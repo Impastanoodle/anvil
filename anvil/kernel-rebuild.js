@@ -25,6 +25,7 @@
   NAME_BASE.closedCorner = 'Closed Corner';
   NAME_BASE.unfold = 'Unfold'; NAME_BASE.fold = 'Fold';   // lane DB
   NAME_BASE.refaxis = 'Axis'; NAME_BASE.refpoint = 'Point'; NAME_BASE.csys = 'Coordinate System';   // lane CZ: reference geometry
+  NAME_BASE.rip = 'Rip'; NAME_BASE.tab = 'Tab';   // lane DI
 
   function featureName(model, type, cut) {
     var base = NAME_BASE[type] || 'Feature';
@@ -445,6 +446,7 @@
     model.features.forEach(function (f) { if (f.type === 'sweep' && typeof f.path === 'number') pathIds[f.path] = true; });
     model.features.forEach(function (f) { if (f.type === 'sketchedBend' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // bend lines are open too
     model.features.forEach(function (f) { if (f.type === 'jog' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // lane DC: a jog's line
+    model.features.forEach(function (f) { if (f.type === 'flange' && f.miterFlange && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // lane DL: a miter flange's profile
     var keys = model.features.map(function (f) { return featureKey(f, model); });
     var prev = cache && cache.steps ? cache.steps : [], steps = [], p = 0;
     while (p < model.features.length && p < prev.length && prev[p].key === keys[p]) p++;
@@ -521,7 +523,7 @@
           case 'unfold':
           case 'fold': {
             // lane DB: Unfold / Fold (kernel-sheetmetal.js) act on the body nearest the fixed face (Fold: the one Unfold made)
-            var uat = f.type === 'unfold' ? f.fixedFace : (ctx.unfold && ctx.unfold.fixedFace);
+            var uat = f.type === 'unfold' ? f.fixedFace || (ctx.unfold && ctx.unfold.fixedFace) : (ctx.unfold && ctx.unfold.fixedFace);   // (lane DJ: a second Unfold)
             var ufk = ctx.bodies.length ? Math.max(0, uat ? bodyNearPoint(ctx.bodies, uat) : 0) : -1;
             ctx.body = ufk >= 0 ? ctx.bodies[ufk] : null;
             var ufr = f.type === 'unfold' ? _.buildUnfold(f, model, ctx) : _.buildFold(f, model, ctx);
@@ -579,6 +581,8 @@
               syncBody();
               break;
             }
+            // lane DI: a Tab (Base Flange/Tab on an existing sheet) is extruded T into the sheet face it is sketched on
+            if (f.type === 'extrude' && f.tab && !f.cut) { var tbs = ctx.sketches[f.sketch] || findFeature(model, f.sketch); if (tbs) f = _.tabFeature(f, model, resolvePlane(tbs.plane, model, ctx.planes), ctx.body); }
             var tool = buildTool(f, model, ctx);
             if (!tool) break;
             var cut = isCut(f, model);

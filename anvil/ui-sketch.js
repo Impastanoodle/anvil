@@ -3299,6 +3299,8 @@
       return;
     }
     var hit = UI.pickEntity(mx, my), t = hit ? K.dimForEntity(f.entities[hit.index], raw) : null;
+    var cv = UI.dimCurvaturePick ? UI.dimCurvaturePick(f, mx, my) : null;   // lane DM: a spline's curvature control (ui-sketch-spline.js)
+    if (cv) { hit = { index: cv.e }; t = { k: 'curv', i: cv.i }; }
     // p9-sketchfix: a sketch point (the virtual sharp on the origin after a fillet, a Point) has no dimension of its own:
     // it starts a distance too (it said "no dimension to place", and the circle clicked next got a second diameter)
     if (!hit || !t) {

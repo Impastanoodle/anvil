@@ -30,6 +30,7 @@
     _.resolveSectionScale(doc, mesh);   // (rfZ) section lines set to scale with model changes go to their place on the part
     var prevStyle = _.DIMSTYLE, prevCtx = _.CTX;
     _.DIMSTYLE = D.dimStyle(doc); _.CTX = { model: model, build: ctx && ctx.build || null, mesh: mesh };
+    if (model) _.lastModel = model;   // (rfDN: excludedBodies outside compute)
     var prevGeo = _.DIMGEO; _.DIMGEO = D.dimGeometry(doc);
     var r;
     try {

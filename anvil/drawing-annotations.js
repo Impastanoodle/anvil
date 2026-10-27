@@ -836,7 +836,8 @@
         return Math.min(Math.max(p0, p1), L) - Math.max(Math.min(p0, p1), 0) > tol;
       });
     }
-    return refs.map(function (r) {
+    var old = refs.map(function (r) { return isEdgeRef(r) ? { a: r.a.slice(), b: r.b.slice() } : null; });
+    var oks = refs.map(function (r) {
       if (!isEdgeRef(r)) return reattachDim(r, pr);
       var ok = false;
       if (collinear(r)) { var re = { kind: r.kind, a: r.a, b: r.b, value: r.value }; ok = reattachDim(re, pr); if (ok) { r.a = re.a; r.b = re.b; r.value = re.value; } }
@@ -860,7 +861,34 @@
       if (!ok) { var rg = { kind: r.kind, a: r.a, b: r.b, value: r.value }; ok = reattachDim(rg, pr); if (ok) { r.a = rg.a; r.b = rg.b; r.value = rg.value; } }
       if (ok) taken.push(dirOf(r.a, r.b));
       return ok;
-    }).every(Boolean);
+    });
+    // (rfDN) the shared vertex itself moved (both ends of the turned edge moved): the vertex the lost line shared with
+    // a sibling that was found is now the sibling's end nearest where it was; the lost line is the edge from there
+    // whose direction is nearest its old one (within 45°, not along a sibling). Only an edge that is gone dangles.
+    oks.forEach(function (ok, i) {
+      if (ok || !old[i]) return;
+      var r = refs[i];
+      for (var j = 0; j < refs.length && !oks[i]; j++) {
+        if (j === i || !oks[j] || !old[j] || !isEdgeRef(refs[j])) continue;
+        var V = null, sense = 0;
+        [[old[i].a, 1], [old[i].b, -1]].forEach(function (e) { [old[j].a, old[j].b].forEach(function (q) { if (!V && Math.hypot(e[0][0] - q[0], e[0][1] - q[1]) <= vtol) { V = e[0]; sense = e[1]; } }); });
+        if (!V) continue;
+        var sj = refs[j], Vn = Math.hypot(sj.a[0] - V[0], sj.a[1] - V[1]) <= Math.hypot(sj.b[0] - V[0], sj.b[1] - V[1]) ? sj.a : sj.b;
+        var t0 = dirOf(old[i].a, old[i].b), want = [t0[0] * sense, t0[1] * sense], best = null, bs = Infinity;
+        (pr.all || []).forEach(function (m) {
+          var q0 = [m[0], m[1]], q1 = [m[2], m[3]], keep = null, other = null;
+          if (Math.hypot(q1[0] - q0[0], q1[1] - q0[1]) <= tol) return;
+          if (Math.hypot(q0[0] - Vn[0], q0[1] - Vn[1]) <= vtol) { keep = q0; other = q1; } else if (Math.hypot(q1[0] - Vn[0], q1[1] - Vn[1]) <= vtol) { keep = q1; other = q0; }
+          if (!keep) return;
+          var u = dirOf(keep, other);
+          if (taken.some(function (x) { return Math.abs(x[0] * u[1] - x[1] * u[0]) < 1e-9; })) return;
+          var s = Math.acos(Math.max(-1, Math.min(1, u[0] * want[0] + u[1] * want[1])));
+          if (s < bs - 1e-12) { bs = s; best = sense > 0 ? { a: keep.slice(), b: other.slice() } : { a: other.slice(), b: keep.slice() }; }
+        });
+        if (best && bs < Math.PI / 4) { var nr = refFrom(best); r.a = nr.a; r.b = nr.b; r.kind = nr.kind; r.value = nr.value; oks[i] = true; taken.push(dirOf(r.a, r.b)); }
+      }
+    });
+    return oks.every(Boolean);
   }
   function reattachCT(d, pr) {
     var ok = d.kind === 'angrun' ? ctReattachLines([d.base].concat(d.refs), pr) : d.refs.map(function (r) { return reattachDim(r, pr); }).every(Boolean);

@@ -49,8 +49,8 @@
       assert(mi && rfDCMenuItem('Unsuppress') && rfDCMenuItem('Flat Pattern'), 'Flat-Pattern1 menu: Edit Feature, Unsuppress, Flat Pattern…');
       mi.click(); await wait(30);
       assert(UI.hasPM() && UI.pmTitle() === 'Flat-Pattern1', 'Edit Feature opens the Flat-Pattern1 PM');
-      var mf = pmField('Merge faces'), sb = pmField('Simplify bends');
-      assert(mf && mf.checked && mf.disabled && sb && sb.checked && sb.disabled, 'Merge faces / Simplify bends shown checked and greyed');
+      // lane DK: Fixed face / Grain direction picks; no greyed boxes for options Anvil does not have
+      assert(!pmField('Merge faces') && !pmField('Simplify bends') && /Fixed face/.test($('pm').textContent) && /Grain direction/.test($('pm').textContent), 'Fixed face / Grain direction, no dead boxes');
       assert(/Flat size4 × 4.4017 in/.test($('pm').textContent), 'the flat size in the PM: ' + $('pm').textContent.slice(300, 700));
       UI.pmCancel(); await idle();
       assert(errors.length === errs0, 'no console errors: ' + errors.slice(errs0).join(' | '));
@@ -181,7 +181,7 @@
       assert(jb, 'Jog on the ribbon: ' + Array.prototype.map.call(D.querySelectorAll('#ribbon button'), function (b) { return b.getAttribute('aria-label'); }).join(', '));
       jb.click(); await idle(); await wait(30);
       assert(UI.hasPM() && UI.pmTitle() === 'Jog', 'Jog PM: ' + (UI.hasPM() && UI.pmTitle()));
-      assert(pmField('Dimension position') && pmField('Jog position') && pmField('Jog angle') && pmField('Fix projected length').disabled, 'Jog Offset / Position / Angle groups');
+      assert(pmField('Dimension position') && pmField('Jog position') && pmField('Jog angle') && pmField('Fix projected length') && !pmField('Fix projected length').disabled && !pmField('Fix projected length').checked, 'Jog Offset / Position / Angle groups');
       var s = UI.worldToScreen([0.5, T, 1.5]), pk = UI.pickFace(s[0], s[1]);
       assert(pk && Math.abs(pk.point[1] - T) < 1e-6, 'the plate top under the cursor');
       rfDCClick(s); await idle(); await wait(20);

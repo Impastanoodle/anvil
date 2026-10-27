@@ -62,6 +62,9 @@
       var ob = D.querySelector('#pm button[data-key="cornerType:overlap"]');
       assert(ob, 'Overlap corner type button'); ob.click(); await wait(20);
       assert(pmField('Overlap/underlap ratio'), 'ratio box shown for Overlap');
+      // lane DK: a new corner closes the bend region (Open bend region off); this step checks the open-region volumes
+      var obr = pmField('Open bend region');
+      assert(obr && !obr.checked, 'Open bend region off for a new corner'); obr.click(); await wait(20);
       var gp = pmField('Gap distance');
       gp.focus(); gp.select(); rfCSType(gp, '.02');
       var ev = pressEnter(gp);

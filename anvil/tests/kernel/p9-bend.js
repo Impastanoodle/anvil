@@ -105,9 +105,9 @@
       var sheet = 'p.units("in");\np.sheet(0.06, 0.06, 0.5, { bendAllowanceType: "deduction", bendDeduction: 0.1 });\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();';
       var h = flatOf(sheet + '\np.hem(0.5, [[0, 0.06, 1.5]], { gap: 0.04 });');
       var Rh = 0.02;
-      near(h.flat.size[0], W + 0.5 + (2 * (Rh + T) - 0.1), 1e-9, 'hem: BA = 2(R + T) − BD at 180°');
+      near(h.flat.size[0], W + 0.5 - (Rh + T) + (2 * (Rh + T) - 0.1), 1e-9, 'hem: BA = 2(R + T) − BD at 180° (leg = 0.5 − (R + T): length overall from the fold, lane DI2)');
       var hc = flatOf(sheet + '\np.hem(0.5, [[0, 0.06, 1.5]], { gap: 0.04, bendAllowance: { type: "allowance", value: 0.1 } });');
-      near(hc.flat.size[0], W + 0.5 + 0.1, 1e-9, 'hem with custom BA');
+      near(hc.flat.size[0], W + 0.5 - (Rh + T) + 0.1, 1e-9, 'hem with custom BA');
       var H = 0.5, L2 = 1;
       var j = flatOf(sheet + '\np.jog(' + H + ', ' + L2 + ', [[0, 0.06, 1.5]]);');
       var wall = H - 2 * R;   // 90° jog: wall = H − 2R(1 − cos A) + T cos A

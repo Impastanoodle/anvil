@@ -445,13 +445,18 @@
   // still paints between them.
   var PJ = { worker: null, off: false, mesh: null, id: 0, jobs: {}, tick: 0, flushT: 0 };
   function projWorker() {
-    if (PJ.off || typeof Worker === 'undefined') return null;
+    if (PJ.off || typeof Worker === 'undefined' || performance.now() < (PJ.coolUntil || 0)) return null;
     if (!PJ.worker) {
       try { PJ.worker = new Worker('drawing-worker.js'); } catch (err) { PJ.off = true; return null; }
       PJ.worker.onmessage = onProjected;
+      var me = PJ.worker;
       PJ.worker.onerror = function (ev) {
         if (ev && ev.preventDefault) ev.preventDefault();   // (handled: the views are worked out here instead)
-        PJ.off = true; PJ.worker = null;
+        if (PJ.worker !== me) return;   // (a worker already dropped)
+        // (rfDN) a worker that failed to start (a script that did not load from a busy local server) is tried again
+        // with the next views once a pause has passed (1 s per failure so far, at most 10 s; meanwhile the views are
+        // worked out here). The new one is sent the mesh again.
+        PJ.why = String(ev && ev.message || 'worker error'); PJ.fails = (PJ.fails || 0) + 1; PJ.coolUntil = performance.now() + Math.min(10000, 1000 * PJ.fails); PJ.worker = null; PJ.sent = false;
         var jobs = PJ.jobs; Object.keys(jobs).forEach(function (k) { if (jobs[k].posted) projectHere(jobs[k]); });
       };
     }
@@ -491,7 +496,7 @@
           if (job.section) w.postMessage({ type: 'section', id: PJ.id, job: job.key, section: job.section, frame: job.frame, display: job.display, tangent: job.tangent });
           else w.postMessage({ type: 'project', id: PJ.id, job: job.key, frame: job.frame, display: job.display, tangent: job.tangent });
           return;
-        } catch (err) { PJ.off = true; w = null; }
+        } catch (err) { PJ.why = String(err && err.message || err); PJ.off = true; w = null; }
       }
       projectHere(job);
     });
@@ -1252,6 +1257,7 @@
   DW.isAsm = isAsm; DW.docKind = docKind; DW.makeDrawing = makeDrawing; DW.openDrawing = openDrawing; DW.closeDrawing = closeDrawing; DW.detachDrawing = detachDrawing;
   DW.requestClose = requestClose; DW.drawingDirty = drawingDirty; DW.markDrawingClean = markDrawingClean;
   DW.activateSheet = activateSheet; DW.addSheet = addSheet; DW.deleteSheet = deleteSheet; DW.renameSheet = renameSheet; DW.sheetTabMenu = sheetTabMenu; DW.renderTabs = renderTabs;
+  DW.workerState = function () { return { off: !!PJ.off, why: PJ.why || null, fails: PJ.fails || 0, worker: !!PJ.worker, cooling: Math.max(0, (PJ.coolUntil || 0) - performance.now()) }; };   // (rfDN: tests)
   DW.render = render; DW.settle = settle; DW.ready = ready; DW.queueRender = queueRender; DW.svgEl = svgEl; DW.fitBox = fitBox; DW.fitSheet = fitSheet; DW.glideTo = glideTo;
   DW.toPaper = toPaper; DW.pxToPaper = pxToPaper; DW.liveOffset = liveOffset; DW.drawOverlay = drawOverlay; DW.dimMatches = dimMatches; DW.viewAt = viewAt; DW.dimAt = dimAt; DW.entityAt = entityAt; DW.segDist = segDist; DW.ellipsePts = ellipsePts; DW.ellipsePath = ellipsePath;
 })();

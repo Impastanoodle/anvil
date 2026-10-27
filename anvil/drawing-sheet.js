@@ -106,14 +106,14 @@
   // finds it. { section: { mesh, caps, area, e, w }, proj, loops }; the cut mesh goes without its _drawing caches.
   function sectionJob(mesh, sec, frame, display, tangent) {
     // (rfCX2) sec.path = { P (the parent's frame), sc (view.section) }: a half / offset / aligned section's path cut
-    var S = sec.path ? D.pathSectionOf(mesh, sec.path.P, sec.path.sc) : sectionOf(mesh, sec.e, sec.w), F = frameOf(frame), proj = cachedProjection(S.mesh, F, display, tangent), loops = capLoops(S, F), sm = {};
+    var S = sec.path ? D.pathSectionOf(mesh, sec.path.P, sec.path.sc) : D.sectionOf(mesh, sec.e, sec.w, sec.ex), F = frameOf(frame), proj = cachedProjection(S.mesh, F, display, tangent), loops = capLoops(S, F), sm = {};
     Object.keys(S.mesh).forEach(function (q) { if (q.indexOf('_drawing') !== 0) sm[q] = S.mesh[q]; });
     var out = { section: { mesh: S.mesh === mesh ? null : sm, caps: S.caps, area: S.area, e: S.e, w: S.w }, proj: proj, loops: loops };
     if (S.path) out.section.path = S.path;
     return out;
   }
   function putSection(mesh, sec, frame, display, tangent, r) {
-    var c = mesh._drawingSections || (mesh._drawingSections = {}), key = sec.path ? _.secKey(sec.path.P, sec.path.sc) : sectionKey(sec.e, sec.w), S = c[key];
+    var c = mesh._drawingSections || (mesh._drawingSections = {}), key = sec.path ? _.secKey(sec.path.P, sec.path.sc) : sectionKey(sec.e, sec.w, sec.ex), S = c[key];
     if (!S) { S = c[key] = r.section; if (!S.mesh) S.mesh = mesh; }
     var F = frameOf(frame);
     if (S.mesh !== mesh) putProjection(S.mesh, projectionKey(F, display, tangent), r.proj);
@@ -311,6 +311,7 @@
     // custom scale of its own
     var osc = opts.scale ? (Array.isArray(opts.scale) ? [+opts.scale[0], +opts.scale[1]] : parseScale(opts.scale)) : null;
     if (osc && osc[0] > 0 && osc[1] > 0) v.scale = osc; else v.section.parentScale = true;
+    if (opts.excluded && opts.excluded.length) v.section.excluded = opts.excluded.map(String);   // (rfDN) Excluded components (assembly component ids)
     labelOpt(doc, v, opts);
     if (opts.x != null && axis === 'v') v.x = opts.x;
     if (opts.y != null && axis === 'h') v.y = opts.y;
@@ -511,18 +512,19 @@
       var P = parentContent(par).frame, sc = v.section, F = sectionFrame(P, sc.axis, sc.sign), full = extentsOf(mesh, F);
       // (lazy compute: a cut not worked out yet is a job for drawing-worker.js, and a placeholder the size of the
       // whole part in this frame meanwhile, r13/drawings13)
+      var ex = _.excludedBodies(v);   // (rfDN) Excluded components: left whole
       if (_.LAZY && _.LAZY.mesh === mesh) {
-        var S0 = mesh._drawingSections && mesh._drawingSections[sectionKey(F.e, sc.sign * sc.at)], pk = projectionKey(F, v.display, v.tangent);
+        var S0 = mesh._drawingSections && mesh._drawingSections[sectionKey(F.e, sc.sign * sc.at, ex)], pk = projectionKey(F, v.display, v.tangent);
         if (!S0 || (S0.mesh !== mesh && S0.mesh.faces.length && !(S0.mesh._drawingProj && S0.mesh._drawingProj[pk])) || !(S0._capLoops && S0._capLoops[frameKey(F)])) {
-          var jk = 'S|' + sectionKey(F.e, sc.sign * sc.at) + '|' + pk;
-          if (!_.LAZY.keys[jk]) { _.LAZY.keys[jk] = 1; _.LAZY.missing.push({ key: jk, section: { e: F.e.slice(), w: sc.sign * sc.at }, frame: { name: F.name, e: F.e, u: F.u, v: F.v }, display: v.display, tangent: v.tangent || null }); }
+          var jk = 'S|' + sectionKey(F.e, sc.sign * sc.at, ex) + '|' + pk;
+          if (!_.LAZY.keys[jk]) { _.LAZY.keys[jk] = 1; _.LAZY.missing.push({ key: jk, section: ex ? { e: F.e.slice(), w: sc.sign * sc.at, ex: ex.slice() } : { e: F.e.slice(), w: sc.sign * sc.at }, frame: { name: F.name, e: F.e, u: F.u, v: F.v }, display: v.display, tangent: v.tangent || null }); }
           var ph = emptyProjection(F, full);
           ph.bounds = { umin: full.umin, umax: full.umax, vmin: full.vmin, vmax: full.vmax };
           ph.pending = true;
           return { frame: F, proj: ph, center: [full.cu, full.cv], caps: [], section: null, scale: s };
         }
       }
-      var S = sectionOf(mesh, F.e, sc.sign * sc.at), pr = cachedProjection(S.mesh, F, v.display, v.tangent);
+      var S = D.sectionOf(mesh, F.e, sc.sign * sc.at, ex), pr = cachedProjection(S.mesh, F, v.display, v.tangent);   // (rfDN: late bound, a test stubs it)
       if (!S.mesh.faces.length) pr = emptyProjection(F, full);
       return { frame: F, proj: pr, center: [full.cu, full.cv], caps: capLoops(S, F), section: S, scale: s };
     }

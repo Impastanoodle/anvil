@@ -100,19 +100,19 @@
       var F0 = 4 + 1.5 - K.bendDeduction(Math.PI / 2, R, T, BA90);
       function polyBend(A, r) { var n = Math.max(4, Math.round(8 * A / (Math.PI / 2))); return n / 2 * ((r + T) * (r + T) - r * r) * Math.sin(A / n); }
       var cases = [
-        { opts: '', A: Math.PI, r: T / 4, L: 0.375 },                                        // legacy: open, gap T/2
-        { opts: 'hemType: "open", hemPosition: "outside"', A: Math.PI, r: T / 4, L: 0.375 },
-        { opts: 'hemType: "open", hemPosition: "inside"', A: Math.PI, r: T / 4, L: 0.375, inside: true },
-        { opts: 'hemType: "closed"', A: Math.PI, r: 0.02 * T, L: 0.375 },
-        { opts: 'hemType: "closed", hemPosition: "inside"', A: Math.PI, r: 0.02 * T, L: 0.375, inside: true },
-        { opts: 'hemType: "teardrop"', A: 1.5 * Math.PI, r: R, L: R - 0.04 * T },              // tail back down to 0.04T above the wall
+        { opts: '', A: Math.PI, r: T / 4, L: 0.375 - (T / 4 + T) },                          // legacy: open, gap T/2; lane DI2: 0.375 overall from the fold's outer face
+        { opts: 'hemType: "open", hemPosition: "outside"', A: Math.PI, r: T / 4, L: 0.375 - (T / 4 + T) },
+        { opts: 'hemType: "open", hemPosition: "inside"', A: Math.PI, r: T / 4, L: 0.375 - (T / 4 + T), inside: true },
+        { opts: 'hemType: "closed"', A: Math.PI, r: 0.05 / 25.4, L: 0.375 - (0.05 / 25.4 + T) },   // lane DI2: SolidWorks' 0.1 mm closed gap
+        { opts: 'hemType: "closed", hemPosition: "inside"', A: Math.PI, r: 0.05 / 25.4, L: 0.375 - (0.05 / 25.4 + T), inside: true },
+        { opts: 'hemType: "teardrop"', A: 1.5 * Math.PI, r: R, L: R - 0.2 / 25.4 },             // tail back down, stopping 0.2 mm short (along it) of the wall (DI2)
         { opts: 'hemType: "teardrop", hemPosition: "inside", hemRadius: 0.08, hemAngle: 225', A: 1.25 * Math.PI, r: 0.08, inside: true },
         { opts: 'hemType: "rolled", hemPosition: "inside", hemRadius: 0.1, hemAngle: 225', A: 1.25 * Math.PI, r: 0.1, L: 0, inside: true },
         { opts: 'hemType: "rolled", hemPosition: "outside"', A: 1.5 * Math.PI, r: R, L: 0 }
       ];
       var base = flatOf(WALL), out = [];
       cases.forEach(function (c) {
-        if (c.L == null) { var s = Math.sin(c.A), cs = Math.cos(c.A); c.L = (Math.min(c.r - c.r * cs, c.r - (c.r + T) * cs) - 0.04 * T) / -s; }
+        if (c.L == null) { var s = Math.sin(c.A), cs = Math.cos(c.A); c.L = Math.min(c.r - c.r * cs, c.r - (c.r + T) * cs) / -s - 0.2 / 25.4; }
         var h = flatOf(WALL + 'p.hem(0.375, [[3, 1.5, ' + T + ']]' + (c.opts ? ', { ' + c.opts + ' }' : '') + ');');
         var lab = c.opts || 'legacy', BA = c.A * (c.r + 0.5 * T), trim = c.inside ? c.r + T : 0;
         near(h.mp.bbox.max[1], c.inside ? 1.5 : 1.5 + c.r + T, 1e-9, lab + ': height');

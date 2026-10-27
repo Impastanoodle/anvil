@@ -32,6 +32,7 @@ var OcctKernel = (function () {
     fillet: 1, chamfer: 1, shell: 1, loft: 1, sweep: 1, hole: 1, import: 1, flange: 1, jog: 1, sketchedBend: 1, breakCorner: 1, closedCorner: 1 };
   SUPPORTED.unfold = SUPPORTED.fold = 1;   // lane DB2
   SUPPORTED.refaxis = SUPPORTED.refpoint = SUPPORTED.csys = 1;   // lane CZ: reference geometry makes no body (skipped below)
+  SUPPORTED.rip = 1;   // lane DI
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
 
   function build(oc, K, model, opts) {
@@ -235,7 +236,13 @@ var OcctKernel = (function () {
     function moveTo(sh, t, plane) { var tr = N(new oc.gp_Trsf_1()); tr.SetTranslation_1(Vec([plane.n[0] * t, plane.n[1] * t, plane.n[2] * t])); return transformed(sh, tr); }
     function extrudeTool(f) {
       if (f.sheetBase && rm.sheetError) throw new Error(rm.sheetError);
-      var sk = K.contourSketch(f, sketchOf(f)), plane = K.resolvePlane(sk.plane, m, planes), range = K.extrudeRange(f, K.THROUGH);   // lane CO: Selected Contours
+      var sk = K.contourSketch(f, sketchOf(f)), plane = K.resolvePlane(sk.plane, m, planes);   // lane CO: Selected Contours
+      if (f.tab && !f.cut) {   // lane DI: a Tab goes T into the sheet face it is sketched on (Kernel.tabFeature)
+        var tpolys = [];
+        bodies.forEach(function (b) { Array.prototype.push.apply(tpolys, shapeToCSG(b).polygons); });
+        f = K.tabFeature(f, m, plane, CSGlib ? CSGlib.fromPolygons(tpolys) : null);
+      }
+      var range = K.extrudeRange(f, K.THROUGH);
       if (f.draft != null && !isFinite(+f.draft)) throw new Error('Draft angle must be a number.');
       var draft = +f.draft || 0;
       if (Math.abs(draft) >= 89) throw new Error('Draft angle must be less than 89°.');
@@ -790,11 +797,13 @@ var OcctKernel = (function () {
     // the void outline drawn on the cylinder of the bend's inner face (ε inside it: angle A·s/BA, axial t, straight in
     // those coordinates) and thickened radially through the thickness (ε past the outer face): its walls are the exact
     // radial walls of the wrapped cut. The cylinder carries on past the bend's ends, where the sweep has no metal.
-    function cylinderCutter(l, plane, sec, BA) {
-      var R0 = sec.R, T = sec.T, eps = Math.min(0.01 * T, 0.5 * R0);
+    // (lane DJ: zr = [z0, z1], the depth range from the inner face instead: material added on the flat, a blind cut)
+    function cylinderCutter(l, plane, sec, BA, zr) {
+      var R0 = sec.R, T = sec.T, eps = Math.min(0.01 * T, 0.5 * R0), z0 = zr ? zr[0] : -eps, z1 = zr ? zr[1] : T + eps;
+      if (!(R0 + z0 > 1e-9)) throw unsupportedErr('material wrapped round a bend down to its axis');
       // axis through the bend centre along the edge; angle 0 at the sheet (−y from the centre), growing toward +x
       var ax = N(new oc.gp_Ax3_3(P(V.add(plane.origin, V.scale(plane.y, R0))), Dir(plane.n), Dir(V.scale(plane.y, -1))));
-      var surf = N(new oc.Handle_Geom_Surface_2(N(new oc.Geom_CylindricalSurface_1(ax, R0 - eps))));
+      var surf = N(new oc.Handle_Geom_Surface_2(N(new oc.Geom_CylindricalSurface_1(ax, R0 + z0))));
       var ku = sec.A / BA, uv = l.map(function (q) { return [ku * q[0], q[1]]; }), mw = N(new oc.BRepBuilderAPI_MakeWire_1());
       function pnt2(q) { return N(new oc.gp_Pnt2d_3(ku * q[0], q[1])); }
       // the outline's points lie on the cut's true edge (a circle's, a slot's): between corners (a turn of more than
@@ -849,13 +858,13 @@ var OcctKernel = (function () {
       // the cutter's volume: the outline's area in (angle, t) times the annulus between the two radii per unit angle
       var area = 0;
       uv.forEach(function (a, j) { var b = uv[(j + 1) % uv.length]; area += a[0] * b[1] - b[0] * a[1]; });
-      var want = Math.abs(area / 2) * (Math.pow(R0 + T + eps, 2) - Math.pow(R0 - eps, 2)) / 2;
+      var want = Math.abs(area / 2) * (Math.pow(R0 + z1, 2) - Math.pow(R0 + z0, 2)) / 2;
       // on a closed surface a wire bounds two regions: when the face came out as the rest of the cylinder, reverse it
       for (var k = 0; k < 2; k++) {
         var w = k ? N(oc.TopoDS.Wire_1(N(wire.Reversed()))) : wire;
         var face = N(N(new oc.BRepBuilderAPI_MakeFace_21(surf, w, true)).Face());
         var th = N(new oc.BRepOffsetAPI_MakeThickSolid());
-        th.MakeThickSolidBySimple(face, T + 2 * eps);
+        th.MakeThickSolidBySimple(face, z1 - z0);
         if (!th.IsDone()) continue;
         var sh = N(th.Shape()), v = volumeOf(sh);   // (the thickened face comes out inside out: negative)
         if (Math.abs(v) < 1.5 * want) return v < 0 ? N(sh.Reversed()) : sh;
@@ -910,8 +919,20 @@ var OcctKernel = (function () {
       return k;
     }
     function flangeOp(f) {
+      if (f.miterFlange && f.sketch != null) { miterFlangeOp(f); return; }   // lane DL
       var k = sheetBody(f);
       applyLayout(k, K.flangeLayout(f, m, { body: shapeToCSG(bodies[k]) }), true);
+    }
+    // lane DL: Miter Flange from a profile sketch (as Kernel's buildMiterFlange): Kernel.miterFlangeStages plans the
+    // stages; each is an edge-flange layout built with exact bend arcs on the part as the stages before it left it
+    function miterFlangeOp(f) {
+      var k = sheetBody(f), csg = shapeToCSG(bodies[k]);
+      K.miterFlangeStages(f, m, { body: csg, sketches: sketches, planes: planes }, function (fk) {
+        var lay = K.flangeLayout(fk, m, { body: csg });
+        applyLayout(k, lay, true);
+        csg = shapeToCSG(bodies[k] = unify(bodies[k]));
+        return { info: lay.info, body: csg };
+      });
     }
     // Jog (as Kernel.buildJog): a flange whose wall length makes the offset `height`, then on its wall's end a flange
     // folding back parallel to the base for `length`
@@ -981,6 +1002,8 @@ var OcctKernel = (function () {
     // moved wall a straight length g further (a sketch made here on the moved face, folding back, Bend Outside), both
     // with exact bend arcs. The offset reference, g and the second line are worked out as the CSG kernel does.
     function sketchJogOp(f) {
+      // lane DK: Fix projected length stretches the sheet at the line first (Kernel.buildSketchJog): Anvil's solid stays
+      if (f.fixLength) throw unsupportedErr('Jog with Fix projected length');
       var sheet = K.sheetParams(m), T = +sheet.thickness, Rr = f.radius != null ? +f.radius : +sheet.bendRadius;
       var deg = f.angle == null ? 90 : +f.angle, A = deg * Math.PI / 180, D = +f.offset, ref = f.offsetRef || 'outside';
       if (!isFinite(D) || !isFinite(A)) throw new Error('Jog offset and angle must be a number each.');
@@ -1021,6 +1044,18 @@ var OcctKernel = (function () {
       });
       return acc;
     }
+    // Rip (lane DI; as Kernel.buildRip, from Kernel.ripLayout found on the bodies' tessellation): planar prisms along
+    // the ripped corner edges; the rebuild cuts the tool (a registered cut)
+    function ripTool(f) {
+      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      if (!bodies.length) throw new Error('Rip: there is nothing to rip yet.');
+      var polys = [];
+      bodies.forEach(function (b) { Array.prototype.push.apply(polys, shapeToCSG(b).polygons); });
+      var lay = K.ripLayout(f, m, { body: CSGlib.fromPolygons(polys) }), acc = null;
+      lay.tools.forEach(function (t) { var s = prismOf(t.pts, t.plane, t.a, t.b); acc = acc ? fuse(acc, s) : s; });
+      return acc;
+    }
     // Closed Corner (lane CS; as Kernel.buildClosedCorner, from Kernel.closedCornerLayout found on the body's
     // tessellation): the trim of the matching walls is cut, then the extensions (planar prisms) are fused on
     function closedCornerOp(f) {
@@ -1031,7 +1066,16 @@ var OcctKernel = (function () {
       bodies[k] = unify(bodies[k]);
       var lay = K.closedCornerLayout(f, m, { body: shapeToCSG(bodies[k]) }), body = bodies[k];
       if (lay.cuts.length) body = boolMany('cut', body, lay.cuts.map(function (t) { return prismOf(t.loop, t.plane, t.a, t.b); }), 'Closed Corner: OpenCascade could not trim the matching wall.');
+      var rest = body;
       body = boolMany('fuse', body, lay.adds.map(function (t) { return prismOf(t.loop, t.plane, t.a, t.b); }), 'Closed Corner: OpenCascade could not extend the faces.');
+      // lane DK: Close bend region: each bend-end fill (its loop is the end face's chords) less the part after the trim
+      // and less that part moved back by the gap along the extension (Kernel.closedCornerFill), fused on
+      (lay.fills || []).forEach(function (t) {
+        var tr = N(new oc.gp_Trsf_1());
+        tr.SetTranslation_1(Vec([-t.clip * t.n[0], -t.clip * t.n[1], -t.clip * t.n[2]]));
+        var P = cut(cut(prismOf(t.loop, t.plane, t.a, t.b), rest), transformed(rest, tr));
+        body = fuse(body, P);
+      });
       bodies[k] = unify(body);
     }
     // Unfold / Fold (lane DB2; as Kernel.buildUnfold / buildFold, from the state Kernel.rebuild leaves after the Unfold:
@@ -1040,8 +1084,10 @@ var OcctKernel = (function () {
     // flat strip × T moved by P·Q (a strip that still has a cut across it from before is Anvil's: unsupported), each
     // bend left folded the part ∩ its wedge moved with its parent; all fused. Fold: what was cut since (the unfolded
     // part less now), face pieces moved back rigidly, each strip's through-voids (Kernel.bendVoids) as exact
-    // cylinderCutter tools round the bend; all cut from the folded part as it was before the Unfold. A Fold of some
-    // bends only is unsupported (Anvil re-unfolds the rest).
+    // cylinderCutter tools round the bend; all cut from the folded part as it was before the Unfold. Lane DJ: a Fold of
+    // some bends unfolds the rest again from Anvil's state after it, an Unfold of a strip with a cut across it takes
+    // the strip from the flat (holes and all), a second Unfold folds the open one back first, and blind cuts and
+    // added material fold back in layers (ufFoldBody).
     var ufLocal = {};   // feature index of an Unfold built in this run -> { B0, F0 }
     function ufMath() { return K._ || {}; }
     function ufCell(st, loop, M, d0, d1) { var sp = st.fr.span(d0, d1), sh = prismOf(loop, sp.plane, sp.a, sp.b); return transformed(sh, trsfOf(M)); }
@@ -1051,44 +1097,70 @@ var OcctKernel = (function () {
       if (!r.state) throw new Error('Unfold: no unfold state.');
       return r.state;
     }
-    function unfoldOp(f, fi) {
-      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
-      if (rm.sheetError) throw new Error(rm.sheetError);
-      var st = ufState(fi), mc = ufMath().mCompose, mi = ufMath().mInv, T = st.T, eps = 0.01 * T;
-      var k = pickBody(f.fixedFace || null);
-      if (k < 0) throw new Error('Unfold: there is no sheet metal part yet.');
-      var B0 = bodies[k] = unify(bodies[k]), parts = [];
+    // lane DJ: the Unfold state left open before feature index fi (an Unfold, or a Fold of some bends), or null
+    function ufOpenAt(fi) {
+      var j = -1;
+      m.features.forEach(function (g, i) { if (i < fi && (g.type === 'unfold' || g.type === 'fold')) j = i; });
+      if (j < 0) return null;
+      var st = K.unfoldStateAt(model, j).state;
+      return st ? { u: j, st: st } : null;
+    }
+    // unfold the exact folded part B0 by state st: every face piece (B0 ∩ its cell) moved by P·Q·F, each unfolded strip
+    // the flat strip × T (lane DJ: less the flat's holes when a cut crosses it) moved by P·Q, each bend left folded
+    // B0 ∩ its wedge moved with its parent; all fused
+    function ufUnfoldBody(st, B0) {
+      var mc = ufMath().mCompose, T = st.T, eps = 0.01 * T, parts = [], flatSh = null;
+      function flatShape() {
+        if (flatSh) return flatSh;
+        var sp = st.fr.span(0, T), sp2 = st.fr.span(-eps, T + eps);
+        flatSh = prismOf(st.flat.loops[0], sp.plane, sp.a, sp.b);
+        var hs = st.flat.loops.slice(1).map(function (h) { return prismOf(h, sp2.plane, sp2.a, sp2.b); });
+        if (hs.length) flatSh = boolMany('cut', flatSh, hs, 'Unfold: OpenCascade could not cut the flat\'s holes.');
+        return flatSh;
+      }
       st.faces.forEach(function (fc, i) {
-        var pc = common(B0, ufCell(st, fc.outer, mi(st.F[i]), -eps, T + eps));
+        var pc = common(B0, ufCell(st, fc.outer, ufMath().mInv(st.F[i]), -eps, T + eps));
         if (volumeOf(pc) > 1e-12) parts.push(transformed(pc, trsfOf(mc(st.P, mc(st.Q[i], st.F[i])))));
       });
       st.strips.forEach(function (s, k2) {
         if (st.sel[k2]) {
-          if (s.fi.cutouts && s.fi.cutouts.length) throw unsupportedErr('an Unfold of a bend with a cut across it');
-          parts.push(ufCell(st, s.strip, mc(st.P, st.Q[s.parent]), 0, T));
+          var M = mc(st.P, st.Q[s.parent]);
+          if (s.fi.cutouts && s.fi.cutouts.length && st.flat) {
+            var sp = st.fr.span(-eps, T + eps), pc2 = common(flatShape(), prismOf(s.strip, sp.plane, sp.a, sp.b));
+            if (volumeOf(pc2) > 1e-12) parts.push(transformed(pc2, trsfOf(M)));
+          } else parts.push(ufCell(st, s.strip, M, 0, T));
           return;
         }
         var w = K.unfoldWedgeSpec(s, T), pw = common(B0, prismOf(w.loop, w.plane, w.a, w.b));
         if (volumeOf(pw) > 1e-12) parts.push(transformed(pw, trsfOf(mc(st.P, mc(st.Q[s.parent], st.F[s.parent])))));
       });
       if (!parts.length) throw new Error('Unfold: nothing of the sheet is left.');
-      var body = parts.length > 1 ? boolMany('fuse', parts[0], parts.slice(1), 'Unfold: OpenCascade could not join the flat pieces.') : parts[0];
-      bodies[k] = unify(body);
-      ufLocal[fi] = { B0: B0, F0: bodies[k], k: k };
+      return unify(parts.length > 1 ? boolMany('fuse', parts[0], parts.slice(1), 'Unfold: OpenCascade could not join the flat pieces.') : parts[0]);
     }
-    function foldOp(f, fi) {
-      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
-      if (rm.sheetError) throw new Error(rm.sheetError);
-      var u = -1;
-      m.features.forEach(function (g, j) { if (j < fi && g.type === 'unfold') u = j; else if (j < fi && g.type === 'fold') u = -1; });
-      if (u < 0) throw new Error('Fold: there is no Unfold before it to fold back.');
-      var st = ufState(u), mc = ufMath().mCompose, mi = ufMath().mInv, T = st.T, eps = 0.01 * T;
-      if (f.bends && f.bends.length && f.bends.length < st.sel.filter(Boolean).length) throw unsupportedErr('a Fold of some of the bends');
-      var k = pickBody(st.fixedFace || null), B0 = null, F0 = null;
-      if (ufLocal[u]) { B0 = ufLocal[u].B0; F0 = ufLocal[u].F0; k = ufLocal[u].k; }
-      else if (cache && cache.states && u > 0 && cache.states[u - 1] && cache.states[u]) { B0 = cache.states[u - 1].bodies[k]; F0 = cache.states[u].bodies[k]; }
-      if (!B0 || !F0 || k < 0) throw unsupportedErr('a Fold whose Unfold is not in this build');
-      var now = bodies[k], removed = cut(F0, now), cuts = [];
+    // the folded part B0 (before the Unfold of state st, F0 just after it) with what was cut from or added to the
+    // unfolded part since (now): face pieces moved back rigidly, each strip's through-voids (Kernel.bendVoids) as exact
+    // cylinderCutter tools round the bend; lane DJ: what else was cut in a strip (a blind cut) and what was added
+    // (Kernel.unfoldCells, Kernel.unfoldLayers) in layers of constant depth, each a cylinderCutter shell at its depth
+    function ufFoldBody(st, B0, F0, now, fid) {
+      var mc = ufMath().mCompose, mi = ufMath().mInv, T = st.T, eps = 0.01 * T, removed = cut(F0, now), cuts = [];
+      function bendFrame(sf) {
+        // cylinderCutter takes a right-handed section frame (x × y = n); the bend's n runs a → b, which may be the other way
+        var bp = sf.bend, flip = V.dot(V.cross(bp.x, bp.y), bp.n) < 0;
+        if (flip) bp = { origin: bp.origin, x: bp.x, y: bp.y, n: V.scale(bp.n, -1) };
+        return { bp: bp, loop: function (l) { return flip ? l.map(function (q) { return [q[0], -q[1]]; }).reverse() : l; } };
+      }
+      function wrapLayers(ly, sf, s, isCut) {
+        var bf = bendFrame(sf), out = [], tol = 1e-6 * Math.max(1, T);
+        ly.forEach(function (l) {
+          var zr = l.z.slice();
+          if (isCut) { if (Math.abs(zr[0]) < tol) zr[0] = -eps; if (Math.abs(zr[1] - T) < tol) zr[1] = T + eps; }
+          var sol = l.outer.map(function (q) { return cylinderCutter(bf.loop(q), bf.bp, sf.sec, s.BA, zr); });
+          var one = sol.length > 1 ? boolMany('fuse', sol[0], sol.slice(1), 'Fold: OpenCascade could not join a layer.') : sol[0];
+          if (l.holes.length) one = boolMany('cut', one, l.holes.map(function (q) { return cylinderCutter(bf.loop(q), bf.bp, sf.sec, s.BA, [zr[0] - eps, zr[1] + eps]); }), 'Fold: OpenCascade could not cut a layer\'s hole.');
+          out.push(one);
+        });
+        return out;
+      }
       if (volumeOf(removed) > 1e-12) {
         st.faces.forEach(function (fc, i) {
           var M = mc(st.P, st.Q[i]), pc = common(removed, ufCell(st, fc.outer, M, -eps, T + eps));
@@ -1103,17 +1175,76 @@ var OcctKernel = (function () {
           }
           var M = mc(st.P, st.Q[s.parent]), Mi = trsfOf(mi(M)), pc = common(removed, ufCell(st, s.strip, M, -eps, T + eps));
           if (!(volumeOf(pc) > 1e-12)) return;
-          var sf = K.unfoldStripFrame(st, s), slab = K.bandSlabSpec(sf.plane, sf.band, T);
-          var vs = common(prismOf(slab.loop, slab.plane, slab.a, slab.b), transformed(pc, Mi));
-          if (!(volumeOf(vs) > 0)) return;
-          var loops = K.bendVoids(shapeToCSG(transformed(now, Mi)), sf.plane, sf.band, T, { ends: true, voids: shapeToCSG(vs, 4e-3 * T, 0.1) });
-          // cylinderCutter takes a right-handed section frame (x × y = n); the bend's n runs a → b, which may be the other way
-          var bp = sf.bend, flip = V.dot(V.cross(bp.x, bp.y), bp.n) < 0;
-          if (flip) bp = { origin: bp.origin, x: bp.x, y: bp.y, n: V.scale(bp.n, -1) };
-          loops.forEach(function (l) { cuts.push(cylinderCutter(flip ? l.map(function (q) { return [q[0], -q[1]]; }).reverse() : l, bp, sf.sec, s.BA)); });
+          var sf = K.unfoldStripFrame(st, s), slab = K.bandSlabSpec(sf.plane, sf.band, T), pcf = transformed(pc, Mi);
+          var vs = common(prismOf(slab.loop, slab.plane, slab.a, slab.b), pcf), loops = [];
+          if (volumeOf(vs) > 0) loops = K.bendVoids(shapeToCSG(transformed(now, Mi)), sf.plane, sf.band, T, { ends: true, voids: shapeToCSG(vs, 4e-3 * T, 0.1) });
+          var bf = bendFrame(sf);
+          loops.forEach(function (l) { cuts.push(cylinderCutter(bf.loop(l), bf.bp, sf.sec, s.BA)); });
+          // lane DJ: a blind cut (what the through voids leave)
+          var rest = pcf;
+          if (loops.length) {
+            var thru = { origin: sf.plane.origin, x: sf.plane.x, y: sf.plane.n, n: V.cross(sf.plane.x, sf.plane.n) }, up = V.dot(thru.n, sf.plane.y) > 0;
+            var tp = loops.map(function (l) { return prismOf(l, thru, up ? -T - eps : -eps, up ? eps : T + eps); });
+            rest = cut(rest, tp.length > 1 ? boolMany('fuse', tp[0], tp.slice(1), 'Fold: OpenCascade could not join the through voids.') : tp[0]);
+          }
+          if (volumeOf(rest) > 1e-9 * Math.max(1e-6, s.BA * (sf.band.t1 - sf.band.t0) * T)) cuts = cuts.concat(wrapLayers(K.unfoldLayers(shapeToCSG(rest), sf, T, s.trackedInner), sf, s, true));
         });
       }
-      bodies[k] = unify(cuts.length ? boolMany('cut', B0, cuts, 'Fold: OpenCascade could not cut the folded part.') : B0);
+      var body = cuts.length ? boolMany('cut', B0, cuts, 'Fold: OpenCascade could not cut the folded part.') : B0;
+      // lane DJ: material added since the Unfold, cell by cell (as Kernel.buildFold)
+      var added = cut(now, F0);
+      if (volumeOf(added) > 1e-12 * Math.max(1, Math.abs(volumeOf(F0)))) {
+        var bb = bboxOf(now), D = 2 * V.len(V.sub(bb[1], bb[0])) + 10 * T + 1, rest2 = added, adds = [];
+        K.unfoldCells(st, D).forEach(function (c) {
+          var cs = c.wedge ? transformed(prismOf(c.wedge.loop, c.wedge.plane, c.wedge.a, c.wedge.b), trsfOf(c.M)) : ufCell(st, c.loop, c.M, -D, T + D);
+          var pc = common(rest2, cs);
+          if (!(volumeOf(pc) > 1e-12)) return;
+          rest2 = cut(rest2, cs);
+          if (!c.strip) { adds.push(transformed(pc, trsfOf(c.back))); return; }
+          var s = c.strip, sf = K.unfoldStripFrame(st, s);
+          adds = adds.concat(wrapLayers(K.unfoldLayers(shapeToCSG(transformed(pc, trsfOf(mi(c.M)))), sf, T, s.trackedInner), sf, s, false));
+        });
+        if (adds.length) body = boolMany('fuse', body, adds, 'Fold: OpenCascade could not add the material folded back.');
+      }
+      return unify(body);
+    }
+    // the exact solids of an Unfold's B0 / F0 (built in this run, or from the cache)
+    function ufBodies(u, k) {
+      if (ufLocal[u]) return ufLocal[u];
+      if (cache && cache.states && u > 0 && cache.states[u - 1] && cache.states[u]) return { B0: cache.states[u - 1].bodies[k], F0: cache.states[u].bodies[k], k: k };
+      return null;
+    }
+    function unfoldOp(f, fi) {
+      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      var st = ufState(fi), open = ufOpenAt(fi);
+      var k = pickBody(f.fixedFace || (open && open.st.fixedFace) || null);
+      if (k < 0) throw new Error('Unfold: there is no sheet metal part yet.');
+      var B0 = unify(bodies[k]);
+      // lane DJ: another Unfold while one is open: fold that one back first (as Kernel.buildUnfold)
+      if (open) {
+        var ob = ufBodies(open.u, k);
+        if (!ob) throw unsupportedErr('an Unfold after one whose solid is not in this build');
+        k = ob.k;
+        B0 = ufFoldBody(open.st, ob.B0, ob.F0, unify(bodies[k]), f.id);
+      }
+      bodies[k] = ufUnfoldBody(st, B0);
+      ufLocal[fi] = { B0: B0, F0: bodies[k], k: k };
+    }
+    function foldOp(f, fi) {
+      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      var open = ufOpenAt(fi);
+      if (!open) throw new Error('Fold: there is no Unfold before it to fold back.');
+      var k = pickBody(open.st.fixedFace || null), ob = ufBodies(open.u, k);
+      if (!ob || k < 0) throw unsupportedErr('a Fold whose Unfold is not in this build');
+      k = ob.k;
+      var folded = ufFoldBody(open.st, ob.B0, ob.F0, bodies[k], f.id);
+      // lane DJ: a Fold of some bends: the rest unfolded again (Anvil's state after this Fold)
+      var again = K.unfoldStateAt(model, fi).state;
+      if (!again) { bodies[k] = folded; return; }
+      bodies[k] = ufUnfoldBody(again, folded);
+      ufLocal[fi] = { B0: folded, F0: bodies[k], k: k };
     }
     function unsupportedErr(what) { var e = new Error(what + ' is not supported by the OpenCascade kernel yet'); e.unsupported = what; return e; }
     function addBoss(tool, f) {
@@ -1214,6 +1345,7 @@ var OcctKernel = (function () {
             case 'jog': jogOp(f); break;
             case 'sketchedBend': sketchedBendOp(f); break;
             case 'breakCorner': tool = breakCornerTool(f); break;
+            case 'rip': tool = ripTool(f); break;   // lane DI
             case 'closedCorner': closedCornerOp(f); break;
             case 'unfold': unfoldOp(f, fi); break;   // lane DB2
             case 'fold': foldOp(f, fi); break;

@@ -9,7 +9,7 @@
     function blankArea(flat) { return flat.loops.reduce(function (s, l, i) { return s + (i === 0 ? K.signedArea(l) : -Math.abs(K.signedArea(l))); }, 0); }
     function inLoop(flat, i, p) { return K.pointInPoly ? K.pointInPoly(p, flat.loops[i]) : flat.loops[i].some(function (q) { return Math.hypot(q[0] - p[0], q[1] - p[1]) < 1e-3; }); }
     test('rfBW: a panel hemmed on both long edges (two open hems, the same gap, folded the same way) unfolds to one loop 6 × (4 + 2·(L + BA − R − T)); both bends UP (was: the second hem laid down by the first, an island of scrap, blank 6 × 11.8)', function () {
-      var gap = 0.06, r = gap / 2, BA = Math.PI * (r + 0.5 * T), each = 0.5 + BA - (r + T);
+      var gap = 0.06, r = gap / 2, BA = Math.PI * (r + 0.5 * T), each = 0.5 - (r + T) + BA - (r + T);   // lane DI2: the hem length is overall from the fold's outer face
       var h = flatOf(HEAD + 'p.hem(0.5, [[3, ' + T + ', 0]], { hemType: "open", gap: ' + gap + ', hemPosition: "inside" });\np.hem(0.5, [[3, ' + T + ', 4]], { hemType: "open", gap: ' + gap + ', hemPosition: "inside" });');
       assert(h.flat.loops.length === 1, 'one loop, got ' + h.flat.loops.length);
       near(h.flat.size[0], 6, 1e-9, 'flat width'); near(h.flat.size[1], 4 + 2 * each, 1e-9, 'flat height');

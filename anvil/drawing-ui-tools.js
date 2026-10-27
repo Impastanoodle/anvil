@@ -166,6 +166,35 @@
     if (chain) startTool('project', { parent: parent, at: null, chain: true });   // (rfW) Auto-start projected view goes on
     return v;
   }
+  // (rfDN) Excluded components (SolidWorks' Section View of an assembly drawing, for pins and fasteners): a selection
+  // list in the Section View PM and a section view's Properties PM; a click on a component's edge in any view adds it
+  // (again: removes it). The ids go on the view as section.excluded; those components are drawn whole, unhatched.
+  function compName(id) { var c = isAsm() ? (App.model.components || []).filter(function (x) { return String(x.id) === String(id); })[0] : null; return c ? c.name : String(id); }
+  function excludedGroup() {
+    return { title: 'Excluded components', show: function (v) { return isAsm() && (!v.type || v.type === 'full'); }, fields: [{ type: 'pick', key: 'excluded', icon: 'component', placeholder: 'Click components in a view',
+      value: function (v) { return v.excluded && v.excluded.length ? v.excluded.length + ' component' + (v.excluded.length > 1 ? 's' : '') + ' not sectioned' : ''; },
+      items: function (v) { return (v.excluded || []).map(function (id) { return { label: compName(id), icon: 'component', id: id }; }); },
+      onRemove: function (v, i) { v.excluded.splice(i, 1); UI.renderPM(); },
+      onClear: function (v) { v.excluded = []; UI.renderPM(); } }] };
+  }
+  // the component under sheet point p (an edge of it in any view), or null
+  function componentAt(p) {
+    var e = D.sheet ? edgeAt(p) : null, comps = App.model && App.model.components;
+    return e && comps && comps[e.body] ? comps[e.body] : null;
+  }
+  document.addEventListener('mousedown', function (e) {
+    if (e.button !== 0 || !D.active || D.tool || !D.host || !D.host.contains(e.target) || !isAsm() || !(UI.hasPM && UI.hasPM())) return;
+    var sp = UI.pmSpec && UI.pmSpec();
+    if (!sp || !sp.values || !Array.isArray(sp.values.excluded) || !(sp.command === 'sectionView' || sp.command === 'viewProps')) return;
+    if (sp.values.type && sp.values.type !== 'full') return;
+    var c = componentAt(DW.toPaper(e));
+    if (!c) return;
+    e.preventDefault(); e.stopPropagation();
+    var list = sp.values.excluded, i = list.indexOf(String(c.id));
+    if (i >= 0) list.splice(i, 1); else list.push(String(c.id));
+    UI.renderPM();
+    UI.setStatus('Excluded components: ' + (list.length ? list.map(compName).join(', ') : 'none') + '.');
+  }, true);
   // Section View: PropertyManager (cutting line Horizontal / Vertical, label), then click in a view to put the cutting
   // line there (it snaps to hole and boss centres within 8 px), then click on the side the section view goes.
   function cmdSectionView() {
@@ -176,7 +205,7 @@
       message: 'Pick the cutting line, press OK, click in a view to place it (it snaps to hole centres), then click on the side where the section view goes. Half: the click is the centre where the line turns. Offset: click each leg (2 or 3), then the side. Aligned: click the centre, then a point on the second leg, then the side.',
       // (rfW) SolidWorks' groups: Section Line (type, orientation, half), Section View (label, Flip direction),
       // Scale (Use parent scale / Use custom scale)
-      values: { axis: 'h', type: 'full', side: '1', label: Drawing.nextLabel(doc()), flip: false, scaleMode: 'parent', scale: scaleOptions()[1][0], partial: false, swm: false, showLabel: true },
+      values: { axis: 'h', type: 'full', side: '1', label: Drawing.nextLabel(doc()), flip: false, scaleMode: 'parent', scale: scaleOptions()[1][0], partial: false, swm: false, showLabel: true, excluded: [] },
       groups: [
         { title: 'Section Line', fields: [{ type: 'select', key: 'type', label: 'Type', rerender: true, options: [['full', 'Full Section'], ['half', 'Half Section'], ['offset', 'Offset Section'], ['aligned', 'Aligned Section']] },
           { type: 'select', key: 'axis', label: 'Line', options: [['h', 'Horizontal'], ['v', 'Vertical']] },
@@ -186,13 +215,15 @@
           { type: 'check', key: 'partial', label: 'Partial section', show: function (v) { return v.type === 'full'; } },
           { type: 'check', key: 'swm', label: 'Scale with model changes' }] },
         { title: 'Section View', fields: [{ type: 'text', key: 'label', label: 'Label' }, { type: 'check', key: 'flip', label: 'Flip direction' }, { type: 'check', key: 'showLabel', label: 'Display label' }] },
+        excludedGroup(),
         { title: 'Scale', fields: [{ type: 'radio', key: 'scaleMode', label: 'Scale', rerender: true, options: [['parent', 'Use parent scale'], ['custom', 'Use custom scale']] },
           { type: 'select', key: 'scale', label: 'Scale', show: function (v) { return v.scaleMode === 'custom'; }, options: scaleOptions().slice(1) }] }
       ],
       onOK: function (val) {
         var ty = /^(half|offset|aligned)$/.test(val.type) ? val.type : 'full';
         startTool('section', { axis: val.axis === 'v' ? 'v' : 'h', type: ty, side: +val.side < 0 ? -1 : 1, label: cleanLabel(val.label), parent: null, at: null, pts: [],
-          flip: !!val.flip, scale: val.scaleMode === 'custom' && val.scale ? Drawing.parseScale(val.scale) : null, partial: ty === 'full' && !!val.partial, swm: !!val.swm, showLabel: val.showLabel !== false });
+          flip: !!val.flip, scale: val.scaleMode === 'custom' && val.scale ? Drawing.parseScale(val.scale) : null, partial: ty === 'full' && !!val.partial, swm: !!val.swm, showLabel: val.showLabel !== false,
+          excluded: ty === 'full' && val.excluded && val.excluded.length ? val.excluded.slice() : null });
         if (ty === 'full' && val.partial) { UI.setStatus('Section View (partial): click one end of the ' + (val.axis === 'v' ? 'vertical' : 'horizontal') + ' cutting line in a view. Esc cancels.'); return; }
         UI.setStatus('Section View: click in a view to place the ' + (ty === 'half' ? 'centre of the half section' : ty === 'aligned' ? 'centre of the aligned section' : (val.axis === 'v' ? 'vertical' : 'horizontal') + ' cutting line') + '. Esc cancels.');
       }
@@ -279,6 +310,7 @@
     if (P.partial && P.to != null) spec.partial = [P.from, P.to];   // (rfZ)
     if (P.swm) spec.scaleWithModel = true;
     if (P.showLabel === false) spec.showLabel = false;   // (rfCQ) Display label off
+    if (P.excluded) spec.excluded = P.excluded;   // (rfDN) Excluded components
     if (ty === 'half') { spec.type = 'half'; spec.c = P.c; spec.side = P.side; }
     else if (ty === 'aligned') { spec.type = 'aligned'; spec.c = P.c; spec.side = P.side; spec.angle = P.angle; }
     else if (ty === 'offset' && P.pts.length > 1) {
@@ -420,7 +452,7 @@
       title: v.name, icon: 'drawingView', command: 'viewProps',
       values: { orient: v.orient, display: v.display, tangent: v.tangent || 'removed', scale: v.section && v.section.parentScale ? 'parent' : v.scale ? Drawing.scaleText(v.scale) : 'sheet', dimType: v.dimType === 'true' ? 'true' : 'projected',
         swm: !!(v.section && v.section.scaleWithModel), partial: !!(v.section && v.section.partial), dstyle: (v.detail && v.detail.style) || 'standard', outline: (v.detail && v.detail.outline) || 'none',
-        showLabel: Drawing.viewLabelShown(v) },
+        showLabel: Drawing.viewLabelShown(v), excluded: v.kind === 'section' && v.section && (!v.section.type || v.section.type === 'full') ? (v.section.excluded || []).slice() : undefined },
       // projected, section and detail views take their direction from the parent
       groups: (v.kind ? [] : [{ title: 'Orientation', fields: [{ type: 'select', key: 'orient', label: 'View', rerender: true, options: Drawing.ORIENTS }] }]).concat([
         { title: 'Display Style', fields: [{ type: 'select', key: 'display', label: 'Style', options: [['hlv', 'Hidden Lines Visible'], ['hlr', 'Hidden Lines Removed']] }].concat(v.kind === 'detail' ? [] : [
@@ -433,6 +465,7 @@
         (!v.kind && ORTHO_NAMES.indexOf(v.orient) < 0) || v.kind === 'aux' ? [{ title: 'Dimension Type', fields: [{ type: 'radio', key: 'dimType', label: 'Dimension type', options: [['projected', 'Projected'], ['true', 'True']],
           disabledOption: function (o, val) { return o === 'true' && ORTHO_NAMES.indexOf(v.kind ? v.orient : val.orient) >= 0 ? 'An orthographic view shows true lengths.' : null; } }] }] : [],
         v.kind === 'section' ? [{ title: 'Section Line', fields: (v.section && v.section.partial && !v.section.removed ? [{ type: 'check', key: 'partial', label: 'Partial section' }] : []).concat([{ type: 'check', key: 'swm', label: 'Scale with model changes' }]) }] : [],
+        v.kind === 'section' && v.section && (!v.section.type || v.section.type === 'full') && isAsm() ? [excludedGroup()] : [],   // (rfDN)
         v.kind === 'detail' ? [{ title: 'Detail Circle', fields: [{ type: 'select', key: 'dstyle', label: 'Circle style', options: DETAIL_STYLE_OPTIONS }, { type: 'select', key: 'outline', label: 'Outline', options: [['none', 'None'], ['full', 'Full outline'], ['jagged', 'Jagged outline']] }] }] : [],
         // (rfCQ) the view label: off by default on model and projected views, on for section, detail and auxiliary views
         [{ title: 'Label', fields: [{ type: 'check', key: 'showLabel', label: 'Display label' }] }]),
@@ -455,6 +488,7 @@
           if (w.role === 'iso') w.role = null;
           if (!w.kind || w.kind === 'aux') { if (val.dimType === 'true' && ORTHO_NAMES.indexOf(w.orient) < 0) w.dimType = 'true'; else delete w.dimType; }
           if (w.kind === 'section' && w.section) Drawing.setSectionOptions(dc, mesh(), w.id, { partial: w.section.partial && !val.partial ? null : undefined, scaleWithModel: !!val.swm });
+          if (w.kind === 'section' && w.section && Array.isArray(val.excluded)) Drawing.setSectionExcluded(dc, w.id, val.excluded);   // (rfDN)
           if (w.kind === 'detail' && w.detail) Drawing.setDetailOptions(dc, w.id, { style: val.dstyle, outline: val.outline });
           Drawing.setViewLabel(dc, w.id, !!val.showLabel);   // (rfCQ)
           dc.layout = 'manual';
@@ -2333,6 +2367,7 @@
     api.removedSection = function (parentId, opts) {
       if (!doc()) return null;
       var v, o = Object.assign({ fit: true }, opts || {});
+      if (DW.cutApi) return DW.cutApi(function (dc) { return Drawing.addRemovedSection(dc, mesh(), parentId, o); });   // (rfDN) cut in the worker
       try { Drawing.addRemovedSection(JSON.parse(JSON.stringify(doc())), mesh(), parentId, o); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }
       edit(function (dc) { v = Drawing.addRemovedSection(dc, mesh(), parentId, o); delete v.offSheet; autoInsertViews(dc, [v.id]); });
       D.sel = { kind: 'view', id: v.id };

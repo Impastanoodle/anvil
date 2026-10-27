@@ -2402,6 +2402,8 @@
 
   // ------------------------------------------------------------------ sheet metal: base flange = thin extrude with sheet parameters
   function cmdBaseFlange() {
+    // lane DI: on a part that already has a sheet, Base Flange/Tab makes a Tab (SolidWorks)
+    if (App.model.sheet && App.model.features.some(function (q) { return q.sheetBase && !q.cut && !q.suppressed; })) { cmdTab(null); return; }
     withSketch(function (sid) {
       var sm = App.model.sheet || defaultSheet();
       var f = { type: 'extrude', cut: false, depth: sm.thickness, end: 'blind', reverse: false, dir2: false, depth2: 0, end2: 'blind', sketch: pickDefaultSketch(sid) };
@@ -2513,6 +2515,7 @@
     return JSON.parse(JSON.stringify(smMemory));
   };
   function cmdEdgeFlange(existing, kind) {
+    if (existing && existing.miterFlange && existing.sketch != null) { cmdMiterFlange(existing); return; }   // lane DL: a Miter Flange from a profile sketch
     if (App.mode === 'sketch') UI.exitSketch(true);
     if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
     if (!App.edges || !App.edges.length) { UI.toast('Create a Base Flange first.'); return; }
@@ -2783,7 +2786,8 @@
       if (!f.position) f.position = 'centerline';
       f.useDefaultRadius = f.radius == null;
       f.radiusValue = f.radius != null ? f.radius : sheet.bendRadius;
-      f.fixProjected = false;
+      f.fixProjected = !!f.fixLength;   // lane DK: Fix projected length (fixLength: material is added for the jog)
+      delete f.fixLength;
       var cba = f.bendAllowance || null, kSheet = K.sheetKFactor(sheet), R0 = +sheet.bendRadius, BA0 = K.bendAllowance(Math.PI / 2, R0, T, kSheet);
       f.useCustomBA = !!cba;
       f.cbaType = cba ? cba.type : 'kfactor';
@@ -2802,6 +2806,7 @@
           out.bendAllowance = { type: v.cbaType };
           if (v.cbaType !== 'table') out.bendAllowance.value = forOK ? pmExpr(CBA_KEY[v.cbaType], +v[CBA_KEY[v.cbaType]]) : +v[CBA_KEY[v.cbaType]];
         } else delete out.bendAllowance;
+        if (v.fixProjected) out.fixLength = true;
         ['useDefaultRadius', 'radiusValue', 'useCustomBA', 'cbaType', 'cbaK', 'cbaBA', 'cbaBD', 'fixProjected'].forEach(function (k) { delete out[k]; });
         if (!forOK) out.offset = +v.offset;
         return out;
@@ -2834,7 +2839,7 @@
           { type: 'number', label: 'Offset distance', key: 'offset', unit: 'u', min: 0 },
           { type: 'select', label: 'Dimension position', key: 'offsetRef', options: JOG_OFFSET_REFS, rerender: true },
           { type: 'static', label: 'Smallest offset', value: minText },
-          { type: 'check', label: 'Fix projected length (not available)', key: 'fixProjected', disabled: true }
+          { type: 'check', label: 'Fix projected length', key: 'fixProjected' }
         ] },
         { title: 'Jog Position', fields: [{ type: 'select', label: 'Jog position', key: 'position', options: SKETCHED_BEND_POSITIONS }] },
         { title: 'Jog Angle', fields: [{ type: 'number', label: 'Jog angle', key: 'angle', unit: '°', min: 0, max: 180 }] },
@@ -2850,7 +2855,7 @@
       openPM({
         title: existing ? existing.name : 'Jog', icon: 'jog', values: f,
         exprMap: { radiusValue: 'radius' },
-        message: 'Sketch <b>one line</b> on a flat face of the sheet where the jog starts. Click the <b>face that stays fixed</b> (default: the larger side); the other side is offset by two bends. The flat pattern keeps the plate\'s size.',
+        message: 'Sketch <b>one line</b> on a flat face of the sheet where the jog starts. Click the <b>face that stays fixed</b> (default: the larger side); the other side is offset by two bends. <b>Fix projected length</b> keeps the jogged side\'s far end where it was (material is added); without it the jog uses up length and the flat keeps the plate\'s size.',
         command: {
           sketchId: f.sketch,
           onPick: function (pk) {
@@ -2877,8 +2882,174 @@
       preview();
     });
   }
-  // Miter Flange: an Edge-Flange with "Miter corners" preset; flanges on adjacent edges meet at the corner.
-  function cmdMiterFlange(existing) { cmdEdgeFlange(existing, 'miter'); }
+  // lane DL (fidelity #11): SolidWorks' Miter Flange. The flange section comes from a profile sketch (an open chain of
+  // lines, tangent arcs between them, on a plane normal to an edge, starting on it: Kernel.miterFlangeStages); the PM
+  // has SolidWorks' groups: Miter Parameters (the edges to run along, the profile sketch, Use default radius / Bend
+  // radius, Flange position icons, Trim side bends, Gap distance), Start/End Offset, Custom Bend Allowance, Custom
+  // Relief Type. With an edge selected and no sketch, it opens a sketch on the plane normal to the edge at its nearer end
+  // (origin on the corner, x outward, y up from the face) and comes back on exit. An edge-only miter flange of an older
+  // part (miter: true, no sketch) still edits in the Edge-Flange PM.
+  var MITER_POSITIONS = [['inside', 'Material Inside', 'hemInside'], ['outside', 'Material Outside', 'hemOutside'], ['bendOutside', 'Bend Outside', 'bend']];
+  var mfLast = null;   // the position / gap last accepted this session
+  function cmdMiterFlange(existing, preEdges) {
+    if (existing && !existing.miterFlange) { cmdEdgeFlange(existing, 'miter'); return; }
+    if (!existing && !preEdges && App.mode !== 'sketch' && App.model.sheet && App.sel && App.sel.kind === 'edge' && App.sel.edge && selectedSketchId() == null) {
+      var e = App.sel.edge, fa = App.mesh.faces[e.faces[0]], fb = App.mesh.faces[e.faces[1]];
+      if (e.normals && fa && fb && !e.smooth) {
+        var fl = fa.area >= fb.area ? 0 : 1, nF = e.normals[fl], o = e.normals[1 - fl], dir = K.vec.norm(K.vec.sub(e.b, e.a));
+        var at = App.sel.point || e.a, V = K.vec.len(K.vec.sub(at, e.a)) <= K.vec.len(K.vec.sub(at, e.b)) ? e.a : e.b;
+        var n = K.vec.cross(o, nF), plane = { custom: true, origin: V.slice(), x: o.slice(), y: nF.slice(), n: n, offset: K.vec.dot(n, V) };
+        if (Math.abs(K.vec.dot(n, dir)) > 0.999) {
+          if (K.tidyPlane) K.tidyPlane(plane);
+          var edgeAt = e.mid.slice();
+          closePM();
+          UI.pushUndo();
+          var sk = { id: App.model.nextId++, type: 'sketch', plane: plane, entities: [] };
+          sk.name = K.featureName(App.model, 'sketch');
+          App.model.features.push(sk);
+          App.sketchSnapshot = JSON.stringify({ entities: [] });
+          App.newSketchId = sk.id;
+          App.pendingAfterSketch = function () { cmdMiterFlange(null, [{ at: edgeAt }]); };
+          UI.afterRebuild(UI.rebuild(), function () { UI.enterSketch(sk.id); UI.setStatus('Miter Flange: sketch the flange profile from the corner (the origin), then exit the sketch.'); });
+          return;
+        }
+      }
+    }
+    withSketch(function (sid) {
+      if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
+      var sheet = previewModel().sheet || App.model.sheet, T = +sheet.thickness;
+      var f = existing ? JSON.parse(JSON.stringify(existing)) : Object.assign({ type: 'flange', miterFlange: true, miter: true, sketch: pickDefaultSketch(sid), edges: preEdges || [], position: 'inside', radius: null, miterGap: 0, startOffset: 0, endOffset: 0 }, mfLast || {});
+      if (f.sketch == null) { UI.toast('Sketch the flange profile on a plane normal to an edge (or select the edge), then click Miter Flange.'); UI.setStatus('Miter Flange: select a straight edge of the sheet and click Miter Flange, or sketch the profile first.'); return; }
+      if (!f.position) f.position = 'inside';
+      if (f.miterGap == null) f.miterGap = 0;
+      if (f.startOffset == null) f.startOffset = 0;
+      if (f.endOffset == null) f.endOffset = 0;
+      f.useDefaultRadius = f.radius == null;
+      f.radiusValue = f.radius != null ? f.radius : sheet.bendRadius;
+      f.trimSideBends = false;
+      f.useOffset = !!(+f.startOffset || +f.endOffset);
+      f.useCustomRelief = f.relief != null;
+      if (!f.relief) f.relief = 'none';
+      var cba = f.bendAllowance || null, kSheet = K.sheetKFactor(sheet), R0 = +sheet.bendRadius, BA0 = K.bendAllowance(Math.PI / 2, R0, T, kSheet);
+      f.useCustomBA = !!cba;
+      f.cbaType = cba ? cba.type : 'kfactor';
+      f.cbaK = cba && cba.type === 'kfactor' ? cba.value : kSheet;
+      f.cbaBA = cba && cba.type === 'allowance' ? cba.value : Math.round(BA0 * 1e4) / 1e4;
+      f.cbaBD = cba && cba.type === 'deduction' ? cba.value : Math.round(K.bendDeduction(Math.PI / 2, R0, T, BA0) * 1e4) / 1e4;
+      delete f.bendAllowance;
+      var CBA_KEY = { kfactor: 'cbaK', allowance: 'cbaBA', deduction: 'cbaBD' };
+      var edgeList = [];
+      function sharpEdges() { return (App.edges || []).filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex; }); }
+      function resolveList() {
+        try { edgeList = existing ? [] : K.resolveEdges(f.edges.map(function (e) { return { at: e.at, chain: false }; }), sharpEdges(), K.pickTol(App.model.units, T)); } catch (err) { edgeList = []; }
+        if (App.command) App.command.edgeList = edgeList;
+        UI.updateHighlights();
+      }
+      function items(v) {
+        return v.edges.map(function (spec, i) { return { label: 'Edge<' + (i + 1) + '>', at: spec.at, get edges() { try { return existing ? [] : K.resolveEdges([{ at: spec.at, chain: false }], sharpEdges(), K.pickTol(App.model.units, T)); } catch (err) { return []; } } }; });
+      }
+      function toFeature(v, forOK) {
+        var out = JSON.parse(JSON.stringify(v));
+        out.type = 'flange'; out.miterFlange = true; out.miter = true;
+        out.sketch = +v.sketch;
+        out.position = MITER_POSITIONS.some(function (p) { return p[0] === v.position; }) ? v.position : 'inside';
+        out.radius = v.useDefaultRadius ? null : +v.radiusValue;
+        out.miterGap = forOK ? pmExpr('miterGap', Math.max(0, +v.miterGap || 0)) : Math.max(0, +v.miterGap || 0);
+        out.startOffset = v.useOffset ? (forOK ? pmExpr('startOffset', +v.startOffset || 0) : +v.startOffset || 0) : 0;
+        out.endOffset = v.useOffset ? (forOK ? pmExpr('endOffset', +v.endOffset || 0) : +v.endOffset || 0) : 0;
+        if (v.useCustomRelief) out.relief = ['none', 'rect', 'obround'].indexOf(v.relief) >= 0 ? v.relief : 'none';
+        else { delete out.relief; delete out.reliefWidth; delete out.reliefDepth; }
+        if (v.useCustomBA) {
+          out.bendAllowance = { type: v.cbaType };
+          if (v.cbaType !== 'table') out.bendAllowance.value = forOK ? pmExpr(CBA_KEY[v.cbaType], +v[CBA_KEY[v.cbaType]]) : +v[CBA_KEY[v.cbaType]];
+        } else delete out.bendAllowance;
+        ['useDefaultRadius', 'radiusValue', 'trimSideBends', 'useOffset', 'useCustomRelief', 'useCustomBA', 'cbaType', 'cbaK', 'cbaBA', 'cbaBD', 'length', 'angle', 'lengthRef', 'toward', 'reverse'].forEach(function (k) { delete out[k]; });
+        return out;
+      }
+      function previewStatus(feat, info) {
+        var n = info ? info.length : (feat.edges || []).length;
+        UI.setStatus('Miter Flange preview: ' + n + ' bend' + (n === 1 ? '' : 's') + ', ' + MITER_POSITIONS.filter(function (p) { return p[0] === feat.position; })[0][1].toLowerCase() +
+          (+feat.miterGap > 0 ? ', gap ' + UI.fmtNum(+feat.miterGap, 4) : '') + (+feat.startOffset || +feat.endOffset ? ', offsets ' + UI.fmtNum(+feat.startOffset, 4) + ' / ' + UI.fmtNum(+feat.endOffset, 4) : '') + '.');
+      }
+      function previewSync() {
+        UI.disposeGroup(UI.groups.preview);
+        try {
+          var feat = toFeature(f), body = existing ? bodyBefore(existing.id) : (App.build ? App.build.body : null);
+          if (!body) throw new Error('Create a Base Flange first.');
+          var ctx = { body: body, flanges: {}, tools: {}, sketches: {}, planes: (App.build && App.build.planes) || {} };
+          var tool = K.buildFlange(feat, previewModel(), ctx);
+          addPreviewMesh(tool, UI.mats.preview);
+          previewStatus(feat, ctx.flanges[feat.id]);
+        } catch (err) { UI.setStatus('Preview: ' + err.message); }
+      }
+      function preview() {
+        var feat;
+        try { feat = toFeature(f); } catch (err) { UI.setStatus('Preview: ' + err.message); return; }
+        if (feat.sketch == null || feat.sketch < 0) { UI.disposeGroup(UI.groups.preview); return; }
+        var upto = null;
+        if (existing) App.model.features.forEach(function (g, i) { if (g.id === existing.id) upto = i; });
+        livePreview({ op: 'flange', feature: feat, upto: upto, mats: [UI.mats.preview], sync: previewSync, done: function () { try { previewStatus(feat); } catch (err) { } } });
+      }
+      var groups = [
+        { title: 'Miter Parameters', fields: [
+          { type: 'pick', icon: 'miter', value: function (v) { return v.edges.length ? v.edges.length + ' edge' + (v.edges.length > 1 ? 's' : '') : ''; }, placeholder: 'Along edges (the profile\'s edge is added)…', items: items,
+            onRemove: function (v, i) { v.edges.splice(i, 1); renderPM(); resolveList(); preview(); }, onClear: function (v) { v.edges.length = 0; renderPM(); resolveList(); preview(); } },
+          sketchPickerField(f),
+          { type: 'check', label: 'Use default radius (' + sheet.bendRadius + ')', key: 'useDefaultRadius', rerender: true },
+          { type: 'number', label: 'Bend radius', key: 'radiusValue', unit: 'u', min: 0, show: function (v) { return !v.useDefaultRadius; } },
+          { type: 'iconRadio', label: 'Flange position', key: 'position', options: MITER_POSITIONS },
+          { type: 'check', label: 'Trim side bends (not available)', key: 'trimSideBends', disabled: true },
+          { type: 'number', label: 'Gap distance', key: 'miterGap', unit: 'u', min: 0 }
+        ] },
+        { title: 'Start/End Offset', fields: [
+          { type: 'check', label: 'Start/End offset', key: 'useOffset', rerender: true },
+          { type: 'number', label: 'Start offset distance', key: 'startOffset', unit: 'u', min: 0, show: function (v) { return v.useOffset; } },
+          { type: 'number', label: 'End offset distance', key: 'endOffset', unit: 'u', min: 0, show: function (v) { return v.useOffset; } }
+        ] },
+        { title: 'Custom Bend Allowance', collapsed: !f.useCustomBA, fields: [
+          { type: 'check', label: 'Custom bend allowance', key: 'useCustomBA', rerender: true },
+          { type: 'select', label: 'Type', key: 'cbaType', options: BA_OPTIONS, rerender: true, show: function (v) { return v.useCustomBA; } },
+          { type: 'number', label: 'K-factor', key: 'cbaK', step: 0.01, min: 0, show: function (v) { return v.useCustomBA && v.cbaType === 'kfactor'; } },
+          { type: 'number', label: 'Bend allowance', key: 'cbaBA', unit: 'u', min: 0, show: function (v) { return v.useCustomBA && v.cbaType === 'allowance'; } },
+          { type: 'number', label: 'Bend deduction', key: 'cbaBD', unit: 'u', show: function (v) { return v.useCustomBA && v.cbaType === 'deduction'; } }
+        ] },
+        { title: 'Custom Relief Type', collapsed: !f.useCustomRelief, fields: [
+          { type: 'check', label: 'Custom relief type', key: 'useCustomRelief', rerender: true },
+          { type: 'select', label: 'Relief type', key: 'relief', options: [['none', 'None'], ['rect', 'Rectangle'], ['obround', 'Obround']], show: function (v) { return v.useCustomRelief; } }
+        ] },
+        { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ];
+      openPM({
+        title: existing ? existing.name : 'Miter Flange', icon: 'miter', values: f,
+        exprMap: { radiusValue: 'radius' },
+        message: 'The <b>profile sketch</b> sets the flange section: its first line is the flange length (to the inner virtual sharp), each further line adds a bend. Click the <b>edges</b> to run along; flanges on adjacent edges are mitred at the corner with the gap.',
+        command: {
+          sketchId: f.sketch, pickEdges: true, edgeList: edgeList,
+          onPick: function (pk) {
+            if (pk.kind !== 'edge') return false;
+            var e = pk.edge, idx = -1;
+            f.edges.forEach(function (spec, i) { if (K.pointSegmentDistance(spec.at, e.a, e.b) < 0.5 * T) idx = i; });
+            if (idx >= 0) f.edges.splice(idx, 1); else f.edges.push({ at: e.mid.slice() });
+            renderPM(); resolveList(); preview();
+            return true;
+          }
+        },
+        groups: groups,
+        onChange: function (v, key) {
+          if (key === 'sketch' && App.command) { App.command.sketchId = v.sketch; UI.updateSketches(); }
+          resolveList(); preview();
+        },
+        onOK: function (v) {
+          if (v.sketch == null || v.sketch < 0) { UI.toast('Select the profile sketch.'); return false; }
+          var feat = toFeature(v, true);
+          if (!feat.name) feat.name = 'Miter Flange' + (App.model.features.filter(function (q) { return q.type === 'flange' && q.miterFlange; }).length + 1);
+          if (!existing) mfLast = { position: feat.position, miterGap: +feat.miterGap || 0 };
+          return commitFeature(feat, existing);
+        }
+      });
+      resolveList(); preview();
+    });
+  }
 
   // ------------------------------------------------------------------ sheet metal: sketched bend
   // Sketched Bend (SolidWorks): bend the sheet along the line(s) of a sketch drawn on one of its flat faces. Bend
@@ -3120,6 +3291,172 @@
     preview();
   }
 
+  // ------------------------------------------------------------------ sheet metal: Rip (lane DI)
+  // SolidWorks' Sheet Metal ▸ Rip (Kernel.ripLayout, a registered cut): Edges to Rip (a click on a corner edge where two
+  // walls meet adds it, a second click removes it; outside or inside edge), Change Direction (cycles the last picked
+  // edge: both walls → wall 1 keeps the corner → wall 2 keeps it), Rip Gap. Works on a sheet-metal part (T = the sheet's)
+  // and on a shelled part (T measured at the edge). The gap is remembered for the session.
+  var ripLast = { gap: null };
+  var RIP_DIR_TEXT = { both: 'both directions', side1: 'side 1', side2: 'side 2' };
+  function cmdRipFeature(existing) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    if (!App.build || !App.build.body || !App.build.body.polygons.length) { UI.toast('Rip needs a part: make a shelled part or a sheet-metal part first.'); return; }
+    var gap0 = ripLast.gap != null ? ripLast.gap : K.ripDefaultGap(App.model);
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'rip', edges: [], gap: gap0, direction: 'both' };
+    f.edges = (f.edges || []).map(function (e) { return e.direction ? { at: e.at.slice(), direction: e.direction } : { at: e.at.slice() }; });
+    var base = null, lastPicked = f.edges.length - 1;
+    function baseBody() { if (!base) base = existing ? bodyBefore(existing.id) : App.build.body; return base; }
+    function featOf(v) {
+      var out = { type: 'rip', edges: v.edges.map(function (e) { return e.direction ? { at: e.at.slice(), direction: e.direction } : { at: e.at.slice() }; }), gap: v.gap, direction: v.direction || 'both' };
+      if (v.name) out.name = v.name;
+      return out;
+    }
+    function edgeDir(e) { return e.direction || f.direction || 'both'; }
+    // the kernel's own corner test for one pick: null when the edge can be ripped, else the reason
+    function why(at) {
+      try { K.ripLayout({ type: 'rip', edges: [{ at: at }], gap: Math.max(+f.gap || 0, 1e-6), direction: 'both' }, previewModel(), { body: baseBody() }); return null; } catch (e) { return e.message.replace(/^Rip: /, ''); }
+    }
+    function lit() {
+      var list = (App.edges || []).filter(function (e) { return f.edges.some(function (q) { return K.pointSegmentDistance(q.at, e.a, e.b) <= 1e-4 * (1 + e.len); }); });
+      if (App.command) App.command.edgeList = list;
+      UI.updateHighlights();
+    }
+    function status() {
+      var n = f.edges.length;
+      UI.setStatus('Rip: ' + n + ' edge' + (n === 1 ? '' : 's') + ' picked' + (n ? ' (last: ' + RIP_DIR_TEXT[edgeDir(f.edges[n - 1])] + ')' : '') + '. Press Enter or ✓ to accept.');
+    }
+    function preview() {
+      lit();
+      if (!f.edges.length) { lp.shown = ++lp.seq; UI.disposeGroup(UI.groups.preview); UI.setStatus('Click the corner edges to rip (where two walls meet, outside or inside).'); return; }
+      livePreview({ op: 'tool', feature: featOf(f), mats: [UI.mats.previewCut], sync: previewSync, done: function () { status(); }, fail: function (msg) { UI.setStatus('Preview: ' + msg); } });
+    }
+    function previewSync() {
+      UI.disposeGroup(UI.groups.preview);
+      try {
+        var tool = K.buildRip(featOf(f), previewModel(), { body: baseBody() });
+        if (tool && tool.polygons.length) addPreviewMesh(tool, UI.mats.previewCut);
+        status();
+      } catch (e) { UI.setStatus('Preview: ' + e.message); }
+    }
+    function toggle(edge) {
+      var i = -1;
+      f.edges.forEach(function (q, k) { if (K.pointSegmentDistance(q.at, edge.a, edge.b) <= 1e-4 * (1 + edge.len)) i = k; });
+      if (i >= 0) { f.edges.splice(i, 1); lastPicked = f.edges.length - 1; return true; }
+      var at = edge.mid.map(function (x) { return Math.round(x * 1e6) / 1e6; }), err = why(at);
+      if (err) { UI.setStatus(err); return false; }
+      f.edges.push({ at: at }); lastPicked = f.edges.length - 1;
+      return true;
+    }
+    function pick(pk) {
+      if (pk.kind !== 'edge' || !pk.edge) return false;
+      if (toggle(pk.edge)) { renderPM(); preview(); }
+      return true;
+    }
+    function changeDirection(v) {
+      var e = v.edges[lastPicked] || v.edges[v.edges.length - 1];
+      if (!e) { UI.setStatus('Pick an edge first.'); return; }
+      var order = K.RIP_DIRECTIONS, next = order[(order.indexOf(edgeDir(e)) + 1) % order.length];
+      if (next === (v.direction || 'both')) delete e.direction; else e.direction = next;
+      renderPM(); preview();
+    }
+    if (!existing && UI.selection) {
+      var pre = UI.selection(), used = false;
+      pre.forEach(function (s) { if (s.kind === 'edge' && s.edge && toggle(s.edge)) used = true; });
+      if (used && UI.setSelection) UI.setSelection([]);
+    }
+    openPM({
+      title: existing ? existing.name : 'Rip', icon: 'rip', values: f,
+      onRollback: function () { base = null; lit(); },
+      message: 'Click the <b>corner edges</b> to rip (where two walls meet: the outside or the inside edge). <b>Change Direction</b> sets which wall keeps the corner for the last edge picked.',
+      command: { pickEdges: true, edgeList: [], onPick: pick },
+      groups: [
+        { title: 'Rip Parameters', fields: [
+          { type: 'pick', icon: 'rip', placeholder: 'Edges to rip…',
+            value: function (v) { var n = v.edges.length; return n ? n + ' edge' + (n === 1 ? '' : 's') : ''; },
+            items: function (v) { return v.edges.map(function (e, i) { return { label: 'Edge<' + (i + 1) + '> (' + RIP_DIR_TEXT[edgeDir(e)] + ')', at: e.at }; }); },
+            onRemove: function (v, i) { v.edges.splice(i, 1); lastPicked = v.edges.length - 1; renderPM(); preview(); },
+            onClear: function (v) { v.edges.length = 0; renderPM(); preview(); } },
+          { type: 'buttons', buttons: [{ label: 'Change Direction', onclick: function (v) { changeDirection(v); } }] },
+          { type: 'number', label: 'Rip gap', key: 'gap', unit: 'u', min: 0 }
+        ] },
+        { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ],
+      onChange: function () { preview(); },
+      onOK: function (v) {
+        if (!v.edges.length) { UI.toast('Select at least one edge to rip.'); return false; }
+        if (!(+v.gap > 0)) { UI.toast('The rip gap must be more than 0.'); return false; }
+        var feat = featOf(v);
+        feat.gap = +v.gap;
+        ripLast = { gap: +v.gap };
+        return commitFeature(feat, existing);
+      }
+    });
+    preview();
+  }
+
+  // ------------------------------------------------------------------ sheet metal: Tab (lane DI)
+  // Base Flange/Tab on a part that already has a sheet is a Tab (SolidWorks: Tab1): a closed sketch on a flat sheet
+  // face extruded the sheet's thickness into the sheet (Kernel.tabFeature: flush with the face, merged), the thickness
+  // linked to the sheet (no sheet parameters here), Reverse direction = away from the face.
+  function tabName() {
+    var max = 0;
+    App.model.features.forEach(function (g) { var mm = /^Tab(\d+)$/.exec(g.name || ''); if (mm && +mm[1] > max) max = +mm[1]; });
+    return 'Tab' + (max + 1);
+  }
+  function cmdTab(existing) {
+    if (existing) { tabPM(existing, existing.sketch); return; }
+    withSketch(function (sid) {
+      var sk = pickDefaultSketch(sid);
+      if (sk == null) {
+        openPM({
+          title: 'Base Flange/Tab', icon: 'flange',
+          message: 'Select a <b>flat face</b> of the sheet to sketch the tab on, then <b>Exit Sketch</b> to make the tab.',
+          command: { pickPlane: true, onPick: function (pk) { if (pk.kind === 'plane') newSketchOnPlane(pk.ref); else newSketchOnFace(pk); App.pendingAfterSketch = function () { cmdBaseFlange(); }; return true; } },
+          groups: []
+        });
+        return;
+      }
+      tabPM(null, sk);
+    });
+  }
+  function tabPM(existing, sketchId) {
+    var T = +(previewModel().sheet || App.model.sheet).thickness;
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'extrude', cut: false, depth: T, end: 'blind', reverse: false, dir2: false, depth2: 0, end2: 'blind', sketch: sketchId, sheetBase: true, tab: true, linkT: true };
+    f.depth = T;
+    openPM({
+      title: existing ? existing.name : 'Base Flange/Tab', icon: 'flange', values: f, command: { sketchId: f.sketch },
+      message: 'Tab: the sketch is extruded the sheet thickness (' + UI.fmtNum(T, 4) + ' ' + UI.unitLabel() + ', linked to the sheet) into the face it is sketched on and merged with the part.',
+      groups: [{ title: 'Sketch', fields: [sketchPickerField(f)] },
+        { title: 'Direction 1', fields: [{ type: 'check', label: 'Reverse direction (away from the face)', key: 'reverse' }, { type: 'check', label: 'Link to thickness', key: 'linkT', disabled: true }] },
+        { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }],
+      onChange: function (v) {
+        App.command.sketchId = v.sketch; UI.updateSketches();
+        v.linkT = true;
+        var err = showPreview(resolved(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing the tab (thickness ' + UI.fmtNum(T, 4) + ').');
+      },
+      onOK: function (v) {
+        var feat = tabOf(v);
+        if (!existing && !feat.name) feat.name = tabName();
+        return commitFeature(feat, existing);
+      }
+    });
+    function tabOf(v) {
+      var o = { type: 'extrude', cut: false, depth: T, end: 'blind', reverse: !!v.reverse, dir2: false, depth2: 0, end2: 'blind', sketch: v.sketch, sheetBase: true, tab: true, linkT: true };
+      if (v.contours) o.contours = v.contours;
+      if (v.name) o.name = v.name;
+      return o;
+    }
+    // the preview extrudes the resolved copy (direction into the face found here, as the rebuild does)
+    function resolved(v) {
+      var o = tabOf(v);
+      try {
+        var sk = K.findFeature(App.model, o.sketch);
+        return K.tabFeature(o, previewModel(), K.resolvePlane(sk.plane, App.model, App.build.planes || {}), App.build.body);
+      } catch (e) { return o; }
+    }
+    var e0 = showPreview(resolved(f)); if (e0) UI.setStatus('Preview: ' + e0);
+  }
+
   // ------------------------------------------------------------------ sheet metal: Closed Corner (lane CS)
   // SolidWorks' Sheet Metal ▸ Corners ▸ Closed Corner (Kernel.buildClosedCorner, a rebuild case): Faces to Extend (a
   // click on the end face of a flange wall at an open corner adds it, a second click removes it; the matching faces
@@ -3138,7 +3475,10 @@
     if (f.cornerType == null) f.cornerType = 'butt';
     if (f.ratio == null) f.ratio = 1;
     f.coplanar = f.coplanar !== false;
-    f.openBend = true;   // shown, always on: the bend region is left open
+    // lane DK: Open bend region (SolidWorks): off (a new corner, as SolidWorks) closes the bend region too
+    // (closeBend: true); a corner saved before it has no closeBend and stays open
+    f.openBend = existing ? !existing.closeBend : false;
+    delete f.closeBend;
     var base = null;
     function baseBody() { if (!base) base = existing ? bodyBefore(existing.id) : App.build.body; return base; }
     // a pick's end face (the kernel's own rule) or the reason it is not one; kept per point until the part shown changes
@@ -3155,6 +3495,7 @@
     function featOf(v) {
       var out = { type: 'closedCorner', faces: v.faces.map(function (p) { return p.slice(); }), cornerType: v.cornerType, gap: v.gap, ratio: v.ratio };
       if (v.coplanar === false) out.coplanar = false;
+      if (!v.openBend) out.closeBend = true;
       if (v.name) out.name = v.name;
       return out;
     }
@@ -3220,7 +3561,7 @@
           { type: 'iconRadio', label: 'Corner type', key: 'cornerType', options: TYPES, rerender: true },
           { type: 'number', label: 'Gap distance', key: 'gap', unit: 'u', min: 0 },
           { type: 'number', label: 'Overlap/underlap ratio', key: 'ratio', min: 0, step: 0.05, show: function (v) { return v.cornerType !== 'butt'; } },
-          { type: 'check', label: 'Open bend region', key: 'openBend', disabled: true },
+          { type: 'check', label: 'Open bend region', key: 'openBend' },
           { type: 'check', label: 'Coplanar faces', key: 'coplanar' }
         ] },
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
@@ -3283,6 +3624,8 @@
       if (bendsMemo) return bendsMemo;
       try {
         if (isFold) { var rec = ufActiveRecord(upto()); bendsMemo = rec ? rec.bends.filter(function (b) { return b.unfolded; }) : []; bendsMemo.rec = rec; }
+        // lane DJ: a second Unfold while one is open offers the bends that one left folded (as the part shows them)
+        else if (ufActiveRecord(upto())) bendsMemo = ufActiveRecord(upto()).bends.filter(function (b) { return !b.unfolded && b.zone; });
         else bendsMemo = K.sheetBends(previewModel(), App.build, App.mesh);
       } catch (e) { bendsMemo = []; bendsMemo.error = e.message; }
       return bendsMemo;
@@ -3472,39 +3815,125 @@
     return true;
   }
   UI.toggleFlatten = toggleFlatten;
-  // Flat-Pattern1 ▸ Edit Feature: SolidWorks' Flat-Pattern PropertyManager. Anvil's unfold has no choices yet: it lays
-  // the largest face on the Base Flange's sketch side, always merges the faces and writes the bends' arcs as arcs, so
-  // those boxes show what it does, greyed; ✓ changes nothing. The flat's size and bends are shown.
+  // Flat-Pattern1 ▸ Edit Feature: SolidWorks' Flat-Pattern PropertyManager (lane DK). Fixed face (a flat face of the
+  // folded part: the flat is laid in its plane, the face staying where it is; empty = the Base Flange's face) and Grain
+  // direction (a straight edge on a flat face: the flat turns so it runs along +X), saved on the model as
+  // model.flatFixed = [x, y, z] / model.flatGrain = { at, dir } and read by Kernel.flatPattern (flatOrient), so the
+  // Flatten state, the flat DXF, the drawing's flat-pattern view and its bend table all follow. Anvil always merges the
+  // faces and keeps bend arcs as arcs, and has no corner treatment, so SolidWorks' Merge faces / Simplify bends /
+  // Corner treatment boxes are not shown. Picks are made while folded (a flat part offers no faces to click).
   function cmdFlatPatternEdit() {
     if (App.mode === 'sketch') UI.exitSketch(true);
     if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
-    var flat = null, err = null;
-    try { flat = K.flatPattern(App.model, App.build, App.mesh); } catch (e) { err = e.message; }
-    var base = App.model.features.filter(function (q) { return q.sheetBase; })[0];
+    var T = ufSheetT(), wasFlat = !!App.model.flatState;
+    if (wasFlat) { delete App.model.flatState; UI.updateFlatState(); }   // show the folded part to pick on
+    var v0 = { fixed: App.model.flatFixed ? App.model.flatFixed.slice() : null, grain: App.model.flatGrain ? { at: App.model.flatGrain.at.slice(), dir: App.model.flatGrain.dir.slice() } : null };
+    var memo = { key: null, flat: null, err: null };
+    function flatOf(v) {
+      var key = JSON.stringify([v.fixed, v.grain]);
+      if (memo.key === key) return memo;
+      var m = {}; Object.keys(App.model).forEach(function (k) { m[k] = App.model[k]; });
+      if (v.fixed) m.flatFixed = v.fixed; else delete m.flatFixed;
+      if (v.grain) m.flatGrain = v.grain; else delete m.flatGrain;
+      delete m.flatState;
+      memo = { key: key, flat: null, err: null };
+      try { memo.flat = K.flatPattern(m, App.build, App.mesh); } catch (e) { memo.err = e.message; }
+      return memo;
+    }
+    function rnd(p) { return p.map(function (x) { return Math.round(x * 1e6) / 1e6; }); }
+    function grainEdge(g) {
+      if (!g || !App.edges) return null;
+      var best = null, bd = 1e-3 * (1 + T);
+      App.edges.forEach(function (e) {
+        if (!e.a || !e.b) return;
+        var d = V.norm(V.sub(e.b, e.a)), gd = V.norm(g.dir);
+        if (Math.abs(Math.abs(V.dot(d, gd)) - 1) > 1e-6) return;
+        var w = V.sub(g.at, e.a), t = V.dot(w, d), L = V.len(V.sub(e.b, e.a));
+        if (t < -bd || t > L + bd) return;
+        var off = V.len(V.sub(w, V.scale(d, t)));
+        if (off < bd) { bd = off; best = e; }
+      });
+      return best;
+    }
+    function lit() {
+      ufLit(pm.values.fixed ? [pm.values.fixed] : [], T);
+      var ge = grainEdge(pm.values.grain);
+      if (App.command) App.command.edgeList = ge ? [ge] : [];
+      UI.updateHighlights();
+    }
+    function warnOf(v) { var r = flatOf(v); return r.flat ? r.flat.warnings.filter(function (w) { return /^Flat-Pattern:/.test(w); })[0] || '' : ''; }
+    function status() {
+      var r = flatOf(pm.values), w = warnOf(pm.values);
+      UI.setStatus(r.flat ? 'Flat-Pattern1: ' + flatSizeText(r.flat) + (w ? ' · ' + w.replace(/^Flat-Pattern: /, '') : '') + '. Press Enter or ✓ to accept.' : 'Flat-Pattern1: ' + r.err);
+    }
+    function pick(pk) {
+      var v = pm.values;
+      if (pk.kind === 'edge' && pk.edge && pk.edge.a && pk.edge.b) {
+        var dir = V.sub(pk.edge.b, pk.edge.a), L = V.len(dir);
+        if (!(L > 1e-9)) return true;
+        var g = { at: rnd(V.scale(V.add(pk.edge.a, pk.edge.b), 0.5)), dir: rnd(V.scale(dir, 1 / L)) };
+        var test = flatOf({ fixed: v.fixed, grain: g });
+        if (test.flat && test.flat.warnings.some(function (w) { return /grain direction/.test(w); })) { UI.setStatus('Grain direction: click a straight edge lying on a flat face of the sheet (not one across the thickness or on a bend).'); return true; }
+        v.grain = g;
+      } else if (pk.kind === 'face' && pk.point) {
+        var fx = rnd(pk.point), tf = flatOf({ fixed: fx, grain: v.grain });
+        if (tf.flat && tf.flat.warnings.some(function (w) { return /fixed face/.test(w); })) { UI.setStatus('Fixed face: click a flat face of the sheet (a bend surface or an edge face cannot stay fixed).'); return true; }
+        v.fixed = fx;
+      } else return false;
+      renderPM(); lit(); status();
+      return true;
+    }
+    function restoreFlat() { if (wasFlat && !App.model.flatState) { App.model.flatState = true; UI.updateFlatState(); } }
     openPM({
-      title: 'Flat-Pattern1', icon: 'flatten', values: { merge: true, simplify: true, grain: false, corner: false },
-      message: 'Anvil unfolds from the Base Flange\'s face on its sketch side and always merges faces and keeps bend arcs as arcs; the options it does not offer yet are greyed. Flatten (Sheet Metal tab) shows the flat.',
+      title: 'Flat-Pattern1', icon: 'flatten', values: v0,
+      message: 'Click a <b>flat face</b> that stays fixed (empty: the Base Flange\'s face) and a straight <b>edge</b> for the grain direction (the flat turns so the grain runs along X). The flat DXF, Flatten and the drawing\'s flat-pattern view follow.',
+      command: { faceList: [], edgeList: [], pickEdges: true, onPick: pick },
       groups: [
         { title: 'Parameters', fields: [
-          { type: 'static', label: 'Fixed face', value: (base ? base.name : 'Base Flange') + ' face (automatic)' },
-          { type: 'static', label: 'Grain direction', value: 'not available' },
-          { type: 'check', label: 'Merge faces', key: 'merge', disabled: true },
-          { type: 'check', label: 'Simplify bends', key: 'simplify', disabled: true },
-          { type: 'check', label: 'Corner treatment (not available)', key: 'corner', disabled: true }
+          { type: 'pick', icon: 'flatten', placeholder: 'Fixed face (default: the Base Flange\'s face)…',
+            value: function (v) { return v.fixed ? 'Fixed face <1>' : ''; },
+            items: function (v) { return v.fixed ? [{ label: 'Face<1>', at: v.fixed }] : []; },
+            onRemove: function (v) { v.fixed = null; renderPM(); lit(); status(); },
+            onClear: function (v) { v.fixed = null; renderPM(); lit(); status(); } },
+          { type: 'pick', icon: 'line', placeholder: 'Grain direction (an edge)…',
+            value: function (v) { return v.grain ? 'Edge<1>' : ''; },
+            items: function (v) { return v.grain ? [{ label: 'Edge<1>', at: v.grain.at }] : []; },
+            onRemove: function (v) { v.grain = null; renderPM(); lit(); status(); },
+            onClear: function (v) { v.grain = null; renderPM(); lit(); status(); } }
         ] },
         { title: 'Flat Pattern', fields: [
-          { type: 'static', label: 'Flat size', value: flat ? flatSizeText(flat).replace(/^Flat size /, '') : (err || '') },
-          { type: 'static', label: 'Bends', value: flat ? String(flat.bends.length) : '' },
-          { type: 'static', label: 'State', value: App.model.flatState ? 'Flattened' : 'Folded (suppressed)' },
+          { type: 'static', label: 'Flat size', value: function (v) { var r = flatOf(v); return r.flat ? flatSizeText(r.flat).replace(/^Flat size /, '') : (r.err || ''); } },
+          { type: 'static', label: 'Bends', value: function (v) { var r = flatOf(v); return r.flat ? String(r.flat.bends.length) : ''; } },
+          { type: 'static', label: 'State', value: wasFlat ? 'Flattened' : 'Folded (suppressed)' },
           { type: 'buttons', buttons: [
-            { label: App.model.flatState ? 'Fold' : 'Flatten', onclick: function () { UI.closePM(); toggleFlatten(); } },
-            { label: 'Flat Pattern…', onclick: function () { UI.closePM(); cmdFlatten(); } },
-            { label: 'Export DXF…', onclick: function () { UI.closePM(); cmdDxfOutput({ export: 'sheet' }); } }
+            { label: wasFlat ? 'Fold' : 'Flatten', onclick: function () { UI.closePM(); restoreFlat(); toggleFlatten(); } },
+            { label: 'Flat Pattern…', onclick: function () { UI.closePM(); restoreFlat(); cmdFlatten(); } },
+            { label: 'Export DXF…', onclick: function () { UI.closePM(); restoreFlat(); cmdDxfOutput({ export: 'sheet' }); } }
           ] }
         ] }
       ],
-      onOK: function () { return true; }
+      onCancel: function () { restoreFlat(); },
+      onOK: function (v) {
+        var same = JSON.stringify([v.fixed, v.grain]) === JSON.stringify([App.model.flatFixed || null, App.model.flatGrain || null]);
+        if (!same) {
+          if (wasFlat) App.model.flatState = true;   // the undo step keeps the state the part was in
+          UI.pushUndo();
+          if (v.fixed) App.model.flatFixed = v.fixed.slice(); else delete App.model.flatFixed;
+          if (v.grain) App.model.flatGrain = { at: v.grain.at.slice(), dir: v.grain.dir.slice() }; else delete App.model.flatGrain;
+          // the drawing caches its flat on the mesh: drop it so a flat-pattern view redraws
+          [App.mesh, App.build && App.build.mesh].forEach(function (ms) { if (ms && typeof ms === 'object') try { delete ms._drawingFlat; } catch (e) { } });
+          if (UI.autosave) UI.autosave();
+        }
+        if (wasFlat) App.model.flatState = true;
+        UI.updateFlatState();
+        UI.updateHighlights();
+        UI.refreshTree();
+        var r = flatOf(v);
+        if (r.flat) UI.setStatus('Flat-Pattern1: ' + flatSizeText(r.flat) + '.');
+        return true;
+      }
     });
+    lit(); status();
   }
   UI.cmdFlatPatternEdit = cmdFlatPatternEdit;
   // Sheet Metal ▸ Flat to DXF: the DXF/DWG Output PropertyManager with Sheet metal chosen (p9-pm: was a text dialog)
@@ -4815,7 +5244,7 @@
     var idx = App.model && App.model.features ? App.model.features.indexOf(f) : -1;
     // p9-pm: not the Base Flange: its PropertyManager (Sheet-Metal) edits the whole part's sheet parameters and shows
     // the part, as SolidWorks does (rolled back to before the Base Flange there would be nothing left on screen)
-    var sheetParams = f.type === 'extrude' && f.sheetBase && !f.cut;
+    var sheetParams = f.type === 'extrude' && f.sheetBase && !f.cut && !f.tab;   // lane DI: a Tab edits as a feature
     if (sheetParams && pm.spec) pmCancel();
     if (f.type !== 'sketch' && !sheetParams && idx >= 0 && !(UI.isAssembly && UI.isAssembly())) {
       if (pm.spec) pmCancel();   // one PropertyManager at a time: the one open is cancelled (and rolls forward)
@@ -4827,7 +5256,8 @@
     switch (f.type) {
       case 'sketch': editSketch(f.id); break;
       // a Base Flange's depth is the sheet thickness: it is edited with the sheet's parameters, not as an extrude
-      case 'extrude': if (f.sheetBase && !f.cut) cmdSheetMetal(); else cmdExtrude(f.cut, f); break;
+      case 'extrude': if (f.tab && !f.cut) cmdTab(f); else if (f.sheetBase && !f.cut) cmdSheetMetal(); else cmdExtrude(f.cut, f); break;
+      case 'rip': UI.cmdRipFeature(f); break;   // lane DI
       case 'revolve': cmdRevolve(f.cut, f); break;
       case 'lpattern': cmdLinearPattern(f); break;
       case 'cpattern': cmdCircularPattern(f); break;
@@ -4964,6 +5394,7 @@
   UI.cmdBreakCorner = partOnly(cmdBreakCorner, 'Break-Corner');   // Sheet Metal ▸ Break-Corner/Corner-Trim PropertyManager (lane CP)
   UI.cmdClosedCorner = partOnly(cmdClosedCorner, 'Closed Corner');   // Sheet Metal ▸ Closed Corner PropertyManager (lane CS)
   UI.cmdUnfold = partOnly(cmdUnfold, 'Unfold'); UI.cmdFold = partOnly(cmdFold, 'Fold');   // Sheet Metal ▸ Unfold / Fold (lane DB)
+  UI.cmdRipFeature = partOnly(cmdRipFeature, 'Rip'); UI.cmdTab = partOnly(cmdTab, 'Base Flange/Tab');   // Sheet Metal ▸ Rip, Tab (lane DI)
   // assembly documents
   UI.cmdInsertComponent = cmdInsertComponent; UI.cmdMate = cmdMate; UI.editMate = editMate; UI.mateSelect = mateSelect;
   UI.cmdMoveComponent = function () { cmdMoveComponent('move'); }; UI.cmdRotateComponent = function () { cmdMoveComponent('rotate'); };

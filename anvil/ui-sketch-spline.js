@@ -846,6 +846,24 @@
   // lane DE: are spline i's handles on screen (Show Spline Handles)? Smart Dimension picks only the handles shown
   // (ui-relations.js pickSketchRef)
   UI.splineHandlesShownFor = function (i) { return !!splineView.handles; };
+  // lane DM: Smart Dimension on a curvature control: a click within 7 px of a spline point that carries one (Add
+  // Curvature Control, tans[k][3]) dimensions its radius of curvature (dim { k: 'curv', i: k }: Kernel.dimGeometry),
+  // as SolidWorks dimensions the curvature handle; the value drives the control (Kernel.setDimValue). Asked by
+  // ui-sketch.js dimToolClick before the entity's own dimension; null = not on a curvature control.
+  UI.dimCurvaturePick = function (f, mx, my) {
+    if (!f || App.tool !== 'dimension') return null;
+    var pl = UI.activePlane(), best = null, bd = 7;
+    f.entities.forEach(function (e, i) {
+      if (!e || e.t !== 'spline' || !e.tans) return;
+      e.pts.forEach(function (q, k) {
+        var d = { e: i, k: 'curv', i: k };
+        if (!K.dimGeometry(e, d)) return;
+        var s = UI.worldToScreen(K.to3D(pl, q[0], q[1])), dd = Math.hypot(s[0] - mx, s[1] - my);
+        if (dd < bd) { bd = dd; best = d; }
+      });
+    });
+    return best;
+  };
   UI.styleSplineOverlay = function () { try { updateComb(); } catch (err) { /* */ } return combGroup ? combGroup.children.length : 0; };   // rfAH test hook: overlay objects shown   // test hook: the comb's segments [[p, q], …] of spline e
 
   // ================================================================== rfAS: spline tools and conic curves

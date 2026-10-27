@@ -1005,7 +1005,7 @@
   }
   // the entities as polylines with each segment tagged with its true curve (index into curves) or -1
   function regionSources(sketch) {
-    var chains = [], curves = [];
+    var chains = [], curves = [], frees = [];
     syncTextPaths(sketch);
     (sketch.entities || []).forEach(function (e) {
       if (e.construction || noProfileEntity(sketch, e)) return;
@@ -1013,6 +1013,8 @@
       if (e.t === 'text' && e.mode !== 'outline') return;
       var ec = entityCurves(e), base = curves.length;
       curves = curves.concat(ec);
+      var fr = isFree(e) ? freeRecord(e) : null;   // lane DP: splines / ellipses keep their parameters
+      if (fr) frees.push(fr);
       entityPolylines(e, true).forEach(function (pl) {
         var pts = pl.closed ? dedupeLoop(pl.pts) : pl.pts.filter(function (p, i, arr) { return !i || Math.abs(p[0] - arr[i - 1][0]) > 1e-9 || Math.abs(p[1] - arr[i - 1][1]) > 1e-9; });
         if (pts.length < 2) return;
@@ -1021,13 +1023,21 @@
           var tags = curveSegments(pts, ec);
           if (tags) { cv = tags.map(function (k) { return k >= 0 ? k + base : -1; }); if (!pl.closed) cv[pts.length - 1] = -1; }
         }
-        chains.push({ pts: pts, closed: !!pl.closed, cv: cv });
+        var fv = null;
+        if (fr) {
+          var tg = freeSegments(pts, [fr]);
+          if (tg) {
+            fv = tg.map(function (q) { return q === -1 ? null : { k: frees.length - 1, ua: q[1], ub: q[2] }; });
+            if (!pl.closed) fv[pts.length - 1] = null;
+          }
+        }
+        chains.push({ pts: pts, closed: !!pl.closed, cv: cv, fv: fv });
       });
     });
-    return { chains: chains, curves: curves };
+    return { chains: chains, curves: curves, frees: frees };
   }
   function regionGraph(sketch) {
-    var src = regionSources(sketch), chains = src.chains, curves = src.curves;
+    var src = regionSources(sketch), chains = src.chains, curves = src.curves, frees = src.frees;
     var span = 0;
     chains.forEach(function (ch) { ch.pts.forEach(function (p) { span = Math.max(span, Math.abs(p[0]), Math.abs(p[1])); }); });
     var tol = 1e-7 * (1 + span);
@@ -1038,7 +1048,7 @@
       var n = ch.pts.length, m = ch.closed ? n : n - 1;
       for (var i = 0; i < m; i++) {
         var a = ch.pts[i], b = ch.pts[(i + 1) % n], cv = ch.cv ? ch.cv[i] : -1, pad = (cv >= 0 ? sag(curves[cv]) : 0) + tol;
-        segs.push({ a: a, b: b, cv: cv, chain: ci, i: i, cuts: [], x0: Math.min(a[0], b[0]) - pad, x1: Math.max(a[0], b[0]) + pad, y0: Math.min(a[1], b[1]) - pad, y1: Math.max(a[1], b[1]) + pad });
+        segs.push({ a: a, b: b, cv: cv, fv: ch.fv ? ch.fv[i] : null, chain: ci, i: i, cuts: [], x0: Math.min(a[0], b[0]) - pad, x1: Math.max(a[0], b[0]) + pad, y0: Math.min(a[1], b[1]) - pad, y1: Math.max(a[1], b[1]) + pad });
       }
     });
     function adjacent(s, t) {
@@ -1046,8 +1056,30 @@
       var n = chains[s.chain].pts.length, d = Math.abs(s.i - t.i);
       return d <= 1 || (chains[s.chain].closed && d === n - 1);
     }
-    function cutAt(s, p) {
+    function cutAt(s, p, u) {
       var t;
+      if (s.fv) {
+        // lane DP: on a chord of a spline / ellipse the cut carries the curve parameter u (the crossing moved onto the
+        // true curve, freeCross) and goes on the chord whose parameter range holds it; a crossing at a sample's own
+        // parameter goes on both chords there and takes the place of that (area-true, off-curve) end
+        if (u == null) {
+          var dx0 = s.b[0] - s.a[0], dy0 = s.b[1] - s.a[1], L0 = dx0 * dx0 + dy0 * dy0;
+          var t0 = L0 > 0 ? Math.max(0, Math.min(1, ((p[0] - s.a[0]) * dx0 + (p[1] - s.a[1]) * dy0) / L0)) : 0;
+          s.cuts.push({ t: t0, p: p, u: s.fv.ua + (s.fv.ub - s.fv.ua) * t0 });
+          return;
+        }
+        var Pd = frees[s.fv.k].period, hosts = [];
+        segs.forEach(function (o2) {
+          if (o2.chain !== s.chain || !o2.fv) return;
+          var uu = u;
+          if (Pd) uu -= Pd * Math.floor((uu - Math.min(o2.fv.ua, o2.fv.ub) + 1e-12) / Pd);
+          var lo2 = Math.min(o2.fv.ua, o2.fv.ub), hi2 = Math.max(o2.fv.ua, o2.fv.ub), sp2 = o2.fv.ub - o2.fv.ua;
+          if (uu >= lo2 - 1e-12 && uu <= hi2 + 1e-12) hosts.push({ o: o2, t: Math.max(0, Math.min(1, sp2 ? (uu - o2.fv.ua) / sp2 : 0)), u: uu });
+        });
+        if (!hosts.length) hosts.push({ o: s, t: 0.5, u: u });
+        hosts.forEach(function (h) { h.o.cuts.push({ t: h.t, p: p, u: h.u }); });
+        return;
+      }
       if (s.cv >= 0) {
         // on a chord of a true curve the cut goes where the point's angle falls; it may fall in a neighbouring chord
         var C = curves[s.cv], ch = chains[s.chain], n = ch.pts.length, m = ch.closed ? n : n - 1;
@@ -1088,6 +1120,44 @@
       cands.forEach(function (q) { var d = Math.hypot(q[0] - X[0], q[1] - X[1]); if (d < bd) { bd = d; best = q; } });
       return best && bd <= 10 * lim + tol ? best : X;
     }
+    // lane DP: a crossing with a spline / ellipse chord, moved onto the true curve(s) by Newton's method from the chord
+    // crossing: line x curve, circle x curve, curve x curve. -> { p, us, uu } (us / uu: the curve parameter on s / u,
+    // null when that one is no free curve or the iteration did not settle near the chords)
+    function freeCross(s, u, X) {
+      function chordU(g) { var dx = g.b[0] - g.a[0], dy = g.b[1] - g.a[1], L2 = dx * dx + dy * dy, t = L2 > 0 ? ((X[0] - g.a[0]) * dx + (X[1] - g.a[1]) * dy) / L2 : 0; return g.fv.ua + (g.fv.ub - g.fv.ua) * Math.max(0, Math.min(1, t)); }
+      function reach(g) { return 2 * Math.abs(g.fv.ub - g.fv.ua) + 1e-9; }
+      var out = { p: X, us: null, uu: null };
+      if (s.fv && u.fv) {
+        if (s.fv.k === u.fv.k) return out;
+        var F = frees[s.fv.k].rec, G = frees[u.fv.k].rec, a = chordU(s), b = chordU(u), a0 = a, b0 = b;
+        for (var it = 0; it < 40; it++) {
+          var P = freeEval(F, a), Q = freeEval(G, b), dP = freeDeriv(F, a), dQ = freeDeriv(G, b), rx = P[0] - Q[0], ry = P[1] - Q[1];
+          // [dP, -dQ] (da, db) = -(P - Q)
+          var det = -dP[0] * dQ[1] + dP[1] * dQ[0];
+          if (Math.abs(det) < 1e-300) break;
+          var da = (rx * dQ[1] - ry * dQ[0]) / det, db = (dP[1] * rx - dP[0] * ry) / det;
+          a += da; b += db;
+          if (Math.abs(da) + Math.abs(db) < 1e-15 * (1 + Math.abs(a) + Math.abs(b))) break;
+        }
+        if (!(Math.abs(a - a0) <= reach(s)) || !(Math.abs(b - b0) <= reach(u))) return out;
+        return { p: freeEval(F, a), us: a, uu: b };
+      }
+      var fs = s.fv ? s : u, os = s.fv ? u : s, Fr = frees[fs.fv.k].rec, w = chordU(fs), w0 = w, C = os.cv >= 0 ? curves[os.cv] : null;
+      for (var j = 0; j < 40; j++) {
+        var Pw = freeEval(Fr, w), dw = freeDeriv(Fr, w), f, df;
+        if (C) { var ex = Pw[0] - C.c[0], ey = Pw[1] - C.c[1]; f = ex * ex + ey * ey - C.r * C.r; df = 2 * (ex * dw[0] + ey * dw[1]); }
+        else { var lx = os.b[0] - os.a[0], ly = os.b[1] - os.a[1]; f = lx * (Pw[1] - os.a[1]) - ly * (Pw[0] - os.a[0]); df = lx * dw[1] - ly * dw[0]; }
+        if (Math.abs(df) < 1e-300) break;
+        var dd = f / df;
+        w -= dd;
+        if (Math.abs(dd) < 1e-15 * (1 + Math.abs(w))) break;
+      }
+      if (!(Math.abs(w - w0) <= reach(fs))) return out;
+      var p = freeEval(Fr, w);
+      out.p = p;
+      if (s.fv) out.us = w; else out.uu = w;
+      return out;
+    }
     function nearEnd(p, s) { return (Math.abs(p[0] - s.a[0]) <= tol && Math.abs(p[1] - s.a[1]) <= tol) || (Math.abs(p[0] - s.b[0]) <= tol && Math.abs(p[1] - s.b[1]) <= tol); }
     // an end p of segment s lying on segment u (not at u's ends): on u's true circle within its chord's angle, or on
     // the chord itself
@@ -1112,7 +1182,8 @@
         if (u.x0 > s.x1) break;
         if (u.y0 > s.y1 || u.y1 < s.y0 || adjacent(s, u)) continue;
         var X = segCross(s.a, s.b, u.a, u.b);
-        if (X) { X = refine(s, u, X); cutAt(s, X); cutAt(u, X); }
+        if (X && (s.fv || u.fv)) { var fx = freeCross(s, u, X); cutAt(s, fx.p, fx.us); cutAt(u, fx.p, fx.uu); }
+        else if (X) { X = refine(s, u, X); cutAt(s, X); cutAt(u, X); }
         endOn(s.a, s, u); endOn(s.b, s, u); endOn(u.a, u, s); endOn(u.b, u, s);
       }
     }
@@ -1130,19 +1201,23 @@
       (cells[cx + ',' + cy] = cells[cx + ',' + cy] || []).push(id);
       return id;
     }
-    function addEdge(a, b, cv) {
+    function addEdge(a, b, cv, fv) {
       if (a === b) return;
       var k = a < b ? a + ',' + b : b + ',' + a;
       if (ekeys[k] != null) return;
       ekeys[k] = edges.length;
-      edges.push({ a: a, b: b, cv: cv, dead: false });
+      edges.push({ a: a, b: b, cv: cv, fv: fv || null, dead: false });
     }
     segs.forEach(function (s) {
-      var pts = [s.a];
+      var pts = [s.a], us = [s.fv ? s.fv.ua : null], b = s.b;
       s.cuts.sort(function (p, q) { return p.t - q.t; });
-      s.cuts.forEach(function (c) { if (c.t > 1e-9 && c.t < 1 - 1e-9) pts.push(c.p); });
-      pts.push(s.b);
-      for (var i = 0; i + 1 < pts.length; i++) addEdge(vertexOf(pts[i]), vertexOf(pts[i + 1]), s.cv);
+      s.cuts.forEach(function (c) {
+        if (c.t > 1e-9 && c.t < 1 - 1e-9) { pts.push(c.p); us.push(c.u); }
+        else if (s.fv && c.t <= 1e-9) pts[0] = c.p;   // lane DP: the crossing on the true curve replaces the sample
+        else if (s.fv) b = c.p;
+      });
+      pts.push(b); us.push(s.fv ? s.fv.ub : null);
+      for (var i = 0; i + 1 < pts.length; i++) addEdge(vertexOf(pts[i]), vertexOf(pts[i + 1]), s.cv, s.fv ? { k: s.fv.k, ua: us[i], ub: us[i + 1] } : null);
     });
     // drop what dangles: an end that touches nothing bounds no region
     var adj = verts.map(function () { return []; }), deg = verts.map(function () { return 0; });
@@ -1161,7 +1236,7 @@
         break;
       }
     }
-    return { verts: verts, edges: edges, adj: adj, curves: curves, span: span };
+    return { verts: verts, edges: edges, adj: adj, curves: curves, frees: frees, span: span };
   }
   function regionFaces(g) {
     var verts = g.verts, edges = g.edges;
@@ -1194,8 +1269,108 @@
     var comp = verts.map(function (v, i) { return i; });
     function find(x) { while (comp[x] !== x) { comp[x] = comp[comp[x]]; x = comp[x]; } return x; }
     edges.forEach(function (e) { if (!e.dead) comp[find(e.a)] = find(e.b); });
-    faces.forEach(function (f) { f.comp = find(f.v); f.edges = f.cyc.map(function (h) { return { a: verts[from(h)], b: verts[to(h)], cv: edges[h >> 1].cv }; }); });
+    faces.forEach(function (f) {
+      f.comp = find(f.v);
+      f.edges = f.cyc.map(function (h) { var e = edges[h >> 1], fv = e.fv ? (h & 1 ? { k: e.fv.k, ua: e.fv.ub, ub: e.fv.ua } : e.fv) : null; return { a: verts[from(h)], b: verts[to(h)], cv: e.cv, fv: fv }; });
+    });
     return faces;
+  }
+  // lane DP: a free curve (profile.free's record: { t: 'spline', bez, knots, closed } | { t: 'ellipse', cx, cy, rx, ry,
+  // rot }) at parameter u (knot length / radians), its derivative, and the sliver between it and its chord from ua to
+  // ub (ua < ub inside one span)
+  function freeSpan(F, u) {
+    var m = F.bez.length, P = F.knots[m];
+    if (F.closed && P > 0) u -= P * Math.floor(u / P);
+    var j = 0;
+    while (j < m - 1 && u > F.knots[j + 1]) j++;
+    var h = F.knots[j + 1] - F.knots[j];
+    return { B: F.bez[j], s: h > 0 ? (u - F.knots[j]) / h : 0, h: h };
+  }
+  function freeEval(F, u) {
+    if (F.t === 'ellipse') return ellipsePoint(F, u);
+    var sp = freeSpan(F, u);
+    return bezPoint(sp.B, sp.s);
+  }
+  function freeDeriv(F, u) {
+    if (F.t === 'ellipse') {
+      var r = (+F.rot || 0) * Math.PI / 180, x = -F.rx * Math.sin(u), y = F.ry * Math.cos(u);
+      return [Math.cos(r) * x - Math.sin(r) * y, Math.sin(r) * x + Math.cos(r) * y];
+    }
+    var sp = freeSpan(F, u), d = bezDeriv(sp.B, sp.s);
+    return [d[0] / (sp.h || 1), d[1] / (sp.h || 1)];
+  }
+  function freeSliver(F, ua, ub) {
+    if (F.t === 'ellipse') { var d = ub - ua; return F.rx * F.ry / 2 * (d - Math.sin(d)); }
+    var sp = freeSpan(F, (ua + ub) / 2);
+    return bezSliver(sp.B, sp.s + (ua - (ua + ub) / 2) / (sp.h || 1), sp.s + (ub - (ua + ub) / 2) / (sp.h || 1));
+  }
+  // exactFreeLoop(loop, cv, fv, frees) -> loop with seg (circle tags, as sketchProfile's) and fseg: every run of a
+  // region loop along one spline / ellipse (fv[i] = { k, ua, ub }: segment i lies on frees[k] from parameter ua to ub)
+  // is sampled again between its two ends (the crossings, on the true curve) at the curve's own sample parameters and
+  // made area-true (areaTrue: the polyline encloses what the curve does), so an extrude of the region is as exact as
+  // the plain extrude of the same curve, and fseg = [k, u at i, u at i + 1] gives OpenCascade the true curve
+  // (loopWire), as sketchProfile's loops do. A loop that is one whole closed curve keeps its points.
+  function exactFreeLoop(loop, cv, fv, frees) {
+    var pts = loop.pts, n = pts.length, hasC = cv.some(function (k) { return k >= 0; });
+    if (!frees || !fv || !fv.some(Boolean)) { if (hasC) loop.seg = cv; return loop; }
+    function joins(p, q) {
+      if (!p || !q || p.k !== q.k) return false;
+      var d = q.ua - p.ub, P = frees[p.k].period;
+      if (P) d -= P * Math.round(d / P);
+      return Math.abs(d) < 1e-9 * (1 + Math.abs(q.ua));
+    }
+    var start = -1, i;
+    for (i = 0; i < n; i++) if (!joins(fv[(i + n - 1) % n], fv[i])) { start = i; break; }
+    if (start < 0) {
+      if (hasC) loop.seg = cv;
+      loop.fseg = fv.map(function (q) { return [q.k, q.ua, q.ub]; });
+      return loop;
+    }
+    var P2 = [], seg = [], fseg = [];
+    i = 0;
+    while (i < n) {
+      var a = (start + i) % n;
+      if (!fv[a]) { P2.push(pts[a]); seg.push(cv[a]); fseg.push(-1); i++; continue; }
+      var len = 1, k = fv[a].k, u0 = fv[a].ua, u1 = u0 + (fv[a].ub - fv[a].ua);
+      while (i + len < n && joins(fv[(start + i + len - 1) % n], fv[(start + i + len) % n])) { var q = fv[(start + i + len) % n]; u1 += q.ub - q.ua; len++; }
+      var R = frees[k], F = R.rec, lo = Math.min(u0, u1), hi = Math.max(u0, u1), grid = [lo, hi], Pd = R.period;
+      R.par.concat(Pd ? [Pd] : []).forEach(function (pv) {
+        if (Pd) pv += Pd * Math.ceil((lo - pv) / Pd);
+        for (; pv < hi; pv += Pd || Infinity) if (pv > lo + 1e-12 && pv < hi - 1e-12) grid.push(pv);
+      });
+      grid.sort(function (x, y) { return x - y; });
+      grid = grid.filter(function (x, j) { return !j || x - grid[j - 1] > 1e-12; });
+      if (grid.length < 3) grid.splice(1, 0, (lo + hi) / 2);
+      var sp = grid.map(function (u) { return freeEval(F, u); }), sl = [];
+      for (var j = 0; j + 1 < grid.length; j++) sl.push(freeSliver(F, grid[j], grid[j + 1]));
+      sp = areaTrue(sp, sl, false);
+      if (u1 < u0) { sp.reverse(); grid.reverse(); }
+      sp[0] = pts[a];
+      // a closed spline's run across its start: OpenCascade's B-spline is not periodic, so the part past the start is
+      // tagged with a second record of the same curve (one edge each, parameters back in [0, period])
+      var wrapK = F.t === 'spline' && Pd ? -1 : null, m0 = null;
+      for (j = 0; j + 1 < sp.length; j++) {
+        var ga = grid[j], gb = grid[j + 1], kk = k;
+        if (wrapK != null) {
+          var mm = Math.floor((ga + gb) / 2 / Pd);
+          if (m0 == null) m0 = mm;
+          ga -= mm * Pd; gb -= mm * Pd;
+          if (mm !== m0) {
+            if (wrapK < 0) {
+              for (var fi2 = 0; fi2 < frees.length && wrapK < 0; fi2++) if (frees[fi2].alias === k) wrapK = fi2;
+              if (wrapK < 0) { frees.push({ rec: F, keys: {}, par: R.par, n: R.n, closed: R.closed, period: Pd, alias: k }); wrapK = frees.length - 1; }
+            }
+            kk = wrapK;
+          }
+        }
+        P2.push(sp[j]); seg.push(-1); fseg.push([kk, ga, gb]);
+      }
+      i += len;
+    }
+    loop.pts = P2;
+    if (seg.some(function (x) { return x >= 0; })) loop.seg = seg;
+    loop.fseg = fseg;
+    return loop;
   }
   var regionCache = { key: null, regions: null };
   function sketchRegions(sketch) {
@@ -1212,14 +1387,13 @@
       if (best) best.holes.push(O);
     });
     function loopOf(f, hole) {
-      var pts = f.pts, cv = f.edges.map(function (e) { return e.cv; }), n = pts.length;
+      var pts = f.pts, cv = f.edges.map(function (e) { return e.cv; }), fv = f.edges.map(function (e) { return e.fv; }), n = pts.length;
       if (hole) {   // traced clockwise round the hole; the profile wants every loop counter-clockwise
         pts = pts.slice().reverse();
         cv = cv.map(function (x, j) { return f.edges[(n - 2 - j + n) % n].cv; });
+        fv = fv.map(function (x, j) { var q = f.edges[(n - 2 - j + n) % n].fv; return q ? { k: q.k, ua: q.ub, ub: q.ua } : null; });
       }
-      var loop = { pts: pts, hole: !!hole, depth: hole ? 1 : 0 };
-      if (cv.some(function (k) { return k >= 0; })) loop.seg = cv;
-      return loop;
+      return exactFreeLoop({ pts: pts, hole: !!hole, depth: hole ? 1 : 0 }, cv, fv, g.frees);
     }
     var regions = bounded.map(function (f) {
       var loops = [loopOf(f, false)].concat(f.holes.map(function (h) { return loopOf(h, true); }));
@@ -1233,6 +1407,8 @@
     regions.sort(function (r, s) { return (r._bb[0] - s._bb[0]) || (r._bb[1] - s._bb[1]) || (s.area - r.area) || (r.p[0] - s.p[0]) || (r.p[1] - s.p[1]); });
     regions.forEach(function (r, i) { r.index = i; delete r._bb; });
     if (regions.some(function (r) { return r.loops.some(function (l) { return l.seg; }); })) regions.curves = g.curves;
+    if (regions.some(function (r) { return r.loops.some(function (l) { return l.fseg; }); })) regions.free = g.frees.map(function (F) { return F.rec; });
+    regions.frees = g.frees;
     regionCache = { key: key, regions: regions };
     return regions;
   }
@@ -1282,7 +1458,7 @@
     picked.forEach(function (r) {
       r._edges.forEach(function (e) {
         var ka = key2(e.a), kb = key2(e.b), back = kb + '>' + ka;
-        if (dir[back]) delete dir[back]; else dir[ka + '>' + kb] = { a: e.a, b: e.b, cv: e.cv, ka: ka, kb: kb };
+        if (dir[back]) delete dir[back]; else dir[ka + '>' + kb] = { a: e.a, b: e.b, cv: e.cv, fv: e.fv, ka: ka, kb: kb };
       });
     });
     var outs = {};
@@ -1291,9 +1467,9 @@
     Object.keys(dir).forEach(function (k0) {
       var e = dir[k0];
       if (e.used) return;
-      var pts = [], cv = [], cur = e, guard = 0;
+      var pts = [], cv = [], fv = [], cur = e, guard = 0;
       while (cur && !cur.used && guard++ < 100000) {
-        cur.used = true; pts.push(cur.a); cv.push(cur.cv);
+        cur.used = true; pts.push(cur.a); cv.push(cur.cv); fv.push(cur.fv || null);
         var cands = (outs[cur.kb] || []).filter(function (x) { return !x.used; });
         if (!cands.length) break;
         if (cands.length === 1) { cur = cands[0]; continue; }
@@ -1305,17 +1481,15 @@
       var a = signedArea(pts), loop;
       if (a < 0) {
         var n = pts.length, rc = cv.map(function (x, j) { return cv[(n - 2 - j + n) % n]; });
-        loop = { pts: pts.slice().reverse(), hole: true, depth: 1 };
-        if (rc.some(function (x) { return x >= 0; })) loop.seg = rc;
-      } else {
-        loop = { pts: pts, hole: false, depth: 0 };
-        if (cv.some(function (x) { return x >= 0; })) loop.seg = cv;
-      }
+        var rf = fv.map(function (x, j) { var q = fv[(n - 2 - j + n) % n]; return q ? { k: q.k, ua: q.ub, ub: q.ua } : null; });
+        loop = exactFreeLoop({ pts: pts.slice().reverse(), hole: true, depth: 1 }, rc, rf, regions.frees);
+      } else loop = exactFreeLoop({ pts: pts, hole: false, depth: 0 }, cv, fv, regions.frees);
       loops.push(loop);
     });
     loops.sort(function (l, m) { return (l.hole ? 1 : 0) - (m.hole ? 1 : 0); });
     var prof = { loops: loops, warnings: [] };
     if (loops.some(function (l) { return l.seg; })) prof.curves = regions.curves;
+    if (loops.some(function (l) { return l.fseg; })) prof.free = (regions.frees || []).map(function (F) { return F.rec; });
     return prof;
   }
   function contourSketch(f, sketch) {
@@ -1558,6 +1732,16 @@
         }
         return null;
       }
+      case 'spline': {
+        // lane DM: Smart Dimension on a curvature control (SolidWorks: dimension the curvature handle): the radius of
+        // curvature 1 / |tans[i][3]| at spline point i; drawn as a radius leader from the point itself (C = the point,
+        // r = 0: the arrow on the spline, the label where it was placed); `centre` is the true centre of curvature
+        if (k !== 'curv') return null;
+        var ci = d.i | 0, tc = e.tans && e.tans[ci], kc = tc && tc[3] != null ? +tc[3] : NaN;
+        if (!e.pts || !e.pts[ci] || !isFinite(kc) || Math.abs(kc) < 1e-12) return null;
+        var Pc = [e.pts[ci][0], e.pts[ci][1]], ta = (tc[0] != null ? +tc[0] : 0) * Math.PI / 180, nc = [-Math.sin(ta), Math.cos(ta)];
+        return { type: 'radial', C: Pc, r: 0, value: 1 / Math.abs(kc), prefix: 'R', curv: true, centre: [Pc[0] + nc[0] / kc, Pc[1] + nc[1] / kc] };
+      }
       case 'polyline': {
         if (k !== 'seg') return null;
         var n2 = e.pts.length, i2 = d.i | 0;
@@ -1594,6 +1778,7 @@
         else if (k === 'len') { e.x2 = e.x1 + g.dir[0] * v; e.y2 = e.y1 + g.dir[1] * v; } else e.w = v;
         break;
       case 'ellipse': case 'pellipse': if (k === 'rx') e.rx = v; else e.ry = v; break;
+      case 'spline': { var tcs = e.tans[d.i | 0]; tcs[3] = (+tcs[3] < 0 ? -1 : 1) / v; break; }   // lane DM: keeps the side it bends to
       case 'polyline': {
         var i = d.i | 0, n = e.pts.length, dl = v - g.value, mv = [g.dir[0] * dl, g.dir[1] * dl];
         // open chains carry the rest of the chain along; closed loops move just the far vertex

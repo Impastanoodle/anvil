@@ -209,7 +209,7 @@
     UI.cmdCircularSketchPattern(); await wait(20);
     var v = UI.pmSpec().values;
     assert(v.cx === 0 && v.cy === 0 && v.angle === 360 && v.equal && v.count === 4 && v.dimRadius && v.dimAngle && v.radius === 20 && v.arcAngle === 0, 'defaults ' + JSON.stringify(v));
-    assert(stLabels().join('|') === 'Reverse direction|Center X|Center Y|Spacing|Equal spacing|Dimension radius|Dimension angular spacing|Number of instances|Radius|Arc angle', 'fields ' + stLabels().join('|'));
+    assert(stLabels().join('|') === 'Reverse direction|Center X|Center Y|Spacing|Equal spacing|Dimension radius|Dimension angular spacing|Number of instances|Display instance count|Radius|Arc angle', 'fields ' + stLabels().join('|'));
     assert(UI.App.tempEntities.length === 3, 'preview 3 copies');
     await pmAccept();
     var holes = f.entities.filter(function (e) { return e.t === 'circle'; });

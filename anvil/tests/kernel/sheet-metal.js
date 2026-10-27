@@ -114,7 +114,7 @@
     nearVec(r.mp.bbox.max, [100, 2 + 1 + 2, 60], 1e-6, 'return lies gap + T above the sheet');
     near(r.mp.bbox.min[0], -(0.5 + 2), 1e-6, 'hem loop extends R + T beyond the edge');
     var flat = K.flatPattern(r.model, r.build, r.mesh), BA = K.bendAllowance(Math.PI, 0.5, 2, 0.71);
-    near(flat.bbox.max[0] - flat.bbox.min[0], 100 + BA + 15, 1e-6, 'flat width');
+    near(flat.bbox.max[0] - flat.bbox.min[0], 100 + BA + 15 - (0.5 + 2), 1e-6, 'flat width (lane DI2, SolidWorks: the hem length 15 is overall from the fold\'s outer face, so the leg is 15 − (R + T))');
     assert(flat.bends.length === 1 && /UP 180°/.test(flat.bends[0].label), 'one 180° bend: ' + JSON.stringify(flat.bends.map(function (b) { return b.label; })));
     var script = K.generateScript(r.model);
     assert(/p\.hem\(15, \[\[0,2,30\]\], \{ gap: 1, name: "Hem1" \}\)/.test(script), 'hem emitted: ' + script.split('\n').pop());

@@ -203,7 +203,10 @@
       { sep: true },
       { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'generic', icon: 'vent', label: 'Vent' },
       { sep: true },
-      { id: 'flatten', label: 'Flatten', run: function () { UI.cmdFlatten(); } }, { id: 'dxf', label: 'Flat to\nDXF', run: function () { UI.exportFlatDXF(); } }, { id: 'unfold', label: 'Unfold', help: 'Unfold bends about a fixed face to cut across them flat', run: function () { UI.cmdUnfold(); } }, { id: 'fold', label: 'Fold', help: 'Fold back the bends an Unfold unfolded, with the cuts made across them', run: function () { UI.cmdFold(); } }, { id: 'generic', icon: 'rip', label: 'Rip' }
+      // lane DL (fidelity #12): SolidWorks 2024's order Unfold, Fold, Flatten, No Bends, Insert Bends, Rip; Flat to DXF (Anvil's) last
+      { id: 'unfold', label: 'Unfold', help: 'Unfold bends about a fixed face to cut across them flat', run: function () { UI.cmdUnfold(); } }, { id: 'fold', label: 'Fold', help: 'Fold back the bends an Unfold unfolded, with the cuts made across them', run: function () { UI.cmdFold(); } }, { id: 'flatten', label: 'Flatten', run: function () { UI.cmdFlatten(); } },
+      { id: 'generic', icon: 'flatten', label: 'No\nBends', help: 'Show the part as it was before its bends were inserted (a part converted from a solid)' }, { id: 'generic', icon: 'bend', label: 'Insert\nBends', help: 'Turn a thin-walled solid with sharp corners into sheet metal by inserting bends' },{ id: 'rip', icon: 'rip', label: 'Rip', help: 'Rip the edges of a hollow part so it can be unfolded', run: function () { UI.cmdRipFeature(); } },
+      { extra: true, id: 'dxf', label: 'Flat to\nDXF', run: function () { UI.exportFlatDXF(); } }
     ],
     // lane BJ: Mastercam 2024's Transform tab, groups Position | Offset | Layout | Size with their captions under the
     // buttons (ui-transform.js lays them out from `group`). Each button runs UI['cmdT' + name] (ui-transform.js,
@@ -500,7 +503,7 @@
     tabs.setAttribute('data-shape', shape.tabs);
     var tfrag = document.createDocumentFragment();
     shape.tabNames.forEach(function (name) {
-      tfrag.appendChild(el('button', { class: 'rtab' + (name === App.ribbonTab ? ' active' : ''), text: name, onclick: function () { if (App.mode !== 'sketch') tabBeforeSketch = null; setRibbonTab(name); } }));
+      tfrag.appendChild(el('button', { class: 'rtab' + (name === App.ribbonTab ? ' active' : ''), text: name, onclick: function () { if (App.mode !== 'sketch') tabBeforeSketch = null; else if (name !== 'Sketch') tabBeforeSketch = name; setRibbonTab(name); } }));
     });
     shape.extraTabs.forEach(function (name) {
       tfrag.appendChild(el('button', { class: 'rtab off', text: name, title: 'Not available in this build', style: 'opacity:.5' }));
@@ -513,6 +516,8 @@
   // (ui-sketch.js enterSketch); closing it asks for Features (exitSketch), which goes back to the tab the sketch was
   // started from instead (Sheet Metal ▸ Base Flange or Extruded Cut return to Sheet Metal). A tab the user clicks
   // while sketching is where the sketch leaves them.
+  // lane DL (fidelity #13): a non-Sketch tab clicked while sketching becomes tabBeforeSketch, so a sketch started from
+  // the Sketch tab and finished by Sheet Metal > Extruded Cut (or any command on that tab) comes back to Sheet Metal.
   var tabBeforeSketch = null;
   function setRibbonTab(name) {
     if (name === 'Sketch' && App.mode === 'sketch') { if (App.ribbonTab !== 'Sketch' && tabBeforeSketch == null) tabBeforeSketch = App.ribbonTab; }
@@ -768,6 +773,7 @@
   }
   var FEATURE_ICON = { sketch: 'sketch', plane: 'planeSmall', extrude: 'extrude', revolve: 'revolve', lpattern: 'lpattern', cpattern: 'cpattern', mirror: 'mirror', chamfer: 'chamfer', fillet: 'fillet', flange: 'bend', jog: 'bend', sweep: 'sweep', loft: 'loft', shell: 'shell', import: 'imported', hole: 'holeWizard' };
   FEATURE_ICON.refaxis = 'refAxis'; FEATURE_ICON.refpoint = 'refPoint'; FEATURE_ICON.csys = 'csys';   // lane CZ: reference geometry
+  FEATURE_ICON.rip = 'rip';   // lane DI
   function featureIcon(f) {
     if (f.type === 'extrude') return f.cut ? 'cut' : (f.sheetBase ? 'flange' : 'extrude');
     if (f.type === 'revolve') return f.cut ? 'revolveCut' : 'revolve';
@@ -1078,7 +1084,7 @@
       case 'fillet': return 'Fillet R' + f.r + ' on ' + (f.edges || []).length + ' edge pick' + ((f.edges || []).length === 1 ? '' : 's');
       case 'sketchedBend': return 'Sketched bend ' + f.angle + '°, ' + ({ inside: 'material inside', outside: 'material outside', bendOutside: 'bend outside' }[f.position] || 'bend centerline') + (f.reverse ? ', reversed' : '') + (f.fixed ? ', fixed face picked' : '');
       case 'jog': return 'Jog ' + f.height + ' high, ' + f.length + ' flat, ' + f.angle + '°, ' + (f.edges || []).length + ' edge' + ((f.edges || []).length === 1 ? '' : 's');
-      case 'flange': return (f.hem ? 'Hem gap ' + Math.round(f.radius * 2 * 1e4) / 1e4 + ', ' : f.miter ? 'Miter flange ' : 'Edge flange ') + f.length + ' long, ' + f.angle + '°, ' + (f.edges || []).length + ' edge' + ((f.edges || []).length === 1 ? '' : 's') + (f.position === 'inside' ? ', material inside' : f.position === 'outside' ? ', material outside' : '') +
+      case 'flange': return (f.miterFlange ? 'Miter flange from a profile sketch, ' : (f.hem ? 'Hem gap ' + Math.round(f.radius * 2 * 1e4) / 1e4 + ', ' : f.miter ? 'Miter flange ' : 'Edge flange ') + f.length + ' long, ' + f.angle + '°, ') + (f.edges || []).length + ' edge' + ((f.edges || []).length === 1 ? '' : 's') + (f.position === 'inside' ? ', material inside' : f.position === 'outside' ? ', material outside' : '') +
         (f.miter ? ', mitred' + (f.miterGap > 0 ? ' (gap ' + f.miterGap + ')' : '') : '') + (f.relief && f.relief !== 'none' ? ', relief ' + (f.relief === 'rect' ? 'rectangle' : f.relief) : '');
       case 'shell': return 'Shell, walls ' + f.thickness + ' thick, ' + ((f.faces || []).length ? (f.faces || []).length + ' face' + ((f.faces || []).length === 1 ? '' : 's') + ' removed' : 'closed');
       case 'sweep': return (f.cut ? 'Cut' : 'Boss') + ' sweep along ' + (Array.isArray(f.path) ? f.path.length + ' points' : 'a path sketch');

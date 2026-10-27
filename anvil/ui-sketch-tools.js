@@ -1269,12 +1269,13 @@
       items: function (x) { return x.skip.map(function (k) { return { label: '(' + k.split(',').map(function (n) { return +n + 1; }).join(', ') + ')' }; }); },
       onRemove: function (x, i) { x.skip.splice(i, 1); UI.renderPM(); onChange(); }, onClear: function (x) { x.skip.length = 0; UI.renderPM(); onChange(); } };
   }
-  function patternTool(circular) {
+  function patternTool(circular, edit) {
     var f = sketch();
     if (!f) return;
     if (!f.entities.length) { UI.toast('Draw something to pattern first.'); return; }
-    var v = circular ? { entities: selIdx(f), rev: false, cx: 0, cy: 0, angle: 360, equal: true, dimRadius: true, dimAngle: true, count: 4, radius: 0, arcAngle: 0, skip: [], box: 'entities' }
+    var v = circular ? { entities: selIdx(f), rev: false, cx: 0, cy: 0, angle: 360, equal: true, dimRadius: true, dimAngle: true, count: 4, radius: 0, arcAngle: 0, skip: [], box: 'entities', showCount: false }
       : { entities: selIdx(f), ref1: 'x', rev1: false, spacing: UI.lenDefault(20), dims: true, count: 3, angle: 0, ref2: 'y', rev2: false, spacing2: UI.lenDefault(20), dimY: false, count2: 1, angle2: 90, dimAngle: false, skip: [], box: 'entities' };
+    if (edit) Object.keys(edit.values).forEach(function (k) { v[k] = edit.values[k]; });   // lane DM: Edit Circular Pattern
     var cmd = {};
     function seedPt() { var e = v.entities.length ? f.entities[v.entities[0]] : null; return e ? anchorPt(e) : null; }
     // circular: Radius / Arc angle are the seed's place round the centre
@@ -1358,6 +1359,7 @@
         { type: 'check', label: 'Dimension radius', key: 'dimRadius' },
         { type: 'check', label: 'Dimension angular spacing', key: 'dimAngle' },
         { type: 'number', label: 'Number of instances', key: 'count', step: 1, min: 2 },
+        { type: 'check', label: 'Display instance count', key: 'showCount' },   // lane DM (as Linear's, lane DE2)
         { type: 'number', label: 'Radius', key: 'radius', unit: 'u', min: 0 },
         { type: 'number', label: 'Arc angle', key: 'arcAngle', unit: '°' }
       ] },
@@ -1378,7 +1380,7 @@
     ];
     var sync = syncSelection(f, v, function () { if (circular) syncPolar(); UI.renderPM(); preview(); });
     UI.openPM({
-      title: circular ? 'Circular Pattern' : 'Linear Pattern', icon: circular ? 'cSketchPattern' : 'sketchPattern', values: v,
+      title: edit ? 'Edit Circular Pattern' : circular ? 'Circular Pattern' : 'Linear Pattern', icon: circular ? 'cSketchPattern' : 'sketchPattern', values: v,
       command: cmd,
       onSelection: sync,
       onEntityPick: function () { return v.box !== 'entities'; },
@@ -1395,7 +1397,18 @@
       okBlocked: function () { return v.entities.length ? '' : 'Select the entities to pattern first.'; },
       onOK: function () {
         if (!v.entities.length) { UI.toast('Select the entities to pattern first.'); return false; }
-        var r = step(function () { return circular ? S.circularPattern(f, v.entities, circSpec()) : S.linearPattern(f, v.entities, linSpec()); }, true);
+        var r = step(function () {
+          if (!circular) return S.linearPattern(f, v.entities, linSpec());
+          // lane DM: Edit Circular Pattern takes the old instances and construction lines out first (a failure pops the
+          // whole edit: step())
+          if (edit) removePatternMade(f, edit.rel);
+          var rc = S.circularPattern(f, v.entities, circSpec());
+          // lane DM: what the pattern was made with rides on its Pattern relation (feature JSON), for Edit Circular
+          // Pattern and Display instance count (drawn by the last instance, sketchPatternCounts)
+          var pr = rc.ok ? lastPatternRel(f) : null;
+          if (pr) { pr.pat.spec = { count: v.count | 0, angle: +v.angle, rev: !!v.rev, equal: !!v.equal, dimRadius: !!v.dimRadius, dimAngle: !!v.dimAngle }; if (v.showCount) pr.pat.showCount = true; }
+          return rc;
+        }, true);
         if (!r.ok) { UI.toast(r.error); return false; }
         clearPreview(); changed();
         if (UI.setSelection) UI.setSelection([]);
@@ -1410,6 +1423,85 @@
   }
   function cmdSketchPattern() { patternTool(false); }
   function cmdCircularSketchPattern() { patternTool(true); }
+
+  // ------------------------------------------------------------------ lane DM: Edit Circular Pattern, instance count
+  // A circular sketch pattern is the seeds, their copies and two construction lines from the centre (L0 to the seed,
+  // L1 one step on) held by one Pattern relation (S.circularPattern: refs [L0, L1, m seeds, copies], pat { circ, m,
+  // inst }); the PM's settings are kept on it as pat.spec, and pat.showCount = Display instance count. Edit Circular
+  // Pattern (right-click an instance or seed) reopens the PM with them; ✓ takes out the old copies and lines (their
+  // relations and dimensions go with them, S.removeEntity) and makes the pattern again from the same seeds.
+  function lastPatternRel(f) { for (var j = (f.rels || []).length - 1; j >= 0; j--) if (f.rels[j].type === 'pattern' && f.rels[j].pat && f.rels[j].pat.circ) return f.rels[j]; return null; }
+  function circPatternOf(f, i) {
+    var found = null;
+    (f.rels || []).forEach(function (rel, j) { if (found == null && rel.type === 'pattern' && rel.pat && rel.pat.circ && rel.refs.slice(2).indexOf(String(i)) >= 0) found = j; });
+    return found;
+  }
+  function removePatternMade(f, ri) {
+    var rel = f.rels[ri], m = rel.pat.m | 0, gone = [+rel.refs[0], +rel.refs[1]].concat(rel.refs.slice(2 + m).map(Number));
+    gone.sort(function (a, b) { return b - a; }).forEach(function (i) { if (f.entities[i]) { S.removeEntity(f, i); f.entities.splice(i, 1); } });
+  }
+  function editCircularPattern(i) {
+    var f = sketch();
+    if (!f) return;
+    var ri = circPatternOf(f, i);
+    if (ri == null) { UI.toast('That entity is not part of a circular sketch pattern.'); return; }
+    var rel = f.rels[ri], pat = rel.pat, m = pat.m | 0, E = f.entities, L0 = E[+rel.refs[0]], L1 = E[+rel.refs[1]], sp = pat.spec || {};
+    var seeds = rel.refs.slice(2, 2 + m).map(Number), C = [L0.x1, L0.y1];
+    var stepA = (Math.atan2(L1.y2 - C[1], L1.x2 - C[0]) - Math.atan2(L0.y2 - C[1], L0.x2 - C[0])) * 180 / Math.PI;
+    while (stepA > 180) stepA -= 360;
+    while (stepA <= -180) stepA += 360;
+    var n = sp.count || (Math.max.apply(null, pat.inst) + 1), equal = sp.equal != null ? sp.equal : true;
+    var tot = sp.angle != null ? sp.angle : Math.abs(stepA) * (Math.abs(stepA * n) >= 360 - 1e-6 ? n : n - 1);
+    var skip = [];
+    for (var k = 1; k < n; k++) if (pat.inst.indexOf(k) < 0) skip.push(String(k));
+    patternTool(true, { rel: ri, values: { entities: seeds, cx: Math.round(C[0] * 1e6) / 1e6, cy: Math.round(C[1] * 1e6) / 1e6, count: n, angle: tot, rev: sp.rev != null ? sp.rev : stepA < 0, equal: equal,
+      dimRadius: sp.dimRadius != null ? sp.dimRadius : true, dimAngle: sp.dimAngle != null ? sp.dimAngle : true, skip: skip, showCount: !!pat.showCount } });
+  }
+  UI.editCircularPattern = editCircularPattern;
+  UI.circularPatternOf = function (i) { var f = sketch(); return f ? circPatternOf(f, i) : null; };
+  // the count labels: by the last instance of every pattern with Display instance count, in #dim-layer (redrawn with
+  // the dimensions: UI.drawDims below), orange as SolidWorks shows the instance count
+  var countLayer = null, SVGNS_C = 'http://www.w3.org/2000/svg';
+  function sketchPatternCounts() {
+    var host = document.getElementById('dim-layer');
+    if (!host) return [];
+    if (!countLayer) { countLayer = document.createElementNS(SVGNS_C, 'g'); countLayer.setAttribute('class', 'sk-pat-counts'); countLayer.setAttribute('pointer-events', 'none'); }
+    while (countLayer.firstChild) countLayer.removeChild(countLayer.firstChild);
+    var f = App.mode === 'sketch' ? UI.activeSketchFeature() : null, out = [];
+    ((f && f.rels) || []).forEach(function (rel) {
+      if (rel.type !== 'pattern' || !rel.pat || !rel.pat.showCount) return;
+      var m = rel.pat.m | 0, last = rel.refs[rel.refs.length - m], e = last != null ? f.entities[+last] : null, p = e && anchorPt(e);
+      if (!p) return;
+      var n = rel.pat.spec && rel.pat.spec.count ? rel.pat.spec.count : rel.pat.inst.length + 1, s = scr(p);
+      var t = document.createElementNS(SVGNS_C, 'text');
+      t.setAttribute('x', s[0].toFixed(1)); t.setAttribute('y', (s[1] - 18).toFixed(1)); t.setAttribute('text-anchor', 'middle'); t.setAttribute('class', 'sk-pat-count');
+      t.setAttribute('style', 'fill:#e8891c;font:600 13px sans-serif');
+      t.textContent = String(n);
+      countLayer.appendChild(t); out.push({ text: String(n), at: p });
+    });
+    if (out.length) host.appendChild(countLayer); else if (countLayer.parentNode) countLayer.parentNode.removeChild(countLayer);
+    return out;
+  }
+  UI.sketchPatternCounts = sketchPatternCounts;
+  if (UI.drawDims) {
+    var baseDrawDimsCount = UI.drawDims;
+    UI.drawDims = function () { var r = baseDrawDimsCount.apply(this, arguments); try { sketchPatternCounts(); } catch (err) { /* an overlay: never break the dimensions */ } return r; };
+  }
+  // the right-click row on an instance or seed of a circular pattern (before Properties…, with the entity commands)
+  if (UI.sketchMenuItems) {
+    var baseSketchMenuItems = UI.sketchMenuItems;
+    UI.sketchMenuItems = function () {
+      var items = baseSketchMenuItems.apply(this, arguments), f = App.mode === 'sketch' ? UI.activeSketchFeature() : null;
+      var sel = f ? selIdx(f) : [], ri = sel.length === 1 ? circPatternOf(f, sel[0]) : null;
+      if (ri == null || !Array.isArray(items)) return items;
+      var row = { label: 'Edit Circular Pattern', icon: 'cSketchPattern', action: function () { if (App.mode === 'sketch') editCircularPattern(sel[0]); } };
+      var at = -1;
+      items.forEach(function (it, k) { if (it && it.label === 'Properties…') at = k; });
+      if (at < 0) items.push(row); else items.splice(at, 0, row);
+      return items;
+    };
+  }
+
 
   // ------------------------------------------------------------------ Intersection Curve (Convert Entities flyout)
   // SolidWorks: Sketch tab ▸ Convert Entities ▸ Intersection Curve. Selections: model faces (planar or curved) picked in

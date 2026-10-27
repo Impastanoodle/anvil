@@ -142,9 +142,9 @@
       return 'ok';
     });
 
-    test('rfDB: errors: Fold with no Unfold, Unfold of a part already unfolded, a bend point off every bend, a fixed face off the sheet, Unfold on a flat plate', function () {
+    test('rfDB: errors: Fold with no Unfold (lane DJ: a second Unfold is no error now), a bend point off every bend, a fixed face off the sheet, Unfold on a flat plate', function () {
       assert(/no Unfold before it/.test(errOf(build(L + 'p.fold();\n'))), 'Fold alone');
-      assert(/unfolded already/.test(errOf(build(L + UNF + 'p.unfold();\n'))), 'Unfold twice');
+      assert(!errOf(build(L + UNF + 'p.unfold();\n')), 'Unfold twice: no error since lane DJ (the second folds the first back and unfolds both)');
       assert(/not on a bend/.test(errOf(build(L + 'p.unfold(null, [[1, 1, 1]]);\n'))), 'bend point');
       assert(/not a flat face/.test(errOf(build(L + 'p.unfold([9, 9, 9]);\n'))), 'fixed face');
       assert(/no bends/.test(errOf(build(HEAD + 'p.unfold();\n'))), 'flat plate');

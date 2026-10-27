@@ -312,7 +312,7 @@
   var SHEET_CASES = [
     { name: 'channel end flange with a Rectangle relief', code: shChannel('rect'), size: [7.0213, 7.0426], bends: 3, loops: 1 },
     { name: 'channel end flange with an Obround relief', code: shChannel('obround'), size: [7.0213, 7.0426], bends: 3, loops: 1, arcs: 2 },
-    { name: 'hand-test channel: side flanges, hem, end flange with relief, 2 × Ø.266 and a 1.5 × .375 slot', size: [7.0213, 7.5585], bends: 4, loops: 4,
+    { name: 'hand-test channel: side flanges, hem, end flange with relief, 2 × Ø.266 and a 1.5 × .375 slot', size: [7.0213, 7.4838], bends: 4, loops: 4,   // lane DI2: the hem's .375 is overall from the fold (was 7.5585 with .375 the straight leg)
       code: SH_HEAD + 'p.flange(1.5, [[3, ' + SH_T + ', 0], [3, ' + SH_T + ', 4]], { position: "inside" });\np.hem(0.375, [[3, 1.6196, 4]], { gap: 0.0299 });\n' +
         'p.flange(1.0, [[0, ' + SH_T + ', 2]], { position: "inside", relief: "rect" });\np.sketch("Top", ' + SH_T + ').slot(2.25, -2, 3.75, -2, 0.375).cut("through", { reverse: true });\n' +
         'p.sketch("Top", ' + SH_T + ').circle(1, -1, 0.133).circle(5, -1, 0.133).cut("through", { reverse: true });' },
@@ -448,6 +448,24 @@
   var DB2_HEAD = 'p.units("in");\np.sheet(' + SH_T + ', ' + SH_T + ', 0.5);\np.sketch("Top").rect(0, -4, 6, 4).end().baseFlange();\n';
   var DB2_L = DB2_HEAD + 'p.flange(1.5, [[3, ' + SH_T + ', 0]], { position: "inside", lengthRef: "outer" });\n';
   var DB2_U = DB2_HEAD + 'p.flange(1.5, [[3, ' + SH_T + ', 0], [3, ' + SH_T + ', 4]], { position: "inside", lengthRef: "outer" });\n';
+  var DI_BOX = 'p.units("in");\np.sketch("Top").rect(0, 0, 2, 2).end().extrude(1);\np.shell(0.06, [[1, 1, -1]]);\n';   // lane DI
+  var DI_CC = CW_TRAY + 'p.closedCorner([' + JSON.stringify(CW_F4[0]) + '], { cornerType: "butt", gap: 0.01, coplanar: false });\n';
+  // lane DJ: a 4 × 2 base with a 1.0 edge flange on its front edge; the U-channel's bends (Kernel.sheetBends' `at`); a
+  // 0.25 × 1.0 slot cut flat from above, centred on a bend line at z = zc
+  var DJ_BR = 'p.units("in");\np.sheet(' + SH_T + ', ' + SH_T + ', 0.5);\np.sketch("Top").rect(0, -2, 4, 2).end().baseFlange();\np.flange(1, [[2, ' + SH_T + ', 0]], { position: "inside", lengthRef: "outer" });\n';
+  var DJ_A = '[3,0.056173,0.056173]', DJ_B = '[3,0.056173,3.943827]';
+  function DJ_SLOT(zc) { return 'p.sketch("Top", 1).rect(2.5, ' + (-(zc + 0.125)) + ', 1, 0.25).cut("through", { reverse: true });\n'; }
+  // lane DL2: Miter Flange from a profile sketch (rfDL's part: 4 × 2, T = R = .06, K = .5; the profile on the Right
+  // Plane at the front-left corner, along the front and left edges). Exact: the gap takes √2·gap·A+ (each flange
+  // gap/√2 along its edge), an offset d takes d·(A+ − (R + T)·T) (the base keeps its corner), A+ = the exact section
+  // beyond the trimmed edge (quarter annulus + straight wall). OpenCascade's volume is Anvil's within the faceting of
+  // Anvil's bends (8 chords per 90°: 3.9e-4 relative here), the same as the edge-only miter flange on both kernels.
+  var DL_T = 0.06, DL_Q = Math.PI / 4 * (4 * DL_T * DL_T - DL_T * DL_T);
+  var DL_HEAD = 'p.units("in");\np.sheet(' + DL_T + ', ' + DL_T + ', 0.5);\np.sketch("Top").rect(0, -2, 4, 2).end().baseFlange();\n', DL_E = '[[2, ' + DL_T + ', 0], [0, ' + DL_T + ', 1]]';
+  var DL_I = DL_HEAD + 'p.sketch("Right").line(0, ' + DL_T + ', 0, ' + (1 + DL_T) + ').end();\n';
+  var DL_L = DL_HEAD + 'p.sketch("Right").line(0, ' + DL_T + ', 0, ' + (1 + DL_T) + ').line(0, ' + (1 + DL_T) + ', 0.5, ' + (1 + DL_T) + ').end();\n';
+  function DL_MF(head, o) { return head + 'p.miterFlange(' + DL_E + ', ' + JSON.stringify(o) + ');\n'; }
+  var DL_AP = DL_Q + (1 - DL_T) * DL_T, DL_A1 = DL_Q + (1 - 2 * DL_T) * DL_T, DL_A2 = DL_Q + (0.5 - DL_T) * DL_T;
   var CW_CASES = [
     { name: 'Closed Corner Overlap (ratio .75, gap .01) on all four corners of a 16 ga 4 × 3 tray', plain: CW_TRAY,
       code: CW_TRAY + 'p.closedCorner(' + JSON.stringify(CW_F4) + ', ' + JSON.stringify({ cornerType: 'overlap', gap: 0.01, ratio: 0.75, coplanar: false }) + ');',
@@ -470,7 +488,40 @@
       code: DB2_U + 'p.unfold([1, ' + SH_T + ', 2], null);', exact: 6 * (4 + 2 * (1.5 - DB2_BD)) * SH_T, loops: 1 },
     { name: 'Unfold, a 0.25 × 1.0 slot cut flat centred on the bend line, Fold (16 ga L-bracket): the slot wraps the exact bend; the flat shows the slot', plain: DB2_L,
       code: DB2_L + 'p.unfold([1, ' + SH_T + ', 2], null);\np.sketch("Top", 1).rect(2.5, ' + (-(DB2_ZB + 0.125)) + ', 1, 0.25).cut("through", { reverse: true });\np.fold();',
-      removed: Math.PI / 4 * (4 * SH_T * SH_T - SH_T * SH_T) + (0.25 - DB2_BA) * SH_T, loops: 2, holeArea: true }
+      removed: Math.PI / 4 * (4 * SH_T * SH_T - SH_T * SH_T) + (0.25 - DB2_BA) * SH_T, loops: 2, holeArea: true },
+    // lane DI: Rip (a planar slot along a corner edge) and Tab (Base Flange/Tab on an existing sheet: T into the face)
+    { name: 'Rip side1, gap .03, on an outside corner edge of a shelled 2 × 2 × 1 box (wall .06): removes .94 × .03 × .06', noFlat: true, plain: DI_BOX,
+      code: DI_BOX + 'p.rip([[2, 0.5, 0]], 0.03, { direction: "side1" });', removed: 0.94 * 0.03 * 0.06 },
+    { name: 'Rip both directions on the inside corner edge of the same box: removes √2 × .94 × .03 × .06', noFlat: true, plain: DI_BOX,
+      code: DI_BOX + 'p.rip([[1.94, 0.5, -0.06]], 0.03);', removed: Math.SQRT2 * 0.94 * 0.03 * 0.06 },
+    { name: 'Rip .03 at a Butt Closed Corner (gap .01) of the 16 ga tray: the gap widens to .03; one blank', plain: DI_CC,
+      code: DI_CC + 'p.rip([[0, 0.6, 0]], 0.03);', removed: (1 - 2 * SH_T) * 0.02 * SH_T, loops: 1, dxf: true },
+    { name: 'Tab 1 × 1 sketched on the top face of a 16 ga 4 × 3 base flange: + 1 × 1 × T, flush; the flat is 5 × 3', plain: null,
+      code: CW_HEAD + 'p.sketch("Top", ' + SH_T + ').rect(4, -2, 1, 1).end().tab();', exact: 13 * SH_T, loops: 1, dxf: true },
+    // lane DJ: no Anvil fallback any more. K = 0.5 makes the exact bend volume-neutral, so a 0.5 × 0.5 × T tab across
+    // the bend line adds exactly 0.25·T, a slot across a bend line takes exactly 0.25·T, folded or flat; the blind
+    // pocket takes the exact annulus R + 0.6T … R + T plus its flat parts
+    { name: 'DJ: Unfold, a 0.5 × 0.5 × T Tab past the side straddling the bend line, Fold (4 × 2, 1.0 flange): the tab bends exactly, + 0.25·T; the flat shows it', plain: DJ_BR,
+      code: DJ_BR + 'p.unfold([1, ' + SH_T + ', 1], null);\np.sketch("Top").rect(4, ' + (-(DB2_ZB + 0.25)) + ', 0.5, 0.5).extrude(' + SH_T + ');\np.fold();', removed: -0.25 * SH_T, loops: 1 },
+    { name: 'DJ: a partial Fold (U-channel all unfolded, a slot across the front bend line, Fold of the front bend): the back stays flat, exact', plain: null,
+      code: DB2_U + 'p.unfold([1, ' + SH_T + ', 2], []);\n' + DJ_SLOT(DB2_ZB) + 'p.fold([' + DJ_A + ']);', exact: 6 * (4 + 2 * (1.5 - DB2_BD)) * SH_T - 0.25 * SH_T, loops: 2, holeArea: true },
+    { name: 'DJ: an Unfold of a bend with a cut across it (L: Unfold, slot, Fold, Unfold): the flat strip keeps the slot, exact', plain: DB2_L,
+      code: DB2_L + 'p.unfold([1, ' + SH_T + ', 2], null);\n' + DJ_SLOT(DB2_ZB) + 'p.fold();\np.unfold([1, ' + SH_T + ', 2]);', removed: 0.25 * SH_T, loops: 2, holeArea: true },
+    { name: 'DJ: two Unfolds open (U-channel: the front, then the back), a slot across each bend line, folded back then front: exact', plain: DB2_U,
+      code: DB2_U + 'p.unfold([1, ' + SH_T + ', 2], [' + DJ_A + ']);\np.unfold(null, [' + DJ_B + ']);\n' + DJ_SLOT(DB2_ZB) + DJ_SLOT(4 - DB2_ZB) + 'p.fold([' + DJ_B + ']);\np.fold([' + DJ_A + ']);', removed: 0.5 * SH_T, loops: 3 },
+    { name: 'DJ: a blind 1.0 × 0.5 pocket 0.4·T deep cut flat across the bend line from below, Fold: the exact annulus R + 0.6T … R + T; the flat stays whole', plain: DJ_BR,
+      code: DJ_BR + 'p.unfold([1, ' + SH_T + ', 1], null);\np.sketch("Top").rect(1, ' + (-(DB2_ZB + 0.25)) + ', 1, 0.5).cut(' + 0.4 * SH_T + ');\np.fold();',
+      removed: (0.5 - DB2_BA) * 0.4 * SH_T + Math.PI / 4 * (4 * SH_T * SH_T - 1.6 * 1.6 * SH_T * SH_T), loops: 1 },
+    { name: 'DL: Miter Flange, 1 in straight profile along two edges, Material Inside, gap .01: exactly the edge-only miter flange (inner virtual sharp)', plain: DL_HEAD + 'p.flange(1, ' + DL_E + ', { position: "inside", lengthRef: "inner", miter: true, miterGap: 0.01 });\n',
+      code: DL_MF(DL_I, { miterGap: 0.01 }), removed: 0, loops: 1, dxf: true },
+    { name: 'DL: Miter Flange start offset .25 (the front flange from x = 4): removes .25·(A+ − (R + T)·T)', plain: DL_MF(DL_I, { miterGap: 0.01 }),
+      code: DL_MF(DL_I, { miterGap: 0.01, startOffset: 0.25 }), removed: 0.25 * (DL_AP - 2 * DL_T * DL_T), loops: 1 },
+    { name: 'DL: Miter Flange end offset .25 (the left flange from z = 2): removes .25·(A+ − (R + T)·T)', plain: DL_MF(DL_I, { miterGap: 0.01 }),
+      code: DL_MF(DL_I, { miterGap: 0.01, endOffset: 0.25 }), removed: 0.25 * (DL_AP - 2 * DL_T * DL_T), loops: 1 },
+    { name: 'DL: Miter Flange L profile (1 up, .5 out), gap .01 against gap 0: two bends along the chain, mitred at both levels, removes √2·.01·(A1 + A2)', plain: DL_MF(DL_L, { miterGap: 0 }),
+      code: DL_MF(DL_L, { miterGap: 0.01 }), removed: Math.SQRT2 * 0.01 * (DL_A1 + DL_A2), loops: 1, dxf: true },
+    { name: 'DL: Miter Flange Bend Outside, gap .01: exactly the edge-only miter flange placed Bend Outside', plain: DL_HEAD + 'p.flange(1, ' + DL_E + ', { position: "bendOutside", lengthRef: "inner", miter: true, miterGap: 0.01 });\n',
+      code: DL_MF(DL_I, { position: 'bendOutside', miterGap: 0.01 }), removed: 0, loops: 1 }
   ];
   for (var cwk = 0; cwk < CW_CASES.length; cwk++) {
     var cw = CW_CASES[cwk], tcw = performance.now();
@@ -488,8 +539,8 @@
       if (cw.plain) { var cwp = K.newModel('T'); K.runScript(cwp, cw.plain); K.rebuild(cwp); var cwpr = await occt(cwp, { noCache: true }); cwWant = cwpr.volume - cw.removed; }
       if (cwWant == null) cwWant = cwr.volume;
       else if (!(Math.abs(cwr.volume - cwWant) <= 1e-6 * cwWant)) whyW.push('OpenCascade volume ' + cwr.volume.toFixed(8) + ', exact ' + cwWant.toFixed(8));
-      var cwfa = K.flatPattern(cwm, cwb, cwmesh), cwfo = null;
-      if (!whyW.length) {
+      var cwfa = cw.noFlat ? null : K.flatPattern(cwm, cwb, cwmesh), cwfo = null;
+      if (!whyW.length && !cw.noFlat) {
         var cwob = OcctKernel.toBuild(cwr, cwb, cwmesh, null, CSG, K);
         cwfo = K.flatPattern(cwm, cwob, K.meshFromBody(cwob.body));
         [0, 1].forEach(function (k) { if (Math.abs(cwfo.size[k] - cwfa.size[k]) > 1e-6) whyW.push('flat ' + 'wh'[k] + ' ' + cwfo.size[k].toFixed(4) + ' vs Anvil ' + cwfa.size[k].toFixed(4)); });
@@ -503,7 +554,7 @@
         }
         if (cw.arcs != null) [['OpenCascade', cwfo], ['Anvil', cwfa]].forEach(function (q) { var dq = shDxf(q[1]); if ((dq['ARC/OUTLINE'] || 0) !== cw.arcs) whyW.push(q[0] + ' flat DXF ' + JSON.stringify(dq) + ', want ' + cw.arcs + ' ARC on OUTLINE'); });
       }
-      row(whyW.length ? 'bad' : 'ok', 'OpenCascade = Anvil: ' + cw.name, whyW.join('\n') || ('volume ' + cwr.volume.toFixed(8) + ' (exact ' + cwWant.toFixed(8) + ', Anvil ' + cwa.toFixed(6) + '), flat ' + cwfo.size.map(function (v) { return v.toFixed(4); }).join(' × ') + ' in, ' + cwfo.loops.length + ' loop' + (cwfo.loops.length === 1 ? '' : 's') + ', DXF ' + JSON.stringify(shDxf(cwfo))), performance.now() - tcw);
+      row(whyW.length ? 'bad' : 'ok', 'OpenCascade = Anvil: ' + cw.name, whyW.join('\n') || ('volume ' + cwr.volume.toFixed(8) + ' (exact ' + cwWant.toFixed(8) + ', Anvil ' + cwa.toFixed(6) + ')' + (cw.noFlat ? '' : ', flat ' + cwfo.size.map(function (v) { return v.toFixed(4); }).join(' × ') + ' in, ' + cwfo.loops.length + ' loop' + (cwfo.loops.length === 1 ? '' : 's') + ', DXF ' + JSON.stringify(shDxf(cwfo)))), performance.now() - tcw);
       counts[whyW.length ? 'fail' : 'pass']++;
     } catch (e) { row('bad', 'OpenCascade = Anvil: ' + cw.name, e.message); counts.fail++; }
   }

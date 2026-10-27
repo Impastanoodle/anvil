@@ -13,10 +13,13 @@
   // sectionOf(mesh, e, w) -> { mesh, caps: [face index], area, e, w }: the part with everything in front of the plane
   // p·e = w removed (p·e > w), cut exactly by CSG: each body is intersected with a box that ends on the plane, so the
   // cut faces ("caps") are true faces of the result lying on the plane and facing +e. Cached on the mesh.
-  function sectionKey(e, w) { return e.map(function (x) { return Math.round(x * 1e9); }).join(',') + '|' + Math.round(w * 1e9); }
-  function sectionOf(mesh, e, w) {
+  // (rfDN) ex: the bodies (assembly component indices) not to section — SolidWorks' Excluded components: they stay
+  // whole, uncut and unhatched, in front of the cut (pins, fasteners); the key carries them
+  function sectionKey(e, w, ex) { return e.map(function (x) { return Math.round(x * 1e9); }).join(',') + '|' + Math.round(w * 1e9) + (ex && ex.length ? '|x' + ex.join(',') : ''); }
+  function sectionOf(mesh, e, w, ex) {
     var c = mesh._drawingSections || (mesh._drawingSections = {});
-    var key = sectionKey(e, w);
+    ex = ex && ex.length ? ex : null;
+    var key = sectionKey(e, w, ex);
     if (c[key]) return c[key];
     var P = mesh.positions64 || mesh.positions, diag = meshDiag(mesh), m = diag * 0.25 + 1;
     var u = V.norm(V.cross(Math.abs(e[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0], e)), v = V.cross(e, u);
@@ -42,17 +45,40 @@
       });
       var polys = [];
       order.forEach(function (g) {
+        if (ex && ex.indexOf(g.b) >= 0) { byBody[g.k].forEach(function (pg) { pg.body = g.b; polys.push(pg); }); return; }   // (rfDN) not sectioned
         CSG.fromPolygons(byBody[g.k]).intersect(box).polygons.forEach(function (pg) { pg.body = g.b; if (g.part != null) pg.part = g.part; polys.push(pg); });
       });
       var sm = K.meshFromBody(polys.length ? CSG.fromPolygons(polys) : null), caps = [], area = 0, tol = diag * 1e-7 + 1e-9;
       sm.faces.forEach(function (f, fi) {
+        if (ex && ex.indexOf(f.body || 0) >= 0) return;
         if (V.dot(f.normal, e) > 1 - 1e-9 && Math.abs(f.w - w) <= tol) { caps.push(fi); area += f.area; }
       });
       out = { mesh: sm, caps: caps, area: area };
     }
     out.e = e.slice(); out.w = w;
+    if (ex) out.ex = ex.slice();
     c[key] = out;
     return out;
+  }
+  // (rfDN) excludedBodies(v) -> the body indices of view v's section.excluded (component ids: an assembly's top-level
+  // components, whose index is the body index of the assembly mesh), or null; the model is the one being drawn
+  // (_.CTX during compute, else the last one compute saw: autoInsert runs outside compute)
+  function excludedBodies(v) {
+    var ids = v && v.section && v.section.excluded;
+    if (!ids || !ids.length) return null;
+    var model = (_.CTX && _.CTX.model) || _.lastModel, comps = model && model.components, out = [];
+    if (!comps) return null;
+    comps.forEach(function (c, i) { if (c && ids.indexOf(String(c.id)) >= 0) out.push(i); });
+    return out.length ? out : null;
+  }
+  // (rfDN) setSectionExcluded(doc, viewId, ids | null): a section view's Excluded components (SolidWorks' Section View
+  // dialog of an assembly drawing): those components are drawn whole, unhatched; [] / null clears the list
+  function setSectionExcluded(doc, viewId, ids) {
+    var v = D.findView(doc, viewId);
+    if (!v || v.kind !== 'section' || !v.section) throw new Error('Excluded components: not a section view');
+    var list = (ids || []).map(String).filter(function (x, i, a) { return x && a.indexOf(x) === i; });
+    if (list.length) v.section.excluded = list; else delete v.section.excluded;
+    return v;
   }
   // a box as CSG: ax = three orthonormal axes, lo / hi = coordinate ranges along them
   function boxSolid(ax, lo, hi) {
@@ -2401,9 +2427,9 @@
   _.profilePts = profilePts; _.rayOut = rayOut; _.clipLayerToPoly = clipLayerToPoly;   // (rfCQ)
 
   D.flatCurves = flatCurves; D.bendKey = bendKey; D.bendKeyMatch = bendKeyMatch; D.flatData = flatData; D.flatProjection = flatProjection; D.bendNoteText = bendNoteText; D.bendTag = bendTag;
-  D.sectionOf = sectionOf; D.hatchLines = hatchLines; D.hatchStyle = hatchStyle; D.hatchAssign = hatchAssign; D.HATCH_PATTERNS = Object.keys(HATCH_PATTERNS);
+  D.setSectionExcluded = setSectionExcluded; D.sectionOf = sectionOf; D.hatchLines = hatchLines; D.hatchStyle = hatchStyle; D.hatchAssign = hatchAssign; D.HATCH_PATTERNS = Object.keys(HATCH_PATTERNS);
   D.hatchPattern = hatchPattern; D.patternLines = patternLines; D.snapHatch = snapHatch; D.clipProjection = clipProjection; D.reattachDim = reattachDim;
-  _.sectionKey = sectionKey; _.capLoops = capLoops; _.HATCH_PATTERNS = HATCH_PATTERNS; _.clipSeg = clipSeg; _.primHitsRect = primHitsRect; _.segOutsideRect = segOutsideRect;
+  _.excludedBodies = excludedBodies; _.sectionKey = sectionKey; _.capLoops = capLoops; _.HATCH_PATTERNS = HATCH_PATTERNS; _.clipSeg = clipSeg; _.primHitsRect = primHitsRect; _.segOutsideRect = segOutsideRect;
   // (rfAD; rfCX2: called directly, no wrappers) drawing-sheet.js viewContent works out a view with broken-out sections
   // with _.brokenOutContent, a typed section with _.pathContent, and runs _.auxCenter then _.contentExtras (jagged
   // detail, Area Hatch regions) on every view's content

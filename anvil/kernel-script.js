@@ -1073,6 +1073,26 @@
     this._add(f);
     return this;
   };
+  // lane DL: miterFlange(edges, opts): Sheet Metal ▸ Miter Flange from a profile sketch (Kernel.miterFlangeStages). edges:
+  // [[x,y,z], …] points on the straight edges to run along (the one the profile starts on is added when missing). opts:
+  // sketch (default: the last sketch; an open chain of lines (+ tangent arcs) on a plane normal to an edge, starting on
+  // it), position ('inside' Material Inside (default) | 'outside' | 'bendOutside'), radius, miterGap, startOffset,
+  // endOffset, relief / reliefWidth / reliefDepth (as flange), bendAllowance, name
+  Builder.prototype.miterFlange = function (edges, opts) {
+    opts = opts || {};
+    var position = opts.position || 'inside';
+    if (K.MITER_FLANGE_POSITIONS.indexOf(position) < 0) throw new Error('miterFlange position must be one of ' + K.MITER_FLANGE_POSITIONS.join(', ') + '.');
+    var f = { type: 'flange', miterFlange: true, miter: true, sketch: this._sketchId(opts), edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }),
+      position: position, radius: opts.radius != null ? num(opts.radius) : null, miterGap: opts.miterGap != null ? num(opts.miterGap) : 0,
+      startOffset: opts.startOffset != null ? num(opts.startOffset) : 0, endOffset: opts.endOffset != null ? num(opts.endOffset) : 0, name: opts.name };
+    if (opts.relief != null) f.relief = opts.relief === 'rect' || opts.relief === 'obround' ? opts.relief : 'none';
+    if (opts.reliefWidth != null) f.reliefWidth = num(opts.reliefWidth);
+    if (opts.reliefDepth != null) f.reliefDepth = num(opts.reliefDepth);
+    customBendAllowance(f, opts.bendAllowance);
+    if (!f.name) f.name = 'Miter Flange' + (this.model.features.filter(function (q) { return q.type === 'flange' && q.miterFlange; }).length + 1);
+    this._add(f);
+    return this;
+  };
   // hem: a 180° flange folded back over the sheet; `gap` is the opening between the flats (default T/2, open hem).
   // A numeric gap is stored as the bend radius; a gap (or sheet thickness) given as an equation is kept as `gap`
   // and the radius is derived from it at rebuild.
@@ -1122,6 +1142,7 @@
     if (K.JOG_OFFSET_REFS.indexOf(ref) < 0) throw new Error('jog offsetRef must be one of ' + K.JOG_OFFSET_REFS.join(', ') + '.');
     var f = { type: 'jog', sketch: this._sketchId(opts), offset: num(offset), offsetRef: ref, angle: opts.angle == null ? 90 : num(opts.angle), position: position,
       reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, fixed: opts.fixed ? [+opts.fixed[0], +opts.fixed[1], +opts.fixed[2]] : null, name: opts.name };
+    if (opts.fixLength) f.fixLength = true;   // lane DK2: Fix projected length
     this._add(customBendAllowance(f, opts.bendAllowance));
     return this;
   };
@@ -1153,10 +1174,40 @@
     this._add(f);
     return this;
   };
+  // rip(edges, gap, opts): Sheet Metal ▸ Rip (kernel-sheetmetal.js, lane DI). edges: [[x, y, z] | { at: [x, y, z],
+  // direction }, …] points on corner edges (outside or inside) where two walls meet; gap (default 0.004 in / 0.1 mm);
+  // opts: direction ('both', the default | 'side1' | 'side2': which wall keeps the corner), name
+  Builder.prototype.rip = function (edges, gap, opts) {
+    opts = opts || {};
+    var dir = opts.direction || 'both';
+    if (K.RIP_DIRECTIONS.indexOf(dir) < 0) throw new Error('rip direction must be "both", "side1" or "side2".');
+    function pt(p) { return [+p[0], +p[1], +p[2]]; }
+    var f = { type: 'rip', edges: (edges || []).map(function (e) {
+      if (Array.isArray(e)) return { at: pt(e) };
+      if (e.direction && K.RIP_DIRECTIONS.indexOf(e.direction) < 0) throw new Error('rip direction must be "both", "side1" or "side2".');
+      return e.direction ? { at: pt(e.at), direction: e.direction } : { at: pt(e.at) };
+    }), gap: gap != null ? num(gap) : K.ripDefaultGap(this.model), direction: dir };
+    if (opts.name) f.name = opts.name;
+    this._add(f);
+    return this;
+  };
+  // tab(opts): Base Flange/Tab on a part that already has a sheet (lane DI): the last sketch (on a sheet face) extruded
+  // the sheet's thickness into the sheet and merged; opts: sketch, reverse (away from the face instead), name (TabN)
+  Builder.prototype.tab = function (opts) {
+    opts = opts || {};
+    if (!this.model.sheet) throw new Error('tab needs a sheet: make a baseFlange first.');
+    this.extrude(this.model.sheet.thickness, { sketch: opts.sketch, reverse: !!opts.reverse, name: opts.name || featureName(this.model, 'tab') });
+    var f = this.model.features[this.model.features.length - 1];
+    f.sheetBase = true; f.tab = true; f.linkT = true;
+    if (opts.contours) contourOpts(f, opts);
+    return this;
+  };
   // closedCorner(faces, opts): Sheet Metal ▸ Closed Corner (kernel-sheetmetal.js). faces: [[x, y, z], …] points on the
   // end faces of a flange to extend across a corner gap (the matching faces are found); opts: cornerType ('butt', the
   // default | 'overlap' | 'underlap'), gap (default 0.01 in / 0.25 mm), ratio (overlap / underlap ratio 0..1, default
-  // 1), coplanar (default true: coplanar end faces are extended too), name
+  // 1), coplanar (default true: coplanar end faces are extended too), closeBend (lane DK2: true closes the bend region
+  // too, the PropertyManager's Open bend region unchecked; absent / false = open, so scripts written before keep their
+  // geometry), name
   Builder.prototype.closedCorner = function (faces, opts) {
     opts = opts || {};
     var type = opts.cornerType || 'butt';
@@ -1165,8 +1216,23 @@
     var f = { type: 'closedCorner', faces: (faces || []).map(pt), cornerType: type,
       gap: opts.gap != null ? num(opts.gap) : K.closedCornerDefaultGap(this.model), ratio: opts.ratio != null ? num(opts.ratio) : 1 };
     if (opts.coplanar === false) f.coplanar = false;
+    if (opts.closeBend) f.closeBend = true;
     f.name = opts.name || K.closedCornerName(this.model);
     this._add(f);
+    return this;
+  };
+  // flatPattern({ fixedFace: [x, y, z], grain: { at: [x, y, z], dir: [x, y, z] } }) (lane DK2): Flat-Pattern1's Fixed face
+  // (a point on a flat face of the folded part) and Grain direction (a point on a straight edge and its direction):
+  // model.flatFixed / model.flatGrain, read by Kernel.flatPattern. A key left out (or null) clears that option.
+  Builder.prototype.flatPattern = function (opts) {
+    opts = opts || {};
+    function pt(p) { if (!p || p.length !== 3 || !p.every(function (x) { return isFinite(+x); })) throw new Error('flatPattern: points are [x, y, z].'); return [+p[0], +p[1], +p[2]]; }
+    if (opts.fixedFace) this.model.flatFixed = pt(opts.fixedFace); else delete this.model.flatFixed;
+    if (opts.grain) {
+      var d = pt(opts.grain.dir);
+      if (!(Math.hypot(d[0], d[1], d[2]) > 0)) throw new Error('flatPattern: grain dir must not be zero.');
+      this.model.flatGrain = { at: pt(opts.grain.at), dir: d };
+    } else delete this.model.flatGrain;
     return this;
   };
   // unfold(fixedFace, bends, opts) / fold(bends, opts): Sheet Metal > Unfold / Fold (kernel-sheetmetal.js, lane DB).
@@ -1450,6 +1516,7 @@
   });
 
   SketchBuilder.prototype.sketchedBend = function (a, opts) { return this.part.sketchedBend(a, Object.assign({}, opts || {}, { sketch: this.f.id })); };
+  SketchBuilder.prototype.miterFlange = function (edges, opts) { return this.part.miterFlange(edges, Object.assign({}, opts || {}, { sketch: this.f.id })); };   // lane DL
   SketchBuilder.prototype.jog = function (offset, opts) { return this.part._sketchJog(offset, Object.assign({}, opts || {}, { sketch: this.f.id })); };   // lane DC
 
   function runScript(model, code) {
@@ -1573,6 +1640,12 @@
           if (f.draft) { o.draft = f.draft; if (f.draftOut) o.draftOutward = true; }
           if (f.cut && f.normalCut) o.normalCut = true;
           if (f.cut && f.linkT) o.linkT = true;   // lane DC
+          if (f.tab && !f.cut) {   // lane DI: Tab
+            var to = { sketch: o.sketch, name: f.name };
+            if (f.reverse) to.reverse = true;
+            out.push('var ' + v + ' = p.tab(' + optsStr(contoursOut(to, f)) + ').last();');
+            break;
+          }
           out.push('var ' + v + ' = p.' + (f.cut ? 'cut' : 'extrude') + '(' + nv(f.depth) + ', ' + optsStr(bodyOptsOut(contoursOut(o, f), f)) + ').last();');
           break;
         }
@@ -1581,6 +1654,20 @@
           break;
         case 'flange': {
           var fspecs = JSON.stringify((f.edges || []).map(function (e) { return e.at.map(function (x) { return Math.round(x * 1e4) / 1e4; }); }));
+          if (f.miterFlange && f.sketch != null) {   // lane DL: Miter Flange from a profile sketch
+            var mfo = { sketch: '@' + idVar[f.sketch], name: f.name };
+            if (f.position && f.position !== 'inside') mfo.position = f.position;
+            if (f.radius != null) mfo.radius = numOut(f.radius);
+            if (f.miterGap != null && (isExpression(f.miterGap) || +f.miterGap !== 0)) mfo.miterGap = numOut(f.miterGap);
+            if (f.startOffset != null && (isExpression(f.startOffset) || +f.startOffset !== 0)) mfo.startOffset = numOut(f.startOffset);
+            if (f.endOffset != null && (isExpression(f.endOffset) || +f.endOffset !== 0)) mfo.endOffset = numOut(f.endOffset);
+            if (f.relief) mfo.relief = f.relief;
+            if (f.reliefWidth != null) mfo.reliefWidth = numOut(f.reliefWidth);
+            if (f.reliefDepth != null) mfo.reliefDepth = numOut(f.reliefDepth);
+            if (f.bendAllowance) mfo.bendAllowance = bendAllowanceOut(f.bendAllowance);
+            out.push('var ' + v + ' = p.miterFlange(' + fspecs + ', ' + optsStr(mfo) + ').last();');
+            break;
+          }
           var fo = { angle: f.angle, name: f.name };
           if (f.reverse) fo.reverse = true;
           if (f.radius != null) fo.radius = f.radius;
@@ -1615,6 +1702,7 @@
             if (f.reverse) sjo.reverse = true;
             if (f.radius != null) sjo.radius = numOut(f.radius);
             if (f.bendAllowance) sjo.bendAllowance = bendAllowanceOut(f.bendAllowance);
+            if (f.fixLength) sjo.fixLength = true;   // lane DK2
             out.push('var ' + v + ' = p.jog(' + nv(f.offset) + ', ' + optsStr(sjo) + ').last();');
             break;
           }
@@ -1650,6 +1738,7 @@
           var cco = { cornerType: f.cornerType || 'butt' };
           if (f.gap != null) cco.gap = numOut(f.gap);
           if (f.ratio != null && +f.ratio !== 1) cco.ratio = numOut(f.ratio);
+          if (f.closeBend) cco.closeBend = true;   // lane DK2
           cco.name = f.name;
           var ccs = optsStr(cco);
           if (f.coplanar === false) ccs = ccs.replace(/^\{ /, '{ coplanar: false, ');   // optsStr drops false values
@@ -1704,6 +1793,13 @@
         }
       }
     });
+    // lane DK2: Flat-Pattern1's options, after the features
+    if (model.flatFixed || (model.flatGrain && model.flatGrain.at && model.flatGrain.dir)) {
+      var r6 = function (q) { return q.map(function (x) { return Math.round(x * 1e6) / 1e6; }); }, fpo = {};
+      if (model.flatFixed) fpo.fixedFace = r6(model.flatFixed);
+      if (model.flatGrain && model.flatGrain.at && model.flatGrain.dir) fpo.grain = { at: r6(model.flatGrain.at), dir: r6(model.flatGrain.dir) };
+      out.push('p.flatPattern(' + JSON.stringify(fpo) + ');');
+    }
     var tail = [];
     scriptSections.forEach(function (sec) { if (sec.tail) tail = tail.concat(sec.tail(model, idVar) || []); });
     return out.join('\n') + (tail.length ? '\n' + tail.join('\n') + '\n' : '');

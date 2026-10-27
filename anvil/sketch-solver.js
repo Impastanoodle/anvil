@@ -665,6 +665,9 @@ var SketchSolver = (function () {
     if (!K || !ents[d.e]) return null;
     var g = K.dimGeometry(ents[d.e], d);
     if (!g) return null;
+    // lane DM: a curvature control's radius (spline k 'curv') is a value the spline is built to (tans[i][3]), not an
+    // unknown of the system: setDim writes it (Kernel.setDimValue) and the solve re-fits the rest; it holds no row
+    if (g.curv) return { n: 0, ents: [d.e], f: function () { return []; } };
     var t = target != null ? +target : g.value;
     return { n: 1, ents: [d.e], f: function (E) { var x = K.dimValue(E[d.e], d); return [x == null ? 0 : x - t]; } };
   }
@@ -1165,6 +1168,7 @@ var SketchSolver = (function () {
   function overDefines(sketch, kind, index) {
     var list = kind === 'rel' ? sketch.rels : sketch.dims, item = list && list[index];
     if (!item) return false;
+    if (kind !== 'rel' && item.k === 'curv') return false;   // lane DM: a curvature control's radius is its own value (no unknown it could over-define)
     var was = item.driven;
     item.driven = true;
     var a0 = analyze(sketch);

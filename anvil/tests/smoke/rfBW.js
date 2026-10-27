@@ -45,7 +45,7 @@
     assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
     return fs.textContent;
   });
-  step('rfBW: Hem on the opposite edge (Open, Material Inside, 0.5) ✓: the flat grows by L + BA − R − T; Sheet-Metal PM ▸ Bend Deduction 0.098 typed + Enter keeps the PM with the flat size following, Enter again ✓: both bends BD .098', async function () {
+  step('rfBW: Hem on the opposite edge (Open, Material Inside, 0.5) ✓: the flat grows by (L − R − T) + BA − R − T; Sheet-Metal PM ▸ Bend Deduction 0.098 typed + Enter keeps the PM with the flat size following, Enter again ✓: both bends BD .098', async function () {
     var errs0 = errors.length;
     UI.cmdHem(); await wait(30);
     assert(UI.pmTitle() === 'Hem', 'Hem PM: ' + UI.pmTitle());
@@ -62,7 +62,7 @@
     var h = UI.App.model.features[UI.App.model.features.length - 1];
     assert(h.type === 'flange' && h.hem === true && h.hemType === 'open' && h.hemPosition === 'inside' && h.length === 0.5 && Math.abs(h.radius - 0.03) < 1e-9, 'hem: ' + JSON.stringify(h));
     var BA = Math.PI / 2 * (0.0598 + 0.5 * 0.0598), BD = 2 * 0.1196 - BA, F = 4 + 0.1196 + 1.5 - BD;
-    var hemAdd = 0.5 + Math.PI * (0.03 + 0.5 * 0.0598) - (0.03 + 0.0598);
+    var hemAdd = 0.5 - (0.03 + 0.0598) + Math.PI * (0.03 + 0.5 * 0.0598) - (0.03 + 0.0598);   // lane DI2: the hem length 0.5 is overall from the fold's outer face (leg 0.5 − R − T)
     near(anvil.flat().size[0], F + hemAdd, 1e-9, 'flat with the hem');
     assert(anvil.flat().loops.length === 1, 'one loop');
     // the shop's bend deduction, typed in the Sheet-Metal PM with the two-Enter rule
@@ -80,7 +80,7 @@
     assert(UI.App.model.sheet.bendAllowanceType === 'deduction' && UI.App.model.sheet.bendDeduction === 0.098, 'sheet: ' + JSON.stringify(UI.App.model.sheet));
     var flat = anvil.flat();
     assert(flat.bends.length === 2 && flat.bends.every(function (b) { return Math.abs(b.bd - 0.098) < 1e-9 && b.method === 'deduction'; }), 'both bends BD .098: ' + JSON.stringify(flat.bends.map(function (b) { return [b.label, b.bd]; })));
-    near(flat.size[0], 4 + 0.1196 + 1.5 - 0.098 + (0.5 + 2 * (0.03 + 0.0598) - 0.098 - (0.03 + 0.0598)), 1e-9, 'flat = A + B − BD, hem BA = 2·OSSB − BD');
+    near(flat.size[0], 4 + 0.1196 + 1.5 - 0.098 + (0.5 - (0.03 + 0.0598) + 2 * (0.03 + 0.0598) - 0.098 - (0.03 + 0.0598)), 1e-9, 'flat = A + B − BD, hem BA = 2·OSSB − BD');
     assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
     return 'flat ' + UI.fmtNum(flat.size[0], 4) + ' × ' + UI.fmtNum(flat.size[1], 4);
   });

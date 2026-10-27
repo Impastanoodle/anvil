@@ -722,6 +722,33 @@
     D.sel = { kind: 'view', id: v.id };
     return summary();
   }
+  // (rfDN) cutApi(fn): viewApi for a view whose linework is a CSG cut (Section View, Removed Section). As the mouse
+  // tools do (editView), the cut and its hidden-line removal go to drawing-worker.js and Auto insert (centre marks,
+  // centrelines) waits until the view has landed, so the call returns at once without cutting on the main thread.
+  // What it returns is laterSummary(): reading any property of it right away (sm.views …) finishes the drawing
+  // here and now (settle) and reads the summary, as before; awaiting it (or UI.drawing.ready()) waits for the worker
+  // instead and resolves to the summary. A closed drawing (or no Proxy) takes the synchronous viewApi path.
+  function cutApi(fn) {
+    if (!doc()) return null;
+    if (!D.active || typeof Proxy === 'undefined') return viewApi(fn);
+    try { fn(JSON.parse(JSON.stringify(doc()))); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }
+    var off = false, v = DW.editView(function (dc) { var nv = fn(dc); if (nv.offSheet) { off = true; delete nv.offSheet; } return nv; });
+    if (off) { var msg = v.name + ': no room on the sheet, placed beside it. Move it, or use a larger sheet or a smaller scale.'; UI.toast(msg); UI.setStatus(msg); }
+    D.sel = { kind: 'view', id: v.id };
+    return laterSummary();
+  }
+  function laterSummary() {
+    var t = {}, filled = false;
+    function fill() { if (!filled) { filled = true; Object.assign(t, summary() || {}); } return t; }
+    function then(res, rej) { return ready().then(function () { return filled ? t : summary(); }).then(res, rej); }
+    return new Proxy(t, {
+      get: function (o, k) { if (k === 'then') return filled ? undefined : then; return fill()[k]; },
+      has: function (o, k) { return k in fill(); },
+      ownKeys: function () { return Reflect.ownKeys(fill()); },
+      getOwnPropertyDescriptor: function (o, k) { return Object.getOwnPropertyDescriptor(fill(), k); }
+    });
+  }
+  DW.cutApi = cutApi;
   function annotApi(fn) {
     if (!doc()) return null;
     try { fn(JSON.parse(JSON.stringify(doc()))); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }
@@ -741,7 +768,7 @@
       standard3View: function () { cmdStandard3View(); return summary(); },
       // Projected / Section / Detail View without the mouse; each is one undo step and returns the summary
       projectedView: function (parentId, dir, opts) { return viewApi(function (dc) { return Drawing.addProjectedView(dc, mesh(), parentId, dir, Object.assign({ fit: true }, opts || {})); }); },
-      sectionView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addSectionView(dc, mesh(), parentId, Object.assign({ fit: true }, opts || {})); }); },
+      sectionView: function (parentId, opts) { return cutApi(function (dc) { return Drawing.addSectionView(dc, mesh(), parentId, Object.assign({ fit: true }, opts || {})); }); },
       // (rfCQ) detailView(parentId, { sketch: [entity ids] }): the closed sketch profile those entities make in a view
       // is the detail's boundary (its entities go); parentId may be null (the profile's view)
       detailView: function (parentId, opts) {

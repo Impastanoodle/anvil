@@ -316,7 +316,7 @@
     var plain = (await anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);\np.flange(20, [[0, 2, 30], [50, 2, 0]], { lengthRef: "outer" });')).volume;
     await anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);');
     await idle();
-    UI.cmdMiterFlange();
+    UI.cmdEdgeFlange(null, 'miter');   // lane DL: the edge-only miter (Edge-Flange PM, Miter corners preset); Sheet Metal ▸ Miter Flange now takes a profile sketch (rfDL)
     assert(UI.hasPM(), 'Miter Flange PM not open');
     assert(/Miter-Flange/.test($('pm').innerText), 'PM title: ' + $('pm').innerText.slice(0, 80));
     var miter = pmField('Miter corners');
