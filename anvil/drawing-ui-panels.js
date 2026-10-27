@@ -722,7 +722,8 @@
     D.sel = { kind: 'view', id: v.id };
     return summary();
   }
-  // (rfDN) cutApi(fn): viewApi for a view whose linework is a CSG cut (Section View, Removed Section). As the mouse
+  // (rfDN) cutApi(fn): viewApi for a view whose linework is a CSG cut (Section View, Removed Section; rfDR: and every
+  // view the API adds: Projected, Detail, Auxiliary, whose hidden-line removal goes the same way). As the mouse
   // tools do (editView), the cut and its hidden-line removal go to drawing-worker.js and Auto insert (centre marks,
   // centrelines) waits until the view has landed, so the call returns at once without cutting on the main thread.
   // What it returns is laterSummary(): reading any property of it right away (sm.views …) finishes the drawing
@@ -748,7 +749,9 @@
       getOwnPropertyDescriptor: function (o, k) { return Object.getOwnPropertyDescriptor(fill(), k); }
     });
   }
-  DW.cutApi = cutApi;
+  // (rfDR) the summary after a call that left views to be worked out in the worker (a closed drawing / no Proxy: now)
+  function later() { return D.active && typeof Proxy !== 'undefined' ? laterSummary() : summary(); }
+  DW.cutApi = cutApi; DW.laterSummary = later;
   function annotApi(fn) {
     if (!doc()) return null;
     try { fn(JSON.parse(JSON.stringify(doc()))); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }
@@ -758,16 +761,18 @@
   function current() { if (!doc()) return null; settle(); if (D.active && D.renderQueued) render(); if (!D.active) { syncBom(); if (doc().layout === 'auto') Drawing.layout(doc(), mesh(), units()); D.sheet = Drawing.compute(doc(), mesh(), App.model, cctx()); } return D.sheet; }
   if (window.anvil) {
     window.anvil.drawing = {
-      make: function (opts) { return makeDrawing(opts) ? summary() : null; },
-      open: function (i) { return makeDrawing({ index: i || 0 }) ? summary() : null; },
+      // (rfDR) make / open / standard3View / addView return laterSummary(): the views are worked out in the worker
+      // (await the result, or read a property of it at once to finish them here)
+      make: function (opts) { return makeDrawing(opts) ? later() : null; },
+      open: function (i) { return makeDrawing({ index: i || 0 }) ? later() : null; },
       close: function () { closeDrawing(); },
       isOpen: function () { return D.active; },
       // isDirty(): the open drawing has changes since it was opened, made or saved (Close Drawing would ask)
       isDirty: function () { return DW.drawingDirty(); },
       summary: summary,
-      standard3View: function () { cmdStandard3View(); return summary(); },
+      standard3View: function () { cmdStandard3View(); return later(); },
       // Projected / Section / Detail View without the mouse; each is one undo step and returns the summary
-      projectedView: function (parentId, dir, opts) { return viewApi(function (dc) { return Drawing.addProjectedView(dc, mesh(), parentId, dir, Object.assign({ fit: true }, opts || {})); }); },
+      projectedView: function (parentId, dir, opts) { return cutApi(function (dc) { return Drawing.addProjectedView(dc, mesh(), parentId, dir, Object.assign({ fit: true }, opts || {})); }); },
       sectionView: function (parentId, opts) { return cutApi(function (dc) { return Drawing.addSectionView(dc, mesh(), parentId, Object.assign({ fit: true }, opts || {})); }); },
       // (rfCQ) detailView(parentId, { sketch: [entity ids] }): the closed sketch profile those entities make in a view
       // is the detail's boundary (its entities go); parentId may be null (the profile's view)
@@ -783,12 +788,12 @@
           if (L.circle) { opts.c = lw.fromSheet(L.circle.c); opts.r = L.circle.r / lw.scale; } else opts.pts = L.pts.map(lw.fromSheet);
           loopIds = L.ids; delete opts.sketch;
         }
-        return viewApi(function (dc) { if (loopIds) loopIds.forEach(function (id) { Drawing.deleteSketchEntity(dc, id); }); return Drawing.addDetailView(dc, mesh(), parentId, Object.assign({ c: [0, 0], fit: true }, opts)); });
+        return cutApi(function (dc) { if (loopIds) loopIds.forEach(function (id) { Drawing.deleteSketchEntity(dc, id); }); return Drawing.addDetailView(dc, mesh(), parentId, Object.assign({ c: [0, 0], fit: true }, opts)); });
       },
       // (rfCQ) viewLabel(id, on | null): a view's Display label (null: its kind's default); one undo step, the summary
       viewLabel: function (id, on) { return annotApi(function (dc) { return Drawing.setViewLabel(dc, id, on); }); },
       deleteView: function (id) { deleteView(id); return summary(); },
-      tangent: function (id, mode) { setViewTangent(id, mode); return summary(); },
+      tangent: function (id, mode) { setViewTangent(id, mode); return later(); },   // (rfDR: the new edges come from the worker)
       // assembly drawings: Auto Balloon on a view (default: the selected view, else the isometric), the Bill of
       // Materials (anchor 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left', or { x, y } for its top-left corner),
       // bom(null) removes it
@@ -801,7 +806,7 @@
       bomType: function (t) { if (!doc()) return null; if (!arguments.length) return (doc().bom && doc().bom.type) || 'top'; setBom({ type: t }); return summary().bom; },
       // title block: titleBlock() -> { key: text shown }; titleBlock({ key: text | null }) sets (null: back to the default link)
       titleBlock: function (map) { if (!doc()) return null; if (map) setTitleBlock(map); return Drawing.titleBlock(doc(), App.model, cctx()); },
-      addView: function (orient, opts) { opts = opts || {}; startPlacing({ orient: orient, display: opts.display, scale: opts.scale ? Drawing.parseScale(opts.scale) : null, dimType: opts.dimType === 'true' || opts.dimType === 'projected' ? opts.dimType : null }); placePending([opts.x != null ? opts.x : 60 * paperK(), opts.y != null ? opts.y : 100 * paperK()]); return summary(); },
+      addView: function (orient, opts) { opts = opts || {}; startPlacing({ orient: orient, display: opts.display, scale: opts.scale ? Drawing.parseScale(opts.scale) : null, dimType: opts.dimType === 'true' || opts.dimType === 'projected' ? opts.dimType : null }); placePending([opts.x != null ? opts.x : 60 * paperK(), opts.y != null ? opts.y : 100 * paperK()]); return later(); },
       setSheet: function (props) { setSheet(props || {}); return summary(); },
       // modelItems(on): the model items on / off (the drawing's default set); modelItems({ source, feature, views,
       // marked, holeLocations, holeCallouts, annotations, dedupe }): as the Model Items PM's OK (rfT)

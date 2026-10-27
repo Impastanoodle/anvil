@@ -84,12 +84,12 @@
       assert(/direction must be/.test(K.rebuild(m).errors[m.features[m.features.length - 1].id] || ''), 'bad direction in the feature');
     });
 
-    // a 4 × 3 tray, 16 ga, four 1 in Material Inside flanges (rfCS) with a Butt Closed Corner (gap .010) at front-left:
+    // a 4 × 3 tray, 16 ga, four 1 in Material Inside flanges (rfCS) with an Underlap Closed Corner (gap .010; SolidWorks' Underlap is the shape Anvil's Butt had before lane DV) at front-left:
     // the front wall covers the corner, the left wall stops .010 short. Rip there widens the gap to the rip gap.
     var T = 0.0598, R = 0.0598, H = 1 - (R + T);
     var TRAY = 'p.units("in");\np.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();\n' +
       [[2, T, 0], [4, T, 1.5], [2, T, 3], [0, T, 1.5]].map(function (e) { return 'p.flange(1, [' + JSON.stringify(e) + '], { position: "inside", lengthRef: "outer" });\n'; }).join('') +
-      'p.closedCorner([[' + T / 2 + ', 0.6, ' + (R + T) + ']], { cornerType: "butt", gap: 0.01, coplanar: false });\n';
+      'p.closedCorner([[' + T / 2 + ', 0.6, ' + (R + T) + ']], { cornerType: "underlap", gap: 0.01, coplanar: false });\n';
     test('rfDI: Rip at a Closed Corner (front-left of a 16 ga tray): the gap widens to .03 (volume − H × .02 × T exactly), any direction; the flat is still one blank, same size, both walls with the wider gap', function () {
       var b = flatOf(TRAY);
       ['both', 'side1', 'side2'].forEach(function (d) {

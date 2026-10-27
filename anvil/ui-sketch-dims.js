@@ -1904,11 +1904,15 @@
       scale = UI.dimShowScale ? UI.dimShowScale(it.d) || 1 : 1;
       val = g.value * scale;
       if (g.type === 'radial') {
-        var C = scr(pl, g.C), tip = sc.arrows && sc.arrows[0] && sc.arrows[0].tip, k = g.prefix === '⌀' ? 2 : 1;
-        if (!tip || !(g.r > 0)) return null;
+        // lane DS: a curvature-control dimension (g.curv: its arrow on the spline point, r 0) measures from the true
+        // centre of curvature: the ball on the arrow, the ruler out from the centre through the point (dragging away
+        // from the centre flattens the curve)
+        var C = scr(pl, g.curv && g.centre ? g.centre : g.C), tip = sc.arrows && sc.arrows[0] && sc.arrows[0].tip, k = g.prefix === '⌀' ? 2 : 1;
+        var rr = g.curv ? g.value : g.r;
+        if (!tip || !(rr > 0)) return null;
         u = unit(C, tip);
         if (!u) return null;
-        O = C; ppu = Math.hypot(tip[0] - C[0], tip[1] - C[1]) / (g.r * k * scale); nn = [-u[1], u[0]];
+        O = C; ppu = Math.hypot(tip[0] - C[0], tip[1] - C[1]) / (rr * k * scale); nn = [-u[1], u[0]];
         h.kind = 'radial';
       }
     } else val = f.rels[it.rel].v;

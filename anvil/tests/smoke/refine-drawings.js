@@ -49,10 +49,10 @@
       D.querySelector('#drawing-sheet svg').dispatchEvent(new W.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: c.clientX, clientY: c.clientY }));
       var it = menuItem(/Tangent Edges With Font/);
       assert(it && menuItem(/Tangent Edges Visible/) && menuItem(/Tangent Edges Removed/), 'Tangent Edge menu items');
-      it.click(); await idle(); await wait(80);
+      it.click(); await idle(); await wait(80); await UI.drawing.ready();   // (rfDR2: the new edges come from the drawing worker)
       var n = D.querySelectorAll('#drawing-sheet g[data-layer="FRONT"] .tanfont').length;
       assert(dwView('Front').tangent === 'font' && n === 2, 'phantom run-outs: ' + dwView('Front').tangent + ' ' + n);
-      await UI.undo(); await idle(); await wait(80);
+      await UI.undo(); await idle(); await wait(80); await UI.drawing.ready();
       assert(dwView('Front').tangent === 'removed' && !D.querySelector('#drawing-sheet .tanfont'), 'undo');
       anvil.drawing.tangent(F.id, 'visible'); await wait(80);
       var s = anvil.drawing.summary();

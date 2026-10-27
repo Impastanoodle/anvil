@@ -224,6 +224,7 @@
       assert(hid.length === 8 && hid.every(function (e) { return e.layer === 'FRONT' || e.layer === 'RIGHT'; }), 'hidden ' + hid.length);
       assert(ents.filter(function (e) { return e.type === 'CIRCLE' && e.layer === 'TOP'; }).length === 4, 'circles');
       assert(dxf.indexOf('%%c8') > 0 && dxf.indexOf('$INSUNITS\n70\n4') > 0, 'diameter text / units');
+      assert(dxf.indexOf('$DIMALTF\n40\n0.0393700787') > 0, 'DIMALTF for mm (rfDU)');
       return ents.length + ' entities, layers ' + layers.join(' ');
     });
     test('PDF: header, xref offsets point at their objects, page is A3 in points, ASCII only', function () {

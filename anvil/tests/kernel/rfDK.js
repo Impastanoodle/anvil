@@ -90,7 +90,7 @@
         [[2, T, 0], [4, T, 1.5], [2, T, 3], [0, T, 1.5]].map(function (e) { return 'p.flange(1, [' + JSON.stringify(e) + '], { position: "' + pos + '", lengthRef: "outer" });\n'; }).join('');
     }
     function cc(faces, closeBend) {
-      return function (m) { m.features.push({ id: 900, type: 'closedCorner', faces: faces, cornerType: 'butt', gap: GAP, ratio: 1, coplanar: false, name: 'Closed Corner1', closeBend: closeBend || undefined }); };
+      return function (m) { m.features.push({ id: 900, type: 'closedCorner', faces: faces, cornerType: 'underlap', gap: GAP, ratio: 1, coplanar: false, name: 'Closed Corner1', closeBend: closeBend || undefined }); };
     }
 
     test('rfDK: Closed Corner, Open bend region cleared (Bend Outside tray): the bend\'s end is filled R − gap across, volume + the bend section × (R − gap) exactly; the flat strip runs on BA × (R − gap), one loop, the notch beside the tab gone', function () {
@@ -122,7 +122,9 @@
       var code = tray('inside'), face = [[T / 2, 0.6, R + T]];
       var o = rfDKbuild(code, cc(face, false)), c = rfDKbuild(code, cc(face, true));
       noErrors(c);
-      var sec = K.signedArea(K.flangeProfile(Math.PI / 2, R, T, 0, 0)), add = c.mp.volume - o.mp.volume;
+      // (lane DV: open, the front bend's end is tapered from the base corner, R + T back, to the wall's end: the bend
+      // section × (R + T) / 2 less than closed, where it ends square with the wall)
+      var sec = K.signedArea(K.flangeProfile(Math.PI / 2, R, T, 0, 0)), add = c.mp.volume - o.mp.volume - sec * (R + T) / 2;
       assert(add > 0.1 * sec * (R - GAP) && add < sec * (R - GAP) - 1e-7, 'clipped fill: ' + add + ' of ' + sec * (R - GAP));
       consistentVolume(c);
       var fc = rfDKflat(c);
@@ -169,10 +171,10 @@
     }
 
     test('rfDK2: script round trip — closedCorner({ closeBend: true }) and jog({ fixLength: true }) are written back and build the same solid; without them nothing is written (old scripts keep the open corner)', function () {
-      var cc1 = rfDKtrip(tray('bendOutside') + 'p.closedCorner([[' + (-(R + T / 2)) + ', 0.6, 0]], { cornerType: "butt", gap: 0.01, coplanar: false, closeBend: true });\n');
+      var cc1 = rfDKtrip(tray('bendOutside') + 'p.closedCorner([[' + (-(R + T / 2)) + ', 0.6, 0]], { cornerType: "underlap", gap: 0.01, coplanar: false, closeBend: true });\n');
       var f = cc1.b.model.features[cc1.b.model.features.length - 1];
       assert(f.closeBend === true && /closeBend: true/.test(cc1.s), 'closeBend kept: ' + JSON.stringify(f));
-      var cc0 = rfDKtrip(tray('bendOutside') + 'p.closedCorner([[' + (-(R + T / 2)) + ', 0.6, 0]], { cornerType: "butt", gap: 0.01, coplanar: false });\n');
+      var cc0 = rfDKtrip(tray('bendOutside') + 'p.closedCorner([[' + (-(R + T / 2)) + ', 0.6, 0]], { cornerType: "underlap", gap: 0.01, coplanar: false });\n');
       assert(!cc0.b.model.features[cc0.b.model.features.length - 1].closeBend && !/closeBend/.test(cc0.s), 'no closeBend: open, nothing written');
       var sec = K.signedArea(K.flangeProfile(Math.PI / 2, R, T, 0, 0));
       nearRel(cc1.b.mp.volume - cc0.b.mp.volume, sec * (R - GAP), 1e-6, 'closed minus open = the bend-region fill');

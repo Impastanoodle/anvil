@@ -2859,6 +2859,28 @@
       if (j >= 0 && before[e.path.e]) e.path.e = j; else delete e.path.e;
     });
   }
+  // lane DS2: a linear sketch pattern's saved settings (Pattern relation pat.spec, Edit Linear Pattern) name the line
+  // each direction runs along by entity index (ref1 / ref2: '<index>', or 'x' / 'y' for a sketch axis); they follow
+  // deletions and renumbering as text paths do. A deleted line leaves the axis word of its direction (the angle stays).
+  function patternSpecRefs(sketch, fn) {
+    (sketch && sketch.rels || []).forEach(function (rel) {
+      var sp = rel && rel.type === 'pattern' && rel.pat && rel.pat.spec;
+      if (!sp) return;
+      [['ref1', 'x'], ['ref2', 'y']].forEach(function (kd) {
+        var r = sp[kd[0]];
+        if (r == null || !/^\d+$/.test(String(r))) return;
+        var j = fn(+r);
+        sp[kd[0]] = j == null || j < 0 ? kd[1] : String(j);
+      });
+    });
+  }
+  function patternEntityRemoved(sketch, index) { patternSpecRefs(sketch, function (i) { return i === index ? -1 : i > index ? i - 1 : i; }); }
+  function remapPatternRefs(sketch, before) {
+    var E = sketch && sketch.entities;
+    if (!E || !before) return;
+    patternSpecRefs(sketch, function (i) { return before[i] ? E.indexOf(before[i]) : -1; });
+  }
+  K.patternEntityRemoved = patternEntityRemoved; K.remapPatternRefs = remapPatternRefs;
   // transformText(e, xf) -> a moved / turned / scaled copy: xf { dx, dy } | { rot (degrees), cx, cy } | { s, cx, cy }
   // (SketchSolver's Move / Copy / Rotate / Scale form); the copy keeps its curve's geometry but no longer follows it
   function transformText(e, xf) {

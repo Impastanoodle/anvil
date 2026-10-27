@@ -91,7 +91,7 @@
       assert(!f.closeBend, 'open: no closeBend');
       var vOpen = rfDKVol(), sec = K.signedArea(K.flangeProfile(Math.PI / 2, R, T, 0, 0));
       assert(vClosed > vOpen && vOpen > v0, 'volumes: ' + [v0, vOpen, vClosed].join(', '));
-      rfDKnearRel(vClosed - vOpen, 2 * sec * (R - GAP), 1e-6, 'the bend-region fill (Coplanar faces on: both front corners)');
+      rfDKnearRel(vClosed - vOpen, 2 * sec * (R - GAP / Math.SQRT2), 1e-6, 'the bend-region fill (Coplanar faces on: both front corners; lane DV: Butt extends R − gap/√2)');
       // Jog: Fix projected length
       await anvil.newPart(); await idle();
       await anvil.run('p.units("in");\np.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();\np.sketch("Top", ' + T + ').line(2, 0, 2, -3).jog(0.5, { fixed: [0.5, ' + T + ', 1.5] });\n'); await idle();

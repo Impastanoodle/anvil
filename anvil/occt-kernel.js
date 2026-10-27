@@ -33,6 +33,8 @@ var OcctKernel = (function () {
   SUPPORTED.unfold = SUPPORTED.fold = 1;   // lane DB2
   SUPPORTED.refaxis = SUPPORTED.refpoint = SUPPORTED.csys = 1;   // lane CZ: reference geometry makes no body (skipped below)
   SUPPORTED.rip = 1;   // lane DI
+  SUPPORTED.vent = 1;   // lane DT
+  SUPPORTED.insertBends = SUPPORTED.convertSM = 1;   // lane DQ
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
 
   function build(oc, K, model, opts) {
@@ -1056,6 +1058,74 @@ var OcctKernel = (function () {
       lay.tools.forEach(function (t) { var s = prismOf(t.pts, t.plane, t.a, t.b); acc = acc ? fuse(acc, s) : s; });
       return acc;
     }
+    // Vent (lane DT; as Kernel.buildVent, from Kernel.ventLayout found on the bodies' tessellation): the boundary prism
+    // less the ribs / spars / fill-in prisms (taller), every circle an exact circle; the rebuild cuts the tool
+    function ventTool(f) {
+      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      if (!bodies.length) throw new Error('Vent: there is no sheet to cut yet.');
+      var polys = [];
+      bodies.forEach(function (b) { Array.prototype.push.apply(polys, shapeToCSG(b).polygons); });
+      var lay = K.ventLayout(f, m, { body: CSGlib.fromPolygons(polys), sketches: sketches, planes: planes }), e2 = 0.5 * (lay.b - lay.a);
+      function solid(l, a, b) {
+        var mf = N(new oc.BRepBuilderAPI_MakeFace_15(loopWire({ pts: l.pts, seg: l.seg }, { curves: l.curves }, lay.plane), true));
+        if (!mf.IsDone()) throw new Error('Vent: OpenCascade could not make a vent contour.');
+        return N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(N(mf.Face()), a, lay.plane), Vec(V.scale(lay.plane.n, b - a)), false, true)).Shape());
+      }
+      var tool = null;
+      lay.boundary.forEach(function (l) { var s = solid(l, lay.a, lay.b); tool = tool ? fuse(tool, s) : s; });
+      lay.keep.forEach(function (k) {
+        var s = solid(k.outer, lay.a - e2, lay.b + e2);
+        k.holes.forEach(function (h) { s = cut(s, solid(h, lay.a - 2 * e2, lay.b + 2 * e2)); });
+        tool = cut(tool, s);
+      });
+      return tool;
+    }
+    // Insert Bends / Convert to Sheet Metal (lane DQ; as Kernel's buildInsertBends, from Kernel.insertBendsLayout found
+    // on the body's tessellation): the corner kites and corner-relief cubes are cut, then each bend is the exact annulus
+    // R … R + T (its T/2 strips into both plates) swept along the corner. Convert first shells (the faces
+    // Kernel.convertSMPlan removes) and rips (Kernel.ripLayout) the solid.
+    function ibWedge(t) {
+      var to3 = function (p) { return V.add(K.to3D(t.plane, p[0], p[1]), V.scale(t.plane.n, t.a)); };
+      var A = t.A, R = t.R, RT = t.RT, ov = t.ov, cA = Math.cos(A), sA = Math.sin(A);
+      var mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+      function line(p, q) { if (Math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-9) mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_3(P(to3(p)), P(to3(q)))).Edge())); }
+      function arc(r, th0, th1) {
+        if (r < 1e-9) return;
+        var at = function (th) { return [r * Math.cos(th), r * Math.sin(th)]; };
+        var mk = N(new oc.GC_MakeArcOfCircle_4(P(to3(at(th0))), P(to3(at((th0 + th1) / 2))), P(to3(at(th1)))));
+        mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_24(N(new oc.Handle_Geom_Curve_2(N(mk.Value()).get())))).Edge()));
+      }
+      var i0 = [R, 0], o0 = [RT, 0], o1 = [RT * cA, RT * sA], i1 = [R * cA, R * sA], st = [-ov * sA, ov * cA];
+      line([R, -ov], [RT, -ov]); line([RT, -ov], o0); arc(RT, 0, A); line(o1, [o1[0] + st[0], o1[1] + st[1]]);
+      line([o1[0] + st[0], o1[1] + st[1]], [i1[0] + st[0], i1[1] + st[1]]); line([i1[0] + st[0], i1[1] + st[1]], i1); arc(R, A, 0); line(i0, [R, -ov]);
+      if (!mw.IsDone()) throw new Error('Insert Bends: OpenCascade could not make the bend section.');
+      var face = N(N(new oc.BRepBuilderAPI_MakeFace_15(N(mw.Wire()), true)).Face());
+      return N(N(new oc.BRepPrimAPI_MakePrism_1(face, Vec(V.scale(t.plane.n, t.b - t.a)), false, true)).Shape());
+    }
+    function insertBendsOp(f) {
+      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      var k = pickBody(f.fixedFace);
+      if (k < 0) throw new Error((f.type === 'convertSM' ? 'Convert to Sheet Metal' : 'Insert Bends') + ': there is no solid to bend yet.');
+      var g = f, body = unify(bodies[k]);
+      if (f.type === 'convertSM') {
+        var plan = K.convertSMPlan(f, m, { body: shapeToCSG(body) }), gap = K.convertSMRipGap(f, m);
+        if (!(gap > 0) || !isFinite(gap)) throw new Error('Convert to Sheet Metal: the rip gap must be a positive number.');
+        shellOp({ thickness: plan.T, faces: plan.removed.map(function (p) { return { at: p }; }) });
+        body = unify(bodies[k]);
+        if (plan.rips.length) {
+          var rl = K.ripLayout({ id: f.id, edges: plan.rips, gap: gap, direction: 'both' }, m, { body: shapeToCSG(body) });
+          body = boolMany('cut', body, rl.tools.map(function (t) { return prismOf(t.pts, t.plane, t.a, t.b); }), 'Convert to Sheet Metal: OpenCascade could not rip the corners.');
+          body = unify(body);
+        }
+        g = K.convertSMInsert(f, plan);
+      }
+      if (m.noBends) { bodies[k] = body; return; }   // No Bends
+      var lay = K.insertBendsLayout(g, m, { body: shapeToCSG(body) });
+      body = boolMany('cut', body, lay.fills.concat(lay.corners).map(function (t) { return prismOf(t.loop, t.plane, t.a, t.b); }), 'Insert Bends: OpenCascade could not cut the sharp corners.');
+      bodies[k] = boolMany('fuse', body, lay.wedges.map(ibWedge), 'Insert Bends: OpenCascade could not add the bends.');
+    }
     // Closed Corner (lane CS; as Kernel.buildClosedCorner, from Kernel.closedCornerLayout found on the body's
     // tessellation): the trim of the matching walls is cut, then the extensions (planar prisms) are fused on
     function closedCornerOp(f) {
@@ -1066,6 +1136,9 @@ var OcctKernel = (function () {
       bodies[k] = unify(bodies[k]);
       var lay = K.closedCornerLayout(f, m, { body: shapeToCSG(bodies[k]) }), body = bodies[k];
       if (lay.cuts.length) body = boolMany('cut', body, lay.cuts.map(function (t) { return prismOf(t.loop, t.plane, t.a, t.b); }), 'Closed Corner: OpenCascade could not trim the matching wall.');
+      // lane DV: open bend region, the matching wall's bend end tapered (SolidWorks): the exact wrapped cut, straight in
+      // (angle, t) from the base corner at the bend's start to the wall's new end at its end
+      if ((lay.wraps || []).length) body = boolMany('cut', body, lay.wraps.map(function (w) { return cylinderCutter(w.loop, w.plane, w.sec, w.BA); }), 'Closed Corner: OpenCascade could not cut the bend\'s end.');
       var rest = body;
       body = boolMany('fuse', body, lay.adds.map(function (t) { return prismOf(t.loop, t.plane, t.a, t.b); }), 'Closed Corner: OpenCascade could not extend the faces.');
       // lane DK: Close bend region: each bend-end fill (its loop is the end face's chords) less the part after the trim
@@ -1133,6 +1206,25 @@ var OcctKernel = (function () {
         }
         var w = K.unfoldWedgeSpec(s, T), pw = common(B0, prismOf(w.loop, w.plane, w.a, w.b));
         if (volumeOf(pw) > 1e-12) parts.push(transformed(pw, trsfOf(mc(st.P, mc(st.Q[s.parent], st.F[s.parent])))));
+      });
+      // lane DT: material added across a bend line past the strip's ends (Kernel's state.extras): an unfolded strip's
+      // from the flat (its outline there), a folded bend's from the part (the wedge run on past both ends)
+      (st.extras || []).forEach(function (x) {
+        var s = st.strips[x.k];
+        if (!s) return;
+        if (st.sel[x.k]) {
+          var sp3 = st.fr.span(-eps, T + eps), M3 = mc(st.P, st.Q[s.parent]);
+          (x.loops || []).forEach(function (l) {
+            var pc3 = common(flatShape(), prismOf(l, sp3.plane, sp3.a, sp3.b));
+            if (volumeOf(pc3) > 1e-12) parts.push(transformed(pc3, trsfOf(M3)));
+          });
+          return;
+        }
+        var w3 = K.unfoldWedgeSpec(s, T);
+        [[-x.D, w3.a], [w3.b, w3.b + x.D]].forEach(function (r) {
+          var pw3 = common(B0, prismOf(w3.loop, w3.plane, r[0], r[1]));
+          if (volumeOf(pw3) > 1e-12) parts.push(transformed(pw3, trsfOf(mc(st.P, mc(st.Q[s.parent], st.F[s.parent])))));
+        });
       });
       if (!parts.length) throw new Error('Unfold: nothing of the sheet is left.');
       return unify(parts.length > 1 ? boolMany('fuse', parts[0], parts.slice(1), 'Unfold: OpenCascade could not join the flat pieces.') : parts[0]);
@@ -1275,7 +1367,7 @@ var OcctKernel = (function () {
     // stay for the rebuild that follows the edit
     var readOnly = !!opts.readOnly;
     function keep(s) { return s.Moved(ident, false); }
-    function featureKey(f) { return JSON.stringify(f, function (k, v) { return k === 'profile' || k === 'name' ? undefined : v; }) + '|' + JSON.stringify(m.sheet || null) + '|' + (m.units || 'mm'); }
+    function featureKey(f) { return JSON.stringify(f, function (k, v) { return k === 'profile' || k === 'name' ? undefined : v; }) + '|' + JSON.stringify(m.sheet || null) + '|' + (m.units || 'mm') + (m.noBends && (f.type === 'insertBends' || f.type === 'convertSM') ? '|noBends' : ''); }   // lane DQ: No Bends
     function freeState(S) { S.bodies.forEach(function (b) { try { b.delete(); } catch (e) { } }); }
     var keys = m.features.map(featureKey), start = 0;
     if (cache) {
@@ -1346,7 +1438,9 @@ var OcctKernel = (function () {
             case 'sketchedBend': sketchedBendOp(f); break;
             case 'breakCorner': tool = breakCornerTool(f); break;
             case 'rip': tool = ripTool(f); break;   // lane DI
+            case 'vent': tool = ventTool(f); break;   // lane DT
             case 'closedCorner': closedCornerOp(f); break;
+            case 'insertBends': case 'convertSM': insertBendsOp(f); break;   // lane DQ
             case 'unfold': unfoldOp(f, fi); break;   // lane DB2
             case 'fold': foldOp(f, fi); break;
             case 'shell': shellOp(f); break;
@@ -1373,7 +1467,7 @@ var OcctKernel = (function () {
         // edges (SolidWorks' tangent propagation); shells of curved faces and corners where three picked edges meet are
         // polygonal / mitred in Anvil (`approx`); everything else is exact
         tolerance: approx || m.features.some(function (f) {
-          return f.type === 'sweep' || f.type === 'loft' || f.type === 'import' || f.type === 'flange' || f.type === 'jog' || f.type === 'sketchedBend' || ((f.type === 'fillet' || f.type === 'chamfer') && (f.edges || []).some(function (e) { return e.chain === false; }));
+          return f.type === 'sweep' || f.type === 'loft' || f.type === 'import' || f.type === 'flange' || f.type === 'jog' || f.type === 'sketchedBend' || f.type === 'insertBends' || f.type === 'convertSM' || ((f.type === 'fillet' || f.type === 'chamfer') && (f.edges || []).some(function (e) { return e.chain === false; }));
         }) ? 2e-2 : 1e-4 };
       if (unsupported || !bodies.length) return out;
       // booleans leave faces split along old seams (a pocket floor in pieces): merge faces on the same surface

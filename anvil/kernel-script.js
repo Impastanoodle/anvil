@@ -568,6 +568,7 @@
     if (r2000) { P(9, '$HANDSEED'); P(5, (h + 1).toString(16).toUpperCase()); }
     P(9, '$INSUNITS'); P(70, this.insunits);
     P(9, '$MEASUREMENT'); P(70, this.units === 'in' ? 0 : 1);
+    P(9, '$DIMALTF'); P(40, this.units === 'in' ? '25.4' : '0.0393700787');   // rfDU: SolidWorks reads the file's unit from $DIMALTF, not $INSUNITS
     P(9, '$LUNITS'); P(70, 2);
     P(9, '$EXTMIN'); P(10, fmtD(mn[0])); P(20, fmtD(mn[1])); P(30, 0);
     P(9, '$EXTMAX'); P(10, fmtD(mx[0])); P(20, fmtD(mx[1])); P(30, 0);
@@ -1202,6 +1203,21 @@
     if (opts.contours) contourOpts(f, opts);
     return this;
   };
+  // vent(opts): Sheet Metal ▸ Vent (kernel-sheetmetal.js, lane DT). opts: sketch (default: the last sketch), boundary,
+  // ribs, spars, fill ([entity indices] of that sketch; no boundary = the largest closed entity is the boundary, lines
+  // ribs, other closed entities spars), ribWidth, sparWidth, fillWidth (default 0), radius (default 0), name
+  Builder.prototype.vent = function (opts) {
+    opts = opts || {};
+    var f = { type: 'vent', sketch: this._sketchId(opts) };
+    ['boundary', 'ribs', 'spars', 'fill'].forEach(function (k) { f[k] = (opts[k] || []).map(function (i) { return +i; }); });
+    f.ribWidth = opts.ribWidth != null ? num(opts.ribWidth) : null;
+    f.sparWidth = opts.sparWidth != null ? num(opts.sparWidth) : null;
+    f.fillWidth = opts.fillWidth != null ? num(opts.fillWidth) : 0;
+    f.radius = opts.radius != null ? num(opts.radius) : 0;
+    if (opts.name) f.name = opts.name;
+    this._add(f);
+    return this;
+  };
   // closedCorner(faces, opts): Sheet Metal ▸ Closed Corner (kernel-sheetmetal.js). faces: [[x, y, z], …] points on the
   // end faces of a flange to extend across a corner gap (the matching faces are found); opts: cornerType ('butt', the
   // default | 'overlap' | 'underlap'), gap (default 0.01 in / 0.25 mm), ratio (overlap / underlap ratio 0..1, default
@@ -1218,6 +1234,62 @@
     if (opts.coplanar === false) f.coplanar = false;
     if (opts.closeBend) f.closeBend = true;
     f.name = opts.name || K.closedCornerName(this.model);
+    this._add(f);
+    return this;
+  };
+  // insertBends(fixedFace, opts) / convertSheetMetal(fixedFace, bendEdges, opts): Sheet Metal ▸ Insert Bends and
+  // Convert to Sheet Metal (kernel-sheetmetal.js, lane DQ). fixedFace: [x, y, z] on a flat face that stays put (the flat
+  // is laid from it). Insert Bends works on a part of constant thickness (a shell, a thin extrude): every sharp corner
+  // between two walls becomes a bend. Convert to Sheet Metal works on a solid: bendEdges [[x, y, z], …] are points on
+  // the solid's edges that become bends; the faces not reached from the fixed face across them are removed (a shell of
+  // the thickness inward) and the edges between kept faces are ripped. opts: thickness (Insert Bends: default measured
+  // at the fixed face; Convert: required unless the part has a sheet), radius (inside bend radius, default T),
+  // kFactor (0.5) or bendAllowanceType / bendAllowance / bendDeduction / bendTable (as sheet()), autoRelief ('rect',
+  // the default | 'none'), Convert also ripEdges ([[x, y, z], …]; default: found) and gap (rip gap, default 0.004 in /
+  // 0.1 mm); name. With no sheet yet they set one; after sheet(...) (a script written back) they keep it and change
+  // only what they are given.
+  function ibPt(p, what) {
+    if (!p || p.length !== 3 || !p.every(function (x) { return isFinite(+x); })) throw new Error(what + ': points are [x, y, z].');
+    return [+p[0], +p[1], +p[2]];
+  }
+  function ibSheet(b, opts, measure) {
+    var m = b.model;
+    if (!m.sheet) {
+      var T = opts.thickness != null ? num(opts.thickness) : measure();
+      if (typeof T === 'number') T = Math.round(T * 1e9) / 1e9;
+      b.sheet(T, opts.radius != null ? opts.radius : T, opts.kFactor, opts);
+    } else if (opts.thickness != null || opts.radius != null || opts.kFactor != null) {
+      var s = Object.assign({}, m.sheet);
+      if (opts.thickness != null) { s.thickness = num(opts.thickness); delete s.gauge; delete s.gaugeTable; }
+      if (opts.radius != null) s.bendRadius = num(opts.radius);
+      if (opts.kFactor != null) s.kFactor = num(opts.kFactor);
+      m.sheet = K.makeSheet(s);
+    }
+  }
+  function ibRelief(f, opts) {
+    if (opts.autoRelief == null) return;
+    if (K.INSERT_BENDS_RELIEFS.indexOf(opts.autoRelief) < 0) throw new Error('autoRelief must be "rect" or "none".');
+    if (opts.autoRelief !== 'rect') f.autoRelief = opts.autoRelief;
+  }
+  Builder.prototype.insertBends = function (fixedFace, opts) {
+    opts = opts || {};
+    var P = ibPt(fixedFace, 'insertBends'), m = this.model;
+    ibSheet(this, opts, function () { return K.sheetThicknessAt(K.rebuild(m).body, P, m.units); });
+    var f = { type: 'insertBends', fixedFace: P, sheetBase: true };
+    ibRelief(f, opts);
+    if (opts.name) f.name = opts.name;
+    this._add(f);
+    return this;
+  };
+  Builder.prototype.convertSheetMetal = function (fixedFace, bendEdges, opts) {
+    opts = opts || {};
+    var P = ibPt(fixedFace, 'convertSheetMetal');
+    ibSheet(this, opts, function () { throw new Error('convertSheetMetal needs a thickness (opts.thickness).'); });
+    var f = { type: 'convertSM', fixedFace: P, bendEdges: (bendEdges || []).map(function (e) { return ibPt(Array.isArray(e) ? e : e.at, 'convertSheetMetal'); }), sheetBase: true };
+    if (opts.ripEdges && opts.ripEdges.length) f.ripEdges = opts.ripEdges.map(function (e) { return ibPt(Array.isArray(e) ? e : e.at, 'convertSheetMetal'); });
+    f.gap = opts.gap != null ? num(opts.gap) : K.ripDefaultGap(this.model);
+    ibRelief(f, opts);
+    if (opts.name) f.name = opts.name;
     this._add(f);
     return this;
   };
@@ -1517,6 +1589,7 @@
 
   SketchBuilder.prototype.sketchedBend = function (a, opts) { return this.part.sketchedBend(a, Object.assign({}, opts || {}, { sketch: this.f.id })); };
   SketchBuilder.prototype.miterFlange = function (edges, opts) { return this.part.miterFlange(edges, Object.assign({}, opts || {}, { sketch: this.f.id })); };   // lane DL
+  SketchBuilder.prototype.vent = function (opts) { return this.part.vent(Object.assign({}, opts || {}, { sketch: this.f.id })); };   // lane DT
   SketchBuilder.prototype.jog = function (offset, opts) { return this.part._sketchJog(offset, Object.assign({}, opts || {}, { sketch: this.f.id })); };   // lane DC
 
   function runScript(model, code) {
@@ -1743,6 +1816,19 @@
           var ccs = optsStr(cco);
           if (f.coplanar === false) ccs = ccs.replace(/^\{ /, '{ coplanar: false, ');   // optsStr drops false values
           out.push('var ' + v + ' = p.closedCorner(' + JSON.stringify((f.faces || []).map(function (q) { return q.map(function (x) { return Math.round(x * 1e4) / 1e4; }); })) + ', ' + ccs + ').last();');
+          break;
+        }
+        case 'insertBends':
+        case 'convertSM': {
+          // lane DQ: the sheet (T, R, K) is the p.sheet(...) line at the top
+          var ibr = function (q) { return q.map(function (x) { return Math.round(x * 1e4) / 1e4; }); };
+          var ibo = {};
+          if (f.type === 'convertSM' && f.ripEdges && f.ripEdges.length) ibo.ripEdges = f.ripEdges.map(ibr);
+          if (f.type === 'convertSM' && f.gap != null) ibo.gap = numOut(f.gap);
+          if (f.autoRelief && f.autoRelief !== 'rect') ibo.autoRelief = f.autoRelief;
+          ibo.name = f.name;
+          if (f.type === 'insertBends') out.push('var ' + v + ' = p.insertBends(' + JSON.stringify(ibr(f.fixedFace)) + ', ' + optsStr(ibo) + ').last();');
+          else out.push('var ' + v + ' = p.convertSheetMetal(' + JSON.stringify(ibr(f.fixedFace)) + ', ' + JSON.stringify((f.bendEdges || []).map(ibr)) + ', ' + optsStr(ibo) + ').last();');
           break;
         }
         case 'revolve': {

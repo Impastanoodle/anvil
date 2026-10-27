@@ -5,8 +5,9 @@
 # (application/acad, the same header, Content-Disposition attachment) or JSON { error, converter } 400 / 503.
 # /api/dwg2dxf is the way back (DWG import): POST the DWG bytes, get the DXF bytes (application/dxf) or the same JSON
 # errors, through the ODA File Converter or LibreDWG's dwg2dxf.
-# The server is single-threaded, so no client may hold it: every response body is written with a deadline (5 s plus
-# half a second per MB) and the response is aborted when the client stops reading; HTTP.sys's own timeouts (idle
+# Requests are served several at once (a runspace pool, see the end) and no client may hold one for long: every
+# response body is written with a deadline (5 s plus half a second per MB) and the response is aborted when the
+# client stops reading; HTTP.sys's own timeouts (idle
 # connection, header wait, request body, minimum send rate) are set too where the platform has them.
 # Usage: powershell -ExecutionPolicy Bypass -File serve.ps1 [-Port 8765]
 param([int]$Port = 8765)
@@ -230,10 +231,11 @@ function Invoke-DwgToDxfApi($ctx) {
 }
 
 # ---- requests ----------------------------------------------------------------------------------------------------
-while ($listener.IsListening) {
-  $ctx = $listener.GetContext()
+# One request: a static file (GET / HEAD) or one of the two APIs. Runs in a pool runspace (below).
+function Invoke-Request($ctx) {
   try {
     $path = [System.Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath)
+    $head = $ctx.Request.HttpMethod -eq "HEAD"
     if ($path -eq "/api/dxf2dwg") {
       Invoke-DxfToDwgApi $ctx
     } elseif ($path -eq "/api/dwg2dxf") {
@@ -246,7 +248,7 @@ while ($listener.IsListening) {
         $ext = [System.IO.Path]::GetExtension($file).ToLower()
         $ctx.Response.ContentType = if ($types.ContainsKey($ext)) { $types[$ext] } else { "application/octet-stream" }
         $ctx.Response.Headers.Add("Cache-Control", "no-store")
-        if ($ctx.Request.HttpMethod -eq "HEAD") {
+        if ($head) {
           # HEAD (ui-occt.js checks that the OpenCascade engine is installed): the size only, no body
           $ctx.Response.ContentLength64 = (Get-Item $file).Length
         } else {
@@ -257,10 +259,43 @@ while ($listener.IsListening) {
       } else {
         $ctx.Response.StatusCode = 404
         $msg = [System.Text.Encoding]::UTF8.GetBytes("404 " + $path)
-        Write-Body $ctx $msg
+        # (rfDR) a HEAD gets the status only: writing a body to it threw, and the 404 went out as a 500
+        if ($head) { $ctx.Response.ContentLength64 = 0 } else { $ctx.Response.ContentLength64 = $msg.Length; Write-Body $ctx $msg }
       }
     }
   } catch { try { $ctx.Response.StatusCode = 500 } catch { } }
   # an aborted response (write timeout, client gone) throws here; the server goes on to the next request
   try { $ctx.Response.OutputStream.Close() } catch { }
+}
+
+# (rfDR) Requests are served by a pool of runspaces, several at once. The server used to answer one request at a
+# time, so one response the client was slow to read (the 50 MB OpenCascade engine while it compiles, a GET whose body
+# is never read, a 30 s DWG conversion) held every other request behind it until Write-Body's deadline (35 s for the
+# engine): the drawing worker's importScripts waited that long, and in headless test runs the worker failed to start
+# (worker onerror) and the views were worked out on the main thread. Measured on serve.ps1 with a client that never
+# reads a 60 MB file: six script GETs behind it took 35.1 s before, a few ms now. Without a pool (an old PowerShell)
+# it serves inline, one at a time, as before.
+$names = "Find-DwgConverter", "Invoke-Converter", "Get-FirstLines", "Convert-DxfToDwg", "Convert-DwgToDxf", "Write-Body", "Send-Json", "Invoke-DxfToDwgApi", "Invoke-DwgToDxfApi", "Invoke-Request"
+$pool = $null
+try {
+  $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+  foreach ($n in $names) { $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry $n, (Get-Command $n -CommandType Function).Definition)) }
+  $iss.Variables.Add((New-Object System.Management.Automation.Runspaces.SessionStateVariableEntry "root", $root, ""))
+  $iss.Variables.Add((New-Object System.Management.Automation.Runspaces.SessionStateVariableEntry "types", $types, ""))
+  $pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(2, 16, $iss, $Host)
+  $pool.Open()
+} catch { Write-Host "Serving one request at a time (no runspace pool: $($_.Exception.Message))"; $pool = $null }
+$busy = New-Object System.Collections.ArrayList
+while ($listener.IsListening) {
+  $ctx = $listener.GetContext()
+  if (-not $pool) { Invoke-Request $ctx; continue }
+  # the finished requests' PowerShell objects are disposed of first
+  for ($i = $busy.Count - 1; $i -ge 0; $i--) {
+    $job = $busy[$i]
+    if ($job.handle.IsCompleted) { try { $job.ps.EndInvoke($job.handle) | Out-Null } catch { }; $job.ps.Dispose(); $busy.RemoveAt($i) }
+  }
+  $ps = [PowerShell]::Create()
+  $ps.RunspacePool = $pool
+  [void]$ps.AddCommand("Invoke-Request").AddArgument($ctx)
+  [void]$busy.Add(@{ ps = $ps; handle = $ps.BeginInvoke() })
 }

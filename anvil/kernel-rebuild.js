@@ -26,6 +26,8 @@
   NAME_BASE.unfold = 'Unfold'; NAME_BASE.fold = 'Fold';   // lane DB
   NAME_BASE.refaxis = 'Axis'; NAME_BASE.refpoint = 'Point'; NAME_BASE.csys = 'Coordinate System';   // lane CZ: reference geometry
   NAME_BASE.rip = 'Rip'; NAME_BASE.tab = 'Tab';   // lane DI
+  NAME_BASE.vent = 'Vent';   // lane DT
+  NAME_BASE.insertBends = 'Process-Bends'; NAME_BASE.convertSM = 'Convert-Solid';   // lane DQ (SolidWorks' names)
 
   function featureName(model, type, cut) {
     var base = NAME_BASE[type] || 'Feature';
@@ -264,6 +266,7 @@
     // its bend allowance sets how much flat each bend rolls up (sketched bends; and p9-cutbend: a cut crossing a
     // flange's or jog's bend is wrapped round it by BA, so the solid changes with K / BA too)
     if (sh && /^(sketchedBend|flange|jog|hem|unfold|fold)$/.test(f.type)) sh = model.sheet;   // (Unfold / Fold: BA sets the strip)
+    if (model.noBends && (f.type === 'insertBends' || f.type === 'convertSM')) sh = [sh, 'noBends'];   // lane DQ: No Bends skips the bends
     return JSON.stringify(f, function (k, v) { return k === 'profile' || k === 'name' ? undefined : v; }) + '|' + JSON.stringify(sh) + '|' + tessKey();
   }
 
@@ -518,6 +521,18 @@
             var ccr = _.buildClosedCorner(f, model, ctx);
             putBody(cck, (ccr.cut ? ctx.body.subtract(ccr.cut) : ctx.body).union(ccr.add));
             ctx.tools[f.id] = ccr.add;
+            break;
+          }
+          case 'insertBends':
+          case 'convertSM': {
+            // lane DQ: Insert Bends / Convert to Sheet Metal (kernel-sheetmetal.js buildInsertBends): the part nearest the
+            // fixed face is replaced by its bent version; edge-flange records for the flat
+            var ibk = ctx.bodies.length ? Math.max(0, f.fixedFace ? bodyNearPoint(ctx.bodies, f.fixedFace) : 0) : -1;
+            ctx.body = ibk >= 0 ? ctx.bodies[ibk] : null;
+            var ibr = _.buildInsertBends(f, model, ctx);
+            putBody(ibk, ibr.body);
+            ctx.flanges[f.id] = ibr.info;
+            ctx.tools[f.id] = null;
             break;
           }
           case 'unfold':

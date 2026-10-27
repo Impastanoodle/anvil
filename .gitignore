@@ -11,3 +11,4 @@ anvil/vendor/occt/opencascade.full.*
 anvil/vendor/libredwg/
 # the head session's live subagent registry (agent ids, per session)
 head-tools/agents.local.json
+__pycache__/

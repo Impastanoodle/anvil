@@ -3394,6 +3394,296 @@
     preview();
   }
 
+  // ------------------------------------------------------------------ sheet metal: Vent (lane DT)
+  // SolidWorks' Sheet Metal ▸ Vent (Kernel.buildVent, a cut): one sketch on a flat sheet face; the PropertyManager's
+  // boxes Boundary / Ribs / Spars / Fill-In Boundary hold sketch entities (filled from Kernel.ventAutoGroups when it
+  // opens: the largest closed entity, the lines, the other closed entities); clicking an entity of the shown sketch
+  // moves it into the active box (or out of it). Geometry Properties (draft 0 and depth = T for sheet metal, fillet
+  // radius), Flow Area (read-only: open area and its percentage of the boundary), widths. Preview = what is cut.
+  var ventLast = { ribWidth: null, sparWidth: null };
+  var VENT_BOXES = [['boundary', 'Boundary'], ['ribs', 'Ribs'], ['spars', 'Spars'], ['fill', 'Fill-In Boundary']];
+  function cmdVent(existing) {
+    withSketch(function (sid) {
+      if (!App.model.sheet) { UI.toast('Vent needs a sheet-metal part: make a Base Flange first (Sheet Metal tab).'); return; }
+      var sheet = previewModel().sheet || App.model.sheet, T = +sheet.thickness, w0 = App.model.units === 'mm' ? 2.5 : 0.1;
+      var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'vent', sketch: pickDefaultSketch(sid), boundary: [], ribs: [], spars: [], fill: [],
+        ribWidth: ventLast.ribWidth != null ? ventLast.ribWidth : w0, sparWidth: ventLast.sparWidth != null ? ventLast.sparWidth : w0, fillWidth: 0, radius: 0 };
+      if (f.sketch == null) { UI.toast('Sketch the vent on a flat face of the sheet first (a closed boundary, rib lines, spar circles), then click Vent.'); return; }
+      VENT_BOXES.forEach(function (b) { f[b[0]] = (f[b[0]] || []).slice(); });
+      function sketchOf(v) { var s = K.findFeature(App.model, v.sketch); return s && s.type === 'sketch' ? s : null; }
+      function autoFill(v) {
+        var s = sketchOf(v);
+        if (!s) return;
+        var g = K.ventAutoGroups(s);
+        VENT_BOXES.forEach(function (b) { v[b[0]] = g[b[0]].slice(); });
+      }
+      if (!existing || !f.boundary.length) autoFill(f);
+      f.box = f.boundary.length ? (f.ribs.length ? 'ribs' : 'spars') : 'boundary';
+      var base = null;
+      function baseBody() { if (!base) base = existing ? bodyBefore(existing.id) : (App.build ? App.build.body : null); return base; }
+      function featOf(v) {
+        var out = { type: 'vent', sketch: v.sketch };
+        VENT_BOXES.forEach(function (b) { out[b[0]] = v[b[0]].slice(); });
+        out.ribWidth = v.ribWidth; out.sparWidth = v.sparWidth; out.fillWidth = v.fillWidth || 0; out.radius = v.radius || 0;
+        if (v.name) out.name = v.name;
+        return out;
+      }
+      var flow = null;
+      function flowText() {
+        if (!flow) return '—';
+        var u = UI.unitLabel();
+        return UI.fmtNum(flow.open, 4) + ' ' + u + '² (' + UI.fmtNum(flow.percent, 1) + '% of ' + UI.fmtNum(flow.boundary, 4) + ' ' + u + '²)';
+      }
+      function preview() {
+        UI.disposeGroup(UI.groups.preview);
+        flow = null;
+        var feat = featOf(f);
+        try {
+          if (!baseBody()) throw new Error('Create a Base Flange first.');
+          var ctx = { body: baseBody(), sketches: {}, planes: (App.build && App.build.planes) || {} };
+          var tool = K.buildVent(feat, previewModel(), ctx);
+          if (tool && tool.polygons.length) addPreviewMesh(tool, UI.mats.previewCut);
+          flow = K.ventFlowArea(feat, previewModel(), ctx);
+          UI.setStatus('Vent: flow area ' + flowText() + '. Click sketch entities to put them in the active box; ✓ to accept.');
+        } catch (e) { UI.setStatus('Preview: ' + e.message); }
+        var fa = document.querySelector('.pm-vent-flow');
+        if (fa) fa.textContent = flowText();
+      }
+      function setBox(b) { f.box = b; renderPM(); UI.setStatus('Click sketch entities for ' + VENT_BOXES.filter(function (x) { return x[0] === b; })[0][1] + ' (click again to remove).'); }
+      function pick(pk) {
+        if (pk.kind !== 'sketchEntity' || pk.sketch !== f.sketch) return false;
+        var i = pk.index, box = f.box || 'boundary', had = f[box].indexOf(i) >= 0;
+        VENT_BOXES.forEach(function (b) { var k = f[b[0]].indexOf(i); if (k >= 0) f[b[0]].splice(k, 1); });
+        if (!had) f[box].push(i);
+        renderPM(); preview();
+        return true;
+      }
+      function box(key, label, icon) {
+        return { type: 'pick', icon: icon, placeholder: 'Select ' + label.toLowerCase() + '…',
+          value: function (v) { var n = v[key].length; return n ? n + ' entit' + (n === 1 ? 'y' : 'ies') : ''; },
+          active: function (v) { return v.box === key; }, onActivate: function () { setBox(key); },
+          items: function (v) { var s = sketchOf(v); return v[key].map(function (i) { var e = s && s.entities[i]; return { label: e ? entityLabel(e, i) : 'Entity' + (i + 1) }; }); },
+          onRemove: function (v, i) { v[key].splice(i, 1); renderPM(); preview(); },
+          onClear: function (v) { v[key].length = 0; renderPM(); preview(); } };
+      }
+      var u = UI.unitLabel();
+      openPM({
+        title: existing ? existing.name : 'Vent', icon: 'vent', values: f,
+        onRollback: function () { base = null; },
+        message: 'Sketch the vent on a flat face of the sheet: a closed <b>boundary</b>, <b>rib</b> lines through it, <b>spar</b> circles and an optional <b>fill-in boundary</b>. Click a box, then click entities of the sketch to put them there.',
+        command: { sketchId: f.sketch, pickRefGeo: true, refKinds: [], pickSketchRefs: true, onPick: pick },
+        groups: [
+          { title: 'Boundary', fields: [sketchPickerField(f), box('boundary', 'Boundary', 'vent')] },
+          { title: 'Geometry Properties', fields: [
+            { type: 'static', label: 'Draft angle', value: '0° (sheet metal)' },
+            { type: 'number', label: 'Radius for fillets', key: 'radius', unit: 'u', min: 0 }
+          ] },
+          { title: 'Flow Area', fields: [{ type: 'html', html: function () { return '<div class="pm-row"><label>Area</label><span class="static pm-vent-flow">' + flowText() + '</span></div>'; } }] },
+          { title: 'Ribs', fields: [box('ribs', 'Ribs', 'line'),
+            { type: 'number', label: 'Rib width', key: 'ribWidth', unit: 'u', min: 0 },
+            { type: 'static', label: 'Rib depth', value: UI.fmtNum(T, 4) + ' ' + u + ' (thickness)' },
+            { type: 'static', label: 'Offset', value: '0 (sheet metal)' }] },
+          { title: 'Spars', fields: [box('spars', 'Spars', 'circle'),
+            { type: 'number', label: 'Spar width', key: 'sparWidth', unit: 'u', min: 0 },
+            { type: 'static', label: 'Spar depth', value: UI.fmtNum(T, 4) + ' ' + u + ' (thickness)' },
+            { type: 'static', label: 'Offset', value: '0 (sheet metal)' }] },
+          { title: 'Fill-In Boundary', collapsed: !f.fill.length, fields: [box('fill', 'Fill-In Boundary', 'vent'),
+            { type: 'number', label: 'Fill-in width', key: 'fillWidth', unit: 'u', min: 0 }] },
+          { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+        ],
+        onChange: function (v, key) {
+          if (key === 'sketch') { autoFill(v); if (App.command) { App.command.sketchId = v.sketch; UI.updateSketches(); } renderPM(); }
+          preview();
+        },
+        onOK: function (v) {
+          if (v.sketch == null || v.sketch < 0) { UI.toast('Select the vent\'s sketch.'); return false; }
+          if (!v.boundary.length) { UI.toast('Select the vent\'s boundary (a closed contour).'); return false; }
+          var feat = featOf(v);
+          try { K.buildVent(feat, previewModel(), { body: baseBody(), sketches: {}, planes: (App.build && App.build.planes) || {} }); } catch (e) { UI.toast(e.message); return false; }
+          ventLast = { ribWidth: v.ribWidth, sparWidth: v.sparWidth };
+          return commitFeature(feat, existing);
+        }
+      });
+      preview();
+    });
+  }
+
+  // ------------------------------------------------------------------ sheet metal: Insert Bends / Convert to Sheet Metal (lane DQ)
+  // SolidWorks' Sheet Metal ▸ Insert Bends (a shelled / thin-walled part: every sharp corner between two walls becomes
+  // a bend; T is read from the part at the fixed face) and Convert to Sheet Metal (a solid: fixed face, bend edges, the
+  // rip edges found between the faces kept, the rip gap). Both write the part's sheet (the Sheet-Metal row: R, bend
+  // allowance, auto relief) with the feature; the flat is laid from the fixed face. Ribbon No Bends (toggleNoBends)
+  // shows the part without its bends (model.noBends) and back.
+  var ibLast = {};
+  function ibRnd(p) { return p.map(function (x) { return Math.round(x * 1e6) / 1e6; }); }
+  function cmdInsertBendsPM(kind, existing) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    var isConv = kind === 'convertSM', title = isConv ? 'Convert to Sheet Metal' : 'Insert Bends';
+    if (!App.build || !App.build.body || !App.build.body.polygons.length) { UI.toast(title + ' needs a part: ' + (isConv ? 'make a solid first.' : 'make a shelled or thin-walled part first.')); return; }
+    if (!existing && App.model.sheet && App.model.features.some(function (g) { return g.sheetBase && !g.cut; })) { UI.toast('The part is sheet metal already.'); return; }
+    var base = null, units = App.model.units;
+    function baseBody() { if (!base) base = existing ? bodyBefore(existing.id) : App.build.body; return base; }
+    var v0 = sheetToValues(App.model.sheet || (function () { var d = defaultSheet(); if (ibLast.radius != null) d.bendRadius = ibLast.radius; return d; })(), {});
+    if (!App.model.sheet && ibLast.thickness != null && isConv) v0.thickness = ibLast.thickness;
+    if (!App.model.sheet && !existing) v0.autoRelief = 'rect';
+    v0.fixedFace = existing && existing.fixedFace ? existing.fixedFace.slice() : null;
+    v0.bendEdges = existing && existing.bendEdges ? existing.bendEdges.map(function (p) { return p.slice(); }) : [];
+    v0.gap = existing && existing.gap != null ? existing.gap : (ibLast.gap != null ? ibLast.gap : K.ripDefaultGap(App.model));
+    v0.cornerRelief = !(existing && existing.autoRelief === 'none');
+    if (existing && existing.name) v0.name = existing.name;
+    // Insert Bends: T is the part's, measured under the fixed face
+    var measured = { at: null, T: null, err: null };
+    function thickness(v) {
+      if (isConv) return +v.thickness;
+      if (!v.fixedFace) return null;
+      if (!measured.at || measured.at.join() !== v.fixedFace.join()) {
+        measured.at = v.fixedFace.slice();
+        try { measured.T = Math.round(K.sheetThicknessAt(baseBody(), v.fixedFace, units) * 1e9) / 1e9; measured.err = null; } catch (e) { measured.T = null; measured.err = e.message; }
+      }
+      return measured.T;
+    }
+    function sheetOf(v, exprs) {
+      var w = {};
+      Object.keys(v).forEach(function (k) { w[k] = v[k]; });
+      if (!isConv) { w.thickness = thickness(v); w.useGauge = false; }
+      return sheetFromValues(w, exprs && isConv);
+    }
+    function featOf(v) {
+      var f = isConv ? { type: 'convertSM', fixedFace: v.fixedFace ? v.fixedFace.slice() : null, bendEdges: v.bendEdges.map(function (p) { return p.slice(); }), gap: +v.gap, sheetBase: true }
+        : { type: 'insertBends', fixedFace: v.fixedFace ? v.fixedFace.slice() : null, sheetBase: true };
+      if (!v.cornerRelief) f.autoRelief = 'none';
+      if (v.name) f.name = v.name;
+      return f;
+    }
+    function modelOf(v) {
+      var m = {};
+      var pmod = previewModel();
+      Object.keys(pmod).forEach(function (k) { m[k] = pmod[k]; });
+      m.sheet = sheetOf(v, false);
+      delete m.noBends;
+      return m;
+    }
+    function lit() {
+      var v = pm.values || v0, T = thickness(v) || +v.thickness || 0;
+      if (v.fixedFace) ufLit([v.fixedFace], T); else if (App.command) { App.command.faceList = []; UI.updateHighlights(); }
+      if (isConv && App.command) {
+        App.command.edgeList = (App.edges || []).filter(function (e) { return v.bendEdges.some(function (q) { return K.pointSegmentDistance(q, e.a, e.b) <= 1e-4 * (1 + e.len); }); });
+        UI.updateHighlights();
+      }
+    }
+    var info = { bends: null, rips: null, err: null };
+    function preview() {
+      lit();
+      var v = pm.values || v0;
+      UI.disposeGroup(UI.groups.preview);
+      info = { bends: null, rips: null, err: null };
+      if (!v.fixedFace) { UI.setStatus('Click the fixed face' + (isConv ? ', then the edges that become bends.' : ' (a flat face of the part that stays put in the flat).')); renderInfo(); return; }
+      if (isConv && !v.bendEdges.length) { UI.setStatus('Click the edges of the solid that become bends.'); renderInfo(); return; }
+      if (!isConv && thickness(v) == null) { info.err = measured.err; UI.setStatus(title + ': ' + measured.err); renderInfo(); return; }
+      try {
+        var m = modelOf(v), f = featOf(v);
+        if (isConv) info.rips = K.convertSMPlan(f, m, { body: baseBody() }).rips.length;
+        var r = K.insertBendsPreview(f, m, baseBody());
+        info.bends = r.bends;
+        if (r.body && r.body.polygons.length) addPreviewMesh(r.body, UI.mats.preview);
+        UI.setStatus(title + ': ' + r.bends + ' bend' + (r.bends === 1 ? '' : 's') + (isConv ? ', ' + info.rips + ' rip' + (info.rips === 1 ? '' : 's') : '') + ', T ' + UI.fmtNum(m.sheet.thickness, 4) + ', R ' + UI.fmtNum(m.sheet.bendRadius, 4) + '. Press Enter or ✓ to accept.');
+      } catch (e) { info.err = e.message; UI.setStatus('Preview: ' + e.message); }
+      renderInfo();
+    }
+    var infoShown = '';
+    function renderInfo() { var t = infoText(); if (t !== infoShown) { infoShown = t; renderPM(); } }
+    function infoText() { return info.err ? info.err : (info.bends == null ? '' : info.bends + ' bend' + (info.bends === 1 ? '' : 's') + (info.rips != null ? ', ' + info.rips + ' rip edge' + (info.rips === 1 ? '' : 's') + ' found' : '')); }
+    function pick(pk) {
+      var v = pm.values;
+      if (isConv && pk.kind === 'edge' && pk.edge) {
+        var i = -1;
+        v.bendEdges.forEach(function (q, k) { if (K.pointSegmentDistance(q, pk.edge.a, pk.edge.b) <= 1e-4 * (1 + pk.edge.len)) i = k; });
+        if (i >= 0) v.bendEdges.splice(i, 1); else v.bendEdges.push(ibRnd(pk.edge.mid));
+      } else if (pk.kind === 'face' && pk.point) {
+        v.fixedFace = ibRnd(pk.point);
+      } else return false;
+      renderPM(); preview();
+      return true;
+    }
+    var gs = sheetGroups().filter(function (g) { return isConv || g.title !== 'Sheet Metal Gauges'; });
+    var fixedPick = { type: 'pick', icon: kind, placeholder: 'Fixed face…',
+      value: function (v) { return v.fixedFace ? 'Face<1>' : ''; },
+      items: function (v) { return v.fixedFace ? [{ label: 'Face<1>', at: v.fixedFace }] : []; },
+      onRemove: function (v) { v.fixedFace = null; renderPM(); preview(); },
+      onClear: function (v) { v.fixedFace = null; renderPM(); preview(); } };
+    gs.forEach(function (g) {
+      if (g.title !== 'Sheet Metal Parameters') return;
+      if (isConv) { g.fields = [fixedPick].concat(g.fields); return; }
+      g.title = 'Bend Parameters';
+      g.fields = [fixedPick, { type: 'static', label: 'Thickness  T', value: function (v) { var t = thickness(v); return t == null ? '(from the part at the fixed face)' : UI.fmtNum(t, 4) + ' (the part\'s)'; } }].concat(g.fields.filter(function (q) { return q.key !== 'thickness'; }));
+    });
+    if (isConv) {
+      var at = 1 + gs.map(function (g) { return g.title; }).indexOf('Sheet Metal Parameters');
+      gs.splice(at, 0, { title: 'Bend Edges', fields: [
+        { type: 'pick', icon: 'bend', placeholder: 'Edges that become bends…',
+          value: function (v) { var n = v.bendEdges.length; return n ? n + ' edge' + (n === 1 ? '' : 's') : ''; },
+          items: function (v) { return v.bendEdges.map(function (p, i) { return { label: 'Edge<' + (i + 1) + '>', at: p }; }); },
+          onRemove: function (v, i) { v.bendEdges.splice(i, 1); renderPM(); preview(); },
+          onClear: function (v) { v.bendEdges.length = 0; renderPM(); preview(); } },
+        { type: 'static', label: 'Rip edges found', value: function () { return info.rips == null ? '–' : String(info.rips); } }
+      ] }, { title: 'Corner Defaults', fields: [{ type: 'number', label: 'Rip gap', key: 'gap', unit: 'u', min: 0 }] });
+    }
+    gs.push({ title: 'Corner Relief', fields: [{ type: 'check', label: 'Relieve corners where two bends meet (R + T square)', key: 'cornerRelief' }] });
+    gs.push({ title: 'Result', fields: [{ type: 'static', label: '', value: function () { return infoText() || '–'; } }] });
+    gs.push({ title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] });
+    openPM({
+      title: existing ? existing.name : title, icon: kind, values: v0,
+      onRollback: function () { base = null; measured.at = null; lit(); },
+      message: isConv
+        ? 'Click the <b>fixed face</b>, then the <b>edges</b> of the solid that become bends. The faces not joined to the fixed face across them are removed (a shell of T inward), the edges between kept faces are ripped, and the bends are inserted.'
+        : 'Click the <b>fixed face</b> (a flat face that stays put in the flat). Every sharp corner between two walls of the part\'s thickness becomes a bend of this radius; rip closed corners first (Rip).',
+      command: isConv ? { faceList: [], edgeList: [], pickEdges: true, onPick: pick } : { faceList: [], onPick: pick },
+      groups: gs,
+      onChange: function (v, key) {
+        if (isConv && v.useGauge && (key === 'useGauge' || key === 'gaugeTable' || key === 'gauge') && applyGauge(v)) renderPM();
+        preview();
+      },
+      onOK: function (v) {
+        if (!v.fixedFace) { UI.toast('Pick the fixed face.'); return false; }
+        if (isConv && !v.bendEdges.length) { UI.toast('Pick the edges that become bends.'); return false; }
+        if (isConv && !(+v.gap > 0)) { UI.toast('The rip gap must be more than 0.'); return false; }
+        if (!isConv && thickness(v) == null) { UI.toast(measured.err || 'Cannot read the part\'s thickness at the fixed face.'); return false; }
+        var sheet;
+        try { sheet = sheetOf(v, true); } catch (e) { UI.toast(e.message); return false; }
+        var feat = featOf(v);
+        ibLast = { radius: +v.bendRadius, gap: isConv ? +v.gap : ibLast.gap, thickness: isConv ? +v.thickness : ibLast.thickness };
+        // one undo step takes back the sheet with the feature: the snapshot is taken before the sheet changes and the
+        // one commitFeature takes (sheet already set) is dropped
+        UI.pushUndo();
+        var mark = App.undo.length;
+        App.model.sheet = sheet;
+        var res = commitFeature(feat, existing);
+        if (App.undo.length === mark + 1) App.undo.splice(mark, 1);
+        return res;
+      }
+    });
+    preview();
+  }
+  function cmdInsertBends(existing) { cmdInsertBendsPM('insertBends', existing); }
+  function cmdConvertSheetMetal(existing) { cmdInsertBendsPM('convertSM', existing); }
+  // ribbon No Bends: the part without its inserted bends (SolidWorks rolls back to before Process-Bends) and back
+  function toggleNoBends(on) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    if (!App.model.features.some(function (g) { return g.type === 'insertBends' || g.type === 'convertSM'; })) { UI.toast('No Bends works on a part made sheet metal by Insert Bends or Convert to Sheet Metal.'); return false; }
+    var want = on == null ? !App.model.noBends : !!on;
+    if (want === !!App.model.noBends) return false;
+    if (UI.hasPM && UI.hasPM()) UI.closePM();
+    if (want && App.model.flatState && UI.toggleFlatten) UI.toggleFlatten(false);
+    UI.pushUndo();
+    if (want) App.model.noBends = true; else delete App.model.noBends;
+    return UI.afterRebuild(UI.rebuild(), function () {
+      UI.refreshTree();
+      if (UI.refreshRibbon) UI.refreshRibbon();
+      UI.setStatus(want ? 'No Bends: the part as it was before its bends were inserted. Click No Bends again to insert them.' : 'Bends inserted.');
+      return true;
+    });
+  }
+
   // ------------------------------------------------------------------ sheet metal: Tab (lane DI)
   // Base Flange/Tab on a part that already has a sheet is a Tab (SolidWorks: Tab1): a closed sketch on a flat sheet
   // face extruded the sheet's thickness into the sheet (Kernel.tabFeature: flush with the face, merged), the thickness
@@ -5258,6 +5548,9 @@
       // a Base Flange's depth is the sheet thickness: it is edited with the sheet's parameters, not as an extrude
       case 'extrude': if (f.tab && !f.cut) cmdTab(f); else if (f.sheetBase && !f.cut) cmdSheetMetal(); else cmdExtrude(f.cut, f); break;
       case 'rip': UI.cmdRipFeature(f); break;   // lane DI
+      case 'vent': UI.cmdVent(f); break;   // lane DT
+      case 'insertBends': UI.cmdInsertBends(f); break;   // lane DQ
+      case 'convertSM': UI.cmdConvertSheetMetal(f); break;
       case 'revolve': cmdRevolve(f.cut, f); break;
       case 'lpattern': cmdLinearPattern(f); break;
       case 'cpattern': cmdCircularPattern(f); break;
@@ -5395,6 +5688,8 @@
   UI.cmdClosedCorner = partOnly(cmdClosedCorner, 'Closed Corner');   // Sheet Metal ▸ Closed Corner PropertyManager (lane CS)
   UI.cmdUnfold = partOnly(cmdUnfold, 'Unfold'); UI.cmdFold = partOnly(cmdFold, 'Fold');   // Sheet Metal ▸ Unfold / Fold (lane DB)
   UI.cmdRipFeature = partOnly(cmdRipFeature, 'Rip'); UI.cmdTab = partOnly(cmdTab, 'Base Flange/Tab');   // Sheet Metal ▸ Rip, Tab (lane DI)
+  UI.cmdVent = partOnly(cmdVent, 'Vent');   // Sheet Metal ▸ Vent (lane DT)
+  UI.cmdInsertBends = partOnly(cmdInsertBends, 'Insert Bends'); UI.cmdConvertSheetMetal = partOnly(cmdConvertSheetMetal, 'Convert to Sheet Metal'); UI.toggleNoBends = toggleNoBends;   // lane DQ
   // assembly documents
   UI.cmdInsertComponent = cmdInsertComponent; UI.cmdMate = cmdMate; UI.editMate = editMate; UI.mateSelect = mateSelect;
   UI.cmdMoveComponent = function () { cmdMoveComponent('move'); }; UI.cmdRotateComponent = function () { cmdMoveComponent('rotate'); };

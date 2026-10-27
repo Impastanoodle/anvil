@@ -29,13 +29,13 @@
     var d2 = rfWDims()[1], m2 = rfWMid(d2);
     sheetMouse('mousedown', m2); sheetMouse('mousemove', [m2[0], m2[1] + 6]); sheetMouse('mouseup', [m2[0], m2[1] + 6]);
     assert(!UI.hasPM(), 'a drag opens no PM');
-    await UI.undo(); await idle(); await wait(40);
+    await UI.undo(); await idle(); await wait(40); await UI.drawing.ready();   // (rfDR2: views from the worker)
     // Delete with the PM open deletes the dimension and closes the PM
     rfWClick(rfWMid(rfWDims()[0]));
     assert(rfWPM() === 'Dimension', 'open again');
     key('Delete'); await wait(40);
     assert(rfWDims().length === n - 1 && !UI.hasPM(), 'Delete: ' + rfWDims().length + ' PM ' + rfWPM());
-    await UI.undo(); await idle(); await wait(60);
+    await UI.undo(); await idle(); await wait(60); await UI.drawing.ready();
     assert(rfWDims().length === n, 'undo brings it back');
     // a part change with the PM open: the PM closes and the sheet follows the thicker plate
     rfWClick(rfWMid(rfWDims()[0]));

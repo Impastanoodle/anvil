@@ -449,11 +449,31 @@
   var DB2_L = DB2_HEAD + 'p.flange(1.5, [[3, ' + SH_T + ', 0]], { position: "inside", lengthRef: "outer" });\n';
   var DB2_U = DB2_HEAD + 'p.flange(1.5, [[3, ' + SH_T + ', 0], [3, ' + SH_T + ', 4]], { position: "inside", lengthRef: "outer" });\n';
   var DI_BOX = 'p.units("in");\np.sketch("Top").rect(0, 0, 2, 2).end().extrude(1);\np.shell(0.06, [[1, 1, -1]]);\n';   // lane DI
-  var DI_CC = CW_TRAY + 'p.closedCorner([' + JSON.stringify(CW_F4[0]) + '], { cornerType: "butt", gap: 0.01, coplanar: false });\n';
+  // lane DQ: Insert Bends / Convert to Sheet Metal (R = T = .06, rip gap .03): each bend takes the kite (R + T)² − R² and
+  // puts the exact annulus π/4·((R + T)² − R²) over the 1.76 between the corner cubes; each corner cube takes the ripped box in it
+  var DQ_RT = 0.12, DQ_F = DQ_RT * DQ_RT - 0.0036, DQ_CUBE = DQ_RT * DQ_RT * 0.06 + (DQ_RT - 0.06) * (2 * DQ_RT * 0.06 - 0.0036 - Math.SQRT2 * 0.03 * 0.06);
+  var DQ_RIPPED = 'p.units("in");\np.sketch("Top").rect(0, 0, 2, 2).end().extrude(1);\np.shell(0.06, [[1, 1, -1]]);\np.rip([[2, 0.5, 0], [2, 0.5, -2], [0, 0.5, -2], [0, 0.5, 0]], 0.03);\n';
+  var DQ_L = 'p.units("in");\np.sketch("Front").polyline([[0, 0], [1.5, 0], [1.5, 0.06], [0.06, 0.06], [0.06, 1], [0, 1]]).end().extrude(2);\n';
+  var DI_CC = CW_TRAY + 'p.closedCorner([' + JSON.stringify(CW_F4[0]) + '], { cornerType: "underlap", gap: 0.01, coplanar: false });\n';
   // lane DJ: a 4 × 2 base with a 1.0 edge flange on its front edge; the U-channel's bends (Kernel.sheetBends' `at`); a
   // 0.25 × 1.0 slot cut flat from above, centred on a bend line at z = zc
   var DJ_BR = 'p.units("in");\np.sheet(' + SH_T + ', ' + SH_T + ', 0.5);\np.sketch("Top").rect(0, -2, 4, 2).end().baseFlange();\np.flange(1, [[2, ' + SH_T + ', 0]], { position: "inside", lengthRef: "outer" });\n';
   var DJ_A = '[3,0.056173,0.056173]', DJ_B = '[3,0.056173,3.943827]';
+  // lane DT: the Vent part and its exact open area (a disk less a centred cross of strips .1 wide); the Tab across the
+  // U-channel's front bend line, past its side
+  var DT_VENT = 'p.units("in");\np.sheet(0.06, 0.06, 0.5);\np.sketch("Top").rect(-2, -2, 4, 4).end().baseFlange();\np.sketch("Top").circle(0, 0, 1).line(-1, 0, 1, 0).line(0, -1, 0, 1).circle(0, 0, 0.5).end().vent({ ribWidth: 0.1, sparWidth: 0.1 });';
+  function dtD(r) { var h = 0.05; return Math.PI * r * r - 4 * (h * Math.sqrt(r * r - h * h) + r * r * Math.asin(h / r)) + 4 * h * h; }
+  var dtOpen = dtD(0.45) + dtD(1) - dtD(0.55);
+  // lane DT2: radius .05: the corner pieces (rib / circle by Green's theorem; rib / rib r²(1 − π/4)) the fillets keep
+  function dtCorner(R, inside) {
+    var r = 0.05, h = 0.05, Rc = inside ? R - r : R + r, xc = Math.sqrt(Rc * Rc - (h + r) * (h + r)), C = [xc, h + r], T1 = [xc, h], T2 = [C[0] * R / Rc, C[1] * R / Rc], V = [Math.sqrt(R * R - h * h), h];
+    function arc(c, rho, t0, sw) { var t1 = t0 + sw; return (rho * rho * sw + rho * (c[0] * (Math.sin(t1) - Math.sin(t0)) - c[1] * (Math.cos(t1) - Math.cos(t0)))) / 2; }
+    var aV = Math.atan2(V[1], V[0]), aT2 = Math.atan2(T2[1], T2[0]), f0 = Math.atan2(T2[1] - C[1], T2[0] - C[0]), sw = -Math.PI / 2 - f0;
+    if (inside) { while (sw > 0) sw -= 2 * Math.PI; } else { while (sw < 0) sw += 2 * Math.PI; }
+    return Math.abs(arc([0, 0], R, aV, aT2 - aV) + arc(C, r, f0, sw) + (T1[0] * V[1] - V[0] * T1[1]) / 2);
+  }
+  var dtLost = 4 * (0.0025 * (1 - Math.PI / 4) + 2 * dtCorner(0.45, true)) + 4 * (2 * dtCorner(0.55, false) + 2 * dtCorner(1, true));
+  var DT_TAB = 'p.sketch("Top").rect(6, ' + (-(DB2_ZB + 0.25)) + ', 0.5, 0.5).extrude(' + SH_T + ');\n';
   function DJ_SLOT(zc) { return 'p.sketch("Top", 1).rect(2.5, ' + (-(zc + 0.125)) + ', 1, 0.25).cut("through", { reverse: true });\n'; }
   // lane DL2: Miter Flange from a profile sketch (rfDL's part: 4 × 2, T = R = .06, K = .5; the profile on the Right
   // Plane at the front-left corner, along the front and left edges). Exact: the gap takes √2·gap·A+ (each flange
@@ -469,7 +489,7 @@
   var CW_CASES = [
     { name: 'Closed Corner Overlap (ratio .75, gap .01) on all four corners of a 16 ga 4 × 3 tray', plain: CW_TRAY,
       code: CW_TRAY + 'p.closedCorner(' + JSON.stringify(CW_F4) + ', ' + JSON.stringify({ cornerType: 'overlap', gap: 0.01, ratio: 0.75, coplanar: false }) + ');',
-      removed: -4 * (1 - 2 * SH_T) * SH_T * (SH_T + 0.75 * SH_T - (SH_T + 0.01)), loops: 1 },
+      removed: -4 * (1 - 2 * SH_T) * SH_T * (SH_T + 0.75 * SH_T - (SH_T + 0.01)) + 4 * Math.PI / 4 * 3 * SH_T * SH_T * (3 * SH_T + 0.01) / 2, loops: 1 },   // lane DV: + each front bend's end tapered (exact quarter annulus × the mean of R + T and T + gap)
     { name: 'Break-Corner fillet R .25 on the four corners of a 4 × 3 base', plain: null, code: CW_HEAD + CW_BC(0.25, [[0, SH_T / 2, 0], [4, SH_T / 2, 0], [4, SH_T / 2, 3], [0, SH_T / 2, 3]], { kind: 'fillet' }), exact: (12 - 4 * (1 - Math.PI / 4) * 0.0625) * SH_T, loops: 1, arcs: 4, dxf: true },
     { name: 'Break-Corner chamfer .2 on the free base corners of an L bracket', plain: CW_L, code: CW_L + CW_BC(0.2, [[4, SH_T / 2, 0], [4, SH_T / 2, 3]], {}), removed: 2 * 0.02 * SH_T, loops: 1, arcs: 0, dxf: true },
     { name: 'Normal Cut of a Ø.375 hole straddling a bend\'s tangent line, cut from the top face, goes through the whole bend normal to the sheet', plain: CW_NC,
@@ -494,7 +514,7 @@
       code: DI_BOX + 'p.rip([[2, 0.5, 0]], 0.03, { direction: "side1" });', removed: 0.94 * 0.03 * 0.06 },
     { name: 'Rip both directions on the inside corner edge of the same box: removes √2 × .94 × .03 × .06', noFlat: true, plain: DI_BOX,
       code: DI_BOX + 'p.rip([[1.94, 0.5, -0.06]], 0.03);', removed: Math.SQRT2 * 0.94 * 0.03 * 0.06 },
-    { name: 'Rip .03 at a Butt Closed Corner (gap .01) of the 16 ga tray: the gap widens to .03; one blank', plain: DI_CC,
+    { name: 'Rip .03 at an Underlap Closed Corner (gap .01) of the 16 ga tray: the gap widens to .03; one blank', plain: DI_CC,
       code: DI_CC + 'p.rip([[0, 0.6, 0]], 0.03);', removed: (1 - 2 * SH_T) * 0.02 * SH_T, loops: 1, dxf: true },
     { name: 'Tab 1 × 1 sketched on the top face of a 16 ga 4 × 3 base flange: + 1 × 1 × T, flush; the flat is 5 × 3', plain: null,
       code: CW_HEAD + 'p.sketch("Top", ' + SH_T + ').rect(4, -2, 1, 1).end().tab();', exact: 13 * SH_T, loops: 1, dxf: true },
@@ -521,7 +541,25 @@
     { name: 'DL: Miter Flange L profile (1 up, .5 out), gap .01 against gap 0: two bends along the chain, mitred at both levels, removes √2·.01·(A1 + A2)', plain: DL_MF(DL_L, { miterGap: 0 }),
       code: DL_MF(DL_L, { miterGap: 0.01 }), removed: Math.SQRT2 * 0.01 * (DL_A1 + DL_A2), loops: 1, dxf: true },
     { name: 'DL: Miter Flange Bend Outside, gap .01: exactly the edge-only miter flange placed Bend Outside', plain: DL_HEAD + 'p.flange(1, ' + DL_E + ', { position: "bendOutside", lengthRef: "inner", miter: true, miterGap: 0.01 });\n',
-      code: DL_MF(DL_I, { position: 'bendOutside', miterGap: 0.01 }), removed: 0, loops: 1 }
+      code: DL_MF(DL_I, { position: 'bendOutside', miterGap: 0.01 }), removed: 0, loops: 1 },
+    // lane DT: Vent (Ø2 boundary, two ribs .1 through the centre, a Ø1 spar .1) on a 4 × 4 × .06 base: removes T × the
+    // exact open area (dtOpen); a partial Unfold of a U-channel with a Tab folded across a bend keeps the tab's bend part
+    { name: 'DT: Vent Ø2, ribs .1 (two, through the centre), spar Ø1 .1, on a 4 × 4 × .06 base flange: removes T × the exact open area; the flat has the 8 vent holes',
+      plain: null, code: DT_VENT, exact: 16 * 0.06 - 0.06 * dtOpen, loops: 9 },
+    { name: 'DT2: the same Vent with radius .05: the 28 hole corners filleted with exact arcs, removes T × (open area − the corner pieces)',
+      plain: null, code: DT_VENT.replace('sparWidth: 0.1 }', 'sparWidth: 0.1, radius: 0.05 }'), exact: 16 * 0.06 - 0.06 * (dtOpen - dtLost), loops: 9 },
+    { name: 'DT: U-channel unfolded, a 0.5 × 0.5 × T Tab past the side across the front bend line, Fold, then Unfold of the front bend only: the tab lies flat with its strip (+ 0.25·T exactly)',
+      plain: DB2_U + 'p.unfold([1, ' + SH_T + ', 2], [' + DJ_A + ']);', code: DB2_U + 'p.unfold([1, ' + SH_T + ', 2], null);\n' + DT_TAB + 'p.fold();\np.unfold([1, ' + SH_T + ', 2], [' + DJ_A + ']);', removed: -0.25 * SH_T, loops: 1 },
+    { name: 'DT: the same, Unfold of the back bend only: the tab stays folded round the front bend, whole (+ 0.25·T exactly)',
+      plain: DB2_U + 'p.unfold([1, ' + SH_T + ', 2], [' + DJ_B + ']);', code: DB2_U + 'p.unfold([1, ' + SH_T + ', 2], null);\n' + DT_TAB + 'p.fold();\np.unfold([1, ' + SH_T + ', 2], [' + DJ_B + ']);', removed: -0.25 * SH_T, loops: 1 },
+    // lane DQ: Insert Bends / Convert to Sheet Metal
+    { name: 'DQ: Insert Bends R .06 on the shelled 2 × 2 × 1 box ripped at its four corners (bottom fixed): four exact bends, four corner cubes; one blank', plain: DQ_RIPPED,
+      code: DQ_RIPPED + 'p.insertBends([1, 0, -1], { radius: 0.06 });', removed: 4 * 1.76 * (1 - Math.PI / 4) * DQ_F + 4 * DQ_CUBE, loops: 1, dxf: true },
+    { name: 'DQ: Convert to Sheet Metal of the solid 2 × 2 × 1 box (bottom fixed, the four bottom edges, T .06, R .06, gap .03) = the ripped box with bends inserted', plain: DQ_RIPPED,
+      code: 'p.units("in");\np.sketch("Top").rect(0, 0, 2, 2).end().extrude(1);\np.convertSheetMetal([1, 0, -1], [[1, 0, 0], [2, 0, -1], [1, 0, -2], [0, 0, -1]], { thickness: 0.06, radius: 0.06, gap: 0.03 });',
+      removed: 4 * 1.76 * (1 - Math.PI / 4) * DQ_F + 4 * DQ_CUBE, loops: 1 },
+    { name: 'DQ: Insert Bends on a thin L extrude (1.5 × 1, T .06, 2 long; free ends): one exact bend', plain: DQ_L,
+      code: DQ_L + 'p.insertBends([0.75, 0, 1], { radius: 0.06 });', removed: 2 * (1 - Math.PI / 4) * DQ_F, loops: 1 }
   ];
   for (var cwk = 0; cwk < CW_CASES.length; cwk++) {
     var cw = CW_CASES[cwk], tcw = performance.now();

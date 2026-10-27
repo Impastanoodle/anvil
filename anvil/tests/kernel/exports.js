@@ -18,6 +18,7 @@
     assert((dxf.match(/\n0\nLINE\n/g) || []).length === 5, 'LINE x5');
     assert(dxf.indexOf('\nPOLYLINE\n') < 0, 'no POLYLINE');
     assert(/\$INSUNITS\n70\n4\n/.test(dxf), 'mm units flag');
+    assert(/\$DIMALTF\n40\n0\.0393700787\n/.test(dxf), 'DIMALTF for mm (SolidWorks reads the unit from it, rfDU)');
     assert(/\nEOF$/.test(dxf), 'EOF');
     assert(dxf.indexOf('OUTLINE') > 0 && dxf.indexOf('HOLES') > 0, 'layer table');
   });

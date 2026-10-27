@@ -1380,7 +1380,7 @@
     ];
     var sync = syncSelection(f, v, function () { if (circular) syncPolar(); UI.renderPM(); preview(); });
     UI.openPM({
-      title: edit ? 'Edit Circular Pattern' : circular ? 'Circular Pattern' : 'Linear Pattern', icon: circular ? 'cSketchPattern' : 'sketchPattern', values: v,
+      title: edit ? (circular ? 'Edit Circular Pattern' : 'Edit Linear Pattern') : circular ? 'Circular Pattern' : 'Linear Pattern', icon: circular ? 'cSketchPattern' : 'sketchPattern', values: v,
       command: cmd,
       onSelection: sync,
       onEntityPick: function () { return v.box !== 'entities'; },
@@ -1398,7 +1398,15 @@
       onOK: function () {
         if (!v.entities.length) { UI.toast('Select the entities to pattern first.'); return false; }
         var r = step(function () {
-          if (!circular) return S.linearPattern(f, v.entities, linSpec());
+          if (!circular) {
+            // lane DS: Edit Linear Pattern takes the old copies (and the construction points / lines the pattern made)
+            // out first, as the circular edit does; the PM's settings ride on the Pattern relation (pat.spec)
+            if (edit) removePatternMade(f, edit.rel);
+            var rl = S.linearPattern(f, v.entities, linSpec()), lr = rl.ok ? lastPatternRel(f, true) : null;
+            if (lr) lr.pat.spec = { ref1: v.ref1, angle: +v.angle, rev1: !!v.rev1, spacing: +v.spacing, count: v.count | 0, dims: !!v.dims, showCount: !!v.showCount,
+              ref2: v.ref2, angle2: +v.angle2, rev2: !!v.rev2, spacing2: +v.spacing2, count2: v.count2 | 0, dimY: !!v.dimY, showCount2: !!v.showCount2, dimAngle: !!v.dimAngle };
+            return rl;
+          }
           // lane DM: Edit Circular Pattern takes the old instances and construction lines out first (a failure pops the
           // whole edit: step())
           if (edit) removePatternMade(f, edit.rel);
@@ -1415,8 +1423,11 @@
         UI.setStatus('Added ' + r.copies.length + ' patterned entit' + (r.copies.length === 1 ? 'y' : 'ies') + '.');
       },
       onCancel: clearPreview,
-      onClose: function () { App.tempEntities = []; UI.updateTemp(); if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); }
+      onClose: function () { App.tempEntities = []; UI.updateTemp(); if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); if (edit) editHideOff(); }
     });
+    // lane DS: while an Edit Circular / Linear Pattern PM is open the old instances (and the pattern's construction
+    // lines, points and dimensions) are hidden, so only the preview shows where the instances will be; ✗ shows them again
+    if (edit) editHideOn(f, edit.rel);
     if (circular) { syncPolar(); UI.renderPM(); }
     if (!v.entities.length) UI.setStatus('Select the sketch entities to pattern in the graphics area.');
     preview();
@@ -1430,15 +1441,65 @@
   // inst }); the PM's settings are kept on it as pat.spec, and pat.showCount = Display instance count. Edit Circular
   // Pattern (right-click an instance or seed) reopens the PM with them; ✓ takes out the old copies and lines (their
   // relations and dimensions go with them, S.removeEntity) and makes the pattern again from the same seeds.
-  function lastPatternRel(f) { for (var j = (f.rels || []).length - 1; j >= 0; j--) if (f.rels[j].type === 'pattern' && f.rels[j].pat && f.rels[j].pat.circ) return f.rels[j]; return null; }
+  function lastPatternRel(f, linear) { for (var j = (f.rels || []).length - 1; j >= 0; j--) if (f.rels[j].type === 'pattern' && f.rels[j].pat && !f.rels[j].pat.circ === !!linear) return f.rels[j]; return null; }
   function circPatternOf(f, i) {
     var found = null;
     (f.rels || []).forEach(function (rel, j) { if (found == null && rel.type === 'pattern' && rel.pat && rel.pat.circ && rel.refs.slice(2).indexOf(String(i)) >= 0) found = j; });
     return found;
   }
+  // the entities a sketch pattern made (lane DS: linear too): circular — the two construction lines and the copies;
+  // linear (refs [A00, one anchor per direction, m seeds, copies], pat { nd, m, inst }) — the copies, a construction
+  // point standing for a skipped first instance, and the two construction lines of Dimension angle between axes
+  // (Coincident from their p1 to A00 and their p2 to a direction anchor)
+  function patternMadeIdx(f, ri) {
+    var rel = f.rels[ri], pat = rel.pat, m = pat.m | 0, out;
+    if (pat.circ) out = [+rel.refs[0], +rel.refs[1]].concat(rel.refs.slice(2 + m).map(Number));
+    else {
+      var nd = pat.nd | 0, A00 = rel.refs[0], dirA = rel.refs.slice(1, 1 + nd), seeds = rel.refs.slice(1 + nd, 1 + nd + m).map(Number);
+      out = rel.refs.slice(1 + nd + m).map(Number);
+      dirA.forEach(function (a) { var e = /^\d+$/.test(a) ? f.entities[+a] : null; if (e && e.t === 'point' && e.construction && seeds.indexOf(+a) < 0 && out.indexOf(+a) < 0) out.push(+a); });
+      (f.rels || []).forEach(function (c) {
+        var mm = c.type === 'coincident' && c.refs[1] === A00 && /^(\d+)\.p1$/.exec(c.refs[0]), L = mm ? +mm[1] : -1, e = L >= 0 ? f.entities[L] : null;
+        if (!e || e.t !== 'line' || !e.construction || out.indexOf(L) >= 0 || seeds.indexOf(L) >= 0) return;
+        if (f.rels.some(function (c2) { return c2.type === 'coincident' && c2.refs[0] === L + '.p2' && dirA.indexOf(c2.refs[1]) >= 0; })) out.push(L);
+      });
+    }
+    return out.filter(function (i) { return i >= 0 && !!f.entities[i]; });
+  }
   function removePatternMade(f, ri) {
-    var rel = f.rels[ri], m = rel.pat.m | 0, gone = [+rel.refs[0], +rel.refs[1]].concat(rel.refs.slice(2 + m).map(Number));
-    gone.sort(function (a, b) { return b - a; }).forEach(function (i) { if (f.entities[i]) { S.removeEntity(f, i); f.entities.splice(i, 1); } });
+    patternMadeIdx(f, ri).sort(function (a, b) { return b - a; }).forEach(function (i) { if (f.entities[i]) { S.removeEntity(f, i); f.entities.splice(i, 1); } });
+  }
+  // lane DS: the old instances are hidden while the edit PM is open: by entity object (indices do not move until ✓),
+  // through the layer hooks every draw / pick / snap path already asks (UI.sketchLayerStyle, UI.entityLayerHidden:
+  // wrapped once, on the first edit, so the layer and level wrappers loaded after this file sit inside), plus the
+  // dimensions and the instance count drawn on them (the drawDims wrapper below)
+  var editHide = null;
+  function editHidden(f, e) { return !!(editHide && f && f.id === editHide.sketch && e && editHide.ents.indexOf(e) >= 0); }
+  function editHideOn(f, ri) {
+    if (!UI.rfDSHideWrapped) {
+      UI.rfDSHideWrapped = true;
+      var baseStyle = UI.sketchLayerStyle, baseHidden = UI.entityLayerHidden;
+      UI.sketchLayerStyle = function (f2, e) { if (editHidden(f2, e)) return { hidden: true, mat: null, dashed: false }; return baseStyle ? baseStyle.apply(this, arguments) : null; };
+      UI.entityLayerHidden = function (f2, e) { return editHidden(f2, e) || (baseHidden ? baseHidden.apply(this, arguments) : false); };
+    }
+    editHide = { sketch: f.id, rel: f.rels[ri], ents: patternMadeIdx(f, ri).map(function (i) { return f.entities[i]; }) };
+    App.dimsStale = true; UI.updateSketches();
+  }
+  function editHideOff() { if (!editHide) return; editHide = null; App.dimsStale = true; UI.updateSketches(); }
+  UI.sketchPatternEditHidden = function () { return editHide ? editHide.ents.length : 0; };
+  // the dimensions (placed, or distance / angle relations) on a hidden instance are not drawn while the edit is open
+  function hideEditDims() {
+    var host = document.getElementById('dim-layer'), f = App.mode === 'sketch' ? UI.activeSketchFeature() : null;
+    if (!host) return;
+    Array.prototype.forEach.call(host.querySelectorAll('text'), function (t) {
+      var it = t._d, g = t.parentNode, hide = false;
+      if (!it || !g || !g.style) return;
+      if (editHide && f && f.id === editHide.sketch) {
+        if (it.rel != null) { var rel = f.rels && f.rels[it.rel]; hide = !!rel && rel.refs.some(function (r) { return editHidden(f, f.entities[parseInt(r, 10)]); }); }
+        else if (it.d && it.d.e != null) hide = editHidden(f, f.entities[it.d.e]);
+      }
+      g.style.display = hide ? 'none' : '';
+    });
   }
   function editCircularPattern(i) {
     var f = sketch();
@@ -1458,6 +1519,52 @@
       dimRadius: sp.dimRadius != null ? sp.dimRadius : true, dimAngle: sp.dimAngle != null ? sp.dimAngle : true, skip: skip, showCount: !!pat.showCount } });
   }
   UI.editCircularPattern = editCircularPattern;
+  // lane DS: Edit Linear Pattern (right-click an instance or seed of a linear sketch pattern), as the circular one: the
+  // PM reopens with the pattern's settings (pat.spec when the PM made it; else read back from the anchors: each
+  // direction's spacing and angle from the seed's anchor to its first instance, the counts and skipped instances from
+  // pat.inst, Dimension X / Y spacing from the distance relations on those anchors)
+  function linPatternOf(f, i) {
+    var found = null;
+    (f.rels || []).forEach(function (rel, j) { if (found == null && rel.type === 'pattern' && rel.pat && !rel.pat.circ && rel.refs.slice(1 + (rel.pat.nd | 0)).indexOf(String(i)) >= 0) found = j; });
+    return found;
+  }
+  function editLinearPattern(i) {
+    var f = sketch();
+    if (!f) return;
+    var ri = linPatternOf(f, i);
+    if (ri == null) { UI.toast('That entity is not part of a linear sketch pattern.'); return; }
+    var rel = f.rels[ri], pat = rel.pat, nd = pat.nd | 0, m = pat.m | 0, sp = pat.spec, A00 = rel.refs[0], P00 = S.refPoint(f, A00);
+    var vals = { entities: rel.refs.slice(1 + nd, 1 + nd + m).map(Number) };
+    function r6v(x) { return Math.round(x * 1e6) / 1e6; }
+    // which grid index each pat.inst column is: [i] / [i, j] when both directions are there; a pattern along
+    // direction 2 alone (count 1 in direction 1) keeps [j]
+    var cols = nd > 1 ? [0, 1] : sp && (sp.count | 0) < 2 && (sp.count2 | 0) > 1 ? [1] : [0];
+    if (sp) Object.keys(sp).forEach(function (k) { vals[k] = sp[k]; });
+    else {
+      var dirs = rel.refs.slice(1, 1 + nd).map(function (a) { var q = S.refPoint(f, a); return q && P00 ? [q[0] - P00[0], q[1] - P00[1]] : [1, 0]; });
+      var hasDim = function (a) { return (f.rels || []).some(function (r) { return r.type === 'distance' && r.refs[0] === A00 && r.refs[1] === a; }); };
+      var cnt = function (c) { var mx = 0; pat.inst.forEach(function (q) { mx = Math.max(mx, q[c] | 0); }); return mx + 1; };
+      vals.ref1 = 'x'; vals.ref2 = 'y'; vals.rev1 = vals.rev2 = false;
+      vals.angle = r6v(Math.atan2(dirs[0][1], dirs[0][0]) * 180 / Math.PI); vals.spacing = r6v(Math.hypot(dirs[0][0], dirs[0][1])); vals.count = cnt(0); vals.dims = hasDim(rel.refs[1]);
+      if (nd > 1) { vals.angle2 = r6v(Math.atan2(dirs[1][1], dirs[1][0]) * 180 / Math.PI); vals.spacing2 = r6v(Math.hypot(dirs[1][0], dirs[1][1])); vals.count2 = cnt(1); vals.dimY = hasDim(rel.refs[2]); }
+      else vals.count2 = 1;
+    }
+    var have = {}, skip = [];
+    pat.inst.forEach(function (q) { var ij = [0, 0]; cols.forEach(function (c, k) { ij[c] = q[k] | 0; }); have[ij[0] + ',' + ij[1]] = true; });
+    for (var a = 0; a < Math.max(1, vals.count | 0); a++) for (var b = 0; b < Math.max(1, vals.count2 | 0); b++) if ((a || b) && !have[a + ',' + b]) skip.push(a + ',' + b);
+    vals.skip = skip;
+    patternTool(false, { rel: ri, values: vals });
+  }
+  UI.editLinearPattern = editLinearPattern;
+  UI.linearPatternOf = function (i) { var f = sketch(); return f ? linPatternOf(f, i) : null; };
+  // lane DS2: the direction line saved in pat.spec (ref1 / ref2, an entity index) follows deletions and renumbering
+  // (Kernel.patternEntityRemoved / remapPatternRefs), wrapped round the solver's remap points as Sketch Text's path is
+  if (S && K.patternEntityRemoved) {
+    var baseRemoveP = S.removeEntity, baseRemapP = S.remap, baseAfterTrimP = S.afterTrim;
+    if (baseRemoveP) S.removeEntity = function (sk, index) { var r = baseRemoveP.apply(this, arguments); K.patternEntityRemoved(sk, index); return r; };
+    if (baseRemapP) S.remap = function (sk, before) { var r = baseRemapP.apply(this, arguments); K.remapPatternRefs(sk, before); return r; };
+    if (baseAfterTrimP) S.afterTrim = function (sk, before) { var r = baseAfterTrimP.apply(this, arguments); K.remapPatternRefs(sk, before); return r; };
+  }
   UI.circularPatternOf = function (i) { var f = sketch(); return f ? circPatternOf(f, i) : null; };
   // the count labels: by the last instance of every pattern with Display instance count, in #dim-layer (redrawn with
   // the dimensions: UI.drawDims below), orange as SolidWorks shows the instance count
@@ -1469,7 +1576,7 @@
     while (countLayer.firstChild) countLayer.removeChild(countLayer.firstChild);
     var f = App.mode === 'sketch' ? UI.activeSketchFeature() : null, out = [];
     ((f && f.rels) || []).forEach(function (rel) {
-      if (rel.type !== 'pattern' || !rel.pat || !rel.pat.showCount) return;
+      if (rel.type !== 'pattern' || !rel.pat || !rel.pat.showCount || (editHide && editHide.rel === rel)) return;   // lane DS: not on instances an edit hides
       var m = rel.pat.m | 0, last = rel.refs[rel.refs.length - m], e = last != null ? f.entities[+last] : null, p = e && anchorPt(e);
       if (!p) return;
       var n = rel.pat.spec && rel.pat.spec.count ? rel.pat.spec.count : rel.pat.inst.length + 1, s = scr(p);
@@ -1485,16 +1592,17 @@
   UI.sketchPatternCounts = sketchPatternCounts;
   if (UI.drawDims) {
     var baseDrawDimsCount = UI.drawDims;
-    UI.drawDims = function () { var r = baseDrawDimsCount.apply(this, arguments); try { sketchPatternCounts(); } catch (err) { /* an overlay: never break the dimensions */ } return r; };
+    UI.drawDims = function () { var r = baseDrawDimsCount.apply(this, arguments); try { sketchPatternCounts(); hideEditDims(); } catch (err) { /* an overlay: never break the dimensions */ } return r; };
   }
   // the right-click row on an instance or seed of a circular pattern (before Properties…, with the entity commands)
   if (UI.sketchMenuItems) {
     var baseSketchMenuItems = UI.sketchMenuItems;
     UI.sketchMenuItems = function () {
       var items = baseSketchMenuItems.apply(this, arguments), f = App.mode === 'sketch' ? UI.activeSketchFeature() : null;
-      var sel = f ? selIdx(f) : [], ri = sel.length === 1 ? circPatternOf(f, sel[0]) : null;
-      if (ri == null || !Array.isArray(items)) return items;
-      var row = { label: 'Edit Circular Pattern', icon: 'cSketchPattern', action: function () { if (App.mode === 'sketch') editCircularPattern(sel[0]); } };
+      var sel = f ? selIdx(f) : [], ri = sel.length === 1 ? circPatternOf(f, sel[0]) : null, li = sel.length === 1 && ri == null ? linPatternOf(f, sel[0]) : null;
+      if ((ri == null && li == null) || !Array.isArray(items)) return items;
+      var row = ri != null ? { label: 'Edit Circular Pattern', icon: 'cSketchPattern', action: function () { if (App.mode === 'sketch') editCircularPattern(sel[0]); } }
+        : { label: 'Edit Linear Pattern', icon: 'sketchPattern', action: function () { if (App.mode === 'sketch') editLinearPattern(sel[0]); } };   // lane DS
       var at = -1;
       items.forEach(function (it, k) { if (it && it.label === 'Properties…') at = k; });
       if (at < 0) items.push(row); else items.splice(at, 0, row);

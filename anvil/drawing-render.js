@@ -1621,6 +1621,7 @@
     if (r2000) { pr(9, '$DWGCODEPAGE'); pr(3, 'ANSI_1252'); pr(9, '$HANDSEED'); pr(5, (h + 1).toString(16).toUpperCase()); }
     pr(9, '$INSUNITS'); pr(70, inch ? 1 : 4);
     pr(9, '$MEASUREMENT'); pr(70, inch ? 0 : 1);
+    pr(9, '$DIMALTF'); pr(40, inch ? '25.4' : '0.0393700787');   // rfDU: SolidWorks reads the file's unit from $DIMALTF
     pr(9, '$EXTMIN'); pr(10, 0); pr(20, 0); pr(30, 0);
     pr(9, '$EXTMAX'); pr(10, num(sheet.size[0])); pr(20, num(sheet.size[1])); pr(30, 0);
     pr(9, '$LTSCALE'); pr(40, inch ? 0.04 : 1);

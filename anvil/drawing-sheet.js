@@ -11,7 +11,7 @@
   'use strict';
   var K = Kernel, V = K.vec;
   var orientation = D.orientation, frameOf = D.frameOf, isOrthoFrame = D.isOrthoFrame, projectedFrame = D.projectedFrame, sectionFrame = D.sectionFrame;
-  var projectView = D.projectView, sectionOf = D.sectionOf, clipProjection = D.clipProjection;
+  var sectionOf = D.sectionOf, clipProjection = D.clipProjection;
   var ORTHO = _.ORTHO, DIRS = _.DIRS, frameKey = _.frameKey, sectionKey = _.sectionKey, capLoops = _.capLoops;
 
   // ------------------------------------------------------------------ sheets, scales, the drawing document
@@ -96,7 +96,7 @@
       ph.pending = true;
       return ph;
     }
-    return (c[key] = projectView(mesh, F, { display: display, tangent: tangent }));
+    return (c[key] = D.projectView(mesh, F, { display: display, tangent: tangent }));   // (rfDR: late bound, a test stubs it)
   }
   // putProjection(mesh, key, proj): a projection worked out elsewhere (drawing-worker.js) goes into the mesh's cache
   function putProjection(mesh, key, proj) { (mesh._drawingProj || (mesh._drawingProj = {}))[key] = proj; }

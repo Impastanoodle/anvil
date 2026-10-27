@@ -103,13 +103,14 @@
   // detail) is one undo step whose linework is worked out in drawing-worker.js, as when a drawing opens: the sheet
   // shows a placeholder where it goes at once (a section's CSG cut and hidden-line removal took 15–60 ms on the main
   // thread), the linework drops in when ready, then Auto insert adds its centre marks / centrelines.
-  function editView(fn) {
+  // (rfDR) o.insert: fn replaced several views (Standard 3 View): Auto insert runs on every view once they have landed
+  function editView(fn, o) {
     settle();
     UI.pushUndo();
     D.dirty = true;
     var v = fn(doc());
     UI.autosave();
-    D.prog = { doc: doc(), insert: false, ids: [v.id], t0: performance.now() };
+    D.prog = { doc: doc(), insert: !!(o && o.insert), ids: o && o.insert ? null : [v.id], t0: performance.now() };
     render();
     return v;
   }
@@ -419,8 +420,13 @@
     // updates a drawing after a rebuild (no freeze of 100–250 ms at a moment the user did not choose, no blank views)
     var m = mesh(), old = D.sheet;
     if (!D.prog && old && D.sheetMesh && D.sheetMesh !== m && D.sheetDoc === dc) D.prog = { doc: dc, insert: false, t0: t0, hold: true };
-    var lazy = !!(D.prog && !D.prog.sync);
+    // (rfDR2) every render is lazy unless settling: an edit that needs a projection not worked out yet (a view's tangent
+    // edges or display style changed from the mouse or a script, an undo onto a rebuilt mesh) shows the placeholder and
+    // has it worked out in the worker, as editView does. Readers settle (summary, current, a click, an export) or
+    // await ready().
+    var lazy = D.prog ? !D.prog.sync : true;
     D.sheet = Drawing.compute(dc, m, App.model, lazy ? Object.assign(cctx(), { lazy: true }) : cctx());
+    if (!D.prog && lazy && D.sheet.pending.length) D.prog = { doc: dc, insert: false, t0: t0 };
     if (D.prog) {
       if (lazy && D.sheet.pending.length) {
         requestProjections(D.sheet.pending);

@@ -17,7 +17,8 @@
   // ------------------------------------------------------------------ commands
   function cmdStandard3View() {
     if (!App.mesh || !App.mesh.triCount) { UI.toast(isAsm() ? 'The assembly has no components to draw yet.' : 'The part has no solid body to draw yet.'); return; }
-    edit(function (dc) { syncBom(dc); Drawing.standard3View(dc, mesh(), units()); });
+    // (rfDR) the views' hidden-line removal goes to the worker; Auto insert runs when they have landed
+    editView(function (dc) { syncBom(dc); Drawing.standard3View(dc, mesh(), units(), { autoInsert: false }); return dc.views[0]; }, { insert: true });
     D.sel = null; fitSheet();
     UI.setStatus('Standard 3 View: Front, Top and Right (' + (doc().sheet.projection === 'first' ? 'first' : 'third') + '-angle) plus an Isometric, scale ' + Drawing.scaleText(doc().sheet.scale) + '.');
   }
@@ -2358,6 +2359,7 @@
     api.auxiliaryView = function (parentId, opts) {
       if (!doc()) return null;
       var v;
+      if (DW.cutApi) return DW.cutApi(function (dc) { return Drawing.addAuxiliaryView(dc, mesh(), parentId, opts || {}); });   // (rfDR) worked out in the worker
       try { Drawing.addAuxiliaryView(JSON.parse(JSON.stringify(doc())), mesh(), parentId, opts || {}); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }
       edit(function (dc) { v = Drawing.addAuxiliaryView(dc, mesh(), parentId, opts || {}); autoInsertViews(dc, [v.id]); });
       D.sel = { kind: 'view', id: v.id };

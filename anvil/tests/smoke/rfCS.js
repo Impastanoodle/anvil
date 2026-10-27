@@ -74,8 +74,11 @@
       var f = UI.App.model.features[UI.App.model.features.length - 1];
       assert(f.type === 'closedCorner' && f.cornerType === 'overlap' && f.gap === 0.02 && f.ratio === 1 && f.faces.length === 3 && f.name === 'Closed Corner1' && f.coplanar !== false, 'feature: ' + JSON.stringify(f));
       assert(!UI.App.build.errors[f.id], 'no error: ' + UI.App.build.errors[f.id]);
-      var wantO = v0 + 4 * H * T * (R + T - (T + 0.02));
-      near(rfCSVol(), wantO, 1e-9, 'volume: four corners closed, overlap');
+      // lane DV: + each front / back bend's end tapered (the faceted section × the mean of R + T and the wall's new end);
+      // Butt stops both walls gap/√2 short (rfCS kernel group)
+      var SEC = 8 * 0.5 * Math.sin(Math.PI / 16) * ((R + T) * (R + T) - R * R), G2 = 0.02 / Math.SQRT2;
+      var wantO = v0 + 4 * (H * T * (R + T - (T + 0.02)) - SEC * ((R + T) + (T + 0.02)) / 2);
+      near(rfCSVol(), wantO, 1e-7, 'volume: four corners closed, overlap');
       var flat = anvil.flat();
       assert(flat.loops.length === 1, 'one flat loop: ' + flat.loops.length);
       assert(Array.prototype.some.call(D.querySelectorAll('#tree .ti'), function (r) { return /Closed Corner1/.test(r.textContent); }), 'Closed Corner1 in the FeatureManager tree');
@@ -84,7 +87,7 @@
       assert(UI.App.model.features.length === n0, 'one undo step removes the feature');
       near(rfCSVol(), v0, 1e-9, 'volume after undo');
       UI.redo(); await idle();
-      near(rfCSVol(), wantO, 1e-9, 'volume after redo');
+      near(rfCSVol(), wantO, 1e-7, 'volume after redo');
       // Edit Feature: the PM reopens on the picks; Butt; ✓ is one undo step
       f = UI.App.model.features[UI.App.model.features.length - 1];
       UI.editFeature(f); await wait(30); await idle();
@@ -94,16 +97,16 @@
       D.querySelector('#pm button[data-key="cornerType:butt"]').click(); await wait(20);
       assert(!pmField('Overlap/underlap ratio'), 'no ratio for Butt');
       await pmAccept(); await wait(30);
-      var wantB = v0 + 4 * H * (R - 0.02) * T;
-      near(rfCSVol(), wantB, 1e-9, 'volume after the edit to Butt');
+      var wantB = v0 + 4 * (H * T * (R - G2) - H * T * (T + G2) - SEC * ((R + T) + (T + G2)) / 2);
+      near(rfCSVol(), wantB, 1e-7, 'volume after the edit to Butt');
       assert(UI.App.model.features.length === n0 + 1, 'still one feature');
       UI.undo(); await idle();
-      near(rfCSVol(), wantO, 1e-9, 'one undo step back to Overlap');
+      near(rfCSVol(), wantO, 1e-7, 'one undo step back to Overlap');
       UI.redo(); await idle();
       // save / reload
       var json = JSON.stringify(anvil.model());
       await anvil.load(json); await idle();
-      near(rfCSVol(), wantB, 1e-9, 'volume after save / reload');
+      near(rfCSVol(), wantB, 1e-7, 'volume after save / reload');
       // Esc on a new Closed Corner leaves nothing behind; the flyout face goes back to Break-Corner for the other groups
       UI.cmdClosedCorner(); await wait(30);
       D.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await idle(); await wait(20);

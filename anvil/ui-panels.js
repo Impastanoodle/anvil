@@ -196,16 +196,16 @@
     ],
     'Sheet Metal': [
       { id: 'flange', label: 'Base\nFlange/Tab', run: function () { UI.cmdBaseFlange(); } },
-      { id: 'generic', icon: 'convertSM', label: 'Convert to\nSheet Metal' }, { id: 'loft', label: 'Lofted-\nBend' },
+      { id: 'convertSM', label: 'Convert to\nSheet Metal', help: 'Turn a solid into sheet metal: a fixed face and the edges that become bends; the other faces are removed and the corners ripped', run: function () { UI.cmdConvertSheetMetal(); } }, { id: 'loft', label: 'Lofted-\nBend' },
       { sep: true },
       { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'hem', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'jog', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'sketchedBend', label: 'Sketched\nBend', run: function () { UI.cmdSketchedBend(); } },
       { stack: [{ id: 'generic', icon: 'crossBreak', label: 'Cross-Break' }, { fly: 'corners', items: [{ id: 'breakCorner', label: 'Break-Corner', help: 'Round or chamfer outside corners of the sheet (Corners ▸ Break-Corner/Corner-Trim)', run: function () { UI.cmdBreakCorner(); } }, { id: 'closedCorner', label: 'Closed Corner', help: 'Extend the end faces of a flange to close the gap at a box corner (Corners ▸ Closed Corner)', run: function () { UI.cmdClosedCorner(); } }] }, { id: 'generic', icon: 'formingTool', label: 'Forming Tool' }] },
       { sep: true },
-      { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'generic', icon: 'vent', label: 'Vent' },
+      { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'vent', label: 'Vent', run: function () { UI.cmdVent(); } },
       { sep: true },
       // lane DL (fidelity #12): SolidWorks 2024's order Unfold, Fold, Flatten, No Bends, Insert Bends, Rip; Flat to DXF (Anvil's) last
       { id: 'unfold', label: 'Unfold', help: 'Unfold bends about a fixed face to cut across them flat', run: function () { UI.cmdUnfold(); } }, { id: 'fold', label: 'Fold', help: 'Fold back the bends an Unfold unfolded, with the cuts made across them', run: function () { UI.cmdFold(); } }, { id: 'flatten', label: 'Flatten', run: function () { UI.cmdFlatten(); } },
-      { id: 'generic', icon: 'flatten', label: 'No\nBends', help: 'Show the part as it was before its bends were inserted (a part converted from a solid)' }, { id: 'generic', icon: 'bend', label: 'Insert\nBends', help: 'Turn a thin-walled solid with sharp corners into sheet metal by inserting bends' },{ id: 'rip', icon: 'rip', label: 'Rip', help: 'Rip the edges of a hollow part so it can be unfolded', run: function () { UI.cmdRipFeature(); } },
+      { id: 'noBends', label: 'No\nBends', help: 'Show the part as it was before its bends were inserted (a part converted from a solid)', run: function () { UI.toggleNoBends(); }, active: function () { return !!(App.model && App.model.noBends); } }, { id: 'insertBends', label: 'Insert\nBends', help: 'Turn a thin-walled solid with sharp corners into sheet metal by inserting bends', run: function () { UI.cmdInsertBends(); } },{ id: 'rip', icon: 'rip', label: 'Rip', help: 'Rip the edges of a hollow part so it can be unfolded', run: function () { UI.cmdRipFeature(); } },
       { extra: true, id: 'dxf', label: 'Flat to\nDXF', run: function () { UI.exportFlatDXF(); } }
     ],
     // lane BJ: Mastercam 2024's Transform tab, groups Position | Offset | Layout | Size with their captions under the
@@ -774,6 +774,8 @@
   var FEATURE_ICON = { sketch: 'sketch', plane: 'planeSmall', extrude: 'extrude', revolve: 'revolve', lpattern: 'lpattern', cpattern: 'cpattern', mirror: 'mirror', chamfer: 'chamfer', fillet: 'fillet', flange: 'bend', jog: 'bend', sweep: 'sweep', loft: 'loft', shell: 'shell', import: 'imported', hole: 'holeWizard' };
   FEATURE_ICON.refaxis = 'refAxis'; FEATURE_ICON.refpoint = 'refPoint'; FEATURE_ICON.csys = 'csys';   // lane CZ: reference geometry
   FEATURE_ICON.rip = 'rip';   // lane DI
+  FEATURE_ICON.vent = 'vent';   // lane DT
+  FEATURE_ICON.insertBends = 'insertBends'; FEATURE_ICON.convertSM = 'convertSM';   // lane DQ
   function featureIcon(f) {
     if (f.type === 'extrude') return f.cut ? 'cut' : (f.sheetBase ? 'flange' : 'extrude');
     if (f.type === 'revolve') return f.cut ? 'revolveCut' : 'revolve';
@@ -1414,6 +1416,7 @@
         { label: 'Features ▸ Chamfer', action: function () { UI.cmdChamfer(); } },
         { label: 'Features ▸ Shell', action: function () { UI.cmdShell(); } },
         { label: 'Features ▸ Imported…', action: function () { UI.cmdInsertImported(); } },
+        { label: 'Features ▸ Fastening Features ▸ Vent', icon: 'vent', action: function () { UI.cmdVent(); } },   // lane DT2
         { sep: true },
         { label: 'Pattern/Mirror ▸ Linear Pattern', action: function () { UI.cmdLinearPattern(); } },
         { label: 'Pattern/Mirror ▸ Circular Pattern', action: function () { UI.cmdCircularPattern(); } },
