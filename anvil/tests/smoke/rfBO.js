@@ -91,7 +91,7 @@
     await rfBJRun('Rectangular Array');
     var v = UI.pmSpec().values; v.d1 = 15; v.n2 = 2; v.d2 = 10; UI.pmSpec().onChange(v, 'd2');
     var plus = rfBOOkPlus();
-    assert(plus && plus.innerHTML.indexOf('M12.5 9 v6') >= 0, 'Rectangular Array has the ✓+ icon');
+    assert(plus && plus.innerHTML.indexOf('M4.6 2.9 v3.6') >= 0, 'Rectangular Array has the ✓+ icon');
     await rfBJOk();
     var c = f.entities.slice(1).map(function (e) { return [e.cx, e.cy]; });
     assert(c.length === 5 && c[0][0] === 5 && c[0][1] === 15 && c[1][0] === 20 && c[1][1] === 5 && c[2][0] === 20 && c[2][1] === 15 && c[4][0] === 35 && c[4][1] === 15, 'exact copies: ' + JSON.stringify(c));
@@ -101,7 +101,7 @@
     for (var k = 0; k < names.length; k++) {
       await rfBJRun(names[k]);
       plus = rfBOOkPlus();
-      assert(plus && plus.innerHTML.indexOf('M12.5 9 v6') >= 0, names[k] + ' has the ✓+ icon');
+      assert(plus && plus.innerHTML.indexOf('M4.6 2.9 v3.6') >= 0, names[k] + ' has the ✓+ icon');
       UI.pmCancel(); await idle();
       await wait(10);   // the 3D commands clear the selection on close and then say they were cancelled
       assert($('status-msg').textContent === names[k] + ' cancelled.', names[k] + ' ✗ status: ' + $('status-msg').textContent);

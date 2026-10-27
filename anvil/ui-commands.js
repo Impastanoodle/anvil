@@ -59,6 +59,11 @@
     else if (vp.hasAttribute('data-pmtool')) vp.removeAttribute('data-pmtool');
   }
   function openPM(spec) {
+    // ✓+ (OKPLUS_COMMANDS): a PropertyManager opened while one of those commands runs offers the blue button; an edit,
+    // a Keep Visible PM or one opened on its own (a double-click, a script) does not; a command's next PM keeps it
+    if (editNext != null || spec.keepVisible || spec.noOkPlus) pm.again = null;
+    else if (pm.invoker) pm.again = pm.invoker;
+    else if (!pm.spec) pm.again = null;
     if (editNext != null) { pm.editUpto = editNext; editNext = null; if (UI.rollbackTo) UI.rollbackTo(pm.editUpto); }
     else if (pm.editUpto != null) { pm.editUpto = null; if (UI.rollForward) UI.rollForward(); }   // another command replaced the edit
     pm.spec = spec;
@@ -172,6 +177,38 @@
     }
     return pending ? r : UI.whenIdle();
   }
+  // ✓+ (user, 2026-10-27, Mastercam's blue OK-and-new): ✓, then the same command again with an empty PropertyManager
+  // for the next one. A refused ✓ (a missing pick, a bad equation) stays; a failed build does not start another.
+  function pmOKPlus() {
+    var again = pm.again, spec = pm.spec;
+    if (!again || !spec) return UI.whenIdle();
+    var r = pmOK({ close: true });
+    if (pm.spec === spec) return r;
+    return Promise.resolve(r).then(function () { if (!pm.spec) runAgainable(again); });
+  }
+  function runAgainable(fn, self, args) {
+    var was = pm.invoker;
+    pm.invoker = fn;
+    try { return fn.apply(self || UI, args || []); } finally { pm.invoker = was; }
+  }
+  // the commands that make something, where "OK and start another" applies (sheet metal, features, reference
+  // geometry, sketch modify / pattern commands, component patterns); the Transform tab has its own ✓+ (extraActions)
+  var OKPLUS_COMMANDS = ['Extrude', 'Revolve', 'Sweep', 'Loft', 'Fillet', 'Chamfer', 'Shell', 'Hole', 'HoleWizard', 'LinearPattern',
+    'CircularPattern', 'Mirror', 'Plane', 'RefAxis', 'RefPoint', 'Csys', 'EquationCurve', 'BaseFlange', 'EdgeFlange', 'MiterFlange',
+    'Hem', 'Jog', 'SketchedBend', 'BreakCorner', 'ClosedCorner', 'Unfold', 'Fold', 'OffsetEntities', 'ConvertEntities',
+    'MirrorEntities', 'SketchPattern', 'CircularSketchPattern', 'MoveEntities', 'CopyEntities', 'RotateEntities', 'ScaleEntities',
+    'StretchEntities', 'SketchFillet', 'SketchChamfer', 'LinearComponentPattern', 'CircularComponentPattern', 'MirrorComponents'];
+  // called once at boot (ui-app.js), when every UI.cmd* exists: those commands run through runAgainable, whoever starts
+  // them (ribbon, menus, shortcuts, Search Commands)
+  function wrapOkPlusCommands() {
+    OKPLUS_COMMANDS.forEach(function (n) {
+      var f = UI['cmd' + n];
+      if (typeof f !== 'function' || f._okPlus) return;
+      var w = function () { return runAgainable(f, this, arguments); };
+      w._okPlus = true;
+      UI['cmd' + n] = w;
+    });
+  }
   function pmCancel() {
     if (!pm.spec) return;
     var spec = pm.spec;
@@ -265,9 +302,13 @@
     head.appendChild(el('button', { class: 'pm-help', title: 'Help', 'aria-label': 'Help', onclick: function () { var sm = document.getElementById('status-msg'); UI.toast(spec.help || (spec.title + ': ' + (sm && sm.textContent && sm.textContent !== 'Ready' ? sm.textContent : 'fill the boxes below, then ✓ (Enter) to accept or ✗ (Esc) to cancel.'))); } }));
     root.appendChild(head);
     var actions = el('div', { class: 'pm-actions' });
+    // Mastercam's order (user, 2026-10-27): the blue ✓+ first, then ✓ and ✗; a command's own ✓+ (Transform) takes its place
+    var extra = spec.extraActions || [], ownPlus = extra.filter(function (a) { return a.icon === 'okPlus'; })[0];
+    if (ownPlus) actions.appendChild(el('button', { title: ownPlus.title, class: 'pm-okplus', html: Icons('okPlus', 20), onclick: ownPlus.onclick }));
+    else if (pm.again) actions.appendChild(el('button', { title: 'OK and start another (✓+): accept, then ' + String(spec.title).replace(/\d+$/, '') + ' again for the next one', class: 'pm-okplus', html: Icons('okPlus', 20), onclick: function () { pmOKPlus(); } }));
     actions.appendChild(el('button', { title: 'OK (Enter)', class: 'pm-ok', html: Icons('ok', 20), onclick: pmOK }));
     actions.appendChild(el('button', { title: 'Cancel (Esc)', class: 'pm-cancel', html: Icons('cancel', 18), onclick: pmCancel }));
-    if (spec.extraActions) spec.extraActions.forEach(function (a) { actions.appendChild(el('button', { title: a.title, html: Icons(a.icon, 20), onclick: a.onclick })); });
+    extra.forEach(function (a) { if (a !== ownPlus) actions.appendChild(el('button', { title: a.title, html: Icons(a.icon, 20), onclick: a.onclick })); });
     // rfBG: a PropertyManager that stays open after ✓ (Mate, Insert Component) shows SolidWorks' pressed Keep Visible pin
     if (spec.keepVisible) actions.appendChild(el('button', { class: 'pm-pin on', title: 'Keep Visible: this PropertyManager stays open after ✓ for the next one; ✗ (Esc) closes it', 'aria-pressed': 'true', html: Icons('fix', 16) }));
     root.appendChild(actions);
@@ -4879,7 +4920,7 @@
     }
   }
 
-  UI.openPM = openPM; UI.closePM = closePM; UI.pmOK = pmOK; UI.pmCancel = pmCancel; UI.escapeCommand = escapeCommand; UI.hasPM = function () { return !!pm.spec; };
+  UI.openPM = openPM; UI.closePM = closePM; UI.pmOK = pmOK; UI.pmCancel = pmCancel; UI.escapeCommand = escapeCommand; UI.pmOKPlus = pmOKPlus; UI.runAgainable = runAgainable; UI.wrapOkPlusCommands = wrapOkPlusCommands; UI.hasPM = function () { return !!pm.spec; };
   UI.pmEnter = pmEnter; UI.pmPending = pmPending; UI.pmArm = pmArm; UI.pmEntryStatus = pmEntryStatus;
   // for commands in other files (ui-assembly.js, ui-evaluate.js) that update their open PropertyManager's message and results
   UI.renderPM = function () { if (pm.spec) renderPM(); }; UI.pmSpec = function () { return pm.spec; }; UI.pmTitle = function () { return pm.spec ? pm.spec.title : null; };

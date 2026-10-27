@@ -1334,6 +1334,7 @@
 
   // ------------------------------------------------------------------ boot
   function boot() {
+    if (UI.wrapOkPlusCommands) UI.wrapOkPlusCommands();   // ✓+ on the commands that make something (ui-commands.js)
     // theme first, before anything is drawn (index.html already set data-theme from localStorage to avoid a flash)
     var savedTheme = 'light';
     try { savedTheme = localStorage.getItem('anvil.theme') || 'light'; } catch (e) { }

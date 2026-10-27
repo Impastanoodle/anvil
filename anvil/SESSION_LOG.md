@@ -1633,3 +1633,7 @@ Tests: kernel 1259/1259, examples 29/29 (both kernels), ui-smoke 790/790, occt 9
 - DF / DF2 (reference geometry): OpenCascade builds Circular Pattern / Revolve / Revolve Cut about a reference axis; snap, Add Relations, Smart Dimension, Convert Entities and Measure on reference points / axes / origins; exact Center of Face (`faceCentroidExact`); Mass Properties frame and Measure each have one definition (overrides removed); multi-jog leader starts at the arrow (rfCU updated). Tests rfDF.
 - Head: fresh Opus agents, the extra "use it like a user" pass removed at the user's request mid-round; follow-ups to the same agents; all retired at the end.
 Tests: kernel 1300/1300, examples 29/29 (both kernels), ui-smoke 809/809, occt 102/102.
+
+## 2026-10-27 head: blue OK-and-start-another (✓+) in every PropertyManager that makes something
+- User asked for Mastercam's blue ✓+ "wherever applicable". The shared PropertyManager header now shows it before ✓ and ✗ for the commands in `OKPLUS_COMMANDS` (ui-commands.js: features, reference geometry, sheet metal, sketch modify / pattern commands, component patterns), however they are started (ribbon, menu, shortcut, search; wrapped at boot by `UI.wrapOkPlusCommands`). It accepts, then opens the same command again, empty; a refused ✓ stays; edits and Keep Visible PMs have none. The Transform tab's own ✓+ moved to the same first place; the icon is a blue round check-plus. Tests rfDH (rfBO icon check updated).
+Tests: ui-smoke 810/810 (ui only; kernel untouched).

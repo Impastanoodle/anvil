@@ -386,7 +386,7 @@ var Icons = (function () {
     tDistribute: circ(2.8, 6, 1.8, FYL, S, 1) + circ(8, 6, 1.8, 'none', S, 1) + circ(13.2, 6, 1.8, 'none', S, 1) + ln('M2.8 10 v3.5 M8 10 v3.5 M13.2 10 v3.5 M2.8 12 H13.2', G, 1),
     tStretch: p('M2 13 H8 L9.5 6 H13', 'none', S, 1.4) + rect(7.5, 3.5, 7, 6, 'none', B, 0.9, DASH) + ln('M11 12 h3.5 M12.8 10.5 l1.7 1.5 -1.7 1.5', G, 1.1),
     tScale: rect(1.5, 9, 5, 5, 'none', S, 1, DASH) + rect(1.5, 2, 12, 12, 'none', S, 1.3) + circ(1.5, 14, 1.2, W, B, 1) + ln('M6 9.5 L12 3.5', G, 1.2) + p('M13 2.5 l-3 0.6 2.4 2.4 z', G, G, 0.5),
-    okPlus: ln('M1.5 8.5 l3 3 L11 4.5', G, 2.4) + ln('M12.5 9 v6 M9.5 12 h6', G, 1.8)
+    okPlus: circ(8, 8, 7.3, '#2f7ad6', '#1f5fae', 0.8) + ln('M5.6 9 l2.2 2.2 L12 6.4', '#fff', 1.8) + ln('M4.6 2.9 v3.6 M2.8 4.7 h3.6', '#fff', 1.4)   // user 2026-10-27: Mastercam's blue round OK-and-new
   };
   // lane BS: Close Arc (Mastercam's: an arc, its blue end points, the closing piece dotted green) and Show Endpoints
   // (the heads-up toggle: a line with its two end dots)
