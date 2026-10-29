@@ -1328,7 +1328,7 @@
       cls: (st.suppressed ? 'suppressed' : '') + (linked ? ' linked' : '') + (isSub ? ' subassembly' : '') + (st.flexible ? ' flexible' : ''),
       suffix: st.suppressed ? ' (suppressed)' : '',
       tip: function (t) {
-        if (st.suppressed) return c.name + ' (suppressed): ' + (st.warning || 'broken reference');
+        if (st.suppressed) return c.name + ' (suppressed)' + (st.broken === false ? '' : ': ' + (st.warning || 'broken reference'));   // rfFC: suppressed by the user
         return t + (isSub ? ' — sub-assembly, solved as ' + (c.flexible ? 'Flexible' : 'Rigid') : '') + (linked ? ' — linked to "' + c.source.file + '"' + (AS.Documents.isDirty(c.source.file) ? ' (edited, not saved)' : '') : '');
       }
     };
@@ -2324,4 +2324,129 @@
       return (App.model.explodedViews || []).map(function (v) { return { id: v.id, name: v.name, exploded: App.model.exploded === v.id, steps: v.steps.map(function (s) { return { id: s.id, name: s.name, components: s.components.map(compName), direction: s.direction.slice(), distance: s.distance }; }) }; });
     };
   }
+})(UI);
+
+// rfFC: configurations in assemblies. A component shows one configuration of its part (right-click ▸ Configuration ▸
+// <name>, Assembly.setComponentState { config }); Suppress / Unsuppress a component; the assembly's own configurations
+// (Assembly.asmConfigurations: per component config / suppressed / hidden) are listed in its ConfigurationManager
+// (Add… / Show / Delete, double-click a row to show it). Each change is one undo step and one rebuild; a component
+// state set while the assembly has configurations goes to the active one only. Hide / Show is recorded in the active
+// configuration too, and showing a configuration applies its hidden states. DOM: .cfg-row.asm-config[data-name],
+// #asm-cfg-add, #asm-cfg-show, #asm-cfg-delete.
+(function (UI) {
+  'use strict';
+  var App = UI.App, AS = Assembly, el = UI.el;
+  function isAsm() { return !!(App.model && App.model.type === 'assembly'); }
+  function run(p) { if (p && p.catch) p.catch(function (e) { UI.toast(e.message || String(e)); }); return p; }
+  function commit(mutate, message) {
+    UI.pushUndo();
+    mutate(App.model);
+    return UI.afterRebuild(UI.rebuild(), function () { UI.refreshTree(); UI.refreshStatus(); if (UI.refreshConfigPanel) UI.refreshConfigPanel(); if (message) UI.setStatus(message); });
+  }
+  function cfgs() { return isAsm() ? AS.asmConfigurations(App.model) : []; }
+  function scope(s) { return s != null ? s : cfgs().length ? 'this' : 'all'; }
+  function comp(idOrName) { var c = AS.findComponent(App.model, idOrName); if (!c) throw new Error('No component "' + idOrName + '"'); return c; }
+  function setComponentConfig(idOrName, cfg, sc) {
+    if (!isAsm()) return Promise.reject(new Error('Open an assembly first.'));
+    var c = comp(idOrName), names = AS.partConfigurations(c.source);
+    if (cfg != null && cfg !== '' && names.indexOf(String(cfg)) < 0) return Promise.reject(new Error(c.name + ': the part has no configuration "' + cfg + '"' + (names.length ? ' (it has ' + names.join(', ') + ')' : '')));
+    return commit(function (m) { AS.setComponentState(m, c.id, { config: cfg }, scope(sc)); }, c.name + ' shows configuration "' + (cfg || 'as saved') + '".');
+  }
+  function setComponentSuppressed(idOrName, on, sc) {
+    if (!isAsm()) return Promise.reject(new Error('Open an assembly first.'));
+    var c = comp(idOrName);
+    return commit(function (m) { AS.setComponentState(m, c.id, { suppressed: !!on }, scope(sc)); }, c.name + (on ? ' suppressed.' : ' unsuppressed.'));
+  }
+  function partActive(c) { try { var m = AS.partModel(c.source); return m && m.activeConfiguration != null ? String(m.activeConfiguration) : null; } catch (e) { return null; } }
+  var baseExtras = UI.asmComponentMenuExtras;
+  UI.asmComponentMenuExtras = function (c) {
+    var items = baseExtras ? baseExtras(c) : [];
+    if (!isAsm()) return items;
+    var st = AS.compState(App.model, c), add = [{ sep: true }];
+    var names = c.pattern == null ? AS.partConfigurations(c.source) : [];
+    var shown = st.config != null ? st.config : partActive(c);
+    names.forEach(function (n) { add.push({ label: 'Configuration ▸ ' + n, checked: shown === n, action: function () { run(setComponentConfig(c.id, n)); } }); });
+    add.push({ label: st.suppressed ? 'Unsuppress' : 'Suppress', action: function () { run(setComponentSuppressed(c.id, !st.suppressed)); } });
+    return items.concat(add);
+  };
+  // hidden states: applied when the shown assembly configuration changes; Hide / Show records into the active one
+  var appliedCfg = null;
+  function applyHidden(force) {
+    if (!isAsm()) { appliedCfg = null; return; }
+    var key = App.model.activeConfiguration != null ? String(App.model.activeConfiguration) : null;
+    if (!force && key === appliedCfg) return;
+    appliedCfg = key;
+    if (!cfgs().length || !UI.setBodyHidden) return;
+    App.model.components.forEach(function (c, i) { UI.setBodyHidden(i, !!AS.compState(App.model, c).hidden); });
+  }
+  (UI.onBuild = UI.onBuild || []).push(function () { applyHidden(false); });
+  function wrapHide() {
+    if (!UI.asm || UI.asm.__fcHide) return;
+    var base = UI.asm.setHidden;
+    UI.asm.setHidden = function (idOrName, hidden) {
+      var r = base.apply(this, arguments);
+      try { if (r && isAsm() && cfgs().length && App.model.activeConfiguration != null) { var c = AS.findComponent(App.model, idOrName); if (c) AS.setComponentState(App.model, c.id, { hidden: hidden !== false }, 'this'); } } catch (e) { }
+      return r;
+    };
+    UI.asm.__fcHide = true;
+  }
+  wrapHide();
+  // the assembly's configurations in its ConfigurationManager, above the exploded views
+  function addAsmConfig(name) {
+    if (!isAsm()) return Promise.reject(new Error('Open an assembly first.'));
+    var n = name == null ? '' : String(name).trim();
+    if (!n) return Promise.reject(new Error('A configuration needs a name.'));
+    if (AS.findAsmConfiguration(App.model, n)) return Promise.reject(new Error('A configuration named "' + n + '" already exists.'));
+    return commit(function (m) {
+      var first = !AS.asmConfigurations(m).length, ac = AS.activeAsmConfiguration(m);
+      if (!Array.isArray(m.configurations)) m.configurations = [];
+      if (first && n !== 'Default') m.configurations.push({ name: 'Default', components: {} });
+      var comps = ac && ac.components ? JSON.parse(JSON.stringify(ac.components)) : {};
+      if (first) m.components.forEach(function (c, i) { if (UI.isBodyHidden && UI.isBodyHidden(i)) (comps[String(c.id)] = comps[String(c.id)] || {}).hidden = true; });
+      m.configurations.push({ name: n, components: comps });
+      m.activeConfiguration = n;
+    }, 'Added configuration "' + n + '" (now active).');
+  }
+  function showAsmConfig(name) {
+    var cf = isAsm() && AS.findAsmConfiguration(App.model, name);
+    if (!cf) return Promise.reject(new Error('No configuration named "' + name + '".'));
+    return commit(function (m) { m.activeConfiguration = String(cf.name); }, 'Configuration "' + cf.name + '" is active.');
+  }
+  function removeAsmConfig(name) {
+    var cf = isAsm() && AS.findAsmConfiguration(App.model, name);
+    if (!cf) return Promise.reject(new Error('No configuration named "' + name + '".'));
+    return commit(function (m) {
+      m.configurations = m.configurations.filter(function (x) { return x !== cf; });
+      if (!m.configurations.length) { delete m.configurations; delete m.activeConfiguration; }
+      else if (String(m.activeConfiguration) === String(cf.name)) m.activeConfiguration = String(m.configurations[0].name);
+    }, 'Deleted configuration "' + cf.name + '".');
+  }
+  var selCfg = null;
+  var basePanel = UI.asmConfigPanel;
+  UI.asmConfigPanel = function (panel) {
+    if (basePanel) basePanel(panel);
+    var m = App.model, list = AS.asmConfigurations(m), act = AS.activeAsmConfiguration(m);
+    var box = panel.querySelector('#asm-cfg');
+    if (!box) return;
+    if (list.length) { var dflt = box.querySelector('.cfg-row[data-name="Default"]:not(.asm-config)'); if (dflt) dflt.remove(); }
+    var tools = el('div', { class: 'cfg-tools' }, [
+      el('button', { id: 'asm-cfg-add', text: 'Add…', title: 'Add Configuration: a copy of the active one (component configurations, suppression and hidden states), made active', onclick: function () { UI.promptDialog('Add Configuration', 'Configuration name:', 'Config' + (list.length + 1), function (v) { run(addAsmConfig(v)); }); } }),
+      el('button', { id: 'asm-cfg-show', text: 'Show', title: 'Show the selected configuration', onclick: function () { if (selCfg) run(showAsmConfig(selCfg)); else UI.toast('Select a configuration first.'); } }),
+      el('button', { id: 'asm-cfg-delete', text: 'Delete', title: 'Delete the selected configuration', onclick: function () { if (selCfg) run(removeAsmConfig(selCfg)); else UI.toast('Select a configuration first.'); } })
+    ]);
+    box.parentNode.insertBefore(tools, box);
+    var first = box.firstChild;
+    list.forEach(function (cf) {
+      var on = act === cf, n = Object.keys(cf.components || {}).length;
+      var row = el('div', { class: 'cfg-row asm-config' + (on ? ' active' : '') + (selCfg === cf.name ? ' selected' : ''), 'data-name': String(cf.name), title: cf.name + (on ? ' (active)' : '') + ' — double-click to show' }, [
+        el('span', { class: 'cfg-mark', text: on ? '✓' : '' }), el('span', { html: Icons('config', 16) }), el('span', { class: 'cfg-name', text: cf.name }),
+        el('span', { class: 'cfg-vals', text: n ? n + ' component' + (n === 1 ? '' : 's') + ' set' : '' })
+      ]);
+      row.addEventListener('click', function () { selCfg = String(cf.name); UI.refreshConfigPanel(); });
+      row.addEventListener('dblclick', function (e) { e.stopPropagation(); selCfg = String(cf.name); run(showAsmConfig(cf.name)); });
+      box.insertBefore(row, first);
+    });
+  };
+  UI.setComponentConfig = setComponentConfig; UI.setComponentSuppressed = setComponentSuppressed;
+  UI.asmConfigurations = { list: function () { return cfgs().map(function (c) { return { name: String(c.name), components: JSON.parse(JSON.stringify(c.components || {})) }; }); }, add: addAsmConfig, activate: showAsmConfig, remove: removeAsmConfig, active: function () { var a = isAsm() && AS.activeAsmConfiguration(App.model); return a ? String(a.name) : null; } };
 })(UI);

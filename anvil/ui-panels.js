@@ -47,22 +47,29 @@
     Features: [
       { id: 'extrude', label: 'Extruded\nBoss/Base', run: function () { UI.cmdExtrude(false); } },
       { id: 'revolve', label: 'Revolved\nBoss/Base', run: function () { UI.cmdRevolve(false); } },
-      { stack: [{ id: 'sweep', label: 'Swept Boss/Base', run: function () { UI.cmdSweep(false); } }, { id: 'loft', label: 'Lofted Boss/Base', run: function () { UI.cmdLoft(false); } }, { id: 'loft', label: 'Boundary Boss/Base' }] },
+      { stack: [{ id: 'sweep', label: 'Swept Boss/Base', run: function () { UI.cmdSweep(false); } }, { id: 'loft', label: 'Lofted Boss/Base', run: function () { UI.cmdLoft(false); } }, 
+      { id: 'boundary', label: 'Boundary Boss/Base', run: function () { UI.cmdBoundary(false); } }   // rfFB
+    ] },
       { sep: true },
       { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } },
       { id: 'holeWizard', label: 'Hole\nWizard', run: function () { (UI.cmdHoleWizard || UI.cmdHole)(); } },
       { id: 'revolveCut', label: 'Revolved\nCut', run: function () { UI.cmdRevolve(true); } },
-      { stack: [{ id: 'sweep', label: 'Swept Cut', run: function () { UI.cmdSweep(true); } }, { id: 'loft', label: 'Lofted Cut', run: function () { UI.cmdLoft(true); } }, { id: 'loft', label: 'Boundary Cut' }] },
+      { stack: [{ id: 'sweep', label: 'Swept Cut', run: function () { UI.cmdSweep(true); } }, { id: 'loft', label: 'Lofted Cut', run: function () { UI.cmdLoft(true); } }, 
+      { id: 'boundaryCut', label: 'Boundary Cut', run: function () { UI.cmdBoundary(true); } }   // rfFB
+    ] },
       { sep: true },
       // r14/commands14: flyout buttons (SolidWorks): the face runs the last command used from the ▾ list
       { fly: 'fillet', items: [{ id: 'fillet', label: 'Fillet', run: function () { UI.cmdFillet(); } }, { id: 'chamfer', label: 'Chamfer', run: function () { UI.cmdChamfer(); } }] },
       { fly: 'pattern', items: [{ id: 'lpattern', label: 'Linear\nPattern', run: function () { UI.cmdLinearPattern(); } }, { id: 'cpattern', label: 'Circular\nPattern', run: function () { UI.cmdCircularPattern(); } }, { id: 'mirror', label: 'Mirror', run: function () { UI.cmdMirror(); } }] },
       { sep: true },
       { id: 'shell', label: 'Shell', run: function () { UI.cmdShell(); } },
-      { id: 'draft', label: 'Draft' }, { id: 'intersect', label: 'Intersect' }, { id: 'rib', label: 'Rib' }, { id: 'wrap', label: 'Wrap' },
+      { id: 'draft', label: 'Draft', run: function () { UI.cmdDraft(); } },   // rfDX
+      { id: 'intersect', label: 'Intersect', help: 'Intersect solids and planes: keep or exclude the regions they make', run: function () { UI.cmdIntersect(); } },   // rfDY
+      { id: 'rib', label: 'Rib', help: 'Add a rib from an open sketch: thickened and extended until it meets the part', run: function () { UI.cmdRib(); } },   // rfDY
+      { id: 'wrap', label: 'Wrap', run: function () { UI.cmdWrap(); } },   // rfDZ
       { sep: true },
       { fly: 'refgeo', label: 'Reference\nGeometry', items: [{ id: 'plane', label: 'Plane', run: function () { UI.cmdPlane(); } }, { id: 'refAxis', label: 'Axis', help: 'Create a reference axis: a line, edge, two planes, two points, a cylindrical face, or a point and a face', run: function () { UI.cmdRefAxis(); } }, { id: 'csys', label: 'Coordinate\nSystem', help: 'Create a coordinate system: an origin and X / Y / Z directions', run: function () { UI.cmdCsys(); } }, { id: 'refPoint', label: 'Point', help: 'Create a reference point: arc centre, face centre, intersection, projection, on a point, or along a curve', run: function () { UI.cmdRefPoint(); } }] },   // lane CZ
-      { id: 'curves', label: 'Curves' },
+      { fly: 'curves', label: 'Curves', items: [{ id: 'splitLine', label: 'Split Line' }, { id: 'projCurve', label: 'Projected\nCurve', help: 'Project a sketch onto faces, or make the 3D curve where two sketches’ extrusions meet', run: function () { UI.cmdProjectedCurve(); } }, { id: 'compositeCurve', label: 'Composite\nCurve', help: 'Join connected edges, sketch entities and curves into one curve', run: function () { UI.cmdCompositeCurve(); } }, { id: 'xyzCurve', label: 'Curve Through\nXYZ Points', help: 'A spline through points typed in a table or read from a .sldcrv / .txt file', run: function () { UI.cmdCurveXYZ(); } }, { id: 'refPtCurve', label: 'Curve Through\nReference Points', help: 'A spline through picked sketch points, vertices and reference points', run: function () { UI.cmdCurveRefPoints(); } }, { id: 'helix', label: 'Helix and\nSpiral', help: 'A helix or spiral from a sketched circle: pitch, revolutions, height, taper', run: function () { UI.cmdHelix(); } }] },   // rfFA: SolidWorks' order
       { id: 'instant', label: 'Instant3D', run: function () { if (UI.toggleInstant3D) UI.toggleInstant3D(); }, active: function () { return !!(UI.instant3DOn && UI.instant3DOn()); } }
     ],
     // rfC: the Sketch tab as SolidWorks 2024's CommandManager lays it out: Sketch ▾ (3D Sketch) and Smart Dimension ▾
@@ -323,6 +330,7 @@
     'Mirror Components': 'Mirror components about a plane', 'Exploded View': 'Pull the components apart in steps', 'Bill of Materials': 'Parts list with quantities',
     'Smart Fasteners': 'Add fasteners to holes', 'Hole Alignment': 'Find holes that do not line up across components'
   };
+  RIBBON_HELP['Boundary Boss/Base'] = 'A solid bounded by profiles (Direction 1), its sides shaped by curves that touch every profile (Direction 2)'; RIBBON_HELP['Boundary Cut'] = 'Remove material bounded by profiles and the curves between them';   // rfFB
   // Drawing commands have their own lines (Section View, Smart Dimension … mean other things in a part)
   var DRAW_HELP = {
     'Standard 3 View': 'Front, Top and Right views of the model on the sheet', 'Model View': 'Place a view of the model in any orientation',
@@ -775,10 +783,16 @@
   FEATURE_ICON.refaxis = 'refAxis'; FEATURE_ICON.refpoint = 'refPoint'; FEATURE_ICON.csys = 'csys';   // lane CZ: reference geometry
   FEATURE_ICON.rip = 'rip';   // lane DI
   FEATURE_ICON.vent = 'vent';   // lane DT
+  FEATURE_ICON.draft = 'draft';   // rfDX
+  FEATURE_ICON.helix = 'helix'; FEATURE_ICON.projCurve = 'projCurve'; FEATURE_ICON.compositeCurve = 'compositeCurve'; FEATURE_ICON.xyzCurve = 'xyzCurve'; FEATURE_ICON.refPtCurve = 'refPtCurve';   // rfFA
+  FEATURE_ICON.wrap = 'wrap';   // rfDZ
   FEATURE_ICON.insertBends = 'insertBends'; FEATURE_ICON.convertSM = 'convertSM';   // lane DQ
+  FEATURE_ICON.rib = 'rib'; FEATURE_ICON.intersect = 'intersect';   // rfDY
+  FEATURE_ICON.boundary = 'boundary';   // rfFB (a Boundary Cut: featureIcon)
   function featureIcon(f) {
     if (f.type === 'extrude') return f.cut ? 'cut' : (f.sheetBase ? 'flange' : 'extrude');
     if (f.type === 'revolve') return f.cut ? 'revolveCut' : 'revolve';
+    if (f.type === 'boundary') return f.cut ? 'boundaryCut' : 'boundary';   // rfFB
     if (f.type === 'flange') return f.miter ? 'miter' : (f.hem ? 'hem' : 'bend');
     if (f.type === 'jog') return 'jog';
     if (f.type === 'sketchedBend') return 'sketchedBend';
@@ -1058,7 +1072,7 @@
     var active = App.activeSketch === f.id;
     // r10/editpreview10: features after the rollback point of an Edit Sketch / Edit Feature are greyed (SolidWorks)
     var rolled = App.rollback != null && !active && App.model.features.indexOf(f) >= App.rollback;
-    var row = treeItem({ icon: err ? 'error' : (warn ? 'warn' : featureIcon(f)), name: (f.type === 'sketch' && UI.sketchTreePrefix ? UI.sketchTreePrefix(f) : '') + f.name + (active ? '  (editing)' : ''), depth: depth, children: !!kids, open: kids && kids.open, toggle: kids && kids.toggle, cls: (selected ? 'selected' : '') + (err ? ' err' : '') + (warn ? ' warn' : '') + (rolled ? ' rolled' : ''), title: (err || warn || featureTitle(f)) + (rolled ? ' (rolled back)' : ''), badge: f.type === 'sketch' && f.entities ? f.entities.length + ' ent.' : '', prefix: f.type === 'sketch' });
+    var row = treeItem({ icon: err ? 'error' : (warn ? 'warn' : featureIcon(f)), name: (f.type === 'sketch' && UI.sketchTreePrefix ? UI.sketchTreePrefix(f) : '') + f.name + (active ? '  (editing)' : ''), depth: depth, children: !!kids, open: kids && kids.open, toggle: kids && kids.toggle, cls: (selected ? 'selected' : '') + (err ? ' err' : '') + (warn ? ' warn' : '') + (rolled ? ' rolled' : '') + (UI.isSuppressed && UI.isSuppressed(f.id) ? ' suppressed' : ''), title: (err || warn || featureTitle(f)) + (rolled ? ' (rolled back)' : '') + (UI.isSuppressed && UI.isSuppressed(f.id) ? ' (suppressed)' : ''), badge: f.type === 'sketch' && f.entities ? f.entities.length + ' ent.' : '', prefix: f.type === 'sketch' });
     row.setAttribute('data-fid', String(f.id));   // selection sync (ui-select.js)
     if (UI.rebuildMarkRow) UI.rebuildMarkRow(row, f, err, warn, featureIcon(f));   // r12/occtui12: own icon + error / warning badge, tooltip
     row.addEventListener('click', function (e) {
@@ -1091,6 +1105,7 @@
       case 'shell': return 'Shell, walls ' + f.thickness + ' thick, ' + ((f.faces || []).length ? (f.faces || []).length + ' face' + ((f.faces || []).length === 1 ? '' : 's') + ' removed' : 'closed');
       case 'sweep': return (f.cut ? 'Cut' : 'Boss') + ' sweep along ' + (Array.isArray(f.path) ? f.path.length + ' points' : 'a path sketch');
       case 'loft': return (f.cut ? 'Cut' : 'Boss') + ' loft through ' + (f.sketches || []).length + ' sections';
+      case 'boundary': return 'Boundary ' + (f.cut ? 'cut' : 'boss') + ': ' + (f.dir1 || []).length + ' profiles' + ((f.dir2 || []).length ? ', ' + f.dir2.length + ' Direction 2 curve' + (f.dir2.length === 1 ? '' : 's') : '') + (f.thin ? ', thin ' + f.thin.t : '');   // rfFB
       case 'import': return 'Imported ' + String(f.format || 'mesh').toUpperCase() + (f.file ? ' from ' + f.file : '') + ', ' + (f.solids || []).length + ' solid' + ((f.solids || []).length === 1 ? '' : 's') + (f.merge ? ', merged' : '');
       case 'hole': return 'Hole Wizard: ' + ({ cbore: 'Counterbore', csk: 'Countersink', hole: 'Hole', tap: 'Straight Tap' }[f.holeType] || f.holeType) + ' ' + (typeof HoleWizard !== 'undefined' && HoleWizard.standardOf ? HoleWizard.standardOf(f) : 'ISO') + ' ' + f.size + (f.holeType !== 'tap' ? ' ' + (f.fit || 'normal') + ' fit' : '') + ', ' + (f.end === 'through' ? 'through all' : 'blind ' + f.depth);
       case 'sketch': return 'Sketch on ' + (f.plane.custom ? 'face' + (f.plane.face && K.findFeature(App.model, f.plane.face.feature) ? ' of ' + K.findFeature(App.model, f.plane.face.feature).name : '') : f.plane.featureId != null ? 'Plane' + f.plane.featureId : f.plane.ref + (f.plane.offset ? ' + ' + f.plane.offset : ''));
@@ -1107,6 +1122,7 @@
     if (f.type === 'sketch') items.push({ label: 'Export sketch as DXF', action: function () { UI.exportSketchDXF(f); } });
     if (f.type === 'sketch') items.push({ label: f.hidden ? 'Show' : 'Hide', action: function () { f.hidden = !f.hidden; UI.updateSketches(); } });
     if (f.type === 'refaxis' || f.type === 'refpoint' || f.type === 'csys') items.push({ label: f.hidden ? 'Show' : 'Hide', action: function () { UI.pushUndo(); f.hidden = !f.hidden; UI.updatePlanes(); refreshTree(); } });   // lane CZ
+    if (UI.suppressMenuItems) Array.prototype.push.apply(items, UI.suppressMenuItems(f));   // rfFC: Suppress / Unsuppress
     items.push({ label: 'Rename (F2)', action: function () { startRename(f); } });
     items.push({ sep: true });
     items.push({ label: 'Delete', action: function () { UI.deleteFeature(f.id); } });
@@ -1216,6 +1232,7 @@
       if (UI.cmdModifySketch) items.push({ label: 'Modify Sketch…', icon: 'moveEnt', action: inSketch(function () { UI.cmdModifySketch(); }) });   // rfAP
       items.push({ sep: true });
       items.push({ label: 'Zoom to Fit', key: 'F', icon: 'fit', action: function () { UI.zoomToFit(); } });
+      if (UI.selectionModeMenuItems) items = items.concat([{ sep: true }], UI.selectionModeMenuItems());   // rfFD: Box / Lasso Selection
     }
     items.push({ sep: true });
     items.push({ label: 'Exit Sketch', icon: 'exitSketch', action: act('Exit Sketch', function () { UI.exitSketch(); }) });
@@ -1352,7 +1369,7 @@
         { label: 'Copy', key: 'Ctrl+C', action: function () { UI.sketchCopy(); } },
         { label: 'Paste', key: 'Ctrl+V', action: function () { UI.sketchPaste(); }, disabled: !UI.sketchClipboard() },
         { sep: true }
-      ] : []).concat([
+      ] : []).concat(UI.suppressEditItems ? UI.suppressEditItems() : []).concat([   // rfFC: Suppress / Unsuppress
         { label: 'Delete', key: 'Del', action: UI.deleteSelection, disabled: !App.sel },
         { label: 'Rebuild', key: 'Ctrl+B', action: function () { UI.rebuild().then(function () { toast('Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms'); }); } },
         { label: 'Rebuild in background (Web Worker)', checked: App.workerOn, action: function () { UI.setWorkerOn(!App.workerOn); toast(App.workerOn ? 'Rebuilds run in a Web Worker' : 'Rebuilds run on the main thread'); } },
@@ -1407,16 +1424,22 @@
         { label: 'Boss/Base ▸ Revolve', action: function () { UI.cmdRevolve(false); } },
         { label: 'Boss/Base ▸ Sweep', action: function () { UI.cmdSweep(false); } },
         { label: 'Boss/Base ▸ Loft', action: function () { UI.cmdLoft(false); } },
+        { label: 'Boss/Base ▸ Boundary', action: function () { UI.cmdBoundary(false); } },   // rfFB
         { label: 'Cut ▸ Extrude', action: function () { UI.cmdExtrude(true); } },
         { label: 'Cut ▸ Revolve', action: function () { UI.cmdRevolve(true); } },
         { label: 'Cut ▸ Sweep', action: function () { UI.cmdSweep(true); } },
         { label: 'Cut ▸ Loft', action: function () { UI.cmdLoft(true); } },
+        { label: 'Cut ▸ Boundary', action: function () { UI.cmdBoundary(true); } },   // rfFB
         { label: 'Features ▸ Hole Wizard', action: function () { (UI.cmdHoleWizard || UI.cmdHole)(); } },
         { label: 'Features ▸ Fillet', action: function () { UI.cmdFillet(); } },
         { label: 'Features ▸ Chamfer', action: function () { UI.cmdChamfer(); } },
         { label: 'Features ▸ Shell', action: function () { UI.cmdShell(); } },
+        { label: 'Features ▸ Draft', icon: 'draft', action: function () { UI.cmdDraft(); } },   // rfDX
+        { label: 'Features ▸ Rib', icon: 'rib', action: function () { UI.cmdRib(); } },   // rfDY
+        { label: 'Features ▸ Intersect', icon: 'intersect', action: function () { UI.cmdIntersect(); } },   // rfDY
         { label: 'Features ▸ Imported…', action: function () { UI.cmdInsertImported(); } },
         { label: 'Features ▸ Fastening Features ▸ Vent', icon: 'vent', action: function () { UI.cmdVent(); } },   // lane DT2
+        { label: 'Features ▸ Wrap', icon: 'wrap', action: function () { UI.cmdWrap(); } },   // rfDZ
         { sep: true },
         { label: 'Pattern/Mirror ▸ Linear Pattern', action: function () { UI.cmdLinearPattern(); } },
         { label: 'Pattern/Mirror ▸ Circular Pattern', action: function () { UI.cmdCircularPattern(); } },
@@ -1424,12 +1447,14 @@
         { sep: true },
         { label: 'Sketch', action: UI.cmdSketch },
         { label: 'Reference Geometry ▸ Plane', action: function () { UI.cmdPlane(); } },
+        { label: 'Curve ▸ Split Line…', icon: 'splitLine', disabled: true }, { label: 'Curve ▸ Projected…', icon: 'projCurve', action: function () { UI.cmdProjectedCurve(); } }, { label: 'Curve ▸ Composite…', icon: 'compositeCurve', action: function () { UI.cmdCompositeCurve(); } }, { label: 'Curve ▸ Curve Through XYZ Points…', icon: 'xyzCurve', action: function () { UI.cmdCurveXYZ(); } }, { label: 'Curve ▸ Curve Through Reference Points…', icon: 'refPtCurve', action: function () { UI.cmdCurveRefPoints(); } }, { label: 'Curve ▸ Helix/Spiral…', icon: 'helix', action: function () { UI.cmdHelix(); } },   // rfFA
         { label: 'Sheet Metal ▸ Base Flange', action: UI.cmdBaseFlange },
         { label: 'Sheet Metal ▸ Edge Flange', action: function () { UI.cmdEdgeFlange(); } },
         { label: 'Sheet Metal ▸ Miter Flange', action: function () { UI.cmdMiterFlange(); } },
         { label: 'Sheet Metal ▸ Hem', action: function () { UI.cmdHem(); } },
         { label: 'Sheet Metal ▸ Jog', action: function () { UI.cmdJog(); } },
-        { label: 'Sheet Metal ▸ Flatten', checked: !!(App.model && App.model.flatState), action: function () { UI.toggleFlatten(); } }
+        { label: 'Sheet Metal ▸ Flatten', checked: !!(App.model && App.model.flatState), action: function () { UI.toggleFlatten(); } },
+        { label: 'Tables ▸ Design Table…', action: function () { showDesignTable(); } }   // rfFC
       ] },
       { label: 'Tools', items: [
         { label: 'Macro ▸ Run script…', action: function () { UI.openTaskPane('macro'); } },
@@ -1501,6 +1526,8 @@
         { label: 'Default units for new documents ▸ Millimeters (MMGS)', checked: UI.defaultUnits() === 'mm', action: function () { UI.setDefaultUnits('mm'); toast('New parts and assemblies start in millimeters (MMGS).'); } },
         { label: 'Options…', action: function () { UI.openTaskPane('props'); } },
         { label: 'Options ▸ Image Quality…', action: function () { UI.openTaskPane('props'); var q = document.querySelector('[data-role="image-quality"]'); if (q) q.focus(); } },
+        // rfFD: System Options ▸ Display/Selection ▸ Select hidden entities (off: a box / lasso in a shaded view takes only visible edges)
+        { label: 'Options ▸ Display/Selection ▸ Select hidden entities', checked: !!(UI.selectHidden && UI.selectHidden()), disabled: !UI.selectHidden, action: function () { var on = UI.selectHidden(!UI.selectHidden()); toast('Select hidden entities ' + (on ? 'on: a box or lasso selects through the part.' : 'off: a box or lasso in a shaded view selects only what can be seen.')); } },
         { sep: true }
       ].concat(UI.occtMenuItems ? UI.occtMenuItems() : []))) },   // r12/occtui12: Tools ▸ OpenCascade kernel ▸ … (ui-occt.js)
       { label: 'Window', items: [
@@ -1913,7 +1940,7 @@
   // configuration (.active = the one shown, .selected = the one the buttons act on). Double-click a row to show it.
   // Every operation is one undo step followed by a rebuild; UI.configurations exposes them for scripts and tests.
   var cfgSelected = null;
-  function cfgCopy(c) { return { name: String(c.name), values: JSON.parse(JSON.stringify(c.values || {})) }; }
+  function cfgCopy(c) { var o = { name: String(c.name), values: JSON.parse(JSON.stringify(c.values || {})) }; if (c.suppressed) o.suppressed = JSON.parse(JSON.stringify(c.suppressed)); return o; }   // rfFC: suppression states
   function cfgList() { return (K.configurationList ? K.configurationList(App.model) : []).map(cfgCopy); }
   function cfgActiveName() { var ac = K.activeConfiguration ? K.activeConfiguration(App.model) : null; return ac ? String(ac.name) : null; }
   function cfgValuesText(values) {
@@ -1947,7 +1974,9 @@
     return cfgCommit(function (m) {
       if (!Array.isArray(m.configurations)) m.configurations = [];
       if (first) m.configurations.push({ name: 'Default', values: JSON.parse(JSON.stringify(values)) });
-      m.configurations.push({ name: chk.name, values: values });
+      var ac0 = K.activeConfiguration(m), nc = { name: chk.name, values: values };
+      if (ac0 && ac0.suppressed) nc.suppressed = JSON.parse(JSON.stringify(ac0.suppressed));   // rfFC: starts as the active one shows
+      m.configurations.push(nc);
       m.activeConfiguration = chk.name;
     }, 'Added configuration "' + chk.name + '" (now active).');
   }
@@ -1997,7 +2026,8 @@
       seen[n] = true;
       var vals = {};
       Object.keys(c.values || {}).forEach(function (k) { vals[k] = String(c.values[k] == null ? '' : c.values[k]).replace(/^\s*=\s*/, '').trim(); });
-      out.push({ name: n, values: vals });
+      var oc = K.findConfiguration(App.model, n), sp = c.suppressed !== undefined ? c.suppressed : oc && oc.suppressed;   // rfFC: keeps its suppression states
+      out.push(sp && Object.keys(sp).length ? { name: n, values: vals, suppressed: JSON.parse(JSON.stringify(sp)) } : { name: n, values: vals });
     }
     var act = null;
     if (out.length) {
@@ -2041,6 +2071,7 @@
     }
     items.push({ label: 'Add Configuration…', action: cfgPromptAdd });
     items.push({ label: 'Manage Equations…', action: function () { showEquations(); } });
+    items.push({ label: 'Design Table…', action: function () { showDesignTable(); } });   // rfFC
     return items;
   }
   function refreshConfigPanel() {
@@ -2056,7 +2087,8 @@
       el('button', { id: 'cfg-add', text: 'Add\u2026', title: 'Add Configuration: a copy of the current variable values, made active', onclick: cfgPromptAdd }),
       el('button', { id: 'cfg-rename', text: 'Rename\u2026', title: 'Rename the selected configuration', onclick: function () { cfgPromptRename(); } }),
       el('button', { id: 'cfg-delete', text: 'Delete', title: 'Delete the selected configuration', onclick: function () { cfgConfirmDelete(); } }),
-      el('button', { id: 'cfg-activate', text: 'Show', title: 'Show Configuration: make the selected configuration active', onclick: function () { var n = cfgNeedSelection(); if (n) cfgRun(cfgActivate(n)); } })
+      el('button', { id: 'cfg-activate', text: 'Show', title: 'Show Configuration: make the selected configuration active', onclick: function () { var n = cfgNeedSelection(); if (n) cfgRun(cfgActivate(n)); } }),
+      el('button', { id: 'cfg-table', text: 'Design Table…', title: 'Design Table: every configuration’s variables, dimensions and suppression states in one grid', onclick: function () { showDesignTable(); } })   // rfFC
     ]));
     var box = el('div', { id: 'cfg-list' });
     box.addEventListener('contextmenu', function (e) { if (e.target !== box) return; e.preventDefault(); showMenu(e.clientX, e.clientY, cfgMenu(null)); });
@@ -2066,6 +2098,8 @@
     }
     list.forEach(function (c) {
       var isActive = c.name === active, vals = cfgValuesText(c.values);
+      var nsup = K.suppressedIds ? Object.keys(K.suppressedIds(App.model, c.name)).length : 0;   // rfFC: features suppressed in it
+      if (nsup) vals = (vals ? vals + '; ' : '') + nsup + ' suppressed';
       var row = el('div', { class: 'cfg-row' + (isActive ? ' active' : '') + (c.name === cfgSelected ? ' selected' : ''), 'data-name': c.name, title: c.name + (isActive ? ' (active)' : '') + (vals ? ': ' + Object.keys(c.values).map(function (k) { return k + ' = ' + c.values[k]; }).join(', ') : '') + ' — double-click to show' }, [
         el('span', { class: 'cfg-mark', text: isActive ? '\u2713' : '' }),
         el('span', { html: Icons('config', 16) }),
@@ -2340,4 +2374,150 @@
   UI.showEquations = showEquations; UI.setEquations = setEquations; UI.normalizeEquations = normalizeEquations;
   UI.refreshConfigPanel = refreshConfigPanel;
   UI.configurations = { list: cfgList, active: cfgActiveName, add: cfgAdd, rename: cfgRename, remove: cfgRemove, activate: cfgActivate, set: cfgSet };
+
+  // ------------------------------------------------------------------ rfFC: Design Table (Insert ▸ Tables ▸ Design Table)
+  // A modal grid: rows = configurations, columns = global variables, feature dimensions (D1@Boss-Extrude1) and
+  // suppression states ($STATE@Cut-Extrude1, S / U). Every cell and header is an input; × deletes a row / column;
+  // Add Row, Add Column (a list of what can be configured, or a typed header); Copy / Paste as tab-separated text
+  // (Excel); a paste of several cells into a cell fills the grid from there. Apply checks the grid on a copy
+  // (Kernel.applyDesignTable): any bad cell is marked red with its message and nothing changes; a good grid is written
+  // as one undo step and the part rebuilt. DOM: #dt-dialog, table #dt-grid, td[data-r][data-c] > input, .dt-err cells,
+  // #dt-msg, #dt-add-row, #dt-add-col (select) , #dt-copy, #dt-paste, modal buttons #dt-apply, #dt-ok, #dt-cancel.
+  var dtGrid = null;
+  function dtColumnChoices() {
+    var m = App.model, out = [], used = {};
+    (dtGrid ? dtGrid[0] : []).forEach(function (h) { used[h] = true; });
+    (Array.isArray(m.equations) ? m.equations : []).forEach(function (q) { var l = q.dim || String(q.name); if (!used[l]) out.push(l); });
+    (m.features || []).forEach(function (f) {
+      (K.DIM_FIELDS[f.type] || []).forEach(function (fld, i) { var l = 'D' + (i + 1) + '@' + f.name; if (f[fld] != null && !used[l]) out.push(l); });
+      if (!used['$STATE@' + f.name]) out.push('$STATE@' + f.name);
+    });
+    return out;
+  }
+  function showDesignTable() {
+    if (!App.model || isAsm()) { toast('Design tables are for parts.'); return; }
+    dtGrid = K.designTable(App.model);
+    var wrap = el('div', { id: 'dt-dialog' });
+    var msg = el('div', { id: 'dt-msg', class: 'eq-msg' });
+    var table = el('table', { id: 'dt-grid', class: 'eq-table dt-grid' });
+    var colSel = el('select', { id: 'dt-add-col', title: 'Add Column: a global variable, a feature dimension or a suppression state' });
+    function fillColSel() {
+      colSel.innerHTML = '';
+      colSel.appendChild(el('option', { value: '', text: 'Add column…' }));
+      dtColumnChoices().forEach(function (l) { colSel.appendChild(el('option', { value: l, text: l })); });
+      colSel.appendChild(el('option', { value: '*', text: 'Blank column (type a header)' }));
+    }
+    colSel.addEventListener('change', function () {
+      var v = colSel.value;
+      if (!v) return;
+      dtGrid.forEach(function (r, i) {
+        if (i === 0) { r.push(v === '*' ? '' : v); return; }
+        var val = '';   // a known column starts with each configuration's value now
+        if (v !== '*') try { val = K.designTableCell(App.model, v, K.findConfiguration(App.model, r[0]) ? r[0] : null); } catch (e) { val = ''; }
+        r.push(val);
+      });
+      render();
+    });
+    function render(errs) {
+      table.innerHTML = '';
+      var bad = {};
+      (errs || []).forEach(function (e) { bad[e.row + ':' + e.col] = e.message; });
+      dtGrid.forEach(function (r, ri) {
+        var tr = el('tr', { class: ri === 0 ? 'dt-head' : 'dt-row' });
+        r.forEach(function (v, ci) {
+          var td = el(ri === 0 ? 'th' : 'td', { 'data-r': String(ri), 'data-c': String(ci) });
+          if (ri === 0 && ci === 0) { td.appendChild(el('span', { text: 'Configuration' })); tr.appendChild(td); return; }
+          var inp = el('input', { type: 'text', value: v, spellcheck: 'false' });
+          inp.addEventListener('input', function () { dtGrid[ri][ci] = inp.value; });
+          inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); var nx = table.querySelector('[data-r="' + (ri + 1) + '"][data-c="' + ci + '"] input'); if (nx) nx.focus(); } });
+          inp.addEventListener('paste', function (e) {
+            var t = e.clipboardData && e.clipboardData.getData('text/plain');
+            if (!t || !/[\t\n]/.test(t)) return;   // one value: the input takes it
+            e.preventDefault();
+            pasteAt(K.tsvToGrid(t), ri, ci);
+          });
+          td.appendChild(inp);
+          if ((ri === 0 && ci > 0) || (ci === 0 && ri > 0)) td.appendChild(el('button', { class: 'dt-del', text: '×', title: ri === 0 ? 'Delete this column' : 'Delete this configuration', onclick: function () { if (ri === 0) dtGrid.forEach(function (x) { x.splice(ci, 1); }); else dtGrid.splice(ri, 1); render(); } }));
+          if (bad[ri + ':' + ci]) { td.classList.add('dt-err'); td.title = bad[ri + ':' + ci]; }
+          tr.appendChild(td);
+        });
+        table.appendChild(tr);
+      });
+      fillColSel();
+      if (!errs) { msg.textContent = (dtGrid.length - 1) + ' configuration' + (dtGrid.length === 2 ? '' : 's') + ', ' + (dtGrid[0].length - 1) + ' column' + (dtGrid[0].length === 2 ? '' : 's'); msg.classList.remove('err'); }
+    }
+    function pasteAt(g, r0, c0) {
+      g.forEach(function (row, i) {
+        var r = r0 + i;
+        while (dtGrid.length <= r) dtGrid.push(dtGrid[0].map(function () { return ''; }));
+        row.forEach(function (v, j) {
+          var c = c0 + j;
+          if (c >= dtGrid[0].length) dtGrid.forEach(function (x) { while (x.length <= c) x.push(''); });
+          if (!(r === 0 && c === 0)) dtGrid[r][c] = v;
+        });
+      });
+      render();
+    }
+    function apply(close) {
+      var trial = JSON.parse(JSON.stringify(App.model, function (k, v) { return k === 'profile' ? undefined : v; }));
+      var res = K.applyDesignTable(trial, dtGrid);
+      if (!res.ok) {
+        render(res.errors);
+        msg.textContent = res.errors.length + ' cell' + (res.errors.length === 1 ? '' : 's') + ' with errors: ' + res.errors[0].message;
+        msg.classList.add('err');
+        return Promise.resolve(false);
+      }
+      UI.pushUndo();
+      K.applyDesignTable(App.model, dtGrid);
+      if (close) closeModal();
+      return UI.afterRebuild(UI.rebuild(), function () {
+        refreshTree(); refreshStatus(); refreshConfigPanel();
+        setStatus('Design table applied: ' + (dtGrid.length - 1) + ' configuration' + (dtGrid.length === 2 ? '' : 's') + (res.created.length ? '; new variable' + (res.created.length === 1 ? ' ' : 's ') + res.created.join(', ') : '') + '.');
+        if (!close) { dtGrid = K.designTable(App.model); render(); }
+      }).then(function () { return true; });
+    }
+    function copyText() {
+      var t = K.gridToTSV(dtGrid);
+      try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).catch(function () { }); } catch (e) { }
+      UI.designTableClipboard = t;
+      setStatus('Design table copied as tab-separated text: paste it into Excel.');
+      return t;
+    }
+    function pasteText() {
+      var box = el('textarea', { id: 'dt-paste-text', rows: '8', style: 'width:100%;font-family:monospace', placeholder: 'Paste cells copied from Excel (tab-separated), header row first' });
+      var back = function () { showModal(spec); $('modal-card').classList.add('wide'); render(); };
+      showModal({ title: 'Paste Design Table', body: el('div', {}, [el('p', { text: 'Paste the whole table here (Ctrl+V), header row first:' }), box]), buttons: [
+        { id: 'dt-paste-ok', label: 'OK', primary: true, action: function () { var g = K.tsvToGrid(box.value); if (g.length) dtGrid = g; back(); } },
+        { label: 'Cancel', action: back }
+      ] });
+      $('modal-card').classList.add('wide');
+      setTimeout(function () { box.focus(); }, 0);
+    }
+    var bar = el('div', { class: 'eq-bar dt-bar' }, [
+      el('button', { id: 'dt-add-row', class: 'btn', text: '+ Add configuration', onclick: function () {
+        var n = 1, names = dtGrid.map(function (r) { return r[0]; });
+        while (names.indexOf('Config' + n) >= 0) n++;
+        var src = dtGrid.length > 1 ? dtGrid[dtGrid.length - 1] : dtGrid[0].map(function () { return ''; });
+        dtGrid.push(src.map(function (v, i) { return i === 0 ? 'Config' + n : v; }));
+        render();
+      } }),
+      colSel,
+      el('button', { id: 'dt-copy', class: 'btn', text: 'Copy', title: 'Copy the table as tab-separated text (pastes into Excel)', onclick: copyText }),
+      el('button', { id: 'dt-paste', class: 'btn', text: 'Paste…', title: 'Paste a table copied from Excel', onclick: pasteText }),
+      msg
+    ]);
+    wrap.appendChild(table);
+    wrap.appendChild(bar);
+    wrap.appendChild(el('p', { class: 'eq-help', html: 'Rows are configurations. A column is a global variable (<kbd>W</kbd>), a feature dimension (<kbd>D1@Boss-Extrude1</kbd>, driven through a global variable Apply makes) or a suppression state (<kbd>$STATE@Cut-Extrude1</kbd>: <kbd>S</kbd> suppressed, <kbd>U</kbd> unsuppressed). Values may be equations of the variables above them.' }));
+    var spec = { title: 'Design Table', body: wrap, buttons: [
+      { id: 'dt-ok', label: 'OK', primary: true, action: function () { apply(true); } },
+      { id: 'dt-apply', label: 'Apply', action: function () { apply(false); } },
+      { id: 'dt-cancel', label: 'Cancel', action: closeModal }
+    ] };
+    showModal(spec);
+    $('modal-card').classList.add('wide');
+    render();
+    UI.designTableState = { grid: function () { return dtGrid; }, set: function (g) { dtGrid = g; render(); }, apply: apply, copy: copyText, pasteText: function (t) { var g = K.tsvToGrid(t); if (g.length) { dtGrid = g; render(); } } };
+  }
+  UI.showDesignTable = showDesignTable;
 })(UI);

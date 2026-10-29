@@ -550,6 +550,7 @@
     var k = S.t + ':' + o.map(q).join(',') + ':' + dd.map(q).join(',') + ':' + q(S.r);
     if (S.t === 'cone') k += ':' + q(S.k * sg) + ':' + q(S.r + S.k * dot(S.o, dd) * 0); // same line + same radius at o
     if (S.t === 'tor') k += ':' + q(S.R);
+    if (S.w != null) k += ':w' + S.w;   // rfDZ: the faces inside a Wrap scribe are a surface of their own
     return k;
   }
   // curveSurfaces(bodyOrMeshOrPolygons) -> [{ key, surf, polys }]: the curved faces as their analytic surfaces (one

@@ -47,6 +47,16 @@
     if (r && r.dims && r.prims) _.finishAngles(r);
     return r;
   }
+  // (lane DW) the sheet sketch's Area Hatch/Fill regions (doc.sheet.areaFills), layer ANNOTATIONS
+  function sheetAreaFills(doc, prims, out, hs, k) {
+    if (!doc.sheet || !doc.sheet.areaFills || !doc.sheet.areaFills.length) return;
+    _.resolveFills(doc, null, null, null, null).forEach(function (rf) {
+      var e = rf.entry, n = 0, ang = 45 + (+e.angle || 0);
+      if (e.pattern === 'SOLID') { prims.push({ k: 'region', loops: rf.loops, layer: 'ANNOTATIONS', style: 'hatch', fillAngle: ang, fillGap: 0.12 * k, areaFill: e.id }); n++; }
+      else if (e.pattern !== 'NONE') patternLines(rf.loops, hs * (+e.scale || 1), ang, e.pattern).forEach(function (h) { prims.push({ k: 'line', a: [h[0], h[1]], b: [h[2], h[3]], layer: 'ANNOTATIONS', style: 'hatch', areaFill: e.id }); n++; });
+      out.push({ id: e.id, view: null, kind: rf.kind, loops: rf.loops, pattern: e.pattern, scale: e.scale, angle: e.angle, prims: n, layer: 'ANNOTATIONS' });
+    });
+  }
   function computeSheet(doc, mesh, model, ctx) {
     ctx = ctx || {};
     var units = model.units === 'in' ? 'in' : 'mm', k = paperK(units);
@@ -127,7 +137,7 @@
 
     // views: what each one shows (its content, in model units of its frame), then paper primitives
     doc.units = units;
-    var projections = {}, views = [], contents = {}, byId = {};
+    var projections = {}, views = [], contents = {}, byId = {}, areaFills = [];   // (lane DW: areaFills, every Area Hatch/Fill drawn)
     var layers = {};
     doc.views.forEach(function (v) { byId[v.id] = v; });
     function contentOf(v, depth) {
@@ -161,28 +171,41 @@
       var hatch = 0, hatches = [], rims = null;
       // (rfAG) a region with its own Area Hatch/Fill (view.hatchRegions, marked cap.areaHatch) takes its pattern, scale
       // and angle (added to 45°) straight from it: SOLID is one filled region (SVG / PDF fill, a DXF HATCH), NONE bare
-      (ct.caps || []).forEach(function (cap, ci) {
-        var loops = cap.loops.map(function (l) { return l.map(toSheet); }), ah = cap.areaHatch, n0 = hatch;
-        var hst = ah ? { angle: 45 + (+ah.angle || 0), spacing: +ah.scale || 1 } : cap.style || hatchStyle(cap.body), pat = ah ? ah.pattern : capPattern(cap);
-        var tag = ah ? { region: ci, areaHatch: pat } : null;
-        function put(q) { if (tag) { q.region = tag.region; q.areaHatch = tag.areaHatch; } prims.push(q); }
+      // hatchInto(loops (sheet), pattern, { angle, spacing }, put, extra) -> primitives made: SOLID one filled region,
+      // NONE nothing, a pattern its lines (ending on the drawn round edges), all clipped to a detail circle
+      function hatchInto(loops, pat, hst, put, extra, merge) {
+        var n = 0;
         if (pat === 'SOLID') {
           var rl = clip ? _.clipLoopsConvex(loops, _.circlePoly(clip.c, clip.r, 128)) : loops;
-          if (rl.length) { put({ k: 'region', loops: rl, layer: layer, style: 'hatch', body: cap.body, part: cap.part, fillAngle: hst.angle, fillGap: 0.12 * k }); hatch++; }
+          if (rl.length) { put(Object.assign({ k: 'region', loops: rl, layer: layer, style: 'hatch' }, extra, { fillAngle: hst.angle, fillGap: 0.12 * k })); n++; }
         } else if (pat !== 'NONE') {
           // (hatch lines end on the drawn round edges, not on the facets' chords)
           if (!rims) {
             rims = [];
             [pr.circles.visible, pr.circles.hidden, pr.arcs && pr.arcs.visible, pr.arcs && pr.arcs.hidden].forEach(function (list) { (list || []).forEach(function (c) { rims.push({ c: toSheet(c.c), r: c.r * s }); }); });
           }
-          snapHatch(patternLines(loops, hs * hst.spacing, hst.angle, pat), loops, rims).forEach(function (h) {
+          var hl = snapHatch(patternLines(loops, hs * hst.spacing, hst.angle, pat), loops, rims);
+          (merge ? _.mergeSegs(hl) : hl).forEach(function (h) {   // (lane DW2: a partly hidden face's pieces, joined again)
             var q = clip ? clipSeg(h, clip.c, clip.r) : h;
-            if (q) { put({ k: 'line', a: [q[0], q[1]], b: [q[2], q[3]], layer: layer, style: 'hatch', body: cap.body, part: cap.part }); hatch++; }
+            if (q) { put(Object.assign({ k: 'line', a: [q[0], q[1]], b: [q[2], q[3]], layer: layer, style: 'hatch' }, extra)); n++; }
           });
         }
+        return n;
+      }
+      (ct.caps || []).forEach(function (cap, ci) {
+        var loops = cap.loops.map(function (l) { return l.map(toSheet); }), ah = cap.areaHatch, n0 = hatch;
+        var hst = ah ? { angle: 45 + (+ah.angle || 0), spacing: +ah.scale || 1 } : cap.style || hatchStyle(cap.body), pat = ah ? ah.pattern : capPattern(cap);
+        var tag = ah ? { region: ci, areaHatch: pat } : null;
+        function put(q) { if (tag) { q.region = tag.region; q.areaHatch = tag.areaHatch; } prims.push(q); }
+        hatch += hatchInto(loops, pat, hst, put, { body: cap.body, part: cap.part });
         var he = { body: cap.body, part: cap.part, angle: hst.angle, spacing: pat === 'SOLID' ? 0 : hs * hst.spacing, lines: hatch - n0, pattern: pat };
-        if (ah) { he.region = ci; he.areaHatch = true; he.scale = hst.spacing; if (pat === 'SOLID') he.fill = true; }
+        if (ah) { he.region = ci; he.areaHatch = true; he.scale = hst.spacing; if (pat === 'SOLID') he.fill = true; if (ah.key) he.key = ah.key; }
         hatches.push(he);
+      });
+      // (lane DW) Area Hatch/Fill on a model face or a closed profile of the view's sketch (view.areaFills)
+      if (v.areaFills && v.areaFills.length && !pr.pending) _.resolveFills(doc, v, ct.frame, mesh, toSheet).forEach(function (rf) {
+        var e = rf.entry, n = hatchInto(rf.loops, e.pattern, { angle: 45 + (+e.angle || 0), spacing: +e.scale || 1 }, function (q) { q.areaFill = e.id; prims.push(q); }, {}, rf.split);
+        areaFills.push({ id: e.id, view: v.id, kind: rf.kind, loops: rf.loops, pattern: e.pattern, scale: e.scale, angle: e.angle, prims: n, layer: layer });
       });
       // straight pieces that run smoothly into each other (a curve drawn as chords) are one chain, written as one path
       // so a hidden curve's dashes run on along it instead of restarting at every chord (r4/drawings4)
@@ -640,7 +663,8 @@
       return { id: it.id, view: it.view, box: it.box, text: it.text, dangling: !!it.dangling, missing: !!it.missing, origin: it.origin || null, colX: it.colX || null, rowY: it.rowY || null,
         rows: (it.rows || []).map(function (r) { return { tag: r.tag, x: r.x, y: r.y, xText: r.xText, yText: r.yText, size: r.size.join(' '), lines: r.size.slice(), c: r.c.slice(), r: r.r, dangling: r.dangling }; }) };
     });
-    return { size: S, units: units, prims: prims, views: views, dims: dims, magLines: magLines, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations, notes: notes, symbols: symbols, revisions: revisions,
+    sheetAreaFills(doc, prims, areaFills, HATCH * k, k);
+    return { size: S, units: units, prims: prims, views: views, areaFills: areaFills, dims: dims, magLines: magLines, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations, notes: notes, symbols: symbols, revisions: revisions,
       format: fmtList, tables: tables,   // (rfAE) the sheet format's items, the General Tables
       holeTables: holeTables,   // (rfAN) [{ id, view, box, rows: [{ tag, x, y, xText, yText, size, lines, c, r }], origin (paper) }]
       // (rfT) the dimension style: geo in paper mm (D.dimGeometry), paper in the sheet's units (what prims use: text,

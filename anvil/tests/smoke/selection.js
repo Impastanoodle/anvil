@@ -49,6 +49,9 @@
     UI.setView('Front');
     var tl = UI.worldToScreen([-20, 10, 0]), br = UI.worldToScreen([20, 0, 0]), mid = UI.worldToScreen([0, 5, 0]);
     var A = [tl[0] - 12, tl[1] - 12], B = [mid[0], br[1] + 12];
+    var hid0 = anvil.selectHidden ? anvil.selectHidden() : true;   // lane FD2: the 5-face crossing counts the hidden back face
+    if (anvil.selectHidden) anvil.selectHidden(true);
+    try {
     anvil.selectionFilter({ faces: true });
     await selDrag(A, B);
     var fw = anvil.selection(), faces = anvil.faces();
@@ -66,6 +69,7 @@
     await selDrag(A, B);
     assert(anvil.selection().length === 0, 'window over half the body selects nothing');
     anvil.selectionFilter({ bodies: false });
+    } finally { if (anvil.selectHidden) anvil.selectHidden(hid0); }
     return 'faces 1 / 5, vertices 4, bodies 1 / 0';
   });
   step('Selection Filter: F5 shows the toolbar, its buttons set the filter; clicks respect it (Faces: edge click → nothing on the silhouette, face; Edges: face click → nothing; Vertices + Ctrl → two vertices); Fillet PM ignores edges under a Faces filter; F6 suspends', async function () {

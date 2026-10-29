@@ -34,7 +34,12 @@ var OcctKernel = (function () {
   SUPPORTED.refaxis = SUPPORTED.refpoint = SUPPORTED.csys = 1;   // lane CZ: reference geometry makes no body (skipped below)
   SUPPORTED.rip = 1;   // lane DI
   SUPPORTED.vent = 1;   // lane DT
+  SUPPORTED.draft = 1;   // rfDX
+  SUPPORTED.wrap = 1;   // rfDZ
   SUPPORTED.insertBends = SUPPORTED.convertSM = 1;   // lane DQ
+  SUPPORTED.rib = SUPPORTED.intersect = 1;   // rfDY
+  SUPPORTED.boundary = 1;   // rfFB
+  SUPPORTED.helix = SUPPORTED.projCurve = SUPPORTED.compositeCurve = SUPPORTED.xyzCurve = SUPPORTED.refPtCurve = 1;   // rfFA: reference curves (no body)
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
 
   function build(oc, K, model, opts) {
@@ -493,7 +498,7 @@ var OcctKernel = (function () {
       if (!profile.loops.length) throw new Error('Sweep profile sketch has no closed profile.');
       var c0 = [0, 0, 0], lp = profile.loops[0].pts;
       lp.forEach(function (p) { var q = K.to3D(profPlane, p[0], p[1]); c0 = [c0[0] + q[0] / lp.length, c0[1] + q[1] / lp.length, c0[2] + q[2] / lp.length]; });
-      var path = Array.isArray(f.path) ? polylinePath(f.path, c0) : sketchPathEdges(f.path, c0);
+      var path = Array.isArray(f.path) ? polylinePath(f.path, c0) : K.isCurveFeature && K.isCurveFeature(K.findFeature(m, f.path)) ? rfFAcurvePath(oc, N, P, Dir, planes[f.path], c0, V) : sketchPathEdges(f.path, c0);   // rfFA: a reference curve
       var mw = N(new oc.BRepBuilderAPI_MakeWire_1());
       path.edges.forEach(function (e) { mw.Add_1(e); });
       if (!mw.IsDone()) throw new Error('The sweep path does not connect.');
@@ -1338,6 +1343,63 @@ var OcctKernel = (function () {
       bodies[k] = ufUnfoldBody(again, folded);
       ufLocal[fi] = { B0: folded, F0: bodies[k], k: k };
     }
+    // rfDX: Draft (Neutral Plane) through BRepOffsetAPI_DraftAngle: planar faces turn about their line on the neutral
+    // plane, cylinders become cones (exact). The pull direction is Kernel.buildDraft's: the neutral face's inward
+    // normal (a plane's normal) turned toward the side the drafted faces lie on (Kernel.draftSide), reverse flips it.
+    function draftPlaneOf(fc) {
+      try {
+        var ad = N(new oc.BRepAdaptor_Surface_2(fc, true)), t = ad.GetType();
+        if ((t && t.value != null ? t.value : t) !== 0) return null;
+        var ax = N(N(ad.Plane()).Axis()), d = N(ax.Direction()), o = N(ax.Location()), n = [d.X(), d.Y(), d.Z()];
+        if (fc.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED) n = V.scale(n, -1);
+        return { n: n, w: V.dot(n, [o.X(), o.Y(), o.Z()]) };
+      } catch (e) { return null; }
+    }
+    function draftOp(f) {
+      var A = +f.angle;
+      if (!(A > 0) || !(A < 89)) throw new Error('Draft angle must be greater than 0 and less than 89 degrees.');
+      if (!(f.faces || []).length) throw new Error('Select the faces to draft.');
+      var k = pickBody(f.faces[0].at);
+      if (k < 0) throw new Error('Nothing to draft yet.');
+      var body = unify(bodies[k]), all = facesOf(body), tol = K.pickTol(m.units || 'mm');
+      var picked = nearest(f.faces, all, tol);
+      if (picked.length < f.faces.length) throw new Error('A face to draft was not found on the body. Select the faces again.');
+      var nr = f.neutral, at = nr && (nr.face || nr.at), pull, d0, nface = null;
+      if (!nr) throw new Error('Select a neutral plane: a planar face or a plane.');
+      if (at) {
+        nface = nearest([{ at: at }], all, tol)[0];
+        if (!nface) throw new Error('The neutral face was not found on the body. Select it again.');
+        var np = draftPlaneOf(nface);
+        if (!np) throw new Error('The neutral plane must be a planar face or a plane.');
+        pull = V.scale(np.n, -1); d0 = -np.w;
+      } else {
+        var neu = K.draftNeutral(nr, null, { planes: planes }, tol);
+        pull = neu.pull; d0 = neu.d0;
+      }
+      var info = picked.map(function (fc) {
+        var g = N(new oc.GProp_GProps_1()); oc.BRepGProp.SurfaceProperties_1(fc, g, false, false);
+        var c = N(g.CentreOfMass());
+        return { area: g.Mass(), centroid: [c.X(), c.Y(), c.Z()] };
+      });
+      if (K.draftSide(pull, d0, info) < 0) { pull = V.scale(pull, -1); d0 = -d0; }
+      if (f.reverse) { pull = V.scale(pull, -1); d0 = -d0; }
+      picked.forEach(function (fc, i) {
+        if (nface && fc.IsSame(nface)) throw new Error('Face<' + (i + 1) + '> is the neutral face: it cannot be drafted.');
+        var pp = draftPlaneOf(fc);
+        if (pp && V.len(V.cross(pp.n, pull)) < 1e-6) throw new Error('Face<' + (i + 1) + '> is parallel to the neutral plane: only faces that run along the direction of pull can be drafted.');
+      });
+      var pln = N(new oc.gp_Pln_3(P(V.scale(pull, d0)), Dir(pull)));
+      var da = N(new oc.BRepOffsetAPI_DraftAngle_2(body)), ang = A * Math.PI / 180;
+      picked.forEach(function (fc, i) {
+        // Flag (tangent propagation) is needed by a curved face (its seam joins it to itself), so it always carries its
+        // tangent neighbours; a planar face does only with Along Tangent
+        da.Add(fc, Dir(pull), ang, pln, f.propagate === 'tangent' || !draftPlaneOf(fc));
+        if (!da.AddDone()) throw new Error('OpenCascade could not draft Face<' + (i + 1) + '> (only planes, cylinders and cones can be drafted).');
+      });
+      da.Build(R());
+      if (!da.IsDone()) throw new Error('OpenCascade could not draft these faces at this angle.');
+      bodies[k] = N(da.Shape());
+    }
     function unsupportedErr(what) { var e = new Error(what + ' is not supported by the OpenCascade kernel yet'); e.unsupported = what; return e; }
     function addBoss(tool, f) {
       var tb = bboxOf(tool), hit = [];
@@ -1410,6 +1472,7 @@ var OcctKernel = (function () {
     try {
       m.features.forEach(function (f, fi) {
         if (fi < start) return;   // restored from the cache
+        if (f.suppressed && !unsupported) { status[f.id] = 'ok'; featMs[f.id] = 0; snapshot(fi); return; }   // rfFC: suppressed (resolvedModel)
         if (unsupported) { status[f.id] = 'skipped'; return; }
         if (!SUPPORTED[f.type]) { unsupported = f.type; status[f.id] = 'unsupported'; return; }
         var tf = now();   // r11/occtswap11: per-feature build time (out.ms.features)
@@ -1418,6 +1481,7 @@ var OcctKernel = (function () {
           var tool = null;
           switch (f.type) {
             case 'plane': planes[f.id] = K.makePlane(f.ref || 'Front', +f.offset || 0); break;
+            case 'helix': case 'projCurve': case 'compositeCurve': case 'xyzCurve': case 'refPtCurve': planes[f.id] = K.resolveCurve(f, m, refGeoCtx()); break;   // rfFA
             case 'refaxis': case 'refpoint': case 'csys': var rgc = refGeoCtx(); planes[f.id] = K.resolveRefGeo(f, m, rgc); if (K.exactFaceCenter) K.exactFaceCenter(f, rgc); break;   // lane DF: no body, a record
             case 'sketch': {
               // r10/facesketch10: a sketch on a face follows the face, resolved exactly as Kernel.rebuild does (an
@@ -1429,6 +1493,7 @@ var OcctKernel = (function () {
             case 'extrude': tool = extrudeTool(f); break;
             case 'revolve': tool = revolveTool(f); break;
             case 'loft': tool = loftTool(f); break;
+            case 'boundary': tool = rfFBBoundary(oc, K, f, m, { N: N, R: R, explore: explore, volumeOf: volumeOf, sketches: sketches, planes: planes, unsupportedErr: unsupportedErr, loftWires: function (ids) { return ids.map(function (id) { var s = sketchById(id, 'A Direction 1 profile sketch was not found.'), o = outerLoop(s, 'Each Direction 1 sketch must contain exactly one closed profile.'); return loopWire(o.loop, o.profile, K.resolvePlane(s.plane, m, planes)); }); } }); break;   // rfFB
             case 'sweep': tool = sweepTool(f); break;
             case 'hole': tool = holeTool(f); break;
             case 'fillet': case 'chamfer': edgeOp(f); break;
@@ -1439,11 +1504,15 @@ var OcctKernel = (function () {
             case 'breakCorner': tool = breakCornerTool(f); break;
             case 'rip': tool = ripTool(f); break;   // lane DI
             case 'vent': tool = ventTool(f); break;   // lane DT
+            case 'wrap': tool = wrapOp(f); break;   // rfDZ
             case 'closedCorner': closedCornerOp(f); break;
             case 'insertBends': case 'convertSM': insertBendsOp(f); break;   // lane DQ
             case 'unfold': unfoldOp(f, fi); break;   // lane DB2
             case 'fold': foldOp(f, fi); break;
+            case 'rib': tool = ribTool(f); break;   // rfDY
+            case 'intersect': intersectOp(f); break;   // rfDY
             case 'shell': shellOp(f); break;
+            case 'draft': draftOp(f); break;   // rfDX
             default: tool = patternTool(f);
           }
           if (tool) {
@@ -1467,13 +1536,14 @@ var OcctKernel = (function () {
         // edges (SolidWorks' tangent propagation); shells of curved faces and corners where three picked edges meet are
         // polygonal / mitred in Anvil (`approx`); everything else is exact
         tolerance: approx || m.features.some(function (f) {
-          return f.type === 'sweep' || f.type === 'loft' || f.type === 'import' || f.type === 'flange' || f.type === 'jog' || f.type === 'sketchedBend' || f.type === 'insertBends' || f.type === 'convertSM' || ((f.type === 'fillet' || f.type === 'chamfer') && (f.edges || []).some(function (e) { return e.chain === false; }));
+          return f.type === 'sweep' || f.type === 'loft' || f.type === 'boundary' || f.type === 'import' || f.type === 'flange' || f.type === 'jog' || f.type === 'sketchedBend' || f.type === 'insertBends' || f.type === 'convertSM' || ((f.type === 'fillet' || f.type === 'chamfer') && (f.edges || []).some(function (e) { return e.chain === false; }));
         }) ? 2e-2 : 1e-4 };
       if (unsupported || !bodies.length) return out;
       // booleans leave faces split along old seams (a pocket floor in pieces): merge faces on the same surface
       bodies = bodies.map(function (b) {
         try { var u = N(new oc.ShapeUpgrade_UnifySameDomain_2(b, true, true, false)); u.Build(); return N(u.Shape()); } catch (e) { return b; }
       });
+      bodies = wrapScribeAll(bodies);   // rfDZ: Wrap scribes split the final faces (UnifySameDomain would merge a split made earlier)
       // exact mass properties per body (volume, surface area, centre of volume): Kernel.massProps prefers them
       out.bodyProps = bodies.map(function (b) {
         if (!valid(b)) out.valid = false;
@@ -1563,6 +1633,167 @@ var OcctKernel = (function () {
         if (type === 'torus') { var to = N(ad.Torus()), f4 = frame(to); return { t: 'tor', o: f4.o, d: f4.d, R: to.MajorRadius(), r: to.MinorRadius() }; }
       } catch (e) { }
       return null;
+    }
+
+    // rfDY: Rib and Intersect, the same layouts / regions as Kernel (kernel-features.js rfDY), built on the B-rep
+    function rfDYcommon(a, b) { var op = N(new oc.BRepAlgoAPI_Common_3(a, b, R())); if (!op.IsDone()) throw new Error('OpenCascade could not intersect the bodies.'); return N(op.Shape()); }
+    // a rib: each layout piece's prism, minus the prisms swept from the faces of (bodies ∩ piece) that face the sketch
+    function ribTool(f) {
+      var sk = sketchOf(f), plane = K.resolvePlane(sk.plane, m, planes);
+      if (!sk.profile) sk.profile = K.sketchProfile(sk);
+      if (!bodies.length) throw new Error('A rib needs a solid to meet: create the part first.');
+      var lay = K.ribLayout(f, sk, plane, refGeoCtx().body), all = bodies.length === 1 ? bodies[0] : compound(bodies), parts = [];
+      lay.pieces.forEach(function (pc) {
+        var P = prismOf(pc.loop, plane, pc.a, pc.b), vD = V.scale(pc.m, pc.D), sh = [];
+        facesOf(rfDYcommon(all, P)).forEach(function (fc) {
+          var ad = N(new oc.BRepAdaptor_Surface_2(fc, true)), t = ad.GetType(), tv = t && t.value != null ? t.value : t;
+          if (tv === 0) {
+            var d = N(N(N(ad.Plane()).Axis()).Direction()), n = [d.X(), d.Y(), d.Z()];
+            if (fc.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED) n = V.scale(n, -1);
+            if (V.dot(n, pc.m) > -1e-9) return;
+          } else {
+            approx = true;   // Anvil's rib meets the facets of a curved face
+            if (tv === 1) { var ca = N(N(N(ad.Cylinder()).Position()).Direction()); if (Math.abs(V.dot([ca.X(), ca.Y(), ca.Z()], pc.m)) > 1 - 1e-9) return; }
+          }
+          sh.push(N(N(new oc.BRepPrimAPI_MakePrism_1(fc, Vec(vD), false, true)).Shape()));
+        });
+        var rib = sh.length ? boolMany('cut', P, sh, 'OpenCascade could not trim the rib to the body.') : P;
+        var bb = bboxOf(rib, true), w0 = V.dot(K.to3D(plane, pc.loop[0][0], pc.loop[0][1]), pc.m);
+        if (!bb || volumeOf(rib) < 1e-12) return;
+        for (var i = 0; i < 8; i++) {
+          var c = [(i & 1 ? bb[1] : bb[0])[0], (i & 2 ? bb[1] : bb[0])[1], (i & 4 ? bb[1] : bb[0])[2]];
+          if (V.dot(c, pc.m) - w0 > 0.5 * pc.D) throw new Error('The rib does not meet the body all along its sketch: flip the material side, change the extrusion direction or extend the sketch.');
+        }
+        parts.push(rib);
+      });
+      if (!parts.length) throw new Error('The rib has no material: its sketch lies inside the body.');
+      return parts.reduce(function (a, b) { return fuse(a, b); });
+    }
+    // Intersect: the regions in Kernel.intersectRegions' order (in / out pattern, plane side, lump centroid)
+    function intersectOp(f) {
+      var sel = K.cutScope(f, bodies.length);
+      var pls = (f.planes || []).map(function (r) {
+        var ref = typeof r === 'string' ? { ref: r, offset: 0 } : typeof r === 'number' ? { featureId: r } : r, pl = K.resolvePlane(ref, m, planes);
+        return { n: pl.n.slice(), w: V.dot(pl.n, pl.origin) };
+      });
+      if (!sel.length) throw new Error('Select the bodies to intersect.');
+      if (sel.length > 6) throw new Error('Intersect takes at most 6 bodies at a time.');
+      if (sel.length < 2 && !pls.length) throw new Error('Select at least two bodies, or a body and a plane, to intersect.');
+      var B = sel.map(function (i) { return bodies[i]; }), U = B.reduce(function (a, b) { return fuse(a, b); }), bb = bboxOf(U, true);
+      var size = V.len(V.sub(bb[1], bb[0])), eps = 1e-9 * Math.max(1, size * size * size), tol = 1e-6 * Math.max(1, size);
+      var cells = [];
+      for (var mask = 1; mask < (1 << B.length); mask++) {
+        var acc = null, k;
+        for (k = 0; k < B.length; k++) if (mask & (1 << k)) acc = acc ? rfDYcommon(acc, B[k]) : B[k];
+        for (k = 0; k < B.length; k++) if (!(mask & (1 << k))) acc = cut(acc, B[k]);
+        if (volumeOf(acc) > eps) cells.push({ sh: acc, cell: mask });
+      }
+      function split(list) {
+        pls.forEach(function (pl) {
+          var out = [];
+          list.forEach(function (c) { [1, -1].forEach(function (sg) { var h = clipKeep(c.sh, V.scale(pl.n, sg), sg * pl.w); if (volumeOf(h) > eps) out.push({ sh: h, cell: c.cell, void: c.void }); }); });
+          list = out;
+        });
+        return list;
+      }
+      function lumpsOf(list) {
+        var out = [];
+        list.forEach(function (c) {
+          var ls = explore(c.sh, ENUM.TopAbs_SOLID).map(function (s) {
+            var g = N(new oc.GProp_GProps_1()); oc.BRepGProp.VolumeProperties_1(s, g, false, false, false);
+            var cm = N(g.CentreOfMass());
+            return { body: s, volume: g.Mass(), centroid: [cm.X(), cm.Y(), cm.Z()], cell: c.cell, void: !!c.void };
+          }).filter(function (r) { return r.volume > eps; });
+          ls.sort(function (a, b) { for (var q = 0; q < 3; q++) { var d = a.centroid[q] - b.centroid[q]; if (Math.abs(d) > tol) return d; } return 0; });
+          out = out.concat(ls);
+        });
+        return out;
+      }
+      var regions = lumpsOf(split(cells));
+      if (f.mode === 'internal') {
+        var box = prismOf([[bb[0][0], bb[0][1]], [bb[1][0], bb[0][1]], [bb[1][0], bb[1][1]], [bb[0][0], bb[1][1]]], K.makePlane('Front', 0), bb[0][2], bb[1][2]);
+        var voids = lumpsOf([{ sh: cut(box, U), cell: 0, void: true }]).filter(function (r) {
+          var b = bboxOf(r.body, true);
+          for (var q = 0; q < 3; q++) if (b[0][q] < bb[0][q] + tol || b[1][q] > bb[1][q] - tol) return false;
+          return true;
+        });
+        regions = regions.concat(lumpsOf(split(voids.map(function (r) { return { sh: r.body, cell: 0, void: true }; }))));
+      }
+      if (!regions.length) throw new Error('The selections make no regions.');
+      var out = K.intersectKeep(regions, f, function (b) { var q = bboxOf(b); return { min: q[0], max: q[1] }; }, fuse, function (a, b) { return boxesMeet([a.min, a.max], [b.min, b.max]); });
+      var at = Math.min.apply(null, sel), nb = [], nf = [];
+      bodies.forEach(function (b, i) {
+        if (i === at) out.forEach(function (o) { nb.push(o); nf.push(f.id); });
+        if (sel.indexOf(i) < 0) { nb.push(b); nf.push(bodyFeatures[i]); }
+      });
+      bodies = nb; bodyFeatures = nf;
+    }
+    // ---- rfDZ: Wrap (Kernel.wrapLayout, read on a faceted copy of this build's bodies as reference geometry is): each
+    // contour is a face on the true surface at a height h (cylinder / cone: its (θ, z) loop as straight p-curves on a
+    // Geom_CylindricalSurface / Geom_ConicalSurface of the offset radius, framed so that u = θ; plane: the sketch's own
+    // loop moved onto the face), thickened along the face normal (deboss −d … ε, emboss −ε … d); holes are cut,
+    // islands added back. A scribe keeps its faces at h = 0 in tools[f.id]; wrapScribeAll imprints them on the final
+    // bodies (after UnifySameDomain, which would merge the split faces again).
+    function wrapOp(f) {
+      if (!bodies.length) throw new Error('Wrap: there is no body to wrap onto yet.');
+      var L = K.wrapLayout(f, m, refGeoCtx()), h = K.wrapHeights(L);
+      if (L.mode === 'scribe') { tools[f.id] = compound(L.loops.map(function (l) { return wrapLoopFace(L, l, 0); })); return null; }
+      var dl = 0.5 * Math.max(L.eps, 1e-9), acc = null;
+      L.loops.slice().sort(function (p, q) { return p.depth - q.depth; }).forEach(function (l) {
+        if (l.depth % 2 === 1) { if (acc) acc = cut(acc, wrapLoopSolid(L, l, h[0] - dl, h[1] + dl)); }
+        else { var s = wrapLoopSolid(L, l, h[0], h[1]); acc = acc ? fuse(acc, s) : s; }
+      });
+      if (!acc) throw new Error('Wrap: the sketch has no closed contour.');
+      return acc;
+    }
+    function wrapLoopFace(L, l, hh) {
+      if (L.prism) {
+        var mf = N(new oc.BRepBuilderAPI_MakeFace_15(loopWire({ pts: l.pts, seg: l.seg }, L.profile, L.prism), true));
+        if (!mf.IsDone()) throw new Error('Wrap: OpenCascade could not make a contour face.');
+        return moveTo(N(mf.Face()), L.prismSign * hh, L.prism);
+      }
+      if (L.kind === 'plane') return polyFace3(l.st.map(function (p) { return L.G(p[0], p[1], hh); }));
+      var rec = L.rec(hh), ax = N(new oc.gp_Ax3_3(P(L.o), Dir(L.dd), Dir(L.e1)));
+      var gs = L.kind === 'cyl' ? new oc.Geom_CylindricalSurface_1(ax, rec.r) : new oc.Geom_ConicalSurface_1(ax, Math.atan(L.k), rec.r);
+      var hs = N(new oc.Handle_Geom_Surface_2(gs)), cv = L.kind === 'cone' ? Math.cos(Math.atan(L.k)) : 1, uv = l.st.map(function (p) { return [p[0], p[1] / cv]; });
+      var mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+      uv.forEach(function (a, i) {
+        var b = uv[(i + 1) % uv.length];
+        if (Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]) < 1e-12) return;
+        var sg = N(new oc.GCE2d_MakeSegment_1(N(new oc.gp_Pnt2d_3(a[0], a[1])), N(new oc.gp_Pnt2d_3(b[0], b[1]))));
+        var e = N(N(new oc.BRepBuilderAPI_MakeEdge_30(N(new oc.Handle_Geom2d_Curve_2(N(sg.Value()).get())), hs)).Edge());
+        oc.BRepLib.BuildCurves3d_2(e);
+        mw.Add_1(e);
+      });
+      if (!mw.IsDone()) throw new Error('Wrap: a wrapped contour does not close.');
+      var fm = N(new oc.BRepBuilderAPI_MakeFace_21(hs, N(mw.Wire()), true));
+      if (!fm.IsDone()) throw new Error('Wrap: OpenCascade could not make a wrapped face.');
+      return N(fm.Face());
+    }
+    function wrapLoopSolid(L, l, a, b) {
+      var face = wrapLoopFace(L, l, a);
+      if (L.prism) return N(N(new oc.BRepPrimAPI_MakePrism_1(face, Vec(V.scale(L.prism.n, L.prismSign * (b - a))), false, true)).Shape());
+      if (L.kind === 'plane') return N(N(new oc.BRepPrimAPI_MakePrism_1(face, Vec(V.scale(L.n, L.sigma * (b - a))), false, true)).Shape());
+      // the face's normal is the surface's (the radial direction for u = θ); sigma turns it to the material's outward one
+      var th = N(new oc.BRepOffsetAPI_MakeThickSolid());
+      th.MakeThickSolidBySimple(face, L.sigma * (b - a));
+      if (!th.IsDone()) throw new Error('Wrap: OpenCascade could not thicken a wrapped contour.');
+      var sh = N(th.Shape());
+      return volumeOf(sh) < 0 ? N(sh.Reversed()) : sh;   // a thickening outward along the face normal comes out inside-out
+    }
+    function wrapScribeAll(list) {
+      var sc = m.features.filter(function (f) { return f.type === 'wrap' && f.mode === 'scribe' && status[f.id] === 'ok' && tools[f.id]; });
+      if (!sc.length) return list;
+      return list.map(function (b) {
+        try {
+          var sp = N(new oc.BRepAlgoAPI_Splitter_1());
+          sp.SetArguments(shapeList([b])); sp.SetTools(shapeList(sc.map(function (f) { return tools[f.id]; })));
+          sp.Build(R());
+          if (!sp.IsDone()) return b;
+          var sols = explore(N(sp.Shape()), ENUM.TopAbs_SOLID);
+          return sols.length === 1 ? sols[0] : b;   // a scribe face inside the material (covered later) would cut the body in two
+        } catch (e) { return b; }
+      });
     }
   }
 
@@ -1767,6 +1998,129 @@ var OcctKernel = (function () {
     }
     var d = sub(p, q);
     return dot(d, d);
+  }
+
+  // rfFB: Boundary Boss/Base / Boundary Cut. h: the build's { N, R, explore, volumeOf, loftWires, sketches, planes,
+  // unsupportedErr }. No Direction 2 curves: ThruSections through the profiles' exact wires (as Loft; Close is
+  // unsupported: Anvil's ruled ring drives). With curves: Kernel.boundaryFrame's patches, each a bilinearly blended (Coons) BSpline surface (GeomFill_BSplineCurves, StretchStyle) on
+  // its four sides — a side whose points run straight is one line, a smooth run is a cubic through its points, a run
+  // with corners stays a polyline — capped by planar faces on the end profiles' sides and sewn. Thin Feature: the
+  // solid shelled outward (reverse: inward) with the end caps removed.
+  function rfFBBoundary(oc, K, f, m, h) {
+    var N = h.N, R = h.R, V = K.vec, fr = K.boundaryFrame(f, m, { sketches: h.sketches, planes: h.planes });
+    var thin = f.thin && +f.thin.t > 0 ? f.thin : null, solid, caps = [];
+    if (thin && thin.mid) throw h.unsupportedErr('Boundary Thin Feature (Mid-Plane)');
+    if (fr.virtual) {
+      // a closed ThruSections (first wire again at the end) comes out flat or inside out here: Anvil's ring drives
+      if (fr.close) throw h.unsupportedErr('Boundary with Close');
+      var ts = N(new oc.BRepOffsetAPI_ThruSections(true, false, 1e-6)), wires = h.loftWires(fr.secs.map(function (s) { return s.id; }));
+      wires.forEach(function (w) { ts.AddWire(w); });
+      ts.Build(R());
+      if (!ts.IsDone()) throw new Error('OpenCascade could not build this boundary through the profiles.');
+      solid = N(ts.Shape());
+      caps = [N(ts.FirstShape()), N(ts.LastShape())];
+    } else {
+      if (fr.G < 2) throw h.unsupportedErr('Boundary with one Direction 2 curve');
+      var P = function (p) { return N(new oc.gp_Pnt_3(p[0], p[1], p[2])); };
+      var bspline = function (pts) {
+        var a = pts[0], b = pts[pts.length - 1], ab = V.sub(b, a), L = V.len(ab), straight = L > 0, smooth = pts.length >= 3, i;
+        for (i = 1; i + 1 < pts.length && straight; i++) { var w = V.sub(pts[i], a), t = V.dot(w, ab) / (L * L); if (V.len(V.sub(w, V.scale(ab, t))) > 1e-9 * Math.max(1, L)) straight = false; }
+        for (i = 1; i + 1 < pts.length && smooth; i++) { var u = V.sub(pts[i], pts[i - 1]), v = V.sub(pts[i + 1], pts[i]); if (V.dot(u, v) < Math.cos(Math.PI / 12) * V.len(u) * V.len(v)) smooth = false; }
+        var q = straight ? [a, b] : pts;
+        if (!straight && smooth) {
+          var arr = N(new oc.TColgp_Array1OfPnt_2(1, q.length));
+          q.forEach(function (p, k) { arr.SetValue(k + 1, P(p)); });
+          var fit = N(new oc.GeomAPI_PointsToBSpline_2(arr, 3, 8, oc.GeomAbs_Shape.GeomAbs_C2, 1e-7 * Math.max(1, L)));
+          if (fit.IsDone()) return N(fit.Curve());
+        }
+        // degree 1 through the points (a line, or a polyline with corners)
+        var poles = N(new oc.TColgp_Array1OfPnt_2(1, q.length)), kn = N(new oc.TColStd_Array1OfReal_2(1, q.length)), mu = N(new oc.TColStd_Array1OfInteger_2(1, q.length)), acc = 0;
+        q.forEach(function (p, k) { poles.SetValue(k + 1, P(p)); if (k) acc += V.len(V.sub(p, q[k - 1])); kn.SetValue(k + 1, acc); mu.SetValue(k + 1, k === 0 || k === q.length - 1 ? 2 : 1); });
+        return N(new oc.Handle_Geom_BSplineCurve_2(new oc.Geom_BSplineCurve_1(poles, kn, mu, 1, false)));
+      };
+      var edge = function (hb) { return N(N(new oc.BRepBuilderAPI_MakeEdge_24(N(new oc.Handle_Geom_Curve_2(hb.get())))).Edge()); };
+      // each side twice, once each way: the four sides of a patch run head to tail (C1 → C2 → C3 → C4)
+      var rev = function (pts) { return bspline(pts.slice().reverse()); };
+      var secC = fr.pieces.map(function (ps) { return ps.map(bspline); }), secR = fr.pieces.map(function (ps) { return ps.map(rev); });
+      var guideC = fr.guides.map(function (gs) { return gs.map(bspline); }), guideR = fr.guides.map(function (gs) { return gs.map(rev); });
+      var sew = N(new oc.BRepBuilderAPI_Sewing(Math.max(1e-7, fr.tol * 1e-2), true, true, true, false)), G = fr.G;
+      for (var b = 0; b < fr.guides.length; b++) for (var k = 0; k < G; k++) {
+        var fill = N(new oc.GeomFill_BSplineCurves_2(secC[b][k], guideC[b][(k + 1) % G], secR[b + 1][k], guideR[b][k], oc.GeomFill_FillingStyle.GeomFill_StretchStyle));   // linear blending: Anvil's Coons patch (CoonsStyle refuses degree-1 sides)
+        sew.Add(N(N(new oc.BRepBuilderAPI_MakeFace_8(N(new oc.Handle_Geom_Surface_2(N(fill.Surface()).get())), 1e-7)).Face()));
+      }
+      [0, fr.secs.length - 1].forEach(function (si) {
+        var mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+        secC[si].forEach(function (c) { mw.Add_1(edge(c)); });
+        if (!mw.IsDone()) throw new Error('OpenCascade could not close a boundary end profile.');
+        var face = N(N(new oc.BRepBuilderAPI_MakeFace_15(N(mw.Wire()), true)).Face());
+        caps.push(face);
+        sew.Add(face);
+      });
+      sew.Perform(R());
+      var shells = h.explore(N(sew.SewedShape()), oc.TopAbs_ShapeEnum.TopAbs_SHELL);
+      if (shells.length !== 1) throw new Error('OpenCascade could not close the boundary surfaces into a solid.');
+      solid = N(N(new oc.BRepBuilderAPI_MakeSolid_3(N(oc.TopoDS.Shell_1(shells[0])))).Solid());
+      if (h.volumeOf(solid) < 0) solid = N(solid.Reversed());
+      // the caps as sewn (the sewing replaces faces): the planar faces on the end profiles' planes
+      var ends = [fr.secs[0], fr.secs[fr.secs.length - 1]];
+      caps = h.explore(solid, oc.TopAbs_ShapeEnum.TopAbs_FACE).filter(function (fc) {
+        var s = N(new oc.BRepAdaptor_Surface_2(oc.TopoDS.Face_1(fc), true)), t = s.GetType(), tv = t && t.value != null ? t.value : t;
+        if (tv !== 0) return false;
+        var pl = N(s.Plane()), o = N(pl.Location()), d = N(N(pl.Axis()).Direction()), n = [d.X(), d.Y(), d.Z()], p0 = [o.X(), o.Y(), o.Z()];
+        return ends.some(function (e) { return Math.abs(Math.abs(V.dot(n, e.plane.n)) - 1) < 1e-9 && Math.abs(V.dot(V.sub(p0, e.plane.origin), e.plane.n)) < fr.tol; });
+      });
+    }
+    if (!thin) return solid;
+    if (caps.length !== 2) throw h.unsupportedErr('Boundary Thin Feature here');
+    var list = N(new oc.TopTools_ListOfShape_1());
+    caps.forEach(function (c) { list.Append_1(c); });
+    var th = N(new oc.BRepOffsetAPI_MakeThickSolid());
+    th.MakeThickSolidByJoin(solid, list, thin.reverse ? -(+thin.t) : +thin.t, 1e-3, oc.BRepOffset_Mode.BRepOffset_Skin, false, false, oc.GeomAbs_JoinType.GeomAbs_Intersection, false, R());
+    if (!th.IsDone()) throw new Error('OpenCascade could not make the thin boundary with this thickness.');
+    return N(th.Shape());   // the wall between the surface and its offset (open at the end profiles)
+  }
+  // ------------------------------------------------------------------ rfFA: a reference curve record (Kernel.resolveCurve) as
+  // a sweep path: its exact edges (a helix as a line in the (u, v) of its cylinder / cone, arcs, circles, the C1 cubic
+  // chains of splines / projections), started at the end nearest the profile (c0) -> { edges, start, dir0 }
+  function rfFAcurvePath(oc, N, P, Dir, rec, c0, V) {
+    if (!rec || rec.refgeo !== 'curve') throw new Error('The path curve is missing or failed to rebuild.');
+    if (rec.runs && rec.runs.length > 1) throw new Error('The path curve is in ' + rec.runs.length + ' separate pieces; a sweep path must be one connected curve.');
+    var pts = rec.pts, flip = V.len(V.sub(pts[pts.length - 1], c0)) < V.len(V.sub(pts[0], c0)), list = rec.edges.slice();
+    if (flip) list = list.reverse().map(function (e) {
+      switch (e.t) {
+        case 'line': return { t: 'line', a: e.b, b: e.a };
+        case 'arc': return { t: 'arc', a: e.b, m: e.m, b: e.a };
+        case 'circle': return { t: 'circle', c: e.c, n: V.scale(e.n, -1), r: e.r, x: e.x };
+        case 'bez': return { t: 'bez', bez: e.bez.slice().reverse().map(function (B) { return B.slice().reverse(); }) };
+        case 'helix': { var h = JSON.parse(JSON.stringify(e)); h.rev = !e.rev; return h; }
+      }
+      return e;
+    });
+    var edges = list.map(function (e) {
+      if (e.t === 'line') return N(N(new oc.BRepBuilderAPI_MakeEdge_3(P(e.a), P(e.b))).Edge());
+      if (e.t === 'arc') { var arc = N(new oc.GC_MakeArcOfCircle_4(P(e.a), P(e.m), P(e.b))); return N(N(new oc.BRepBuilderAPI_MakeEdge_24(N(new oc.Handle_Geom_Curve_2(N(arc.Value()).get())))).Edge()); }
+      if (e.t === 'circle') return N(N(new oc.BRepBuilderAPI_MakeEdge_8(N(new oc.gp_Circ_2(N(new oc.gp_Ax2_2(P(e.c), Dir(e.n), Dir(e.x))), e.r)))).Edge());
+      if (e.t === 'bez') {
+        var m = e.bez.length, poles = N(new oc.TColgp_Array1OfPnt_2(1, 3 * m + 1)), kn = N(new oc.TColStd_Array1OfReal_2(1, m + 1)), mu = N(new oc.TColStd_Array1OfInteger_2(1, m + 1));
+        poles.SetValue(1, P(e.bez[0][0]));
+        e.bez.forEach(function (B, j) { for (var q = 1; q <= 3; q++) poles.SetValue(3 * j + q + 1, P(B[q])); });
+        for (var j = 0; j <= m; j++) { kn.SetValue(j + 1, j); mu.SetValue(j + 1, j === 0 || j === m ? 4 : 3); }
+        var hc = N(new oc.Handle_Geom_Curve_2(new oc.Geom_BSplineCurve_1(poles, kn, mu, 3, false)));   // the handle owns the curve
+        return N(N(new oc.BRepBuilderAPI_MakeEdge_24(hc)).Edge());
+      }
+      if (e.t === 'helix') {
+        var ax = N(new oc.gp_Ax3_3(P(e.o), Dir(e.n), Dir(e.x)));
+        var surf = N(new oc.Handle_Geom_Surface_2(e.cone ? new oc.Geom_ConicalSurface_1(ax, e.cone, e.r0) : new oc.Geom_CylindricalSurface_1(ax, e.r0)));   // the handle owns the surface
+        var u0 = [e.a0, 0], u1 = [e.a0 + e.du, e.v1];
+        if (e.rev) { var sw = u0; u0 = u1; u1 = sw; }
+        var crv = N(N(new oc.GCE2d_MakeSegment_1(N(new oc.gp_Pnt2d_3(u0[0], u0[1])), N(new oc.gp_Pnt2d_3(u1[0], u1[1])))).Value()).get();
+        var ed = N(N(new oc.BRepBuilderAPI_MakeEdge_30(N(new oc.Handle_Geom2d_Curve_2(crv)), surf)).Edge());
+        oc.BRepLib.BuildCurves3d_2(ed);
+        return ed;
+      }
+      throw new Error('Unknown curve piece ' + e.t + '.');
+    });
+    return { edges: edges, start: flip ? pts[pts.length - 1] : pts[0], dir0: flip ? V.scale(rec.t1, -1) : rec.t0 };
   }
 
   return { build: build, importFile: importFile, mapFaces: mapFaces, toBuild: toBuild, toBodies: toBodies, fromPacked: fromPacked, nearestTriangles: nearestTriangles, SUPPORTED: SUPPORTED };

@@ -492,7 +492,12 @@
     if (D.active) return [['View Layout', 'Annotation'], ['Sketch', 'Markup', 'Sheet Format']];
     return [names.filter(function (n) { return n !== 'View Layout' && n !== 'Annotation'; }), extra];
   };
+  // (lane DW2) a menu hook set before this one (a part-side module) runs first: DW.menuHookBase (the hook itself, not
+  // drawing-ui-tools.js' onAssign wrapper round it, which wraps this one again)
+  var hook0 = UI.menuHook;
+  DW.menuHookBase = hook0 && hook0._inner ? hook0._inner : hook0 || null;
   UI.menuHook = function (menus) {
+    if (typeof DW.menuHookBase === 'function') menus = DW.menuHookBase(menus) || menus;
     var file = menus.filter(function (m) { return m.label === 'File'; })[0];
     if (!D.active) {
       var asm = isAsm();
@@ -1328,6 +1333,12 @@
   deleteSelection = DW.deleteSelection = function () {
     if (DW.skDelete && DW.skDelete()) return true;
     return baseDelete3.apply(this, arguments);
+  };
+  // (lane DW) Delete: an Area Hatch/Fill (drawing-ui-tools.js)
+  var baseDelete4 = deleteSelection;
+  deleteSelection = DW.deleteSelection = function () {
+    if (DW.areaFillDelete && DW.areaFillDelete()) return true;
+    return baseDelete4.apply(this, arguments);
   };
   // the sheet's right-click menu: Edit Sheet Format after Properties (SolidWorks' place)
   var baseSheetMenu = DW.sheetMenu;

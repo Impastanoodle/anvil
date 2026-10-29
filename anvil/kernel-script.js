@@ -1619,7 +1619,7 @@
     if (Array.isArray(model.equations) && model.equations.length) out.push('p.equations(' + JSON.stringify(model.equations) + ');');
     // configurations right after, so a box/hole size given as "=..." is evaluated with the active set as the model had it
     if (Array.isArray(model.configurations) && model.configurations.length) {
-      out.push('p.configurations(' + JSON.stringify(model.configurations) + ');');
+      out.push('p.configurations(' + JSON.stringify(model.configurations, function (k, x) { return k === 'suppressed' ? undefined : x; }) + ');');   // rfFC: states by script variable, after the features
       if (model.activeConfiguration != null && findConfiguration(model, model.activeConfiguration)) out.push('p.activeConfiguration(' + JSON.stringify(String(model.activeConfiguration)) + ');');
     }
     if (model.sheet) {
@@ -1866,12 +1866,14 @@
           out.push('var ' + v + ' = p.loft([' + f.sketches.map(function (id) { return idVar[id]; }).join(', ') + '], ' + optsStr(bodyOptsOut(lo2, f)) + ').last();');
           break;
         }
+        case 'boundary': out.push(boundaryScript(f, v, idVar)); break;   // rfFB
         case 'chamfer':
         case 'fillet': {
           var specs = JSON.stringify((f.edges || []).map(function (e) { return { at: e.at.map(function (x) { return Math.round(x * 1e4) / 1e4; }), chain: e.chain !== false }; }));
           out.push('var ' + v + ' = p.' + f.type + '(' + nv(f.type === 'chamfer' ? f.d : f.r) + ', ' + specs + ', ' + optsStr({ name: f.name }) + ').last();');
           break;
         }
+        case 'draft': out.push('var ' + v + ' = p.draft(' + nv(f.angle) + ', ' + refOut(f.neutral, idVar) + ', ' + JSON.stringify((f.faces || []).map(function (e) { return e.at.map(function (x) { return Math.round(x * 1e4) / 1e4; }); })) + ', ' + optsStr({ reverse: !!f.reverse, propagate: f.propagate === 'tangent' ? 'tangent' : undefined, name: f.name }) + ').last();'); break;   // rfDX
         case 'shell': {
           var fspecs2 = JSON.stringify((f.faces || []).map(function (e) { return e.at.map(function (x) { return Math.round(x * 1e4) / 1e4; }); }));
           out.push('var ' + v + ' = p.shell(' + nv(f.thickness) + ', ' + fspecs2 + ', ' + optsStr({ name: f.name }) + ').last();');
@@ -1886,6 +1888,7 @@
       if (model.flatGrain && model.flatGrain.at && model.flatGrain.dir) fpo.grain = { at: r6(model.flatGrain.at), dir: r6(model.flatGrain.dir) };
       out.push('p.flatPattern(' + JSON.stringify(fpo) + ');');
     }
+    out = out.concat(suppressScript(model, idVar));   // rfFC
     var tail = [];
     scriptSections.forEach(function (sec) { if (sec.tail) tail = tail.concat(sec.tail(model, idVar) || []); });
     return out.join('\n') + (tail.length ? '\n' + tail.join('\n') + '\n' : '');
@@ -1924,13 +1927,197 @@
     return '{ ' + parts.join(', ') + ' }';
   }
 
+  // ------------------------------------------------------------------ rfFC: Suppress / Unsuppress in scripts
+  // p.suppress(ref, configs?) / p.unsuppress(ref, configs?): ref = a feature id (a script variable), its name, or a
+  // list of them; configs omitted = every configuration (f.suppressed), 'this' = the active one, a name or [names] =
+  // those configurations (Kernel.setSuppressed). Children follow at rebuild (Kernel.suppressedIds).
+  function suppressIds(model, ref) {
+    return (Array.isArray(ref) ? ref : [ref]).map(function (r) {
+      var f = typeof r === 'number' ? K.findFeature(model, r) : null;
+      if (!f) for (var i = 0; i < model.features.length; i++) if (model.features[i].name === String(r)) { f = model.features[i]; break; }
+      if (!f) throw new Error('suppress: no feature "' + r + '"');
+      return f.id;
+    });
+  }
+  function suppressScope(model, configs) {
+    if (configs == null || configs === 'all' || configs === 'this') return configs;
+    (Array.isArray(configs) ? configs : [configs]).forEach(function (n) { if (!findConfiguration(model, n)) throw new Error('suppress: no configuration named "' + n + '"'); });
+    return configs;
+  }
+  // rfFC2: as the UI (Kernel.suppressWithChildren): Suppress also suppresses the children (by id and by picks on the
+  // feature's faces: a fillet on a hole's edge); Unsuppress also the suppressed features it needs, opts { dependents:
+  // true } its children too. opts { exact: true } sets just the listed features (what generateScript writes, so a round
+  // trip never rebuilds).
+  function setSuppress(b, ref, configs, opts, on) {
+    var ids = suppressIds(b.model, ref), sc = suppressScope(b.model, configs);
+    if (opts && opts.exact) K.setSuppressed(b.model, ids, on, sc);
+    else K.suppressWithChildren(b.model, ids, on, sc, opts);
+    return b;
+  }
+  Builder.prototype.suppress = function (ref, configs, opts) { return setSuppress(this, ref, configs, opts, true); };
+  Builder.prototype.unsuppress = function (ref, configs, opts) { return setSuppress(this, ref, configs, opts, false); };
+  // the script lines that give every feature its suppression state: p.suppress(fN) for f.suppressed, then one line per
+  // configuration override (by configuration name and script variable, since ids are renumbered)
+  function suppressScript(model, idVar) {
+    var out = [];
+    var all = model.features.filter(function (f) { return f.suppressed && idVar[f.id]; }).map(function (f) { return idVar[f.id]; });
+    if (all.length) out.push('p.suppress([' + all.join(', ') + '], null, { exact: true });');
+    (Array.isArray(model.configurations) ? model.configurations : []).forEach(function (c) {
+      if (!c || c.name == null || !c.suppressed) return;
+      var on = [], off = [];
+      Object.keys(c.suppressed).forEach(function (id) { var v = idVar[+id]; if (v) (c.suppressed[id] ? on : off).push(v); });
+      if (on.length) out.push('p.suppress([' + on.join(', ') + '], [' + JSON.stringify(String(c.name)) + '], { exact: true });');
+      if (off.length) out.push('p.unsuppress([' + off.join(', ') + '], [' + JSON.stringify(String(c.name)) + '], { exact: true });');
+    });
+    return out;
+  }
+  // rfFB: Boundary Boss/Base and Boundary Cut (kernel-features.js buildBoundary)
+  //   p.boundary([s1, s2, …], { dir2: [sketch | { sketch, entity } | { pts: [[x,y,z], …] }], cut, tangency1: { start, end },
+  //     tangency2, close, mergeTangent, thin: { t, mid, reverse }, name, merge, bodies })
+  //   p.boundary({ dir1: [...], dir2: [...], … }) and p.boundaryCut(dir1, opts) work too.
+  Builder.prototype.boundary = function (dir1, opts) {
+    if (dir1 && !Array.isArray(dir1) && typeof dir1 === 'object') { opts = dir1; dir1 = opts.dir1; }
+    opts = opts || {};
+    if (!Array.isArray(dir1) || dir1.length < 2) throw new Error('boundary needs an array of at least two Direction 1 sketch ids.');
+    var f = { type: 'boundary', dir1: dir1.slice(), dir2: (opts.dir2 || []).map(function (c) { return c && typeof c === 'object' ? JSON.parse(JSON.stringify(c)) : c; }), cut: !!opts.cut, name: opts.name };
+    ['tangency1', 'tangency2'].forEach(function (k) { if (opts[k]) f[k] = { start: opts[k].start || 'none', end: opts[k].end || 'none' }; });
+    if (opts.close) f.close = true;
+    if (opts.mergeTangent === false) f.mergeTangent = false;
+    if (opts.thin) f.thin = { t: num(opts.thin.t != null ? opts.thin.t : opts.thin), mid: !!opts.thin.mid, reverse: !!opts.thin.reverse };
+    bodyOpts(this._add(f), opts);
+    return this;
+  };
+  Builder.prototype.boundaryCut = function (dir1, opts) {
+    if (dir1 && !Array.isArray(dir1) && typeof dir1 === 'object') { opts = dir1; dir1 = opts.dir1; }
+    return this.boundary(dir1, Object.assign({}, opts || {}, { cut: true }));
+  };
+  function boundaryScript(f, v, idVar) {
+    function ref(c) {
+      if (c && typeof c === 'object') {
+        if (Array.isArray(c.pts)) return '{ pts: ' + JSON.stringify(c.pts.map(function (p) { return p.map(function (x) { return Math.round(x * 1e4) / 1e4; }); })) + ' }';
+        return '{ sketch: ' + (idVar[c.sketch] || c.sketch) + (c.entity != null ? ', entity: ' + (c.entity | 0) : '') + ' }';
+      }
+      return idVar[c] || String(c);
+    }
+    var o = { dir2: (f.dir2 || []).length ? '@[' + f.dir2.map(ref).join(', ') + ']' : null, name: f.name };
+    if (f.cut) o.cut = true;
+    ['tangency1', 'tangency2'].forEach(function (k) { var t = f[k]; if (t && ((t.start && t.start !== 'none') || (t.end && t.end !== 'none'))) o[k] = { start: t.start || 'none', end: t.end || 'none' }; });
+    if (f.close) o.close = true;
+    if (f.mergeTangent === false) o.mergeTangent = '@false';   // optsStr drops plain false values
+    if (f.thin && (isExpression(f.thin.t) || +f.thin.t > 0)) { var th = { t: numOut(f.thin.t) }; if (f.thin.mid) th.mid = true; if (f.thin.reverse) th.reverse = true; o.thin = th; }
+    return 'var ' + v + ' = p.boundary([' + (f.dir1 || []).map(function (id) { return idVar[id] || String(id); }).join(', ') + '], ' + optsStr(bodyOptsOut(o, f)) + ').last();';
+  }
+  _.boundaryScript = boundaryScript;
+
 
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.exportSTL = exportSTL; K.exportDXFSketch = exportDXFSketch; K.exportDXFFace = exportDXFFace; K.exportDXFFlat = exportDXFFlat;
+  // rfDX: p.draft(angle, neutral, faces, opts): a Neutral Plane draft. neutral: [x,y,z] on a planar face, 'Front' | 'Top' |
+  // 'Right', a plane feature id, or a ref ({ face: [x,y,z] } | { plane: name | id, offset? }); faces: [[x,y,z], ...] points
+  // on the faces to draft; opts { reverse, propagate: 'tangent', name }
+  Builder.prototype.draft = function (angle, neutral, faces, opts) {
+    opts = opts || {};
+    var nr = Array.isArray(neutral) ? { face: neutral } : (neutral != null && typeof neutral === 'object') ? neutral : { plane: neutral };
+    var f = { type: 'draft', angle: num(angle), neutral: nr, faces: (faces || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name };
+    if (opts.reverse) f.reverse = true;
+    if (opts.propagate === 'tangent') f.propagate = 'tangent';
+    this._add(f);
+    return this;
+  };
   K.Builder = Builder; K.runScript = runScript; K.generateScript = generateScript;
   if (K.installBlockScript) K.installBlockScript();   // sketch Blocks (kernel-sketch.js) add .blocks() to the SketchBuilder
   if (K.installPictureScript) K.installPictureScript();   // Sketch Picture (kernel-sketch.js) adds .picture()
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.fmt = fmt;
   _.fmtD = fmtD;
+
+  // ------------------------------------------------------------------ rfDY: Rib and Intersect (kernel-features.js)
+  // p.rib(thickness, { sketch, side: 'both' | 'one' | 'other', direction: 'parallel' | 'normal', flip, extension, name })
+  Builder.prototype.rib = function (t, opts) {
+    opts = opts || {};
+    var f = this._add({ type: 'rib', sketch: this._sketchId(opts), thickness: num(t), side: opts.side === 'one' || opts.side === 'other' ? opts.side : 'both',
+      direction: opts.direction === 'normal' ? 'normal' : 'parallel', name: opts.name });
+    if (opts.flip) f.flip = true;
+    if (opts.extension === 'natural') f.extension = 'natural';
+    return this;
+  };
+  // p.intersect({ bodies: [i], planes: ['Front' | planeId], regions: [keep flags] | exclude: [region indices], merge: true, mode: 'create' | 'internal', name })
+  Builder.prototype.intersect = function (opts) {
+    opts = opts || {};
+    var f = { type: 'intersect', mode: opts.mode === 'internal' ? 'internal' : 'create', name: opts.name };
+    if (Array.isArray(opts.bodies) && opts.bodies.length) f.bodies = opts.bodies.map(function (i) { return i | 0; });
+    if (Array.isArray(opts.planes) && opts.planes.length) f.planes = opts.planes.slice();
+    if (Array.isArray(opts.regions)) f.regions = opts.regions.map(function (x) { return x !== false; });
+    if (Array.isArray(opts.exclude)) { f.regions = f.regions || []; opts.exclude.forEach(function (i) { for (var k = f.regions.length; k <= i; k++) f.regions.push(true); f.regions[i] = false; }); }
+    if (opts.merge === false) f.merge = false;
+    this._add(f);
+    return this;
+  };
+  // ------------------------------------------------------------------ rfFA: reference curves (kernel-features.js)
+  // Each returns the new feature's id (not `this`), like p.axis / p.point; a curve is never a pattern source.
+  // p.helix(sketchId, { defineBy: 'pitchRev' | 'heightRev' | 'heightPitch' | 'spiral', pitch, revolutions, height,
+  //   startAngle, clockwise, reverse, taper, taperOut, name })
+  // p.projectedCurve(sketchId, { mode: 'sketchOnFaces' | 'sketchOnSketch', faces: [[x,y,z], …] | sketch2, reverse })
+  // p.compositeCurve([ref, …]) — refs { edge: [x,y,z] }, { sketch, entity, seg? }, { curve: id }
+  // p.xyzCurve([[x,y,z], …], { closed }) and p.refPointCurve([ref, …], { closed })
+  Builder.prototype._addCurve = function (f, opts) {
+    var keep = this.lastSolidId;
+    if (opts && opts.name) f.name = opts.name;
+    var id = this._add(f).id;
+    this.lastSolidId = keep;
+    return id;
+  };
+  Builder.prototype.helix = function (sketch, opts) {
+    opts = opts || {};
+    var f = { type: 'helix', sketch: sketch != null ? sketch : this.lastSketchId, defineBy: opts.defineBy || 'pitchRev' };
+    if (f.sketch == null) throw new Error('helix needs a sketch with one circle.');
+    ['pitch', 'revolutions', 'height', 'startAngle', 'taper'].forEach(function (k) { if (opts[k] != null) f[k] = num(opts[k]); });
+    if (f.defineBy !== 'heightRev' && f.pitch == null) throw new Error('helix needs a pitch.');
+    ['clockwise', 'reverse', 'taperOut'].forEach(function (k) { if (opts[k]) f[k] = true; });
+    return this._addCurve(f, opts);
+  };
+  Builder.prototype.projectedCurve = function (sketch, opts) {
+    opts = opts || {};
+    var f = { type: 'projCurve', mode: opts.mode || (opts.sketch2 != null ? 'sketchOnSketch' : 'sketchOnFaces'), sketch: sketch != null ? sketch : this.lastSketchId };
+    if (f.mode === 'sketchOnSketch') f.sketch2 = opts.sketch2;
+    else f.faces = (opts.faces || []).map(function (p) { return { at: (Array.isArray(p) ? p : p.at).map(Number) }; });
+    if (opts.reverse) f.reverse = true;
+    return this._addCurve(f, opts);
+  };
+  function curveRefIn(r) {
+    if (Array.isArray(r)) return { vertex: r.map(Number) };
+    var o = {};
+    Object.keys(r).forEach(function (k) { o[k] = Array.isArray(r[k]) ? r[k].map(Number) : r[k]; });
+    return o;
+  }
+  Builder.prototype.compositeCurve = function (refs, opts) {
+    return this._addCurve({ type: 'compositeCurve', edges: (refs || []).map(curveRefIn) }, opts);
+  };
+  Builder.prototype.xyzCurve = function (points, opts) {
+    var f = { type: 'xyzCurve', points: (points || []).map(function (p) { return p.map(Number); }) };
+    if (opts && opts.closed) f.closed = true;
+    return this._addCurve(f, opts);
+  };
+  Builder.prototype.refPointCurve = function (refs, opts) {
+    var f = { type: 'refPtCurve', points: (refs || []).map(curveRefIn) };
+    if (opts && opts.closed) f.closed = true;
+    return this._addCurve(f, opts);
+  };
+  // ------------------------------------------------------------------ rfDZ: Wrap
+  // wrap(opts): Insert ▸ Features ▸ Wrap (kernel-features.js). opts: face ([x, y, z] on the cylindrical, conical or
+  // planar face to wrap onto, required), sketch (default: the last sketch), mode ('emboss', the default | 'deboss' |
+  // 'scribe'), thickness (emboss / deboss), reverse, name
+  Builder.prototype.wrap = function (opts) {
+    opts = opts || {};
+    if (!Array.isArray(opts.face) || opts.face.length !== 3) throw new Error('wrap: give face: [x, y, z], a point on the face to wrap onto.');
+    var mode = opts.mode || 'emboss';
+    if (mode !== 'emboss' && mode !== 'deboss' && mode !== 'scribe') throw new Error('wrap: mode must be emboss, deboss or scribe.');
+    var f = { type: 'wrap', sketch: this._sketchId(opts), face: opts.face.map(Number), mode: mode };
+    if (mode !== 'scribe') f.thickness = num(opts.thickness != null ? opts.thickness : 0);
+    if (opts.reverse) f.reverse = true;
+    if (opts.name) f.name = opts.name;
+    this._add(f);
+    return this;
+  };
+  SketchBuilder.prototype.wrap = function (opts) { return this.part.wrap(Object.assign({}, opts || {}, { sketch: this.f.id })); };
 })(Kernel, Kernel._);

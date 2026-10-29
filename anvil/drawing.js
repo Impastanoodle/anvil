@@ -91,6 +91,8 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
   // The kernel's coarsest curved facets turn 22.5° (a 16-gon circle, a slot end, a 90° fillet in 4 steps), so faces
   // meeting at less than 23° are treated as one smooth surface: drawn only where they form a silhouette.
   var COS_SMOOTH = Math.cos(23 * Math.PI / 180);
+  // rfDZ: two faces on one surface kept apart by a Wrap scribe (Kernel.wrapSplit) meet at a real edge, drawn like a sharp one
+  function wrapScribe(mesh, faces) { return faces.length === 2 && !!(Kernel.wrapSplit && Kernel.wrapSplit(mesh, faces[0], faces[1])); }
   var COS_CREASE = Math.cos(2 * Math.PI / 180);   // true normals further apart than this: a crease, not tangent (r5/drawings5)
   function meshDiag(mesh) {
     var p = mesh.positions64 || mesh.positions, mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
@@ -155,7 +157,7 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
       porder.forEach(function (pk) {
         var pc = pieces[pk];
         pc.smooth = false;
-        if (pc.normals.length === 2) pc.smooth = V.dot(pc.normals[0], pc.normals[1]) > COS_SMOOTH;
+        if (pc.normals.length === 2) pc.smooth = V.dot(pc.normals[0], pc.normals[1]) > COS_SMOOTH && !wrapScribe(mesh, pc.faces);   // rfDZ: a Wrap scribe edge is a visible edge
         out.push(pc);
       });
     });
@@ -226,7 +228,7 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
       g.forEach(function (x) { drop[x.i] = 1; });
       porder.forEach(function (j) {
         var pc = pieces[j];
-        pc.smooth = pc.normals.length === 2 && V.dot(pc.normals[0], pc.normals[1]) > COS_SMOOTH;
+        pc.smooth = pc.normals.length === 2 && V.dot(pc.normals[0], pc.normals[1]) > COS_SMOOTH && !wrapScribe(mesh, pc.faces);
         extra.push(pc);
       });
     });

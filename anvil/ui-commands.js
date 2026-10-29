@@ -193,11 +193,14 @@
   }
   // the commands that make something, where "OK and start another" applies (sheet metal, features, reference
   // geometry, sketch modify / pattern commands, component patterns); the Transform tab has its own ✓+ (extraActions)
-  var OKPLUS_COMMANDS = ['Extrude', 'Revolve', 'Sweep', 'Loft', 'Fillet', 'Chamfer', 'Shell', 'Hole', 'HoleWizard', 'LinearPattern',
+  var OKPLUS_COMMANDS = ['Extrude', 'Revolve', 'Sweep', 'Loft', 'Boundary', 'Fillet', 'Chamfer', 'Shell', 'Hole', 'HoleWizard', 'LinearPattern',
     'CircularPattern', 'Mirror', 'Plane', 'RefAxis', 'RefPoint', 'Csys', 'EquationCurve', 'BaseFlange', 'EdgeFlange', 'MiterFlange',
     'Hem', 'Jog', 'SketchedBend', 'BreakCorner', 'ClosedCorner', 'Unfold', 'Fold', 'OffsetEntities', 'ConvertEntities',
     'MirrorEntities', 'SketchPattern', 'CircularSketchPattern', 'MoveEntities', 'CopyEntities', 'RotateEntities', 'ScaleEntities',
     'StretchEntities', 'SketchFillet', 'SketchChamfer', 'LinearComponentPattern', 'CircularComponentPattern', 'MirrorComponents'];
+  OKPLUS_COMMANDS.push('Rib', 'Intersect');   // rfDY
+  OKPLUS_COMMANDS.push('Helix', 'ProjectedCurve', 'CompositeCurve', 'CurveXYZ', 'CurveRefPoints');   // rfFA
+  OKPLUS_COMMANDS.push('Wrap');   // rfDZ
   // called once at boot (ui-app.js), when every UI.cmd* exists: those commands run through runAgainable, whoever starts
   // them (ribbon, menus, shortcuts, Search Commands)
   function wrapOkPlusCommands() {
@@ -1532,7 +1535,7 @@
   function cmdSweep(cut, existing) {
     withSketch(function (sid) {
       var sketches = App.model.features.filter(function (s) { return s.type === 'sketch'; });
-      if (sketches.length < 2 && !existing) { UI.toast('A sweep needs a profile sketch and a path sketch (lines/arcs).'); return; }
+      if (sketches.length < (faCurves().length ? 1 : 2) && !existing) { UI.toast('A sweep needs a profile sketch and a path sketch (lines/arcs).'); return; }   // rfFA: or a curve
       var free = unconsumedSketches();
       // default pairing: the most recent unconsumed sketch with a closed profile is the profile, the other one the path
       var cands = (free.length >= 2 ? free : sketches).slice(-2);
@@ -1541,6 +1544,7 @@
       if (cands.length === 2 && closedLoops(prof) === 0 && closedLoops(path) > 0) { prof = cands[0]; path = cands[1]; }
       if (sid != null) { prof = K.findFeature(App.model, sid) || prof; path = (free.length >= 2 ? free : sketches).filter(function (s) { return s.id !== sid; }).slice(-1)[0] || path; }
       var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'sweep', cut: !!cut, profile: prof.id, path: path.id };
+      if (!existing) { var fac = faDefaultPath(); if (fac != null) f.path = fac; }   // rfFA: a curve not yet swept along is the path
       if (Array.isArray(f.path)) f.pathPoints = JSON.stringify(f.path);
       var title = f.cut ? 'Cut-Sweep' : 'Sweep';
       initBodyFields(f, existing);
@@ -1551,7 +1555,7 @@
         groups: [
           { title: 'Profile and Path', fields: [
             { type: 'select', label: 'Profile', key: 'profile', options: function (v) { return allSketchesField('Profile', 'profile', 'path')(v).options; } },
-            { type: 'select', label: 'Path', key: 'path', options: function (v) { return allSketchesField('Path', 'path', 'profile')(v).options; }, show: function (v) { return !Array.isArray(v.path); } },
+            { type: 'select', label: 'Path', key: 'path', options: function (v) { return allSketchesField('Path', 'path', 'profile')(v).options.concat(faCurveOptions(v.id)); }, show: function (v) { return !Array.isArray(v.path); } },   // rfFA: curves too
             { type: 'static', label: 'Path', value: function (v) { return Array.isArray(v.path) ? v.path.length + ' points (from script)' : ''; }, show: function (v) { return Array.isArray(v.path); } },
             mergeField(function (v) { return !v.cut; })
           ] },
@@ -5549,6 +5553,7 @@
       case 'extrude': if (f.tab && !f.cut) cmdTab(f); else if (f.sheetBase && !f.cut) cmdSheetMetal(); else cmdExtrude(f.cut, f); break;
       case 'rip': UI.cmdRipFeature(f); break;   // lane DI
       case 'vent': UI.cmdVent(f); break;   // lane DT
+      case 'wrap': UI.cmdWrap(f); break;   // rfDZ
       case 'insertBends': UI.cmdInsertBends(f); break;   // lane DQ
       case 'convertSM': UI.cmdConvertSheetMetal(f); break;
       case 'revolve': cmdRevolve(f.cut, f); break;
@@ -5557,6 +5562,7 @@
       case 'mirror': cmdMirror(f); break;
       case 'plane': cmdPlane(f); break;
       case 'refaxis': case 'refpoint': case 'csys': cmdRefGeo(f.type, f); break;   // lane CZ
+      case 'helix': case 'projCurve': case 'compositeCurve': case 'xyzCurve': case 'refPtCurve': faEdit(f); break;   // rfFA
       case 'chamfer': cmdChamfer(f); break;
       case 'fillet': cmdFillet(f); break;
       case 'flange': cmdEdgeFlange(f); break;
@@ -5568,7 +5574,11 @@
       case 'fold': UI.cmdFold(f); break;
       case 'sweep': cmdSweep(f.cut, f); break;
       case 'loft': cmdLoft(f.cut, f); break;
+      case 'boundary': UI.cmdBoundary(f.cut, f); break;   // rfFB
       case 'shell': cmdShell(f); break;
+      case 'draft': UI.cmdDraft(f); break;   // rfDX
+      case 'rib': UI.cmdRib(f); break;   // rfDY
+      case 'intersect': UI.cmdIntersect(f); break;   // rfDY
       case 'import': cmdImported(f); break;
       case 'hole': if (UI.cmdHoleWizard) UI.cmdHoleWizard(f); break;
     }
@@ -5744,4 +5754,876 @@
   }
   (UI.onBuild = UI.onBuild || []).push(overDefinedWarnings);
   UI.overDefinedWarnings = overDefinedWarnings;
+
+  // ------------------------------------------------------------------ rfDX: Draft PropertyManager (SolidWorks' Neutral Plane)
+  // Draft Angle, Neutral Plane (a planar face or a plane; Reverse direction flips the pull, also the arrow on the
+  // model), Faces to Draft (click a listed face again to drop it), Face propagation (None / Along Tangent). The preview
+  // is the drafted part (Kernel.buildDraft, the worker's 'tool' op).
+  function cmdDraft(existing) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    var base = existing ? null : (App.build ? App.build.body : null), baseMesh = existing ? null : App.mesh;
+    function getBase() { if (!base) { base = bodyBefore(existing.id); baseMesh = K.meshFromBody(base); } return base; }
+    function getBaseMesh() { getBase(); return baseMesh; }
+    if (existing ? !App.build : !base) { UI.toast('Create a solid first, then draft it.'); return; }
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'draft', angle: 1, neutral: null, faces: [], reverse: false, propagate: 'none' };
+    if (!f.propagate) f.propagate = 'none';
+    if (!Array.isArray(f.faces)) f.faces = [];
+    var st = { box: f.neutral ? 'faces' : 'neutral', err: null };
+    function r4(p) { return p.map(function (x) { return Math.round(x * 1e4) / 1e4; }); }
+    function tol() { return K.pickTol(App.model.units); }
+    function live() { return !existing || App.rollback != null; }   // the base body is on screen (picks and highlights map to it)
+    function featOf(v) {
+      var o = { type: 'draft', angle: v.angle, neutral: v.neutral ? JSON.parse(JSON.stringify(v.neutral)) : null, faces: v.faces.map(function (s) { return { at: s.at.slice() }; }) };
+      if (v.reverse) o.reverse = true;
+      if (v.propagate === 'tangent') o.propagate = 'tangent';
+      if (v.name) o.name = v.name;
+      return o;
+    }
+    function faceIdx(spec) { try { var k = K.resolveFaces([spec], getBaseMesh(), tol())[0]; return k != null && k >= 0 ? k : -1; } catch (e) { return -1; } }
+    function lit() {
+      var idx = [];
+      if (live()) {
+        f.faces.forEach(function (s) { var k = faceIdx(s); if (k >= 0) idx.push(k); });
+        var nf = f.neutral && (f.neutral.face || f.neutral.at);
+        if (nf) { var k = faceIdx({ at: nf }); if (k >= 0) idx.push(k); }
+      }
+      if (App.command) App.command.faceList = idx;
+      UI.updateHighlights();
+    }
+    // the pull direction and a point on the neutral plane for the arrow (null until both boxes are filled)
+    function pullOf(v) {
+      try {
+        var mesh = getBaseMesh(), neu = K.draftNeutral(v.neutral, mesh, { planes: (App.build && App.build.planes) || {}, units: App.model.units }, tol());
+        var idx = K.resolveFaces(v.faces, mesh, tol());
+        if (!idx.length) return null;
+        var fcs = idx.map(function (i) { return mesh.faces[i]; }), N = neu.pull, d0 = neu.d0;
+        if (K.draftSide(N, d0, fcs) < 0) { N = V.scale(N, -1); d0 = -d0; }
+        if (v.reverse) { N = V.scale(N, -1); d0 = -d0; }
+        var c = fcs[0].centroid;
+        return { n: N, O: V.add(c, V.scale(N, d0 - V.dot(N, c))) };
+      } catch (e) { return null; }
+    }
+    function ready(v) { return !!(v.neutral && v.faces.length && +v.angle > 0); }
+    function status(r) {
+      UI.setStatus(st.err ? 'Preview: ' + st.err : ready(f) ? 'Draft preview: ' + f.faces.length + ' face' + (f.faces.length === 1 ? '' : 's') + ' at ' + UI.fmtNum(+f.angle, 3) + '°. Press Enter or ✓ to accept.'
+        : !f.neutral ? 'Draft: select the neutral plane (a planar face or a plane).' : 'Draft: select the faces to draft.');
+    }
+    function preview() {
+      UI.disposeGroup(UI.groups.preview);
+      st.err = null;
+      if (!ready(f)) { status(); UI.requestRender(); return; }
+      var upto = null;
+      if (existing) App.model.features.forEach(function (g, i) { if (g.id === existing.id) upto = i; });
+      livePreview({ op: 'tool', feature: featOf(f), upto: upto, mats: [UI.mats.preview], sync: previewSync, done: function () { st.err = null; status(); },
+        fail: function (msg) { st.err = msg; status(); } });
+    }
+    function previewSync() {
+      UI.disposeGroup(UI.groups.preview);
+      try {
+        var r = K.buildDraft(featOf(f), { body: getBase(), planes: (App.build && App.build.planes) || {}, units: App.model.units });
+        addPreviewMesh(r.body, UI.mats.preview);
+        st.err = null;
+      } catch (e) { st.err = e.message; }
+      status();
+    }
+    function onPick(pk) {
+      if (st.box === 'neutral') {
+        if (pk.kind === 'face' && App.mesh && App.mesh.faces[pk.index] && App.mesh.faces[pk.index].polys && App.mesh.faces[pk.index].polys.some(function (p) { return p.surf && p.surf.s && p.surf.s.t && p.surf.s.t !== 'plane'; })) {
+          UI.setStatus('Pick a planar face or a plane for the neutral plane.'); UI.toast('Pick a planar face or a plane for the neutral plane.'); return true;
+        }
+        var r = UI.refFromPick(pk, 'plane');
+        if (typeof r === 'string' || r.sketch != null) { var msg = typeof r === 'string' ? r : 'Pick a planar face or a plane.'; UI.setStatus(msg); UI.toast(msg); return true; }
+        f.neutral = r; st.box = 'faces';
+      } else {
+        if (pk.kind !== 'face' || !pk.point) { UI.setStatus('Pick the faces to draft.'); return pk.kind === 'plane'; }
+        var hit = -1, grp = live() && UI.faceGroup ? UI.faceGroup(pk.index) : [pk.index];
+        f.faces.forEach(function (s, i) { if (grp.indexOf(faceIdx(s)) >= 0) hit = i; });
+        if (hit >= 0) f.faces.splice(hit, 1); else f.faces.push({ at: r4(pk.point) });
+      }
+      renderPM(); lit(); preview();
+      return true;
+    }
+    function neutralLabel(v) {
+      var n = v.neutral;
+      if (!n) return '';
+      if (n.face || n.at) return 'Face<1>';
+      if (n.plane != null) { if (typeof n.plane === 'string') return n.plane + ' Plane'; var g = K.findFeature(App.model, n.plane); return g ? g.name : 'Plane'; }
+      return 'Plane';
+    }
+    // SolidWorks: faces selected before the command go to Faces to Draft, a plane to Neutral Plane
+    if (!existing) {
+      var pre = (UI.selection ? UI.selection() : [App.sel]).filter(Boolean);
+      pre.forEach(function (s) {
+        if (s.kind === 'plane' || (s.kind === 'feature' && K.findFeature(App.model, s.id) && K.findFeature(App.model, s.id).type === 'plane')) { var r = UI.refFromPick(s, 'plane'); if (typeof r !== 'string') f.neutral = r; return; }
+        if (s.kind !== 'face' || !App.mesh || !App.mesh.faces[s.index]) return;
+        var at = s.point ? s.point.slice() : null;
+        if (!at) { var fc = App.mesh.faces[s.index], P = App.mesh.positions, o = fc.start * 9; at = [0, 1, 2].map(function (k) { return (P[o + k] + P[o + 3 + k] + P[o + 6 + k]) / 3; }); }
+        f.faces.push({ at: r4(at) });
+      });
+      if (pre.length && UI.setSelection) UI.setSelection([], { quiet: true });
+      st.box = f.neutral ? 'faces' : 'neutral';
+    }
+    openPM({
+      title: existing ? existing.name : 'Draft', icon: 'draft', values: f,
+      onRollback: function (on) { if (on && existing) { base = App.build.body; baseMesh = App.mesh; } try { lit(); } catch (e) { } },
+      handles: function (v) { var p = ready(v) ? pullOf(v) : null; return p ? [{ type: 'flip', key: 'reverse', O: p.O, dir: p.n }] : []; },
+      message: existing ? 'Edit the draft. The drafted part is previewed in yellow.' : 'Select the <b>neutral plane</b> (a planar face or a plane), then the <b>faces to draft</b>. The faces turn about where they meet the neutral plane; the part tapers away from it along the direction of pull.',
+      command: { faceList: [], pickPlane: true, onPick: onPick },
+      groups: [
+        { title: 'Type of Draft', fields: [{ type: 'static', label: 'Type', value: 'Neutral Plane' }] },
+        { title: 'Draft Angle', fields: [{ type: 'number', label: 'Draft angle', key: 'angle', unit: '°', min: 0, max: 89 }] },
+        { title: 'Neutral Plane', fields: [
+          { type: 'pick', icon: 'plane', placeholder: 'Select a planar face or a plane…', value: neutralLabel,
+            active: function () { return st.box === 'neutral'; }, onActivate: function () { st.box = 'neutral'; renderPM(); } },
+          { type: 'check', label: 'Reverse direction', key: 'reverse' }
+        ] },
+        { title: 'Faces to Draft', fields: [
+          { type: 'pick', icon: 'draft', placeholder: 'Select the faces to draft…', value: function (v) { return v.faces.length ? v.faces.length + ' face' + (v.faces.length > 1 ? 's' : '') : ''; },
+            active: function () { return st.box === 'faces'; }, onActivate: function () { st.box = 'faces'; renderPM(); },
+            items: function (v) { return v.faces.map(function (spec, i) { return { label: 'Face<' + (i + 1) + '>', get faces() { if (!live()) return []; var k = faceIdx(spec); return k >= 0 ? [k] : []; }, at: spec.at }; }); },
+            onRemove: function (v, i) { v.faces.splice(i, 1); renderPM(); lit(); preview(); },
+            onClear: function (v) { v.faces.length = 0; renderPM(); lit(); preview(); } },
+          { type: 'select', label: 'Face propagation', key: 'propagate', options: [['none', 'None'], ['tangent', 'Along Tangent']] }
+        ] },
+        { title: 'Feature', collapsed: !existing, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ],
+      onChange: function () { lit(); preview(); },
+      okBlocked: function (v) { return !v.neutral ? 'Select the neutral plane.' : !v.faces.length ? 'Select the faces to draft.' : null; },
+      onOK: function (v) {
+        if (!(+v.angle > 0) || !(+v.angle < 89)) { UI.toast('Draft angle must be greater than 0 and less than 89 degrees.'); return false; }
+        if (st.err) { UI.toast(st.err); return false; }
+        return commitFeature(featOf(v), existing);
+      },
+      onClose: function () { UI.disposeGroup(UI.groups.preview); }
+    });
+    lit(); preview();
+  }
+  UI.cmdDraft = partOnly(cmdDraft, 'Draft');
+  OKPLUS_COMMANDS.push('Draft');
+  // ------------------------------------------------------------------ rfDY: Rib and Intersect (kernel-features.js rfDY)
+  // Rib (Features ▸ Rib, SolidWorks' PropertyManager): Parameters — Thickness (First Side / Both Sides / Second Side),
+  // Rib thickness, Extrusion direction (Parallel to Sketch / Normal to Sketch), Flip material side, Type (Linear /
+  // Natural); the sketch is the selected / last unconsumed one (an open line or chain). Live preview of the rib.
+  function cmdRib(existing) {
+    if (isAsm()) { refusePart('Rib'); return; }
+    withSketch(function (sid) {
+      if (!existing && !(App.build && App.build.body)) { UI.toast('Create a solid first, then sketch the rib on a plane through it.'); return; }
+      var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'rib', sketch: pickDefaultSketch(sid), thickness: UI.lenDefault(5), side: 'both', direction: 'parallel', flip: false, extension: 'linear' };
+      if (existing) delete f.profile;
+      f.side = f.side || 'both'; f.direction = f.direction || 'parallel'; f.flip = !!f.flip; f.extension = f.extension || 'linear';
+      if (f.sketch == null) { UI.toast('Sketch the rib first: an open line on a plane through the part.'); return; }
+      function toFeature(v) {
+        var out = { type: 'rib', sketch: v.sketch, thickness: v.thickness, side: v.side, direction: v.direction };
+        if (v.flip) out.flip = true;
+        if (v.extension === 'natural') out.extension = 'natural';
+        if (v.name) out.name = v.name;
+        return out;
+      }
+      function preview(v) {
+        App.command.sketchId = v.sketch; UI.updateSketches();
+        var err = showPreview(toFeature(v));
+        UI.setStatus(err ? 'Preview: ' + err : 'Previewing the rib. Press Enter or ✓ to accept.');
+      }
+      openPM({
+        title: existing ? existing.name : 'Rib', icon: 'rib', values: f,
+        message: 'Sketch an <b>open line</b> on a plane through the part; the rib is thickened from it and grows until it meets the part.',
+        command: { sketchId: f.sketch },
+        groups: [
+          { title: 'Parameters', fields: [
+            sketchPickerField(f),
+            { type: 'iconRadio', label: 'Thickness', key: 'side', options: [['one', 'First Side', 'rib'], ['both', 'Both Sides', 'rib'], ['other', 'Second Side', 'rib']] },
+            { type: 'number', label: 'Rib thickness', key: 'thickness', unit: 'u', min: 0 },
+            { type: 'radio', label: 'Extrusion direction', key: 'direction', options: [['parallel', 'Parallel to Sketch'], ['normal', 'Normal to Sketch']] },
+            { type: 'check', label: 'Flip material side', key: 'flip' },
+            { type: 'select', label: 'Type', key: 'extension', options: [['linear', 'Linear'], ['natural', 'Natural']] }
+          ] },
+          { title: 'Feature', collapsed: !existing, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+        ],
+        onChange: function (v) { preview(v); },
+        onOK: function (v) { return commitFeature(toFeature(v), existing); }
+      });
+    });
+  }
+  // Intersect (Features ▸ Intersect): Selections (solid bodies and planes, checked in the list or clicked in the graphics
+  // area), Options (Create internal regions), the Intersect button that lists the Regions to Exclude (a check excludes a
+  // region; the preview shows kept regions yellow, excluded red), Merge result.
+  function rfDYbuildBefore(existing) {
+    var idx = -1;
+    if (existing) App.model.features.forEach(function (g, i) { if (g.id === existing.id) idx = i; });
+    if (idx < 0) return App.build;
+    var m = JSON.parse(JSON.stringify(App.model));
+    m.features = m.features.slice(0, idx);
+    return K.rebuild(m);
+  }
+  function cmdIntersect(existing) {
+    if (isAsm()) { refusePart('Intersect'); return; }
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    var before = rfDYbuildBefore(existing);
+    var nb = before && before.bodies ? before.bodies.length : 0;
+    if (!nb) { UI.toast('Create the solids to intersect first.'); return; }
+    var planeRefs = ['Front', 'Top', 'Right'].concat(App.model.features.filter(function (g) { return g.type === 'plane' && (!existing || g.id !== existing.id) && before.planes && before.planes[g.id]; }).map(function (g) { return g.id; }));
+    function planeName(r) { if (typeof r === 'number') { var g = K.findFeature(App.model, r); return g ? g.name : 'Plane ' + r; } return r + ' Plane'; }
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'intersect', mode: 'create', merge: true };
+    var v = { name: f.name || '', internal: f.mode === 'internal', merge: f.merge !== false, regions: null };
+    var picked = Array.isArray(f.bodies) && f.bodies.length ? f.bodies : null;
+    for (var i = 0; i < nb; i++) v['b' + i] = picked ? picked.indexOf(i) >= 0 : true;
+    planeRefs.forEach(function (r) { v['p' + r] = (f.planes || []).some(function (q) { return q === r || (q && q.featureId === r); }); });
+    function toFeature() {
+      var out = { type: 'intersect', mode: v.internal ? 'internal' : 'create' };
+      var bs = []; for (var k = 0; k < nb; k++) if (v['b' + k]) bs.push(k);
+      if (bs.length && bs.length < nb) out.bodies = bs;
+      var ps = planeRefs.filter(function (r) { return v['p' + r]; });
+      if (ps.length) out.planes = ps;
+      if (v.regions && v.regions.some(function (r, k) { return v['x' + k]; })) out.regions = v.regions.map(function (r, k) { return !v['x' + k]; });
+      if (!v.merge) out.merge = false;
+      if (v.name) out.name = v.name;
+      return out;
+    }
+    function compute() {
+      UI.disposeGroup(UI.groups.preview);
+      try {
+        var regs = K.intersectRegions(before.bodies, toFeature(), previewModel(), before.planes || {});
+        var keep = existing && Array.isArray(existing.regions) && !v.regions ? existing.regions : null;
+        v.regions = regs;
+        regs.forEach(function (r, k) { if (v['x' + k] == null) v['x' + k] = keep ? keep[k] === false : false; });
+        labelRegions();
+        UI.setStatus(regs.length + ' region' + (regs.length === 1 ? '' : 's') + '. Check the regions to exclude, then ✓.');
+      } catch (e) { v.regions = null; UI.setStatus('Intersect: ' + e.message); }
+      renderPM(); show();
+    }
+    function show() {
+      UI.disposeGroup(UI.groups.preview);
+      (v.regions || []).forEach(function (r, k) { try { addPreviewMesh(r.body, v['x' + k] ? UI.mats.previewCut : UI.mats.preview); } catch (e) { } });
+    }
+    function stale() { v.regions = null; Object.keys(v).forEach(function (k) { if (/^x\d+$/.test(k)) delete v[k]; }); UI.disposeGroup(UI.groups.preview); }
+    var selFields = [], regionFields = [];
+    for (var q = 0; q < 64; q++) (function (k) { regionFields.push({ type: 'check', key: 'x' + k, label: 'Region' + (k + 1), show: function () { return !!(v.regions && v.regions[k]); }, rerender: true }); })(q);
+    function labelRegions() {
+      (v.regions || []).forEach(function (r, k) { if (regionFields[k]) regionFields[k].label = 'Region' + (k + 1) + (r.void ? ' (internal)' : '') + '  ' + UI.fmtNum(r.volume, 4) + ' ' + UI.unitLabel() + '³'; });
+    }
+    for (var j = 0; j < nb; j++) selFields.push({ type: 'check', label: 'Solid Body ' + (j + 1), key: 'b' + j, rerender: true });
+    planeRefs.forEach(function (r) { selFields.push({ type: 'check', label: planeName(r), key: 'p' + r, rerender: true }); });
+    openPM({
+      title: existing ? existing.name : 'Intersect', icon: 'intersect', values: v,
+      message: 'Select the <b>solid bodies</b> and <b>planes</b> to intersect, click <b>Intersect</b>, then check the regions to exclude.',
+      command: {
+        pickPlane: true,
+        onPick: function (pk) {
+          if (pk.kind === 'face' && App.mesh && App.mesh.faces[pk.index] && App.rollback == null && !existing) { var bi = App.mesh.faces[pk.index].body | 0; if (bi < nb) { v['b' + bi] = !v['b' + bi]; stale(); renderPM(); } return true; }
+          if (pk.kind === 'plane' && planeRefs.indexOf(pk.ref) >= 0) { v['p' + pk.ref] = !v['p' + pk.ref]; stale(); renderPM(); return true; }
+          return false;
+        }
+      },
+      groups: [
+        { title: 'Selections', fields: selFields.concat([{ type: 'check', label: 'Create internal regions', key: 'internal', rerender: true },
+          { type: 'buttons', buttons: [{ label: 'Intersect', onclick: function () { compute(); } }] }]) },
+        { title: 'Regions to Exclude', show: function () { return !!v.regions; }, fields: [{ type: 'html', html: function () { return '<div class="pm-note">Checked regions are left out (red in the preview).</div>'; } }].concat(
+          regionFields) },
+        { title: 'Options', fields: [{ type: 'check', label: 'Merge result', key: 'merge' }] },
+        { title: 'Feature', collapsed: !existing, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ],
+      onChange: function (vals, key) {
+        if (/^(b\d+|p.+|internal)$/.test(key || '')) stale();
+        else if (/^x\d+$/.test(key || '')) show();
+      },
+      onOK: function () {
+        if (!v.regions) compute();
+        if (!v.regions) return false;
+        return commitFeature(toFeature(), existing);
+      }
+    });
+    if (existing) compute();
+  }
+  UI.cmdRib = cmdRib; UI.cmdIntersect = cmdIntersect;
+  // rfFB: ------------------------------------------------------------------ Boundary Boss/Base, Boundary Cut
+  // SolidWorks' Boundary PropertyManager: Direction 1 (profiles, Move Up / Move Down, tangency at the start and end),
+  // Direction 2 (curves that touch every profile, tangency), Options (Merge tangent faces, Close, Show preview), Thin
+  // Feature. Click a box, then click a sketch in the graphics area or the FeatureManager tree: Direction 1 takes the
+  // sketch, Direction 2 the chain of the clicked entity (the whole sketch from the tree). Feature JSON: Kernel
+  // buildBoundary (kernel-features.js).
+  var BFB_TAN = [['none', 'None'], ['direction', 'Direction Vector'], ['normal', 'Normal To Profile']];
+  var bfbFocus = null;   // the Direction 1 / 2 row last focused: { box, index } (Move Up / Move Down act on it)
+  pm.root.addEventListener('focusin', function (e) {
+    if (!pm.spec || !pm.spec.bfb) return;
+    var row = e.target && e.target.closest && e.target.closest('.pm-item'), wrap = row && row.closest('.pm-pickwrap');
+    if (wrap) bfbFocus = { box: Array.prototype.indexOf.call(pm.root.querySelectorAll('.pm-pickwrap'), wrap) + 1, index: +row.getAttribute('data-index') };
+  });
+  function cmdBoundary(cut, existing) {
+    withSketch(function (sid) {
+      var sketches = App.model.features.filter(function (s) { return s.type === 'sketch'; });
+      if (sketches.length < 2 && !existing) { UI.toast('A boundary needs at least two profile sketches.'); return; }
+      var cutNow = existing ? !!existing.cut : !!cut;
+      var title = cutNow ? 'Boundary-Cut' : 'Boundary';
+      var tan = function (t, k) { return t && t[k] ? t[k] : 'none'; };
+      var f = existing ? {
+        dir1: (existing.dir1 || []).slice(), dir2: JSON.parse(JSON.stringify(existing.dir2 || [])), cut: cutNow, name: existing.name,
+        t1s: tan(existing.tangency1, 'start'), t1e: tan(existing.tangency1, 'end'), t2s: tan(existing.tangency2, 'start'), t2e: tan(existing.tangency2, 'end'),
+        mergeTangent: existing.mergeTangent !== false, close: !!existing.close, preview: true,
+        thinOn: !!(existing.thin && +existing.thin.t > 0), thinType: existing.thin && existing.thin.mid ? 'mid' : 'one', thinRev: !!(existing.thin && existing.thin.reverse),
+        thinT: existing.thin ? existing.thin.t : UI.lenDefault(1)
+      } : { dir1: [], dir2: [], cut: cutNow, t1s: 'none', t1e: 'none', t2s: 'none', t2e: 'none', mergeTangent: true, close: false, preview: true, thinOn: false, thinType: 'one', thinRev: false, thinT: UI.lenDefault(1) };
+      f.box = 1;
+      if (!existing) {
+        // a preselected sketch starts Direction 1; otherwise the last two unused sketches with a closed profile
+        var closed = function (s) { try { var pr = s.profile || K.sketchProfile(s); return pr.loops.some(function (l) { return !l.hole; }); } catch (e) { return false; } };
+        var free = unconsumedSketches().filter(closed);
+        if (sid != null) f.dir1 = [sid];
+        else f.dir1 = free.slice(-2).map(function (s) { return s.id; });
+      }
+      initBodyFields(f, existing);
+      bfbFocus = null;
+      function sk(id) { var s = K.findFeature(App.model, id); return s && s.type === 'sketch' ? s : null; }
+      function curveLabel(c) {
+        var id = c && typeof c === 'object' ? c.sketch : c, s = sk(id);
+        if (c && Array.isArray(c.pts)) return '3D curve (' + c.pts.length + ' points)';
+        if (!s) return 'Sketch ' + id + ' (missing)';
+        if (c && typeof c === 'object' && c.entity != null) { var e = s.entities[c.entity]; return s.name + ' / ' + (e ? entityLabel(e, +c.entity) : 'Entity' + (+c.entity + 1)); }
+        return s.name;
+      }
+      function shownIds(v) { var ids = v.dir1.slice(); v.dir2.forEach(function (c) { var id = c && typeof c === 'object' ? c.sketch : c; if (id != null) ids.push(id); }); return ids; }
+      function toFeature(v) {
+        var out = { type: 'boundary', dir1: v.dir1.slice(), dir2: JSON.parse(JSON.stringify(v.dir2)), cut: !!v.cut, merge: v.merge, scope: v.scope };
+        Object.keys(v).forEach(function (k) { if (/^body\d+$/.test(k)) out[k] = v[k]; });
+        if (v.id != null) out.id = v.id;
+        if (v.t1s !== 'none' || v.t1e !== 'none') out.tangency1 = { start: v.t1s, end: v.t1e };
+        if (v.t2s !== 'none' || v.t2e !== 'none') out.tangency2 = { start: v.t2s, end: v.t2e };
+        if (v.close) out.close = true;
+        if (!v.mergeTangent) out.mergeTangent = false;
+        if (v.thinOn) out.thin = { t: v.thinT, mid: v.thinType === 'mid', reverse: !!v.thinRev };
+        if (v.name) out.name = v.name;
+        return applyBodyFields(out, out, !!v.cut);
+      }
+      function preview() {
+        var v = pm.values;
+        if (App.command) { App.command.loftIds = shownIds(v); UI.updateSketches(); }
+        if (!v.preview) { showPreview(null); UI.setStatus('Preview off. Press Enter or ✓ to accept.'); return; }
+        if (v.dir1.length < 2) { showPreview(null); UI.setStatus('Select at least two profiles for Direction 1.'); return; }
+        var err = showPreview(toFeature(v));
+        UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '. Press Enter or ✓ to accept.');
+      }
+      function setBox(b) { pm.values.box = b; renderPM(); UI.setStatus(b === 1 ? 'Click the profile sketches in order (Direction 1).' : 'Click the curves that join the profiles (Direction 2).'); }
+      function addSketch(id, entity) {
+        var v = pm.values, s = sk(id);
+        if (!s) return false;
+        if (v.box === 1) {
+          if (v.dir1.indexOf(id) >= 0) { UI.setStatus(s.name + ' is already a Direction 1 profile.'); return true; }
+          v.dir1.push(id);
+        } else {
+          if (v.dir1.indexOf(id) >= 0) { UI.toast(s.name + ' is a Direction 1 profile; pick a curve for Direction 2.'); return true; }
+          var c = entity != null ? { sketch: id, entity: entity } : id;
+          if (v.dir2.some(function (x) { return JSON.stringify(x) === JSON.stringify(c); })) return true;
+          v.dir2.push(c);
+        }
+        renderPM(); preview();
+        return true;
+      }
+      function onPick(pk) {
+        if (pk.kind === 'sketchEntity') return addSketch(pk.sketch, pm.values.box === 2 ? pk.index : null);
+        if (pk.kind === 'feature') return addSketch(pk.id, null);
+        return false;
+      }
+      function move(d) {
+        var v = pm.values, list = bfbFocus && bfbFocus.box === 1 ? v.dir1 : bfbFocus && bfbFocus.box === 2 ? v.dir2 : null, i = bfbFocus ? bfbFocus.index : -1, j = i + d;
+        if (!list || i < 0 || i >= list.length) { UI.toast('Click a profile in the list first, then Move Up / Move Down.'); return; }
+        if (j < 0 || j >= list.length) return;
+        var t = list[i]; list[i] = list[j]; list[j] = t;
+        bfbFocus.index = j;
+        renderPM(); preview();
+        var wrap = pm.root.querySelectorAll('.pm-pickwrap')[bfbFocus.box - 1], row = wrap && wrap.querySelector('.pm-item[data-index="' + j + '"]');
+        if (row) try { row.focus({ preventScroll: true }); } catch (e) { }
+      }
+      function box(n) {
+        var key = n === 1 ? 'dir1' : 'dir2';
+        return { type: 'pick', icon: n === 1 ? 'sketch' : 'spline', placeholder: n === 1 ? 'Select profiles…' : 'Select curves…',
+          value: function (v) { var c = v[key].length; return c ? c + (n === 1 ? ' profile' : ' curve') + (c === 1 ? '' : 's') : ''; },
+          active: function (v) { return v.box === n; }, onActivate: function () { setBox(n); },
+          items: function (v) { return v[key].map(function (x) { return { label: curveLabel(x), icon: n === 1 ? 'sketch' : 'spline' }; }); },
+          onRemove: function (v, i) { v[key].splice(i, 1); renderPM(); preview(); },
+          onClear: function (v) { v[key].length = 0; renderPM(); preview(); } };
+      }
+      function tanFields(n) {
+        return [{ type: 'select', label: 'Start tangency', key: 't' + n + 's', options: BFB_TAN }, { type: 'select', label: 'End tangency', key: 't' + n + 'e', options: BFB_TAN }];
+      }
+      openPM({
+        title: existing ? existing.name : title, icon: cutNow ? 'boundaryCut' : 'boundary', values: f, bfb: true,
+        command: { loftIds: shownIds(f), pickRefGeo: true, refKinds: [], pickSketchRefs: true, onPick: onPick },
+        message: 'Direction 1: the <b>profiles</b> (each a sketch with one closed profile), in order. Direction 2 (optional): <b>curves</b> that touch every profile and shape the sides between them. Click a box, then click sketches in the graphics area or the FeatureManager tree.',
+        onSelection: function () { if (App.sel && App.sel.kind === 'feature') { var s = sk(App.sel.id); if (s) addSketch(s.id, null); } },
+        groups: [
+          { title: 'Direction 1', fields: [box(1),
+            { type: 'buttons', buttons: [{ label: '▲ Move Up', onclick: function () { move(-1); } }, { label: '▼ Move Down', onclick: function () { move(1); } }] }].concat(tanFields(1)) },
+          { title: 'Direction 2', collapsed: !f.dir2.length && !existing, fields: [box(2)].concat(tanFields(2)) },
+          { title: 'Options and Preview', fields: [
+            { type: 'check', label: 'Merge tangent faces', key: 'mergeTangent' },
+            { type: 'check', label: 'Close', key: 'close', disabled: function (v) { return v.dir1.length < 3 || v.dir2.length > 0; } },
+            { type: 'check', label: 'Show preview', key: 'preview' },
+            mergeField(function (v) { return !v.cut; })
+          ] },
+          { title: 'Thin Feature', collapsed: !f.thinOn, fields: [
+            { type: 'check', label: 'Thin Feature', key: 'thinOn', rerender: true },
+            { type: 'select', label: 'Type', key: 'thinType', options: [['one', 'One-Direction'], ['mid', 'Mid-Plane']], show: function (v) { return v.thinOn; }, rerender: true },
+            { type: 'check', label: 'Reverse direction', key: 'thinRev', show: function (v) { return v.thinOn && v.thinType !== 'mid'; } },
+            { type: 'number', label: 'Thickness', key: 'thinT', unit: 'u', min: 0, show: function (v) { return v.thinOn; } }
+          ] },
+          scopeGroup(function (v) { return !!v.cut; }),
+          { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut', rerender: true }, { type: 'text', label: 'Name', key: 'name' }] }
+        ],
+        onChange: function () { preview(); },
+        onOK: function (v) {
+          if (v.dir1.length < 2) { UI.toast('Select at least two profiles for Direction 1.'); return false; }
+          if (v.thinOn && !(+v.thinT > 0) && !(typeof v.thinT === 'string' && /^=/.test(v.thinT))) { UI.toast('Give the thin feature a thickness.'); return false; }
+          var out = toFeature(v);
+          if (!existing && !out.name) delete out.name;
+          if (existing && !out.name) out.name = existing.name;
+          return commitFeature(out, existing);
+        }
+      });
+    });
+  }
+  // UI.cmdBoundary(cut, existing): the ribbon's Boundary Boss/Base (false) and Boundary Cut (true); Edit Feature passes the feature
+  UI.cmdBoundary = cmdBoundary;
+  // rfFD: Instant3D on a selected face of a fillet / chamfer, shell or pattern (ui-select.js computeHandles turns these
+  // into drag handles that edit the committed feature): the handles its PropertyManager shows, from the feature as
+  // built. f: the feature; faceIndex: the selected face (one of its own faces) or null (the feature is selected).
+  // -> [{ key, label, O, dir, k, value, min } | { type: 'angle', key, label, A, D, c, sign, value, max }]
+  function instant3DFeatureHandles(f, faceIndex) {
+    if (!f || !App.mesh || !App.build) return [];
+    var faces = App.mesh.faces || [], fc = faceIndex != null ? faces[faceIndex] : null;
+    if (f.type === 'fillet' || f.type === 'chamfer') {
+      var isCh = f.type === 'chamfer', key = isCh ? 'd' : 'r', edges = f.edges || [];
+      if (!edges.length) return [];
+      // the edge pick nearest the selected face (a fillet of several edges: the arrow sits on the one clicked)
+      var spec = edges[0];
+      if (fc && fc.centroid) { var bd = Infinity; edges.forEach(function (e) { var d = e.at ? V.len(V.sub(e.at, fc.centroid)) : Infinity; if (d < bd) { bd = d; spec = e; } }); }
+      var fr = spec.at ? edgeFrame(spec.at, []) : null;   // the two planar faces through the old sharp edge
+      return fr && fr.dir ? [{ key: key, label: isCh ? 'Distance' : 'Radius', O: fr.O, dir: fr.dir, k: 1, value: +f[key], min: 0 }] : [];
+    }
+    if (f.type === 'shell') {
+      // the selected inner wall (else the shell's largest face) moves along its normal: the outer face stays, the
+      // arrow's base sits on it (t behind the inner face) and its value is the wall thickness
+      var t = +f.thickness, own = function (x) { return x && App.triShared && App.triShared[x.start] === f.id && x.normal && x.centroid; };
+      var w = own(fc) ? fc : null;
+      if (!w) faces.forEach(function (x) { if (own(x) && (!w || x.area > w.area)) w = x; });
+      if (!w || !(t > 0)) return [];
+      return [{ key: 'thickness', label: 'Thickness', O: V.sub(w.centroid, V.scale(w.normal, t)), dir: w.normal, k: 1, value: t, min: 0 }];
+    }
+    if (f.type === 'lpattern') return lpatternHandles(f).map(function (h) { h.label = h.key === 's2' ? 'Spacing 2' : 'Spacing'; return h; });
+    if (f.type === 'cpattern') {
+      var v = JSON.parse(JSON.stringify(f));
+      if (v.center) { v.cx = v.center[0]; v.cy = v.center[1]; v.cz = v.center[2]; }
+      axisRefIn(v);
+      return cpatternHandles(v);
+    }
+    return [];
+  }
+  UI.instant3DFeatureHandles = instant3DFeatureHandles;
+  // ------------------------------------------------------------------ rfFA: Curves (Features ▸ Curves, Insert ▸ Curve)
+  // Helix and Spiral, Projected Curve, Composite Curve, Curve Through XYZ Points, Curve Through Reference Points as
+  // SolidWorks has them: each a PropertyManager making a reference curve feature (kernel-features.js resolveCurve; the
+  // record lands in App.build.planes and ui-core draws it). A curve is a Sweep path (the Sweep PM's Path list).
+  var FA_TITLES = { helix: 'Helix/Spiral', projCurve: 'Projected Curve', compositeCurve: 'Composite Curve', xyzCurve: 'Curve Through XYZ Points', refPtCurve: 'Curve Through Reference Points' };
+  var faSt = { before: null, err: null, preview: null };
+  function faCurves(beforeId) {
+    var out = [];
+    for (var i = 0; i < App.model.features.length; i++) {
+      var g = App.model.features[i];
+      if (beforeId != null && g.id === beforeId) break;
+      if (K.isCurveFeature(g)) out.push(g);
+    }
+    return out;
+  }
+  function faCurveOptions(beforeId) { return faCurves(beforeId).map(function (g) { return [g.id, g.name]; }); }
+  // the newest curve no sweep follows yet
+  function faDefaultPath() {
+    var used = {};
+    App.model.features.forEach(function (g) { if (g.type === 'sweep' && typeof g.path === 'number') used[g.path] = true; });
+    var c = faCurves().filter(function (g) { return !used[g.id]; }).pop();
+    return c ? c.id : null;
+  }
+  function faResolve(v) {
+    var b = faSt.before, ctx = { planes: Object.assign({}, (b && b.planes) || {}), sketches: {}, body: b ? b.body : null, units: App.model.units || 'mm' };
+    return K.resolveCurve(JSON.parse(JSON.stringify(v)), K.resolvedModel ? K.resolvedModel(App.model).model : App.model, ctx);
+  }
+  function faPreview(v, title) {
+    UI.disposeGroup(UI.groups.preview);
+    try {
+      var rec = faResolve(v);
+      UI.drawRefGeo(rec, UI.groups.preview, 'sel');
+      faSt.err = null;
+      UI.setStatus(title + ' preview: length ' + UI.fmtNum(rec.length, 4) + ' ' + UI.unitLabel() + (rec.runs.length > 1 ? ', in ' + rec.runs.length + ' pieces' : '') + '. Press Enter or ✓ to accept.');
+    } catch (e) { faSt.err = e.message; UI.setStatus('Preview: ' + e.message); }
+    if (UI.requestRender) UI.requestRender();
+  }
+  function faClean(v) {
+    var o = JSON.parse(JSON.stringify(v));
+    ['clockwise', 'reverse', 'taperOut', 'closed'].forEach(function (k) { if (!o[k]) delete o[k]; });
+    if (!o.name) delete o.name;
+    delete o.pitchKind;
+    return o;
+  }
+  // the PropertyManager shared by the five: groups, live preview, ✓ refused while the preview fails
+  function faOpen(type, existing, f, groups, command, extra) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    faSt.before = refBuildBefore(existing ? existing.id : null); faSt.err = null;
+    var title = FA_TITLES[type];
+    faSt.preview = function () { faPreview(pm.values, existing ? existing.name : title); };
+    var spec = {
+      title: existing ? existing.name : title, icon: type, values: f, command: command || null,
+      groups: groups.concat([{ title: 'Feature', collapsed: !existing, fields: [{ type: 'text', label: 'Name', key: 'name' }] }]),
+      onChange: function () { faSt.preview(); },
+      onOK: function (v) {
+        if (faSt.err) { UI.toast(faSt.err); return false; }
+        return commitFeature(faClean(v), existing);
+      },
+      onClose: function () { UI.disposeGroup(UI.groups.preview); faSt.preview = null; }
+    };
+    Object.keys(extra || {}).forEach(function (k) { spec[k] = extra[k]; });
+    openPM(spec);
+    faSt.preview();
+  }
+  function faSketchOptions(filter) {
+    return function () {
+      var list = App.model.features.filter(function (s) { return s.type === 'sketch' && (!filter || filter(s)); });
+      return list.length ? list.map(function (s) { return [s.id, s.name]; }) : [[-1, '(no sketches)']];
+    };
+  }
+  function faOneCircle(s) { return (s.entities || []).filter(function (e) { return e.t === 'circle'; }).length === 1; }
+
+  // ---- Helix and Spiral: Defined By, Parameters (constant pitch), Taper Helix
+  function cmdHelix(existing) {
+    if (isAsm()) { refusePart('Helix and Spiral'); return; }
+    withSketch(function (sid) {
+      var cands = App.model.features.filter(function (s) { return s.type === 'sketch' && faOneCircle(s); });
+      var sk = existing ? existing.sketch : sid != null && cands.some(function (s) { return s.id === sid; }) ? sid : cands.length ? cands[cands.length - 1].id : null;
+      if (sk == null) { var msg = 'Helix and Spiral needs a sketch with one circle: sketch a circle (its centre is the axis, its diameter the start diameter), then run Helix and Spiral.'; UI.toast(msg); UI.setStatus(msg); return; }
+      var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'helix', sketch: sk, defineBy: 'pitchRev' };
+      var dflt = { pitch: UI.lenDefault(5), revolutions: 4, height: UI.lenDefault(20), startAngle: 0, taper: 0, clockwise: false, reverse: false, taperOut: false };
+      Object.keys(dflt).forEach(function (k) { if (f[k] == null) f[k] = dflt[k]; });
+      f.pitchKind = 'constant';   // SolidWorks' Constant / Variable pitch: constant only
+      var isH = function (v) { return v.defineBy === 'heightRev' || v.defineBy === 'heightPitch'; };
+      faOpen('helix', existing, f, [
+        { title: 'Defined By', fields: [
+          { type: 'select', label: 'Type', key: 'defineBy', rerender: true, options: [['pitchRev', 'Pitch and Revolution'], ['heightRev', 'Height and Revolution'], ['heightPitch', 'Height and Pitch'], ['spiral', 'Spiral']] },
+          { type: 'select', label: 'Sketch', key: 'sketch', options: faSketchOptions(faOneCircle) }] },
+        { title: 'Parameters', fields: [
+          { type: 'radio', key: 'pitchKind', options: [['constant', 'Constant pitch']] },
+          { type: 'number', label: 'Height', key: 'height', unit: 'u', min: 0, show: isH },
+          { type: 'number', label: 'Pitch', key: 'pitch', unit: 'u', min: 0, show: function (v) { return v.defineBy !== 'heightRev'; } },
+          { type: 'check', label: 'Reverse direction', key: 'reverse' },
+          { type: 'number', label: 'Revolutions', key: 'revolutions', min: 0, show: function (v) { return v.defineBy !== 'heightPitch'; } },
+          { type: 'number', label: 'Start angle', key: 'startAngle', unit: '°' },
+          { type: 'radio', key: 'clockwise', options: [[true, 'Clockwise'], [false, 'Counterclockwise']] }] },
+        { title: 'Taper Helix', show: function (v) { return v.defineBy !== 'spiral'; }, fields: [
+          { type: 'number', label: 'Taper angle', key: 'taper', unit: '°', min: 0 },
+          { type: 'check', label: 'Taper outward', key: 'taperOut' }] }
+      ], null, { message: 'The helix starts on the circle’s sketch plane, at the start angle, and grows along the sketch normal (Reverse direction: the other way). Its diameter is the circle’s.' });
+    });
+  }
+  // ---- Projected Curve: Sketch on faces / Sketch on sketch
+  function cmdProjectedCurve(existing) {
+    if (isAsm()) { refusePart('Projected Curve'); return; }
+    withSketch(function (sid) {
+      var sks = App.model.features.filter(function (s) { return s.type === 'sketch'; });
+      if (!sks.length && !existing) { UI.toast('Projected Curve needs a sketch to project.'); return; }
+      var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'projCurve', mode: 'sketchOnFaces', sketch: sid != null ? sid : sks[sks.length - 1].id, faces: [], reverse: false };
+      if (!existing && sks.length > 1) f.sketch2 = sks.filter(function (s) { return s.id !== f.sketch; }).pop().id;
+      if (!Array.isArray(f.faces)) f.faces = [];
+      var tol = function () { return K.pickTol(App.model.units); };
+      var faceIdx = function (spec) { try { var b = faSt.before, m = b && b.body ? K.meshFromBody(b.body) : App.mesh; return K.resolveFaces([spec], m, tol())[0]; } catch (e) { return -1; } };
+      var onFaces = function (v) { return v.mode !== 'sketchOnSketch'; };
+      faOpen('projCurve', existing, f, [
+        { title: 'Selections', fields: [
+          { type: 'radio', key: 'mode', rerender: true, options: [['sketchOnFaces', 'Sketch on faces'], ['sketchOnSketch', 'Sketch on sketch']] },
+          { type: 'select', label: 'Sketch to project', key: 'sketch', options: faSketchOptions() },
+          { type: 'pick', icon: 'projCurve', show: onFaces, placeholder: 'Projection faces…', value: function (v) { return v.faces.length ? v.faces.length + ' face' + (v.faces.length > 1 ? 's' : '') : ''; },
+            items: function (v) { return v.faces.map(function (s, i) { return { label: 'Face<' + (i + 1) + '>', at: s.at }; }); },
+            onRemove: function (v, i) { v.faces.splice(i, 1); renderPM(); faSt.preview(); }, onClear: function (v) { v.faces.length = 0; renderPM(); faSt.preview(); } },
+          { type: 'check', label: 'Reverse projection', key: 'reverse', show: onFaces },
+          { type: 'select', label: 'Second sketch', key: 'sketch2', options: faSketchOptions(), show: function (v) { return !onFaces(v); } }] }
+      ], {
+        onPick: function (pk) {
+          var v = pm.values;
+          if (!onFaces(v) || pk.kind !== 'face' || !pk.point) return false;
+          var grp = UI.faceGroup ? UI.faceGroup(pk.index) : [pk.index], hit = -1;
+          v.faces.forEach(function (s, i) { if (grp.indexOf(faceIdx(s)) >= 0) hit = i; });
+          if (hit >= 0) v.faces.splice(hit, 1); else v.faces.push({ at: pk.point.map(function (x) { return Math.round(x * 1e4) / 1e4; }) });
+          renderPM(); faSt.preview();
+          return true;
+        }
+      }, { message: 'Sketch on faces: pick the faces; the sketch is projected onto them along its normal. Sketch on sketch: the curve where the two sketches’ extrusions meet.' });
+    });
+  }
+  // ---- Composite Curve: edges, sketch entities and curves joined end to end
+  function faEdgeRef(pk) {
+    if (pk.kind === 'sketchEntity') { var r = { sketch: pk.sketch, entity: pk.index }; if (pk.seg != null) r.seg = pk.seg; return r; }
+    if (pk.kind === 'feature' && pk.id != null) { var g = K.findFeature(App.model, pk.id); if (K.isCurveFeature(g)) return { curve: g.id }; }
+    return refFromPick(pk, 'curve');
+  }
+  function faRefLabel(r) {
+    if (r.curve != null) { var g = K.findFeature(App.model, r.curve); return g ? g.name : 'Curve'; }
+    if (r.sketch != null && r.seg == null && r.end == null) {
+      var sk = K.findFeature(App.model, r.sketch), e = sk && sk.entities ? sk.entities[r.entity] : null;
+      if (e && e.t !== 'line' && e.t !== 'arc' && e.t !== 'circle' && e.t !== 'point') return (e.t.charAt(0).toUpperCase() + e.t.slice(1)) + (r.entity + 1) + '@' + sk.name;
+    }
+    return refLabel(r);
+  }
+  function faRefList(key, icon, placeholder) {
+    return { type: 'pick', icon: icon, placeholder: placeholder, value: function (v) { return v[key].length ? v[key].length + ' selected' : ''; },
+      items: function (v) { return v[key].map(function (r) { return { label: faRefLabel(r), at: r.edge || r.vertex || null }; }); },
+      onRemove: function (v, i) { v[key].splice(i, 1); renderPM(); faSt.preview(); }, onClear: function (v) { v[key].length = 0; renderPM(); faSt.preview(); } };
+  }
+  function faListPick(key, toRef) {
+    return function (pk) {
+      var v = pm.values, r = toRef(pk);
+      if (typeof r === 'string') { UI.setStatus(r); UI.toast(r); return true; }
+      var js = JSON.stringify(r), at = -1;
+      v[key].forEach(function (x, i) { if (JSON.stringify(x) === js) at = i; });
+      if (at >= 0 && key === 'edges') v[key].splice(at, 1); else v[key].push(r);
+      renderPM(); faSt.preview();
+      return true;
+    };
+  }
+  function cmdCompositeCurve(existing) {
+    if (isAsm()) { refusePart('Composite Curve'); return; }
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'compositeCurve', edges: [] };
+    var pre = (UI.selection ? UI.selection() : [App.sel]).filter(Boolean);
+    faOpen('compositeCurve', existing, f, [{ title: 'Entities to Join', fields: [faRefList('edges', 'compositeCurve', 'Edges, sketch entities or curves…')] }],
+      { pickRefGeo: true, refKinds: [], pickEdges: true, pickSketchRefs: true, onPick: faListPick('edges', faEdgeRef) },
+      { message: 'Pick the connected edges, sketch lines / arcs / splines or curves to join (in any order). A gap between them is refused.',
+        okBlocked: function (v) { return v.edges.length ? null : 'Select the entities to join.'; } });
+    if (!existing && pre.length) { pre.forEach(function (pk) { if (App.command && App.command.onPick) App.command.onPick(pk); }); if (UI.setSelection) UI.setSelection([], { quiet: true }); }
+  }
+  // ---- Curve Through XYZ Points: the point table, Browse… / Save… a .sldcrv text
+  function faXyzHtml(v) {
+    var u = UI.unitLabel(), rows = v.points.concat([['', '', '']]);
+    return '<div class="rfFA-xyz"><table style="width:100%;border-collapse:collapse"><tr><th style="text-align:left">Point</th><th>X (' + u + ')</th><th>Y (' + u + ')</th><th>Z (' + u + ')</th><th></th></tr>' +
+      rows.map(function (p, i) {
+        return '<tr><td>' + (i < v.points.length ? i + 1 : '*') + '</td>' + [0, 1, 2].map(function (k) {
+          return '<td><input class="fa-xyz" data-fa-i="' + i + '" data-fa-k="' + k + '" style="width:100%;box-sizing:border-box" value="' + (p[k] === '' ? '' : UI.fmtNum(+p[k], 6)) + '"></td>';
+        }).join('') + '<td>' + (i < v.points.length ? '<button type="button" class="fa-xyz-del" data-fa-i="' + i + '" title="Delete point ' + (i + 1) + '">×</button>' : '') + '</td></tr>';
+      }).join('') + '</table></div>';
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('change', function (e) {
+      var t = e.target, v = pm.values;
+      if (!t || !t.classList || !t.classList.contains('fa-xyz') || !pm.spec || !v || v.type !== 'xyzCurve') return;
+      var i = +t.getAttribute('data-fa-i'), k = +t.getAttribute('data-fa-k'), r = UI.parseLength ? UI.parseLength(t.value) : { value: parseFloat(t.value) };
+      if (r.error != null || !isFinite(r.value)) { UI.toast('Point ' + (i + 1) + ': ' + (r.error || 'enter a number') + '.'); return; }
+      if (i >= v.points.length) v.points.push([0, 0, 0]);
+      v.points[i][k] = r.value;
+      renderPM(); if (faSt.preview) faSt.preview();
+    });
+    document.addEventListener('click', function (e) {
+      var t = e.target && e.target.closest ? e.target.closest('.fa-xyz-del') : null, v = pm.values;
+      if (!t || !pm.spec || !v || v.type !== 'xyzCurve') return;
+      v.points.splice(+t.getAttribute('data-fa-i'), 1);
+      renderPM(); if (faSt.preview) faSt.preview();
+    });
+  }
+  function faBrowse(v) {
+    var inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = '.sldcrv,.txt,.csv';
+    inp.addEventListener('change', function () {
+      var file = inp.files && inp.files[0];
+      if (!file) return;
+      file.text().then(function (text) { faLoadText(v, text); });
+    });
+    inp.click();
+  }
+  function faLoadText(v, text) {
+    try { v.points = K.parseCurveFile(text, App.model.units); } catch (e) { UI.toast(e.message); return false; }
+    renderPM(); if (faSt.preview) faSt.preview();
+    return true;
+  }
+  function cmdCurveXYZ(existing) {
+    if (isAsm()) { refusePart('Curve Through XYZ Points'); return; }
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'xyzCurve', points: [], closed: false };
+    faOpen('xyzCurve', existing, f, [{ title: 'Points', fields: [
+      { type: 'html', html: faXyzHtml },
+      { type: 'buttons', buttons: [{ label: 'Browse…', onclick: faBrowse }, { label: 'Save…', onclick: function (v) { if (!v.points.length) { UI.toast('No points to save.'); return; } UI.download((v.name || 'curve').replace(/[\\/:*?"<>|]+/g, '_') + '.sldcrv', K.formatCurveFile(v.points, App.model.units), 'text/plain'); } }] },
+      { type: 'check', label: 'Closed curve', key: 'closed' }] }], null,
+      { message: 'Type X, Y, Z in the last (*) row to add a point; × deletes one. Browse… reads a .sldcrv / .txt file (one point a line: x y z, units optional).',
+        okBlocked: function (v) { return v.points.length >= 2 ? null : 'Enter at least two points.'; } });
+  }
+  // ---- Curve Through Reference Points: picked sketch points, vertices and reference points
+  function cmdCurveRefPoints(existing) {
+    if (isAsm()) { refusePart('Curve Through Reference Points'); return; }
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'refPtCurve', points: [], closed: false };
+    faOpen('refPtCurve', existing, f, [{ title: 'Through Points', fields: [faRefList('points', 'refPoint', 'Sketch points, vertices or points…'), { type: 'check', label: 'Closed curve', key: 'closed' }] }],
+      { pickRefGeo: true, refKinds: ['point'], pickVertices: true, pickSketchRefs: true, onPick: faListPick('points', function (pk) { return refFromPick(pk, 'point'); }) },
+      { message: 'Pick the points the curve passes through, in order: sketch points, line ends, vertices or reference points.',
+        okBlocked: function (v) { return v.points.length >= 2 ? null : 'Select at least two points.'; } });
+  }
+  function faEdit(f) {
+    ({ helix: cmdHelix, projCurve: cmdProjectedCurve, compositeCurve: cmdCompositeCurve, xyzCurve: cmdCurveXYZ, refPtCurve: cmdCurveRefPoints })[f.type](f);
+  }
+  // the Curves flyout's face starts as Helix and Spiral (its first row, Split Line, is SolidWorks' and greyed)
+  try { if (typeof localStorage !== 'undefined' && localStorage.getItem('anvil.fly.curves') == null) localStorage.setItem('anvil.fly.curves', '5'); } catch (e) { }
+  UI.cmdHelix = cmdHelix; UI.cmdProjectedCurve = cmdProjectedCurve; UI.cmdCompositeCurve = cmdCompositeCurve; UI.cmdCurveXYZ = cmdCurveXYZ; UI.cmdCurveRefPoints = cmdCurveRefPoints;
+  UI.curveXYZLoadText = function (text) { return pm.values && pm.values.type === 'xyzCurve' ? faLoadText(pm.values, text) : false; };
+  // ------------------------------------------------------------------ rfDZ: Wrap
+  // Insert ▸ Features ▸ Wrap (Features tab ▸ Wrap): SolidWorks' PropertyManager — Wrap Type (Emboss / Deboss / Scribe),
+  // Wrap Method (Analytical), Wrap Parameters (Source Sketch, Face for Wrap Sketch, Thickness, Reverse direction).
+  // The sketch: the one selected / being edited, else the last unconsumed one; the face: a click on the part. Live
+  // preview: the material added (emboss) or removed (deboss), a thin skin for a scribe.
+  var wrapLast = {};
+  function cmdWrap(existing) {
+    withSketch(function (sid) {
+      if (!App.build || !App.build.body || !App.build.body.polygons.length) { UI.toast('Wrap needs a body to wrap the sketch onto: make a solid first.'); return; }
+      var inch = App.model.units === 'in';
+      var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'wrap', sketch: pickDefaultSketch(sid), face: null, mode: wrapLast.mode || 'emboss',
+        thickness: wrapLast.thickness != null ? wrapLast.thickness : (inch ? 0.02 : 0.5) };
+      if (f.sketch == null) { UI.toast('Sketch the contours (or Sketch Text) to wrap first, on a plane tangent to the face, then click Wrap.'); return; }
+      if (f.thickness == null) f.thickness = inch ? 0.02 : 0.5;
+      f.reverse = !!f.reverse; f.method = 'analytical';
+      var base = null;
+      function baseBody() { if (!base) base = existing ? bodyBefore(existing.id) : App.build.body; return base; }
+      function featOf(v) {
+        var out = { type: 'wrap', sketch: v.sketch, face: v.face ? v.face.slice() : null, mode: v.mode };
+        if (v.mode !== 'scribe') out.thickness = v.thickness;
+        if (v.reverse) out.reverse = true;
+        if (v.name) out.name = v.name;
+        return out;
+      }
+      function wctx() { return { body: baseBody(), sketches: {}, planes: (App.build && App.build.planes) || {}, units: App.model.units, warnings: {} }; }
+      function preview() {
+        var v = pm.values || f;
+        if (v.face) ufLit([v.face], 0); else if (App.command) { App.command.faceList = []; UI.updateHighlights(); }
+        UI.disposeGroup(UI.groups.preview);
+        if (v.sketch == null || v.sketch < 0) { UI.setStatus('Wrap: select the source sketch.'); return; }
+        if (!v.face) { UI.setStatus('Wrap: click the face to wrap the sketch onto (cylindrical, conical or planar).'); return; }
+        try {
+          var feat = featOf(v);
+          // a scribe shows its contours as a thin skin on the face
+          if (feat.mode === 'scribe') { feat.mode = 'emboss'; feat.thickness = inch ? 0.002 : 0.05; }
+          var r = K.buildWrap(feat, previewModel(), wctx());
+          if (r.tool && r.tool.polygons.length) addPreviewMesh(r.tool, v.mode === 'deboss' ? UI.mats.previewCut : UI.mats.preview);
+          UI.setStatus('Wrap (' + v.mode + '): press Enter or ✓ to accept.');
+        } catch (e) { UI.setStatus('Preview: ' + e.message); }
+      }
+      function pick(pk) {
+        if (pk.kind !== 'face' || !pk.point) return false;
+        pm.values.face = pk.point.map(function (x) { return Math.round(x * 1e6) / 1e6; });
+        renderPM(); preview();
+        return true;
+      }
+      openPM({
+        title: existing ? existing.name : 'Wrap', icon: 'wrap', values: f,
+        onRollback: function () { base = null; },
+        message: 'Wraps the closed contours of a sketch (Sketch Text too) onto a <b>cylindrical</b>, <b>conical</b> or <b>planar</b> face, keeping their length along the surface. Sketch on a plane tangent to the face, then click the face.',
+        command: { sketchId: f.sketch, faceList: [], onPick: pick },
+        groups: [
+          { title: 'Wrap Type', fields: [{ type: 'radio', key: 'mode', options: [['emboss', 'Emboss'], ['deboss', 'Deboss'], ['scribe', 'Scribe']], rerender: true }] },
+          { title: 'Wrap Method', fields: [{ type: 'radio', key: 'method', options: [['analytical', 'Analytical']] }] },
+          { title: 'Wrap Parameters', fields: [
+            sketchPickerField(f),
+            { type: 'pick', icon: 'wrap', placeholder: 'Face for wrap sketch…',
+              value: function (v) { return v.face ? 'Face<1>' : ''; },
+              items: function (v) { return v.face ? [{ label: 'Face<1>', at: v.face }] : []; },
+              onRemove: function (v) { v.face = null; renderPM(); preview(); },
+              onClear: function (v) { v.face = null; renderPM(); preview(); } },
+            { type: 'number', label: 'Thickness', key: 'thickness', unit: 'u', min: 0, show: function (v) { return v.mode !== 'scribe'; } },
+            { type: 'check', label: 'Reverse direction', key: 'reverse', show: function (v) { return v.mode !== 'scribe'; } }
+          ] },
+          { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+        ],
+        onChange: function (v, key) {
+          if (key === 'sketch' && App.command) { App.command.sketchId = v.sketch; UI.updateSketches(); }
+          if (key === 'mode') renderPM();
+          preview();
+        },
+        onOK: function (v) {
+          if (v.sketch == null || v.sketch < 0) { UI.toast('Select the sketch to wrap.'); return false; }
+          if (!v.face) { UI.toast('Click the face to wrap the sketch onto.'); return false; }
+          if (v.mode !== 'scribe' && !(+v.thickness > 0)) { UI.toast('The thickness must be more than 0.'); return false; }
+          var feat = featOf(v);
+          try { K.buildWrap(feat, previewModel(), wctx()); } catch (e) { UI.toast(e.message); return false; }
+          wrapLast = { mode: v.mode, thickness: v.mode !== 'scribe' ? v.thickness : wrapLast.thickness };
+          return commitFeature(feat, existing);
+        }
+      });
+      preview();
+    });
+  }
+  UI.cmdWrap = partOnly(cmdWrap, 'Wrap');
+})(UI);
+
+// rfFC: Suppress / Unsuppress / Unsuppress with Dependents (SolidWorks Edit ▸ Suppress, the FeatureManager right-click).
+// A part feature's state lives in the kernel (f.suppressed, configuration.suppressed; Kernel.setSuppressed). Suppress
+// takes the feature's children with it, each stored suppressed as SolidWorks does: the features that reference it by id
+// (Kernel.featureChildren) and the features whose face / edge picks lie on faces it made (Kernel.suppressWithChildren,
+// kernel-rebuild.js, which p.suppress uses too). Unsuppress also unsuppresses the suppressed features
+// it needs (its sketch …); Unsuppress with Dependents also its children. scope: 'this' | 'all' | [configuration
+// names]. Every call is one undo step and one rebuild.
+(function (UI) {
+  'use strict';
+  var App = UI.App, K = UI.K, el = UI.el;
+  function isPart() { return !!(App.model && App.model.type !== 'assembly' && K.suppressedIds); }
+  function suppressedNow() { return isPart() ? K.suppressedIds(App.model) : {}; }
+  UI.isSuppressed = function (id) { return !!suppressedNow()[id]; };
+  function uniq(a) { var s = {}, o = []; a.forEach(function (x) { if (!s[x]) { s[x] = true; o.push(x); } }); return o; }
+  function selectedFeatureIds() {
+    var list = UI.selection ? UI.selection() : (App.sel ? [App.sel] : []);
+    var ids = list.filter(function (s) { return s && s.kind === 'feature' && s.id != null; }).map(function (s) { return s.id; });
+    if (!ids.length && App.sel && App.sel.kind === 'feature') ids = [App.sel.id];
+    return uniq(ids).filter(function (id) { return K.findFeature(App.model, id); });
+  }
+  function scopeText(scope) { return scope === 'all' || !(K.configurationList(App.model) || []).length ? '' : scope === 'this' ? ' in this configuration' : ' in ' + scope.join(', '); }
+  // setSuppression(ids, on, scope?, dependents?) -> the rebuild Promise
+  function setSuppression(ids, on, scope, dependents) {
+    if (!isPart()) return Promise.reject(new Error('Suppress works on part features.'));
+    ids = uniq((Array.isArray(ids) ? ids : [ids]).map(function (r) { var f = typeof r === 'object' ? r : (K.findFeature(App.model, r) || App.model.features.filter(function (x) { return x.name === String(r); })[0]); return f ? f.id : null; }).filter(function (x) { return x != null; }));
+    if (!ids.length) return Promise.reject(new Error('Select a feature to ' + (on ? 'suppress' : 'unsuppress') + '.'));
+    if (scope == null) scope = (K.configurationList(App.model) || []).length ? 'this' : 'all';
+    var m = App.model;
+    UI.pushUndo();
+    var all = K.suppressWithChildren(m, ids, !!on, scope, { dependents: !!dependents });   // rfFC2: the kernel helper p.suppress uses too
+    if (on && App.sel && App.sel.kind !== 'feature') { App.sel = null; App.sel2 = null; }
+    var names = ids.map(function (id) { return K.findFeature(m, id).name; }).join(', ');
+    var more = all.length - ids.length;
+    var msg = (on ? 'Suppressed ' : 'Unsuppressed ') + names + (more ? ' and ' + more + (on ? ' dependent' : ' related') + ' feature' + (more === 1 ? '' : 's') : '') + scopeText(scope) + '.';
+    return UI.afterRebuild(UI.rebuild(), function () { if (UI.refreshTree) UI.refreshTree(); if (UI.refreshConfigPanel) UI.refreshConfigPanel(); UI.setStatus(msg); });
+  }
+  // Specify Configurations: a modal with one check box per configuration
+  function specifyConfigs(title, onOk) {
+    var list = K.configurationList(App.model) || [], ac = K.activeConfiguration(App.model);
+    var box = el('div', { id: 'fc-spec' }, [el('p', { text: 'Apply to these configurations:' })]);
+    list.forEach(function (c) {
+      var cb = el('input', { type: 'checkbox', 'data-name': String(c.name) });
+      cb.checked = !!(ac && String(ac.name) === String(c.name));
+      box.appendChild(el('label', { class: 'fc-spec-row' }, [cb, el('span', { text: ' ' + c.name })]));
+    });
+    UI.showModal({ title: title, body: box, buttons: [
+      { id: 'fc-spec-ok', label: 'OK', primary: true, action: function () { var names = Array.prototype.filter.call(box.querySelectorAll('input'), function (i) { return i.checked; }).map(function (i) { return i.getAttribute('data-name'); }); UI.closeModal(); if (names.length) onOk(names); else UI.toast('No configuration checked: nothing changed.'); } },
+      { label: 'Cancel', action: UI.closeModal }
+    ] });
+  }
+  function run(p) { return p.catch(function (e) { UI.toast(e.message || String(e)); }); }
+  // the menu rows for feature(s): Suppress … or Unsuppress … (with the configuration choices when there are any)
+  function suppressMenuItems(f) {
+    if (!isPart()) return [];
+    var ids = f ? [f.id] : selectedFeatureIds();
+    if (!ids.length) return [];
+    var sup = suppressedNow(), anyOn = ids.some(function (id) { return sup[id]; }), cfgs = (K.configurationList(App.model) || []).length > 0;
+    function trio(label, on, dep) {
+      var go = function (scope) { return function () { run(setSuppression(ids, on, scope, dep)); }; };
+      if (!cfgs) return [{ label: label, action: go('all') }];
+      return [{ label: label, action: go('this') }, { label: label + ' ▸ All Configurations', action: go('all') },
+        { label: label + ' ▸ Specify Configurations…', action: function () { specifyConfigs(label, function (names) { run(setSuppression(ids, on, names, dep)); }); } }];
+    }
+    return anyOn ? trio('Unsuppress', false, false).concat(trio('Unsuppress with Dependents', false, true)) : trio('Suppress', true, false);
+  }
+  // Edit menu rows (ui-panels.js partMenus): Suppress / Unsuppress / Unsuppress with Dependents, greyed without a
+  // selected feature
+  UI.suppressEditItems = function () {
+    if (!isPart() || App.mode === 'sketch') return [];
+    var items = suppressMenuItems(null);
+    if (!items.length) items = [{ label: 'Suppress', disabled: true }, { label: 'Unsuppress', disabled: true }];
+    return items.concat([{ sep: true }]);
+  };
+  UI.setSuppression = setSuppression;
+  UI.suppressFeature = function (ids, scope) { return setSuppression(ids, true, scope, false); };
+  UI.unsuppressFeature = function (ids, scope, dependents) { return setSuppression(ids, false, scope, !!dependents); };
+  UI.suppressMenuItems = suppressMenuItems;
+  UI.suppressionChildren = function (ids, scope) { return K.suppressionChildren(App.model, Array.isArray(ids) ? ids : [ids], scope || 'all'); };
 })(UI);

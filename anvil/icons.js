@@ -445,6 +445,17 @@ var Icons = (function () {
     I.vSnapModel = p('M1 12 H15 V15.5 H1 z', F2, 'none') + ln('M1 12 H15', S, 1.4) + ln('M4.5 9.2 V6 a3.5 3.5 0 0 1 7 0 V9.2', R, 2.6) + ln('M4.5 8.2 V9.4 M11.5 8.2 V9.4', M, 2.6) + circ(8, 12, 1.6, FY, FYD, 0.9);
     I.vFeatureTree = I.tree;
   })();
+  // rfFB: Boundary Boss/Base (a yellow body between two profiles, its sides shaped by Direction 2 curves) and Boundary Cut
+  I.boundary = p('M2.5 12.5 C2.5 8.5 5.5 7 5.5 3.5 H10.5 C10.5 7 13.5 8.5 13.5 12.5 z', FY, S, 1.1) + ell(8, 12.5, 5.5, 1.7, FYL, S, 1.1) + ell(8, 3.5, 2.5, 0.9, FYL, S, 1.1) + ln('M8 4.4 C8 7.5 8 9 8 14.2', B, 1.1, DASH);
+  I.boundaryCut = blk(1.5, 5, 8, 6, 3.5) + p('M3.6 8.4 C4.4 7.6 5.6 7.4 6 5.6 H9.6 C9.4 7 8.8 7.8 8.4 8.4 z', FY, FYD, 1) + ln('M5.5 7.2 C6.8 7 8 6.6 8.2 5.6', B, 0.9, DASH);
+  // rfFA: the Curves flyout (SolidWorks' order: Split Line, Projected Curve, Composite Curve, Curve Through XYZ Points,
+  // Curve Through Reference Points, Helix and Spiral)
+  I.splitLine = p('M1.5 12.5 l3.5 -6 h9 l-3.5 6 z', F1, P, 1) + ln('M3.2 9.5 C6 8 9 11 12.8 9.5', S, 1.4);
+  I.projCurve = p('M1.5 14 C5 10 11 10 14.5 14', F2, P, 1) + ln('M3 3 C6 1 10 5 13 3', S, 1.3) + ln('M4 4 V11 M12 4 V11', M, 0.9, DASH) + ln('M3 12.4 C6 10.8 10 10.8 13 12.4', FYD, 1.5);
+  I.compositeCurve = ln('M1.5 13 L5.5 6', S, 1.5) + ln('M5.5 6 C7 2.5 10 2.5 11 6', FYD, 1.5) + ln('M11 6 L14.5 12', S, 1.5) + pt(5.5, 6) + pt(11, 6);
+  I.xyzCurve = ln('M1.5 12.5 C4 3 8 13 14.5 3.5', S, 1.4) + pt(1.5, 12.5) + pt(5.6, 8) + pt(10, 8.4) + pt(14.5, 3.5) + ln('M10.5 15 h4 M10.5 15 v-4 M10.5 15 l-2 1', M, 0.9);
+  I.refPtCurve = ln('M1.5 12.5 C4 3 8 13 14.5 3.5', S, 1.4) + [[1.5, 12.5], [7.5, 8.5], [14.5, 3.5]].map(function (q) { return ln('M' + (q[0] - 1.6) + ' ' + q[1] + ' h3.2 M' + q[0] + ' ' + (q[1] - 1.6) + ' v3.2', P, 1); }).join('');
+  I.helix = ln('M4 2.5 C13 2.5 13 5 8 5.2 C3 5.4 3 7.8 8 8 C13 8.2 13 10.6 8 10.8 C3 11 3 13.5 12 13.5', S, 1.4) + ln('M8 1 V15', M, 0.8, 'stroke-dasharray="3 1.4 0.6 1.4"');
   function icon(name, size, cls) {
     var body = I[name] || I.generic;
     size = size || 32;

@@ -66,3 +66,4 @@ App.view = { style: 'shadedEdges', bg: 'gradient', showPlanes, showOrigin, showS
 - Group captions (`captions()`): a group narrower than its name gets a caption as wide as the name (`capTextWidth`, canvas measure at the ribbon's font), centred and clamped between its neighbours; the View tab's Managers was cut to "Mana" (rfDA).
 - The View Selector sits on the model, not the middle (lane DA); the Space / heads-up View Orientation menu moves beside it.
 - `r11/occtswap11` is a known timing flake in full headless runs (passes alone).
+- Display style matters to selection (lane FD): with *Select hidden entities* off (default) a box / lasso in Shaded With Edges / Shaded takes only visible edges and vertices; HLR / HLV / Wireframe take hidden ones (ui-select.js `occlusionWanted`). A View tab change of `App.view.style` needs nothing else.

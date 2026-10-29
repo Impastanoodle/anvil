@@ -205,6 +205,10 @@
     ANSI32: [{ da: 0, offs: [0, 1], period: 3 }],                                // steel
     ANSI33: [{ da: 0, offs: [0], period: 2 }, { da: 0, offs: [1], period: 2, dash: [1, 0.5] }],   // bronze, brass, copper
     ANSI34: [{ da: 0, offs: [0, 1, 2, 3], period: 6 }],                          // plastic, rubber
+    // (lane DW) acad.pat's dash-dot families: dash [on, off, on, off …] with 0 a dot; shift moves the dashes along each
+    // next line (base units), as acad.pat's delta-x
+    ANSI35: [{ da: 0, offs: [0], period: 2 }, { da: 0, offs: [1], period: 2, dash: [2.5, 0.5, 0, 0.5] }],   // fire brick, refractory
+    ANSI36: [{ da: 0, offs: [0], period: 1, dash: [2.5, 0.5, 0, 0.5], shift: 1.75 }],                  // marble, slate, glass
     ANSI37: [{ da: 0, offs: [0], period: 1 }, { da: 90, offs: [0], period: 1 }], // lead, zinc, insulation
     ANSI38: [{ da: 0, offs: [0], period: 1 }, { da: 90, offs: [0], period: 1, dash: [2.5, 1.5] }]   // aluminium
   };
@@ -224,11 +228,17 @@
       fam.offs.forEach(function (o) {
         hatchLines(loops, sp * fam.period, a, sp * o).forEach(function (l) {
           if (!fam.dash) { out.push(l); return; }
-          var on = fam.dash[0] * sp, P = (fam.dash[0] + fam.dash[1]) * sp, t0 = d[0] * l[0] + d[1] * l[1], t1 = d[0] * l[2] + d[1] * l[3];
+          // the dashes of one period: [start, length] (a dot is a dash 0.05 long)
+          var ds = [], at = 0;
+          for (var di = 0; di < fam.dash.length; di++) { var dl = fam.dash[di] * sp; if (di % 2 === 0) ds.push([at, dl > 0 ? dl : 0.05 * sp]); at += dl; }
+          var P = at, t0 = d[0] * l[0] + d[1] * l[1], t1 = d[0] * l[2] + d[1] * l[3], ph = 0;
           var lo = Math.min(t0, t1), hi = Math.max(t0, t1), bx = l[0] - d[0] * t0, by = l[1] - d[1] * t0;
-          for (var s = Math.floor(lo / P) * P; s < hi; s += P) {
-            var u0 = Math.max(lo, s), u1 = Math.min(hi, s + on);
-            if (u1 - u0 > 1e-9) out.push([bx + d[0] * u0, by + d[1] * u0, bx + d[0] * u1, by + d[1] * u1]);
+          if (fam.shift) { var nn = -d[1] * l[0] + d[0] * l[1]; ph = Math.round((nn - sp * o) / (sp * fam.period)) * fam.shift * sp; ph -= Math.floor(ph / P) * P; }
+          for (var s = Math.floor((lo - ph) / P) * P + ph; s < hi; s += P) {
+            ds.forEach(function (q) {
+              var u0 = Math.max(lo, s + q[0]), u1 = Math.min(hi, s + q[0] + q[1]);
+              if (u1 - u0 > 1e-9) out.push([bx + d[0] * u0, by + d[1] * u0, bx + d[0] * u1, by + d[1] * u1]);
+            });
           }
         });
       });
@@ -1781,7 +1791,7 @@
   //     hatched region of a section or broken-out drawn with its own pattern (the Material crosshatch unticked); a
   //     detail view follows its parent's regions and may have its own;
   //   * a detail with a Jagged outline shows its linework out to the zig-zag, clipped to it (not to the circle).
-  var BO_SHAPES = ['spline', 'poly', 'rect', 'circle'], AREA_PATTERNS = ['ANSI31', 'ANSI32', 'ANSI33', 'ANSI34', 'ANSI37', 'ANSI38', 'SOLID', 'NONE'];
+  var BO_SHAPES = ['spline', 'poly', 'rect', 'circle'], AREA_PATTERNS = ['ANSI31', 'ANSI32', 'ANSI33', 'ANSI34', 'ANSI35', 'ANSI36', 'ANSI37', 'ANSI38', 'SOLID', 'NONE'];
   function polyArea(P) { var a = 0; for (var i = 0, j = P.length - 1; i < P.length; j = i++) a += (P[j][0] + P[i][0]) * (P[j][1] - P[i][1]); return -a / 2; }
   function inPoly(p, P) {
     var n = false;
@@ -1999,54 +2009,365 @@
   }
 
   // ---- Area Hatch / Fill per region
-  // setAreaHatch(doc, viewId, p, props | null) -> the view: the hatched region of the view at p (model units of the
-  // view) drawn with props { pattern, scale, angle } (null: back to the material crosshatch)
-  function setAreaHatch(doc, viewId, p, props) {
+  // (lane DW) An override is keyed so it survives a rebuild that keeps its region: key 'b<body>[.<part>]:r<n>' — the
+  // solid (body; an assembly's component is the body, the part tag the solid inside it) and the region's place among
+  // that solid's regions (left to right, then bottom to top). Apply changes to (SolidWorks' Area Hatch/Fill PM):
+  // scope 'region' (one region; matched by the stored point when it still lies in a region of that solid, else by the
+  // place n), 'body' (every region of the solid, key 'b<body>[.<part>]'), 'component' (every solid of an assembly
+  // component, key 'b<body>' + comp: the component id, so it follows the component when the list is reordered). A
+  // region scope beats a body scope beats a component scope; an override whose region or solid is gone is not drawn.
+  // Old entries without a key match by the point alone.
+  var AREA_SCOPES = ['region', 'body', 'component'];
+  function solidKey(g) { return 'b' + (g.body | 0) + (g.part != null ? '.' + g.part : ''); }
+  function keySolid(k) { return String(k).replace(/:r\d+$/, ''); }
+  function keyBody(k) { var m = /^b(\d+)/.exec(String(k)); return m ? +m[1] : -1; }
+  // regionPieces(caps) -> [{ cap, loops, body, part, solid, loop, key }]: every hatched region of a view's cut faces
+  function regionPieces(caps) {
+    var out = [], groups = {};
+    (caps || []).forEach(function (cap, ci) {
+      splitRegions(cap.loops).forEach(function (sub) {
+        var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        (sub[0] || []).forEach(function (p) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; });
+        var g = { cap: ci, loops: sub, body: cap.body | 0, part: cap.part, c: [(x0 + x1) / 2, (y0 + y1) / 2], ext: Math.max(x1 - x0, y1 - y0) };
+        g.solid = solidKey(g);
+        (groups[g.solid] = groups[g.solid] || []).push(g);
+        out.push(g);
+      });
+    });
+    Object.keys(groups).forEach(function (k) {
+      var L = groups[k], tol = 1e-6 * Math.max(1, L.reduce(function (m, g) { return Math.max(m, g.ext, Math.abs(g.c[0]), Math.abs(g.c[1])); }, 0));
+      L.slice().sort(function (a, b) { var du = a.c[0] - b.c[0]; return Math.abs(du) > tol ? du : a.c[1] - b.c[1]; }).forEach(function (g, i) { g.loop = i; g.key = g.solid + ':r' + i; });
+    });
+    return out;
+  }
+  // the body index a component scope names: by its component id when the model has components (gone: -1)
+  function scopeBody(h) {
+    if (h.comp != null) {
+      var model = (_.CTX && _.CTX.model) || _.lastModel, comps = model && model.components;
+      if (comps) { for (var i = 0; i < comps.length; i++) if (comps[i] && String(comps[i].id) === String(h.comp)) return i; return -1; }
+    }
+    return keyBody(h.key);
+  }
+  function entryHits(h, g, pieces, own) {
+    var sc = h.scope || 'region';
+    if (sc === 'component') return scopeBody(h) === g.body;
+    if (sc === 'body') return h.key === g.solid;
+    if (!h.key) return !!h.p && inLoops(h.p, g.loops);
+    if (keySolid(h.key) !== g.solid) return false;
+    if (h.p) {
+      var at = pieces.filter(function (x) { return x.solid === g.solid && inLoops(h.p, x.loops); })[0];
+      if (at) return at === g;
+    }
+    return own && h.key === g.key;
+  }
+  // the override for a region: the most specific scope, the last entry of it
+  function pickOverride(list, g, pieces, own) {
+    var best = null, rank = -1;
+    (list || []).forEach(function (h) {
+      var r = 2 - AREA_SCOPES.indexOf(h.scope || 'region');
+      if (r >= rank && entryHits(h, g, pieces, own)) { best = h; rank = r; }
+    });
+    return best;
+  }
+  // normFill(props) -> { pattern, scale, angle }: props.fill 'hatch' | 'solid' | 'none' (SolidWorks' Hatch / Solid /
+  // None) or a pattern name ('SOLID' and 'NONE' too)
+  function normFill(props) {
+    var fill = props.fill ? String(props.fill).toLowerCase() : null;
+    if (fill && fill !== 'hatch' && fill !== 'solid' && fill !== 'none') throw new Error('Area Hatch fill must be hatch, solid or none');
+    var pat = fill === 'solid' ? 'SOLID' : fill === 'none' ? 'NONE' : String(props.pattern || 'ANSI31').toUpperCase();
+    if (fill === 'hatch' && (pat === 'SOLID' || pat === 'NONE')) pat = 'ANSI31';
+    if (AREA_PATTERNS.indexOf(pat) < 0) throw new Error('Hatch pattern must be one of ' + AREA_PATTERNS.join(', '));
+    var sc = props.scale == null ? 1 : +props.scale, an = props.angle == null ? 0 : +props.angle;
+    if (!(sc > 0) || !isFinite(sc)) throw new Error('Hatch scale must be greater than zero');
+    if (!isFinite(an)) throw new Error('Hatch angle must be a number');
+    return { pattern: pat, scale: sc, angle: an };
+  }
+  // setAreaHatch(doc, viewId, p | key, props | null, opts?) -> the view: the hatched region of the view at p (model
+  // units of the view) and / or with key (opts.key, or a key string in place of p) drawn with props { pattern, scale,
+  // angle, fill: 'hatch' | 'solid' | 'none' } (null: back to the material crosshatch); opts.scope 'region' (default) |
+  // 'body' | 'component' (opts.comp: the component id). Setting a body or component replaces the overrides inside it.
+  function setAreaHatch(doc, viewId, p, props, opts) {
     var v = findV(doc, viewId);
     if (!v) throw new Error('No drawing view ' + viewId);
-    if (!p || !isFinite(+p[0]) || !isFinite(+p[1])) throw new Error('Area Hatch needs a point in the region: [u, v]');
-    p = [+p[0], +p[1]];
-    var list = (v.hatchRegions || []).filter(function (h) { return Math.hypot(h.p[0] - p[0], h.p[1] - p[1]) > 1e-9; });
+    opts = opts || {};
+    if (typeof p === 'string') { opts = { key: p, scope: opts.scope, comp: opts.comp }; p = null; }
+    var scope = opts.scope || 'region', key = opts.key != null ? String(opts.key) : null;
+    if (AREA_SCOPES.indexOf(scope) < 0) throw new Error('Apply changes to must be region, body or component');
+    if (key != null && !/^b\d+(\.\d+)?(:r\d+)?$/.test(key)) throw new Error('A hatch region key looks like b0:r1 (body 0, region 1)');
+    if (p != null && (!isFinite(+p[0]) || !isFinite(+p[1]))) throw new Error('Area Hatch needs a point in the region: [u, v]');
+    if (scope === 'region' && !key && !p) throw new Error('Area Hatch needs a point in the region: [u, v]');
+    if (scope !== 'region' && !key) throw new Error('Apply changes to ' + scope + ' needs the region key');
+    if (scope === 'body') key = keySolid(key);
+    if (scope === 'component') key = 'b' + keyBody(key);
+    if (scope === 'region' && key && !/:r\d+$/.test(key)) throw new Error('A region key ends in :r<n>');
+    p = p != null ? [+p[0], +p[1]] : null;
+    var list = (v.hatchRegions || []).filter(function (h) {
+      var hs = h.scope || 'region';
+      if (scope === 'region') return !(hs === 'region' && ((key && h.key === key) || (p && h.p && Math.hypot(h.p[0] - p[0], h.p[1] - p[1]) <= 1e-9)));
+      if (scope === 'body') return !(h.key && hs !== 'component' && keySolid(h.key) === key);
+      return !(h.key && keyBody(h.key) === keyBody(key));
+    });
     if (props) {
-      var pat = String(props.pattern || 'ANSI31').toUpperCase();
-      if (AREA_PATTERNS.indexOf(pat) < 0) throw new Error('Hatch pattern must be one of ' + AREA_PATTERNS.join(', '));
-      var sc = props.scale == null ? 1 : +props.scale, an = props.angle == null ? 0 : +props.angle;
-      if (!(sc > 0) || !isFinite(sc)) throw new Error('Hatch scale must be greater than zero');
-      if (!isFinite(an)) throw new Error('Hatch angle must be a number');
-      list.push({ p: p, pattern: pat, scale: sc, angle: an });
+      var e = {}, f = normFill(props);
+      if (p) e.p = p;
+      if (key) e.key = key;
+      if (scope !== 'region') e.scope = scope;
+      if (scope === 'component' && opts.comp != null) e.comp = String(opts.comp);
+      e.pattern = f.pattern; e.scale = f.scale; e.angle = f.angle;
+      list.push(e);
     }
     if (list.length) v.hatchRegions = list; else delete v.hatchRegions;
     return v;
   }
-  // the region override for a cap: the view's own first, then its parent's (a detail follows its parent)
-  function regionOverride(doc, v, cap) {
-    var chain = [v], o = null;
-    if (v.kind === 'detail' && v.parent != null) { var par = findV(doc, v.parent); if (par) chain.push(par); }
-    chain.some(function (x) {
-      return (x.hatchRegions || []).some(function (h) { if (inLoops(h.p, cap.loops)) { o = h; return true; } return false; });
-    });
-    return o;
-  }
   // marks the overridden caps (a fresh copy each, cap.areaHatch): drawing-render.js draws them with the region's own
-  // pattern, scale and angle (rfAG; SOLID as a filled region, NONE bare)
+  // pattern, scale and angle (rfAG; SOLID as a filled region, NONE bare); a detail view follows its parent's entries
+  // (by the stored point or the solid) and may have its own
   function applyRegions(doc, v, ct) {
     if (!ct.caps || !ct.caps.length) return;
     var par = v.kind === 'detail' && v.parent != null ? findV(doc, v.parent) : null;
-    if (!(v.hatchRegions && v.hatchRegions.length) && !(par && par.hatchRegions && par.hatchRegions.length)) return;
+    var own = v.hatchRegions || [], pe = par && par.hatchRegions || [];
+    if (!own.length && !pe.length) return;
+    var pieces = regionPieces(ct.caps), hit = {};
+    pieces.forEach(function (g) { g.o = pickOverride(own, g, pieces, true) || pickOverride(pe, g, pieces, false); if (g.o) hit[g.cap] = 1; });
     var out = [];
-    ct.caps.forEach(function (cap) {
-      if (!regionOverride(doc, v, cap)) { out.push(cap); return; }
+    ct.caps.forEach(function (cap, ci) {
+      if (!hit[ci]) { out.push(cap); return; }
       // (a cut face in several pieces — the plate either side of a hole — is one region per piece, as SolidWorks
       // selects them: only the piece picked takes the pattern)
-      splitRegions(cap.loops).forEach(function (sub) {
+      pieces.filter(function (g) { return g.cap === ci; }).forEach(function (g) {
         var c2 = {}; Object.keys(cap).forEach(function (q) { c2[q] = cap[q]; });
-        c2.loops = sub;
-        var o = regionOverride(doc, v, c2);
-        if (o) c2.areaHatch = { pattern: o.pattern, scale: o.scale, angle: o.angle, p: o.p.slice() };
+        c2.loops = g.loops;
+        var o = g.o;
+        if (o) { c2.areaHatch = { pattern: o.pattern, scale: o.scale, angle: o.angle, scope: o.scope || 'region' }; if (o.p) c2.areaHatch.p = o.p.slice(); if (o.key) c2.areaHatch.key = o.key; }
         out.push(c2);
       });
     });
     ct.caps = out;
+  }
+  // ---- (lane DW) Area Hatch/Fill on a closed region that is not a cut face (SolidWorks: Insert ▸ Annotations ▸ Area
+  // Hatch/Fill on a closed sketch profile, or on a model face in a view):
+  //   * view.areaFills = [{ id, face: { p: [u, v] (model units of the view), n: [x, y, z] (the face's normal) },
+  //     pattern, scale, angle }]: the model face under p, found again at every compute (the nearest face facing the
+  //     viewer there, kept only while its normal is n), outlined in the view and hatched; the view's own sketch:
+  //     [{ id, ids: [sketch entity ids], … }];
+  //   * doc.sheet.areaFills = [{ id, ids, pattern, scale, angle }]: a closed profile of the sheet's own sketch.
+  // A fill whose face or profile is gone is not drawn. pattern 'SOLID' fills, 'NONE' draws nothing (kept, editable).
+  function unitE(F) { var e = F.e, l = Math.hypot(e[0], e[1], e[2]) || 1; return [e[0] / l, e[1] / l, e[2] / l]; }
+  // faceAt(mesh, F, p) -> the index of the nearest face turned to the viewer under view point p, or -1
+  function faceAt(mesh, F, p) {
+    if (!mesh || !mesh.faces) return -1;
+    var P = mesh.positions64 || mesh.positions, e = unitE(F), best = -1, bd = -Infinity;
+    mesh.faces.forEach(function (f, fi) {
+      if (V.dot(f.normal, e) <= 1e-6) return;
+      for (var t = f.start; t < f.start + f.count; t++) {
+        var q = [], o = t * 9;
+        for (var j = 0; j < 3; j++) { var x = [P[o + 3 * j], P[o + 3 * j + 1], P[o + 3 * j + 2]]; q.push([V.dot(x, F.u), V.dot(x, F.v), V.dot(x, e)]); }
+        var d = (q[1][1] - q[2][1]) * (q[0][0] - q[2][0]) + (q[2][0] - q[1][0]) * (q[0][1] - q[2][1]);
+        if (Math.abs(d) < 1e-18) continue;
+        var l0 = ((q[1][1] - q[2][1]) * (p[0] - q[2][0]) + (q[2][0] - q[1][0]) * (p[1] - q[2][1])) / d;
+        var l1 = ((q[2][1] - q[0][1]) * (p[0] - q[2][0]) + (q[0][0] - q[2][0]) * (p[1] - q[2][1])) / d, l2 = 1 - l0 - l1;
+        if (l0 < -1e-9 || l1 < -1e-9 || l2 < -1e-9) continue;
+        var z = l0 * q[0][2] + l1 * q[1][2] + l2 * q[2][2];
+        if (z > bd + 1e-9) { bd = z; best = fi; }
+      }
+    });
+    return best;
+  }
+  // faceLoopsIn(mesh, fi, F) -> the face's outline loops in the view's frame (as the cut faces' capLoops)
+  function faceLoopsIn(mesh, fi, F) {
+    var o = K.faceOutline(mesh, fi);
+    if (!o || !o.loops || !o.loops.length) return null;
+    return o.loops.map(function (loop) { return loop.map(function (p2) { var p = K.to3D(o.plane, p2[0], p2[1]); return [V.dot(p, F.u), V.dot(p, F.v)]; }); });
+  }
+  function fillId(doc) { doc.nextFill = (doc.nextFill | 0) + 1; return 'AF' + doc.nextFill; }
+  function fillLists(doc) {
+    var out = [];
+    if (doc.sheet && doc.sheet.areaFills) out.push({ list: doc.sheet.areaFills, view: null, owner: doc.sheet });
+    (doc.views || []).forEach(function (v) { if (v.areaFills) out.push({ list: v.areaFills, view: v, owner: v }); });
+    return out;
+  }
+  function findFill(doc, id) {
+    var ls = fillLists(doc);
+    for (var i = 0; i < ls.length; i++) for (var j = 0; j < ls[i].list.length; j++) if (ls[i].list[j].id === id) return { entry: ls[i].list[j], at: j, l: ls[i] };
+    return null;
+  }
+  function fillCopy(f, view) { var c = JSON.parse(JSON.stringify(f.entry || f)); c.view = view ? view.id : null; c.kind = c.face ? 'face' : 'sketch'; return c; }
+  // addAreaFill(doc, spec, mesh?, frame?) -> the fill (a copy, with view and kind): spec { ids: [sketch ids] (a
+  // closed profile of the sheet's or a view's sketch) | view, p: [u, v] (a model face in that view; needs the mesh and
+  // the view's frame), pattern, scale, angle, fill: 'hatch' | 'solid' | 'none' }
+  function addAreaFill(doc, spec, mesh, frame) {
+    spec = spec || {};
+    var f = normFill(spec), e = { id: null };
+    if (spec.ids != null) {
+      var lp = D.sketchLoop(doc, spec.ids), v0 = lp.view != null ? findV(doc, lp.view) : null;
+      e.ids = lp.ids.slice();
+      e.pattern = f.pattern; e.scale = f.scale; e.angle = f.angle; e.id = fillId(doc);
+      var own = v0 || doc.sheet;
+      (own.areaFills = own.areaFills || []).push(e);
+      return fillCopy(e, v0);
+    }
+    var v = findV(doc, spec.view);
+    if (!v) throw new Error('Area Hatch/Fill: give a closed sketch profile (ids) or a view and a point on a face');
+    if (v.kind === 'section' || v.kind === 'flat' || (v.brokenOut && v.brokenOut.length)) throw new Error('Area Hatch/Fill: in a section, click its hatched region; a flat pattern has no model faces');
+    var p = spec.p;
+    if (!p || !isFinite(+p[0]) || !isFinite(+p[1])) throw new Error('Area Hatch/Fill on a face needs a point in the view: [u, v]');
+    if (!frame) throw new Error('Area Hatch/Fill on a face needs the view laid out');
+    p = [+p[0], +p[1]];
+    var fi = faceAt(mesh, frame, p);
+    if (fi < 0 || !faceLoopsIn(mesh, fi, frame)) throw new Error('Area Hatch/Fill: no model face under that point');
+    e.face = { p: p, n: mesh.faces[fi].normal.slice() };
+    e.pattern = f.pattern; e.scale = f.scale; e.angle = f.angle; e.id = fillId(doc);
+    (v.areaFills = v.areaFills || []).push(e);
+    return fillCopy(e, v);
+  }
+  // editAreaFill(doc, id, props | null) -> the fill (null: deleted, returns null)
+  function editAreaFill(doc, id, props) {
+    var hit = findFill(doc, id);
+    if (!hit) throw new Error('No area hatch ' + id);
+    if (!props) { hit.l.list.splice(hit.at, 1); if (!hit.l.list.length) delete hit.l.owner.areaFills; return null; }
+    var f = normFill(Object.assign({ pattern: hit.entry.pattern, scale: hit.entry.scale, angle: hit.entry.angle }, props));
+    hit.entry.pattern = f.pattern; hit.entry.scale = f.scale; hit.entry.angle = f.angle;
+    return fillCopy(hit.entry, hit.l.view);
+  }
+  function areaFills(doc) { var out = []; fillLists(doc).forEach(function (l) { l.list.forEach(function (e) { out.push(fillCopy(e, l.view)); }); }); return out; }
+  // (lane DW2) the sheet loops of a sketch fill: its profile, then every closed profile of the same sketch (the sheet's,
+  // or the view's) lying inside it, as islands — the hatch is even-odd, so nested islands alternate (SolidWorks)
+  function sketchFillLoops(doc, e) {
+    var lp;
+    try { lp = D.sketchLoop(doc, e.ids.length > 1 ? e.ids : e.ids[0]); } catch (err) { return null; }
+    if (!lp || lp.pts.length < 3) return null;
+    var loops = [lp.pts], seen = {};
+    lp.ids.forEach(function (id) { seen[id] = 1; });
+    (D.sketchEntities ? D.sketchEntities(doc, lp.view) : []).forEach(function (en) {
+      if (!/^(line|arc|spline|circle)$/.test(en.t) || seen[en.id]) return;
+      var q;
+      try { q = D.sketchLoop(doc, en.id); } catch (err) { return; }
+      q.ids.forEach(function (id) { seen[id] = 1; });
+      if (q.pts.length >= 3 && q.pts.every(function (p) { return inPoly(p, lp.pts); })) loops.push(q.pts);
+    });
+    return loops;
+  }
+  // (lane DW2) the visible part of model face fi in frame F: null when nothing in front of it overlaps it (then its
+  // outline is used as it is); else convex pieces (view coordinates): the face's triangles less every triangle of a
+  // face turned to the viewer that lies nearer than this face's plane where they overlap — the hidden-line result of
+  // the view for this face, as areas
+  function tri2(P, t, F, e) {
+    var o = t * 9, q = [];
+    for (var j = 0; j < 3; j++) { var x = [P[o + 3 * j], P[o + 3 * j + 1], P[o + 3 * j + 2]]; q.push([V.dot(x, F.u), V.dot(x, F.v), V.dot(x, e)]); }
+    if ((q[1][0] - q[0][0]) * (q[2][1] - q[0][1]) - (q[1][1] - q[0][1]) * (q[2][0] - q[0][0]) < 0) q.reverse();
+    return q;
+  }
+  function areaOf(P) { var a = 0; for (var i = 0, j = P.length - 1; i < P.length; j = i++) a += (P[j][0] - P[i][0]) * (P[j][1] + P[i][1]); return a / 2; }
+  // the part of convex polygon P on the left of a -> b (keep) or on its right
+  function clipHalf(P, a, b, left) {
+    var out = [], dx = b[0] - a[0], dy = b[1] - a[1];
+    function s(p) { var c = dx * (p[1] - a[1]) - dy * (p[0] - a[0]); return left ? c : -c; }
+    for (var i = 0; i < P.length; i++) {
+      var p = P[i], q = P[(i + 1) % P.length], sp = s(p), sq = s(q);
+      if (sp >= 0) out.push(p);
+      if ((sp >= 0) !== (sq >= 0)) { var f = sp / (sp - sq); out.push([p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f]); }
+    }
+    return out;
+  }
+  // convex P less convex counter-clockwise triangle T -> convex pieces
+  function convexLess(P, T, eps) {
+    var inside = P;
+    for (var i = 0; i < 3 && inside.length; i++) inside = clipHalf(inside, T[i], T[(i + 1) % 3], true);
+    if (inside.length < 3 || areaOf(inside) <= eps) return [P];
+    var out = [], rest = P;
+    for (var k = 0; k < 3 && rest.length >= 3; k++) {
+      var a = T[k], b = T[(k + 1) % 3], o = clipHalf(rest, a, b, false);
+      if (o.length >= 3 && areaOf(o) > eps) out.push(o);
+      rest = clipHalf(rest, a, b, true);
+    }
+    return out;
+  }
+  function visibleFacePieces(mesh, fi, F) {
+    var P = mesh.positions64 || mesh.positions, e = unitE(F), f = mesh.faces[fi], n = f.normal, nz = V.dot(n, e);
+    if (!(nz > 1e-9)) return null;
+    var nu = V.dot(n, F.u), nv = V.dot(n, F.v), diag = meshDiag(mesh), tol = diag * 1e-7, eps = diag * diag * 1e-12;
+    function depth(u, v) { return (f.w - u * nu - v * nv) / nz; }
+    var base = [], bb = [Infinity, Infinity, -Infinity, -Infinity];
+    for (var t = f.start; t < f.start + f.count; t++) {
+      var q = tri2(P, t, F, e);
+      base.push(q.map(function (p) { bb[0] = Math.min(bb[0], p[0]); bb[1] = Math.min(bb[1], p[1]); bb[2] = Math.max(bb[2], p[0]); bb[3] = Math.max(bb[3], p[1]); return [p[0], p[1]]; }));
+    }
+    var occ = [];
+    mesh.faces.forEach(function (g, gi) {
+      if (gi === fi || V.dot(g.normal, e) <= 1e-6) return;
+      for (var s = g.start; s < g.start + g.count; s++) {
+        var T = tri2(P, s, F, e);
+        if (Math.max(T[0][0], T[1][0], T[2][0]) <= bb[0] + tol || Math.min(T[0][0], T[1][0], T[2][0]) >= bb[2] - tol) continue;
+        if (Math.max(T[0][1], T[1][1], T[2][1]) <= bb[1] + tol || Math.min(T[0][1], T[1][1], T[2][1]) >= bb[3] - tol) continue;
+        var cu = (T[0][0] + T[1][0] + T[2][0]) / 3, cv = (T[0][1] + T[1][1] + T[2][1]) / 3, cz = (T[0][2] + T[1][2] + T[2][2]) / 3;
+        if (cz > depth(cu, cv) + tol) occ.push(T.map(function (p) { return [p[0], p[1]]; }));
+      }
+    });
+    if (!occ.length) return null;
+    var pieces = base, hit = false;
+    occ.forEach(function (T) {
+      var next = [];
+      pieces.forEach(function (Pc) { var r = convexLess(Pc, T, eps); if (r.length !== 1 || r[0] !== Pc) hit = true; r.forEach(function (x) { next.push(x); }); });
+      pieces = next;
+    });
+    return hit ? pieces : null;
+  }
+  // (lane DW2) hatch segments cut at the pieces' shared edges joined again: [[x1, y1, x2, y2]] on one line that touch
+  // end to end become one
+  function mergeSegs(segs) {
+    var groups = {}, order = [], out = [];
+    segs.forEach(function (s) {
+      var dx = s[2] - s[0], dy = s[3] - s[1];
+      if (Math.hypot(dx, dy) < 1e-12) { out.push(s); return; }
+      var a = Math.atan2(dy, dx); if (a < 0) a += Math.PI; if (a >= Math.PI - 1e-9) a -= Math.PI;
+      var d = [Math.cos(a), Math.sin(a)], off = -d[1] * s[0] + d[0] * s[1], t0 = d[0] * s[0] + d[1] * s[1], t1 = d[0] * s[2] + d[1] * s[3];
+      var k = a.toFixed(7) + '|' + off.toFixed(6);
+      if (!groups[k]) { groups[k] = { d: d, off: off, list: [] }; order.push(k); }
+      groups[k].list.push([Math.min(t0, t1), Math.max(t0, t1)]);
+    });
+    order.forEach(function (k) {
+      var g = groups[k], cur = null;
+      function emit(iv) { var bx = -g.d[1] * g.off, by = g.d[0] * g.off; out.push([bx + g.d[0] * iv[0], by + g.d[1] * iv[0], bx + g.d[0] * iv[1], by + g.d[1] * iv[1]]); }
+      g.list.sort(function (x, y) { return x[0] - y[0]; }).forEach(function (iv) {
+        if (cur && iv[0] <= cur[1] + 1e-7) cur[1] = Math.max(cur[1], iv[1]);
+        else { if (cur) emit(cur); cur = iv.slice(); }
+      });
+      if (cur) emit(cur);
+    });
+    return out;
+  }
+  // resolveFills(doc, v | null, frame, mesh, toSheet) -> [{ entry, kind, loops (sheet) }] of a view's fills, or the
+  // sheet's own (v null)
+  function resolveFills(doc, v, frame, mesh, toSheet) {
+    var list = v ? v.areaFills : doc.sheet && doc.sheet.areaFills, out = [];
+    (list || []).forEach(function (e) {
+      var loops = null, split = false;
+      if (e.face) {
+        if (!frame || !mesh) return;
+        var fi = faceAt(mesh, frame, e.face.p), n = fi >= 0 ? mesh.faces[fi].normal : null;
+        if (!n || V.dot(n, e.face.n) < 1 - 1e-6) return;
+        // (lane DW2) only where the face shows: its outline when nothing in front overlaps it, else the visible pieces
+        var L = visibleFacePieces(mesh, fi, frame), split = !!L;
+        if (!L) L = faceLoopsIn(mesh, fi, frame);
+        loops = L && L.map(function (l) { return l.map(toSheet); });
+      } else if (e.ids) loops = sketchFillLoops(doc, e);
+      if (loops && loops.length) out.push({ entry: e, kind: e.face ? 'face' : 'sketch', loops: loops, split: !!split });
+    });
+    return out;
+  }
+  // sketchRegionAt(doc, p (sheet)) -> { ids, view, pts } the smallest closed sketch profile round p, or null
+  function sketchRegionAt(doc, p) {
+    var best = null, ba = Infinity, seen = {};
+    (D.sketchEntities ? D.sketchEntities(doc) : []).forEach(function (en) {
+      if (!/^(line|arc|spline|circle)$/.test(en.t) || seen[en.id]) return;
+      var lp;
+      try { lp = D.sketchLoop(doc, en.id); } catch (err) { return; }
+      lp.ids.forEach(function (id) { seen[id] = 1; });
+      if (!inPoly(p, lp.pts)) return;
+      var a = Math.abs(polyArea(lp.pts));
+      if (a < ba) { ba = a; best = lp; }
+    });
+    return best ? { ids: best.ids, view: best.view, pts: best.pts } : null;
   }
   // splitRegions(loops) -> [[loop…]…]: each outer loop with the holes directly inside it
   function splitRegions(loops) {
@@ -2214,14 +2535,16 @@
   function hatchRegions(w) {
     var ct = w && w.content, out = [];
     if (!ct || !ct.caps) return out;
-    ct.caps.forEach(function (cap, i) {
-      var he = (w.hatches || [])[i] || {}, ah = cap.areaHatch, st = cap.style || hatchStyle(cap.body);
-      splitRegions(cap.loops).forEach(function (sub) {
-        var p = interiorPoint(sub);
-        if (!p) return;
-        out.push({ index: out.length, cap: i, p: p, body: cap.body, part: cap.part, loops: sub,
-          pattern: ah ? ah.pattern : he.pattern || 'ANSI31', scale: ah ? ah.scale : 1, angle: ah ? ah.angle : (isFinite(st.angle) ? st.angle : 45) - 45, areaHatch: !!ah });
-      });
+    var model = (_.CTX && _.CTX.model) || _.lastModel, comps = model && model.type === 'assembly' && model.components;
+    regionPieces(ct.caps).forEach(function (g) {
+      var i = g.cap, cap = ct.caps[i], he = (w.hatches || [])[i] || {}, ah = cap.areaHatch, st = cap.style || hatchStyle(cap.body);
+      var p = interiorPoint(g.loops);
+      if (!p) return;
+      var r = { index: out.length, cap: i, p: p, body: cap.body, part: cap.part, loops: g.loops, key: g.key, solid: g.solid,
+        pattern: ah ? ah.pattern : he.pattern || 'ANSI31', scale: ah ? ah.scale : 1, angle: ah ? ah.angle : (isFinite(st.angle) ? st.angle : 45) - 45, areaHatch: !!ah };
+      if (ah) r.scope = ah.scope || 'region';
+      if (comps && comps[cap.body | 0]) r.comp = String(comps[cap.body | 0].id);
+      out.push(r);
     });
     return out;
   }
@@ -2435,6 +2758,8 @@
   // detail, Area Hatch regions) on every view's content
   _.hasBrokenOut = hasBrokenOut; _.brokenOutContent = brokenOutContent; _.contentExtras = contentExtras; _.secKey = secKey;   // (rfCX2: putSection files a path cut under it)
   D.addBrokenOut = addBrokenOut; D.setBrokenOut = setBrokenOut; D.clearBrokenOut = clearBrokenOut; D.brokenOutPolygon = boPolygon; D.brokenOutOf = brokenOutOf;
+  D.addAreaFill = addAreaFill; D.editAreaFill = editAreaFill; D.areaFills = areaFills; D.sketchRegionAt = sketchRegionAt; D.faceAt = faceAt;   // (lane DW)
+  D.regionPieces = regionPieces; D.AREA_SCOPES = AREA_SCOPES; _.resolveFills = resolveFills; D.visibleFacePieces = visibleFacePieces; _.mergeSegs = mergeSegs;   // (lane DW2)
   D.setAreaHatch = setAreaHatch; D.hatchRegions = hatchRegions; D.hatchRegionAt = regionAt; D.AREA_PATTERNS = AREA_PATTERNS; D.interiorPoint = interiorPoint;
   _.jaggedPts = jaggedPts; _.primInPoly = primInPoly; _.inLoops = inLoops; _.clipLoopsConvex = clipLoopsConvex; _.circlePoly = circlePoly; _.convexHull = convexHull; _.regionOutsideRect = regionOutsideRect;
 })(Drawing, Drawing._);

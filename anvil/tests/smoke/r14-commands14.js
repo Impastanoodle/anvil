@@ -140,9 +140,6 @@
     assert(t.querySelector('b').textContent === 'Extruded Boss/Base' && t.querySelector('.tip-key').textContent === 'E' && /Extrude a closed sketch profile/.test(t.querySelector('.tip-desc').textContent), 'tooltip: ' + t.textContent);
     D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
     assert(t.hidden, 'a press hides the tooltip');
-    var draft = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (b) { return b.getAttribute('aria-label') === 'Draft'; })[0];
-    t = await c14Tip(draft);
-    assert(t && t.querySelector('.tip-note') && /Not available/.test(t.querySelector('.tip-note').textContent) && /Taper faces/.test(t.textContent), 'greyed Draft: ' + (t && t.textContent));
     var fit = $('hud').children[0];
     t = await c14Tip(fit);
     assert(t && !fit.hasAttribute('title') && fit.getAttribute('aria-label') === 'Zoom to Fit (F)', 'heads-up title not adopted: ' + fit.getAttribute('aria-label'));
@@ -154,7 +151,20 @@
     assert(t && t.querySelector('.tip-key').textContent === 'S, S', 'Sketch shortcut: ' + (t && t.textContent));
     D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
     UI.setRibbonTab('Features');
-    return 'Extruded Boss/Base (E), Draft greyed, Zoom to Fit (F), Sketch (S, S)';
+    // 2026-10-29a: Draft (and the other Features-tab placeholders) work now; the greyed-button note is checked on the
+    // first greyed button of the assembly ribbon instead
+    await anvil.newAssembly('C14Grey'); await idle();
+    UI.setRibbonTab('Assembly');
+    var grey = null, gt = null, cands = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (b) { return b.disabled; });
+    for (var gi = 0; gi < cands.length && !grey; gi++) {
+      gt = await c14Tip(cands[gi]);
+      if (gt && gt.querySelector('.tip-note') && /Not available/.test(gt.querySelector('.tip-note').textContent)) grey = cands[gi];
+      D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
+    }
+    assert(grey, 'no greyed assembly button with the Not available note (' + cands.length + ' disabled)');
+    var greyName = grey.getAttribute('aria-label');
+    await anvil.newPart(); await idle();
+    return 'Extruded Boss/Base (E), ' + greyName + ' greyed, Zoom to Fit (F), Sketch (S, S)';
   });
   // --- end r14/commands14 ---
 

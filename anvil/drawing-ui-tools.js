@@ -2202,27 +2202,77 @@
     }
   }
   function removeBrokenOut(id) { if (tryEdit(function (dc) { Drawing.clearBrokenOut(dc, id); })) UI.setStatus('Broken-out sections removed.'); }
-  // the Area Hatch/Fill PropertyManager for region g (an entry of Drawing.hatchRegions) of view viewId
+  // the Area Hatch/Fill PropertyManager for region g (an entry of Drawing.hatchRegions) of view viewId (lane DW:
+  // SolidWorks' groups — Properties: Material crosshatch, Hatch / Solid / None, Pattern, Pattern scale, Pattern angle;
+  // Apply changes to: Region / Body / Component (an assembly))
+  var HATCH_NAMES = { ANSI31: 'ANSI31 (Iron BrickStone)', ANSI32: 'ANSI32 (Steel)', ANSI33: 'ANSI33 (Bronze Brass)', ANSI34: 'ANSI34 (Plastic Rubber)', ANSI35: 'ANSI35 (Fire Brick)', ANSI36: 'ANSI36 (Marble Slate Glass)', ANSI37: 'ANSI37 (Lead Zinc Mg)', ANSI38: 'ANSI38 (Aluminum)' };
+  function hatchValues(pattern, scale, angle) {
+    var fill = pattern === 'SOLID' ? 'solid' : pattern === 'NONE' ? 'none' : 'hatch';
+    return { fill: fill, pattern: fill !== 'hatch' || HATCH_NAMES[pattern] ? pattern : 'ANSI31', scale: scale || 1, angle: angle || 0 };   // (SOLID / NONE kept as the value: Hatch then starts from ANSI31, normFill)
+  }
+  function hatchFieldList(material) {
+    var off = function (v) { return material && v.material; }, hatchOn = function (v) { return !off(v) && v.fill === 'hatch'; };
+    return (material ? [{ type: 'check', key: 'material', label: 'Material crosshatch', rerender: true }] : []).concat([
+      { type: 'radio', key: 'fill', label: 'Fill', rerender: true, options: [['hatch', 'Hatch'], ['solid', 'Solid'], ['none', 'None']], show: function (v) { return !off(v); } },
+      { type: 'select', key: 'pattern', label: 'Pattern', options: Drawing.AREA_PATTERNS.filter(function (k) { return HATCH_NAMES[k]; }).map(function (k) { return [k, HATCH_NAMES[k]]; }), show: hatchOn },
+      { type: 'number', key: 'scale', label: 'Scale', min: 0.01, show: hatchOn },
+      { type: 'number', key: 'angle', label: 'Angle (degrees)', show: hatchOn }]);
+  }
+  function hatchProps(v) { return { fill: v.fill, pattern: v.pattern, scale: +v.scale > 0 ? +v.scale : 1, angle: +v.angle || 0 }; }
   function cmdAreaHatch(viewId, g) {
     if (!g) return;
-    var vals = { material: !g.areaHatch, pattern: g.pattern === 'SOLID' || g.pattern === 'NONE' || Drawing.AREA_PATTERNS.indexOf(g.pattern) >= 0 ? g.pattern : 'ANSI31', scale: g.scale || 1, angle: g.angle || 0 };
-    var names = { ANSI31: 'ANSI31 (Iron BrickStone)', ANSI32: 'ANSI32 (Steel)', ANSI33: 'ANSI33 (Bronze Brass)', ANSI34: 'ANSI34 (Plastic Rubber)', ANSI37: 'ANSI37 (Lead Zinc Mg)', ANSI38: 'ANSI38 (Aluminum)', SOLID: 'Solid', NONE: 'None' };
+    var vals = hatchValues(g.pattern, g.areaHatch ? g.scale : 1, g.areaHatch ? g.angle : 0);
+    vals.material = !g.areaHatch; vals.apply = g.scope || 'region';
+    var apply = [['region', 'Region'], ['body', 'Body']].concat(isAsm() ? [['component', 'Component']] : []);
     D.sel = { kind: 'view', id: viewId };
     openDrawingPM({
       title: 'Area Hatch/Fill', icon: 'areaHatch', command: 'areaHatch', values: vals,
-      message: 'The hatch of the selected region. Material crosshatch uses the part\'s material pattern; untick it to give this region its own pattern, scale and angle.',
-      groups: [{ title: 'Properties', fields: [
-        { type: 'check', key: 'material', label: 'Material crosshatch', rerender: true },
-        { type: 'select', key: 'pattern', label: 'Pattern', options: Drawing.AREA_PATTERNS.map(function (k) { return [k, names[k] || k]; }), show: function (v) { return !v.material; } },
-        { type: 'number', key: 'scale', label: 'Scale', min: 0.01, show: function (v) { return !v.material && v.pattern !== 'SOLID' && v.pattern !== 'NONE'; } },
-        { type: 'number', key: 'angle', label: 'Angle (degrees)', show: function (v) { return !v.material && v.pattern !== 'SOLID' && v.pattern !== 'NONE'; } }] }],
-      onOK: function (v) { setAreaHatch(viewId, g.p, v.material ? null : { pattern: v.pattern, scale: +v.scale > 0 ? +v.scale : 1, angle: +v.angle || 0 }); }
+      message: 'The hatch of the selected region. Material crosshatch uses the part\'s material pattern; untick it to give the region, its body or its component its own hatch, a solid fill or none.',
+      groups: [{ title: 'Properties', fields: hatchFieldList(true) },
+        { title: 'Apply changes to', fields: [{ type: 'radio', key: 'apply', label: 'Apply to', options: apply }] }],
+      onOK: function (v) { setAreaHatch(viewId, g, v.material ? null : hatchProps(v), v.apply); }
     });
     UI.setStatus('Area Hatch/Fill: region ' + (g.index + 1) + ' of ' + ((sheetView(viewId) || { view: {} }).view.name || 'the view') + '.');
   }
-  function setAreaHatch(viewId, p, props) {
-    if (tryEdit(function (dc) { Drawing.setAreaHatch(dc, viewId, p, props); })) UI.setStatus(props ? 'Area hatch: ' + props.pattern + (props.pattern === 'SOLID' || props.pattern === 'NONE' ? '' : ', scale ' + props.scale + ', angle ' + props.angle + '°') + '.' : 'Area hatch: material crosshatch.');
+  // setAreaHatch(viewId, region (an entry of hatchRegions) | [u, v], props | null, scope?) — one undo step
+  function setAreaHatch(viewId, g, props, scope) {
+    var p = Array.isArray(g) ? g : g.p, opts = Array.isArray(g) ? {} : { key: g.key, scope: scope || 'region', comp: g.comp };
+    var what = { body: ' (the body)', component: ' (the component)' }[opts.scope] || '';
+    if (tryEdit(function (dc) { Drawing.setAreaHatch(dc, viewId, p, props, opts); })) UI.setStatus(props ? 'Area hatch' + what + ': ' + hatchSays(props) + '.' : 'Area hatch' + what + ': material crosshatch.');
   }
+  function hatchSays(props) { return props.fill === 'solid' || props.pattern === 'SOLID' ? 'solid fill' : props.fill === 'none' || props.pattern === 'NONE' ? 'none' : props.pattern + ', scale ' + props.scale + ', angle ' + props.angle + '°'; }
+  // (lane DW) Area Hatch/Fill on a model face or a closed sketch profile: its PM (new: spec for Drawing.addAreaFill;
+  // existing: the fill, an entry of the sheet's areaFills)
+  function cmdAreaFill(spec, fill) {
+    var vals = fill ? hatchValues(fill.pattern, fill.scale, fill.angle) : hatchValues('ANSI31', 1, 0);
+    if (fill) D.sel = { kind: 'areaFill', id: fill.id };
+    openDrawingPM({
+      title: 'Area Hatch/Fill', icon: 'areaHatch', command: 'areaHatch', values: vals,
+      message: fill ? 'The hatch of the selected area. Delete removes it.' : 'Hatch or fill the ' + (spec.ids ? 'closed sketch profile' : 'model face') + ' you picked.',
+      groups: [{ title: 'Properties', fields: hatchFieldList(false) }],
+      onOK: function (v) {
+        var props = hatchProps(v);
+        if (fill) { if (tryEdit(function (dc) { Drawing.editAreaFill(dc, fill.id, props); })) UI.setStatus('Area hatch: ' + hatchSays(props) + '.'); return; }
+        var fr = spec.view != null && sheetView(spec.view) ? sheetView(spec.view).frame : null, made = null;
+        if (tryEdit(function (dc) { made = Drawing.addAreaFill(dc, Object.assign({}, spec, props), mesh(), fr); })) {
+          if (made) D.sel = { kind: 'areaFill', id: made.id };
+          UI.setStatus('Area hatch added: ' + hatchSays(props) + '.');
+        }
+      }
+    });
+  }
+  // the drawn Area Hatch/Fill under sheet point p (the smallest), or null
+  function fillAt(p) {
+    var best = null, ba = Infinity;
+    ((D.sheet && D.sheet.areaFills) || []).forEach(function (f) {
+      if (!Drawing._.inLoops(p, f.loops)) return;
+      var a = 0; f.loops[0].forEach(function (q, i, l) { var r = l[(i + 1) % l.length]; a += q[0] * r[1] - r[0] * q[1]; });
+      if (Math.abs(a) < ba) { ba = Math.abs(a); best = f; }
+    });
+    return best;
+  }
+  function deleteAreaFill(id) { if (tryEdit(function (dc) { Drawing.editAreaFill(dc, id, null); })) { if (D.sel && D.sel.kind === 'areaFill') D.sel = null; UI.setStatus('Area hatch deleted.'); } }
+  DW.areaFillDelete = function () { var s = D.sel; if (!s || s.kind !== 'areaFill') return false; deleteAreaFill(s.id); return true; };
   function regionAtSheet(p) { var w = viewAt(p), g = w ? Drawing.hatchRegionAt(w, p) : null; return g ? { w: w, g: g } : null; }
   // an edge within 2.5 px of p (a click there picks the edge, not the hatch)
   function nearEdge(p) {
@@ -2237,13 +2287,22 @@
     if (D.tool === 'ahatch') { endTool(); return; }
     if (!needPart()) return;
     startTool('ahatch', { mode: 'ahatch' });
-    UI.setStatus('Area Hatch/Fill: click a hatched region of a section or broken-out section. Esc cancels.');
+    UI.setStatus('Area Hatch/Fill: click a hatched region of a section, a closed sketch profile, or a model face in a view. Esc cancels.');
   }
   function hatchPickClick(p) {
     var h = regionAtSheet(p);
-    if (!h) { UI.setStatus('Area Hatch/Fill: click inside a hatched region.'); return; }
-    endTool();
-    cmdAreaHatch(h.w.view.id, h.g);
+    if (h) { endTool(); cmdAreaHatch(h.w.view.id, h.g); return; }
+    var f = fillAt(p);
+    if (f) { endTool(); cmdAreaFill(null, f); return; }
+    var sk = Drawing.sketchRegionAt(doc(), p);
+    if (sk) { endTool(); cmdAreaFill({ ids: sk.ids }); return; }
+    var w = viewAt(p);
+    if (w && !w.pending) {
+      var spec = { view: w.view.id, p: w.fromSheet(p) };
+      try { Drawing.addAreaFill(JSON.parse(JSON.stringify(doc())), spec, mesh(), w.frame); } catch (err) { UI.setStatus(err.message); return; }
+      endTool(); cmdAreaFill(spec); return;
+    }
+    UI.setStatus('Area Hatch/Fill: click inside a hatched region, a closed sketch profile or a model face.');
   }
   // a plain click on the hatch of a view that is already selected opens the Area Hatch/Fill PropertyManager (SolidWorks
   // selects the hatch); the right-click menu of a hatched region offers it too
@@ -2253,11 +2312,14 @@
     if (e.button !== 0 || e.defaultPrevented || !D.active || !D.sheet || D.tool || !D.host || !D.host.contains(e.target) || (UI.hasPM && UI.hasPM())) return;
     var p = DW.toPaper(e), h = regionAtSheet(p);
     if (h && D.sel && D.sel.kind === 'view' && D.sel.id === h.w.view.id && !nearEdge(p) && !(DW.dimAt && DW.dimAt(p))) hatchDown = { x: e.clientX, y: e.clientY, view: h.w.view.id, g: h.g };
+    // (lane DW) an Area Hatch/Fill: a sheet one anywhere off the views, a view's one when the view is selected
+    var fl = !hatchDown && !h ? fillAt(p) : null;
+    if (fl && (fl.view == null ? !viewAt(p) : D.sel && D.sel.kind === 'view' && D.sel.id === fl.view) && !nearEdge(p) && !(DW.dimAt && DW.dimAt(p))) hatchDown = { x: e.clientX, y: e.clientY, fill: fl };
   }, true);
   document.addEventListener('mouseup', function (e) {
     var h = hatchDown; hatchDown = null;
     if (!h || Math.hypot(e.clientX - h.x, e.clientY - h.y) > 3 || D.tool) return;
-    setTimeout(function () { if (D.active && !D.tool) cmdAreaHatch(h.view, h.g); }, 0);
+    setTimeout(function () { if (D.active && !D.tool) { if (h.fill) cmdAreaFill(null, h.fill); else cmdAreaHatch(h.view, h.g); } }, 0);
   }, true);
   document.addEventListener('contextmenu', function (e) { ctxAt = D.active && D.sheet && D.host && D.host.contains(e.target) ? DW.toPaper(e) : null; }, true);
   var RF_TOOLS = { aux: auxClick, crop: cropClick, brk: breakClick, bko: boClick, ahatch: hatchPickClick };   // (rfAG) routed by tool name
@@ -2349,7 +2411,7 @@
       });
       return m;
     };
-    g._rfN = true;
+    g._rfN = true; g._inner = f;   // (lane DW2: drawing-ui-panels.js chains to the hook it replaces through _inner)
     return g;
   });
   // anvil.drawing.auxiliaryView(parentId, { a, b, sign, x, y, label }), crop(viewId, region | null),
@@ -2411,13 +2473,42 @@
     api.hatchRegions = function (viewId) {
       if (!doc()) return [];
       settle(); if (!D.sheet) render();
-      return Drawing.hatchRegions(sheetView(viewId)).map(function (g) { return { index: g.index, p: g.p, pattern: g.pattern, scale: g.scale, angle: g.angle, areaHatch: g.areaHatch, body: g.body }; });
+      return Drawing.hatchRegions(sheetView(viewId)).map(function (g) {
+        var r = { index: g.index, key: g.key, solid: g.solid, p: g.p, pattern: g.pattern, scale: g.scale, angle: g.angle, areaHatch: g.areaHatch, body: g.body };
+        if (g.part != null) r.part = g.part;
+        if (g.comp != null) r.comp = g.comp;
+        if (g.scope) r.scope = g.scope;
+        return r;
+      });
     };
-    api.areaHatch = function (viewId, which, props) {
+    // (lane DW) areaHatch(viewId, index | [u, v] | key 'b0:r1', props | null, { apply: 'region' | 'body' | 'component' }?);
+    // props { pattern, scale, angle, fill: 'hatch' | 'solid' | 'none' }
+    api.areaHatch = function (viewId, which, props, opts) {
       if (!doc()) return null;
-      var p = which;
-      if (typeof which === 'number') { var g = api.hatchRegions(viewId)[which]; if (!g) { UI.toast('No hatched region ' + which); return null; } p = g.p; }
-      return tryEdit(function (dc) { Drawing.setAreaHatch(dc, viewId, p, props || null); }) ? api.summary() : null;
+      var p = which, o = { scope: opts && (opts.apply || opts.scope) || 'region' };
+      if (typeof which === 'number' || typeof which === 'string') {
+        var g = api.hatchRegions(viewId).filter(function (x) { return typeof which === 'number' ? x.index === which : x.key === which; })[0];
+        if (!g && typeof which === 'number') { UI.toast('No hatched region ' + which); return null; }
+        if (g) { p = g.p; o.key = g.key; o.comp = g.comp; } else { p = null; o.key = which; }
+      }
+      return tryEdit(function (dc) { Drawing.setAreaHatch(dc, viewId, p, props || null, o); }) ? api.summary() : null;
+    };
+    // hatch(viewId, regionKey, { pattern, scale, angle, fill, apply }) — the same, the scope in the props
+    api.hatch = function (viewId, key, props) { return api.areaHatch(viewId, key, props ? props : null, props ? { apply: props.apply } : null); };
+    // areaFill({ ids } | { view, p: [u, v] }, props?) -> the new fill ({ id, view, kind, pattern, scale, angle }) or null;
+    // areaFills() -> every fill; areaFillEdit(id, props | null) changes or deletes one. One undo step each
+    api.areaFill = function (spec, props) {
+      if (!doc()) return null;
+      settle(); if (!D.sheet) render();
+      var s2 = Object.assign({}, spec || {}, props || {}), w = s2.view != null ? sheetView(s2.view) : null, made = null;
+      return tryEdit(function (dc) { made = Drawing.addAreaFill(dc, s2, mesh(), w && w.frame); }) ? made : null;
+    };
+    api.areaFills = function () { return doc() ? Drawing.areaFills(doc()) : []; };
+    api.areaFillEdit = function (id, props) { return doc() && tryEdit(function (dc) { Drawing.editAreaFill(dc, id, props || null); }) ? api.summary() : null; };
+    // view(viewId) -> { id, hatch(key, props), hatchRegions(), areaFill(p, props) } (a script's handle on one view)
+    if (!api.view) api.view = function (viewId) {
+      return { id: viewId, hatch: function (key, props) { return api.hatch(viewId, key, props); }, hatchRegions: function () { return api.hatchRegions(viewId); },
+        areaFill: function (p, props) { return api.areaFill({ view: viewId, p: p }, props); } };
     };
     // (rfAG) magnetic lines: magLines() -> [{ id, view, a, b (sheet, paper), side, balloons: [index] }]; magLine(viewId,
     // { a, b } (sheet points) | { side }) adds one (-> its id); magLineEdit(id, { a, b } | { shift } | null) moves or
@@ -3204,7 +3295,7 @@
     return g;
   });
   DW.cmdHoleTable = cmdHoleTable; DW.cmdHoleTableProps = cmdHoleTableProps; DW.holeTableAt = holeTableAt; DW.cmdSymbolAN = cmdSymbolAN; DW.cmdCloud = cmdCloud;   // (rfAN)
-  DW.cmdBrokenOut = cmdBrokenOut; DW.cmdAreaHatch = cmdAreaHatch; DW.cmdAreaHatchTool = cmdAreaHatchTool;   // (rfAD)
+  DW.cmdBrokenOut = cmdBrokenOut; DW.cmdAreaHatch = cmdAreaHatch; DW.cmdAreaHatchTool = cmdAreaHatchTool; DW.cmdAreaFill = cmdAreaFill; DW.fillAt = fillAt;   // (lane DW)   // (rfAD)
   DW.cmdMagLine = cmdMagLine; DW.magLineClick = magLineClick; DW.magOverlay = magOverlay; DW.magSnap = magSnap; DW.magAt = magAt; DW.deleteMagLine = deleteMagLine;   // (rfAG)
   DW.smartDimClick = smartDimClick; DW.smartDimMove = smartDimMove; DW.smartDimOverlay = smartDimOverlay; DW.pickAt = pickAt; DW.saveDWG = saveDWG;
   DW.cmdNote = cmdNote; DW.noteClick = noteClick; DW.noteAt = noteAt; DW.openNoteEdit = openNoteEdit; DW.cmdFlatView = cmdFlatView; DW.setFlatViewProps = setFlatViewProps; DW.flatReady = flatReady; DW.sheetMetal = sheetMetal;

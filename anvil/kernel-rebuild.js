@@ -27,7 +27,12 @@
   NAME_BASE.refaxis = 'Axis'; NAME_BASE.refpoint = 'Point'; NAME_BASE.csys = 'Coordinate System';   // lane CZ: reference geometry
   NAME_BASE.rip = 'Rip'; NAME_BASE.tab = 'Tab';   // lane DI
   NAME_BASE.vent = 'Vent';   // lane DT
+  NAME_BASE.draft = 'Draft';   // rfDX
+  NAME_BASE.wrap = 'Wrap';   // rfDZ
   NAME_BASE.insertBends = 'Process-Bends'; NAME_BASE.convertSM = 'Convert-Solid';   // lane DQ (SolidWorks' names)
+  NAME_BASE.rib = 'Rib'; NAME_BASE.intersect = 'Intersect';   // rfDY
+  NAME_BASE.boundary = 'Boundary-Boss'; NAME_BASE.boundaryCut = 'Boundary-Cut';   // rfFB (SolidWorks' names)
+  NAME_BASE.helix = 'Helix/Spiral'; NAME_BASE.projCurve = 'Curve'; NAME_BASE.compositeCurve = 'CompCurve'; NAME_BASE.xyzCurve = 'Curve'; NAME_BASE.refPtCurve = 'Curve';   // rfFA (SolidWorks' tree names)
 
   function featureName(model, type, cut) {
     var base = NAME_BASE[type] || 'Feature';
@@ -35,6 +40,7 @@
     if (type === 'revolve' && cut) base = NAME_BASE.revolveCut;
     if (type === 'sweep' && cut) base = 'Cut-Sweep';
     if (type === 'loft' && cut) base = 'Cut-Loft';
+    if (type === 'boundary' && cut) base = NAME_BASE.boundaryCut;   // rfFB
     var max = 0;
     model.features.forEach(function (f) {
       if (f.name && f.name.indexOf(base) === 0) {
@@ -174,6 +180,8 @@
         return f.type === 'extrude' ? buildExtrude(f, csk, plane, ctx.throughLimit) : buildRevolve(f, csk, plane);
       case 'sweep': return _.buildSweep(f, model, ctx);
       case 'loft': return _.buildLoft(f, model, ctx);
+      case 'draft': return _.buildDraft(f, { body: ctx.body, planes: ctx.planes, units: ctx.units || (model && model.units) }).body;   // rfDX: the drafted body (PropertyManager preview)
+      case 'boundary': return _.buildBoundary(f, model, ctx);   // rfFB
       case 'lpattern': {
         var src = familyTool(f.feature, model, ctx);
         if (!src) throw new Error('Pattern source feature has no geometry.');
@@ -246,8 +254,10 @@
   function registerScriptSection(spec) { scriptSections.push(spec); }
 
   function isCut(f, model) {
+    if (f.type === 'wrap') return f.mode === 'deboss';   // rfDZ: Wrap (emboss adds, scribe splits)
     if (featureTypes[f.type]) return !!featureTypes[f.type].cut;
     if (f.type === 'extrude' || f.type === 'revolve' || f.type === 'sweep' || f.type === 'loft') return !!f.cut;
+    if (f.type === 'boundary') return !!f.cut;   // rfFB
     if (f.type === 'mirror' && f.body) return false;
     if (f.type === 'lpattern' || f.type === 'cpattern' || f.type === 'mirror') {
       var src = findFeature(model, f.feature);
@@ -449,7 +459,10 @@
     model.features.forEach(function (f) { if (f.type === 'sweep' && typeof f.path === 'number') pathIds[f.path] = true; });
     model.features.forEach(function (f) { if (f.type === 'sketchedBend' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // bend lines are open too
     model.features.forEach(function (f) { if (f.type === 'jog' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // lane DC: a jog's line
+    model.features.forEach(function (f) { if (f.type === 'projCurve' || f.type === 'compositeCurve') { pathIds[f.sketch] = pathIds[f.sketch2] = true; (f.edges || []).forEach(function (r) { if (r && r.sketch != null) pathIds[r.sketch] = true; }); } });   // rfFA: curves from open sketches
     model.features.forEach(function (f) { if (f.type === 'flange' && f.miterFlange && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // lane DL: a miter flange's profile
+    model.features.forEach(function (f) { if (f.type === 'rib' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // rfDY: a rib's open lines
+    model.features.forEach(function (f) { if (f.type === 'boundary') (f.dir2 || []).forEach(function (c) { var id = c && typeof c === 'object' ? c.sketch : c; if (typeof id === 'number') pathIds[id] = true; }); });   // rfFB: Direction 2 curves are open
     var keys = model.features.map(function (f) { return featureKey(f, model); });
     var prev = cache && cache.steps ? cache.steps : [], steps = [], p = 0;
     while (p < model.features.length && p < prev.length && prev[p].key === keys[p]) p++;
@@ -475,9 +488,9 @@
     }
     model.features.slice(p).forEach(function (f, j) {
       try {
-        if (resolveErrors[f.id]) throw new Error(resolveErrors[f.id]);
-        if (sheetError && needsSheet(f)) throw new Error(sheetError);
-        switch (f.type) {
+        if (resolveErrors[f.id] && !f.suppressed) throw new Error(resolveErrors[f.id]);
+        if (sheetError && needsSheet(f) && !f.suppressed) throw new Error(sheetError);
+        if (!f.suppressed) switch (f.type) {   // rfFC: a suppressed feature (and its children) builds nothing
           case 'flange': {
             var fk = pickBody(f);
             var ft = _.buildFlange(f, model, ctx);
@@ -563,6 +576,7 @@
             if (fp && fp.warning) warnings[f.id] = fp.warning + (warnings[f.id] ? ' ' + warnings[f.id] : '');
             break;
           }
+          case 'wrap': { var wk = ctx.bodies.length ? Math.max(0, bodyNearPoint(ctx.bodies, f.face || [0, 0, 0])) : -1; ctx.body = wk >= 0 ? ctx.bodies[wk] : null; var wr = _.buildWrap(f, model, ctx); putBody(wk, wr.body); ctx.tools[f.id] = wr.tool; break; }   // rfDZ: Wrap on the body its face is on
           case 'shell': {
             var sk = pickBody(f);
             var sh = _.buildShell(f, ctx);
@@ -570,9 +584,12 @@
             ctx.tools[f.id] = null;   // the cavity is not built during a rebuild (buildShell: sh.inner is lazy)
             break;
           }
+          case 'draft': { var dxk = pickBody(f), dxr = _.buildDraft(f, ctx); putBody(dxk, dxr.body); ctx.tools[f.id] = null; break; }   // rfDX
           case 'plane':
             ctx.planes[f.id] = makePlane(f.ref || 'Front', +f.offset || 0);
             break;
+          case 'intersect': _.applyIntersect(f, model, ctx); syncBody(); break;   // rfDY (kernel-features.js)
+          case 'helix': case 'projCurve': case 'compositeCurve': case 'xyzCurve': case 'refPtCurve': ctx.planes[f.id] = _.resolveCurve(f, model, ctx); break;   // rfFA: reference curves, no body change
           case 'refaxis': case 'refpoint': case 'csys':   // lane CZ: reference geometry, no body change; the record rides in planes
             ctx.planes[f.id] = _.resolveRefGeo(f, model, ctx);
             exactFaceCenter(f, ctx);   // lane DF
@@ -627,7 +644,7 @@
     var profiles = {};
     Object.keys(ctx.sketches).forEach(function (id) { profiles[id] = ctx.sketches[id].profile || null; });
     return { body: ctx.body, bodies: ctx.bodies, bodyFeatures: ctx.bodyFeatures, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles, facePlanes: facePlanes,
-      equations: resolved.vars, equationErrors: resolved.errors, configuration: resolved.configuration };
+      equations: resolved.vars, equationErrors: resolved.errors, configuration: resolved.configuration, suppressed: resolved.suppressed || {} };
   }
 
   // ------------------------------------------------------------------ build serialization (Web Worker rebuilds)
@@ -653,7 +670,7 @@
       body: !bodies.length && build.body ? build.body.pack() : null, tools: tools,
       planes: build.planes || {}, flanges: build.flanges || {}, errors: build.errors || {}, warnings: build.warnings || {},
       time: build.time || 0, reused: build.reused || 0, profiles: profiles, facePlanes: build.facePlanes || {},
-      equations: build.equations || {}, equationErrors: build.equationErrors || {}, configuration: build.configuration || null
+      equations: build.equations || {}, equationErrors: build.equationErrors || {}, configuration: build.configuration || null, suppressed: build.suppressed || {}
     };
   }
   // Every ArrayBuffer of a packed build (bodies, body and tools), for postMessage's transfer list. pack() allocates
@@ -679,7 +696,7 @@
       body: combineBodies(bodies), bodies: bodies, bodyFeatures: bodyFeatures, tools: tools,
       planes: obj.planes || {}, flanges: obj.flanges || {}, errors: obj.errors || {}, warnings: obj.warnings || {},
       time: obj.time || 0, reused: obj.reused || 0, profiles: obj.profiles || {}, facePlanes: obj.facePlanes || {}, cache: null,
-      equations: obj.equations || {}, equationErrors: obj.equationErrors || {}, configuration: obj.configuration || null
+      equations: obj.equations || {}, equationErrors: obj.equationErrors || {}, configuration: obj.configuration || null, suppressed: obj.suppressed || {}
     };
   }
   // Write the profiles a build computed (build.profiles, keyed by sketch feature id) onto the model's sketch features.
@@ -730,7 +747,76 @@
   }
 
 
+  // ------------------------------------------------------------------ rfFC2: Suppress with its children (UI and scripts)
+  // SolidWorks' Suppress takes a feature's children with it, each stored suppressed: the features that reference it by
+  // id (Kernel.featureChildren) and the features whose face / edge picks lie on faces it made (the part rebuilt once on
+  // a copy where it is unsuppressed; each pick tested against the solid before that feature, polygon.shared).
+  // the face / edge / face-list picks of a feature: [[x, y, z]]
+  function suppressPickPoints(g) {
+    var pts = [];
+    function pt(a) { if (Array.isArray(a) && a.length === 3 && a.every(function (n) { return typeof n === 'number' && isFinite(n); })) pts.push(a); }
+    ['edges', 'faces', 'ripEdges', 'bendEdges', 'bends'].forEach(function (k) { if (Array.isArray(g[k])) g[k].forEach(function (e) { if (Array.isArray(e)) pt(e); else if (e && e.at) pt(e.at); }); });
+    pt(g.fixedFace);
+    return pts;
+  }
+  // the feature ids (polygon.shared) of the body's faces through point p
+  function sharedAt(body, p, tol) {
+    var out = {};
+    (body && body.polygons || []).forEach(function (poly) {
+      var n = poly.plane.normal, d = n.x * p[0] + n.y * p[1] + n.z * p[2] - poly.plane.w;
+      if (Math.abs(d) > tol || poly.shared == null) return;
+      var vs = poly.vertices, inside = true;
+      for (var i = 0; i < vs.length && inside; i++) {
+        var a = vs[i].pos, b = vs[(i + 1) % vs.length].pos;
+        var ex = b.x - a.x, ey = b.y - a.y, ez = b.z - a.z, px = p[0] - a.x, py = p[1] - a.y, pz = p[2] - a.z;
+        var cx = ey * pz - ez * py, cy = ez * px - ex * pz, cz = ex * py - ey * px;
+        var l = Math.sqrt(ex * ex + ey * ey + ez * ez) || 1;
+        if ((cx * n.x + cy * n.y + cz * n.z) / l < -tol) inside = false;
+      }
+      if (inside) out[poly.shared] = true;
+    });
+    return out;
+  }
+  // suppressionChildren(model, ids, scope?) -> the ids (not in ids) that depend on them, by id or by a pick on their faces
+  function suppressionChildren(model, ids, scope) {
+    ids = (Array.isArray(ids) ? ids : [ids]).map(Number);
+    var copy = JSON.parse(JSON.stringify(model, function (k, v) { return k === 'profile' ? undefined : v; }));
+    K.setSuppressed(copy, ids, false, scope || 'all');
+    var set = {}, out = [];
+    ids.forEach(function (id) { set[id] = true; });
+    function addKids(id) { K.featureChildren(copy, id).forEach(function (k) { if (!set[k]) { set[k] = true; out.push(k); } }); }
+    ids.forEach(addKids);
+    var idx = ids.map(function (id) { for (var i = 0; i < copy.features.length; i++) if (copy.features[i].id === id) return i; return -1; }).filter(function (i) { return i >= 0; });
+    if (!idx.length) return out;
+    var first = Math.min.apply(null, idx);
+    if (!copy.features.slice(first + 1).some(function (g) { return !set[g.id] && suppressPickPoints(g).length; })) return out;
+    var b;
+    try { b = rebuild(copy); } catch (e) { return out; }
+    var steps = (b.cache && b.cache.steps) || [], tol = K.pickTol ? K.pickTol(copy.units || 'mm') * 0.02 : 1e-3;
+    copy.features.forEach(function (g, gi) {
+      if (gi <= first || set[g.id]) return;
+      var pts = suppressPickPoints(g), before = steps[gi - 1] ? steps[gi - 1].body : null;
+      if (!pts.length || !before) return;
+      if (pts.some(function (p) { return Object.keys(sharedAt(before, p, tol)).some(function (k) { return set[+k]; }); })) { set[g.id] = true; out.push(g.id); addKids(g.id); }
+    });
+    return out;
+  }
+  // suppressWithChildren(model, ids, on, scope?, opts?) -> [every id whose state was set]. on: the features and their
+  // children (opts.children === false: the features only). Off: the features and the suppressed features they need
+  // (their sketch …); opts.dependents also their children. Then Kernel.setSuppressed(…, scope).
+  function suppressWithChildren(model, ids, on, scope, opts) {
+    opts = opts || {};
+    ids = (Array.isArray(ids) ? ids : [ids]).map(Number);
+    var extra = [], sup = K.suppressedIds(model);
+    if ((on && opts.children !== false) || (!on && opts.dependents)) extra = suppressionChildren(model, ids, scope);
+    if (!on) ids.forEach(function (id) { K.featureAncestors(model, id).forEach(function (a) { if (sup[a]) extra.push(a); }); });
+    var seen = {}, all = ids.concat(extra).filter(function (x) { if (seen[x]) return false; seen[x] = true; return true; });
+    K.setSuppressed(model, all, !!on, scope);
+    return all;
+  }
+
   // ------------------------------------------------------------------ public API (Kernel.*)
+  K.suppressionChildren = suppressionChildren; K.suppressWithChildren = suppressWithChildren;   // rfFC2
   K.newModel = newModel; K.featureName = featureName; K.findFeature = findFeature; K.cutDirectionHint = cutDirectionHint; K.buildTool = buildTool;
   K.refAxisFor = refAxisFor;   // lane CZ
   K.exactFaceCenter = exactFaceCenter;   // lane DF (occt-kernel.js resolves reference geometry the same way)

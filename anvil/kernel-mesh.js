@@ -60,7 +60,7 @@
     if (!body) return { positions: new Float32Array(0), normals: new Float32Array(0), faces: [], triCount: 0 };
     var clusters = planeClusters(planeTol(bodyDiag(body.polygons))), order = [];
     body.polygons.forEach(function (p) {
-      var bi = p.body || 0, tag = bi + (p.face != null ? '|f' + p.face : '') + (p.part != null ? '|p' + p.part : '');   // OpenCascade faces / assembly parts stay apart
+      var bi = p.body || 0, tag = bi + (p.face != null ? '|f' + p.face : '') + (p.part != null ? '|p' + p.part : '') + (p.surf && p.surf.s && p.surf.s.w != null ? '|w' + p.surf.s.w : '');   // OpenCascade faces / assembly parts stay apart
       var c = clusters.find(p.plane, tag);
       if (!c) { c = clusters.add(p.plane, tag, { polys: [], plane: p.plane, body: bi, part: p.part }); order.push(c.value); }
       c.value.polys.push(p);
@@ -382,6 +382,7 @@
           if (dot(e.normals[p], e.normals[q]) < COS_SMOOTH) { e.smooth = false; break; }
         }
       }
+      if (e.smooth && e.faces.length === 2 && wrapSplit(mesh, e.faces[0], e.faces[1])) e.smooth = false;   // rfDZ: a Wrap scribe edge is a real edge
       e.convex = null;
       if (e.faces.length >= 2) {
         // convex when face B's interior heads behind face A's plane (into the material)
@@ -543,4 +544,22 @@
   _.bodyEdges = bodyEdges; _.buildEdgeFeature = buildEdgeFeature; _.ekey = ekey; _.faceOutline = faceOutline; _.meshFromBody = meshFromBody;
   _.pointSegmentDistance = pointSegmentDistance; _.resolveEdges = resolveEdges; _.pickTol = pickTol;
   _.planeClusters = planeClusters; _.planeTol = planeTol; _.bodyDiag = bodyDiag;
+
+  // ------------------------------------------------------------------ rfDZ: Wrap scribe edges
+  // wrapSplit(mesh, i, j) -> true when mesh faces i and j lie on one surface but are kept apart by a Wrap scribe: Anvil's
+  // facets inside a scribe carry surface records marked w (kernel-features.js scribeSplit); OpenCascade's split faces
+  // are different B-rep faces (face tags) on one plane or one analytic surface (after UnifySameDomain only a kept split
+  // leaves two). Their common edge is a model edge, not a seam between facets.
+  function wrapSplit(mesh, i, j) {
+    var fa = mesh.faces[i], fb = mesh.faces[j], pa = fa && fa.polys && fa.polys[0], pb = fb && fb.polys && fb.polys[0];
+    if (!pa || !pb || (fa.body || 0) !== (fb.body || 0) || fa.part !== fb.part) return false;
+    var sa = pa.surf && pa.surf.s, sb = pb.surf && pb.surf.s, wa = sa && sa.w != null ? sa.w : null, wb = sb && sb.w != null ? sb.w : null;
+    if (wa === wb && (pa.face == null || pb.face == null || pa.face === pb.face)) return false;
+    if (!sa && !sb) return dot(fa.normal, fb.normal) > 1 - 1e-9 && Math.abs(fa.w - fb.w) < 1e-6 * (1 + Math.abs(fa.w));
+    if (!sa || !sb || sa.t !== sb.t || Math.abs((sa.r || 0) - (sb.r || 0)) > 1e-7 * (1 + Math.abs(sa.r || 0)) || Math.abs((sa.k || 0) - (sb.k || 0)) > 1e-9) return false;
+    if (Math.abs(Math.abs(dot(norm(sa.d), norm(sb.d))) - 1) > 1e-9) return false;
+    var v = sub(sb.o, sa.o), dd = norm(sa.d);
+    return len(sub(v, scale(dd, dot(v, dd)))) < 1e-7 * (1 + len(sa.o)) && (sa.t !== 'cone' || Math.abs(dot(v, dd)) < 1e-7 * (1 + len(sa.o)));
+  }
+  K.wrapSplit = wrapSplit;
 })(Kernel, Kernel._);

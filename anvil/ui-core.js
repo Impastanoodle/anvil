@@ -1616,6 +1616,7 @@ var UI = (function () {
       var p = g.p, r = s * 0.22, k = r * 0.7, arr = [];
       [[r, 0, 0], [0, r, 0], [0, 0, r], [k, k, k], [k, -k, k], [-k, k, k], [-k, -k, k]].forEach(function (d) { arr.push(p[0] - d[0], p[1] - d[1], p[2] - d[2], p[0] + d[0], p[1] + d[1], p[2] + d[2]); });
       group.add(refSegs(arr, refMat(state || 'line', false), false));
+    } else if (g.refgeo === 'curve') { faDrawCurve(g, group, state);   // rfFA: a reference curve
     } else if (g.refgeo === 'csys') {
       var o = g.origin, L2 = s * 1.4;
       ['x', 'y', 'z'].forEach(function (ax) {
@@ -1628,6 +1629,7 @@ var UI = (function () {
   }
   function updateRefGeo() {
     disposeGroup(refGroup);
+    faCurveItems().forEach(function (it) { drawRefGeo(it.g, refGroup, refSelected(it.f.id) ? 'sel' : refHovered(it.f.id) ? 'hover' : null); });   // rfFA
     refGeoItems(false).forEach(function (it) {
       drawRefGeo(it.g, refGroup, refSelected(it.f.id) ? 'sel' : refHovered(it.f.id) ? 'hover' : null);
     });
@@ -1689,7 +1691,9 @@ var UI = (function () {
   }
   function isConsumed(id) {
     return App.model.features.some(function (g) {
-      return g.sketch === id || g.profile === id || g.path === id || (g.sketches && g.sketches.indexOf(id) >= 0);
+      if (g.sketch === id || g.profile === id || g.path === id || (g.sketches && g.sketches.indexOf(id) >= 0)) return true;
+      // rfFB: a Boundary's Direction 1 profiles and Direction 2 curves (an id, or { sketch, entity })
+      return [g.dir1, g.dir2].some(function (L) { return Array.isArray(L) && L.some(function (c) { return c === id || (c && typeof c === 'object' && c.sketch === id); }); });
     });
   }
   // a dashed twin of a sketch line material, dash length in screen pixels at the current zoom
@@ -3191,6 +3195,28 @@ var UI = (function () {
     lastMiddle = nearPt(ev, middleDown) ? middleDown : null;
     middleDown = null;
   });
+
+  // ------------------------------------------------------------------ rfFA: reference curves in the viewport
+  // Helix / Spiral, Projected, Composite and Curve Through Points records (App.build.planes, refgeo 'curve') drawn as
+  // grey polylines (yellow selected); a curve hidden from the tree (f.hidden) or with View ▸ Curves off is not drawn.
+  // Drawings never show them (HLR reads the bodies only).
+  function faCurveItems() {
+    var out = [], planes = App.build && App.build.planes;
+    if (!planes || !App.model || !App.model.features || App.view.showCurves === false) return out;
+    App.model.features.forEach(function (f) {
+      var g = planes[f.id];
+      if (!g || g.refgeo !== 'curve' || f.hidden || f.suppressed || rolledBack(f) || App.editingFeatureId === f.id) return;
+      out.push({ f: f, g: g });
+    });
+    return out;
+  }
+  function faDrawCurve(g, group, state) {
+    (g.runs || [g]).forEach(function (r) {
+      var P = r.pts, arr = [];
+      for (var i = 0; i + 1 < P.length; i++) arr.push(P[i][0], P[i][1], P[i][2], P[i + 1][0], P[i + 1][1], P[i + 1][2]);
+      if (arr.length) group.add(refSegs(arr, refMat(state || 'line', false), false));
+    });
+  }
 
   return {
     App: App, K: K, V: V, $: $, el: el, fmtNum: fmtNum, unitLabel: unitLabel,

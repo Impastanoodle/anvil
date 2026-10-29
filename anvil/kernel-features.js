@@ -99,10 +99,12 @@
     var profile = prof.profile || sketchProfile(prof);
     if (!profile.loops.length) throw new Error('Sweep profile sketch has no closed profile.');
     checkProfile(profile);
-    var path;
+    var path, cpath = null;
     if (Array.isArray(f.path)) {
       path = f.path.map(function (p) { return [+p[0], +p[1], +p[2]]; });
       path.forEach(function (p) { if (!isFinite(p[0]) || !isFinite(p[1]) || !isFinite(p[2])) throw new Error('Every sweep path coordinate must be a number.'); });
+    } else if (isCurveFeature(findFeature(model, f.path))) {   // rfFA: a reference curve (helix, projected, composite, …)
+      cpath = _.curveSweepPath(f.path, ctx); path = cpath.pts;
     } else {
       var ps = ctx.sketches[f.path] || findFeature(model, f.path);
       if (!ps || ps.type !== 'sketch') throw new Error('Select a path sketch for the sweep.');
@@ -115,7 +117,8 @@
     if (pts.length < 2) throw new Error('Sweep path needs at least two distinct points.');
     // the path starts at the end nearest the profile
     var c0 = loopCentroid3(profile.loops[0].pts.map(function (p) { return to3D(profPlane, p[0], p[1]); }));
-    if (len(sub(pts[pts.length - 1], c0)) < len(sub(pts[0], c0))) pts.reverse();
+    var flipped = len(sub(pts[pts.length - 1], c0)) < len(sub(pts[0], c0));
+    if (flipped) pts.reverse();
     var dirs = [];
     for (i = 0; i + 1 < pts.length; i++) dirs.push(norm(sub(pts[i + 1], pts[i])));
     // a closed path (a closed polyline, or a chain back to its start) mitres its start / end joint like every other
@@ -123,11 +126,11 @@
     var closed = dirs.length > 2 && len(sub(pts[pts.length - 1], pts[0])) < 1e-6;
     var joint = closed && len(add(dirs[dirs.length - 1], dirs[0])) > 1e-9 ? { v: pts[0], n: norm(add(dirs[dirs.length - 1], dirs[0])) } : null;
     // place the profile perpendicular to the first segment, pivoting about the path start
-    var J0 = pts[0];
+    var J0 = pts[0], A0 = cpath ? (flipped ? cpath.end : cpath.start) : J0;   // rfFA: the profile keeps its offset from the true curve end
     var nSign = dot(profPlane.n, dirs[0]) < 0 ? -1 : 1;
     var rot0 = rotationTo(scale(profPlane.n, nSign), dirs[0]);
     var sections = profile.loops.map(function (l) {
-      return { hole: l.hole, pts: l.pts.map(function (p) { return add(J0, rot0(sub(to3D(profPlane, p[0], p[1]), J0))); }) };
+      return { hole: l.hole, pts: (cpath ? _.areaTrueLoop(l, profile) : l.pts).map(function (p) { return add(J0, rot0(sub(to3D(profPlane, p[0], p[1]), A0))); }) };
     });
     var perLoop = sections.map(function () { return []; });
     for (i = 0; i < dirs.length; i++) {
@@ -818,10 +821,1530 @@
   function toCsys(cs, p) { var v = sub(p, cs.origin); return [dot(v, cs.x), dot(v, cs.y), dot(v, cs.z)]; }
   function dirToCsys(cs, v) { return [dot(v, cs.x), dot(v, cs.y), dot(v, cs.z)]; }
 
+  // rfFB: ------------------------------------------------------------------ Boundary Boss/Base, Boundary Cut
+  // { type: 'boundary', dir1: [sketch ids], dir2: [sketch id | { sketch, entity } | { pts: [[x,y,z], …] }], cut?,
+  //   tangency1?: { start, end }, tangency2?, close?, mergeTangent?, thin?: { t, mid?, reverse? } }
+  // Direction 1 sketches each hold one closed profile; every open chain of a Direction 2 sketch (or the one entity, or
+  // the 3D polyline) is a curve that must touch every Direction 1 profile. boundaryFrame splits each profile at the
+  // curves' contact points into pieces and each curve between profiles into pieces: patch (band i, piece k) is bounded
+  // by profile i and i+1's piece k and curves k and k+1 — a Coons patch (bilinear blend of the four sides). Anvil's
+  // kernel facets it on the union of the sides' own vertices, so straight sides give planar faces (exact volumes);
+  // OpenCascade (occt-kernel.js) builds the same patches as BSpline surfaces. With no Direction 2 curves the solid is
+  // the Loft through the profiles (buildLoft; ThruSections on OpenCascade).
+  function bfbErr(msg) { return new Error(msg); }
+  function bfbArc(pts) { var a = [0]; for (var i = 1; i < pts.length; i++) a.push(a[i - 1] + len(sub(pts[i], pts[i - 1]))); return a; }
+  // the points of polyline pts at arclength fractions fr (0..1)
+  function bfbAt(pts, fr) {
+    var a = bfbArc(pts), L = a[a.length - 1], out = [], j = 0;
+    fr.forEach(function (x) {
+      if (x <= 0) { out.push(pts[0]); return; }
+      if (x >= 1) { out.push(pts[pts.length - 1]); return; }
+      var s = x * L;
+      while (j > 0 && a[j] > s) j--;
+      while (j < pts.length - 2 && a[j + 1] < s) j++;
+      var d = a[j + 1] - a[j], t = d > 1e-15 ? (s - a[j]) / d : 0;
+      out.push(t <= 1e-12 ? pts[j] : t >= 1 - 1e-12 ? pts[j + 1] : add(pts[j], scale(sub(pts[j + 1], pts[j]), t)));
+    });
+    return out;
+  }
+  function bfbFracs(pts) { var a = bfbArc(pts), L = a[a.length - 1]; return a.map(function (x) { return L > 0 ? x / L : 0; }); }
+  function bfbUnion(lists, cap) {
+    var all = [];
+    lists.forEach(function (l) { all = all.concat(l); });
+    all.sort(function (p, q) { return p - q; });
+    var out = [];
+    all.forEach(function (x) { if (!out.length || x - out[out.length - 1] > 1e-7) out.push(x); });
+    out[0] = 0; if (out[out.length - 1] < 1 - 1e-7) out.push(1); else out[out.length - 1] = 1;
+    if (out.length > cap) { out = []; for (var i = 0; i <= 64; i++) out.push(i / 64); }
+    return out;
+  }
+  function bfbId(x) { return x != null && typeof x === 'object' ? x.sketch : x; }
+  function bfbSketch(id, model, ctx, what) {
+    var s = ctx.sketches[id] || findFeature(model, id);
+    if (!s || s.type !== 'sketch') throw bfbErr(what);
+    return s;
+  }
+  // the Direction 2 curves as 3D polylines
+  function bfbCurves(f, model, ctx) {
+    var out = [];
+    (f.dir2 || []).forEach(function (c) {
+      if (c && Array.isArray(c.pts)) { if (c.pts.length >= 2) out.push(c.pts.map(function (p) { return [+p[0], +p[1], +p[2]]; })); return; }
+      // { sketch, entity }: the chain through that entity; a sketch id: every chain of the sketch
+      var s = bfbSketch(bfbId(c), model, ctx, 'A Direction 2 curve sketch was not found.'), pl = resolvePlane(s.plane, model, ctx.planes), chains = [];
+      var want = c && typeof c === 'object' && c.entity != null ? +c.entity : null;
+      (s.entities || []).forEach(function (e, i) {
+        if (e.construction || e.t === 'text' || e.t === 'point' || (K.noProfileEntity && K.noProfileEntity(s, e))) return;
+        entityPolylines(e).forEach(function (p) { chains.push({ pts: p.closed ? p.pts.concat([p.pts[0]]) : p.pts.slice(), ents: [i] }); });
+      });
+      // chain the pieces end to end: each connected chain is one curve
+      while (chains.length) {
+        var ch = chains.shift(), pts = ch.pts, ents = ch.ents, grew = true;
+        while (grew) {
+          grew = false;
+          for (var i = 0; i < chains.length; i++) {
+            var q = chains[i].pts, h = key2(pts[0]), t = key2(pts[pts.length - 1]);
+            if (key2(q[0]) === t) pts = pts.concat(q.slice(1));
+            else if (key2(q[q.length - 1]) === t) pts = pts.concat(q.slice().reverse().slice(1));
+            else if (key2(q[q.length - 1]) === h) pts = q.slice(0, -1).concat(pts);
+            else if (key2(q[0]) === h) pts = q.slice().reverse().slice(0, -1).concat(pts);
+            else continue;
+            ents = ents.concat(chains[i].ents); chains.splice(i, 1); grew = true; break;
+          }
+        }
+        if (want == null || ents.indexOf(want) >= 0) out.push(pts.map(function (p) { return to3D(pl, p[0], p[1]); }));
+      }
+      if (want != null && !s.entities[want]) throw bfbErr('A Direction 2 curve (' + s.name + ', entity ' + (want + 1) + ') was not found.');
+    });
+    return out;
+  }
+  // contacts of polyline g with a section (plane pl, closed 3D loop L): [{ u (arclength on g), p, j (loop segment), t }]
+  function bfbContacts(g, sec, tol) {
+    var pl = sec.plane, L = sec.pts, n = L.length, ag = bfbArc(g), cands = [];
+    function onLoop(p) {
+      var best = null;
+      for (var j = 0; j < n; j++) {
+        var a = L[j], b = L[(j + 1) % n], ab = sub(b, a), l2 = dot(ab, ab), t = l2 > 0 ? Math.max(0, Math.min(1, dot(sub(p, a), ab) / l2)) : 0;
+        var d = len(sub(p, add(a, scale(ab, t))));
+        if (!best || d < best.d) best = { d: d, j: j, t: t };
+      }
+      return best && best.d <= tol ? best : null;
+    }
+    for (var i = 0; i < g.length; i++) {
+      var d0 = dot(sub(g[i], pl.origin), pl.n), hit = null, u = ag[i];
+      if (Math.abs(d0) <= tol) hit = g[i];
+      else if (i + 1 < g.length) {
+        var d1 = dot(sub(g[i + 1], pl.origin), pl.n);
+        if (Math.abs(d1) > tol && (d0 < 0) !== (d1 < 0)) { var s = d0 / (d0 - d1); hit = add(g[i], scale(sub(g[i + 1], g[i]), s)); u = ag[i] + s * (ag[i + 1] - ag[i]); }
+      }
+      if (!hit) continue;
+      var on = onLoop(hit);
+      if (on && !cands.some(function (c) { return Math.abs(c.u - u) <= tol; })) cands.push({ u: u, j: on.j, t: on.t, d: on.d });
+    }
+    return cands;
+  }
+  // the shared layout both kernels build from:
+  // { secs: [{ plane, pts, dir }], G, virtual, close, pieces[i][k] (section i between curves k and k+1, both contact
+  //   points included), guides[b][k] (curve k from section b to b + 1, ends = the contact points), tol }
+  function boundaryFrame(f, model, ctx) {
+    var ids = (f.dir1 || []).map(bfbId);
+    if (ids.length < 2) throw bfbErr('Select at least two profiles for Direction 1.');
+    var secs = ids.map(function (id) {
+      var s = bfbSketch(id, model, ctx, 'A Direction 1 profile sketch was not found.'), pl = resolvePlane(s.plane, model, ctx.planes);
+      var prof = s.profile || sketchProfile(s);
+      checkProfile(prof);
+      var outers = prof.loops.filter(function (l) { return !l.hole; });
+      if (outers.length !== 1) throw bfbErr('Each Direction 1 sketch must contain exactly one closed profile.');
+      return { id: id, plane: pl, pts: outers[0].pts.map(function (p) { return to3D(pl, p[0], p[1]); }) };
+    });
+    var n = secs.length, close = !!f.close && n >= 3, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    secs.forEach(function (s) { s.c = loopCentroid3(s.pts); s.pts.forEach(function (p) { for (var a = 0; a < 3; a++) { lo[a] = Math.min(lo[a], p[a]); hi[a] = Math.max(hi[a], p[a]); } }); });
+    var tol = Math.max(1e-9, 1e-4 * len(sub(hi, lo)));
+    secs.forEach(function (s, i) {
+      var d = i + 1 < n ? sub(secs[i + 1].c, s.c) : sub(s.c, secs[i - 1].c);
+      if (len(d) < tol) throw bfbErr('Two Direction 1 profiles lie on top of each other.');
+      s.dir = norm(d);
+      if (dot(loopNormal3(s.pts), s.dir) < 0) s.pts = s.pts.slice().reverse();
+    });
+    var curves = bfbCurves(f, model, ctx), G = curves.length, out = { secs: secs, close: close, tol: tol, virtual: !G, pieces: [], guides: [] };
+    var contact = [], i, k;   // contact[i][k] = index of curve k's point in section i's loop
+    if (G) {
+      if (close) throw bfbErr('Close is not available with Direction 2 curves yet.');
+      var hits = curves.map(function (g, gi) {
+        var prev = -Infinity, list = secs.map(function (s) {
+          var cs = bfbContacts(g, s, 10 * tol);
+          if (!cs.length) throw bfbErr('Each Direction 2 curve must intersect every Direction 1 profile.');
+          cs.sort(function (p, q) { return p.u - q.u; });
+          var c = cs.filter(function (x) { return x.u > prev; })[0] || cs[0];
+          prev = c.u;
+          return c;
+        });
+        var inc = true, dec = true;
+        for (var j = 1; j < n; j++) { if (!(list[j].u > list[j - 1].u)) inc = false; if (!(list[j].u < list[j - 1].u)) dec = false; }
+        if (!inc && !dec) throw bfbErr('Direction 2 curve ' + (gi + 1) + ' must run through the Direction 1 profiles in order.');
+        return { g: g, list: list, dec: dec };
+      });
+      // put the contact points into each loop
+      secs.forEach(function (s, si) {
+        var ins = hits.map(function (h, gi) { var c = h.list[si]; return { gi: gi, w: c.t > 1 - 1e-9 ? (c.j + 1) % s.pts.length : c.j + (c.t < 1e-9 ? 0 : c.t), c: c }; });
+        ins.sort(function (p, q) { return p.w - q.w; });
+        for (var q = 1; q < ins.length; q++) if (Math.abs(ins[q].w - ins[q - 1].w) < 1e-9) throw bfbErr('Two Direction 2 curves meet a profile at the same point.');
+        var pts = [], at = {};
+        for (var v = 0; v < s.pts.length; v++) {
+          ins.forEach(function (x) { if (Math.abs(x.w - v) < 1e-9) at[x.gi] = pts.length; });
+          pts.push(s.pts[v]);
+          ins.forEach(function (x) { if (x.w > v + 1e-9 && x.w < v + 1 - 1e-9) { at[x.gi] = pts.length; var a = s.pts[v], b = s.pts[(v + 1) % s.pts.length]; pts.push(add(a, scale(sub(b, a), x.w - v))); } });
+        }
+        s.pts = pts;
+        contact.push(hits.map(function (h, gi) { return at[gi]; }));
+      });
+      // the curves' cyclic order around the first profile must hold on every profile
+      var order = hits.map(function (h, gi) { return gi; }).sort(function (p, q) { return contact[0][p] - contact[0][q]; });
+      for (i = 1; i < n; i++) {
+        var o2 = order.slice().sort(function (p, q) { return contact[i][p] - contact[i][q]; }), r = o2.indexOf(order[0]);
+        for (k = 0; k < G; k++) if (o2[(r + k) % G] !== order[k]) throw bfbErr('The Direction 2 curves cross between the profiles.');
+      }
+      hits = order.map(function (gi) { return hits[gi]; });
+      contact = contact.map(function (row) { return order.map(function (gi) { return row[gi]; }); });
+      // curve pieces between consecutive profiles, ends snapped to the contact points
+      for (var b = 0; b + 1 < n; b++) {
+        out.guides.push(hits.map(function (h, kk) {
+          var g = h.g, ag = bfbArc(g), u0 = h.list[b].u, u1 = h.list[b + 1].u, pts = [secs[b].pts[contact[b][kk]]];
+          if (u0 < u1) { for (var m = 0; m < g.length; m++) if (ag[m] > u0 + 1e-9 && ag[m] < u1 - 1e-9) pts.push(g[m]); }
+          else { for (var m2 = g.length - 1; m2 >= 0; m2--) if (ag[m2] < u0 - 1e-9 && ag[m2] > u1 + 1e-9) pts.push(g[m2]); }
+          pts.push(secs[b + 1].pts[contact[b + 1][kk]]);
+          return pts;
+        }));
+      }
+    } else {
+      // no curves: one seam per profile, each started where it best matches the one before (as Loft aligns them)
+      contact.push([0]);
+      for (i = 1; i < n; i++) {
+        var A = resampleLoop(secs[i - 1].pts.slice(contact[i - 1][0]).concat(secs[i - 1].pts.slice(0, contact[i - 1][0])), 24), Bp = secs[i].pts, best = 0, bestCost = Infinity;
+        for (var st = 0; st < Bp.length; st++) {
+          var Bs = resampleLoop(Bp.slice(st).concat(Bp.slice(0, st)), 24), cost = 0;
+          for (var q2 = 0; q2 < 24; q2++) { var dd = sub(sub(A[q2], secs[i - 1].c), sub(Bs[q2], secs[i].c)); cost += dot(dd, dd); }
+          if (cost < bestCost - 1e-12) { bestCost = cost; best = st; }
+        }
+        contact.push([best]);
+      }
+      for (i = 0; i + 1 < n + (close ? 1 : 0); i++) out.guides.push([[secs[i].pts[contact[i][0]], secs[(i + 1) % n].pts[contact[(i + 1) % n][0]]]]);
+      G = 1;
+    }
+    out.G = G;
+    secs.forEach(function (s, si) {
+      var m = s.pts.length;
+      out.pieces.push(contact[si].map(function (c0, kk) {
+        var c1 = contact[si][(kk + 1) % G], pts = [s.pts[c0]], v = (c0 + 1) % m, guard = 0;
+        while (v !== c1 && guard++ <= m) { pts.push(s.pts[v]); v = (v + 1) % m; }
+        pts.push(s.pts[c1]);
+        return pts;
+      }));
+    });
+    return out;
+  }
+  // a grid of rows (one per curve station, each a closed ring of points); planar convex quads stay quads
+  function bfbQuad(polys, a, b, c, d, id) {
+    var nrm = cross(sub(c, a), sub(d, b)), L = len(nrm);
+    if (L < 1e-18) return;
+    var nn = scale(nrm, 1 / L), size = len(sub(c, a)) + len(sub(d, b)), off = Math.abs(dot(sub(d, a), nn)) + Math.abs(dot(sub(b, a), nn)) + Math.abs(dot(sub(c, a), nn));
+    var convex = [[a, b, c], [b, c, d], [c, d, a], [d, a, b]].every(function (t) { return dot(cross(sub(t[1], t[0]), sub(t[2], t[1])), nn) > 0; });
+    if (off < 1e-9 * size && convex) { pushPoly(polys, [a, b, c, d], id); return; }
+    if (len(sub(c, a)) <= len(sub(d, b))) { pushPoly(polys, [a, b, c], id); pushPoly(polys, [a, c, d], id); }
+    else { pushPoly(polys, [a, b, d], id); pushPoly(polys, [b, c, d], id); }
+  }
+  function boundaryGrid(fr) {
+    var secs = fr.secs, n = secs.length, G = fr.G, S = [], rows = [], k, i;
+    for (k = 0; k < G; k++) S.push(bfbUnion(fr.pieces.map(function (ps) { return bfbFracs(ps[k]); }), 400));
+    var ring = function (si) { var r = []; for (var kk = 0; kk < G; kk++) r = r.concat(bfbAt(fr.pieces[si][kk], S[kk]).slice(0, -1)); return r; };
+    var bands = fr.guides.length;
+    for (var b = 0; b < bands; b++) {
+      var s0 = b, s1 = (b + 1) % n;
+      rows.push(ring(s0));
+      var T = bfbUnion(fr.guides[b].map(bfbFracs), 400);
+      if (T.length <= 2) continue;
+      var As = [], Bs = [], Ls = [];
+      for (k = 0; k < G; k++) { As.push(bfbAt(fr.pieces[s0][k], S[k])); Bs.push(bfbAt(fr.pieces[s1][k], S[k])); Ls.push(bfbAt(fr.guides[b][k], T)); }
+      for (i = 1; i + 1 < T.length; i++) {
+        var t = T[i], row = [];
+        for (k = 0; k < G; k++) {
+          var A = As[k], B = Bs[k], L = Ls[k][i], R = Ls[(k + 1) % G][i], A0 = A[0], A1 = A[A.length - 1], B0 = B[0], B1 = B[B.length - 1];
+          for (var j = 0; j + 1 < A.length; j++) {
+            var s = S[k][j], p = add(scale(A[j], 1 - t), scale(B[j], t));
+            p = add(p, add(scale(L, 1 - s), scale(R, s)));
+            p = sub(p, add(add(scale(A0, (1 - s) * (1 - t)), scale(A1, s * (1 - t))), add(scale(B0, (1 - s) * t), scale(B1, s * t))));
+            row.push(p);
+          }
+        }
+        rows.push(row);
+      }
+    }
+    if (!fr.close) rows.push(ring(n - 1));
+    return rows;
+  }
+  // unit-distance offset per grid point (outward: rings run CCW about the direction of travel), mitred so planar
+  // neighbouring faces move by exactly the distance
+  function bfbOffsets(rows, closed) {
+    var R = rows.length, C = rows[0].length, cell = [];
+    function at(r, c) { return rows[(r + R) % R][(c + C) % C]; }
+    for (var r = 0; r < R - (closed ? 0 : 1); r++) {
+      cell.push([]);
+      for (var c = 0; c < C; c++) { var nv = cross(sub(at(r + 1, c + 1), at(r, c)), sub(at(r + 1, c), at(r, c + 1))); cell[r].push(len(nv) > 1e-18 ? norm(nv) : null); }
+    }
+    var out = [];
+    for (r = 0; r < R; r++) {
+      out.push([]);
+      for (c = 0; c < C; c++) {
+        var ns = [];
+        [[r - 1, c - 1], [r - 1, c], [r, c - 1], [r, c]].forEach(function (rc) {
+          var rr = closed ? (rc[0] + cell.length) % cell.length : rc[0];
+          if (rr < 0 || rr >= cell.length) return;
+          var v = cell[rr][(rc[1] + C) % C];
+          if (v && !ns.some(function (u) { return dot(u, v) > 1 - 1e-9; })) ns.push(v);
+        });
+        var d = [0, 0, 0];
+        if (ns.length === 1) d = ns[0];
+        else if (ns.length === 2) d = scale(add(ns[0], ns[1]), 1 / (1 + dot(ns[0], ns[1])));
+        else if (ns.length > 2) {
+          // least squares d·n = 1 for every neighbouring face normal (3×3 normal equations, Cramer)
+          var M = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], y = [0, 0, 0];
+          ns.forEach(function (v) { for (var a = 0; a < 3; a++) { y[a] += v[a]; for (var b = 0; b < 3; b++) M[a][b] += v[a] * v[b]; } });
+          var det = function (m) { return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]); };
+          var D = det(M);
+          if (Math.abs(D) > 1e-12) for (var a = 0; a < 3; a++) { var Ma = M.map(function (row, ri) { var x = row.slice(); x[a] = y[ri]; return x; }); d[a] = det(Ma) / D; }
+          else { ns.forEach(function (v) { d = add(d, v); }); d = norm(d); }
+        }
+        out[r].push(d);
+      }
+    }
+    return out;
+  }
+  function buildBoundary(f, model, ctx) {
+    var thin = f.thin && +f.thin.t > 0 ? f.thin : null;
+    if (!(f.dir2 || []).length && !thin && !f.close) {
+      // no Direction 2 curves: the Loft through the profiles
+      var fr0 = boundaryFrame(f, model, ctx);   // the same checks and messages as with curves
+      return buildLoft({ id: f.id, type: 'loft', sketches: fr0.secs.map(function (s) { return s.id; }) }, model, ctx);
+    }
+    var fr = boundaryFrame(f, model, ctx), rows = boundaryGrid(fr), R = rows.length, C = rows[0].length, polys = [], id = f.id, r, c;
+    var closed = fr.close, secs = fr.secs;
+    if (f.tangency1 || f.tangency2) {
+      var tg = [f.tangency1, f.tangency2].some(function (t) { return t && ((t.start && t.start !== 'none') || (t.end && t.end !== 'none')); });
+      if (tg && ctx.warnings) ctx.warnings[f.id] = (ctx.warnings[f.id] ? ctx.warnings[f.id] + ' ' : '') + 'End tangency is not applied yet: the profiles are joined without it.';
+    }
+    function capTris(ring, plane, want, flip) {
+      var r2 = ring.map(function (p) { return to2D(plane, p); }), out = [];
+      triangulateAny(r2).forEach(function (t) {
+        var tri = [ring[t[0]], ring[t[1]], ring[t[2]]];
+        if (dot(cross(sub(tri[1], tri[0]), sub(tri[2], tri[0])), want) < 0) tri.reverse();
+        out.push(flip ? tri.reverse() : tri);
+      });
+      return out;
+    }
+    var nCells = closed ? R : R - 1;
+    if (!thin) {
+      for (r = 0; r < nCells; r++) for (c = 0; c < C; c++) bfbQuad(polys, rows[r][c], rows[r][(c + 1) % C], rows[(r + 1) % R][(c + 1) % C], rows[(r + 1) % R][c], id);
+      if (!closed) {
+        capTris(rows[0], secs[0].plane, scale(secs[0].dir, -1)).forEach(function (t) { pushPoly(polys, t, id); });
+        capTris(rows[R - 1], secs[secs.length - 1].plane, secs[secs.length - 1].dir).forEach(function (t) { pushPoly(polys, t, id); });
+      }
+      return ensureOutward(polys);
+    }
+    // Thin Feature: walls of thickness t about the boundary surface, open at the end profiles
+    var T = +thin.t, dOut = thin.mid ? T / 2 : (thin.reverse ? 0 : T), dIn = thin.mid ? T / 2 : (thin.reverse ? T : 0), off = bfbOffsets(rows, closed);
+    // the wall ends lie in the end profiles' planes: slide each end offset along the surface (its run to the next row)
+    if (!closed) [[0, 1, secs[0].plane], [R - 1, R - 2, secs[secs.length - 1].plane]].forEach(function (e) {
+      off[e[0]] = off[e[0]].map(function (d, ci) {
+        var dt = sub(rows[e[1]][ci], rows[e[0]][ci]), dn = dot(dt, e[2].n);
+        return Math.abs(dn) > 1e-12 ? sub(d, scale(dt, dot(d, e[2].n) / dn)) : d;
+      });
+    });
+    var O = rows.map(function (row, ri) { return row.map(function (p, ci) { return add(p, scale(off[ri][ci], dOut)); }); });
+    var I = rows.map(function (row, ri) { return row.map(function (p, ci) { return sub(p, scale(off[ri][ci], dIn)); }); });
+    for (r = 0; r < nCells; r++) for (c = 0; c < C; c++) {
+      var r1 = (r + 1) % R, c1 = (c + 1) % C;
+      bfbQuad(polys, O[r][c], O[r][c1], O[r1][c1], O[r1][c], id);
+      bfbQuad(polys, I[r][c], I[r1][c], I[r1][c1], I[r][c1], id);
+    }
+    if (!closed) {
+      [[0, scale(secs[0].dir, -1)], [R - 1, secs[secs.length - 1].dir]].forEach(function (e) {
+        var ri = e[0], want = e[1];
+        for (c = 0; c < C; c++) {
+          var c2 = (c + 1) % C, q = [O[ri][c], O[ri][c2], I[ri][c2], I[ri][c]];
+          if (dot(cross(sub(q[2], q[0]), sub(q[3], q[1])), want) < 0) q.reverse();
+          bfbQuad(polys, q[0], q[1], q[2], q[3], id);
+        }
+      });
+    }
+    return ensureOutward(polys);
+  }
+  K.buildBoundary = buildBoundary; K.boundaryFrame = boundaryFrame; _.buildBoundary = buildBoundary; _.boundaryFrame = boundaryFrame; _.boundaryGrid = boundaryGrid;   // rfFB
+
 
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.sketchPath = sketchPath; K.buildSweep = buildSweep; K.buildLoft = buildLoft; K.resolveFaces = resolveFaces; K.buildShell = buildShell;
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   K.resolveRefGeo = resolveRefGeo; K.toCsys = toCsys; K.dirToCsys = dirToCsys; _.resolveRefGeo = resolveRefGeo; _.revolveOnRefAxis = revolveOnRefAxis;   // lane CZ
   _.buildLoft = buildLoft; _.buildShell = buildShell; _.buildSweep = buildSweep; _.faceLoopsClassified = faceLoopsClassified;
+
+  // ------------------------------------------------------------------ rfDX: Draft (SolidWorks' Neutral Plane draft)
+  // { type: 'draft', neutral: { face: [x,y,z] } | { plane: 'Front' | 'Top' | 'Right' | <plane feature id>, offset? },
+  //   faces: [{ at: [x,y,z] }], angle (deg, 0 < a < 89), reverse?, propagate?: 'none' | 'tangent' }
+  // Pull direction: the neutral face's inward normal (a plane's normal), turned toward the side of the neutral plane
+  // the drafted faces lie on (draftSide); reverse flips it. Every drafted face turns about its line on the neutral plane by the angle, its outward normal
+  // tilting toward the pull, so the part tapers away from the neutral plane along the pull (a 2 x 2 x 1 block drafted
+  // 5 deg about its bottom face: the top shrinks by 2 tan 5 deg each way; reverse grows it).
+  // Planar faces are exact: per face, the wedge between the old and the new plane inside the face's prism (its
+  // outline grown across convex edges so corners meet the neighbour's new plane) is cut away on the pull side of the
+  // neutral plane and added (clipped by the convex neighbours' planes, new or old) on the other side. Curved faces
+  // (cylinders become cones) are refused here; OpenCascade drafts them exactly (occt-kernel.js draftOp).
+  // -> { body, faces: [mesh face index], pull, removed: CSG|null, added: CSG|null }
+  function draftNeutral(ref, mesh, ctx, tol) {
+    if (!ref) throw new Error('Select a neutral plane: a planar face or a plane.');
+    var at = ref.face || ref.at;
+    if (at) {
+      var k = resolveFaces([{ at: at }], mesh, tol)[0];
+      if (k == null || k < 0) throw new Error('The neutral face was not found on the body. Select it again.');
+      if (draftCurved(mesh.faces[k])) throw new Error('The neutral plane must be a planar face or a plane.');
+      var fn = mesh.faces[k].normal;
+      return { pull: scale(fn, -1), d0: -mesh.faces[k].w, face: k };
+    }
+    var pl = null, name = ref.plane != null ? ref.plane : ref.ref;
+    if (typeof name === 'string' && K.STD_PLANES[name]) pl = K.makePlane(name, +ref.offset || 0);
+    else if (name != null && ctx.planes && ctx.planes[name] && ctx.planes[name].n && ctx.planes[name].origin) pl = ctx.planes[name];
+    else if (ref.featureId != null || ref.custom) pl = resolvePlane(ref, null, ctx.planes);
+    if (!pl) throw new Error('The neutral plane was not found. Select a planar face or a plane.');
+    var n = norm(pl.n);
+    return { pull: n, d0: dot(n, pl.origin), face: -1 };
+  }
+  function draftCurved(face) {
+    return !!(face && face.polys && face.polys.some(function (p) { var s = p.surf && p.surf.s; return !!(s && s.t && s.t !== 'plane'); }));
+  }
+  // faces sharing a smooth edge with a picked face that lie on a curved surface (Face propagation: Along Tangent)
+  function draftPropagate(idx, mesh) {
+    var edges = bodyEdges(mesh), grew = true;
+    while (grew) {
+      grew = false;
+      edges.forEach(function (e) {
+        if (!e.smooth || e.faces.length !== 2) return;
+        var a = e.faces[0], b = e.faces[1], ia = idx.indexOf(a) >= 0, ib = idx.indexOf(b) >= 0;
+        if (ia === ib) return;
+        var o = ia ? b : a;
+        if (!draftCurved(mesh.faces[o]) && !draftCurved(mesh.faces[ia ? a : b])) return;
+        idx.push(o); grew = true;
+      });
+    }
+    return idx;
+  }
+  // -1 when the faces ({ area, centroid }) lie mostly on the far side of the neutral plane from the pull N (n . p = d0)
+  function draftSide(N, d0, faces) {
+    var s = 0, a = 0;
+    faces.forEach(function (fc) { s += fc.area * (dot(N, fc.centroid) - d0); a += fc.area; });
+    return s < -1e-9 * Math.max(1, a) ? -1 : 1;
+  }
+  function rotateVec(v, u, ang) {
+    var c = Math.cos(ang), s = Math.sin(ang);
+    return add(add(scale(v, c), scale(cross(u, v), s)), scale(u, dot(u, v) * (1 - c)));
+  }
+  function buildDraft(f, ctx) {
+    if (!ctx.body || !ctx.body.polygons || !ctx.body.polygons.length) throw new Error('Nothing to draft yet.');
+    var A = +f.angle;
+    if (!(A > 0) || !(A < 89)) throw new Error('Draft angle must be greater than 0 and less than 89 degrees.');
+    if (!(f.faces || []).length) throw new Error('Select the faces to draft.');
+    var mesh = meshFromBody(ctx.body), tol = _.pickTol(ctx.units || 'mm');
+    var neu = draftNeutral(f.neutral, mesh, ctx, tol);
+    var N = f.reverse ? scale(neu.pull, -1) : neu.pull, d0 = f.reverse ? -neu.d0 : neu.d0;
+    var idx = resolveFaces(f.faces, mesh, tol);
+    if (idx.length < f.faces.length) throw new Error('A face to draft was not found on the body. Select the faces again.');
+    if (f.propagate === 'tangent') idx = draftPropagate(idx.slice(), mesh);
+    // the pull points to the side of the neutral plane the drafted faces lie on (the part tapers away from it)
+    var side = draftSide(neu.pull, neu.d0, idx.map(function (i) { return { area: mesh.faces[i].area, centroid: mesh.faces[i].centroid }; }));
+    if (side < 0) { neu.pull = scale(neu.pull, -1); neu.d0 = -neu.d0; }
+    N = f.reverse ? scale(neu.pull, -1) : neu.pull; d0 = f.reverse ? -neu.d0 : neu.d0;
+    var ang = A * Math.PI / 180, recs = {};
+    idx.forEach(function (i, k) {
+      var face = mesh.faces[i], n = face.normal, nm = k < f.faces.length ? 'Face<' + (k + 1) + '>' : 'A face reached by Along Tangent';
+      if (i === neu.face) throw new Error(nm + ' is the neutral face: it cannot be drafted.');
+      if (draftCurved(face)) throw new Error(nm + ' is curved: a cylindrical or conical face is drafted by the OpenCascade kernel only (Anvil\'s own kernel drafts planar faces).');
+      var c = dot(n, N), ux = cross(n, N);
+      if (len(ux) < 1e-6) throw new Error(nm + ' is parallel to the neutral plane: only faces that run along the direction of pull can be drafted.');
+      var u = norm(ux), det = 1 - c * c;
+      var x0 = add(scale(n, (face.w - c * d0) / det), scale(N, (d0 - c * face.w) / det));   // on the face plane and the neutral plane
+      var n2 = norm(rotateVec(n, u, ang));
+      recs[i] = { n: n, w: face.w, n2: n2, w2: dot(n2, x0), o: faceOutline(mesh, i) };
+      if (!recs[i].o || !recs[i].o.loops.length) throw new Error(nm + ' has no outline: select it again.');
+    });
+    // the widest gap between a face and its drafted plane, measured along the face normal
+    var gap = 0, diag = 0, P64 = mesh.positions64, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (var q = 0; q < P64.length; q += 3) for (var ax = 0; ax < 3; ax++) { lo[ax] = Math.min(lo[ax], P64[q + ax]); hi[ax] = Math.max(hi[ax], P64[q + ax]); }
+    idx.forEach(function (i) {
+      var r = recs[i];
+      r.o.loops.forEach(function (l) { l.forEach(function (q) { var p = to3D(r.o.plane, q[0], q[1]); gap = Math.max(gap, Math.abs(dot(r.n2, p) - r.w2) / Math.max(1e-6, dot(r.n2, r.n))); }); });
+    });
+    if (P64.length) diag = len(sub(hi, lo));
+    var D = gap * 1.25 + 1e-4 * (diag || 1) + 1e-6, G = 2 * D;
+    // neighbour of a face outline segment: the other face whose plane holds both ends (convex when its normal points
+    // away from this face's interior, the left of the segment)
+    var ptol = Math.max(1e-7, 1e-8 * (diag || 1));
+    function neighbour(i, a, b) {
+      var e = sub(b, a), left = cross(mesh.faces[i].normal, e);
+      for (var j = 0; j < mesh.faces.length; j++) {
+        if (j === i) continue;
+        var fj = mesh.faces[j];
+        if (Math.abs(dot(fj.normal, a) - fj.w) > ptol * 10 || Math.abs(dot(fj.normal, b) - fj.w) > ptol * 10) continue;
+        if (len(cross(fj.normal, mesh.faces[i].normal)) < 1e-9) continue;
+        return { j: j, convex: dot(fj.normal, left) < 0 };
+      }
+      return null;
+    }
+    var R = [], Ad = [];
+    idx.forEach(function (i) {
+      var r = recs[i], pl = r.o.plane, cl = faceLoopsClassified(r.o), clips = [];
+      function grown(l, forAdd) {
+        return offsetLoopVar(l, l.map(function (q, k) {
+          var a = to3D(pl, q[0], q[1]), q2 = l[(k + 1) % l.length], b = to3D(pl, q2[0], q2[1]), nb = neighbour(i, a, b);
+          if (!nb) return forAdd ? 0 : G;
+          if (!nb.convex) return 0;
+          if (forAdd) { var rj = recs[nb.j]; clips.push(rj ? [rj.n2, rj.w2] : [mesh.faces[nb.j].normal, mesh.faces[nb.j].w]); }
+          return G;
+        }));
+      }
+      var rem = [], add_ = [], holes = [];
+      cl.outers.forEach(function (l) {
+        var g = grown(l, false); if (signedArea(g) > 1e-12) rem.push(prism(g, pl, -D, D, f.id));
+        var g2 = grown(l, true); if (signedArea(g2) > 1e-12) add_.push(prism(g2, pl, -D, D, f.id));
+      });
+      cl.holes.forEach(function (l) { holes.push(prism(l, pl, -D * 1.1, D * 1.1, f.id)); });
+      if (rem.length) {
+        var zr = unionTree(rem).clipByPlane(r.n2, r.w2).clipByPlane(N, d0);   // outside the new plane, pull side
+        if (zr.polygons.length) R.push(zr);
+      }
+      if (add_.length) {
+        var za = unionTree(add_);
+        if (holes.length) za = za.subtract(unionTree(holes));
+        za = za.clipByPlane(scale(r.n2, -1), -r.w2).clipByPlane(r.n, r.w).clipByPlane(scale(N, -1), -d0);   // inside new, outside old, against the pull
+        clips.forEach(function (c) { if (za.polygons.length) za = za.clipByPlane(scale(c[0], -1), -c[1]); });
+        if (za.polygons.length) Ad.push(za);
+      }
+    });
+    var removed = R.length ? unionTree(R) : null, added = Ad.length ? unionTree(Ad) : null, body = ctx.body;
+    if (removed) body = body.subtract(removed);
+    if (added) body = body.union(added);
+    return { body: body, faces: idx, pull: N, removed: removed, added: added };
+  }
+  K.buildDraft = buildDraft; _.buildDraft = buildDraft; K.draftNeutral = draftNeutral; K.draftSide = draftSide;
+  // ------------------------------------------------------------------ rfDY: Rib and Intersect
+  // Rib { type: 'rib', sketch, thickness, side: 'both' | 'one' | 'other', direction: 'parallel' | 'normal', flip?, extension?: 'linear' | 'natural' }
+  // An open sketch (lines, a chain; arcs as their chords) thickened and grown until it meets the body, as SolidWorks:
+  // 'parallel' grows in the sketch plane, perpendicular to each line, toward the material (thickness across the plane:
+  // 'one' = +n side, 'other' = -n side); 'normal' grows along the sketch normal (thickness in the plane, across the
+  // line: 'one' = the line's left). `flip` takes the side opposite the one the body is found on. The free ends of a
+  // chain are extended along their lines until they reach the body (both extension types extend lines linearly).
+  // Shared by both kernels (OcctKernel builds the same pieces):
+  // ribLayout -> { pieces: [{ loop (CCW, sketch coords), a, b (prism span along plane.n), m (unit growth direction), D }] };
+  // each piece is the prism of its loop minus the "shadow" of the body inside it (every face of body ∩ piece facing
+  // back toward the sketch, swept along m by D): exactly the material between the sketch and the first face it meets.
+  function rfDYray(body, o, d) {
+    var best = Infinity, ps = body ? body.polygons : [];
+    for (var i = 0; i < ps.length; i++) {
+      var p = ps[i], n = [p.plane.normal.x, p.plane.normal.y, p.plane.normal.z], den = dot(n, d);
+      if (Math.abs(den) < 1e-12) continue;
+      var t = (p.plane.w - dot(n, o)) / den;
+      if (t < -1e-9 || t >= best) continue;
+      var x = add(o, scale(d, t)), vs = p.vertices, k = vs.length, inside = true;
+      for (var j = 0; j < k && inside; j++) {
+        var a = vs[j].pos, b = vs[(j + 1) % k].pos, e = [b.x - a.x, b.y - a.y, b.z - a.z];
+        if (dot(cross(e, [x[0] - a.x, x[1] - a.y, x[2] - a.z]), n) < -1e-9 * (1 + len(e))) inside = false;
+      }
+      if (inside) best = Math.max(0, t);
+    }
+    return best;
+  }
+  function rfDYchains(sketch) {
+    var lines = [];
+    (sketch.entities || []).forEach(function (e) {
+      if (e.construction || e.t === 'text' || e.t === 'point' || K.noProfileEntity(sketch, e)) return;
+      entityPolylines(e).forEach(function (pl) { if (!pl.closed && pl.pts.length >= 2) lines.push(pl.pts.map(function (q) { return [q[0], q[1]]; })); });
+    });
+    var chains = [];
+    while (lines.length) {
+      var c = lines.shift(), grew = true;
+      while (grew) {
+        grew = false;
+        for (var i = 0; i < lines.length; i++) {
+          var q = lines[i], h = c[0], t = c[c.length - 1];
+          if (key2(q[0]) === key2(t)) c = c.concat(q.slice(1));
+          else if (key2(q[q.length - 1]) === key2(t)) c = c.concat(q.slice().reverse().slice(1));
+          else if (key2(q[q.length - 1]) === key2(h)) c = q.slice(0, -1).concat(c);
+          else if (key2(q[0]) === key2(h)) c = q.slice().reverse().slice(0, -1).concat(c);
+          else continue;
+          lines.splice(i, 1); grew = true; break;
+        }
+      }
+      c = c.filter(function (p, j) { return !j || Math.hypot(p[0] - c[j - 1][0], p[1] - c[j - 1][1]) > 1e-9; });
+      if (c.length >= 2 && key2(c[0]) !== key2(c[c.length - 1])) chains.push(c);
+    }
+    return chains;
+  }
+  function rfDYhull(pts) {
+    var p = pts.slice().sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; }), lo = [], up = [];
+    function cr(o, a, b) { return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); }
+    p.forEach(function (q) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], q) <= 1e-12) lo.pop(); lo.push(q); });
+    p.slice().reverse().forEach(function (q) { while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], q) <= 1e-12) up.pop(); up.push(q); });
+    return lo.slice(0, -1).concat(up.slice(0, -1));
+  }
+  function ribLayout(f, sketch, plane, body) {
+    var T = +f.thickness;
+    if (!(T > 0)) throw new Error('Rib thickness must be greater than zero.');
+    if (!body || !body.polygons.length) throw new Error('A rib needs a solid to meet: create the part first.');
+    var chains = rfDYchains(sketch);
+    if (!chains.length) throw new Error('Sketch the rib as an open line or chain of lines: a closed contour is not a rib.');
+    var side = f.side || 'both', t0 = side === 'one' ? 0 : side === 'other' ? -T : -T / 2, t1 = side === 'one' ? T : side === 'other' ? 0 : T / 2;
+    var normal = f.direction === 'normal';
+    var bb = body.getBounds(), cen = scale(add(bb.min, bb.max), 0.5), diag = len(sub(bb.max, bb.min));
+    function to3(p) { return to3D(plane, p[0], p[1]); }
+    function dir3(v) { return add(scale(plane.x, v[0]), scale(plane.y, v[1])); }
+    function unit2(v) { var l = Math.hypot(v[0], v[1]); return [v[0] / l, v[1] / l]; }
+    function ccw(loop) { return signedArea(loop) < 0 ? loop.slice().reverse() : loop; }
+    function off(p, v, k) { return [p[0] + v[0] * k, p[1] + v[1] * k]; }
+    var pieces = [];
+    chains.forEach(function (pts) {
+      var D = 4 * (diag + len(sub(to3(pts[0]), cen))) + 1;
+      var d0 = unit2([pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]]), L0 = [-d0[1], d0[0]];
+      var mid = to3([(pts[0][0] + pts[1][0]) / 2, (pts[0][1] + pts[1][1]) / 2]), probe = normal ? plane.n : dir3(L0);
+      var tp = rfDYray(body, mid, probe), tn = rfDYray(body, mid, scale(probe, -1));
+      if (!isFinite(tp) && !isFinite(tn)) throw new Error('The rib sketch does not face the body: draw it where the rib can grow to the part.');
+      var s = tp <= tn ? 1 : -1;
+      if (f.flip) s = -s;
+      // linear extension of the free ends to the body (a normal rib: the nearest wall at any height down to the floor)
+      [0, 1].forEach(function (end) {
+        var k = end ? pts.length - 1 : 0, kin = end ? pts.length - 2 : 1, P = pts[k];
+        var u2 = unit2([P[0] - pts[kin][0], P[1] - pts[kin][1]]), u3 = dir3(u2), P3 = to3(P);
+        var sd = end ? u2 : [-u2[0], -u2[1]];   // the end segment's own direction (start to end of the chain)
+        var m3 = normal ? scale(plane.n, s) : dir3([-sd[1] * s, sd[0] * s]);
+        var depth = rfDYray(body, P3, m3), hs = [0], best = Infinity;
+        if (normal && isFinite(depth)) hs = [0, 0.25, 0.5, 0.75, 0.999].map(function (x) { return x * depth; });
+        hs.forEach(function (h) { var t = rfDYray(body, add(P3, scale(m3, h)), u3); if (t < best) best = t; });
+        if (isFinite(best) && best > 1e-9 && best < D) pts[k] = off(P, u2, best);
+      });
+      for (var i = 0; i + 1 < pts.length; i++) {
+        var a = pts[i], b = pts[i + 1];
+        if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-12) continue;
+        var d = unit2([b[0] - a[0], b[1] - a[1]]), L = [-d[1], d[0]];
+        if (!normal) pieces.push({ loop: ccw([a, b, off(b, L, s * D), off(a, L, s * D)]), a: t0, b: t1, m: dir3([L[0] * s, L[1] * s]), D: D });
+        else pieces.push({ loop: ccw([off(a, L, t0), off(b, L, t0), off(b, L, t1), off(a, L, t1)]), a: Math.min(0, s * D), b: Math.max(0, s * D), m: scale(plane.n, s), D: D });
+        if (i + 2 < pts.length) {   // the joint to the next segment
+          var c = pts[i + 2], d2 = unit2([c[0] - b[0], c[1] - b[1]]), L2 = [-d2[1], d2[0]], crs = d[0] * d2[1] - d[1] * d2[0];
+          if (Math.abs(crs) < 1e-9) continue;
+          if (!normal) {
+            if (s * crs < 0) { var bis = unit2([L[0] + L2[0], L[1] + L2[1]]); pieces.push({ loop: ccw([b, off(b, L, s * D), off(b, L2, s * D)]), a: t0, b: t1, m: dir3([bis[0] * s, bis[1] * s]), D: D }); }
+          } else {   // a mitred corner: the offsets of both lines and where they cross (M: the miter vector)
+            var kM = 1 + L[0] * L2[0] + L[1] * L2[1], M = kM > 1e-6 ? [(L[0] + L2[0]) / kM, (L[1] + L2[1]) / kM] : L;
+            pieces.push({ loop: ccw(rfDYhull([off(b, L, t0), off(b, L, t1), off(b, L2, t0), off(b, L2, t1), off(b, M, t0), off(b, M, t1)])), a: Math.min(0, s * D), b: Math.max(0, s * D), m: scale(plane.n, s), D: D });
+          }
+        }
+      }
+    });
+    return { pieces: pieces, side: side, normal: normal };
+  }
+  // a convex polygon swept along v into a prism (q's outward normal points against v)
+  function rfDYsweep(q, v, shared) {
+    var pts = q.vertices.map(function (w) { return [w.pos.x, w.pos.y, w.pos.z]; }), top = pts.map(function (p) { return add(p, v); }), polys = [];
+    pushPoly(polys, pts, shared);
+    pushPoly(polys, top.slice().reverse(), shared);
+    for (var i = 0; i < pts.length; i++) { var j = (i + 1) % pts.length; pushPoly(polys, [pts[j], pts[i], top[i], top[j]], shared); }
+    return ensureOutward(polys);
+  }
+  function ribMissError() { return new Error('The rib does not meet the body all along its sketch: flip the material side, change the extrusion direction or extend the sketch.'); }
+  function buildRib(f, model, ctx) {
+    var sketch = ctx.sketches[f.sketch] || findFeature(model, f.sketch);
+    if (!sketch || sketch.type !== 'sketch') throw new Error('Select a sketch for the rib.');
+    var plane = resolvePlane(sketch.plane, model, ctx.planes), body = ctx.body;
+    var lay = ribLayout(f, sketch, plane, body), parts = [];
+    lay.pieces.forEach(function (pc) {
+      var P = prism(pc.loop, plane, pc.a, pc.b, f.id), Bp = body.intersect(P), sh = [], vD = scale(pc.m, pc.D);
+      Bp.polygons.forEach(function (q) { if (dot([q.plane.normal.x, q.plane.normal.y, q.plane.normal.z], pc.m) < -1e-9) sh.push(rfDYsweep(q, vD, f.id)); });
+      var rib = sh.length ? P.subtract(unionTree(sh)) : P;
+      var w0 = dot(to3D(plane, pc.loop[0][0], pc.loop[0][1]), pc.m);
+      rib.polygons.forEach(function (q) { q.vertices.forEach(function (w) { if (dot([w.pos.x, w.pos.y, w.pos.z], pc.m) - w0 > 0.5 * pc.D) throw ribMissError(); }); });
+      if (rib.polygons.length) parts.push(rib);
+    });
+    if (!parts.length) throw new Error('The rib has no material: its sketch lies inside the body.');
+    return unionTree(parts);
+  }
+
+  // Intersect { type: 'intersect', bodies?: [i], planes?: ['Front' | planeFeatureId | { ref, offset } | { featureId }], regions?: [keep flags],
+  //             merge?: true, mode?: 'create' | 'internal' }
+  // The selected solids (f.bodies, else every body) are split into the regions their overlaps make (every in / out
+  // pattern of the bodies, each split again by the selected planes, each separate lump its own region); with mode
+  // 'internal' the closed voids between them are regions too. Regions come in a fixed order both kernels share
+  // (pattern, plane side, then lump centroid x, y, z) and `regions[i] === false` excludes region i. The kept regions
+  // replace the selected bodies; with `merge` (the default) kept regions whose boxes meet are joined.
+  function ixPlanes(f, model, planesById) {
+    return (f.planes || []).map(function (r) {
+      var ref = typeof r === 'string' ? { ref: r, offset: 0 } : typeof r === 'number' ? { featureId: r } : r;
+      var pl = resolvePlane(ref, model, planesById);
+      return { n: pl.n.slice(), w: dot(pl.n, pl.origin) };
+    });
+  }
+  function ixVolCen(csg) {
+    var V = 0, c = [0, 0, 0];
+    csg.polygons.forEach(function (p) {
+      var v = p.vertices, a = [v[0].pos.x, v[0].pos.y, v[0].pos.z];
+      for (var i = 1; i + 1 < v.length; i++) {
+        var b = [v[i].pos.x, v[i].pos.y, v[i].pos.z], e = [v[i + 1].pos.x, v[i + 1].pos.y, v[i + 1].pos.z], dv = dot(a, cross(b, e)) / 6;
+        V += dv; c = add(c, scale(add(add(a, b), e), dv / 4));
+      }
+    });
+    return { volume: V, centroid: Math.abs(V) > 0 ? scale(c, 1 / V) : [0, 0, 0] };
+  }
+  // the separate lumps of a solid (polygons joined through shared vertices)
+  function ixLumps(csg) {
+    var ps = csg.polygons, parent = ps.map(function (p, i) { return i; }), owner = {};
+    function find(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+    ps.forEach(function (p, i) {
+      p.vertices.forEach(function (w) {
+        var k = Math.round(w.pos.x * 1e6) + ',' + Math.round(w.pos.y * 1e6) + ',' + Math.round(w.pos.z * 1e6);
+        if (owner[k] == null) owner[k] = i; else { var a = find(i), b = find(owner[k]); if (a !== b) parent[a] = b; }
+      });
+    });
+    var groups = {}, order = [];
+    ps.forEach(function (p, i) { var r = find(i); if (!groups[r]) { groups[r] = []; order.push(r); } groups[r].push(p.clone()); });
+    return order.map(function (r) { return CSG.fromPolygons(groups[r]); });
+  }
+  function ixSortKey(tol) {
+    return function (a, b) { for (var k = 0; k < 3; k++) { var d = a.centroid[k] - b.centroid[k]; if (Math.abs(d) > tol) return d; } return 0; };
+  }
+  function ixBox(mn, mx) {
+    var polys = [], c = function (i) { return [(i & 1 ? mx : mn)[0], (i & 2 ? mx : mn)[1], (i & 4 ? mx : mn)[2]]; };
+    [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]].forEach(function (q) { pushPoly(polys, q.map(c)); });
+    return ensureOutward(polys);
+  }
+  function ixMeet(a, b) {
+    if (!a || !b) return false;
+    for (var k = 0; k < 3; k++) if (a.min[k] > b.max[k] + 1e-6 || b.min[k] > a.max[k] + 1e-6) return false;
+    return true;
+  }
+  function intersectRegions(bodies, f, model, planesById) {
+    var sel = K.cutScope(f, bodies.length), planes = ixPlanes(f, model, planesById);
+    if (!sel.length) throw new Error('Select the bodies to intersect.');
+    if (sel.length > 6) throw new Error('Intersect takes at most 6 bodies at a time.');
+    if (sel.length < 2 && !planes.length) throw new Error('Select at least two bodies, or a body and a plane, to intersect.');
+    var B = sel.map(function (i) { return bodies[i]; }), U = unionTree(B.slice()), bb = U.getBounds();
+    var size = len(sub(bb.max, bb.min)), eps = 1e-9 * Math.max(1, size * size * size), tol = 1e-6 * Math.max(1, size);
+    var cells = [];
+    for (var mask = 1; mask < (1 << B.length); mask++) {
+      var acc = null, k;
+      for (k = 0; k < B.length; k++) if (mask & (1 << k)) acc = acc ? acc.intersect(B[k]) : B[k];
+      for (k = 0; k < B.length && acc.polygons.length; k++) if (!(mask & (1 << k))) acc = acc.subtract(B[k]);
+      if (acc.polygons.length) cells.push({ csg: acc, cell: mask });
+    }
+    function split(list) {
+      planes.forEach(function (pl) {
+        var out = [];
+        list.forEach(function (c) { [1, -1].forEach(function (sg) { var h = c.csg.clipByPlane(scale(pl.n, sg), sg * pl.w); if (h.polygons.length) out.push({ csg: h, cell: c.cell, void: c.void }); }); });
+        list = out;
+      });
+      return list;
+    }
+    function lumpsOf(list) {
+      var out = [];
+      list.forEach(function (c) {
+        var ls = ixLumps(c.csg).map(function (l) { var vc = ixVolCen(l); return { body: l, volume: vc.volume, centroid: vc.centroid, cell: c.cell, void: !!c.void }; })
+          .filter(function (r) { return r.volume > eps; });
+        ls.sort(ixSortKey(tol));
+        out = out.concat(ls);
+      });
+      return out;
+    }
+    var regions = lumpsOf(split(cells));
+    if (f.mode === 'internal') {
+      var voids = lumpsOf([{ csg: ixBox(bb.min, bb.max).subtract(U), cell: 0, void: true }]).filter(function (r) {
+        var b = r.body.getBounds();
+        for (var q = 0; q < 3; q++) if (b.min[q] < bb.min[q] + tol || b.max[q] > bb.max[q] - tol) return false;
+        return true;
+      });
+      regions = regions.concat(lumpsOf(split(voids.map(function (r) { return { csg: r.body, cell: 0, void: true }; }))));
+    }
+    if (!regions.length) throw new Error('The selections make no regions.');
+    return regions;
+  }
+  // the kept regions as the new bodies (merge: those whose boxes meet joined); bounds / join / meet are the kernel's own
+  function ixKeep(regions, f, bounds, join, meet) {
+    var keep = regions.filter(function (r, i) { return !(Array.isArray(f.regions) && f.regions[i] === false); });
+    if (!keep.length) throw new Error('Every region is excluded: keep at least one.');
+    if (f.merge === false) return keep.map(function (r) { return r.body; });
+    var groups = [];
+    keep.forEach(function (r) {
+      var g = r.body, hit = [];
+      groups.forEach(function (h, i) { if (meet(bounds(h), bounds(g))) hit.push(i); });
+      for (var i = hit.length - 1; i >= 0; i--) { g = join(groups[hit[i]], g); groups.splice(hit[i], 1); }
+      groups.push(g);
+    });
+    return groups;
+  }
+  function applyIntersect(f, model, ctx) {
+    var regions = intersectRegions(ctx.bodies, f, model, ctx.planes);
+    var out = ixKeep(regions, f, function (b) { return b.getBounds(); }, function (a, b) { return a.union(b); }, ixMeet);
+    var sel = K.cutScope(f, ctx.bodies.length), at = Math.min.apply(null, sel), nb = [], nf = [];
+    ctx.bodies.forEach(function (b, i) {
+      if (i === at) out.forEach(function (o) { nb.push(o); nf.push(f.id); });
+      if (sel.indexOf(i) < 0) { nb.push(b); nf.push(ctx.bodyFeatures[i]); }
+    });
+    ctx.bodies = nb; ctx.bodyFeatures = nf;
+    ctx.tools[f.id] = null;
+    return regions;
+  }
+  K.registerFeature('rib', {
+    cut: false, build: buildRib,
+    script: function (f, v, idVar, optsStr) {
+      var t = typeof f.thickness === 'string' ? JSON.stringify(f.thickness) : String(f.thickness);
+      return 'var ' + v + ' = p.rib(' + t + ', ' + optsStr({ sketch: '@' + idVar[f.sketch], side: f.side && f.side !== 'both' ? f.side : null, direction: f.direction === 'normal' ? 'normal' : null,
+        flip: !!f.flip, extension: f.extension === 'natural' ? 'natural' : null, name: f.name }) + ').last();';
+    }
+  });
+  K.registerFeature('intersect', {
+    cut: false,
+    script: function (f, v, idVar, optsStr) {
+      var o = {};
+      if (Array.isArray(f.bodies) && f.bodies.length) o.bodies = f.bodies.slice();
+      if (Array.isArray(f.planes) && f.planes.length) o.planes = '@[' + f.planes.map(function (r) {
+        var id = typeof r === 'number' ? r : r && r.featureId != null ? r.featureId : null;
+        return id != null && idVar[id] ? idVar[id] : JSON.stringify(r);
+      }).join(', ') + ']';
+      if (Array.isArray(f.regions)) o.regions = f.regions.map(function (x) { return x !== false; });
+      if (f.mode === 'internal') o.mode = 'internal';
+      if (f.merge === false) o.merge = false;
+      o.name = f.name;
+      return 'var ' + v + ' = p.intersect(' + optsStr(o) + ').last();';
+    }
+  });
+  K.ribLayout = ribLayout; K.buildRib = buildRib; K.intersectRegions = intersectRegions; K.intersectKeep = ixKeep; K.solidLumps = ixLumps; K.ribRay = rfDYray;
+  _.applyIntersect = applyIntersect;
+  // ------------------------------------------------------------------ rfFA: reference curves (Features ▸ Curves)
+  // Five feature types that change no body (SolidWorks' Curves flyout); rebuild resolves each into a record kept in
+  // ctx.planes[f.id], as lane CZ's axes and points are, so the cache, packBuild, the worker and OpenCascade carry it:
+  //   { type: 'helix', sketch (one circle), defineBy: 'pitchRev' | 'heightRev' | 'heightPitch' | 'spiral', pitch,
+  //     revolutions, height, startAngle (deg, from the sketch's x toward its y), clockwise?, reverse?, taper? (deg),
+  //     taperOut? }   counterclockwise = right-handed about the direction the helix grows (the sketch normal, or its
+  //     opposite with reverse); a spiral lies in the sketch plane and grows outward (reverse: inward)
+  //   { type: 'projCurve', mode: 'sketchOnFaces' | 'sketchOnSketch', sketch, faces: [{ at }] | sketch2, reverse? }
+  //   { type: 'compositeCurve', edges: [ref] }   refs: { edge: [x,y,z] }, { sketch, entity, seg? }, { curve: id }
+  //   { type: 'xyzCurve', points: [[x,y,z], …], closed? }
+  //   { type: 'refPtCurve', points: [ref], closed? }   refs as lane CZ's points ({ point: id }, { vertex }, { sketch, … })
+  // -> { refgeo: 'curve', kind, runs: [{ pts, edges, closed }], pts / edges / closed (= runs[0]), length, t0, t1 (unit
+  //    tangents at the ends), helix? }. pts lie on the true curve; edges are exact pieces for OpenCascade:
+  //    { t: 'line', a, b }, { t: 'arc', a, m, b }, { t: 'circle', c, n, r, x }, { t: 'bez', bez: [[P0, P1, P2, P3], …] }
+  //    (a C1 cubic chain), { t: 'helix', o, n, x, r0, a0, du, v1, cone, rev? } (a line in the (u, v) of a cylinder /
+  //    cone about n: exact). A curve is a Sweep path (`sweep.path` = its id): see curveSweepPath.
+  var FA_TYPES = { helix: 1, projCurve: 1, compositeCurve: 1, xyzCurve: 1, refPtCurve: 1 };
+  function isCurveFeature(f) { return !!(f && FA_TYPES[typeof f === 'string' ? f : f.type]); }
+  function faNum(x, what) { var v = +x; if (x === '' || x == null || !isFinite(v)) throw refErr(what + ' must be a number.'); return v; }
+  function faLen(pts) { var L = 0; for (var i = 1; i < pts.length; i++) L += len(sub(pts[i], pts[i - 1])); return L; }
+  function faTol(pts) { var m = 1; pts.forEach(function (p) { m = Math.max(m, Math.abs(p[0]), Math.abs(p[1]), Math.abs(p[2])); }); return 1e-6 * m; }
+  // cubic Bézier span helpers
+  function bezAt(B, t) { var s = 1 - t, a = s * s * s, b = 3 * s * s * t, c = 3 * s * t * t, d = t * t * t; return [0, 1, 2].map(function (k) { return a * B[0][k] + b * B[1][k] + c * B[2][k] + d * B[3][k]; }); }
+  // the chord-length C1 cubic (Catmull-Rom) through pts, as Bézier spans; closed wraps (pts without the repeat)
+  function hermiteBez(P, closed) {
+    P = P.slice();
+    if (closed && P.length > 2 && len(sub(P[0], P[P.length - 1])) < faTol(P)) P.pop();
+    var n = P.length, m = closed ? n : n - 1, d = [], tg = [], i;
+    if (n < 2) throw refErr('A curve needs at least two points.');
+    for (i = 0; i < m; i++) { d.push(Math.max(1e-12, len(sub(P[(i + 1) % n], P[i])))); }
+    for (i = 0; i < n; i++) {
+      var pi = i > 0 ? i - 1 : closed ? n - 1 : 0, ni = i < n - 1 ? i + 1 : closed ? 0 : n - 1;
+      var dl = i > 0 ? d[i - 1] : closed ? d[m - 1] : 0, dr = i < n - 1 || closed ? d[i % m] : 0;
+      tg.push(scale(sub(P[ni], P[pi]), 1 / Math.max(1e-12, dl + dr)));
+    }
+    var bez = [];
+    for (i = 0; i < m; i++) {
+      var a = P[i], b = P[(i + 1) % n];
+      bez.push([a, add(a, scale(tg[i], d[i] / 3)), sub(b, scale(tg[(i + 1) % n], d[i] / 3)), b]);
+    }
+    return bez;
+  }
+  function sampleBez(bez, k) {
+    var out = [bez[0][0].slice()];
+    bez.forEach(function (B) { for (var j = 1; j <= k; j++) out.push(bezAt(B, j / k)); });
+    return out;
+  }
+  function revEdge(e) {
+    switch (e.t) {
+      case 'line': return { t: 'line', a: e.b, b: e.a };
+      case 'arc': return { t: 'arc', a: e.b, m: e.m, b: e.a };
+      case 'circle': return { t: 'circle', c: e.c, n: scale(e.n, -1), r: e.r, x: e.x };
+      case 'bez': return { t: 'bez', bez: e.bez.slice().reverse().map(function (B) { return B.slice().reverse(); }) };
+      case 'helix': { var h = JSON.parse(JSON.stringify(e)); h.rev = !e.rev; return h; }
+    }
+    return e;
+  }
+  function revPiece(pc) { return { pts: pc.pts.slice().reverse(), edges: pc.edges.slice().reverse().map(revEdge) }; }
+  // pieces [{ pts, edges }] joined end to end into chains [{ pts, edges, closed }]; strict: a gap is an error
+  function chainPieces(pieces, strict, what) {
+    var all = []; pieces.forEach(function (p) { all = all.concat(p.pts); });
+    var tol = faTol(all), left = pieces.slice(), chains = [];
+    while (left.length) {
+      var ch = { pts: left[0].pts.slice(), edges: left[0].edges.slice() };
+      left.shift();
+      for (var grew = true; grew && left.length;) {
+        grew = false;
+        for (var i = 0; i < left.length && !grew; i++) {
+          var pc = left[i], s = pc.pts[0], e = pc.pts[pc.pts.length - 1], hd = ch.pts[0], tl = ch.pts[ch.pts.length - 1];
+          if (len(sub(s, tl)) < tol) { ch.pts = ch.pts.concat(pc.pts.slice(1)); ch.edges = ch.edges.concat(pc.edges); grew = true; }
+          else if (len(sub(e, tl)) < tol) { var r = revPiece(pc); ch.pts = ch.pts.concat(r.pts.slice(1)); ch.edges = ch.edges.concat(r.edges); grew = true; }
+          else if (len(sub(e, hd)) < tol) { ch.pts = pc.pts.slice(0, -1).concat(ch.pts); ch.edges = pc.edges.concat(ch.edges); grew = true; }
+          else if (len(sub(s, hd)) < tol) { var r2 = revPiece(pc); ch.pts = r2.pts.slice(0, -1).concat(ch.pts); ch.edges = r2.edges.concat(ch.edges); grew = true; }
+          if (grew) left.splice(i, 1);
+        }
+      }
+      if (strict && left.length) {
+        var gap = Infinity;
+        left.forEach(function (pc) { [pc.pts[0], pc.pts[pc.pts.length - 1]].forEach(function (p) { [ch.pts[0], ch.pts[ch.pts.length - 1]].forEach(function (q) { gap = Math.min(gap, len(sub(p, q))); }); }); });
+        throw refErr((what || 'The curve') + ' must be one connected chain: there is a gap of ' + Math.round(gap * 1e4) / 1e4 + ' between the selections.');
+      }
+      ch.closed = ch.pts.length > 2 && len(sub(ch.pts[0], ch.pts[ch.pts.length - 1])) < tol;
+      chains.push(ch);
+    }
+    return chains;
+  }
+  function curveRecord(kind, runs, extra) {
+    if (!runs.length || runs[0].pts.length < 2) throw refErr('The curve is empty.');
+    runs.sort(function (a, b) { return faLen(b.pts) - faLen(a.pts); });
+    var r0 = runs[0], P = r0.pts, n = P.length;
+    var rec = { refgeo: 'curve', kind: kind, runs: runs, pts: P, edges: r0.edges, closed: !!r0.closed, length: faLen(P),
+      t0: norm(sub(P[1], P[0])), t1: norm(sub(P[n - 1], P[n - 2])) };
+    Object.keys(extra || {}).forEach(function (k) { rec[k] = extra[k]; });
+    return rec;
+  }
+
+  // ---- Helix and Spiral
+  function helixCircle(f, model, ctx) {
+    var sk = (ctx.sketches && ctx.sketches[f.sketch]) || findFeature(model, f.sketch);
+    if (!sk || sk.type !== 'sketch') throw refErr('Select a sketch with one circle for the helix.');
+    var cs = (sk.entities || []).filter(function (e) { return e.t === 'circle'; });
+    if (cs.length !== 1) throw refErr(cs.length ? 'The helix sketch must hold exactly one circle (it has ' + cs.length + ').' : 'The helix sketch has no circle.');
+    return { sk: sk, e: cs[0], pl: resolvePlane(sk.plane, model, ctx.planes) };
+  }
+  // -> { P (pitch), revs, H (height), spiral }
+  function helixParams(f) {
+    var by = f.defineBy || 'pitchRev', P, n, H;
+    if (by === 'heightRev') { H = faNum(f.height, 'The height'); n = faNum(f.revolutions, 'The revolutions'); P = H / n; }
+    else if (by === 'heightPitch') { H = faNum(f.height, 'The height'); P = faNum(f.pitch, 'The pitch'); n = H / P; }
+    else { P = faNum(f.pitch, 'The pitch'); n = faNum(f.revolutions, 'The revolutions'); H = by === 'spiral' ? 0 : P * n; }
+    if (by !== 'spiral' && !(H > 0)) throw refErr('The height must be more than 0.');
+    if (!(P > 0)) throw refErr('The pitch must be more than 0.');
+    if (!(n > 0)) throw refErr('The number of revolutions must be more than 0.');
+    if (n > 2000) throw refErr('A helix of more than 2000 revolutions is not supported.');
+    return { P: P, revs: n, H: H, spiral: by === 'spiral' };
+  }
+  function helixAt(h, th, rs) {
+    var z = h.spiral ? 0 : h.P * th / (2 * Math.PI), r = (h.r0 + (h.spiral ? h.kr * th : h.kz * z)) * (rs || 1), phi = h.a0 + h.s * th;
+    return add(add(h.o, add(scale(h.x, r * Math.cos(phi)), scale(h.y, r * Math.sin(phi)))), scale(h.d, z));
+  }
+  function helixDeriv(h, th) {
+    var z = h.spiral ? 0 : h.P * th / (2 * Math.PI), r = h.r0 + (h.spiral ? h.kr * th : h.kz * z), phi = h.a0 + h.s * th;
+    var dz = h.spiral ? 0 : h.P / (2 * Math.PI), dr = h.spiral ? h.kr : h.kz * dz, c = Math.cos(phi), s = Math.sin(phi);
+    return add(add(scale(h.x, dr * c - r * h.s * s), scale(h.y, dr * s + r * h.s * c)), scale(h.d, dz));
+  }
+  function resolveHelix(f, model, ctx) {
+    var hc = helixCircle(f, model, ctx), e = hc.e, pl = hc.pl, q = helixParams(f);
+    var n = norm(pl.n), x = norm(pl.x), y = cross(n, x), flipY = dot(y, pl.y) < 0;
+    var a0 = (+f.startAngle || 0) * Math.PI / 180;
+    var sg = f.reverse && !q.spiral ? -1 : 1, s = (f.clockwise ? -1 : 1) * sg;
+    if (flipY) { a0 = -a0; s = -s; }   // a left-handed sketch frame: angles still read in the sketch's own sense
+    var T = q.spiral ? 0 : (+f.taper || 0) * Math.PI / 180;
+    if (Math.abs(T) >= Math.PI / 2 - 1e-6) throw refErr('The taper angle must be less than 90°.');
+    var h = { o: to3D(pl, e.cx, e.cy), d: scale(n, sg), x: x, y: y, r0: +e.r, a0: a0, s: s, P: q.P, revs: q.revs, H: q.H, spiral: q.spiral,
+      kz: Math.tan(T) * (f.taperOut ? 1 : -1), kr: q.spiral ? (f.reverse ? -1 : 1) * q.P / (2 * Math.PI) : 0 };
+    if (!(h.r0 > 0)) throw refErr('The helix circle has no radius.');
+    var thEnd = 2 * Math.PI * q.revs, rEnd = h.r0 + (q.spiral ? h.kr * thEnd : h.kz * q.H);
+    if (!(rEnd > 1e-9)) throw refErr(q.spiral ? 'The spiral reaches its centre: use fewer revolutions or a smaller pitch.' : 'The taper closes the helix to its axis: use a smaller taper angle or a shorter helix.');
+    var rmax = Math.max(h.r0, rEnd), perRev = Math.max(48, Math.min(360, K.segsForRadius ? K.segsForRadius(rmax) : 72));
+    var N = Math.max(8, Math.ceil(perRev * q.revs)), pts = [];
+    for (var i = 0; i <= N; i++) pts.push(helixAt(h, thEnd * i / N));
+    var length;
+    if (!q.spiral && !h.kz) length = q.revs * Math.hypot(2 * Math.PI * h.r0, q.P);
+    else {   // Simpson on |dP/dθ|
+      var M = 2 * Math.max(64, Math.ceil(128 * q.revs)), acc = 0;
+      for (i = 0; i <= M; i++) acc += (i === 0 || i === M ? 1 : i % 2 ? 4 : 2) * len(helixDeriv(h, thEnd * i / M));
+      length = acc * thEnd / M / 3;
+    }
+    var edges;
+    if (!q.spiral) {
+      // OpenCascade: a straight line in the (u, v) of a cylinder (cone when tapered) about the sketch normal, exact
+      var cone = Math.atan(h.kz * sg);
+      edges = [{ t: 'helix', o: h.o, n: n, x: x, r0: h.r0, a0: a0, du: s * thEnd, v1: sg * q.H / Math.cos(cone), cone: cone }];
+    } else {
+      // a spiral: cubic Hermite spans with the exact derivative, 16 a revolution
+      var S = Math.max(4, Math.ceil(16 * q.revs)), bez = [], dt = thEnd / S;
+      for (i = 0; i < S; i++) {
+        var A = helixAt(h, i * dt), B = helixAt(h, (i + 1) * dt);
+        bez.push([A, add(A, scale(helixDeriv(h, i * dt), dt / 3)), sub(B, scale(helixDeriv(h, (i + 1) * dt), dt / 3)), B]);
+      }
+      edges = [{ t: 'bez', bez: bez }];
+    }
+    var rec = curveRecord('helix', [{ pts: pts, edges: edges, closed: false }], { helix: h });
+    rec.length = length; rec.t0 = norm(helixDeriv(h, 0)); rec.t1 = norm(helixDeriv(h, thEnd));
+    return rec;
+  }
+
+  // ---- Projected Curve
+  function polyOut(poly, p) {
+    var n = polyN(poly), pts = polyPts(poly), out = 0;
+    for (var i = 0; i < pts.length; i++) {
+      var a = pts[i], b = pts[(i + 1) % pts.length], inward = cross(n, sub(b, a)), l = len(inward);
+      if (l < 1e-12) continue;
+      out = Math.max(out, -dot(sub(p, a), inward) / l);
+    }
+    return out;
+  }
+  // parameters t (P + t·dir) where the ray meets face F (refFace): exact on planes and cylinders, on the facets otherwise
+  function rayFace(F, P, dir, tol) {
+    var ts = [];
+    if (F.kind === 'plane') {
+      var den = dot(F.n, dir);
+      if (Math.abs(den) < 1e-12) return ts;
+      var t = (F.w - dot(F.n, P)) / den, X = add(P, scale(dir, t));
+      if (F.polys.some(function (q) { return polyScore(q, X) < tol; })) ts.push(t);
+      return ts;
+    }
+    var s = F.surf;
+    if (F.kind === 'cyl' && s && s.r > 0) {
+      var d = norm(s.d), w = sub(P, s.o), wp = sub(w, scale(d, dot(w, d))), vp = sub(dir, scale(d, dot(dir, d)));
+      var a = dot(vp, vp), b = 2 * dot(wp, vp), c = dot(wp, wp) - s.r * s.r, disc = b * b - 4 * a * c;
+      if (a < 1e-18 || disc < 0) return ts;
+      [(-b - Math.sqrt(disc)) / (2 * a), (-b + Math.sqrt(disc)) / (2 * a)].forEach(function (t2) {
+        var X2 = add(P, scale(dir, t2)), sag = s.r * 0.05 + tol;
+        if (F.polys.some(function (q) { return polyOut(q, X2) < tol && Math.abs(dot(polyN(q), X2) - q.plane.w) < sag; })) ts.push(t2);
+      });
+      return ts;
+    }
+    F.polys.forEach(function (q) {
+      var nq = polyN(q), dn = dot(nq, dir);
+      if (Math.abs(dn) < 1e-12) return;
+      var t3 = (q.plane.w - dot(nq, P)) / dn;
+      if (polyOut(q, add(P, scale(dir, t3))) < tol * 1e-3) ts.push(t3);
+    });
+    return ts;
+  }
+  // a sketch's entities as pieces of 2D points: straight sides one by one, every other entity whole
+  var FA_STRAIGHT = { line: 1, rect: 1, crect: 1, poly: 1, polyline: 1, rect3: 1, crect3: 1, parallelogram: 1 };
+  function sketchPieces2(sk) {
+    var out = [];
+    (sk.entities || []).forEach(function (e) {
+      if (e.construction || e.t === 'text' || e.t === 'point' || K.noProfileEntity(sk, e)) return;
+      entityPolylines(e).forEach(function (pl) {
+        var q = pl.closed ? pl.pts.concat([pl.pts[0]]) : pl.pts;
+        if (FA_STRAIGHT[e.t] && !e.bulges) { for (var i = 0; i + 1 < q.length; i++) out.push({ pts: [q[i], q[i + 1]], straight: true, e: e }); }
+        else out.push({ pts: q, straight: false, e: e });
+      });
+    });
+    if (!out.length) throw refErr('The sketch to project has no lines or curves.');
+    return out;
+  }
+  function densify2(pts, step) {
+    var out = [pts[0]];
+    for (var i = 1; i < pts.length; i++) {
+      var a = pts[i - 1], b = pts[i], k = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / step));
+      for (var j = 1; j <= k; j++) out.push([a[0] + (b[0] - a[0]) * j / k, a[1] + (b[1] - a[1]) * j / k]);
+    }
+    return out;
+  }
+  // samples -> runs of hits (null = a miss splits the run) -> pieces { pts, edges }
+  function hitRuns(samples, pieces) {
+    var run = [];
+    function flush() {
+      if (run.length >= 2) pieces.push({ pts: run, edges: [run.length === 2 ? { t: 'line', a: run[0], b: run[1] } : { t: 'bez', bez: hermiteBez(run, false) }] });
+      run = [];
+    }
+    samples.forEach(function (p) { if (p) run.push(p); else flush(); });
+    flush();
+  }
+  function resolveProjCurve(f, model, ctx) {
+    var sk = (ctx.sketches && ctx.sketches[f.sketch]) || findFeature(model, f.sketch);
+    if (!sk || sk.type !== 'sketch') throw refErr('Select the sketch to project.');
+    var pl = resolvePlane(sk.plane, model, ctx.planes), pcs = sketchPieces2(sk), lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+    pcs.forEach(function (pc) { pc.pts.forEach(function (p) { lo = [Math.min(lo[0], p[0]), Math.min(lo[1], p[1])]; hi = [Math.max(hi[0], p[0]), Math.max(hi[1], p[1])]; }); });
+    var step = Math.max(1e-6, Math.hypot(hi[0] - lo[0], hi[1] - lo[1]) / 400), pieces = [];
+    if ((f.mode || 'sketchOnFaces') === 'sketchOnSketch') {
+      var sk2 = (ctx.sketches && ctx.sketches[f.sketch2]) || findFeature(model, f.sketch2);
+      if (!sk2 || sk2.type !== 'sketch' || sk2.id === sk.id) throw refErr('Select a second sketch to intersect with.');
+      var pl2 = resolvePlane(sk2.plane, model, ctx.planes), n1 = norm(pl.n), ev = [dot(n1, pl2.x), dot(n1, pl2.y)];
+      if (Math.hypot(ev[0], ev[1]) < 1e-9) throw refErr('The two sketches are on parallel planes: their extrusions do not cross.');
+      // the second sketch's entities as exact 2D primitives: segments, and circles / arcs
+      var prims = [];
+      (sk2.entities || []).forEach(function (e) {
+        if (e.construction || e.t === 'text' || e.t === 'point' || K.noProfileEntity(sk2, e)) return;
+        if (e.t === 'circle' || e.t === 'arc') { prims.push({ t: 'c', c: [e.cx, e.cy], r: e.r, a0: e.t === 'arc' ? e.a0 : null, a1: e.a1 }); return; }
+        entityPolylines(e).forEach(function (q) { var Q = q.closed ? q.pts.concat([q.pts[0]]) : q.pts; for (var i = 0; i + 1 < Q.length; i++) prims.push({ t: 's', a: Q[i], b: Q[i + 1] }); });
+      });
+      if (!prims.length) throw refErr('The second sketch has no lines or curves.');
+      var hitsAt = function (q0) {
+        var ts = [];
+        prims.forEach(function (pr) {
+          if (pr.t === 's') {
+            var ab = [pr.b[0] - pr.a[0], pr.b[1] - pr.a[1]], den = ev[0] * -ab[1] + ev[1] * ab[0];   // q0 + t·ev = a + u·ab
+            if (Math.abs(den) < 1e-14) return;
+            var w = [pr.a[0] - q0[0], pr.a[1] - q0[1]], t = (w[0] * -ab[1] + w[1] * ab[0]) / den, u = (ev[0] * w[1] - ev[1] * w[0]) / den;
+            if (u >= -1e-9 && u <= 1 + 1e-9) ts.push(t);
+          } else {
+            var wc = [q0[0] - pr.c[0], q0[1] - pr.c[1]], A = ev[0] * ev[0] + ev[1] * ev[1], B = 2 * (wc[0] * ev[0] + wc[1] * ev[1]), C = wc[0] * wc[0] + wc[1] * wc[1] - pr.r * pr.r, D = B * B - 4 * A * C;
+            if (D < 0) return;
+            [(-B - Math.sqrt(D)) / (2 * A), (-B + Math.sqrt(D)) / (2 * A)].forEach(function (t2) {
+              if (pr.a0 != null) {
+                var ang = Math.atan2(wc[1] + t2 * ev[1], wc[0] + t2 * ev[0]) * 180 / Math.PI, a0 = pr.a0, a1 = pr.a1;
+                while (a1 <= a0) a1 += 360;
+                while (ang < a0 - 1e-9) ang += 360;
+                if (ang > a1 + 1e-9) return;
+              }
+              ts.push(t2);
+            });
+          }
+        });
+        return ts;
+      };
+      pcs.forEach(function (pc) {
+        var prev = null, samples = densify2(pc.pts, step).map(function (p2) {
+          var P = to3D(pl, p2[0], p2[1]), ts = hitsAt(to2D(pl2, P));
+          if (!ts.length) { prev = null; return null; }
+          var ref = prev == null ? 0 : prev, best = ts[0];
+          ts.forEach(function (t) { if (Math.abs(t - ref) < Math.abs(best - ref)) best = t; });
+          prev = best;
+          return add(P, scale(n1, best));
+        });
+        hitRuns(samples, pieces);
+      });
+    } else {
+      var faces = (f.faces || []).map(function (r) { return refFace(Array.isArray(r) ? r : r.at || r.face, ctx); });
+      if (!faces.length) throw refErr('Select the faces to project the sketch onto.');
+      var dir = scale(norm(pl.n), f.reverse ? -1 : 1), tol = refTol(ctx) * 0.02;
+      pcs.forEach(function (pc) {
+        var samples = densify2(pc.pts, step).map(function (p2) {
+          var P = to3D(pl, p2[0], p2[1]), best = Infinity;
+          faces.forEach(function (F) { rayFace(F, P, dir, tol).forEach(function (t) { if (t >= -tol && t < best) best = t; }); });
+          return best < Infinity ? add(P, scale(dir, best)) : null;
+        });
+        hitRuns(samples, pieces);
+      });
+    }
+    if (!pieces.length) throw refErr(f.mode === 'sketchOnSketch' ? 'The two sketches’ extrusions do not meet.' : 'The sketch does not project onto the selected faces' + (f.reverse ? '' : ' (try Reverse projection)') + '.');
+    return curveRecord('projCurve', chainPieces(pieces, false));
+  }
+
+  // ---- Composite Curve
+  function edgePiece(r, ctx, model) {
+    if (r.curve != null) {
+      var g = ctx.planes && ctx.planes[r.curve];
+      if (!g || g.refgeo !== 'curve') throw refErr('A referenced curve (feature ' + r.curve + ') is missing or failed to rebuild.');
+      return { pts: g.pts.slice(), edges: g.edges.slice() };
+    }
+    if (r.sketch != null) {
+      var s = refSketch(r, ctx, model), e = s.e, P3 = function (p) { return to3D(s.pl, p[0], p[1]); };
+      if (r.seg != null) { var sd = polySide(e, r.seg); return { pts: [P3(sd[0]), P3(sd[1])], edges: [{ t: 'line', a: P3(sd[0]), b: P3(sd[1]) }] }; }
+      if (e.t === 'line') { var A = P3([e.x1, e.y1]), B = P3([e.x2, e.y2]); return { pts: [A, B], edges: [{ t: 'line', a: A, b: B }] }; }
+      var pls = entityPolylines(e);
+      if (!pls.length) throw refErr('The sketch entity has no curve.');
+      var q = pls[0].closed ? pls[0].pts.concat([pls[0].pts[0]]) : pls[0].pts, pts = q.map(P3);
+      if (e.t === 'circle') return { pts: pts, edges: [{ t: 'circle', c: P3([e.cx, e.cy]), n: s.pl.n.slice(), r: e.r, x: norm(sub(pts[0], P3([e.cx, e.cy]))) }] };
+      if (e.t === 'arc') {
+        var a0 = e.a0 * Math.PI / 180, a1 = e.a1 * Math.PI / 180;
+        while (a1 <= a0) a1 += 2 * Math.PI;
+        var at = function (an) { return P3([e.cx + e.r * Math.cos(an), e.cy + e.r * Math.sin(an)]); };
+        pts[0] = at(a0); pts[pts.length - 1] = at(a1);
+        return { pts: pts, edges: [{ t: 'arc', a: at(a0), m: at((a0 + a1) / 2), b: at(a1) }] };
+      }
+      return { pts: pts, edges: [{ t: 'bez', bez: hermiteBez(pts, false) }] };
+    }
+    if (r.edge) {
+      var ed = refEdge(r.edge, ctx);
+      if (!ed.circle) return { pts: [ed.line.a, ed.line.b], edges: [{ t: 'line', a: ed.line.a, b: ed.line.b }] };
+      // a circular edge: the sharp chords on its circle connected to the picked one, in order
+      var C = ed.circle, tol = refTol(ctx) * 0.02, on = function (p) { var v = sub(p, C.c), ax = dot(v, C.d); return Math.abs(ax) < tol && Math.abs(len(sub(v, scale(C.d, ax))) - C.r) < tol; };
+      var segs = refEdges(ctx).filter(function (x) { return on(x.a) && on(x.b); }), chain = [ed.seg.a, ed.seg.b], used = [ed.seg];
+      var near = function (p, q2) { return len(sub(p, q2)) < tol; };
+      for (var grew = true; grew;) {
+        grew = false;
+        segs.forEach(function (x) {
+          if (used.indexOf(x) >= 0) return;
+          var tl = chain[chain.length - 1], hd = chain[0];
+          if (near(x.a, tl) && !near(x.b, chain[chain.length - 2])) { chain.push(x.b); used.push(x); grew = true; }
+          else if (near(x.b, tl) && !near(x.a, chain[chain.length - 2])) { chain.push(x.a); used.push(x); grew = true; }
+          else if (near(x.b, hd) && !near(x.a, chain[1])) { chain.unshift(x.a); used.push(x); grew = true; }
+          else if (near(x.a, hd) && !near(x.b, chain[1])) { chain.unshift(x.b); used.push(x); grew = true; }
+        });
+        if (chain.length > 3 && near(chain[0], chain[chain.length - 1])) break;
+      }
+      if (chain.length > 3 && near(chain[0], chain[chain.length - 1])) { chain[chain.length - 1] = chain[0]; return { pts: chain, edges: [{ t: 'circle', c: C.c, n: C.d, r: C.r, x: norm(sub(chain[0], C.c)) }] }; }
+      return { pts: chain, edges: [{ t: 'arc', a: chain[0], m: arcMid(C, chain[0], chain[chain.length - 1], chain[Math.floor(chain.length / 2)]), b: chain[chain.length - 1] }] };
+    }
+    throw refErr('Pick model edges, sketch lines / arcs or curves.');
+  }
+  // the point on circle C halfway (by angle) from a to b, on the side through `via`
+  function arcMid(C, a, b, via) {
+    var x = norm(sub(a, C.c)), y = cross(C.d, x), ang = function (p) { var v = sub(p, C.c); var t = Math.atan2(dot(v, y), dot(v, x)); return t < 0 ? t + 2 * Math.PI : t; };
+    var tb = ang(b), tv = ang(via), half = tv <= tb ? tb / 2 : (tb - 2 * Math.PI) / 2;
+    return add(C.c, add(scale(x, C.r * Math.cos(half)), scale(y, C.r * Math.sin(half))));
+  }
+  function resolveComposite(f, model, ctx) {
+    var refs = f.edges || [];
+    if (!refs.length) throw refErr('Select the edges, sketch entities or curves to join.');
+    return curveRecord('compositeCurve', chainPieces(refs.map(function (r) { return edgePiece(r, ctx, model); }), true, 'A composite curve'));
+  }
+
+  // ---- Curve Through XYZ Points / Reference Points
+  function splineRecord(kind, P, closed) {
+    if (P.length < 2) throw refErr('A curve through points needs at least two points.');
+    for (var i = 1; i < P.length; i++) if (len(sub(P[i], P[i - 1])) < faTol(P)) throw refErr('Points ' + i + ' and ' + (i + 1) + ' are the same point.');
+    var cl = !!closed && P.length > 2, bez = hermiteBez(P, cl), pts = sampleBez(bez, 12);
+    var edges = P.length === 2 ? [{ t: 'line', a: P[0], b: P[1] }] : [{ t: 'bez', bez: bez }];
+    if (P.length === 2) pts = [P[0], P[1]];
+    return curveRecord(kind, [{ pts: pts, edges: edges, closed: cl }]);
+  }
+  function resolveXyz(f) {
+    var P = (f.points || []).map(function (p, i) {
+      if (!Array.isArray(p) || p.length < 3) throw refErr('Point ' + (i + 1) + ' needs X, Y and Z.');
+      return [faNum(p[0], 'X of point ' + (i + 1)), faNum(p[1], 'Y of point ' + (i + 1)), faNum(p[2], 'Z of point ' + (i + 1))];
+    });
+    return splineRecord('xyzCurve', P, f.closed);
+  }
+  function resolveRefPtCurve(f, model, ctx) {
+    return splineRecord('refPtCurve', (f.points || []).map(function (r) { return refPoint(r, ctx, model); }), f.closed);
+  }
+
+  function resolveCurve(f, model, ctx) {
+    switch (f.type) {
+      case 'helix': return resolveHelix(f, model, ctx);
+      case 'projCurve': return resolveProjCurve(f, model, ctx);
+      case 'compositeCurve': return resolveComposite(f, model, ctx);
+      case 'xyzCurve': return resolveXyz(f, model, ctx);
+      case 'refPtCurve': return resolveRefPtCurve(f, model, ctx);
+    }
+    throw refErr('Unknown curve type ' + f.type + '.');
+  }
+  // the 3D polyline Kernel.buildSweep follows along curve feature `id`: { pts, start, end (true ends: the profile's
+  // offset from them is kept) }. A helix is sampled with its radius scaled by (Δθ/2) / sin(Δθ/2), so every chord is as
+  // long as the true arc and the mitred sweep's volume is area × the true length.
+  function curveSweepPath(id, ctx) {
+    var g = ctx.planes && ctx.planes[id];
+    if (!g || g.refgeo !== 'curve') throw refErr('The path curve (feature ' + id + ') is missing or failed to rebuild.');
+    if (g.runs && g.runs.length > 1) throw refErr('The path curve is in ' + g.runs.length + ' separate pieces; a sweep path must be one connected curve.');
+    var pts = g.pts, h = g.helix;
+    if (h) {
+      var N = pts.length - 1, th = 2 * Math.PI * h.revs, dt = th / N, k = (dt / 2) / Math.sin(dt / 2);
+      pts = [];
+      for (var i = 0; i <= N; i++) pts.push(helixAt(h, th * i / N, k));
+    }
+    return { pts: pts, start: g.pts[0], end: g.pts[g.pts.length - 1] };
+  }
+  // the loop's points with a full circle made area-true (scaled about its centre to the circle's own area), so a
+  // circle swept along a curve has the exact volume; any other loop as it is
+  function areaTrueLoop(l, profile) {
+    var seg = l.seg, C = seg && seg.length && seg[0] >= 0 && seg.every(function (k) { return k === seg[0]; }) ? (profile.curves || [])[seg[0]] : null;
+    if (!C || !C.full) return l.pts;
+    var A = Math.abs(signedArea(l.pts));
+    if (!(A > 0)) return l.pts;
+    var k = Math.sqrt(Math.PI * C.r * C.r / A);
+    return l.pts.map(function (p) { return [C.c[0] + (p[0] - C.c[0]) * k, C.c[1] + (p[1] - C.c[1]) * k]; });
+  }
+  // generateScript lines (registered: the default case of generateScript)
+  function faR4(p) { return p.map(function (x) { return Math.round(x * 1e4) / 1e4; }); }
+  function faRefOut(r, idVar) {
+    var parts = [];
+    Object.keys(r || {}).forEach(function (k) {
+      var x = r[k];
+      if ((k === 'point' || k === 'sketch' || k === 'curve') && typeof x === 'number' && idVar[x]) parts.push(k + ': ' + idVar[x]);
+      else if (Array.isArray(x)) parts.push(k + ': ' + JSON.stringify(faR4(x)));
+      else parts.push(k + ': ' + JSON.stringify(x));
+    });
+    return '{ ' + parts.join(', ') + ' }';
+  }
+  var FA_SCRIPT = {
+    helix: function (f, v, idVar, optsStr) {
+      var o = { defineBy: f.defineBy || 'pitchRev', name: f.name };
+      ['pitch', 'revolutions', 'height', 'startAngle', 'taper'].forEach(function (k) { if (f[k] != null && f[k] !== '' && (k !== 'startAngle' && k !== 'taper' || +f[k] !== 0 || typeof f[k] === 'string')) o[k] = typeof f[k] === 'string' && f[k].charAt(0) === '=' ? f[k] : +f[k]; });
+      ['clockwise', 'reverse', 'taperOut'].forEach(function (k) { if (f[k]) o[k] = true; });
+      return 'var ' + v + ' = p.helix(' + (idVar[f.sketch] || f.sketch) + ', ' + optsStr(o) + ');';
+    },
+    projCurve: function (f, v, idVar, optsStr) {
+      var o = { mode: f.mode || 'sketchOnFaces', name: f.name };
+      if (o.mode === 'sketchOnSketch') o.sketch2 = '@' + (idVar[f.sketch2] || f.sketch2);
+      else o.faces = (f.faces || []).map(function (r) { return faR4(Array.isArray(r) ? r : r.at); });
+      if (f.reverse) o.reverse = true;
+      return 'var ' + v + ' = p.projectedCurve(' + (idVar[f.sketch] || f.sketch) + ', ' + optsStr(o) + ');';
+    },
+    compositeCurve: function (f, v, idVar, optsStr) {
+      return 'var ' + v + ' = p.compositeCurve([' + (f.edges || []).map(function (r) { return faRefOut(r, idVar); }).join(', ') + '], ' + optsStr({ name: f.name }) + ');';
+    },
+    xyzCurve: function (f, v, idVar, optsStr) {
+      return 'var ' + v + ' = p.xyzCurve(' + JSON.stringify((f.points || []).map(function (p) { return p.map(Number); })) + ', ' + optsStr({ closed: !!f.closed, name: f.name }) + ');';
+    },
+    refPtCurve: function (f, v, idVar, optsStr) {
+      return 'var ' + v + ' = p.refPointCurve([' + (f.points || []).map(function (r) { return faRefOut(r, idVar); }).join(', ') + '], ' + optsStr({ closed: !!f.closed, name: f.name }) + ');';
+    }
+  };
+  Object.keys(FA_TYPES).forEach(function (t) { K.registerFeature(t, { cut: false, script: FA_SCRIPT[t] }); });
+  // .sldcrv-style text (Curve Through XYZ Points ▸ Browse / Save): one point a line, "x y z", each value optionally
+  // with a unit (mm, cm, m, in, ", ft); values without a unit are in the part's units
+  var FA_UNITS = { mm: 1, cm: 10, m: 1000, in: 25.4, '"': 25.4, inch: 25.4, ft: 304.8 };
+  function parseCurveFile(text, units) {
+    var toU = units === 'in' ? 1 / 25.4 : 1, pts = [];
+    String(text || '').split(/\r?\n/).forEach(function (line, li) {
+      line = line.replace(/[#;].*$/, '').trim();
+      if (!line) return;
+      var parts = line.split(/[\s,]+/).filter(Boolean);
+      if (parts.length < 3) throw refErr('Line ' + (li + 1) + ' needs X, Y and Z.');
+      pts.push(parts.slice(0, 3).map(function (s) {
+        var m = /^([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)\s*([a-z"]*)$/i.exec(s);
+        if (!m) throw refErr('Line ' + (li + 1) + ': "' + s + '" is not a number.');
+        var u = m[2].toLowerCase();
+        if (u && !FA_UNITS[u]) throw refErr('Line ' + (li + 1) + ': unknown unit "' + m[2] + '".');
+        return u ? +m[1] * FA_UNITS[u] * toU : +m[1];
+      }));
+    });
+    return pts;
+  }
+  function formatCurveFile(points, units) {
+    var u = units === 'in' ? 'in' : 'mm';
+    return points.map(function (p) { return p.map(function (x) { return (Math.round(+x * 1e8) / 1e8) + u; }).join(' '); }).join('\r\n') + '\r\n';
+  }
+  K.isCurveFeature = isCurveFeature; K.resolveCurve = resolveCurve; K.curveSweepPath = curveSweepPath; K.parseCurveFile = parseCurveFile; K.formatCurveFile = formatCurveFile;   // rfFA
+  K.helixAt = helixAt; K.hermiteBez = hermiteBez; K.CURVE_TYPES = Object.keys(FA_TYPES);
+  _.resolveCurve = resolveCurve; _.curveSweepPath = curveSweepPath; _.areaTrueLoop = areaTrueLoop;
+  // ------------------------------------------------------------------ rfDZ: Wrap
+  // { type: 'wrap', sketch, face: [x, y, z], mode: 'emboss' | 'deboss' | 'scribe', thickness, reverse? } — SolidWorks'
+  // Insert ▸ Features ▸ Wrap, Analytical method: the sketch's closed contours (Sketch Text outlines and their counters
+  // included) are wrapped onto a cylindrical, conical or planar face keeping arc length along the surface. Emboss adds
+  // and deboss removes material a constant `thickness` normal to the face; scribe splits the face along the wrapped
+  // contours (no volume change; the faces inside are their own faces, owned by the Wrap feature). `reverse` turns the
+  // normal round. The face is picked by a point on it (re-resolved on the body before the feature, like every pick).
+  // Cylinder: the sketch plane is parallel to the axis; sketch coordinates map to (θ = w / R, z) where w is the
+  // distance across the axis in the sketch plane, z along it, θ measured from the line where the sketch plane faces
+  // the cylinder. Cone: the sketch plane is tangent to the cone; the cone is developed (unrolled) about its apex.
+  // Plane: the sketch is projected onto the face. Wrapped solids are faceted in strips of constant θ whose edges sit on
+  // the true surface; the caps carry exact surface records, so a straight-sided contour on a cylinder or a plane gives
+  // exact volumes (massProps).
+  var WRAP_MODES = { emboss: 1, deboss: 1, scribe: 1 };
+  function wrapLayout(f, model, ctx) {
+    var mode = f.mode || 'emboss';
+    if (!WRAP_MODES[mode]) throw new Error('Wrap: unknown wrap type "' + mode + '".');
+    var sk = (ctx.sketches && ctx.sketches[f.sketch]) || findFeature(model, f.sketch);
+    if (!sk || sk.type !== 'sketch') throw new Error('Wrap: select a sketch (Source Sketch).');
+    var plane = resolvePlane(sk.plane, model, ctx.planes || {});
+    var profile = sk.profile || sketchProfile(sk);
+    checkProfile(profile);
+    if (!profile.loops.length) throw new Error('Wrap: the sketch has no closed contour.');
+    var at = f.face && !Array.isArray(f.face) && f.face.at ? f.face.at : f.face;   // (an array's own .at is a method)
+    if (!Array.isArray(at) || at.length !== 3) throw new Error('Wrap: pick the face to wrap onto (Face for Wrap Sketch).');
+    at = at.map(Number);
+    var d = mode === 'scribe' ? 0 : +f.thickness;
+    if (mode !== 'scribe' && !(d > 0)) throw new Error('Wrap: Thickness must be greater than zero.');
+    var body = needBody(ctx), pk = polyAt(body, at, refTol(ctx));
+    if (!pk) throw refErr('Wrap: the face is gone (nothing at ' + fmtPt(at) + ').');
+    var rf = refFace(at, ctx), flip = f.reverse ? -1 : 1, pn = polyN(pk), size = 0;
+    profile.loops.forEach(function (l) { l.pts.forEach(function (p) { size = Math.max(size, Math.abs(p[0]), Math.abs(p[1])); }); });
+    var L = { mode: mode, d: d, plane: plane, profile: profile, kind: rf.kind, id: f.id, rec: function () { return null; } };
+    if (rf.kind === 'plane') {
+      var nf = rf.n, sg = dot(plane.n, nf);
+      L.n = nf; L.w = rf.w; L.sigma = flip;
+      L.eps = mode === 'scribe' ? Math.max(1e-6, 1e-4 * size) : 0.05 * d;
+      if (Math.abs(sg) > 1 - 1e-9) {
+        // parallel: a prism of the sketch's own loops (exact arcs) on the sketch plane moved onto the face
+        L.prism = { origin: sub(plane.origin, scale(nf, dot(nf, plane.origin) - rf.w)), x: plane.x, y: plane.y, n: plane.n };
+        L.prismSign = (sg > 0 ? 1 : -1) * flip;
+      }
+      L.toST = function (p) { return p; };
+      L.G = function (s, t, h) { var P = to3D(plane, s, t); return add(sub(P, scale(nf, dot(nf, P) - rf.w)), scale(nf, flip * h)); };
+      L.dsMax = Infinity;
+    } else if (rf.kind === 'cyl' || (rf.kind === 'cone' && Math.abs(rf.surf.k || 0) < 1e-12)) {
+      var S = rf.surf, o = S.o.slice(), dd = norm(S.d), R = S.r;
+      if (Math.abs(dot(plane.n, dd)) > 1e-6) throw new Error('Wrap: the sketch plane must be parallel to the cylinder\'s axis.');
+      var s0 = dot(sub(plane.origin, o), plane.n);
+      if (Math.abs(s0) < 1e-9 * (1 + R)) s0 = dot(sub(at, o), plane.n);
+      var e1 = scale(plane.n, s0 >= 0 ? 1 : -1), e2 = cross(dd, e1);
+      var rel = sub(at, o), er = norm(sub(rel, scale(dd, dot(rel, dd)))), sig = (dot(pn, er) >= 0 ? 1 : -1) * flip;
+      if (mode !== 'scribe' && sig < 0 && d >= R) throw new Error('Wrap: the thickness reaches the axis of the cylinder.');
+      var segsB = _.segsForRadius(R), segsT = _.segsForRadius(R + d), sag = Math.max(R * (1 - Math.cos(Math.PI / segsB)), (R + d) * (1 - Math.cos(Math.PI / segsT)));
+      L.kind = 'cyl'; L.o = o; L.dd = dd; L.e1 = e1; L.e2 = e2; L.R = R; L.sigma = sig;
+      L.eps = Math.min(Math.max(2 * sag, 1e-6 * (1 + R)), 0.25 * R);   // past the facets of both the body and the wrap
+      L.dsMax = 2 * Math.PI / segsT;
+      L.toST = function (p) { var r = sub(to3D(plane, p[0], p[1]), o); return [dot(r, e2) / R, dot(r, dd)]; };
+      L.G = function (th, z, h) { var c = Math.cos(th), s = Math.sin(th), rr = R + sig * h; return [o[0] + dd[0] * z + rr * (c * e1[0] + s * e2[0]), o[1] + dd[1] * z + rr * (c * e1[1] + s * e2[1]), o[2] + dd[2] * z + rr * (c * e1[2] + s * e2[2])]; };
+      L.rec = function (h) { return { t: 'cyl', o: o.slice(), d: dd.slice(), r: R + sig * h }; };
+    } else if (rf.kind === 'cone') {
+      var C = rf.surf, co = C.o.slice(), cd = norm(C.d), k = C.k, q = Math.sqrt(1 + k * k), z0 = -C.r / k, A = add(co, scale(cd, z0));
+      var nd = dot(plane.n, cd);
+      if (Math.abs(nd) < 1e-9) throw new Error('Wrap: the sketch plane must be tangent to the cone.');
+      // the tangent plane's normal is ±(e1 − k·d)/q for the generator direction e1
+      var sgc = -(nd > 0 ? 1 : -1) * (k > 0 ? 1 : -1), v1 = add(scale(plane.n, sgc * q), scale(cd, k));
+      var ce1 = norm(sub(v1, scale(cd, dot(v1, cd)))), ce2 = cross(cd, ce1), sk0 = k > 0 ? 1 : -1;
+      var g0 = scale(add(cd, scale(ce1, k)), sk0 / q), sb = Math.abs(k) / q;
+      var crel = sub(at, co), cer = norm(sub(crel, scale(cd, dot(crel, cd)))), csig = (dot(pn, sub(cer, scale(cd, k))) >= 0 ? 1 : -1) * flip;
+      var rmax = 0;
+      L.kind = 'cone'; L.o = co; L.dd = cd; L.e1 = ce1; L.e2 = ce2; L.k = k; L.sigma = csig; L.apex = A;
+      L.toST = function (p) {
+        var r = sub(to3D(plane, p[0], p[1]), A), rg = dot(r, g0), wl = dot(r, ce2), rho = Math.hypot(rg, wl);
+        return [Math.atan2(wl, rg) / sb, z0 + sk0 * rho / q];
+      };
+      L.G = function (th, z, h) {
+        var c = Math.cos(th), s = Math.sin(th), er2 = add(scale(ce1, c), scale(ce2, s)), rr = C.r + k * z;
+        return add(add(add(co, scale(cd, z)), scale(er2, rr)), scale(sub(er2, scale(cd, k)), csig * h / q));
+      };
+      L.rec = function (h) { return { t: 'cone', o: co.slice(), d: cd.slice(), r: C.r + csig * h * q, k: k }; };
+      profile.loops.forEach(function (l) { l.pts.forEach(function (p) { var z = L.toST(p)[1]; rmax = Math.max(rmax, Math.abs(C.r + k * z)); }); });
+      var segC = _.segsForRadius(rmax + d);
+      L.dsMax = 2 * Math.PI / segC;
+      L.maxEdge = Math.max(1e-6, (rmax + d) * L.dsMax);
+      L.eps = Math.min(Math.max(2 * (rmax + d) * (1 - Math.cos(Math.PI / segC)), 1e-6 * (1 + rmax)), 0.25 * Math.max(rmax, 1e-9));
+    } else throw new Error('Wrap: the face must be cylindrical, conical or planar.');
+    // the loops in parameter space (s = θ or the sketch's u, t = z or v), counter-clockwise, with their nesting
+    L.loops = profile.loops.map(function (l) {
+      var pts = l.pts;
+      if (L.maxEdge) {
+        var fine = [];
+        pts.forEach(function (p, i) {
+          var nx = pts[(i + 1) % pts.length], n = Math.max(1, Math.ceil(Math.hypot(nx[0] - p[0], nx[1] - p[1]) / L.maxEdge));
+          for (var j = 0; j < n; j++) fine.push([p[0] + (nx[0] - p[0]) * j / n, p[1] + (nx[1] - p[1]) * j / n]);
+        });
+        pts = fine;
+      }
+      var st = pts.map(L.toST);
+      if (signedArea(st) < 0) st.reverse();
+      var lo = Infinity, hi = -Infinity;
+      st.forEach(function (p) { lo = Math.min(lo, p[0]); hi = Math.max(hi, p[0]); });
+      if (L.kind !== 'plane' && hi - lo >= 2 * Math.PI - 1e-9) throw new Error('Wrap: the sketch is longer than the way round the face.');
+      return { st: st, pts: l.pts, seg: l.seg, depth: l.depth || 0, hole: !!l.hole };
+    });
+    return L;
+  }
+  // strip lines (s values) for one loop: its ends, every s where an edge runs along t (exact walls there), and as many
+  // between as dsMax needs
+  function wrapZones(st, dsMax) {
+    var lo = Infinity, hi = -Infinity, base = [];
+    st.forEach(function (p, i) {
+      lo = Math.min(lo, p[0]); hi = Math.max(hi, p[0]);
+      var q = st[(i + 1) % st.length];
+      if (Math.abs(q[0] - p[0]) <= 1e-12 * (1 + Math.abs(p[0])) && Math.abs(q[1] - p[1]) > 0) base.push(p[0]);
+    });
+    base.push(lo, hi);
+    base.sort(function (a, b) { return a - b; });
+    var u = [];
+    base.forEach(function (s) { if (!u.length || s - u[u.length - 1] > 1e-11 * (1 + Math.abs(s))) u.push(s); });
+    if (u.length < 2) throw new Error('Wrap: a contour has no width.');
+    var Z = [u[0]];
+    for (var i = 0; i + 1 < u.length; i++) {
+      var n = isFinite(dsMax) ? Math.max(1, Math.ceil((u[i + 1] - u[i]) / dsMax - 1e-9)) : 1;
+      for (var j = 1; j <= n; j++) Z.push(j === n ? u[i + 1] : u[i] + (u[i + 1] - u[i]) * j / n);
+    }
+    return Z;
+  }
+  // one loop (parameter space, CCW) wrapped between heights h0 < h1 as a closed CSG solid: caps cut into strips
+  // (chordal facets, planar for cylinders, cones and planes), walls split at the strip lines; a wall piece that is not
+  // planar (an edge slanted across a strip) is four triangles to its centre
+  function wrapLoopSolid(L, st, h0, h1, shared, recs) {
+    var Z = wrapZones(st, L.dsMax), memo = {}, polys = [], G = L.G;
+    var loop = st.map(function (p) {
+      for (var j = 0; j < Z.length; j++) if (Math.abs(p[0] - Z[j]) < 1e-10 * (1 + Math.abs(Z[j]))) return [Z[j], p[1]];
+      return p;
+    }).filter(function (p, j, l) { var q = l[(j + 1) % l.length]; return Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]) > 1e-13; });
+    function zoneOf(s) { var k = 0; while (k + 2 < Z.length && Z[k + 1] <= s) k++; return k; }
+    function key(p) { return p[0] + ',' + p[1]; }
+    function cross2(a, b, z) {
+      var ka = key(a), kb = key(b), k = ka < kb ? ka + '|' + kb + '|' + z : kb + '|' + ka + '|' + z;
+      if (!memo[k]) { var p = ka < kb ? a : b, q2 = p === a ? b : a, t = (z - p[0]) / (q2[0] - p[0]); memo[k] = [z, p[1] + (q2[1] - p[1]) * t]; }
+      return memo[k];
+    }
+    function crossings(a, b) {
+      var lo = Math.min(a[0], b[0]), hi = Math.max(a[0], b[0]), out = [];
+      Z.forEach(function (z) { if (z > lo && z < hi) out.push(cross2(a, b, z)); });
+      return a[0] <= b[0] ? out : out.reverse();
+    }
+    function at(p, h, k) {
+      var A = G(Z[k], p[1], h), B = G(Z[k + 1], p[1], h), f = (p[0] - Z[k]) / (Z[k + 1] - Z[k]);
+      return [A[0] + (B[0] - A[0]) * f, A[1] + (B[1] - A[1]) * f, A[2] + (B[2] - A[2]) * f];
+    }
+    function put(pts, surf) { var pg = _.poly(pts, shared); if (pg) { if (surf) pg.surf = surf; polys.push(pg); } }
+    var w0 = recs && recs[0] ? { s: recs[0] } : null, w1 = recs && recs[1] ? { s: recs[1] } : null;
+    triangulate(loop).forEach(function (t) {
+      var tri = [loop[t[0]], loop[t[1]], loop[t[2]]], lo = Infinity, hi = -Infinity;
+      tri.forEach(function (p) { lo = Math.min(lo, p[0]); hi = Math.max(hi, p[0]); });
+      var cuts = [-Infinity].concat(Z.filter(function (z) { return z > lo && z < hi; }), [Infinity]);
+      for (var c = 0; c + 1 < cuts.length; c++) {
+        var za = cuts[c], zb = cuts[c + 1], pc = [];
+        for (var i = 0; i < 3; i++) {
+          var a = tri[i], b = tri[(i + 1) % 3];
+          if (a[0] >= za && a[0] <= zb) pc.push(a);
+          crossings(a, b).forEach(function (x) { if (x[0] === za || x[0] === zb) pc.push(x); });
+        }
+        if (pc.length < 3) continue;
+        var sm = 0; pc.forEach(function (p) { sm += p[0]; });
+        var zone = zoneOf(sm / pc.length);
+        put(pc.map(function (p) { return at(p, h1, zone); }), w1);
+        put(pc.map(function (p) { return at(p, h0, zone); }).reverse(), w0);
+      }
+    });
+    for (var i = 0; i < loop.length; i++) {
+      var a = loop[i], b = loop[(i + 1) % loop.length], pts = [a].concat(crossings(a, b), [b]);
+      for (var k = 0; k + 1 < pts.length; k++) {
+        var p = pts[k], q = pts[k + 1], zone = zoneOf((p[0] + q[0]) / 2);
+        var p0 = at(p, h0, zone), q0 = at(q, h0, zone), p1 = at(p, h1, zone), q1 = at(q, h1, zone);
+        var nrm = cross(sub(q0, p0), sub(p1, p0)), nl = len(nrm), sz = Math.max(len(sub(q0, p0)), len(sub(p1, p0)), 1e-12);
+        if (nl > 1e-14 && Math.abs(dot(nrm, sub(q1, p0))) / nl < 1e-10 * sz) { put([p0, q0, q1, p1]); continue; }
+        var cm = at([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2], (h0 + h1) / 2, zone);
+        put([p0, q0, cm]); put([q0, q1, cm]); put([q1, p1, cm]); put([p1, p0, cm]);
+      }
+    }
+    return ensureOutward(polys);
+  }
+  // the wrapped solid of every contour between heights h[0] < h[1] (holes cut, islands added back)
+  function wrapTool(L, h, shared) {
+    var dlt = 0.5 * Math.max(L.eps, 1e-9);
+    function solid(l, a, b) {
+      if (L.prism) {
+        var cv = l.seg && L.profile.curves ? l.seg.map(function (k) { return k >= 0 ? L.profile.curves[k] : null; }) : null;
+        var x = L.prismSign * a, y = L.prismSign * b;
+        return prism(l.pts, L.prism, Math.min(x, y), Math.max(x, y), shared, cv);
+      }
+      return wrapLoopSolid(L, l.st, a, b, shared, [L.rec(a), L.rec(b)]);
+    }
+    var outers = [], holes = [], islands = [];
+    L.loops.forEach(function (l) {
+      if (l.depth % 2 === 1) holes.push(solid(l, h[0] - dlt, h[1] + dlt));
+      else (l.depth ? islands : outers).push(solid(l, h[0], h[1]));
+    });
+    if (!outers.length) throw new Error('Wrap: the sketch has no closed contour.');
+    var acc = CSG.fromPolygons([].concat.apply([], outers.map(function (s) { return s.polygons; })));
+    if (holes.length) acc = acc.subtract(unionAll(holes));
+    if (islands.length) acc = acc.union(CSG.fromPolygons([].concat.apply([], islands.map(function (s) { return s.polygons; }))));
+    return acc;
+  }
+  function wrapHeights(L) {
+    return L.mode === 'emboss' ? [-L.eps, L.d] : L.mode === 'deboss' ? [-L.d, L.eps] : [-L.eps, L.eps];
+  }
+  // scribe: the body split along the wrapped contours. The body ∩ tool and body − tool keep the body's own surface on
+  // each side of the contours; the tool's walls between them cancel and are dropped. The surface inside belongs to the
+  // Wrap feature (shared) and its curved facets get a copy of their surface record marked w: <feature id>, so it is a
+  // face of its own (meshFromBody, surfKey) with real edges round it (bodyEdges); the geometry is unchanged.
+  function scribeSplit(body, tool, T, id) {
+    var inside = body.intersect(tool), outside = body.subtract(tool), keep = [], from = [], to = [];
+    function mark(p) {
+      p.shared = id;
+      if (!p.surf || !p.surf.s) return;
+      var i = from.indexOf(p.surf);
+      if (i < 0) {
+        var w = {}, s = {}, k;
+        for (k in p.surf) if (Object.prototype.hasOwnProperty.call(p.surf, k) && k.charAt(0) !== '_') w[k] = p.surf[k];
+        for (k in p.surf.s) if (Object.prototype.hasOwnProperty.call(p.surf.s, k) && k.charAt(0) !== '_') s[k] = p.surf.s[k];
+        s.w = id; w.s = s;
+        from.push(p.surf); to.push(w); i = from.length - 1;
+      }
+      p.surf = to[i];
+    }
+    outside.polygons.forEach(function (p) { if (p.shared !== T) keep.push(p); });
+    inside.polygons.forEach(function (p) { if (p.shared !== T) { mark(p); keep.push(p); } });
+    return CSG.fromPolygons(keep);
+  }
+  // buildWrap(f, model, ctx) -> { body, tool }: ctx.body is the body the face is on (kernel-rebuild.js picks it)
+  function buildWrap(f, model, ctx) {
+    var L = wrapLayout(f, model, ctx), body = ctx.body, h = wrapHeights(L);
+    if (L.mode === 'scribe') {
+      var T = { scribe: f.id };
+      return { body: scribeSplit(body, wrapTool(L, h, T), T, f.id), tool: null };
+    }
+    var tool = wrapTool(L, h, f.id), nb = L.mode === 'deboss' ? body.subtract(tool) : body.union(tool);
+    if (Math.abs(nb.volume() - body.volume()) < 1e-12 * Math.max(1, Math.abs(body.volume())) && ctx.warnings) {
+      ctx.warnings[f.id] = (ctx.warnings[f.id] ? ctx.warnings[f.id] + ' ' : '') + 'Wrap ' + (L.mode === 'deboss' ? 'removed' : 'added') + ' no material. Try "Reverse direction".';
+    }
+    return { body: nb, tool: tool };
+  }
+  K.registerFeature('wrap', {
+    cut: false,   // (kernel-rebuild.js isCut: a deboss cuts)
+    build: function (f, model, ctx) { if ((f.mode || 'emboss') === 'scribe') return null; var L = wrapLayout(f, model, ctx); return wrapTool(L, wrapHeights(L), f.id); },
+    script: function (f, v, idVar, optsStr) {
+      var o = { sketch: '@' + idVar[f.sketch], face: (f.face || []).map(function (x) { return Math.round(+x * 1e4) / 1e4; }), mode: f.mode || 'emboss' };
+      if ((f.mode || 'emboss') !== 'scribe') o.thickness = f.thickness;
+      if (f.reverse) o.reverse = true;
+      o.name = f.name;
+      return 'var ' + v + ' = p.wrap(' + optsStr(o) + ').last();';
+    }
+  });
+  K.wrapLayout = wrapLayout; K.wrapHeights = wrapHeights; K.wrapZones = wrapZones; K.buildWrap = buildWrap; _.buildWrap = buildWrap;
 })(Kernel, Kernel._);

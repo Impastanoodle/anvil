@@ -11,7 +11,8 @@ var BoxSelect = (function () {
   function rect(a, b) {
     return { x0: Math.min(a[0], b[0]), y0: Math.min(a[1], b[1]), x1: Math.max(a[0], b[0]), y1: Math.max(a[1], b[1]), mode: b[0] >= a[0] ? 'window' : 'crossing' };
   }
-  function inside(p, r) { return p[0] >= r.x0 && p[0] <= r.x1 && p[1] >= r.y0 && p[1] <= r.y1; }
+  // rfFD: a lasso region (lasso() below) tests its bounding box first, then the loop
+  function inside(p, r) { return p[0] >= r.x0 && p[0] <= r.x1 && p[1] >= r.y0 && p[1] <= r.y1 && (!r.lasso || inLoop(p, r.lasso)); }
   // Liang–Barsky: does segment ab meet the box (boundary included)?
   function segHits(a, b, r) {
     var t0 = 0, t1 = 1, dx = b[0] - a[0], dy = b[1] - a[1];
@@ -34,14 +35,18 @@ var BoxSelect = (function () {
     if (segHits(a, b, r) || segHits(b, c, r) || segHits(c, a, r)) return true;
     return pointInTri([r.x0, r.y0], a, b, c);   // the box lies inside the triangle
   }
-  function segment(a, b, r, mode) { return mode === 'window' ? inside(a, r) && inside(b, r) : segHits(a, b, r); }
+  function segment(a, b, r, mode) { return mode === 'window' ? inside(a, r) && inside(b, r) && !(r.lasso && crossesLoop(a, b, r.lasso)) : segHits(a, b, r); }
   // A polyline [[x, y], …] (closed adds the last → first segment). Window: every point inside; crossing: any segment
   // meets the box (a single point: inside).
   function polyline(pts, closed, r, mode) {
     if (!pts.length) return false;
-    if (mode === 'window') { for (var k = 0; k < pts.length; k++) if (!inside(pts[k], r)) return false; return true; }
-    if (pts.length === 1) return inside(pts[0], r);
     var n = pts.length, cnt = closed ? n : n - 1;
+    if (mode === 'window') {
+      for (var k = 0; k < n; k++) if (!inside(pts[k], r)) return false;
+      if (r.lasso) for (var j = 0; j < cnt; j++) if (crossesLoop(pts[j], pts[(j + 1) % n], r.lasso)) return false;   // rfFD: a concave loop
+      return true;
+    }
+    if (pts.length === 1) return inside(pts[0], r);
     for (var i = 0; i < cnt; i++) if (segHits(pts[i], pts[(i + 1) % n], r)) return true;
     return false;
   }
@@ -50,7 +55,17 @@ var BoxSelect = (function () {
     from = from || 0; to = to == null ? t.length : to;
     if (to <= from) return false;
     var i;
-    if (mode === 'window') { for (i = from; i < to; i += 2) if (!(t[i] >= r.x0 && t[i] <= r.x1 && t[i + 1] >= r.y0 && t[i + 1] <= r.y1)) return false; return true; }
+    if (mode === 'window') {
+      for (i = from; i < to; i += 2) if (!(t[i] >= r.x0 && t[i] <= r.x1 && t[i + 1] >= r.y0 && t[i + 1] <= r.y1)) return false;
+      if (r.lasso) {   // rfFD: every corner inside the loop and no side leaving it
+        for (i = from; i < to; i += 2) if (!inLoop([t[i], t[i + 1]], r.lasso)) return false;
+        for (i = from; i < to; i += 6) {
+          var A = [t[i], t[i + 1]], B = [t[i + 2], t[i + 3]], C = [t[i + 4], t[i + 5]];
+          if (crossesLoop(A, B, r.lasso) || crossesLoop(B, C, r.lasso) || crossesLoop(C, A, r.lasso)) return false;
+        }
+      }
+      return true;
+    }
     // quick reject / accept on the bounding box first
     var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (i = from; i < to; i += 2) { if (t[i] < x0) x0 = t[i]; if (t[i] > x1) x1 = t[i]; if (t[i + 1] < y0) y0 = t[i + 1]; if (t[i + 1] > y1) y1 = t[i + 1]; }
@@ -79,7 +94,40 @@ var BoxSelect = (function () {
     return 10 * e;
   }
   function snap(v, step) { return +(Math.round(v / step) * step).toPrecision(12); }
-  return { rect: rect, inside: inside, segHits: segHits, pointInTri: pointInTri, triHits: triHits, segment: segment, polyline: polyline, triangles: triangles, combine: combine, rulerStep: rulerStep, snap: snap };
+  // rfFD: Lasso Selection (SolidWorks): a free-form loop of screen points, closed back to its first point. lasso(pts)
+  // -> a region the functions above take in place of a box: { lasso, mode: 'window', x0, y0, x1, y1 } (bounding box).
+  // A lasso always uses the window rule (items wholly inside); crossing tests only see its bounding box.
+  function lasso(pts) {
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, loop = [];
+    (pts || []).forEach(function (p) {
+      if (!p || !isFinite(p[0]) || !isFinite(p[1])) return;
+      loop.push([p[0], p[1]]);
+      if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1];
+    });
+    return { lasso: loop, mode: 'window', x0: x0, y0: y0, x1: x1, y1: y1 };
+  }
+  // even-odd point in polygon (a point on the loop itself may fall either way)
+  function inLoop(p, poly) {
+    var c = false, n = poly.length;
+    if (n < 3) return false;
+    for (var i = 0, j = n - 1; i < n; j = i++) {
+      var a = poly[i], b = poly[j];
+      if ((a[1] > p[1]) !== (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]) c = !c;
+    }
+    return c;
+  }
+  // does segment ab properly cross a side of the closed loop (touching is not crossing)?
+  function crossesLoop(a, b, poly) {
+    var n = poly.length, mx0 = Math.min(a[0], b[0]), mx1 = Math.max(a[0], b[0]), my0 = Math.min(a[1], b[1]), my1 = Math.max(a[1], b[1]);
+    for (var i = 0, j = n - 1; i < n; j = i++) {
+      var c = poly[j], d = poly[i];
+      if (Math.max(c[0], d[0]) < mx0 || Math.min(c[0], d[0]) > mx1 || Math.max(c[1], d[1]) < my0 || Math.min(c[1], d[1]) > my1) continue;
+      var d1 = cross(c, d, a), d2 = cross(c, d, b), d3 = cross(a, b, c), d4 = cross(a, b, d);
+      if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return true;
+    }
+    return false;
+  }
+  return { lasso: lasso, inLoop: inLoop, crossesLoop: crossesLoop, rect: rect, inside: inside, segHits: segHits, pointInTri: pointInTri, triHits: triHits, segment: segment, polyline: polyline, triangles: triangles, combine: combine, rulerStep: rulerStep, snap: snap };
 })();
 
 if (typeof UI !== 'undefined') (function (UI) {
@@ -706,19 +754,29 @@ if (typeof UI !== 'undefined') (function (UI) {
     var f = filterSet(), asm = isAsm();
     var want = f ? { faces: f.faces, edges: f.edges, vertices: f.vertices, bodies: bodyFilter(f), sketch: f.sketch } : asm ? { bodies: true } : { edges: true };
     var faces = App.mesh.faces, sp = (want.faces || want.bodies) ? screenMesh() : null;
+    // rfFD: Select hidden entities off (the default) in a shaded view: only what can be seen (faces / bodies: a pixel of
+    // theirs inside the box or lasso shows; edges / vertices: a point of theirs is not behind the part)
+    var occ = occlusionWanted() && (want.faces || want.bodies || want.edges || want.vertices) ? occluder() : null, vis = occ && (want.faces || want.bodies) ? occ.shownIn(r) : null;
+    function faceSeen(i, grp) {
+      if (!vis || vis.faces[grp[0]]) return true;
+      // a face seen edge-on owns no pixel: it counts when its middle is not behind the part (on the outline)
+      var a = 0;
+      grp.forEach(function (j) { var g = faces[j]; for (var t = g.start; t < g.start + g.count; t++) { var k = t * 6; a += Math.abs((sp[k + 2] - sp[k]) * (sp[k + 5] - sp[k + 1]) - (sp[k + 3] - sp[k + 1]) * (sp[k + 4] - sp[k])) / 2; } });
+      return a < 1 && occ.seen(faces[i].centroid);
+    }
     // a curved face (every facet of one cylinder, hole, cone...) is one face: a window box needs all of it inside, a
     // crossing box any part of it, and it is listed once
     if (want.faces) faces.forEach(function (fc, i) {
       var grp = UI.faceGroup ? UI.faceGroup(i) : [i];
       if (grp[0] !== i || !faceVisible(i)) return;
       var hit = function (j) { var g = faces[j]; return BoxSelect.triangles(sp, r, mode, g.start * 6, (g.start + g.count) * 6); };
-      if (mode === 'window' ? grp.every(hit) : grp.some(hit)) out.push({ kind: 'face', index: i });
+      if ((mode === 'window' ? grp.every(hit) : grp.some(hit)) && faceSeen(i, grp)) out.push({ kind: 'face', index: i });
     });
     if (want.edges) (App.edges || []).forEach(function (e, i) {
-      if (edgeShown(e) && BoxSelect.segment(S(e.a), S(e.b), r, mode)) out.push({ kind: 'edge', edge: e, index: i });
+      if (edgeShown(e) && BoxSelect.segment(S(e.a), S(e.b), r, mode) && (!occ || occ.edge(e))) out.push({ kind: 'edge', edge: e, index: i });
     });
     if (want.vertices) vertices().forEach(function (v, i) {
-      if (v.edges.some(edgeShown) && BoxSelect.inside(S(v.point), r)) out.push({ kind: 'vertex', point: v.point.slice(), index: i });
+      if (v.edges.some(edgeShown) && BoxSelect.inside(S(v.point), r) && (!occ || occ.seen(v.point))) out.push({ kind: 'vertex', point: v.point.slice(), index: i });
     });
     if (want.bodies) {
       var n = Math.max(1, UI.bodyCount ? UI.bodyCount() : 1), state = [];
@@ -730,7 +788,7 @@ if (typeof UI !== 'undefined') (function (UI) {
         if (mode === 'window') state[bi] = (state[bi] == null ? true : state[bi]) && hit;
         else state[bi] = state[bi] || hit;
       });
-      state.forEach(function (s, bi) { if (s) out.push({ kind: 'body', index: bi }); });
+      state.forEach(function (s, bi) { if (s && (!vis || vis.bodies[bi])) out.push({ kind: 'body', index: bi }); });
     }
     if (want.sketch) {
       var per = {};
@@ -764,13 +822,13 @@ if (typeof UI !== 'undefined') (function (UI) {
     // rfBC: the box in sketch coordinates, with what it left selected, for Stretch Entities (the points inside it move)
     if (App.mode === 'sketch') {
       var bsk = UI.activeSketchFeature(), bpl = UI.activePlane && UI.activePlane();
-      var quad = bpl ? [[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]].map(function (q) { return UI.screenToPlane(q[0], q[1], bpl); }) : [];
+      var quad = bpl ? (r.lasso || [[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]]).map(function (q) { return UI.screenToPlane(q[0], q[1], bpl); }) : [];
       UI.lastSketchBox = bsk && quad.every(Boolean) ? { sketch: bsk.id, mode: r.mode, poly: quad,
         sel: list.filter(function (s) { return s.kind === 'entity'; }).map(function (s) { return s.index; }).sort(function (a, b) { return a - b; }) } : null;
     }
     // rfF: a box in a sketch shows the selection's PropertyManager (Properties for two or more) unless another PM is open
     if (App.mode === 'sketch' && !(UI.pmCollectsSelection && UI.pmCollectsSelection())) sketchSelectionPM(list, false);
-    if (UI.setStatus) UI.setStatus((r.mode === 'window' ? 'Window' : 'Crossing') + ' selection: ' + (list.length ? describe(list) + ' selected.' : 'nothing selected.'));
+    if (UI.setStatus) UI.setStatus((r.lasso ? 'Lasso' : r.mode === 'window' ? 'Window' : 'Crossing') + ' selection: ' + (list.length ? describe(list) + ' selected.' : 'nothing selected.'));
     return list;
   }
   function showBox(a, b) {
@@ -790,10 +848,12 @@ if (typeof UI !== 'undefined') (function (UI) {
       if (UI.pickEntity(p[0], p[1])) return null;
     } else {
       if (cmd && !(cmd.onPick && cmd.pickEdges)) return null;   // other PropertyManagers keep press-and-drag = rotate
-      if (UI.pickFace(p[0], p[1])) return null;
-      if (App.view.showPlanes && UI.pickPlane(p[0], p[1])) return null;
+      // rfFD: in Lasso Selection a left-drag on the model draws the loop too (middle-drag rotates, as in SolidWorks)
+      if (selMode !== 'lasso' && UI.pickFace(p[0], p[1])) return null;
+      if (selMode !== 'lasso' && App.view.showPlanes && UI.pickPlane(p[0], p[1])) return null;
     }
     var mods = { ctrl: ev.ctrlKey || ev.metaKey, shift: ev.shiftKey };
+    if (selMode === 'lasso') return lassoHook(p, mods);
     return {
       box: true,
       start: function () { boxing = { start: p, end: p, mods: mods }; showBox(p, p); },
@@ -1209,8 +1269,11 @@ if (typeof UI !== 'undefined') (function (UI) {
     var s = list[0], f = null, face = null;
     if (s.kind === 'face') { var fc = App.mesh.faces[s.index]; if (!fc || !App.triShared) return []; f = K.findFeature(App.model, App.triShared[fc.start]); face = s.index; }
     else if (s.kind === 'feature') f = K.findFeature(App.model, s.id);
-    if (!f || (f.type !== 'extrude' && f.type !== 'revolve') || f.suppressed) return [];
+    if (!f || f.suppressed) return [];
     if (App.build.errors && App.build.errors[f.id]) return [];
+    var pat = face != null ? patternOfInstance(f, face, s.point) : null;   // rfFD: a pattern copy's face is tagged with its seed
+    if (pat) return otherFeatureHandles(pat, null);
+    if (f.type !== 'extrude' && f.type !== 'revolve') return otherFeatureHandles(f, face);   // rfFD: fillet, shell, patterns
     var sk = K.findFeature(App.model, f.sketch), pl = sk && sketchPlane(sk);
     if (!sk || !pl) return [];
     var out = [], h = f.type === 'extrude' ? extrudeHandle(f, sk, pl, face) : revolveHandle(f, sk, pl, face);
@@ -1585,7 +1648,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     App.dimsStale = true;
     drawI3D();
     if (UI.refreshRibbon) UI.refreshRibbon();
-    if (UI.setStatus) UI.setStatus('Instant3D ' + (i3d.on ? 'on: select a face of an extrude or revolve and drag its arrow.' : 'off.'));
+    if (UI.setStatus) UI.setStatus('Instant3D ' + (i3d.on ? 'on: select a face of an extrude, revolve, fillet, shell or pattern and drag its arrow.' : 'off.'));
     return i3d.on;
   }
 
@@ -1660,6 +1723,207 @@ if (typeof UI !== 'undefined') (function (UI) {
     return did;
   });
 
+  // ================================================================== rfFD: lasso, Select hidden entities, Instant3D on other features
+  // Instant3D on a selected face of a fillet / chamfer (radius / distance), a shell (wall thickness) or a linear /
+  // circular pattern (spacing / angle): ui-commands.js UI.instant3DFeatureHandles gives the handles the feature's
+  // PropertyManager shows; a drag or a typed value edits the feature itself (one undo step, rebuilt as an extrude drag).
+  function otherFeatureHandles(f, faceIndex) {
+    var specs = [];
+    try { specs = UI.instant3DFeatureHandles ? UI.instant3DFeatureHandles(f, faceIndex) || [] : []; } catch (e) { specs = []; }
+    var out = [];
+    specs.forEach(function (d) {
+      if (!d || d.type === 'callout' || d.type === 'flip') return;
+      var val = numeric(f[d.key]);
+      if (val == null) return;   // an equation drives it: no handle
+      var h = { kind: 'fparam', fid: f.id, dimIndex: d.key, key: d.key, label: (f.name || f.type) + ' ' + String(d.label || d.key).toLowerCase(), value: val, min: d.min != null ? d.min : 0, max: d.max };
+      h.apply = function (v) { f[d.key] = v; return true; };
+      if (d.type === 'angle') { if (!angleHandle(h, d.A, d.D, d.c, d.sign)) return; }
+      else { h.O = d.O; h.dir = V.norm(d.dir); h.k = d.k || 1; linearHandle(h); }
+      out.push(h);
+    });
+    return out;
+  }
+  // A face of a linear / circular pattern's copy carries its seed feature's id (the copies are the seed's tool moved):
+  // the face lies outside the seed's tool and inside the pattern's -> that pattern, else null.
+  function toolBox(fid) {
+    var t = App.build && App.build.tools && App.build.tools[fid], b = t && t.getBounds && t.getBounds();
+    if (!b) return null;
+    return { lo: b.min.x != null ? [b.min.x, b.min.y, b.min.z] : b.min, hi: b.max.x != null ? [b.max.x, b.max.y, b.max.z] : b.max };
+  }
+  function boxHas(b, p) {
+    var tol = 1e-6 * Math.max(1, Math.abs(b.hi[0] - b.lo[0]) + Math.abs(b.hi[1] - b.lo[1]) + Math.abs(b.hi[2] - b.lo[2]));
+    for (var k = 0; k < 3; k++) if (p[k] < b.lo[k] - tol || p[k] > b.hi[k] + tol) return false;
+    return true;
+  }
+  function patternOfInstance(seed, faceIndex, at) {
+    var fc = App.mesh.faces[faceIndex], seedBox = toolBox(seed.id), c = at || (fc && fc.centroid);   // a click's point (coplanar copies share one face)
+    if (!c || !seedBox || boxHas(seedBox, c)) return null;
+    var hit = null;
+    App.model.features.forEach(function (p) {
+      if (hit || p.suppressed || (p.type !== 'lpattern' && p.type !== 'cpattern')) return;
+      var src = Array.isArray(p.feature) ? p.feature.map(Number) : [+p.feature];
+      if (src.indexOf(seed.id) < 0) return;
+      var pb = toolBox(p.id);
+      if (pb && boxHas(pb, c)) hit = p;
+    });
+    return hit;
+  }
+
+  // Select hidden entities (Tools ▸ Options ▸ System Options ▸ Display/Selection), off by default as in SolidWorks: a
+  // box or lasso in a shaded view then takes only the model edges, vertices, faces and bodies that can be seen. Hidden Lines Removed,
+  // Hidden Lines Visible and Wireframe take hidden ones too, as SolidWorks does; on = through the part (the old way).
+  // Faces and bodies count when a pixel of theirs inside the box / lasso shows (FD2). Saved in localStorage
+  // anvil.selectHidden ('1' on).
+  var selectHiddenOn = false;
+  try { selectHiddenOn = localStorage.getItem('anvil.selectHidden') === '1'; } catch (e) { }
+  function selectHidden(on) {
+    if (on == null) return selectHiddenOn;
+    selectHiddenOn = !!on;
+    try { localStorage.setItem('anvil.selectHidden', selectHiddenOn ? '1' : '0'); } catch (e) { }
+    return selectHiddenOn;
+  }
+  function occlusionWanted() {
+    var st = App.view && App.view.style;
+    return !selectHiddenOn && App.mode !== 'sketch' && (!st || st === 'shadedEdges' || st === 'shaded');
+  }
+  // A depth buffer of the shaded part at screen resolution (orthographic camera: depth is linear on screen), built
+  // once per box / lasso. seen(p): the point is not behind the part: within the 3 × 3 pixels around it some pixel is
+  // empty (the outline) or not clearly nearer than p. edge(e): any of a few points along it is seen.
+  function occluder() {
+    var m = App.mesh, w = Math.max(1, Math.ceil(UI.size.w)), h = Math.max(1, Math.ceil(UI.size.h));
+    var zb = new Float32Array(w * h), ib = new Int32Array(w * h), pos = m.positions64 || m.positions, D = camDir(), sp = screenMesh();
+    var sec = App.view.section && App.view.section.plane, tol = 3 * (UI.cam.scale || 0.01);
+    zb.fill(-Infinity); ib.fill(-1);
+    function dep(i) { return pos[i * 3] * D[0] + pos[i * 3 + 1] * D[1] + pos[i * 3 + 2] * D[2]; }
+    function tri(t, fi) {
+      var i = t * 3, ax = sp[i * 2], ay = sp[i * 2 + 1], bx = sp[i * 2 + 2], by = sp[i * 2 + 3], cx = sp[i * 2 + 4], cy = sp[i * 2 + 5];
+      var area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+      if (!(Math.abs(area) > 1e-9)) return;
+      if (sec) {   // a section view: a triangle on the removed side does not hide anything
+        var c = new THREE.Vector3((pos[i * 3] + pos[i * 3 + 3] + pos[i * 3 + 6]) / 3, (pos[i * 3 + 1] + pos[i * 3 + 4] + pos[i * 3 + 7]) / 3, (pos[i * 3 + 2] + pos[i * 3 + 5] + pos[i * 3 + 8]) / 3);
+        if (sec.distanceToPoint(c) < 0) return;
+      }
+      var az = dep(i), bz = dep(i + 1), cz = dep(i + 2);
+      var x0 = Math.max(0, Math.floor(Math.min(ax, bx, cx))), x1 = Math.min(w - 1, Math.ceil(Math.max(ax, bx, cx)));
+      var y0 = Math.max(0, Math.floor(Math.min(ay, by, cy))), y1 = Math.min(h - 1, Math.ceil(Math.max(ay, by, cy)));
+      for (var y = y0; y <= y1; y++) {
+        var py = y + 0.5;
+        for (var x = x0; x <= x1; x++) {
+          var px = x + 0.5;
+          var w0 = ((bx - px) * (cy - py) - (by - py) * (cx - px)) / area, w1 = ((cx - px) * (ay - py) - (cy - py) * (ax - px)) / area, w2 = 1 - w0 - w1;
+          if (w0 < -1e-7 || w1 < -1e-7 || w2 < -1e-7) continue;
+          var z = w0 * az + w1 * bz + w2 * cz, k = y * w + x;
+          if (z > zb[k]) { zb[k] = z; ib[k] = fi; }
+        }
+      }
+    }
+    m.faces.forEach(function (fc, fi) {
+      if (!faceVisible(fi)) return;
+      for (var t = fc.start; t < fc.start + fc.count; t++) tri(t, fi);
+    });
+    function seen(p) {
+      var s = S(p), d = p[0] * D[0] + p[1] * D[1] + p[2] * D[2], px = Math.floor(s[0]), py = Math.floor(s[1]);
+      for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+        var x = px + dx, y = py + dy;
+        if (x < 0 || y < 0 || x >= w || y >= h) return true;
+        var zz = zb[y * w + x];
+        if (zz === -Infinity || d >= zz - tol) return true;
+      }
+      return false;
+    }
+    function edge(e) {
+      var a = S(e.a), b = S(e.b), n = Math.max(1, Math.min(8, Math.round(Math.hypot(b[0] - a[0], b[1] - a[1]) / 20)));
+      for (var k = 0; k < n; k++) {
+        var t = (k + 0.5) / n;
+        if (seen([e.a[0] + (e.b[0] - e.a[0]) * t, e.a[1] + (e.b[1] - e.a[1]) * t, e.a[2] + (e.b[2] - e.a[2]) * t])) return true;
+      }
+      return false;
+    }
+    // FD2: the faces (by face-group root) and bodies owning a pixel whose centre lies in the region r (box or lasso)
+    function shownIn(r) {
+      var out = { faces: {}, bodies: {} }, root = {};
+      var x0 = Math.max(0, Math.floor(r.x0)), x1 = Math.min(w - 1, Math.ceil(r.x1)), y0 = Math.max(0, Math.floor(r.y0)), y1 = Math.min(h - 1, Math.ceil(r.y1));
+      for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) {
+        var fi = ib[y * w + x];
+        if (fi < 0) continue;
+        var g = root[fi];
+        if (g == null) g = root[fi] = UI.faceGroup ? UI.faceGroup(fi)[0] : fi;
+        var bi = m.faces[fi].body || 0;
+        if (out.faces[g] && out.bodies[bi]) continue;
+        if (!BoxSelect.inside([x + 0.5, y + 0.5], r)) continue;
+        out.faces[g] = true; out.bodies[bi] = true;
+      }
+      return out;
+    }
+    return { seen: seen, edge: edge, shownIn: shownIn };
+  }
+
+  // Lasso Selection (SolidWorks: right-click the graphics area ▸ Lasso Selection; it stays until Box Selection): a
+  // left-drag draws a free-form loop and, on release, what lies wholly inside it is selected (the window rule) under
+  // the Selection Filter; Ctrl adds, Shift toggles, as a box does. Parts (edges by default; faces / vertices with the
+  // filter), open sketches (entities and points) and assemblies (components). In a part the loop may start on the
+  // model (a plain click still selects).
+  var selMode = 'box';
+  var lassoSvg = svg('svg', { id: 'sel-lasso' });
+  lassoSvg.style.display = 'none';
+  var lassoPath = svg('polyline', { points: '' }, lassoSvg);
+  viewport.appendChild(lassoSvg);
+  function selectionMode(mode) {
+    if (mode === 'box' || mode === 'lasso') {
+      selMode = mode;
+      if (UI.setStatus) UI.setStatus(mode === 'lasso' ? 'Lasso Selection: drag a loop around the items to select (right-click ▸ Box Selection goes back).' : 'Box Selection.');
+    }
+    return selMode;
+  }
+  function showLasso(pts) {
+    lassoSvg.style.display = pts ? '' : 'none';
+    lassoPath.setAttribute('points', pts ? pts.map(function (q) { return q[0].toFixed(1) + ',' + q[1].toFixed(1); }).join(' ') : '');
+  }
+  // the loop with points at least 3 px apart, at most 400 of them
+  function lassoPoints(pts) {
+    var out = [];
+    (pts || []).forEach(function (q) { var l = out[out.length - 1]; if (q && (!l || Math.hypot(q[0] - l[0], q[1] - l[1]) >= 3)) out.push([q[0], q[1]]); });
+    if (out.length > 400) { var step = out.length / 400, d = []; for (var i = 0; i < 400; i++) d.push(out[Math.floor(i * step)]); out = d; }
+    return out;
+  }
+  function applyLasso(pts, mods) {
+    var loop = lassoPoints(pts), r = BoxSelect.lasso(loop);
+    if (loop.length < 3 || r.x1 - r.x0 < 2 || r.y1 - r.y0 < 2) return selection();
+    return applyBox(r, mods);
+  }
+  function lassoHook(p, mods) {
+    return {
+      box: true, lasso: true,
+      start: function () { boxing = { start: p, end: p, mods: mods, pts: [p] }; showLasso(boxing.pts); },
+      move: function (q) { if (!boxing) return; boxing.end = q; boxing.pts.push(q); showLasso(boxing.pts); },
+      end: function (q) {
+        var b = boxing; boxing = null; showLasso(null);
+        if (!b || b.cancelled) return;
+        b.pts.push(q);
+        applyLasso(b.pts, mods);
+      }
+    };
+  }
+  UI.escapeBoxes.push(function () { if (lassoSvg.style.display !== 'none') { showLasso(null); return true; } return false; });
+  // the right-click menu rows (an empty spot of the graphics area in a part or assembly; in a sketch ui-panels.js
+  // sketchMenuItems adds them)
+  function selectionModeMenuItems() {
+    return [
+      { label: 'Box Selection', checked: selMode === 'box', action: function () { selectionMode('box'); } },
+      { label: 'Lasso Selection', checked: selMode === 'lasso', action: function () { selectionMode('lasso'); } }
+    ];
+  }
+  viewport.addEventListener('contextmenu', function (ev) {
+    if (App.mode !== 'part' || drawingOn() || !UI.showMenu) return;
+    var p = pos(ev);
+    if (rDown && Math.hypot(p[0] - rDown[0], p[1] - rDown[1]) > 4) return;   // a right-drag panned the view
+    if (ev.target.closest && ev.target.closest('#hud, #i3d-edit, #i3d-layer .i3d')) return;
+    if (App.mesh && UI.pickFacesAll && UI.pickFacesAll(p[0], p[1]).length) return;   // on the model: Select Other (above)
+    var items = selectionModeMenuItems();
+    if (selection().length) items.push({ sep: true }, { label: 'Clear Selection', action: function () { setSelection([], { quiet: true }); } });
+    UI.showMenu(ev.clientX, ev.clientY, items);
+  });
+
   // ================================================================== exports
   function summarize(s) {
     var o = { kind: s.kind };
@@ -1690,6 +1954,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   UI.pickVertex = pickVertex; UI.pickFiltered = pick; UI.pickHover = pickHover; UI.selectClick = selectClick; UI.sketchSelectClick = sketchSelectClick;
   UI.sketchPickItem = sketchPickItem; UI.selectedSketchRefs = selectedSketchRefs; UI.sketchSelectionPM = sketchSelectionPM;   // rfF
   UI.boxSelectHook = boxSelectHook; UI.boxItems = boxItems; UI.applyBox = applyBox;
+  UI.selectionMode = selectionMode; UI.applyLasso = applyLasso; UI.selectionModeMenuItems = selectionModeMenuItems; UI.selectHidden = selectHidden;   // rfFD
   UI.instant3DOn = function () { return i3d.on; }; UI.toggleInstant3D = setInstant3D;
   UI.instant3DHandles = function () { drawI3D(); return handleList.slice(); };
   UI.instant3DEdit = function (text) {   // type into the open value box and press Enter (tests / scripts)
@@ -1711,6 +1976,11 @@ if (typeof UI !== 'undefined') (function (UI) {
     window.anvil.selectionFilter = function (opts) { return selectionFilter(opts); };
     // boxSelect([x0, y0], [x1, y1], { ctrl, shift }) in viewport pixels: left to right = window, right to left = crossing
     window.anvil.boxSelect = function (a, b, mods) { applyBox(BoxSelect.rect(a, b), mods); return selection().map(summarize); };
+    // rfFD: lassoSelect([[x, y], ...], { ctrl, shift }) in viewport pixels: a closed loop, items wholly inside it
+    window.anvil.lassoSelect = function (points, mods) { applyLasso(points || [], mods); return selection().map(summarize); };
+    // selectionMode('box' | 'lasso'?) -> the mode a left-drag uses; selectHidden(on?) -> the Select hidden entities option
+    window.anvil.selectionMode = function (mode) { return selectionMode(mode); };
+    window.anvil.selectHidden = function (on) { return selectHidden(on); };
     window.anvil.clearSelection = function () { setSelection([], { quiet: true }); return []; };
     // instant3D(on?) -> { on, handles: [{ kind: 'depth' | 'angle' | 'sdim', label, value, at, grab, step }] }
     window.anvil.instant3D = function (on) { if (on != null) setInstant3D(on); return { on: i3d.on, handles: UI.instant3DHandles().map(handleSummary) }; };

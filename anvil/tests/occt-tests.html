@@ -964,6 +964,156 @@
     counts[whyDF2.length ? 'fail' : 'pass']++;
   } catch (e) { row('bad', 'reference axis follows an edit (OpenCascade cache)', e.message); counts.fail++; }
   // --- end lane DF ---
+  // --- rfDX: Draft (Neutral Plane) through BRepOffsetAPI_DraftAngle: planar faces on both kernels to the closed form;
+  // a cylinder (Anvil refuses it) and a filleted block with Along Tangent become exact cones on OpenCascade, which drives ---
+  var rfDXt = Math.tan(5 * Math.PI / 180), rfDXblock = 'p.units("in");\np.sketch("Top").rect(-1, -1, 2, 2).end().extrude(1);\n', rfDXsides = '[[1, 0.5, 0], [-1, 0.5, 0], [0, 0.5, 1], [0, 0.5, -1]]';
+  function rfDXfr(a, b, h) { return h / 3 * (a * a + b * b + a * b); }
+  var DX_CASES = [
+    { name: '2 x 2 x 1 in block, four sides 5° about the bottom face (top 2 - 2 tan 5°)', code: rfDXblock + 'p.draft(5, [0, 0, 0], ' + rfDXsides + ');', want: rfDXfr(2, 2 - 2 * rfDXt, 1), both: true },
+    { name: 'the same, Reverse direction (top 2 + 2 tan 5°)', code: rfDXblock + 'p.draft(5, [0, 0, 0], ' + rfDXsides + ', { reverse: true });', want: rfDXfr(2, 2 + 2 * rfDXt, 1), both: true },
+    { name: 'neutral plane through the middle (Top Plane offset 0.5)', code: rfDXblock + 'var pl = p.plane("Top", 0.5);\np.draft(5, pl, ' + rfDXsides + ');', want: rfDXfr(2 + rfDXt, 2, 0.5) + rfDXfr(2, 2 - rfDXt, 0.5), both: true },
+    { name: 'Ø 2 x 1 in cylinder drafted 5°: an exact cone on OpenCascade (Anvil refuses the curved face)', code: 'p.units("in");\np.sketch("Top").circle(0, 0, 1).end().extrude(1);\np.draft(5, [0, 0, 0], [[1, 0.5, 0]]);', want: Math.PI / 3 * (1 + Math.pow(1 - rfDXt, 2) + (1 - rfDXt)) },
+    { name: 'block with R.25 vertical fillets, one side picked, Along Tangent: every side and fillet drafted (OpenCascade)', code: rfDXblock + 'p.fillet(0.25, [[1, 0.5, 1], [1, 0.5, -1], [-1, 0.5, 1], [-1, 0.5, -1]]);\np.draft(5, [0, 0, 0], [[1, 0.5, 0]], { propagate: "tangent" });',
+      want: 4 * (1 - rfDXt + rfDXt * rfDXt / 3) - (4 - Math.PI) * (0.0625 - 0.25 * rfDXt + rfDXt * rfDXt / 3) }
+  ];
+  for (var dxc of DX_CASES) {
+    try {
+      var tdx = performance.now(), mdx = K.newModel('T'); K.runScript(mdx, dxc.code);
+      var adx = K.rebuild(JSON.parse(JSON.stringify(mdx))), avdx = K.massProps(K.meshFromBody(adx.body), 1).volume;
+      var rdx = await occt(JSON.parse(JSON.stringify(mdx)), { noCache: true }), whyDX = [];
+      if (dxc.both && Object.keys(adx.errors).length) whyDX.push('Anvil errors ' + JSON.stringify(adx.errors));
+      if (!dxc.both && !Object.keys(adx.errors).length) whyDX.push('Anvil should refuse the curved face');
+      if (rdx.unsupported || !rdx.ok) whyDX.push('OpenCascade did not build every feature: ' + (rdx.unsupported || JSON.stringify(rdx.status)));
+      if (!rdx.valid) whyDX.push('invalid solid');
+      if (!(Math.abs(rdx.volume - dxc.want) <= 1e-9 * dxc.want)) whyDX.push('OpenCascade volume ' + rdx.volume + ', exact ' + dxc.want);
+      if (dxc.both && !(Math.abs(avdx - dxc.want) <= 1e-9 * dxc.want)) whyDX.push('Anvil volume ' + avdx + ', exact ' + dxc.want);
+      row(whyDX.length ? 'bad' : 'ok', 'rfDX Draft: ' + dxc.name, whyDX.join('\n') || ('OpenCascade ' + rdx.volume.toFixed(9) + (dxc.both ? ' / Anvil ' + avdx.toFixed(9) : '') + ' / exact ' + dxc.want.toFixed(9)), performance.now() - tdx);
+      counts[whyDX.length ? 'fail' : 'pass']++;
+    } catch (e) { row('bad', 'rfDX Draft: ' + dxc.name, e.message); counts.fail++; }
+  }
+  // --- end rfDX ---
+  // --- rfDY (lane DY): Rib and Intersect built by OpenCascade (occt-kernel.js ribTool / intersectOp from Kernel.ribLayout
+  // and the same region order): every feature 'ok', valid, and the volume equal to Anvil's and the exact one (1e-6) ---
+  var rfDYL = 'p.units("in");\np.sketch("Front").rect(0, 0, 4, 0.25).end().extrude(4, { midplane: true });\np.sketch("Front").rect(0, 0, 0.25, 4).end().extrude(4, { midplane: true });\n';
+  var rfDYBox = 'p.units("in");\np.sketch("Top").rect(0, -4, 4, 4).end().extrude(2);\np.sketch("Top", 0.25).rect(0.25, -3.75, 3.5, 3.5).end().cut(2);\n';
+  var rfDYTwo = 'p.sketch("Front").rect(0, 0, 10, 10).end().extrude(10, { merge: false });\np.sketch("Front").rect(5, 5, 10, 10).end().extrude(10, { merge: false });\n';
+  var DY_CASES = [
+    { name: 'Rib: L bracket gusset .25 both sides', code: rfDYL + 'p.sketch("Front").line(0.25, 3, 3, 0.25).end();\np.rib(0.25);', want: 7.75 + 2.75 * 2.75 / 2 * 0.25 },
+    { name: 'Rib: short line extended to both plates, first side', code: rfDYL + 'p.sketch("Front").line(1, 2.25, 2.25, 1).end();\np.rib(0.25, { side: "one" });', want: 7.75 + 2.75 * 2.75 / 2 * 0.25 },
+    { name: 'Rib: Normal to Sketch, an L chain in an open box', code: rfDYBox + 'p.sketch("Top", 2).line(2, -1, 2, -2).line(2, -2, 3, -2).end();\np.rib(0.25, { direction: "normal" });', want: 32 - 3.5 * 3.5 * 1.75 + 0.875 * 1.75 },
+    { name: 'Intersect: keep the common region of two blocks', code: rfDYTwo + 'p.intersect({ regions: [false, false, true] });', want: 250, bodies: 1 },
+    { name: 'Intersect: keep the two outer regions, Merge result off', code: rfDYTwo + 'p.intersect({ exclude: [2], merge: false });', want: 1500, bodies: 2 },
+    { name: 'Intersect: split by a plane, six bodies', code: rfDYTwo + 'var pl = p.plane("Right", 7);\np.intersect({ planes: [pl], merge: false });', want: 1750, bodies: 6 },
+    { name: 'Intersect: Create internal regions fills the void of a capped tube', code: 'p.sketch("Front").rect(0, 0, 10, 10).end().extrude(10, { merge: false });\np.sketch("Front").rect(2, 2, 6, 6).end().cut(10);\np.sketch("Front", 10).rect(-1, -1, 12, 12).end().extrude(2, { merge: false });\np.sketch("Front").rect(-1, -1, 12, 12).end().extrude(2, { merge: false, reverse: true });\np.intersect({ mode: "internal" });', want: 1576, bodies: 1 }
+  ];
+  for (var dyc of DY_CASES) {
+    try {
+      var tdy = performance.now(), mdy = K.newModel('T'); K.runScript(mdy, dyc.code);
+      var ady = K.rebuild(JSON.parse(JSON.stringify(mdy))), avdy = K.massProps(K.meshFromBody(ady.body), 1).volume;
+      var rdy = await occt(JSON.parse(JSON.stringify(mdy)), { noCache: true }), whyDY = [];
+      if (Object.keys(ady.errors).length) whyDY.push('Anvil errors ' + JSON.stringify(ady.errors));
+      if (rdy.unsupported || !rdy.ok) whyDY.push('OpenCascade did not build every feature: ' + (rdy.unsupported || JSON.stringify(rdy.status)));
+      if (!rdy.valid) whyDY.push('invalid solid');
+      if (dyc.bodies && (rdy.bodies !== dyc.bodies || ady.bodies.length !== dyc.bodies)) whyDY.push('bodies OpenCascade ' + rdy.bodies + ' / Anvil ' + ady.bodies.length + ', want ' + dyc.bodies);
+      if (!(Math.abs(rdy.volume - dyc.want) <= 1e-6 * dyc.want)) whyDY.push('OpenCascade volume ' + rdy.volume + ', exact ' + dyc.want);
+      if (!(Math.abs(avdy - dyc.want) <= 1e-6 * dyc.want)) whyDY.push('Anvil volume ' + avdy + ', exact ' + dyc.want);
+      row(whyDY.length ? 'bad' : 'ok', 'rfDY, OpenCascade = Anvil: ' + dyc.name, whyDY.join('\n') || ('OpenCascade ' + rdy.volume.toFixed(6) + ' / Anvil ' + avdy.toFixed(6) + ' / exact ' + dyc.want.toFixed(6)), performance.now() - tdy);
+      counts[whyDY.length ? 'fail' : 'pass']++;
+    } catch (e) { row('bad', 'rfDY, OpenCascade = Anvil: ' + dyc.name, e.message); counts.fail++; }
+  }
+  // --- end rfDY ---
+  // --- rfFB: Boundary Boss/Base / Boundary Cut on OpenCascade (no Direction 2 curves: ThruSections; with curves: one
+  // Coons BSpline face per patch, sewn with planar end caps): every feature 'ok', the frustum and its cut / thin wall
+  // exact on both kernels; curved curves agree with Anvil's facets to the loft tolerance ---
+  var FB_R2 = Math.SQRT1_2, FB_S2 = Math.SQRT2, FB_V = 2 / 3 * 7, FB_H = 0.1 * Math.sqrt(1.0625);
+  var FB_FR = 'var a = p.sketch("Front").centerRect(0, 0, 2, 2).id();\nvar b = p.sketch("Front", 2).centerRect(0, 0, 1, 1).id();\n';
+  var FB_G = 'var g1 = p.sketch({ custom: true, origin: [0, 0, 0], x: [' + FB_R2 + ', ' + FB_R2 + ', 0], y: [0, 0, 1], n: [' + FB_R2 + ', ' + (-FB_R2) + ', 0] }, 0).line(' + FB_S2 + ', 0, ' + FB_S2 / 2 + ', 2).line(' + (-FB_S2) + ', 0, ' + (-FB_S2 / 2) + ', 2).id();\n' +
+    'var g2 = p.sketch({ custom: true, origin: [0, 0, 0], x: [' + FB_R2 + ', ' + (-FB_R2) + ', 0], y: [0, 0, 1], n: [' + (-FB_R2) + ', ' + (-FB_R2) + ', 0] }, 0).line(' + FB_S2 + ', 0, ' + FB_S2 / 2 + ', 2).line(' + (-FB_S2) + ', 0, ' + (-FB_S2 / 2) + ', 2).id();\n';
+  function fbFr(d) { var a0 = 1 + d, a1 = a0 - 0.5; return 2 / 3 * (4 * a0 * a0 + 4 * a1 * a1 + 4 * a0 * a1); }
+  var FB_CASES = [
+    { name: 'Boundary, Direction 1 only: the 2 → 1 square frustum', code: FB_FR + 'p.boundary([a, b]);', want: FB_V },
+    { name: 'Boundary with four straight Direction 2 corner lines: the same frustum', code: FB_FR + FB_G + 'p.boundary([a, b], { dir2: [g1, g2] });', want: FB_V },
+    { name: 'Boundary Cut of the frustum through a 3 × 3 × 2 block', code: 'p.sketch("Front").centerRect(0, 0, 3, 3).end().extrude(2);\n' + FB_FR + FB_G + 'p.boundaryCut([a, b], { dir2: [g1, g2] });', want: 18 - FB_V },
+    { name: 'Boundary Thin Feature 0.1 outward with the corner lines (walls parallel to the sides)', code: FB_FR + FB_G + 'p.boundary([a, b], { dir2: [g1, g2], thin: { t: 0.1 } });', want: fbFr(FB_H) - FB_V },
+    { name: 'Boundary Thin Feature 0.1 inward, no curves', code: FB_FR + 'p.boundary([a, b], { thin: { t: 0.1, reverse: true } });', want: FB_V - fbFr(-FB_H) },
+    { name: 'Boundary between two Ø2 circles bulged by two curved Direction 2 curves (smooth on OpenCascade, faceted on Anvil)', code: 'var c1 = p.sketch("Front").circle(0, 0, 1).id();\nvar c2 = p.sketch("Front", 3).circle(0, 0, 1).id();\np.boundary([c1, c2], { dir2: [{ pts: [[1, 0, 0], [1.3, 0, 1.5], [1, 0, 3]] }, { pts: [[-1, 0, 0], [-1.3, 0, 1.5], [-1, 0, 3]] }] });', tol: 2e-2 }
+  ];
+  for (var fbc of FB_CASES) {
+    try {
+      var tfb = performance.now(), mfb = K.newModel('T'); K.runScript(mfb, fbc.code);
+      var afb = K.rebuild(JSON.parse(JSON.stringify(mfb))), avfb = K.massProps(K.meshFromBody(afb.body), 1).volume;
+      var rfb = await occt(JSON.parse(JSON.stringify(mfb)), { noCache: true }), whyFB = [];
+      if (Object.keys(afb.errors).length) whyFB.push('Anvil errors ' + JSON.stringify(afb.errors));
+      if (rfb.unsupported || !rfb.ok) whyFB.push('OpenCascade did not build every feature: ' + (rfb.unsupported || JSON.stringify(rfb.status)));
+      if (!rfb.valid) whyFB.push('invalid solid');
+      if (fbc.want != null) {
+        if (!(Math.abs(rfb.volume - fbc.want) <= 1e-6 * fbc.want)) whyFB.push('OpenCascade volume ' + rfb.volume + ', exact ' + fbc.want);
+        if (!(Math.abs(avfb - fbc.want) <= 1e-6 * fbc.want)) whyFB.push('Anvil volume ' + avfb + ', exact ' + fbc.want);
+      } else if (!(Math.abs(rfb.volume - avfb) <= fbc.tol * avfb)) whyFB.push('OpenCascade ' + rfb.volume + ' vs Anvil ' + avfb);
+      row(whyFB.length ? 'bad' : 'ok', 'rfFB boundary, OpenCascade = Anvil: ' + fbc.name, whyFB.join('\n') || ('OpenCascade ' + rfb.volume.toFixed(6) + ' / Anvil ' + avfb.toFixed(6) + (fbc.want != null ? ' / exact ' + fbc.want.toFixed(6) : '')), performance.now() - tfb);
+      counts[whyFB.length ? 'fail' : 'pass']++;
+    } catch (e) { row('bad', 'rfFB boundary, OpenCascade = Anvil: ' + fbc.name, e.message); counts.fail++; }
+  }
+  // --- end rfFB ---
+  // --- rfFA (2026-10-29, lane FA: Curves) --- sweeps along reference curves on both kernels: OpenCascade sweeps the
+  // exact helix (a line on its cylinder / cone), the composite's exact lines and arcs and the splines' C1 cubics
+  var FA_SPRING = 'p.units("in");\nvar s = p.sketch("Top").circle(0, 0, 0.5).id();\nvar h = p.helix(s, { pitch: 0.25, revolutions: 4 });\nvar pr = p.sketch("Front").circle(0.5, 0, 0.05).id();\np.sweep({ profile: pr, path: h });';
+  var FA_CASES = [
+    { name: 'spring: Ø0.1 along a helix R 0.5, pitch 0.25, 4 revolutions (exact on both; OpenCascade 1e-5: BRepLib builds the 3D helix to 1e-5)', code: FA_SPRING, want: Math.PI * 0.0025 * 4 * Math.hypot(Math.PI, 0.25), occtTol: 1e-5, anvilTol: 1e-9 },
+    { name: 'composite curve (line, arc, line) swept with a Ø3 circle (OpenCascade exact)', code: 'var a = p.sketch("Right").line(0, 0, 0, 20).arc(5, 20, 5, 90, 180).line(5, 25, 40, 25).id();\nvar c = p.compositeCurve([{ sketch: a, entity: 0 }, { sketch: a, entity: 1 }, { sketch: a, entity: 2 }]);\nvar pr = p.sketch("Top").circle(0, 0, 1.5).id();\np.sweep({ profile: pr, path: c });', want: Math.PI * 2.25 * (55 + 2.5 * Math.PI), occtTol: 1e-6, anvilTol: 2e-3 },
+    { name: 'tapered helix (10°, 3 revolutions in 40) swept with a Ø4 circle: the kernels agree', code: 'var s = p.sketch("Top").circle(0, 0, 20).id();\nvar h = p.helix(s, { defineBy: "heightRev", height: 40, revolutions: 3, taper: 10 });\nvar pr = p.sketch("Front").circle(20, 0, 2).id();\np.sweep({ profile: pr, path: h });', want: null, agree: 1e-4 },
+    { name: 'curve through XYZ points swept with a Ø4 circle: the kernels agree', code: 'var c = p.xyzCurve([[0, 0, 0], [0, 0, 20], [10, 5, 40], [30, 5, 50]]);\nvar pr = p.sketch("Top").circle(0, 0, 2).id();\np.sweep({ profile: pr, path: c });', want: null, agree: 2e-3 }
+  ];
+  for (var fai = 0; fai < FA_CASES.length; fai++) {
+    var fac = FA_CASES[fai];
+    try {
+      var tfa = performance.now(), mfa = K.newModel('T'), whyFA = [];
+      K.runScript(mfa, fac.code);
+      var rfa = await occt(JSON.parse(JSON.stringify(mfa))), afa = K.rebuild(JSON.parse(JSON.stringify(mfa)));
+      var avfa = K.massProps(K.meshFromBody(afa.body)).volume;
+      if (!rfa.ok) whyFA.push('status ' + JSON.stringify(rfa.status));
+      if (!rfa.valid) whyFA.push('invalid solid');
+      if (Object.keys(afa.errors).length) whyFA.push('Anvil errors ' + JSON.stringify(afa.errors));
+      if (fac.want != null) {
+        if (!(Math.abs(rfa.volume - fac.want) <= fac.occtTol * fac.want)) whyFA.push('OpenCascade volume ' + rfa.volume + ', exact ' + fac.want);
+        if (!(Math.abs(avfa - fac.want) <= fac.anvilTol * fac.want)) whyFA.push('Anvil volume ' + avfa + ', exact ' + fac.want);
+      } else if (!(Math.abs(rfa.volume - avfa) <= fac.agree * avfa)) whyFA.push('OpenCascade ' + rfa.volume + ' vs Anvil ' + avfa);
+      row(whyFA.length ? 'bad' : 'ok', 'rfFA sweep along a curve, OpenCascade = Anvil: ' + fac.name, whyFA.join('\n') || ('OpenCascade ' + rfa.volume.toFixed(6) + ' / Anvil ' + avfa.toFixed(6) + (fac.want != null ? ' / exact ' + fac.want.toFixed(6) : '')), performance.now() - tfa);
+      counts[whyFA.length ? 'fail' : 'pass']++;
+    } catch (e) { row('bad', 'rfFA sweep along a curve, OpenCascade = Anvil: ' + fac.name, e.message); counts.fail++; }
+  }
+  // --- end rfFA ---
+  // --- rfDZ: Wrap built by OpenCascade (each contour a face on the true cylinder / plane, thickened along its normal;
+  // a scribe imprinted on the final body): every feature 'ok', both kernels' volumes exact (1e-6); a scribe adds one
+  // face and keeps the volume; Sketch Text "A1" debossed agrees with Anvil within the swap tolerance ---
+  var DZ_CYL = 'p.units("in");\np.sketch("Top").circle(0, 0, 1).end().extrude(3);\n', DZ_R = 'p.sketch("Front", 1).rect(-0.5, 1, 1, 0.5).end()', DZ_V = 3 * Math.PI, DZ_B = 0.5 * (1 - 0.95 * 0.95) / 2, DZ_E = 0.5 * (1.05 * 1.05 - 1) / 2;
+  var DZ_CASES = [
+    { name: 'deboss .05 of a 1 × .5 rectangle on a Ø2 cylinder', code: DZ_CYL + DZ_R + '.wrap({ face: [0, 1.25, 1], mode: "deboss", thickness: 0.05 });', want: DZ_V - DZ_B, faces: 8 },
+    { name: 'emboss .05 of the same rectangle', code: DZ_CYL + DZ_R + '.wrap({ face: [0, 1.25, 1], mode: "emboss", thickness: 0.05 });', want: DZ_V + DZ_E, faces: 8 },
+    { name: 'scribe of the same rectangle (one face more, same volume)', code: DZ_CYL + DZ_R + '.wrap({ face: [0, 1.25, 1], mode: "scribe" });', want: DZ_V, faces: 4 },
+    { name: 'scribe on the flat end (one face more, same volume)', code: DZ_CYL + 'p.sketch("Top", 3).rect(-0.5, -0.25, 1, 0.5).end().wrap({ face: [0, 3, 0], mode: "scribe" });', want: DZ_V, faces: 4 },
+    { name: 'deboss .05 on a Ø2 bore (concave)', code: 'p.units("in");\np.sketch("Top").rect(-2, -2, 4, 4).circle(0, 0, 1).end().extrude(3);\np.sketch("Front", 0).rect(-0.5, 1, 1, 0.5).end().wrap({ face: [0, 1.25, 1], mode: "deboss", thickness: 0.05 });', want: 48 - DZ_V - DZ_E },
+    { name: 'deboss .05 on the flat end: a rectangle with a Ø.2 hole in it', code: DZ_CYL + 'p.sketch("Top", 3).rect(-0.5, -0.25, 1, 0.5).circle(0, 0, 0.1).end().wrap({ face: [0, 3, 0], mode: "deboss", thickness: 0.05 });', want: DZ_V - (0.5 - Math.PI * 0.01) * 0.05 },
+    { name: 'Sketch Text "A1" debossed .05 on the cylinder (OpenCascade = Anvil within the swap tolerance)', code: DZ_CYL + 'p.sketch("Front", 1).text(-0.4, 1.1, "A1", { h: 0.4, mode: "outline" }).end().wrap({ face: [0, 1.25, 1], mode: "deboss", thickness: 0.05 });', want: null }
+  ];
+  for (var dzc of DZ_CASES) {
+    try {
+      var tdz = performance.now(), mdz = K.newModel('T'); K.runScript(mdz, dzc.code);
+      var adz = K.rebuild(JSON.parse(JSON.stringify(mdz))), avdz = K.massProps(K.meshFromBody(adz.body), 1).volume;
+      var rdz = await occt(JSON.parse(JSON.stringify(mdz)), { noCache: true }), whyDZ = [];
+      if (Object.keys(adz.errors).length) whyDZ.push('Anvil errors ' + JSON.stringify(adz.errors));
+      if (rdz.unsupported || !rdz.ok) whyDZ.push('OpenCascade did not build every feature: ' + (rdz.unsupported || JSON.stringify(rdz.status)));
+      if (!rdz.valid) whyDZ.push('invalid solid');
+      if (dzc.want != null) {
+        if (!(Math.abs(rdz.volume - dzc.want) <= 1e-6 * dzc.want)) whyDZ.push('OpenCascade volume ' + rdz.volume + ', exact ' + dzc.want);
+        if (!(Math.abs(avdz - dzc.want) <= 1e-6 * dzc.want)) whyDZ.push('Anvil volume ' + avdz + ', exact ' + dzc.want);
+      } else if (!(Math.abs(rdz.volume - avdz) <= 1e-4 * avdz)) whyDZ.push('OpenCascade ' + rdz.volume + ' vs Anvil ' + avdz);
+      if (dzc.faces && rdz.faces.length !== dzc.faces) whyDZ.push(rdz.faces.length + ' B-rep faces, want ' + dzc.faces);
+      row(whyDZ.length ? 'bad' : 'ok', 'Wrap, OpenCascade = Anvil: ' + dzc.name, whyDZ.join('\n') || ('OpenCascade ' + rdz.volume.toFixed(6) + ' / Anvil ' + avdz.toFixed(6) + (dzc.want != null ? ' / exact ' + dzc.want.toFixed(6) : '') + ', ' + rdz.faces.length + ' faces'), performance.now() - tdz);
+      counts[whyDZ.length ? 'fail' : 'pass']++;
+    } catch (e) { row('bad', 'Wrap, OpenCascade = Anvil: ' + dzc.name, e.message); counts.fail++; }
+  }
+  // --- end rfDZ ---
   var s = document.getElementById('summary');
   s.textContent = counts.pass + ' / ' + (counts.pass + counts.fail) + ' passed' + (counts.fail ? ' — ' + counts.fail + ' FAILED' : '') + ' · ' + counts.todo + ' parts need features not built by OpenCascade yet · engine loaded in ' + loadMs.toFixed(0) + ' ms · Anvil ' + totals.anvil.toFixed(0) + ' ms, OpenCascade ' + totals.occt.toFixed(0) + ' ms';
   s.className = counts.fail ? 'bad' : 'ok';

@@ -286,6 +286,8 @@ var Assembly = (function () {
     if (opts.flexible) comp.flexible = true;
     if (opts.transparent) comp.transparent = true;   // r7/asm7: Change Transparency (display, kept in the model)
     if (opts.flexState && typeof opts.flexState === 'object') comp.flexState = clone(opts.flexState);
+    if (opts.config != null && opts.config !== '') comp.config = String(opts.config);   // rfFC: the part configuration it shows
+    if (opts.suppressed) comp.suppressed = true;
     model.components.push(comp);
     return comp;
   }
@@ -1741,7 +1743,7 @@ var Assembly = (function () {
   var partBuilder = null;
   function setPartBuilder(fn) { partBuilder = fn || null; }
   function guardKey(source) { return source && source.file != null ? 'file:' + source.file : source && source.example != null ? 'example:' + source.example : null; }
-  function buildPart(source, stamp) {
+  function buildPart(source, stamp, config) {
     var entry = { kind: 'part', model: null, build: null, error: null, stamp: stamp || '' };
     var gk = guardKey(source);
     try {
@@ -1762,6 +1764,7 @@ var Assembly = (function () {
         }
         return entry;
       }
+      if (config != null) entry.model = partInConfig(entry.model, config, entry);   // rfFC: the component's part configuration
       entry.build = (partBuilder && partBuilder(entry.model)) || Kernel.rebuild(entry.model);
       if (!entry.build || !entry.build.body || !entry.build.body.polygons.length) entry.error = 'Part has no solid body';
       else {
@@ -1985,8 +1988,9 @@ var Assembly = (function () {
     cache = cache || {};
     var newCache = {}, partBuilds = {}, errors = {}, warnings = {}, entries = {};
     model.components.forEach(function (c) {
-      var key = JSON.stringify(c.source), stamp = sourceStamp(c.source);
-      var entry = newCache[key] || (cache[key] && cache[key].stamp === stamp ? cache[key] : null) || buildPart(c.source, stamp);
+      var key = entryKey(model, c), stamp = sourceStamp(c.source);   // rfFC: the key names the part configuration
+      if (compState(model, c).suppressed) { entries[c.id] = { kind: 'part', model: null, build: null, error: null, broken: true, userSuppressed: true }; return; }   // rfFC
+      var entry = newCache[key] || (cache[key] && cache[key].stamp === stamp ? cache[key] : null) || buildPart(c.source, stamp, compState(model, c).config);
       newCache[key] = entry;
       entries[c.id] = entry;
       if (entry.build) partBuilds[c.id] = entry.build;
@@ -2029,7 +2033,7 @@ var Assembly = (function () {
       if (e && e.file) co.file = e.file;
       var c = findComponent(model, co.id);
       if (c && c.source && c.source.file != null) co.file = String(c.source.file);
-      if (e && e.broken) { co.suppressed = true; co.broken = true; co.dof = 0; co.underDefined = false; }
+      if (e && e.broken) { co.suppressed = true; co.broken = !e.userSuppressed; co.dof = 0; co.underDefined = false; }
       if (warnings[co.id]) co.warning = warnings[co.id];
     });
     // the exploded view shown (display only: the offsets are added to the world bodies, not to the transforms)
@@ -2083,7 +2087,7 @@ var Assembly = (function () {
   function explodedBodies(model, build, view, t) {
     var v = findExplodedView(model, view), offs = v ? explodeOffsets(model, v, t == null ? 1 : t).offsets : {};
     return model.components.map(function (c) {
-      var pb = build && build.partBuilds && build.partBuilds[c.id], e = build && build.cache && build.cache[JSON.stringify(c.source)];
+      var pb = build && build.partBuilds && build.partBuilds[c.id], e = build && build.cache && build.cache[entryKey(model, c)];
       return worldBody(pb && !(e && e.error) ? pb.body : null, c.transform, offs[c.id]);
     });
   }
@@ -2272,7 +2276,7 @@ var Assembly = (function () {
     var entries = build && build.cache ? build.cache : {};
     model.components.forEach(function (c, i) {
       var pb = build && build.partBuilds && build.partBuilds[c.id];
-      var e = entries[JSON.stringify(c.source)];
+      var e = entries[entryKey(model, c)];
       // a sub-assembly: its own mass properties (every level down), carried into this frame
       if (pb && pb.assembly && pb.model && !(e && e.error)) {
         var sm = massProps(pb.model, pb), TT = tf(c.transform), scen = transformPoint(TT, sm.centroid);
@@ -2336,7 +2340,7 @@ var Assembly = (function () {
     var type = opts.type === 'indented' || opts.type === 'parts' ? opts.type : 'top';
     var names = {};
     function info(c, pb) {
-      var key = JSON.stringify(c.source);
+      var key = entryKey(model, c);
       if (!names[key]) {
         var r = null;
         try { r = resolveSource(c.source); } catch (e) { r = null; }
@@ -2550,6 +2554,8 @@ var Assembly = (function () {
       if (T.position.some(function (x) { return r6(x) !== 0; })) opts.push('position: ' + numList(T.position));
       if (!isIdentity(T.rotation)) opts.push('rotation: ' + numList(T.rotation));
       if (c.transparent) opts.push('transparent: true');
+      if (c.config != null) opts.push('config: ' + JSON.stringify(String(c.config)));   // rfFC
+      if (c.suppressed) opts.push('suppressed: true');
       if (c.flexible) {
         opts.push('flexible: true');
         var fs = c.flexState ? Object.keys(c.flexState) : [];
@@ -2581,12 +2587,102 @@ var Assembly = (function () {
     });
     var xv = model.exploded != null ? findExplodedView(model, model.exploded) : null;
     if (xv && (xv.steps || []).length) out.push('a.exploded(' + JSON.stringify(xv.name) + ');');
+    out = out.concat(asmConfigScript(model));   // rfFC
     (model.ignoredInterferences || []).forEach(function (k) {   // r4/asm4
       var s = ignoreSides(k);   // r5/asm5: saved by component id, written by name (a script's ids may differ)
       out.push('a.ignoreInterference(' + JSON.stringify(sideName(model, s.a)) + ', ' + JSON.stringify(sideName(model, s.b)) + (s.co ? ', { coincident: true }' : '') + ');');
     });
     return out.join('\n') + '\n';
   }
+
+  // ------------------------------------------------------------------ rfFC: configurations in assemblies
+  // A component shows one configuration of its part: `c.config` (a name in the part's model.configurations; none = the
+  // part's own active one). The assembly's configurations are model.configurations = [{ name, components: { <comp id>:
+  // { config?, suppressed?, hidden? } } }] with model.activeConfiguration: the active one overrides each component's own
+  // fields (c.config, c.suppressed, c.hidden). A suppressed component builds nothing and its mates are left out (as a
+  // broken reference, without the warning). The part-build cache is keyed by source + configuration (entryKey).
+  function asmConfigList(model) { return model && Array.isArray(model.configurations) ? model.configurations.filter(function (c) { return c && c.name != null; }) : []; }
+  function findAsmConfig(model, name) { var l = asmConfigList(model); for (var i = 0; i < l.length; i++) if (String(l[i].name) === String(name)) return l[i]; return null; }
+  function activeAsmConfig(model) { return model && model.activeConfiguration != null ? findAsmConfig(model, model.activeConfiguration) : null; }
+  // compState(model, c, cfgName?) -> { config, suppressed, hidden } as configuration cfgName (default: the active one) shows c
+  function compState(model, c, cfgName) {
+    var out = { config: c.config != null ? String(c.config) : null, suppressed: !!c.suppressed, hidden: !!c.hidden };
+    var cfg = cfgName === undefined ? activeAsmConfig(model) : findAsmConfig(model, cfgName);
+    var o = cfg && cfg.components && cfg.components[String(c.id)];
+    if (o) {
+      if (has(o, 'config')) out.config = o.config == null || o.config === '' ? null : String(o.config);
+      if (has(o, 'suppressed')) out.suppressed = !!o.suppressed;
+      if (has(o, 'hidden')) out.hidden = !!o.hidden;
+    }
+    return out;
+  }
+  function entryKey(model, c) { var cf = compState(model, c).config; return JSON.stringify(c.source) + (cf != null ? '|cfg:' + cf : ''); }
+  function partInConfig(m, cfg, entry) {
+    if (!Kernel.findConfiguration || !Kernel.findConfiguration(m, cfg)) { entry.warning = 'The part has no configuration "' + cfg + '"; its active one is shown.'; return m; }
+    var o = {};
+    Object.keys(m).forEach(function (k) { o[k] = m[k]; });
+    o.activeConfiguration = String(cfg);
+    return o;
+  }
+  // partConfigurations(source) -> [name] of the part's configurations ([] for none, a sub-assembly or a broken source)
+  function partConfigurations(source) {
+    try { var r = resolveSource(source); return r.kind === 'part' && Kernel.configurationList ? Kernel.configurationList(r.model).map(function (c) { return String(c.name); }) : []; } catch (e) { return []; }
+  }
+  // setComponentState(model, id, patch { config?, suppressed?, hidden? }, scope): scope 'all' (default; the component's
+  // own fields, the configurations' overrides of those keys cleared), 'this' (the active configuration; 'all' without
+  // one) or [names] (those configurations)
+  function setComponentState(model, id, patch, scope) {
+    var c = findComponent(model, id);
+    if (!c) throw new Error('Unknown component ' + JSON.stringify(id));
+    var list = asmConfigList(model), ac = activeAsmConfig(model);
+    if (scope == null) scope = 'all';
+    if (scope === 'this' && !ac) scope = 'all';
+    var names = scope === 'all' ? null : scope === 'this' ? [String(ac.name)] : (Array.isArray(scope) ? scope : [scope]).map(String);
+    Object.keys(patch || {}).forEach(function (k) {
+      var v = patch[k];
+      if (!names) {
+        if (k === 'config') { if (v == null || v === '') delete c.config; else c.config = String(v); }
+        else if (v) c[k] = true; else delete c[k];
+        list.forEach(function (cf) { var o = cf.components && cf.components[String(c.id)]; if (o) { delete o[k]; if (!Object.keys(o).length) delete cf.components[String(c.id)]; } });
+        return;
+      }
+      list.forEach(function (cf) {
+        if (names.indexOf(String(cf.name)) < 0) return;
+        cf.components = cf.components || {};
+        var o = cf.components[String(c.id)] = cf.components[String(c.id)] || {};
+        o[k] = k === 'config' ? (v == null || v === '' ? null : String(v)) : !!v;
+      });
+    });
+    return c;
+  }
+  // the script lines of the assembly's configurations (component overrides by component name)
+  function asmConfigScript(model) {
+    var out = [], list = asmConfigList(model);
+    list.forEach(function (cf) {
+      var comps = {};
+      Object.keys(cf.components || {}).forEach(function (id) { var c = findComponent(model, +id); if (c) comps[c.name] = cf.components[id]; });
+      out.push('a.configuration(' + JSON.stringify(String(cf.name)) + (Object.keys(comps).length ? ', { components: ' + JSON.stringify(comps) + ' }' : '') + ');');
+    });
+    if (list.length && activeAsmConfig(model)) out.push('a.activeConfiguration(' + JSON.stringify(String(model.activeConfiguration)) + ');');
+    return out;
+  }
+  // a.configuration(name, { components: { <component name or id>: { config, suppressed, hidden } } }): adds or replaces
+  // an assembly configuration; a.activeConfiguration(name | null); a.componentConfig(component, partConfigName)
+  Builder.prototype.configuration = function (name, opts) {
+    var m = this.model, comps = {};
+    Object.keys((opts && opts.components) || {}).forEach(function (k) { comps[String(compId(m, isNaN(+k) ? k : +k))] = JSON.parse(JSON.stringify(opts.components[k])); });
+    if (!Array.isArray(m.configurations)) m.configurations = [];
+    var cf = findAsmConfig(m, name), rec = { name: String(name), components: comps };
+    if (cf) m.configurations[m.configurations.indexOf(cf)] = rec; else m.configurations.push(rec);
+    return this;
+  };
+  Builder.prototype.activeConfiguration = function (name) {
+    if (name == null) { delete this.model.activeConfiguration; return this; }
+    if (!findAsmConfig(this.model, name)) throw new Error('activeConfiguration: no configuration named "' + name + '"');
+    this.model.activeConfiguration = String(name);
+    return this;
+  };
+  Builder.prototype.componentConfig = function (comp, cfg) { setComponentState(this.model, compId(this.model, comp), { config: cfg }); return this; };
 
   return {
     IDENTITY: IDENTITY,
@@ -2606,6 +2702,8 @@ var Assembly = (function () {
     Documents: Documents, documents: Documents, resolveSource: resolveSource, references: references, saveReferences: saveReferences,
     packAndGo: packAndGo, setFlexible: setFlexible, setTransparent: setTransparent, isSubAssemblySource: isSubAssemblySource, bom: bom, leafBodies: leafBodies,
     composeTransforms: composeT, relativeTransform: relativeT, interferenceKey: interferenceKey, setInterferenceIgnored: setInterferenceIgnored, ignoreSide: ignoreSide, migrateIgnored: migrateIgnored,
-    findCylinder: function (build, p) { var g = partGeom(build); return g ? findCylinder(g, p) : null; }
+    findCylinder: function (build, p) { var g = partGeom(build); return g ? findCylinder(g, p) : null; },
+    compState: compState, entryKey: entryKey, partConfigurations: partConfigurations, setComponentState: setComponentState,   // rfFC
+    asmConfigurations: asmConfigList, findAsmConfiguration: findAsmConfig, activeAsmConfiguration: activeAsmConfig
   };
 })();

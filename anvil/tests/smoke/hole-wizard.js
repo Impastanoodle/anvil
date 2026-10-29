@@ -72,7 +72,10 @@
     UI.setView('Isometric'); UI.zoomToFit && UI.zoomToFit(); await idle();
     var vr = D.getElementById('viewport').getBoundingClientRect();
     anvil.selectionFilter({ faces: true });
-    await selDrag([vr.width - 20, vr.height - 20], [20, 60]);
+    // rfFD: a box in a shaded view takes only the faces in sight unless Select hidden entities is on
+    var hid0 = anvil.selectHidden ? anvil.selectHidden() : true;
+    if (anvil.selectHidden) anvil.selectHidden(true);
+    try { await selDrag([vr.width - 20, vr.height - 20], [20, 60]); } finally { if (anvil.selectHidden) anvil.selectHidden(hid0); }
     var sel = anvil.selection();
     anvil.selectionFilter({ faces: false }); anvil.clearSelection();
     assert(sel.length === 6 && sel.every(function (s) { return s.kind === 'face'; }), 'crossing box: ' + sel.length + ' faces');

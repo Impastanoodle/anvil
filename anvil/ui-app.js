@@ -1441,3 +1441,35 @@
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })(UI);
+
+// rfFC: window.anvil for Suppress, the Design Table and assembly configurations
+//   suppress(feature | [features], scope?) / unsuppress(feature, scope?, dependents?): a feature id or name; scope 'this'
+//     (default with configurations), 'all', or [configuration names]. -> summary() with `suppressed` (names)
+//   suppressed(config?) -> [feature names] suppressed in that configuration (default: the active one)
+//   designTable() -> the grid [[header…], [config, cell…]]; designTable(grid | tsvText) -> applies it: { ok, errors }
+//   componentConfig(component, name | null, scope?) / suppressComponent(component, on, scope?) in an assembly;
+//   asmConfigurations() -> { active, list }; asmConfigurations.add(name) / .activate(name) / .remove(name)
+(function (UI) {
+  'use strict';
+  var App = UI.App, K = UI.K, A = window.anvil;
+  if (!A) return;
+  function names(map) { return App.model.features.filter(function (f) { return map[f.id]; }).map(function (f) { return f.name; }); }
+  function sum() { var s = A.summary(); if (K.suppressedIds && App.model.type !== 'assembly') s.suppressed = names(K.suppressedIds(App.model)); return s; }
+  A.suppress = function (refs, scope) { return UI.suppressFeature(refs, scope).then(sum); };
+  A.unsuppress = function (refs, scope, dependents) { return UI.unsuppressFeature(refs, scope, dependents).then(sum); };
+  A.suppressed = function (cfg) { return K.suppressedIds ? names(K.suppressedIds(App.model, cfg)) : []; };
+  A.designTable = function (grid) {
+    if (!arguments.length) return K.designTable(App.model);
+    if (typeof grid === 'string') grid = K.tsvToGrid(grid);
+    var trial = JSON.parse(JSON.stringify(App.model, function (k, v) { return k === 'profile' ? undefined : v; }));
+    var res = K.applyDesignTable(trial, grid);
+    if (!res.ok) return Promise.resolve(res);
+    UI.pushUndo();
+    K.applyDesignTable(App.model, grid);
+    return UI.afterRebuild(UI.rebuild(), function () { UI.refreshTree(); if (UI.refreshConfigPanel) UI.refreshConfigPanel(); return { ok: true, errors: [], created: res.created, summary: sum() }; });
+  };
+  A.componentConfig = function (comp, name, scope) { return UI.setComponentConfig(comp, name, scope).then(function () { return A.summary(); }); };
+  A.suppressComponent = function (comp, on, scope) { return UI.setComponentSuppressed(comp, on !== false, scope).then(function () { return A.summary(); }); };
+  A.asmConfigurations = function () { return { active: UI.asmConfigurations.active(), list: UI.asmConfigurations.list() }; };
+  ['add', 'activate', 'remove'].forEach(function (op) { A.asmConfigurations[op] = function (n) { return UI.asmConfigurations[op](n).then(function () { return A.summary(); }); }; });
+})(UI);
