@@ -1963,7 +1963,7 @@ var OcctKernel = (function () {
     out.cache = anvilBuild.cache;
     // errors of features OpenCascade built are Anvil's kernel's own limits: the shown part has none
     out.errors = {};
-    Object.keys(anvilBuild.errors || {}).forEach(function (id) { if (!occ.status || occ.status[id] !== 'ok') out.errors[id] = anvilBuild.errors[id]; });
+    Object.keys(anvilBuild.errors || {}).forEach(function (id) { if (!occ.status || occ.status[id] !== 'ok' || (K.isRefusal && K.isRefusal(anvilBuild.errors[id]))) out.errors[id] = anvilBuild.errors[id]; });
     out.occt = { volume: occ.volume, faces: nf, bodies: occ.bodies, step: occ.step || null, iges: occ.iges || null };
     return out;
   }

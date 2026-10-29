@@ -240,6 +240,19 @@
       return { hole: l.hole, pts: (cpath ? _.areaTrueLoop(l, profile) : l.pts).map(function (p) { return add(J0, rot0(sub(to3D(profPlane, p[0], p[1]), A0))); }) };
     });
     var perLoop = sections.map(function () { return []; });
+    // rfFN: a path that doubles back, or a corner tighter than the profile (the mitre planes at the two ends of a
+    // segment cross inside the section), would sweep a self-intersecting solid (open edges): refuse it as SolidWorks does
+    for (i = 1; i < dirs.length; i++) if (dot(dirs[i - 1], dirs[i]) < -1 + 1e-9) throw new Error('The sweep path turns back on itself. Sweep paths cannot fold back along their own line.');
+    if (closed && dot(dirs[dirs.length - 1], dirs[0]) < -1 + 1e-9) throw new Error('The sweep path turns back on itself. Sweep paths cannot fold back along their own line.');
+    function sweepFits(s, i, L, capA, capB) {
+      var d = dirs[i], o = pts[i];
+      for (var k = 0; k < s.pts.length; k++) {
+        var w = sub(s.pts[k], o), q = sub(w, scale(d, dot(w, d)));
+        var tA = capA ? -dot(q, capA.n) / dot(d, capA.n) : 0, tB = L - (capB ? dot(q, capB.n) / dot(d, capB.n) : 0);
+        if (!(tB - tA > 1e-9 * Math.max(1, L))) return false;
+      }
+      return true;
+    }
     for (i = 0; i < dirs.length; i++) {
       if (i > 0) {
         var R = rotationTo(dirs[i - 1], dirs[i]);
@@ -248,6 +261,7 @@
       var L = len(sub(pts[i + 1], pts[i]));
       var capA = i > 0 ? { v: pts[i], n: norm(add(dirs[i - 1], dirs[i])) } : joint;
       var capB = i + 1 < dirs.length ? { v: pts[i + 1], n: norm(add(dirs[i], dirs[i + 1])) } : joint;
+      sections.forEach(function (s) { if (!s.hole && !sweepFits(s, i, L, capA, capB)) throw new Error('The sweep would intersect itself: the path turns more tightly than the profile allows at a corner. Lengthen the path segment or use a smaller profile.'); });
       sections.forEach(function (s, k) { perLoop[k].push(sweepSection(s.pts, dirs[i], pts[i], L, capA, capB, f.id)); });
     }
     var outers = [], holes = [];
@@ -410,6 +424,23 @@
       if (outers.length !== 1) throw new Error('Each loft sketch must contain exactly one closed profile.');
       return { plane: pl, pts: outers[0].pts.map(function (p) { return to3D(pl, p[0], p[1]); }), loop: outers[0], prof: prof };
     });
+    // rfFN: two consecutive profiles in one plane loft to a flat, zero-volume sheet (was: a body of volume 0)
+    for (var c = 0; c + 1 < secs.length; c++) {
+      var pa = secs[c].plane, sb = secs[c + 1].pts, off = 0, ext = 0;
+      sb.forEach(function (q) { off = Math.max(off, Math.abs(dot(sub(q, pa.origin), pa.n))); ext = Math.max(ext, len(sub(q, pa.origin))); });
+      if (off <= 1e-9 * Math.max(1, ext)) throw new Error('Loft profiles ' + (c + 1) + ' and ' + (c + 2) + ' lie in the same plane: zero-thickness geometry would result. Put each profile on its own plane.');
+    }
+    // rfFN2: a profile with points on both sides of its neighbour's plane makes the side surface reach that
+    // neighbour's cap from both sides, so the loft folds over the cap and intersects itself (a Top rectangle lofted to
+    // a Front octagon centred on the Top plane). Profiles that only touch the other plane are fine (an elbow).
+    for (c = 0; c + 1 < secs.length; c++) {
+      [[c, c + 1], [c + 1, c]].forEach(function (pr) {
+        var pl = secs[pr[0]].plane, pts = secs[pr[1]].pts, lo = 0, hi = 0, span = 0;
+        pts.forEach(function (q) { var h = dot(sub(q, pl.origin), pl.n); lo = Math.min(lo, h); hi = Math.max(hi, h); span = Math.max(span, len(sub(q, pl.origin))); });
+        var tol = 1e-7 * Math.max(1, span);
+        if (lo < -tol && hi > tol) throw new Error('The loft would intersect itself: profile ' + (pr[1] + 1) + ' lies on both sides of the plane of profile ' + (pr[0] + 1) + '. Move the profiles so that each one lies to one side of the next one\'s plane.');
+      });
+    }
     var polys = [], loops, i;
     var hull = blendLoftLoops(secs) || hullLoftLoops(secs);
     if (hull) {
@@ -524,17 +555,89 @@
     return out;
   }
 
+  // rfFN2: untangleLoop(pts) -> the simple loops of a self-intersecting closed polyline that keep its orientation.
+  // Offsetting a concave run (a hole that bites shallowly into a face's edge) outward by more than its depth crosses the
+  // offset edges and leaves an inverted "swallowtail"; a prism over that loop is self-intersecting and every boolean
+  // with it cracks (a shell of a hexagon whose hole broke a side wall had 45 open edges). The loop is split at its first
+  // crossing into two loops, recursively; pieces wound against the original (the swallowtails) and slivers are dropped.
+  function segCross(p, q, r, s) {
+    var d1 = [q[0] - p[0], q[1] - p[1]], d2 = [s[0] - r[0], s[1] - r[1]], den = d1[0] * d2[1] - d1[1] * d2[0];
+    var L1 = d1[0] * d1[0] + d1[1] * d1[1], L2 = d2[0] * d2[0] + d2[1] * d2[1];
+    if (Math.abs(den) <= 1e-12 * Math.sqrt(L1 * L2)) {
+      // parallel: two collinear runs lying over each other (a clamped mitre folding back along an edge) cross at the
+      // middle of their overlap
+      if (!L1 || !L2) return null;
+      var wr = [r[0] - p[0], r[1] - p[1]];
+      if (Math.abs(wr[0] * d1[1] - wr[1] * d1[0]) > 1e-9 * L1) return null;
+      var tr = (wr[0] * d1[0] + wr[1] * d1[1]) / L1, ts = ((s[0] - p[0]) * d1[0] + (s[1] - p[1]) * d1[1]) / L1;
+      var lo = Math.max(0, Math.min(tr, ts)), hi = Math.min(1, Math.max(tr, ts));
+      if (hi - lo <= 1e-9) return null;
+      var tm = (lo + hi) / 2;
+      return [p[0] + d1[0] * tm, p[1] + d1[1] * tm];
+    }
+    var w = [r[0] - p[0], r[1] - p[1]], t = (w[0] * d2[1] - w[1] * d2[0]) / den, u = (w[0] * d1[1] - w[1] * d1[0]) / den;
+    if (t <= 1e-12 || t >= 1 - 1e-12 || u <= 1e-12 || u >= 1 - 1e-12) return null;
+    return [p[0] + d1[0] * t, p[1] + d1[1] * t];
+  }
+  function untangleLoop(pts, sign, depth) {
+    var n = pts.length;
+    if (sign == null) sign = signedArea(pts) >= 0 ? 1 : -1;
+    if (n < 3) return [];
+    for (var i = 0; i < n && (depth || 0) < 64; i++) {
+      for (var j = i + 2; j < n; j++) {
+        if (i === 0 && j === n - 1) continue;   // neighbours through the closing edge
+        var X = segCross(pts[i], pts[(i + 1) % n], pts[j], pts[(j + 1) % n]);
+        if (!X) continue;
+        var A = pts.slice(0, i + 1).concat([X], pts.slice(j + 1)), B = [X].concat(pts.slice(i + 1, j + 1));
+        return untangleLoop(A, sign, (depth || 0) + 1).concat(untangleLoop(B, sign, (depth || 0) + 1));
+      }
+    }
+    var ar = signedArea(pts);
+    return ar * sign > 1e-9 ? [pts] : [];
+  }
+  _.untangleLoop = untangleLoop; _.offsetLoopVar = offsetLoopVar;
+  // the pieces of an untangled loop minus the ones lying inside a bigger piece (a clamped mitre can fold a piece back
+  // inside the outline: winding 2, and a prism over it shares a face with the big one -> non-manifold edges)
+  function onOrIn(p, loop, eps) {
+    if (pointInPoly(p, loop)) return true;
+    for (var i = 0; i < loop.length; i++) {
+      var a = loop[i], b = loop[(i + 1) % loop.length], dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+      var t = L2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0;
+      if (Math.hypot(a[0] + dx * t - p[0], a[1] + dy * t - p[1]) <= eps) return true;
+    }
+    return false;
+  }
+  function outerPieces(pieces) {
+    var byArea = pieces.slice().sort(function (p, q) { return Math.abs(signedArea(q)) - Math.abs(signedArea(p)); }), kept = [];
+    byArea.forEach(function (pc) {
+      var span = 0; pc.forEach(function (q) { span = Math.max(span, Math.abs(q[0]), Math.abs(q[1])); });
+      var eps = 1e-9 * Math.max(1, span);
+      if (!kept.some(function (k) { return pc.every(function (q) { return onOrIn(q, k, eps); }); })) kept.push(pc);
+    });
+    return kept;
+  }
+  function loopSelfCrosses(pts) {
+    var n = pts.length;
+    for (var i = 0; i < n; i++) for (var j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue;
+      if (segCross(pts[i], pts[(i + 1) % n], pts[j], pts[(j + 1) % n])) return true;
+    }
+    return false;
+  }
+
   // Prism over a face's loops: outer loops grown and holes shrunk by growFor(loop) (per-edge distances; holes that
   // collapse are dropped), from plane offset a to b along the face normal.
   function slabSolid(o, growFor, a, b, tag) {
     var cl = faceLoopsClassified(o), prisms = [], holes = [];
     cl.outers.forEach(function (l) {
       var g = offsetLoopVar(l, growFor(l));
-      if (signedArea(g) > 1e-9) prisms.push(prism(g, o.plane, a, b, tag));
+      var gs = loopSelfCrosses(g) ? outerPieces(untangleLoop(g, signedArea(l) >= 0 ? 1 : -1)) : [g];   // rfFN2
+      gs.forEach(function (gp) { if (signedArea(gp) > 1e-9) prisms.push(prism(gp, o.plane, a, b, tag)); });
     });
     cl.holes.forEach(function (l) {
       var g = offsetLoopVar(l, growFor(l).map(function (d) { return -d; }));
-      if (signedArea(g) > 1e-9 && signedArea(g) < signedArea(l)) holes.push(prism(g, o.plane, a - 0.01, b + 0.01, tag));
+      var gs = loopSelfCrosses(g) ? outerPieces(untangleLoop(g, signedArea(l) >= 0 ? 1 : -1)) : [g];   // rfFN2
+      gs.forEach(function (gp) { if (signedArea(gp) > 1e-9 && signedArea(gp) < signedArea(l)) holes.push(prism(gp, o.plane, a - 0.01, b + 0.01, tag)); });
     });
     if (!prisms.length) return null;
     var solid = prisms.length === 1 ? prisms[0] : unionAll(prisms);

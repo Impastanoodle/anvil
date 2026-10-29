@@ -98,7 +98,7 @@
     'Sheet-metal U-bracket': 23862.694338157933,
     'Tray': 35750.4546182302,
     'Normal Cut Bracket': 15780.118294909678,
-    'Chamfered block': 96398.26753692025,
+    'Chamfered block': 96398.42743159662,   // rfFM (2026-10-29): exact; the old pin counted the chamfer-notched R6 facets as full cylinder
     'Rounded handle': 30673.638463025945,   // rfFF: the root fillet is a revolved torus patch (a chain of cylinder pieces gave 30674.73950036209)
     'Mug': 84806.88290263337,
     'Funnel': 12160.516094319566, // run cloud-2026-09-25g: hull loft; equals the independent slice integral of the 1.5 mm offset in group "mesh quality" (was 12268.395 on the resampled loft)

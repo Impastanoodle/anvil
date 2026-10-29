@@ -3,6 +3,8 @@
 var CSG = (function () {
   'use strict';
   var EPSILON = 1e-5;
+  // splitPolygon counts vertices it classifies as on a plane while they lie more than FUZZ off it (healCracks, rfFL)
+  var FUZZ = 1e-9, FUZZY = 0;
 
   function Vector(x, y, z) { this.x = x; this.y = y; this.z = z; }
   Vector.prototype = {
@@ -74,6 +76,8 @@ var CSG = (function () {
       for (i = 0; i < n; i++) {
         var t = this.normal.dot(polygon.vertices[i].pos) - this.w;
         var type = (t < -EPSILON) ? BACK : (t > EPSILON) ? FRONT : COPLANAR;
+        // a vertex taken as on the plane although it is not (rfFL): the boolean may leave a crack there
+        if (type === COPLANAR && (t > FUZZ || t < -FUZZ)) FUZZY++;
         polygonType |= type;
         types.push(type);
       }
@@ -140,6 +144,17 @@ var CSG = (function () {
     }
   };
 
+  // fn(node) for every node of the tree, pre-order, front subtree before back (the order the recursive walks had);
+  // fn runs before the node's children are read, so it may swap them (invert)
+  function eachNode(root, fn) {
+    var stack = [root];
+    while (stack.length) {
+      var node = stack.pop();
+      fn(node);
+      if (node.back) stack.push(node.back);
+      if (node.front) stack.push(node.front);
+    }
+  }
   function Node(polygons) {
     this.plane = null;
     this.front = null;
@@ -148,22 +163,27 @@ var CSG = (function () {
     if (polygons) this.build(polygons);
   }
   Node.prototype = {
+    // Every walk over the tree is iterative (eachNode: pre-order, front before back, as the recursion went): the tree
+    // of a finely faceted solid can be thousands of nodes deep (rfFL: the DISH at maxAngle 3 overflowed the stack).
     clone: function () {
-      var node = new Node();
-      node.plane = this.plane && this.plane.clone();
-      node.front = this.front && this.front.clone();
-      node.back = this.back && this.back.clone();
-      node.polygons = this.polygons.map(function (p) { return p.clone(); });
-      return node;
+      var root = new Node(), stack = [this, root];
+      while (stack.length) {
+        var node = stack.pop(), src = stack.pop();
+        node.plane = src.plane && src.plane.clone();
+        node.polygons = src.polygons.map(function (p) { return p.clone(); });
+        if (src.back) { node.back = new Node(); stack.push(src.back, node.back); }
+        if (src.front) { node.front = new Node(); stack.push(src.front, node.front); }
+      }
+      return root;
     },
     invert: function () {
-      for (var i = 0; i < this.polygons.length; i++) this.polygons[i].flip();
-      if (this.plane) this.plane.flip();
-      if (this.front) this.front.invert();
-      if (this.back) this.back.invert();
-      var temp = this.front;
-      this.front = this.back;
-      this.back = temp;
+      eachNode(this, function (node) {
+        for (var i = 0; i < node.polygons.length; i++) node.polygons[i].flip();
+        if (node.plane) node.plane.flip();
+        var temp = node.front;
+        node.front = node.back;
+        node.back = temp;
+      });
     },
     clipPolygons: function (polygons) {
       var out = [];
@@ -173,54 +193,66 @@ var CSG = (function () {
     // clipPolygons appending to `out` (front results first, then back results: the order of the old front.concat(back)
     // recursion), so a deep tree (a convex solid's BSP is a chain as deep as its face count) no longer copies the
     // whole surviving list at every level.
+    // Iterative (an explicit stack, front before back as the recursion went): a tree of a finely faceted solid can be
+    // thousands of nodes deep (rfFL: the DISH at maxAngle 3 overflowed the call stack).
     clipInto: function (polygons, out) {
-      var i;
-      if (!this.plane) { for (i = 0; i < polygons.length; i++) out.push(polygons[i]); return; }
-      if (!polygons.length) return;
-      var front = [], back = [];
-      for (i = 0; i < polygons.length; i++) this.plane.splitPolygon(polygons[i], front, back, front, back);
-      if (this.front) this.front.clipInto(front, out);
-      else for (i = 0; i < front.length; i++) out.push(front[i]);
-      if (this.back) this.back.clipInto(back, out);
-      else {
-        // these fragments are inside the solid and are dropped: their source polygon no longer survives whole
-        for (var k = 0; k < back.length; k++) if (back[k]._src) back[k]._src.lost = true;
+      var i, stack = [this, polygons];
+      while (stack.length) {
+        var list = stack.pop(), node = stack.pop();
+        if (!node.plane) { for (i = 0; i < list.length; i++) out.push(list[i]); continue; }
+        if (!list.length) continue;
+        var front = [], back = [];
+        for (i = 0; i < list.length; i++) node.plane.splitPolygon(list[i], front, back, front, back);
+        if (node.back) stack.push(node.back, back);
+        else {
+          // these fragments are inside the solid and are dropped: their source polygon no longer survives whole
+          for (var k = 0; k < back.length; k++) if (back[k]._src) back[k]._src.lost = true;
+        }
+        if (node.front) stack.push(node.front, front);
+        else for (i = 0; i < front.length; i++) out.push(front[i]);
       }
     },
     clipTo: function (bsp) {
-      this.polygons = bsp.clipPolygons(this.polygons);
-      if (this.front) this.front.clipTo(bsp);
-      if (this.back) this.back.clipTo(bsp);
+      eachNode(this, function (node) { node.polygons = bsp.clipPolygons(node.polygons); });
     },
     allPolygons: function (out) {
       out = out || [];
-      for (var i = 0; i < this.polygons.length; i++) out.push(this.polygons[i]);
-      if (this.front) this.front.allPolygons(out);
-      if (this.back) this.back.allPolygons(out);
+      eachNode(this, function (node) { for (var i = 0; i < node.polygons.length; i++) out.push(node.polygons[i]); });
       return out;
     },
     // Move every polygon whose own bounding box lies outside `bounds` (grown by eps) out of this tree into `out`.
     // The node planes stay, so the tree still classifies space exactly; only the far polygons skip the clipping.
     extractFar: function (bounds, eps, out) {
-      if (this.polygons.length) {
+      eachNode(this, function (node) {
+        if (!node.polygons.length) return;
         var keep = [];
-        for (var i = 0; i < this.polygons.length; i++) {
-          var p = this.polygons[i];
+        for (var i = 0; i < node.polygons.length; i++) {
+          var p = node.polygons[i];
           // a far piece leaves the clipped set, so its source (possibly split by the tree build) is not restored whole
           if (polygonFar(p, bounds, eps)) { if (p._src) p._src.lost = true; out.push(p); } else keep.push(p);
         }
-        this.polygons = keep;
-      }
-      if (this.front) this.front.extractFar(bounds, eps, out);
-      if (this.back) this.back.extractFar(bounds, eps, out);
+        node.polygons = keep;
+      });
     },
+    // Iterative for deep trees (see clipInto); nodes are filled in the order the recursion filled them.
     build: function (polygons) {
-      if (!polygons.length) return;
-      if (!this.plane) this.plane = polygons[(polygons.length / 2) | 0].plane.clone();
-      var front = [], back = [];
-      for (var i = 0; i < polygons.length; i++) this.plane.splitPolygon(polygons[i], this.polygons, this.polygons, front, back);
-      if (front.length) { if (!this.front) this.front = new Node(); this.front.build(front); }
-      if (back.length) { if (!this.back) this.back = new Node(); this.back.build(back); }
+      var stack = [this, polygons, 0];
+      while (stack.length) {
+        var depth = stack.pop(), list = stack.pop(), node = stack.pop();
+        if (!list.length) continue;
+        if (depth > STATS.maxDepth) STATS.maxDepth = depth;
+        // the polygon the plane is taken from stays at this node even when it is not quite flat (a sheet-metal Normal
+        // Cut tool's warped quads, a healed polygon): split by its own plane, its pieces could be passed down forever
+        var self = -1;
+        if (!node.plane) { self = (list.length / 2) | 0; node.plane = list[self].plane.clone(); }
+        var front = [], back = [];
+        for (var i = 0; i < list.length; i++) {
+          if (i === self) node.polygons.push(list[i]);
+          else node.plane.splitPolygon(list[i], node.polygons, node.polygons, front, back);
+        }
+        if (back.length) { if (!node.back) node.back = new Node(); stack.push(node.back, back, depth + 1); }
+        if (front.length) { if (!node.front) node.front = new Node(); stack.push(node.front, front, depth + 1); }
+      }
     }
   };
 
@@ -289,23 +321,388 @@ var CSG = (function () {
   // CSG.options.nearTrees = false turns off the near-region trees below; nearRatio is the largest share of an
   // operand's polygons that may lie near the other one for its tree to be built from the near part only.
   // CSG.options.sphereTest = false turns off splitPolygon's bounding-sphere shortcut (same results, slower).
-  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5, sphereTest: true };
+  // CSG.options.heal = false turns off healCracks (rfFL) on boolean results; healWide, healFill, healDrop: see healCracks.
+  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5, sphereTest: true, heal: true, healWide: 2 * EPSILON, healDrop: false, healFill: false };
+  // FRAG: the bounding box of the fragments the last restoreWhole kept (null: everything may be cut), the region where
+  // healCracks looks for cracks
+  var FRAG = null;
   function restoreWhole(polygons) {
+    FRAG = null;
     if (!OPTIONS.restoreWhole) return untag(polygons);
-    var out = [];
+    var out = [], frag = [];
     for (var i = 0; i < polygons.length; i++) {
       var p = polygons[i], r = p._src;
       p._src = null; // no record outlives the boolean (it would keep the operands alive)
-      if (!r || r.lost) { out.push(p); continue; }
+      if (!r || r.lost) { out.push(p); frag.push(p); continue; }
       if (r.done) continue;
       r.done = true;
       var q = r.orig.clone();
       if (q.plane.normal.dot(p.plane.normal) < 0) q.flip(); // a subtract hands the tool's faces back inverted
       out.push(q);
     }
+    FRAG = boundsOf(frag) || { min: [0, 0, 0], max: [0, 0, 0] };
     return out;
   }
   function untag(polygons) { for (var i = 0; i < polygons.length; i++) polygons[i]._src = null; return polygons; }
+
+  // ---------------------------------------------------------------- crack healing (rfFL)
+  // The BSP classifies a vertex within EPSILON of a plane as on it but leaves it where it is, and a split point on a
+  // nearly tangent edge (a fillet chord running into a straight edge, a hole tangent to a wall) lands a few 1e-6 off the
+  // line its neighbour sees. Two faces that should share an edge then miss each other: an open edge for every mesh weld
+  // (1e-6 grid, 1e-9 of the diagonal), a crack in the shaded part. healCracks runs on a boolean result when
+  // splitPolygon took some vertex as on a plane while it was more than FUZZ off it (FUZZY; otherwise nothing can have
+  // cracked), on the polygons near the fragments the boolean made (FRAG). It pairs directed edges between vertices
+  // welded on a 1e-9 grid, drops exact T-junctions (dropTJunctions, cancelCollinear) and, for the open edges left:
+  // (1) welds endpoints within WELD of each other, (2) inserts an endpoint lying within HEAL of another open edge's
+  // interior into that edge (the nearest edge; never where the outline would fold back on itself, `spiked`); at most 4
+  // passes. Never worse: unless fewer open edges are left than at the start, the result goes back as the BSP made it.
+  // Watertight results come back unchanged (the same array); no vertex moves (except welds under 1e-7), every tag
+  // (shared, surf, face, part) stays on its polygon. Off by default, as they cost sheet-metal Normal Cut flats an extra
+  // loop (rfCW) and a bend's hole area (rfBZ): CSG.options.healWide (insert up to that distance when the point lies in
+  // the edge's face plane, 20 EPSILON closed the Normal Cut Bracket with every edge filleted), healFill (fillSlivers:
+  // a small flat loop of open edges becomes a face), healDrop (drop a rebuilt polygon narrower than HEAL).
+  var HEAL = 2 * EPSILON, HEAL_WIDE = 20 * EPSILON, HEAL_Q = 1e9, WELD = 1e-7;
+  var healStats = { calls: 0, healed: 0, moved: 0, dropped: 0, left: 0, passes: 0, ms: 0 };
+  var NOW = typeof performance !== 'undefined' && performance.now ? function () { return performance.now(); } : Date.now;
+  function healCracks(polys) {
+    if (!OPTIONS.heal || !FUZZY || polys.length < 4) return polys;
+    healStats.calls++;
+    var t0 = NOW(), orig = polys, before = -1, after = 0;
+    SPIKES = 0;
+    for (var pass = 0; pass <= 4; pass++) {
+      healStats.passes++;
+      LAST_OPEN = 0;
+      var r = healPass(polys, pass === 4);
+      if (before < 0) before = LAST_OPEN;
+      after = LAST_OPEN;
+      if (!r) break;
+      polys = r;
+    }
+    // never worse: when the cracks left are not fewer than at the start, the result goes back as the BSP made it
+    if (polys !== orig && after >= before) { polys = orig; healStats.reverted = (healStats.reverted || 0) + 1; }
+    else if (polys !== orig) healStats.healed++;
+    healStats.ms += NOW() - t0;
+    return polys;
+  }
+  var LAST_OPEN = 0;
+  // one pass: the healed polygon list, or null when nothing is open (or nothing could be changed)
+  function healPass(all, countOnly) {
+    // only the polygons near the fragments this boolean made (FRAG): every polygon sharing an edge with one of them is
+    // in the set too, so an edge near FRAG without a twin in the set is really open
+    var box = FRAG, sel = null, polys = all, i, j;
+    if (box) {
+      sel = []; polys = [];
+      for (i = 0; i < all.length; i++) if (!polygonFar(all[i], box, 4 * HEAL)) { sel.push(i); polys.push(all[i]); }
+    }
+    var n = polys.length, nv0 = 0;
+    for (i = 0; i < n; i++) nv0 += polys[i].vertices.length;
+    // weld on a 1e-9 grid: open-addressing hash of the rounded coordinates
+    var cap = 1; while (cap < 2 * nv0) cap <<= 1;
+    var slot = new Int32Array(cap).fill(-1), qx = new Float64Array(nv0), qy = new Float64Array(nv0), qz = new Float64Array(nv0);
+    var pos = [], pid = new Array(n), mask = cap - 1;
+    for (i = 0; i < n; i++) {
+      var vs = polys[i].vertices, ids = [];
+      for (j = 0; j < vs.length; j++) {
+        var q = vs[j].pos, X = Math.round(q.x * HEAL_Q), Y = Math.round(q.y * HEAL_Q), Z = Math.round(q.z * HEAL_Q);
+        var h = ((X % 1000003) * 73856093 ^ (Y % 1000033) * 19349663 ^ (Z % 1000037) * 83492791) & mask, id;
+        for (;;) {
+          id = slot[h];
+          if (id < 0) { id = pos.length; slot[h] = id; qx[id] = X; qy[id] = Y; qz[id] = Z; pos.push(q); break; }
+          if (qx[id] === X && qy[id] === Y && qz[id] === Z) break;
+          h = (h + 1) & mask;
+        }
+        if (!ids.length || ids[ids.length - 1] !== id) ids.push(id);
+      }
+      while (ids.length > 1 && ids[0] === ids[ids.length - 1]) ids.pop();
+      pid[i] = ids;
+    }
+    // directed edges in per-vertex lists; each one is paired with an unused reverse twin
+    var N = pos.length, head = new Int32Array(N).fill(-1), ne = 0;
+    for (i = 0; i < n; i++) ne += pid[i].length;
+    var nxt = new Int32Array(ne), tgt = new Int32Array(ne), used = new Uint8Array(ne), src = new Int32Array(ne), eP = new Int32Array(ne), eJ = new Int32Array(ne), k = 0;
+    for (i = 0; i < n; i++) {
+      var a = pid[i], m = a.length;
+      for (j = 0; j < m; j++) { var e0 = a[j]; src[k] = e0; tgt[k] = a[j + 1 < m ? j + 1 : 0]; eP[k] = i; eJ[k] = j; nxt[k] = head[e0]; head[e0] = k; k++; }
+    }
+    var open = [];
+    for (k = 0; k < ne; k++) {
+      if (used[k]) continue;
+      var aa = src[k], bb = tgt[k], f = head[bb];
+      while (f >= 0 && (used[f] || tgt[f] !== aa)) f = nxt[f];
+      if (f >= 0) { used[k] = 1; used[f] = 1; continue; }
+      if (box) {
+        var PA = pos[aa], PB = pos[bb], gg = 2 * HEAL;
+        if (Math.max(PA.x, PB.x) < box.min[0] - gg || Math.min(PA.x, PB.x) > box.max[0] + gg || Math.max(PA.y, PB.y) < box.min[1] - gg ||
+          Math.min(PA.y, PB.y) > box.max[1] + gg || Math.max(PA.z, PB.z) < box.min[2] - gg || Math.min(PA.z, PB.z) > box.max[2] + gg) continue;
+      }
+      open.push(eP[k], eJ[k], aa, bb);
+    }
+    if (!open.length) return null;
+    open = cancelCollinear(dropTJunctions(open, pos, N), pos);
+    LAST_OPEN = open.length / 4;
+    if (!open.length || countOnly) return null;
+    // candidate vertices: endpoints of open edges, sorted by x
+    var seen = new Uint8Array(N), cand = [];
+    for (i = 0; i < open.length; i += 4) {
+      if (!seen[open[i + 2]]) { seen[open[i + 2]] = 1; cand.push(open[i + 2]); }
+      if (!seen[open[i + 3]]) { seen[open[i + 3]] = 1; cand.push(open[i + 3]); }
+    }
+    cand.sort(function (u, v) { return pos[u].x - pos[v].x; });
+    var to = new Int32Array(N), change = false;
+    for (i = 0; i < N; i++) to[i] = i;
+    // (1) open-edge endpoints within HEAL of each other -> one point (the first in x order)
+    for (i = 0; i < cand.length; i++) {
+      var u = cand[i]; if (to[u] !== u) continue;
+      var pu = pos[u];
+      for (j = i + 1; j < cand.length; j++) {
+        var v = cand[j], pv = pos[v];
+        if (pv.x - pu.x > WELD) break;
+        if (to[v] !== v) continue;
+        var dx = pv.x - pu.x, dy = pv.y - pu.y, dz = pv.z - pu.z;
+        var dd = dx * dx + dy * dy + dz * dz;
+        if (dd <= WELD * WELD) { to[v] = u; if (dd > exact2(pu)) change = true; }
+      }
+    }
+    // (2) an endpoint within HEAL of another open edge's interior is inserted into that edge (the nearest one: at a
+    // tangent joint a point can lie within HEAL of two edges' lines); one already on the line (an exact T-junction,
+    // which every mesher downstream splits) is left alone
+    // candidates sorted along each axis; an edge scans the axis whose slab (its extent + HEAL) holds the fewest
+    var AX = ['x', 'y', 'z'], ord = [cand], keys = [];
+    ord[1] = cand.slice().sort(function (u, v) { return pos[u].y - pos[v].y; });
+    ord[2] = cand.slice().sort(function (u, v) { return pos[u].z - pos[v].z; });
+    for (i = 0; i < 3; i++) keys[i] = ord[i].map(function (c) { return pos[c][AX[i]]; });
+    var best = new Float64Array(N).fill(Infinity), bestE = new Int32Array(N).fill(-1), bestT = new Float64Array(N);
+    for (i = 0; i < open.length; i += 4) {
+      var ia = to[open[i + 2]], ib = to[open[i + 3]];
+      if (ia === ib) continue;
+      var A = pos[ia], B = pos[ib], ux = B.x - A.x, uy = B.y - A.y, uz = B.z - A.z, L = Math.sqrt(ux * ux + uy * uy + uz * uz);
+      ux /= L; uy /= L; uz /= L;
+      var s0 = 0, s1 = 0, oa = null, pl = polys[open[i]].plane, nn = pl.normal, wide = Math.max(HEAL, OPTIONS.healWide);
+      for (var ax = 0; ax < 3; ax++) {
+        var ca = A[AX[ax]], cb = B[AX[ax]], kk = keys[ax];
+        var r0 = lowerBound(kk, Math.min(ca, cb) - wide), r1 = lowerBound(kk, Math.max(ca, cb) + wide * 1.000001);
+        if (!oa || r1 - r0 < s1 - s0) { s0 = r0; s1 = r1; oa = ord[ax]; }
+      }
+      for (var c = s0; c < s1; c++) {
+        var w = oa[c];
+        if (to[w] !== w || w === ia || w === ib) continue;
+        var P = pos[w], wx = P.x - A.x, wy = P.y - A.y, wz = P.z - A.z, t = wx * ux + wy * uy + wz * uz;
+        if (t <= 1e-9 || t >= L - 1e-9) continue;
+        var ox = wx - t * ux, oy = wy - t * uy, oz = wz - t * uz, d2 = ox * ox + oy * oy + oz * oz;
+        if (d2 >= best[w] || d2 > wide * wide) continue;
+        // further than HEAL from the line: only a point in the edge's own face plane (a coplanar face of the other
+        // operand whose outline the BSP cut a chord short of)
+        if (d2 > HEAL * HEAL) { var pd = nn.x * P.x + nn.y * P.y + nn.z * P.z - pl.w; if (pd > EPSILON || pd < -EPSILON) continue; }
+        best[w] = d2; bestE[w] = d2 > exact2(A, L) ? i : -1; bestT[w] = t;
+      }
+    }
+    var ins = new Map();   // "polygon:edge" -> [{ t, v }]
+    for (i = 0; i < cand.length; i++) {
+      var bw = cand[i];
+      if (bestE[bw] < 0) continue;
+      var key = open[bestE[bw]] * 65536 + open[bestE[bw] + 1], list = ins.get(key);
+      if (!list) ins.set(key, list = []);
+      list.push({ t: bestT[bw], v: bw });
+      change = true;
+    }
+    if (!change) {
+      // (2b) nothing to snap or insert: a small closed loop of open edges is a sliver the BSP dropped; put it back
+      var holes = OPTIONS.healFill ? fillSlivers(open, polys, pos) : [];
+      if (holes.length) { healStats.filled = (healStats.filled || 0) + holes.length; return all.concat(holes); }
+      healStats.left += open.length / 4;
+      return null;
+    }
+    // (3) rebuild the touched polygons; one that lost a vertex or became a sliver goes (the next pass closes round it)
+    var out = sel ? all.slice() : [], dropped = false;
+    for (i = 0; i < n; i++) {
+      var ids0 = pid[i], touched = false;
+      for (j = 0; j < ids0.length && !touched; j++) if (to[ids0[j]] !== ids0[j] || ins.has(i * 65536 + j)) touched = true;
+      if (!touched) { if (!sel) out.push(polys[i]); continue; }
+      var ids1 = [];
+      for (j = 0; j < ids0.length; j++) {
+        var f = to[ids0[j]];
+        if (!ids1.length || ids1[ids1.length - 1] !== f) ids1.push(f);
+        var il = ins.get(i * 65536 + j);
+        if (il) {
+          il.sort(function (x, y) { return x.t - y.t; });
+          for (var q = 0; q < il.length; q++) if (ids1[ids1.length - 1] !== il[q].v) ids1.push(il[q].v);
+        }
+      }
+      while (ids1.length > 1 && ids1[0] === ids1[ids1.length - 1]) ids1.pop();
+      if (ids1.length < 3 || (OPTIONS.healDrop && sliver(ids1, pos))) { healStats.dropped++; if (sel) { out[sel[i]] = null; dropped = true; } continue; }
+      // an insertion that folds the outline back on itself (a fin): this polygon keeps its old outline
+      if (spiked(ids1, pos)) { SPIKES++; if (sel) out[sel[i]] = polys[i]; else out.push(polys[i]); continue; }
+      var p = polys[i], pp = new Polygon(ids1.map(function (q) { return new Vertex(pos[q].clone()); }), p.shared, p.plane.clone());
+      pp.surf = p.surf;
+      if (p.face != null) pp.face = p.face;
+      if (p.part != null) pp.part = p.part;
+      healStats.moved++;
+      if (sel) out[sel[i]] = pp; else out.push(pp);
+    }
+    return dropped ? out.filter(function (x) { return x; }) : out;
+  }
+  // Most open edges of a boolean result are exact T-junctions: a long edge a→b on one side, a chain b→…→a of shorter
+  // collinear edges on the other (the splitter downstream joins them). Walk that chain for each open edge (out-lists of
+  // the open edges, each step moving back along a→b within rounding of its line) and drop both the edge and the chain;
+  // what is left are the real cracks (a few edges), the only ones worth the candidate search.
+  function dropTJunctions(open, pos, N) {
+    var m = open.length / 4, head = new Int32Array(N).fill(-1), nxt = new Int32Array(m), done = new Uint8Array(m), i;
+    for (i = 0; i < m; i++) { var s = open[4 * i + 2]; nxt[i] = head[s]; head[s] = i; }
+    var chain = [];
+    for (i = 0; i < m; i++) {
+      if (done[i]) continue;
+      var a = open[4 * i + 2], b = open[4 * i + 3], A = pos[a], B = pos[b];
+      var ux = B.x - A.x, uy = B.y - A.y, uz = B.z - A.z, L = Math.sqrt(ux * ux + uy * uy + uz * uz);
+      if (!(L > 0)) continue;
+      ux /= L; uy /= L; uz /= L;
+      var ex = exact2(A, L), cur = b, tc = L, ok = false;
+      chain.length = 0;
+      for (var step = 0; step < 256 && !ok; step++) {
+        var f = head[cur], took = -1;
+        for (; f >= 0; f = nxt[f]) {
+          if (done[f] || f === i) continue;
+          var nx = open[4 * f + 3], P = pos[nx], wx = P.x - A.x, wy = P.y - A.y, wz = P.z - A.z, t = wx * ux + wy * uy + wz * uz;
+          if (!(t < tc)) continue;
+          var ox = wx - t * ux, oy = wy - t * uy, oz = wz - t * uz;
+          if (ox * ox + oy * oy + oz * oz > ex) continue;
+          took = f; tc = t; break;
+        }
+        if (took < 0) break;
+        chain.push(took);
+        cur = open[4 * took + 3];
+        if (cur === a) ok = true;
+      }
+      if (!ok) continue;
+      done[i] = 1;
+      for (var c = 0; c < chain.length; c++) done[chain[c]] = 1;
+    }
+    var out = [];
+    for (i = 0; i < m; i++) if (!done[i]) out.push(open[4 * i], open[4 * i + 1], open[4 * i + 2], open[4 * i + 3]);
+    return out;
+  }
+  // What dropTJunctions leaves can still be T-junctions with vertices on both sides (a→c→b against b→d→a): cancel each
+  // edge's parameter range against the antiparallel edges on its line (within rounding), as meshQuality does, and keep
+  // only edges with something left uncovered. Pairwise over the (few) edges left; more than 4000 are kept as they are.
+  function cancelCollinear(open, pos) {
+    var m = open.length / 4;
+    if (m < 2 || m > 4000) return open;
+    var U = new Float64Array(3 * m), Lh = new Float64Array(m), i, j;
+    for (i = 0; i < m; i++) {
+      var A = pos[open[4 * i + 2]], B = pos[open[4 * i + 3]], dx = B.x - A.x, dy = B.y - A.y, dz = B.z - A.z, L = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      Lh[i] = L; U[3 * i] = dx / L; U[3 * i + 1] = dy / L; U[3 * i + 2] = dz / L;
+    }
+    var out = [];
+    for (i = 0; i < m; i++) {
+      var Ai = pos[open[4 * i + 2]], Li = Lh[i], ux = U[3 * i], uy = U[3 * i + 1], uz = U[3 * i + 2], tol2 = exact2(Ai, Li), tol = Math.sqrt(tol2);
+      if (!(Li > 0)) continue;
+      var pieces = [[0, Li]];
+      for (j = 0; j < m && pieces.length; j++) {
+        if (j === i || ux * U[3 * j] + uy * U[3 * j + 1] + uz * U[3 * j + 2] > -0.999999) continue;
+        var t = [0, 0], ok = true;
+        for (var e = 0; e < 2 && ok; e++) {
+          var P = pos[open[4 * j + 2 + e]], wx = P.x - Ai.x, wy = P.y - Ai.y, wz = P.z - Ai.z, tt = wx * ux + wy * uy + wz * uz;
+          var ox = wx - tt * ux, oy = wy - tt * uy, oz = wz - tt * uz;
+          if (ox * ox + oy * oy + oz * oz > tol2) ok = false;
+          t[e] = tt;
+        }
+        if (!ok) continue;
+        var t0 = Math.min(t[0], t[1]), t1 = Math.max(t[0], t[1]), np = [];
+        for (var q = 0; q < pieces.length; q++) {
+          var pc = pieces[q];
+          if (t1 <= pc[0] || t0 >= pc[1]) { np.push(pc); continue; }
+          if (t0 > pc[0] + tol) np.push([pc[0], t0]);
+          if (t1 < pc[1] - tol) np.push([t1, pc[1]]);
+        }
+        pieces = np;
+      }
+      var left = 0;
+      for (q = 0; q < pieces.length; q++) left += pieces[q][1] - pieces[q][0];
+      if (left > tol) out.push(open[4 * i], open[4 * i + 1], open[4 * i + 2], open[4 * i + 3]);
+    }
+    return out;
+  }
+  // Loops of at most 12 open edges (each edge's end starts the next) that are flat (every point within EPSILON of the
+  // loop's plane) and narrow (twice the area over the longest edge under HEAL_WIDE): the hole a dropped sliver left.
+  // Each becomes a polygon run the other way round, with the tags of the face it lies in (the first edge's polygon).
+  function fillSlivers(open, polys, pos) {
+    var m = open.length / 4, byStart = new Map(), used = new Uint8Array(m), out = [], i;
+    for (i = 0; i < m; i++) { var s = open[4 * i + 2]; if (!byStart.has(s)) byStart.set(s, []); byStart.get(s).push(i); }
+    for (i = 0; i < m; i++) {
+      if (used[i]) continue;
+      var loop = [i], cur = open[4 * i + 3], start = open[4 * i + 2], ok = false;
+      while (loop.length <= 12) {
+        if (cur === start) { ok = true; break; }
+        var nx = byStart.get(cur), f = -1;
+        if (nx) for (var q = 0; q < nx.length; q++) if (!used[nx[q]] && loop.indexOf(nx[q]) < 0) { f = nx[q]; break; }
+        if (f < 0) break;
+        loop.push(f); cur = open[4 * f + 3];
+      }
+      if (!ok || loop.length < 3) continue;
+      var vs = [];
+      for (var k = loop.length - 1; k >= 0; k--) vs.push(new Vertex(pos[open[4 * loop[k] + 3]].clone()));
+      var pl = Plane.fromVertices(vs);
+      if (!pl) continue;
+      var e2 = 0, flat = true, sx = 0, sy = 0, sz = 0, a0 = vs[0].pos;
+      for (k = 0; k < vs.length; k++) {
+        var b = vs[k].pos, c = vs[(k + 1) % vs.length].pos, d = pl.normal.dot(b) - pl.w;
+        if (d > EPSILON || d < -EPSILON) flat = false;
+        var ex = c.x - b.x, ey = c.y - b.y, ez = c.z - b.z;
+        e2 = Math.max(e2, ex * ex + ey * ey + ez * ez);
+        var bx = b.x - a0.x, by = b.y - a0.y, bz = b.z - a0.z, cx = c.x - a0.x, cy = c.y - a0.y, cz = c.z - a0.z;
+        sx += by * cz - bz * cy; sy += bz * cx - bx * cz; sz += bx * cy - by * cx;
+      }
+      var s2 = Math.sqrt(sx * sx + sy * sy + sz * sz), el = Math.sqrt(e2);
+      // not a hole worth a face: a near-point gap whose fill would be a zero-area face for Evaluate's check
+      var sc = Math.abs(a0.x) + Math.abs(a0.y) + Math.abs(a0.z) + el;
+      if (!flat || s2 > HEAL_WIDE * el || s2 <= Math.sqrt(exact2(a0, el)) * el || s2 <= 2e-13 * sc * sc) continue;
+      // convex only (the BSP needs it): every turn the same way round the plane normal
+      var convex = true, nn = pl.normal;
+      for (k = 0; k < vs.length && convex; k++) {
+        var p0 = vs[k].pos, p1 = vs[(k + 1) % vs.length].pos, p2 = vs[(k + 2) % vs.length].pos;
+        var ux = p1.x - p0.x, uy = p1.y - p0.y, uz = p1.z - p0.z, wx = p2.x - p1.x, wy = p2.y - p1.y, wz = p2.z - p1.z;
+        if ((uy * wz - uz * wy) * nn.x + (uz * wx - ux * wz) * nn.y + (ux * wy - uy * wx) * nn.z < -1e-18) convex = false;
+      }
+      if (!convex) continue;
+      var src = polys[open[4 * i]], np = new Polygon(vs, src.shared, pl);
+      np.surf = src.surf;
+      if (src.face != null) np.face = src.face;
+      if (src.part != null) np.part = src.part;
+      for (k = 0; k < loop.length; k++) used[loop[k]] = 1;
+      out.push(np);
+    }
+    return out;
+  }
+  // the square of the distance under which two points / a point and a line count as one already: rounding of
+  // coordinates this large (1e-9 of their size, as the meshes' own welds); such a T-junction is split downstream
+  function exact2(P, L) { var m = 1e-9 * (Math.abs(P.x) + Math.abs(P.y) + Math.abs(P.z) + (L || 0) + 1e-3); return m * m; }
+  // an outline that doubles back on itself (two consecutive edges antiparallel within 5e-5 rad): an insertion
+  // that would leave a fin (two coincident faces of zero area), which healPass refuses
+  var SPIKES = 0;
+  function spiked(ids, P) {
+    var m = ids.length;
+    for (var k = 0; k < m; k++) {
+      var a = P[ids[(k + m - 1) % m]], b = P[ids[k]], c = P[ids[(k + 1) % m]];
+      var ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z, wx = c.x - b.x, wy = c.y - b.y, wz = c.z - b.z;
+      var d = ux * wx + uy * wy + uz * wz, l = Math.sqrt((ux * ux + uy * uy + uz * uz) * (wx * wx + wy * wy + wz * wz));
+      if (l > 0 && d < -(1 - 1e-9) * l) return true;
+    }
+    return false;
+  }
+  // a polygon narrower than HEAL everywhere: twice its area over its longest edge
+  function sliver(ids, P) {
+    var a = P[ids[0]], sx = 0, sy = 0, sz = 0, e2 = 0, m = ids.length;
+    for (var j = 0; j < m; j++) {
+      var b = P[ids[j]], c = P[ids[(j + 1) % m]];
+      var ex = c.x - b.x, ey = c.y - b.y, ez = c.z - b.z, l2 = ex * ex + ey * ey + ez * ez;
+      if (l2 > e2) e2 = l2;
+      if (j > 0 && j + 1 < m) {
+        var bx = b.x - a.x, by = b.y - a.y, bz = b.z - a.z, cx = c.x - a.x, cy = c.y - a.y, cz = c.z - a.z;
+        sx += by * cz - bz * cy; sy += bz * cx - bx * cz; sz += bx * cy - by * cx;
+      }
+    }
+    return Math.sqrt(sx * sx + sy * sy + sz * sz) <= HEAL * Math.sqrt(e2);
+  }
+  function lowerBound(arr, x) { var lo = 0, hi = arr.length; while (lo < hi) { var mm = (lo + hi) >> 1; if (arr[mm] < x) lo = mm + 1; else hi = mm; } return lo; }
 
   // ---------------------------------------------------------------- trees built from the near region only
   // The classic boolean builds a BSP tree from every polygon of both solids, although only the polygons near the
@@ -320,7 +717,7 @@ var CSG = (function () {
   // all cap pieces in it. That point is classified exactly by a ray cast against all of X (signed crossing count,
   // two directions that must agree). Anything doubtful (a cap coplanar with a face, a ray grazing an edge,
   // directions disagreeing) returns null and the boolean falls back to the classic full trees.
-  var STATS = { near: 0, classic: 0, fallback: 0 };
+  var STATS = { near: 0, classic: 0, fallback: 0, maxDepth: 0 };
   var RAY_DIRS = [[0.5377, 0.6214, 0.5698], [-0.6023, 0.4719, 0.6441], [0.4402, -0.7131, 0.5456], [0.7071, 0.1234, -0.6963]].map(function (d) {
     return new Vector(d[0], d[1], d[2]).unit();
   });
@@ -361,12 +758,18 @@ var CSG = (function () {
   }
   // Split `polygons` down the tree and collect the pieces that reach each empty child (one group per leaf cell).
   // false when a piece is coplanar with a node plane.
-  function leafGroups(node, polygons, groups) {
-    var cop = [], front = [], back = [];
-    for (var i = 0; i < polygons.length; i++) node.plane.splitPolygon(polygons[i], cop, cop, front, back);
-    if (cop.length) return false;
-    if (front.length) { if (node.front) { if (!leafGroups(node.front, front, groups)) return false; } else groups.push(front); }
-    if (back.length) { if (node.back) { if (!leafGroups(node.back, back, groups)) return false; } else groups.push(back); }
+  // (iterative, front before back: stack entries are [node, list] to split or [null, group] to emit)
+  function leafGroups(root, polygons, groups) {
+    var stack = [root, polygons];
+    while (stack.length) {
+      var list = stack.pop(), node = stack.pop();
+      if (!node) { groups.push(list); continue; }
+      var cop = [], front = [], back = [];
+      for (var i = 0; i < list.length; i++) node.plane.splitPolygon(list[i], cop, cop, front, back);
+      if (cop.length) return false;
+      if (back.length) stack.push(node.back || null, back);
+      if (front.length) stack.push(node.front || null, front);
+    }
     return true;
   }
   function polygonArea(p) {
@@ -556,11 +959,12 @@ var CSG = (function () {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
       if (!ba || !bb) return CSG.fromPolygons(clonePolys(this.polygons).concat(clonePolys(csg.polygons))); // an operand is empty
       if (!boundsOverlap(ba, bb, eps)) return CSG.fromPolygons(clonePolys(this.polygons).concat(clonePolys(csg.polygons)));
+      FUZZY = 0;
       var n = nearOperands(this, csg, ba, bb, eps);
       if (n) {
         // A outside B, plus B outside A with B's faces coplanar with A's dropped (the classic sequence as lists)
         var bk = flipAll(n.t.a.clipPolygons(flipAll(n.t.a.clipPolygons(n.b))));
-        return CSG.fromPolygons(restoreWhole(n.t.b.clipPolygons(n.a).concat(bk)).concat(clonePolys(n.farA), clonePolys(n.farB)));
+        return CSG.fromPolygons(healCracks(restoreWhole(n.t.b.clipPolygons(n.a).concat(bk)).concat(clonePolys(n.farA), clonePolys(n.farB))));
       }
       STATS.classic++;
       var a = new Node(taggedClones(this.polygons));
@@ -573,19 +977,20 @@ var CSG = (function () {
       b.clipTo(a);
       b.invert();
       a.build(b.allPolygons());
-      return CSG.fromPolygons(restoreWhole(a.allPolygons()).concat(untag(far)));
+      return CSG.fromPolygons(healCracks(restoreWhole(a.allPolygons()).concat(untag(far))));
     },
     subtract: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
       // nothing minus anything is nothing (the trees would hand back the tool's faces inverted)
       if (!ba || !bb || !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons(ba ? clonePolys(this.polygons) : []);
+      FUZZY = 0;
       var n = nearOperands(this, csg, ba, bb, eps);
       if (n) {
         // A outside B, plus B inside A flipped: the classic sequence with ~A = the inverted tree of A
         n.t.a.invert();
         var ak = flipAll(n.t.b.clipPolygons(flipAll(n.a)));
         var bk = n.t.a.clipPolygons(flipAll(n.t.a.clipPolygons(n.b)));
-        return CSG.fromPolygons(restoreWhole(ak.concat(bk)).concat(clonePolys(n.farA)));
+        return CSG.fromPolygons(healCracks(restoreWhole(ak.concat(bk)).concat(clonePolys(n.farA))));
       }
       STATS.classic++;
       var a = new Node(taggedClones(this.polygons));
@@ -601,18 +1006,19 @@ var CSG = (function () {
       b.invert();
       a.build(b.allPolygons());
       a.invert();
-      return CSG.fromPolygons(restoreWhole(a.allPolygons()).concat(untag(far)));
+      return CSG.fromPolygons(healCracks(restoreWhole(a.allPolygons()).concat(untag(far))));
     },
     intersect: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
       if (!ba || !bb || !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons([]);
+      FUZZY = 0;
       var n = nearOperands(this, csg, ba, bb, eps);
       if (n) {
         n.t.a.invert();
         var b1 = flipAll(n.t.a.clipPolygons(n.b));
         n.t.b.invert();
         var ak = flipAll(n.t.b.clipPolygons(flipAll(n.a)));
-        return CSG.fromPolygons(restoreWhole(ak.concat(flipAll(n.t.a.clipPolygons(b1)))));
+        return CSG.fromPolygons(healCracks(restoreWhole(ak.concat(flipAll(n.t.a.clipPolygons(b1))))));
       }
       STATS.classic++;
       var a = new Node(taggedClones(this.polygons));
@@ -626,7 +1032,7 @@ var CSG = (function () {
       b.clipTo(a);
       a.build(b.allPolygons());
       a.invert();
-      return CSG.fromPolygons(restoreWhole(a.allPolygons()));
+      return CSG.fromPolygons(healCracks(restoreWhole(a.allPolygons())));
     },
     inverse: function () {
       var csg = this.clone();
@@ -684,11 +1090,17 @@ var CSG = (function () {
     // EPSILON of a face count as inside. Build the tester once and reuse it for many probes.
     pointTester: function () {
       var tree = new Node(this.polygons.slice());
-      function inside(node, p) {
-        var t = node.plane.normal.dot(p) - node.plane.w;
-        if (t > EPSILON) return node.front ? inside(node.front, p) : false;
-        if (t < -EPSILON) return node.back ? inside(node.back, p) : true;
-        return (node.front ? inside(node.front, p) : false) || (node.back ? inside(node.back, p) : true);
+      // iterative (deep trees, see eachNode): any leaf region reached behind a plane is inside
+      function inside(root, p) {
+        var st = [root];
+        while (st.length) {
+          var node = st.pop(), t = node.plane.normal.dot(p) - node.plane.w;
+          if (t > EPSILON) { if (node.front) st.push(node.front); continue; }
+          if (!node.back) return true;
+          st.push(node.back);
+          if (t >= -EPSILON && node.front) st.push(node.front);
+        }
+        return false;
       }
       return function (p) {
         if (!tree.plane) return false;
@@ -786,5 +1198,8 @@ var CSG = (function () {
   // Counters of the boolean paths taken since load (near-region trees, classic full trees, near attempts that fell
   // back to the classic because a probe was doubtful); tests and benchmarks reset them by assigning 0.
   CSG.stats = STATS;
+  // healCracks counters (rfFL): calls, results healed, polygons rebuilt / dropped, open edges it could not close
+  CSG.healStats = healStats;
+  CSG.healCracks = function (csg) { FUZZY = 1; FRAG = null; return CSG.fromPolygons(healCracks(csg.polygons.slice())); };
   return CSG;
 })();

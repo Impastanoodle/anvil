@@ -141,7 +141,9 @@
       // rfFE2: 1e-8 (was 1e-9): the fillet arcs meet the spar circles' chords at their tangent points, and the curve
       // correction's columns there leave a residual that follows the chord count (1.6e-9 at the 12° angular limit,
       // 2.5e-7 at 10°, 1e-14 before the limit): a known limit of the column correction at tangent chord meetings
-      near((16 * T - r.mp.volume) / T, OPEN - LOST, 1e-8, 'open area with fillets');
+      // rfFL: 1e-7: csg.js healCracks closes the 4 open edges this vent had; the BSP split order it implies moves the same
+      // residual to 7e-8 in² (a rotation of the tool's polygon list alone gives 1e-14 or 7e-8)
+      near((16 * T - r.mp.volume) / T, OPEN - LOST, 1e-7, 'open area with fillets');
       consistentVolume(r);
       var fl = K.flatPattern(r.model, r.build, r.mesh), dxf = K.exportDXFFlat(fl, 'in', { style: 'entities' }), c = DxfCheck.check(dxf, { units: 'in' });
       assert(fl.loops.length === 9 && c.ok, 'loops ' + fl.loops.length + ' ' + c.errors.join('; '));

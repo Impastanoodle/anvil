@@ -636,7 +636,7 @@ var UI = (function () {
 
   function updateBodyMesh() {
     disposeGroup(groups.body); disposeGroup(groups.edges);
-    bodyMesh = null; edgeLines = null; silLines = null; edgeScr.edges = null; pickMemo.key = null;
+    bodyMesh = null; crackFill = null; edgeLines = null; silLines = null; edgeScr.edges = null; pickMemo.key = null; App.displayWarning = null;
     var m = App.mesh;
     if (!m || !m.triCount) { App.edges = m ? edgesFor(m) : []; App.triHidden = null; visTris = null; sceneVer++; return; }
     var g = new THREE.BufferGeometry();
@@ -663,14 +663,138 @@ var UI = (function () {
     bodyMesh = new THREE.Mesh(g, App.view.style === 'hlr' || App.view.style === 'hlv' ? mats.hlr : mats.part);
     bodyMesh.renderOrder = -1;   // r14/viewui14: before every line, so the depth-only HLR occluder hides the hidden ones in any draw order
     groups.body.add(bodyMesh);
-    edgeLines = new THREE.LineSegments(buildEdgeGeometry(m), mats.edge);
-    groups.edges.add(edgeLines);
-    silLines = buildSilhouettes(m);
-    if (silLines) groups.edges.add(silLines);
+    // lane FO: the crack filler (see "display safety" below) shares the geometry, drawn right after the faces
+    crackFill = new THREE.Mesh(g, mats.partFill);
+    crackFill.renderOrder = -0.9;
+    crackFill.userData.crackFill = true;
+    crackFill.raycast = function () { };
+    groups.body.add(crackFill);
+    // lane FO: edges come from Kernel.bodyEdges / annotateCurveEdges; a mesh they cannot read (a degenerate sliver from
+    // a boolean) must not take the shaded part off the screen with it: the part is drawn without edges and the status
+    // bar says so, instead of an empty graphics area
+    try {
+      edgeLines = new THREE.LineSegments(buildEdgeGeometry(m), mats.edge);
+      groups.edges.add(edgeLines);
+      silLines = buildSilhouettes(m);
+      if (silLines) groups.edges.add(silLines);
+    } catch (e) {
+      console.warn('Model edges could not be drawn:', e);
+      disposeGroup(groups.edges); edgeLines = null; silLines = null;
+      App.edges = []; App.curves = []; App.edgesMesh = m;
+      App.displayWarning = 'Model edges could not be drawn for this part (' + ((e && e.message) || e) + '); the shaded part is shown.';
+    }
     sceneVer++;
     applyDisplayStyle();
   }
   var silLines = null;
+
+  // ------------------------------------------------------------------ lane FO: display safety
+  // "The part never looks broken", whatever mesh the kernel hands over:
+  //   crack filler: a boolean leaves T-junctions (a vertex of one facet on the edge of its neighbour); the rasterizer
+  //     can leave single pixels between them unfilled, and on a thin plate the background shows through both faces as
+  //     a sparkle. crackFill draws the body's triangle edges as 1-pixel lines in the same lit material after the
+  //     faces, without writing depth: on a face it lands on the face itself (same colour, the faces sit back by their
+  //     polygonOffset), behind a face it is hidden, in a pinhole it fills the pixel. Off in HLR / HLV / Wireframe and
+  //     in a section (where the inside of the body is seen, which the filler's front-facing light would stripe).
+  //   normals: a smoothed normal that is not finite, has no length or points more than ~78° away from its facet is
+  //     replaced by the facet's own (safeNormals), so no triangle shades black.
+  //   section caps: SolidWorks' Section View shows the cut faces solid; the body is drawn twice more into the stencil
+  //     (back faces +1, front faces -1, both clipped) and a plane on the section is drawn where the count is not zero.
+  mats.partFill = new THREE.MeshPhongMaterial({ color: 0x8c8c8c, specular: 0x555555, shininess: 64, wireframe: true, depthWrite: false });
+  mats.partFill.onBeforeCompile = mats.part.onBeforeCompile;
+  mats.partFill.customProgramCacheKey = function () { return 'anvil-part-fill-fo'; };
+  var crackFill = null;
+  function syncCrackFill() {
+    if (!crackFill) return;
+    var s = App.view.style, on = (s === 'shaded' || s === 'shadedEdges') && !App.view.section && !mats.part.transparent && !UI.noCrackFill;
+    crackFill.visible = on && !!(bodyMesh && bodyMesh.visible);
+    var f = mats.partFill, p = mats.part;
+    if (!f.color.equals(p.color)) f.color.copy(p.color);
+    if (f.vertexColors !== p.vertexColors) { f.vertexColors = p.vertexColors; f.needsUpdate = true; }
+    if (f.specular.getHex() !== p.specular.getHex() || f.shininess !== p.shininess) { f.specular.copy(p.specular); f.shininess = p.shininess; }
+  }
+  // corner normals out (Float32Array, 3 per triangle corner) checked against the facets' flat normals m.normals
+  function safeNormals(m, out) {
+    var fl = m && m.normals;
+    if (!out || !fl || fl.length !== out.length || out._foSafe) return out;
+    var fixed = 0;
+    for (var i = 0; i < out.length; i += 3) {
+      var x = out[i], y = out[i + 1], z = out[i + 2], l = Math.sqrt(x * x + y * y + z * z);
+      var fx = fl[i], fy = fl[i + 1], fz = fl[i + 2], fln = Math.sqrt(fx * fx + fy * fy + fz * fz);
+      if (!(fln > 1e-9)) {   // a sliver with no flat normal: any finite unit normal will do
+        if (!(l > 1e-9) || !isFinite(l)) { out[i] = 0; out[i + 1] = 0; out[i + 2] = 1; fixed++; }
+        continue;
+      }
+      if (!isFinite(l) || !(l > 1e-6) || (x * fx + y * fy + z * fz) / (l * fln) < 0.2) {
+        out[i] = fx / fln; out[i + 1] = fy / fln; out[i + 2] = fz / fln; fixed++;
+      }
+    }
+    out._foSafe = true;
+    m.normalsFixed = fixed;
+    return out;
+  }
+  var capGroup = new THREE.Group();
+  capGroup.userData.sectionCaps = true;
+  scene.add(capGroup);
+  mats.capBack = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, depthTest: false, side: THREE.BackSide,
+    stencilWrite: true, stencilFunc: THREE.AlwaysStencilFunc, stencilFail: THREE.IncrementWrapStencilOp, stencilZFail: THREE.IncrementWrapStencilOp, stencilZPass: THREE.IncrementWrapStencilOp });
+  mats.capFront = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, depthTest: false, side: THREE.FrontSide,
+    stencilWrite: true, stencilFunc: THREE.AlwaysStencilFunc, stencilFail: THREE.DecrementWrapStencilOp, stencilZFail: THREE.DecrementWrapStencilOp, stencilZPass: THREE.DecrementWrapStencilOp });
+  mats.cap = new THREE.MeshPhongMaterial({ color: 0x8c8c8c, specular: 0x222222, shininess: 20, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+    stencilWrite: true, stencilRef: 0, stencilFunc: THREE.NotEqualStencilFunc, stencilFail: THREE.ReplaceStencilOp, stencilZFail: THREE.ReplaceStencilOp, stencilZPass: THREE.ReplaceStencilOp });
+  function updateSectionCaps() {
+    while (capGroup.children.length) { var c = capGroup.children.pop(); if (c.userData.capPlane && c.geometry) c.geometry.dispose(); }
+    var sec = App.view.section, s = App.view.style;
+    if (!sec || !sec.plane || !bodyMesh || !bodyMesh.visible || !App.mesh || !App.mesh.triCount || (s !== 'shaded' && s !== 'shadedEdges') || flatShown()) return;
+    var pl = sec.plane, b = modelBounds(), ctr = new THREE.Vector3((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2);
+    var diag = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]);
+    if (!(diag > 0)) return;
+    [mats.capBack, mats.capFront].forEach(function (mt, k) {
+      mt.clippingPlanes = [pl]; mt.needsUpdate = true;
+      var o = new THREE.Mesh(bodyMesh.geometry, mt);
+      o.renderOrder = 1 + k * 0.01; o.raycast = function () { };
+      capGroup.add(o);
+    });
+    // the cap: a square on the plane round the box centre's projection, big enough for any section of the box, facing
+    // the removed side (three.js keeps the positive side of a clipping plane)
+    var foot = pl.projectPoint(ctr, new THREE.Vector3()), qg = new THREE.PlaneGeometry(diag * 1.05, diag * 1.05);
+    var cap = new THREE.Mesh(qg, mats.cap);
+    cap.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), pl.normal.clone().negate());
+    cap.position.copy(foot);
+    cap.renderOrder = 1.02; cap.raycast = function () { };
+    cap.userData.capPlane = true;
+    mats.cap.color.copy(mats.part.vertexColors ? new THREE.Color(partColor(App.model.color)) : mats.part.color);
+    capGroup.add(cap);
+    // the cut outline (SolidWorks draws the section's edges): every visible triangle crossing the plane gives a segment
+    if (s === 'shadedEdges') {
+      var P = App.mesh.positions, th = App.triHidden, seg = [], d = [0, 0, 0], n = pl.normal, c0 = pl.constant;
+      for (var t = 0; t < App.mesh.triCount; t++) {
+        if (th && th[t]) continue;
+        var o = t * 9, pos = 0, neg = 0;
+        for (var k = 0; k < 3; k++) { d[k] = n.x * P[o + k * 3] + n.y * P[o + k * 3 + 1] + n.z * P[o + k * 3 + 2] + c0; if (d[k] > 0) pos++; else if (d[k] < 0) neg++; }
+        if (!pos || !neg) continue;
+        for (var e = 0; e < 3; e++) {
+          var a = e, bb = (e + 1) % 3;
+          if ((d[a] > 0) === (d[bb] > 0) || d[a] === d[bb]) continue;
+          var u = d[a] / (d[a] - d[bb]);
+          seg.push(P[o + a * 3] + (P[o + bb * 3] - P[o + a * 3]) * u, P[o + a * 3 + 1] + (P[o + bb * 3 + 1] - P[o + a * 3 + 1]) * u, P[o + a * 3 + 2] + (P[o + bb * 3 + 2] - P[o + a * 3 + 2]) * u);
+        }
+        if (seg.length % 6) seg.length -= 3;   // a vertex on the plane gave one crossing only
+      }
+      // a hair towards the removed side, so the outline is never half buried in the faces it runs along
+      var lift = diag * 2e-4;
+      for (var si = 0; si < seg.length; si += 3) { seg[si] -= n.x * lift; seg[si + 1] -= n.y * lift; seg[si + 2] -= n.z * lift; }
+      if (seg.length) {
+        if (!mats.capEdge) { mats.capEdge = new THREE.LineBasicMaterial({ color: 0xffffff }); lineMat(mats.capEdge, LINE_W.edge); }
+        mats.capEdge.color.copy(mats.edge.color); mats.capEdge.clippingPlanes = []; mats.capEdge.needsUpdate = true;
+        var eg = new THREE.BufferGeometry();
+        eg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(seg), 3));
+        var ln = new THREE.LineSegments(eg, mats.capEdge);
+        ln.renderOrder = 1.05; ln.userData.capPlane = true; ln.raycast = function () { };
+        capGroup.add(ln);
+      }
+    }
+  }
 
   // ------------------------------------------------------------------ lane DC (finding #9): the flattened state
   // SolidWorks' Flatten: the part is shown as its flat pattern (Flat-Pattern1 unsuppressed) until Flatten is clicked
@@ -1052,7 +1176,7 @@ var UI = (function () {
   // the smooth-shading normals a worker found on the same mesh (Kernel.analyticNormals, the numbers analyticNormals
   // below makes) become the mesh's cached ones when they fit it (r3/engine3)
   function useWorkerNormals(m, n) {
-    if (m && n && m.normals && n.length === m.normals.length && !m.smoothNormals) m.smoothNormals = n;
+    if (m && n && m.normals && n.length === m.normals.length && !m.smoothNormals) m.smoothNormals = safeNormals(m, n);
   }
   // App.edges is computed once per mesh (bodyEdges is not cheap) and reused when only visibility changes.
   function edgesFor(m) {
@@ -1127,10 +1251,10 @@ var UI = (function () {
   function analyticNormals(m) {
     if (m.smoothNormals) return m.smoothNormals;
     var an = m === App.mesh && UI.asmNormals ? UI.asmNormals(m) : null;   // r4/asm4: an assembly's, from its parts'
-    if (an) return (m.smoothNormals = an);
+    if (an) return (m.smoothNormals = safeNormals(m, an));
     var out;
     try { out = K.analyticNormals(m); } catch (e) { out = new Float32Array(m.normals); }
-    m.smoothNormals = out;
+    m.smoothNormals = out = safeNormals(m, out);   // lane FO: no corner shades black
     return out;
   }
   function ekey3(p) { return Math.round(p[0] * 1000) + ',' + Math.round(p[1] * 1000) + ',' + Math.round(p[2] * 1000); }
@@ -1278,6 +1402,8 @@ var UI = (function () {
     var planes = App.view.section ? [App.view.section.plane] : [];
     needsRender = true;
     [mats.part, mats.hlr, mats.edge, mats.hover, mats.sel, silMat].forEach(function (mm) { mm.clippingPlanes = planes; mm.needsUpdate = true; });
+    syncCrackFill();   // lane FO
+    updateSectionCaps();
   }
 
   // Per-body colours: UI.bodyColors() (ui-materials.js) gives one CSS colour per body when bodies differ (a body with its
@@ -2568,8 +2694,16 @@ var UI = (function () {
     if (roll.active && !roll.committing && (opts.occt || App.mode === 'sketch')) { roll.deferred = { build: build, opts: opts, ms: msBefore }; return App.build; }
     if (roll.active || roll.committing) clearRollback();
     var t0 = performance.now();
+    // lane FO: a body the mesher cannot read leaves the last good part on screen (and in App.build) instead of an
+    // empty graphics area; the status bar says why
+    var newMesh;
+    try { newMesh = K.meshFromBody(build.body); } catch (e) {
+      console.warn('The rebuilt part could not be displayed:', e);
+      if (UI.setStatus) UI.setStatus('The rebuilt part could not be displayed (' + ((e && e.message) || e) + '); the last good part is shown.');
+      return App.build;
+    }
     App.build = build;
-    App.mesh = K.meshFromBody(App.build.body);
+    App.mesh = newMesh;
     // worker.js found the edges of this same mesh (edgesFor); its volume follows in a 'volume' message (onWorkerMessage)
     if (nextWorker && App.mesh) { App.mesh.workerEdges = nextWorker.edges; App.mesh.workerCurves = nextWorker.curves || null; App.mesh.workerSeq = nextWorker.seq; useWorkerNormals(App.mesh, nextWorker.normals); }
     nextWorker = null;
@@ -2616,7 +2750,7 @@ var UI = (function () {
       if (App.build.assembly && typeof Assembly !== 'undefined') f = Assembly.findComponent(App.model, +errIds[0]) || Assembly.findMate(App.model, +errIds[0]);
       else f = K.findFeature(App.model, +errIds[0]);
       UI.setStatus((f ? f.name : (App.build.assembly ? 'Assembly' : 'Feature')) + ': ' + App.build.errors[errIds[0]]);
-    }
+    } else if (App.displayWarning && UI.setStatus) UI.setStatus(App.displayWarning);   // lane FO: edges not drawn
     return App.build;
   }
 
@@ -3262,6 +3396,8 @@ var UI = (function () {
     isDirty: isDirty, markClean: markClean, markUnsaved: markUnsaved, readRecovery: readRecovery, dropRecovery: dropRecovery, holdRecovery: holdRecovery,
     rebuildPending: function () { return !!(wk.inflight || wk.pending); },
     getBodyMesh: function () { return bodyMesh; },
+    // lane FO: display safety (crack filler, section caps, safe normals)
+    getCrackFill: function () { return crackFill; }, sectionCaps: function () { return capGroup; }, safeNormals: safeNormals,
     // multi-body parts (viewport side): see the "bodies" section
     // assembly documents
     isAssembly: isAssembly, componentIndex: componentIndex, selectComponent: selectComponent,

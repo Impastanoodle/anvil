@@ -812,10 +812,20 @@
         if (kG > 0 && th >= SMOOTH.carry * cdist(F, G) * kG) kind[F] = 4;   // a facet (decided below)
       });
     });
-    for (i = 0; i < nf; i++) {
-      if (kind[i] === 3 && bface[i] != null && occ[bface[i]] > 1) kind[i] = 4;
-      if (kind[i] === 4) kind[i] = 2; else if (kind[i] === 3) kind[i] = 0;
-    }
+    for (i = 0; i < nf; i++) if (kind[i] === 3 && bface[i] != null && occ[bface[i]] > 1) kind[i] = 4;
+    // rfFM: a loft's strips are triangulated unevenly (turns of 2.2°, 4.3°, 6.5° on the Funnel), so the carry test
+    // missed a few facets, flat bands between smooth ones: a candidate between two facets of its own feature, each
+    // within SMOOTH.exact, is one too (a plane beside a fillet belongs to another feature and stays flat)
+    var tagOf = function (fi) { var p = faces[fi].polys && faces[fi].polys[0]; return p ? p.shared : null; }, nFac = new Int32Array(nf);
+    pairs.forEach(function (th, pk) {
+      if (th < MIN_T || th > SMOOTH.exact * D2R) return;
+      var fa = Math.floor(pk / nf), fb = pk - fa * nf;
+      if (tagOf(fa) == null || tagOf(fa) !== tagOf(fb)) return;
+      if (kind[fa] === 3 && kind[fb] === 4) nFac[fa]++;
+      if (kind[fb] === 3 && kind[fa] === 4) nFac[fb]++;
+    });
+    for (i = 0; i < nf; i++) if (kind[i] === 3 && nFac[i] >= 2) kind[i] = 4;
+    for (i = 0; i < nf; i++) { if (kind[i] === 4) kind[i] = 2; else if (kind[i] === 3) kind[i] = 0; }
     // 4. angle-weighted source normals per (vertex, face) at the vertices of facets
     var need = new Uint8Array(nv), anyF = false;
     for (i = 0; i < nT * 3; i++) if (kind[faceOf[(i / 3) | 0]] === 2) { need[vid[i]] = 1; anyF = true; }
@@ -863,6 +873,39 @@
         if (!(rl > 1e-12)) continue;
         var oo = t * 9 + k * 3;
         out[oo] = r[0] / rl; out[oo + 1] = r[1] / rl; out[oo + 2] = r[2] / rl;
+      }
+    }
+    // 6. rfFM: corners no other face shares (a boolean's split points inside a facet, T-junctions on its sides) only
+    // had the facet's own flat normal, so a record-less facet cut into pieces (the Funnel's shelled loft: 617 of
+    // 1742 inner triangles) shaded in bands; they blend the facet's shared corners' normals by inverse square distance
+    var anchors = new Map(), took = new Set();
+    for (t = 0; t < nT; t++) {
+      F = faceOf[t];
+      if (kind[F] !== 2) continue;
+      for (k = 0; k < 3; k++) {
+        vv = vid[t * 3 + k];
+        if (vfStart[vv + 1] - vfStart[vv] < 2 || took.has(vv * nf + F)) continue;
+        took.add(vv * nf + F);
+        var an = anchors.get(F);
+        if (!an) anchors.set(F, an = []);
+        var po = t * 9 + k * 3;
+        an.push(P[po], P[po + 1], P[po + 2], out[po], out[po + 1], out[po + 2]);
+      }
+    }
+    for (t = 0; t < nT; t++) {
+      F = faceOf[t];
+      var A6 = kind[F] === 2 && anchors.get(F);
+      if (!A6) continue;
+      for (k = 0; k < 3; k++) {
+        vv = vid[t * 3 + k];
+        if (vfStart[vv + 1] - vfStart[vv] > 1) continue;
+        var pp = t * 9 + k * 3, sx = 0, sy = 0, sz = 0;
+        for (var ai = 0; ai < A6.length; ai += 6) {
+          var dx = A6[ai] - P[pp], dy = A6[ai + 1] - P[pp + 1], dz = A6[ai + 2] - P[pp + 2], wgt = 1 / Math.max(dx * dx + dy * dy + dz * dz, 1e-24);
+          sx += wgt * A6[ai + 3]; sy += wgt * A6[ai + 4]; sz += wgt * A6[ai + 5];
+        }
+        var sl = Math.hypot(sx, sy, sz);
+        if (sl > 1e-12) { out[pp] = sx / sl; out[pp + 1] = sy / sl; out[pp + 2] = sz / sl; }
       }
     }
     return out;

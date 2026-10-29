@@ -163,6 +163,74 @@
     return tool;
   }
 
+  // rfFN: nonManifoldCount(csg) -> the number of edges of the body's welded, T-junction-split triangle mesh
+  // (Exchange.bodyMesh) that more than two triangles share: where a solid touches itself along a line or at a point.
+  // 0 when exchange.js is not loaded. Cached on the CSG object (bodies are never changed in place). NM.on switches the
+  // rebuild's zero-thickness check (tests).
+  var NM = { on: true };
+  function nonManifoldCount(body) {
+    if (!body || !body.polygons || !body.polygons.length || typeof Exchange === 'undefined' || !Exchange.bodyMesh) return 0;
+    if (body._fnNM != null) return body._fnNM;
+    var m = Exchange.bodyMesh(body), t = m.triangles, P = m.positions, use = {}, n = 0;
+    for (var i = 0; i < t.length; i += 3) {
+      for (var k = 0; k < 3; k++) {
+        var a = t[i + k], b = t[i + (k + 1) % 3], key = a < b ? a + '_' + b : b + '_' + a;
+        use[key] = (use[key] || 0) + 1;
+      }
+    }
+    // a real touch is two sheets through one edge (4, 6 … triangles) along a length that matters; three uses (a crack
+    // next to a duplicated sliver) and edges a few 1e-5 long are boolean noise (the vent fillets, stencil bridges, a
+    // Normal Cut across a bend) that FL's watertightness work owns, not geometry the user made
+    var bb = body.getBounds ? body.getBounds() : null, diag = bb ? Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]) : 1, minL = 1e-3 * diag;
+    Object.keys(use).forEach(function (key) {
+      if (use[key] < 4) return;
+      var ab = key.split('_'), p = +ab[0] * 3, q = +ab[1] * 3;
+      if (Math.hypot(P[p] - P[q], P[p + 1] - P[q + 1], P[p + 2] - P[q + 2]) >= minL) n++;
+    });
+    try { Object.defineProperty(body, '_fnNM', { value: n, enumerable: false, writable: true, configurable: true }); } catch (e) { /* frozen */ }
+    return n;
+  }
+  K.nonManifoldCount = nonManifoldCount;
+  K.zeroThicknessCheck = NM;
+  // isRefusal(message) -> true for the errors Anvil raises on purpose because the result would be bad geometry
+  // (SolidWorks refuses the same features): zero thickness, a cut leaving nothing, a sweep folding back or crossing
+  // itself, a 0° revolve, a loft between coplanar profiles or across a neighbour's plane (rfFN2). OpenCascade would build some of them anyway, so
+  // ui-occt.js suppresses these features in its copy of the model and keeps their errors (not "Anvil's own limits").
+  var REFUSAL = /zero-thickness geometry|would remove all of the material|turns back on itself|sweep would intersect itself|loft would intersect itself|Revolve angle must be greater than zero/;
+  K.isRefusal = function (msg) { return REFUSAL.test(String(msg || '')); };
+
+  // rfFN: solidFromProfile (kernel-curves.js) stacks every outline's solid and subtracts every hole from all of them,
+  // which loses an island inside a hole (depth 2: SolidWorks extrudes it as a separate solid) and leaves a double
+  // internal wall where two outlines share an edge. profileComponents(profile) -> null for the usual profile, else
+  // one sub-profile per outline (depth 0, 2, …) with the holes directly inside it, to be built apart and unioned.
+  function loopBox(pts) {
+    var b = [Infinity, Infinity, -Infinity, -Infinity];
+    pts.forEach(function (p) { b[0] = Math.min(b[0], p[0]); b[1] = Math.min(b[1], p[1]); b[2] = Math.max(b[2], p[0]); b[3] = Math.max(b[3], p[1]); });
+    return b;
+  }
+  function profileComponents(profile) {
+    var loops = profile && profile.loops;
+    if (!loops || loops.length < 2) return null;
+    var solids = loops.filter(function (l) { return !l.hole; });
+    if (solids.length < 2) return null;
+    var nested = solids.some(function (l) { return (l.depth | 0) >= 2; }), touch = false;
+    if (!nested) {
+      var boxes = solids.map(function (l) { return loopBox(l.pts); });
+      var span = Math.max.apply(null, boxes.map(function (b) { return Math.max(b[2] - b[0], b[3] - b[1]); })), eps = 1e-7 * Math.max(1, span);
+      for (var i = 0; i < boxes.length && !touch; i++) for (var j = i + 1; j < boxes.length && !touch; j++) {
+        var a = boxes[i], c = boxes[j];
+        if (a[0] <= c[2] + eps && c[0] <= a[2] + eps && a[1] <= c[3] + eps && c[1] <= a[3] + eps) touch = true;
+      }
+    }
+    if (!nested && !touch) return null;
+    return solids.map(function (s) {
+      var d = s.depth | 0;
+      var holes = loops.filter(function (h) { return h.hole && (h.depth | 0) === d + 1 && pointInPoly(h.pts[0], s.pts); });
+      return { loops: [s].concat(holes), curves: profile.curves, free: profile.free, warnings: [] };
+    });
+  }
+  _.profileComponents = profileComponents;
+
   // Build the tool body of one feature given a context of previously built tools/planes/sketches.
   function buildTool(f, model, ctx) {
     var sketch, plane;
@@ -176,7 +244,13 @@
         // lane CO: Selected Contours (f.contours = [[u, v], …]) — the profile is the union of the picked regions; the
         // sketch feature keeps its own full profile (contourSketch returns a copy)
         var csk = _.contourSketch(f, sketch);
+        if (f.type === 'revolve' && f.angle != null && isFinite(+f.angle) && Math.abs(+f.angle) < 1e-9) throw new Error('Revolve angle must be greater than zero.');   // rfFN (buildRevolve reads 0 as 360)
         if (f.type === 'revolve' && _.refAxisId(f) != null) f = _.revolveOnRefAxis(f, refAxisFor(f, ctx), plane, ctx);   // lane CZ
+        var comps = profileComponents(csk.profile);   // rfFN: islands inside holes, outlines that touch
+        if (comps) return unionAll(comps.map(function (pr) {
+          var sk = {}; Object.keys(csk).forEach(function (k) { sk[k] = csk[k]; }); sk.profile = pr;
+          return f.type === 'extrude' ? buildExtrude(f, sk, plane, ctx.throughLimit) : buildRevolve(f, sk, plane);
+        }));
         return f.type === 'extrude' ? buildExtrude(f, csk, plane, ctx.throughLimit) : buildRevolve(f, csk, plane);
       case 'sweep': return _.buildSweep(f, model, ctx);
       case 'loft': return _.buildLoft(f, model, ctx);
@@ -436,7 +510,13 @@
         if (!nb.polygons.length || vol < 1e-9) { ctx.bodies.splice(i, 1); ctx.bodyFeatures.splice(i, 1); }
         else ctx.bodies[i] = nb;
       }
+      // rfFN (decided 2026-10-29): an empty cut stays a warning, not SolidWorks' error. The script API's default cut
+      // direction is +normal (SolidWorks cuts into the face it is sketched on), so many saved parts carry forward cuts
+      // that miss (features.js, the Mirrored clevis example's cross hole, rfFG's WHEEL …); failing them would turn
+      // working parts red. Revisit together with the default direction.
       if (!changed) warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + 'Cut removed no material. Try "Reverse direction".';
+      // rfFN: a cut that takes away every body would blank the part; it fails instead and the part before it stays
+      if (!ctx.bodies.length) throw new Error('This cut would remove all of the material: nothing would be left of the part.');
       syncBody();
     }
     // the body a face- or edge-picked feature works on: the one nearest its first pick (body 0 without a pick);
@@ -453,6 +533,31 @@
       if (k < 0) return;
       ctx.bodies[k] = body;
       syncBody();
+    }
+    // rfFN: a feature built from a feature that failed (a pattern of a failed cut, a loft through a sketch whose
+    // feature failed) fails with a message that names the parent, as SolidWorks flags the children of a failed feature
+    function parentFailed(f) {
+      var ids = K.featureParents ? K.featureParents(f) : [];
+      for (var i = 0; i < ids.length; i++) {
+        if (!errors[ids[i]]) continue;
+        var pf = findFeature(model, ids[i]);
+        throw new Error('The parent feature ' + ((pf && pf.name) || ('#' + ids[i])) + ' failed to rebuild. Fix it first.');
+      }
+    }
+    // rfFN: a boss, cut or pattern whose result touches itself along an edge or at a single point (tangent holes in a
+    // pattern, two blocks sharing only an edge) is zero-thickness geometry; SolidWorks refuses the feature. Counted on
+    // the bodies the feature changed (an edge shared by more than two triangles of the welded mesh), against the bodies
+    // they came from so a part that was already like that does not fail every later feature.
+    function zeroThickness(before) {
+      if (!NM.on || model.sheet) return;   // never on sheet metal (bends, reliefs and Normal Cuts are FL's / sheet metal's)
+      var changed = ctx.bodies.filter(function (b) { return before.indexOf(b) < 0; });
+      if (!changed.length) return;
+      var gone = before.filter(function (b) { return ctx.bodies.indexOf(b) < 0; });
+      var nAfter = 0, nBefore = 0;
+      changed.forEach(function (b) { nAfter += nonManifoldCount(b); });
+      if (!nAfter) return;
+      gone.forEach(function (b) { nBefore += nonManifoldCount(b); });
+      if (nAfter > nBefore) throw new Error('This feature would create zero-thickness geometry: the solid would touch itself along an edge or at a point. Change its size or position so the pieces overlap or stay apart.');
     }
     // sketches used as sweep paths are open by design: no "open contour" warning for them
     var pathIds = {};
@@ -487,9 +592,13 @@
       steps.push(st);
     }
     model.features.slice(p).forEach(function (f, j) {
+      // rfFN: the bodies before the feature; a feature that throws leaves them exactly as they were (a cut that fails
+      // half way through its scope, a pattern that would make zero-thickness geometry), so the rest of the tree builds
+      var saveBodies = ctx.bodies.slice(), saveBodyFeatures = ctx.bodyFeatures.slice();
       try {
         if (resolveErrors[f.id] && !f.suppressed) throw new Error(resolveErrors[f.id]);
         if (sheetError && needsSheet(f) && !f.suppressed) throw new Error(sheetError);
+        if (!f.suppressed && f.type !== 'sketch') parentFailed(f);
         if (!f.suppressed) switch (f.type) {   // rfFC: a suppressed feature (and its children) builds nothing
           case 'flange': {
             var fk = pickBody(f);
@@ -630,10 +739,12 @@
             }
             ctx.tools[f.id] = tool;
             if (cut) applyCut(tool, f); else addBoss(tool, f);
+            zeroThickness(saveBodies);
           }
         }
       } catch (e) {
         errors[f.id] = e.message || String(e);
+        ctx.bodies = saveBodies; ctx.bodyFeatures = saveBodyFeatures;
         syncBody(); // a failed pick-based feature may have left ctx.body pointing at one body
       }
       steps.push({ key: keys[p + j], body: ctx.body, bodies: ctx.bodies.slice(), bodyFeatures: ctx.bodyFeatures.slice(), tool: ctx.tools[f.id] || null, plane: ctx.planes[f.id] || null, flange: ctx.flanges[f.id] || null, profile: f.profile || null, error: errors[f.id] || null, warning: warnings[f.id] || null, unfold: ctx.unfold });

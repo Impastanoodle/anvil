@@ -189,6 +189,20 @@
     mesh.faces.forEach(function (f) { var t = f.start; f.polys.forEach(function (p) { for (var i = 0; i < p.vertices.length - 2; i++) out[t++] = p.shared == null ? -1 : p.shared; }); });
     return out;
   }
+  // features Anvil's kernel refused on purpose (K.isRefusal: zero thickness, a cut leaving nothing, ...) are
+  // suppressed in OpenCascade's copy of the model, so it does not show the solid Anvil refused (resolvedModel
+  // suppresses their children too); `model` is already a clone
+  function withoutRefused(model, build) {
+    var errs = (build && build.errors) || {};
+    if (!K.isRefusal || !model || !model.features) return model;
+    model.features.forEach(function (f) { if (errs[f.id] && K.isRefusal(errs[f.id])) f.suppressed = true; });
+    return model;
+  }
+  // features Anvil failed that OpenCascade built: OpenCascade's solid is shown for them (a refusal is not one)
+  function beyondOf(build, status) {
+    var errs = (build && build.errors) || {};
+    return Object.keys(errs).filter(function (id) { return status && status[id] === 'ok' && !(K.isRefusal && K.isRefusal(errs[id])); });
+  }
   function requestAssembly() {
     var parts = collectParts(App.build && App.build.cache, [], {});
     if (!parts.length) { st.state = 'assembly'; st.result = null; settle(); refresh(); return; }
@@ -201,7 +215,7 @@
     st.asm = { seq: st.want, parts: parts, results: {}, left: parts.length, anvilBuild: App.build };
     parts.forEach(function (p, i) {
       var model; try { model = JSON.parse(JSON.stringify(p.model)); } catch (e) { model = p.model; }
-      st.worker.postMessage({ type: 'build', seq: st.want, part: i, model: model, cacheKey: p.cacheKey });
+      st.worker.postMessage({ type: 'build', seq: st.want, part: i, model: withoutRefused(model, p.anvilBuild), cacheKey: p.cacheKey });
     });
     refresh();
   }
@@ -215,7 +229,7 @@
       if (!r.valid) { bad = { state: 'invalid', error: p.name }; return; }
       var ai = anvilInfo(p.anvilBuild), mesh = ai.mesh, av = ai.volume;
       var dv = av ? Math.abs(r.volume - av) / av : Math.abs(r.volume);
-      var bey = Object.keys(p.anvilBuild.errors || {}).filter(function (id) { return r.status[id] === 'ok'; });
+      var bey = beyondOf(p.anvilBuild, r.status);
       if (!r.mesh || (!bey.length && !(dv <= (r.tolerance || 1e-4)))) { bad = { state: 'mismatch', error: p.name + ': ' + r.volume.toFixed(3) + ' vs Anvil ' + av.toFixed(3) }; return; }
       builds[p.key] = OcctKernel.toBuild(r, p.anvilBuild, mesh, ai.triShared, window.CSG, K);
       faces += r.faces.length; volume += r.volume; ms.build += r.ms.build; ms.mesh += r.ms.mesh;
@@ -257,7 +271,7 @@
     st.volumeDiff = dv;
     // features Anvil's kernel failed that OpenCascade built (a fillet on a saddle edge, ...): Anvil's volume is no
     // reference any more, OpenCascade's valid solid is shown and those errors are cleared
-    st.beyond = Object.keys((anvilBuild && anvilBuild.errors) || {}).filter(function (id) { return r.status[id] === 'ok'; });
+    st.beyond = beyondOf(anvilBuild, r.status);
     // r12/occtui12: no solid on either side (every feature failed, or nothing built yet): nothing to compare, not a
     // "volume differs"
     if (!r.mesh && !(Math.abs(r.volume || 0) > 1e-9) && !(st.anvilVolume > 1e-9)) { st.state = 'empty'; return; }
@@ -455,7 +469,7 @@
     if (!st.driving && App.mesh && App.mesh.positions && App.triShared) { anvil = { key: ++st.anvilSeq, positions: App.mesh.positions, triShared: App.triShared }; st.sentAnvil = { key: anvil.key, mesh: App.mesh }; }
     else st.sentAnvil = null;
     st.estMs = estimate(model);   // r11/occtswap11: how long this build should take (afterBuild's frame hold)
-    st.worker.postMessage({ type: 'build', seq: st.want, model: model, exports: true, anvil: anvil });
+    st.worker.postMessage({ type: 'build', seq: st.want, model: withoutRefused(model, App.build), exports: true, anvil: anvil });
     refresh();
   }
   // ---- r11/occtswap11: how long OpenCascade will take. The worker's rebuild cache restores the unchanged feature
@@ -559,7 +573,7 @@
     if (!st.on || !st.ready || !st.worker || !st.driving || isAsm() || !App.model) return;
     var model; try { model = JSON.parse(JSON.stringify(App.model)); } catch (e) { return; }
     rb.want = ++rb.seq; rb.n = n; rb.t0 = performance.now(); st.rollbackMs = null;
-    st.worker.postMessage({ type: 'build', seq: rb.want, model: model, upto: n });
+    st.worker.postMessage({ type: 'build', seq: rb.want, model: withoutRefused(model, App.build), upto: n });
   });
   (UI.onRollbackShown = UI.onRollbackShown || []).push(function (n) {
     if (!rb.want || rb.n !== n) return;
@@ -596,7 +610,7 @@
     try {
       // Anvil's rolled-back part is the reference, as for the whole part (accept)
       var av = am && am.triCount ? K.massProps(am, 1).volume : 0, dv = av ? Math.abs(r.volume - av) / av : Math.abs(r.volume);
-      var beyond = Object.keys((ab && ab.errors) || {}).filter(function (id) { return r.status[id] === 'ok'; });
+      var beyond = beyondOf(ab, r.status);
       if (beyond.length || dv <= (r.tolerance || 1e-4)) {
         var b = OcctKernel.toBuild(r, ab, am, App.triShared, window.CSG, K), fade = fadeSnap();   // r12/occtui12
         if (UI.rollbackSwap && UI.rollbackSwap(b, { upto: n, anvil: ab, edges: r.edges, curves: r.curves, normals: r.normals })) st.rollbackMs = performance.now() - rb.t0;
