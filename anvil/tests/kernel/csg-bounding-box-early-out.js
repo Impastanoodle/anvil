@@ -99,7 +99,7 @@
     'Tray': 35750.4546182302,
     'Normal Cut Bracket': 15780.118294909678,
     'Chamfered block': 96398.26753692025,
-    'Rounded handle': 30674.73950036209,
+    'Rounded handle': 30673.638463025945,   // rfFF: the root fillet is a revolved torus patch (a chain of cylinder pieces gave 30674.73950036209)
     'Mug': 84806.88290263337,
     'Funnel': 12160.516094319566, // run cloud-2026-09-25g: hull loft; equals the independent slice integral of the 1.5 mm offset in group "mesh quality" (was 12268.395 on the resampled loft)
     'Handlebar': 46838.66040500728,
@@ -146,6 +146,8 @@
     // shells of round faces are still polygonal: those examples only have to stay within 1 % of their legacy pin.
     var EXACT_VOLUMES = {
       'Plate with bolt holes': 100 * 60 * 8 - 4 * circleArea(4) * 8,
+      // rfFF: plate − mitred 1 mm chamfers (centroid path 4 × (40 − 2/3)) + post + R3 root fillet ring (Pappus) + grip
+      'Rounded handle': 9600 - 0.5 * (160 - 8 / 3) + 30 * circleArea(8) + 2 * Math.PI * (8 + (10 - 3 * Math.PI) / (4 - Math.PI)) * 9 * (1 - Math.PI / 4) + 12 * circleArea(18) + 2 * Math.PI * (18 + 4 / 3) * 24,
       'Flange': 12 * circleArea(60) + 4 * circleArea(35) - 16 * circleArea(25) - 6 * 12 * circleArea(5.5),
       'Parametric plate': 120 * 80 * 8 - 8 * (4 * circleArea(4) + 3 * circleArea(2)),
       'Configured spacer': 80 * 40 * 10 - 3 * 10 * 20 * 5,
@@ -153,7 +155,7 @@
       'Distance and angle mates': 100 * 60 * 10 + 20 * 20 * 20 + 40 * 4 * 10,
       'Interference check': 60 * 40 * 10 + 20 * 20 * 20 + 2 * circleArea(4) * 20
     };
-    var POLYGONAL_FEATURES = { 'Hex nut': 1, 'Shaft with keyway': 1, 'Rounded handle': 1, 'Mug': 1, 'Funnel': 1, 'Handlebar': 1, 'Moulded cap': 1, 'Spur gear (12 teeth)': 1 };
+    var POLYGONAL_FEATURES = { 'Hex nut': 1, 'Shaft with keyway': 1,'Mug': 1, 'Funnel': 1, 'Handlebar': 1, 'Moulded cap': 1, 'Spur gear (12 teeth)': 1 };
     AnvilExamples.forEach(function (ex) {
       test('exact volume of the true curves: ' + ex.name, function () {
         var r = buildExample(ex);

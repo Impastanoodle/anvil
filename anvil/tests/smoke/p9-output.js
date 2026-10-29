@@ -32,7 +32,7 @@
     return 'R2000 lines/arcs ' + t.length + ' chars, R12 ' + r12.length + ' chars';
   });
 
-  step('p9-output: Hole Wizard in an inch part — Standard defaults to ANSI Inch, Size lists 1/4 / #10, the spec reads "Ø.281 … ⌴ Ø.438 ↧ .250"; Straight Tap switches the size to 1/4-20 UNC, Hole offers drill sizes; ✓ makes a CBORE for 1/4 (volume exact); edit to ISO M6 scales to inches; script round trip keeps standard: "ANSI Inch"', async function () {
+  step('p9-output: Hole Wizard in an inch part — Standard defaults to ANSI Inch, Size lists 1/4 / #10, the spec reads "Ø.266 … ⌴ Ø.438 ↧ .250" (the SolidWorks 1/4 Normal clearance); Straight Tap switches the size to 1/4-20 UNC, Hole offers drill sizes; ✓ makes a CBORE for 1/4 (volume exact); edit to ISO M6 scales to inches; script round trip keeps standard: "ANSI Inch"', async function () {
     await anvil.run('p.units("in");\np.box(2, 2, 1, { centered: true });'); await idle();
     assert(UI.App.model.units === 'in', 'inch part');
     var idx = faceWithNormal([0, 1, 0]);
@@ -45,7 +45,7 @@
     setInput(pmSelect('holeType'), 'cbore'); setInput(pmSelect('size'), '1/4'); setInput(pmSelect('fit'), 'normal'); setInput(pmSelect('end'), 'blind');
     setInput(pmNumber(0), 0.75);
     var txt = $('pm').textContent;
-    assert(txt.indexOf('Ø.281') >= 0 && txt.indexOf('⌴ Ø.438 ↧ .250') >= 0 && txt.indexOf('9/32 drill') >= 0, 'spec text: ' + txt.slice(0, 400));
+    assert(txt.indexOf('Ø.266') >= 0 && txt.indexOf('⌴ Ø.438 ↧ .250') >= 0 && txt.indexOf('H drill') >= 0, 'spec text: ' + txt.slice(0, 400));
     setInput(pmSelect('holeType'), 'tap'); await idle();
     assert(pmSelect('size').value === '1/4-20 UNC' && !pmSelect('fit'), 'tap size ' + pmSelect('size').value);
     assert(/1\/4-20 UNC - 2B/.test($('pm').textContent) && /#7 drill/.test($('pm').textContent), 'tap spec');
@@ -59,7 +59,7 @@
     var f = UI.App.model.features[UI.App.model.features.length - 1];
     assert(f.type === 'hole' && f.standard === 'ANSI Inch' && f.holeType === 'cbore' && f.size === '1/4' && f.depth === 0.75 && !f.sizeType, JSON.stringify(f));
     assert(f.name === 'CBORE for 1/4 Socket Head Cap Screw1', f.name);
-    var Rc = 0.4375 / 2, R = 0.28125 / 2;
+    var Rc = 0.4375 / 2, R = 0.266 / 2;   // SolidWorks 1/4 Normal clearance (letter H), lane FH2
     near(anvil.mass().volume, 4 - (Math.PI * Rc * Rc * 0.25 + Math.PI * R * R * 0.5), 1e-8, 'counterbore volume (in³)');
     var code = anvil.script();
     assert(/standard: "ANSI Inch", type: "cbore", size: "1\/4"/.test(code), code);
@@ -72,7 +72,7 @@
     assert(pmSelect('size').value === 'M6', 'ISO size ' + pmSelect('size').value);
     await pmAccept();
     assert(f.standard === 'ISO' && f.size === 'M6', JSON.stringify(f));
-    var k = 1 / 25.4, Rc2 = 5.5 * k, R2 = 3.3 * k, dc = 6.5 * k;
+    var k = 1 / 25.4, Rc2 = 5.5 * k, R2 = 3.3 * k, dc = 6.4 * k;   // SolidWorks Hole Wizard M6 counterbore depth 6.4 (lane FH2)
     near(anvil.mass().volume, 4 - (Math.PI * Rc2 * Rc2 * dc + Math.PI * R2 * R2 * (0.75 - dc)), 1e-8, 'ISO M6 counterbore in inches');
     return 'ANSI 1/4 cbore ' + v0.toFixed(6) + ' in³';
   });

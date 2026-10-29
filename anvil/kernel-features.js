@@ -92,6 +92,109 @@
     return scale(c, 1 / pts.length);
   }
 
+  // lane FH2: a path sketch of lines and true arcs as pieces, chained end to end: [{ kind: 'line' | 'arc', a, b (3D),
+  // C, D, ang (arcs: centre, unit axis, signed angle in radians, so rotating a about (C, D) by ang gives b) }], or
+  // null when the sketch holds anything else (splines, ellipses, closed entities, construction-free points) or no arc
+  // (the polyline sweep then runs as before).
+  function sketchPathPieces(sketch, plane) {
+    var raw = [], other = false, arcs = 0;
+    (sketch.entities || []).forEach(function (e) {
+      if (e.construction || e.t === 'text' || e.t === 'point' || K.noProfileEntity(sketch, e)) return;
+      if (e.t === 'line') raw.push({ kind: 'line', a: [e.x1, e.y1], b: [e.x2, e.y2] });
+      else if (e.t === 'polyline' && !e.closed) for (var i = 0; i + 1 < e.pts.length; i++) raw.push({ kind: 'line', a: e.pts[i].slice(0, 2), b: e.pts[i + 1].slice(0, 2) });
+      else if (e.t === 'arc' && Math.abs(e.a1 - e.a0) > 1e-9 && Math.abs(e.a1 - e.a0) < 360 - 1e-9) {
+        var s0 = e.a0 * Math.PI / 180, s1 = e.a1 * Math.PI / 180;
+        raw.push({ kind: 'arc', c: [e.cx, e.cy], a: [e.cx + e.r * Math.cos(s0), e.cy + e.r * Math.sin(s0)], b: [e.cx + e.r * Math.cos(s1), e.cy + e.r * Math.sin(s1)], ang: s1 - s0 });
+        arcs++;
+      } else other = true;
+    });
+    if (other || !arcs || !raw.length) return null;
+    raw = raw.filter(function (p) { return Math.hypot(p.b[0] - p.a[0], p.b[1] - p.a[1]) > 1e-9; });
+    function rev(p) { return { kind: p.kind, c: p.c, a: p.b, b: p.a, ang: -p.ang }; }
+    var chain = [raw.shift()], guard = 0;
+    while (raw.length && guard++ < 1000) {
+      var head = chain[0].a, tail = chain[chain.length - 1].b, found = false;
+      for (var k = 0; k < raw.length && !found; k++) {
+        var p = raw[k];
+        if (key2(p.a) === key2(tail)) { chain.push(p); found = true; }
+        else if (key2(p.b) === key2(tail)) { chain.push(rev(p)); found = true; }
+        else if (key2(p.b) === key2(head)) { chain.unshift(p); found = true; }
+        else if (key2(p.a) === key2(head)) { chain.unshift(rev(p)); found = true; }
+        if (found) raw.splice(k, 1);
+      }
+      if (!found) return null;   // a disconnected piece: the polyline sweep reports it
+    }
+    return chain.map(function (p) {
+      var o = { kind: p.kind, a: to3D(plane, p.a[0], p.a[1]), b: to3D(plane, p.b[0], p.b[1]) };
+      if (p.kind === 'arc') {
+        o.C = to3D(plane, p.c[0], p.c[1]); o.D = norm(cross(plane.x, plane.y)); o.ang = p.ang;
+        if (len(sub(rotatePoint(o.a, o.C, o.D, o.ang), o.b)) > 1e-6 * Math.max(1, len(sub(o.a, o.C)))) o.ang = -o.ang;
+      }
+      return o;
+    });
+  }
+  function pieceDir(p, end) {
+    if (p.kind === 'line') return norm(sub(p.b, p.a));
+    return scale(norm(cross(p.D, sub(end ? p.b : p.a, p.C))), p.ang < 0 ? -1 : 1);
+  }
+  // Sweep along line / arc pieces joined tangentially: each line piece is a prism of the section, each arc piece a
+  // revolve of it about the arc's axis, so the end caps lie in the path's end planes (normal to the true tangent) and
+  // the walls carry true-surface records (cylinders along lines, tori along arcs: the volume is exact, Pappus).
+  // Returns null (the caller falls back to the chord-polyline sweep) when a join is not tangent or the path closes.
+  function sweepAlongPieces(f, pieces, profile, profPlane) {
+    var i, n = pieces.length;
+    for (i = 1; i < n; i++) if (dot(pieceDir(pieces[i - 1], true), pieceDir(pieces[i], false)) < 1 - 1e-9) return null;
+    if (n > 1 && len(sub(pieces[n - 1].b, pieces[0].a)) < 1e-6) return null;
+    var c0 = loopCentroid3(profile.loops[0].pts.map(function (p) { return to3D(profPlane, p[0], p[1]); }));
+    if (len(sub(pieces[n - 1].b, c0)) < len(sub(pieces[0].a, c0))) {
+      pieces = pieces.slice().reverse().map(function (p) { return { kind: p.kind, a: p.b, b: p.a, C: p.C, D: p.D, ang: -p.ang }; });
+    }
+    var d0 = pieceDir(pieces[0], false), J0 = pieces[0].a;
+    var nSign = dot(profPlane.n, d0) < 0 ? -1 : 1;
+    var rot0 = rotationTo(scale(profPlane.n, nSign), d0);
+    // the section frame: the profile's own 2D coordinates stay valid in it (rigid motion of the profile plane)
+    var F = { origin: add(J0, rot0(sub(profPlane.origin, J0))), x: rot0(profPlane.x), y: rot0(profPlane.y), n: rot0(profPlane.n) };
+    function cvOf(l) { return l.seg && profile.curves ? l.seg.map(function (k) { return k >= 0 ? profile.curves[k] : null; }) : null; }
+    var perLoop = profile.loops.map(function () { return []; });
+    pieces.forEach(function (p) {
+      if (p.kind === 'line') {
+        var L = len(sub(p.b, p.a));
+        profile.loops.forEach(function (l, k) { perLoop[k].push(_.prism(l.pts, F, 0, L * nSign, f.id, cvOf(l))); });
+        F = { origin: add(F.origin, sub(p.b, p.a)), x: F.x, y: F.y, n: F.n };
+        return;
+      }
+      // the section plane holds the arc's axis: express the loops in a frame (radial e, axis D) and revolve them
+      var e = sub(p.a, p.C); e = norm(sub(e, scale(p.D, dot(e, p.D))));
+      var R = { origin: p.C, x: e, y: p.D, n: cross(e, p.D) };
+      function map2(u, v) { return to2D(R, to3D(F, u, v)); }
+      var deg = Math.abs(p.ang) * 180 / Math.PI;
+      profile.loops.forEach(function (l, k) {
+        var curves = (profile.curves || []).map(function (C) {
+          if (!C) return C;
+          var o = {}; Object.keys(C).forEach(function (key) { o[key] = C[key]; });
+          o.c = map2(C.c[0], C.c[1]);
+          return o;
+        });
+        var fake = { profile: { loops: [{ pts: l.pts.map(function (q) { return map2(q[0], q[1]); }), hole: false, seg: l.seg }], curves: curves }, entities: [] };
+        perLoop[k].push(_.buildRevolve({ id: f.id, angle: deg, reverse: p.ang < 0, axis: { x1: 0, y1: 0, x2: 0, y2: 1 } }, fake, R));
+      });
+      function rot(v) { return rotatePoint(v, [0, 0, 0], p.D, p.ang); }
+      F = { origin: rotatePoint(F.origin, p.C, p.D, p.ang), x: rot(F.x), y: rot(F.y), n: rot(F.n) };
+    });
+    if (!profile.loops.some(function (l) { return !l.hole; })) throw new Error('Sweep profile has no outer loop.');
+    // rfFJ: each piece is made hollow on its own (its outer loops less its holes), then the pieces are joined. Joining
+    // all the outers and subtracting all the holes in one boolean lost a sliver (3.7e-8 of a tube's 0.848, the raw
+    // facets too, not the curve correction) once the 12° angular limit gave the bore and the outside the same 32
+    // section chords on the same rays; every piece less its own bore, and the hollow pieces' union, stay exact.
+    var hollow = pieces.map(function (p, i) {
+      var outs = [], hs = [];
+      perLoop.forEach(function (parts, k) { (profile.loops[k].hole ? hs : outs).push(parts[i]); });
+      var s = CSG.fromPolygons([].concat.apply([], outs.map(function (o) { return o.polygons; })));
+      return hs.length ? s.subtract(unionAll(hs)) : s;
+    });
+    return unionTree(hollow);
+  }
+
   function buildSweep(f, model, ctx) {
     var prof = ctx.sketches[f.profile] || findFeature(model, f.profile);
     if (!prof || prof.type !== 'sketch') throw new Error('Select a profile sketch for the sweep.');
@@ -108,8 +211,12 @@
     } else {
       var ps = ctx.sketches[f.path] || findFeature(model, f.path);
       if (!ps || ps.type !== 'sketch') throw new Error('Select a path sketch for the sweep.');
-      var info = {};
-      path = sketchPath(ps, resolvePlane(ps.plane, model, ctx.planes), info);
+      var info = {}, psPlane = resolvePlane(ps.plane, model, ctx.planes);
+      // lane FH2: true arcs in the path (the legacy tessellation keeps the chord sweep, so its pinned volumes hold)
+      var pieces = _.TESS && _.TESS.legacy ? null : sketchPathPieces(ps, psPlane);
+      var exact = pieces && sweepAlongPieces(f, pieces, profile, profPlane);
+      if (exact) return exact;
+      path = sketchPath(ps, psPlane, info);
       if (info.dropped && ctx.warnings) ctx.warnings[f.id] = info.dropped + ' path ' + (info.dropped === 1 ? 'entity does' : 'entities do') + ' not connect to the path and ' + (info.dropped === 1 ? 'was' : 'were') + ' ignored.';
     }
     var pts = [path[0]];
@@ -220,6 +327,76 @@
     return { loops: loops.map(function (l) { return sgn < 0 ? l.pts.slice().reverse() : l.pts; }), tris: tris };
   }
 
+  // lane FH2: SolidWorks' loft between a polygon and a full circle (two sections, no start / end constraints), measured
+  // over its API on a 2 × 2 square → r 1 circle (head-tools/sw-reference/solids_loft.py): straight rulings between
+  // the two profiles, each polygon side matched to one arc of the circle split at the directions of the polygon's
+  // corners from the circle's centre; the side is parametrized uniformly, the arc as SolidWorks' rational quadratic
+  // (weight cos(half span)), so u ↔ θ with tan((θ − mid) / 2) = tan(half span / 2)·(2u − 1). The hull loft (the
+  // convex hull of the two sections) is 3.8 % bigger on that part. Returns { loops, tris } like hullLoftLoops, or
+  // null when the pair is not one polygon and one full circle on parallel planes.
+  function circleOf(sec) {
+    var l = sec.loop, seg = l.seg, C = seg && seg.length && seg[0] >= 0 && seg.every(function (k) { return k === seg[0]; }) ? (sec.prof.curves || [])[seg[0]] : null;
+    return C && C.full ? C : null;
+  }
+  function blendLoftLoops(secs) {
+    if (secs.length !== 2) return null;
+    var ci = circleOf(secs[0]) ? 0 : circleOf(secs[1]) ? 1 : -1;
+    if (ci < 0 || circleOf(secs[1 - ci])) return null;
+    var cs = secs[ci], ps = secs[1 - ci], C = circleOf(cs), pl = cs.plane;
+    if (Math.abs(dot(pl.n, ps.plane.n)) < 1 - 1e-9) return null;
+    if (ps.loop.seg && ps.loop.seg.some(function (k) { return k >= 0; })) return null;   // a polygon: straight sides only
+    var O = to3D(pl, C.c[0], C.c[1]), hgt = dot(sub(loopCentroid3(ps.pts), O), pl.n);
+    if (Math.abs(hgt) < 1e-9) return null;
+    // the polygon's corners (collinear points dropped) CCW about the circle plane's normal, with their angles
+    var P = ps.pts.slice(), p2 = P.map(function (p) { return to2D(pl, p); });
+    if (signedArea(p2) < 0) { P.reverse(); p2.reverse(); }
+    var corners = [];
+    for (var i = 0; i < P.length; i++) {
+      var a = p2[(i + P.length - 1) % P.length], b = p2[i], c = p2[(i + 1) % P.length];
+      var cr = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+      if (Math.abs(cr) > 1e-12 * (1 + Math.abs(b[0]) + Math.abs(b[1]))) corners.push({ p: P[i], th: Math.atan2(b[1] - C.c[1], b[0] - C.c[0]) });
+    }
+    var n = corners.length;
+    if (n < 3) return null;
+    // angles increasing around the circle, each span under 180°
+    var th = corners.map(function (q) { return q.th; });
+    for (i = 1; i < n; i++) { while (th[i] <= th[i - 1]) th[i] += Math.PI * 2; }
+    if (th[n - 1] - th[0] >= Math.PI * 2 - 1e-9) return null;
+    th.push(th[0] + Math.PI * 2);
+    for (i = 0; i < n; i++) if (th[i + 1] - th[i] >= Math.PI - 1e-9 || th[i + 1] - th[i] < 1e-9) return null;
+    // samples: at least the sketch's own chord density and 1.5° steps (the chords then cost 5e-5 of the volume on the
+    // square → circle), at least 8 per side
+    var step = Math.min(Math.PI * 2 / Math.max(3, cs.pts.length), Math.PI / 120);
+    var Lp = [], Lc = [];
+    for (i = 0; i < n; i++) {
+      var t0 = th[i], t1 = th[i + 1], half = (t1 - t0) / 2, mid = (t0 + t1) / 2, m = Math.max(8, Math.ceil((t1 - t0) / step));
+      var A = corners[i].p, B = corners[(i + 1) % n].p;
+      for (var k = 0; k < m; k++) {
+        var t = t0 + (t1 - t0) * k / m, u = (Math.tan((t - mid) / 2) / Math.tan(half / 2) + 1) / 2;
+        Lc.push(to3D(pl, C.c[0] + C.r * Math.cos(t), C.c[1] + C.r * Math.sin(t)));
+        Lp.push(add(A, scale(sub(B, A), u)));
+      }
+    }
+    // rows along the rulings too: the surface twists along each ruling (it is not developable), and strips of two long
+    // triangles each would keep a fixed area error however fine the samples (+1.7 % on the square → circle)
+    var N = Lc.length, tris = [], ROWS = 8, rows = [];
+    for (var r = 0; r <= ROWS; r++) rows.push(r === 0 ? Lp : r === ROWS ? Lc : Lp.map(function (p, q) { return add(p, scale(sub(Lc[q], p), r / ROWS)); }));
+    for (r = 0; r < ROWS; r++) {
+      var R0 = rows[r], R1 = rows[r + 1];
+      for (k = 0; k < N; k++) {
+        var j = (k + 1) % N;
+        tris.push([R0[k], R0[j], R1[j]]);
+        tris.push([R0[k], R1[j], R1[k]]);
+      }
+    }
+    var loops = ci === 0 ? [Lc, Lp] : [Lp, Lc];
+    // the loops run CCW about the circle plane's normal n; [p0, p1, q0] faces out when the polygon (p) lies below the
+    // circle (q) along n, as in hullLoftLoops
+    var polyBelow = dot(sub(loopCentroid3(Lc), loopCentroid3(Lp)), pl.n) > 0;
+    if (!polyBelow) tris.forEach(function (tr) { tr.reverse(); });
+    return { loops: loops, tris: tris };
+  }
+
   function buildLoft(f, model, ctx) {
     var ids = f.sketches || [];
     if (ids.length < 2) throw new Error('Loft needs at least two profile sketches.');
@@ -231,10 +408,10 @@
       checkProfile(prof);
       var outers = prof.loops.filter(function (l) { return !l.hole; });
       if (outers.length !== 1) throw new Error('Each loft sketch must contain exactly one closed profile.');
-      return { plane: pl, pts: outers[0].pts.map(function (p) { return to3D(pl, p[0], p[1]); }) };
+      return { plane: pl, pts: outers[0].pts.map(function (p) { return to3D(pl, p[0], p[1]); }), loop: outers[0], prof: prof };
     });
     var polys = [], loops, i;
-    var hull = hullLoftLoops(secs);
+    var hull = blendLoftLoops(secs) || hullLoftLoops(secs);
     if (hull) {
       loops = hull.loops;
       hull.tris.forEach(function (t) { pushPoly(polys, t, f.id); });
@@ -397,6 +574,31 @@
       };
     }
     function uniform(loop) { return loop.map(function () { return T; }); }
+    // rfFE2: a kept face on a cylinder or cone record walls in its inner side on that surface offset by T (r − T on a
+    // convex face, r + T in a hole; a cone moves T·√(1 + k²) along its radius): the slab's inner cap carries the
+    // offset record, so massProps stays exact on the shell's inner walls (the Mug's inner wall had none: its volume was
+    // 0.9 % high at any tessellation) and its rims draw as true circles. One offset record per surface.
+    var offMemo = typeof Map === 'function' ? new Map() : null;
+    function offsetRecord(face) {
+      var S = null, ps = face.polys || [];
+      for (var j = 0; j < ps.length; j++) {
+        var s = ps[j].surf && ps[j].surf.s;
+        if (!s || ps[j].surf.fc || (s.t !== 'cyl' && s.t !== 'cone')) return null;
+        if (S && S !== s) return null;
+        S = s;
+      }
+      if (!S || !offMemo) return null;
+      var v = sub(face.centroid, S.o), z = dot(v, S.d), rho = sub(v, scale(S.d, z));
+      if (len(rho) < 1e-9) return null;
+      var conv = dot(face.normal, rho) > 0 ? 1 : -1, k = S.k || 0, key = S, memo = offMemo.get(key);
+      if (memo && memo[conv]) return memo[conv];
+      var S2 = {};
+      for (var q in S) if (S.hasOwnProperty(q) && q !== '_m' && q !== '_pk') S2[q] = S[q];
+      S2.o = S.o.slice(); S2.d = S.d.slice(); S2.r = S.r - conv * T * Math.sqrt(1 + k * k);
+      if (!(S2.r + k * z > 1e-9)) return null;
+      if (!memo) offMemo.set(key, memo = {});
+      return (memo[conv] = { s: S2 });
+    }
     var inner = ctx.body, extensions = [], slabs = [];
     for (var i = 0; i < mesh.faces.length; i++) {
       var o;
@@ -407,7 +609,8 @@
         var ext = slabSolid({ loops: o.loops.filter(function (l) { return signedArea(l) > 0; }), plane: o.plane }, uniform, -T / 2, T + 1, f.id);
         if (ext) extensions.push(ext);
       } else {
-        var slab = slabSolid(o, growFor(o.plane), -T, T, f.id);
+        var slab = slabSolid(o, growFor(o.plane), -T, T, f.id), rec = slab && offsetRecord(mesh.faces[i]), fn = mesh.faces[i].normal;
+        if (rec) slab.polygons.forEach(function (p) { var n = p.plane.normal; if (n.x * fn[0] + n.y * fn[1] + n.z * fn[2] < -0.999999) p.surf = rec; });
         if (slab) slabs.push(slab);
       }
     }
@@ -1164,7 +1367,7 @@
   K.sketchPath = sketchPath; K.buildSweep = buildSweep; K.buildLoft = buildLoft; K.resolveFaces = resolveFaces; K.buildShell = buildShell;
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   K.resolveRefGeo = resolveRefGeo; K.toCsys = toCsys; K.dirToCsys = dirToCsys; _.resolveRefGeo = resolveRefGeo; _.revolveOnRefAxis = revolveOnRefAxis;   // lane CZ
-  _.buildLoft = buildLoft; _.buildShell = buildShell; _.buildSweep = buildSweep; _.faceLoopsClassified = faceLoopsClassified;
+  _.buildLoft = buildLoft; _.blendLoftLoops = blendLoftLoops; _.buildShell = buildShell; _.buildSweep = buildSweep; _.faceLoopsClassified = faceLoopsClassified;
 
   // ------------------------------------------------------------------ rfDX: Draft (SolidWorks' Neutral Plane draft)
   // { type: 'draft', neutral: { face: [x,y,z] } | { plane: 'Front' | 'Top' | 'Right' | <plane feature id>, offset? },

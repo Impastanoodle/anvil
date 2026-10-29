@@ -11,7 +11,7 @@
     var fl = anvil.flat();
     return fl.loops.slice(1).map(function (l) { var xs = l.map(function (p) { return p[0]; }), ys = l.map(function (p) { return p[1]; }); return { c: [(Math.min.apply(null, xs) + Math.max.apply(null, xs)) / 2, (Math.min.apply(null, ys) + Math.max.apply(null, ys)) / 2], r: (Math.max.apply(null, xs) - Math.min.apply(null, xs)) / 2 }; }).sort(function (a, b) { return a.c[0] - b.c[0]; });
   }
-  step('rfAI: Hole Wizard on a 16 ga inch sheet — Ø.281 (1/4) Clearance, 1/4-20 UNC Tapped (#7 drill) and CSK for 1/4 Flat Head (its 82° cone goes through the sheet) build without errors and the flat pattern carries the three holes at r .1406 / .1005 / .2015', async function () {
+  step('rfAI: Hole Wizard on a 16 ga inch sheet — Ø.266 (1/4) Clearance, 1/4-20 UNC Tapped (#7 drill) and CSK for 1/4 Flat Head (its 82° cone goes through the sheet) build without errors and the flat pattern carries the three holes at r .133 / .1005 / .2015', async function () {
     var errs0 = errors.length;
     await rfAISheet();
     var top = faceWithNormal([0, 1, 0]);
@@ -35,14 +35,14 @@
     assert(/Clearance Hole/.test(nm[0]) && /1\/4-20 UNC Tapped Hole/.test(nm[1]) && /CSK for 1\/4 Flat Head/.test(nm[2]), 'names ' + nm.join(' | '));
     var holes = rfAIFlatHoles();
     assert(holes.length === 3, 'three holes in the flat: ' + JSON.stringify(holes));
-    near(holes[0].c[0], 2, 1e-6, 'clearance x'); near(holes[0].r, 0.28125 / 2, 2e-4, 'clearance r (Ø.281)');
+    near(holes[0].c[0], 2, 1e-6, 'clearance x'); near(holes[0].r, 0.266 / 2, 2e-4, 'clearance r (Ø.266, the SolidWorks 1/4 Normal clearance)');
     near(holes[1].c[0], 5, 1e-6, 'tap x'); near(holes[1].r, 0.201 / 2, 2e-4, 'tap drill r (#7, Ø.201)');
     // CSK Ø.507 x 82° on a .0598 sheet: the cone is .130 deep, so the sheet's far face sees Ø.507 - 2 T tan 41° = Ø.403
     near(holes[2].c[0], 8, 1e-6, 'csk x'); near(holes[2].r, (0.507 - 2 * rfAIT * Math.tan(41 * Math.PI / 180)) / 2, 2e-3, 'csk far-side r');
     assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
     return holes.map(function (h) { return 'r' + h.r.toFixed(4) + '@' + h.c[0]; }).join(' ');
   });
-  step('rfAI: hole callouts on the drawing\'s Top view of that sheet — the clearance hole reads "Ø.281 THRU ALL", the tapped hole "Ø.201 THRU ALL" + "1/4-20 UNC - 2B THRU ALL"; Model Items with Hole callouts inserts one per hole', async function () {
+  step('rfAI: hole callouts on the drawing\'s Top view of that sheet — the clearance hole reads "Ø.266 THRU ALL", the tapped hole "Ø.201 THRU ALL" + "1/4-20 UNC - 2B THRU ALL"; Model Items with Hole callouts inserts one per hole', async function () {
     var errs0 = errors.length;
     assert(anvil.drawing.make(), 'drawing');
     var s = anvil.drawing.standard3View();
@@ -53,7 +53,7 @@
     function texts(sm) { return sm.annotations.filter(function (a) { return a.type === 'holeCallout'; }).map(function (a) { return a.text; }); }
     assert(s1 && s2, 'callouts placed: ' + statusText());
     var t = texts(s2);
-    assert(/^Ø\.281 THRU( ALL)?$/.test(t[0]), 'clearance callout: ' + t[0]);
+    assert(/^Ø\.266 THRU( ALL)?$/.test(t[0]), 'clearance callout: ' + t[0]);
     assert(/^Ø\.201 THRU( ALL)?\s+1\/4-20 UNC - 2B THRU( ALL)?$/.test(t[1]), 'tapped callout: ' + t[1]);
     anvil.drawing.deleteAnnotation(s2.annotations.filter(function (a) { return a.type === 'holeCallout'; })[0].id);
     anvil.drawing.deleteAnnotation(s2.annotations.filter(function (a) { return a.type === 'holeCallout'; })[1].id);
@@ -61,7 +61,7 @@
     var sm = anvil.drawing.modelItems({ views: [top.id], holeCallouts: true, holeLocations: true, dedupe: true });
     var mt = texts(sm);
     assert(mt.length === 3 && /Model Items inserted into 1 view/.test(statusText()), 'Model Items puts a hole callout on each of the three holes: ' + mt.join(' | ') + ', ' + statusText());
-    assert(mt.indexOf('Ø.281 THRU ALL ⌵ Ø.507 X 82°') >= 0 && mt.indexOf('Ø.201 THRU ALL 1/4-20 UNC - 2B THRU ALL') >= 0 && mt.indexOf('Ø.281 THRU ALL') >= 0, 'callout texts: ' + mt.join(' | '));
+    assert(mt.indexOf('Ø.266 THRU ALL ⌵ Ø.507 X 82°') >= 0 && mt.indexOf('Ø.201 THRU ALL 1/4-20 UNC - 2B THRU ALL') >= 0 && mt.indexOf('Ø.266 THRU ALL') >= 0, 'callout texts: ' + mt.join(' | '));
     anvil.drawing.close(); await idle();
     assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
     return t.join(' | ') + '; Model Items ' + mt.join(' | ');

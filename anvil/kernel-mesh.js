@@ -251,6 +251,32 @@
     };
   }
 
+  // rfFG: a boolean can lose a sliver polygon (a few 1e-4 wide, a BSP coplanar call at EPSILON) and leave a crack in a
+  // face's boundary: one chain ends at a vertex no boundary edge leaves (a dangling end) a hair away from a vertex no
+  // boundary edge reaches (a dangling start). The chain stopped there and the loop closed straight back to its first
+  // vertex: a chord across the face, drawn as a stray triangle / line on the shaded solid. Each dangling end now
+  // continues with the boundary edge leaving the nearest dangling start within 1e-3 of the face's size (the end vertex
+  // itself is dropped; the collinear pass removes what is left of the step).
+  function bridgeGaps(boundary, next, vlist) {
+    var into = {}, ends = [], starts = [];
+    boundary.forEach(function (e) { into[e[1].k] = true; });
+    boundary.forEach(function (e) { if (!next[e[1].k]) ends.push(e[1]); if (!into[e[0].k]) starts.push(e); });
+    if (!ends.length || !starts.length) return;
+    var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    vlist.forEach(function (v) { for (var k = 0; k < 3; k++) { if (v[k] < lo[k]) lo[k] = v[k]; if (v[k] > hi[k]) hi[k] = v[k]; } });
+    var gapTol = 1e-3 * len(sub(hi, lo)), taken = {};
+    ends.forEach(function (v) {
+      if (next[v.k]) return;
+      var best = null, bestD = gapTol;
+      starts.forEach(function (s) {
+        if (taken[s[0].k]) return;
+        var d = len(sub(s[0], v));
+        if (d <= bestD) { bestD = d; best = s; }
+      });
+      if (best) { taken[best[0].k] = true; next[v.k] = best; }
+    });
+  }
+
   // Boundary loops of a planar face as 2D polylines in the face frame. Handles T-junctions by splitting edges at
   // any face vertex lying on them.
   function faceOutline(mesh, faceIndex) {
@@ -310,13 +336,20 @@
       var k = e[0].k + '>' + e[1].k;
       count[k] = (count[k] || 0) + 1;
     });
+    // rfFG: by count, not presence: a boolean can leave a sliver copy of part of a polygon (the same corners in the
+    // same order twice, one of them welded shut), whose reversed edge cancelled the face's real boundary edge and
+    // the loop through it was lost. a>b is on the boundary as many times as it outnumbers b>a.
+    var emitted = {};
     var boundary = split.filter(function (e) {
-      var twin = e[1].k + '>' + e[0].k;
-      return !count[twin];
+      var k = e[0].k + '>' + e[1].k, net = count[k] - (count[e[1].k + '>' + e[0].k] || 0);
+      if (!(net > 0) || (emitted[k] || 0) >= net) return false;
+      emitted[k] = (emitted[k] || 0) + 1;
+      return true;
     });
     // chain
     var next = {};
     boundary.forEach(function (e) { next[e[0].k] = e; });
+    bridgeGaps(boundary, next, vlist);
     var used = {}, loops = [];
     boundary.forEach(function (e) {
       var k0 = e[0].k;
@@ -329,13 +362,17 @@
       }
       if (loop.length >= 3) loops.push(loop);
     });
-    // simplify collinear runs
+    // simplify collinear runs. rfFG: the cross product is not normalised, so it is also tested against the longer
+    // adjacent segment (sin of the turn × the shorter one): a true corner between two tiny pieces (a CSG sliver at a
+    // fillet end leaves 2e-4 steps, cross ~7e-8) was dropped as "collinear" together with its collinear neighbours,
+    // and the outline cut across the face (a diagonal edge drawn as a stray triangle on the shaded solid).
     loops = loops.map(function (l) {
       var out = [];
       for (var i = 0; i < l.length; i++) {
         var p = l[(i + l.length - 1) % l.length], q = l[i], r = l[(i + 1) % l.length];
-        var cr = (q[0] - p[0]) * (r[1] - q[1]) - (q[1] - p[1]) * (r[0] - q[0]);
-        if (Math.abs(cr) > 1e-7) out.push(q);
+        var cr = Math.abs((q[0] - p[0]) * (r[1] - q[1]) - (q[1] - p[1]) * (r[0] - q[0]));
+        var lp = Math.hypot(q[0] - p[0], q[1] - p[1]), lr = Math.hypot(r[0] - q[0], r[1] - q[1]);
+        if (cr > 1e-7 || cr > 1e-6 * Math.max(lp, lr)) out.push(q);
       }
       return out.length >= 3 ? out : l;
     });
@@ -345,6 +382,90 @@
   // ------------------------------------------------------------------ body edges (for display, picking, chamfer/fillet)
   var COS_SMOOTH = Math.cos(22 * Math.PI / 180);
   function ekey(p) { return Math.round(p[0] * 1000) + ',' + Math.round(p[1] * 1000) + ',' + Math.round(p[2] * 1000); }
+
+  // rfFG: pairCracks(mesh, map, order) -> order. On a closed solid every outline segment should meet its twin from the
+  // neighbouring face (same two ekey ends). After a boolean the two sides can disagree: a sliver left a vertex a few
+  // 1e-4 off (a crack), or one side has a vertex the other side's single segment runs through (a T-junction between
+  // faces). Such a segment kept one face, was never "smooth", and was drawn: short V / "<" marks along tangent fillet
+  // edges and lines across curved faces. The segments left unpaired are split at each other's ends lying on them
+  // (within tol = 1e-4 of the mesh diagonal), their ends snapped together within tol, and pieces of two faces of one
+  // body that now share both ends become one edge. Segments that already paired are never touched, so a clean mesh
+  // gives exactly the edges it gave before.
+  function pairCracks(mesh, map, order) {
+    var lone = order.filter(function (k) { return map[k].faces.length === 1; });
+    if (lone.length < 2 || lone.length > 4000) return order;
+    var P = mesh.positions64 || mesh.positions, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (var i = 0; i < P.length; i += 3) for (var c = 0; c < 3; c++) { if (P[i + c] < lo[c]) lo[c] = P[i + c]; if (P[i + c] > hi[c]) hi[c] = P[i + c]; }
+    var tol = 1e-4 * len(sub(hi, lo));
+    if (!(tol > 0)) return order;
+    var segs = lone.map(function (k) { var e = map[k]; return { e: e, key: k, d: len(sub(e.b, e.a)), pts: [] }; });
+    var ends = [];
+    segs.forEach(function (s) { ends.push(s.e.a, s.e.b); });
+    // ends within tol of each other share one representative (the first one met)
+    var rep = ends.map(function (p, i) { return i; });
+    function find(i) { while (rep[i] !== i) i = rep[i] = rep[rep[i]]; return i; }
+    for (i = 0; i < ends.length; i++) for (var j = i + 1; j < ends.length; j++) {
+      var p = ends[i], q = ends[j];
+      if (Math.abs(p[0] - q[0]) <= tol && Math.abs(p[1] - q[1]) <= tol && Math.abs(p[2] - q[2]) <= tol && len(sub(p, q)) <= tol) { var a = find(i), b = find(j); if (a !== b) rep[Math.max(a, b)] = Math.min(a, b); }
+    }
+    function at(i) { return ends[find(i)]; }
+    // split points: other segments' (snapped) ends inside a segment, within tol of its line
+    segs.forEach(function (s, si) {
+      var A = at(si * 2), B = at(si * 2 + 1), d = sub(B, A), L = len(d);
+      s.A = A; s.B = B; s.L = L;
+      if (!(L > tol)) return;
+      var u = scale(d, 1 / L), x0 = Math.min(A[0], B[0]) - tol, x1 = Math.max(A[0], B[0]) + tol, y0 = Math.min(A[1], B[1]) - tol, y1 = Math.max(A[1], B[1]) + tol, z0 = Math.min(A[2], B[2]) - tol, z1 = Math.max(A[2], B[2]) + tol;
+      for (var k = 0; k < ends.length; k++) {
+        if ((k >> 1) === si) continue;
+        var v = at(k);
+        if (v === A || v === B || v[0] < x0 || v[0] > x1 || v[1] < y0 || v[1] > y1 || v[2] < z0 || v[2] > z1) continue;
+        var w = sub(v, A), t = dot(w, u);
+        if (t <= tol || t >= L - tol || len(sub(w, scale(u, t))) > tol) continue;
+        if (!s.pts.some(function (x) { return x.v === v; })) s.pts.push({ t: t, v: v });
+      }
+      s.pts.sort(function (x, y) { return x.t - y.t; });
+    });
+    var pieces = {}, pieceOrder = [];
+    function pkey(v) { return ends.indexOf(v); }
+    segs.forEach(function (s) {
+      if (!(s.L > tol)) return;
+      var chain = [s.A].concat(s.pts.map(function (x) { return x.v; }), [s.B]);
+      for (var k = 0; k + 1 < chain.length; k++) {
+        var a = chain[k], b = chain[k + 1], ia = pkey(a), ib = pkey(b), key = ia < ib ? ia + '|' + ib : ib + '|' + ia;
+        (pieces[key] || (pieces[key] = [], pieceOrder.push(key), pieces[key])).push({ s: s, a: a, b: b });
+      }
+    });
+    // a segment is replaced only when every one of its pieces found a twin from another face of the same body / part
+    function sameBody(fa, fb) { var A = mesh.faces[fa], B = mesh.faces[fb]; return (A.body || 0) === (B.body || 0) && A.part === B.part; }
+    function paired(key) { var l = pieces[key]; return l.length === 2 && l[0].s.e.faces[0] !== l[1].s.e.faces[0] && sameBody(l[0].s.e.faces[0], l[1].s.e.faces[0]); }
+    var ok = new Map();
+    segs.forEach(function (s) { ok.set(s, s.L > tol); });
+    pieceOrder.forEach(function (key) { if (!paired(key)) pieces[key].forEach(function (pc) { ok.set(pc.s, false); }); });
+    // a piece whose twin's segment is not replaced cannot be replaced either (repeat until stable)
+    for (var changed = true, guard = 0; changed && guard++ < 50;) {
+      changed = false;
+      pieceOrder.forEach(function (key) {
+        var l = pieces[key];
+        if (l.length === 2 && ok.get(l[0].s) !== ok.get(l[1].s)) { ok.set(l[0].s, false); ok.set(l[1].s, false); changed = true; }
+      });
+    }
+    var drop = {}, added = [];
+    segs.forEach(function (s) { if (ok.get(s) || s.A === s.B) drop[s.key] = true; });   // both ends snapped together: a sliver's edge
+    if (!Object.keys(drop).length) return order;
+    pieceOrder.forEach(function (key) {
+      var l = pieces[key];
+      if (!ok.get(l[0].s)) return;
+      var a = l[0].a, b = l[0].b, ka = ekey(a), kb = ekey(b), mk = (ka < kb ? ka + '|' + kb : kb + '|' + ka) + '#fg' + added.length;
+      var e = map[mk] = { a: a, b: b, ka: ka, kb: kb, faces: [], normals: [], ins: [] };
+      l.forEach(function (pc) {
+        var se = pc.s.e, n = se.normals[0];
+        e.faces.push(se.faces[0]); e.normals.push(n);
+        e.ins.push(norm(cross(n, norm(sub(pc.b, pc.a)))));
+      });
+      added.push(mk);
+    });
+    return order.filter(function (k) { return !drop[k]; }).concat(added);
+  }
 
   // -> [{a, b, mid, dir, len, faces:[i,j], normals:[nA,nB], smooth, convex, ka, kb}]
   function bodyEdges(mesh) {
@@ -367,6 +488,7 @@
         }
       });
     }
+    order = pairCracks(mesh, map, order);
     var list = [];
     order.forEach(function (key) {
       var e = map[key];
@@ -516,21 +638,405 @@
   var PICK_MM = 0.5;
   function pickTol(units, size) { return Math.max(units === 'in' ? PICK_MM / 25.4 : PICK_MM, +size || 0); }
 
+  // ------------------------------------------------------------------ rfFF: fillets / chamfers on circular edges, spherical corners
+  // A circular edge (a chain of chords where a plane perpendicular to the axis meets a faceted cylinder or cone) is
+  // filleted / chamfered as SolidWorks does it: the section (the same corner construction as edgeTool, in the
+  // meridian half-plane (ρ, z)) is revolved about the axis through the chord vertices themselves, so the tool's facets
+  // lie in the planes of the body's facets (each facet of a revolve is the section scaled radially), the cut leaves
+  // no slivers, and the round carries a 'tor' record (a chamfer a 'cone' record) with the profile chord P / Q that
+  // curveCorrection integrates exactly (as for a revolve). Three mutually perpendicular convex straight edges filleted
+  // at one vertex with one radius get SolidWorks' spherical corner: each edge's round stops at the plane through the
+  // ball centre C, and the cube between the vertex and C minus the ball is cut with 'sph' records.
+  function rfFFsurf(fc) { var ps = fc.polys || []; for (var i = 0; i < ps.length; i++) if (ps[i].surf && ps[i].surf.s) return ps[i].surf.s; return null; }
+  function rfFFplanar(fc) { return !(fc.polys || []).some(function (p) { return p.surf; }); }
+  function rfFFsegs(size, sweep) {
+    return TESS.legacy ? Math.max(4, Math.round(sweep / (Math.PI / 12))) : Math.max(4, Math.ceil(segsForRadius(size) * sweep / (2 * Math.PI) - 1e-9));
+  }
+  function rfFFradial(p, A, d) { var v = sub(p, A); return sub(v, scale(d, dot(v, d))); }
+  // -> null, or the circle an edge (one chord) lies on: { key, A (centre), d, Rc, uP, uC (unit directions into the planar
+  // and the curved face in (ρ, z)), conv }
+  function arcEdgeInfo(e, mesh, kind) {
+    if (e.faces.length !== 2 || e.convex == null) return null;
+    var f0 = mesh.faces[e.faces[0]], f1 = mesh.faces[e.faces[1]];
+    var ip = rfFFplanar(f0) ? 0 : rfFFplanar(f1) ? 1 : -1;
+    if (ip < 0) return null;
+    var ic = 1 - ip, fc = mesh.faces[e.faces[ic]], S = rfFFsurf(fc);
+    if (S && (S.t === 'tor' || S.t === 'sph') && S.w == null && kind !== 'chamfer') return rfFKcircInfo(e, mesh, ip, ic, fc, S);
+    if (!S || (S.t !== 'cyl' && S.t !== 'cone') || S.w != null) return null;
+    if (!(fc.polys || []).every(function (p) { return p.surf && p.surf.s && p.surf.s.t === S.t; })) return null;
+    var d = norm(S.d), nP = e.normals[ip];
+    if (Math.abs(Math.abs(dot(nP, d)) - 1) > 1e-7) return null;
+    var za = dot(sub(e.a, S.o), d), zb = dot(sub(e.b, S.o), d), k = S.k || 0, Rc = S.r + k * za;
+    if (!(Rc > 1e-9)) return null;
+    var tol = 1e-6 * Math.max(1, Rc, Math.abs(za));
+    if (Math.abs(za - zb) > tol) return null;
+    var A = add(S.o, scale(d, za)), ra = len(rfFFradial(e.a, A, d)), rb = len(rfFFradial(e.b, A, d));
+    // both ends on the faceted circle: on the true circle, or (a T-junction on a chord) inside it by at most a sagitta
+    if (ra > Rc + tol || rb > Rc + tol || ra < 0.7 * Rc || rb < 0.7 * Rc) return null;
+    var erm = norm(rfFFradial(e.mid, A, d));
+    var sp = dot(e.ins[ip], erm) > 0 ? 1 : -1, sc = dot(e.ins[ic], d) > 0 ? 1 : -1, kn = Math.sqrt(1 + k * k);
+    var dd = d, sg = (d[0] < -1e-9 || (Math.abs(d[0]) <= 1e-9 && (d[1] < -1e-9 || (Math.abs(d[1]) <= 1e-9 && d[2] < 0)))) ? -1 : 1;
+    function q(v) { return Math.round(v * 1e5); }
+    var key = A.map(q).join(',') + '|' + scale(dd, sg).map(q).join(',') + '|' + q(Rc) + '|' + (e.convex ? 1 : 0) + '|' + sp + '|' + sc;
+    return { key: key, A: A, d: d, Rc: Rc, uP: [sp, 0], uC: [k * sc / kn, sc / kn], conv: e.convex };
+  }
+  // rfFK: the circle where a plane square to the axis meets a revolved torus / sphere face (a dish wall cut by a
+  // revolve with an arc, a ball dimple). In the meridian half-plane (ρ, z from A) the face is the tube circle C, r and
+  // the round is the circle tangent to the plane line and to that circle (rfFFsection's circ), so it is a torus too.
+  // The body's edge lies on the faceted surface (a profile chord), inside the true circle Rc by up to a sagitta: Rv is
+  // that ring's radius (arcChainTool scales the true section by ρ_vertex / Rv, so the round meets the true surface).
+  // Fillets only (what SolidWorks measures a chamfer distance along on a curved face is not checked yet).
+  function rfFKcircInfo(e, mesh, ip, ic, fc, S) {
+    var F0 = fc.polys[0].surf;
+    if (!F0 || !F0.P || !F0.Q) return null;
+    var same = (fc.polys || []).every(function (p) {
+      var s = p.surf && p.surf.s;
+      return s && (s === S || (s.t === S.t && Math.abs(s.r - S.r) < 1e-9 * Math.max(1, S.r) && Math.abs((s.R || 0) - (S.R || 0)) < 1e-9 * Math.max(1, Math.abs(S.R || 0)) && len(sub(s.o, S.o)) < 1e-9 * Math.max(1, len(S.o))));
+    });
+    if (!same) return null;
+    var d = norm(S.d), nP = e.normals[ip];
+    if (Math.abs(Math.abs(dot(nP, d)) - 1) > 1e-7) return null;
+    var za = dot(sub(e.a, S.o), d), zb = dot(sub(e.b, S.o), d), r = S.r, Cr = S.t === 'tor' ? S.R : 0;
+    var tol = 1e-6 * Math.max(1, r, Math.abs(za));
+    if (Math.abs(za - zb) > tol || !(r * r - za * za > 0)) return null;
+    var A = add(S.o, scale(d, za)), ra = len(rfFFradial(e.a, A, d)), rb = len(rfFFradial(e.b, A, d)), Rv = Math.max(ra, rb);
+    var h = Math.sqrt(r * r - za * za), Rc = Math.abs(Cr + h - Rv) <= Math.abs(Cr - h - Rv) ? Cr + h : Cr - h;
+    // the ring within a sagitta of the true circle (a chord of the profile arc deviates by at most its own sagitta)
+    if (!(Rc > 1e-9) || Math.abs(Rc - Rv) > 0.25 * r || Math.min(ra, rb) < 0.7 * Rv) return null;
+    var erm = norm(rfFFradial(e.mid, A, d)), sp = dot(e.ins[ip], erm) > 0 ? 1 : -1;
+    var C = [Cr, -za], v = [Rc - Cr, za];
+    if (Math.abs(sp * v[0]) < 1e-6 * r) return null;   // the plane tangent to the tube: no edge to round
+    var t = [-v[1] / r, v[0] / r], insC = [dot(e.ins[ic], erm), dot(e.ins[ic], d)];
+    if (t[0] * insC[0] + t[1] * insC[1] < 0) t = [-t[0], -t[1]];
+    var sg = (d[0] < -1e-9 || (Math.abs(d[0]) <= 1e-9 && (d[1] < -1e-9 || (Math.abs(d[1]) <= 1e-9 && d[2] < 0)))) ? -1 : 1;
+    function q(x) { return Math.round(x * 1e5); }
+    var key = A.map(q).join(',') + '|' + scale(d, sg).map(q).join(',') + '|' + q(Rc) + '|' + (e.convex ? 1 : 0) + '|' + sp + '|' + S.t + q(r);
+    // out: the corner's wedge lies outside the tube (a cut dish wall, material outside the circle)
+    return { key: key, A: A, d: d, Rc: Rc, Rv: Rv, uP: [sp, 0], uC: t, conv: e.convex, circ: { C: C, r: r, out: sp * v[0] > 0 } };
+  }
+
+  // The corner section in 2D (edgeTool's construction): uA, uB unit directions from the corner E into the two faces.
+  // -> { pts, arc (curved-segment flags), c (arc centre) }
+  function rfFFsection(kind, size, E, uA, uB, conv, minRho, circ) {
+    function a2(p, u, t) { return [p[0] + u[0] * t, p[1] + u[1] * t]; }
+    var cosT = Math.max(-1, Math.min(1, uA[0] * uB[0] + uA[1] * uB[1])), theta = Math.acos(cosT);
+    if (theta < 0.05 || theta > Math.PI - 0.05) throw new Error('Edge faces are nearly parallel; cannot ' + kind + ' it.');
+    var pts = [], arc = [], c = null;
+    if (circ && kind !== 'chamfer') return rfFKsection(size, E, uA, uB, minRho, circ, a2);
+    if (kind === 'chamfer') { pts.push(a2(E, uA, size), a2(E, uB, size)); arc.push(true, true); }
+    else {
+      var t = size / Math.tan(theta / 2), pA = a2(E, uA, t), pB = a2(E, uB, t);
+      var bis = [uA[0] + uB[0], uA[1] + uB[1]], bl = Math.hypot(bis[0], bis[1]);
+      c = a2(E, [bis[0] / bl, bis[1] / bl], size / Math.sin(theta / 2));
+      var a0 = Math.atan2(pA[1] - c[1], pA[0] - c[0]), a1 = Math.atan2(pB[1] - c[1], pB[0] - c[0]), sw = a1 - a0;
+      while (sw > Math.PI) sw -= 2 * Math.PI;
+      while (sw < -Math.PI) sw += 2 * Math.PI;
+      var n = rfFFsegs(size, Math.abs(sw));
+      for (var s = 0; s <= n; s++) {
+        var an = a0 + sw * s / n;
+        pts.push(s === 0 ? pA : s === n ? pB : [c[0] + size * Math.cos(an), c[1] + size * Math.sin(an)]);
+        arc.push(true);
+      }
+    }
+    var first = pts[0], last = pts[pts.length - 1], ext = 1.5 * size, extra;
+    function perpAway(u, other) { var p = [-u[1], u[0]]; return p[0] * other[0] + p[1] * other[1] > 0 ? [-p[0], -p[1]] : p; }
+    if (conv) {
+      var nA = perpAway(uA, uB), nB = perpAway(uB, uA);
+      extra = function (x) { return [a2(last, nB, x), a2(E, [nA[0] + nB[0], nA[1] + nB[1]], x), a2(first, nA, x)]; };
+    } else {
+      extra = function (x) { return [a2(E, [-(uA[0] + uB[0]), -(uA[1] + uB[1])], x)]; };
+    }
+    // keep the extension clear of the axis (a revolved section must not cross it)
+    for (var it = 0; it < 30 && extra(ext).some(function (p) { return p[0] < minRho; }); it++) ext *= 0.6;
+    extra(ext).forEach(function (p) { pts.push(p); arc.push(false); });
+    return { pts: pts, arc: arc, c: c };
+  }
+  // rfFK: the round between the plane line (E, uA) and the tube circle (circ.C, circ.r): its centre F is size off the
+  // line on the wedge's side and r ± size from C (+ when the wedge lies outside the tube); A on the line, B on the
+  // circle. The tool runs on from B along the circle's normal (a ray through C, the direction curveCorrection's columns
+  // take on the wall's facets, so the wall left under the round still integrates exactly), past E and back over A.
+  var rfFKfirst = 24 * Math.PI / 180;
+  function rfFKsection(size, E, uA, uB, minRho, circ, a2) {
+    var C = circ.C, r = circ.r, D = circ.out ? r + size : r - size;
+    if (!(D > 1e-9 * r)) throw new Error('Radius ' + +size.toFixed(6) + ' is too large for the curved face of radius ' + +r.toFixed(6) + ' it meets; use less than ' + +r.toFixed(6) + '.');
+    var m = [-uA[1], uA[0]];
+    if (m[0] * uB[0] + m[1] * uB[1] < 0) m = [-m[0], -m[1]];
+    var w = [E[0] + m[0] * size - C[0], E[1] + m[1] * size - C[1]], wu = w[0] * uA[0] + w[1] * uA[1];
+    var disc = wu * wu - (w[0] * w[0] + w[1] * w[1]) + D * D;
+    if (!(disc >= 0)) throw new Error('Radius ' + +size.toFixed(6) + ' does not fit between these faces.');
+    var tt = [-wu - Math.sqrt(disc), -wu + Math.sqrt(disc)].filter(function (x) { return x > 1e-9 * size; });
+    if (!tt.length) throw new Error('Radius ' + +size.toFixed(6) + ' does not fit between these faces.');
+    var pA = a2(E, uA, tt[0]), F = a2(pA, m, size), fd = Math.hypot(F[0] - C[0], F[1] - C[1]);
+    var pB = [C[0] + (F[0] - C[0]) * r / fd, C[1] + (F[1] - C[1]) * r / fd];
+    var a0 = Math.atan2(pA[1] - F[1], pA[0] - F[0]), a1 = Math.atan2(pB[1] - F[1], pB[0] - F[0]), sw = a1 - a0;
+    while (sw > Math.PI) sw -= 2 * Math.PI;
+    while (sw < -Math.PI) sw += 2 * Math.PI;
+    // the chord at A leaves the plane at half its turn: a shallow round (a dish wall at 31° to the top, 4 chords of
+    // 7.7°) put that chord within the BSP's 1e-5 of the plane over 1e-4 and cracked the plane face, so the first chord
+    // turns at least rfFKfirst (its facets keep their exact record; only the shading near A is coarser)
+    var asw = Math.abs(sw), n = rfFFsegs(size, asw), first = Math.min(asw, Math.max(asw / n, rfFKfirst)), pts = [], arc = [];
+    var rest = asw - first, nr = rest > 1e-9 ? Math.max(1, Math.ceil(n * rest / asw - 1e-9)) : 0, sg = sw < 0 ? -1 : 1;
+    for (var s = 0; s <= nr + 1; s++) {
+      var an = a0 + sg * (s === 0 ? 0 : first + rest * (s - 1) / (nr || 1));
+      pts.push(s === 0 ? pA : s === nr + 1 ? pB : [F[0] + size * Math.cos(an), F[1] + size * Math.sin(an)]);
+      arc.push(true);
+    }
+    // away from the wedge: off the plane (−m), and along the circle's normal (towards C when the wedge is outside)
+    function nAt(p) { var x = (p[0] - C[0]) / r, y = (p[1] - C[1]) / r; return circ.out ? [-x, -y] : [x, y]; }
+    var nA = [-m[0], -m[1]], nB = nAt(pB), nE = nAt(E), ext = 1.5 * size;
+    function extra(x) { return [a2(pB, nB, x), a2(E, [nA[0] + nE[0], nA[1] + nE[1]], x), a2(pA, nA, x)]; }
+    for (var it = 0; it < 30 && extra(ext).some(function (p) { return p[0] < minRho; }); it++) ext *= 0.6;
+    extra(ext).forEach(function (p) { pts.push(p); arc.push(false); });
+    return { pts: pts, arc: arc, c: F, b: pB };
+  }
+
+  // Revolve the section about the circle's axis through the chain's vertices. chain: { info, vs (3D points in order,
+  // turning positively about d), closed }
+  function arcChainTool(chain, kind, size, tag) {
+    var I = chain.info, A = I.A, d = I.d, Rc = I.Rc;
+    var sec = rfFFsection(kind, size, [Rc, 0], I.uP, I.uC, I.conv, 0.2 * Rc, I.circ);
+    var pts = sec.pts, arc = sec.arc;
+    // the round would cross the axis (a radius larger than the round edge it runs round): SolidWorks refuses it too
+    if (pts.some(function (p, i) { return arc[i] && !(p[0] > 1e-6 * Math.max(1, Rc)); }))
+      throw new Error((kind === 'chamfer' ? 'Distance ' : 'Radius ') + +size.toFixed(6) + ' is too large for the round edge of radius ' + +Rc.toFixed(6) + ' it runs round; use less than ' + +Rc.toFixed(6) + ' (or ' + kind + ' this edge before the smaller rounds).');
+    if (signedArea(pts) < 0) { pts = pts.slice().reverse(); arc = arc.slice().reverse(); }
+    var n = pts.length, vs = chain.vs, m = vs.length, Rv = I.Rv || Rc;
+    // rfFK: on a torus / sphere wall the ring is the faceted one (a profile chord's radius at the plane): the largest
+    // vertex radius of the chain (T-junctions sit inside, on chords), so ring vertices map the true section unscaled
+    if (I.circ) vs.forEach(function (v) { Rv = Math.max(Rv, len(rfFFradial(v, A, d))); });
+    // one record for the whole round
+    var S = null;
+    if (kind === 'chamfer') {
+      var ia = arc.indexOf(true), P = pts[ia], Q = pts[(ia + 1) % n], dz = Q[1] - P[1], dr = Q[0] - P[0];
+      S = Math.abs(dr) < 1e-12 * Rc ? { t: 'cyl', o: A.slice(), d: d.slice(), r: P[0] } : { t: 'cone', o: A.slice(), d: d.slice(), r: P[0] - dr / dz * P[1], k: dr / dz };
+    } else {
+      var oc = add(A, scale(d, sec.c[1]));
+      S = Math.abs(sec.c[0]) < 1e-9 * Math.max(1, size) ? { t: 'sph', o: oc, d: d.slice(), r: size } : { t: 'tor', o: oc, d: d.slice(), R: sec.c[0], r: size };
+    }
+    var e0 = norm(rfFFradial(vs[0], A, d)), e1 = cross(d, e0);
+    var rings = [], ph = [];
+    for (var k = 0; k < m; k++) {
+      var rv = rfFFradial(vs[k], A, d), rho = len(rv), uk = scale(rv, 1 / rho), s = rho / Rv;
+      var raw = Math.atan2(dot(uk, e1), dot(uk, e0));
+      if (k === 0) ph.push(0);
+      else { var dp = raw - ph[k - 1]; while (dp < 0) dp += 2 * Math.PI; while (dp >= 2 * Math.PI) dp -= 2 * Math.PI; ph.push(ph[k - 1] + dp); }
+      rings.push(pts.map(function (p) { return add(A, add(scale(d, p[1]), scale(uk, p[0] * s))); }));
+    }
+    if (chain.closed) { rings.push(rings[0]); ph.push(2 * Math.PI); }
+    // one wrapper per profile segment, all sharing e0 (curveEdges keys a meridian edge by its angle from e0); dphi (the
+    // first sector's) only serves profile chords perpendicular to the axis, which a fillet section never has
+    var wraps = pts.map(function (p, i) {
+      var j = (i + 1) % n;
+      // rfFK: the run-on from B along the tube's normal is left as a step (up to a sagitta wide) between the wall's
+      // facets and the round: a cone record, so its facets integrate exactly as well
+      if (sec.b && arc[i] !== arc[j] && (pts[i] === sec.b || pts[j] === sec.b)) {
+        var cz = pts[j][1] - pts[i][1], cr = pts[j][0] - pts[i][0];
+        if (Math.abs(cz) < 1e-12 * Math.max(1, Rc)) return null;
+        return Math.abs(cr) < 1e-12 * Math.max(1, Rc) ? { s: { t: 'cyl', o: A.slice(), d: d.slice(), r: pts[i][0] }, step: 1 } : { s: { t: 'cone', o: A.slice(), d: d.slice(), r: pts[i][0] - cr / cz * pts[i][1], k: cr / cz }, step: 1 };
+      }
+      if (!(arc[i] && arc[j])) return null;
+      return S.t === 'tor' || S.t === 'sph' ? { s: S, P: [pts[i][0], pts[i][1] - sec.c[1]], Q: [pts[j][0], pts[j][1] - sec.c[1]], e0: e0.slice(), dphi: ph[1] - ph[0] } : { s: S };
+    });
+    var polys = [];
+    for (k = 0; k + 1 < rings.length; k++) {
+      var r0 = rings[k], r1 = rings[k + 1];
+      for (var i = 0; i < n; i++) {
+        var j = (i + 1) % n, pg = poly([r0[i], r1[i], r1[j], r0[j]], tag);
+        if (!pg) continue;
+        if (wraps[i]) pg.surf = wraps[i];
+        polys.push(pg);
+      }
+    }
+    if (!chain.closed) {
+      var first = rings[0], lastR = rings[rings.length - 1];
+      triangulate(pts).forEach(function (t) {
+        pushPoly(polys, [first[t[0]], first[t[1]], first[t[2]]], tag);
+        pushPoly(polys, [lastR[t[2]], lastR[t[1]], lastR[t[0]]], tag);
+      });
+    }
+    return ensureOutward(polys);
+  }
+
+  // Group the selected chords by circle and walk each group into chains of vertices turning positively about d.
+  function arcChains(arcEdges) {
+    var groups = {}, order = [];
+    arcEdges.forEach(function (x) { var g = groups[x.info.key]; if (!g) { g = groups[x.info.key] = []; order.push(g); } g.push(x); });
+    var chains = [];
+    order.forEach(function (g) {
+      var adj = {}, used = {};
+      g.forEach(function (x, i) { (adj[x.e.ka] = adj[x.e.ka] || []).push(i); (adj[x.e.kb] = adj[x.e.kb] || []).push(i); });
+      function walk(startKey) {
+        var keys = [startKey], cur = startKey, closed = false;
+        for (;;) {
+          var next = (adj[cur] || []).filter(function (i) { return !used[i]; })[0];
+          if (next == null) break;
+          used[next] = true;
+          var e = g[next].e, nk = e.ka === cur ? e.kb : e.ka;
+          if (nk === startKey) { closed = true; break; }
+          keys.push(nk); cur = nk;
+        }
+        return { keys: keys, closed: closed };
+      }
+      var pos = {};
+      g.forEach(function (x) { pos[x.e.ka] = x.e.a; pos[x.e.kb] = x.e.b; });
+      var starts = Object.keys(adj).filter(function (k) { return adj[k].length === 1; });
+      var all = starts.concat(Object.keys(adj));
+      all.forEach(function (sk) {
+        if (!(adj[sk] || []).some(function (i) { return !used[i]; })) return;
+        var w = walk(sk);
+        if (w.keys.length < 2) return;
+        var vs = w.keys.map(function (k) { return pos[k]; }), info = g[0].info;
+        // turn positively about d: the second vertex at a positive angle from the first
+        var e0 = norm(rfFFradial(vs[0], info.A, info.d)), v1 = norm(rfFFradial(vs[1], info.A, info.d));
+        if (dot(cross(e0, v1), info.d) < 0) { vs.reverse(); w.keys.reverse(); if (w.closed) { vs.unshift(vs.pop()); w.keys.unshift(w.keys.pop()); } }
+        chains.push({ info: info, vs: vs, keys: w.keys, closed: w.closed });
+      });
+    });
+    return chains;
+  }
+
+  // corner: { V, C, u: [u1, u2, u3] (unit, leaving V along the three edges) }: the cube between V and C minus the ball.
+  function sphereCornerTool(corner, size, tag) {
+    var C = corner.C, u1 = corner.u[0], u2 = corner.u[1], u3 = corner.u[2], r = size, n = rfFFsegs(size, Math.PI / 2), i, j;
+    function P(a, b, c) { return sub(C, add(scale(u1, a), add(scale(u2, b), scale(u3, c)))); }
+    var hand = dot(cross(u1, u2), u3) > 0 ? 1 : -1;
+    var S = { t: 'sph', o: C.slice(), d: u1.slice(), r: r }, polys = [], ring = [];
+    // the octant as a revolve about u1: profile β from the ring (ρ = r, z = 0) to the pole (ρ = 0, z = −r), rings φ from −u2 to −u3
+    for (i = 0; i <= n; i++) {
+      var be = Math.PI / 2 * i / n, rho = i === n ? 0 : r * Math.cos(be), z = i === 0 ? 0 : -r * Math.sin(be), row = [];
+      if (i === n) z = -r;
+      for (j = 0; j <= n; j++) {
+        var phi = Math.PI / 2 * j / n, cb = j === 0 ? 1 : j === n ? 0 : Math.cos(phi), sb = j === 0 ? 0 : j === n ? 1 : Math.sin(phi);
+        row.push(P(-z, rho * cb, rho * sb));
+      }
+      ring.push({ rho: rho, z: z, pts: row });
+    }
+    var dphi = hand * Math.PI / 2 / n;
+    for (i = 0; i < n; i++) for (j = 0; j < n; j++) {
+      var a = ring[i], b = ring[i + 1], q = [a.pts[j], b.pts[j], b.pts[j + 1], a.pts[j + 1]], clean = [];
+      for (var t = 0; t < 4; t++) if (len(sub(q[t], q[(t + 1) % 4])) > 1e-9 * Math.max(1, r)) clean.push(q[t]);
+      var pg = clean.length >= 3 ? poly(clean, tag) : null;
+      if (!pg) continue;
+      pg.surf = { s: S, P: [a.rho, a.z], Q: [b.rho, b.z], e0: scale(u2, -1), dphi: dphi };
+      polys.push(pg);
+    }
+    // three faces through C (square minus the quarter disc) and three full squares through V
+    function lface(pt, arcPts) {
+      var loop = [[r, 0], [r, r], [0, r]].concat(arcPts), loop3 = loop.map(function (p) { return pt(p[0], p[1]); });
+      if (signedArea(loop) < 0) { loop.reverse(); loop3.reverse(); }
+      triangulate(loop).forEach(function (tr) { pushPoly(polys, [loop3[tr[0]], loop3[tr[1]], loop3[tr[2]]], tag); });
+    }
+    // each loop: (r, 0), (r, r), (0, r), then back along the quarter arc to (r, 0) (its inner points only)
+    var ringArc = [], meridArc = [];
+    for (j = n - 1; j >= 1; j--) ringArc.push([r * Math.cos(Math.PI / 2 * j / n), r * Math.sin(Math.PI / 2 * j / n)]);
+    for (i = 1; i <= n - 1; i++) meridArc.push([r * Math.sin(Math.PI / 2 * i / n), r * Math.cos(Math.PI / 2 * i / n)]);
+    lface(function (b, c) { return P(0, b, c); }, ringArc);        // ⊥ u1 through C: the ring z = 0
+    lface(function (a, b) { return P(a, b, 0); }, meridArc);       // ⊥ u3: the meridian φ = 0 (a = r sin β, b = ρ)
+    lface(function (a, c) { return P(a, 0, c); }, meridArc);       // ⊥ u2: the meridian φ = π/2
+    [[function (b, c) { return P(r, b, c); }], [function (a, c) { return P(a, r, c); }], [function (a, b) { return P(a, b, r); }]].forEach(function (F) {
+      var pt = F[0], loop = [[0, 0], [r, 0], [r, r], [0, r]].map(function (p) { return pt(p[0], p[1]); });
+      pushPoly(polys, loop, tag);
+    });
+    // outward: the planar faces away from the cube's centre, the sphere facets towards C (the tool is outside the ball)
+    var mid = P(r / 2, r / 2, r / 2);
+    polys.forEach(function (pg) {
+      var cen = [0, 0, 0];
+      pg.vertices.forEach(function (v) { cen = add(cen, arr(v.pos)); });
+      cen = scale(cen, 1 / pg.vertices.length);
+      var want = pg.surf ? sub(C, cen) : sub(cen, mid);
+      if (dot(arr(pg.plane.normal), want) < 0) pg.flip();
+    });
+    return CSG.fromPolygons(polys);
+  }
+
   // -> { cut: CSG|null, add: CSG|null, count }
   function buildEdgeFeature(f, ctx) {
     if (!ctx.body) throw new Error('Nothing to ' + f.type + ' yet.');
     var size = f.type === 'chamfer' ? +f.d : +f.r;
     if (!(size > 0)) throw new Error((f.type === 'chamfer' ? 'Distance' : 'Radius') + ' must be greater than zero.');
     var mesh = meshFromBody(ctx.body);
-    var edges = bodyEdges(mesh).filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex !== null; });
-    var selected = resolveEdges(f.edges, edges, pickTol(ctx.units, size));   // r16/picktol
+    var allEdges = bodyEdges(mesh), edges = allEdges.filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex !== null; });
+    var tol = pickTol(ctx.units, size);
+    var selected = resolveEdges(f.edges, edges, tol);   // r16/picktol
     if (!selected.length) throw new Error('No edges found for this ' + f.type + '. Select edges again.');
+    // rfFF: circular edges; a chained pick takes the whole circle (SolidWorks' tangent propagation), however few its chords
+    var infoOf = new Map();
+    function info(e) { if (!infoOf.has(e)) infoOf.set(e, arcEdgeInfo(e, mesh, f.type)); return infoOf.get(e); }
+    var seen = {};
+    selected.forEach(function (e) { seen[e.ka + '|' + e.kb] = true; });
+    (f.edges || []).forEach(function (spec) {
+      if (spec.chain === false) return;
+      var hit = resolveEdges([{ at: spec.at, chain: false }], edges, tol)[0], hi = hit && info(hit);
+      if (!hi) return;
+      var grow = true;
+      while (grow) {
+        grow = false;
+        edges.forEach(function (e) {
+          if (seen[e.ka + '|' + e.kb]) return;
+          var ii = info(e);
+          if (!ii || ii.key !== hi.key) return;
+          if (!selected.some(function (x) { return info(x) && info(x).key === hi.key && (x.ka === e.ka || x.ka === e.kb || x.kb === e.ka || x.kb === e.kb); })) return;
+          seen[e.ka + '|' + e.kb] = true; selected.push(e); grow = true;
+        });
+      }
+    });
     var byKey = {};
     selected.forEach(function (e) { (byKey[e.ka] = byKey[e.ka] || []).push(e); (byKey[e.kb] = byKey[e.kb] || []).push(e); });
+    var arcs = [], straight = [];
+    selected.forEach(function (e) { var ii = info(e); if (ii) arcs.push({ e: e, info: ii }); else straight.push(e); });
     var cuts = [], adds = [];
-    selected.forEach(function (e) {
+    arcChains(arcs).forEach(function (ch) { (ch.info.conv ? cuts : adds).push(arcChainTool(ch, f.type, size, f.id)); });
+    // spherical corners: three mutually perpendicular convex straight edges between planar faces at one vertex
+    var corners = {};
+    if (f.type === 'fillet') Object.keys(byKey).forEach(function (vk) {
+      var es = byKey[vk];
+      if (es.length !== 3 || !es.every(function (e) { return e.convex && !info(e) && e.faces.every(function (fi) { return rfFFplanar(mesh.faces[fi]); }); })) return;
+      var V = es[0].ka === vk ? es[0].a : es[0].b;
+      var us = es.map(function (e) { return e.ka === vk ? e.dir : scale(e.dir, -1); });
+      if (Math.abs(dot(us[0], us[1])) > 1e-6 || Math.abs(dot(us[0], us[2])) > 1e-6 || Math.abs(dot(us[1], us[2])) > 1e-6) return;
+      if (!es.every(function (e) { return e.len > size * (1 + 1e-9); })) return;
+      corners[vk] = { V: V, C: add(V, scale(add(us[0], add(us[1], us[2])), size)), u: us };
+    });
+    Object.keys(corners).forEach(function (vk) { cuts.push(sphereCornerTool(corners[vk], size, f.id)); });
+    function capFor(e, atA, nbs) {
+      var vk = atA ? e.ka : e.kb, v = atA ? e.a : e.b;
+      if (corners[vk]) return { v: corners[vk].C, n: e.dir, ext: 0 };
+      // a straight edge running on tangentially into a filleted circle stops at the circle's meridian plane there
+      var arcNb = nbs.filter(function (x) { return info(x); });
+      if (arcNb.length === 1 && nbs.length === 1) {
+        var I = info(arcNb[0]), tn = norm(cross(I.d, norm(rfFFradial(v, I.A, I.d))));
+        if (Math.abs(dot(tn, e.dir)) > 0.97) return { v: v, n: tn, ext: 0 };
+      }
+      // rfFF2: an edge whose end runs into a round that one of its faces blends into tangentially (an edge left by an
+      // earlier fillet, SolidWorks P07): the round rolls on until it leaves the body, as SolidWorks trims it against
+      // that round; the tool runs on past the end by the round's radius + this size (a wall square to the edge never
+      // continues a face tangentially, so it is never cut into)
+      if (!nbs.length) {
+        var run = 0;
+        // fillets only: what SolidWorks does with a chamfer there is not measured yet (the Chamfered block example keeps its end)
+        if (f.type === 'fillet') allEdges.forEach(function (s) {
+          if (!s.smooth || (s.ka !== vk && s.kb !== vk) || !s.faces.some(function (fi) { return e.faces.indexOf(fi) >= 0; })) return;
+          s.faces.forEach(function (fi) { var S = rfFFsurf(mesh.faces[fi]); if (S) run = Math.max(run, size + (S.t === 'tor' ? S.R + S.r : S.r)); });
+        });
+        if (run > 0) return { v: v, n: null, ext: run };
+        // a wall the edge runs into (a face at the end whose outward normal faces back along the edge): stop exactly on
+        // the wall's plane (the 0.01 overshoot of a free end cut a sliver out of the wall)
+        var out = atA ? scale(e.dir, -1) : e.dir, wall = null;
+        allEdges.forEach(function (s) {
+          if (s.ka !== vk && s.kb !== vk) return;
+          s.faces.forEach(function (fi) {
+            if (e.faces.indexOf(fi) >= 0 || !rfFFplanar(mesh.faces[fi])) return;
+            var wn = mesh.faces[fi].normal;
+            if (dot(wn, out) < -0.5 && (!wall || dot(wn, out) < dot(wall, out))) wall = wn;
+          });
+        });
+        if (wall) return { v: v, n: wall.slice(), ext: 0 };
+      }
+      return mitreCap(e, atA, nbs);
+    }
+    straight.forEach(function (e) {
       var nbA = byKey[e.ka].filter(function (x) { return x !== e; }), nbB = byKey[e.kb].filter(function (x) { return x !== e; });
-      var tool = edgeTool(e, mesh, f.type, size, mitreCap(e, true, nbA), mitreCap(e, false, nbB), f.id);
+      var tool = edgeTool(e, mesh, f.type, size, capFor(e, true, nbA), capFor(e, false, nbB), f.id);
       (e.convex ? cuts : adds).push(tool);
     });
     return { cut: cuts.length ? unionAll(cuts) : null, add: adds.length ? unionAll(adds) : null, count: selected.length };

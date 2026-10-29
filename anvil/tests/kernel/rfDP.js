@@ -122,7 +122,13 @@
       nearRel(cap.v, 2 * CAP, 1e-12, 'cap volume');
       nearRel(plain.v, 2 * CAP, 1e-12, 'plain cap volume');
       nearRel(low.v, 2 * (8 * Math.PI - CAP), 1e-12, 'ellipse below the line');
-      assert(cap.mesh.faces.length === plain.mesh.faces.length, 'faces ' + cap.mesh.faces.length + ' vs plain ' + plain.mesh.faces.length);
+      // the cap's run keeps the whole ellipse's samples between the crossings (so it shares them with the region below);
+      // a plain Partial Ellipse spreads round(N / 3) chords over its 120° — the same count only when N / 3 is whole
+      // (N = 24 before the 10° angular limit; rfFE2: N = 40, 14 chords vs 13): the faces are 2 caps + the line + chords
+      var N = K.segsForRadius(4), inside = 0;
+      for (var q = 1; q < N; q++) if (360 * q / N > 30 + 1e-9 && 360 * q / N < 150 - 1e-9) inside++;
+      assert(cap.mesh.faces.length === inside + 1 + 3, 'faces ' + cap.mesh.faces.length + ' = 3 + ' + (inside + 1) + ' chords');
+      assert(plain.mesh.faces.length === Math.round(N / 3) + 3, 'plain faces ' + plain.mesh.faces.length);
       var prof = K.contourProfile(cap.model.features[0], [[5, 4.5]]), fs = prof.loops[0].fseg || [];
       assert(prof.free && prof.free[0].t === 'ellipse', 'profile.free ' + JSON.stringify(prof.free));
       var on = fs.filter(function (q) { return q !== -1; });

@@ -1081,52 +1081,55 @@ var UI = (function () {
   //     facet edges that approximate a true circle or arc (Kernel.curveEdges chords) are drawn as that curve, a fine
   //     polyline of CURVE_SEGS segments per full turn independent of the mesh (App.curves, e.curve on the chord edges).
   var CURVE_SEGS = 128;
-  // unit outward-or-inward normal of surface S at point x ([x,y,z]), or null where it is undefined (a cone apex)
-  function surfNormal(S, x) {
-    var v = [x[0] - S.o[0], x[1] - S.o[1], x[2] - S.o[2]], d = S.d, z = V.dot(v, d), n;
-    if (S.t === 'sph') n = v;
-    else {
-      var rho = [v[0] - d[0] * z, v[1] - d[1] * z, v[2] - d[2] * z], rl = V.len(rho);
-      if (rl < 1e-9) return null;   // on the axis: a cone apex or a torus pole has no single normal
-      var er = [rho[0] / rl, rho[1] / rl, rho[2] / rl];
-      if (S.t === 'cyl') n = er;
-      else if (S.t === 'cone') n = [er[0] - (S.k || 0) * d[0], er[1] - (S.k || 0) * d[1], er[2] - (S.k || 0) * d[2]];
-      else if (S.t === 'tor') n = [rho[0] - er[0] * S.R, rho[1] - er[1] * S.R, rho[2] - er[2] * S.R];   // from the tube centre o + R·eρ
-      else return null;
-    }
-    var l = V.len(n);
-    return l > 1e-12 ? [n[0] / l, n[1] / l, n[2] / l] : null;
+  // rfFE: a true circle / arc edge is drawn at screen resolution: at least CURVE_SEGS per turn, more when the zoom
+  // makes a chord's sagitta over CURVE_SAG_PX pixels (up to 4096 per turn); refineCurves (from updateGrid) samples
+  // every curve again when the zoom has moved more than 30 % since, and swaps the edge lines' geometry (no rebuild).
+  var CURVE_SAG_PX = 0.15, curveSegsScale = 0;
+  function curveScreenSegs(r) {
+    var tol = Math.max(1e-12, CURVE_SAG_PX * cam.scale), n = r > tol ? Math.PI / Math.acos(Math.max(-1, 1 - tol / r)) : 0;
+    return Math.max(CURVE_SEGS, Math.min(4096, Math.ceil(n - 1e-9)));
   }
+  function curveScreenPts(c) {
+    var n = c.normal, xd = c.xdir, yd = V.cross(n, xd), sweep = c.a1 - c.a0;
+    var segs = Math.max(4, Math.ceil(curveScreenSegs(c.radius) * sweep / (2 * Math.PI) - 1e-9)), pts = [];
+    for (var i = 0; i <= segs; i++) {
+      var a = c.a0 + sweep * i / segs, ca = Math.cos(a) * c.radius, sa = Math.sin(a) * c.radius;
+      pts.push([c.center[0] + xd[0] * ca + yd[0] * sa, c.center[1] + xd[1] * ca + yd[1] * sa, c.center[2] + xd[2] * ca + yd[2] * sa]);
+    }
+    return pts;
+  }
+  function refineCurves() {
+    var cs = App.curves;
+    if (!cs || !cs.length || !edgeLines || !App.mesh || App.edgesMesh !== App.mesh || !(curveSegsScale > 0)) return false;
+    if (Math.abs(Math.log(cam.scale / curveSegsScale)) <= Math.log(1.3)) return false;
+    curveSegsScale = cam.scale;
+    var changed = false;
+    cs.forEach(function (c) {
+      if (!c || !c.screen || !c.curve) return;
+      var pts = curveScreenPts(c.curve);
+      if (pts.length !== c.pts.length) { c.pts = pts; changed = true; }
+    });
+    if (!changed) return false;
+    var old = edgeLines.geometry;
+    edgeLines.geometry = buildEdgeGeometry(App.mesh);
+    if (old) old.dispose();
+    sceneVer++;
+    return true;
+  }
+  // unit outward-or-inward normal of surface S at point x ([x,y,z]), or null where it is undefined (on the axis of a
+  // cone / torus without `toward`, a point of the facet whose meridian gives the limit); Kernel.surfNormalAt (rfFE)
+  function surfNormal(S, x, toward) { return K.surfNormalAt(S, x, toward); }
   // analyticNormals(mesh) -> Float32Array laid out like mesh.normals (3 per triangle corner); cached on the mesh as
-  // mesh.smoothNormals. The triangles follow meshFromBody's order (each face's polygons fanned from vertex 0); each
-  // normal is oriented to agree with its facet's (holes face inward). mesh.normals itself stays flat (exports, zebra).
+  // mesh.smoothNormals. rfFE: one copy, Kernel.analyticNormals (kernel-curves.js "smooth shading normals"): record
+  // facets take their surface's normal, other curved faces (fillets on curved edges, splines, lofts, sweeps, …) are
+  // smoothed over their facets with a crease angle, planes stay flat; a worker sends the same numbers with its build
+  // (useWorkerNormals). mesh.normals itself stays flat (exports, zebra, picking).
   function analyticNormals(m) {
     if (m.smoothNormals) return m.smoothNormals;
     var an = m === App.mesh && UI.asmNormals ? UI.asmNormals(m) : null;   // r4/asm4: an assembly's, from its parts'
     if (an) return (m.smoothNormals = an);
-    var out = new Float32Array(m.normals);
-    (m.faces || []).forEach(function (f) {
-      if (!f.polys) return;
-      var t = f.start, fn = f.normal, ok = true, writes = [];
-      f.polys.forEach(function (p) {
-        var vs = p.vertices, nt = Math.max(0, vs.length - 2);
-        if (p.surf && p.surf.s) {
-          var vn = vs.map(function (vx) {
-            var n = surfNormal(p.surf.s, [vx.pos.x, vx.pos.y, vx.pos.z]);
-            if (!n) return fn;
-            return V.dot(n, fn) < 0 ? [-n[0], -n[1], -n[2]] : n;
-          });
-          for (var j = 1; j + 1 < vs.length; j++) writes.push(t + j - 1, vn[0], vn[j], vn[j + 1]);
-        }
-        t += nt;
-      });
-      if (t !== f.start + f.count) ok = false;   // not the layout meshFromBody made: keep the flat normals
-      if (!ok) return;
-      for (var w = 0; w < writes.length; w += 4) {
-        var o = writes[w] * 9;
-        for (var c = 0; c < 3; c++) { var n = writes[w + 1 + c]; out[o + c * 3] = n[0]; out[o + c * 3 + 1] = n[1]; out[o + c * 3 + 2] = n[2]; }
-      }
-    });
+    var out;
+    try { out = K.analyticNormals(m); } catch (e) { out = new Float32Array(m.normals); }
     m.smoothNormals = out;
     return out;
   }
@@ -1161,19 +1164,29 @@ var UI = (function () {
     });
     if (info) list = info.curves;
     else { try { list = K.curveEdges(m); } catch (e2) { return []; } }
+    curveSegsScale = cam.scale;
     var curves = list.map(function (c) {
-      var n = c.normal, xd = c.xdir, yd = V.cross(n, xd), sweep = c.a1 - c.a0;
-      var segs = Math.max(4, Math.ceil(CURVE_SEGS * sweep / (2 * Math.PI) - 1e-9)), pts = [];
-      for (var i = 0; i <= segs; i++) {
-        var a = c.a0 + sweep * i / segs, ca = Math.cos(a) * c.radius, sa = Math.sin(a) * c.radius;
-        pts.push([c.center[0] + xd[0] * ca + yd[0] * sa, c.center[1] + xd[1] * ca + yd[1] * sa, c.center[2] + xd[2] * ca + yd[2] * sa]);
-      }
-      return { curve: c, pts: pts, edges: [] };
+      return { curve: c, pts: curveScreenPts(c), edges: [], screen: true };
     });
     var chordMap = {};
     curves.forEach(function (c, ci) { c.curve.chords.forEach(function (ch) { chordMap[pairKey(ekey3(ch[0]), ekey3(ch[1]))] = ci; }); });
     // pieces of a chord (a face outline split it at a T-junction): both ends on one of the curve's chords
     function onSeg(p, q0, q1, tol) { return K.pointSegmentDistance(p, q0, q1) <= tol; }
+    // rfFG: a whole facet chord whose record lists it in pieces (Kernel.curveEdges keeps mesh polygon edges, which a
+    // boolean split, e.g. a revolved rim next to a hole), so neither the key nor one piece matches it: the edge is that
+    // curve's when both ends lie on the circle, in its plane, it is no longer than the record's longest chord and its
+    // middle is inside the arc. It was a lone straight segment, and hovering the rim lit that one segment.
+    function onCircle(p, C, tol) { var d = V.sub(p, C.center), h = V.dot(d, C.normal); return Math.abs(h) <= tol && Math.abs(V.len(V.sub(d, V.scale(C.normal, h))) - C.radius) <= tol; }
+    function chordOfCircle(e, cv, tol) {
+      var C = cv.curve;
+      if (cv.maxChord == null) cv.maxChord = C.chords.reduce(function (m, ch) { return Math.max(m, V.len(V.sub(ch[1], ch[0]))); }, 0);
+      if (!(e.len <= cv.maxChord * 1.05 + tol) || !onCircle(e.a, C, tol) || !onCircle(e.b, C, tol)) return false;
+      if (C.a1 - C.a0 >= 2 * Math.PI - 1e-9) return true;
+      var d = V.sub(e.mid, C.center), yd = V.cross(C.normal, C.xdir), a = Math.atan2(V.dot(d, yd), V.dot(d, C.xdir));
+      while (a < C.a0 - 1e-9) a += 2 * Math.PI;
+      while (a > C.a0 + 2 * Math.PI) a -= 2 * Math.PI;
+      return a <= C.a1 + 1e-9;
+    }
     edges.forEach(function (e) {
       if (e.seam) return;
       var ci = chordMap[pairKey(e.ka, e.kb)];
@@ -1187,6 +1200,7 @@ var UI = (function () {
             var ch = C.chords[j];
             if (onSeg(e.a, ch[0], ch[1], tol) && onSeg(e.b, ch[0], ch[1], tol)) { ci = i; break; }
           }
+          if (ci == null && chordOfCircle(e, curves[i], tol)) ci = i;
         }
       }
       if (ci == null) return;
@@ -1875,6 +1889,7 @@ var UI = (function () {
     return { min: min, max: max };
   }
   function updateGrid() {
+    if (App.gridStale) refineCurves();   // rfFE: true curve edges at screen resolution
     if (App.gridStale && sketchSegsScale > 0 && groups.sketches.children.length && Math.abs(Math.log(cam.scale / sketchSegsScale)) > Math.log(1.3) && !App.sketchDragging) updateSketches();
     if (!App.gridStale) return;
     App.gridStale = false;
@@ -3241,7 +3256,7 @@ var UI = (function () {
     showViewSelector: showViewSelector, hideViewSelector: hideViewSelector, viewSelectorShown: viewSelectorShown, viewSelectorPick: viewSelectorPick, viewSelectorMenuClear: vsMenuClear, modelEdgeInBox: modelEdgeInBox,
     viewSelectorRegions: function () { return vs.cells.map(function (c) { return { id: c.id, center: [(c.q[0][0] + c.q[2][0]) / 2, (c.q[0][1] + c.q[2][1]) / 2] }; }); },
     imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY, imagePresets: imagePresets, defaultUnits: defaultUnits, setDefaultUnits: setDefaultUnits, lenDefault: lenDefault,
-    analyticNormals: analyticNormals, surfNormal: surfNormal, annotateCurveEdges: annotateCurveEdges,
+    analyticNormals: analyticNormals, surfNormal: surfNormal, annotateCurveEdges: annotateCurveEdges, curveScreenSegs: curveScreenSegs,
     autosave: autosave, pushUndo: pushUndo, undo: undo, redo: redo, loadModel: loadModel,
     // unsaved changes and AutoRecover (ui-app.js: title star, save prompts, the start-up Recover / Discard dialog)
     isDirty: isDirty, markClean: markClean, markUnsaved: markUnsaved, readRecovery: readRecovery, dropRecovery: dropRecovery, holdRecovery: holdRecovery,

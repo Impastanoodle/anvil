@@ -44,12 +44,14 @@
       return (V0 - r.mp.volume).toFixed(4);
     });
 
-    test('Counterbore depth and countersink angle read from the solid: CBORE ↧ 6.5 (M6), cone half-angle 45° (90° countersink)', function () {
+    // lane FH2 (2026-10-29): the M6 counterbore depth is SolidWorks 2022's Hole Wizard value, 6.4 (was ISO 4762's 6.5);
+    // source: head-tools/sw-reference/sw-holewizard.json (solids_holes.py)
+    test('Counterbore depth and countersink angle read from the solid: CBORE ↧ 6.4 (M6, as SolidWorks), cone half-angle 45° (90° countersink)', function () {
       var r = hw({ type: 'cbore', size: 'M6', depth: 16 }), cb = [];
       r.body.polygons.forEach(function (p) { if (p.surf && p.surf.s.t === 'cyl' && Math.abs(p.surf.s.r - 5.5) < 1e-9) p.vertices.forEach(function (v) { cb.push(v.pos.y); }); });
       assert(cb.length, 'no Ø11 cylinder records');
-      near(Math.max.apply(null, cb) - Math.min.apply(null, cb), 6.5, 1e-9, 'counterbore wall height');
-      near(Math.min.apply(null, cb), 30 - 6.5, 1e-9, 'counterbore floor');
+      near(Math.max.apply(null, cb) - Math.min.apply(null, cb), 6.4, 1e-9, 'counterbore wall height');
+      near(Math.min.apply(null, cb), 30 - 6.4, 1e-9, 'counterbore floor');
       var c = hw({ type: 'csk', size: 'M6', depth: 16 }), pts = [];
       c.body.polygons.forEach(function (p) { if (p.surf && p.surf.s.t === 'cone') p.vertices.forEach(function (v) { pts.push([Math.hypot(v.pos.x, v.pos.z), v.pos.y]); }); });
       assert(pts.length, 'no cone records');
@@ -57,7 +59,7 @@
       var zs = pts.map(function (q) { return q[1]; }), rs = pts.map(function (q) { return q[0]; });
       var ang = 2 * Math.atan2(Math.max.apply(null, rs) - Math.min.apply(null, rs), Math.max.apply(null, zs) - Math.min.apply(null, zs)) * 180 / Math.PI;
       near(ang, 90, 1e-9, 'included angle');
-      return 'cbore 6.5, csk ' + ang + '°';
+      return 'cbore 6.4, csk ' + ang + '°';
     });
 
     test('Script round trip: generateScript writes p.holeWizard({ sketch, type, size, fit, depth, threadDepth }) and rebuilds the same part', function () {
@@ -104,7 +106,7 @@
       DW.addHoleCallout(q.doc, q.view('Top').view.id, { c: [0, 0], r: 3.3 });
       q.recompute();
       var aq = q.sheet.annotations.filter(function (a) { return a.type === 'holeCallout'; })[0];
-      assert(aq.text === 'Ø6.6 ↧ 16 ⌴ Ø11 ↧ 6.5', aq.text);
+      assert(aq.text === 'Ø6.6 ↧ 16 ⌴ Ø11 ↧ 6.4', aq.text);
       assert(!q.sheet.prims.some(function (p) { return p.thread; }), 'no thread');
       return an.text + ' | ' + aq.text;
     });

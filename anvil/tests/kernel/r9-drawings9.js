@@ -45,7 +45,9 @@
       });
       // the Rounded handle's post: its outline stops where the root fillet starts (y = 9: v = 9 × 0.8165)
       var rh = DW.projectView(build(ex9('Rounded handle')).mesh, 'Isometric', { display: 'hlr' }).lines.visible;
-      var post = rh.filter(function (l) { return Math.abs(Math.abs(l[0]) - 8) < 0.2 && Math.abs(Math.abs(l[2]) - 8) < 0.2; }), lo = Math.min.apply(null, post.map(function (l) { return Math.min(l[1], l[3]); }));
+      // rfFF: the fillet is a true torus now; its silhouette's first chords (≤ 0.05 mm, within 0.01 of the post's outline,
+      // truly hidden by the post) pass HLR's tolerance, so only lines longer than 1 mm are the post's outline
+      var post = rh.filter(function (l) { return Math.abs(Math.abs(l[0]) - 8) < 0.2 && Math.abs(Math.abs(l[2]) - 8) < 0.2 && Math.hypot(l[2] - l[0], l[3] - l[1]) > 1; }), lo = Math.min.apply(null, post.map(function (l) { return Math.min(l[1], l[3]); }));
       assert(post.length === 2 && Math.abs(lo - 9 * 2 / Math.sqrt(6)) < 1e-6, 'post outline ends at v = ' + lo.toFixed(4) + ' (' + post.length + ' lines)');
       return nE + ' ends';
     });

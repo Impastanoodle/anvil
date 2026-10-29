@@ -103,7 +103,7 @@
     // --- refine/perf ---
     // a rim picked where the cylinder's seam meets it (the seam is no longer a candidate edge; the fillet failed on it)
     { name: 'fillet and chamfer on cylinder rims picked at the seam', code: 'p.cylinder(20, 30);\np.fillet(3, [[20, 30, 0]]);\np.chamfer(2, [[20, 0, 0]]);' },
-    // all 12 edges: spherical corners in OpenCascade (exact rounded box), mitred in Anvil -> the loose tolerance
+    // all 12 edges: spherical corners in both kernels (exact rounded box; Anvil's since lane FF, 26 faces each)
     { name: 'fillet on all 12 edges of a box (rounded box)', code: 'p.box(40, 30, 20);\np.fillet(3, [[20,0,0],[20,0,30],[20,20,0],[20,20,30],[0,10,0],[40,10,0],[0,10,30],[40,10,30],[0,0,15],[40,0,15],[0,20,15],[40,20,15]]);',
       exact: 34 * 24 * 14 + 6 * (34 * 24 + 24 * 14 + 34 * 14) + Math.PI * 9 * (34 + 24 + 14) + 4 / 3 * Math.PI * 27 },
     // a shell of a round part: exact walls in OpenCascade, polygonal in Anvil -> the loose tolerance, so it drives
@@ -116,8 +116,19 @@
     { name: 'tall ellipse on Top (axes swapped for OpenCascade)', code: 'p.sketch("Top").ellipse(1, 1, 6, 10, 15).extrude(5);', exact: Math.PI * 60 * 5 },
     { name: 'partial ellipse closed by a line, on Right', code: 'p.sketch("Right").partialEllipse(0, 0, 20, 10, 0, 0, 180).line(-20, 0, 20, 0).extrude(5);', exact: Math.PI * 100 * 5 },
     { name: 'plate cut by an ellipse and a closed spline', code: 'p.sketch("Front").rect(-30, -20, 60, 40).extrude(4);\np.sketch("Front", 4).ellipse(0, 0, 10, 5, 20).spline([[12, 0], [18, 6], [24, 0], [18, -6]], true).cut("through", { reverse: true });' },
-    { name: 'open spline with a driving tangent closed by a line', code: 'p.sketch("Front").spline([[0, 0], [5, 4], [12, 3], [20, 0]], false, [[80, 1.5], null, null, null]).line(0, 0, 20, 0).extrude(1);' }
+    { name: 'open spline with a driving tangent closed by a line', code: 'p.sketch("Front").spline([[0, 0], [5, 4], [12, 3], [20, 0]], false, [[80, 1.5], null, null, null]).line(0, 0, 20, 0).extrude(1);' },
     // --- end sketch-spline ---
+    // --- rfFF: fillets / chamfers on circular edges are torus / cone patches in Anvil too (exact), spherical corners ---
+    { name: 'rfFF: Ø100 × 20 cylinder, top rim R6 (torus)', code: 'p.cylinder(50, 20);\np.fillet(6, [[50, 20, 0]]);',
+      exact: Math.PI * 2500 * 20 - 2 * Math.PI * (50 - 6 * (10 - 3 * Math.PI) / (3 * (4 - Math.PI))) * 36 * (1 - Math.PI / 4) },
+    { name: 'rfFF: Ø20 through hole, R2 on both hole edges', code: 'p.cylinder(50, 20);\np.hole("Top", 0, 0, 20, { offset: 20 });\np.fillet(2, [[10, 20, 0], [10, 0, 0]]);',
+      exact: Math.PI * 2400 * 20 - 4 * Math.PI * (10 + 2 * (10 - 3 * Math.PI) / (3 * (4 - Math.PI))) * 4 * (1 - Math.PI / 4) },
+    { name: 'rfFF: chamfer 3 on a Ø100 rim (cone)', code: 'p.cylinder(50, 20);\np.chamfer(3, [[50, 20, 0]]);', exact: Math.PI * 2500 * 20 - 2 * Math.PI * 49 * 4.5 },
+    { name: 'rfFF: Ø20 boss root R3 (concave torus)', code: 'p.box(60, 60, 10);\np.sketch("Top", 10).circle(30, -30, 10).extrude(15);\np.fillet(3, [[40, 10, 30]]);',
+      exact: 36000 + Math.PI * 1500 + 2 * Math.PI * (10 + 3 * (10 - 3 * Math.PI) / (3 * (4 - Math.PI))) * 9 * (1 - Math.PI / 4) },
+    { name: 'rfFF: 5° drafted boss, root R3 and top rim R2 (plane-cone tori)', code: 'p.box(60, 60, 10);\np.sketch("Top", 10).circle(30, -30, 10).extrude(15, { draft: 5 });\np.fillet(3, [[40, 10, 30]]);\np.fillet(2, [[' + (40 - 15 * Math.tan(5 * Math.PI / 180)) + ', 25, 30]]);' },
+    { name: 'rfFF: vertical edges R5, then the top outline R2 round them', code: 'p.box(40, 30, 20);\np.fillet(5, [[0, 10, 0], [40, 10, 0], [0, 10, 30], [40, 10, 30]]);\np.fillet(2, [[20, 20, 0]]);',
+      exact: 24000 - 4 * 25 * 20 * (1 - Math.PI / 4) - 4 * (1 - Math.PI / 4) * (2 * 30 + 2 * 20) - 2 * Math.PI * (5 - 2 * (10 - 3 * Math.PI) / (3 * (4 - Math.PI))) * 4 * (1 - Math.PI / 4) }
   ];
   var EX = AnvilExamples.list || AnvilExamples;
   var parts = EX.filter(function (e) { return e.kind !== 'assembly'; }).map(function (e) { return { name: e.name, code: e.code, exact: e.volume || null }; }).concat(EXTRA);
@@ -959,7 +970,8 @@
     if (!(r2df.reused >= 1 && r2df.reused < mdf2.features.length)) whyDF2.push('reused ' + r2df.reused + ' (want the first sketch only)');
     if (!(Math.abs(r2df.volume - wantDF2) <= 1e-6 * wantDF2)) whyDF2.push('volume ' + r2df.volume + ', want ' + wantDF2);
     if (!axdf || !(Math.abs(Math.abs(axdf.b[1] - axdf.a[1]) - 30) < 1e-9)) whyDF2.push('Anvil axis ' + JSON.stringify(axdf) + ' (want 30 long)');
-    for (var kdf = 0; kdf < 3; kdf++) if (!(Math.abs(r2df.bbox[0][kdf] - bbdf.min[kdf]) < 1e-6 && Math.abs(r2df.bbox[1][kdf] - bbdf.max[kdf]) < 1e-6)) whyDF2.push('box ' + JSON.stringify(r2df.bbox) + ' vs Anvil ' + JSON.stringify([bbdf.min, bbdf.max]));
+    // the page's 0.05 mm box rule: both boxes are faceted, and the 12° angular limit (local-2026-10-29b) put Anvil's facet corners elsewhere
+    for (var kdf = 0; kdf < 3; kdf++) if (!(Math.abs(r2df.bbox[0][kdf] - bbdf.min[kdf]) < 0.05 && Math.abs(r2df.bbox[1][kdf] - bbdf.max[kdf]) < 0.05)) whyDF2.push('box ' + JSON.stringify(r2df.bbox) + ' vs Anvil ' + JSON.stringify([bbdf.min, bbdf.max]));
     row(whyDF2.length ? 'bad' : 'ok', 'reference axis on a cylindrical face: the cylinder grows, OpenCascade\'s cached rebuild resolves the axis on the new face and patterns about it', whyDF2.join('\n') ||('reused ' + r2df.reused + ', volume ' + r2df.volume.toFixed(6)), performance.now() - tdf2);
     counts[whyDF2.length ? 'fail' : 'pass']++;
   } catch (e) { row('bad', 'reference axis follows an edit (OpenCascade cache)', e.message); counts.fail++; }

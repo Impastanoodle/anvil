@@ -171,7 +171,7 @@
     assert(n2 > n1 && sagPx(n2) < 0.2 && n2 <= 2048, 'r = 1000 px: ' + n2 + ' segments (was ' + n1 + '), sagitta ' + sagPx(n2).toFixed(3) + ' px');
     var tess1 = K.setTessellation({});
     assert(tess1.chordTol === tess0.chordTol && tess1.minSegs === tess0.minSegs && tess1.maxSegs === tess0.maxSegs, 'kernel tessellation restored: ' + JSON.stringify(tess1));
-    assert(K.entityPolylines(f.entities[0])[0].pts.length === 24, 'the model-side polyline is still 24-sided for the profile (' + K.entityPolylines(f.entities[0])[0].pts.length + ')');
+    assert(K.entityPolylines(f.entities[0])[0].pts.length === 32, 'the model-side polyline is still 32-sided (the 12 degree angular limit) for the profile (' + K.entityPolylines(f.entities[0])[0].pts.length + ')');
     UI.zoomToFit(); UI.exitSketch(true); await idle();
     return 'r = 100 px: ' + n1 + ' segs; r = 1000 px: ' + n2 + ' segs';
   });

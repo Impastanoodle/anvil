@@ -112,6 +112,46 @@
     return { t: 'arc', a: A, b: B, c: c, r: r, ccw: !!ccw, sweep: sw };
   }
 
+  // rfFJ: an arc whose end chord was spoiled. At a tangent point where two tessellated curves meet at a shallow angle
+  // (a fillet outside a circle: the chords turn by only |half step − half step|) a boolean leaves split points a few
+  // 1e-4 along the chord, and the outline's 1e-4 weld can keep one of them instead of the tangent point. That end
+  // chord is then a little longer or shorter than the run's and its far end 1e-5 off the circle, so it is not in the
+  // run and was written as a LINE (one per fillet end on the laser). A single chord next to an arc is taken into
+  // it when its far end lies on the arc's circle within snap·(1 + r) (snap 3e-5: a weld of 1e-4 along a chord that
+  // turns by at most half of maxStep), it turns the same way, and it spans at most 1.5 × the arc's mean chord angle.
+  // The arc then runs to that end (its centre moved onto the new ends' bisector, as arcThrough does).
+  function absorbEndChords(segs, tol) {
+    var snap = tol.snap != null ? tol.snap : 3e-5, TAU = 2 * Math.PI;
+    function wrapPi(a) { a = ((a % TAU) + TAU) % TAU; return a > Math.PI ? a - TAU : a; }
+    for (var again = true; again && segs.length > 2;) {
+      again = false;
+      for (var i = 0; i < segs.length && !again; i++) {
+        var s = segs[i];
+        if (s.t !== 'arc' || !s.n) continue;
+        for (var dir = 1; dir >= -1 && !again; dir -= 2) {
+          var j = (i + dir + segs.length) % segs.length, L = segs[j];
+          if (L.t !== 'line') continue;
+          var E = dir > 0 ? s.b : s.a, Q = dir > 0 ? L.b : L.a;
+          if (dist2(dir > 0 ? L.a : L.b, E) > 1e-12) continue;
+          if (Math.abs(dist2(s.c, Q) - s.r) > snap * (1 + s.r)) continue;
+          var phi = wrapPi(Math.atan2(Q[1] - s.c[1], Q[0] - s.c[0]) - Math.atan2(E[1] - s.c[1], E[0] - s.c[0]));
+          if (phi * (s.ccw ? 1 : -1) * dir <= 0 || Math.abs(phi) > 1.5 * Math.abs(s.sweep) / s.n) continue;
+          var A = dir > 0 ? s.a : Q, B = dir > 0 ? Q : s.b, M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], LL = dist2(A, B), c = s.c;
+          if (LL > 1e-12) {
+            var nx = -(B[1] - A[1]) / LL, ny = (B[0] - A[0]) / LL, t = (c[0] - M[0]) * nx + (c[1] - M[1]) * ny;
+            c = [M[0] + nx * t, M[1] + ny * t];
+          }
+          var sw = Math.atan2(B[1] - c[1], B[0] - c[0]) - Math.atan2(A[1] - c[1], A[0] - c[0]);
+          if (s.ccw) { while (sw <= 0) sw += TAU; } else { while (sw >= 0) sw -= TAU; }
+          segs[i] = { t: 'arc', a: A, b: B, c: c, r: dist2(c, A), ccw: s.ccw, sweep: sw, n: s.n + 1 };
+          segs.splice(j, 1);
+          again = true;
+        }
+      }
+    }
+    segs.forEach(function (s) { delete s.n; });
+  }
+
   // dxfLoopCurves(loop, tol?) -> { circle: { c, r } } | { segs: [{ t: 'line', a, b } | { t: 'arc', a, b, c, r, ccw,
   // sweep }] } (closed, in loop order, each segment starting where the last ended) | null for a degenerate loop
   function dxfLoopCurves(loop, tol) {
@@ -148,11 +188,12 @@
         var run = [];
         for (k = 0; k <= m + 1; k++) run.push(p[(a + k) % n]);
         var arc = arcThrough(run, T[(a + 1) % n] > 0);
-        if (arc) { segs.push(arc); i += m + 1; continue; }
+        if (arc) { arc.n = m + 1; segs.push(arc); i += m + 1; continue; }
       }
       segs.push({ t: 'line', a: p[a], b: p[(a + 1) % n] });
       i++;
     }
+    absorbEndChords(segs, tol);
     // step 4: merge straight runs
     for (var again = true; again && segs.length > 2;) {
       again = false;

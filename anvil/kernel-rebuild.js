@@ -377,8 +377,8 @@
     // (0.002 in ≈ 0.05 mm), not at 0.05 in, which would leave a Ø1 in circle 16-sided
     var tess = model && (model.tessellation || (model.units === 'in' ? { chordTol: 0.002 } : null));
     if (!tess) return fn();
-    var saved = { chordTol: TESS.chordTol, minSegs: TESS.minSegs, maxSegs: TESS.maxSegs, legacy: TESS.legacy };
-    try { setTessellation(tess); return fn(); } finally { TESS.chordTol = saved.chordTol; TESS.minSegs = saved.minSegs; TESS.maxSegs = saved.maxSegs; TESS.legacy = saved.legacy; }
+    var saved = { chordTol: TESS.chordTol, minSegs: TESS.minSegs, maxSegs: TESS.maxSegs, maxAngle: TESS.maxAngle, legacy: TESS.legacy };
+    try { setTessellation(tess); return fn(); } finally { TESS.chordTol = saved.chordTol; TESS.minSegs = saved.minSegs; TESS.maxSegs = saved.maxSegs; TESS.maxAngle = saved.maxAngle; TESS.legacy = saved.legacy; }
   }
   function rebuild(model, cache) { return withModelTess(model, function () { return rebuildModel(model, cache); }); }
   // lane DC (finding #10): Cut-Extrude's "Link to thickness" in a sheet part: a feature with linkT: true is a blind cut

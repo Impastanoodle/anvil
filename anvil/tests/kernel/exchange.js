@@ -25,7 +25,10 @@
       return xhr.responseText;
     }
     var PARTS = ['Plate with bolt holes', 'L-bracket', 'Bushing', 'Two-body clamp', 'Hex nut', 'Mug'];
-    var STEP_FACETED = { 'Hex nut': ['cone'], 'Mug': ['cyl'] };
+    // lane FH2 (2026-10-29): the Mug's swept handle now carries torus records (the sweep along the arc is a partial
+    // revolve of the tube); its torus patch is bounded by two meridian circles, a patch shape the STEP writer / reader
+    // do not take yet ("plain" patches are cylinders and cones only), so it goes out faceted with the cylinders
+    var STEP_FACETED = { 'Hex nut': ['cone'], 'Mug': ['cyl', 'tor'] };
     // the kernel's exact volume with the given surface types measured by their facets (as a STEP export writes them)
     function stepVolume(r, faceted) {
       if (!faceted) return r.mp.volume;

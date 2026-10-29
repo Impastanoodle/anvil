@@ -932,12 +932,26 @@ var Exchange = (function () {
       c.tris.forEach(function (t2) { for (var e2 = 0; e2 < 3; e2++) { var v = tri[t2 * 3 + e2]; if (!onAxis && axial(S, P(v)).rho < tol) onAxis = P(v); } });
       if (!closed.length && !other.length) return S.t === 'sph' || S.t === 'tor' ? { kind: 'closed' } : null;
       if (!closed.length) {
-        if (S.t !== 'cyl' && S.t !== 'cone') return null;
+        if (S.t !== 'cyl' && S.t !== 'cone' && S.t !== 'tor' && S.t !== 'sph') return null;
+        // rfFF: a sphere patch bounded by arcs (a fillet's spherical corner) is written on a sphere whose axis is square
+        // to the patch's mean direction m and whose seam (x direction) is opposite m, so the patch keeps clear of the
+        // poles and the seam; a torus patch (a fillet along part of a circle) keeps its own axis
+        var SA = S;
+        if (S.t === 'sph') {
+          var m = [0, 0, 0];
+          c.tris.forEach(function (t2) { m = add(m, sub(scale(add(add(P(tri[t2 * 3]), P(tri[t2 * 3 + 1])), P(tri[t2 * 3 + 2])), 1 / 3), S.o)); });
+          if (len(m) < tol) return null;
+          m = norm(m);
+          var w = Math.abs(m[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+          c.axis = norm(cross(m, w)); c.xdir = scale(m, -1);
+          SA = { t: 'sph', o: S.o, d: c.axis, r: S.r };
+          xd = c.xdir; yd = cross(c.axis, xd);
+        }
         // every loop must stay on one side of the axis (winding number 0)
         for (var k = 0; k < other.length; k++) {
           var l = other[k].loop, sum = 0, prev = null, first2 = null;
           for (var i = 0; i < l.length; i++) {
-            var ax = axial(S, P(l[i]));
+            var ax = axial(SA, P(l[i]));
             if (ax.rho < tol) return null;
             var ang = Math.atan2(dot(ax.v, yd), dot(ax.v, xd));
             if (prev == null) first2 = ang; else sum += wrapAngle(ang - prev);
@@ -1021,7 +1035,7 @@ var Exchange = (function () {
       return W.add('EDGE_CURVE(\'\',' + V1ref + ',' + V2ref + ',' + W.add('CIRCLE(\'\',' + axisE(C, circ.normal, xd) + ',' + stepReal(S.r) + ')') + ',' + (inside * 2 >= total ? '.T.' : '.F.') + ')');
     }
     function surfaceE(c) {
-      var S = c.surf, nC = canonDir(S.d), xd = xdirOf(nC);
+      var S = c.surf, nC = c.axis || canonDir(S.d), xd = c.xdir || xdirOf(nC);   // rfFF: a sphere patch's own axis (patchShape)
       // same_sense: the true surface normal against the facets' outward normal, on the largest triangle
       var best = -1, bt = c.tris[0];
       c.tris.forEach(function (t2) { var A = P(tri[t2 * 3]), ar = len(cross(sub(P(tri[t2 * 3 + 1]), A), sub(P(tri[t2 * 3 + 2]), A))); if (ar > best) { best = ar; bt = t2; } });
@@ -1467,7 +1481,43 @@ var Exchange = (function () {
         return Math.abs(Math.hypot(a.rho - Cr, a.z) - S.r) < tol;
       }
       var seams = [], lats = [], rulings = [];
-      for (var li = 0; li < loops.length; li++) for (var xi = 0; xi < loops[li].length; xi++) {
+      // rfFF2: a fillet's spherical corner (Anvil's own export, OpenCascade's rounded box): one loop of three quarter
+      // great circles in mutually perpendicular planes
+      var octTris = S.t === 'sph' && loops.length === 1 && !vloops.length && loops[0].length === 3 ? sphereOctant(loops[0]) : null;
+      // -> triangles [A, B, C, record] of a sphere octant, or null: re-framed about the axis from the pole (where the
+      // second and third arcs meet) through the centre, the first arc is the equator and the others meridians; rows of
+      // constant latitude through the meridians' own points, columns at the equator's points, so every quad is a
+      // revolved chord (exact massProps with P / Q) and the boundary points are the edges' (watertight with neighbours)
+      function sphereOctant(L) {
+        if (!L.every(function (x) { return x.info.kind === 'circle' && !x.info.full && len(sub(x.info.circle.c, S.o)) < tol && Math.abs(x.info.circle.r - S.r) < tol; })) return null;
+        var ns = L.map(function (x) { return norm(x.info.circle.n); });
+        if (Math.abs(dot(ns[0], ns[1])) > 1e-6 || Math.abs(dot(ns[0], ns[2])) > 1e-6 || Math.abs(dot(ns[1], ns[2])) > 1e-6) return null;
+        var Eq = orientedPts(L[0]), M1 = orientedPts(L[1]), M2 = orientedPts(L[2]).slice().reverse(), pole = M1[M1.length - 1];
+        if (M1.length !== M2.length || M1.length < 2 || len(sub(M2[M2.length - 1], pole)) > tol || len(sub(Eq[0], M2[0])) > tol || len(sub(Eq[Eq.length - 1], M1[0])) > tol) return null;
+        var d = norm(sub(S.o, pole)), Sp = { t: 'sph', o: S.o, d: d, r: S.r };
+        function zOf(p) { return dot(sub(p, S.o), d); }
+        for (var i = 0; i < M1.length; i++) if (Math.abs(zOf(M1[i]) - zOf(M2[i])) > tol) return null;
+        var e0 = norm(sub(Eq[0], add(S.o, scale(d, zOf(Eq[0]))))), e1 = cross(d, e0), phis = [], acc = 0, prev = 0;
+        Eq.forEach(function (p, j) { var v = sub(p, S.o), a = Math.atan2(dot(v, e1), dot(v, e0)); if (j) acc += wrapAngle(a - prev); prev = a; phis.push(acc); });
+        var rows = [];
+        for (i = 0; i < M1.length; i++) {
+          var z = zOf(M2[i]), rho = i === M1.length - 1 ? 0 : Math.sqrt(Math.max(0, S.r * S.r - z * z)), c = add(S.o, scale(d, z)), row;
+          if (i === 0) row = Eq.slice();
+          else if (i === M1.length - 1) row = [pole];
+          else row = phis.map(function (ph, j) { return j === 0 ? M2[i] : j === phis.length - 1 ? M1[i] : add(c, scale(add(scale(e0, Math.cos(ph)), scale(e1, Math.sin(ph))), rho)); });
+          rows.push({ pts: row, rho: rho, z: z });
+        }
+        var res = [];
+        for (i = 0; i + 1 < rows.length; i++) {
+          var A = rows[i], B = rows[i + 1], R = { s: Sp, P: [A.rho, A.z], Q: [B.rho, B.z] };
+          for (var j = 0; j + 1 < A.pts.length; j++) {
+            if (B.pts.length === 1) { res.push([A.pts[j], A.pts[j + 1], B.pts[0], R]); continue; }
+            res.push([A.pts[j], A.pts[j + 1], B.pts[j + 1], R], [A.pts[j], B.pts[j + 1], B.pts[j], R]);
+          }
+        }
+        return res;
+      }
+      for (var li = 0; !octTris && li < loops.length; li++) for (var xi = 0; xi < loops[li].length; xi++) {
         var x = loops[li][xi], info = x.info;
         if (uses[info.id] > 1) { if (seams.indexOf(info) < 0) seams.push(info); continue; }
         if (info.kind === 'circle' && Math.abs(Math.abs(dot(norm(info.circle.n), S.d)) - 1) < 1e-9 && ax(info.circle.c).rho < tol && onSurface(info.start)) {
@@ -1540,7 +1590,8 @@ var Exchange = (function () {
       }
       function circleRow(q) { return { row: ring(q), rho: q.rho, z: q.z }; }
       var seamMid = seams.length && seams[0].kind === 'circle' ? seams[0].mid : null;
-      if (S.t === 'cyl' || S.t === 'cone') {
+      if (octTris) tris = octTris;   // rfFF2
+      else if (S.t === 'cyl' || S.t === 'cone') {
         if (levels.length === 2 && full.length === 2 && !rulings.length) zip(ring(levels[0]), ring(levels[1]), true, rec());
         else if (S.t === 'cone' && levels.length === 1 && full.length === 1 && !rulings.length && Math.abs(S.k) > 1e-12) zip(ring(levels[0]), pointRow(add(S.o, scale(S.d, -S.r / S.k))), true, rec());
         else if (levels.length === 2 && rulings.length === 2 && loops.length === 1) {

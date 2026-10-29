@@ -18,7 +18,7 @@
     var f = UI.App.model.features[UI.App.model.features.length - 1];
     assert(UI.App.model.features.length === n0 + 2 && f.type === 'hole' && f.holeType === 'cbore' && f.size === 'M6' && f.depth === 16, JSON.stringify(f));
     assert(!UI.App.build.errors[f.id], UI.App.build.errors[f.id]);
-    var one = Math.PI * 5.5 * 5.5 * 6.5 + Math.PI * 3.3 * 3.3 * (16 - 6.5);   // CBORE Ø11 ↧ 6.5 over Ø6.6 ↧ 16
+    var one = Math.PI * 5.5 * 5.5 * 6.4 + Math.PI * 3.3 * 3.3 * (16 - 6.4);   // CBORE Ø11 ↧ 6.4 over Ø6.6 ↧ 16 (SolidWorks Hole Wizard: depth d + 0.4, lane FH2)
     near(anvil.summary().volume, 108000 - 2 * one, 1e-3, 'volume');   // summary() rounds to 3 decimals
     var row = D.querySelector('#tree .ti[data-fid="' + f.id + '"]');
     var ic = D.createElement('span'); ic.innerHTML = W.Icons('holeWizard', 16);

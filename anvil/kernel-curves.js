@@ -65,8 +65,11 @@
   function revolveSegs(rmax, angleDeg) {
     return Math.max(8, Math.round((TESS.legacy ? 48 : segsForRadius(rmax)) * Math.abs(angleDeg) / 360));
   }
-  // segs: rings of facets (default: from the loop's largest radius and the chord tolerance); cv: loopCurves
-  function revolveLoop(loop, plane, axisP, axisD, angleDeg, shared, cv, segs) {
+  // segs: rings of facets (default: from the loop's largest radius and the chord tolerance); cv: loopCurves; fseg: the
+  // loop's free-curve segments (sketchProfile loop.fseg: chords of a spline / ellipse). rfFE: a chord of a free curve
+  // still gets its cone record (exact volumes of the faceted ring), flagged fc: 1 so analyticNormals smooths the
+  // rings into one surface instead of shading each chord's cone apart.
+  function revolveLoop(loop, plane, axisP, axisD, angleDeg, shared, cv, segs, fseg) {
     var A = to3D(plane, axisP[0], axisP[1]);
     var D = norm(sub(to3D(plane, axisP[0] + axisD[0], axisP[1] + axisD[1]), A));
     var full = Math.abs(angleDeg) >= 360 - 1e-6;
@@ -98,7 +101,7 @@
       if (Math.abs(dz) <= eps || (qi[0] <= eps && qj[0] <= eps)) { surfs.push(null); continue; }
       if (Math.abs(dr) <= eps) S = { t: 'cyl', o: A.slice(), d: D.slice(), r: qi[0] };
       else S = { t: 'cone', o: A.slice(), d: D.slice(), r: qi[0] - dr / dz * qi[1], k: dr / dz };
-      surfs.push({ s: S });
+      surfs.push(fseg && fseg[i] && fseg[i] !== -1 ? { s: S, fc: 1 } : { s: S });
     }
     for (s = 0; s < segs; s++) {
       var r0 = rings[s], r1 = rings[s + 1];
@@ -148,7 +151,7 @@
     checkProfile(profile);
     var outers = [], holes = [];
     profile.loops.forEach(function (l) {
-      var solid = makeSolid(l.pts, l.hole, loopCurves(profile, l));
+      var solid = makeSolid(l.pts, l.hole, loopCurves(profile, l), l);
       if (!solid) return;
       (l.hole ? holes : outers).push(solid);
     });
@@ -289,7 +292,7 @@
     var rmax = 0;
     profile.loops.forEach(function (l) { l.pts.forEach(function (p) { rmax = Math.max(rmax, Math.abs((p[0] - axis.p[0]) * d[1] - (p[1] - axis.p[1]) * d[0])); }); });
     var segs = revolveSegs(rmax, angle);
-    return solidFromProfile(profile, function (pts, hole, cv) {
+    return solidFromProfile(profile, function (pts, hole, cv, l) {
       // reject loops crossing the axis
       var side = 0;
       for (var i = 0; i < pts.length; i++) {
@@ -298,7 +301,7 @@
         if (side === 0) side = s > 0 ? 1 : -1;
         else if ((s > 0 ? 1 : -1) !== side) throw new Error('Revolve profile crosses the axis.');
       }
-      return revolveLoop(pts, plane, axis.p, d, angle, f.id, cv, segs);
+      return revolveLoop(pts, plane, axis.p, d, angle, f.id, cv, segs, l && l.fseg);
     });
   }
 
@@ -672,50 +675,199 @@
     }) : [];
     return { faces: mesh.faces.length, faceSurfs: faceSurfs, key0: key0, curves: curves };
   }
-  // analyticNormals(mesh) -> Float32Array laid out like mesh.normals: every corner of a triangle on a curved face gets
-  // its surface's own normal there, oriented like its facet's (planar faces keep the flat normals). The same numbers as
-  // ui-core.js analyticNormals (the viewport's smooth shading), so a worker can find them and send them with its build
-  // (r3/engine3: tens of ms on the main thread for an OpenCascade solid, where every facet is curved).
-  function surfNormalAt(S, x) {
+  // ------------------------------------------------------------------ smooth shading normals (rfFE)
+  // analyticNormals(mesh) -> Float32Array laid out like mesh.normals (3 per triangle corner): the viewport's smooth
+  // shading (ui-core.js UI.analyticNormals calls this; a worker sends it with its build). mesh.normals stays flat
+  // (exports, zebra, picking). The triangles follow meshFromBody's order (each face's polygons fanned from vertex 0).
+  //   record facets (polygon.surf.s: cyl / cone / sph / tor): the surface's own normal at each corner, oriented like
+  //     the facet; on the axis (a cone apex, a torus pole) the limit along the facet's own meridian;
+  //   other curved faces (fillets on curved edges, revolved / extruded splines and ellipses, lofts, sweeps, boundary,
+  //     wrap, OpenCascade B-spline faces …): meshFromBody makes one mesh face per facet plane, so a facet is told
+  //     from a real plane by its neighbours (faces sharing a welded vertex, normals within SMOOTH.crease degrees):
+  //     a face is a facet when its turn to some neighbour G carries on G's own curvature (the turn from G to G's
+  //     other neighbours, per unit distance between face centres) — a plane next to a fillet turns far less than
+  //     the fillet's curvature over its size and stays flat; two planes at a small angle have no third face to
+  //     carry on and stay sharp. Polygons of one OpenCascade face (polygon.face) are facets of it whenever it spans
+  //     several mesh faces. A revolved free curve's chords (surf.fc) are always facets. Each corner of a facet takes
+  //     the angle-weighted normal of the faces at its vertex: the exact ones (planes and record facets within
+  //     SMOOTH.exact degrees: a tangent plane's normal is the surface's there) when there are any, else the facets
+  //     within SMOOTH.crease (one OpenCascade face's own only), so a real sharp edge inside a face stays sharp.
+  var SMOOTH = { crease: 20, exact: 12, carry: 0.4 };
+  function surfNormalAt(S, x, toward) {
     var v = [x[0] - S.o[0], x[1] - S.o[1], x[2] - S.o[2]], d = S.d, z = dot(v, d), n;
     if (S.t === 'sph') n = v;
     else {
       var rho = [v[0] - d[0] * z, v[1] - d[1] * z, v[2] - d[2] * z], rl = len(rho);
-      if (rl < 1e-9) return null;
-      var er = [rho[0] / rl, rho[1] / rl, rho[2] / rl];
-      if (S.t === 'cyl') n = er;
-      else if (S.t === 'cone') n = [er[0] - (S.k || 0) * d[0], er[1] - (S.k || 0) * d[1], er[2] - (S.k || 0) * d[2]];
-      else if (S.t === 'tor') n = [rho[0] - er[0] * S.R, rho[1] - er[1] * S.R, rho[2] - er[2] * S.R];
-      else return null;
+      if (rl < 1e-9 * Math.max(1, Math.abs(S.r || 0), Math.abs(S.R || 0)) && toward) {
+        // on the axis: the limit along the meridian through `toward` (a point of the same facet)
+        var w = [toward[0] - S.o[0], toward[1] - S.o[1], toward[2] - S.o[2]], zw = dot(w, d);
+        rho = [w[0] - d[0] * zw, w[1] - d[1] * zw, w[2] - d[2] * zw]; var rw = len(rho);
+        if (rw < 1e-12) return null;
+        var eu = [rho[0] / rw, rho[1] / rw, rho[2] / rw];
+        if (S.t === 'cone') n = [eu[0] - (S.k || 0) * d[0], eu[1] - (S.k || 0) * d[1], eu[2] - (S.k || 0) * d[2]];
+        else if (S.t === 'tor') n = [d[0] * z - eu[0] * S.R, d[1] * z - eu[1] * S.R, d[2] * z - eu[2] * S.R];   // x − (o + R·eρ)
+        else return null;
+      } else {
+        if (rl < 1e-12) return null;
+        var er = [rho[0] / rl, rho[1] / rl, rho[2] / rl];
+        if (S.t === 'cyl') n = er;
+        else if (S.t === 'cone') n = [er[0] - (S.k || 0) * d[0], er[1] - (S.k || 0) * d[1], er[2] - (S.k || 0) * d[2]];
+        else if (S.t === 'tor') n = [v[0] - er[0] * S.R, v[1] - er[1] * S.R, v[2] - er[2] * S.R];   // x − (o + R·eρ), the tube centre (rfFE: with the axial part; it was radial only)
+        else return null;
+      }
     }
     var l = len(n);
     return l > 1e-12 ? [n[0] / l, n[1] / l, n[2] / l] : null;
   }
   function analyticNormals(m) {
-    var out = new Float32Array(m.normals);
-    (m.faces || []).forEach(function (f) {
-      if (!f.polys) return;
-      var t = f.start, fn = f.normal, writes = [];
+    var out = new Float32Array(m.normals), faces = m.faces || [], nf = faces.length;
+    if (!nf) return out;
+    var P = m.positions64 || m.positions, nT = (P.length / 9) | 0;
+    // 1. record facets: the surface normal at each corner; kind[fi]: 0 plane, 1 record, 2 facet, 3 candidate, -1 skip
+    var kind = new Int8Array(nf), bface = new Array(nf), faceOf = new Int32Array(nT), recTri = new Uint8Array(nT);
+    var cos = Math.cos, D2R = Math.PI / 180;
+    faces.forEach(function (f, fi) {
+      for (var q = f.start; q < f.start + f.count && q < nT; q++) faceOf[q] = fi;
+      if (!f.polys) { kind[fi] = -1; return; }
+      var t = f.start, fn = f.normal, writes = [], rec = 0, plain = 0, fc = 0, bf = null;
       f.polys.forEach(function (p) {
         var vs = p.vertices, nt = Math.max(0, vs.length - 2);
-        if (p.surf && p.surf.s) {
+        if (p.face != null && bf == null) bf = p.face;
+        if (p.surf && p.surf.s && !p.surf.fc) {
+          rec++;
+          var cx = 0, cy = 0, cz = 0;
+          vs.forEach(function (vx) { cx += vx.pos.x; cy += vx.pos.y; cz += vx.pos.z; });
+          var cen = [cx / vs.length, cy / vs.length, cz / vs.length];
           var vn = vs.map(function (vx) {
-            var n = surfNormalAt(p.surf.s, [vx.pos.x, vx.pos.y, vx.pos.z]);
+            var n = surfNormalAt(p.surf.s, [vx.pos.x, vx.pos.y, vx.pos.z], cen);
             if (!n) return fn;
             return dot(n, fn) < 0 ? [-n[0], -n[1], -n[2]] : n;
           });
           for (var j = 1; j + 1 < vs.length; j++) writes.push(t + j - 1, vn[0], vn[j], vn[j + 1]);
-        }
+        } else { plain++; if (p.surf && p.surf.fc) fc++; }
         t += nt;
       });
-      if (t !== f.start + f.count) return;
+      bface[fi] = bf;
+      if (t !== f.start + f.count) { kind[fi] = -1; return; }   // not the layout meshFromBody made: keep the flat normals
       for (var w = 0; w < writes.length; w += 4) {
         var o = writes[w] * 9;
+        recTri[writes[w]] = 1;
         for (var c = 0; c < 3; c++) { var n = writes[w + 1 + c]; out[o + c * 3] = n[0]; out[o + c * 3 + 1] = n[1]; out[o + c * 3 + 2] = n[2]; }
       }
+      kind[fi] = plain === 0 ? 1 : fc === plain && !rec ? 2 : rec ? 0 : 3;
     });
+    var anyCand = false;
+    for (var fi0 = 0; fi0 < nf; fi0++) if (kind[fi0] >= 2) { anyCand = true; break; }
+    if (!anyCand || !nT) return out;
+    // 2. weld corners (a grid of 1e-7 × the bounding diagonal) and list the faces at each vertex
+    var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], i, k;
+    for (i = 0; i < nT * 9; i += 3) for (k = 0; k < 3; k++) { if (P[i + k] < lo[k]) lo[k] = P[i + k]; if (P[i + k] > hi[k]) hi[k] = P[i + k]; }
+    var q = Math.max(len(sub(hi, lo)) * 1e-7, 1e-12), ids = new Map(), vid = new Int32Array(nT * 3), nv = 0;
+    for (i = 0; i < nT * 3; i++) {
+      var key = Math.round(P[i * 3] / q) + ',' + Math.round(P[i * 3 + 1] / q) + ',' + Math.round(P[i * 3 + 2] / q), id = ids.get(key);
+      if (id == null) { id = nv++; ids.set(key, id); }
+      vid[i] = id;
+    }
+    ids = null;
+    var vfStart = new Int32Array(nv + 1), vfList, cnt = new Int32Array(nv);
+    // faces at each vertex, without repeats (a triangle fan visits a vertex many times)
+    var seen = new Map();
+    for (i = 0; i < nT * 3; i++) { var sk = vid[i] * nf + faceOf[(i / 3) | 0]; if (!seen.has(sk)) { seen.set(sk, -1); cnt[vid[i]]++; } }
+    for (i = 0; i < nv; i++) vfStart[i + 1] = vfStart[i] + cnt[i];
+    vfList = new Int32Array(vfStart[nv]); cnt.fill(0);
+    seen.forEach(function (x, sk) { var v = Math.floor(sk / nf), f = sk - v * nf; vfList[vfStart[v] + cnt[v]++] = f; });
+    // 3. classify candidates: neighbour pairs within the crease, curvature carried on from a neighbour
+    var cosC = cos(SMOOTH.crease * D2R), cosE = cos(SMOOTH.exact * D2R), MIN_T = 1e-4;
+    function fnrm(fi) { return faces[fi].normal; }
+    function cdist(a, b) { var ca = faces[a].centroid, cb = faces[b].centroid; return Math.max(Math.hypot(ca[0] - cb[0], ca[1] - cb[1], ca[2] - cb[2]), 1e-12); }
+    var pairs = new Map(), k1 = new Float64Array(nf), k1o = new Int32Array(nf).fill(-1), k2 = new Float64Array(nf);
+    for (var v = 0; v < nv; v++) {
+      var s0 = vfStart[v], s1 = vfStart[v + 1];
+      for (var a = s0; a < s1; a++) for (var b = a + 1; b < s1; b++) {
+        var fa = vfList[a], fb = vfList[b];
+        if (kind[fa] < 0 || kind[fb] < 0) continue;
+        var pk = fa < fb ? fa * nf + fb : fb * nf + fa;
+        if (pairs.has(pk)) continue;
+        var c = dot(fnrm(fa), fnrm(fb));
+        if (c < cosC) { pairs.set(pk, -1); continue; }
+        var th = Math.acos(Math.min(1, c));
+        pairs.set(pk, th);
+        if (th < MIN_T) continue;
+        var kap = th / cdist(fa, fb);
+        [[fa, fb], [fb, fa]].forEach(function (ab) {
+          var x = ab[0];
+          if (kap > k1[x]) { k2[x] = k1[x]; k1[x] = kap; k1o[x] = ab[1]; } else if (kap > k2[x]) k2[x] = kap;
+        });
+      }
+    }
+    var occ = {};   // OpenCascade face id -> mesh faces it spans
+    for (i = 0; i < nf; i++) if (bface[i] != null) occ[bface[i]] = (occ[bface[i]] || 0) + 1;
+    pairs.forEach(function (th, pk) {
+      if (th < MIN_T) return;
+      var fa = Math.floor(pk / nf), fb = pk - fa * nf;
+      [[fa, fb], [fb, fa]].forEach(function (ab) {
+        var F = ab[0], G = ab[1];
+        if (kind[F] !== 3) return;
+        var kG = k1o[G] === F ? k2[G] : k1[G];
+        if (kG > 0 && th >= SMOOTH.carry * cdist(F, G) * kG) kind[F] = 4;   // a facet (decided below)
+      });
+    });
+    for (i = 0; i < nf; i++) {
+      if (kind[i] === 3 && bface[i] != null && occ[bface[i]] > 1) kind[i] = 4;
+      if (kind[i] === 4) kind[i] = 2; else if (kind[i] === 3) kind[i] = 0;
+    }
+    // 4. angle-weighted source normals per (vertex, face) at the vertices of facets
+    var need = new Uint8Array(nv), anyF = false;
+    for (i = 0; i < nT * 3; i++) if (kind[faceOf[(i / 3) | 0]] === 2) { need[vid[i]] = 1; anyF = true; }
+    if (!anyF) return out;
+    var acc = new Map();
+    for (var t = 0; t < nT; t++) {
+      var f0 = faceOf[t];
+      if (kind[f0] < 0) continue;
+      var base = t * 9;
+      for (k = 0; k < 3; k++) {
+        var vi = vid[t * 3 + k];
+        if (!need[vi]) continue;
+        var pa = base + k * 3, pb = base + ((k + 1) % 3) * 3, pc = base + ((k + 2) % 3) * 3;
+        var ux = P[pb] - P[pa], uy = P[pb + 1] - P[pa + 1], uz = P[pb + 2] - P[pa + 2], wx = P[pc] - P[pa], wy = P[pc + 1] - P[pa + 1], wz = P[pc + 2] - P[pa + 2];
+        var lu = Math.hypot(ux, uy, uz), lw = Math.hypot(wx, wy, wz);
+        if (!(lu > 0 && lw > 0)) continue;
+        var ang = Math.acos(Math.max(-1, Math.min(1, (ux * wx + uy * wy + uz * wz) / (lu * lw))));
+        if (!(ang > 0)) continue;
+        var ak = vi * nf + f0, sm = acc.get(ak);
+        if (!sm) acc.set(ak, sm = [0, 0, 0]);
+        var on = base + k * 3;
+        sm[0] += ang * out[on]; sm[1] += ang * out[on + 1]; sm[2] += ang * out[on + 2];
+      }
+    }
+    // 5. facet corners
+    for (t = 0; t < nT; t++) {
+      var F = faceOf[t];
+      if (kind[F] !== 2) continue;
+      var nF = faces[F].normal;
+      for (k = 0; k < 3; k++) {
+        var vv = vid[t * 3 + k], ex = [0, 0, 0], fs = [0, 0, 0], nEx = 0;
+        for (var j2 = vfStart[vv]; j2 < vfStart[vv + 1]; j2++) {
+          var G = vfList[j2], g = acc.get(vv * nf + G);
+          if (!g || kind[G] < 0) continue;
+          var gl = Math.hypot(g[0], g[1], g[2]);
+          if (!(gl > 0)) continue;
+          var cg = (g[0] * nF[0] + g[1] * nF[1] + g[2] * nF[2]) / gl;
+          if (kind[G] === 2) {
+            if (G !== F && cg < cosC) continue;
+            if (G !== F && bface[F] != null && bface[G] !== bface[F]) continue;
+            fs[0] += g[0]; fs[1] += g[1]; fs[2] += g[2];
+          } else if (cg >= cosE) { ex[0] += g[0]; ex[1] += g[1]; ex[2] += g[2]; nEx++; }
+        }
+        var r = nEx ? ex : fs, rl = Math.hypot(r[0], r[1], r[2]);
+        if (!(rl > 1e-12)) continue;
+        var oo = t * 9 + k * 3;
+        out[oo] = r[0] / rl; out[oo + 1] = r[1] / rl; out[oo + 2] = r[2] / rl;
+      }
+    }
     return out;
   }
+  K.smoothOptions = SMOOTH;
 
   // massProps(mesh, density) -> { volume, area, centroid, bbox, density, mass, polygonal?, curved? }. Volume, area and
   // centroid are the exact values of the true curved faces when the mesh's faces carry their CSG polygons (meshes
@@ -864,7 +1016,7 @@
   K.faceCentroidExact = faceCentroidExact;   // lane DF
   K.extrudeRange = extrudeRange; K.revolveAxis = revolveAxis; K.THROUGH = THROUGH; K.massProps = massProps; K.curveCorrection = curveCorrection;
   K.curveEdges = curveEdges; K.curveSurfaces = curveSurfaces; K.massOptions = massOptions; K.meshCurveInfo = meshCurveInfo;
-  K.analyticNormals = analyticNormals;
+  K.analyticNormals = analyticNormals; K.surfNormalAt = surfNormalAt;   // rfFE: K.smoothOptions (crease, exact, carry) is set above
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.THROUGH = THROUGH; _.buildExtrude = buildExtrude; _.buildRevolve = buildRevolve; _.extrudeRange = extrudeRange; _.mirrorBody = mirrorBody;
   _.prism = prism; _.rotateBody = rotateBody; _.rotatePoint = rotatePoint; _.translateBody = translateBody; _.unionAll = unionAll;

@@ -18,15 +18,15 @@
     var t = list.map(function (a) { return a.text; });   // (the callout's lines joined with a space)
     assert(list.length === 3, 'three callouts: ' + t.join(' | '));
     var clear = t.filter(function (x) { return /^2X /.test(x); })[0], tap = t.filter(function (x) { return /UNC/.test(x); })[0], csk = t.filter(function (x) { return /⌵/.test(x); })[0];
-    assert(clear === '2X Ø.281 THRU ALL', 'clearance (two positions): ' + clear + ' of ' + t.join(' | '));
+    assert(clear === '2X Ø.266 THRU ALL', 'clearance (two positions): ' + clear + ' of ' + t.join(' | '));
     assert(tap === 'Ø.201 THRU ALL 1/4-20 UNC - 2B THRU ALL', 'tapped: ' + tap);
-    assert(csk === 'Ø.281 THRU ALL ⌵ Ø.507 X 82°', 'countersink, from the feature (not the far-side Ø.403): ' + csk);
+    assert(csk === 'Ø.266 THRU ALL ⌵ Ø.507 X 82°', 'countersink, from the feature (not the far-side Ø.403): ' + csk);
     assert(list.every(function (a) { return !a.dangling; }), 'attached: ' + list.map(function (a) { return a.dangling; }).join());
     return t.join(' | ');
   }
-  step('rfAJ: Hole Callout by pick on a Hole Wizard hole reads the feature\'s callout — "2X Ø.281 THRU ALL", "Ø.201 THRU ALL" / "1/4-20 UNC - 2B THRU ALL", and the CSK through a 16 ga sheet "Ø.281 THRU ALL" / "⌵ Ø.507 X 82°" (not Ø.403)', async function () {
+  step('rfAJ: Hole Callout by pick on a Hole Wizard hole reads the feature\'s callout — "2X Ø.266 THRU ALL", "Ø.201 THRU ALL" / "1/4-20 UNC - 2B THRU ALL", and the CSK through a 16 ga sheet "Ø.266 THRU ALL" / "⌵ Ø.507 X 82°" (not Ø.403)', async function () {
     var errs0 = errors.length, top = await rfAJPart();
-    anvil.drawing.holeCallout(top.id, { c: [2, -3], r: 0.1406 });
+    anvil.drawing.holeCallout(top.id, { c: [2, -3], r: 0.133 });
     anvil.drawing.holeCallout(top.id, { c: [5, -3], r: 0.1005 });
     var sm = anvil.drawing.holeCallout(top.id, { c: [8, -3], r: (0.507 - 2 * rfAJT * Math.tan(41 * Math.PI / 180)) / 2 });
     assert(sm, 'callouts placed: ' + statusText());

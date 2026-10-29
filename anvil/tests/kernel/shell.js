@@ -31,8 +31,9 @@
     // inner polygon: apothem shrinks by 2, so the inner circumradius is (20 cos(pi/n) - 2) / cos(pi/n)
     var n = segsForRadius(20), ri = (20 * Math.cos(Math.PI / n) - 2) / Math.cos(Math.PI / n);
     var inner = n / 2 * ri * ri * Math.sin(2 * Math.PI / n) * 28;
-    // the outside is the true cylinder (exact since true curves), the cavity the polygonal offset
-    nearRel(r.mp.volume, circleArea(20) * 30 - inner, 1e-4, 'volume');
+    // the outside is the true cylinder (exact since true curves), the cavity too since rfFE2 (the inner wall carries
+    // the cylinder record offset by T: r 18), the facets the polygonal offset
+    nearRel(r.mp.volume, circleArea(20) * 30 - circleArea(18) * 28, 1e-9, 'volume: exact');
     nearRel(polyVol(r.mp), polyCircleArea(20) * 30 - inner, 1e-4, 'polygonal volume');
     consistentVolume(r);
     return 'volume ' + fmt(r.mp.volume) + ', ' + (performance.now() - t0).toFixed(0) + ' ms';

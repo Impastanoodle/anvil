@@ -48,9 +48,11 @@
     assert(pr.loops.length === 1, 'loops = ' + pr.loops.length);
   });
   test('slot, polygon and centre-rect entities are closed loops with the right area', function () {
-    // slot ends are 8-segment half circles (16-gon), so compare with the polygonal area
+    // slot ends are half circles of segsForRadius(2) / 2 chords each (40-gon at the 10° angular limit, rfFE2), so
+    // compare with the polygonal area
     var slot = K.sketchProfile({ entities: [{ t: 'slot', x1: 0, y1: 0, x2: 10, y2: 0, w: 4 }] });
-    nearRel(K.signedArea(slot.loops[0].pts), 10 * 4 + 16 / 2 * 4 * Math.sin(2 * Math.PI / 16), 1e-6, 'slot area');
+    var sn = K.segsForRadius(2);
+    nearRel(K.signedArea(slot.loops[0].pts), 10 * 4 + sn / 2 * 4 * Math.sin(2 * Math.PI / sn), 1e-6, 'slot area (' + sn + '-gon ends)');
     var sl = slot.loops[0].pts, tangent = sl.filter(function (q) { return Math.abs(Math.abs(q[1]) - 2) < 1e-9 && (Math.abs(q[0]) < 1e-9 || Math.abs(q[0] - 10) < 1e-9); });
     assert(tangent.length === 4, 'slot should keep all 4 tangent points where the arcs meet the straight sides (got ' + tangent.length + ')');
     var hex = K.sketchProfile({ entities: [{ t: 'poly', cx: 0, cy: 0, r: 2, n: 6 }] });

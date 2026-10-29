@@ -65,7 +65,8 @@
   test('r15/inches15: an inch document with no Image Quality of its own is built at the mm default scaled to inches (0.002 in), not 0.05 in', function () {
     function faces(units) { var m = K.newModel('T'); K.runScript(m, 'p.units("' + units + '"); p.sketch("Top").circle(0, 0, 0.5).extrude(0.1);'); var b = K.rebuild(m); return K.meshFromBody(b.body).faces.length; }
     var fin = faces('in'), fmm = faces('mm');
-    assert(fin === 42 && fmm === 18, 'a Ø1 in cylinder has ' + (fin - 2) + ' facets, the same numbers in mm ' + (fmm - 2) + ' (expected 40 and 16)');
+    // rfFE2: 32 in mm, not 16: the 12° angular limit's floor
+    assert(fin === 42 && fmm === 34, 'a Ø1 in cylinder has ' + (fin - 2) + ' facets, the same numbers in mm ' + (fmm - 2) + ' (expected 40 and 32)');
   });
   test('trim a rectangle edge inside a circle gives a closed keyhole profile', function () {
     // rect 0..40 × 0..20, circle r=6 centred on the top edge at (20, 20): trim the edge inside the circle and the arc inside the rect

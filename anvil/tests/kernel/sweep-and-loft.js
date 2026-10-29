@@ -23,10 +23,12 @@
     near(r.mp.volume, 100 * 130, 1e-6, 'volume');
     consistentVolume(r);
   });
-  test('sweep along a line + tangent arc path (polygonal arc, tolerance 0.5 %)', function () {
+  // lane FH2 (2026-10-29): a path of lines and tangent arcs is swept exactly (prisms and revolves of the section with
+  // cylinder / torus records), so the volume is π r² × path length (was the polygonal section, 0.5 %)
+  test('sweep along a line + tangent arc path: exact π r² L', function () {
     var r = build('var prof = p.sketch("Front").circle(0, 0, 4).id();\nvar path = p.sketch("Top").line(0, 0, 0, -30).arc(20, -30, 20, 180, 270).line(20, -50, 60, -50).id();\np.sweep({ profile: prof, path: path });');
     noErrors(r);
-    nearRel(r.mp.volume, polyCircleArea(4) * (30 + 20 * Math.PI / 2 + 40), 0.005, 'volume');
+    nearRel(r.mp.volume, circleArea(4) * (30 + 20 * Math.PI / 2 + 40), 1e-9, 'volume');
     nearVec(r.mp.bbox.max, [60, 4, 54], 0.1, 'bbox.max');
     consistentVolume(r);
     assert(Object.keys(r.warnings).length === 0, 'no warnings: ' + JSON.stringify(r.warnings));

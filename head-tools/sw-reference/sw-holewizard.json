@@ -1,0 +1,5191 @@
+{
+ "_about": "SolidWorks 2022 SP5 Hole Wizard database values read over COM by solids_holes.py (lane FH2, 2026-10-29). ANSI Inch in inches, ISO in mm; fits close / normal / loose set through HoleFit.",
+ "ansi.cbore": {
+  "#10": {
+   "close": {
+    "CounterBoreDepth": 0.19,
+    "CounterBoreDiameter": 0.375,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.196,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.19,
+    "CounterBoreDiameter": 0.375,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.201,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.19,
+    "CounterBoreDiameter": 0.375,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.221,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.19,
+    "CounterBoreDiameter": 0.375,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.201,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#12": {
+   "error": "HoleWizard5 returned Nothing for #12"
+  },
+  "#2": {
+   "close": {
+    "CounterBoreDepth": 0.086,
+    "CounterBoreDiameter": 0.1875,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.089,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.086,
+    "CounterBoreDiameter": 0.1875,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.096,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.086,
+    "CounterBoreDiameter": 0.1875,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1065,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.086,
+    "CounterBoreDiameter": 0.1875,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.096,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#3": {
+   "close": {
+    "CounterBoreDepth": 0.099,
+    "CounterBoreDiameter": 0.2031,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.104,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.099,
+    "CounterBoreDiameter": 0.2031,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.11,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.099,
+    "CounterBoreDiameter": 0.2031,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.12,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.099,
+    "CounterBoreDiameter": 0.2031,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.11,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#4": {
+   "close": {
+    "CounterBoreDepth": 0.112,
+    "CounterBoreDiameter": 0.2188,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.116,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.112,
+    "CounterBoreDiameter": 0.2188,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1285,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.112,
+    "CounterBoreDiameter": 0.2188,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.136,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.112,
+    "CounterBoreDiameter": 0.2188,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1285,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#5": {
+   "close": {
+    "CounterBoreDepth": 0.125,
+    "CounterBoreDiameter": 0.25,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1285,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.125,
+    "CounterBoreDiameter": 0.25,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.136,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.125,
+    "CounterBoreDiameter": 0.25,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.154,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.125,
+    "CounterBoreDiameter": 0.25,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.136,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#6": {
+   "close": {
+    "CounterBoreDepth": 0.138,
+    "CounterBoreDiameter": 0.2813,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.144,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.138,
+    "CounterBoreDiameter": 0.2813,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1495,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.138,
+    "CounterBoreDiameter": 0.2813,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1695,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.138,
+    "CounterBoreDiameter": 0.2813,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1495,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#8": {
+   "close": {
+    "CounterBoreDepth": 0.164,
+    "CounterBoreDiameter": 0.3125,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1695,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.164,
+    "CounterBoreDiameter": 0.3125,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.177,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.164,
+    "CounterBoreDiameter": 0.3125,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1935,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.164,
+    "CounterBoreDiameter": 0.3125,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.177,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "1": {
+   "close": {
+    "CounterBoreDepth": 1.0,
+    "CounterBoreDiameter": 1.625,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 1.0156,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 1.0,
+    "CounterBoreDiameter": 1.625,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 1.0312,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 1.0,
+    "CounterBoreDiameter": 1.625,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 1.0469,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 1.0,
+    "CounterBoreDiameter": 1.625,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 1.0312,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "1/2": {
+   "close": {
+    "CounterBoreDepth": 0.5,
+    "CounterBoreDiameter": 0.8125,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.5156,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.5,
+    "CounterBoreDiameter": 0.8125,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.5312,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.5,
+    "CounterBoreDiameter": 0.8125,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.5469,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.5,
+    "CounterBoreDiameter": 0.8125,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.5312,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "1/4": {
+   "close": {
+    "CounterBoreDepth": 0.25,
+    "CounterBoreDiameter": 0.4375,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.257,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.25,
+    "CounterBoreDiameter": 0.4375,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.266,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.25,
+    "CounterBoreDiameter": 0.4375,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.2812,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.25,
+    "CounterBoreDiameter": 0.4375,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.266,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "3/4": {
+   "close": {
+    "CounterBoreDepth": 0.75,
+    "CounterBoreDiameter": 1.1875,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.7656,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.75,
+    "CounterBoreDiameter": 1.1875,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.7812,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.75,
+    "CounterBoreDiameter": 1.1875,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.7969,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.75,
+    "CounterBoreDiameter": 1.1875,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.7812,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "3/8": {
+   "close": {
+    "CounterBoreDepth": 0.375,
+    "CounterBoreDiameter": 0.625,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.386,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.375,
+    "CounterBoreDiameter": 0.625,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.397,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.375,
+    "CounterBoreDiameter": 0.625,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.4062,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.375,
+    "CounterBoreDiameter": 0.625,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.397,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "5/16": {
+   "close": {
+    "CounterBoreDepth": 0.3125,
+    "CounterBoreDiameter": 0.5313,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.323,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.3125,
+    "CounterBoreDiameter": 0.5313,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.332,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.3125,
+    "CounterBoreDiameter": 0.5313,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.3437,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.3125,
+    "CounterBoreDiameter": 0.5313,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.332,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "5/8": {
+   "close": {
+    "CounterBoreDepth": 0.625,
+    "CounterBoreDiameter": 1.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.6406,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.625,
+    "CounterBoreDiameter": 1.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.6562,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.625,
+    "CounterBoreDiameter": 1.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.6719,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.625,
+    "CounterBoreDiameter": 1.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.6562,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "7/16": {
+   "close": {
+    "CounterBoreDepth": 0.4375,
+    "CounterBoreDiameter": 0.7188,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.4531,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.4375,
+    "CounterBoreDiameter": 0.7188,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.4687,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.4375,
+    "CounterBoreDiameter": 0.7188,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.4844,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.4375,
+    "CounterBoreDiameter": 0.7188,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.4687,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "7/8": {
+   "close": {
+    "CounterBoreDepth": 0.875,
+    "CounterBoreDiameter": 1.375,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.8906,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.875,
+    "CounterBoreDiameter": 1.375,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.9062,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.875,
+    "CounterBoreDiameter": 1.375,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.9219,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.875,
+    "CounterBoreDiameter": 1.375,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.9062,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "9/16": {
+   "error": "HoleWizard5 returned Nothing for 9/16"
+  }
+ },
+ "ansi.csk": {
+  "#10": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.385,
+    "FastenerSize": "#10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.196,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.385,
+    "FastenerSize": "#10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.201,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.385,
+    "FastenerSize": "#10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.221,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.385,
+    "FastenerSize": "#10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.201,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#12": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.438,
+    "FastenerSize": "#12",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.221,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.438,
+    "FastenerSize": "#12",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.228,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.438,
+    "FastenerSize": "#12",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.246,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.438,
+    "FastenerSize": "#12",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.228,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#2": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.172,
+    "FastenerSize": "#2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.089,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.172,
+    "FastenerSize": "#2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.096,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.172,
+    "FastenerSize": "#2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1065,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.172,
+    "FastenerSize": "#2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.096,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#3": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.199,
+    "FastenerSize": "#3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.104,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.199,
+    "FastenerSize": "#3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.11,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.199,
+    "FastenerSize": "#3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.12,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.199,
+    "FastenerSize": "#3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.11,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#4": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.225,
+    "FastenerSize": "#4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.116,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.225,
+    "FastenerSize": "#4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1285,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.225,
+    "FastenerSize": "#4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.136,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.225,
+    "FastenerSize": "#4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1285,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#5": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.252,
+    "FastenerSize": "#5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1285,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.252,
+    "FastenerSize": "#5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.136,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.252,
+    "FastenerSize": "#5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.154,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.252,
+    "FastenerSize": "#5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.136,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#6": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.279,
+    "FastenerSize": "#6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.144,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.279,
+    "FastenerSize": "#6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1495,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.279,
+    "FastenerSize": "#6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1695,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.279,
+    "FastenerSize": "#6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1495,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#8": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.332,
+    "FastenerSize": "#8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1695,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.332,
+    "FastenerSize": "#8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.177,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.332,
+    "FastenerSize": "#8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.1935,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.332,
+    "FastenerSize": "#8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.177,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "1": {
+   "error": "HoleWizard5 returned Nothing for 1"
+  },
+  "1/2": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.875,
+    "FastenerSize": "1/2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.5156,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.875,
+    "FastenerSize": "1/2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.5312,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.875,
+    "FastenerSize": "1/2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.5469,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.875,
+    "FastenerSize": "1/2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.5312,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "1/4": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.507,
+    "FastenerSize": "1/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.257,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.507,
+    "FastenerSize": "1/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.266,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.507,
+    "FastenerSize": "1/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.2812,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.507,
+    "FastenerSize": "1/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.266,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "3/4": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 1.375,
+    "FastenerSize": "3/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.7656,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 1.375,
+    "FastenerSize": "3/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.7812,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 1.375,
+    "FastenerSize": "3/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.7969,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 1.375,
+    "FastenerSize": "3/4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.7812,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "3/8": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.762,
+    "FastenerSize": "3/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.386,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.762,
+    "FastenerSize": "3/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.397,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.762,
+    "FastenerSize": "3/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.4062,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.762,
+    "FastenerSize": "3/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.397,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "5/16": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.635,
+    "FastenerSize": "5/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.323,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.635,
+    "FastenerSize": "5/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.332,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.635,
+    "FastenerSize": "5/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.3437,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.635,
+    "FastenerSize": "5/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.332,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "5/8": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 1.125,
+    "FastenerSize": "5/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.6406,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 1.125,
+    "FastenerSize": "5/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.6562,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 1.125,
+    "FastenerSize": "5/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.6719,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 1.125,
+    "FastenerSize": "5/8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.6562,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "7/16": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.812,
+    "FastenerSize": "7/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.4531,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.812,
+    "FastenerSize": "7/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.4687,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.812,
+    "FastenerSize": "7/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.4844,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 0.812,
+    "FastenerSize": "7/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.4687,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "7/8": {
+   "error": "HoleWizard5 returned Nothing for 7/8"
+  },
+  "9/16": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 1.0,
+    "FastenerSize": "9/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.5781,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 1.0,
+    "FastenerSize": "9/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.5937,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 1.0,
+    "FastenerSize": "9/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.6094,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 82.0,
+    "CounterSinkDiameter": 1.0,
+    "FastenerSize": "9/16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.5937,
+    "ThruTapDrillDiameter": 0.0
+   }
+  }
+ },
+ "ansi.hole": {
+  "#10": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#10",
+    "HoleDiameter": 0.196,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#10",
+    "HoleDiameter": 0.201,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#10",
+    "HoleDiameter": 0.221,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#10",
+    "HoleDiameter": 0.201,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#12": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#12",
+    "HoleDiameter": 0.221,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#12",
+    "HoleDiameter": 0.228,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#12",
+    "HoleDiameter": 0.246,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#12",
+    "HoleDiameter": 0.228,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#2": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#2",
+    "HoleDiameter": 0.089,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#2",
+    "HoleDiameter": 0.096,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#2",
+    "HoleDiameter": 0.1065,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#2",
+    "HoleDiameter": 0.096,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#3": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#3",
+    "HoleDiameter": 0.104,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#3",
+    "HoleDiameter": 0.11,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#3",
+    "HoleDiameter": 0.12,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#3",
+    "HoleDiameter": 0.11,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#4": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#4",
+    "HoleDiameter": 0.116,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#4",
+    "HoleDiameter": 0.1285,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#4",
+    "HoleDiameter": 0.136,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#4",
+    "HoleDiameter": 0.1285,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#5": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#5",
+    "HoleDiameter": 0.1285,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#5",
+    "HoleDiameter": 0.136,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#5",
+    "HoleDiameter": 0.154,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#5",
+    "HoleDiameter": 0.136,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#6": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#6",
+    "HoleDiameter": 0.144,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#6",
+    "HoleDiameter": 0.1495,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#6",
+    "HoleDiameter": 0.1695,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#6",
+    "HoleDiameter": 0.1495,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "#8": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#8",
+    "HoleDiameter": 0.1695,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#8",
+    "HoleDiameter": 0.177,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#8",
+    "HoleDiameter": 0.1935,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#8",
+    "HoleDiameter": 0.177,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "1": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1",
+    "HoleDiameter": 1.0156,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1",
+    "HoleDiameter": 1.0312,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1",
+    "HoleDiameter": 1.0469,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1",
+    "HoleDiameter": 1.0312,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "1/2": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/2",
+    "HoleDiameter": 0.5156,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/2",
+    "HoleDiameter": 0.5312,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/2",
+    "HoleDiameter": 0.5469,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/2",
+    "HoleDiameter": 0.5312,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "1/4": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/4",
+    "HoleDiameter": 0.257,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/4",
+    "HoleDiameter": 0.266,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/4",
+    "HoleDiameter": 0.2812,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/4",
+    "HoleDiameter": 0.266,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "3/4": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/4",
+    "HoleDiameter": 0.7656,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/4",
+    "HoleDiameter": 0.7812,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/4",
+    "HoleDiameter": 0.7969,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/4",
+    "HoleDiameter": 0.7812,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "3/8": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/8",
+    "HoleDiameter": 0.386,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/8",
+    "HoleDiameter": 0.397,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/8",
+    "HoleDiameter": 0.4062,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/8",
+    "HoleDiameter": 0.397,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "5/16": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/16",
+    "HoleDiameter": 0.323,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/16",
+    "HoleDiameter": 0.332,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/16",
+    "HoleDiameter": 0.3437,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/16",
+    "HoleDiameter": 0.332,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "5/8": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/8",
+    "HoleDiameter": 0.6406,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/8",
+    "HoleDiameter": 0.6562,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/8",
+    "HoleDiameter": 0.6719,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/8",
+    "HoleDiameter": 0.6562,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "7/16": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/16",
+    "HoleDiameter": 0.4531,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/16",
+    "HoleDiameter": 0.4687,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/16",
+    "HoleDiameter": 0.4844,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/16",
+    "HoleDiameter": 0.4687,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "7/8": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/8",
+    "HoleDiameter": 0.8906,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/8",
+    "HoleDiameter": 0.9062,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/8",
+    "HoleDiameter": 0.9219,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/8",
+    "HoleDiameter": 0.9062,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "9/16": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "9/16",
+    "HoleDiameter": 0.5781,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "9/16",
+    "HoleDiameter": 0.5937,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "9/16",
+    "HoleDiameter": 0.6094,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "9/16",
+    "HoleDiameter": 0.5937,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  }
+ },
+ "ansi.tap": {
+  "#10-24": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#10-24",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.19,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.1495
+   }
+  },
+  "#10-32": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#10-32",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.19,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.159
+   }
+  },
+  "#12-24": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#12-24",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.216,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.177
+   }
+  },
+  "#12-28": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#12-28",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.216,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.182
+   }
+  },
+  "#2-56": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#2-56",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.086,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.07
+   }
+  },
+  "#2-64": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#2-64",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.086,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.07
+   }
+  },
+  "#3-48": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#3-48",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.099,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0785
+   }
+  },
+  "#3-56": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#3-56",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.099,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.082
+   }
+  },
+  "#4-40": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#4-40",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.112,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.089
+   }
+  },
+  "#4-48": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#4-48",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.112,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0935
+   }
+  },
+  "#5-40": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#5-40",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.125,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.1015
+   }
+  },
+  "#5-44": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#5-44",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.125,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.104
+   }
+  },
+  "#6-32": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#6-32",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.138,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.1065
+   }
+  },
+  "#6-40": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#6-40",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.138,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.113
+   }
+  },
+  "#8-32": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#8-32",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.164,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.136
+   }
+  },
+  "#8-36": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "#8-36",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.164,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.136
+   }
+  },
+  "1-12": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1-12",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 1.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.9219
+   }
+  },
+  "1-8": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1-8",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 1.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.875
+   }
+  },
+  "1/2-13": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/2-13",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.5,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.4219
+   }
+  },
+  "1/2-20": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/2-20",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.5,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.4531
+   }
+  },
+  "1/4-20": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/4-20",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.25,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.201
+   }
+  },
+  "1/4-28": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "1/4-28",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.25,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.213
+   }
+  },
+  "3/4-10": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/4-10",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.75,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.6562
+   }
+  },
+  "3/4-16": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/4-16",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.75,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.6875
+   }
+  },
+  "3/8-16": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/8-16",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.375,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.3125
+   }
+  },
+  "3/8-24": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "3/8-24",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.375,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.332
+   }
+  },
+  "5/16-18": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/16-18",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.3125,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.257
+   }
+  },
+  "5/16-24": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/16-24",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.3125,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.272
+   }
+  },
+  "5/8-11": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/8-11",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.625,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.5312
+   }
+  },
+  "5/8-18": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "5/8-18",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.625,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.5781
+   }
+  },
+  "7/16-14": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/16-14",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.4375,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.368
+   }
+  },
+  "7/16-20": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/16-20",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.4375,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.3906
+   }
+  },
+  "7/8-14": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/8-14",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.875,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.8125
+   }
+  },
+  "7/8-9": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "7/8-9",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.875,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.7656
+   }
+  },
+  "9/16-12": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "9/16-12",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.5625,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.4844
+   }
+  },
+  "9/16-18": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "9/16-18",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.5625,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.5156
+   }
+  }
+ },
+ "iso.cbore": {
+  "M10": {
+   "close": {
+    "CounterBoreDepth": 10.6,
+    "CounterBoreDiameter": 18.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 10.5,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 10.6,
+    "CounterBoreDiameter": 18.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 11.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 10.6,
+    "CounterBoreDiameter": 18.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 12.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 10.6,
+    "CounterBoreDiameter": 18.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 11.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M12": {
+   "close": {
+    "CounterBoreDepth": 12.6,
+    "CounterBoreDiameter": 20.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M12",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 13.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 12.6,
+    "CounterBoreDiameter": 20.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M12",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 13.5,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 12.6,
+    "CounterBoreDiameter": 20.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M12",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 15.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 12.6,
+    "CounterBoreDiameter": 20.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M12",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 13.5,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M14": {
+   "error": "HoleWizard5 returned Nothing for M14"
+  },
+  "M16": {
+   "close": {
+    "CounterBoreDepth": 16.6,
+    "CounterBoreDiameter": 26.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 17.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 16.6,
+    "CounterBoreDiameter": 26.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 17.5,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 16.6,
+    "CounterBoreDiameter": 26.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 19.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 16.6,
+    "CounterBoreDiameter": 26.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 17.5,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M2": {
+   "close": {
+    "CounterBoreDepth": 2.4,
+    "CounterBoreDiameter": 4.4,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 2.2,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 2.4,
+    "CounterBoreDiameter": 4.4,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 2.4,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 2.4,
+    "CounterBoreDiameter": 4.4,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 2.6,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 2.4,
+    "CounterBoreDiameter": 4.4,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 2.4,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M2.5": {
+   "close": {
+    "CounterBoreDepth": 2.9,
+    "CounterBoreDiameter": 5.5,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2.5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 2.7,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 2.9,
+    "CounterBoreDiameter": 5.5,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2.5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 2.9,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 2.9,
+    "CounterBoreDiameter": 5.5,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2.5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 3.1,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 2.9,
+    "CounterBoreDiameter": 5.5,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2.5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 2.9,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M20": {
+   "close": {
+    "CounterBoreDepth": 20.6,
+    "CounterBoreDiameter": 33.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M20",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 21.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 20.6,
+    "CounterBoreDiameter": 33.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M20",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 22.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 20.6,
+    "CounterBoreDiameter": 33.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M20",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 24.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 20.6,
+    "CounterBoreDiameter": 33.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M20",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 22.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M3": {
+   "close": {
+    "CounterBoreDepth": 3.4,
+    "CounterBoreDiameter": 6.5,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 3.2,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 3.4,
+    "CounterBoreDiameter": 6.5,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 3.4,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 3.4,
+    "CounterBoreDiameter": 6.5,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 3.6,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 3.4,
+    "CounterBoreDiameter": 6.5,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 3.4,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M4": {
+   "close": {
+    "CounterBoreDepth": 4.4,
+    "CounterBoreDiameter": 8.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 4.3,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 4.4,
+    "CounterBoreDiameter": 8.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 4.5,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 4.4,
+    "CounterBoreDiameter": 8.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 4.8,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 4.4,
+    "CounterBoreDiameter": 8.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 4.5,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M5": {
+   "close": {
+    "CounterBoreDepth": 5.4,
+    "CounterBoreDiameter": 10.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 5.3,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 5.4,
+    "CounterBoreDiameter": 10.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 5.5,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 5.4,
+    "CounterBoreDiameter": 10.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 5.8,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 5.4,
+    "CounterBoreDiameter": 10.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 5.5,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M6": {
+   "close": {
+    "CounterBoreDepth": 6.4,
+    "CounterBoreDiameter": 11.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 6.4,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 6.4,
+    "CounterBoreDiameter": 11.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 6.6,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 6.4,
+    "CounterBoreDiameter": 11.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 7.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 6.4,
+    "CounterBoreDiameter": 11.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 6.6,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M8": {
+   "close": {
+    "CounterBoreDepth": 8.6,
+    "CounterBoreDiameter": 15.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 8.4,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 8.6,
+    "CounterBoreDiameter": 15.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 9.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 8.6,
+    "CounterBoreDiameter": 15.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 10.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 8.6,
+    "CounterBoreDiameter": 15.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 9.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  }
+ },
+ "iso.csk": {
+  "M10": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 22.4,
+    "FastenerSize": "M10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 10.5,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 22.4,
+    "FastenerSize": "M10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 11.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 22.4,
+    "FastenerSize": "M10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 12.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 22.4,
+    "FastenerSize": "M10",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 11.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M12": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 26.88,
+    "FastenerSize": "M12",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 13.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 26.88,
+    "FastenerSize": "M12",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 13.5,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 26.88,
+    "FastenerSize": "M12",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 15.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 26.88,
+    "FastenerSize": "M12",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 13.5,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M14": {
+   "error": "HoleWizard5 returned Nothing for M14"
+  },
+  "M16": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 33.6,
+    "FastenerSize": "M16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 17.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 33.6,
+    "FastenerSize": "M16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 17.5,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 33.6,
+    "FastenerSize": "M16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 19.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 33.6,
+    "FastenerSize": "M16",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 17.5,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M2": {
+   "error": "HoleWizard5 returned Nothing for M2"
+  },
+  "M2.5": {
+   "error": "HoleWizard5 returned Nothing for M2.5"
+  },
+  "M20": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 40.32,
+    "FastenerSize": "M20",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 21.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 40.32,
+    "FastenerSize": "M20",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 22.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 40.32,
+    "FastenerSize": "M20",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 24.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 40.32,
+    "FastenerSize": "M20",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 22.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M3": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 6.72,
+    "FastenerSize": "M3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 3.2,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 6.72,
+    "FastenerSize": "M3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 3.4,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 6.72,
+    "FastenerSize": "M3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 3.6,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 6.72,
+    "FastenerSize": "M3",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 3.4,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M4": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 8.96,
+    "FastenerSize": "M4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 4.3,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 8.96,
+    "FastenerSize": "M4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 4.5,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 8.96,
+    "FastenerSize": "M4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 4.8,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 8.96,
+    "FastenerSize": "M4",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 4.5,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M5": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 11.2,
+    "FastenerSize": "M5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 5.3,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 11.2,
+    "FastenerSize": "M5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 5.5,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 11.2,
+    "FastenerSize": "M5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 5.8,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 11.2,
+    "FastenerSize": "M5",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 5.5,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M6": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 13.44,
+    "FastenerSize": "M6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 6.4,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 13.44,
+    "FastenerSize": "M6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 6.6,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 13.44,
+    "FastenerSize": "M6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 7.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 13.44,
+    "FastenerSize": "M6",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 6.6,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M8": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 17.92,
+    "FastenerSize": "M8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 8.4,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 17.92,
+    "FastenerSize": "M8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 9.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 17.92,
+    "FastenerSize": "M8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 10.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 90.0,
+    "CounterSinkDiameter": 17.92,
+    "FastenerSize": "M8",
+    "HoleDiameter": 0.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 9.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  }
+ },
+ "iso.hole": {
+  "M10": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M10",
+    "HoleDiameter": 10.5,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M10",
+    "HoleDiameter": 11.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M10",
+    "HoleDiameter": 12.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M10",
+    "HoleDiameter": 11.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M12": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M12",
+    "HoleDiameter": 13.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M12",
+    "HoleDiameter": 13.5,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M12",
+    "HoleDiameter": 15.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M12",
+    "HoleDiameter": 13.5,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M14": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M14",
+    "HoleDiameter": 15.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M14",
+    "HoleDiameter": 15.5,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M14",
+    "HoleDiameter": 17.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M14",
+    "HoleDiameter": 15.5,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M16": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M16",
+    "HoleDiameter": 17.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M16",
+    "HoleDiameter": 17.5,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M16",
+    "HoleDiameter": 19.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M16",
+    "HoleDiameter": 17.5,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M2": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2",
+    "HoleDiameter": 2.2,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2",
+    "HoleDiameter": 2.4,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2",
+    "HoleDiameter": 2.6,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2",
+    "HoleDiameter": 2.4,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M2.5": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2.5",
+    "HoleDiameter": 2.7,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2.5",
+    "HoleDiameter": 2.9,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2.5",
+    "HoleDiameter": 3.1,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2.5",
+    "HoleDiameter": 2.9,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M20": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M20",
+    "HoleDiameter": 21.0,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M20",
+    "HoleDiameter": 22.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M20",
+    "HoleDiameter": 24.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M20",
+    "HoleDiameter": 22.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M3": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M3",
+    "HoleDiameter": 3.2,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M3",
+    "HoleDiameter": 3.4,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M3",
+    "HoleDiameter": 3.6,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M3",
+    "HoleDiameter": 3.4,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M4": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M4",
+    "HoleDiameter": 4.3,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M4",
+    "HoleDiameter": 4.5,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M4",
+    "HoleDiameter": 4.8,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M4",
+    "HoleDiameter": 4.5,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M5": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M5",
+    "HoleDiameter": 5.3,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M5",
+    "HoleDiameter": 5.5,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M5",
+    "HoleDiameter": 5.8,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M5",
+    "HoleDiameter": 5.5,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M6": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M6",
+    "HoleDiameter": 6.4,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M6",
+    "HoleDiameter": 6.6,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M6",
+    "HoleDiameter": 7.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M6",
+    "HoleDiameter": 6.6,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  },
+  "M8": {
+   "close": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M8",
+    "HoleDiameter": 8.4,
+    "HoleFit": 0,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M8",
+    "HoleDiameter": 9.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "loose": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M8",
+    "HoleDiameter": 10.0,
+    "HoleFit": 2,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   },
+   "normal": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M8",
+    "HoleDiameter": 9.0,
+    "HoleFit": 1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 0.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 0.0
+   }
+  }
+ },
+ "iso.tap": {
+  "M10": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M10",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 10.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 8.5
+   }
+  },
+  "M12": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M12",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 12.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 10.2
+   }
+  },
+  "M14": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M14",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 14.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 12.0
+   }
+  },
+  "M16": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M16",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 16.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 14.0
+   }
+  },
+  "M2": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 2.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 1.6
+   }
+  },
+  "M2.5": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M2.5",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 2.5,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 2.05
+   }
+  },
+  "M20": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M20",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 20.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 17.5
+   }
+  },
+  "M3": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M3",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 3.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 2.5
+   }
+  },
+  "M4": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M4",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 4.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 3.3
+   }
+  },
+  "M5": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M5",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 5.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 4.2
+   }
+  },
+  "M6": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M6",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 6.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 5.0
+   }
+  },
+  "M8": {
+   "default": {
+    "CounterBoreDepth": 0.0,
+    "CounterBoreDiameter": 0.0,
+    "CounterSinkAngle": 0.0,
+    "CounterSinkDiameter": 0.0,
+    "FastenerSize": "M8",
+    "HoleDiameter": 0.0,
+    "HoleFit": -1,
+    "TapDrillDiameter": 0.0,
+    "ThreadDiameter": 8.0,
+    "ThruHoleDiameter": 0.0,
+    "ThruTapDrillDiameter": 6.8
+   }
+  }
+ }
+}

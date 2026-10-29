@@ -16,12 +16,12 @@
     var p2 = K.sketchProfile({ entities: [{ t: 'line', x1: 0, y1: -5, x2: 0, y2: 5 }, { t: 'arc', cx: 0, cy: 0, r: 5, a0: -90, a1: 90 }] });
     assert(p2.loops.length === 1 && p2.loops[0].seg.filter(function (k) { return k >= 0; }).length === p2.loops[0].pts.length - 1, 'D profile: every segment but the line is on the arc');
   });
-  test('tessellation: chord tolerance (sagitta ≤ 0.05 mm by default), n a multiple of 8 in 16..128; setTessellation and legacy', function () {
+  test('tessellation: chord tolerance (sagitta ≤ 0.05 mm by default) and the 12° angular limit (rfFE2: at least 30 -> 32), n a multiple of 8 in 32..128; setTessellation and legacy', function () {
     [0.5, 2, 4, 7, 10, 25, 40, 100, 400].forEach(function (r) {
       var n = K.segsForRadius(r);
-      assert(n % 8 === 0 && n >= 16 && n <= 128, 'r ' + r + ': n = ' + n);
+      assert(n % 8 === 0 && n >= 32 && n <= 128, 'r ' + r + ': n = ' + n);
       if (n < 128) assert(r * (1 - Math.cos(Math.PI / n)) <= 0.05 + 1e-12, 'r ' + r + ': sagitta ' + r * (1 - Math.cos(Math.PI / n)));
-      if (n > 16) assert(r * (1 - Math.cos(Math.PI / (n - 8))) > 0.05, 'r ' + r + ': n = ' + n + ' is the smallest multiple of 8 that meets the tolerance');
+      if (n > 32) assert(r * (1 - Math.cos(Math.PI / (n - 8))) > 0.05, 'r ' + r + ': n = ' + n + ' is the smallest multiple of 8 that meets the tolerance');
     });
     var st = K.setTessellation({ chordTol: 0.01 });
     try { assert(st.chordTol === 0.01 && K.segsForRadius(10) === 72, 'r 10 at 0.01: ' + K.segsForRadius(10)); } finally { K.setTessellation('default'); }

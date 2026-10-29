@@ -1380,15 +1380,50 @@
     }
     return C;
   }
+  // rfFE2: the circle most of the loop's points lie on exactly (the drilled circle's own vertices), or null. The
+  // enclosing circle alone is pulled out by any point a little outside it: a bend cutout carried past its strip's end
+  // (growLoop) leaves a jog of ~0.001 in just outside the circle where the wall's chord crosses the bend line, and
+  // with 40 chords per circle the Ø.300 hole's flat CIRCLE came out R .15037. Least squares (Kåsa) on all points, then
+  // twice on the closer half, then on the points within 1e-7 of that circle: kept when they are at least half the loop.
+  function majorityCircle(loop) {
+    function fit(pts) {
+      var m = pts.length, mx = 0, my = 0, j;
+      if (m < 3) return null;
+      for (j = 0; j < m; j++) { mx += pts[j][0]; my += pts[j][1]; }
+      mx /= m; my /= m;
+      var suu = 0, svv = 0, suv = 0, suuu = 0, svvv = 0, suvv = 0, svuu = 0;
+      for (j = 0; j < m; j++) {
+        var u = pts[j][0] - mx, v = pts[j][1] - my;
+        suu += u * u; svv += v * v; suv += u * v; suuu += u * u * u; svvv += v * v * v; suvv += u * v * v; svuu += v * u * u;
+      }
+      var det = suu * svv - suv * suv;
+      if (!(Math.abs(det) > 1e-300)) return null;
+      var bu = (suuu + suvv) / 2, bv = (svvv + svuu) / 2, c = [mx + (bu * svv - bv * suv) / det, my + (bv * suu - bu * suv) / det], r = 0;
+      for (j = 0; j < m; j++) r += Math.hypot(pts[j][0] - c[0], pts[j][1] - c[1]);
+      return { c: c, r: r / m };
+    }
+    function closest(F, frac) {
+      return loop.map(function (p) { return { p: p, e: Math.abs(Math.hypot(p[0] - F.c[0], p[1] - F.c[1]) - F.r) }; })
+        .sort(function (a, b) { return a.e - b.e; }).slice(0, Math.max(3, Math.ceil(loop.length * frac))).map(function (x) { return x.p; });
+    }
+    var F = fit(loop);
+    for (var it = 0; F && it < 2; it++) F = fit(closest(F, 0.5));
+    if (!F || !(F.r > 0)) return null;
+    var eps = 1e-7 * (1 + F.r), on = loop.filter(function (p) { return Math.abs(Math.hypot(p[0] - F.c[0], p[1] - F.c[1]) - F.r) <= eps; });
+    if (on.length * 2 < loop.length) return null;
+    var G = fit(on);
+    return G && G.r > 0 ? G : F;
+  }
   function snapFlatCircle(loop, tol) {
     var n = loop.length;
     if (n < 8) return loop;
-    var C = enclosingCircle(loop);
+    var C = enclosingCircle(loop), M = majorityCircle(loop);
+    if (M) C = M;
     if (!C || !(C.r > 0)) return loop;
     var r = C.r, cx = C.c[0], cy = C.c[1], worst = 0, turn = 0, gap = 0, i;
     for (i = 0; i < n; i++) {
-      var p = loop[i], q = loop[(i + 1) % n];
-      worst = Math.max(worst, r - Math.hypot(p[0] - cx, p[1] - cy));
+      var p = loop[i], q = loop[(i + 1) % n], dr = r - Math.hypot(p[0] - cx, p[1] - cy);
+      worst = Math.max(worst, M ? Math.abs(dr) : dr);   // on the majority circle a point may also stand a little outside
       var da = Math.atan2((p[0] - cx) * (q[1] - cy) - (p[1] - cy) * (q[0] - cx), (p[0] - cx) * (q[0] - cx) + (p[1] - cy) * (q[1] - cy));
       turn += da; gap = Math.max(gap, Math.abs(da));
     }

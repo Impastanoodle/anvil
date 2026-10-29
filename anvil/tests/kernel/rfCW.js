@@ -81,9 +81,12 @@
         // CW2: smooth, no stair: only the two corners where the hole meets the wall's inside face turn more than 20°
         // (was ~90 points: the far surface's hole stepped at every facet and the union drew the steps), and the half
         // disk in the base is one true ARC for the laser
+        // rfFE2: the footprint across the strip is sampled at the bend's facets, so its turn between samples grows with
+        // their angle: the limit is twice the bend's chord angle, at least 20° (11 ga at the 12° angular limit: 20.4°)
+        var kink = Math.max(20, 2 * 360 / K.segsForRadius(rr + t)) * Math.PI / 180;
         var hl = nc.flat.loops[1], sharp = hl.filter(function (p, i) {
           var a = hl[(i + hl.length - 1) % hl.length], c = hl[(i + 1) % hl.length], d1 = [p[0] - a[0], p[1] - a[1]], d2 = [c[0] - p[0], c[1] - p[1]];
-          return Math.abs(Math.atan2(d1[0] * d2[1] - d1[1] * d2[0], d1[0] * d2[0] + d1[1] * d2[1])) > 20 * Math.PI / 180;
+          return Math.abs(Math.atan2(d1[0] * d2[1] - d1[1] * d2[0], d1[0] * d2[0] + d1[1] * d2[1])) > kink;
         });
         assert(sharp.length === 2, g[0] + ' ga: 2 sharp corners (at the wall), got ' + sharp.length + ' of ' + hl.length + ' points');
         sharp.forEach(function (p) { near(p[0], tg + ba, 1e-6, g[0] + ' ga: sharp corner on the wall line'); });

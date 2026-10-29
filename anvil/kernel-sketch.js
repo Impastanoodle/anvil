@@ -18,27 +18,35 @@
   // was a sagitta of about 0.077 mm.
   // `legacy: true` restores the pre-true-curves meshes exactly (clamp(round(8√r), 16, 72) segments, 48 revolve rings
   // per turn, mitred draft offsets on arcs): old polygonal results can be reproduced bit for bit.
-  var TESS = { chordTol: 0.05, minSegs: 16, maxSegs: 128, legacy: false };
+  // rfFE (2026-10-29): an angular limit next to the chord tolerance, as in SolidWorks' Image Quality: with maxAngle > 0
+  // no chord of a circle (or spline span, bezSegs) turns more than maxAngle degrees, so small holes and fillets keep
+  // round outlines at any chord tolerance. rfFE2: on by default at 12° (at least 30 -> 32 segments per turn: a Ø.25 in
+  // hole is a 32-gon instead of 24, its outline under 0.7 px off the circle at 300 px across). 10° (40) still breaks
+  // drawings (Funnel Front view 56 hidden facet lines, Rounded handle silhouette ends 0.05 mm short, Shaft keyway-end
+  // arcs as more lines) and CSG slivers (Shaft, Chamfered block); 0 switches the limit off.
+  var TESS = { chordTol: 0.05, minSegs: 16, maxSegs: 128, maxAngle: 12, legacy: false };
   function segsForRadius(r) {
     if (TESS.legacy) return Math.max(16, Math.min(72, Math.round(8 * Math.sqrt(Math.max(r, 0.01)))));
     r = Math.max(+r || 0, 0.01);
     var c = 1 - TESS.chordTol / r, n = c <= -1 ? TESS.minSegs : Math.ceil(Math.PI / Math.acos(Math.max(-1, Math.min(1, c))) - 1e-9);
+    if (TESS.maxAngle > 0) n = Math.max(n, Math.ceil(360 / TESS.maxAngle - 1e-9));
     n = Math.ceil(n / 8) * 8;
     return Math.max(TESS.minSegs, Math.min(TESS.maxSegs, n));
   }
-  // setTessellation({ chordTol?, minSegs?, maxSegs?, legacy? }) -> the settings now in force (rebuild cache keys
-  // include them); setTessellation('default') restores the defaults
+  // setTessellation({ chordTol?, minSegs?, maxSegs?, maxAngle?, legacy? }) -> the settings now in force (rebuild cache
+  // keys include them); setTessellation('default') restores the defaults
   function setTessellation(o) {
-    if (o === 'default') o = { chordTol: 0.05, minSegs: 16, maxSegs: 128, legacy: false };
+    if (o === 'default') o = { chordTol: 0.05, minSegs: 16, maxSegs: 128, maxAngle: 12, legacy: false };
     o = o || {};
     if (o.legacy != null) TESS.legacy = !!o.legacy;
     if (o.chordTol != null) { if (!(+o.chordTol > 0)) throw new Error('Chord tolerance must be positive.'); TESS.chordTol = +o.chordTol; }
     if (o.minSegs != null) TESS.minSegs = Math.max(8, Math.ceil((+o.minSegs || 8) / 8) * 8);
     if (o.maxSegs != null && !(+o.maxSegs >= 4)) throw new Error('maxSegs must be at least 4.');
     if (o.maxSegs != null) TESS.maxSegs = Math.max(TESS.minSegs, +o.maxSegs | 0);
-    return { chordTol: TESS.chordTol, minSegs: TESS.minSegs, maxSegs: TESS.maxSegs, legacy: TESS.legacy };
+    if (o.maxAngle != null) { if (!(+o.maxAngle >= 0)) throw new Error('maxAngle must be 0 (off) or a positive angle.'); TESS.maxAngle = +o.maxAngle; }
+    return { chordTol: TESS.chordTol, minSegs: TESS.minSegs, maxSegs: TESS.maxSegs, maxAngle: TESS.maxAngle, legacy: TESS.legacy };
   }
-  function tessKey() { return TESS.legacy ? 'legacy' : TESS.chordTol + '/' + TESS.minSegs + '/' + TESS.maxSegs; }
+  function tessKey() { return TESS.legacy ? 'legacy' : TESS.chordTol + '/' + TESS.minSegs + '/' + TESS.maxSegs + (TESS.maxAngle > 0 ? '/a' + TESS.maxAngle : ''); }
 
   function arcPoints(cx, cy, r, a0, a1, segs) {
     var pts = [];
@@ -436,10 +444,24 @@
     return [d0 * (B[1][0] - B[0][0]) + d1 * (B[2][0] - B[1][0]) + d2 * (B[3][0] - B[2][0]), d0 * (B[1][1] - B[0][1]) + d1 * (B[2][1] - B[1][1]) + d2 * (B[3][1] - B[2][1])];
   }
   // chords per span so the sagitta |P''|·Δs²/8 stays under the chord tolerance (P'' is linear: largest at an end)
+  // rfFE: and, unless legacy, so the tangent turns no more than TESS.maxAngle per chord on average over the span
   function bezSegs(B) {
     var dd = 0;
     for (var k = 0; k < 2; k++) dd = Math.max(dd, 6 * Math.hypot(B[k][0] - 2 * B[k + 1][0] + B[k + 2][0], B[k][1] - 2 * B[k + 1][1] + B[k + 2][1]));
-    return Math.max(4, Math.min(256, Math.ceil(Math.sqrt(dd / (8 * TESS.chordTol)) - 1e-9)));
+    var n = Math.ceil(Math.sqrt(dd / (8 * TESS.chordTol)) - 1e-9);
+    if (TESS.maxAngle > 0 && !TESS.legacy && dd > 0) {
+      // chords are equal steps in s: the fastest turn per unit s (sampled at 32 steps) sets the count
+      var rate = 0, prev = null, NS = 32;
+      for (var i = 0; i <= NS; i++) {
+        var d = bezDeriv(B, i / NS);
+        if (!(Math.abs(d[0]) + Math.abs(d[1]) > 1e-12)) { prev = null; continue; }
+        var a = Math.atan2(d[1], d[0]);
+        if (prev != null) { var da = a - prev; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI; rate = Math.max(rate, Math.abs(da) * NS); }
+        prev = a;
+      }
+      n = Math.max(n, Math.ceil(rate * 180 / Math.PI / TESS.maxAngle - 1e-9));
+    }
+    return Math.max(4, Math.min(256, n));
   }
   // signed area between span B and its chord from s0 to s1 (½∮ x dy − y dx along the curve minus along the chord;
   // 3-point Gauss-Legendre is exact: the integrand is a quintic)

@@ -27,19 +27,26 @@ var HoleWizard = (function () {
   // drill (D - P); cb: counterbore for ISO 4762 socket head cap screws [diameter, depth] (head dk + clearance, depth
   // head k + clearance); csk: countersink diameter for ISO 10642 countersunk screws (head dk max, 90°; M2 / M2.5 from
   // ISO 7046).
+  // lane FH2 (2026-10-29): every value checked against SolidWorks 2022's own Hole Wizard (ISO; Socket Head Cap Screw
+  // ISO 4762, Socket Countersunk Head ISO 10642, Screw Clearances, Tapped Hole), read over its API by
+  // head-tools/sw-reference/solids_holes.py into sw-holewizard.json (tests/kernel/rfFH2.js compares). Changed to
+  // SolidWorks': loose clearance M12 15, M14 17, M16 19 (was 14.5, 16.5, 18.5) and the counterbore depths, which
+  // SolidWorks makes head height + clearance d + 0.4 (M2 – M6) / d + 0.6 (M8 – M20) where this table had the ISO 4762
+  // head k + clearance (2.2, 2.7, 3.3, 6.5, 10.8, 13, 17.5, 21.5). SolidWorks has no M14 socket head cap screw nor
+  // M2 / M2.5 / M14 ISO 10642 screw: those keep this table's values (M14 depth 14.6 on SolidWorks' pattern).
   var ISO = [
-    { size: 'M2', d: 2, pitch: 0.4, tap: 1.6, clr: [2.2, 2.4, 2.6], cb: [4.4, 2.2], csk: 4.4 },
-    { size: 'M2.5', d: 2.5, pitch: 0.45, tap: 2.05, clr: [2.7, 2.9, 3.1], cb: [5.5, 2.7], csk: 5.5 },
-    { size: 'M3', d: 3, pitch: 0.5, tap: 2.5, clr: [3.2, 3.4, 3.6], cb: [6.5, 3.3], csk: 6.72 },
+    { size: 'M2', d: 2, pitch: 0.4, tap: 1.6, clr: [2.2, 2.4, 2.6], cb: [4.4, 2.4], csk: 4.4 },
+    { size: 'M2.5', d: 2.5, pitch: 0.45, tap: 2.05, clr: [2.7, 2.9, 3.1], cb: [5.5, 2.9], csk: 5.5 },
+    { size: 'M3', d: 3, pitch: 0.5, tap: 2.5, clr: [3.2, 3.4, 3.6], cb: [6.5, 3.4], csk: 6.72 },
     { size: 'M4', d: 4, pitch: 0.7, tap: 3.3, clr: [4.3, 4.5, 4.8], cb: [8, 4.4], csk: 8.96 },
     { size: 'M5', d: 5, pitch: 0.8, tap: 4.2, clr: [5.3, 5.5, 5.8], cb: [10, 5.4], csk: 11.2 },
-    { size: 'M6', d: 6, pitch: 1, tap: 5, clr: [6.4, 6.6, 7], cb: [11, 6.5], csk: 13.44 },
+    { size: 'M6', d: 6, pitch: 1, tap: 5, clr: [6.4, 6.6, 7], cb: [11, 6.4], csk: 13.44 },
     { size: 'M8', d: 8, pitch: 1.25, tap: 6.8, clr: [8.4, 9, 10], cb: [15, 8.6], csk: 17.92 },
-    { size: 'M10', d: 10, pitch: 1.5, tap: 8.5, clr: [10.5, 11, 12], cb: [18, 10.8], csk: 22.4 },
-    { size: 'M12', d: 12, pitch: 1.75, tap: 10.2, clr: [13, 13.5, 14.5], cb: [20, 13], csk: 26.88 },
-    { size: 'M14', d: 14, pitch: 2, tap: 12, clr: [15, 15.5, 16.5], cb: [24, 15], csk: 30.8 },
-    { size: 'M16', d: 16, pitch: 2, tap: 14, clr: [17, 17.5, 18.5], cb: [26, 17.5], csk: 33.6 },
-    { size: 'M20', d: 20, pitch: 2.5, tap: 17.5, clr: [21, 22, 24], cb: [33, 21.5], csk: 40.32 }
+    { size: 'M10', d: 10, pitch: 1.5, tap: 8.5, clr: [10.5, 11, 12], cb: [18, 10.6], csk: 22.4 },
+    { size: 'M12', d: 12, pitch: 1.75, tap: 10.2, clr: [13, 13.5, 15], cb: [20, 12.6], csk: 26.88 },
+    { size: 'M14', d: 14, pitch: 2, tap: 12, clr: [15, 15.5, 17], cb: [24, 14.6], csk: 30.8 },
+    { size: 'M16', d: 16, pitch: 2, tap: 14, clr: [17, 17.5, 19], cb: [26, 16.6], csk: 33.6 },
+    { size: 'M20', d: 20, pitch: 2.5, tap: 17.5, clr: [21, 22, 24], cb: [33, 20.6], csk: 40.32 }
   ];
 
   // ---------------------------------------------------------------- ANSI Inch (inches)
@@ -63,7 +70,7 @@ var HoleWizard = (function () {
     for (i = 0; i < NUMBER_DRILLS.length; i++) DRILLS.push({ name: '#' + (i + 1), dia: NUMBER_DRILLS[i], kind: 'number' });
     for (i = 0; i < LETTER_DRILLS.length; i++) DRILLS.push({ name: String.fromCharCode(65 + i), dia: LETTER_DRILLS[i], kind: 'letter' });
     for (i = 4; i <= 64; i++) DRILLS.push({ name: fracName(i), dia: i / 64, kind: 'fraction' });
-    [65, 66, 70, 74, 76, 88, 104].forEach(function (n) { DRILLS.push({ name: fracName(n), dia: n / 64, kind: 'fraction' }); });
+    [65, 66, 67, 70, 74, 76, 88, 104].forEach(function (n) { DRILLS.push({ name: fracName(n), dia: n / 64, kind: 'fraction' }); });
     DRILLS.forEach(function (d) { DRILL[d.name] = d; });
   })();
   function drill(name) {
@@ -77,33 +84,34 @@ var HoleWizard = (function () {
     return ka !== kb ? ka - kb : a.dia - b.dia;
   });
 
-  // Screws: d basic major diameter; clr: clearance drills [close, normal, loose] per ASME B18.2.8; cb: socket head cap
-  // screw counterbore per ASME B18.3 (appendix: close and normal drill, counterbore diameter; depth = head height = D);
-  // csk: 82° countersink diameter for flat countersunk head machine screws, ASME B18.6.3 head diameter max (theoretical
-  // sharp; the countersinks of #2, #3, #5 and 7/16 – 1 are in ANSI_CSK_MORE below).
-  // #12 and 9/16 are inside B18.2.8's #0 – 1-1/2 range but not tabulated in it; their clearances follow the table's own
-  // steps (#5 – 3/8: close D + 1/64, normal D + 1/32, loose D + 3/64; 1/2 and 5/8: D + 1/32, D + 1/16, D + 7/64), taken
-  // up to the next standard drill: #12 (.216) 15/64 .2344, 1/4 .2500, 17/64 .2656; 9/16 19/32, 5/8, 43/64. Neither
-  // has a socket head cap screw in ASME B18.3, so neither has a counterbore (no cb; spec says so).
+  // Screws: d basic major diameter; clr: clearance drills [close, normal, loose]; cb: socket head cap screw counterbore
+  // diameter (depth = head height = D); csk: 82° countersink diameter for flat countersunk head machine screws, ASME
+  // B18.6.3 head diameter max (theoretical sharp; the countersinks of #2, #3, #5 and 7/16 – 1 are in ANSI_CSK_MORE).
+  // lane FH2 (2026-10-29): the clearances are SolidWorks 2022's (ANSI Inch Hole Wizard, Screw Clearances, read over
+  // its API by head-tools/sw-reference/solids_holes.py into sw-holewizard.json; tests/kernel/rfFH2.js compares), and
+  // SolidWorks drills the same three holes for a Hole, a Counterbore and a Countersink of a size. The table had ASME
+  // B18.2.8's clearances (1/4: 17/64, 9/32, 19/64 where SolidWorks drills F, H, 9/32) and B18.3's counterbore drills.
+  // Counterbore diameters, depths and countersinks were SolidWorks' already except #3's counterbore (13/64, was 7/32).
+  // #12 and 9/16 have no socket head cap screw (no cb; spec says so), as in SolidWorks.
   var ANSI_SCREWS = [
-    { size: '#2', d: 0.086, clr: ['3/32', '#38', '#32'], cb: { drills: ['3/32', '#36'], dia: '3/16' } },
-    { size: '#3', d: 0.099, clr: ['#36', '#32', '#30'], cb: { drills: ['#36', '#31'], dia: '7/32' } },
-    { size: '#4', d: 0.112, clr: ['#31', '#30', '#27'], cb: { drills: ['1/8', '#29'], dia: '7/32' }, csk: 0.225 },
-    { size: '#5', d: 0.125, clr: ['9/64', '5/32', '11/64'], cb: { drills: ['9/64', '#23'], dia: '1/4' } },
-    { size: '#6', d: 0.138, clr: ['#23', '#18', '#13'], cb: { drills: ['#23', '#18'], dia: '9/32' }, csk: 0.279 },
-    { size: '#8', d: 0.164, clr: ['#15', '#9', '#3'], cb: { drills: ['#15', '#10'], dia: '5/16' }, csk: 0.332 },
-    { size: '#10', d: 0.190, clr: ['#5', '#2', 'B'], cb: { drills: ['#5', '#2'], dia: '3/8' }, csk: 0.385 },
-    { size: '#12', d: 0.216, clr: ['15/64', '1/4', '17/64'], csk: 0.438 },
-    { size: '1/4', d: 0.250, clr: ['17/64', '9/32', '19/64'], cb: { drills: ['17/64', '9/32'], dia: '7/16' }, csk: 0.507 },
-    { size: '5/16', d: 0.3125, clr: ['21/64', '11/32', '23/64'], cb: { drills: ['21/64', '11/32'], dia: '17/32' }, csk: 0.635 },
-    { size: '3/8', d: 0.375, clr: ['25/64', '13/32', '27/64'], cb: { drills: ['25/64', '13/32'], dia: '5/8' }, csk: 0.762 },
-    { size: '7/16', d: 0.4375, clr: ['29/64', '15/32', '31/64'], cb: { drills: ['29/64', '15/32'], dia: '23/32' } },
-    { size: '1/2', d: 0.500, clr: ['17/32', '9/16', '39/64'], cb: { drills: ['33/64', '17/32'], dia: '13/16' } },
-    { size: '9/16', d: 0.5625, clr: ['19/32', '5/8', '43/64'], csk: 1.000 },
-    { size: '5/8', d: 0.625, clr: ['21/32', '11/16', '47/64'], cb: { drills: ['41/64', '21/32'], dia: '1' } },
-    { size: '3/4', d: 0.750, clr: ['25/32', '13/16', '29/32'], cb: { drills: ['49/64', '25/32'], dia: '1-3/16' } },
-    { size: '7/8', d: 0.875, clr: ['29/32', '15/16', '1-1/32'], cb: { drills: ['57/64', '29/32'], dia: '1-3/8' } },
-    { size: '1', d: 1.000, clr: ['1-1/32', '1-3/32', '1-5/32'], cb: { drills: ['1-1/64', '1-1/32'], dia: '1-5/8' } }
+    { size: '#2', d: 0.086, clr: ['#43', '#41', '#36'], cb: { dia: '3/16' } },
+    { size: '#3', d: 0.099, clr: ['#37', '#35', '#31'], cb: { dia: '13/64' } },
+    { size: '#4', d: 0.112, clr: ['#32', '#30', '#29'], cb: { dia: '7/32' }, csk: 0.225 },
+    { size: '#5', d: 0.125, clr: ['#30', '#29', '#23'], cb: { dia: '1/4' } },
+    { size: '#6', d: 0.138, clr: ['#27', '#25', '#18'], cb: { dia: '9/32' }, csk: 0.279 },
+    { size: '#8', d: 0.164, clr: ['#18', '#16', '#10'], cb: { dia: '5/16' }, csk: 0.332 },
+    { size: '#10', d: 0.190, clr: ['#9', '#7', '#2'], cb: { dia: '3/8' }, csk: 0.385 },
+    { size: '#12', d: 0.216, clr: ['#2', '#1', 'D'], csk: 0.438 },
+    { size: '1/4', d: 0.250, clr: ['F', 'H', '9/32'], cb: { dia: '7/16' }, csk: 0.507 },
+    { size: '5/16', d: 0.3125, clr: ['P', 'Q', '11/32'], cb: { dia: '17/32' }, csk: 0.635 },
+    { size: '3/8', d: 0.375, clr: ['W', 'X', '13/32'], cb: { dia: '5/8' }, csk: 0.762 },
+    { size: '7/16', d: 0.4375, clr: ['29/64', '15/32', '31/64'], cb: { dia: '23/32' } },
+    { size: '1/2', d: 0.500, clr: ['33/64', '17/32', '35/64'], cb: { dia: '13/16' } },
+    { size: '9/16', d: 0.5625, clr: ['37/64', '19/32', '39/64'], csk: 1.000 },
+    { size: '5/8', d: 0.625, clr: ['41/64', '21/32', '43/64'], cb: { dia: '1' } },
+    { size: '3/4', d: 0.750, clr: ['49/64', '25/32', '51/64'], cb: { dia: '1-3/16' } },
+    { size: '7/8', d: 0.875, clr: ['57/64', '29/32', '59/64'], cb: { dia: '1-3/8' } },
+    { size: '1', d: 1.000, clr: ['1-1/64', '1-1/32', '1-3/64'], cb: { dia: '1-5/8' } }
   ];
   // 82° countersinks for the rows above that carry none: Ø = head diameter max (theoretical sharp) of ASME B18.6.3 flat
   // countersunk head machine screws, as the rows above (#2 .172, #3 .199, #5 .252, 7/16 .812, 1/2 .875, 5/8 1.125,
@@ -177,7 +185,7 @@ var HoleWizard = (function () {
       var sr = screwRow(f.size || '1/4');
       if (t === 'cbore' && !sr.cb) throw new Error('No counterbore size for a ' + sr.size + ' socket head cap screw (ASME B18.3 has none).');
       out.row = sr;
-      out.drillName = t === 'cbore' && fi < 2 ? sr.cb.drills[fi] : sr.clr[fi];
+      out.drillName = sr.clr[fi];   // lane FH2: SolidWorks drills the screw's clearance for all three hole types
       out.dia = drill(out.drillName);
       if (t === 'cbore') out.cbore = { dia: drill(sr.cb.dia), depth: sr.d };
       if (t === 'csk') {

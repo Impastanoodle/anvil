@@ -161,20 +161,23 @@
     });
 
     if (!HW) { test('holewizard.js loaded', function () { fail('HoleWizard is undefined'); }); return; }
-    test('p9-output: ANSI Inch tables — 1/4 clearance close .2656 / normal .2812 / loose .2969 (ASME B18.2.8), 1/4-20 tap drill #7 = .201, 1/4 counterbore Ø.4375 ↧ .25 (B18.3), #10 countersink Ø.385 × 82°', function () {
+    // lane FH2 (2026-10-29): the ANSI Inch clearance drills below are SolidWorks 2022's Hole Wizard values (the same
+    // drill for a Hole, a Counterbore and a Countersink of a size), read over its API; source:
+    // head-tools/sw-reference/sw-holewizard.json (solids_holes.py). They replaced ASME B18.2.8 / B18.3's drills.
+    test('p9-output: ANSI Inch tables — 1/4 clearance close F .257 / normal H .266 / loose 9/32 (SolidWorks\' Hole Wizard since lane FH2), 1/4-20 tap drill #7 = .201, 1/4 counterbore Ø.4375 ↧ .25 (B18.3), #10 countersink Ø.385 × 82°', function () {
       var A = HW.ANSI;
       function sp(o) { o.standard = A; return HW.spec(o, 'in'); }
-      near(sp({ holeType: 'hole', size: '1/4', fit: 'normal' }).dia, 0.28125, 1e-12, '1/4 normal');
-      near(sp({ holeType: 'hole', size: '1/4', fit: 'close' }).dia, 17 / 64, 1e-12, '1/4 close');
-      near(sp({ holeType: 'hole', size: '1/4', fit: 'loose' }).dia, 19 / 64, 1e-12, '1/4 loose');
-      near(sp({ holeType: 'hole', size: '#10', fit: 'normal' }).dia, 0.221, 1e-12, '#10 normal (#2 drill)');
+      near(sp({ holeType: 'hole', size: '1/4', fit: 'normal' }).dia, 0.266, 1e-12, '1/4 normal');
+      near(sp({ holeType: 'hole', size: '1/4', fit: 'close' }).dia, 0.257, 1e-12, '1/4 close');
+      near(sp({ holeType: 'hole', size: '1/4', fit: 'loose' }).dia, 9 / 32, 1e-12, '1/4 loose');
+      near(sp({ holeType: 'hole', size: '#10', fit: 'normal' }).dia, 0.201, 1e-12, '#10 normal (#7 drill)');
       var t = sp({ holeType: 'tap', size: '1/4-20 UNC' });
       near(t.dia, 0.201, 1e-12, '1/4-20 tap drill'); assert(t.drillName === '#7' && t.thread.label === '1/4-20 UNC - 2B', t.drillName + ' ' + t.thread.label);
       near(t.thread.pitch, 0.05, 1e-12, 'pitch');
       near(sp({ holeType: 'tap', size: '3/8-16 UNC' }).dia, 0.3125, 1e-12, '3/8-16 tap drill 5/16');
       near(sp({ holeType: 'tap', size: '#10-32 UNF' }).dia, 0.159, 1e-12, '#10-32 tap drill #21');
       var cb = sp({ holeType: 'cbore', size: '1/4', fit: 'normal' });
-      near(cb.dia, 0.28125, 1e-12, 'cbore thru'); near(cb.cbore.dia, 0.4375, 1e-12, 'cbore Ø'); near(cb.cbore.depth, 0.25, 1e-12, 'cbore depth');
+      near(cb.dia, 0.266, 1e-12, 'cbore thru'); near(cb.cbore.dia, 0.4375, 1e-12, 'cbore Ø'); near(cb.cbore.depth, 0.25, 1e-12, 'cbore depth');
       var cs = sp({ holeType: 'csk', size: '#10', fit: 'normal' });
       near(cs.csk.dia, 0.385, 1e-12, 'csk Ø'); assert(cs.csk.angle === 82, 'csk angle');
       near(sp({ holeType: 'hole', sizeType: 'drill', size: 'F' }).dia, 0.257, 1e-12, 'F drill');
@@ -183,22 +186,22 @@
       HW.ANSI_SCREWS.forEach(function (s) {
         var c = s.clr.map(HW.drill);
         assert(c[0] > s.d && c[0] < c[1] && c[1] < c[2], s.size + ' clearances ' + c);
-        if (s.cb) assert(HW.drill(s.cb.dia) > c[2] && HW.drill(s.cb.drills[0]) > s.d, s.size + ' counterbore');
+        if (s.cb) assert(HW.drill(s.cb.dia) > c[2], s.size + ' counterbore');
         if (s.csk) assert(s.csk > c[2], s.size + ' countersink');
       });
       HW.ANSI_THREADS.forEach(function (th) { assert(th.tap < th.d && th.tap > th.d - 1.3 / th.tpi, th.size + ' tap drill ' + th.tap); });
       // ANSI in a metric part and ISO in an inch part come out the right size
-      near(HW.spec({ standard: A, holeType: 'hole', size: '1/4', fit: 'normal' }, 'mm').dia, 0.28125 * 25.4, 1e-12, 'ANSI in mm');
+      near(HW.spec({ standard: A, holeType: 'hole', size: '1/4', fit: 'normal' }, 'mm').dia, 0.266 * 25.4, 1e-12, 'ANSI in mm');
       near(HW.spec({ standard: 'ISO', holeType: 'hole', size: 'M8', fit: 'normal' }, 'in').dia, 9 / 25.4, 1e-12, 'ISO in inches');
       return HW.ANSI_SCREWS.length + ' screw sizes, ' + HW.ANSI_THREADS.length + ' threads, ' + HW.DRILLS.length + ' drills';
     });
 
-    test('p9-output: ANSI Inch callouts — "Ø.281 THRU", "Ø.281 THRU" + "⌴ Ø.438 ↧ .250", "Ø.201 ↧ .750" + "1/4-20 UNC - 2B ↧ .500", "Ø.221 THRU" + "⌵ Ø.385 X 82°"', function () {
+    test('p9-output: ANSI Inch callouts — "Ø.266 THRU", "Ø.266 THRU" + "⌴ Ø.438 ↧ .250", "Ø.201 ↧ .750" + "1/4-20 UNC - 2B ↧ .500", "Ø.201 THRU" + "⌵ Ø.385 X 82°"', function () {
       function co(o) { return HW.callout(HW.newFeature(o, 'in'), 'in').join(' | '); }
       var a = co({ type: 'hole', size: '1/4', fit: 'normal', end: 'through' }), b = co({ type: 'cbore', size: '1/4', end: 'through' });
       var c = co({ type: 'tap', size: '1/4-20 UNC', depth: 0.75, threadDepth: 0.5 }), d = co({ type: 'csk', size: '#10', end: 'through' });
-      assert(a === 'Ø.281 THRU', a); assert(b === 'Ø.281 THRU | ⌴ Ø.438 ↧ .250', b);
-      assert(c === 'Ø.201 ↧ .750 | 1/4-20 UNC - 2B ↧ .500', c); assert(d === 'Ø.221 THRU | ⌵ Ø.385 X 82°', d);
+      assert(a === 'Ø.266 THRU', a); assert(b === 'Ø.266 THRU | ⌴ Ø.438 ↧ .250', b);
+      assert(c === 'Ø.201 ↧ .750 | 1/4-20 UNC - 2B ↧ .500', c); assert(d === 'Ø.201 THRU | ⌵ Ø.385 X 82°', d);
       var iso = HW.callout(HW.newFeature({ type: 'tap', size: 'M8', depth: 16, threadDepth: 12 }, 'mm'), 'mm').join(' | ');
       assert(iso === 'Ø6.8 ↧ 16 | M8x1.25 ↧ 12', iso);
       return [a, b, c, d].join(' / ');
@@ -215,7 +218,7 @@
       assert(holes.length === 3 && holes.every(function (f) { return f.standard === HW.ANSI; }), 'standard stored: ' + holes.map(function (f) { return f.standard; }));
       assert(holes[0].size === '1/4' && holes[1].size === '1/4-20 UNC' && holes[2].size === 'F' && holes[2].sizeType === 'drill', 'sizes stored');
       assert(holes[0].name === 'CBORE for 1/4 Socket Head Cap Screw1' && holes[1].name === '1/4-20 UNC Tapped Hole2' && holes[2].name === 'F Drill Hole3', holes.map(function (f) { return f.name; }).join(' / '));
-      var Rc = 0.4375 / 2, R = 0.28125 / 2, Rt = 0.201 / 2, Rf = 0.257 / 2;
+      var Rc = 0.4375 / 2, R = 0.266 / 2, Rt = 0.201 / 2, Rf = 0.257 / 2;
       var cut = Math.PI * Rc * Rc * 0.25 + Math.PI * R * R * (0.75 - 0.25) + 2 * Math.PI * Rt * Rt * 0.6 + Math.PI * Rf * Rf * 1;
       nearRel(4 - r.mp.volume, cut, 1e-9, 'removed volume');
       var script = K.generateScript(r.model);
@@ -246,11 +249,11 @@
 
     // --- hw-ansi-sizes: the ANSI Inch sizes that were missing (#12, 9/16, countersinks for #2, #3, #5 and 7/16 – 1,
     // #12-28 UNF) resolve to their table values, show in the PropertyManager size lists and cut their analytic volume ---
-    test('hw-ansi-sizes: #12 and 9/16 clearances (B18.2.8 steps), #12-28 UNF tap #14, 82° countersinks #2 / #3 / #5 / #12 / 7/16 – 1 (B18.6.3; 7/8, 1 B18.6.2); no #12 / 9/16 counterbore; existing rows unchanged', function () {
+    test('hw-ansi-sizes: #12 and 9/16 clearances (SolidWorks\' since lane FH2), #12-28 UNF tap #14, 82° countersinks #2 / #3 / #5 / #12 / 7/16 – 1 (B18.6.3; 7/8, 1 B18.6.2); no #12 / 9/16 counterbore; existing rows unchanged', function () {
       var A = HW.ANSI;
       function sp(o) { o.standard = A; return HW.spec(o, 'in'); }
       var FITS = ['close', 'normal', 'loose'];
-      var CLR = { '#12': [15 / 64, 0.25, 17 / 64], '9/16': [19 / 32, 5 / 8, 43 / 64] };
+      var CLR = { '#12': [0.221, 0.228, 0.246], '9/16': [37 / 64, 19 / 32, 39 / 64] };
       Object.keys(CLR).forEach(function (size) {
         FITS.forEach(function (fit, i) {
           near(sp({ holeType: 'hole', size: size, fit: fit }).dia, CLR[size][i], 1e-12, size + ' ' + fit);
@@ -260,7 +263,7 @@
         try { sp({ holeType: 'cbore', size: size }); } catch (e) { threw = e.message; }
         assert(/No counterbore size for a/.test(threw), size + ' counterbore: ' + threw);
       });
-      assert(sp({ holeType: 'hole', size: '#12', fit: 'close' }).drillName === '15/64' && sp({ holeType: 'hole', size: '9/16', fit: 'loose' }).drillName === '43/64', 'drill names');
+      assert(sp({ holeType: 'hole', size: '#12', fit: 'close' }).drillName === '#2' && sp({ holeType: 'hole', size: '9/16', fit: 'loose' }).drillName === '39/64', 'drill names');
       var CSK = { '#2': 0.172, '#3': 0.199, '#4': 0.225, '#5': 0.252, '#6': 0.279, '#8': 0.332, '#10': 0.385, '#12': 0.438, '1/4': 0.507, '5/16': 0.635, '3/8': 0.762,
         '7/16': 0.812, '1/2': 0.875, '9/16': 1.000, '5/8': 1.125, '3/4': 1.375, '7/8': 1.625, '1': 1.875 };
       Object.keys(CSK).forEach(function (size) {
@@ -280,14 +283,14 @@
       near(sp({ holeType: 'tap', size: '#12-28 unf' }).thread.major, 0.216, 1e-12, '#12 major');
       // existing rows unchanged (spot checks)
       var r8 = HW.screwRow('#8'), r1 = HW.screwRow('1'), r716 = HW.screwRow('7/16'), r2 = HW.screwRow('#2');
-      assert(r8.clr.join() === '#15,#9,#3' && r8.cb.drills.join() === '#15,#10' && r8.cb.dia === '5/16' && r8.csk === 0.332, '#8 row');
-      assert(r1.clr.join() === '1-1/32,1-3/32,1-5/32' && r1.cb.drills.join() === '1-1/64,1-1/32' && r1.cb.dia === '1-5/8', '1 row');
-      assert(r716.clr.join() === '29/64,15/32,31/64' && r716.cb.dia === '23/32' && r2.clr.join() === '3/32,#38,#32' && r2.cb.dia === '3/16', '7/16, #2 rows');
+      assert(r8.clr.join() === '#18,#16,#10' && r8.cb.dia === '5/16' && r8.csk === 0.332, '#8 row');
+      assert(r1.clr.join() === '1-1/64,1-1/32,1-3/64' && r1.cb.dia === '1-5/8', '1 row');
+      assert(r716.clr.join() === '29/64,15/32,31/64' && r716.cb.dia === '23/32' && r2.clr.join() === '#43,#41,#36' && r2.cb.dia === '3/16', '7/16, #2 rows');
       var cb38 = sp({ holeType: 'cbore', size: '3/8', fit: 'close' });
-      near(cb38.dia, 25 / 64, 1e-12, '3/8 cbore close drill'); near(cb38.cbore.dia, 0.625, 1e-12, '3/8 cbore Ø'); near(cb38.cbore.depth, 0.375, 1e-12, '3/8 cbore depth');
+      near(cb38.dia, 0.386, 1e-12, '3/8 cbore close drill W'); near(cb38.cbore.dia, 0.625, 1e-12, '3/8 cbore Ø'); near(cb38.cbore.depth, 0.375, 1e-12, '3/8 cbore depth');
       var cb34 = sp({ holeType: 'cbore', size: '3/4', fit: 'loose' });
-      near(cb34.dia, 29 / 32, 1e-12, '3/4 cbore loose = B18.2.8 loose'); near(cb34.cbore.dia, 1.1875, 1e-12, '3/4 cbore Ø');
-      near(sp({ holeType: 'hole', size: '5/16', fit: 'loose' }).dia, 23 / 64, 1e-12, '5/16 loose');
+      near(cb34.dia, 51 / 64, 1e-12, '3/4 cbore loose = SolidWorks loose'); near(cb34.cbore.dia, 1.1875, 1e-12, '3/4 cbore Ø');
+      near(sp({ holeType: 'hole', size: '5/16', fit: 'loose' }).dia, 11 / 32, 1e-12, '5/16 loose');
       near(sp({ holeType: 'tap', size: '5/16-18 UNC' }).dia, 0.257, 1e-12, '5/16-18 tap F');
       // the PropertyManager's Size lists (ui-holewizard.js reads HW.sizeOptions)
       function opts(t) { return HW.sizeOptions(A, t, 'clearance').map(function (o) { return o[0]; }); }
@@ -299,7 +302,7 @@
       assert(taps.indexOf('#12-28 UNF') === taps.indexOf('#12-24 UNC') + 1 && taps.length === 36, 'tap list ' + taps.length);
       assert(HW.validSize(A, 'csk', 'clearance', '#2') && HW.validSize(A, 'csk', 'clearance', '1') && !HW.validSize(A, 'cbore', 'clearance', '#12'), 'validSize');
       var co = HW.callout(HW.newFeature({ type: 'csk', size: '1', end: 'through' }, 'in'), 'in').join(' | ');
-      assert(co === 'Ø1.094 THRU | ⌵ Ø1.875 X 82°', co);
+      assert(co === 'Ø1.031 THRU | ⌵ Ø1.875 X 82°', co);
       var co12 = HW.callout(HW.newFeature({ type: 'tap', size: '#12-28 UNF', depth: 0.5, threadDepth: 0.4 }, 'in'), 'in').join(' | ');
       assert(co12 === 'Ø.182 ↧ .500 | #12-28 UNF - 2B ↧ .400', co12);
       return HW.ANSI_SCREWS.length + ' screw sizes, ' + taps.length + ' threads; ' + co;

@@ -135,7 +135,9 @@
       return hi > lo ? [lo, hi] : null;
     }
 
-    var vis = [], hid = [], tan = [], fsil = [], tanOn =opts.tangent === 'visible' || opts.tangent === 'font';
+    // xsil (rfFI): visible pieces of exact silhouettes of curved faces, { l: [u0, v0, u1, v1], dev } with dev how far
+    // the face's facet outline (what hides other linework) may lie from it in this view, for rimsToSilhouettes
+    var vis = [], hid = [], tan = [], fsil = [], xsil = [], tanOn =opts.tangent === 'visible' || opts.tangent === 'font';
     // true curves: edges on a circle or arc of the kernel's analytic records are collected per curve (as angle
     // intervals) and drawn as exact circles, arcs, ellipses or, edge-on, exact lines; silhouettes of cylinders and
     // cones are their exact tangent generators; facets of one analytic surface never show the edge between them
@@ -342,9 +344,16 @@
         arc(t, 1, st.vis);
         return;
       }
+      // (an exact silhouette's facet deviation in this view: the facet edge's distance from the exact line)
+      var xdev = -1;
+      if (ed.exactA && ed.smooth) {
+        xdev = 0;
+        [ed.a, ed.b, V.scale(V.add(ed.a, ed.b), 0.5)].forEach(function (X) { var x2 = [V.dot(X, U) - a2[0], V.dot(X, Vv) - a2[1]]; xdev = Math.max(xdev, Math.abs(x2[0] * (b2[1] - a2[1]) - x2[1] * (b2[0] - a2[0])) / L2); });
+      }
       function seg(t0, t1, list) {
         if ((t1 - t0) * L2 < tol2 * 10) return;
         list.push([a2[0] + (b2[0] - a2[0]) * t0, a2[1] + (b2[1] - a2[1]) * t0, a2[0] + (b2[0] - a2[0]) * t1, a2[1] + (b2[1] - a2[1]) * t1, body]);
+        if (list === vis && xdev >= 0) xsil.push({ l: list[list.length - 1], dev: xdev });
       }
       hidden.forEach(function (iv) { seg(t, iv[0], vis); seg(iv[0], iv[1], hid); t = iv[1]; });
       seg(t, 1, vis);
@@ -691,11 +700,14 @@
         var phi = function (q) { var w = V.sub(q, S.o); return Math.atan2(V.dot(w, y0), V.dot(w, x0)); };
         var fa = phi(a), fb = unwrapNear(phi(b), fa);
         var key = p.key + '|' + body + '|' + sg;
-        if (!runs[key]) { runs[key] = { S: S, skey: p.key, body: body, sg: sg, x0: x0, y0: y0, ivs: [], dev: 0, phi: phi }; rorder.push(key); }
+        if (!runs[key]) { runs[key] = { S: S, skey: p.key, body: body, sg: sg, x0: x0, y0: y0, ivs: [], dev: 0, dev2: 0, phi: phi }; rorder.push(key); }
         runs[key].ivs.push([Math.min(fa, fb), Math.max(fa, fb)]);
         var ra = runs[key];
         ra.p = p;
         [a, b].forEach(function (q) { var X = torusSil(ra, phi(q)); if (X) ra.dev = Math.max(ra.dev, V.len(V.sub(X, q))); });
+        // (dev2, rfFI: the same in this view, the facet edge's middle included: a swept tube's facets are chords both
+        // round the tube and along the path, and their outline lies up to both sagittas inside the exact one)
+        [a, b, m].forEach(function (q) { var X = torusSil(ra, phi(q)); if (X) ra.dev2 = Math.max(ra.dev2, Math.hypot(V.dot(V.sub(X, q), U), V.dot(V.sub(X, q), Vv))); });
       });
       // the exact silhouette point of a torus run at angle φ
       function torusSil(ra, f) {
@@ -762,7 +774,11 @@
             var a2 = pr2(A), b2 = pr2(B), L2 = Math.hypot(b2[0] - a2[0], b2[1] - a2[1]);
             if (L2 < 1e-12) continue;
             var hidden = hiddenIntervals(A, B, a2, b2, eps), t = 0;
-            var seg = function (t0, t1, list) { if (t1 - t0 > 1e-9) list.push([a2[0] + (b2[0] - a2[0]) * t0, a2[1] + (b2[1] - a2[1]) * t0, a2[0] + (b2[0] - a2[0]) * t1, a2[1] + (b2[1] - a2[1]) * t1, ra.body]); };
+            var seg = function (t0, t1, list) {
+              if (!(t1 - t0 > 1e-9)) return;
+              list.push([a2[0] + (b2[0] - a2[0]) * t0, a2[1] + (b2[1] - a2[1]) * t0, a2[0] + (b2[0] - a2[0]) * t1, a2[1] + (b2[1] - a2[1]) * t1, ra.body]);
+              if (list === vis) xsil.push({ l: list[list.length - 1], dev: ra.dev2 });
+            };
             hidden.forEach(function (h) { seg(t, h[0], vis); seg(h[0], h[1], hid); t = h[1]; });
             seg(t, 1, vis);
             silh.push(a2, b2);
@@ -954,6 +970,73 @@
         });
       });
     }
+    // rimsToSilhouettes (rfFI): a rim (exact ellipse / arc) hidden by a curved face is hidden where that face's facets
+    // are, and their outline lies inside the face's exact silhouette, which is what is drawn: the rim ran on past the
+    // silhouette (or stopped short of it) by up to the facets' deviation in this view. A swept tube's facets are chords
+    // round the tube and along the path, so that can be more than the chord tolerance closeEnds reaches (the Mug's
+    // bottom rim under the handle's bend in the isometric, 0.052 mm past it at maxAngle 12°). A free rim end within
+    // 1.5 such deviations of an exact silhouette piece it crosses (not tangentially) is moved along the rim to the
+    // crossing; a hidden piece of the same rim that began there begins at the crossing too.
+    function rimsToSilhouettes(lines, ells, arcs, circs, hidEll, hidArc, tol) {
+      if (!xsil.length || !(ells.length || arcs.length)) return;
+      var cs = [];
+      ells.forEach(function (q) { cs.push({ o: q, c: q.c, ax: q.ax, ay: q.ay, t0: q.full ? 0 : q.t0, t1: q.full ? TWO_PI : q.t1, full: q.full }); });
+      arcs.forEach(function (a) { cs.push({ o: a, arc: true, c: a.c, ax: [a.r, 0], ay: [0, a.r], t0: a.a0 * Math.PI / 180, t1: a.a1 * Math.PI / 180 }); });
+      circs.forEach(function (c) { cs.push({ o: c, c: c.c, ax: [c.r, 0], ay: [0, c.r], t0: 0, t1: TWO_PI, full: true }); });
+      function cp(E, t) { return [E.c[0] + Math.cos(t) * E.ax[0] + Math.sin(t) * E.ay[0], E.c[1] + Math.cos(t) * E.ax[1] + Math.sin(t) * E.ay[1]]; }
+      function segD(p, l) { var dx = l[2] - l[0], dy = l[3] - l[1], L2 = dx * dx + dy * dy, t = L2 ? Math.max(0, Math.min(1, ((p[0] - l[0]) * dx + (p[1] - l[1]) * dy) / L2)) : 0; return Math.hypot(p[0] - l[0] - t * dx, p[1] - l[1] - t * dy); }
+      function curveD(E, p) {
+        var n = 96, h = (E.t1 - E.t0) / n, bt = E.t0, bd = Infinity;
+        for (var i = 0; i <= n; i++) { var t = E.t0 + h * i, q = cp(E, t), d = Math.hypot(q[0] - p[0], q[1] - p[1]); if (d < bd) { bd = d; bt = t; } }
+        var lo = Math.max(E.t0, bt - h), hi = Math.min(E.t1, bt + h);
+        for (var it = 0; it < 60; it++) { var m1 = lo + (hi - lo) * 0.382, m2 = lo + (hi - lo) * 0.618, q1 = cp(E, m1), q2 = cp(E, m2); if (Math.hypot(q1[0] - p[0], q1[1] - p[1]) < Math.hypot(q2[0] - p[0], q2[1] - p[1])) hi = m2; else lo = m1; }
+        var qm = cp(E, (lo + hi) / 2);
+        return Math.min(bd, Math.hypot(qm[0] - p[0], qm[1] - p[1]));
+      }
+      cs.forEach(function (E) {
+        if (E.full) return;
+        [0, 1].forEach(function (end) {
+          var te = end ? E.t1 : E.t0, sg = end ? 1 : -1, pe = cp(E, te), eps = 1e-6 * (1 + Math.abs(pe[0]) + Math.abs(pe[1]));
+          var dv = [-Math.sin(te) * E.ax[0] + Math.cos(te) * E.ay[0], -Math.sin(te) * E.ax[1] + Math.cos(te) * E.ay[1]], sp = Math.hypot(dv[0], dv[1]);
+          if (sp < 1e-12) return;
+          var maxS = (E.t1 - E.t0) * sp * 0.5, best = null;
+          xsil.forEach(function (x) {
+            var l = x.l, R = Math.max(tol, 1.5 * x.dev), dx = l[2] - l[0], dy = l[3] - l[1], L = Math.hypot(dx, dy);
+            if (!(L > 0) || segD(pe, l) >= R) return;
+            if (Math.abs(dv[0] * dy - dv[1] * dx) / (sp * L) < 0.2) return;   // tangential: closeFreeEnds' case
+            var side = function (s) { var q = cp(E, te + sg * s / sp); return ((q[0] - l[0]) * dy - (q[1] - l[1]) * dx) / L; };
+            var Rs = Math.min(2 * R, maxS), N = 32, sol = null;
+            for (var k = 1; k <= N && sol == null; k++) {
+              [1, -1].forEach(function (dir) {
+                if (sol != null) return;
+                var a = dir * Rs * (k - 1) / N, b = dir * Rs * k / N, ga = side(a), gb = side(b);
+                if (ga === 0) { sol = a; return; }
+                if (ga * gb > 0) return;
+                for (var it = 0; it < 80; it++) { var m = (a + b) / 2, gm = side(m); if (ga * gm <= 0) b = m; else { a = m; ga = gm; } }
+                sol = (a + b) / 2;
+              });
+            }
+            if (sol == null) return;
+            var q = cp(E, te + sg * sol / sp);
+            if (segD(q, l) > eps || Math.hypot(q[0] - pe[0], q[1] - pe[1]) >= R) return;   // on the piece, near the end
+            if (!best || Math.abs(sol) < Math.abs(best.s)) best = { s: sol };
+          });
+          if (!best || Math.abs(best.s) < 1e-9) return;
+          // only a free end: one that meets other linework already stays
+          for (var i = 0; i < lines.length; i++) if (segD(pe, lines[i]) <= eps) return;
+          for (var j = 0; j < cs.length; j++) if (cs[j] !== E && curveD(cs[j], pe) <= eps) return;
+          var t = te + sg * best.s / sp, deg = 180 / Math.PI;
+          if (end) E.t1 = t; else E.t0 = t;
+          if (E.arc) {
+            if (end) E.o.a1 = t * deg; else E.o.a0 = t * deg;
+            hidArc.forEach(function (h) { if (h.r === E.o.r && h.c[0] === E.o.c[0] && h.c[1] === E.o.c[1]) { if (end && Math.abs(h.a0 - te * deg) < 1e-9) h.a0 = t * deg; if (!end && Math.abs(h.a1 - te * deg) < 1e-9) h.a1 = t * deg; } });
+          } else {
+            if (end) E.o.t1 = t; else E.o.t0 = t;
+            hidEll.forEach(function (h) { if (h.ax === E.o.ax && !h.full) { if (end && Math.abs(h.t0 - te) < 1e-9) h.t0 = t; if (!end && Math.abs(h.t1 - te) < 1e-9) h.t1 = t; } });
+          }
+        });
+      });
+    }
     var merged = mergeCollinear(vis, hid, diag);
     var vc = extractCircles(merged.visible, diag), hc = extractCircles(merged.hidden, diag);
     // every edge whole, visible or not: what user dimensions reattach to after a part change
@@ -979,6 +1062,7 @@
       res.lines.visible = dropOnCurves(res.lines.visible, res.arcs.visible, res.circles.visible, res.ellipses.visible);
       res.lines.hidden = dropOnCurves(res.lines.hidden, res.arcs.visible.concat(res.arcs.hidden), res.circles.visible.concat(res.circles.hidden), res.ellipses.visible.concat(res.ellipses.hidden));
     }
+    if (CV) rimsToSilhouettes(res.lines.visible, res.ellipses.visible, res.arcs.visible, res.circles.visible, exact.ellipses.hidden, exact.arcs.hidden, chordTol());
     if (CV) closeEnds(res.lines.visible, res.ellipses.visible, res.arcs.visible, res.circles.visible, chordTol());
     closeFreeEnds(res.lines.visible, res.ellipses.visible, res.arcs.visible, chordTol());
     if (fsil.length && silh.length) res.lines.visible = dropStubs(res.lines.visible, res.ellipses.visible, res.arcs.visible, res.circles.visible);
