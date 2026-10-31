@@ -105,6 +105,9 @@
     // chordal facets lie inside the surface, and a sliver facet ending on the silhouette must not cut it short near
     // its end, r5/drawings5)
     // (only: { body, same } keeps just the occluders of that body (same) or of the other bodies (!same), r10/drawings10)
+    // (lane FX) skip may also be { faces: [mesh face indices] }: an intersection chain on Anvil's solid lies on the true
+    // surfaces, up to a sagitta behind its own two faces' facets (a sheet-metal mitre seam on two concave bend
+    // surfaces): those faces cannot hide their own edge
     function hiddenIntervals(A, B, a2, b2, ez, skip, only) {
       var wa = V.dot(A, e), wb = V.dot(B, e), wmin = Math.min(wa, wb), AB = V.sub(B, A), eZ = ez > epsZ ? ez : epsZ;
       var ivs = [];
@@ -112,7 +115,7 @@
       for (var ci = 0; ci < cand.length; ci++) {
         var t = tris[cand[ci]];
         if (t.wmax <= wmin + eZ) continue;               // the triangle is nowhere in front of the segment
-        if (skip != null && CV.faceSurf[t.f] && CV.faceSurf[t.f].key === skip) continue;
+        if (skip != null && (skip.faces ? skip.faces.indexOf(t.f) >= 0 : CV.faceSurf[t.f] && CV.faceSurf[t.f].key === skip)) continue;
         if (only && ((mesh.faces[t.f].body || 0) === only.body) !== only.same) continue;
         var lo = 0, hi = 1;
         // in front: s(t) = (c - n·X(t)) / (n·e) > epsZ
@@ -253,7 +256,7 @@
               // (on Anvil's solid each piece gets its own depth tolerance, from how far it lies off the facet chord, so
               // a piece pulled back onto a corner does not show through the faces around it)
               var offC = function (x) { return K.pointSegmentDistance ? K.pointSegmentDistance(x, ed.a, ed.b) : chn.dev; };
-              for (var ci = 0; ci + 1 < chn.pts.length; ci++) edgePiece({ a: chn.pts[ci], b: chn.pts[ci + 1], faces: ed.faces, normals: ed.normals, exactDone: true, eps: brepMesh ? ceps : 2 * Math.max(offC(chn.pts[ci]), offC(chn.pts[ci + 1])) + diag * 1e-6, isect: true }, null);
+              for (var ci = 0; ci + 1 < chn.pts.length; ci++) edgePiece({ a: chn.pts[ci], b: chn.pts[ci + 1], faces: ed.faces, normals: ed.normals, exactDone: true, eps: brepMesh ? ceps : 2 * Math.max(offC(chn.pts[ci]), offC(chn.pts[ci + 1])) + diag * 1e-6, isect: true, skip: brepMesh ? null : { faces: ed.faces } }, null);
               return;
             }
           }

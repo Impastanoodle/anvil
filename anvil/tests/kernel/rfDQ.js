@@ -30,7 +30,7 @@
       near(+r.model.sheet.thickness, W, 1e-12, 'T'); near(+r.model.sheet.bendRadius, R, 1e-12, 'R'); near(+r.model.sheet.kFactor, K5, 1e-12, 'K');
       var f = r.model.features[r.model.features.length - 1];
       assert(f.type === 'insertBends' && f.sheetBase === true && f.name === 'Process-Bends1', JSON.stringify(f));
-      near(r.mp.volume, ripped().mp.volume - 4 * LB * (FILL - WEDGE) - 4 * CUBE, 1e-9, 'volume');
+      near(polyVol(r.mp), polyVol(ripped().mp) - 4 * LB * (FILL - WEDGE) - 4 * CUBE, 1e-9, 'volume');
       assert(r.build.bodies.length === 1, 'one body: ' + r.build.bodies.length);
       consistentVolume(r);
       assert((r.build.flanges[f.id] || []).length === 4, 'four bend records');
@@ -68,7 +68,7 @@
       var r2 = build(BOX + RIP + 'p.insertBends([1, 0, -1], { radius: 0.03 });\n'), RT2 = 0.03 + W, F2 = RT2 * RT2 - 0.03 * 0.03, W2 = 0.5 * 8 * Math.sin(Math.PI / 16) * F2;
       noErrors(r2);
       var C2 = RT2 * RT2 * W + (RT2 - W) * (2 * RT2 * W - W * W - Math.SQRT2 * G * W);
-      near(r2.mp.volume, ripped().mp.volume - 4 * (2 - 2 * RT2) * (F2 - W2) - 4 * C2, 1e-9, 'R .03 volume');
+      near(polyVol(r2.mp), polyVol(ripped().mp) - 4 * (2 - 2 * RT2) * (F2 - W2) - 4 * C2, 1e-9, 'R .03 volume');
     });
 
     test('rfDQ: Convert to Sheet Metal of the solid 2 × 2 × 1 box (bottom fixed, the four bottom edges, T .06, R .06, gap .03) = the shelled, ripped, inserted box', function () {
@@ -93,7 +93,7 @@
     test('rfDQ: a thin L extrude (legs 1.5 × 1, T .06, 2 long): one bend, free ends; flat 1.5 + 1 − BD either face fixed', function () {
       var r0 = build(L), r = build(L + 'p.insertBends([0.75, 0, 1], { radius: ' + R + ' });\n'), w = build(L + 'p.insertBends([0, 0.5, 1], { radius: ' + R + ' });\n');
       noErrors(r0); noErrors(r); noErrors(w);
-      near(r.mp.volume, r0.mp.volume - 2 * (FILL - WEDGE), 1e-9, 'volume');
+      near(polyVol(r.mp), polyVol(r0.mp) - 2 * (FILL - WEDGE), 1e-9, 'volume');
       near(w.mp.volume, r.mp.volume, 1e-12, 'fixed on the wall: same solid');
       var BD = 2 * RT - BA, a = flatOf(r), b = flatOf(w);
       near(Math.max(a.size[0], a.size[1]), 2.5 - BD, 1e-9, 'flat length'); near(Math.min(a.size[0], a.size[1]), 2, 1e-9, 'flat width');

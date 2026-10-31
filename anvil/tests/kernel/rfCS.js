@@ -34,7 +34,7 @@
 
     test('rfCS: Butt, gap .010, all four corners (SolidWorks: both walls gap/√2 short): volume + 4·(H·T·(R − g) − H·T·(T + g) − the bend taper); the flat keeps its size, stays one loop; one clean DXF OUTLINE loop', function () {
       var b = tray(), r = flatOf(HEAD + cc(F4, { cornerType: 'butt', gap: GAP, coplanar: false }));
-      near(r.mp.volume - b.mp.volume, 4 * butt1(G2), 1e-7, 'added volume');
+      near(polyVol(r.mp) - polyVol(b.mp), 4 * butt1(G2), 1e-7, 'added volume');
       consistentVolume(r);
       near(r.flat.size[0], b.flat.size[0], 1e-9, 'flat width'); near(r.flat.size[1], b.flat.size[1], 1e-9, 'flat height');
       assert(r.flat.loops.length === 1, 'one loop: ' + r.flat.loops.length);
@@ -54,7 +54,7 @@
 
     test('rfCS: Overlap, ratio 1: the extended wall runs over the matching wall\'s end to its outside, the matching wall is trimmed T + gap back; Underlap keeps the matching wall over the end', function () {
       var b = tray(), o = flatOf(HEAD + cc(F4, { cornerType: 'overlap', gap: GAP, coplanar: false }));
-      near(o.mp.volume - b.mp.volume, 4 * (H * T * ((R + T) - (T + GAP)) - taper(T + GAP)), 1e-7, 'overlap: added volume');
+      near(polyVol(o.mp) - polyVol(b.mp), 4 * (H * T * ((R + T) - (T + GAP)) - taper(T + GAP)), 1e-7, 'overlap: added volume');
       consistentVolume(o);
       var io = o.build.body.pointTester();
       assert(io([T / 2, 0.6, T / 2]) && io([T / 2, 0.6, 0.002]), 'overlap: the left wall reaches the front wall\'s outside');
@@ -62,7 +62,7 @@
       assert(o.flat.loops.length === 1, 'overlap: one loop');
       near(blankArea(o.flat) - blankArea(b.flat), 4 * (H * ((R + T) - (T + GAP)) - BAF * ((T + R) + (T + GAP)) / 2), 1e-6, 'overlap: blank area');
       var u = flatOf(HEAD + cc(F4, { cornerType: 'underlap', gap: GAP, coplanar: false })), iu = u.build.body.pointTester();
-      near(u.mp.volume - b.mp.volume, 4 * (H * (R - GAP) * T - taper(0)), 1e-7, 'underlap 1: added volume');
+      near(polyVol(u.mp) - polyVol(b.mp), 4 * (H * (R - GAP) * T - taper(0)), 1e-7, 'underlap 1: added volume');
       assert(iu([T + GAP / 2, 0.6, T / 2]) && !iu([T / 2, 0.6, T + GAP / 2]), 'underlap: the front wall covers the left wall\'s end');
       return 'overlap ' + fmt(o.mp.volume - b.mp.volume);
     });
@@ -70,9 +70,9 @@
     test('rfCS: ratios: Overlap .75 runs .75·T into the matching wall; Underlap .5 trims the matching wall to cover half the thickness', function () {
       var b = tray();
       var o = flatOf(HEAD + cc(F4, { cornerType: 'overlap', gap: GAP, ratio: 0.75, coplanar: false }));
-      near(o.mp.volume - b.mp.volume, 4 * (H * T * (R + 0.75 * T - (T + GAP)) - taper(T + GAP)), 1e-7, 'overlap .75');
+      near(polyVol(o.mp) - polyVol(b.mp), 4 * (H * T * (R + 0.75 * T - (T + GAP)) - taper(T + GAP)), 1e-7, 'overlap .75');
       var u = flatOf(HEAD + cc(F4, { cornerType: 'underlap', gap: GAP, ratio: 0.5, coplanar: false }));
-      near(u.mp.volume - b.mp.volume, 4 * (H * (R - GAP) * T - H * 0.5 * T * T - taper(0.5 * T)), 1e-7, 'underlap .5');
+      near(polyVol(u.mp) - polyVol(b.mp), 4 * (H * (R - GAP) * T - H * 0.5 * T * T - taper(0.5 * T)), 1e-7, 'underlap .5');
       var iu = u.build.body.pointTester();
       assert(!iu([T / 4, 0.6, T / 2]) && iu([0.75 * T, 0.6, T / 2]), 'underlap .5: the front wall ends half way across the left wall');
       assert(u.flat.loops.length === 1 && o.flat.loops.length === 1, 'one loop each');
@@ -83,11 +83,11 @@
       var b = tray();
       var on = build(HEAD + cc([F4[0]], { gap: GAP }));
       noErrors(on);
-      near(on.mp.volume - b.mp.volume, 2 * butt1(G2), 1e-7, 'coplanar: two corners');
+      near(polyVol(on.mp) - polyVol(b.mp), 2 * butt1(G2), 1e-7, 'coplanar: two corners');
       var off = build(HEAD + cc([F4[0]], { gap: GAP, coplanar: false }));
-      near(off.mp.volume - b.mp.volume, butt1(G2), 1e-7, 'one corner');
+      near(polyVol(off.mp) - polyVol(b.mp), butt1(G2), 1e-7, 'one corner');
       var twice = build(HEAD + cc([F4[0], F4[1]], { gap: GAP }));
-      near(twice.mp.volume - b.mp.volume, 2 * butt1(G2), 1e-7, 'a face picked twice is extended once');
+      near(polyVol(twice.mp) - polyVol(b.mp), 2 * butt1(G2), 1e-7, 'a face picked twice is extended once');
       return 'ok';
     });
 
@@ -103,7 +103,7 @@
       var e0 = K.rebuild(r0.model).errors; assert(/butt, overlap or underlap/.test(e0[r0.model.features[r0.model.features.length - 1].id] || ''), 'unknown type: ' + JSON.stringify(e0));
       var ok = build(HEAD + cc(F4, { gap: 0.001 }));
       noErrors(ok);
-      near(ok.mp.volume - tray().mp.volume, 4 * butt1(0.001 / Math.SQRT2), 1e-7, 'gap .001');
+      near(polyVol(ok.mp) - polyVol(tray().mp), 4 * butt1(0.001 / Math.SQRT2), 1e-7, 'gap .001');
       return 'ok';
     });
 
@@ -128,7 +128,7 @@
       var mo = build(tray('outside')); noErrors(mo);
       var Q = [[-T / 2, 0.6, R], [4 + T / 2, 0.6, R], [4 - R, 0.6, 3 + T / 2], [-T / 2, 0.6, 3 - R]];
       var m = flatOf(tray('outside') + cc(Q, { cornerType: 'butt', gap: GAP, coplanar: false }));
-      near(m.mp.volume - mo.mp.volume, 4 * (T * ((R - G2) - G2) - SEC * (R + G2) / 2), 1e-7, 'material outside, butt (the front wall trimmed gap/√2, its bend tapered from R)');
+      near(polyVol(m.mp) - polyVol(mo.mp), 4 * (T * ((R - G2) - G2) - SEC * (R + G2) / 2), 1e-7, 'material outside, butt (the front wall trimmed gap/√2, its bend tapered from R)');
       assert(m.flat.loops.length === 1, 'material outside: one flat loop');
       var dxf = K.exportDXFFlat(m.flat, 'in', { version: 'R2000', style: 'entities' }), c = DxfCheck.check(dxf, { units: 'in' });
       assert(c.ok && c.loops.filter(function (l) { return l.layer === 'OUTLINE'; }).length === 1, 'dxf-check: ' + c.errors.join('; '));

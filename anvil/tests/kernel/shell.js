@@ -28,8 +28,9 @@
     var t0 = performance.now();
     var r = build('p.cylinder(20, 30);\np.shell(2, [[0, 30, 0]]);');
     noErrors(r);
-    // inner polygon: apothem shrinks by 2, so the inner circumradius is (20 cos(pi/n) - 2) / cos(pi/n)
-    var n = segsForRadius(20), ri = (20 * Math.cos(Math.PI / n) - 2) / Math.cos(Math.PI / n);
+    // inner polygon: since lane GB the inner wall sits on the offset cylinder itself, so its circumradius is exactly 18
+    // (it used to be the apothem offset, (20 cos(pi/n) - 2) / cos(pi/n))
+    var n = segsForRadius(20), ri = 18;
     var inner = n / 2 * ri * ri * Math.sin(2 * Math.PI / n) * 28;
     // the outside is the true cylinder (exact since true curves), the cavity too since rfFE2 (the inner wall carries
     // the cylinder record offset by T: r 18), the facets the polygonal offset

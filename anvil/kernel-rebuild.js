@@ -163,6 +163,68 @@
     return tool;
   }
 
+  // rfGB: the point maps of a pattern / mirror feature's own copies (not the seed): translations, rotations, a reflection
+  function familyMaps(f, ctx) {
+    var out = [];
+    if (f.type === 'mirror') {
+      var mp = makePlane(f.plane || 'Right', f.offset || 0), n = mp.n, o = mp.origin;
+      out.push(function (q) { return sub(q, scale(n, 2 * dot(sub(q, o), n))); });
+    } else if (f.type === 'lpattern') {
+      var d1 = scale(AXES[f.d1 || 'x'], f.rev1 ? -1 : 1), n1 = Math.max(1, f.n1 | 0), n2 = f.d2 ? Math.max(1, f.n2 | 0) : 1;
+      var d2 = f.d2 ? scale(AXES[f.d2], f.rev2 ? -1 : 1) : [0, 0, 0];
+      for (var i = 0; i < n1; i++) for (var j = 0; j < n2; j++) {
+        if (i === 0 && j === 0) continue;
+        (function (t) { out.push(function (q) { return add(q, t); }); })(add(scale(d1, i * (+f.s1 || 0)), scale(d2, j * (+f.s2 || 0))));
+      }
+    } else if (f.type === 'cpattern') {
+      var count = Math.max(2, f.n | 0), total = +f.angle || 360;
+      var step = (f.equal === false) ? total : (Math.abs(total) >= 360 ? total / count : total / (count - 1));
+      var cax = _.refAxisId(f) != null ? refAxisFor(f, ctx) : null, c = cax ? cax.o : f.center || [0, 0, 0], ax = cax ? cax.d : AXES[f.axis || 'z'];
+      for (var k = 1; k < count; k++) (function (a) { out.push(function (q) { return _.rotatePoint(q, c, ax, a); }); })(step * k * Math.PI / 180);
+    }
+    return out;
+  }
+  // rfGB: edgeFamily(f) -> for a feature-mode Mirror / LPattern / CirPattern whose source is (a pattern / mirror of) a
+  // Fillet or Chamfer, that edge feature with its picks moved onto the copies (id = f.id, so the new faces are the
+  // pattern's); null for anything else. The seed (and an inner pattern's copies) are already on the part.
+  function edgeFamily(f, model, ctx) {
+    if (!(f.type === 'lpattern' || f.type === 'cpattern' || (f.type === 'mirror' && !f.body))) return null;
+    function seeds(g, depth) {   // -> { src, maps } with every instance g puts on the part (identity included)
+      if (!g || depth > 8) return null;
+      if (g.type === 'fillet' || g.type === 'chamfer') return { src: g, maps: [function (q) { return q; }] };
+      if (!(g.type === 'lpattern' || g.type === 'cpattern' || (g.type === 'mirror' && !g.body))) return null;
+      var inner = seeds(findFeature(model, g.feature), depth + 1);
+      if (!inner) return null;
+      var all = inner.maps.slice();
+      familyMaps(g, ctx).forEach(function (m) { inner.maps.forEach(function (im) { all.push(function (q) { return m(im(q)); }); }); });
+      return { src: inner.src, maps: all };
+    }
+    var inner = seeds(findFeature(model, f.feature), 0);
+    if (!inner) return null;
+    var own = familyMaps(f, ctx), edges = [];
+    if (!own.length) throw new Error((f.type === 'mirror' ? 'Mirror' : 'Pattern') + ' needs at least 2 instances.');
+    own.forEach(function (m) {
+      inner.maps.forEach(function (im) {
+        (inner.src.edges || []).forEach(function (e) {
+          var spec = {};
+          for (var key in e) spec[key] = e[key];
+          if (e.at) spec.at = m(im(e.at));
+          edges.push(spec);
+        });
+      });
+    });
+    var fe = {};
+    for (var key in inner.src) fe[key] = inner.src[key];
+    fe.id = f.id; fe.edges = edges; fe.bodies = f.bodies || inner.src.bodies;
+    fe._family = inner.src;
+    return fe;
+  }
+  function edgeFamilyMiss(f, fe) {
+    var what = fe.type === 'chamfer' ? 'chamfer' : 'fillet', src = fe._family;
+    return (f.type === 'mirror' ? 'Mirror' : 'Pattern') + ': the ' + (f.type === 'mirror' ? 'mirrored' : 'patterned') + ' edges of ' + ((src && src.name) || ('the ' + what)) +
+      ' are not on the part, so there is nothing to ' + what + '. Check the ' + (f.type === 'mirror' ? 'mirror plane' : 'pattern direction and spacing') + '.';
+  }
+
   // rfFN: nonManifoldCount(csg) -> the number of edges of the body's welded, T-junction-split triangle mesh
   // (Exchange.bodyMesh) that more than two triangles share: where a solid touches itself along a line or at a point.
   // 0 when exchange.js is not loaded. Cached on the CSG object (bodies are never changed in place). NM.on switches the
@@ -666,7 +728,9 @@
             var cck = ctx.bodies.length ? Math.max(0, bodyNearPoint(ctx.bodies, (f.faces && f.faces[0]) || [0, 0, 0])) : -1;
             ctx.body = cck >= 0 ? ctx.bodies[cck] : null;
             var ccr = _.buildClosedCorner(f, model, ctx);
-            putBody(cck, (ccr.cut ? ctx.body.subtract(ccr.cut) : ctx.body).union(ccr.add));
+            // head (local-2026-10-30b, lane FW): ccr.apply puts the corners in one at a time; four corners in one feature
+            // through a plain (body - cut) U add cracked (36 open edges on a 0.125 tray)
+            putBody(cck, ccr.apply ? ccr.apply(ctx.body) : (ccr.cut ? ctx.body.subtract(ccr.cut) : ctx.body).union(ccr.add));
             ctx.tools[f.id] = ccr.add;
             break;
           }
@@ -740,6 +804,21 @@
             break;
           }
           default: {
+            // rfGB: a Mirror / LPattern / CirPattern of a Fillet or Chamfer is that edge feature again on the copied
+            // edges (SolidWorks), not its removed / added volume moved (which added a sliver outside the part)
+            var efam = edgeFamily(f, model, ctx);
+            if (efam) {
+              var efk = pickBody(efam);
+              var efr;
+              try { efr = buildEdgeFeature(efam, ctx); }
+              catch (ee) { if (/^No edges found/.test(ee.message || '')) throw new Error(edgeFamilyMiss(f, efam)); throw ee; }
+              var efb = ctx.body;
+              if (efr.cut) efb = efb.subtract(efr.cut);
+              if (efr.add) efb = efb.union(efr.add);
+              putBody(efk, efb);
+              ctx.tools[f.id] = efr.cut || efr.add;
+              break;
+            }
             if (featureTypes[f.type] && featureTypes[f.type].apply) {
               var ar = featureTypes[f.type].apply(f, { bodies: ctx.bodies.slice(), bodyFeatures: ctx.bodyFeatures.slice() }, model);
               ctx.bodies = ar.bodies; ctx.bodyFeatures = ar.bodyFeatures;

@@ -62,7 +62,7 @@
       return 'normal ' + fmt(rfDYVol(r) - v0);
     });
 
-    test('rfDY: Intersect two overlapping blocks — regions in a fixed order (A only, B only, common); keep the common region: 250; keep the outer two: union − common; Merge result off: two bodies', function () {
+    test('rfDY: Intersect two overlapping blocks — regions in a fixed order (A only, B only, common); keep the common region: 250; keep the outer two: union − common as two bodies (they touch only along the common block\'s edges, lane GB); Merge result off: two bodies', function () {
       var r0 = build(rfDYTwo);
       var regs = K.intersectRegions(r0.build.bodies, { type: 'intersect' }, r0.model, r0.build.planes);
       assert(regs.length === 3, 'three regions');
@@ -74,7 +74,7 @@
       assert(c.build.bodies.length === 1 && rfDYLast(c).name === 'Intersect1', 'one body, Intersect1');
       var o = build(rfDYTwo + 'p.intersect({ exclude: [2] });');
       nearRel(rfDYVol(o), 2000 - 500, 1e-12, 'outer two');
-      assert(o.build.bodies.length === 1, 'merged');
+      assert(o.build.bodies.length === 2, 'two bodies (the outer regions touch only along edges; lane GB keeps them apart as SolidWorks does): ' + o.build.bodies.length);
       var s = build(rfDYTwo + 'p.intersect({ regions: [true, true, false], merge: false });');
       assert(s.build.bodies.length === 2, 'two bodies: ' + s.build.bodies.length);
       var all = build(rfDYTwo + 'p.intersect({});');

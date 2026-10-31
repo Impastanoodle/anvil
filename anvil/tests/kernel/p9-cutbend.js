@@ -8,7 +8,7 @@
     var T = 0.06, R = 0.06, A90 = Math.PI / 2, BA = K.bendAllowance(A90, R, T, 0.5);
     var PLATE = 'p.units("in");\np.sheet(0.06, 0.06, 0.5);\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();\n';
     // Anvil's bend has 8 facets per 90°: flat area dA rolled into a facet of angle δ keeps T·dA·sin δ / δ of metal
-    var DTH = A90 / 8, ROLL = Math.sin(DTH) / DTH;
+    var DTH = A90 / 8, ROLL = Math.sin(DTH) / DTH;   // (the faceted solid: polyVol; mp.volume integrates the bend out to its true cylinders, lane FX)
     function cutSq(cx, cz, h) { return 'p.sketch("Top", 0.06).rect(' + (cx - h) + ', ' + (-cz - h) + ', ' + 2 * h + ', ' + 2 * h + ').cut("through", { reverse: true });\n'; }
     function flatOf(code) { var r = build(code); noErrors(r); return { r: r, flat: K.flatPattern(r.model, r.build, r.mesh) }; }
     function box2(l) { var b = [Infinity, Infinity, -Infinity, -Infinity]; l.forEach(function (p) { b[0] = Math.min(b[0], p[0]); b[1] = Math.min(b[1], p[1]); b[2] = Math.max(b[2], p[0]); b[3] = Math.max(b[3], p[1]); }); return b; }
@@ -20,7 +20,7 @@
     test('p9-cutbend: Edge Flange, Material Inside: a .2 square / Ø.2 hole centred on the bend line wraps round the bend and unfolds in place', function () {
       var plain = flatOf(PLATE + FL_IN), sq = flatOf(PLATE + cutSq(3.88, 1.5, 0.1) + FL_IN);
       // the trim line (bend start) is x = 4 − (R + T) = 3.88: half the square stays in the base, half rolls into the bend
-      near(sq.r.mp.volume, plain.r.mp.volume - T * 0.02 - T * 0.02 * ROLL, 1e-9, 'volume = flanged plate − base half − rolled half');
+      near(polyVol(sq.r.mp), polyVol(plain.r.mp) - T * 0.02 - T * 0.02 * ROLL, 1e-9, 'volume = flanged plate − base half − rolled half');
       near(sq.flat.size[0], plain.flat.size[0], 1e-9, 'flat length unchanged'); near(sq.flat.size[1], plain.flat.size[1], 1e-9, 'flat width unchanged');
       assert(sq.flat.loops.length === 2, sq.flat.loops.length + ' loops (outline + the hole)');
       nearBox(sq.flat.loops[1], [3.78, -1.6, 3.98, -1.4], 'the square in the flat, where it was cut');
@@ -48,7 +48,7 @@
         ['jog', 'p.jog(0.5, 1, [[4, 0.06, 1.5]]);', cutSq(3.95, 1.5, 0.03), T * 0.0036, [3.92, -1.53, 3.98, -1.47]]];
       cases.forEach(function (c) {
         var plain = flatOf(PLATE + c[1]), cut = flatOf(PLATE + c[2] + c[1]);
-        near(cut.r.mp.volume, plain.r.mp.volume - c[3], 1e-9, c[0] + ': volume');
+        near(polyVol(cut.r.mp), polyVol(plain.r.mp) - c[3], 1e-9, c[0] + ': volume');
         assert(cut.flat.loops.length === 2, c[0] + ': ' + cut.flat.loops.length + ' loops');
         nearBox(cut.flat.loops[1], c[4], c[0] + ': hole in the flat');
         near(cut.flat.size[0], plain.flat.size[0], 1e-9, c[0] + ': flat length');
@@ -71,11 +71,11 @@
     var SB = function (pos) { return 'p.sketch("Top", 0.06).line(2, 0, 2, -3).sketchedBend(90, { fixed: [1, 0, 1]' + (pos ? ', position: "' + pos + '"' : '') + ' });'; };
     test('p9-cutbend: Sketched Bend across a .4 square hole, a slot and a side notch: wrapped round the bend, the flat is the plate as cut', function () {
       var plain = flatOf(PLATE + SB());
-      near(plain.r.mp.volume, 0.72 - T * 3 * BA * (1 - ROLL), 1e-9, 'plain bend');
+      near(polyVol(plain.r.mp), 0.72 - T * 3 * BA * (1 - ROLL), 1e-9, 'plain bend');
       ['centerline', 'inside'].forEach(function (pos) {
         var sq = flatOf(PLATE + cutSq(2, 1.5, 0.2) + SB(pos === 'centerline' ? null : pos));
         // the square x ∈ [1.8, 2.2] covers the whole strip (BA = .1414 wide) for z ∈ [1.3, 1.7]
-        near(sq.r.mp.volume, plain.r.mp.volume - T * (0.16 - 0.4 * BA) - T * 0.4 * BA * ROLL, 1e-9, pos + ': volume');
+        near(polyVol(sq.r.mp), polyVol(plain.r.mp) - T * (0.16 - 0.4 * BA) - T * 0.4 * BA * ROLL, 1e-9, pos + ': volume');
         assert(sq.flat.loops.length === 2, pos + ': ' + sq.flat.loops.length + ' loops (the square was two D-shaped halves)');
         nearBox(sq.flat.loops[0], [0, -3, 4, 0], pos + ': the blank is the plate');
         nearBox(sq.flat.loops[1], [1.8, -1.7, 2.2, -1.3], pos + ': the square in place');
@@ -87,7 +87,7 @@
       assert(slot.flat.loops.length === 2, 'slot: ' + slot.flat.loops.length + ' loops');
       nearBox(slot.flat.loops[1], [1.375, -1.625, 2.625, -1.375], 'slot in place');
       var notch = flatOf(PLATE + 'p.sketch("Top", 0.06).rect(1.8, -0.3, 0.4, 0.3).cut("through", { reverse: true });\n' + SB());
-      near(notch.r.mp.volume, plain.r.mp.volume - T * (0.12 - 0.3 * BA) - T * 0.3 * BA * ROLL, 1e-9, 'side notch: volume');
+      near(polyVol(notch.r.mp), polyVol(plain.r.mp) - T * (0.12 - 0.3 * BA) - T * 0.3 * BA * ROLL, 1e-9, 'side notch: volume');
       assert(notch.flat.loops.length === 1, 'side notch: one outline');
       near(area2(notch.flat.loops[0]), 12 - 0.12, 1e-9, 'side notch: the blank is the notched plate');
       return 'square ' + fmt(sq.r.mp.volume) + ' in³; slot ' + box2(slot.flat.loops[1]).map(fmt).join(', ');
@@ -95,7 +95,7 @@
     test('p9-cutbend: a Sketched Bend line slanted across the plate: the bend follows the plate\'s edges, the flat is the plate', function () {
       // line (1.5, 0) → (2.5, 3): the strip is a parallelogram BA × √10; before, its square-ended sweep stuck out past both edges
       var r = flatOf(PLATE + 'p.sketch("Top", 0.06).line(1.5, 0, 2.5, -3).sketchedBend(90, { fixed: [0.5, 0, 1] });');
-      nearRel(r.r.mp.volume, 0.72 - T * BA * Math.sqrt(10) * (1 - ROLL), 1e-7, 'volume = plate − strip + bend');
+      nearRel(polyVol(r.r.mp), 0.72 - T * BA * Math.sqrt(10) * (1 - ROLL), 1e-7, 'volume = plate − strip + bend');
       assert(r.flat.loops.length === 1 && r.flat.loops[0].length === 4, 'blank: ' + r.flat.loops.map(function (l) { return l.length; }).join(', ') + ' points');
       nearBox(r.flat.loops[0], [0, -3, 4, 0], 'the blank is the 4 × 3 plate');
       return 'blank ' + r.flat.size.map(fmt).join(' × ');

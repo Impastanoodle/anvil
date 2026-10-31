@@ -6,7 +6,7 @@
     var T = 0.0598, R = 0.0598, H = 1 - (R + T);
     var TRAY = 'p.units("in");\np.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();\n' +
       [[2, T, 0], [4, T, 1.5], [2, T, 3], [0, T, 1.5]].map(function (e) { return 'p.flange(1, [' + JSON.stringify(e) + '], { position: "inside", lengthRef: "outer" });'; }).join('\n');
-    function rfCSVol() { return K.massProps(UI.App.mesh, UI.App.model.density).volume; }
+    function rfCSVol() { var mp = K.massProps(UI.App.mesh, UI.App.model.density); return mp.polygonal ? mp.polygonal.volume : mp.volume; }   // the faceted solid (lane FX: mp.volume integrates the bends to their cylinders)
     function rfCSEv(type, p, target) {
       var r = $('viewport').getBoundingClientRect();
       (target || W).dispatchEvent(new W.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: type === 'mouseup' ? 0 : 1, clientX: Math.round(r.left + p[0]), clientY: Math.round(r.top + p[1]) }));

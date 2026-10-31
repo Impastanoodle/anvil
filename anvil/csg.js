@@ -246,14 +246,16 @@ var CSG = (function () {
     },
     // Move every polygon whose own bounding box lies outside `bounds` (grown by eps) out of this tree into `out`.
     // The node planes stay, so the tree still classifies space exactly; only the far polygons skip the clipping.
-    extractFar: function (bounds, eps, out) {
+    // `kept` (rfFV): the far pieces stay in the result and go through restoreWhole with the clipped ones, so a source
+    // the tree build split (by the solid's own planes) comes back whole; otherwise they are discarded and their
+    // source counts as lost.
+    extractFar: function (bounds, eps, out, kept) {
       eachNode(this, function (node) {
         if (!node.polygons.length) return;
         var keep = [];
         for (var i = 0; i < node.polygons.length; i++) {
           var p = node.polygons[i];
-          // a far piece leaves the clipped set, so its source (possibly split by the tree build) is not restored whole
-          if (polygonFar(p, bounds, eps)) { if (p._src) p._src.lost = true; out.push(p); } else keep.push(p);
+          if (polygonFar(p, bounds, eps)) { if (kept) p._far = true; else if (p._src) p._src.lost = true; out.push(p); } else keep.push(p);
         }
         node.polygons = keep;
       });
@@ -342,12 +344,16 @@ var CSG = (function () {
     return out;
   }
   // CSG.options.restoreWhole = false turns this off (every fragment is kept, as before) for benchmarks and debugging.
+  // CSG.options.restoreFar (rfFV, on): the classic path's far polygons (extractFar) go through restoreWhole too. The
+  // full trees split each solid's polygons by its own planes, and where two of them are nearly parallel the EPSILON
+  // band puts a vertex into both pieces, so the pieces overlap by up to ~1e-5; kept as pieces they made non-manifold
+  // and open edges (the U-bracket with every edge R0.1: 51 open) and 5x the polygons. Off: far pieces stay pieces.
   // CSG.options.nearTrees = false turns off the near-region trees below; nearRatio is the largest share of an
   // operand's polygons that may lie near the other one for its tree to be built from the near part only.
   // CSG.options.sphereTest = false turns off splitPolygon's bounding-sphere shortcut (same results, slower).
   // CSG.options.heal = false turns off healCracks (rfFL) on boolean results; healWide, healFill, healDrop: see healCracks.
   // CSG.options.retryExact = false turns off the exact retry of a cracked boolean (rfFQ); retryMin / retryMax: see retryExact.
-  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5, sphereTest: true, heal: true, healWide: 2 * EPSILON, healDrop: false, healFill: false, retryExact: true, retryMin: 3, retryMax: 300 };
+  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5, sphereTest: true, heal: true, healWide: 2 * EPSILON, healDrop: false, healFill: false, retryExact: true, retryMin: 3, retryMax: 300, fatten: true, restoreFar: true, snapTwins: true };
   // FRAG: the bounding box of the fragments the last restoreWhole kept (null: everything may be cut), the region where
   // healCracks looks for cracks
   var FRAG = null;
@@ -358,7 +364,7 @@ var CSG = (function () {
     for (var i = 0; i < polygons.length; i++) {
       var p = polygons[i], r = p._src;
       p._src = null; // no record outlives the boolean (it would keep the operands alive)
-      if (!r || r.lost) { out.push(p); frag.push(p); continue; }
+      if (!r || r.lost) { out.push(p); if (p._far) p._far = false; else frag.push(p); continue; }
       if (r.done) continue;
       r.done = true;
       var q = r.orig.clone();
@@ -981,16 +987,28 @@ var CSG = (function () {
   // false turns it off; CSG.retryStats counts the retries and the wins.
   var RETRY = { runs: 0, won: 0 };
   function retryExact(A, B, raw) {
-    HEAL_LEFT = 0; EXACT = false;
+    HEAL_LEFT = 0; EXACT = false; FUZZY = 0; FRAG = null;
     var r = raw.call(A, B);
-    var left = HEAL_LEFT;
-    if (!left || !FUZZY || !OPTIONS.retryExact || left < OPTIONS.retryMin || left > OPTIONS.retryMax) return r;
-    var frag0 = FRAG, r2;
-    RETRY.runs++;
-    EXACT = true; HEAL_LEFT = 0;
-    try { r2 = raw.call(A, B); } finally { EXACT = false; }
-    if (HEAL_LEFT < left && (!HEAL_LEFT || thinCount(r2.polygons, FRAG) <= thinCount(r.polygons, frag0))) { r = r2; left = HEAL_LEFT; RETRY.won++; }
+    var left = HEAL_LEFT, fuzzy = FUZZY, frag = FRAG;
+    if (left && fuzzy && OPTIONS.retryExact && left >= OPTIONS.retryMin && left <= OPTIONS.retryMax) {
+      var r2;
+      RETRY.runs++;
+      EXACT = true; HEAL_LEFT = 0;
+      try { r2 = raw.call(A, B); } finally { EXACT = false; }
+      if (HEAL_LEFT < left && (!HEAL_LEFT || thinCount(r2.polygons, FRAG) <= thinCount(r.polygons, frag))) { r = r2; left = HEAL_LEFT; frag = FRAG; RETRY.won++; }
+    }
     HEAL_LEFT = left;
+    // rfFV: slivers under the meshes' 1e-6 weld merged into a coplanar neighbour (fattenSlivers)
+    if (fuzzy && OPTIONS.fatten) {
+      var fp = fattenSlivers(r.polygons, frag);
+      if (fp !== r.polygons) { var rb = r.bounds; r = CSG.fromPolygons(fp); r.bounds = rb; }
+    }
+    // rfFV: twin points ~1e-9 apart made one (snapTwins); only where the boolean made fragments (frag), never on the
+    // early-out paths or with restoreWhole off (the flat pattern's region merge)
+    if (frag && OPTIONS.snapTwins) {
+      var sp = snapTwins(r.polygons, frag);
+      if (sp !== r.polygons) { var sb = r.bounds; r = CSG.fromPolygons(sp); r.bounds = sb; }
+    }
     return r;
   }
   // polygons near the last boolean's fragments (FRAG) narrower than 1e-6 (twice the area over the longest edge): the
@@ -1010,6 +1028,200 @@ var CSG = (function () {
       if (Math.sqrt(sx * sx + sy * sy + sz * sz) <= 1e-6 * Math.sqrt(e2)) n++;
     }
     return n;
+  }
+
+  // ---------------------------------------------------------------- sliver merge (rfFV)
+  // A face of the result can have a reflex corner a hair off straight: where a fillet's last chord runs into a circle's
+  // chord at the tangent point they turn by ~1e-4 rad (maxAngle 3°: the vent R.05). A convex split of that face must
+  // cut from the reflex vertex, and the BSP cuts along the extension of one of the two chords, which leaves a wedge
+  // under 1e-6 wide between the extension and the other chord. The solid is exact, but every mesh downstream welds and
+  // splits T-junctions at 1e-6 (Exchange.bodyMesh, meshFromBody): the wedge's long edges fall onto each other and four
+  // triangles share an edge (non-manifold). fattenSlivers merges each such sliver (width = 2 area / longest edge <=
+  // SLIM, near the boolean's fragments) into a coplanar neighbour with the same tags that holds one of its edges
+  // (whole, or as part of a longer edge), drops vertices left exactly collinear and, when the merged outline has one
+  // reflex vertex, fans it from there (a polygon with one reflex vertex is star-shaped from it). Every piece must be
+  // wider than FAT_MIN and wound like the face, else the sliver stays. No vertex moves and the merged pieces tile the
+  // same area, so volumes, outlines and flats are unchanged (to rounding). Runs on every boolean that had band vertices
+  // (FUZZY: no sliver of this kind can appear otherwise); CSG.options.fatten = false turns it off, CSG.fatStats counts.
+  var FAT = { calls: 0, slivers: 0, merged: 0, snapped: 0, ms: 0 }, SLIM = 1e-6, FAT_MIN = 1e-5;
+  // 2 area / longest edge of a vertex loop (positions)
+  function loopWidth(ps) {
+    var a = ps[0], sx = 0, sy = 0, sz = 0, e2 = 0, n = ps.length;
+    for (var j = 0; j < n; j++) {
+      var b = ps[j], c = ps[(j + 1) % n], ex = c.x - b.x, ey = c.y - b.y, ez = c.z - b.z, l2 = ex * ex + ey * ey + ez * ez;
+      if (l2 > e2) e2 = l2;
+      var bx = b.x - a.x, by = b.y - a.y, bz = b.z - a.z, cx = c.x - a.x, cy = c.y - a.y, cz = c.z - a.z;
+      sx += by * cz - bz * cy; sy += bz * cx - bx * cz; sz += bx * cy - by * cx;
+    }
+    return e2 > 0 ? Math.sqrt(sx * sx + sy * sy + sz * sz) / Math.sqrt(e2) : 0;
+  }
+  function posOf(p) { return p.vertices.map(function (v) { return v.pos; }); }
+  function tagOf(x) { return x == null ? null : x; }
+  function sameFace(S, N) {
+    if (S.shared !== N.shared || S.surf !== N.surf || tagOf(S.face) !== tagOf(N.face) || tagOf(S.part) !== tagOf(N.part)) return false;
+    var a = S.plane.normal, b = N.plane.normal;
+    if (a.x * b.x + a.y * b.y + a.z * b.z < 1 - 1e-9) return false;
+    for (var i = 0; i < S.vertices.length; i++) { var d = b.dot(S.vertices[i].pos) - N.plane.w; if (d > 1e-9 || d < -1e-9) return false; }
+    return true;
+  }
+  // drop repeated and exactly collinear (sin < 1e-10, running on) vertices of a closed loop of positions
+  function cleanLoop(loop) {
+    for (var changed = true; changed && loop.length >= 3;) {
+      changed = false;
+      for (var k = 0; k < loop.length && loop.length >= 3; k++) {
+        var m = loop.length, P = loop[(k + m - 1) % m], V = loop[k], Q = loop[(k + 1) % m];
+        var ax = V.x - P.x, ay = V.y - P.y, az = V.z - P.z, bx = Q.x - V.x, by = Q.y - V.y, bz = Q.z - V.z;
+        var la = ax * ax + ay * ay + az * az, lb = bx * bx + by * by + bz * bz;
+        var cx = ay * bz - az * by, cy = az * bx - ax * bz, cz = ax * by - ay * bx;
+        if (la < 1e-24 || (cx * cx + cy * cy + cz * cz <= 1e-20 * la * lb && ax * bx + ay * by + az * bz > 0)) { loop.splice(k, 1); k--; changed = true; }
+      }
+    }
+    return loop;
+  }
+  // convex pieces of a planar loop (normal n): itself when convex, a fan from its one reflex vertex, else null; every
+  // piece wound along n and wider than FAT_MIN
+  function convexPieces(loop, n) {
+    var m = loop.length, r = -1, k;
+    if (m < 3) return null;
+    for (k = 0; k < m; k++) {
+      var P = loop[(k + m - 1) % m], V = loop[k], Q = loop[(k + 1) % m];
+      var ax = V.x - P.x, ay = V.y - P.y, az = V.z - P.z, bx = Q.x - V.x, by = Q.y - V.y, bz = Q.z - V.z;
+      var s = (ay * bz - az * by) * n.x + (az * bx - ax * bz) * n.y + (ax * by - ay * bx) * n.z;
+      if (s <= 1e-10 * Math.sqrt((ax * ax + ay * ay + az * az) * (bx * bx + by * by + bz * bz))) { if (r >= 0) return null; r = k; }
+    }
+    var pieces = [];
+    if (r < 0) pieces.push(loop);
+    else for (k = 1; k + 1 < m; k++) pieces.push([loop[r], loop[(r + k) % m], loop[(r + k + 1) % m]]);
+    for (k = 0; k < pieces.length; k++) {
+      var pl = Plane.fromVertices(pieces[k].map(function (q) { return { pos: q }; }));
+      if (!pl || pl.normal.dot(n) < 0.999 || loopWidth(pieces[k]) <= FAT_MIN) return null;
+    }
+    return pieces;
+  }
+  // S (a sliver) merged into N across an edge of S that lies on an edge of N (reversed): N's new convex pieces, or null
+  function mergeSliver(S, N) {
+    var sv = posOf(S), nv = posOf(N), ns = sv.length, nn = nv.length, i, j, k;
+    for (i = 0; i < ns; i++) {
+      var a = sv[i], b = sv[(i + 1) % ns];
+      for (j = 0; j < nn; j++) {
+        var p = nv[j], q = nv[(j + 1) % nn], ux = q.x - p.x, uy = q.y - p.y, uz = q.z - p.z, L2 = ux * ux + uy * uy + uz * uz;
+        if (L2 < 1e-24) continue;
+        var tb = ((b.x - p.x) * ux + (b.y - p.y) * uy + (b.z - p.z) * uz) / L2, ta = ((a.x - p.x) * ux + (a.y - p.y) * uy + (a.z - p.z) * uz) / L2;
+        if (!(tb > -1e-9 && ta < 1 + 1e-9 && ta - tb > 1e-9)) continue;
+        var ok = true;
+        [[a, ta], [b, tb]].forEach(function (c) {
+          var dx = c[0].x - p.x - c[1] * ux, dy = c[0].y - p.y - c[1] * uy, dz = c[0].z - p.z - c[1] * uz;
+          if (dx * dx + dy * dy + dz * dz > 1e-18) ok = false;
+        });
+        if (!ok) continue;
+        // N up to p, then b, round S to a, then q and the rest of N
+        var loop = nv.slice(0, j + 1);
+        loop.push(b);
+        for (k = 2; k < ns; k++) loop.push(sv[(i + k) % ns]);
+        loop.push(a);
+        for (k = j + 1; k < nn; k++) loop.push(nv[k]);
+        var pieces = convexPieces(cleanLoop(loop), N.plane.normal);
+        if (!pieces) continue;
+        return pieces.map(function (ps) {
+          var pp = new Polygon(ps.map(function (x) { return new Vertex(x.clone()); }), N.shared, N.plane.clone());
+          pp.surf = N.surf;
+          if (N.face != null) pp.face = N.face;
+          if (N.part != null) pp.part = N.part;
+          return pp;
+        });
+      }
+    }
+    return null;
+  }
+  // Twin points (rfFV): the same corner of the result computed twice, as A's edge cut by B's plane and as B's edge cut
+  // by A's plane, lands 1e-9..7e-7 apart (3e-8 where a nearly flat tool facet's trace on a face sets it: the R2 round on an
+  // extruded spline's end face, rfFY; 7.2e-7 for a plain boss on a plate, rfGA pin 1). Every mesh welds on a 1e-6 grid (Exchange.bodyMesh, meshFromBody), so a pair
+  // that straddles a grid line comes apart there: open edges in a closed solid, by lottery (the Funnel's R15.51 spout
+  // ring drew one, the spline round 4). snapTwins makes every pair of distinct vertices within SNAP of each other (near
+  // the boolean's fragments) the bitwise-same point, the lexicographically smaller; a polygon keeps its plane, loses
+  // repeats and goes when fewer than 3 vertices are left. SNAP is the weld cell: two distinct points closer than it are
+  // one point to the meshes anyway, unless a grid line falls between them. Moves are under SNAP (volumes ~1e-10). Tried
+  // and dropped: a second tier sliding an interior face vertex onto a neighbour up to 4e-6 away (the spline round's
+  // 3 non-manifold edges): every candidate move opened a T-junction of a tool chord line by ~1e-6.
+  var SNAP = 1e-6;
+  function pkey(q) { return q.x + ',' + q.y + ',' + q.z; }
+  function snapTwins(polys, box) {
+    var vs = [], i, j, k;
+    for (i = 0; i < polys.length; i++) {
+      if (box && polygonFar(polys[i], box, 4 * HEAL)) continue;
+      var pv = polys[i].vertices;
+      for (j = 0; j < pv.length; j++) vs.push(pv[j].pos);
+    }
+    if (vs.length < 2) return polys;
+    vs.sort(function (a, b) { return a.x - b.x || a.y - b.y || a.z - b.z; });
+    var to = new Map();
+    for (i = 0; i < vs.length; i++) {
+      var a = vs[i];
+      if (to.has(a)) continue;
+      for (k = i + 1; k < vs.length; k++) {
+        var b = vs[k];
+        if (b.x - a.x > SNAP) break;
+        if (to.has(b) || (b.x === a.x && b.y === a.y && b.z === a.z)) continue;
+        var dy = b.y - a.y, dz = b.z - a.z;
+        if (dy > SNAP || dy < -SNAP || dz > SNAP || dz < -SNAP) continue;
+        to.set(b, a);
+      }
+    }
+    if (!to.size) return polys;
+    // positions are shared only within a polygon's own vertex objects, so map by value through a key of the moved ones
+    var moved = new Map();
+    to.forEach(function (a, b) { moved.set(pkey(b), a); });
+    var out = [], changed = 0;
+    for (i = 0; i < polys.length; i++) {
+      var p = polys[i], v = p.vertices, hit = false;
+      if (box && polygonFar(p, box, 4 * HEAL)) { out.push(p); continue; }
+      for (j = 0; j < v.length && !hit; j++) if (moved.has(pkey(v[j].pos))) hit = true;
+      if (!hit) { out.push(p); continue; }
+      var nv = [];
+      for (j = 0; j < v.length; j++) {
+        var q = v[j].pos, t = moved.get(pkey(q)) || q, last = nv.length ? nv[nv.length - 1].pos : null;
+        if (!last || last.x !== t.x || last.y !== t.y || last.z !== t.z) nv.push(new Vertex(t.clone()));
+      }
+      while (nv.length > 1) { var f0 = nv[0].pos, fl = nv[nv.length - 1].pos; if (f0.x === fl.x && f0.y === fl.y && f0.z === fl.z) nv.pop(); else break; }
+      changed++;
+      if (nv.length < 3) continue;
+      var pp = new Polygon(nv, p.shared, p.plane.clone());
+      pp.surf = p.surf;
+      if (p.face != null) pp.face = p.face;
+      if (p.part != null) pp.part = p.part;
+      out.push(pp);
+    }
+    FAT.snapped += changed;
+    return out;
+  }
+  function fattenSlivers(polys, box) {
+    var t0 = NOW(), near = [], thin = [], i, k;
+    for (i = 0; i < polys.length; i++) {
+      if (box && polygonFar(polys[i], box, 4 * HEAL)) continue;
+      near.push(i);
+      if (loopWidth(posOf(polys[i])) <= SLIM) thin.push(i);
+    }
+    if (!thin.length) return polys;
+    FAT.calls++; FAT.slivers += thin.length;
+    var out = polys.slice(), merged = 0;
+    for (var s = 0; s < thin.length; s++) {
+      var S = out[thin[s]];
+      if (!S || loopWidth(posOf(S)) > SLIM) continue;
+      var sb = boundsOf([S]);
+      for (k = 0; k < near.length; k++) {
+        var j = near[k], N = out[j];
+        if (j === thin[s] || !N || polygonFar(N, sb, 1e-9) || !sameFace(S, N)) continue;
+        var pieces = mergeSliver(S, N);
+        if (!pieces) continue;
+        out[thin[s]] = null; out[j] = pieces[0];
+        for (var q = 1; q < pieces.length; q++) { near.push(out.length); out.push(pieces[q]); }
+        merged++;
+        break;
+      }
+    }
+    FAT.merged += merged;
+    FAT.ms += NOW() - t0;
+    return merged ? out.filter(function (x) { return x; }) : polys;
   }
   // The booleans below are the classic BSP algorithm with a bounding-box early-out: a polygon whose own bounding box
   // lies clear of the other solid's bounding box is never clipped and is put back (or dropped) unchanged, since no
@@ -1048,14 +1260,14 @@ var CSG = (function () {
       var a = new Node(taggedClones(this.polygons));
       var b = new Node(taggedClones(csg.polygons));
       var far = [];
-      a.extractFar(bb, eps, far); b.extractFar(ba, eps, far);
+      a.extractFar(bb, eps, far, OPTIONS.restoreFar); b.extractFar(ba, eps, far, OPTIONS.restoreFar);
       a.clipTo(b);
       b.clipTo(a);
       b.invert();
       b.clipTo(a);
       b.invert();
       a.build(b.allPolygons());
-      return CSG.fromPolygons(healCracks(restoreWhole(a.allPolygons()).concat(untag(far))));
+      return CSG.fromPolygons(healCracks(OPTIONS.restoreFar ? restoreWhole(a.allPolygons().concat(far)) : restoreWhole(a.allPolygons()).concat(untag(far))));
     },
     _subtract: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
@@ -1075,7 +1287,7 @@ var CSG = (function () {
       var b = new Node(taggedClones(csg.polygons));
       var far = [];
       // A's far polygons survive untouched; B's far polygons lie outside A and take nothing away
-      a.extractFar(bb, eps, far); b.extractFar(ba, eps, []);
+      a.extractFar(bb, eps, far, OPTIONS.restoreFar); b.extractFar(ba, eps, []);
       a.invert();
       a.clipTo(b);
       b.clipTo(a);
@@ -1084,7 +1296,7 @@ var CSG = (function () {
       b.invert();
       a.build(b.allPolygons());
       a.invert();
-      return CSG.fromPolygons(healCracks(restoreWhole(a.allPolygons()).concat(untag(far))));
+      return CSG.fromPolygons(healCracks(OPTIONS.restoreFar ? restoreWhole(a.allPolygons().concat(far)) : restoreWhole(a.allPolygons()).concat(untag(far))));
     },
     _intersect: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
@@ -1281,6 +1493,7 @@ var CSG = (function () {
   // healCracks counters (rfFL): calls, results healed, polygons rebuilt / dropped, open edges it could not close
   CSG.healStats = healStats;
   CSG.retryStats = RETRY;
+  CSG.fatStats = FAT;
   CSG.healCracks = function (csg) { FUZZY = 1; FRAG = null; return CSG.fromPolygons(healCracks(csg.polygons.slice())); };
   return CSG;
 })();

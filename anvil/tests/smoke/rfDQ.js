@@ -10,7 +10,7 @@
     (target || W).dispatchEvent(new W.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: type === 'mouseup' ? 0 : 1, clientX: Math.round(r.left + p[0]), clientY: Math.round(r.top + p[1]) }));
   }
   function rfDQClick(p) { rfDQEv('mousemove', p); rfDQEv('mousedown', p, $('viewport')); rfDQEv('mouseup', p); }
-  function rfDQVol() { return K.massProps(UI.App.mesh, UI.App.model.density).volume; }
+  function rfDQVol() { var mp = K.massProps(UI.App.mesh, UI.App.model.density); return mp.polygonal ? mp.polygonal.volume : mp.volume; }   // the faceted solid (lane FX)
   function rfDQRibbon(re) {
     return Array.prototype.filter.call(D.querySelectorAll('#ribbon button'), function (b) { return re.test((b.getAttribute('aria-label') || '') + ' ' + (b.title || '') + ' ' + b.textContent); })[0];
   }

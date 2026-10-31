@@ -28,12 +28,16 @@
     // lane FH2 (2026-10-29): the Mug's swept handle now carries torus records (the sweep along the arc is a partial
     // revolve of the tube); its torus patch is bounded by two meridian circles, a patch shape the STEP writer / reader
     // do not take yet ("plain" patches are cylinders and cones only), so it goes out faceted with the cylinders
-    var STEP_FACETED = { 'Hex nut': ['cone'], 'Mug': ['cyl', 'tor'] };
+    // lane GB: the shell's inner wall is a true offset cylinder (r 37) and goes out as one; only the outer cylinder (r 40,
+    // trimmed by the handle), the handle's straight r 5 pieces (trimmed by the torus) and its torus patches stay faceted in
+    // the file (head probe: this set reproduces the re-imported volume to 2e-12)
+    var STEP_FACETED = { 'Hex nut': ['cone'], 'Mug': function (S) { return S.t === 'tor' || (S.t === 'cyl' && Math.abs(S.r - 37) > 1e-6); } };
     // the kernel's exact volume with the given surface types measured by their facets (as a STEP export writes them)
     function stepVolume(r, faceted) {
       if (!faceted) return r.mp.volume;
       var b = r.body.clone();
-      b.polygons.forEach(function (p) { if (p.surf && faceted.indexOf(p.surf.s.t) >= 0) p.surf = null; });
+      var drop = typeof faceted === 'function' ? faceted : function (S) { return faceted.indexOf(S.t) >= 0; };
+      b.polygons.forEach(function (p) { if (p.surf && drop(p.surf.s)) p.surf = null; });
       return K.massProps(K.meshFromBody(b), 1).volume;
     }
     function count(re, text) { return (text.match(re) || []).length; }

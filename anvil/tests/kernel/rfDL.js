@@ -46,21 +46,21 @@
 
     test('rfDL: the mitre gap: volume = no-gap volume − √2 · gap · A+ (each flange loses gap/√2 along its edge), exact', function () {
       var a = flatOf(HEAD + STRAIGHT + mf({ miterGap: 0 })), b = flatOf(HEAD + STRAIGHT + mf({ miterGap: 0.01 }));
-      nearRel(a.mp.volume - b.mp.volume, Math.SQRT2 * 0.01 * APLUS, 1e-6, 'gap volume');
+      nearRel(polyVol(a.mp) - polyVol(b.mp), Math.SQRT2 * 0.01 * APLUS, 1e-6, 'gap volume');
       return 'removed ' + fmt(a.mp.volume - b.mp.volume);
     });
 
     test('rfDL: start offset .25 shortens the first flange (front edge, from its free end x = 4) by .25: volume − .25·(A+ − (R + T)·T), the base keeps its corner; end offset .25 the left flange at z = 2', function () {
       var a = flatOf(HEAD + STRAIGHT + mf({ miterGap: 0.01 })), s = flatOf(HEAD + STRAIGHT + mf({ miterGap: 0.01, startOffset: 0.25 }));
-      nearRel(a.mp.volume - s.mp.volume, 0.25 * (APLUS - (R + T) * T), 1e-6, 'start offset volume');
+      nearRel(polyVol(a.mp) - polyVol(s.mp), 0.25 * (APLUS - (R + T) * T), 1e-6, 'start offset volume');
       var inS = s.build.body.pointTester();
       assert(inS([3.7, 0.6, T / 2]) && !inS([3.8, 0.6, T / 2]), 'the front wall ends at x = 3.75');
       assert(inS([3.9, T / 2, (R + T) / 2]), 'the base is not trimmed past the offset');
       var e = flatOf(HEAD + STRAIGHT + mf({ miterGap: 0.01, endOffset: 0.25 })), inE = e.build.body.pointTester();
-      nearRel(a.mp.volume - e.mp.volume, 0.25 * (APLUS - (R + T) * T), 1e-6, 'end offset volume');
+      nearRel(polyVol(a.mp) - polyVol(e.mp), 0.25 * (APLUS - (R + T) * T), 1e-6, 'end offset volume');
       assert(inE([T / 2, 0.6, 1.7]) && !inE([T / 2, 0.6, 1.8]), 'the left wall ends at z = 1.75');
       var both = flatOf(HEAD + STRAIGHT + mf({ miterGap: 0.01, startOffset: 0.25, endOffset: 0.5 }));
-      nearRel(a.mp.volume - both.mp.volume, 0.75 * (APLUS - (R + T) * T), 1e-6, 'both offsets');
+      nearRel(polyVol(a.mp) - polyVol(both.mp), 0.75 * (APLUS - (R + T) * T), 1e-6, 'both offsets');
       return 'start ' + fmt(a.mp.volume - s.mp.volume) + ', end ' + fmt(a.mp.volume - e.mp.volume);
     });
 

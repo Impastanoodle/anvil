@@ -10,7 +10,7 @@
       var one = build(HEAD + FLANGE_Z4), two = build(HEAD + FLANGE_Z4 + 'p.flange(1.0, [[6, ' + T + ', 2]], { position: "inside", lengthRef: "outer" });');
       noErrors(one); noErrors(two);
       var sec = Math.abs(K.signedArea(K.flangeProfile(Math.PI / 2, R, T, 1.0 - (R + T), 0))), lenA = 4 - (R + T);
-      nearRel(two.mp.volume, one.mp.volume + (sec - (R + T) * T) * lenA, 1e-9, 'volume with the second flange');
+      nearRel(polyVol(two.mp), polyVol(one.mp) + (sec - (R + T) * T) * lenA, 1e-9, 'volume with the second flange');
       var inside = two.body.pointTester(), z = 4 - (R + T) + 0.005, miss = [];
       for (var x = 5.885; x < 5.995; x += 0.01) if (!inside([x, T / 2, z])) miss.push(fmt(x));
       assert(!miss.length, 'the first bend has metal at mid-thickness 0.005 past its start: missing at x = ' + miss.join(', '));

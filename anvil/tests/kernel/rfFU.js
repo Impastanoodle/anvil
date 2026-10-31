@@ -34,6 +34,8 @@
       return a;
     }
     // bracket + each [unfold, cut, fold] cycle: the folded volume by the formula above (δ = 90° / 8, K = 0.5)
+    // (lane FX: wrapRegion now puts a point inside a zone at the TRUE angle on its chord, not evenly in s, so a void edge
+    // inside a zone is off this linear-map formula by up to 1.4e-7 (R .25): tolerance 5e-7; mp.volume is the exact one)
     function rfFUcheck(base, T, unf, cuts, label, tol) {
       var dl = Math.PI / 16, f = Math.sin(dl) / dl, code = base, want = build(base).body.volume();
       cuts.forEach(function (c, i) {
@@ -45,7 +47,7 @@
         assert(ab > 1e-4, label + ' cycle ' + (i + 1) + ': the Fold wrapped a void (band area ' + fmt(ab) + ')');
         want -= (F0 - Uc) + T * ab * (f - 1);
         rfFUclosed(r, label + ' cycle ' + (i + 1));
-        nearRel(r.body.volume(), want, tol || 1e-9, label + ' cycle ' + (i + 1) + ': folded volume');
+        nearRel(r.body.volume(), want, tol || 5e-7, label + ' cycle ' + (i + 1) + ': folded volume');
       });
       return build(code);
     }

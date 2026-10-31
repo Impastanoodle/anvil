@@ -79,15 +79,15 @@
       return out.join('; ') + '; retry off at 6°: ' + c.open + ' open';
     });
 
-    test('rfFQ TODO: vent R.05 at maxAngle 3: no open edge and the exact volume, but 10 non-manifold edges (was 38 open + 4 non-manifold)', function () {
-      // the fillet's end chord and the spar's chord leave the tangent point nearly collinear (3°: a wedge 1e-7 wide),
-      // and the exact retry puts both walls on that line: four faces meet along it. Pinned so a fix shows up here.
-      var r = rfFQbuild(VENT, 3), c = rfFQcount(r), exact = rfFQventVolume();
+    test('rfFQ: vent R.05 at maxAngle 3: closed (no open and no non-manifold edge) and the exact volume (was 38 open + 4 non-manifold, then 10 non-manifold; lane FV)', function () {
+      // the fillet's end chord and the spar's chord leave the tangent point nearly collinear (3°): the BSP split the
+      // sheet faces along the spar chord's extension into a wedge ~5e-7 wide, which the meshes' 1e-6 weld folded into
+      // four faces on one edge. csg.js fattenSlivers (rfFV) merges the wedge into its neighbour.
+      var r = rfFQbuild(VENT, 3), exact = rfFQventVolume();
       noErrors(r);
-      assert(c.open === 0 && c.mq === 0 && c.zero === 0, 'open ' + c.open + ' / ' + c.mq + ', zero-area ' + c.zero);
-      assert(c.nm <= 10, 'non-manifold ' + c.nm);
+      var c = rfFQclosed(r, 'vent at 3°');
       nearRel(r.mp.volume, exact, 1e-8, 'volume');
-      return 'non-manifold ' + c.nm;
+      return 'open ' + c.open + ', non-manifold ' + c.nm + ', ' + ((r.mp.volume - exact) / exact).toExponential(1);
     });
 
     test('rfFQ: R0.1 round on a ball dimple at maxAngle 6: built (the open-edge guard refused it: 12 open), closed, exact torus volume', function () {

@@ -120,7 +120,23 @@ var OcctKernel = (function () {
       if (Math.abs(d) < 1e-12) return firstWire(face);
       var mo = N(new oc.BRepOffsetAPI_MakeOffset_2(face, oc.GeomAbs_JoinType.GeomAbs_Intersection, false));
       mo.Perform(d, 0);
-      if (!mo.IsDone()) throw new Error('Draft angle is too large for this depth: the profile collapses.');
+      if (!mo.IsDone()) {
+        // lane FZ: this build's MakeOffset refuses to shrink a face bounded by ONE closed circular edge (a round boss
+        // with any draft failed); the offset of a circle is the concentric circle of radius r + d
+        var es = explore(face, ENUM.TopAbs_EDGE);
+        if (es.length === 1) {
+          var ad = N(new oc.BRepAdaptor_Curve_2(N(oc.TopoDS.Edge_1(es[0])))), ty = ad.GetType();
+          if ((ty && ty.value != null ? ty.value : ty) === (oc.GeomAbs_CurveType.GeomAbs_Circle.value != null ? oc.GeomAbs_CurveType.GeomAbs_Circle.value : oc.GeomAbs_CurveType.GeomAbs_Circle)) {
+            var ci = N(ad.Circle()), r = ci.Radius() + d;
+            if (r > 1e-9 * Math.max(1, ci.Radius())) {
+              var cw = N(new oc.BRepBuilderAPI_MakeWire_1());
+              cw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_8(N(new oc.gp_Circ_2(N(ci.Position()), r)))).Edge()));
+              return N(cw.Wire());
+            }
+          }
+        }
+        throw new Error('Draft angle is too large for this depth: the profile collapses.');
+      }
       return firstWire(N(mo.Shape()));
     }
 
@@ -437,8 +453,39 @@ var OcctKernel = (function () {
       }
       return tool;
     }
+    // lane FZ2: a Mirror / LPattern / CirPattern of a fillet or chamfer (rfGA G10): OpenCascade rounds edges in place
+    // (edgeOp, no tool body), so the copy is the same edge feature on the edges at the moved pick points, one per
+    // instance, as SolidWorks does. The point maps follow patternTool's own transforms below.
+    function edgeFeatureCopies(f, sf) {
+      var maps = [];
+      if (f.type === 'mirror') {
+        var mp = K.makePlane(f.plane || 'Right', f.offset || 0);
+        maps.push(function (p) { var d = V.dot(V.sub(p, mp.origin), mp.n); return V.sub(p, V.scale(mp.n, 2 * d)); });
+      } else if (f.type === 'lpattern') {
+        var d1 = K.AXES[f.d1 || 'x'].map(function (x) { return x * (f.rev1 ? -1 : 1); }), n1 = Math.max(1, f.n1 | 0), n2 = f.d2 ? Math.max(1, f.n2 | 0) : 1;
+        var d2 = f.d2 ? K.AXES[f.d2].map(function (x) { return x * (f.rev2 ? -1 : 1); }) : [0, 0, 0];
+        for (var i = 0; i < n1; i++) for (var j = 0; j < n2; j++) {
+          if (i === 0 && j === 0) continue;
+          (function (t) { maps.push(function (p) { return V.add(p, t); }); })(V.add(V.scale(d1, i * (+f.s1 || 0)), V.scale(d2, j * (+f.s2 || 0))));
+        }
+      } else {
+        var count = Math.max(2, f.n | 0), total = +f.angle || 360, step = f.equal === false ? total : (Math.abs(total) >= 360 ? total / count : total / (count - 1));
+        var rax = K.refAxisId(f) != null ? refAxisRec(f) : null, o = rax ? rax.o : f.center || [0, 0, 0], ax = rax ? rax.d : K.AXES[f.axis || 'z'];
+        ax = V.scale(ax, 1 / V.len(ax));
+        for (var c = 1; c < count; c++) (function (a) {
+          var cs = Math.cos(a), sn = Math.sin(a);
+          maps.push(function (p) { var v = V.sub(p, o), k = V.dot(ax, v); return V.add(o, V.add(V.add(V.scale(v, cs), V.scale(V.cross(ax, v), sn)), V.scale(ax, k * (1 - cs)))); });
+        })(step * c * Math.PI / 180);
+      }
+      maps.forEach(function (mapP) {
+        var g = JSON.parse(JSON.stringify(sf));
+        g.edges = (sf.edges || []).map(function (e) { var e2 = JSON.parse(JSON.stringify(e)); e2.at = mapP(e.at); return e2; });
+        edgeOp(g);
+      });
+    }
     function patternTool(f) {
-      var src = familyTool(f.feature), copies = [];
+      var src = familyTool(f.feature), copies = [], sf = !src && f.feature != null ? K.findFeature(m, f.feature) : null;
+      if (sf && (sf.type === 'fillet' || sf.type === 'chamfer') && !(f.type === 'mirror' && f.body)) { edgeFeatureCopies(f, sf); return null; }
       if (f.type !== 'mirror' || !f.body) { if (!src) throw new Error((f.type === 'mirror' ? 'Mirror' : 'Pattern') + ' source feature has no geometry.'); }
       if (f.type === 'lpattern') {
         var d1 = K.AXES[f.d1 || 'x'].map(function (x) { return x * (f.rev1 ? -1 : 1); }), n1 = Math.max(1, f.n1 | 0), n2 = f.d2 ? Math.max(1, f.n2 | 0) : 1;
@@ -649,6 +696,12 @@ var OcctKernel = (function () {
       var join = oc.GeomAbs_JoinType.GeomAbs_Intersection, mode = oc.BRepOffset_Mode.BRepOffset_Skin;
       // Anvil offsets curved faces facet by facet (a polygonal cavity); OpenCascade's walls are the exact offset
       if (facesOf(body).some(function (fc) { var t = N(new oc.BRepAdaptor_Surface_2(fc, true)).GetType(); return (t && t.value != null ? t.value : t) !== 0; })) approx = true;
+      // lane FZ: OpenCascade's offset with sharp (intersection) joins comes out invalid on some bodies with curved
+      // faces (a cylinder notched by a slot: 14930 instead of ~8720 mm³, BRepCheck fails; the arc join is invalid too
+      // or rounds the inside corners, which Anvil and SolidWorks keep sharp). A later Boolean on that invalid solid
+      // (Mirror body, a pattern) ran for minutes. Such a result is refused here, so the feature fails on OpenCascade,
+      // Anvil's shell drives, and the features after it build on valid solids.
+      var badShell = 'OpenCascade could not shell this body: its offset walls cross each other.';
       if (rm.length) {
         var list = N(new oc.TopTools_ListOfShape_1());
         rm.forEach(function (fc) { list.Append_1(fc); });
@@ -660,8 +713,20 @@ var OcctKernel = (function () {
         var mo = N(new oc.BRepOffsetAPI_MakeOffsetShape());
         mo.PerformByJoin(body, -T, 1e-3, mode, false, false, join, false, R());
         if (!mo.IsDone()) throw new Error('OpenCascade could not shell the body with this thickness.');
-        res = cut(body, N(mo.Shape()));
+        var inner = N(mo.Shape());
+        if (!valid(inner)) throw new Error(badShell);
+        res = cut(body, inner);
       }
+      // valid is not enough: on a cylinder with a slot through its side the offset also came out VALID but 2.9 times
+      // too heavy (18946 for 6524 mm³: the cavity lost where the slot's offset walls cross the bore). A wall T thick
+      // holds about T × the area of the faces kept (less on convex curves, more round a bore: T·A·(1 + T/2r)), plus
+      // about T² per length of concave edge at sharp inside corners; 1.2·T·A + T²·(every edge's length) is a generous
+      // ceiling (a slotted Ø20 cylinder: 8428 for Anvil's 4159 mm³ was let through by 1.5·T·A)
+      var vr = volumeOf(res), gl = N(new oc.GProp_GProps_1()), aKept = 0;
+      function areaOf(s) { var g = N(new oc.GProp_GProps_1()); oc.BRepGProp.SurfaceProperties_1(s, g, false, false); return g.Mass(); }
+      aKept = areaOf(body) - rm.reduce(function (s, fc) { return s + areaOf(fc); }, 0);
+      oc.BRepGProp.LinearProperties(body, gl, false, false);
+      if (!valid(res) || !(vr > 0) || !(vr < volumeOf(body)) || vr > 1.2 * T * aKept + T * T * gl.Mass()) throw new Error(badShell);
       bodies[k] = res;
     }
     // Imported feature (exchange.js) that kept its source file (f.brep: { format: 'step' | 'iges', text }): the exact
@@ -811,7 +876,29 @@ var OcctKernel = (function () {
       // axis through the bend centre along the edge; angle 0 at the sheet (−y from the centre), growing toward +x
       var ax = N(new oc.gp_Ax3_3(P(V.add(plane.origin, V.scale(plane.y, R0))), Dir(plane.n), Dir(V.scale(plane.y, -1))));
       var surf = N(new oc.Handle_Geom_Surface_2(N(new oc.Geom_CylindricalSurface_1(ax, R0 + z0))));
-      var ku = sec.A / BA, uv = l.map(function (q) { return [ku * q[0], q[1]]; }), mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+      var ku = sec.A / BA, uv = l.map(function (q) { return [ku * q[0], q[1]]; });
+      var wire = outlineWire(l, surf, ku);
+      // the cutter's volume: the outline's area in (angle, t) times the annulus between the two radii per unit angle
+      var area = 0;
+      uv.forEach(function (a, j) { var b = uv[(j + 1) % uv.length]; area += a[0] * b[1] - b[0] * a[1]; });
+      var want = Math.abs(area / 2) * (Math.pow(R0 + z1, 2) - Math.pow(R0 + z0, 2)) / 2;
+      // on a closed surface a wire bounds two regions: when the face came out as the rest of the cylinder, reverse it
+      for (var k = 0; k < 2; k++) {
+        var w = k ? N(oc.TopoDS.Wire_1(N(wire.Reversed()))) : wire;
+        var face = N(N(new oc.BRepBuilderAPI_MakeFace_21(surf, w, true)).Face());
+        var th = N(new oc.BRepOffsetAPI_MakeThickSolid());
+        th.MakeThickSolidBySimple(face, z1 - z0);
+        if (!th.IsDone()) continue;
+        var sh = N(th.Shape()), v = volumeOf(sh);   // (the thickened face comes out inside out: negative)
+        if (Math.abs(v) < 1.5 * want) return v < 0 ? N(sh.Reversed()) : sh;
+      }
+      throw new Error('OpenCascade could not make the cut across the bend.');
+    }
+    // lane FZ: a band loop (Kernel.bendVoids: points on the void's true edge) as exact edges on surf, whose (u, v) are
+    // (ku·q[0], q[1]): a run on one circle is that circle (an ellipse when ku ≠ 1), another smooth run the C1 cubic
+    // through its points, two points a straight edge. Shared by cylinderCutter (the bend) and exactPrism (the flat).
+    function outlineWire(l, surf, ku) {
+      var mw = N(new oc.BRepBuilderAPI_MakeWire_1());
       function pnt2(q) { return N(new oc.gp_Pnt2d_3(ku * q[0], q[1])); }
       // the outline's points lie on the cut's true edge (a circle's, a slot's): between corners (a turn of more than
       // 30°) each smooth run is drawn as the C1 cubic through them (chord-length Catmull-Rom), so the cut meets the
@@ -862,21 +949,29 @@ var OcctKernel = (function () {
       if (!mw.IsDone()) throw new Error('OpenCascade could not outline the cut across the bend.');
       var wire = N(mw.Wire());
       oc.BRepLib.BuildCurves3d_2(wire);
-      // the cutter's volume: the outline's area in (angle, t) times the annulus between the two radii per unit angle
-      var area = 0;
-      uv.forEach(function (a, j) { var b = uv[(j + 1) % uv.length]; area += a[0] * b[1] - b[0] * a[1]; });
-      var want = Math.abs(area / 2) * (Math.pow(R0 + z1, 2) - Math.pow(R0 + z0, 2)) / 2;
-      // on a closed surface a wire bounds two regions: when the face came out as the rest of the cylinder, reverse it
-      for (var k = 0; k < 2; k++) {
-        var w = k ? N(oc.TopoDS.Wire_1(N(wire.Reversed()))) : wire;
-        var face = N(N(new oc.BRepBuilderAPI_MakeFace_21(surf, w, true)).Face());
-        var th = N(new oc.BRepOffsetAPI_MakeThickSolid());
-        th.MakeThickSolidBySimple(face, z1 - z0);
-        if (!th.IsDone()) continue;
-        var sh = N(th.Shape()), v = volumeOf(sh);   // (the thickened face comes out inside out: negative)
-        if (Math.abs(v) < 1.5 * want) return v < 0 ? N(sh.Reversed()) : sh;
+      return wire;
+    }
+    // lane FZ: prismOf with the loop's true edges (outlineWire on the plane: a round hole's chords become its circle),
+    // so a through void taken out of a cut in the flat leaves no crescent between chord and arc; prismOf when the loop
+    // has no curved run (or the exact face fails)
+    function exactPrism(loop, plane, a, b) {
+      var n = loop.length, curved = false;
+      for (var i = 0; i < n && !curved; i++) {
+        var p = loop[(i + n - 1) % n], q = loop[i], r = loop[(i + 1) % n], d1 = [q[0] - p[0], q[1] - p[1]], d2 = [r[0] - q[0], r[1] - q[1]];
+        var t = Math.abs(Math.atan2(d1[0] * d2[1] - d1[1] * d2[0], d1[0] * d2[0] + d1[1] * d2[1]));
+        if (t > 1e-6 && t < 0.5) curved = true;
       }
-      throw new Error('OpenCascade could not make the cut across the bend.');
+      if (!curved) return prismOf(loop, plane, a, b);
+      try {
+        var surf = N(new oc.Handle_Geom_Surface_2(N(new oc.Geom_Plane_1(N(new oc.gp_Ax3_3(P(plane.origin), Dir(plane.n), Dir(plane.x)))))));
+        var face = N(N(new oc.BRepBuilderAPI_MakeFace_21(surf, outlineWire(loop, surf, 1), true)).Face());
+        var sh = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(face, a, plane), Vec(V.scale(plane.n, b - a)), false, true)).Shape());
+        var area = 0;
+        loop.forEach(function (u, j) { var w = loop[(j + 1) % n]; area += u[0] * w[1] - w[0] * u[1]; });
+        var want = Math.abs(area / 2 * (b - a)), v = volumeOf(sh);
+        if (Math.abs(Math.abs(v) - want) < 0.05 * want) return v < 0 ? N(sh.Reversed()) : sh;
+      } catch (e) { /* the polygon prism below */ }
+      return prismOf(loop, plane, a, b);
     }
     // fitCircle(pts) -> { c, r, ccw } when every point lies on the circle through the first, middle and last (to 1e-7
     // plus 1e-6 of the radius: points of an exact circle's mesh), else null; ccw: the run turns counterclockwise
@@ -1281,7 +1376,7 @@ var OcctKernel = (function () {
           var rest = pcf;
           if (loops.length) {
             var thru = { origin: sf.plane.origin, x: sf.plane.x, y: sf.plane.n, n: V.cross(sf.plane.x, sf.plane.n) }, up = V.dot(thru.n, sf.plane.y) > 0;
-            var tp = loops.map(function (l) { return prismOf(l, thru, up ? -T - eps : -eps, up ? eps : T + eps); });
+            var tp = loops.map(function (l) { return exactPrism(l, thru, up ? -T - eps : -eps, up ? eps : T + eps); });
             rest = cut(rest, tp.length > 1 ? boolMany('fuse', tp[0], tp.slice(1), 'Fold: OpenCascade could not join the through voids.') : tp[0]);
           }
           if (volumeOf(rest) > 1e-9 * Math.max(1e-6, s.BA * (sf.band.t1 - sf.band.t0) * T)) cuts = cuts.concat(wrapLayers(K.unfoldLayers(shapeToCSG(rest), sf, T, s.trackedInner), sf, s, true));
@@ -1401,22 +1496,45 @@ var OcctKernel = (function () {
       bodies[k] = N(da.Shape());
     }
     function unsupportedErr(what) { var e = new Error(what + ' is not supported by the OpenCascade kernel yet'); e.unsupported = what; return e; }
+    // lane FZ: a tool that is a compound of solids (a pattern's or mirror's copies, a pattern of a pattern with its
+    // seed) as its solids, one Boolean tool each: OpenCascade's Booleans take one argument's sub-shapes not to overlap
+    // each other, so instances that overlap (a Ø1 boss at 0.8 pitch) came out with their overlaps counted twice or
+    // lost (a self-intersecting compound body); a General Fuse / Cut with a list of tools takes overlapping tools
+    function toolSolids(tool) {
+      if (tool.ShapeType() !== ENUM.TopAbs_COMPOUND) return [tool];
+      var s = explore(tool, ENUM.TopAbs_SOLID);
+      return s.length ? s : [tool];
+    }
     function addBoss(tool, f) {
-      var tb = bboxOf(tool), hit = [];
+      var tb = bboxOf(tool), hit = [], parts = toolSolids(tool);
       if (f.merge !== false) bodies.forEach(function (b, i) { if (boxesMeet(bboxOf(b), tb)) hit.push(i); });
-      if (!hit.length) { bodies.push(tool); bodyFeatures.push(f.id); return; }
-      var merged = tool;
-      hit.forEach(function (i) { merged = fuse(bodies[i], merged); });
+      if (!hit.length) {
+        var lone = parts.length > 1 ? boolMany('fuse', parts[0], parts.slice(1), 'OpenCascade could not join the pattern instances.') : tool;
+        bodies.push(parts.length > 1 ? unify(lone) : lone); bodyFeatures.push(f.id); return;
+      }
+      var merged = parts.length > 1 ? boolMany('fuse', bodies[hit[0]], parts, 'OpenCascade could not join the bodies.') : fuse(bodies[hit[0]], tool);
+      for (var j = 1; j < hit.length; j++) merged = fuse(bodies[hit[j]], merged);
+      // lane FZ2: a union is never lighter than any of its pieces (rfGA G30 lost its base plate: 1.5 for 2.875); 1e-3
+      // slack: these are fixed-order Gauss volumes (up to ~1e-4 off on B-spline faces)
+      var vm = volumeOf(merged), vmax = Math.max.apply(null, hit.map(function (i) { return volumeOf(bodies[i]); }).concat(parts.map(volumeOf)));
+      if (!(vm >= vmax * (1 - 1e-3))) throw new Error('OpenCascade joined this feature into a solid lighter than one of its pieces.');
       for (var h = hit.length - 1; h >= 1; h--) { bodies.splice(hit[h], 1); bodyFeatures.splice(hit[h], 1); }
       bodies[hit[0]] = merged;
     }
     function applyCut(tool, f) {
       if (!bodies.length) throw new Error('Nothing to cut yet.');
-      var scope = K.cutScope(f, bodies.length);
+      var scope = K.cutScope(f, bodies.length), parts = toolSolids(tool), next = bodies.slice(), nextF = bodyFeatures.slice();
       for (var s = scope.length - 1; s >= 0; s--) {
-        var i = scope[s], nb = cut(bodies[i], tool);
-        if (volumeOf(nb) < 1e-9) { bodies.splice(i, 1); bodyFeatures.splice(i, 1); } else bodies[i] = nb;
+        var i = scope[s], nb = parts.length > 1 ? boolMany('cut', bodies[i], parts, 'OpenCascade could not cut the body.') : cut(bodies[i], tool);
+        var vn = volumeOf(nb), vb = volumeOf(bodies[i]);
+        // lane FZ2: a cut never adds material
+        if (vn > vb * (1 + 1e-3)) throw new Error('OpenCascade cut this body into a heavier solid.');
+        if (vn < 1e-9) { next.splice(i, 1); nextF.splice(i, 1); } else next[i] = nb;
       }
+      // lane FZ2: a cut that leaves nothing (rfGA G31 came out empty and was reported ok) is an error, as in Anvil
+      // and SolidWorks; the bodies are left as they were
+      if (!next.length) throw new Error('OpenCascade\'s cut removed every body.');
+      bodies = next; bodyFeatures = nextF;
     }
 
     // ---- rebuild cache (opts.cache, kept by the worker between builds): after each feature, a snapshot of the bodies,
@@ -1548,8 +1666,17 @@ var OcctKernel = (function () {
       out.bodyProps = bodies.map(function (b) {
         if (!valid(b)) out.valid = false;
         var g = N(new oc.GProp_GProps_1()), s = N(new oc.GProp_GProps_1());
-        oc.BRepGProp.VolumeProperties_1(b, g, false, false, false); oc.BRepGProp.SurfaceProperties_1(b, s, false, false);
-        var c = N(g.CentreOfMass()), v = g.Mass();
+        // lane FZ2: Gauss-Kronrod over the knot spans to a relative error of 1e-9. The fixed-order Gauss rule was 1.2e-4
+        // heavy on a handwheel whose spokes meet the rim and hub in B-spline intersection curves (rfGA G01) and 5e-5
+        // light on an extruded spline; the plain adaptive VolumeProperties_2 was worse on the spline (1.4e-4, while
+        // reporting an error of 1e-16). GK is right to 4e-10 on both, the area (SurfaceProperties_2) to 1e-10. GK
+        // computes the volume only: with its centre of volume too it took 46 s on the Moulded cap (7 ms without), so
+        // the centre still comes from the fixed rule
+        var gv = N(new oc.GProp_GProps_1());
+        oc.BRepGProp.VolumeProperties_1(b, g, false, false, false);
+        oc.BRepGProp.VolumePropertiesGK_1(b, gv, 1e-9, false, true, false, false, false);
+        oc.BRepGProp.SurfaceProperties_2(b, s, 1e-9, false);
+        var c = N(g.CentreOfMass()), v = gv.Mass();
         out.volume += v;
         return { volume: v, area: s.Mass(), centroid: [c.X(), c.Y(), c.Z()] };
       });
@@ -1704,10 +1831,36 @@ var OcctKernel = (function () {
             var cm = N(g.CentreOfMass());
             return { body: s, volume: g.Mass(), centroid: [cm.X(), cm.Y(), cm.Z()], cell: c.cell, void: !!c.void };
           }).filter(function (r) { return r.volume > eps; });
+          ls = joinTouching(ls);
           ls.sort(function (a, b) { for (var q = 0; q < 3; q++) { var d = a.centroid[q] - b.centroid[q]; if (Math.abs(d) > tol) return d; } return 0; });
           out = out.concat(ls);
         });
         return out;
+      }
+      // lane FZ2: Anvil's lumps (Kernel.solidLumps) are pieces joined wherever they share a vertex, so lumps touching
+      // at a point or along an edge are ONE region; OpenCascade gives them as separate solids (two crossed Ø2
+      // cylinders: each cylinder less the other is 4 solids pinched at points, 1 region in Anvil), which shifted every
+      // region index after them (G20 kept three caps with the common part). Solids of a cell sharing a vertex position
+      // are joined (a compound; volume and centre of volume combined) in their order of appearance, as Anvil does.
+      function joinTouching(ls) {
+        if (ls.length < 2) return ls;
+        var parent = ls.map(function (r, i) { return i; }), owner = {}, q = 1e-6 * Math.max(1, size);
+        function find(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+        ls.forEach(function (r, i) {
+          explore(r.body, ENUM.TopAbs_VERTEX).forEach(function (v) {
+            var p = N(oc.BRep_Tool.Pnt(N(oc.TopoDS.Vertex_1(v)))), key = Math.round(p.X() / q) + ',' + Math.round(p.Y() / q) + ',' + Math.round(p.Z() / q);
+            if (owner[key] == null) owner[key] = i; else { var a = find(i), b = find(owner[key]); if (a !== b) parent[a] = b; }
+          });
+        });
+        var groups = {}, order = [];
+        ls.forEach(function (r, i) { var g = find(i); if (!groups[g]) { groups[g] = []; order.push(g); } groups[g].push(r); });
+        if (order.length === ls.length) return ls;
+        return order.map(function (g) {
+          var rs = groups[g];
+          if (rs.length === 1) return rs[0];
+          var vol = rs.reduce(function (s, r) { return s + r.volume; }, 0), cen = [0, 1, 2].map(function (k) { return rs.reduce(function (s, r) { return s + r.volume * r.centroid[k]; }, 0) / vol; });
+          return { body: compound(rs.map(function (r) { return r.body; })), volume: vol, centroid: cen, cell: rs[0].cell, void: rs[0].void };
+        });
       }
       var regions = lumpsOf(split(cells));
       if (f.mode === 'internal') {
@@ -1720,6 +1873,13 @@ var OcctKernel = (function () {
         regions = regions.concat(lumpsOf(split(voids.map(function (r) { return { sh: r.body, cell: 0, void: true }; }))));
       }
       if (!regions.length) throw new Error('The selections make no regions.');
+      // lane FZ2: f.regions picks regions by index, so both kernels must number them alike: a different count from
+      // Anvil's (read on faceted copies of these bodies) is an error, never a different part kept
+      if (Array.isArray(f.regions) && CSGlib) {
+        var aReg = null;
+        try { aReg = K.intersectRegions(bodies.map(function (b) { return shapeToCSG(b); }), f, m, planes); } catch (e) { aReg = null; }
+        if (aReg && aReg.length !== regions.length) throw new Error('OpenCascade divides these bodies into ' + regions.length + ' regions where Anvil finds ' + aReg.length + ', so the regions to keep are ambiguous.');
+      }
       var out = K.intersectKeep(regions, f, function (b) { var q = bboxOf(b); return { min: q[0], max: q[1] }; }, fuse, function (a, b) { return boxesMeet([a.min, a.max], [b.min, b.max]); });
       var at = Math.min.apply(null, sel), nb = [], nf = [];
       bodies.forEach(function (b, i) {

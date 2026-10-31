@@ -211,6 +211,22 @@
     if (signedArea(loop) < 0) loop.reverse();
     return loop;
   }
+  // lane FX: bendCv(loop, c, radii) -> prism()'s per-segment curves for a bend section: segment i gets { c, r } (one
+  // object per radius, so every facet of a bend surface shares one cylinder record) when both its ends lie on the
+  // circle of radius r about c (flangeProfile: c = [0, R], radii R and R + T). prism attaches { t: 'cyl', o, d, r } to
+  // those side facets, so massProps integrates the chords out to the true bend (mp.volume exact, mp.polygonal faceted)
+  function bendCv(loop, c, radii) {
+    var cs = radii.map(function (r) { return r > 0 ? { c: c.slice(), r: r } : null; }), n = loop.length, out = [], any = false;
+    function on(p, r) { return Math.abs(Math.hypot(p[0] - c[0], p[1] - c[1]) - r) <= 1e-9 * (1 + r); }
+    for (var i = 0; i < n; i++) {
+      var p = loop[i], q = loop[(i + 1) % n], C = null;
+      if (Math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-12) cs.forEach(function (x) { if (x && !C && on(p, x.r) && on(q, x.r)) C = x; });
+      out.push(C);
+      if (C) any = true;
+    }
+    return any ? out : null;
+  }
+  function secCv(loop, sec) { return bendCv(loop, [0, sec.R], [sec.R, sec.R + sec.T]); }
 
   // ---- flange edge resolution (r12/inchflange12). meshFromBody keys a face by its plane with the offset rounded to
   // 0.01 model units, so polygons of one face whose offsets differ by rounding noise land in two faces when the offset
@@ -573,13 +589,19 @@
     opts = opts || {};
     var M = opts.voids || bandSlab(plane, band, T).subtract(body);
     if (!M.polygons.length || !(M.volume() > 1e-9 * (band.s1 - band.s0) * (band.t1 - band.t0) * 0.1 * T)) return [];
-    var mesh = meshFromBody(M), w0 = dot(plane.y, plane.origin) - 0.45 * T, fi = -1;
+    // lane FW: opts.fine reads the outline at 1024× scale, so faceOutline's 1e-4 weld cannot merge a hole's polygon
+    // vertex lying a hair inside the band with the hole edge's crossing of the band edge (a Ø0.281 hole across a 14 ga
+    // bend, its vertex 5e-5 past the bend start: the outline skipped the vertex, leaving a sliver that read as a blind
+    // cut, and the Fold fell back to the wrapped tool: 7 open / 15 non-manifold, rfFT pin 12)
+    var k = opts.fine ? 1024 : 1;
+    if (k !== 1) M = M.transform(function (p) { return new CSG.Vector(p.x * k, p.y * k, p.z * k); }, false);
+    var mesh = meshFromBody(M), w0 = (dot(plane.y, plane.origin) - 0.45 * T) * k, fi = -1;
     mesh.faces.forEach(function (fc, i) { if (fi < 0 && dot(fc.normal, plane.y) > 0.999 && Math.abs(fc.w - w0) < 1e-6 * Math.max(1, Math.abs(w0)) + 1e-9) fi = i; });
     if (fi < 0) return [];
     var o = faceOutline(mesh, fi);
     if (!o) return [];
     var loops = o.loops.map(function (l) {
-      return l.map(function (p) { var q = sub(to3D(o.plane, p[0], p[1]), plane.origin); return [dot(q, plane.x), dot(q, plane.n)]; });
+      return l.map(function (p) { var q = sub(scale(to3D(o.plane, p[0], p[1]), 1 / k), plane.origin); return [dot(q, plane.x), dot(q, plane.n)]; });
     }).filter(function (l) { return Math.abs(signedArea(l)) > 1e-6 * T * T; });
     var inside = null, tolE = 1e-6 * Math.max(1, band.t1 - band.t0), out = [];
     loops.forEach(function (l) {
@@ -618,7 +640,9 @@
       return at([Ia[0] + (Ib[0] - Ia[0]) * f, Ia[1] + (Ib[1] - Ia[1]) * f], [Oa[0] + (Ob[0] - Oa[0]) * f, Oa[1] + (Ob[1] - Oa[1]) * f], z);
     };
     fn.zones = [];
-    for (var k = 0; k <= segs; k++) fn.zones.push(BA * k / segs);
+    // the last line is BA itself (lane FW: BA·11/11 can be BA − 1 ulp, so wrapRegion's points clamped to BA and its
+    // zone-line points at the bend's end differed: 25 non-manifold edges on a 120° bend across a hole)
+    for (var k = 0; k <= segs; k++) fn.zones.push(k === segs ? BA : BA * k / segs);
     return fn;
   }
   // wrapMesh(loop, sec, BA, plane, segs, eps) -> [[P, ...]]: one void outline (s, t, CCW) pushed through the thickness
@@ -752,9 +776,25 @@
     opts = opts || {};
     var T = sec.T, segs = opts.segs || Math.max(4, Math.round(8 * sec.A / (Math.PI / 2))), map = bendZoneMap(sec, BA, segs), Z = map.zones;
     var tolS = 1e-9 * Math.max(T, BA), tolT = 1e-9 * Math.max(1, t1 - t0);
-    var edges = [];
+    var axO = add(plane.origin, scale(plane.y, sec.R)), axD = plane.n.slice();   // lane FX: the bend's axis (bendZoneMap: centre [0, R])
+    var cylIn = sec.R > 0 ? { s: { t: 'cyl', o: axO, d: axD, r: sec.R } } : null, cylOut = { s: { t: 'cyl', o: axO.slice(), d: axD.slice(), r: sec.R + T } };
+    var edges = [], sEnd = Z[Z.length - 1];
+    // lane FW: clip (not clamp) each outline to the band: a hole whose polygon pokes a vertex past the bend's start
+    // crosses s = 0 where its edges do, as the flat piece beside it is cut; clamping that vertex onto s = 0 bent the
+    // edges and left non-manifold edges against that piece (Ø.5 hole on a 0.125 sheet R 0.25 bend)
+    function clipLoop(l, k, v, keepLo) {
+      var out = [];
+      for (var i = 0; i < l.length; i++) {
+        var p = l[i], q = l[(i + 1) % l.length], ip = keepLo ? p[k] >= v : p[k] <= v, iq = keepLo ? q[k] >= v : q[k] <= v;
+        if (ip) out.push(p);
+        if (ip !== iq) { var f = (v - p[k]) / (q[k] - p[k]), x = [0, 0]; x[k] = v; x[1 - k] = p[1 - k] + (q[1 - k] - p[1 - k]) * f; out.push(x); }
+      }
+      return out;
+    }
     loops.forEach(function (l0) {
       var l = signedArea(l0) < 0 ? l0.slice().reverse() : l0;
+      l = clipLoop(clipLoop(clipLoop(clipLoop(l, 0, 0, true), 0, sEnd, false), 1, t0, true), 1, t1, false);
+      if (l.length < 3) return;
       l = l.map(function (p) {
         var s = p[0], t = p[1];
         Z.forEach(function (z) { if (Math.abs(s - z) < tolS) s = z; });
@@ -795,11 +835,19 @@
     var zoneOfLine = {};
     Z.forEach(function (z, j) { zoneOfLine[z] = Math.min(j, segs - 1); });
     var pts3 = {};
+    // lane FX: a point inside a zone goes on its chord where the radius at the TRUE angle A·s/BA meets it (bendZoneMap
+    // spaces s evenly along the chord instead), so the cylinder records' radial correction lands every void edge at its
+    // exact place on the arc: the rebuilt bend's mass properties are exact and the flat unrolls the void exactly
+    function chordAt(s, z, zone) {
+      var A = sec.A, R = sec.R, th = A * s / BA, ta = A * zone / segs, tb = A * (zone + 1) / segs;
+      var k = Math.cos((tb - ta) / 2) / Math.cos(th - (ta + tb) / 2), rho = (R + z) * k;
+      return [rho * Math.sin(th), R - rho * Math.cos(th)];
+    }
     function at(p, z, zone) {
       if (zoneOfLine[p[0]] != null) zone = zoneOfLine[p[0]];
       var key = p[0] + ',' + p[1] + ',' + z + ',' + zone;
       if (pts3[key]) return pts3[key];
-      var ou = map(p[0], z, zone);
+      var ou = zoneOfLine[p[0]] != null ? map(p[0], z, zone) : chordAt(p[0], z, zone);
       return (pts3[key] = add(add(add(plane.origin, scale(plane.x, ou[0])), scale(plane.y, ou[1])), scale(plane.n, p[1])));
     }
     var faces = [];
@@ -807,7 +855,8 @@
       // the wall over the boundary edge A → B (region on its left): planar, or a twisted bilinear patch split exactly
       var a0 = at(A, 0, zone), b0 = at(B, 0, zone), a1 = at(A, T, zone), b1 = at(B, T, zone);
       if (len(sub(sub(b1, b0), sub(a1, a0))) < 1e-9 * Math.max(1, T)) { faces.push([a0, b0, b1, a1]); return; }
-      var M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], m0 = at(M, 0, zone), m1 = at(M, T, zone);
+      // (lane FX: the 3D midpoints, on the cap edges a0 b0 / a1 b1 whatever the s map within the zone)
+      var m0 = scale(add(a0, b0), 0.5), m1 = scale(add(a1, b1), 0.5);
       faces.push([a0, m0, m1], [a0, m1, a1], [m0, b0, m1], [m1, b0, b1]);
     }
     var below = null, sideZ = {};
@@ -839,8 +888,9 @@
           var Ra = R.e ? edgeAt(R.e, k) : lineAt(R.line, k), Rb = R.e ? edgeAt(R.e, k + 1) : lineAt(R.line, k + 1);
           var ring = [La, Ra, Rb, Lb].filter(function (p, i, r) { return p !== r[(i + 1) % r.length]; });
           if (ring.length >= 3) {
-            faces.push(ring.map(function (p) { return at(p, T, zk); }));
-            faces.push(ring.map(function (p) { return at(p, 0, zk); }).reverse());
+            var capT = ring.map(function (p) { return at(p, T, zk); }), cap0 = ring.map(function (p) { return at(p, 0, zk); }).reverse();
+            capT.surf = cylOut; cap0.surf = cylIn;   // lane FX: chords of the bend's outer / inner cylinder
+            faces.push(capT, cap0);
           }
           // left side Lb → La, right side Ra → Rb
           [[L, Lb, La], [R, Ra, Rb]].forEach(function (sd) {
@@ -885,6 +935,7 @@
     var polys = [];
     faces.forEach(function (f) {
       var pg = CSG.Polygon.tryCreate(f.map(function (p) { return new CSG.Vertex(new CSG.Vector(p[0], p[1], p[2])); }), opts.shared);
+      if (pg && f.surf) pg.surf = f.surf;
       if (pg) polys.push(pg);
     });
     return polys.length ? CSG.fromPolygons(polys) : null;
@@ -943,7 +994,7 @@
     if (f.miterFlange && f.sketch != null) return buildMiterFlange(f, model, ctx);   // lane DL: Miter Flange from a profile sketch
     var lay = flangeLayout(f, model, ctx);
     var tools = lay.parts.map(function (p) {
-      var tool = prism(p.loop, p.plane, p.t0, p.t1, f.id);
+      var tool = prism(p.loop, p.plane, p.t0, p.t1, f.id, secCv(p.loop, lay.section));
       p.clips.forEach(function (c) { tool = tool.clipByPlane(c.n, c.w); });
       // cuts across the bend zone (bendVoids): wrapped round the bend and taken out of it
       if (p.voids && p.voids.length) {
@@ -2793,16 +2844,21 @@
     function clip(body, hs) { hs.forEach(function (h) { if (body.polygons.length) body = body.clipByPlane(h.n, h.w); }); return body; }
     var fixed = clip(ctx.body, lay.fixed), moved = [];
     lay.pieces.forEach(function (pc) { var b = clip(ctx.body, pc.keep); if (b.polygons.length) moved.push(mBody(b, pc.motion)); });
+    var holed = false;
     var bends = lay.bends.map(function (bd) {
-      var tool = prism(bd.loop, bd.plane, bd.t0, bd.t1, f.id);
-      if (bd.voids) {   // cuts across the bend: wrapped round it and taken out (bendVoids, wrapCut)
-        var w = wrapCut(bd.voids, lay.section, lay.BA, bd.plane, { grow: bd.band, shared: f.id });
-        if (w) tool = tool.subtract(w);
+      // lane FW: a bend across holes / slots / a slanted sheet edge (bendVoids) is its metal built straight from the
+      // flat (wrapRegion: the band less the voids, s ∈ [0, BA], no boolean), as lane FU's Fold does; cutting a wrapped
+      // tool out of the faceted sweep left cracks (a Ø.5 hole across a 16 ga bend: 9 non-manifold edges). It meets the
+      // fixed and moved pieces on the bend's end planes exactly; the union runs at the sheet's scale (smBool).
+      if (bd.voids) {
+        var w = wrapRegion(bd.voids, lay.section, lay.BA, bd.plane, bd.t0, bd.t1, { shared: f.id });
+        if (w) { holed = true; return mBody(w, bd.motion); }
       }
-      return mBody(tool, bd.motion);
+      return mBody(prism(bd.loop, bd.plane, bd.t0, bd.t1, f.id, secCv(bd.loop, lay.section)), bd.motion);
     });
     ctx.flanges[f.id] = lay.info;
-    return { body: unionTree([fixed].concat(moved, bends)), tool: unionAll(bends), preview: unionTree(moved.concat(bends)) };
+    var T = lay.section.T, body = holed ? smBool(fixed, 'union', moved.concat(bends), T) : unionTree([fixed].concat(moved, bends));
+    return { body: body, tool: unionAll(bends), preview: unionTree(moved.concat(bends)) };
   }
   // flatPattern's records after a Sketched Bend: earlier flange records (and anchors) on a piece it moved go along
   // with it; then its own anchor and bend records join. -> { flanges, anchors }
@@ -3735,7 +3791,7 @@
       var loop = [[0, t0], [BA, tE], [BA, tFar], [0, tFar]];
       if (signedArea(loop) < 0) loop.reverse();
       return { at: at, dir: scale(wd3, -sg), p0: P3(x0, hb, dc), pTo: P3(to, hb, dc),
-        wrap: { loop: loop, plane: { origin: P3(0, hb + hs * R, dc), x: N3.slice(), y: y, n: n }, sec: { A: Math.PI / 2, R: R, T: T }, BA: BA } };
+        wrap: { loop: loop, plane: { origin: P3(0, hb + hs * R, dc), x: N3.slice(), y: y, n: n }, sec: { A: Math.PI / 2, R: R, T: T }, BA: BA, ts: [t0, tE, sn * match.bEnd] } };
     }
     work.forEach(function (wk) {
       var C = wk.c, face = mesh.faces[C.fi], ne = face.normal, Cp = C.plane, cb = bbox(C.outer), why = null;
@@ -3869,19 +3925,54 @@
   function buildClosedCorner(f, model, ctx) {
     var lay = closedCornerLayout(f, model, ctx);
     var tools = lay.cuts.map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id); });
-    (lay.wraps || []).forEach(function (w) { var c = wrapCut([w.loop], w.sec, w.BA, w.plane, { shared: f.id }); if (c) tools.push(c); });   // lane DV
-    var cut = tools.length ? unionAll(tools) : null;
-    var add = unionAll(lay.adds.map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id); }));
+    var sectors = [], metal = [], fl = [];
+    (lay.wraps || []).forEach(function (w) {   // lane DV
+      var rb = ccWrapRebuild(w, ctx.body, f.id);
+      if (rb) { sectors.push(rb.sector); metal.push(rb.metal); return; }
+      var c = wrapCut([w.loop], w.sec, w.BA, w.plane, { shared: f.id, split: true }); if (c) tools.push(c);
+    });
+    var cut = tools.length + sectors.length ? unionAll(tools.concat(sectors)) : null;
+    var adds = lay.adds.map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id); });
+    var add = unionAll(adds.concat(metal));
     if (ctx.flanges) ctx.flanges[f.id] = closedCornerEnds(lay.ends || [], model, ctx);
     if (lay.fills.length) {
       var rest = cut ? ctx.body.subtract(cut) : ctx.body;
-      var fl = lay.fills.map(function (t) { return closedCornerFill(t, rest); }).filter(function (b) { return b.polygons.length; });
+      if (metal.length) rest = unionAll([rest].concat(metal));
+      fl = lay.fills.map(function (t) { return closedCornerFill(t, rest); }).filter(function (b) { return b.polygons.length; });
       if (fl.length) add = add.union(unionAll(fl));
       // the flat: the bend strip of the flange whose end was extended runs on by the same length (bendSurfaceNotches
       // then notches what the fill left out); flatPattern applies these to a copy of that flange's record
       if (ctx.flanges) ctx.flanges[f.id] = closedCornerStrips(lay.fills, model, ctx).concat(ctx.flanges[f.id] || []);
     }
-    return { add: add, cut: cut };
+    // lane FW: apply(body) -> the same solid as (body − cut) ∪ add, one tool at a time: the bends' ends cut out and their
+    // metal put back first, then the wall cuts, then the extensions and fills. With several corners in one feature the
+    // unioned tools touched on the bend's end planes and `add` itself came out cracked (Overlap on all four corners of
+    // a 0.125 tray: 36 open edges); one at a time every swept tray in rfFW is closed. The rebuild should call it.
+    function apply(body) {
+      var b = body;
+      sectors.forEach(function (s) { b = b.subtract(s); });
+      metal.forEach(function (m) { b = b.union(m); });
+      tools.forEach(function (c) { b = b.subtract(c); });
+      adds.concat(fl).forEach(function (a) { b = b.union(a); });
+      return b;
+    }
+    return { add: add, cut: cut, apply: apply };
+  }
+  // lane FW: an open bend region's slanted end (lane DV `wraps`) made without a wrapped tool, as lane FU's Fold does:
+  // the matching bend from the slant's start to its end (w.ts: the slant's ends at s = 0 / BA, the bend's end) is cut out
+  // (bendSector, exact radial planes) and its metal put back by wrapRegion (the band less the slant's far side). Cutting
+  // the wrapped tool (twisted walls across the chord faces) left 1e-6 cracks (16 ga Overlap: 6 open / 1 non-manifold).
+  // Only when that stretch is plain bend (its metal = the faceted section × the length); null otherwise (wrapCut then).
+  function ccWrapRebuild(w, body, id) {
+    if (!body || !w.ts) return null;
+    var lo = Math.min.apply(null, w.ts), hi = Math.max.apply(null, w.ts), sec = w.sec, T = sec.T;
+    if (!(hi - lo > 1e-6 * (1 + T))) return null;
+    var segs = Math.max(4, Math.round(8 * sec.A / (Math.PI / 2)));
+    var sector = bendSector(sec, w.plane, lo, hi), want = segs * (sec.R + T / 2) * T * Math.sin(sec.A / segs) * (hi - lo);
+    var got = body.intersect(sector);
+    if (!got.polygons.length || Math.abs(got.volume() - want) > 1e-7 * want) return null;
+    var metal = wrapRegion([w.loop], sec, w.BA, w.plane, lo, hi, { shared: id });
+    return metal ? { sector: sector, metal: metal } : null;
   }
   // lane DV: the bend records (of edge flanges before it) whose end the corner cut: [{ kind: 'ccEnd', feature, index,
   // end, t0, ext }] (how far past the record's end the strip now ends at the bend's start / at its end; negative =
@@ -4388,7 +4479,7 @@
         if (!pc.polygons.length) return;
         // the strip's voids in its own (s, τ) frame (ufStripFrame; lane DB2: a mitred strip's whole τ range)
         var sf = ufStripFrame(st, s), band = sf.band;
-        var loops = bendVoids(mBody(ctx.body, Mi), sf.plane, band, T, { ends: true, voids: bandSlab(sf.plane, band, T).intersect(mBody(pc, Mi)) });
+        var loops = bendVoids(mBody(ctx.body, Mi), sf.plane, band, T, { ends: true, fine: true, voids: bandSlab(sf.plane, band, T).intersect(mBody(pc, Mi)) });
         // lane DJ: what is left once the through voids are out (a blind cut, a pocket's floor) goes in layers
         var rest = mBody(pc, Mi);
         if (loops.length) {
@@ -4407,7 +4498,7 @@
         // (wrapRegion), so no wrapped tool crosses the bend's facets
         var L = ufBendFrame(s, T).len, tolL = 1e-7 * Math.max(1, L);
         if (!blind && !s.mitred && !s.fi.ccEnds && sf.sec.R > 0.01 * T && Math.abs(band.t0) < tolL && Math.abs(band.t1 - L) < tolL) {
-          var flatNow = mBody(ctx.body, Mi), all = bendVoids(flatNow, sf.plane, band, T, { ends: true });
+          var flatNow = mBody(ctx.body, Mi), all = bendVoids(flatNow, sf.plane, band, T, { ends: true, fine: true });
           var th = { origin: sf.plane.origin, x: sf.plane.x, y: sf.plane.n, n: cross(sf.plane.x, sf.plane.n) }, upw = dot(th.n, sf.plane.y) > 0;
           var bandPrism = prism([[0, 0], [s.BA, 0], [s.BA, L], [0, L]], th, upw ? -T - m : -m, upw ? m : T + m);
           var want = (s.BA * L - all.reduce(function (a, l) { return a + Math.abs(signedArea(l)); }, 0)) * T;
@@ -4605,6 +4696,10 @@
         var ok = inside(P(-T / 2, -T / 2, sm)) && !inside(P(-T - dl, -T - dl, sm)) &&
           inside(P(-T / 2, bp, sm)) && inside(P(-T + dl, bp, sm)) && !inside(P(-T - dl, bp, sm)) && !inside(P(dl, bp, sm)) &&
           inside(P(bp, -T / 2, sm)) && inside(P(bp, -T + dl, sm)) && !inside(P(bp, -T - dl, sm)) && !inside(P(bp, dl, sm));
+        // lane FW: both plates must run on unbroken from the corner square to bp: a one-sided Rip (side 1 / side 2)
+        // keeps one wall's corner square, whose end face lies in the other wall's outer plane, so the edge looked like a
+        // bend across the rip gap and the box read as a closed ring (rfGA G42)
+        for (var k = 0; ok && k <= 4; k++) { var dk = -T - dl + (bp + T + dl) * k / 4; ok = inside(P(dk, -T / 2, sm)) && inside(P(-T / 2, dk, sm)); }
         if (!ok) return;
         bends.push({ L: L, P: P, s0: r[0], s1: r[1], A: Math.acos(Math.max(-1, Math.min(1, c))), p1: plateOf(L.n1, dot(L.n1, L.O0)), p2: plateOf(L.n2, dot(L.n2, L.O0)) });
       });
@@ -4751,7 +4846,7 @@
     if (model.noBends) return { body: body, info: [], tool: null };   // No Bends: the part as it was before its bends were inserted
     var lay = insertBendsLayout(g, model, { body: body });
     var cut = unionAll(lay.fills.concat(lay.corners).map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id); }));
-    var put = unionAll(lay.wedges.map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id); }));
+    var put = unionAll(lay.wedges.map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id, bendCv(t.loop, [0, 0], [t.R, t.RT])); }));
     return { body: body.subtract(cut).union(put), info: lay.info, tool: put, bends: lay.info.length };
   }
   // insertBendsPreview(f, model, body) -> { body: the bends (Insert Bends) or the converted part (Convert), bends: count }

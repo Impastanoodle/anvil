@@ -411,6 +411,38 @@
     return { loops: loops, tris: tris };
   }
 
+  // lane FX: a loft through full circles on parallel planes with their centres on one line along the planes' normal is
+  // a stack of cone frusta (a cylinder where two radii are equal), SolidWorks' and OpenCascade's ruled loft between
+  // them: every side facet (its corners lie on the circles, so on the cone) gets the frustum's record { t: 'cone', o,
+  // d, r, k } (radius r + k·z, z = (x − o)·d) or { t: 'cyl' }, so massProps integrates the chords out to the true
+  // surface (the Funnel's cone), shading is smooth and the rims are true circles. Polygons are tagged in place.
+  function loftAxisRecords(secs, polys) {
+    var cs = secs.map(circleOf);
+    if (cs.some(function (C) { return !C; })) return;
+    var n0 = secs[0].plane.n, O = to3D(secs[0].plane, cs[0].c[0], cs[0].c[1]), last = to3D(secs[secs.length - 1].plane, cs[cs.length - 1].c[0], cs[cs.length - 1].c[1]);
+    var span = len(sub(last, O));
+    if (!(span > 1e-12)) return;
+    var d = scale(sub(last, O), 1 / span), zs = [], recs = [];
+    if (Math.abs(Math.abs(dot(d, n0)) - 1) > 1e-9) return;
+    for (var i = 0; i < secs.length; i++) {
+      var Ci = to3D(secs[i].plane, cs[i].c[0], cs[i].c[1]), z = dot(sub(Ci, O), d);
+      if (Math.abs(Math.abs(dot(secs[i].plane.n, n0)) - 1) > 1e-9 || len(sub(Ci, add(O, scale(d, z)))) > 1e-9 * Math.max(1, span)) return;
+      if (i && !(z > zs[i - 1] + 1e-12 * span)) return;
+      zs.push(z);
+    }
+    for (i = 0; i + 1 < secs.length; i++) {
+      var r0 = cs[i].r, r1 = cs[i + 1].r, k = (r1 - r0) / (zs[i + 1] - zs[i]);
+      recs.push(Math.abs(r1 - r0) <= 1e-12 * Math.max(r0, r1) ? { s: { t: 'cyl', o: O.slice(), d: d.slice(), r: r0 } } : { s: { t: 'cone', o: O.slice(), d: d.slice(), r: r0 - k * zs[i], k: k } });
+    }
+    var tol = 1e-9 * Math.max(1, span);
+    polys.forEach(function (p) {
+      var lo = Infinity, hi = -Infinity;
+      p.vertices.forEach(function (v) { var z = dot(sub([v.pos.x, v.pos.y, v.pos.z], O), d); lo = Math.min(lo, z); hi = Math.max(hi, z); });
+      if (!(hi - lo > tol)) return;   // a cap
+      for (var j = 0; j + 1 < zs.length; j++) if (lo >= zs[j] - tol && hi <= zs[j + 1] + tol) { p.surf = recs[j]; return; }
+    });
+  }
+
   function buildLoft(f, model, ctx) {
     var ids = f.sketches || [];
     if (ids.length < 2) throw new Error('Loft needs at least two profile sketches.');
@@ -473,6 +505,7 @@
         }
       }
     }
+    loftAxisRecords(secs, polys);
     function cap(loop3, plane, flip) {
       var loop2 = loop3.map(function (p) { return to2D(plane, p); });
       triangulateAny(loop2).forEach(function (t) {
@@ -651,13 +684,13 @@
     o.loops.forEach(function (l) { l.forEach(function (q) { span = Math.max(span, Math.abs(q[0]), Math.abs(q[1])); }); });
     var spikeEps = 1e-9 * span;
     cl.outers.forEach(function (l) {
-      var g = dropSpikes(offsetLoopVar(l, growFor(l)), spikeEps);
+      var g = dropSpikes(offsetLoopVar(l, growFor(l, false)), spikeEps);
       if (g.length < 3) return;
       var gs = loopSelfCrosses(g) ? outerPieces(untangleLoop(g, signedArea(l) >= 0 ? 1 : -1)) : [g];   // rfFN2
       gs.forEach(function (gp) { if (signedArea(gp) > 1e-9) prisms.push(prism(gp, o.plane, a, b, tag)); });
     });
     cl.holes.forEach(function (l) {
-      var g = dropSpikes(offsetLoopVar(l, growFor(l).map(function (d) { return -d; })), spikeEps);
+      var g = dropSpikes(offsetLoopVar(l, growFor(l, true).map(function (d) { return -d; })), spikeEps);   // (hole: reversed to CCW, the face lies to its right)
       if (g.length < 3) return;
       var gs = loopSelfCrosses(g) ? outerPieces(untangleLoop(g, signedArea(l) >= 0 ? 1 : -1)) : [g];   // rfFN2
       gs.forEach(function (gp) { if (signedArea(gp) > 1e-9 && signedArea(gp) < signedArea(l)) holes.push(prism(gp, o.plane, a - 0.01, b + 0.01, tag)); });
@@ -688,7 +721,7 @@
     try { Object.defineProperty(body, '_fsCrack', { value: n, enumerable: false, writable: true, configurable: true }); } catch (e) { /* frozen */ }
     return n;
   }
-  function scaledGrow(grow, s) { return s === 1 ? grow : function (l) { return grow(l).map(function (d) { return d * s; }); }; }
+  function scaledGrow(grow, s) { return s === 1 ? grow : function (l, hole) { return grow(l, hole).map(function (d) { return d * s; }); }; }
   // on: check the shell for cracks (retry, refuse); slack: cracks above the body's own a shell may keep; last: the
   // last check { tries, open: [per try], before }
   K.shellGuard = { on: true, slack: 24, last: null };
@@ -705,21 +738,127 @@
     var mesh = meshFromBody(ctx.body);
     var removed = resolveFaces(f.faces || [], mesh, _.pickTol(ctx.units, T / 2));   // r16/picktol (kernel-mesh.js)
     if ((f.faces || []).length && removed.length < f.faces.length) throw new Error('A face to remove was not found on the body. Select the faces again.');
-    // dihedral turn angle per body edge, keyed like bodyEdges
-    var turn = {};
+    // dihedral turn angle per body edge, keyed like bodyEdges (and the edge itself: its two faces)
+    var turn = {}, edgeOf = {};
     bodyEdges(mesh).forEach(function (e) {
       var key = e.ka < e.kb ? e.ka + '|' + e.kb : e.kb + '|' + e.ka;
       var phi = 0;
       for (var p = 0; p < e.normals.length; p++) for (var q = p + 1; q < e.normals.length; q++) phi = Math.max(phi, Math.acos(Math.max(-1, Math.min(1, dot(e.normals[p], e.normals[q])))));
       turn[key] = phi;
+      edgeOf[key] = e;
     });
-    function growFor(plane) {
-      return function (loop) {
+    // rfGB: the depth of each kept face's slab. A facet of a curved face (a chord of a cylinder, cone, sphere or torus
+    // record) moves by T·|N(v)·n| (N the surface normal at its corners, n the facet's), so its corners land exactly on
+    // the surface offset by T (the record the inner cap carries: r − T); moved by T they sat T/cos(α/2) deep and the
+    // shell of a rounded part came out up to 8e-4 heavy (G13). Planar faces: T.
+    var depthOf = {}, radiusOf = {};
+    function surfOf(face) {
+      var S = null, F = null, ps = face.polys || [];
+      for (var j = 0; j < ps.length; j++) {
+        var s = ps[j].surf && ps[j].surf.s;
+        if (!s || ps[j].surf.fc) return null;
+        if (S && S !== s) return null;
+        S = s; F = F || ps[j].surf;
+      }
+      return S ? { S: S, F: F } : null;
+    }
+    function surfError(S, x) {
+      var v = sub(x, S.o), z = dot(v, S.d), rho = len(sub(v, scale(S.d, z)));
+      if (S.t === 'cyl') return Math.abs(rho - S.r);
+      if (S.t === 'cone') return Math.abs(rho - (S.r + (S.k || 0) * z)) / Math.sqrt(1 + (S.k || 0) * (S.k || 0));
+      if (S.t === 'sph') return Math.abs(len(v) - S.r);
+      if (S.t === 'tor') return Math.abs(Math.hypot(rho - S.R, z) - S.r);
+      return Infinity;
+    }
+    // surfaces kept at depth T: those meeting a record-less faceted face (a loft, a sweep) at a concave edge under 60°
+    // (the Funnel's tube under its cone): the exact depth there left a CSG fragment and flat-shaded bands
+    // lane GC: a surface with a facet whose corners meet it at different angles (N·n differs corner to corner: a
+    // hull-loft triangle of a cone, two neck corners at 0.99714 and its mouth corner at 0.9999999, beside mouth-based
+    // triangles at 0.99928 at every corner) has no exact parallel offset per facet: at each facet's own depth the
+    // neighbouring caps stood 0.003 mm apart, the slabs met PAST the shared ruling (at (d1·cosφ − d2) / sinφ, three
+    // times the T·tan(φ/2) growth) and the Funnel's inner wall kept a hair-thin slit along every ruling (0.0006°
+    // fragments, 669 hidden lines). Tilted caps through the offset corners (exact) plus that growth still left slits
+    // near the tube: such a surface is offset at depth T on every facet, as before rfGB (and counts as record-less in
+    // mixedSurf, so the tube under the Funnel's cone stays at T too). Cylinders, spheres and tori (facets symmetric
+    // about their middle) are even and keep the exact depth.
+    var uneven = typeof Map === 'function' ? new Map() : null;
+    function unevenSurf(S) {
+      if (!uneven) return false;
+      if (uneven.has(S)) return uneven.get(S);
+      var out = false, scl = Math.max(1, Math.abs(S.r || 0), Math.abs(S.R || 0));
+      for (var fi = 0; fi < mesh.faces.length && !out; fi++) {
+        var sf = surfOf(mesh.faces[fi]);
+        if (!sf || sf.S !== S) continue;
+        var n = mesh.faces[fi].normal, cen = mesh.faces[fi].centroid, lo = Infinity, hi = -Infinity;
+        mesh.faces[fi].polys.forEach(function (p) {
+          p.vertices.forEach(function (v) {
+            var x = [v.pos.x, v.pos.y, v.pos.z];
+            if (!(surfError(S, x) < 1e-6 * scl)) return;
+            var N = K.surfNormalAt(S, x, cen);
+            if (!N) return;
+            var c = Math.abs(dot(N, n));
+            lo = Math.min(lo, c); hi = Math.max(hi, c);
+          });
+        });
+        if (hi - lo > 1e-9) out = true;
+      }
+      uneven.set(S, out);
+      return out;
+    }
+    var mixed = null;
+    function mixedSurf() {
+      if (mixed) return mixed;
+      mixed = typeof Set === 'function' ? new Set() : { has: function () { return false; }, add: function () {} };
+      Object.keys(edgeOf).forEach(function (key) {
+        var e = edgeOf[key];
+        if (e.faces.length !== 2 || !(turn[key] < Math.PI / 3)) return;
+        var sa = surfOf(mesh.faces[e.faces[0]]), sb = surfOf(mesh.faces[e.faces[1]]);
+        if (sa && unevenSurf(sa.S)) sa = null;   // lane GC: an uneven surface is offset as a record-less one
+        if (sb && unevenSurf(sb.S)) sb = null;
+        if (!!sa === !!sb) return;
+        var k = sa ? 0 : 1, rec = sa || sb;
+        if (dot(e.ins[k], mesh.faces[e.faces[1 - k]].normal) > 1e-9) mixed.add(rec.S);
+      });
+      return mixed;
+    }
+    function faceDepth(i) {
+      if (i in depthOf) return depthOf[i];
+      var face = mesh.faces[i], sf = surfOf(face), d = T;
+      radiusOf[i] = null;
+      if (sf && K.surfNormalAt) {
+        var o = null;
+        try { o = faceOutline(mesh, i); } catch (e) { o = null; }
+        var S = sf.S, best = null, bestErr = Infinity, cen = face.centroid, scl = Math.max(1, Math.abs(S.r || 0), Math.abs(S.R || 0));
+        (o ? o.loops : []).forEach(function (l) { l.forEach(function (p2) { var x = to3D(o.plane, p2[0], p2[1]), er = surfError(S, x); if (er < bestErr) { bestErr = er; best = x; } }); });
+        var N = best && bestErr < 1e-6 * scl ? K.surfNormalAt(S, best, cen) : null;
+        if (N && !mixedSurf().has(S) && !unevenSurf(S)) d = T * Math.abs(dot(N, face.normal));
+        // the radius a convex face curves with (an inward shell thicker than it cannot offset the face): cylinder,
+        // sphere, a torus's tube (convex when the facet faces away from the tube centre)
+        var Nc = K.surfNormalAt(S, cen, best);
+        if (Nc && dot(Nc, face.normal) > 0 && (S.t === 'cyl' || S.t === 'sph' || S.t === 'tor')) radiusOf[i] = S.r;
+      }
+      return (depthOf[i] = d);
+    }
+    function growFor(plane, fi) {
+      return function (loop, hole) {
+        var d1 = faceDepth(fi), n1 = mesh.faces[fi].normal;
         return loop.map(function (p, k) {
           var a = to3D(plane, p[0], p[1]), q = loop[(k + 1) % loop.length], b = to3D(plane, q[0], q[1]);
           var ka = ekey(a), kb = ekey(b), key = ka < kb ? ka + '|' + kb : kb + '|' + ka;
           var phi = key in turn ? turn[key] : Math.PI / 2;
-          return Math.min(4 * T, T * Math.tan(Math.min(phi, Math.PI - 0.05) / 2));
+          var g = Math.min(4 * T, T * Math.tan(Math.min(phi, Math.PI - 0.05) / 2));
+          // rfGB: at a concave edge the slab reaches exactly where its inner cap meets the neighbour's (at depths d1,
+          // d2): the old T·tan(φ/2) is right only when both are T (a hole's facets, a curved facet beside a plane).
+          // Convex edges keep it (overgrowth there lies outside the body or inside the neighbour's wall).
+          var e = edgeOf[key], j = -1;
+          if (e && e.faces.length === 2) j = e.faces[0] === fi ? e.faces[1] : e.faces[1] === fi ? e.faces[0] : -1;
+          if (j >= 0 && removed.indexOf(j) < 0) {
+            var n2 = mesh.faces[j].normal, dir = norm(sub(b, a)), u1 = scale(cross(n1, dir), hole ? -1 : 1), un = dot(u1, n2);
+            // (it leaves a 0.0008° CSG fragment in the Funnel where the tube meets the cone; 1e-6·T or 1e-4·T more, or
+            // the old growth where the depths differ, each cracked or moved other shells: BSP-sensitive, left as is)
+            if (un > 1e-9) g = Math.min(4 * T, Math.max(-(d1 * dot(n1, n2) - faceDepth(j)) / un, 0));
+          }
+          return g;
         });
       };
     }
@@ -730,14 +869,9 @@
     // 0.9 % high at any tessellation) and its rims draw as true circles. One offset record per surface.
     var offMemo = typeof Map === 'function' ? new Map() : null;
     function offsetRecord(face) {
-      var S = null, ps = face.polys || [];
-      for (var j = 0; j < ps.length; j++) {
-        var s = ps[j].surf && ps[j].surf.s;
-        if (!s || ps[j].surf.fc || (s.t !== 'cyl' && s.t !== 'cone')) return null;
-        if (S && S !== s) return null;
-        S = s;
-      }
-      if (!S || !offMemo) return null;
+      var sf = surfOf(face), S = sf && sf.S;
+      if (S && (S.t === 'sph' || S.t === 'tor')) return offsetRevRecord(face, sf);   // rfGB
+      if (!S || (S.t !== 'cyl' && S.t !== 'cone') || !offMemo) return null;
       var v = sub(face.centroid, S.o), z = dot(v, S.d), rho = sub(v, scale(S.d, z));
       if (len(rho) < 1e-9) return null;
       var conv = dot(face.normal, rho) > 0 ? 1 : -1, k = S.k || 0, key = S, memo = offMemo.get(key);
@@ -749,14 +883,60 @@
       if (!memo) offMemo.set(key, memo = {});
       return (memo[conv] = { s: S2 });
     }
+    // rfGB: a sphere / torus facet's inner cap: the same surface with its radius (a torus's tube) moved T toward the
+    // centre (away from it in a concave face), and the facet's profile chord P, Q scaled about the profile circle's
+    // centre, since the offset corners are the old ones moved T along the surface normal
+    var revMemo = typeof Map === 'function' ? new Map() : null;
+    function offsetRevRecord(face, sf) {
+      var S = sf.S, F = sf.F, N = K.surfNormalAt ? K.surfNormalAt(S, face.centroid) : null;
+      if (!N || !revMemo) return null;
+      var conv = dot(N, face.normal) > 0 ? 1 : -1, r2 = S.r - conv * T;
+      if (!(r2 > 1e-9 * Math.max(1, S.r))) return null;
+      var ms = revMemo.get(S);
+      if (!ms) revMemo.set(S, ms = {});
+      var S2 = ms[conv];
+      if (!S2) {
+        S2 = {};
+        for (var q in S) if (S.hasOwnProperty(q) && q !== '_m' && q !== '_pk') S2[q] = S[q];
+        S2.o = S.o.slice(); S2.d = S.d.slice(); S2.r = r2;
+        ms[conv] = S2;
+      }
+      var mf = revMemo.get(F);
+      if (!mf) revMemo.set(F, mf = {});
+      if (mf[conv]) return mf[conv];
+      var F2 = {}, k = r2 / S.r, Cr = S.t === 'tor' ? S.R : 0;
+      for (var w in F) if (F.hasOwnProperty(w) && w !== '_m' && w !== '_pk') F2[w] = F[w];
+      F2.s = S2;
+      if (F.P) F2.P = [Cr + (F.P[0] - Cr) * k, F.P[1] * k];
+      if (F.Q) F2.Q = [Cr + (F.Q[0] - Cr) * k, F.Q[1] * k];
+      return (mf[conv] = F2);
+    }
     // rfFS: a shell whose slabs meet in exact coincidences (a slot exactly 2T wide, a notch whose offset collapses onto
     // its centre line) can come out cracked (open / non-manifold edges). The result is checked against the body before
     // it; a cracked one is rebuilt with every growth 1e-6 (then 1e-4) larger, which turns the coincidences into
     // crossings untangleLoop removes, and refused if still cracked (OpenCascade's shell then drives: not a refusal).
+    // rfGB: an inward shell thicker than the radius of a convex round (a rim fillet, a boss) cannot offset that face
+    // (its offset would turn inside out): SolidWorks refuses it ("the thickness is greater than the minimum radius of
+    // curvature"); Anvil's slabs left it cracked (fuzz pins 2, 5)
+    var minR = Infinity;
+    for (var fr = 0; fr < mesh.faces.length; fr++) {
+      if (removed.indexOf(fr) >= 0) continue;
+      faceDepth(fr);
+      if (radiusOf[fr] != null && radiusOf[fr] < minR) minR = radiusOf[fr];
+    }
+    if (minR < T * (1 - 1e-9)) {
+      var rs = String(+minR.toPrecision(6)), ts = String(+T.toPrecision(6));
+      throw new Error('Failed to shell the part: the thickness ' + ts + ' is greater than the ' + rs + ' radius of a rounded face, so that face cannot be offset inward. Use a thickness below ' + rs + ', or a larger round.');
+    }
     var inner = ctx.body, extensions = [], S = null, body = null, open0 = -1, best = null;
-    var tries = K.shellGuard.on ? [1, 1 + 1e-6, 1 + 1e-4] : [1];
+    // lane GC: a last try (0) with csg.js's restoreFar (rfFV) off: the top union of G13's slabs (rfGA: 4 × 3 × 2 box,
+    // R.5 / R.25 rounds, shell .1) cracks with it on (two closed halves of 3192 + 3257 polygons → 12 open edges at
+    // the inner corner torus; growth ×(1 + 1e-6) / ×(1 + 1e-4): 8 / 6) and closes with it off. Reported as a csg.js
+    // repro; a shell that closes on an earlier try never gets here, so no other shell moves.
+    var noFar = typeof CSG !== 'undefined' && CSG.options && CSG.options.restoreFar;
+    var tries = K.shellGuard.on ? (noFar ? [1, 1 + 1e-6, 1 + 1e-4, 0] : [1, 1 + 1e-6, 1 + 1e-4]) : [1];
     for (var tr = 0; tr < tries.length; tr++) {
-      var gs = tries[tr], slabs = [];
+      var gs = tries[tr] || 1, slabs = [];
       extensions = [];
       for (var i = 0; i < mesh.faces.length; i++) {
         var o;
@@ -767,7 +947,8 @@
           var ext = slabSolid({ loops: o.loops.filter(function (l) { return signedArea(l) > 0; }), plane: o.plane }, uniform, -T / 2, T + 1, f.id);
           if (ext) extensions.push(ext);
         } else {
-          var slab = slabSolid(o, scaledGrow(growFor(o.plane), gs), -T, T, f.id), rec = slab && offsetRecord(mesh.faces[i]), fn = mesh.faces[i].normal;
+          var slab = slabSolid(o, scaledGrow(growFor(o.plane, i), gs), -faceDepth(i), T, f.id);   // rfGB: −faceDepth (was −T)
+          var rec = slab && offsetRecord(mesh.faces[i]), fn = mesh.faces[i].normal;
           if (rec) slab.polygons.forEach(function (p) { var n = p.plane.normal; if (n.x * fn[0] + n.y * fn[1] + n.z * fn[2] < -0.999999) p.surf = rec; });
           if (slab) slabs.push(slab);
         }
@@ -776,8 +957,13 @@
       // body − ((body ∪ ext) − S) = body ∩ S exactly (S: the slab union), so the walls are one intersection instead of
       // a union and two subtractions (the Funnel's shell: two large booleans fewer, the same solid). The cavity
       // `inner` (the Shell PropertyManager's red preview) is only built when it is read.
-      S = unionTree(slabs);
-      body = ctx.body.intersect(S);
+      if (tries[tr] === 0) {
+        CSG.options.restoreFar = false;
+        try { S = unionTree(slabs); body = ctx.body.intersect(S); } finally { CSG.options.restoreFar = true; }
+      } else {
+        S = unionTree(slabs);
+        body = ctx.body.intersect(S);
+      }
       if (ctx.body.volume() - body.volume() < 1e-9) throw new Error('Shell thickness ' + T + ' is too large for this part: nothing would remain hollow. Enter a thickness below half of the thinnest wall.');
       if (tries.length === 1) break;
       if (open0 < 0) { open0 = crackCount(ctx.body); K.shellGuard.last = { tries: 0, open: [], before: open0 }; }
@@ -1614,6 +1800,19 @@
     var side = draftSide(neu.pull, neu.d0, idx.map(function (i) { return { area: mesh.faces[i].area, centroid: mesh.faces[i].centroid }; }));
     if (side < 0) { neu.pull = scale(neu.pull, -1); neu.d0 = -neu.d0; }
     N = f.reverse ? scale(neu.pull, -1) : neu.pull; d0 = f.reverse ? -neu.d0 : neu.d0;
+    // rfGB: a planar face tangent to a round that is not drafted with it would leave the round standing straight
+    // beside the tilted face (a kink; a second Draft over it cracked the part, fuzz pin 6): refused, as the round
+    // cannot follow on Anvil's kernel (it drafts planar faces only)
+    var COS_TAN = Math.cos(30 * Math.PI / 180);
+    bodyEdges(mesh).forEach(function (e) {
+      if (e.faces.length !== 2) return;
+      var a = e.faces[0], b = e.faces[1], ia = idx.indexOf(a), ib = idx.indexOf(b);
+      if ((ia >= 0) === (ib >= 0)) return;
+      var k = ia >= 0 ? ia : ib, other = ia >= 0 ? b : a;
+      if (draftCurved(mesh.faces[ia >= 0 ? a : b])) return;   // a curved face itself is refused below, in its own words
+      if (!draftCurved(mesh.faces[other]) || dot(mesh.faces[a].normal, mesh.faces[b].normal) < COS_TAN) return;
+      throw new Error((k < f.faces.length ? 'Face<' + (k + 1) + '>' : 'A face reached by Along Tangent') + ' is tangent to a round that is not drafted with it, and Anvil\'s kernel cannot tilt the round to follow. Draft the faces before adding the round, or draft on the OpenCascade kernel.');
+    });
     var ang = A * Math.PI / 180, recs = {};
     idx.forEach(function (i, k) {
       var face = mesh.faces[i], n = face.normal, nm = k < f.faces.length ? 'Face<' + (k + 1) + '>' : 'A face reached by Along Tangent';
@@ -1922,7 +2121,9 @@
     if (!regions.length) throw new Error('The selections make no regions.');
     return regions;
   }
-  // the kept regions as the new bodies (merge: those whose boxes meet joined); bounds / join / meet are the kernel's own
+  // the kept regions as the new bodies (merge: those whose boxes meet joined); bounds / join / meet are the kernel's own.
+  // rfGB: `join` may return null for two regions that must stay apart (they touch only along an edge or at a point:
+  // joined they would be one non-manifold solid); they are then kept as separate bodies, as SolidWorks keeps them.
   function ixKeep(regions, f, bounds, join, meet) {
     var keep = regions.filter(function (r, i) { return !(Array.isArray(f.regions) && f.regions[i] === false); });
     if (!keep.length) throw new Error('Every region is excluded: keep at least one.');
@@ -1931,14 +2132,29 @@
     keep.forEach(function (r) {
       var g = r.body, hit = [];
       groups.forEach(function (h, i) { if (meet(bounds(h), bounds(g))) hit.push(i); });
-      for (var i = hit.length - 1; i >= 0; i--) { g = join(groups[hit[i]], g); groups.splice(hit[i], 1); }
+      for (var i = hit.length - 1; i >= 0; i--) { var j = join(groups[hit[i]], g); if (j) { g = j; groups.splice(hit[i], 1); } }
       groups.push(g);
     });
     return groups;
   }
+  // rfGB: the solid join of two kept regions, or null when the union touches itself along an edge / at a point (more
+  // non-manifold edges than the two had): those stay two bodies
+  function ixJoin(a, b) {
+    var u = a.union(b);
+    if (!K.nonManifoldCount) return u;
+    var before = K.nonManifoldCount(a) + K.nonManifoldCount(b);
+    return K.nonManifoldCount(u) > before ? null : u;
+  }
   function applyIntersect(f, model, ctx) {
     var regions = intersectRegions(ctx.bodies, f, model, ctx.planes);
-    var out = ixKeep(regions, f, function (b) { return b.getBounds(); }, function (a, b) { return a.union(b); }, ixMeet);
+    var out = ixKeep(regions, f, function (b) { return b.getBounds(); }, ixJoin, ixMeet);
+    // rfGB: a kept region that touches itself along an edge or at a point (ixLumps joins lumps through a shared
+    // vertex) is zero-thickness geometry: refused in a sentence, as the rebuild refuses a boss that would make it
+    var nmIn = 0;
+    if (K.nonManifoldCount && !model.sheet) K.cutScope(f, ctx.bodies.length).forEach(function (i) { nmIn += K.nonManifoldCount(ctx.bodies[i]); });
+    if (K.nonManifoldCount && !model.sheet && !nmIn) out.forEach(function (o) {
+      if (K.nonManifoldCount(o)) throw new Error('Intersect: a region kept would touch itself along an edge or at a point (zero-thickness geometry). Keep or exclude the regions next to it so the solids overlap or stay apart.');
+    });
     var sel = K.cutScope(f, ctx.bodies.length), at = Math.min.apply(null, sel), nb = [], nf = [];
     ctx.bodies.forEach(function (b, i) {
       if (i === at) out.forEach(function (o) { nb.push(o); nf.push(f.id); });

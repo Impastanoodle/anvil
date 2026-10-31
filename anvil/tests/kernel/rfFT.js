@@ -265,7 +265,8 @@
   }
   // rfFT-TABLE-END
   // OpenCascade's [volume, bodies, bbox [x0, y0, z0, x1, y1, z1], its own failure] for every part (OcctKernel.build
-  // headless, main checkout at d83a8c7, 2026-10-30: compare.js --occt). Re-measure with compare.js after engine work.
+  // headless, main checkout at d83a8c7, 2026-10-30: compare.js --occt; S16, S20, M26 re-measured after lane FZ2 by lane GA2).
+  // Re-measure with compare.js after engine work.
   var rfFTocc = {
       S01: [11.888856735, 1, [-3,0,-2,3,0.5,2]], S02: [14.785816619, 1, [-4,0,-2.5,4,0.375,2.5]],
       S03: [9.551809831, 1, [-3,0,-3,3,0.375,3]], S04: [8.738526618, 1, [-2,0,-1.5,2,0.75,1.5]],
@@ -274,10 +275,10 @@
       S09: [2.488952679, 1, [0,0,0,3,2.5,2]], S10: [2.914249984, 1, [-2,0,-1.5,2,0.25,1.5]],
       S11: [5.797055951, 1, [-1.5,0,-1,1.5,1,1]], S12: [3.752892443, 1, [-1.5,0,-1.5,1.5,1.125,1.5]],
       S13: [2.641522621, 1, [-2,0,-1,2,0.375,1]], S14: [2.515728492, 1, [-1.125,0,-1.125,1.125,2,1.125]],
-      S15: [3.135256375, 1, [-0.5,0,-0.5,0.5,4,0.5]], S16: [3.092883254, 1, [-0.5,0,-0.5,0.5,4,0.5]],
+      S15: [3.135256375, 1, [-0.5,0,-0.5,0.5,4,0.5]], S16: [3.092891821, 1, [-0.5,0,-0.5,0.5,4,0.5]],
       S17: [7.384477559, 1, [-2,0,-2,2,0.75,2]], S18: [1.141796743, 1, [-0.75,0,-0.75,0.75,1,0.75]],
       S19: [8.125, 1, [0,0,-2,4,3,2]],
-      S20: [7.90182523, 1, [-2,0,-2,2,0.5,2], "error: Draft angle is too large for this depth: the profile collapses."],
+      S20: [9.352014843, 1, [-2,0,-2,2,1.5,2]],
       S21: [10.57527687, 1, [-2,0,-1.5,2,1,1.5]], S22: [3.61575216, 1, [-2,0,-1.5,2,2,1.5]],
       S23: [6.203125, 1, [-1.5,0,-1.5,1.5,3,1.5]], S24: [0.925275413, 1, [-0.25,0,-0.25,3,3.25,0.25]],
       S25: [8.750586407, 1, [-0.5,0,-0.5,6,6.5,0.5]], S26: [1.570796327, 1, [-0.5,0,-0.25,1.525126,3.181981,0.25]],
@@ -302,7 +303,7 @@
       M21: [1.938130114, 1, [0,0,0,6,1.5,4]], M22: [3.395499139, 1, [0,0,0,5,2.15625,3]],
       M23: [2.191120458, 1, [0,0,-0.6902,6,1.5,2.6902]], M24: [2.077777839, 1, [0,0,0,6,0.75,4]],
       M25: [3.536493615, 1, [0,0,0,10,0.0598,6]],
-      M26: [2.417576824, 1, [0,0,-1.4017,6,0.0598,5.4017], "error: OpenCascade could not make the cut across the bend."],
+      M26: [2.417576825, 1, [0,0,0,6,1.5,4]],
       M27: [2.914619339, 1, [0,0,0,8,2,3]]
   };
   (function () {
@@ -318,7 +319,10 @@
     var FACET = [1e-3, 'Anvil\'s bend surfaces are faceted chords with no cylinder record in Mass Properties: 1e-4 to 7e-4 light'];
     var VOLTODO = { S28: [3e-3, 'rectangle → circle loft: Anvil ruled, OpenCascade smooth (no SolidWorks reference yet)'],
       S29: [6e-3, 'three-section loft: Anvil ruled, OpenCascade smooth (known, SESSION_LOG 2026-10-29c)', 0.02] };
-    'M01 M02 M03 M05 M06 M07 M08 M09 M10 M11 M12 M13 M15 M18 M19 M20 M21 M22 M23 M24 M27 M04 M26'.split(' ').forEach(function (id) { VOLTODO[id] = FACET; });
+    // lane FX (local-2026-10-30b): every bend face carries a cylinder record, so the 23 bent parts are exact in Mass
+    // Properties (21 promoted to hard rows: = OpenCascade to 2.4e-8). Two stay TODO for what is still polygonal:
+    VOLTODO.M18 = [1e-4, 'the Normal Cut holes carry no cylinder record (2.5e-5 light; normalCutTool, kernel-sheetmetal.js)'];
+    VOLTODO.M26 = [1e-4, 'the round hole\'s wall inside the bend is a polygon (1.2e-5; buildFold / wrapRegion)'];
     // flat area × T = OpenCascade's exact folded volume (K 0.5: the neutral surface is the mid-surface; straight
     // bends, no round holes in the flat loops, no mitres)
     var FLATVOL = 'M01 M02 M04 M05 M06 M07 M08 M09 M10 M11 M13 M16 M19 M20 M23 M27'.split(' ');
@@ -369,8 +373,9 @@
     });
 
     // seeded fuzz: 30 sheet-metal and 30 fillet / chamfer stacks (compare.js --fuzz 1000 runs more by hand). Allowed:
-    // a refusal in a plain sentence; an open result only when the stack holds a pinned, known failure (a hole across a
-    // bend through Unfold / Fold, rfFT TODO M26; a Closed Corner, M04). Anything else fails with its seed.
+    // a refusal in a plain sentence; an open result only when the stack holds a pinned, known failure. Lane GA
+    // (2026-10-30, on ffadfbf): Closed Corner stacks are all closed now (0 open in 1000), holes across a bend 3 open in
+    // 1000 (pins 12, 13), none in seeds 1–30, so nothing is exempt any more. Anything open fails with its seed.
     test('rfFT: seeded fuzz, 30 sheet-metal stacks + 30 fillet / chamfer stacks (seeds 1–30): no exception, plain refusals, closed results and flats', function () {
       var n = { ok: 0, refused: 0, known: 0 }, bad = [];
       ['sheet', 'round'].forEach(function (kind) {
@@ -380,7 +385,7 @@
           var errs = Object.keys(r.errors).map(function (k) { return r.errors[k]; }), open = 0;
           errs.forEach(function (m) { if (!PLAIN.test(m) || JSERR.test(m)) bad.push(kind + ' ' + s + ' message: ' + m); });
           (r.build.bodies || []).forEach(function (b) { var ck = Evaluate.checkBody(b); open += ck.openEdges.length + ck.nonManifoldEdges.length; });
-          var known = /holeAcrossBend|closedCorner/.test(c.ops.join(' '));
+          var known = false;   // lane FW: no stack is excused any more (holeAcrossBend closed by FU; this fuzz's Closed Corners are refused or closed)
           if (open) { if (known) n.known++; else bad.push(kind + ' ' + s + ' (' + c.ops.join(' ') + '): ' + open + ' open / non-manifold edges'); continue; }
           if (kind === 'sheet' && r.body) {
             var fb = K.flatBody(r.model, r.build, K.flatPattern(r.model, r.build, r.mesh)).body, fc = Evaluate.checkBody(fb);
@@ -407,12 +412,15 @@
       ['two bosses and a Ø0.266 hole through the edge of one (fuzz round 38)', U + 'p.sketch("Top").rect(0, -2.5, 5.75, 2.5).end().extrude(0.75);\np.sketch("Top", 0.75).circle(2.261, -0.891, 0.25).end().extrude(0.5);\np.sketch("Top", 0.75).circle(3.6057, -1.463, 0.375).end().extrude(0.5);\np.sketch("Top", 1.75).circle(3.3146, -1.3062, 0.133).end().cut("through", { reverse: true });\n'],
       ['Ø0.75 boss and a Ø0.266 hole through its edge on a 0.375 plate (fuzz round 91)', U + 'p.sketch("Top").rect(0, -4, 5.75, 4).end().extrude(0.375);\np.sketch("Top", 0.375).circle(2.738, -0.7576, 0.375).end().extrude(0.5);\np.sketch("Top", 1.375).circle(2.7143, -1.1901, 0.133).circle(4.7097, -2.2459, 0.25).end().cut("through", { reverse: true });\n'],
       ['14 ga 4.75 × 4: open hem on the right edge, 1.125 flange on the front (fuzz sheet 830; also 221, 336, 544: plain flanges / hems open)', U + 'p.sheet(0.0747, 0.0747, 0.5);\np.sketch("Top").rect(0, -4, 4.75, 4).end().baseFlange();\np.hem(0.5, [[4.75, 0.0747, 2]], { hemType: "open" });\np.flange(1.125, [[2.375, 0.0747, 0]], { position: "inside", lengthRef: "outer" });\n'],
-      ['Ø0.5 hole through a Ø1.5 boss extruded 1 with 3° draft (S20 smallest)', U + 'p.sketch("Top").circle(0, 0, 0.75).end().extrude(1, { draft: 3 });\np.sketch("Top", 1).circle(0, 0, 0.25).end().cut("through", { reverse: true });\n']
+      ['Ø0.5 hole through a Ø1.5 boss extruded 1 with 3° draft (S20 smallest)', U + 'p.sketch("Top").circle(0, 0, 0.75).end().extrude(1, { draft: 3 });\np.sketch("Top", 1).circle(0, 0, 0.25).end().cut("through", { reverse: true });\n'],
+      // lane GA (2026-10-30, fuzz 1000 on ffadfbf): the holes across a bend still open
+      ['14 ga K 0.4 4 × 2.75, 1 flange on the back edge, Ø0.281 hole across that bend (fuzz sheet 899 / 323; the front edge, 16 ga or Ø0.5 are closed)', U + 'p.sheet(0.0747, 0.0747, 0.4);\np.sketch("Top").rect(0, -2.75, 4, 2.75).end().baseFlange();\np.flange(1, [[2, 0.0747, 2.75]], { position: "inside", lengthRef: "outer" });\np.unfold([2, 0.0747, 1.375], null);\np.sketch("Top", 0.0747).circle(2.8814, -2.7, 0.1405).end().cut("through", { reverse: true });\np.fold(null);\n'],
+      ['14 ga L bracket, two Unfold / Cut / Fold rounds each cutting a hole across the bend (fuzz sheet 929; one round is closed)', U + 'p.sheet(0.0747, 0.0747, 0.5);\np.sketch("Top").rect(0, -3.5, 5.5, 3.5).end().baseFlange();\np.flange(1.625, [[0, 0.0747, 1.75]], { position: "inside", lengthRef: "outer" });\np.unfold([2.75, 0.0747, 1.75], null);\np.sketch("Top", 0.0747).circle(-0.05, -2.1517, 0.25).end().cut("through", { reverse: true });\np.fold(null);\np.unfold([2.75, 0.0747, 1.75], null);\np.sketch("Top", 0.0747).circle(-0.05, -2.5522, 0.1405).end().cut("through", { reverse: true });\np.fold(null);\n']
     ];
     // pins closed since (hard rows now): 2 (lane FU, Fold rebuilds the bend from the flat); 1, 3, 4, 7, 8, 9, 10, 11 (lane FQ:
     // shared split points and the exact retry in csg.js). Still TODO: 5 (refused in a plain sentence: the jog is too small
     // for the bend, so no body to check), 6 (9 non-manifold edges where the 120° flange hole meets the bend)
-    var HARD = { 1: true, 2: true, 3: true, 4: true, 7: true, 8: true, 9: true, 10: true, 11: true };
+    var HARD = { 1: true, 2: true, 3: true, 4: true, 7: true, 8: true, 9: true, 10: true, 11: true, 12: true };   // 12: lane FW2 (Fold reads the voids at 1024× scale)
     PINS.forEach(function (pin, i) {
       test((HARD[i + 1] ? 'rfFT: pin ' : 'rfFT TODO: pin ') + (i + 1) + ' closed: ' + pin[0], function () {
         var r = build(pin[1]), open = 0, nm = 0;

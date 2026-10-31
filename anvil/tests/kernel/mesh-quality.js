@@ -75,7 +75,20 @@
     var ex = AnvilExamples.filter(function (e) { return e.name === 'Funnel'; })[0], r = build(ex.code);
     noErrors(r);
     nearRel(r.body.volume(), expected, 1e-8, 'Funnel vs the analytic shell');
-    return 'analytic ' + expected.toFixed(6) + ', kernel ' + r.body.volume().toFixed(6);
+    // lane GC: and the true solid (SolidWorks' Shell offsets every face normal to itself by T): cone k = 33/40 from
+    // r 7 at y 20 to r 40 at y 60 plus the Ø14 × 20 tube, minus the cavity: the inner cone r(y) = 7 − T·√(1 + k²) +
+    // k (y − 20) (moved T along its normal, T·√(1 + k²) along its radius) above y_a, where it meets the Ø11 inner
+    // tube (y_a = 20 + (5.5 − r(20)) / k), and the Ø11 bore below; both ends open, so the cavity runs 0 .. 60.
+    // massProps integrates the facets' cone / cylinder records: 2.5e-8 here (6e-8 on this legacy mesh), not 1e-9,
+    // because the hull-loft cone is "uneven" (its neck-based triangles meet the cone at different angles corner to
+    // corner) and its slabs stay T deep (buildShell unevenSurf): the inner corners sit up to 0.004 mm off the offset
+    // cone. rfFX pins the default tessellation to 1e-7 as well.
+    var k = 33 / 40, ri = 7 - T * Math.sqrt(1 + k * k), ya = 20 + (5.5 - ri) / k, r60 = ri + 40 * k;
+    function frustum(h, a, b) { return Math.PI * h / 3 * (a * a + a * b + b * b); }
+    var exact = frustum(40, 40, 7) + Math.PI * 49 * 20 - frustum(60 - ya, 5.5, r60) - Math.PI * 5.5 * 5.5 * ya;
+    nearRel(exact, 12183.973273631083, 1e-12, 'closed form');
+    nearRel(r.mp.volume, exact, 1e-7, 'Funnel mass properties vs the true offset shell');
+    return 'analytic ' + expected.toFixed(6) + ', kernel ' + r.body.volume().toFixed(6) + '; true offset ' + exact.toFixed(6) + ', massProps ' + r.mp.volume.toFixed(6);
   }); });
   test('the Funnel is closed where the cone meets the tube (the resampled loft left a ~1e-5 mm crack: 3 open edges)', function () {
     var ex = AnvilExamples.filter(function (e) { return e.name === 'Funnel'; })[0], r = build(ex.code), q = K.meshQuality(r.mesh);

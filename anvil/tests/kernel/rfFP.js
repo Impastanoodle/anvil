@@ -63,7 +63,7 @@
       // a straight edge along both faces' rulings still builds: two parallel cylinders' line of contact is not a saddle
     });
 
-    test('rfFP: the guard: R.1 on the wheel\'s bottom rim after R.25 on its top rim and the dish leaves 6 open edges from the BSP (band halved or doubled too); the head\'s last retry with csg.js wide healing closes it, the same body as built in the other order; with healing off it is refused, the body kept; a checked result is the one the rebuild uses', function () {
+    test('rfFP: the guard: R.1 on the wheel\'s bottom rim after R.25 on its top rim and the dish leaves 6 open edges from the BSP (band halved or doubled too); the head\'s last retry with csg.js wide healing closes it, the same body as built in the other order; with healing off the BSP alone now closes it too (lane FV), the same body; a checked result is the one the rebuild uses', function () {
       var W = 'p.units("in");\np.sketch("Front").line(0,0,3,0).line(3,0,3,1.5).line(3,1.5,0,1.5).line(0,1.5,0,0).revolve(360);\n' +
         'var a = Math.asin((1.5-5)/4.1), x1 = 4.1*Math.cos(a);\np.sketch("Front").arc(0,5,4.1,-90,a*180/Math.PI).line(x1,1.5,x1,2).line(x1,2,0,2).line(0,2,0,0.9).revolveCut(360);\n' +
         'p.sketch("Front").arc(0,0.9,0.3,-90,90).line(0,1.2,0,0.6).revolveCut(360);\n';
@@ -71,11 +71,14 @@
       noErrors(r);
       var cr = Evaluate.checkBody(r.body, { maxPairs: 1 });
       assert(!cr.openEdges.length && !cr.nonManifoldEdges.length, 'R.1 second: open ' + cr.openEdges.length + ', non-manifold ' + cr.nonManifoldEdges.length);
+      // healing off: this used to leave the crack and be refused; since lane FV (csg.js: the classic path's far pieces go
+      // through restoreWhole, so the fillet tools' own-tree pieces no longer overlap) the BSP alone closes it
       CSG.options.heal = false;
       try { var nh = build(W + 'p.fillet(0.25,[[3,1.5,0]]);\np.fillet(0.1,[[3,0,0]]);'); } finally { CSG.options.heal = true; }
-      var msg = rfFPerr(nh);
-      assert(/^Failed to create fillet\. Anvil's kernel could not close the rounded faces on these edges/.test(msg), msg);
-      nearRel(nh.mp.volume, base.mp.volume, 1e-12, 'body kept');
+      noErrors(nh);
+      var cn = Evaluate.checkBody(nh.body, { maxPairs: 1 });
+      assert(!cn.openEdges.length && !cn.nonManifoldEdges.length, 'healing off: open ' + cn.openEdges.length + ', non-manifold ' + cn.nonManifoldEdges.length);
+      nearRel(nh.mp.volume, r.mp.volume, 1e-9, 'healing off = healing on');
       var first = build(W + 'p.fillet(0.1,[[3,0,0]]);\np.fillet(0.25,[[3,1.5,0]]);');
       noErrors(first);
       var ck = Evaluate.checkBody(first.body, { maxPairs: 1 });

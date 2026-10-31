@@ -1,7 +1,9 @@
 // rfFT corpus runner (lane FT, 2026-10-30): builds every part of the rfFT table (anvil/tests/kernel/rfFT.js, between
 // the rfFT-TABLE markers) on Anvil's engine, or with --occt on OpenCascade, and prints one JSON line per part.
-//   node anvil/tests/fixtures/rfFT/compare.js [--root <checkout>] [--occt] [--only S01,M03]
-//   node anvil/tests/fixtures/rfFT/compare.js --fuzz 1000 [--seed 1]      (Anvil only)
+//   node anvil/tests/fixtures/rfFT/compare.js [--root <checkout>] [--occt] [--only S01,M03] [--table rfGA]
+//   node anvil/tests/fixtures/rfFT/compare.js --fuzz 1000 [--seed 1] [--table rfGA]     (Anvil only)
+// --table picks the group file (anvil/tests/kernel/<name>.js) whose <name>-TABLE markers hold the parts and the fuzz
+// generator: rfFT (default; kinds 'sheet' and 'round') or rfGA (lane GA's second corpus; one kind 'stack').
 // --root picks the checkout whose engine is loaded (default: this one); vendor/occt is not in worktrees, so run
 // --occt with the main checkout as --root (the table is always read from this file's checkout).
 'use strict';
@@ -14,12 +16,14 @@ const only = flag('--only') ? String(flag('--only')).split(',') : null;
 const g = require(path.join(root, 'anvil/headless/load.js')).load({ occt });
 const K = g.Kernel, Ev = g.Evaluate;
 
-const src = fs.readFileSync(path.join(here, 'anvil/tests/kernel/rfFT.js'), 'utf8');
-const table = src.slice(src.indexOf('// rfFT-TABLE-BEGIN'), src.indexOf('// rfFT-TABLE-END'));
-const lib = new Function(table + '\nreturn { parts: rfFTparts, fuzz: rfFTfuzz };')(), parts = lib.parts;
+const T = String(flag('--table') || 'rfFT');
+const src = fs.readFileSync(path.join(here, 'anvil/tests/kernel/' + T + '.js'), 'utf8');
+const table = src.slice(src.indexOf('// ' + T + '-TABLE-BEGIN'), src.indexOf('// ' + T + '-TABLE-END'));
+const lib = new Function(table + '\nreturn { parts: ' + T + 'parts, fuzz: ' + T + 'fuzz, kinds: typeof ' + T + 'kinds !== "undefined" ? ' + T + 'kinds : ["sheet", "round"] };')(), parts = lib.parts;
 const r6 = (x) => (x == null ? x : Math.round(x * 1e9) / 1e9);
 
 function anvilRow(p) {
+  if (!p.code) return { id: p.id, missing: p.missing };   // a feature Anvil does not have: no script to run
   const t0 = Date.now(), m = K.newModel(p.id);
   let b;
   try { K.runScript(m, p.code); b = K.rebuild(m); } catch (e) { return { id: p.id, threw: String(e && e.stack || e).slice(0, 300) }; }
@@ -46,6 +50,7 @@ async function occtRows() {
   const { oc } = await require(path.join(root, 'anvil/headless/occt.js')).loadOpenCascade();
   parts.forEach((p) => {
     if (only && only.indexOf(p.id) < 0) return;
+    if (!p.code) { console.log(JSON.stringify({ id: p.id, missing: p.missing })); return; }
     const m = K.newModel(p.id), t0 = Date.now();
     let row;
     try {
@@ -67,10 +72,14 @@ function fuzzOne(kind, seed) {
   let b;
   try { K.runScript(m, c.code); b = K.rebuild(m); } catch (e) { out.status = 'threw'; out.msg = String(e && e.message || e).slice(0, 200); out.code = c.code; return out; }
   const errs = Object.keys(b.errors || {}).map((id) => b.errors[id]), bad = errs.filter((e) => !PLAIN.test(e) || JSERR.test(e));
-  let open = 0, nm = 0;
+  let open = 0, nm = 0, cv = 0;
   (b.bodies || []).forEach((x) => { const ck = Ev.checkBody(x); open += ck.openEdges.length; nm += ck.nonManifoldEdges.length; });
+  if (b.body && !open && !nm) {   // consistentVolume: the mesh's own volume = the polygon volume to 1e-6
+    try { const mp = K.massProps(K.meshFromBody(b.body), 1), pv = b.body.volume(), mv = mp.polygonal ? mp.polygonal.volume : mp.volume; cv = Math.abs(mv - pv) / Math.max(Math.abs(pv), 1e-12); } catch (e) { cv = Infinity; }
+  }
   if (bad.length) { out.status = 'badMessage'; out.msg = bad[0].slice(0, 200); }
   else if (open || nm) { out.status = 'open'; out.msg = open + ' open, ' + nm + ' non-manifold'; }
+  else if (cv > 1e-6) { out.status = 'inconsistent'; out.msg = 'mesh volume vs polygon volume rel ' + cv.toExponential(2); }
   else if (errs.length) { out.status = 'refused'; out.msg = errs[0].slice(0, 160); }
   if (kind === 'sheet' && b.body) {
     try {
@@ -84,7 +93,7 @@ function fuzzOne(kind, seed) {
 
 if (flag('--fuzz')) {
   const N = +flag('--fuzz'), S = +(flag('--seed') || 1), counts = {}, t0 = Date.now();
-  ['sheet', 'round'].forEach((kind) => {
+  lib.kinds.forEach((kind) => {
     for (let s = S; s < S + N; s++) {
       const o = fuzzOne(kind, s), key = kind + ' ' + o.status;
       counts[key] = (counts[key] || 0) + 1;

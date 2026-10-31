@@ -8,7 +8,7 @@
     var L = 'p.units("in");\np.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Top").rect(0, -4, 6, 4).end().baseFlange();\np.flange(1.5, [[3, ' + T + ', 0]], { position: "inside", lengthRef: "outer" });';
     var SLOT = 'p.sketch("Top", 1).rect(2.5, ' + (-(ZB + 0.125)) + ', 1, 0.25).cut("through", { reverse: true });';
     var FACET = 8 * 0.5 * Math.sin(Math.PI / 16) * ((R + T) * (R + T) - R * R);
-    function rfDBVol() { return K.massProps(UI.App.mesh, UI.App.model.density).volume; }
+    function rfDBVol() { var mp = K.massProps(UI.App.mesh, UI.App.model.density); return mp.polygonal ? mp.polygonal.volume : mp.volume; }   // the faceted solid (lane FX)
     function rfDBEv(type, p, target) {
       var r = $('viewport').getBoundingClientRect();
       (target || W).dispatchEvent(new W.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: type === 'mouseup' ? 0 : 1, clientX: Math.round(r.left + p[0]), clientY: Math.round(r.top + p[1]) }));

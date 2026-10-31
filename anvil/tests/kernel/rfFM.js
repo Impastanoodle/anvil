@@ -112,6 +112,27 @@
           if (d <= 1e-3) flat++;
         }
       });
-      assert(tot > 1000 && flat === 0, flat + ' of ' + tot + ' facet triangles keep the flat normal');
+      // lane FX: the loft between the Funnel's coaxial circles is a cone record now (loftAxisRecords) and its shell's inner
+      // walls carry the offset cone: they shade from the records, so no record-less loft triangles are left to check
+      var cone = m.faces.filter(function (f) { return f.polys && f.polys.some(function (p) { return p.surf && p.surf.s && p.surf.s.t === 'cone'; }); }).length;
+      assert(flat === 0 && (tot > 1000 || cone > 100), flat + ' of ' + tot + ' facet triangles keep the flat normal (' + cone + ' cone faces)');
+      // lane GC: the record-carrying faces shade from their records: every corner of the outer cone (r 40) and of the
+      // shell's inner offset cone (r 38.055, the same k) takes the record's normal (a wrong apex / k sign / axis would
+      // be ignored and leave the wall flat-shaded), on 1000+ inner triangles
+      var P = m.positions64, worst = 0, radii = {}, inner = 0;
+      m.faces.forEach(function (f) {
+        var s = f.polys && f.polys[0] && f.polys[0].surf && f.polys[0].surf.s;
+        if (!s || s.t !== 'cone') return;
+        radii[s.r.toFixed(3)] = true;
+        if (s.r < 39) inner += f.count;
+        for (var t = f.start; t < f.start + f.count; t++) for (var c = 0; c < 3; c++) {
+          var x = [P[t * 9 + c * 3], P[t * 9 + c * 3 + 1], P[t * 9 + c * 3 + 2]], N = K.surfNormalAt(s, x, f.centroid);
+          if (N[0] * f.normal[0] + N[1] * f.normal[1] + N[2] * f.normal[2] < 0) N = N.map(function (v) { return -v; });
+          worst = Math.max(worst, Math.hypot(sm[t * 9 + c * 3] - N[0], sm[t * 9 + c * 3 + 1] - N[1], sm[t * 9 + c * 3 + 2] - N[2]));
+        }
+      });
+      assert(radii['40.000'] && radii['38.055'] && inner > 1000, 'outer and inner cone records: ' + Object.keys(radii).join(', ') + '; ' + inner + ' inner triangles');
+      assert(worst < 1e-6, 'smooth normal vs the cone record ' + worst.toExponential(2));
+      return cone + ' cone faces, ' + inner + ' inner cone triangles shaded from the offset record (worst ' + worst.toExponential(1) + ')';
     });
   })();

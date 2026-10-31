@@ -119,7 +119,7 @@
         near(h.flat.size[1], F0 - trim + BA + c.L, 1e-9, lab + ': flat length');
         assert(h.flat.bends.length === 2 && h.flat.loops.length === 1, lab + ': 2 bends, 1 loop');
         near(h.flat.bends[1].ba, BA, 1e-12, lab + ': hem BA');
-        near(h.mp.volume - base.mp.volume, (polyBend(c.A, c.r) + T * c.L - trim * T) * 6, 1e-9, lab + ': hem volume');
+        near(polyVol(h.mp) - polyVol(base.mp), (polyBend(c.A, c.r) + T * c.L - trim * T) * 6, 1e-9, lab + ': hem volume');
         consistentVolume(h);
         out.push(fmt(h.flat.size[1]));
       });

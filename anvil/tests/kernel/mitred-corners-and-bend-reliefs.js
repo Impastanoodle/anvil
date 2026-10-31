@@ -37,7 +37,7 @@
   test('mitred square corner adds exactly the first moment of the profile on each side', function () {
     var one = build(SHEET + '\np.flange(20, [[0, 2, 30]]);');
     noErrors(one);
-    nearRel(one.mp.volume - 12000, PROF.area * 60, 1e-6, 'one flange = profile area × edge length');
+    nearRel(polyVol(one.mp) - 12000, PROF.area * 60, 1e-6, 'one flange = profile area × edge length');
     var two = build(SHEET + '\np.flange(20, [[0, 2, 30], [50, 2, 0]]);');
     var mit = build(SHEET + '\np.flange(20, [[0, 2, 30], [50, 2, 0]], { miter: true });');
     noErrors(two); noErrors(mit);
@@ -45,7 +45,7 @@
     assert(f.type === 'flange' && f.miter === true, 'miter flag stored: ' + JSON.stringify(f));
     // each flange is extended past the shared vertex (0, 2, 0) up to the 45° bisector plane x = z: a slice dA at
     // distance o from the edge reaches o beyond the corner, so the corner gains ∫∫ o dA per flange
-    nearRel(mit.mp.volume - two.mp.volume, 2 * PROF.mx, 1e-4, 'mitre volume = 2 × first moment');
+    nearRel(polyVol(mit.mp) - polyVol(two.mp), 2 * PROF.mx, 1e-4, 'mitre volume = 2 × first moment');
     nearVec(mit.mp.bbox.min, two.mp.bbox.min, 1e-6, 'bbox.min unchanged'); nearVec(mit.mp.bbox.max, two.mp.bbox.max, 1e-6, 'bbox.max unchanged');
     consistentVolume(mit);
     var rev = build(SHEET + '\np.flange(20, [[50, 2, 0], [0, 2, 30]], { miter: true });');
@@ -70,8 +70,8 @@
     var plain = build(SHEET + '\np.flange(20, [[50, 2, 0], [100, 2, 30], [50, 2, 60]]);');
     var mit = build(SHEET + '\np.flange(20, [[50, 2, 0], [100, 2, 30], [50, 2, 60]], { miter: true });');
     noErrors(plain); noErrors(mit);
-    nearRel(plain.mp.volume - 12000, PROF.area * (100 + 60 + 100), 1e-6, 'three plain flanges');
-    nearRel(mit.mp.volume - plain.mp.volume, 2 * 2 * PROF.mx, 1e-4, 'two mitred corners add 2 × 2M');
+    nearRel(polyVol(plain.mp) - 12000, PROF.area * (100 + 60 + 100), 1e-6, 'three plain flanges');
+    nearRel(polyVol(mit.mp) - polyVol(plain.mp), 2 * 2 * PROF.mx, 1e-4, 'two mitred corners add 2 × 2M');
     consistentVolume(mit);
     var s = Math.SQRT1_2;
     var mg = build(SHEET + '\np.flange(20, [[50, 2, 0], [100, 2, 30], [50, 2, 60]], { miter: true, miterGap: 0.5 });');
@@ -89,11 +89,11 @@
     var none = build(LSHEET + '\np.flange(10, [[60, 2, -45]]);');
     var rect = build(LSHEET + '\np.flange(10, [[60, 2, -45]], { relief: "rect", reliefWidth: 2, reliefDepth: 1 });');
     noErrors(none); noErrors(rect);
-    var F = none.mp.volume - 9600;
+    var F = polyVol(none.mp) - 9600;   // the faceted section (flangeProfile); mp.volume is the exact one (lane FX)
     nearRel(F, polyMoments(flangeProfile(Math.PI / 2, 2, 2, 10)).area * 30, 1e-6, 'flange volume without relief');
     var f = rect.model.features[rect.model.features.length - 1];
     assert(f.relief === 'rect' && f.reliefWidth === 2 && f.reliefDepth === 1, 'relief fields stored: ' + JSON.stringify(f));
-    nearRel(rect.mp.volume, 9600 - 24 + F, 1e-6, 'volume = plate − slot + flange');
+    nearRel(polyVol(rect.mp), 9600 - 24 + F, 1e-6, 'volume = plate − slot + flange');
     consistentVolume(rect);
     var ob = build(LSHEET + '\np.flange(10, [[60, 2, -45]], { relief: "obround", reliefWidth: 2, reliefDepth: 1 });');
     noErrors(ob);

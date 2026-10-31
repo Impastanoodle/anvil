@@ -134,6 +134,7 @@
       test('rfDU: Closed Corner ' + key + ' bend region, gap 0.01, ratio 1 = SolidWorks: wall-top corner, flat 4.9017 × 2.9017, blank area × T ' + CORNER[key].flatVol + ', flat outline', function () {
         close(cornerRows(key).slice(0, 5));
       });
-      todo('Closed Corner ' + key + ' bend region: solid volume (Anvil\'s bends are 8 chords per 90°; the closed region\'s fill is clipped by the gap)', function () { return cornerRows(key).slice(5); });
+      if (/ open$/.test(key)) test('rfDU: Closed Corner ' + key + ' bend region: solid volume = SolidWorks (hard since lane FX: bend cylinder records in Mass Properties)', function () { close(cornerRows(key).slice(5)); });
+      else todo('Closed Corner ' + key + ' bend region: solid volume (the closed region\'s fill is 6e-4 heavier than SolidWorks: the fill shape, not the facets)', function () { return cornerRows(key).slice(5); });
     });
   })();

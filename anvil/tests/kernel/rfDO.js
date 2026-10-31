@@ -48,9 +48,9 @@
           [ref + ' blank area × T', blankArea(r.flat) * T, JOG[ref].fixVol]]);
       });
     });
-    todo('Jog solid volume = SolidWorks 0.4784 / fixed length 0.528991 … (Anvil\'s bend facets lose a little)', function () {
-      return Object.keys(JOG).map(function (ref) { return [ref + ' volume', jog(ref).mp.volume, 0.4784]; })
-        .concat(Object.keys(JOG).map(function (ref) { return [ref + ' fixed-length volume', jog(ref, true).mp.volume, JOG[ref].fixVol]; }));
+    test('rfDO: Jog solid volume = SolidWorks 0.4784 / fixed length 0.528991 … (hard since lane FX: bend cylinder records in Mass Properties)', function () {
+      close(Object.keys(JOG).map(function (ref) { return [ref + ' volume', jog(ref).mp.volume, 0.4784]; })
+        .concat(Object.keys(JOG).map(function (ref) { return [ref + ' fixed-length volume', jog(ref, true).mp.volume, JOG[ref].fixVol]; })));
     });
 
     // 2. Edge flange, 1 in, on the z = 2 edge, Material Inside, Outer Virtual Sharp ('outer') and Tangent: tip height

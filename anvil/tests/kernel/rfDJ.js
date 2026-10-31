@@ -46,7 +46,7 @@
     test('rfDJ: a 0.5 × 0.5 × T boss on the flat\'s top face (the inside of the bend) straddling the bend line folds round it: base and wall pieces 0.25 − BA/2 long, the bend piece compressed to the axis (R = T): exact faceted volume; the flat blank does not change', function () {
       var b = rfDJB(BR), f = build(BR + UNF + 'p.sketch("Top", ' + T + ').rect(1, ' + (-(ZB + 0.25)) + ', 0.5, 0.5).extrude(' + T + ');\np.fold();\n');
       noErrors(f);
-      near(f.mp.volume - b.mp.volume, 2 * 0.5 * (0.25 - BA / 2) * T + 0.5 * rfDJSec(0, R), 1e-12, 'boss folded');
+      near(polyVol(f.mp) - polyVol(b.mp), 2 * 0.5 * (0.25 - BA / 2) * T + 0.5 * rfDJSec(0, R), 1e-12, 'boss folded');
       var tst = f.build.body.pointTester(), C = [1.25, R + T, R + T];
       assert(tst([1.25, C[1] - 0.5 * R * Math.SQRT1_2, C[2] - 0.5 * R * Math.SQRT1_2]), 'boss metal inside the bend');
       assert(tst([1.25, 1.5 * T, R + T + 0.1]) && tst([1.25, R + T + 0.1, 1.5 * T]), 'on the base top and the wall\'s inside');
@@ -60,8 +60,8 @@
       var top = build(BR + UNF + 'p.sketch("Top", ' + T + ').rect(1, ' + (-(ZB + 0.25)) + ', 1, 0.5).cut(' + d + ', { reverse: true });\np.fold();\n');
       var bot = build(BR + UNF + 'p.sketch("Top").rect(1, ' + (-(ZB + 0.25)) + ', 1, 0.5).cut(' + d + ');\np.fold();\n');
       noErrors(top); noErrors(bot);
-      near(b.mp.volume - top.mp.volume, (0.5 - BA) * d + rfDJSec(R, R + d), 1e-12, 'top pocket');
-      near(b.mp.volume - bot.mp.volume, (0.5 - BA) * d + rfDJSec(R + T - d, R + T), 1e-12, 'bottom pocket');
+      near(polyVol(b.mp) - polyVol(top.mp), (0.5 - BA) * d + rfDJSec(R, R + d), 1e-12, 'top pocket');
+      near(polyVol(b.mp) - polyVol(bot.mp), (0.5 - BA) * d + rfDJSec(R + T - d, R + T), 1e-12, 'bottom pocket');
       var tst = top.build.body.pointTester(), C = [1.5, R + T, R + T], h = Math.PI / 4;
       assert(!tst([1.5, C[1] - (R + 0.2 * T) * Math.cos(h), C[2] - (R + 0.2 * T) * Math.sin(h)]) && tst([1.5, C[1] - (R + 0.7 * T) * Math.cos(h), C[2] - (R + 0.7 * T) * Math.sin(h)]), 'top: air in the inner 0.4T of the bend, metal below');
       var fl0 = rfDJFlat(b);
@@ -89,7 +89,7 @@
       near(hb.max[1], 1.5, 1e-9, 'Fold of the back bend: the back wall stands again'); near(hb.max[2], 4, 1e-9, 'back at z = 4'); assert(hb.min[2] < -1, 'the front wall still flat');
       var f = build(two + SLOT_A + SLOT_B + 'p.fold([' + B + ']);\np.fold([' + A + ']);\n');
       noErrors(f);
-      near(f.mp.volume, b.mp.volume - 2 * SLOTV, 1e-12, 'both slots wrapped round their bends');
+      near(polyVol(f.mp), polyVol(b.mp) - 2 * SLOTV, 1e-12, 'both slots wrapped round their bends');
       var fl = rfDJFlat(f);
       assert(fl.loops.length === 3 && fl.loops[1].length === 4 && fl.loops[2].length === 4 && fl.bends.length === 2, 'flat: two 4-corner holes, two bends: ' + fl.loops.map(function (l) { return l.length; }));
       var g = build(two + SLOT_A + SLOT_B + 'p.fold();\n');

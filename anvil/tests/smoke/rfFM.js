@@ -31,5 +31,8 @@
         if (d <= 1e-3) flat++;
       }
     });
-    assert(tot > 1000 && flat === 0, flat + ' of ' + tot + ' facet triangles shade flat');
+    // lane FX: the Funnel's coaxial loft is a cone record now and its shell's inner walls carry the offset cone: they
+    // shade from the records, so no record-less loft triangles may be left to check
+    var cone = m.faces.filter(function (fc) { return fc.polys && fc.polys.some(function (p) { return p.surf && p.surf.s && p.surf.s.t === 'cone'; }); }).length;
+    assert(flat === 0 && (tot > 1000 || cone > 100), flat + ' of ' + tot + ' facet triangles shade flat (' + cone + ' cone faces)');
   });

@@ -534,7 +534,144 @@
       if (!planar) planar = planarIndex(polys);
       res.area += curveWalls(F, p, planar);
     }
+    if (res.facets) boundCorrection(polys, res);
     return res;
+  }
+
+  // lane FX (rfFY's two TODO rows): curveCorrection's columns run radially from each facet point out to the cylinder,
+  // so the sliver of a fragment ends on the ruled radial wall over each of its edges. That is the true boundary where
+  // the face beside it holds the axis (a facet seam, a partial revolve's end) or is square to it (a cap), but not where a
+  // plane cuts the surface obliquely: a mitre between two rounds (the bisector plane), a pocket's wall or floor parallel
+  // to the axis, a sheet-metal flange's mitre. boundCorrection adds, for every such edge of a cylinder fragment, the
+  // volume between that radial wall and the bounding plane inside the sliver (exact for planes parallel to the axis, a
+  // Gauss-Legendre line integral of the closed-form ρ integral otherwise) and its first moment. The bounding plane is the
+  // planar polygon sharing the edge, or the bisector plane of two cylinder records of one radius meeting there.
+  function boundCorrection(polys, res) {
+    var cands = [], scl = 1;
+    function A3(v) { return [v.pos.x, v.pos.y, v.pos.z]; }
+    polys.forEach(function (p) {
+      var F = p.surf, S = F && F.s;
+      if (!S || S.t !== 'cyl' || F.fc || !(S.r > 0)) return;
+      var vs = p.vertices, R = S.r, tolR = 1e-9 * Math.max(1, R);
+      for (var i = 0; i < vs.length; i++) {
+        var A = A3(vs[i]), B = A3(vs[(i + 1) % vs.length]), AB = sub(B, A), L = len(AB);
+        scl = Math.max(scl, Math.abs(A[0]), Math.abs(A[1]), Math.abs(A[2]));
+        if (!(L > 1e-9)) continue;
+        var ax = dot(AB, S.d) / L, ra = len(sub(sub(A, S.o), scale(S.d, dot(sub(A, S.o), S.d))));
+        if (Math.abs(ax) > 1 - 1e-12) { if (ra > R - tolR) continue; }   // a seam between facets (on the circle)
+        else if (Math.abs(ax) < 1e-9) continue;                          // square to the axis: a cap
+        cands.push({ p: p, A: A, B: B, L: L, S: S });
+      }
+    });
+    if (!cands.length) return;
+    // every polygon edge, bucketed by its (sign-free) direction
+    var idx = {};
+    function dkey(u, o) { var s = (u[0] < -1e-9 || (Math.abs(u[0]) <= 1e-9 && (u[1] < -1e-9 || (Math.abs(u[1]) <= 1e-9 && u[2] < 0)))) ? -1 : 1; return Math.round(u[0] * s * 1e3 + o[0]) + ',' + Math.round(u[1] * s * 1e3 + o[1]) + ',' + Math.round(u[2] * s * 1e3 + o[2]); }
+    polys.forEach(function (q) {
+      var vs = q.vertices;
+      for (var i = 0; i < vs.length; i++) {
+        var P = A3(vs[i]), Q = A3(vs[(i + 1) % vs.length]), PQ = sub(Q, P), l = len(PQ);
+        if (!(l > 1e-12)) continue;
+        var k = dkey(scale(PQ, 1 / l), [0, 0, 0]);
+        (idx[k] = idx[k] || []).push({ q: q, P: P, Q: Q });
+      }
+    });
+    var tol = 1e-7 * scl;
+    cands.forEach(function (c) {
+      // the stretches of the edge each neighbour borders (a fragment edge may run on past a sibling fragment of its own
+      // surface, a facet split along the line of a pocket's wall, into the wall itself): planes with their intervals
+      var u = scale(sub(c.B, c.A), 1 / c.L), seen = [], planes = [];
+      function put(pl, t0, t1) {
+        var k = null;
+        for (var i = 0; i < planes.length && !k; i++) if (dot(planes[i].n, pl.n) > 1 - 1e-9 && Math.abs(planes[i].w - pl.w) <= tol) k = planes[i];
+        if (!k) planes.push(k = { n: pl.n, w: pl.w, iv: [] });
+        k.iv.push([t0, t1]);
+      }
+      for (var a = -1; a <= 1; a++) for (var b = -1; b <= 1; b++) for (var g = -1; g <= 1; g++) {
+        var list = idx[dkey(u, [a, b, g])];
+        if (!list || seen.indexOf(list) >= 0) continue;
+        seen.push(list);
+        list.forEach(function (e) {
+          if (e.q === c.p) return;
+          var dP = sub(e.P, c.A), dQ = sub(e.Q, c.A), tP = dot(dP, u), tQ = dot(dQ, u);
+          if (len(sub(dP, scale(u, tP))) > tol || len(sub(dQ, scale(u, tQ))) > tol) return;
+          var t0 = Math.max(Math.min(tP, tQ), 0), t1 = Math.min(Math.max(tP, tQ), c.L);
+          if (t1 - t0 <= 1e-9 * c.L) return;
+          var Sq = e.q.surf && e.q.surf.s;
+          if (Sq && (Sq === c.S || surfKey(Sq) === surfKey(c.S))) return;   // a sibling fragment: an inner split
+          if (!Sq) {
+            var n = arr(e.q.plane.normal);
+            if (Math.abs(dot(n, arr(c.p.plane.normal))) < 1 - 1e-9) put({ n: n, w: e.q.plane.w }, t0, t1);
+          } else if (Sq.t === 'cyl' && Math.abs(Sq.r - c.S.r) <= 1e-9 * Math.max(1, c.S.r)) {
+            // two rounds of one radius meeting: the bisector plane through the edge
+            var done = false;
+            [add(c.S.d, Sq.d), sub(c.S.d, Sq.d)].forEach(function (m) {
+              if (done || len(m) < 1e-9) return;
+              m = norm(m);
+              if (Math.abs(dot(m, u)) < 1e-9) { done = true; put({ n: m, w: dot(m, c.A) }, t0, t1); }
+            });
+          }
+        });
+      }
+      planes.forEach(function (pl) {
+        pl.iv.sort(function (x, y) { return x[0] - y[0]; });
+        var cur = null;
+        pl.iv.concat([null]).forEach(function (iv) {
+          if (iv && cur && iv[0] <= cur[1] + 1e-9 * c.L) { cur[1] = Math.max(cur[1], iv[1]); return; }
+          if (cur) boundEdge({ p: c.p, S: c.S, A: add(c.A, scale(u, cur[0])), B: add(c.A, scale(u, cur[1])) }, pl, res);
+          cur = iv && iv.slice();
+        });
+      });
+    });
+  }
+  // the correction of one fragment edge c (on cylinder c.S) against the plane n·x = w that bounds the fragment there
+  function boundEdge(c, plane, res) {
+    var S = c.S, R = S.r, d = S.d, p = c.p, vs = p.vertices, n = plane.n, w = plane.w;
+    // orient the plane so the fragment lies on its negative side (its vertex farthest from the plane decides)
+    var far = 0;
+    vs.forEach(function (v) { var x = dot(n, [v.pos.x, v.pos.y, v.pos.z]) - w; if (Math.abs(x) > Math.abs(far)) far = x; });
+    if (Math.abs(far) < 1e-12) return;
+    if (far > 0) { n = scale(n, -1); w = -w; }
+    var bAx = dot(n, d), mid = scale(add(c.A, c.B), 0.5);
+    function radial(X) { var rel = sub(X, S.o), z = dot(rel, d), v = sub(rel, scale(d, z)); return { z: z, v: v, r: len(v) }; }
+    if (Math.abs(bAx) < 1e-9) {
+      // a plane parallel to the axis: in the cross-section the region between the radial ray from the edge point E0
+      // and the plane's line, out to the circle; the same along the edge's whole (axial) length
+      var e1 = norm(Math.abs(d[0]) < 0.9 ? cross(d, [1, 0, 0]) : cross(d, [0, 1, 0])), e2 = cross(d, e1);
+      var q0 = radial(c.A), E0 = [dot(q0.v, e1), dot(q0.v, e2)], r0 = q0.r;
+      if (!(r0 > 1e-12) || r0 >= R) return;
+      var n2 = [dot(n, e1), dot(n, e2)], nl = Math.hypot(n2[0], n2[1]);
+      if (!(nl > 1e-12)) return;
+      var uu = [-n2[1] / nl, n2[0] / nl], fn = arr(p.plane.normal), m2 = [dot(fn, e1), dot(fn, e2)];
+      if (m2[0] * E0[0] + m2[1] * E0[1] < 0) m2 = [-m2[0], -m2[1]];   // the facet normal away from the axis
+      if (uu[0] * m2[0] + uu[1] * m2[1] < 0) uu = [-uu[0], -uu[1]];
+      var eu = E0[0] * uu[0] + E0[1] * uu[1], t = -eu + Math.sqrt(Math.max(0, eu * eu - (r0 * r0 - R * R)));
+      var Pr = [E0[0] * R / r0, E0[1] * R / r0], Pp = [E0[0] + uu[0] * t, E0[1] + uu[1] * t];
+      var fr = Math.atan2(Pr[1], Pr[0]), fp = Math.atan2(Pp[1], Pp[0]), df = fp - fr;
+      while (df > Math.PI) df -= 2 * Math.PI;
+      while (df < -Math.PI) df += 2 * Math.PI;
+      var As = Math.abs(0.5 * (E0[0] * Pr[1] - E0[1] * Pr[0]) + 0.5 * R * R * df + 0.5 * (Pp[0] * E0[1] - Pp[1] * E0[0]));
+      if (!(As > 0)) return;
+      var Lz = Math.abs(radial(c.B).z - q0.z), zm = (radial(c.B).z + q0.z) / 2;
+      var T2 = [(E0[0] + Pr[0] + Pp[0]) / 3, (E0[1] + Pr[1] + Pp[1]) / 3];
+      var T3 = add(add(S.o, scale(d, zm)), add(scale(e1, T2[0]), scale(e2, T2[1])));
+      var sg = dot(n, T3) - w <= 0 ? 1 : -1, dv = sg * As * Lz;
+      res.volume += dv;
+      for (var k = 0; k < 3; k++) res.moment[k] += dv * T3[k];
+      return;
+    }
+    // a plane oblique to the axis: at each angle the fragment's axial end moves by −c (ρ − ρc) / |b| at radius ρ
+    // (c = n·er, b = n·d), so the edge adds ∫ −c / |b| · (R³/3 − ρc R²/2 + ρc³/6) dθ
+    var AB = sub(c.B, c.A);
+    for (var ig = 0; ig < 6; ig++) {
+      var s = GL6.x[ig], X = add(c.A, scale(AB, s)), q = radial(X);
+      if (!(q.r > 1e-12)) continue;
+      var er = scale(q.v, 1 / q.r), dth = Math.abs(dot(d, cross(er, AB))) / q.r, cc = dot(n, er), rc = q.r;
+      var I = R * R * R / 3 - rc * R * R / 2 + rc * rc * rc / 6, dv2 = GL6.w[ig] * dth * (-cc / Math.abs(bAx)) * I;
+      var at = add(X, scale(er, (R - rc) / 2));
+      res.volume += dv2;
+      for (var k2 = 0; k2 < 3; k2++) res.moment[k2] += dv2 * at[k2];
+    }
   }
 
   // ------------------------------------------------------------------ analytic edges (true circles and arcs)

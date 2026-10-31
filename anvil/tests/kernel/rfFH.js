@@ -58,8 +58,7 @@
     ['P03', 'P06', 'P15', 'P16'].forEach(function (id) { hard(id, TOL, 'lane FF: exact fillet surfaces'); });
     // lane FH2: the sweep runs along the true arc (a revolve of the section, torus records), the Hole Wizard drills
     // SolidWorks' clearances (0.266 H for 1/4 Normal), the square → circle loft blends as SolidWorks does
-    hard('P09', 3e-3, 'the shell offsets polygonal fillet cylinders');
-    todo('P09', 'the shell\'s inner fillet walls are polygonal, about +2.2e-3 (lane FE2 gives them offset cylinder records: promote then)');
+    hard('P09', 1e-5, 'rel 2.5e-6 since lane FX: massProps bounds each curved facet correction at the cutting plane, so the inner fillet walls of the shell integrate right; was +2.2e-3');
     hard('P12', TOL, 'lane FH2: swept along the true arc');
     hard('P10', TOL, 'lane FH2: SolidWorks\' 1/4 Normal clearance, H 0.266');
     hard('P11', 2e-4, 'lane FH2: SolidWorks\' blend; the circle is sampled at 1.5°, about −5e-5');

@@ -103,7 +103,7 @@
       assert(sp.length === 5 && !sp.some(function (q) { return q[0] === 2; }), 'a spike out and back along one line is dropped: ' + JSON.stringify(sp));
       return 'volume ' + fmt(r.mp.volume);
     });
-    test('rfFS: fuzz #82 / #114: a shell whose walls would offset into a neighbouring face (a slot cut by a hole, a shell of a shell) is refused with a plain message, the part kept, not an on-purpose refusal (OpenCascade may build it); the rest builds', function () {
+    test('rfFS: fuzz #82 / #114: a shell whose walls would offset into a neighbouring face (a slot cut by a hole) is refused with a plain message, the part kept, not an on-purpose refusal (OpenCascade may build it); a shell of a shell builds watertight (lane FV)', function () {
       var pre = 'p.box(44, 24, 26);\np.sketch("Top", 26).slot(3, -16, 35, -13, 4).end().cut(8);\np.sketch("Top", 26).circle(21, -14, 5).end().cut(9, { reverse: true });\n';
       var before = build(pre), r = build(pre + 'p.shell(2, [[22, 26, 12]]);\np.hole("Top", 12, -21, 3, { offset: 26 });');
       var e = r.errors[rfFSbyName(r, 'Shell1').id] || '';
@@ -111,9 +111,16 @@
       assert(!K.isRefusal(e), 'Anvil\'s own limit, not a refusal');
       nearRel(r.mp.volume, before.mp.volume - 1.5 * 1.5 * PI * 26, 1e-9, 'the part before the shell − the later hole');
       assert(rfFScracks(r) === 0, 'watertight');
-      var s = build('p.box(36, 26, 26);\np.sketch("Top", 26).slot(15, -5, 31, -21, 2).end().cut(20);\np.sketch("Front", 26).rect(28, 13, 3, 8).end().cut(9);\np.sketch("Top", 26).circle(31, -19, 4).end().cut(4, { reverse: true });\np.shell(3, [[18, 26, 13]]);\np.shell(1, [[18, 26, 13]]);');
-      assert(/^Failed to shell the part/.test(s.errors[rfFSbyName(s, 'Shell2').id] || ''), 'shell of a shell: ' + JSON.stringify(s.errors));
-      assert(rfFScracks(s) === 0, 'watertight after the refused shell');
+      // a shell of a shell: since lane FV (csg.js: the classic path's far pieces go through restoreWhole, so the shell
+      // slabs' own-tree pieces no longer overlap) Shell2 builds watertight. Shell 1 of the 3 mm shelled part hollows
+      // each 3 mm wall to a 1 mm skin on either side of a 1 mm core, so it keeps about 2/3 of the material; the slot,
+      // the pocket and the hole make corners and bosses that move this off 2/3 (no clean closed form): between .55 and .72
+      var shellPre = 'p.box(36, 26, 26);\np.sketch("Top", 26).slot(15, -5, 31, -21, 2).end().cut(20);\np.sketch("Front", 26).rect(28, 13, 3, 8).end().cut(9);\np.sketch("Top", 26).circle(31, -19, 4).end().cut(4, { reverse: true });\np.shell(3, [[18, 26, 13]]);\n';
+      var s1 = build(shellPre), s = build(shellPre + 'p.shell(1, [[18, 26, 13]]);');
+      noErrors(s1); noErrors(s);
+      assert(rfFScracks(s) === 0, 'shell of a shell watertight');
+      var kept = s.mp.volume / s1.mp.volume;
+      assert(kept > 0.55 && kept < 0.72, 'the 1 mm skins keep ' + kept.toFixed(3) + ' of the 3 mm walls');
       return e;
     });
     test('rfFS: Mirrored clevis: the cross hole goes through both arms, 37440 + 648π', function () {

@@ -100,8 +100,8 @@
     'Normal Cut Bracket': 15780.118294909678,
     'Chamfered block': 96398.42743159662,   // rfFM (2026-10-29): exact; the old pin counted the chamfer-notched R6 facets as full cylinder
     'Rounded handle': 30673.638463025945,   // rfFF: the root fillet is a revolved torus patch (a chain of cylinder pieces gave 30674.73950036209)
-    'Mug': 84806.88290263337,
-    'Funnel': 12160.516094319566, // run cloud-2026-09-25g: hull loft; equals the independent slice integral of the 1.5 mm offset in group "mesh quality" (was 12268.395 on the resampled loft)
+    'Mug': 84691.88073866014,   // lane GB: the shell's inner wall sits on the offset cylinder (was 84806.88290263337)
+    'Funnel': 12160.516094319566, // run cloud-2026-09-25g: hull loft; equals the independent slice integral of the 1.5 mm offset in group "mesh quality" (was 12268.395 on the resampled loft). Lane GC: still, since the hull-loft cone is an uneven surface whose slabs stay T deep (rfGB's exact depths on it gave 12120.409 with a stepped, fragmented inner wall)
     'Handlebar': 46838.66040500728,
     'Moulded cap': 13443.22758936501,
     'Parametric plate': 120 * 80 * 8 - 8 * (4 * legacyCircleArea(4) + 3 * legacyCircleArea(2)), // equations example (run 2026-09-25T15): plate − 4 Ø8 − 3 Ø4 through holes

@@ -14,7 +14,8 @@
       Object.keys(shifts).forEach(function (pos) {
         var c = 3 - shifts[pos];   // where the bend starts (the fixed side's flat ends)
         var a = flatOf(bendAt(3, '90, { fixed: [1, 0, 2]' + (pos === 'centerline' ? '' : ', position: "' + pos + '"') + ' }'));
-        near(a.r.mp.volume, T * (24 - 4 * BA) + 4 * bendArea(A90), 1e-9, pos + ': volume = plate − BA strip + bend');
+        near(polyVol(a.r.mp), T * (24 - 4 * BA) + 4 * bendArea(A90), 1e-9, pos + ': faceted volume = plate − BA strip + bend');
+        near(a.r.mp.volume, T * 24, 1e-9, pos + ': exact volume (cylinder records, lane FX) = the plate (K 0.5)');
         nearVec(a.r.mp.bbox.min, [0, 0, 0], 1e-9, pos + ': min');
         nearVec(a.r.mp.bbox.max, [c + R + T, T + R + (6 - c - BA), 4], 1e-9, pos + ': max (wall outside at c + R + T, top at T + R + the moving flat)');
         near(a.flat.size[0], 6, 1e-9, pos + ': flat length'); near(a.flat.size[1], 4, 1e-9, pos + ': flat width');
@@ -32,7 +33,8 @@
     test('p9-sketchedbend: a 45° bend and a line that stops short of the edges (the bend runs across the whole face)', function () {
       var A = Math.PI / 4, BA45 = K.bendAllowance(A, R, T, 0.5), c = 3 - BA45 / 2, Lm = 6 - c - BA45;
       var a = flatOf(PLATE + 'p.sketch("Top", ' + T + ').line(3, -1, 3, -3).sketchedBend(45, { fixed: [1, 0, 2] });');
-      near(a.r.mp.volume, T * (24 - 4 * BA45) + 4 * bendArea(A), 1e-9, 'volume');
+      near(polyVol(a.r.mp), T * (24 - 4 * BA45) + 4 * bendArea(A), 1e-9, 'faceted volume');
+      near(a.r.mp.volume, T * 24, 1e-9, 'exact volume = the plate (lane FX)');
       near(a.r.mp.bbox.max[0], c + (R + T) * Math.sin(A) + Lm * Math.cos(A), 1e-9, 'far end of the outside face');
       near(a.r.mp.bbox.max[1], T + R - R * Math.cos(A) + Lm * Math.sin(A), 1e-9, 'far end of the inside face');
       near(a.r.mp.bbox.max[2], 4, 1e-9, 'bend across the full width');

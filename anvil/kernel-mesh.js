@@ -893,6 +893,11 @@
         arc.push(true);
       }
     }
+    // rfFY: a round / chamfer exactly as large as the round edge it runs round (R.03 along a top edge, round the R.03
+    // vertical corner round it runs into tangentially) ends its setback on the axis: the corner becomes a sphere (a cone
+    // for a chamfer), as SolidWorks builds it. Snap that end onto the axis; its band point stays on the axis too.
+    var tolAx = 1e-7 * Math.max(size, Math.abs(E[0]), 1e-9), onAx = [];
+    pts = pts.map(function (p) { var o = Math.abs(p[0]) <= tolAx; onAx.push(o); return o ? [0, p[1]] : p; });
     var first = pts[0], last = pts[pts.length - 1], ext = 1.5 * size, extra;
     function perpAway(u, other) { var p = [-u[1], u[0]]; return p[0] * other[0] + p[1] * other[1] > 0 ? [-p[0], -p[1]] : p; }
     if (conv) {
@@ -905,9 +910,16 @@
       var mA = perpAway(uA, uB), mB = perpAway(uB, uA), cm = mA[0] * mB[0] + mA[1] * mB[1];
       extra = function (x) { var b = Math.min(x, rfFMband); return [a2(last, mB, b), a2(E, [mA[0] + mB[0], mA[1] + mB[1]], b / (1 + cm)), a2(first, mA, b)]; };
     }
-    // keep the extension clear of the axis (a revolved section must not cross it)
-    for (var it = 0; it < 30 && extra(ext).some(function (p) { return p[0] < minRho; }); it++) ext *= 0.6;
-    extra(ext).forEach(function (p) { pts.push(p); arc.push(false); });
+    // keep the extension clear of the axis (a revolved section must not cross it); rfFY: the band point straight out
+    // from an end on the axis lies on the axis (extraAx), not near it
+    function extraAx(x) {
+      var q = extra(x);
+      if (onAx[pts.length - 1] && Math.abs(q[0][0]) <= tolAx) q[0] = [0, q[0][1]];
+      if (onAx[0] && Math.abs(q[2][0]) <= tolAx) q[2] = [0, q[2][1]];
+      return q;
+    }
+    for (var it = 0; it < 30 && extraAx(ext).some(function (p) { return p[0] !== 0 && p[0] < minRho; }); it++) ext *= 0.6;
+    extraAx(ext).forEach(function (p) { pts.push(p); arc.push(false); });
     return { pts: pts, arc: arc, c: c };
   }
   // ------------------------------------------------------------------ rfFM: does the round fit?
@@ -1051,14 +1063,23 @@
     return { pts: pts, arc: arc, c: null, b: pB };
   }
 
+  // rfFY: poly() without repeated corners (a section point on the axis is the same point in every ring): a quad with one
+  // corner on the axis is a triangle, one with two is nothing
+  function rfFYpoly(ps, tag) {
+    var q = [];
+    ps.forEach(function (p) { if (!q.length || len(sub(p, q[q.length - 1])) > 1e-12) q.push(p); });
+    if (q.length > 1 && len(sub(q[0], q[q.length - 1])) <= 1e-12) q.pop();
+    return q.length < 3 ? null : poly(q, tag);
+  }
   // Revolve the section about the circle's axis through the chain's vertices. chain: { info, vs (3D points in order,
   // turning positively about d), closed }
   function arcChainTool(chain, kind, size, tag, secIn) {
     var I = chain.info, A = I.A, d = I.d, Rc = I.Rc;
     var sec = secIn || rfFFsection(kind, size, [Rc, 0], I.uP, I.uC, I.conv, 0.2 * Rc, I.circ);   // rfFR: secIn = the air-pocket fill (rfFRpocketSec)
     var pts = sec.pts, arc = sec.arc;
-    // the round would cross the axis (a radius larger than the round edge it runs round): SolidWorks refuses it too
-    if (pts.some(function (p, i) { return arc[i] && !(p[0] > 1e-6 * Math.max(1, Rc)); }))
+    // the round would cross the axis (a radius larger than the round edge it runs round): SolidWorks refuses it too.
+    // rfFY: one exactly as large ends on the axis (rfFFsection snaps it there): a sphere / cone corner, built
+    if (pts.some(function (p, i) { return arc[i] && p[0] !== 0 && !(p[0] > 1e-6 * Math.max(1, Rc)); }))
       throw new Error((kind === 'chamfer' ? 'Distance ' : 'Radius ') + +size.toFixed(6) + ' is too large for the round edge of radius ' + +Rc.toFixed(6) + ' it runs round; use less than ' + +Rc.toFixed(6) + ' (or ' + kind + ' this edge before the smaller rounds).');
     if (signedArea(pts) < 0) { pts = pts.slice().reverse(); arc = arc.slice().reverse(); }
     var n = pts.length, vs = chain.vs, m = vs.length, Rv = I.Rv || Rc;
@@ -1070,6 +1091,9 @@
     if (kind === 'chamfer') {
       var ia = arc.indexOf(true), P = pts[ia], Q = pts[(ia + 1) % n], dz = Q[1] - P[1], dr = Q[0] - P[0];
       S = Math.abs(dr) < 1e-12 * Rc ? { t: 'cyl', o: A.slice(), d: d.slice(), r: P[0] } : { t: 'cone', o: A.slice(), d: d.slice(), r: P[0] - dr / dz * P[1], k: dr / dz };
+      // rfFY: a chamfer exactly as large as the round edge has its apex at A (r = 0 there): the same cone taken from its
+      // outer point, so STEP writes a CONICAL_SURFACE (exchange.js wants r > 0 at the record's origin)
+      if (S.t === 'cone' && !(Math.abs(S.r) > 1e-9 * Math.max(1, Rc))) { var Rf = P[0] >= Q[0] ? P : Q; S.o = add(A, scale(d, Rf[1])); S.r = Rf[0]; }
     } else {
       var oc = add(A, scale(d, sec.c[1]));
       S = Math.abs(sec.c[0]) < 1e-9 * Math.max(1, size) ? { t: 'sph', o: oc, d: d.slice(), r: size } : { t: 'tor', o: oc, d: d.slice(), R: sec.c[0], r: size };
@@ -1115,7 +1139,7 @@
       var r0 = rings[k], r1 = rings[k + 1];
       var tri = (k === 0 && mitred[0]) || (k + 2 === rings.length && mitred[1]);   // a mitred end sector: quads are no longer planar
       for (var i = 0; i < n; i++) {
-        var j = (i + 1) % n, pgs = tri ? [poly([r0[i], r1[i], r1[j]], tag), poly([r0[i], r1[j], r0[j]], tag)] : [poly([r0[i], r1[i], r1[j], r0[j]], tag)];
+        var j = (i + 1) % n, pgs = tri ? [rfFYpoly([r0[i], r1[i], r1[j]], tag), rfFYpoly([r0[i], r1[j], r0[j]], tag)] : [rfFYpoly([r0[i], r1[i], r1[j], r0[j]], tag)];
         pgs.forEach(function (pg) {
           if (!pg) return;
           if (wraps[i]) pg.surf = wraps[i];
@@ -1269,6 +1293,8 @@
       if (!S0 || !S1) return;
       function ruling(S) { return S.t === 'cyl' && S.d && Math.abs(dot(norm(S.d), e.dir)) > 1 - 1e-6; }
       if (ruling(S0) && ruling(S1)) return;
+      function coax(A, B) { return (A.t === 'cyl' || A.t === 'cone') && (B.t === 'cyl' || B.t === 'cone') && Math.abs(Math.abs(dot(norm(A.d), norm(B.d))) - 1) < 1e-9 && len(cross(norm(A.d), sub(B.o, A.o))) < 1e-9 * (1 + len(sub(B.o, A.o))); }
+      if (coax(S0, S1)) return;   // lane FX: coaxial cylinders / cones meet in a circle (the Funnel's cone loft, now a cone record, into its spout): builds as before
       throw new Error('Failed to create ' + f.type + '. Anvil\'s kernel cannot ' + (f.type === 'chamfer' ? 'chamfer' : 'round') + ' an edge where two curved faces meet in a curve (OpenCascade can: Tools ▸ OpenCascade kernel).');
     });
     // rfFM: a round that does not fit (its setback runs off a face, into a hole or a boss; it breaks through a thin wall)

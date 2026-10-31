@@ -33,8 +33,8 @@
     test('rfDB: the shop case: Unfold, a 0.25 × 1.0 slot cut flat centred on the bend line, Fold: volume = bracket − slot developed round the bend (whole faceted bend section + (0.25 − BA)·T straight, × 1.0), exact', function () {
       var b = bld(L), f = bld(L + UNF + SLOT + 'p.fold();\n');
       noErrors(f);
-      var want = b.mp.volume - 1.0 * (FACET + (0.25 - BA) * T);
-      near(f.mp.volume, want, 1e-12, 'folded volume');
+      var want = polyVol(b.mp) - 1.0 * (FACET + (0.25 - BA) * T);
+      near(polyVol(f.mp), want, 1e-12, "folded volume (faceted)"); near(f.mp.volume, b.mp.volume - 0.25 * T, 1e-9, "folded volume, exact (cylinder records, lane FX): bracket − 0.25·T");
       var tst = f.build.body.pointTester();
       // the slot is open through the bend at mid-angle and in the base / wall just past the bend, metal beside it
       var C = [3, R + T, R + T], mid = [C[0], C[1] - (R + T / 2) * Math.cos(Math.PI / 4), C[2] - (R + T / 2) * Math.sin(Math.PI / 4)];
@@ -130,7 +130,7 @@
       var code = L + 'var uf = p.unfold([1, ' + T + ', 2]).last();\np.sketch({ face: uf, role: "geom", normal: [0, 1, 0], at: [1, ' + T + ', 1] }).rect(2.5, ' + (-(ZB + 0.125)) + ', 1, 0.25).cut(0.5, { reverse: true });\np.fold();\n';
       var r = build(code), b = bld(L);
       noErrors(r);
-      near(r.mp.volume, b.mp.volume - 1.0 * (FACET + (0.25 - BA) * T), 1e-12, 'volume');
+      near(polyVol(r.mp), polyVol(b.mp) - 1.0 * (FACET + (0.25 - BA) * T), 1e-12, 'volume');
       var s = K.generateScript(r.model);
       assert(/p\.unfold\(\[1,0\.0598,2\], null, \{ name: "Unfold1" \}\)/.test(s) && /p\.fold\(null, \{ name: "Fold1" \}\)/.test(s), 'script lines: ' + s.split('\n').filter(function (l) { return /fold/.test(l); }).join(' | '));
       var r2 = build(s);
