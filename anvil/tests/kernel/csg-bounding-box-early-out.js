@@ -94,7 +94,7 @@
     'Shaft with keyway': 40081.63430437458,
     'Pulley': 82472.75250921662,
     'Enclosure lid': 31747.799209639525,
-    'Mirrored clevis': 40109.90683139952,
+    'Mirrored clevis': 2 * (14400 + (360 + legacyCircleArea(6)) * 12 - legacyCircleArea(3) * 12),   // rfFS (2026-10-30): the cross hole now goes through the arm (it missed: an empty cut is an error)
     'Sheet-metal U-bracket': 23862.694338157933,
     'Tray': 35750.4546182302,
     'Normal Cut Bracket': 15780.118294909678,
@@ -151,6 +151,7 @@
       'Flange': 12 * circleArea(60) + 4 * circleArea(35) - 16 * circleArea(25) - 6 * 12 * circleArea(5.5),
       'Parametric plate': 120 * 80 * 8 - 8 * (4 * circleArea(4) + 3 * circleArea(2)),
       'Configured spacer': 80 * 40 * 10 - 3 * 10 * 20 * 5,
+      'Mirrored clevis': 37440 + 648 * Math.PI,   // rfFS: block + R6-ended arm − the Ø6 cross hole, mirrored
       'Pinned plate assembly': 100 * 60 * 8 - 4 * circleArea(4) * 8 + 2 * circleArea(4) * 20 + 30 * 20 * 5,
       'Distance and angle mates': 100 * 60 * 10 + 20 * 20 * 20 + 40 * 4 * 10,
       'Interference check': 60 * 40 * 10 + 20 * 20 * 20 + 2 * circleArea(4) * 20

@@ -13,9 +13,10 @@
   // so its count is not asserted.
   (function () {
     group('rfFG: no stray triangles: face outlines and edges after booleans with slivers');
+    // rfFS (2026-10-30): the WHEEL had a dish revolve-cut whose profile ran above the top face (y >= 1.5) and removed
+    // nothing; an empty cut is a rebuild error now, so it is dropped: the solid, volume and face counts are the same
     var WHEEL = 'p.units("in");\n' +
       'p.sketch("Front").line(0,0,3,0).line(3,0,3,1.5).line(3,1.5,0,1.5).line(0,1.5,0,0).revolve(360);\n' +
-      'p.sketch("Front").line(0,1.5,2.4,1.5).arc(2.4,2.7,1.2,-90,-40).line(2.4+1.2*Math.cos(-40*Math.PI/180),2.7+1.2*Math.sin(-40*Math.PI/180),0,3).line(0,3,0,1.5).revolveCut(360);\n' +
       'p.sketch("Front").arc(0,1.9,0.8,-90,-20).line(0.8*Math.cos(-20*Math.PI/180),1.9+0.8*Math.sin(-20*Math.PI/180),0,1.9+0.8*Math.sin(-20*Math.PI/180)).line(0,1.9+0.8*Math.sin(-20*Math.PI/180),0,1.1).revolveCut(360);\n' +
       'p.fillet(0.25,[[3,1.5,0]]);\n' +
       'p.sketch("Top",1.0).circle(0,0,1.3).circle(0,0,0.8).end();\n';
@@ -97,7 +98,7 @@
       return mesh.faces.length + ' facets, ' + E.length + ' edges, ' + n + ' faces';
     }
 
-    test('rfFG: WHEEL (revolve, dish cut, centre dimple, R0.25 rim fillet, sketch on the floor): outlines exact, every edge two faces, no slivers / short edges, 5 faces as OpenCascade', function () {
+    test('rfFG: WHEEL (revolve, centre dimple, R0.25 rim fillet, sketch on the floor): outlines exact, every edge two faces, no slivers / short edges, 5 faces as OpenCascade', function () {
       // exact since lane FF's torus fillets (= OpenCascade to 6 decimals, 2026-10-29)
       return rfFGCheck('WHEEL', WHEEL, 41.828284742188025, 5);
     });

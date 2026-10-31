@@ -43,8 +43,8 @@
         8 * PI - 16 / 3, 1e-6, [12, 6]],
       ['cylinder cut through a cylinder off-axis (OpenCascade volume)', U + 'p.sketch("Top").circle(0, 0, 1).extrude(3);\np.sketch("Right").circle(0.4, 1.5, 0.35).extrude(4, { cut: true, midplane: true });\n',
         8.735269871650829, 1e-6],
-      ['WHEEL: revolved, dished, rim fillet (OpenCascade volume)', U + 'p.sketch("Front").line(0,0,3,0).line(3,0,3,1.5).line(3,1.5,0,1.5).line(0,1.5,0,0).revolve(360);\n' +
-        'p.sketch("Front").line(0,1.5,2.4,1.5).arc(2.4,2.7,1.2,-90,-40).line(2.4+1.2*Math.cos(-40*Math.PI/180),2.7+1.2*Math.sin(-40*Math.PI/180),0,3).line(0,3,0,1.5).revolveCut(360);\n' +
+      // rfFS: the WHEEL's dish revolve-cut ran above the top face and removed nothing (an error now): dropped, same solid
+      ['WHEEL: revolved, dimpled, rim fillet (OpenCascade volume)',U + 'p.sketch("Front").line(0,0,3,0).line(3,0,3,1.5).line(3,1.5,0,1.5).line(0,1.5,0,0).revolve(360);\n' +
         'p.sketch("Front").arc(0,1.9,0.8,-90,-20).line(0.8*Math.cos(-20*Math.PI/180),1.9+0.8*Math.sin(-20*Math.PI/180),0,1.9+0.8*Math.sin(-20*Math.PI/180)).line(0,1.9+0.8*Math.sin(-20*Math.PI/180),0,1.1).revolveCut(360);\n' +
         'p.fillet(0.25,[[3,1.5,0]]);\n', 41.82828179888897, 2e-7, [12, 6]],
       // GROOVE (rfFG, without its annular groove): torus-walled dish, ball dimple, two fillets; 6 open edges at 12° before healCracks

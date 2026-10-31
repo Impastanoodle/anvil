@@ -23,9 +23,12 @@
     near(b4.body.volume(), K.rebuild(JSON.parse(JSON.stringify(model))).body.volume(), 1e-9, 'fresh again');
     // errors and warnings are restored from the cache too
     var m2 = K.newModel('W');
-    K.runScript(m2, 'p.box(20, 20, 10);\np.sketch("Top", 10).circle(10, -10, 3).cut(5);\np.box(5, 5, 5, { at: [100, 0, 0] });');
+    // (rfFS: an empty cut is an error now, so the cut that misses gives the error and a zero-area contour the warning)
+    K.runScript(m2, 'p.box(20, 20, 10);\np.sketch("Top", 10).circle(10, -10, 3).cut(5, { reverse: false });\np.sketch("Front").rect(0, 0, 0, 5).rect(30, 0, 5, 5).extrude(2);\np.box(5, 5, 5, { at: [100, 0, 0] });');
     var c1 = K.rebuild(m2), c2 = K.rebuild(m2, c1.cache);
+    assert(c2.reused === m2.features.length, 'everything reused (' + c2.reused + ')');
     assert(JSON.stringify(c2.warnings) === JSON.stringify(c1.warnings) && Object.keys(c1.warnings).length === 1, 'warning restored: ' + JSON.stringify(c2.warnings));
+    assert(JSON.stringify(c2.errors) === JSON.stringify(c1.errors) && Object.keys(c1.errors).length === 1, 'error restored: ' + JSON.stringify(c2.errors));
     // sheet parameters are part of every key
     var m3 = K.newModel('S');
     K.runScript(m3, 'p.sheet(2);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);\np.flange(20, [[0, 2, 30]]);');

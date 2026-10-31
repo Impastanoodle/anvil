@@ -46,10 +46,14 @@
     var r = build('p.box(40, 40, 10, { centered: true });\np.sketch("Top", 10).circle(0, 0, 3).cut(4, { reverse: true });');
     noErrors(r);
     nearRel(r.mp.volume, 16000 - circleArea(3) * 4, 1e-9, 'volume');
-    var fwd = build('p.box(40, 40, 10, { centered: true });\np.sketch("Top", 10).circle(0, 0, 3).cut(4);');
-    noErrors(fwd);
-    // a tool touching the face only along a coplanar disc leaves a ~1e-5 sliver from BSP clipping; that is fine
-    near(fwd.mp.volume, 16000, 1e-3, 'a forward cut from the top face removes nothing');
+    // rfFS: with no direction the cut goes into the material as SolidWorks' does (it used to go +n and miss)
+    var auto = build('p.box(40, 40, 10, { centered: true });\np.sketch("Top", 10).circle(0, 0, 3).cut(4);');
+    noErrors(auto);
+    nearRel(auto.mp.volume, 16000 - circleArea(3) * 4, 1e-9, 'a cut with no direction goes down into the part');
+    // an explicit forward cut from the top face removes nothing: a rebuild error, the block is kept
+    var fwd = build('p.box(40, 40, 10, { centered: true });\np.sketch("Top", 10).circle(0, 0, 3).cut(4, { reverse: false });');
+    assert(/does not intersect the model/.test(fwd.errors[fwd.model.features[fwd.model.features.length - 1].id] || ''), 'errors: ' + JSON.stringify(fwd.errors));
+    near(fwd.mp.volume, 16000, 1e-9, 'the block is kept');
   });
   test('extrude with a hole in the profile leaves a tube', function () {
     var r = build('p.sketch("Front").circle(0, 0, 10).circle(0, 0, 6).extrude(8);');

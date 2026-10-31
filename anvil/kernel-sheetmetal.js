@@ -629,7 +629,7 @@
   // pieces along the zone lines (each lands on a plane).
   // lane DJ: zr = [z0, z1] gives the depth range instead (material added on the flat, a blind cut: z < 0 or > T lies
   // off the sheet, carried on radially as bendZoneMap's map extends)
-  function wrapMesh(loop, sec, BA, plane, segs, eps, zr) {
+  function wrapMesh(loop, sec, BA, plane, segs, eps, zr, split) {
     var map = bendZoneMap(sec, BA, segs), Z = map.zones, T = sec.T, memo = {}, tris = [], zA = zr ? zr[0] : -eps, zB = zr ? zr[1] : T + eps;
     // a corner a hair off a zone line goes onto it (else the line would cut a sliver off next to it)
     loop = loop.map(function (p) {
@@ -650,7 +650,12 @@
       Z.forEach(function (z) { if (z > lo && z < hi) out.push(cross2(a, b, z)); });
       return a[0] <= b[0] ? out : out.reverse();
     }
+    var onLine = {};
+    Z.forEach(function (z, j) { onLine[z] = Math.min(j, segs - 1); });
     function at(p, z, zone) {
+      // lane FU: a point on a zone line maps through one zone whichever piece asks (the two zones agree there only to
+      // rounding, and a tool's pieces must share their vertices bit for bit)
+      if (split && onLine[p[0]] != null) zone = onLine[p[0]];
       var ou = map(p[0], z, zone);
       return add(add(add(plane.origin, scale(plane.x, ou[0])), scale(plane.y, ou[1])), scale(plane.n, p[1]));
     }
@@ -680,16 +685,30 @@
         tris.push(pc.map(function (p) { return at(p, zA, zone); }), pc.map(function (p) { return at(p, zB, zone); }).reverse());
       }
     });
-    // walls: each outline edge split at the zone lines
+    // walls: each outline edge split at the zone lines (lane FU split: and at the sheet's faces)
+    var zl = split ? [zA].concat([0, T].filter(function (z) { return z > zA && z < zB; }), [zB]) : [zA, zB];
     for (var i = 0; i < loop.length; i++) {
       var a = loop[i], b = loop[(i + 1) % loop.length], pts = [a].concat(crossings(a, b), [b]);
       for (var k = 0; k + 1 < pts.length; k++) {
         var p = pts[k], q = pts[k + 1], zone = zoneOf((p[0] + q[0]) / 2);
-        var p0 = at(p, zA, zone), q0 = at(q, zA, zone), p1 = at(p, zB, zone), q1 = at(q, zB, zone);
-        // a slanted wall in the bend twists (radial lines turn along it): four triangles to its true centre
-        if (len(sub(sub(q1, q0), sub(p1, p0))) < 1e-9 * Math.max(1, T)) { tris.push([p0, p1, q1, q0]); continue; }
-        var cm = at([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2], (zA + zB) / 2, zone);
-        tris.push([p0, cm, q0], [q0, cm, q1], [q1, cm, p1], [p1, cm, p0]);
+        var mid = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+        for (var zi = 0; zi + 1 < zl.length; zi++) {
+          var za = zl[zi], zb = zl[zi + 1];
+          var p0 = at(p, za, zone), q0 = at(q, za, zone), p1 = at(p, zb, zone), q1 = at(q, zb, zone);
+          if (len(sub(sub(q1, q0), sub(p1, p0))) < 1e-9 * Math.max(1, T)) { tris.push([p0, p1, q1, q0]); continue; }
+          // a slanted wall in the bend twists (radial lines turn along it): a bilinear patch, fanned to its true centre
+          // (exact). lane FU (split): the wall is cut at the sheet's faces (z = 0, T: its trace on the bend's chord faces
+          // is then one straight edge of the tool, not a crossing of nearly coplanar triangles, which left near-collinear
+          // kinks and 1e-5 cracks there) and each band halved at its true mid line (m), the halves split along opposite
+          // diagonals (p0–m1, then m1–q0): their errors against the patch are equal and opposite, so the volume is exact.
+          if (split) {
+            var m0 = at(mid, za, zone), m1 = at(mid, zb, zone);
+            tris.push([p0, p1, m1], [p0, m1, m0], [m0, m1, q0], [m1, q1, q0]);
+            continue;
+          }
+          var cm = at(mid, (za + zb) / 2, zone);
+          tris.push([p0, cm, q0], [q0, cm, q1], [q1, cm, p1], [p1, cm, p0]);
+        }
       }
     }
     // outward: flip all when the enclosed volume comes out negative
@@ -710,7 +729,7 @@
     loops.forEach(function (l0) {
       var l = opts.grow ? growLoop(l0, opts.grow, T) : l0;
       if (signedArea(l) < 0) l = l.slice().reverse();
-      tris = tris.concat(wrapMesh(l, sec, BA, plane, segs, eps, opts.depth));   // (lane DJ: opts.depth = [z0, z1])
+      tris = tris.concat(wrapMesh(l, sec, BA, plane, segs, eps, opts.depth, !!opts.split && !opts.faces && !opts.depth));   // (lane DJ: opts.depth = [z0, z1]; lane FU: opts.split)
     });
     if (opts.faces) return tris;
     var polys = [];
@@ -719,6 +738,163 @@
       if (pg) polys.push(pg);
     });
     return polys.length ? CSG.fromPolygons(polys) : null;
+  }
+  // lane FU: wrapRegion(loops, sec, BA, plane, t0, t1, opts) -> the bend's metal itself as a CSG solid: the band
+  // s ∈ [0, BA] × t ∈ [t0, t1] less the void outlines (CCW, inside the band, as bendVoids gives them), mapped through
+  // bendZoneMap from the inner face (z = 0) to the outer (z = T), with no boolean at all. Cutting a wrapped void out of
+  // the faceted bend (wrapCut) crossed the chord faces with twisted walls whose triangles are nearly coplanar; the BSP
+  // booleans left 1e-5 cracks and pinched edges there (a Ø.5 hole across a 16 ga bend: 61 open / 3 non-manifold). Here
+  // the region is cut into convex pieces (per zone, between the t values where something happens: a void corner, a
+  // void edge crossing a zone line) whose caps land on the chord faces exactly, and only the region's boundary is
+  // walled: void edges (twisted bilinear patches, triangulated so the volume is exact), the bend ends (s = 0, BA: the
+  // radial planes there) and the band's sides (t = t0, t1). Every point is made once and reused, so the solid is closed.
+  function wrapRegion(loops, sec, BA, plane, t0, t1, opts) {
+    opts = opts || {};
+    var T = sec.T, segs = opts.segs || Math.max(4, Math.round(8 * sec.A / (Math.PI / 2))), map = bendZoneMap(sec, BA, segs), Z = map.zones;
+    var tolS = 1e-9 * Math.max(T, BA), tolT = 1e-9 * Math.max(1, t1 - t0);
+    var edges = [];
+    loops.forEach(function (l0) {
+      var l = signedArea(l0) < 0 ? l0.slice().reverse() : l0;
+      l = l.map(function (p) {
+        var s = p[0], t = p[1];
+        Z.forEach(function (z) { if (Math.abs(s - z) < tolS) s = z; });
+        if (s < 0) s = 0; if (s > BA) s = BA;
+        if (Math.abs(t - t0) < tolT || t < t0) t = t0; if (Math.abs(t - t1) < tolT || t > t1) t = t1;
+        return [s, t];
+      });
+      for (var i = 0; i < l.length; i++) {
+        var a = l[i], b = l[(i + 1) % l.length];
+        if (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) > tolS) edges.push({ a: a, b: b, id: edges.length });
+      }
+    });
+    // events: the band's ends, every void corner, every crossing of a void edge with a zone line
+    var ev = [t0, t1];
+    edges.forEach(function (e) {
+      ev.push(e.a[1]);
+      if (Math.abs(e.b[1] - e.a[1]) < tolT) return;
+      Z.forEach(function (z) {
+        if ((e.a[0] - z) * (e.b[0] - z) < 0) ev.push(e.a[1] + (e.b[1] - e.a[1]) * (z - e.a[0]) / (e.b[0] - e.a[0]));
+      });
+    });
+    ev = ev.filter(function (t) { return t >= t0 && t <= t1; }).sort(function (x, y) { return x - y; });
+    var E = [];
+    ev.forEach(function (t) { if (!E.length || t - E[E.length - 1] > tolT) E.push(t); });
+    E[E.length - 1] = t1;
+    // the 2D point of edge e at event k (its own end where it ends there: one object per (edge, event))
+    var memo = {};
+    function edgeAt(e, k) {
+      var key = e.id + ':' + k;
+      if (memo[key]) return memo[key];
+      var t = E[k], p;
+      if (Math.abs(e.a[1] - t) <= tolT) p = e.a;
+      else if (Math.abs(e.b[1] - t) <= tolT) p = e.b;
+      else { var s = e.a[0] + (e.b[0] - e.a[0]) * (t - e.a[1]) / (e.b[1] - e.a[1]); Z.forEach(function (z) { if (Math.abs(s - z) < tolS) s = z; }); p = [s, t]; }
+      return (memo[key] = p);
+    }
+    function lineAt(j, k) { var key = 'z' + j + ':' + k; return memo[key] || (memo[key] = [Z[j], E[k]]); }
+    var zoneOfLine = {};
+    Z.forEach(function (z, j) { zoneOfLine[z] = Math.min(j, segs - 1); });
+    var pts3 = {};
+    function at(p, z, zone) {
+      if (zoneOfLine[p[0]] != null) zone = zoneOfLine[p[0]];
+      var key = p[0] + ',' + p[1] + ',' + z + ',' + zone;
+      if (pts3[key]) return pts3[key];
+      var ou = map(p[0], z, zone);
+      return (pts3[key] = add(add(add(plane.origin, scale(plane.x, ou[0])), scale(plane.y, ou[1])), scale(plane.n, p[1])));
+    }
+    var faces = [];
+    function quad(A, B, zone) {
+      // the wall over the boundary edge A → B (region on its left): planar, or a twisted bilinear patch split exactly
+      var a0 = at(A, 0, zone), b0 = at(B, 0, zone), a1 = at(A, T, zone), b1 = at(B, T, zone);
+      if (len(sub(sub(b1, b0), sub(a1, a0))) < 1e-9 * Math.max(1, T)) { faces.push([a0, b0, b1, a1]); return; }
+      var M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], m0 = at(M, 0, zone), m1 = at(M, T, zone);
+      faces.push([a0, m0, m1], [a0, m1, a1], [m0, b0, m1], [m1, b0, b1]);
+    }
+    var below = null, sideZ = {};
+    for (var k = 0; k + 1 < E.length; k++) {
+      var ta = E[k], tb = E[k + 1], tm = (ta + tb) / 2;
+      // the void edges across this slab, ordered by s at mid-slab, paired into void intervals
+      var cr = [];
+      edges.forEach(function (e) {
+        var lo = Math.min(e.a[1], e.b[1]), hi = Math.max(e.a[1], e.b[1]);
+        if (!(lo < tm && hi > tm)) return;
+        cr.push({ e: e, s: e.a[0] + (e.b[0] - e.a[0]) * (tm - e.a[1]) / (e.b[1] - e.a[1]) });
+      });
+      cr.sort(function (x, y) { return x.s - y.s; });
+      var voids = [];
+      for (var c = 0; c + 1 < cr.length; c += 2) voids.push([cr[c], cr[c + 1]]);
+      var here = [];
+      for (var zk = 0; zk < segs; zk++) {
+        var zlo = Z[zk], zhi = Z[zk + 1], cur = { line: zk, s: zlo };
+        var pieces = [];
+        voids.forEach(function (v) {
+          if (!cur || v[1].s <= zlo || v[0].s >= zhi) return;
+          if (v[0].s > cur.s) pieces.push([cur, { e: v[0].e, s: v[0].s }]);
+          cur = v[1].s < zhi ? { e: v[1].e, s: v[1].s } : null;
+        });
+        if (cur && cur.s < zhi) pieces.push([cur, { line: zk + 1, s: zhi }]);
+        pieces.forEach(function (pc) {
+          var L = pc[0], R = pc[1];
+          var La = L.e ? edgeAt(L.e, k) : lineAt(L.line, k), Lb = L.e ? edgeAt(L.e, k + 1) : lineAt(L.line, k + 1);
+          var Ra = R.e ? edgeAt(R.e, k) : lineAt(R.line, k), Rb = R.e ? edgeAt(R.e, k + 1) : lineAt(R.line, k + 1);
+          var ring = [La, Ra, Rb, Lb].filter(function (p, i, r) { return p !== r[(i + 1) % r.length]; });
+          if (ring.length >= 3) {
+            faces.push(ring.map(function (p) { return at(p, T, zk); }));
+            faces.push(ring.map(function (p) { return at(p, 0, zk); }).reverse());
+          }
+          // left side Lb → La, right side Ra → Rb
+          [[L, Lb, La], [R, Ra, Rb]].forEach(function (sd) {
+            if (sd[1] === sd[2]) return;
+            if (sd[0].e) { quad(sd[1], sd[2], zk); return; }
+            var j = sd[0].line;
+            if (j === 0 || j === segs) { quad(sd[1], sd[2], zk); return; }
+            // an inner zone line: a wall only where the other side has no metal
+            var key = j + ':' + k;
+            (sideZ[key] = sideZ[key] || []).push({ A: sd[1], B: sd[2], zone: zk });
+          });
+          here.push({ zone: zk, a: [La, Ra], b: [Lb, Rb] });
+        });
+      }
+      // t = ta: walls where the slab below had metal and this one has none (facing +t), or the other way round
+      tEdges(below, here, k);
+      below = here;
+    }
+    tEdges(below, [], E.length - 1);
+    Object.keys(sideZ).forEach(function (key) { var l = sideZ[key]; if (l.length === 1) quad(l[0].A, l[0].B, l[0].zone); });
+    // the event line k: intervals [p, q] (2D points, p left) of the slab below (their top edges) and above (bottoms)
+    function tEdges(lo, hi, k) {
+      for (var zk = 0; zk < segs; zk++) {
+        var B = (lo || []).filter(function (x) { return x.zone === zk; }).map(function (x) { return x.b; });
+        var A = hi.filter(function (x) { return x.zone === zk; }).map(function (x) { return x.a; });
+        var cuts = [];
+        B.concat(A).forEach(function (iv) { cuts.push(iv[0], iv[1]); });
+        cuts.sort(function (x, y) { return x[0] - y[0]; });
+        var u = [];
+        cuts.forEach(function (p) { if (!u.length || p[0] - u[u.length - 1][0] > tolS) u.push(p); });
+        function inside(list, s) { return list.some(function (iv) { return iv[0][0] < s && iv[1][0] > s; }); }
+        for (var i = 0; i + 1 < u.length; i++) {
+          var sm = (u[i][0] + u[i + 1][0]) / 2, inB = inside(B, sm), inA = inside(A, sm);
+          if (inB && !inA) quad(u[i + 1], u[i], zk);   // top edge of the piece below: right → left
+          else if (inA && !inB) quad(u[i], u[i + 1], zk);   // bottom edge of the piece above: left → right
+        }
+      }
+    }
+    var vol = 0;
+    faces.forEach(function (f) { for (var j = 1; j + 1 < f.length; j++) vol += dot(f[0], cross(f[j], f[j + 1])); });
+    if (vol < 0) faces.forEach(function (f) { f.reverse(); });
+    var polys = [];
+    faces.forEach(function (f) {
+      var pg = CSG.Polygon.tryCreate(f.map(function (p) { return new CSG.Vertex(new CSG.Vector(p[0], p[1], p[2])); }), opts.shared);
+      if (pg) polys.push(pg);
+    });
+    return polys.length ? CSG.fromPolygons(polys) : null;
+  }
+  // lane FU: the bend of a section frame as a solid to cut out of the folded part: the sector between the radial
+  // planes at the bend's start and end (exactly), from the axis out past the outer face, t0 … t1 along the edge
+  function bendSector(sec, plane, t0, t1) {
+    var R = sec.R, T = sec.T, A = sec.A, n = Math.max(4, Math.ceil(A / (Math.PI / 16))), r = R + 1.5 * T, loop = [[0, R]];
+    for (var i = 0; i <= n; i++) { var th = A * i / n; loop.push([r * Math.sin(th), R - r * Math.cos(th)]); }
+    return prism(signedArea(loop) < 0 ? loop.reverse() : loop, plane, t0, t1);
   }
   // growLoop(l, band, T) -> the outline with each edge that runs along a band edge (s0, s1, t0 or t1, where set) carried
   // 2 % T out past it as a rectangle: the edges inside the band stay exactly where they were (a void cut off by the band
@@ -2415,6 +2591,20 @@
   }
   function mBody(body, M) {
     return body.transform(function (p) { var q = mPt(M, [p.x, p.y, p.z]); return new CSG.Vector(q[0], q[1], q[2]); }, false);
+  }
+  // lane FU: smBool(a, op, b, T) -> a.subtract / union / intersect(b) done at a scale where the CSG's absolute
+  // tolerance (csg.js EPSILON 1e-5) is small against the sheet: S = the power of two nearest 1/T, at least 1 (16 for
+  // 16 ga in inches, 1 for millimetre sheets). A power of two scales and scales back without rounding, so every vertex
+  // the boolean does not touch comes back bit for bit. Why: a hole wrapped round a 16 ga bend (Fold) cuts the bend's
+  // chord faces with twisted walls whose planes differ by under a degree; at scale 1 the slivers between them fall
+  // inside 1e-5 and the result had 61 open / 3 non-manifold edges, at 16 none (rfFU).
+  function smScale(T) { return T > 0 && T < 0.75 ? Math.pow(2, Math.round(Math.log(1 / T) / Math.LN2)) : 1; }
+  // b may be a list of tools: they are unioned at the same scale first
+  function smBool(a, op, b, T) {
+    var S = smScale(T), list = Array.isArray(b);
+    if (S === 1) return a[op](list ? unionAll(b) : b);
+    function sc(body, k) { return body.transform(function (p) { return new CSG.Vector(p.x * k, p.y * k, p.z * k); }, false); }
+    return sc(sc(a, S)[op](list ? unionAll(b.map(function (x) { return sc(x, S); })) : sc(b, S)), 1 / S);
   }
   function inHalfSpaces(hs, p, tol) { return hs.every(function (h) { return dot(h.n, p) >= h.w - tol; }); }
   // the lines of a sketched bend's sketch in 3D: { plane, lines: [{ P1, P2, d, mid }] }
@@ -4180,7 +4370,7 @@
   function buildFold(f, model, ctx) {
     var st = ctx.unfold;
     if (!st) throw new Error('Fold: there is no Unfold before it to fold back.');
-    var T = st.T, fr = st.fr, m = 0.01 * T, cuts = [], recs = [];
+    var T = st.T, fr = st.fr, m = 0.01 * T, cuts = [], recs = [], direct = [];
     var removed = st.F0.subtract(ctx.body);
     var some = removed.polygons.length && removed.volume() > 1e-12 * Math.max(1, Math.abs(st.F0.volume()));
     if (some) {
@@ -4205,17 +4395,39 @@
           var thru = { origin: sf.plane.origin, x: sf.plane.x, y: sf.plane.n, n: cross(sf.plane.x, sf.plane.n) }, up = dot(thru.n, sf.plane.y) > 0;
           rest = rest.subtract(unionAll(loops.map(function (l) { return prism(l, thru, up ? -T - m : -m, up ? m : T + m); })));
         }
-        if (rest.polygons.length && rest.volume() > 1e-9 * Math.max(1e-6, s.BA * (band.t1 - band.t0) * T)) {
+        var blind = rest.polygons.length && rest.volume() > 1e-9 * Math.max(1e-6, s.BA * (band.t1 - band.t0) * T);
+        if (blind) {
           var wb = ufWrapLayers(ufLayers(rest, sf, T, s.trackedInner), sf, s.BA, { cut: true, grow: band, shared: f.id });
           if (wb) cuts.push(wb);
         }
         if (!loops.length) return;
-        var w = wrapCut(loops, sf.sec, s.BA, sf.bend, { grow: band, shared: f.id });
-        if (w) cuts.push(w);
         if (s.id) recs.push({ kind: 'foldCutouts', feature: s.id.feature, index: s.id.index, cutouts: loops });
+        // lane FU: a square-ended strip whose band now holds plain sheet and through voids only (every void, the ones cut
+        // before this Unfold too): the bend is cut out whole and its metal (band less the voids) rebuilt from the flat
+        // (wrapRegion), so no wrapped tool crosses the bend's facets
+        var L = ufBendFrame(s, T).len, tolL = 1e-7 * Math.max(1, L);
+        if (!blind && !s.mitred && !s.fi.ccEnds && sf.sec.R > 0.01 * T && Math.abs(band.t0) < tolL && Math.abs(band.t1 - L) < tolL) {
+          var flatNow = mBody(ctx.body, Mi), all = bendVoids(flatNow, sf.plane, band, T, { ends: true });
+          var th = { origin: sf.plane.origin, x: sf.plane.x, y: sf.plane.n, n: cross(sf.plane.x, sf.plane.n) }, upw = dot(th.n, sf.plane.y) > 0;
+          var bandPrism = prism([[0, 0], [s.BA, 0], [s.BA, L], [0, L]], th, upw ? -T - m : -m, upw ? m : T + m);
+          var want = (s.BA * L - all.reduce(function (a, l) { return a + Math.abs(signedArea(l)); }, 0)) * T;
+          if (Math.abs(flatNow.intersect(bandPrism).volume() - want) <= 1e-7 * Math.max(want, 1e-9)) {
+            var metal = wrapRegion(all, sf.sec, s.BA, sf.bend, 0, L, { shared: f.id });
+            if (metal) { direct.push({ sector: bendSector(sf.sec, sf.bend, 0, L), metal: metal }); return; }
+          }
+        }
+        var w = wrapCut(loops, sf.sec, s.BA, sf.bend, { grow: band, shared: f.id, split: true });
+        if (w) cuts.push(w);
       });
     }
-    var cut = cuts.length ? unionAll(cuts) : null, body = cut ? st.B0.subtract(cut) : st.B0;
+    var cut = cuts.length ? unionAll(cuts) : null, body = st.B0;
+    if (direct.length) {
+      // the bends rebuilt: the faces' cuts and the whole bends out, then the bends' metal in (lane FU: smBool)
+      body = smBool(st.B0, 'subtract', cuts.concat(direct.map(function (d) { return d.sector; })), T);
+      body = smBool(body, 'union', direct.map(function (d) { return d.metal; }), T);
+      var gone = unionAll(direct.map(function (d) { return d.sector.subtract(d.metal); }));
+      cut = cut ? cut.union(gone) : gone;
+    } else if (cut) body = smBool(st.B0, 'subtract', cuts, T);
     // lane DJ: material added since the Unfold (now less the unfolded part), cell by cell (ufCells): face pieces moved
     // back rigidly, strip pieces wrapped round their bends in layers; the sheet-plane layer's outline joins the flat
     var added = ctx.body.subtract(st.F0), more = added.polygons.length && added.volume() > 1e-12 * Math.max(1, Math.abs(st.F0.volume()));
@@ -4552,7 +4764,7 @@
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.buildClosedCorner = buildClosedCorner; K.closedCornerLayout = closedCornerLayout;
   K.closedCornerName = closedCornerName; K.CLOSED_CORNER_TYPES = CC_TYPES.slice(); K.closedCornerDefaultGap = ccDefaultGap; K.closedCornerMinGap = ccMinGap;
-  _.buildClosedCorner = buildClosedCorner;
+  _.buildClosedCorner = buildClosedCorner; _.smBool = smBool; _.smScale = smScale;
   K.buildFlange = buildFlange; K.flangeLayout = flangeLayout; K.buildJog = buildJog; K.normalCutTool = normalCutTool;
   K.flangeProfile = flangeProfile; K.flatPattern = flatPattern; K.flatOptions = flatOptions; K.cleanFlatLoop = cleanFlatLoop; K.snapFlatCircle = snapFlatCircle; K.flatCircleTol = flatCircleTol; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
   K.bendDeduction = bendDeduction; K.outsideSetback = outsideSetback; K.bendCalc = bendCalc; K.bendTableLookup = bendTableLookup;
@@ -4564,7 +4776,7 @@
   _.buildFlange = buildFlange; _.buildJog = buildJog; _.normalCutTool = normalCutTool;
   K.buildSketchedBend = buildSketchedBend; K.sketchedBendLayout = sketchedBendLayout; K.SKETCHED_BEND_POSITIONS = SB_POSITIONS.slice();
   // cuts across a bend zone (occt-kernel.js reads the voids again from its exact solid and cuts them from its sweep)
-  K.bendVoids = bendVoids; K.bandSlabSpec = bandSlabSpec; K.wrapCut = wrapCut; K.bendZoneMap = bendZoneMap;
+  K.bendVoids = bendVoids; K.bandSlabSpec = bandSlabSpec; K.wrapCut = wrapCut; K.wrapRegion = wrapRegion; K.bendSector = bendSector; K.bendZoneMap = bendZoneMap;
   // Break Corner (lane CP)
   K.buildBreakCorner = buildBreakCorner; K.breakCornerLayout = breakCornerLayout; K.breakCornerCandidates = breakCornerCandidates;
   K.breakCornerName = breakCornerName; K.BREAK_CORNER_KINDS = BC_KINDS.slice();

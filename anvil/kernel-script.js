@@ -1012,6 +1012,9 @@
       reverse: !!opts.reverse || opts.dir === -1, cut: !!opts.cut, dir2: !!opts.depth2 || !!opts.both,
       depth2: opts.depth2 != null ? num(opts.depth2) : (opts.both ? num(depth) : 0), end2: opts.throughAll2 ? 'through' : 'blind', name: opts.name
     });
+    // rfFS: a cut given no direction (no `reverse`, no `dir`, one direction) leaves `reverse` out; the rebuild then
+    // cuts into the material as SolidWorks does (+n, or −n when +n removes nothing) and writes the direction it took
+    if (opts.cut && opts.reverse == null && opts.dir == null && f.end !== 'mid' && !f.dir2) delete f.reverse;
     if (opts.sheetBase) f.sheetBase = true;
     if (opts.draft) { f.draft = num(opts.draft); if (opts.draftOutward) f.draftOut = true; }
     if (opts.cut && opts.normalCut) f.normalCut = true; // sheet metal Normal Cut: the tool is made normal to the sheet
@@ -1451,7 +1454,7 @@
     // sketch on Top: u = x, v = -z
     var s = this.sketch('Top', at[1]);
     if (opts.centered) s.centerRect(at[0], -at[2], w, d); else s.rect(at[0], -at[2] - d, w, d);
-    s.end().extrude(h, { cut: !!opts.cut, name: opts.name, merge: opts.merge, bodies: opts.bodies });
+    s.end().extrude(h, { cut: !!opts.cut, reverse: false, name: opts.name, merge: opts.merge, bodies: opts.bodies });
     return this;
   };
   Builder.prototype.cylinder = function (r, h, opts) {
@@ -1462,7 +1465,7 @@
     if (axis === 'y') s = this.sketch('Top', at[1]).circle(at[0], -at[2], r);
     else if (axis === 'z') s = this.sketch('Front', at[2]).circle(at[0], at[1], r);
     else s = this.sketch('Right', at[0]).circle(-at[2], at[1], r);
-    s.end().extrude(h, { cut: !!opts.cut, name: opts.name, merge: opts.merge, bodies: opts.bodies });
+    s.end().extrude(h, { cut: !!opts.cut, reverse: false, name: opts.name, merge: opts.merge, bodies: opts.bodies });
     return this;
   };
   Builder.prototype.last = function () { return this.lastId; };

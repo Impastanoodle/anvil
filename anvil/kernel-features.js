@@ -627,15 +627,38 @@
 
   // Prism over a face's loops: outer loops grown and holes shrunk by growFor(loop) (per-edge distances; holes that
   // collapse are dropped), from plane offset a to b along the face normal.
+  // rfFS: a run of a loop offset by exactly its half width (a 4 wide slot in a face shelled 2 thick, a notch as wide as
+  // 2T) collapses onto its centre line: the loop runs out along it and back, a spike of width ~1e-15 that segCross does
+  // not see and a prism over it is non-manifold (fuzz: shells after slots had 26 open / 14 non-manifold edges in one
+  // slab). Repeatedly drop repeated points and vertices where the loop turns straight back within eps.
+  function dropSpikes(pts, eps) {
+    var out = pts.slice(), changed = true;
+    while (changed && out.length >= 3) {
+      changed = false;
+      for (var i = 0; i < out.length && out.length >= 3; i++) {
+        var n = out.length, a = out[(i + n - 1) % n], p = out[i], c = out[(i + 1) % n];
+        var u = [p[0] - a[0], p[1] - a[1]], v = [c[0] - p[0], c[1] - p[1]], lu = Math.hypot(u[0], u[1]), lv = Math.hypot(v[0], v[1]);
+        var back = lu > eps && lv > eps && u[0] * v[0] + u[1] * v[1] < 0 && Math.abs(u[0] * v[1] - u[1] * v[0]) <= eps * (lu + lv);
+        if (lu <= eps || back) { out.splice(i, 1); changed = true; i--; }
+      }
+    }
+    return out.length >= 3 ? out : [];
+  }
+  _.dropSpikes = dropSpikes;
   function slabSolid(o, growFor, a, b, tag) {
     var cl = faceLoopsClassified(o), prisms = [], holes = [];
+    var span = 1;
+    o.loops.forEach(function (l) { l.forEach(function (q) { span = Math.max(span, Math.abs(q[0]), Math.abs(q[1])); }); });
+    var spikeEps = 1e-9 * span;
     cl.outers.forEach(function (l) {
-      var g = offsetLoopVar(l, growFor(l));
+      var g = dropSpikes(offsetLoopVar(l, growFor(l)), spikeEps);
+      if (g.length < 3) return;
       var gs = loopSelfCrosses(g) ? outerPieces(untangleLoop(g, signedArea(l) >= 0 ? 1 : -1)) : [g];   // rfFN2
       gs.forEach(function (gp) { if (signedArea(gp) > 1e-9) prisms.push(prism(gp, o.plane, a, b, tag)); });
     });
     cl.holes.forEach(function (l) {
-      var g = offsetLoopVar(l, growFor(l).map(function (d) { return -d; }));
+      var g = dropSpikes(offsetLoopVar(l, growFor(l).map(function (d) { return -d; })), spikeEps);
+      if (g.length < 3) return;
       var gs = loopSelfCrosses(g) ? outerPieces(untangleLoop(g, signedArea(l) >= 0 ? 1 : -1)) : [g];   // rfFN2
       gs.forEach(function (gp) { if (signedArea(gp) > 1e-9 && signedArea(gp) < signedArea(l)) holes.push(prism(gp, o.plane, a - 0.01, b + 0.01, tag)); });
     });
@@ -645,6 +668,30 @@
     return solid;
   }
 
+  // rfFS: open + non-manifold edges of a body's welded triangle mesh (edges used by one or by three or more
+  // triangles, longer than 1e-9 × the diagonal), cached on the body; the shell's crack check (as kernel-mesh.js'
+  // rfFPopenCount for fillets)
+  function crackCount(body) {
+    if (!body || !body.polygons || typeof Exchange === 'undefined' || !Exchange.bodyMesh) return 0;
+    if (body._fsCrack != null) return body._fsCrack;
+    var m = Exchange.bodyMesh(body), t = m.triangles, P = m.positions, use = {}, n = 0;
+    for (var i = 0; i < t.length; i += 3) for (var k = 0; k < 3; k++) {
+      var a = t[i + k], b = t[i + (k + 1) % 3], key = a < b ? a + '_' + b : b + '_' + a;
+      use[key] = (use[key] || 0) + 1;
+    }
+    var bb = body.getBounds ? body.getBounds() : null, diag = bb ? Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]) : 1;
+    Object.keys(use).forEach(function (key) {
+      if (use[key] === 2) return;
+      var ab = key.split('_'), p = +ab[0] * 3, q = +ab[1] * 3;
+      if (Math.hypot(P[p] - P[q], P[p + 1] - P[q + 1], P[p + 2] - P[q + 2]) > 1e-9 * diag) n++;
+    });
+    try { Object.defineProperty(body, '_fsCrack', { value: n, enumerable: false, writable: true, configurable: true }); } catch (e) { /* frozen */ }
+    return n;
+  }
+  function scaledGrow(grow, s) { return s === 1 ? grow : function (l) { return grow(l).map(function (d) { return d * s; }); }; }
+  // on: check the shell for cracks (retry, refuse); slack: cracks above the body's own a shell may keep; last: the
+  // last check { tries, open: [per try], before }
+  K.shellGuard = { on: true, slack: 24, last: null };
   // Shell: hollow the body leaving walls of thickness T; faces listed in f.faces are removed (open).
   // The inner solid is the body minus a slab of depth T behind every kept face. Each slab outline is grown across
   // every edge by T·tan(φ/2), φ being the dihedral angle to the neighbouring face, which is exactly where the two
@@ -702,28 +749,49 @@
       if (!memo) offMemo.set(key, memo = {});
       return (memo[conv] = { s: S2 });
     }
-    var inner = ctx.body, extensions = [], slabs = [];
-    for (var i = 0; i < mesh.faces.length; i++) {
-      var o;
-      try { o = faceOutline(mesh, i); } catch (e) { o = null; }
-      if (!o || !o.loops.length) continue;
-      if (removed.indexOf(i) >= 0) {
-        // outward through the face, starting a little inside so no cap is coplanar with the face
-        var ext = slabSolid({ loops: o.loops.filter(function (l) { return signedArea(l) > 0; }), plane: o.plane }, uniform, -T / 2, T + 1, f.id);
-        if (ext) extensions.push(ext);
-      } else {
-        var slab = slabSolid(o, growFor(o.plane), -T, T, f.id), rec = slab && offsetRecord(mesh.faces[i]), fn = mesh.faces[i].normal;
-        if (rec) slab.polygons.forEach(function (p) { var n = p.plane.normal; if (n.x * fn[0] + n.y * fn[1] + n.z * fn[2] < -0.999999) p.surf = rec; });
-        if (slab) slabs.push(slab);
+    // rfFS: a shell whose slabs meet in exact coincidences (a slot exactly 2T wide, a notch whose offset collapses onto
+    // its centre line) can come out cracked (open / non-manifold edges). The result is checked against the body before
+    // it; a cracked one is rebuilt with every growth 1e-6 (then 1e-4) larger, which turns the coincidences into
+    // crossings untangleLoop removes, and refused if still cracked (OpenCascade's shell then drives: not a refusal).
+    var inner = ctx.body, extensions = [], S = null, body = null, open0 = -1, best = null;
+    var tries = K.shellGuard.on ? [1, 1 + 1e-6, 1 + 1e-4] : [1];
+    for (var tr = 0; tr < tries.length; tr++) {
+      var gs = tries[tr], slabs = [];
+      extensions = [];
+      for (var i = 0; i < mesh.faces.length; i++) {
+        var o;
+        try { o = faceOutline(mesh, i); } catch (e) { o = null; }
+        if (!o || !o.loops.length) continue;
+        if (removed.indexOf(i) >= 0) {
+          // outward through the face, starting a little inside so no cap is coplanar with the face
+          var ext = slabSolid({ loops: o.loops.filter(function (l) { return signedArea(l) > 0; }), plane: o.plane }, uniform, -T / 2, T + 1, f.id);
+          if (ext) extensions.push(ext);
+        } else {
+          var slab = slabSolid(o, scaledGrow(growFor(o.plane), gs), -T, T, f.id), rec = slab && offsetRecord(mesh.faces[i]), fn = mesh.faces[i].normal;
+          if (rec) slab.polygons.forEach(function (p) { var n = p.plane.normal; if (n.x * fn[0] + n.y * fn[1] + n.z * fn[2] < -0.999999) p.surf = rec; });
+          if (slab) slabs.push(slab);
+        }
+      }
+      if (!slabs.length) throw new Error('Every face of the body is selected for removal: leave at least one face to keep as a wall.');
+      // body − ((body ∪ ext) − S) = body ∩ S exactly (S: the slab union), so the walls are one intersection instead of
+      // a union and two subtractions (the Funnel's shell: two large booleans fewer, the same solid). The cavity
+      // `inner` (the Shell PropertyManager's red preview) is only built when it is read.
+      S = unionTree(slabs);
+      body = ctx.body.intersect(S);
+      if (ctx.body.volume() - body.volume() < 1e-9) throw new Error('Shell thickness ' + T + ' is too large for this part: nothing would remain hollow. Enter a thickness below half of the thinnest wall.');
+      if (tries.length === 1) break;
+      if (open0 < 0) { open0 = crackCount(ctx.body); K.shellGuard.last = { tries: 0, open: [], before: open0 }; }
+      var nOpen = crackCount(body);
+      K.shellGuard.last.tries = tr + 1; K.shellGuard.last.open.push(nOpen);
+      if (!best || nOpen < best.n) best = { n: nOpen, body: body, S: S, extensions: extensions };
+      if (nOpen <= open0) break;
+      if (tr === tries.length - 1) {
+        // a few cracks are the boolean's (csg.js; the legacy-tessellation Funnel leaves 4): keep the best try; a shell
+        // that falls apart (fuzz: 90 .. 171 open / non-manifold edges) is refused
+        if (best.n > open0 + K.shellGuard.slack) throw new Error('Failed to shell the part: a wall would offset into a neighbouring face where Anvil\'s kernel cannot close it (the result would have gaps). Try another thickness.');
+        body = best.body; S = best.S; extensions = best.extensions;
       }
     }
-    if (!slabs.length) throw new Error('Every face of the body is selected for removal: leave at least one face to keep as a wall.');
-    // body − ((body ∪ ext) − S) = body ∩ S exactly (S: the slab union), so the walls are one intersection instead of
-    // a union and two subtractions (the Funnel's shell: two large booleans fewer, the same solid). The cavity
-    // `inner` (the Shell PropertyManager's red preview) is only built when it is read.
-    var S = unionTree(slabs);
-    var body = ctx.body.intersect(S);
-    if (ctx.body.volume() - body.volume() < 1e-9) throw new Error('Shell thickness ' + T + ' is too large for this part: nothing would remain hollow. Enter a thickness below half of the thinnest wall.');
     var out = { body: body, removed: removed }, innerSolid = null;
     Object.defineProperty(out, 'inner', { enumerable: true, get: function () {
       if (!innerSolid) innerSolid = (extensions.length ? inner.union(unionTree(extensions)) : inner).subtract(S);

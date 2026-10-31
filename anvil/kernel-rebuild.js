@@ -196,7 +196,10 @@
   // (SolidWorks refuses the same features): zero thickness, a cut leaving nothing, a sweep folding back or crossing
   // itself, a 0° revolve, a loft between coplanar profiles or across a neighbour's plane (rfFN2). OpenCascade would build some of them anyway, so
   // ui-occt.js suppresses these features in its copy of the model and keeps their errors (not "Anvil's own limits").
-  var REFUSAL = /zero-thickness geometry|would remove all of the material|turns back on itself|sweep would intersect itself|loft would intersect itself|Revolve angle must be greater than zero/;
+  // rfFS: an empty cut (both directions tried for a cut that had none) is SolidWorks' rebuild error, a refusal too
+  var CUT_MISS = 'The cut does not intersect the model: it would remove no material. Reverse its direction or change its end condition.';
+  K.CUT_MISS = CUT_MISS;
+  var REFUSAL = /zero-thickness geometry|would remove all of the material|does not intersect the model|turns back on itself|sweep would intersect itself|loft would intersect itself|Revolve angle must be greater than zero/;
   K.isRefusal = function (msg) { return REFUSAL.test(String(msg || '')); };
 
   // rfFN: solidFromProfile (kernel-curves.js) stacks every outline's solid and subtracts every hole from all of them,
@@ -473,7 +476,7 @@
   _.linkThickness = linkThickness;
   function rebuildModel(model, cache) {
     var t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-    var errors = {}, warnings = {}, facePlanes = {};
+    var errors = {}, warnings = {}, facePlanes = {}, cutDirs = {};
     var origFeatures = model.features, resolved = resolvedModel(model);
     model = linkThickness(resolved.model);
     var resolveErrors = resolved.featureErrors, sheetError = resolved.sheetError;
@@ -500,24 +503,46 @@
       syncBody();
     }
     // a cut tool is taken out of every body in the feature's scope; a body it empties leaves the list
-    function applyCut(tool, f) {
+    // rfFS: a cut is tried first (cutTrial: every body in scope minus the tool, nothing committed) so a cut with no
+    // direction can try the other side, then committed (commitCut). An empty cut is an error, as SolidWorks
+    // reports a cut that does not intersect the model; the part before it stays (FN's rule).
+    function cutTrial(tool, f) {
       if (!ctx.bodies.length) throw new Error('Nothing to cut yet.');
-      var scope = cutScope(f, ctx.bodies.length), changed = false;
-      for (var s = scope.length - 1; s >= 0; s--) {
+      var scope = cutScope(f, ctx.bodies.length), changed = false, res = [];
+      for (var s = 0; s < scope.length; s++) {
         var i = scope[s], b = ctx.bodies[i], volBefore = b.volume();
         var nb = b.subtract(tool), vol = nb.polygons.length ? nb.volume() : 0;
         if (Math.abs(vol - volBefore) >= 1e-6) changed = true;
-        if (!nb.polygons.length || vol < 1e-9) { ctx.bodies.splice(i, 1); ctx.bodyFeatures.splice(i, 1); }
-        else ctx.bodies[i] = nb;
+        res.push({ i: i, nb: nb, vol: vol });
       }
-      // rfFN (decided 2026-10-29): an empty cut stays a warning, not SolidWorks' error. The script API's default cut
-      // direction is +normal (SolidWorks cuts into the face it is sketched on), so many saved parts carry forward cuts
-      // that miss (features.js, the Mirrored clevis example's cross hole, rfFG's WHEEL …); failing them would turn
-      // working parts red. Revisit together with the default direction.
-      if (!changed) warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + 'Cut removed no material. Try "Reverse direction".';
+      return { res: res, changed: changed };
+    }
+    function commitCut(trial, f) {
+      if (!trial.changed) throw new Error(CUT_MISS);
+      for (var s = trial.res.length - 1; s >= 0; s--) {
+        var r = trial.res[s];
+        if (!r.nb.polygons.length || r.vol < 1e-9) { ctx.bodies.splice(r.i, 1); ctx.bodyFeatures.splice(r.i, 1); }
+        else ctx.bodies[r.i] = r.nb;
+      }
       // rfFN: a cut that takes away every body would blank the part; it fails instead and the part before it stays
       if (!ctx.bodies.length) throw new Error('This cut would remove all of the material: nothing would be left of the part.');
       syncBody();
+    }
+    function applyCut(tool, f) { commitCut(cutTrial(tool, f), f); }
+    // a tool feature's solid: buildTool, and on sheet metal a Normal Cut's prism normal to the sheet (normalCutTool;
+    // the swapped tool is what the cache and the packed build carry) -> { tool, warning } or null
+    function cutToolFor(f, cut) {
+      var tool = buildTool(f, model, ctx), warning = null;
+      if (!tool) return null;
+      if (cut && f.type === 'extrude' && f.normalCut && model.sheet && ctx.body) {
+        var ncs = ctx.sketches[f.sketch] || findFeature(model, f.sketch);
+        var ncp = resolvePlane(ncs.plane, model, ctx.planes);
+        var ncDir = (f.dir2 || f.end === 'mid') ? null : (f.reverse ? scale(ncp.n, -1) : ncp.n.slice());
+        var nct = _.normalCutTool(tool, ctx.body, model, ncDir);
+        if (nct === tool) warning = 'Normal cut: the cut does not cross a sheet face; a plain cut was made.';
+        tool = nct;
+      }
+      return { tool: tool, warning: warning };
     }
     // the body a face- or edge-picked feature works on: the one nearest its first pick (body 0 without a pick);
     // ctx.body is pointed at it for the builder, and the result goes back into the same slot with putBody
@@ -724,21 +749,33 @@
             }
             // lane DI: a Tab (Base Flange/Tab on an existing sheet) is extruded T into the sheet face it is sketched on
             if (f.type === 'extrude' && f.tab && !f.cut) { var tbs = ctx.sketches[f.sketch] || findFeature(model, f.sketch); if (tbs) f = _.tabFeature(f, model, resolvePlane(tbs.plane, model, ctx.planes), ctx.body); }
-            var tool = buildTool(f, model, ctx);
-            if (!tool) break;
             var cut = isCut(f, model);
-            if (cut && f.type === 'extrude' && f.normalCut && model.sheet && ctx.body) {
-              // Normal Cut: swap the tool for a prism normal to the sheet (see normalCutTool); the swapped tool is
-              // what the cache and the packed build carry
-              var ncs = ctx.sketches[f.sketch] || findFeature(model, f.sketch);
-              var ncp = resolvePlane(ncs.plane, model, ctx.planes);
-              var ncDir = (f.dir2 || f.end === 'mid') ? null : (f.reverse ? scale(ncp.n, -1) : ncp.n.slice());
-              var nct = _.normalCutTool(tool, ctx.body, model, ncDir);
-              if (nct === tool) warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + 'Normal cut: the cut does not cross a sheet face; a plain cut was made.';
-              tool = nct;
+            // rfFS: a Cut-Extrude with no direction (a script cut without `reverse` / `dir`) goes into the material,
+            // as SolidWorks' does: +n first; when that removes nothing and −n does, −n. The direction found is
+            // written onto the model's own feature (and reported in build.cutDirs for a build made on a copy), so
+            // the feature JSON, generateScript and the PropertyManager carry it from then on.
+            var autoDir = cut && f.type === 'extrude' && f.reverse == null && !f.dir2 && f.end !== 'mid';
+            var made = cutToolFor(f, cut);
+            if (!made) break;
+            var tool = made.tool, trial = null;
+            if (cut) {
+              trial = cutTrial(tool, f);
+              if (autoDir && !trial.changed) {
+                f.reverse = true;
+                var made2 = cutToolFor(f, cut), trial2 = made2 ? cutTrial(made2.tool, f) : null;
+                if (trial2 && trial2.changed) { made = made2; tool = made2.tool; trial = trial2; }
+                else delete f.reverse;
+              }
+              if (autoDir && trial.changed) {
+                f.reverse = !!f.reverse;
+                origFeatures[p + j].reverse = f.reverse;
+                cutDirs[f.id] = f.reverse;
+                keys[p + j] = featureKey(f, model);
+              }
             }
+            if (made.warning) warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + made.warning;
             ctx.tools[f.id] = tool;
-            if (cut) applyCut(tool, f); else addBoss(tool, f);
+            if (cut) commitCut(trial, f); else addBoss(tool, f);
             zeroThickness(saveBodies);
           }
         }
@@ -754,7 +791,7 @@
     // can hand them back to the original with applyProfiles
     var profiles = {};
     Object.keys(ctx.sketches).forEach(function (id) { profiles[id] = ctx.sketches[id].profile || null; });
-    return { body: ctx.body, bodies: ctx.bodies, bodyFeatures: ctx.bodyFeatures, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles, facePlanes: facePlanes,
+    return { body: ctx.body, bodies: ctx.bodies, bodyFeatures: ctx.bodyFeatures, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles, facePlanes: withCutDirs(facePlanes, cutDirs), cutDirs: cutDirs,
       equations: resolved.vars, equationErrors: resolved.errors, configuration: resolved.configuration, suppressed: resolved.suppressed || {} };
   }
 
@@ -780,7 +817,7 @@
       bodyFeatures: bodies.map(function (b, i) { return build.bodyFeatures && build.bodyFeatures[i] != null ? build.bodyFeatures[i] : null; }),
       body: !bodies.length && build.body ? build.body.pack() : null, tools: tools,
       planes: build.planes || {}, flanges: build.flanges || {}, errors: build.errors || {}, warnings: build.warnings || {},
-      time: build.time || 0, reused: build.reused || 0, profiles: profiles, facePlanes: build.facePlanes || {},
+      time: build.time || 0, reused: build.reused || 0, profiles: profiles, facePlanes: build.facePlanes || {}, cutDirs: build.cutDirs || {},
       equations: build.equations || {}, equationErrors: build.equationErrors || {}, configuration: build.configuration || null, suppressed: build.suppressed || {}
     };
   }
@@ -806,7 +843,7 @@
     return {
       body: combineBodies(bodies), bodies: bodies, bodyFeatures: bodyFeatures, tools: tools,
       planes: obj.planes || {}, flanges: obj.flanges || {}, errors: obj.errors || {}, warnings: obj.warnings || {},
-      time: obj.time || 0, reused: obj.reused || 0, profiles: obj.profiles || {}, facePlanes: obj.facePlanes || {}, cache: null,
+      time: obj.time || 0, reused: obj.reused || 0, profiles: obj.profiles || {}, facePlanes: withCutDirs(obj.facePlanes || {}, obj.cutDirs || {}), cutDirs: obj.cutDirs || {}, cache: null,
       equations: obj.equations || {}, equationErrors: obj.equationErrors || {}, configuration: obj.configuration || null, suppressed: obj.suppressed || {}
     };
   }
@@ -814,13 +851,24 @@
   // Other features are left alone; a sketch the build did not see (or recorded as null) keeps its profile.
   // facePlanes (build.facePlanes, r10/facesketch10): the frames the build resolved for sketches on faces, written
   // onto those sketches the same way
+  // rfFS: the cut directions the build found (build.cutDirs: { extrude id: reverse }) ride on facePlanes as a
+  // non-enumerable `cutDirs`, so the page's applyProfiles(model, build.profiles, build.facePlanes) writes them onto
+  // a script cut that had no direction
   function applyProfiles(model, profiles, facePlanes) {
     if (!profiles && !facePlanes) return model;
+    var dirs = facePlanes && facePlanes.cutDirs;
     model.features.forEach(function (f) {
       if (f.type === 'sketch' && profiles && profiles[f.id]) f.profile = profiles[f.id];
       if (f.type === 'sketch' && facePlanes && facePlanes[f.id] && f.plane && f.plane.face) f.plane = facePlanes[f.id];
+      if (f.type === 'extrude' && dirs && typeof dirs[f.id] === 'boolean' && f.reverse == null) f.reverse = dirs[f.id];
     });
     return model;
+  }
+  function withCutDirs(facePlanes, cutDirs) {
+    if (facePlanes && cutDirs && Object.keys(cutDirs).length) {
+      try { Object.defineProperty(facePlanes, 'cutDirs', { value: cutDirs, enumerable: false, writable: true, configurable: true }); } catch (e) { /* frozen */ }
+    }
+    return facePlanes;
   }
   // bodyPlanes(body) -> [{ n, w, feature }]: one entry per distinct (plane, feature) of a solid's polygons, the
   // candidate faces of a 'geom' face reference (resolveFacePlane)

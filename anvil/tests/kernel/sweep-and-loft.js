@@ -87,7 +87,7 @@
     assert(/exactly one closed profile/i.test(b.errors[3] || ''), 'expected a one-profile error, got ' + JSON.stringify(b.errors));
   });
   test('sweep and loft survive a script round-trip', function () {
-    var a = build('var prof = p.sketch("Front").circle(0, 0, 5).id();\nvar path = p.sketch("Top").line(0, 0, 0, -50).line(0, -50, 40, -50).id();\np.sweep({ profile: prof, path: path, name: "Tube" });\nvar s1 = p.sketch("Top", 60).centerRect(0, 0, 20, 20).id();\nvar s2 = p.sketch("Top", 90).circle(0, 0, 6).id();\np.loft([s1, s2]);\np.sketch("Front").centerRect(20, 0, 6, 6);\np.sweep({ path: [[20, 0, 0], [20, 0, 30], [20, 20, 30]], cut: true });');
+    var a = build('var prof = p.sketch("Front").circle(0, 0, 5).id();\nvar path = p.sketch("Top").line(0, 0, 0, -50).line(0, -50, 40, -50).id();\np.sweep({ profile: prof, path: path, name: "Tube" });\nvar s1 = p.sketch("Top", 60).centerRect(0, 0, 20, 20).id();\nvar s2 = p.sketch("Top", 90).circle(0, 0, 6).id();\np.loft([s1, s2]);\np.sketch("Front").centerRect(20, 0, 6, 6);\np.sweep({ path: [[20, 0, 0], [20, 0, 50], [20, 20, 50]], cut: true });');   // rfFS: the path rises to the tube's top leg (z = 50); at z = 30 the cut missed everything
     noErrors(a);
     var script = K.generateScript(a.model);
     assert(script.indexOf('p.sweep(') >= 0 && script.indexOf('p.loft(') >= 0, 'sweep and loft emitted');

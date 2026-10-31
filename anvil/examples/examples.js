@@ -119,11 +119,15 @@ var AnvilExamples = [
   {
     name: 'Mirrored clevis',
     description: 'A clevis built as one arm plus a body mirror across the Right plane.',
+    // rfFS (2026-10-30): the cross hole was at z = 20, clear of the arm (z −12..0): an empty cut, now a rebuild error.
+    // At z = −6, y = 24 it goes square through the arm, below the R6 end: 2 × (block 30·40·12 + arm (12·30 + 36π)·12
+    // − hole 9π·12) = 37440 + 648π
+    volume: 37440 + 648 * Math.PI,
     code: [
       'p.name("Clevis").units("mm");',
       'p.box(30, 12, 40);                            // base block, from x=0 to 30',
       'p.sketch("Front").slot(24, 0, 24, 30, 12).extrude(12, { reverse: true }); // one arm, rounded top',
-      'p.hole("Right", -20, 30, 6, { offset: 30 }); // cross hole through the arm',
+      'p.hole("Right", 6, 24, 6, { offset: 30 });   // cross hole through the arm (Right plane: x = -Z, so 6 is z = -6, mid-arm)',
       'p.mirror("Right", { body: true });           // mirror everything to the other side'
     ].join('\n')
   },

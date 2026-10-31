@@ -198,21 +198,21 @@
     var vc = bodyVols(closed);
     near(vc[0], 1000 - 512, 1e-6, 'closed shell of body 0'); near(vc[1], 1000, 1e-9, 'body 1 untouched by the closed shell');
   });
-  test('a cut that misses every body warns "removed no material"; one that hits only body 1 with the default scope does not', function () {
+  // rfFS: an empty cut is a rebuild error now (was the "removed no material" warning); the bodies are kept
+  test('a cut that misses every body is an error; one that hits only body 1 with the default scope neither fails nor warns', function () {
     var miss = build(TWO + 'p.box(5, 5, 5, { at: [50, 0, 0], cut: true });');
-    noErrors(miss);
-    assert(/removed no material/i.test(warningText(miss)), 'expected the empty-cut warning, got: ' + JSON.stringify(miss.warnings));
+    assert(/does not intersect the model/.test(JSON.stringify(miss.errors)), 'expected the empty-cut error, got: ' + JSON.stringify(miss.errors));
     near(miss.body.volume(), 2000, 1e-9, 'nothing removed');
+    assert(miss.build.bodies.length === 2, 'both bodies kept');
     var one = build(TWO + 'p.box(5, 5, 5, { at: [22, 5, 2], cut: true });'); // inside body 1 only
     noErrors(one);
     assert(Object.keys(one.warnings).length === 0, 'a cut that changed one of the bodies must not warn: ' + warningText(one));
     var v = bodyVols(one);
     near(v[0], 1000, 1e-9, 'body 0'); near(v[1], 1000 - 125, 1e-9, 'body 1');
   });
-  test('a cut whose scope excludes the only body it touches warns and changes nothing', function () {
+  test('a cut whose scope excludes the only body it touches is an error and changes nothing', function () {
     var r = build(TWO + 'p.box(5, 5, 5, { at: [22, 5, 2], cut: true, bodies: [0] });'); // the tool lies in body 1, the scope says body 0
-    noErrors(r);
-    assert(/removed no material/i.test(warningText(r)), 'expected the empty-cut warning, got: ' + JSON.stringify(r.warnings));
+    assert(/does not intersect the model/.test(JSON.stringify(r.errors)), 'expected the empty-cut error (rfFS), got: ' + JSON.stringify(r.errors));
     var v = bodyVols(r);
     assert(v.length === 2, 'bodies: ' + v.length);
     near(v[0], 1000, 1e-9, 'body 0'); near(v[1], 1000, 1e-9, 'body 1 (out of scope)');

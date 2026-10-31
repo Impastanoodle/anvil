@@ -4,7 +4,7 @@ var CSG = (function () {
   'use strict';
   var EPSILON = 1e-5;
   // splitPolygon counts vertices it classifies as on a plane while they lie more than FUZZ off it (healCracks, rfFL)
-  var FUZZ = 1e-9, FUZZY = 0;
+  var FUZZ = 1e-9, FUZZY = 0, XS_T = [], EXACT = false, HEAL_LEFT = 0;
 
   function Vector(x, y, z) { this.x = x; this.y = y; this.z = z; }
   Vector.prototype = {
@@ -58,6 +58,18 @@ var CSG = (function () {
     var normal = new Vector(nx / len, ny / len, nz / len);
     return new Plane(normal, normal.dot(vs[0].pos));
   };
+  // the point where the plane cuts segment a-b, interpolated from a and from b (the same arithmetic as a.interpolate(b, t)
+  // with t from a, and b.interpolate(a, t') with t' from b); the lexicographically smaller of the two, so both polygons
+  // sharing the edge get the bitwise-same point whichever way they walk it (rfFQ / lane FU)
+  function splitPoint(pl, a, b) {
+    var n = pl.normal, A = a.pos, B = b.pos, nx = n.x, ny = n.y, nz = n.z;
+    var abx = B.x - A.x, aby = B.y - A.y, abz = B.z - A.z, bax = A.x - B.x, bay = A.y - B.y, baz = A.z - B.z;
+    var t1 = (pl.w - (nx * A.x + ny * A.y + nz * A.z)) / (nx * abx + ny * aby + nz * abz);
+    var t2 = (pl.w - (nx * B.x + ny * B.y + nz * B.z)) / (nx * bax + ny * bay + nz * baz);
+    var x1 = A.x + abx * t1, y1 = A.y + aby * t1, z1 = A.z + abz * t1, x2 = B.x + bax * t2, y2 = B.y + bay * t2, z2 = B.z + baz * t2;
+    if (x2 < x1 || (x2 === x1 && (y2 < y1 || (y2 === y1 && z2 < z1)))) return new Vertex(new Vector(x2, y2, z2));
+    return new Vertex(new Vector(x1, y1, z1));
+  }
   Plane.prototype = {
     clone: function () { return new Plane(this.normal.clone(), this.w); },
     flip: function () { this.normal = this.normal.negated(); this.w = -this.w; },
@@ -72,14 +84,24 @@ var CSG = (function () {
         if (dc < -bs.m) { back.push(polygon); return; }
       }
       var COPLANAR = 0, FRONT = 1, BACK = 2, SPANNING = 3;
-      var polygonType = 0, types = [], i, n = polygon.vertices.length;
+      var polygonType = 0, types = [], i, n = polygon.vertices.length, band = 0, ts = XS_T;
       for (i = 0; i < n; i++) {
         var t = this.normal.dot(polygon.vertices[i].pos) - this.w;
         var type = (t < -EPSILON) ? BACK : (t > EPSILON) ? FRONT : COPLANAR;
         // a vertex taken as on the plane although it is not (rfFL): the boolean may leave a crack there
-        if (type === COPLANAR && (t > FUZZ || t < -FUZZ)) FUZZY++;
+        if (type === COPLANAR && (t > FUZZ || t < -FUZZ)) { FUZZY++; band++; }
         polygonType |= type;
         types.push(type);
+        ts[i] = t;
+      }
+      // rfFQ: on a retry (retryExact), the vertices in the band take their true side, so the polygon is split exactly
+      // where it crosses the plane (only a vertex within FUZZ stays on it)
+      if (band && EXACT) {
+        polygonType = 0;
+        for (i = 0; i < n; i++) {
+          if (types[i] === COPLANAR) { var tb = ts[i]; if (tb > FUZZ) types[i] = FRONT; else if (tb < -FUZZ) types[i] = BACK; }
+          polygonType |= types[i];
+        }
       }
       switch (polygonType) {
         case COPLANAR:
@@ -96,8 +118,10 @@ var CSG = (function () {
             if (ti !== BACK) f.push(vi);
             if (ti !== FRONT) b.push(ti !== BACK ? vi.clone() : vi);
             if ((ti | tj) === SPANNING) {
-              var tt = (this.w - this.normal.dot(vi.pos)) / this.normal.dot(vj.pos.minus(vi.pos));
-              var v = vi.interpolate(vj, tt);
+              // rfFQ / lane FU: the two polygons sharing this edge walk it in opposite directions, and a split point
+              // interpolated from either end can differ in the last bit (twins 5e-17 apart round to different cells of
+              // the meshes' 1e-6 weld grid: open and non-manifold edges, the 14 ga L bracket): splitPoint is symmetric
+              var v = splitPoint(this, vi, vj);
               f.push(v);
               b.push(v.clone());
             }
@@ -322,7 +346,8 @@ var CSG = (function () {
   // operand's polygons that may lie near the other one for its tree to be built from the near part only.
   // CSG.options.sphereTest = false turns off splitPolygon's bounding-sphere shortcut (same results, slower).
   // CSG.options.heal = false turns off healCracks (rfFL) on boolean results; healWide, healFill, healDrop: see healCracks.
-  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5, sphereTest: true, heal: true, healWide: 2 * EPSILON, healDrop: false, healFill: false };
+  // CSG.options.retryExact = false turns off the exact retry of a cracked boolean (rfFQ); retryMin / retryMax: see retryExact.
+  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5, sphereTest: true, heal: true, healWide: 2 * EPSILON, healDrop: false, healFill: false, retryExact: true, retryMin: 3, retryMax: 300 };
   // FRAG: the bounding box of the fragments the last restoreWhole kept (null: everything may be cut), the region where
   // healCracks looks for cracks
   var FRAG = null;
@@ -365,6 +390,7 @@ var CSG = (function () {
   var healStats = { calls: 0, healed: 0, moved: 0, dropped: 0, left: 0, passes: 0, ms: 0 };
   var NOW = typeof performance !== 'undefined' && performance.now ? function () { return performance.now(); } : Date.now;
   function healCracks(polys) {
+    HEAL_LEFT = 0;
     if (!OPTIONS.heal || !FUZZY || polys.length < 4) return polys;
     healStats.calls++;
     var t0 = NOW(), orig = polys, before = -1, after = 0;
@@ -379,7 +405,8 @@ var CSG = (function () {
       polys = r;
     }
     // never worse: when the cracks left are not fewer than at the start, the result goes back as the BSP made it
-    if (polys !== orig && after >= before) { polys = orig; healStats.reverted = (healStats.reverted || 0) + 1; }
+    HEAL_LEFT = after;
+    if (polys !== orig && after >= before) { polys = orig; HEAL_LEFT = before; healStats.reverted = (healStats.reverted || 0) + 1; }
     else if (polys !== orig) healStats.healed++;
     healStats.ms += NOW() - t0;
     return polys;
@@ -936,6 +963,54 @@ var CSG = (function () {
     csg.polygons = polygons;
     return csg;
   };
+  // ---------------------------------------------------------------- exact retry of a cracked boolean (rfFQ)
+  // splitPolygon takes a vertex within EPSILON of a plane as on it. That band is what lets coincident faces (a cut
+  // flush with a face, shell slabs meeting on a facet) come out coplanar, but where two nearly parallel planes meet
+  // (a fillet chord running tangent into a circle chord, a shallow round's first chord on a plane) the solid being
+  // split takes its new edge through the band vertex, while the other solid's faces are cut where the planes really
+  // cross, up to EPSILON / sin(angle) away: a crack (1e-4 at a few degrees) wider than healCracks may bridge. So a
+  // boolean whose result is still open after healing (HEAL_LEFT open edges near its fragments) and that had band
+  // vertices at all (FUZZY) is run once more with those vertices on their true side (EXACT; a gentler retry that kept
+  // polygons nearly parallel to the plane on the band closed fewer cases and cost a second run). The retry wins when it
+  // leaves fewer open edges and, unless it is closed, no more slivers under 1e-6 near the fragments (thinCount: the
+  // Funnel's shell slabs, near-coincident faces, came out with fewer heal-open edges but more slivers, which the
+  // meshes' 1e-6 weld turns into cracks, and the shell guard then refused it). A watertight boolean is never
+  // redone, so every closed result, every exact volume and every flat stays as it was. Cost: in the kernel tests ~880
+  // retries, ~260 won; retryMin (3) and retryMax (300) skip the counts that never won there (1-2 open edges: one win in
+  // 64; over 300: a boolean of cracked operands, one win in ~80, the costliest retries). CSG.options.retryExact =
+  // false turns it off; CSG.retryStats counts the retries and the wins.
+  var RETRY = { runs: 0, won: 0 };
+  function retryExact(A, B, raw) {
+    HEAL_LEFT = 0; EXACT = false;
+    var r = raw.call(A, B);
+    var left = HEAL_LEFT;
+    if (!left || !FUZZY || !OPTIONS.retryExact || left < OPTIONS.retryMin || left > OPTIONS.retryMax) return r;
+    var frag0 = FRAG, r2;
+    RETRY.runs++;
+    EXACT = true; HEAL_LEFT = 0;
+    try { r2 = raw.call(A, B); } finally { EXACT = false; }
+    if (HEAL_LEFT < left && (!HEAL_LEFT || thinCount(r2.polygons, FRAG) <= thinCount(r.polygons, frag0))) { r = r2; left = HEAL_LEFT; RETRY.won++; }
+    HEAL_LEFT = left;
+    return r;
+  }
+  // polygons near the last boolean's fragments (FRAG) narrower than 1e-6 (twice the area over the longest edge): the
+  // slivers a 1e-6 mesh weld collapses into open edges
+  function thinCount(polys, box) {
+    var n = 0;
+    for (var i = 0; i < polys.length; i++) {
+      var p = polys[i], vs = p.vertices;
+      if (box && polygonFar(p, box, 4 * HEAL)) continue;
+      var a = vs[0].pos, sx = 0, sy = 0, sz = 0, e2 = 0;
+      for (var j = 0; j < vs.length; j++) {
+        var b = vs[j].pos, c = vs[(j + 1) % vs.length].pos, ex = c.x - b.x, ey = c.y - b.y, ez = c.z - b.z, l2 = ex * ex + ey * ey + ez * ez;
+        if (l2 > e2) e2 = l2;
+        var bx = b.x - a.x, by = b.y - a.y, bz = b.z - a.z, cx = c.x - a.x, cy = c.y - a.y, cz = c.z - a.z;
+        sx += by * cz - bz * cy; sy += bz * cx - bx * cz; sz += bx * cy - by * cx;
+      }
+      if (Math.sqrt(sx * sx + sy * sy + sz * sz) <= 1e-6 * Math.sqrt(e2)) n++;
+    }
+    return n;
+  }
   // The booleans below are the classic BSP algorithm with a bounding-box early-out: a polygon whose own bounding box
   // lies clear of the other solid's bounding box is never clipped and is put back (or dropped) unchanged, since no
   // part of it can be inside the other solid. Two solids whose boxes do not meet skip the trees altogether. When few
@@ -955,7 +1030,10 @@ var CSG = (function () {
       if (!this.bounds) this.bounds = boundsOf(this.polygons);
       return this.bounds;
     },
-    union: function (csg) {
+    union: function (csg) { return retryExact(this, csg, rawUnion); },
+    subtract: function (csg) { return retryExact(this, csg, rawSubtract); },
+    intersect: function (csg) { return retryExact(this, csg, rawIntersect); },
+    _union: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
       if (!ba || !bb) return CSG.fromPolygons(clonePolys(this.polygons).concat(clonePolys(csg.polygons))); // an operand is empty
       if (!boundsOverlap(ba, bb, eps)) return CSG.fromPolygons(clonePolys(this.polygons).concat(clonePolys(csg.polygons)));
@@ -979,7 +1057,7 @@ var CSG = (function () {
       a.build(b.allPolygons());
       return CSG.fromPolygons(healCracks(restoreWhole(a.allPolygons()).concat(untag(far))));
     },
-    subtract: function (csg) {
+    _subtract: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
       // nothing minus anything is nothing (the trees would hand back the tool's faces inverted)
       if (!ba || !bb || !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons(ba ? clonePolys(this.polygons) : []);
@@ -1008,7 +1086,7 @@ var CSG = (function () {
       a.invert();
       return CSG.fromPolygons(healCracks(restoreWhole(a.allPolygons()).concat(untag(far))));
     },
-    intersect: function (csg) {
+    _intersect: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
       if (!ba || !bb || !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons([]);
       FUZZY = 0;
@@ -1133,6 +1211,8 @@ var CSG = (function () {
   //                               index into them (-1 for a planar face); null when no polygon has one }
   // unpack(obj) rebuilds the same polygons with the same vertex order and planes, so volume() of the round trip is
   // bit-identical and booleans on the result behave exactly as on the original.
+  var rawUnion = CSG.prototype._union, rawSubtract = CSG.prototype._subtract, rawIntersect = CSG.prototype._intersect;
+  delete CSG.prototype._union; delete CSG.prototype._subtract; delete CSG.prototype._intersect;
   CSG.prototype.pack = function () {
     var polys = this.polygons, P = polys.length, V = 0, i, j;
     for (i = 0; i < P; i++) V += polys[i].vertices.length;
@@ -1200,6 +1280,7 @@ var CSG = (function () {
   CSG.stats = STATS;
   // healCracks counters (rfFL): calls, results healed, polygons rebuilt / dropped, open edges it could not close
   CSG.healStats = healStats;
+  CSG.retryStats = RETRY;
   CSG.healCracks = function (csg) { FUZZY = 1; FRAG = null; return CSG.fromPolygons(healCracks(csg.polygons.slice())); };
   return CSG;
 })();

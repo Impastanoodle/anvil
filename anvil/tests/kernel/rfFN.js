@@ -70,18 +70,18 @@
       assert(r.build.bodies.length === 1, 'one body');
       return 'kept';
     });
-    // decided 2026-10-29: an empty cut stays a WARNING (SolidWorks errors), because the script default cut direction is
-    // +normal and many saved parts (an example, several pinned tests) carry forward cuts that miss; see kernel-rebuild.js
-    test('rfFN: a Cut-Extrude sketched on the top face with the default direction cuts nothing: a warning, no error, the part kept, the rest builds; a cut that changes one of two bodies neither fails nor warns', function () {
-      var r = build(BLOCK + 'p.sketch("Top", 20).circle(10, -10, 3).end().cut(5);\np.sketch("Top", 20).circle(30, -20, 2).end().cut("through", { reverse: true });');
-      noErrors(r);
-      var c1 = r.model.features.filter(function (x) { return x.name === 'Cut-Extrude1'; })[0], e = r.warnings[c1.id] || '';
-      assert(/removed no material/.test(e) && /Reverse direction/.test(e), 'warning: ' + JSON.stringify(r.warnings));
+    // rfFS (2026-10-30): script cuts with no direction go into the material, so an empty cut is SolidWorks' rebuild
+    // error now (it was a warning while the default was +normal); the part before it is kept
+    test('rfFN: a Cut-Extrude sketched on the top face cutting away from the part is an error, the part kept, the rest builds; a cut that changes one of two bodies neither fails nor warns', function () {
+      var r = build(BLOCK + 'p.sketch("Top", 20).circle(10, -10, 3).end().cut(5, { reverse: false });\np.sketch("Top", 20).circle(30, -20, 2).end().cut("through", { reverse: true });');
+      rfFNonly(r, ['Cut-Extrude1']);
+      var e = rfFNerr(r, 'Cut-Extrude1');
+      assert(/does not intersect the model/.test(e) && K.isRefusal(e), 'error: ' + e);
       nearRel(r.mp.volume, 24000 - 20 * 4 * PI, 1e-6, 'block − the later hole');
       var p = build(BLOCK + 'p.sketch("Top", 20).circle(10, -10, 3).end().cut("through", { reverse: true });\np.linearPattern({ dir: "x", spacing: 100, count: 2 });');
-      noErrors(p);
-      var pid = p.model.features[p.model.features.length - 1].id;
-      assert(/removed no material/.test(p.warnings[pid] || ''), 'pattern warning: ' + JSON.stringify(p.warnings));
+      rfFNonly(p, ['LPattern1']);
+      assert(/does not intersect the model/.test(rfFNerr(p, 'LPattern1')), 'pattern error: ' + rfFNerr(p, 'LPattern1'));
+      nearRel(p.mp.volume, 24000 - 20 * 9 * PI, 1e-6, 'block − the seed hole');
       var two = build(BLOCK + 'p.box(10, 10, 10, { at: [60, 0, 0], merge: false });\np.sketch("Top", 20).circle(10, -10, 3).end().cut("through", { reverse: true });');
       noErrors(two);
       assert(Object.keys(two.warnings).length === 0, 'a cut that changes one of two bodies neither fails nor warns: ' + JSON.stringify(two.warnings));

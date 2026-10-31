@@ -120,13 +120,12 @@
     assert(Object.keys(r.warnings).length === 0, 'no warning: ' + JSON.stringify(r.warnings));
     consistentVolume(r);
   });
-  test('normal cut whose tool crosses no sheet face warns and leaves the body alone', function () {
+  // rfFS: a cut that removes no material is a rebuild error now (it was a warning); the body is kept
+  test('normal cut whose tool crosses no sheet face and misses the part is an error and leaves the body alone', function () {
     var r = build(NSHEET + '\np.sketch("Top", 2).rect(200, 200, 10, 10);\np.cut("through", { reverse: true, normalCut: true });');
-    noErrors(r);
     var id = lastFeature(r).id;
-    assert(typeof r.warnings[id] === 'string' && r.warnings[id].length > 0, 'expected a warning on feature ' + id + ': ' + JSON.stringify(r.warnings));
-    assert(/normal cut|removed no material/i.test(r.warnings[id]), 'warning text: ' + r.warnings[id]);
+    assert(/does not intersect the model/.test(r.errors[id] || ''), 'expected the empty-cut error on feature ' + id + ': ' + JSON.stringify(r.errors));
     near(r.mp.volume, 12000, 1e-6, 'volume unchanged');
-    return r.warnings[id];
+    return r.errors[id];
   });
 

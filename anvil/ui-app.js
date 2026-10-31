@@ -24,7 +24,7 @@
 '// profile in the Front plane: X is radius, Y is height; revolve about the sketch Y axis\n' +
 'p.sketch("Front").polyline([[6, 0], [14, 0], [14, 3], [9, 3], [9, 22], [6, 22]]).revolve(360);\n' +
 '// cross hole through the wall\n' +
-'p.sketch("Right", 20).circle(-12, 12, 1.5).cut("through", { reverse: true });\n' },
+'p.sketch("Right", 20).circle(0, 12, 1.5).cut("through", { reverse: true });\n' },
     { name: 'V-Belt Pulley', note: 'revolve with groove, bore, six lightening holes in a circular pattern', code:
 'p.name("V-Belt Pulley");\n' +
 'p.sketch("Front").polyline([[8, 0], [40, 0], [40, 5], [34, 9], [40, 13], [40, 18], [8, 18]]).revolve(360);\n' +

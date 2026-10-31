@@ -448,6 +448,11 @@
     'kernel/rfFM.js',
     'kernel/rfFL.js',
     'kernel/rfFP.js',
+    'kernel/rfFT.js',
+    'kernel/rfFS.js',
+    'kernel/rfFR.js',
+    'kernel/rfFU.js',
+    'kernel/rfFQ.js',
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'kernel-tests.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'kernel-tests.groups.js', error: e }); }

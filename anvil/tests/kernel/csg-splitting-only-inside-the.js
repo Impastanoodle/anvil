@@ -142,7 +142,9 @@
     nearRel(d.mp.volume, circleArea(10) * 20, 1e-9, 'exact');
     consistentVolume(d);
     var h = build('p.box(40, 40, 20);\np.hole("Top", 20, -20, 10, { offset: 20 });\np.hole("Top", 20, -20, 4, { offset: 20 });');
-    noErrors(h);
+    // rfFS: the second hole lies inside the first and removes nothing, which is a rebuild error now; the part is kept
+    var hid = h.model.features[h.model.features.length - 1].id;
+    assert(Object.keys(h.errors).length === 1 && /does not intersect the model/.test(h.errors[hid] || ''), 'errors: ' + JSON.stringify(h.errors));
     nearRel(h.body.volume(), 32000 - polyCircleArea(5) * 20, 1e-6, 'a smaller hole inside a larger one removes nothing more');
     nearRel(h.mp.volume, 32000 - circleArea(5) * 20, 1e-9, 'exact');
     consistentVolume(h);
