@@ -5179,7 +5179,9 @@
   // openBaseLayout(f, model, { planes, sketches? }) -> { plane, a, b, loop, cv, plates: [{ pts }], wedges (as Insert
   // Bends' for ibWedge), info (the bend records), fixed (a point on the fixed face), flatPlane, flats, T } (plain data,
   // both kernels). Records: Material Inside flanges from the plate nearer the fixed plate (the longest flat, the first
-  // of equal ones); the flat lies on the face that looks the way the chain turns, so a U's flanges read UP.
+  // of equal ones). SolidWorks 2022 (measured, rfGW, L / U / Z both ways): the thickness goes on the right of the chain
+  // as it runs, the sketch's first line to its last, whichever way the chain turns; the flat lies on the fixed plate's
+  // face on the sketch line, looking away from the material, so a flange that bends toward that side reads UP.
   function openBaseLayout(f, model, ctx) {
     var sheet = model.sheet && resolvedModel(model).model.sheet;
     if (!sheet) throw new Error('Base Flange: the part has no sheet parameters (thickness, bend radius).');
@@ -5197,14 +5199,13 @@
       var dx = pts[i + 1][0] - pts[i][0], dy = pts[i + 1][1] - pts[i][1], SL = Math.hypot(dx, dy);
       segs.push({ d: [dx / SL, dy / SL], l: [-dy / SL, dx / SL], L: SL });
     }
-    var joints = [], net = 0;
+    var joints = [];
     for (j = 0; j + 1 < m; j++) {
       var cr = segs[j].d[0] * segs[j + 1].d[1] - segs[j].d[1] * segs[j + 1].d[0], dt = segs[j].d[0] * segs[j + 1].d[0] + segs[j].d[1] * segs[j + 1].d[1];
       var A = Math.atan2(Math.abs(cr), dt), t = cr > 0 ? 1 : -1;
       joints.push({ A: A, t: t });
-      net += t * A;
     }
-    var left = Math.abs(net) > 1e-9 ? (net > 0 ? 1 : -1) : 1, s = f.flip ? -left : left;   // s: the material's side of the chain (+1 left)
+    var s = f.flip ? 1 : -1;   // s: the material's side of the chain (+1 left)
     joints.forEach(function (J, q) {
       var outer = J.t === s, r = prof.radii[q];   // outer: the sketch line is the bend's outside face
       J.R = r != null ? (outer ? r - T : r) : R0;
@@ -5263,11 +5264,10 @@
       var l = [p0, p1, off(p1, g), off(p0, g)];
       return { pts: signedArea(l) < 0 ? l.reverse() : l };
     });
-    // the fixed face: on the side the chain turns to, looking that way; the sheet lies behind it
+    // the fixed face: the fixed plate's face on the sketch line, looking away from the material; the sheet lies behind it
     var g = segs[fix], ms = 0.5 * ((fix > 0 ? joints[fix - 1].sb : 0) + g.L - (fix < m - 1 ? joints[fix].sb : 0));
-    var P2 = [pts[fix][0] + g.d[0] * ms, pts[fix][1] + g.d[1] * ms], nside = left;
-    if (nside === s) P2 = off(P2, g);
-    var nf = vec([nside * g.l[0], nside * g.l[1]]), xf = vec(g.d), big = 0;
+    var P2 = [pts[fix][0] + g.d[0] * ms, pts[fix][1] + g.d[1] * ms];
+    var nf = vec([-s * g.l[0], -s * g.l[1]]), xf = vec(g.d), big = 0;
     for (k = 1; k < 3; k++) if (Math.abs(xf[k]) > Math.abs(xf[big]) + 1e-9) big = k;
     if (xf[big] < 0) xf = scale(xf, -1);
     var P3 = add(to3D(plane, P2[0], P2[1]), scale(plane.n, (a + b) / 2));

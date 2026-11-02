@@ -17,8 +17,8 @@
   function rfGLarea(l) { var a = 0; for (var i = 0; i < l.length; i++) { var p = l[i], q = l[(i + 1) % l.length]; a += p[0] * q[1] - q[0] * p[1]; } return Math.abs(a) / 2; }
   function rfGLnet(flat) { var a = rfGLarea(flat.loops[0]); flat.loops.slice(1).forEach(function (l) { a -= rfGLarea(l); }); return a; }
 
-  // U: sketch lines are the outside faces: 2 up, 3 across, 2 up, 4 deep
-  var U = function (k) { return 'p.sheet(' + T + ', ' + R + ', ' + k + ');\np.sketch("Front").polyline([[0, 2], [0, 0], [3, 0], [3, 2]], false).end().baseFlange(null, { depth: 4 });\n'; };
+  // U: sketch lines are the outside faces: 2 up, 3 across, 2 up, 4 deep (the thickness goes on the right of the chain, rfGW)
+  var U = function (k) { return 'p.sheet(' + T + ', ' + R + ', ' + k + ');\np.sketch("Front").polyline([[3, 2], [3, 0], [0, 0], [0, 2]], false).end().baseFlange(null, { depth: 4 });\n'; };
   test('rfGL: U channel, K 0.5: closed, flat length = flats + 2 BA, volume = flat area x T', function () {
     var r = rfGLbuild(U(0.5)), f = rfGLflat(r), flats = (2 - Rt) + (3 - 2 * Rt) + (2 - Rt), L = flats + 2 * rfGLba(HP, R, 0.5);
     rfGLclosed(r);
@@ -34,10 +34,10 @@
     nearRel(f.size[0], flats + 2 * rfGLba(HP, R, 0.33), 1e-9);
     nearRel(r.mp.volume, rfGLbuild(U(0.5)).mp.volume, 1e-12);
   });
-  test('rfGL: U drawn the other way round is the same part (outside dimensions)', function () {
-    var r = rfGLbuild('p.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Front").polyline([[3, 2], [3, 0], [0, 0], [0, 2]], false).end().baseFlange(null, { depth: 4 });\n');
-    near(r.mp.bbox ? r.mp.bbox.max[0] : 3, 3, 1e-9);
-    nearRel(rfGLflat(r).size[0], rfGLflat(rfGLbuild(U(0.5))).size[0], 1e-12);
+  test('rfGL: U drawn the other way round puts the thickness outside the lines: the sketch is the inside faces', function () {
+    var r = rfGLbuild('p.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Front").polyline([[0, 2], [0, 0], [3, 0], [3, 2]], false).end().baseFlange(null, { depth: 4 });\n');
+    near(r.mp.bbox.max[0], 3 + T, 1e-9);
+    nearRel(rfGLflat(r).size[0], (2 - R) + (3 - 2 * R) + (2 - R) + 2 * rfGLba(HP, R, 0.5), 1e-9);
   });
   // Z: three legs, 45 deg-free square steps: 2, 1.5, 2
   var Z = 'p.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Front").polyline([[0, 0], [2, 0], [2, 1.5], [4, 1.5]], false).end().baseFlange(null, { depth: 3 });\n';
@@ -58,7 +58,7 @@
     var c = 'p.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Front").polyline([[0, 0], [3, 0], [5, 2]], false).end().baseFlange(null, { depth: 2, flip: true, midplane: true });\n';
     var r = rfGLbuild(c), f = rfGLflat(r), A = Math.PI / 4, s2 = Math.SQRT2;
     rfGLclosed(r);
-    nearRel(f.size[0], (3 - R * Math.tan(A / 2)) + (2 * s2 - R * Math.tan(A / 2)) + rfGLba(A, R, 0.5), 1e-9);
+    nearRel(f.size[0], (3 - Rt * Math.tan(A / 2)) + (2 * s2 - Rt * Math.tan(A / 2)) + rfGLba(A, R, 0.5), 1e-9);
     nearRel(r.mp.volume, rfGLnet(f) * T, 1e-9);
     var s = K.generateScript(r.model), r2 = build(s);
     noErrors(r2);
@@ -71,7 +71,7 @@
     var one = rfGLbuild('p.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Front").polyline([[0, 0], [3, 0]], false).end().baseFlange(null, { depth: 2 });\n');
     nearRel(one.mp.volume, 6 * T, 1e-9);
     nearRel(rfGLflat(one).size[0], 3, 1e-9);
-    var bad = build('p.units("in");\np.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Front").polyline([[0, 0.1], [0, 0], [3, 0]], false).end().baseFlange(null, { depth: 2 });\n');
+    var bad = build('p.units("in");\np.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Front").polyline([[3, 0], [0, 0], [0, 0.1]], false).end().baseFlange(null, { depth: 2 });\n');
     var e = Object.keys(bad.build.errors).map(function (k) { return bad.build.errors[k]; });
     assert(e.length && /too short/.test(e[0]), 'error: ' + e.join(' | '));
     return e[0];
@@ -85,7 +85,7 @@
   });
   test('rfGL: a sketched arc between two lines is that joint\'s radius (outside face: r - T inside)', function () {
     var r0 = 0.25;
-    var r = rfGLbuild('p.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Front").line(0, 2, 0, ' + r0 + ').arc(' + r0 + ', ' + r0 + ', ' + r0 + ', 180, 270).line(' + r0 + ', 0, 3, 0).end().baseFlange(null, { depth: 2 });\n');
+    var r = rfGLbuild('p.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Front").line(3, 0, ' + r0 + ', 0).arc(' + r0 + ', ' + r0 + ', ' + r0 + ', 180, 270).line(0, ' + r0 + ', 0, 2).end().baseFlange(null, { depth: 2 });\n');
     var f = rfGLflat(r);
     rfGLclosed(r);
     assert(f.bends.length === 1, 'bends ' + f.bends.length);

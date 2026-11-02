@@ -160,7 +160,7 @@
       near(rfGVpos(s.m, s.door)[1], 20, 1e-7, 'y: on the post top');
       near(rfGVpos(s.m, s.door)[2], 15, 1e-7, 'z: hole on the pin');
       assert(rfGVst(b, s.door).dof === 1, 'dof ' + rfGVst(b, s.door).dof);
-      assert(s.mt.name === 'Hinge1' && AS.defaultAlignment(s.mt) === 'anti-aligned', s.mt.name + ' ' + AS.defaultAlignment(s.mt));
+      assert(s.mt.name === 'Hinge1' && AS.defaultAlignment(s.mt) === 'closest', s.mt.name + ' ' + AS.defaultAlignment(s.mt));   // SolidWorks' default (rfGW)
     });
     test('Hinge: Define angle limit brings a door turned 60 back to its 30 maximum, leaves one inside the range alone; still 1 DOF', function () {
       var s = rfGVhinge({ limit: true, min: 0, max: 30 }, 60);

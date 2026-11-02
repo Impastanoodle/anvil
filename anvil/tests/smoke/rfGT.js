@@ -19,19 +19,19 @@
     await UI.drawing.ready();
     return top;
   }
-  step('rfGT: Hole Wizard callouts — blind Ø .281 ↧ .750; thread over drill 2X 1/4-20 UNC ↧ .500 / Ø .201 ↧ .750; counterbore over drill ⌴ Ø .438 ↧ .250 / Ø .266 THRU ALL; at two places the digits SolidWorks measured (Ø .28 ↧ .75, 1/4-20 UNC ↧ .50 over Ø .20 ↧ .75, ⌴ Ø .44 ↧ .25 over Ø .27 THRU ALL); a callout\'s own precision wins; Hole Table the same text', async function () {
+  step('rfGT: Hole Wizard callouts — blind Ø .281 ↧ .750; drill over thread 2X Ø .201 ↧ .750 / 1/4-20 UNC ↧ .500; drill over counterbore Ø .266 THRU ALL / ⌴ Ø .438 ↧ .250; at two places the digits SolidWorks measured (Ø .28 ↧ .75, Ø .20 ↧ .75 over 1/4-20 UNC ↧ .50, ⌴ Ø .44 ↧ .25 over Ø .27 THRU ALL); a callout\'s own precision wins; Hole Table the same text', async function () {
     var errs0 = errors.length, top = await rfGTBlock(), sm = anvil.drawing.summary();
     var t3 = sm.annotations.filter(function (a) { return a.type === 'holeCallout'; }).map(function (a) { return a.text; });
     assert(t3.indexOf('Ø .281 ↧ .750') >= 0, 'blind: ' + t3.join(' | '));
-    assert(t3.indexOf('2X 1/4-20 UNC ↧ .500 Ø .201 ↧ .750') >= 0, 'tapped: ' + t3.join(' | '));
-    assert(t3.indexOf('⌴ Ø .438 ↧ .250 Ø .266 THRU ALL') >= 0, 'counterbore: ' + t3.join(' | '));
+    assert(t3.indexOf('2X Ø .201 ↧ .750 1/4-20 UNC ↧ .500') >= 0, 'tapped: ' + t3.join(' | '));
+    assert(t3.indexOf('Ø .266 THRU ALL ⌴ Ø .438 ↧ .250') >= 0, 'counterbore: ' + t3.join(' | '));
     var lines = rfGTTexts();
-    ['2X 1/4-20 UNC ↧ .500', 'Ø .201 ↧ .750', '⌴ Ø .438 ↧ .250', 'Ø .266 THRU ALL'].forEach(function (x) { assert(lines.indexOf(x) >= 0, 'sheet line ' + x + ': ' + lines.join(' | ')); });
-    assert(lines.indexOf('2X 1/4-20 UNC ↧ .500') < lines.indexOf('Ø .201 ↧ .750') && lines.indexOf('⌴ Ø .438 ↧ .250') < lines.indexOf('Ø .266 THRU ALL'), 'line order ' + lines.join(' | '));
+    ['2X Ø .201 ↧ .750', '1/4-20 UNC ↧ .500', '⌴ Ø .438 ↧ .250', 'Ø .266 THRU ALL'].forEach(function (x) { assert(lines.indexOf(x) >= 0, 'sheet line ' + x + ': ' + lines.join(' | ')); });
+    assert(lines.indexOf('2X Ø .201 ↧ .750') < lines.indexOf('1/4-20 UNC ↧ .500') && lines.indexOf('Ø .266 THRU ALL') < lines.indexOf('⌴ Ø .438 ↧ .250'), 'line order ' + lines.join(' | '));
     anvil.drawing.options({ dimPrec: 2 }); await UI.drawing.ready();
     sm = anvil.drawing.summary();
     var t2 = sm.annotations.filter(function (a) { return a.type === 'holeCallout'; }).map(function (a) { return a.text; });
-    assert(t2.indexOf('Ø .28 ↧ .75') >= 0 && t2.indexOf('2X 1/4-20 UNC ↧ .50 Ø .20 ↧ .75') >= 0 && t2.indexOf('⌴ Ø .44 ↧ .25 Ø .27 THRU ALL') >= 0, 'document precision 2: ' + t2.join(' | '));
+    assert(t2.indexOf('Ø .28 ↧ .75') >= 0 && t2.indexOf('2X Ø .20 ↧ .75 1/4-20 UNC ↧ .50') >= 0 && t2.indexOf('Ø .27 THRU ALL ⌴ Ø .44 ↧ .25') >= 0, 'document precision 2: ' + t2.join(' | '));
     var dxf = anvil.drawing.dxf({ version: 'R2000' });
     assert(dxf.indexOf('%%c .28') >= 0, 'DXF keeps the space after the diameter sign');
     anvil.drawing.options({ dimPrec: '' }); await UI.drawing.ready();

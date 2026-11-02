@@ -42,7 +42,7 @@
     assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
     return holes.map(function (h) { return 'r' + h.r.toFixed(4) + '@' + h.c[0]; }).join(' ');
   });
-  step('rfAI: hole callouts on the drawing\'s Top view of that sheet — the clearance hole reads "Ø .266 THRU ALL", the tapped hole "1/4-20 UNC THRU ALL" + "Ø .201 THRU ALL"; Model Items with Hole callouts inserts one per hole', async function () {
+  step('rfAI: hole callouts on the drawing\'s Top view of that sheet — the clearance hole reads "Ø .266 THRU ALL", the tapped hole "Ø .201 THRU ALL" + "1/4-20 UNC THRU ALL"; Model Items with Hole callouts inserts one per hole', async function () {
     var errs0 = errors.length;
     assert(anvil.drawing.make(), 'drawing');
     var s = anvil.drawing.standard3View();
@@ -54,14 +54,14 @@
     assert(s1 && s2, 'callouts placed: ' + statusText());
     var t = texts(s2);
     assert(/^Ø \.266 THRU ALL$/.test(t[0]), 'clearance callout: ' + t[0]);
-    assert(/^1\/4-20 UNC THRU ALL\s+Ø \.201 THRU ALL$/.test(t[1]), 'tapped callout: ' + t[1]);
+    assert(/^Ø \.201 THRU ALL\s+1\/4-20 UNC THRU ALL$/.test(t[1]), 'tapped callout: ' + t[1]);
     anvil.drawing.deleteAnnotation(s2.annotations.filter(function (a) { return a.type === 'holeCallout'; })[0].id);
     anvil.drawing.deleteAnnotation(s2.annotations.filter(function (a) { return a.type === 'holeCallout'; })[1].id);
     // Model Items ▸ Hole callout inserts the Hole Wizard callouts (shop audit 2 finding 3, rfAJ), the CSK's from the feature
     var sm = anvil.drawing.modelItems({ views: [top.id], holeCallouts: true, holeLocations: true, dedupe: true });
     var mt = texts(sm);
     assert(mt.length === 3 && /Model Items inserted into 1 view/.test(statusText()), 'Model Items puts a hole callout on each of the three holes: ' + mt.join(' | ') + ', ' + statusText());
-    assert(mt.indexOf('Ø .266 THRU ALL ⌵ Ø .507 X 82°') >= 0 && mt.indexOf('1/4-20 UNC THRU ALL Ø .201 THRU ALL') >= 0 && mt.indexOf('Ø .266 THRU ALL') >= 0, 'callout texts: ' + mt.join(' | '));
+    assert(mt.indexOf('Ø .266 THRU ALL ⌵ Ø .507 X 82°') >= 0 && mt.indexOf('Ø .201 THRU ALL 1/4-20 UNC THRU ALL') >= 0 && mt.indexOf('Ø .266 THRU ALL') >= 0, 'callout texts: ' + mt.join(' | '));
     anvil.drawing.close(); await idle();
     assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
     return t.join(' | ') + '; Model Items ' + mt.join(' | ');

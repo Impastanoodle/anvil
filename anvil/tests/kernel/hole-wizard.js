@@ -96,7 +96,7 @@
       DW.addHoleCallout(r.doc, T.view.id, { c: [10, -5], r: 3.4 });   // Top view: u = x, v = −z; the sketch point (10, −5) is z = 5
       r.recompute();
       var an = r.sheet.annotations.filter(function (a) { return a.type === 'holeCallout'; })[0];
-      assert(an && an.text === 'M8x1.25 ↧ 12 Ø 6.8 ↧ 16', an && an.text);
+      assert(an && an.text === 'Ø 6.8 ↧ 16 M8x1.25 ↧ 12', an && an.text);
       T = r.view('Top');
       var c = T.toSheet([10, -5]), th = r.sheet.prims.filter(function (p) { return p.k === 'circle' && p.thread; });
       assert(th.length === 1 && th[0].style === 'hidden' && th[0].thread === 'M8x1.25', JSON.stringify(th));
@@ -106,7 +106,7 @@
       DW.addHoleCallout(q.doc, q.view('Top').view.id, { c: [0, 0], r: 3.3 });
       q.recompute();
       var aq = q.sheet.annotations.filter(function (a) { return a.type === 'holeCallout'; })[0];
-      assert(aq.text === '⌴ Ø 11 ↧ 6.4 Ø 6.6 ↧ 16', aq.text);
+      assert(aq.text === 'Ø 6.6 ↧ 16 ⌴ Ø 11 ↧ 6.4', aq.text);
       assert(!q.sheet.prims.some(function (p) { return p.thread; }), 'no thread');
       return an.text + ' | ' + aq.text;
     });

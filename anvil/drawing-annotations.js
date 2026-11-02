@@ -1604,18 +1604,18 @@
   }
   // wizardLines(hole, units, count, prec) -> the Hole Wizard hole's callout as SolidWorks 2022 writes it (measured,
   // test-reports/2026-11-02-solidworks-reference-2.md section 5; a space after each symbol, digits at the document's
-  // precision or the callout's own): 'Ø .28 ↧ .75'; thread over drill '1/4-20 UNC ↧ .50' / 'Ø .20 ↧ .75'; counterbore
-  // over drill '⌴ Ø .44 ↧ .25' / 'Ø .27 THRU ALL'. A countersink stays under the drill line (not measured yet). A
+  // precision or the callout's own): 'Ø .28 ↧ .75'. The drill line is always on top (its text sits in the dimension's
+  // Callout Above slot; the sheet exported to DXF shows it above the other line, rfGW): 'Ø .20 ↧ .75' over the thread
+  // '1/4-20 UNC ↧ .50'; 'Ø .27 THRU ALL' over the counterbore '⌴ Ø .44 ↧ .25' or the countersink '⌵ Ø .51 X 82°'. A
   // Through All end reads THRU ALL, several positions 'nX' on the first line. HoleWizard.callout (the PM's spec text)
   // keeps its own words.
   function wizardLines(h, units, count, prec) {
     var u = units === 'in' || units === 'mm' ? units : h.units, f = h.feature, s = HoleWizard.spec(f, u), thru = f.end === 'through';
     var k = u === h.units ? 1 : u === 'in' ? 1 / 25.4 : 25.4;   // the feature's depths are in the part's units
     function n(x) { return numText(x, u, prec); }
-    var drill = 'Ø ' + n(s.dia) + (thru ? ' THRU ALL' : ' ↧ ' + n(+f.depth * k)), lines = [];
+    var lines = ['Ø ' + n(s.dia) + (thru ? ' THRU ALL' : ' ↧ ' + n(+f.depth * k))];
     if (s.thread) lines.push(s.thread.label.replace(/ - 2B$/, '') + (thru ? ' THRU ALL' : ' ↧ ' + n(+(f.threadDepth || f.depth) * k)));
     if (s.cbore) lines.push('⌴ Ø ' + n(s.cbore.dia) + ' ↧ ' + n(s.cbore.depth));
-    lines.push(drill);
     if (s.csk) lines.push('⌵ Ø ' + n(s.csk.dia) + ' X ' + s.csk.angle + '°');
     if (count > 1) lines[0] = count + 'X ' + lines[0];
     return lines;

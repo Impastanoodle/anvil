@@ -49,7 +49,7 @@
   // 100 x 60 x 20 plate, 20 x 20 x 5 pocket, 20 x 20 x 10 boss
   var rfGQBase = 120000, rfGQCut = 118000, rfGQFull = 122000;
 
-  step('rfGQ: drag the rollback bar up the tree: the part rolls back, rows below go grey, their sketches stay out of the view, the cut\'s sketch stands above the bar; drag it down, Esc cancels, one undo per move', async function () {
+  step('rfGQ: drag the rollback bar up the tree: the part rolls back, rows below go grey, their sketches stay out of the view, the cut\'s sketch rolls with the cut; drag it down, Esc cancels, one undo per move', async function () {
     await rfGQOpen();
     rfGQNear(rfGQVol(), rfGQFull, 'whole part');
     assert(UI.rollbarIndex() === UI.App.model.features.length, 'the bar starts at the end');
@@ -63,9 +63,7 @@
     assert(!rfGQRow(cut).classList.contains('rolled'), 'the cut stays above the bar');
     await rfGQDrag(rfGQAbove(cut));
     rfGQNear(rfGQVol(), rfGQBase, 'above the cut');
-    var skRow = rfGQRow(K.findFeature(UI.App.model, cut.sketch));
-    assert(skRow && !skRow.classList.contains('rolled'), 'the cut\'s sketch stands above the bar on its own row');
-    assert(skRow.compareDocumentPosition(rfGQBar()) & 4, 'the bar is below the sketch');
+    assert(!rfGQRow(K.findFeature(UI.App.model, cut.sketch)) && UI.rollbarRolled(K.findFeature(UI.App.model, cut.sketch)), 'the cut\'s sketch rolls with it, under its row, as SolidWorks (rfGW)');
     assert(rfGQBar().compareDocumentPosition(rfGQRow(cut)) & 4, 'the bar is above the cut');
     // Esc while dragging leaves everything where it was
     var at = UI.rollbarIndex();
@@ -98,7 +96,7 @@
     rfGQNear(rfGQVol(), rfGQCut, 'Rollback on the last boss');
     await rfGQMenu(cut, 'Rollback');
     rfGQNear(rfGQVol(), rfGQBase, 'Rollback on the cut');
-    assert(UI.rollbarIndex() === m.features.indexOf(cut), 'the bar is right above the cut');
+    assert(UI.rollbarIndex() === m.features.indexOf(cut) - 1, 'the bar is right above the cut and its sketch');
     await rfGQMenu(cut, 'Roll Forward');
     assert(UI.rollbarIndex() === UI.App.model.features.indexOf(rfGQKind('sketch', 2)), 'Roll Forward is one feature: the bar is above the third sketch');
     rfGQNear(rfGQVol(), rfGQCut, 'Roll Forward');
@@ -123,7 +121,7 @@
     assert(fs.length === f0 + 2, 'two new features');
     assert(UI.rollbarIndex() === at + 2, 'the bar is under them: ' + UI.rollbarIndex());
     assert(fs[fs.length - 1].name === rfGQKind('extrude', 3).name || fs.indexOf(cut) > at, 'the rolled features stayed below');
-    assert(fs.indexOf(cut) === at + 2, 'the cut is below the new features');
+    assert(fs.indexOf(cut) === at + 3, 'the cut and its sketch are below the new features');
     rfGQNear(rfGQVol(), rfGQBase + 4000, 'the new boss is in, the rolled ones are not');
     await rfGQMenu(cut, 'Roll to End');
     rfGQNear(rfGQVol(), rfGQFull + 4000, 'all features rolled forward');

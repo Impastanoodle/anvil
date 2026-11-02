@@ -66,24 +66,24 @@
     });
     test('p9-bendtable: Bend Table columns TAG / DIRECTION / ANGLE / INNER RADIUS / BEND DED.: radius .060 (SolidWorks bend table--standard, rfV), BD = flatPattern\'s bd at three places, no leading zero; bendCols adds BEND ALLOW. and K-FACTOR', function () {
       var r = channel(), q = sheetOf(false, [8.5, 6.5]), rows = q.table.info.rows;
-      assert(JSON.stringify(q.table.info.columns) === '["TAG","DIRECTION","ANGLE","INNER RADIUS","BEND DED."]', 'columns ' + JSON.stringify(q.table.info.columns));
+      assert(JSON.stringify(q.table.info.columns) === '["Tag","Direction","Angle","Inner Radius","Bend Ded."]', 'columns ' + JSON.stringify(q.table.info.columns));
       assert(rows.length === 4, 'rows ' + rows.length);
-      r.flat.bends.forEach(function (b, i) {
+      r.flat.bends.slice().reverse().forEach(function (b, i) {   // the last bend made is A (rfGW)
         var row = rows[i];
         assert(row[0] === DW.bendTag(i) && row[1] === (b.up ? 'UP' : 'DOWN') && row[2] === Math.round(b.angle) + '°', 'row ' + i + ' ' + JSON.stringify(row));
-        assert(row[3] === DW.numText(b.R, 'in', 3) && row[4] === DW.numText(b.bd, 'in', 3), 'row ' + i + ' R / BD ' + JSON.stringify(row));
+        assert(row[3] === DW.numText(b.R, 'in', 3).replace(/^\./, '0.') && row[4] === DW.numText(b.bd, 'in', 3), 'row ' + i + ' R / BD ' + JSON.stringify(row));
       });
-      assert(rows.some(function (x) { return x[3] === '.060' && x[4] === '.098'; }) && rows.some(function (x) { return x[2] === '180°' && x[3] === '.015' && x[4] === '.009'; }), 'values ' + JSON.stringify(rows));
+      assert(rows.some(function (x) { return x[3] === '0.060' && x[4] === '.098'; }) && rows.some(function (x) { return x[2] === '180°' && x[3] === '0.015' && x[4] === '.009'; }), 'values ' + JSON.stringify(rows));
       var txt = q.sheet.prims.filter(function (p) { return p.k === 'text' && p.layer === 'BEND_NOTES'; }).map(function (p) { return p.text; });
-      assert(txt.indexOf('BEND DED.') >= 0 && txt.indexOf('.098') >= 0 && txt.indexOf('R .060') < 0, 'drawn ' + txt.join('|'));
+      assert(txt.indexOf('Bend Ded.') >= 0 && txt.indexOf('.098') >= 0 && txt.indexOf('R .060') < 0, 'drawn ' + txt.join('|'));
       q.view.bendCols = ['k', 'ba', 'bd']; q.recompute();
-      assert(JSON.stringify(q.table.info.columns) === '["TAG","DIRECTION","ANGLE","INNER RADIUS","BEND DED.","BEND ALLOW.","K-FACTOR"]', 'all columns ' + JSON.stringify(q.table.info.columns));
+      assert(JSON.stringify(q.table.info.columns) === '["Tag","Direction","Angle","Inner Radius","Bend Ded.","Bend Allow.","K-Factor"]', 'all columns ' + JSON.stringify(q.table.info.columns));
       assert(q.table.info.rows.every(function (x) { return x[5] === '.141' && x[6] === '0.50'; }), 'BA / K ' + JSON.stringify(q.table.info.rows));
       q.view.bendCols = []; q.recompute();
       assert(q.table.info.rows[0].length === 4, 'no optional columns');
       // the drawing's set precision applies (two places); fractions do not (a deduction stays decimal)
       delete q.view.bendCols; q.doc.options.dimPrec = 2; q.recompute();
-      assert(q.table.info.rows[0][4] === '.10' && q.table.info.rows[0][3] === '.06', 'two places ' + JSON.stringify(q.table.info.rows[0]));
+      assert(q.table.info.rows[0][4] === '.10' && q.table.info.rows[0][3] === '0.06', 'two places ' + JSON.stringify(q.table.info.rows[0]));
       q.doc.options.dimPrec = ''; q.doc.options.fractions = true; q.recompute();
       assert(q.table.info.rows[0][4] === '.098', 'fractions ' + JSON.stringify(q.table.info.rows[0]));
       return rows.map(function (x) { return x.join(' '); }).join(' / ');

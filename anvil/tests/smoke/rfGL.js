@@ -5,7 +5,7 @@
     function rfGLOk() { var b = D.querySelector('#pm .pm-ok'); assert(b, 'PM ✓ button'); b.click(); }
     step('rfGL: Base Flange on an open U sketch: Direction 1 in the PM, depth typed, the flat length, Edit Feature, undo', async function () {
       await anvil.newPart(); await idle();
-      await anvil.run('p.units("in");\np.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Front").polyline([[0, 2], [0, 0], [3, 0], [3, 2]], false).end();\n'); await idle();
+      await anvil.run('p.units("in");\np.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Front").polyline([[3, 2], [3, 0], [0, 0], [0, 2]], false).end();\n'); await idle();
       var n0 = UI.App.model.features.length;
       UI.cmdBaseFlange(); await idle();
       assert(UI.hasPM() && UI.pmTitle() === 'Base Flange/Tab', 'PM: ' + UI.pmTitle());

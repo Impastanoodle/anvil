@@ -3099,6 +3099,13 @@ var UI = (function () {
       cfgs.forEach(function (c) { if (c.suppressed && c.suppressed[f.id] === false) { delete c.suppressed[f.id]; b.over.push([c.name, f.id]); } });
     });
   }
+  // the sketch at index n - 1 is absorbed by feature n: only it uses that sketch. SolidWorks shows the sketch under the
+  // feature and rolls the two together (Feature.IsRolledBack, measured, rfGW): the bar never goes between them.
+  function rollbarAbsorbed(m, n) {
+    var f = m.features[n], s = m.features[n - 1];
+    if (!f || !s || s.type !== 'sketch' || f.type === 'sketch' || f.sketch !== s.id) return false;
+    return m.features.filter(function (g) { return g.sketch === s.id; }).length === 1;
+  }
   // rollbarTo(n): the bar goes above feature n (the feature count: to the end). One undo step. -> the rebuild's
   // Promise, or false when nothing moved. SolidWorks greys the bar while a command or a sketch is open.
   function rollbarTo(n) {
@@ -3107,6 +3114,7 @@ var UI = (function () {
     if (App.mode === 'sketch' || (UI.hasPM && UI.hasPM())) { if (UI.setStatus) UI.setStatus('Close the open command or sketch before moving the rollback bar.'); return false; }
     var at = rollbarIndex(), len = m.features.length;
     n = Math.max(0, Math.min(len, n | 0));
+    if (rollbarAbsorbed(m, n)) n--;
     if (n === at) return false;
     pushUndo();
     var was = m.features[at], next = m.features[n];
@@ -3118,7 +3126,7 @@ var UI = (function () {
       return b;
     });
   }
-  function rollbarForward() { return rollbarTo(rollbarIndex() + 1); }
+  function rollbarForward() { var n = rollbarIndex() + 1; return rollbarTo(rollbarAbsorbed(App.model, n) ? n + 1 : n); }
   function rollbarEnd() { return rollbarTo(App.model.features.length); }
   function rollbarPrevIndex() {
     var m = App.model, p = m && m.rollbarPrev;

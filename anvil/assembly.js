@@ -693,9 +693,13 @@ var Assembly = (function () {
       var L = len(sub(pb, pa));
       if (L < 1e-6) continue;
       var e = scale(sub(pb, pa), 1 / L), w = cross(d, e), mid = scale(add(pa, pb), 0.5);
-      // the two straight sides join them (so the ends of two slots in line do not read as one slot)
-      var s1 = patchesByDistance(geom, add(mid, scale(w, r)))[0], s2 = patchesByDistance(geom, sub(mid, scale(w, r)))[0];
-      if (!s1 || !s2 || s1.d > tol * 10 || s2.d > tol * 10) continue;
+      // the two straight sides join them all the way (so the ends of two slots in line do not read as one slot, nor a
+      // slot's end and a round hole of its width further along its line)
+      var joined = [0.5, 0.1, 0.9].every(function (u) {
+        var q = add(pa, scale(e, u * L)), s1 = patchesByDistance(geom, add(q, scale(w, r)))[0], s2 = patchesByDistance(geom, sub(q, scale(w, r)))[0];
+        return s1 && s2 && s1.d <= tol * 10 && s2.d <= tol * 10;
+      });
+      if (!joined) continue;
       // the point lies on the slot's wall: r from its centre line
       var t = Math.max(0, Math.min(L, dot(sub(p, pa), e))), err = Math.abs(len(sub(p, add(pa, scale(e, t)))) - r);
       if (err < bestErr) { bestErr = err; best = { a: pa, b: pb, dir: d, radius: r, length: L, e: e }; }
@@ -817,8 +821,9 @@ var Assembly = (function () {
   // two directions have when the mate is solved (so the component turns the least).
   function defaultAlignment(m) {
     var t = m.type;
-    if (t === 'symmetric' || t === 'slot') return 'closest';
-    if (t === 'hinge') return (m.a2 && m.a2.face && m.b2 && m.b2.face) ? 'anti-aligned' : 'aligned';   // of the Coincident Selections
+    // SolidWorks' CreateMateData defaults (measured, rfGW): Slot and Hinge closest, Symmetric aligned
+    if (t === 'symmetric') return 'aligned';
+    if (t === 'slot' || t === 'hinge') return 'closest';
     if (t === 'parallel' || t === 'perpendicular' || t === 'tangent' || t === 'width' || t === 'gear') return 'closest';
     if (t === 'coincident' || t === 'distance' || t === 'limitdistance') {
       if (t !== 'coincident' && (isAxisRef(m.a) || isAxisRef(m.b))) return 'closest';
@@ -1139,7 +1144,7 @@ var Assembly = (function () {
       if (hs[pm.cb.id] && !hs[pm.ca.id]) return false;
       if (grounded[pm.ca.id] && !grounded[pm.cb.id]) return true;
       if (grounded[pm.cb.id] && !grounded[pm.ca.id]) return false;
-      return true;
+      return pm.type !== 'symmetric';   // two free parts: SolidWorks moves the first entity of a Symmetric mate (measured, rfGW)
     }
     // Angle mate: turn the moving component about the angle axis k (its hinge, when earlier mates left one) until the
     // signed angle reaches the target; a hinged component is then fully oriented.

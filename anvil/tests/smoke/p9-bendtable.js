@@ -11,7 +11,7 @@
     assert(tab && !(tab.box[0] < tb[2] && tb[0] < tab.box[2] && tab.box[1] < tb[3] && tb[1] < tab.box[3]), 'the table is off the title block: ' + JSON.stringify(tab && tab.box) + ' vs ' + JSON.stringify(tb));
     function tableTexts() { return Array.prototype.map.call(D.querySelectorAll('#drawing-sheet g[data-layer="BEND_NOTES"] text'), function (t) { return t.textContent; }); }
     var t0 = tableTexts();
-    assert(t0.indexOf('BEND DED.') >= 0 && t0.indexOf('INNER RADIUS') >= 0 && t0.indexOf('.030') >= 0 && t0.indexOf('K-FACTOR') < 0, 'default columns ' + t0.join('|'));
+    assert(t0.indexOf('Bend Ded.') >= 0 && t0.indexOf('Inner Radius') >= 0 && t0.indexOf('0.030') >= 0 && t0.indexOf('K-Factor') < 0, 'default columns ' + t0.join('|'));
     UI.drawing.viewProperties(fv.id);
     assert(UI.hasPM() && /Bend Table Columns/.test($('pm').innerText), 'Bend Table Columns group: ' + $('pm').innerText.replace(/\s+/g, ' ').slice(0, 300));
     assert(pmField('Bend deduction').checked && !pmField('K-factor').checked, 'BEND DED. on, K-factor off');
@@ -19,7 +19,7 @@
     await UI.pmOK(); await UI.drawing.ready(); await wait(30);
     var v = anvil.drawing.doc().views.filter(function (x) { return x.kind === 'flat'; })[0], t1 = tableTexts();
     assert(JSON.stringify(v.bendCols) === '["bd","k"]', 'bendCols ' + JSON.stringify(v.bendCols));
-    assert(t1.indexOf('K-FACTOR') >= 0 && t1.indexOf('0.44') >= 0 && t1.indexOf('BEND DED.') >= 0, 'K-FACTOR column drawn ' + t1.join('|'));
+    assert(t1.indexOf('K-Factor') >= 0 && t1.indexOf('0.44') >= 0 && t1.indexOf('Bend Ded.') >= 0, 'K-Factor column drawn ' + t1.join('|'));
     anvil.drawing.close();
     return 'table at ' + tab.box.join(', ') + '; columns ' + t1.slice(0, 6).join(' / ');
   });

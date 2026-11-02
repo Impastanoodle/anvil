@@ -95,10 +95,10 @@
     });
     test('p9-drawing: Bend Table mode: tags A, B on the bend lines and a table TAG / DIRECTION / ANGLE / INNER RADIUS / BEND DED. under the view (A UP 90° .030 .091, B DOWN 90° .030 .091)', function () {
       var q = flatDrawing(INCH, { bendNotes: 'table' }), tags = flatAnns(q, 'bendTag'), tb = flatAnns(q, 'bendTable');
-      assert(tags.map(function (a) { return a.text; }).join() === 'A,B' && !flatAnns(q, 'bendNote').length, 'tags ' + JSON.stringify(tags.map(function (a) { return a.text; })));
-      assert(tb.length === 1 && JSON.stringify(tb[0].info.rows) === '[["A","UP","90°",".030",".091"],["B","DOWN","90°",".030",".091"]]', 'table ' + JSON.stringify(tb[0] && tb[0].info));
+      assert(tags.map(function (a) { return a.text; }).join() === 'B,A' && !flatAnns(q, 'bendNote').length, 'tags ' + JSON.stringify(tags.map(function (a) { return a.text; })));   // the last bend made is A (rfGW)
+      assert(tb.length === 1 && JSON.stringify(tb[0].info.rows) === '[["A","DOWN","90°","0.030",".091"],["B","UP","90°","0.030",".091"]]', 'table ' + JSON.stringify(tb[0] && tb[0].info));
       var txt = q.sheet.prims.filter(function (p) { return p.k === 'text' && p.layer === 'BEND_NOTES'; }).map(function (p) { return p.text; });
-      ['TAG', 'DIRECTION', 'ANGLE', 'INNER RADIUS', 'BEND DED.', 'UP', 'DOWN', '.030', '.091'].forEach(function (s) { assert(txt.indexOf(s) >= 0, 'table text ' + s); });
+      ['Tag', 'Direction', 'Angle', 'Inner Radius', 'Bend Ded.', 'UP', 'DOWN', '0.030', '.091'].forEach(function (s) { assert(txt.indexOf(s) >= 0, 'table text ' + s); });
       assert(tb[0].box.y1 < q.w.box.y0, 'the table is under the view');
       q.view.bendNotes = 'none'; q.recompute();
       assert(!flatAnns(q).length, 'none: no notes, tags or table');

@@ -1780,3 +1780,13 @@ Context: the user, "make the tests run in parallel from now on". The agent's tri
 - Decisions: a speed claim is measured on merged code before it is reported. Using up the usage window is not a goal.
 - Next: QUEUE.md leftovers.
 Tests: kernel 2311/2311 in 216 s on 8 workers, plus the new rfGM speed row (rfGM 7/7), examples 29/29 (both kernels), ui-smoke 896/896, occt 176/176, app console not rechecked after the one-function fix.
+
+## local-2026-11-02e (local, interactive head; 1 Opus agent): today's unchecked work against SolidWorks
+
+Context: the user, "check everything from today that hasnt been checked". One lane, one SolidWorks session, 54 documents, 12,236 to 252,188 handles, no foreign document. Group runs only for the agent, one full run by the head, so the PC stayed usable.
+- Incident before the lane: the head listed documents in the user's session over COM at 16:13:58, then started a hidden second SolidWorks at 16:15:29 without asking. The user's session crashed at 16:16:59 (0xc0000374, heap corruption, dump in %LOCALAPPDATA%\CrashDumps) with three unsaved parts open; no autorecover file existed for them. Cause unproven, timing points at the head. Second-instance helper deleted, recovery folder copied to Output, memory `solidworks-unsaved-work` added. The user said not to worry about the parts and to carry on.
+- swcheck (rfGW): `test-reports/2026-11-02-unchecked-items.md`, 27 rows, 9 match, 7 fixed, 7 differ, 4 need a person. Fixed: `openBaseLayout` (thickness right of the chain, fixed face on the sketch line; the old rule put L and U volumes and both Z wrong), Bend Table (headers, last bend made is A, `0.060`), `wizardLines` (drill on top; the second reference report misread GetText(1)), `rollbarAbsorbed`, `findSlot`, `defaultAlignment` for Hinge and Symmetric, Symmetric mover. Jog Bend Outside was the API call, as suspected: it matches.
+- The agent's `RunCommand(1048)` raised a modal box and blocked its script with its own Part41 open; it clicked OK with a posted click and closed Part41. Head reviewed all 13 changed test pins: each follows a measured result. The agent's `?only=Hole` 17/19 did not repeat: the full ui-smoke passes.
+- Head: not fixed, queued: the miter line (5d), Closed Corner pick at d = 0 (5c, not the plain swap the report suggests: SolidWorks' volume differs from the other pick), tangent default (15b), the Symmetric refusal (Anvil builds), drawing notes.
+- Next: QUEUE.md "Check local-2026-11-02e leftovers".
+Tests: kernel 2332 / 2332 in 182 s, examples 29 / 29 both engines, ui-smoke 897 / 897, occt 176 / 176, app loads with no console errors of its own.

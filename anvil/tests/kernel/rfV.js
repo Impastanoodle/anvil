@@ -49,7 +49,7 @@
       assert(sh.dims.filter(function (d) { return d.flat; }).length === 2, 'the option adds width and height');
       v.bendNotes = 'table'; sh = DW.compute(doc, r.mesh, r.model, { build: r.build });
       var tb = sh.annotations.filter(function (a) { return a.type === 'bendTable'; })[0];
-      assert(tb && tb.info.columns.indexOf('INNER RADIUS') === 3 && tb.info.rows[0][3] === '.030', 'table ' + JSON.stringify(tb && tb.info));
+      assert(tb && tb.info.columns.indexOf('Inner Radius') === 3 && tb.info.rows[0][3] === '0.030', 'table ' + JSON.stringify(tb && tb.info));
       return tb.info.columns.join(' / ');
     });
     test('rfV: an angle dimension uses the drawing\'s dimension style (inch: .125 text and arrows, like the linear ones) and is a 3-point angular DIMENSION in R2000 DXF with its own block', function () {

@@ -689,21 +689,21 @@
   // the Bend Table's columns: [key, min width (paper mm), header]; view.bendCols lists the optional ones shown
   // ('bd' bend deduction, 'ba' bend allowance, 'k' K-factor, in that order; default ['bd']), as SolidWorks' bend table
   // template takes extra columns
-  var TABLE_COLS = [['tag', 12, 'TAG'], ['dir', 24, 'DIRECTION'], ['angle', 18, 'ANGLE'], ['radius', 30, 'INNER RADIUS']];
-  var TABLE_OPT_COLS = [['bd', 24, 'BEND DED.'], ['ba', 26, 'BEND ALLOW.'], ['k', 20, 'K-FACTOR']];
+  var TABLE_COLS = [['tag', 12, 'Tag'], ['dir', 24, 'Direction'], ['angle', 18, 'Angle'], ['radius', 30, 'Inner Radius']];
+  var TABLE_OPT_COLS = [['bd', 24, 'Bend Ded.'], ['ba', 26, 'Bend Allow.'], ['k', 20, 'K-Factor']];
   function bendTableCols(v) {
     var on = Array.isArray(v.bendCols) ? v.bendCols : ['bd'];
     return TABLE_COLS.concat(TABLE_OPT_COLS.filter(function (c) { return on.indexOf(c[0]) >= 0; }));
   }
   // a Bend Table cell: lengths with the drawing's precision (inch: 3 places, no leading zero, never a fraction —
-  // a bend deduction of 3/32 means nothing on the floor; mm: the dimension format); the INNER RADIUS cell is the plain
-  // value '.060' under its header, as SolidWorks' bend table--standard template writes it (rfV)
+  // a bend deduction of 3/32 means nothing on the floor; mm: the dimension format); the Inner Radius cell has the
+  // leading zero, '0.060', as SolidWorks' bend table--standard template writes it (0.06 at its 2 places, rfGW)
   function bendTableCell(key, b, i, units, prec, T) {
     function len(x) { return x == null || !isFinite(x) ? '-' : numText(x, units, prec != null ? prec : units === 'in' ? 3 : null); }
     if (key === 'tag') return D.bendTag(i);
     if (key === 'dir') return b.up ? 'UP' : 'DOWN';
     if (key === 'angle') return (Math.round(b.angle * 10) / 10) + '°';
-    if (key === 'radius') return len(b.R);
+    if (key === 'radius') return len(b.R).replace(/^\./, '0.');
     if (key === 'bd') return len(b.bd);
     if (key === 'ba') return len(b.ba);
     if (key === 'k') {
@@ -804,7 +804,8 @@
       if (t[0] < -1e-9 || (Math.abs(t[0]) <= 1e-9 && t[1] < 0)) t = [-t[0], -t[1]];
       var rot = Math.atan2(t[1], t[0]) * 180 / Math.PI, n = [-t[1], t[0]], M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], g = BEND_GAP * k;
       if (Math.abs(rot) < 1e-9) rot = 0;
-      var txt = mode === 'table' ? D.bendTag(i) : D.bendNoteText(b, units, { prec: v.bendPrec });
+      // SolidWorks tags the bends from the last made (A) back to the first (measured twice, rfGW)
+      var txt = mode === 'table' ? D.bendTag(fd.bends.length - 1 - i) : D.bendNoteText(b, units, { prec: v.bendPrec });
       var bk = bkeys[i] || 'b' + i;
       if (!own[bk] && own['b' + i]) own = Object.assign({}, own, (function () { var o2 = {}; o2[bk] = own['b' + i]; return o2; })());
       item(bk, mode === 'table' ? 'bendTag' : 'bendNote', txt, bendNotePrims(txt, M, t, n, L, g, noteH() * k, rot, BEND_EXT * k),
@@ -819,7 +820,7 @@
     if (mode === 'table' && fd.bends.length) {
       var spec = bendTableCols(v), rh = TABLE_ROW * k, th = TABLE_H * k, T = fd.sheet && +fd.sheet.thickness || 0;
       var tprec = v.bendPrec != null && v.bendPrec !== '' ? +v.bendPrec : _.DIMSTYLE && _.DIMSTYLE.prec != null ? _.DIMSTYLE.prec : null;
-      var rows = fd.bends.map(function (b, i) { return spec.map(function (c) { return bendTableCell(c[0], b, i, units, tprec, T); }); });
+      var rows = fd.bends.slice().reverse().map(function (b, i) { return spec.map(function (c) { return bendTableCell(c[0], b, i, units, tprec, T); }); });
       // (a column is as wide as its longest text needs, at least its template width)
       var cols = spec.map(function (c, ci) {
         var cw = c[1] * k;
