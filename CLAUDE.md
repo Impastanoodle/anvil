@@ -97,7 +97,7 @@ Do this **as soon as the subagents return**, before polish, so an interrupted ru
     "tests": {"passed": 188, "total": 188}, "uiSmoke": {"passed": 16, "total": 16},
     "next": ["<next task>", "<next task>"]}
    ```
-3. Update roadmap counts: `ArtifactData` action `set`, collection `status`, doc_id `board`, data `{"updatedAt": "<ISO>", "appUrl": "https://claude.ai/artifact/Dhex98h8xugn5w2RXraAPS", "roadmap": [{"phase": "Phase 1 — foundation", "done": 15, "total": 15}, ...]}` (count the `[x]` and `[ ]` lines per phase).
+3. Update roadmap counts: `ArtifactData` action `set`, collection `status`, doc_id `board`, data `{"updatedAt": "<ISO>", "appUrl": "https://claude.ai/artifact/Dhex98h8xugn5w2RXraAPS", "roadmap": [{"phase": "Phase 1 — foundation", "done": 15, "total": 15}, ...], "loc": <the JSON from `node head-tools/count-loc.js`, after the commit>}` (count the `[x]` and `[ ]` lines per phase). `set` replaces the document, so keep its other fields.
 4. Close each request handled this run: `ArtifactData` action `update`, collection `requests`, doc_id `<id>`, data `{"status": "done", "runId": "<run id>", "reply": "<what was done, one or two sentences>"}`. A request that was not finished goes back to `"status": "open"` with a reply saying why.
 5. Republish the app: `Artifact` with `url` `https://claude.ai/artifact/Dhex98h8xugn5w2RXraAPS`, `root: anvil`, files map of every script and stylesheet `anvil/index.html` loads (read its `<script src>` list: `csg.js`, `kernel.js` and the eight `kernel-*.js`, `holewizard.js`, `sketch-solver.js`, `exchange.js`, `assembly.js`, `materials.js`, `icons.js`, `examples/examples.js`, the `ui-*.js` files, `evaluate.js`, `occt-kernel.js`, `drawing.js` and the nine `drawing-*.js`) plus `style.css`, `drawing.css`, `worker.js`, `drawing-worker.js` and `occt-worker.js`. A missing file breaks the published app.
 6. If the `PushNotification` tool is available, send one line: run id, lanes done, test result.
@@ -109,7 +109,7 @@ Do this **as soon as the subagents return**, before polish, so an interrupted ru
 Anvil Foreman, https://claude.ai/artifact/NpXWnL5SbATgTfMLSuRRav, is the user's view and steering wheel. Its page lives in `dashboard/index.html`; republish it from that file only when the page itself changes. Collections:
 - `runs/<run id>`: the run itself. `status` (`running`, `done`), `phase`, `heartbeat`, `startedAt`, `finishedAt`, `head`, `tests`, `uiSmoke`, `commit`, `next`. The board shows a running run in an "In progress" panel and a done run as a brief.
 - `runs/<run id>/lanes/<lane>`: one document per subagent, written by the head when planned and by the subagent while it works. `lane`, `task`, `status` (`queued`, `running`, `done`, `failed`), `step` (what it is doing now, one line), `log` (list of `{at, msg}`, newest last, at most 30), `files`, `filesChanged`, `note`, `startedAt`, `updatedAt`. A helper run's lanes go under `runs/<run id>-helper/lanes`.
-- `status/board`: `roadmap` counts and `updatedAt`.
+- `status/board`: `roadmap` counts, `loc` (the Lines of code tile) and `updatedAt`.
 - `requests/<auto id>`: `text`, `createdAt`, `status` (`open`, `taken`, `done`), `runId`, `reply`.
 
 ## Files and ownership

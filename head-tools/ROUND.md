@@ -67,7 +67,8 @@ every ~30 s, 87 rows), and `http://localhost:8812/` with no console errors.
 - Republish the app: `Artifact` with `url` https://claude.ai/artifact/Dhex98h8xugn5w2RXraAPS, `root: anvil`,
   `file_path: anvil/index.html`, `files` = every app file changed since the round base
   (`git diff --name-only <base> HEAD | grep -v "tests/\|\.md$"`) plus any new script `index.html` loads.
-- Close the run on the board (status done, commit, lanes with outcome / note, tests, uiSmoke, next).
+- Close the run on the board (status done, commit, lanes with outcome / note, tests, uiSmoke, next), and `update`
+  `status/board` with `loc` = the JSON from `node head-tools/count-loc.js` (the Lines of code tile).
 - Clean up: `git worktree remove --force .claude/worktrees/agent-<id>`, `git branch -D worktree-agent-<id>`,
   `git worktree prune`, delete `HEAD.lock` (the heartbeat stops by itself).
 - Tell the user: what each lane did, the suite table, what is still open, usage — then suggest `/compact` before the
