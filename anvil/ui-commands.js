@@ -2423,6 +2423,7 @@
         });
         return;
       }
+      if (K.isOpenProfile(K.findFeature(App.model, f.sketch))) { cmdOpenBase(f.sketch, null); return; }   // lane open-base
       function feature(v) { var o = {}; Object.keys(v).forEach(function (k) { if (SHEET_PM_KEYS.indexOf(k) < 0) o[k] = v[k]; }); return o; }
       openPM({
         title: 'Base Flange/Tab', icon: 'flange', values: f, command: { sketchId: f.sketch },
@@ -2444,6 +2445,64 @@
         }
       });
     });
+  }
+  // lane open-base: Base Flange from an open profile: Direction 1 (Blind / Mid Plane, depth, Reverse Direction), the
+  // sheet's groups with a Reverse direction for the side T goes to (SolidWorks). The feature is an `insertBends` with
+  // `openBase`, so the preview is built here, not through the worker's tool op.
+  function cmdOpenBase(sid, existing) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    var v0 = sheetToValues(App.model.sheet || defaultSheet(), {});
+    v0.sketch = existing ? existing.sketch : sid;
+    v0.depth = existing ? existing.depth : (App.model.units === 'in' ? 1 : 25);
+    v0.end = existing && existing.end === 'mid' ? 'mid' : 'blind';
+    v0.reverse = !!(existing && existing.reverse);
+    v0.flip = !!(existing && existing.flip);
+    function featOf(v) {
+      var o = { type: 'insertBends', openBase: true, sketch: v.sketch, depth: +v.depth, end: v.end, reverse: !!v.reverse, sheetBase: true };
+      if (v.flip) o.flip = true;
+      if (existing && existing.radius != null) o.radius = existing.radius;
+      return o;
+    }
+    function preview() {
+      var v = pm.values || v0;
+      UI.disposeGroup(UI.groups.preview);
+      try {
+        var pmod = previewModel(), m = {};
+        Object.keys(pmod).forEach(function (k) { m[k] = pmod[k]; });
+        m.sheet = sheetFromValues(v, false);
+        var r = K.buildOpenBase(featOf(v), m, { planes: (App.build && App.build.planes) || {} });
+        addPreviewMesh(r.tool, UI.mats.preview);
+        UI.setStatus('Base Flange: ' + r.bends + ' bend' + (r.bends === 1 ? '' : 's') + ', T ' + UI.fmtNum(m.sheet.thickness, 4) + ', R ' + UI.fmtNum(m.sheet.bendRadius, 4) + '. Press Enter or ✓ to accept.');
+      } catch (e) { UI.setStatus('Preview: ' + e.message); }
+    }
+    openPM({
+      title: existing ? existing.name : 'Base Flange/Tab', icon: 'flange', values: v0, command: { sketchId: v0.sketch },
+      groups: [{ title: 'Direction 1', fields: [
+        { type: 'select', label: 'End Condition', key: 'end', options: [['blind', 'Blind'], ['mid', 'Mid Plane']] },
+        { type: 'number', label: 'Depth', key: 'depth', step: 0.1, min: 0 },
+        { type: 'check', label: 'Reverse Direction', key: 'reverse' }
+      ] }].concat(sheetGroups([{ type: 'check', label: 'Reverse direction', key: 'flip' }])),
+      onChange: function (v, key) {
+        if (v.useGauge && (key === 'useGauge' || key === 'gaugeTable' || key === 'gauge') && applyGauge(v)) renderPM();
+        preview();
+      },
+      onOK: function (v) {
+        if (!(+v.depth > 0)) { UI.toast('The depth must be more than 0.'); return false; }
+        var sheet;
+        try { sheet = sheetFromValues(v, true); } catch (e) { UI.toast(e.message); UI.setStatus(e.message); return false; }
+        var feat = featOf(v);
+        feat.depth = pmExpr('depth', +v.depth);
+        feat.name = existing ? existing.name : 'Base-Flange' + (App.model.features.filter(function (q) { return /^Base-Flange\d+$/.test(q.name || ''); }).length + 1);
+        // one undo step takes back the sheet with the feature (as Insert Bends)
+        UI.pushUndo();
+        var mark = App.undo.length;
+        App.model.sheet = sheet;
+        var res = commitFeature(feat, existing);
+        if (App.undo.length === mark + 1) App.undo.splice(mark, 1);
+        return res;
+      }
+    });
+    preview();
   }
   // Sheet Metal (SolidWorks' Sheet-Metal feature): the part's sheet parameters and bend allowance, with the flat size
   // of the part as it stands updated live (a change of T or R needs the rebuild: the size follows after ✓).
@@ -3295,6 +3354,162 @@
     preview();
   }
 
+  // ------------------------------------------------------------------ sheet metal: Cross-Break (lane cross-break)
+  // SolidWorks' Sheet Metal ▸ Cross-Break (Kernel.crossBreakLayout, cosmetic: a rebuild case that keeps the body): a
+  // planar sheet face, Radius, Angle, Reverse Direction and Edit Cross-Break Sketch, which opens a sketch on the face
+  // holding the lines and comes back here. The lines are drawn on the model, and on the flat while Flatten is on.
+  var xbLast = { radius: null, angle: 1 };
+  var xbGroup = null, xbMat = null;
+  function xbSegments(segs, group) {
+    if (!xbMat) xbMat = new THREE.LineBasicMaterial({ color: 0x1f6fd0 });
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(segs), 3));
+    var o = new THREE.LineSegments(g, xbMat);
+    o.renderOrder = 3;
+    o.userData.crossBreak = true;
+    group.add(o);
+  }
+  function xbLineSegs(rec) {
+    var e = 2e-3 * (+(previewModel().sheet || {}).thickness || 1), n = rec.n, out = [];
+    rec.lines.forEach(function (l) { [l.a, l.b].forEach(function (p) { out.push(p[0] + n[0] * e, p[1] + n[1] * e, p[2] + n[2] * e); }); });
+    return out;
+  }
+  // the marks of every Cross-Break: on the model, or on the flat when Flatten shows it
+  function drawCrossBreaks() {
+    if (!UI.scene || typeof THREE === 'undefined') return;
+    if (!xbGroup) { xbGroup = new THREE.Group(); UI.scene.add(xbGroup); UI.crossBreakGroup = xbGroup; }
+    UI.disposeGroup(xbGroup);
+    var feats = (App.model && App.model.features || []).filter(function (f) { return f.type === 'crossBreak' && !f.suppressed; });
+    if (!feats.length || !App.build) { if (UI.requestRender) UI.requestRender(); return; }
+    var segs = [];
+    if (UI.flatShown && UI.flatShown()) {
+      var marks = App.flat ? (App.flat.etch || []).filter(function (it) { return it.crossBreak; }) : [];
+      if (marks.length) {
+        var fb = K.flatBody(App.model, App.build, App.flat), pl = fb.plane, h = fb.h1 + 2e-3 * (fb.h1 - fb.h0);
+        var P = function (q) { var w = K.to3D(pl, q[0], q[1]); return [w[0] + pl.n[0] * h, w[1] + pl.n[1] * h, w[2] + pl.n[2] * h]; };
+        marks.forEach(function (it) { segs = segs.concat(P(it.a), P(it.b)); });
+      }
+    } else {
+      feats.forEach(function (f) {
+        var rec = App.build.planes && App.build.planes[f.id];
+        if (rec && rec.lines && !(App.build.errors && App.build.errors[f.id])) segs = segs.concat(xbLineSegs(rec));
+      });
+    }
+    if (segs.length) xbSegments(segs, xbGroup);
+    if (UI.requestRender) UI.requestRender();
+  }
+  (UI.onBuild = UI.onBuild || []).push(drawCrossBreaks);
+  function cmdCrossBreak(existing, back) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
+    if (!App.build || !App.build.body || !App.build.body.polygons.length) { UI.toast('Create a Base Flange first.'); return; }
+    var sheet = previewModel().sheet || App.model.sheet;
+    var f = back ? back : existing ? JSON.parse(JSON.stringify(existing)) : { type: 'crossBreak', face: null, radius: xbLast.radius != null ? xbLast.radius : +sheet.bendRadius, angle: xbLast.angle, reverse: false };
+    if (f.face) f.face = f.face.slice();
+    var base = null;
+    function baseBody() { if (!base) base = existing ? bodyBefore(existing.id) : App.build.body; return base; }
+    function layout(v) {
+      return K.crossBreakLayout(v, previewModel(), { body: baseBody(), sketches: {}, planes: (App.build && App.build.planes) || {} });
+    }
+    function preview() {
+      UI.disposeGroup(UI.groups.preview);
+      if (!f.face) { UI.setStatus('Cross-Break: select a planar face of the sheet.'); if (UI.requestRender) UI.requestRender(); return; }
+      try {
+        var lay = layout(f);
+        xbSegments(xbLineSegs(lay), UI.groups.preview);
+        UI.setStatus('Cross-Break: ' + lay.lines.length + ' line' + (lay.lines.length === 1 ? '' : 's') + ' on the face. Press Enter or ✓ to accept.');
+      } catch (e) { UI.setStatus(e.message); }
+      if (UI.requestRender) UI.requestRender();
+    }
+    function featOf(v) {
+      var out = { type: 'crossBreak', face: v.face.slice(), radius: v.radius, angle: v.angle, reverse: !!v.reverse };
+      if (v.sketch != null) out.sketch = v.sketch;
+      if (v.name) out.name = v.name;
+      return out;
+    }
+    function pick(pk) {
+      if (pk.kind !== 'face' || !pk.point) return false;
+      var p = pk.point.map(function (x) { return Math.round(x * 1e6) / 1e6; }), keep = f.face;
+      f.face = p;
+      try { layout(f); }
+      catch (e) { f.face = keep; UI.setStatus(e.message.replace(/^Cross-Break: /, '')); return true; }
+      delete f.sketch;   // the lines belonged to the old face
+      renderPM(); preview();
+      return true;
+    }
+    if (!existing && !back && UI.selection) {
+      UI.selection().forEach(function (s) {
+        if (f.face || s.kind !== 'face' || !App.mesh || !App.mesh.faces[s.index]) return;
+        var c = App.mesh.faces[s.index].centroid.slice(), keep = f.face;
+        f.face = c;
+        try { layout(f); if (UI.setSelection) UI.setSelection([]); } catch (e) { f.face = keep; }
+      });
+    }
+    // Edit Cross-Break Sketch: a sketch on the face with the lines in it (made now, the first time); ✓ on the sketch
+    // comes back here with the feature's values as they stand
+    function editSketch(v) {
+      if (!v.face) { UI.toast('Select a planar face first.'); return; }
+      var held = JSON.parse(JSON.stringify(v));
+      function again(sid) { cmdCrossBreak(existing, Object.assign(held, { sketch: sid })); }
+      if (v.sketch != null) {
+        var sid0 = v.sketch;
+        closePM();
+        App.pendingAfterSketch = function () { again(sid0); };
+        UI.enterSketch(sid0);
+        return;
+      }
+      var lay;
+      try { lay = layout(v); } catch (e) { UI.toast(e.message); return; }
+      var pl = lay.plane, plane = { custom: true, origin: pl.origin.slice(), x: pl.x.slice(), y: pl.y.slice(), n: pl.n.slice(), offset: K.vec.dot(pl.n, pl.origin) };
+      if (K.tidyPlane) K.tidyPlane(plane);
+      var ents = lay.lines.map(function (l) {
+        var a = K.to2D(plane, l.a), b = K.to2D(plane, l.b);
+        return { t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] };
+      });
+      closePM();
+      UI.pushUndo();
+      var sk = { id: App.model.nextId++, type: 'sketch', plane: plane, entities: ents };
+      sk.name = K.featureName(App.model, 'sketch');
+      var at = existing ? App.model.features.indexOf(existing) : -1;   // a sketch comes before the feature that reads it
+      if (at >= 0) App.model.features.splice(at, 0, sk); else App.model.features.push(sk);
+      App.sketchSnapshot = JSON.stringify({ entities: ents });
+      App.pendingAfterSketch = function () { again(sk.id); };
+      UI.afterRebuild(UI.rebuild(), function () {
+        App.pendingAfterSketch = function () { again(sk.id); };
+        UI.enterSketch(sk.id);
+        UI.setStatus('Cross-Break: edit the lines, then exit the sketch.');
+      });
+    }
+    openPM({
+      title: existing ? existing.name : 'Cross-Break', icon: 'crossBreak', values: f,
+      message: 'Select a <b>planar face</b> of the sheet. The cross-break is cosmetic: the solid and the flat blank do not change.',
+      command: { onPick: pick },
+      groups: [
+        { title: 'Cross Break Parameters', fields: [
+          { type: 'pick', icon: 'crossBreak', placeholder: 'Face…',
+            value: function (v) { return v.face ? 'Face<1>' : ''; },
+            items: function (v) { return v.face ? [{ label: 'Face<1>', at: v.face }] : []; },
+            onRemove: function (v) { v.face = null; delete v.sketch; renderPM(); preview(); },
+            onClear: function (v) { v.face = null; delete v.sketch; renderPM(); preview(); } },
+          { type: 'buttons', buttons: [{ label: 'Edit Cross-Break Sketch', onclick: function (v) { editSketch(v); } }] },
+          { type: 'check', label: 'Reverse direction', key: 'reverse' },
+          { type: 'number', label: 'Radius', key: 'radius', unit: 'u', min: 0 },
+          { type: 'number', label: 'Angle', key: 'angle', unit: '°', min: 0 }
+        ] },
+        { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ],
+      onChange: function () { preview(); },
+      onOK: function (v) {
+        if (!v.face) { UI.toast('Select a planar face of the sheet.'); return false; }
+        var feat = featOf(v);
+        if (!existing && !feat.name) feat.name = K.crossBreakName(App.model);
+        xbLast = { radius: +v.radius, angle: +v.angle };
+        return commitFeature(feat, existing);
+      }
+    });
+    preview();
+  }
+
   // ------------------------------------------------------------------ sheet metal: Rip (lane DI)
   // SolidWorks' Sheet Metal ▸ Rip (Kernel.ripLayout, a registered cut): Edges to Rip (a click on a corner edge where two
   // walls meet adds it, a second click removes it; outside or inside edge), Change Direction (cycles the last picked
@@ -4099,6 +4314,7 @@
     if (want) App.model.flatState = true; else delete App.model.flatState;
     App.sel = null; App.sel2 = null; App.hover = null;
     UI.updateFlatState();
+    drawCrossBreaks();
     UI.updateHighlights();
     UI.refreshTree();
     if (UI.refreshRibbon) UI.refreshRibbon();
@@ -5553,8 +5769,9 @@
       case 'extrude': if (f.tab && !f.cut) cmdTab(f); else if (f.sheetBase && !f.cut) cmdSheetMetal(); else cmdExtrude(f.cut, f); break;
       case 'rip': UI.cmdRipFeature(f); break;   // lane DI
       case 'vent': UI.cmdVent(f); break;   // lane DT
+      case 'crossBreak': UI.cmdCrossBreak(f); break;   // lane cross-break
       case 'wrap': UI.cmdWrap(f); break;   // rfDZ
-      case 'insertBends': UI.cmdInsertBends(f); break;   // lane DQ
+      case 'insertBends': if (f.openBase) cmdOpenBase(f.sketch, f); else UI.cmdInsertBends(f); break;   // lane DQ; lane open-base
       case 'convertSM': UI.cmdConvertSheetMetal(f); break;
       case 'revolve': cmdRevolve(f.cut, f); break;
       case 'lpattern': cmdLinearPattern(f); break;
@@ -5699,6 +5916,7 @@
   UI.cmdUnfold = partOnly(cmdUnfold, 'Unfold'); UI.cmdFold = partOnly(cmdFold, 'Fold');   // Sheet Metal ▸ Unfold / Fold (lane DB)
   UI.cmdRipFeature = partOnly(cmdRipFeature, 'Rip'); UI.cmdTab = partOnly(cmdTab, 'Base Flange/Tab');   // Sheet Metal ▸ Rip, Tab (lane DI)
   UI.cmdVent = partOnly(cmdVent, 'Vent');   // Sheet Metal ▸ Vent (lane DT)
+  UI.cmdCrossBreak = partOnly(cmdCrossBreak, 'Cross-Break');   // Sheet Metal ▸ Cross-Break (lane cross-break)
   UI.cmdInsertBends = partOnly(cmdInsertBends, 'Insert Bends'); UI.cmdConvertSheetMetal = partOnly(cmdConvertSheetMetal, 'Convert to Sheet Metal'); UI.toggleNoBends = toggleNoBends;   // lane DQ
   // assembly documents
   UI.cmdInsertComponent = cmdInsertComponent; UI.cmdMate = cmdMate; UI.editMate = editMate; UI.mateSelect = mateSelect;

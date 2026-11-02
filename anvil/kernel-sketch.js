@@ -918,25 +918,56 @@
       warnings = warnings.concat(splitterWarnings(ch, loops, chains));   // lane CV: a splitting line is no open contour
     }
     var zero = 0, out = [];
+    // rfGM: with thousands of circles (a perforated sheet) a loop only tries the curves whose box meets its own, in list
+    // order, so the first match is the one the whole list gives and seg holds the same indices
+    var cellOf = null, wideC = [], cellS = 0, cellX = 0, cellY = 0;
+    if (curves.length > 32) {
+      var cMax = [-Infinity, -Infinity], cSum = 0;
+      cellX = Infinity; cellY = Infinity;
+      curves.forEach(function (C) { cellX = Math.min(cellX, C.c[0] - C.r); cellY = Math.min(cellY, C.c[1] - C.r); cMax[0] = Math.max(cMax[0], C.c[0] + C.r); cMax[1] = Math.max(cMax[1], C.c[1] + C.r); cSum += 2 * C.r; });
+      cellS = Math.max(cSum / curves.length, Math.max(cMax[0] - cellX, cMax[1] - cellY) / 512, 1e-9);
+      cellOf = new Map();
+      curves.forEach(function (C, k) {
+        var pad = C.r + 2e-7 * Math.max(1, C.r), x0 = Math.floor((C.c[0] - pad - cellX) / cellS), x1 = Math.floor((C.c[0] + pad - cellX) / cellS), y0 = Math.floor((C.c[1] - pad - cellY) / cellS), y1 = Math.floor((C.c[1] + pad - cellY) / cellS);
+        if ((x1 - x0 + 1) * (y1 - y0 + 1) > 64) { wideC.push(k); return; }
+        for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) { var key = (x + 2048) * 8192 + y + 2048, c = cellOf.get(key); if (c) c.push(k); else cellOf.set(key, [k]); }
+      });
+    }
+    function loopSegments(pts) {
+      var b = cellOf ? loopBox(pts) : null;
+      if (!b) return curveSegments(pts, curves);
+      var x0 = Math.floor((b[0] - cellX) / cellS), x1 = Math.floor((b[2] - cellX) / cellS), y0 = Math.floor((b[1] - cellY) / cellS), y1 = Math.floor((b[3] - cellY) / cellS);
+      if ((x1 - x0 + 1) * (y1 - y0 + 1) > 4096) return curveSegments(pts, curves);
+      var seen = {}, ids = wideC.slice();
+      for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) {
+        var c = cellOf.get((x + 2048) * 8192 + y + 2048);
+        if (c) for (var i = 0; i < c.length; i++) if (!seen[c[i]]) { seen[c[i]] = true; ids.push(c[i]); }
+      }
+      ids.sort(function (p, q) { return p - q; });
+      var seg = curveSegments(pts, ids.map(function (k) { return curves[k]; }));
+      return seg && seg.map(function (k) { return k < 0 ? k : ids[k]; });
+    }
     loops.forEach(function (l) {
       var cross = l.length >= 3 ? loopSelfCrossing(l) : null;
       if (!cross && (l.length < 3 || Math.abs(signedArea(l)) <= 1e-9)) { zero++; return; }
       var pts = signedArea(l) < 0 ? l.slice().reverse() : l;
       var loop = { pts: pts, hole: false, depth: 0 };
       if (cross) loop.cross = cross;
-      var seg = curveSegments(pts, curves);
+      var seg = loopSegments(pts);
       if (seg) loop.seg = seg;
       var fseg = free.length ? freeSegments(pts, free) : null;
       if (fseg) loop.fseg = fseg;
       out.push(loop);
     });
     if (zero) warnings.push(zero === 1 ? '1 zero-area contour was ignored.' : zero + ' zero-area contours were ignored.');
+    var outBox = out.length > 32 ? out.map(function (l) { return loopBox(l.pts); }) : null;   // rfGM: outside its box a point is outside the loop
     for (var i = 0; i < out.length; i++) {
       var depth = 0, probe = out[i].pts[0];
       // use the centroid of the first edge so a shared vertex does not confuse containment
       probe = [(out[i].pts[0][0] + out[i].pts[1][0]) / 2, (out[i].pts[0][1] + out[i].pts[1][1]) / 2];
       for (var j = 0; j < out.length; j++) {
         if (i === j) continue;
+        if (outBox && (probe[0] < outBox[j][0] || probe[0] > outBox[j][2] || probe[1] < outBox[j][1] || probe[1] > outBox[j][3])) continue;
         if (pointInPoly(probe, out[j].pts)) depth++;
       }
       out[i].depth = depth;
@@ -2932,6 +2963,134 @@
     return o;
   }
 
+  // ------------------------------------------------------------------ Close Sketch to Model (Tools ▸ Sketch Tools)
+  // openSketchChains(sketch) -> [{ ents: [entity indices], a: [u, v], b: [u, v] }]: the open contours of the sketch, each
+  // with its two free ends. Only what a profile takes counts (no construction, ETCH / BEND or infinite lines); a branch
+  // with more than two free ends is no chain.
+  function openSketchChains(sketch) {
+    var E = (sketch && sketch.entities) || [], items = [], byKey = {};
+    E.forEach(function (e, i) {
+      if (!e || e.construction || noProfileEntity(sketch, e) || e.t === 'point' || e.t === 'text' || (e.t === 'line' && e.infinite)) return;
+      entityPolylines(e, true).forEach(function (pl) {
+        if (pl.closed || !pl.pts || pl.pts.length < 2) return;
+        var it = { i: i, a: pl.pts[0], b: pl.pts[pl.pts.length - 1] };
+        items.push(it);
+        [it.a, it.b].forEach(function (p) { var k = key2(p); (byKey[k] = byKey[k] || []).push(it); });
+      });
+    });
+    var seen = [], out = [];
+    items.forEach(function (it0) {
+      if (seen.indexOf(it0) >= 0) return;
+      var stack = [it0], ents = [], ends = {};
+      seen.push(it0);
+      while (stack.length) {
+        var it = stack.pop();
+        if (ents.indexOf(it.i) < 0) ents.push(it.i);
+        [it.a, it.b].forEach(function (p) {
+          var k = key2(p), on = byKey[k];
+          if (on.length === 1) ends[k] = p;
+          on.forEach(function (o) { if (seen.indexOf(o) < 0) { seen.push(o); stack.push(o); } });
+        });
+      }
+      var keys = Object.keys(ends);
+      if (keys.length === 2) out.push({ ents: ents.sort(function (x, y) { return x - y; }), a: ends[keys[0]], b: ends[keys[1]] });
+    });
+    return out;
+  }
+  // closeToModel(a, b, geo, opts?) -> { ok, entities, other } | { ok: false, why: 'end' | 'path' }: the sketch lines and
+  // arcs that run along model edges from a to b (the two free ends of an open contour). geo: the model edges as sketch
+  // entities (line, arc, circle; opts.tol the on-edge tolerance). The shorter way round is the closure; opts.reverse the
+  // shortest way that shares no edge piece with it. other: there is such a second way. The entities run end to end from
+  // a towards b, and a and b themselves are their first and last points, so the contour chains.
+  function closeToModel(a, b, geo, opts) {
+    opts = opts || {};
+    var tol = opts.tol || 1e-6, D = 180 / Math.PI, nodes = [a, b], links = [];
+    function nodeOf(p) {
+      for (var i = 0; i < nodes.length; i++) if (Math.hypot(nodes[i][0] - p[0], nodes[i][1] - p[1]) <= tol) return i;
+      nodes.push(p);
+      return nodes.length - 1;
+    }
+    function ptAt(g, t) {
+      if (g.t === 'line') return [g.x1 + t * (g.x2 - g.x1), g.y1 + t * (g.y2 - g.y1)];
+      return [g.cx + g.r * Math.cos(t / D), g.cy + g.r * Math.sin(t / D)];
+    }
+    // the parameter of p on g (line 0..1, arc a0..a1 degrees, circle 0..360), or null when p is not on it
+    function paramOn(g, p) {
+      if (g.t === 'line') {
+        var dx = g.x2 - g.x1, dy = g.y2 - g.y1, L2 = dx * dx + dy * dy;
+        if (L2 < 1e-24) return null;
+        var t = ((p[0] - g.x1) * dx + (p[1] - g.y1) * dy) / L2, ov = tol / Math.sqrt(L2);
+        if (t < -ov || t > 1 + ov) return null;
+        t = Math.max(0, Math.min(1, t));
+        var q = ptAt(g, t);
+        return Math.hypot(q[0] - p[0], q[1] - p[1]) <= tol ? t : null;
+      }
+      if (Math.abs(Math.hypot(p[0] - g.cx, p[1] - g.cy) - g.r) > tol) return null;
+      var ang = Math.atan2(p[1] - g.cy, p[0] - g.cx) * D;
+      if (g.t === 'circle') return (ang + 360) % 360;
+      var off = (((ang - g.a0) % 360) + 360) % 360, sw = g.a1 - g.a0, slack = tol / g.r * D;
+      if (off <= sw + slack) return g.a0 + Math.min(off, sw);
+      return off >= 360 - slack ? g.a0 : null;
+    }
+    function endsOf(g) { return g.t === 'circle' ? [] : g.t === 'line' ? [[g.x1, g.y1], [g.x2, g.y2]] : [ptAt(g, g.a0), ptAt(g, g.a1)]; }
+    function onSome(p) { return geo.some(function (g) { return paramOn(g, p) != null; }); }
+    if (!onSome(a) || !onSome(b)) return { ok: false, why: 'end' };
+    var marks = [a, b];
+    geo.forEach(function (g) { endsOf(g).forEach(function (p) { marks.push(p); }); });
+    // each edge cut at the two free ends and at every edge end on it, one link per piece
+    geo.forEach(function (g, k) {
+      var cuts = [];
+      marks.forEach(function (p) {
+        var t = paramOn(g, p);
+        if (t != null) cuts.push({ t: t, n: nodeOf(p) });
+      });
+      cuts.sort(function (x, y) { return x.t - y.t; });
+      cuts = cuts.filter(function (c, i) { return !i || c.n !== cuts[i - 1].n; });
+      if (g.t === 'circle' && cuts.length > 1) cuts.push({ t: cuts[0].t + 360, n: cuts[0].n });
+      for (var i = 0; i + 1 < cuts.length; i++) {
+        var sw = cuts[i + 1].t - cuts[i].t;
+        links.push({ g: g, src: k, t0: cuts[i].t, t1: cuts[i + 1].t, n0: cuts[i].n, n1: cuts[i + 1].n, len: g.t === 'line' ? sw * Math.hypot(g.x2 - g.x1, g.y2 - g.y1) : g.r * sw / D });
+      }
+    });
+    function shortest(skip) {
+      var dist = nodes.map(function () { return Infinity; }), from = nodes.map(function () { return null; }), done = nodes.map(function () { return false; });
+      dist[0] = 0;
+      for (;;) {
+        var u = -1;
+        dist.forEach(function (d, i) { if (!done[i] && d < Infinity && (u < 0 || d < dist[u])) u = i; });
+        if (u < 0 || u === 1) break;
+        done[u] = true;
+        links.forEach(function (L) {
+          if ((skip && skip.indexOf(L) >= 0) || (L.n0 !== u && L.n1 !== u)) return;
+          var w = L.n0 === u ? L.n1 : L.n0;
+          if (dist[u] + L.len < dist[w] - 1e-12) { dist[w] = dist[u] + L.len; from[w] = { L: L, u: u }; }
+        });
+      }
+      if (dist[1] === Infinity) return null;
+      var path = [];
+      for (var at = 1; at !== 0; at = from[at].u) path.unshift({ L: from[at].L, fwd: from[at].L.n1 === at });
+      return path;
+    }
+    var first = shortest(null);
+    if (!first) return { ok: false, why: 'path' };
+    var second = shortest(first.map(function (s) { return s.L; })), path = opts.reverse && second ? second : first;
+    // consecutive pieces of one edge walked the same way become one entity
+    var runs = [];
+    path.forEach(function (s) {
+      var R = runs[runs.length - 1], from = s.fwd ? s.L.n0 : s.L.n1, to = s.fwd ? s.L.n1 : s.L.n0;
+      if (R && R.src === s.L.src && R.fwd === s.fwd) { R.to = to; R.sweep += s.L.t1 - s.L.t0; return; }
+      runs.push({ src: s.L.src, g: s.L.g, fwd: s.fwd, from: from, to: to, tStart: s.fwd ? s.L.t0 : s.L.t1, sweep: s.L.t1 - s.L.t0 });
+    });
+    function r9(x) { return Math.round(x * 1e9) / 1e9; }
+    var ents = runs.map(function (R) {
+      if (R.g.t === 'line') { var p = nodes[R.from], q = nodes[R.to]; return { t: 'line', x1: p[0], y1: p[1], x2: q[0], y2: q[1] }; }
+      var a0 = R.fwd ? R.tStart : R.tStart - R.sweep;   // arcs run counter-clockwise, whichever way the path walks them
+      a0 = ((a0 % 360) + 360) % 360;
+      return { t: 'arc', cx: R.g.cx, cy: R.g.cy, r: R.g.r, a0: r9(a0), a1: r9(a0 + R.sweep) };
+    });
+    return { ok: true, entities: ents, other: !!second };
+  }
+  K.openSketchChains = openSketchChains; K.closeToModel = closeToModel;
 
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.entityPolylines = entityPolylines; K.entitySnapPoints = entitySnapPoints; K.sketchProfile = sketchProfile; K.signedArea = signedArea;
@@ -3352,4 +3511,195 @@
   }
   // kernel-script.js calls Kernel.installPictureScript once the Builder exists
   K.installPictureScript = installPictureScript; K.pictureScriptLine = pictureScriptLine; K.sketchPictureRecord = pictureRecord;
+})(Kernel);
+
+// lane sketch-path: Make Path (Tools ▸ Sketch Tools). A path is a set of sketch entities joined end to end; each member
+// carries `pathId` (a number, the same on all of them), so trims, splits and renumbering keep it without any remapping.
+// Scripts write `.paths([[i, …], …])` before the sketch's `.id()`.
+(function (K) {
+  'use strict';
+  var JOIN = 1e-6, TANGENT = 0.9997;   // ends that meet; cos of the 1.4° a tangent join may miss by (chords of a free curve)
+  // the two ends of an open entity, each with its outward unit direction; [] for a closed one
+  function pathEnds(e) {
+    if (!e || e.t === 'point' || e.t === 'text') return [];
+    if (e.t === 'line' && !e.infinite) {
+      var L = Math.hypot(e.x2 - e.x1, e.y2 - e.y1) || 1, ux = (e.x2 - e.x1) / L, uy = (e.y2 - e.y1) / L;
+      return [{ p: [e.x1, e.y1], out: [-ux, -uy] }, { p: [e.x2, e.y2], out: [ux, uy] }];
+    }
+    if (e.t === 'arc') {
+      var a = e.a0 * Math.PI / 180, b = e.a1 * Math.PI / 180;
+      return [{ p: [e.cx + e.r * Math.cos(a), e.cy + e.r * Math.sin(a)], out: [Math.sin(a), -Math.cos(a)] },
+        { p: [e.cx + e.r * Math.cos(b), e.cy + e.r * Math.sin(b)], out: [-Math.sin(b), Math.cos(b)] }];
+    }
+    var pl = K.entityPolylines(e, true)[0];
+    if (!pl || pl.closed || pl.pts.length < 2) return [];
+    function dir(p, q) { var d = Math.hypot(p[0] - q[0], p[1] - q[1]) || 1; return [(p[0] - q[0]) / d, (p[1] - q[1]) / d]; }
+    var n = pl.pts.length;
+    return [{ p: pl.pts[0], out: dir(pl.pts[0], pl.pts[1]) }, { p: pl.pts[n - 1], out: dir(pl.pts[n - 1], pl.pts[n - 2]) }];
+  }
+  function meet(p, q) { return Math.hypot(p[0] - q[0], p[1] - q[1]) <= JOIN * Math.max(1, Math.abs(p[0]), Math.abs(p[1])); }
+  // tangentChain(sketch, i) -> [entity indices]: i and the entities joined to it end to end and tangent, in chain order
+  function tangentChain(sketch, i) {
+    var E = sketch.entities, used = [i], order = [i];
+    function walk(at, end, front) {
+      for (var guard = 0; guard < E.length; guard++) {
+        var best = -1, bestEnd = -1;
+        E.forEach(function (o, j) {
+          if (!o || !!o.construction !== !!E[i].construction || used.indexOf(j) >= 0) return;
+          pathEnds(o).forEach(function (q, k) {
+            if (best < 0 && meet(end.p, q.p) && end.out[0] * q.out[0] + end.out[1] * q.out[1] < -TANGENT) { best = j; bestEnd = k; }
+          });
+        });
+        if (best < 0) return;
+        used.push(best);
+        if (front) order.unshift(best); else order.push(best);
+        end = pathEnds(E[best])[1 - bestEnd];
+      }
+    }
+    var ends = pathEnds(E[i]);
+    if (ends.length) { walk(i, ends[1], false); walk(i, ends[0], true); }
+    return order;
+  }
+  // pathOrder(sketch, list) -> the entities of list in chain order, or null when they are not one chain end to end
+  function pathOrder(sketch, list) {
+    var E = sketch.entities, ids = list.filter(function (i, k) { return E[i] && list.indexOf(i) === k; });
+    if (!ids.length) return null;
+    if (ids.length === 1) return ids.slice();
+    var ends = {};
+    for (var n = 0; n < ids.length; n++) { ends[ids[n]] = pathEnds(E[ids[n]]); if (!ends[ids[n]].length) return null; }
+    function joined(p, skip) { return ids.filter(function (j) { return j !== skip && ends[j].some(function (q) { return meet(p, q.p); }); }); }
+    var start = ids[0], from = 0, branch = false;
+    ids.forEach(function (i) {
+      ends[i].forEach(function (q, k) {
+        var on = joined(q.p, i);
+        if (on.length > 1) branch = true;
+        if (!on.length && !(joined(ends[start][from].p, start).length === 0)) { start = i; from = k; }
+      });
+    });
+    if (branch) return null;
+    var order = [start], at = ends[start][1 - from].p;
+    for (var guard = 0; guard < ids.length; guard++) {
+      var cur = order[order.length - 1], next = joined(at, cur).filter(function (j) { return order.indexOf(j) < 0; })[0];
+      if (next == null) break;
+      order.push(next);
+      at = meet(ends[next][0].p, at) ? ends[next][1].p : ends[next][0].p;
+    }
+    return order.length === ids.length ? order : null;
+  }
+  // sketchPaths(sketch) -> [{ id, ents: [entity indices in chain order when they still chain] }], by id
+  function sketchPaths(sketch) {
+    var by = {};
+    (sketch.entities || []).forEach(function (e, i) { if (e && e.pathId != null) (by[e.pathId] = by[e.pathId] || []).push(i); });
+    return Object.keys(by).map(Number).sort(function (a, b) { return a - b; }).map(function (id) { return { id: id, ents: pathOrder(sketch, by[id]) || by[id] }; });
+  }
+  // makeSketchPath(sketch, list, id?) -> { ok, id, ents } | { ok: false, error }: list becomes one path (id: the path
+  // being edited, whose other members leave it). An entity of another path moves to this one.
+  function makeSketchPath(sketch, list, id) {
+    var order = pathOrder(sketch, list);
+    if (!order) return { ok: false, error: 'A path has to be one chain of sketch entities joined end to end, with no branches.' };
+    var E = sketch.entities;
+    if (id == null) { id = 0; E.forEach(function (e) { if (e && e.pathId > id) id = e.pathId; }); id++; }
+    E.forEach(function (e) { if (e && e.pathId === id) delete e.pathId; });
+    order.forEach(function (i) { E[i].pathId = id; });
+    return { ok: true, id: id, ents: order };
+  }
+  // dissolveSketchPath(sketch, i) -> how many entities left the path of entity i; the entities themselves stay
+  function dissolveSketchPath(sketch, i) {
+    var e = sketch.entities[i], id = e && e.pathId, n = 0;
+    if (id == null) return 0;
+    sketch.entities.forEach(function (o) { if (o && o.pathId === id) { delete o.pathId; n++; } });
+    return n;
+  }
+  function pathScriptLine(f) {
+    var list = sketchPaths(f).map(function (p) { return p.ents; });
+    return list.length ? '\n  .paths(' + JSON.stringify(list) + ')' : '';
+  }
+  function installPathScript() {
+    if (K.__sketchPaths || !K.registerSketchScript || !K.newModel || !K.Builder) return;
+    var SBP = Object.getPrototypeOf(new K.Builder(K.newModel('x')).sketch('Front'));
+    SBP.paths = function (list) {
+      var f = this.f;
+      (list || []).forEach(function (ents) { var r = makeSketchPath(f, ents); if (!r.ok) throw new Error(r.error); });
+      return this;
+    };
+    K.registerSketchScript(pathScriptLine);
+    K.__sketchPaths = true;
+  }
+  // kernel-script.js calls Kernel.installPictureScript once the Builder exists
+  var installPictures = K.installPictureScript;
+  K.installPictureScript = function () { installPictures(); installPathScript(); };
+  K.tangentChain = tangentChain; K.pathOrder = pathOrder; K.sketchPaths = sketchPaths; K.makeSketchPath = makeSketchPath; K.dissolveSketchPath = dissolveSketchPath;
+})(Kernel);
+
+// rfGS: Derived Sketch (Insert ▸ Derived Sketch). A sketch with derived: { from: <parent sketch id>, dx, dy, at, name } is
+// a linked copy of its parent on another plane or face: its entities are the parent's own, same 2D coordinates moved
+// by (dx, dy). SolidWorks lets a derived sketch be located but not reshaped, so a sync keeps how far the copy was moved
+// by hand (at: where each entity stood after the last sync) and takes the shape from the parent again. Underive
+// (Kernel.underiveSketch) drops the link and leaves the entities as they stand.
+(function (K) {
+  'use strict';
+  function anchor(e) { var p = e ? K.entitySnapPoints(e) : null; return p && p.length ? p[0] : null; }
+  function anchors(ents) { return ents.map(anchor); }
+  // how far the copy was dragged since the last sync: the move of the first entity that is not where it was left
+  function dragged(ents, at) {
+    if (!Array.isArray(at) || at.length !== ents.length) return null;
+    for (var i = 0; i < ents.length; i++) {
+      var c = anchor(ents[i]), a = at[i];
+      if (c && a && Math.hypot(c[0] - a[0], c[1] - a[1]) > 1e-9) return [c[0] - a[0], c[1] - a[1]];
+    }
+    return null;
+  }
+  function deriveEntities(parent, dx, dy) { return (parent.entities || []).map(function (e) { return K.translateEntity(e, dx, dy); }); }
+  // one derived sketch from its parent: true when anything changed
+  function syncDerived(f, parent) {
+    var d = f.derived, dx = +d.dx || 0, dy = +d.dy || 0, mv = dragged(f.entities || [], d.at);
+    if (mv) { dx += mv[0]; dy += mv[1]; }
+    var ents = deriveEntities(parent, dx, dy), a = anchors(ents), same = JSON.stringify(ents) === JSON.stringify(f.entities || []);
+    var sameLen = (f.entities || []).length === ents.length;
+    d.name = parent.name;
+    if (same && d.dx === dx && d.dy === dy) { d.at = a; return false; }
+    d.dx = dx; d.dy = dy; d.at = a;
+    f.entities = ents;
+    if (!sameLen) { f.rels = []; f.dims = []; }   // what they held has changed: relations added to locate the copy start again
+    return true;
+  }
+  // every derived sketch of the model from its parent, in tree order (a derived sketch of a derived sketch follows).
+  // A sketch being edited (skipId) waits for the rebuild after it closes. Returns the number of sketches changed.
+  function syncDerivedSketches(model, skipId) {
+    var n = 0;
+    ((model && model.features) || []).forEach(function (f) {
+      if (f.type !== 'sketch' || !f.derived || f.id === skipId) return;
+      var parent = K.findFeature(model, f.derived.from);
+      if (parent && parent.type === 'sketch' && parent !== f && syncDerived(f, parent)) n++;
+    });
+    return n;
+  }
+  // a new derived sketch's record: { derived, entities } (no feature made: the caller places it in the tree)
+  function deriveSketch(parent) {
+    var ents = deriveEntities(parent, 0, 0);
+    return { derived: { from: parent.id, dx: 0, dy: 0, at: anchors(ents), name: parent.name }, entities: ents };
+  }
+  function underiveSketch(f) { if (!f || !f.derived) return false; delete f.derived; return true; }
+  // the script line: p.sketch('Top').line(…).derivedFrom('Sketch1', dx, dy)
+  function derivedScriptLine(f) {
+    var d = f.derived;
+    return d && d.name ? '\n  .derivedFrom(' + JSON.stringify(d.name) + (d.dx || d.dy ? ', ' + (+d.dx || 0) + ', ' + (+d.dy || 0) : '') + ')' : '';
+  }
+  function installDerivedScript() {
+    if (K.__derivedSketches || !K.registerSketchScript || !K.newModel || !K.Builder) return;
+    var SBP = Object.getPrototypeOf(new K.Builder(K.newModel('x')).sketch('Front'));
+    SBP.derivedFrom = function (name, dx, dy) {
+      var f = this.f, parent = this.part.model.features.filter(function (g) { return g.type === 'sketch' && g.name === name; })[0];
+      if (!parent) throw new Error('derivedFrom: there is no sketch named ' + name + ' before this one.');
+      f.derived = { from: parent.id, dx: +dx || 0, dy: +dy || 0, name: parent.name };
+      f.entities = deriveEntities(parent, f.derived.dx, f.derived.dy);
+      f.derived.at = anchors(f.entities);
+      return this;
+    };
+    K.registerSketchScript(derivedScriptLine);
+    K.__derivedSketches = true;
+  }
+  var basePictureScript = K.installPictureScript;   // kernel-script.js calls it once the Builder exists
+  K.installPictureScript = function () { basePictureScript(); installDerivedScript(); };
+  K.syncDerivedSketches = syncDerivedSketches; K.deriveSketch = deriveSketch; K.underiveSketch = underiveSketch; K.derivedScriptLine = derivedScriptLine;
 })(Kernel);

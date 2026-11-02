@@ -1136,10 +1136,79 @@
     preview();
   }
 
+  // ------------------------------------------------------------------ rfGS: sketches made from sketches
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function isAsm() { return !!(App.model && App.model.type === 'assembly'); }
+  // Tools ▸ Sketch Tools ▸ Create Sketch from Selections: the selected entities of the open sketch become a new sketch on
+  // the same plane, with the relations and dimensions held among them. The open sketch keeps them and stays open.
+  function cmdSketchFromSelections() {
+    var f = sketch();
+    if (!f) { UI.toast('Open a sketch and select its entities first.'); return null; }
+    var idx = selIdx(f);
+    if (!idx.length) { UI.toast('Select the sketch entities for the new sketch first.'); return null; }
+    if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
+    var g = clone(f), S = SS();
+    ['profile', 'pictures', 'derived', 'hidden', 'name', 'id'].forEach(function (k) { delete g[k]; });
+    for (var i = g.entities.length - 1; i >= 0; i--) if (idx.indexOf(i) < 0) { S.removeEntity(g, i); g.entities.splice(i, 1); }
+    g.id = App.model.nextId++;
+    g.name = K.featureName(App.model, 'sketch');
+    App.model.features.splice(App.model.features.indexOf(f) + 1, 0, g);
+    if (UI.refreshTree) UI.refreshTree();
+    UI.setStatus(g.name + ' created from ' + idx.length + ' selected entit' + (idx.length === 1 ? 'y' : 'ies') + '.');
+    return g;
+  }
+  // Insert ▸ Derived Sketch: select a sketch and a plane or planar face (SolidWorks has no PropertyManager for it). The
+  // linked copy opens for editing so it can be located; Kernel.syncDerivedSketches keeps its shape on the parent's.
+  function cmdDerivedSketch(parentId, target) {
+    if (isAsm()) { UI.toast('Derived Sketch works in a part.'); return Promise.resolve(null); }
+    if (App.mode === 'sketch') { UI.toast('Exit the sketch first, then Insert Derived Sketch.'); return Promise.resolve(null); }
+    var sel = UI.selection ? UI.selection() : [], pick = sel.filter(function (s) { return s.kind === 'feature' && (K.findFeature(App.model, s.id) || {}).type === 'sketch'; })[0];
+    var parent = K.findFeature(App.model, parentId != null ? parentId : pick ? pick.id : -1);
+    target = target || sel.filter(function (s) { return s.kind === 'plane' || s.kind === 'face'; })[0];
+    if (!parent || parent.type !== 'sketch' || !target) { UI.toast('Select a sketch and a plane or planar face, then Insert Derived Sketch.'); return Promise.resolve(null); }
+    var face = target.kind === 'face' ? App.mesh && App.mesh.faces[target.index] : null;
+    if (target.kind === 'face' && (!face || (face.polys && face.polys[0] && face.polys[0].surf))) { UI.toast('A derived sketch goes on a plane or a planar face.'); return Promise.resolve(null); }
+    if (UI.closePM) UI.closePM();
+    UI.pushUndo();
+    var plane = face ? UI.facePlane(face, target.point || face.centroid) : typeof target.ref === 'number' ? { featureId: target.ref } : { ref: target.ref, offset: 0 };
+    var made = K.deriveSketch(parent), f = { id: App.model.nextId++, type: 'sketch', plane: plane, entities: made.entities, derived: made.derived };
+    f.name = K.featureName(App.model, 'sketch');
+    App.model.features.push(f);
+    App.sketchSnapshot = JSON.stringify({ entities: f.entities });
+    App.newSketchId = f.id;
+    return UI.afterRebuild(UI.rebuild(), function () { UI.enterSketch(f.id); UI.setStatus(f.name + ' is derived from ' + parent.name + ': drag it to locate it. Its shape follows ' + parent.name + '.'); return f; });
+  }
+  // right-click a derived sketch ▸ Underive Sketch: the link goes, the entities stay and can be edited freely
+  function cmdUnderiveSketch(id) {
+    var f = K.findFeature(App.model, id != null ? id : App.activeSketch);
+    if (!f || !f.derived) { UI.toast('That sketch is not derived.'); return false; }
+    UI.pushUndo();
+    K.underiveSketch(f);
+    if (UI.refreshTree) UI.refreshTree();
+    UI.setStatus(f.name + ' is no longer linked to its parent sketch.');
+    return true;
+  }
+  // a derived sketch takes its parent's shape at every rebuild, before the build (or the worker) sees the model
+  var baseRebuild = UI.rebuild;
+  UI.rebuild = function () { if (App.model && App.model.features) K.syncDerivedSketches(App.model, App.mode === 'sketch' ? App.activeSketch : null); return baseRebuild.apply(this, arguments); };
+  // Intersection Curve with no sketch open: a selected plane is the plane it cuts with; the sketch opens on that plane
+  // and the selected faces come in (SolidWorks makes a 3D sketch here, which Anvil does not have)
+  var baseIntersection = UI.cmdIntersectionCurve;
+  UI.cmdIntersectionCurve = function (faces) {
+    if (App.mode === 'sketch' || !baseIntersection) return baseIntersection ? baseIntersection(faces) : undefined;
+    var sel = UI.selection ? UI.selection() : [], pl = sel.filter(function (s) { return s.kind === 'plane'; })[0];
+    if (!pl) { UI.toast('Select a plane and the faces it cuts, or open a sketch, then click Intersection Curve.'); return Promise.resolve(null); }
+    var ids = Array.isArray(faces) ? faces : sel.filter(function (s) { return s.kind === 'face'; }).map(function (s) { return s.index; });
+    return Promise.resolve(UI.newSketchOnPlane(pl.ref)).then(function () { return baseIntersection(ids); });
+  };
+
   UI.cmdTangentLine = cmdTangentLine;
   UI.cmdPerpendicularLine = cmdPerpendicularLine;
   UI.cmdBisectorLine = cmdBisectorLine;
   UI.cmdTangentCircle = cmdTangentCircle;
   UI.cmdSplitEntities = cmdSplitEntities;
   UI.cmdJoinEntities = cmdJoinEntities;
+  UI.cmdSketchFromSelections = cmdSketchFromSelections;
+  UI.cmdDerivedSketch = cmdDerivedSketch;
+  UI.cmdUnderiveSketch = cmdUnderiveSketch;
 })();

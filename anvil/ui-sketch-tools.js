@@ -994,7 +994,7 @@
     return loops.sort(function (a, b) { return size(b) - size(a); });
   }
   // sketch entities for model edges: one circle / arc per true curve that lies square to the sketch, else lines
-  function convertGeometry(edges) {
+  function convertGeometry(edges, keepPieces) {
     var pl = UI.activePlane(), V = K.vec, out = [], seenCurve = {};
     function r6(x) { return Math.round(x * 1e6) / 1e6; }
     function p2(p) { var q = K.to2D(pl, p); return [r6(q[0]), r6(q[1])]; }
@@ -1017,6 +1017,7 @@
       if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-6) return;   // square to the sketch: a point, nothing to draw
       out.push({ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] });
     });
+    if (keepPieces) return out;   // Close Sketch to Model: edges projected onto one another must not be joined here
     // collinear pieces of one straight edge (a face outline split it) join into one line
     for (var again = true; again;) {
       again = false;
@@ -2485,6 +2486,213 @@
     return spec;
   }
   UI.cmdReplaceEntity = cmdReplaceEntity;
+
+  // ------------------------------------------------------------------ Close Sketch to Model (lane sketch-path)
+  // SolidWorks' Tools ▸ Sketch Tools ▸ Close Sketch to Model: an open profile whose two ends lie on model edges is
+  // closed along those edges, so it extrudes as a closed profile. The closure runs the shorter way round
+  // (Kernel.closeToModel); Reverse direction of closure takes the other way. Edges in the sketch plane are used when the
+  // ends lie on them, else the model's edges projected onto the sketch. A selected open contour is the one closed, else
+  // every open contour. The new lines and arcs are held On Edge and Coincident with each other and the profile's ends.
+  function closeModelEdges(inPlane) {
+    var pl = UI.activePlane(), V = K.vec, edges = App.edges || [];
+    function near(p) { return Math.abs(V.dot(V.sub(p, K.to3D(pl, 0, 0)), pl.n)) < 1e-6; }
+    var geo = convertGeometry(edges.filter(function (e) { return inPlane ? near(e.a) && near(e.b) : !e.smooth; }), true), seen = {};
+    // an edge once: the back of a block projects onto its front, and Reverse must not take the same line again
+    return geo.filter(function (g) {
+      var k = g.t === 'line' ? [[g.x1, g.y1].join(), [g.x2, g.y2].join()].sort().join(';') : [g.t, g.cx, g.cy, g.r, g.a0, g.a1].join();
+      if (seen[k]) return false;
+      seen[k] = true;
+      return true;
+    });
+  }
+  function closeSize(f, geo) {
+    var m = 1;
+    geo.concat(f.entities).forEach(function (g) { if (g) K.entityPolylines(g).forEach(function (l) { l.pts.forEach(function (p) { m = Math.max(m, Math.abs(p[0]), Math.abs(p[1])); }); }); });
+    return m;
+  }
+  // { ok, entities (closing geometry, chain by chain), runs: [{ chain, ents }], other } or { ok: false, error }
+  function closePlan(f, reverse) {
+    if (!App.edges || !App.edges.length) return { ok: false, error: 'There is no model to close the sketch to.' };
+    var chains = K.openSketchChains(f), sel = selIdx(f);
+    if (!chains.length) return { ok: false, error: 'The sketch has no open profile to close.' };
+    var picked = chains.filter(function (c) { return c.ents.some(function (i) { return sel.indexOf(i) >= 0; }); });
+    if (picked.length) chains = picked;
+    var flat = closeModelEdges(true), all = null, runs = [], other = false, why = null;
+    chains.forEach(function (c) {
+      var tol = 1e-5 * closeSize(f, flat), r = flat.length ? K.closeToModel(c.a, c.b, flat, { reverse: reverse, tol: tol }) : { ok: false, why: 'end' };
+      if (!r.ok) {
+        all = all || closeModelEdges(false);
+        var r2 = K.closeToModel(c.a, c.b, all, { reverse: reverse, tol: 1e-5 * closeSize(f, all) });
+        if (r2.ok || r.why === 'end') r = r2;
+      }
+      if (!r.ok) { why = why || r.why; return; }
+      runs.push({ chain: c, ents: r.entities });
+      other = other || r.other;
+    });
+    if (!runs.length) return { ok: false, error: why === 'path' ? 'The ends of the open profile lie on model edges that do not connect, so they cannot close it.' : 'The ends of the open profile have to lie on model edges.' };
+    return { ok: true, runs: runs, entities: runs.reduce(function (o, q) { return o.concat(q.ents); }, []), other: other };
+  }
+  function refNear(f, i, p) {
+    var best = null, bd = 1e-4;
+    S.pointRefs(f, i).forEach(function (q) { if (/\.(mid|c)$/.test(q.ref)) return; var d = Math.hypot(q.pt[0] - p[0], q.pt[1] - p[1]); if (d < bd) { bd = d; best = q.ref; } });
+    return best;
+  }
+  function closeApply(f, plan) {
+    var made = 0, ends = 0;
+    plan.runs.forEach(function (run) {
+      var c = run.chain, idx = [];
+      run.ents.forEach(function (g) {
+        var keys = S.paramNames(g), at = -1;
+        f.entities.forEach(function (o, i) { if (at < 0 && o && !o.construction && o.t === g.t && keys.every(function (k) { return Math.abs((+o[k] || 0) - g[k]) < 1e-6 * Math.max(1, Math.abs(g[k])); })) at = i; });
+        if (at >= 0) { idx.push(at); return; }   // that edge is already in the sketch (a converted edge)
+        f.entities.push(g);
+        at = f.entities.length - 1;
+        idx.push(at); made++;
+        var ar = S.addRelation(f, 'onEdge', [String(at)]);
+        if (!ar.ok) throw new Error(ar.error);
+      });
+      // the ends: chain end to first entity, entity to entity, last entity to chain end. A relation the solver finds
+      // redundant is dropped: the points are coincident already
+      function tie(i, j, p) {
+        var A = refNear(f, i, p), B = refNear(f, j, p);
+        if (A && B && S.addRelation(f, 'coincident', [A, B]).ok) ends++;
+      }
+      function chainEntAt(p) { var hit = -1; c.ents.forEach(function (i) { if (hit < 0 && refNear(f, i, p)) hit = i; }); return hit; }
+      var ia = chainEntAt(c.a), ib = chainEntAt(c.b), P = c.a;
+      idx.forEach(function (i, k) {
+        var ee = K.entityEnds(f.entities[i]), far = Math.hypot(ee[0][0] - P[0], ee[0][1] - P[1]) < Math.hypot(ee[1][0] - P[0], ee[1][1] - P[1]) ? ee[1] : ee[0];
+        if (!k && ia >= 0) tie(ia, i, P);
+        if (k) tie(idx[k - 1], i, P);
+        P = far;
+      });
+      if (ib >= 0 && idx.length) tie(idx[idx.length - 1], ib, c.b);
+    });
+    return { ok: true, made: made, ties: ends };
+  }
+  function closeMessage(r) { return 'Sketch closed to the model: ' + r.made + ' entit' + (r.made === 1 ? 'y' : 'ies') + ' added along the model edges (On Edge).'; }
+  function cmdCloseSketchToModel() {
+    var f = sketch();
+    if (!f) return;
+    var v = { reverse: false }, plan = null, spec = null;
+    var HELP = 'The open profile closes along the model edges its ends lie on. Reverse direction of closure takes the other way round.';
+    function fresh() { var g = UI.activeSketchFeature(); if (g) f = g; }
+    function replan() {
+      fresh();
+      try { plan = closePlan(f, !!v.reverse); } catch (e) { plan = { ok: false, error: e.message }; }
+      App.tempEntities = plan.ok ? plan.entities : [];
+      UI.updateTemp();
+      UI.setStatus(plan.ok ? 'Close Sketch to Model: ✓ closes the open profile along the model edges.' : plan.error);
+    }
+    spec = {
+      title: 'Close Sketch to Model', icon: 'closeArc', values: v, message: HELP, keepSelection: true,
+      groups: [{ title: 'Options', fields: [{ type: 'check', key: 'reverse', label: 'Reverse direction of closure' }] }],
+      onChange: replan,
+      onSelection: replan,
+      okBlocked: function () { return plan && !plan.ok ? plan.error : ''; },
+      onOK: function () {
+        replan();
+        if (!plan.ok) { UI.toast(plan.error); return false; }
+        var p = plan, r = step(function () { return closeApply(f, p); }, true);
+        if (!r.ok) { UI.toast(r.error); return false; }
+        clearPreview(); changed();
+        UI.setStatus(closeMessage(r));
+        return true;
+      },
+      onCancel: function () { clearPreview(); UI.setStatus('Close Sketch to Model cancelled.'); },
+      onClose: function () { App.tempEntities = []; UI.updateTemp(); },
+      help: 'Close Sketch to Model: closes an open profile against the model edges its ends lie on, so it extrudes as a closed profile. Reverse direction of closure takes the other way round the edges.'
+    };
+    replan();
+    UI.openPM(spec);
+    return spec;
+  }
+  UI.cmdCloseSketchToModel = cmdCloseSketchToModel;
+  // UI.closeSketchToModel({ reverse }) closes at once (one undo step), as the PropertyManager's ✓ does
+  UI.closeSketchToModel = function (o) {
+    var f = sketch();
+    if (!f) return { ok: false, error: 'Open a sketch first.' };
+    var p = closePlan(f, !!(o && o.reverse));
+    if (!p.ok) return p;
+    var r = step(function () { return closeApply(f, p); }, true);
+    if (r.ok) { changed(); UI.setStatus(closeMessage(r)); }
+    return r;
+  };
+
+  // ------------------------------------------------------------------ Make Path (lane sketch-path)
+  // SolidWorks' Tools ▸ Sketch Tools ▸ Make Path: one entity selected brings in everything tangent-connected to it, and
+  // a click in the graphics area does the same (a click on a member takes that entity out). Several entities selected
+  // stay as they are; ✓ makes them one path (Kernel.makeSketchPath), one undo step. Right-click a member: Edit Path
+  // (id given: the same PropertyManager on that path) and Dissolve Path (the entities stay, the path goes).
+  function cmdMakePath(editId) {
+    var f = sketch();
+    if (!f) return;
+    var edit = editId != null, pre = edit ? [] : selIdx(f), v = { entities: [] }, spec = null;
+    var HELP = 'Select the sketch entities of the path; a click takes in what is tangent-connected to the entity. ✓ makes them one path.';
+    if (edit) K.sketchPaths(f).forEach(function (p) { if (p.id === editId) v.entities = p.ents.slice(); });
+    else v.entities = pre.length === 1 ? K.tangentChain(f, pre[0]) : pre;
+    function fresh() { var g = UI.activeSketchFeature(); if (g) f = g; }
+    function show() { if (UI.setSelection) UI.setSelection(v.entities.map(function (k) { return { kind: 'entity', index: k }; })); }
+    function hint() { UI.setStatus(v.entities.length ? (edit ? 'Edit Path: ' : 'Make Path: ') + v.entities.length + ' entit' + (v.entities.length === 1 ? 'y' : 'ies') + ' in the path; press ✓.' : 'Make Path: select the sketch entities of the path.'); }
+    spec = {
+      title: edit ? 'Edit Path' : 'Make Path', icon: 'pathLengthDim', values: v, message: HELP, keepSelection: true,
+      command: { onSketchPoint: function (uv, mx, my) {
+        fresh();
+        var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index];
+        if (!e || e.t === 'point' || e.t === 'text') { UI.setStatus('Click a line, arc or curve.'); return; }
+        var at = v.entities.indexOf(hit.index);
+        if (at >= 0) v.entities.splice(at, 1);
+        else K.tangentChain(f, hit.index).forEach(function (i) { if (v.entities.indexOf(i) < 0) v.entities.push(i); });
+        show(); UI.renderPM(); hint();
+      } },
+      groups: [{ title: 'Selected Entities', fields: [entityBox(f, v, 'pathLengthDim', hint)] }],
+      okBlocked: function () { return v.entities.length ? '' : 'Select the sketch entities of the path.'; },
+      onOK: function () {
+        fresh();
+        var list = v.entities.slice(), r = step(function () { return K.makeSketchPath(f, list, edit ? editId : undefined); }, true);
+        if (!r.ok) { UI.toast(r.error); return false; }
+        changed();
+        UI.setStatus((edit ? 'Path' + r.id + ' now has ' : 'Path' + r.id + ' made of ') + r.ents.length + ' entit' + (r.ents.length === 1 ? 'y' : 'ies') + '.');
+        return true;
+      },
+      onCancel: function () { UI.setStatus((edit ? 'Edit Path' : 'Make Path') + ' cancelled.'); },
+      help: 'Make Path: joins sketch entities that run end to end into one path. Right-click a member for Edit Path and Dissolve Path.'
+    };
+    show();
+    UI.openPM(spec);
+    hint();
+    return spec;
+  }
+  UI.cmdMakePath = function () { return cmdMakePath(); };
+  UI.editSketchPath = function (i) {
+    var f = sketch(), e = f && f.entities[i];
+    return e && e.pathId != null ? cmdMakePath(e.pathId) : null;
+  };
+  UI.dissolveSketchPath = function (i) {
+    var f = sketch();
+    if (!f) return 0;
+    var n = 0, r = step(function () { n = K.dissolveSketchPath(f, i); return n ? { ok: true } : { ok: false, error: 'That entity is not in a path.' }; }, true);
+    if (!r.ok) { UI.toast(r.error); return 0; }
+    changed();
+    UI.setStatus('Path dissolved: ' + n + ' entit' + (n === 1 ? 'y' : 'ies') + ' stay in the sketch.');
+    return n;
+  };
+  // the right-click rows on a member of a path (before Properties…, with the entity commands)
+  if (UI.sketchMenuItems) {
+    var basePathMenuItems = UI.sketchMenuItems;
+    UI.sketchMenuItems = function () {
+      var items = basePathMenuItems.apply(this, arguments), f = App.mode === 'sketch' ? UI.activeSketchFeature() : null;
+      var sel = f ? selIdx(f) : [], e = sel.length ? f.entities[sel[0]] : null;
+      if (!e || e.pathId == null || !Array.isArray(items) || !sel.every(function (i) { return f.entities[i].pathId === e.pathId; })) return items;
+      if (items.some(function (it) { return it && it.label === 'Edit Path'; })) return items;   // a list built already and passed through again
+      var at = -1, who = sel[0];
+      items.forEach(function (it, k) { if (it && it.label === 'Properties…') at = k; });
+      var rows = [{ label: 'Edit Path', icon: 'pathLengthDim', action: function () { if (App.mode === 'sketch') UI.editSketchPath(who); } },
+        { label: 'Dissolve Path', icon: 'pathLengthDim', action: function () { if (App.mode === 'sketch') UI.dissolveSketchPath(who); } }];
+      if (at < 0) items.push(rows[0], rows[1]); else items.splice(at, 0, rows[0], rows[1]);
+      return items;
+    };
+  }
+
   // UI.closeArcs([entity indices]) closes those arcs of the open sketch at once (one undo step): { ok, closed,
   // relations, dimensions } (the counts removed), as the PropertyManager's ✓ does
   UI.closeArcs = function (list) {

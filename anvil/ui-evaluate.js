@@ -128,8 +128,8 @@
     try {
       var obj = display.build(App.mesh);
       if (obj) {
-        // hidden bodies stay hidden: draw only the visible triangles
-        if (App.triHidden) {
+        // hidden bodies stay hidden: draw only the visible triangles (Thickness Analysis casts from visible bodies only)
+        if (App.triHidden && !obj.userData.ownTriangles) {
           var th = App.triHidden, idx = [];
           for (var t = 0; t < App.mesh.triCount; t++) if (!th[t]) idx.push(t * 3, t * 3 + 1, t * 3 + 2);
           obj.geometry.setIndex(idx);
@@ -140,7 +140,7 @@
         obj.renderOrder = 1;
         analysis.add(obj);
       }
-    } catch (e) { UI.setStatus((display.kind === 'zebra' ? 'Zebra Stripes' : 'Draft Analysis') + ': ' + (e.message || e)); }
+    } catch (e) { UI.setStatus(({ zebra: 'Zebra Stripes', draft: 'Draft Analysis', thickness: 'Thickness Analysis' })[display.kind] + ': ' + (e.message || e)); }
     UI.render();
   }
   // after every rebuild (UI.refreshStatus runs at the end of applyBuild) and when bodies are hidden / shown
@@ -339,8 +339,105 @@
     return f ? { face: i, angle: f.angle, cls: f.cls, label: 'Face ' + i + ': draft ' + fmt(f.angle, 2) + '° (' + CLASS_LABEL[f.cls] + ')' } : null;
   }
 
+  // ------------------------------------------------------------------ Thickness Analysis
+  // Calculate casts (Evaluate.thickness) from the visible bodies; the overlay is its own triangles, the facets cut into
+  // sample cells, one colour per cell written to its three vertices. The scale runs red (thinnest) through green to blue:
+  // Show thin regions colours 0 … Target and leaves thicker walls grey; Show thick regions colours Target … Limit and
+  // leaves thinner walls grey. The overlay goes when the PropertyManager closes.
+  var THICK_GREY = [0.62, 0.64, 0.66];
+  var THICK_RAMP = [[0.85, 0.15, 0.13], [0.95, 0.76, 0.16], [0.22, 0.69, 0.29], [0.13, 0.67, 0.78], [0.14, 0.33, 0.85]];
+  var thick = { res: null, values: null, stale: false, mesh: null, hidden: '' };
+  function thickColor(x) {
+    x = Math.max(0, Math.min(1, x)) * (THICK_RAMP.length - 1);
+    var i = Math.min(THICK_RAMP.length - 2, Math.floor(x)), f = x - i, a = THICK_RAMP[i], b = THICK_RAMP[i + 1];
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+  }
+  function thickRange(v) { return v.mode === 'thick' ? [+v.target, Math.max(+v.limit, +v.target + 1e-9)] : [0, Math.max(+v.target, 1e-9)]; }
+  function thickVisible() {
+    var hid = App.hiddenBodies || {}, list = bodies();
+    return list.filter(function (b, i) { return !hid[i]; });
+  }
+  function thickColors(res, v) {
+    var f = res.field, n = f.t.length, col = new Float32Array(n * 9), rg = thickRange(v), span = rg[1] - rg[0];
+    for (var i = 0; i < n; i++) {
+      var t = f.corner[i] ? (v.corners ? 0 : f.median[i]) : f.t[i];
+      var inRange = v.mode === 'thick' ? t >= rg[0] - 1e-9 : t <= rg[1] + 1e-9;
+      var c = inRange ? thickColor((t - rg[0]) / span) : THICK_GREY;
+      for (var o = i * 9; o < (i + 1) * 9; o += 3) { col[o] = c[0]; col[o + 1] = c[1]; col[o + 2] = c[2]; }
+    }
+    return col;
+  }
+  function buildThick(mesh) {
+    var v = thick.values, key = JSON.stringify(App.hiddenBodies || {});
+    if (!thick.res || thick.mesh !== mesh || thick.hidden !== key) {
+      thick.res = E.thickness(thickVisible(), { resolution: v.resolution, target: +v.target, treatCorners: !!v.corners });
+      thick.mesh = mesh; thick.hidden = key; thick.stale = false;
+      if (pmIs('Thickness Analysis')) rerender();
+    }
+    var f = thick.res.field, g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(f.positions, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(f.normals, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(thickColors(thick.res, v), 3));
+    var o = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+    o.userData.ownTriangles = true;
+    return o;
+  }
+  function thickHtml() {
+    var r = thick.res, v = thick.values;
+    if (!r) return '<span class="static">Press Calculate to colour the part by wall thickness.</span>';
+    var u = UI.unitLabel(), rg = thickRange(v), rows = [['Minimum', fmt(r.min) + ' ' + u], ['Maximum', fmt(r.max) + ' ' + u], ['Average', fmt(r.mean) + ' ' + u], ['Surface area', fmt(r.area) + ' ' + u + '²']];
+    if (r.cornerArea > 0) rows.push([v.corners ? 'Corners (as zero)' : 'Corners (left out)', fmt(r.cornerArea) + ' ' + u + '²']);
+    var stops = THICK_RAMP.map(function (c, i) { return 'rgb(' + c.map(function (x) { return Math.round(x * 255); }).join(',') + ') ' + (i * 25) + '%'; }).join(', ');
+    var bars = r.histogram.map(function (b) {
+      var mid = (b.from + b.to) / 2, inRange = v.mode === 'thick' ? mid >= rg[0] - 1e-9 : mid <= rg[1] + 1e-9;
+      var c = inRange ? thickColor((mid - rg[0]) / (rg[1] - rg[0])) : THICK_GREY;
+      return '<div class="th-bin"><span class="sw" style="background:rgb(' + c.map(function (x) { return Math.round(x * 255); }).join(',') + ')"></span><span>' + fmt(b.from) + (r.histogram.length > 1 ? ' – ' + fmt(b.to) : '') + '</span><span class="th-bar"><i style="width:' + (b.fraction * 100).toFixed(1) + '%"></i></span><b>' + (b.fraction * 100).toFixed(1) + '%</b></div>';
+    }).join('');
+    return (thick.stale ? '<div class="ev-note">Parameters changed: press Calculate again.</div>' : '') + kv(rows) +
+      '<div class="ev-sub">Thickness scale</div><div class="th-scale" style="background:linear-gradient(to right, ' + stops + ')"></div><div class="th-ends"><span>' + fmt(rg[0]) + '</span><span>' + fmt(rg[1]) + '</span></div>' +
+      '<div class="ev-sub">Thickness distribution (area)</div><div class="th-hist">' + bars + '</div>';
+  }
+  function calcThick() {
+    if (!(+thick.values.target > 0)) { UI.setStatus('Thickness Analysis: type a target thickness above zero.'); return; }
+    thick.res = null; thick.mesh = null;
+    setDisplay('thickness', buildThick);
+    var r = thick.res;
+    rerender();
+    if (r) UI.setStatus('Thickness Analysis: minimum ' + fmt(r.min) + ', maximum ' + fmt(r.max) + '.');
+  }
+  function closeThick() { if (display.kind === 'thickness') setDisplay(null, null); thick.res = null; thick.mesh = null; thick.stale = false; }
+  function cmdThickness() {
+    if (!App.mesh || !App.mesh.triCount) { UI.toast('Build a solid first.'); return; }
+    if (zebra.on) zebraOff();
+    var v = thick.values = { target: 0, mode: 'thin', limit: 0, corners: false, resolution: 'medium' };
+    try { var quick = E.thickness(thickVisible(), { resolution: 'low' }); v.target = +quick.min.toFixed(4); v.limit = +quick.max.toFixed(4); } catch (e) { }
+    UI.openPM({
+      title: 'Thickness Analysis', icon: 'thickness', values: v, messageOk: true,
+      message: 'Finds the thin or thick regions of the part. Set the target thickness, then press Calculate.',
+      groups: [
+        { title: 'Analysis Parameters', fields: [
+          { type: 'number', label: 'Target thickness', key: 'target', unit: 'u', min: 0 },
+          { type: 'radio', key: 'mode', rerender: true, options: [['thin', 'Show thin regions'], ['thick', 'Show thick regions']] },
+          { type: 'number', label: 'Limit', key: 'limit', unit: 'u', min: 0, show: function (x) { return x.mode === 'thick'; } },
+          { type: 'check', label: 'Treat corners as zero thickness', key: 'corners' },
+          { type: 'select', label: 'Resolution', key: 'resolution', options: [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']] },
+          { type: 'buttons', buttons: [{ label: 'Calculate', onclick: function () { calcThick(); } }] }
+        ] },
+        { title: 'Results', fields: [{ type: 'html', html: thickHtml }] }
+      ],
+      onChange: function () {
+        if (!thick.res) return;
+        thick.stale = true;
+        rerender();
+      },
+      onClose: function () { closeThick(); },
+      onOK: function () { }
+    });
+    UI.setStatus('Thickness Analysis: set the target thickness, then press Calculate.');
+  }
+
   // ------------------------------------------------------------------ Check
-  var CHECK_COLORS = { open: 0xe0292b, nonManifold: 0xc026d3, zeroArea: 0xf59e0b, selfIntersection: 0xff5a1f };
+  var CHECK_COLORS ={ open: 0xe0292b, nonManifold: 0xc026d3, zeroArea: 0xf59e0b, selfIntersection: 0xff5a1f };
   var chk = { res: null, active: -1 };
   function drawCheckItems() {
     clearPreview();
@@ -846,6 +943,12 @@
       var r = E.interference(collapsedBodies(), bodyNames(), sel, { withRest: !!withRest });
       return { count: r.pairs.length, volume: r.volume, checked: r.checked, pairs: r.pairs.map(function (p) { return { a: p.aName, b: p.bName, volume: p.volume }; }) };
     };
+    // thickness({ target, treatCorners, resolution }?) -> { min, max, mean, area, cornerArea, histogram: [{ from, to, area, fraction }] }
+    window.anvil.thickness = function (opts) {
+      var r = E.thickness(thickVisible(), opts || {}), o = {};
+      Object.keys(r).forEach(function (k) { if (k !== 'field') o[k] = r[k]; });
+      return o;
+    };
     // zebra(true | false, { stripes, direction, sharpness }?) -> state
     window.anvil.zebra = function (on, opts) { return on === false ? zebraOff() : zebraOn(opts || {}); };
   }
@@ -853,7 +956,7 @@
   // ------------------------------------------------------------------ exports
   UI.Icons_ = function (name) { return Icons(name, 16); };
   UI.cmdCheck = cmdCheck; UI.cmdZebra = cmdZebra; UI.cmdSectionProperties = cmdSectionProperties;
-  UI.cmdDraftAnalysis = cmdDraftAnalysis; UI.cmdClearance = cmdClearance; UI.cmdInterference = cmdInterference;
+  UI.cmdDraftAnalysis = cmdDraftAnalysis; UI.cmdThickness = cmdThickness; UI.cmdClearance = cmdClearance; UI.cmdInterference = cmdInterference;
   UI.interferenceSession = function () { return intfSession; };
   // the whole assembly, collapsed (anvil.interference() in ui-app.js reads this)
   UI.interference = function () {
@@ -868,7 +971,8 @@
     sectionError: function () { return sect.error; },
     draft: function () { return draft.result; }, draftCounts: draftCounts, draftFace: draftFaceInfo,
     setDraft: function (o) { if (!draft.values) return null; Object.keys(o).forEach(function (k) { draft.values[k] = o[k]; }); draftApply(); return draft.result; },
+    thickness: function () { return thick.res; }, thicknessValues: function () { return thick.values; }, thicknessCalculate: calcThick,
     clearanceSession: function () { return clrSession; },
-    display: function () { return display.kind; }
+    display: function () { return display.kind; }, analysisGroup: function () { return analysis; }
   };
 })(UI);

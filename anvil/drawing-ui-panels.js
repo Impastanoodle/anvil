@@ -492,6 +492,13 @@
     if (D.active) return [['View Layout', 'Annotation'], ['Sketch', 'Markup', 'Sheet Format']];
     return [names.filter(function (n) { return n !== 'View Layout' && n !== 'Annotation'; }), extra];
   };
+  // (rfGT) View ▸ Display: the selected view's tangent edges (SolidWorks' View ▸ Display), the same commands as the
+  // view's right-click menu; greyed with no view selected
+  function viewDisplayItems() {
+    var v = D.sel && D.sel.kind === 'view' && doc() ? Drawing.findView(doc(), D.sel.id) : null, tan = v ? v.tangent || 'removed' : null;
+    function t(label, mode) { return { label: 'Display \u25b8 ' + label, disabled: !v || v.kind === 'detail', checked: tan === mode, action: function () { setViewTangent(v.id, mode); } }; }
+    return [{ sep: true }, t('Tangent Edges Visible', 'visible'), t('Tangent Edges With Font', 'font'), t('Tangent Edges Removed', 'removed')];
+  }
   // (lane DW2) a menu hook set before this one (a part-side module) runs first: DW.menuHookBase (the hook itself, not
   // drawing-ui-tools.js' onAssign wrapper round it, which wraps this one again)
   var hook0 = UI.menuHook;
@@ -534,7 +541,7 @@
         { label: 'Close Drawing', action: requestClose }
       ]) },
       { label: 'Edit', items: (editMenu ? editMenu.items.slice(0, 2) : []).concat([{ label: 'Delete', key: 'Del', disabled: !D.sel || D.sel.kind === 'sheet', action: deleteSelection }]) },
-      { label: 'View', items: [{ label: 'Zoom to Fit', key: 'F', action: fitSheet }] },
+      { label: 'View', items: [{ label: 'Zoom to Fit', key: 'F', action: fitSheet }].concat(viewDisplayItems()) },
       { label: 'Insert', items: [
         { label: 'Sheet\u2026', action: function () { DW.addSheet(); } },
         { label: 'Drawing View \u25b8 Standard 3 View', action: cmdStandard3View },
@@ -564,7 +571,7 @@
       ] },
       { label: 'Tools', items: [{ label: 'Sheet Properties\u2026', action: cmdSheetProperties }, { label: 'Options \u25b8 Document Properties\u2026', action: cmdDocProps }, { sep: true }].concat(CT_DIMS.map(function (x) {
         return { label: 'Dimensions \u25b8 ' + x.label.replace(/\n/g, ' '), checked: !!x.active(), action: x.run };   // (lane CT)
-      })) },
+      })).concat([{ label: 'Dimensions \u25b8 Autodimension\u2026', checked: D.tool === 'autodim', action: function () { DW.cmdAutodimension(); } }]) },   // (rfGT)
       { label: 'Window', items: [
         { label: App.model.name + ' (' + docKind() + ')', action: requestClose },
         { label: (dc ? dc.name + ' - ' + dc.sheet.name : 'Drawing'), checked: true, action: function () { } }
@@ -848,6 +855,9 @@
       deleteAnnotation: function (id) { return annotApi(function (dc) { if (!Drawing.deleteAnnotation(dc, id)) throw new Error('No annotation ' + id); return true; }); },
       ordinate: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addOrdinate(dc, viewId, spec || {}); }); },
       baseline: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addBaseline(dc, viewId, spec || {}); }); },
+      // (rfGT) autodimension(viewId, { h: { scheme, origin, place }, v: { … } }) -> summary; bendTable(): Insert ▸ Tables ▸ Bend Table
+      autodimension: function (viewId, spec) { settle(); var w = D.sheet.views.filter(function (x) { return x.view.id === viewId; })[0]; if (!w) return null; return annotApi(function (dc) { return Drawing.autodimension(dc, viewId, w.proj, Object.assign({ scale: w.scale, units: dc.units }, spec || {})); }); },
+      bendTable: function () { return DW.cmdBendTable(); },
       chamferDim: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addChamferDim(dc, viewId, spec || {}); }); },
       // (lane CT) horizontalDim / verticalDim(viewId, pick1, pick2 | null, at): smartDim held horizontal / vertical (the
       // same picks, view model units) -> { kind, value, text, index, view }; horizontalOrdinate / verticalOrdinate(viewId,

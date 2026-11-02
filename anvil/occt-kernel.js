@@ -33,6 +33,7 @@ var OcctKernel = (function () {
   SUPPORTED.unfold = SUPPORTED.fold = 1;   // lane DB2
   SUPPORTED.refaxis = SUPPORTED.refpoint = SUPPORTED.csys = 1;   // lane CZ: reference geometry makes no body (skipped below)
   SUPPORTED.rip = 1;   // lane DI
+  SUPPORTED.crossBreak = 1;   // rfGK: cosmetic, makes no body (skipped below)
   SUPPORTED.vent = 1;   // lane DT
   SUPPORTED.draft = 1;   // rfDX
   SUPPORTED.wrap = 1;   // rfDZ
@@ -1252,6 +1253,13 @@ var OcctKernel = (function () {
     function insertBendsOp(f) {
       if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
       if (rm.sheetError) throw new Error(rm.sheetError);
+      if (f.openBase) {   // lane open-base: Base Flange from an open profile: the flat plates fused with the exact bends
+        var obl = K.openBaseLayout(f, m, { planes: planes, sketches: sketches });
+        var obs = obl.plates.map(function (t) { return prismOf(t.pts, obl.plane, obl.a, obl.b); }).concat(obl.wedges.map(ibWedge));
+        var obb = obs.length > 1 ? boolMany('fuse', obs[0], obs.slice(1), 'Base Flange: OpenCascade could not join the bends.') : obs[0];
+        if (bodies.length) bodies[0] = boolMany('fuse', bodies[0], [obb], 'Base Flange: OpenCascade could not join the flange.'); else { bodies.push(obb); bodyFeatures.push(f.id); }
+        return;
+      }
       var k = pickBody(f.fixedFace);
       if (k < 0) throw new Error((f.type === 'convertSM' ? 'Convert to Sheet Metal' : 'Insert Bends') + ': there is no solid to bend yet.');
       var g = f, body = unify(bodies[k]);
@@ -1290,6 +1298,15 @@ var OcctKernel = (function () {
       // lane DK: Close bend region: each bend-end fill (its loop is the end face's chords) less the part after the trim
       // and less that part moved back by the gap along the extension (Kernel.closedCornerFill), fused on
       (lay.fills || []).forEach(function (t) {
+        // rfGJ: a plain bend end closes with a helicoid (t.taper, as the matching bend's `wraps`): the exact bend swept a
+        // little past the band, the triangle past the slant cut off, the sweep's ends cut back to the band
+        if (t.taper) {
+          var tp = t.taper, over = 0.02 * tp.BA, w0 = V.dot(tp.plane.n, tp.plane.origin);
+          var sw = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(flangeSection(noOverlap(tp.sec, true), tp.plane), tp.t0 - over, tp.plane), Vec(V.scale(tp.plane.n, tp.t1 - tp.t0 + 2 * over)), false, true)).Shape());
+          sw = boolMany('cut', sw, [cylinderCutter(taperLoop(tp.loop, tp.BA), tp.plane, tp.sec, tp.BA)], 'Closed Corner: OpenCascade could not taper the bend\'s end.');
+          body = fuse(body, clipKeep(clipKeep(sw, tp.plane.n, w0 + tp.t0), V.scale(tp.plane.n, -1), -(w0 + tp.t1)));
+          return;
+        }
         var tr = N(new oc.gp_Trsf_1());
         tr.SetTranslation_1(Vec([-t.clip * t.n[0], -t.clip * t.n[1], -t.clip * t.n[2]]));
         var P = cut(cut(prismOf(t.loop, t.plane, t.a, t.b), rest), transformed(rest, tr));
@@ -1646,6 +1663,7 @@ var OcctKernel = (function () {
           switch (f.type) {
             case 'plane': planes[f.id] = K.makePlane(f.ref || 'Front', +f.offset || 0); break;
             case 'helix': case 'projCurve': case 'compositeCurve': case 'xyzCurve': case 'refPtCurve': planes[f.id] = K.resolveCurve(f, m, refGeoCtx()); break;   // rfFA
+            case 'crossBreak': break;   // rfGK
             case 'refaxis': case 'refpoint': case 'csys': var rgc = refGeoCtx(); planes[f.id] = K.resolveRefGeo(f, m, rgc); if (K.exactFaceCenter) K.exactFaceCenter(f, rgc); break;   // lane DF: no body, a record
             case 'sketch': {
               // r10/facesketch10: a sketch on a face follows the face, resolved exactly as Kernel.rebuild does (an

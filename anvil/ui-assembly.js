@@ -2,7 +2,7 @@
 // Components (PropertyManagers, pattern folders in the FeatureManager), Exploded View (explode steps picked or dragged
 // along an axis, explode lines, the ExplView rows of the assembly ConfigurationManager, Explode / Collapse and the
 // explode animation), and the matching window.anvil calls. The maths is in assembly.js; the Mate PM (Standard /
-// Advanced / Mechanical Mates) is in ui-commands.js. Loaded after ui-app.js.
+// Advanced / Mechanical Mates) is in ui-commands.js, Symmetric / Slot / Hinge's own PM at the end of this file (rfGV). Loaded after ui-app.js.
 (function (UI) {
   'use strict';
   if (typeof Assembly === 'undefined' || !UI || !UI.App) return;
@@ -1442,6 +1442,7 @@
     var anyErr = null;
     Array.prototype.forEach.call(tree.querySelectorAll('.ti.mate-row[data-mate]'), function (row) {
       var id = +row.getAttribute('data-mate'), mt = AS.findMate(m, id), iss = issueOf('mate', id);
+      if (UI.gvRowIcon) UI.gvRowIcon(row, mt);
       markRow(row, iss, mt && (UI.mateLabel ? UI.mateLabel(mt) : mt.name));
     });
     (m.mates || []).forEach(function (mt) { var iss = issueOf('mate', mt.id); if (iss && (!anyErr || iss.kind === 'err')) anyErr = iss.kind; });
@@ -2449,4 +2450,234 @@
   };
   UI.setComponentConfig = setComponentConfig; UI.setComponentSuppressed = setComponentSuppressed;
   UI.asmConfigurations = { list: function () { return cfgs().map(function (c) { return { name: String(c.name), components: JSON.parse(JSON.stringify(c.components || {})) }; }); }, add: addAsmConfig, activate: showAsmConfig, remove: removeAsmConfig, active: function () { var a = isAsm() && AS.activeAsmConfiguration(App.model); return a ? String(a.name) : null; } };
+  // ------------------------------------------------------------------ rfGV: Symmetric, Slot and Hinge in the Mate PM
+  // The Mate PM itself is in ui-commands.js (cmdMate); these three take selections and values it has no room for, so they
+  // have their own PropertyManager here, titled and grouped the same (Mate Selections, Standard / Advanced / Mechanical
+  // Mates, Mate alignment), and the two swap as the mate type changes, keeping the picks: gvHookBase adds the three to the
+  // base PM's Advanced / Mechanical selects, and choosing one there, or a base type here, opens the other.
+  var GV_LABEL = { symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge' };
+  var GV_ALL_LABEL = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle', parallel: 'Parallel', perpendicular: 'Perpendicular', tangent: 'Tangent', width: 'Width', gear: 'Gear', limitdistance: 'Limit Distance', limitangle: 'Limit Angle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge' };
+  function gvSvg(body) { return '<svg class="ico" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>'; }
+  var GV_ICON = {
+    symmetric: gvSvg('<path d="M8 1.5v13" stroke-dasharray="2 1.6" stroke="#939393"/><path d="M6 4L2 8l4 4z" fill="#c9b6e6" stroke="#8a5cc2"/><path d="M10 4l4 4-4 4z" fill="#c9b6e6" stroke="#8a5cc2"/>'),
+    slot: gvSvg('<path d="M5 4.5h6a3.5 3.5 0 0 1 0 7H5a3.5 3.5 0 0 1 0-7z"/><circle cx="6" cy="8" r="2" fill="#c9b6e6" stroke="#8a5cc2"/>'),
+    hinge: gvSvg('<path d="M1.5 3.5h5.5v9H1.5z" fill="#c9b6e6" stroke="#8a5cc2"/><path d="M9 3.5h5.5v9H9z"/><path d="M8 2v12" stroke-width="2.2"/>')
+  };
+  // ui-panels.js draws a mate row before it knows these three: the row gets its icon here
+  function gvRowIcon(row, mt) {
+    if (mt && GV_ICON[mt.type] && row.children[1] && !row.children[1].querySelector('.gv-mate-ico')) {
+      row.children[1].innerHTML = GV_ICON[mt.type].replace('class="ico"', 'class="ico gv-mate-ico"');
+    }
+  }
+  function gvRefText(ref) {
+    if (!ref) return '';
+    var c = ref.component != null ? AS.findComponent(App.model, ref.component) : null, who = c ? c.name : 'Assembly';
+    if (ref.face) return 'Face@' + who;
+    if (ref.cylinder) return 'Cylindrical Face@' + who;
+    if (ref.plane) return ref.plane + ' Plane@' + who;
+    if (ref.axis) return 'Axis ' + String(ref.axis).toUpperCase() + '@' + who;
+    return who;
+  }
+  UI.gvRowIcon = gvRowIcon;
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function gvCommit(mutate, message) {
+    UI.pushUndo();
+    var r = mutate(App.model);
+    return UI.afterRebuild(UI.rebuild(), function () { UI.refreshTree(); UI.refreshStatus(); UI.setStatus(message(r)); return r; });
+  }
+  var gvSession = null;
+  function gvMate(type, existing, seed) {
+    if (!(UI.isAssembly ? UI.isAssembly() : App.model && App.model.type === 'assembly')) { UI.toast('Open an assembly first (File \u25b8 New \u25b8 Assembly).'); return; }
+    var X = existing || {}, snapshot = JSON.stringify(App.model), previewed = false, alignSet = !!X.alignment;
+    function start(k) { return X[k] ? clone(X[k]) : seed && seed[k] ? clone(seed[k]) : null; }
+    var v = { type: type, advType: type === 'symmetric' ? type : '', mechType: type === 'symmetric' ? '' : type,
+      a: start('a'), b: start('b'), a2: start('a2'), b2: start('b2'), a3: start('a3'), b3: start('b3'),
+      constraint: X.constraint || 'free', distance: X.distance != null ? X.distance : 0, percent: X.percent != null ? X.percent : 50, flip: !!X.flip,
+      limit: !!X.limit, min: X.min != null ? X.min : 0, max: X.max != null ? X.max : 90 };
+    if (type !== 'hinge') { v.b2 = null; v.a3 = null; v.b3 = null; }
+    if (type !== 'hinge' && type !== 'symmetric') v.a2 = null;
+    v.alignment = X.alignment || AS.defaultAlignment({ type: type, a: v.a, b: v.b, a2: v.a2, b2: v.b2 });
+    // the selections, in pick order
+    function slots() { return type === 'symmetric' ? ['a2', 'a', 'b'] : type === 'slot' ? ['a', 'b'] : v.limit ? ['a', 'b', 'a2', 'b2', 'a3', 'b3'] : ['a', 'b', 'a2', 'b2']; }
+    function ready() { return slots().every(function (k) { return !!v[k]; }); }
+    function restore() { App.model = JSON.parse(snapshot); }
+    function values() {
+      if (type === 'slot') return { constraint: v.constraint, distance: v.constraint === 'distance' ? +v.distance || 0 : null, percent: v.constraint === 'percent' ? +v.percent || 0 : null, flip: !!v.flip };
+      if (type === 'hinge') return { limit: !!v.limit, min: v.limit ? +v.min || 0 : null, max: v.limit ? +v.max || 0 : null };
+      return {};
+    }
+    function apply(m) {
+      var vals = values(), refs = {};
+      slots().forEach(function (k) { if (k !== 'a' && k !== 'b') refs[k] = clone(v[k]); });
+      if (existing) {
+        var x = AS.findMate(m, existing.id);
+        if (x.type !== type) { delete x.phase; x.name = AS.MATE_NAMES[type] + x.id; }
+        x.type = type; x.a = clone(v.a); x.b = clone(v.b);
+        ['a2', 'b2', 'a3', 'b3'].forEach(function (k) { if (refs[k]) x[k] = refs[k]; else delete x[k]; });
+        if (alignSet) x.alignment = v.alignment; else delete x.alignment;
+        AS.setMateValues(x, vals);
+        return x;
+      }
+      var o = refs;
+      Object.keys(vals).forEach(function (k) { if (vals[k] != null) o[k] = vals[k]; });
+      if (alignSet) o.alignment = v.alignment;
+      return AS.addMate(m, type, clone(v.a), clone(v.b), o);
+    }
+    function setMessage(html, ok) { if (!UI.hasPM() || UI.pmSpec() !== pmSpec) return; pmSpec.message = html; pmSpec.messageOk = !!ok; UI.renderPM(); }
+    function hint() {
+      return type === 'symmetric' ? 'Symmetric: select the Symmetry Plane, then the two entities to mate.'
+        : type === 'slot' ? 'Slot: select a face of the slot and a cylindrical face or axis (the pin).'
+        : 'Hinge: select two cylindrical faces (Concentric Selections), then two planar faces (Coincident Selections)' + (v.limit ? ', then two faces (Angle Selections).' : '.');
+    }
+    function statusOf(mt) { return UI.mateStatus ? UI.mateStatus(mt) : { error: null }; }
+    function preview() {
+      restore();
+      if (!ready()) { if (previewed) { previewed = false; UI.rebuild({ noSave: true }); } setMessage(hint()); return; }
+      var mt, st;
+      try {
+        mt = apply(App.model); previewed = true; UI.rebuild({ noSave: true }); st = statusOf(mt);
+        // the pin picked first: the slot face is the other selection
+        if (st.error && type === 'slot') {
+          var was = [v.a, v.b];
+          v.a = was[1]; v.b = was[0]; restore();
+          mt = apply(App.model); UI.rebuild({ noSave: true });
+          var st2 = statusOf(mt);
+          if (st2.error) { v.a = was[0]; v.b = was[1]; restore(); mt = apply(App.model); UI.rebuild({ noSave: true }); st = statusOf(mt); } else { st = st2; UI.renderPM(); }
+        }
+      } catch (e) { restore(); previewed = false; UI.rebuild({ noSave: true }); setMessage('Preview failed: ' + (e.message || e)); return; }
+      setMessage(st.error ? GV_LABEL[type] + ': ' + st.error : GV_LABEL[type] + ' mate previewed. Press ✓ to ' + (existing ? 'update' : 'add') + ' it.', !st.error);
+    }
+    function lightFaces() {
+      if (App.command && UI.mateRefFace) App.command.faceList = slots().map(function (k) { return v[k] ? UI.mateRefFace(v[k]) : -1; }).filter(function (i) { return i >= 0; });
+      if (UI.updateHighlights) UI.updateHighlights();
+    }
+    function addRef(ref) {
+      if (!ref) return false;
+      if (ready()) slots().forEach(function (k) { v[k] = null; });
+      v[slots().filter(function (k) { return !v[k]; })[0]] = ref;
+      if (!alignSet) v.alignment = AS.defaultAlignment({ type: type, a: v.a, b: v.b, a2: v.a2, b2: v.b2 });
+      UI.renderPM(); preview(); lightFaces();
+      return true;
+    }
+    function box(keys, icon, placeholder, show) {
+      function filled(x) { return keys.filter(function (k) { return !!x[k]; }); }
+      return { type: 'pick', icon: icon, placeholder: placeholder, show: show,
+        value: function (x) { var n = filled(x).length; return n ? n + ' selected' : ''; },
+        items: function (x) { return filled(x).map(function (k) { return { label: gvRefText(x[k]), get faces() { var f = UI.mateRefFace && x[k] ? UI.mateRefFace(x[k]) : -1; return f >= 0 ? [f] : []; } }; }); },
+        onRemove: function (x, i) { var k = filled(x)[i]; if (k) { x[k] = null; for (var j = keys.indexOf(k); j + 1 < keys.length; j++) { x[keys[j]] = x[keys[j + 1]]; x[keys[j + 1]] = null; } UI.renderPM(); preview(); lightFaces(); } },
+        onClear: function (x) { keys.forEach(function (k) { x[k] = null; }); UI.renderPM(); preview(); lightFaces(); } };
+    }
+    function label(t) { return { type: 'static', label: t, value: '' }; }
+    var picks = type === 'symmetric'
+      ? [label('Symmetry Plane'), box(['a2'], 'plane', 'Symmetry plane…'), label('Entities to Mate'), box(['a', 'b'], 'component', 'Two entities to mate…')]
+      : type === 'slot' ? [box(['a', 'b'], 'component', 'Slot face and pin…')]
+      : [label('Concentric Selections'), box(['a', 'b'], 'concentric', 'Two cylindrical faces or axes…'),
+        label('Coincident Selections'), box(['a2', 'b2'], 'coincident', 'Two planar faces or planes…'),
+        { type: 'check', label: 'Define angle limit', key: 'limit', rerender: true },
+        { type: 'static', label: 'Angle Selections', value: '', show: function (x) { return !!x.limit; } },
+        box(['a3', 'b3'], 'angle', 'Two faces…', function (x) { return !!x.limit; })];
+    picks.push({ type: 'buttons', buttons: [{ label: 'Clear Selections', onclick: function (x) { slots().forEach(function (k) { x[k] = null; }); UI.renderPM(); preview(); lightFaces(); } }] });
+    function group(name) { return AS.MATE_GROUPS[name].map(function (t) { return [t, GV_ALL_LABEL[t]]; }); }
+    var mech = [{ type: 'select', label: 'Mechanical', key: 'mechType', rerender: true, options: function () { return [['', '—']].concat(group('mechanical')); } }];
+    if (type === 'slot') mech = mech.concat([
+      { type: 'select', label: 'Constraint', key: 'constraint', rerender: true, options: [['free', 'Free'], ['center', 'Center in Slot'], ['distance', 'Distance Along Slot'], ['percent', 'Percent Along Slot']] },
+      { type: 'number', label: 'Distance', key: 'distance', unit: 'u', min: 0, show: function (x) { return x.constraint === 'distance'; } },
+      { type: 'number', label: 'Percent', key: 'percent', unit: '%', min: 0, show: function (x) { return x.constraint === 'percent'; } },
+      { type: 'check', label: 'Flip Dimension', key: 'flip', show: function (x) { return x.constraint === 'distance' || x.constraint === 'percent'; } }
+    ]);
+    if (type === 'hinge') mech = mech.concat([
+      { type: 'number', label: 'Maximum Value', key: 'max', unit: '°', show: function (x) { return !!x.limit; } },
+      { type: 'number', label: 'Minimum Value', key: 'min', unit: '°', show: function (x) { return !!x.limit; } }
+    ]);
+    function pick(pk) {
+      var ref = null;
+      if (pk.kind === 'face') { try { ref = AS.refFromPick(App.model, App.build, pk.index, pk.point, App.mesh); } catch (e) { ref = null; } }
+      else if (pk.kind === 'axis' && typeof pk.ref === 'string') ref = { axis: pk.ref };
+      else if (pk.kind === 'plane' && typeof pk.ref === 'string') ref = { plane: pk.ref };
+      if (!ref) { UI.setStatus('That entity cannot be used in a mate.'); return true; }
+      return addRef(ref);
+    }
+    function switchTo(t) {
+      var carry = { a: v.a, b: v.b };
+      if (type === 'symmetric' && t === 'hinge') carry = {};
+      UI.pmCancel();
+      if (GV_LABEL[t]) { gvMate(t, existing, carry); return; }
+      gvOpenBase(existing || null);
+      var sp = UI.pmSpec();
+      if (!sp) return;
+      sp.values.type = t;
+      if (sp.onChange) sp.onChange(sp.values, 'type');
+      ['a', 'b'].forEach(function (k) { if (carry[k] && !existing) gvSelect(carry[k]); });
+    }
+    var pmSpec = {
+      title: existing ? existing.name : 'Mate', icon: 'mate', values: v, noFocus: !existing, message: hint(),
+      command: { pickPlane: true, quietPlanes: true, faceList: [], onPick: pick },
+      groups: [
+        { title: 'Mate Selections', fields: picks },
+        { title: 'Standard Mates', fields: [{ type: 'select', label: 'Mate type', key: 'type', rerender: true, options: function () { return [[type, '—']].concat(group('standard')); } }] },
+        { title: 'Advanced Mates', fields: [{ type: 'select', label: 'Advanced', key: 'advType', rerender: true, options: function () { return [['', '—']].concat(group('advanced')); } }] },
+        { title: 'Mechanical Mates', fields: mech },
+        { title: 'Mate alignment', fields: [{ type: 'select', label: 'Alignment', key: 'alignment', options: [['aligned', 'Aligned'], ['anti-aligned', 'Anti-Aligned'], ['closest', 'Closest']] }] }
+      ],
+      onChange: function (x, key) {
+        if (key === 'type' || key === 'advType' || key === 'mechType') {
+          var t = x[key];
+          if (!t || t === type) { x.type = type; x.advType = type === 'symmetric' ? type : ''; x.mechType = type === 'symmetric' ? '' : type; UI.renderPM(); return; }
+          switchTo(t);
+          return;
+        }
+        if (key === 'alignment') alignSet = true;
+        if (key) preview();
+      },
+      onCancel: function () { if (previewed) { restore(); previewed = false; UI.rebuild({ noSave: true }); } },
+      onClose: function () { gvSession = null; },
+      onOK: function () {
+        if (!ready()) { UI.toast('Select ' + (type === 'hinge' ? 'the Concentric and Coincident Selections' : type === 'slot' ? 'a slot face and a pin' : 'the Symmetry Plane and two entities') + ' first.'); return false; }
+        restore(); previewed = false;
+        return gvCommit(apply, function (mt) {
+          var st = statusOf(mt);
+          return st.error ? mt.name + ': ' + st.error : mt.name + (existing ? ' updated.' : ' added.');
+        });
+      }
+    };
+    UI.openPM(pmSpec);
+    gvSession = { addRef: addRef, values: v };
+    if (ready()) preview();
+    lightFaces();
+  }
+  // the base Mate PM offers the three too
+  function gvHookBase(existing) {
+    var spec = UI.pmSpec && UI.pmSpec();
+    if (!spec || !spec.groups) return;
+    spec.groups.forEach(function (g) {
+      (g.fields || []).forEach(function (f) {
+        if (f.key !== 'advType' && f.key !== 'mechType') return;
+        var base = f.options;
+        f.options = function (x) { return base(x).map(function (o) { return [o[0], o[1] || GV_LABEL[o[0]]]; }); };
+      });
+    });
+    var change = spec.onChange;
+    spec.onChange = function (x, key) {
+      var t = key === 'advType' || key === 'mechType' ? x[key] : null;
+      if (t && GV_LABEL[t]) {
+        var carry = { a: x.a, b: x.b };
+        if (x.type === 'width') carry = { a: x.a, b: x.a2 };
+        UI.pmCancel();
+        gvMate(t, existing, carry);
+        return undefined;
+      }
+      return change ? change.apply(this, arguments) : undefined;
+    };
+    UI.renderPM();
+  }
+  var gvBase = UI.cmdMate, gvSelect = UI.mateSelect;
+  function gvOpenBase(existing) { var r = gvBase(existing || undefined); gvHookBase(existing); return r; }
+  UI.cmdMate = function (existing) {
+    var mt = existing && typeof existing !== 'object' ? AS.findMate(App.model, existing) : existing;
+    if (mt && GV_LABEL[mt.type]) return gvMate(mt.type, mt);
+    return gvOpenBase(mt || null);
+  };
+  UI.editMate = function (m) { return UI.cmdMate(m); };
+  UI.mateSelect = function (ref) { return gvSession ? gvSession.addRef(clone(ref)) : gvSelect(ref); };
+  if (UI.commands) { UI.commands.mate = UI.cmdMate; UI.commands.editMate = UI.editMate; }
 })(UI);

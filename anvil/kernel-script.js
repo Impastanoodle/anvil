@@ -276,7 +276,17 @@
     function sh(q) { return [q[0] + shift[0], q[1] + shift[1]]; }
     // marking (flat.etch: Etch text strokes and ETCH-layer geometry of sketches on the sheet's faces), never a cut:
     // LINE / ARC / CIRCLE (a stretched letter as a polyline) on ETCH, in the layer's colour (default 3, green)
-    var etch = opts.etch === false ? [] : (flat.etch || []);
+    // lane cross-break: a Cross-Break's marks ride in flat.etch but are bend marks: BEND lines and one UP / DOWN note
+    var etch = opts.etch === false ? [] : (flat.etch || []).filter(function (it) { return !it.crossBreak; });
+    (flat.etch || []).forEach(function (it) {
+      if (!it.crossBreak) return;
+      if (opts.bendLines !== false) d.line('BEND', sh(it.a), sh(it.b));
+      if (opts.notes !== false && it.note) {
+        // on the line's first half, clear of the crossing
+        var nb = { a: it.a, b: [(it.a[0] + it.b[0]) / 2, (it.a[1] + it.b[1]) / 2] }, np = bendNotePlace(nb, th);
+        d.text('NOTES', sh(np.p), th, 'CROSS BREAK ' + K.bendNoteText(it, units), { rot: np.rot, center: true });
+      }
+    });
     if (etch.length) {
       var el = flat.etchLayer || {};
       d.layer('ETCH', el.aci > 0 ? el.aci | 0 : el.color ? nearestAci(el.color) : 3);
@@ -1082,6 +1092,16 @@
       this.model.sheet = K.makeSheet(s);
     }
     var T = this.model.sheet.thickness;
+    // lane open-base: an open chain of lines is SolidWorks' open-profile Base Flange: opts depth (default 1 in / 25 mm),
+    // midplane, reverse (depth direction), flip (thickness side), radius
+    var skf = this.model.features.filter(function (q) { return q.id === (opts.sketch != null ? opts.sketch : this.lastSketchId); }, this)[0];
+    if (skf && K.isOpenProfile(skf)) {
+      var ob = { type: 'insertBends', openBase: true, sketch: skf.id, depth: opts.depth != null ? num(opts.depth) : (this.model.units === 'in' ? 1 : 25), end: opts.midplane ? 'mid' : 'blind', reverse: !!opts.reverse, sheetBase: true, name: opts.name || 'Base-Flange1' };
+      if (opts.flip) ob.flip = true;
+      if (opts.radius != null) ob.radius = num(opts.radius);
+      this._add(ob);
+      return this;
+    }
     var f = this.extrude(T, Object.assign({}, opts, { sheetBase: true, name: opts.name || 'Base-Flange1' }));
     return f;
   };
@@ -1216,6 +1236,18 @@
     var f = { type: 'breakCorner', kind: kind, size: num(size), corners: (corners || []).map(pt) };
     if (opts.faces && opts.faces.length) f.faces = opts.faces.map(pt);
     f.name = opts.name || K.breakCornerName(this.model);
+    this._add(f);
+    return this;
+  };
+  // crossBreak(face, opts): Sheet Metal ▸ Cross-Break (kernel-sheetmetal.js), cosmetic: the solid and the blank stay.
+  // face: [x, y, z] on a planar sheet face; opts: radius (default the sheet's bend radius), angle (degrees, default 1),
+  // reverse, sketch (a sketch on the face: its lines replace the corner-to-corner X), name
+  Builder.prototype.crossBreak = function (face, opts) {
+    opts = opts || {};
+    var s = this.model.sheet;
+    var f = { type: 'crossBreak', face: [+face[0], +face[1], +face[2]], radius: opts.radius != null ? num(opts.radius) : (s ? s.bendRadius : 0), angle: opts.angle != null ? num(opts.angle) : 1, reverse: !!opts.reverse };
+    if (opts.sketch != null) f.sketch = opts.sketch;
+    f.name = opts.name || K.crossBreakName(this.model);
     this._add(f);
     return this;
   };
@@ -1634,6 +1666,7 @@
   SketchBuilder.prototype.sketchedBend = function (a, opts) { return this.part.sketchedBend(a, Object.assign({}, opts || {}, { sketch: this.f.id })); };
   SketchBuilder.prototype.miterFlange = function (edges, opts) { return this.part.miterFlange(edges, Object.assign({}, opts || {}, { sketch: this.f.id })); };   // lane DL
   SketchBuilder.prototype.vent = function (opts) { return this.part.vent(Object.assign({}, opts || {}, { sketch: this.f.id })); };   // lane DT
+  SketchBuilder.prototype.crossBreak = function (face, opts) { return this.part.crossBreak(face, Object.assign({}, opts || {}, { sketch: this.f.id })); };   // lane cross-break
   SketchBuilder.prototype.jog = function (offset, opts) { return this.part._sketchJog(offset, Object.assign({}, opts || {}, { sketch: this.f.id })); };   // lane DC
 
   function runScript(model, code) {
@@ -1864,6 +1897,15 @@
         }
         case 'insertBends':
         case 'convertSM': {
+          if (f.openBase) {   // lane open-base: the Base Flange from an open profile
+            var obo = { sketch: '@' + idVar[f.sketch], depth: numOut(f.depth), name: f.name };
+            if (f.end === 'mid') obo.midplane = true;
+            if (f.reverse) obo.reverse = true;
+            if (f.flip) obo.flip = true;
+            if (f.radius != null) obo.radius = numOut(f.radius);
+            out.push('var ' + v + ' = p.baseFlange(null, ' + optsStr(obo) + ').last();');
+            break;
+          }
           // lane DQ: the sheet (T, R, K) is the p.sheet(...) line at the top
           var ibr = function (q) { return q.map(function (x) { return Math.round(x * 1e4) / 1e4; }); };
           var ibo = {};

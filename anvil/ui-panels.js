@@ -197,7 +197,7 @@
       { id: 'zebra', label: 'Zebra\nStripes', run: function () { UI.cmdZebra(); }, active: function () { return !!(UI.evaluate && UI.evaluate.zebra.state().on); } },
       { id: 'draftAnalysis', label: 'Draft\nAnalysis', run: function () { UI.cmdDraftAnalysis(); } },
       { id: 'clearance', label: 'Clearance\nVerification', run: function () { UI.cmdClearance(); } },
-      { stack: [{ id: 'generic', icon: 'undercut', label: 'Undercut Analysis' }, { id: 'generic', icon: 'thickness', label: 'Thickness Analysis' }] },
+      { stack: [{ id: 'generic', icon: 'undercut', label: 'Undercut Analysis' }, { id: 'generic', icon: 'thickness', label: 'Thickness Analysis', run: function () { UI.cmdThickness(); } }] },
       { sep: true },
       { id: 'generic', icon: 'compareDocs', label: 'Compare\nDocuments' }, { id: 'generic', icon: 'perfEval', label: 'Performance\nEvaluation' }, { id: 'generic', icon: 'costing', label: 'Costing' }
     ],
@@ -206,7 +206,7 @@
       { id: 'convertSM', label: 'Convert to\nSheet Metal', help: 'Turn a solid into sheet metal: a fixed face and the edges that become bends; the other faces are removed and the corners ripped', run: function () { UI.cmdConvertSheetMetal(); } }, { id: 'loft', label: 'Lofted-\nBend' },
       { sep: true },
       { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'hem', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'jog', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'sketchedBend', label: 'Sketched\nBend', run: function () { UI.cmdSketchedBend(); } },
-      { stack: [{ id: 'generic', icon: 'crossBreak', label: 'Cross-Break' }, { fly: 'corners', items: [{ id: 'breakCorner', label: 'Break-Corner', help: 'Round or chamfer outside corners of the sheet (Corners ▸ Break-Corner/Corner-Trim)', run: function () { UI.cmdBreakCorner(); } }, { id: 'closedCorner', label: 'Closed Corner', help: 'Extend the end faces of a flange to close the gap at a box corner (Corners ▸ Closed Corner)', run: function () { UI.cmdClosedCorner(); } }] }, { id: 'generic', icon: 'formingTool', label: 'Forming Tool' }] },
+      { stack: [{ id: 'crossBreak', icon: 'crossBreak', label: 'Cross-Break', help: 'Mark a stiffening X on a flat sheet face, corner to corner (cosmetic: the solid and the blank stay)', run: function () { UI.cmdCrossBreak(); } }, { fly: 'corners', items: [{ id: 'breakCorner', label: 'Break-Corner', help: 'Round or chamfer outside corners of the sheet (Corners ▸ Break-Corner/Corner-Trim)', run: function () { UI.cmdBreakCorner(); } }, { id: 'closedCorner', label: 'Closed Corner', help: 'Extend the end faces of a flange to close the gap at a box corner (Corners ▸ Closed Corner)', run: function () { UI.cmdClosedCorner(); } }] }, { id: 'generic', icon: 'formingTool', label: 'Forming Tool' }] },
       { sep: true },
       { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'vent', label: 'Vent', run: function () { UI.cmdVent(); } },
       { sep: true },
@@ -783,6 +783,7 @@
   FEATURE_ICON.refaxis = 'refAxis'; FEATURE_ICON.refpoint = 'refPoint'; FEATURE_ICON.csys = 'csys';   // lane CZ: reference geometry
   FEATURE_ICON.rip = 'rip';   // lane DI
   FEATURE_ICON.vent = 'vent';   // lane DT
+  FEATURE_ICON.crossBreak = 'crossBreak';   // lane cross-break
   FEATURE_ICON.draft = 'draft';   // rfDX
   FEATURE_ICON.helix = 'helix'; FEATURE_ICON.projCurve = 'projCurve'; FEATURE_ICON.compositeCurve = 'compositeCurve'; FEATURE_ICON.xyzCurve = 'xyzCurve'; FEATURE_ICON.refPtCurve = 'refPtCurve';   // rfFA
   FEATURE_ICON.wrap = 'wrap';   // rfDZ
@@ -857,7 +858,9 @@
       return ids;
     }
     var consumedBy = {};
-    m.features.forEach(function (f) { childSketchIds(f).forEach(function (id) { if (consumedBy[id] == null) consumedBy[id] = f.id; }); });
+    // rfGQ: a feature below the rollback bar gives its sketch back: the sketch stands on its own above the bar
+    UI.rollbarSync();
+    m.features.forEach(function (f) { var low = UI.rollbarRolled(f); childSketchIds(f).forEach(function (id) { if (consumedBy[id] == null && !(low && !UI.rollbarRolled(K.findFeature(m, id)))) consumedBy[id] = f.id; }); });
     var smBase = m.sheet ? m.features.filter(function (f) { return f.sheetBase; })[0] || null : null;   // lane DC: Sheet-Metal row above it
     if (m.sheet && !smBase && !filter) tree.appendChild(sheetMetalRow());
     m.features.forEach(function (f) {
@@ -875,10 +878,13 @@
       }
     });
     if (m.sheet && !filter) appendFlatPatternFolder(tree);   // lane DC
-    // rfBG: SolidWorks' rollback bar, under the last feature, or above the first rolled-back one during an edit
-    // (drawn only: dragging it is not supported)
-    var bar = el('div', { class: 'rollbar', title: 'Rollback bar', 'aria-hidden': 'true' });
+    // rfBG: SolidWorks' rollback bar, under the last feature, or above the first rolled-back one;
+    // rfGQ: drag it, right-click it (rollbarDrag, rollbarMenu)
+    var bar = el('div', { class: 'rollbar', title: 'Rollback bar: drag it up or down the tree to roll the part back; right-click for Roll Forward, Roll to Previous, Roll to End' });
+    bar.addEventListener('mousedown', function (e) { rollbarDrag(e, bar); });
+    bar.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, rollbarMenu(null)); });
     var firstRolled = tree.querySelector('.ti.rolled');
+    if (firstRolled && firstRolled.parentNode !== tree) firstRolled = firstRolled.parentNode.previousElementSibling;   // a sketch in its feature's folder
     if (!filter) tree.insertBefore(bar, firstRolled && firstRolled.parentNode === tree ? firstRolled : null);
     if (App.sel && (App.sel.kind === 'feature' || App.sel.kind === 'body')) {
       // a row selected elsewhere (the viewport) scrolls into view by the least amount, as in SolidWorks; a visible
@@ -887,6 +893,47 @@
       if (selRow) revealRow(tree, selRow);
     }
     refreshConfigPanel();   // every rebuild, undo and load refreshes the tree; keep the ConfigurationManager in step
+  }
+  // rfGQ: the bar moves between the top-level feature rows and the part rolls when the mouse is released; Esc cancels.
+  // A tree that scrolls follows the mouse near its top and bottom edges.
+  function rollbarDrag(e, bar) {
+    if (e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    if (App.mode === 'sketch' || UI.hasPM()) { setStatus('Close the open command or sketch before moving the rollback bar.'); return; }
+    var tree = $('tree'), rows = Array.prototype.slice.call(tree.querySelectorAll(':scope > .ti[data-fid]')), moved = false, target = null;
+    function gapAt(y) {
+      for (var i = 0; i < rows.length; i++) { var r = rows[i].getBoundingClientRect(); if (y < r.top + r.height / 2) return rows[i]; }
+      return null;
+    }
+    function end() {
+      document.removeEventListener('mousemove', move, true); document.removeEventListener('mouseup', up, true); document.removeEventListener('keydown', key, true);
+      document.body.classList.remove('rollbar-dragging'); bar.classList.remove('dragging');
+    }
+    function move(ev) {
+      var b = tree.getBoundingClientRect();
+      if (ev.clientY < b.top + 14) tree.scrollTop -= 12; else if (ev.clientY > b.bottom - 14) tree.scrollTop += 12;
+      target = gapAt(ev.clientY); moved = true;
+      if (bar.nextSibling !== target) tree.insertBefore(bar, target);
+    }
+    function up() {
+      end();
+      if (!moved) return;
+      var f = target ? K.findFeature(App.model, +target.getAttribute('data-fid')) : null;
+      if (!UI.rollbarTo(f ? App.model.features.indexOf(f) : App.model.features.length)) refreshTree();
+    }
+    function key(ev) { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); end(); refreshTree(); } }
+    document.body.classList.add('rollbar-dragging'); bar.classList.add('dragging');
+    document.addEventListener('mousemove', move, true); document.addEventListener('mouseup', up, true); document.addEventListener('keydown', key, true);
+  }
+  // Rollback (on a feature: the bar goes right above it), Roll Forward (one feature), Roll to Previous (where the bar
+  // was before its last move), Roll to End
+  function rollbarMenu(f) {
+    var at = UI.rollbarIndex(), len = App.model.features.length, items = [];
+    if (f) items.push({ label: 'Rollback', disabled: App.model.features.indexOf(f) === at, action: function () { UI.rollbarTo(App.model.features.indexOf(f)); } });
+    items.push({ label: 'Roll Forward', disabled: at >= len, action: function () { UI.rollbarForward(); } });
+    items.push({ label: 'Roll to Previous', disabled: UI.rollbarPrevIndex() < 0, action: function () { UI.rollbarPrevious(); } });
+    items.push({ label: 'Roll to End', disabled: at >= len, action: function () { UI.rollbarEnd(); } });
+    return items;
   }
   function revealRow(box, row) {
     if (!row.getClientRects().length) return;   // inside a collapsed folder
@@ -1071,8 +1118,9 @@
     var selected = App.sel && App.sel.kind === 'feature' && App.sel.id === f.id;
     var active = App.activeSketch === f.id;
     // r10/editpreview10: features after the rollback point of an Edit Sketch / Edit Feature are greyed (SolidWorks)
-    var rolled = App.rollback != null && !active && App.model.features.indexOf(f) >= App.rollback;
-    var row = treeItem({ icon: err ? 'error' : (warn ? 'warn' : featureIcon(f)), name: (f.type === 'sketch' && UI.sketchTreePrefix ? UI.sketchTreePrefix(f) : '') + f.name + (active ? '  (editing)' : ''), depth: depth, children: !!kids, open: kids && kids.open, toggle: kids && kids.toggle, cls: (selected ? 'selected' : '') + (err ? ' err' : '') + (warn ? ' warn' : '') + (rolled ? ' rolled' : '') + (UI.isSuppressed && UI.isSuppressed(f.id) ? ' suppressed' : ''), title: (err || warn || featureTitle(f)) + (rolled ? ' (rolled back)' : '') + (UI.isSuppressed && UI.isSuppressed(f.id) ? ' (suppressed)' : ''), badge: f.type === 'sketch' && f.entities ? f.entities.length + ' ent.' : '', prefix: f.type === 'sketch' });
+    var rolled = !active && ((App.rollback != null && App.model.features.indexOf(f) >= App.rollback) || UI.rollbarRolled(f));   // rfGQ: below the rollback bar
+    var shownSuppressed = !UI.rollbarRolled(f) && UI.isSuppressed && UI.isSuppressed(f.id);
+    var row = treeItem({ icon: err ? 'error' : (warn ? 'warn' : featureIcon(f)), name: (f.type === 'sketch' && UI.sketchTreePrefix ? UI.sketchTreePrefix(f) : '') + f.name + (active ? '  (editing)' : ''), depth: depth, children: !!kids, open: kids && kids.open, toggle: kids && kids.toggle, cls: (selected ? 'selected' : '') + (err ? ' err' : '') + (warn ? ' warn' : '') + (rolled ? ' rolled' : '') + (shownSuppressed ? ' suppressed' : ''), title: (err || warn || featureTitle(f)) + (rolled ? ' (rolled back)' : '') + (shownSuppressed ? ' (suppressed)' : ''), badge: f.type === 'sketch' && f.entities ? f.entities.length + ' ent.' : '', prefix: f.type === 'sketch' });
     row.setAttribute('data-fid', String(f.id));   // selection sync (ui-select.js)
     if (UI.rebuildMarkRow) UI.rebuildMarkRow(row, f, err, warn, featureIcon(f));   // r12/occtui12: own icon + error / warning badge, tooltip
     row.addEventListener('click', function (e) {
@@ -1118,11 +1166,15 @@
     if (f.type === 'sketch') items.push({ label: 'Edit Sketch', action: function () { UI.editSketch(f.id); } });
     else items.push({ label: 'Edit Feature', action: function () { UI.editFeature(f); } });
     if (f.sketch != null) items.push({ label: 'Edit Sketch', action: function () { UI.editSketch(f.sketch); } });
+    if (f.type === 'sketch' && f.derived && UI.cmdUnderiveSketch) items.push({ label: 'Underive', action: function () { UI.cmdUnderiveSketch(f.id); } });   // rfGS
     if (f.type === 'sketch' && UI.editSketchPlane) items.push({ label: 'Edit Sketch Plane', action: function () { UI.editSketchPlane(f.id); } });   // r11/faceref11
     if (f.type === 'sketch') items.push({ label: 'Export sketch as DXF', action: function () { UI.exportSketchDXF(f); } });
     if (f.type === 'sketch') items.push({ label: f.hidden ? 'Show' : 'Hide', action: function () { f.hidden = !f.hidden; UI.updateSketches(); } });
     if (f.type === 'refaxis' || f.type === 'refpoint' || f.type === 'csys') items.push({ label: f.hidden ? 'Show' : 'Hide', action: function () { UI.pushUndo(); f.hidden = !f.hidden; UI.updatePlanes(); refreshTree(); } });   // lane CZ
-    if (UI.suppressMenuItems) Array.prototype.push.apply(items, UI.suppressMenuItems(f));   // rfFC: Suppress / Unsuppress
+    if (UI.suppressMenuItems && !UI.rollbarRolled(f)) Array.prototype.push.apply(items, UI.suppressMenuItems(f));   // rfFC: Suppress / Unsuppress
+    items.push({ sep: true });
+    Array.prototype.push.apply(items, rollbarMenu(f));   // rfGQ
+    items.push({ sep: true });
     items.push({ label: 'Rename (F2)', action: function () { startRename(f); } });
     items.push({ sep: true });
     items.push({ label: 'Delete', action: function () { UI.deleteFeature(f.id); } });
@@ -1446,6 +1498,7 @@
         { label: 'Pattern/Mirror ▸ Mirror', action: function () { UI.cmdMirror(); } },
         { sep: true },
         { label: 'Sketch', action: UI.cmdSketch },
+        { label: 'Derived Sketch', action: function () { UI.cmdDerivedSketch(); }, disabled: !UI.cmdDerivedSketch },   // rfGS
         { label: 'Reference Geometry ▸ Plane', action: function () { UI.cmdPlane(); } },
         { label: 'Curve ▸ Split Line…', icon: 'splitLine', disabled: true }, { label: 'Curve ▸ Projected…', icon: 'projCurve', action: function () { UI.cmdProjectedCurve(); } }, { label: 'Curve ▸ Composite…', icon: 'compositeCurve', action: function () { UI.cmdCompositeCurve(); } }, { label: 'Curve ▸ Curve Through XYZ Points…', icon: 'xyzCurve', action: function () { UI.cmdCurveXYZ(); } }, { label: 'Curve ▸ Curve Through Reference Points…', icon: 'refPtCurve', action: function () { UI.cmdCurveRefPoints(); } }, { label: 'Curve ▸ Helix/Spiral…', icon: 'helix', action: function () { UI.cmdHelix(); } },   // rfFA
         { label: 'Sheet Metal ▸ Base Flange', action: UI.cmdBaseFlange },
@@ -1482,6 +1535,9 @@
         { label: 'Sketch Tools ▸ SketchXpert…', icon: 'relations', action: function () { UI.cmdSketchXpert(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchXpert },
         { label: 'Sketch Tools ▸ Modify…', icon: 'moveEnt', action: function () { UI.cmdModifySketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdModifySketch },
         { label: 'Sketch Tools ▸ Replace Entity…', icon: 'moveEnt', action: function () { UI.cmdReplaceEntity(); }, disabled: App.mode !== 'sketch' || !UI.cmdReplaceEntity },   // rfCR: ui-sketch-tools.js
+        { label: 'Sketch Tools ▸ Close Sketch to Model…', icon: 'closeArc', action: function () { UI.cmdCloseSketchToModel(); }, disabled: App.mode !== 'sketch' || !UI.cmdCloseSketchToModel },   // lane sketch-path: ui-sketch-tools.js
+        { label: 'Sketch Tools ▸ Create Sketch from Selections', action: function () { UI.cmdSketchFromSelections(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchFromSelections },   // rfGS
+        { label: 'Sketch Tools ▸ Make Path…', icon: 'pathLengthDim', action: function () { UI.cmdMakePath(); }, disabled: App.mode !== 'sketch' || !UI.cmdMakePath },   // lane sketch-path: ui-sketch-tools.js
         { label: 'Sketch Tools ▸ Check Sketch for Feature…', action: function () { UI.cmdCheckSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdCheckSketch },   // dxf-import (ui-sketch-import.js)
         { label: 'Sketch Tools ▸ Sketch Picture…', icon: 'sketchPicture', action: function () { UI.cmdSketchPicture(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchPicture },   // rfAW: ui-sketch-picture.js
         { label: 'Sketch Tools ▸ Insert DXF / DWG…', action: function () { UI.cmdInsertDXF(); }, disabled: isAsm() || !UI.cmdInsertDXF },

@@ -12,7 +12,8 @@
 //                                       one mesh object per body, assemblies as build items with transforms
 //   exportSTEP(model, build?, opts?) -> STEP AP214 text: one MANIFOLD_SOLID_BREP per body (CLOSED_SHELL of ADVANCED_FACEs
 //                                       on PLANEs and, for true curves, CYLINDRICAL / CONICAL / SPHERICAL / TOROIDAL
-//                                       surfaces; LINE and CIRCLE EDGE_CURVEs), products named after the parts,
+//                                       surfaces, B_SPLINE_SURFACE_WITH_KNOTS for a body that is one loft through 3+
+//                                       sections; LINE, CIRCLE and B-spline EDGE_CURVEs), products named after the parts,
 //                                       assemblies as NEXT_ASSEMBLY_USAGE_OCCURRENCEs with placements
 // Imports turn a file into solids ({ name, positions: [x, y, z, …], triangles: [i, j, k, …], curves? }, outward, in the
 // target model's units; `curves` holds the analytic surface records of a STEP file's curved faces, see curvesOf):
@@ -362,7 +363,7 @@ var Exchange = (function () {
         var nm = bodies.length === 1 ? (model.name || 'Part1') : (infos[i] && infos[i].name) || ('Body' + (i + 1));
         if (used[nm]) { var n = 2; while (used[nm + '-' + n]) n++; nm = nm + '-' + n; }
         used[nm] = true;
-        return { name: nm, mesh: bodyMesh(b), material: bodyMat(model, { bodies: bodies, bodyFeatures: build.bodyFeatures || [] }, i) };
+        return { name: nm, mesh: bodyMesh(b), material: bodyMat(model, { bodies: bodies, bodyFeatures: build.bodyFeatures || [] }, i), src: { body: b, model: model, build: build } };
       });
       return { name: model.name || 'Part1', units: model.units === 'in' ? 'in' : 'mm', assembly: false,
         parts: [{ name: model.name || 'Part1', color: partColor(model), bodies: list }],
@@ -412,7 +413,7 @@ var Exchange = (function () {
           var pbodies = pb.bodies && pb.bodies.length ? pb.bodies : [pb.body];
           byKey[key] = parts.length;
           var pbuild = { bodies: pbodies, bodyFeatures: pb.bodyFeatures || [] };
-          parts.push({ name: nm, color: partColor(pm), bodies: pbodies.map(function (bb, i) { return { name: pbodies.length === 1 ? nm : nm + '-Body' + (i + 1), mesh: bodyMesh(mirrored ? reflectX(bb) : bb), material: pm ? bodyMat(pm, pbuild, i) : { name: null, color: null } }; }) });
+          parts.push({ name: nm, color: partColor(pm), bodies: pbodies.map(function (bb, i) { return { name: pbodies.length === 1 ? nm : nm + '-Body' + (i + 1), mesh: bodyMesh(mirrored ? reflectX(bb) : bb), material: pm ? bodyMat(pm, pbuild, i) : { name: null, color: null }, src: pm && !mirrored ? { body: bb, model: pm, build: pb } : null }; }) });
         }
         if (mirrored) { var R = T.rotation; T = { rotation: [-R[0], R[1], R[2], -R[3], R[4], R[5], -R[6], R[7], R[8]], position: T.position }; }
         var inst = { part: byKey[key], name: c.name, transform: T };
@@ -1202,6 +1203,167 @@ var Exchange = (function () {
   function wrapAngle(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a <= -Math.PI) a += 2 * Math.PI; return a; }
   function mod2pi(a) { a = a % (2 * Math.PI); return a < 0 ? a + 2 * Math.PI : a; }
 
+  // ------------------------------------------------------------------ B-spline curves and faces (rfGO)
+  // A loft through three or more sections is bicubic (kernel-features.js loftPatches), so a body that is nothing but that
+  // loft is written from its patches: one B_SPLINE_SURFACE_WITH_KNOTS face per piece, B_SPLINE_CURVE_WITH_KNOTS edges, two
+  // PLANE caps (what occt-kernel.js loftTool sews). Any other body, a loft a later feature cut or joined included, keeps
+  // the facets. The reader takes the same faces: a surface bounded by four B-spline edges along its own sides. Its chords
+  // are moved off the curve by a twelfth of their second difference (Euler-Maclaurin: the trapezoid sum of the moved
+  // samples is the integral to O(h^4)), so a tessellation of SPLINE_SEGS chords per knot span keeps the volume.
+  var SPLINE_SEGS = 24;
+  function bsFlat(knots, mults) { var U = []; knots.forEach(function (k, i) { for (var m = 0; m < +mults[i]; m++) U.push(+k); }); return U; }
+  function bsBasis(deg, U, t) {
+    var last = U.length - deg - 2, s = deg;
+    while (s < last && !(t < U[s + 1])) s++;
+    var N = [1], L = [], R = [];
+    for (var j = 1; j <= deg; j++) {
+      L[j] = t - U[s + 1 - j]; R[j] = U[s + j] - t;
+      var saved = 0;
+      for (var r = 0; r < j; r++) { var tmp = N[r] / (R[r + 1] + L[j - r]); N[r] = saved + R[r + 1] * tmp; saved = L[j - r] * tmp; }
+      N[j] = saved;
+    }
+    return { s: s, N: N };
+  }
+  function bsParams(U, deg) {
+    var out = [], end = U.length - deg - 1;
+    for (var i = deg; i < end; i++) if (U[i + 1] > U[i]) for (var s = 0; s < SPLINE_SEGS; s++) out.push(U[i] + (U[i + 1] - U[i]) * s / SPLINE_SEGS);
+    out.push(U[end]);
+    return out;
+  }
+  function bsCurvePoints(deg, poles, U) {
+    return bsParams(U, deg).map(function (t) {
+      var b = bsBasis(deg, U, t), p = [0, 0, 0];
+      for (var k = 0; k <= deg; k++) { var q = poles[b.s - deg + k]; p[0] += b.N[k] * q[0]; p[1] += b.N[k] * q[1]; p[2] += b.N[k] * q[2]; }
+      return p;
+    });
+  }
+  // G[i][j]: i along u (the first index of the poles), j along v
+  function bsSurfaceGrid(du, dv, poles, U, V) {
+    var bv = bsParams(V, dv).map(function (t) { return bsBasis(dv, V, t); });
+    return bsParams(U, du).map(function (t) {
+      var bu = bsBasis(du, U, t);
+      return bv.map(function (b) {
+        var p = [0, 0, 0];
+        for (var i = 0; i <= du; i++) for (var j = 0; j <= dv; j++) {
+          var q = poles[bu.s - du + i][b.s - dv + j], w = bu.N[i] * b.N[j];
+          p[0] += w * q[0]; p[1] += w * q[1]; p[2] += w * q[2];
+        }
+        return p;
+      });
+    });
+  }
+  // the area-true move of sample i of n + 1, none at a corner of the path. The ends stay put, so the samples next to them
+  // take 1/8: the end's own 1/24 of the second difference (Gregory's end correction; 1/12 alone is 1e-4 short on a circle)
+  function areaTrueMove(a, p, b, i, n) {
+    var d1 = sub(p, a), d2 = sub(b, p), l = len(d1) * len(d2);
+    return l > 0 && dot(d1, d2) > 0.85 * l ? scale(sub(add(a, b), scale(p, 2)), i === 1 || i === n - 1 ? -1 / 8 : -1 / 12) : [0, 0, 0];
+  }
+  function areaTruePath(pts) { var n = pts.length - 1; return pts.map(function (p, i) { return i === 0 || i === n ? p : add(p, areaTrueMove(pts[i - 1], p, pts[i + 1], i, n)); }); }
+  function areaTrueGrid(G, bottom, right, top, left) {
+    var nu = G.length - 1, nv = G[0].length - 1;
+    return G.map(function (col, i) {
+      return col.map(function (p, j) {
+        if (j === 0) return bottom[i];
+        if (j === nv) return top[i];
+        if (i === 0) return left[j];
+        if (i === nu) return right[j];
+        return add(add(p, areaTrueMove(G[i - 1][j], p, G[i + 1][j], i, nu)), areaTrueMove(col[j - 1], p, col[j + 1], j, nv));
+      });
+    });
+  }
+  // emit(a, b, c) counter-clockwise in (u, v); the diagonals alternate, so a twisted cell's error cancels in the next
+  function gridTris(Q, emit) {
+    for (var i = 0; i + 1 < Q.length; i++) for (var j = 0; j + 1 < Q[0].length; j++) {
+      var a = Q[i][j], b = Q[i + 1][j], c = Q[i + 1][j + 1], d = Q[i][j + 1];
+      if ((i + j) % 2) { emit(a, b, c); emit(a, c, d); } else { emit(a, b, d); emit(b, c, d); }
+    }
+  }
+  function columnOf(G, j) { return G.map(function (c) { return c[j]; }); }
+  // the closed shell of a loft's patches: signed volume (+ when dPdu x dPdv points outward) and bounds
+  function loftShellInfo(faces) {
+    var o = faces[0].poles[0][0], v = 0, low = [], high = [], lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    function tet(a, b, c) { v += dot(sub(a, o), cross(sub(b, o), sub(c, o))) / 6; }
+    faces.forEach(function (pa) {
+      var G = bsSurfaceGrid(3, pa.degV, pa.poles, bsFlat(pa.uKnots, pa.uMults), bsFlat(pa.vKnots, pa.vMults)), nv = G[0].length - 1;
+      var bottom = areaTruePath(columnOf(G, 0)), top = areaTruePath(columnOf(G, nv));
+      gridTris(areaTrueGrid(G, bottom, areaTruePath(G[G.length - 1]), top, areaTruePath(G[0])), tet);
+      low = low.concat(bottom.slice(0, -1)); high = high.concat(top.slice(0, -1));
+      G.forEach(function (c) { c.forEach(function (p) { for (var k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[k]); hi[k] = Math.max(hi[k], p[k]); } }); });
+    });
+    for (var i = 1; i + 1 < high.length; i++) tet(high[0], high[i], high[i + 1]);
+    for (i = 1; i + 1 < low.length; i++) tet(low[0], low[i + 1], low[i]);
+    return { volume: v, lo: lo, hi: hi };
+  }
+  // splineLoftOf(src, mesh) -> { faces, sense } when the body is exactly one loft's patches, else null
+  function splineLoftOf(src, mesh) {
+    if (!src || !src.body.polygons.length || !K._.loftPatches) return null;
+    var polys = src.body.polygons, id = polys[0].shared, i;
+    for (i = 0; i < polys.length; i++) if (polys[i].shared !== id) return null;
+    try {
+      var m = K.resolvedModel(src.model).model, f = K.findFeature(m, id);
+      if (!f || f.type !== 'loft' || f.cut || !f.sketches || f.sketches.length < 3) return null;
+      var planes = (src.build && src.build.planes) || {};
+      var pa = K._.loftPatches(f.sketches.map(function (sid) {
+        var s = K.findFeature(m, sid), pl = K.resolvePlane(s.plane, m, planes), prof = s.profile || K.sketchProfile(s);
+        var o = prof.loops.filter(function (l) { return !l.hole; })[0];
+        return { plane: pl, loop: o, prof: prof, pts: o.pts.map(function (p) { return K.to3D(pl, p[0], p[1]); }) };
+      }));
+      if (!pa || pa.ruled) return null;
+      var faces = pa.faces, n = faces.length, info = loftShellInfo(faces), vol = src.body.volume(), diag = len(sub(info.hi, info.lo));
+      if (Math.abs(Math.abs(info.volume) - vol) > 1e-4 * vol) return null;
+      for (var k = 0; k < 3; k++) {
+        var mn = Infinity, mx = -Infinity;
+        for (i = k; i < mesh.positions.length; i += 3) { mn = Math.min(mn, mesh.positions[i]); mx = Math.max(mx, mesh.positions[i]); }
+        if (Math.abs(mn - info.lo[k]) > 1e-3 * diag || Math.abs(mx - info.hi[k]) > 1e-3 * diag) return null;
+      }
+      // neighbours must share their side exactly, and no piece may shrink to a point on a cap
+      for (var j = 0; j < n; j++) {
+        var A = faces[j], B = faces[(j + 1) % n], a = A.poles[A.poles.length - 1], b = B.poles[0], nv = a.length - 1;
+        if (b.length !== a.length) return null;
+        for (i = 0; i <= nv; i++) if (len(sub(a[i], b[i])) > 1e-9 * diag) return null;
+        if (len(sub(A.poles[0][0], a[0])) + len(sub(A.poles[1][0], a[0])) < 1e-9 * diag || len(sub(A.poles[0][nv], a[nv])) + len(sub(A.poles[1][nv], a[nv])) < 1e-9 * diag) return null;
+      }
+      return { faces: faces, sense: info.volume > 0 };
+    } catch (e) { return null; }
+  }
+  function writeLoftBrep(W, L, name) {
+    var faces = L.faces, n = faces.length, sense = L.sense, vp = {};
+    function pt(p) { return W.add('CARTESIAN_POINT(\'\',' + stepVec(p) + ')'); }
+    function ints(xs) { return stepList(xs.map(String)); }
+    function vertex(j, end) {   // the corner of piece j on the first (0) or last (1) section
+      var k = j + '_' + end, row = faces[j].poles[0];
+      return vp[k] || (vp[k] = W.add('VERTEX_POINT(\'\',' + pt(row[end ? row.length - 1 : 0]) + ')'));
+    }
+    function curve(poles, knots, mults) { return W.add('B_SPLINE_CURVE_WITH_KNOTS(\'\',3,' + stepList(poles.map(pt)) + ',.UNSPECIFIED.,.F.,.F.,' + ints(mults) + ',' + stepList(knots.map(stepReal)) + ',.UNSPECIFIED.)'); }
+    function edge(V1, V2, geom) { return W.add('EDGE_CURVE(\'\',' + V1 + ',' + V2 + ',' + geom + ',.T.)'); }
+    function oe(id, fwd) { return W.add('ORIENTED_EDGE(\'\',*,*,' + id + ',' + (fwd ? '.T.' : '.F.') + ')'); }
+    function rimEdge(j, end) {
+      var pa = faces[j], k = end ? pa.poles[0].length - 1 : 0;
+      return edge(vertex(j, end), vertex((j + 1) % n, end), curve(pa.poles.map(function (c) { return c[k]; }), pa.uKnots, pa.uMults));
+    }
+    var sideE = faces.map(function (pa, j) { return edge(vertex(j, 0), vertex(j, 1), curve(pa.poles[0], pa.vKnots, pa.vMults)); });
+    var rimE = [faces.map(function (pa, j) { return rimEdge(j, 0); }), faces.map(function (pa, j) { return rimEdge(j, 1); })];
+    var faceIds = faces.map(function (pa, j) {
+      var nx = (j + 1) % n, loop = sense ? [oe(rimE[0][j], true), oe(sideE[nx], true), oe(rimE[1][j], false), oe(sideE[j], false)]
+        : [oe(sideE[j], true), oe(rimE[1][j], true), oe(sideE[nx], false), oe(rimE[0][j], false)];
+      var surf = W.add('B_SPLINE_SURFACE_WITH_KNOTS(\'\',3,' + pa.degV + ',' + stepList(pa.poles.map(function (c) { return stepList(c.map(pt)); })) + ',.UNSPECIFIED.,.F.,.F.,.F.,' + ints(pa.uMults) + ',' + ints(pa.vMults) + ',' + stepList(pa.uKnots.map(stepReal)) + ',' + stepList(pa.vKnots.map(stepReal)) + ',.UNSPECIFIED.)');
+      return W.add('ADVANCED_FACE(\'\',(' + W.add('FACE_BOUND(\'\',' + W.add('EDGE_LOOP(\'\',' + stepList(loop) + ')') + ',.T.)') + '),' + surf + ',' + (sense ? '.T.' : '.F.') + ')');
+    });
+    // a cap runs its rim against the side faces; its plane's normal comes from the way round the loop then goes
+    [0, 1].forEach(function (end) {
+      var fwd = sense === (end === 1), order = faces.map(function (pa, j) { return fwd ? j : n - 1 - j; }), ring = [];
+      faces.forEach(function (pa) { var k = end ? pa.poles[0].length - 1 : 0; for (var a = 0; a + 1 < pa.poles.length; a++) ring.push(pa.poles[a][k]); });
+      if (!fwd) ring.reverse();
+      var nrm = [0, 0, 0];
+      ring.forEach(function (p, i) { nrm = add(nrm, cross(sub(p, ring[0]), sub(ring[(i + 1) % ring.length], ring[0]))); });
+      nrm = norm(nrm);
+      var ax = W.add('AXIS2_PLACEMENT_3D(\'\',' + pt(ring[0]) + ',' + W.add('DIRECTION(\'\',' + stepVec(nrm) + ')') + ',' + W.add('DIRECTION(\'\',' + stepVec(frameFor(nrm).u) + ')') + ')');
+      var loop = W.add('EDGE_LOOP(\'\',' + stepList(order.map(function (j) { return oe(rimE[end][j], fwd); })) + ')');
+      faceIds.push(W.add('ADVANCED_FACE(\'\',(' + W.add('FACE_OUTER_BOUND(\'\',' + loop + ',.T.)') + '),' + W.add('PLANE(\'\',' + ax + ')') + ',.T.)'));
+    });
+    return W.add('MANIFOLD_SOLID_BREP(' + stepString(name) + ',' + W.add('CLOSED_SHELL(\'\',' + stepList(faceIds) + ')') + ')');
+  }
+
   function exportSTEP(model, build, opts) {
     opts = opts || {};
     // a part built by OpenCascade (Tools ▸ OpenCascade kernel, ui-occt.js) exports its own B-rep: every face exact,
@@ -1251,7 +1413,11 @@ var Exchange = (function () {
     function writePart(part) {
       var pr = product(part.name, 'part');
       var origin = axis(null);
-      var solids = part.bodies.map(function (b) { var s = writeBrep(W, b.mesh, b.name); styleSolid(s, (b.material && b.material.color) || part.color); return s; });
+      var solids = part.bodies.map(function (b) {
+        var lp = splineLoftOf(b.src, b.mesh), s = lp ? writeLoftBrep(W, lp, b.name) : writeBrep(W, b.mesh, b.name);
+        styleSolid(s, (b.material && b.material.color) || part.color);
+        return s;
+      });
       var rep = W.add('ADVANCED_BREP_SHAPE_REPRESENTATION(' + stepString(part.name) + ',' + stepList([origin].concat(solids)) + ',' + ctx + ')');
       W.add('SHAPE_DEFINITION_REPRESENTATION(' + pr.pds + ',' + rep + ')');
       pr.rep = rep; pr.origin = origin;
@@ -1461,6 +1627,11 @@ var Exchange = (function () {
         info.circle = { c: T.position, n: [T.rotation[2], T.rotation[5], T.rotation[8]], r: +geom.a[2] };
         var cp = circlePoints(info.circle, p1, p2, same, toMM);
         info.pts = cp.pts; info.mid = cp.mid; info.full = cp.full;
+      } else if (geom.t === 'B_SPLINE_CURVE_WITH_KNOTS' && +geom.a[1] > 1) {   // rfGO: info.raw on the curve, info.pts area-true; degree 1 stays a chord
+        var raw = bsCurvePoints(+geom.a[1], (geom.a[2] || []).map(point), bsFlat(geom.a[7], geom.a[6]));
+        if (!same) raw.reverse();
+        raw[0] = p1; raw[raw.length - 1] = p2;
+        info.kind = 'bspline'; info.raw = raw; info.pts = areaTruePath(raw);
       } else info.pts = [p1, p2];
       return (edgeCache[id] = info);
     }
@@ -1513,6 +1684,7 @@ var Exchange = (function () {
           normal = [T.rotation[2], T.rotation[5], T.rotation[8]];
           if (fa[3] && fa[3].e === 'F') normal = scale(normal, -1);
         } else if (surf) {
+          if (surf.t === 'B_SPLINE_SURFACE_WITH_KNOTS' && splineFace(fa, surf, !(fa[3] && fa[3].e === 'F'), out)) return;
           var S = surf.t ? surfRecord(surf) : null;
           if (S && curvedFace(fa, S, !(fa[3] && fa[3].e === 'F'), out)) return;
           var key = (surf.t || 'complex surface') + (S ? ' (trimmed by curves other than circles and rulings)' : '');
@@ -1542,6 +1714,40 @@ var Exchange = (function () {
       var t0 = out.tris.length;
       triangulateFace(loops, outerIdx, normal, out);
       for (var t = t0; t < out.tris.length; t += 3) out.recs.push(null);
+    }
+    // rfGO: a B-spline face bounded by four B-spline edges along the surface's own sides, in rows through the edges' points
+    function splineFace(fa, surf, sameSense, out) {
+      var a = surf.a, bs = fa[1] || [], b = bs.length === 1 ? ent(bs[0]) : null, ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
+      if (!l || l.t !== 'EDGE_LOOP') return false;
+      var list = loopEdgeList(l);
+      if (list.length !== 4 || list.some(function (x) { return x.info.kind !== 'bspline'; })) return false;
+      var G = bsSurfaceGrid(+a[1], +a[2], (a[3] || []).map(function (row) { return row.map(point); }), bsFlat(a[10], a[8]), bsFlat(a[11], a[9]));
+      var nu = G.length - 1, nv = G[0].length - 1, ext = 0;
+      G.forEach(function (c) { c.forEach(function (p) { ext = Math.max(ext, Math.abs(p[0]), Math.abs(p[1]), Math.abs(p[2])); }); });
+      // the grid's boundary, round in (u, v): which way the file's loop goes depends on its orientation, so try every start
+      var want = [columnOf(G, 0), G[nu], columnOf(G, nv).reverse(), G[0].slice().reverse()], tol = 1e-6 * Math.max(ext, 1e-9);
+      function fits(q, w) {
+        if (q.length !== w.length) return false;
+        for (var i = 0; i < q.length; i++) if (len(sub(q[i], w[i])) > tol) return false;
+        return true;
+      }
+      function along(x, fwd, key) { var q = x.info[key]; return fwd ? q : q.slice().reverse(); }
+      for (var dir = 1; dir >= -1; dir -= 2) for (var r = 0; r < 4; r++) {
+        var got = [], ok = true;
+        for (var k = 0; k < 4 && ok; k++) {
+          var x = list[(r + dir * k + 8) % 4], fwd = x.fwd === (dir > 0);
+          if (fits(along(x, fwd, 'raw'), want[k])) got.push(along(x, fwd, 'pts')); else ok = false;
+        }
+        if (!ok) continue;
+        gridTris(areaTrueGrid(G, got[0], got[1], got[2].slice().reverse(), got[3].slice().reverse()), function (A, B, C) {
+          var base = out.pos.length / 3, P = sameSense ? B : C, Q = sameSense ? C : B;
+          out.pos.push(A[0], A[1], A[2], P[0], P[1], P[2], Q[0], Q[1], Q[2]);
+          out.tris.push(base, base + 1, base + 2);
+          out.recs.push(null);
+        });
+        return true;
+      }
+      return false;
     }
     // curvedFace(faceArgs, S, sameSense, out) -> true when the face was tessellated. Supported: bands between two full
     // latitude circles (cylinder, cone, sphere, torus), caps from one circle to a cone's apex or a sphere's pole,

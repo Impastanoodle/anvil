@@ -336,6 +336,8 @@
       }
     }
     if (!nested && !touch) return null;
+    // rfGM: a fine pitch's boxes overlap with the circles still apart: concatenated prisms, not a union per hole
+    if (!nested && solids.length === loops.length && solids.length >= K.plateOptions.minLoops && _.plateApart(solids.map(function (l) { return l.pts; }), 1e-7)) return null;
     return solids.map(function (s) {
       var d = s.depth | 0;
       var holes = loops.filter(function (h) { return h.hole && (h.depth | 0) === d + 1 && pointInPoly(h.pts[0], s.pts); });
@@ -616,12 +618,19 @@
     // rfFS: a cut is tried first (cutTrial: every body in scope minus the tool, nothing committed) so a cut with no
     // direction can try the other side, then committed (commitCut). An empty cut is an error, as SolidWorks
     // reports a cut that does not intersect the model; the part before it stays (FN's rule).
+    // rfGM: a through cut of many holes in one plate needs no boolean (kernel-curves.js plateCut); null: use the boolean
+    function plateCutOf(b, f) {
+      if (f.type !== 'extrude' || f.end !== 'through' || f.dir2 || f.draft || f.normalCut || (f.contours && f.contours.length)) return null;
+      var sk = ctx.sketches[f.sketch] || findFeature(model, f.sketch);
+      if (!sk || !sk.profile) return null;
+      return _.plateCut(b, f, sk.profile, resolvePlane(sk.plane, model, ctx.planes), _.extrudeRange(f, ctx.throughLimit));
+    }
     function cutTrial(tool, f) {
       if (!ctx.bodies.length) throw new Error('Nothing to cut yet.');
       var scope = cutScope(f, ctx.bodies.length), changed = false, res = [];
       for (var s = 0; s < scope.length; s++) {
         var i = scope[s], b = ctx.bodies[i], volBefore = b.volume();
-        var nb = b.subtract(tool), vol = nb.polygons.length ? nb.volume() : 0;
+        var nb = plateCutOf(b, f) || b.subtract(tool), vol = nb.polygons.length ? nb.volume() : 0;
         if (Math.abs(vol - volBefore) >= 1e-6) changed = true;
         res.push({ i: i, nb: nb, vol: vol });
       }
@@ -724,6 +733,7 @@
     var pathIds = {};
     model.features.forEach(function (f) { if (f.type === 'sweep' && typeof f.path === 'number') pathIds[f.path] = true; });
     model.features.forEach(function (f) { if (f.type === 'sketchedBend' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // bend lines are open too
+    model.features.forEach(function (f) { if (f.type === 'insertBends' && f.openBase && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // rfGL: an open-profile Base Flange
     model.features.forEach(function (f) { if (f.type === 'jog' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // lane DC: a jog's line
     model.features.forEach(function (f) { if (f.type === 'projCurve' || f.type === 'compositeCurve') { pathIds[f.sketch] = pathIds[f.sketch2] = true; (f.edges || []).forEach(function (r) { if (r && r.sketch != null) pathIds[r.sketch] = true; }); } });   // rfFA: curves from open sketches
     model.features.forEach(function (f) { if (f.type === 'flange' && f.miterFlange && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // lane DL: a miter flange's profile
@@ -806,6 +816,14 @@
             // through a plain (body - cut) U add cracked (36 open edges on a 0.125 tray)
             putBody(cck, ccr.apply ? ccr.apply(ctx.body) : (ccr.cut ? ctx.body.subtract(ccr.cut) : ctx.body).union(ccr.add));
             ctx.tools[f.id] = ccr.add;
+            break;
+          }
+          case 'crossBreak': {
+            // Cross-Break (kernel-sheetmetal.js) is cosmetic: the body stays; its lines ride in planes like reference geometry
+            if (sheetError) throw new Error(sheetError);
+            var xbk = ctx.bodies.length ? Math.max(0, bodyNearPoint(ctx.bodies, f.face || [0, 0, 0])) : -1;
+            ctx.planes[f.id] = _.crossBreakLayout(f, model, { body: xbk >= 0 ? ctx.bodies[xbk] : null, sketches: ctx.sketches, planes: ctx.planes });
+            ctx.tools[f.id] = null;
             break;
           }
           case 'insertBends':

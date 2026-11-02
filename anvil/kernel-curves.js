@@ -161,6 +161,223 @@
     return body;
   }
 
+  // ------------------------------------------------------------------ perforated plates (lane perforated, rfGM)
+  // plateCut(body, f, profile, plane, range) -> the body with the profile's loops cut through it, without a boolean, or
+  // null when the cut is anything but holes through one plate (the caller then does the boolean). Conditions: at least
+  // plateOptions.minLoops loops, all outlines; apart from each other; no wall, slanted or curved polygon of the body
+  // anywhere near a hole; every hole's column crosses exactly one up cap and one down cap, inside the tool's range. Then
+  // the only things that change are the caps, so each cap is cut by the BSP of the hole it meets: a k-d split of the
+  // holes hands each hole its own few fragments, so the cost is n log n, not n × the whole cap. The new walls are the
+  // tool's side facets with their surf records (true cylinders in STEP and Mass Properties). The holes being apart and
+  // clear of every wall proves the solid neither touches itself nor falls apart, which is what zeroThickness would have
+  // meshed the body to find out (_ghTouch below). plateOptions.on = false: always the boolean.
+  var plateOptions = { on: true, minLoops: 64, last: null };
+  function plateBox(pts, gap) {
+    var b = [Infinity, Infinity, -Infinity, -Infinity];
+    for (var i = 0; i < pts.length; i++) {
+      var p = pts[i];
+      if (p[0] < b[0]) b[0] = p[0]; if (p[1] < b[1]) b[1] = p[1]; if (p[0] > b[2]) b[2] = p[0]; if (p[1] > b[3]) b[3] = p[1];
+    }
+    if (gap) { b[0] -= gap; b[1] -= gap; b[2] += gap; b[3] += gap; }
+    return b;
+  }
+  function plateMeet(a, b) { return a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]; }
+  // a grid over the boxes; visit(box, fn) calls fn(index) for the boxes in the cells box covers until fn returns true
+  function plateGrid(boxes) {
+    var U = [Infinity, Infinity, -Infinity, -Infinity], i, sum = 0;
+    for (i = 0; i < boxes.length; i++) {
+      var b = boxes[i];
+      U[0] = Math.min(U[0], b[0]); U[1] = Math.min(U[1], b[1]); U[2] = Math.max(U[2], b[2]); U[3] = Math.max(U[3], b[3]);
+      sum += Math.max(b[2] - b[0], b[3] - b[1]);
+    }
+    var cs = Math.max(sum / boxes.length, Math.max(U[2] - U[0], U[3] - U[1]) / 1024, 1e-9);
+    var nx = Math.floor((U[2] - U[0]) / cs) + 1, ny = Math.floor((U[3] - U[1]) / cs) + 1, cells = new Array(nx * ny);
+    function range(b) {
+      return [Math.max(0, Math.floor((b[0] - U[0]) / cs)), Math.max(0, Math.floor((b[1] - U[1]) / cs)), Math.min(nx - 1, Math.floor((b[2] - U[0]) / cs)), Math.min(ny - 1, Math.floor((b[3] - U[1]) / cs))];
+    }
+    for (i = 0; i < boxes.length; i++) {
+      var r = range(boxes[i]);
+      for (var y = r[1]; y <= r[3]; y++) for (var x = r[0]; x <= r[2]; x++) (cells[y * nx + x] = cells[y * nx + x] || []).push(i);
+    }
+    return {
+      U: U,
+      visit: function (box, fn) {
+        var r = range(box);
+        for (var y = r[1]; y <= r[3]; y++) for (var x = r[0]; x <= r[2]; x++) {
+          var c = cells[y * nx + x];
+          if (!c) continue;
+          for (var k = 0; k < c.length; k++) if (fn(c[k])) return true;
+        }
+        return false;
+      }
+    };
+  }
+  function plateSegDist2(p, a, b) {
+    var dx = b[0] - a[0], dy = b[1] - a[1], l = dx * dx + dy * dy, t = l > 0 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    var ex = a[0] + t * dx - p[0], ey = a[1] + t * dy - p[1];
+    return ex * ex + ey * ey;
+  }
+  function plateSide(a, b, p) { return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]); }
+  // do two loops come within gap of each other? (only the edges inside the other's box matter)
+  function plateLoopsNear(A, B, boxA, boxB, gap) {
+    function near(L, box) {
+      var out = [];
+      for (var i = 0; i < L.length; i++) {
+        var a = L[i], b = L[(i + 1) % L.length];
+        if (Math.max(a[0], b[0]) >= box[0] && Math.min(a[0], b[0]) <= box[2] && Math.max(a[1], b[1]) >= box[1] && Math.min(a[1], b[1]) <= box[3]) out.push([a, b]);
+      }
+      return out;
+    }
+    var ea = near(A, boxB), eb = near(B, boxA), g2 = gap * gap;
+    for (var i = 0; i < ea.length; i++) for (var j = 0; j < eb.length; j++) {
+      var a = ea[i][0], b = ea[i][1], c = eb[j][0], d = eb[j][1];
+      if (plateSegDist2(a, c, d) < g2 || plateSegDist2(b, c, d) < g2 || plateSegDist2(c, a, b) < g2 || plateSegDist2(d, a, b) < g2) return true;
+      if (plateSide(a, b, c) * plateSide(a, b, d) < 0 && plateSide(c, d, a) * plateSide(c, d, b) < 0) return true;
+    }
+    return false;
+  }
+  // are all these loops at least gap apart? (boxes that only touch or overlap are a fine hexagonal pitch, not a touch)
+  function plateApart(pts, gap) {
+    var boxes = pts.map(function (l) { return plateBox(l, gap); }), grid = plateGrid(boxes), seen = {};
+    for (var i = 0; i < pts.length; i++) {
+      var bad = grid.visit(boxes[i], function (j) {
+        if (j <= i || !plateMeet(boxes[i], boxes[j])) return false;
+        var key = i + ',' + j;
+        if (seen[key]) return false;
+        seen[key] = true;
+        return plateLoopsNear(pts[i], pts[j], boxes[i], boxes[j], gap);
+      });
+      if (bad) return false;
+    }
+    return true;
+  }
+  // does the segment a-b reach into the box? (Liang-Barsky)
+  function plateSegBox(a, b, box) {
+    var t0 = 0, t1 = 1, d = [b[0] - a[0], b[1] - a[1]];
+    for (var k = 0; k < 2; k++) {
+      if (Math.abs(d[k]) < 1e-300) { if (a[k] < box[k] || a[k] > box[k + 2]) return false; continue; }
+      var s = (box[k] - a[k]) / d[k], e = (box[k + 2] - a[k]) / d[k];
+      if (s > e) { var t = s; s = e; e = t; }
+      if (s > t0) t0 = s;
+      if (e < t1) t1 = e;
+      if (t0 > t1) return false;
+    }
+    return true;
+  }
+  function plateArea(list) {
+    var total = 0;
+    for (var i = 0; i < list.length; i++) {
+      var v = list[i].vertices, A = v[0].pos, sx = 0, sy = 0, sz = 0;
+      for (var j = 1; j + 1 < v.length; j++) {
+        var B = v[j].pos, C = v[j + 1].pos, ux = B.x - A.x, uy = B.y - A.y, uz = B.z - A.z, wx = C.x - A.x, wy = C.y - A.y, wz = C.z - A.z;
+        sx += uy * wz - uz * wy; sy += uz * wx - ux * wz; sz += ux * wy - uy * wx;
+      }
+      total += Math.sqrt(sx * sx + sy * sy + sz * sz) / 2;
+    }
+    return total;
+  }
+  function plateCut(body, f, profile, plane, range) {
+    var loops = profile && profile.loops;
+    if (!plateOptions.on || !loops || loops.length < plateOptions.minLoops) return null;
+    var X = plane.x, Y = plane.y, N = plane.n, O = plane.origin, i;
+    if (Math.abs(dot(X, Y)) > 1e-9 || Math.abs(dot(X, N)) > 1e-9 || Math.abs(dot(Y, N)) > 1e-9) return null;
+    var pts = [], areaMin = Infinity, areaAll = 0;
+    for (i = 0; i < loops.length; i++) {
+      if (loops[i].hole || loops[i].depth || loops[i].cross) return null;
+      var ar = Math.abs(signedArea(loops[i].pts));
+      areaMin = Math.min(areaMin, ar); areaAll += ar;
+      pts.push(loops[i].pts);
+    }
+    var bb = body.getBounds();
+    var gap = 1e-5 * Math.max(1, Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]));
+    if (!plateApart(pts, gap)) return null;
+    var boxes = pts.map(function (l) { return plateBox(l, gap); }), grid = plateGrid(boxes), U = grid.U;
+    var keep = [], caps = [], hi = null, lo = null, polys = body.polygons;
+    for (var q = 0; q < polys.length; q++) {
+      var p = polys[q], vs = p.vertices, nm = p.plane.normal;
+      if (p.face != null || p.part != null) return null;
+      var nz = nm.x * N[0] + nm.y * N[1] + nm.z * N[2], uv = new Array(vs.length), hmin = Infinity, hmax = -Infinity;
+      for (var k = 0; k < vs.length; k++) {
+        var P = vs[k].pos, rx = P.x - O[0], ry = P.y - O[1], rz = P.z - O[2], h = rx * N[0] + ry * N[1] + rz * N[2];
+        uv[k] = [rx * X[0] + ry * X[1] + rz * X[2], rx * Y[0] + ry * Y[1] + rz * Y[2]];
+        if (h < hmin) hmin = h;
+        if (h > hmax) hmax = h;
+      }
+      var box = plateBox(uv, gap);
+      if (!plateMeet(box, U)) { keep.push(p); continue; }
+      var meets = function (j) { return plateMeet(box, boxes[j]); };
+      if (Math.abs(nz) > 1 - 1e-12 && hmax - hmin < 1e-9 && !p.surf) {
+        if (!grid.visit(box, meets)) { keep.push(p); continue; }
+        if (nz > 0) { if (hi == null) hi = hmin; else if (Math.abs(hi - hmin) > 1e-9) return null; }
+        else if (lo == null) lo = hmin; else if (Math.abs(lo - hmin) > 1e-9) return null;
+        caps.push(p);
+      } else if (Math.abs(nz) < 1e-9) {
+        // a wall seen from above is a segment: its two farthest corners
+        var far = 0, best = -1;
+        for (k = 0; k < uv.length; k++) { var dd = (uv[k][0] - uv[0][0]) * (uv[k][0] - uv[0][0]) + (uv[k][1] - uv[0][1]) * (uv[k][1] - uv[0][1]); if (dd > best) { best = dd; far = k; } }
+        var other = 0; best = -1;
+        for (k = 0; k < uv.length; k++) { var de = (uv[k][0] - uv[far][0]) * (uv[k][0] - uv[far][0]) + (uv[k][1] - uv[far][1]) * (uv[k][1] - uv[far][1]); if (de > best) { best = de; other = k; } }
+        var ua = uv[far], ub = uv[other];
+        if (grid.visit(box, function (j) { return plateSegBox(ua, ub, boxes[j]); })) return null;
+        keep.push(p);
+      } else {
+        if (grid.visit(box, meets)) return null;
+        keep.push(p);
+      }
+    }
+    if (hi == null || lo == null || !(hi - lo > 1e-9) || range[0] > lo + 1e-9 || range[1] < hi - 1e-9) return null;
+    var capsUp = caps.filter(function (c) { return c.plane.normal.x * N[0] + c.plane.normal.y * N[1] + c.plane.normal.z * N[2] > 0; });
+    var capsDown = caps.filter(function (c) { return c.plane.normal.x * N[0] + c.plane.normal.y * N[1] + c.plane.normal.z * N[2] < 0; });
+    var areaUp = plateArea(capsUp), areaDown = plateArea(capsDown);
+    // the hole walls, outward from the hole for now: they are the hole's BSP, and flipped they face the plate's material
+    var walls = [], trees = new Array(pts.length), nlo = scale(N, lo), nhi = scale(N, hi);
+    function wallsOf(l) {
+      var L = pts[l], n = L.length, bottom = new Array(n), top = new Array(n), sides = [], j;
+      for (j = 0; j < n; j++) { var b3 = to3D(plane, L[j][0], L[j][1]); bottom[j] = add(b3, nlo); top[j] = add(b3, nhi); }
+      for (j = 0; j < n; j++) { var m = (j + 1) % n; sides.push(poly([bottom[j], bottom[m], top[m], top[j]], f.id)); }
+      tagSides(sides, loopCurves(profile, loops[l]), function (C) { return cylSurf(plane, C); });
+      return sides.filter(function (s) { return s; });
+    }
+    for (i = 0; i < pts.length; i++) walls.push(wallsOf(i));
+    function treeOf(l) { return trees[l] || (trees[l] = new CSG.Node(walls[l])); }
+    var cutPlanes = [X, Y], W = [dot(O, X), dot(O, Y)], out = [];
+    // a k-d split of the holes, along the wider spread, at a gap between them when there is one near the median
+    function divide(list, ids) {
+      var l;
+      if (!list.length) return;
+      if (!ids.length) { for (l = 0; l < list.length; l++) out.push(list[l]); return; }
+      if (ids.length === 1) { treeOf(ids[0]).clipInto(list, out); return; }
+      var lo2 = [Infinity, Infinity], hi2 = [-Infinity, -Infinity];
+      ids.forEach(function (d) { var b = boxes[d]; lo2[0] = Math.min(lo2[0], b[0]); lo2[1] = Math.min(lo2[1], b[1]); hi2[0] = Math.max(hi2[0], b[2]); hi2[1] = Math.max(hi2[1], b[3]); });
+      var ax = hi2[0] - lo2[0] >= hi2[1] - lo2[1] ? 0 : 1, sorted = ids.slice().sort(function (a, b) { return boxes[a][ax] - boxes[b][ax]; });
+      var run = new Array(sorted.length), mx = -Infinity, c = sorted.length, m = c >> 1, pick = -1, score = Infinity;
+      for (l = 0; l < c; l++) { mx = Math.max(mx, boxes[sorted[l]][ax + 2]); run[l] = mx; }
+      for (l = 1; l < c; l++) if (run[l - 1] < boxes[sorted[l]][ax] && Math.abs(l - m) < score) { score = Math.abs(l - m); pick = l; }
+      var t = pick > 0 ? (run[pick - 1] + boxes[sorted[pick]][ax]) / 2 : (run[m - 1] + boxes[sorted[m]][ax]) / 2;
+      var left = ids.filter(function (d) { return boxes[d][ax] < t; }), right = ids.filter(function (d) { return boxes[d][ax + 2] > t; });
+      if (left.length === ids.length && right.length === ids.length) { var rest = list; ids.forEach(function (d) { rest = treeOf(d).clipPolygons(rest); }); for (l = 0; l < rest.length; l++) out.push(rest[l]); return; }
+      var cp = new CSG.Plane(vec(cutPlanes[ax]), W[ax] + t), front = [], back = [];
+      for (l = 0; l < list.length; l++) cp.splitPolygon(list[l], front, back, front, back);
+      divide(back, left);
+      divide(front, right);
+    }
+    divide(caps, ids0(pts.length));
+    var afterUp = [], afterDown = [];
+    for (i = 0; i < out.length; i++) { var c = out[i], cn = c.plane.normal; (cn.x * N[0] + cn.y * N[1] + cn.z * N[2] > 0 ? afterUp : afterDown).push(c); }
+    // every hole was all on the caps (none in air): the area taken off each cap is the holes' area
+    var tol = 0.25 * areaMin;
+    if (Math.abs(areaUp - plateArea(afterUp) - areaAll) > tol || Math.abs(areaDown - plateArea(afterDown) - areaAll) > tol) return null;
+    var res = keep.map(function (k0) { return k0.clone(); });
+    for (i = 0; i < out.length; i++) res.push(out[i].clone());
+    for (i = 0; i < walls.length; i++) for (var w = 0; w < walls[i].length; w++) { var fl = walls[i][w].clone(); fl.flip(); res.push(fl); }
+    var csg = CSG.fromPolygons(res);
+    Object.defineProperty(csg, '_ghTouch', { value: { nm: 0, lumps: null, touch: false }, enumerable: false, writable: true, configurable: true });
+    plateOptions.last = { holes: pts.length, polygons: res.length };
+    return csg;
+  }
+  function ids0(n) { var a = new Array(n); for (var i = 0; i < n; i++) a[i] = i; return a; }
+
   var THROUGH = 5000;
 
   function extrudeRange(f, through) {
@@ -451,14 +668,48 @@
       (idx[k] = idx[k] || []).push(p);
       (boxIdx[k] = boxIdx[k] || []).push(planarBox(p));
     });
+    // rfGM: a plane of many polygons (a perforated plate's caps) gets a grid on its two widest axes, so a query looks at
+    // the polygons whose boxes cover its cell, not at the whole list. Same answers: only polygons the box filter would
+    // have skipped are left out. Boxes with no extent limit, or covering many cells, are in every cell (`wide`).
+    var grids = {};
+    function planarGrid(list, boxes) {
+      var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], wide = [], i, k;
+      for (i = 0; i < list.length; i++) {
+        if (boxes[i][0] === -Infinity) { wide.push(i); continue; }
+        for (k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], boxes[i][k]); hi[k] = Math.max(hi[k], boxes[i][k + 3]); }
+      }
+      var sp = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], small = sp.indexOf(Math.min(sp[0], sp[1], sp[2])), a = small === 0 ? 1 : 0, b = small === 2 ? 1 : 2;
+      if (!(sp[a] > 0) || !(sp[b] > 0)) return null;
+      var nc = Math.ceil(Math.sqrt(list.length)), nx = Math.min(1024, nc), ny = Math.min(1024, nc), fx = nx / sp[a], fy = ny / sp[b], cells = new Array(nx * ny);
+      for (i = 0; i < list.length; i++) {
+        var B = boxes[i];
+        if (B[0] === -Infinity) continue;
+        var x0 = Math.floor((B[a] - lo[a]) * fx), x1 = Math.min(nx - 1, Math.floor((B[a + 3] - lo[a]) * fx)), y0 = Math.floor((B[b] - lo[b]) * fy), y1 = Math.min(ny - 1, Math.floor((B[b + 3] - lo[b]) * fy));
+        if ((x1 - x0 + 1) * (y1 - y0 + 1) > 1024) { wide.push(i); continue; }
+        for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) (cells[y * nx + x] = cells[y * nx + x] || []).push(i);
+      }
+      if (wide.length > 256) return null;
+      return { lo: lo, a: a, b: b, fx: fx, fy: fy, nx: nx, ny: ny, cells: cells, wide: wide };
+    }
+    function planarCell(key, list, boxes, q) {
+      if (!massOptions.planarBoxes || list.length <= 64) return null;
+      if (grids[key] === undefined) grids[key] = planarGrid(list, boxes);
+      var g = grids[key];
+      if (!g) return null;
+      var x = Math.floor((q[g.a] - g.lo[g.a]) * g.fx), y = Math.floor((q[g.b] - g.lo[g.b]) * g.fy);
+      if (x < 0 || y < 0 || x >= g.nx || y >= g.ny) return g.wide;
+      var c = g.cells[y * g.nx + x];
+      return c ? (g.wide.length ? c.concat(g.wide) : c) : g.wide;
+    }
     return function (N, q) {
       var s = (N[0] < -1e-9 || (Math.abs(N[0]) <= 1e-9 && (N[1] < -1e-9 || (Math.abs(N[1]) <= 1e-9 && N[2] < 0)))) ? -1 : 1;
       var w = dot(N, q) * s, base = Math.round(N[0] * s * 1000) + ',' + Math.round(N[1] * s * 1000) + ',' + Math.round(N[2] * s * 1000) + ',', wk = Math.round(w * 1e4);
       for (var dk = -1; dk <= 1; dk++) {
         var list = idx[base + (wk + dk)], boxes = boxIdx[base + (wk + dk)];
         if (!list) continue;
-        for (var i = 0; i < list.length; i++) {
-          var bx = boxes[i];
+        var sel = planarCell(base + (wk + dk), list, boxes, q), cnt = sel ? sel.length : list.length;
+        for (var c0 = 0; c0 < cnt; c0++) {
+          var i = sel ? sel[c0] : c0, bx = boxes[i];
           if (massOptions.planarBoxes && (q[0] < bx[0] || q[0] > bx[3] || q[1] < bx[1] || q[1] > bx[4] || q[2] < bx[2] || q[2] > bx[5])) continue;
           var p = list[i], pn = p.plane.normal, vs = p.vertices, inside = true;
           if (Math.abs(pn.x * q[0] + pn.y * q[1] + pn.z * q[2] - p.plane.w) > 1e-6 * Math.max(1, Math.abs(p.plane.w))) continue;
@@ -627,16 +878,21 @@
     function A3(v) { return [v.pos.x, v.pos.y, v.pos.z]; }
     polys.forEach(function (p) {
       var F = p.surf, S = F && F.s;
-      if (!S || S.t !== 'cyl' || F.fc || !(S.r > 0)) return;
+      if (!S || F.fc) return;
+      var isCyl = S.t === 'cyl';
+      if (isCyl ? !(S.r > 0) : (S.t === 'cone' ? false : !(F.P && F.Q && S.r > 0))) return;
       var vs = p.vertices, R = S.r, tolR = 1e-9 * Math.max(1, R);
       for (var i = 0; i < vs.length; i++) {
         var A = A3(vs[i]), B = A3(vs[(i + 1) % vs.length]), AB = sub(B, A), L = len(AB);
         scl = Math.max(scl, Math.abs(A[0]), Math.abs(A[1]), Math.abs(A[2]));
         if (!(L > 1e-9)) continue;
-        var ax = dot(AB, S.d) / L, ra = len(sub(sub(A, S.o), scale(S.d, dot(sub(A, S.o), S.d))));
-        if (Math.abs(ax) > 1 - 1e-12) { if (ra > R - tolR) continue; }   // a seam between facets (on the circle)
-        else if (Math.abs(ax) < 1e-9) continue;                          // square to the axis: a cap
-        cands.push({ p: p, A: A, B: B, L: L, S: S });
+        var cap = false;
+        if (isCyl) {
+          var ax = dot(AB, S.d) / L, ra = len(sub(sub(A, S.o), scale(S.d, dot(sub(A, S.o), S.d))));
+          if (Math.abs(ax) > 1 - 1e-12) { if (ra > R - tolR) continue; }   // a seam between facets (on the circle)
+          else if (Math.abs(ax) < 1e-9) cap = true;                        // square to the axis: a cap (exact on a plane)
+        }
+        cands.push({ p: p, A: A, B: B, L: L, S: S, cap: cap });
       }
     });
     if (!cands.length) return;
@@ -652,14 +908,14 @@
         (idx[k] = idx[k] || []).push({ q: q, P: P, Q: Q });
       }
     });
-    var tol = 1e-7 * scl;
+    var tol = 1e-7 * scl, jobs = [], stopped = {};
     cands.forEach(function (c) {
       // the stretches of the edge each neighbour borders (a fragment edge may run on past a sibling fragment of its own
       // surface, a facet split along the line of a pocket's wall, into the wall itself): planes with their intervals
       var u = scale(sub(c.B, c.A), 1 / c.L), seen = [], planes = [];
       function put(pl, t0, t1) {
         var k = null;
-        for (var i = 0; i < planes.length && !k; i++) if (dot(planes[i].n, pl.n) > 1 - 1e-9 && Math.abs(planes[i].w - pl.w) <= tol) k = planes[i];
+        for (var i = 0; i < planes.length && !k; i++) if (planes[i].n && dot(planes[i].n, pl.n) > 1 - 1e-9 && Math.abs(planes[i].w - pl.w) <= tol) k = planes[i];
         if (!k) planes.push(k = { n: pl.n, w: pl.w, iv: [] });
         k.iv.push([t0, t1]);
       }
@@ -677,27 +933,49 @@
           if (Sq && (Sq === c.S || surfKey(Sq) === surfKey(c.S))) return;   // a sibling fragment: an inner split
           if (!Sq) {
             var n = arr(e.q.plane.normal);
-            if (Math.abs(dot(n, arr(c.p.plane.normal))) < 1 - 1e-9) put({ n: n, w: e.q.plane.w }, t0, t1);
-          } else if (Sq.t === 'cyl' && Math.abs(Sq.r - c.S.r) <= 1e-9 * Math.max(1, c.S.r)) {
+            if (!c.cap && Math.abs(dot(n, arr(c.p.plane.normal))) < 1 - 1e-9) put({ n: n, w: e.q.plane.w }, t0, t1);
+            if ((c.S.t === 'tor' || c.S.t === 'sph') && Math.abs(dot(n, c.S.d)) < 1e-9 && Math.abs(dot(n, c.S.o) - e.q.plane.w) <= tol) stopped[surfKey(c.S)] = true;
+          } else {
             // two rounds of one radius meeting: the bisector plane through the edge
             var done = false;
-            [add(c.S.d, Sq.d), sub(c.S.d, Sq.d)].forEach(function (m) {
+            if (c.S.t === 'cyl' && Sq.t === 'cyl' && Math.abs(Sq.r - c.S.r) <= 1e-9 * Math.max(1, c.S.r)) [add(c.S.d, Sq.d), sub(c.S.d, Sq.d)].forEach(function (m) {
               if (done || len(m) < 1e-9) return;
               m = norm(m);
               if (Math.abs(dot(m, u)) < 1e-9) { done = true; put({ n: m, w: dot(m, c.A) }, t0, t1); }
             });
+            // any other two surfaces: at each point of the edge, the plane through the edge and the true corner of the two
+            // surfaces there, shared by the fragments on both sides, so their slivers meet on it (boundRevolved)
+            if (!done) putCorner(Sq, t0, t1);
           }
         });
+      }
+      function putCorner(Sq, t0, t1) {
+        var k = surfKey(Sq), e = null;
+        for (var i = 0; i < planes.length && !e; i++) if (planes[i].key === k) e = planes[i];
+        if (!e) planes.push(e = { key: k, sq: Sq, iv: [] });
+        e.iv.push([t0, t1]);
       }
       planes.forEach(function (pl) {
         pl.iv.sort(function (x, y) { return x[0] - y[0]; });
         var cur = null;
         pl.iv.concat([null]).forEach(function (iv) {
           if (iv && cur && iv[0] <= cur[1] + 1e-9 * c.L) { cur[1] = Math.max(cur[1], iv[1]); return; }
-          if (cur) boundEdge({ p: c.p, S: c.S, A: add(c.A, scale(u, cur[0])), B: add(c.A, scale(u, cur[1])) }, pl, res);
+          // boundEdge's closed forms take a convex cylinder and one plane; boundRevolved all the rest
+          if (cur) {
+            var rA = sub(c.A, c.S.o), convex = dot(arr(c.p.plane.normal), sub(rA, scale(c.S.d, dot(rA, c.S.d)))) > 0;
+            jobs.push({ f: c.S.t === 'cyl' && !pl.sq && convex ? boundEdge : boundRevolved, c: { p: c.p, S: c.S, A: add(c.A, scale(u, cur[0])), B: add(c.A, scale(u, cur[1])) }, pl: pl });
+          }
           cur = iv && iv.slice();
         });
       });
+    });
+    // a round that ends on a plane through its own axis stopped short: an arc chain ending on a wall (rfFP, the Moulded cap's
+    // hole floor) ends on the meridian of the polygon's corner, leaving a tip against the wall unfilled, and only the surface
+    // knows it. Bounding its slivers at that wall would widen the gap to the true round, so it keeps its plain columns
+    jobs.forEach(function (j) {
+      var S = j.c.S;
+      if (!j.pl.sq && stopped[surfKey(S)] && Math.abs(dot(j.pl.n, S.d)) < 1 - 1e-9) return;
+      j.f(j.c, j.pl, res);
     });
   }
   // the correction of one fragment edge c (on cylinder c.S) against the plane n·x = w that bounds the fragment there
@@ -747,6 +1025,149 @@
       var at = add(X, scale(er, (R - rc) / 2));
       res.volume += dv2;
       for (var k2 = 0; k2 < 3; k2++) res.moment[k2] += dv2 * at[k2];
+    }
+  }
+  // lane massprops (rfGP): the same bound on cones, spheres and tori. curveDensity's columns stay in the meridian half-plane
+  // of their point (radially to the chord's cone, then along the ray from the arc centre), so the sliver's wall over a
+  // fragment edge is, at each angle, the column from the edge point X; the plane leaves X along a straight line of that
+  // half-plane, out to the true meridian at T. The edge adds ∫ E dθ, E = ±∮ ρ²/2 dz (Green: ∫ρ dA) round X, T, along the
+  // meridian to the column's end, back down the column. The sign is fixed once, the same for convex and concave faces:
+  // a walk along the facet towards the edge has the facet normal on its left, or E changes sign. On a cylinder or cone an
+  // edge running more along the axis than round it slices at z = const instead (no θ range at the limit, a wall beside a hole).
+  function revolvedColumn(F, X, q, er, phiC) {
+    var S = F.s, z = q.z, rho = q.r;
+    if (S.t === 'cone' || S.t === 'cyl') { var Rc = S.r + (S.k || 0) * z; return { y1: [Rc, z], y2: [Rc, z] }; }
+    var P = F.P, Q = F.Q, Cr = S.t === 'tor' ? S.R : 0, r = S.r, dz = Q[1] - P[1], dr = Q[0] - P[0], L = Math.hypot(dr, dz), y1;
+    if (Math.abs(dz) > 1e-12 * Math.max(1, L)) y1 = [P[0] + dr * (z - P[1]) / dz, z];
+    else {
+      var dphi = F.dphi, e0 = F.e0, e1 = cross(S.d, e0), phi = Math.atan2(dot(er, e1), dot(er, e0));
+      y1 = [rho * Math.cos(phi - (Math.floor(phiC / dphi) + 0.5) * dphi) / Math.cos(Math.abs(dphi) / 2), P[1]];
+    }
+    var a = y1[0] - Cr, b = y1[1], ry = Math.hypot(a, b);
+    if (ry < 1e-12) return null;
+    return { y1: y1, y2: [Cr + a * r / ry, b * r / ry] };
+  }
+  // the signed distance to a revolved surface and its gradient at x
+  function surfField(S, x) {
+    var rel = sub(x, S.o), z = dot(rel, S.d), v = sub(rel, scale(S.d, z)), rho = len(v), er = rho > 1e-12 ? scale(v, 1 / rho) : null;
+    if (!er) return null;
+    if (S.t === 'cyl') return { f: rho - S.r, g: er };
+    if (S.t === 'cone') { var k = S.k || 0, q = Math.sqrt(1 + k * k); return { f: (rho - S.r - k * z) / q, g: scale(sub(er, scale(S.d, k)), 1 / q) }; }
+    var a = rho - (S.t === 'tor' ? S.R : 0), D = Math.hypot(a, z);
+    if (!(D > 1e-12)) return null;
+    return { f: D - S.r, g: add(scale(er, a / D), scale(S.d, z / D)) };
+  }
+  // the plane through the edge direction u and the corner of surfaces S and Sq nearest X, in the plane square to u at X:
+  // null where they run tangent (no corner to find, the slivers are the same there) or Newton does not settle close by
+  function cornerPlane(S, Sq, X, u) {
+    var Z = X, a0 = surfField(S, X), b0 = surfField(Sq, X);
+    if (!a0 || !b0) return null;
+    var s0 = len(cross(a0.g, b0.g));
+    if (!(s0 > 0.03)) return null;
+    for (var it = 0; it < 12; it++) {
+      var a = surfField(S, Z), b = surfField(Sq, Z);
+      if (!a || !b) return null;
+      if (Math.abs(a.f) + Math.abs(b.f) < 1e-11 * Math.max(1, S.r)) {
+        var ZX = sub(Z, X), L = len(ZX);
+        if (!(L > 1e-11) || L > 3 * (Math.abs(a0.f) + Math.abs(b0.f)) / s0) return null;
+        var m = cross(u, ZX), ml = len(m);
+        if (!(ml > 1e-11)) return null;
+        m = scale(m, 1 / ml);
+        return { n: m, w: dot(m, X) };
+      }
+      var g1 = sub(a.g, scale(u, dot(a.g, u))), g2 = sub(b.g, scale(u, dot(b.g, u)));
+      var c11 = dot(g1, g1), c12 = dot(g1, g2), c22 = dot(g2, g2), det = c11 * c22 - c12 * c12;
+      if (!(Math.abs(det) > 1e-9)) return null;
+      var la = (-a.f * c22 + b.f * c12) / det, lb = (-b.f * c11 + a.f * c12) / det;
+      Z = add(Z, add(scale(g1, la), scale(g2, lb)));
+    }
+    return null;
+  }
+  function boundRevolved(c, plane, res) {
+    var S = c.S, F = c.p.surf, d = S.d, p = c.p, vs = p.vertices, fn = arr(p.plane.normal), n = plane.n, w = plane.w;
+    var phiC = 0, Cr = S.t === 'tor' ? S.R : 0, round = S.t === 'sph' || S.t === 'tor', u = norm(sub(c.B, c.A));
+    function orient(q) {   // the fragment on the plane's negative side (its vertex farthest from the plane decides)
+      var far = 0;
+      vs.forEach(function (v) { var x = dot(q.n, [v.pos.x, v.pos.y, v.pos.z]) - q.w; if (Math.abs(x) > Math.abs(far)) far = x; });
+      if (Math.abs(far) < 1e-12) return null;
+      return far > 0 ? { n: scale(q.n, -1), w: -q.w } : q;
+    }
+    if (!plane.sq) { var o0 = orient(plane); if (!o0) return; n = o0.n; w = o0.w; }
+    if (F.P && F.e0) {
+      var cen = [0, 0, 0];
+      vs.forEach(function (v) { cen = add(cen, [v.pos.x, v.pos.y, v.pos.z]); });
+      phiC = angleOf(F, scale(cen, 1 / vs.length));
+    }
+    function seg(a, b) { return (b[1] - a[1]) * (a[0] * a[0] + a[0] * b[0] + b[0] * b[0]) / 6; }
+    var AB = sub(c.B, c.A);
+    for (var ig = 0; ig < 6; ig++) {
+      var X = add(c.A, scale(AB, GL6.x[ig])), rel = sub(X, S.o), z = dot(rel, d), v = sub(rel, scale(d, z)), rho = len(v);
+      if (!(rho > 1e-12)) continue;
+      var er = scale(v, 1 / rho), dth = Math.abs(dot(d, cross(er, AB))) / rho, dzEdge = Math.abs(dot(AB, d));
+      var useZ = !round && dzEdge >= rho * dth;
+      if (!useZ && !(dth > 1e-14)) continue;
+      var col = revolvedColumn(F, X, { z: z, r: rho }, er, phiC);
+      if (!col) continue;
+      if (plane.sq) {
+        var cp = cornerPlane(S, plane.sq, X, u);
+        cp = cp && orient(cp);
+        if (!cp) continue;
+        n = cp.n; w = cp.w;
+      }
+      if (useZ) {
+        // an edge that runs more along the axis than round it (a wall beside a hole: at the limit no θ range at all): the
+        // same region in the slice z = const, where the columns of a cylinder or cone lie: X, out to the circle R(z) at
+        // Y = (R, 0), round to T where the plane's line meets it, back to X (axes er, e2)
+        var e2 = cross(d, er), n1 = dot(n, er), n2 = dot(n, e2), nl = Math.hypot(n1, n2), Rz = S.r + (S.k || 0) * z;
+        if (!(nl > 1e-12)) continue;
+        var lx = -n2 / nl, ly = n1 / nl, lq = rho * lx, ld = lq * lq - rho * rho + Rz * Rz;
+        if (ld < 0) continue;
+        var lr = Math.sqrt(ld), s1 = -lq + lr, s2 = -lq - lr;
+        var t1 = [rho + lx * s1, ly * s1], t2 = [rho + lx * s2, ly * s2];
+        var Tz = Math.hypot(t1[0] - Rz, t1[1]) <= Math.hypot(t2[0] - Rz, t2[1]) ? t1 : t2;
+        var hz = Math.abs(Rz - rho), gz = Math.hypot(Tz[0] - Rz, Tz[1]);
+        if (!(hz > 1e-13) || gz > 50 * hz) continue;
+        var Az = 0.5 * rho * Tz[1] - 0.5 * Rz * Rz * Math.atan2(Tz[1], Tz[0]);
+        var N1 = dot(fn, er), N2 = dot(fn, e2), outz = n1 * N2 - n2 * N1;
+        if (!(Math.abs(outz) > 1e-12)) continue;
+        var dvz = GL6.w[ig] * dzEdge * (outz > 0 ? Az : -Az);
+        var atz = add(add(S.o, scale(d, z)), add(scale(er, (rho + Rz + Tz[0]) / 3), scale(e2, Tz[1] / 3)));
+        res.volume += dvz;
+        for (var kz = 0; kz < 3; kz++) res.moment[kz] += dvz * atz[kz];
+        continue;
+      }
+      var cc = dot(n, er), bb = dot(n, d), ln = Math.hypot(cc, bb);
+      if (!(ln > 1e-12)) continue;                                    // the plane holds the half-plane: no line in it
+      var vx = bb / ln, vz = -cc / ln, Y2 = col.y2, XX = [rho, z], T = null;
+      if (round) {
+        var q0 = rho - Cr, qb = q0 * vx + z * vz, qc = q0 * q0 + z * z - S.r * S.r, disc = qb * qb - qc;
+        if (disc < 0) continue;
+        var rt = Math.sqrt(disc), T1 = [rho + vx * (-qb + rt), z + vz * (-qb + rt)], T2 = [rho + vx * (-qb - rt), z + vz * (-qb - rt)];
+        T = Math.hypot(T1[0] - Y2[0], T1[1] - Y2[1]) <= Math.hypot(T2[0] - Y2[0], T2[1] - Y2[1]) ? T1 : T2;
+      } else {
+        var kk = S.k || 0, den = vx - kk * vz;
+        if (!(Math.abs(den) > 1e-12)) continue;
+        var ss = (S.r + kk * z - rho) / den;
+        T = [rho + vx * ss, z + vz * ss];
+      }
+      var h = Math.hypot(Y2[0] - rho, Y2[1] - z), gap = Math.hypot(T[0] - Y2[0], T[1] - Y2[1]);
+      if (!(h > 1e-13) || gap > 50 * h) continue;                     // grazing: the line leaves the sliver, nothing to bound
+      var E = seg(XX, T) + seg(Y2, col.y1) + seg(col.y1, XX);
+      if (round) {
+        var a0 = Math.atan2(T[1], T[0] - Cr), a1 = Math.atan2(Y2[1], Y2[0] - Cr), da = a1 - a0;
+        while (da > Math.PI) da -= 2 * Math.PI;
+        while (da < -Math.PI) da += 2 * Math.PI;
+        for (var ia = 0; ia < 6; ia++) {
+          var ang = a0 + da * GL6.x[ia], ra = Cr + S.r * Math.cos(ang);
+          E += GL6.w[ia] * da * ra * ra / 2 * S.r * Math.cos(ang);
+        }
+      } else E += seg(T, Y2);
+      var Nr = dot(fn, er), Nz = dot(fn, d), out = cc * Nz - bb * Nr;  // the plane's side of τ' = (Nz, −Nρ), the direction with N on its left
+      if (!(Math.abs(out) > 1e-12)) continue;
+      var dv = GL6.w[ig] * dth * (out > 0 ? E : -E);
+      var mr = (rho + T[0] + Y2[0]) / 3, mz = (z + T[1] + Y2[1]) / 3, at = add(add(S.o, scale(d, mz)), scale(er, mr));
+      res.volume += dv;
+      for (var k = 0; k < 3; k++) res.moment[k] += dv * at[k];
     }
   }
 
@@ -1274,6 +1695,7 @@
   K.curveEdges = curveEdges; K.curveSurfaces = curveSurfaces; K.massOptions = massOptions; K.meshCurveInfo = meshCurveInfo;
   K.analyticNormals = analyticNormals; K.surfNormalAt = surfNormalAt;   // rfFE: K.smoothOptions (crease, exact, carry) is set above
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
+  K.plateOptions = plateOptions; _.plateCut = plateCut; _.plateApart = plateApart;   // rfGM
   _.THROUGH = THROUGH; _.buildExtrude = buildExtrude; _.buildRevolve = buildRevolve; _.extrudeRange = extrudeRange; _.mirrorBody = mirrorBody;
   _.prism = prism; _.rotateBody = rotateBody; _.rotatePoint = rotatePoint; _.translateBody = translateBody; _.unionAll = unionAll;
   _.unionTree = unionTree;

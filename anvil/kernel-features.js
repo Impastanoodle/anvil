@@ -1133,9 +1133,24 @@
     var removed = resolveFaces(f.faces || [], mesh, _.pickTol(ctx.units, T / 2));   // r16/picktol (kernel-mesh.js)
     if ((f.faces || []).length && removed.length < f.faces.length) throw new Error('A face to remove was not found on the body. Select the faces again.');
     // dihedral turn angle per body edge, keyed like bodyEdges (and the edge itself: its two faces)
-    var turn = {}, edgeOf = {};
+    // rfGN: ekey rounds to 1e-3, and an inch fraction's corner (.0625, .9375) lies ON a rounding boundary: an outline
+    // point 1e-12 off the mesh's vertex rounded the other way, the edge was not found and the slab grew as if at 90°.
+    // edgeKey looks an edge up on a grid offset from those boundaries first.
+    var turn = {}, edgeOf = {}, fine = {};
+    function fineKey(p, q) {
+      function pk(x) { return Math.floor(x[0] * 1e6 + 0.37) + ',' + Math.floor(x[1] * 1e6 + 0.37) + ',' + Math.floor(x[2] * 1e6 + 0.37); }
+      var a = pk(p), b = pk(q);
+      return a < b ? a + '|' + b : b + '|' + a;
+    }
+    function edgeKey(a, b) {
+      var k = fine[fineKey(a, b)];
+      if (k) return k;
+      var ka = ekey(a), kb = ekey(b);
+      return ka < kb ? ka + '|' + kb : kb + '|' + ka;
+    }
     bodyEdges(mesh).forEach(function (e) {
       var key = e.ka < e.kb ? e.ka + '|' + e.kb : e.kb + '|' + e.ka;
+      if (e.a && e.b) fine[fineKey(e.a, e.b)] = key;
       var phi = 0;
       for (var p = 0; p < e.normals.length; p++) for (var q = p + 1; q < e.normals.length; q++) phi = Math.max(phi, Math.acos(Math.max(-1, Math.min(1, dot(e.normals[p], e.normals[q])))));
       turn[key] = phi;
@@ -1238,7 +1253,7 @@
         var d1 = faceDepth(fi), n1 = mesh.faces[fi].normal;
         return loop.map(function (p, k) {
           var a = to3D(plane, p[0], p[1]), q = loop[(k + 1) % loop.length], b = to3D(plane, q[0], q[1]);
-          var ka = ekey(a), kb = ekey(b), key = ka < kb ? ka + '|' + kb : kb + '|' + ka;
+          var key = edgeKey(a, b);
           var phi = key in turn ? turn[key] : Math.PI / 2;
           var g = Math.min(4 * T, T * Math.tan(Math.min(phi, Math.PI - 0.05) / 2));
           // rfGB: at a concave edge the slab reaches exactly where its inner cap meets the neighbour's (at depths d1,
@@ -1423,15 +1438,103 @@
         if (on) p.surf = rec;
       });
     }
+    // rfGN: the second try after a crack. A torus / sphere round's facets, one slab each, touch along exact lines where
+    // the surface is hollow round the axis (a bore's rim, a boss root: a saddle), and the union of those slabs cracked
+    // (ring Ø.5 bore, R .0625, shell .05: 572 open edges, refused). ringSolid(G) is one closed polyhedron for a whole
+    // connected round: each facet's corners moved along the SURFACE normal (T in, T/2 out), so neighbouring facets share
+    // their walls and need no boolean between them; the inner polygons carry the offset record. A wall under a tangent
+    // removed face stands on the tangent chord along the normal, the same wall `openingOf` cuts. null (the slabs stay)
+    // when a facet has a hole, a corner off the surface, or a neighbour that is not tangent (it needs a mitre).
+    function polyOf(pts, tag, rec) {
+      var pg = CSG.Polygon.tryCreate(pts.map(function (p) { return new CSG.Vertex(new CSG.Vector(p[0], p[1], p[2])); }), tag);
+      if (pg && rec) pg.surf = rec;
+      return pg;
+    }
+    function ringSolid(G) {
+      var Sg = surfOf(mesh.faces[G[0]]).S, scl = Math.max(1, Math.abs(Sg.r || 0), Math.abs(Sg.R || 0)), h = T / 2, polys = [], open = {};
+      function key(x) { return Math.round(x[0] * 1e7) + ',' + Math.round(x[1] * 1e7) + ',' + Math.round(x[2] * 1e7); }
+      for (var g = 0; g < G.length; g++) {
+        var face = mesh.faces[G[g]], n = face.normal, oo = null, rec = offsetRecord(face);
+        try { oo = faceOutline(mesh, G[g]); } catch (e) { oo = null; }
+        if (!oo || oo.loops.length !== 1 || !rec) return null;
+        var pts = oo.loops[0].map(function (q) { return to3D(oo.plane, q[0], q[1]); }), nw = [0, 0, 0];
+        pts.forEach(function (a, k) { nw = add(nw, cross(a, pts[(k + 1) % pts.length])); });
+        if (dot(nw, n) < 0) pts.reverse();
+        var outL = [], inL = [], keys = [];
+        for (var k = 0; k < pts.length; k++) {
+          if (!(surfError(Sg, pts[k]) < 1e-6 * scl)) return null;
+          var N = K.surfNormalAt(Sg, pts[k], face.centroid);
+          if (!N) return null;
+          N = norm(N);
+          if (dot(N, n) < 0) N = scale(N, -1);
+          outL.push(add(pts[k], scale(N, h))); inL.push(sub(pts[k], scale(N, T))); keys.push(key(pts[k]));
+          var v = sub(outL[k], Sg.o), z = dot(v, Sg.d);
+          if (Sg.t === 'tor' && !(len(sub(v, scale(Sg.d, z))) > 1e-6 * scl)) return null;
+        }
+        var top = polyOf(outL, f.id), cap = polyOf(inL.slice().reverse(), f.id, rec);
+        if (!top || !cap) return null;
+        polys.push(top, cap);
+        for (k = 0; k < pts.length; k++) {
+          var k2 = (k + 1) % pts.length, ek = keys[k] + '>' + keys[k2], rk = keys[k2] + '>' + keys[k];
+          if (open[ek]) return null;   // two facets the same way round: not a surface
+          if (open[rk]) delete open[rk];
+          else open[ek] = { a: pts[k], b: pts[k2], ao: outL[k], ai: inL[k], bo: outL[k2], bi: inL[k2], n: n };
+        }
+      }
+      var ok = true;
+      Object.keys(open).forEach(function (ek) {
+        var e = open[ek], be = edgeOf[edgeKey(e.a, e.b)], j = -1;
+        if (be && be.faces.length === 2) j = G.indexOf(be.faces[0]) >= 0 ? be.faces[1] : G.indexOf(be.faces[1]) >= 0 ? be.faces[0] : -1;
+        if (j < 0) { ok = false; return; }
+        // tangent: the neighbour's own normal there (its surface's, when it has one) is the round's
+        var sj = surfOf(mesh.faces[j]), Nj = mesh.faces[j].normal, Ni = K.surfNormalAt(Sg, e.a, mesh.faces[G[0]].centroid);
+        if (sj && !(surfError(sj.S, e.a) < 1e-6 * scl)) { ok = false; return; }
+        if (sj) { var Nq = K.surfNormalAt(sj.S, e.a, mesh.faces[j].centroid); if (Nq) Nj = norm(Nq); }
+        if (!Ni || Math.abs(dot(norm(Ni), Nj)) < Math.cos(Math.PI / 90)) { ok = false; return; }
+        var wall = polyOf([e.ao, e.ai, e.bi, e.bo], f.id, removed.indexOf(j) >= 0 && Sg.t === 'tor' ? { s: { t: 'cyl', o: Sg.o.slice(), d: Sg.d.slice(), r: Sg.R } } : null);
+        if (!wall) ok = false; else polys.push(wall);
+      });
+      return ok && polys.length ? CSG.fromPolygons(polys) : null;
+    }
+    // the rounds ringSolid replaces: [{ G, solid }], facets in `inRing`
+    var ringMemo = null, inRing = {};
+    function ringSolids() {
+      if (ringMemo) return ringMemo;
+      ringMemo = [];
+      var adj = {}, seen = {};
+      Object.keys(edgeOf).forEach(function (key) {
+        var e = edgeOf[key];
+        if (e.faces.length !== 2) return;
+        (adj[e.faces[0]] = adj[e.faces[0]] || []).push(e.faces[1]);
+        (adj[e.faces[1]] = adj[e.faces[1]] || []).push(e.faces[0]);
+      });
+      for (var i = 0; i < mesh.faces.length; i++) {
+        var sf = seen[i] || removed.indexOf(i) >= 0 || bridge[i] ? null : surfOf(mesh.faces[i]);
+        if (!sf || (sf.S.t !== 'tor' && sf.S.t !== 'sph') || mixedSurf().has(sf.S)) continue;
+        var G = [i];
+        seen[i] = true;
+        for (var q = 0; q < G.length; q++) (adj[G[q]] || []).forEach(function (j) {
+          var sj = surfOf(mesh.faces[j]);
+          if (!seen[j] && removed.indexOf(j) < 0 && !bridge[j] && sj && sj.S === sf.S) { seen[j] = true; G.push(j); }
+        });
+        var solid = ringSolid(G);
+        if (solid) { ringMemo.push(solid); G.forEach(function (g) { inRing[g] = true; }); }
+      }
+      return ringMemo;
+    }
     var inner = ctx.body, extensions = [], S = null, body = null, open0 = -1, best = null;
     // lane GC: a last try (0) with csg.js's restoreFar (rfFV) off: the top union of G13's slabs (rfGA: 4 × 3 × 2 box,
     // R.5 / R.25 rounds, shell .1) cracks with it on (two closed halves of 3192 + 3257 polygons → 12 open edges at
     // the inner corner torus; growth ×(1 + 1e-6) / ×(1 + 1e-4): 8 / 6) and closes with it off. Reported as a csg.js
     // repro; a shell that closes on an earlier try never gets here, so no other shell moves.
     var noFar = typeof CSG !== 'undefined' && CSG.options && CSG.options.restoreFar;
-    var tries = K.shellGuard.on ? (noFar ? [1, 1 + 1e-6, 1 + 1e-4, 0] : [1, 1 + 1e-6, 1 + 1e-4]) : [1];
+    var tries = K.shellGuard.on ? (noFar ? [1, 1, 1 + 1e-6, 1 + 1e-4, 0] : [1, 1, 1 + 1e-6, 1 + 1e-4]) : [1];
     for (var tr = 0; tr < tries.length; tr++) {
-      var gs = tries[tr] || 1, slabs = [];
+      var gs = tries[tr] || 1, slabs = [], ringOn = tr === 1;   // rfGN: try 1 = the rounds as one solid each
+      if (ringOn) {
+        if (!ringSolids().length) continue;
+        slabs = ringSolids().slice();
+      }
       extensions = [];
       for (var i = 0; i < mesh.faces.length; i++) {
         var o;
@@ -1444,7 +1547,7 @@
           // outward through the face, starting a little inside so no cap is coplanar with the face
           var ext = slabSolid({ loops: parts.open.loops.filter(function (l) { return signedArea(l) > 0; }), plane: o.plane }, uniform, -T / 2, T + 1, f.id);
           if (ext) extensions.push(ext);
-        } else if (!bridge[i]) {
+        } else if (!bridge[i] && !(ringOn && inRing[i])) {
           var slab = slabSolid(o, scaledGrow(growFor(o.plane, i), gs), -faceDepth(i), T, f.id);   // rfGB: −faceDepth (was −T)
           var rec = slab && offsetRecord(mesh.faces[i]), fn = mesh.faces[i].normal;
           if (rec) slab.polygons.forEach(function (p) { var n = p.plane.normal; if (n.x * fn[0] + n.y * fn[1] + n.z * fn[2] < -0.999999) p.surf = rec; });

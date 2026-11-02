@@ -102,7 +102,7 @@
       var sh = rfANSheet(r, doc), rows = sh.holeTables[0].rows;
       assert(rows.length === 2, 'two holes: ' + JSON.stringify(rows));
       var hw = r.model.features.filter(function (f) { return f.type === 'hole'; });
-      var want = hw.map(function (f) { return HoleWizard.callout(f, 'in').map(function (s) { return s.replace(/ THRU$/, ' THRU ALL'); }).join(' '); });
+      var want = ['⌴ Ø .438 ↧ .250 Ø .266 ↧ .750', 'Ø .257 THRU ALL'];   // (rfGT: as SolidWorks writes them)
       rows.forEach(function (x) { assert(want.indexOf(x.size) >= 0, 'wizard text ' + x.size + ' in ' + JSON.stringify(want)); });
       assert(rows.some(function (x) { return /THRU ALL/.test(x.size); }) && rows.some(function (x) { return x.lines.length > 1; }), 'THRU ALL drill, a two-line CBORE size');
       return rows.map(function (x) { return x.tag + ' ' + x.size; }).join(' | ');

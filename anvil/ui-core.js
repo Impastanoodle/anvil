@@ -1831,6 +1831,7 @@ var UI = (function () {
   }
   function isConsumed(id) {
     return App.model.features.some(function (g) {
+      if (rollbarRolled(g)) return false;   // rfGQ: a feature below the rollback bar gives its sketch back
       if (g.sketch === id || g.profile === id || g.path === id || (g.sketches && g.sketches.indexOf(id) >= 0)) return true;
       // rfFB: a Boundary's Direction 1 profiles and Direction 2 curves (an id, or { sketch, entity })
       return [g.dir1, g.dir2].some(function (L) { return Array.isArray(L) && L.some(function (c) { return c === id || (c && typeof c === 'object' && c.sketch === id); }); });
@@ -2636,6 +2637,7 @@ var UI = (function () {
   };
 
   function rebuild(opts) {
+    rollbarSync();   // rfGQ: a new feature goes in at the rollback bar
     opts = opts || {};
     // assemblies always build on the main thread (worker.js only knows part models)
     if (!App.workerOn || opts.sync || !window.Worker || isAssembly()) {
@@ -2971,6 +2973,7 @@ var UI = (function () {
   var roll = { want: null, posted: false, active: false, saved: null, deferred: null, committing: false };
   App.rollback = null;
   function rolledBack(f) {
+    if (rollbarRolled(f)) return true;   // rfGQ: below the rollback bar
     if (App.rollback == null || !App.model) return false;
     var i = App.model.features.indexOf(f);
     return i >= App.rollback;
@@ -3050,6 +3053,81 @@ var UI = (function () {
     if (UI.onRollback) { try { UI.onRollback(false); } catch (e) { console.warn(e); } }
     if (d) applyBuild(d.build, d.opts, d.ms);   // OpenCascade's solid that arrived meanwhile
   }
+  // ---- rfGQ: the rollback bar of the FeatureManager (SolidWorks). Unlike Edit Feature's rollback above (App.rollback,
+  // shown for as long as a PropertyManager is open) it is a state of the document: every feature below the bar is
+  // really suppressed (so the kernel, the worker, previews, OpenCascade, exports and drawings all see the rolled part),
+  // and model.rollbar = { ids: [rolled features in order], kept: { id: true } (suppressed by the user already),
+  // over: [[configuration, id]] (per-configuration "unsuppressed" overrides taken away while rolled) } says what to
+  // give back. It is plain model JSON, so Save, undo and AutoRecover keep it. model.rollbarPrev: the feature the bar
+  // sat above before its last move, -1 for the end (Roll to Previous). A new feature is pushed at the end of the list
+  // by every command: rollbarSync() moves anything that is not in ids above the rolled ones, which is the bar.
+  function rollbarIds() { var b = App.model && App.model.rollbar; return b && b.ids ? b.ids : null; }
+  function rollbarRolled(f) { var ids = rollbarIds(); return !!(ids && f && ids.indexOf(f.id) >= 0); }
+  function rollbarSync() {
+    var ids = rollbarIds(), m = App.model;
+    if (!ids || !m.features) return;
+    var shown = [], rolled = [];
+    m.features.forEach(function (f) { (ids.indexOf(f.id) >= 0 ? rolled : shown).push(f); });
+    if (!rolled.length) { delete m.rollbar; return; }
+    m.rollbar.ids = rolled.map(function (f) { return f.id; });
+    var order = shown.concat(rolled);
+    if (order.some(function (f, i) { return m.features[i] !== f; })) { m.features.length = 0; Array.prototype.push.apply(m.features, order); }
+  }
+  // the index of the first feature below the bar; the feature count when the bar is at the end
+  function rollbarIndex() {
+    var m = App.model;
+    if (!m || !m.features) return 0;
+    rollbarSync();
+    var ids = rollbarIds();
+    return ids ? m.features.length - ids.length : m.features.length;
+  }
+  function rollbarLift(m) {
+    var b = m.rollbar;
+    if (!b) return;
+    b.ids.forEach(function (id) { var f = K.findFeature(m, id); if (f && !(b.kept && b.kept[id])) delete f.suppressed; });
+    (b.over || []).forEach(function (o) { var c = K.findConfiguration(m, o[0]); if (c) (c.suppressed = c.suppressed || {})[o[1]] = false; });
+    delete m.rollbar;
+  }
+  function rollbarDrop(m, n) {
+    var tail = m.features.slice(n), cfgs = m.configurations || [];
+    if (!tail.length) return;
+    var b = m.rollbar = { ids: [], kept: {}, over: [] };
+    tail.forEach(function (f) {
+      b.ids.push(f.id);
+      if (f.suppressed) b.kept[f.id] = true;
+      f.suppressed = true;
+      cfgs.forEach(function (c) { if (c.suppressed && c.suppressed[f.id] === false) { delete c.suppressed[f.id]; b.over.push([c.name, f.id]); } });
+    });
+  }
+  // rollbarTo(n): the bar goes above feature n (the feature count: to the end). One undo step. -> the rebuild's
+  // Promise, or false when nothing moved. SolidWorks greys the bar while a command or a sketch is open.
+  function rollbarTo(n) {
+    var m = App.model;
+    if (!m || !m.features || isAssembly()) return false;
+    if (App.mode === 'sketch' || (UI.hasPM && UI.hasPM())) { if (UI.setStatus) UI.setStatus('Close the open command or sketch before moving the rollback bar.'); return false; }
+    var at = rollbarIndex(), len = m.features.length;
+    n = Math.max(0, Math.min(len, n | 0));
+    if (n === at) return false;
+    pushUndo();
+    var was = m.features[at], next = m.features[n];
+    rollbarLift(m);
+    m.rollbarPrev = was ? was.id : -1;
+    rollbarDrop(m, n);
+    return rebuild().then(function (b) {
+      if (UI.setStatus) UI.setStatus(next ? 'Rolled back to before ' + next.name + '.' : 'Rolled to the end.');
+      return b;
+    });
+  }
+  function rollbarForward() { return rollbarTo(rollbarIndex() + 1); }
+  function rollbarEnd() { return rollbarTo(App.model.features.length); }
+  function rollbarPrevIndex() {
+    var m = App.model, p = m && m.rollbarPrev;
+    if (p == null || !m.features) return -1;
+    if (p === -1) return m.features.length;
+    var f = K.findFeature(m, p);
+    return f ? m.features.indexOf(f) : -1;
+  }
+  function rollbarPrevious() { var n = rollbarPrevIndex(); return n < 0 ? false : rollbarTo(n); }
   // ---- Instant3D's light drag path (r3/engine3): while a depth / angle arrow (or a part-mode sketch dimension) is
   // dragged, each ruler step previews only the dragged feature, built in the worker on the part before it, instead of
   // rebuilding and re-applying the whole part; the release rebuilds once (ui-select.js endDrag), and
@@ -3384,6 +3462,7 @@ var UI = (function () {
     rebuild: rebuild, previewInWorker: previewInWorker, cancelPreviews: cancelPreviews, featurePreview: featurePreview, featurePreviewEnd: featurePreviewEnd, holdFrame: holdFrame, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
     applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
     rollbackTo: rollbackTo, rollForward: rollForward, rollbackCommit: rollbackCommit, rollbackSwap: rollbackSwap,   // r10/editpreview10: Edit Feature rollback
+    rollbarTo: rollbarTo, rollbarIndex: rollbarIndex, rollbarRolled: rollbarRolled, rollbarSync: rollbarSync, rollbarForward: rollbarForward, rollbarEnd: rollbarEnd, rollbarPrevious: rollbarPrevious, rollbarPrevIndex: rollbarPrevIndex,   // rfGQ: the rollback bar
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
     // r14/viewui14: background, triad, View Selector
     setBackground: setBackground, drawTriad: function () { drawTriad(); }, triadClick: triadClick, triadAxisAt: triadAxisAt, orientView: orientView,

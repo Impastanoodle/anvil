@@ -1,5 +1,5 @@
 // assembly.js — Anvil assembly documents: insert parts as components, mate them (Standard mates Coincident / Parallel /
-// Perpendicular / Tangent / Concentric / Distance / Angle, Advanced mates Width / Limit Distance / Limit Angle, the
+// Perpendicular / Tangent / Concentric / Distance / Angle, Advanced mates Symmetric / Width / Limit Distance / Limit Angle, the Slot and Hinge and
 // Mechanical Gear mate), solve, move and rotate components, detect interference, pattern and mirror components
 // (Linear / Circular Component Pattern, Mirror Components) and explode them (Exploded View steps and explode lines).
 // Components may be sub-assemblies (rigid, or Flexible: their own mates solved in context) and live links to documents
@@ -314,14 +314,17 @@ var Assembly = (function () {
 
   var MATE_BASE = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle',
     parallel: 'Parallel', perpendicular: 'Perpendicular', tangent: 'Tangent', width: 'Width', gear: 'Gear',
-    limitdistance: 'LimitDistance', limitangle: 'LimitAngle' };
-  var MATE_TYPES = ['coincident', 'concentric', 'distance', 'angle', 'parallel', 'perpendicular', 'tangent', 'width', 'gear', 'limitdistance', 'limitangle'];
+    limitdistance: 'LimitDistance', limitangle: 'LimitAngle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge' };
+  var MATE_TYPES = ['coincident', 'concentric', 'distance', 'angle', 'parallel', 'perpendicular', 'tangent', 'width', 'gear', 'limitdistance', 'limitangle', 'symmetric', 'slot', 'hinge'];
   // Mate PropertyManager groups, as in SolidWorks (types Anvil does not have yet are left out)
   var MATE_GROUPS = {
     standard: ['coincident', 'parallel', 'perpendicular', 'tangent', 'concentric', 'distance', 'angle'],
-    advanced: ['width', 'limitdistance', 'limitangle'],
-    mechanical: ['gear']
+    advanced: ['symmetric', 'width', 'limitdistance', 'limitangle'],
+    mechanical: ['slot', 'hinge', 'gear']
   };
+  // every key of a mate that holds a reference (Width: a2 / b2 the second faces; Symmetric: a2 the symmetry plane;
+  // Hinge: a / b Concentric Selections, a2 / b2 Coincident Selections, a3 / b3 Angle Selections of its angle limit)
+  var REF_KEYS = ['a', 'b', 'a2', 'b2', 'a3', 'b3'];
   function mateTypeName(t) { t = String(t || '').toLowerCase(); return t === 'limitdistance' ? 'limitDistance' : t === 'limitangle' ? 'limitAngle' : t; }
 
   function normRef(model, ref) {
@@ -347,6 +350,8 @@ var Assembly = (function () {
     // Width: a / a2 are the two width faces, b / b2 the two tab faces (or b alone: a cylindrical tab)
     if (opts.a2) m.a2 = normRef(model, opts.a2);
     if (opts.b2) m.b2 = normRef(model, opts.b2);
+    if (opts.a3) m.a3 = normRef(model, opts.a3);
+    if (opts.b3) m.b3 = normRef(model, opts.b3);
     if (opts.alignment) m.alignment = opts.alignment;
     if (opts.phase && opts.phase.length === 2) m.phase = [+opts.phase[0], +opts.phase[1]];
     setMateValues(m, opts);
@@ -360,21 +365,33 @@ var Assembly = (function () {
   // (B turns a/b times as far as A; a number r means [r, 1]); `flip: true` (Flip dimension) puts the distance / offset /
   // range on the other side, measures the angle the other way round, makes a Tangent internal (cylinders) or puts the
   // cylinder on the back of the plane, and makes a Gear turn both components the same way (SolidWorks' Reverse).
-  // Keys that do not belong to the mate type are removed.
-  var FLIP_TYPES = { distance: 1, angle: 1, coincident: 1, tangent: 1, gear: 1, limitdistance: 1, limitangle: 1 };
+  // Slot { constraint: 'free' | 'center' | 'distance' | 'percent', distance (mm), percent } (Free, Center in Slot,
+  // Distance Along Slot, Percent Along Slot; along the slot's centre line from the first end's arc centre, flip: from
+  // the other end). Hinge { limit: true, min, max } (Define angle limit, degrees, signed about the Concentric axis; the
+  // angle is measured between a3 and b3). Keys that do not belong to the mate type are removed.
+  var FLIP_TYPES = { distance: 1, angle: 1, coincident: 1, tangent: 1, gear: 1, limitdistance: 1, limitangle: 1, slot: 1 };
   function setMateValues(m, opts) {
     opts = opts || {};
-    ['distance', 'angle', 'offset', 'min', 'max'].forEach(function (k) { if (opts[k] != null) m[k] = +opts[k]; });
+    ['distance', 'angle', 'offset', 'min', 'max', 'percent'].forEach(function (k) { if (opts[k] != null) m[k] = +opts[k]; });
+    if (opts.constraint != null) m.constraint = String(opts.constraint).toLowerCase();
+    if (opts.limit != null) { if (opts.limit) m.limit = true; else delete m.limit; }
     if (opts.ratio != null) m.ratio = Array.isArray(opts.ratio) ? [+opts.ratio[0], +opts.ratio[1]] : [+opts.ratio, 1];
     if (opts.flip != null) { if (opts.flip) m.flip = true; else delete m.flip; }
-    var limit = m.type === 'limitdistance' || m.type === 'limitangle';
-    if (m.type !== 'distance') delete m.distance;
+    if (m.type !== 'hinge') delete m.limit;
+    if (m.type !== 'slot') delete m.constraint;
+    else if (m.constraint == null) m.constraint = 'free';
+    var slotDist = m.type === 'slot' && m.constraint === 'distance', slotPct = m.type === 'slot' && m.constraint === 'percent';
+    var limit = m.type === 'limitdistance' || m.type === 'limitangle' || (m.type === 'hinge' && !!m.limit);
+    if (!slotPct) delete m.percent; else if (m.percent == null) m.percent = 50;
+    if (m.type !== 'distance' && !slotDist) delete m.distance;
     if (m.type !== 'angle') delete m.angle;
     if (m.type !== 'coincident' || !m.offset) delete m.offset;
     if (!limit) { delete m.min; delete m.max; }
     if (m.type !== 'gear') { delete m.ratio; delete m.phase; }
-    if (m.type !== 'width') { delete m.a2; delete m.b2; }
-    if (m.type === 'distance' && m.distance == null) m.distance = 0;
+    if (m.type !== 'width' && m.type !== 'hinge' && m.type !== 'symmetric') delete m.a2;
+    if (m.type !== 'width' && m.type !== 'hinge') delete m.b2;
+    if (m.type !== 'hinge' || !m.limit) { delete m.a3; delete m.b3; }
+    if ((m.type === 'distance' || slotDist) && m.distance == null) m.distance = 0;
     if (m.type === 'angle' && m.angle == null) m.angle = 0;
     if (limit && m.min == null) m.min = 0;
     if (limit && m.max == null) m.max = m.min;
@@ -399,7 +416,7 @@ var Assembly = (function () {
   // remove the components in `gone` (id -> true), the mates that reference them and their explode-step entries
   function dropComponents(model, gone) {
     model.components = model.components.filter(function (x) { return !gone[x.id]; });
-    model.mates = model.mates.filter(function (m) { return ['a', 'b', 'a2', 'b2'].every(function (k) { return !(m[k] && gone[m[k].component]); }); });
+    model.mates = model.mates.filter(function (m) { return REF_KEYS.every(function (k) { return !(m[k] && gone[m[k].component]); }); });
     if (model.ignoredInterferences) {   // r5/asm5: ignored interferences of a deleted component go with it
       model.ignoredInterferences = model.ignoredInterferences.filter(function (k) { var s = ignoreSides(k); return ![s.a, s.b].some(function (x) { var m = /^(\d+)(\/|$)/.exec(x); return m && gone[+m[1]]; }); });
       if (!model.ignoredInterferences.length) delete model.ignoredInterferences;
@@ -655,6 +672,55 @@ var Assembly = (function () {
     return null;
   }
 
+  // A straight slot through / nearest a local point: two end cylinders of one radius with parallel axes, joined by the
+  // two flat sides. -> { p1, p2, dir, radius, length } (p1: the end that was picked, or the lower end for a side face)
+  function slotCylinders(geom) {
+    if (geom.slotCyls) return geom.slotCyls;
+    var out = [];
+    (geom.patches || []).forEach(function (pt) {
+      var c = patchCylinder(geom, pt);
+      if (!c) return;
+      if (!out.some(function (o) { return Math.abs(o.radius - c.radius) < 1e-7 && len(cross(o.dir, c.dir)) < 1e-7 && axisDistance(o, c) < 1e-7; })) out.push(c);
+    });
+    return (geom.slotCyls = out);
+  }
+  function findSlot(geom, p, endPicked) {
+    var cs = slotCylinders(geom), tol = Math.max(1e-4, 1e-5 * geom.size), best = null, bestErr = Infinity;
+    for (var i = 0; i < cs.length; i++) for (var j = i + 1; j < cs.length; j++) {
+      var a = cs[i], b = cs[j], r = a.radius;
+      if (Math.abs(a.radius - b.radius) > tol || len(cross(a.dir, b.dir)) > 1e-6) continue;
+      var d = a.dir, ha = dot(sub(p, a.point), d), pa = add(a.point, scale(d, ha)), hb = dot(sub(p, b.point), d), pb = add(b.point, scale(d, hb));
+      var L = len(sub(pb, pa));
+      if (L < 1e-6) continue;
+      var e = scale(sub(pb, pa), 1 / L), w = cross(d, e), mid = scale(add(pa, pb), 0.5);
+      // the two straight sides join them (so the ends of two slots in line do not read as one slot)
+      var s1 = patchesByDistance(geom, add(mid, scale(w, r)))[0], s2 = patchesByDistance(geom, sub(mid, scale(w, r)))[0];
+      if (!s1 || !s2 || s1.d > tol * 10 || s2.d > tol * 10) continue;
+      // the point lies on the slot's wall: r from its centre line
+      var t = Math.max(0, Math.min(L, dot(sub(p, pa), e))), err = Math.abs(len(sub(p, add(pa, scale(e, t)))) - r);
+      if (err < bestErr) { bestErr = err; best = { a: pa, b: pb, dir: d, radius: r, length: L, e: e }; }
+    }
+    if (!best || bestErr > 0.1 * best.radius + 10 * tol) return null;
+    var first = endPicked ? len(sub(p, best.a)) <= len(sub(p, best.b)) : dot(best.e, canonicalDir(best.e)) > 0;
+    return { p1: first ? best.a : best.b, p2: first ? best.b : best.a, dir: best.dir, radius: best.radius, length: best.length };
+  }
+  // the slot of a mate reference, in its component's local frame (through a sub-assembly: as localRef does)
+  function slotOfRef(model, partBuilds, ref) {
+    var comp = findComponent(model, ref.component);
+    if (!comp) return null;
+    if (ref.path && ref.path.length) {
+      var sb = partBuilds && partBuilds[comp.id], inner = sb && sb.model ? findComponent(sb.model, ref.path[0]) : null;
+      if (!inner) return null;
+      var iref = JSON.parse(JSON.stringify(ref));
+      iref.component = inner.id;
+      if (ref.path.length > 1) iref.path = ref.path.slice(1); else delete iref.path;
+      var s = slotOfRef(sb.model, sb.partBuilds, iref), Ti = tf(inner.transform);
+      return s && { p1: transformPoint(Ti, s.p1), p2: transformPoint(Ti, s.p2), dir: transformDir(Ti, s.dir), radius: s.radius, length: s.length };
+    }
+    var g = partGeom(partBuilds && partBuilds[comp.id]), p = ref.cylinder || ref.face;
+    return g && p ? findSlot(g, copy3(p), !!ref.cylinder) : null;
+  }
+
   // ------------------------------------------------------------------ references
   var STD_PLANE_NORMALS = { front: [0, 0, 1], top: [0, 1, 0], right: [1, 0, 0] };
   var AXIS_DIRS = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
@@ -751,6 +817,8 @@ var Assembly = (function () {
   // two directions have when the mate is solved (so the component turns the least).
   function defaultAlignment(m) {
     var t = m.type;
+    if (t === 'symmetric' || t === 'slot') return 'closest';
+    if (t === 'hinge') return (m.a2 && m.a2.face && m.b2 && m.b2.face) ? 'anti-aligned' : 'aligned';   // of the Coincident Selections
     if (t === 'parallel' || t === 'perpendicular' || t === 'tangent' || t === 'width' || t === 'gear') return 'closest';
     if (t === 'coincident' || t === 'distance' || t === 'limitdistance') {
       if (t !== 'coincident' && (isAxisRef(m.a) || isAxisRef(m.b))) return 'closest';
@@ -812,7 +880,7 @@ var Assembly = (function () {
     if (pm.pair === 'pp' || pm.pair === 'aa') { var d = sub(dirOf(A), scale(dirOf(B), pm.sign || 1)); return [d[0], d[1], d[2]]; }
     return [dot(dirOf(A), dirOf(B))];
   }
-  function mateResidual(pm, A, B, k, A2, B2) {
+  function mateResidual(pm, A, B, k, A2, B2, A3, B3) {
     var s = pm.sign;
     if (pm.type === 'coincident' || (pm.type === 'distance' && pm.pair === 'pp')) {
       var dn = sub(A.normal, scale(B.normal, s));
@@ -834,13 +902,55 @@ var Assembly = (function () {
       var dw = sub(nW, scale(B.normal, s || 1)), midB = scale(add(B.point, B2.point), 0.5);
       return [dw[0], dw[1], dw[2], dot(sub(midB, mid), nW)];
     }
+    if (pm.type === 'symmetric') {   // B is A's mirror image in the plane A2, entity for entity (the rest of the part is not mirrored)
+      var Am = mirrorRef(A, A2), va = sub(B.point, Am.point);
+      if (pm.pair === 'pp') {
+        var ds = sub(Am.normal, scale(B.normal, s));
+        return [ds[0], ds[1], ds[2], 0.5 * (dot(va, Am.normal) + s * dot(va, B.normal))];
+      }
+      var da = sub(Am.dir, scale(B.dir, s)), pa = sub(va, scale(Am.dir, dot(va, Am.dir)));
+      return [da[0], da[1], da[2], pa[0], pa[1], pa[2]];
+    }
+    if (pm.type === 'slot') {        // the pin's axis parallel to the slot, on its centre line, at / between the ends
+      var eS = norm(sub(A2.point, A.point)), wS = cross(A.dir, eS), vS = sub(B.point, A.point), tS = dot(vS, eS), dS = sub(A.dir, scale(B.dir, s || 1));
+      var goal = slotTarget(pm);
+      return [dS[0], dS[1], dS[2], dot(vS, wS), goal != null ? tS - goal : pm.noLimit ? 0 : clampExcess(tS, 0, pm.slotLength)];
+    }
+    if (pm.type === 'hinge') {       // Concentric (a, b) + Coincident (a2, b2), and the angle limit (a3, b3) when defined
+      var dh = sub(A.dir, scale(B.dir, s || 1)), vh = sub(B.point, A.point), ph = sub(vh, scale(A.dir, dot(vh, A.dir)));
+      var nh = sub(A2.normal, scale(B2.normal, pm.sign2)), vc = sub(B2.point, A2.point);
+      var rh = [dh[0], dh[1], dh[2], ph[0], ph[1], ph[2], nh[0], nh[1], nh[2], 0.5 * (dot(vc, A2.normal) + pm.sign2 * dot(vc, B2.normal))];
+      if (pm.A3) rh.push(hingeExcess(pm, A, A3, B3));
+      return rh;
+    }
     if (pm.type === 'gear') {
-      var ph = pm.phase, dA = wrapAngle(axisTurn(A) - ph[0]), dB = wrapAngle(axisTurn(B) - ph[1]);
+      var phs = pm.phase, dA = wrapAngle(axisTurn(A) - phs[0]), dB = wrapAngle(axisTurn(B) - phs[1]);
       return [wrapAngle(dB + (pm.mate.flip ? -1 : 1) * pm.ratio * dA)];
     }
     var dd = sub(A.dir, scale(B.dir, s)), v = sub(B.point, A.point);
     var perp = sub(v, scale(A.dir, dot(v, A.dir)));
     return [dd[0], dd[1], dd[2], perp[0], perp[1], perp[2]];
+  }
+  // A world ref mirrored in plane P.
+  function mirrorPoint(q, P) { return sub(q, scale(P.normal, 2 * dot(sub(q, P.point), P.normal))); }
+  function mirrorDir(d, P) { return sub(d, scale(P.normal, 2 * dot(d, P.normal))); }
+  function mirrorRef(W, P) {
+    var o = { kind: W.kind, point: mirrorPoint(W.point, P) };
+    if (W.normal) o.normal = mirrorDir(W.normal, P);
+    if (W.dir) o.dir = mirrorDir(W.dir, P);
+    return o;
+  }
+  // Slot: the along-slot position its constraint holds (null: Free), measured from pm.A's end
+  function slotTarget(pm) {
+    var m = pm.mate, L = pm.slotLength, v = m.constraint === 'center' ? L / 2 : m.constraint === 'distance' ? +m.distance || 0
+      : m.constraint === 'percent' ? L * (+m.percent || 0) / 100 : null;
+    return v != null && m.flip ? L - v : v;
+  }
+  // Hinge angle limit: how far the angle between the Angle Selections, about the Concentric axis, lies outside its range
+  function hingeExcess(pm, A, A3, B3) {
+    if (pm.noLimit) return 0;
+    var lo = +pm.mate.min * Math.PI / 180, hi = +pm.mate.max * Math.PI / 180, mid = (lo + hi) / 2;
+    return clampExcess(mid + wrapAngle(signedAngle(dirOf(A3), dirOf(B3), A.dir) - mid), lo, hi);
   }
   function vnorm(r) { var s = 0; for (var i = 0; i < r.length; i++) s += r[i] * r[i]; return Math.sqrt(s); }
 
@@ -871,6 +981,10 @@ var Assembly = (function () {
       return transformPoint(transforms[comp.id], g ? g.center : [0, 0, 0]);
     }
 
+    function refAt(lr, T) { return worldOf(lr, lr.comp ? T[lr.comp.id] : null); }
+    // the direction 'closest' compares with B's: A's (Symmetric: its mirror image)
+    function alignDir(pm, Aw, Pw) { return Pw ? mirrorDir(dirOf(Aw), Pw) : dirOf(Aw); }
+    function mateComps(pm) { return pm.extra ? [pm.ca, pm.cb].concat(pm.extra) : [pm.ca, pm.cb]; }
     // prepare mates: resolve local refs, check kinds
     var prepared = [];
     model.mates.forEach(function (m) {
@@ -916,19 +1030,54 @@ var Assembly = (function () {
           if (!(isFinite(+ratio[0]) && isFinite(+ratio[1]) && +ratio[0] > 0 && +ratio[1] > 0)) throw new Error('Gear ratio must be two numbers > 0');
           pm.ratio = +ratio[0] / +ratio[1];
         }
+        if (m.type === 'symmetric') {
+          if (!m.a2) throw new Error('Symmetric needs a symmetry plane and two entities to mate');
+          pm.A2 = localRef(model, partBuilds, m.a2);
+          if (pm.A2.kind !== 'plane') throw new Error('The Symmetry Plane must be a plane or a planar face');
+          if (pm.pair !== 'pp' && pm.pair !== 'aa') throw new Error('Symmetric needs two entities of one kind: two planar faces or planes, or two cylindrical faces or axes');
+        }
+        if (m.type === 'slot') {
+          if (m.constraint !== 'free' && m.constraint !== 'center' && m.constraint !== 'distance' && m.constraint !== 'percent') throw new Error('Unknown slot constraint "' + m.constraint + '"');
+          if (m.constraint === 'distance' && !(isFinite(+m.distance) && +m.distance >= 0)) throw new Error('Distance must be a number ≥ 0');
+          if (m.constraint === 'percent' && !(isFinite(+m.percent) && +m.percent >= 0 && +m.percent <= 100)) throw new Error('Percent must be between 0 and 100');
+          if (pm.B.kind !== 'axis') throw new Error('Slot needs a slot face and a cylindrical face or axis (the pin)');
+          var sl = pm.A.comp ? slotOfRef(model, partBuilds, m.a) : null;
+          if (!sl) throw new Error('Slot needs a face of a straight slot: its flat sides or round ends');
+          pm.A = { kind: 'axis', refKind: 'cylinder', comp: pm.A.comp, point: sl.p1, dir: sl.dir, ref: perpTo(sl.dir), radius: sl.radius };
+          pm.A2 = { kind: 'axis', refKind: 'cylinder', comp: pm.A.comp, point: sl.p2, dir: sl.dir, ref: perpTo(sl.dir), radius: sl.radius };
+          pm.slotLength = sl.length; pm.pair = 'aa';
+        }
+        if (m.type === 'hinge') {
+          if (pm.pair !== 'aa') throw new Error('Hinge needs two cylindrical faces or axes as its Concentric Selections');
+          if (!m.a2 || !m.b2) throw new Error('Hinge needs two planar faces or planes as its Coincident Selections');
+          pm.A2 = localRef(model, partBuilds, m.a2); pm.B2 = localRef(model, partBuilds, m.b2);
+          if (pm.A2.kind !== 'plane' || pm.B2.kind !== 'plane') throw new Error('Hinge needs two planar faces or planes as its Coincident Selections');
+          if (pm.A2.comp !== pm.A.comp && pm.B2.comp === pm.A.comp) { var sw = pm.A2; pm.A2 = pm.B2; pm.B2 = sw; }
+          if (m.limit) {
+            if (!(isFinite(+m.min) && isFinite(+m.max) && +m.max >= +m.min)) throw new Error('Hinge needs minimum ≤ maximum');
+            if (!m.a3 || !m.b3) throw new Error('Hinge needs two faces as its Angle Selections to limit the angle');
+            pm.A3 = localRef(model, partBuilds, m.a3); pm.B3 = localRef(model, partBuilds, m.b3);
+            if (pm.A3.comp !== pm.A.comp && pm.B3.comp === pm.A.comp) { var sw3 = pm.A3; pm.A3 = pm.B3; pm.B3 = sw3; }
+          }
+          // the alignment is the Coincident Selections'; the Concentric pair keeps the sense it has (closest)
+          pm.sign2 = pm.sign; pm.sign = 0;
+        }
         if (m.type === 'angle') pm.target = angleTarget(m);
       } catch (e) {
         mateOut[m.id] = { ok: false, residual: null, error: e.message || String(e) };
         return;
       }
       pm.ca = pm.A.comp; pm.cb = pm.B.comp;
+      // a selection on a third component (a symmetry plane, say): it moves with the mate too
+      [pm.A2, pm.B2, pm.A3, pm.B3].forEach(function (lr) { if (lr && lr.comp && lr.comp !== pm.ca && lr.comp !== pm.cb) { pm.extra = pm.extra || []; if (pm.extra.indexOf(lr.comp) < 0) pm.extra.push(lr.comp); } });
       // 'closest' alignment: the sign the two directions have now (Width: the width normal and the tab normal)
       if (pm.sign === 0) {
         var wa = worldOf(pm.A, pm.ca ? transforms[pm.ca.id] : null), wb = worldOf(pm.B, pm.cb ? transforms[pm.cb.id] : null);
-        pm.sign = dot(dirOf(wa), dirOf(wb)) < -1e-9 ? -1 : 1;
+        pm.sign = dot(alignDir(pm, wa, pm.type === 'symmetric' ? refAt(pm.A2, transforms) : null), dirOf(wb)) < -1e-9 ? -1 : 1;
         // (an Angle keeps the sense it starts with: its signed angle is measured from it)
         if (pm.type !== 'angle' && pm.type !== 'limitangle') pm.closest = true;
       }
+      if (pm.type === 'hinge' && pm.sign2 === 0) pm.sign2 = dot(refAt(pm.A2, transforms).normal, refAt(pm.B2, transforms).normal) < -1e-9 ? -1 : 1;
       if (pm.type === 'gear') {
         // the phase is the two components' turns when the mate is first solved; it is stored with the mate
         if (!(m.phase && m.phase.length === 2 && isFinite(+m.phase[0]) && isFinite(+m.phase[1]))) {
@@ -936,7 +1085,7 @@ var Assembly = (function () {
         }
         pm.phase = [+m.phase[0] * Math.PI / 180, +m.phase[1] * Math.PI / 180];
       }
-      pm.rigid = (pm.ca && pm.cb && pm.ca === pm.cb) || (!movable(pm.ca) && !movable(pm.cb));
+      pm.rigid = (pm.ca && pm.cb && pm.ca === pm.cb && !pm.extra) || !mateComps(pm).some(movable);
       if (pm.type === 'angle' || pm.type === 'limitangle') setAngleAxis(pm, null);
       prepared.push(pm);
     });
@@ -963,9 +1112,10 @@ var Assembly = (function () {
       var Aw = worldOf(pm.A, pm.ca ? T[pm.ca.id] : null), Bw = worldOf(pm.B, pm.cb ? T[pm.cb.id] : null);
       // 'closest' alignment holds either sense: whichever the two directions have now, so a later mate may still turn
       // the component over (a roller made Perpendicular to a face, then its end face Coincident with that face)
-      if (pm.closest) pm.sign = dot(dirOf(Aw), dirOf(Bw)) < 0 ? -1 : 1;
-      return mateResidual(pm, Aw, Bw, pm.kL ? angleAxisWorld(pm, T) : null,
-        pm.A2 ? worldOf(pm.A2, pm.ca ? T[pm.ca.id] : null) : null, pm.B2 ? worldOf(pm.B2, pm.cb ? T[pm.cb.id] : null) : null);
+      var A2w = pm.A2 ? refAt(pm.A2, T) : null;
+      if (pm.closest) pm.sign = dot(alignDir(pm, Aw, pm.type === 'symmetric' ? A2w : null), dirOf(Bw)) < 0 ? -1 : 1;
+      return mateResidual(pm, Aw, Bw, pm.kL ? angleAxisWorld(pm, T) : null, A2w, pm.B2 ? refAt(pm.B2, T) : null,
+        pm.A3 ? refAt(pm.A3, T) : null, pm.B3 ? refAt(pm.B3, T) : null);
     }
 
     // ---- greedy placement of one mate: rotate then translate the component being brought to the other side
@@ -1095,10 +1245,61 @@ var Assembly = (function () {
       if (e && lockIt) lockTrans(L, e);
       if (!oc || grounded[oc.id]) grounded[C.id] = true;
     }
+    // Greedy placement for Symmetric, Slot and Hinge: turn the moving component onto the direction the mate holds, slide
+    // it to the place the mate holds; what is left (a selection on a third component) is the solver's.
+    function greedyHeld(pm) {
+      var moveB = moverIsB(pm), C = moveB ? pm.cb : pm.ca, oc = moveB ? pm.ca : pm.cb;
+      if (!movable(C) || pm.ca === pm.cb) return;
+      var L = locks[C.id], mine = moveB ? pm.B : pm.A, other = moveB ? pm.A : pm.B;
+      function W(lr) { return refAt(lr, transforms); }
+      function target() { var o = W(other); return pm.type === 'symmetric' ? mirrorRef(o, W(pm.A2)) : o; }
+      var M = W(mine), O = target();
+      if (!L.full) {
+        var R = alignRotation(dirOf(M), scale(dirOf(O), pm.sign || 1), L);
+        if (R && vnorm(residualOf(pm)) > TOL_DONE) { rotateAbout(C.id, R, L.axis ? L.point : M.point); M = W(mine); }
+        if (pm.type === 'hinge' && !L.axis) {   // the Coincident faces must face as their alignment says: end for end
+          if (dot(W(pm.A2).normal, W(pm.B2).normal) * pm.sign2 < -0.5) { rotateAbout(C.id, rotVec(scale(perpTo(dirOf(M)), Math.PI)), M.point); M = W(mine); }
+        }
+      }
+      O = target();
+      var delta, v = sub(O.point, M.point), dir = dirOf(M), lockE = [];
+      if (pm.type === 'slot') {
+        var A = W(pm.A), B = W(pm.B), e = norm(sub(W(pm.A2).point, A.point)), w = cross(A.dir, e), u = sub(B.point, A.point), t = dot(u, e), g = slotTarget(pm);
+        var goal = g != null ? g : Math.max(0, Math.min(pm.slotLength, t));
+        delta = add(scale(w, -dot(u, w)), scale(e, goal - t));
+        if (!moveB) delta = scale(delta, -1);
+        lockE = g != null ? [w, e] : [w];
+      } else if (M.normal) { delta = scale(O.normal, dot(v, O.normal)); lockE = [O.normal]; }
+      else {
+        delta = sub(v, scale(O.dir, dot(v, O.dir)));
+        var e1 = perpTo(dir); lockE = [e1, cross(dir, e1)];
+      }
+      function slide(d) {
+        L.trans.forEach(function (tr) { d = sub(d, scale(tr, dot(d, tr))); });
+        transforms[C.id] = { rotation: transforms[C.id].rotation, position: add(transforms[C.id].position, d) };
+      }
+      slide(delta);
+      if (pm.type === 'hinge') {   // along the axis, until the Coincident faces touch
+        var Aw2 = W(pm.A2), Bw2 = W(pm.B2), gap = dot(sub(Bw2.point, Aw2.point), Aw2.normal);
+        slide(scale(Aw2.normal, moveB ? -gap : gap));
+        lockE.push(dir);
+        if (pm.A3) {               // back inside the angle limit, about the axis
+          var ex = residualOf(pm), err = ex[ex.length - 1], Ma = W(pm.A);
+          if (Math.abs(err) > TOL_DONE) rotateAbout(C.id, rotVec(scale(Ma.dir, moveB ? -err : err)), W(mine).point);
+        }
+      }
+      var Mw = W(mine), dw = dirOf(Mw);
+      if (!L.axis) { L.axis = dw.slice(); L.point = Mw.point.slice(); }
+      else if (len(cross(L.axis, dw)) > 1e-6) L.full = true;
+      lockE.forEach(function (d) { lockTrans(L, d); });
+      if (!oc || grounded[oc.id]) grounded[C.id] = true;
+    }
+    var HELD = { symmetric: 1, slot: 1, hinge: 1 };
     var MORE = { parallel: 1, perpendicular: 1, tangent: 1, width: 1, gear: 1, limitdistance: 1 };
     function greedy(pm) {
       if (pm.rigid) return;
       if (pm.type === 'angle' || pm.type === 'limitangle') { greedyAngle(pm); return; }
+      if (HELD[pm.type]) { greedyHeld(pm); return; }
       if (MORE[pm.type] || (pm.type === 'distance' && pm.pair === 'aa')) { greedyMore(pm); return; }
       var moveB = moverIsB(pm);
       var C = moveB ? pm.cb : pm.ca, mine = moveB ? pm.B : pm.A, other = moveB ? pm.A : pm.B;
@@ -1148,7 +1349,7 @@ var Assembly = (function () {
     function unknowns(active) {
       var ids = [], seen = {};
       active.forEach(function (pm) {
-        [pm.ca, pm.cb].forEach(function (c) { if (movable(c) && !seen[c.id]) { seen[c.id] = true; ids.push(c.id); } });
+        mateComps(pm).forEach(function (c) { if (movable(c) && !seen[c.id]) { seen[c.id] = true; ids.push(c.id); } });
       });
       return ids;
     }
@@ -1158,10 +1359,10 @@ var Assembly = (function () {
     function groupsOf(list, only) {
       var parent = {};
       function find(x) { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
-      function key(pm) { var c = movable(pm.ca) ? pm.ca : movable(pm.cb) ? pm.cb : null; return c ? find(String(c.id)) : 'm' + pm.id; }
+      function key(pm) { var c = mateComps(pm).filter(movable)[0]; return c ? find(String(c.id)) : 'm' + pm.id; }
       list.forEach(function (pm) {
-        var ks = [pm.ca, pm.cb].filter(movable).map(function (c) { var k = String(c.id); if (!(k in parent)) parent[k] = k; return find(k); });
-        if (ks.length === 2 && ks[0] !== ks[1]) parent[ks[0]] = ks[1];
+        var ks = mateComps(pm).filter(movable).map(function (c) { var k = String(c.id); if (!(k in parent)) parent[k] = k; return find(k); });
+        for (var q = 1; q < ks.length; q++) { var r0 = find(ks[0]), rq = find(ks[q]); if (r0 !== rq) parent[r0] = rq; }
       });
       var out = {}, order = [];
       list.forEach(function (pm) { var k = key(pm); if (!out[k]) { out[k] = []; order.push(k); } out[k].push(pm); });
@@ -1278,7 +1479,7 @@ var Assembly = (function () {
       if (!movable(c0) || !d.point || !d.target) return;
       // r5/asm5: in a large floating cluster the dragged component first moves as far as its mates to the hub let it
       // (the hub held), then the whole cluster follows the rest of the pull (a translation keeps every mate)
-      var linked = active.filter(function (pm) { return pm.ca === c0 || pm.cb === c0; });
+      var linked = active.filter(function (pm) { return mateComps(pm).indexOf(c0) >= 0; });
       var cl = linked.length ? groupsOf(active, linked[0])[0] : [], hub = cl.length ? freeHub(cl) : null;
       if (hub != null) {
         if (hub !== c0.id) { held[hub] = true; try { dragTo(d); } finally { delete held[hub]; } }
@@ -1293,11 +1494,11 @@ var Assembly = (function () {
         var id = queue.shift();
         group.push(id);
         active.forEach(function (pm) {
-          if (!((pm.ca && pm.ca.id === id) || (pm.cb && pm.cb.id === id))) return;
-          [pm.ca, pm.cb].forEach(function (c) { if (movable(c) && !inGroup[c.id]) { inGroup[c.id] = true; queue.push(c.id); } });
+          if (!mateComps(pm).some(function (c) { return c && c.id === id; })) return;
+          mateComps(pm).forEach(function (c) { if (movable(c) && !inGroup[c.id]) { inGroup[c.id] = true; queue.push(c.id); } });
         });
       }
-      var mates = active.filter(function (pm) { return (pm.ca && inGroup[pm.ca.id]) || (pm.cb && inGroup[pm.cb.id]); });
+      var mates = active.filter(function (pm) { return mateComps(pm).some(function (c) { return c && inGroup[c.id]; }); });
       var pt = copy3(d.point), tg = copy3(d.target);
       // Gauss–Newton on the pull restricted to the free motions (the null space of the mates' Jacobian, so to first
       // order the step keeps every mate), then the mates made exact again (the least motion), with step halving when
@@ -1410,6 +1611,7 @@ var Assembly = (function () {
     comps.forEach(function (c) { dofs[c.id] = c.fixed || c.pattern != null ? 0 : 6; });
     // Limit Distance / Limit Angle remove nothing: inside their range the component still moves
     var holding = active.filter(function (pm) { return pm.type !== 'limitdistance' && pm.type !== 'limitangle'; });
+    holding.forEach(function (pm) { pm.noLimit = true; });   // (nor do a Slot's ends or a Hinge's angle limit)
     // components that share no mate (through floating components) are independent: one small null space per group
     // instead of one over every component (30 pinned pins: ~100 ms -> a few ms per rebuild)
     if (!(opts && opts.quick)) groupsOf(holding).forEach(function (grp) { dofOf(grp); });   // (a drag frame shows placements only)
@@ -1837,7 +2039,7 @@ var Assembly = (function () {
   }
   function composeT(A, B) { A = tf(A); B = tf(B); return { rotation: matMul(A.rotation, B.rotation), position: add(matVec(A.rotation, B.position), A.position) }; }
   function relativeT(A, B) { A = tf(A); B = tf(B); var Rt = [A.rotation[0], A.rotation[3], A.rotation[6], A.rotation[1], A.rotation[4], A.rotation[7], A.rotation[2], A.rotation[5], A.rotation[8]]; return { rotation: matMul(Rt, B.rotation), position: matTVec(A.rotation, sub(B.position, A.position)) }; }
-  function refComponents(m) { return ['a', 'b', 'a2', 'b2'].map(function (k) { return m[k] && m[k].component != null ? m[k].component : null; }).filter(function (x) { return x != null; }); }
+  function refComponents(m) { return REF_KEYS.map(function (k) { return m[k] && m[k].component != null ? m[k].component : null; }).filter(function (x) { return x != null; }); }
 
   // virtualModel(model, entries, partBuilds) -> null when the model can be solved as it is, else { model, builds, … }:
   // the model the mate solver sees. Broken references (suppressed components) are held fixed and the mates on them left
@@ -1901,7 +2103,7 @@ var Assembly = (function () {
         if (m.suppressed || (sbm && sbm.suppressed)) return;
         var cp = shallow(m);
         cp.id = c.id + '/' + m.id;
-        ['a', 'b', 'a2', 'b2'].forEach(function (k) { if (m[k]) cp[k] = inner(m[k]); });
+        REF_KEYS.forEach(function (k) { if (m[k]) cp[k] = inner(m[k]); });
         innerMates[c.id].push({ mate: m, copy: cp });
       });
     });
@@ -1909,7 +2111,7 @@ var Assembly = (function () {
     model.mates.forEach(function (m) {
       if (refComponents(m).some(function (id) { return broken[id]; })) { skipped.push(m); return; }
       var cp = m, changed = false;
-      ['a', 'b', 'a2', 'b2'].forEach(function (k) {
+      REF_KEYS.forEach(function (k) {
         if (!m[k]) return;
         var r = outer(m[k]);
         if (r !== m[k]) { if (!changed) { cp = shallow(m); changed = true; } cp[k] = r; }
@@ -2003,7 +2205,7 @@ var Assembly = (function () {
     var SM = ctx ? ctx.model : model, SB = ctx ? ctx.builds : partBuilds;
     function instanceMates() {   // mates that reference a pattern instance: solved again once the instances moved
       return SM.mates.some(function (m) {
-        return !m.suppressed && ['a', 'b', 'a2', 'b2'].some(function (k) { var c = m[k] && m[k].component != null ? findComponent(SM, m[k].component) : null; return c && c.pattern != null; });
+        return !m.suppressed && REF_KEYS.some(function (k) { var c = m[k] && m[k].component != null ? findComponent(SM, m[k].component) : null; return c && c.pattern != null; });
       });
     }
     try {
@@ -2429,6 +2631,20 @@ var Assembly = (function () {
   Builder.prototype.gear = function (a, b, ratio, opts) { return this.mate('gear', a, b, withValue(opts, 'ratio', ratio)); };
   Builder.prototype.limitDistance = function (a, b, min, max, opts) { return this.mate('limitdistance', a, b, withValue(withValue(opts, 'min', min), 'max', max)); };
   Builder.prototype.limitAngle = function (a, b, min, max, opts) { return this.mate('limitangle', a, b, withValue(withValue(opts, 'min', min), 'max', max)); };
+  // symmetric(symmetryPlane, a, b, opts); slot(slotFace, pin, opts { constraint, distance, percent, flip });
+  // hinge(concentricA, concentricB, coincidentA, coincidentB, opts { limit: { a, b, min, max } })
+  Builder.prototype.symmetric = function (plane, a, b, opts) {
+    var o = JSON.parse(JSON.stringify(opts || {}));
+    o.a2 = builderRef(this.model, plane);
+    return this.mate('symmetric', a, b, o);
+  };
+  Builder.prototype.slot = function (face, pin, opts) { return this.mate('slot', face, pin, opts); };
+  Builder.prototype.hinge = function (a, b, a2, b2, opts) {
+    var o = JSON.parse(JSON.stringify(opts || {})), l = o.limit;
+    o.a2 = builderRef(this.model, a2); o.b2 = builderRef(this.model, b2);
+    if (l && typeof l === 'object') { o.a3 = builderRef(this.model, l.a); o.b3 = builderRef(this.model, l.b); o.min = l.min; o.max = l.max; o.limit = true; }
+    return this.mate('hinge', a, b, o);
+  };
   function patternOpts(model, opts) {
     var o = JSON.parse(JSON.stringify(opts || {}));
     ['direction', 'direction2', 'axis', 'plane'].forEach(function (k) { if (o[k]) o[k] = builderRef(model, o[k]); });
@@ -2569,11 +2785,15 @@ var Assembly = (function () {
     (model.mates || []).forEach(function (m) {
       var opts = ['name: ' + JSON.stringify(m.name)];
       if (m.alignment && m.alignment !== defaultAlignment(m)) opts.push('alignment: ' + JSON.stringify(m.alignment));
-      ['distance', 'angle', 'offset', 'min', 'max'].forEach(function (k) { if (m[k] != null) opts.push(k + ': ' + String(r6(+m[k]))); });
+      ['distance', 'angle', 'offset', 'min', 'max', 'percent'].forEach(function (k) { if (m[k] != null) opts.push(k + ': ' + String(r6(+m[k]))); });
+      if (m.constraint) opts.push('constraint: ' + JSON.stringify(m.constraint));
+      if (m.limit) opts.push('limit: true');
       if (m.ratio) opts.push('ratio: ' + numList(m.ratio));
       if (m.phase) opts.push('phase: ' + numList(m.phase));
       if (m.a2) opts.push('a2: ' + refText(m.a2, varOf));
       if (m.b2) opts.push('b2: ' + refText(m.b2, varOf));
+      if (m.a3) opts.push('a3: ' + refText(m.a3, varOf));
+      if (m.b3) opts.push('b3: ' + refText(m.b3, varOf));
       if (m.flip) opts.push('flip: true');
       if (m.suppressed) opts.push('suppressed: true');
       out.push('a.mate(' + JSON.stringify(m.type) + ', ' + refText(m.a, varOf) + ', ' + refText(m.b, varOf) + ', { ' + opts.join(', ') + ' });');

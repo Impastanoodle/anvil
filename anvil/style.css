@@ -358,6 +358,13 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 .ev-legend { display: flex; flex-direction: column; gap: 3px; }
 .ev-leg { display: grid; grid-template-columns: 14px 1fr auto; gap: 6px; align-items: center; }
 .sw { display: inline-block; width: 12px; height: 12px; border: 1px solid rgba(0, 0, 0, 0.35); border-radius: 2px; flex: none; margin-top: 2px; }
+.th-scale { height: 12px; border: 1px solid rgba(0, 0, 0, 0.35); border-radius: 2px; }
+.th-ends { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.th-hist { display: flex; flex-direction: column; gap: 2px; }
+.th-bin { display: grid; grid-template-columns: 14px minmax(70px, auto) 1fr 44px; gap: 6px; align-items: center; font-variant-numeric: tabular-nums; font-size: 11px; }
+.th-bin b { font-weight: 400; text-align: right; }
+.th-bar { height: 8px; background: var(--hover); border-radius: 1px; overflow: hidden; }
+.th-bar i { display: block; height: 100%; background: var(--blue); }
 .chk-list, .clr-list { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; max-height: 320px; overflow-y: auto; }
 .chk-row, .clr-row { display: flex; align-items: flex-start; gap: 6px; padding: 3px 6px; border: 1px solid transparent; border-radius: 2px; cursor: pointer; }
 .chk-row:hover, .clr-row:hover { border-color: var(--blue-line); }
@@ -1212,6 +1219,11 @@ body.splitting #viewport { pointer-events: none; }
 /* the rollback bar: a short blue bar under the last feature (above the first rolled-back one while editing) */
 #tree .rollbar { position: relative; height: 9px; margin: 1px 8px 0 22px; }
 #tree .rollbar::before { content: ''; position: absolute; left: 0; right: 0; top: 3px; height: 3px; border-radius: 2px; background: var(--sw-rollbar); box-shadow: 0 1px 0 rgba(0,0,0,0.12); }
+/* rfGQ: the bar is dragged up and down the tree; the rows below it are grey */
+#tree .rollbar { cursor: grab; }
+#tree .rollbar:hover::before, #tree .rollbar.dragging::before { top: 2px; height: 5px; background: var(--text); }
+body.rollbar-dragging, body.rollbar-dragging * { cursor: grabbing !important; user-select: none; }
+#tree .ti.rolled .ico { filter: grayscale(1); opacity: 0.5; }
 
 /* PropertyManager: title row with Help, the ✓ ✗ (pin) row, grey-banded group boxes on a light ground */
 #pm { background: var(--sw-panel); }

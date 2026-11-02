@@ -6,6 +6,7 @@
 //                         face or a sketch profile (sectionFromLoops / sectionOfFace / sectionOfSketch)
 //   Draft Analysis        per-face draft angle against a pull direction, classified positive / negative /
 //                         requires draft / straddle (draftAnalysis)
+//   Thickness Analysis    wall thickness over the surface: min / max, area histogram, a sample field (thickness)
 //   Clearance Verification  minimum distance and the two closest points between bodies (minDistance / clearance)
 //   Interference Detection  common volume of every pair among the selected bodies (interference)
 // Geometry is read through Kernel.meshFromBody / faceOutline / bodyEdges / sketchProfile and the CSG body API only;
@@ -463,6 +464,204 @@ var Evaluate = (function () {
     return { faces: faces, surfaces: surfaces, counts: counts, faceCounts: faceCounts, pull: d, draft: +angleDeg || 0 };
   }
 
+  // ------------------------------------------------------------------ Thickness Analysis
+  // thickness(body | [bodies], opts?) -> { min, max, mean, area, wallArea, cornerArea, histogram: [{ from, to, area, fraction }],
+  //   target, below, above, samples, field: { positions, normals, t, corner, median, area } }
+  // opts: target, treatCorners, bins (10), resolution 'low' | 'medium' | 'high' or samples (a count).
+  // Each facet is cut into cells; the cell's centre (on the true cylinder or sphere when the facet has an analytic record,
+  // so a curved wall is exact and not cos(π/n) short) casts a ray straight in along −n to the first exit, which gives the
+  // chord to the facing wall. That chord alone is wrong in two places:
+  //  - a rim (the edge of a plate, the end of a tube): the ray runs along the wall. So the sample also tries chords
+  //    through itself in the plane of its face, along the body's main plane directions and toward the nearest other
+  //    surface; a chord counts when both ends meet their walls square (ends' normals within 25° of it). The thinnest wins.
+  //  - a junction of walls (the corner of a shell): the ray runs down the length of the next wall. A sample much thicker
+  //    than its surface's area-weighted median and within that median of the surface's edge is a corner sample. Corner
+  //    samples leave min / max / histogram, or count as zero with treatCorners (SolidWorks' Treat corners as zero thickness).
+  var THICK_SAMPLES = { low: 3000, medium: 12000, high: 40000 };
+  function thickPolys(src) {
+    var out = [];
+    function planeKey(a, n) { return 'p' + n.map(function (x) { return Math.round(x * 1e4); }).join(',') + ':' + Math.round(dot(n, a) * 1e5); }
+    function push(a, b, c, S, key) {
+      var n = cross(sub(b, a), sub(c, a)), l = len(n);
+      if (l > 1e-13) out.push({ a: a, b: b, c: c, n: scale(n, 1 / l), area: l / 2, S: S && (S.t === 'cyl' || S.t === 'sph') ? S : null, key: key });
+    }
+    if (src && src.polygons) src.polygons.forEach(function (p) {
+      var v = p.vertices.map(function (x) { return [x.pos.x, x.pos.y, x.pos.z]; }), S = p.surf && !p.surf.fc ? p.surf.s : null, key;
+      if (S) key = S.t + ':' + [S.o, S.d].map(function (q) { return q ? q.map(function (x) { return Math.round(x * 1e6); }).join(',') : ''; }).join(':') + ':' + Math.round((S.r || 0) * 1e6);
+      else key = planeKey(v[0], [p.plane.normal.x, p.plane.normal.y, p.plane.normal.z]);
+      for (var i = 1; i + 1 < v.length; i++) push(v[0], v[i], v[i + 1], S, key);
+    });
+    else trianglesOf(src).forEach(function (t) {
+      var a = [t[0], t[1], t[2]], b = [t[3], t[4], t[5]], c = [t[6], t[7], t[8]];
+      push(a, b, c, null, planeKey(a, norm(cross(sub(b, a), sub(c, a)))));
+    });
+    return out;
+  }
+  // the surface's own outward normal at x, oriented like the facet normal n (null: a plane or another surface)
+  function thickSurfN(S, x, n) {
+    if (!S) return null;
+    var v = sub(x, S.o), r = S.t === 'sph' ? v : sub(v, scale(S.d, dot(v, S.d))), u = norm(r);
+    if (!(len(u) > 0.5)) return null;
+    return dot(u, n) < 0 ? scale(u, -1) : u;
+  }
+  // x moved onto the true surface
+  function thickSnap(S, x) {
+    var v = sub(x, S.o), z = S.t === 'sph' ? 0 : dot(v, S.d), r = S.t === 'sph' ? v : sub(v, scale(S.d, z)), u = norm(r);
+    if (!(len(u) > 0.5)) return x;
+    return add(S.t === 'sph' ? S.o : add(S.o, scale(S.d, z)), scale(u, S.r));
+  }
+  // the ray o + t d on the true surface: the root nearest the facet hit tf
+  function thickRefine(S, o, d, tf) {
+    var w = sub(o, S.o), a = d, b = w;
+    if (S.t !== 'sph') { a = sub(d, scale(S.d, dot(d, S.d))); b = sub(w, scale(S.d, dot(w, S.d))); }
+    var A = dot(a, a), B = dot(a, b), C = dot(b, b) - S.r * S.r, D = B * B - A * C;
+    if (A < 1e-12 || D < 0) return tf;
+    var q = Math.sqrt(D), t1 = (-B - q) / A, t2 = (-B + q) / A, t = Math.abs(t1 - tf) < Math.abs(t2 - tf) ? t1 : t2;
+    return Math.abs(t - tf) < Math.max(0.2 * S.r, 1e-9) ? t : tf;
+  }
+  // the first exit from the solid along the ray
+  function thickRay(T, o, d) {
+    var best = Infinity, hit = -1, stack = [T.tree], inv = [1 / d[0], 1 / d[1], 1 / d[2]];
+    while (stack.length) {
+      var nd = stack.pop(), t0 = 0, t1 = best, k;
+      for (k = 0; k < 3; k++) {
+        var p = (nd.box.min[k] - 1e-9 - o[k]) * inv[k], q = (nd.box.max[k] + 1e-9 - o[k]) * inv[k];
+        if (p !== p || q !== q) { if (o[k] < nd.box.min[k] - 1e-9 || o[k] > nd.box.max[k] + 1e-9) { t0 = 1; t1 = 0; } continue; }
+        if (p > q) { var s = p; p = q; q = s; }
+        if (p > t0) t0 = p;
+        if (q < t1) t1 = q;
+      }
+      if (t0 > t1) continue;
+      if (!nd.items) { stack.push(nd.left); stack.push(nd.right); continue; }
+      for (var j = 0; j < nd.items.length; j++) {
+        var f = T.polys[nd.items[j]];
+        if (dot(f.n, d) <= 1e-9) continue;
+        var e1 = sub(f.b, f.a), e2 = sub(f.c, f.a), pv = cross(d, e2), det = dot(e1, pv);
+        if (Math.abs(det) < 1e-14) continue;
+        var tv = sub(o, f.a), u = dot(tv, pv) / det;
+        if (u < -1e-9 || u > 1 + 1e-9) continue;
+        var qv = cross(tv, e1), v = dot(d, qv) / det;
+        if (v < -1e-9 || u + v > 1 + 1e-9) continue;
+        var t = dot(e2, qv) / det;
+        if (t > 1e-10 && t < best) { best = t; hit = nd.items[j]; }
+      }
+    }
+    if (hit < 0) return null;
+    var P = T.polys[hit], tt = P.S ? thickRefine(P.S, o, d, best) : best;
+    return { t: tt, n: thickSurfN(P.S, add(o, scale(d, tt)), P.n) || P.n };
+  }
+  // the nearest point on any surface other than `key`
+  function thickNearest(T, p, key) {
+    var best = Infinity, poly = null, pb = { min: p, max: p }, stack = [T.tree];
+    while (stack.length) {
+      var nd = stack.pop();
+      if (boxDist(pb, nd.box) >= best) continue;
+      if (!nd.items) {
+        if (boxDist(pb, nd.left.box) < boxDist(pb, nd.right.box)) { stack.push(nd.right); stack.push(nd.left); } else { stack.push(nd.left); stack.push(nd.right); }
+        continue;
+      }
+      for (var j = 0; j < nd.items.length; j++) {
+        var f = T.polys[nd.items[j]];
+        if (f.key === key) continue;
+        var d = len(sub(closestOnTri(p, f.a, f.b, f.c), p));
+        if (d < best) { best = d; poly = f; }
+      }
+    }
+    return poly ? { d: best, poly: poly } : null;
+  }
+  function thickBody(src, h, out) {
+    var polys = thickPolys(src);
+    if (!polys.length) return;
+    var T = { polys: polys, tree: buildBVH(polys.map(function (f) { return [f.a[0], f.a[1], f.a[2], f.b[0], f.b[1], f.b[2], f.c[0], f.c[1], f.c[2]]; })) };
+    var eps = 1e-7 * Math.max(1e-3, boxDiag(T.tree.box));
+    // the body's main plane directions, largest area first (±n count once)
+    var dirs = [], planar = {};
+    polys.forEach(function (f) { if (!f.S) { var s = f.key.split(':')[0]; (planar[s] = planar[s] || { n: f.n, a: 0 }).a += f.area; } });
+    Object.keys(planar).map(function (k) { return planar[k]; }).sort(function (a, b) { return b.a - a.a; }).forEach(function (q) {
+      if (dirs.length < 8 && !dirs.some(function (d) { return Math.abs(dot(d, q.n)) > 1 - 1e-6; })) dirs.push(q.n);
+    });
+    function chord(q, u) {
+      var F = thickRay(T, q, u), B = thickRay(T, q, scale(u, -1));
+      return F && B && dot(F.n, u) > 0.9 && dot(B.n, u) < -0.9 ? F.t + B.t : Infinity;
+    }
+    var bySurface = {};
+    function sample(f, a, b, c, area) {
+      var cen = scale(add(add(a, b), c), 1 / 3), p = f.S ? thickSnap(f.S, cen) : cen, n = thickSurfN(f.S, p, f.n) || f.n;
+      var q = sub(p, scale(n, eps)), r = thickRay(T, q, scale(n, -1)), t = r ? r.t + eps : Infinity, near = thickNearest(T, p, f.key);
+      var qc = sub(cen, scale(f.n, eps));   // on a curved face p lies outside the facets: chords start from the facet
+      dirs.forEach(function (u) { if (Math.abs(dot(u, n)) < 0.02) t = Math.min(t, chord(qc, u)); });
+      if (near) {
+        var m = thickSurfN(near.poly.S, p, near.poly.n) || near.poly.n, u = sub(m, scale(n, dot(m, n)));
+        if (len(u) > 1e-3) t = Math.min(t, chord(qc, norm(u)));
+      }
+      if (t === Infinity) return;   // an open sheet: no wall to measure
+      var i = out.t.length;
+      out.t.push(t); out.area.push(area); out.corner.push(0); out.median.push(t); out.near.push(near ? near.d : Infinity);
+      [a, b, c].forEach(function (x) {
+        out.positions.push(x[0], x[1], x[2]);
+        var w = thickSurfN(f.S, x, f.n) || f.n;
+        out.normals.push(w[0], w[1], w[2]);
+      });
+      (bySurface[f.key] = bySurface[f.key] || []).push(i);
+    }
+    polys.forEach(function (f) {
+      var k = Math.max(1, Math.min(64, Math.ceil(Math.sqrt(f.area) / h))), e1 = scale(sub(f.b, f.a), 1 / k), e2 = scale(sub(f.c, f.a), 1 / k), area = f.area / (k * k);
+      function at(i, j) { return add(add(f.a, scale(e1, i)), scale(e2, j)); }
+      for (var i = 0; i < k; i++) for (var j = 0; i + j < k; j++) {
+        sample(f, at(i, j), at(i + 1, j), at(i, j + 1), area);
+        if (i + j + 1 < k) sample(f, at(i + 1, j), at(i + 1, j + 1), at(i, j + 1), area);
+      }
+    });
+    // corner samples: much thicker than their surface's median, and near its edge
+    Object.keys(bySurface).forEach(function (key) {
+      var list = bySurface[key].slice().sort(function (a, b) { return out.t[a] - out.t[b]; }), total = 0, s = 0, med = out.t[list[0]];
+      list.forEach(function (i) { total += out.area[i]; });
+      for (var i = 0; i < list.length; i++) { s += out.area[list[i]]; if (s >= total / 2) { med = out.t[list[i]]; break; } }
+      list.forEach(function (i) { out.median[i] = med; if (out.t[i] > 1.25 * med && out.near[i] <= med) out.corner[i] = 1; });
+    });
+  }
+  // the statistics of a field (Evaluate.thickness(…).field); cheap, so options can change without casting again
+  function thicknessStats(field, opts) {
+    opts = opts || {};
+    var n = field.t.length, bins = opts.bins || 10, lo = Infinity, hi = -Infinity, area = 0, sum = 0, cornerArea = 0, wallArea = 0, below = 0, above = 0, i;
+    var target = opts.target != null ? +opts.target : null;
+    for (i = 0; i < n; i++) {
+      area += field.area[i];
+      if (field.corner[i]) { cornerArea += field.area[i]; if (!opts.treatCorners) continue; }
+      var t = field.corner[i] ? 0 : field.t[i];
+      if (t < lo) lo = t;
+      if (t > hi) hi = t;
+      sum += t * field.area[i]; wallArea += field.area[i];
+      if (target != null) { if (t < target - 1e-9) below += field.area[i]; else if (t > target + 1e-9) above += field.area[i]; }
+    }
+    var hist = [];
+    if (wallArea > 0) {
+      var w = (hi - lo) / bins;
+      if (!(w > 1e-9 * Math.max(hi, 1e-9))) hist.push({ from: lo, to: hi, area: wallArea, fraction: 1 });
+      else {
+        for (i = 0; i < bins; i++) hist.push({ from: lo + i * w, to: lo + (i + 1) * w, area: 0, fraction: 0 });
+        for (i = 0; i < n; i++) {
+          if (field.corner[i] && !opts.treatCorners) continue;
+          hist[Math.min(bins - 1, Math.floor(((field.corner[i] ? 0 : field.t[i]) - lo) / w))].area += field.area[i];
+        }
+        hist.forEach(function (b) { b.fraction = b.area / wallArea; });
+      }
+    }
+    return { min: wallArea > 0 ? lo : 0, max: wallArea > 0 ? hi : 0, mean: wallArea > 0 ? sum / wallArea : 0, area: area, wallArea: wallArea, cornerArea: cornerArea, histogram: hist, target: target, below: below, above: above, samples: n, treatCorners: !!opts.treatCorners };
+  }
+  function thickness(body, opts) {
+    opts = opts || {};
+    var list = Array.isArray(body) ? body : [body], total = 0;
+    list.forEach(function (b) { thickPolys(b).forEach(function (f) { total += f.area; }); });
+    if (!(total > 0)) throw new Error('There is no solid to analyze.');
+    var count = opts.samples || THICK_SAMPLES[opts.resolution || 'medium'] || THICK_SAMPLES.medium, h = Math.sqrt(total / count);
+    var out = { positions: [], normals: [], t: [], corner: [], median: [], area: [], near: [] };
+    list.forEach(function (b) { thickBody(b, h, out); });
+    var r = thicknessStats(out, opts);
+    r.field = { positions: new Float32Array(out.positions), normals: new Float32Array(out.normals), t: out.t, corner: out.corner, median: out.median, area: out.area };
+    return r;
+  }
+
   // ------------------------------------------------------------------ Clearance Verification
   // minDistance(a, b) -> { distance, pa, pb, interfering }  (a, b: CSG bodies or kernel meshes)
   // Exact minimum distance between the two triangle sets (a BVH over b, pruned by the best distance so far); 0 when
@@ -657,6 +856,7 @@ var Evaluate = (function () {
     smoothNormals: smoothNormals,
     sectionFromLoops: sectionFromLoops, sectionOfFace: sectionOfFace, sectionOfSketch: sectionOfSketch,
     draftAnalysis: draftAnalysis, DRAFT_COLORS: DRAFT_COLORS,
+    thickness: thickness, thicknessStats: thicknessStats,
     minDistance: minDistance, clearance: clearance, interference: interference, pairsFor: pairsFor,
     exactVolume: exactVolume, exactClearance: exactClearance,
     triTriDistance: triTriDistance, closestOnTri: closestOnTri, closestSegSeg: closestSegSeg

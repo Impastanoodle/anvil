@@ -416,6 +416,58 @@
   }
   function addOrdinate(doc, viewId, spec) { return addChainDim('ordinate', doc, viewId, spec); }
   function addBaseline(doc, viewId, spec) { return addChainDim('baseline', doc, viewId, spec); }
+  // ------------------------------------------------------------------ rfGT: Autodimension (drawing)
+  // gtStations(pr, dir) -> [{ pos, ref, pick }] along the view's u (dir 'h') or v ('v'), one per place, ordered: the
+  // straight edges across that direction (the longest of each place), then the holes at a place no edge holds.
+  // ref is what addOrdinate / addBaseline take, pick what smartDim takes.
+  function gtStations(pr, dir) {
+    var ax = dir === 'h' ? 0 : 1, xs = [];
+    (pr.lines.visible || []).forEach(function (l) { xs.push(Math.abs(l[0]), Math.abs(l[1]), Math.abs(l[2]), Math.abs(l[3])); });
+    (pr.circles.visible || []).forEach(function (c) { xs.push(Math.abs(c.c[0]), Math.abs(c.c[1])); });
+    var size = xs.length ? Math.max.apply(null, xs) : 1, tol = 1e-7 * (1 + size), out = [];
+    function at(pos) { return out.filter(function (q) { return Math.abs(q.pos - pos) <= tol * 10; })[0]; }
+    (pr.lines.visible || []).forEach(function (l) {
+      if (Math.abs(l[ax] - l[ax + 2]) > tol) return;
+      var a = [l[0], l[1]], b = [l[2], l[3]], L = Math.hypot(b[0] - a[0], b[1] - a[1]), q = at(l[ax]);
+      if (!(L > tol)) return;
+      if (!q) out.push({ pos: l[ax], L: L, ref: { a: a, b: b }, pick: { edge: [a, b] } });
+      else if (L > q.L) { q.L = L; q.ref = { a: a, b: b }; q.pick = { edge: [a, b] }; }
+    });
+    (pr.circles.visible || []).forEach(function (c) {
+      if (!at(c.c[ax])) out.push({ pos: c.c[ax], L: 0, ref: { c: c.c.slice(), r: c.r }, pick: { circle: { c: c.c.slice(), r: c.r } } });
+    });
+    return out.sort(function (x, y) { return x.pos - y.pos; });
+  }
+  // autodimension(doc, viewId, proj, { h: { scheme: 'baseline' | 'chain' | 'ordinate', origin: 'left' | 'right', place:
+  // 'above' | 'below' }, v: { scheme, origin: 'bottom' | 'top', place: 'left' | 'right' }, scale, units }) -> the
+  // number of dimensions added (SolidWorks: Autodimension, All entities in view). Every edge and hole position is
+  // dimensioned from the origin side; a direction left out is skipped. They are ordinary view dimensions.
+  function autodimension(doc, viewId, pr, opts) {
+    var n = 0, sc = +opts.scale > 0 ? +opts.scale : 1, gap = (opts.units === 'in' ? 0.5 : 12) / sc;
+    ['h', 'v'].forEach(function (dir) {
+      var o = opts[dir];
+      if (!o || !o.scheme || o.scheme === 'none') return;
+      var st = gtStations(pr, dir), ax = dir === 'h' ? 1 : 0, far = o.origin === 'right' || o.origin === 'top';
+      var side = o.place === 'below' || o.place === 'left' ? -1 : 1;
+      if (st.length < 2) return;
+      if (far) st.reverse();
+      if (o.scheme !== 'chain') {
+        (o.scheme === 'ordinate' ? addOrdinate : addBaseline)(doc, viewId, { dir: dir, base: st[0].ref, refs: st.slice(1).map(function (q) { return q.ref; }), side: side });
+        n += st.length - 1;
+        return;
+      }
+      var cross = [];
+      (pr.lines.visible || []).forEach(function (l) { cross.push(l[ax], l[ax + 2]); });
+      (pr.circles.visible || []).forEach(function (c) { cross.push(c.c[ax] - c.r, c.c[ax] + c.r); });
+      var edge = side > 0 ? Math.max.apply(null, cross) + gap : Math.min.apply(null, cross) - gap;
+      st.slice(1).forEach(function (q, i) {
+        var mid = (q.pos + st[i].pos) / 2;
+        if (addSmartDim(doc, viewId, st[i].pick, q.pick, dir === 'h' ? [mid, edge] : [edge, mid], { lock: dir, scale: sc })) n++;
+      });
+    });
+    return n;
+  }
+  D.autodimension = autodimension;
   // addChamferDim(doc, viewId, { a, b (the chamfer edge), ref: { a, b } (the lead-in edge), lead }): "1 X 45°"
   function addChamferDim(doc, viewId, spec) {
     var v = findView(doc, viewId);
@@ -1550,11 +1602,21 @@
     }
     return null;
   }
-  // wizardLines(hole, units, count) -> HoleWizard.callout in the drawing's words: a Through All end reads THRU ALL,
-  // several positions 'nX' on the first line
-  function wizardLines(h, units, count) {
-    var u = units === 'in' || units === 'mm' ? units : h.units;
-    var lines = HoleWizard.callout(h.feature, u).map(function (s) { return s.replace(/ THRU$/, ' THRU ALL'); });
+  // wizardLines(hole, units, count, prec) -> the Hole Wizard hole's callout as SolidWorks 2022 writes it (measured,
+  // test-reports/2026-11-02-solidworks-reference-2.md section 5; a space after each symbol, digits at the document's
+  // precision or the callout's own): 'Ø .28 ↧ .75'; thread over drill '1/4-20 UNC ↧ .50' / 'Ø .20 ↧ .75'; counterbore
+  // over drill '⌴ Ø .44 ↧ .25' / 'Ø .27 THRU ALL'. A countersink stays under the drill line (not measured yet). A
+  // Through All end reads THRU ALL, several positions 'nX' on the first line. HoleWizard.callout (the PM's spec text)
+  // keeps its own words.
+  function wizardLines(h, units, count, prec) {
+    var u = units === 'in' || units === 'mm' ? units : h.units, f = h.feature, s = HoleWizard.spec(f, u), thru = f.end === 'through';
+    var k = u === h.units ? 1 : u === 'in' ? 1 / 25.4 : 25.4;   // the feature's depths are in the part's units
+    function n(x) { return numText(x, u, prec); }
+    var drill = 'Ø ' + n(s.dia) + (thru ? ' THRU ALL' : ' ↧ ' + n(+f.depth * k)), lines = [];
+    if (s.thread) lines.push(s.thread.label.replace(/ - 2B$/, '') + (thru ? ' THRU ALL' : ' ↧ ' + n(+(f.threadDepth || f.depth) * k)));
+    if (s.cbore) lines.push('⌴ Ø ' + n(s.cbore.dia) + ' ↧ ' + n(s.cbore.depth));
+    lines.push(drill);
+    if (s.csk) lines.push('⌵ Ø ' + n(s.csk.dia) + ' X ' + s.csk.angle + '°');
     if (count > 1) lines[0] = count + 'X ' + lines[0];
     return lines;
   }
@@ -1677,7 +1739,7 @@
       allOf(h);
       if (hw) {
         var hwn = hw.hole.pts.length;
-        lines = wizardLines(hw.hole, units, hwn);
+        lines = wizardLines(hw.hole, units, hwn, an.prec);
         info = { hole: { c: an.c.slice(), dia: +HoleWizard.spec(hw.hole.feature, hw.hole.units).dia, thru: hw.hole.feature.end === 'through' }, count: hwn, feature: hw.hole.feature.id };
       } else if (h && w.flat) {
         var nf = 0;
@@ -2402,7 +2464,7 @@
       var lines = null, dia = 2 * h.r;
       if (!w.flat && w.ortho) {
         var hw = wizardAt(wiz, w.frame, h.c, h.r);
-        if (hw) return { lines: wizardLines(hw.hole, units, 1), dia: +HoleWizard.spec(hw.hole.feature, hw.hole.units).dia };
+        if (hw) return { lines: wizardLines(hw.hole, units, 1, t.prec), dia: +HoleWizard.spec(hw.hole.feature, hw.hole.units).dia };
         var hi = holeInfo(m, w.frame, h.c, h.r);
         if (hi) {
           if (hi.thru && thruAllFor(ends, hi.dia)) hi.thruAll = true;
@@ -2415,7 +2477,7 @@
       if (w.flat && wiz.length) {
         // a flat pattern's hole of a Hole Wizard feature (those of that drilled or largest diameter all read alike): its callout
         var mu = units === 'in' ? 0.0005 : 0.01, fw = wiz.filter(function (q) { var sp = HoleWizard.spec(q.feature, q.units); return Math.abs(+sp.dia - dia) <= mu || Math.abs(2 * q.ra - dia) <= mu; });
-        if (fw.length && fw.every(function (q) { return JSON.stringify(wizardLines(q, units, 1)) === JSON.stringify(wizardLines(fw[0], units, 1)); })) return { lines: wizardLines(fw[0], units, 1), dia: dia };
+        if (fw.length && fw.every(function (q) { return JSON.stringify(wizardLines(q, units, 1, t.prec)) === JSON.stringify(wizardLines(fw[0], units, 1, t.prec)); })) return { lines: wizardLines(fw[0], units, 1, t.prec), dia: dia };
       }
       return { lines: ['Ø' + numText(dia, units, t.prec) + ' THRU ALL'], dia: dia };
     }

@@ -125,7 +125,7 @@
       // (lane DV: open, the front bend's end is tapered from the base corner, R + T back, to the wall's end: the bend
       // section × (R + T) / 2 less than closed, where it ends square with the wall)
       var sec = K.signedArea(K.flangeProfile(Math.PI / 2, R, T, 0, 0)), add = c.mp.volume - o.mp.volume - sec * (R + T) / 2;
-      assert(add > 0.1 * sec * (R - GAP) && add < sec * (R - GAP) - 1e-7, 'clipped fill: ' + add + ' of ' + sec * (R - GAP));
+      assert(c.mp.volume > o.mp.volume, 'closing the bend adds metal: ' + c.mp.volume + ' / ' + o.mp.volume);   // (rfGJ: two ruled faces, SolidWorks' closed fill, not the old clipped prism)
       consistentVolume(c);
       var fc = rfDKflat(c);
       assert(fc.loops.length === 1, 'one loop');

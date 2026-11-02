@@ -2374,7 +2374,7 @@
         { id: 'dowelPin', label: 'Dowel Pin Symbol', run: cmdDowelPin, active: function () { return D.tool === 'cudowel'; } }
       ] });
       if (b.id === 'note') out.push({ id: 'multiJogLeader', label: 'Multi-jog\nLeader', run: cmdMultiJog, active: function () { return D.tool === 'culeader'; } });   // (rfCU)
-      if (b.id === 'revTable') out.push({ id: 'holeTable', label: 'Hole\nTable', run: cmdHoleTable, active: function () { return D.tool === 'holetable'; } });
+      if (b.id === 'revTable') out.push({ id: 'holeTable', label: 'Hole\nTable', run: cmdHoleTable, active: function () { return D.tool === 'holetable'; } }, { id: 'bendTable', icon: 'bendNote', label: 'Bend\nTable', run: cmdBendTable });   // (rfGT)
     });
     Object.defineProperty(out, '_rfAD', { value: true });
     return out;
@@ -2404,9 +2404,10 @@
           if (it && it.label === 'Annotations ▸ Auto Balloon') add('Annotations ▸ Magnetic Line', cmdMagLine);   // (rfAG)
           if (it && it.label === 'Annotations ▸ Geometric Tolerance…') { add('Annotations ▸ Weld Symbol…', function () { cmdSymbolAN('weld'); }); add('Annotations ▸ Revision Symbol…', function () { cmdSymbolAN('revision'); }); add('Annotations ▸ Revision Cloud', cmdCloud); add('Annotations ▸ Datum Target…', function () { cuSymbolPM('datumTarget'); }); add('Annotations ▸ Cosmetic Thread…', function () { cmdCosmeticThread(); }); add('Annotations ▸ Dowel Pin Symbol', cmdDowelPin); }   // (rfAN; rfCU)
           if (it && it.label === 'Annotations ▸ Note') add('Annotations ▸ Multi-jog Leader', cmdMultiJog);   // (rfCU)
-          if (it && /^Tables ▸ (Revision|General) Table/.test(it.label || '')) add('Tables ▸ Hole Table…', cmdHoleTable);
+          if (it && /^Tables ▸ (Revision|General) Table/.test(it.label || '')) { add('Tables ▸ Hole Table…', cmdHoleTable); add('Tables ▸ Bend Table…', cmdBendTable); }   // (rfGT)
         });
         if (D.active && !items.some(function (q) { return q && q.label === 'Tables ▸ Hole Table…'; })) items.push({ label: 'Tables ▸ Hole Table…', action: cmdHoleTable });
+        if (D.active && !items.some(function (q) { return q && q.label === 'Tables ▸ Bend Table…'; })) items.push({ label: 'Tables ▸ Bend Table…', action: cmdBendTable });
         menu.items = items;
       });
       return m;
@@ -2661,6 +2662,57 @@
     UI.setStatus('Magnetic line ' + id + ' deleted; its balloons stay where they were.');
     return true;
   }
+  // ------------------------------------------------------------------ rfGT: Bend Table, Autodimension
+  // Insert ▸ Tables ▸ Bend Table / Annotation ▸ Bend Table: the flat pattern view selected (or the sheet's only one)
+  // switches from bend notes to tags A, B, C and the table. SolidWorks asks for a flat pattern view the same way.
+  function cmdBendTable() {
+    var flats = (D.sheet ? D.sheet.views : []).filter(function (w) { return w.view.kind === 'flat'; });
+    if (!flats.length) { UI.toast('Bend Table: this sheet has no flat pattern view. Add one with Model View first.'); return false; }
+    var sel = D.sel && D.sel.kind === 'view' ? flats.filter(function (w) { return w.view.id === D.sel.id; })[0] : null;
+    var w = sel || (flats.length === 1 ? flats[0] : null);
+    if (!w) { UI.toast('Bend Table: select a flat pattern view first.'); return false; }
+    setFlatViewProps(w.view.id, { bendNotes: 'table' });
+    D.sel = { kind: 'view', id: w.view.id };
+    UI.setStatus('Bend Table on ' + w.view.name + '. Double-click the view for its columns.');
+    return true;
+  }
+  // Tools ▸ Dimensions ▸ Autodimension: the view selected (or clicked while the PropertyManager is open), All entities
+  // in view; Horizontal and Vertical Dimensions each with their Scheme, Origin and Placement, as the sketch's PM
+  var GT_SCHEME = [['baseline', 'Baseline'], ['chain', 'Chain'], ['ordinate', 'Ordinate']];
+  function gtOrtho(w) { return !!(w && w.proj && w.proj.lines && !w.proj.pending && (w.ortho || w.view.kind === 'flat')); }
+  function cmdAutodimension() {
+    if (D.tool === 'autodim') { endToolPM(); return; }
+    if (!doc() || !D.sheet || !D.sheet.views.length) { UI.toast('Add a drawing view first.'); return; }
+    var w0 = D.sel && D.sel.kind === 'view' ? sheetView(D.sel.id) : D.sheet.views.length === 1 ? D.sheet.views[0] : null;
+    if (!gtOrtho(w0)) w0 = null;
+    toolPM({ title: 'Autodimension', icon: 'dim', command: 'autodimension',
+      message: 'Click the view to dimension, set each direction\'s scheme, then ✓. Every edge and hole position gets a dimension from the origin side.',
+      values: { h: true, hScheme: 'baseline', hOrigin: 'left', hPlace: 'above', v: true, vScheme: 'baseline', vOrigin: 'bottom', vPlace: 'right' },
+      groups: [
+        { title: 'Horizontal Dimensions', fields: [{ type: 'check', key: 'h', label: 'Horizontal dimensions' }, { type: 'select', key: 'hScheme', label: 'Scheme', options: GT_SCHEME },
+          { type: 'select', key: 'hOrigin', label: 'Origin', options: [['left', 'Left edge'], ['right', 'Right edge']] }, { type: 'select', key: 'hPlace', label: 'Dimension placement', options: [['above', 'Above view'], ['below', 'Below view']] }] },
+        { title: 'Vertical Dimensions', fields: [{ type: 'check', key: 'v', label: 'Vertical dimensions' }, { type: 'select', key: 'vScheme', label: 'Scheme', options: GT_SCHEME },
+          { type: 'select', key: 'vOrigin', label: 'Origin', options: [['bottom', 'Bottom edge'], ['top', 'Top edge']] }, { type: 'select', key: 'vPlace', label: 'Dimension placement', options: [['right', 'Right of view'], ['left', 'Left of view']] }] }
+      ],
+      onOK: function (v) {
+        var w = D.pending && D.pending.view != null ? sheetView(D.pending.view) : null;
+        if (!w) { UI.toast('Autodimension: click an orthographic view first.'); return false; }
+        var spec = { scale: w.scale, units: units(), h: v.h ? { scheme: v.hScheme, origin: v.hOrigin, place: v.hPlace } : null, v: v.v ? { scheme: v.vScheme, origin: v.vOrigin, place: v.vPlace } : null }, made = 0;
+        if (!tryEdit(function (dc) { made = Drawing.autodimension(dc, w.view.id, w.proj, spec); })) return false;
+        if (!made) { UI.toast('Autodimension: that view has nothing to dimension in those directions.'); return false; }
+        UI.setStatus('Autodimension: ' + made + ' dimensions on ' + w.view.name + '.');
+      } }, 'autodim', { view: w0 ? w0.view.id : null });
+    UI.setStatus(w0 ? 'Autodimension: ' + w0.view.name + ' selected. Set the schemes, then ✓, or click another view.' : 'Autodimension: click an orthographic view.');
+  }
+  function gtAutodimClick(p) {
+    var w = DW.viewAt ? DW.viewAt(p) : null;
+    if (!gtOrtho(w)) { UI.setStatus('Autodimension: click an orthographic view.'); return; }
+    D.pending.view = w.view.id; D.sel = { kind: 'view', id: w.view.id }; drawOverlay(); DW.renderTree();
+    UI.setStatus('Autodimension: ' + w.view.name + ' selected. Set the schemes, then ✓.');
+  }
+  RF_TOOLS.autodim = gtAutodimClick;
+  DW.cmdAutodimension = cmdAutodimension; DW.cmdBendTable = cmdBendTable;
+
   // ------------------------------------------------------------------ rfAN: Hole Table, Revision Symbol / Cloud, Weld Symbol
   // Hole Table (Annotation ▸ Hole Table, Insert ▸ Tables ▸ Hole Table): the PropertyManager's Datum (click a vertex for
   // the origin, or an X-axis edge then a Y-axis edge), Holes (click hole edges; Select all holes of the same size adds

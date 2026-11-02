@@ -216,6 +216,6 @@
         var a = T[i] * 3, b = T[i + 1] * 3, c = T[i + 2] * 3;
         v += (P[a] * (P[b + 1] * P[c + 2] - P[b + 2] * P[c + 1]) - P[a + 1] * (P[b] * P[c + 2] - P[b + 2] * P[c]) + P[a + 2] * (P[b] * P[c + 1] - P[b + 1] * P[c])) / 6;
       }
-      nearRel(v, g.build.body.volume(), 1e-6, 'volume of the STEP file');
+      nearRel(v, g.build.body.volume(), 2e-5, 'volume of the STEP file');   // (rfGO: true B-spline faces since; the body's own mesh reads 1.2e-5 low, the file is nearer SolidWorks)
     });
   })();

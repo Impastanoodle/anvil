@@ -100,7 +100,7 @@
 
     test('rfFG: WHEEL (revolve, centre dimple, R0.25 rim fillet, sketch on the floor): outlines exact, every edge two faces, no slivers / short edges, 5 faces as OpenCascade', function () {
       // exact since lane FF's torus fillets (= OpenCascade to 6 decimals, 2026-10-29)
-      return rfFGCheck('WHEEL', WHEEL, 41.828284742188025, 5);
+      return rfFGCheck('WHEEL', WHEEL, 41.828281798889, 5);   // (rfGP: the closed form, and OpenCascade 41.828282; the older 41.8282847 was off)
     });
     test('rfFG: DISH (spherical dish, ball dimple, R0.25 rim and R0.15 dish fillets): outlines exact, every edge two faces, no slivers / short edges, 7 faces as OpenCascade', function () {
       // the exact volume (Green on the section; OpenCascade 37.692434). The R0.15 round where the spherical dish meets
