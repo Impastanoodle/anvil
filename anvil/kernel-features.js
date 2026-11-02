@@ -443,6 +443,392 @@
     });
   }
 
+  // ------------------------------------------------------------------ lofts through three or more sections
+  // Lane lofts, 2026-11-02, from SolidWorks' measured sections (head-tools/sw-reference/ref2_loft.py: S29, G18, L1):
+  // the side is S(u, v) = Σ w_i(v) C_i(u), a natural cubic spline in v through corresponding points of the sections.
+  //   Pieces. Each outline is cut at its vertices into pieces, and the sections share one list of pieces. A section
+  //   with fewer vertices takes each corner to the nearest vertex of the section with the most, walking round from its
+  //   first corner (a tie: the first corner takes the later vertex, the others the earlier one); the vertices left over
+  //   split its sides in the same proportions. A full circle is cut at the directions of those vertices from its centre.
+  //   Points. A straight side runs uniformly in u. An arc is treated as SolidWorks treats it: one cubic with the
+  //   equal-ripple handle length (radius error ±1.96e-4 on a quarter circle), so its rational parameter, right for a
+  //   two-section loft, is wrong here. Mid-side paths of G18 measure exactly that −1.96e-4 r.
+  //   Knots. The chord length of each span is the mean distance between corresponding points at u = 0 and u = 0.5 of
+  //   every piece (fits S29 0.4129463 and G18 0.4937882 to 2e-8; other sample counts miss by 1e-3).
+  // The mesh is a grid of rows of constant v. The rows at the sections lie exactly on the sketch; a row between them
+  // moves off the surface by 1/12 of its second differences, which is 2/3 of a chord's sag, so that the facets average
+  // onto the surface and the volume does not need a mesh too fine for booleans (a loft on the surface itself stays
+  // 2.5e-1 / rows² off, and every later cut pays for each extra row). Largest distance to the true surface: 2/3 sag.
+  var LOFT_ARC_STEP = Math.PI / 72, LOFT_TWIST_CELLS = 8, LOFT_MIN_ROWS = 4, LOFT_MAX_ROWS = 32, LOFT_SAG = 6e-5;
+  var loftHandles = {};
+  // the handle length (per unit radius) of the cubic that keeps a circular arc of this span equally far either side
+  function arcHandle(span) {
+    var key = Math.round(span * 1e7);
+    if (loftHandles[key] != null) return loftHandles[key];
+    var c = Math.cos(span / 2), s = Math.sin(span / 2), k0 = 4 / 3 * Math.tan(span / 4), lo = k0 * 0.99, hi = k0;
+    function ripple(k) {   // arc centred on +x: the largest error above the circle + the largest below it
+      var x1 = c + k * s, y1 = s - k * c, top = -Infinity, bot = Infinity;
+      for (var i = 1; i <= 64; i++) {
+        var u = 0.5 + i / 128, a = (1 - u) * (1 - u) * (1 - u) + u * u * u, b = 3 * u * (1 - u);
+        var x = a * c + b * x1, y = (u * u * u - (1 - u) * (1 - u) * (1 - u)) * s + b * (2 * u - 1) * y1, r = Math.sqrt(x * x + y * y) - 1;
+        if (r > top) top = r;
+        if (r < bot) bot = r;
+      }
+      return top + bot;
+    }
+    for (var it = 0; it < 40; it++) { var m = (lo + hi) / 2; if (ripple(m) < 0) lo = m; else hi = m; }
+    return (loftHandles[key] = (lo + hi) / 2);
+  }
+  function linePiece(A, B) {
+    function at(u) { return [A[0] + (B[0] - A[0]) * u, A[1] + (B[1] - A[1]) * u, A[2] + (B[2] - A[2]) * u]; }
+    return { t: 'line', A: A, B: B, L: len(sub(B, A)), at: at, exact: at, sub: function (u0, u1) { return linePiece(at(u0), at(u1)); }, flip: function () { return linePiece(B, A); } };
+  }
+  // an arc from angle t0 to t1 of the circle (centre c, radius r, sketch coordinates) of a plane; one cubic, or equal
+  // cubics of at most 90° each past that (no measurement beyond 90° yet: the largest arc in S29, G18 and L1 is 90°)
+  function arcPiece(pl, c, r, t0, t1) {
+    var span = Math.abs(t1 - t0), sg = t1 > t0 ? 1 : -1, ns = Math.max(1, Math.ceil(span / (Math.PI / 2) - 1e-9)), k = arcHandle(span / ns), poles = [];
+    for (var i = 0; i < ns; i++) {
+      var a = t0 + (t1 - t0) * i / ns, b = t0 + (t1 - t0) * (i + 1) / ns, c0 = Math.cos(a), s0 = Math.sin(a), c1 = Math.cos(b), s1 = Math.sin(b);
+      poles.push([[c0, s0], [c0 - sg * k * s0, s0 + sg * k * c0], [c1 + sg * k * s1, s1 - sg * k * c1], [c1, s1]]);
+    }
+    function dir(u) {   // the unit-circle cubic at u
+      var x = Math.max(0, Math.min(1, u)) * ns, j = Math.min(ns - 1, Math.floor(x)), w = x - j, v = 1 - w, P = poles[j], e = [v * v * v, 3 * w * v * v, 3 * w * w * v, w * w * w];
+      return [e[0] * P[0][0] + e[1] * P[1][0] + e[2] * P[2][0] + e[3] * P[3][0], e[0] * P[0][1] + e[1] * P[1][1] + e[2] * P[2][1] + e[3] * P[3][1]];
+    }
+    return { t: 'arc', plane: pl, c: c, r: r, t0: t0, t1: t1, poles: poles, L: span * r,
+      at: function (u) { var d = dir(u); return to3D(pl, c[0] + r * d[0], c[1] + r * d[1]); },
+      exact: function (u) { var d = dir(u), q = Math.sqrt(d[0] * d[0] + d[1] * d[1]); return to3D(pl, c[0] + r * d[0] / q, c[1] + r * d[1] / q); },
+      sub: function (u0, u1) { return arcPiece(pl, c, r, t0 + (t1 - t0) * u0, t0 + (t1 - t0) * u1); }, flip: function () { return arcPiece(pl, c, r, t1, t0); } };
+  }
+  // a run of chords of a spline or an ellipse, by arc length
+  function polyPiece(pts) {
+    var acc = [0];
+    for (var i = 1; i < pts.length; i++) acc.push(acc[i - 1] + len(sub(pts[i], pts[i - 1])));
+    var L = acc[acc.length - 1];
+    function at(u) {
+      var s = Math.max(0, Math.min(1, u)) * L, lo = 0, hi = pts.length - 1;
+      while (hi - lo > 1) { var m = (lo + hi) >> 1; if (acc[m] <= s) lo = m; else hi = m; }
+      var d = acc[hi] - acc[lo], q = d > 1e-15 ? (s - acc[lo]) / d : 0;
+      return add(pts[lo], scale(sub(pts[hi], pts[lo]), q));
+    }
+    return { t: 'poly', pts: pts, L: L, at: at, exact: at, flip: function () { return polyPiece(pts.slice().reverse()); },
+      sub: function (u0, u1) {
+        var out = [at(u0)];
+        for (var j = 1; j + 1 < pts.length; j++) if (acc[j] > u0 * L + 1e-12 && acc[j] < u1 * L - 1e-12) out.push(pts[j]);
+        out.push(at(u1));
+        return polyPiece(out);
+      } };
+  }
+  // the outline of a section as pieces (its vertices are where they meet), or { circle } for a full circle
+  function sectionPieces(sec) {
+    var l = sec.loop, pts = l.pts, n = pts.length, seg = l.seg, fseg = l.fseg, curves = sec.prof.curves || [], pl = sec.plane;
+    function key(i) { return fseg && fseg[i] !== -1 && fseg[i] != null ? 'f' + fseg[i][0] : seg ? seg[i] : -1; }
+    function p3(i) { return to3D(pl, pts[i][0], pts[i][1]); }
+    var start = -1, i, k;
+    for (i = 0; i < n; i++) if (key(i) === -1 || key(i) !== key((i + n - 1) % n)) { start = i; break; }
+    if (start < 0) {   // one curve all the way round
+      var k0 = key(0);
+      if (typeof k0 === 'number' && k0 >= 0 && curves[k0] && curves[k0].full) return { circle: curves[k0], plane: pl };
+      return { pieces: [polyPiece(sec.pts.concat([sec.pts[0]]))], closed: true };
+    }
+    var out = [];
+    for (i = 0; i < n;) {
+      var a = (start + i) % n, q = key(a), run = 1;
+      if (q !== -1) while (i + run < n && key((start + i + run) % n) === q) run++;
+      var b = (start + i + run) % n;
+      if (q === -1) {
+        var P = p3(a), Q = p3(b), last = out[out.length - 1];
+        if (last && last.t === 'line' && len(cross(norm(sub(last.B, last.A)), norm(sub(Q, P)))) < 1e-9 && dot(sub(last.B, last.A), sub(Q, P)) > 0) out[out.length - 1] = linePiece(last.A, Q);
+        else out.push(linePiece(P, Q));
+      } else if (typeof q === 'number' && q >= 0 && curves[q]) {
+        var C = curves[q], c = C.c, t0 = Math.atan2(pts[a][1] - c[1], pts[a][0] - c[0]), th = t0;
+        for (k = 0; k < run; k++) {   // sum the steps, so that an arc past 180° keeps its way round
+          var p0 = pts[(a + k) % n], p1 = pts[(a + k + 1) % n], d = Math.atan2(p1[1] - c[1], p1[0] - c[0]) - Math.atan2(p0[1] - c[1], p0[0] - c[0]);
+          while (d > Math.PI) d -= Math.PI * 2;
+          while (d < -Math.PI) d += Math.PI * 2;
+          th += d;
+        }
+        out.push(arcPiece(pl, c, C.r, t0, th));
+      } else {
+        var run3 = [];
+        for (k = 0; k <= run; k++) run3.push(p3((a + k) % n));
+        out.push(polyPiece(run3));
+      }
+      i += run;
+    }
+    // the closing corner: a straight side that runs on through the start of the loop
+    if (out.length > 1 && out[0].t === 'line' && out[out.length - 1].t === 'line') {
+      var e = out[out.length - 1], s = out[0];
+      if (len(cross(norm(sub(e.B, e.A)), norm(sub(s.B, s.A)))) < 1e-9 && dot(sub(e.B, e.A), sub(s.B, s.A)) > 0) { out[0] = linePiece(e.A, s.B); out.pop(); }
+    }
+    return { pieces: out };
+  }
+  // sections -> stack[i][j]: piece j of section i, all going round the same way about the direction of the loft
+  function matchLoftSections(secs) {
+    var cen = secs.map(function (s) { return loopCentroid3(s.pts); }), ns = secs.length, sp = secs.map(sectionPieces), up = [], i, j;
+    secs.forEach(function (s, q) {
+      var d = norm(sub(cen[Math.min(q + 1, ns - 1)], cen[Math.max(q - 1, 0)])), rev = dot(loopNormal3(s.pts), d) < 0;
+      up.push(rev ? -1 : 1);
+      if (rev && sp[q].pieces) sp[q].pieces = sp[q].pieces.slice().reverse().map(function (p) { return p.flip(); });
+    });
+    var mi = -1;
+    sp.forEach(function (s, q) { if (s.pieces && (mi < 0 || s.pieces.length > sp[mi].pieces.length)) mi = q; });
+    // no vertices anywhere: quarter circles from the first plane's x direction, in the same directions in every section
+    if (mi < 0) {
+      var ex = secs[0].plane.x;
+      return secs.map(function (s, q) {
+        var pl = s.plane, C = sp[q].circle, t0 = Math.atan2(dot(ex, pl.y), dot(ex, pl.x)), sg = up[q], out = [];
+        for (var a = 0; a < 4; a++) out.push(arcPiece(pl, C.c, C.r, t0 + sg * a * Math.PI / 2, t0 + sg * (a + 1) * Math.PI / 2));
+        return out;
+      });
+    }
+    var master = sp[mi].pieces, m = master.length, mc = master.map(function (p) { return sub(p.at(0), cen[mi]); });
+    return secs.map(function (s, q) {
+      if (q === mi) return master;
+      var pl = s.plane, out = [];
+      if (sp[q].circle) {
+        var C = sp[q].circle, th = master.map(function (p) { var w = to2D(pl, p.at(0)); return Math.atan2(w[1] - C.c[1], w[0] - C.c[0]); });
+        var sg = up[q], ok = true;
+        for (j = 1; j <= m; j++) {   // increasing the way round, each under a full turn from the start
+          var a = j < m ? th[j] : th[0] + Math.PI * 2 * sg;
+          while ((a - th[j - 1]) * sg <= 0) a += Math.PI * 2 * sg;
+          if ((a - th[j - 1]) * sg >= Math.PI * 2 - 1e-9) ok = false;
+          th[j] = a;
+        }
+        if (!ok || m < 2 || Math.abs(th[m] - th[0] - Math.PI * 2 * sg) > 1e-9) for (j = 0; j <= m; j++) th[j] = th[0] + Math.PI * 2 * sg * j / Math.max(m, 1);
+        for (j = 0; j < m; j++) out.push(arcPiece(pl, C.c, C.r, th[j], th[j + 1]));
+        return out;
+      }
+      var ps = sp[q].pieces, n = ps.length, rel = ps.map(function (p) { return sub(p.at(0), cen[q]); });
+      function gap(a, b) { var d = sub(a, b); return dot(d, d); }
+      if (n === m) {
+        var best = Infinity, off = 0;
+        for (var o = 0; o < m; o++) {
+          var cost = 0;
+          for (j = 0; j < m; j++) cost += gap(rel[(j + o) % m], mc[j]);
+          if (cost < best * (1 - 1e-9)) { best = cost; off = o; }
+        }
+        return ps.slice(off).concat(ps.slice(0, off));
+      }
+      // fewer vertices: from the corner at the smallest angle about the loft direction, round the loop
+      var xa = pl.x, ya = scale(pl.y, up[q]), first = 0, amin = Infinity;
+      rel.forEach(function (r, c) { var t = Math.atan2(dot(r, ya), dot(r, xa)); if (t < -1e-9) t += Math.PI * 2; if (t < amin - 1e-9) { amin = t; first = c; } });
+      ps = ps.slice(first).concat(ps.slice(0, first));
+      rel = rel.slice(first).concat(rel.slice(0, first));
+      var tol = 1 + 1e-9, idx = [], d0 = mc.map(function (w) { return gap(rel[0], w); }), dmin = Math.min.apply(null, d0), j0 = -1;
+      for (j = 0; j < m; j++) if (d0[j] <= dmin * tol + 1e-18 && d0[(j + 1) % m] > dmin * tol + 1e-18) { j0 = j; break; }
+      idx.push(j0 < 0 ? 0 : j0);
+      for (var c = 1; c < n; c++) {
+        var prev = idx[c - 1], room = ((idx[0] - prev - 1 + m) % m + 1) - (n - c), bj = (prev + 1) % m, bd = Infinity;
+        for (var st = 1; st <= room; st++) {
+          var jj = (prev + st) % m, dd = gap(rel[c], mc[jj]);
+          if (dd < bd / tol - 1e-18) { bd = dd; bj = jj; }
+        }
+        idx.push(bj);
+      }
+      // each side takes the master's pieces between its two corners, in proportion to their lengths; out[] follows the master
+      var res = new Array(m);
+      for (c = 0; c < n; c++) {
+        var a0 = idx[c], g = ((idx[(c + 1) % n] - a0 + m - 1) % m) + 1, tot = 0;
+        for (var h = 0; h < g; h++) tot += master[(a0 + h) % m].L;
+        var run = 0;
+        for (h = 0; h < g; h++) {
+          var L = master[(a0 + h) % m].L, u0 = tot > 0 ? run / tot : h / g, u1 = tot > 0 ? (run + L) / tot : (h + 1) / g;
+          res[(a0 + h) % m] = g === 1 ? ps[c] : ps[c].sub(u0, u1);
+          run += L;
+        }
+      }
+      return res;
+    });
+  }
+  // knots of the spline in v through a stack: chord length, from the corresponding points at u = 0 and u = 0.5
+  function loftKnots(stack) {
+    var ts = [0], i, j;
+    for (i = 0; i + 1 < stack.length; i++) {
+      var tot = 0, m = stack[i].length;
+      for (j = 0; j < m; j++) tot += len(sub(stack[i + 1][j].exact(0), stack[i][j].exact(0))) + len(sub(stack[i + 1][j].exact(0.5), stack[i][j].exact(0.5)));
+      ts.push(ts[i] + tot / (2 * m));
+    }
+    return ts.map(function (t) { return t / ts[ts.length - 1]; });
+  }
+  // the natural cubic spline's cardinal functions on knots ts: D[k] = second derivatives at the knots of the spline that
+  // is 1 at knot k and 0 at the others
+  function naturalCardinals(ts) {
+    var n = ts.length, D = [];
+    for (var k = 0; k < n; k++) {
+      var a = [], b = [], c = [], r = [], i;
+      for (i = 0; i < n; i++) {
+        if (i === 0 || i === n - 1) { a.push(0); b.push(1); c.push(0); r.push(0); continue; }
+        var h0 = ts[i] - ts[i - 1], h1 = ts[i + 1] - ts[i];
+        a.push(h0); b.push(2 * (h0 + h1)); c.push(h1);
+        r.push(6 * (((i + 1 === k ? 1 : 0) - (i === k ? 1 : 0)) / h1 - ((i === k ? 1 : 0) - (i - 1 === k ? 1 : 0)) / h0));
+      }
+      for (i = 1; i < n; i++) { var w = a[i] / b[i - 1]; b[i] -= w * c[i - 1]; r[i] -= w * r[i - 1]; }
+      var x = new Array(n);
+      x[n - 1] = r[n - 1] / b[n - 1];
+      for (i = n - 2; i >= 0; i--) x[i] = (r[i] - c[i] * x[i + 1]) / b[i];
+      D.push(x);
+    }
+    return D;
+  }
+  // the side of a loft through three or more sections. Returns { loops, tris } like hullLoftLoops
+  function splineLoftGrid(secs) {
+    var stack = matchLoftSections(secs), n = stack.length, m = stack[0].length, ts = loftKnots(stack), D = naturalCardinals(ts), i, j, q, k;
+    // cells per piece: an arc by angle, a chord run by its chords, a straight side only if the side twists
+    var cells = [], twisted = false;
+    for (j = 0; j < m; j++) {
+      var c = 1, d0 = null;
+      for (i = 0; i < n; i++) {
+        var p = stack[i][j];
+        if (p.t === 'arc') c = Math.max(c, Math.ceil(Math.abs(p.t1 - p.t0) / LOFT_ARC_STEP - 1e-9));
+        else if (p.t === 'poly') c = Math.max(c, Math.min(p.pts.length - 1, 64));
+        else {
+          var d = norm(sub(p.B, p.A));
+          if (!d0) d0 = d;
+          else if (len(cross(d, d0)) > 1e-9) { c = Math.max(c, LOFT_TWIST_CELLS); twisted = true; }
+        }
+      }
+      cells.push(c);
+    }
+    // samples of each section on the common cells; surrogate[i] carries the spline, exact[i] the rows at the sections
+    var surrogate = [], exact = [];
+    for (i = 0; i < n; i++) {
+      var ra = [], rb = [];
+      for (j = 0; j < m; j++) for (q = 0; q < cells[j]; q++) { ra.push(stack[i][j].at(q / cells[j])); rb.push(stack[i][j].exact(q / cells[j])); }
+      surrogate.push(ra); exact.push(rb);
+    }
+    var N = surrogate[0].length, size = 0;
+    secs.forEach(function (s) { s.pts.forEach(function (a) { size = Math.max(size, len(sub(a, s.pts[0]))); }); });
+    var tol = LOFT_SAG * Math.max(size, 1e-9);
+    // joint[q]: the sample is a corner, so its neighbours along the row are not one smooth curve
+    var joint = [], at0 = 0;
+    for (j = 0; j < m; j++) { joint[at0] = true; at0 += cells[j]; }
+    var rows = [exact[0]];
+    for (var sp = 0; sp + 1 < n; sp++) {
+      var h = ts[sp + 1] - ts[sp], M = 0;
+      for (q = 0; q < N; q++) for (var e = 0; e < 2; e++) {
+        var s = [0, 0, 0];
+        for (k = 0; k < n; k++) { var w = D[k][sp + e], C = surrogate[k][q]; s[0] += w * C[0]; s[1] += w * C[1]; s[2] += w * C[2]; }
+        M = Math.max(M, len(s));
+      }
+      var R = Math.ceil(h * Math.sqrt(M / (8 * tol)));
+      R = Math.max(twisted || M > 0 ? LOFT_MIN_ROWS : 1, Math.min(LOFT_MAX_ROWS, R));
+      if (twisted) R = Math.max(R, LOFT_TWIST_CELLS);
+      for (var r = 1; r < R; r++) {
+        var B = r / R, A = 1 - B, f3 = h * h / 6, row = [], acc = [];
+        var wv = new Array(n), wdd = new Array(n);
+        for (k = 0; k < n; k++) {
+          wv[k] = (k === sp ? A : 0) + (k === sp + 1 ? B : 0) + ((A * A * A - A) * D[k][sp] + (B * B * B - B) * D[k][sp + 1]) * f3;
+          wdd[k] = A * D[k][sp] + B * D[k][sp + 1];
+        }
+        for (q = 0; q < N; q++) {
+          var x = [0, 0, 0], y = [0, 0, 0];
+          for (k = 0; k < n; k++) {
+            var P = surrogate[k][q];
+            x[0] += wv[k] * P[0]; x[1] += wv[k] * P[1]; x[2] += wv[k] * P[2];
+            y[0] += wdd[k] * P[0]; y[1] += wdd[k] * P[1]; y[2] += wdd[k] * P[2];
+          }
+          acc.push(x); row.push(y);
+        }
+        var dv = h / R, fv = dv * dv / 12, out = [];
+        for (q = 0; q < N; q++) {
+          var o = sub(acc[q], scale(row[q], fv));
+          if (!joint[q] && !joint[(q + 1) % N] || !joint[q]) {
+            var a0 = acc[(q + N - 1) % N], a1 = acc[(q + 1) % N];
+            o = sub(o, scale(sub(add(a0, a1), scale(acc[q], 2)), 1 / 12));
+          }
+          out.push(o);
+        }
+        rows.push(out);
+      }
+      rows.push(exact[sp + 1]);
+    }
+    var tris = [];
+    for (r = 0; r + 1 < rows.length; r++) {
+      var R0 = rows[r], R1 = rows[r + 1];
+      for (q = 0; q < N; q++) {
+        var nx = (q + 1) % N;
+        // the diagonals change from row to row, so that a twisted side's error in one row cancels in the next (+3e-5 on
+        // S29 with one diagonal); along a row they must not, or four coplanar triangles fan round a vertex of a straight
+        // row, the STEP writer merges them, and the importer drops that vertex (open edges in the file read back)
+        if (r % 2) { tris.push([R0[q], R0[nx], R1[nx]]); tris.push([R0[q], R1[nx], R1[q]]); }
+        else { tris.push([R0[q], R0[nx], R1[q]]); tris.push([R0[nx], R1[nx], R1[q]]); }
+      }
+    }
+    return { loops: rows.length > 3 ? [rows[0], rows[1], rows[rows.length - 2], rows[rows.length - 1]] : rows, tris: tris };
+  }
+
+  // a piece as M cubic spans: its own cubics (a straight side one, an arc one per 90°, M a multiple of that) cut at
+  // uniform u; a chord run as Hermite spans through at(u)
+  function pieceCubics(p, M) {
+    var base = p.t === 'line' ? [[0, 1, 2, 3].map(function (k) { return p.at(k / 3); })] : p.t === 'arc' ? p.poles.map(function (P) { return P.map(function (q) { return to3D(p.plane, p.c[0] + p.r * q[0], p.c[1] + p.r * q[1]); }); }) : null, out = [], s;
+    function mix(a, b, t) { return add(a, scale(sub(b, a), t)); }
+    if (!base) {
+      for (s = 0; s < M; s++) {
+        var u0 = s / M, u1 = (s + 1) / M, h = 1e-4 / M, A = p.at(u0), B = p.at(u1), T0 = scale(sub(p.at(Math.min(1, u0 + h)), p.at(Math.max(0, u0 - h))), 1 / (Math.min(1, u0 + h) - Math.max(0, u0 - h)));
+        var T1 = scale(sub(p.at(Math.min(1, u1 + h)), p.at(Math.max(0, u1 - h))), 1 / (Math.min(1, u1 + h) - Math.max(0, u1 - h)));
+        out.push([A, add(A, scale(T0, 1 / (3 * M))), sub(B, scale(T1, 1 / (3 * M))), B]);
+      }
+      return out;
+    }
+    var per = M / base.length;
+    base.forEach(function (P) {
+      for (s = 0; s < per; s++) {   // de Casteljau: the part of the cubic from s / per to (s + 1) / per
+        var t = (s + 1) / per, a = mix(P[0], P[1], t), b = mix(P[1], P[2], t), c = mix(P[2], P[3], t), d = mix(a, b, t), e = mix(b, c, t), f = mix(d, e, t);
+        var q = [P[0], a, d, f], w = s / (s + 1);
+        a = mix(q[0], q[1], w); b = mix(q[1], q[2], w); c = mix(q[2], q[3], w); d = mix(a, b, w); e = mix(b, c, w);
+        out.push([mix(d, e, w), e, c, q[3]]);
+      }
+    });
+    return out;
+  }
+  // The same surfaces as patches, for OpenCascade: { degU, degV, faces: [{ uKnots, vKnots, uMults, vMults, poles[u][v],
+  // weights? }] }, one face per piece; the first and last v rows are the cap edges. Three or more sections: bicubic
+  // (the Bézier spans of the natural spline in v, knots loftKnots). Two sections: the polygon → circle blend (ruled,
+  // the arc rational, the side uniform: both raised to one rational cubic in u). null: not one of these (OpenCascade's
+  // ruled ThruSections does it).
+  function loftPatches(secs) {
+    var n = secs.length, stack, j, i;
+    if (n === 2) {
+      if (!blendLoftLoops(secs)) return null;
+      stack = matchLoftSections(secs);
+      return { ruled: true, faces: stack[0].map(function (p0, q) {
+        var pair = [p0, stack[1][q]], arc = p0.t === 'arc' ? p0 : pair[1], half = Math.abs(arc.t1 - arc.t0) / 2, w = Math.cos(half), W1 = (1 + 2 * w) / 3, mid = (arc.t0 + arc.t1) / 2;
+        var ctrl = to3D(arc.plane, arc.c[0] + arc.r / w * Math.cos(mid), arc.c[1] + arc.r / w * Math.sin(mid));
+        var rows = pair.map(function (p) {
+          var A = p.exact(0), B = p.exact(1);
+          if (p === arc) return [A, scale(add(A, scale(ctrl, 2 * w)), 1 / (3 * W1)), scale(add(scale(ctrl, 2 * w), B), 1 / (3 * W1)), B];
+          return [A, scale(add(scale(A, 2 * w), B), 1 / (3 * W1)), scale(add(A, scale(B, 2 * w)), 1 / (3 * W1)), B];
+        });
+        return { uKnots: [0, 1], uMults: [4, 4], vKnots: [0, 1], vMults: [2, 2], degV: 1, poles: [0, 1, 2, 3].map(function (a) { return [rows[0][a], rows[1][a]]; }), weights: [1, W1, W1, 1].map(function (x) { return [x, x]; }) };
+      }) };
+    }
+    stack = matchLoftSections(secs);
+    var ts = loftKnots(stack), D = naturalCardinals(ts), faces = [], vKnots = ts, vMults = ts.map(function (t, k) { return k === 0 || k === n - 1 ? 4 : 3; });
+    for (j = 0; j < stack[0].length; j++) {
+      var M = 1;   // spans in u: a common multiple of the arcs' cubics (1 to 4), and at least 12 or 24 for a chord run
+      for (i = 0; i < n; i++) {
+        var p = stack[i][j], want = p.t === 'arc' ? p.poles.length : p.t === 'poly' ? (p.pts.length > 48 ? 24 : 12) : 1;
+        if (M % want) M = M * want / (M % 2 === 0 && want % 2 === 0 ? 2 : 1);
+      }
+      var cubics = stack.map(function (s) { return pieceCubics(s[j], M); }), nu = 3 * M + 1, poles = [];
+      for (var a = 0; a < nu; a++) {
+        var Q = cubics.map(function (c) { return a === nu - 1 ? c[M - 1][3] : c[Math.floor(a / 3)][a % 3]; }), row = [Q[0]];
+        for (var s = 0; s + 1 < n; s++) {
+          var h = ts[s + 1] - ts[s], d0 = [0, 0, 0], d1 = [0, 0, 0];
+          for (var k = 0; k < n; k++) { d0 = add(d0, scale(Q[k], D[k][s])); d1 = add(d1, scale(Q[k], D[k][s + 1])); }
+          var slope = scale(sub(Q[s + 1], Q[s]), 1 / h), t0 = sub(slope, scale(add(scale(d0, 2), d1), h / 6)), t1 = add(slope, scale(add(d0, scale(d1, 2)), h / 6));
+          row.push(add(Q[s], scale(t0, h / 3)), sub(Q[s + 1], scale(t1, h / 3)), Q[s + 1]);
+        }
+        poles.push(row);
+      }
+      var uKnots = [], uMults = [];
+      for (var b = 0; b <= M; b++) { uKnots.push(b / M); uMults.push(b === 0 || b === M ? 4 : 3); }
+      faces.push({ uKnots: uKnots, uMults: uMults, vKnots: vKnots, vMults: vMults, degV: 3, poles: poles });
+    }
+    return { faces: faces };
+  }
+
   function buildLoft(f, model, ctx) {
     var ids = f.sketches || [];
     if (ids.length < 2) throw new Error('Loft needs at least two profile sketches.');
@@ -473,8 +859,16 @@
         if (lo < -tol && hi > tol) throw new Error('The loft would intersect itself: profile ' + (pr[1] + 1) + ' lies on both sides of the plane of profile ' + (pr[0] + 1) + '. Move the profiles so that each one lies to one side of the next one\'s plane.');
       });
     }
+    // SolidWorks: "self-intersecting geometry". Parallel profiles picked out of order: the loft goes up past a profile
+    // and back down through it
+    for (c = 0; c + 2 < secs.length; c++) {
+      var mid = secs[c + 1].plane;
+      if (Math.abs(dot(mid.n, secs[c].plane.n)) < 1 - 1e-9 || Math.abs(dot(mid.n, secs[c + 2].plane.n)) < 1 - 1e-9) continue;
+      var h0 = dot(sub(secs[c].pts[0], mid.origin), mid.n), h2 = dot(sub(secs[c + 2].pts[0], mid.origin), mid.n);
+      if (h0 * h2 > 0) throw new Error('The loft would intersect itself: profile ' + (c + 2) + ' does not lie between profiles ' + (c + 1) + ' and ' + (c + 3) + '. Pick the profiles in order along the loft.');
+    }
     var polys = [], loops, i;
-    var hull = blendLoftLoops(secs) || hullLoftLoops(secs);
+    var hull = secs.length > 2 ? splineLoftGrid(secs) : blendLoftLoops(secs) || hullLoftLoops(secs);
     if (hull) {
       loops = hull.loops;
       hull.tris.forEach(function (t) { pushPoly(polys, t, f.id); });
@@ -505,7 +899,7 @@
         }
       }
     }
-    loftAxisRecords(secs, polys);
+    if (secs.length === 2) loftAxisRecords(secs, polys);
     function cap(loop3, plane, flip) {
       var loop2 = loop3.map(function (p) { return to2D(plane, p); });
       triangulateAny(loop2).forEach(function (t) {
@@ -857,6 +1251,8 @@
             // (it leaves a 0.0008° CSG fragment in the Funnel where the tube meets the cone; 1e-6·T or 1e-4·T more, or
             // the old growth where the depths differ, each cracked or moved other shells: BSP-sensitive, left as is)
             if (un > 1e-9) g = Math.min(4 * T, Math.max(-(d1 * dot(n1, n2) - faceDepth(j)) / un, 0));
+            // rfGH: across a thin round (no slab of its own) to where the two faces beside it would meet, and on past it
+            if (bridge[j] && !bridge[fi] && phi < Math.PI / 6) g = Math.max(g, (bridge[j].r + 0.75 * T) * Math.tan(bridge[j].phi / 2));
           }
           return g;
         });
@@ -915,18 +1311,117 @@
     // its centre line) can come out cracked (open / non-manifold edges). The result is checked against the body before
     // it; a cracked one is rebuilt with every growth 1e-6 (then 1e-4) larger, which turns the coincidences into
     // crossings untangleLoop removes, and refused if still cracked (OpenCascade's shell then drives: not a refusal).
-    // rfGB: an inward shell thicker than the radius of a convex round (a rim fillet, a boss) cannot offset that face
-    // (its offset would turn inside out): SolidWorks refuses it ("the thickness is greater than the minimum radius of
-    // curvature"); Anvil's slabs left it cracked (fuzz pins 2, 5)
-    var minR = Infinity;
-    for (var fr = 0; fr < mesh.faces.length; fr++) {
-      if (removed.indexOf(fr) >= 0) continue;
-      faceDepth(fr);
-      if (radiusOf[fr] != null && radiusOf[fr] < minR) minR = radiusOf[fr];
+    // rfGH (SolidWorks measured, rfGD R09a..d, rfGA 147, 183): a convex round thinner than the shell has no offset of
+    // its own: the walls either side simply meet at a sharp inner corner (R 0.25 edges, shell 0.5: box − sharp 3 × 2 ×
+    // 1.5, exact; this used to be a refusal, SolidWorks has none). bridge[j] = { r, phi }: j is a facet of such a round
+    // (tangent to faces on both sides, which turn by phi): it gets no slab, and the faces beside it grow across it,
+    // past where they would meet, to fill the corner. Its own slabs would reach T − r past its centre, all inside the
+    // walls' slabs, but they chopped the inner wall into thousands of pieces. With a removed face on one side the wall
+    // simply runs on to that face's plane, leaving a flat rim (Ø3 disk, R .03, T .0625: disk − Ø2.875 cylinder right
+    // through). A thin boss, tangent to nothing, keeps its slabs: they overlap into a solid peg.
+    // rimOf[j] = r: j is a facet of a round at least T thick, tangent to removed face r: the wall ends straight down
+    // from the tangent edge. A slab's end stands square to its facet (and is grown past it), which left a lip inside
+    // the opening: +1.1 % on the Ø3 disk (R 0.1, T .0625: SolidWorks 0.697804 = disk − offset cavity − Ø2.8 opening,
+    // the closed form). Those slabs are trimmed by r's own prism.
+    var bridge = {}, rimOf = {}, rimSurf = {};
+    (function () {
+      var keys = Object.keys(edgeOf), adj = {};
+      function round(j) { faceDepth(j); return radiusOf[j] != null; }
+      function thin(j) { return round(j) && radiusOf[j] <= T * (1 + 1e-9); }   // (R = T: its offset is a line, the same sharp corner)
+      function sameRound(a, b) { var sa = surfOf(mesh.faces[a]), sb = surfOf(mesh.faces[b]); return sa && sb && sa.S === sb.S; }
+      // the direction a face turns to across the round: its normal; round a torus (a rim) in its meridian plane, so a
+      // ring's facets on opposite sides of the part do not count as turned from each other
+      function turnDir(j, S) {
+        var n = mesh.faces[j].normal;
+        if (S.t !== 'tor') return n;
+        var v = sub(mesh.faces[j].centroid, S.o), rad = sub(v, scale(S.d, dot(v, S.d)));
+        if (len(rad) < 1e-12) return n;
+        rad = norm(rad);
+        return [dot(n, rad), dot(n, S.d), 0];
+      }
+      function angle(a, b, S) { return Math.acos(Math.max(-1, Math.min(1, dot(turnDir(a, S), turnDir(b, S))))); }
+      keys.forEach(function (key) {
+        var e = edgeOf[key];
+        if (e.faces.length !== 2) return;
+        (adj[e.faces[0]] = adj[e.faces[0]] || []).push({ to: e.faces[1], turn: turn[key] });
+        (adj[e.faces[1]] = adj[e.faces[1]] || []).push({ to: e.faces[0], turn: turn[key] });
+      });
+      function flood(i) {
+        var seen = {}, list = [i];
+        seen[i] = true;
+        for (var q = 0; q < list.length; q++) (adj[list[q]] || []).forEach(function (a) {
+          if (!seen[a.to] && removed.indexOf(a.to) < 0 && sameRound(list[q], a.to)) { seen[a.to] = true; list.push(a.to); }
+        });
+        return list;
+      }
+      var done = {};
+      for (var i = 0; i < mesh.faces.length; i++) {
+        if (done[i] || removed.indexOf(i) >= 0 || !thin(i) || !surfOf(mesh.faces[i])) continue;
+        var G = flood(i), side = {}, own = 0, sides = [], phi = 0, Sg = surfOf(mesh.faces[i]).S;
+        G.forEach(function (g) {
+          done[g] = true;
+          (adj[g] || []).forEach(function (a) { if (G.indexOf(a.to) < 0 && a.turn < Math.PI / 6) side[a.to] = true; });
+        });
+        sides = Object.keys(side).map(Number);
+        for (var p = 0; p < G.length; p++) for (var q = p + 1; q < G.length; q++) own = Math.max(own, angle(G[p], G[q], Sg));
+        for (p = 0; p < sides.length; p++) for (q = p + 1; q < sides.length; q++) phi = Math.max(phi, angle(sides[p], sides[q], Sg));
+        if (!(phi > Math.max(own, 0.1) * (1 - 1e-9)) || phi > 2 * Math.PI / 3) continue;
+        G.forEach(function (g) { faceDepth(g); bridge[g] = { r: radiusOf[g], phi: phi }; });
+      }
+      keys.forEach(function (key) {
+        var e = edgeOf[key];
+        if (e.faces.length !== 2) return;
+        [0, 1].forEach(function (s) {
+          var r = e.faces[s], j = e.faces[1 - s];
+          if (removed.indexOf(r) >= 0 && removed.indexOf(j) < 0 && turn[key] < Math.PI / 6 && round(j) && !thin(j) && !(j in rimOf)) { rimSurf[r] = surfOf(mesh.faces[j]).S; flood(j).forEach(function (g) { rimOf[g] = r; }); }
+        });
+      });
+    })();
+    // rfGH: a removed face's outline in regions (faces are one per plane, so two separate faces in one plane are one
+    // here): -> { open: the regions holding a pick, keep: [the others] }, each { loops, plane }. Every region opens
+    // when no pick lands in one (a pick on an edge). rfGA 52: the groove split the top in two, SolidWorks keeps the other.
+    function pickedRegions(o) {
+      var cl = faceLoopsClassified(o);
+      if (cl.outers.length < 2) return { open: o, keep: [] };
+      var regions = cl.outers.map(function (l) { return { outer: l, holes: [], area: signedArea(l) }; });
+      cl.holes.forEach(function (h) {
+        var owner = null;
+        regions.forEach(function (r) { if (pointInPoly(h[0], r.outer) && (!owner || r.area < owner.area)) owner = r; });
+        if (owner) owner.holes.push(h);
+      });
+      var open = [], keep = [];
+      regions.forEach(function (r) {
+        var hit = (f.faces || []).some(function (spec) {
+          var uv = to2D(o.plane, spec.at);
+          return pointInPoly(uv, r.outer) && !r.holes.some(function (h) { return pointInPoly(uv, h); });
+        });
+        var rec = { loops: [r.outer].concat(r.holes.map(function (h) { return h.slice().reverse(); })), plane: o.plane };
+        (hit ? open : keep).push(rec);
+      });
+      if (!open.length) return { open: o, keep: [] };
+      return { open: { loops: [].concat.apply([], open.map(function (r) { return r.loops; })), plane: o.plane }, keep: keep };
     }
-    if (minR < T * (1 - 1e-9)) {
-      var rs = String(+minR.toPrecision(6)), ts = String(+T.toPrecision(6));
-      throw new Error('Failed to shell the part: the thickness ' + ts + ' is greater than the ' + rs + ' radius of a rounded face, so that face cannot be offset inward. Use a thickness below ' + rs + ', or a larger round.');
+    // straight through a removed region, its own holes standing
+    function openingPrism(o) {
+      var cl = faceLoopsClassified(o), sol = unionAll(cl.outers.map(function (l) { return prism(l, o.plane, -3 * T, T + 1, f.id); }));
+      return cl.holes.length ? sol.subtract(unionAll(cl.holes.map(function (l) { return prism(l, o.plane, -3 * T - 0.01, T + 1.01, f.id); }))) : sol;
+    }
+    // the end of the wall under a torus rim is a true cylinder through the tangent circle: its chords carry the record
+    var openMemo = {};
+    function openingOf(r) {
+      if (openMemo[r]) return openMemo[r];
+      var hole = openingPrism(pickedRegions(faceOutline(mesh, r)).open), S = rimSurf[r];
+      if (S && S.t === 'tor') rimWall(hole, S);
+      return (openMemo[r] = hole);
+    }
+    function rimWall(hole, S) {
+      var rec = { s: { t: 'cyl', o: S.o.slice(), d: S.d.slice(), r: S.R } }, tol = 1e-6 * Math.max(1, S.R);
+      hole.polygons.forEach(function (p) {
+        var nd = p.plane.normal.x * S.d[0] + p.plane.normal.y * S.d[1] + p.plane.normal.z * S.d[2];
+        if (Math.abs(nd) > 1e-9) return;
+        var on = p.vertices.every(function (v) { var w = sub([v.pos.x, v.pos.y, v.pos.z], S.o); return Math.abs(len(sub(w, scale(S.d, dot(w, S.d)))) - S.R) < tol; });
+        if (on) p.surf = rec;
+      });
     }
     var inner = ctx.body, extensions = [], S = null, body = null, open0 = -1, best = null;
     // lane GC: a last try (0) with csg.js's restoreFar (rfFV) off: the top union of G13's slabs (rfGA: 4 × 3 × 2 box,
@@ -943,13 +1438,18 @@
         try { o = faceOutline(mesh, i); } catch (e) { o = null; }
         if (!o || !o.loops.length) continue;
         if (removed.indexOf(i) >= 0) {
+          // rfGH: only the picked region opens; a coplanar region elsewhere (the mesh keeps one face per plane) stays a wall
+          var parts = pickedRegions(o);
+          if (parts.keep.length) slabs.push.apply(slabs, parts.keep.map(function (kr) { return slabSolid(kr, scaledGrow(growFor(o.plane, i), gs), -faceDepth(i), T, f.id); }).filter(Boolean));
           // outward through the face, starting a little inside so no cap is coplanar with the face
-          var ext = slabSolid({ loops: o.loops.filter(function (l) { return signedArea(l) > 0; }), plane: o.plane }, uniform, -T / 2, T + 1, f.id);
+          var ext = slabSolid({ loops: parts.open.loops.filter(function (l) { return signedArea(l) > 0; }), plane: o.plane }, uniform, -T / 2, T + 1, f.id);
           if (ext) extensions.push(ext);
-        } else {
+        } else if (!bridge[i]) {
           var slab = slabSolid(o, scaledGrow(growFor(o.plane, i), gs), -faceDepth(i), T, f.id);   // rfGB: −faceDepth (was −T)
           var rec = slab && offsetRecord(mesh.faces[i]), fn = mesh.faces[i].normal;
           if (rec) slab.polygons.forEach(function (p) { var n = p.plane.normal; if (n.x * fn[0] + n.y * fn[1] + n.z * fn[2] < -0.999999) p.surf = rec; });
+          // rfGH: one at a time: the union of a whole rim's slabs less the opening cracked (ring OD 3 × 1, R .15, T .1)
+          if (slab && rimOf[i] != null) slab = slab.subtract(openingOf(rimOf[i]));
           if (slab) slabs.push(slab);
         }
       }
@@ -1724,7 +2224,7 @@
   K.sketchPath = sketchPath; K.buildSweep = buildSweep; K.buildLoft = buildLoft; K.resolveFaces = resolveFaces; K.buildShell = buildShell;
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   K.resolveRefGeo = resolveRefGeo; K.toCsys = toCsys; K.dirToCsys = dirToCsys; _.resolveRefGeo = resolveRefGeo; _.revolveOnRefAxis = revolveOnRefAxis;   // lane CZ
-  _.buildLoft = buildLoft; _.blendLoftLoops = blendLoftLoops; _.buildShell = buildShell; _.buildSweep = buildSweep; _.faceLoopsClassified = faceLoopsClassified;
+  _.buildLoft = buildLoft; _.blendLoftLoops = blendLoftLoops; _.loftPatches = loftPatches; _.buildShell = buildShell; _.buildSweep = buildSweep; _.faceLoopsClassified = faceLoopsClassified;
 
   // ------------------------------------------------------------------ rfDX: Draft (SolidWorks' Neutral Plane draft)
   // { type: 'draft', neutral: { face: [x,y,z] } | { plane: 'Front' | 'Top' | 'Right' | <plane feature id>, offset? },
@@ -1735,8 +2235,8 @@
   // 5 deg about its bottom face: the top shrinks by 2 tan 5 deg each way; reverse grows it).
   // Planar faces are exact: per face, the wedge between the old and the new plane inside the face's prism (its
   // outline grown across convex edges so corners meet the neighbour's new plane) is cut away on the pull side of the
-  // neutral plane and added (clipped by the convex neighbours' planes, new or old) on the other side. Curved faces
-  // (cylinders become cones) are refused here; OpenCascade drafts them exactly (occt-kernel.js draftOp).
+  // neutral plane and added (clipped by the convex neighbours' planes, new or old) on the other side. A cylinder along
+  // the pull becomes an exact cone (rfGH); other curved faces are refused here (OpenCascade: occt-kernel.js draftOp).
   // -> { body, faces: [mesh face index], pull, removed: CSG|null, added: CSG|null }
   function draftNeutral(ref, mesh, ctx, tol) {
     if (!ref) throw new Error('Select a neutral plane: a planar face or a plane.');
@@ -1758,6 +2258,17 @@
   }
   function draftCurved(face) {
     return !!(face && face.polys && face.polys.some(function (p) { var s = p.surf && p.surf.s; return !!(s && s.t && s.t !== 'plane'); }));
+  }
+  // the one surface record of a curved facet, else null
+  function draftSurf(face) {
+    var S = null, ps = (face && face.polys) || [];
+    for (var i = 0; i < ps.length; i++) {
+      var s = ps[i].surf && ps[i].surf.s;
+      if (!s) return null;
+      if (S && S !== s) return null;
+      S = s;
+    }
+    return S;
   }
   // faces sharing a smooth edge with a picked face that lie on a curved surface (Face propagation: Along Tangent)
   function draftPropagate(idx, mesh) {
@@ -1796,34 +2307,58 @@
     var idx = resolveFaces(f.faces, mesh, tol);
     if (idx.length < f.faces.length) throw new Error('A face to draft was not found on the body. Select the faces again.');
     if (f.propagate === 'tangent') idx = draftPropagate(idx.slice(), mesh);
+    // rfGH: a pick on a round means the round: all its facets
+    idx.slice().forEach(function (i) {
+      var S = draftSurf(mesh.faces[i]);
+      if (S) mesh.faces.forEach(function (fc, j) { if (idx.indexOf(j) < 0 && draftSurf(fc) === S) idx.push(j); });
+    });
     // the pull points to the side of the neutral plane the drafted faces lie on (the part tapers away from it)
     var side = draftSide(neu.pull, neu.d0, idx.map(function (i) { return { area: mesh.faces[i].area, centroid: mesh.faces[i].centroid }; }));
     if (side < 0) { neu.pull = scale(neu.pull, -1); neu.d0 = -neu.d0; }
     N = f.reverse ? scale(neu.pull, -1) : neu.pull; d0 = f.reverse ? -neu.d0 : neu.d0;
     // rfGB: a planar face tangent to a round that is not drafted with it would leave the round standing straight
     // beside the tilted face (a kink; a second Draft over it cracked the part, fuzz pin 6): refused, as the round
-    // cannot follow on Anvil's kernel (it drafts planar faces only)
+    // cannot follow (SolidWorks refuses it too, rfGD R10a, R10b; Along Tangent takes the round along)
     var COS_TAN = Math.cos(30 * Math.PI / 180);
     bodyEdges(mesh).forEach(function (e) {
       if (e.faces.length !== 2) return;
       var a = e.faces[0], b = e.faces[1], ia = idx.indexOf(a), ib = idx.indexOf(b);
       if ((ia >= 0) === (ib >= 0)) return;
       var k = ia >= 0 ? ia : ib, other = ia >= 0 ? b : a;
-      if (draftCurved(mesh.faces[ia >= 0 ? a : b])) return;   // a curved face itself is refused below, in its own words
-      if (!draftCurved(mesh.faces[other]) || dot(mesh.faces[a].normal, mesh.faces[b].normal) < COS_TAN) return;
-      throw new Error((k < f.faces.length ? 'Face<' + (k + 1) + '>' : 'A face reached by Along Tangent') + ' is tangent to a round that is not drafted with it, and Anvil\'s kernel cannot tilt the round to follow. Draft the faces before adding the round, or draft on the OpenCascade kernel.');
+      if (dot(mesh.faces[a].normal, mesh.faces[b].normal) < COS_TAN) return;
+      var drew = draftCurved(mesh.faces[ia >= 0 ? a : b]), nmk = k < f.faces.length ? 'Face<' + (k + 1) + '>' : 'A face reached by Along Tangent';
+      // (a round drafted beside a tangent face left straight: the same kink, as SolidWorks: both refuse, R10a, R10b)
+      if (drew && !draftCurved(mesh.faces[other])) throw new Error('The round is tangent to a face that is not drafted with it. Select that face too, or use Along Tangent.');
+      if (drew || !draftCurved(mesh.faces[other])) return;
+      throw new Error(nmk + ' is tangent to a round that is not drafted with it, so the round cannot follow. Select the round too, or use Along Tangent.');
     });
-    var ang = A * Math.PI / 180, recs = {};
+    // rfGH (rfGD R10c, SolidWorks 8.911946): a cylinder along the pull drafts to a cone: its radius moves by the same
+    // tan(A) per unit height as the planes either side, so it stays tangent to them. Each chord facet turns by the
+    // angle that keeps its corners on that cone (the apothem moves by cos(half chord) of the radius) and its new plane
+    // carries the cone's record, so Mass Properties stay exact.
+    var ang = A * Math.PI / 180, recs = {}, coneOf = typeof Map === 'function' ? new Map() : null;
+    function draftCone(S, conv) {
+      var wr = coneOf.get(S);
+      if (!wr) coneOf.set(S, wr = { s: { t: 'cone', o: add(S.o, scale(N, d0 - dot(N, S.o))), d: N.slice(), r: S.r, k: conv * Math.tan(ang) } });
+      return wr;
+    }
     idx.forEach(function (i, k) {
       var face = mesh.faces[i], n = face.normal, nm = k < f.faces.length ? 'Face<' + (k + 1) + '>' : 'A face reached by Along Tangent';
       if (i === neu.face) throw new Error(nm + ' is the neutral face: it cannot be drafted.');
-      if (draftCurved(face)) throw new Error(nm + ' is curved: a cylindrical or conical face is drafted by the OpenCascade kernel only (Anvil\'s own kernel drafts planar faces).');
+      var turnBy = ang, cone = null;
+      if (draftCurved(face)) {
+        var Sf = draftSurf(face);
+        if (!Sf || Sf.t !== 'cyl' || !coneOf || Math.abs(dot(Sf.d, N)) < 1 - 1e-9) throw new Error(nm + ' is curved and does not run along the direction of pull: Anvil\'s kernel drafts planar faces and cylinders along the pull (OpenCascade drafts the rest).');
+        var apo = face.w - dot(n, Sf.o);   // + on a boss, − in a hole
+        turnBy = Math.atan(Math.tan(ang) * Math.abs(apo) / Sf.r);
+        cone = draftCone(Sf, apo > 0 ? -1 : 1);
+      }
       var c = dot(n, N), ux = cross(n, N);
       if (len(ux) < 1e-6) throw new Error(nm + ' is parallel to the neutral plane: only faces that run along the direction of pull can be drafted.');
       var u = norm(ux), det = 1 - c * c;
       var x0 = add(scale(n, (face.w - c * d0) / det), scale(N, (d0 - c * face.w) / det));   // on the face plane and the neutral plane
-      var n2 = norm(rotateVec(n, u, ang));
-      recs[i] = { n: n, w: face.w, n2: n2, w2: dot(n2, x0), o: faceOutline(mesh, i) };
+      var n2 = norm(rotateVec(n, u, turnBy));
+      recs[i] = { n: n, w: face.w, n2: n2, w2: dot(n2, x0), o: faceOutline(mesh, i), cone: cone };
       if (!recs[i].o || !recs[i].o.loops.length) throw new Error(nm + ' has no outline: select it again.');
     });
     // the widest gap between a face and its drafted plane, measured along the face normal
@@ -1849,14 +2384,30 @@
       }
       return null;
     }
+    // a drafted facet's new plane in a wedge: the cone's record
+    function tagCone(z, r) {
+      if (!r.cone) return;
+      z.polygons.forEach(function (p) {
+        var m = p.plane.normal;
+        if (Math.abs(Math.abs(m.x * r.n2[0] + m.y * r.n2[1] + m.z * r.n2[2]) - 1) < 1e-9) p.surf = r.cone;
+      });
+    }
     var R = [], Ad = [];
     idx.forEach(function (i) {
-      var r = recs[i], pl = r.o.plane, cl = faceLoopsClassified(r.o), clips = [];
+      var r = recs[i], pl = r.o.plane, cl = faceLoopsClassified(r.o), clips = [], remClips = [];
       function grown(l, forAdd) {
         return offsetLoopVar(l, l.map(function (q, k) {
           var a = to3D(pl, q[0], q[1]), q2 = l[(k + 1) % l.length], b = to3D(pl, q2[0], q2[1]), nb = neighbour(i, a, b);
           if (!nb) return forAdd ? 0 : G;
-          if (!nb.convex) return 0;
+          // rfGH: across a concave edge to a drafted neighbour (hole facets, pocket corners) the removal must reach where
+          // the two new planes meet, so it grows and is clipped by the neighbour's new plane; without it a sliver of
+          // material stayed in every corner (a drafted hole came out 3 % small)
+          if (!nb.convex) {
+            if (forAdd || !recs[nb.j]) return 0;
+            remClips.push(recs[nb.j]);
+            var turnJ = Math.acos(Math.max(-1, Math.min(1, dot(mesh.faces[i].normal, mesh.faces[nb.j].normal))));
+            return Math.min(G, D * Math.tan(turnJ / 2));   // (no further: past the next facet of a hole it would cut what that facet keeps)
+          }
           if (forAdd) { var rj = recs[nb.j]; clips.push(rj ? [rj.n2, rj.w2] : [mesh.faces[nb.j].normal, mesh.faces[nb.j].w]); }
           return G;
         }));
@@ -1869,6 +2420,9 @@
       cl.holes.forEach(function (l) { holes.push(prism(l, pl, -D * 1.1, D * 1.1, f.id)); });
       if (rem.length) {
         var zr = unionTree(rem).clipByPlane(r.n2, r.w2).clipByPlane(N, d0);   // outside the new plane, pull side
+        remClips.forEach(function (c) { if (zr.polygons.length) zr = zr.clipByPlane(c.n2, c.w2); });
+        tagCone(zr, r);
+        remClips.forEach(function (c) { tagCone(zr, c); });
         if (zr.polygons.length) R.push(zr);
       }
       if (add_.length) {
@@ -1876,6 +2430,7 @@
         if (holes.length) za = za.subtract(unionTree(holes));
         za = za.clipByPlane(scale(r.n2, -1), -r.w2).clipByPlane(r.n, r.w).clipByPlane(scale(N, -1), -d0);   // inside new, outside old, against the pull
         clips.forEach(function (c) { if (za.polygons.length) za = za.clipByPlane(scale(c[0], -1), -c[1]); });
+        tagCone(za, r);
         if (za.polygons.length) Ad.push(za);
       }
     });
@@ -1977,6 +2532,9 @@
         var depth = rfDYray(body, P3, m3), hs = [0], best = Infinity;
         if (normal && isFinite(depth)) hs = [0, 0.25, 0.5, 0.75, 0.999].map(function (x) { return x * depth; });
         hs.forEach(function (h) { var t = rfDYray(body, add(P3, scale(m3, h)), u3); if (t < best) best = t; });
+        // rfGH: a free end of a Normal to Sketch rib whose extension reaches no wall: SolidWorks refuses ("The rib is not
+        // bounded properly", rfGD R20a, R20b, rfGA G24); a Parallel rib's end stays where it is drawn
+        if (normal && !isFinite(best)) throw new Error('The rib is not bounded properly: the extension of its sketch does not reach the part. Extend the sketch to a wall, or make the rib Parallel to Sketch.');
         if (isFinite(best) && best > 1e-9 && best < D) pts[k] = off(P, u2, best);
       });
       for (var i = 0; i + 1 < pts.length; i++) {

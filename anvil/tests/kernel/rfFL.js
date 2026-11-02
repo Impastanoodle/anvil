@@ -76,14 +76,15 @@
         [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]], [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]], [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]],
         [[1, 1, 0], [0, 1, 0], [0, 1, 1], [1, 1, 1]], [[0, 1, 0], [0, 0, 0], [0, 0, 1], [0, 1, 1]],
         [[0, 0, 1], [0.5, 0, 1], [0.5 - d, 0.5, 1], [0.5, 1, 1], [0, 1, 1]], [[0.5, 0, 1], [1, 0, 1], [1, 1, 1], [0.5, 1, 1]]];
-      var cube = CSG.fromPolygons(quads.map(poly)), before = Evaluate.checkBody(cube, { maxPairs: 1 }).openEdges.length;
-      assert(before > 0, 'the cracked cube is open: ' + before);
+      var cube = CSG.fromPolygons(quads.map(poly));   // (Evaluate no longer sees this crack: since rfGH bodyMesh closes a loop of open edges this thin)
+      function corners(c) { return c.polygons.reduce(function (n, q) { return n + q.vertices.length; }, 0); }
       var healed = CSG.healCracks(cube), after = Evaluate.checkBody(healed, { maxPairs: 1 });
+      assert(corners(healed) === corners(cube) + 1, 'the dented corner went into the right half\'s edge');
       assert(after.openEdges.length === 0 && after.nonManifoldEdges.length === 0, 'healed: open ' + after.openEdges.length + ', non-manifold ' + after.nonManifoldEdges.length);
       // the right half's edge now runs through the dented corner: the top is whole again, the solid the unit cube
       near(healed.volume(), 1, 1e-12, 'healed volume');
       var whole = CSG.fromPolygons(quads.slice(0, 5).map(poly).concat([poly([[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]])]));
       assert(CSG.healCracks(whole).polygons.every(function (p, i) { return p === whole.polygons[i]; }), 'a watertight solid comes back untouched');
-      return 'open ' + before + ' → 0';
+      return 'one corner inserted, closed';
     });
   })();

@@ -4,7 +4,10 @@
   // is sketched on, merged, thickness linked) on a 4 × 2 × 0.06 Base Flange. Exact volumes, flats, errors, round trips.
   (function () {
     group('rfDI: Rip (shelled box, closed corner, directions, errors) and Tab (into / away, flat, linked thickness)');
-    var W = 0.06, G = 0.03, LEN = 1 - W;   // the ripped length: the walls above the box's bottom
+    // SolidWorks 2022 (2026-11-02, rfGD rows corner rip_*): the rip runs the corner's whole length, through the box's
+    // bottom too: one side removes G·W·1 (four corners 0.670464 of 0.677664); both walls stop square S = T + g/√2 from
+    // the outer corner, the bottom's corner goes with them (four corners 0.652974). Was a 45° slit stopping at the bottom.
+    var W = 0.06, G = 0.03, LEN = 1, S = W + G / Math.SQRT2, BOTH = S * S * W + (S * S - (S - W) * (S - W)) * (1 - W);
     var BOX = 'p.units("in");\np.sketch("Top").rect(0, 0, 2, 2).end().extrude(1);\np.shell(' + W + ', [[1, 1, -1]]);\n';
     var OUT = [2, 0.5, 0], IN = [2 - W, 0.5, -W];   // the corner at x = 2, z = 0: outside and inside edges
     function rip(edges, gap, opts) { return 'p.rip(' + JSON.stringify(edges) + ', ' + gap + (opts ? ', ' + JSON.stringify(opts) : '') + ');\n'; }
@@ -18,7 +21,7 @@
       near(box().mp.volume, 4 - 1.88 * 1.88 * 0.94, 1e-9, 'box volume');
     });
 
-    test('rfDI: Rip side1 / side2 on the outside corner edge, gap .03: volume − .94 × .03 × .06 exactly (the bottom stays whole), named Rip1', function () {
+    test('rfDI: Rip side1 / side2 on the outside corner edge, gap .03: volume − 1 × .03 × .06 exactly (through the bottom, SolidWorks), named Rip1', function () {
       ['side1', 'side2'].forEach(function (d) {
         var r = build(BOX + rip([OUT], G, { direction: d }));
         noErrors(r);
@@ -30,18 +33,18 @@
       // side1: wall 1 (here the z = 0 wall: (n1 × n2)·d > 0 with d = +y) keeps the corner square, the x = 2 wall is cut back
       assert(b([2 - W / 2, 0.5, -W / 2]) && !b([2 - W - G / 2, 0.5, -W / 2]) && b([2 - W - G - 0.005, 0.5, -W / 2]), 'side2: z = 0 wall cut back from the x = 2 wall');
       assert(a([2 - W / 2, 0.5, -W / 2]) && !a([2 - W / 2, 0.5, -W - G / 2]) && a([2 - W / 2, 0.5, -W - G - 0.005]), 'side1: x = 2 wall cut back from the z = 0 wall');
-      assert(a([2 - W - G / 2, W / 2, -W / 2]), 'the bottom under the rip is whole');
+      assert(!a([2 - W / 2, W / 2, -W - G / 2]) && a([2 - W - 0.005, W / 2, -W - G / 2]) && a([2 - W / 2, W / 2, -W / 2]), 'the slot goes through the bottom, as wide as the wall, and no further');
     });
 
-    test('rfDI: Rip both directions: a slot .03 wide on the corner\'s bisector, volume − √2 × .94 × .03 × .06; the inside edge gives the same', function () {
+    test('rfDI: Rip both directions: both walls and the bottom stop square at T + g/√2 from the outer corner (SolidWorks 0.652974 for four corners); the inside edge gives the same', function () {
       var r = build(BOX + rip([OUT], G)), q = build(BOX + rip([IN], G)), s = build(BOX + rip([IN], G, { direction: 'side1' }));
       noErrors(r); noErrors(q); noErrors(s);
-      near(box().mp.volume - r.mp.volume, Math.SQRT2 * LEN * G * W, 1e-9, 'both removed');
+      near(box().mp.volume - r.mp.volume, BOTH, 1e-9, 'both removed');
       near(q.mp.volume, r.mp.volume, 1e-9, 'inside edge = outside edge');
       near(box().mp.volume - s.mp.volume, LEN * G * W, 1e-9, 'inside edge side1');
       consistentVolume(r);
       var t = r.build.body.pointTester();
-      assert(!t([2 - W / 2, 0.5, -W / 2]) && t([2 - W / 2, 0.5, -W - 0.01]) && t([2 - W - 0.01, 0.5, -W / 2]), 'the corner square is split, both walls go on');
+      assert(!t([2 - W / 2, 0.5, -W / 2]) && !t([2 - W / 2, 0.5, -S + 0.005]) && t([2 - W / 2, 0.5, -S - 0.005]) && t([2 - S - 0.005, 0.5, -W / 2]), 'the corner square is gone, both walls stop square at S');
     });
 
     test('rfDI: Rip all four corners (side1) of the box: 4 × the slot, still one body; per-edge direction', function () {
@@ -52,14 +55,14 @@
       assert(r.build.bodies.length === 1, 'one body: ' + r.build.bodies.length);
       var m = build(BOX + rip([{ at: OUT, direction: 'side2' }, [0, 0.5, -2]], G));
       noErrors(m);
-      near(box().mp.volume - m.mp.volume, LEN * G * W * (1 + Math.SQRT2), 1e-9, 'one side2 edge + one both edge');
+      near(box().mp.volume - m.mp.volume, LEN * G * W + BOTH, 1e-9, 'one side2 edge + one both edge');
     });
 
     test('rfDI: Rip on a part with a sheet uses the sheet\'s T; script round trip keeps edges, gap, directions', function () {
       var code = 'p.units("in");\np.sheet(' + W + ', ' + W + ', 0.5);\n' + BOX.split('\n').slice(1).join('\n') + rip([{ at: OUT, direction: 'side2' }, [0, 0.5, -2]], G);
       var r = build(code);
       noErrors(r);
-      near(box().mp.volume - r.mp.volume, LEN * G * W * (1 + Math.SQRT2), 1e-9, 'removed');
+      near(box().mp.volume - r.mp.volume, LEN * G * W + BOTH, 1e-9, 'removed');
       var s = K.generateScript(r.model);
       assert(/p\.rip\(\[\{"at":\[2,0\.5,0\],"direction":"side2"\},\[0,0\.5,-2\]\], 0\.03/.test(s), 'script line: ' + s.split('\n').filter(function (l) { return /rip/.test(l); }).join(' '));
       var r2 = build(s);

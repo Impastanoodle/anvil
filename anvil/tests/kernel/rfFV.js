@@ -44,8 +44,7 @@
       noErrors(r);
       rfFVclosed(r, 'vent at 3°');
       assert(merged >= 4, 'slivers merged: ' + merged);
-      var off = rfFVwith({ fatten: false }, at3), c = rfFVcount([off.body]);
-      assert(c.nm > 0, 'without the merge the wedges fold into non-manifold edges (' + c.nm + ')');
+      var off = rfFVwith({ fatten: false }, at3), c = rfFVcount([off.body]);   // (since rfGH bodyMesh cancels those folds itself: no assert on c.nm)
       nearRel(r.mp.volume, off.mp.volume, 1e-12, 'the merge moves no vertex');
       return merged + ' slivers merged; off: ' + c.nm + ' non-manifold';
     });
@@ -97,7 +96,7 @@
       var c = rfFVcount([back.body]), c0 = rfFVcount([off.body]);
       assert(c.open === 0, 'end face: open ' + c.open);
       assert(c.nm <= 3, 'end face: non-manifold ' + c.nm);
-      assert(c0.open > 0, 'without snapTwins the twin corner splits (' + c0.open + ' open)');
+      // (c0.open > 0 was asserted here: since rfGH bodyMesh closes that sliver itself, so snapTwins off shows nothing)
       nearRel(base.mp.volume - back.mp.volume, base.mp.volume - front.mp.volume, 1e-7, 'the end face takes what the sketch-plane face takes');   // head: 1e-7, not 1e-8: 1.3e-8 apart in the final pass of local-2026-10-30b (3 non-manifold edges left, a TODO row)
       return 'end face: open ' + c.open + ', non-manifold ' + c.nm + ' (snapTwins off: ' + c0.open + ' open)';
     });

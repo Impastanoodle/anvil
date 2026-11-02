@@ -31,17 +31,19 @@
       assert(sh.lines.visible.length < 40, 'Shaft isometric: ' + sh.lines.visible.length + ' visible lines (rims as facets?)');
       return n + ' chord ends on their circles; Shaft iso ' + sh.lines.visible.length + ' lines, ' + sh.ellipses.visible.length + ' ellipses';
     });
-    test('mitre seams drawn whole: the Tray\'s bend mitres reach the base corner, the Handlebar\'s mitre ellipses reach its outline (were 0.54-1.86 mm short); the Rounded handle\'s post outline ends at its root fillet (no 0.64 mm facet stub)', function () {
+    test('mitre seams drawn whole: the Tray\'s bend ends reach the base corner, the Handlebar\'s mitre ellipses reach its outline (were 0.54-1.86 mm short); the Rounded handle\'s post outline ends at its root fillet (no 0.64 mm facet stub)', function () {
       var cases = [['Tray', ['Top', 'Front', 'Right', 'Isometric']], ['Handlebar', ['Front', 'Top', 'Right', 'Isometric']], ['Rounded handle', ['Isometric', 'Front']]], bad = [], nE = 0;
       cases.forEach(function (c) {
         var r = build(ex9(c[0])); noErrors(r);
         c[1].forEach(function (vn) { var s = shortEnds(DW.projectView(r.mesh, vn, { display: 'hlr' }), 1.99); nE += s.n; s.bad.forEach(function (b) { bad.push(c[0] + ' ' + vn + ' ' + b); }); });
       });
       assert(!bad.length, bad.length + ' ends short: ' + bad.slice(0, 5).join('; '));
-      // the Tray's Top view: each mitre runs from the wall's inner corner to the base corner
-      var tt = DW.projectView(build(ex9('Tray')).mesh, 'Top', { display: 'hlr' }).lines.visible;
-      [[0, 0, -2, 2], [120, 0, 122, 2], [0, -80, -2, -82], [120, -80, 122, -82]].forEach(function (d) {
-        assert(tt.some(function (l) { return (Math.hypot(l[0] - d[0], l[1] - d[1]) < 1e-6 && Math.hypot(l[2] - d[2], l[3] - d[3]) < 1e-6) || (Math.hypot(l[2] - d[0], l[3] - d[1]) < 1e-6 && Math.hypot(l[0] - d[2], l[1] - d[3]) < 1e-6); }), 'Tray Top: no mitre line ' + d.join(','));
+      // the Tray's Top view (lane flanges: corners as SolidWorks' auto miter): each bend's end runs from the base corner to
+      // its wall's inner corner, which stops R − gap/√2 = 1.8232 past that corner
+      var tt = DW.projectView(build(ex9('Tray')).mesh, 'Top', { display: 'hlr' }).lines.visible, dd = 2 - 0.25 / Math.SQRT2;
+      function ttEnd(x, y) { return tt.some(function (l) { return Math.hypot(l[0] - x, l[1] - y) < 1e-3 || Math.hypot(l[2] - x, l[3] - y) < 1e-3; }); }
+      [[0, 0, -1, 1], [120, 0, 1, 1], [0, -80, -1, -1], [120, -80, 1, -1]].forEach(function (d) {
+        assert(ttEnd(d[0], d[1]) && ttEnd(d[0] + 2 * d[2], d[1] + dd * d[3]) && ttEnd(d[0] + dd * d[2], d[1] + 2 * d[3]), 'Tray Top: the bend ends at ' + d.slice(0, 2).join(','));
       });
       // the Rounded handle's post: its outline stops where the root fillet starts (y = 9: v = 9 × 0.8165)
       var rh = DW.projectView(build(ex9('Rounded handle')).mesh, 'Isometric', { display: 'hlr' }).lines.visible;

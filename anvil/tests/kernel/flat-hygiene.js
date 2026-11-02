@@ -52,9 +52,9 @@
       });
       return Object.keys(CASES).length + ' parts, loops ' + det.join(' ');
     });
-    test('flat-hygiene: the Tray\'s back walls (one plane, two flanges): the blank has no stray vertex at the mitre (24 points, none 3.7e-4 off a corner) and a hole on each back wall reaches the flat', function () {
+    test('flat-hygiene: the Tray\'s back walls (one plane, two flanges): the blank has no stray vertex at the corners (16 points since the corners are the SolidWorks square notch, none 3.7e-4 off a corner) and a hole on each back wall reaches the flat', function () {
       var r = flatOf(TRAY), BA = K.bendAllowance(Math.PI / 2, 2, 2, 0.71), o = r.flat.loops[0];
-      assert(o.length === 24, 'outline points ' + o.length + ' (25 with the stray vertex)');
+      assert(o.length === 16, 'outline points ' + o.length + ' (17 with the stray vertex)');
       assert(!o.some(function (p) { return Math.abs(p[0] + 2) > 1e-9 && Math.abs(p[0] + 2) < 1e-3; }), 'no point a hair off x = −2: ' + JSON.stringify(o.filter(function (p) { return Math.abs(p[0] + 2) < 1e-3; })));
       var h = flatOf(TRAY + '\np.sketch("Front", 80).circle(15, 10, 2).circle(105, 10, 2).cut(10);');
       var holes = h.flat.loops.slice(1).filter(function (l) { return Math.abs(Math.abs(K.signedArea(l)) - polyCircleArea(2)) < 1e-6 * polyCircleArea(2); });

@@ -34,7 +34,13 @@
     return -1;
   }
   var PROF = polyMoments(flangeProfile(Math.PI / 2, 2, 2, 20)); // { area, mx } of the 90° R2 T2 L20 profile
-  test('mitred square corner adds exactly the first moment of the profile on each side', function () {
+  // lane flanges: SolidWorks' auto miter (M03, M24; its gap, default 0.25 mm here, none = default) stops both walls
+  // square, gap/√2 short of the other's inside face; here (Bend Outside, R = T = 2) that is d = R − gap/√2 past the corner.
+  // Each bend tapers from the base corner at its start to the wall's end at its end, so it gains d/2 of its section.
+  // These tests held the old bisector mitre (2 × the first moment of the section, 45° faces), which SolidWorks does not make.
+  var MITER_S = Math.PI / 4 * 12, MITER_W = 20 * 2;   // exact bend section, wall section
+  function miterAdds(g) { return (MITER_S / 2 + MITER_W) * (2 - g / Math.SQRT2); }
+  test('mitred square corner: each wall runs R − gap/√2 past the corner and its bend tapers to it (SolidWorks: Butt, bend closed)', function () {
     var one = build(SHEET + '\np.flange(20, [[0, 2, 30]]);');
     noErrors(one);
     nearRel(polyVol(one.mp) - 12000, PROF.area * 60, 1e-6, 'one flange = profile area × edge length');
@@ -43,40 +49,33 @@
     noErrors(two); noErrors(mit);
     var f = mit.model.features[mit.model.features.length - 1];
     assert(f.type === 'flange' && f.miter === true, 'miter flag stored: ' + JSON.stringify(f));
-    // each flange is extended past the shared vertex (0, 2, 0) up to the 45° bisector plane x = z: a slice dA at
-    // distance o from the edge reaches o beyond the corner, so the corner gains ∫∫ o dA per flange
-    nearRel(polyVol(mit.mp) - polyVol(two.mp), 2 * PROF.mx, 1e-4, 'mitre volume = 2 × first moment');
+    nearRel(mit.mp.volume - two.mp.volume, 2 * miterAdds(0.25), 1e-6, 'both flanges run on past the corner');
     nearVec(mit.mp.bbox.min, two.mp.bbox.min, 1e-6, 'bbox.min unchanged'); nearVec(mit.mp.bbox.max, two.mp.bbox.max, 1e-6, 'bbox.max unchanged');
     consistentVolume(mit);
     var rev = build(SHEET + '\np.flange(20, [[50, 2, 0], [0, 2, 30]], { miter: true });');
     noErrors(rev);
     nearRel(rev.mp.volume, mit.mp.volume, 1e-9, 'pick order does not matter');
-    return 'corner adds ' + fmt(mit.mp.volume - two.mp.volume) + ' (2·M = ' + fmt(2 * PROF.mx) + ')';
+    return 'corner adds ' + fmt(mit.mp.volume - two.mp.volume);
   });
-  test('mitre gap opens the corner by roughly gap × profile area and leaves 45° faces', function () {
+  test('a mitre gap of its own: both walls stop square gap/√2 short of the other\'s inside face, no 45° face', function () {
     var mit = build(SHEET + '\np.flange(20, [[0, 2, 30], [50, 2, 0]], { miter: true });');
     var gap = build(SHEET + '\np.flange(20, [[0, 2, 30], [50, 2, 0]], { miter: true, miterGap: 1 });');
     noErrors(mit); noErrors(gap);
-    assert(gap.mp.volume < mit.mp.volume, 'the gap removes material: ' + gap.mp.volume + ' vs ' + mit.mp.volume);
     var removed = mit.mp.volume - gap.mp.volume;
-    // gap measured along the edges: 1 × area; measured normal to the bisector plane: √2 × area — accept both
-    assert(removed > 0.8 * PROF.area * 1 && removed < 1.6 * PROF.area * 1, 'gap removed ' + fmt(removed) + ', expected about ' + fmt(PROF.area) + '…' + fmt(Math.SQRT2 * PROF.area));
-    var s = Math.SQRT1_2;
-    assert(mitreFaceIndex(gap.mesh, [s, 0, -s]) >= 0, 'no face parallel to the bisector plane x = z (normal ±(1, 0, −1)/√2)');
+    nearRel(removed, 2 * (miterAdds(0.25) - miterAdds(1)), 1e-6, 'the gap removes material');
+    var s = Math.SQRT1_2, ins = gap.body.pointTester(), d = 2 - Math.SQRT1_2;
+    assert(mitreFaceIndex(gap.mesh, [s, 0, -s]) < 0, 'no face on the bisector plane x = z');
+    assert(ins([-3, 12, 0.01 - d]) && !ins([-3, 12, -0.01 - d]), 'the x = −3 wall stops at z = ' + (-d));
     consistentVolume(gap);
     return 'gap removed ' + fmt(removed);
   });
-  test('three mitred edges around the sheet: two mitred corners, one feature', function () {
+  test('three mitred edges around the sheet: two closed corners, one feature', function () {
     var plain = build(SHEET + '\np.flange(20, [[50, 2, 0], [100, 2, 30], [50, 2, 60]]);');
     var mit = build(SHEET + '\np.flange(20, [[50, 2, 0], [100, 2, 30], [50, 2, 60]], { miter: true });');
     noErrors(plain); noErrors(mit);
     nearRel(polyVol(plain.mp) - 12000, PROF.area * (100 + 60 + 100), 1e-6, 'three plain flanges');
-    nearRel(polyVol(mit.mp) - polyVol(plain.mp), 2 * 2 * PROF.mx, 1e-4, 'two mitred corners add 2 × 2M');
+    nearRel(mit.mp.volume - plain.mp.volume, 4 * miterAdds(0.25), 1e-6, 'two corners, two walls each');
     consistentVolume(mit);
-    var s = Math.SQRT1_2;
-    var mg = build(SHEET + '\np.flange(20, [[50, 2, 0], [100, 2, 30], [50, 2, 60]], { miter: true, miterGap: 0.5 });');
-    noErrors(mg);
-    assert(mitreFaceIndex(mg.mesh, [s, 0, s]) >= 0 && mitreFaceIndex(mg.mesh, [s, 0, -s]) >= 0, 'with a gap both corners show a 45° face');
   });
   // L-shaped sheet on Top (v → −z): x ∈ [0,100] for z ∈ [−30, 0] plus x ∈ [0,60] for z ∈ [−60, −30]; area 4800
   var LSHEET = 'p.sheet(2, 2, 0.71);\np.sketch("Top").polyline([[0, 0], [100, 0], [100, 30], [60, 30], [60, 60], [0, 60]], true).end().baseFlange(2);';
@@ -134,15 +133,13 @@
     assert(!/miter|relief/.test(plain), 'defaults are silent: ' + plain);
     return lines;
   });
-  test('flat pattern of a mitred corner: bend strips end on the mitre line, no step in the blank', function () {
+  test('flat pattern of a mitred corner: a square notch at the wall ends, as SolidWorks (M03): every strip stays square out to its wall\'s end line', function () {
     // Top frame: sketch x = X, sketch y = -Z. The x = 0 edge (z in [0, 60]) unfolds to sketch x < 0, the z = 0 edge
-    // (x in [0, 100]) unfolds to sketch y > 0; the shared corner (0, 2, 0) is sketch (0, 0). Before the fix each bend
-    // strip stayed edge-length and the wall stuck out past it by its mitre extension, leaving the step vertices
-    // (-BA, 0) and (0, BA) in the outline. Now the strip's end edge runs straight from the base corner to the wall's
-    // extended corner, so (0, 0) is a vertex of the outer loop and the step vertices are gone.
+    // (x in [0, 100]) unfolds to sketch y > 0; the shared corner (0, 2, 0) is sketch (0, 0). The walls end d past it, so the
+    // notch's corner is (−d, d) and the old mitre's trapezoid strips (base corner (0, 0) a vertex of the outline) are gone.
     var r = build(SHEET + '\np.flange(20, [[0, 2, 30], [50, 2, 0]], { miter: true });');
     noErrors(r);
-    var R = 2, T = 2, L = 20, BA = K.bendAllowance(Math.PI / 2, R, T, 0.71);
+    var L = 20, BA = K.bendAllowance(Math.PI / 2, 2, 2, 0.71), d = 2 - 0.25 / Math.SQRT2;
     var flat = K.flatPattern(r.model, r.build, r.mesh);
     assert(flat.loops.length === 1, 'one outline loop, got ' + flat.loops.length);
     assert(flat.bends.length === 2, 'two bends, got ' + flat.bends.length);
@@ -150,22 +147,12 @@
     assert(K.signedArea(outer) > 0, 'outer loop is CCW');
     function hasVertex(loop, p, tol) { return loop.some(function (q) { return Math.hypot(q[0] - p[0], q[1] - p[1]) <= tol; }); }
     function show(loop) { return loop.map(function (q) { return '(' + fmt(q[0]) + ', ' + fmt(q[1]) + ')'; }).join(' '); }
-    assert(hasVertex(outer, [0, 0], 1e-6), 'the base corner (0, 0) must be a vertex of the outline: ' + show(outer));
-    assert(!hasVertex(outer, [-BA, 0], 1e-6), 'old step vertex (-BA, 0) is still in the outline: ' + show(outer));
-    assert(!hasVertex(outer, [0, BA], 1e-6), 'old step vertex (0, BA) is still in the outline: ' + show(outer));
-    for (var i = 0; i < outer.length; i++) {
-      var p = outer[i], q = outer[(i + 1) % outer.length];
-      assert(Math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-6, 'zero-length or duplicate consecutive vertices at ' + i + ': ' + show(outer));
-    }
-    var area = K.signedArea(outer);
-    var strips = 60 * (BA + L) + 100 * (BA + L);
-    var lo = 6000 + strips + 2 * R * L, hi = 6000 + strips + 2 * (R + T) * L + (R + T) * BA + 1e-6;
-    assert(area > lo, 'blank area ' + fmt(area) + ' should exceed base + strips + 2·R·L = ' + fmt(lo));
-    assert(area <= hi, 'blank area ' + fmt(area) + ' exceeds base + strips + 2·(R+T)·L + (R+T)·BA = ' + fmt(hi));
-    // the envelope is unchanged: the walls end at BA + L beyond their edges
+    assert(outer.length === 6, 'six corners: ' + show(outer));
+    [[-d, d], [-d, BA + L], [-(BA + L), d], [100, BA + L], [100, -60], [-(BA + L), -60]].forEach(function (p) { assert(hasVertex(outer, p, 1e-6), 'corner ' + p + ' of ' + show(outer)); });
+    near(K.signedArea(outer), (100 + BA + L) * (60 + BA + L) - (BA + L - d) * (BA + L - d), 1e-6, 'blank area');
     near(flat.bbox.max[0] - flat.bbox.min[0], 100 + BA + L, 1e-6, 'flat width');
     near(flat.bbox.max[1] - flat.bbox.min[1], 60 + BA + L, 1e-6, 'flat height');
-    return 'blank ' + fmt(area) + ' (bounds ' + fmt(lo) + ' .. ' + fmt(hi) + '), ' + outer.length + ' outline points';
+    return 'blank ' + fmt(K.signedArea(outer)) + ', ' + outer.length + ' outline points';
   });
   test('Material Outside flanges on two edges that share a corner unfold into one blank with two bends', function () {
     // Sheet on Top: rect(0, 0, 100, 60) → x ∈ [0,100], y ∈ [0,2], z ∈ [−60,0] (Top sketch v maps to −z). Flange 1 on the

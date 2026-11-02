@@ -17,20 +17,25 @@
     // Anvil's bend: the annulus R … R + T as 8 chords per 90° (flangeProfile); the sharp corner it replaces: the kite
     // (R + T)² less the inner R² square
     var FILL = RT * RT - R * R, WEDGE = 0.5 * 8 * Math.sin(Math.PI / 16) * (RT * RT - R * R);
-    var LB = 2 - 2 * RT;   // each bend between the corner reliefs
-    // the ripped box inside one corner cube (R + T): the bottom's corner, then the two walls above it less the 'both' slot
-    var CUBE = RT * RT * W + (RT - W) * (2 * RT * W - W * W - Math.SQRT2 * G * W);
+    // SolidWorks 2022 (2026-11-02, M15, ripbends_both_box): Rip 'both' takes the bottom's corner with the walls, S = T +
+    // g/√2 square, so the bends stop there, S from the corner, meet nothing and need no corner relief; flat a cross, 4
+    // squares off a 3.8027 square, volume 0.635938. (The (R + T) corner cube was the old 45° slit's relief.)
+    var LB = 2 - 2 * (W + G / Math.SQRT2);   // each bend between the rip's corner notches
     var BA = Math.PI / 2 * (R + K5 * W), FLAT = 2 * (1 - RT) + (2 - 2 * RT) + 2 * BA;
     var ripped0 = null, ib0 = null;
     function ripped() { if (!ripped0) { ripped0 = build(BOX + RIP); noErrors(ripped0); } return ripped0; }
     function ib() { if (!ib0) { ib0 = build(BOX + RIP + IB); noErrors(ib0); } return ib0; }
 
-    test('rfDQ: Insert Bends on the ripped shelled box (R .06, bottom fixed): T measured .06, four bends, volume = ripped − 4·Lb·(kite − bend) − 4 corner cubes, exact', function () {
+    test('rfDQ: Insert Bends on the ripped shelled box (R .06, bottom fixed): T measured .06, four bends, volume = ripped − 4·Lb·(kite − bend), exact', function () {
       var r = ib();
       near(+r.model.sheet.thickness, W, 1e-12, 'T'); near(+r.model.sheet.bendRadius, R, 1e-12, 'R'); near(+r.model.sheet.kFactor, K5, 1e-12, 'K');
       var f = r.model.features[r.model.features.length - 1];
       assert(f.type === 'insertBends' && f.sheetBase === true && f.name === 'Process-Bends1', JSON.stringify(f));
-      near(polyVol(r.mp), polyVol(ripped().mp) - 4 * LB * (FILL - WEDGE) - 4 * CUBE, 1e-9, 'volume');
+      // (the two bends' kites overlap a little where they run past each other at a corner: + 3.1e-5 in all)
+      near(polyVol(r.mp), polyVol(ripped().mp) - 4 * LB * (FILL - WEDGE), 5e-5, 'volume');
+      var fb = flatOf(r), area = fb.loops.reduce(function (s, l, i) { return s + (i === 0 ? K.signedArea(l) : -Math.abs(K.signedArea(l))); }, 0);
+      near(area * W, 0.635937886, 1e-6, 'flat volume, SolidWorks M15');
+      assert(fb.loops[0].length === 12, 'the blank is a cross with 12 corners: ' + fb.loops[0].length);
       assert(r.build.bodies.length === 1, 'one body: ' + r.build.bodies.length);
       consistentVolume(r);
       assert((r.build.flanges[f.id] || []).length === 4, 'four bend records');
@@ -67,8 +72,7 @@
       near(flatOf(d).size[0], 1 + 2 + 1 - 2 * 0.1, 1e-9, 'flat = A + B + C − 2·BD (outside 1 + 2 + 1)');
       var r2 = build(BOX + RIP + 'p.insertBends([1, 0, -1], { radius: 0.03 });\n'), RT2 = 0.03 + W, F2 = RT2 * RT2 - 0.03 * 0.03, W2 = 0.5 * 8 * Math.sin(Math.PI / 16) * F2;
       noErrors(r2);
-      var C2 = RT2 * RT2 * W + (RT2 - W) * (2 * RT2 * W - W * W - Math.SQRT2 * G * W);
-      near(polyVol(r2.mp), polyVol(ripped().mp) - 4 * (2 - 2 * RT2) * (F2 - W2) - 4 * C2, 1e-9, 'R .03 volume');
+      near(polyVol(r2.mp), polyVol(ripped().mp) - 4 * LB * (F2 - W2), 5e-6, 'R .03 volume');
     });
 
     test('rfDQ: Convert to Sheet Metal of the solid 2 × 2 × 1 box (bottom fixed, the four bottom edges, T .06, R .06, gap .03) = the shelled, ripped, inserted box', function () {
@@ -137,7 +141,8 @@
 
     test('rfDQ: errors: an unripped box (a ring of bends), no relief where bends meet, a solid (no walls T thick), a fixed face that is no wall, Convert without bend edges', function () {
       assert(/close a ring.*rip a corner first/.test(errOf(build(BOX + 'p.insertBends([1, 0, -1]);\n'))), 'ring: ' + errOf(build(BOX + 'p.insertBends([1, 0, -1]);\n')));
-      var e2 = build(BOX + RIP + 'p.insertBends([1, 0, -1], { autoRelief: "none" });\n');
+      // corners cut open above a whole bottom: the bottom's edges meet (a Rip takes the bottom's corner, so they would not)
+      var e2 = build(BOX + 'p.sketch("Top", 0.06).rect(0, 0, 0.09, 0.09).rect(1.91, 0, 0.09, 0.09).rect(0, 1.91, 0.09, 0.09).rect(1.91, 1.91, 0.09, 0.09).end().cut(0.94);\n' + 'p.insertBends([1, 0, -1], { autoRelief: "none" });\n');
       assert(/two bends meet at .*turn Auto Relief on/.test(errOf(e2)), 'none: ' + errOf(e2));
       var e3 = build(SOLID + 'p.insertBends([1, 0, -1], { thickness: 0.06 });\n');
       assert(/no sharp corner between two walls 0\.06 thick/.test(errOf(e3)), 'solid: ' + errOf(e3));

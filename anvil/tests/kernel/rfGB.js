@@ -1,8 +1,8 @@
   // --- rfGB (2026-10-30, lane GB: wrong solids with no error in the feature stack) --- Mirror / pattern of a Fillet or
   // Chamfer re-applies it to the copied edges (kernel-rebuild.js edgeFamily); Intersect keeps regions that touch only
   // along an edge as separate bodies and refuses a region that touches itself (kernel-features.js ixJoin /
-  // applyIntersect); Shell offsets curved facets exactly (faceDepth, offsetRevRecord) and refuses a thickness above a
-  // convex round's radius; Draft refuses a face tangent to a round it would leave behind.
+  // applyIntersect); Shell offsets curved facets exactly (faceDepth, offsetRevRecord; a thickness above a convex round's
+  // radius gives a sharp inner corner, rfGH); Draft refuses a face tangent to a round it would leave behind.
   (function () {
     group('rfGB: mirror of a fillet, Intersect along an edge, shell of rounded parts, draft beside a round');
     var PI = Math.PI, U = 'p.units("in");\n';
@@ -104,9 +104,11 @@
       nearRel(r.mp.volume, (12 - (4 - PI) * 0.25) * 2 - (3.8 * 2.8 - (4 - PI) * 0.16) * 1.9, 1e-7, 'rounded box − its offset');
       return 'volume ' + r.mp.volume.toFixed(9);
     });
-    test('rfGB: a shell thicker than a convex rim round is refused in a plain sentence, as SolidWorks (Ø3 × 0.5 disk, R 0.03 rim, shell 0.0625; fuzz pin 2)', function () {
+    test('rfGB: a shell thicker than a convex rim round builds: 0.692314, SolidWorks rfGD R09a (Ø3 × 0.5 disk, R 0.03 rim, shell 0.0625; fuzz pin 2; was a refusal claimed from SolidWorks)', function () {
       var r = build(U + 'p.sketch("Front").polyline([[0, 0], [1.5, 0], [1.5, 0.5], [0, 0.5]]).end().revolve(360);\np.fillet(0.03, [[1.5, 0.5, 0]]);\np.shell(0.0625, [[1.4, 0.5, 0]]);\n');
-      return rfGBrefused(r, /^Failed to shell the part: the thickness 0\.0625 is greater than the 0\.03 radius of a rounded face/);
+      noErrors(r); rfGBclosed(r);
+      nearRel(r.mp.volume, 0.6923141, 1e-6, 'SolidWorks');
+      return 'volume ' + r.mp.volume.toFixed(7);
     });
     // Ø3 × 0.5 disk, R 0.1 rim round, shell 0.0625 open top (T < r): the inside is the offset (tube 0.0375 round the
     // round's centre circle at radius 1.4, y 0.4); the wall ends straight up from the offset edge (OpenCascade's)
@@ -127,10 +129,12 @@
       noErrors(r); rfGBclosed(r);
       return 'volume ' + r.mp.volume.toFixed(6);
     });
-    test('rfGB TODO: shell open top of a disk with a rim round tangent to the opening = closed form (the wall under the opening ends square to the last facet: a lip about 1 % heavy)', function () {
+    test('rfGB: shell open top of a disk with a rim round tangent to the opening = closed form = SolidWorks 0.697804 (rfGD R09d; the wall ends straight down from the tangent edge, rfGH)', function () {
       var r = rfGBdiskOpen();
-      var want = PI * 2.25 * 0.5 - rfGBcorner(0.1, 1.4) - (PI * 1.4375 * 1.4375 * 0.3375 + PI * 1.96 * 0.1 + rfGBquarter(0.0375, 1.4)), rel = (r.mp.volume - want) / want;
-      return Math.abs(rel) <= 1e-5 ? 'matches now: promote to a hard test' : 'TODO Anvil ' + r.mp.volume.toFixed(9) + ' / closed form ' + want.toFixed(9) + ' (rel ' + rel.toExponential(2) + ')';
+      var want = PI * 2.25 * 0.5 - rfGBcorner(0.1, 1.4) - (PI * 1.4375 * 1.4375 * 0.3375 + PI * 1.96 * 0.1 + rfGBquarter(0.0375, 1.4));
+      nearRel(want, 0.6978044, 1e-6, 'SolidWorks');
+      nearRel(r.mp.volume, want, 1e-7, 'closed form');
+      return 'volume ' + r.mp.volume.toFixed(7);
     });
     test('rfGB: shell 0.1 open top of a ring OD 3 / ID 1 × 1 with a R 0.15 outer rim round is closed (4 open edges before)', function () {
       var r = build(U + 'p.sketch("Front").polyline([[0.5, 0], [1.5, 0], [1.5, 1], [0.5, 1]]).end().revolve(360);\np.fillet(0.15, [[1.5, 1, 0]]);\np.shell(0.1, [[1.0, 1, 0]]);\n');

@@ -96,7 +96,7 @@
     'Enclosure lid': 31747.799209639525,
     'Mirrored clevis': 2 * (14400 + (360 + legacyCircleArea(6)) * 12 - legacyCircleArea(3) * 12),   // rfFS (2026-10-30): the cross hole now goes through the arm (it missed: an empty cut is an error)
     'Sheet-metal U-bracket': 23862.694338157933,
-    'Tray': 35750.4546182302,
+    'Tray': 35388.4226756402,   // lane flanges: was 35750.45 (bisector mitres); its corners are SolidWorks' auto miter now (M03: 2.482514708 in³)
     'Normal Cut Bracket': 15780.118294909678,
     'Chamfered block': 96398.42743159662,   // rfFM (2026-10-29): exact; the old pin counted the chamfer-notched R6 facets as full cylinder
     'Rounded handle': 30673.638463025945,   // rfFF: the root fillet is a revolved torus patch (a chain of cylinder pieces gave 30674.73950036209)

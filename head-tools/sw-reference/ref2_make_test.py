@@ -157,6 +157,7 @@ HEAD = r"""  // --- rfGD (2026-11-02, lane swref: SolidWorks reference, second p
       if (s.f) s.f.forEach(function (q, i) { if (!a.f || !(Math.abs(a.f[i] - q) <= TOL)) bad.push('flat[' + i + '] Anvil ' + (a.f ? a.f[i].toFixed(6) : 'none') + ' / SolidWorks ' + q); });
       return bad;
     }
+    function rfGDswbuilt(bad) { return bad.length ? 'TODO ' + bad.slice(0, 8).join('; ') : 'matches SolidWorks now: promote to a hard test'; }
     function rfGDrow(row) {
       var name = row.id + (row.d ? ' (' + row.d + ')' : '');
       if (row.kind === 'both') test('rfGD: both refuse: ' + name + (row.text ? '; SolidWorks: ' + row.text : ''), function () {
@@ -177,7 +178,7 @@ HEAD = r"""  // --- rfGD (2026-11-02, lane swref: SolidWorks reference, second p
       });
       else test('rfGD TODO: ' + row.kind + ': ' + name, function () {
         var a = rfGDnums(row);
-        if (row.kind === 'swbuilds') return a.errs.length ? 'TODO Anvil refuses (' + a.errs[0] + ') / SolidWorks builds volume ' + row.sw.v + ', ' + row.sw.n + ' bodies' : 'builds now: compare, then promote to a hard test';
+        if (row.kind === 'swbuilds') return a.errs.length ? 'TODO Anvil refuses (' + a.errs[0] + ') / SolidWorks builds volume ' + row.sw.v + ', ' + row.sw.n + ' bodies' : rfGDswbuilt(rfGDoff(row, a));
         if (row.kind === 'anvilbuilds') return a.errs.length ? 'refuses now: promote to a hard test' : 'TODO Anvil builds volume ' + a.v.toFixed(6) + ' / SolidWorks refuses: ' + row.text;
         var bad = rfGDoff(row, a);
         return bad.length ? 'TODO ' + bad.slice(0, 8).join('; ') : 'matches SolidWorks now: promote to a hard test';

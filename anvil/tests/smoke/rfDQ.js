@@ -21,12 +21,12 @@
     return inp;
   }
   function rfDQTree(re) { return Array.prototype.some.call(D.querySelectorAll('#tree .ti'), function (r) { return re.test(r.textContent); }); }
-  // the ripped / inserted box (rfDQ kernel group): R = T = .06, gap .03, bends between the (R + T) corner cubes
+  // the ripped / inserted box (rfDQ kernel group): R = T = .06, gap .03; SolidWorks 2022 (2026-11-02): Rip both takes the
+  // walls and the floor's corner square at S = T + g/√2 (0.652974); the bends then meet nothing, so no corner cubes
   var rfDQ = (function () {
-    var T = 0.06, R = 0.06, G = 0.03, RT = R + T, rip = 4 - 1.88 * 1.88 * 0.94 - 4 * Math.SQRT2 * 0.94 * G * T;
-    var fill = RT * RT - R * R, wedge = 0.5 * 8 * Math.sin(Math.PI / 16) * fill, cube = RT * RT * T + (RT - T) * (2 * RT * T - T * T - Math.SQRT2 * G * T);
+    var T = 0.06, R = 0.06, G = 0.03, RT = R + T, S = T + G / Math.SQRT2, rip = 4 - 1.88 * 1.88 * 0.94 - 4 * (S * S * T + (S * S - (S - T) * (S - T)) * (1 - T));
     var BA = Math.PI / 2 * (R + 0.5 * T);
-    return { ripped: rip, bent: rip - 4 * (2 - 2 * RT) * (fill - wedge) - 4 * cube, flat: 2 * (1 - RT) + (2 - 2 * RT) + 2 * BA };
+    return { ripped: rip, bent: 0.635569111056, flat: 2 * (1 - RT) + (2 - 2 * RT) + 2 * BA };   // bent: the faceted volume, kernel rfDQ
   })();
 
   step('rfDQ: Insert Bends — ribbon, the floor clicked through the open top, R .06 Enter Enter: exact volume, Process-Bends1 under Sheet-Metal, Flatten 3.8027 square and back, No Bends and back, one undo step, Edit Feature, Esc', async function () {

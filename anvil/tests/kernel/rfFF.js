@@ -93,15 +93,17 @@
       assert(rfFFfaces(r) === 26 && kinds.sph === 8 && kinds.cyl === 12, 'faces ' + rfFFfaces(r) + ' ' + JSON.stringify(kinds));
       assert(K.meshQuality(r.mesh).slivers === 0, 'slivers');
     });
-    test('unequal radii at a corner: vertical edges R5, then the top outline R2 runs round them (cylinders + tori, exact); R5 over R2 corners is refused', function () {
+    test('unequal radii at a corner: vertical edges R5, then the top outline R2 runs round them (cylinders + tori, exact); R5 over R2 corners builds, the straight rounds meeting past each corner round (this test pinned a refusal; SolidWorks builds that shape, R11a 3.7434737, rfGG)', function () {
       var r = build('p.box(40, 30, 20);\np.fillet(5, [[0, 10, 0], [40, 10, 0], [0, 10, 30], [40, 10, 30]]);\np.fillet(2, [[20, 20, 0]]);'); noErrors(r);
       var A = rfFFspA(2), d = rfFFspD(2);
       nearRel(r.mp.volume, 24000 - 4 * rfFFspA(5) * 20 - A * (2 * 30 + 2 * 20) - 2 * PI * (5 - d) * A, 1e-9, 'volume');
       assert(rfFFfaces(r) === 18 && rfFFkinds(r).tor === 4, 'faces ' + rfFFfaces(r) + ' ' + JSON.stringify(rfFFkinds(r)));
       assert(K.meshQuality(r.mesh).slivers === 0, 'slivers');
-      var bad = build('p.box(40, 30, 20);\np.fillet(2, [[0, 10, 0], [40, 10, 0], [0, 10, 30], [40, 10, 30]]);\np.fillet(5, [[20, 20, 0]]);');
-      var msg = Object.keys(bad.errors).map(function (id) { return bad.errors[id]; }).join(' ');
-      assert(/too large for the round edge of radius 2/.test(msg), 'error: ' + msg);
+      var base = build('p.box(40, 30, 20);\np.fillet(2, [[0, 10, 0], [40, 10, 0], [0, 10, 30], [40, 10, 30]]);');
+      var big = build('p.box(40, 30, 20);\np.fillet(2, [[0, 10, 0], [40, 10, 0], [0, 10, 30], [40, 10, 30]]);\np.fillet(5, [[20, 20, 0]]);'); noErrors(big);
+      var ck = Evaluate.checkBody(big.body, { maxPairs: 1 });
+      assert(!ck.openEdges.length && !ck.nonManifoldEdges.length, 'closed');
+      nearRel(base.mp.volume - big.mp.volume, rfFFspA(5) * (140 - 8 * rfFFspD(5)), 2.5e-2, 'removed: four mitred rounds, less what the R2 corners already took');
     });
     test('STEP: the rim fillet on TOROIDAL_SURFACE, the chamfer on CONICAL_SURFACE, the rounded box on 8 SPHERICAL + 12 CYLINDRICAL_SURFACE, every edge used twice; the rim re-imports to the exact volume', function () {
       if (!X) fail('exchange.js is not loaded');

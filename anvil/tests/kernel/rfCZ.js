@@ -102,7 +102,7 @@
     });
 
     test('rfCZ: reference geometry is no pattern source (Builder), is not a cut, names Axis1 / Point1 / Coordinate System1, and a missing reference is an error on that feature only', function () {
-      // rfFN: was rect(0, 0, …): the three blocks met only along the Y axis (zero thickness, refused as in SolidWorks)
+      // rfFN: was rect(0, 0, …): the three blocks met only along the Y axis (contact alone; refused then, separate bodies since rfGH, as SolidWorks)
       var r = build('p.sketch("Front").rect(1, 0, 10, 10).end().extrude(5);\np.axis("line", ["y"]);\np.point("on", ["origin"]);\np.csys({});\np.circularPattern({ axis: "y", count: 3 });');
       noErrors(r);
       var F = r.model.features;

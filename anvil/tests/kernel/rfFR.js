@@ -112,7 +112,6 @@
     // a Ø8 hole through a 40 × 30 × 20 block, its axis 8 from a 40 long top edge: R9 / chamfer 9 on that edge run into it
     var BOXHOLE = 'p.units("mm"); p.box(40, 20, 30); p.hole("Top", 32, -10, 8, { offset: 30 });\n';
     var POCKET = 'p.units("mm"); p.box(40, 20, 30);\np.sketch("Top", 30).rect(28, -14, 8, 8).cut(5, { reverse: true });\n';
-    var REFUSE = /^Failed to create (fillet|chamfer)\. The (radius|distance) may be too large for the selected edges\.$/;
     function rfFRint(f, a, b) { var n = 20000, s = 0; for (var i = 0; i < n; i++) s += f(a + (b - a) * (i + 0.5) / n); return s * (b - a) / n; }
     function rfFRtight(r, label) {
       noErrors(r);
@@ -147,22 +146,17 @@
       nearRel(base.mp.volume - f.mp.volume, ex, 2e-5, 'removed');
       return 'removed ' + (base.mp.volume - f.mp.volume).toFixed(6) + ', exact ' + ex.toFixed(6);
     });
-    test('rfFR: R3.981 on the rim of a Ø6 hole 5 from a Ø20 boss: the setback runs under the boss; the boss is kept whole and its wall carried down to the round (removed = the round\'s corner ring less its part under the boss footprint, 81.938 to 8e-4: the facets; OpenCascade removes 78.51); still refused when it runs off the plate (R16)', function () {
+    test('rfFR: R3.981 on the rim of a Ø6 hole 5 from a Ø20 boss: the setback runs under the boss; the boss is kept whole and the ball rests on its root (SolidWorks 40351.12115: this test held the plain round cut by the boss footprint, 3.48 mm³ light, rfGG); R16, off the plate, builds too (SolidWorks 39019.561, was pinned refused)', function () {
       var B = 'p.units("mm"); p.box(60, 60, 10);\np.sketch("Top", 10).circle(30, -30, 10).extrude(15);\np.hole("Top", 45, -30, 6, { offset: 10 });\n';
-      var base = build(B), f = build(B + 'p.fillet(3.981, [[47.971178, 10, 29.707365]]);');
+      var f = build(B + 'p.fillet(3.981, [[47.971178, 10, 29.707365]]);');
       rfFRtight(f, 'R3.981');
-      var R = 3.981, a = 3, s = a + R, V = 0, NR = 400, NT = 2000;
-      for (var i = 0; i < NR; i++) {
-        var rho = a + (s - a) * (i + 0.5) / NR, h = R - Math.sqrt(R * R - (s - rho) * (s - rho)), ang = 0;
-        for (var j = 0; j < NT; j++) { var t = 2 * PI * (j + 0.5) / NT, x = 15 + rho * Math.cos(t), z = rho * Math.sin(t); if (x * x + z * z >= 100) ang += 2 * PI / NT; }
-        V += h * rho * ang * (s - a) / NR;
-      }
-      nearRel(base.mp.volume - f.mp.volume, V, 1.5e-3, 'removed');
+      nearRel(f.mp.volume, 40351.1211501, 1e-5, 'SolidWorks');
       // the boss: its top face and full height are untouched
       assert(Math.abs(f.mp.bbox.max[1] - 25) < 1e-9, 'boss top ' + f.mp.bbox.max[1]);
       var big = build(B + 'p.fillet(16, [[47.971178, 10, 29.707365]]);');
-      assert(REFUSE.test(Object.keys(big.errors).map(function (k) { return big.errors[k]; }).join(' | ')), 'R16 refused');
-      return 'removed ' + (base.mp.volume - f.mp.volume).toFixed(5) + ', model ' + V.toFixed(5);
+      rfFRtight(big, 'R16');
+      nearRel(big.mp.volume, 39019.5607681, 2e-4, 'R16 SolidWorks');
+      return 'V ' + f.mp.volume.toFixed(5) + ', R16 ' + big.mp.volume.toFixed(5);
     });
     test('rfFR: K.fitProbe.where names the place of a refusing miss: R9 on a 2 mm shelled box\'s outer edge breaks through the wall (\'face\'), R12 on the block edge runs off the 20 mm face (\'off\')', function () {
       var sh = build('p.units("mm"); p.box(40, 20, 30); p.shell(2, [[20, 30, 10]]);\np.fillet(9, [[0, 0, 10]]);');

@@ -522,16 +522,62 @@ var OcctKernel = (function () {
       if (outers.length !== 1) throw new Error(what);
       return { loop: outers[0], profile: prof };
     }
-    // Loft through the sections' outer loops, smooth as SolidWorks (Anvil's own loft is ruled between sections)
+    // lane lofts: Geom_BSplineSurface of one Kernel loft patch (kernel-features.js loftPatches: poles[u][v])
+    function patchFace(pa) {
+      var nu = pa.poles.length, nv = pa.poles[0].length, poles = N(new oc.TColgp_Array2OfPnt_2(1, nu, 1, nv));
+      pa.poles.forEach(function (row, a) { row.forEach(function (q, b) { poles.SetValue(a + 1, b + 1, P(q)); }); });
+      function reals(xs) { var o = N(new oc.TColStd_Array1OfReal_2(1, xs.length)); xs.forEach(function (x, i) { o.SetValue(i + 1, x); }); return o; }
+      function ints(xs) { var o = N(new oc.TColStd_Array1OfInteger_2(1, xs.length)); xs.forEach(function (x, i) { o.SetValue(i + 1, x); }); return o; }
+      var surf;
+      if (pa.weights) {
+        var wts = N(new oc.TColStd_Array2OfReal_2(1, nu, 1, nv));
+        pa.weights.forEach(function (row, a) { row.forEach(function (w, b) { wts.SetValue(a + 1, b + 1, w); }); });
+        surf = new oc.Geom_BSplineSurface_2(poles, wts, reals(pa.uKnots), reals(pa.vKnots), ints(pa.uMults), ints(pa.vMults), 3, pa.degV, false, false);
+      } else surf = new oc.Geom_BSplineSurface_1(poles, reals(pa.uKnots), reals(pa.vKnots), ints(pa.uMults), ints(pa.vMults), 3, pa.degV, false, false);
+      return N(N(new oc.BRepBuilderAPI_MakeFace_8(N(new oc.Handle_Geom_Surface_2(surf)), 1e-7)).Face());   // the handle owns the surface
+    }
+    // the first (b = 0) or last v row of a patch as an edge of a cap
+    function patchRimEdge(pa, last) {
+      var nu = pa.poles.length, poles = N(new oc.TColgp_Array1OfPnt_2(1, nu)), kn = N(new oc.TColStd_Array1OfReal_2(1, pa.uKnots.length)), mu = N(new oc.TColStd_Array1OfInteger_2(1, pa.uKnots.length)), wts = null;
+      pa.poles.forEach(function (row, a) { poles.SetValue(a + 1, P(row[last ? row.length - 1 : 0])); });
+      pa.uKnots.forEach(function (x, i) { kn.SetValue(i + 1, x); mu.SetValue(i + 1, pa.uMults[i]); });
+      if (pa.weights) {
+        wts = N(new oc.TColStd_Array1OfReal_2(1, nu));
+        pa.weights.forEach(function (row, a) { wts.SetValue(a + 1, row[0]); });
+      }
+      var c = wts ? new oc.Geom_BSplineCurve_2(poles, wts, kn, mu, 3, false, true) : new oc.Geom_BSplineCurve_1(poles, kn, mu, 3, false);
+      return N(N(new oc.BRepBuilderAPI_MakeEdge_24(N(new oc.Handle_Geom_Curve_2(c)))).Edge());
+    }
+    // Loft through the sections' outer loops, by SolidWorks' rule. Three or more sections: the natural cubic spline of
+    // Anvil's own loft, as exact bicubic faces; OpenCascade's own smoothing in ThruSections is a different surface (+7e-3
+    // on S29), and so is the way it pairs up the points of differing outlines. Two sections are ruled: polygon → circle
+    // as Anvil's blend (ThruSections pairs the circle's points differently, +2e-3 on S28), others ruled ThruSections.
     function loftTool(f) {
       var ids = f.sketches || [];
       if (ids.length < 2) throw new Error('Loft needs at least two profile sketches.');
-      var ts = N(new oc.BRepOffsetAPI_ThruSections(true, false, 1e-6));
-      ids.forEach(function (id) {
+      var secs = ids.map(function (id) {
         var s = sketchById(id, 'Loft sketch not found.'), pl = K.resolvePlane(s.plane, m, planes);
         var o = outerLoop(s, 'Each loft sketch must contain exactly one closed profile.');
-        ts.AddWire(loopWire(o.loop, o.profile, pl));
+        return { plane: pl, loop: o.loop, prof: o.profile, pts: o.loop.pts.map(function (p) { return K.to3D(pl, p[0], p[1]); }) };
       });
+      var patched = K._.loftPatches(secs);
+      if (patched) {
+        var sew = N(new oc.BRepBuilderAPI_Sewing(1e-6, true, true, true, false));
+        patched.faces.forEach(function (pa) { sew.Add(patchFace(pa)); });
+        [false, true].forEach(function (last) {
+          var mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+          patched.faces.forEach(function (pa) { mw.Add_1(patchRimEdge(pa, last)); });
+          if (!mw.IsDone()) throw new Error('OpenCascade could not close a loft end profile.');
+          sew.Add(N(N(new oc.BRepBuilderAPI_MakeFace_15(N(mw.Wire()), true)).Face()));
+        });
+        sew.Perform(R());
+        var shells = explore(N(sew.SewedShape()), ENUM.TopAbs_SHELL);
+        if (shells.length !== 1) throw new Error('OpenCascade could not close the loft into a solid.');
+        var solid = N(N(new oc.BRepBuilderAPI_MakeSolid_3(N(oc.TopoDS.Shell_1(shells[0])))).Solid());
+        return volumeOf(solid) < 0 ? N(solid.Reversed()) : solid;
+      }
+      var ts = N(new oc.BRepOffsetAPI_ThruSections(true, true, 1e-6));
+      secs.forEach(function (s) { ts.AddWire(loopWire(s.loop, s.prof, s.plane)); });
       ts.Build(R());
       if (!ts.IsDone()) throw new Error('OpenCascade could not loft these sections.');
       return N(ts.Shape());
@@ -841,13 +887,33 @@ var OcctKernel = (function () {
       var walls = lay.parts.map(function (p) {
         // a part whose band holds a hole / slot of the sheet (p.voids): no overlap strip, and the cut wrapped round the bend
         var cutters = p.voids ? bendCutters(src, srcCSG || (srcCSG = shapeToCSG(src)), p.plane, p.band, lay.section, p.BA, false) : [];
-        var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(flangeSection(p.voids ? noOverlap(lay.section, false) : lay.section, p.plane), p.t0, p.plane), Vec(V.scale(p.plane.n, p.t1 - p.t0)), false, true)).Shape());
+        // a Miter Flange's square end: the bend's taper, and the overlap strip stops at the base's corner
+        (p.tapers || []).forEach(function (l) { cutters.push(cylinderCutter(l, p.plane, lay.section, p.BA)); });
+        if (!p.voids) (p.tails || []).forEach(function (r) { cutters.push(prismOf(K.miterTail(lay.section), p.plane, r.t0, r.t1)); });
+        // a butt corner (Kernel.flangeLayout's p.taper): the sweep runs on past both ends, the bend's ends are tapered from
+        // the base corner to the wall's end and only then are the walls cut square, so the taper does not have to find
+        // its corner on the tangent line where bend meets wall at the very end of the sweep.
+        var over = p.taper ? 0.02 * p.taper.BA : 0;
+        var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(flangeSection(p.voids || p.taper ? noOverlap(lay.section, false) : lay.section, p.plane), p.t0 - over, p.plane), Vec(V.scale(p.plane.n, p.t1 - p.t0 + 2 * over)), false, true)).Shape());
+        if (p.taper) {
+          tool = boolMany('cut', tool, p.taper.loops.map(function (l) { return cylinderCutter(taperLoop(l, p.taper.BA), p.plane, lay.section, p.taper.BA); }), 'OpenCascade could not taper the bend.');
+          var w0 = V.dot(p.plane.n, p.plane.origin);
+          tool = clipKeep(clipKeep(tool, p.plane.n, w0 + p.t0), V.scale(p.plane.n, -1), -(w0 + p.t1));
+        }
         if (cutters.length) tool = boolMany('cut', tool, cutters, 'OpenCascade could not cut the hole across the bend.');
         p.clips.forEach(function (c) { tool = clipKeep(tool, c.n, c.w); });
         return tool;
       });
       if (walls.length) body = boolMany('fuse', body, walls, 'OpenCascade could not join the bodies.');
       bodies[k] = body;
+    }
+    // a taper triangle [(0, base corner), (BA, wall end), (0, wall end)], in either order, as a cutter's outline: the
+    // slanted side is carried on past both ends of the bend and the rest runs well outside the sweep, so the cut ends on
+    // no face of it. Past BA the slanted side has left the wall's t range: the wall is not touched.
+    function taperLoop(l, BA) {
+      var q = l.filter(function (p) { return p[0] > 0; })[0], b = l.filter(function (p) { return p[0] === 0 && p[1] !== q[1]; })[0];
+      var e = 0.05 * BA, k = (q[1] - b[1]) / BA, at = function (s) { return b[1] + k * s; }, out = q[1] + (k > 0 ? 1 : -1) * e;
+      return [[-e, at(-e)], [BA + e, at(BA + e)], [BA + e, out + k * e], [-e, out + k * e]];
     }
     // --- cutbend: a hole, slot or notch cut in the flat before an edge flange or a sketched bend that crosses the bend
     // zone stays cut (Kernel.bendVoids / Kernel.wrapCut, as Anvil's kernel). The layout found the voids on the coarse
@@ -948,7 +1014,9 @@ var OcctKernel = (function () {
       });
       if (!mw.IsDone()) throw new Error('OpenCascade could not outline the cut across the bend.');
       var wire = N(mw.Wire());
-      oc.BRepLib.BuildCurves3d_2(wire);
+      // (lane flanges: 1e-9, not BuildCurves3d_2's 1e-5: a cut's helical edge was 1e-6 off, enough to tilt a planar face that
+      // ends on it past the drawing's depth tolerance, so the face hid its own edge)
+      oc.BRepLib.BuildCurves3d_1(wire, 1e-9, oc.GeomAbs_Shape.GeomAbs_C1, 14, 0);
       return wire;
     }
     // lane FZ: prismOf with the loop's true edges (outlineWire on the plane: a round hole's chords become its circle),
@@ -1090,7 +1158,7 @@ var OcctKernel = (function () {
       lay.bends.forEach(function (bd) {
         // holes / slots / notches across the strip (bd.voids): the bend meets both pieces face to face, the cut wrapped round it
         var cutters = bd.voids ? bendCutters(src, srcCSG, bd.plane, bd.band, lay.section, lay.BA, true) : [];
-        var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(flangeSection(bd.voids ? noOverlap(lay.section, true) : lay.section, bd.plane), bd.t0, bd.plane), Vec(V.scale(bd.plane.n, bd.t1 - bd.t0)), false, true)).Shape());
+        var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(flangeSection(bd.voids ? noOverlap(bd.section, true) : bd.section, bd.plane), bd.t0, bd.plane), Vec(V.scale(bd.plane.n, bd.t1 - bd.t0)), false, true)).Shape());
         if (cutters.length) tool = boolMany('cut', tool, cutters, 'OpenCascade could not cut the hole across the bend.');
         parts.push(isIdentity(bd.motion) ? tool : transformed(tool, trsfOf(bd.motion)));
       });
@@ -1100,34 +1168,12 @@ var OcctKernel = (function () {
       bodies[k] = unify(body);
       return lay;
     }
-    // lane DC2: Jog from a sketch line (as Kernel.buildSketchJog): a Sketched Bend at the line, then a second one on the
-    // moved wall a straight length g further (a sketch made here on the moved face, folding back, Bend Outside), both
-    // with exact bend arcs. The offset reference, g and the second line are worked out as the CSG kernel does.
+    // lane DC2: Jog from a sketch line (as Kernel.buildSketchJog): both bends are one Sketched Bend layout on the flat
+    // sheet (Kernel.jogBendFeature works out the offset reference and the riser g), built with exact bend arcs.
     function sketchJogOp(f) {
       // lane DK: Fix projected length stretches the sheet at the line first (Kernel.buildSketchJog): Anvil's solid stays
       if (f.fixLength) throw unsupportedErr('Jog with Fix projected length');
-      var sheet = K.sheetParams(m), T = +sheet.thickness, Rr = f.radius != null ? +f.radius : +sheet.bendRadius;
-      var deg = f.angle == null ? 90 : +f.angle, A = deg * Math.PI / 180, D = +f.offset, ref = f.offsetRef || 'outside';
-      if (!isFinite(D) || !isFinite(A)) throw new Error('Jog offset and angle must be a number each.');
-      if (!(A > 0.05 && A < Math.PI - 0.05)) throw new Error('Jog angle must be between 3° and 177°.');
-      var inner = ref === 'inside' ? D : ref === 'overall' ? D - 2 * T : D - T;
-      var g = (inner - 2 * Rr * (1 - Math.cos(A)) + T * Math.cos(A)) / Math.sin(A);
-      if (!(g > -1e-9)) throw new Error('Jog offset is too small for this bend radius and angle: at least ' + (Math.round(K.jogMinOffset(A, Rr, T, ref) * 1e6) / 1e6) + ' (' + ref + ' offset).');
-      g = Math.max(g, 0);
-      var position = f.position || 'centerline';
-      var lay1 = sketchedBendOp({ id: f.id, sketch: f.sketch, fixed: f.fixed || null, angle: deg, position: position, reverse: !!f.reverse, radius: Rr, bendAllowance: f.bendAllowance });
-      if (!lay1 || lay1.bends.length !== 1 || lay1.pieces.length !== 1) throw new Error('Jog: the sketch must hold exactly one line, on a flat face of the sheet.');
-      var G = lay1.pieces[0].motion, mdir = lay1.bends[0].plane.x, BA = lay1.BA, shift = lay1.shift;
-      var sk = sketches[f.sketch] || K.findFeature(m, f.sketch), pl = K.resolvePlane(sk.plane, m, planes), ln = null;
-      (sk.entities || []).forEach(function (e) { if (!ln && e.t === 'line' && !e.construction && !(K.noProfileEntity && K.noProfileEntity(sk, e))) ln = e; });
-      var P1 = K.to3D(pl, +ln.x1, +ln.y1), P2 = K.to3D(pl, +ln.x2, +ln.y2), Dm = BA - shift + g;
-      function mP(M, q) { return V.add([V.dot(M.R[0], q), V.dot(M.R[1], q), V.dot(M.R[2], q)], M.t); }
-      function mD(M, q) { return [V.dot(M.R[0], q), V.dot(M.R[1], q), V.dot(M.R[2], q)]; }
-      var Q1 = K.to2D(pl, V.add(P1, V.scale(mdir, Dm))), Q2 = K.to2D(pl, V.add(P2, V.scale(mdir, Dm)));
-      var pl2 = { custom: true, origin: mP(G, pl.origin), x: mD(G, pl.x), y: mD(G, pl.y), n: mD(G, pl.n) };
-      var mid = V.scale(V.add(P1, P2), 0.5), fixed2 = mP(G, V.add(mid, V.scale(mdir, Dm - 0.05 * T)));
-      sketchedBendOp({ id: f.id, sketch: 'jog2', fixed: fixed2, angle: deg, position: 'bendOutside', reverse: !f.reverse, radius: Rr, bendAllowance: f.bendAllowance },
-        { jog2: { id: 'jog2', type: 'sketch', plane: pl2, entities: [{ t: 'line', x1: Q1[0], y1: Q1[1], x2: Q2[0], y2: Q2[1] }] } });
+      sketchedBendOp(K.jogBendFeature(f, m, { sketches: sketches, planes: planes }));
     }
     // Break Corner (lane CP; as Kernel.buildBreakCorner, from Kernel.breakCornerLayout found on the bodies'
     // tessellation): one prism per corner, its section's fillet an exact arc; the rebuild cuts the tool (a registered cut)

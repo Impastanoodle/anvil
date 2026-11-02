@@ -353,7 +353,7 @@ var CSG = (function () {
   // CSG.options.sphereTest = false turns off splitPolygon's bounding-sphere shortcut (same results, slower).
   // CSG.options.heal = false turns off healCracks (rfFL) on boolean results; healWide, healFill, healDrop: see healCracks.
   // CSG.options.retryExact = false turns off the exact retry of a cracked boolean (rfFQ); retryMin / retryMax: see retryExact.
-  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5, sphereTest: true, heal: true, healWide: 2 * EPSILON, healDrop: false, healFill: false, retryExact: true, retryMin: 3, retryMax: 300, fatten: true, restoreFar: true, snapTwins: true };
+  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5, sphereTest: true, heal: true, healWide: 2 * EPSILON, healDrop: false, healFill: false, retryExact: true, retryMin: 3, retryMax: 300, fatten: true, restoreFar: true, snapTwins: true, recap: true };
   // FRAG: the bounding box of the fragments the last restoreWhole kept (null: everything may be cut), the region where
   // healCracks looks for cracks
   var FRAG = null;
@@ -990,12 +990,15 @@ var CSG = (function () {
     HEAL_LEFT = 0; EXACT = false; FUZZY = 0; FRAG = null;
     var r = raw.call(A, B);
     var left = HEAL_LEFT, fuzzy = FUZZY, frag = FRAG;
-    if (left && fuzzy && OPTIONS.retryExact && left >= OPTIONS.retryMin && left <= OPTIONS.retryMax) {
+    // lane lofts: the cracks of a boolean grow with the outline it cuts, so a fine body (a spline loft's 16000 facets) may
+    // pass retryMax without being cracked itself; and a retry that takes the open edges down at least tenfold wins over
+    // a few more slivers (a planar cut of G18: 66 open edges to 1, 165 to 4, with fattenSlivers still to run)
+    if (left && fuzzy && OPTIONS.retryExact && left >= OPTIONS.retryMin && left <= Math.max(OPTIONS.retryMax, (A.polygons.length + B.polygons.length) / 16)) {
       var r2;
       RETRY.runs++;
       EXACT = true; HEAL_LEFT = 0;
       try { r2 = raw.call(A, B); } finally { EXACT = false; }
-      if (HEAL_LEFT < left && (!HEAL_LEFT || thinCount(r2.polygons, FRAG) <= thinCount(r.polygons, frag))) { r = r2; left = HEAL_LEFT; frag = FRAG; RETRY.won++; }
+      if (HEAL_LEFT < left && (!HEAL_LEFT || HEAL_LEFT * 10 <= left || thinCount(r2.polygons, FRAG) <= thinCount(r.polygons, frag))) { r = r2; left = HEAL_LEFT; frag = FRAG; RETRY.won++; }
     }
     HEAL_LEFT = left;
     // rfFV: slivers under the meshes' 1e-6 weld merged into a coplanar neighbour (fattenSlivers)
@@ -1009,7 +1012,107 @@ var CSG = (function () {
       var sp = snapTwins(r.polygons, frag);
       if (sp !== r.polygons) { var sb = r.bounds; r = CSG.fromPolygons(sp); r.bounds = sb; }
     }
+    // lane lofts: a planar face the boolean shredded into slivers, laid again from its outline (rebuildCaps)
+    if (frag && OPTIONS.recap) {
+      var cp = rebuildCaps(r.polygons, frag);
+      if (cp !== r.polygons) { var cb = r.bounds; r = CSG.fromPolygons(cp); r.bounds = cb; }
+    }
     return r;
+  }
+  // Lane lofts. A flat cut across a finely faceted curved side: the tool's face is clipped by the plane of every facet,
+  // and where facets are nearly coplanar (the two triangles of a quad on a gently curved loft) their traces on the face
+  // are nearly collinear, so the cap comes out as dozens of overlapping-looking wedges under the 1e-6 weld. Patching the
+  // wedges one at a time (fattenSlivers, the mesh's T-junction splits) leaves edges used four times here or there: a
+  // false zero-thickness refusal or the part in pieces. But the cap's outline is known exactly: it is the edges the other
+  // polygons have on that plane, split symmetrically by the boolean. So a planar face with slivers (width <= FAT_MIN,
+  // RECAP.minParts polygons or more, one tag) is laid again as a fan of each closed outline from its area centroid: no
+  // vertex of the outline moves and nothing is left narrower than its own edge. Left as it was when the outline does
+  // not close into simple loops, a loop runs the wrong way (a hole), a loop is not star-shaped from its centroid, or the
+  // new area differs from the old by more than RECAP.area: then the slivers stay, as before. CSG.options.recap = false
+  // turns it off; CSG.recapStats counts the faces seen and the faces laid again.
+  var RECAP = { seen: 0, done: 0, minParts: 4, area: 1e-6 };
+  function rebuildCaps(polys, box) {
+    var near = [], seeds = [], i, k;
+    for (i = 0; i < polys.length; i++) {
+      if (box && polygonFar(polys[i], box, 4 * HEAL)) continue;
+      near.push(i);
+      if (!polys[i].surf && loopWidth(posOf(polys[i])) <= FAT_MIN) seeds.push(i);
+    }
+    if (!seeds.length) return polys;
+    var seen = {}, dead = {}, fresh = [];
+    seeds.forEach(function (s) {
+      var S = polys[s], n = S.plane.normal, w = S.plane.w;
+      var pk = Math.round(n.x * 1e7) + ',' + Math.round(n.y * 1e7) + ',' + Math.round(n.z * 1e7) + ',' + Math.round(w * 1e7);
+      if (seen[pk]) return;
+      seen[pk] = true;
+      var cl = [], others = [], ok = true;
+      near.forEach(function (j) {
+        var P = polys[j], m = P.plane.normal;
+        if (m.x * n.x + m.y * n.y + m.z * n.z > 1 - 1e-9 && P.vertices.every(function (v) { var d = n.dot(v.pos) - w; return d <= 1e-9 && d >= -1e-9; })) {
+          cl.push(j);
+          if (P.shared !== S.shared || P.surf || tagOf(P.face) !== tagOf(S.face) || tagOf(P.part) !== tagOf(S.part)) ok = false;
+        } else others.push(P);
+      });
+      if (!ok || cl.length < RECAP.minParts) return;
+      RECAP.seen++;
+      // the outline: the other polygons' edges on the plane, reversed
+      var next = new Map(), at = new Map();
+      others.forEach(function (P) {
+        var vs = P.vertices, m = vs.length;
+        for (var q = 0; q < m; q++) {
+          var a = vs[q].pos, b = vs[(q + 1) % m].pos, da = n.dot(a) - w, db = n.dot(b) - w;
+          if (da > 1e-9 || da < -1e-9 || db > 1e-9 || db < -1e-9) continue;
+          var ka = pkey(a), kb = pkey(b);
+          if (ka === kb) continue;
+          if (next.has(kb)) ok = false;
+          next.set(kb, ka); at.set(ka, a); at.set(kb, b);
+        }
+      });
+      if (!ok || !next.size) return;
+      var loops = [], used = {};
+      next.forEach(function (x, start) {
+        if (used[start]) return;
+        var loop = [], key = start;
+        while (key != null && !used[key]) { used[key] = true; loop.push(at.get(key)); key = next.get(key); }
+        if (key !== start) ok = false;
+        else loops.push(loop);
+      });
+      if (!ok) return;
+      // area vector of a loop along n, and of the polygons it replaces
+      function areaOf(L, o) {
+        var A = 0, cx = 0, cy = 0, cz = 0, m = L.length;
+        for (var q = 0; q < m; q++) {
+          var a = L[q], b = L[(q + 1) % m], ax = a.x - o.x, ay = a.y - o.y, az = a.z - o.z, bx = b.x - o.x, by = b.y - o.y, bz = b.z - o.z;
+          var t = (ay * bz - az * by) * n.x + (az * bx - ax * bz) * n.y + (ax * by - ay * bx) * n.z;
+          A += t; cx += t * (ax + bx); cy += t * (ay + by); cz += t * (az + bz);
+        }
+        return { a: A / 2, c: A ? [o.x + cx / (3 * A), o.y + cy / (3 * A), o.z + cz / (3 * A)] : null };
+      }
+      var before = 0, after = 0, o0 = S.vertices[0].pos, parts = [];
+      cl.forEach(function (j) { before += areaOf(posOf(polys[j]), o0).a; });
+      loops.forEach(function (L) {
+        var r = areaOf(L, o0), c;
+        if (!(r.a > 0)) { ok = false; return; }
+        after += r.a;
+        c = L[0].clone(); c.x = r.c[0]; c.y = r.c[1]; c.z = r.c[2];
+        for (var q = 0; q < L.length; q++) {
+          var a = L[q], b = L[(q + 1) % L.length], ax = a.x - c.x, ay = a.y - c.y, az = a.z - c.z, bx = b.x - c.x, by = b.y - c.y, bz = b.z - c.z;
+          if ((ay * bz - az * by) * n.x + (az * bx - ax * bz) * n.y + (ax * by - ay * bx) * n.z < 0) { ok = false; return; }
+          parts.push([c, a, b]);
+        }
+      });
+      if (!ok || Math.abs(after - before) > RECAP.area * Math.abs(before)) return;
+      cl.forEach(function (j) { dead[j] = true; });
+      parts.forEach(function (t) {
+        var pp = new Polygon(t.map(function (x) { return new Vertex(x.clone()); }), S.shared, S.plane.clone());
+        if (S.face != null) pp.face = S.face;
+        if (S.part != null) pp.part = S.part;
+        fresh.push(pp);
+      });
+      RECAP.done++;
+    });
+    if (!fresh.length) return polys;
+    return polys.filter(function (p, j) { return !dead[j]; }).concat(fresh);
   }
   // polygons near the last boolean's fragments (FRAG) narrower than 1e-6 (twice the area over the longest edge): the
   // slivers a 1e-6 mesh weld collapses into open edges
@@ -1494,6 +1597,7 @@ var CSG = (function () {
   CSG.healStats = healStats;
   CSG.retryStats = RETRY;
   CSG.fatStats = FAT;
+  CSG.recapStats = RECAP;
   CSG.healCracks = function (csg) { FUZZY = 1; FRAG = null; return CSG.fromPolygons(healCracks(csg.polygons.slice())); };
   return CSG;
 })();

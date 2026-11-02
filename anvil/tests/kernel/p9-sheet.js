@@ -105,7 +105,7 @@
         { opts: 'hemType: "open", hemPosition: "inside"', A: Math.PI, r: T / 4, L: 0.375 - (T / 4 + T), inside: true },
         { opts: 'hemType: "closed"', A: Math.PI, r: 0.05 / 25.4, L: 0.375 - (0.05 / 25.4 + T) },   // lane DI2: SolidWorks' 0.1 mm closed gap
         { opts: 'hemType: "closed", hemPosition: "inside"', A: Math.PI, r: 0.05 / 25.4, L: 0.375 - (0.05 / 25.4 + T), inside: true },
-        { opts: 'hemType: "teardrop"', A: 1.5 * Math.PI, r: R, L: R - 0.2 / 25.4 },             // tail back down, stopping 0.2 mm short (along it) of the wall (DI2)
+        { opts: 'hemType: "teardrop", hemAngle: 225', A: 1.25 * Math.PI, r: R },                // tail back down, stopping 0.2 mm short (along it) of the wall (DI2); 270° is refused, as SolidWorks
         { opts: 'hemType: "teardrop", hemPosition: "inside", hemRadius: 0.08, hemAngle: 225', A: 1.25 * Math.PI, r: 0.08, inside: true },
         { opts: 'hemType: "rolled", hemPosition: "inside", hemRadius: 0.1, hemAngle: 225', A: 1.25 * Math.PI, r: 0.1, L: 0, inside: true },
         { opts: 'hemType: "rolled", hemPosition: "outside"', A: 1.5 * Math.PI, r: R, L: 0 }
@@ -124,7 +124,7 @@
         out.push(fmt(h.flat.size[1]));
       });
       var bad = build(WALL + 'p.hem(0.375, [[3, 1.5, ' + T + ']], { hemType: "teardrop", hemAngle: 150 });');
-      assert(/between 181° and 359°/.test(Object.keys(bad.errors).map(function (k) { return bad.errors[k]; }).join(' ')), 'tear drop angle checked');
+      assert(/more than 180° and less than 270°/.test(Object.keys(bad.errors).map(function (k) { return bad.errors[k]; }).join(' ')), 'tear drop angle checked');
       var thr = ''; try { build(WALL + 'p.hem(0.375, [[3, 1.5, ' + T + ']], { hemType: "crimp" });'); } catch (e) { thr = e.message; }
       assert(/hemType must be one of/.test(thr), 'unknown hem type refused: ' + thr);
       return 'flats ' + out.join(', ');

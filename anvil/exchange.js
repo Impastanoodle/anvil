@@ -136,7 +136,7 @@ var Exchange = (function () {
       if (i == null) { i = pos.length / 3; vmap[k] = i; pos.push(x, y, z); }
       return i;
     }
-    (body && body.polygons || []).forEach(function (p) {
+    (body && body.polygons || []).forEach(function (p, pi) {
       var idx = [];
       p.vertices.forEach(function (v) {
         var i = vid(v.pos.x, v.pos.y, v.pos.z);
@@ -144,13 +144,69 @@ var Exchange = (function () {
       });
       while (idx.length > 1 && idx[0] === idx[idx.length - 1]) idx.pop();
       if (idx.length >= 3) {
-        var q = { idx: idx, n: [p.plane.normal.x, p.plane.normal.y, p.plane.normal.z], w: p.plane.w };
+        var q = { idx: idx, n: [p.plane.normal.x, p.plane.normal.y, p.plane.normal.z], w: p.plane.w, src: pi };
         if (p.surf) q.srf = p.surf; // analytic surface record (true curves): carried to mesh.triSurf
         polys.push(q);
       }
     });
     splitTJunctions(pos, polys);
+    dropSpikes(polys);
+    fillSliverLoops(pos, polys);
     return fanPolygons(pos, polys);
+  }
+  // rfGH (the 968 hole grid): where chords of two holes lie within the BSP's 1e-5 of one plane, a face's corner lands up
+  // to ~2e-5 from the wall's: a hair-thin wedge 2.5e-2 long is left open at that corner, on the top and on the bottom.
+  // No vertex needs to move: a small closed loop of open edges no wider than SLIVER is simply closed with a face of its
+  // own. Volume and area change by the sliver's (1e-7 of a square unit); bigger holes in a mesh stay open, as they must.
+  var SLIVER = 5e-5;
+  function fillSliverLoops(pos, polys) {
+    var open = openEdgeList(polys);
+    if (!open.length || open.length > 200) return;
+    var from = {}, used = {};
+    open.forEach(function (e) { (from[e.a] = from[e.a] || []).push(e); });
+    function P(i) { return [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]; }
+    open.forEach(function (e0) {
+      if (used[e0.a + '>' + e0.b]) return;
+      var loop = [e0.a], at = e0.b;
+      while (at !== e0.a && loop.length <= 6 && from[at] && from[at].length === 1) { loop.push(at); at = from[at][0].b; }
+      if (at !== e0.a || loop.length < 3 || loop.length > 6) return;
+      // width: the farthest corner from the line through the two farthest corners
+      var far = 0, A = P(loop[0]), B = A, wid = 0;
+      loop.forEach(function (a) { loop.forEach(function (b) { var d = len(sub(P(a), P(b))); if (d > far) { far = d; A = P(a); B = P(b); } }); });
+      if (far < 1e-12) return;
+      var u = scale(sub(B, A), 1 / far);
+      loop.forEach(function (a) { var w = sub(P(a), A); wid = Math.max(wid, len(sub(w, scale(u, dot(w, u))))); });
+      if (wid > SLIVER) return;
+      var idx = loop.slice().reverse(), area = [0, 0, 0];
+      for (var i = 1; i + 1 < idx.length; i++) area = add(area, cross(sub(P(idx[i]), P(idx[0])), sub(P(idx[i + 1]), P(idx[0]))));
+      var al = len(area);
+      if (al < 1e-30) return;
+      var n = scale(area, 1 / al);
+      polys.push({ idx: idx, n: n, w: dot(n, P(idx[0])) });
+      loop.forEach(function (v, k) { used[v + '>' + loop[(k + 1) % loop.length]] = true; });
+    });
+  }
+  // rfGH (the false "zero-thickness" on 648 / 800 hole grids): two split points of one corner can land just over the
+  // weld apart (P, P' 1.5e-6 here). P is a real T-junction on one edge of a thin polygon ending at P', but it also lies
+  // within tol of that polygon's other edge at P', so splitTJunctions puts it into both and the outline goes … P, P', P
+  // …: there and back along a zero-area spike. The centroid fan then uses edges four times, which reads as a solid
+  // touching itself. a, b, a is one edge in both directions in one polygon, so taking it out leaves every other edge's
+  // pairing as it was (the rest of the mesh keeps P–P' through the polygons that really have it).
+  function dropSpikes(polys) {
+    polys.forEach(function (p) {
+      var idx = p.idx, again = idx.length >= 4;
+      while (again) {
+        again = false;
+        for (var i = 0; i < idx.length && idx.length >= 4; i++) {
+          var n = idx.length, a = (i + n - 1) % n, c = (i + 1) % n;
+          if (idx[a] !== idx[c]) continue;
+          var hi = Math.max(i, c), lo = Math.min(i, c);   // i and the vertex after it: the far end of the spike and its twin
+          idx.splice(hi, 1); idx.splice(lo, 1);
+          again = true;
+          break;
+        }
+      }
+    });
   }
   // directed edge set -> the edges without a reverse twin, and the vertices they touch
   function openEdgeList(polys) {
@@ -206,10 +262,40 @@ var Exchange = (function () {
     }
   }
   function lowerBound(arr, x) { var lo = 0, hi = arr.length; while (lo < hi) { var m = (lo + hi) >> 1; if (arr[m] < x) lo = m + 1; else hi = m; } return lo; }
+  // rfGH (the 800 hole grid): two polygons meeting on a run a, c, b that is straight to within the weld may each fan a
+  // triangle a, b, c from the same three vertices, one wound each way: a fold of no width whose long side, a mere fan
+  // diagonal, counts four uses. Both go: their three edges cancel in pairs, so no edge opens, and their volumes cancel.
+  // Only triangles of polygons a T-junction split can do this. -> the triangle list; faces and the per-triangle lists
+  // (triSurf, triPoly) renumbered
+  function dropFoldedPairs(tris, splitT, faces, perTri) {
+    if (splitT.length < 2) return tris;
+    var seen = new Map(), dead = null;
+    splitT.forEach(function (t) {
+      var a = tris[t * 3], b = tris[t * 3 + 1], c = tris[t * 3 + 2], lo = Math.min(a, b, c), s, u;
+      if (lo === a) { s = b; u = c; } else if (lo === b) { s = c; u = a; } else { s = a; u = b; }
+      var fwd = lo + '_' + s + '_' + u, back = lo + '_' + u + '_' + s, twin = seen.get(back);
+      if (twin != null) { (dead = dead || {})[t] = true; dead[twin] = true; seen.delete(back); } else seen.set(fwd, t);
+    });
+    if (!dead) return tris;
+    var out = [], map = new Int32Array(tris.length / 3), n = 0;
+    for (var t = 0; t * 3 < tris.length; t++) {
+      if (dead[t]) { map[t] = -1; continue; }
+      map[t] = n;
+      perTri.forEach(function (list) { list[n] = list[t]; });
+      n++;
+      out.push(tris[t * 3], tris[t * 3 + 1], tris[t * 3 + 2]);
+    }
+    perTri.forEach(function (list) { list.length = n; });
+    for (var f = faces.length - 1; f >= 0; f--) {
+      faces[f].tris = faces[f].tris.map(function (q) { return map[q]; }).filter(function (q) { return q >= 0; });
+      if (!faces[f].tris.length) faces.splice(f, 1);
+    }
+    return out;
+  }
   // A polygon's `srf` (a surface record or tag) is copied to every triangle made from it: mesh.triSurf[t] (null for
   // untagged polygons); triSurf is only present when some polygon has one.
   function fanPolygons(pos, polys) {
-    var tris = [], faces = [], fmap = {}, vol = 0;
+    var tris = [], faces = [], fmap = {}, vol = 0, splitT = [], triPoly = [];
     var triSurf = polys.some(function (p) { return p.srf != null; }) ? [] : null;
     function P(i) { return [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]; }
     polys.forEach(function (p) {
@@ -225,6 +311,8 @@ var Exchange = (function () {
       function tri(a, b, c) {
         var t = tris.length / 3;
         tris.push(a, b, c); face.tris.push(t);
+        if (p.split) splitT.push(t);
+        triPoly.push(p.src != null ? p.src : -1);
         if (triSurf) triSurf.push(p.srf != null ? p.srf : null);
         vol += dot(P(a), cross(P(b), P(c))) / 6;
       }
@@ -238,11 +326,12 @@ var Exchange = (function () {
         for (var k = 0; k < n; k++) tri(ci, idx[k], idx[(k + 1) % n]);
       }
     });
+    tris = dropFoldedPairs(tris, splitT, faces, triSurf ? [triPoly, triSurf] : [triPoly]);
     // open edges of the triangle mesh (0 for a closed body)
     var dir = {}, open = 0;
     for (var t = 0; t < tris.length; t += 3) for (var e = 0; e < 3; e++) dir[tris[t + e] + '>' + tris[t + (e + 1) % 3]] = (dir[tris[t + e] + '>' + tris[t + (e + 1) % 3]] || 0) + 1;
     Object.keys(dir).forEach(function (k) { var ab = k.split('>'); if (!dir[ab[1] + '>' + ab[0]]) open++; });
-    var res = { positions: pos, triangles: tris, faces: faces, openEdges: open, volume: vol };
+    var res = { positions: pos, triangles: tris, faces: faces, openEdges: open, volume: vol, triPoly: triPoly };   // triPoly[t]: the body polygon of triangle t
     if (triSurf) res.triSurf = triSurf;
     return res;
   }

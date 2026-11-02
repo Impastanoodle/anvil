@@ -1,7 +1,7 @@
   // ------------------------------------------------------------------ rfDX: Draft (Neutral Plane)
   // { type: 'draft', neutral: { face: [x,y,z] } | { plane }, faces: [{ at }], angle, reverse?, propagate? } turns each
   // face about its line on the neutral plane. Planar faces are exact on Anvil's kernel (frustum volumes in closed form);
-  // curved faces are refused here (OpenCascade makes them exact cones: occt-tests.html rfDX rows).
+  // cylinders along the pull become exact cones (rfGH), other curved faces are refused here (OpenCascade: occt-tests.html rfDX rows).
   (function () {
     group('rfDX: Draft (Neutral Plane)');
     var rfDXt5 = Math.tan(5 * Math.PI / 180);
@@ -56,12 +56,12 @@
       var a = Math.PI * 0.0625;
       nearRel(r.mp.volume, 4 - 2 * a - 2 * rfDXt5 + rfDXt5 * a, 1e-9, 'volume');
     });
-    test('refusals: a face parallel to the neutral plane, a cylinder, the neutral face itself, no faces', function () {
+    test('refusals: a face parallel to the neutral plane, a cylinder not along the pull, the neutral face itself, no faces', function () {
       var r = build(rfDXblock + 'p.draft(5, [0, 0, 0], [[0, 1, 0]]);');
       assert(/parallel to the neutral plane/.test(rfDXerr(r)), rfDXerr(r));
-      r = build('p.units("in"); p.sketch("Top").circle(0, 0, 1).end().extrude(1); p.draft(5, [0, 0, 0], [[1, 0.5, 0]]);');
+      r = build('p.units("in"); p.sketch("Front").circle(0, 0, 1).end().extrude(4); p.draft(5, "Top", [[0, 1, 2]]);');
       assert(/curved/.test(rfDXerr(r)) && /OpenCascade/.test(rfDXerr(r)), rfDXerr(r));
-      nearRel(r.mp.volume, Math.PI, 1e-9, 'the body before the draft stays');
+      nearRel(r.mp.volume, 4 * Math.PI, 1e-9, 'the body before the draft stays');
       r = build(rfDXblock + 'p.draft(5, [0.5, 0, 0.5], [[0, 0, 0]]);');
       assert(/neutral face/.test(rfDXerr(r)), rfDXerr(r));
       r = build(rfDXblock + 'p.draft(5, [0, 0, 0], []);');

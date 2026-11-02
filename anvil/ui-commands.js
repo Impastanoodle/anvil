@@ -2922,10 +2922,10 @@
     withSketch(function (sid) {
       if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
       var sheet = previewModel().sheet || App.model.sheet, T = +sheet.thickness;
-      var f = existing ? JSON.parse(JSON.stringify(existing)) : Object.assign({ type: 'flange', miterFlange: true, miter: true, sketch: pickDefaultSketch(sid), edges: preEdges || [], position: 'inside', radius: null, miterGap: 0, startOffset: 0, endOffset: 0 }, mfLast || {});
+      var f = existing ? JSON.parse(JSON.stringify(existing)) : Object.assign({ type: 'flange', miterFlange: true, miter: true, sketch: pickDefaultSketch(sid), edges: preEdges || [], position: 'inside', radius: null, miterGap: K.closedCornerDefaultGap(App.model), startOffset: 0, endOffset: 0 }, mfLast || {});
       if (f.sketch == null) { UI.toast('Sketch the flange profile on a plane normal to an edge (or select the edge), then click Miter Flange.'); UI.setStatus('Miter Flange: select a straight edge of the sheet and click Miter Flange, or sketch the profile first.'); return; }
       if (!f.position) f.position = 'inside';
-      if (f.miterGap == null) f.miterGap = 0;
+      if (f.miterGap == null) f.miterGap = K.closedCornerDefaultGap(App.model);
       if (f.startOffset == null) f.startOffset = 0;
       if (f.endOffset == null) f.endOffset = 0;
       f.useDefaultRadius = f.radius == null;

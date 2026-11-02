@@ -334,7 +334,8 @@
     { name: 'Sketched Bend after an edge flange on the moving side, holes in the plate', size: [7.1409, 4], bends: 2, loops: 3,
       code: SH_HEAD + 'p.flange(1, [[6, ' + SH_T + ', 2]]);\np.sketch("Top", ' + SH_T + ').circle(1, -1, 0.2).circle(5, -3, 0.2).cut("through", { reverse: true });\np.sketch("Top", ' + SH_T + ').line(3, 0, 3, -4).sketchedBend(90, { fixed: [1, 0, 2] });' },
     { name: 'Sketched Bend 60°, reversed, Material Inside, radius .1, custom deduction', code: shBend('.line(3, 0, 3, -4)', '60, { fixed: [1, 0, 2], position: "inside", reverse: true, radius: 0.1, bendAllowance: { type: "deduction", value: 0.1 } }'), size: [6, 4], bends: 1, loops: 1 },
-    // lane DC2: Jog from a sketch line (two Sketched Bends; K .5 rolls each strip up with its metal, so the volume is the plate's exactly)
+    // lane DC2: Jog from a sketch line (two bends of one Sketched Bend layout; K .5 rolls each strip up with its metal, so the volume is the plate's exactly)
+    { name: 'Jog 120°, Outside Offset .5 (lane jogs-rips: the second bend no longer takes the base the wall leans over)', code: SH_HEAD + 'p.sketch("Top", ' + SH_T + ').line(3, 0, 3, -4).jog(0.5, { fixed: [1, 0, 2], angle: 120 });', size: [6, 4], bends: 2, loops: 1, exact: 24 * SH_T },
     { name: 'Jog from a sketch line, Outside Offset .5, 90°', code: SH_HEAD + 'p.sketch("Top", ' + SH_T + ').line(3, 0, 3, -4).jog(0.5, { fixed: [1, 0, 2] });', size: [6, 4], bends: 2, loops: 1, exact: 24 * SH_T },
     { name: 'Jog 45°, Inside Offset .4, Material Inside, a Ø.4 hole on the jogged side', code: SH_HEAD + 'p.sketch("Top", ' + SH_T + ').circle(5, -2, 0.2).cut("through", { reverse: true });\np.sketch("Top", ' + SH_T + ').line(3, 0, 3, -4).jog(0.4, { fixed: [1, 0, 2], angle: 45, offsetRef: "inside", position: "inside" });', size: [6, 4], bends: 2, loops: 2, exact: (24 - Math.PI * 0.04) * SH_T }
   ];
@@ -462,7 +463,7 @@
   var DI_BOX = 'p.units("in");\np.sketch("Top").rect(0, 0, 2, 2).end().extrude(1);\np.shell(0.06, [[1, 1, -1]]);\n';   // lane DI
   // lane DQ: Insert Bends / Convert to Sheet Metal (R = T = .06, rip gap .03): each bend takes the kite (R + T)² − R² and
   // puts the exact annulus π/4·((R + T)² − R²) over the 1.76 between the corner cubes; each corner cube takes the ripped box in it
-  var DQ_RT = 0.12, DQ_F = DQ_RT * DQ_RT - 0.0036, DQ_CUBE = DQ_RT * DQ_RT * 0.06 + (DQ_RT - 0.06) * (2 * DQ_RT * 0.06 - 0.0036 - Math.SQRT2 * 0.03 * 0.06);
+  var DQ_RT = 0.12, DQ_F = DQ_RT * DQ_RT - 0.0036;
   var DQ_RIPPED = 'p.units("in");\np.sketch("Top").rect(0, 0, 2, 2).end().extrude(1);\np.shell(0.06, [[1, 1, -1]]);\np.rip([[2, 0.5, 0], [2, 0.5, -2], [0, 0.5, -2], [0, 0.5, 0]], 0.03);\n';
   var DQ_L = 'p.units("in");\np.sketch("Front").polyline([[0, 0], [1.5, 0], [1.5, 0.06], [0.06, 0.06], [0.06, 1], [0, 1]]).end().extrude(2);\n';
   var DI_CC = CW_TRAY + 'p.closedCorner([' + JSON.stringify(CW_F4[0]) + '], { cornerType: "underlap", gap: 0.01, coplanar: false });\n';
@@ -488,7 +489,8 @@
   function DJ_SLOT(zc) { return 'p.sketch("Top", 1).rect(2.5, ' + (-(zc + 0.125)) + ', 1, 0.25).cut("through", { reverse: true });\n'; }
   // lane DL2: Miter Flange from a profile sketch (rfDL's part: 4 × 2, T = R = .06, K = .5; the profile on the Right
   // Plane at the front-left corner, along the front and left edges). Exact: the gap takes √2·gap·A+ (each flange
-  // gap/√2 along its edge), an offset d takes d·(A+ − (R + T)·T) (the base keeps its corner), A+ = the exact section
+  // gap/√2 along its edge; lane jogs-rips: an L profile's corners, the straight profile's are SolidWorks' square notch),
+  // an offset d takes d·(A+ − (R + T)·T) (the base keeps its corner), A+ = the exact section
   // beyond the trimmed edge (quarter annulus + straight wall). OpenCascade's volume is Anvil's within the faceting of
   // Anvil's bends (8 chords per 90°: 3.9e-4 relative here), the same as the edge-only miter flange on both kernels.
   var DL_T = 0.06, DL_Q = Math.PI / 4 * (4 * DL_T * DL_T - DL_T * DL_T);
@@ -521,10 +523,10 @@
       code: DB2_L + 'p.unfold([1, ' + SH_T + ', 2], null);\np.sketch("Top", 1).rect(2.5, ' + (-(DB2_ZB + 0.125)) + ', 1, 0.25).cut("through", { reverse: true });\np.fold();',
       removed: Math.PI / 4 * (4 * SH_T * SH_T - SH_T * SH_T) + (0.25 - DB2_BA) * SH_T, loops: 2, holeArea: true },
     // lane DI: Rip (a planar slot along a corner edge) and Tab (Base Flange/Tab on an existing sheet: T into the face)
-    { name: 'Rip side1, gap .03, on an outside corner edge of a shelled 2 × 2 × 1 box (wall .06): removes .94 × .03 × .06', noFlat: true, plain: DI_BOX,
-      code: DI_BOX + 'p.rip([[2, 0.5, 0]], 0.03, { direction: "side1" });', removed: 0.94 * 0.03 * 0.06 },
-    { name: 'Rip both directions on the inside corner edge of the same box: removes √2 × .94 × .03 × .06', noFlat: true, plain: DI_BOX,
-      code: DI_BOX + 'p.rip([[1.94, 0.5, -0.06]], 0.03);', removed: Math.SQRT2 * 0.94 * 0.03 * 0.06 },
+    { name: 'Rip side1, gap .03, on an outside corner edge of a shelled 2 × 2 × 1 box (wall .06): removes 1 × .03 × .06, through the floor (SolidWorks)', noFlat: true, plain: DI_BOX,
+      code: DI_BOX + 'p.rip([[2, 0.5, 0]], 0.03, { direction: "side1" });', removed: 0.03 * 0.06 },
+    { name: 'Rip both directions on the inside corner edge of the same box: walls and floor square at T + g/√2 (SolidWorks: 0.652974 for four corners)', noFlat: true, plain: DI_BOX,
+      code: DI_BOX + 'p.rip([[1.94, 0.5, -0.06]], 0.03);', removed: (4 - 1.88 * 1.88 * 0.94 - 0.652973662) / 4 },
     { name: 'Rip .03 at an Underlap Closed Corner (gap .01) of the 16 ga tray: the gap widens to .03; one blank', plain: DI_CC,
       code: DI_CC + 'p.rip([[0, 0.6, 0]], 0.03);', removed: (1 - 2 * SH_T) * 0.02 * SH_T, loops: 1, dxf: true },
     { name: 'Tab 1 × 1 sketched on the top face of a 16 ga 4 × 3 base flange: + 1 × 1 × T, flush; the flat is 5 × 3', plain: null,
@@ -543,16 +545,18 @@
     { name: 'DJ: a blind 1.0 × 0.5 pocket 0.4·T deep cut flat across the bend line from below, Fold: the exact annulus R + 0.6T … R + T; the flat stays whole', plain: DJ_BR,
       code: DJ_BR + 'p.unfold([1, ' + SH_T + ', 1], null);\np.sketch("Top").rect(1, ' + (-(DB2_ZB + 0.25)) + ', 1, 0.5).cut(' + 0.4 * SH_T + ');\np.fold();',
       removed: (0.5 - DB2_BA) * 0.4 * SH_T + Math.PI / 4 * (4 * SH_T * SH_T - 1.6 * 1.6 * SH_T * SH_T), loops: 1 },
-    { name: 'DL: Miter Flange, 1 in straight profile along two edges, Material Inside, gap .01: exactly the edge-only miter flange (inner virtual sharp)', plain: DL_HEAD + 'p.flange(1, ' + DL_E + ', { position: "inside", lengthRef: "inner", miter: true, miterGap: 0.01 });\n',
-      code: DL_MF(DL_I, { miterGap: 0.01 }), removed: 0, loops: 1, dxf: true },
+    { name: 'DL: Miter Flange, 1 in straight profile along two edges, Material Inside, gap .01: the square notch (SolidWorks 0.817915; its end face reads 1.5e-5 in³ under the true curve)',
+      code: DL_MF(DL_I, { miterGap: 0.01 }), exact: 0.817924081, loops: 1, dxf: true },
+    { name: 'rfGE: M03, four mitred flanges = SolidWorks\' Butt corners: base + walls + tapered bends (38 faces in SolidWorks and here)', plain: null,
+      code: 'p.units("in");\np.sheet(0.0598, 0.0598, 0.5);\np.sketch("Top").rect(0, -4, 6, 4).end().baseFlange();\np.flange(1, [[3, 0.0598, 0], [3, 0.0598, 4], [0, 0.0598, 2], [6, 0.0598, 2]], { position: "inside", lengthRef: "outer", miter: true });\n', exact: 2.482605583125422, loops: 1 },
     { name: 'DL: Miter Flange start offset .25 (the front flange from x = 4): removes .25·(A+ − (R + T)·T)', plain: DL_MF(DL_I, { miterGap: 0.01 }),
       code: DL_MF(DL_I, { miterGap: 0.01, startOffset: 0.25 }), removed: 0.25 * (DL_AP - 2 * DL_T * DL_T), loops: 1 },
     { name: 'DL: Miter Flange end offset .25 (the left flange from z = 2): removes .25·(A+ − (R + T)·T)', plain: DL_MF(DL_I, { miterGap: 0.01 }),
       code: DL_MF(DL_I, { miterGap: 0.01, endOffset: 0.25 }), removed: 0.25 * (DL_AP - 2 * DL_T * DL_T), loops: 1 },
-    { name: 'DL: Miter Flange L profile (1 up, .5 out), gap .01 against gap 0: two bends along the chain, mitred at both levels, removes √2·.01·(A1 + A2)', plain: DL_MF(DL_L, { miterGap: 0 }),
-      code: DL_MF(DL_L, { miterGap: 0.01 }), removed: Math.SQRT2 * 0.01 * (DL_A1 + DL_A2), loops: 1, dxf: true },
-    { name: 'DL: Miter Flange Bend Outside, gap .01: exactly the edge-only miter flange placed Bend Outside', plain: DL_HEAD + 'p.flange(1, ' + DL_E + ', { position: "bendOutside", lengthRef: "inner", miter: true, miterGap: 0.01 });\n',
-      code: DL_MF(DL_I, { position: 'bendOutside', miterGap: 0.01 }), removed: 0, loops: 1 },
+    { name: 'DL: Miter Flange L profile (1 up, .5 out), gap .02 against .01: two bends along the chain, mitred at both levels, removes √2·.01·(A1 + A2)', plain: DL_MF(DL_L, { miterGap: 0.01 }),
+      code: DL_MF(DL_L, { miterGap: 0.02 }), removed: Math.SQRT2 * 0.01 * (DL_A1 + DL_A2), loops: 1, dxf: true },
+    { name: 'DL: Miter Flange Bend Outside, gap .01: the square notch',
+      code: DL_MF(DL_I, { position: 'bendOutside', miterGap: 0.01 }), exact: 0.875831833, loops: 1 },
     // lane DT: Vent (Ø2 boundary, two ribs .1 through the centre, a Ø1 spar .1) on a 4 × 4 × .06 base: removes T × the
     // exact open area (dtOpen); a partial Unfold of a U-channel with a Tab folded across a bend keeps the tab's bend part
     { name: 'DT: Vent Ø2, ribs .1 (two, through the centre), spar Ø1 .1, on a 4 × 4 × .06 base flange: removes T × the exact open area; the flat has the 8 vent holes',
@@ -564,11 +568,11 @@
     { name: 'DT: the same, Unfold of the back bend only: the tab stays folded round the front bend, whole (+ 0.25·T exactly)',
       plain: DB2_U + 'p.unfold([1, ' + SH_T + ', 2], [' + DJ_B + ']);', code: DB2_U + 'p.unfold([1, ' + SH_T + ', 2], null);\n' + DT_TAB + 'p.fold();\np.unfold([1, ' + SH_T + ', 2], [' + DJ_B + ']);', removed: -0.25 * SH_T, loops: 1 },
     // lane DQ: Insert Bends / Convert to Sheet Metal
-    { name: 'DQ: Insert Bends R .06 on the shelled 2 × 2 × 1 box ripped at its four corners (bottom fixed): four exact bends, four corner cubes; one blank', plain: DQ_RIPPED,
-      code: DQ_RIPPED + 'p.insertBends([1, 0, -1], { radius: 0.06 });', removed: 4 * 1.76 * (1 - Math.PI / 4) * DQ_F + 4 * DQ_CUBE, loops: 1, dxf: true },
+    { name: 'DQ: Insert Bends R .06 on the shelled 2 × 2 × 1 box ripped at its four corners (bottom fixed): four exact bends meeting nothing (Rip took the corners, as SolidWorks); one blank', plain: DQ_RIPPED,
+      code: DQ_RIPPED + 'p.insertBends([1, 0, -1], { radius: 0.06 });', removed: 0.652973662 - 0.635963686, loops: 1, dxf: true },
     { name: 'DQ: Convert to Sheet Metal of the solid 2 × 2 × 1 box (bottom fixed, the four bottom edges, T .06, R .06, gap .03) = the ripped box with bends inserted', plain: DQ_RIPPED,
       code: 'p.units("in");\np.sketch("Top").rect(0, 0, 2, 2).end().extrude(1);\np.convertSheetMetal([1, 0, -1], [[1, 0, 0], [2, 0, -1], [1, 0, -2], [0, 0, -1]], { thickness: 0.06, radius: 0.06, gap: 0.03 });',
-      removed: 4 * 1.76 * (1 - Math.PI / 4) * DQ_F + 4 * DQ_CUBE, loops: 1 },
+      removed: 0.652973662 - 0.635963686, loops: 1 },
     { name: 'DQ: Insert Bends on a thin L extrude (1.5 × 1, T .06, 2 long; free ends): one exact bend', plain: DQ_L,
       code: DQ_L + 'p.insertBends([0.75, 0, 1], { radius: 0.06 });', removed: 2 * (1 - Math.PI / 4) * DQ_F, loops: 1 }
   ];
@@ -903,8 +907,8 @@
   // --- r11/occtswap11 ---
   // (a) Edit Feature's rolled-back part (worker `upto`): the first n features from the rebuild cache, the same solid as a
   // fresh build of those features, and the cache left as it was (the next whole build reuses every feature);
-  // (b) the Tray's Miter Flange with its relief cuts and walls in one Boolean each: the same solid as before (57 faces,
-  // 35770.997515 mm³ from the one-Boolean-per-tool build), per-feature times reported
+  // (b) the Tray's Miter Flange with its relief cuts and walls in one Boolean each: the same solid as before (77 faces,
+  // 35407.972015 mm³, lane flanges: its corners are SolidWorks' auto miter; was 57 faces, 35770.997515), per-feature times reported
   try {
     var t11 = performance.now(), why11 = [], det11 = [];
     function occtUpto(model, n) { return new Promise(function (res, rej) { var s11 = ++seq; waiting[s11] = { res: res, rej: rej }; worker.postMessage({ type: 'build', seq: s11, model: model, upto: n }); }); }
@@ -923,7 +927,7 @@
       if (rolled.step || rolled.iges) why11.push(nm11 + ': the rolled-back build exported STEP / IGES');
       var fresh2 = nm11 === 'Tray' ? await occt(JSON.parse(js11), { noCache: true }) : null;
       if (fresh2) {
-        if (!(Math.abs(fresh2.volume - 35770.997515) < 1e-5) || fresh2.faces.length !== 57 || !fresh2.valid) why11.push('Tray: ' + fresh2.volume + ' mm³, ' + fresh2.faces.length + ' faces, valid ' + fresh2.valid + ' (want 35770.997515, 57)');
+        if (!(Math.abs(fresh2.volume - 35407.972015) < 1e-5) || fresh2.faces.length !== 77 || !fresh2.valid) why11.push('Tray: ' + fresh2.volume + ' mm³, ' + fresh2.faces.length + ' faces, valid ' + fresh2.valid + ' (want 35407.972015, 77)');
         var fm11 = fresh2.ms && fresh2.ms.features || {};
         if (m11.features.some(function (f) { return typeof fm11[f.id] !== 'number'; })) why11.push('Tray: per-feature times ' + JSON.stringify(fm11));
         det11.push('Tray flange ' + (fm11[m11.features.filter(function (f) { return f.type === 'flange'; })[0].id] || 0).toFixed(0) + ' ms');
@@ -977,16 +981,16 @@
   } catch (e) { row('bad', 'reference axis follows an edit (OpenCascade cache)', e.message); counts.fail++; }
   // --- end lane DF ---
   // --- rfDX: Draft (Neutral Plane) through BRepOffsetAPI_DraftAngle: planar faces on both kernels to the closed form;
-  // a cylinder (Anvil refuses it) and a filleted block with Along Tangent become exact cones on OpenCascade, which drives ---
+  // a cylinder and a filleted block with Along Tangent become exact cones on both kernels (Anvil's since rfGH) ---
   var rfDXt = Math.tan(5 * Math.PI / 180), rfDXblock = 'p.units("in");\np.sketch("Top").rect(-1, -1, 2, 2).end().extrude(1);\n', rfDXsides = '[[1, 0.5, 0], [-1, 0.5, 0], [0, 0.5, 1], [0, 0.5, -1]]';
   function rfDXfr(a, b, h) { return h / 3 * (a * a + b * b + a * b); }
   var DX_CASES = [
     { name: '2 x 2 x 1 in block, four sides 5° about the bottom face (top 2 - 2 tan 5°)', code: rfDXblock + 'p.draft(5, [0, 0, 0], ' + rfDXsides + ');', want: rfDXfr(2, 2 - 2 * rfDXt, 1), both: true },
     { name: 'the same, Reverse direction (top 2 + 2 tan 5°)', code: rfDXblock + 'p.draft(5, [0, 0, 0], ' + rfDXsides + ', { reverse: true });', want: rfDXfr(2, 2 + 2 * rfDXt, 1), both: true },
     { name: 'neutral plane through the middle (Top Plane offset 0.5)', code: rfDXblock + 'var pl = p.plane("Top", 0.5);\np.draft(5, pl, ' + rfDXsides + ');', want: rfDXfr(2 + rfDXt, 2, 0.5) + rfDXfr(2, 2 - rfDXt, 0.5), both: true },
-    { name: 'Ø 2 x 1 in cylinder drafted 5°: an exact cone on OpenCascade (Anvil refuses the curved face)', code: 'p.units("in");\np.sketch("Top").circle(0, 0, 1).end().extrude(1);\np.draft(5, [0, 0, 0], [[1, 0.5, 0]]);', want: Math.PI / 3 * (1 + Math.pow(1 - rfDXt, 2) + (1 - rfDXt)) },
-    { name: 'block with R.25 vertical fillets, one side picked, Along Tangent: every side and fillet drafted (OpenCascade)', code: rfDXblock + 'p.fillet(0.25, [[1, 0.5, 1], [1, 0.5, -1], [-1, 0.5, 1], [-1, 0.5, -1]]);\np.draft(5, [0, 0, 0], [[1, 0.5, 0]], { propagate: "tangent" });',
-      want: 4 * (1 - rfDXt + rfDXt * rfDXt / 3) - (4 - Math.PI) * (0.0625 - 0.25 * rfDXt + rfDXt * rfDXt / 3) }
+    { name: 'Ø 2 x 1 in cylinder drafted 5°: an exact cone on both kernels', code: 'p.units("in");\np.sketch("Top").circle(0, 0, 1).end().extrude(1);\np.draft(5, [0, 0, 0], [[1, 0.5, 0]]);', want: Math.PI / 3 * (1 + Math.pow(1 - rfDXt, 2) + (1 - rfDXt)), both: true },
+    { name: 'block with R.25 vertical fillets, one side picked, Along Tangent: every side and fillet drafted, on both kernels', code: rfDXblock + 'p.fillet(0.25, [[1, 0.5, 1], [1, 0.5, -1], [-1, 0.5, 1], [-1, 0.5, -1]]);\np.draft(5, [0, 0, 0], [[1, 0.5, 0]], { propagate: "tangent" });',
+      want: 4 * (1 - rfDXt + rfDXt * rfDXt / 3) - (4 - Math.PI) * (0.0625 - 0.25 * rfDXt + rfDXt * rfDXt / 3), both: true }
   ];
   for (var dxc of DX_CASES) {
     try {
@@ -1034,6 +1038,30 @@
     } catch (e) { row('bad', 'rfDY, OpenCascade = Anvil: ' + dyc.name, e.message); counts.fail++; }
   }
   // --- end rfDY ---
+  // --- rfGI: lofts on OpenCascade follow SolidWorks' rule too (lane lofts): three or more sections are the bicubic spline
+  // patches of Anvil's own loft, polygon → circle in two sections the ruled rational blend, every other pair ruled
+  // ThruSections. Volumes are SolidWorks' (head-tools/sw-reference/ref2_loft.py); valid solid, a STEP file comes out.
+  var GI_U = 'p.units("in");\n';
+  var GI_CASES = [
+    { name: 'S28: 3 × 2 rectangle → Ø1.5 circle', code: 'var a = p.sketch("Top").centerRect(0, 0, 3, 2).id();\nvar b = p.sketch("Top", 2.5).circle(0, 0, 0.75).id();\np.loft([a, b]);\n', want: 9.218308893, faces: 6 },
+    { name: 'G17: 3 × 3 square → Ø2 circle', code: 'var a = p.sketch("Top").centerRect(0, 0, 3, 3).id();\nvar b = p.sketch("Top", 3).circle(0, 0, 1).id();\np.loft([a, b]);\n', want: 17.51832923, faces: 6 },
+    { name: 'S29: square, octagon, circle', code: 'var a = p.sketch("Top").centerRect(0, 0, 2, 2).id();\nvar b = p.sketch("Top", 1).polygon(0, 0, 1.1, 8, 22.5).id();\nvar c = p.sketch("Top", 2.5).circle(0, 0, 0.75).id();\np.loft([a, b, c]);\n', want: 7.672999045, faces: 10 },
+    { name: 'G18: circle, square, circle', code: 'var a = p.sketch("Top").circle(0, 0, 1.5).id();\nvar b = p.sketch("Top", 1.5).centerRect(0, 0, 2, 2).id();\nvar c = p.sketch("Top", 3).circle(0, 0, 0.75).id();\np.loft([a, b, c]);\n', want: 12.47522741, faces: 6 },
+    { name: 'L1: square, smaller square, square', code: 'var a = p.sketch("Top").centerRect(0, 0, 4, 4).id();\nvar b = p.sketch("Top", 1.5).centerRect(0, 0, 2, 2).id();\nvar c = p.sketch("Top", 3).centerRect(0, 0, 4, 4).id();\np.loft([a, b, c]);\n', want: 23.828711098, faces: 6 }
+  ];
+  for (var gic of GI_CASES) {
+    try {
+      var mgi = K.newModel('T'); K.runScript(mgi, GI_U + gic.code);
+      var rgi = await occt(JSON.parse(JSON.stringify(mgi)), { noCache: true, exports: true }), whyGI = [];
+      if (rgi.unsupported || !rgi.ok) whyGI.push('OpenCascade did not build every feature: ' + (rgi.unsupported || JSON.stringify(rgi.status)));
+      if (!rgi.valid) whyGI.push('invalid solid');
+      if (!(Math.abs(rgi.volume - gic.want) <= 5e-5 * gic.want)) whyGI.push('OpenCascade volume ' + rgi.volume + ', SolidWorks ' + gic.want);
+      if ((rgi.faces || []).length !== gic.faces) whyGI.push((rgi.faces || []).length + ' faces, SolidWorks ' + gic.faces);
+      row(whyGI.length ? 'bad' : 'ok', 'rfGI, OpenCascade = SolidWorks: ' + gic.name, whyGI.join('\n') || ('OpenCascade ' + rgi.volume.toFixed(6) + ' / SolidWorks ' + gic.want));
+      counts[whyGI.length ? 'fail' : 'pass']++;
+    } catch (e) { row('bad', 'rfGI, OpenCascade = SolidWorks: ' + gic.name, e.message); counts.fail++; }
+  }
+  // --- end rfGI ---
   // --- rfFB: Boundary Boss/Base / Boundary Cut on OpenCascade (no Direction 2 curves: ThruSections; with curves: one
   // Coons BSpline face per patch, sewn with planar end caps): every feature 'ok', the frustum and its cut / thin wall
   // exact on both kernels; curved curves agree with Anvil's facets to the loft tolerance ---

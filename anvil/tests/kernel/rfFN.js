@@ -51,15 +51,16 @@
       nearRel(ok.mp.volume, 24000 - 2 * 20 * PI * 9, 1e-6, 'two holes 0.01 apart');
       return 'refused / accepted';
     });
-    test('rfFN: outlines touching at a corner and a boss meeting the part on one edge are refused; a flush boss sharing a face is not', function () {
+    test('rfFN: outlines touching at a corner are refused; a boss meeting the part on one edge is a second body (SolidWorks rfGD R01b: 1.0, 2 bodies); a flush boss sharing a face merges', function () {
       var a = build('p.sketch("Front").rect(0, 0, 10, 10).rect(10, 10, 10, 10).end().extrude(5);');
       assert(/zero-thickness/.test(rfFNerr(a, 'Boss-Extrude1')), 'corner: ' + JSON.stringify(a.errors));
       var b = build('p.sketch("Front").rect(0, 0, 10, 10).end().extrude(5);\np.sketch("Front", 5).rect(10, 0, 10, 10).end().extrude(5);');
-      rfFNonly(b, ['Boss-Extrude2']); nearRel(b.mp.volume, 500, 1e-12, 'first block kept');
+      rfFNonly(b, []); nearRel(b.mp.volume, 1000, 1e-12, 'both blocks'); assert(b.build.bodies.length === 2, 'two bodies');
       var c = build(BLOCK + 'p.sketch("Front", 30).rect(0, 0, 40, 20).end().extrude(10);\np.sketch("Front", 40).rect(0, 0, 10, 10).end().extrude(3);');
       noErrors(c); rfFNtight(c, 'flush'); nearRel(c.mp.volume, 24000 + 8000 + 300, 1e-12, 'flush unions');
       var d = build(BLOCK + 'p.circularPattern({ axis: "y", center: [0, 0, 0], count: 2 });');
-      rfFNonly(d, ['CirPattern1']);
+      rfFNonly(d, []); nearRel(d.mp.volume, 24000, 1e-12, 'the copy touching on the edge alone is not created (rfGD R17: 24 in³, a warning)');
+      assert(/disjoint/.test(JSON.stringify(d.warnings)), 'warning');
       return 'ok';
     });
     test('rfFN: a cut that would remove every body fails and keeps the part (was: an empty part, no error); the next boss builds', function () {
@@ -79,8 +80,8 @@
       assert(/does not intersect the model/.test(e) && K.isRefusal(e), 'error: ' + e);
       nearRel(r.mp.volume, 24000 - 20 * 4 * PI, 1e-6, 'block − the later hole');
       var p = build(BLOCK + 'p.sketch("Top", 20).circle(10, -10, 3).end().cut("through", { reverse: true });\np.linearPattern({ dir: "x", spacing: 100, count: 2 });');
-      rfFNonly(p, ['LPattern1']);
-      assert(/does not intersect the model/.test(rfFNerr(p, 'LPattern1')), 'pattern error: ' + rfFNerr(p, 'LPattern1'));
+      rfFNonly(p, []);   // SolidWorks rfGD R05e: "Some feature instances are disjoint and will not be created", a warning
+      assert(/disjoint/.test(JSON.stringify(p.warnings)), 'pattern warning: ' + JSON.stringify(p.warnings));
       nearRel(p.mp.volume, 24000 - 20 * 9 * PI, 1e-6, 'block − the seed hole');
       var two = build(BLOCK + 'p.box(10, 10, 10, { at: [60, 0, 0], merge: false });\np.sketch("Top", 20).circle(10, -10, 3).end().cut("through", { reverse: true });');
       noErrors(two);

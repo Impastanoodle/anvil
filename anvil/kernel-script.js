@@ -1128,7 +1128,7 @@
     var position = opts.position || 'inside';
     if (K.MITER_FLANGE_POSITIONS.indexOf(position) < 0) throw new Error('miterFlange position must be one of ' + K.MITER_FLANGE_POSITIONS.join(', ') + '.');
     var f = { type: 'flange', miterFlange: true, miter: true, sketch: this._sketchId(opts), edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }),
-      position: position, radius: opts.radius != null ? num(opts.radius) : null, miterGap: opts.miterGap != null ? num(opts.miterGap) : 0,
+      position: position, radius: opts.radius != null ? num(opts.radius) : null, miterGap: opts.miterGap != null ? num(opts.miterGap) : K.closedCornerDefaultGap(this.model),
       startOffset: opts.startOffset != null ? num(opts.startOffset) : 0, endOffset: opts.endOffset != null ? num(opts.endOffset) : 0, name: opts.name };
     if (opts.relief != null) f.relief = opts.relief === 'rect' || opts.relief === 'obround' ? opts.relief : 'none';
     if (opts.reliefWidth != null) f.reliefWidth = num(opts.reliefWidth);
@@ -1143,7 +1143,7 @@
   // and the radius is derived from it at rebuild.
   // opts.hemType ('open' | 'closed' | 'teardrop' | 'rolled'; absent = the legacy open hem), hemPosition ('inside':
   // Material Inside, within the flange's height | 'outside': Bend Outside, the legacy placement), hemRadius and
-  // hemAngle (tear drop / rolled: the curl's inner radius, default the sheet radius, and sweep, default 270°). A closed,
+  // hemAngle (tear drop / rolled: the curl's inner radius, default the sheet radius, and sweep, default 200° / 270°). A closed,
   // tear drop or rolled hem has no gap (its radius comes from its type).
   Builder.prototype.hem = function (length, edges, opts) {
     opts = opts || {};
@@ -1775,7 +1775,7 @@
             var mfo = { sketch: '@' + idVar[f.sketch], name: f.name };
             if (f.position && f.position !== 'inside') mfo.position = f.position;
             if (f.radius != null) mfo.radius = numOut(f.radius);
-            if (f.miterGap != null && (isExpression(f.miterGap) || +f.miterGap !== 0)) mfo.miterGap = numOut(f.miterGap);
+            if (f.miterGap != null) mfo.miterGap = numOut(f.miterGap);
             if (f.startOffset != null && (isExpression(f.startOffset) || +f.startOffset !== 0)) mfo.startOffset = numOut(f.startOffset);
             if (f.endOffset != null && (isExpression(f.endOffset) || +f.endOffset !== 0)) mfo.endOffset = numOut(f.endOffset);
             if (f.relief) mfo.relief = f.relief;

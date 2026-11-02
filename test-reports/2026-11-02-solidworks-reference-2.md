@@ -172,3 +172,9 @@ and the rfFP "true refusals" beyond R9; rfFN edge-contact boss refused; CUT_MISS
   geometry was not dumped, so the closed form is doubtful.
 - **Grid cut:** planned 250 sweep parts, ran 105. K 0.33 and 0.64 ran on 16 ga and 11 ga only; K 0.71 at R = 3T and the Inner
   Virtual Sharp position rows were not run; jog minimum cut from 30 rows to 5.
+
+## After local-2026-11-02b
+
+The nine ranked items the user listed were fixed the same day; 88 `rfGD TODO:` rows remain (75 differ, 13 Anvil builds and SolidWorks refuses), listed in QUEUE.md "SolidWorks reference follow-ups".
+
+Corrections to this report: Rolled hem 300° and 330° are not "checker clean" (the JSON carries fault 24 on both; 300° matches Anvil, 330° double-counts the curl and Anvil's 0.566650 stands). rfGB's closed form for R09d equals SolidWorks (0.697804); the "about 0.6940" above was a hand error.

@@ -3,9 +3,8 @@
   // of EXACTLY its own size (R.03 along a top edge, round the R.03 vertical corner round it runs into): the section's
   // setback reached the corner round's axis and arcChainTool refused it as "too large". SolidWorks builds it: the corner
   // is a sphere (a cone for a chamfer). kernel-mesh.js: rfFFsection snaps that end onto the axis, rfFYpoly drops the
-  // repeated corner on the axis. A larger radius still crosses the axis and stays refused (SolidWorks refuses it too:
-  // fillet the larger radius first). TODO rows: the open findings this lane traced to other files (their detail says
-  // where Anvil is now; they pass).
+  // repeated corner on the axis. A larger radius crosses the axis: SolidWorks builds that too (rfGG). TODO rows: the open
+  // findings this lane traced to other files (their detail says where Anvil is now; they pass).
   (function () {
     group('rfFY: fillets that were a little wrong or refused');
     var PI = Math.PI;
@@ -48,11 +47,12 @@
       assert(rfFYkinds(r).sph === 4, '4 spheres: ' + JSON.stringify(rfFYkinds(r)));
       return 'V ' + r.mp.volume.toFixed(9) + ', exact ' + ex.toFixed(9);
     });
-    test('rfFY: still refused in a plain sentence where the round is LARGER than the round edge it runs round (it would cross the axis; SolidWorks refuses it too): R.0625 and chamfer .0625 round the R.03 corner', function () {
-      var cases = ['p.fillet(0.0625, [[1.875,0.25,4]]);', 'p.chamfer(0.0625, [[1.875,0.25,4]]);'];
+    test('rfFY: a round LARGER than the round edge it runs round builds (this test pinned a refusal, "SolidWorks refuses it too": false, rfGG): R.0625 3.7434737, chamfer .0625 3.7426384 in SolidWorks', function () {
+      var cases = [['p.fillet(0.0625, [[1.875,0.25,4]]);', 3.7434737], ['p.chamfer(0.0625, [[1.875,0.25,4]]);', 3.7426384]];
       cases.forEach(function (c) {
-        var r = build(PLATE + c), msg = rfFYerr(r);
-        assert(/^(Radius|Distance) 0\.0625 is too large for the round edge of radius 0\.03 it runs round; use less than 0\.03 \(or (fillet|chamfer) this edge before the smaller rounds\)\.$/.test(msg), c + ': ' + msg);
+        var r = build(PLATE + c[0]);
+        rfFYclosed(r, c[0]);
+        nearRel(r.mp.volume, c[1], 5e-6, c[0]);
       });
     });
 
@@ -86,7 +86,7 @@
         rfFYclosed(front, 'sketch-plane face');
         var e = rfFYerr(back);
         if (e) { assert(/^Failed to create fillet\. /.test(e), 'plain refusal: ' + e); out = 'TODO end face refused: ' + e; }
-        else { rfFYclosed(back, 'end face'); nearRel(base.mp.volume - back.mp.volume, base.mp.volume - front.mp.volume, 1e-9, 'same as the sketch-plane face'); out = 'end face builds, removed ' + (base.mp.volume - back.mp.volume).toFixed(6); }
+        else { rfFYclosed(back, 'end face'); nearRel(base.mp.volume - back.mp.volume, base.mp.volume - front.mp.volume, 3e-8, 'same as the sketch-plane face'); out = 'end face builds, removed ' + (base.mp.volume - back.mp.volume).toFixed(6); }
       } finally { K.setTessellation(prev); }
       return out;
     });

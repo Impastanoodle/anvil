@@ -192,12 +192,12 @@
       var q = await occIdle();
       assert(q.state === 'unsupported' && /mesh import/.test(q.unsupported) && !UI.App.build.occt, 'STL import: ' + q.state + ' ' + q.unsupported);
       assert(/needs a mesh import/.test($('status-right').textContent), 'chip: ' + $('status-right').textContent);
-      // beyond Anvil's kernel: a fillet on the saddle edge of a pipe tee (Anvil's kernel errors); OpenCascade's solid
-      // is shown and the feature carries no error
-      await anvil.run('p.cylinder(15, 80, { axis: "x", at: [-40, 0, 0] });\np.cylinder(10, 40, { at: [0, 0, 0] });\np.fillet(3, [[0, Math.sqrt(125), 10]]);').catch(function () { });
+      // beyond Anvil's kernel: R9 through a shelled box's 2 mm wall (Anvil's kernel refuses it; the pipe tee saddle this
+      // step used builds on Anvil's engine now, rfGG); OpenCascade's solid is shown and the feature carries no error
+      await anvil.run('p.units("mm"); p.box(40, 20, 30); p.shell(2, [[20, 30, 10]]);\np.fillet(9, [[0, 0, 10]]);').catch(function () { });
       await idle();
       var tee = await occIdle();
-      assert(tee.state === 'ok' && tee.beyond.length === 1 && Object.keys(UI.App.build.errors).length === 0 && /Anvil could not/.test($('status-right').textContent), 'tee fillet: ' + JSON.stringify({ state: tee.state, beyond: tee.beyond, errors: UI.App.build.errors }));
+      assert(tee.state === 'ok' && tee.beyond.length === 1 && Object.keys(UI.App.build.errors).length === 0 && /Anvil could not/.test($('status-right').textContent), 'R9 fillet: ' + JSON.stringify({ state: tee.state, beyond: tee.beyond, errors: UI.App.build.errors }));
       // assemblies: every part built by OpenCascade, the assembly rebuilt around them, mates solved as ever
       await UI.openExample(exByName('Pinned plate assembly')); await idle();
       var pa = await occIdle();

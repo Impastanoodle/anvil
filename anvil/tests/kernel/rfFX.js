@@ -71,16 +71,16 @@
       rfFXexact(rfFXhead(6, 4) + 'p.sketch("Top", ' + T + ').line(1.5, 0, 1.5, -4).line(4.5, 0, 4.5, -4).sketchedBend(90);\n', 24 * T, 'sketched bends');
       rfFXexact(rfFXhead(6, 4) + 'p.sketch("Top", ' + T + ').line(3, 0, 3, -4).end().jog(0.375, { fixed: [1, ' + T + ', 2] });\n', 24 * T, 'sketch jog');
     });
-    test('rfFX: Miter Flange 1 high along two edges: OpenCascade\'s exact volume 0.822546049 to 1e-7 (was 3.9e-4 light)', function () {
+    test('rfFX: Miter Flange 1 high along two edges: SolidWorks\' 0.817915481 to 1e-5 (the square notch, 2026-11-02; the bends are exact)', function () {
       var r = build(rfFXhead(4, 2, 0.06, 0.06) + 'p.sketch("Right").line(0, 0.06, 0, 1.06).end();\np.miterFlange([[2, 0.06, 0], [0, 0.06, 1]], {});\n');
       rfFXok(r);
-      nearRel(r.mp.volume, 0.822546049, 1e-7, 'Miter Flange volume');
+      nearRel(r.mp.volume, 0.817915481, 1e-5, 'Miter Flange volume');
       return 'volume ' + r.mp.volume.toFixed(9);
     });
-    test('rfFX: Insert Bends on a ripped shelled box: OpenCascade\'s exact volume 0.646338936 to 1e-8', function () {
+    test('rfFX: Insert Bends on a ripped shelled box: OpenCascade\'s exact volume 0.635963686 to 2e-8 (Rip as SolidWorks: 2026-11-02)', function () {
       var r = build(U + 'p.sketch("Top").rect(0, 0, 2, 2).end().extrude(1);\np.shell(0.06, [[1, 1, -1]]);\np.rip([[2, 0.5, 0], [2, 0.5, -2], [0, 0.5, -2], [0, 0.5, 0]], 0.03);\np.insertBends([1, 0, -1], { radius: 0.06 });\n');
       rfFXok(r);
-      nearRel(r.mp.volume, 0.646338936, 1e-8, 'Insert Bends volume');
+      nearRel(r.mp.volume, 0.635963686, 2e-8, 'Insert Bends volume');
     });
     test('rfFX: 1 × 0.25 slot across the bend (Unfold, Cut, Fold): volume = L bracket − 0.25·T to 1e-9', function () {
       var r = rfFXexact(rfFXhead(6, 4) + rfFXfl(1.5, [[3, T, 0]]) + 'p.unfold([1, ' + T + ', 2], null);\np.sketch("Top", ' + T + ').rect(2.5, 0, 1, 0.25).end().cut("through", { reverse: true });\np.fold(null);\n',

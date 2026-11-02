@@ -214,6 +214,79 @@
     }
     return out;
   }
+  function convexLoop(loop) {
+    for (var i = 0, n = loop.length; i < n; i++) {
+      var p = loop[i], q = loop[(i + 1) % n], r = loop[(i + 2) % n];
+      var ux = q[0] - p[0], uy = q[1] - p[1], vx = r[0] - q[0], vy = r[1] - q[1];
+      if (ux * vy - uy * vx < -1e-9 * Math.hypot(ux, uy) * Math.hypot(vx, vy)) return false;
+    }
+    return true;
+  }
+  // rfGH (SolidWorks measured, rfGD R18a..c, R02b): a draft past the depth where the section runs out is not an error:
+  // the drafted faces go on until they meet, at a tip or along a ridge (Ø1, 45°, depth 0.5 or 1: a cone 0.5 high; 2 × 1,
+  // 45°: a roof 0.5 high, 0.416667), and any depth left over builds nothing. For a convex section the solid is the
+  // intersection of its side planes and the end planes, so each face is the plane clipped by all the others; nothing is
+  // re-offset, and the side planes are those of the plain frustum: the offsets are linear in d (mitres and radial
+  // moves alike), so a collapsed section's "inverted" corners still lie on them. A concave section would need a
+  // straight skeleton: it stays refused. Chords of true circles keep their cone (all through the tip): exact.
+  function taperedRoof(loop, la, lb, plane, a, b, offA, offB, shared, cv) {
+    var n = loop.length, nA = scale(plane.n, a), nB = scale(plane.n, b), low = Math.abs(offA) <= Math.abs(offB);
+    var A = la.map(function (p) { return add(to3D(plane, p[0], p[1]), nA); }), B = lb.map(function (p) { return add(to3D(plane, p[0], p[1]), nB); });
+    var base = low ? A : B, far = low ? B : A, mid = [0, 0, 0], size = Math.abs(b - a);
+    base.forEach(function (p) { mid = add(mid, scale(p, 1 / n)); });
+    base.forEach(function (p) { size = Math.max(size, len(sub(p, mid))); });
+    var hs = [], own = [], i;   // half-spaces n·x <= w; own[i]: the side plane of edge i
+    for (i = 0; i < n; i++) {
+      var p = base[i], q = base[(i + 1) % n], r = far[i], N = cross(sub(q, p), sub(r, p)), l = len(N);
+      own.push(-1);
+      if (l < 1e-14 * size * size) continue;
+      N = scale(N, 1 / l);
+      if (dot(N, sub(mid, p)) > 0) N = scale(N, -1);
+      var w = dot(N, p), same = -1;
+      for (var h = 0; h < hs.length && same < 0; h++) if (len(sub(hs[h].n, N)) < 1e-12 && Math.abs(hs[h].w - w) < 1e-12 * size) same = h;
+      if (same >= 0) { own[i] = same; continue; }
+      own[i] = hs.length;
+      hs.push({ n: N, w: w });
+    }
+    var sideCount = hs.length, w0 = dot(plane.n, to3D(plane, 0, 0));
+    hs.push({ n: plane.n.slice(), w: w0 + b }); hs.push({ n: scale(plane.n, -1), w: -(w0 + a) });
+    // one plane's face: a big square on it, cut by every other half-space. Tip and ridge corners are computed from
+    // several planes, so they are welded to one point (1e-10 of the size) or a tip would come out as a tiny facet.
+    var eps = 1e-12 * size, weld = {}, Q = 1e10 / size;
+    function snap(x) {
+      var k = Math.round(x[0] * Q) + ',' + Math.round(x[1] * Q) + ',' + Math.round(x[2] * Q);
+      return weld[k] || (weld[k] = x);
+    }
+    function face(f) {
+      var hf = hs[f], ax = Math.abs(hf.n[0]) < 0.6 ? [1, 0, 0] : [0, 1, 0], u = norm(cross(ax, hf.n)), v = cross(hf.n, u), S = 8 * size;
+      var c = add(mid, scale(hf.n, hf.w - dot(hf.n, mid))), pts = [add(add(c, scale(u, -S)), scale(v, -S)), add(add(c, scale(u, S)), scale(v, -S)), add(add(c, scale(u, S)), scale(v, S)), add(add(c, scale(u, -S)), scale(v, S))];
+      for (var g = 0; g < hs.length && pts.length >= 3; g++) {
+        if (g === f) continue;
+        var cut = hs[g], out = [];
+        for (var k = 0; k < pts.length; k++) {
+          var P = pts[k], R = pts[(k + 1) % pts.length], dp = dot(cut.n, P) - cut.w, dr = dot(cut.n, R) - cut.w;
+          if (dp <= eps) out.push(P);
+          if ((dp < -eps && dr > eps) || (dp > eps && dr < -eps)) out.push(add(P, scale(sub(R, P), dp / (dp - dr))));
+        }
+        pts = out;
+      }
+      var keep = [];
+      pts.map(snap).forEach(function (x) { if (!keep.length || keep[keep.length - 1] !== x) keep.push(x); });
+      while (keep.length > 1 && keep[0] === keep[keep.length - 1]) keep.pop();
+      return keep.length >= 3 ? poly(keep, shared) : null;
+    }
+    var polys = [], made = [], sides = [];
+    for (i = 0; i < hs.length; i++) made.push(face(i));
+    for (i = sideCount; i < hs.length; i++) if (made[i]) polys.push(made[i]);
+    for (i = 0; i < n; i++) sides.push(own[i] >= 0 ? made[own[i]] : null);
+    tagSides(sides, cv, function (C) {
+      var k = (offB - offA) / (b - a);
+      return { t: 'cone', o: to3D(plane, C.c[0], C.c[1]), d: plane.n.slice(), r: C.r + offA - k * a, k: k };
+    });
+    for (i = 0; i < sideCount; i++) if (made[i]) polys.push(made[i]);
+    if (polys.length < 4) throw new Error('Draft angle is too large for this depth: the profile collapses.');
+    return ensureOutward(polys);
+  }
   function taperedPrism(loop, plane, a, b, offA, offB, shared, cv) {
     var la = offA ? curveOffset(loop, offA, cv) : loop, lb = offB ? curveOffset(loop, offB, cv) : loop;
     // an offset loop has collapsed when any edge reverses direction (a square offset past its centre keeps its area sign)
@@ -224,7 +297,10 @@
       }
       return signedArea(off) <= 1e-9;
     }
-    if (collapsed(la) || collapsed(lb)) throw new Error('Draft angle is too large for this depth: the profile collapses.');
+    if (collapsed(la) || collapsed(lb)) {
+      if (convexLoop(loop)) return taperedRoof(loop, la, lb, plane, a, b, offA, offB, shared, cv);
+      throw new Error('Draft angle is too large for this depth: the profile collapses.');
+    }
     var polys = [], n = loop.length;
     var na = scale(plane.n, a), nb = scale(plane.n, b);
     var bottom = la.map(function (p) { return add(to3D(plane, p[0], p[1]), na); });

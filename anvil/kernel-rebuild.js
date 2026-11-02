@@ -230,29 +230,77 @@
   // 0 when exchange.js is not loaded. Cached on the CSG object (bodies are never changed in place). NM.on switches the
   // rebuild's zero-thickness check (tests).
   var NM = { on: true };
-  function nonManifoldCount(body) {
-    if (!body || !body.polygons || !body.polygons.length || typeof Exchange === 'undefined' || !Exchange.bodyMesh) return 0;
-    if (body._fnNM != null) return body._fnNM;
-    var m = Exchange.bodyMesh(body), t = m.triangles, P = m.positions, use = {}, n = 0;
-    for (var i = 0; i < t.length; i += 3) {
-      for (var k = 0; k < 3; k++) {
-        var a = t[i + k], b = t[i + (k + 1) % 3], key = a < b ? a + '_' + b : b + '_' + a;
-        use[key] = (use[key] || 0) + 1;
+  // rfGH: bodyTouch(body) -> { nm, lumps, touch } (cached): nm as above; lumps = null, or the body polygons' indices per
+  // piece when the mesh falls apart into pieces (triangles joined across edges with exactly two uses); touch: pieces
+  // meet along an edge or at a vertex. Pieces are what SolidWorks keeps as separate bodies (rfGD R01b, R01e, R02a)
+  // unless one is a cavity's wall, which `touchParts` checks. A polygon's triangles stay together whatever their fan
+  // diagonals do.
+  function bodyTouch(body) {
+    if (!body || !body.polygons || !body.polygons.length || typeof Exchange === 'undefined' || !Exchange.bodyMesh) return { nm: 0, lumps: null, touch: false };
+    if (body._ghTouch) return body._ghTouch;
+    var m = Exchange.bodyMesh(body), t = m.triangles, P = m.positions, V = P.length / 3, T = t.length / 3, use = new Map(), first = new Map(), n = 0, i, k;
+    for (i = 0; i < T; i++) {
+      for (k = 0; k < 3; k++) {
+        var a = t[3 * i + k], b = t[3 * i + (k + 1) % 3], key = a < b ? a * V + b : b * V + a, u = use.get(key);
+        if (u == null) { use.set(key, 1); first.set(key, i); } else use.set(key, u + 1);
       }
     }
     // a real touch is two sheets through one edge (4, 6 … triangles) along a length that matters; three uses (a crack
     // next to a duplicated sliver) and edges a few 1e-5 long are boolean noise (the vent fillets, stencil bridges, a
     // Normal Cut across a bend) that FL's watertightness work owns, not geometry the user made
     var bb = body.getBounds ? body.getBounds() : null, diag = bb ? Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]) : 1, minL = 1e-3 * diag;
-    Object.keys(use).forEach(function (key) {
-      if (use[key] < 4) return;
-      var ab = key.split('_'), p = +ab[0] * 3, q = +ab[1] * 3;
+    use.forEach(function (c, key) {
+      if (c < 4) return;
+      var p = Math.floor(key / V) * 3, q = (key % V) * 3;
       if (Math.hypot(P[p] - P[q], P[p + 1] - P[q + 1], P[p + 2] - P[q + 2]) >= minL) n++;
     });
-    try { Object.defineProperty(body, '_fnNM', { value: n, enumerable: false, writable: true, configurable: true }); } catch (e) { /* frozen */ }
-    return n;
+    var up = new Int32Array(T);
+    for (i = 0; i < T; i++) up[i] = i;
+    function root(x) { while (up[x] !== x) { up[x] = up[up[x]]; x = up[x]; } return x; }
+    function join(x, y) { x = root(x); y = root(y); if (x !== y) up[y] = x; }
+    for (i = 0; i < T; i++) {
+      for (k = 0; k < 3; k++) {
+        var c0 = t[3 * i + k], c1 = t[3 * i + (k + 1) % 3], ek = c0 < c1 ? c0 * V + c1 : c1 * V + c0;
+        if (use.get(ek) === 2) join(i, first.get(ek));
+      }
+    }
+    var polyTri = {};
+    for (i = 0; i < T; i++) { var pi = m.triPoly[i]; if (pi < 0) continue; if (polyTri[pi] == null) polyTri[pi] = i; else join(i, polyTri[pi]); }
+    var at = new Int32Array(V).fill(-1), touch = false, ids = {}, count = 0;
+    for (i = 0; i < T; i++) {
+      var r = root(i);
+      if (ids[r] == null) { ids[r] = count++; }
+      for (k = 0; k < 3; k++) { var w = t[3 * i + k]; if (at[w] < 0) at[w] = r; else if (at[w] !== r) touch = true; }
+    }
+    var lumps = null;
+    if (count > 1) {
+      lumps = [];
+      for (i = 0; i < count; i++) lumps.push([]);
+      Object.keys(polyTri).forEach(function (q) { lumps[ids[root(polyTri[q])]].push(+q); });
+    }
+    var res = { nm: n, lumps: lumps, touch: touch };
+    try { Object.defineProperty(body, '_ghTouch', { value: res, enumerable: false, writable: true, configurable: true }); } catch (e) { /* frozen */ }
+    return res;
+  }
+  function nonManifoldCount(body) { return bodyTouch(body).nm; }
+  // rfGH: touchParts(body, apart) -> the closed solid pieces of a body whose pieces touch only along edges or at
+  // vertices (apart: or do not touch at all: a boss off the part inside the part's box, rfGA 183), or null: no such
+  // pieces, a piece that is not a solid of its own (a cavity's wall, negative volume), or one still open or still
+  // touching itself (the check that follows then refuses the feature)
+  function touchParts(body, apart) {
+    var info = bodyTouch(body);
+    if (!info.lumps || !(info.touch || apart)) return null;
+    var parts = [], open0 = Exchange.bodyMesh(body).openEdges, open = 0;
+    for (var i = 0; i < info.lumps.length; i++) {
+      var q = CSG.fromPolygons(info.lumps[i].map(function (k) { return body.polygons[k].clone(); }));
+      if (!(q.volume() > 0) || nonManifoldCount(q)) return null;
+      open += Exchange.bodyMesh(q).openEdges;
+      parts.push(q);
+    }
+    return open > open0 ? null : parts;
   }
   K.nonManifoldCount = nonManifoldCount;
+  K.touchParts = touchParts;
   K.zeroThicknessCheck = NM;
   // isRefusal(message) -> true for the errors Anvil raises on purpose because the result would be bad geometry
   // (SolidWorks refuses the same features): zero thickness, a cut leaving nothing, a sweep folding back or crossing
@@ -261,7 +309,7 @@
   // rfFS: an empty cut (both directions tried for a cut that had none) is SolidWorks' rebuild error, a refusal too
   var CUT_MISS = 'The cut does not intersect the model: it would remove no material. Reverse its direction or change its end condition.';
   K.CUT_MISS = CUT_MISS;
-  var REFUSAL = /zero-thickness geometry|would remove all of the material|does not intersect the model|turns back on itself|sweep would intersect itself|loft would intersect itself|Revolve angle must be greater than zero/;
+  var REFUSAL = /zero-thickness geometry|would remove all of the material|does not intersect the model|turns back on itself|sweep would intersect itself|loft would intersect itself|Revolve angle must be greater than zero|rib is not bounded properly/;
   K.isRefusal = function (msg) { return REFUSAL.test(String(msg || '')); };
 
   // rfFN: solidFromProfile (kernel-curves.js) stacks every outline's solid and subtracts every hole from all of them,
@@ -632,13 +680,39 @@
       }
     }
     // rfFN: a boss, cut or pattern whose result touches itself along an edge or at a single point (tangent holes in a
-    // pattern, two blocks sharing only an edge) is zero-thickness geometry; SolidWorks refuses the feature. Counted on
-    // the bodies the feature changed (an edge shared by more than two triangles of the welded mesh), against the bodies
+    // pattern, bosses touching in a row) is zero-thickness geometry; SolidWorks refuses the feature. Counted on the
+    // bodies the feature changed (an edge shared by more than two triangles of the welded mesh), against the bodies
     // they came from so a part that was already like that does not fail every later feature.
-    function zeroThickness(before) {
+    // rfGH (SolidWorks measured, rfGD R01b, R01e, R02a, R17): only a solid that stays ONE piece through the contact is
+    // refused. When the contact is all that joins two pieces, a boss or a cut from a clean sketch leaves them as
+    // separate bodies (a block meeting another on one edge: volume 1, 2 bodies); a sketch whose own outlines touch stays
+    // refused (R01a, R01d: SolidWorks refuses that sketch); a pattern or mirror copy held on by the contact alone is
+    // "disjoint and will not be created", a warning, and the part stays as it was (R17: 24, 1 body).
+    function isFamilyFeature(f) { return f.type === 'lpattern' || f.type === 'cpattern' || f.type === 'mirror'; }
+    function disjointCopies(f, saveBodies, saveBodyFeatures) {
+      ctx.bodies = saveBodies.slice(); ctx.bodyFeatures = saveBodyFeatures.slice();
+      syncBody();
+      warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + 'Some instances are disjoint from the part and were not created.';
+    }
+    function zeroThickness(before, f, tool, beforeFeatures) {
       if (!NM.on || model.sheet) return;   // never on sheet metal (bends, reliefs and Normal Cuts are FL's / sheet metal's)
       var changed = ctx.bodies.filter(function (b) { return before.indexOf(b) < 0; });
       if (!changed.length) return;
+      var clean = null, split = false;   // (the tool's own mesh only when there are pieces to judge: a 1000-hole tool takes seconds)
+      var cut = isCut(f, model);
+      for (var i = ctx.bodies.length - 1; i >= 0 && clean !== false; i--) {
+        if (before.indexOf(ctx.bodies[i]) >= 0) continue;
+        var parts = touchParts(ctx.bodies[i], !cut && !isFamilyFeature(f));
+        if (!parts) continue;
+        if (clean === null) clean = !tool || !nonManifoldCount(tool);
+        if (!clean) break;
+        if (isFamilyFeature(f)) { disjointCopies(f, before, beforeFeatures); return; }
+        var from = ctx.bodyFeatures[i];
+        ctx.bodies.splice.apply(ctx.bodies, [i, 1].concat(parts));
+        ctx.bodyFeatures.splice.apply(ctx.bodyFeatures, [i, 1].concat(parts.map(function (q, k) { return k && !cut ? f.id : from; })));
+        split = true;
+      }
+      if (split) { syncBody(); changed = ctx.bodies.filter(function (b) { return before.indexOf(b) < 0; }); }
       var gone = before.filter(function (b) { return ctx.bodies.indexOf(b) < 0; });
       var nAfter = 0, nBefore = 0;
       changed.forEach(function (b) { nAfter += nonManifoldCount(b); });
@@ -854,8 +928,11 @@
             }
             if (made.warning) warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + made.warning;
             ctx.tools[f.id] = tool;
+            // rfGH: a pattern / mirror of a cut whose copies land on empty space (or on what is already cut) builds with
+            // SolidWorks' warning (rfGD R05e, rfGA 7, 244); only a cut from a sketch that misses is an error
+            if (cut && !trial.changed && isFamilyFeature(f)) { warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + 'Some instances are disjoint from the part and were not created.'; break; }
             if (cut) commitCut(trial, f); else addBoss(tool, f);
-            zeroThickness(saveBodies);
+            zeroThickness(saveBodies, f, tool, saveBodyFeatures);
           }
         }
       } catch (e) {

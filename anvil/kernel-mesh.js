@@ -819,7 +819,7 @@
     var dd = d, sg = (d[0] < -1e-9 || (Math.abs(d[0]) <= 1e-9 && (d[1] < -1e-9 || (Math.abs(d[1]) <= 1e-9 && d[2] < 0)))) ? -1 : 1;
     function q(v) { return Math.round(v * 1e5); }
     var key = A.map(q).join(',') + '|' + scale(dd, sg).map(q).join(',') + '|' + q(Rc) + '|' + (e.convex ? 1 : 0) + '|' + sp + '|' + sc;
-    return { key: key, A: A, d: d, Rc: Rc, uP: [sp, 0], uC: [k * sc / kn, sc / kn], conv: e.convex, fp: e.faces[ip] };
+    return { key: key, A: A, d: d, Rc: Rc, uP: [sp, 0], uC: [k * sc / kn, sc / kn], conv: e.convex, fp: e.faces[ip], fw: e.faces[ic] };
   }
   // rfFK: the circle where a plane square to the axis meets a revolved torus / sphere face (a dish wall cut by a
   // revolve with an arc, a ball dimple). In the meridian half-plane (ρ, z from A) the face is the tube circle C, r and
@@ -1063,6 +1063,169 @@
     return { pts: pts, arc: arc, c: null, b: pB };
   }
 
+  // ------------------------------------------------------------------ rfGG: a rolling ball along a curve between two curved faces
+  // value and unit gradient of an analytic surface's signed distance at p (+ on the side away from its axis / centre)
+  function rfGGval(S, p) {
+    var d = norm(S.d), q = sub(p, S.o), z = dot(q, d), rad = sub(q, scale(d, z)), rho = len(rad), u = rho > 1e-12 ? scale(rad, 1 / rho) : [1, 0, 0];
+    if (S.t === 'cyl') return { v: rho - S.r, g: u };
+    if (S.t === 'cone') { var k = S.k || 0, kn = Math.sqrt(1 + k * k); return { v: (rho - (S.r + k * z)) / kn, g: scale(sub(u, scale(d, k)), 1 / kn) }; }
+    if (S.t === 'sph') { var L = len(q); return { v: L - S.r, g: scale(q, 1 / L) }; }
+    var qr = rho - S.R, Lt = Math.hypot(qr, z);   // tor
+    return { v: Lt - S.r, g: scale(add(scale(u, qr), scale(d, z)), 1 / Lt) };
+  }
+  // Newton on v1 = t1, v2 = t2, (C − E)·T = 0: -> C, or null
+  function rfGGsolve(S1, S2, t1, t2, E, T, C0, lim) {
+    var C = C0.slice();
+    for (var it = 0; it < 40; it++) {
+      var a = rfGGval(S1, C), b = rfGGval(S2, C), f = [a.v - t1, b.v - t2, dot(sub(C, E), T)], A = a.g, B = b.g;
+      var c = cross(B, T), det = dot(A, c);
+      if (Math.abs(det) < 1e-9) return null;
+      // Cramer on rows A, B, T
+      var dC = [
+        (f[0] * c[0] + f[1] * (T[1] * A[2] - T[2] * A[1]) + f[2] * (A[1] * B[2] - A[2] * B[1])) / det,
+        (f[0] * c[1] + f[1] * (T[2] * A[0] - T[0] * A[2]) + f[2] * (A[2] * B[0] - A[0] * B[2])) / det,
+        (f[0] * c[2] + f[1] * (T[0] * A[1] - T[1] * A[0]) + f[2] * (A[0] * B[1] - A[1] * B[0])) / det];
+      var st = len(dC);
+      if (st > lim) dC = scale(dC, lim / st);
+      C = sub(C, dC);
+      if (st < 1e-11 * Math.max(1, lim)) return C;
+    }
+    return null;
+  }
+  // the chains of a saddle: the whole edge (every chord between the same two faces joined to the picked ones), in order.
+  // -> [{ es, vs, closed, S: [S0, S1], sg: [±1, ±1] (+ when the body's outward normal is the surface's + side), convex }]
+  function rfGGsaddleChains(picked, edges, mesh, kind) {
+    function no() { return new Error('Failed to create ' + kind + '. Anvil\'s kernel cannot ' + (kind === 'chamfer' ? 'chamfer' : 'round') + ' this edge where two curved faces meet: part of the edge is gone, or the faces are not plain cylinders, cones, spheres or tori.'); }
+    function q(x) { return Math.round(x * 1e6); }
+    function skey(fi) {
+      var S = rfFFsurf(mesh.faces[fi]);
+      return S ? [S.t, S.o.map(q).join(','), (S.d || []).map(q).join(','), q(S.r || 0), q(S.R || 0), q(S.k || 0)].join('|') : '';
+    }
+    function pair(e) { var a = skey(e.faces[0]), b = skey(e.faces[1]); return a < b ? a + '#' + b : b + '#' + a; }
+    var out = [], used = new Map();
+    picked.forEach(function (e0) {
+      if (used.has(e0)) return;
+      var p0 = pair(e0), list = edges.filter(function (e) { return rfFFsurf(mesh.faces[e.faces[0]]) && rfFFsurf(mesh.faces[e.faces[1]]) && e.convex === e0.convex && pair(e) === p0; }), adj = {};
+      list.forEach(function (e) { (adj[e.ka] = adj[e.ka] || []).push(e); (adj[e.kb] = adj[e.kb] || []).push(e); });
+      var keys = [e0.ka], cur = e0.ka, es = [], pos = {};
+      list.forEach(function (e) { pos[e.ka] = e.a; pos[e.kb] = e.b; });
+      for (var guard = 0; guard < 200000; guard++) {
+        var nx = (adj[cur] || []).filter(function (e) { return !used.has(e); })[0];
+        if (!nx) break;
+        used.set(nx, true); es.push(nx);
+        cur = nx.ka === cur ? nx.kb : nx.ka;
+        keys.push(cur);
+        if (cur === keys[0]) break;
+      }
+      var closed = keys.length > 3 && keys[keys.length - 1] === keys[0];
+      if (!closed && keys.length > 3 && len(sub(pos[keys[0]], pos[keys[keys.length - 1]])) < 1e-5) closed = true;
+      if (closed) keys.pop();
+      if (!closed) throw no();
+      var S = e0.faces.map(function (fi) { return rfFFsurf(mesh.faces[fi]); });
+      if (S.some(function (s) { return !s || s.w != null || ['cyl', 'cone', 'sph', 'tor'].indexOf(s.t) < 0; })) throw no();
+      var sg = S.map(function (s, i) { return dot(rfGGval(s, e0.mid).g, e0.normals[i]) > 0 ? 1 : -1; }), k0 = skey(e0.faces[0]), fl = [[], []];
+      es.forEach(function (e) { e.faces.forEach(function (fi) { var w = skey(fi) === k0 ? 0 : 1; if (fl[w].indexOf(fi) < 0) fl[w].push(fi); }); });
+      out.push({ es: es, vs: keys.map(function (k) { return pos[k]; }), closed: true, S: S, sg: sg, convex: e0.convex, faces: fl });
+    });
+    return out;
+  }
+  // The ball of radius size touching both surfaces, swept along the chain: rings of the arc from one contact to the other
+  // (a chamfer: the straight line between the two points a distance size from the edge along each surface), closed behind
+  // by a path a band (+ the facets' sagitta) past each surface and the edge. Few facets (the BSP's 1e-5 meets fine ones),
+  // the arc's chords keeping the sector's true area (see rfGGring). -> a closed CSG, or null when the ball does not fit
+  function rfGGsaddleTool(ch, mesh, kind, size, tag, tester, eta, vary) {
+    var S = ch.S, sg = ch.sg, vs = ch.vs, m = vs.length, sag = [0, 0], sgn = ch.convex ? -1 : 1;
+    ch.faces.forEach(function (fl, i) {
+      fl.forEach(function (fi) {
+        (mesh.faces[fi].polys || []).forEach(function (p) {
+          var c = [0, 0, 0];
+          p.vertices.forEach(function (v) { c = add(c, arr(v.pos)); });
+          sag[i] = Math.max(sag[i], Math.abs(rfGGval(S[i], scale(c, 1 / p.vertices.length)).v));
+        });
+      });
+    });
+    sag = sag.map(function (x) { return Math.min(x, 0.2 * size); });
+    var bs = [rfFMband + 1.5 * sag[0], rfFMband + 1.5 * sag[1]], cum = [0], i, k;
+    for (i = 0; i < m; i++) cum.push(cum[i] + len(sub(vs[(i + 1) % m], vs[i])));
+    var Lc = cum[m], Ns = Math.max(20, Math.min(36, Math.ceil(Lc / (0.35 * size))) + vary), ptsAt = function (s) {
+      s = ((s % Lc) + Lc) % Lc;
+      var lo = 0, hi = m;
+      while (hi - lo > 1) { var md = (lo + hi) >> 1; if (cum[md] <= s) lo = md; else hi = md; }
+      var t = (s - cum[lo]) / Math.max(cum[lo + 1] - cum[lo], 1e-12);
+      return add(scale(vs[lo], 1 - t), scale(vs[(lo + 1) % m], t));
+    };
+    function project(s, p) { for (var q = 0; q < 6; q++) { var a = rfGGval(s, p); p = sub(p, scale(a.g, a.v)); } return p; }
+    var stations = [], maxAng = 0, ds = Lc / Ns, C = null;
+    for (k = 0; k < Ns; k++) {
+      var sk = k * ds, E0 = ptsAt(sk), T = norm(sub(ptsAt(sk + 0.5 * ds), ptsAt(sk - 0.5 * ds)));
+      var Et = rfGGsolve(S[0], S[1], 0, 0, E0, T, E0, size);
+      if (!Et) return null;
+      var a0 = rfGGval(S[0], Et), b0 = rfGGval(S[1], Et), n0 = scale(a0.g, sg[0]), n1 = scale(b0.g, sg[1]), st = { E: Et, T: T, n: [n0, n1] };
+      // (a chamfer: the chord between the same ball's contacts: SolidWorks' 45° chamfer 3 on the tee adds 152 mm³, setbacks
+      // of 3 along each face would add 273: at the wider corners of the saddle its setback is the ball's, R / tan(θ / 2))
+      var c0 = add(Et, scale(norm(add(n0, n1)), sgn * size / Math.max(0.2, Math.sqrt(0.5 * (1 + dot(n0, n1))))));
+      C = rfGGsolve(S[0], S[1], sg[0] * sgn * size, sg[1] * sgn * size, Et, T, C || c0, size);
+      if (!C) C = rfGGsolve(S[0], S[1], sg[0] * sgn * size, sg[1] * sgn * size, Et, T, c0, size);
+      if (!C) return null;
+      // (each contact a hair off its true surface, so the tool's foot never grazes the facets' edges there)
+      var va = rfGGval(S[0], C), vb = rfGGval(S[1], C), lift = 1e-3 * size;
+      st.C = C; st.p = [sub(C, scale(va.g, va.v * (1 - lift / size))), sub(C, scale(vb.g, vb.v * (1 - lift / size)))];
+      var w0 = norm(sub(st.p[0], C)), w1 = norm(sub(st.p[1], C));
+      st.v = [w0, w1]; st.ang = Math.acos(Math.max(-1, Math.min(1, dot(w0, w1))));
+      maxAng = Math.max(maxAng, st.ang);
+      // each contact must lie on its face: material under it, air over it
+      for (var w = 0; w < 2; w++) {
+        var nP = scale(rfGGval(S[w], st.p[w]).g, sg[w]), off = sag[w] + 2 * eta + 2 * lift;
+        if (tester(sub(st.p[w], scale(nP, off))) !== true || tester(add(st.p[w], scale(nP, off))) !== false) return null;
+      }
+      stations.push(st);
+    }
+    // the ring: arc (or chord), then back round the corner behind the surfaces
+    var angs = kind === 'chamfer' ? [0, 1] : rfFMarcAngles(maxAng, Math.min(12, Math.max(4, rfFFsegs(size, maxAng)))).map(function (a) { return a / maxAng; }), BACK = 3;
+    var rings = stations.map(function (st) {
+      var ring = [];
+      if (kind === 'chamfer') ring.push(st.p[0], st.p[1]);
+      else {
+        var Se = 0, Sm = 0, an = st.ang, sn = Math.sin(an);
+        for (var i2 = 0; i2 + 1 < angs.length; i2++) { var sd = Math.sin((angs[i2 + 1] - angs[i2]) * an); if (i2 === 0 || i2 + 2 === angs.length) Se += sd * size; else Sm += sd; }
+        var Ar = size * size * an, rIn = Sm > 1e-12 ? (-Se + Math.sqrt(Se * Se + 4 * Sm * Ar)) / (2 * Sm) : size;
+        angs.forEach(function (fr, q) {
+          if (q === 0) { ring.push(st.p[0]); return; }
+          if (q === angs.length - 1) { ring.push(st.p[1]); return; }
+          ring.push(add(st.C, scale(add(scale(st.v[0], Math.sin((1 - fr) * an) / sn), scale(st.v[1], Math.sin(fr * an) / sn)), rIn)));
+        });
+      }
+      // the tool stands sgn × band past the surfaces, away from the ball's side: into the material (concave), into the air (convex)
+      function along(w, t) { var P = project(S[w], add(scale(st.p[w], 1 - t), scale(st.E, t))), nP = scale(rfGGval(S[w], P).g, sg[w]); return add(P, scale(nP, -sgn * bs[w])); }
+      for (var q = 0; q <= BACK; q++) ring.push(along(1, q / (BACK + 1)));
+      var cn = dot(st.n[0], st.n[1]), bq = Math.max(bs[0], bs[1]) / Math.max(0.3, 1 + cn);
+      ring.push(add(st.E, scale(add(st.n[0], st.n[1]), -sgn * bq)));
+      for (q = BACK; q >= 0; q--) ring.push(along(0, q / (BACK + 1)));
+      return ring;
+    });
+    // the same along the curve: a polygon ring through points of a curve is short by Δ²/6 of its area; each arc point
+    // stands off its neighbours' mean by 1/6 of the way, which keeps the tool's true volume on few stations
+    var nArc = angs.length;
+    rings = rings.map(function (ring, kk) {
+      var a = rings[(kk + Ns - 1) % Ns], b = rings[(kk + 1) % Ns];
+      return ring.map(function (P, q) { return q < nArc ? add(P, scale(sub(P, scale(add(a[q], b[q]), 0.5)), 1 / 6)) : P; });
+    });
+    var polys = [], n = rings[0].length;
+    for (k = 0; k < Ns; k++) {
+      var r0 = rings[k], r1 = rings[(k + 1) % Ns];
+      for (i = 0; i < n; i++) {
+        var j = (i + 1) % n;
+        [rfFYpoly([r0[i], r1[i], r1[j]], tag), rfFYpoly([r0[i], r1[j], r0[j]], tag)].forEach(function (pg) { if (pg) polys.push(pg); });
+      }
+    }
+    return ensureOutward(polys);
+  }
+  // rfGG: would this chain's section cross its axis (a round / chamfer larger than the plain round edge it runs round)?
+  function rfGGcrosses(I, kind, size) {
+    if (!I || I.circ || !(I.uP[0] < 0)) return false;
+    var c = I.uP[0] * I.uC[0] + I.uP[1] * I.uC[1], th = Math.acos(Math.max(-1, Math.min(1, c))), t = kind === 'chamfer' ? size : size / Math.tan(th / 2);
+    return I.Rc + I.uP[0] * t < -1e-6 * Math.max(1, I.Rc);
+  }
   // rfFY: poly() without repeated corners (a section point on the axis is the same point in every ring): a quad with one
   // corner on the axis is a triangle, one with two is nothing
   function rfFYpoly(ps, tag) {
@@ -1071,14 +1234,74 @@
     if (q.length > 1 && len(sub(q[0], q[q.length - 1])) <= 1e-12) q.pop();
     return q.length < 3 ? null : poly(q, tag);
   }
+  // rfGG: one ring of a round whose ball cannot rest on its plane at this station (the setback falls in a hole, off the
+  // plate, or under a boss). SolidWorks' ball stays tangent to the wall and rests on the edge bounding the plane
+  // (rail.P, on the plane, a band inside that edge): the ball moves along the wall by τ until it passes through P, and the
+  // section is its great circle from the wall contact W to P, with the same chord fractions as the plain section. A
+  // chamfer keeps W and ends on P. pts / arc: the section as arcChainTool holds it (possibly reversed).
+  function rfGGring(rail, I, uk, s, sec, pts, arc, kind, size) {
+    var A = I.A, d = I.d, P = rail.P, n = pts.length;
+    function M(p) { return add(A, add(scale(d, p[1]), scale(uk, p[0] * s))); }
+    var ai = [], i;
+    for (i = 0; i < n; i++) if (arc[i]) ai.push(i);
+    var iA = ai[0], iB = ai[ai.length - 1];
+    // which end of the arc is on the plane: the point of the section at z = 0 away from the corner
+    if (Math.abs(pts[iA][1]) > Math.abs(pts[iB][1])) { var sw = iA; iA = iB; iB = sw; }
+    var u3 = add(scale(uk, I.uC[0]), scale(d, I.uC[1])), PA = M(pts[iA]), PB = M(pts[iB]), W = PB, C = null, tau = 0, v0 = null, v1 = null, ang = 0, L0 = 0, L1 = 0;
+    if (kind !== 'chamfer') {
+      // on the wall's true surface, not its facet (no record corrects the gap between them here), a hair off it into the
+      // air so the tool's foot never grazes the facets' edges
+      var Mt = function (p) { return add(A, add(scale(d, p[1]), scale(uk, p[0]))); };
+      var C0 = Mt(sec.c), c0 = sub(C0, P), b = dot(c0, u3), dsc = b * b - (dot(c0, c0) - size * size);
+      tau = Math.max(0, b - Math.sqrt(Math.max(0, dsc)));
+      var tw = dot(sub(PB, M([I.Rc, 0])), u3);
+      tau = Math.min(tau, Math.max(0, tw - 3 * rfFMband));
+      if (tau < 2e-3 * size) tau = 0;   // a wall contact a hair off the plain ring's cracks the BSP (edges under its 1e-5)
+      var nW = scale(uk, (I.uP[0] > 0 ? 1 : -1) * (I.conv ? -1 : 1));
+      C = sub(C0, scale(u3, tau)); W = add(sub(Mt(pts[iB]), scale(u3, tau)), scale(nW, 1e-3 * size));
+      v0 = sub(P, C); v1 = sub(W, C); L0 = len(v0); L1 = len(v1); v0 = scale(v0, 1 / L0); v1 = scale(v1, 1 / L1);
+      ang = Math.acos(Math.max(-1, Math.min(1, dot(v0, v1))));
+    }
+    var a0 = sec.c ? Math.atan2(pts[iA][1] - sec.c[1], pts[iA][0] - sec.c[0]) : 0, a1 = sec.c ? Math.atan2(pts[iB][1] - sec.c[1], pts[iB][0] - sec.c[0]) : 0, sw0 = a1 - a0;
+    while (sw0 > Math.PI) sw0 -= 2 * Math.PI;
+    while (sw0 < -Math.PI) sw0 += 2 * Math.PI;
+    function frac(p) {
+      var da = Math.atan2(p[1] - sec.c[1], p[0] - sec.c[0]) - a0;
+      while (da > Math.PI) da -= 2 * Math.PI;
+      while (da < -Math.PI) da += 2 * Math.PI;
+      return da / sw0;
+    }
+    // no record can carry this round: the chords' fan keeps the sector's true area instead (the inner points a little
+    // off the ball), so the volume comes out right on few facets; many facets would meet the BSP's 1e-5 (see rfGGstations)
+    var rIn = size;
+    if (kind !== 'chamfer') {
+      var fs = ai.map(function (q) { return q === iA ? 0 : q === iB ? 1 : frac(pts[q]); }).sort(function (x, y) { return x - y; }), Sm = 0, Se = 0;
+      for (i = 0; i + 1 < fs.length; i++) { var sd = Math.sin((fs[i + 1] - fs[i]) * ang); if (i === 0 || i + 2 === fs.length) Se += sd * (i === 0 ? L0 : L1); else Sm += sd; }
+      var Ar = size * size * ang;
+      if (fs.length > 2) rIn = Sm > 1e-12 ? (-Se + Math.sqrt(Se * Se + 4 * Sm * Ar)) / (2 * Sm) : Ar / Math.max(Se, 1e-12);
+    }
+    return pts.map(function (p, q) {
+      if (arc[q]) {
+        if (q === iA) return P;
+        if (q === iB) return W;
+        var fr = frac(p), sa = Math.sin(ang), dir = sa > 1e-6 ? add(scale(v0, Math.sin((1 - fr) * ang) / sa), scale(v1, Math.sin(fr * ang) / sa)) : norm(add(scale(v0, 1 - fr), scale(v1, fr)));
+        return add(C, scale(dir, rIn));
+      }
+      // the run-out points next to the arc's ends move with those ends
+      if ((q + 1) % n === iA || (q + n - 1) % n === iA) return add(P, sub(M(p), PA));
+      if ((q + 1) % n === iB || (q + n - 1) % n === iB) return sub(M(p), scale(u3, tau));
+      return M(p);
+    });
+  }
   // Revolve the section about the circle's axis through the chain's vertices. chain: { info, vs (3D points in order,
-  // turning positively about d), closed }
+  // turning positively about d), closed, rail (rfGG: for each vertex null or { P }, see rfGGring) }
   function arcChainTool(chain, kind, size, tag, secIn) {
     var I = chain.info, A = I.A, d = I.d, Rc = I.Rc;
     var sec = secIn || rfFFsection(kind, size, [Rc, 0], I.uP, I.uC, I.conv, 0.2 * Rc, I.circ);   // rfFR: secIn = the air-pocket fill (rfFRpocketSec)
     var pts = sec.pts, arc = sec.arc;
-    // the round would cross the axis (a radius larger than the round edge it runs round): SolidWorks refuses it too.
-    // rfFY: one exactly as large ends on the axis (rfFFsection snaps it there): a sphere / cone corner, built
+    // the round would cross the axis (a radius larger than the round edge it runs round). A chain between two straight
+    // edges never reaches here (rfGG: the straight rounds run on past it); a whole circle or a lone arc does: no number
+    // from SolidWorks yet. rfFY: one exactly as large ends on the axis (rfFFsection snaps it there): a sphere / cone corner, built
     if (pts.some(function (p, i) { return arc[i] && p[0] !== 0 && !(p[0] > 1e-6 * Math.max(1, Rc)); }))
       throw new Error((kind === 'chamfer' ? 'Distance ' : 'Radius ') + +size.toFixed(6) + ' is too large for the round edge of radius ' + +Rc.toFixed(6) + ' it runs round; use less than ' + +Rc.toFixed(6) + ' (or ' + kind + ' this edge before the smaller rounds).');
     if (signedArea(pts) < 0) { pts = pts.slice().reverse(); arc = arc.slice().reverse(); }
@@ -1105,7 +1328,7 @@
       var raw = Math.atan2(dot(uk, e1), dot(uk, e0));
       if (k === 0) ph.push(0);
       else { var dp = raw - ph[k - 1]; while (dp < 0) dp += 2 * Math.PI; while (dp >= 2 * Math.PI) dp -= 2 * Math.PI; ph.push(ph[k - 1] + dp); }
-      rings.push(pts.map(function (p) { return add(A, add(scale(d, p[1]), scale(uk, p[0] * s))); }));
+      rings.push(chain.rail && chain.rail[k] ? rfGGring(chain.rail[k], I, uk, s, sec, pts, arc, kind, size) : pts.map(function (p) { return add(A, add(scale(d, p[1]), scale(uk, p[0] * s))); }));
     }
     if (chain.closed) { rings.push(rings[0]); ph.push(2 * Math.PI); }
     // rfFM: an open chain meeting a selected straight edge at a corner (a gear tooth's top arc and its flank) ends on
@@ -1137,12 +1360,13 @@
     var polys = [];
     for (k = 0; k + 1 < rings.length; k++) {
       var r0 = rings[k], r1 = rings[k + 1];
-      var tri = (k === 0 && mitred[0]) || (k + 2 === rings.length && mitred[1]);   // a mitred end sector: quads are no longer planar
+      var railed = chain.rail && (chain.rail[k] || chain.rail[(k + 1) % m]);   // rfGG: a ball resting on an edge: no record, no planar quads
+      var tri = (k === 0 && mitred[0]) || (k + 2 === rings.length && mitred[1]) || railed;   // a mitred end sector: quads are no longer planar
       for (var i = 0; i < n; i++) {
         var j = (i + 1) % n, pgs = tri ? [rfFYpoly([r0[i], r1[i], r1[j]], tag), rfFYpoly([r0[i], r1[j], r0[j]], tag)] : [rfFYpoly([r0[i], r1[i], r1[j], r0[j]], tag)];
         pgs.forEach(function (pg) {
           if (!pg) return;
-          if (wraps[i]) pg.surf = wraps[i];
+          if (wraps[i] && !railed) pg.surf = wraps[i];
           polys.push(pg);
         });
       }
@@ -1186,6 +1410,9 @@
         var w = walk(sk);
         if (w.keys.length < 2) return;
         var vs = w.keys.map(function (k) { return pos[k]; }), info = g[0].info;
+        // rfGG: a full circle whose seam vertex fell on both sides of ekey's rounding (rfFT 55) is still closed: an open
+        // chain's two end caps stood back to back there, inside the round
+        if (!w.closed && vs.length > 3 && len(sub(vs[0], vs[vs.length - 1])) < 1e-5 * Math.max(1, info.Rc)) { vs.pop(); w.keys.pop(); w.closed = true; }
         // turn positively about d: the second vertex at a positive angle from the first
         var e0 = norm(rfFFradial(vs[0], info.A, info.d)), v1 = norm(rfFFradial(vs[1], info.A, info.d));
         if (dot(cross(e0, v1), info.d) < 0) { vs.reverse(); w.keys.reverse(); if (w.closed) { vs.unshift(vs.pop()); w.keys.unshift(w.keys.pop()); } }
@@ -1280,14 +1507,27 @@
         });
       }
     });
+    // rfGG: a chamfer larger than the round edge its tangent chain runs into does not go round it: SolidWorks stops the
+    // propagation there and the straight edge's chamfer plane runs on past the tangent line until it leaves the body
+    // (R11b 3.7426384, rfFT 198, rfGA 82, all to 1e-6: body − one prism). The arc itself picked stays refused below.
+    if (f.type === 'chamfer' && selected.some(function (e) { return rfGGcrosses(info(e), f.type, size); })) {
+      var picks = (f.edges || []).map(function (spec) { return resolveEdges([{ at: spec.at, chain: false }], edges, tol)[0]; });
+      if (!picks.some(function (e) { return e && rfGGcrosses(info(e), f.type, size); })) {
+        var rest = edges.filter(function (e) { return !rfGGcrosses(info(e), f.type, size); });
+        selected = resolveEdges(f.edges, rest, tol);
+        seen = {};
+        selected.forEach(function (e) { seen[e.ka + '|' + e.kb] = true; });
+      }
+    }
     var byKey = {};
     selected.forEach(function (e) { (byKey[e.ka] = byKey[e.ka] || []).push(e); (byKey[e.kb] = byKey[e.kb] || []).push(e); });
     var arcs = [], straight = [];
     selected.forEach(function (e) { var ii = info(e); if (ii) arcs.push({ e: e, info: ii }); else straight.push(e); });
-    // rfFP: a chord of a curve between two analytic curved faces (the saddle where a pipe tee's branch meets the run:
-    // cylinder × cylinder) has no exact tool here: the chord-by-chord prisms are not planar where they meet (2e-3) and
-    // left ~1100 open edges, or added 11 % more than OpenCascade's round. Refused cleanly; OpenCascade builds it.
-    // A straight edge along both faces' rulings (two cylinders with axes parallel to it) is a true line and still builds.
+    // rfGG: a curve between two analytic curved faces (the saddle where a pipe tee's branch meets the run: cylinder ×
+    // cylinder) gets a rolling-ball tool swept along the true intersection (rfGGsaddleTool, closed by the boolean):
+    // the whole edge, as SolidWorks picks it. A straight edge along both faces' rulings (two cylinders with axes parallel
+    // to it) is a true line and builds as a straight edge.
+    var saddle = [];
     straight.forEach(function (e) {
       var S0 = rfFFsurf(mesh.faces[e.faces[0]]), S1 = rfFFsurf(mesh.faces[e.faces[1]]);
       if (!S0 || !S1) return;
@@ -1295,12 +1535,37 @@
       if (ruling(S0) && ruling(S1)) return;
       function coax(A, B) { return (A.t === 'cyl' || A.t === 'cone') && (B.t === 'cyl' || B.t === 'cone') && Math.abs(Math.abs(dot(norm(A.d), norm(B.d))) - 1) < 1e-9 && len(cross(norm(A.d), sub(B.o, A.o))) < 1e-9 * (1 + len(sub(B.o, A.o))); }
       if (coax(S0, S1)) return;   // lane FX: coaxial cylinders / cones meet in a circle (the Funnel's cone loft, now a cone record, into its spout): builds as before
-      throw new Error('Failed to create ' + f.type + '. Anvil\'s kernel cannot ' + (f.type === 'chamfer' ? 'chamfer' : 'round') + ' an edge where two curved faces meet in a curve (OpenCascade can: Tools ▸ OpenCascade kernel).');
+      saddle.push(e);
     });
-    // rfFM: a round that does not fit (its setback runs off a face, into a hole or a boss; it breaks through a thin wall)
-    // is refused as SolidWorks refuses it, instead of cutting a wrong body
+    var saddleChains = saddle.length ? rfGGsaddleChains(saddle, edges, mesh, f.type) : [];
+    if (saddle.length) {
+      straight = straight.filter(function (e) { return saddle.indexOf(e) < 0; });
+      saddleChains.forEach(function (ch) { ch.es.forEach(function (e) { seen[e.ka + '|' + e.kb] = true; }); });
+    }
+    // rfFM: a round that does not fit (it breaks through a thin wall; a straight edge's setback runs off its face) is
+    // refused instead of cutting a wrong body. rfGG: what SolidWorks does build is built: see the rfGG notes below
     rfFMband = Math.min(0.05 * size, ctx.units === 'in' ? 0.05 / 25.4 : 0.05);
     var eta = Math.max(1e-3 * size, 1e-4), tester = null, chainList = arcChains(arcs);
+    // rfGG: a round larger than the corner round its tangent chain runs round (R.0625 along a plate's edges, round their
+    // R.03 corner): the ball cannot follow the corner; SolidWorks builds the two straight rounds on past the tangent lines
+    // until they meet (R11a 3.7434737, rfFT 104, 136: body − both tools is that solid to 4e-6). The chain's tool is left
+    // out, and each straight neighbour runs on past the virtual corner (rfGGrun, read by capFor)
+    var rfGGrun = {};
+    chainList = chainList.filter(function (ch) {
+      if (ch.closed || !rfGGcrosses(ch.info, f.type, size)) return true;
+      var I = ch.info, n = ch.vs.length, ends = [[ch.keys[0], ch.vs[0]], [ch.keys[n - 1], ch.vs[n - 1]]];
+      var nbs = ends.map(function (q) {
+        var rv = norm(rfFFradial(q[1], I.A, I.d));
+        return (byKey[q[0]] || []).filter(function (x) { return !info(x) && Math.abs(dot(x.dir, rv)) < 0.05; }).length === 1;
+      });
+      if (!nbs[0] || !nbs[1]) return true;
+      var u0 = norm(rfFFradial(ch.vs[0], I.A, I.d)), u1 = norm(rfFFradial(ch.vs[n - 1], I.A, I.d)), sw = Math.acos(Math.max(-1, Math.min(1, dot(u0, u1))));
+      if (sw > 0.9 * Math.PI) return true;
+      var run = I.Rc * Math.tan(sw / 2) + 0.25 * size;
+      ends.forEach(function (q) { rfGGrun[q[0]] = run; });
+      arcs = arcs.filter(function (x) { return ch.keys.indexOf(x.e.ka) < 0 || ch.keys.indexOf(x.e.kb) < 0; });
+      return false;
+    });
     K.fitProbe.last = null; K.fitProbe.soft = 0; K.fitProbe.where = null;
     // rfFP: does the setback point P = V + s·dE + t·u (V an end of the round's edge e, dE along e from V, u into face fi
     // square to e) leave face fi across the face's own corner at V? True when fi has one sharp outline edge w leaving
@@ -1379,6 +1644,16 @@
         return _.prism(L.loops[b.li], L.plane, -3 * size, 2 * size + 2 * rfFMband, f.id);
       });
     }
+    // rfGG: the prisms up a hole a concave round rests on, taken off the tool: on the hole's flanks the ball dips into the
+    // hole (its nearest rim point lies past its foot) and the hole stays open through the round
+    var rfGGholes = {}, rfGGsub = 3, rfGGused = false, rfGGplain = false, rfGGoutline = null;
+    function rfGGholePrisms() {
+      return Object.keys(rfGGholes).map(function (k) {
+        var b = rfGGholes[k], L = rfFRouter[b.fi];
+        return _.prism(L.loops[b.li], L.plane, -4 * rfFMband, 2 * size + 2 * rfFMband, f.id);
+      });
+    }
+    var rfGGoff = {};   // the stations of a chain whose setback was excused as running off the plate
     function probe(pts3) {
       if (!pts3.length) return 0;
       if (!tester) tester = ctx.body.pointTester();
@@ -1387,7 +1662,7 @@
         if (tester(q.p) === q.want) return;
         K.fitProbe.last = q.why + (q.at != null ? '@' + q.at : ''); K.fitProbe.lastP = q.p; K.fitProbe.where = q.where || null;
         if (K.fitProbe.log) K.fitProbe.log.push({ why: q.why, at: q.at, soft: !!q.soft, where: q.where || null, p: q.p });   // rfFR: every miss, when a caller asks (fuzz)
-        if (q.soft) { K.fitProbe.soft++; if (q.inner) fell++; return; }
+        if (q.soft) { K.fitProbe.soft++; if (q.inner) fell++; if (q.offAt != null) rfGGoff[q.offAt] = 1; return; }
         if (K.fitProbe.on) throw rfFMrefuse(f.type);
       });
       return fell;
@@ -1415,11 +1690,13 @@
         }));
         if (hit) fell++;
       }
-      // head (local-2026-10-30a): a convex round whose setback lies in air at more than half the stations of its edge has no
-      // face left under it along the edge: the face is a rim narrower than the setback (R7.2 on a shelled box's 2 mm rim,
-      // smoke rfFM), not a hole crossing the setback (rfFR: at most a hole's width of stations). SolidWorks refuses it;
-      // built, the round would cut the corner off through the wall.
-      if (fell > ns / 2) { K.fitProbe.last = 'rim'; K.fitProbe.lastP = m; K.fitProbe.where = 'face'; if (K.fitProbe.on) throw rfFMrefuse(f.type); }
+      // rfGG: a convex round whose setback lies in air along its edge rides on a rim narrower than the setback (R7.2 and
+      // R2.5 on a shelled box's 2 mm rim: SolidWorks builds them, 7015.928 and 7717.806 mm³, the tangent ball still on the
+      // rim's plane, the top of the wall the arc's trace: 27.77996 = 22.8 + √(7.2² − 5.2²)): body − tool. Only where the
+      // setback reaches a selected edge on that rim (both rims R7.2) do the two rounds eat each other: refused.
+      if (fell > ns / 2 && selected.some(function (x) {
+        return x !== e && Math.abs(dot(x.dir, e.dir)) > 0.7 && e.faces.some(function (fi) { return x.faces.indexOf(fi) >= 0; }) && pointSegmentDistance(m, x.a, x.b) < tset;
+      })) { K.fitProbe.last = 'rim'; K.fitProbe.lastP = m; K.fitProbe.where = 'face'; if (K.fitProbe.on) throw rfFMrefuse(f.type); }
     });
     chainList.forEach(function (ch) {
       var I = ch.info;
@@ -1440,6 +1717,7 @@
         return { V: vs[c], n: mesh.faces[+ws[0]].normal };
       }).filter(function (w) { return w; });
       var ks = [], kMid = Math.floor((vs.length - 1) / 2);
+      rfGGoff = {};
       for (var k = k0; k < k1; k += step) ks.push(k);
       if (walls.length && ks.indexOf(kMid) < 0) ks.push(kMid);
       ks.forEach(function (k) {
@@ -1448,11 +1726,98 @@
           var P = add(I.A, add(scale(I.d, q.p[1]), scale(uk, q.p[0] * sc)));
           // (rfFR: a concave open chain's middle vertex stays hard here too: R1 in the Moulded cap's 0.5 mm wide half hole
           // would fill it up to the rib, which neither SolidWorks nor OpenCascade builds)
-          var soft = (k !== kMid && walls.some(function (w) { return dot(sub(P, w.V), w.n) < -0.5 * eta; })) || ((I.conv || ch.closed || k !== kMid) && rfFRharmless(q, P, I.conv, [I.fp, null]));
-          return { p: P, want: q.want, why: q.why, soft: soft, where: q.where, at: 'a' + k + '/' + vs.length + (ch.closed ? 'c' : '') };
+          var offAt = null, soft = (k !== kMid && walls.some(function (w) { return dot(sub(P, w.V), w.n) < -0.5 * eta; })) || ((I.conv || ch.closed || k !== kMid) && rfFRharmless(q, P, I.conv, [I.fp, null]));
+          // rfGG: a convex round / chamfer on a circular edge running off the plate, or past the end of its wall, into air
+          // keeps its surface: body − tool is SolidWorks' solid (rfFT 303, 82 to 4e-7). A concave round whose setback finds
+          // no plane under it rests on the edge bounding the plane (rfGGstations): both built. A whole circle off the plate
+          // all the way round has nothing left to stand on: refused (the check after this loop).
+          if (!soft && q.why === 'under') {
+            if (q.where == null) rfFRharmless(q, P, I.conv, [I.fp, null]);
+            if (I.conv) { soft = q.side === 1 || (q.side === 0 && /off/.test(q.where || '')); offAt = soft && q.side === 0 ? k : null; }
+            else soft = q.side === 0 && !walls.length;
+          }
+          // the corner region running off the face beside the setback (rfFT 303): air, the cut is exact there. Air in the
+          // corner with faces all round it (R9 through a shelled box's wall, where 'face+face') stays a misfit.
+          if (!soft && q.why === 'corner' && I.conv && /off/.test(q.where || '')) soft = true;
+          return { p: P, want: q.want, why: q.why, soft: soft, where: q.where, offAt: offAt, at: 'a' + k + '/' + vs.length + (ch.closed ? 'c' : '') };
         }));
       });
+      if (I.conv && ch.closed && ks.length && Object.keys(rfGGoff).length === ks.length && K.fitProbe.on) throw rfFMrefuse(f.type);
     });
+    // rfGG: a convex round on a circular edge whose wall is shorter than the round and ends in air (R16 on the rim of a hole
+    // through a 10 mm plate): the ball stays tangent to the plane and rests on the wall's far rim (SolidWorks' 39019.561,
+    // = the integral of this section to 6e-7), no longer tangent to the wall. The arc runs just past that rim, a hair
+    // outside it, so no sliver of wall is left. -> a section for arcChainTool, or null
+    function rfGGshortWall(ch) {
+      var I = ch.info;
+      if (f.type !== 'fillet' || !I.conv || I.circ || I.fw == null || Math.abs(I.uC[0]) > 1e-9 || Math.abs(I.uC[1]) < 0.5) return null;
+      var sc = I.uC[1] > 0 ? 1 : -1, sp = I.uP[0] > 0 ? 1 : -1, H = -Infinity;
+      (mesh.faces[I.fw].polys || []).forEach(function (p) { p.vertices.forEach(function (v) { H = Math.max(H, dot(sub(arr(v.pos), I.A), I.d) * sc); }); });
+      if (!(H > eta) || H >= size * (1 - 1e-9)) return null;
+      if (!tester) tester = ctx.body.pointTester();
+      var uk = norm(rfFFradial(ch.vs[0], I.A, I.d));
+      if (tester(add(I.A, add(scale(uk, I.Rc + sp * eta), scale(I.d, sc * (H + eta)))))) return null;
+      var r = size, ins = Math.max(5e-4 * size, 1e-4), a = ins + Math.sqrt(r * r - (r - H) * (r - H)), c = [I.Rc + sp * a, sc * r], m = 4 * rfFMband;
+      var pA = [I.Rc + sp * a, 0], dzB = r - H - m, pB = [c[0] - sp * Math.sqrt(r * r - dzB * dzB), sc * (H + m)];
+      var a0 = Math.atan2(pA[1] - c[1], pA[0] - c[0]), a1 = Math.atan2(pB[1] - c[1], pB[0] - c[0]), sw = a1 - a0;
+      while (sw > Math.PI) sw -= 2 * Math.PI;
+      while (sw < -Math.PI) sw += 2 * Math.PI;
+      var asw = Math.abs(sw), angs = rfFMarcAngles(asw, rfFFsegs(r, asw)), sg = sw < 0 ? -1 : 1, pts = [], arc = [];
+      for (var i = 0; i < angs.length; i++) { var an = a0 + sg * angs[i]; pts.push(i === 0 ? pA : i === angs.length - 1 ? pB : [c[0] + r * Math.cos(an), c[1] + r * Math.sin(an)]); arc.push(true); }
+      var x = 1.5 * size;
+      if (sp > 0) x = Math.min(x, 0.8 * I.Rc);
+      pts.push([I.Rc - sp * x, pB[1]], [I.Rc - sp * x, -sc * x], [pA[0], -sc * x]);
+      arc.push(false, false, false);
+      return { pts: pts, arc: arc, c: c };
+    }
+    // rfGG: the stations of a chain on a planar face, finer where the plain setback is lost: -> null, or { vs, rail }
+    // (rail[k] = null, or { P }: the point of the plane the ball rests on, 2 bands inside the edge bounding the plane; a
+    // band, not on it, so the tool's foot never lies along that edge). A concave round rests on a hole's rim or the plate's
+    // edge (R14a, R14b, rfFT 55, 388); a convex one on the root of a boss standing on its face (R14c, R14d); a convex
+    // round running off into air keeps its surface and needs nothing here.
+    function rfGGstations(ch, secShort) {
+      var I = ch.info;
+      if (I.circ || I.fp == null || !rfFFplanar(mesh.faces[I.fp]) || ch.vs.length < 2) return null;
+      rfFRinHole(I.fp, ch.vs[0]);
+      var L = rfFRouter[I.fp], sec = secShort;
+      if (!L) return null;
+      if (!sec) { try { sec = rfFFsection(f.type, size, [I.Rc, 0], I.uP, I.uC, I.conv, 0.2 * I.Rc, null); } catch (err) { return null; } }
+      if (!tester) tester = ctx.body.pointTester();
+      var rhoF = sec.pts[0][0], nF = mesh.faces[I.fp].normal, inset = Math.min(2 * rfFMband, Math.max(5e-4 * size, 1e-4));
+      if (!(rhoF > 0)) return null;
+      function status(v) {
+        var uk = norm(rfFFradial(v, I.A, I.d)), foot = add(I.A, scale(uk, rhoF)), li = rfFRinHole(I.fp, foot);
+        if (li === -1 || (I.conv && li == null)) return null;
+        if (tester(add(foot, scale(nF, I.conv ? eta : -eta))) !== !!I.conv) return null;
+        var q = to2D(L.plane, foot), best = null, bd = Infinity;
+        L.loops.forEach(function (lp) {
+          for (var i = 0; i < lp.length; i++) {
+            var a = lp[i], b = lp[(i + 1) % lp.length], ex = b[0] - a[0], ey = b[1] - a[1], t = ((q[0] - a[0]) * ex + (q[1] - a[1]) * ey) / Math.max(ex * ex + ey * ey, 1e-18);
+            t = Math.max(0, Math.min(1, t));
+            var x = a[0] + ex * t, y = a[1] + ey * t, dd = Math.hypot(x - q[0], y - q[1]);
+            if (dd < bd) { bd = dd; best = [x, y]; }
+          }
+        });
+        if (!best || !(bd > 1e-9)) return null;
+        var Pi = [best[0] + (best[0] - q[0]) / bd * inset, best[1] + (best[1] - q[1]) / bd * inset];
+        if (I.conv) rfFRbosses[I.fp + ':' + li] = { fi: I.fp, li: li };
+        else if (li != null) rfGGholes[I.fp + ':' + li] = { fi: I.fp, li: li };
+        else rfGGoutline = I.fp;
+        return secShort || rfGGplain ? null : { P: to3D(L.plane, Pi[0], Pi[1]) };   // (a ball on the wall's far rim is already placed)
+      }
+      var vs = ch.vs, m = vs.length, N = ch.closed ? m : m - 1, st = vs.map(status), mids = [], any = st.some(function (x) { return x; }), SUB = rfGGsub;
+      for (var i = 0; i < N; i++) { mids.push(status(scale(add(vs[i], vs[(i + 1) % m]), 0.5))); if (mids[i]) any = true; }
+      if (!any) return null;
+      rfGGused = true;
+      var out = [], rail = [];
+      for (i = 0; i < N; i++) {
+        var j = (i + 1) % m;
+        out.push(vs[i]); rail.push(st[i]);
+        if (st[i] || st[j] || mids[i]) for (var q = 1; q < SUB; q++) { var v = add(scale(vs[i], 1 - q / SUB), scale(vs[j], q / SUB)); out.push(v); rail.push(status(v)); }
+      }
+      if (!ch.closed) { out.push(vs[m - 1]); rail.push(st[m - 1]); }
+      return { vs: out, rail: rail };
+    }
     // rfFP: the tools are made by makeTools() so a cracked result can be retried with another band (see below)
     function makeTools() {
     var cuts = [], adds = [];
@@ -1469,8 +1834,16 @@
       });
     });
     var pres = [];
+    saddleChains.forEach(function (ch) {
+      if (!tester) tester = ctx.body.pointTester();
+      rfGGused = true;
+      var tool = rfGGsaddleTool(ch, mesh, f.type, size, f.id, tester, eta, 7 * (rfGGsub - 3));
+      if (!tool) { K.fitProbe.last = 'saddle'; K.fitProbe.where = 'curved'; if (K.fitProbe.on) throw rfFMrefuse(f.type); return; }
+      (ch.convex ? cuts : adds).push(tool);
+    });
     chainList.forEach(function (ch) {
-      (ch.info.conv ? cuts : adds).push(arcChainTool(ch, f.type, size, f.id));
+      var ss = rfGGshortWall(ch), rs = rfGGstations(ch, ss);
+      (ch.info.conv ? cuts : adds).push(arcChainTool(rs ? { info: ch.info, vs: rs.vs, rail: rs.rail, closed: ch.closed, caps: ch.caps } : ch, f.type, size, f.id, ss));
       var ps = rfFRpocketSec(ch.info, f.type, size);   // rfFR: the air pocket at B of a round inside the tube
       if (ps) pres.push(arcChainTool(ch, f.type, size, f.id, ps));
     });
@@ -1499,6 +1872,7 @@
     });
     function capFor(e, atA, nbs) {
       var vk = atA ? e.ka : e.kb, v = atA ? e.a : e.b;
+      if (rfGGrun[vk]) return { v: v, n: null, ext: rfGGrun[vk] };   // rfGG: on past the corner round it is too large for
       if (corners[vk]) return { v: corners[vk].C, n: e.dir, ext: 0 };
       // a straight edge running on tangentially into a filleted circle stops at the circle's meridian plane there
       var arcNb = nbs.filter(function (x) { return info(x); });
@@ -1512,13 +1886,14 @@
       // continues a face tangentially, so it is never cut into)
       if (!nbs.length) {
         var run = 0, atRound = false;
-        // fillets only: what SolidWorks does with a chamfer there is not measured yet (the Chamfered block example keeps its end)
+        // a fillet always; a chamfer when it is larger than that round (rfGG: SolidWorks' chamfer plane runs on through it,
+        // R11b, rfFT 198, rfGA 82). A smaller chamfer there is not measured yet (the Chamfered block example keeps its end)
         allEdges.forEach(function (s) {
           if (!s.smooth || (s.ka !== vk && s.kb !== vk) || !s.faces.some(function (fi) { return e.faces.indexOf(fi) >= 0; })) return;
           // rfFM: a plane face of the edge blending into another face's round, not a seam between two facets of the edge's
           // own curved face (a lone chord of the Funnel's bore ran on 21 mm along its tangent and cut a slab out)
           if (!s.faces.some(function (fi) { return e.faces.indexOf(fi) >= 0 && rfFFplanar(mesh.faces[fi]); })) return;
-          s.faces.forEach(function (fi) { if (e.faces.indexOf(fi) >= 0) return; var S = rfFFsurf(mesh.faces[fi]); if (S) { atRound = true; if (f.type === 'fillet') run = Math.max(run, size + (S.t === 'tor' ? S.R + S.r : S.r)); } });
+          s.faces.forEach(function (fi) { if (e.faces.indexOf(fi) >= 0) return; var S = rfFFsurf(mesh.faces[fi]); if (S) { atRound = true; if (f.type === 'fillet' || (S.t === 'cyl' && size > S.r * (1 + 1e-6))) run = Math.max(run, size + (S.t === 'tor' ? S.R + S.r : S.r)); } });
         });
         if (run > 0) return { v: v, n: null, ext: run };
         // rfFM: a chamfer keeps its end there, exactly on the plane square to the edge at the tangent line: its 0.01
@@ -1576,7 +1951,11 @@
     });
     var cutU = cuts.length ? unionAll(cuts) : null, bp = cutU ? rfFRbossPrisms() : [];
     if (bp.length) cutU = cutU.subtract(unionAll(bp));   // rfFR: the bosses the round runs under stay whole
-    return [cutU, adds.length ? unionAll(adds) : null, pres.length && cutU ? unionAll(pres) : null];
+    var addU = adds.length ? unionAll(adds) : null, hp = addU ? rfGGholePrisms() : [];
+    if (hp.length) addU = addU.subtract(unionAll(hp));
+    // the plain tool would hang off the plate where its foot leaves it: keep it inside the plate's outline
+    if (addU && rfGGplain && rfGGoutline != null) { var LO = rfFRouter[rfGGoutline]; addU = addU.intersect(_.prism(LO.loops[LO.outer], LO.plane, -4 * rfFMband, 2 * size + 2 * rfFMband, f.id)); }
+    return [cutU, addU, pres.length && cutU ? unionAll(pres) : null];
     }
     // rfFP: a fillet / chamfer whose result has open edges is never returned: the boolean is done here, checked (open
     // edges of the welded, T-junction-split mesh, more than the body had before), and handed to the caller's own
@@ -1590,7 +1969,10 @@
       // rfCW / rfBZ flats): a wheel's R.1 rim fillet after an R.25 one had 6 open edges and built before the guard
       var before = ctx.body, open0 = rfFPopenCount(before), done = false;
       var CO = (typeof CSG !== 'undefined' && CSG.options) || {}, keepW = CO.healWide, keepF = CO.healFill;
-      [0.5, 2, 'heal', null].forEach(function (bf) {
+      // rfGG: a tool with rail stations first tries other station counts (no count is safe for every BSP); after the band
+      // and healing retries, the plain round trimmed by the hole and the plate's outline (closed, a little heavy: better
+      // than an error; R14a is 2e-4 heavy that way)
+      (rfGGused ? ['s2', 's1', 's4'] : []).concat(rfGGused ? [0.5, 2, 'heal', 'plain', null] : [0.5, 2, 'heal', null]).forEach(function (bf) {
         if (done) return;
         var mid, res;
         try {
@@ -1606,7 +1988,10 @@
           return;
         }
         if (bf == null) return;
-        rfFMband = bf === 'heal' ? band0 : band0 * bf; tools = makeTools(); cutT = tools[0]; addT = tools[1]; preT = tools[2];
+        if (bf === 'plain') { rfGGplain = true; rfGGsub = 3; rfFMband = band0; }
+        else if (typeof bf === 'string' && bf.charAt(0) === 's') rfGGsub = +bf.charAt(1);
+        else rfFMband = bf === 'heal' ? band0 : band0 * bf;
+        tools = makeTools(); cutT = tools[0]; addT = tools[1]; preT = tools[2];
         if (bf === 'heal') { CO.healWide = 2e-4; CO.healFill = true; }
       });
       rfFMband = band0;

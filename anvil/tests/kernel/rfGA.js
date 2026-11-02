@@ -273,7 +273,9 @@
       G11: [4.6640625, 1, [-2,0,-1.5,2,2,1.5]], G12: [3.308203522, 1, [-2,0,-1.5,2,1.5,1.5]],
       G13: [3.503599424, 1, [-2,0,-1.5,2,2,1.5]], G14: [3.000466421, 1, [-1.5,0,-1.5,1.5,2,1.5]],
       G15: [1.776528792, 1, [-0.5,0,-0.5,4,4.5,0.5]], G16: [1.542560181, 1, [-0.25,0,-0.25,4,4.75,0.25]],
-      G17: [17.543490481, 1, [-1.5,0,-1.5,1.5,3,1.5]], G18: [12.468594822, 1, [-1.5,0,-1.5,1.5,3,1.5]],
+      // lane lofts: G17 and G18 changed with OpenCascade's loft, which now follows SolidWorks (17.51832923, 12.47522741)
+      // instead of its own smoothing (was 17.543490481, 12.468594822); G18's rim is the arcs' cubic, 2.9e-4 inside r 1.5
+      G17: [17.518306041, 1, [-1.5,0,-1.5,1.5,3,1.5]], G18: [12.474921136, 1, [-1.499705,0,-1.499705,1.499705,3,1.499705]],
       G19: [28, 1, [-2,0,-2,2,3,2]],
       G20: [5.333333326, 1, [-1,-1,-1,1,1,1]],
       G21: [7.232854132, 1, [-1.5,0,-1.5,1.5,1,1.5]], G22: [7.233037288, 1, [-1,-1,-1,1,1,1]],
@@ -286,9 +288,9 @@
       G32: [5.877488521, 1, [-2.5,0,-2.5,2.5,0.75,2.5]],
       G33: [4.696563657, 1, [-1,0,-1,1,1.5,1]], G34: [9.424777961, 1, [-1,0,-1,1,3,1]],
       G35: [9.400403044, 1, [-1,0,-1,1,3,1]], G36: [3.336956597, 1, [-0.75,0,-0.75,0.75,3,0.75]],
-      G37: [6.209394232, 1, [-1.5,0,-1.5,1.5,1,1.5]], G38: [1.343026346, 1, [0,0,0,4,1.0598,3]],
+      G37: [6.209394232, 1, [-1.5,0,-1.5,1.5,1,1.5]], G38: [1.333810675, 1, [0,0,0,4,1.0598,3]] /* SolidWorks: the square notch (2026-11-02); OpenCascade 1.333839 */,
       G40: [1.152658401, 1, [0,0,0,3,1,4]], G41: [2.757629778, 1, [0,0,0,6,1.57475,4]],
-      G42: [0.648963393, 1, [0,0,-2,2,1,0], "OpenCascade 0.648963393 after lane FW2 (head rerun of compare.js --occt; before FW2 it refused the ring) = Anvil's flat area × T (K 0.5 straight bends)"],
+      G42: [0.653834158, 1, [0,0,-2,2,1,0], "OpenCascade 0.653834158 after Rip went through the floor (SolidWorks 2022: the slot runs the corner's whole length); SolidWorks' flat 0.653189"],
       G43: [0.530782907, 1, [2.95085,0,0,6,3.04915,1.5]], G44: [2.417140229, 1, [0,0,0,6,1.5,4]],
       G45: [1.445061815, 1, [0,0,0,4,1,3]], G46: [1.447206998, 1, [0,0,0,4,1,3]],
       G47: [1.453061469, 1, [0,0,0,4,1,3]], G48: [0, 0, null, "error: Sketch has no closed profile."]
@@ -300,13 +302,14 @@
     var OPEN = {};   // G46 closed by lane FW (Closed Corner bend ends rebuilt from the flat)
     // refusals: [true when SolidWorks refuses too (a hard row), why]
     var REFUSED = { G29: [true, 'the bosses touch along a line: zero-thickness geometry, which SolidWorks refuses too'],
+      G24: [true, 'a free-ended rib Normal to Sketch: SolidWorks: "The rib is not bounded properly" (rfGD R20a); this row used to pin 2.45'],
       G48: [false, 'Base Flange from an open profile is not in Anvil'] };
     // volume mismatches: [loose hard tolerance, why]
     var FACET = [1e-3, 'Anvil\'s bend surfaces are faceted chords with no cylinder record in Mass Properties: 1e-4 to 7e-4 light'];
     // (G10 Mirror of a fillet and G13 shell after fillets are exact since rfGB)
     var VOLTODO = {
-      G17: [3e-3, 'square → circle loft: Anvil ruled as SolidWorks (rfFH P11), OpenCascade smooth'],
-      G18: [4e-2, 'circle → square → circle loft: Anvil ruled, OpenCascade smooth (no SolidWorks reference yet)', 0.01] };
+      G17: [5e-5, 'square → circle loft: one surface on both engines, Anvil\'s facets of it are 3.6e-5 light (SolidWorks 17.51832923)'],
+      G18: [2e-5, 'circle → square → circle loft: one surface on both engines, Anvil\'s facets and exact rims 1.2e-5 apart (SolidWorks 12.47522741)'] };
     // (G38, G40-G47 were FACET rows until lane FX's bend cylinder records: hard rows now, = OpenCascade to 1e-5)
     // flat area × T = OpenCascade's exact folded volume (K 0.5, straight bends, no round holes, no mitres)
     var FLATVOL = 'G40 G41 G44 G46 G47'.split(' ');
@@ -408,9 +411,9 @@
     // apart, split by the meshes' 1e-6 weld grid; restoreFar for pin 8), with the closed-form volume where there is one;
     // pins 2, 4, 5, 6 by lane GB (a refusal in a plain sentence matching re, or a volume and a body count). Hard rows all.
     var FIXED = { 1: { vol: 3.5 * 2.75 * 0.5 + Math.PI * 0.375 * 0.375 * 0.25 }, 3: {}, 7: {}, 8: { vol: 4 * 3.5 * 0.25 + 4 * 0.25 * 0.125 * 0.75 },
-      2: { re: /^Failed to shell the part: the thickness 0\.0625 is greater than the 0\.03 radius/ },
+      2: { vol: Math.PI * 1.125 - 2 * Math.PI * 0.0009 * (1 - Math.PI / 4) * (1.47 + 0.03 / (6 * (1 - Math.PI / 4))) - Math.PI * 1.4375 * 1.4375 * 0.4375 },   // = SolidWorks' 0.6923141, rfGD R09a (the refusal here was false: sharp inner corner, rfGH)
       4: { vol: Math.PI * 0.9375, bodies: 2 },   // the ring and the rod's upper half, kept as two bodies
-      5: { re: /^Failed to shell the part: the thickness 0\.1 is greater than the 0\.0625 radius/ },
+      5: { vol: Math.PI * 2 - 2 * Math.PI * 0.0625 * 0.0625 * (1 - Math.PI / 4) * (1.4375 + 0.0625 / (6 * (1 - Math.PI / 4))) - Math.PI * (1.96 - 0.36) * 0.9 },   // ring − sharp cavity, as SolidWorks' R09a rule
       6: { re: /is tangent to a round that is not drafted with it/ } };
     PINS.forEach(function (pin, i) {
       var fx = FIXED[i + 1];

@@ -1,6 +1,8 @@
   // --- rfFM (2026-10-29, lane FM: fillet / chamfer on any edge builds right or says why) --- in the app on Anvil's
-  // engine: a round too large for the 2 mm rim of a shelled box is refused with SolidWorks' message and the part keeps
+  // engine: a round that breaks through a shelled box's 2 mm wall is refused with SolidWorks' message and the part keeps
   // its shape; an inside-corner R9 on a thin L is exact and watertight; the Funnel's shelled loft shades smooth.
+  // (R7.2 round the rim was the refused case here; SolidWorks builds that one, 7015.928 mm³: rfGG. R9 on the outer edge
+  // is the case SolidWorks' own check faults.)
   async function rfFMPart(code) {
     await anvil.newPart(); await idle();
     if (anvil.occt) anvil.occt(false, { remember: false });
@@ -8,8 +10,8 @@
     await idle();
     UI.setView('Isometric'); if (UI.zoomToFit) UI.zoomToFit(); await idle(); await wait(30);
   }
-  step('rfFM: Fillet R7.2 round the 2 mm rim of a shelled box is refused ("Failed to create fillet. The radius may be too large for the selected edges."), the box unchanged; an inside-corner R9 on an L with 8 mm legs is exact and watertight', async function () {
-    await rfFMPart('p.units("mm"); p.box(40, 20, 30); p.shell(2, [[20, 30, 10]]);\np.fillet(7.2, [[40, 30, 10], [20, 30, 0], [0, 30, 10], [20, 30, 20]]);');
+  step('rfFM: Fillet R9 through the 2 mm wall of a shelled box is refused ("Failed to create fillet. The radius may be too large for the selected edges."), the box unchanged; an inside-corner R9 on an L with 8 mm legs is exact and watertight', async function () {
+    await rfFMPart('p.units("mm"); p.box(40, 20, 30); p.shell(2, [[20, 30, 10]]);\np.fillet(9, [[0, 0, 10]]);');
     var f = UI.App.model.features[UI.App.model.features.length - 1], msg = UI.App.build.errors[f.id];
     assert(f.type === 'fillet' && msg === 'Failed to create fillet. The radius may be too large for the selected edges.', 'error: ' + msg);
     near(K.massProps(UI.App.mesh, 1).volume, 7872, 1e-6, 'the shelled box is kept');

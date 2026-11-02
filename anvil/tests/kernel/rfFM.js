@@ -63,11 +63,10 @@
       var one = rfFMedge(fun, 'fillet', 15.51, [[3.4678, 20.5393, 4.2255]], false); noErrors(one); rfFMtight(one, 'one chord');
       assert(base.mp.volume - one.mp.volume < 10, 'one chord removed ' + (base.mp.volume - one.mp.volume));
     });
-    test('rfFM: a radius that cannot fit is refused with SolidWorks\' message, the body before it kept: R7.2 round the 2 mm rim of a shelled box, chamfer 9 through its 2 mm walls', function () {
+    test('rfFM: a radius that cannot fit is refused with SolidWorks\' message, the body before it kept: R7.2 round both edges of the 2 mm rim of a shelled box, chamfer 9 through its 2 mm walls (the 4 outer rim edges alone build: SolidWorks 7015.928, rfGG)', function () {
       var cases = [
         [SHELL, 'fillet', 7.2, [[40, 30, 10], [20, 30, 0], [0, 30, 10], [20, 30, 20], [38, 30, 10], [20, 30, 18], [2, 30, 10], [20, 30, 2]]],
-        [SHELL, 'chamfer', 9, [[0, 0, 10]]],
-        [SHELL, 'fillet', 7.2, [[40, 30, 10], [20, 30, 0], [0, 30, 10], [20, 30, 20]]]   // the 4 outer rim edges alone (smoke rfFM): the setback lies in the pocket along the whole edge, not a hole crossing it (head, local-2026-10-30a)
+        [SHELL, 'chamfer', 9, [[0, 0, 10]]]
       ];
       cases.forEach(function (c, i) {
         var base = build(c[0]), r = rfFMedge(c[0], c[1], c[2], c[3]), msg = rfFMerr(r);

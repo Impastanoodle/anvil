@@ -61,8 +61,11 @@
     noErrors(r);
     nearRel(r.mp.volume, 32000 - frustum(20, 10, 10 - 2 * 20 * TAN10), 1e-6, 'volume');
   });
-  test('draft errors: profile collapses, angle too large', function () {
-    expectError('p.sketch("Top").centerRect(0, 0, 20, 20).extrude(100, { draft: 30 });', /collapses/i);
+  test('draft past the collapse builds a pyramid (SolidWorks rfGD R18c; a concave section stays refused); angle too large', function () {
+    var r = build('p.sketch("Top").centerRect(0, 0, 20, 20).extrude(100, { draft: 30 });');
+    noErrors(r);
+    nearRel(r.mp.volume, 400 * (10 / Math.tan(Math.PI / 6)) / 3, 1e-9, 'a 20 × 20 pyramid');
+    expectError('p.sketch("Top").polyline([[0, 0], [20, 0], [20, 10], [10, 10], [10, 20], [0, 20], [0, 0]]).end().extrude(100, { draft: 30 });', /collapses/i);
     expectError('p.sketch("Top").centerRect(0, 0, 20, 20).extrude(10, { draft: 89 });', /less than 89/i);
   });
   test('draft survives a script round-trip', function () {

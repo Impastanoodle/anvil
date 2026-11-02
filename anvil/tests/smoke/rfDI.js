@@ -16,7 +16,7 @@
   function rfDIClickable(list) { return list.filter(function (e) { var s = UI.worldToScreen(e.mid), pk = UI.pickEdge(s[0], s[1]); return pk && pk.edge === e; }); }
   function rfDIEsc() { D.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); }
 
-  step('rfDI: Rip — ribbon button, rim edge refused, outside corner edge clicked, Change Direction, .03 Enter Enter: volume − .94·.03·.06, Rip1 in the tree, one undo step, Edit Feature reopens with the pick, Esc', async function () {
+  step('rfDI: Rip — ribbon button, rim edge refused, outside corner edge clicked, Change Direction, .03 Enter Enter: volume − .03·.06, Rip1 in the tree, one undo step, Edit Feature reopens with the pick, Esc', async function () {
     var W6 = 0.06, G = 0.03;
     await anvil.newPart(); await idle();
     await anvil.run('p.units("in");\np.sketch("Top").rect(0, 0, 2, 2).end().extrude(1);\np.shell(' + W6 + ', [[1, 1, -1]]);'); await idle();
@@ -53,7 +53,7 @@
     var f = UI.App.model.features[UI.App.model.features.length - 1];
     assert(f.type === 'rip' && f.name === 'Rip1' && f.gap === G && f.edges.length === 1 && f.edges[0].direction === 'side1', 'feature: ' + JSON.stringify(f));
     assert(!UI.App.build.errors[f.id], 'no error: ' + UI.App.build.errors[f.id]);
-    near(v0 - rfDIVol(), 0.94 * G * W6, 1e-9, 'removed volume');
+    near(v0 - rfDIVol(), G * W6, 1e-9, 'removed volume');   // SolidWorks 2022: through the floor too, the corner's whole length
     assert(Array.prototype.some.call(D.querySelectorAll('#tree [data-fid]'), function (r) { return /Rip1/.test(r.textContent); }), 'Rip1 in the FeatureManager tree');
     UI.undo(); await idle();
     assert(UI.App.model.features.length === n0, 'one undo step removes the Rip');
@@ -66,7 +66,7 @@
     assert(vals.edges.length === 1 && vals.gap === G && vals.edges[0].direction === 'side1', 'the pick is back: ' + JSON.stringify(vals.edges));
     rfDIEsc(); await idle(); await wait(20);
     assert(!UI.hasPM(), 'Esc ends the command');
-    near(v0 - rfDIVol(), 0.94 * G * W6, 1e-9, 'unchanged after Esc');
+    near(v0 - rfDIVol(), G * W6, 1e-9, 'unchanged after Esc');
   });
 
   step('rfDI: Tab — Base Flange/Tab on a part with a sheet opens the Tab PM (no sheet parameters), ✓ makes Tab1 (+ 1 × 1 × T, flush), Edit Feature ▸ Reverse ▸ ✓ stacks it, the flat is 5 × 2', async function () {

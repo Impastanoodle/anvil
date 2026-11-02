@@ -27,26 +27,30 @@
     }
     function hasFace(mesh, n) { return mesh.faces.some(function (f) { return Math.abs(f.normal[0] * n[0] + f.normal[1] * n[1] + f.normal[2] * n[2] - 1) < 1e-6; }); }
 
-    test('rfDL: 1 in straight profile, gap .010: the same solid and flat as the edge-only miter (Material Inside, inner virtual sharp), flat 4 + e × 2 + e with e = 1 + BA − 2R − T, a 45° mitre in the blank', function () {
+    // SolidWorks 2022 (2026-11-02, corpus M12: this very part): solid 0.817915, blank 0.818086, walls square T + g/√2 from
+    // the corner, a square notch in the blank. (Was the edge-only miter's 45° mitre: 0.8216.)
+    test('rfDL: 1 in straight profile, gap .010: SolidWorks\' solid and flat (M12), flat 4 + e × 2 + e with e = 1 + BA − 2R − T, a square notch', function () {
       var r = flatOf(HEAD + STRAIGHT + mf({ miterGap: 0.01 }));
-      var o = flatOf(HEAD + 'p.flange(1, ' + EDGES + ', { position: "inside", lengthRef: "inner", miter: true, miterGap: 0.01 });\n');
       var f = r.model.features[r.model.features.length - 1];
       assert(f.type === 'flange' && f.miterFlange === true && f.sketch === 3 && f.name === 'Miter Flange1' && f.position === 'inside', 'feature: ' + JSON.stringify(f));
-      nearRel(r.mp.volume, o.mp.volume, 1e-9, 'volume = the edge-only miter flange');
+      nearRel(r.mp.volume, 0.817915481, 1e-5, 'volume, SolidWorks M12');
+      near(r.flat.loops[0].reduce(function (s, p, i, l) { var q = l[(i + 1) % l.length]; return s + (p[0] * q[1] - q[0] * p[1]) / 2; }, 0) * T, 0.818086262, 1e-6, 'blank, SolidWorks M12');
       var e = 1 + BA - 2 * R - T;
       near(r.flat.size[0], 4 + e, 1e-9, 'flat width'); near(r.flat.size[1], 2 + e, 1e-9, 'flat height');
       assert(r.flat.bends.length === 2 && r.flat.bends.every(function (b) { return b.label === 'UP 90° R.060'; }), 'two UP 90° bends: ' + r.flat.bends.map(function (b) { return b.label; }));
       var h = Math.SQRT1_2;
-      assert(hasFace(r.mesh, [h, 0, -h]) && hasFace(r.mesh, [-h, 0, h]), 'the two 45° mitre faces at the corner');
-      // flat: each wall's end runs square to its bend line, T + gap/√2 from the corner (the mitre at the wall's inside face)
+      assert(!hasFace(r.mesh, [h, 0, -h]) && !hasFace(r.mesh, [-h, 0, h]) && hasFace(r.mesh, [-1, 0, 0]) && hasFace(r.mesh, [0, 0, 1]), 'no 45° face at the corner: the walls end square');
+      // flat: each wall's end runs square to its bend line, T + gap/√2 from the corner
       assert(r.flat.loops.length === 1 && axisSegs(r.flat.loops[0], T + 0.01 * h, 0.9) === 2, 'the two wall ends T + gap/√2 from the corner: ' + JSON.stringify(r.flat.loops[0]));
       assert(!r.warnings[3], 'no "open contour" warning on the profile sketch: ' + r.warnings[3]);
       return 'volume ' + fmt(r.mp.volume) + ', flat ' + fmt(r.flat.size[0]) + ' × ' + fmt(r.flat.size[1]);
     });
 
-    test('rfDL: the mitre gap: volume = no-gap volume − √2 · gap · A+ (each flange loses gap/√2 along its edge), exact', function () {
-      var a = flatOf(HEAD + STRAIGHT + mf({ miterGap: 0 })), b = flatOf(HEAD + STRAIGHT + mf({ miterGap: 0.01 }));
-      nearRel(polyVol(a.mp) - polyVol(b.mp), Math.SQRT2 * 0.01 * APLUS, 1e-6, 'gap volume');
+    test('rfDL: the gap: each wall loses gap/√2 at the corner: .02 against .01, exact on the walls; gap 0 at a corner is refused (SolidWorks: "The miter flanges interfere with each other")', function () {
+      var a = flatOf(HEAD + STRAIGHT + mf({ miterGap: 0.01 })), b = flatOf(HEAD + STRAIGHT + mf({ miterGap: 0.02 }));
+      var wall = 2 * (1 - R) * T * 0.01 / Math.SQRT2;   // the two straight walls; the bends' tapers shrink a little less
+      assert(a.mp.volume - b.mp.volume > wall && a.mp.volume - b.mp.volume < 1.1 * wall, 'gap volume ' + (a.mp.volume - b.mp.volume) + ' against the walls\' ' + wall);
+      assert(/interfere with each other/.test(errOf(build(HEAD + STRAIGHT + mf({ miterGap: 0 })))), 'gap 0: ' + errOf(build(HEAD + STRAIGHT + mf({ miterGap: 0 }))));
       return 'removed ' + fmt(a.mp.volume - b.mp.volume);
     });
 

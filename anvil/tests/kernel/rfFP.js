@@ -55,11 +55,11 @@
       });
     });
 
-    test('rfFP: the saddle edge of a pipe tee (cylinder × cylinder) is refused cleanly, the body kept: its chord-by-chord tool was not planar (2e-3) and cracked, or added 11 % more than OpenCascade (which builds it)', function () {
+    test('rfFP: the saddle edge of a pipe tee (cylinder × cylinder) builds (was refused: its chord-by-chord tool was not planar, 2e-3): a ball swept along the true curve, SolidWorks 64744.264 mm³, rfGG', function () {
       var TEE = 'p.cylinder(15, 80, { axis: "x", at: [-40, 0, 0] });\np.cylinder(10, 40, { at: [0, 0, 0] });\n';
-      var base = build(TEE), r = build(TEE + 'p.fillet(3, [[0, Math.sqrt(125), 10]]);'), msg = rfFPerr(r);
-      assert(/^Failed to create fillet\. Anvil's kernel cannot round an edge where two curved faces meet in a curve/.test(msg), msg);
-      nearRel(r.mp.volume, base.mp.volume, 1e-12, 'body kept');
+      var r = build(TEE + 'p.fillet(3, [[0, Math.sqrt(125), 10]]);');
+      assert(!rfFPerr(r), rfFPerr(r));
+      nearRel(r.mp.volume, 64744.2641485, 3e-5, 'SolidWorks');
       // a straight edge along both faces' rulings still builds: two parallel cylinders' line of contact is not a saddle
     });
 
