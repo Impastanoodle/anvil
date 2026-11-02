@@ -896,35 +896,54 @@
       }
     });
     if (!cands.length) return;
-    // every polygon edge, bucketed by its (sign-free) direction
-    var idx = {};
-    function dkey(u, o) { var s = (u[0] < -1e-9 || (Math.abs(u[0]) <= 1e-9 && (u[1] < -1e-9 || (Math.abs(u[1]) <= 1e-9 && u[2] < 0)))) ? -1 : 1; return Math.round(u[0] * s * 1e3 + o[0]) + ',' + Math.round(u[1] * s * 1e3 + o[1]) + ',' + Math.round(u[2] * s * 1e3 + o[2]); }
+    // every polygon edge in a sparse grid, so an edge finds its neighbours without scanning the part (a perforated plate
+    // has hundreds of thousands of edges; by direction alone every hole's rim landed in one list: quadratic)
+    var edges = [], lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
     polys.forEach(function (q) {
       var vs = q.vertices;
       for (var i = 0; i < vs.length; i++) {
         var P = A3(vs[i]), Q = A3(vs[(i + 1) % vs.length]), PQ = sub(Q, P), l = len(PQ);
         if (!(l > 1e-12)) continue;
-        var k = dkey(scale(PQ, 1 / l), [0, 0, 0]);
-        (idx[k] = idx[k] || []).push({ q: q, P: P, Q: Q });
+        edges.push({ q: q, P: P, Q: Q, u: scale(PQ, 1 / l) });
+        for (var a = 0; a < 3; a++) { lo[a] = Math.min(lo[a], P[a]); hi[a] = Math.max(hi[a], P[a]); }
       }
     });
+    var G = Math.min(1024, Math.max(8, Math.ceil(Math.sqrt(edges.length)))), cell = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], 1e-9) / G, grid = new Map(), stamp = new Int32Array(edges.length);
+    function cellOf(p, a) { return Math.floor((p[a] - lo[a]) / cell) + 2; }
+    // the cells of a segment, sampled at half a cell (a query takes the 26 neighbours too, so nothing falls between)
+    function eachCell(P, Q, fn) {
+      var n = Math.max(1, Math.ceil(len(sub(Q, P)) / (cell / 2))), last = -1;
+      for (var s = 0; s <= n; s++) {
+        var X = add(P, scale(sub(Q, P), s / n)), key = cellOf(X, 0) * 4194304 + cellOf(X, 1) * 2048 + cellOf(X, 2);
+        if (key !== last) { last = key; fn(key); }
+      }
+    }
+    edges.forEach(function (e, i) {
+      eachCell(e.P, e.Q, function (key) { var list = grid.get(key); if (list) { if (list[list.length - 1] !== i) list.push(i); } else grid.set(key, [i]); });
+    });
     var tol = 1e-7 * scl, jobs = [], stopped = {};
-    cands.forEach(function (c) {
+    cands.forEach(function (c, ci) {
       // the stretches of the edge each neighbour borders (a fragment edge may run on past a sibling fragment of its own
       // surface, a facet split along the line of a pocket's wall, into the wall itself): planes with their intervals
-      var u = scale(sub(c.B, c.A), 1 / c.L), seen = [], planes = [];
+      var u = scale(sub(c.B, c.A), 1 / c.L), planes = [];
       function put(pl, t0, t1) {
         var k = null;
         for (var i = 0; i < planes.length && !k; i++) if (planes[i].n && dot(planes[i].n, pl.n) > 1 - 1e-9 && Math.abs(planes[i].w - pl.w) <= tol) k = planes[i];
         if (!k) planes.push(k = { n: pl.n, w: pl.w, iv: [] });
         k.iv.push([t0, t1]);
       }
-      for (var a = -1; a <= 1; a++) for (var b = -1; b <= 1; b++) for (var g = -1; g <= 1; g++) {
-        var list = idx[dkey(u, [a, b, g])];
-        if (!list || seen.indexOf(list) >= 0) continue;
-        seen.push(list);
-        list.forEach(function (e) {
-          if (e.q === c.p) return;
+      var near = [];
+      eachCell(c.A, c.B, function (key) {
+        for (var a = -1; a <= 1; a++) for (var b = -1; b <= 1; b++) for (var g = -1; g <= 1; g++) {
+          var list = grid.get(key + a * 4194304 + b * 2048 + g);
+          if (!list) continue;
+          for (var k = 0; k < list.length; k++) if (stamp[list[k]] !== ci + 1) { stamp[list[k]] = ci + 1; near.push(list[k]); }
+        }
+      });
+      near.sort(function (x, y) { return x - y; });
+      near.forEach(function (ei) {
+          var e = edges[ei];
+          if (e.q === c.p || Math.abs(dot(e.u, u)) < 1 - 1e-4) return;
           var dP = sub(e.P, c.A), dQ = sub(e.Q, c.A), tP = dot(dP, u), tQ = dot(dQ, u);
           if (len(sub(dP, scale(u, tP))) > tol || len(sub(dQ, scale(u, tQ))) > tol) return;
           var t0 = Math.max(Math.min(tP, tQ), 0), t1 = Math.min(Math.max(tP, tQ), c.L);
@@ -947,8 +966,7 @@
             // surfaces there, shared by the fragments on both sides, so their slivers meet on it (boundRevolved)
             if (!done) putCorner(Sq, t0, t1);
           }
-        });
-      }
+      });
       function putCorner(Sq, t0, t1) {
         var k = surfKey(Sq), e = null;
         for (var i = 0; i < planes.length && !e; i++) if (planes[i].key === k) e = planes[i];

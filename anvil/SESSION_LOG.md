@@ -1771,3 +1771,12 @@ Context: the user, "lets run a 15min round with as many agents as necessary to m
 - Decisions: group-only testing kept 13 agents inside 15 minutes, at the price of 9 failures on the first full run, so plan head time for that.
 - Next: QUEUE.md "Round local-2026-11-02c leftovers" and "SolidWorks reference follow-ups".
 Tests: kernel 2311/2311 (977 s alone, was 611 s at this round's first merge; the examples are not slower, 2.5 s against 2.3 s, so the time is in the tests), examples 29/29 (both kernels), ui-smoke 896/896, occt 176/176, app console clean; Thickness Analysis seen on screen.
+
+## local-2026-11-02d (local, interactive head; 1 Opus agent): kernel tests in parallel
+
+Context: the user, "make the tests run in parallel from now on". The agent's trial at 12 workers pegged all 16 threads of the user's machine without warning; the head killed that run and capped it. The default is 8 workers, half the threads, so the PC stays usable.
+- parallel-tests (anvil/headless/test-run.js, test-timings.json): `node anvil/headless/anvil.js test` splits group files across child processes balanced by recorded timings; 1012 s serial, 216 s on 8 workers, 14 workers no faster (217 s, floored by rfGI / rfGH at about 200 s each). `--only`, `--serial`, `--jobs N`, `--timings`. Peak 5.0 GB. Serial against two parallel runs: 0 differences across 4376 lines. No group pinned serial, none flaky. ui-smoke stays one Chrome.
+- Head: the head's claim that the suite's slowdown came from sharing the machine was wrong: it ran 977 s alone. The agent found the cause, and it was a real regression in the published app: lanes perforated and massprops were each green, but on merged code `boundCorrection` scanned every hole rim for every hole (59 s at 800 holes; 3200 holes did not finish in 170 s, where the round had reported 4.2 s). `boundCorrection` now finds neighbours through a sparse grid: 3200 holes 7.4 s from a cold start, exact volume, every suite green; rfGM has a speed row.
+- Decisions: a speed claim is measured on merged code before it is reported. Using up the usage window is not a goal.
+- Next: QUEUE.md leftovers.
+Tests: kernel 2311/2311 in 216 s on 8 workers, plus the new rfGM speed row (rfGM 7/7), examples 29/29 (both kernels), ui-smoke 896/896, occt 176/176, app console not rechecked after the one-function fix.

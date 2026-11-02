@@ -24,6 +24,15 @@
       nearRel(mp.area, 2 * a + 9 + n * 2 * Math.PI * 0.015625, 1e-9, name + ': area');
       eq(Exchange.bodyMesh(r.b.body).openEdges, 0, name + ': closed');
     }
+    // (2026-11-02: boundCorrection's neighbour search went quadratic on hole rims after the merge: 59 s at 800 holes, in no test)
+    test('1000 holes: Mass Properties stays fast', function () {
+      var r = rfGMbuild(rfGMholes(1000) + THROUGH), t0 = Date.now();
+      assert(r.used && r.used.holes === 1000, 'the plate path ran');
+      Kernel.massProps(Kernel.meshFromBody(r.b.body), 1);
+      var s = (Date.now() - t0) / 1000;
+      assert(s < 20, 'meshing and Mass Properties took ' + s + ' s');
+      return s.toFixed(1) + ' s';
+    });
     test('200 holes on a square pitch: no boolean, closed form, same faces as the boolean', function () {
       var code = rfGMholes(200) + THROUGH, r = rfGMbuild(code);
       assert(r.used && r.used.holes === 200, 'the plate path ran');

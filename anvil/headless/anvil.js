@@ -2,15 +2,13 @@
 // with the engine loaded by headless/load.js (plain Node built-ins, no npm packages) and prints a JSON summary, writes
 // STL / STEP / DXF / DWG / JSON / script files (DWG through headless/dwg.js: the ODA File Converter or LibreDWG),
 // makes drawings (SVG / DXF / DWG / PDF), builds the bundled examples against their documented volumes, compares a
-// part with OpenCascade (headless/occt.js) and runs tests/kernel-tests.html under a small DOM and Worker shim. Paths
+// part with OpenCascade (headless/occt.js) and runs tests/kernel-tests.html (headless/test-run.js). Paths
 // are resolved from this file, so it works from any current directory. Exit codes: 0 ok, 1 feature errors / failed
 // checks / failed tests, 2 usage error or missing engine / converter. `--help` prints the commands.
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
-const threads = require('worker_threads');
-const { load, ANVIL_DIR, TESTS_PAGE } = require('./load');
+const { load, ANVIL_DIR } = require('./load');
 
 const USAGE = [
   'usage: node anvil/headless/anvil.js <command> [options]',
@@ -29,7 +27,11 @@ const USAGE = [
   '  example <name | index> [build options]     a bundled example (name case-insensitive, prefix allowed)',
   '  example --all [--occt]                      every example against its documented volume',
   '  examples                                    list the examples with their documented volumes',
-  '  test                                        run tests/kernel-tests.html under Node',
+  '  test [--only rfXX[,rfYY]] [--jobs N] [--serial] [--timings] [--save-timings]',
+  '      tests/kernel-tests.html under Node, each group file a job on its own process, longest first. --only: those group',
+  '      files (exact name, else part of the name), with every helper the full page has. --jobs: processes at a time',
+  '      (default: half the threads). --serial: one process, in page order. --timings: seconds per group file, the slowest',
+  '      tests, the largest process. --save-timings: writes headless/test-timings.json. --verbose: every row.',
   '  dwg <in.dxf> <out.dwg>                      an R2000 DXF to an AutoCAD 2000 DWG with Anvil\'s own writer (no converter)',
   '  dxf2sketch <file.dxf | file.dwg> [--dxf out] what File > Open brings into a sketch: units, layers, entities, extents,',
   '                                              Check Sketch summary (a DWG through the ODA File Converter or LibreDWG)',
@@ -39,7 +41,7 @@ const USAGE = [
 
 // ------------------------------------------------------------------ arguments
 const VALUED = { stl: 1, step: 1, 'dxf-flat': 1, 'dwg-flat': 1, json: 1, script: 1, svg: 1, dxf: 1, dwg: 1, pdf: 1, views: 1, scale: 1, 'dxf-face': 2, 'dwg-face': 2,
-  'dxf-version': 1, 'dxf-style': 1 };
+  'dxf-version': 1, 'dxf-style': 1, jobs: 1, only: 1 };
 function parseArgs(argv) {
   const out = { _: [], flags: {} };
   for (let i = 0; i < argv.length; i++) {
@@ -392,112 +394,6 @@ async function cmdExampleAll(flags) {
   return failed ? 1 : 0;
 }
 
-// ------------------------------------------------------------------ test (tests/kernel-tests.html under Node)
-// The page's inline script is run as is. It needs: document.createElement / getElementById for its result table (a
-// few plain objects here), window, a synchronous XMLHttpRequest for tests/fixtures and for the page's test group files
-// (tests/kernel/*.js in its GROUPS list, which the page joins and evals in its own scope; both read from disk), and Worker
-// (worker_threads with importScripts / postMessage / onmessage bridged, as worker.js expects). The harness sets
-// window.__anvilTests once every test, sync and async, has settled.
-const WORKER_BOOT = `
-  'use strict';
-  const { parentPort, workerData } = require('worker_threads');
-  const fs = require('fs'), path = require('path'), vm = require('vm');
-  const dir = path.dirname(workerData.file);
-  globalThis.self = globalThis;
-  globalThis.importScripts = function () {
-    Array.prototype.forEach.call(arguments, function (name) { const f = path.resolve(dir, name); vm.runInThisContext(fs.readFileSync(f, 'utf8'), { filename: f }); });
-  };
-  globalThis.postMessage = function (msg) { parentPort.postMessage(msg); };   // the transfer list is ignored: buffers are cloned
-  parentPort.on('message', function (data) { if (typeof globalThis.onmessage === 'function') globalThis.onmessage({ data: data }); });
-  vm.runInThisContext(fs.readFileSync(workerData.file, 'utf8'), { filename: workerData.file });
-`;
-function domShim(pageDir) {
-  const workers = new Set();
-  function node(tag) {
-    const n = {
-      tagName: tag, children: [], className: '', _text: '', hidden: false,
-      get firstChild() { return this.children[0] || null; },
-      get textContent() { return this.children.length ? this.children.map((c) => c.textContent).join('') : this._text; },
-      set textContent(s) { this.children = []; this._text = String(s); },
-      // the harness's row templates: '<td class="st"></td><td></td>…' -> td children
-      set innerHTML(html) {
-        this.children = []; this._text = '';
-        const re = /<(\w+)([^>]*)>/g;
-        let m;
-        while ((m = re.exec(String(html)))) {
-          if (m[1].toLowerCase() === 'td') { const c = node('td'), cls = /class\s*=\s*"([^"]*)"/.exec(m[2]); if (cls) c.className = cls[1]; this.children.push(c); }
-        }
-      },
-      appendChild(c) { this.children.push(c); return c; },
-      setAttribute() { }, addEventListener() { }
-    };
-    return n;
-  }
-  const byId = { rows: node('tbody'), summary: node('div') };
-  const g = globalThis;
-  g.window = g;
-  if (typeof g.DOMParser === 'undefined') g.DOMParser = require('./xmldom').DOMParser;   // the SVG export checks
-  g.document = {
-    createElement: (tag) => node(tag), createElementNS: (ns, tag) => node(tag),
-    getElementById: (id) => byId[id] || null, body: node('body'), head: node('head'), addEventListener() { }
-  };
-  g.XMLHttpRequest = class XMLHttpRequest {
-    open(method, url) { this._url = url; this.status = 0; this.responseText = ''; }
-    send() {
-      const f = path.resolve(pageDir, String(this._url).replace(/[?#].*$/, '').replace(/^\//, ''));
-      if (fs.existsSync(f)) { this.status = 200; this.responseText = fs.readFileSync(f, 'utf8'); } else { this.status = 404; }
-    }
-  };
-  g.Worker = class Worker {
-    constructor(url) {
-      const file = path.resolve(pageDir, String(url));
-      if (!fs.existsSync(file)) throw new Error('Worker: no such file ' + file);
-      this.onmessage = null; this.onerror = null;
-      this._w = new threads.Worker(WORKER_BOOT, { eval: true, workerData: { file } });
-      this._w.on('message', (data) => { if (typeof this.onmessage === 'function') this.onmessage({ data }); });
-      this._w.on('error', (err) => { if (typeof this.onerror === 'function') this.onerror({ message: (err && err.message) || String(err) }); });
-      workers.add(this);
-    }
-    postMessage(msg) { this._w.postMessage(msg); }
-    terminate() { workers.delete(this); return this._w.terminate(); }
-  };
-  return { workers, byId };
-}
-function inlineScript(html) {
-  const re = /<script(?![^>]*\bsrc\b)[^>]*>([\s\S]*?)<\/script>/gi;
-  let m, last = null;
-  while ((m = re.exec(html))) last = { code: m[1], index: m.index + m[0].indexOf(m[1]) };
-  if (!last) throw new Error('no inline <script> block in ' + TESTS_PAGE);
-  last.line = html.slice(0, last.index).split('\n').length - 1;
-  return last;
-}
-async function cmdTest(flags) {
-  load();
-  const pageDir = path.dirname(TESTS_PAGE), html = fs.readFileSync(TESTS_PAGE, 'utf8');
-  const shim = domShim(pageDir);
-  const script = inlineScript(html);
-  const t0 = performance.now();
-  vm.runInThisContext(script.code, { filename: TESTS_PAGE, lineOffset: script.line });
-  const result = await new Promise((resolve, reject) => {
-    const limit = 300000, started = Date.now();
-    const timer = setInterval(() => {
-      if (globalThis.__anvilTests) { clearInterval(timer); resolve(globalThis.__anvilTests); }
-      else if (Date.now() - started > limit) { clearInterval(timer); reject(new Error('the test page did not settle within ' + limit / 1000 + ' s: ' + shim.byId.summary.textContent)); }
-    }, 50);
-  });
-  for (const w of Array.from(shim.workers)) { try { w.terminate(); } catch (e) { } }
-  const failures = result.results.filter((r) => !r.ok);
-  if (!flags.quiet) {
-    let group = null;
-    result.results.forEach((r) => {
-      if (flags.verbose && r.group !== group) { group = r.group; process.stdout.write('\n' + group + '\n'); }
-      if (flags.verbose || !r.ok) process.stdout.write((r.ok ? 'PASS  ' : 'FAIL  ') + r.name + (r.detail ? '\n      ' + String(r.detail).replace(/\n/g, '\n      ') : '') + '\n');
-    });
-  }
-  process.stdout.write(result.passed + ' / ' + result.total + ' passed' + (failures.length ? ' — ' + failures.length + ' FAILED' : '') + '  ·  ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s\n');
-  return failures.length ? 1 : 0;
-}
-
 // ------------------------------------------------------------------ dxf2sketch (DWG / DXF import)
 // What File ▸ Open of the file would bring into a sketch (dxf-import.js): units, layers, entities by type, extents and
 // Check Sketch for Feature's summary; a .dwg goes through headless/dwg.js toDxf (ODA File Converter or LibreDWG's
@@ -551,7 +447,7 @@ async function main(argv) {
       if (flags.svg || flags.dxf || flags.dwg || flags.pdf) return cmdDrawing(sourceFromExample(findExample(args._[1])), flags);
       return cmdBuild(sourceFromExample(findExample(args._[1])), flags);
     case 'test':
-      return cmdTest(flags);
+      return require('./test-run').cmdTest(flags);
     case 'dwg':
       if (!args._[1] || !args._[2]) throw usage('dwg: give an R2000 .dxf and the .dwg to write');
       return cmdDwg(args._[1], args._[2]);

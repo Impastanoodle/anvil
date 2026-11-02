@@ -65,8 +65,21 @@
   var currentGroup = null;
 
   // ------------------------------------------------------------------ harness
+  // headless/anvil.js sets window.__anvilOnly = { 'kernel/x.js': true } to run only those files' tests (--only, and each
+  // job of the parallel run). Every group file's top level still runs, so a selected file sees exactly the helpers it
+  // sees in the full page; test() and group() of the other files just add no row. Each file opens with a call to
+  // __groupFile (loadGroups adds it), which also times the file. The rows of a file that failed to load have no file:
+  // they always run.
+  var only = window.__anvilOnly || null, currentFile = null, fileMs = {}, fileT0 = 0;
+  function __groupFile(file) {
+    var t = performance.now();
+    if (currentFile) fileMs[currentFile] = (fileMs[currentFile] || 0) + t - fileT0;
+    currentFile = file; fileT0 = t;
+  }
+  function skipped() { return only && currentFile && !only[currentFile]; }
   function group(name) {
     currentGroup = name;
+    if (skipped()) return;
     var tr = document.createElement('tr');
     tr.className = 'group';
     tr.innerHTML = '<td colspan="4"></td>';
@@ -85,8 +98,9 @@
     return String(e.message || e) + '\n' + top2 + (where && top2.indexOf(where) < 0 ? '\n    in ' + where : '');
   }
   function test(name, fn) {
+    if (skipped()) return;
     var t0 = performance.now();
-    var res = { group: currentGroup, name: name, ok: false, detail: '', ms: 0, pending: false };
+    var res = { group: currentGroup, name: name, file: currentFile, ok: false, detail: '', ms: 0, pending: false };
     results.push(res);
     var tr = document.createElement('tr');
     tr.innerHTML = '<td class="st"></td><td></td><td class="detail"></td><td class="ms"></td>';
@@ -141,7 +155,7 @@
     // tests added ~45 s that never happened; the synchronous tests' own sum is shown beside it.
     var wallMs = performance.now(), syncMs = results.reduce(function (s, r) { return s + (r.async ? 0 : r.ms); }, 0);
     summary.textContent = passed + ' / ' + total + ' passed' + (passed === total ? '' : ' — ' + (total - passed) + ' FAILED') + '  ·  ' + (wallMs / 1000).toFixed(1) + ' s (synchronous tests ' + (syncMs / 1000).toFixed(1) + ' s)';
-    window.__anvilTests = { passed: passed, total: total, results: results, wallMs: wallMs, syncMs: syncMs, sumMs: totalMs };
+    window.__anvilTests = { passed: passed, total: total, results: results, wallMs: wallMs, syncMs: syncMs, sumMs: totalMs, fileMs: fileMs };
   }
   function fail(msg) { throw new Error(msg); }
   function assert(cond, msg) { if (!cond) fail(msg || 'assertion failed'); }
@@ -478,6 +492,7 @@
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'kernel-tests.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'kernel-tests.groups.js', error: e }); }
+  __groupFile(null);
   // a group file that did not load, parse or run to its end: one FAIL row
   groupSet.failed.forEach(function (f) { group(f.file); test(f.file + ' loads', function () { throw f.error; }); });
   function loadGroups(files, name) {
@@ -504,7 +519,8 @@
     var line = 1;
     texts.forEach(function (t) { t.first = line; line += t.text.split('\n').length - 1; });
     groupFiles = texts;
-    return { source: texts.map(function (t) { return t.text; }).join('') + '//# sourceURL=' + base + name, failed: failed };
+    // the __groupFile call shares the file's first line, so groupLines() still counts lines right
+    return { source: texts.map(function (t) { return '__groupFile(\'' + t.file + '\');' + t.text; }).join('') + '//# sourceURL=' + base + name, failed: failed };
   }
   // "…/kernel-tests.groups.js:LINE" in a stack or message -> "tests/kernel/<file>:<line>"
   function groupLines(text) {

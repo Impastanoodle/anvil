@@ -51,7 +51,7 @@ hook when it is cheap.
 ```
 node anvil/tests/split-tests.js --check          # every group file listed in its page manifest and parsing
 node head-tools/make-index.js --check            # anvil/docs/INDEX.md current (else run it without --check)
-node anvil/headless/anvil.js test
+node anvil/headless/anvil.js test                # parallel, half the threads, about 3.5 min here; --serial for one process
 node anvil/headless/anvil.js example --all
 node anvil/headless/anvil.js example --all --occt
 node anvil/headless/ui-smoke.js http://localhost:8812/tests/ui-smoke.html --port 9312

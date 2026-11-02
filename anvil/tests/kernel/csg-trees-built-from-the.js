@@ -36,7 +36,7 @@
     assert(CSG.options.nearTrees === true, 'CSG.options.nearTrees should default to true, got ' + CSG.options.nearTrees);
     assert(typeof CSG.options.nearRatio === 'number' && CSG.options.nearRatio > 0 && CSG.options.nearRatio <= 1, 'nearRatio ' + CSG.options.nearRatio);
     assert(CSG.stats && ['near', 'classic', 'fallback'].every(function (k) { return typeof CSG.stats[k] === 'number'; }), 'CSG.stats { near, classic, fallback }');
-    return JSON.stringify(CSG.stats);
+    return Object.keys(CSG.stats).join(', ');   // the names: the counts depend on every boolean this process has run
   });
   test('a box sunk into a 96-sided disc takes the near path: +64 / −32 / 32, the disc side faces stay whole', function () {
     var D = disc(), B = boxCSG(-2, -2, 3, 2, 2, 9), V = 5 * DISC_A;
