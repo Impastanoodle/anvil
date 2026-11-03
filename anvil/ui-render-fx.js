@@ -4,8 +4,8 @@
 //   Ambient Occlusion: screen space. The shaded solid is drawn once more into a normal + depth target, an SAO-style
 //     shader samples a spiral of neighbours (world radius from the zoom and the model size), a depth- and
 //     normal-aware blur smooths it, and the result is multiplied into the solid layer ONLY: the frame is drawn as
-//     solid -> AO multiply -> everything else (edges, sketches, highlights, previews, planes), so no overlay is ever
-//     darkened. Off in a section (the caps are a stencil trick the depth pass cannot see) and on a see-through part.
+//     solid (with its selection / pre-highlight face tints, rfHJ) -> AO multiply -> everything else (edges, sketches,
+//     previews, planes), so no overlay is ever darkened and a selected face keeps its shading. Off in a section (the caps are a stencil trick the depth pass cannot see) and on a see-through part.
 //     Full resolution with 16 samples, or (governor) half resolution with 8.
 //   Shadows In Shaded Mode: a scene floor under the model's box (world Y is up, as the SolidWorks floor under the Top
 //     plane), never drawn as a plane: a soft lighter glow on the grey-black ground round the part's footprint, faded
@@ -503,6 +503,25 @@
     renderer.render(floorScene, camera);
   }
   var HALTON = [[0, 0], [0.25, -0.1667], [-0.25, 0.1667], [0.375, 0.3889], [-0.375, -0.3889], [0.125, -0.0556], [-0.125, 0.2778], [0.4375, -0.2778]];
+  // rfHJ: the face tints (selection light blue, pre-highlight orange: transparent meshes over the faces, ui-core.js
+  // updateHighlights and ui-select.js drawSelectionExtras) are part of the shaded solid, as SolidWorks colours a
+  // selected face and still shades it: they are drawn with the solid before the AO multiply. Drawn over it instead
+  // (before), a selected face lost about half of its occlusion and got it back on the next click elsewhere, so the
+  // shading round a boss or a flange "toggled" with every selection (user 2026-11-03). Edges, see-through tints and
+  // everything else stay over the AO.
+  function faceTints() {
+    var out = [], g = UI.groups && UI.groups.highlight, M = UI.mats;
+    if (!g || !g.visible || !M) return out;
+    (function visit(o) {
+      for (var i = 0; i < o.children.length; i++) {
+        var c = o.children[i];
+        if (!c.visible) continue;
+        if (c.isMesh && (c.material === M.sel || c.material === M.hover)) out.push(c);
+        else if (c.children.length) visit(c);
+      }
+    })(g);
+    return out;
+  }
   // one frame of the still view into dest (null = the canvas, already cleared by render())
   function drawFrame(dest, a, k) {
     renderer.setRenderTarget(dest);
@@ -512,8 +531,8 @@
     try {
       if (a.shadow && st.shadowOK) drawFloor();
       if (a.ao && st.aoUsed) {
-        withSolidLayer(a.solids, function (camMask) {
-          camera.layers.set(LAYER); renderer.render(scene, camera);           // the shaded solid alone
+        withSolidLayer(a.solids.concat(faceTints()), function (camMask) {
+          camera.layers.set(LAYER); renderer.render(scene, camera);           // the shaded solid alone (with its face tints)
           pass(mulMat, dest);                                                  // times the occlusion
           camera.layers.mask = camMask; renderer.setRenderTarget(dest); renderer.render(scene, camera);   // edges, sketches, highlights ... over it
         });
@@ -655,6 +674,7 @@
     st.key = null;
     var n = samples == null ? (a.smooth ? a.samples : 1) : Math.max(1, samples);
     for (var i = 0; i < n; i++) UI.render(undefined, 'still');
+    st.changeAt = 0; st.touchAt = 0;   // rfHJ: the pass is complete, so the view counts as still (the next frame is not a 'moving' one)
     gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);   // wait for the GPU, so ms is the real cost
     st.lastMs = performance.now() - t0;
     return { ms: st.lastMs, samples: st.k, ao: !!a.ao && st.aoUsed, aoQuality: a.ao && st.aoUsed ? st.aoQ : null, shadow: a.shadow && st.shadowOK, realView: !!st.shownRv };

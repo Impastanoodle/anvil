@@ -1517,6 +1517,10 @@ var UI = (function () {
     var faces = m.faces, pos = [], na = [], nb = [];
     (App.edges || []).forEach(function (e) {
       if (!e.smooth || e.faces.length !== 2 || !edgeVisible(e)) return;
+      // rfHJ (hole lines): only a convex fold is ever an outline. A concave one (the side of a bore, where the wall
+      // turns away from the viewer) is always covered by the solid in front of it, so it only showed where the depth
+      // test let it through (crossing holes, thin walls): stray dark lines across the inside of colliding holes
+      if (e.convex === false) return;
       if (zt.faceSet && zt.faceSet[e.faces[0]] && zt.faceSet[e.faces[1]]) return;   // rfHG: drawn from the zoom display mesh
       var f1 = faces[e.faces[0]], f2 = faces[e.faces[1]];
       var n1 = f1 && f1.normal, n2 = f2 && f2.normal;
@@ -1968,7 +1972,12 @@ var UI = (function () {
     function nrm(t, c) { var o = t * 9 + c * 3; return [SN[o], SN[o + 1], SN[o + 2]]; }
     function flat(t) { var o = t * 9; return [FN[o], FN[o + 1], FN[o + 2]]; }
     function triN(a, b, c) { return V.norm(V.cross(V.sub(b, a), V.sub(c, a))); }
-    function silPair(a, b, n1, n2) { if (V.dot(n1, n2) > 0.999999) return; sil.push(a[0], a[1], a[2], b[0], b[1], b[2]); s1.push(n1[0], n1[1], n1[2], n1[0], n1[1], n1[2]); s2.push(n2[0], n2[1], n2[2], n2[0], n2[1], n2[2]); }
+    // rfHJ: a sub-facet pair of a bore (normals toward the axis: concave) is never an outline (buildSilhouettes)
+    function concaveOn(S, p, n1, n2) {
+      var o = S.o, d = S.d, vx = p[0] - o[0], vy = p[1] - o[1], vz = p[2] - o[2], h = vx * d[0] + vy * d[1] + vz * d[2];
+      return (n1[0] + n2[0]) * (vx - d[0] * h) + (n1[1] + n2[1]) * (vy - d[1] * h) + (n1[2] + n2[2]) * (vz - d[2] * h) < 0;
+    }
+    function silPair(a, b, n1, n2, S) { if (V.dot(n1, n2) > 0.999999 || (S && S.o && S.d && concaveOn(S, a, n1, n2))) return; sil.push(a[0], a[1], a[2], b[0], b[1], b[2]); s1.push(n1[0], n1[1], n1[2], n1[0], n1[1], n1[2]); s2.push(n2[0], n2[1], n2[2], n2[0], n2[1], n2[2]); }
     for (var t = 0; t < m.triCount; t++) {
       start[t] = map.length;
       if (hid && hid[t]) continue;
@@ -1994,9 +2003,9 @@ var UI = (function () {
             var b0 = idx(i + 1, j), b1 = idx(i + 1, j + 1), b2 = idx(i, j + 1);
             emit(t, grid[b0], grid[b1], grid[b2], gn[b0], gn[b1], gn[b2]);
             var nD = triN(grid[b0], grid[b1], grid[b2]);
-            silPair(grid[b2], grid[b0], nU, nD);                        // shared with up (i, j)
-            silPair(grid[b0], grid[b1], upN[(i + 1) + ',' + j], nD);    // with up (i + 1, j)
-            silPair(grid[b1], grid[b2], upN[i + ',' + (j + 1)], nD);    // with up (i, j + 1)
+            silPair(grid[b2], grid[b0], nU, nD, S);                        // shared with up (i, j)
+            silPair(grid[b0], grid[b1], upN[(i + 1) + ',' + j], nD, S);    // with up (i + 1, j)
+            silPair(grid[b1], grid[b2], upN[i + ',' + (j + 1)], nD, S);    // with up (i, j + 1)
           }
           // sub-edges on the base triangle's sides pair with the neighbouring refined triangle's
           var side = [];
@@ -2007,7 +2016,7 @@ var UI = (function () {
             var cA = [C0, C1, C2][sd[0]], cB = [C0, C1, C2][(sd[0] + 1) % 3], kA = ck(cA), kB = ck(cB);
             var key = (kA < kB ? kA + '|' + kB + '#' + sd[1] : kB + '|' + kA + '#' + (k - 1 - sd[1]));
             var prev = subEdge.get(key);
-            if (prev) { if (prev.g === G.id) silPair(sd[2], sd[3], prev.n, nU); subEdge.delete(key); }
+            if (prev) { if (prev.g === G.id) silPair(sd[2], sd[3], prev.n, nU, S); subEdge.delete(key); }
             else subEdge.set(key, { g: G.id, n: nU });
           });
         }
