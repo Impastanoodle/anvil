@@ -1824,3 +1824,38 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 .menu .mi > .mi-ico { box-sizing: border-box; flex: 0 0 16px; width: 16px; min-width: 16px; max-width: 16px; height: 16px; margin: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; position: static; }
 .menu .mi > .mi-ico > svg { flex: none; display: block; }
 .menu.mi-icons .mi:not(.mi-has-ico) > .chk { margin-right: 24px; }
+/* rfHH Design Library (ui-app.js tpLibrary): toolbar, folder tree, path, icon tiles; grey-black, selection yellow #ffd400 */
+#tp-body .dl { display: flex; flex-direction: column; gap: var(--sp-2); flex: none; }
+#tp-body .dl > * { flex: none; }
+#tp-body .dl-bar { display: flex; align-items: center; gap: var(--sp-1); }
+#tp-body .dl-btn { width: var(--ctl); height: var(--ctl); flex: none; display: grid; place-items: center; border: var(--hair) solid transparent; border-radius: var(--radius); background: transparent; color: var(--c-text); }
+#tp-body .dl-btn:hover:not(:disabled) { background: var(--c-hover); border-color: var(--c-hover-line); }
+#tp-body .dl-btn:active:not(:disabled) { background: var(--c-press); border-color: var(--c-press-line); }
+#tp-body .dl-btn:disabled { opacity: 0.38; }
+#tp-body #dl-search { flex: 1; min-width: 0; height: var(--ctl); box-sizing: border-box; padding: 0 var(--sp-2); border: var(--hair) solid var(--c-field-line); border-radius: var(--radius); background: var(--c-field); color: var(--c-text); font: inherit; font-size: var(--fs-sm); }
+#tp-body #dl-search:focus { outline: none; border-color: var(--c-focus); }
+#tp-body .dl-tree { position: relative; max-height: 338px; overflow: auto; padding: 2px 0; border: var(--hair) solid var(--c-line); border-radius: var(--radius); background: var(--c-field); user-select: none; -webkit-user-select: none; }
+#tp-body .dl-row { display: flex; align-items: center; gap: 4px; height: var(--row); padding-right: var(--sp-2); cursor: default; white-space: nowrap; color: var(--c-text); }
+#tp-body .dl-row[hidden] { display: none; }
+#tp-body .dl-row:hover { background: var(--c-hover); }
+#tp-body .dl-row.sel { background: var(--c-sel); box-shadow: inset 2px 0 0 #ffd400; }
+#tp-body .dl-caret { width: 12px; flex: none; text-align: center; font-size: 10px; color: var(--c-muted); cursor: pointer; }
+#tp-body .dl-row .dl-ico { width: 16px; height: 16px; flex: none; display: grid; place-items: center; }
+#tp-body .dl-row .dl-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+#tp-body .dl-count { color: var(--c-muted); font-size: var(--fs-xs); }
+#tp-body .dl-path { font-size: var(--fs-xs); color: var(--c-muted); padding: 0 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#tp-body .dl-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(86px, 1fr)); gap: var(--sp-1); align-content: start; }
+#tp-body .dl-tile { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; height: 78px; padding: 8px 4px 4px; border: var(--hair) solid transparent; border-radius: var(--radius); background: transparent; color: var(--c-text); text-align: center; }
+#tp-body .dl-tile[hidden] { display: none; }
+#tp-body .dl-tile:hover { background: var(--c-hover); border-color: var(--c-hover-line); }
+#tp-body .dl-tile:active { background: var(--c-press); border-color: var(--c-press-line); }
+#tp-body .dl-tile:focus-visible { outline: none; border-color: #ffd400; box-shadow: inset 0 0 0 1px #ffd400; }
+#tp-body .dl-tile .dl-ico { width: 32px; height: 32px; flex: none; display: grid; place-items: center; }
+#tp-body .dl-tile .dl-name { font-size: var(--fs-xs); line-height: 1.25; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+#tp-body .dl-empty { color: var(--c-muted); padding: var(--sp-2) 2px; }
+#tp-body .dl-empty[hidden] { display: none; }
+#modal-body .dl-hw { display: grid; gap: var(--sp-2); min-width: 300px; }
+#modal-body .dl-hw-row { display: grid; grid-template-columns: 96px 1fr; align-items: center; gap: var(--sp-2); }
+#modal-body .dl-hw-row select { height: var(--ctl); }
+#modal-body .dl-hw-info { display: grid; gap: 2px; padding: var(--sp-2); border: var(--hair) solid var(--c-line); border-radius: var(--radius); background: var(--c-field); }
+#modal-body .dl-hw-info .dl-muted { color: var(--c-muted); font-size: var(--fs-xs); }

@@ -114,24 +114,300 @@
     row.appendChild(el('button', { class: 'btn', text: 'Keyboard shortcuts', onclick: showShortcuts }));
     body.appendChild(row);
   }
-  function tpLibrary(body) {
-    body.appendChild(el('h3', { text: 'Sample parts' }));
-    body.appendChild(el('p', { text: 'Loading a sample replaces the current model (it is kept in Undo).' }));
-    function addList(items) {
-      var list = el('div', { class: 'list' });
-      items.forEach(function (ex) {
-        list.appendChild(el('button', { html: '<b>' + ex.name + '</b><small>' + ex.note + '</small>', onclick: function () { confirmDiscard(null, function () { openExample(ex); }); } }));
-      });
-      body.appendChild(list);
-    }
-    addList(EXAMPLES.filter(function (ex) { return ex.kind !== 'assembly'; }));
-    var asms = EXAMPLES.filter(function (ex) { return ex.kind === 'assembly'; });
-    if (asms.length) {
-      body.appendChild(el('h3', { text: 'Sample assemblies' }));
-      body.appendChild(el('p', { text: 'Opens as an assembly document: components from the parts above, positioned by mates.' }));
-      addList(asms);
-    }
+  // ---- Design Library (rfHH): SolidWorks' layout — a toolbar (Back, Up, search), the folder tree, the path of the
+  // open folder and its contents as icon tiles. Folders: Examples (the sample parts and assemblies: unchanged, a click
+  // opens one as a new document), Hardware (library.js families: a click asks size / length, then opens the part or,
+  // in an assembly, inserts it), Parts (library.js curved parts), Features (library features cut into a planar face:
+  // libraryFeature), Forming Tools (Kernel.FORMING_TOOLS when the kernel has them: UI.cmdFormingTool(id)).
+  // Every tile is in the DOM all the time (the other folders' are hidden), so `#tp-body button` holds every example.
+  // DOM: .dl > .dl-bar (#dl-back, #dl-up, #dl-search), .dl-tree (.dl-row[data-folder] > .dl-caret, .dl-name), .dl-path,
+  // .dl-tiles (.dl-tile[data-folder][data-kind] > .dl-ico, .dl-name; folder tiles .dl-tile.dl-folder[data-open]).
+  var LIB = window.AnvilLibrary || null;
+  var dl = { folder: 'examples', back: [], expanded: { examples: true, hardware: true, parts: true, features: true, forming: true }, query: '', root: null };
+  function dlSvg(body, size) { return Icons.svg ? Icons.svg(body, size || 16) : ''; }
+  function dlIcon(name, size) {
+    if (LIB && LIB.icons[name]) return dlSvg(LIB.icons[name], size);
+    return Icons(Icons.has && Icons.has(name) ? name : 'part', size);
   }
+  var DL_BACK = '<path d="M9.5 3.5 L5 8 L9.5 12.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
+  var DL_UP = '<path d="M1.5 4.5 h4.5 l1.5 1.5 h7 v7.5 h-13 z" fill="#e8e8e8" stroke="#464646" stroke-width="1"/><path d="M8 12 V7.5 M5.8 9.5 L8 7.3 L10.2 9.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
+  // folder ids: 'lib' (root), top folders ('examples', 'hardware' …) and 'hardware/Nuts' style sub-folders
+  function dlFolders() {
+    var tops = LIB ? LIB.folders.slice() : [{ id: 'examples', name: 'Examples' }];
+    if (LIB && LIB.shapes && !tops.some(function (f) { return f.id === 'parts'; })) tops.splice(2, 0, { id: 'parts', name: 'Parts', subs: ['Bent and Swept', 'Rounded and Revolved'] });
+    return tops;
+  }
+  function dlName(id) {
+    if (id === 'lib') return 'Design Library';
+    var i = id.indexOf('/');
+    if (i >= 0) return id.slice(i + 1);
+    var f = dlFolders().filter(function (t) { return t.id === id; })[0];
+    return f ? f.name : id;
+  }
+  function dlParent(id) { if (id === 'lib') return null; var i = id.indexOf('/'); return i >= 0 ? id.slice(0, i) : 'lib'; }
+  function dlSubs(id) {
+    if (id === 'lib') return dlFolders().map(function (f) { return f.id; });
+    var f = dlFolders().filter(function (t) { return t.id === id; })[0];
+    return f && f.subs ? f.subs.map(function (s) { return id + '/' + s; }) : [];
+  }
+  function formingTools() { try { return (K && Array.isArray(K.FORMING_TOOLS)) ? K.FORMING_TOOLS : null; } catch (e) { return null; } }
+  // every item tile: { folder, kind, name, note, icon, run }
+  function dlItems() {
+    var out = [];
+    EXAMPLES.forEach(function (ex) { out.push({ folder: 'examples', kind: ex.kind === 'assembly' ? 'assembly' : 'example', name: ex.name, note: ex.note, icon: ex.kind === 'assembly' ? 'assembly' : 'part', run: function () { confirmDiscard(null, function () { openExample(ex); }); } }); });
+    if (LIB) {
+      LIB.hardware.forEach(function (f) { out.push({ folder: 'hardware/' + f.folder, kind: 'hardware', id: f.id, name: f.name, note: f.standard + ': ' + f.choices.map(function (c) { return c.items.length + ' ' + c.label.toLowerCase() + (c.items.length > 1 ? 's' : ''); }).join(' × '), icon: f.icon, run: function () { hardwareDialog(f.id); } }); });
+      (LIB.shapes || []).forEach(function (s) { out.push({ folder: 'parts/' + s.folder, kind: 'shape', name: s.name, note: s.note, icon: s.icon, run: function () { placeLibraryPart({ name: s.name, code: s.code }); } }); });
+      LIB.features.forEach(function (f) { out.push({ folder: 'features/' + f.folder, kind: 'feature', id: f.id, name: f.name, note: f.help + ' Select a planar face, then click.', icon: f.icon, run: function () { libraryFeature(f.id); } }); });
+    }
+    (formingTools() || []).forEach(function (t) {
+      if (!t || !t.id) return;
+      out.push({ folder: 'forming', kind: 'forming', id: t.id, name: t.label || t.id, note: t.help || '', icon: Icons.has && Icons.has(t.icon || t.id) ? (t.icon || t.id) : 'formingTool', run: function () { if (typeof UI.cmdFormingTool === 'function') UI.cmdFormingTool(t.id); else UI.toast('Forming tools are not available in this build.'); } });
+    });
+    return out;
+  }
+  function tpLibrary(body) {
+    var root = el('div', { class: 'dl' });
+    dl.root = root;
+    var back = el('button', { id: 'dl-back', class: 'dl-btn', title: 'Back', html: dlSvg(DL_BACK), onclick: function () { if (dl.back.length) dlOpen(dl.back.pop(), true); } });
+    var up = el('button', { id: 'dl-up', class: 'dl-btn', title: 'Up one level', html: dlSvg(DL_UP), onclick: function () { var p = dlParent(dl.folder); if (p) dlOpen(p); } });
+    var search = el('input', { id: 'dl-search', type: 'search', placeholder: 'Search Design Library', spellcheck: 'false' });
+    search.value = dl.query;
+    search.addEventListener('input', function () { dl.query = search.value; dlShow(); });
+    search.addEventListener('keydown', function (e) { if (e.key === 'Escape' && search.value) { e.preventDefault(); e.stopPropagation(); search.value = ''; dl.query = ''; dlShow(); } });
+    root.appendChild(el('div', { class: 'dl-bar' }, [back, up, search]));
+    // tree
+    var tree = el('div', { class: 'dl-tree', role: 'tree' }), items = dlItems();
+    function count(id) { return items.filter(function (it) { return it.folder === id || it.folder.indexOf(id + '/') === 0; }).length; }
+    function row(id, depth) {
+      var subs = dlSubs(id), r = el('div', { class: 'dl-row', role: 'treeitem', 'data-folder': id, style: 'padding-left:' + (4 + depth * 14) + 'px' });
+      var caret = el('span', { class: 'dl-caret' + (subs.length ? '' : ' none'), text: subs.length ? '▸' : '' });
+      caret.addEventListener('click', function (e) { e.stopPropagation(); if (!subs.length) return; dl.expanded[id] = !dl.expanded[id]; dlShow(); });
+      r.appendChild(caret);
+      r.appendChild(el('span', { class: 'dl-ico', html: Icons(id === 'lib' ? 'library' : 'folder', 16) }));
+      r.appendChild(el('span', { class: 'dl-name', text: dlName(id) }));
+      if (id !== 'lib') r.appendChild(el('span', { class: 'dl-count', text: String(count(id)) }));
+      r.addEventListener('click', function () { dlOpen(id); });
+      r.addEventListener('dblclick', function () { if (subs.length) { dl.expanded[id] = !dl.expanded[id]; dlShow(); } });
+      tree.appendChild(r);
+      subs.forEach(function (s) { row(s, depth + 1); });
+    }
+    dl.expanded.lib = true;
+    row('lib', 0);
+    root.appendChild(tree);
+    root.appendChild(el('div', { class: 'dl-path' }));
+    // tiles: folder tiles for every folder, then every item
+    var tiles = el('div', { class: 'dl-tiles' });
+    function folderTiles(id) {
+      dlSubs(id).forEach(function (s) {
+        tiles.appendChild(el('button', { class: 'dl-tile dl-folder', 'data-folder': id, 'data-open': s, title: dlName(s) + ' (' + count(s) + ')', onclick: function () { dlOpen(s); } },
+          [el('span', { class: 'dl-ico', html: Icons('folder', 32) }), el('span', { class: 'dl-name', text: dlName(s) })]));
+        folderTiles(s);
+      });
+    }
+    folderTiles('lib');
+    items.forEach(function (it) {
+      var b = el('button', { class: 'dl-tile', 'data-folder': it.folder, 'data-kind': it.kind, title: it.name + (it.note ? '\n' + it.note : ''), onclick: function () { it.run(); } },
+        [el('span', { class: 'dl-ico', html: dlIcon(it.icon, 32) }), el('span', { class: 'dl-name', text: it.name })]);
+      if (it.id) b.dataset.id = it.id;
+      tiles.appendChild(b);
+    });
+    root.appendChild(tiles);
+    root.appendChild(el('div', { class: 'dl-empty', text: '' }));
+    body.appendChild(root);
+    dlShow();
+  }
+  function dlOpen(id, isBack) {
+    if (id !== dl.folder && !isBack) dl.back.push(dl.folder);
+    if (dl.back.length > 50) dl.back.shift();
+    dl.folder = id;
+    for (var p = dlParent(id); p; p = dlParent(p)) dl.expanded[p] = true;
+    if (dl.query) { dl.query = ''; var s = dl.root && dl.root.querySelector('#dl-search'); if (s) s.value = ''; }
+    dlShow();
+  }
+  // which rows and tiles show: the open folder's sub-folders and items, or every item matching the search
+  function dlShow() {
+    var root = dl.root;
+    if (!root || !root.isConnected) return;
+    var q = dl.query.trim().toLowerCase();
+    Array.prototype.forEach.call(root.querySelectorAll('.dl-row'), function (r) {
+      var id = r.dataset.folder, shown = true;
+      for (var p = dlParent(id); p; p = dlParent(p)) if (!dl.expanded[p]) shown = false;
+      r.hidden = !shown;
+      r.classList.toggle('sel', !q && id === dl.folder);
+      if (!q && id === dl.folder && shown && r.parentNode) { var tr = r.parentNode; if (r.offsetTop < tr.scrollTop || r.offsetTop + r.offsetHeight > tr.scrollTop + tr.clientHeight) tr.scrollTop = r.offsetTop - tr.clientHeight / 2; }
+      var c = r.querySelector('.dl-caret');
+      if (c && !c.classList.contains('none')) c.textContent = dl.expanded[id] ? '▾' : '▸';
+    });
+    var n = 0;
+    Array.prototype.forEach.call(root.querySelectorAll('.dl-tile'), function (t) {
+      var show;
+      if (q) show = !t.classList.contains('dl-folder') && (t.textContent.toLowerCase().indexOf(q) >= 0 || (t.title || '').toLowerCase().indexOf(q) >= 0);
+      else show = t.dataset.folder === dl.folder;
+      t.hidden = !show;
+      if (show) n++;
+    });
+    var path = root.querySelector('.dl-path');
+    if (q) path.textContent = 'Search: ' + n + ' match' + (n === 1 ? '' : 'es') + ' for "' + dl.query.trim() + '"';
+    else { var parts = []; for (var f = dl.folder; f; f = dlParent(f)) parts.unshift(dlName(f)); path.textContent = parts.join('  ›  '); }
+    var empty = root.querySelector('.dl-empty');
+    empty.textContent = n ? '' : q ? 'Nothing in the Design Library matches.' : dl.folder === 'forming' ? 'No forming tools installed in this build.' : 'This folder is empty.';
+    empty.hidden = !!n;
+    root.querySelector('#dl-back').disabled = !dl.back.length;
+    root.querySelector('#dl-up').disabled = dl.folder === 'lib';
+  }
+  // A Design Library part ({ name, code }): opened as a new part, or inserted as a component in an open assembly
+  function placeLibraryPart(p, opts) {
+    if (isAsm() && UI.asm && UI.asm.insert) {
+      return Promise.resolve(UI.asm.insert({ script: p.code }, { name: p.name })).then(function (c) { UI.toast('Inserted ' + p.name); return c; }, function (e) { UI.toast(p.name + ': ' + ((e && e.message) || e)); });
+    }
+    return new Promise(function (res) {
+      confirmDiscard(null, function () {
+        runScript(p.code, true, 'part').then(function (r) {
+          if (!r.error) UI.markClean();
+          UI.toast(r.error ? p.name + ': ' + r.error.split('\n')[0] : 'Loaded ' + p.name);
+          res(r);
+        });
+      }, opts && opts.noConfirm ? { dirty: false } : null);
+    });
+  }
+  // Hardware: size (and length) for one family, then Open / Insert. DOM: #dl-hw with select[data-key], #dl-hw-info.
+  function hardwareDialog(id) {
+    var f = LIB && LIB.family(id);
+    if (!f) return;
+    var sel = {}, box = el('div', { id: 'dl-hw', class: 'dl-hw' }), info = el('div', { id: 'dl-hw-info', class: 'dl-hw-info' });
+    function current() { return LIB.part(f.id, sel.size, sel.len); }
+    function upd() { var p = current(); info.innerHTML = ''; info.appendChild(el('b', { text: p.name })); info.appendChild(el('div', { text: p.note + (p.hole ? '' : '') })); info.appendChild(el('div', { class: 'dl-muted', text: f.standard })); }
+    f.choices.forEach(function (ch) {
+      var s = el('select', { 'data-key': ch.key });
+      ch.items.forEach(function (it) { s.appendChild(el('option', { value: it.label, text: it.label })); });
+      s.value = ch.key === 'size' ? ch.items[0].label : (ch.def || ch.items[0].label);
+      sel[ch.key] = s.value;
+      s.addEventListener('change', function () { sel[ch.key] = s.value; upd(); });
+      box.appendChild(el('label', { class: 'dl-hw-row' }, [el('span', { text: ch.label }), s]));
+    });
+    box.appendChild(info);
+    upd();
+    var asm = isAsm();
+    UI.showModal({ title: f.name, body: box, buttons: [
+      { label: asm ? 'Insert' : 'Open', primary: true, id: 'dl-hw-ok', action: function () { var p = current(); UI.closeModal(); placeLibraryPart(p); } },
+      { label: 'Cancel', action: UI.closeModal }
+    ] });
+  }
+  // ---- library features: a PropertyManager over a planar face; ✓ adds a sketch on the face and a Cut-Extrude Through
+  // All (one undo step), both ordinary features in the FeatureManager. Values in the document's units; X / Y are from
+  // the face sketch's origin (the projection of the part origin, as a sketch on that face has it).
+  var dlPreviewMat = null;
+  function libraryFeature(id, preset) {
+    var fd = LIB && LIB.feature(id);
+    if (!fd) return null;
+    if (isAsm()) { UI.toast('Library features go on a part: open a part first.'); return null; }
+    if (App.mode === 'sketch' && UI.exitSketch) UI.exitSketch(true);
+    if (!App.mesh || !App.mesh.faces || !App.mesh.faces.length) { UI.toast('Create a solid first, then add ' + fd.name + ' to one of its faces.'); return null; }
+    var s = App.model.units === 'mm' ? 25.4 : 1, dp = s === 1 ? 1e4 : 1e3;
+    var v = LIB.featureDefaults(id, s), face = null;
+    Object.keys(preset || {}).forEach(function (k) { if (k !== 'face') v[k] = preset[k]; });
+    function planar(i) {
+      var fc = App.mesh.faces[i];
+      if (!fc) return false;
+      if (fc.polys && fc.polys[0] && fc.polys[0].surf) return false;
+      return !(UI.faceGroup && UI.faceGroup(i).length > 1);
+    }
+    function setFace(i, point, keepXY) {
+      if (!planar(i)) { UI.setStatus(fd.name + ' goes on a planar face: pick a flat face.'); return false; }
+      var fc = App.mesh.faces[i], pl = UI.facePlane(fc, point || fc.centroid), p = point || fc.centroid, d = K.vec.sub(p, pl.origin);
+      face = { index: i, plane: pl };
+      if (!keepXY) { v.x = Math.round(K.vec.dot(d, pl.x) * dp) / dp; v.y = Math.round(K.vec.dot(d, pl.y) * dp) / dp; }
+      if (App.command) App.command.faceList = [i];
+      return true;
+    }
+    if (preset && preset.face != null) setFace(preset.face, preset.point || null, preset.x != null);
+    else {
+      var pre = (UI.selection ? UI.selection() : [App.sel]).filter(function (q) { return q && q.kind === 'face'; })[0];
+      if (pre) { setFace(pre.index, pre.point || null); if (UI.setSelection) UI.setSelection([]); }
+    }
+    function why(val) {
+      if (!face) return 'Select a planar face for the ' + fd.name + '.';
+      try { LIB.featureEntities(id, val, s); } catch (e) { return e.message; }
+      return null;
+    }
+    function preview() {
+      UI.disposeGroup(UI.groups.preview);
+      if (!face) return;
+      var ents; try { ents = LIB.featureEntities(id, v, s); } catch (e) { UI.setStatus(e.message); return; }
+      var pl = face.plane, lift = 1e-3 * s, pts = [];
+      function P(u, w) { return new THREE.Vector3(pl.origin[0] + u * pl.x[0] + w * pl.y[0] + lift * pl.n[0], pl.origin[1] + u * pl.x[1] + w * pl.y[1] + lift * pl.n[1], pl.origin[2] + u * pl.x[2] + w * pl.y[2] + lift * pl.n[2]); }
+      function seg(a, b) { pts.push(a, b); }
+      function arc(cx, cy, r, a0, a1) { var n = Math.max(8, Math.ceil(Math.abs(a1 - a0) / 6)), prev = null; for (var k = 0; k <= n; k++) { var t = (a0 + (a1 - a0) * k / n) * Math.PI / 180, q = P(cx + r * Math.cos(t), cy + r * Math.sin(t)); if (prev) seg(prev, q); prev = q; } }
+      ents.forEach(function (e) {
+        if (e.t === 'line') seg(P(e.x1, e.y1), P(e.x2, e.y2));
+        else if (e.t === 'arc') arc(e.cx, e.cy, e.r, e.a0, e.a1);
+        else if (e.t === 'circle') arc(e.cx, e.cy, e.r, 0, 360);
+        else if (e.t === 'slot') {
+          var dx = e.x2 - e.x1, dy = e.y2 - e.y1, L = Math.hypot(dx, dy) || 1, nx = -dy / L * e.w / 2, ny = dx / L * e.w / 2, a = Math.atan2(dy, dx) * 180 / Math.PI;
+          seg(P(e.x1 + nx, e.y1 + ny), P(e.x2 + nx, e.y2 + ny)); seg(P(e.x1 - nx, e.y1 - ny), P(e.x2 - nx, e.y2 - ny));
+          arc(e.x2, e.y2, e.w / 2, a - 90, a + 90); arc(e.x1, e.y1, e.w / 2, a + 90, a + 270);
+        }
+      });
+      if (!dlPreviewMat) dlPreviewMat = new THREE.LineBasicMaterial({ color: 0xffd400, depthTest: false, transparent: true });
+      var g = new THREE.BufferGeometry().setFromPoints(pts), ls = new THREE.LineSegments(g, dlPreviewMat);
+      ls.renderOrder = 10;
+      UI.groups.preview.add(ls);
+      if (UI.requestRender) UI.requestRender();
+      UI.setStatus(fd.name + ': ' + UI.fmtNum(LIB.featureArea(id, v, s), 4) + ' ' + UI.unitLabel() + '² cut Through All. Press Enter or ✓ to add it.');
+    }
+    var sizeFields = fd.fields.map(function (f) {
+      if (f.type === 'select') return { type: 'select', key: f.key, label: f.label, options: f.options.map(function (o) { return [o, o]; }) };
+      if (f.deg) return { type: 'number', key: f.key, label: f.label, unit: 'deg', step: 15 };
+      if (f.count) return { type: 'number', key: f.key, label: f.label, step: 1, min: 1 };
+      return { type: 'number', key: f.key, label: f.label, unit: 'u', min: 0 };
+    });
+    UI.openPM({
+      title: fd.name, icon: 'library', values: v,
+      message: fd.help + ' Pick a <b>planar face</b>; the click sets the location (X, Y from the face sketch origin).',
+      command: {
+        faceList: face ? [face.index] : [],
+        onPick: function (pk) {
+          if (!pk || pk.kind !== 'face') return false;
+          if (!setFace(pk.index, pk.point)) return true;
+          UI.renderPM(); preview(); if (UI.updateHighlights) UI.updateHighlights();
+          return true;
+        }
+      },
+      groups: [
+        { title: 'Placement', fields: [
+          { type: 'pick', icon: 'faceSel', value: function () { return face ? 'Face<1>' : ''; }, placeholder: 'Planar face…' },
+          { type: 'number', key: 'x', label: 'X', unit: 'u' },
+          { type: 'number', key: 'y', label: 'Y', unit: 'u' }
+        ] },
+        { title: 'Size', fields: sizeFields }
+      ],
+      okBlocked: why,
+      onChange: function () { preview(); },
+      onClose: function () { UI.disposeGroup(UI.groups.preview); },
+      onOK: function (val) {
+        var bad = why(val);
+        if (bad) { UI.toast(bad); return false; }
+        UI.pushUndo();
+        var made;
+        try { made = LIB.addFeature(App.model, face.plane, id, val); } catch (e) { UI.toast(e.message); return false; }
+        return UI.afterRebuild(UI.rebuild(), function () {
+          App.sel = { kind: 'feature', id: made.cut.id };
+          UI.updateHighlights(); UI.updateSketches(); UI.refreshTree();
+          var err = App.build.errors[made.cut.id];
+          UI.setStatus(err ? made.cut.name + ' failed: ' + err : fd.name + ' added: ' + made.sketch.name + ' + ' + made.cut.name + '.');
+          if (UI.autosave) UI.autosave();
+          return made;
+        });
+      }
+    });
+    preview();
+    return true;
+  }
+  UI.libraryFeature = libraryFeature; UI.placeLibraryPart = placeLibraryPart; UI.hardwareDialog = hardwareDialog;
+  UI.designLibrary = { open: function (id) { if (tpCurrent !== 'library') openTaskPane('library'); dlOpen(id || 'lib'); }, state: function () { return { folder: dl.folder, query: dl.query, back: dl.back.slice() }; },
+    search: function (q) { if (tpCurrent !== 'library') openTaskPane('library'); dl.query = q || ''; var s = dl.root && dl.root.querySelector('#dl-search'); if (s) s.value = dl.query; dlShow(); },
+    reset: function () { dl.folder = 'examples'; dl.back = []; dl.query = ''; if (tpCurrent === 'library') openTaskPane('library'); } };
   // Design Library entry -> a new part or assembly document (an assembly entry's code is an assembly script)
   function openExample(ex) {
     return runScript(ex.code, true, ex.kind === 'assembly' ? 'assembly' : 'part').then(function (r) {
@@ -1130,6 +1406,18 @@
       if (isAsm()) return asmSummary();
       var mp = App.mesh.triCount ? K.massProps(App.mesh, App.model.density) : null; return { name: App.model.name, type: 'part', rebuilding: rebuilding(), dirty: !!App.dirty, features: App.model.features.length, errors: App.build.errors, volume: mp ? +mp.volume.toFixed(3) : 0, bbox: mp ? mp.bbox : null, faces: App.mesh.faces.length, bodies: UI.bodyList ? UI.bodyList().length : (App.mesh.triCount ? 1 : 0), rebuildMs: +App.lastRebuildMs.toFixed(1), equations: JSON.parse(JSON.stringify((App.build && App.build.equations) || {})), equationErrors: JSON.parse(JSON.stringify((App.build && App.build.equationErrors) || {})), configuration: UI.configurations.active(), configurations: UI.configurations.list().map(function (c) { return c.name; }) }; },
     examples: EXAMPLES,
+    // rfHH Design Library: library = AnvilLibrary (hardware, shapes, features); libraryPart(family | shape name, size?, len?)
+    // opens it as a new part (in an assembly: inserts it); libraryFeature(id, { face, point?, x?, y?, ...size }) cuts a
+    // library feature into a planar face (face index of anvil.faces()) and resolves to { sketch, cut } once rebuilt
+    library: window.AnvilLibrary || null,
+    libraryPart: function (name, size, len) {
+      var L = window.AnvilLibrary, sh = L && L.shape(name), p = sh ? { name: sh.name, code: sh.code } : L.part(name, size, len);
+      return placeLibraryPart({ name: p.name, code: p.code }, { noConfirm: true }).then(function () { return window.anvil.summary(); });
+    },
+    libraryFeature: function (id, opts) {
+      if (!libraryFeature(id, opts || {})) return Promise.reject(new Error('Library feature ' + id + ' could not start'));
+      return Promise.resolve(UI.pmOK()).then(function (made) { return made && made.cut ? made : window.anvil.summary(); });
+    },
     // ---- assembly documents. Each change is one undo step and resolves to the summary once rebuilt; the calls that
     // need an assembly reject with "Not an assembly document" in a part.
     newAssembly: function (name) { return newAssembly(name); },
