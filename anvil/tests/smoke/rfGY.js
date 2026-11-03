@@ -55,6 +55,16 @@
         UI.editFeature(f); await idle();
         assert(UI.hasPM(), 'Edit Feature PM');
         await rfGYCheckLook((t ? 'dark' : 'light') + ' Boss-Extrude');
+        // one focus frame: the box's own border, no outline on the number, list or text box inside it
+        ['#pm input.pm-num', '#pm .pm-row-select select', '#pm .pm-row-text input'].forEach(function (q) {
+          var e = D.querySelector(q); if (!e) return;
+          e.focus();
+          var cs = W.getComputedStyle(e);
+          assert(cs.outlineStyle === 'none' || parseFloat(cs.outlineWidth) === 0, q + ': a second frame (outline ' + cs.outlineStyle + ' ' + cs.outlineWidth + ')');
+        });
+        var wrapCs = W.getComputedStyle(D.querySelector('#pm .pm-num-wrap'));
+        D.querySelector('#pm input.pm-num').focus();
+        assert(W.getComputedStyle(D.querySelector('#pm .pm-num-wrap')).borderTopColor !== '' && wrapCs, 'focus frame on the whole box');
         // ✓ ✗ share one size; the title row is 36 px
         var ok = D.querySelector('#pm .pm-ok').getBoundingClientRect(), no = D.querySelector('#pm .pm-cancel').getBoundingClientRect();
         assert(Math.round(ok.width) === Math.round(no.width) && Math.round(ok.height) === Math.round(no.height) && Math.abs(ok.top - no.top) < 0.5, 'OK / Cancel sizes');

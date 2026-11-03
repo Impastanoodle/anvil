@@ -1735,6 +1735,12 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 #pm .pm-num-wrap { width: 100%; height: var(--pm-ctl-h); box-sizing: border-box; border: 1px solid var(--pm-ctl-line); border-radius: 2px; background: var(--pm-ctl-bg); box-shadow: none; }
 #pm .pm-num-wrap:hover { border-color: var(--pm-ctl-hover); }
 #pm .pm-num-wrap:focus-within { border-color: var(--pm-focus); box-shadow: none; }
+/* one focus frame: the control's own border (number + unit + spin, list, text box, selection list); the chrome's
+   `#left :focus-visible` outline must not draw a second frame inside it */
+#pm .pm-num-wrap input.pm-num:focus, #pm .pm-num-wrap input.pm-num:focus-visible, #pm .pm-num-wrap button:focus-visible,
+#pm .pm-row select:focus-visible, #pm .pm-row input[type=text]:focus-visible, #pm .pm-list:focus-visible, #pm .pm-item:focus-visible,
+#pm .pm-pick:focus-visible { outline: none; box-shadow: none; }
+#pm .pm-row select:focus, #pm .pm-row input[type=text]:focus { border-color: var(--pm-focus); }
 #pm .pm-num-wrap input.pm-num { height: 100%; padding: 0 4px 0 6px; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text); }
 #pm .pm-num-wrap input.pm-num.expr { font-size: 11.5px; }
 #pm .pm-num-wrap .unit { width: 20px; padding-right: 4px; text-align: right; line-height: 16px; }
