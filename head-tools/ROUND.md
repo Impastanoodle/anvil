@@ -54,8 +54,11 @@ node head-tools/make-index.js --check            # anvil/docs/INDEX.md current (
 node anvil/headless/anvil.js test                # parallel, half the threads, about 3.5 min here; --serial for one process
 node anvil/headless/anvil.js example --all
 node anvil/headless/anvil.js example --all --occt
-node anvil/headless/ui-smoke.js http://localhost:8812/tests/ui-smoke.html --port 9312
+node anvil/headless/ui-smoke.js http://localhost:8812/tests/ui-smoke.html --port 9312 --timeout 900 --slowest
 ```
+Agents run only their own groups plus the full kernel suite and examples (user, 2026-11-03); this ui-smoke run is the
+only full one per lane, so a failure in another group goes back to the lane's agent (SendMessage) with the FAIL rows.
+`--slowest` lists the slowest steps and groups: hand persistent offenders to a test-speed lane.
 Then `http://localhost:8812/tests/occt-tests.html` in the browser pane (`location.reload()`, poll the PASS / FAIL count
 every ~30 s, 87 rows), and `http://localhost:8812/` with no console errors.
 

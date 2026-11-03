@@ -647,6 +647,7 @@ var UI = (function () {
     ztDrop();   // rfHG: the zoom display mesh belongs to the old body
     disposeGroup(groups.body); disposeGroup(groups.edges);
     bodyMesh = null; crackFill = null; edgeLines = null; silLines = null; edgeScr.edges = null; pickMemo.key = null; App.displayWarning = null;
+    tanLines = null;   // rfHL (disposed with groups.edges)
     var m = App.mesh;
     if (!m || !m.triCount) { App.edges = m ? edgesFor(m) : []; App.triHidden = null; visTris = null; sceneVer++; return; }
     var g = new THREE.BufferGeometry();
@@ -688,6 +689,7 @@ var UI = (function () {
       groups.edges.add(edgeLines);
       silLines = buildSilhouettes(m);
       if (silLines) groups.edges.add(silLines);
+      tanRebuild();   // rfHL: tangent edges
     } catch (e) {
       console.warn('Model edges could not be drawn:', e);
       disposeGroup(groups.edges); edgeLines = null; silLines = null;
@@ -1577,10 +1579,15 @@ var UI = (function () {
     App.edges = edgesFromWorker(m) || (asmE = UI.asmEdges && UI.asmEdges(m)) || K.bodyEdges(m);   // asmEdges: an assembly from its parts' edges (ui-assembly.js)
     // a solid from OpenCascade (ui-occt.js): every polygon knows its B-rep face; edges inside one face are seams
     if (m.faces.length && m.faces[0].polys && m.faces[0].polys[0] && m.faces[0].polys[0].face != null) {
+      // rfHL: an edge between two B-rep faces that OpenCascade says meet tangent (occt-kernel.js tangentFaces) is a
+      // tangent edge, never drawn, however far a coarse mesh's facets turn across it (a loft's or sweep's patches)
+      var tan = !asmE && App.mesh === m && App.build && App.build.occt && App.build.occt.tangent || null;
       App.edges.forEach(function (e) {
         if (e.faces.length !== 2) return;
         var a = m.faces[e.faces[0]].polys[0].face, b = m.faces[e.faces[1]].polys[0].face;
-        if (a != null && a === b && (m.faces[e.faces[0]].body || 0) === (m.faces[e.faces[1]].body || 0)) { e.seam = true; e.smooth = true; }   // (r4/asm4: one component's)
+        if ((m.faces[e.faces[0]].body || 0) !== (m.faces[e.faces[1]].body || 0)) return;   // (r4/asm4: one component's)
+        if (a != null && a === b) { e.seam = true; e.smooth = true; }
+        else if (tan && a != null && b != null && tan[Math.min(a, b) + '|' + Math.max(a, b)]) { e.smooth = true; e.tangent = true; }
       });
     }
     App.curves = asmE && asmE.curves ? asmE.curves : annotateCurveEdges(m, App.edges);   // r4/asm4: placed from the parts' curves
@@ -1628,6 +1635,7 @@ var UI = (function () {
     var old = edgeLines.geometry;
     edgeLines.geometry = buildEdgeGeometry(App.mesh);
     if (old) old.dispose();
+    tanRebuild();   // rfHL: tangent circles at the new resolution
     sceneVer++;
     return true;
   }
@@ -1784,6 +1792,98 @@ var UI = (function () {
         return V.add(C.center, V.scale(V.sub(p, C.center), t / r));
       }
       return p;
+    });
+  }
+
+  // ------------------------------------------------------------------ rfHL: tangent edges (display)
+  // SolidWorks' Tools ▸ Options ▸ Display ▸ Part/assembly tangent edge display: in Shaded With Edges, Hidden Lines
+  // Removed / Visible and Wireframe the edges where two DIFFERENT faces meet tangent (a fillet running onto a flat face,
+  // two rounds meeting, a bend onto its flange) are drawn as thin lines ('visible', the default), dashed ('phantom') or
+  // not at all ('removed'); View ▸ Display ▸ Tangent Edges … switches it (UI.setTangentEdges), remembered per browser
+  // in localStorage 'anvil.tangentEdges' (the ui-smoke page starts at 'removed' and stores nothing, like rfHD's effects,
+  // unless UI.tangentEdgesPersistInTest). Never drawn: edges between facets of one face (e.seam: one surface record or
+  // one B-rep face), between facets of one freeform face (a loft's or sweep's side on Anvil's kernel: one face group,
+  // same feature and no record), and sharp edges (those are model edges). A chord of a true circle draws the circle
+  // (with rfHG's chord feet, so the line sits on the faces' boundary and does not poke through the facets).
+  var TAN_MODES = ['visible', 'phantom', 'removed'], TAN_KEY = 'anvil.tangentEdges', TAN_W = 1;
+  var tanInTest = false;
+  try { tanInTest = !!(window.frameElement && /\/tests\//.test(window.parent.location.pathname)); } catch (e) { }
+  App.view.tangentEdges = (function () {
+    if (tanInTest) return 'removed';
+    try { var v = localStorage.getItem(TAN_KEY); if (TAN_MODES.indexOf(v) >= 0) return v; } catch (e) { }
+    return 'visible';
+  })();
+  mats.tanEdge = new THREE.LineBasicMaterial({ color: 0xffffff });
+  mats.tanEdge.color = mats.edge.color;   // one colour object: the edge palette (dark on a painted body, light lines otherwise)
+  mats.tanPhantom = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 1, gapSize: 0.5 });
+  mats.tanPhantom.color = mats.edge.color;
+  mats.tanPhantom.userData.dashPx = 9; mats.tanPhantom.userData.gapPx = 4;
+  lineMat(mats.tanEdge, TAN_W); lineMat(mats.tanPhantom, TAN_W);   // thin, whole device pixels (fat-line twins)
+  var tanLines = null;
+  // the mesh edges drawn as tangent edges (UI.tangentEdgeList for tests)
+  function tangentEdgeList(m) {
+    if (!m || !m.faces || !m.faces.length) return [];
+    var edges = edgesFor(m), groups = faceGroups(m) || [];
+    return edges.filter(function (e) {
+      if (!e.smooth || e.seam || e.faces.length !== 2 || !edgeVisible(e)) return false;
+      var i = e.faces[0], j = e.faces[1], fa = m.faces[i], fb = m.faces[j];
+      if (bodyOfFace(fa) !== bodyOfFace(fb) || fa.part !== fb.part) return false;
+      if (groups[i] && groups[i] === groups[j]) return false;   // one face (a curved face's facets, one freeform face)
+      var pa = fa.polys && fa.polys[0], pb = fb.polys && fb.polys[0];
+      if (!pa || !pb) return false;
+      if (pa.face != null && pb.face != null) return pa.face !== pb.face;   // OpenCascade: two B-rep faces
+      if (pa.surf || pb.surf) return true;   // a surface record on either side: two true surfaces meet
+      return pa.shared !== pb.shared;   // record-less facets: only where two features meet (as drawing-hlr.js)
+    });
+  }
+  function buildTangentGeometry(m) {
+    var list = tangentEdgeList(m);
+    if (!list.length) return null;
+    var arr = [], chord, drawCurve = {}, sharpCurve = {};
+    (App.edges || []).forEach(function (e) { if (!e.smooth && e.curve != null) sharpCurve[e.curve] = 1; });
+    list.forEach(function (e) {
+      if (e.curve != null && App.curves && App.curves[e.curve]) { if (!sharpCurve[e.curve]) drawCurve[e.curve] = 1; return; }
+      arr.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]);
+    });
+    chord = arr.slice();
+    Object.keys(drawCurve).forEach(function (ci) {
+      pushPolyline(arr, App.curves[ci].pts);
+      pushPolyline(chord, zt.curveRefined && zt.curveRefined[ci] ? App.curves[ci].pts : curveChordFeet(App.curves[ci]));
+    });
+    if (!arr.length) return null;
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+    g.setAttribute('chord', new THREE.Float32BufferAttribute(chord, 3));
+    return g;
+  }
+  // (re)make the tangent lines for the mesh on screen; called wherever the model edges are remade
+  function tanRebuild() {
+    if (tanLines) { groups.edges.remove(tanLines); tanLines.geometry.dispose(); tanLines = null; }
+    var mode = App.view.tangentEdges, m = App.mesh;
+    if (mode === 'removed' || !m || !m.triCount || !edgeLines) return;
+    var g = buildTangentGeometry(m);
+    if (!g) return;
+    tanLines = new THREE.LineSegments(g, mode === 'phantom' ? mats.tanPhantom : mats.tanEdge);
+    if (mode === 'phantom') tanLines.computeLineDistances();
+    tanLines.raycast = noRaycast;
+    tanLines.userData.tangentEdges = true;
+    tanLines.visible = App.view.style !== 'shaded';
+    groups.edges.add(tanLines);
+  }
+  function setTangentEdges(mode) {
+    if (TAN_MODES.indexOf(mode) < 0) mode = 'visible';
+    App.view.tangentEdges = mode;
+    if (!tanInTest || UI.tangentEdgesPersistInTest) { try { localStorage.setItem(TAN_KEY, mode); } catch (e) { } }
+    tanRebuild();
+    needsRender = true;
+    if (UI.requestRender) UI.requestRender();
+    return mode;
+  }
+  var TAN_LABEL = { visible: 'Tangent Edges Visible', phantom: 'Tangent Edges As Phantom', removed: 'Tangent Edges Removed' };
+  // View ▸ Display rows (ui-panels.js), as SolidWorks' View ▸ Display menu names them
+  function tangentEdgesMenuItems(prefix) {
+    return TAN_MODES.map(function (k) {
+      return { label: (prefix || '') + TAN_LABEL[k], checked: App.view.tangentEdges === k, action: function () { setTangentEdges(k); if (UI.setStatus) UI.setStatus(TAN_LABEL[k] + '.'); } };
     });
   }
 
@@ -2096,6 +2196,7 @@ var UI = (function () {
     var old = edgeLines.geometry;
     edgeLines.geometry = buildEdgeGeometry(App.mesh);
     if (old) old.dispose();
+    tanRebuild();   // rfHL
     if (silLines) { groups.edges.remove(silLines); silLines.geometry.dispose(); silLines = null; }
     silLines = buildSilhouettes(App.mesh);
     if (silLines) groups.edges.add(silLines);
@@ -2230,12 +2331,14 @@ var UI = (function () {
     if (bodyMesh) { bodyMesh.visible = s !== 'wireframe'; bodyMesh.material = s === 'hlr' || s === 'hlv' ? mats.hlr : mats.part; }   // r13/lines13: hlv = Hidden Lines Visible
     if (edgeLines) edgeLines.visible = s !== 'shaded';
     if (silLines) silLines.visible = s !== 'shaded';
+    if (tanLines) tanLines.visible = s !== 'shaded';   // rfHL
     mats.part.color.set(partColor(App.model.color));
     applyBodyColors();
     applyLinePalette();   // r14/viewui14: edges dark on a painted body, light on a dark background otherwise
     var planes = App.view.section ? [App.view.section.plane] : [];
     needsRender = true;
     [mats.part, mats.hlr, mats.edge, mats.hover, mats.sel, silMat].forEach(function (mm) { mm.clippingPlanes = planes; mm.needsUpdate = true; });
+    [mats.tanEdge, mats.tanPhantom].forEach(function (mm) { mm.clippingPlanes = planes; mm.needsUpdate = true; });   // rfHL
     syncCrackFill();   // lane FO
     rvApply();         // rfHC: RealView materials on the body, filler and flat pattern
     updateSectionCaps();
@@ -4346,6 +4449,9 @@ var UI = (function () {
     equationVars: equationVars, equationErrorMessages: equationErrorMessages, evalInput: evalInput, parseLength: parseLength,
     // whole curved faces (every facet of one cylinder, hole, cone...) for picking and selection
     faceGroup: faceGroup, faceGroups: function () { return faceGroups(App.mesh); },
+    // rfHL: tangent edge display ('visible' | 'phantom' | 'removed'), its View ▸ Display rows, and the edges it draws
+    setTangentEdges: setTangentEdges, tangentEdges: function () { return App.view.tangentEdges; }, tangentEdgesMenuItems: tangentEdgesMenuItems,
+    tangentEdgeList: function () { return tangentEdgeList(App.mesh); }, tangentLines: function () { return tanLines; },
     // lane DC: Flatten (the flat state's display)
     updateFlatState: updateFlatState, flatShown: flatShown, flatGroup: flatGroup
   };

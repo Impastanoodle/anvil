@@ -537,6 +537,31 @@ var OcctKernel = (function () {
       } else surf = new oc.Geom_BSplineSurface_1(poles, reals(pa.uKnots), reals(pa.vKnots), ints(pa.uMults), ints(pa.vMults), 3, pa.degV, false, false);
       return N(N(new oc.BRepBuilderAPI_MakeFace_8(N(new oc.Handle_Geom_Surface_2(surf)), 1e-7)).Face());   // the handle owns the surface
     }
+    // rfHL: the loft's pieces (kernel-features.js loftPatches) joined end to end in u into ONE closed B-spline surface:
+    // a loft through full circles has one side face in SolidWorks, and the seams between quarter pieces were drawn as
+    // edges wherever the mesh turned by more than the smooth angle across them (the Trumpet Funnel's neck). Knots at
+    // the joins keep multiplicity 3 (the surface is the same, point for point); the last pole row is the first one, so
+    // the surface is closed in u and MakeFace gives it a seam edge. null when the pieces do not fit together.
+    function joinPatches(list) {
+      if (!list.length || list.some(function (pa) { return pa.weights || pa.degV !== list[0].degV || pa.vKnots.join() !== list[0].vKnots.join() || pa.vMults.join() !== list[0].vMults.join(); })) return null;
+      var poles = [], uKnots = [0], uMults = [4], span = 0, tol = 0;
+      list[0].poles[0].forEach(function (q) { tol = Math.max(tol, Math.abs(q[0]), Math.abs(q[1]), Math.abs(q[2])); });
+      tol = 1e-9 * Math.max(1, tol);
+      function same(r1, r2) { return r1.every(function (q, b) { var w = r2[b]; return Math.abs(q[0] - w[0]) <= tol && Math.abs(q[1] - w[1]) <= tol && Math.abs(q[2] - w[2]) <= tol; }); }
+      for (var j = 0; j < list.length; j++) {
+        var pa = list[j];
+        if (j > 0 && !same(poles[poles.length - 1], pa.poles[0])) return null;
+        pa.poles.forEach(function (row, a) { if (j === 0 || a > 0) poles.push(row); });
+        for (var k = 1; k < pa.uKnots.length; k++) {
+          uKnots.push(span + pa.uKnots[k]);
+          uMults.push(k === pa.uKnots.length - 1 ? (j === list.length - 1 ? 4 : 3) : pa.uMults[k]);
+        }
+        span += pa.uKnots[pa.uKnots.length - 1];
+      }
+      if (!same(poles[poles.length - 1], poles[0])) return null;
+      poles[poles.length - 1] = poles[0];   // exactly closed
+      return { uKnots: uKnots, uMults: uMults, vKnots: list[0].vKnots, vMults: list[0].vMults, degV: list[0].degV, poles: poles };
+    }
     // the first (b = 0) or last v row of a patch as an edge of a cap
     function patchRimEdge(pa, last) {
       var nu = pa.poles.length, poles = N(new oc.TColgp_Array1OfPnt_2(1, nu)), kn = N(new oc.TColStd_Array1OfReal_2(1, pa.uKnots.length)), mu = N(new oc.TColStd_Array1OfInteger_2(1, pa.uKnots.length)), wts = null;
@@ -562,6 +587,10 @@ var OcctKernel = (function () {
         return { plane: pl, loop: o.loop, prof: o.profile, pts: o.loop.pts.map(function (p) { return K.to3D(pl, p[0], p[1]); }) };
       });
       var patched = K._.loftPatches(secs);
+      if (patched && patched.smooth) {
+        var one = joinPatches(patched.faces);
+        if (one) patched = { faces: [one] };
+      }
       if (patched) {
         var sew = N(new oc.BRepBuilderAPI_Sewing(1e-6, true, true, true, false));
         patched.faces.forEach(function (pa) { sew.Add(patchFace(pa)); });
@@ -1675,7 +1704,7 @@ var OcctKernel = (function () {
             case 'extrude': tool = extrudeTool(f); break;
             case 'revolve': tool = revolveTool(f); break;
             case 'loft': tool = loftTool(f); break;
-            case 'boundary': tool = rfFBBoundary(oc, K, f, m, { N: N, R: R, explore: explore, volumeOf: volumeOf, sketches: sketches, planes: planes, unsupportedErr: unsupportedErr, loftWires: function (ids) { return ids.map(function (id) { var s = sketchById(id, 'A Direction 1 profile sketch was not found.'), o = outerLoop(s, 'Each Direction 1 sketch must contain exactly one closed profile.'); return loopWire(o.loop, o.profile, K.resolvePlane(s.plane, m, planes)); }); } }); break;   // rfFB
+            case 'boundary': tool = rfFBBoundary(oc, K, f, m, { N: N, R: R, explore: explore, volumeOf: volumeOf, sketches: sketches, planes: planes, unsupportedErr: unsupportedErr, loft: function (ids) { return loftTool({ sketches: ids }); }, loftWires: function (ids) { return ids.map(function (id) { var s = sketchById(id, 'A Direction 1 profile sketch was not found.'), o = outerLoop(s, 'Each Direction 1 sketch must contain exactly one closed profile.'); return loopWire(o.loop, o.profile, K.resolvePlane(s.plane, m, planes)); }); } }); break;   // rfFB
             case 'sweep': tool = sweepTool(f); break;
             case 'hole': tool = holeTool(f); break;
             case 'fillet': case 'chamfer': edgeOp(f); break;
@@ -1780,11 +1809,53 @@ var OcctKernel = (function () {
         out.mesh = tessellate(all, bodies, opts.chord || 0.05, out.faces);
         out.ms.mesh = now() - t1;
       }
+      if (out.mesh) { try { tangentFaces(bodies, out.faces); } catch (eT) { /* no tangency info: edges fall back to the facet angle */ } }
       return out;
     } finally {
       for (var a = arena.length - 1; a >= 0; a--) { try { if (arena[a] && arena[a].delete && !(arena[a].isDeleted && arena[a].isDeleted())) arena[a].delete(); } catch (e) { } }
     }
 
+    // rfHL: which faces meet TANGENT (G1 or smoother) along every edge they share, from the exact B-rep
+    // (BRepLib::EncodeRegularity within TANGENT_ANG), as facesOut[fi].tangent = [other face indices] (same order of
+    // faces as tessellate). The viewport never draws a tangent edge (SolidWorks' default; ui-core.js edgesFor), but on
+    // a mesh it only knew the facets' angle across the edge: a coarse B-spline face turns by more than the smooth angle
+    // (22°) from one facet to the next, so a tangent seam between two freeform faces (loft pieces, a sweep's or a
+    // boundary's patches, fillet faces on a spline) was drawn as short dark segments wherever the facets were coarse.
+    var TANGENT_ANG = Math.PI / 180;   // 1°
+    function tangentFaces(bodyList, facesOut) {
+      var fi = 0;
+      bodyList.forEach(function (body) {
+        oc.BRepLib.EncodeRegularity_1(body, TANGENT_ANG);
+        var emap = N(new oc.TopTools_IndexedMapOfShape_1()), edgeFaces = [], faceObj = [], base = fi;
+        explore(body, ENUM.TopAbs_FACE).forEach(function (s, k) {
+          var f = N(oc.TopoDS.Face_1(s));
+          faceObj[k] = f;
+          explore(f, ENUM.TopAbs_EDGE).forEach(function (se) {
+            var idx = emap.FindIndex(se);
+            if (!idx) idx = emap.Add(se);
+            var l = edgeFaces[idx] || (edgeFaces[idx] = []);
+            if (l.indexOf(k) < 0) l.push(k);
+          });
+        });
+        fi += faceObj.length;
+        var pair = {};   // 'a|b' -> true while every shared edge is tangent
+        edgeFaces.forEach(function (l, idx) {
+          if (!l || l.length !== 2) return;
+          var a = Math.min(l[0], l[1]), b = Math.max(l[0], l[1]), key = a + '|' + b;
+          if (pair[key] === false) return;
+          var e = N(oc.TopoDS.Edge_1(emap.FindKey(idx))), c = oc.BRep_Tool.Continuity_1(e, faceObj[a], faceObj[b]);
+          var cv = c && c.value != null ? c.value : c, c0 = oc.GeomAbs_Shape.GeomAbs_C0, c0v = c0 && c0.value != null ? c0.value : c0;
+          pair[key] = cv !== c0v;
+        });
+        Object.keys(pair).forEach(function (key) {
+          if (!pair[key]) return;
+          var ab = key.split('|').map(function (x) { return base + +x; });
+          if (!facesOut[ab[0]] || !facesOut[ab[1]]) return;
+          (facesOut[ab[0]].tangent = facesOut[ab[0]].tangent || []).push(ab[1]);
+          (facesOut[ab[1]].tangent = facesOut[ab[1]].tangent || []).push(ab[0]);
+        });
+      });
+    }
     // triangles of every B-rep face, tagged with the face's index in out.faces
     function tessellate(all, bodyList, chord, facesOut) {
       N(new oc.BRepMesh_IncrementalMesh_2(all, chord, false, 0.35, false));
@@ -2188,7 +2259,15 @@ var OcctKernel = (function () {
     // errors of features OpenCascade built are Anvil's kernel's own limits: the shown part has none
     out.errors = {};
     Object.keys(anvilBuild.errors || {}).forEach(function (id) { if (!occ.status || occ.status[id] !== 'ok' || (K.isRefusal && K.isRefusal(anvilBuild.errors[id]))) out.errors[id] = anvilBuild.errors[id]; });
-    out.occt = { volume: occ.volume, faces: nf, bodies: occ.bodies, step: occ.step || null, iges: occ.iges || null };
+    out.occt = { volume: occ.volume, faces: nf, bodies: occ.bodies, step: occ.step || null, iges: occ.iges || null, tangent: tangentPairs(occ) };
+    return out;
+  }
+  // rfHL: { 'a|b': true } for every pair of B-rep faces (global indices, a < b, the polygons' `face` tags) that meet
+  // tangent along all their shared edges (build's tangentFaces); ui-core.js edgesFor treats mesh edges between them as
+  // smooth whatever the facets' angle
+  function tangentPairs(occ) {
+    var out = {};
+    (occ.faces || []).forEach(function (f, i) { (f.tangent || []).forEach(function (j) { out[Math.min(i, j) + '|' + Math.max(i, j)] = true; }); });
     return out;
   }
   // squared distance from point p to the triangle at P[o..o+8] (Ericson, Real-Time Collision Detection 5.1.5)
@@ -2237,6 +2316,10 @@ var OcctKernel = (function () {
     if (fr.virtual) {
       // a closed ThruSections (first wire again at the end) comes out flat or inside out here: Anvil's ring drives
       if (fr.close) throw h.unsupportedErr('Boundary with Close');
+      // rfHL: no curves and no Thin is the Loft on Anvil's kernel (buildBoundary → buildLoft), so it is loftTool here
+      // too: the same surface (ThruSections' own smoothing of three circles was 5 % off and was never shown) and one
+      // side face through full circles
+      if (!thin && h.loft) return h.loft(fr.secs.map(function (s) { return s.id; }));
       var ts = N(new oc.BRepOffsetAPI_ThruSections(true, false, 1e-6)), wires = h.loftWires(fr.secs.map(function (s) { return s.id; }));
       wires.forEach(function (w) { ts.AddWire(w); });
       ts.Build(R());

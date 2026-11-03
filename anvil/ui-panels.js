@@ -1465,7 +1465,8 @@
         { label: 'Sketch Regions', checked: v.sketchRegions !== false, action: toggleSketchRegions },   // sketch-layers
         { label: 'Snap to Model', checked: v.snapModel !== false, action: function () { v.snapModel = v.snapModel === false; UI.setStatus(v.snapModel ? 'Sketch points snap to model vertices, edges, centres and faces.' : 'Sketch points snap to sketch geometry only.'); } },   // p9-modelsnap
         { label: 'Display ▸ Show Endpoints', icon: 'showEndpoints', checked: v.showEndpoints !== false, action: function () { toggleShowEndpoints(); } }   // lane BS
-      ].concat(UI.depthFxMenuItems ? UI.depthFxMenuItems('Display ▸ ') : [], [   // rfHD: RealView, Shadows In Shaded Mode, Ambient Occlusion
+      ].concat(UI.tangentEdgesMenuItems ? UI.tangentEdgesMenuItems('Display ▸ ') : [],   // rfHL: Tangent Edges Visible / As Phantom / Removed
+        UI.depthFxMenuItems ? UI.depthFxMenuItems('Display ▸ ') : [], [   // rfHD: RealView, Shadows In Shaded Mode, Ambient Occlusion
         { label: 'Sketch Dimensions', checked: v.showDims, action: function () { v.showDims = !v.showDims; App.dimsStale = true; UI.setStatus(v.showDims ? 'Driven dimensions shown on every sketch entity. Click a value to change it.' : 'Only placed dimensions are shown.'); } },
         { label: 'Model Dimensions', checked: !!(UI.modelDimsShown && UI.modelDimsShown()), disabled: !UI.toggleModelDims, action: function () { UI.toggleModelDims(); } },   // lane model-dims
         { label: 'Section View', checked: !!v.section, action: UI.cmdSection },
@@ -1824,7 +1825,7 @@
     dd('scene', 'Apply Scene', function () { return [['gradient', 'Gradient'], ['plain', 'Plain'], ['dark', 'Dark']].map(function (s) { return { label: s[1], checked: App.view.bg === s[0], action: function () { setBg(s[0]); } }; }); });
     btn('showEndpoints', 'Show Endpoints — Show or hide the end-point dots of sketch entities', function () { toggleShowEndpoints(); }, function () { return App.view.showEndpoints !== false; });   // lane BS
     // rfHD: SolidWorks' View Settings flyout starts with RealView Graphics, Shadows In Shaded Mode, Ambient Occlusion
-    dd('settings', 'View Settings', function () { return (UI.depthFxMenuItems ? UI.depthFxMenuItems().concat([{ sep: true }]) : []).concat([
+    dd('settings', 'View Settings', function () { return (UI.depthFxMenuItems ? UI.depthFxMenuItems().concat([{ sep: true }]) : []).concat(UI.tangentEdgesMenuItems ? UI.tangentEdgesMenuItems().concat([{ sep: true }]) : [], [   // rfHL: tangent edge display
       { label: 'Options…', action: function () { UI.openTaskPane('props'); } },
       { sep: true },
       { label: 'Light Theme', checked: !!UI.theme && UI.theme() === 'light', action: function () { UI.setTheme('light'); } },

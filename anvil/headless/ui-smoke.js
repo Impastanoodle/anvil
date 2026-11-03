@@ -8,7 +8,8 @@
 // timeout passes), print the summary and every FAIL row, and exit 0 when all passed, 1 on failures or a
 // timeout, 2 when Chrome or the server is missing. The server must already be running (anvil/serve.ps1;
 // default URL http://localhost:8812/tests/ui-smoke.html). Options: --timeout <s> (default 420), --chrome <path>,
-// --port <n> (debugging port, default 9333), --keep (leave Chrome running for a look with a debugger).
+// --port <n> (debugging port, default 9333), --keep (leave Chrome running for a look with a debugger),
+// --slowest [n] (after the run, the n slowest steps and step-title groups by the page's MS column, default 25).
 'use strict';
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -21,6 +22,7 @@ const url = args.find((a) => /^https?:\/\//.test(a)) || 'http://localhost:8812/t
 const timeoutS = Number(opt('--timeout', 420));
 const port = Number(opt('--port', 9333));
 const keep = args.includes('--keep');
+const slowest = args.includes('--slowest') ? (Number(opt('--slowest', 25)) || 25) : 0;
 
 function findChrome() {
   const given = opt('--chrome', null);
@@ -107,6 +109,17 @@ async function main() {
   const size = await page.eval('innerWidth + "x" + innerHeight + " visible=" + document.visibilityState');
   console.log(summary + '  (' + size + ', ' + Math.round((Date.now() - t0) / 1000) + ' s)');
   for (const f of JSON.parse(fails)) console.log('  ' + f);
+  if (slowest) {
+    // every result row's step title and MS column; groups by the title's prefix before ':' ("rfHL: …", "smooth/responsive: …")
+    const rows = JSON.parse(await page.eval("JSON.stringify(Array.prototype.slice.call(document.querySelectorAll('tr')).filter(function(tr){return /^(PASS|FAIL)/.test(tr.textContent)}).map(function(tr){var c=tr.children;return [c[1].textContent, parseFloat(c[c.length-1].textContent)||0]}))"));
+    const total = rows.reduce((s, r) => s + r[1], 0), byGroup = {};
+    rows.forEach((r) => { const m = /^([^:]{1,40}):/.exec(r[0]), g = m ? m[1] : '(no prefix)'; byGroup[g] = byGroup[g] || [0, 0]; byGroup[g][0] += r[1]; byGroup[g][1]++; });
+    const sec = (ms) => (ms / 1000).toFixed(1).padStart(6) + ' s';
+    console.log('\nSlowest ' + slowest + ' steps (of ' + rows.length + ', ' + sec(total).trim() + ' in steps):');
+    rows.slice().sort((a, b) => b[1] - a[1]).slice(0, slowest).forEach((r) => console.log(sec(r[1]) + '  ' + r[0].slice(0, 130)));
+    console.log('\nSlowest ' + slowest + ' groups:');
+    Object.keys(byGroup).sort((a, b) => byGroup[b][0] - byGroup[a][0]).slice(0, slowest).forEach((g) => console.log(sec(byGroup[g][0]) + '  ' + String(byGroup[g][1]).padStart(3) + ' steps  ' + g));
+  }
   ws.close();
   return /FAILED/.test(summary) ? 1 : 0;
 }

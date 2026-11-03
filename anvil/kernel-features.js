@@ -576,11 +576,15 @@
     // no vertices anywhere: quarter circles from the first plane's x direction, in the same directions in every section
     if (mi < 0) {
       var ex = secs[0].plane.x;
-      return secs.map(function (s, q) {
+      // rfHL: `smooth` says the pieces are only quarters of one circle per section (no corner anywhere), so the side is
+      // ONE face, as in SolidWorks: OpenCascade's loftTool joins the patches into one closed surface
+      var quarters = secs.map(function (s, q) {
         var pl = s.plane, C = sp[q].circle, t0 = Math.atan2(dot(ex, pl.y), dot(ex, pl.x)), sg = up[q], out = [];
         for (var a = 0; a < 4; a++) out.push(arcPiece(pl, C.c, C.r, t0 + sg * a * Math.PI / 2, t0 + sg * (a + 1) * Math.PI / 2));
         return out;
       });
+      quarters.smooth = true;
+      return quarters;
     }
     var master = sp[mi].pieces, m = master.length, mc = master.map(function (p) { return sub(p.at(0), cen[mi]); });
     return secs.map(function (s, q) {
@@ -826,7 +830,8 @@
       for (var b = 0; b <= M; b++) { uKnots.push(b / M); uMults.push(b === 0 || b === M ? 4 : 3); }
       faces.push({ uKnots: uKnots, uMults: uMults, vKnots: vKnots, vMults: vMults, degV: 3, poles: poles });
     }
-    return { faces: faces };
+    // rfHL: smooth = the pieces meet tangent all round (every section one full circle): one side face in SolidWorks
+    return { faces: faces, smooth: !!stack.smooth };
   }
 
   function buildLoft(f, model, ctx) {
