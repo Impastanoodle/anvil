@@ -4,7 +4,11 @@
 // are dark strokes with mid-grey square points; reference lines and construction are a lighter grey; green and red are
 // kept for OK / cancel, the rebuild light, relations and errors. The dark ink is currentColor so the stylesheet picks
 // it per theme (.ico { color: var(--icon-ink) }); every other colour reads on both the light and the dark panel.
-var Icons = (function () {
+// rfGZ (2026-11-03): one drawing serves every size; `weigh` (after the artwork) maps the drawn stroke widths to quiet
+// 1 px outlines, 1.25 / 2 px main lines and pixel-snapped positions per size and devicePixelRatio, `CENTRE` centres the
+// older drawings, and the global `Icons` is an accessor (end of file) so the drawing wrappers' icons are weighed too.
+// The rules for new icons: docs/areas/ui-core.md *Look: icons (rfGZ)*.
+var IconsLib = (function () {
   'use strict';
   var S = 'currentColor';                                   // ink: sketch entities and outlines
   var M = '#939393';                                        // reference / construction grey
@@ -53,8 +57,8 @@ var Icons = (function () {
     holeWizard: blk(1.5, 5, 10, 4, 3.5) + ell(7.5, 7.2, 3.4, 1.4, FYL, FYD, 1) + ell(7.5, 7.8, 1.6, 0.6, FYD, 'none') + ln('M5.9 7.8 v1.6 M9.1 7.8 v1.6', FYD, 0.8),
     fillet: p('M2 14 V7.5 a4.5 4.5 0 0 1 4.5 -4.5 H14 V14 z', F2, S) + ln('M2 7.5 a4.5 4.5 0 0 1 4.5 -4.5', FY, 2.2),
     chamfer: p('M2 14 V7.5 l4.5 -4.5 H14 V14 z', F2, S) + ln('M2 7.5 l4.5 -4.5', FY, 2.2),
-    imported: blk(5.5, 5.5, 8, 7, 3) + ln('M0.8 4.2 H6.2', FY, 1.5) + ln('M4.2 2 L6.4 4.2 L4.2 6.4', FY, 1.5),
-    shell: blk(1.5, 4.5, 9, 7, 3.5) + p('M3.4 7.1 L5.5 5 H11.6 L9.5 7.1 z', '#6d6d6d', S, 1),
+    imported: blk(4.5, 5.5, 8, 7, 3) + ln('M0.8 4.2 H6.2', FY, 1.5) + ln('M4.2 2 L6.4 4.2 L4.2 6.4', FY, 1.5),
+    shell: blk(1.5, 4.5, 9, 7, 3.5) + p('M3.4 7.1 L5.5 5 H11.6 L9.5 7.1 z', '#6e6e6e', S, 1),
     draft: p('M3 14 L5.5 2.5 h5 L13 14 z', F2, S) + ln('M5.5 2.5 L3 14', FY, 1.6),
     rib: blk(1.5, 4.5, 9, 7, 3.5) + p('M4 13 l5 -5.5 v5.5 z', FY, S, 1),
     wrap: p('M3 4 a5 2 0 0 1 10 0 v8 a5 2 0 0 1 -10 0 z', F2, S) + ell(8, 4, 5, 2, F1, S) + ln('M4 9 c1.5 1.2 6.5 1.2 8 0', FY, 1.6),
@@ -238,7 +242,7 @@ var Icons = (function () {
     scene: rect(2, 3, 12, 10, W, S, 1.1, 'rx="0.6"') + ln('M2 11 l4 -3.5 3 2.5 2 -1.5 3 2.5', B, 1.2) + circ(11, 5.5, 1.1, Y, 'none'),
     settings: circ(8, 8, 2, 'none', S) + ln('M8 2 v2 M8 12 v2 M2 8 h2 M12 8 h2 M3.8 3.8 l1.4 1.4 M10.8 10.8 l1.4 1.4 M3.8 12.2 l1.4 -1.4 M10.8 5.2 l1.4 -1.4', S, 1.25),
     // rfBF: the quick-access toolbar (New, Open, Save, Print, Select, Rebuild, File Properties) in the menu bar
-    newDoc: p('M3.5 1.5 h6 l3 3 v10 h-9 z', W, S, 1.1) + p('M9.5 1.5 v3 h3', F1, S, 1) + ln('M5.5 8 h5 M5.5 10.5 h5', M, 0.9),
+    newDoc: p('M3.5 1.5 h6 l3 3 v10 h-9 z', W, S, 1.1) + p('M9.5 1.5 v3 h3', W, S, 1) + ln('M5.5 8 h5 M5.5 10.5 h5', M, 0.9),
     openDoc: p('M1.5 4 h4.5 l1.5 1.5 h5.5 v2', '#f6d77a', '#b48a1c', 1) + p('M1.5 4 V13.5 h10.5 l2.5 -6 H4 l-2.5 6', '#f9e3a0', '#b48a1c', 1) + ln('M11 1 l2.2 2.2 -2.2 2.2 M13.2 3.2 H8.5', G, 1.3),
     saveDoc: p('M2 2 h10 l2 2 v10 H2 z', '#6d6d6d', '#3a3a3a', 1) + rect(4.5, 2.5, 6, 4, W, '#3a3a3a', 0.8) + rect(8.2, 3.2, 1.4, 2.5, '#3a3a3a', 'none') + rect(4, 9, 8, 5, '#e4e4e4', '#3a3a3a', 0.8),
     printDoc: rect(4.5, 1.5, 7, 4, W, S, 1) + p('M1.5 5.5 h13 v6 h-13 z', F2, S, 1) + rect(4.5, 9.5, 7, 5, W, S, 1) + ln('M6 11.5 h4 M6 13 h4', M, 0.8) + circ(12.5, 7.3, 0.7, G, 'none'),
@@ -313,11 +317,11 @@ var Icons = (function () {
     // Limit Angle: a hinge with an arc between two stops
     limitAngle: ln('M2 13.5 h12.5', S, 1.3) + ln('M2 13.5 L11 3', '#8a5cc2', 1.3) + p('M8 13.5 a6 6 0 0 0 -1.9 -4.4', 'none', '#8a5cc2', 1.1) + ln('M9.6 12 l1.6 -0.4 M7.8 9.4 l1.1 -1.2', '#8a5cc2', 1),
     // Linear / Circular Component Pattern, Mirror Components: component blocks in a row, round a centre, across a plane
-    lpatternComp: blk(1, 8, 4.5, 4.5, 2, '#f0c987', '#f8e2b8', '#d9a95a', S, 0.9) + blk(6, 8, 4.5, 4.5, 2, '#f8e2b8', '#fbeed6', '#e8c58c', S, 0.9) + blk(11, 8, 4.5, 4.5, 2, '#f8e2b8', '#fbeed6', '#e8c58c', S, 0.9) + ln('M2 3.5 h12 M12.5 2 l1.5 1.5 -1.5 1.5', G, 1.1),
+    lpatternComp: blk(0.5, 8, 3, 4.5, 1.5, '#f0c987', '#f8e2b8', '#d9a95a', S, 0.9) + blk(5.5, 8, 3, 4.5, 1.5, '#f8e2b8', '#fbeed6', '#e8c58c', S, 0.9) + blk(10.5, 8, 3, 4.5, 1.5, '#f8e2b8', '#fbeed6', '#e8c58c', S, 0.9) + ln('M2 3.5 h12 M12.5 2 l1.5 1.5 -1.5 1.5', G, 1.1),
     cpatternComp: circ(8, 8, 5, 'none', S, 0.8, DASH) + rect(6, 1, 4, 4, '#f0c987', S, 0.9) + rect(11, 6, 4, 4, '#f8e2b8', S, 0.9) + rect(6, 11, 4, 4, '#f8e2b8', S, 0.9) + rect(1, 6, 4, 4, '#f8e2b8', S, 0.9),
-    mirrorComp: ln('M8 1 v14', P, 1.1, DASH) + blk(1, 5, 5, 6, 2, '#f0c987', '#f8e2b8', '#d9a95a', S, 0.9) + blk(10, 5, 5, 6, 2, '#f8e2b8', '#fbeed6', '#e8c58c', S, 0.9),
+    mirrorComp: ln('M8 1 v14', P, 1.1, DASH) + blk(1.5, 5, 4, 6, 2, '#f0c987', '#f8e2b8', '#d9a95a', S, 0.9) + blk(9.5, 5, 4, 6, 2, '#f8e2b8', '#fbeed6', '#e8c58c', S, 0.9),
     // Exploded View: a block lifted off another along a dashed explode line; an explode step: the arrow alone
-    explode: blk(2, 10, 8, 4, 2.5, F2, F1, F3, S, 1) + blk(5, 1.5, 6, 4, 2.5, '#f0c987', '#f8e2b8', '#d9a95a', S, 1) + ln('M13.5 9.5 v-6 M12.2 4.8 l1.3 -1.3 1.3 1.3', '#e07b1a', 1.2) + ln('M8 6 v4', '#e07b1a', 0.9, DASH),
+    explode: blk(2, 9.5, 8, 3.5, 2.5, F2, F1, F3, S, 1) + blk(5, 1.5, 6, 4, 2.5, '#f0c987', '#f8e2b8', '#d9a95a', S, 1) + ln('M13.5 9.5 v-6 M12.2 4.8 l1.3 -1.3 1.3 1.3', '#e07b1a', 1.2) + ln('M8 6 v4', '#e07b1a', 0.9, DASH),
     explodeStep: ln('M8 14 V3 M5 6 l3 -3 3 3', '#e07b1a', 1.4) + ln('M3 14 h10', S, 1.2),
     // Fix: a push pin
     fix: p('M6 2 h5 l-1 1.5 v3.5 l2 2 h-7 l2 -2 V3.5 z', R, RD, 1) + ln('M8.5 9 v5.5', S, 1.3),
@@ -336,7 +340,7 @@ var Icons = (function () {
     sketch3d: ln('M1.5 14.5 h6 M1.5 14.5 V8 M1.5 14.5 l3.4 -3.4', P, 1.2) + ln('M3 6 L7.5 2 L12.5 4.5', S, 1.5) + pt(3, 6) + pt(12.5, 4.5) + PENCIL,
     sketch3dPlane: p('M1.5 10.5 l3.5 -6 h9 l-3.5 6 z', PL, P, 1.1) + ln('M4.5 8.5 L10 6', S, 1.5) + PENCIL,
     styleSpline: ln('M2 13 L5 3 L11 13 L14 3', M, 0.9, DASH) + ln('M2 13 C5 1 11 15 14 3', S, 1.5) + pt(5, 3) + pt(11, 13),
-    eqnCurve: ln('M1.5 9.5 C4 2 6.5 2 8.5 7 S12.5 12.5 14.5 4.5', S, 1.5) + txt(5, 15, 5, 'f(x)', S, 'Georgia, serif', 600),
+    eqnCurve: ln('M1.5 9.5 C4 2 6.5 2 8.5 7 S12.5 12.5 14.5 4.5', S, 1.5) + txt(5.8, 15, 4.6, 'f(x)', S, 'Georgia, serif', 600),
     parabola: ln('M2 2 Q8 22 14 2', S, 1.5) + pt(8, 8.5) + ln('M5 12 h6', M, 0.9, DASH),
     conic: ln('M2 13 L4.5 3 L14 3.5', M, 0.9, DASH) + ln('M2 13 Q4.5 3 14 3.5', S, 1.5) + pt(2, 13) + pt(14, 3.5),
     quickSnaps: circ(8, 8, 4.5, 'none', S, 1.1) + ln('M8 1.5 v3 M8 11.5 v3 M1.5 8 h3 M11.5 8 h3', S, 1.1) + circ(8, 8, 1.7, Y, YD, 0.9),
@@ -445,6 +449,10 @@ var Icons = (function () {
     I.vSnapModel = p('M1 12 H15 V15.5 H1 z', F2, 'none') + ln('M1 12 H15', S, 1.4) + ln('M4.5 9.2 V6 a3.5 3.5 0 0 1 7 0 V9.2', R, 2.6) + ln('M4.5 8.2 V9.4 M11.5 8.2 V9.4', M, 2.6) + circ(8, 12, 1.6, FY, FYD, 0.9);
     I.vFeatureTree = I.tree;
   })();
+  // rfGZ: Smart Fasteners (a hex-head bolt) and Hole Alignment (two plates whose holes miss the shared axis), for the
+  // greyed assembly buttons (ui-panels.js passes them as icon: 'smartFasteners' / 'holeAlignment')
+  I.smartFasteners = p('M2.5 2.5 h11 v3.5 h-11 z', F2, S, 1) + ln('M6 2.5 v3.5 M10 2.5 v3.5', S, 0.8) + rect(5.5, 6, 5, 8, F1, S, 1) + ln('M5.5 8.5 l5 -1 M5.5 10.5 l5 -1 M5.5 12.5 l5 -1', S, 0.8);
+  I.holeAlignment = p('M1.5 3.5 h5 v3 h-5 z M9.5 3.5 h5 v3 h-5 z', F2, S, 1) + p('M1.5 9.5 h6 v3 h-6 z M10.5 9.5 h4 v3 h-4 z', F1, S, 1) + ln('M8 1 v14', R, 1, DASH) + ln('M9 8 h0.5', R, 1);
   // rfFB: Boundary Boss/Base (a yellow body between two profiles, its sides shaped by Direction 2 curves) and Boundary Cut
   I.boundary = p('M2.5 12.5 C2.5 8.5 5.5 7 5.5 3.5 H10.5 C10.5 7 13.5 8.5 13.5 12.5 z', FY, S, 1.1) + ell(8, 12.5, 5.5, 1.7, FYL, S, 1.1) + ell(8, 3.5, 2.5, 0.9, FYL, S, 1.1) + ln('M8 4.4 C8 7.5 8 9 8 14.2', B, 1.1, DASH);
   I.boundaryCut = blk(1.5, 5, 8, 6, 3.5) + p('M3.6 8.4 C4.4 7.6 5.6 7.4 6 5.6 H9.6 C9.4 7 8.8 7.8 8.4 8.4 z', FY, FYD, 1) + ln('M5.5 7.2 C6.8 7 8 6.6 8.2 5.6', B, 0.9, DASH);
@@ -453,27 +461,154 @@ var Icons = (function () {
   I.splitLine = p('M1.5 12.5 l3.5 -6 h9 l-3.5 6 z', F1, P, 1) + ln('M3.2 9.5 C6 8 9 11 12.8 9.5', S, 1.4);
   I.projCurve = p('M1.5 14 C5 10 11 10 14.5 14', F2, P, 1) + ln('M3 3 C6 1 10 5 13 3', S, 1.3) + ln('M4 4 V11 M12 4 V11', M, 0.9, DASH) + ln('M3 12.4 C6 10.8 10 10.8 13 12.4', FYD, 1.5);
   I.compositeCurve = ln('M1.5 13 L5.5 6', S, 1.5) + ln('M5.5 6 C7 2.5 10 2.5 11 6', FYD, 1.5) + ln('M11 6 L14.5 12', S, 1.5) + pt(5.5, 6) + pt(11, 6);
-  I.xyzCurve = ln('M1.5 12.5 C4 3 8 13 14.5 3.5', S, 1.4) + pt(1.5, 12.5) + pt(5.6, 8) + pt(10, 8.4) + pt(14.5, 3.5) + ln('M10.5 15 h4 M10.5 15 v-4 M10.5 15 l-2 1', M, 0.9);
+  I.xyzCurve = ln('M1.5 12.5 C4 3 8 13 14.5 3.5', S, 1.4) + pt(1.5, 12.5) + pt(5.6, 8) + pt(10, 8.4) + pt(14.5, 3.5) + ln('M10.5 14.5 h4 M10.5 14.5 v-4 M10.5 14.5 l-1.8 1', M, 0.9);
   I.refPtCurve = ln('M1.5 12.5 C4 3 8 13 14.5 3.5', S, 1.4) + [[1.5, 12.5], [7.5, 8.5], [14.5, 3.5]].map(function (q) { return ln('M' + (q[0] - 1.6) + ' ' + q[1] + ' h3.2 M' + q[0] + ' ' + (q[1] - 1.6) + ' v3.2', P, 1); }).join('');
   I.helix = ln('M4 2.5 C13 2.5 13 5 8 5.2 C3 5.4 3 7.8 8 8 C13 8.2 13 10.6 8 10.8 C3 11 3 13.5 12 13.5', S, 1.4) + ln('M8 1 V15', M, 0.8, 'stroke-dasharray="3 1.4 0.6 1.4"');
-  function icon(name, size, cls) {
-    var body = I[name] || I.generic;
-    size = size || 32;
-    return '<svg class="ico ' + (cls || '') + '" width="' + size + '" height="' + size + '" viewBox="0 0 16 16" aria-hidden="true">' + body + '</svg>';
+  // ---- rfGZ: one weight system for every size. The artwork above is drawn once on the 16 grid; `weigh` re-weights
+  // each stroked element for the size it is shown at and the screen's devicePixelRatio, so a 32 px ribbon icon no
+  // longer doubles every outline (2.5 px black borders) and a 16 px tree icon keeps 1 px lines. Classes, by the drawn
+  // width w (16-grid units) and whether the element is filled:
+  //   outline  filled shape with a stroke  -> 1 CSS px at 16-20 px, 1.2 CSS px at 24-32 px, in EDGE (a fixed dark grey,
+  //            not the ink: the fills are fixed colours, so a theme-coloured outline vanished into them on dark panels)
+  //   self     filled with its own colour as the stroke (arrow heads, dots) -> unchanged
+  //   bold     w >= 1.9 (accent strokes: the yellow edge of Fillet, a check mark, a sweep path) -> w at 16, 0.7 w at 32
+  //   hero     1.3 <= w < 1.9 (the main sketch entity) -> 1.25 CSS px at 16-20 px, 2 CSS px at 24-32 px
+  //   fine     0.85 <= w < 1.3 (secondary lines, dimensions) -> 1 CSS px at 16-20 px, 1.5 CSS px at 24-32 px
+  //   hair     w < 0.85 (hatching, thin details) -> as drawn, never above 1 CSS px
+  // The result is rounded to whole device pixels (half rounds down), then nudged by under half a device pixel so a
+  // 1 px line on a half-unit coordinate lands on a pixel row instead of straddling two (only when the scale from the
+  // 16 grid to device pixels is a whole number: 16 px at 1x / 2x, 32 px at 1x / 1.5x / 2x). The viewBox stays 0 0 16 16.
+  var EDGE = '#464646', INK2 = '0.7';
+  // paper (white sheets, documents, balloons) takes the panel colour, so on a dark panel a sheet is an inked outline
+  // instead of a glaring white box; a drawing view's grey (#c4c4c4, drawing icons) is the ink at 35 %. Both keep the
+  // ink outline (not EDGE), which is what shows on the dark panel.
+  var PAPER = /^#(fff|ffffff|f4f4f4)$/i, VIEW = /^#c4c4c4$/i;
+  var WEIGHT = { outline: [1, 1.2], hero: [1.25, 2], fine: [1, 1.5], boldLarge: 0.7 };
+  var SHAPE_RE = /<(path|rect|circle|ellipse|line|polyline|polygon)\b([^>]*?)\s*(\/?)>/g;
+  function attr(a, n) { var m = new RegExp('(?:^|\\s)' + n + '="([^"]*)"').exec(a); return m ? m[1] : null; }
+  function setAttr(a, n, v) {
+    var re = new RegExp('(^|\\s)' + n + '="[^"]*"');
+    return re.test(a) ? a.replace(re, '$1' + n + '="' + v + '"') : a + ' ' + n + '="' + v + '"';
   }
+  function num(v) { return String(Math.round(v * 1000) / 1000); }
+  // the class and target width (CSS px) of one stroke drawn w wide on the 16 grid, shown at size px
+  function strokeClass(w, filled, self, size) {
+    var s = size / 16, big = size >= 24 ? 1 : 0;
+    if (filled && self) return ['self', w * s];
+    if (filled) return ['outline', WEIGHT.outline[big]];
+    if (w >= 1.9) return ['bold', w * s * (big ? WEIGHT.boldLarge : 1)];
+    if (w >= 1.3) return ['hero', WEIGHT.hero[big]];
+    if (w >= 0.85) return ['fine', WEIGHT.fine[big]];
+    return ['hair', Math.min(w * s, 1)];
+  }
+  function ratio() { return (typeof window !== 'undefined' && window.devicePixelRatio) || 1; }
+  // the offset (16-grid units) that puts a line of dw device px at coordinate c on whole pixels, at k device px per unit
+  function nudge(c, dw, k) {
+    if (c == null || isNaN(c)) return 0;
+    var want = Math.round(dw) % 2 ? 0.5 : 0, at = c * k - Math.floor(c * k), d = want - at;
+    if (d > 0.5) d -= 1; if (d <= -0.5) d += 1;
+    return Math.abs(d) < 0.02 ? 0 : d / k;
+  }
+  function weigh(body, size, dpr) {
+    var s = size / 16, k = s * dpr, whole = Math.abs(k - Math.round(k)) < 0.01;
+    return body.replace(SHAPE_RE, function (all, tag, a, close) {
+      var stroke = attr(a, 'stroke');
+      if (!stroke || stroke === 'none') return all;
+      var fill = attr(a, 'fill'), filled = fill != null && fill !== 'none';
+      var w = parseFloat(attr(a, 'stroke-width') || '1');
+      var c = strokeClass(w, filled, fill === stroke, size);
+      var dw = c[1] * dpr;
+      if (c[0] !== 'self' && c[0] !== 'hair') dw = Math.max(1, Math.ceil(dw - 0.5));
+      a = setAttr(a, 'stroke-width', num(dw / dpr / s));
+      if (c[0] === 'outline' && stroke === 'currentColor' && !PAPER.test(fill) && !VIEW.test(fill)) a = setAttr(a, 'stroke', EDGE);
+      if (whole && dw >= 1 && Math.abs(dw - Math.round(dw)) < 0.01 && !attr(a, 'transform') && tag !== 'circle' && tag !== 'ellipse') {
+        var x = null, y = null;
+        if (tag === 'rect') { x = parseFloat(attr(a, 'x')); y = parseFloat(attr(a, 'y')); }
+        else { var m = /^\s*M\s*(-?[\d.]+)[\s,]+(-?[\d.]+)/.exec(attr(a, 'd') || ''); if (m) { x = parseFloat(m[1]); y = parseFloat(m[2]); } }
+        var tx = nudge(x, dw, k), ty = nudge(y, dw, k);
+        if (tx || ty) a += ' transform="translate(' + num(tx) + ' ' + num(ty) + ')"';
+      }
+      return '<' + tag + a + (close ? '/' : '') + '>';
+    });
+  }
+  // icon.svg(body, size, cls): the <svg> for any 16-grid body (the drawing documents' own icons come through here)
+  // A size just above a whole multiple of 16 device px (18 px small ribbon buttons at 1x: 1.125 px per unit, every line
+  // blurred) is drawn at that multiple and centred on whole pixels instead (16 px inside the 18 px box).
+  function svg(body, size, cls) {
+    size = size || 32;
+    var dpr = ratio(), k = size / 16 * dpr, n = Math.floor(k + 1e-6), inner;
+    if (n >= 1 && k - n > 0.01 && k / n - 1 <= 0.13) {
+      var off = Math.floor((size * dpr - 16 * n) / 2) / k;
+      inner = '<g transform="translate(' + num(off) + ' ' + num(off) + ') scale(' + num(n / k) + ')">' + weigh(body, size * n / k, dpr) + '</g>';
+    } else inner = weigh(body, size, dpr);
+    // the secondary ink (B: sketch points, dimension arrows, a drawing icon's second colour) follows the theme too:
+    // the ink at 70 % (#737373 on the light ribbon, #a5a5a5 on the dark one; a fixed #6d6d6d all but vanished on dark)
+    inner = inner.replace(/(\s)(fill|stroke)="#6d6d6d"/g, '$1$2="currentColor" $2-opacity="' + INK2 + '"')
+      .replace(/(\s)fill="(#fff|#ffffff|#f4f4f4)"/gi, '$1fill="$2" style="fill:var(--icon-paper, var(--panel, #fff))"')
+      .replace(/(\s)fill="#c4c4c4"/gi, '$1fill="currentColor" fill-opacity="0.35"');
+    return '<svg class="ico ' + (cls || '') + '" width="' + size + '" height="' + size + '" viewBox="0 0 16 16" aria-hidden="true" data-wt="1">' + inner + '</svg>';
+  }
+  // rfGZ: optical centring. Whole-unit shifts (so the pixel snapping above still holds) that put each drawing's box
+  // within a unit of the grid's centre: blocks drawn sitting low, strips drawn at the bottom, glyphs drawn to one side.
+  // Measured with getBBox over every icon (the lane's audit); a new icon should be drawn centred instead of added here.
+  var CENTRE = {"cut":[0,-2],"sweep":[0,-1],"fillet":[0,-1],"chamfer":[0,-1],"imported":[0,-1],"shell":[0,-2],"rib":[0,-2],"refgeo":[0,-2],"plane":[0,-1],"planeSmall":[0,-1],"origin":[0,-1],"csys":[0,-1],"refPoint":[0,-1],"instant":[1,0],"instant2D":[0,-1],"sketch":[0,-2],"exitSketch":[0,-1],"parallelLine":[-1,-1],"tangentLine":[0,-2],"tangentCircle":[1,-1],"crect3":[0,-1],"arc3":[0,-1],"tarc":[1,-3],"aslot":[0,-3],"slotLenCC":[0,-3],"slotLenAll":[0,-3],"pellipse":[0,-1],"convert":[0,-2],"sketchPattern":[0,-1],"skChamfer":[0,-1],"moveEnt":[-1,0],"rotateEnt":[-1,3],"stretchEnt":[0,-2],"intersectCurve":[0,-2],"relPattern":[0,-1],"relParallel":[-1,0],"relFix":[0,1],"horizDim":[0,-1],"vertDim":[-1,0],"hem":[0,-4],"jog":[0,-1],"sketchedBend":[0,-1],"breakCorner":[0,-2],"lenOuter":[-1,0],"lenInner":[-1,0],"lenTangent":[-1,0],"hemClosed":[1,0],"hemTeardrop":[1,0],"hemInside":[1,0],"undercut":[0,-1],"perfEval":[0,-2],"convertSM":[0,-2],"formingTool":[0,-2],"fold":[0,-1],"rip":[0,-2],"section":[2,0],"checkSketch":[-1,0],"repairSketch":[-1,0],"undo":[-1,0],"redo":[1,0],"orient":[0,-1],"display":[0,-2],"select":[-1,0],"filter":[0,-1],"part":[0,-1],"body":[0,-1],"folder":[0,-1],"assembly":[0,-1],"insertComponent":[0,-2],"mate":[-1,0],"component":[0,-1],"matesFolder":[0,-1],"moveComponent":[-1,-1],"explode":[0,-1],"explodeStep":[0,-1],"fix":[-1,0],"sketch3dPlane":[0,-2],"eqnCurve":[1,-2],"rapidSketch":[0,-2],"edgeSel":[0,-2],"faceSel":[0,-2],"vertexSel":[0,-2],"weldSymbol":[0,-3],"revisionCloud":[-1,0],"angRunDim":[-1,0],"pathLengthDim":[0,-2],"autodim":[0,2],"tProject":[-1,0],"tMoveOrigin":[0,-1],"tOffsetEntity":[-1,0],"tDistribute":[0,-1],"tScale":[1,0],"vPlanes":[-1,0],"vOrigins":[-1,0],"vSketchDims":[-1,0],"vSnapModel":[0,-1],"boundaryCut":[0,-2],"splitLine":[0,-1],"xyzCurve":[0,-1]};
+  function body(name) {
+    var b = I[name] || I.generic, c = CENTRE[name];
+    return c ? '<g transform="translate(' + c[0] + ' ' + c[1] + ')">' + b + '</g>' : b;
+  }
+  function icon(name, size, cls) { return svg(body(name), size, cls); }
   icon.has = function (name) { return !!I[name]; };
-  // icon.node(name, size) -> a fresh <svg> element cloned from a parsed template (a long FeatureManager tree builds
+  icon.svg = svg;
+  icon.weigh = weigh;
+  icon.strokeClass = strokeClass;
+  icon.names = function () { return Object.keys(I); };
+  icon.raw = function (name) { return I[name] ? body(name) : null; };
+  // node(name, size) -> a fresh <svg> element cloned from a parsed template (a long FeatureManager tree builds
   // hundreds of icons per refresh; cloning is about four times cheaper than parsing the markup every time)
-  var nodeCache = {};
-  icon.node = function (name, size, cls) {
-    var key = name + '|' + (size || 32) + '|' + (cls || '');
-    var t = nodeCache[key];
-    if (!t) {
-      var box = document.createElement('div');
-      box.innerHTML = icon(name, size, cls);
-      t = nodeCache[key] = box.firstChild;
+  function nodeOf(fn) {
+    var cache = {};
+    return function (name, size, cls) {
+      var key = name + '|' + (size || 32) + '|' + (cls || '') + '|' + ratio();
+      var t = cache[key];
+      if (!t) {
+        var box = document.createElement('div');
+        box.innerHTML = fn(name, size, cls);
+        t = cache[key] = box.firstChild;
+      }
+      return t.cloneNode(true);
+    };
+  }
+  icon.node = nodeOf(icon);
+  // rfGZ: drawing-ui.js and drawing-ui-sketch.js wrap the global (`var base = Icons; Icons = function (n, s, c) { …
+  // own icons … else base(n, s, c) }`). `Icons` is an accessor on window: reading it gives a front for the latest
+  // wrapper that weighs any <svg> the wrapper drew itself (not marked data-wt) and keeps has / node / svg / names.
+  var fronts = [];
+  function frontFor(fn) {
+    for (var i = 0; i < fronts.length; i++) if (fronts[i][0] === fn) return fronts[i][1];
+    var f = fn === icon ? icon : function (name, size, cls) {
+      var out = fn(name, size, cls);
+      if (typeof out !== 'string' || out.indexOf('data-wt="1"') >= 0) return out;
+      var m = /^(<svg\b[^>]*?)>([\s\S]*)<\/svg>$/.exec(out);
+      if (!m || m[1].indexOf('viewBox="0 0 16 16"') < 0) return out;
+      var sz = parseFloat((/\swidth="([\d.]+)"/.exec(m[1]) || [])[1]) || 32;
+      return svg(m[2], sz, ((/\sclass="ico ?([^"]*)"/.exec(m[1]) || [])[1] || '').trim());
+    };
+    if (f !== icon) {
+      f.has = function (name) { return fn.has ? fn.has(name) : icon.has(name); };
+      f.svg = svg; f.weigh = weigh; f.strokeClass = strokeClass; f.names = icon.names; f.raw = icon.raw;
+      f.node = nodeOf(f);
     }
-    return t.cloneNode(true);
-  };
-  return icon;
+    fronts.push([fn, f]);
+    return f;
+  }
+  return { icon: icon, frontFor: frontFor };
 })();
+(function (lib) {
+  var current = lib.icon;
+  var g = typeof window !== 'undefined' ? window : this;
+  Object.defineProperty(g, 'Icons', {
+    configurable: true, enumerable: true,
+    get: function () { return lib.frontFor(current); },
+    set: function (fn) { if (typeof fn === 'function') current = fn; }
+  });
+})(IconsLib);

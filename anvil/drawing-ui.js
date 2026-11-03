@@ -67,9 +67,15 @@
   DI.multiJogLeader = '<path d="M9 3 h5 M9 3 L5 7 V10 L2.5 13.5" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M2 14.2 l0.4 -2.5 2 1.4 z" fill="currentColor"/><circle cx="5" cy="7" r="1" fill="#6d6d6d"/><circle cx="5" cy="10" r="1" fill="#6d6d6d"/>';
   // (rfCX) Removed Section: the parent with its cutting line, the hatched cross-section set apart
   DI.removedSection = '<path d="M1.5 2.5 h7 v11 h-7 z" fill="none" stroke="currentColor" stroke-width="1"/><path d="M5 1 v14" stroke="#e0553c" stroke-width="1.2" stroke-dasharray="3 1 1 1"/><path d="M10.5 6 h4 v4 h-4 z" fill="#c4c4c4" stroke="currentColor" stroke-width="1"/><path d="M10.5 9 l3 -3 M11.5 10 l3 -3" stroke="currentColor" stroke-width="0.6"/>';
+  // (rfGZ) optical centring, whole units (see icons.js CENTRE): these were drawn a unit or two off the grid's centre
+  DI.modelItems = '<g transform="translate(-1 0)">' + DI.modelItems + '</g>';
+  DI.bendNote = '<g transform="translate(-2 0)">' + DI.bendNote + '</g>';
+  DI.ordinateDim = '<g transform="translate(0 1)">' + DI.ordinateDim + '</g>';
   var baseIcons = Icons;
+  // icons.js' Icons.svg weighs the strokes for the size shown (rfGZ: 1 px outlines, pixel-snapped), as for every icon
   var wrapped = function (name, size, cls) {
     if (!DI[name]) return baseIcons(name, size, cls);
+    if (baseIcons.svg) return baseIcons.svg(DI[name], size, cls);
     size = size || 32;
     return '<svg class="ico ' + (cls || '') + '" width="' + size + '" height="' + size + '" viewBox="0 0 16 16" aria-hidden="true">' + DI[name] + '</svg>';
   };
