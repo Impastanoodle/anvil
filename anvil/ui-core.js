@@ -1251,7 +1251,7 @@ var UI = (function () {
   function fatVertexShader(kind) {
     return [
       'uniform vec2 resolution;', 'uniform vec2 devRes;', 'uniform float linewidth;', 'uniform float worldPerPx;',
-      'attribute vec3 instanceStart;', 'attribute vec3 instanceEnd;',
+      'attribute vec3 instanceStart;', 'attribute vec3 instanceEnd;', 'attribute vec3 instanceChordStart;', 'attribute vec3 instanceChordEnd;',
       '#ifdef DASHED', 'attribute float instanceDistStart;', 'attribute float instanceDistEnd;', 'varying float vDist;', '#endif',
       '#ifdef SIL', 'uniform vec3 viewDir;', 'attribute vec3 instanceN1;', 'attribute vec3 instanceN2;', '#endif',
       'varying vec2 vPx;', 'varying float vLen;', 'varying float vHw;',
@@ -1268,7 +1268,16 @@ var UI = (function () {
       '  float hw = 0.5 * linewidth;',
       '  bool atA = position.y < 0.5;',
       '  vec4 c = atA ? cA : cB;',
-      '  vec2 off = nrm * position.x * hw + dir * (atA ? -hw : hw);',
+      // rfHG: a true-curve edge (a circle drawn finely over the faces' chords) also covers the sliver between its arc
+      // and the facet chord under it (instanceChord*: the radial foot on the chord; = the point itself for every other
+      // line): that side of the band is widened by the chord's offset across the line (at most 4 px) and takes the
+      // chord's depth there, so the line meets its faces' boundary with no gap of background or face between them and
+      // is never buried by its own faces (the chord lies on them), whatever the GPU's depth precision
+      '  vec4 q = projectionMatrix * (modelViewMatrix * vec4(atA ? instanceChordStart : instanceChordEnd, 1.0));',
+      '  float dq = dot((q.xy / q.w - c.xy / c.w) * hr, nrm);',
+      '  float ext = position.x * dq > 0.0 ? min(abs(dq), 4.0) : 0.0;',
+      '  if (ext > 0.0) c.z = q.z / q.w * c.w;',
+      '  vec2 off = nrm * position.x * (hw + ext) + dir * (atA ? -hw : hw);',
       '  c.xy += off / hr * c.w;',
       // rfHA: a line that runs square to the screen (a Normal To view, a sketch rectangle) is moved by under half a device
       // pixel so it covers whole pixels (even widths centred on a pixel boundary, odd ones on a pixel centre): crisp,
@@ -1279,7 +1288,7 @@ var UI = (function () {
       '  if (abs(dd.y) < 0.05 && abs(dd.x) > 0.5) { float yy = (cA.y / cA.w * 0.5 + 0.5) * devRes.y; c.y += (floor(yy - hp + 0.5) + hp - yy) / devRes.y * 2.0 * c.w; }',
       '  else if (abs(dd.x) < 0.05 && abs(dd.y) > 0.5) { float xx = (cA.x / cA.w * 0.5 + 0.5) * devRes.x; c.x += (floor(xx - hp + 0.5) + hp - xx) / devRes.x * 2.0 * c.w; }',
       '  gl_Position = c;',
-      '  vPx = vec2(position.x * hw, atA ? -hw : L + hw);', '  vLen = L;', '  vHw = hw;',
+      '  vPx = vec2(position.x * (hw + ext), atA ? -hw : L + hw);', '  vLen = L;', '  vHw = hw;',
       '#ifdef DASHED',
       '  float tt = L > 1e-5 ? vPx.y / L : 0.0;',   // extrapolated over the round ends, so dashes keep their pitch across joins
       '  vDist = (instanceDistStart + tt * (instanceDistEnd - instanceDistStart)) / worldPerPx;',
@@ -1365,6 +1374,10 @@ var UI = (function () {
     var ib = new THREE.InstancedInterleavedBuffer(pos.array, stride, 1);
     g.setAttribute('instanceStart', new THREE.InterleavedBufferAttribute(ib, 3, 0));
     g.setAttribute('instanceEnd', new THREE.InterleavedBufferAttribute(ib, 3, 3));
+    // rfHG: the radial foot of each point on its facet chord (buildEdgeGeometry's 'chord'), else the points themselves
+    var ch = src.attributes.chord, cb = ch && ch.count === pos.count && ch.itemSize === 3 ? new THREE.InstancedInterleavedBuffer(ch.array, stride, 1) : ib;
+    g.setAttribute('instanceChordStart', new THREE.InterleavedBufferAttribute(cb, 3, 0));
+    g.setAttribute('instanceChordEnd', new THREE.InterleavedBufferAttribute(cb, 3, 3));
     var count = seg ? Math.floor(pos.count / 2) : pos.count - 1, nb = null;
     if (o.material === silMat || (o.material.userData && o.material.userData.fatSil)) {
       var a1 = src.attributes.n1, a2 = src.attributes.n2;
@@ -1703,10 +1716,44 @@ var UI = (function () {
       if (e.curve != null && App.curves && App.curves[e.curve]) { drawCurve[e.curve] = 1; return; }
       arr.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]);
     });
-    Object.keys(drawCurve).forEach(function (ci) { pushPolyline(arr, App.curves[ci].pts); });
+    var chord = arr.slice();
+    Object.keys(drawCurve).forEach(function (ci) { pushPolyline(arr, App.curves[ci].pts); pushPolyline(chord, curveChordFeet(App.curves[ci])); });
     var g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+    g.setAttribute('chord', new THREE.Float32BufferAttribute(chord, 3));   // rfHG: read by the thick-line shader
     return g;
+  }
+  // rfHG: the radial foot of every point of a true-curve polyline (c.pts) on the facet chord under it (the faces'
+  // boundary): where the ray from the centre through the point crosses that chord's line, in the circle's plane (a
+  // chord split at a T-junction works piece by piece). A point over no chord is its own foot.
+  function curveChordFeet(c) {
+    var C = c.curve, pts = c.pts, xd = C.xdir, yd = V.cross(C.normal, C.xdir), TWO = 2 * Math.PI;
+    function uv(p) { var d = V.sub(p, C.center); return [V.dot(d, xd), V.dot(d, yd)]; }
+    var iv = [];
+    (C.chords || []).forEach(function (ch) {
+      var p0 = uv(ch[0]), p1 = uv(ch[1]), s = Math.atan2(p0[1], p0[0]), d = Math.atan2(p1[1], p1[0]) - s;
+      while (d > Math.PI) d -= TWO;
+      while (d < -Math.PI) d += TWO;
+      if (d < 0) { s = s + d; d = -d; }
+      if (!(d > 1e-9)) return;
+      for (var k = -1; k <= 1; k++) iv.push({ s: s + k * TWO, e: s + d + k * TWO, p0: p0, p1: p1 });
+    });
+    iv.sort(function (u, v) { return u.s - v.s; });
+    return pts.map(function (p) {
+      if (!iv.length) return p;
+      var q = uv(p), a = Math.atan2(q[1], q[0]), lo = 0, hi = iv.length - 1;
+      while (lo < hi) { var mid = (lo + hi + 1) >> 1; if (iv[mid].s <= a) lo = mid; else hi = mid - 1; }   // last chord starting at or before a
+      for (var j = lo; j >= 0 && j >= lo - 2; j--) {
+        var u = iv[j];
+        if (a < u.s - 1e-9 || a > u.e + 1e-9) continue;
+        var ex = u.p1[0] - u.p0[0], ey = u.p1[1] - u.p0[1], ca = Math.cos(a), sa = Math.sin(a), den = ca * ey - sa * ex;
+        if (Math.abs(den) < 1e-12) return p;
+        var t = (u.p0[0] * ey - u.p0[1] * ex) / den, r = Math.hypot(q[0], q[1]);   // ray t·(cos a, sin a) meets the chord's line
+        if (!(t > 0) || !(r > 0) || t > r * (1 + 1e-9)) return p;
+        return V.add(C.center, V.scale(V.sub(p, C.center), t / r));
+      }
+      return p;
+    });
   }
 
   // UI.setBodyHidden(index, hidden): viewport-only; rebuilds the drawn geometry from the visible faces.
