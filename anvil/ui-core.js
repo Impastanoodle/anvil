@@ -2787,7 +2787,9 @@ var UI = (function () {
     camera.near = lo - pad; camera.far = hi + pad;
     camera.updateProjectionMatrix();
   }
-  function render(sig) {
+  // rfHD: { draw(info) -> true when it drew the frame, idle(now) -> true when it wants a still pass } (ui-render-fx.js)
+  var renderHooks = { draw: null, idle: null };
+  function render(sig, mode) {
     updateGrid();
     syncFatLines(scene);   // r13/lines13: thick lines follow their line objects (before the signature: new children count)
     if (typeof sig !== 'string') sig = sceneSignature();
@@ -2806,7 +2808,10 @@ var UI = (function () {
     silMat.uniforms.viewDir.value.copy(dir);
     syncFatFrame();
     renderer.clear();
-    renderer.render(scene, camera);
+    // rfHD: ui-render-fx.js draws the frame itself (ambient occlusion, floor shadow, still-view smoothing) when it
+    // returns true; mode 'plain' (UI.render(): tests, anvil.png) only tells it a plain frame is on screen
+    var fxHook = renderHooks.draw;
+    if (!fxHook || !fxHook({ mode: mode || 'plain', sig: sig, moving: !!pose || !!zoomMomentum.pending })) renderer.render(scene, camera);
     // back to the logical camera with the fixed depth range (picking, worldToScreen and scripts use it)
     poseCamera(cam.target, cam.dir, cam.up, cam.scale);
     drawTriad(right, up, dir);
@@ -2857,7 +2862,8 @@ var UI = (function () {
       return;
     }
     App.holdCam = null;
-    if (needsRender || viewAnim || zoomMomentum.pending || App.gridStale || now - lastRenderAt > 1000 || sceneSignature() !== lastSig) render();
+    if (needsRender || viewAnim || zoomMomentum.pending || App.gridStale || now - lastRenderAt > 1000 || sceneSignature() !== lastSig) render(undefined, 'auto');
+    else if (renderHooks.idle && renderHooks.idle(now)) render(lastSig, 'still');   // rfHD: the view is still
     else if (UI.drawDims && App.dimsStale) { App.dimsStale = false; UI.drawDims(); }
   }
   function frame(now) {
@@ -3714,7 +3720,7 @@ var UI = (function () {
     sketchOverlayHooks: sketchOverlayHooks, tempEntityHooks: tempEntityHooks, sketchOverlayObjects: sketchOverlayObjects, tempEntitiesShown: tempEntitiesShown,   // sketch-hooks
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickRefGeo: pickRefGeo, updateRefGeo: updateRefGeo, drawRefGeo: drawRefGeo, pickEntity: pickEntity, pickEntityDist: pickEntityDist, pickEdge: pickEdge,
-    lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame, tick: tick, thickLines: thickLines, LINE_W: LINE_W, requestRender: requestRender,
+    lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, renderHooks: renderHooks, frame: frame, tick: tick, thickLines: thickLines, LINE_W: LINE_W, requestRender: requestRender,
     // view transitions and smooth zoom (see "view animation")
     finishViewAnimation: finishViewAnimation, viewAnimating: viewAnimating, viewPose: viewPose, wheelZoom: wheelZoom, zoomToArea: zoomToArea,
     camVersion: function () { return camVer; },

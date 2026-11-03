@@ -1457,7 +1457,8 @@
         { label: 'Sketch Grid', checked: v.showGrid, action: function () { v.showGrid = !v.showGrid; App.gridStale = true; } },
         { label: 'Sketch Regions', checked: v.sketchRegions !== false, action: toggleSketchRegions },   // sketch-layers
         { label: 'Snap to Model', checked: v.snapModel !== false, action: function () { v.snapModel = v.snapModel === false; UI.setStatus(v.snapModel ? 'Sketch points snap to model vertices, edges, centres and faces.' : 'Sketch points snap to sketch geometry only.'); } },   // p9-modelsnap
-        { label: 'Display ▸ Show Endpoints', icon: 'showEndpoints', checked: v.showEndpoints !== false, action: function () { toggleShowEndpoints(); } },   // lane BS
+        { label: 'Display ▸ Show Endpoints', icon: 'showEndpoints', checked: v.showEndpoints !== false, action: function () { toggleShowEndpoints(); } }   // lane BS
+      ].concat(UI.depthFxMenuItems ? UI.depthFxMenuItems('Display ▸ ') : [], [   // rfHD: RealView, Shadows In Shaded Mode, Ambient Occlusion
         { label: 'Sketch Dimensions', checked: v.showDims, action: function () { v.showDims = !v.showDims; App.dimsStale = true; UI.setStatus(v.showDims ? 'Driven dimensions shown on every sketch entity. Click a value to change it.' : 'Only placed dimensions are shown.'); } },
         { label: 'Section View', checked: !!v.section, action: UI.cmdSection },
         { sep: true },
@@ -1467,7 +1468,7 @@
         { label: 'Background ▸ Gradient', checked: v.bg === 'gradient', action: function () { setBg('gradient'); } },
         { label: 'Background ▸ Plain', checked: v.bg === 'plain', action: function () { setBg('plain'); } },
         { label: 'Background ▸ Dark', checked: v.bg === 'dark', action: function () { setBg('dark'); } }
-      ] },
+      ]) },
       { label: 'Insert', items: isAsm() ? [
         { label: 'Component ▸ Existing Part…', action: function () { UI.cmdInsertComponent(); } },
         { label: 'Mate…', action: function () { UI.cmdMate(); } }
@@ -1814,12 +1815,13 @@
     dd('appearance', 'Edit Appearance', function () { return [{ label: 'Edit Appearance…', action: function () { UI.openTaskPane('appearance'); } }]; });
     dd('scene', 'Apply Scene', function () { return [['gradient', 'Gradient'], ['plain', 'Plain'], ['dark', 'Dark']].map(function (s) { return { label: s[1], checked: App.view.bg === s[0], action: function () { setBg(s[0]); } }; }); });
     btn('showEndpoints', 'Show Endpoints — Show or hide the end-point dots of sketch entities', function () { toggleShowEndpoints(); }, function () { return App.view.showEndpoints !== false; });   // lane BS
-    dd('settings', 'View Settings', function () { return [
+    // rfHD: SolidWorks' View Settings flyout starts with RealView Graphics, Shadows In Shaded Mode, Ambient Occlusion
+    dd('settings', 'View Settings', function () { return (UI.depthFxMenuItems ? UI.depthFxMenuItems().concat([{ sep: true }]) : []).concat([
       { label: 'Options…', action: function () { UI.openTaskPane('props'); } },
       { sep: true },
       { label: 'Light Theme', checked: !!UI.theme && UI.theme() === 'light', action: function () { UI.setTheme('light'); } },
       { label: 'Dark Theme', checked: !!UI.theme && UI.theme() === 'dark', action: function () { UI.setTheme('dark'); } }
-    ]; });
+    ]); });
   }
   UI.HUD_ORDER = ['Zoom to Fit', 'Zoom to Area', 'Previous View', 'Section View', 'Dynamic Annotation Views', 'View Orientation', 'Display Style', 'Hide/Show Items', 'Edit Appearance', 'Apply Scene', 'Show Endpoints', 'View Settings'];
   // Space (ui-app.js): the View Orientation menu at the mouse pointer when it is over the graphics area, else under
