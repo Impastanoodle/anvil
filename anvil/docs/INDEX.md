@@ -3346,27 +3346,30 @@ more: setDriven L416, relHighlight L526, hoverRelation L543, restoreDims L764, a
 more: constrainAllOpts L1004, constrainAllPreview L1007, cmdConstrainAllPM L1019, itemLabel L1061,
 more: xpertShow L1062
 
-## ui-render-fx.js (426 lines)
+## ui-render-fx.js (681 lines)
 > rfHD depth effects, drawn only while the view is still (SolidWorks: View Settings ▸ Ambient
-withClear  L62  — targets of our own clear to transparent black, whatever the app's clear colour is
-solidMeshes  L172  — the shaded solid on screen: the part (with its crack filler) or the flat pattern; [] …
-applicable  L184  — what applies now: null for a plain frame
-withSolidLayer  L212  — runs fn with the solids on their own layer (lights on both), so a pass can draw the …
-drawFloor  L285  — the floor shadow fades out as the view turns to look along the floor or up at it
-drawFrame  L294  — one frame of the still view into dest (null = the canvas, already cleared by render())
-movingFrame  L333  — a moving frame: the plain scene, with the floor shadow already worked out for this model …
-UI.setAmbientOcclusion  L391
-UI.ambientOcclusion  L392
-UI.setShadows  L393
-UI.shadows  L394
-UI.setStillSmoothing  L395
-UI.stillSmoothing  L396
-UI.renderStill  L399  — UI.renderStill(samples?): the still pass now, synchronously (tests, timing): AO, shadow …
-UI.depthFxMenuItems  L413  — the menus' rows (Heads-up View Settings flyout, View menu ▸ Display), SolidWorks' names; …
-UI.renderFx  L421
-more: stored L33, shader L48, pass L53, rt L54, ensureTargets L151, shadowTargets L169, viewKey L195,
-more: bodyKey L200, solidBox L206, computeAO L225, computeShadow L253, blitAcc L310, stillFrame L311, draw L341,
-more: idle L368, setFx L382
+withClear  L68  — targets of our own clear to transparent black, whatever the app's clear colour is
+rvOnNow  L335  — RealView held back for one frame: the solids on their Phong materials (mats.part keeps …
+solidMeshes  L373  — the shaded solid on screen: the part (with its crack filler) or the flat pattern; [] …
+applicable  L386  — what applies now: null for a plain frame. ao is false, 'full' or 'half'; samples = …
+withSolidLayer  L417  — runs fn with the solids on their own layer (lights on both), so a pass can draw the …
+drawFloor  L496  — the floor fades out as the view turns to look along the floor or up at it
+drawFrame  L507  — one frame of the still view into dest (null = the canvas, already cleared by render())
+stillFrame  L525  — -> what the frame did, for the governor: { kind: 'first' | 'sample', ao: quality worked …
+movingFrame  L554  — a moving frame: the plain scene, with the floor already worked out for this model …
+rvAuto  L567  — RealView's default (no choice stored by the user) is on everywhere outside the test …
+UI.setAmbientOcclusion  L641
+UI.ambientOcclusion  L642
+UI.setShadows  L643
+UI.shadows  L644
+UI.setStillSmoothing  L645
+UI.stillSmoothing  L646
+UI.renderStill  L650  — UI.renderStill(samples?): the still pass now, synchronously (tests, timing), at the …
+UI.depthFxMenuItems  L664  — the menus' rows (Heads-up View Settings flyout, View menu ▸ Display), SolidWorks' names; …
+UI.renderFx  L673
+more: stored L39, shader L54, pass L59, rt L60, frameStamp L324, measure L325, withRv L336, freeT L346,
+more: ensureTargets L347, shadowTargets L370, viewKey L400, bodyKey L405, solidBox L411, computeAO L430,
+more: computeShadow L459, blitAcc L523, draw L575, idle L619, setFx L632
 
 ## ui-select.js (1988 lines)
 > selection: the Selection Filter toolbar (F5), box selection (window / crossing) in parts, sketches and

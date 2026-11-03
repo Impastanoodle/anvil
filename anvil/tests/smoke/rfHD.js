@@ -125,7 +125,10 @@
       var u0 = rfHDAt(off, under), u1 = rfHDAt(on, under), f0 = rfHDAt(off, far), f1 = rfHDAt(on, far), b0 = rfHDPx(off, bg[0], bg[1]), b1 = rfHDPx(on, bg[0], bg[1]);
       var msg = 'under alpha ' + u0[3] + ' -> ' + u1[3] + ', far ' + f0[3] + ' -> ' + f1[3] + ', background ' + b0[3] + ' -> ' + b1[3];
       assert(u0[3] === 0, 'no paint on the floor without shadows: ' + msg);
-      assert(u1[3] - u0[3] >= 25 && rfHDLum(u1) < 8, 'a dark shadow just under the part: ' + msg + ' rgb ' + u1.slice(0, 3).join(','));
+      // rfHE (2026-11-03): the floor round the part is now lit (a lighter glow the shadow darkens), so the shadow's
+      // premultiplied colour is that floor's light times (1 - shadow), no longer black (was < 8); rfHE checks the
+      // shadow reads darker than the floor round it
+      assert(u1[3] - u0[3] >= 25 && rfHDLum(u1) < 24, 'a dark shadow just under the part: ' + msg + ' rgb ' + u1.slice(0, 3).join(','));
       assert(Math.abs(f1[3] - f0[3]) <= 3, 'the floor far from the part is clear: ' + msg);
       assert(b0.join(',') === b1.join(','), 'the background elsewhere is unchanged: ' + msg);
       UI.setStyle('hlr'); await wait(30);
