@@ -89,4 +89,79 @@
       assert(start.length + end.length === drawn.length, (drawn.length - start.length - end.length) + ' edges drawn off the rims');
       return 'start rim ' + start.length + ', end rim ' + end.length;
     });
+
+    // STEP: the funnel's side is one closed B-spline face (exchange.js splineLoftOf joins loftPatches' quarters with
+    // K._.joinLoftPatches, as occt-kernel.js loftTool does): 3 faces; Anvil's reader takes it back closed at the volume
+    function rfHLStepVolume(s) {
+      var P = s.positions, T = s.triangles, v = 0;
+      for (var i = 0; i < T.length; i += 3) {
+        var a = T[i] * 3, b = T[i + 1] * 3, c = T[i + 2] * 3;
+        v += (P[a] * (P[b + 1] * P[c + 2] - P[b + 2] * P[c + 1]) - P[a + 1] * (P[b] * P[c + 2] - P[b + 2] * P[c]) + P[a + 2] * (P[b] * P[c + 1] - P[b + 1] * P[c])) / 6;
+      }
+      return v;
+    }
+    function rfHLOpen(s) {
+      var P = s.positions, T = s.triangles, use = {}, bad = 0;
+      function key(i) { return Math.round(P[i * 3] * 1e7) + ',' + Math.round(P[i * 3 + 1] * 1e7) + ',' + Math.round(P[i * 3 + 2] * 1e7); }
+      for (var t = 0; t < T.length; t += 3) for (var e = 0; e < 3; e++) {
+        var a = key(T[t + e]), b = key(T[t + (e + 1) % 3]);
+        if (a !== b) use[a + '>' + b] = (use[a + '>' + b] || 0) + 1;
+      }
+      Object.keys(use).forEach(function (k) { var ab = k.split('>'); if (use[k] !== 1 || use[ab[1] + '>' + ab[0]] !== 1) bad++; });
+      return bad;
+    }
+    test('rfHL: the Trumpet Funnel goes to STEP as ONE closed B-spline side face and two planes (3 faces, as SolidWorks and OpenCascade); it reads back closed at the part\'s volume', function () {
+      var r = build(FUNNEL + 'p.loft([a, b, c]);'), step = Exchange.exportSTEP(r.model, r.build), back = Exchange.importFile('funnel.step', step, { units: 'in' });
+      assert((step.match(/B_SPLINE_SURFACE_WITH_KNOTS/g) || []).length === 1, 'B-spline faces ' + (step.match(/B_SPLINE_SURFACE_WITH_KNOTS/g) || []).length);
+      assert((step.match(/=ADVANCED_FACE/g) || []).length === 3 && (step.match(/=PLANE\(/g) || []).length === 2, 'faces');
+      assert(back.solids.length === 1 && !back.warnings.length, 'solids ' + back.solids.length + ' ' + back.warnings);
+      assert(rfHLOpen(back.solids[0]) === 0, 'open edges ' + rfHLOpen(back.solids[0]));
+      nearRel(rfHLStepVolume(back.solids[0]), r.mp.volume, 3e-5, 'volume read back');
+      // the joined patch: closed in u (last pole row = first), the quarters' knots kept (mult 3 at the joins)
+      var one = K._.joinLoftPatches(K._.loftPatches(rfHLSecs(r)).faces);
+      assert(one && one.closed && one.poles[one.poles.length - 1] === one.poles[0], 'closed patch');
+      assert(one.uMults.join() === [4, 3, 3, 3, 4].join() || one.uMults.filter(function (x) { return x === 3; }).length >= 3, 'join knots ' + one.uMults.join());
+      return step.length + ' bytes, volume ' + rfHLStepVolume(back.solids[0]).toFixed(6);
+    });
+    // meshFromBody on face-tagged triangles (OpenCascade's toBodies): a curved B-rep face groups only edge-connected,
+    // exactly coplanar triangles; a flat one keeps the loose grouping (its edge nodes may sit 1e-7 off the plane)
+    function rfHLTri(a, b, c, face) {
+      var pg = CSG.Polygon.tryCreate([a, b, c].map(function (p) { return new CSG.Vertex(new CSG.Vector(p[0], p[1], p[2])); }), 1);
+      pg.face = face;
+      return pg;
+    }
+    test('rfHL: meshFromBody keeps two coplanar triangles of one curved B-rep face that only share a corner apart (it joined them into a bow tie whose outline lost points and drew stray diagonals), joins edge-sharing coplanar ones, and keeps a flat face whole', function () {
+      var polys = [
+        rfHLTri([0, 0, 0], [1, 0, 0], [0, 1, 0], 7), rfHLTri([1, 0, 0], [2, 0, 0], [2, 1, 0], 7),   // coplanar, one shared corner
+        rfHLTri([0, 1, 0], [1, 0, 0], [1, 1, 0.0123], 7),                                         // between them, tilted: face 7 is curved
+        rfHLTri([2, 0, 0], [3, 0, 0], [2, 1, 0], 7),                                              // shares an edge with the second: joined
+        rfHLTri([0, 0, 5], [1, 0, 5], [1, 1, 5 + 1e-7], 8), rfHLTri([0, 0, 5], [1, 1, 5 + 1e-7], [0, 1, 5], 8)   // a flat face, a node 1e-7 off
+      ];
+      var m = K.meshFromBody(CSG.fromPolygons(polys)), f7 = m.faces.filter(function (f) { return f.polys[0].face === 7; }), f8 = m.faces.filter(function (f) { return f.polys[0].face === 8; });
+      assert(f7.length === 3, 'curved face: ' + f7.length + ' mesh faces (want 3: the corner-sharing pair apart, the edge-sharing pair joined)');
+      assert(f7.some(function (f) { return f.polys.length === 2; }), 'the edge-sharing pair joined');
+      assert(f8.length === 1 && f8[0].polys.length === 2, 'flat face kept whole: ' + f8.length);
+      // every outline keeps its triangles' own corners (nothing re-projected)
+      m.faces.forEach(function (f, i) {
+        var o = K.faceOutline(m, i), pts = [];
+        f.polys.forEach(function (p) { p.vertices.forEach(function (v) { pts.push([v.pos.x, v.pos.y, v.pos.z]); }); });
+        o.loops.forEach(function (l) { l.forEach(function (q) { var p = K.to3D(o.plane, q[0], q[1]); assert(pts.some(function (w) { return Math.hypot(w[0] - p[0], w[1] - p[1], w[2] - p[2]) < 1e-6; }), 'outline point moved: ' + JSON.stringify(p)); }); });
+      });
+    });
+    test('rfHL: a square-to-round transition (6 × 6 square to Ø3 circle over 4 in) on Anvil\'s kernel: no open / T-junction edges and no drawn edge off the four corner rulings (the loose plane grouping joined nearly flat facets and drew 56 stray lines)', function () {
+      var r = build(U + 'var a = p.sketch("Top").centerRect(0, 0, 6, 6).id();\nvar b = p.sketch("Top", 4).circle(0, 0, 1.5).id();\np.loft([a, b]);\n');
+      assert(!Object.keys(r.errors).length, JSON.stringify(r.errors));
+      var E = K.bodyEdges(r.mesh), open = E.filter(function (e) { return e.faces.length !== 2; });
+      assert(!open.length, open.length + ' edges with one face, first ' + (open[0] && JSON.stringify([open[0].a, open[0].b])));
+      var off = rfHLDrawn(r, [0, 4]).filter(function (e) { return Math.abs(Math.abs(e.a[0]) - Math.abs(e.a[2])) > 1e-6 || Math.abs(Math.abs(e.b[0]) - Math.abs(e.b[2])) > 1e-6; });
+      assert(!off.length, off.length + ' drawn edges off the corner rulings, first ' + (off[0] && JSON.stringify([off[0].a, off[0].b])));
+      // every mesh face is flat: no vertex off its plane by more than 1e-9 of the size
+      r.mesh.faces.forEach(function (f) {
+        f.polys.forEach(function (p) { p.vertices.forEach(function (v) { near(f.normal[0] * v.pos.x + f.normal[1] * v.pos.y + f.normal[2] * v.pos.z, f.w, 1e-8, 'face flatness'); }); });
+      });
+    });
+    test('rfHL: a loft through squares still goes to STEP as four B-spline faces (corners are real edges): joinLoftPatches is only for full circles', function () {
+      var r = build(SQUARES + 'p.loft([a, b, c]);'), step = Exchange.exportSTEP(r.model, r.build);
+      assert((step.match(/B_SPLINE_SURFACE_WITH_KNOTS/g) || []).length === 4, 'B-spline faces');
+    });
   })();

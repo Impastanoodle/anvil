@@ -56,15 +56,92 @@
   // Coplanar polygons make one face, but only within one body: the body tag (polygon.body, from combineBodies; 0 when
   // untagged) is part of the grouping key, and each face records it as `face.body`. r10/asmfaces10: so is the
   // assembly part tag (polygon.part, assembly.js), so coplanar faces of two parts in a sub-assembly stay apart (`face.part`).
+  // rfHL: the B-rep faces (polygon.face tags, OpenCascade's solid) that are NOT flat within the clustering tolerance:
+  // { tag: true } for every tag whose polygons' normals or vertices leave the first polygon's plane by more than
+  // PLANE_COS / tol. Their polygons are grouped only when coplanar and edge-connected (edgeComponents), never through
+  // the loose test: a nearly flat stretch of a loft side grouped two triangles that share only a corner (normals 1e-3 rad
+  // apart, offsets at the origin within tol), and faceOutline re-projected the second onto the first's plane, moving its
+  // far corner ~1e-3; its edges then paired with nothing and drew as diagonal stray lines across the face.
+  function curvedFaceTags(polys, tol, tagOf) {
+    var ref = {}, curved = {};
+    polys.forEach(function (p) {
+      if (p.face == null) return;
+      var t = tagOf(p);
+      if (curved[t]) return;
+      var r = ref[t];
+      if (!r) { ref[t] = p.plane; return; }
+      var n = r.normal, q = p.plane.normal;
+      if (n.x * q.x + n.y * q.y + n.z * q.z < PLANE_COS) { curved[t] = true; return; }
+      for (var i = 0; i < p.vertices.length; i++) {
+        var v = p.vertices[i].pos;
+        if (Math.abs(n.x * v.x + n.y * v.y + n.z * v.z - r.w) > tol) { curved[t] = true; return; }
+      }
+    });
+    return curved;
+  }
+  // edgeComponents(polys, tol) -> [[polygon]]: polys split into groups that are joined through shared EDGES (both ends,
+  // exact coordinates: neighbours share their vertices; a shared corner alone would make a bow tie faceOutline cannot
+  // trace) between coplanar polygons (normals within EXACT_COS, every vertex of each within tol of the other's plane:
+  // the two triangles of a cylinder's facet, a strip of a ruled loft side). Groups keep the polygons' order.
+  var EXACT_COS = Math.cos(1e-6);
+  function edgeComponents(polys, tol) {
+    var parent = polys.map(function (p, i) { return i; }), owner = {};
+    function find(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+    function onPlane(pl, p) {
+      for (var k = 0; k < p.vertices.length; k++) { var v = p.vertices[k].pos; if (Math.abs(pl.normal.x * v.x + pl.normal.y * v.y + pl.normal.z * v.z - pl.w) > tol) return false; }
+      return true;
+    }
+    function coplanar(a, b) {
+      var n = a.plane.normal, q = b.plane.normal;
+      return n.x * q.x + n.y * q.y + n.z * q.z >= EXACT_COS && onPlane(a.plane, b) && onPlane(b.plane, a);
+    }
+    function vkey(v) { return v.x + ',' + v.y + ',' + v.z; }
+    polys.forEach(function (p, i) {
+      var vs = p.vertices;
+      for (var k = 0; k < vs.length; k++) {
+        var a = vkey(vs[k].pos), b = vkey(vs[(k + 1) % vs.length].pos), ek = a < b ? a + '|' + b : b + '|' + a;
+        var j = owner[ek];
+        if (j == null) { owner[ek] = i; continue; }
+        if (coplanar(polys[j], p)) { var ra = find(i), rb = find(j); if (ra !== rb) parent[ra] = rb; }
+      }
+    });
+    var byRoot = {}, out = [];
+    polys.forEach(function (p, i) { var r = find(i); if (!byRoot[r]) out.push(byRoot[r] = []); byRoot[r].push(p); });
+    return out;
+  }
+  // the largest distance of a group's vertices from its plane
+  function groupDeviation(g) {
+    var n = g.plane.normal, w = g.plane.w, d = 0;
+    g.polys.forEach(function (p) { p.vertices.forEach(function (v) { d = Math.max(d, Math.abs(n.x * v.pos.x + n.y * v.pos.y + n.z * v.pos.z - w)); }); });
+    return d;
+  }
   function meshFromBody(body) {
     if (!body) return { positions: new Float32Array(0), normals: new Float32Array(0), faces: [], triCount: 0 };
-    var clusters = planeClusters(planeTol(bodyDiag(body.polygons))), order = [];
+    var diag = bodyDiag(body.polygons), ptol = planeTol(diag), clusters = planeClusters(ptol), order = [];
+    function tagOf(p) { return (p.body || 0) + (p.face != null ? '|f' + p.face : '') + (p.part != null ? '|p' + p.part : '') + (p.surf && p.surf.s && p.surf.s.w != null ? '|w' + p.surf.s.w : ''); }   // OpenCascade faces / assembly parts stay apart
+    // rfHL: groups that are not flat are split into edge-connected, coplanar pieces. Flat faces (every example part's
+    // planar faces: within 3e-10 of their plane, 2e-12 of the size) stay as they were; what the loose test wrongly joined
+    // (the facets of a nearly flat stretch of a loft: 1e-6 .. 8e-4 off) does not, nor does any group of a curved B-rep face
+    var curved = curvedFaceTags(body.polygons, ptol, tagOf), flatTol = Math.max(1e-12, 1e-9 * diag), byTag = {};
     body.polygons.forEach(function (p) {
-      var bi = p.body || 0, tag = bi + (p.face != null ? '|f' + p.face : '') + (p.part != null ? '|p' + p.part : '') + (p.surf && p.surf.s && p.surf.s.w != null ? '|w' + p.surf.s.w : '');   // OpenCascade faces / assembly parts stay apart
+      var bi = p.body || 0, tag = tagOf(p);
+      if (curved[tag]) {   // a curved B-rep face: split below, all of it
+        var ct = byTag[tag];
+        if (!ct) { ct = byTag[tag] = { polys: [], plane: p.plane, body: bi, part: p.part, curved: true }; order.push(ct); }
+        ct.polys.push(p);
+        return;
+      }
       var c = clusters.find(p.plane, tag);
       if (!c) { c = clusters.add(p.plane, tag, { polys: [], plane: p.plane, body: bi, part: p.part }); order.push(c.value); }
       c.value.polys.push(p);
     });
+    var split = [];
+    order.forEach(function (g) {
+      // a flat B-rep face (OpenCascade) stays whole however its edge nodes sit (up to the edges' tolerance off its plane)
+      if (g.polys.length < 2 || (!g.curved && (g.polys[0].face != null || groupDeviation(g) <= 1e-8 * diag + 1e-12))) { split.push(g); return; }
+      edgeComponents(g.polys, flatTol * (g.curved ? 1 : 10)).forEach(function (ps) { split.push({ polys: ps, plane: ps[0].plane, body: g.body, part: g.part }); });
+    });
+    order = split;
     var tris = [];
     var faces = [];
     order.forEach(function (g) {

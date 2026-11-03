@@ -61,11 +61,11 @@
       return pairs.length + ' tangent face pairs, ' + tEdges + ' mesh edges on tangent seams (never drawn), ' + d.all.length + ' rim edges';
     } finally { anvil.occt(was, { remember: false }); await idle(); }
   });
-  step('rfHL: a loft through three squares keeps its four corner edges drawn the whole height on both kernels (no tangent pairs on OpenCascade)', async function () {
+  step('rfHL: a loft through three squares keeps its four corner edges drawn the whole height on both kernels and draws nothing else on its sides (no tangent pairs, no diagonals on OpenCascade)', async function () {
     var was = anvil.occt().on;
-    // drawn height along each corner line (|x| = |z|); edges elsewhere on the sides are counted, not failed: on
-    // OpenCascade's mesh Kernel.meshFromBody joins nearly coplanar triangles of one B-rep face that only share a corner
-    // and re-projects them, so a few of their edges stop pairing up and draw (kernel-mesh.js, outside this lane)
+    // drawn height along each corner line (|x| = |z|), and the edges drawn elsewhere on the sides: on OpenCascade's mesh
+    // Kernel.meshFromBody used to join nearly coplanar triangles of one B-rep face that only share a corner and
+    // re-project them, so 68 of their edges stopped pairing up and drew as diagonals (fixed: rfHL coplanarComponents)
     function heights(who) {
       var h = {}, stray = 0;
       rfHLDrawn().off.forEach(function (e) {
@@ -83,7 +83,28 @@
       if (!await rfHLRun(RFHL_SQUARES, true)) return 'Anvil only (OpenCascade not installed)';
       assert(!Object.keys(UI.App.build.occt.tangent || {}).length, 'no tangent pairs: ' + Object.keys(UI.App.build.occt.tangent || {}).join(' '));
       var so = heights('OpenCascade');
-      return 'corners drawn on both kernels; OpenCascade ' + so + ' edges off the corners (meshFromBody regrouping, known)';
+      assert(!so, 'OpenCascade: ' + so + ' edges drawn off the corners');
+      return 'corners drawn on both kernels, nothing else';
+    } finally { anvil.occt(was, { remember: false }); await idle(); }
+  });
+  step('rfHL: a square-to-round transition (6 × 6 square to Ø3 circle, 4 in) draws no diagonal lines on its sides on either kernel: only the rims and the four corner-to-circle edges', async function () {
+    var was = anvil.occt().on, notes = [];
+    try {
+      for (var pass = 0; pass < 2; pass++) {
+        if (!await rfHLRun(RFHL_U + 'var a = p.sketch("Top").centerRect(0, 0, 6, 6).id();\nvar b = p.sketch("Top", 4).circle(0, 0, 1.5).id();\np.loft([a, b]);\n', pass === 1)) { notes.push('OpenCascade not installed'); break; }
+        var who = pass ? 'OpenCascade' : 'Anvil', m = UI.App.mesh, d = rfHLDrawn();
+        // open / T-junction edges are what drew as stray diagonals
+        var open = UI.App.edges.filter(function (e) { return e.faces.length !== 2; }).length;
+        assert(!open, who + ': ' + open + ' edges with one face');
+        // every side edge drawn runs from a square corner (|x| = |z| = 3 at y 0) to the circle (r 1.5 at y 4)
+        var bad = d.off.filter(function (e) {
+          var lo = e.a[1] < e.b[1] ? e.a : e.b, hi = lo === e.a ? e.b : e.a;   // on a ruling from a corner to the circle's 45° point
+          return !(Math.abs(Math.abs(lo[0]) - Math.abs(lo[2])) < 1e-3 && Math.abs(Math.abs(hi[0]) - Math.abs(hi[2])) < 1e-3);
+        });
+        assert(!bad.length, who + ': ' + bad.length + ' side edges off the corner rulings, first ' + (bad[0] && JSON.stringify([bad[0].a, bad[0].b])));
+        notes.push(who + ' ' + d.off.length + ' corner edges, ' + m.faces.length + ' mesh faces');
+      }
+      return notes.join('; ');
     } finally { anvil.occt(was, { remember: false }); await idle(); }
   });
   // ---- rfHL tangent edges (user: "add lines in anvil's shaded with lines visible mode", a SolidWorks Shaded With Edges

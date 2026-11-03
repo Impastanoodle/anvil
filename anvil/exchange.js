@@ -1309,7 +1309,11 @@ var Exchange = (function () {
         return { plane: pl, loop: o, prof: prof, pts: o.pts.map(function (p) { return K.to3D(pl, p[0], p[1]); }) };
       }));
       if (!pa || pa.ruled) return null;
-      var faces = pa.faces, n = faces.length, info = loftShellInfo(faces), vol = src.body.volume(), diag = len(sub(info.hi, info.lo));
+      // rfHL: a loft through full circles is ONE closed side face (as SolidWorks and occt-kernel.js loftTool make it):
+      // writeLoftBrep then has one rim edge per cap (closed, one vertex) and one seam edge the face uses both ways
+      var faces = pa.faces;
+      if (pa.smooth && K._.joinLoftPatches) { var one = K._.joinLoftPatches(faces); if (one) faces = [one]; }
+      var n = faces.length, info = loftShellInfo(faces), vol = src.body.volume(), diag = len(sub(info.hi, info.lo));
       if (Math.abs(Math.abs(info.volume) - vol) > 1e-4 * vol) return null;
       for (var k = 0; k < 3; k++) {
         var mn = Infinity, mx = -Infinity;

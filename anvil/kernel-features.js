@@ -833,6 +833,30 @@
     // rfHL: smooth = the pieces meet tangent all round (every section one full circle): one side face in SolidWorks
     return { faces: faces, smooth: !!stack.smooth };
   }
+  // rfHL: loftPatches' pieces joined end to end in u into ONE closed B-spline patch (the side of a loft through full
+  // circles is one face in SolidWorks): knots at the joins keep multiplicity 3, so the surface is the same point for
+  // point; the last pole row IS the first one (closed in u, a seam edge where it meets itself). Used by occt-kernel.js
+  // loftTool and exchange.js splineLoftOf. null when the pieces do not fit together (rational, other v knots, a gap).
+  function joinLoftPatches(list) {
+    if (!list || !list.length || list.some(function (pa) { return pa.weights || pa.degV !== list[0].degV || pa.vKnots.join() !== list[0].vKnots.join() || pa.vMults.join() !== list[0].vMults.join(); })) return null;
+    var poles = [], uKnots = [0], uMults = [4], span = 0, tol = 0;
+    list[0].poles[0].forEach(function (q) { tol = Math.max(tol, Math.abs(q[0]), Math.abs(q[1]), Math.abs(q[2])); });
+    tol = 1e-9 * Math.max(1, tol);
+    function same(r1, r2) { return r1.length === r2.length && r1.every(function (q, b) { var w = r2[b]; return Math.abs(q[0] - w[0]) <= tol && Math.abs(q[1] - w[1]) <= tol && Math.abs(q[2] - w[2]) <= tol; }); }
+    for (var j = 0; j < list.length; j++) {
+      var pa = list[j];
+      if (j > 0 && !same(poles[poles.length - 1], pa.poles[0])) return null;
+      pa.poles.forEach(function (row, a) { if (j === 0 || a > 0) poles.push(row); });
+      for (var k = 1; k < pa.uKnots.length; k++) {
+        uKnots.push(span + pa.uKnots[k]);
+        uMults.push(k === pa.uKnots.length - 1 ? (j === list.length - 1 ? 4 : 3) : pa.uMults[k]);
+      }
+      span += pa.uKnots[pa.uKnots.length - 1];
+    }
+    if (!same(poles[poles.length - 1], poles[0])) return null;
+    poles[poles.length - 1] = poles[0];   // exactly closed
+    return { uKnots: uKnots, uMults: uMults, vKnots: list[0].vKnots, vMults: list[0].vMults, degV: list[0].degV, poles: poles, closed: true };
+  }
 
   function buildLoft(f, model, ctx) {
     var ids = f.sketches || [];
@@ -2332,7 +2356,7 @@
   K.sketchPath = sketchPath; K.buildSweep = buildSweep; K.buildLoft = buildLoft; K.resolveFaces = resolveFaces; K.buildShell = buildShell;
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   K.resolveRefGeo = resolveRefGeo; K.toCsys = toCsys; K.dirToCsys = dirToCsys; _.resolveRefGeo = resolveRefGeo; _.revolveOnRefAxis = revolveOnRefAxis;   // lane CZ
-  _.buildLoft = buildLoft; _.blendLoftLoops = blendLoftLoops; _.loftPatches = loftPatches; _.buildShell = buildShell; _.buildSweep = buildSweep; _.faceLoopsClassified = faceLoopsClassified;
+  _.buildLoft = buildLoft; _.blendLoftLoops = blendLoftLoops; _.loftPatches = loftPatches; _.joinLoftPatches = joinLoftPatches; _.buildShell = buildShell; _.buildSweep = buildSweep; _.faceLoopsClassified = faceLoopsClassified;
 
   // ------------------------------------------------------------------ rfDX: Draft (SolidWorks' Neutral Plane draft)
   // { type: 'draft', neutral: { face: [x,y,z] } | { plane: 'Front' | 'Top' | 'Right' | <plane feature id>, offset? },
