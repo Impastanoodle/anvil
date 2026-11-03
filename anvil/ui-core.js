@@ -678,6 +678,7 @@ var UI = (function () {
     crackFill.renderOrder = -0.9;
     crackFill.userData.crackFill = true;
     crackFill.raycast = function () { };
+    crackFill.onBeforeRender = function (r, s, c, g2, material) { fillFrontOnly(material); };   // rfHG panel seams
     groups.body.add(crackFill);
     // lane FO: edges come from Kernel.bodyEdges / annotateCurveEdges; a mesh they cannot read (a degenerate sliver from
     // a boolean) must not take the shaded part off the screen with it: the part is drawn without edges and the status
@@ -714,6 +715,23 @@ var UI = (function () {
   mats.partFill.onBeforeCompile = mats.part.onBeforeCompile;
   mats.partFill.customProgramCacheKey = function () { return 'anvil-part-fill-fo'; };
   var crackFill = null;
+  // rfHG (panel seams): the filler's lines have no polygon offset, but the faces sit back by theirs, and on a big thin
+  // plate at Zoom to Fit that offset (≈ 1.75 px of depth slope) is more than the plate is thick: the BOTTOM face's
+  // triangle edges passed the depth test through the top face and drew faint lines across it (1000-hole panel; 298 of
+  // 9 600 pixels of a plain patch were off by up to 387 levels, 0 without the filler). A pinhole is only ever in a
+  // face turned to the viewer, so the filler (Phong or RealView, whichever the body uses) drops fragments whose view-space
+  // normal points away from the camera. Patched once per material, the first time the filler draws with it.
+  function fillFrontOnly(m) {
+    if (!m || !m.isMaterial || m.userData.fillFrontOnly) return;
+    m.userData.fillFrontOnly = true;
+    var prev = m.onBeforeCompile, base = m.customProgramCacheKey ? m.customProgramCacheKey() : '';   // before the hook is replaced
+    m.onBeforeCompile = function (sh, r) {
+      if (prev) prev.call(this, sh, r);
+      sh.fragmentShader = sh.fragmentShader.replace('void main() {', 'void main() {\n#ifndef FLAT_SHADED\n  if (vNormal.z < -0.05) discard;\n#endif');
+    };
+    m.customProgramCacheKey = function () { return base + '|fill-front-only'; };
+    m.needsUpdate = true;
+  }
   function syncCrackFill() {
     if (!crackFill) return;
     var s = App.view.style, on = (s === 'shaded' || s === 'shadedEdges') && !App.view.section && !mats.part.transparent && !UI.noCrackFill;

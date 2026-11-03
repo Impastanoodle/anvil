@@ -35,6 +35,9 @@
         if (Math.abs(d) <= 1.5 && !near) for (var q = -1; q <= 1 && !near; q++) if (rfHGClass(img, c[0] + ca * (r + d) - sa * q, c[1] + sa * (r + d) + ca * q) === 'D') near = true;
       }
       if (!seq) continue;
+      // no background on this ray at all: something else of the scene covers the ground beyond the rim here (in the
+      // full run another group's overlay lay over 0° once); not a rim sample. A broken line always shows background.
+      if (seq.indexOf('B') < 0) continue;
       seen++;
       var s = seq.join('').replace(/(.)\1+/g, '$1');
       if (!near || /FB|BF/.test(s) || s.split('D').length !== 2) bad.push(deg + ':' + seq.join(''));
@@ -170,6 +173,37 @@
       return 'hole r ' + z.r.toFixed(0) + ' px: ' + out.join(', ');
     } finally {
       if (UI.zoomTess && zl != null) UI.zoomTess.setLevel(zl);
+      if (UI.setRealView) UI.setRealView(rv0, true);
+      UI.setStyle(style);
+    }
+  });
+
+  step('rfHG: the flat top of a big thin perforated panel (1200 × 600 × 1.5) at Zoom to Fit is one clean surface — no triangle lines from the crack filler reaching the bottom face through it, RealView off and on', async function () {
+    var rv0 = UI.realView ? UI.realView() : false, style = UI.App.view.style, out = [];
+    try {
+      await anvil.newPart(); await idle();
+      await anvil.run('p.units("mm");\np.box(1200, 600, 1.5);\np.hole("Top", 30, -30, 8, { offset: 1.5 });\np.linearPattern({ dir: "x", spacing: 28, count: 20, dir2: "z", spacing2: 22, count2: 10 });\n'); await idle();
+      if (UI.setAmbientOcclusion) { UI.setAmbientOcclusion(false); UI.setShadows(false); UI.setStillSmoothing(false); }
+      UI.setStyle('shadedEdges');
+      UI.setView('Isometric'); if (UI.finishViewAnimation) UI.finishViewAnimation();
+      UI.zoomToFit(); if (UI.finishViewAnimation) UI.finishViewAnimation();
+      var modes = [false];
+      if (UI.setRealView) modes.push(true);
+      for (var i = 0; i < modes.length; i++) {
+        if (UI.setRealView) UI.setRealView(modes[i], true);
+        await wait(30); UI.render();
+        // a patch of the top face with no hole or edge in it: every pixel the same shade
+        var img = rfHGCanvas(), p0 = UI.worldToScreen([900, 1.5, 450]), vals = [];
+        for (var dy = -20; dy < 20; dy++) for (var dx = -40; dx < 40; dx++) {
+          var x = Math.round((p0[0] + dx) * img.pr), y = img.h - 1 - Math.round((p0[1] + dy) * img.pr), k = (y * img.w + x) * 4;
+          vals.push(img.px[k] + img.px[k + 1] + img.px[k + 2]);
+        }
+        var s = vals.slice().sort(function (a, b) { return a - b; }), med = s[s.length >> 1], off = vals.filter(function (v) { return Math.abs(v - med) > 6; }).length;
+        assert(off === 0, (modes[i] ? 'RealView' : 'plain') + ': ' + off + ' of ' + vals.length + ' pixels off the face\'s shade (' + s[0] + '..' + s[s.length - 1] + ' around ' + med + ')');
+        out.push((modes[i] ? 'RealView' : 'plain') + ' ' + vals.length + ' px uniform');
+      }
+      return out.join(', ');
+    } finally {
       if (UI.setRealView) UI.setRealView(rv0, true);
       UI.setStyle(style);
     }
