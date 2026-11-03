@@ -956,7 +956,17 @@ var UI = (function () {
       .replace('#include <lights_physical_fragment>', RV_PATTERN + '\n#include <lights_physical_fragment>')
       // the hemisphere light's share (irradiance) by rvAmbient, the camera lights' by rvDirect; the studio's own by its panels
       .replace('#include <lights_fragment_maps>', 'irradiance *= rvAmbient;\n#include <lights_fragment_maps>')
-      .replace('#include <aomap_fragment>', 'reflectedLight.directDiffuse *= rvDirect; reflectedLight.directSpecular *= rvDirect;\n#include <aomap_fragment>')
+      .replace('#include <aomap_fragment>', 'reflectedLight.directDiffuse *= rvDirect; reflectedLight.directSpecular *= rvDirect;\n' +
+        // rfHF: no Fresnel rim on faces seen edge-on or from behind. A physically based reflection goes to white as the
+        // normal turns away from the viewer (dotNV is clamped at 0, Fresnel at 1), so the crack filler's wireframe, which
+        // shows in the fringe of every outline and carries the normals of the faces turned away (the base of a cone,
+        // the far side of a cylinder; a line has no back face to flip them), was drawn near white there and silhouettes
+        // and edges of cones, cylinders and rounds read washed out; the Phong part (RealView off) is dark there. The
+        // reflection fades out over the last ~17 degrees before edge-on and is gone behind, so outlines read as dark as
+        // with RealView off; faces seen at more than that (an isometric box's faces, most of a round) are unchanged.
+        // normal.z is signed here on purpose: three.js has already flipped it for the back of a double-sided face.
+        'float rvRim = mix(0.12, 1.0, smoothstep(0.02, 0.3, normal.z)); reflectedLight.directSpecular *= rvRim; reflectedLight.indirectSpecular *= rvRim;\n' +
+        '#include <aomap_fragment>')
       // the rfHA silhouette darkening, then tone map and encode (the renderer adds nothing: linear output, no tone mapping)
       .replace('#include <dithering_fragment>', 'gl_FragColor.rgb *= mix(0.8, 1.0, smoothstep(0.04, 0.6, abs(normal.z)));\ngl_FragColor.rgb = rvToSRGB(rvTone(gl_FragColor.rgb));\n#include <dithering_fragment>');
     sh.vertexShader = vs; sh.fragmentShader = fs;

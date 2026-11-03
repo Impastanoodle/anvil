@@ -131,3 +131,73 @@
       return 'check ' + a.left.toFixed(1) + '..' + a.right.toFixed(1) + ', icon ' + b.left.toFixed(1) + '..' + b.right.toFixed(1);
     } finally { if (UI.closeMenus) UI.closeMenus(); UI.App.view.showEndpoints = keepEnd; }
   });
+
+  // a row of device pixels across an outline (horizontal through the screen point of p; -1 = background): the darkest
+  // level and how many pixels are the line's core (< 30: its width)
+  function rfHFAcross(img, p) {
+    var s = UI.worldToScreen(p), x0 = Math.round(s[0] * img.pr), y = Math.round(s[1] * img.pr), n = 0, row = [], dark = 255;
+    for (var x = x0 - 4; x <= x0 + 4; x++) {
+      var i = ((img.h - 1 - y) * img.w + x) * 4, l = img.px[i + 3] < 128 ? -1 : Math.round((img.px[i] + img.px[i + 1] + img.px[i + 2]) / 3);
+      row.push(l); if (l >= 0) { dark = Math.min(dark, l); if (l < 30) n++; }
+    }
+    return { dark: dark, n: n, row: row };
+  }
+  // the line and its fringe (every pixel of the RealView-off row darker than 100: the line and its partly covered
+  // pixels, where the face or the crack filler's fringe shows through) are no lighter with RealView on -> worst excess
+  function rfHFFringe(a, b) {
+    var worst = -255;
+    a.row.forEach(function (v, i) { if (v >= 0 && v < 100) worst = Math.max(worst, b.row[i] < 0 ? 255 : b.row[i] - v); });
+    return worst;
+  }
+  // the frame as drawn on the canvas (antialiased, as the user sees it: a render target has no multisampling, so the
+  // partly covered fringe pixels of a line never show there) -> { w, h, pr, px }; read right after UI.render()
+  function rfHFCanvas() {
+    UI.render();
+    var R = UI.renderer, gl = R.getContext(), c = R.domElement, w = c.width, h = c.height, px = new Uint8Array(w * h * 4);
+    R.setRenderTarget(null);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return { w: w, h: h, pr: R.getPixelRatio(), px: px };
+  }
+  // the screen-leftmost point of the circle of radius r round the Y axis at height y, turned by `turn` degrees
+  function rfHFRim(r, y, turn) {
+    var best = null;
+    for (var a = 0; a < 360; a += 0.5) { var t = a * Math.PI / 180, s = UI.worldToScreen([r * Math.cos(t), y, r * Math.sin(t)]); if (!best || s[0] < best.s) best = { s: s[0], a: a }; }
+    var u = (best.a + turn) * Math.PI / 180;
+    return [r * Math.cos(u), y, r * Math.sin(u)];
+  }
+  step('rfHF: with RealView on, the silhouettes and edges of a cone and a cylinder are as dark and as wide as with RealView off (no bright Fresnel fringe beside the #161616 line)', async function () {
+    var keep = rfHFStored(), style = UI.App.view.style, out = [];
+    try {
+      var parts = [['cone', 'p.units("in");\np.sketch("Front").polyline([[0, 0], [1, 0], [0, 2]], true).revolve(360);\np.material("AISI 304");\n', 1, 0],
+        ['cylinder', 'p.units("in");\np.sketch("Top").circle(0, 0, 0.5).extrude(2);\np.material("6061");\n', 0.5, 2]];
+      for (var k = 0; k < parts.length; k++) {
+        await anvil.newPart(); await idle();
+        await anvil.run(parts[k][1]); await idle();
+        UI.setStyle('shadedEdges');
+        var R0 = parts[k][2], views = ['Front', 'Isometric'];
+        for (var v = 0; v < views.length; v++) {
+          await rfHFView(views[v]);
+          // Front: the two side silhouettes; Isometric: the outline along the rim (silhouette into sharp edge), three places
+          // (Front: the cone, r 1 at y 0 and apex at y 2, and the cylinder, r 0.5, both have their sides at x = ±0.5 at y = 1)
+          var pts = views[v] === 'Front' ? [[0.5, 1, 0], [-0.5, 1, 0]] : [rfHFRim(R0, 0, 0), rfHFRim(R0, 0, -15), rfHFRim(R0, 0, 15), rfHFRim(R0, parts[k][3], 0)];
+          var res = {};
+          [false, true].forEach(function (on) {
+            UI.setRealView(on, true);
+            var img = rfHFCanvas();
+            res[on] = pts.map(function (p) { return rfHFAcross(img, p); });
+          });
+          assert(UI.realViewInfo().active, 'RealView drawn');
+          pts.forEach(function (p, j) {
+            var a = res[false][j], b = res[true][j];
+            var ex = rfHFFringe(a, b);
+            var msg = parts[k][0] + ' ' + views[v] + ' at ' + p.map(function (c) { return c.toFixed(2); }).join(',') + ': off ' + a.dark + ' (' + a.n + ' px) [' + a.row.join(' ') + '] / on ' + b.dark + ' (' + b.n + ' px) [' + b.row.join(' ') + ']';
+            assert(a.dark < 45 && Math.abs(a.dark - b.dark) <= 4, 'line as dark: ' + msg);
+            assert(ex <= 8, 'no lighter fringe beside the line (worst +' + ex + '): ' + msg);
+            assert(b.n === a.n, 'as wide: ' + msg);
+            out.push(parts[k][0][0] + views[v][0] + j + ' ' + a.dark + '/' + b.dark + ' +' + ex);
+          });
+        }
+      }
+      return out.join('; ');
+    } finally { rfHFRestore(keep); UI.setStyle(style); }
+  });
