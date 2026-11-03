@@ -291,7 +291,7 @@
     'Swept Cut': 'Remove material along a path', 'Lofted Cut': 'Remove material lofted through section sketches',
     'Fillet': 'Round the selected edges', 'Chamfer': 'Bevel the selected edges', 'Linear Pattern': 'Repeat a feature along one or two directions', 'Circular Pattern': 'Repeat a feature about an axis', 'Mirror': 'Mirror a feature or the body about a plane',
     'Shell': 'Hollow the body, removing the selected faces', 'Reference Geometry': 'Create an offset reference plane',
-    'Sketch': 'Start a sketch on the selected plane or face', 'Exit Sketch': 'Close the sketch and return to the part', 'Smart Dimension': 'Dimension sketch entities: click an entity (or two), then where the value goes',
+    'Sketch': 'Start a sketch on the selected plane or face', 'Exit Sketch': 'Close the sketch and return to the part', 'Smart Dimension': 'Dimension sketch entities, or with no sketch open the model’s edges, faces and vertices: click an item (or two), then where the value goes',
     'Line': 'Draw lines: click point after point, or press and drag for one', 'Corner Rectangle': 'Rectangle from two corners', 'Center Rectangle': 'Rectangle from its center', 'Circle': 'Circle from center and radius', 'Centerpoint Arc': 'Arc from center, start and end', '3 Point Arc': 'Arc from its start, end and a point on it', 'Polygon': 'Regular polygon from its center and a side or corner', 'Straight Slot': 'Slot from two centers and a width', 'Point': 'Place a sketch point',
     'Sketch Fillet': 'Round a sketch corner with a tangent arc', 'Sketch Chamfer': 'Bevel a sketch corner', 'Intersection Curve': 'Sketch where a plane or face crosses the model', 'Trim Entities': 'Trim or extend sketch entities to where they cross', 'Convert Entities': 'Project model edges into the sketch', 'Offset Entities': 'Offset sketch entities by a distance',
     'Plane': 'Create an offset reference plane', 'Sketch to DXF': 'Export the active sketch as DXF (layers, colours and line types kept)',
@@ -359,8 +359,10 @@
     var id = d ? d.id : item.id, label = d ? d.label : item.label, flat = label.replace(/\n/g, ' ');
     // rfAY: with Rapid Sketch on, the sketch-entity tools work with no sketch open (armed until a plane / face is clicked)
     var rapid = !!item.tool && item.tool !== 'dimension' && App.mode !== 'sketch' && !!(UI.rapidSketchOn && UI.rapidSketchOn());
-    var enabled = !!(item.run || item.tool), needsSketch = !!item.tool && App.mode !== 'sketch' && !rapid, active = false;
-    if (item.tool) active = (App.mode === 'sketch' && App.tool === item.tool && (!item.active || !!item.active())) || (rapid && UI.rapidSketchArmed() === item);   // p9-sketchtab: Line / Centerline / Midpoint Line share the line tool
+    // lane model-dims: Smart Dimension with no sketch open dimensions the part's solid (ui-model-dims.js)
+    var modelDim = item.tool === 'dimension' && App.mode !== 'sketch' && !!UI.modelDimOn && !(UI.isAssembly && UI.isAssembly());
+    var enabled = !!(item.run || item.tool), needsSketch = !!item.tool && App.mode !== 'sketch' && !rapid && !modelDim, active = false;
+    if (item.tool) active = (App.mode === 'sketch' && App.tool === item.tool && (!item.active || !!item.active())) || (rapid && UI.rapidSketchArmed() === item) || (modelDim && UI.modelDimOn());   // p9-sketchtab: Line / Centerline / Midpoint Line share the line tool
     else if (item.run) active = !!((item.id === 'sketch' && App.mode === 'sketch') || (item.active && item.active()));
     return { id: id, icon: (d && d.icon) || (d ? id : item.icon || id), label: label, flat: flat, disabled: !enabled || needsSketch, active: active, tip: ribbonTip(id, flat, enabled, needsSketch, item.help, item.key) };
   }
@@ -1465,6 +1467,7 @@
         { label: 'Display ▸ Show Endpoints', icon: 'showEndpoints', checked: v.showEndpoints !== false, action: function () { toggleShowEndpoints(); } }   // lane BS
       ].concat(UI.depthFxMenuItems ? UI.depthFxMenuItems('Display ▸ ') : [], [   // rfHD: RealView, Shadows In Shaded Mode, Ambient Occlusion
         { label: 'Sketch Dimensions', checked: v.showDims, action: function () { v.showDims = !v.showDims; App.dimsStale = true; UI.setStatus(v.showDims ? 'Driven dimensions shown on every sketch entity. Click a value to change it.' : 'Only placed dimensions are shown.'); } },
+        { label: 'Model Dimensions', checked: !!(UI.modelDimsShown && UI.modelDimsShown()), disabled: !UI.toggleModelDims, action: function () { UI.toggleModelDims(); } },   // lane model-dims
         { label: 'Section View', checked: !!v.section, action: UI.cmdSection },
         { sep: true },
         { label: 'Theme ▸ Light', checked: UI.theme() === 'light', action: function () { UI.setTheme('light'); toast('Light theme'); } },
