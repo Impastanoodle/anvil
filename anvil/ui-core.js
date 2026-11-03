@@ -803,6 +803,231 @@ var UI = (function () {
     }
   }
 
+  // ------------------------------------------------------------------ rfHC RealView
+  // SolidWorks' RealView Graphics: the part drawn physically based (MeshStandardMaterial: base colour, metalness,
+  // roughness) and lit by a studio (a procedural room of soft boxes, prefiltered once by PMREMGenerator) on top of the
+  // camera-mounted lights of rfHA. Off = the Phong part of rfHA, untouched (mats.part keeps every job it had: colour,
+  // vertex colours, clipping; tests that read it read the flat colour). On = the body / crack filler / flat pattern meshes
+  // take an RV twin of it (rvFaceMaterial) whose state is copied from mats.part in rvApply (end of applyDisplayStyle).
+  // Colour handling: the renderer stays linear with no tone mapping, so every overlay (selection tint, pre-highlight,
+  // previews, sketch, edges, planes, caps) keeps its exact rule colour; only the RV shader works in linear light: it
+  // decodes its sRGB colours, shades, tone maps (a soft shoulder) and encodes back to sRGB itself.
+  // The studio is fixed to the camera (lookups in view space), as the lights are: a part reads the same from every side,
+  // reflections slide over it as it turns. Appearances come from Materials.appearanceOf / bodyAppearances (materials.js).
+  var RV_KEY = 'anvil.realview';
+  var rv = { on: null, env: null, envFailed: false, mats: null, attrKey: null, why: '' };
+  // RealView's default rule (measured 2026-11-03, 1253 x 756 graphics area, a turn of the view per frame): on for every
+  // part when WebGL runs on a GPU (default bracket 3.3 ms off / 3.5 ms on, a 20 x 12 in panel with 1000 holes,
+  // 138k triangles, 2.0 / 3.4 ms: no size threshold is needed), off when WebGL is a software rasterizer (SwiftShader,
+  // llvmpipe, Microsoft Basic Render: 11.7 / 26.4 ms and 195 / 359 ms, RealView doubles the frame). The studio is built
+  // once (~300 ms at boot with its shader compiles, ~15 ms a rebuild). The user's choice wins and is kept per browser (localStorage anvil.realview, '1' / '0').
+  function rvStored() { try { var v = localStorage.getItem(RV_KEY); return v === '1' ? true : v === '0' ? false : null; } catch (e) { return null; } }
+  function softwareGL() {
+    try {
+      var gl = renderer.getContext(), ext = gl.getExtension('WEBGL_debug_renderer_info');
+      var name = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+      return /swiftshader|llvmpipe|softpipe|basic render|software/i.test(name);
+    } catch (e) { return false; }
+  }
+  function rvDefault() { return !softwareGL(); }
+  function realView() { if (rv.on == null) rv.on = rvStored() != null ? rvStored() : rvDefault(); App.view.realView = rv.on; return rv.on; }
+  // UI.setRealView(on, noSave): RealView on / off (remembered unless noSave); returns the new state
+  function setRealView(on, noSave) {
+    rv.on = !!on; App.view.realView = rv.on;
+    if (!noSave) { try { localStorage.setItem(RV_KEY, rv.on ? '1' : '0'); } catch (e) { } }
+    applyDisplayStyle();
+    if (UI && UI.refreshHud) { try { UI.refreshHud(); } catch (e) { } }
+    return rv.on;
+  }
+  // The studio in view space (+x right, +y up, +z towards the viewer, -z behind the part): what a face of an isometric
+  // box reflects decides how metals read, so each panel is placed for one of them. Top faces see the ceiling panel, a
+  // face turned left sees the left wall's low soft box, one turned right the dimmer right panel, a face square to the
+  // view the card behind the viewer; the key soft box (upper left, in front, as the key light) puts the highlight streak
+  // on rounds. Walls: a cool grey from `floor` through `mid` to `ceil` (linear). Panels: [centre, size, linear colour].
+  var RV_STUDIO = {
+    floor: 0.06, mid: 0.2, ceil: 0.42, tint: [0.95, 0.98, 1.04],
+    panels: [
+      [[-3.6, 3.2, 3.4], [3.6, 2.4, 0.2], [4.2, 4.25, 4.3]],      // key soft box
+      [[0, 5.8, -1.5], [6, 0.2, 4], [1.3, 1.34, 1.42]],           // ceiling
+      [[-5.8, -2.2, -2.0], [0.2, 4.2, 6.0], [0.95, 0.98, 1.04]],  // left wall, low
+      [[5.8, -2.2, -2.0], [0.2, 4.2, 6.0], [0.42, 0.44, 0.47]],   // right wall, low
+      [[0.5, 2.6, -5.8], [7, 1.2, 0.2], [1.6, 1.62, 1.7]],        // rim strip behind
+      [[0, 0.2, 5.8], [6, 4, 0.2], [0.8, 0.82, 0.86]]             // card behind the viewer
+    ]
+  };
+  function rvBuildEnv() {
+    if (rv.env || rv.envFailed) return rv.env;
+    try {
+      var t0 = performance.now(), st = RV_STUDIO;
+      var sc = new THREE.Scene(), boxG = new THREE.BoxGeometry(1, 1, 1);
+      var room = new THREE.BoxGeometry(12, 12, 12, 1, 8, 1), pos = room.getAttribute('position'), col = new Float32Array(pos.count * 3);
+      for (var i = 0; i < pos.count; i++) {
+        var y = pos.getY(i) / 6, k = y > 0 ? st.mid + (st.ceil - st.mid) * y : st.mid + (st.mid - st.floor) * y;
+        col[i * 3] = k * st.tint[0]; col[i * 3 + 1] = k * st.tint[1]; col[i * 3 + 2] = k * st.tint[2];
+      }
+      room.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      sc.add(new THREE.Mesh(room, new THREE.MeshBasicMaterial({ side: THREE.BackSide, vertexColors: true })));
+      st.panels.forEach(function (p) {
+        var m = new THREE.Mesh(boxG, new THREE.MeshBasicMaterial({ color: new THREE.Color(p[2][0], p[2][1], p[2][2]) }));
+        m.position.set(p[0][0], p[0][1], p[0][2]); m.scale.set(p[1][0], p[1][1], p[1][2]);
+        sc.add(m);
+      });
+      var pm = new THREE.PMREMGenerator(renderer), rt = pm.fromScene(sc, 0.035);
+      pm.dispose();
+      sc.traverse(function (o) { if (o.material) o.material.dispose(); });
+      boxG.dispose(); room.dispose();
+      rv.env = rt.texture; rv.envMs = performance.now() - t0;
+    } catch (e) { rv.envFailed = true; rv.why = 'RealView studio could not be built: ' + ((e && e.message) || e); console.warn(rv.why); }
+    return rv.env;
+  }
+  // tuning hook (look work, tests): rebuild the studio after changing RV_STUDIO
+  function rvRebuildEnv() { if (rv.env) rv.env.dispose(); rv.env = null; rv.envFailed = false; rvBuildEnv(); applyDisplayStyle(); return rv.envMs; }
+  var RV_GLSL = [
+    'uniform float rvDirect; uniform float rvAmbient; uniform float rvExposure; uniform float rvUnit; uniform float rvPattern;',
+    'varying vec3 vRvPos; varying vec3 vRvObjN; varying vec2 vRvNdc;',
+    '#ifdef RV_VERTEX', 'varying vec3 vRvColor; varying vec3 vRvAppear;', '#endif',
+    // the studio is looked up as from an eye in front of the screen (a ~40° lens) though the view is orthographic, so a
+    // planar face reflects a soft gradient across the screen instead of one flat tone
+    'vec3 rvEyeDir(vec3 v) { return normalize(v + vec3(-vRvNdc * 0.36, 0.0)); }',
+    'vec3 rvToLinear(vec3 c) { return mix(pow(c * 0.9478672986 + 0.0521327014, vec3(2.4)), c * 0.0773993808, vec3(lessThanEqual(c, vec3(0.04045)))); }',
+    'vec3 rvToSRGB(vec3 c) { return mix(pow(max(c, vec3(0.0)), vec3(0.41666)) * 1.055 - 0.055, c * 12.92, vec3(lessThanEqual(c, vec3(0.0031308)))); }',
+    // a soft shoulder above 0.62: mid tones stay as lit (the grey part reads as it does with RealView off), highlights roll to white
+    'vec3 rvTone(vec3 c) { c *= rvExposure; vec3 k = max(c - 0.62, 0.0); return min(c, vec3(0.62)) + k / (1.0 + k / 0.38); }',
+    'float rvHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }',
+    'float rvHash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }'
+  ].join('\n');
+  // pattern 1 brushed: streaks along the world axis that lies best in the face, about 3 px apart (a whole octave of zoom
+  // keeps the same streaks), each a little rougher / darker than the next; 2 galvanized spangle: crystal patches ~10 mm
+  var RV_PATTERN = [
+    '{',
+    '#ifdef RV_VERTEX', '  float rvPat = vRvAppear.z;', '#else', '  float rvPat = rvPattern;', '#endif',
+    '  vec3 rvN = normalize(vRvObjN);',
+    '  if (rvPat > 0.5 && rvPat < 1.5) {',
+    '    vec3 ax = abs(rvN.x) < 0.8 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);',
+    '    vec3 across = normalize(cross(rvN, ax));',
+    '    float s = dot(vRvPos, across), px = max(fwidth(s), 1e-6), cell = exp2(ceil(log2(px * 2.5)));',
+    '    float a = rvHash(vec2(floor(s / cell), floor(dot(vRvPos, ax) / (cell * 60.0)))), b = rvHash(vec2(floor(s / (cell * 5.0)), 7.0));',
+    '    float g = (a * 0.65 + b * 0.35) - 0.5;',
+    '    roughnessFactor = clamp(roughnessFactor + g * 0.16, 0.04, 1.0);',
+    '    diffuseColor.rgb *= 1.0 + g * 0.1;',
+    '  } else if (rvPat > 1.5 && rvPat < 2.5) {',
+    // crystals: 3D Voronoi cells (~8 mm), each with its own sheen
+    '    vec3 q = vRvPos * rvUnit / 8.0, i0 = floor(q), fq = fract(q);',
+    '    float best = 8.0, h = 0.5;',
+    '    for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) {',
+    '      vec3 gg = vec3(float(x), float(y), float(z)), c = i0 + gg;',
+    '      vec3 r = gg + vec3(rvHash3(c), rvHash3(c + 17.31), rvHash3(c + 41.7)) - fq;',
+    '      float d = dot(r, r);',
+    '      if (d < best) { best = d; h = rvHash3(c + 5.13); }',
+    '    }',
+    '    roughnessFactor = clamp(roughnessFactor + (h - 0.5) * 0.26, 0.04, 1.0);',
+    '    diffuseColor.rgb *= 1.0 + (h - 0.5) * 0.08;',
+    '  }',
+    '}'
+  ].join('\n');
+  function rvPatchShader(sh, vertex) {
+    sh.uniforms.rvDirect = rvU.direct; sh.uniforms.rvAmbient = rvU.ambient; sh.uniforms.rvExposure = rvU.exposure; sh.uniforms.rvUnit = rvU.unit;
+    sh.uniforms.rvPattern = this.userData.rvPattern;
+    var vs = sh.vertexShader, fs = sh.fragmentShader;
+    vs = vs.replace('#include <common>', '#include <common>\nvarying vec3 vRvPos; varying vec3 vRvObjN; varying vec2 vRvNdc;\n#ifdef RV_VERTEX\nattribute vec3 rvColor; attribute vec3 rvAppear; varying vec3 vRvColor; varying vec3 vRvAppear;\n#endif')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRvPos = position; vRvObjN = normal;\n#ifdef RV_VERTEX\nvRvColor = rvColor; vRvAppear = rvAppear;\n#endif')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvRvNdc = vec2(gl_Position.x / gl_Position.w * projectionMatrix[1][1] / projectionMatrix[0][0], gl_Position.y / gl_Position.w);');
+    var env = THREE.ShaderChunk.envmap_physical_pars_fragment
+      .replace('inverseTransformDirection( geometry.normal, viewMatrix )', 'geometry.normal')
+      .replace('vec3 reflectVec = reflect( -viewDir, normal );', 'vec3 reflectVec = reflect( -rvEyeDir(viewDir), normal );')
+      .replace('reflectVec = inverseTransformDirection( reflectVec, viewMatrix );', '');
+    if (env.indexOf('rvEyeDir') < 0 || env.indexOf('inverseTransformDirection') >= 0) console.warn('rfHC: the studio lookup patch did not apply (three.js chunk changed)');
+    fs = fs.replace('#include <common>', '#include <common>\n' + RV_GLSL)
+      .replace('#include <envmap_physical_pars_fragment>', env)
+      .replace('#include <color_fragment>', '#ifdef RV_VERTEX\ndiffuseColor.rgb = vRvColor;\n#endif\ndiffuseColor.rgb = rvToLinear(diffuseColor.rgb);')
+      .replace('#include <roughnessmap_fragment>', '#ifdef RV_VERTEX\nfloat roughnessFactor = vRvAppear.y;\n#else\nfloat roughnessFactor = roughness;\n#endif')
+      .replace('#include <metalnessmap_fragment>', '#ifdef RV_VERTEX\nfloat metalnessFactor = vRvAppear.x;\n#else\nfloat metalnessFactor = metalness;\n#endif')
+      .replace('#include <lights_physical_fragment>', RV_PATTERN + '\n#include <lights_physical_fragment>')
+      // the hemisphere light's share (irradiance) by rvAmbient, the camera lights' by rvDirect; the studio's own by its panels
+      .replace('#include <lights_fragment_maps>', 'irradiance *= rvAmbient;\n#include <lights_fragment_maps>')
+      .replace('#include <aomap_fragment>', 'reflectedLight.directDiffuse *= rvDirect; reflectedLight.directSpecular *= rvDirect;\n#include <aomap_fragment>')
+      // the rfHA silhouette darkening, then tone map and encode (the renderer adds nothing: linear output, no tone mapping)
+      .replace('#include <dithering_fragment>', 'gl_FragColor.rgb *= mix(0.8, 1.0, smoothstep(0.04, 0.6, abs(normal.z)));\ngl_FragColor.rgb = rvToSRGB(rvTone(gl_FragColor.rgb));\n#include <dithering_fragment>');
+    sh.vertexShader = vs; sh.fragmentShader = fs;
+  }
+  // shared uniforms (one set for every RV material): tuned so the satin grey part reads like the Phong part of rfHA
+  // (isometric box top / left / right about 200 / 150 / 115) with the studio's reflections on top
+  var rvU = { direct: { value: 1.9 }, ambient: { value: 0.15 }, exposure: { value: 1.0 }, unit: { value: 1 } };
+  function rvMaterial(vertex, wire) {
+    var m = new THREE.MeshStandardMaterial({ color: 0x8c8c8c, metalness: 0.05, roughness: 0.42, side: THREE.DoubleSide,
+      polygonOffset: !wire, polygonOffsetFactor: 1, polygonOffsetUnits: 1, wireframe: !!wire, depthWrite: !wire, envMapIntensity: 1 });
+    m.userData.rvPattern = { value: 0 };
+    m.userData.realView = true;
+    if (vertex) m.defines = { RV_VERTEX: '' };
+    m.extensions = { derivatives: true };
+    m.onBeforeCompile = function (sh) { rvPatchShader.call(m, sh, vertex); };
+    m.customProgramCacheKey = function () { return 'anvil-rv-hc' + (vertex ? '-v' : '') + (wire ? '-w' : ''); };
+    return m;
+  }
+  function rvMats() {
+    if (!rv.mats) rv.mats = { part: rvMaterial(false, false), partV: rvMaterial(true, false), fill: rvMaterial(false, true), fillV: rvMaterial(true, true) };
+    return rv.mats;
+  }
+  function rvShaded() { var s = App.view.style; return s === 'shaded' || s === 'shadedEdges'; }
+  function rvActive() { return realView() && rvShaded() && !!rvBuildEnv(); }
+  // the face material for a mesh without RV attributes (the flat pattern)
+  function partFaceMaterial() {
+    var s = App.view.style;
+    if (s === 'hlr' || s === 'hlv') return mats.hlr;
+    return rvActive() ? rvMats().part : mats.part;
+  }
+  function rvSetAppearance(m, a) {
+    m.color.set(a.color); m.metalness = a.metalness; m.roughness = a.roughness; m.userData.rvPattern.value = a.pattern || 0;
+  }
+  function rvSync(m) {
+    var p = mats.part;
+    if (m.clippingPlanes !== p.clippingPlanes) { m.clippingPlanes = p.clippingPlanes; m.needsUpdate = true; }
+    if (!m.wireframe) m.polygonOffsetFactor = p.polygonOffsetFactor;
+    if (m.envMap !== rv.env) { m.envMap = rv.env; m.needsUpdate = true; }
+  }
+  // per-vertex appearance (bodies / components that differ): rvColor (sRGB) and rvAppear (metalness, roughness, pattern)
+  function rvVertexData(g, m, list) {
+    var key = list.map(Materials.appearanceKey).join(';') + '#' + m.triCount;
+    if (g.getAttribute('rvColor') && g.__rvKey === key) return;
+    var n = m.triCount * 9, cA = new Float32Array(n), aA = new Float32Array(n), c = new THREE.Color();
+    m.faces.forEach(function (f) {
+      var a = list[f.body || 0] || list[0];
+      c.set(a.color);
+      for (var o = f.start * 9; o < (f.start + f.count) * 9; o += 3) { cA[o] = c.r; cA[o + 1] = c.g; cA[o + 2] = c.b; aA[o] = a.metalness; aA[o + 1] = a.roughness; aA[o + 2] = a.pattern || 0; }
+    });
+    g.setAttribute('rvColor', new THREE.BufferAttribute(cA, 3));
+    g.setAttribute('rvAppear', new THREE.BufferAttribute(aA, 3));
+    g.__rvKey = key;
+  }
+  // rvApply(): called at the end of applyDisplayStyle; puts the body (and the crack filler, the flat pattern) on the RV
+  // or the Phong material
+  function rvApply() {
+    var on = rvActive(), MS = on ? rvMats() : null;
+    rvU.unit.value = App.model && App.model.units === 'in' ? 25.4 : 1;
+    if (bodyMesh && bodyMesh.material !== mats.hlr) {
+      var face = mats.part, fillM = mats.partFill;
+      if (on) {
+        var list = null;
+        try { list = window.Materials && Materials.bodyAppearances ? Materials.bodyAppearances(App.model, App.build) : null; } catch (e) { list = null; }
+        var base = window.Materials && Materials.appearanceOf ? Materials.appearanceOf(App.model) : { color: partColor(App.model.color), metalness: 0.05, roughness: 0.42, pattern: 0 };
+        if (list && list.length) {
+          var k0 = Materials.appearanceKey(list[0]), same = list.every(function (a) { return Materials.appearanceKey(a) === k0; });
+          if (same) { base = list[0]; list = null; }
+        }
+        if (list && App.mesh && App.mesh.triCount) { rvVertexData(bodyMesh.geometry, App.mesh, list); face = MS.partV; fillM = MS.fillV; }
+        else { face = MS.part; fillM = MS.fill; }
+        rvSetAppearance(MS.part, base); rvSetAppearance(MS.fill, base);
+        [MS.part, MS.partV, MS.fill, MS.fillV].forEach(rvSync);
+      }
+      bodyMesh.material = face;
+      if (crackFill) crackFill.material = fillM;
+    }
+    flatGroup.children.forEach(function (o) { if (o.userData.flatPattern) o.material = partFaceMaterial(); });
+    rv.active = on && !!(bodyMesh && bodyMesh.material && bodyMesh.material.userData.realView);
+  }
+  // UI.realViewInfo() -> { on (the setting), active (drawn now), envMs, why } for tests and the status bar
+  function realViewInfo() { return { on: realView(), active: !!rv.active, software: softwareGL(), byDefault: rvDefault(), envMs: rv.envMs || 0, why: rv.why, material: bodyMesh ? bodyMesh.material : null, materials: rvMats(), tune: { uniforms: rvU, studio: RV_STUDIO, rebuild: rvRebuildEnv } }; }
+
   // ------------------------------------------------------------------ lane DC (finding #9): the flattened state
   // SolidWorks' Flatten: the part is shown as its flat pattern (Flat-Pattern1 unsuppressed) until Flatten is clicked
   // again. App.model.flatState (saved with the document, undoable) asks for it; the folded part stays App.mesh /
@@ -826,7 +1051,7 @@ var UI = (function () {
         var g = new THREE.BufferGeometry();
         g.setAttribute('position', new THREE.BufferAttribute(fm.positions, 3));
         g.setAttribute('normal', new THREE.BufferAttribute(analyticNormals(fm), 3));
-        var mesh = new THREE.Mesh(g, App.view.style === 'hlr' || App.view.style === 'hlv' ? mats.hlr : mats.part);
+        var mesh = new THREE.Mesh(g, partFaceMaterial());   // rfHC: the RV material when RealView is on
         mesh.renderOrder = -1;
         mesh.userData.flatPattern = true;
         flatGroup.add(mesh);
@@ -1134,7 +1359,7 @@ var UI = (function () {
     // the faces sit back by their slope over half an edge width, so an edge in an inside corner (a pocket floor, a boss
     // foot) is not half buried by the face that rises towards the viewer next to it (1 px was enough for 1-pixel lines)
     var po = fatOn && fatOk ? 1 + Math.ceil(LINE_W.edge * renderer.getPixelRatio() * 2) / 4 : 1;
-    if (mats.part.polygonOffsetFactor !== po) { mats.part.polygonOffsetFactor = po; mats.hlr.polygonOffsetFactor = po; }
+    if (mats.part.polygonOffsetFactor !== po) { mats.part.polygonOffsetFactor = po; mats.hlr.polygonOffsetFactor = po; if (rv.mats) { rv.mats.part.polygonOffsetFactor = po; rv.mats.partV.polygonOffsetFactor = po; } }
   }
   function lineMat(mat, w, extra) { mat.userData.lineWidth = w; if (extra) Object.keys(extra).forEach(function (k) { mat.userData[k] = extra[k]; }); return mat; }
   lineMat(mats.edge, LINE_W.edge, { hlv: true });
@@ -1422,6 +1647,7 @@ var UI = (function () {
     needsRender = true;
     [mats.part, mats.hlr, mats.edge, mats.hover, mats.sel, silMat].forEach(function (mm) { mm.clippingPlanes = planes; mm.needsUpdate = true; });
     syncCrackFill();   // lane FO
+    rvApply();         // rfHC: RealView materials on the body, filler and flat pattern
     updateSectionCaps();
   }
 
@@ -3497,6 +3723,8 @@ var UI = (function () {
     rollbackTo: rollbackTo, rollForward: rollForward, rollbackCommit: rollbackCommit, rollbackSwap: rollbackSwap,   // r10/editpreview10: Edit Feature rollback
     rollbarTo: rollbarTo, rollbarIndex: rollbarIndex, rollbarRolled: rollbarRolled, rollbarSync: rollbarSync, rollbarForward: rollbarForward, rollbarEnd: rollbarEnd, rollbarPrevious: rollbarPrevious, rollbarPrevIndex: rollbarPrevIndex,   // rfGQ: the rollback bar
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
+    // rfHC: RealView (physically based shading in a studio; the depthfx lane's toggles call setRealView)
+    setRealView: setRealView, realView: realView, realViewInfo: realViewInfo, partFaceMaterial: partFaceMaterial,
     // r14/viewui14: background, triad, View Selector
     setBackground: setBackground, drawTriad: function () { drawTriad(); }, triadClick: triadClick, triadAxisAt: triadAxisAt, orientView: orientView,
     showViewSelector: showViewSelector, hideViewSelector: hideViewSelector, viewSelectorShown: viewSelectorShown, viewSelectorPick: viewSelectorPick, viewSelectorMenuClear: vsMenuClear, modelEdgeInBox: modelEdgeInBox,

@@ -1055,6 +1055,8 @@
       return UI.setImageQuality(opts).then(function () { return UI.imageQuality(); });
     },
     workerOn: function (on) { if (arguments.length) UI.setWorkerOn(on); return App.workerOn; },
+    // realView() -> on / off; realView(on) turns RealView Graphics on or off (rfHC, ui-core.js)
+    realView: function (on) { return on == null ? UI.realView() : UI.setRealView(!!on); },
     script: function () { return modelScript(); },
     stl: function () { return K.exportSTL(App.mesh, App.model.name); },
     // neutral formats (exchange.js): STEP AP214 text, 3MF bytes (Uint8Array), OBJ text (+ exportMtl), from the open

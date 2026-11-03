@@ -34,6 +34,8 @@ var Materials = (function () {
       M('AISI 1020', 7900, 200000, 0.29, 420.51, 351.57, '#8a9098', { metal: true }),
       M('AISI 1045 Steel, cold drawn', 7850, 205000, 0.29, 625, 530, '#878d95', { metal: true }),
       M('AISI 4130 Steel, normalized', 7850, 205000, 0.285, 731, 460, '#868c93', { metal: true }),
+      M('AISI 1018 Steel, cold rolled', 7870, 205000, 0.29, 440, 370, '#8e949b', { metal: true }),   // rfHC: the shop's CRS sheet
+      M('ASTM A36 Steel', 7850, 200000, 0.26, 400, 250, '#6e7276', { metal: true, finish: 'hotRolled' }),   // rfHC: hot rolled plate / HRPO
       M('Galvanized Steel', 7870, 200000, 0.29, 356.9, 203.94, '#b5bcc2', { metal: true })
     ] },
     { name: 'Stainless Steel', materials: [
@@ -70,6 +72,9 @@ var Materials = (function () {
   // short names and the names the task pane used before this library existed
   var ALIASES = {
     'steel': 'Plain Carbon Steel', 'steel, plain carbon': 'Plain Carbon Steel', 'mild steel': 'Plain Carbon Steel', 'carbon steel': 'Plain Carbon Steel',
+    'cold rolled': 'AISI 1018 Steel, cold rolled', 'cold rolled steel': 'AISI 1018 Steel, cold rolled', 'crs': 'AISI 1018 Steel, cold rolled', '1018': 'AISI 1018 Steel, cold rolled',
+    'hot rolled': 'ASTM A36 Steel', 'hot rolled steel': 'ASTM A36 Steel', 'hrs': 'ASTM A36 Steel', 'hrpo': 'ASTM A36 Steel', 'a36': 'ASTM A36 Steel',
+    'galvanized': 'Galvanized Steel', 'galvanised': 'Galvanized Steel',
     '1020': 'AISI 1020', '1045': 'AISI 1045 Steel, cold drawn', '4130': 'AISI 4130 Steel, normalized',
     'stainless': 'AISI 304', 'stainless steel': 'AISI 304', 'stainless 304': 'AISI 304', '304': 'AISI 304', 'ss304': 'AISI 304',
     'stainless 316': 'AISI 316', '316': 'AISI 316', '17-4': '17-4 PH (H1150)', '17-4ph': '17-4 PH (H1150)',
@@ -150,6 +155,71 @@ var Materials = (function () {
     var n = bodyList(build).length, out = [], any = false;
     for (var i = 0; i < n; i++) { var bm = bodyMaterial(model, build, i); out.push(bm.color); if (bm.own && bm.color !== displayColor(model.color)) any = true; }
     return any ? out : null;
+  }
+
+  // ------------------------------------------------------------------ rfHC: RealView appearances
+  // What a material looks like with RealView on (ui-core.js "rfHC RealView"): base colour (sRGB '#rrggbb', for a metal
+  // its reflectance), metalness 0..1, roughness 0..1 and a surface pattern drawn in the shader (0 none, 1 brushed
+  // streaks, 2 galvanized spangle). With RealView off the part keeps its flat `color` as before. One finish per kind of
+  // stock; a library material takes its finish from APPEARANCE_OF (by name), else from its class.
+  var FINISHES = {
+    none: { name: 'Satin grey (no material)', color: DEFAULT_COLOR, metalness: 0.05, roughness: 0.42, pattern: 0 },
+    carbonSteel: { name: 'Cold rolled steel', color: '#a2a9b1', metalness: 0.78, roughness: 0.4, pattern: 0 },
+    hotRolled: { name: 'Hot rolled steel (mill scale)', color: '#5d6166', metalness: 0.5, roughness: 0.74, pattern: 0 },
+    galvanized: { name: 'Galvanized steel', color: '#bfc5ca', metalness: 0.85, roughness: 0.44, pattern: 2 },
+    stainless: { name: 'Brushed stainless steel', color: '#c8ccd0', metalness: 0.92, roughness: 0.3, pattern: 1 },
+    aluminium: { name: 'Satin aluminium', color: '#d3d6da', metalness: 0.9, roughness: 0.36, pattern: 0 },
+    aluminiumSheet: { name: 'Mill finish aluminium sheet', color: '#d8dbdf', metalness: 0.92, roughness: 0.3, pattern: 1 },
+    brass: { name: 'Polished brass', color: '#dcb96a', metalness: 0.95, roughness: 0.28, pattern: 0 },
+    copper: { name: 'Polished copper', color: '#d98c5f', metalness: 0.95, roughness: 0.3, pattern: 0 },
+    bronze: { name: 'Bronze', color: '#c89d55', metalness: 0.92, roughness: 0.36, pattern: 0 },
+    titanium: { name: 'Titanium', color: '#a3a6aa', metalness: 0.85, roughness: 0.44, pattern: 0 }
+  };
+  var APPEARANCE_OF = {
+    'Plain Carbon Steel': 'carbonSteel', 'AISI 1020': 'carbonSteel', 'AISI 1045 Steel, cold drawn': 'carbonSteel', 'AISI 4130 Steel, normalized': 'carbonSteel',
+    'AISI 1018 Steel, cold rolled': 'carbonSteel', 'ASTM A36 Steel': 'hotRolled', 'Galvanized Steel': 'galvanized',
+    'AISI 304': 'stainless', 'AISI 316': 'stainless', '17-4 PH (H1150)': 'stainless',
+    '1060 Alloy': 'aluminiumSheet', '5052-H32': 'aluminiumSheet', '6061-T6 (SS)': 'aluminium', '7075-T6 (SN)': 'aluminium',
+    'Brass': 'brass', 'Copper': 'copper', 'Aluminium Bronze': 'bronze',
+    'Commercially Pure Titanium (Grade 2)': 'titanium', 'Ti-6Al-4V': 'titanium'
+  };
+  // plastics: their own colour, no metal, a gloss by grade
+  var PLASTIC_ROUGHNESS = { 'ABS': 0.45, 'PLA': 0.5, 'Nylon 6/6': 0.6, 'Acetal (POM)': 0.4, 'Polycarbonate': 0.16, 'Acrylic (PMMA)': 0.1 };
+  function finishCopy(f, color) { return { name: f.name, color: color || f.color, metalness: f.metalness, roughness: f.roughness, pattern: f.pattern }; }
+  // appearance(material | name | null) -> { name, color, metalness, roughness, pattern } (null: the no-material grey)
+  function appearance(m) {
+    if (m != null && !(typeof m === 'object' && m.name && m.density)) m = find(m);
+    if (!m) return finishCopy(FINISHES.none);
+    if (APPEARANCE_OF[m.name]) return finishCopy(FINISHES[APPEARANCE_OF[m.name]]);
+    if (m.finish && FINISHES[m.finish]) return finishCopy(FINISHES[m.finish]);
+    if (!m.metal) return { name: 'Plastic, ' + m.name, color: m.color, metalness: 0, roughness: PLASTIC_ROUGHNESS[m.name] != null ? PLASTIC_ROUGHNESS[m.name] : 0.45, pattern: 0 };
+    return { name: 'Metal, ' + m.name, color: m.color, metalness: 0.85, roughness: 0.4, pattern: 0 };
+  }
+  // appearanceOf(model) -> the part's appearance: its material's, with a colour of its own (p.color, a colour that is not
+  // the material's) kept as the base colour; no material = the satin grey in the part's display colour
+  function appearanceOf(model) {
+    var m = of(model), c = model && model.color ? displayColor(model.color) : null;
+    if (!m) return finishCopy(FINISHES.none, c || DEFAULT_COLOR);
+    var a = appearance(m);
+    if (c && c.toLowerCase() !== String(m.color).toLowerCase()) a.color = c;
+    return a;
+  }
+  function appearanceKey(a) { return [a.color, a.metalness, a.roughness, a.pattern].join('|'); }
+  // bodyAppearances(model, build) -> [appearance per body] (assemblies: per component, from its part), or null for a part
+  // without body materials (every body looks like the part: appearanceOf(model)). The viewer draws a list whose entries
+  // share one appearanceKey without per-vertex data.
+  function bodyAppearances(model, build) {
+    if (!model || !build) return null;
+    var out = [];
+    if (model.type === 'assembly') {
+      var cache = build.cache || {};
+      out = (model.components || []).map(function (c) { var e = cache[JSON.stringify(c.source)]; return appearanceOf(e && e.model ? e.model : null); });
+    } else {
+      if (!hasBodyMaterials(model)) return null;
+      var n = bodyList(build).length, base = appearanceOf(model);
+      for (var i = 0; i < n; i++) { var bm = bodyMaterial(model, build, i); out.push(bm.own ? appearance(bm.name) : base); }
+    }
+    return out.length ? out : null;
   }
 
   // ------------------------------------------------------------------ mass properties
@@ -432,7 +502,8 @@ var Materials = (function () {
     CLASSES: CLASSES, NONE: NONE, DEFAULT_DENSITY: DEFAULT_DENSITY, DEFAULT_COLOR: DEFAULT_COLOR, displayColor: displayColor, TYPES: TYPES, PRESETS: PRESETS, LINKS: LINKS,
     list: list, classes: classes, find: find, favorites: favorites,
     of: of, materialName: materialName, apply: apply, applyToBody: applyToBody, hasBodyMaterials: hasBodyMaterials,
-    bodyMaterial: bodyMaterial, bodyColors: bodyColors, massProps: massProps, assemblyMass: assemblyMass, bodyIntegrals: bodyIntegrals,
+    bodyMaterial: bodyMaterial, bodyColors: bodyColors, FINISHES: FINISHES, appearance: appearance, appearanceOf: appearanceOf, appearanceKey: appearanceKey, bodyAppearances: bodyAppearances,
+    massProps: massProps, assemblyMass: assemblyMass, bodyIntegrals: bodyIntegrals,
     volumeToM3: volumeToM3, formatMass: formatMass, link: link,
     defaultProperties: defaultProperties, custom: custom, configSpecific: configSpecific, setCustom: setCustom, setConfigSpecific: setConfigSpecific,
     setProperty: setProperty, effective: effective, evaluated: evaluated, context: context, system: system, evaluate: evaluate, isLinked: isLinked,

@@ -1805,3 +1805,8 @@ Tests (drawing-look push): kernel 2336 / 2336, examples 29 / 29, ui-smoke 899 / 
 - Head: every lane's first merge was checked with the full ui-smoke; chrome and drawing-look first failed 8 and 5 pick / drag groups because bars grew (status bar 22 -> 24, sheet tabs 25 -> 28 px) and shrank the graphics area / sheet; both restyled inside their old sizes. `?only=` takes one group name (the briefs' comma lists matched nothing). occt-tests not rerun (no engine file changed except drawing-render.js); examples 29 / 29 on both engines.
 Next: QUEUE.md *UI refurbish leftovers*.
 Tests: kernel 2336 / 2336, examples 29 / 29 both engines, ui-smoke 926 / 926, app loads with no console errors.
+
+## local-2026-11-03b (local, interactive head; 2 Opus agents): graphics roadmap, big wins first
+
+Context: the user, "start the graphics roadmap, big changes with big improvements first then nitty-gritty work", after clarifying that the no-blue rule is for the UI only, not solids (card updated, 253c4af). Analytic smooth normals and GPU silhouettes already existed, so this round took the two big pieces.
+- realview (rfHC): RealView Graphics, physically based shading lit by a procedural soft-box studio (PMREM) on the camera; appearances per material (brass / copper polished, aluminium satin, stainless brushed, galvanized spangle, cold-rolled cool blue-grey, hot-rolled dark matte; new AISI 1018 CR and ASTM A36); off = pixel-identical old look; overlay colours exact; default on with a GPU, off on software WebGL; anvil.realView(on?) (head added the ui-app.js line). Kernel 2339 / 2339, examples 29 / 29 both engines, ui-smoke 931 / 931.

@@ -124,8 +124,10 @@
         PROPS.forEach(function (p) { tb.appendChild(el('tr', { 'data-prop': p[1] }, [el('td', { text: p[0] }), el('td', { class: 'num', text: String(m[p[1]]) }), el('td', { text: p[2] })])); });
         right.appendChild(tb);
       } else {
-        right.appendChild(el('div', { class: 'mat-appearance' }, [el('div', { class: 'mat-swatch', style: 'background:' + m.color }), el('div', {}, [el('div', { text: m.metal ? 'Polished ' + m.category.toLowerCase().replace(/s$/, '') : 'Plastic, ' + m.name }), el('div', { class: 'v', text: m.color })])]));
-        right.appendChild(el('div', { class: 'mat-note', text: 'The part (or body) takes this colour in the viewport when the material is applied.' }));
+        // rfHC: the RealView appearance (materials.js appearance) beside the flat colour shown with RealView off
+        var ap = MT.appearance ? MT.appearance(m) : null;
+        right.appendChild(el('div', { class: 'mat-appearance' }, [el('div', { class: 'mat-swatch', style: 'background:' + (ap ? ap.color : m.color) }), el('div', {}, [el('div', { class: 'mat-ap-name', text: ap ? ap.name : (m.metal ? 'Polished ' + m.category.toLowerCase().replace(/s$/, '') : 'Plastic, ' + m.name) }), el('div', { class: 'v', text: ap ? 'RealView ' + ap.color + ', metalness ' + ap.metalness + ', roughness ' + ap.roughness + (ap.pattern === 1 ? ', brushed' : ap.pattern === 2 ? ', spangle' : '') : m.color }), el('div', { class: 'v', text: 'Flat colour ' + m.color })])]));
+        right.appendChild(el('div', { class: 'mat-note', text: 'The part (or body) takes this appearance in the viewport when the material is applied: the RealView appearance with RealView on, the flat colour with it off.' }));
       }
       right.appendChild(msg);
     }
