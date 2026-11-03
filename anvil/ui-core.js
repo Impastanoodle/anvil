@@ -199,6 +199,8 @@ var UI = (function () {
   })();
 
   // ------------------------------------------------------------------ camera model
+  // rfHG zoom display mesh state (see "zoom tessellation" below); declared early, read by picking / edges / highlights
+  var zt = { map: null, faceSet: null, curveRefined: null, base: null, disp: null, sil: null, key: null, info: null };
   var cam = { target: new THREE.Vector3(0, 0, 0), dir: new THREE.Vector3(1, 1, 1).normalize(), up: new THREE.Vector3(0, 1, 0), scale: 0.35, right: new THREE.Vector3(1, 0, 0) };
   var size = { w: 1, h: 1 };
   var DIST = 10000;
@@ -642,6 +644,7 @@ var UI = (function () {
   }
 
   function updateBodyMesh() {
+    ztDrop();   // rfHG: the zoom display mesh belongs to the old body
     disposeGroup(groups.body); disposeGroup(groups.edges);
     bodyMesh = null; crackFill = null; edgeLines = null; silLines = null; edgeScr.edges = null; pickMemo.key = null; App.displayWarning = null;
     var m = App.mesh;
@@ -1496,6 +1499,7 @@ var UI = (function () {
     var faces = m.faces, pos = [], na = [], nb = [];
     (App.edges || []).forEach(function (e) {
       if (!e.smooth || e.faces.length !== 2 || !edgeVisible(e)) return;
+      if (zt.faceSet && zt.faceSet[e.faces[0]] && zt.faceSet[e.faces[1]]) return;   // rfHG: drawn from the zoom display mesh
       var f1 = faces[e.faces[0]], f2 = faces[e.faces[1]];
       var n1 = f1 && f1.normal, n2 = f2 && f2.normal;
       if (!n1 || !n2 || V.dot(n1, n2) > 0.999999) return;   // coplanar split: never an outline
@@ -1514,6 +1518,8 @@ var UI = (function () {
     return o;
   }
   var visTris = null;  // rendered triangle -> global triangle, or null when nothing is hidden
+  // a triangle index of the drawn body geometry -> the App.mesh triangle (rfHG: the zoom display mesh has its own map)
+  function renderedTri(i) { return zt.map ? zt.map[i] : visTris ? visTris[i] : i; }
 
   // the edges worker.js found on the same mesh (a worker build): used when they fit it, else null (smooth/responsive)
   function edgesFromWorker(m) {
@@ -1717,7 +1723,10 @@ var UI = (function () {
       arr.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]);
     });
     var chord = arr.slice();
-    Object.keys(drawCurve).forEach(function (ci) { pushPolyline(arr, App.curves[ci].pts); pushPolyline(chord, curveChordFeet(App.curves[ci])); });
+    Object.keys(drawCurve).forEach(function (ci) {
+      pushPolyline(arr, App.curves[ci].pts);
+      pushPolyline(chord, zt.curveRefined && zt.curveRefined[ci] ? App.curves[ci].pts : curveChordFeet(App.curves[ci]));   // rfHG: its faces reach the circle
+    });
     var g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
     g.setAttribute('chord', new THREE.Float32BufferAttribute(chord, 3));   // rfHG: read by the thick-line shader
@@ -1756,6 +1765,406 @@ var UI = (function () {
     });
   }
 
+  // ------------------------------------------------------------------ rfHG: zoom tessellation (display only)
+  // Round faces stay round at any zoom: when the view has been still for ZT.stillMs after a zoom or pan, every cylinder
+  // / cone face on screen whose facets leave more than ZT.needPx of chord error at the current scale (cam.scale = model
+  // units per pixel) is drawn from a finer display mesh: each of its triangles split into k × k and every new vertex
+  // moved onto the exact surface (radially, keeping its axial coordinate, so a rim stays in its plane). Any other
+  // triangle sharing a split edge (the plate round a hole, a cap, a neighbouring face) takes the same points on that
+  // edge (a fan), so nothing cracks. One k for the whole refined set (shared circles match), chosen for the worst face;
+  // faces are taken largest on screen first, nearest the centre next, until ZT.budget × ZT.level extra triangles. Back
+  // to the base mesh when nothing needs it (zoomed out). App.mesh, picking, exports, mass and the edges' topology stay
+  // the kernel's: the drawn geometry maps each triangle back (zt.map → renderedTri), highlights are cut from it
+  // (ztRangeGeometry), silhouettes of refined faces come from its sub-facets, and their rim lines drop the chord band.
+  // Spheres and tori are not refined yet. UI.zoomTess: { now, info, setLevel (0 off .. 1; the adaptive governor's
+  // hook), setBudget, enabled }.
+  var ZT = { on: true, level: 1, budget: 400000, tolPx: 0.35, needPx: 0.5, maxK: 16, stillMs: 150 };
+  function ztKey(x, y, z) { return Math.round(x * 1e4) + ',' + Math.round(y * 1e4) + ',' + Math.round(z * 1e4); }
+  function ztSurfKey(S) { function q(x) { return Math.round(x * 1e6); } return S.t + ':' + S.o.map(q) + ':' + S.d.map(q) + ':' + q(S.r) + ':' + q(S.k || 0); }
+  function ztRadiusAt(S, z) { return Math.abs(S.t === 'cone' ? S.r + (S.k || 0) * z : S.r); }
+  // p (3 numbers) moved onto S radially at its own axial coordinate -> [x, y, z]
+  function ztProj(S, x, y, z) {
+    var o = S.o, d = S.d, vx = x - o[0], vy = y - o[1], vz = z - o[2], h = vx * d[0] + vy * d[1] + vz * d[2];
+    var rx = vx - d[0] * h, ry = vy - d[1] * h, rz = vz - d[2] * h, rl = Math.sqrt(rx * rx + ry * ry + rz * rz);
+    if (rl < 1e-12) return [x, y, z];
+    var s = ztRadiusAt(S, h) / rl;
+    return [o[0] + d[0] * h + rx * s, o[1] + d[1] * h + ry * s, o[2] + d[2] * h + rz * s];
+  }
+  // per mesh, once: which triangles lie on which cylinder / cone, with each group's box, largest radius and the
+  // largest angle one of its triangles spans round the axis
+  function ztAnalyse(m) {
+    var P = m.positions64 || m.positions, triG = new Int32Array(m.triCount).fill(-1), gs = [], byKey = {};
+    m.faces.forEach(function (f, fi) {
+      var t = f.start;
+      f.polys.forEach(function (p) {
+        var n = p.vertices.length - 2, S = p.surf && p.surf.s, gi = -1;
+        if (S && (S.t === 'cyl' || S.t === 'cone') && !p.surf.fc && S.o && S.d) {
+          var key = ztSurfKey(S) + '|' + (f.body || 0);
+          gi = byKey[key];
+          if (gi == null) { gi = byKey[key] = gs.length; gs.push({ id: gi, S: S, tris: [], faces: {}, box: [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity], R: 0, theta: 0 }); }
+        }
+        for (var i = 0; i < n; i++, t++) if (gi >= 0) { triG[t] = gi; gs[gi].tris.push(t); gs[gi].faces[fi] = 1; }
+      });
+    });
+    gs.forEach(function (g) {
+      var S = g.S, d = S.d, e1 = Math.abs(d[0]) < 0.9 ? V.norm(V.cross(d, [1, 0, 0])) : V.norm(V.cross(d, [0, 1, 0])), e2 = V.cross(d, e1), keep = [];
+      g.tris.forEach(function (t) {
+        var a = [], ok = true;
+        for (var c = 0; c < 3; c++) {
+          var o = t * 9 + c * 3, x = P[o], y = P[o + 1], z = P[o + 2], b = g.box;
+          if (x < b[0]) b[0] = x; if (y < b[1]) b[1] = y; if (z < b[2]) b[2] = z; if (x > b[3]) b[3] = x; if (y > b[4]) b[4] = y; if (z > b[5]) b[5] = z;
+          var v = [x - S.o[0], y - S.o[1], z - S.o[2]], h = V.dot(v, d), R = ztRadiusAt(S, h), rv = V.sub(v, V.scale(d, h));
+          if (V.len(rv) < 1e-9 * Math.max(1, R)) { ok = false; break; }   // on the axis (a cone's apex): left as it is
+          g.R = Math.max(g.R, R);
+          a.push(Math.atan2(V.dot(rv, e2), V.dot(rv, e1)));
+        }
+        if (!ok) { triG[t] = -1; return; }
+        keep.push(t);
+        for (var i = 0; i < 3; i++) for (var j = i + 1; j < 3; j++) { var w = Math.abs(a[i] - a[j]); if (w > Math.PI) w = 2 * Math.PI - w; if (w > g.theta) g.theta = w; }
+      });
+      g.tris = keep;
+    });
+    return { triG: triG, groups: gs.filter(function (g) { return g.tris.length && g.R > 0; }) };
+  }
+  function ztEligible() {
+    var m = App.mesh;
+    return ZT.on && ZT.level > 0 && !!bodyMesh && !!m && m.triCount > 0 && !!m.faces && !!(m.faces[0] && m.faces[0].polys) &&
+      !(App.build && App.build.assembly) && !flatShown() && App.view.style !== 'wireframe';
+  }
+  // -> { k, groups, key } (groups empty: the base mesh is enough)
+  function ztPlan() {
+    if (!ztEligible()) return { k: 1, groups: [], key: '' };
+    var m = App.mesh, A = m._zt || (m._zt = ztAnalyse(m)), s = cam.scale, tol = ZT.tolPx * s, need = ZT.needPx * s;
+    var budget = ZT.budget * Math.max(0, Math.min(1, ZT.level)), cands = [], cx = size.w / 2, cy = size.h / 2;
+    A.groups.forEach(function (g) {
+      if (g.R * (1 - Math.cos(g.theta / 2)) <= need) return;
+      var b = g.box, x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (var c = 0; c < 8; c++) { var q = worldToScreen([c & 1 ? b[3] : b[0], c & 2 ? b[4] : b[1], c & 4 ? b[5] : b[2]]); x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); y0 = Math.min(y0, q[1]); y1 = Math.max(y1, q[1]); }
+      var w = Math.min(x1, size.w) - Math.max(x0, 0), h = Math.min(y1, size.h) - Math.max(y0, 0);
+      if (!(w > 0 && h > 0)) return;   // off screen
+      var step = 2 * Math.acos(Math.max(-1, 1 - tol / g.R)), k = Math.min(ZT.maxK, Math.max(2, Math.ceil(g.theta / step - 1e-9)));
+      cands.push({ g: g, k: k, area: w * h, dist: Math.hypot((x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy) });
+    });
+    cands.sort(function (a, b) { return b.area - a.area || a.dist - b.dist; });
+    var sel = [], kG = 1, n = 0;
+    for (var i = 0; i < cands.length; i++) {
+      var kN = Math.max(kG, cands[i].k), nN = n + cands[i].g.tris.length;
+      if (nN * (kN * kN - 1) > budget) break;
+      sel.push(cands[i].g); kG = kN; n = nN;
+    }
+    sel.sort(function (a, b) { return a.id - b.id; });
+    return { k: kG, groups: sel, key: sel.length ? kG + '|' + sel.map(function (g) { return g.id; }).join(',') : '' };
+  }
+  // the display geometry for a plan -> { geom, map, start (base triangle -> first display triangle, triCount + 1),
+  // edges (split base edges), sil (LineSegments of the refined faces' sub-facet seams), faceSet }
+  function ztBuild(plan) {
+    var m = App.mesh, A = m._zt, P = m.positions64 || m.positions, SN = analyticNormals(m), FN = m.normals, k = plan.k, hid = App.triHidden;
+    var on = {}, faceSet = {};
+    plan.groups.forEach(function (g) { on[g.id] = g; Object.keys(g.faces).forEach(function (fi) { faceSet[fi] = 1; }); });
+    function corner(t, c) { var o = t * 9 + c * 3; return [P[o], P[o + 1], P[o + 2]]; }
+    function ck(p) { return ztKey(p[0], p[1], p[2]); }
+    // 1. split edges of the refined triangles: base edge key -> { a (key of the end the points start from), pts }
+    var edges = new Map(), redges = [];
+    plan.groups.forEach(function (g) {
+      g.tris.forEach(function (t) {
+        if (hid && hid[t]) return;
+        for (var e = 0; e < 3; e++) {
+          var p = corner(t, e), q = corner(t, (e + 1) % 3), kp = ck(p), kq = ck(q), key = kp < kq ? kp + '|' + kq : kq + '|' + kp;
+          if (edges.has(key)) continue;
+          var a = kp < kq ? p : q, b = kp < kq ? q : p, pts = [];
+          for (var i = 0; i <= k; i++) { var u = i / k; pts.push(i === 0 ? a : i === k ? b : ztProj(g.S, a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u)); }
+          var en = { a: kp < kq ? kp : kq, pa: a, pb: b, pts: pts, g: g.id, S: g.S };
+          edges.set(key, en); redges.push(en);
+        }
+      });
+    });
+    // the booleans leave T-junctions: a neighbour's side may be a PIECE of a refined edge (a plate round a hole is cut
+    // into fragments whose sides end part-way along the hole's chords). A grid over the refined edges finds the edge a
+    // point lies on; such a point is moved onto the surface for every triangle that uses it (no crack), and a piece takes
+    // the edge's points between its ends.
+    var cell = 0, egrid = new Map(), eps = 0;
+    redges.forEach(function (e) { cell = Math.max(cell, V.len(V.sub(e.pb, e.pa))); eps = Math.max(eps, ztRadiusAt(e.S, 0)); });
+    cell = cell || 1; eps = 2e-6 * Math.max(1, eps);
+    function cellKey(x, y, z) { return Math.floor(x / cell) + ',' + Math.floor(y / cell) + ',' + Math.floor(z / cell); }
+    redges.forEach(function (e, ei) {
+      var x0 = Math.floor(Math.min(e.pa[0], e.pb[0]) / cell), x1 = Math.floor(Math.max(e.pa[0], e.pb[0]) / cell), y0 = Math.floor(Math.min(e.pa[1], e.pb[1]) / cell), y1 = Math.floor(Math.max(e.pa[1], e.pb[1]) / cell), z0 = Math.floor(Math.min(e.pa[2], e.pb[2]) / cell), z1 = Math.floor(Math.max(e.pa[2], e.pb[2]) / cell);
+      for (var x = x0; x <= x1; x++) for (var y = y0; y <= y1; y++) for (var z = z0; z <= z1; z++) { var ck2 = x + ',' + y + ',' + z, L = egrid.get(ck2); if (!L) egrid.set(ck2, L = []); L.push(ei); }
+    });
+    // -> [{ e, t }] the refined edges point p lies on (t: its parameter from e.pa)
+    function onEdges(p) {
+      var L = egrid.get(cellKey(p[0], p[1], p[2])), out = [];
+      if (!L) return out;
+      for (var i = 0; i < L.length; i++) {
+        var e = redges[L[i]], ab = V.sub(e.pb, e.pa), l2 = V.dot(ab, ab);
+        if (!(l2 > 0)) continue;
+        var t = V.dot(V.sub(p, e.pa), ab) / l2;
+        if (t < -1e-9 || t > 1 + 1e-9) continue;
+        if (V.len(V.sub(p, V.add(e.pa, V.scale(ab, t)))) <= eps) out.push({ e: e, t: t });
+      }
+      return out;
+    }
+    var zbox = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    plan.groups.forEach(function (g) { for (var i = 0; i < 3; i++) { zbox[i] = Math.min(zbox[i], g.box[i] - eps); zbox[i + 3] = Math.max(zbox[i + 3], g.box[i + 3] + eps); } });
+    function inZbox(p) { return p[0] >= zbox[0] && p[0] <= zbox[3] && p[1] >= zbox[1] && p[1] <= zbox[4] && p[2] >= zbox[2] && p[2] <= zbox[5]; }
+    var moved = new Map();
+    function place(p) {
+      var key = ck(p), q = moved.get(key);
+      if (q !== undefined) return q || p;
+      var on = onEdges(p);
+      q = on.length ? ztProj(on[0].e.S, p[0], p[1], p[2]) : null;
+      moved.set(key, q);
+      return q || p;
+    }
+    // the refined edges' points strictly inside side p -> q, ordered from p: the side may be a piece of a refined edge
+    // or run along one or more of them (a BSP cut along a hole's facet plane makes plate edges that pass through the
+    // hole's vertices); [] when none
+    function along(p, q) {
+      var pq = V.sub(q, p), l2 = V.dot(pq, pq), L = Math.sqrt(l2), seen = new Set(), out = [];
+      if (!(l2 > 0)) return out;
+      var steps = Math.min(4096, Math.ceil(L / cell) * 2 + 1);
+      for (var s = 0; s <= steps; s++) {
+        var x = V.add(p, V.scale(pq, s / steps));
+        if (!inZbox(x)) continue;
+        var C = egrid.get(cellKey(x[0], x[1], x[2]));
+        if (!C) continue;
+        for (var i = 0; i < C.length; i++) {
+          if (seen.has(C[i])) continue;
+          seen.add(C[i]);
+          var e = redges[C[i]], ta = V.dot(V.sub(e.pa, p), pq) / l2, tb = V.dot(V.sub(e.pb, p), pq) / l2;
+          if (Math.max(ta, tb) < 1e-9 || Math.min(ta, tb) > 1 - 1e-9) continue;
+          if (V.len(V.sub(e.pa, V.add(p, V.scale(pq, ta)))) > eps || V.len(V.sub(e.pb, V.add(p, V.scale(pq, tb)))) > eps) continue;   // not along pq
+          for (var j = 0; j <= k; j++) { var u = ta + (tb - ta) * j / k; if (u > 1e-9 && u < 1 - 1e-9) out.push({ u: u, p: e.pts[j] }); }
+        }
+      }
+      out.sort(function (a, b) { return a.u - b.u; });
+      var res = [];
+      for (var r = 0; r < out.length; r++) if (!r || out[r].u - out[r - 1].u > 1e-9) res.push(out[r].p);
+      return res;
+    }
+    var pos = [], nor = [], map = [], start = new Int32Array(m.triCount + 1), sil = [], s1 = [], s2 = [], subEdge = new Map(), fans = 0;
+    function emit(t, a, b, c, na, nb, nc) {
+      pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+      nor.push(na[0], na[1], na[2], nb[0], nb[1], nb[2], nc[0], nc[1], nc[2]);
+      map.push(t);
+    }
+    function nrm(t, c) { var o = t * 9 + c * 3; return [SN[o], SN[o + 1], SN[o + 2]]; }
+    function flat(t) { var o = t * 9; return [FN[o], FN[o + 1], FN[o + 2]]; }
+    function triN(a, b, c) { return V.norm(V.cross(V.sub(b, a), V.sub(c, a))); }
+    function silPair(a, b, n1, n2) { if (V.dot(n1, n2) > 0.999999) return; sil.push(a[0], a[1], a[2], b[0], b[1], b[2]); s1.push(n1[0], n1[1], n1[2], n1[0], n1[1], n1[2]); s2.push(n2[0], n2[1], n2[2], n2[0], n2[1], n2[2]); }
+    for (var t = 0; t < m.triCount; t++) {
+      start[t] = map.length;
+      if (hid && hid[t]) continue;
+      var gi = A.triG[t], G = gi >= 0 ? on[gi] : null, C0 = corner(t, 0), C1 = corner(t, 1), C2 = corner(t, 2);
+      if (G) {
+        // k × k: grid point (i, j) = C0 + (C1 − C0) i/k + (C2 − C0) j/k on the surface; normals from the surface, on the facet's side
+        var S = G.S, fl = flat(t), grid = [], gn = [], idx = function (i, j) { return i * (k + 1) - (i * (i - 1)) / 2 + j; };
+        for (var i = 0; i <= k; i++) for (var j = 0; j <= k - i; j++) {
+          var u = i / k, v = j / k, p = (i === 0 && j === 0) ? C0 : (i === k) ? C1 : (j === k) ? C2 : ztProj(S, C0[0] + (C1[0] - C0[0]) * u + (C2[0] - C0[0]) * v, C0[1] + (C1[1] - C0[1]) * u + (C2[1] - C0[1]) * v, C0[2] + (C1[2] - C0[2]) * u + (C2[2] - C0[2]) * v);
+          var n = K.surfNormalAt(S, p, C0) || fl;
+          if (V.dot(n, fl) < 0) n = [-n[0], -n[1], -n[2]];
+          grid[idx(i, j)] = p; gn[idx(i, j)] = n;
+        }
+        var upN = {};
+        for (i = 0; i < k; i++) for (j = 0; j < k - i; j++) {
+          var a0 = idx(i, j), a1 = idx(i + 1, j), a2 = idx(i, j + 1);
+          emit(t, grid[a0], grid[a1], grid[a2], gn[a0], gn[a1], gn[a2]);
+          upN[i + ',' + j] = triN(grid[a0], grid[a1], grid[a2]);
+        }
+        for (i = 0; i < k; i++) for (j = 0; j < k - i; j++) {
+          var nU = upN[i + ',' + j];
+          if (i + j < k - 1) {
+            var b0 = idx(i + 1, j), b1 = idx(i + 1, j + 1), b2 = idx(i, j + 1);
+            emit(t, grid[b0], grid[b1], grid[b2], gn[b0], gn[b1], gn[b2]);
+            var nD = triN(grid[b0], grid[b1], grid[b2]);
+            silPair(grid[b2], grid[b0], nU, nD);                        // shared with up (i, j)
+            silPair(grid[b0], grid[b1], upN[(i + 1) + ',' + j], nD);    // with up (i + 1, j)
+            silPair(grid[b1], grid[b2], upN[i + ',' + (j + 1)], nD);    // with up (i, j + 1)
+          }
+          // sub-edges on the base triangle's sides pair with the neighbouring refined triangle's
+          var side = [];
+          if (j === 0) side.push([0, i, grid[idx(i, j)], grid[idx(i + 1, j)]]);
+          if (i + j === k - 1) side.push([1, j, grid[idx(i + 1, j)], grid[idx(i, j + 1)]]);
+          if (i === 0) side.push([2, k - 1 - j, grid[idx(0, j + 1)], grid[idx(0, j)]]);
+          side.forEach(function (sd) {
+            var cA = [C0, C1, C2][sd[0]], cB = [C0, C1, C2][(sd[0] + 1) % 3], kA = ck(cA), kB = ck(cB);
+            var key = (kA < kB ? kA + '|' + kB + '#' + sd[1] : kB + '|' + kA + '#' + (k - 1 - sd[1]));
+            var prev = subEdge.get(key);
+            if (prev) { if (prev.g === G.id) silPair(sd[2], sd[3], prev.n, nU); subEdge.delete(key); }
+            else subEdge.set(key, { g: G.id, n: nU });
+          });
+        }
+        continue;
+      }
+      // a triangle beside a refined face: corners on a refined edge move onto the surface, split sides (whole edges or
+      // pieces) take the same points, fanned
+      var orig = [C0, C1, C2], ns = [nrm(t, 0), nrm(t, 1), nrm(t, 2)], split = [], nSplit = 0;
+      var near = redges.length > 0;   // the triangle's box meets the refined faces' box
+      for (var ax = 0; ax < 3 && near; ax++) if (Math.max(C0[ax], C1[ax], C2[ax]) < zbox[ax] || Math.min(C0[ax], C1[ax], C2[ax]) > zbox[ax + 3]) near = false;
+      var cs = near ? orig.map(place) : orig;
+      for (var e = 0; e < 3; e++) {
+        var sp = null;
+        if (near) {
+          var p0 = orig[e], p1 = orig[(e + 1) % 3], k0 = ck(p0), k1 = ck(p1), en = edges.get(k0 < k1 ? k0 + '|' + k1 : k1 + '|' + k0);
+          if (en) sp = (en.a === k0 ? en.pts : en.pts.slice().reverse()).slice(1, -1);
+          else sp = along(p0, p1);
+        }
+        if (sp && sp.length) { split.push(sp); nSplit++; } else split.push([]);
+      }
+      if (!nSplit) { emit(t, cs[0], cs[1], cs[2], ns[0], ns[1], ns[2]); continue; }
+      C0 = cs[0]; C1 = cs[1]; C2 = cs[2];
+      fans++;
+      function lerpN(na, nb, u) { return V.norm([na[0] + (nb[0] - na[0]) * u, na[1] + (nb[1] - na[1]) * u, na[2] + (nb[2] - na[2]) * u]); }
+      var ring = [], rn = [];
+      for (e = 0; e < 3; e++) {
+        ring.push(cs[e]); rn.push(ns[e]);
+        var sp = split[e], L = sp.length;
+        for (var q = 0; q < L; q++) { ring.push(sp[q]); rn.push(lerpN(ns[e], ns[(e + 1) % 3], (q + 1) / (L + 1))); }
+      }
+      if (nSplit === 1) {
+        var se = split[0].length ? 0 : split[1].length ? 1 : 2, oc = (se + 2) % 3, seq = [cs[se]].concat(split[se], [cs[(se + 1) % 3]]), sqn = [ns[se]];
+        for (q = 0; q < split[se].length; q++) sqn.push(lerpN(ns[se], ns[(se + 1) % 3], (q + 1) / (split[se].length + 1)));
+        sqn.push(ns[(se + 1) % 3]);
+        for (q = 0; q + 1 < seq.length; q++) emit(t, seq[q], seq[q + 1], cs[oc], sqn[q], sqn[q + 1], ns[oc]);
+      } else {
+        var cen = [(C0[0] + C1[0] + C2[0]) / 3, (C0[1] + C1[1] + C2[1]) / 3, (C0[2] + C1[2] + C2[2]) / 3], cn = V.norm(V.add(V.add(ns[0], ns[1]), ns[2]));
+        for (q = 0; q < ring.length; q++) emit(t, ring[q], ring[(q + 1) % ring.length], cen, rn[q], rn[(q + 1) % ring.length], cn);
+      }
+    }
+    start[m.triCount] = map.length;
+    var g = new THREE.BufferGeometry(), base = zt.base || bodyMesh.geometry;
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    var mapA = new Int32Array(map);
+    // any per-vertex body data (body colours, RealView appearances) from the base triangle's first corner
+    Object.keys(base.attributes).forEach(function (name) {
+      if (name === 'position' || name === 'normal') return;
+      var src = base.attributes[name], isz = src.itemSize, out = new Float32Array(mapA.length * 3 * isz);
+      for (var d = 0; d < mapA.length; d++) for (var c = 0; c < 3; c++) for (var w = 0; w < isz; w++) out[(d * 3 + c) * isz + w] = src.array[mapA[d] * 3 * isz + w];
+      g.setAttribute(name, new THREE.BufferAttribute(out, isz));
+    });
+    if (base.__rvKey) g.__rvKey = base.__rvKey;
+    var silObj = null;
+    if (sil.length) {
+      var sg = new THREE.BufferGeometry();
+      sg.setAttribute('position', new THREE.Float32BufferAttribute(sil, 3));
+      sg.setAttribute('n1', new THREE.Float32BufferAttribute(s1, 3));
+      sg.setAttribute('n2', new THREE.Float32BufferAttribute(s2, 3));
+      silObj = new THREE.LineSegments(sg, silMat);
+      silObj.frustumCulled = false;
+      silObj.userData.silhouette = true;
+      silObj.userData.zoomTess = true;
+    }
+    // a curve whose chords (or chord pieces) all lie on refined edges: its faces reach the true circle, the edge line
+    // needs no chord band
+    var curveRefined = {};
+    (App.curves || []).forEach(function (c, ci) {
+      var ch = c && c.curve && c.curve.chords;
+      if (ch && ch.length && ch.every(function (q) { return onEdges(q[0]).some(function (h) { return onEdges(q[1]).some(function (h2) { return h2.e === h.e; }); }); })) curveRefined[ci] = 1;
+    });
+    return { geom: g, map: mapA, start: start, edges: edges, sil: silObj, faceSet: faceSet, fans: fans, curveRefined: curveRefined };
+  }
+  // rebuild the drawn edges and silhouettes for the geometry now on the body (after a swap either way)
+  function ztRedrawLines() {
+    if (!edgeLines) return;
+    var old = edgeLines.geometry;
+    edgeLines.geometry = buildEdgeGeometry(App.mesh);
+    if (old) old.dispose();
+    if (silLines) { groups.edges.remove(silLines); silLines.geometry.dispose(); silLines = null; }
+    silLines = buildSilhouettes(App.mesh);
+    if (silLines) groups.edges.add(silLines);
+    var s = App.view.style;
+    if (silLines) silLines.visible = s !== 'shaded';
+    if (zt.sil) zt.sil.visible = s !== 'shaded';
+  }
+  function ztSwap(plan, built) {
+    if (!zt.base) zt.base = bodyMesh.geometry;
+    else if (zt.disp) zt.disp.dispose();
+    if (zt.sil) { groups.edges.remove(zt.sil); zt.sil.geometry.dispose(); }
+    zt.disp = built.geom; zt.map = built.map; zt.start = built.start; zt.faceSet = built.faceSet; zt.key = plan.key; zt.sil = built.sil;
+    bodyMesh.geometry = built.geom;
+    if (crackFill) crackFill.geometry = built.geom;
+    zt.curveRefined = built.curveRefined;
+    if (zt.sil) groups.edges.add(zt.sil);
+    ztRedrawLines();
+    zt.info = { k: plan.k, faces: plan.groups.length, baseTris: App.mesh.triCount, tris: built.map.length, fanned: built.fans, curves: Object.keys(zt.curveRefined).length };
+    ztAfterSwap();
+  }
+  function ztAfterSwap() {
+    pickMemo.key = null;
+    sceneVer++;
+    needsRender = true;
+    try { updateHighlights(); } catch (e) { }
+  }
+  // back to the kernel's mesh (zoomed out, a style change, a new body)
+  function ztRestore() {
+    if (!zt.base) return false;
+    if (bodyMesh) { bodyMesh.geometry = zt.base; if (crackFill) crackFill.geometry = zt.base; }
+    if (zt.disp) zt.disp.dispose();
+    if (zt.sil) { groups.edges.remove(zt.sil); zt.sil.geometry.dispose(); }
+    zt.base = zt.disp = zt.map = zt.start = zt.faceSet = zt.curveRefined = zt.sil = null; zt.key = null; zt.doneKey = null;
+    zt.info = App.mesh ? { k: 1, faces: 0, baseTris: App.mesh.triCount, tris: App.mesh.triCount } : null;
+    ztRedrawLines();
+    ztAfterSwap();
+    return true;
+  }
+  function ztDrop() {
+    if (zt.base && zt.base !== (bodyMesh && bodyMesh.geometry)) zt.base.dispose();
+    zt.base = zt.disp = zt.map = zt.start = zt.faceSet = zt.curveRefined = zt.sil = null; zt.key = null; zt.doneKey = null; zt.info = null;
+  }
+  // re-plan for the view now: refine, change the refined set, or go back to the base mesh -> zt.info
+  function ztUpdate() {
+    var plan = ztPlan();
+    if (!plan.groups.length) {
+      ztRestore();
+      var n = App.mesh ? App.mesh.triCount : 0;
+      return (zt.info = { k: 1, faces: 0, baseTris: n, tris: n });
+    }
+    if (plan.key === zt.key && zt.base) return zt.info;
+    var t0 = performance.now(), built = ztBuild(plan);
+    ztSwap(plan, built);
+    zt.info.ms = Math.round(performance.now() - t0);
+    return zt.info;
+  }
+  // highlights cut from the display geometry: base triangle ranges -> their display triangles
+  function ztRangeGeometry(ranges) {
+    var src = zt.disp.attributes.position.array, total = 0;
+    ranges.forEach(function (r) { total += zt.start[r[0] + r[1]] - zt.start[r[0]]; });
+    var pos = new Float32Array(total * 9), o = 0;
+    ranges.forEach(function (r) { var a = zt.start[r[0]], b = zt.start[r[0] + r[1]]; pos.set(src.subarray(a * 9, b * 9), o); o += (b - a) * 9; });
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    return g;
+  }
+  // the still-view check: a cheap comparison every 100 ms, the work only once the view has rested ZT.stillMs
+  function ztCamKey() { return [cam.scale, cam.target.x, cam.target.y, cam.target.z, cam.dir.x, cam.dir.y, cam.dir.z, size.w, size.h, App.view.style].join(','); }
+  var ztMeshIds = 0;
+  function ztTick() {
+    try {
+      if (!ZT.on || !App.mesh) return;
+      if (!(ZT.level > 0)) { if (zt.base) ztRestore(); return; }
+      var key = ztCamKey(), now = performance.now();
+      if (key !== zt.camKey) { zt.camKey = key; zt.camAt = now; return; }
+      if (now - zt.camAt < ZT.stillMs || App.rebuilding || viewAnimating()) return;
+      var m = App.mesh, done = key + '|' + (m._ztId || (m._ztId = ++ztMeshIds)) + '|' + ZT.level + '|' + ZT.budget + '|' + (bodyMesh ? bodyMesh.id : 0);
+      if (zt.doneKey === done) return;
+      zt.doneKey = done;
+      ztUpdate();
+    } catch (e) { console.warn('Zoom tessellation turned off:', e); ZT.on = false; try { ztRestore(); } catch (e2) { } }
+  }
+  setInterval(ztTick, 100);
+  // UI.zoomTess: now() re-plans for the view at once (tests) -> info; info() -> { k, faces, baseTris, tris, ms } | null;
+  // setLevel(0..1) scales the triangle budget (0 = off: the base mesh), for the adaptive quality governor;
+  // setBudget(n) extra triangles at level 1; enabled(on?) switches the whole thing
+  var zoomTessApi = {
+    now: function () { finishViewAnimation(); zt.doneKey = null; return ztEligible() || zt.base ? ztUpdate() : null; },
+    info: function () { return zt.info ? Object.assign({ level: ZT.level, budget: ZT.budget }, zt.info) : null; },
+    setLevel: function (x) { ZT.level = Math.max(0, Math.min(1, +x || 0)); zt.doneKey = null; return ZT.level; },
+    level: function () { return ZT.level; },
+    setBudget: function (n) { ZT.budget = Math.max(0, +n || 0); zt.doneKey = null; return ZT.budget; },
+    enabled: function (on) { if (on != null) { ZT.on = !!on; zt.doneKey = null; if (!ZT.on) ztRestore(); } return ZT.on; },
+    options: ZT
+  };
+
   // UI.setBodyHidden(index, hidden): viewport-only; rebuilds the drawn geometry from the visible faces.
   function setBodyHidden(index, hidden) {
     index = +index;
@@ -1789,6 +2198,7 @@ var UI = (function () {
   // rfBU: the colour a part is shown in (Materials.displayColor: none or the old bluish default -> the neutral grey)
   function partColor(c) { return window.Materials && Materials.displayColor ? Materials.displayColor(c) : (c || '#8c8c8c'); }
   function applyDisplayStyle() {
+    ztRestore();   // rfHG: per-vertex body data (colours, RealView appearances) is written on the kernel mesh's geometry
     var s = App.view.style;
     if (bodyMesh) { bodyMesh.visible = s !== 'wireframe'; bodyMesh.material = s === 'hlr' || s === 'hlv' ? mats.hlr : mats.part; }   // r13/lines13: hlv = Hidden Lines Visible
     if (edgeLines) edgeLines.visible = s !== 'shaded';
@@ -1857,6 +2267,7 @@ var UI = (function () {
     return -1;
   }
   function triRangeGeometry(ranges) {
+    if (zt.map) return ztRangeGeometry(ranges);   // rfHG: highlights follow the zoom display mesh
     var total = 0;
     ranges.forEach(function (r) { total += r[1]; });
     var pos = new Float32Array(total * 9), o = 0, src = App.mesh.positions;
@@ -2481,7 +2892,7 @@ var UI = (function () {
       var h = hits[i];
       if (App.view.section && App.view.section.plane.distanceToPoint(h.point) < 0) continue;
       // with hidden bodies the mesh is indexed and faceIndex counts rendered triangles; map it back to the global one
-      var tri = visTris ? visTris[h.faceIndex] : h.faceIndex;
+      var tri = renderedTri(h.faceIndex);
       return { kind: 'face', index: faceAtTriangle(tri), point: [h.point.x, h.point.y, h.point.z] };
     }
     return null;
@@ -2493,7 +2904,7 @@ var UI = (function () {
     var hits = raycaster.intersectObject(bodyMesh, false), out = [], seen = {};
     hits.forEach(function (h) {
       if (App.view.section && App.view.section.plane.distanceToPoint(h.point) < 0) return;
-      var fi = faceAtTriangle(visTris ? visTris[h.faceIndex] : h.faceIndex), grp = faceGroup(fi), key = grp && grp.length ? grp[0] : fi;
+      var fi = faceAtTriangle(renderedTri(h.faceIndex)), grp = faceGroup(fi), key = grp && grp.length ? grp[0] : fi;
       if (seen[key]) return;
       seen[key] = 1;
       out.push({ kind: 'face', index: fi, point: [h.point.x, h.point.y, h.point.z] });
@@ -3898,7 +4309,7 @@ var UI = (function () {
     rebuildPending: function () { return !!(wk.inflight || wk.pending); },
     getBodyMesh: function () { return bodyMesh; },
     // lane FO: display safety (crack filler, section caps, safe normals)
-    getCrackFill: function () { return crackFill; }, sectionCaps: function () { return capGroup; }, safeNormals: safeNormals,
+    getCrackFill: function () { return crackFill; }, zoomTess: zoomTessApi, sectionCaps: function () { return capGroup; }, safeNormals: safeNormals,
     // multi-body parts (viewport side): see the "bodies" section
     // assembly documents
     isAssembly: isAssembly, componentIndex: componentIndex, selectComponent: selectComponent,
