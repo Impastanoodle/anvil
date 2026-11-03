@@ -154,12 +154,15 @@
       var body = UI.getBodyMesh().material;
       assert(UI.App.view.section && body.userData.realView && body.clippingPlanes && body.clippingPlanes.length === 1, 'the RV body is clipped by the section');
       assert(UI.sectionCaps().children.length === 4, 'caps: ' + UI.sectionCaps().children.length);
-      var mc = UI.mats.cap, k0 = mc.color.getHex();
-      mc.color.setHex(0xff0000); if (mc.emissive) mc.emissive.setHex(0xff0000);
+      // rfHF re-pinned: with RealView on the cap is drawn in its own RV material (the part's appearance), not mats.cap
+      var capMesh = UI.sectionCaps().children.filter(function (c) { return c.isMesh && c.userData.capPlane; })[0];
+      assert(capMesh && capMesh.material.userData.realView && capMesh.material !== UI.mats.cap, 'the cap is on a RealView material');
+      var mc = capMesh.material, k0 = mc.color.getHex(), mt0 = mc.metalness;
+      mc.color.setHex(0xff0000); mc.metalness = 0;
       if (UI.render) UI.render();
       var T = W.THREE, R = UI.renderer, w = Math.round(UI.size.w * R.getPixelRatio()), h = Math.round(UI.size.h * R.getPixelRatio()), rt = new T.WebGLRenderTarget(w, h, { stencilBuffer: true }), px = new Uint8Array(w * h * 4);
       R.setRenderTarget(rt); R.setClearColor(0x000000, 0); R.clear(); R.render(UI.scene, UI.camera); R.readRenderTargetPixels(rt, 0, 0, w, h, px); R.setRenderTarget(null); rt.dispose();
-      mc.color.setHex(k0); if (mc.emissive) mc.emissive.setHex(0x000000);
+      mc.color.setHex(k0); mc.metalness = mt0;
       var c = rfHCPx({ w: w, h: h, pr: R.getPixelRatio(), px: px }, UI.worldToScreen([3, 1, 1])[0], UI.worldToScreen([3, 1, 1])[1]);
       assert(c[0] > 150 && c[1] < 90 && c[2] < 90, 'cap drawn at the cut centre: rgba ' + c.join(','));
       UI.pmCancel(); await idle();

@@ -163,15 +163,18 @@ var Materials = (function () {
   // streaks, 2 galvanized spangle). With RealView off the part keeps its flat `color` as before. One finish per kind of
   // stock; a library material takes its finish from APPEARANCE_OF (by name), else from its class.
   var FINISHES = {
-    none: { name: 'Satin grey (no material)', color: DEFAULT_COLOR, metalness: 0.05, roughness: 0.42, pattern: 0 },
+    // rfHF: the no-material grey is a satin with a faint studio reflection (a soft sheen on rounds, a gradient across
+    // faces), so RealView visibly does something on a new part while it still reads as the plain grey part
+    none: { name: 'Satin grey (no material)', color: DEFAULT_COLOR, metalness: 0.34, roughness: 0.3, pattern: 0 },
     carbonSteel: { name: 'Cold rolled steel', color: '#a2a9b1', metalness: 0.78, roughness: 0.4, pattern: 0 },
     hotRolled: { name: 'Hot rolled steel (mill scale)', color: '#5d6166', metalness: 0.5, roughness: 0.74, pattern: 0 },
     galvanized: { name: 'Galvanized steel', color: '#bfc5ca', metalness: 0.85, roughness: 0.44, pattern: 2 },
     stainless: { name: 'Brushed stainless steel', color: '#c8ccd0', metalness: 0.92, roughness: 0.3, pattern: 1 },
     aluminium: { name: 'Satin aluminium', color: '#d3d6da', metalness: 0.9, roughness: 0.36, pattern: 0 },
     aluminiumSheet: { name: 'Mill finish aluminium sheet', color: '#d8dbdf', metalness: 0.92, roughness: 0.3, pattern: 1 },
-    brass: { name: 'Polished brass', color: '#dcb96a', metalness: 0.95, roughness: 0.28, pattern: 0 },
-    copper: { name: 'Polished copper', color: '#d98c5f', metalness: 0.95, roughness: 0.3, pattern: 0 },
+    // rfHF: brass and copper a deeper, more saturated reflectance (the paler ones read as painted plastic on a flat sheet)
+    brass: { name: 'Polished brass', color: '#d2a94f', metalness: 0.96, roughness: 0.26, pattern: 0 },
+    copper: { name: 'Polished copper', color: '#cc7a4c', metalness: 0.96, roughness: 0.28, pattern: 0 },
     bronze: { name: 'Bronze', color: '#c89d55', metalness: 0.92, roughness: 0.36, pattern: 0 },
     titanium: { name: 'Titanium', color: '#a3a6aa', metalness: 0.85, roughness: 0.44, pattern: 0 }
   };

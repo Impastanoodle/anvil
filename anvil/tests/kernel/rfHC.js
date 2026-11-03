@@ -17,7 +17,8 @@
         assert(m.metal ? a.metalness >= 0.4 : a.metalness === 0, m.name + ' metal / plastic');
       });
       var none = MT.appearance(null);
-      assert(none.color === '#8c8c8c' && none.metalness < 0.2, 'no material: ' + JSON.stringify(none));
+      // rfHF re-pinned (was metalness < 0.2): a satin with a faint studio reflection, still far from any metal finish
+      assert(none.color === '#8c8c8c' && none.metalness > 0.1 && none.metalness < 0.4 && none.roughness >= 0.25, 'no material: ' + JSON.stringify(none));
       assert(MT.appearanceOf(K.newModel()).color === '#8c8c8c', 'a new part');
       return MT.list().length + ' materials';
     });

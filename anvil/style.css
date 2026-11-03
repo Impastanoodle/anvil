@@ -1815,3 +1815,12 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 #pm .pm-list { margin-top: 4px; padding: 2px 0; max-height: 132px; }
 #pm .pm-pickwrap.has-list > .pm-list { margin-top: -1px; }
 #pm .pm-item { min-height: 20px; box-sizing: border-box; padding: 2px 6px; gap: 6px; line-height: 16px; }
+
+/* rfHF menus: a row with a check and an icon draws them side by side, as SolidWorks' menus do: a 16 px check column,
+   then a 16 px icon column, each a fixed box that never shrinks, grows or overflows into the other (a wide check glyph
+   from a fallback font is clipped to its column). Rows without an icon in a menu with icons keep the icon column empty
+   (.mi-icons / .mi-has-ico are set by showMenu, so this does not depend on :has()). */
+.menu .mi > .chk { box-sizing: border-box; flex: 0 0 16px; width: 16px; min-width: 16px; max-width: 16px; height: 16px; line-height: 16px; margin: 0; padding: 0; overflow: hidden; text-align: center; position: static; }
+.menu .mi > .mi-ico { box-sizing: border-box; flex: 0 0 16px; width: 16px; min-width: 16px; max-width: 16px; height: 16px; margin: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; position: static; }
+.menu .mi > .mi-ico > svg { flex: none; display: block; }
+.menu.mi-icons .mi:not(.mi-has-ico) > .chk { margin-right: 24px; }

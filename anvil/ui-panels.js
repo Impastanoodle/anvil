@@ -1299,10 +1299,13 @@
   function showMenu(x, y, items, anchorLi) {
     closeMenus();
     if (!anchorLi && isSketchMenu(items)) items = sketchMenuItems(items);
-    var m = el('div', { class: 'menu' });
+    // rfHF: a menu with icons is marked (and so is each row with one), so the check column and the icon column are laid
+    // out side by side by plain CSS (style.css "rfHF menus"), never on top of each other
+    var withIcons = items.some(function (it) { return it && !it.sep && it.icon; });
+    var m = el('div', { class: 'menu' + (withIcons ? ' mi-icons' : '') });
     items.forEach(function (it) {
       if (it.sep) { m.appendChild(el('div', { class: 'sep' })); return; }
-      var row = el('div', { class: 'mi' + (it.disabled ? ' disabled' : '') });
+      var row = el('div', { class: 'mi' + (it.icon ? ' mi-has-ico' : '') + (it.disabled ? ' disabled' : '') });
       row.appendChild(el('span', { class: 'chk', text: it.checked ? '✓' : '' }));
       if (it.icon) row.appendChild(el('span', { class: 'mi-ico', html: Icons(it.icon, 16) }));   // r12/chrome12: ribbon overflow rows
       row.appendChild(el('span', { text: it.label }));

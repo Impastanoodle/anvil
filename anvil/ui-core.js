@@ -750,28 +750,36 @@ var UI = (function () {
   mats.cap = new THREE.MeshPhongMaterial({ color: 0x8c8c8c, specular: 0x222222, shininess: 20, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
     stencilWrite: true, stencilRef: 0, stencilFunc: THREE.NotEqualStencilFunc, stencilFail: THREE.ReplaceStencilOp, stencilZFail: THREE.ReplaceStencilOp, stencilZPass: THREE.ReplaceStencilOp });
   function updateSectionCaps() {
-    while (capGroup.children.length) { var c = capGroup.children.pop(); if (c.userData.capPlane && c.geometry) c.geometry.dispose(); }
+    while (capGroup.children.length) { var c = capGroup.children.pop(); if ((c.userData.capPlane || c.userData.capOwnGeo) && c.geometry) c.geometry.dispose(); }
     var sec = App.view.section, s = App.view.style;
     if (!sec || !sec.plane || !bodyMesh || !bodyMesh.visible || !App.mesh || !App.mesh.triCount || (s !== 'shaded' && s !== 'shadedEdges') || flatShown()) return;
     var pl = sec.plane, b = modelBounds(), ctr = new THREE.Vector3((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2);
     var diag = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]);
     if (!(diag > 0)) return;
-    [mats.capBack, mats.capFront].forEach(function (mt, k) {
-      mt.clippingPlanes = [pl]; mt.needsUpdate = true;
-      var o = new THREE.Mesh(bodyMesh.geometry, mt);
-      o.renderOrder = 1 + k * 0.01; o.raycast = function () { };
-      capGroup.add(o);
-    });
     // the cap: a square on the plane round the box centre's projection, big enough for any section of the box, facing
-    // the removed side (three.js keeps the positive side of a clipping plane)
-    var foot = pl.projectPoint(ctr, new THREE.Vector3()), qg = new THREE.PlaneGeometry(diag * 1.05, diag * 1.05);
-    var cap = new THREE.Mesh(qg, mats.cap);
-    cap.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), pl.normal.clone().negate());
-    cap.position.copy(foot);
-    cap.renderOrder = 1.02; cap.raycast = function () { };
-    cap.userData.capPlane = true;
+    // the removed side (three.js keeps the positive side of a clipping plane). Its transform is baked into the geometry,
+    // so a RealView cap's pattern (brushed streaks, spangle) is laid out in model space as on the body.
+    var foot = pl.projectPoint(ctr, new THREE.Vector3()), qq = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), pl.normal.clone().negate());
+    var qm = new THREE.Matrix4().compose(foot, qq, new THREE.Vector3(1, 1, 1));
+    function capQuad() { var qg = new THREE.PlaneGeometry(diag * 1.05, diag * 1.05); qg.applyMatrix4(qm); return qg; }
     mats.cap.color.copy(mats.part.vertexColors ? new THREE.Color(partColor(App.model.color)) : mats.part.color);
-    capGroup.add(cap);
+    // rfHF: with RealView on the cap takes the RealView appearance of the part, or of each body (stencil count, cap and
+    // stencil reset per group of bodies sharing one appearance, so every body's cut shows its own material)
+    var groups = rvCapGroups(), order = 1;
+    groups.forEach(function (gr) {
+      [mats.capBack, mats.capFront].forEach(function (mt, k) {
+        mt.clippingPlanes = [pl]; mt.needsUpdate = true;
+        var o = new THREE.Mesh(gr.geometry, mt);
+        o.renderOrder = order + k * 0.01; o.raycast = function () { };
+        if (gr.own) o.userData.capOwnGeo = true;
+        capGroup.add(o);
+      });
+      var cap = new THREE.Mesh(capQuad(), gr.material);
+      cap.renderOrder = order + 0.02; cap.raycast = function () { };
+      cap.userData.capPlane = true;
+      capGroup.add(cap);
+      order += 0.03;
+    });
     // the cut outline (SolidWorks draws the section's edges): every visible triangle crossing the plane gives a segment
     if (s === 'shadedEdges') {
       var P = App.mesh.positions, th = App.triHidden, seg = [], d = [0, 0, 0], n = pl.normal, c0 = pl.constant;
@@ -797,7 +805,7 @@ var UI = (function () {
         var eg = new THREE.BufferGeometry();
         eg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(seg), 3));
         var ln = new THREE.LineSegments(eg, mats.capEdge);
-        ln.renderOrder = 1.05; ln.userData.capPlane = true; ln.raycast = function () { };
+        ln.renderOrder = Math.max(1.05, order + 0.02); ln.userData.capPlane = true; ln.raycast = function () { };
         capGroup.add(ln);
       }
     }
@@ -883,7 +891,7 @@ var UI = (function () {
   // tuning hook (look work, tests): rebuild the studio after changing RV_STUDIO
   function rvRebuildEnv() { if (rv.env) rv.env.dispose(); rv.env = null; rv.envFailed = false; rvBuildEnv(); applyDisplayStyle(); return rv.envMs; }
   var RV_GLSL = [
-    'uniform float rvDirect; uniform float rvAmbient; uniform float rvExposure; uniform float rvUnit; uniform float rvPattern;',
+    'uniform float rvDirect; uniform float rvAmbient; uniform float rvExposure; uniform float rvUnit; uniform float rvPattern; uniform vec3 rvBend;',
     'varying vec3 vRvPos; varying vec3 vRvObjN; varying vec2 vRvNdc;',
     '#ifdef RV_VERTEX', 'varying vec3 vRvColor; varying vec3 vRvAppear;', '#endif',
     // the studio is looked up as from an eye in front of the screen (a ~40° lens) though the view is orthographic, so a
@@ -903,7 +911,10 @@ var UI = (function () {
     '#ifdef RV_VERTEX', '  float rvPat = vRvAppear.z;', '#else', '  float rvPat = rvPattern;', '#endif',
     '  vec3 rvN = normalize(vRvObjN);',
     '  if (rvPat > 0.5 && rvPat < 1.5) {',
-    '    vec3 ax = abs(rvN.x) < 0.8 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);',
+    // rfHF: along the bend direction (rvBendAxis) in every face that holds it, so the grain runs on through the bends
+    '    vec3 ax = rvBend - rvN * dot(rvBend, rvN);',
+    '    if (dot(ax, ax) < 0.25) ax = abs(rvN.x) < 0.8 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);',
+    '    ax = normalize(ax);',
     '    vec3 across = normalize(cross(rvN, ax));',
     '    float s = dot(vRvPos, across), px = max(fwidth(s), 1e-6), cell = exp2(ceil(log2(px * 2.5)));',
     '    float a = rvHash(vec2(floor(s / cell), floor(dot(vRvPos, ax) / (cell * 60.0)))), b = rvHash(vec2(floor(s / (cell * 5.0)), 7.0));',
@@ -926,7 +937,7 @@ var UI = (function () {
     '}'
   ].join('\n');
   function rvPatchShader(sh, vertex) {
-    sh.uniforms.rvDirect = rvU.direct; sh.uniforms.rvAmbient = rvU.ambient; sh.uniforms.rvExposure = rvU.exposure; sh.uniforms.rvUnit = rvU.unit;
+    sh.uniforms.rvDirect = rvU.direct; sh.uniforms.rvAmbient = rvU.ambient; sh.uniforms.rvExposure = rvU.exposure; sh.uniforms.rvUnit = rvU.unit; sh.uniforms.rvBend = rvU.bend;
     sh.uniforms.rvPattern = this.userData.rvPattern;
     var vs = sh.vertexShader, fs = sh.fragmentShader;
     vs = vs.replace('#include <common>', '#include <common>\nvarying vec3 vRvPos; varying vec3 vRvObjN; varying vec2 vRvNdc;\n#ifdef RV_VERTEX\nattribute vec3 rvColor; attribute vec3 rvAppear; varying vec3 vRvColor; varying vec3 vRvAppear;\n#endif')
@@ -952,7 +963,7 @@ var UI = (function () {
   }
   // shared uniforms (one set for every RV material): tuned so the satin grey part reads like the Phong part of rfHA
   // (isometric box top / left / right about 200 / 150 / 115) with the studio's reflections on top
-  var rvU = { direct: { value: 1.9 }, ambient: { value: 0.15 }, exposure: { value: 1.0 }, unit: { value: 1 } };
+  var rvU = { direct: { value: 1.9 }, ambient: { value: 0.15 }, exposure: { value: 1.0 }, unit: { value: 1 }, bend: { value: new THREE.Vector3(1, 0, 0) } };
   function rvMaterial(vertex, wire) {
     var m = new THREE.MeshStandardMaterial({ color: 0x8c8c8c, metalness: 0.05, roughness: 0.42, side: THREE.DoubleSide,
       polygonOffset: !wire, polygonOffsetFactor: 1, polygonOffsetUnits: 1, wireframe: !!wire, depthWrite: !wire, envMapIntensity: 1 });
@@ -1015,7 +1026,9 @@ var UI = (function () {
           if (same) { base = list[0]; list = null; }
         }
         if (list && App.mesh && App.mesh.triCount) { rvVertexData(bodyMesh.geometry, App.mesh, list); face = MS.partV; fillM = MS.fillV; }
-        else { face = MS.part; fillM = MS.fill; }
+        else { face = MS.part; fillM = MS.fill; list = null; }
+        rv.capBase = base; rv.capList = list;   // rfHF: the section caps' appearances (rvCapGroups)
+        rvU.bend.value.copy(rvBendAxis());
         rvSetAppearance(MS.part, base); rvSetAppearance(MS.fill, base);
         [MS.part, MS.partV, MS.fill, MS.fillV].forEach(rvSync);
       }
@@ -1024,6 +1037,89 @@ var UI = (function () {
     }
     flatGroup.children.forEach(function (o) { if (o.userData.flatPattern) o.material = partFaceMaterial(); });
     rv.active = on && !!(bodyMesh && bodyMesh.material && bodyMesh.material.userData.realView);
+  }
+  // rfHF: section caps in RealView. rvCapGroups() -> [{ geometry (what the stencil counts), material (the cap's), own
+  // (geometry made here: disposed with the caps) }]: RealView off = one group, the whole body and the Phong mats.cap in
+  // the flat colour (unchanged); on = the cap in an RV twin carrying the part's appearance, or one group per appearance
+  // when bodies differ (their triangles copied out of the body mesh, so each cut shows its own body's material).
+  var rvCapMats = [];
+  function rvCapMaterial(i, a) {
+    var m = rvCapMats[i];
+    if (!m) {
+      m = rvMaterial(false, false);
+      m.stencilWrite = true; m.stencilRef = 0; m.stencilFunc = THREE.NotEqualStencilFunc;
+      m.stencilFail = THREE.ReplaceStencilOp; m.stencilZFail = THREE.ReplaceStencilOp; m.stencilZPass = THREE.ReplaceStencilOp;
+      m.userData.sectionCap = true;
+      rvCapMats[i] = m;
+    }
+    rvSetAppearance(m, a);
+    if (m.envMap !== rv.env) { m.envMap = rv.env; m.needsUpdate = true; }
+    return m;
+  }
+  function rvCapGroups() {
+    var whole = [{ geometry: bodyMesh.geometry, material: mats.cap }];
+    if (!rv.active || !rv.capBase) return whole;
+    var list = rv.capList;
+    if (!list || !App.mesh || !App.mesh.faces) return [{ geometry: bodyMesh.geometry, material: rvCapMaterial(0, rv.capBase) }];
+    var keys = [], byKey = {}, P = bodyMesh.geometry.getAttribute('position').array;
+    App.mesh.faces.forEach(function (f) {
+      var a = list[f.body || 0] || list[0], k = Materials.appearanceKey(a);
+      if (!byKey[k]) { byKey[k] = { a: a, faces: [] }; keys.push(k); }
+      byKey[k].faces.push(f);
+    });
+    return keys.map(function (k, i) {
+      var g = byKey[k], n = 0;
+      g.faces.forEach(function (f) { n += f.count; });
+      var arr = new Float32Array(n * 9), o = 0;
+      g.faces.forEach(function (f) { arr.set(P.subarray(f.start * 9, (f.start + f.count) * 9), o); o += f.count * 9; });
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+      return { geometry: geo, material: rvCapMaterial(i, g.a), own: true };
+    });
+  }
+  // rfHF: the brushed grain runs along the part's bend lines on every face, so it is continuous across the bends (it
+  // turned from along X on the base to along Z on a wall before). The bend direction is the one the faces' normals are
+  // all square to: the eigenvector of the smallest eigenvalue of sum(area * n n^T) over the triangles (for a part bent
+  // about one direction exactly that direction; for a box or a flat blank any direction in a face, as before).
+  var rvBendCache = { geo: null, n: -1, v: new THREE.Vector3(1, 0, 0) };
+  function rvBendAxis() {
+    var m = App.mesh;
+    if (!m || !m.triCount || !m.positions) return rvBendCache.v.set(1, 0, 0);
+    if (rvBendCache.geo === m.positions && rvBendCache.n === m.triCount) return rvBendCache.v;
+    var P = m.positions, A = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for (var t = 0; t < m.triCount; t++) {
+      var o = t * 9, ux = P[o + 3] - P[o], uy = P[o + 4] - P[o + 1], uz = P[o + 5] - P[o + 2], vx = P[o + 6] - P[o], vy = P[o + 7] - P[o + 1], vz = P[o + 8] - P[o + 2];
+      var nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, l = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      if (!(l > 0)) continue;
+      var w = 1 / l;   // area-weighted n n^T = (N N^T) / |N| with N the unnormalised normal (|N| = 2 * area)
+      A[0] += nx * nx * w; A[1] += nx * ny * w; A[2] += nx * nz * w; A[4] += ny * ny * w; A[5] += ny * nz * w; A[8] += nz * nz * w;
+    }
+    A[3] = A[1]; A[6] = A[2]; A[7] = A[5];
+    // Jacobi rotations on the symmetric 3 x 3 matrix
+    var V = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    for (var it = 0; it < 24; it++) {
+      var p = 0, q = 1, big = Math.abs(A[1]);
+      if (Math.abs(A[2]) > big) { p = 0; q = 2; big = Math.abs(A[2]); }
+      if (Math.abs(A[5]) > big) { p = 1; q = 2; big = Math.abs(A[5]); }
+      if (big < 1e-12 * (Math.abs(A[0]) + Math.abs(A[4]) + Math.abs(A[8]) + 1e-30)) break;
+      var app = A[p * 3 + p], aqq = A[q * 3 + q], apq = A[p * 3 + q], th = 0.5 * Math.atan2(2 * apq, aqq - app), c = Math.cos(th), s = Math.sin(th);
+      for (var k = 0; k < 3; k++) {   // A = J^T A J, columns then rows
+        var akp = A[k * 3 + p], akq = A[k * 3 + q];
+        A[k * 3 + p] = c * akp - s * akq; A[k * 3 + q] = s * akp + c * akq;
+      }
+      for (k = 0; k < 3; k++) {
+        var apk = A[p * 3 + k], aqk = A[q * 3 + k];
+        A[p * 3 + k] = c * apk - s * aqk; A[q * 3 + k] = s * apk + c * aqk;
+      }
+      for (k = 0; k < 3; k++) {
+        var vkp = V[k * 3 + p], vkq = V[k * 3 + q];
+        V[k * 3 + p] = c * vkp - s * vkq; V[k * 3 + q] = s * vkp + c * vkq;
+      }
+    }
+    var j = 0; if (A[4] < A[j * 4]) j = 1; if (A[8] < A[j * 4]) j = 2;
+    rvBendCache.v.set(V[j], V[3 + j], V[6 + j]).normalize();
+    rvBendCache.geo = m.positions; rvBendCache.n = m.triCount;
+    return rvBendCache.v;
   }
   // UI.realViewInfo() -> { on (the setting), active (drawn now), envMs, why } for tests and the status bar
   function realViewInfo() { return { on: realView(), active: !!rv.active, software: softwareGL(), byDefault: rvDefault(), envMs: rv.envMs || 0, why: rv.why, material: bodyMesh ? bodyMesh.material : null, materials: rvMats(), tune: { uniforms: rvU, studio: RV_STUDIO, rebuild: rvRebuildEnv } }; }
@@ -3650,6 +3746,8 @@ var UI = (function () {
     App.undo.length = 0; App.redo.length = 0;
     App.sel = null; App.sel2 = null;
     App.hiddenBodies = {}; // hidden bodies/components are viewport state of the previous document
+    App.view.section = null;   // rfHF: so is Section View (SolidWorks keeps it per document view); a rebuild of the same part keeps it
+    if (UI.refreshHud) { try { UI.refreshHud(); } catch (e) { } }
     App.activeSketch = null; App.mode = 'part';
     // the opened document is clean once its first rebuild is applied (markClean below; a rejected build too)
     clean.loading = true;

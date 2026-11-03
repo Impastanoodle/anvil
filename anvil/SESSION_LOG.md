@@ -1814,3 +1814,8 @@ Context: the user, "start the graphics roadmap, big changes with big improvement
 - Head: on the user's GTX 1660 Ti RealView, AO and shadows default on, bracket frame < 1 ms either way, first still pass 151 ms, no console errors.
 Next: QUEUE.md *Graphics roadmap, next*.
 Tests: kernel 2339 / 2339, examples 29 / 29 both engines, ui-smoke 936 / 936.
+
+## local-2026-11-03c (local, interactive head; 3 Opus agents): graphics round 2, quality for any machine
+
+Context: the user, "continue on graphics", then "it shouldnt be custom to my graphics card" (every default holds on any machine; no thresholds from one card), a screenshot of a chewed circular edge ("whatever this is needs to be fixed"), and "can we make circular solids NOT have flat facets" -> re-tessellate as you zoom ("lets do it").
+- rv-polish (rfHF): RealView section caps in the body's material (cap set per material), satin default for no-material parts, loadModel clears the section (new parts start uncut), brushed grain along the bends, deeper brass / copper, menu check and icon in fixed 16 px boxes. Pins: smoke rfHC cap material, kernel rfHC metalness 0.1-0.4. ui-smoke 941 / 941, kernel 2339 / 2339, examples 29 / 29.
