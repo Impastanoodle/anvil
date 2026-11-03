@@ -62,6 +62,29 @@
   --dim-halo: rgba(255,255,255,0.9);
   --font: "Segoe UI", "Segoe UI Variable", system-ui, -apple-system, Roboto, Arial, sans-serif;
   --mono: "Cascadia Mono", Consolas, "Segoe UI Mono", monospace;
+  /* rfGX: the chrome's design tokens. Spacing in 4 px steps, one radius, 1 px hairlines, one type scale (Segoe UI,
+     12 px body), and one grey ramp; the dark theme is the same ramp inverted. Older variables (--cm-*, --sw-*, --line,
+     --text …) are mapped onto this ramp at the end of this file (block "rfGX"), so new rules should use these. */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px;
+  --radius: 3px; --radius-lg: 6px; --hair: 1px;
+  --fs-xs: 11px; --fs-sm: 12px; --fs-md: 13px; --fs-lg: 15px;
+  --row: 22px; --ctl: 24px;                       /* a list / tree / menu row; a button or input in the chrome */
+  --c-sunken: #e5e5e5;    /* tab strips, the Task Pane strip, the status bar */
+  --c-panel: #f0f0f0;     /* the menu bar and the CommandManager */
+  --c-raised: #fafafa;    /* the FeatureManager, Task Pane, menus, dialogs, tooltips */
+  --c-field: #ffffff;     /* inputs */
+  --c-field-line: #bdbdbd;
+  --c-line-soft: #e3e3e3; /* separators inside one panel */
+  --c-line: #cdcdcd;      /* hairlines between panels */
+  --c-line-strong: #9a9a9a;
+  --c-hover: #e6e6e6; --c-hover-line: #b8b8b8;
+  --c-press: #d3d3d3; --c-press-line: #8e8e8e;
+  --c-sel: #dadada; --c-sel-line: #8e8e8e;
+  --c-text: #1f1f1f; --c-muted: #666666; --c-disabled: #a5a5a5;
+  --c-default: #2b2b2b; --c-default-hover: #454545; --c-default-text: #ffffff;   /* the default button */
+  --c-focus: #3a3a3a;
+  --shadow-pop: 0 4px 12px rgba(0, 0, 0, 0.14), 0 0 1px rgba(0, 0, 0, 0.12);   /* menus, flyouts, tooltips, Shortcut Bar */
+  --shadow-dlg: 0 12px 32px rgba(0, 0, 0, 0.22);
 }
 :root[data-theme="dark"] {
   --bg: #212121;
@@ -121,6 +144,23 @@
   --dim-text: #f2f2f2;
   --dim-halo: rgba(30,30,30,0.9);
   color-scheme: dark;
+  /* rfGX: the same ramp, dark */
+  --c-sunken: #1f1f1f;
+  --c-panel: #2b2b2b;
+  --c-raised: #303030;
+  --c-field: #242424;
+  --c-field-line: #565656;
+  --c-line-soft: #3a3a3a;
+  --c-line: #444444;
+  --c-line-strong: #707070;
+  --c-hover: #3b3b3b; --c-hover-line: #5f5f5f;
+  --c-press: #4a4a4a; --c-press-line: #7c7c7c;
+  --c-sel: #464646; --c-sel-line: #7c7c7c;
+  --c-text: #e6e6e6; --c-muted: #a3a3a3; --c-disabled: #6c6c6c;
+  --c-default: #cfcfcf; --c-default-hover: #e2e2e2; --c-default-text: #1b1b1b;
+  --c-focus: #bdbdbd;
+  --shadow-pop: 0 4px 14px rgba(0, 0, 0, 0.5), 0 0 1px rgba(0, 0, 0, 0.6);
+  --shadow-dlg: 0 12px 36px rgba(0, 0, 0, 0.6);
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
@@ -1370,3 +1410,224 @@ body.rollbar-dragging, body.rollbar-dragging * { cursor: grabbing !important; us
 #modal-body .dt-grid td.dt-err input, #modal-body .dt-grid th.dt-err input { border-color: var(--red); color: var(--red); }
 .dt-bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
 #fc-spec .fc-spec-row { display: block; padding: 2px 0; }
+
+/* ==== rfGX (2026-11-03, lane chrome): the application chrome refurbished — menu bar, quick-access toolbar, search,
+   CommandManager, menus / flyouts / Shortcut Bar / tooltips, FeatureManager, Task Pane, status bar, dialogs,
+   scrollbars. Last in the file on purpose: it is the one finish layer over the older passes (rfBF, rfBG, r12, r14).
+   Tokens are on :root at the top (--sp-*, --radius*, --fs-*, --row, --ctl, --c-*); here the older chrome variables are
+   mapped onto that one grey ramp in both themes, so every pass that still reads them gets the same greys.
+   Not here: PropertyManager rules (.pm… / #pm…, lane pm), #viewport and its overlays (lane viewport). */
+:root, :root[data-theme="dark"] {
+  --bg: var(--c-sunken); --panel-2: var(--c-panel); --line: var(--c-line); --line-2: var(--c-line-soft);
+  --text: var(--c-text); --muted: var(--c-muted); --hover: var(--c-hover); --sel: var(--c-sel);
+  --input-bg: var(--c-field); --input-line: var(--c-field-line);
+  --menu-bg: var(--c-raised); --menu-line: var(--c-line); --menu-disabled: var(--c-disabled);
+  --cm-bg: var(--c-panel); --cm-bar: var(--c-panel); --cm-strip: var(--c-sunken); --cm-tab: var(--c-panel);
+  --cm-line: var(--c-line); --cm-line-2: var(--c-line-soft); --cm-text: var(--c-text); --cm-muted: var(--c-muted);
+  --cm-hover: var(--c-hover); --cm-hover-line: var(--c-hover-line); --cm-press: var(--c-press); --cm-press-line: var(--c-press-line); --cm-down: var(--c-press);
+  --sw-chrome: var(--c-sunken); --sw-chrome-line: var(--c-line); --sw-panel: var(--c-raised);
+  --sw-row-hover: var(--c-hover); --sw-row-sel: var(--c-sel); --sw-row-sel-line: var(--c-sel-line);
+  --sw-dlg-bg: var(--c-panel); --sw-btn: var(--c-field); --sw-btn-line: var(--c-field-line); --sw-btn-hover: var(--c-hover);
+  --sw-default: var(--c-default); --sw-default-hover: var(--c-default-hover); --sw-menu-gutter: var(--c-raised);
+}
+:root { --c-scroll: #c2c2c2; --c-scroll-hover: #9a9a9a; }
+:root[data-theme="dark"] { --c-scroll: #555555; --c-scroll-hover: #747474; }
+
+/* scrollbars: thin, a neutral thumb on no track, in every scrolling pane */
+html { scrollbar-color: var(--c-scroll) transparent; }
+* { scrollbar-width: thin; }
+
+/* focus: one visible ring for keyboard focus in the chrome */
+#menubar :focus-visible, #ribbon :focus-visible, #left :focus-visible, #taskpane :focus-visible, #statusbar :focus-visible, #modal :focus-visible, .menu :focus-visible, .scbar :focus-visible { outline: 1px solid var(--c-focus); outline-offset: -1px; }
+
+/* ---- menu bar: the mark, the menus, the quick-access toolbar, the title and Search Commands on one 28 px row,
+   every control 24 px tall and centred on it */
+#menubar { gap: 0; padding: 0 var(--sp-1) 0 var(--sp-2); background: var(--c-panel); border-bottom: var(--hair) solid var(--c-line); color: var(--c-text); }
+#menubar #logo { width: 16px; height: 16px; margin: 0 6px 0 0; padding: 0; border-radius: 0; background: none; color: var(--logo); display: block; flex: none; }
+#menubar #logo svg { display: block; width: 16px; height: 16px; }
+#menubar #brand { margin-right: var(--sp-2); color: var(--c-text); font-size: var(--fs-md); font-style: normal; font-weight: 600; letter-spacing: 0; line-height: 16px; }
+#menubar #menus { height: 100%; align-items: center; gap: 0; }
+#menubar #menus > li { height: var(--ctl); padding: 0 var(--sp-2); border-radius: var(--radius); color: var(--c-text); line-height: var(--ctl); box-shadow: none; }
+#menubar #menus > li:hover { background: var(--c-hover); box-shadow: none; }
+#menubar #menus > li.open { background: var(--c-press); box-shadow: none; }
+#menubar #std-toolbar { height: var(--ctl); gap: 0; margin-left: var(--sp-1); padding: 0 0 0 var(--sp-1); border-left: var(--hair) solid var(--c-line); border-right: 0; }
+#menubar .std-btn { width: var(--ctl); height: var(--ctl); border: 0; border-radius: var(--radius); }
+#menubar .std-btn .ico { width: 16px; height: 16px; }
+#menubar .std-btn:hover:not(:disabled) { background: var(--c-hover); }
+#menubar .std-btn:active:not(:disabled) { background: var(--c-press); }
+#menubar .std-btn:disabled { opacity: 0.35; }
+#menubar .std-sep { height: 16px; margin: 0 var(--sp-1); background: var(--c-line); }
+/* user 2026-10-14: Undo / Redo with something to undo are a dark chip with a white arrow in the light theme */
+#menubar #std-undo:not(:disabled), #menubar #std-redo:not(:disabled) { width: 22px; height: 20px; margin: 0 1px; background: #3a3a3a; }
+#menubar #std-undo:not(:disabled):hover, #menubar #std-redo:not(:disabled):hover { background: #555555; }
+:root[data-theme="dark"] #menubar #std-undo:not(:disabled), :root[data-theme="dark"] #menubar #std-redo:not(:disabled) { width: var(--ctl); height: var(--ctl); margin: 0; background: transparent; }
+:root[data-theme="dark"] #menubar #std-undo:not(:disabled):hover, :root[data-theme="dark"] #menubar #std-redo:not(:disabled):hover { background: var(--c-hover); }
+#menubar #doc-title { padding: 0 var(--sp-3); color: var(--c-text); font-size: var(--fs-sm); }
+#menubar #search { height: var(--ctl); gap: var(--sp-1); padding: 0 6px 0 var(--sp-2); background: var(--c-field); border: var(--hair) solid var(--c-field-line); border-radius: var(--radius); }
+#menubar #search:hover { border-color: var(--c-line-strong); }
+#menubar #search:focus-within { border-color: var(--c-focus); }
+#menubar #search input { height: 22px; padding: 0; outline: none; font-size: var(--fs-sm); }
+#menubar #search input::placeholder { color: var(--c-muted); opacity: 1; }
+#menubar #search-ico { display: inline-flex; color: var(--c-muted); }
+#menubar #search-ico .ico { width: 16px; height: 16px; color: var(--c-muted); }
+
+/* ---- CommandManager: 64 px buttons, 32 px icons, two-line 11 px labels centred under them; small buttons 22 px rows
+   with 16 px icons; one hover / pressed / checked / disabled set; hairline group separators */
+#ribbon { background: var(--c-panel); border-bottom: var(--hair) solid var(--c-line); }
+#ribbon-buttons { gap: 2px; padding: 4px var(--sp-2) 2px; }
+/* the button box is exactly the old one (70.28 px: 4 px padding, 3 px gap, 1.15 line height), so the CommandManager
+   keeps its height to the hundredth and the graphics area does not move (tests pick there by pixel) */
+#ribbon .rb { gap: 3px; padding: var(--sp-1) 2px; border: var(--hair) solid transparent; border-radius: var(--radius); line-height: 1.15; }
+#ribbon .rb span { color: var(--c-text); font-size: var(--fs-xs); line-height: 1.15; }
+#ribbon #ribbon-buttons > .rb > .ico, #ribbon .rb-fly:not(.rb-fly-small) > .rb > .ico { width: 32px; height: 32px; }
+#ribbon .rb:hover:not(:disabled) { background: var(--c-hover); border-color: var(--c-hover-line); }
+#ribbon .rb:active:not(:disabled) { background: var(--c-press); border-color: var(--c-press-line); }
+#ribbon .rb.active, #ribbon .rb.active:hover { background: var(--c-press); border-color: var(--c-press-line); box-shadow: none; }
+#ribbon .rb:disabled { opacity: 0.38; }
+#ribbon .rb:disabled:hover { background: none; border-color: transparent; }
+#ribbon .rb-sep { width: 1px; margin: 6px var(--sp-1); background: var(--c-line); }
+/* flyouts: the face and the ▾ share one frame; the ▾ is its own pressed zone */
+#ribbon .rb-fly { border: var(--hair) solid transparent; border-radius: var(--radius); }
+#ribbon .rb-fly:hover, #ribbon .rb-fly.open { background: var(--c-hover); border-color: var(--c-hover-line); }
+#ribbon .rb-fly > .rb, #ribbon .rb-fly > .rb:hover:not(:disabled), #ribbon .rb-fly > .rb:active:not(:disabled) { border: 0; background: transparent; }#ribbon .rb-fly > .rb.active { box-shadow: none; }
+#ribbon .rb-fly:has(> .rb.active) { background: var(--c-press); border-color: var(--c-press-line); }
+#ribbon .rb-caret { width: 12px; color: var(--c-muted); font-size: 9px; border-radius: 0 2px 2px 0; }
+#ribbon .rb-caret:hover:not(:disabled) { background: var(--c-press); color: var(--c-text); box-shadow: inset 1px 0 0 var(--c-hover-line); }
+#ribbon .rb-fly.open .rb-caret { background: var(--c-press); color: var(--c-text); box-shadow: inset 1px 0 0 var(--c-press-line); }
+/* small buttons in stacks and the sketch grid: one 22 px row grid, 16 px icons centred in 22 px */
+#ribbon .rb-stack { gap: 1px; }
+#ribbon .rb-stack .rb .ico, #ribbon .rb-grid .rb .ico { width: 16px; height: 16px; }
+#ribbon .rb-stack:not(.rb-grid) .rb { height: 22px; padding: 0 6px 0 var(--sp-1); gap: 6px; align-items: center; }
+#ribbon .rb-stack .rb span { line-height: 16px; }
+#ribbon .rb-grid .rb { height: 22px; padding: 0 3px; align-items: center; }
+/* the » overflow */
+#ribbon .rb-more { width: 20px; color: var(--c-muted); font-size: 13px; border: var(--hair) solid transparent; border-radius: var(--radius); }
+#ribbon .rb-more:hover, #ribbon .rb-more.open { background: var(--c-hover); border-color: var(--c-hover-line); color: var(--c-text); }
+/* the tab strip: flat text tabs on a sunken strip; the active one is the CommandManager's own grey, joined to it */
+#ribbon #ribbon-tabs { padding: 0 var(--sp-1); background: var(--c-sunken); box-shadow: inset 0 1px 0 var(--c-line); border-top: 0; }
+#ribbon .rtab, #ribbon .rtab:first-child { height: 22px; padding: 0 var(--sp-3); border: 0; border-radius: 0; margin: 0; background: transparent; color: var(--c-muted); font-size: var(--fs-sm); font-weight: 400; line-height: 22px; box-shadow: none; }
+#ribbon .rtab:not(.active):not(.off):hover { background: var(--c-hover); color: var(--c-text); }
+#ribbon .rtab.active { background: var(--c-panel); color: var(--c-text); font-weight: 600; padding-top: 0; box-shadow: inset 1px 0 0 var(--c-line), inset -1px 0 0 var(--c-line); }
+#ribbon .rtab.off { color: var(--c-disabled); }
+
+/* ---- menus, flyouts, context menus: one popup style — raised ground, hairline frame, 3 px radius, one shadow;
+   24 px rows; a 16 px check column, a 16 px icon column (kept empty in rows without an icon so labels align),
+   shortcut keys right-aligned and muted */
+.menu { padding: var(--sp-1); background: var(--c-raised); border: var(--hair) solid var(--c-line); border-radius: var(--radius); box-shadow: var(--shadow-pop); }
+.menu .mi { gap: var(--sp-2); min-height: var(--ctl); padding: 0 var(--sp-3) 0 var(--sp-1); border-radius: 2px; color: var(--c-text); box-shadow: none; }
+.menu .mi:hover:not(.disabled) { background: var(--c-hover); box-shadow: none; }
+.menu .mi.disabled { color: var(--c-disabled); }
+.menu .mi.disabled .ico { opacity: 0.45; }
+.menu .mi .chk { width: 16px; flex: none; color: var(--c-text); text-align: center; font-size: var(--fs-sm); }
+.menu .mi .mi-ico { width: 16px; margin: 0; flex: none; }
+.menu:has(.mi-ico) .mi:not(:has(.mi-ico)) > .chk { margin-right: 24px; }
+.menu .mi .key { padding-left: var(--sp-6); color: var(--c-muted); font-size: var(--fs-xs); }
+.menu .mi.disabled .key { color: var(--c-disabled); }
+.menu .sep { height: 1px; margin: var(--sp-1) var(--sp-2); background: var(--c-line-soft); }
+/* the Shortcut Bar (S) */
+.scbar { gap: 2px; padding: var(--sp-1); background: var(--c-raised); border: var(--hair) solid var(--c-line); border-radius: var(--radius); box-shadow: var(--shadow-pop); }
+.scbar .sc-btn { width: 28px; height: 28px; border: var(--hair) solid transparent; border-radius: var(--radius); }
+.scbar .sc-btn .ico { width: 16px; height: 16px; }
+.scbar .sc-btn:hover:not(:disabled), .scbar .sc-btn.kbd:not(:disabled) { background: var(--c-hover); border-color: var(--c-hover-line); }
+.scbar .sc-btn.active { background: var(--c-press); border-color: var(--c-press-line); }
+.scbar .sc-btn:disabled { opacity: 0.38; }
+/* tooltips */
+.tip { max-width: 320px; padding: 6px var(--sp-2); background: var(--c-raised); color: var(--c-text); border: var(--hair) solid var(--c-line); border-radius: var(--radius); box-shadow: var(--shadow-pop); font-size: var(--fs-sm); line-height: 16px; }
+.tip-head { gap: var(--sp-3); }
+.tip-key { color: var(--c-muted); font-size: var(--fs-xs); }
+.tip-desc { margin-top: 2px; color: var(--c-text); }
+.tip-note { margin-top: 2px; color: var(--c-muted); font-style: normal; }
+
+/* ---- FeatureManager pane */
+#left { background: var(--c-raised); border-right: var(--hair) solid var(--c-line); }
+#fm-tabs { height: 28px; gap: 2px; padding: 0 var(--sp-1); background: var(--c-sunken); border-bottom: var(--hair) solid var(--c-line); }
+#fm-tabs button { width: 32px; height: 24px; border: var(--hair) solid transparent; border-bottom: 0; border-radius: var(--radius) var(--radius) 0 0; }
+#fm-tabs button .ico { width: 16px; height: 16px; }
+#fm-tabs button:hover { background: var(--c-hover); border-color: transparent; }
+#fm-tabs button.active, #fm-tabs button.active:hover { height: 25px; background: var(--c-raised); border-color: var(--c-line); border-bottom: var(--hair) solid var(--c-raised); }
+#fm-tabs button:not(.active) .ico { opacity: 0.75; }
+#tree-filter { height: 30px; gap: 6px; padding: var(--sp-1) var(--sp-2); background: var(--c-raised); border-bottom: var(--hair) solid var(--c-line-soft); }
+#tree-filter #filter-ico { color: var(--c-muted); }
+#tree-filter input { height: 22px; padding: 0 6px; background: var(--c-field); border: var(--hair) solid var(--c-field-line); border-radius: var(--radius); }
+#tree-filter input:hover { border-color: var(--c-line-strong); }
+#tree-filter input:focus { border-color: var(--c-focus); box-shadow: none; outline: none; }
+#tree-filter input::placeholder { color: var(--c-muted); opacity: 1; }
+#tree { background: var(--c-raised); padding: var(--sp-1) 0 var(--sp-6); }
+#tree .ti { height: var(--row); margin: 0 var(--sp-1) 0 2px; border-radius: 2px; contain-intrinsic-size: auto 22px; }
+#tree .ti:hover, #tree .ti.hover-sync { background: var(--c-hover); }
+#tree .ti.selected, #tree .ti.selected.hover-sync, #tree .ti.selected:hover { background: var(--c-sel); box-shadow: inset 0 0 0 1px var(--c-sel-line); }
+#tree .ti .tw { width: 12px; color: var(--c-muted); font-size: 9px; }
+#tree .ti .tw:not(.leaf):hover { color: var(--c-text); }
+#tree .ti.dim .nm, #tree .ti.hidden .nm, #tree .ti.rolled .nm, #tree .ti.suppressed .nm { color: var(--c-muted); }
+#tree .ti .badge { color: var(--c-muted); font-size: var(--fs-xs); }
+/* the rollback bar: a quiet 3 px rule under the last feature, darker and thicker while hovered or dragged */
+#tree .rollbar::before { top: 3px; height: 3px; border-radius: 2px; background: var(--c-line-strong); box-shadow: none; }
+#tree .rollbar:hover::before, #tree .rollbar.dragging::before { top: 2px; height: 5px; background: var(--c-text); }
+/* the pane splitters: a hairline appears on hover, 2 px while dragged */
+.split::after { background: transparent; }
+.split:hover::after { left: 3px; width: 1px; background: var(--c-line-strong); }
+.split.dragging::after { left: 2px; width: 2px; background: var(--c-text); }
+/* ConfigurationManager rows match the tree */
+.cfg-head { height: 32px; padding: 0 var(--sp-2); background: var(--c-raised); border-bottom: var(--hair) solid var(--c-line-soft); }
+.cfg-tools { gap: var(--sp-1); padding: var(--sp-1) var(--sp-2); border-bottom: var(--hair) solid var(--c-line-soft); }
+.cfg-tools button { height: var(--ctl); padding: 0 var(--sp-2); background: var(--c-field); border: var(--hair) solid var(--c-field-line); border-radius: var(--radius); }
+.cfg-tools button:hover { background: var(--c-hover); border-color: var(--c-line-strong); }
+.cfg-row { min-height: var(--row); margin: 0 var(--sp-1) 0 2px; border-radius: 2px; }
+.cfg-row .cfg-mark { color: var(--c-text); }
+
+/* ---- Task Pane: the icon strip on a sunken ground at the window edge, the open tab joined to its panel */
+#taskpane { background: var(--c-raised); border-left: var(--hair) solid var(--c-line); }
+#tp-strip { width: 34px; gap: 2px; padding: var(--sp-1) 0; background: var(--c-sunken); border-left: var(--hair) solid var(--c-line); }
+#tp-strip button { width: 33px; height: 32px; margin-left: -1px; border: var(--hair) solid transparent; border-left: 0; border-radius: 0 var(--radius) var(--radius) 0; }
+#tp-strip button .ico { width: 16px; height: 16px; }
+#tp-strip button:hover { background: var(--c-hover); border-color: transparent; }
+#tp-strip button.active, #tp-strip button.active:hover { background: var(--c-raised); border-color: var(--c-line); }
+#tp-panel { background: var(--c-raised); }
+#tp-title { min-height: 32px; gap: var(--sp-2); padding: 0 var(--sp-1) 0 var(--sp-3); background: var(--c-raised); border-bottom: var(--hair) solid var(--c-line); font-size: var(--fs-md); font-weight: 600; }
+#tp-title .ico { width: 16px; height: 16px; }
+#tp-title button { width: var(--ctl); height: var(--ctl); border-radius: var(--radius); color: var(--c-muted); display: grid; place-items: center; }
+#tp-title button:hover { background: var(--c-hover); color: var(--c-text); }
+#tp-body { padding: var(--sp-3); gap: var(--sp-3); }
+#tp-body h3 { margin: var(--sp-1) 0 0; font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.06em; color: var(--c-muted); }
+#tp-body .list button, #tp-body .views button { border-color: var(--c-line); border-radius: var(--radius); background: var(--c-field); }
+#tp-body .list button:hover, #tp-body .views button:hover { border-color: var(--c-line-strong); background: var(--c-hover); }
+#tp-body details summary { color: var(--c-text); }
+#taskpane.tp-overlay #tp-panel { border-left: var(--hair) solid var(--c-line); box-shadow: var(--shadow-pop); }
+
+/* ---- status bar: 22 px (the outer sizes of every bar are kept: graphics-area picks in the tests depend on them), the message left, the chips right, each chip split by a 14 px hairline */
+#statusbar { gap: var(--sp-3); padding: 0 0 0 var(--sp-2); background: var(--c-sunken); border-top: var(--hair) solid var(--c-line); color: var(--c-text); font-size: var(--fs-sm); line-height: 22px; }
+#status-coords { color: var(--c-muted); font-size: var(--fs-xs); }
+#status-right { gap: 0; align-items: center; }
+#status-right > span { height: 14px; padding: 0 var(--sp-3); border-left: var(--hair) solid var(--c-line); line-height: 14px; display: inline-flex; align-items: center; }
+#status-right > span.st-ms { justify-content: flex-end; }
+
+/* ---- buttons in the chrome (dialogs, the Task Pane): 24 px, a hairline frame; the default one dark (light in the
+   dark theme), so Enter's button is plain to see */
+.btn { height: var(--ctl); padding: 0 var(--sp-3); background: var(--c-field); border: var(--hair) solid var(--c-field-line); border-radius: var(--radius); color: var(--c-text); }
+.btn:hover { background: var(--c-hover); border-color: var(--c-line-strong); }
+.btn:active { background: var(--c-press); }
+.btn.primary { background: var(--c-default); border-color: var(--c-default); color: var(--c-default-text); }
+.btn.primary:hover { background: var(--c-default-hover); border-color: var(--c-default-hover); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+
+/* ---- dialogs: title row, 16 px body, a button row with the default button */
+#modal-card { background: var(--c-raised); border: var(--hair) solid var(--c-line); border-radius: var(--radius-lg); box-shadow: var(--shadow-dlg); }
+#modal-title { min-height: 36px; padding: 0 var(--sp-1) 0 var(--sp-4); background: var(--c-raised); border-bottom: var(--hair) solid var(--c-line-soft); font-size: var(--fs-md); font-weight: 600; }
+#modal-title button { width: 32px; height: 28px; border-radius: var(--radius); color: var(--c-muted); }
+#modal-title button:hover { background: #c42b1c; color: #fff; }
+#modal-body { padding: var(--sp-4); background: var(--c-raised); font-size: var(--fs-sm); line-height: 1.5; }
+#modal-body > p:first-child, #modal-body > div:first-child > p:first-child { margin-top: 0; }
+#modal-body > p:last-child, #modal-body > div:last-child > p:last-child { margin-bottom: 0; }
+#modal-body table, #tp-body table { font-size: inherit; }   /* the page runs in quirks mode, where tables reset to 16 px */
+#modal-body td, #modal-body th { padding: 6px var(--sp-2); border-bottom: var(--hair) solid var(--c-line-soft); }
+#modal-body th { color: var(--c-muted); font-weight: 600; }
+#modal-body input[type=text], #modal-body input[type=number], #modal-body select { height: var(--ctl); border-color: var(--c-field-line); border-radius: var(--radius); background: var(--c-field); }
+#modal-body input[type=text]:focus, #modal-body input[type=number]:focus, #modal-body select:focus, #modal-body textarea:focus { border-color: var(--c-focus); outline: none; }
+#modal-buttons { gap: var(--sp-2); padding: var(--sp-3) var(--sp-4); background: var(--c-panel); border-top: var(--hair) solid var(--c-line-soft); }
+#modal-buttons .btn { min-width: 80px; height: var(--ctl); padding: 0 var(--sp-4); border-radius: var(--radius); }
+#modal-buttons .btn.primary, #tp-body .btn.primary { background: var(--c-default); border-color: var(--c-default); color: var(--c-default-text); }
+#modal-buttons .btn.primary:hover, #tp-body .btn.primary:hover { background: var(--c-default-hover); border-color: var(--c-default-hover); }
+#modal-buttons .btn:focus-visible { outline: 2px solid var(--c-focus); outline-offset: 1px; }
+
+/* toasts: the dark note over the graphics area, one radius and the popup shadow */
+.toast { border-radius: var(--radius); box-shadow: var(--shadow-pop); padding: 6px var(--sp-4); font-size: var(--fs-sm); }

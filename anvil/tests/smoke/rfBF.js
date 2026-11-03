@@ -18,7 +18,9 @@
     assert(checked > 60 && bad.length === 0, checked + ' buttons; ' + bad.join(', '));
     return checked + ' buttons, each with its own icon';
   });
-  step('rfBF: the tab strip is grey and the active tab is raised white (lighter, with a shadow); inactive tabs are flat', async function () {
+  // rfGX (2026-11-03) re-pinned: flat tabs; the active one is the CommandManager's own grey, joined to the buttons above
+  // it (was raised white with a shadow)
+  step('rfBF: the tab strip is grey and the active tab is joined to the CommandManager (lighter than the strip, same grey as the buttons); inactive tabs are flat', async function () {
     UI.setRibbonTab('Sketch'); await idle();
     await new Promise(function (r) { setTimeout(r, 250); });   // the tabs fade their background in (90 ms transition)
     var strip = rfBFrgb(W.getComputedStyle($('ribbon-tabs')).backgroundColor);
@@ -26,13 +28,12 @@
     assert(act && act.textContent === 'Sketch' && off, 'an active Sketch tab and an inactive one');
     var as = W.getComputedStyle(act), a = rfBFrgb(as.backgroundColor), o = rfBFrgb(W.getComputedStyle(off).backgroundColor);
     assert(strip && strip.a === 1 && strip.lum < 235, 'grey strip: ' + JSON.stringify(strip));
-    assert(a && a.a === 1 && a.lum > strip.lum + 15, 'active tab lighter than the strip: ' + JSON.stringify(a) + ' vs ' + JSON.stringify(strip));
-    assert(as.boxShadow && as.boxShadow !== 'none', 'active tab has a shadow (raised): ' + as.boxShadow);
+    assert(a && a.a === 1 && a.lum > strip.lum + 8, 'active tab lighter than the strip: ' + JSON.stringify(a) + ' vs ' + JSON.stringify(strip));
     assert(!o || o.a === 0, 'inactive tab is flat on the strip: ' + JSON.stringify(o));
     assert(as.fontWeight >= 600, 'active tab text is bold: ' + as.fontWeight);
-    // the CommandManager is a light grey, darker than the active tab
+    // the CommandManager is a light grey, the active tab the same grey (joined to it)
     var cm = rfBFrgb(W.getComputedStyle($('ribbon')).backgroundColor);
-    assert(cm && cm.lum < a.lum && cm.lum > strip.lum, 'CommandManager grey between the strip and the active tab: ' + JSON.stringify(cm));
+    assert(cm && Math.abs(cm.lum - a.lum) < 1 && cm.lum > strip.lum, 'active tab joined to the CommandManager grey: ' + JSON.stringify(cm));
     UI.setRibbonTab('Features');
     return 'strip ' + Math.round(strip.lum) + ', CommandManager ' + Math.round(cm.lum) + ', active tab ' + Math.round(a.lum);
   });
@@ -60,7 +61,8 @@
     var on = sk.filter(function (b) { return b.classList.contains('active'); })[0], plain = Array.prototype.filter.call($('ribbon-buttons').querySelectorAll('button.rb'), function (b) { return !b.classList.contains('active') && !b.disabled; })[0];
     if (on && plain) {
       var ons = W.getComputedStyle(on), ps = W.getComputedStyle(plain);
-      assert(ons.backgroundColor !== ps.backgroundColor && ons.boxShadow !== 'none', 'toggled button pressed: ' + ons.backgroundColor + ' / ' + ons.boxShadow);
+      // rfGX re-pin: pressed = a darker grey and a darker frame (the inset shadow went)
+      assert(ons.backgroundColor !== ps.backgroundColor && ons.borderTopColor !== ps.borderTopColor && rfBFrgb(ons.borderTopColor).a === 1, 'toggled button pressed: ' + ons.backgroundColor + ' / ' + ons.borderTopColor);
     }
     var light = rfBFrgb(W.getComputedStyle($('ribbon')).backgroundColor);
     D.documentElement.dataset.theme = 'dark';
