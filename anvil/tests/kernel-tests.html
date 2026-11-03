@@ -71,7 +71,12 @@
   // sees in the full page; test() and group() of the other files just add no row. Each file opens with a call to
   // __groupFile (loadGroups adds it), which also times the file. The rows of a file that failed to load have no file:
   // they always run.
-  var only = window.__anvilOnly || null, currentFile = null, fileMs = {}, fileT0 = 0;
+  // A slow file can be split across jobs by its rows: only[file] = { rows: { 3: true, … }, from: n } runs the tests whose
+  // index in the file (the order of their test() calls, counted whether they run or not) is listed or is n or above;
+  // { mod: k, rem: j } runs every k-th from j (a file with no recorded row times).
+  // fileRows (every file's test() count) goes back with the results, so the runner can check the jobs of a split file
+  // ran every row of it exactly once.
+  var only = window.__anvilOnly || null, currentFile = null, fileMs = {}, fileT0 = 0, fileRows = {};
   function __groupFile(file) {
     var t = performance.now();
     if (currentFile) fileMs[currentFile] = (fileMs[currentFile] || 0) + t - fileT0;
@@ -99,9 +104,12 @@
     return String(e.message || e) + '\n' + top2 + (where && top2.indexOf(where) < 0 ? '\n    in ' + where : '');
   }
   function test(name, fn) {
+    var idx = currentFile ? (fileRows[currentFile] = (fileRows[currentFile] || 0) + 1) - 1 : -1;
     if (skipped()) return;
+    var pick = only && currentFile ? only[currentFile] : true;
+    if (pick !== true && !(pick.rows && pick.rows[idx]) && !(pick.from != null && idx >= pick.from) && !(pick.mod && idx % pick.mod === pick.rem)) return;
     var t0 = performance.now();
-    var res = { group: currentGroup, name: name, file: currentFile, ok: false, detail: '', ms: 0, pending: false };
+    var res = { group: currentGroup, name: name, file: currentFile, idx: idx, ok: false, detail: '', ms: 0, pending: false };
     results.push(res);
     var tr = document.createElement('tr');
     tr.innerHTML = '<td class="st"></td><td></td><td class="detail"></td><td class="ms"></td>';
@@ -156,7 +164,7 @@
     // tests added ~45 s that never happened; the synchronous tests' own sum is shown beside it.
     var wallMs = performance.now(), syncMs = results.reduce(function (s, r) { return s + (r.async ? 0 : r.ms); }, 0);
     summary.textContent = passed + ' / ' + total + ' passed' + (passed === total ? '' : ' — ' + (total - passed) + ' FAILED') + '  ·  ' + (wallMs / 1000).toFixed(1) + ' s (synchronous tests ' + (syncMs / 1000).toFixed(1) + ' s)';
-    window.__anvilTests = { passed: passed, total: total, results: results, wallMs: wallMs, syncMs: syncMs, sumMs: totalMs, fileMs: fileMs };
+    window.__anvilTests = { passed: passed, total: total, results: results, wallMs: wallMs, syncMs: syncMs, sumMs: totalMs, fileMs: fileMs, fileRows: fileRows };
   }
   function fail(msg) { throw new Error(msg); }
   function assert(cond, msg) { if (!cond) fail(msg || 'assertion failed'); }

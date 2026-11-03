@@ -41,8 +41,8 @@
   var W, D, K, UI, anvil, errors = [];
   var STEP_TIMEOUT_MS = 30000;
 
-  function row(name, ok, detail, ms) {
-    results.push({ name: name, ok: ok, detail: detail, ms: ms });
+  function row(name, ok, detail, ms, file, setup) {
+    results.push({ name: name, ok: ok, detail: detail, ms: ms, file: file || null, waited: waitedMs, setup: !!setup });
     var tr = document.createElement('tr');
     tr.className = ok ? 'ok' : 'bad';
     tr.innerHTML = '<td class="st"></td><td></td><td class="detail"></td><td class="ms"></td>';
@@ -66,7 +66,9 @@
   function fail(msg) { throw new Error(msg); }
   function assert(c, msg) { if (!c) fail(msg || 'assertion failed'); }
   function near(a, b, tol, label) { if (!(Math.abs(a - b) <= tol)) fail((label || 'value') + ' = ' + a + ', expected ' + b + ' ±' + tol); }
-  function wait(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
+  // waitedMs: the time the current step asked to sleep (headless/ui-smoke.js --slowest lists the steps that sleep most)
+  var waitedMs = 0;
+  function wait(ms) { waitedMs += +ms || 0; return new Promise(function (res) { setTimeout(res, ms); }); }
   function fmt(n) { return Math.round(n * 1000) / 1000; }
   function polyCircleArea(r) { var n = Math.max(16, Math.min(72, Math.round(8 * Math.sqrt(Math.max(r, 0.01))))); return n / 2 * r * r * Math.sin(2 * Math.PI / n); }
   // true curves (cloud-2026-09-25p): the mesh's n-gon at the current chord tolerance (Kernel.segsForRadius), for results
@@ -79,7 +81,22 @@
   var steps = [];
   // ?only=<text> runs just the steps whose name contains it (a quick re-run of one area; the full suite has no query)
   var ONLY = (function () { try { return new URLSearchParams(location.search).get('only'); } catch (e) { return null; } })();
-  function step(name, fn) { if (ONLY && name.indexOf(ONLY) < 0) return; steps.push({ name: name, fn: fn }); }
+  // ?files=a-b runs only the steps of GROUPS[a] … GROUPS[b - 1] (one shard of headless/ui-smoke.js --shards: every
+  // group file still loads, so helpers are all there). `declared` counts every step before that cut, so the driver can
+  // check its shards ran each step of the suite exactly once. loadGroups starts each file with __smokeFile(its index).
+  var SHARD = (function () { var m = /[?&]files=(\d+)-(\d+)/.exec(location.search); return m ? { from: +m[1], to: +m[2] } : null; })();
+  // The suite's first step ('app booted', smoke/basics.js) is also its setup: it records downloads instead of saving
+  // them (W.__downloads) and turns OpenCascade off for every later step. A shard that does not hold it runs it first as
+  // a setup row (setup: true; the driver reports it only when it fails), so every shard starts where the full run does.
+  var smokeFile = -1, declared = 0, setupStep = null;
+  function __smokeFile(i) { smokeFile = i; }
+  function step(name, fn) {
+    if (!setupStep) setupStep = { name: name + ' (shard setup)', fn: fn, file: null, setup: true, index: smokeFile };
+    if (ONLY && name.indexOf(ONLY) < 0) return;
+    declared++;
+    if (SHARD && smokeFile >= 0 && (smokeFile < SHARD.from || smokeFile >= SHARD.to)) return;
+    steps.push({ name: name, fn: fn, file: smokeFile >= 0 ? GROUPS[smokeFile] : null });
+  }
 
   // ---- helpers that talk to the app
   function $(id) { return D.getElementById(id); }
@@ -406,17 +423,18 @@
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'ui-smoke.groups.js', error: e }); }
   // a group file that did not load, parse or run to its end: one FAIL row
   groupSet.failed.forEach(function (f) { steps.push({ name: f.file + ' loads', fn: function () { throw f.error; } }); });
+  if (SHARD && setupStep && (setupStep.index < SHARD.from || setupStep.index >= SHARD.to)) steps.unshift(setupStep);
   function loadGroups(files, name) {
     var base = (typeof location !== 'undefined' && location.href) ? String(location.href).replace(/[?#].*$/, '').replace(/[^\/]*$/, '') : '';
     var texts = [], failed = [];
-    files.forEach(function (file) {
+    files.forEach(function (file, index) {
       try {
         var xhr = new XMLHttpRequest();
         xhr.open('GET', file, false);
         if (xhr.overrideMimeType) xhr.overrideMimeType('text/plain; charset=utf-8');
         xhr.send();
         if (xhr.status !== 200 && !(xhr.status === 0 && xhr.responseText)) throw new Error('could not read ' + file + ' (HTTP ' + xhr.status + ')');
-        var text = String(xhr.responseText);
+        var text = '__smokeFile(' + index + '); ' + String(xhr.responseText);   // same line: line numbers stay
         texts.push({ file: file, text: /\n$/.test(text) ? text : text + '\n' });
       } catch (e) { failed.push({ file: 'tests/' + file, error: e }); }
     });
@@ -451,15 +469,32 @@
       Promise.resolve(p).then(function (v) { clearTimeout(t); resolve(v); }, function (e) { clearTimeout(t); reject(e); });
     });
   }
+  // the settings a step inherits from the steps before it (headless/ui-smoke.js --shards compares the end of one shard
+  // with the start of the next and lists what differs)
+  var startState = null;
+  function smokeState() {
+    var o = {};
+    try {
+      o.occt = !!(anvil.occt && anvil.occt().on); o.worker = !!(anvil.workerOn && anvil.workerOn());
+      o.units = localStorage.getItem('anvil.units'); o.theme = D.documentElement.getAttribute('data-theme') || D.body.className;
+      var v = UI.App.view || {};
+      Object.keys(v).forEach(function (k) { if (typeof v[k] === 'boolean' || typeof v[k] === 'string' || typeof v[k] === 'number') o['view.' + k] = v[k]; });
+      for (var j = 0; j < localStorage.length; j++) { var k = localStorage.key(j); if (!/^anvil\.(lastPart|files|sketchClipboard|recover|autosave)$/.test(k)) o['ls.' + k] = String(localStorage.getItem(k)).slice(0, 120); }
+      o.downloadsRecorded = Array.isArray(W.__downloads);
+    } catch (e) { o.error = String(e); }
+    return o;
+  }
   function runAll() {
     var i = 0;
     function next() {
       if (i >= steps.length) return finish();
+      if (!startState && !steps[i].setup) startState = smokeState();
       var s = steps[i++], t0 = performance.now();
+      waitedMs = 0;
       withTimeout(Promise.resolve().then(function () { return s.fn(); }), STEP_TIMEOUT_MS, s.name).then(function (detail) {
-        row(s.name, true, typeof detail === 'string' ? detail : '', performance.now() - t0);
+        row(s.name, true, typeof detail === 'string' ? detail : '', performance.now() - t0, s.file, s.setup);
       }, function (e) {
-        row(s.name, false, (e && e.message) || String(e), performance.now() - t0);
+        row(s.name, false, (e && e.message) || String(e), performance.now() - t0, s.file, s.setup);
       }).then(function () { return wait(30); }).then(next);
     }
     next();
@@ -469,7 +504,7 @@
     var el = document.getElementById('summary');
     el.className = passed === total ? 'ok' : 'bad';
     el.textContent = passed + ' / ' + total + ' passed' + (passed === total ? '' : ' — ' + (total - passed) + ' FAILED');
-    window.__anvilSmoke = { passed: passed, total: total, results: results, errors: errors };
+    window.__anvilSmoke = { passed: passed, total: total, results: results, errors: errors, declared: declared, shard: SHARD, startState: startState, endState: smokeState() };
     // the suite's documents are not the user's unsaved work: no recovery copy for the next session, no "leave the page?"
     try { if (UI && UI.markClean) UI.markClean(); localStorage.removeItem('anvil.recover'); } catch (e) { }
   }

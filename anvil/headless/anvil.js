@@ -27,11 +27,16 @@ const USAGE = [
   '  example <name | index> [build options]     a bundled example (name case-insensitive, prefix allowed)',
   '  example --all [--occt]                      every example against its documented volume',
   '  examples                                    list the examples with their documented volumes',
-  '  test [--only rfXX[,rfYY]] [--jobs N] [--serial] [--timings] [--save-timings]',
-  '      tests/kernel-tests.html under Node, each group file a job on its own process, longest first. --only: those group',
-  '      files (exact name, else part of the name), with every helper the full page has. --jobs: processes at a time',
-  '      (default: half the threads). --serial: one process, in page order. --timings: seconds per group file, the slowest',
-  '      tests, the largest process. --save-timings: writes headless/test-timings.json. --verbose: every row.',
+  '  test [--only rfXX[,rfYY]] [--jobs N] [--serial] [--no-split] [--timings] [--save-timings] [--json out]',
+  '      tests/kernel-tests.html under Node, each group file a job on its own process, longest first; a file longer than',
+  '      a third of the even share is split by its rows into several jobs (the runner checks every row ran once; --no-split:',
+  '      one job per file). --only: those group files (exact name, else part of the name), with every helper the full page',
+  '      has. --jobs: processes at a time (default: half the threads). --serial: one process, in page order. --timings:',
+  '      seconds per group file, the slowest tests, the largest process. --save-timings: merges seconds per file and each',
+  '      test\'s ms of the slow files into headless/test-timings.json. --json: passed, total, failures. --verbose: every row.',
+  '  verify [--url http://localhost:8812] [--slots N] [--shards N] [--slowest [n]] [--skip kernel,examples,ex-occt,smoke,occt]',
+  '      the head\'s whole check at once within N busy processes (headless/verify.js): kernel tests, example --all with and',
+  '      without --occt, ui-smoke in N headless Chromes, occt-tests.html; one table, every FAIL row, exit 1 on any failure',
   '  dwg <in.dxf> <out.dwg>                      an R2000 DXF to an AutoCAD 2000 DWG with Anvil\'s own writer (no converter)',
   '  dxf2sketch <file.dxf | file.dwg> [--dxf out] what File > Open brings into a sketch: units, layers, entities, extents,',
   '                                              Check Sketch summary (a DWG through the ODA File Converter or LibreDWG)',
@@ -448,6 +453,8 @@ async function main(argv) {
       return cmdBuild(sourceFromExample(findExample(args._[1])), flags);
     case 'test':
       return require('./test-run').cmdTest(flags);
+    case 'verify':
+      return require('./verify').main(argv.slice(1));
     case 'dwg':
       if (!args._[1] || !args._[2]) throw usage('dwg: give an R2000 .dxf and the .dwg to write');
       return cmdDwg(args._[1], args._[2]);

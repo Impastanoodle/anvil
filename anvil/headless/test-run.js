@@ -109,11 +109,12 @@ function pageEnv() {
   const pageDir = path.dirname(TESTS_PAGE), html = fs.readFileSync(TESTS_PAGE, 'utf8');
   return { shim: domShim(pageDir), script: inlineScript(html) };
 }
-// one run of the page; only = list of group files, or null for all of them
+// one run of the page; only = list of group files, or a map file -> true | { rows, from } (a part of a split file), or
+// null for all of them
 async function runPage(env, only) {
-  const map = {};
-  (only || []).forEach((f) => { map[f] = true; });
-  globalThis.__anvilOnly = only ? map : undefined;
+  let map = null;
+  if (Array.isArray(only)) { map = {}; only.forEach((f) => { map[f] = true; }); } else if (only) map = only;
+  globalThis.__anvilOnly = map || undefined;
   delete globalThis.__anvilTests;
   env.shim.byId.rows.children = [];
   vm.runInThisContext(env.script.code, { filename: TESTS_PAGE, lineOffset: env.script.line });
@@ -132,74 +133,138 @@ async function runPage(env, only) {
 function childMain() {
   const env = pageEnv();
   process.on('message', (m) => {
-    runPage(env, m.files).then((r) => {
-      process.send({ files: m.files, results: r.results, fileMs: r.fileMs, maxRSS: process.resourceUsage().maxRSS * 1024 });
+    runPage(env, m.only).then((r) => {
+      process.send({ results: r.results, fileMs: r.fileMs, fileRows: r.fileRows || {}, maxRSS: process.resourceUsage().maxRSS * 1024 });
     }, (e) => {
-      process.send({ files: m.files, error: String((e && e.stack) || e), fileMs: {}, maxRSS: process.resourceUsage().maxRSS * 1024 });
+      process.send({ error: String((e && e.stack) || e), fileMs: {}, fileRows: {}, maxRSS: process.resourceUsage().maxRSS * 1024 });
     });
   });
   process.send({ ready: true });
 }
 
 // ------------------------------------------------------------------ the pool
-function recorded() { try { return JSON.parse(fs.readFileSync(TIMINGS, 'utf8')).seconds || {}; } catch (e) { return {}; } }
-// longest first; a file with no record counts as the median
-function longestFirst(files, seconds) {
+// test-timings.json: { seconds: { file: s }, rows: { file: [ms of each test, in file order] } } (rows only for the slow files)
+function recorded() { try { const j = JSON.parse(fs.readFileSync(TIMINGS, 'utf8')); return { seconds: j.seconds || {}, rows: j.rows || {} }; } catch (e) { return { seconds: {}, rows: {} }; } }
+const ROWS_MIN_S = 8;   // --save-timings keeps each test's time for files at least this long: the ones that may be split
+const JOB_START_S = 0.6;   // a job's own cost: a process, the engine and every group file's top level
+// The jobs: one per group file, except that a file longer than a third of the even share (all files / n) is split into
+// parts by its rows, each part at most that long, so the run is no longer bound by its slowest file (rfGH, rfGI were 145 s
+// and 137 s of a 129 s share). A part is a run of consecutive rows (each test still sees the tests before it in its own
+// part, as in the page), chosen from the recorded row times; with no row times on record, every k-th row. Longest first.
+// -> [{ file, part: null | { rows, from } | { mod, rem }, est, label }]
+function planJobs(files, n, rec, split) {
+  const seconds = rec.seconds;
   const known = files.map((f) => seconds[f]).filter((s) => s > 0).sort((a, b) => a - b);
   const mid = known.length ? known[known.length >> 1] : 1;
   const est = (f) => (seconds[f] > 0 ? seconds[f] : mid);
-  return files.slice().sort((a, b) => est(b) - est(a));
-}
-function crashRow(file, why) {
-  return { group: file, name: file + ' job', file, ok: false, detail: why, ms: 0, pending: false };
-}
-// run every file in a child of its own, at most n at a time -> { rows: Map(file -> rows), jobSeconds, peak, sumPeak }
-function runPool(files, n) {
-  const JOB_LIMIT_S = 1200;   // a test stuck in a loop: that job fails, the others finish
-  const queue = longestFirst(files, recorded());
-  const rows = new Map(), fileMs = {}, jobSeconds = {};
-  let next = 0, live = 0, maxRSS = 0;
-  return new Promise((resolve) => {
-    const kids = new Set();
-    const watch = setInterval(() => {
-      kids.forEach((c) => {
-        if (c.job && Date.now() - c.job.t0 > JOB_LIMIT_S * 1000) { c.job.why = 'no result within ' + JOB_LIMIT_S + ' s: the job was stopped'; c.kill(); }
-      });
-    }, 1000);
-    function spawn() {
-      if (next >= queue.length) return;
-      // V8 gives a process 4 helper threads by default: 8 jobs could ask for 40 threads and peg every core of the PC
-      const c = cp.fork(__filename, [], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'], execArgv: process.execArgv.concat(V8_POOL) });
-      const file = queue[next++];
-      c.job = { file, t0: Date.now(), why: null };
-      kids.add(c); live++;
-      c.on('message', (m) => {
-        if (m.ready) { c.send({ files: [file] }); return; }
-        rows.set(file, m.error ? [crashRow(file, m.error)] : m.results);
-        fileMs[file] = m.fileMs[file] || 0;
-        jobSeconds[file] = (Date.now() - c.job.t0) / 1000;
-        maxRSS = Math.max(maxRSS, m.maxRSS || 0);
-        c.job = null;
-        c.kill();
-      });
-      c.on('exit', (code, signal) => {
-        kids.delete(c); live--;
-        if (c.job) rows.set(file, [crashRow(file, c.job.why || 'the job\'s process ended early (exit code ' + code + (signal ? ', ' + signal : '') + ')')]);
-        spawn();
-        if (!live) { clearInterval(watch); resolve({ rows, fileMs, jobSeconds, maxRSS }); }
-      });
+  const total = files.reduce((s, f) => s + est(f) + JOB_START_S, 0);
+  const cap = Math.max(total / n / 3, ROWS_MIN_S);
+  const jobs = [];
+  files.forEach((f) => {
+    const s = est(f), times = rec.rows[f];
+    if (!split || n < 2 || s <= cap) { jobs.push({ file: f, part: null, est: s, label: f }); return; }
+    if (!times || times.length < 2) {
+      const k = Math.min(n, Math.ceil(s / cap));
+      for (let j = 0; j < k; j++) jobs.push({ file: f, part: { mod: k, rem: j }, est: s / k, label: f + ' (every ' + k + 'th row from ' + j + ')' });
+      return;
     }
-    for (let i = 0; i < n; i++) spawn();
-    if (!live) { clearInterval(watch); resolve({ rows, fileMs, jobSeconds, maxRSS }); }
+    const parts = [];
+    let cur = [], sum = 0;
+    times.forEach((ms, i) => {
+      const t = ms / 1000;
+      if (cur.length && sum + t > cap) { parts.push({ rows: cur, s: sum }); cur = []; sum = 0; }
+      cur.push(i); sum += t;
+    });
+    if (cur.length) parts.push({ rows: cur, s: sum });
+    if (parts.length < 2) { jobs.push({ file: f, part: null, est: s, label: f }); return; }
+    parts.forEach((p, k) => {
+      const rows = {};
+      p.rows.forEach((i) => { rows[i] = true; });
+      // the last part also takes any row added since the times were recorded
+      const last = k === parts.length - 1;
+      jobs.push({ file: f, part: { rows, from: last ? times.length : null }, est: p.s, label: f + ' (rows ' + p.rows[0] + '–' + (last ? 'end' : p.rows[p.rows.length - 1]) + ')' });
+    });
+  });
+  return jobs.sort((a, b) => b.est - a.est);
+}
+function crashRow(file, why, label) {
+  return { group: file, name: (label || file) + ' job', file, ok: false, detail: why, ms: 0, pending: false };
+}
+// one job in a child process of its own -> Promise of { job, rows, fileRows, crashed, fileMs, seconds, maxRSS }
+const JOB_LIMIT_S = 1200;   // a test stuck in a loop: that job fails, the others finish
+function runJob(job) {
+  return new Promise((resolve) => {
+    // V8 gives a process 4 helper threads by default: 8 jobs could ask for 40 threads and peg every core of the PC
+    const c = cp.fork(__filename, [], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'], execArgv: process.execArgv.concat(V8_POOL) });
+    const file = job.file, t0 = Date.now();
+    let out = null, why = null;
+    const limit = setTimeout(() => { why = 'no result within ' + JOB_LIMIT_S + ' s: the job was stopped'; c.kill(); }, JOB_LIMIT_S * 1000);
+    c.on('message', (m) => {
+      if (m.ready) { const only = {}; only[file] = job.part || true; c.send({ only }); return; }
+      out = { job, rows: m.error ? [crashRow(file, m.error, job.part && job.label)] : m.results, fileRows: m.fileRows || {}, crashed: !!m.error,
+        fileMs: m.fileMs[file] || 0, seconds: (Date.now() - t0) / 1000, maxRSS: m.maxRSS || 0 };
+      c.kill();
+    });
+    c.on('exit', (code, signal) => {
+      clearTimeout(limit);
+      resolve(out || { job, rows: [crashRow(file, why || 'the job\'s process ended early (exit code ' + code + (signal ? ', ' + signal : '') + ')', job.part && job.label)],
+        fileRows: {}, crashed: true, fileMs: 0, seconds: (Date.now() - t0) / 1000, maxRSS: 0 });
+    });
   });
 }
-// rows in the order the serial page gives them; a load-failure row (no file) comes from every job: keep one of each
+// the finished jobs -> { done, fileMs, jobSeconds, maxRSS } (what mergeRows and printTimings read)
+function poolResult(done) {
+  const fileMs = {}, jobSeconds = {};
+  let maxRSS = 0;
+  done.forEach((d) => {
+    const f = d.job.file;
+    fileMs[f] = (fileMs[f] || 0) + d.fileMs;
+    jobSeconds[f] = Math.max(jobSeconds[f] || 0, d.seconds);
+    maxRSS = Math.max(maxRSS, d.maxRSS);
+  });
+  return { done, fileMs, jobSeconds, maxRSS };
+}
+// run every job, at most n at a time, longest first (the order of `jobs`)
+function runPool(jobs, n) {
+  const done = [];
+  let next = 0;
+  return new Promise((resolve) => {
+    let live = 0;
+    function spawn() {
+      if (next >= jobs.length) { if (!live) resolve(poolResult(done)); return; }
+      live++;
+      runJob(jobs[next++]).then((d) => { done.push(d); live--; spawn(); });
+    }
+    for (let i = 0; i < n; i++) spawn();
+  });
+}
+// rows in the order the serial page gives them; a load-failure row (no file) comes from every job: keep one of each. The
+// parts of a split file must agree on its test count and have run each of its rows exactly once, else a FAIL row says so.
 function mergeRows(files, pool) {
+  const byFile = new Map();
+  pool.done.forEach((d) => { if (!byFile.has(d.job.file)) byFile.set(d.job.file, []); byFile.get(d.job.file).push(d); });
   const out = [], late = new Map();
   files.forEach((f) => {
-    (pool.rows.get(f) || []).forEach((r) => {
-      if (r.file) out.push(r); else if (!late.has(r.name)) late.set(r.name, r);
-    });
+    const parts = byFile.get(f) || [];
+    let mine = [];
+    parts.forEach((d) => d.rows.forEach((r) => { if (r.file) mine.push(r); else if (!late.has(r.name)) late.set(r.name, r); }));
+    if (parts.length > 1 || (parts[0] && parts[0].job.part)) {
+      const ok = parts.filter((d) => !d.crashed), counts = Array.from(new Set(ok.map((d) => d.fileRows[f])));
+      const ran = mine.filter((r) => r.idx != null).map((r) => r.idx).sort((a, b) => a - b);
+      let why = null;
+      if (ok.length === parts.length) {
+        if (counts.length !== 1 || !(counts[0] >= 0)) why = 'the parts declared different test counts: ' + counts.join(', ');
+        else if (ran.length !== counts[0] || ran.some((x, i) => x !== i)) {
+          const seen = {}, missing = [], twice = [];
+          ran.forEach((x) => { if (seen[x]) twice.push(x); seen[x] = true; });
+          for (let i = 0; i < counts[0]; i++) if (!seen[i]) missing.push(i);
+          why = counts[0] + ' tests declared, ' + ran.length + ' ran; rows not run: [' + missing.join(', ') + '], run twice: [' + twice.join(', ') + ']';
+        }
+      }
+      mine = mine.sort((a, b) => (a.idx == null ? 1e9 : a.idx) - (b.idx == null ? 1e9 : b.idx));
+      if (why) mine.push({ group: f, name: f + ' split across ' + parts.length + ' jobs: every row once', file: f, ok: false, detail: why, ms: 0, pending: false });
+    }
+    out.push.apply(out, mine);
   });
   return out.concat(Array.from(late.values()));
 }
@@ -235,10 +300,19 @@ function printTimings(results, fileMs, jobSeconds, maxRSS) {
   results.filter((r) => r.async).sort((a, b) => b.ms - a.ms).slice(0, 8).forEach((r) => w((r.ms / 1000).toFixed(1).padStart(8) + ' s  ' + r.file + ': ' + r.name));
   w('largest process: ' + Math.round(maxRSS / 1048576) + ' MB');
 }
-function saveTimings(fileMs) {
-  const seconds = {};
-  Object.keys(fileMs).sort().forEach((f) => { seconds[f] = +(fileMs[f] / 1000).toFixed(2); });
-  fs.writeFileSync(TIMINGS, JSON.stringify({ note: 'seconds per group file, for handing out the longest first: node anvil/headless/anvil.js test --save-timings', seconds }, null, 1) + '\n');
+// the files run (seconds per file, and each test's ms for the slow ones) merge into the record: an --only run keeps the rest
+function saveTimings(fileMs, results) {
+  let old = {};
+  try { old = JSON.parse(fs.readFileSync(TIMINGS, 'utf8')); } catch (e) { }
+  const seconds = Object.assign({}, old.seconds || {}), rows = Object.assign({}, old.rows || {});
+  Object.keys(fileMs).forEach((f) => { seconds[f] = +(fileMs[f] / 1000).toFixed(2); delete rows[f]; });
+  const byFile = {};
+  results.forEach((r) => { if (r.file && r.idx != null) (byFile[r.file] = byFile[r.file] || [])[r.idx] = Math.round(r.ms); });
+  Object.keys(byFile).forEach((f) => { if (seconds[f] >= ROWS_MIN_S) rows[f] = Array.from(byFile[f], (x) => x || 0); });
+  const sorted = (o) => { const out = {}; Object.keys(o).sort().forEach((k) => { out[k] = o[k]; }); return out; };
+  const text = JSON.stringify({ note: 'seconds per group file (longest first), and each test\'s ms in the files of ' + ROWS_MIN_S + ' s or more (how a slow file is split across jobs): node anvil/headless/anvil.js test --save-timings', seconds: sorted(seconds), rows: {} }, null, 1)
+    .replace(/"rows": \{\}/, '"rows": {\n' + Object.keys(sorted(rows)).map((f) => '  ' + JSON.stringify(f) + ': ' + JSON.stringify(rows[f])).join(',\n') + '\n }');
+  fs.writeFileSync(TIMINGS, text + '\n');
 }
 async function cmdTest(flags) {
   const html = fs.readFileSync(TESTS_PAGE, 'utf8'), all = groupList(html);
@@ -248,12 +322,15 @@ async function cmdTest(flags) {
   if (!(jobs >= 1)) throw Object.assign(new Error('--jobs: give a whole number of at least 1'), { code: 2 });
   const t0 = performance.now();
   let results, fileMs, jobSeconds = null, maxRSS;
-  if (flags.serial || jobs === 1 || files.length === 1) {
+  const plan = flags.serial || jobs === 1 ? null : planJobs(files, jobs, recorded(), !flags['no-split']);
+  if (!plan || plan.length === 1) {
     const r = await runPage(pageEnv(), only);
     results = r.results; fileMs = r.fileMs; maxRSS = process.resourceUsage().maxRSS * 1024;
   } else {
-    const pool = await runPool(files, Math.min(jobs, files.length));
+    const pool = await runPool(plan, Math.min(jobs, plan.length));
     results = mergeRows(files, pool); fileMs = pool.fileMs; jobSeconds = pool.jobSeconds; maxRSS = pool.maxRSS;
+    const split = plan.filter((j) => j.part);
+    if (flags.timings && split.length) process.stdout.write(plan.length + ' jobs, ' + split.length + ' of them parts of ' + new Set(split.map((j) => j.file)).size + ' split files\n');
   }
   const failures = results.filter((r) => !r.ok);
   if (!flags.quiet) {
@@ -264,10 +341,19 @@ async function cmdTest(flags) {
     });
   }
   if (flags.timings) printTimings(results, fileMs, jobSeconds, maxRSS);
-  if (flags['save-timings']) saveTimings(fileMs);
-  process.stdout.write((results.length - failures.length) + ' / ' + results.length + ' passed' + (failures.length ? ' — ' + failures.length + ' FAILED' : '') + '  ·  ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s\n');
+  if (flags['save-timings']) saveTimings(fileMs, results);
+  const seconds = (performance.now() - t0) / 1000;
+  if (flags.json) fs.writeFileSync(path.resolve(process.cwd(), String(flags.json)), JSON.stringify({ passed: results.length - failures.length, total: results.length, seconds: +seconds.toFixed(1),
+    failures: failures.map((r) => ({ name: r.name, file: r.file, detail: String(r.detail || '') })) }, null, 1) + '\n');
+  process.stdout.write((results.length - failures.length) + ' / ' + results.length + ' passed' + (failures.length ? ' — ' + failures.length + ' FAILED' : '') + '  ·  ' + seconds.toFixed(1) + ' s\n');
   return failures.length ? 1 : 0;
 }
 
+// the whole kernel page as jobs, for headless/verify.js: { files (GROUPS order), jobs (longest first) }
+function kernelPlan(opts) {
+  const files = groupList(fs.readFileSync(TESTS_PAGE, 'utf8'));
+  return { files, jobs: planJobs(files, (opts && opts.jobs) || defaultJobs(), recorded(), !(opts && opts.noSplit)) };
+}
+
 if (require.main === module && process.send) childMain();
-module.exports = { cmdTest };
+module.exports = { cmdTest, kernelPlan, runJob, poolResult, mergeRows };

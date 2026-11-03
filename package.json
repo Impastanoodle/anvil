@@ -6,6 +6,7 @@
   "scripts": {
     "test": "node anvil/headless/anvil.js test",
     "examples": "node anvil/headless/anvil.js example --all",
-    "ui-smoke": "node anvil/headless/ui-smoke.js"
+    "ui-smoke": "node anvil/headless/ui-smoke.js",
+    "verify": "node anvil/headless/verify.js"
   }
 }

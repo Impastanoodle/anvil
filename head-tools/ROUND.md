@@ -51,16 +51,18 @@ hook when it is cheap.
 ```
 node anvil/tests/split-tests.js --check          # every group file listed in its page manifest and parsing
 node head-tools/make-index.js --check            # anvil/docs/INDEX.md current (else run it without --check)
-node anvil/headless/anvil.js test                # parallel, half the threads, about 3.5 min here; --serial for one process
-node anvil/headless/anvil.js example --all
-node anvil/headless/anvil.js example --all --occt
-node anvil/headless/ui-smoke.js http://localhost:8812/tests/ui-smoke.html --port 9312 --timeout 900 --slowest
+node anvil/headless/verify.js --slowest          # the whole check at once in 8 busy processes, about 6 min here:
+                                                 # kernel tests, example --all with and without --occt, ui-smoke in
+                                                 # 2 headless Chromes, occt-tests.html; one table, every FAIL row
 ```
-Agents run only their own groups plus the full kernel suite and examples (user, 2026-11-03); this ui-smoke run is the
-only full one per lane, so a failure in another group goes back to the lane's agent (SendMessage) with the FAIL rows.
-`--slowest` lists the slowest steps and groups: hand persistent offenders to a test-speed lane.
-Then `http://localhost:8812/tests/occt-tests.html` in the browser pane (`location.reload()`, poll the PASS / FAIL count
-every ~30 s, 87 rows), and `http://localhost:8812/` with no console errors.
+The server on 8812 must be running. Exit 0 = all green, 1 = a failure, 2 = a suite could not run. A smoke step that
+failed under load is rerun alone (listed separately); a step that fails only in shard 2 is rechecked with `--shards 1`.
+It warns when a suite has fewer tests than the last green run: a drop needs a coverage ledger from the lane (where
+each removed assertion now lives), never just a smaller count.
+Agents run only their own groups plus the full kernel suite and examples (user, 2026-11-03); this verify run is the
+only full ui-smoke per lane, so a failure in another group goes back to the lane's agent (SendMessage) with the FAIL
+rows. `--slowest` lists the slowest steps and groups: hand persistent offenders to a test-speed lane.
+Then `http://localhost:8812/` with no console errors.
 
 ## 5. Record, commit, publish
 **Push per lane (user, 2026-11-03):** each lane gets its own commit and `git push origin main` as soon as it is merged
