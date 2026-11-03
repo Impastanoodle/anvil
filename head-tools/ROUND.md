@@ -60,6 +60,10 @@ Then `http://localhost:8812/tests/occt-tests.html` in the browser pane (`locatio
 every ~30 s, 87 rows), and `http://localhost:8812/` with no console errors.
 
 ## 5. Record, commit, publish
+**Push per lane (user, 2026-11-03):** each lane gets its own commit and `git push origin main` as soon as it is merged
+and the suites in step 4 are green (no TEMP commits left on main); the SESSION_LOG entry grows one line per lane. The
+app republish, board close and clean-up below stay at round end.
+
 - Append the SESSION_LOG entry (per lane, head, next, Tests line); update the ui-smoke count in README *Headless*; move
   QUEUE items to Done and rewrite the open sketch / drawing gaps line.
 - One commit: write the message to a file, `git add -A anvil QUEUE.md test-reports/<new>`, `git reset --soft <round base>`,

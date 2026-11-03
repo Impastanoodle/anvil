@@ -87,7 +87,11 @@
     fmtItem('tb', function () { rect([tx0, ty0], [S[0] - b1, ty0 + th], 'SHEET', 'thick'); });
     fmtItem('tb-row1', function () { line([tx0, ty0 + row], [S[0] - b1, ty0 + row], 'SHEET', 'thin'); });
     fmtItem('tb-row2', function () { line([tx0, ty0 + 2 * row], [S[0] - b1, ty0 + 2 * row], 'SHEET', 'thin'); });
-    var lab = 2.2 * k, val = 3.5 * k, pad = 1.5 * k;
+    // (rfHB, user 2026-11-03) an ANSI title block that reads at arm's length: captions 2.8 mm type (capitals .08 in,
+    // were 2.2 mm / .06 in and hard to read on paper), values 3.5 mm (capitals .10 in, ASME Y14.2's minimum), the
+    // TITLE 6 mm (capitals .17 in); every caption 1.5 mm in from its cell's top-left corner, every value centred in the
+    // room under its caption, left-aligned at the same 1.5 mm, so the columns line up down the block
+    var lab = 2.8 * k, val = 3.5 * k, pad = 1.5 * k, big = 6 * k;
     // title block fields: each a text with $PRPSHEET:"name" (the model's custom property) / $PRP:"name" (the
     // drawing's) links, evaluated now; doc.titleBlock overrides a field's text
     var tb = titleBlock(doc, model, ctx), scale = doc.sheet.scale || [1, 1];
@@ -109,16 +113,16 @@
       var x0 = tx0 + f.x0 * k, x1 = tx0 + f.x1 * k, yTop = ty0 + th - f.row * row;
       if ((f.x0 > 0 || (f.block && f.x0 > D.TB_BLOCKS[f.block])) && !colX[f.row + ':' + f.x0]) { colX[f.row + ':' + f.x0] = 1; fmtItem('col:' + f.row + ':' + f.x0, function () { line([x0, yTop - row * (f.rows || 1)], [x0, yTop], 'SHEET', 'thin'); }); }
       fmtItem('field:' + f.key, function () {
-        var v = tb[f.key], h = f.big ? 5 * k : val, w = x1 - x0 - 2 * pad;
-        text([x0 + pad, yTop - pad - lab], lab, f.label, 'start', 'SHEET');
+        var v = tb[f.key], h = f.big ? big : val, w = x1 - x0 - 2 * pad, capBase = yTop - pad - lab * CAP_EM, yBot = yTop - row * (f.rows || 1);
+        text([x0 + pad, capBase], lab, f.label, 'start', 'SHEET');
         if (f.multi && v) {
-          // a block of lines (the general tolerances), 2.2 mm text, 1.5 × apart
+          // a block of lines (the general tolerances): capitals 2.2 mm, 1.75 × apart, 2.5 mm under the caption
           var ls = String(v).split(/\r?\n/), lh = 2.2 * k;
-          ls.forEach(function (s, i) { if (s) text([x0 + pad, yTop - pad - lab - 4 * k - i * lh * 1.5], lh / CAP_EM, s, 'start', 'SHEET'); });
+          ls.forEach(function (s, i) { if (s) text([x0 + pad, capBase - 2.5 * k - lh - i * lh * 1.75], lh / CAP_EM, s, 'start', 'SHEET'); });
           return;
         }
         if (v && textWidth(v, h * CAP_EM) > w) h = Math.max(1.6 * k, w / (String(v).length * 0.78 * CAP_EM));
-        if (v) text([x0 + pad, yTop - pad - lab - (f.big ? 6.5 : 4.5) * k], h, v, 'start', 'SHEET');
+        if (v) text([x0 + pad, (capBase + yBot) / 2 - h * CAP_EM / 2], h, v, 'start', 'SHEET');
       });
     });
     // (rfAE) the format's own lines and notes (paper mm from the border's bottom-right corner); notes take $PRP links

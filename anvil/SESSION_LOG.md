@@ -1790,3 +1790,9 @@ Context: the user, "check everything from today that hasnt been checked". One la
 - Head: not fixed, queued: the miter line (5d), Closed Corner pick at d = 0 (5c, not the plain swap the report suggests: SolidWorks' volume differs from the other pick), tangent default (15b), the Symmetric refusal (Anvil builds), drawing notes.
 - Next: QUEUE.md "Check local-2026-11-02e leftovers".
 Tests: kernel 2332 / 2332 in 182 s, examples 29 / 29 both engines, ui-smoke 897 / 897, occt 176 / 176, app loads with no console errors of its own.
+
+## local-2026-11-03a (local, interactive head; 5 Opus agents): UI refurbish, one push per lane
+
+Context: the user, "next we need serious ui refurbishing and improvements, everything needs to look clean, sharp and professional", then "make a push to github for every agent task" (so this round commits and pushes each lane as it is merged; memory push-per-agent). Look rules kept: grey-black chrome and graphics area, no blue, yellow dashed selection (2026-10-13 rules). New head tool head-tools/shots.js (headless-Chrome screenshots, steps file, --scale for Windows display scaling); before / after shots in Output\Screenshots\Anvil UI refresh 2026-11-03\<lane>.
+- drawing-look (rfHB): sheet lines on whole device pixels (thin 1 device px, visible 2/2/2/3 at scaling 1/1.25/1.5/2, axis-aligned lines snapped on screen only), 1 px sheet edge and softer shadow, crisp hover / selection frames, sheet-tab bar restyled at its old 25 px (28 px moved test picks, see drawings.md), drawing tree rows like the part tree; title block captions 2.2 -> 2.8 mm, TITLE 5 -> 6 mm, values centred under captions (paper output; r13-drawings13 pin updated). Other DXF / DWG / PDF geometry unchanged.
+Tests (drawing-look push): kernel 2336 / 2336, examples 29 / 29, ui-smoke 899 / 899.

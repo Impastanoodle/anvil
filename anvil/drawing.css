@@ -5,10 +5,12 @@
    selection a dark amber (rfBU: the 3D graphics area's selection yellow, deep enough to read on white paper; was
    blue), pre-selection (dynamic highlight) orange, a reference dimension added on the sheet grey. They are
    on the screen only: the SVG / PDF / DXF written from the sheet keep their own (black) colours. */
-:root { --dw-desk: #bdbdbd; --dw-hot: #cf9500; --dw-pre: #ff7f00; --dw-ref: #7a7a7a; --dw-ghost: #3fa34d;
-  --dw-tabbar: #d9d9d9; --dw-tab: #e6e6e6; --dw-tab-on: #ffffff; --dw-tab-line: #b2b2b2; --dw-tab-text: #1f1f1f; }
-:root[data-theme="dark"] { --dw-desk: #383838;
-  --dw-tabbar: #2d2d2d; --dw-tab: #373737; --dw-tab-on: #4b4b4b; --dw-tab-line: #555555; --dw-tab-text: #e9e9e9; }
+:root { --dw-desk: #b9b9b9; --dw-hot: #cf9500; --dw-pre: #ff7f00; --dw-ref: #7a7a7a; --dw-ghost: #3fa34d;
+  --dw-tabbar: var(--sw-chrome, #e4e4e4); --dw-tab: var(--dw-tabbar); --dw-tab-hover: #f6f6f6; --dw-tab-on: #ffffff; --dw-tab-line: #b4b4b4;
+  --dw-tab-text: #1f1f1f; --dw-tab-muted: #555555; --dw-tab-mark: #3a3a3a; }
+:root[data-theme="dark"] { --dw-desk: #3a3a3a;
+  --dw-tabbar: var(--sw-chrome, #2b2b2b); --dw-tab: var(--dw-tabbar); --dw-tab-hover: #363636; --dw-tab-on: #424242; --dw-tab-line: #565656;
+  --dw-tab-text: #ececec; --dw-tab-muted: #b4b4b4; --dw-tab-mark: #d0d0d0; }
 
 #drawing-doc { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; background: var(--dw-desk); }
 #drawing-doc[hidden] { display: none; }
@@ -18,17 +20,24 @@
 #drawing-sheet .sheet-bg { filter: none; }
 /* the sheet tabs along the bottom, as SolidWorks draws them: the four scroll arrows, flat tabs on the chrome grey with a
    hairline between them, the active sheet white and open to the sheet area above, the Add Sheet tab after the last */
-#drawing-tabs { flex: none; display: flex; align-items: stretch; gap: 0; height: 24px; padding: 0 4px 0 2px; background: var(--dw-tabbar); border-top: 1px solid var(--dw-tab-line); font-family: "Segoe UI", system-ui, sans-serif; }
-#drawing-tabs .dw-tab { display: flex; align-items: center; gap: 4px; margin-top: -1px; border: 1px solid var(--dw-tab-line); border-left: none; background: var(--dw-tab); color: var(--dw-tab-text); font: inherit; font-size: 12px; padding: 0 12px; cursor: pointer; border-radius: 0; }
+/* (rfHB, 2026-11-03) the bar keeps its 24 px (the sheet area above must not change height: drag tests in a short
+   test viewport land on whole pixels, rfHB2), the arrows in 20 px squares, tabs 12 px type with 16 px sides, the
+   inactive ones a step darker with muted text, the active one the bar's lightest face with full-strength text and a
+   2 px ink line along its top edge (the sheet it shows sits above it), hairlines on whole pixels */
+#drawing-tabs { flex: none; display: flex; align-items: stretch; gap: 0; height: 24px; padding: 0 4px; background: var(--dw-tabbar); border-top: 1px solid var(--dw-tab-line); font-family: "Segoe UI", system-ui, sans-serif; }
+#drawing-tabs .dw-tab { display: flex; align-items: center; gap: 6px; margin: -1px 0 3px; border: 1px solid var(--dw-tab-line); border-top: none; border-left: none; background: var(--dw-tab); color: var(--dw-tab-muted); font: inherit; font-size: 12px; line-height: 16px; padding: 0 16px; cursor: pointer; border-radius: 0 0 3px 3px; box-shadow: inset 0 1px 0 var(--dw-tab-line); }
 #drawing-tabs .dw-tab-nav + .dw-tab, #drawing-tabs .dw-sp + .dw-tab { border-left: 1px solid var(--dw-tab-line); }
-#drawing-tabs .dw-tab:hover { background: var(--dw-tab-on); }
-#drawing-tabs .dw-tab.active { background: var(--dw-tab-on); border-top-color: var(--dw-tab-on); font-weight: 400; }
+#drawing-tabs .dw-tab:hover { background: var(--dw-tab-hover); color: var(--dw-tab-text); }
+#drawing-tabs .dw-tab.active { background: var(--dw-tab-on); color: var(--dw-tab-text); font-weight: 400; box-shadow: inset 0 2px 0 var(--dw-tab-mark); }
 #drawing-tabs .dw-tab:focus-visible, #drawing-tabs .dw-nav:focus-visible { outline: 1px dotted var(--dw-tab-text); outline-offset: -3px; }
+#drawing-tabs .dw-tab svg { flex: none; display: block; }
 #drawing-tabs .dw-sp { flex: 1; }
-#drawing-tabs .dw-tab-nav { display: flex; align-items: center; margin-right: 4px; }
-#drawing-tabs .dw-nav { width: 16px; height: 18px; display: flex; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; color: var(--dw-tab-text); cursor: pointer; border-radius: 2px; }
-#drawing-tabs .dw-nav:hover:not(:disabled) { background: var(--dw-tab-on); }
-#drawing-tabs .dw-nav:disabled { opacity: 0.35; cursor: default; }
+#drawing-tabs .dw-tab-nav { display: flex; align-items: center; gap: 0; margin-right: 8px; }
+#drawing-tabs .dw-nav { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; color: var(--dw-tab-text); cursor: pointer; border-radius: 3px; }
+#drawing-tabs .dw-nav:hover:not(:disabled) { background: var(--dw-tab-hover); }
+#drawing-tabs .dw-nav:disabled { opacity: 0.3; cursor: default; }
+/* the part tab at the right end: the document the drawing is of */
+#drawing-tabs .dw-sp + .dw-tab { color: var(--dw-tab-text); }
 /* the status bar while a drawing is open: Editing Sheet1 | 1 : 2 | MMGS (drawing-ui.js renderStatus) in place of the
    part's items, which come back as the drawing closes */
 #dw-status { display: none; }
@@ -43,6 +52,8 @@
 /* (rfBI) a view's frame: dashed, orange under the pointer, blue when selected (SolidWorks); a note's, a symbol's or an
    annotation's frame the same colours, thin, nearly clear */
 #dw-overlay .dw-vbox { fill: none; stroke: var(--dw-hot); }
+/* (rfHB) frames are whole device pixels (drawing-ui.js devPx: 2 at 100 %), snapped to the pixel grid */
+#dw-overlay rect.dw-vbox, #dw-overlay rect.dw-dbox, #dw-overlay rect.dw-ghost { shape-rendering: crispEdges; }
 #dw-overlay .dw-vbox.pre { stroke: var(--dw-pre); }
 #dw-overlay .dw-dbox { fill: var(--dw-hot); fill-opacity: 0.05; stroke: var(--dw-hot); opacity: 0.9; }
 #dw-overlay .dw-dbox.pre { fill: var(--dw-pre); stroke: var(--dw-pre); }
@@ -59,10 +70,17 @@
 #dw-overlay .dw-ghost { fill: var(--dw-ghost); fill-opacity: 0.08; stroke: var(--dw-ghost); }
 
 /* the drawing FeatureManager replaces the part tree (and the ConfigurationManager) while a drawing is open */
-#drawing-tree { flex: 1; overflow: auto; padding: 4px 0 20px; }
+/* (rfHB) its rows the part tree's (style.css #tree): 21 px, Windows 11 hover / selection fill with a hairline frame;
+   the right-hand hints (Front, ANSI B 1:1, counts) small, muted, tabular figures, 8 px clear of the name */
+#drawing-tree { flex: 1; overflow: auto; padding: 4px 0 20px; background: var(--sw-panel, transparent); }
 #drawing-tree[hidden] { display: none; }
 #app.drawing-mode #fm-tree, #app.drawing-mode #config-panel { display: none !important; }
 #app.drawing-mode.dw-pm #drawing-tree { display: none; }
+#drawing-tree .ti { gap: 4px; border-radius: 2px; margin: 0 4px 0 2px; padding-right: 8px; }
+#drawing-tree .ti:hover { background: var(--sw-row-hover, var(--hover)); }
+#drawing-tree .ti.selected { background: var(--sw-row-sel, var(--sel)); box-shadow: inset 0 0 0 1px var(--sw-row-sel-line, var(--line)); }
+#drawing-tree .ti .nm { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#drawing-tree .ti .badge { flex: none; padding-left: 8px; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: pre; }
 #drawing-tree .ti.dw-root .nm { font-weight: 600; }
 #drawing-tree .ti.dw-ref { color: var(--muted); }
 

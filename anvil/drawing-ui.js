@@ -552,6 +552,7 @@
       s = svgEl();
       s.setAttribute('width', '100%'); s.setAttribute('height', '100%');
       s.appendChild(document.createElementNS(NS, 'g')).setAttribute('id', 'dw-overlay');
+      crispLines(s);
       D.svgHead = P.head; D.svgKeys = keys; D.svgBodies = P.groups.map(function (g) { return g.body; });
       D.patched = P.groups.length;
       return;
@@ -560,7 +561,7 @@
     P.groups.forEach(function (g, i) {
       var node = nodes[i];
       if (!node) return;
-      if (D.svgBodies[i] !== g.body) { node.innerHTML = g.body; D.svgBodies[i] = g.body; n++; }
+      if (D.svgBodies[i] !== g.body) { node.innerHTML = g.body; D.svgBodies[i] = g.body; n++; crispLines(node); }
       else if (D.shifted) {
         if (node.hasAttribute('transform')) node.removeAttribute('transform');
         var sub = node.querySelectorAll('g[transform]');
@@ -628,7 +629,31 @@
   // zoom that fits an A3 sheet in the window comes out at 0.4–0.6 px for thin, hidden and hatch lines: faint grey
   // smudges. Like SolidWorks, the screen keeps every line at least about a pixel wide (visible and thick edges a
   // little more) while zoomed out; zoomed in, the paper widths show. Exports always use the paper widths.
-  var MIN_PX = { visible: 1.35, thick: 1.6, chain: 1.1, hidden: 1, thin: 1, center: 1, tangent: 1, tanfont: 1, hatch: 0.8 };
+  // (rfHB, user 2026-11-03 "clean, sharp and professional") The floors are whole DEVICE pixels, so a hairline is one
+  // crisp pixel row at 100 %, 125 % and 150 % display scaling, never a 1.5-pixel grey smear: hairlines (dimension,
+  // extension, centre, hidden, hatch, bend lines) 1 device px (2 from 200 %), visible edges 1.5 CSS px rounded
+  // (2 / 2 / 2 / 3 device px at 1 / 1.25 / 1.5 / 2), thick lines (border, title block frame) one more, the section
+  // line as visible. SolidWorks' screen hierarchy: outlines clearly heavier than everything that annotates them.
+  var MIN_PX = { visible: 1.5, thick: 2.5, chain: 1.5, hidden: 1, thin: 1, center: 1, tangent: 1, tanfont: 1, hatch: 1, bendup: 1, benddown: 1, etch: 1 };
+  var HAIR = { hidden: 1, thin: 1, center: 1, tangent: 1, tanfont: 1, hatch: 1, bendup: 1, benddown: 1, etch: 1 };
+  function devPx(c) {
+    var dpr = window.devicePixelRatio || 1;
+    var d = HAIR[c] ? Math.max(1, Math.floor(dpr + 0.01)) : Math.max(2, Math.round(MIN_PX[c] * dpr));
+    if (c === 'thick') d = Math.max(d, devPx('visible') + 1);
+    return d / dpr;
+  }
+  DW.devPx = devPx;
+  // axis-aligned <line>s (borders, title block, dimension and extension lines, most model edges of orthographic views)
+  // are snapped to the device pixel grid; slanted lines, arcs and circles stay anti-aliased (crispEdges would step them)
+  function crispLines(root) {
+    if (!root) return;
+    var ls = root.getElementsByTagName('line');
+    for (var i = 0; i < ls.length; i++) {
+      var l = ls[i];
+      if (l.getAttribute('x1') === l.getAttribute('x2') || l.getAttribute('y1') === l.getAttribute('y2')) l.setAttribute('shape-rendering', 'crispEdges');
+    }
+  }
+  DW.crispLines = crispLines;
   function strokeFloor() {
     var st = D.strokeStyle;
     if (!st) { st = D.strokeStyle = document.createElement('style'); st.id = 'dw-stroke-floor'; document.head.appendChild(st); }
@@ -636,18 +661,21 @@
     if (!w || !h || !D.vb || !D.sheet) return;
     var ppu = Math.min(w / D.vb.w, h / D.vb.h), k = D.sheet.units === 'in' ? 1 / 25.4 : 1;
     // (in steps of about 6 %, so a smooth zoom restyles the sheet a few times, not on every frame)
-    var q = Math.round(Math.log(ppu) / 0.06);
-    if (q === D.strokeQ) return;
-    D.strokeQ = q;
-    var px = 1 / Math.exp(q * 0.06), css = '';
+    var q = Math.round(Math.log(ppu) / 0.06), dpr = window.devicePixelRatio || 1;
+    if (q === D.strokeQ && dpr === D.strokeDpr) return;
+    D.strokeQ = q; D.strokeDpr = dpr;
+    // (rfHB) paper units per CSS px at the zoom now, plus the most the zoom drifts before the next restyle (half a
+    // step), so a floor of one device pixel never comes out at 0.97 px and drops out between restyles
+    var px = Math.exp(0.03) / ppu, css = '';
     Object.keys(MIN_PX).forEach(function (c) {
-      var paper = (Drawing.STROKE[c] || 0.25) * k, need = MIN_PX[c] * px;
+      var paper = (Drawing.STROKE[c] || 0.25) * k, need = devPx(c) * px;
       if (need > paper) css += '#drawing-sheet svg .' + c + '{stroke-width:' + +need.toPrecision(4) + 'px}';
     });
     // (rfBI) the sheet's shadow, down and to the right as SolidWorks draws it, the same few screen pixels at any zoom
     // and in either paper unit (a filter's lengths on an SVG element are in the sheet's units)
     var sp = function (n) { return +(n * px).toPrecision(3) + 'px'; };
-    css += '#drawing-sheet .sheet-bg{filter:drop-shadow(' + sp(3) + ' ' + sp(3) + ' ' + sp(2.5) + ' rgba(0,0,0,0.38))}';
+    // (rfHB) a one-pixel edge first, so the paper reads as a sheet on either desk, then a soft shadow down-right
+    css += '#drawing-sheet .sheet-bg{filter:drop-shadow(0 0 ' + sp(0.6) + ' rgba(0,0,0,0.5)) drop-shadow(' + sp(2) + ' ' + sp(3) + ' ' + sp(4) + ' rgba(0,0,0,0.3))}';
     if (st.textContent !== css) st.textContent = css;
   }
   function fitBox() {
@@ -713,7 +741,7 @@
     if (!g) return;
     g.innerHTML = '';
     var tinted = tintDims();
-    var H = D.sheet.size[1], pad = 2 * paperK(), vpad = 3 * paperK(), sw = pxToPaper(1.2);   // (a view's frame is where a click takes the view: viewAt's margin)
+    var H = D.sheet.size[1], pad = 2 * paperK(), vpad = 3 * paperK(), sw = pxToPaper(devPx('visible'));   // (rfHB: whole device pixels, crisp; 2 px at 100 %) (a view's frame is where a click takes the view: viewAt's margin)
     D.sheet.views.forEach(function (w) {
       var sel = D.sel && D.sel.kind === 'view' && D.sel.id === w.view.id, hov = D.hover && (D.hover.kind === 'view' && D.hover.id === w.view.id || D.hover.pre && D.hover.view === w.view.id);
       if (!sel && !hov) return;

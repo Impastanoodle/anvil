@@ -18,6 +18,14 @@ UI (only when `UI` exists; share state through `UI.drawingInternal`, alias `DW`;
 - `drawing-ui-sketch.js` — the drawing's Sketch tab (rfAO): Line / Centerline / Rectangle / Circle / Arc / Spline / Point / Text on the sheet or in a view, relations, Smart Dimension on sketch entities, Line Format, Hide / Show Edges, Relative View (`DW.sk*` hooks called before drawing-ui.js mouse handling). Not in CLAUDE.md's drawing lane list, but it is this area.
 - `drawing.css` — sheet desk / shadow, sheet tabs, drawing FeatureManager; `--dw-hot` amber hover / selection.
 
+## Look rules (rfHB, 2026-11-03, user: "clean, sharp and professional") — keep them
+- Screen line weights: `MIN_PX` / `devPx(c)` in drawing-ui.js `strokeFloor` set floors in whole DEVICE pixels: hairlines (thin, center, hidden, hatch, tangent, bend, etch) 1 device px (2 from 200 %), visible / chain `round(1.5 × dpr)` (2 / 2 / 2 / 3 device px at 1 / 1.25 / 1.5 / 2), thick one more. Paper widths (`STROKE`, drawing-render.js) unchanged: visible 0.5, thin 0.25, thick 0.7 mm. Never floor in CSS px (1.35 px at 150 % is a grey smear).
+- Axis-aligned `<line>`s of the live sheet get `shape-rendering="crispEdges"` (`DW.crispLines`, run on every patched layer); slanted lines / arcs stay anti-aliased. Exports carry no crispEdges (rfHB checks).
+- Overlay frames (view / annotation boxes) are `devPx('visible')` wide and crisp (drawing.css `#dw-overlay rect.dw-vbox…`).
+- Sheet: a 1 px dark edge + a soft shadow (two `drop-shadow`s in `strokeFloor`), desk `--dw-desk` #b9b9b9 / #3a3a3a.
+- Title block (drawing-render.js, `lab` / `val` / `big`): caption type 2.8 mm (capitals .08 in), values 3.5 mm, TITLE 6 mm; captions 1.5 mm in from the cell's top-left; values left on the same inset and centred in the room between the caption baseline and the cell bottom; tolerance lines capitals 2.2 mm, 1.75 × apart, 2.5 mm under the caption. Pinned in kernel rfHB + r13.
+- Sheet tab bar: 24 px (rfHB2: do not change it, nor anything else that resizes `#drawing-sheet`: synthetic mouse events land on whole pixels and the smoke tests' drag tolerances (annotations, balloons, rfN, rfAL, rfAO) were met by the current pixel phase; a 28 px bar failed five of them), tabs hang from the bar's top line, inactive = bar colour with muted text, active = `--dw-tab-on` with a 2 px `--dw-tab-mark` line on top; bar colour follows `--sw-chrome`. Drawing tree rows copy the part tree's (`--sw-row-hover` / `--sw-row-sel` + hairline), hints 10.5 px muted tabular figures.
+
 ## Entry points — commands / API / key functions
 - `anvil.drawing.make(opts)` — new drawing (or opens #0 if one exists; `{ fresh: true }` always adds one), Standard 3 View, returns `summary()`.
 - `anvil.drawing.summary()` — `{ name, open, sheet, sheets, views[{ id, orient, kind, box, extents, stats, scale, flat… }], dims, notes, symbols, revisions, bom }`.
@@ -69,6 +77,7 @@ UI (only when `UI` exists; share state through `UI.drawingInternal`, alias `DW`;
 - Model-view labels used to appear whenever a view had its own scale; tests reading a view's texts should expect none unless `showLabel` is set.
 - After `anvil.drawing.make()` or any edit: `await UI.drawing.ready()` (views come from the worker). Read the sheet as `UI.drawing.state.sheet.prims`.
 - Fast loop: `node anvil/headless/anvil.js test`, then `ui-smoke.html?only=<rfXX>`; see `tests.md`.
+- rfHB (kernel + smoke): line-weight hierarchy, title block sizes / insets / centring (in and mm), on-screen widths in whole device px, crisp axis lines, tab bar alignment, no blue in both themes. Smoke `only=` takes one substring per run.
 
 ## Traps
 - Reattach (every render, `reattachUserDim`): edges follow by geometry only — the projection lines (`pr.all`: `[u0, v0, u1, v1, body]`) carry no edge or face ids. Generic `reattachDim` matches a collinear or parallel edge, so an edge that turns is lost; angle-type dimensions (Smart `angle`, `angrun`) go through `ctReattachLines` (lane CT2: collinear first, else the edge that keeps one old end, nearest the old direction, not along a sibling line, else parallel). A new dimension that measures between turning edges should use it too; (rfDN) a moved shared vertex is followed too (see below).

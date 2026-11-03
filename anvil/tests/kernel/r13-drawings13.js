@@ -93,8 +93,8 @@
       assert(svg.indexOf('font-family="&quot;Century Gothic&quot;') > 0 && svg.indexOf('font-size="' + (Math.round(3.5 / 0.72 * 1e4) / 1e4) + '"') > 0, 'SVG: Century Gothic at 3.5 / 0.72');
       assert(pdf.indexOf('/F1 ' + (Math.round(3.5 / 0.718 * 72 / 25.4 * 1e4) / 1e4) + ' Tf') > 0, 'PDF: Helvetica with 3.5 mm capitals');
       assert(dxf.indexOf('\n0\nTABLE\n2\nSTYLE\n') > 0 && dxf.indexOf('\n3\nGOTHIC.TTF\n') > 0 && dxf.indexOf('\n40\n3.5\n1\n60\n') > 0, 'DXF: STYLE GOTHIC.TTF, TEXT height 3.5');
-      // a title block label keeps its size on screen: SVG font-size 2.2 as before
-      assert(sh.prims.some(function (p) { return p.layer === 'SHEET' && p.k === 'text' && Math.abs(p.h - 2.2 * 0.72) < 1e-9; }) && svg.indexOf('font-size="2.2"') > 0, 'title block label size');
+      // a title block caption: SVG font-size 2.8 (rfHB, was 2.2)
+      assert(sh.prims.some(function (p) { return p.layer === 'SHEET' && p.k === 'text' && Math.abs(p.h - 2.8 * 0.72) < 1e-9; }) && svg.indexOf('font-size="2.8"') > 0, 'title block label size');
       return '60 in a break [' + gapL.toFixed(2) + ', ' + gapR.toFixed(2) + ']; 5 above the arrows at ' + t5.p[1].toFixed(2);
     });
     test('section views in the lazy compute: a pending job with its cut for drawing-worker.js and a placeholder (no cut on the main thread); sectionJob / putSection on a structured copy give the synchronous sheet', function () {
