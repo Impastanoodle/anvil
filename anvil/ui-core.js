@@ -74,10 +74,14 @@ var UI = (function () {
   // rfBH: with the lights aimed (below), more sky and fill keep the side faces from going dark; no light sits on the
   // view axis (its Blinn-Phong highlight whitens a face square to the view); intensities set so an
   // isometric box reads top ~0.85, sides ~0.5-0.6 and a face square to the view ~0.76 of the part colour
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x939393, 0.7));   // rfBU: neutral ground light (was bluish 0x8d96a1)
-  var key = new THREE.DirectionalLight(0xffffff, 0.6); key.position.set(-0.45, 0.85, 0.9); camera.add(key);
-  var fill = new THREE.DirectionalLight(0xffffff, 0.35); fill.position.set(1, -0.35, 0.7); camera.add(fill);
-  var rim = new THREE.DirectionalLight(0xffffff, 0.3); rim.position.set(0.2, 0.5, -1); camera.add(rim);
+  // rfHA graphics area: re-balanced as a three-point studio rig so planar faces at different angles take distinct
+  // tones (isometric box: top ~196, left ~148, right ~112 of 255; a face square to the view ~162, never washed out):
+  // a stronger key from the upper left front, a low soft fill from below the view (it no longer lights the right side as
+  // much as the key lights the left, which made both sides one grey), the rim kept; more sky / darker ground ambient.
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x636363, 0.85));   // rfBU: neutral ground light (was bluish 0x8d96a1)
+  var key = new THREE.DirectionalLight(0xffffff, 0.64); key.position.set(-0.8, 1, 1.05); camera.add(key);
+  var fill = new THREE.DirectionalLight(0xffffff, 0.31); fill.position.set(0.05, -0.52, 0.3); camera.add(fill);
+  var rim = new THREE.DirectionalLight(0xffffff, 0.25); rim.position.set(0.3, 0.6, -1); camera.add(rim);
   // rfBH: the lights' targets ride on the camera too. A DirectionalLight aims at its target, which defaults to the world
   // origin: with the light 10000 units out on the camera that made all three a headlight, so a face square to the view
   // took key + fill + rim at once and washed out to white (a sketch plane's face seen Normal To). Aimed at the camera's
@@ -92,7 +96,7 @@ var UI = (function () {
   Object.keys(groups).forEach(function (k) { scene.add(groups[k]); });
 
   var mats = {
-    part: new THREE.MeshPhongMaterial({ color: 0x8c8c8c, specular: 0x555555, shininess: 64, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),   // r14/viewui14: glossier (was specular 0x2a2f36, shininess 38)
+    part: new THREE.MeshPhongMaterial({ color: 0x8c8c8c, specular: 0x262626, shininess: 40, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),   // rfHA: a restrained satin highlight (was 0x555555 / 64, r14 0x2a2f36 / 38)
     // r14/viewui14: the HLR / HLV occluder writes depth only, so the background (gradient, plain or dark) shows through it
     // as in SolidWorks; the edges are drawn after it (renderOrder 0.5), so hidden ones are still hidden
     hlr: new THREE.MeshBasicMaterial({ color: 0xffffff, colorWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
@@ -229,11 +233,14 @@ var UI = (function () {
     if (w < 2 || h < 2) return;
     // smooth/chrome: a resize to the same size is skipped (setting a canvas's size clears it), and a real one redraws at
     // once — the ResizeObserver runs after this frame's render, so the Task Pane opening or closing showed one blank frame
-    if (w === size.w && h === size.h && renderer.domElement.style.width === w + 'px' && renderer.domElement.width === Math.floor(w * renderer.getPixelRatio())) return;
+    // rfHA: the canvas is laid out exactly as wide as its drawing buffer in device pixels (floor(w * dpr) / dpr CSS px), so
+    // at 125 % / 150 % display scaling the browser never stretches the frame by a fraction of a pixel (soft edges)
+    var pr = renderer.getPixelRatio(), cssW = Math.floor(w * pr) / pr + 'px', cssH = Math.floor(h * pr) / pr + 'px';
+    if (w === size.w && h === size.h && renderer.domElement.style.width === cssW && renderer.domElement.style.height === cssH && renderer.domElement.width === Math.floor(w * pr)) return;
     size.w = w; size.h = h;
     renderer.setSize(w, h, false);
-    renderer.domElement.style.width = w + 'px';
-    renderer.domElement.style.height = h + 'px';
+    renderer.domElement.style.width = cssW;
+    renderer.domElement.style.height = cssH;
     applyCamera();
     if (typeof render === 'function') { try { render(); } catch (e) { } }
   }
@@ -700,7 +707,7 @@ var UI = (function () {
   //     replaced by the facet's own (safeNormals), so no triangle shades black.
   //   section caps: SolidWorks' Section View shows the cut faces solid; the body is drawn twice more into the stencil
   //     (back faces +1, front faces -1, both clipped) and a plane on the section is drawn where the count is not zero.
-  mats.partFill = new THREE.MeshPhongMaterial({ color: 0x8c8c8c, specular: 0x555555, shininess: 64, wireframe: true, depthWrite: false });
+  mats.partFill = new THREE.MeshPhongMaterial({ color: 0x8c8c8c, specular: 0x262626, shininess: 40, wireframe: true, depthWrite: false });
   mats.partFill.onBeforeCompile = mats.part.onBeforeCompile;
   mats.partFill.customProgramCacheKey = function () { return 'anvil-part-fill-fo'; };
   var crackFill = null;
@@ -904,7 +911,7 @@ var UI = (function () {
   var FAT_LAYER = 30, fatOn = true;
   // UI.thickLines(on?) -> whether lines are drawn thick (off: the plain 1-pixel lines; for comparisons and old GPUs)
   function thickLines(on) { if (on != null) { fatOn = !!on; needsRender = true; } return fatOn && fatOk; }
-  var fatU = { resolution: { value: new THREE.Vector2(1, 1) }, worldPerPx: { value: 1 } };
+  var fatU = { resolution: { value: new THREE.Vector2(1, 1) }, devRes: { value: new THREE.Vector2(1, 1) }, worldPerPx: { value: 1 } };
   var fatOk = (function () {
     try { return !!(renderer.capabilities.isWebGL2 || renderer.extensions.get('ANGLE_instanced_arrays')); } catch (e) { return false; }
   })();
@@ -912,7 +919,7 @@ var UI = (function () {
   var FAT_QUAD = new Float32Array([-1, 0, 0, 1, 0, 0, -1, 1, 0, 1, 1, 0]), FAT_IDX = new Uint16Array([0, 1, 2, 2, 1, 3]);
   function fatVertexShader(kind) {
     return [
-      'uniform vec2 resolution;', 'uniform float linewidth;', 'uniform float worldPerPx;',
+      'uniform vec2 resolution;', 'uniform vec2 devRes;', 'uniform float linewidth;', 'uniform float worldPerPx;',
       'attribute vec3 instanceStart;', 'attribute vec3 instanceEnd;',
       '#ifdef DASHED', 'attribute float instanceDistStart;', 'attribute float instanceDistEnd;', 'varying float vDist;', '#endif',
       '#ifdef SIL', 'uniform vec3 viewDir;', 'attribute vec3 instanceN1;', 'attribute vec3 instanceN2;', '#endif',
@@ -932,6 +939,14 @@ var UI = (function () {
       '  vec4 c = atA ? cA : cB;',
       '  vec2 off = nrm * position.x * hw + dir * (atA ? -hw : hw);',
       '  c.xy += off / hr * c.w;',
+      // rfHA: a line that runs square to the screen (a Normal To view, a sketch rectangle) is moved by under half a device
+      // pixel so it covers whole pixels (even widths centred on a pixel boundary, odd ones on a pixel centre): crisp,
+      // never a two-tone smear from the multisampling. Both ends move by the same amount (computed from end A).
+      '  vec2 dd = d * devRes / resolution;',
+      '  float wd = floor(linewidth * devRes.x / resolution.x + 0.5);',
+      '  float hp = mod(wd, 2.0) * 0.5;',
+      '  if (abs(dd.y) < 0.05 && abs(dd.x) > 0.5) { float yy = (cA.y / cA.w * 0.5 + 0.5) * devRes.y; c.y += (floor(yy - hp + 0.5) + hp - yy) / devRes.y * 2.0 * c.w; }',
+      '  else if (abs(dd.x) < 0.05 && abs(dd.y) > 0.5) { float xx = (cA.x / cA.w * 0.5 + 0.5) * devRes.x; c.x += (floor(xx - hp + 0.5) + hp - xx) / devRes.x * 2.0 * c.w; }',
       '  gl_Position = c;',
       '  vPx = vec2(position.x * hw, atA ? -hw : L + hw);', '  vLen = L;', '  vHw = hw;',
       '#ifdef DASHED',
@@ -968,7 +983,7 @@ var UI = (function () {
     var m = new THREE.ShaderMaterial({
       defines: defs,
       uniforms: {
-        resolution: fatU.resolution, worldPerPx: fatU.worldPerPx, linewidth: { value: 1 },
+        resolution: fatU.resolution, devRes: fatU.devRes, worldPerPx: fatU.worldPerPx, linewidth: { value: 1 },
         color: { value: new THREE.Color() }, opacity: { value: 1 }, dashPx: { value: 6 }, gapPx: { value: 4 },
         viewDir: silMat.uniforms.viewDir
       },
@@ -985,7 +1000,10 @@ var UI = (function () {
     if (hidden) fm.uniforms.color.value.setHex(hiddenLineColor());
     else if (srcColor) fm.uniforms.color.value.copy(srcColor);
     fm.uniforms.opacity.value = src.opacity != null ? src.opacity : 1;
-    fm.uniforms.linewidth.value = w;
+    // rfHA: widths are whole device pixels (1.5 px edges are 2 device px at 100 %, 125 % and 150 % scaling), so an edge
+    // has one weight at every display scale and never alternates between a hard and a soft pixel as the view turns
+    var dpr = renderer.getPixelRatio();
+    fm.uniforms.linewidth.value = Math.max(1, Math.round(w * dpr)) / dpr;
     if (fm.transparent !== !!src.transparent) { fm.transparent = !!src.transparent; fm.needsUpdate = true; }
     if (!hidden) { fm.depthTest = src.depthTest; fm.depthWrite = src.depthWrite; }
     fm.clippingPlanes = src.clippingPlanes;
@@ -1111,6 +1129,7 @@ var UI = (function () {
   // the shader's view of the frame: drawing-buffer-independent CSS pixels and mm per CSS pixel
   function syncFatFrame() {
     fatU.resolution.value.set(size.w, size.h);
+    fatU.devRes.value.set(renderer.domElement.width || 1, renderer.domElement.height || 1);
     fatU.worldPerPx.value = (camera.right - camera.left) / Math.max(1, size.w);
     // the faces sit back by their slope over half an edge width, so an edge in an inside corner (a pocket floor, a boss
     // foot) is not half buried by the face that rises towards the viewer next to it (1 px was enough for 1-pixel lines)
@@ -2222,13 +2241,18 @@ var UI = (function () {
   // -90°. Only the axes take the mouse: a press anywhere else on the triad goes to the graphics area as before.
   var triadCanvas = $('triad'), tctx = triadCanvas.getContext('2d');
   var triadState = { items: [], hover: -1, basis: null };
-  var TRIAD_AXES = [[[1, 0, 0], '#d9453b', 'X'], [[0, 1, 0], '#3fa34d', 'Y'], [[0, 0, 1], '#2d7dd2', 'Z']];
+  var TRIAD_AXES = [[[1, 0, 0], '#d9453b', 'X'], [[0, 1, 0], '#3fa34d', 'Y'], [[0, 0, 1], '#2d7dd2', 'Z']], TRIAD_U = 192;
   function drawTriad(right, up, dir) {
     if (right) triadState.basis = [right, up, dir];
     else if (triadState.basis && viewAnim) { right = triadState.basis[0]; up = triadState.basis[1]; dir = triadState.basis[2]; }
     right = right || cam.right; up = up || cam.up; dir = dir || cam.dir;
-    var w = triadCanvas.width, h = triadCanvas.height, c = [w / 2, h / 2 + 8], L = w * 0.34;
-    tctx.clearRect(0, 0, w, h);
+    // rfHA: the canvas is 96 CSS px drawn at the screen's own pixel density (it was a fixed 192 px bitmap, resampled to
+    // 144 device px at 150 %: soft shafts and letters); the drawing stays in 192 logical units
+    var tcss = triadCanvas.clientWidth || 96, tdev = Math.max(96, Math.round(tcss * (window.devicePixelRatio || 1)));
+    if (triadCanvas.width !== tdev) { triadCanvas.width = tdev; triadCanvas.height = tdev; }
+    tctx.setTransform(1, 0, 0, 1, 0, 0); tctx.clearRect(0, 0, tdev, tdev);
+    tctx.setTransform(tdev / TRIAD_U, 0, 0, tdev / TRIAD_U, 0, 0);
+    var w = TRIAD_U, h = TRIAD_U, c = [w / 2, h / 2 + 8], L = w * 0.34;
     var items = TRIAD_AXES.map(function (a, i) {
       var v = new THREE.Vector3(a[0][0], a[0][1], a[0][2]);
       return { axis: i, x: v.dot(right), y: v.dot(up), z: v.dot(dir), color: a[1], label: a[2] };
@@ -2252,13 +2276,14 @@ var UI = (function () {
         tctx.lineTo(ex - ux * hs - uy * hs * 0.5, ey - uy * hs + ux * hs * 0.5); tctx.lineTo(ex - ux * hs + uy * hs * 0.5, ey - uy * hs - ux * hs * 0.5); tctx.closePath(); tctx.fill();
       }
       if (hot) { tctx.strokeStyle = it.color; tctx.lineWidth = 2.5; tctx.beginPath(); tctx.arc(lx, ly, 15, 0, Math.PI * 2); tctx.stroke(); }
+      tctx.lineWidth = 5; tctx.strokeStyle = 'rgba(12,12,12,0.6)'; tctx.strokeText(it.label, lx, ly);   // rfHA: a dark halo, as the dimension labels
       tctx.fillStyle = it.color; tctx.fillText(it.label, lx, ly);
       triadState.items.push({ axis: it.axis, z: it.z, a: c, b: [ex, ey], l: [lx, ly] });
     });
   }
   // the axis under a point of the triad canvas (CSS px from its top left), or -1; the one nearest the viewer wins
   function triadAxisAt(px, py) {
-    var k = triadCanvas.width / Math.max(1, triadCanvas.clientWidth || 96), p = [px * k, py * k], best = -1, bestZ = -Infinity;
+    var k = TRIAD_U / Math.max(1, triadCanvas.clientWidth || 96), p = [px * k, py * k], best = -1, bestZ = -Infinity;
     triadState.items.forEach(function (it) {
       // the shaft (when it is not seen end-on) or the letter
       var shaft = Math.hypot(it.b[0] - it.a[0], it.b[1] - it.a[1]) > 12 ? distToSegment(p, [it.a[0] + (it.b[0] - it.a[0]) * 0.25, it.a[1] + (it.b[1] - it.a[1]) * 0.25], it.b) : Infinity;

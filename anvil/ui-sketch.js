@@ -2617,9 +2617,20 @@
   }
   // path data: lines as M..L.. pieces, arrowheads as closed triangles
   function r2(v) { return Math.round(v * 100) / 100; }
+  // rfHA: a 1 px dimension / extension line that runs square to the screen sits on a device pixel's centre (crisp, not
+  // a two-pixel grey smear); slanted lines are left as they are
+  function pxSnap(v) {
+    var dpr = window.devicePixelRatio || 1, dw = Math.max(1, Math.round(dpr)), o = (dw % 2) * 0.5;
+    return (Math.floor(v * dpr - o + 0.5) + o) / dpr;
+  }
   function linesPath(lines) {
     var d = '';
-    for (var i = 0; i < lines.length; i++) { var l = lines[i]; d += 'M' + r2(l[0][0]) + ' ' + r2(l[0][1]) + 'L' + r2(l[1][0]) + ' ' + r2(l[1][1]); }
+    for (var i = 0; i < lines.length; i++) {
+      var l = lines[i], x0 = l[0][0], y0 = l[0][1], x1 = l[1][0], y1 = l[1][1];
+      if (Math.abs(y1 - y0) < 0.01 && Math.abs(x1 - x0) > 0.5) { y0 = y1 = pxSnap(y0); }
+      else if (Math.abs(x1 - x0) < 0.01 && Math.abs(y1 - y0) > 0.5) { x0 = x1 = pxSnap(x0); }
+      d += 'M' + r2(x0) + ' ' + r2(y0) + 'L' + r2(x1) + ' ' + r2(y1);
+    }
     return d || 'M0 0';
   }
   function arrowsPath(arrows) {
@@ -2891,6 +2902,7 @@
     window.addEventListener('mouseup', up, true);
   }
 
+  var dimCasing = null;   // rfHA: the casing path data of the drawing in progress (drawDimsIn), else null
   function drawOne(sc, it) {
     var isSel = it.rel != null ? App.sel && App.sel.kind === 'rel' && App.sel.index === it.rel : App.sel && App.sel.kind === 'dim' && App.sel.index === it.index;
     var cls = 'dim' + (it.temp ? ' temp' : '') + (it.auto ? ' auto' : '') + (!it.temp && !it.auto && isSel ? ' sel' : '') + (it.state && it.state !== 'ok' ? ' ' + it.state : '');
@@ -2900,7 +2912,12 @@
     // r14/sketchui14: every line of the dimension stops at the label's box (the text sits in a break of the line)
     // All its lines are one <path>, its arrowheads another (r12/sketchui12 slender, r14/sketchui14 ANSI 10 × 3.4 px):
     // four nodes per dimension whatever the break does, so the frame-to-frame node reuse always matches
-    svg('path', { 'class': 'dl', d: linesPath(sc.box ? breakLines(sc.lines, sc.box) : sc.lines) }, gEl);
+    // rfHA: the lines also go into the layer's one dark casing path (path.dlh, 3 px, under every dimension: drawDimsIn)
+    // so the light 1 px lines read on a light face as on the ground, as the text's halo does; the arrows take the same
+    // casing from CSS (paint-order: stroke). One node for the whole layer keeps three children per dimension.
+    var dlD = linesPath(sc.box ? breakLines(sc.lines, sc.box) : sc.lines);
+    if (dimCasing != null) dimCasing += dlD;
+    svg('path', { 'class': 'dl', d: dlD }, gEl);
     svg('path', { 'class': 'da', d: arrowsPath(sc.arrows) }, gEl);
     var ta = { x: r2(sc.text.x), y: r2(sc.text.y), 'text-anchor': sc.text.anchor };
     if (!it.temp) { ta.tabindex = '0'; ta.role = 'button'; ta['aria-label'] = 'Dimension ' + sc.label + ', double-click to change, drag to move'; }
@@ -2993,6 +3010,8 @@
     if (!f || App.mode !== 'sketch') { clearFeedback(); if (dimEditing) closeDimEdit(false); return []; }
     var pl = UI.activePlane(), placed = f.dims || [], list = [], stale = [];
     var an = App.sketchState;
+    var casing = svg('path', { 'class': 'dlh' }, dimLayer);   // rfHA: filled in below, drawn under every dimension
+    dimCasing = '';
     placed.forEach(function (d, i) { list.push({ d: d, index: i, state: d.driven ? 'driven' : an && an.dims ? an.dims[i] : null }); });
     if (App.view.showDims) f.entities.forEach(function (e, i) { autoDims(e, i, placed).forEach(function (d) { list.push({ d: d, auto: true }); }); });
     if (App.tempDim) list.push({ d: App.tempDim, temp: true });
@@ -3005,6 +3024,9 @@
     });
     // the two-entity (distance / angle) dimensions and the relation highlights: ui-relations.js
     if (UI.drawRelations) UI.drawRelations(f, pl, dimLayer, { svg: svg, text: svgText, drawOne: drawOne, list: list, free: function (b) { return boxFree(b, null, true); }, freeKeep: function (b) { return boxFree(b, null, false); }, take: function (b) { labelBoxes.push(b); } });
+    var cd = dimCasing || 'M0 0';
+    if (casing.getAttribute('d') !== cd) casing.setAttribute('d', cd);
+    dimCasing = null;
     // placed dimensions whose entity vanished or changed type (delete, trim, mirror in place) are dropped
     if (stale.length) {
       f.dims = placed.filter(function (d, i) { return stale.indexOf(i) < 0; });

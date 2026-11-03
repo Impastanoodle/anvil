@@ -1784,7 +1784,8 @@
     // Scene, View Settings), each a small icon with its caret beside it; no separators, on a transparent bar.
     // children[5] stays View Orientation (showOrientationMenu clicks it); data-hud names each button (UI.HUD_ORDER).
     function btn(icon, title, action, active, caret) {
-      var b = el('button', { class: caret ? 'hud-dd' : '', html: Icons(icon, 20) + (caret ? '<span class="caret">▾</span>' : ''), title: title, onclick: action });
+      // rfHA: the flyout arrow is a crisp 7 x 4 SVG chevron on whole pixels (the ▾ text glyph sat soft and off centre)
+      var b = el('button', { class: caret ? 'hud-dd' : '', html: Icons(icon, 20) + (caret ? '<span class="caret"><svg viewBox="0 0 7 4" width="7" height="4" aria-hidden="true"><path d="M0 0h7L3.5 4z" fill="currentColor"/></svg></span>' : ''), title: title, onclick: action });
       b.setAttribute('data-hud', title.replace(/ \(.*$/, '').replace(/ — [\s\S]*$/, ''));
       if (active) { hudActive.push([b, active]); if (active()) b.classList.add('active'); }
       hud.appendChild(b);

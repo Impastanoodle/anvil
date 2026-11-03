@@ -461,6 +461,33 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 #view-selector { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.18)); }
 #view-selector[hidden] { display: none; }
 #zoom-box { position: absolute; border: 1px dashed #d0d0d0; background: rgba(255,255,255,0.06); pointer-events: none; z-index: 2; }
+/* rfHA graphics area (lane viewport, 2026-11-03): the finish of the graphics area and its overlays, both themes.
+   Ground: the same grey-black gradient with more stops (an eased fall-off, no hard knee at 45 %) and a fine static grain
+   under the canvas that dithers the 8-bit steps away (a 128 px noise tile, mean ~ the ground's, +-2 levels; drawn once,
+   no WebGL cost). Heads-up toolbar: one 20 px glyph box, a 1 px dark lift under each glyph so it reads over a light
+   part, quiet hover / clear checked frames on whole pixels, SVG flyout chevrons. Scale bar: 1 px hairlines. Sketch and
+   Instant3D dimensions: a thin dark halo round lines and arrows too, so they read on a light face as on the ground. */
+#viewport, html[data-theme="dark"] #viewport { --viewport: linear-gradient(180deg, #3c3c3c 0%, #353535 14%, #2a2a2a 36%, #1e1e1e 60%, #151515 82%, #0e0e0e 100%); }
+#viewport::before { content: ''; position: absolute; inset: 0; pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='128' height='128'><filter id='n' x='0' y='0'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='1 0 0 0 -0.32  1 0 0 0 -0.32  1 0 0 0 -0.32  0 0 0 0 0.03'/></filter><rect width='128' height='128' filter='url(%23n)'/></svg>"); }
+#viewport.bg-dark::before { opacity: 0.6; }
+#viewport, #viewport.bg-dark, html[data-theme="dark"] #viewport { --hud-hover: rgba(255,255,255,0.09); --hud-hover-line: #5c5c5c; --hud-on: rgba(255,255,255,0.16); --hud-on-line: #9a9a9a; }
+#hud { gap: 2px; }
+#hud button { height: 26px; min-width: 26px; border-radius: 3px; transition: background-color 80ms linear, border-color 80ms linear; }
+#hud button svg { width: 20px; height: 20px; display: block; filter: drop-shadow(0 1px 0 rgba(0,0,0,0.55)); }
+#hud button:active:not(.off) { background: rgba(255,255,255,0.22); }
+#hud button.active { box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); }
+#hud button.hud-dd { padding: 0 2px 0 3px; }
+#hud .caret { display: inline-flex; align-items: center; justify-content: center; width: 8px; height: 20px; margin-left: 1px; font-size: 0; }
+#hud .caret svg { width: 7px; height: 4px; filter: none; }
+#hud button:hover .caret { color: #e6e6e6; }
+#scale-bar { text-shadow: 0 1px 1px rgba(0,0,0,0.7); }
+#scale-bar-line { height: 9px; border-left-width: 1px; border-right-width: 1px; }
+#scale-bar-line::after { top: 4px; border-top-width: 1px; }
+#dim-layer path.dlh { fill: none; stroke: var(--dim-halo); stroke-width: 3; stroke-linecap: butt; }
+#viewport #dim-layer path.da { stroke: var(--dim-halo); stroke-width: 1.5; stroke-linejoin: round; paint-order: stroke; }
+#i3d-layer .i3d-dim { filter: drop-shadow(0 0 1px rgba(20,20,20,0.9)); }
+#dim-layer .dim text, #i3d-layer .i3d-dim-text, #i3d-layer .i3d-value { font-variant-numeric: tabular-nums; }
 /* sketch dimensions: an SVG overlay; only the value labels take the mouse */
 #dim-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; overflow: visible; }
 #dim-layer line, #dim-layer polyline, #dim-layer path.dl { stroke: var(--dim-ink); stroke-width: 1; fill: none; }

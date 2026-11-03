@@ -26,7 +26,8 @@
     var edgeObj = UI.groups.edges.children[0];
     assert(!edgeObj.layers.test(UI.camera.layers), 'the 1-pixel line set itself is not drawn');
     assert(edgeObj.geometry.getAttribute('position').count % 2 === 0, 'the line set keeps its segment positions (picking, box selection)');
-    near(fats[0].mesh.material.uniforms.linewidth.value, UI.LINE_W.edge, 1e-9, 'edge width (CSS px)');
+    var r13pr = UI.renderer.getPixelRatio();   // rfHA: widths are rounded to whole device pixels (1.5 px -> 2 device px)
+    near(fats[0].mesh.material.uniforms.linewidth.value, Math.max(1, Math.round(UI.LINE_W.edge * r13pr)) / r13pr, 1e-9, 'edge width (CSS px)');
     near(fats[0].mesh.geometry.instanceCount, edgeObj.geometry.getAttribute('position').count / 2, 0, 'one quad per segment');
     var e = UI.App.edges.filter(function (x) { return !x.smooth && x.faces.length === 2; })[0];
     var s = UI.worldToScreen(e.mid), thick = r13dark(700), pk1 = UI.pickEdge(s[0], s[1]);
