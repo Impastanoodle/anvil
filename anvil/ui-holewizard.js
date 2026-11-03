@@ -64,7 +64,7 @@
       },
       groups: [
         // r14/fixes14: the pressed button is the tab on show (was a separate "Showing" row)
-        { title: 'Tabs', fields: [{ type: 'buttons', buttons: [{ label: 'Type', active: isType, onclick: function () { tab('type'); } }, { label: 'Positions', active: isPos, onclick: function () { tab('positions'); } }] }] },
+        { title: 'Tabs', tabs: true, fields: [{ type: 'buttons', tabs: true, buttons: [{ label: 'Type', active: isType, onclick: function () { tab('type'); } }, { label: 'Positions', active: isPos, onclick: function () { tab('positions'); } }] }] },
         { title: 'Hole Type', show: isType, fields: [{ type: 'select', label: 'Type', key: 'holeType', options: HW.TYPES, rerender: true },
           { type: 'select', label: 'Standard', key: 'standard', options: HW.STANDARDS, rerender: true },
           { type: 'select', label: 'Hole type', key: 'sizeType', options: HW.SIZE_TYPES, rerender: true, show: isAnsiHole }] },

@@ -317,13 +317,18 @@
     root.appendChild(actions);
     // rfC: the Message box (SolidWorks' yellow Message group; its title is drawn by the stylesheet, so the text read
     // from .pm-msg is the message alone)
-    if (spec.message) root.appendChild(el('div', { class: 'pm-msg' + (spec.messageOk ? ' ok' : ''), role: 'status', html: spec.message }));
+    // rfGY: spec.messageKind 'warn' | 'error' tints the box (the default is the yellow information Message)
+    var msgBox = spec.message ? el('div', { class: 'pm-msg' + (spec.messageOk ? ' ok' : '') + (spec.messageKind ? ' ' + spec.messageKind : ''), role: 'status', html: spec.message }) : null;
+    if (msgBox) root.appendChild(msgBox);
     (spec.groups || []).forEach(function (g) {
       if (g.show && !g.show(pm.values)) return;   // a group may hide itself, like a field
       var folded = pm.collapsed && pm.collapsed[g.title] != null ? pm.collapsed[g.title] : !!g.collapsed;
+      // rfGY: an optional group (g.optional, or a group whose first field is a check box named as the group: Custom
+      // Bend Allowance …) shows that check box in its title band, as SolidWorks' Direction 2 / Draft / Custom Relief Type
+      var f0 = g.fields && g.fields[0], opt = !!(f0 && f0.type === 'check' && !(f0.show && !f0.show(pm.values)) && (g.optional || String(f0.label).toLowerCase() === String(g.title).toLowerCase()));
       // rfC: a group titled Message (Insert Line …) gets the yellow Message look; the collapse arrow is SolidWorks'
       // round chevron at the right of the blue header band (drawn by the stylesheet: the header's text is its title)
-      var box = el('div', { class: 'pm-group' + (folded ? ' collapsed' : '') + (g.title === 'Message' ? ' pm-group-msg' : '') });
+      var box = el('div', { class: 'pm-group' + (folded ? ' collapsed' : '') + (g.title === 'Message' ? ' pm-group-msg' : '') + (opt ? ' pm-optional' : '') + (g.tabs ? ' pm-tabgroup' : '') });
       var h = el('h4', { html: '<span class="pm-gt"></span><span class="tw" aria-hidden="true"></span>' });
       h.firstChild.textContent = g.title;
       h.setAttribute('aria-expanded', folded ? 'false' : 'true');
@@ -333,13 +338,39 @@
         h.setAttribute('aria-expanded', c ? 'false' : 'true');
       });
       box.appendChild(h);
+      if (opt) {
+        // the check box keeps its own label (tests and Tab find it by "Enable direction 2"), read by screen readers only;
+        // it sits over the band, outside the h4, so the h4's text stays the group's title. Ticking it opens the group.
+        var row0 = renderField(f0), cb0 = row0.querySelector('input');
+        var hc = el('label', { class: 'pm-hcheck', title: f0.label }, [cb0, el('span', { class: 'pm-sr', text: f0.label })]);
+        hc.addEventListener('click', function (e) { e.stopPropagation(); });
+        cb0.addEventListener('change', function () { if (cb0.checked) { box.classList.remove('collapsed'); h.setAttribute('aria-expanded', 'true'); if (pm.collapsed) pm.collapsed[g.title] = false; } }, true);
+        box.appendChild(hc);
+      }
       var fields = el('div', { class: 'pm-fields' });
       g.fields.forEach(function (f) {
         if (f.show && !f.show(pm.values)) return;
-        fields.appendChild(renderField(f));
+        if (opt && f === f0) return;
+        var row = renderField(f);
+        // rfGY: a plain "Reverse direction" check becomes SolidWorks' Reverse Direction button left of the group's first
+        // value box (the last list above it: End condition, Direction; else the first number: Angle, Length); it stays
+        // the same check box with its own label
+        if (f.type === 'check' && f.label === 'Reverse direction') {
+          var lists = fields.querySelectorAll(':scope > .pm-row-select:not(.pm-has-rev)');
+          var host = lists[lists.length - 1] || fields.querySelector(':scope > .pm-row-num:not(.pm-has-rev)');
+          if (host) {
+            row.classList.add('pm-rev');
+            row.querySelector('input').title = f.label;
+            host.classList.add('pm-has-rev');
+            host.appendChild(row);   // last in the row, so pmField('End condition') still finds the list; the grid draws it left
+            return;
+          }
+        }
+        fields.appendChild(row);
       });
       box.appendChild(fields);
-      root.appendChild(box);
+      // rfGY: tabs (Hole Wizard Type / Positions) sit under ✓ ✗, above the Message, as in SolidWorks
+      if (g.tabs) root.insertBefore(box, msgBox || null); else root.appendChild(box);
     });
     if (spec.okBlocked) updateOkState();
     if (scroll && root.scrollTop !== scroll) root.scrollTop = scroll;
@@ -515,7 +546,7 @@
         var wrap = el('span', { class: 'pm-num-wrap' + (unitText ? '' : ' no-unit') }, [inp, el('span', { class: 'unit', text: unitText }), spin]);
         // a click on the unit or the box's padding puts the caret in the number, as in a single box
         wrap.addEventListener('mousedown', function (e) { if (e.target === wrap || e.target.classList.contains('unit')) { e.preventDefault(); try { inp.focus(); inp.select(); } catch (er) { } } });
-        return el('div', { class: 'pm-row pm-row-num' }, [el('label', { text: f.label }), wrap, hint]);
+        return el('div', { class: 'pm-row pm-row-num pm-field' }, [el('label', { text: f.label }), wrap, hint]);
       }
       case 'select': {
         var sel = el('select', { 'data-key': f.key });
@@ -530,7 +561,7 @@
           var raw = sel.value, match = opts.filter(function (o) { return String(Array.isArray(o) ? o[0] : o) === raw; })[0];
           changed(Array.isArray(match) ? match[0] : match);
         });
-        return el('div', { class: 'pm-row' }, [el('label', { text: f.label }), sel]);
+        return el('div', { class: 'pm-row pm-field pm-row-select' }, [el('label', { text: f.label }), sel]);
       }
       case 'check': {
         // f.disabled (bool or fn(v)): a greyed box that keeps its state (DXF/DWG Output's "Geometry", always on)
@@ -539,7 +570,7 @@
         var cbOff = typeof f.disabled === 'function' ? f.disabled(v) : !!f.disabled;
         if (cbOff) cb.disabled = true;
         cb.addEventListener('change', function () { changed(cb.checked); });
-        return el('div', { class: 'pm-row check' + (cbOff ? ' disabled' : '') }, [cb, el('label', { text: f.label, onclick: function () { if (!cbOff) cb.click(); } })]);
+        return el('div', { class: 'pm-row check pm-field' + (cbOff ? ' disabled' : '') }, [cb, el('label', { text: f.label, onclick: function () { if (!cbOff) cb.click(); } })]);
       }
       case 'radio': {   // r13/trim13: a column of option buttons, as in SolidWorks' PropertyManagers (Trim Entities' Options)
         // f.disabledOption(value, v) -> a reason string greys that option and shows the reason under it (DXF/DWG Output)
@@ -566,15 +597,15 @@
           ib.addEventListener('click', function () { if (String(v[f.key]) === String(o[0])) return; changed(o[0]); if (!f.rerender && pm.spec) renderPM(); });
           ibox.appendChild(ib);
         });
-        return el('div', { class: 'pm-row' }, [el('label', {}, [document.createTextNode(f.label), el('div', { class: 'static', text: curName })]), ibox]);
+        return el('div', { class: 'pm-row pm-field pm-row-icons' }, [el('label', {}, [document.createTextNode(f.label), el('div', { class: 'static', text: curName })]), ibox]);
       }
       case 'text': {
         var t = el('input', { type: 'text', value: v[f.key] || '', 'data-key': f.key || '' });
         t.addEventListener('input', function () { changed(t.value); });
-        return el('div', { class: 'pm-row' }, [el('label', { text: f.label }), t]);
+        return el('div', { class: 'pm-row pm-field pm-row-text' }, [el('label', { text: f.label }), t]);
       }
       case 'static':
-        return el('div', { class: 'pm-row' }, [el('label', { text: f.label }), el('span', { class: 'static', text: typeof f.value === 'function' ? f.value(v) : f.value })]);
+        return el('div', { class: 'pm-row pm-field pm-row-static' }, [el('label', { text: f.label }), el('span', { class: 'static', text: typeof f.value === 'function' ? f.value(v) : f.value })]);
       case 'pick': {
         var txt = typeof f.value === 'function' ? f.value(v) : f.value;
         var pickBox = el('div', { class: 'pm-pick' + (txt ? ' filled' : '') + (f.active && f.active(v) ? ' active' : ''), html: Icons(f.icon || 'plane', 16) + '<span>' + (txt || f.placeholder || 'Select…') + '</span>' });
@@ -583,7 +614,8 @@
         return f.items ? pickList(f, pickBox) : pickBox;
       }
       case 'buttons': {
-        var row = el('div', { class: 'pm-btns' });
+        // rfGY: f.tabs draws the row as SolidWorks' PropertyManager tabs (Hole Wizard Type / Positions)
+        var row = el('div', { class: 'pm-btns' + (f.tabs ? ' pm-tabs' : ''), role: f.tabs ? 'tablist' : 'group' });
         f.buttons.forEach(function (b) {
           var bt = el('button', { text: b.label, onclick: function () { b.onclick(v); } });
           if (b.active) { var on = !!b.active(v); bt.classList.toggle('on', on); bt.setAttribute('aria-pressed', on ? 'true' : 'false'); }   // r14/fixes14: a tab-like pair (Hole Wizard Type / Positions)
@@ -1460,7 +1492,7 @@
             ]
           },
           {
-            title: 'Direction 2', fields: [
+            title: 'Direction 2', optional: true, fields: [
               { type: 'check', label: 'Enable direction 2', key: 'dir2', rerender: true },
               { type: 'select', label: 'End condition', key: 'end2', options: [['blind', 'Blind'], ['through', 'Through All']], rerender: true, show: function (v) { return v.dir2; } },
               { type: 'number', label: 'Depth  D2', key: 'depth2', unit: 'u', min: 0, show: function (v) { return v.dir2 && v.end2 !== 'through'; } }
@@ -1474,7 +1506,7 @@
           },
           scopeGroup(isCutPM),   // only on a cut of a multi-body part
           {
-            title: 'Draft', collapsed: !f.draftOn, fields: [
+            title: 'Draft', optional: true, collapsed: !f.draftOn, fields: [
               { type: 'check', label: 'Draft on', key: 'draftOn', rerender: true },
               { type: 'number', label: 'Draft angle', key: 'draft', unit: '°', min: 0, show: function (v) { return v.draftOn; } },
               { type: 'check', label: 'Draft outward', key: 'draftOut', show: function (v) { return v.draftOn; } }
@@ -2371,7 +2403,7 @@
   function sheetGroups(extra) {
     var isBuiltIn = function (v) { return v.gaugeTable !== '__custom'; };
     return [
-      { title: 'Sheet Metal Gauges', fields: [
+      { title: 'Sheet Metal Gauges', optional: true, fields: [
         { type: 'check', label: 'Use gauge table', key: 'useGauge', rerender: true },
         { type: 'select', label: 'Table', key: 'gaugeTable', options: gaugeTableOptions, rerender: true, show: function (v) { return v.useGauge; } },
         { type: 'select', label: 'Gauge', key: 'gauge', options: gaugeOptions, rerender: true, show: function (v) { return v.useGauge; } },

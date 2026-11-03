@@ -1631,3 +1631,154 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 
 /* toasts: the dark note over the graphics area, one radius and the popup shadow */
 .toast { border-radius: var(--radius); box-shadow: var(--shadow-pop); padding: 6px var(--sp-4); font-size: var(--fs-sm); }
+/* rfGY PropertyManager — the finish pass (2026-11-03). One 4 px spacing scale (8 px between boxes and inside them,
+   4 px between rows), 24 px controls in one 136 px value column (labels left, values right, every box the same width),
+   20 px check rows, drawn check boxes / radios / chevrons / select arrows that stay crisp at 125 % and 150 %, flat
+   hover / pressed / focus / disabled states, no blue. Local tokens live on #pm itself (never on :root); colours come
+   from the chrome tokens (--sw-*, --text, --muted …) wherever the meaning is shared. Markup: ui-commands.js renderPM /
+   renderField add .pm-field + .pm-row-select / -text / -static / -icons, .pm-optional + .pm-hcheck (a check box in the
+   title band), .pm-tabgroup + .pm-tabs (Hole Wizard Type / Positions) and .pm-msg.error. */
+#pm {
+  --pm-ctl-w: clamp(136px, 50%, 220px);   /* 136 px in the default panel, wider when the panel is widened */
+  --pm-ctl-h: 24px;
+  --pm-ctl-bg: var(--input-bg, #ffffff);
+  --pm-ctl-line: var(--sw-chrome-line, #c8c8c8);
+  --pm-ctl-hover: var(--sw-row-sel-line, #8c8c8c);
+  --pm-box-line: #8a8a8a;
+  --pm-focus: #3a3a3a;
+  --pm-on: #2f2f2f;
+  --pm-tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='8' viewBox='0 0 10 8'%3E%3Cpath d='M1 4.1 3.8 6.8 9 1.2' fill='none' stroke='%23ffffff' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  --pm-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M.6.6 4 4 7.4.6' fill='none' stroke='%23666666' stroke-width='1.3'/%3E%3C/svg%3E");
+  --pm-err-bg: #fdf0ef; --pm-err-head: #f8dcda; --pm-err-line: #e0a8a3; --pm-err-text: #8c2219;
+  font-size: 12px;
+  padding-bottom: 8px;
+}
+:root[data-theme="dark"] #pm {
+  --pm-box-line: #8a8a8a;
+  --pm-focus: #d0d0d0;
+  --pm-on: #d6d6d6;
+  --pm-tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='8' viewBox='0 0 10 8'%3E%3Cpath d='M1 4.1 3.8 6.8 9 1.2' fill='none' stroke='%23202020' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  --pm-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M.6.6 4 4 7.4.6' fill='none' stroke='%23b4b4b4' stroke-width='1.3'/%3E%3C/svg%3E");
+  --pm-err-bg: #3a2422; --pm-err-head: #4a2a27; --pm-err-line: #7a3d37; --pm-err-text: #f3b9b2;
+}
+/* title row: icon, name, round Help; ✓ ✗ under it, their icons on the title icon's left edge */
+#pm .pm-head { height: 36px; padding: 0 8px; gap: 8px; font-size: 13px; font-weight: 600; line-height: 16px; color: var(--text); }
+#pm .pm-head > svg { flex: none; width: 20px; height: 20px; }
+#pm .pm-head .pm-help { width: 20px; height: 20px; padding: 0; }
+#pm .pm-head .pm-help:focus-visible { outline: 1px solid var(--pm-focus); outline-offset: 1px; }
+#pm .pm-actions { gap: 4px; padding: 0 8px 8px 2px; align-items: center; border-bottom: 1px solid var(--sw-chrome-line, var(--line)); }
+#pm .pm-actions button { width: 32px; height: 28px; padding: 0; display: grid; place-items: center; border: 1px solid transparent; border-radius: 3px; background: transparent; box-shadow: none; }
+#pm .pm-actions button:hover { background: var(--sw-row-hover); border-color: var(--pm-ctl-line); }
+#pm .pm-actions button:active { background: var(--sw-row-sel); border-color: var(--pm-ctl-hover); }
+#pm .pm-actions button:focus-visible { outline: 1px solid var(--pm-focus); outline-offset: -1px; }
+#pm .pm-actions button.pm-ok.disabled, #pm .pm-actions button:disabled { opacity: .35; cursor: not-allowed; background: transparent; border-color: transparent; }
+#pm .pm-actions .pm-pin { margin-left: auto; width: 28px; height: 24px; }
+#pm .pm-actions .pm-pin.on { background: var(--sw-row-sel); border-color: var(--pm-ctl-hover); }
+/* the Message box (information yellow; .ok green, .error red) */
+#pm .pm-msg { margin: 8px 8px 0; padding: 0 8px 8px; line-height: 16px; border-radius: 3px; }
+#pm .pm-msg::before { height: 24px; line-height: 24px; margin: 0 -8px 4px; padding: 0 8px; font-weight: 600; }
+#pm .pm-msg.error { background: var(--pm-err-bg); border-color: var(--pm-err-line); color: var(--pm-err-text); }
+#pm .pm-msg.error::before { background: var(--pm-err-head); border-bottom-color: var(--pm-err-line); color: var(--pm-err-text); }
+/* group boxes: 8 px apart, a 24 px title band, the round chevron (a drawn mask, crisp at any scale) */
+#pm .pm-group { margin: 8px 8px 0; border-radius: 3px; }
+#pm .pm-group > h4 { height: 24px; padding: 0 4px 0 8px; gap: 8px; line-height: 24px; font-size: 12px; font-weight: 600; cursor: default; }
+#pm .pm-group > h4:hover .pm-gt { color: var(--text); }
+#pm .pm-group > h4 .tw { width: 16px; height: 16px; box-sizing: border-box; border: 1px solid var(--sw-group-line); border-radius: 50%; background: var(--sw-group-body); color: var(--muted); }
+#pm .pm-group > h4 .tw::after { left: 0; top: 0; width: 100%; height: 100%; border: 0; transform: none; background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M.7 4.3 4 1 7.3 4.3' fill='none' stroke='%23000' stroke-width='1.4'/%3E%3C/svg%3E") center / 8px 5px no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M.7 4.3 4 1 7.3 4.3' fill='none' stroke='%23000' stroke-width='1.4'/%3E%3C/svg%3E") center / 8px 5px no-repeat; }
+#pm .pm-group.collapsed > h4 .tw::after { top: 0; transform: rotate(180deg); }
+#pm .pm-group > h4:hover .tw { color: var(--text); border-color: var(--pm-ctl-hover); }
+#pm .pm-fields { padding: 8px; gap: 4px; }
+#pm .pm-fields:empty { padding: 0; }
+#pm .pm-group:has(> .pm-fields:empty) > h4 { border-bottom-color: transparent; }
+#pm .pm-group:has(> .pm-fields:empty) > h4 .tw::after { transform: rotate(180deg); }
+/* an optional group: its check box in the title band, left of the title (SolidWorks' Direction 2, Draft …) */
+#pm .pm-group.pm-optional { position: relative; }
+#pm .pm-group.pm-optional > h4 { padding-left: 30px; }
+#pm .pm-hcheck { position: absolute; left: 8px; top: 5px; width: 14px; height: 14px; margin: 0; display: block; }
+#pm .pm-hcheck input { display: block; }
+#pm .pm-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* field rows: one label column, one 136 px value column */
+#pm .pm-row.pm-field:not(.check) { grid-template-columns: minmax(0, 1fr) var(--pm-ctl-w); column-gap: 8px; row-gap: 2px; min-height: var(--pm-ctl-h); align-items: center; }
+#pm .pm-row.pm-field > label { line-height: 16px; color: var(--text); }
+#pm .pm-row.pm-row-icons { grid-template-columns: minmax(0, 1fr) auto; }
+#pm .pm-row.pm-row-icons > label .static { margin-top: 2px; font-size: 11px; line-height: 14px; }
+#pm .pm-row.pm-row-static .static { padding: 4px 0 4px 7px; line-height: 16px; color: var(--muted); text-align: left; overflow-wrap: anywhere; }
+#pm .pm-num-wrap { width: 100%; height: var(--pm-ctl-h); box-sizing: border-box; border: 1px solid var(--pm-ctl-line); border-radius: 2px; background: var(--pm-ctl-bg); box-shadow: none; }
+#pm .pm-num-wrap:hover { border-color: var(--pm-ctl-hover); }
+#pm .pm-num-wrap:focus-within { border-color: var(--pm-focus); box-shadow: none; }
+#pm .pm-num-wrap input.pm-num { height: 100%; padding: 0 4px 0 6px; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text); }
+#pm .pm-num-wrap input.pm-num.expr { font-size: 11.5px; }
+#pm .pm-num-wrap .unit { width: 20px; padding-right: 4px; text-align: right; line-height: 16px; }
+#pm .pm-num-wrap.no-unit .unit { width: 0; padding: 0; }
+#pm .pm-num-wrap:has(input.expr-err) { border-color: var(--red); }
+#pm .pm-spin { width: 16px; border-left: 1px solid var(--pm-ctl-line); }
+#pm .pm-spin button { height: 50%; min-height: 0; border: 0; border-radius: 0; background: transparent; color: var(--muted); }
+#pm .pm-spin button:hover { background: var(--sw-row-hover); color: var(--text); }
+#pm .pm-spin button:active { background: var(--sw-row-sel); }
+#pm .pm-row.pm-row-select select, #pm .pm-row.pm-row-text input {
+  width: 100%; min-width: 0; max-width: none; height: var(--pm-ctl-h); box-sizing: border-box; margin: 0; padding: 0 6px;
+  border: 1px solid var(--pm-ctl-line); border-radius: 2px; background-color: var(--pm-ctl-bg); color: var(--text); font: inherit; font-size: 12px; line-height: 16px; box-shadow: none; }
+#pm .pm-row.pm-row-select select { -webkit-appearance: none; appearance: none; padding-right: 22px; text-overflow: ellipsis;
+  background: var(--pm-arrow) right 8px center / 8px 5px no-repeat, var(--pm-ctl-bg); }
+#pm .pm-row.pm-row-select select option { background: var(--pm-ctl-bg); color: var(--text); }
+#pm .pm-row.pm-row-select select:hover, #pm .pm-row.pm-row-text input:hover { border-color: var(--pm-ctl-hover); }
+#pm .pm-row.pm-row-select select:focus, #pm .pm-row.pm-row-text input:focus { border-color: var(--pm-focus); outline: none; box-shadow: none; }
+#pm .pm-row.pm-row-select select:disabled, #pm .pm-row.pm-row-text input:disabled { opacity: .5; }
+#pm .pm-row .pm-expr-hint { line-height: 14px; margin-top: 0; }
+/* check boxes and radios: drawn 14 px boxes centred on the first text line; checked = ink fill */
+#pm input[type=checkbox], #pm input[type=radio] {
+  -webkit-appearance: none; appearance: none; flex: none; width: 14px; height: 14px; margin: 0; padding: 0; box-sizing: border-box;
+  border: 1px solid var(--pm-box-line); border-radius: 2px; background: var(--pm-ctl-bg); vertical-align: middle; cursor: default; }
+#pm input[type=radio] { border-radius: 50%; }
+#pm input[type=checkbox]:checked { border-color: var(--pm-on); background: var(--pm-tick) center / 10px 8px no-repeat, var(--pm-on); }
+#pm input[type=radio]:checked { border-color: var(--pm-on); background: radial-gradient(circle, var(--pm-on) 0 3px, transparent 3.6px), var(--pm-ctl-bg); }
+#pm input[type=checkbox]:hover:not(:disabled), #pm input[type=radio]:hover:not(:disabled) { border-color: var(--pm-focus); }
+#pm input[type=checkbox]:focus-visible, #pm input[type=radio]:focus-visible { outline: 1px solid var(--pm-focus); outline-offset: 1px; }
+#pm input[type=checkbox]:disabled, #pm input[type=radio]:disabled { opacity: .4; }
+#pm .pm-row.check { grid-template-columns: 14px minmax(0, 1fr); column-gap: 8px; min-height: 20px; align-items: start; }
+#pm .pm-row.check > input { margin-top: 3px; }
+#pm .pm-row.check > label { line-height: 16px; padding: 2px 0; }
+#pm .pm-radio { gap: 0; }
+/* Reverse Direction: the check box drawn as SolidWorks' button left of the group's first value box (its label is read
+   by screen readers and tests only) */
+#pm .pm-row.pm-field.pm-has-rev:not(.check) { grid-template-columns: minmax(0, 1fr) 24px var(--pm-ctl-w); column-gap: 4px; }
+#pm .pm-row.pm-field.pm-has-rev > label { grid-column: 1; grid-row: 1; margin-right: 4px; }
+#pm .pm-row.pm-field.pm-has-rev > .pm-rev { grid-column: 2; grid-row: 1; }
+#pm .pm-row.pm-field.pm-has-rev > .pm-num-wrap, #pm .pm-row.pm-field.pm-has-rev > select { grid-column: 3; grid-row: 1; }
+#pm .pm-row.check.pm-rev { display: block; width: 24px; height: 24px; min-height: 0; }
+#pm .pm-row.check.pm-rev > label { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+#pm .pm-row.check.pm-rev > input, #pm .pm-row.check.pm-rev > input:checked { display: block; width: 24px; height: 24px; margin: 0; border: 1px solid var(--sw-btn-line); border-radius: 3px;
+  background: var(--pm-rev-icon) center / 16px 16px no-repeat, var(--sw-btn); }
+#pm .pm-row.check.pm-rev > input:hover:not(:disabled) { border-color: var(--pm-ctl-hover); background-color: var(--sw-btn-hover); }
+#pm .pm-row.check.pm-rev > input:checked { border-color: var(--pm-ctl-hover); background-color: var(--sw-row-sel); box-shadow: inset 0 1px 0 rgba(0, 0, 0, .08); }
+#pm { --pm-rev-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M2.5 5.5h10M10 3l2.5 2.5L10 8M13.5 10.5h-10M6 8l-2.5 2.5L6 13' fill='none' stroke='%23464646' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+:root[data-theme="dark"] #pm { --pm-rev-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M2.5 5.5h10M10 3l2.5 2.5L10 8M13.5 10.5h-10M6 8l-2.5 2.5L6 13' fill='none' stroke='%23d2d2d2' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+#pm .pm-note { margin: -2px 0 2px 22px; line-height: 15px; }
+/* buttons: 24 px, flat; .on is pressed (sunken grey, same weight so nothing shifts) */
+#pm .pm-btns { gap: 4px; }
+#pm .pm-btns button { height: 24px; padding: 0 12px; border: 1px solid var(--sw-btn-line); border-radius: 3px; background: var(--sw-btn); color: var(--text); font: inherit; font-size: 12px; font-weight: 400; box-shadow: none; }
+#pm .pm-btns button:hover { background: var(--sw-btn-hover); border-color: var(--pm-ctl-hover); }
+#pm .pm-btns button:active, #pm .pm-btns button.on { background: var(--sw-row-sel); border-color: var(--pm-ctl-hover); }
+#pm .pm-btns button:focus-visible { outline: 1px solid var(--pm-focus); outline-offset: 1px; }
+#pm .pm-btns button:disabled { opacity: .45; cursor: default; }
+#pm .pm-btns.pm-icons button { width: 28px; padding: 0; display: inline-grid; place-items: center; }
+/* PropertyManager tabs (Hole Wizard Type / Positions): under ✓ ✗, the pressed one joined to the panel */
+#pm .pm-group.pm-tabgroup { margin: 8px 8px 0; border: 0; border-radius: 0; background: transparent; overflow: visible; }
+#pm .pm-group.pm-tabgroup > h4 { display: none; }
+#pm .pm-group.pm-tabgroup > .pm-fields { padding: 0; }
+#pm .pm-btns.pm-tabs { gap: 0; flex-wrap: nowrap; border-bottom: 1px solid var(--sw-group-line); }
+#pm .pm-btns.pm-tabs button { flex: 1 1 0; height: 28px; margin-bottom: -1px; border: 1px solid var(--sw-group-line); border-bottom: 0; border-radius: 3px 3px 0 0; background: var(--sw-chrome, var(--panel-2)); color: var(--muted); }
+#pm .pm-btns.pm-tabs button + button { margin-left: -1px; }
+#pm .pm-btns.pm-tabs button:hover { background: var(--sw-row-hover); color: var(--text); border-color: var(--sw-group-line); }
+#pm .pm-btns.pm-tabs button.on { background: var(--sw-group-body); border-color: var(--sw-group-line); color: var(--text); font-weight: 600; }
+/* selection boxes: grey, the active one (where picks go) pink with the magenta frame; the list joined under it */
+#pm .pm-pick { min-height: 24px; box-sizing: border-box; padding: 3px 6px; gap: 6px; line-height: 16px; border-radius: 2px; }
+#pm .pm-pick > svg { flex: none; }
+#pm .pm-pick > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#pm .pm-pick:not(.filled) > span { color: var(--muted); }
+#pm .pm-pick.clickable:not(.active):hover { border-color: var(--pm-ctl-hover); }
+#pm .pm-list { margin-top: 4px; padding: 2px 0; max-height: 132px; }
+#pm .pm-pickwrap.has-list > .pm-list { margin-top: -1px; }
+#pm .pm-item { min-height: 20px; box-sizing: border-box; padding: 2px 6px; gap: 6px; line-height: 16px; }
