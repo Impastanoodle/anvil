@@ -175,3 +175,80 @@
       return out.join(', ');
     } finally { UI.setTheme(theme0); if (UI.exitSketch) UI.exitSketch(true); }
   });
+
+  // ---- rfHA follow-up (user 2026-11-03): "double clicking a solid should select the entire solid, not open extrude or
+  // whatever feature was used to create it; single click should only select the face that was clicked"
+  function rfHAEv(type, p, target, mods) {
+    var r = $('viewport').getBoundingClientRect();
+    (target || W).dispatchEvent(new W.MouseEvent(type, Object.assign({ bubbles: true, cancelable: true, button: 0, buttons: type === 'mousedown' ? 1 : 0, clientX: r.left + p[0], clientY: r.top + p[1], detail: type === 'dblclick' ? 2 : 1 }, mods || {})));
+  }
+  function rfHAClick(p, mods) { rfHAEv('mousemove', p, $('viewport'), mods); rfHAEv('mousedown', p, $('viewport'), mods); rfHAEv('mouseup', p, null, mods); }
+  function rfHADbl(p, mods) { rfHAClick(p, mods); rfHAClick(p, mods); rfHAEv('dblclick', p, $('viewport'), mods); }
+  function rfHASel() { return anvil.selection().map(function (s) { return s.kind + (s.index != null ? ':' + s.index : ''); }).join(','); }
+  function rfHAEsc() { D.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); }
+
+  step('rfHA: a single click on a solid selects only the clicked face; a double-click selects the whole body (no Edit Feature); Esc clears', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run(RFHA_BOX); await idle();
+    await rfHAView('Isometric');
+    var p = UI.worldToScreen([1.5, 1, 1]), hit = UI.pickFace(p[0], p[1]);
+    assert(hit, 'the top face is under the point');
+    rfHAClick(p); await wait(20);
+    assert(rfHASel() === 'face:' + hit.index, 'a single click selects the face only: ' + rfHASel());
+    rfHAEsc(); await wait(20);
+    rfHADbl(p); await idle();
+    assert(!UI.hasPM(), 'no PropertyManager opened by the double-click: ' + (UI.hasPM() && UI.pmTitle()));
+    assert(rfHASel() === 'body:0', 'the double-click selects the body, no face beside it: ' + rfHASel());
+    rfHAEsc(); await wait(20);
+    assert(rfHASel() === '', 'Esc clears: ' + rfHASel());
+    return 'ok';
+  });
+
+  step('rfHA: two-body part — a double-click selects the body under the cursor, Ctrl+double-click adds the other body', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run('p.units("in");\np.box(3, 2, 1);\np.box(3, 2, 0.5, { at: [0, 1.5, 0], merge: false });\n'); await idle();
+    assert(UI.bodyCount() === 2, 'two bodies: ' + UI.bodyCount());
+    await rfHAView('Isometric');
+    var capP = UI.worldToScreen([1.5, 2, 1]), baseP = UI.worldToScreen([1.5, 0.5, 2]);
+    var capF = UI.pickFace(capP[0], capP[1]), baseF = UI.pickFace(baseP[0], baseP[1]);
+    assert(capF && baseF, 'faces under both points');
+    var capB = UI.App.mesh.faces[capF.index].body || 0, baseB = UI.App.mesh.faces[baseF.index].body || 0;
+    assert(capB !== baseB, 'the two points are on different bodies: ' + capB + ' / ' + baseB);
+    rfHAClick(baseP); await wait(20);
+    assert(rfHASel() === 'face:' + baseF.index, 'single click: the face ' + rfHASel());
+    rfHAEsc(); await wait(20);
+    rfHADbl(capP); await idle();
+    assert(!UI.hasPM() && rfHASel() === 'body:' + capB, 'double-click on the cap: its body ' + rfHASel());
+    rfHADbl(baseP, { ctrlKey: true }); await idle();
+    var s = anvil.selection().map(function (x) { return x.kind + ':' + x.index; }).sort().join(',');
+    assert(s === ['body:' + capB, 'body:' + baseB].sort().join(','), 'Ctrl+double-click adds the base body: ' + s);
+    rfHAEsc(); await wait(20);
+    assert(rfHASel() === '', 'Esc clears: ' + rfHASel());
+    return 'ok';
+  });
+
+  step('rfHA: with a command open, a double-click on a solid stays in that command (it never opens Edit Feature of the face\'s feature)', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run(RFHA_BOX); await idle();
+    await rfHAView('Isometric');
+    UI.cmdFillet(); await idle();
+    var title = UI.pmTitle();
+    assert(UI.hasPM() && /fillet/i.test(title), 'Fillet open: ' + title);
+    rfHADbl(UI.worldToScreen([1.5, 1, 1])); await idle();
+    assert(UI.hasPM() && UI.pmTitle() === title, 'still in ' + title + ': ' + (UI.hasPM() && UI.pmTitle()));
+    UI.pmCancel(); await idle();
+    return 'ok';
+  });
+
+  step('rfHA: a double-click on a FeatureManager feature row still opens Edit Feature', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run(RFHA_BOX); await idle();
+    var f = UI.App.model.features.filter(function (x) { return x.type !== 'sketch'; })[0];
+    var row = D.querySelector('[data-fid="' + f.id + '"]');
+    assert(row, 'the tree row of ' + f.name);
+    row.dispatchEvent(new W.MouseEvent('dblclick', { bubbles: true }));
+    await idle();
+    assert(UI.hasPM(), 'Edit Feature opened from the tree');
+    UI.pmCancel(); await idle();
+    return 'ok';
+  });

@@ -3632,8 +3632,23 @@
       finishChain(); return;
     }
     var p = pos(ev), hit = UI.pickFace(p[0], p[1]);
+    // user 2026-11-03: in a part with no command taking picks, a double-click on a solid selects that whole body (as its
+    // Solid Bodies row does); the single clicks before it selected (and with Ctrl toggled) only the face. Ctrl adds the
+    // body to the selection. The FeatureManager row still opens Edit Feature on a double-click. With a command open the
+    // double-click is only that command's two picks: it never opens another feature (that would drop the command).
+    var inPart = !(UI.isAssembly && UI.isAssembly()) && !(UI.drawingActive && UI.drawingActive());
+    if (hit && inPart && (App.command || (UI.hasPM && UI.hasPM()))) return;
+    if (hit && inPart) {
+      var bf = App.mesh.faces[hit.index], bi = bf && bf.body ? bf.body : 0;
+      if (ev.ctrlKey || ev.metaKey) {
+        var cur = (UI.selection ? UI.selection() : []).filter(function (s) { return !(s.kind === 'face' && s.index === hit.index) && !(s.kind === 'body' && s.index === bi); });
+        if (UI.setSelection) { UI.setSelection(cur.concat([{ kind: 'body', index: bi }])); return; }
+      }
+      if (UI.selectBody) UI.selectBody(bi);
+      return;
+    }
     if (hit) {
-      // double-clicking a face opens its owning feature for editing
+      // double-clicking a face opens its owning feature for editing (assemblies only)
       var id = App.triShared[App.mesh.faces[hit.index].start];
       var f = K.findFeature(App.model, id);
       if (f) UI.editFeature(f);

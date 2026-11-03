@@ -3941,7 +3941,7 @@ more: tidy L1837, dynMirrorOf L1846, dynOn L1851, dynOff L1857, dynMarks L1890, 
 more: jogEntities L2218, jogApply L2222, closeArcs L2325, closeArcMessage L2363, closeSize L2508, refNear L2535,
 more: closeApply L2540, closeMessage L2572
 
-## ui-sketch.js (3838 lines)
+## ui-sketch.js (3853 lines)
 > viewport mouse handling, sketch mode and the 2D sketch tools.
 UI.enterSketch  L8
 UI.refreshSketchCorner (refreshCorner)  L36
@@ -4068,14 +4068,14 @@ UI.openRelDimEdit  L3462
 UI.cancelDimEdit  L3463
 UI.isDimEditOpen  L3464
 freeTextDrag  L3478  — Click-drag sketching, as in SolidWorks: with a drawing tool, pressing and dragging draws …
-sketchMenu  L3646  — r5/sketch5: right-click with the Select tool opens the sketch's shortcut menu, as in …
-UI.sketchMenu  L3703
-chainMenuWanted  L3706  — rfE (fidelity finding 10): right-click while a Line chain is being drawn opens …
-UI.quickSnapMenuItems  L3724  — rfAR: the Quick Snaps rows of the right-click menu (and of Tools ▸ Sketch Tools ▸ Quick …
-UI.chainMenu  L3730
-finishChain  L3734  — Double-click or right-click: as in SolidWorks, a chain (or a half-drawn entity) ends and …
-UI.sketchZooming  L3758
-UI.addEntity  L3837  — (Spline, Text: the points their tool placed)
+sketchMenu  L3661  — r5/sketch5: right-click with the Select tool opens the sketch's shortcut menu, as in …
+UI.sketchMenu  L3718
+chainMenuWanted  L3721  — rfE (fidelity finding 10): right-click while a Line chain is being drawn opens …
+UI.quickSnapMenuItems  L3739  — rfAR: the Quick Snaps rows of the right-click menu (and of Tools ▸ Sketch Tools ▸ Quick …
+UI.chainMenu  L3745
+finishChain  L3749  — Double-click or right-click: as in SolidWorks, a chain (or a half-drawn entity) ends and …
+UI.sketchZooming  L3773
+UI.addEntity  L3852  — (Spline, Text: the points their tool placed)
 more: hintText L174, toolHook L198, pmHint L228, sketchPoints L278, onArc L313, onSeg L320, intersect L326,
 more: modelSnapOn L370, buildModelSnaps L386, snap L829, sliding L991, toolEntities L1076, slotFarCentre L1127,
 more: distPointLine L1154, stepsNeeded L1159, inferSkip L1172, addEntity L1197, sketchClick L1229,
@@ -4089,7 +4089,7 @@ more: onGeometry L2767, placeLabel L2776, selectDim L2820, editDimItem L2827, pa
 more: dimPress L2862, drawOne L2906, radialClear L2987, drawDimsIn L3009, dmButton L3046, openDimEdit L3083,
 more: positionDimEdit L3103, inAngleRange L3124, spinDim L3131, previewDim L3146, runPreview L3152,
 more: restoreDimPreview L3165, dimToolMove L3359, entityRef L3385, entityAnchor L3389, startDimFrom L3394,
-more: pos L3468, sketchDrawHook L3483, chainMenu L3711, partClick L3760, tpair L3795
+more: pos L3468, sketchDrawHook L3483, chainMenu L3726, partClick L3775, tpair L3810
 
 ## ui-transform-3d.js (1140 lines)
 > Mastercam's Transform tab, lane BK: Translate to Plane, Project and Roll (Position group), Stretch and
