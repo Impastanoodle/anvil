@@ -424,17 +424,57 @@
       return true;
     });
     // chain
-    var next = {};
-    boundary.forEach(function (e) { next[e[0].k] = e; });
+    var next = {}, outs = {}, pinch = false;
+    boundary.forEach(function (e) { next[e[0].k] = e; if (outs[e[0].k]) { outs[e[0].k].push(e); pinch = true; } else outs[e[0].k] = [e]; });
+    var loops = [];
     bridgeGaps(boundary, next, vlist);
-    var used = {}, loops = [];
-    boundary.forEach(function (e) {
+    if (pinch) {
+      Object.keys(next).forEach(function (k) { if (!outs[k]) outs[k] = [next[k]]; });   // a crack bridged by bridgeGaps
+      // rfHM: two pieces of the face touch at a vertex (two boundary edges leave it): meshFromBody clusters facets by
+      // plane, so on a finely meshed curved surface two facets a third one apart can share a face and a corner. Chaining
+      // by vertex then took whichever edge came last, ran one piece's loop into the other's and lost two real edges
+      // (their neighbours' edges were left open and drawn as dark marks on an OpenCascade loft). At such a vertex take
+      // the edge turning least clockwise from the way back (the one bounding the same piece) and mark edges, not
+      // vertices, as used.
+      var usedE = new Set();
+      var pickOut = function (cur) {
+        var l = outs[cur[1].k];
+        if (!l) return null;
+        var best = null, bestA = -1, r = sub(cur[0], cur[1]), fn = face.normal;
+        l.forEach(function (e) {
+          if (usedE.has(e)) return;
+          if (l.length === 1) { best = e; return; }
+          var o = sub(e[1], e[0]);
+          var a = Math.atan2(dot(fn, cross(r, o)), dot(r, o));   // angle from r to o, counter-clockwise about the face normal
+          if (a <= 0) a += 2 * Math.PI;
+          if (a > bestA) { bestA = a; best = e; }
+        });
+        return best;
+      };
+      boundary.forEach(function (e) {
+        if (usedE.has(e)) return;
+        var loop = [], cur = e, guard = 0;
+        while (cur && !usedE.has(cur) && guard++ < 100000) {
+          usedE.add(cur);
+          var p2 = to2D(plane, cur[0]);
+          p2.p3 = cur[0];
+          loop.push(p2);
+          if (cur[1].k === e[0].k) break;   // back at the loop's first vertex: closed
+          cur = pickOut(cur);
+        }
+        if (loop.length >= 3) loops.push(loop);
+      });
+    }
+    var used = {};
+    if (!pinch) boundary.forEach(function (e) {
       var k0 = e[0].k;
       if (used[k0]) return;
       var loop = [], cur = e, guard = 0;
       while (cur && !used[cur[0].k] && guard++ < 100000) {
         used[cur[0].k] = true;
-        loop.push(to2D(plane, cur[0]));
+        var q2 = to2D(plane, cur[0]);
+        q2.p3 = cur[0];   // rfHM: the vertex itself, for bodyEdges (see there)
+        loop.push(q2);
         cur = next[cur[1].k];
       }
       if (loop.length >= 3) loops.push(loop);
@@ -554,7 +594,12 @@
       var n = mesh.faces[i].normal;
       o.loops.forEach(function (loop) {
         for (var k = 0; k < loop.length; k++) {
-          var a = to3D(o.plane, loop[k][0], loop[k][1]), b = to3D(o.plane, loop[(k + 1) % loop.length][0], loop[(k + 1) % loop.length][1]);
+          // rfHM: the outline's own 3D vertices, not points rebuilt on the face's plane: meshFromBody clusters facets
+          // within 1e-3 rad into one face whose plane is the first one's, so on a finely meshed curved surface (an
+          // OpenCascade loft) a merged neighbour's corners lie off that plane and came back moved, missed their twins
+          // and were drawn as short dark marks across the shaded face
+          var l1 = loop[(k + 1) % loop.length];
+          var a = loop[k].p3 ? loop[k].p3.slice(0, 3) : to3D(o.plane, loop[k][0], loop[k][1]), b = l1.p3 ? l1.p3.slice(0, 3) : to3D(o.plane, l1[0], l1[1]);
           var ka = ekey(a), kb = ekey(b), key = ka < kb ? ka + '|' + kb : kb + '|' + ka;
           var e = map[key];
           if (!e) { e = map[key] = { a: a, b: b, ka: ka, kb: kb, faces: [], normals: [], ins: [] }; order.push(key); }

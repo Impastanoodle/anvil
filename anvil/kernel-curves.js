@@ -1344,7 +1344,7 @@
   //     the angle-weighted normal of the faces at its vertex: the exact ones (planes and record facets within
   //     SMOOTH.exact degrees: a tangent plane's normal is the surface's there) when there are any, else the facets
   //     within SMOOTH.crease (one OpenCascade face's own only), so a real sharp edge inside a face stays sharp.
-  var SMOOTH = { crease: 20, exact: 12, carry: 0.4 };
+  var SMOOTH = { crease: 20, exact: 12, carry: 0.4, occCrease: 35, occSeam: 10 };
   function surfNormalAt(S, x, toward) {
     var v = [x[0] - S.o[0], x[1] - S.o[1], x[2] - S.o[2]], d = S.d, z = dot(v, d), n;
     if (S.t === 'sph') n = v;
@@ -1481,7 +1481,7 @@
     // 4. angle-weighted source normals per (vertex, face) at the vertices of facets
     var need = new Uint8Array(nv), anyF = false;
     for (i = 0; i < nT * 3; i++) if (kind[faceOf[(i / 3) | 0]] === 2) { need[vid[i]] = 1; anyF = true; }
-    if (!anyF) return out;
+    if (!anyF) return chordBlend();
     var acc = new Map();
     for (var t = 0; t < nT; t++) {
       var f0 = faceOf[t];
@@ -1503,6 +1503,45 @@
       }
     }
     // 5. facet corners
+    // rfHM: facets of one OpenCascade face share ONE normal per vertex (the angle-weighted sum over all of that face's
+    // facets there): a B-rep face is smooth inside, and OpenCascade's mesh turns up to its angular deflection (~20°)
+    // between facets, right at SMOOTH.crease, so the per-facet crease test let neighbours in and out from one triangle
+    // to the next (a Ø.0625 spring wire: normals jumped up to 39° across 38k of 83k shared corners: lumps, bright
+    // streaks along the coil, dark spots). The crease test still applies when that normal is over SMOOTH.occCrease from
+    // the facet's own (a real crease inside one face, a C0 boundary patch's corner).
+    var cosO = cos((SMOOTH.occCrease || 35) * D2R), occN = new Map();
+    function occVertexNormal(vv, B) {
+      var ok = occN.get(vv + ':' + B);
+      if (ok !== undefined) return ok;
+      var s = [0, 0, 0];
+      for (var j3 = vfStart[vv]; j3 < vfStart[vv + 1]; j3++) {
+        var G3 = vfList[j3];
+        if (kind[G3] !== 2 || bface[G3] !== B) continue;
+        var g3 = acc.get(vv * nf + G3);
+        if (g3) { s[0] += g3[0]; s[1] += g3[1]; s[2] += g3[2]; }
+      }
+      var sl3 = Math.hypot(s[0], s[1], s[2]);
+      ok = sl3 > 1e-12 ? [s[0] / sl3, s[1] / sl3, s[2] / sl3, s] : null;
+      occN.set(vv + ':' + B, ok);
+      return ok;
+    }
+    // ... and across a tangent seam between two OpenCascade faces (the pieces of a loft through three sections, a
+    // periodic face's seam) the faces' vertex normals, each from its own side only, differ by about half a facet turn:
+    // within SMOOTH.occSeam they are one tangent surface and share their sum (a shaded line along the seam otherwise)
+    var cosSeam = cos((SMOOTH.occSeam || 10) * D2R);
+    function occSeamNormal(vv, B, own) {
+      var s = own[3].slice(), merged = false, seen = {};
+      seen[B] = 1;
+      for (var j4 = vfStart[vv]; j4 < vfStart[vv + 1]; j4++) {
+        var G4 = vfList[j4], B4 = bface[G4];
+        if (kind[G4] !== 2 || B4 == null || seen[B4] || !(occ[B4] > 1)) continue;
+        seen[B4] = 1;
+        var o4 = occVertexNormal(vv, B4);
+        if (!o4 || o4[0] * own[0] + o4[1] * own[1] + o4[2] * own[2] < cosSeam) continue;
+        s[0] += o4[3][0]; s[1] += o4[3][1]; s[2] += o4[3][2]; merged = true;
+      }
+      return merged ? s : own;
+    }
     for (t = 0; t < nT; t++) {
       var F = faceOf[t];
       if (kind[F] !== 2) continue;
@@ -1520,6 +1559,10 @@
             if (G !== F && bface[F] != null && bface[G] !== bface[F]) continue;
             fs[0] += g[0]; fs[1] += g[1]; fs[2] += g[2];
           } else if (cg >= cosE) { ex[0] += g[0]; ex[1] += g[1]; ex[2] += g[2]; nEx++; }
+        }
+        if (!nEx && bface[F] != null && occ[bface[F]] > 1) {
+          var on3 = occVertexNormal(vv, bface[F]);
+          if (on3 && on3[0] * nF[0] + on3[1] * nF[1] + on3[2] * nF[2] >= cosO) fs = occSeamNormal(vv, bface[F], on3).slice(0, 3);
         }
         var r = nEx ? ex : fs, rl = Math.hypot(r[0], r[1], r[2]);
         if (!(rl > 1e-12)) continue;
@@ -1560,7 +1603,59 @@
         if (sl > 1e-12) { out[pp] = sx / sl; out[pp + 1] = sy / sl; out[pp + 2] = sz / sl; }
       }
     }
-    return out;
+    return chordBlend();
+    // 7. rfHM: a round along the chords of a free curve (an elliptic or spline boss rim: rfFRruns) is one cylinder
+    // record per chord, mitred where the chords meet, so neighbouring pieces' exact normals differ by the chord's turn
+    // (~12°) at the mitre, and the wall facets beside them took those pieces' normals as "exact": the round and the
+    // wall shaded in steps. Where two records of one feature, the same kind and radius, axes within SMOOTH.crease, meet
+    // at a vertex at a small angle, the record and facet corners there within SMOOTH.crease of each other share one
+    // normal (their mean). Mitres of rounds on a real corner (axes far apart) stay sharp.
+    function chordBlend() {
+      var recOf = new Array(nf), anyRec = false;
+      for (var f7 = 0; f7 < nf; f7++) {
+        if (kind[f7] !== 1) continue;
+        var p7 = faces[f7].polys[0], s7 = p7 && p7.surf && p7.surf.s;
+        if (s7 && (s7.t === 'cyl' || s7.t === 'cone' || s7.t === 'tor')) { recOf[f7] = { s: s7, tag: p7.shared }; anyRec = true; }
+      }
+      if (!anyRec) return out;
+      var at = new Map(), q7, k7;
+      for (q7 = 0; q7 < nT; q7++) {
+        var kf = kind[faceOf[q7]];
+        if (kf !== 1 && kf !== 2) continue;
+        for (k7 = 0; k7 < 3; k7++) { var v7 = vid[q7 * 3 + k7], l7 = at.get(v7); if (!l7) at.set(v7, l7 = []); l7.push(q7 * 9 + k7 * 3, faceOf[q7]); }
+      }
+      var cosLo = Math.cos(0.05 * D2R);
+      at.forEach(function (l) {
+        var fsAt = [], nAt = [], seenF = {};
+        for (var i7 = 0; i7 < l.length; i7 += 2) if (!seenF[l[i7 + 1]]) { seenF[l[i7 + 1]] = 1; fsAt.push(l[i7 + 1]); nAt.push([out[l[i7]], out[l[i7] + 1], out[l[i7] + 2]]); }
+        if (fsAt.length < 2) return;
+        var hit = false, a7, b7;
+        for (a7 = 0; a7 < fsAt.length && !hit; a7++) for (b7 = a7 + 1; b7 < fsAt.length && !hit; b7++) {
+          var A = recOf[fsAt[a7]], B = recOf[fsAt[b7]];
+          if (!A || !B || A.s === B.s || A.tag !== B.tag || A.s.t !== B.s.t) continue;
+          if (Math.abs((A.s.r || 0) - (B.s.r || 0)) > 1e-9 * Math.max(1, Math.abs(A.s.r || 0))) continue;
+          if (Math.abs(dot(A.s.d, B.s.d)) < cosC) continue;
+          var c7 = dot(nAt[a7], nAt[b7]);
+          if (c7 < cosLo && c7 >= cosC) hit = true;
+        }
+        if (!hit) return;
+        // clusters of corners within the crease of each other (union-find over this vertex's faces)
+        var par = fsAt.map(function (x, i) { return i; });
+        function root(i) { while (par[i] !== i) i = par[i] = par[par[i]]; return i; }
+        for (a7 = 0; a7 < fsAt.length; a7++) for (b7 = a7 + 1; b7 < fsAt.length; b7++) if (dot(nAt[a7], nAt[b7]) >= cosC) par[root(a7)] = root(b7);
+        var sum = {};
+        fsAt.forEach(function (f, i) { var r = root(i), s = sum[r] || (sum[r] = [0, 0, 0, 0]); s[0] += nAt[i][0]; s[1] += nAt[i][1]; s[2] += nAt[i][2]; s[3]++; });
+        var idx = {};
+        fsAt.forEach(function (f, i) { idx[f] = i; });
+        for (var j7 = 0; j7 < l.length; j7 += 2) {
+          var s8 = sum[root(idx[l[j7 + 1]])];
+          if (!s8 || s8[3] < 2) continue;
+          var ln = Math.hypot(s8[0], s8[1], s8[2]);
+          if (ln > 1e-12) { out[l[j7]] = s8[0] / ln; out[l[j7] + 1] = s8[1] / ln; out[l[j7] + 2] = s8[2] / ln; }
+        }
+      });
+      return out;
+    }
   }
   K.smoothOptions = SMOOTH;
 

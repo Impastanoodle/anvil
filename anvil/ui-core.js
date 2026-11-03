@@ -2631,11 +2631,13 @@ var UI = (function () {
   ['showAxes', 'showPoints', 'showCsys'].forEach(function (k) { if (App.view[k] == null) App.view[k] = true; });
   var REF_COL = { line: 0xb4b4b4, sel: 0xffd400, hover: 0xff9a2e, x: 0xd9453b, y: 0x3fa34d, z: 0x2d7dd2 };
   var refMatCache = {};
-  function refMat(kind, dashed) {
-    var k = kind + (dashed ? 'd' : '');
+  // depth (rfHM): hidden by the solids like SolidWorks' curves (a helix inside the coil it swept showed through the
+  // wire as a white streak along it); faces sit back by their polygon offset, so a curve lying on a face still shows
+  function refMat(kind, dashed, depth) {
+    var k = kind + (dashed ? 'd' : '') + (depth ? 'z' : '');
     if (!refMatCache[k]) {
-      refMatCache[k] = dashed ? lineMat(new THREE.LineDashedMaterial({ color: REF_COL[kind], depthTest: false, transparent: true }), kind === 'line' ? 1.2 : 2, { dashPx: 9, gapPx: 3 })
-        : lineMat(new THREE.LineBasicMaterial({ color: REF_COL[kind], depthTest: false, transparent: true }), kind === 'line' ? 1.5 : 2.5);
+      refMatCache[k] = dashed ? lineMat(new THREE.LineDashedMaterial({ color: REF_COL[kind], depthTest: !!depth, transparent: true }), kind === 'line' ? 1.2 : 2, { dashPx: 9, gapPx: 3 })
+        : lineMat(new THREE.LineBasicMaterial({ color: REF_COL[kind], depthTest: !!depth, transparent: true }), kind === 'line' ? 1.5 : 2.5);
     }
     return refMatCache[k];
   }
@@ -4402,7 +4404,7 @@ var UI = (function () {
     (g.runs || [g]).forEach(function (r) {
       var P = r.pts, arr = [];
       for (var i = 0; i + 1 < P.length; i++) arr.push(P[i][0], P[i][1], P[i][2], P[i + 1][0], P[i + 1][1], P[i + 1][2]);
-      if (arr.length) group.add(refSegs(arr, refMat(state || 'line', false), false));
+      if (arr.length) group.add(refSegs(arr, refMat(state || 'line', false, !state && group === refGroup), false));   // rfHM: depth-tested unless picked / hovered or a PM preview
     });
   }
 

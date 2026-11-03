@@ -1785,7 +1785,7 @@ var OcctKernel = (function () {
       }
       if (opts.mesh !== false) {
         var t1 = now();
-        out.mesh = tessellate(all, bodies, opts.chord || 0.05, out.faces);
+        out.mesh = tessellate(all, bodies, opts.chord, out.faces);
         out.ms.mesh = now() - t1;
       }
       if (out.mesh) { try { tangentFaces(bodies, out.faces); } catch (eT) { /* no tangency info: edges fall back to the facet angle */ } }
@@ -1836,8 +1836,18 @@ var OcctKernel = (function () {
       });
     }
     // triangles of every B-rep face, tagged with the face's index in out.faces
+    // rfHM: the display mesh follows Anvil's Image Quality (Kernel TESS via withModelTess): chord = the model's
+    // chordTol, else 0.05 mm in the model's units (it was 0.05 UNITS: 1.27 mm on an inch part), angle = its maxAngle
+    // (default 12°; 0 = off -> 20°). It was 0.35 rad (20°): a Ø.0625 spring wire came out an 18-gon and the Trumpet
+    // Funnel's flare 372 triangles, both faceted and lumpy. Cap like Anvil's maxSegs 128: the chord never goes below
+    // 1.5e-4 of the bounding diagonal (a circle as large as the part stays <= 128 segments).
     function tessellate(all, bodyList, chord, facesOut) {
-      N(new oc.BRepMesh_IncrementalMesh_2(all, chord, false, 0.35, false));
+      var tq = (m && m.tessellation) || {}, inch = m && m.units === 'in';
+      chord = chord || tq.chordTol || (inch ? 0.05 / 25.4 : 0.05);
+      var bb = bboxOf(all, false), diag = bb ? Math.hypot(bb[1][0] - bb[0][0], bb[1][1] - bb[0][1], bb[1][2] - bb[0][2]) : 0;
+      chord = Math.max(chord, diag * 1.5e-4);
+      var deg = tq.maxAngle != null ? +tq.maxAngle : 12;
+      N(new oc.BRepMesh_IncrementalMesh_2(all, chord, false, (deg > 0 ? Math.min(deg, 20) : 20) * Math.PI / 180, false));
       var pos = [], faceOf = [];
       bodyList.forEach(function (body, bi) {
         explore(body, ENUM.TopAbs_FACE).forEach(function (s) {
