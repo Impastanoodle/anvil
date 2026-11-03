@@ -277,7 +277,19 @@
     // marking (flat.etch: Etch text strokes and ETCH-layer geometry of sketches on the sheet's faces), never a cut:
     // LINE / ARC / CIRCLE (a stretched letter as a polyline) on ETCH, in the layer's colour (default 3, green)
     // lane cross-break: a Cross-Break's marks ride in flat.etch but are bend marks: BEND lines and one UP / DOWN note
-    var etch = opts.etch === false ? [] : (flat.etch || []).filter(function (it) { return !it.crossBreak; });
+    var etch = opts.etch === false ? [] : (flat.etch || []).filter(function (it) { return !it.crossBreak && it.form == null; });
+    // lane forming: a Forming Tool's marks ride in flat.etch too: its outline and centre mark on FORM (the punch
+    // position, like the bend lines on BEND), its note on NOTES (lance slits are real holes of flat.loops, on HOLES)
+    var formIts = (flat.etch || []).filter(function (it) { return it.form != null; });
+    if (formIts.some(function (it) { return it.kind === 'mark'; }) && opts.bendLines !== false) d.layer('FORM', 6);
+    formIts.forEach(function (it) {
+      if (it.kind === 'cut') { if (it.t === 'line') d.line('HOLES', sh(it.a), sh(it.b)); return; }
+      if (it.kind === 'note') { if (opts.notes !== false) d.text('NOTES', sh(it.a), th, it.text, { center: true }); return; }
+      if (opts.bendLines === false) return;
+      if (it.t === 'line') d.line('FORM', sh(it.a), sh(it.b));
+      else if (it.t === 'circle') d.circle('FORM', sh(it.c), it.r);
+      else if (it.t === 'poly' && it.pts && it.pts.length > 1) d.polyline('FORM', it.pts.map(sh), !!it.closed);
+    });
     (flat.etch || []).forEach(function (it) {
       if (!it.crossBreak) return;
       if (opts.bendLines !== false) d.line('BEND', sh(it.a), sh(it.b));
@@ -1248,6 +1260,24 @@
     var f = { type: 'crossBreak', face: [+face[0], +face[1], +face[2]], radius: opts.radius != null ? num(opts.radius) : (s ? s.bendRadius : 0), angle: opts.angle != null ? num(opts.angle) : 1, reverse: !!opts.reverse };
     if (opts.sketch != null) f.sketch = opts.sketch;
     f.name = opts.name || K.crossBreakName(this.model);
+    this._add(f);
+    return this;
+  };
+  // formingTool(tool, face, opts): Sheet Metal ▸ Forming Tool (kernel-sheetmetal.js, lane forming). tool: 'dimple' |
+  // 'extrudedHole' | 'louver' | 'lance' | 'rib' (Kernel.FORMING_TOOLS); face: [x, y, z] on a flat sheet face (the tool
+  // sits there unless opts.at is given); opts: at ([u, v] in the face's sketch frame), angle (degrees), flip (form the
+  // other way), the tool's dims (default Kernel.formingToolDefaults in the part's units), name
+  Builder.prototype.formingTool = function (tool, face, opts) {
+    opts = opts || {};
+    var def = K.formingToolDefaults(tool, this.model.units);
+    if (!def) throw new Error('formingTool: unknown tool "' + tool + '" (' + K.FORMING_TOOLS.map(function (t) { return t.id; }).join(', ') + ').');
+    if (!face || face.length !== 3) throw new Error('formingTool: give a point [x, y, z] on a flat face of the sheet.');
+    var f = { type: 'formingTool', tool: tool, face: [+face[0], +face[1], +face[2]] };
+    if (opts.at) f.at = [+opts.at[0], +opts.at[1]];
+    f.angle = opts.angle != null ? num(opts.angle) : 0;
+    f.flip = !!opts.flip;
+    K.FORMING_TOOLS.filter(function (t) { return t.id === tool; })[0].params.forEach(function (p) { f[p.key] = opts[p.key] != null ? num(opts[p.key]) : def[p.key]; });
+    f.name = opts.name || K.formingToolName(this.model, tool);
     this._add(f);
     return this;
   };

@@ -464,6 +464,13 @@ var IconsLib = (function () {
   I.xyzCurve = ln('M1.5 12.5 C4 3 8 13 14.5 3.5', S, 1.4) + pt(1.5, 12.5) + pt(5.6, 8) + pt(10, 8.4) + pt(14.5, 3.5) + ln('M10.5 14.5 h4 M10.5 14.5 v-4 M10.5 14.5 l-1.8 1', M, 0.9);
   I.refPtCurve = ln('M1.5 12.5 C4 3 8 13 14.5 3.5', S, 1.4) + [[1.5, 12.5], [7.5, 8.5], [14.5, 3.5]].map(function (q) { return ln('M' + (q[0] - 1.6) + ' ' + q[1] + ' h3.2 M' + q[0] + ' ' + (q[1] - 1.6) + ' v3.2', P, 1); }).join('');
   I.helix = ln('M4 2.5 C13 2.5 13 5 8 5.2 C3 5.4 3 7.8 8 8 C13 8.2 13 10.6 8 10.8 C3 11 3 13.5 12 13.5', S, 1.4) + ln('M8 1 V15', M, 0.8, 'stroke-dasharray="3 1.4 0.6 1.4"');
+  // lane forming: the Forming Tool flyout (a grey plate seen at an angle with the yellow form): Dimple, Extruded Hole,
+  // Louver (a hood with its dark opening), Lance (a bridge on two legs), Rib (a long rounded ridge)
+  I.ftDimple = p('M1 13 l3 -5 h11 l-3 5 z', F2, S, 1) + p('M4.5 10.8 C5 7.2 11 7.2 11.5 10.8 z', FY, FYD, 1);
+  I.ftExtrudedHole = p('M1 13 l3 -5 h11 l-3 5 z', F2, S, 1) + p('M5.5 10.6 V5.5 h5 v5.1 z', FY, FYD, 1) + ell(8, 5.5, 2.5, 0.9, W, FYD, 1);
+  I.ftLouver = p('M1 13 l3 -5 h11 l-3 5 z', F2, S, 1) + p('M4.5 11 L6 7.5 h6.5 L11 11 z', FY, FYD, 1) + p('M6 7.5 h6.5 l-1 1.6 h-5 z', '#424242', 'none');
+  I.ftLance = p('M1 13 l3 -5 h11 l-3 5 z', F2, S, 1) + p('M3.5 11 L5.5 7 h5 L12.5 11 h-1.6 L9.6 8.4 h-3.2 L5.1 11 z', FY, FYD, 1);
+  I.ftRib = p('M1 13 l3 -5 h11 l-3 5 z', F2, S, 1) + p('M4.2 11.4 L9.6 7.4 a1 1 0 0 1 2.2 1.2 L6.4 12.6 a1 1 0 0 1 -2.2 -1.2 z', FY, FYD, 1);
   // ---- rfGZ: one weight system for every size. The artwork above is drawn once on the 16 grid; `weigh` re-weights
   // each stroked element for the size it is shown at and the screen's devicePixelRatio, so a 32 px ribbon icon no
   // longer doubles every outline (2.5 px black borders) and a 16 px tree icon keeps 1 px lines. Classes, by the drawn

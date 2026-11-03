@@ -592,7 +592,7 @@
     var origFeatures = model.features, resolved = resolvedModel(model);
     model = linkThickness(resolved.model);
     var resolveErrors = resolved.featureErrors, sheetError = resolved.sheetError;
-    function needsSheet(f) { return f.type === 'flange' || f.type === 'jog' || f.type === 'closedCorner' || f.type === 'unfold' || f.type === 'fold' || f.sheetBase || (f.cut && f.normalCut); }
+    function needsSheet(f) { return f.type === 'flange' || f.type === 'jog' || f.type === 'closedCorner' || f.type === 'formingTool' || f.type === 'unfold' || f.type === 'fold' || f.sheetBase || (f.cut && f.normalCut); }
     var ctx = { tools: {}, planes: {}, sketches: {}, flanges: {}, body: null, bodies: [], bodyFeatures: [], warnings: warnings, units: model.units || 'mm' };   // units: pick tolerances (Kernel.pickTol)
     ctx.errors = errors; ctx.unfold = null;   // lane DB: Unfold's state (in memory only: the steps carry it) until its Fold
     function syncBody() { ctx.body = combineBodies(ctx.bodies); }
@@ -824,6 +824,17 @@
             var xbk = ctx.bodies.length ? Math.max(0, bodyNearPoint(ctx.bodies, f.face || [0, 0, 0])) : -1;
             ctx.planes[f.id] = _.crossBreakLayout(f, model, { body: xbk >= 0 ? ctx.bodies[xbk] : null, sketches: ctx.sketches, planes: ctx.planes });
             ctx.tools[f.id] = null;
+            break;
+          }
+          case 'formingTool': {
+            // lane forming: a Forming Tool (kernel-sheetmetal.js buildFormingTool) cuts the footprint out of the body nearest
+            // its face point and puts the formed shell in; its record rides in planes (the flat reads it, like Cross-Break)
+            var ftk = ctx.bodies.length ? Math.max(0, bodyNearPoint(ctx.bodies, f.face || [0, 0, 0])) : -1;
+            ctx.body = ftk >= 0 ? ctx.bodies[ftk] : null;
+            var ftr = _.buildFormingTool(f, model, ctx);
+            putBody(ftk, ftr.body);
+            ctx.planes[f.id] = ftr.rec;
+            ctx.tools[f.id] = ftr.tool;
             break;
           }
           case 'insertBends':

@@ -3411,15 +3411,19 @@
     if (!UI.scene || typeof THREE === 'undefined') return;
     if (!xbGroup) { xbGroup = new THREE.Group(); UI.scene.add(xbGroup); UI.crossBreakGroup = xbGroup; }
     UI.disposeGroup(xbGroup);
-    var feats = (App.model && App.model.features || []).filter(function (f) { return f.type === 'crossBreak' && !f.suppressed; });
+    var feats = (App.model && App.model.features || []).filter(function (f) { return (f.type === 'crossBreak' || f.type === 'formingTool') && !f.suppressed; });   // lane forming: a Forming Tool's flat marks too
     if (!feats.length || !App.build) { if (UI.requestRender) UI.requestRender(); return; }
     var segs = [];
     if (UI.flatShown && UI.flatShown()) {
       var marks = App.flat ? (App.flat.etch || []).filter(function (it) { return it.crossBreak; }) : [];
-      if (marks.length) {
+      if (marks.length || (App.flat && (App.flat.etch || []).some(function (it) { return it.form != null; }))) {
         var fb = K.flatBody(App.model, App.build, App.flat), pl = fb.plane, h = fb.h1 + 2e-3 * (fb.h1 - fb.h0);
         var P = function (q) { var w = K.to3D(pl, q[0], q[1]); return [w[0] + pl.n[0] * h, w[1] + pl.n[1] * h, w[2] + pl.n[2] * h]; };
         marks.forEach(function (it) { segs = segs.concat(P(it.a), P(it.b)); });
+        (App.flat ? (App.flat.etch || []).filter(function (it) { return it.form != null && it.kind === 'mark'; }) : []).forEach(function (it) {   // lane forming
+          var pts = it.t === 'line' ? [it.a, it.b] : it.t === 'poly' ? it.pts.concat(it.closed ? [it.pts[0]] : []) : it.t === 'circle' ? Array.apply(null, Array(49)).map(function (z, i) { return [it.c[0] + it.r * Math.cos(i * Math.PI / 24), it.c[1] + it.r * Math.sin(i * Math.PI / 24)]; }) : [];
+          for (var qi = 0; qi + 1 < pts.length; qi++) segs = segs.concat(P(pts[qi]), P(pts[qi + 1]));
+        });
       }
     } else {
       feats.forEach(function (f) {
@@ -3536,6 +3540,122 @@
         var feat = featOf(v);
         if (!existing && !feat.name) feat.name = K.crossBreakName(App.model);
         xbLast = { radius: +v.radius, angle: +v.angle };
+        return commitFeature(feat, existing);
+      }
+    });
+    preview();
+  }
+
+  // ------------------------------------------------------------------ sheet metal: Forming Tool (lane forming, rfHI)
+  // SolidWorks' Design Library forming tools dropped on a sheet face (Kernel.FORMING_TOOLS, Kernel.buildFormingTool):
+  // the PM's Tool row picks Dimple / Extruded Hole / Louver / Lance / Rib, a click on a flat face of the sheet puts the
+  // tool's centre there (a second click moves it), Position X / Y (the face's sketch frame), Rotation angle, Reverse
+  // direction (form into the face), the tool's dimensions; live preview of the formed shell. cmdFormingTool(id,
+  // existing): id presets the tool (the Design Library pane calls UI.cmdFormingTool(id)); the dims are remembered per
+  // tool for the session.
+  var ftLast = { tool: 'dimple', dims: {} };
+  function ftRound(x) { return Math.round(x * 1e4) / 1e4; }
+  function cmdFormingTool(id, existing) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    if (!App.model.sheet) { UI.toast('Forming tools need a sheet-metal part: make a Base Flange first (Sheet Metal tab).'); return; }
+    if (!App.build || !App.build.body || !App.build.body.polygons.length) { UI.toast('Create a Base Flange first.'); return; }
+    var tools = K.FORMING_TOOLS, units = App.model.units;
+    function defaults(t) { return Object.assign(K.formingToolDefaults(t, units), ftLast.dims[t] || {}); }
+    var tool0 = existing ? existing.tool : (id && K.formingToolDefaults(id, units) ? id : ftLast.tool);
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : Object.assign({ type: 'formingTool', face: null, angle: 0, flip: false }, defaults(tool0));
+    f.tool = tool0;
+    f.atU = f.at ? +f.at[0] : 0; f.atV = f.at ? +f.at[1] : 0;
+    var base = null;
+    function baseBody() { if (!base) base = existing ? bodyBefore(existing.id) : App.build.body; return base; }
+    // a feature written without a position (a script's p.formingTool at a face point): its centre is that point
+    if (existing && !existing.at && f.face) try { var lay0 = K.formingToolLayout(existing, previewModel(), { body: baseBody() }); f.atU = ftRound(lay0.uv[0]); f.atV = ftRound(lay0.uv[1]); } catch (e0) { }
+    function params(t) { var d = tools.filter(function (x) { return x.id === t; })[0]; return d ? d.params : []; }
+    function featOf(v) {
+      var out = { type: 'formingTool', tool: v.tool, face: v.face ? v.face.slice() : null, at: [+v.atU || 0, +v.atV || 0], angle: +v.angle || 0, flip: !!v.flip };
+      params(v.tool).forEach(function (p) { out[p.key] = v[p.key]; });
+      if (v.name) out.name = v.name;
+      return out;
+    }
+    function label(t) { var d = tools.filter(function (x) { return x.id === t; })[0]; return d ? d.label : 'Forming Tool'; }
+    function preview() {
+      UI.disposeGroup(UI.groups.preview);
+      if (!f.face) { UI.setStatus(label(f.tool) + ': click a flat face of the sheet where the tool goes.'); if (UI.requestRender) UI.requestRender(); return; }
+      try {
+        var r = K.buildFormingTool(Object.assign(featOf(f), { id: 'ftPreview' }), previewModel(), { body: baseBody() });
+        addPreviewMesh(r.tool, UI.mats.preview);
+        UI.setStatus(label(f.tool) + ' at (' + UI.fmtNum(+f.atU, 4) + ', ' + UI.fmtNum(+f.atV, 4) + ')' + (f.flip ? ', reversed' : '') + '. Click the face again to move it; press Enter or ✓ to accept.');
+      } catch (e) { UI.setStatus('Preview: ' + e.message); }
+      if (UI.requestRender) UI.requestRender();
+    }
+    // a face click: the tool's centre goes to the clicked point (its position in the face's sketch frame)
+    function placeAt(point, normal, w) {
+      var fp = K.planeFromFace(normal, K.vec.scale(normal, w)), uv = K.to2D(fp, point);
+      f.face = point.map(function (x) { return Math.round(x * 1e6) / 1e6; });
+      f.atU = ftRound(uv[0]); f.atV = ftRound(uv[1]);
+    }
+    function pick(pk) {
+      if (pk.kind !== 'face' || !pk.point) return false;
+      var face = App.mesh && App.mesh.faces[pk.index];
+      if (!face || !face.normal) return false;
+      var keep = { face: f.face, atU: f.atU, atV: f.atV };
+      placeAt(pk.point, face.normal, isFinite(face.w) ? face.w : K.vec.dot(face.normal, pk.point));
+      try { K.formingToolLayout(featOf(f), previewModel(), { body: baseBody() }); }
+      catch (e) { Object.assign(f, keep); UI.setStatus(e.message); return true; }
+      renderPM(); preview();
+      return true;
+    }
+    if (!existing && UI.selection) {
+      UI.selection().forEach(function (s) {
+        var face = s.kind === 'face' && App.mesh ? App.mesh.faces[s.index] : null;
+        if (f.face || !face || !face.normal) return;
+        var keep = { face: f.face, atU: f.atU, atV: f.atV };
+        placeAt(face.centroid.slice(), face.normal, isFinite(face.w) ? face.w : K.vec.dot(face.normal, face.centroid));
+        try { K.formingToolLayout(featOf(f), previewModel(), { body: baseBody() }); if (UI.setSelection) UI.setSelection([]); } catch (e) { Object.assign(f, keep); }
+      });
+    }
+    var dimFields = [];
+    tools.forEach(function (t) {
+      t.params.forEach(function (p) {
+        dimFields.push({ type: 'number', label: p.label, key: p.key, unit: p.unit, min: 0, help: p.help, show: function (v) { return v.tool === t.id; } });
+      });
+    });
+    openPM({
+      title: existing ? existing.name : 'Forming Tool', icon: 'formingTool', values: f,
+      message: 'Pick a <b>tool</b>, then click a <b>flat face</b> of the sheet where it goes. The form keeps the sheet\'s thickness; the flat pattern shows it flat with its outline on the FORM layer.',
+      command: { onPick: pick },
+      groups: [
+        { title: 'Tool', fields: [{ type: 'iconRadio', label: 'Tool', key: 'tool', options: tools.map(function (t) { return [t.id, t.label, 'ft' + t.id.charAt(0).toUpperCase() + t.id.slice(1)]; }), rerender: true }] },
+        { title: 'Placement', fields: [
+          { type: 'pick', icon: 'formingTool', placeholder: 'Face…',
+            value: function (v) { return v.face ? 'Face<1>' : ''; },
+            items: function (v) { return v.face ? [{ label: 'Face<1>', at: v.face }] : []; },
+            onRemove: function (v) { v.face = null; renderPM(); preview(); },
+            onClear: function (v) { v.face = null; renderPM(); preview(); } },
+          { type: 'number', label: 'Position X', key: 'atU', unit: 'u' },
+          { type: 'number', label: 'Position Y', key: 'atV', unit: 'u' },
+          { type: 'number', label: 'Rotation angle', key: 'angle', unit: '°' },
+          { type: 'check', label: 'Reverse direction', key: 'flip' }
+        ] },
+        { title: 'Dimensions', fields: dimFields },
+        { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ],
+      onChange: function (v, key) {
+        if (key === 'tool') {
+          var d = defaults(v.tool);
+          params(v.tool).forEach(function (p) { v[p.key] = d[p.key]; });
+          renderPM();
+        }
+        preview();
+      },
+      onOK: function (v) {
+        if (!v.face) { UI.toast('Click a flat face of the sheet where the tool goes.'); return false; }
+        var feat = featOf(v);
+        try { K.formingToolLayout(feat, previewModel(), { body: baseBody() }); }
+        catch (e) { UI.toast(e.message); return false; }
+        if (!existing && !feat.name) feat.name = K.formingToolName(App.model, feat.tool);
+        ftLast.tool = feat.tool;
+        ftLast.dims[feat.tool] = {};
+        params(feat.tool).forEach(function (p) { ftLast.dims[feat.tool][p.key] = feat[p.key]; });
         return commitFeature(feat, existing);
       }
     });
@@ -5802,6 +5922,7 @@
       case 'rip': UI.cmdRipFeature(f); break;   // lane DI
       case 'vent': UI.cmdVent(f); break;   // lane DT
       case 'crossBreak': UI.cmdCrossBreak(f); break;   // lane cross-break
+      case 'formingTool': UI.cmdFormingTool(f.tool, f); break;   // lane forming
       case 'wrap': UI.cmdWrap(f); break;   // rfDZ
       case 'insertBends': if (f.openBase) cmdOpenBase(f.sketch, f); else UI.cmdInsertBends(f); break;   // lane DQ; lane open-base
       case 'convertSM': UI.cmdConvertSheetMetal(f); break;
@@ -5949,6 +6070,7 @@
   UI.cmdRipFeature = partOnly(cmdRipFeature, 'Rip'); UI.cmdTab = partOnly(cmdTab, 'Base Flange/Tab');   // Sheet Metal ▸ Rip, Tab (lane DI)
   UI.cmdVent = partOnly(cmdVent, 'Vent');   // Sheet Metal ▸ Vent (lane DT)
   UI.cmdCrossBreak = partOnly(cmdCrossBreak, 'Cross-Break');   // Sheet Metal ▸ Cross-Break (lane cross-break)
+  UI.cmdFormingTool = partOnly(cmdFormingTool, 'Forming Tool');   // Sheet Metal ▸ Forming Tool, UI.cmdFormingTool(id) presets the tool (lane forming)
   UI.cmdInsertBends = partOnly(cmdInsertBends, 'Insert Bends'); UI.cmdConvertSheetMetal = partOnly(cmdConvertSheetMetal, 'Convert to Sheet Metal'); UI.toggleNoBends = toggleNoBends;   // lane DQ
   // assembly documents
   UI.cmdInsertComponent = cmdInsertComponent; UI.cmdMate = cmdMate; UI.editMate = editMate; UI.mateSelect = mateSelect;

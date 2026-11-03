@@ -2349,6 +2349,8 @@
     if (trace) { trace.plane = plane; trace.nB = best.face.normal.slice(); trace.wB = best.face.w; trace.T = T; }
     // lane DB2: the bends an open Unfold laid flat keep their bend lines and notes (SolidWorks)
     if (openUnfold) ufOpenBends(openUnfold, faceRecs, sheet, T, model.units, warn).forEach(function (b) { bends.push(b); });
+    var formItems = [];
+    formingFlat(model, build, faceRecs, T, warn, regions, notches, formItems);   // lane forming: Forming Tools laid back flat, marks, lance cuts
     // merge: in 2D (mergeFlatRegions); the CSG merge stays as the fallback for a boundary that does not close
     var loops = flatOptions.merge === 'csg' ? null : mergeFlatRegions(regions, notches, FLAT_WELD);
     if (!loops) loops = csgMerge(regions, notches);
@@ -2369,6 +2371,7 @@
     var outSheet = Object.assign({}, sheet, { kFactor: sheetKFactor(sheet) });
     var etch = flatEtch(model, build, faceRecs, T, warn, etchStrips);
     crossBreakFlat(model, build, faceRecs, T, warn, etch.items);   // lane cross-break: its marks ride with the etch items
+    formItems.forEach(function (it) { etch.items.push(it); });   // lane forming
     var res = { loops: loops, bends: bends, plane: plane, sheet: outSheet, bbox: { min: min, max: max }, size: [max[0] - min[0], max[1] - min[1]], note: sheetNote(outSheet), warnings: warnings,
       etch: etch.items, etchLayer: etch.layer };
     // lane DK: Flat-Pattern1's Fixed face / Grain direction (model.flatFixed, model.flatGrain); not while an Unfold is
@@ -5313,4 +5316,375 @@
   K.unfoldCells = ufCells; K.unfoldLayers = ufLayers;   // lane DJ (OpenCascade folds added material / blind cuts with them)
   K.miterFlangeStages = miterFlangeStages; K.miterTail = miterTail; K.MITER_FLANGE_POSITIONS = MITER_FLANGE_POSITIONS.slice(); _.buildMiterFlange = buildMiterFlange;   // lane DL
   K.insertBendsLayout = insertBendsLayout; K.convertSMPlan = convertSMPlan; K.sheetThicknessAt = sheetThicknessAt; K.INSERT_BENDS_RELIEFS = IB_RELIEFS.slice(); K.convertSMInsert = convertSMInsert; K.convertSMRipGap = ibRipGap; K.insertBendsPreview = insertBendsPreview; _.buildInsertBends = buildInsertBends;   // lane DQ
+
+  // ------------------------------------------------------------------ Forming Tool (lane forming, rfHI)
+  // SolidWorks' Design Library forming tools dropped on a flat sheet face: Dimple (round emboss), Extruded Hole (the
+  // formed collar round a hole), Louver (a hood lanced along one side), Lance (a bridge lance, cut along both sides) and
+  // Rib (a straight stiffening rib with round ends). Feature JSON { type: 'formingTool', tool, face: [x, y, z] (a point
+  // on the face), at: [u, v] (the tool's centre in the face's sketch frame, Kernel.planeFromFace), angle (degrees, the
+  // tool's length direction from the frame's x), flip (false: raised toward the picked face's side), ...the tool's dims
+  // (FORMING_TOOLS[i].params keys), name }. The form keeps the sheet's thickness: a shell T thick (sharp-cornered
+  // sections offset by T, the extruded hole's and louver's bends true arcs), built as revolves / prisms of a section
+  // whose curved facets carry their cone / cylinder / torus records, so massProps is exact. The sheet under the tool's
+  // footprint is cut through and the formed section (running T past the footprint, onto the sheet) is unioned in.
+  // The flat pattern lays the formed area back as plain sheet (the footprint filled), puts the tool's outline and a
+  // centre mark on layer FORM with a note on NOTES, the lance cuts (Louver: the open side; Lance: both sides) on HOLES as
+  // slits, and the Extruded Hole's pre-pierce hole (developed: collar + the 90° bend's BA, back from the bend's start)
+  // as a real hole. A tool that does not fit on its face (off an edge, over a hole, across a bend) is refused.
+  var FORMING_TOOLS = [
+    { id: 'dimple', label: 'Dimple', help: 'Round emboss: a cone-walled cup pressed out of the sheet', params: [
+      { key: 'diameter', label: 'Diameter', unit: 'u', value: 0.75, mm: 20, help: 'Across the form where it leaves the face' },
+      { key: 'height', label: 'Height', unit: 'u', value: 0.125, mm: 3, help: 'How far the form stands proud of the face' },
+      { key: 'sideAngle', label: 'Side angle', unit: '°', value: 30, mm: 30, help: 'Wall angle from square to the face (0 = straight walls)' }] },
+    { id: 'extrudedHole', label: 'Extruded Hole', help: 'A formed collar round a hole (extruded flange): tapping or bearing length in thin sheet', params: [
+      { key: 'holeDiameter', label: 'Hole diameter', unit: 'u', value: 0.25, mm: 6, help: 'Inside diameter of the collar' },
+      { key: 'height', label: 'Flange height', unit: 'u', value: 0.125, mm: 3, help: 'Outside height of the collar above the face' },
+      { key: 'radius', label: 'Inside radius', unit: 'u', value: 0.03, mm: 0.8, help: 'Bend radius between the face and the collar' }] },
+    { id: 'louver', label: 'Louver', help: 'A hood lanced along one side and pressed up: a vent', params: [
+      { key: 'length', label: 'Length', unit: 'u', value: 1.5, mm: 40, help: 'Length of the lanced opening' },
+      { key: 'width', label: 'Width', unit: 'u', value: 0.375, mm: 10, help: 'From the hinge to the lanced side' },
+      { key: 'height', label: 'Height', unit: 'u', value: 0.125, mm: 3, help: 'Height of the hood\'s open edge above the face' },
+      { key: 'radius', label: 'Radius', unit: 'u', value: 0.03, mm: 0.8, help: 'Inside radius at the hinge' }] },
+    { id: 'lance', label: 'Lance', help: 'A bridge lance: a strip cut along both sides and pressed up on sloped legs', params: [
+      { key: 'length', label: 'Length', unit: 'u', value: 1, mm: 25, help: 'Length of the two cuts' },
+      { key: 'width', label: 'Width', unit: 'u', value: 0.25, mm: 6, help: 'Width of the bridge' },
+      { key: 'height', label: 'Height', unit: 'u', value: 0.125, mm: 3, help: 'Height of the bridge\'s top above the face (more than the thickness)' },
+      { key: 'legAngle', label: 'Leg angle', unit: '°', value: 45, mm: 45, help: 'Slope of the legs from the face' }] },
+    { id: 'rib', label: 'Rib', help: 'A straight stiffening rib with round ends', params: [
+      { key: 'length', label: 'Length', unit: 'u', value: 2, mm: 50, help: 'Overall length, end to end' },
+      { key: 'width', label: 'Width', unit: 'u', value: 0.375, mm: 10, help: 'Width where the rib leaves the face' },
+      { key: 'depth', label: 'Depth', unit: 'u', value: 0.125, mm: 3, help: 'How far the rib stands proud of the face' },
+      { key: 'sideAngle', label: 'Side angle', unit: '°', value: 30, mm: 30, help: 'Wall angle from square to the face' }] }
+  ];
+  var FT_SLIT = 0.01;   // a lance cut's width in the flat (inches; 0.254 mm)
+  function ftTool(id) { for (var i = 0; i < FORMING_TOOLS.length; i++) if (FORMING_TOOLS[i].id === id) return FORMING_TOOLS[i]; return null; }
+  // formingToolDefaults(id, units) -> { tool, ...dims } in the model's units (inch values for 'in', else mm)
+  function formingToolDefaults(id, units) {
+    var t = ftTool(id);
+    if (!t) return null;
+    var o = { tool: id };
+    t.params.forEach(function (p) { o[p.key] = units === 'in' ? p.value : p.mm; });
+    return o;
+  }
+  function ftName(model, tool) {
+    var t = ftTool(tool), base = t ? t.label : 'Forming Tool', max = 0, re = new RegExp('^' + base + '(\\d+)$');
+    (model.features || []).forEach(function (g) { var mm = re.exec(g.name || ''); if (mm && +mm[1] > max) max = +mm[1]; });
+    return base + (max + 1);
+  }
+  function ftNum(x) { return String(Math.round(x * 1e4) / 1e4).replace(/^0\./, '.').replace(/^-0\./, '-.'); }
+  // the polyline offset by d to its right (sharp corners: neighbouring offset lines meet); throws when a piece turns
+  // back (the form is too tight for the thickness)
+  function ftOffset(pts, d, what) {
+    var segs = [], i;
+    for (i = 0; i + 1 < pts.length; i++) {
+      var a = pts[i], b = pts[i + 1], dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy), u = [dx / l, dy / l];
+      segs.push({ p: [a[0] + u[1] * d, a[1] - u[0] * d], u: u });
+    }
+    var out = [segs[0].p];
+    for (i = 1; i < segs.length; i++) {
+      var s = segs[i - 1], t = segs[i], den = s.u[0] * t.u[1] - s.u[1] * t.u[0];
+      if (Math.abs(den) < 1e-12) { out.push(t.p); continue; }
+      var w = [t.p[0] - s.p[0], t.p[1] - s.p[1]], k = (w[0] * t.u[1] - w[1] * t.u[0]) / den;
+      out.push([s.p[0] + s.u[0] * k, s.p[1] + s.u[1] * k]);
+    }
+    var last = pts[pts.length - 1], sl = segs[segs.length - 1];
+    out.push([last[0] + sl.u[1] * d, last[1] - sl.u[0] * d]);
+    for (i = 0; i + 1 < out.length; i++) {
+      var v = [out[i + 1][0] - out[i][0], out[i + 1][1] - out[i][1]];
+      if (v[0] * segs[i].u[0] + v[1] * segs[i].u[1] <= 1e-9 * (1 + Math.abs(d))) throw new Error(what + ': the form is too small for the sheet thickness (' + ftNum(d) + '): make it larger or shallower.');
+    }
+    return out;
+  }
+  // a closed section path ([x, y] points; { c, r } between two points = an arc round c) -> sketch entities
+  function ftEntities(path) {
+    var list = [], ents = [], i;
+    path.forEach(function (q) { if (Array.isArray(q)) list.push({ p: q, arc: null }); else if (list.length) list[list.length - 1].arc = q; });
+    for (i = 0; i < list.length; i++) {
+      var a = list[i].p, b = list[(i + 1) % list.length].p, C = list[i].arc;
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-12) continue;
+      if (!C) { ents.push({ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }); continue; }
+      var a0 = Math.atan2(a[1] - C.c[1], a[0] - C.c[0]) * 180 / Math.PI, a1 = Math.atan2(b[1] - C.c[1], b[0] - C.c[0]) * 180 / Math.PI, sw = a1 - a0;
+      while (sw > 180) sw -= 360;
+      while (sw <= -180) sw += 360;
+      ents.push(sw > 0 ? { t: 'arc', cx: C.c[0], cy: C.c[1], r: C.r, a0: a0, a1: a0 + sw } : { t: 'arc', cx: C.c[0], cy: C.c[1], r: C.r, a0: a0 + sw, a1: a0 });
+    }
+    return ents;
+  }
+  // the section mirrored through the sheet's mid-plane (z -> -T - z): a form pressed the other way
+  function ftMirror(path, T) {
+    return path.map(function (q) { return Array.isArray(q) ? [q[0], -T - q[1]] : { c: [q.c[0], -T - q.c[1]], r: q.r }; });
+  }
+  function ftCircle(c, r, n) {
+    var out = [];
+    for (var i = 0; i < n; i++) { var a = 2 * Math.PI * i / n; out.push([c[0] + r * Math.cos(a), c[1] + r * Math.sin(a)]); }
+    return out;
+  }
+  function ftRect(u0, v0, u1, v1) { return [[u0, v0], [u1, v0], [u1, v1], [u0, v1]]; }
+  // an obround (stadium) along u, centres at ±a, radius r (CCW)
+  function ftObround(a, r, n) {
+    var out = [], i, k = Math.max(4, n >> 1);
+    for (i = 0; i <= k; i++) { var t = -Math.PI / 2 + Math.PI * i / k; out.push([a + r * Math.cos(t), r * Math.sin(t)]); }
+    for (i = 0; i <= k; i++) { var s = Math.PI / 2 + Math.PI * i / k; out.push([-a + r * Math.cos(s), r * Math.sin(s)]); }
+    return out;
+  }
+  // the louver's hinge: the angle β of the hood's straight top that runs tangent off the hinge arc (radius R, centre
+  // (-W/2, R)) to (W/2, H)
+  function ftLouverBeta(W, H, R) {
+    function g(b) { return (W - R * Math.sin(b)) * Math.sin(b) - (H - R * (1 - Math.cos(b))) * Math.cos(b); }
+    var lo = 0, hi = Math.PI / 2;
+    if (!(g(hi) > 0)) return null;
+    for (var i = 0; i < 200; i++) { var m = (lo + hi) / 2; if (g(m) > 0) hi = m; else lo = m; }
+    return (lo + hi) / 2;
+  }
+  // formingToolGeometry(tool, dims, T) -> the tool in its own frame (u along its length, v across, z out of the face;
+  // the sheet is z in [-T, 0]), formed upward: { solids: [{ path, rev: angle, at: [u, v], dir: [du, dv] } |
+  // { path, sec: 'yz' (section (v, z) along u) | 'xz' (section (u, z) along v), from, to }], cut: [sketch entities in
+  // (u, v)], clear (polygon the face must hold), fill (polygon the flat fills), marks: [{ t: 'circle', c, r } |
+  // { t: 'poly', pts, closed }], lances: [[a, b]], ext: half size across v (note placement), pierce?, note }
+  function formingToolGeometry(tool, d, T) {
+    var e = T, k = Math.PI / 180, g;
+    function pos(key, what) { if (!(+d[key] > 0)) throw new Error(what + ': ' + key + ' must be more than 0.'); return +d[key]; }
+    switch (tool) {
+      case 'dimple': {
+        var Db = pos('diameter', 'Dimple'), H = pos('height', 'Dimple'), A = +d.sideAngle || 0, Rb = Db / 2;
+        if (A < 0 || A >= 89) throw new Error('Dimple: the side angle must be from 0° to 89°.');
+        var Rt = Rb - H * Math.tan(A * k);
+        if (!(Rt > 1e-9 * Rb)) throw new Error('Dimple: a ' + ftNum(H) + ' height at ' + A + '° leaves no top on a ' + ftNum(Db) + ' diameter: make it wider, shallower or steeper.');
+        var top = [[0, H], [Rt, H], [Rb, 0], [Rb + e, 0]], bot = ftOffset(top, T, 'Dimple');
+        g = { solids: [{ path: top.concat(bot.reverse()), rev: 360, at: [0, 0], dir: [1, 0] }], cut: [{ t: 'circle', cx: 0, cy: 0, r: Rb }],
+          clear: ftCircle([0, 0], Rb + T, 64), fill: ftCircle([0, 0], Rb + T / 2, 64), marks: [{ t: 'circle', c: [0, 0], r: Rb }], lances: [], ext: Rb,
+          note: 'DIMPLE Ø' + ftNum(Db) + ' X ' + ftNum(H) };
+        break;
+      }
+      case 'extrudedHole': {
+        var rh = pos('holeDiameter', 'Extruded Hole') / 2, Hc = pos('height', 'Extruded Hole'), ri = +d.radius || 0;
+        if (ri < 0) throw new Error('Extruded Hole: the inside radius cannot be negative.');
+        if (!(Hc > ri + 1e-9)) throw new Error('Extruded Hole: the flange height must be more than the inside radius (' + ftNum(ri) + ').');
+        var rc = rh + T + ri, C = [rc, ri];
+        var path = [[rh, Hc], [rh + T, Hc], [rh + T, ri]];
+        if (ri > 1e-12) path.push({ c: C, r: ri });
+        path.push([rc, 0], [rc + e, 0], [rc + e, -T], [rc, -T], { c: C, r: ri + T }, [rh, ri]);
+        g = { solids: [{ path: path, rev: 360, at: [0, 0], dir: [1, 0] }], cut: [{ t: 'circle', cx: 0, cy: 0, r: rc }],
+          clear: ftCircle([0, 0], rc + T, 64), fill: ftCircle([0, 0], rc + T / 2, 64), marks: [{ t: 'circle', c: [0, 0], r: rc }], lances: [], ext: rc,
+          pierce: { rc: rc, ri: ri, straight: Hc - ri }, note: 'EXTRUDED HOLE Ø' + ftNum(2 * rh) + ' X ' + ftNum(Hc) };
+        break;
+      }
+      case 'louver': {
+        var L = pos('length', 'Louver'), W = pos('width', 'Louver'), Hl = pos('height', 'Louver'), R = +d.radius || 0;
+        if (R < 0) throw new Error('Louver: the radius cannot be negative.');
+        var be = ftLouverBeta(W, Hl, R);
+        if (be == null) throw new Error('Louver: the hinge radius must be less than the width.');
+        var Cl = [-W / 2, R], Pb = [-W / 2 + R * Math.sin(be), R - R * Math.cos(be)], Bb = [-W / 2 + (R + T) * Math.sin(be), R - (R + T) * Math.cos(be)];
+        var zb = Bb[1] + (W / 2 - Bb[0]) * Math.tan(be);
+        if (!(Bb[0] < W / 2 - 1e-9) || !(Pb[0] < W / 2 - 1e-9)) throw new Error('Louver: the hinge radius is too large for the width.');
+        if (!(zb > 1e-6 * T)) throw new Error('Louver: a ' + ftNum(Hl) + ' height does not open a ' + ftNum(W) + ' wide louver in ' + ftNum(T) + ' sheet: make it taller.');
+        var hood = [[-W / 2 - e, 0], [-W / 2, 0]];
+        if (R > 1e-12) hood.push({ c: Cl, r: R });
+        hood.push(Pb, [W / 2, Hl], [W / 2, zb], Bb, { c: Cl, r: R + T }, [-W / 2, -T], [-W / 2 - e, -T]);
+        var end = [[-W / 2, -T / 2], [-W / 2, 0]];
+        if (R > 1e-12) end.push({ c: Cl, r: R });
+        end.push(Pb, [W / 2, Hl], [W / 2, -T / 2]);
+        g = { solids: [{ path: hood, sec: 'yz', from: -L / 2 - T / 2, to: L / 2 + T / 2 }, { path: end, sec: 'yz', from: L / 2, to: L / 2 + T }, { path: end, sec: 'yz', from: -L / 2 - T, to: -L / 2 }],
+          cut: [{ t: 'line', x1: -L / 2, y1: -W / 2, x2: L / 2, y2: -W / 2 }, { t: 'line', x1: L / 2, y1: -W / 2, x2: L / 2, y2: W / 2 }, { t: 'line', x1: L / 2, y1: W / 2, x2: -L / 2, y2: W / 2 }, { t: 'line', x1: -L / 2, y1: W / 2, x2: -L / 2, y2: -W / 2 }],
+          clear: ftRect(-L / 2 - 2 * T, -W / 2 - T, L / 2 + 2 * T, W / 2 + T), fill: ftRect(-L / 2 - 1.5 * T, -W / 2 - T / 2, L / 2 + 1.5 * T, W / 2 + T / 2),
+          marks: [{ t: 'poly', pts: ftRect(-L / 2 - T, -W / 2, L / 2 + T, W / 2), closed: true }], lances: [[[-L / 2, W / 2], [L / 2, W / 2]]], ext: W / 2,
+          note: 'LOUVER ' + ftNum(L) + ' X ' + ftNum(W) + ' X ' + ftNum(Hl) };
+        break;
+      }
+      case 'lance': {
+        var Ll = pos('length', 'Lance'), Wl = pos('width', 'Lance'), Hb = pos('height', 'Lance'), al = d.legAngle != null ? +d.legAngle : 45;
+        if (!(al > 0 && al <= 90)) throw new Error('Lance: the leg angle must be more than 0° and at most 90°.');
+        if (!(Hb > T * (1 + 1e-6))) throw new Error('Lance: the height must be more than the sheet thickness (' + ftNum(T) + ') so the bridge clears the sheet.');
+        var run = al >= 90 ? 0 : Hb / Math.tan(al * k);
+        if (!(Ll - 2 * run > 1e-9)) throw new Error('Lance: a ' + ftNum(Ll) + ' length has no room for ' + ftNum(Hb) + ' high legs at ' + al + '°.');
+        var lt = [[-Ll / 2 - e, 0], [-Ll / 2, 0], [-Ll / 2 + run, Hb], [Ll / 2 - run, Hb], [Ll / 2, 0], [Ll / 2 + e, 0]], lb = ftOffset(lt, T, 'Lance');
+        g = { solids: [{ path: lt.concat(lb.reverse()), sec: 'xz', from: -Wl / 2, to: Wl / 2 }],
+          cut: [{ t: 'line', x1: -Ll / 2, y1: -Wl / 2, x2: Ll / 2, y2: -Wl / 2 }, { t: 'line', x1: Ll / 2, y1: -Wl / 2, x2: Ll / 2, y2: Wl / 2 }, { t: 'line', x1: Ll / 2, y1: Wl / 2, x2: -Ll / 2, y2: Wl / 2 }, { t: 'line', x1: -Ll / 2, y1: Wl / 2, x2: -Ll / 2, y2: -Wl / 2 }],
+          clear: ftRect(-Ll / 2 - 2 * T, -Wl / 2 - T, Ll / 2 + 2 * T, Wl / 2 + T), fill: ftRect(-Ll / 2 - 1.5 * T, -Wl / 2 - T / 2, Ll / 2 + 1.5 * T, Wl / 2 + T / 2),
+          marks: [{ t: 'poly', pts: ftRect(-Ll / 2, -Wl / 2, Ll / 2, Wl / 2), closed: true }], lances: [[[-Ll / 2, -Wl / 2], [Ll / 2, -Wl / 2]], [[-Ll / 2, Wl / 2], [Ll / 2, Wl / 2]]], ext: Wl / 2,
+          note: 'LANCE ' + ftNum(Ll) + ' X ' + ftNum(Wl) + ' X ' + ftNum(Hb) };
+        break;
+      }
+      case 'rib': {
+        var Lr = pos('length', 'Rib'), Wr = pos('width', 'Rib'), Dr = pos('depth', 'Rib'), Ar = +d.sideAngle || 0, Rr = Wr / 2;
+        if (Ar < 0 || Ar >= 89) throw new Error('Rib: the side angle must be from 0° to 89°.');
+        if (Lr < Wr - 1e-9) throw new Error('Rib: the length must be at least the width (' + ftNum(Wr) + ').');
+        var Rtr = Rr - Dr * Math.tan(Ar * k), a = Math.max(0, Lr / 2 - Rr);
+        if (!(Rtr > 1e-9 * Rr)) throw new Error('Rib: a ' + ftNum(Dr) + ' depth at ' + Ar + '° leaves no top on a ' + ftNum(Wr) + ' wide rib: make it wider, shallower or steeper.');
+        var ht = [[0, Dr], [Rtr, Dr], [Rr, 0], [Rr + e, 0]], hb = ftOffset(ht, T, 'Rib'), half = ht.concat(hb.slice().reverse());
+        var solids = [];
+        if (a > 1e-9) {
+          var ft = [[-Rr - e, 0], [-Rr, 0], [-Rtr, Dr], [Rtr, Dr], [Rr, 0], [Rr + e, 0]], fb = ftOffset(ft, T, 'Rib');
+          solids.push({ path: ft.concat(fb.reverse()), sec: 'yz', from: -a, to: a });
+          solids.push({ path: half, rev: 180, at: [a, 0], dir: [0, -1] }, { path: half, rev: 180, at: [-a, 0], dir: [0, 1] });
+        } else solids.push({ path: half, rev: 360, at: [0, 0], dir: [1, 0] });
+        g = { solids: solids, cut: [a > 1e-9 ? { t: 'slot', x1: -a, y1: 0, x2: a, y2: 0, w: Wr } : { t: 'circle', cx: 0, cy: 0, r: Rr }],
+          clear: ftObround(a, Rr + T, 64), fill: ftObround(a, Rr + T / 2, 64), marks: [{ t: 'poly', pts: ftObround(a, Rr, 64), closed: true }], lances: [], ext: Rr,
+          note: 'RIB ' + ftNum(Lr) + ' X ' + ftNum(Wr) + ' X ' + ftNum(Dr) };
+        break;
+      }
+      default: throw new Error('Forming Tool: unknown tool "' + tool + '" (dimple, extrudedHole, louver, lance or rib).');
+    }
+    return g;
+  }
+  // the flat sheet faces of a body (the opposite face T behind): { plane, loops, w } as faceOutline gives them
+  function ftSheetFaces(body, T) {
+    var mesh = meshFromBody(coplanarBody(body)), out = [], tolW = 1e-6 * (1 + T) + 1e-4 * T;
+    function curved(face) { return (face.polys || []).some(function (p) { return !!p.surf; }); }
+    mesh.faces.forEach(function (face, fi) {
+      if (curved(face)) return;
+      if (!mesh.faces.some(function (h) { return !curved(h) && dot(h.normal, face.normal) < -1 + 1e-9 && Math.abs(face.w + h.w - T) <= tolW; })) return;
+      var o = faceOutline(mesh, fi);
+      if (o && o.loops.length) out.push({ index: fi, plane: o.plane, loops: o.loops, w: face.w });
+    });
+    return out;
+  }
+  function ftSegsCross(a, b, c, d2) {
+    function o(p, q, r) { return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]); }
+    var d1 = o(a, b, c), e1 = o(a, b, d2), f1 = o(c, d2, a), g1 = o(c, d2, b);
+    return ((d1 > 1e-12 && e1 < -1e-12) || (d1 < -1e-12 && e1 > 1e-12)) && ((f1 > 1e-12 && g1 < -1e-12) || (f1 < -1e-12 && g1 > 1e-12));
+  }
+  // does the face hold the polygon q (2D, in the face's outline frame): every corner on the face, no outline / hole
+  // corner inside it, no edge crossing
+  function ftFaceHolds(face, q) {
+    function on(u) { var k = 0; face.loops.forEach(function (l) { if (pointInPoly(u, l)) k++; }); return k % 2 === 1; }
+    if (!q.every(on)) return false;
+    if (face.loops.some(function (l) { return l.some(function (v) { return pointInPoly(v, q); }); })) return false;
+    for (var i = 0; i < q.length; i++) {
+      var a = q[i], b = q[(i + 1) % q.length];
+      for (var li = 0; li < face.loops.length; li++) {
+        var l = face.loops[li];
+        for (var j = 0; j < l.length; j++) if (ftSegsCross(a, b, l[j], l[(j + 1) % l.length])) return false;
+      }
+    }
+    return true;
+  }
+  // formingToolLayout(f, model, { body }) -> plain data: { tool, T, n, at, x, y, flip, solids (3D frames), cut, rec }
+  // where rec (stored in build.planes[f.id], refgeo 'formingTool') carries what the flat pattern needs in 3D
+  function formingToolLayout(f, model, ctx) {
+    var sheet = model.sheet, t = ftTool(f.tool), what = t ? t.label : 'Forming Tool';
+    if (!sheet) throw new Error(what + ' needs a sheet-metal part: make a Base Flange first (Sheet Metal tab).');
+    if (!t) throw new Error('Forming Tool: unknown tool "' + f.tool + '" (dimple, extrudedHole, louver, lance or rib).');
+    if (!ctx.body || !ctx.body.polygons || !ctx.body.polygons.length) throw new Error(what + ': there is no sheet to form yet.');
+    if (!f.face) throw new Error(what + ': select a flat face of the sheet.');
+    var T = +sheet.thickness, d = {};
+    t.params.forEach(function (p) {
+      var v = f[p.key] == null ? (model.units === 'in' ? p.value : p.mm) : +f[p.key];
+      if (!isFinite(v)) throw new Error(what + ': ' + p.label.toLowerCase() + ' must be a number.');
+      d[p.key] = v;
+    });
+    var g = formingToolGeometry(f.tool, d, T);
+    var p = f.face.map(Number), face = null, bd = 1e-3 * (1 + T);
+    ftSheetFaces(ctx.body, T).forEach(function (fr) {
+      var off = Math.abs(dot(fr.plane.n, p) - fr.w);
+      if (off > bd) return;
+      var uv = to2D(fr.plane, p), inn = 0;
+      fr.loops.forEach(function (l) { if (pointInPoly(uv, l)) inn++; });
+      if (inn % 2 === 1) { bd = off; face = fr; }
+    });
+    if (!face) throw new Error(what + ': there is no flat face of the sheet at ' + bcPt(p) + ': select a flat face of the sheet.');
+    var n = face.plane.n.slice(), fp = _.planeFromFace(n, scale(n, face.w));
+    var at = f.at && f.at.length === 2 ? [+f.at[0], +f.at[1]] : to2D(fp, p);
+    if (!isFinite(at[0]) || !isFinite(at[1])) throw new Error(what + ': the position must be numbers.');
+    var ang = (+f.angle || 0) * Math.PI / 180, P = to3D(fp, at[0], at[1]);
+    var ex = add(scale(fp.x, Math.cos(ang)), scale(fp.y, Math.sin(ang))), ey = cross(n, ex);
+    function W3(q) { return add(P, add(scale(ex, q[0]), scale(ey, q[1]))); }
+    if (!ftFaceHolds(face, g.clear.map(function (q) { return to2D(face.plane, W3(q)); })))
+      throw new Error(what + ': the tool does not fit on the face at (' + ftNum(at[0]) + ', ' + ftNum(at[1]) + '): it runs off the face, over a hole or across a bend; move it at least ' + ftNum(T) + ' clear of the face\'s edges.');
+    var flip = !!f.flip, solids = g.solids.map(function (s) {
+      var path = flip ? ftMirror(s.path, T) : s.path, plane;
+      if (s.rev) {
+        var rd = add(scale(ex, s.dir[0]), scale(ey, s.dir[1]));
+        return { path: path, rev: s.rev, plane: { origin: W3(s.at), x: rd, y: n.slice(), n: cross(rd, n) } };
+      }
+      if (s.sec === 'yz') return { path: path, depth: s.to - s.from, plane: { origin: add(P, scale(ex, s.from)), x: ey.slice(), y: n.slice(), n: ex.slice() } };
+      return { path: path, depth: s.to - s.from, plane: { origin: add(P, scale(ey, s.to)), x: ex.slice(), y: n.slice(), n: scale(ey, -1) } };
+    });
+    var eps = 0.01 * T, cut = { ents: g.cut, depth: T + 2 * eps, plane: { origin: sub(P, scale(n, T + eps)), x: ex.slice(), y: ey.slice(), n: n.slice() } };
+    var cm = Math.min(0.5 * g.ext, model.units === 'in' ? 0.125 : 3);
+    var rec = { refgeo: 'formingTool', tool: f.tool, n: n, at: P, x: ex, y: ey, flip: flip, T: T,
+      fill: g.fill.map(W3), marks: g.marks.map(function (m) { return m.t === 'circle' ? { t: 'circle', c: W3(m.c), r: m.r } : { t: 'poly', pts: m.pts.map(W3), closed: !!m.closed }; }),
+      centre: [[W3([-cm, 0]), W3([cm, 0])], [W3([0, -cm]), W3([0, cm])]], lances: g.lances.map(function (l) { return [W3(l[0]), W3(l[1])]; }),
+      noteAt: W3([0, -(g.ext + 2 * T + (model.units === 'in' ? 0.15 : 4))]), note: g.note,
+      pierce: g.pierce ? { c: P, rc: g.pierce.rc, ri: g.pierce.ri, straight: g.pierce.straight } : null };
+    return { tool: f.tool, T: T, n: n, at: P, uv: at, x: ex, y: ey, flip: flip, solids: solids, cut: cut, rec: rec };
+  }
+  function ftSolid(s, id) {
+    var sk = { entities: ftEntities(s.path) };
+    if (s.rev) return _.buildRevolve({ id: id, angle: s.rev, axis: 'y' }, sk, s.plane);
+    return _.buildExtrude({ id: id, depth: s.depth }, sk, s.plane);
+  }
+  // buildFormingTool(f, model, { body }) -> { body (the formed part), tool (the formed material, for previews), rec }
+  function buildFormingTool(f, model, ctx) {
+    var lay = formingToolLayout(f, model, ctx), id = f.id != null ? f.id : 'ft';
+    var cut = _.buildExtrude({ id: id, depth: lay.cut.depth }, { entities: lay.cut.ents }, lay.cut.plane);
+    var adds = lay.solids.map(function (s) { return ftSolid(s, id); });
+    var form = adds.length > 1 ? smBool(adds[0], 'union', adds.slice(1), lay.T) : adds[0];
+    var body = smBool(smBool(ctx.body, 'subtract', cut, lay.T), 'union', form, lay.T);
+    return { body: body, tool: form, rec: lay.rec, layout: lay };
+  }
+  // the flat pattern's part (flatPattern, before the merge): the footprint filled back to plain sheet, the Extruded
+  // Hole's pre-pierce hole as a notch, and the marks (FORM outline + centre mark, lance slits, a note) as flat.etch
+  // items tagged form: feature id (kind 'mark' | 'cut' | 'note'); exportDXFFlat takes them out of ETCH.
+  function formingFlat(model, build, faceRecs, T, warn, regions, notches, items) {
+    model.features.forEach(function (f) {
+      if (f.type !== 'formingTool' || f.suppressed || (build.errors && build.errors[f.id])) return;
+      var rec = build.planes && build.planes[f.id];
+      if (!rec || rec.refgeo !== 'formingTool') return;
+      var w0 = dot(rec.n, rec.at), tol = 1e-5 * (1 + Math.abs(w0)), best = null;
+      faceRecs.forEach(function (fr) {
+        if (Math.abs(Math.abs(dot(rec.n, fr.normal)) - 1) > 1e-6) return;
+        var off = dot(fr.normal, rec.at) - fr.w;
+        if (Math.abs(off) > tol && Math.abs(off + T) > tol) return;
+        var q = fr.map(sub(rec.at, scale(fr.normal, off))), k = 0;
+        fr.loops.forEach(function (l) { if (pointInPoly(q, l)) k++; });
+        var dist = Infinity;
+        fr.loops.forEach(function (l) { l.forEach(function (v) { dist = Math.min(dist, Math.hypot(v[0] - q[0], v[1] - q[1])); }); });
+        if (!best || dist < best.dist) best = { fr: fr, dist: dist };
+      });
+      if (!best) { warn((f.name || 'Forming Tool') + ': its face is not a flat face of the sheet, so it is left out of the flat pattern.'); return; }
+      var fr = best.fr, up = (dot(rec.n, fr.normal) > 0) !== !!rec.flip;
+      function drop(Q) { return fr.map(sub(Q, scale(fr.normal, dot(fr.normal, Q) - fr.w))); }
+      var fl = rec.fill.map(drop);
+      if (signedArea(fl) < 0) fl.reverse();
+      regions.push([fl]);
+      var note = rec.note + ' ' + (up ? 'UP' : 'DOWN');
+      if (rec.pierce) {
+        var bc = bendCalc(model.sheet, Math.PI / 2, rec.pierce.ri, T), rp = rec.pierce.rc - bc.BA - rec.pierce.straight;
+        if (rp > 1e-6 * (1 + rec.pierce.rc)) {
+          var c2 = drop(rec.pierce.c), hole = ftCircle(c2, rp, 128);
+          notches.push(signedArea(hole) < 0 ? hole.reverse() : hole);
+          note += ' PIERCE Ø' + ftNum(2 * rp);
+        } else warn((f.name || 'Extruded Hole') + ': the collar takes more than the whole hole (developed pierce Ø ' + ftNum(2 * rp) + '): no pre-pierce hole in the flat.');
+      }
+      rec.marks.forEach(function (m) {
+        if (m.t === 'circle') items.push({ t: 'circle', c: drop(m.c), r: m.r, form: f.id, kind: 'mark' });
+        else items.push({ t: 'poly', pts: m.pts.map(drop), closed: !!m.closed, form: f.id, kind: 'mark' });
+      });
+      rec.centre.forEach(function (l) { items.push({ t: 'line', a: drop(l[0]), b: drop(l[1]), form: f.id, kind: 'mark' }); });
+      // a lance cut is a real cut through the blank: a slit FT_SLIT wide (0.01 in / 0.25 mm, a laser kerf) centred on the
+      // lance line, so the DXF keeps closed loops on HOLES
+      var gw = model.units === 'in' ? FT_SLIT : FT_SLIT * 25.4;
+      rec.lances.forEach(function (l) {
+        var a2 = drop(l[0]), b2 = drop(l[1]), dx = b2[0] - a2[0], dy = b2[1] - a2[1], ll = Math.hypot(dx, dy), nx = -dy / ll * gw / 2, ny = dx / ll * gw / 2;
+        var sl = [[a2[0] - nx, a2[1] - ny], [b2[0] - nx, b2[1] - ny], [b2[0] + nx, b2[1] + ny], [a2[0] + nx, a2[1] + ny]];
+        notches.push(signedArea(sl) < 0 ? sl.reverse() : sl);
+      });
+      items.push({ t: 'note', a: drop(rec.noteAt), text: note, form: f.id, kind: 'note', up: up, tool: rec.tool });
+    });
+  }
+  K.registerFeature('formingTool', {
+    cut: false,
+    script: function (f, v, idVar, optsStr) {
+      var t = ftTool(f.tool), o = {};
+      if (f.at) o.at = [Math.round(+f.at[0] * 1e6) / 1e6, Math.round(+f.at[1] * 1e6) / 1e6];
+      if (+f.angle) o.angle = f.angle;
+      if (f.flip) o.flip = true;
+      (t ? t.params : []).forEach(function (p) { if (f[p.key] != null) o[p.key] = f[p.key]; });
+      o.name = f.name;
+      return 'var ' + v + ' = p.formingTool(' + JSON.stringify(f.tool) + ', ' + JSON.stringify((f.face || [0, 0, 0]).map(function (x) { return Math.round(x * 1e4) / 1e4; })) + ', ' + optsStr(o) + ').last();';
+    }
+  });
+  K.FORMING_TOOLS = FORMING_TOOLS; K.formingToolDefaults = formingToolDefaults; K.formingToolName = ftName; K.formingToolLayout = formingToolLayout;
+  K.formingToolGeometry = formingToolGeometry; K.buildFormingTool = buildFormingTool; _.buildFormingTool = buildFormingTool; _.formingFlat = formingFlat;
 })(Kernel, Kernel._);

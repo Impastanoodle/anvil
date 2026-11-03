@@ -206,7 +206,7 @@
       { id: 'convertSM', label: 'Convert to\nSheet Metal', help: 'Turn a solid into sheet metal: a fixed face and the edges that become bends; the other faces are removed and the corners ripped', run: function () { UI.cmdConvertSheetMetal(); } }, { id: 'loft', label: 'Lofted-\nBend' },
       { sep: true },
       { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'hem', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'jog', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'sketchedBend', label: 'Sketched\nBend', run: function () { UI.cmdSketchedBend(); } },
-      { stack: [{ id: 'crossBreak', icon: 'crossBreak', label: 'Cross-Break', help: 'Mark a stiffening X on a flat sheet face, corner to corner (cosmetic: the solid and the blank stay)', run: function () { UI.cmdCrossBreak(); } }, { fly: 'corners', items: [{ id: 'breakCorner', label: 'Break-Corner', help: 'Round or chamfer outside corners of the sheet (Corners ▸ Break-Corner/Corner-Trim)', run: function () { UI.cmdBreakCorner(); } }, { id: 'closedCorner', label: 'Closed Corner', help: 'Extend the end faces of a flange to close the gap at a box corner (Corners ▸ Closed Corner)', run: function () { UI.cmdClosedCorner(); } }] }, { id: 'generic', icon: 'formingTool', label: 'Forming Tool' }] },
+      { stack: [{ id: 'crossBreak', icon: 'crossBreak', label: 'Cross-Break', help: 'Mark a stiffening X on a flat sheet face, corner to corner (cosmetic: the solid and the blank stay)', run: function () { UI.cmdCrossBreak(); } }, { fly: 'corners', items: [{ id: 'breakCorner', label: 'Break-Corner', help: 'Round or chamfer outside corners of the sheet (Corners ▸ Break-Corner/Corner-Trim)', run: function () { UI.cmdBreakCorner(); } }, { id: 'closedCorner', label: 'Closed Corner', help: 'Extend the end faces of a flange to close the gap at a box corner (Corners ▸ Closed Corner)', run: function () { UI.cmdClosedCorner(); } }] }, { fly: 'forming', label: 'Forming Tool', items: [['dimple', 'Dimple', 'Press a round dimple (emboss) into a sheet face'], ['extrudedHole', 'Extruded Hole', 'A formed collar round a hole (extruded flange)'], ['louver', 'Louver', 'A vent hood lanced along one side'], ['lance', 'Lance', 'A bridge lance: cut along both sides, pressed up'], ['rib', 'Rib', 'A straight stiffening rib with round ends']].map(function (t) { return { id: 'ft' + t[0].charAt(0).toUpperCase() + t[0].slice(1), label: t[1], help: t[2], run: function () { UI.cmdFormingTool(t[0]); } }; }) }] },   // lane forming
       { sep: true },
       { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'vent', label: 'Vent', run: function () { UI.cmdVent(); } },
       { sep: true },
@@ -784,6 +784,7 @@
   FEATURE_ICON.rip = 'rip';   // lane DI
   FEATURE_ICON.vent = 'vent';   // lane DT
   FEATURE_ICON.crossBreak = 'crossBreak';   // lane cross-break
+  FEATURE_ICON.formingTool = 'formingTool';   // lane forming
   FEATURE_ICON.draft = 'draft';   // rfDX
   FEATURE_ICON.helix = 'helix'; FEATURE_ICON.projCurve = 'projCurve'; FEATURE_ICON.compositeCurve = 'compositeCurve'; FEATURE_ICON.xyzCurve = 'xyzCurve'; FEATURE_ICON.refPtCurve = 'refPtCurve';   // rfFA
   FEATURE_ICON.wrap = 'wrap';   // rfDZ
@@ -799,6 +800,7 @@
     if (f.type === 'sketchedBend') return 'sketchedBend';
     if (f.type === 'breakCorner') return 'breakCorner';   // lane CP
     if (f.type === 'closedCorner') return 'closedCorner';   // lane CS
+    if (f.type === 'formingTool' && f.tool && Icons.has && Icons.has('ft' + f.tool.charAt(0).toUpperCase() + f.tool.slice(1))) return 'ft' + f.tool.charAt(0).toUpperCase() + f.tool.slice(1);   // lane forming
     if (f.type === 'unfold' || f.type === 'fold') return f.type;   // lane DB
     return FEATURE_ICON[f.type] || 'generic';
   }
