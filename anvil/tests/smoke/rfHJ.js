@@ -58,6 +58,7 @@
     var keep, rv0 = typeof UI.setRealView === 'function' && UI.realView ? !!UI.realView() : null, out = [];
     try {
       keep = await rfHJSetup();
+      var bgHJ = UI.App.view.bg; UI.setBackground('dark', true);   // the floor glow is the dark ground's (the light ground has a soft shadow only, rfHE)
       var modes = rv0 != null ? [false, true] : [false];
       for (var mi = 0; mi < modes.length; mi++) {
         if (rv0 != null) { UI.setRealView(modes[mi], true); await idle(); await wait(30); }
@@ -85,7 +86,7 @@
         out.push(msg);
       }
       return out.join(' | ');
-    } finally { if (rv0 != null) UI.setRealView(rv0, true); rfHJReset(keep); }
+    } finally { if (rv0 != null) UI.setRealView(rv0, true); if (typeof bgHJ !== 'undefined') UI.setBackground(bgHJ || 'gradient', true); rfHJReset(keep); }
   });
 
   step('rfHJ: a hover pre-highlight keeps the ambient occlusion and floor glow in the next frame, and the orange face keeps its shading round the boss', async function () {

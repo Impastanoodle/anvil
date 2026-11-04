@@ -106,10 +106,11 @@
     }
   });
 
-  step('rfHE: Shadows In Shaded Mode: the floor round the part reads lighter than the ground far away and the contact shadow darker than that floor, over the darkest and the lightest ground grey; none in a view from below', async function () {
-    var style = UI.App.view.style, back = null;
+  step('rfHE: Shadows In Shaded Mode on the dark ground: the floor round the part reads lighter than the ground far away and the contact shadow darker than that floor, over the darkest and the lightest ground grey; on the light ground (user 2026-11-04: "shadows look like black glow") no glow and a soft shadow; none in a view from below', async function () {
+    var style = UI.App.view.style, back = null, bg0 = UI.App.view.bg;
     try {
       rfHEReset();
+      UI.setBackground('dark', true);
       await anvil.newPart(); await idle();
       await anvil.run('p.units("in");\np.box(4, 4, 0.5);\np.box(1, 1, 1.5, { at: [1.5, 0.5, 1.5] });\n'); await idle();
       UI.setStyle('shadedEdges');
@@ -128,18 +129,29 @@
         assert(gl - sh >= 10, 'ground ' + bg + ': the shadow is darker than the floor round it (' + sh.toFixed(1) + ' vs ' + gl.toFixed(1) + '); ' + msg);
       });
       assert(far[3] <= 3, 'nothing drawn far away (no floor edge): ' + msg);
+      if (UI.theme() !== 'dark') {
+        UI.setBackground('gradient', true);
+        assert(!UI.darkViewport(), 'the light ground');
+        UI.renderStill(1);
+        var img2 = rfHECanvas(), sh2 = rfHEAt(img2, [2, 0, 4.06]), gl2 = rfHEAt(img2, [2, 0, 5]);
+        msg += '; light ground: shadow ' + sh2.join(',') + ', floor ' + gl2.join(',');
+        assert(sh2[3] > 10 && sh2[3] <= 0.6 * shadow[3] && sh2[0] < 20, 'a soft shadow on the light ground (alpha above 10, at most 0.6 of the dark ground shadow): ' + msg);
+        assert(gl2[3] < sh2[3] && gl2[0] < 20, 'no grey glow round it on the light ground: ' + msg);
+        UI.setBackground('dark', true);
+      }
       await rfHEView('Bottom');
       UI.renderStill(1);
       var below = rfHEAt(rfHECanvas(), [2, 0, 4.06]);
       assert(!below || below[3] === 0 || rfHESeen(below, 30) > 25, 'no floor seen from below: ' + (below && below.join(',')));
       return msg;
-    } finally { if (back) back(); UI.setStyle(style); rfHEReset(); UI.render(); }
+    } finally { if (back) back(); UI.setStyle(style); UI.setBackground(bg0 || 'gradient', true); rfHEReset(); UI.render(); }
   });
 
   step('rfHE: the floor is under the part wherever it sits: a part far below the origin and a tall column both get their contact shadow right under them', async function () {
-    var style = UI.App.view.style, back = null, out = [];
+    var style = UI.App.view.style, back = null, out = [], bg0 = UI.App.view.bg;
     try {
       rfHEReset();
+      UI.setBackground('dark', true);   // the dark ground's shadow (the light ground's is soft: step above)
       back = rfHEQuiet();
       var cases = [
         { code: 'p.units("in");\np.box(2, 2, 1, { at: [-1, -40, -1] });\n', under: [0, -40, 1.08], far: [0, -40, 2.4], name: 'far below the origin' },
@@ -159,7 +171,7 @@
         out.push(c.name + ' a=' + u[3]);
       }
       return out.join('; ');
-    } finally { if (back) back(); UI.setStyle(style); rfHEReset(); UI.render(); }
+    } finally { if (back) back(); UI.setStyle(style); UI.setBackground(bg0 || 'gradient', true); rfHEReset(); UI.render(); }
   });
 
   step('rfHE: with the governor lowered (AO half resolution, 2 samples, RealView held back) the plain UI.render() frame is byte-identical to the frame with every effect off', async function () {

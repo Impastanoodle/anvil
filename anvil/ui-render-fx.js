@@ -156,7 +156,10 @@
   // FLOOR_FALL × the footprint's span past its edge) times (1 - shadow). Written premultiplied, so over the
   // transparent canvas the CSS ground shows through as mix(ground, tone, glow) * (1 - shadow): lighter round the part,
   // darker under it, and nothing at all far away (no floor edge).
-  var FLOOR_TONE = 0.5, FLOOR_GLOW = 0.32, FLOOR_FALL = 0.3, SHADOW_OPACITY = 0.92, SHADOW_BLUR = 0.09, SHADOW_GAIN = 2;
+  // User 2026-11-04 ("shadows look like black glow" on the light theme's light ground, ui-core.js darkViewport): the
+  // glow's grey tone darkens a near-white ground, and a 92 % black contact shadow reads as a dark halo there, so on the
+  // light ground there is no glow and the shadow is a soft grey (LIGHT_SHADOW_OPACITY).
+  var FLOOR_TONE = 0.5, FLOOR_GLOW = 0.32, FLOOR_FALL = 0.3, SHADOW_OPACITY = 0.92, SHADOW_BLUR = 0.09, SHADOW_GAIN = 2, LIGHT_SHADOW_OPACITY = 0.3;
   var floorMat = new THREE.ShaderMaterial({ transparent: true, premultipliedAlpha: true, depthTest: false, depthWrite: false,
     uniforms: { tShadow: { value: null }, shadowVP: { value: new THREE.Matrix4() }, opacity: { value: 0.5 }, gain: { value: SHADOW_GAIN }, glow: { value: 0 }, tone: { value: FLOOR_TONE },
       centre: { value: new THREE.Vector2() }, halfExt: { value: new THREE.Vector2(1, 1) }, fall: { value: 1 } },
@@ -498,8 +501,9 @@
     var up = -d.y, f = Math.max(0, Math.min(1, (up - 0.03) / 0.25));
     if (f <= 0) return;
     f = f * f * (3 - 2 * f);
-    floorMat.uniforms.opacity.value = SHADOW_OPACITY * f;
-    floorMat.uniforms.glow.value = FLOOR_GLOW * f;
+    var darkGround = !UI.darkViewport || UI.darkViewport();
+    floorMat.uniforms.opacity.value = (darkGround ? SHADOW_OPACITY : LIGHT_SHADOW_OPACITY) * f;
+    floorMat.uniforms.glow.value = darkGround ? FLOOR_GLOW * f : 0;
     renderer.render(floorScene, camera);
   }
   var HALTON = [[0, 0], [0.25, -0.1667], [-0.25, 0.1667], [0.375, 0.3889], [-0.375, -0.3889], [0.125, -0.0556], [-0.125, 0.2778], [0.4375, -0.2778]];
@@ -692,7 +696,7 @@
   };
   UI.renderFx = {
     STILL_MS: STILL_MS, SAMPLES: SAMPLES, inTest: inTest, persistInTest: false,
-    FLOOR: { tone: FLOOR_TONE, glow: FLOOR_GLOW, fall: FLOOR_FALL, shadow: SHADOW_OPACITY, blur: SHADOW_BLUR, gain: SHADOW_GAIN },
+    FLOOR: { tone: FLOOR_TONE, glow: FLOOR_GLOW, fall: FLOOR_FALL, shadow: SHADOW_OPACITY, lightShadow: LIGHT_SHADOW_OPACITY, blur: SHADOW_BLUR, gain: SHADOW_GAIN },
     state: function () { return { shown: st.shown, k: st.k, aoOK: st.aoOK, aoUsed: st.aoUsed, aoQ: st.aoQ, shadowOK: st.shadowOK, lastMs: st.lastMs, realView: st.shownRv }; },
     targets: function () { return { ao: T.ao, nd: T.nd, aoHalf: T.aoH, sample: T.sample, shadow: shadowT && shadowT.a, w: T.w, h: T.h }; },
     // rfHE: the quality governor. feed(kind, ms, o) / decide() / state() / reset({ auto, slowGuess }) / hint(name)
