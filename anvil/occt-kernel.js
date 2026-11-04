@@ -40,6 +40,7 @@ var OcctKernel = (function () {
   SUPPORTED.insertBends = SUPPORTED.convertSM = 1;   // lane DQ
   SUPPORTED.rib = SUPPORTED.intersect = 1;   // rfDY
   SUPPORTED.boundary = 1;   // rfFB
+  SUPPORTED.deleteBody = 1;   // rfHT: Delete/Keep Body
   SUPPORTED.helix = SUPPORTED.projCurve = SUPPORTED.compositeCurve = SUPPORTED.xyzCurve = SUPPORTED.refPtCurve = 1;   // rfFA: reference curves (no body)
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
 
@@ -1701,6 +1702,7 @@ var OcctKernel = (function () {
             case 'fold': foldOp(f, fi); break;
             case 'rib': tool = ribTool(f); break;   // rfDY
             case 'intersect': intersectOp(f); break;   // rfDY
+            case 'deleteBody': rfHTdeleteBody(f); break;   // rfHT: Delete/Keep Body
             case 'shell': shellOp(f); break;
             case 'draft': draftOp(f); break;   // rfDX
             default: tool = patternTool(f);
@@ -2011,6 +2013,36 @@ var OcctKernel = (function () {
         if (sel.indexOf(i) < 0) { nb.push(b); nf.push(bodyFeatures[i]); }
       });
       bodies = nb; bodyFeatures = nf;
+    }
+    // ---- rfHT: Delete/Keep Body (Kernel.resolveBodyRefs on the exact solids): each reference is the body that holds
+    // its point, else the one whose surface is within the pick tolerance (nearest); a bare number is a body index.
+    // A reference that finds nothing removes nothing (Anvil reports it as a warning).
+    function rfHTdeleteBody(f) {
+      var refs = Array.isArray(f.bodies) ? f.bodies : [];
+      if (!refs.length) throw new Error(f.keep ? 'Select the bodies to keep.' : 'Select the bodies to delete.');
+      var tol = K.pickTol(m.units), hit = [];
+      refs.forEach(function (r) {
+        var k = -1;
+        if (typeof r === 'number') k = r >= 0 && r < bodies.length && r === Math.floor(r) ? r : -1;
+        else {
+          var p = r && (Array.isArray(r) ? r : r.at), ins = [], near = [], ds = [];
+          if (Array.isArray(p) && p.length >= 3) bodies.forEach(function (b, i) {
+            var cls = N(new oc.BRepClass3d_SolidClassifier_2(b));
+            cls.Perform(P(p), 1e-7);
+            var st = cls.State(), d = dist(p, b);
+            ds[i] = d;
+            if (st === oc.TopAbs_State.TopAbs_IN) ins.push(i); else if (st === oc.TopAbs_State.TopAbs_ON || d <= tol) near.push(i);
+          });
+          if (ins.length > 1) ins.sort(function (a, b) { return ds[b] - ds[a] || a - b; });   // (overlapping bodies) the one it is deeper in
+          near.sort(function (a, b) { return ds[a] - ds[b] || a - b; });
+          k = ins.length ? ins[0] : near.length ? near[0] : -1;
+        }
+        if (k >= 0 && hit.indexOf(k) < 0) hit.push(k);
+      });
+      var gone = [];
+      if (f.keep) { if (hit.length) bodies.forEach(function (b, i) { if (hit.indexOf(i) < 0) gone.push(i); }); }
+      else gone = hit.slice();
+      gone.sort(function (a, b) { return b - a; }).forEach(function (i) { bodies.splice(i, 1); bodyFeatures.splice(i, 1); });
     }
     // ---- rfDZ: Wrap (Kernel.wrapLayout, read on a faceted copy of this build's bodies as reference geometry is): each
     // contour is a face on the true surface at a height h (cylinder / cone: its (θ, z) loop as straight p-curves on a

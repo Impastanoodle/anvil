@@ -2332,6 +2332,8 @@ var UI = (function () {
   function selectBody(index) {
     index = +index;
     if (!(index >= 0 && index < Math.max(1, bodyCount()))) return null;
+    // rfHT: a command with a body selection box (Delete/Keep Body) takes the pick instead
+    if (App.command && App.command.onBodyPick && App.command.onBodyPick(index) !== false) return null;
     App.sel = { kind: 'body', index: index }; App.sel2 = null;
     updateHighlights();
     if (UI.refreshTree) UI.refreshTree();

@@ -63,6 +63,7 @@ var IconsLib = (function () {
     rib: blk(1.5, 4.5, 9, 7, 3.5) + p('M4 13 l5 -5.5 v5.5 z', FY, S, 1),
     wrap: p('M3 4 a5 2 0 0 1 10 0 v8 a5 2 0 0 1 -10 0 z', F2, S) + ell(8, 4, 5, 2, F1, S) + ln('M4 9 c1.5 1.2 6.5 1.2 8 0', FY, 1.6),
     intersect: circ(6, 8, 4.5, F2, S) + circ(10, 8, 4.5, F2, S) + p('M8 3.97 A4.5 4.5 0 0 1 8 12.03 A4.5 4.5 0 0 1 8 3.97 z', FY, S, 1),
+    deleteBody: blk(1.5, 5.5, 7, 7, 3) + ln('M10 1.5 L14.5 6 M14.5 1.5 L10 6', R, 1.8),   // rfHT: Delete/Keep Body (a solid and a red cross)
     // ---- patterns and mirror: the seed is solid green, the instances a lighter tint
     lpattern: rect(1.5, 3, 3, 3, FY, S, 1) + rect(6.5, 3, 3, 3, FYL, S, 1) + rect(11.5, 3, 3, 3, FYL, S, 1) + rect(1.5, 9.5, 3, 3, FYL, S, 1) + rect(6.5, 9.5, 3, 3, FYL, S, 1) + rect(11.5, 9.5, 3, 3, FYL, S, 1),
     cpattern: circ(8, 8, 5.5, 'none', S, 0.9) + circ(8, 8, 0.8, S, 'none') + rect(6.7, 1.2, 2.6, 2.6, FY, S, 1) + rect(12.2, 6.7, 2.6, 2.6, FYL, S, 1) + rect(6.7, 12.2, 2.6, 2.6, FYL, S, 1) + rect(1.2, 6.7, 2.6, 2.6, FYL, S, 1),

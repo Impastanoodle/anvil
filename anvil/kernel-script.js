@@ -2169,6 +2169,21 @@
     this._add(f);
     return this;
   };
+  // ------------------------------------------------------------------ rfHT: Delete/Keep Body (kernel-rebuild.js)
+  // p.deleteBody(points, { keep, name }): points = a point on / inside each body ([x, y, z], or a list of them; a bare
+  // number is a body index); keep: true keeps those bodies and deletes the rest
+  Builder.prototype.deleteBody = function (points, opts) {
+    opts = opts || {};
+    var list = Array.isArray(points) && points.length === 3 && points.every(function (x) { return typeof x === 'number'; }) && !opts.indices ? [points] : (Array.isArray(points) ? points : [points]);
+    var f = { type: 'deleteBody', bodies: list.map(function (r) {
+      if (typeof r === 'number') return r | 0;
+      var p = r && (Array.isArray(r) ? r : r.at);
+      return { at: [+p[0], +p[1], +p[2]] };
+    }), name: opts.name };
+    if (opts.keep) f.keep = true;
+    this._add(f);
+    return this;
+  };
   // ------------------------------------------------------------------ rfFA: reference curves (kernel-features.js)
   // Each returns the new feature's id (not `this`), like p.axis / p.point; a curve is never a pattern source.
   // p.helix(sketchId, { defineBy: 'pitchRev' | 'heightRev' | 'heightPitch' | 'spiral', pitch, revolutions, height,

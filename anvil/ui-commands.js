@@ -5949,6 +5949,7 @@
       case 'draft': UI.cmdDraft(f); break;   // rfDX
       case 'rib': UI.cmdRib(f); break;   // rfDY
       case 'intersect': UI.cmdIntersect(f); break;   // rfDY
+      case 'deleteBody': UI.cmdDeleteBody(f); break;   // rfHT
       case 'import': cmdImported(f); break;
       case 'hole': if (UI.cmdHoleWizard) UI.cmdHoleWizard(f); break;
     }
@@ -6016,6 +6017,18 @@
     if (App.mode === 'sketch' && App.sel && App.sel.kind === 'entity') { deleteEntity(App.sel.index); closePM(); return; }
     if (App.mode === 'sketch' && App.sel && App.sel.kind === 'dim') { UI.deleteDim(App.sel.index); return; }
     if (App.mode === 'sketch' && App.sel && App.sel.kind === 'rel' && UI.deleteRelation) { UI.deleteRelation(App.sel.index); return; }
+    // rfHT: whole bodies selected (graphics area or Solid Bodies folder): Delete opens Delete/Keep Body with them listed
+    if (App.mode !== 'sketch' && !pm.spec) {
+      var selBodies = (UI.selection ? UI.selection() : []).concat([App.sel, App.sel2]).filter(function (s) { return s && s.kind === 'body' && s.index >= 0; })
+        .map(function (s) { return s.index; }).filter(function (i, k, a) { return a.indexOf(i) === k; });
+      if (selBodies.length) {
+        App.sel = null; App.sel2 = null;
+        if (UI.setSelection) UI.setSelection([], { quiet: true });
+        UI.updateHighlights();
+        cmdDeleteBody(null, selBodies);
+        return;
+      }
+    }
     if (App.sel && App.sel.kind === 'feature') { deleteFeature(App.sel.id); return; }
     if (App.sel && App.sel.kind === 'face' && App.mesh) {
       var id = App.triShared[App.mesh.faces[App.sel.index].start];
@@ -6407,6 +6420,100 @@
     if (existing) compute();
   }
   UI.cmdRib = cmdRib; UI.cmdIntersect = cmdIntersect;
+  // rfHT: ------------------------------------------------------------------ Delete/Keep Body
+  // SolidWorks' Delete/Keep Body PropertyManager: Type (Delete Bodies / Keep Bodies) and one selection box of solid
+  // bodies (click a body in the graphics area or its row in the Solid Bodies folder; Delete / right-click removes it
+  // from the list). Opened by Delete with bodies selected (pre = their indices), Insert ▸ Features ▸ Delete/Keep Body
+  // or the body's right-click menu. Feature JSON { type: 'deleteBody', keep?, bodies: [{ at }] } (Kernel.bodyRefFor:
+  // a point inside each body, resolved again on every rebuild). The bodies that will go are shown in red.
+  function cmdDeleteBody(existing, pre) {
+    if (isAsm()) { refusePart('Delete/Keep Body'); return; }
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    var before = rfDYbuildBefore(existing);
+    var bodies = before ? (before.bodies || (before.body ? [before.body] : [])) : [];
+    if (!bodies.length) { UI.toast('There are no solid bodies to delete.'); return; }
+    var units = App.model.units, infos = K.bodyInfo(before, App.model);
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'deleteBody', bodies: [] };
+    if (!Array.isArray(f.bodies)) f.bodies = [];
+    var v = { name: f.name || '', type: f.keep ? 'keep' : 'delete', bodies: f.bodies };
+    function live() { return !existing || App.rollback != null; }   // the bodies before the feature are on screen
+    function resolved() { try { return K.resolveBodyRefs(v.bodies, bodies, units); } catch (e) { return v.bodies.map(function () { return -1; }); } }
+    function addBody(i) {
+      if (!(i >= 0 && i < bodies.length) || resolved().indexOf(i) >= 0) return false;
+      var r = K.bodyRefFor(bodies, i, units);
+      if (r) v.bodies.push(r);
+      return !!r;
+    }
+    function toggle(i) {
+      var k = resolved().indexOf(i);
+      if (k >= 0) v.bodies.splice(k, 1); else addBody(i);
+      renderPM(); show();
+    }
+    (pre || []).forEach(addBody);
+    function doomed() {
+      var idx = resolved().filter(function (i) { return i >= 0; }), out = [];
+      bodies.forEach(function (b, i) { if ((idx.indexOf(i) >= 0) !== (v.type === 'keep' && idx.length > 0)) out.push(i); });
+      return v.type === 'keep' && !idx.length ? [] : out;
+    }
+    function show() {
+      UI.disposeGroup(UI.groups.preview);
+      var gone = doomed();
+      gone.forEach(function (i) { try { addPreviewMesh(bodies[i], UI.mats.previewCut); } catch (e) { } });
+      var left = bodies.length - gone.length;
+      UI.setStatus(v.bodies.length ? gone.length + ' bod' + (gone.length === 1 ? 'y' : 'ies') + ' will be deleted (red), ' + left + ' will remain. Press ✓ to accept.'
+        : 'Select the bodies to ' + (v.type === 'keep' ? 'keep' : 'delete') + ' in the graphics area or the Solid Bodies folder.');
+    }
+    function bodyFaces(i) {
+      if (!live() || !App.mesh) return [];
+      var out = [];
+      App.mesh.faces.forEach(function (fc, k) { if ((fc.body | 0) === i) out.push(k); });
+      return out;
+    }
+    function toFeature() {
+      var out = { type: 'deleteBody', bodies: v.bodies.map(function (r) { return typeof r === 'number' ? r : { at: (r.at || r).slice() }; }) };
+      if (v.type === 'keep') out.keep = true;
+      if (v.name) out.name = v.name;
+      return out;
+    }
+    openPM({
+      title: existing ? existing.name : 'Delete/Keep Body', icon: 'deleteBody', values: v,
+      message: 'Select the <b>bodies</b> to delete (or to keep) in the graphics area or the Solid Bodies folder.',
+      command: {
+        onPick: function (pk) {
+          if (pk.kind === 'body' && live()) { toggle(pk.index); return true; }
+          if (pk.kind === 'face' && live() && App.mesh && App.mesh.faces[pk.index]) { toggle(App.mesh.faces[pk.index].body | 0); return true; }
+          return false;
+        },
+        onBodyPick: function (i) { if (!live()) return false; toggle(i); return true; }
+      },
+      groups: [
+        { title: 'Type', fields: [{ type: 'radio', key: 'type', options: [['delete', 'Delete Bodies'], ['keep', 'Keep Bodies']], rerender: true }] },
+        { title: 'Bodies', fields: [
+          { type: 'pick', icon: 'body', placeholder: 'Select solid bodies…',
+            value: function () { return v.bodies.length ? (v.type === 'keep' ? 'Bodies to Keep' : 'Bodies to Delete') + ': ' + v.bodies.length : ''; },
+            items: function () {
+              var idx = resolved();
+              return v.bodies.map(function (r, k) {
+                var i = idx[k], info = i >= 0 ? infos[i] : null;
+                return { label: info ? info.name : 'Missing body', icon: 'body', get faces() { return i >= 0 ? bodyFaces(i) : []; } };
+              });
+            },
+            onRemove: function (vv, k) { v.bodies.splice(k, 1); renderPM(); show(); },
+            onClear: function () { v.bodies.length = 0; renderPM(); show(); } }
+        ] },
+        { title: 'Feature', collapsed: !existing, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ],
+      onChange: function (vals, key) { if (key === 'type') show(); },
+      onOK: function () {
+        if (!v.bodies.length) { UI.setStatus('Select at least one body to ' + (v.type === 'keep' ? 'keep' : 'delete') + '.'); return false; }
+        UI.disposeGroup(UI.groups.preview);
+        return commitFeature(toFeature(), existing);
+      }
+    });
+    show();
+  }
+  UI.cmdDeleteBody = cmdDeleteBody;
+  // a body row clicked in the Solid Bodies folder goes to the open selection box: ui-core.js selectBody asks command.onBodyPick
   // rfFB: ------------------------------------------------------------------ Boundary Boss/Base, Boundary Cut
   // SolidWorks' Boundary PropertyManager: Direction 1 (profiles, Move Up / Move Down, tangency at the start and end),
   // Direction 2 (curves that touch every profile, tangency), Options (Merge tangent faces, Close, Show preview), Thin

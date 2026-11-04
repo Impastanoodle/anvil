@@ -858,6 +858,7 @@
   FEATURE_ICON.wrap = 'wrap';   // rfDZ
   FEATURE_ICON.insertBends = 'insertBends'; FEATURE_ICON.convertSM = 'convertSM';   // lane DQ
   FEATURE_ICON.rib = 'rib'; FEATURE_ICON.intersect = 'intersect';   // rfDY
+  FEATURE_ICON.deleteBody = 'deleteBody';   // rfHT: Body-Delete/Keep
   FEATURE_ICON.boundary = 'boundary';   // rfFB (a Boundary Cut: featureIcon)
   function featureIcon(f) {
     if (f.type === 'extrude') return f.cut ? 'cut' : (f.sheetBase ? 'flange' : 'extrude');
@@ -1126,6 +1127,7 @@
     // Zoom to Selection frames just this body when ui-core has UI.zoomToBody, else the whole model
     if (UI.zoomToBody || UI.zoomToFit) items.push({ label: 'Zoom to Selection', action: function () { if (!(UI.zoomToBody && UI.zoomToBody(b.index)) && UI.zoomToFit) UI.zoomToFit(); } });
     if (UI.bodyMaterialMenu) items = items.concat([{ sep: true }], UI.bodyMaterialMenu(b));
+    if (UI.cmdDeleteBody) items.push({ sep: true }, { label: 'Delete/Keep Body…', icon: 'deleteBody', action: function () { UI.cmdDeleteBody(null, [b.index]); } });   // rfHT
     if (b.featureId != null && K.findFeature(App.model, b.featureId)) {
       items.push({ sep: true });
       items.push({ label: 'Edit Feature', action: function () { UI.editFeature(K.findFeature(App.model, b.featureId)); } });
@@ -1565,6 +1567,7 @@
         { label: 'Features ▸ Draft', icon: 'draft', action: function () { UI.cmdDraft(); } },   // rfDX
         { label: 'Features ▸ Rib', icon: 'rib', action: function () { UI.cmdRib(); } },   // rfDY
         { label: 'Features ▸ Intersect', icon: 'intersect', action: function () { UI.cmdIntersect(); } },   // rfDY
+        { label: 'Features ▸ Delete/Keep Body…', icon: 'deleteBody', action: function () { UI.cmdDeleteBody(); } },   // rfHT
         { label: 'Features ▸ Imported…', action: function () { UI.cmdInsertImported(); } },
         { label: 'Features ▸ Fastening Features ▸ Vent', icon: 'vent', action: function () { UI.cmdVent(); } },   // lane DT2
         { label: 'Features ▸ Wrap', icon: 'wrap', action: function () { UI.cmdWrap(); } },   // rfDZ

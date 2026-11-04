@@ -32,6 +32,7 @@
   NAME_BASE.insertBends = 'Process-Bends'; NAME_BASE.convertSM = 'Convert-Solid';   // lane DQ (SolidWorks' names)
   NAME_BASE.rib = 'Rib'; NAME_BASE.intersect = 'Intersect';   // rfDY
   NAME_BASE.boundary = 'Boundary-Boss'; NAME_BASE.boundaryCut = 'Boundary-Cut';   // rfFB (SolidWorks' names)
+  NAME_BASE.deleteBody = 'Body-Delete/Keep';   // rfHT (SolidWorks' tree name)
   NAME_BASE.helix = 'Helix/Spiral'; NAME_BASE.projCurve = 'Curve'; NAME_BASE.compositeCurve = 'CompCurve'; NAME_BASE.xyzCurve = 'Curve'; NAME_BASE.refPtCurve = 'Curve';   // rfFA (SolidWorks' tree names)
 
   function featureName(model, type, cut) {
@@ -525,6 +526,105 @@
       return { index: i, featureId: fid, name: f && f.name ? f.name : 'Body' + (i + 1), volume: b.volume() };
     });
   }
+  // ------------------------------------------------------------------ rfHT: Delete/Keep Body
+  // { type: 'deleteBody', keep?: true, bodies: [{ at: [x, y, z] } | index] }: SolidWorks' Delete/Keep Body
+  // (Body-Delete/Keep1). Each body reference is a point on or inside the body, resolved against the bodies before the
+  // feature (resolveBodyRefs), so it follows the body when an earlier feature adds or removes others; a bare index is
+  // taken as is (scripts). keep: the listed bodies stay and the rest go. A reference that finds no body is a rebuild
+  // warning, as SolidWorks flags a missing body; deleting every body is allowed (an empty part).
+  // rfHTpolyDist2(p, poly) -> squared distance from p to a convex CSG polygon
+  function rfHTpolyDist2(p, poly) {
+    var vs = poly.vertices, n = poly.plane.normal, nx = n.x, ny = n.y, nz = n.z;
+    var d = nx * p[0] + ny * p[1] + nz * p[2] - poly.plane.w, qx = p[0] - nx * d, qy = p[1] - ny * d, qz = p[2] - nz * d;
+    var inside = true, best = Infinity, m = vs.length;
+    for (var k = 0; k < m; k++) {
+      var a = vs[k].pos, b = vs[(k + 1) % m].pos, ex = b.x - a.x, ey = b.y - a.y, ez = b.z - a.z;
+      var rx = qx - a.x, ry = qy - a.y, rz = qz - a.z;
+      if ((ey * rz - ez * ry) * nx + (ez * rx - ex * rz) * ny + (ex * ry - ey * rx) * nz < -1e-12) inside = false;
+      var l2 = ex * ex + ey * ey + ez * ez, t = l2 > 1e-24 ? ((p[0] - a.x) * ex + (p[1] - a.y) * ey + (p[2] - a.z) * ez) / l2 : 0;
+      if (t < 0) t = 0; else if (t > 1) t = 1;
+      var dx = a.x + ex * t - p[0], dy = a.y + ey * t - p[1], dz = a.z + ez * t - p[2], dd = dx * dx + dy * dy + dz * dz;
+      if (dd < best) best = dd;
+    }
+    return inside ? d * d : best;
+  }
+  // rfHTsurfDist(body, p, tol) -> distance from p to the body's surface (Infinity when p is more than tol outside its box)
+  function rfHTsurfDist(body, p, tol) {
+    var bb = body.getBounds();
+    for (var k = 0; k < 3; k++) if (p[k] < bb.min[k] - tol || p[k] > bb.max[k] + tol) return Infinity;
+    var best = Infinity, ps = body.polygons;
+    for (var i = 0; i < ps.length; i++) { var d = rfHTpolyDist2(p, ps[i]); if (d < best) best = d; }
+    return Math.sqrt(best);
+  }
+  function rfHTinBox(body, p) {
+    var bb = body.getBounds();
+    for (var k = 0; k < 3; k++) if (p[k] < bb.min[k] || p[k] > bb.max[k]) return false;
+    return true;
+  }
+  // resolveBodyRefs(refs, bodies, units) -> [body index | -1 per ref]: the body that contains the point, else the one
+  // whose surface is within the pick tolerance of it (the nearest); two bodies sharing a face are told apart by which
+  // one holds the point (bodyRefFor nudges its point inside)
+  function resolveBodyRefs(refs, bodies, units) {
+    var tol = _.pickTol ? _.pickTol(units) : 0.5;
+    bodies = bodies || [];
+    return (refs || []).map(function (r) {
+      if (typeof r === 'number') return r >= 0 && r < bodies.length && r === Math.floor(r) ? r : -1;
+      var p = r && (Array.isArray(r) ? r : r.at);
+      if (!Array.isArray(p) || p.length < 3) return -1;
+      var ds = bodies.map(function (b) { return rfHTsurfDist(b, p, tol); }), near = [];
+      ds.forEach(function (d, i) { if (d <= tol) near.push(i); });
+      if (near.length === 1) return near[0];
+      var inside = [];
+      bodies.forEach(function (b, i) { if ((near.indexOf(i) >= 0 || rfHTinBox(b, p)) && b.polygons.length && b.containsPoint(p)) inside.push(i); });
+      var pool = inside.length ? inside : near;
+      if (!pool.length) return -1;
+      // several holding it (on the shared face of two bodies): the one the point is deeper in; else the nearest surface
+      pool.sort(inside.length > 1 ? function (a, b) { return ds[b] - ds[a] || a - b; } : function (a, b) { return ds[a] - ds[b] || a - b; });
+      return pool[0];
+    });
+  }
+  // bodyRefFor(bodies, i, units) -> { at: [x, y, z] } that resolveBodyRefs maps back to body i: the centre of one of the
+  // body's larger facets, nudged a quarter of the pick tolerance inside (so a face shared with another body is not
+  // ambiguous), rounded to 1e-4 as picked points are; null when no facet gives a point that resolves to i
+  function bodyRefFor(bodies, i, units) {
+    var b = bodies && bodies[i];
+    if (!b || !b.polygons.length) return null;
+    var tol = _.pickTol ? _.pickTol(units) : 0.5, nudge = tol / 4;
+    var cand = b.polygons.map(function (poly, k) {
+      var vs = poly.vertices, a = vs[0].pos, area = 0, c = [0, 0, 0], w = 0;
+      for (var j = 1; j + 1 < vs.length; j++) {
+        var p1 = vs[j].pos, p2 = vs[j + 1].pos;
+        var ux = p1.x - a.x, uy = p1.y - a.y, uz = p1.z - a.z, vx = p2.x - a.x, vy = p2.y - a.y, vz = p2.z - a.z;
+        var cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx, ar = Math.sqrt(cx * cx + cy * cy + cz * cz) / 2;
+        c[0] += ar * (a.x + p1.x + p2.x) / 3; c[1] += ar * (a.y + p1.y + p2.y) / 3; c[2] += ar * (a.z + p1.z + p2.z) / 3; area += ar; w += ar;
+      }
+      return { k: k, area: area, c: w > 0 ? [c[0] / w, c[1] / w, c[2] / w] : [a.x, a.y, a.z] };
+    }).sort(function (x, y) { return y.area - x.area; });
+    var round = function (x) { return Math.round(x * 1e4) / 1e4; };
+    for (var t = 0; t < cand.length && t < 24; t++) {
+      var n = b.polygons[cand[t].k].plane.normal;
+      var tries = [[cand[t].c[0] - n.x * nudge, cand[t].c[1] - n.y * nudge, cand[t].c[2] - n.z * nudge], cand[t].c];
+      for (var q = 0; q < tries.length; q++) {
+        var at = tries[q].map(round);
+        if (resolveBodyRefs([{ at: at }], bodies, units)[0] === i) return { at: at };
+      }
+    }
+    return null;
+  }
+  // applyDeleteBody(f, ctx) -> { removed: [indices], missing: count }: drops the bodies from ctx.bodies / bodyFeatures
+  function applyDeleteBody(f, ctx) {
+    var refs = Array.isArray(f.bodies) ? f.bodies : [];
+    if (!refs.length) throw new Error(f.keep ? 'Select the bodies to keep.' : 'Select the bodies to delete.');
+    var idx = resolveBodyRefs(refs, ctx.bodies, ctx.units), hit = [], missing = 0;
+    idx.forEach(function (i) { if (i < 0) missing++; else if (hit.indexOf(i) < 0) hit.push(i); });
+    var gone = [];
+    if (f.keep) { if (hit.length) ctx.bodies.forEach(function (b, i) { if (hit.indexOf(i) < 0) gone.push(i); }); }
+    else gone = hit.slice();
+    gone.sort(function (a, b) { return b - a; }).forEach(function (i) { ctx.bodies.splice(i, 1); ctx.bodyFeatures.splice(i, 1); });
+    if (missing) ctx.warnings[f.id] = (missing === refs.length ? 'None of the selected bodies could be found' : missing + ' of the selected bodies could not be found') +
+      ': an earlier feature changed or removed ' + (missing === 1 ? 'it' : 'them') + '. Edit the feature and select the bodies again.' + (f.keep && !hit.length ? ' No body was removed.' : '');
+    return { removed: gone.reverse(), missing: missing };
+  }
   // True when two bounding boxes overlap or touch (within the CSG classification tolerance plus a hair of the extent),
   // the merge test for a boss: a tool whose box meets a body's box is unioned with it, as one body always was.
   function boundsMeet(a, b) {
@@ -890,6 +990,7 @@
             ctx.planes[f.id] = makePlane(f.ref || 'Front', +f.offset || 0);
             break;
           case 'intersect': _.applyIntersect(f, model, ctx); syncBody(); break;   // rfDY (kernel-features.js)
+          case 'deleteBody': applyDeleteBody(f, ctx); syncBody(); ctx.tools[f.id] = null; break;   // rfHT: Delete/Keep Body
           case 'helix': case 'projCurve': case 'compositeCurve': case 'xyzCurve': case 'refPtCurve': ctx.planes[f.id] = _.resolveCurve(f, model, ctx); break;   // rfFA: reference curves, no body change
           case 'refaxis': case 'refpoint': case 'csys':   // lane CZ: reference geometry, no body change; the record rides in planes
             ctx.planes[f.id] = _.resolveRefGeo(f, model, ctx);
@@ -1168,6 +1269,20 @@
   K.registerScriptSection = registerScriptSection; K.rebuild = rebuild; K.combineBodies = combineBodies; K.bodyInfo = bodyInfo;
   K.bodyNearPoint = bodyNearPoint; K.packBuild = packBuild; K.packTransferables = packTransferables; K.unpackBuild = unpackBuild;
   K.applyProfiles = applyProfiles; K.cacheFromBuild = cacheFromBuild;
+  K.resolveBodyRefs = resolveBodyRefs; K.bodyRefFor = bodyRefFor; K.applyDeleteBody = applyDeleteBody;   // rfHT
+  // generateScript: p.deleteBody(points, { keep, name }), each body reference as its point (a bare index as is)
+  registerFeature('deleteBody', {
+    cut: false,
+    script: function (f, v, idVar, optsStr) {
+      var pts = (f.bodies || []).map(function (r) {
+        if (typeof r === 'number') return String(r);
+        var p = (r && (Array.isArray(r) ? r : r.at)) || [0, 0, 0];
+        return '[' + p.map(function (x) { return String(Math.round(x * 1e4) / 1e4); }).join(', ') + ']';
+      });
+      var ix = (f.bodies || []).length === 3 && f.bodies.every(function (r) { return typeof r === 'number'; });   // three indices, not a point
+      return 'var ' + v + ' = p.deleteBody([' + pts.join(', ') + '], ' + optsStr({ keep: !!f.keep, indices: ix || null, name: f.name }) + ').last();';
+    }
+  });
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.featureName = featureName; _.featureTypes = featureTypes; _.findFeature = findFeature; _.isCut = isCut; _.scriptSections = scriptSections;
   _.sketchScripts = sketchScripts;
