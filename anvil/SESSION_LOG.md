@@ -1883,3 +1883,10 @@ Context: the user (screenshot of the title bar and the red menu-bar glyph): "red
 - #logo in index.html is now a faceted steel anvil (14 polygons: pointed horn with lit top / dark underside, bright face with hardy hole, bevel, shaded body and heel end, waist lit left / shaded right, flared base with two feet), drawn over a dark #1b2027 outline group; viewBox 0 10.5 64 41.5, 25 x 16 px in the menu bar (style.css #menubar #logo). rfGX checks 25 x 16. desktop/make-icon.js reads those polygons from index.html and draws them on the blue tile (outline by distance to the facet edges, about 1 px at 16 px), so the app icon always matches the logo.
 - Released Anvil 0.1.2 and installed it with /S (Anvil was closed); the installed Anvil.exe carries the new icon; ran ie4uinit -show so the Desktop shortcut picks it up.
 Tests: rfGX 7 / 7; no console errors on load.
+
+## local-2026-11-04f (local, interactive head, no agents): File ▸ Open redesigned
+
+Context: the user: "update the file uploading screen ui" (File ▸ Open: a bare browser file input, a type list and a big paste box).
+- ui-app.js showOpenDialog: a wide dialog; left, the documents saved in this browser, newest first (click + Open, or double-click; openSaved shared with the Files task pane); right, a drop zone (drag a file in, click or Browse… for the picker narrowed by Files of type), the chosen file's card (type badge, name, size, what it opens as from openKind; unknown types flagged red; Change…), Files of type, and "Paste text instead" (details). Picking a saved document clears a dropped file; Open waits for a file still being read. style.css .open-* rules, light and dark.
+- Released Anvil 0.1.3 and installed it with /S.
+Tests: new smoke rfHQ (2 steps); kernel 2384 / 2384, examples 29 / 29 both engines, ui-smoke 991 / 991, occt-tests 176 / 176 (verify.js). Note: exchange-js's Save As step fails when run alone with ?only=exchange on main too (needs an earlier group's download hook); green in the full page.

@@ -696,7 +696,42 @@ html[data-theme="dark"] #sketch-hint b, #viewport #sketch-hint b { color: #ecece
 #modal-body .dlg-row > span { flex: none; width: 96px; color: var(--muted); }
 #modal-body .dlg-row input[type=text], #modal-body .dlg-row select, #modal-body .dlg-row input[type=file] { flex: 1; min-width: 0; }
 #modal-body .dlg-note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
-#modal-body .open-dialog textarea { min-height: 140px; margin-top: 6px; }
+/* File ▸ Open: saved documents on the left, a drop zone + the chosen file's card on the right */
+#modal-body .open-dialog { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: var(--sp-4); min-height: 300px; }
+#modal-body .open-side { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--c-line-soft); padding-right: var(--sp-3); }
+#modal-body .open-side h4 { margin: 0 0 var(--sp-2); font-size: var(--fs-sm); font-weight: 600; color: var(--c-muted); }
+#modal-body .open-saved-list { flex: 1; overflow-y: auto; max-height: 340px; display: flex; flex-direction: column; gap: 2px; }
+#modal-body .open-saved { display: flex; align-items: center; gap: var(--sp-2); width: 100%; padding: 5px 6px; border: 1px solid transparent; border-radius: 3px; background: none; color: var(--c-text); text-align: left; cursor: default; }
+#modal-body .open-saved:hover { background: var(--c-hover); }
+#modal-body .open-saved.sel { background: var(--c-sel); border-color: var(--c-sel-line); }
+#modal-body .open-saved-icon { flex: none; display: grid; }
+#modal-body .open-saved-text { display: flex; flex-direction: column; min-width: 0; }
+#modal-body .open-saved-text b, #modal-body .open-saved-text small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#modal-body .open-saved-text b { font-weight: 600; }
+#modal-body .open-saved-text small { color: var(--c-muted); font-size: var(--fs-xs); }
+#modal-body .open-main { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+#modal-body .open-drop { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--sp-2); min-height: 150px; padding: var(--sp-4); border: 1.5px dashed var(--c-line-strong); border-radius: 6px; background: var(--c-field); color: var(--c-text); text-align: center; cursor: pointer; transition: background .12s, border-color .12s; }
+#modal-body .open-drop:hover { background: var(--c-hover); }
+#modal-body .open-drop:focus-visible { outline: 2px solid var(--c-focus); outline-offset: 2px; }
+#modal-body .open-drop.over { border-style: solid; border-color: var(--c-focus); background: var(--c-sel); }
+#modal-body .open-drop.has-file { min-height: 84px; flex-direction: row; gap: var(--sp-3); }
+#modal-body .open-drop.has-file small, #modal-body .open-drop.has-file .open-drop-icon { display: none; }
+#modal-body .open-drop-icon { opacity: .85; }
+#modal-body .open-drop-text { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-md); }
+#modal-body .open-drop-text span, #modal-body .open-drop small { color: var(--c-muted); }
+#modal-body .open-drop small { font-size: var(--fs-xs); }
+#modal-body .open-input { display: none; }
+#modal-body .open-card { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) var(--sp-3); border: 1px solid var(--c-line); border-radius: 4px; background: var(--c-raised); }
+#modal-body .open-card[hidden] { display: none; }
+#modal-body .open-badge { flex: none; min-width: 42px; padding: 7px 4px; border-radius: 3px; background: var(--c-default); color: var(--c-default-text); font: 700 11px/1 var(--mono, monospace); letter-spacing: .04em; text-align: center; }
+#modal-body .open-card.bad .open-badge { background: var(--red); color: #fff; }
+#modal-body .open-card-text { flex: 1; display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+#modal-body .open-card-text b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+#modal-body .open-card-text small { color: var(--c-muted); font-size: var(--fs-xs); }
+#modal-body .open-main .dlg-row { margin: 0; }
+#modal-body .open-paste summary { cursor: pointer; color: var(--c-muted); font-size: var(--fs-sm); }
+#modal-body .open-paste textarea { width: 100%; box-sizing: border-box; min-height: 110px; margin-top: 6px; }
+@media (max-width: 640px) { #modal-body .open-dialog { grid-template-columns: 1fr; } #modal-body .open-side { border-right: 0; padding-right: 0; order: 2; } }
 #modal-body .eq-table .eq-val { font-family: var(--mono); font-size: 12px; min-width: 110px; }
 #modal-body .eq-table .eq-val.err { color: var(--red); font-family: inherit; font-size: 11.5px; }
 #modal-body .eq-table tr.err .eq-expr { border-color: var(--red); }

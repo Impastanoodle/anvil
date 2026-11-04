@@ -424,9 +424,8 @@
     var list = el('div', { class: 'list' });
     names.forEach(function (n) {
       var f = files[n];
-      var isA = f.model && f.model.type === 'assembly';
-      var b = el('button', { html: '<b>' + n + '</b><small>' + (isA ? 'assembly, ' + ((f.model.components || []).length) + ' components' : (typeof f.features === 'number' ? f.features : (f.features ? f.features.length : 0)) + ' features') + ' · ' + new Date(f.savedAt || 0).toLocaleString() + '</small>' });
-      b.addEventListener('click', function () { confirmDiscard(null, function () { rememberPart(); UI.loadModel(JSON.parse(JSON.stringify(f.model))); App.fileName = n; UI.toast('Opened ' + n); }); });
+      var b = el('button', { html: '<b>' + n + '</b><small>' + savedSummary(f) + '</small>' });
+      b.addEventListener('click', function () { confirmDiscard(null, function () { openSaved(n, f); }); });
       b.addEventListener('contextmenu', function (e) { e.preventDefault(); UI.showMenu(e.clientX, e.clientY, [{ label: 'Delete ' + n, action: function () { delete files[n]; localStorage.setItem('anvil.files', JSON.stringify(files)); openTaskPane('files'); } }]); });
       list.appendChild(b);
     });
@@ -873,31 +872,93 @@
     inp.click();
   }
   function fileOpen() { confirmDiscard(null, showOpenDialog); }
+  // what a file of this name opens as, for the Open dialog's file card: [badge, line]
+  function openKind(name) {
+    var n = String(name || '').toLowerCase(), ext = (/\.([a-z0-9]+)$/.exec(n) || [])[1] || '';
+    if (/\.anvil\.json$|\.json$/.test(n)) return ['JSON', 'Anvil document: opens as it was saved'];
+    if (/\.js$/.test(n)) return ['JS', 'Anvil script: runs and opens as a part or assembly'];
+    if (ext === 'drawing') return ['DWG', 'Anvil drawing: opens as it was saved'];
+    if (ext === 'dxf') return ['DXF', 'A new part with the DXF in a sketch on the Top Plane'];
+    if (ext === 'dwg') return ['DWG', 'A new part with the DWG in a sketch on the Top Plane (converted by the local Anvil server)'];
+    if (ext === 'igs' || ext === 'iges') return ['IGES', 'A new part with an Imported1 feature, read by OpenCascade'];
+    if (neutralFile(n)) return [ext === 'stp' ? 'STEP' : ext.toUpperCase(), 'A new part with an Imported1 feature you can sketch on, cut and boss against'];
+    return [ext ? ext.toUpperCase().slice(0, 4) : '?', 'Not a file type Anvil opens'];
+  }
+  function fileSize(n) { return n < 1024 ? n + ' bytes' : n < 1048576 ? (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
+  function savedSummary(f) {
+    var isA = f.model && f.model.type === 'assembly';
+    return (isA ? 'assembly, ' + ((f.model.components || []).length) + ' components' : (typeof f.features === 'number' ? f.features : (f.features ? f.features.length : 0)) + ' features') + ' · ' + new Date(f.savedAt || 0).toLocaleString();
+  }
+  // a document saved in this browser (File ▸ Save) replaces the open one
+  function openSaved(n, f) { rememberPart(); UI.loadModel(JSON.parse(JSON.stringify(f.model))); App.fileName = n; UI.toast('Opened ' + n); }
+  // File ▸ Open: the documents saved in this browser on the left; on the right a drop zone (drag a file in, or click /
+  // Browse… for the system's file picker, narrowed by Files of type), the chosen file's card (type, name, size, what
+  // it opens as), and "Paste text instead" (a model JSON, a script, or a STEP / ASCII STL / OBJ file's text).
+  // Open opens the chosen file, else the selected saved document, else the pasted text. Double-click a saved one opens it.
   function showOpenDialog() {
-    var chosen = null;
+    var chosen = null, reading = null, savedPick = null;
     var type = el('select', { 'aria-label': 'Files of type' });
     OPEN_TYPES.forEach(function (t) { type.appendChild(el('option', { value: t[0], text: t[1] })); });
-    var fileInp = el('input', { type: 'file', accept: OPEN_TYPES[0][2], 'aria-label': 'File to open' });
+    var fileInp = el('input', { type: 'file', accept: OPEN_TYPES[0][2], 'aria-label': 'File to open', class: 'open-input' });
     type.addEventListener('change', function () { OPEN_TYPES.forEach(function (t) { if (t[0] === type.value) fileInp.accept = t[2]; }); });
-    fileInp.addEventListener('change', function () {
-      var file = fileInp.files && fileInp.files[0];
-      if (!file) { chosen = null; return; }
-      readFile(file).then(function (buf) { chosen = { name: file.name, data: buf }; }, function (e) { UI.toast('Could not read ' + file.name + ': ' + (e && e.message || e)); });
-    });
-    var ta = el('textarea', { placeholder: '…or paste a model JSON (File → Save As), an Anvil script, or the text of a STEP / ASCII STL / OBJ file here…' });
-    var body = el('div', { class: 'open-dialog' }, [
-      el('p', { text: 'Anvil documents and scripts open as they were saved. STEP (planar and faceted B-reps), STL, OBJ and 3MF files open as a new part with an Imported1 feature you can sketch on, cut and boss against.' }),
-      el('label', { class: 'dlg-row' }, [el('span', { text: 'Files of type' }), type]),
-      el('label', { class: 'dlg-row' }, [el('span', { text: 'File' }), fileInp]),
-      ta
+    var card = el('div', { class: 'open-card', hidden: '' });
+    var zone = el('div', { class: 'open-drop', tabindex: '0', role: 'button', 'aria-label': 'Drop a file here, or press Enter to browse' }, [
+      el('div', { class: 'open-drop-icon', html: Icons('openDoc', 32) }),
+      el('div', { class: 'open-drop-text' }, [el('b', { text: 'Drop a file here' }), el('span', { text: 'or' }),
+        el('button', { class: 'btn', type: 'button', text: 'Browse…', onclick: function (e) { e.stopPropagation(); fileInp.click(); } })]),
+      el('small', { text: 'Anvil documents and scripts, STEP, IGES, STL, OBJ, 3MF, DXF, DWG' })
     ]);
+    function choose(file) {
+      if (!file) return;
+      savedPick = null; markSaved();
+      var k = openKind(file.name);
+      card.hidden = false; zone.classList.add('has-file'); card.classList.toggle('bad', k[1].indexOf('Not a file') === 0);
+      card.innerHTML = '';
+      card.appendChild(el('span', { class: 'open-badge', text: k[0] }));
+      card.appendChild(el('div', { class: 'open-card-text' }, [el('b', { text: file.name, title: file.name }), el('small', { text: fileSize(file.size || 0) + ' · ' + k[1] })]));
+      card.appendChild(el('button', { class: 'btn', type: 'button', text: 'Change…', onclick: function () { fileInp.click(); } }));
+      chosen = null;
+      reading = readFile(file).then(function (buf) { chosen = { name: file.name, data: buf }; reading = null; },
+        function (e) { reading = null; UI.toast('Could not read ' + file.name + ': ' + (e && e.message || e)); });
+    }
+    fileInp.addEventListener('change', function () { choose(fileInp.files && fileInp.files[0]); });
+    zone.addEventListener('click', function () { fileInp.click(); });
+    zone.addEventListener('keydown', function (e) { if (e.key === ' ' || (e.key === 'Enter' && !chosen)) { e.preventDefault(); e.stopPropagation(); fileInp.click(); } });
+    ['dragenter', 'dragover'].forEach(function (t) { zone.addEventListener(t, function (e) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; zone.classList.add('over'); }); });
+    zone.addEventListener('dragleave', function (e) { if (!zone.contains(e.relatedTarget)) zone.classList.remove('over'); });
+    zone.addEventListener('drop', function (e) { e.preventDefault(); zone.classList.remove('over'); choose(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); });
+    // the saved documents
+    var files = savedFiles(), names = Object.keys(files).sort(function (a, b) { return (files[b].savedAt || 0) - (files[a].savedAt || 0); });
+    var list = el('div', { class: 'open-saved-list', role: 'listbox', 'aria-label': 'Saved in this browser' });
+    function markSaved() { Array.prototype.forEach.call(list.children, function (b) { b.classList.toggle('sel', b.dataset.name === savedPick); }); }
+    names.forEach(function (n) {
+      var f = files[n], isA = f.model && f.model.type === 'assembly';
+      var b = el('button', { type: 'button', class: 'open-saved', 'data-name': n, title: n }, [
+        el('span', { class: 'open-saved-icon', html: Icons(isA ? 'assembly' : 'part', 16) }),
+        el('span', { class: 'open-saved-text' }, [el('b', { text: n }), el('small', { text: savedSummary(f) })])]);
+      b.addEventListener('click', function () { savedPick = n; markSaved(); chosen = reading = null; fileInp.value = ''; card.hidden = true; zone.classList.remove('has-file'); });
+      b.addEventListener('dblclick', function () { UI.closeModal(); openSaved(n, f); });
+      list.appendChild(b);
+    });
+    if (!names.length) list.appendChild(el('p', { class: 'dlg-note', text: 'Nothing saved yet. File ▸ Save (Ctrl+S) keeps a document here.' }));
+    var ta = el('textarea', { placeholder: 'Paste a model JSON (File → Save As), an Anvil script, or the text of a STEP / ASCII STL / OBJ file…' });
+    var paste = el('details', { class: 'open-paste' }, [el('summary', { text: 'Paste text instead' }), ta]);
+    var body = el('div', { class: 'open-dialog' }, [
+      el('div', { class: 'open-side' }, [el('h4', { text: 'Saved in this browser' }), list]),
+      el('div', { class: 'open-main' }, [zone, fileInp, card,
+        el('label', { class: 'dlg-row' }, [el('span', { text: 'Files of type' }), type]), paste])
+    ]);
+    body.addEventListener('dragover', function (e) { e.preventDefault(); });   // a file dropped beside the zone is not opened by the browser
+    body.addEventListener('drop', function (e) { if (!zone.contains(e.target)) { e.preventDefault(); choose(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); } });
     UI.showModal({ title: 'Open', body: body, buttons: [
-      { label: 'Open', primary: true, action: function () {
+      { label: 'Open', primary: true, action: function go() {
+        if (reading) { reading.then(go); return; }
         var p;
         if (chosen) p = openFileData(chosen.name, chosen.data);
+        else if (savedPick && files[savedPick]) { UI.closeModal(); openSaved(savedPick, files[savedPick]); return; }
         else {
           var txt = ta.value.trim();
-          if (!txt) { UI.toast('Choose a file or paste its text first.'); return; }
+          if (!txt) { UI.toast('Choose a file, a saved document, or paste its text first.'); return; }
           // pasted text: JSON, a STEP / ASCII STL / OBJ file, or else an Anvil script
           var fmt = txt.charAt(0) === '{' || !hasExchange() ? null : Exchange.formatOf('', txt);
           if (fmt === 'obj' && /(^|[^\w.$])(p|a)\s*\.\s*\w+\s*\(/.test(txt)) fmt = null;
@@ -907,6 +968,8 @@
       } },
       { label: 'Cancel', action: UI.closeModal }
     ] });
+    $('modal-card').classList.add('wide');
+    setTimeout(function () { zone.focus(); }, 0);
   }
   // Insert ▸ Features ▸ Imported…: a STEP / STL / OBJ / 3MF file becomes an Imported feature at the end of the part
   function cmdInsertImported() {
