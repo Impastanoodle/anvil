@@ -908,17 +908,40 @@
         for (var a = 0; a < 3; a++) { lo[a] = Math.min(lo[a], P[a]); hi[a] = Math.max(hi[a], P[a]); }
       }
     });
-    var G = Math.min(1024, Math.max(8, Math.ceil(Math.sqrt(edges.length)))), cell = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], 1e-9) / G, grid = new Map(), stamp = new Int32Array(edges.length);
-    function cellOf(p, a) { return Math.floor((p[a] - lo[a]) / cell) + 2; }
+    // rfHV (1.8 s of Mass Properties on a 1000 hole panel, each hole-wall edge met ~350 neighbours): (1) an edge that
+    // runs along no candidate's direction (|e.u · u| < 1 - 1e-4 for every candidate: the first test below) is never
+    // put in the grid; the candidates' directions are clustered within 1e-6 (≤ 256 clusters, else every edge goes in)
+    // and the test is widened by 4e-6, so only edges that test can never accept are left out; (2) cells about the median
+    // candidate edge long (was the part's size / √edges, 0.17 in on a 48 x 96 in panel), but never so fine that the
+    // edges in the grid are sampled more than 8 times each on average, nor finer than the part / 4000. Every edge that
+    // runs along a candidate still lands in a neighbouring cell and they are visited in index order: the same result.
+    var reps = [];
+    for (var ci0 = 0; ci0 < cands.length && reps; ci0++) {
+      var c0 = cands[ci0], u0 = scale(sub(c0.B, c0.A), 1 / c0.L), hit = false;
+      for (var r0 = 0; r0 < reps.length && !hit; r0++) { var R0 = reps[r0]; hit = Math.abs(R0[0] - u0[0]) <= 1e-6 && Math.abs(R0[1] - u0[1]) <= 1e-6 && Math.abs(R0[2] - u0[2]) <= 1e-6; }
+      if (!hit) { if (reps.length >= 256) reps = null; else reps.push(u0); }
+    }
+    var inGrid = edges.map(function (e) {
+      if (!reps) return true;
+      for (var r = 0; r < reps.length; r++) if (Math.abs(dot(e.u, reps[r])) >= 1 - 1e-4 - 4e-6) return true;
+      return false;
+    });
+    var span = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], 1e-9), sumL = 0, nIn = 0, cl = cands.map(function (c) { return c.L; }).sort(function (x, y) { return x - y; });
+    edges.forEach(function (e, i) { if (inGrid[i]) { sumL += len(sub(e.Q, e.P)); nIn++; } });
+    var G = Math.min(1024, Math.max(8, Math.ceil(Math.sqrt(edges.length)))), cell = Math.min(span / G, Math.max(cl[cl.length >> 1], 2 * sumL / (8 * Math.max(1, nIn)), span / 4000));
+    var grid = new Map(), stamp = new Int32Array(edges.length);
+    var lo0 = lo[0], lo1 = lo[1], lo2 = lo[2];
     // the cells of a segment, sampled at half a cell (a query takes the 26 neighbours too, so nothing falls between)
     function eachCell(P, Q, fn) {
-      var n = Math.max(1, Math.ceil(len(sub(Q, P)) / (cell / 2))), last = -1;
+      var d0 = Q[0] - P[0], d1 = Q[1] - P[1], d2 = Q[2] - P[2];
+      var n = Math.max(1, Math.ceil(Math.sqrt(d0 * d0 + d1 * d1 + d2 * d2) / (cell / 2))), last = -1;
       for (var s = 0; s <= n; s++) {
-        var X = add(P, scale(sub(Q, P), s / n)), key = cellOf(X, 0) * 4194304 + cellOf(X, 1) * 2048 + cellOf(X, 2);
+        var f = s / n, key = (Math.floor((P[0] + d0 * f - lo0) / cell) + 2) * 16777216 + (Math.floor((P[1] + d1 * f - lo1) / cell) + 2) * 4096 + (Math.floor((P[2] + d2 * f - lo2) / cell) + 2);
         if (key !== last) { last = key; fn(key); }
       }
     }
     edges.forEach(function (e, i) {
+      if (!inGrid[i]) return;
       eachCell(e.P, e.Q, function (key) { var list = grid.get(key); if (list) { if (list[list.length - 1] !== i) list.push(i); } else grid.set(key, [i]); });
     });
     var tol = 1e-7 * scl, jobs = [], stopped = {};
@@ -935,9 +958,16 @@
       var near = [];
       eachCell(c.A, c.B, function (key) {
         for (var a = -1; a <= 1; a++) for (var b = -1; b <= 1; b++) for (var g = -1; g <= 1; g++) {
-          var list = grid.get(key + a * 4194304 + b * 2048 + g);
+          var list = grid.get(key + a * 16777216 + b * 4096 + g);
           if (!list) continue;
-          for (var k = 0; k < list.length; k++) if (stamp[list[k]] !== ci + 1) { stamp[list[k]] = ci + 1; near.push(list[k]); }
+          for (var k = 0; k < list.length; k++) {
+            var lk = list[k];
+            if (stamp[lk] === ci + 1) continue;
+            stamp[lk] = ci + 1;
+            var eu = edges[lk].u;
+            if (Math.abs(eu[0] * u[0] + eu[1] * u[1] + eu[2] * u[2]) < 1 - 1e-4) continue;   // rfHV: the first test below, early
+            near.push(lk);
+          }
         }
       });
       near.sort(function (x, y) { return x - y; });

@@ -131,10 +131,16 @@ var Exchange = (function () {
   var WELD = 1e6;
   function wkey(x, y, z) { return Math.round(x * WELD) + ',' + Math.round(y * WELD) + ',' + Math.round(z * WELD); }
   function bodyMesh(body) {
-    var pos = [], vmap = {}, polys = [];
+    var pos = [], vmap = new Map(), polys = [], wq = [];
+    // rfHV: the weld grid cell (wkey's three rounded numbers) is looked up under a small-integer hash, the bucket
+    // compared number by number (wq[i] = vertex i's cell): the same vertices as the wkey strings, far cheaper
     function vid(x, y, z) {
-      var k = wkey(x, y, z), i = vmap[k];
-      if (i == null) { i = pos.length / 3; vmap[k] = i; pos.push(x, y, z); }
+      var rx = Math.round(x * WELD), ry = Math.round(y * WELD), rz = Math.round(z * WELD);
+      var h = (Math.imul(rx | 0, 73856093) ^ Math.imul(ry | 0, 19349663) ^ Math.imul(rz | 0, 83492791) ^ Math.imul((rx / 4294967296) | 0, 2654435761) ^ Math.imul((ry / 4294967296) | 0, 40503) ^ Math.imul((rz / 4294967296) | 0, 2246822519)) & 0x3fffffff;
+      var l = vmap.get(h), i;
+      if (l) for (var j = 0; j < l.length; j++) { i = l[j]; if (wq[i * 3] === rx && wq[i * 3 + 1] === ry && wq[i * 3 + 2] === rz) return i; }
+      i = pos.length / 3; pos.push(x, y, z); wq.push(rx, ry, rz);
+      if (l) l.push(i); else vmap.set(h, [i]);
       return i;
     }
     (body && body.polygons || []).forEach(function (p, pi) {
@@ -209,16 +215,91 @@ var Exchange = (function () {
       }
     });
   }
+  // rfHV: directed edges as compressed rows (out[a] = dst[off[a] .. off[a + 1])), built from parallel from / to lists.
+  // Replaces string-keyed "a>b" maps, which took most of bodyMesh's time on big perforated panels (1M triangles).
+  // -> { nv, off, dst, has(a, b) }
+  function dirRows(from, to, m) {
+    var nv = 0, i;
+    for (i = 0; i < m; i++) { if (from[i] >= nv) nv = from[i] + 1; if (to[i] >= nv) nv = to[i] + 1; }
+    var off = new Int32Array(nv + 1), dst = new Int32Array(m);
+    for (i = 0; i < m; i++) off[from[i] + 1]++;
+    for (i = 0; i < nv; i++) off[i + 1] += off[i];
+    var fill = off.slice(0, nv);
+    for (i = 0; i < m; i++) dst[fill[from[i]]++] = to[i];
+    return { nv: nv, off: off, dst: dst, has: function (a, b) {
+      if (a >= nv) return false;
+      for (var j = off[a], e = off[a + 1]; j < e; j++) if (dst[j] === b) return true;
+      return false;
+    } };
+  }
+  function polyRows(polys) {
+    var m = 0;
+    polys.forEach(function (p) { m += p.idx.length; });
+    var from = new Int32Array(m), to = new Int32Array(m), k = 0;
+    polys.forEach(function (p) { var idx = p.idx, n = idx.length; for (var i = 0; i < n; i++, k++) { from[k] = idx[i]; to[k] = idx[(i + 1) % n]; } });
+    return dirRows(from, to, m);
+  }
   // directed edge set -> the edges without a reverse twin, and the vertices they touch
   function openEdgeList(polys) {
-    var dir = {};
-    polys.forEach(function (p) { var n = p.idx.length; for (var i = 0; i < n; i++) dir[p.idx[i] + '>' + p.idx[(i + 1) % n]] = true; });
-    var open = [];
+    var D = polyRows(polys), open = [];
     polys.forEach(function (p, pi) {
-      var n = p.idx.length;
-      for (var i = 0; i < n; i++) { var a = p.idx[i], b = p.idx[(i + 1) % n]; if (!dir[b + '>' + a]) open.push({ p: pi, i: i, a: a, b: b }); }
+      var idx = p.idx, n = idx.length;
+      for (var i = 0; i < n; i++) { var a = idx[i], b = idx[(i + 1) % n]; if (!D.has(b, a)) open.push({ p: pi, i: i, a: a, b: b }); }
     });
     return open;
+  }
+  // rfHV: a uniform grid over splitTJunctions' candidate vertices (cand[k], sorted by x). query(A, B, tol) -> how many
+  // k it wrote to .buf (ascending, so in the x-sorted order the band scan visits them): every candidate in the cells the
+  // edge's box ±2 tol touches; -1 when that box spans too many cells (a long edge: the caller scans its x band as
+  // before). Every vertex the band scan can accept lies within tol of the edge, so inside that box: the result is
+  // unchanged. The band alone went quadratic on a panel whose holes line up in columns (each edge of a column scanned
+  // the whole column: 6 s of bodyMesh's 8.5 s at 1000 holes).
+  function candGrid(pos, cand, open) {
+    if (cand.length < 256) return null;
+    var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], lens = new Float64Array(open.length), i, c;
+    cand.forEach(function (v) { for (var q = 0; q < 3; q++) { var x = pos[v * 3 + q]; if (x < lo[q]) lo[q] = x; if (x > hi[q]) hi[q] = x; } });
+    open.forEach(function (e, j) { lens[j] = Math.hypot(pos[e.b * 3] - pos[e.a * 3], pos[e.b * 3 + 1] - pos[e.a * 3 + 1], pos[e.b * 3 + 2] - pos[e.a * 3 + 2]); });
+    lens.sort();   // cells half the median open edge (the mean is dragged up by a few long edges)
+    var span = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], diag = Math.hypot(span[0], span[1], span[2]);
+    if (!(diag > 0)) return null;
+    var cs = Math.max(lens[lens.length >> 1] / 2, diag * 1e-6);
+    var N = [0, 0, 0];
+    for (var guard = 0; guard < 60; guard++, cs *= 2) {
+      for (c = 0; c < 3; c++) N[c] = Math.floor(span[c] / cs) + 1;
+      if (N[0] * N[1] * N[2] <= 4 * cand.length + 64) break;
+    }
+    // compressed cells: start[cell] .. start[cell + 1] in ks, filled in k order (so each cell's list is ascending)
+    var N0 = N[0], N1 = N[1], N2 = N[2], lo0 = lo[0], lo1 = lo[1], lo2 = lo[2], nc = N0 * N1 * N2;
+    function cell(x, l0, n) { var f = Math.floor((x - l0) / cs); return f < 0 ? 0 : f >= n ? n - 1 : f; }
+    var cellOf = new Int32Array(cand.length), start = new Int32Array(nc + 1), ks = new Int32Array(cand.length);
+    for (i = 0; i < cand.length; i++) {
+      var v = cand[i];
+      cellOf[i] = cell(pos[v * 3], lo0, N0) + N0 * (cell(pos[v * 3 + 1], lo1, N1) + N1 * cell(pos[v * 3 + 2], lo2, N2));
+      start[cellOf[i] + 1]++;
+    }
+    for (i = 0; i < nc; i++) start[i + 1] += start[i];
+    var fill = start.slice(0, nc);
+    for (i = 0; i < cand.length; i++) ks[fill[cellOf[i]]++] = i;
+    var buf = new Int32Array(64);
+    function query(ax, ay, az, bx, by, bz, tol) {
+      var t2 = 2 * tol;
+      var x0 = cell(Math.min(ax, bx) - t2, lo0, N0), x1 = cell(Math.max(ax, bx) + t2, lo0, N0);
+      var y0 = cell(Math.min(ay, by) - t2, lo1, N1), y1 = cell(Math.max(ay, by) + t2, lo1, N1);
+      var z0 = cell(Math.min(az, bz) - t2, lo2, N2), z1 = cell(Math.max(az, bz) + t2, lo2, N2);
+      if ((x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) > 512) return -1;
+      var n = 0, hit = 0;
+      for (var z = z0; z <= z1; z++) for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) {
+        var cc = x + N0 * (y + N1 * z), s0 = start[cc], s1 = start[cc + 1];
+        if (s0 === s1) continue;
+        hit++;
+        if (n + s1 - s0 > buf.length) { var nb = new Int32Array(Math.max(buf.length * 2, n + s1 - s0)); nb.set(buf); buf = nb; query.buf = buf; }
+        for (var j = s0; j < s1; j++) buf[n++] = ks[j];
+      }
+      if (hit > 1) buf.subarray(0, n).sort();
+      return n;
+    }
+    query.buf = buf;
+    return query;
   }
   function splitTJunctions(pos, polys, tol0) {
     tol0 = tol0 || 1e-6;
@@ -230,36 +311,42 @@ var Exchange = (function () {
       open.forEach(function (e) { [e.a, e.b].forEach(function (v) { if (!seen[v]) { seen[v] = true; cand.push(v); } }); });
       cand.sort(function (u, v) { return pos[u * 3] - pos[v * 3]; });
       var xs = cand.map(function (v) { return pos[v * 3]; });
-      var inserts = {}, any = false; // "poly:edge" -> [{ t, v }]
+      var any = false;   // e.ins: [{ t, v }] (rfHV: on the open edge itself, was an object of "poly:edge" keys)
+      var grid = candGrid(pos, cand, open);
+      // rfHV: the vector arithmetic written out (same operations, same order: bit-identical t and distances)
       open.forEach(function (e) {
-        var A = [pos[e.a * 3], pos[e.a * 3 + 1], pos[e.a * 3 + 2]], B = [pos[e.b * 3], pos[e.b * 3 + 1], pos[e.b * 3 + 2]];
-        var d = sub(B, A), L = len(d);
+        var A0 = pos[e.a * 3], A1 = pos[e.a * 3 + 1], A2 = pos[e.a * 3 + 2], B0 = pos[e.b * 3], B1 = pos[e.b * 3 + 1], B2 = pos[e.b * 3 + 2];
+        var d0 = B0 - A0, d1 = B1 - A1, d2 = B2 - A2, L = Math.sqrt(d0 * d0 + d1 * d1 + d2 * d2);
         if (L < 1e-12) return;
-        var u = scale(d, 1 / L), tol = tol0 + L * 1e-9;
-        var lo = Math.min(A[0], B[0]) - tol, hi = Math.max(A[0], B[0]) + tol;
-        var s = lowerBound(xs, lo);
-        for (var k = s; k < cand.length && xs[k] <= hi; k++) {
+        var iL = 1 / L, u0 = d0 * iL, u1 = d1 * iL, u2 = d2 * iL, tol = tol0 + L * 1e-9;
+        var lo = Math.min(A0, B0) - tol, hi = Math.max(A0, B0) + tol;
+        var kn = grid ? grid(A0, A1, A2, B0, B1, B2, tol) : -1, ks = kn >= 0 ? grid.buf : null, s = ks ? 0 : lowerBound(xs, lo);
+        if (!ks) kn = cand.length;
+        for (var kk = s; kk < kn; kk++) {
+          var k = ks ? ks[kk] : kk;
+          if (xs[k] < lo) continue;
+          if (xs[k] > hi) { if (ks) continue; break; }
           var v = cand[k];
           if (v === e.a || v === e.b) continue;
-          var P = [pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]], w = sub(P, A), t = dot(w, u);
+          var w0 = pos[v * 3] - A0, w1 = pos[v * 3 + 1] - A1, w2 = pos[v * 3 + 2] - A2, t = w0 * u0 + w1 * u1 + w2 * u2;
           if (t <= tol || t >= L - tol) continue;
-          if (len(sub(w, scale(u, t))) > tol) continue;
-          var key = e.p + ':' + e.i;
-          (inserts[key] = inserts[key] || []).push({ t: t, v: v });
+          var p0 = w0 - u0 * t, p1 = w1 - u1 * t, p2 = w2 - u2 * t;
+          if (Math.sqrt(p0 * p0 + p1 * p1 + p2 * p2) > tol) continue;
+          (e.ins || (e.ins = [])).push({ t: t, v: v });
           any = true;
         }
       });
       if (!any) return;
-      Object.keys(inserts).sort(function (a, b) { // apply from the last edge of a polygon backwards so indices stay valid
-        var pa = a.split(':'), pb = b.split(':');
-        return (+pa[0] - +pb[0]) || (+pb[1] - +pa[1]);
-      }).forEach(function (key) {
-        var parts = key.split(':'), p = polys[+parts[0]], i = +parts[1];
-        var list = inserts[key].sort(function (x, y) { return x.t - y.t; }), vs = [];
+      // apply from the last edge of a polygon backwards so indices stay valid (open runs by polygon, then edge)
+      for (var oi = open.length - 1; oi >= 0; oi--) {
+        var oe = open[oi];
+        if (!oe.ins) continue;
+        var p = polys[oe.p], i = oe.i;
+        var list = oe.ins.sort(function (x, y) { return x.t - y.t; }), vs = [];
         list.forEach(function (it) { if (vs[vs.length - 1] !== it.v) vs.push(it.v); });
         Array.prototype.splice.apply(p.idx, [i + 1, 0].concat(vs));
         p.split = true;
-      });
+      }
     }
   }
   function lowerBound(arr, x) { var lo = 0, hi = arr.length; while (lo < hi) { var m = (lo + hi) >> 1; if (arr[m] < x) lo = m + 1; else hi = m; } return lo; }
@@ -270,12 +357,16 @@ var Exchange = (function () {
   // (triSurf, triPoly) renumbered
   function dropFoldedPairs(tris, splitT, faces, perTri) {
     if (splitT.length < 2) return tris;
-    var seen = new Map(), dead = null;
+    // rfHV: seen[lo] = the live triangles [s, u, t, …] whose lowest vertex is lo (was a Map of "lo_s_u" strings)
+    var seen = [], dead = null;
     splitT.forEach(function (t) {
       var a = tris[t * 3], b = tris[t * 3 + 1], c = tris[t * 3 + 2], lo = Math.min(a, b, c), s, u;
       if (lo === a) { s = b; u = c; } else if (lo === b) { s = c; u = a; } else { s = a; u = b; }
-      var fwd = lo + '_' + s + '_' + u, back = lo + '_' + u + '_' + s, twin = seen.get(back);
-      if (twin != null) { (dead = dead || {})[t] = true; dead[twin] = true; seen.delete(back); } else seen.set(fwd, t);
+      var l = seen[lo] || (seen[lo] = []), j;
+      for (j = 0; j < l.length; j += 3) if (l[j] === u && l[j + 1] === s) break;   // the twin, wound the other way
+      if (j < l.length) { (dead = dead || {})[t] = true; dead[l[j + 2]] = true; l.splice(j, 3); return; }
+      for (j = 0; j < l.length; j += 3) if (l[j] === s && l[j + 1] === u) break;   // the same triangle again: replaces it
+      if (j < l.length) l[j + 2] = t; else l.push(s, u, t);
     });
     if (!dead) return tris;
     var out = [], map = new Int32Array(tris.length / 3), n = 0;
@@ -301,9 +392,14 @@ var Exchange = (function () {
     function P(i) { return [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]; }
     polys.forEach(function (p) {
       var idx = p.idx, n = idx.length, collinear = false;
+      // rfHV: the collinear test and the volume below are len(cross(sub(b, a), sub(c, b))) etc. written out, the same
+      // operations in the same order (bit-identical), without allocating arrays per corner
       if (n > 3) for (var i = 0; i < n && !collinear; i++) {
-        var a = P(idx[(i + n - 1) % n]), b = P(idx[i]), c = P(idx[(i + 1) % n]);
-        var cr = len(cross(sub(b, a), sub(c, b))), ref = len(sub(b, a)) * len(sub(c, b));
+        var ia = idx[(i + n - 1) % n] * 3, ib = idx[i] * 3, ic = idx[(i + 1) % n] * 3;
+        var u0 = pos[ib] - pos[ia], u1 = pos[ib + 1] - pos[ia + 1], u2 = pos[ib + 2] - pos[ia + 2];
+        var v0 = pos[ic] - pos[ib], v1 = pos[ic + 1] - pos[ib + 1], v2 = pos[ic + 2] - pos[ib + 2];
+        var w0 = u1 * v2 - u2 * v1, w1 = u2 * v0 - u0 * v2, w2 = u0 * v1 - u1 * v0;
+        var cr = Math.sqrt(w0 * w0 + w1 * w1 + w2 * w2), ref = Math.sqrt(u0 * u0 + u1 * u1 + u2 * u2) * Math.sqrt(v0 * v0 + v1 * v1 + v2 * v2);
         if (cr <= ref * 1e-9) collinear = true;
       }
       var fk = Math.round(p.n[0] * 1e6) + ',' + Math.round(p.n[1] * 1e6) + ',' + Math.round(p.n[2] * 1e6) + ',' + Math.round(p.w * 1e5);
@@ -315,7 +411,8 @@ var Exchange = (function () {
         if (p.split) splitT.push(t);
         triPoly.push(p.src != null ? p.src : -1);
         if (triSurf) triSurf.push(p.srf != null ? p.srf : null);
-        vol += dot(P(a), cross(P(b), P(c))) / 6;
+        var A = a * 3, B = b * 3, C = c * 3, b0 = pos[B], b1 = pos[B + 1], b2 = pos[B + 2], c0 = pos[C], c1 = pos[C + 1], c2 = pos[C + 2];
+        vol += (pos[A] * (b1 * c2 - b2 * c1) + pos[A + 1] * (b2 * c0 - b0 * c2) + pos[A + 2] * (b0 * c1 - b1 * c0)) / 6;
       }
       if (n === 3) tri(idx[0], idx[1], idx[2]);
       else if (!collinear) for (var j = 1; j + 1 < n; j++) tri(idx[0], idx[j], idx[j + 1]);
@@ -329,12 +426,24 @@ var Exchange = (function () {
     });
     tris = dropFoldedPairs(tris, splitT, faces, triSurf ? [triPoly, triSurf] : [triPoly]);
     // open edges of the triangle mesh (0 for a closed body)
-    var dir = {}, open = 0;
-    for (var t = 0; t < tris.length; t += 3) for (var e = 0; e < 3; e++) dir[tris[t + e] + '>' + tris[t + (e + 1) % 3]] = (dir[tris[t + e] + '>' + tris[t + (e + 1) % 3]] || 0) + 1;
-    Object.keys(dir).forEach(function (k) { var ab = k.split('>'); if (!dir[ab[1] + '>' + ab[0]]) open++; });
+    var open = triOpenCount(tris);
     var res = { positions: pos, triangles: tris, faces: faces, openEdges: open, volume: vol, triPoly: triPoly };   // triPoly[t]: the body polygon of triangle t
     if (triSurf) res.triSurf = triSurf;
     return res;
+  }
+  // the distinct directed edges of a triangle list with no reverse twin (0 for a closed body)
+  function triOpenCount(tris) {
+    var m = tris.length, from = new Int32Array(m), to = new Int32Array(m), open = 0;
+    for (var t = 0; t < m; t += 3) for (var e = 0; e < 3; e++) { from[t + e] = tris[t + e]; to[t + e] = tris[t + (e + 1) % 3]; }
+    var D = dirRows(from, to, m), off = D.off, dst = D.dst;
+    for (var a = 0; a < D.nv; a++) {
+      for (var j = off[a]; j < off[a + 1]; j++) {
+        var b = dst[j], dup = false;
+        for (var q = off[a]; q < j && !dup; q++) dup = dst[q] === b;
+        if (!dup && !D.has(b, a)) open++;
+      }
+    }
+    return open;
   }
   function meshBounds(mesh, T) {
     var min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity], p = mesh.positions;
@@ -886,16 +995,36 @@ var Exchange = (function () {
     return { t: 'c', c: circleOf(C, m, S.r), lat: false };
   }
   // the loops (vertex lists) of a set of triangles: directed edges without a reverse twin in the set, chained
+  // rfHV: the directed edges are counted per start vertex (compressed rows over the set's own vertices, filled in
+  // triangle order) instead of in an "a>b" string map: next[a] gets its b's in the order the old map first met a>b,
+  // and loops start at the vertices in ascending order (the old integer object keys): the same loops, same order.
+  var tlLocal = null;   // global vertex -> local number, -1 when unused (kept between calls: one face at a time)
   function trisLoops(tri, tris) {
-    var dir = {};
-    tris.forEach(function (t) { for (var e = 0; e < 3; e++) { var k = tri[t * 3 + e] + '>' + tri[t * 3 + (e + 1) % 3]; dir[k] = (dir[k] || 0) + 1; } });
-    var next = {}, loops = [];
-    Object.keys(dir).forEach(function (k) {
-      var ab = k.split('>'), a = +ab[0], b = +ab[1], twin = dir[b + '>' + a] || 0;
-      for (var r = 0; r < dir[k] - twin; r++) (next[a] = next[a] || []).push(b);
-    });
-    Object.keys(next).forEach(function (s) {
-      s = +s;
+    var m = tris.length * 3, maxV = 0, i, e;
+    for (i = 0; i < tris.length; i++) for (e = 0; e < 3; e++) if (tri[tris[i] * 3 + e] > maxV) maxV = tri[tris[i] * 3 + e];
+    if (!tlLocal || tlLocal.length <= maxV) { tlLocal = new Int32Array(maxV + 1 + (maxV >> 1)); tlLocal.fill(-1); }
+    var loc = tlLocal, verts = [], from = new Int32Array(m), to = new Int32Array(m), k = 0;
+    function id(v) { var l = loc[v]; if (l < 0) { l = loc[v] = verts.length; verts.push(v); } return l; }
+    for (i = 0; i < tris.length; i++) for (e = 0; e < 3; e++, k++) { from[k] = id(tri[tris[i] * 3 + e]); to[k] = id(tri[tris[i] * 3 + (e + 1) % 3]); }
+    var nl = verts.length, off = new Int32Array(nl + 1), dst = new Int32Array(m);
+    for (k = 0; k < m; k++) off[from[k] + 1]++;
+    for (i = 0; i < nl; i++) off[i + 1] += off[i];
+    var fill = off.slice(0, nl);
+    for (k = 0; k < m; k++) dst[fill[from[k]]++] = to[k];
+    for (i = 0; i < nl; i++) loc[verts[i]] = -1;
+    var next = {}, starts = [], loops = [];
+    for (var la = 0; la < nl; la++) {
+      for (var j = off[la]; j < off[la + 1]; j++) {
+        var lb = dst[j], dup = false, cnt = 0, twin = 0, q;
+        for (q = off[la]; q < j && !dup; q++) dup = dst[q] === lb;
+        if (dup) continue;
+        for (q = j; q < off[la + 1]; q++) if (dst[q] === lb) cnt++;
+        for (q = off[lb]; q < off[lb + 1]; q++) if (dst[q] === la) twin++;
+        var a = verts[la], bb = verts[lb];
+        for (var r = 0; r < cnt - twin; r++) { if (!next[a]) { next[a] = []; starts.push(a); } next[a].push(bb); }
+      }
+    }
+    starts.sort(function (x, y) { return x - y; }).forEach(function (s) {
       while (next[s] && next[s].length) {
         var loop = [s], cur = next[s].pop(), guard = 0;
         while (cur !== s && guard++ < 1e6) {
@@ -909,6 +1038,11 @@ var Exchange = (function () {
     return loops;
   }
 
+  // rfHV: a map keyed by two vertex numbers (rows[a] = [b, value, …]); replaces "a>b" / "a_b" string keys in the STEP
+  // writer (get returns undefined when absent, as the object lookups did; set overwrites)
+  function PairMap() { this.rows = []; }
+  PairMap.prototype.get = function (a, b) { var r = this.rows[a]; if (r) for (var i = 0; i < r.length; i += 2) if (r[i] === b) return r[i + 1]; return undefined; };
+  PairMap.prototype.set = function (a, b, v) { var r = this.rows[a] || (this.rows[a] = []); for (var i = 0; i < r.length; i += 2) if (r[i] === b) { r[i + 1] = v; return; } r.push(b, v); };
   function writeBrepAnalytic(W, mesh, name) {
     var pos = mesh.positions, tri = mesh.triangles, nT = tri.length / 3, nF = mesh.faces.length;
     function P(i) { return [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]; }
@@ -918,25 +1052,25 @@ var Exchange = (function () {
     var triPlane = new Int32Array(nT);
     mesh.faces.forEach(function (f, fi) { f.tris.forEach(function (t) { triPlane[t] = fi; }); });
     // distinct surfaces (one per analytic surface key), and each triangle's
-    var recs = [], triRec = new Int32Array(nT), lastF = null, lastI = -1;
+    var recs = [], recIndex = new Map(), triRec = new Int32Array(nT), lastF = null, lastI = -1;
     for (var t = 0; t < nT; t++) {
       var F = mesh.triSurf[t];
       if (!F) { triRec[t] = -1; continue; }
-      if (F !== lastF) { lastF = F; lastI = recs.indexOf(F); if (lastI < 0) { lastI = recs.length; recs.push(F); } }
+      if (F !== lastF) { lastF = F; lastI = recIndex.get(F); if (lastI == null) { lastI = recs.length; recs.push(F); recIndex.set(F, lastI); } }
       triRec[t] = lastI;
     }
     var sGroups = K.curveSurfaces(recs.map(function (F) { return { surf: F }; })), recSurf = [];
-    sGroups.forEach(function (g, gi) { g.polys.forEach(function (fp) { recSurf[recs.indexOf(fp.surf)] = gi; }); });
+    sGroups.forEach(function (g, gi) { g.polys.forEach(function (fp) { var ri = recIndex.get(fp.surf); recSurf[ri == null ? -1 : ri] = gi; }); });
     var surfaces = sGroups.map(function (g) { return g.surf; });
     // connected patches of each surface: union-find over triangles of one surface sharing an edge
-    var par = new Int32Array(nT), edgeTris = {};
+    var par = new Int32Array(nT), edgeTris = new PairMap();
     for (t = 0; t < nT; t++) par[t] = t;
     function root(x) { while (par[x] !== x) { par[x] = par[par[x]]; x = par[x]; } return x; }
     for (t = 0; t < nT; t++) {
       if (triRec[t] < 0) continue;
       for (var e = 0; e < 3; e++) {
-        var a = tri[t * 3 + e], b = tri[t * 3 + (e + 1) % 3], k = a < b ? a + '_' + b : b + '_' + a, o = edgeTris[k];
-        if (o == null) edgeTris[k] = t;
+        var a = tri[t * 3 + e], b = tri[t * 3 + (e + 1) % 3], ea = a < b ? a : b, eb = a < b ? b : a, o = edgeTris.get(ea, eb);
+        if (o == null) edgeTris.set(ea, eb, t);
         else if (recSurf[triRec[o]] === recSurf[triRec[t]]) { var ra = root(o), rb = root(t); if (ra !== rb) par[ra] = rb; }
       }
     }
@@ -954,7 +1088,7 @@ var Exchange = (function () {
     });
 
     var groups, loopsOf, owner, ecls, shape;
-    function ek(a, b) { return a < b ? a + '_' + b : b + '_' + a; }
+    function eget(a, b) { return a < b ? ecls.get(a, b) : ecls.get(b, a); }
     function build() {
       // faces: analytic patches (group nF + comp) and planes (group = the mesh face index)
       groups = [];
@@ -980,9 +1114,9 @@ var Exchange = (function () {
           return l;
         });
       });
-      owner = {};
-      loopsOf.forEach(function (ls, g) { ls.forEach(function (l) { for (var i = 0; i < l.length; i++) owner[l[i] + '>' + l[(i + 1) % l.length]] = g; }); });
-      ecls = {};
+      owner = new PairMap();
+      loopsOf.forEach(function (ls, g) { ls.forEach(function (l) { for (var i = 0; i < l.length; i++) owner.set(l[i], l[(i + 1) % l.length], g); }); });
+      ecls = new PairMap();
       shape = {};
       var failed = false;
       comps.forEach(function (c, ci) {
@@ -990,7 +1124,7 @@ var Exchange = (function () {
         var g = nF + ci, S = c.surf, bad = false;
         loopsOf[g].forEach(function (l) {
           for (var i = 0; i < l.length && !bad; i++) {
-            var a = l[i], b = l[(i + 1) % l.length], A = P(a), B = P(b), cl = classifyEdge(S, A, B, tol), nb = owner[b + '>' + a];
+            var a = l[i], b = l[(i + 1) % l.length], A = P(a), B = P(b), cl = classifyEdge(S, A, B, tol), nb = owner.get(b, a);
             if (!cl || nb == null) { bad = true; break; }
             if (nb >= nF) {
               var c2 = classifyEdge(comps[nb - nF].surf, A, B, tol);
@@ -999,7 +1133,7 @@ var Exchange = (function () {
               var pf = mesh.faces[nb], pn = norm(pf.normal);
               if (Math.abs(Math.abs(dot(pn, cl.c.normal)) - 1) > 1e-9 || Math.abs(dot(pn, cl.c.center) - pf.w) > tol) bad = true;
             }
-            ecls[ek(a, b)] = cl;
+            ecls.set(a < b ? a : b, a < b ? b : a, cl);
           }
         });
         var sh = bad ? null : patchShape(c, loopsOf[g]);
@@ -1011,10 +1145,10 @@ var Exchange = (function () {
     function patchShape(c, loops) {
       var S = c.surf, nC = canonDir(S.d), xd = xdirOf(nC), yd = cross(nC, xd), closed = [], other = [];
       loops.forEach(function (l) {
-        var first = ecls[ek(l[0], l[1])], nb0 = owner[l[1] + '>' + l[0]], all = first && first.t === 'c' && first.lat;
+        var first = eget(l[0], l[1]), nb0 = owner.get(l[1], l[0]), all = first && first.t === 'c' && first.lat;
         for (var i = 1; i < l.length && all; i++) {
-          var cl = ecls[ek(l[i], l[(i + 1) % l.length])];
-          if (!cl || cl.t !== 'c' || cl.c.key !== first.c.key || owner[l[(i + 1) % l.length] + '>' + l[i]] !== nb0) all = false;
+          var cl = eget(l[i], l[(i + 1) % l.length]);
+          if (!cl || cl.t !== 'c' || cl.c.key !== first.c.key || owner.get(l[(i + 1) % l.length], l[i]) !== nb0) all = false;
         }
         (all ? closed : other).push({ loop: l, circle: all ? first.c : null });
       });
@@ -1077,7 +1211,7 @@ var Exchange = (function () {
     // the oriented edges of one loop: runs of chords of one circle between the same two faces become one EDGE_CURVE
     function loopEdges(l, g) {
       var n = l.length, cls = [], nbs = [], i;
-      for (i = 0; i < n; i++) { cls.push(ecls[ek(l[i], l[(i + 1) % n])] || { t: 'l' }); nbs.push(owner[l[(i + 1) % n] + '>' + l[i]]); }
+      for (i = 0; i < n; i++) { cls.push(eget(l[i], l[(i + 1) % n]) || { t: 'l' }); nbs.push(owner.get(l[(i + 1) % n], l[i])); }
       function same(i1, i2) { return cls[i1].t === 'c' && cls[i2].t === 'c' && cls[i1].c.key === cls[i2].c.key && nbs[i1] === nbs[i2]; }
       var breaks = [];
       for (i = 0; i < n; i++) if (!same((i + n - 1) % n, i)) breaks.push(i);

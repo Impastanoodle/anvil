@@ -335,22 +335,22 @@
   // continues with the boundary edge leaving the nearest dangling start within 1e-3 of the face's size (the end vertex
   // itself is dropped; the collinear pass removes what is left of the step).
   function bridgeGaps(boundary, next, vlist) {
-    var into = {}, ends = [], starts = [];
-    boundary.forEach(function (e) { into[e[1].k] = true; });
-    boundary.forEach(function (e) { if (!next[e[1].k]) ends.push(e[1]); if (!into[e[0].k]) starts.push(e); });
+    var into = [], ends = [], starts = [];
+    boundary.forEach(function (e) { into[e[1].vi] = true; });
+    boundary.forEach(function (e) { if (!next[e[1].vi]) ends.push(e[1]); if (!into[e[0].vi]) starts.push(e); });
     if (!ends.length || !starts.length) return;
     var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
     vlist.forEach(function (v) { for (var k = 0; k < 3; k++) { if (v[k] < lo[k]) lo[k] = v[k]; if (v[k] > hi[k]) hi[k] = v[k]; } });
-    var gapTol = 1e-3 * len(sub(hi, lo)), taken = {};
+    var gapTol = 1e-3 * len(sub(hi, lo)), taken = [];
     ends.forEach(function (v) {
-      if (next[v.k]) return;
+      if (next[v.vi]) return;
       var best = null, bestD = gapTol;
       starts.forEach(function (s) {
-        if (taken[s[0].k]) return;
+        if (taken[s[0].vi]) return;
         var d = len(sub(s[0], v));
         if (d <= bestD) { bestD = d; best = s; }
       });
-      if (best) { taken[best[0].k] = true; next[v.k] = best; }
+      if (best) { taken[best[0].vi] = true; next[v.vi] = best; }
     });
   }
 
@@ -363,23 +363,41 @@
     // Vertices are welded once: each gets .k, the key of the first vertex within 1e-4 of it on every axis (looked up in
     // its own and the neighbouring 1e-4 cells). That welds all the old key3 cell did (near-coincident CSG corners a few
     // 1e-5 apart) and also two copies of one point that straddle a rounding midpoint, which key3 kept apart.
-    var WELD = 1e-4, verts = {}, cells = {}, edges = [];
+    // rfHV: the search is the same (the stored vertex within WELD on every axis whose 1e-4 cell comes first in the old
+    // dx, dy, dz = -1..1 order, then the earliest stored), but the stored vertices sit in coarse cells of 3 × 3 × 3 of
+    // those cells under a small-integer hash, so a vertex looks in at most 8 buckets instead of building 27 strings
+    // (2 s of bodyEdges' 3.4 s on a 400 hole panel). vi numbers the welded vertices; k keeps its old string value.
+    var WELD = 1e-4, vlist = [], edges = [], buckets = new Map(), CX = [], CY = [], CZ = [];   // CX[vi]: a stored vertex's cell
+    function coarse(i) { return Math.floor(i / 3); }
+    function bucketKey(X, Y, Z) { return (Math.imul(X, 73856093) ^ Math.imul(Y, 19349663) ^ Math.imul(Z, 83492791)) & 0x3fffffff; }
     function weld(q) {
       var ix = Math.round(q[0] * 1e4), iy = Math.round(q[1] * 1e4), iz = Math.round(q[2] * 1e4);
-      for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) for (var dz = -1; dz <= 1; dz++) {
-        var c = cells[(ix + dx) + ',' + (iy + dy) + ',' + (iz + dz)];
-        if (c) for (var j = 0; j < c.length; j++) { var r = c[j]; if (Math.abs(r[0] - q[0]) <= WELD && Math.abs(r[1] - q[1]) <= WELD && Math.abs(r[2] - q[2]) <= WELD) { q.k = r.k; return q; } }
+      var X0 = coarse(ix - 1), X1 = coarse(ix + 1), Y0 = coarse(iy - 1), Y1 = coarse(iy + 1), Z0 = coarse(iz - 1), Z1 = coarse(iz + 1);
+      var best = null, bestR = 27, sameCell = false;
+      for (var X = X0; X <= X1; X++) for (var Y = Y0; Y <= Y1; Y++) for (var Z = Z0; Z <= Z1; Z++) {
+        var l = buckets.get(bucketKey(X, Y, Z));
+        if (l) for (var j = 0; j < l.length; j++) {
+          var s = l[j], sv = s.vi, ox = CX[sv] - ix, oy = CY[sv] - iy, oz = CZ[sv] - iz;
+          if (ox < -1 || ox > 1 || oy < -1 || oy > 1 || oz < -1 || oz > 1) continue;
+          if (!ox && !oy && !oz) sameCell = true;
+          if (!(Math.abs(s[0] - q[0]) <= WELD && Math.abs(s[1] - q[1]) <= WELD && Math.abs(s[2] - q[2]) <= WELD)) continue;
+          var rank = (ox + 1) * 9 + (oy + 1) * 3 + (oz + 1);
+          if (rank < bestR || (rank === bestR && sv < best.vi)) { bestR = rank; best = s; }
+        }
       }
+      if (best) { q.k = best.k; q.vi = best.vi; return q; }
       var k = ix + ',' + iy + ',' + iz;
-      if (verts[k]) k += '#' + Object.keys(verts).length;   // a different point in the same cell keeps its own key
-      q.k = k; verts[k] = q; (cells[ix + ',' + iy + ',' + iz] = cells[ix + ',' + iy + ',' + iz] || []).push(q);
+      if (sameCell) k += '#' + vlist.length;   // a different point in the same cell keeps its own key
+      q.k = k; q.vi = vlist.length; vlist.push(q);
+      CX.push(ix); CY.push(iy); CZ.push(iz);
+      var bk = bucketKey(coarse(ix), coarse(iy), coarse(iz)), bl = buckets.get(bk);
+      if (bl) bl.push(q); else buckets.set(bk, [q]);
       return q;
     }
     face.polys.forEach(function (p) {
       var vs = p.vertices.map(function (v) { return weld(arr(v.pos)); });
       for (var i = 0; i < vs.length; i++) edges.push([vs[i], vs[(i + 1) % vs.length]]);
     });
-    var vlist = Object.keys(verts).map(function (k) { return verts[k]; });
     // split edges at collinear interior vertices; on faces with many vertices only the vertices in the grid cells the
     // edge crosses are tested (r3/engine3: was every vertex against every edge, ~100 ms on the Flange)
     var near = vlist.length > outlineOptions.gridMin ? outlineGrid(vlist, plane) : null;
@@ -394,7 +412,7 @@
       if (L < 1e-9) return;
       var u = scale(d, 1 / L), ts = [{ t: 0, p: a }, { t: L, p: b }];
       function test(v) {
-        if (v.k === a.k || v.k === b.k) return;   // the edge's own ends (or their welded twins) never split it
+        if (v.vi === a.vi || v.vi === b.vi) return;   // the edge's own ends (or their welded twins) never split it
         var w = sub(v, a), t = dot(w, u);
         if (t <= 1e-6 || t >= L - 1e-6) return;
         var perp = len(sub(w, scale(u, t)));
@@ -408,28 +426,33 @@
       }
     });
     // an edge is on the boundary when no opposite-direction twin exists
-    var count = {};
-    split.forEach(function (e) {
-      var k = e[0].k + '>' + e[1].k;
-      count[k] = (count[k] || 0) + 1;
-    });
+    // rfHV: counted per welded vertex number (a short list of { b, n, em } per start vertex), not in "a>b" strings
+    var count = new Array(vlist.length);
+    function slot(a, b, make) {
+      var l = count[a];
+      if (l) for (var i = 0; i < l.length; i++) if (l[i].b === b) return l[i];
+      if (!make) return null;
+      var s = { b: b, n: 0, em: 0 };
+      if (l) l.push(s); else count[a] = [s];
+      return s;
+    }
+    split.forEach(function (e) { slot(e[0].vi, e[1].vi, true).n++; });
     // rfFG: by count, not presence: a boolean can leave a sliver copy of part of a polygon (the same corners in the
     // same order twice, one of them welded shut), whose reversed edge cancelled the face's real boundary edge and
     // the loop through it was lost. a>b is on the boundary as many times as it outnumbers b>a.
-    var emitted = {};
     var boundary = split.filter(function (e) {
-      var k = e[0].k + '>' + e[1].k, net = count[k] - (count[e[1].k + '>' + e[0].k] || 0);
-      if (!(net > 0) || (emitted[k] || 0) >= net) return false;
-      emitted[k] = (emitted[k] || 0) + 1;
+      var s = slot(e[0].vi, e[1].vi, false), tw = slot(e[1].vi, e[0].vi, false), net = s.n - (tw ? tw.n : 0);
+      if (!(net > 0) || s.em >= net) return false;
+      s.em++;
       return true;
     });
     // chain
-    var next = {}, outs = {}, pinch = false;
-    boundary.forEach(function (e) { next[e[0].k] = e; if (outs[e[0].k]) { outs[e[0].k].push(e); pinch = true; } else outs[e[0].k] = [e]; });
+    var next = [], outs = [], pinch = false;
+    boundary.forEach(function (e) { next[e[0].vi] = e; if (outs[e[0].vi]) { outs[e[0].vi].push(e); pinch = true; } else outs[e[0].vi] = [e]; });
     var loops = [];
     bridgeGaps(boundary, next, vlist);
     if (pinch) {
-      Object.keys(next).forEach(function (k) { if (!outs[k]) outs[k] = [next[k]]; });   // a crack bridged by bridgeGaps
+      next.forEach(function (e, k) { if (!outs[k]) outs[k] = [e]; });   // a crack bridged by bridgeGaps
       // rfHM: two pieces of the face touch at a vertex (two boundary edges leave it): meshFromBody clusters facets by
       // plane, so on a finely meshed curved surface two facets a third one apart can share a face and a corner. Chaining
       // by vertex then took whichever edge came last, ran one piece's loop into the other's and lost two real edges
@@ -438,7 +461,7 @@
       // vertices, as used.
       var usedE = new Set();
       var pickOut = function (cur) {
-        var l = outs[cur[1].k];
+        var l = outs[cur[1].vi];
         if (!l) return null;
         var best = null, bestA = -1, r = sub(cur[0], cur[1]), fn = face.normal;
         l.forEach(function (e) {
@@ -459,23 +482,23 @@
           var p2 = to2D(plane, cur[0]);
           p2.p3 = cur[0];
           loop.push(p2);
-          if (cur[1].k === e[0].k) break;   // back at the loop's first vertex: closed
+          if (cur[1].vi === e[0].vi) break;   // back at the loop's first vertex: closed
           cur = pickOut(cur);
         }
         if (loop.length >= 3) loops.push(loop);
       });
     }
-    var used = {};
+    var used = [];
     if (!pinch) boundary.forEach(function (e) {
-      var k0 = e[0].k;
+      var k0 = e[0].vi;
       if (used[k0]) return;
       var loop = [], cur = e, guard = 0;
-      while (cur && !used[cur[0].k] && guard++ < 100000) {
-        used[cur[0].k] = true;
+      while (cur && !used[cur[0].vi] && guard++ < 100000) {
+        used[cur[0].vi] = true;
         var q2 = to2D(plane, cur[0]);
         q2.p3 = cur[0];   // rfHM: the vertex itself, for bodyEdges (see there)
         loop.push(q2);
-        cur = next[cur[1].k];
+        cur = next[cur[1].vi];
       }
       if (loop.length >= 3) loops.push(loop);
     });
@@ -587,26 +610,46 @@
   // -> [{a, b, mid, dir, len, faces:[i,j], normals:[nA,nB], smooth, convex, ka, kb}]
   function bodyEdges(mesh) {
     var map = {}, order = [];
+    // rfHV: each corner's ekey is numbered once (ids) and an edge is found from its two numbers (adj[lo] = [hi, edge,
+    // …]); the "ka|kb" key string is built only for a new edge. Same keys, same order, same edges as the string lookup.
+    var ids = new Map(), adj = [];
+    function idOf(s) { var v = ids.get(s); if (v === undefined) { v = ids.size; ids.set(s, v); } return v; }
     for (var i = 0; i < mesh.faces.length; i++) {
       var o;
       try { o = faceOutline(mesh, i); } catch (e) { o = null; }
       if (!o) continue;
-      var n = mesh.faces[i].normal;
+      var n = mesh.faces[i].normal, n0 = n[0], n1 = n[1], n2 = n[2];
       o.loops.forEach(function (loop) {
-        for (var k = 0; k < loop.length; k++) {
-          // rfHM: the outline's own 3D vertices, not points rebuilt on the face's plane: meshFromBody clusters facets
-          // within 1e-3 rad into one face whose plane is the first one's, so on a finely meshed curved surface (an
-          // OpenCascade loft) a merged neighbour's corners lie off that plane and came back moved, missed their twins
-          // and were drawn as short dark marks across the shaded face
-          var l1 = loop[(k + 1) % loop.length];
-          var a = loop[k].p3 ? loop[k].p3.slice(0, 3) : to3D(o.plane, loop[k][0], loop[k][1]), b = l1.p3 ? l1.p3.slice(0, 3) : to3D(o.plane, l1[0], l1[1]);
-          var ka = ekey(a), kb = ekey(b), key = ka < kb ? ka + '|' + kb : kb + '|' + ka;
-          var e = map[key];
-          if (!e) { e = map[key] = { a: a, b: b, ka: ka, kb: kb, faces: [], normals: [], ins: [] }; order.push(key); }
+        var nl = loop.length, P3 = new Array(nl), KS = new Array(nl), ID = new Array(nl);
+        // rfHM: the outline's own 3D vertices, not points rebuilt on the face's plane: meshFromBody clusters facets
+        // within 1e-3 rad into one face whose plane is the first one's, so on a finely meshed curved surface (an
+        // OpenCascade loft) a merged neighbour's corners lie off that plane and came back moved, missed their twins
+        // and were drawn as short dark marks across the shaded face
+        for (var k = 0; k < nl; k++) {
+          var lk = loop[k];
+          P3[k] = lk.p3 ? lk.p3 : to3D(o.plane, lk[0], lk[1]);
+          KS[k] = ekey(P3[k]);
+          ID[k] = idOf(KS[k]);
+        }
+        for (k = 0; k < nl; k++) {
+          var k1 = (k + 1) % nl, ka = KS[k], kb = KS[k1], lo = ID[k], hi = ID[k1];
+          if (lo > hi) { lo = ID[k1]; hi = ID[k]; }
+          var row = adj[lo] || (adj[lo] = []), e = null;
+          for (var r = 0; r < row.length; r += 2) if (row[r] === hi) { e = row[r + 1]; break; }
+          if (!e) {
+            var key = ka < kb ? ka + '|' + kb : kb + '|' + ka, A = P3[k], B = P3[k1];
+            e = map[key] = { a: [A[0], A[1], A[2]], b: [B[0], B[1], B[2]], ka: ka, kb: kb, faces: [], normals: [], ins: [] };
+            order.push(key);
+            row.push(hi, e);
+          }
           e.faces.push(i);
           e.normals.push(n);
-          // outline loops run counter-clockwise about the face normal, so the face interior is to the left of a->b
-          e.ins.push(norm(cross(n, norm(sub(b, a)))));
+          // outline loops run counter-clockwise about the face normal, so the face interior is to the left of a->b:
+          // norm(cross(n, norm(sub(b, a)))) written out (the same operations, bit-identical)
+          var a3 = P3[k], b3 = P3[k1], d0 = b3[0] - a3[0], d1 = b3[1] - a3[1], d2 = b3[2] - a3[2], l = Math.sqrt(d0 * d0 + d1 * d1 + d2 * d2);
+          if (l > 1e-12) { var il = 1 / l; d0 *= il; d1 *= il; d2 *= il; } else { d0 = 0; d1 = 0; d2 = 0; }
+          var c0 = n1 * d2 - n2 * d1, c1 = n2 * d0 - n0 * d2, c2 = n0 * d1 - n1 * d0, lc = Math.sqrt(c0 * c0 + c1 * c1 + c2 * c2);
+          e.ins.push(lc > 1e-12 ? [c0 * (1 / lc), c1 * (1 / lc), c2 * (1 / lc)] : [0, 0, 0]);
         }
       });
     }
