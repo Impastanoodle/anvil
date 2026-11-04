@@ -1876,3 +1876,10 @@ Context: the user: "install it in my windows app and give me a shortcut to anvil
 - Released Anvil 0.1.1 (133.5 MB, sha256 aa0feb3c31a4...) and installed it over 0.1.0 with `/S` (Anvil was not running); check.js app --exe on the installed Anvil.exe: all pass, engine native. In-app times (wasm / native): engine load 3,620 / 12 ms; first start 5.5 / 2.3 s; U-bracket round trip 1,113 / 314 ms; 150-hole panel round trip 23.3 / 5.8 s.
 Next: the in-app update prompt (0.1.1 -> 0.1.2 through "Restart to update") is still untested by a real click; fuse hole prisms in one Boolean; the first start is still 2.3 s (page + kernel scripts, not the engine).
 Tests: kernel 2384 / 2384, examples 29 / 29 both engines, ui-smoke 989 / 989, occt-tests 176 / 176 (verify.js 367 s); desktop/check.js app 47 / 47 on the unpacked build and all pass on the installed one.
+
+## local-2026-11-04e (local, interactive head, no agents): a new logo and app icon
+
+Context: the user (screenshot of the title bar and the red menu-bar glyph): "redesign the logo to be.. an actual anvil thats sharp and shaded with edges", then "needs to update the app icon aswell on desktop".
+- #logo in index.html is now a faceted steel anvil (14 polygons: pointed horn with lit top / dark underside, bright face with hardy hole, bevel, shaded body and heel end, waist lit left / shaded right, flared base with two feet), drawn over a dark #1b2027 outline group; viewBox 0 10.5 64 41.5, 25 x 16 px in the menu bar (style.css #menubar #logo). rfGX checks 25 x 16. desktop/make-icon.js reads those polygons from index.html and draws them on the blue tile (outline by distance to the facet edges, about 1 px at 16 px), so the app icon always matches the logo.
+- Released Anvil 0.1.2 and installed it with /S (Anvil was closed); the installed Anvil.exe carries the new icon; ran ie4uinit -show so the Desktop shortcut picks it up.
+Tests: rfGX 7 / 7; no console errors on load.
