@@ -140,6 +140,7 @@
     for (var n = 2; ; n++) for (var j = 0; j < abc.length; j++) if (!used[abc[j] + n]) return abc[j] + n;
   }
   function viewExtents(doc, mesh, v) {
+    if (v.kind === 'empty') return emptyExtents(doc, v);
     if (v.kind === 'flat') { var fe = flatExtents(mesh); if (fe) return fe; }
     return extentsOf(mesh, viewFrame(doc, v));
   }
@@ -149,6 +150,34 @@
     if (!fd || fd.error) return null;
     var b = fd.bbox;
     return { umin: b.umin, umax: b.umax, vmin: b.vmin, vmax: b.vmax, w: b.umax - b.umin, h: b.vmax - b.vmin, cu: (b.umin + b.umax) / 2, cv: (b.vmin + b.vmax) / 2 };
+  }
+  // (lane drawing) Empty View (Insert ▸ Drawing View ▸ Empty): a view with no model, to sketch and annotate in. Its
+  // sketch (view.sketch, paper offsets from the view's centre) moves with it. emptyExtents: the paper its sketch takes
+  // round the centre (at least half an inch / 12.7 mm each way), in the view's model units (paper / scale)
+  var EMPTY_HALF = 12.7;
+  function emptyExtents(doc, v) {
+    var s = viewScale(doc, v), h = EMPTY_HALF * paperK(doc.units), b = { x0: -h, y0: -h, x1: h, y1: h };
+    function grow(x, y) { b.x0 = Math.min(b.x0, x); b.x1 = Math.max(b.x1, x); b.y0 = Math.min(b.y0, y); b.y1 = Math.max(b.y1, y); }
+    (v.sketch || []).forEach(function (e) {
+      [e.a, e.b, e.p, e.c].forEach(function (q) { if (q) grow(+q[0], +q[1]); });
+      if (e.c && +e.r > 0) { grow(e.c[0] - e.r, e.c[1] - e.r); grow(e.c[0] + e.r, e.c[1] + e.r); }
+      (e.pts || []).forEach(function (q) { grow(+q[0], +q[1]); });
+    });
+    var g = 2 * paperK(doc.units);
+    b = { umin: (b.x0 - g) / s, umax: (b.x1 + g) / s, vmin: (b.y0 - g) / s, vmax: (b.y1 + g) / s };
+    b.w = b.umax - b.umin; b.h = b.vmax - b.vmin; b.cu = (b.umin + b.umax) / 2; b.cv = (b.vmin + b.vmax) / 2;
+    return b;
+  }
+  // addEmptyView(doc, { x, y, scale, name }) -> the view (kind 'empty', Front frame, no linework); at the sheet's centre
+  // unless x / y are given
+  function addEmptyView(doc, opts) {
+    opts = opts || {};
+    var S = sheetSize(doc, doc.units), F = frameOf('Front'), sc = opts.scale ? (Array.isArray(opts.scale) ? opts.scale : parseScale(opts.scale)) : null;
+    var v = addView(doc, 'Front', { kind: 'empty', frame: { e: F.e.slice(), u: F.u.slice(), v: F.v.slice() }, display: 'hlv', scale: sc,
+      x: opts.x != null ? +opts.x : S[0] / 2, y: opts.y != null ? +opts.y : S[1] / 2 });
+    if (opts.name) v.name = String(opts.name);
+    doc.layout = 'manual';
+    return v;
   }
   // addFlatView(doc, mesh, { model, build, x, y, scale, fit }) -> the view: the sheet-metal part's flat pattern (Model
   // View ▸ Flat pattern), seen from the +n side of the Base Flange's sketch plane, with its bend lines and bend notes.
@@ -177,6 +206,7 @@
     if (!par) throw new Error('No drawing view ' + parentId);
     if (par.kind === 'detail') throw new Error('A view cannot be projected from a detail view');
     if (par.kind === 'flat') throw new Error('A view cannot be projected from a flat-pattern view');
+    if (par.kind === 'empty') throw new Error('A view cannot be projected from an empty view');
     var F = projectedFrame(viewFrame(doc, par), dir, doc.sheet.projection), vert = !DIRS[dir][0];
     var pos = besidePos(doc, mesh, par, F, dir);
     var v = addView(doc, F.name, { kind: 'projected', frame: { e: F.e, u: F.u, v: F.v }, parent: par.id, align: vert ? 'x' : 'y', dir: dir,
@@ -300,6 +330,7 @@
     if (!par) throw new Error('No drawing view ' + parentId);
     if (par.kind === 'detail') throw new Error('A section cannot be cut in a detail view');
     if (par.kind === 'flat') throw new Error('A section cannot be cut in a flat-pattern view');
+    if (par.kind === 'empty') throw new Error('A section cannot be cut in an empty view');
     var axis = opts.axis === 'v' ? 'v' : 'h', sign = opts.sign < 0 ? -1 : 1, label = opts.label || nextLabel(doc);
     var F = sectionFrame(viewFrame(doc, par), axis, sign);
     var place = (axis === 'h' ? (sign > 0 ? 'up' : 'down') : (sign > 0 ? 'right' : 'left'));
@@ -336,6 +367,7 @@
     if (!par) throw new Error('No drawing view ' + parentId);
     if (par.kind === 'detail') throw new Error('Detail views of detail views are not supported');
     if (par.kind === 'flat') throw new Error('Detail views of flat-pattern views are not supported');
+    if (par.kind === 'empty') throw new Error('An empty view has no model to show in a detail view');
     // (rfZ) a Profile (opts.shape 'profile', a, b: a rectangle's corners) instead of the circle; opts.style (Per standard /
     // Broken / Leader / No leader / Connected) and opts.outline ('full' | 'jagged'): see drawing-views.js
     var prof = _.detailProfile(opts);
@@ -503,6 +535,11 @@
   }
   function plainContent(doc, v, mesh, parentContent) {
     var par = v.parent != null ? findView(doc, v.parent) : null, s = viewScale(doc, v);
+    if (v.kind === 'empty') {   // (lane drawing) no model: an empty projection the size of its sketch, centred on 0, 0
+      var EF = viewFrame(doc, v), ee = emptyExtents(doc, v), epr = emptyProjection(EF, ee);
+      epr.bounds = { umin: ee.umin, umax: ee.umax, vmin: ee.vmin, vmax: ee.vmax };
+      return { frame: EF, proj: epr, center: [0, 0], caps: [], scale: s, empty: true };
+    }
     if (v.kind === 'flat') {
       // the flat pattern, unfolded by the kernel (worked out here, not in the worker: it is a few ms of CSG)
       var fd = D.flatData(mesh) || { error: 'No flat pattern' }, fpr = D.flatProjection(fd), FF = viewFrame(doc, v), fb = fpr.bounds;
@@ -2373,7 +2410,7 @@
   D.newDrawing = newDrawing; D.addView = addView; D.projectionKey = projectionKey; D.putProjection = putProjection; D.sectionJob = sectionJob; D.putSection = putSection;
   // isSheetMetal(model): a part with sheet-metal parameters and a Base Flange (Model View offers Flat pattern)
   D.isSheetMetal = function (model) { return !!(model && model.type !== 'assembly' && model.sheet && (model.features || []).some(function (f) { return f.sheetBase && !f.suppressed; })); };
-  D.addFlatView = addFlatView; D.flatExtents = flatExtents; D.viewExtents = viewExtents;
+  D.addFlatView = addFlatView; D.addEmptyView = addEmptyView; D.emptyExtents = emptyExtents; D.flatExtents = flatExtents; D.viewExtents = viewExtents;
   D.viewFrame = viewFrame; D.nextLabel = nextLabel; D.addProjectedView = addProjectedView; D.addSectionView = addSectionView; D.detailScale = detailScale; D.addDetailView = addDetailView;
   D.TB_BLOCKS = TB_BLOCKS; D.tbBlocks = tbBlocks; D.tbRects = tbRects; D.fieldRect = fieldRect; D.generalTolerances = generalTolerances;
   D.todayISO = todayISO; D.REV_COLS = REV_COLS; D.revLetter = revLetter; D.nextRev = nextRev; D.latestRev = latestRev; D.insertRevisionTable = insertRevisionTable; D.addRevision = addRevision;

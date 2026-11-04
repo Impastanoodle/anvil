@@ -1086,6 +1086,7 @@
     opts = opts || {};
     var par = findV(doc, parentId);
     if (!par) throw new Error('No drawing view ' + parentId);
+    if (par.kind === 'empty') throw new Error('An auxiliary view cannot be made from an empty view');
     if (par.kind === 'detail' || par.kind === 'flat') throw new Error('An auxiliary view cannot be made from a ' + (par.kind === 'flat' ? 'flat-pattern' : 'detail') + ' view');
     if (!opts.a || !opts.b) throw new Error('An auxiliary view needs the edge it looks square onto: { a: [u, v], b: [u, v] }');
     var sign = opts.sign < 0 ? -1 : 1, label = opts.label || D.nextLabel(doc), P = D.viewFrame(doc, par), F = auxFrame(P, opts.a, opts.b, sign, doc.sheet.projection);

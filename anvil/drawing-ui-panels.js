@@ -402,7 +402,7 @@
       var sel = D.sel && D.sel.kind === 'view' && D.sel.id === v.id;
       var w = D.sheet && D.sheet.views.filter(function (x) { return x.view.id === v.id; })[0];
       var st = w ? w.proj.stats : null;
-      var badge = v.kind === 'section' ? v.label + '-' + v.label : v.kind === 'detail' ? v.label + ' ' + Drawing.scaleText(v.scale || dc.sheet.scale) : v.orient;
+      var badge = v.kind === 'section' ? v.label + '-' + v.label : v.kind === 'detail' ? v.label + ' ' + Drawing.scaleText(v.scale || dc.sheet.scale) : v.kind === 'empty' ? 'Empty' : v.orient;
       t.appendChild(row({ icon: v.kind === 'section' ? (v.section && v.section.removed ? 'removedSection' : 'sectionView') : v.kind === 'detail' ? 'detailView' : v.kind === 'projected' ? 'projView' : v.kind === 'flat' ? 'flatView' : 'drawingView', name: v.name, depth: 2, twisty: true, cls: 'dw-view' + (v.kind ? ' dw-' + v.kind : ''), data: { view: String(v.id) }, sel: sel, badge: badge,
         title: v.name + ' \u2014 ' + v.orient + (v.scale ? ', scale ' + Drawing.scaleText(v.scale) : '') + (st ? ' \u2014 ' + st.visibleLines + ' visible / ' + st.hiddenLines + ' hidden lines, ' + st.visibleCircles + ' circles' : '') + '. Double-click for properties.',
         click: function () { D.sel = { kind: 'view', id: v.id }; drawOverlay(); renderTree(); },
@@ -417,7 +417,7 @@
           menu: function () { return [{ label: 'Delete ' + tp[1], action: function () { edit(function (dc2) { var vv = Drawing.findView(dc2, v.id); if (vv) vv.annotations = (vv.annotations || []).filter(function (a) { return a.type !== tp[0]; }); }); } }]; } }));
       });
       // a flat-pattern view: its bend notes (or Bend Table tags), shown / hidden
-      var fl = an.filter(function (a) { return a.flat && (a.type === 'bendNote' || a.type === 'bendTag'); });
+      var fl = an.filter(function (a) { return a.flat && (a.type === 'bendNote' || a.type === 'bendTag' || a.type === 'crossBreakNote'); });
       if (fl.length) {
         var hid = fl.filter(function (a) { return a.hidden; }).length;
         t.appendChild(row({ icon: 'bendNote', name: fl[0].type === 'bendTag' ? 'Bend Table' : 'Bend Notes', depth: 3, cls: 'dw-annots dw-bendNotes', badge: String(fl.length - hid) + (hid ? ' (' + hid + ' hidden)' : ''), title: fl.map(function (a) { return a.text + (a.hidden ? ' (hidden)' : ''); }).join(', '),

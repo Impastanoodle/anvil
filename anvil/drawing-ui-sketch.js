@@ -17,7 +17,7 @@
   function drawOverlay() { DW.drawOverlay(); }
   function units() { return DW.units(); }
   var TOOL_NAMES = { line: 'Line', centerline: 'Centerline', rect: 'Corner Rectangle', circle: 'Circle', arc: 'Centerpoint Arc', spline: 'Spline', point: 'Point', text: 'Text',
-    coin: 'Coincident', hideedges: 'Hide/Show Edges', relpick: 'Relative View', relplace: 'Relative View' };
+    coin: 'Coincident', hideedges: 'Hide/Show Edges', relpick: 'Relative View', relplace: 'Relative View', hideann: 'Hide/Show Annotations', emptyview: 'Empty View' };
   var TOOL_MSG = {
     line: 'Line: click its start, then each next point (the lines chain; an end on another point is held Coincident, a near-level line is made Horizontal). Esc ends.',
     centerline: 'Centerline: click its start, then its end. Esc ends.',
@@ -28,7 +28,9 @@
     point: 'Point: click where it goes.',
     text: 'Text: click where the text starts.',
     coin: 'Coincident: click a point of a sketch entity, then the point it should meet.',
-    hideedges: 'Hide/Show Edges: click a view edge to hide it; hidden edges show grey, click one to show it again. Esc ends.'
+    hideedges: 'Hide/Show Edges: click a view edge to hide it; hidden edges show grey, click one to show it again. Esc ends.',
+    hideann: 'Hide/Show Annotations: click a dimension, note, symbol, balloon or bend note to hide it; hidden ones show grey, click one to show it again. Esc ends.',
+    emptyview: 'Empty View: click where the view goes. Sketch and annotate in it; drag it and its sketch moves with it.'
   };
 
   // ------------------------------------------------------------------ icons (rfAO)
@@ -134,6 +136,8 @@
   function toolClick(name, p, e) {
     var P = D.pending || (D.pending = { pts: [] });
     if (name === 'hideedges') { hideShowClick(p); return; }
+    if (name === 'hideann') { hideAnnClick(p); return; }
+    if (name === 'emptyview') { emptyViewClick(p); return; }
     if (name === 'relpick') { relPick(p); return; }
     if (name === 'relplace') { relPlace(p); return; }
     if (name === 'coin') {
@@ -234,6 +238,37 @@
     if (!g) { UI.setStatus(TOOL_MSG.hideedges); return; }
     edit(function (dc) { Drawing.hideEdge(dc, g.view, g.key, true); });
     UI.setStatus('Edge hidden (click it again to show it). Esc ends.');
+  }
+
+  // ------------------------------------------------------------------ (lane drawing) View ▸ Hide/Show Annotations
+  // annAt(p) -> { ref (Drawing.setAnnotationHidden's), hidden, box } for the annotation under p, hidden ones included
+  // (while the tool runs the sheet lists them, drawn grey): dimensions, centre marks / callouts / flat-view notes,
+  // notes, symbols, balloons
+  function annAt(p) {
+    var sh = D.sheet, t = px(4), hit = null;
+    if (!sh) return null;
+    function inBox(b) { return b && isFinite(b.x0) && p[0] >= b.x0 - t && p[0] <= b.x1 + t && p[1] >= b.y0 - t && p[1] <= b.y1 + t; }
+    (sh.dims || []).forEach(function (d) { if (inBox(d.box)) hit = { ref: d.index != null ? { kind: 'dim', view: d.view, index: d.index } : { kind: 'dim', key: d.key }, hidden: !!d.hidden, box: d.box }; });
+    (sh.annotations || []).forEach(function (a) { if (inBox(a.box)) hit = { ref: a.flat ? { kind: 'flat', view: a.view, key: a.key } : { kind: 'annot', id: a.id }, hidden: !!a.hidden, box: a.box }; });
+    (sh.notes || []).forEach(function (n) { if (inBox(n.box)) hit = { ref: { kind: 'note', id: n.id }, hidden: !!n.hidden, box: n.box }; });
+    (sh.symbols || []).forEach(function (y) { if (inBox(y.box)) hit = { ref: { kind: 'symbol', id: y.id }, hidden: !!y.hidden, box: y.box }; });
+    (sh.balloons || []).forEach(function (b) {
+      if (b.c && Math.hypot(p[0] - b.c[0], p[1] - b.c[1]) <= b.r + t) hit = { ref: { kind: 'balloon', view: b.view, index: b.index }, hidden: !!b.hidden, box: { x0: b.c[0] - b.r, y0: b.c[1] - b.r, x1: b.c[0] + b.r, y1: b.c[1] + b.r } };
+    });
+    return hit;
+  }
+  function hideAnnClick(p) {
+    var h = annAt(p);
+    if (!h) { UI.setStatus(TOOL_MSG.hideann); return; }
+    edit(function (dc) { Drawing.setAnnotationHidden(dc, h.ref, !h.hidden); });
+    D.hover = null;
+    UI.setStatus(h.hidden ? 'Annotation shown again.' : 'Annotation hidden (it shows grey while this tool runs; click it again to show it). Esc ends.');
+  }
+  // ------------------------------------------------------------------ (lane drawing) Insert ▸ Drawing View ▸ Empty
+  function emptyViewClick(p) {
+    var v = edit(function (dc) { return Drawing.addEmptyView(dc, { x: p[0], y: p[1] }); });
+    endTool();
+    if (v) { D.sel = { kind: 'view', id: v.id }; drawOverlay(); DW.renderTree(); UI.setStatus(v.name + ' (empty view) placed: sketch or annotate in it; drag it to move it with its sketch.'); }
   }
 
   // ------------------------------------------------------------------ Line Format
@@ -415,6 +450,8 @@
     var T = D.tool, h;
     if (T && T.indexOf('sk:') === 0) {
       var P = D.pending || (D.pending = { pts: [] }), name = T.slice(3);
+      if (name === 'hideann') { var ha = annAt(q); D.hover = ha ? { kind: 'hidann', box: ha.box, hidden: ha.hidden } : null; drawOverlay(); return true; }
+      if (name === 'emptyview') { P.at = q; drawOverlay(); return true; }
       if (name === 'hideedges') { var hh = hiddenAt(q), g = hh ? null : edgeAt(q); D.hover = hh ? { kind: 'skhidden', view: hh.view, key: hh.key } : g ? g.ent : null; drawOverlay(); return true; }
       if (name === 'relpick') { var w = DW.viewAt(q); D.hover = w ? { kind: 'view', id: w.view.id } : null; drawOverlay(); return true; }
       if (name === 'relplace') { P.at = q; drawOverlay(); return true; }
@@ -517,6 +554,15 @@
       if (q.k === 'line') svgNode('line', Object.assign(a, { x1: q.a[0], y1: H - q.a[1], x2: q.b[0], y2: H - q.b[1] }), g);
       else if (q.k === 'circle' || q.k === 'arc') svgNode('circle', Object.assign(a, { cx: q.c[0], cy: H - q.c[1], r: q.r }), g);
     });
+    // (lane drawing) Hide/Show Annotations: the annotation under the pointer; Empty View: where it goes
+    if (D.tool === 'sk:hideann' && D.hover && D.hover.kind === 'hidann' && D.hover.box) {
+      var hb = D.hover.box;
+      svgNode('rect', { class: 'dw-dbox sel dw-hidann', x: hb.x0 - pad / 2, y: H - hb.y1 - pad / 2, width: hb.x1 - hb.x0 + pad, height: hb.y1 - hb.y0 + pad, 'stroke-width': sw }, g);
+    }
+    if (D.tool === 'sk:emptyview' && D.pending && D.pending.at) {
+      var ea = D.pending.at, eh = 12.7 * (units() === 'in' ? 1 / 25.4 : 1);
+      svgNode('rect', { class: 'dw-cut dw-empty-prev', x: ea[0] - eh, y: H - ea[1] - eh, width: 2 * eh, height: 2 * eh, fill: 'none', 'stroke-width': px(1.2), 'stroke-dasharray': px(5) + ' ' + px(3) }, g);
+    }
     var P = D.pending, T = D.tool;
     if (!T || T.indexOf('sk:') !== 0 || !P) return;
     var gw = px(1.5);
@@ -593,7 +639,13 @@
     if (ins && !ins.items.some(function (it) { return it && it.label === 'Drawing View ▸ Relative To Model…'; })) {
       var ri = -1;
       ins.items.forEach(function (it, i) { if (it && /^Drawing View ▸ Model/.test(it.label || '')) ri = i; });
-      ins.items.splice(ri >= 0 ? ri + 1 : ins.items.length, 0, { label: 'Drawing View ▸ Relative To Model…', action: cmdRelativeView });
+      ins.items.splice(ri >= 0 ? ri + 1 : ins.items.length, 0, { label: 'Drawing View ▸ Relative To Model…', action: cmdRelativeView },
+        { label: 'Drawing View ▸ Empty', action: function () { startTool('emptyview'); } });   // (lane drawing: SolidWorks' order)
+    }
+    // (lane drawing) View ▸ Hide/Show Annotations, as SolidWorks' drawing View menu has it
+    var vm = out.filter(function (m) { return m.label === 'View'; })[0];
+    if (vm && !vm.items.some(function (it) { return it && it.label === 'Hide/Show Annotations'; })) {
+      vm.items.push({ sep: true }, { label: 'Hide/Show Annotations', checked: toolOn('hideann'), action: function () { startTool('hideann'); } });
     }
     var tools = out.filter(function (m) { return m.label === 'Tools'; })[0];
     if (tools && !tools.items.some(function (it) { return it && it.label === 'Sketch Entities ▸ Line'; })) {
@@ -632,5 +684,12 @@
     };
   }
   if (window.anvil && window.anvil.drawing) window.anvil.drawing.sketch = api();
+  // (lane drawing) anvil.drawing.emptyView({ x, y, scale, name }) -> the view; anvil.drawing.hideAnnotation(ref, hidden)
+  // (ref as Drawing.setAnnotationHidden takes it); anvil.drawing.hideShowAnnotations() toggles the tool
+  if (window.anvil && window.anvil.drawing) {
+    window.anvil.drawing.emptyView = function (o) { var v = edit(function (dc) { return Drawing.addEmptyView(dc, o || {}); }); return v ? JSON.parse(JSON.stringify(v)) : null; };
+    window.anvil.drawing.hideAnnotation = function (ref, hidden) { return edit(function (dc) { return Drawing.setAnnotationHidden(dc, ref, hidden !== false); }); };
+    window.anvil.drawing.hideShowAnnotations = function () { startTool('hideann'); return toolOn('hideann'); };
+  }
   DW.sketchApi = api;
 })();

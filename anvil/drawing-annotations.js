@@ -2009,6 +2009,41 @@
     if (!Object.keys(own).length) delete v.flatAnn;
     return s;
   }
+  // (lane drawing) setAnnotationHidden(doc, ref, hidden) -> true when ref named one: View ▸ Hide/Show Annotations.
+  // ref: { kind: 'dim', key } (a model item: doc.hiddenAnn) | { kind: 'dim', view, index } (view.dims[index].hidden) |
+  // { kind: 'annot', id } (a centre mark, callout … : its record's hidden) | { kind: 'flat', view, key } (a flat view's
+  // bend note / Cross-Break note / table: view.flatAnn) | { kind: 'note' | 'symbol', id } | { kind: 'balloon', view, index }.
+  // The flag rides on the record, so it is saved with the drawing; render leaves hidden ones off (grey while the tool runs).
+  function setAnnotationHidden(doc, ref, hidden) {
+    hidden = !!hidden;
+    function flag(rec) { if (!rec) return false; if (hidden) rec.hidden = true; else delete rec.hidden; return true; }
+    if (!ref) return false;
+    if (ref.kind === 'dim' && ref.key) {
+      var l = (doc.hiddenAnn || []).filter(function (k) { return k !== ref.key; });
+      if (hidden) l.push(ref.key);
+      if (l.length) doc.hiddenAnn = l; else delete doc.hiddenAnn;
+      return true;
+    }
+    var v = ref.view != null ? findView(doc, ref.view) : null;
+    if (ref.kind === 'dim') return flag(v && v.dims && v.dims[ref.index]);
+    if (ref.kind === 'flat') { if (!v) return false; flatAnnotation(doc, v.id, ref.key, { hidden: hidden }); return true; }
+    if (ref.kind === 'annot') { var f = findAnnotation(doc, ref.id); return flag(f && f.annotation); }
+    if (ref.kind === 'note') return flag(findNote(doc, ref.id));
+    if (ref.kind === 'symbol') return flag((doc.symbols || []).filter(function (y) { return y.id === ref.id; })[0]);
+    if (ref.kind === 'balloon') return flag(v && v.balloons && v.balloons[ref.index]);
+    return false;
+  }
+  // hiddenAnnotationCount(doc) -> how many annotations of the active sheet are hidden (for the tool's status line)
+  function hiddenAnnotationCount(doc) {
+    var n = (doc.hiddenAnn || []).length;
+    (doc.notes || []).concat(doc.symbols || []).forEach(function (r) { if (r && r.hidden) n++; });
+    (doc.views || []).forEach(function (v) {
+      (v.dims || []).concat(v.annotations || [], v.balloons || []).forEach(function (r) { if (r && r.hidden) n++; });
+      Object.keys(v.flatAnn || {}).forEach(function (k) { if (v.flatAnn[k].hidden) n++; });
+    });
+    return n;
+  }
+  D.setAnnotationHidden = setAnnotationHidden; D.hiddenAnnotationCount = hiddenAnnotationCount;
   // ------------------------------------------------------------------ shop symbols (rfM): Surface Finish, Datum Feature,
   // Geometric Tolerance. doc.symbols = [{ id, type: 'surfaceFinish' | 'datum' | 'gtol', p: [x, y] (paper), leader:
   // [x, y] (paper: the arrow / triangle tip; none: no leader), … }], SolidWorks' Annotation tab tools. Every symbol is

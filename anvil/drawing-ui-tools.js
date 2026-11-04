@@ -873,6 +873,7 @@
   // remembered for the session (D.dxfVersion)
   function exportAs(kind, opts) {
     settle();
+    if (D.tool === 'sk:hideann') { D.tool = null; D.pending = null; D.hover = null; D.sheetShowHidden = false; render(); }   // (lane drawing) hidden annotations stay off the export
     if (!D.sheet) render();
     var sh = D.sheet;
     if (kind === 'svg') UI.exportDialog('Save Drawing as SVG', safeName() + '.svg', Drawing.toSVG(sh), 'image/svg+xml');

@@ -61,6 +61,11 @@
     ctx = ctx || {};
     var units = model.units === 'in' ? 'in' : 'mm', k = paperK(units);
     var S = sheetSize(doc, units), prims = [], chainSeq = 0;
+    // (lane drawing) View ▸ Hide/Show Annotations: a hidden annotation (its record's hidden flag; a model item's key in
+    // doc.hiddenAnn) is left off the sheet and every export, or drawn grey (color 'hiddenAnn') while the tool runs
+    // (ctx.showHidden), so a click can show it again
+    var SH = !!ctx.showHidden, hidKeys = doc.hiddenAnn || [], NOBOX = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    function greyOut(list, from) { for (var gi = from || 0; gi < list.length; gi++) list[gi].color = 'hiddenAnn'; }
     function line(a, b, layer, style) { prims.push({ k: 'line', a: a, b: b, layer: layer, style: style }); }
     // (h here is the font size the sheet was laid out with; the primitive keeps the capitals' height, r13/drawings13)
     function text(p, h, t, anchor, layer, rot) { prims.push({ k: 'text', p: p, h: h * CAP_EM, text: t, anchor: anchor || 'start', layer: layer, rot: rot || 0 }); }
@@ -283,7 +288,7 @@
       // (rfZ) a detail view's Full / Jagged outline
       if (v.kind === 'detail' && v.detail && v.detail.outline) _.detailOutline(prims, { view: v, layer: layer, toSheet: toSheet, scale: s }, k);
       // (a flat pattern is drawn at true size whatever plane the Base Flange was sketched on)
-      views.push({ view: v, proj: pr, box: box, layer: layer, toSheet: toSheet, fromSheet: fromSheet, scale: s, frame: ct.frame, ortho: isOrthoFrame(ct.frame) || !!fd,
+      views.push({ view: v, proj: pr, box: box, layer: layer, toSheet: toSheet, fromSheet: fromSheet, scale: s, frame: ct.frame, ortho: v.kind !== 'empty' && (isOrthoFrame(ct.frame) || !!fd), empty: v.kind === 'empty',
         section: ct.section || null, hatch: hatch, hatches: hatches, clip: clip, content: ct, pending: !!pr.pending, flat: fd,
         trueDims: _.isTrueView(v, ct.frame) });   // (rfZ) Dimension Type True: its linear dimensions read true 3D lengths
     });
@@ -457,6 +462,7 @@
       if (!(w.view.balloons || []).length || !brows.length || w.pending) return;
       var nb0 = prims.length;
       balloonSpots(w, brows, k).forEach(function (b) {
+        var bp0 = prims.length, bHid = !!(b.src && b.src.hidden);
         var L = 'BALLOONS', d = [b.attach[0] - b.c[0], b.attach[1] - b.c[1]], Ln = Math.hypot(d[0], d[1]) || 1, u = [d[0] / Ln, d[1] / Ln];
         var start = [b.c[0] + u[0] * b.r, b.c[1] + u[1] * b.r];
         line(start, b.attach, L, 'thin');
@@ -478,6 +484,7 @@
           else text([qx, b.c[1] - 1.25 * k], 3.5 * k, qt, qp === 'left' ? 'end' : 'start', L);
         }
         b.view = w.view.id;
+        if (bHid) { if (!SH) { prims.length = bp0; return; } greyOut(prims, bp0); b.hidden = true; }
         if (b.mag != null) magLines.forEach(function (m) { if (m.id === b.mag) m.balloons.push(b.index); });
         balloons.push(b);
       });
@@ -533,6 +540,13 @@
     D.followViews(doc, views, k);
     var notePre = (doc.notes || []).map(function (nt) { return noteItem(nt, k, noteText); });
     var symPre = (doc.symbols || []).map(function (sy) { var r = D.symbolPrims(sy, k, textWidth, ARROW_W, doc); r.id = sy.id; r.type = sy.type; return r; });
+    function hideItem(it, rec) {
+      if (!rec || !rec.hidden) return;
+      it.hidden = true;
+      if (SH) greyOut(it.prims); else { it.prims = []; it.box = NOBOX; it.pts = undefined; }
+    }
+    notePre.forEach(function (it, i) { hideItem(it, (doc.notes || [])[i]); });
+    symPre.forEach(function (it, i) { hideItem(it, (doc.symbols || [])[i]); });
     // (rfAN) Hole Tables: each one's rows worked out from its view (reattached origin and holes, sizes, tags), the table
     // on the TABLES layer and the tags and datum arrows on ANNOTATIONS (moving with the view)
     var htTaken = [tbRect].concat(revBx ? [revBx] : [], bom ? [bom.box] : [], tables.map(function (t) { return t.box; }), tbBoxes.slice(1));
@@ -597,6 +611,10 @@
     if (bom) obs.boxes.push({ box: bom.box });
     Object.keys(annPre).forEach(function (key) { annPre[key].prims.forEach(function (x) { if (x.k === 'line') geo.segs.push([x.a, x.b]); else if (x.k === 'text') obs.texts.push(textRect(x)); }); });
     flatPre.concat(notePre).forEach(function (it) { if (!it.hidden) obs.texts.push(it.box); });
+    // (lane drawing) hidden dimensions: off the sheet, or grey while Hide/Show Annotations runs
+    dims.forEach(function (d) { d.hidden = (d.index == null && d.key != null && hidKeys.indexOf(d.key) >= 0) || (d.index != null && !!d.hidden); });
+    // (placed after the shown ones while the tool runs, so showing them grey moves nothing)
+    dims = dims.filter(function (d) { return !d.hidden; }).concat(SH ? dims.filter(function (d) { return d.hidden; }) : []);
     keepOut.forEach(function (b) { obs.boxes.push({ box: b }); });
     prims.forEach(function (p) { if (p.bend != null) geo.segs.push([p.a, p.b]); });
     dims.forEach(function (d) {
@@ -605,6 +623,7 @@
       var p = placeDim(d, vw, k, placed, obs), pg = primGeo(p);
       obs.texts = obs.texts.concat(pg.texts); obs.segs = obs.segs.concat(pg.segs);
       if (d.dangling) p.forEach(function (x) { x.color = 'dangling'; });
+      if (d.hidden) greyOut(p);
       var bx = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
       function grow(q) { bx.x0 = Math.min(bx.x0, q[0]); bx.x1 = Math.max(bx.x1, q[0]); bx.y0 = Math.min(bx.y0, q[1]); bx.y1 = Math.max(bx.y1, q[1]); }
       // the arrow tips (clicked to flip the arrows) and the text's rectangle (edited in place), r4/drawings4
@@ -633,6 +652,8 @@
       if (w.pending) return;
       (w.view.annotations || []).forEach(function (an, i) {
         var r = annPre[w.view.id + ':' + i], bx = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+        if (an.hidden && !SH) { annotations.push({ id: an.id, view: w.view.id, index: i, type: an.type, style: an.style || null, auto: !!an.auto, text: r.text, dangling: r.dangling, box: NOBOX, info: r.info, hidden: true }); return; }
+        if (an.hidden) greyOut(r.prims);
         function grow(q) { bx.x0 = Math.min(bx.x0, q[0]); bx.x1 = Math.max(bx.x1, q[0]); bx.y0 = Math.min(bx.y0, q[1]); bx.y1 = Math.max(bx.y1, q[1]); }
         r.prims.forEach(function (x) {
           x.view = w.view.id;
@@ -642,25 +663,25 @@
           if (x.k === 'fill') x.pts.forEach(grow);
           if (x.k === 'text') { var tw = textWidth(x.text, x.h); grow(x.p); grow([x.p[0] + (x.anchor === 'end' ? -tw : tw), x.p[1] + x.h]); }
         });
-        annotations.push({ id: an.id, view: w.view.id, index: i, type: an.type, style: an.style || null, auto: !!an.auto, text: r.text, dangling: r.dangling, box: bx, info: r.info });
+        annotations.push({ id: an.id, view: w.view.id, index: i, type: an.type, style: an.style || null, auto: !!an.auto, text: r.text, dangling: r.dangling, box: bx, info: r.info, hidden: !!an.hidden });
       });
     });
     // the flat views' bend notes, tags, Bend Tables and FLAT SIZE notes: annotations too (select, drag, hide), with
     // ids 'f<view>:<key>' (key b0, b1 … per bend, 'table', 'size')
     flatPre.forEach(function (it) {
-      if (!it.hidden) it.prims.forEach(function (x) { x.view = it.view; prims.push(x); });
+      if (!it.hidden || SH) { if (it.hidden) greyOut(it.prims); it.prims.forEach(function (x) { x.view = it.view; prims.push(x); }); }
       annotations.push({ id: it.id, view: it.view, type: it.type, key: it.key, auto: true, flat: true, hidden: !!it.hidden, off: it.off, text: it.text, dangling: false, box: it.box, info: it.info || null });
     });
     // (rfQ) a note / symbol attached to a view carries its id (x.view), so a dragged view takes it along live
     var notes = notePre.map(function (it, i) {
       var of = (doc.notes[i] || {}).view || null;
       it.prims.forEach(function (x) { if (of) x.view = of; prims.push(x); });
-      return { id: it.id, text: it.text, lines: it.lines, p: it.p, h: it.h, box: it.box, raw: it.raw, leader: it.leader || null, view: of };
+      return { id: it.id, text: it.text, lines: it.lines, p: it.p, h: it.h, box: it.box, raw: it.raw, leader: it.leader || null, view: of, hidden: !!it.hidden };
     });
     var symbols = symPre.map(function (it, i) {
       var of = (doc.symbols[i] || {}).view || null;
       it.prims.forEach(function (x) { if (of) x.view = of; prims.push(x); });
-      return { id: it.id, type: it.type, text: it.text, box: it.box, view: of, pts: it.pts || undefined };   // (rfCU) pts: a multi-jog leader's polyline
+      return { id: it.id, type: it.type, text: it.text, box: it.box, view: of, pts: it.pts || undefined, hidden: !!it.hidden };   // (rfCU) pts: a multi-jog leader's polyline
     });
     var holeTables = htPre.map(function (it) {
       it.prims.forEach(function (x) { prims.push(x); });
@@ -785,6 +806,51 @@
     if (best && best.w <= room) return [tp(0, g + 1.6 * h, best.lines[0]), tp(0, g, best.lines[1])];
     return [tp(L / 2 + e + g, -h / 2, txt, 'start')];
   }
+  // (lane drawing) cbCrossing(segs) -> where a Cross-Break's first two lines cross (paper), else its first line's middle
+  function cbCrossing(segs) {
+    var s0 = segs[0], mid = [(s0[0][0] + s0[1][0]) / 2, (s0[0][1] + s0[1][1]) / 2];
+    if (segs.length < 2) return mid;
+    var p = s0[0], r = [s0[1][0] - p[0], s0[1][1] - p[1]], q = segs[1][0], s = [segs[1][1][0] - q[0], segs[1][1][1] - q[1]];
+    var den = r[0] * s[1] - r[1] * s[0];
+    if (Math.abs(den) < 1e-12 * (1 + Math.hypot(r[0], r[1]) * Math.hypot(s[0], s[1]))) return mid;
+    var t = ((q[0] - p[0]) * s[1] - (q[1] - p[1]) * s[0]) / den, u = ((q[0] - p[0]) * r[1] - (q[1] - p[1]) * r[0]) / den;
+    return t >= -1e-9 && t <= 1 + 1e-9 && u >= -1e-9 && u <= 1 + 1e-9 ? [p[0] + r[0] * t, p[1] + r[1] * t] : mid;
+  }
+  // does segment a–b touch the box r (Liang–Barsky)?
+  function cbSegHits(a, b, r) {
+    var t0 = 0, t1 = 1, dx = b[0] - a[0], dy = b[1] - a[1];
+    var ps = [-dx, dx, -dy, dy], qs = [a[0] - r.x0, r.x1 - a[0], a[1] - r.y0, r.y1 - a[1]];
+    for (var i = 0; i < 4; i++) {
+      if (Math.abs(ps[i]) < 1e-15) { if (qs[i] < 0) return false; continue; }
+      var t = qs[i] / ps[i];
+      if (ps[i] < 0) { if (t > t1) return false; if (t > t0) t0 = t; } else { if (t < t0) return false; if (t < t1) t1 = t; }
+    }
+    return true;
+  }
+  // cbNotePrims(txt, C, segs, h, g, box) -> the note's text primitive: level, as near the crossing C as it goes clear of
+  // the Cross-Break's lines (a gap g round it) and the boxes in avoid (the bend notes) inside the view box: to the right of the crossing first, then above, to
+  // the left, below; else just right of and above it
+  function cbNotePrims(txt, C, segs, h, g, box, avoid) {
+    var step = Math.max(h / 4, 1e-6), maxS = Math.max(box.x1 - box.x0, box.y1 - box.y0);
+    var dirs = [
+      function (s) { return { p: [C[0] + s, C[1] - h / 2], anchor: 'start' }; },
+      function (s) { return { p: [C[0], C[1] + s], anchor: 'middle' }; },
+      function (s) { return { p: [C[0] - s, C[1] - h / 2], anchor: 'end' }; },
+      function (s) { return { p: [C[0], C[1] - s - h], anchor: 'middle' }; }];
+    var best = null;
+    dirs.forEach(function (fn, di) {
+      for (var s = g; s <= maxS && (!best || s < best.s - 1e-9); s += step) {
+        var c = fn(s), r = rectOfText(c.p, h, txt, 0, c.anchor), rg = { x0: r.x0 - g / 2, y0: r.y0 - g / 2, x1: r.x1 + g / 2, y1: r.y1 + g / 2 };
+        if (r.x0 < box.x0 || r.x1 > box.x1 || r.y0 < box.y0 || r.y1 > box.y1) continue;
+        if (segs.some(function (sg) { return cbSegHits(sg[0], sg[1], rg); })) continue;
+        if ((avoid || []).some(function (q) { return q.x0 < rg.x1 && q.x1 > rg.x0 && q.y0 < rg.y1 && q.y1 > rg.y0; })) continue;
+        best = { s: s, c: c, di: di };
+        break;
+      }
+    });
+    var c = best ? best.c : { p: [C[0] + g, C[1] + g], anchor: 'start' };
+    return [{ k: 'text', p: c.p, h: h, text: txt, anchor: c.anchor, layer: 'BEND_NOTES', rot: 0, crossBreak: true }];
+  }
   function flatItems(w, doc, units, k, ctx) {
     var v = w.view, fd = w.flat, o = D.docOptions(doc), mode = v.bendNotes || o.bendNotes, own = v.flatAnn || {}, out = [], box = w.box;
     ctx = ctx || { views: [w], tb: { x0: Infinity, y0: Infinity, x1: Infinity, y1: Infinity }, bom: null, sheet: { x0: -Infinity, y0: -Infinity, x1: Infinity, y1: Infinity }, taken: [] };
@@ -815,6 +881,26 @@
       item(bk, mode === 'table' ? 'bendTag' : 'bendNote', txt, bendNotePrims(txt, M, t, n, L, g, noteH() * k, rot, BEND_EXT * k),
         { bend: i, bendKey: bk, up: b.up, angle: b.angle, R: b.R, a: A, b: B });
     });
+    // (lane drawing) a Cross-Break's note ('UP 1° R .060', the bend notes' shop format) at the crossing of its lines, as
+    // SolidWorks' flat-pattern view shows it; key 'cb:<feature id>' (dragged / hidden like a bend note). Shown with its
+    // lines (the view's etch marks) unless the view's bend notes are off.
+    if (mode !== 'none' && v.showEtch !== false) {
+      var cbs = {}, cbOrder = [];
+      (fd.etch || []).forEach(function (it) {
+        if (it.crossBreak == null || it.t !== 'line') return;
+        var id = String(it.crossBreak);
+        if (!cbs[id]) { cbs[id] = []; cbOrder.push(id); }
+        cbs[id].push(it);
+      });
+      cbOrder.forEach(function (id) {
+        var L = cbs[id], first = L.filter(function (x) { return x.note; })[0] || L[0];
+        var segs = L.map(function (x) { return [w.toSheet(x.a), w.toSheet(x.b)]; });
+        var C = cbCrossing(segs), bnd = { up: !!first.up, angle: +first.angle, R: +first.R };
+        var txt = D.bendNoteText(bnd, units, { prec: v.bendPrec });
+        item('cb:' + id, 'crossBreakNote', txt, cbNotePrims(txt, C, segs, noteH() * k, BEND_GAP * k, box, out.filter(function (x) { return !x.hidden; }).map(function (x) { return x.box; })),
+          { crossBreak: id, up: bnd.up, angle: bnd.angle, R: bnd.R, at: C });
+      });
+    }
     var yTop = box.y0 - (o.flatDims ? 20 : 8) * k, cx = (box.x0 + box.x1) / 2;
     if (v.flatSize != null ? !!v.flatSize : o.flatSizeNote) {
       var W = fd.bbox.umax - fd.bbox.umin, H = fd.bbox.vmax - fd.bbox.vmin, ts = 'FLAT SIZE ' + D.numText(W, units, null) + ' × ' + D.numText(H, units, null);
@@ -870,7 +956,7 @@
     return { id: nt.id, text: shown, raw: raw, lines: lines, p: nt.p.slice(), h: h, prims: prims, box: r, leader: nt.leader ? nt.leader.slice() : null };
   }
   function layerName(v, used) {
-    var base = v.kind === 'section' ? 'SECTION_' + v.label : v.kind === 'detail' ? 'DETAIL_' + v.label : v.kind === 'flat' ? 'FLAT_PATTERN' : String(v.orient).toUpperCase(), name = base, n = 2;
+    var base = v.kind === 'section' ? 'SECTION_' + v.label : v.kind === 'detail' ? 'DETAIL_' + v.label : v.kind === 'flat' ? 'FLAT_PATTERN' : v.kind === 'empty' ? 'EMPTY_VIEW' : String(v.orient).toUpperCase(), name = base, n = 2;
     while (used[name]) name = base + '_' + n++;
     used[name] = true;
     return name;
@@ -1292,7 +1378,7 @@
   function rgbOf(p) { return p && typeof p.rgb === 'string' && /^#[0-9a-f]{6}$/i.test(p.rgb) ? p.rgb.toLowerCase() : null; }
   var DXF_LW = [0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211];
   function dxfLw(mm) { var v = Math.round(mm * 100), best = DXF_LW[0]; DXF_LW.forEach(function (x) { if (Math.abs(x - v) < Math.abs(best - v)) best = x; }); return best; }
-  var COLORS = { dangling: '#a07c00', etch: '#1e9e3c' }, DXF_COLORS = { dangling: 42, etch: 3 }, PDF_COLORS = { dangling: '0.627 0.486 0', etch: '0.118 0.62 0.235' };
+  var COLORS = { dangling: '#a07c00', etch: '#1e9e3c', hiddenAnn: '#a8a8a8' }, DXF_COLORS = { dangling: 42, etch: 3, hiddenAnn: 9 }, PDF_COLORS = { dangling: '0.627 0.486 0', etch: '0.118 0.62 0.235', hiddenAnn: '0.66 0.66 0.66' };
   // a CCW arc (degrees) as start / end points
   function arcEnds(p) {
     var a0 = p.a0 * Math.PI / 180, a1 = p.a1 * Math.PI / 180;

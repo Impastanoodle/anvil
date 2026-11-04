@@ -91,7 +91,8 @@
   function doc() { var l = App.model && App.model.drawings; return l && l[D.index] || null; }
   // an assembly drawing's BOM row count drives where Standard 3 View leaves room for the table
   // the build the sheet reads mass and bodies from (the open document's)
-  function cctx() { return { build: App.build || null }; }
+  // (lane drawing) showHidden: View ▸ Hide/Show Annotations runs, so hidden annotations are drawn grey to be clicked back
+  function cctx() { return { build: App.build || null, showHidden: D.tool === 'sk:hideann' }; }
   function syncBom(dc) { dc = dc || doc(); if (dc && dc.bom) dc.bomRows = Drawing.bomRows(App.model, mesh(), dc.bom, cctx()).length; return dc; }
   function relayout(dc) { syncBom(dc); Drawing.layout(dc, mesh(), units()); }
   function units() { return App.model.units === 'in' ? 'in' : 'mm'; }
@@ -755,6 +756,10 @@
   }
   function drawOverlay() {
     updateCursor();
+    // (lane drawing) Hide/Show Annotations turned on or off (its button, Esc, another tool): the sheet is worked out again
+    // so hidden annotations show grey while it runs and go when it ends
+    var shNow = D.tool === 'sk:hideann';
+    if (D.sheet && !!D.sheetShowHidden !== shNow) { D.sheetShowHidden = shNow; queueRender(); }
     var s = svgEl(), g = s && s.querySelector('#dw-overlay');
     if (!g) return;
     g.innerHTML = '';

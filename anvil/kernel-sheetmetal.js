@@ -1900,7 +1900,11 @@
       if (f.type === 'closedCorner' && !build.errors[f.id]) { ccExtendRecords(flanges, flangeIds, build.flanges[f.id]); return; }   // lane DK
       if ((f.type === 'insertBends' || f.type === 'convertSM') && !build.errors[f.id]) { (build.flanges[f.id] || []).forEach(function (fi, j) { flanges.push(fi); flangeIds[flanges.length - 1] = { feature: f.id, index: j }; }); return; }   // lane DQ
       if ((f.type !== 'flange' && f.type !== 'jog' && f.type !== 'sketchedBend') || build.errors[f.id]) return;
-      if (f.type === 'sketchedBend' || isSketchJog(f)) { var sbr = sketchedBendRecords(flanges, anchors, build.flanges[f.id] || []); flanges = sbr.flanges; anchors = sbr.anchors; return; }
+      if (f.type === 'sketchedBend' || isSketchJog(f)) {
+        var sbr = sketchedBendRecords(flanges, anchors, build.flanges[f.id] || []), n0 = flanges.length; flanges = sbr.flanges; anchors = sbr.anchors;
+        sbr.added.forEach(function (j, q) { flangeIds[n0 + q] = { feature: f.id, index: j }; });   // lane drawing: bend ids
+        return;
+      }
       (build.flanges[f.id] || []).forEach(function (fi, j) { flanges.push(fi); flangeIds[flanges.length - 1] = { feature: f.id, index: j }; });
     });
     // a Sketched Bend's fixed side stays where it was: the unfold starts from the largest face parallel to the base
@@ -2249,6 +2253,9 @@
         var bend = { a: addT[0] < 0 && !eA.mitred ? corner(eA, BA / 2, -addT[0]) : corner(eA, BA / 2, (eA.t0 + eA.ext) / 2),
           b: addT[1] > Math.hypot(B2[0] - A2[0], B2[1] - A2[1]) && !eB.mitred ? corner(eA, BA / 2, -addT[1]) : corner(eB, BA / 2, (eB.t0 + eB.ext) / 2), up: trackedInner, angle: fi.angle * 180 / Math.PI, R: fi.R, ba: BA, bd: bc.BD, method: bc.type, source: bc.source };
         bend.label = bendNoteText(bend, model.units);
+        // (lane drawing) the bend's stable id: '<feature id>:<n>', n the record's place in build.flanges[feature], so a
+        // drawing's dragged / hidden bend note stays with its bend when flanges are added, removed or reordered
+        if (flangeIds[k]) bend.id = flangeIds[k].feature + ':' + flangeIds[k].index;
         bends.push(bend);
         if (trace && stripIdx >= 0) trace.strips[stripIdx].bend = bend;   // lane DB2
         var Pmid = add(add(fi.origin, scale(fi.o, Rt * sA)), scale(fi.u, fi.R - Rt * cA));
@@ -3047,8 +3054,9 @@
       return out;
     });
     anchors = anchors.map(function (p) { var M = mover(p); return M ? mPt(M, p) : p; });
-    recs.forEach(function (r) { if (r.anchor) anchors.push(r.anchor); else if (!r.move) flanges.push(r); });
-    return { flanges: flanges, anchors: anchors };
+    var added = [];   // (lane drawing) the index in recs of every record that became a flange, for the bends' ids
+    recs.forEach(function (r, j) { if (r.anchor) anchors.push(r.anchor); else if (!r.move) { flanges.push(r); added.push(j); } });
+    return { flanges: flanges, anchors: anchors, added: added };
   }
 
   // ------------------------------------------------------------------ Jog from a sketch line (lane DC, finding #4)
@@ -4613,7 +4621,7 @@
     var pl = tr.plane, frame = { origin: mPt(P, pl.origin), x: mDir(P, pl.x), y: mDir(P, pl.y), n: mDir(P, pl.n) };
     var recs = [{ kind: 'unfold', fixed: f.fixedFace || null, frame: frame, bends: strips.map(function (s, k) {
       var bf = ufBendFrame(s, T), M = sel[k] ? mCompose(P, Q[s.parent]) : null;
-      var out = { at: bf.at, unfolded: sel[k], R: s.fi.R, angle: s.fi.angle, ba: s.BA,
+      var out = { at: bf.at, unfolded: sel[k], R: s.fi.R, angle: s.fi.angle, ba: s.BA, src: s.id ? s.id.feature + ':' + s.id.index : null,
         quad: M ? s.strip.map(function (q) { return mPt(M, fr.at(q, 0)); }) : null, normal: M ? mDir(M, tr.nB) : null };
       // lane DB2: the flat bend line (unfolded state, on the tracked surface), the side it folds toward, a custom BA
       if (M && s.bend) {
@@ -4727,6 +4735,7 @@
       warn(bc.warning);
       var bend = { a: fr.map(b.line[0]), b: fr.map(b.line[1]), up: dot(b.toward, fr.normal) > 0, angle: b.angle * 180 / Math.PI, R: b.R, ba: bc.BA, bd: bc.BD, method: bc.type, source: bc.source };
       bend.label = bendNoteText(bend, units);
+      if (b.src) bend.id = b.src;   // (lane drawing) the flange the unfolded bend came from
       out.push(bend);
     });
     return out;

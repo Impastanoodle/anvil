@@ -1416,11 +1416,14 @@ var doc = Drawing.newDrawing(m, { options: { flatSizeNote: true, bendNotes: 'not
 var v = Drawing.addFlatView(doc, mesh, { model: m, build: b, x: 150, y: 120, bendNotes: 'table' });   // { scale, fit }
 var sheet = Drawing.compute(doc, mesh, m, { build: b });   // annotations: bendNote / bendTag / bendTable / flatSize (flat: true)
 Drawing.flatAnnotation(doc, v.id, 'b0', { off: [5, 0] });  // move a bend note; { hidden: true } hides it
-// a bend note's settings go under its bend's stable key: 'bend:<feature id>:<n>' (the flange feature and its edge
-// record, found from the flat; the kernel's own bend.id / feature + edge when it gives one) or, for a flange on a wall,
+// a bend note's settings go under its bend's stable key: 'bend:<feature id>:<n>' (Kernel.flatPattern gives every bend
+// its id: the flange / Sketched Bend / Jog / Insert Bends feature and the record's place in build.flanges[feature],
+// also for a flange on a wall and a bend an open Unfold laid flat) or, for a drawing saved before with no source,
 // 'bend@<u>,<v>,<U|D><angle>,R<radius>' (its place, re-found nearest after a change); 'b0' … after the view has been
 // computed name the bends in order and become their keys. A dragged note stays with its bend when a rebuild reorders
 // or changes the bends. Drawing.bendKey(bend), Drawing.bendKeyMatch(bends, view.flatAnn, diag).
+// A Cross-Break's note ('UP 1° R .060', the bend notes' format) sits beside the crossing of its X, level, clear of
+// its lines and the bend notes: annotation type crossBreakNote, key 'cb:<feature id>' (drag / hide as a bend note).
 Drawing.addNote(doc, { p: [20, 30], text: 'NOTES:\n1. BREAK ALL EDGES' }); Drawing.editNote(doc, id, { text, p }); Drawing.deleteNote(doc, id);
 ```
 
@@ -1440,6 +1443,9 @@ doc.properties = { DrawnBy: 'LH', CompanyName: 'Acme' };   // the sheet format's
 ```
 
 In the app (rfM): `anvil.drawing.revisionTable({ anchor })` / `revisionTable(null)`, `addRevision(spec)`, `editRevision(i, props)`, `deleteRevision(i)`, `symbol(spec)`, `editSymbol(id, props)`, `deleteSymbol(id)`, `symbols()`, `properties({ name: value | null })`; `summary()` adds `revisions: { rows, latest, anchor, box }`, `symbols` and per note `raw` and `leader`.
+
+- **Empty View** (*Insert ▸ Drawing View ▸ Empty*, click where it goes): a view with no model, to sketch and annotate in; its sketch moves with it, nothing projects from it (`Drawing.addEmptyView(doc, { x, y, scale, name })`, `kind: 'empty'`, layer `EMPTY_VIEW`; `anvil.drawing.emptyView(opts)`).
+- **Hide/Show Annotations** (*View ▸ Hide/Show Annotations*): click dimensions, notes, symbols, balloons, centre marks / callouts or flat-view notes to hide them; while the tool runs hidden ones show grey (`#a8a8a8`) and a click shows one again; Esc ends. Hidden ones are left off the sheet and every export. Saved on the records (`hidden: true`; a model item's key in `doc.hiddenAnn`; a flat note's `view.flatAnn[key].hidden`). `Drawing.setAnnotationHidden(doc, ref, hidden)` with ref `{ kind: 'dim', key } | { kind: 'dim', view, index } | { kind: 'annot', id } | { kind: 'flat', view, key } | { kind: 'note' | 'symbol', id } | { kind: 'balloon', view, index }`; `compute(…, { showHidden: true })` draws them grey; `anvil.drawing.hideAnnotation(ref, hidden)`, `anvil.drawing.hideShowAnnotations()` (toggles the tool).
 
 In the app: `anvil.drawing.flatView({ x, y, scale, bendNotes })`, `flatViewProps(id, { bendNotes, flatSize })`, `flatAnnotation(viewId, key, { off, hidden })`, `note({ p, text })`, `editNote(id, props)`, `deleteNote(id)`, `notes()`, `options({ flatDims, flatSizeNote, bendNotes, dimPrec, fractions, fracDenom })`; `summary()` adds `notes` and per flat view `flat: { size, bendNotes, bends: [{ id, key, up, angle, R, a, b, note }], circles, arcs, lines, annotations }`.
 
