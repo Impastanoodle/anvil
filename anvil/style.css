@@ -1470,8 +1470,8 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 /* ---- menu bar: the mark, the menus, the quick-access toolbar, the title and Search Commands on one 28 px row,
    every control 24 px tall and centred on it */
 #menubar { gap: 0; padding: 0 var(--sp-1) 0 var(--sp-2); background: var(--c-panel); border-bottom: var(--hair) solid var(--c-line); color: var(--c-text); }
-#menubar #logo { width: 16px; height: 16px; margin: 0 6px 0 0; padding: 0; border-radius: 0; background: none; color: var(--logo); display: block; flex: none; }
-#menubar #logo svg { display: block; width: 16px; height: 16px; }
+#menubar #logo { width: 25px; height: 16px; margin: 0 6px 0 0; padding: 0; border-radius: 0; background: none; color: var(--logo); display: block; flex: none; }
+#menubar #logo svg { display: block; width: 25px; height: 16px; }
 #menubar #brand { margin-right: var(--sp-2); color: var(--c-text); font-size: var(--fs-md); font-style: normal; font-weight: 600; letter-spacing: 0; line-height: 16px; }
 #menubar #menus { height: 100%; align-items: center; gap: 0; }
 #menubar #menus > li { height: var(--ctl); padding: 0 var(--sp-2); border-radius: var(--radius); color: var(--c-text); line-height: var(--ctl); box-shadow: none; }

@@ -1,25 +1,28 @@
-// make-icon.js — draws Anvil's app icon (an anvil on a blue tile, with a spark) and writes assets/icon.png (256 px)
-// and assets/icon.ico (16..256 px, PNG-compressed entries). No packages: a tiny polygon rasterizer with 4x4
-// supersampling and Node's zlib for the PNG. Run: node make-icon.js
+// make-icon.js — draws Anvil's app icon (the menu bar's shaded anvil on a blue tile) and writes assets/icon.png
+// (256 px) and assets/icon.ico (16..256 px, PNG-compressed entries). The anvil's facets are read from the logo in
+// ../anvil/index.html (#logo: an outline group, then one filled <polygon> per facet), so the two always match.
+// No packages: a tiny polygon rasterizer with 4x4 supersampling and Node's zlib for the PNG. Run: node make-icon.js
 'use strict';
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 
-// shapes in a 0..1 square; later shapes paint over earlier ones
-const ANVIL = [
-  [0.08, 0.33], [0.14, 0.31], [0.22, 0.295], [0.30, 0.285], [0.36, 0.28], [0.90, 0.28], [0.90, 0.42], [0.72, 0.42],
-  [0.66, 0.50], [0.66, 0.62], [0.80, 0.70], [0.82, 0.79], [0.24, 0.79], [0.26, 0.70], [0.42, 0.62], [0.42, 0.50],
-  [0.34, 0.44], [0.26, 0.405], [0.18, 0.375], [0.12, 0.355]
-];
-const FACE = [[0.36, 0.28], [0.90, 0.28], [0.90, 0.315], [0.36, 0.315], [0.30, 0.30]];
-const BASE = [[0.26, 0.74], [0.80, 0.74], [0.82, 0.79], [0.24, 0.79]];
-function star(cx, cy, r) {
-  const p = [];
-  for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4 - Math.PI / 2, rr = i % 2 ? r * 0.28 : r; p.push([cx + rr * Math.cos(a), cy + rr * Math.sin(a)]); }
-  return p;
-}
-const SPARK = star(0.78, 0.16, 0.085), SPARK2 = star(0.64, 0.12, 0.045);
+// the logo's facets: { fill: [r, g, b], pts: [[x, y], ...] } in its viewBox units, painted in order
+const HTML = fs.readFileSync(path.join(__dirname, '..', 'anvil', 'index.html'), 'utf8');
+const LOGO = (/<div id="logo"[^>]*>([\s\S]*?)<\/div>/.exec(HTML) || [])[1] || '';
+const VIEW = ((/viewBox="([^"]+)"/.exec(LOGO) || [])[1] || '').split(/\s+/).map(Number);
+const EDGE_HEX = (/<g fill="(#[0-9a-f]{6})"/i.exec(LOGO) || [])[1];
+const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const FACETS = [];
+LOGO.replace(/<polygon fill="(#[0-9a-f]{6})"[^>]*points="([^"]+)"/gi, (m, fill, pts) => {
+  const n = pts.trim().split(/[\s,]+/).map(Number), p = [];
+  for (let i = 0; i + 1 < n.length; i += 2) p.push([n[i], n[i + 1]]);
+  FACETS.push({ fill: hex(fill), pts: p });
+});
+if (!FACETS.length || VIEW.length !== 4 || !EDGE_HEX) throw new Error('make-icon.js: no anvil logo (#logo svg) found in anvil/index.html');
+const EDGE = hex(EDGE_HEX);
+// the anvil spans 86 % of the tile's width, centred
+const FIT = 0.86 / VIEW[2], OX = 0.5 - VIEW[2] * FIT / 2 - VIEW[0] * FIT, OY = 0.5 - VIEW[3] * FIT / 2 - VIEW[1] * FIT;
 
 function inPoly(x, y, poly) {
   let c = false;
@@ -35,23 +38,31 @@ function inTile(x, y) {   // rounded square, corner radius 0.2, 0.02 margin
   const cx = Math.min(Math.max(x, m + r), 1 - m - r), cy = Math.min(Math.max(y, m + r), 1 - m - r);
   return (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r;
 }
-// the colour of one sample point, or null (transparent)
-function sample(x, y) {
+function segDist2(x, y, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / (dx * dx + dy * dy || 1)));
+  const ex = a[0] + t * dx - x, ey = a[1] + t * dy - y;
+  return ex * ex + ey * ey;
+}
+// the colour of one sample point, or null (transparent); edge: the outline's half width in logo units
+function sample(x, y, edge) {
   if (!inTile(x, y)) return null;
   let c = [Math.round(42 - 18 * y), Math.round(84 - 34 * y), Math.round(134 - 46 * y)];   // blue tile, darker at the bottom
-  if (inPoly(x, y, ANVIL)) c = [214, 220, 228];
-  if (inPoly(x, y, BASE)) c = [168, 176, 188];
-  if (inPoly(x, y, FACE)) c = [250, 251, 253];
-  if (inPoly(x, y, SPARK) || inPoly(x, y, SPARK2)) c = [255, 160, 40];
-  return c;
+  const lx = (x - OX) / FIT, ly = (y - OY) / FIT;
+  let hit = null;
+  FACETS.forEach((f) => { if (inPoly(lx, ly, f.pts)) hit = f.fill; });
+  if (hit) return hit;
+  const e2 = edge * edge;
+  const near = FACETS.some((f) => f.pts.some((p, i) => segDist2(lx, ly, p, f.pts[(i + 1) % f.pts.length]) <= e2));
+  return near ? EDGE : c;
 }
 function render(size) {
+  const edge = Math.max(1.5, 0.9 / size / FIT);   // about a pixel of outline at the small sizes
   const S = 4, px = Buffer.alloc(size * size * 4);
   for (let py = 0; py < size; py++) {
     for (let pxi = 0; pxi < size; pxi++) {
       let r = 0, g = 0, b = 0, a = 0;
       for (let sy = 0; sy < S; sy++) for (let sx = 0; sx < S; sx++) {
-        const c = sample((pxi + (sx + 0.5) / S) / size, (py + (sy + 0.5) / S) / size);
+        const c = sample((pxi + (sx + 0.5) / S) / size, (py + (sy + 0.5) / S) / size, edge);
         if (c) { r += c[0]; g += c[1]; b += c[2]; a++; }
       }
       const o = (py * size + pxi) * 4;

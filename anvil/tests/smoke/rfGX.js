@@ -63,7 +63,7 @@
       if (Math.abs(r.top + r.height / 2 - mid) > 0.6) bad.push((e.id || e.textContent) + ' off centre ' + (r.top + r.height / 2 - mid).toFixed(1));
     });
     var logo = rfGXbox('#logo');
-    assert(logo && Math.round(logo.width) === 16 && Math.round(logo.height) === 16 && D.querySelector('#logo svg'), 'the mark is a 16 px glyph');
+    assert(logo && Math.round(logo.width) === 25 && Math.round(logo.height) === 16 && D.querySelector('#logo svg polygon'), 'the mark is a 16 px tall anvil');
     assert(Math.abs(logo.top + 8 - mid) <= 0.6, 'the mark is centred');
     var brand = W.getComputedStyle(D.getElementById('brand'));
     assert(brand.fontStyle === 'normal' && +brand.fontWeight >= 600, 'the name is upright semibold: ' + brand.fontStyle + ' ' + brand.fontWeight);
