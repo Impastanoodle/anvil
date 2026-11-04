@@ -234,9 +234,23 @@ var UI = (function () {
     App.dimsStale = true;
   }
 
+  // (user 2026-11-04: "the pulling of the panel should not change the position of the part relative to the screen")
+  // when the graphics area moves or changes size inside an unchanged window (the FeatureManager dragged, hidden or
+  // shown, the Task Pane docked or closed), the view shifts with it so the model stays where it was on the screen; the
+  // panel simply covers or uncovers it. A window resize keeps the view centred as before.
+  var vpAnchor = null;
+  function keepModelOnScreen(w, h) {
+    var br = viewport.getBoundingClientRect(), cx = br.left + w / 2, cy = br.top + h / 2, win = window.innerWidth + 'x' + window.innerHeight;
+    var a = vpAnchor;
+    vpAnchor = { cx: cx, cy: cy, win: win };
+    if (!a || a.win !== win || (Math.abs(cx - a.cx) < 0.01 && Math.abs(cy - a.cy) < 0.01) || viewAnim || !cam.right) return false;
+    cam.target.addScaledVector(cam.right, (cx - a.cx) * cam.scale).addScaledVector(cam.up, -(cy - a.cy) * cam.scale);
+    return true;
+  }
   function resize() {
     var w = viewport.clientWidth, h = viewport.clientHeight;
     if (w < 2 || h < 2) return;
+    if (keepModelOnScreen(w, h) && w === size.w && h === size.h) { applyCamera(); return; }
     // smooth/chrome: a resize to the same size is skipped (setting a canvas's size clears it), and a real one redraws at
     // once — the ResizeObserver runs after this frame's render, so the Task Pane opening or closing showed one blank frame
     // rfHA: the canvas is laid out exactly as wide as its drawing buffer in device pixels (floor(w * dpr) / dpr CSS px), so
@@ -3349,32 +3363,60 @@ var UI = (function () {
     placeViewSelector(S);   // lane DA
     var b = vsBasis(), R = b[0], U = b[1], D = b[2], half = S / 2, r = S * 0.285;   // cube half-size in px (its diagonal fits)
     function P(p) { return [half + (p[0] * R.x + p[1] * R.y + p[2] * R.z) * r, half - (p[0] * U.x + p[1] * U.y + p[2] * U.z) * r]; }
+    function path(q) { g.beginPath(); g.moveTo(q[0][0], q[0][1]); for (var i = 1; i < q.length; i++) g.lineTo(q[i][0], q[i][1]); g.closePath(); }
     var g = vsCtx, dark = darkViewport();
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, S, S);
     vs.cells = [];
-    var faces = vsFaces.map(function (f) { return { f: f, z: f.n[0] * D.x + f.n[1] * D.y + f.n[2] * D.z }; }).sort(function (a, c) { return a.z - c.z; });
+    // (user 2026-11-04, redesign) a solid, lit cube instead of the see-through wireframe: only the faces towards the
+    // viewer are drawn (no back grid showing through), each face shaded by how it faces the viewer and the light (from
+    // the upper left, as the model's key light); the edge and corner regions are a shade darker, like bevels, so the
+    // three kinds of region read at a glance; a soft drop shadow lifts it off the graphics area; the hovered region is
+    // orange with its name in white.
+    var hull = (function () {
+      var pts = [];
+      for (var i = 0; i < 8; i++) pts.push(P([i & 1 ? 1 : -1, i & 2 ? 1 : -1, i & 4 ? 1 : -1]));
+      pts.sort(function (a, c) { return a[0] - c[0] || a[1] - c[1]; });
+      function cross(o, a, c) { return (a[0] - o[0]) * (c[1] - o[1]) - (a[1] - o[1]) * (c[0] - o[0]); }
+      var lo = [], hi = [];
+      pts.forEach(function (p) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); });
+      pts.slice().reverse().forEach(function (p) { while (hi.length >= 2 && cross(hi[hi.length - 2], hi[hi.length - 1], p) <= 0) hi.pop(); hi.push(p); });
+      return lo.slice(0, -1).concat(hi.slice(0, -1));
+    })();
+    var base = dark ? [74, 76, 80] : [250, 250, 251], ink = dark ? '#eeeeee' : '#2b2b2b';
+    g.save();
+    path(hull);
+    g.shadowColor = dark ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.22)'; g.shadowBlur = 18; g.shadowOffsetY = 5;
+    g.fillStyle = 'rgb(' + base.join(',') + ')'; g.fill();
+    g.restore();
+    var L = [-0.45, 0.75, 0.48];   // light in view space (right, up, towards the viewer)
+    function tone(k) { return 'rgb(' + base.map(function (x) { return Math.round(Math.max(0, Math.min(255, x * k))); }).join(',') + ')'; }
+    var faces = vsFaces.map(function (f) { return { f: f, z: f.n[0] * D.x + f.n[1] * D.y + f.n[2] * D.z }; }).filter(function (fz) { return fz.z > 0.02; }).sort(function (a, c) { return a.z - c.z; });
     faces.forEach(function (fz) {
-      var f = fz.f, front = fz.z > 0.02;
+      var f = fz.f, n = f.n;
+      var vr = n[0] * R.x + n[1] * R.y + n[2] * R.z, vu = n[0] * U.x + n[1] * U.y + n[2] * U.z;
+      var lit = Math.max(0, vr * L[0] + vu * L[1] + fz.z * L[2]), k = dark ? 0.82 + 0.34 * lit : 0.86 + 0.15 * lit;
       f.cells.forEach(function (c) {
-        var q = c.quad.map(P);
-        g.beginPath(); g.moveTo(q[0][0], q[0][1]); for (var i = 1; i < 4; i++) g.lineTo(q[i][0], q[i][1]); g.closePath();
-        var hot = front && vs.hover === c.id;
-        g.fillStyle = hot ? 'rgba(255,154,46,0.85)' : !front ? (dark ? 'rgba(100,100,100,0.10)' : 'rgba(140,140,140,0.08)') : (dark ? 'rgba(78,78,78,0.62)' : 'rgba(240,240,240,0.68)');   // rfBR: neutral greys
+        var q = c.quad.map(P), kind = c.dir.filter(function (x) { return x; }).length;   // 1 face, 2 edge, 3 corner
+        path(q);
+        g.fillStyle = vs.hover === c.id ? '#ff9a2e' : tone(kind === 1 ? k : k * (kind === 2 ? 0.935 : 0.89));
         g.fill();
-        g.strokeStyle = front ? (dark ? 'rgba(210,210,210,0.55)' : 'rgba(80,80,80,0.45)') : (dark ? 'rgba(210,210,210,0.18)' : 'rgba(80,80,80,0.16)');
-        g.lineWidth = 1; g.stroke();
-        if (front) vs.cells.push({ id: c.id, dir: c.dir, q: q, z: fz.z });
+        g.strokeStyle = dark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.09)'; g.lineWidth = 1; g.stroke();
+        vs.cells.push({ id: c.id, dir: c.dir, q: q, z: fz.z });
       });
-      if (front && fz.z > 0.25) {
+      // the face's outline, crisper than the region seams
+      var fk = n[0] ? 0 : n[1] ? 1 : 2, fu = (fk + 1) % 3, fv = (fk + 2) % 3;
+      path([[-1, -1], [1, -1], [1, 1], [-1, 1]].map(function (ab) { var p = n.slice(); p[fu] = ab[0]; p[fv] = ab[1]; return P(p); }));
+      g.strokeStyle = dark ? 'rgba(225,225,225,0.55)' : 'rgba(55,55,55,0.55)'; g.lineWidth = 1.25; g.lineJoin = 'round'; g.stroke();
+      if (fz.z > 0.25) {
         // the face's name in the face's own plane (an affine map, as the projection is orthographic)
-        var t = VS_TEXT[f.id], o = P(f.n), pr = P([f.n[0] + t[0][0], f.n[1] + t[0][1], f.n[2] + t[0][2]]), pu = P([f.n[0] + t[1][0], f.n[1] + t[1][1], f.n[2] + t[1][2]]);
+        var t = VS_TEXT[f.id], o = P(n), pr = P([n[0] + t[0][0], n[1] + t[0][1], n[2] + t[0][2]]), pu = P([n[0] + t[1][0], n[1] + t[1][1], n[2] + t[1][2]]);
         var ax = (pr[0] - o[0]) / 100, ay = (pr[1] - o[1]) / 100, bx = (pu[0] - o[0]) / 100, by = (pu[1] - o[1]) / 100;
         g.save();
         g.setTransform(dpr * ax, dpr * ay, -dpr * bx, -dpr * by, dpr * o[0], dpr * o[1]);
         g.globalAlpha = Math.min(1, (fz.z - 0.25) / 0.35);
-        g.fillStyle = vs.hover === f.id ? '#3b2200' : dark ? '#ebebeb' : '#3a3a3a';
-        g.font = '600 34px Segoe UI, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillStyle = vs.hover === f.id ? '#ffffff' : ink;
+        g.font = '600 36px Segoe UI, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
         g.fillText(VS_FACE_NAMES[f.id], 0, 0);
         g.restore();
       }
@@ -3421,22 +3463,25 @@ var UI = (function () {
     return VS_FACE_NAMES[h.id] || (n === 3 ? 'Corner (isometric)' : 'Edge');
   }
   vsCanvas.addEventListener('mousemove', function (ev) {
+    if (ev.buttons) return;   // a middle drag that started on or crossed the cube still rotates the view (window listener)
     ev.stopPropagation();   // no pre-highlight of the model under the cube
-    if (ev.buttons) return;
     var p = vsLocal(ev), h = vsPick(p[0], p[1]), id = h ? h.id : null;
     vsCanvas.style.cursor = h ? 'pointer' : '';
     if (id !== vs.hover) { vs.hover = id; vsCanvas.title = vsTitle(h); drawViewSelector(); }
   });
   vsCanvas.addEventListener('mouseleave', function () { if (vs.hover) { vs.hover = null; drawViewSelector(); } });
   vsCanvas.addEventListener('mousedown', function (ev) {
+    if (ev.button === 1) { vs.hover = null; drawViewSelector(); return; }   // middle drag: rotate / pan / zoom with the cube up
     var p = vsLocal(ev), h = ev.button === 0 ? vsPick(p[0], p[1]) : null;
     if (!h) { hideViewSelector(); return; }   // off the cube: closes it, and the graphics area takes the press
     ev.stopPropagation(); ev.preventDefault();
     viewSelectorPick(h.id);
   });
-  // a press anywhere else closes it (the View Orientation menu and the heads-up toolbar leave it open)
+  // a press anywhere else closes it (the View Orientation menu and the heads-up toolbar leave it open). The middle
+  // button does not (user 2026-11-04: "mmb view rotation still works not cancels the menu"): it rotates (Ctrl pans,
+  // Shift zooms) the view and the cube turns with it, as SolidWorks' View Selector does; so does the wheel.
   document.addEventListener('mousedown', function (ev) {
-    if (!vs.shown || ev.target === vsCanvas) return;
+    if (!vs.shown || ev.target === vsCanvas || ev.button === 1) return;
     if (ev.target.closest && ev.target.closest('.menu, #hud')) return;
     hideViewSelector();
   }, true);

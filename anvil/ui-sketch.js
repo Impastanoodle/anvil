@@ -158,6 +158,7 @@
     viewport.setAttribute('data-sktool', App.tool);   // r12/sketchui12: the pencil cursor with the tool's glyph (style.css)
     var hint = $('sketch-hint');
     hint.hidden = App.mode !== 'sketch';
+    hint.classList.remove('dismissed');
     hint.innerHTML = TOOL_HINTS[App.tool] || '';
     // a sketch tool's own PropertyManager (Insert Line, Rectangle, Circle …, as SolidWorks opens on the tool): registered
     // in UI.sketchToolPMs[tool] = function (tool) { UI.openPM(…) } by the ui-sketch-*.js files; opened here exempt from
@@ -228,6 +229,7 @@
   function pmHint() {
     var spec = UI.pmSpec && UI.pmSpec(), h = $('sketch-hint');
     if (!spec || !h || !spec.message || spec.sketchTool || (UI.dimensionPMOpen && UI.dimensionPMOpen())) return;
+    h.classList.remove('dismissed');
     h.innerHTML = spec.message;
     // and the status bar, which still showed the previous command's prompt (re-audit 2026-10-12, #14 / #15)
     // (once per PropertyManager: a command that later writes its own status, e.g. an ordinate's value, keeps it)
@@ -3508,6 +3510,9 @@
   viewport.addEventListener('mousedown', function (ev) {
     if (ev.target.closest && ev.target.closest('#hud, #exit-sketch, #sketch-hint, #dim-layer, #dim-edit, #sk-num')) return;
     UI.closeMenus();
+    // (user 2026-11-04: "i click empty space and this prompt doesnt disappear") the Select tool's help line goes away at the
+    // first press in the graphics area; a drawing tool or a command's message brings its own line back (setTool, pmHint)
+    if (App.mode === 'sketch' && App.tool === 'select' && !(UI.hasPM && UI.hasPM())) $('sketch-hint').classList.add('dismissed');
     var p = pos(ev);
     downPos = p;
     // r4/asm4: Alt + drag on a floating component is SmartMates (ui-assembly.js); elsewhere Alt + drag rotates the view

@@ -120,15 +120,13 @@
     assert($('status-right').lastElementChild === span && span.classList.contains('st-ms'), 'status bar rewritten');
     return 'ok';
   });
-  step('chrome: Space opens View Orientation at the mouse pointer over the graphics area', async function () {
+  step('chrome: Space over the graphics area opens the View Selector cube alone (user 2026-11-04), no View Orientation list; Space again closes it', async function () {
     var vp = $('viewport'), r = vp.getBoundingClientRect(), x = Math.round(r.left + 24), y = Math.round(r.top + 40);
     vp.dispatchEvent(new W.MouseEvent('mousemove', { clientX: x, clientY: y, bubbles: true }));
     chromeKey(D, ' ');
-    var m = D.querySelector('.menu');
-    assert(m && /Isometric/.test(m.textContent), 'no orientation menu');
-    var mr = m.getBoundingClientRect();
-    assert(Math.abs(mr.left - x) < 2 && Math.abs(mr.top - y) < 2, 'menu at ' + mr.left + ',' + mr.top + ' not at ' + x + ',' + y);
-    UI.closeMenus();
+    assert(UI.viewSelectorShown() && !D.querySelector('.menu'), 'Space: the cube and no menu');
+    chromeKey(D, ' ');
+    assert(!UI.viewSelectorShown(), 'Space again closes the cube');
     return 'ok';
   });
   step('chrome: Esc with a context menu open closes only the menu; the PropertyManager stays', async function () {

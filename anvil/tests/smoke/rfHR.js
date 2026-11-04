@@ -28,4 +28,34 @@
       return 'box ' + Math.round(wraps[0].getBoundingClientRect().width) + ' px at 150 px';
     } finally { main.style.gridTemplateColumns = cols0; UI.setTool('select'); if (UI.exitSketch) UI.exitSketch(true); await idle(); }
   });
+
+  // (user 2026-11-04, Boss-Extrude narrowed: "Start" broke as St / ar / t and End condition read "B…")
+  step('rfHR: Boss-Extrude narrowed: "Start" stays whole, a drop-down list keeps 84 px (else drops under its label, right-aligned) and the Reverse Direction button stays inside; at the default width the list is 136 px with the button 4 px before it', async function () {
+    var main = $('left').parentElement, cols0 = main.style.gridTemplateColumns;
+    try {
+      await anvil.newPart(); await idle();
+      await anvil.run("p.sketch('Front').rect(0, 0, 60, 40)"); await idle();
+      UI.cmdExtrude(); await idle(); await wait(30);
+      assert(UI.pmTitle() === 'Boss-Extrude', 'Boss-Extrude open: ' + UI.pmTitle());
+      var pm = $('pm'), endRow = D.querySelector('#pm .pm-row-select.pm-has-rev'), sel = endRow.querySelector('select'), rev = endRow.querySelector('.pm-rev');
+      var s = sel.getBoundingClientRect(), r = rev.getBoundingClientRect();
+      assert(Math.abs(s.width - 136) < 1 && Math.abs(s.left - 4 - r.right) < 1.5 && Math.abs(s.top - r.top) < 6, 'default: End condition 136 px, the button 4 px before it: ' + Math.round(s.width) + ' / ' + Math.round(s.left - r.right));
+      var out = [];
+      for (var w of [230, 200, 160, 150]) {
+        main.style.gridTemplateColumns = w + 'px 1fr 35px'; await wait(50);
+        var p = pm.getBoundingClientRect(), start = D.querySelector('#pm .pm-row-static > label');
+        assert(start.getBoundingClientRect().height <= 22, w + ' px: "Start" on one line: ' + start.getBoundingClientRect().height);
+        assert(pm.scrollWidth <= pm.clientWidth + 1, w + ' px: no sideways scroll');
+        Array.prototype.forEach.call(D.querySelectorAll('#pm .pm-row-select select'), function (x) {
+          var b = x.getBoundingClientRect();
+          if (!x.offsetParent) return;
+          assert(b.width >= 83.5 && b.right <= p.right + 1, w + ' px: a list at least 84 px and inside: ' + Math.round(b.width) + ' / ' + Math.round(b.right) + ' > ' + Math.round(p.right));
+        });
+        r = rev.getBoundingClientRect();
+        assert(r.right <= p.right + 1, w + ' px: the Reverse Direction button inside the panel');
+        out.push(w + ':' + Math.round(sel.getBoundingClientRect().width));
+      }
+      return out.join(' ');
+    } finally { main.style.gridTemplateColumns = cols0; if (UI.hasPM()) UI.closePM(); await idle(); }
+  });
 })();

@@ -50,7 +50,7 @@
     assert(errors.length === errs0, 'no errors: ' + errors.slice(errs0).join(' | '));
   });
 
-  step('rfDA: the View Selector cube is centred on the model (panned off the middle) and clamped inside the graphics area; the View Orientation menu opened with Space at the model, or from the heads-up toolbar, never covers it', async function () {
+  step('rfDA: the View Selector cube is centred on the model (panned off the middle) and clamped inside the graphics area; Space shows the cube alone (user 2026-11-04); the View Orientation menu from the heads-up toolbar never covers it', async function () {
     var errs0 = errors.length;
     await rfDABox();
     UI.panView(-260, -90); await wait(120);
@@ -70,18 +70,14 @@
     assert(c.left >= v.left - 0.5 && c.left <= v.left + 6, 'model off the left edge: the cube stops at the left edge (' + c.left.toFixed(1) + ' vs ' + v.left.toFixed(1) + ')');
     UI.hideViewSelector();
     UI.setView('Isometric'); await wait(450);
-    // Space with the pointer on the model: the menu would open on the cube; it moves beside it
+    // Space with the pointer on the model: the cube alone (user 2026-11-04: no View Orientation list with Space)
     var p = UI.worldToScreen([2, 1, 0.5]), gl = UI.viewport.querySelector('canvas') || UI.viewport;
     gl.dispatchEvent(new W.MouseEvent('mousemove', { clientX: v.left + p[0], clientY: v.top + p[1], bubbles: true }));
     UI.showOrientationMenu(); await wait(30);
     var menu = D.querySelector('body > .menu');
-    assert(menu && UI.viewSelectorShown(), 'Space: the menu and the cube are up');
-    c = rfDARect(cube);
-    var mr = rfDARect(menu);
-    assert(!rfDAOverlap(mr, c), 'Space: the menu ' + [mr.left, mr.top, mr.right, mr.bottom].map(Math.round).join(',') + ' does not cover the cube ' + [c.left, c.top, c.right, c.bottom].map(Math.round).join(','));
-    assert(mr.left >= 0 && mr.right <= W.innerWidth && mr.top >= 0 && mr.bottom <= W.innerHeight, 'the menu is inside the window');
-    UI.showOrientationMenu(); await wait(20);   // Space again closes both
-    assert(!UI.viewSelectorShown() && !D.querySelector('body > .menu'), 'Space again closes the cube and the menu');
+    assert(!menu && UI.viewSelectorShown(), 'Space: the cube is up and no menu');
+    UI.showOrientationMenu(); await wait(20);   // Space again closes it
+    assert(!UI.viewSelectorShown() && !D.querySelector('body > .menu'), 'Space again closes the cube');
     // the heads-up View Orientation button
     D.getElementById('hud').children[5].click(); await wait(30);
     menu = D.querySelector('body > .menu'); c = rfDARect(cube);

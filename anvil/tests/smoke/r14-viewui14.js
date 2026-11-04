@@ -75,13 +75,23 @@
     UI.viewAnimation = undefined;
     return 'X → Right → Left, Shift+Y from Front → Right';
   });
-  step('r14 view: View Selector — Space shows the cube with the View Orientation menu, a corner / edge / face click orients and closes it, Space again or Esc closes it', async function () {
+  step('r14 view: View Selector — Space shows the cube alone (no menu, user 2026-11-04), a corner / edge / face click orients and closes it, a middle drag rotates the view with the cube still up, Space again or Esc closes it', async function () {
     UI.viewAnimation = false;
     UI.setView('Isometric'); UI.render();
     UI.showOrientationMenu();
     var vsEl = D.getElementById('view-selector');
     assert(UI.viewSelectorShown() && vsEl && !vsEl.hidden, 'the cube is shown');
-    assert(D.querySelector('body > .menu'), 'the View Orientation menu is open with it');
+    assert(!D.querySelector('body > .menu'), 'Space opens no View Orientation list, only the cube');
+    // a middle drag on the cube rotates the view and leaves the cube up, turned with the view
+    var vr = vsEl.getBoundingClientRect(), mx = vr.left + vr.width / 2, my = vr.top + vr.height / 2, d0 = r14dir();
+    vsEl.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 1, buttons: 4, clientX: mx, clientY: my }));
+    for (var mi = 1; mi <= 4; mi++) vsEl.dispatchEvent(new W.MouseEvent('mousemove', { bubbles: true, buttons: 4, clientX: mx + mi * 15, clientY: my + mi * 4 }));
+    W.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true, button: 1, clientX: mx + 60, clientY: my + 16 }));
+    UI.render();
+    var d1 = r14dir();
+    assert(UI.viewSelectorShown() && !vsEl.hidden, 'a middle drag keeps the cube up');
+    assert(Math.abs(d0[0] - d1[0]) + Math.abs(d0[1] - d1[1]) + Math.abs(d0[2] - d1[2]) > 0.05, 'a middle drag on the cube rotates the view: ' + d0.map(function (x) { return x.toFixed(3); }) + ' -> ' + d1.map(function (x) { return x.toFixed(3); }));
+    UI.setView('Isometric'); UI.render();
     var regs = UI.viewSelectorRegions(), ids = {};
     regs.forEach(function (r) { ids[r.id] = 1; });
     // from the isometric view three faces face the viewer: their 3 × 3 cells give 19 distinct regions (7 shared)
@@ -101,7 +111,7 @@
     assert(UI.viewSelectorPick('0,1,0'), 'pick Top');
     nearVecS(r14dir(), [0, 1, 0], 1e-6, 'Top'); nearVecS(UI.cam.up.toArray(), [0, 0, -1], 1e-6, 'Top up = -Z');
     UI.showOrientationMenu(); assert(UI.viewSelectorShown(), 'Space shows it');
-    UI.showOrientationMenu(); assert(!UI.viewSelectorShown() && !D.querySelector('body > .menu'), 'Space again closes the cube and the menu');
+    UI.showOrientationMenu(); assert(!UI.viewSelectorShown() && !D.querySelector('body > .menu'), 'Space again closes the cube');
     UI.showViewSelector();
     W.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     assert(!UI.viewSelectorShown(), 'Esc closes it');

@@ -1935,3 +1935,33 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 #pm .pm-row.pm-row-icons > label { flex: 1 1 auto; white-space: nowrap; overflow-wrap: normal; }
 #pm .pm-row.pm-row-icons > .pm-icons { flex: 0 1 auto; min-width: 0; max-width: 100%; flex-wrap: wrap; }
 #pm { overflow-x: hidden; }
+/* pm-narrow 2 (user 2026-11-04, Boss-Extrude narrowed: "Start" broke as St / ar / t, End condition read "B…"): a static
+   row's label and value break only between words; a drop-down list shrinks to 84 px (its longest usual choice still
+   reads) and below that drops onto its own line under its label, right-aligned, as wide as it may be; the Reverse
+   Direction button stays beside the label. At the default width the row is laid out as before (list --pm-ctl-w wide on
+   the right, the button 4 px before it). */
+#pm .pm-row.pm-row-static > label, #pm .pm-row.pm-row-static .static { overflow-wrap: normal; word-break: normal; }
+#pm .pm-row.pm-field.pm-row-select:not(.check) { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; column-gap: 8px; row-gap: 3px; }
+#pm .pm-row.pm-field.pm-row-select.pm-has-rev:not(.check) { column-gap: 4px; }
+#pm .pm-row.pm-field.pm-row-select:not(.check) > label { flex: 0 0 auto; order: 0; margin-right: auto; white-space: nowrap; overflow-wrap: normal; }
+#pm .pm-row.pm-field.pm-row-select:not(.check) > .pm-rev { flex: 0 0 24px; order: 1; }
+#pm .pm-row.pm-field.pm-row-select:not(.check) > select { flex: 1 1 84px; order: 2; width: auto; min-width: 84px; max-width: var(--pm-ctl-w); }
+
+/* fm-tab (user 2026-11-04: "the left panel ... able to be completely hidden with a pull tab always extruded"): the
+   FeatureManager hides completely (#main.fm-hidden, --fm-w 0) and a pull tab always sticks out on the graphics area's
+   left edge, half way down: click hides / shows the panel, a drag pulls it out to the pointer. Its edge splitter stays
+   live while hidden so the edge can be dragged out too. */
+#main.fm-hidden > #left { border-right-width: 0; }
+#main.fm-hidden > #left > :not(.split) { visibility: hidden; }
+#main.fm-hidden > #left > .split { right: -7px; }
+#fm-tab { position: absolute; left: 0; top: 50%; z-index: 7; width: 13px; height: 52px; margin: -26px 0 0; padding: 0;
+  display: flex; align-items: center; justify-content: center; border: 1px solid var(--sw-chrome-line, var(--line)); border-left: 0;
+  border-radius: 0 6px 6px 0; background: var(--sw-panel, var(--panel)); color: var(--muted); cursor: pointer;
+  box-shadow: 1px 0 4px rgba(0, 0, 0, .14); touch-action: none; }
+#fm-tab:hover, #fm-tab.dragging { color: var(--text); background: var(--sw-row-hover, var(--panel)); width: 15px; }
+#fm-tab:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+#fm-tab svg { transition: transform 120ms ease-out; }
+#fm-tab.collapsed svg { transform: scaleX(-1); }
+body.splitting #fm-tab { cursor: col-resize; }
+/* the Select tool's sketch help line, dismissed by a press in the graphics area (user 2026-11-04) */
+#sketch-hint.dismissed { display: none; }

@@ -613,11 +613,15 @@
   // width); the width a user sets is kept in localStorage, and the shown width is clamped so the graphics area keeps
   // at least max(320 px, 35 % of the window): the Task Pane gives way first, then the FeatureManager.
   var PANES = {
-    fm: { key: 'anvil.fmWidth', def: 296, min: 200, max: 640, css: '--fm-w', pref: null, shown: null },
+    // (user 2026-11-04: "the left panel ... not locked at a minimum size, rather able to be completely hidden with a pull
+    // tab always extruded") a drag goes down to dragMin; past it (FM_COLLAPSE) the FeatureManager hides completely, and
+    // the pull tab on the graphics area's left edge (#fm-tab) shows it again (click, or drag it out); F9 toggles it as in
+    // SolidWorks. min stays the width the window fit gives way to on its own.
+    fm: { key: 'anvil.fmWidth', def: 296, min: 200, dragMin: 140, max: 640, css: '--fm-w', pref: null, shown: null },
     tp: { key: 'anvil.tpWidth', def: 340, min: 240, max: 720, css: '--tp-w', pref: null, shown: null }
   };
   function panePref(p) {
-    if (p.pref == null) { var n = NaN; try { n = parseFloat(localStorage.getItem(p.key)); } catch (e) { } p.pref = n >= p.min && n <= p.max ? Math.round(n) : p.def; }
+    if (p.pref == null) { var n = NaN; try { n = parseFloat(localStorage.getItem(p.key)); } catch (e) { } p.pref = n >= (p.dragMin || p.min) && n <= p.max ? Math.round(n) : p.def; }
     return p.pref;
   }
   function paneWidths() {
@@ -625,7 +629,8 @@
     var tpOpen = $('tp-panel') && !$('tp-panel').hidden;
     var fm = panePref(PANES.fm), tp = panePref(PANES.tp), minVp = Math.max(320, Math.round(W * 0.35)), overlay = false;
     var spare = W - strip - minVp - fm;
-    if (spare < 0) fm = Math.max(PANES.fm.min, fm + spare);
+    if (fmHidden) fm = 0;
+    else if (spare < 0) fm = Math.max(Math.min(fm, PANES.fm.min), fm + spare);
     if (tpOpen) {
       spare = W - strip - minVp - fm - tp;
       if (spare < 0 && tp + spare >= PANES.tp.min) tp += spare;
@@ -634,6 +639,30 @@
     }
     return { fm: fm, tp: tp, W: W, strip: strip, minVp: minVp, tpOpen: tpOpen, overlay: overlay };
   }
+  var FM_COLLAPSE = 100, fmHidden = false;
+  try { fmHidden = localStorage.getItem('anvil.fmHidden') === '1'; } catch (e) { }
+  function syncFmHidden() {
+    var main = $('main'), tab = $('fm-tab');
+    if (main) main.classList.toggle('fm-hidden', fmHidden);
+    if (tab) { tab.classList.toggle('collapsed', fmHidden); tab.title = (fmHidden ? 'Show' : 'Hide') + ' FeatureManager (F9) — click, or drag to resize'; tab.setAttribute('aria-expanded', String(!fmHidden)); }
+  }
+  // UI.setFeatureManagerHidden(true|false), no argument toggles; returns the new hidden state
+  function setFeatureManagerHidden(h, keep) {
+    h = h === undefined ? !fmHidden : !!h;
+    if (h !== fmHidden) { fmHidden = h; if (!keep) try { localStorage.setItem('anvil.fmHidden', h ? '1' : '0'); } catch (e) { } }
+    syncFmHidden(); fitPanels(true);
+    return fmHidden;
+  }
+  // a drag of the FeatureManager's edge or of the pull tab to raw width w: past FM_COLLAPSE it hides, else at least dragMin
+  function dragFmTo(raw) {
+    var w = paneWidths(), room = w.W - w.strip - w.minVp - (w.tpOpen && !w.overlay ? w.tp : 0), p = PANES.fm;
+    if (raw < FM_COLLAPSE) { if (!fmHidden) { fmHidden = true; syncFmHidden(); fitPanels(true); } return; }
+    var nw = Math.round(Math.max(p.dragMin, Math.min(p.max, room, raw)));
+    p.pref = nw;
+    if (fmHidden) { fmHidden = false; syncFmHidden(); }
+    if (setPaneWidth(p, nw) && UI.resize) UI.resize();
+  }
+  function saveFm() { try { localStorage.setItem(PANES.fm.key, String(PANES.fm.pref)); localStorage.setItem('anvil.fmHidden', fmHidden ? '1' : '0'); } catch (e) { } }
   function setPaneWidth(p, w) {
     if (p.shown === w) return false;
     p.shown = w;
@@ -654,12 +683,13 @@
     s.addEventListener('pointerdown', function (e) {
       if (e.button !== 0) return;
       e.preventDefault();
-      start = { x: e.clientX, w: p.shown || panePref(p) };
+      start = { x: e.clientX, w: p === PANES.fm && fmHidden ? 0 : p.shown || panePref(p) };
       try { s.setPointerCapture(e.pointerId); } catch (er) { }
       s.classList.add('dragging'); document.body.classList.add('splitting');
     });
     s.addEventListener('pointermove', function (e) {
       if (!start) return;
+      if (p === PANES.fm) { dragFmTo(start.w + sign * (e.clientX - start.x)); return; }
       var w = paneWidths(), other = p === PANES.fm ? (w.tpOpen && !w.overlay ? w.tp : 0) : w.fm;
       var room = p === PANES.tp && w.overlay ? w.W - w.strip - 48 : w.W - w.strip - w.minVp - other;
       var nw = Math.round(Math.max(p.min, Math.min(p.max, room, start.w + sign * (e.clientX - start.x))));
@@ -670,18 +700,54 @@
       if (!start) return;
       start = null;
       s.classList.remove('dragging'); document.body.classList.remove('splitting');
-      try { localStorage.setItem(p.key, String(p.pref)); } catch (er) { }
+      if (p === PANES.fm) saveFm(); else try { localStorage.setItem(p.key, String(p.pref)); } catch (er) { }
       fitPanels(true);
     }
     s.addEventListener('pointerup', end);
     s.addEventListener('pointercancel', end);
     s.addEventListener('lostpointercapture', end);
-    s.addEventListener('dblclick', function () { p.pref = p.def; try { localStorage.removeItem(p.key); } catch (er) { } fitPanels(true); });
+    s.addEventListener('dblclick', function () { if (p === PANES.fm && fmHidden) { fmHidden = false; syncFmHidden(); saveFm(); } p.pref = p.def; try { localStorage.removeItem(p.key); } catch (er) { } fitPanels(true); });
     host.appendChild(s);
   }
+  // the pull tab: always out on the graphics area's left edge, beside the FeatureManager or where it was when hidden;
+  // a click hides / shows it, a drag pulls it out (or in) to the width under the pointer
+  function addFmTab() {
+    var vp = $('viewport');
+    if (!vp || $('fm-tab')) return;
+    var t = el('button', { id: 'fm-tab', type: 'button', 'aria-label': 'FeatureManager', html: '<svg viewBox="0 0 6 10" width="6" height="10" aria-hidden="true"><path d="M5 1 1 5l4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>' });
+    var start = null;
+    t.addEventListener('mousedown', function (e) { e.stopPropagation(); });   // not a press in the graphics area
+    t.addEventListener('pointerdown', function (e) {
+      if (e.button !== 0) return;
+      e.preventDefault(); e.stopPropagation();
+      start = { x: e.clientX, w: fmHidden ? 0 : PANES.fm.shown || panePref(PANES.fm), moved: false };
+      try { t.setPointerCapture(e.pointerId); } catch (er) { }
+    });
+    t.addEventListener('pointermove', function (e) {
+      if (!start) return;
+      if (!start.moved && Math.abs(e.clientX - start.x) < 4) return;
+      if (!start.moved) { start.moved = true; document.body.classList.add('splitting'); t.classList.add('dragging'); }
+      dragFmTo(start.w + e.clientX - start.x);
+    });
+    function end() {
+      if (!start) return;
+      var moved = start.moved; start = null;
+      document.body.classList.remove('splitting'); t.classList.remove('dragging');
+      if (moved) { saveFm(); fitPanels(true); } else setFeatureManagerHidden();
+    }
+    t.addEventListener('pointerup', end);
+    t.addEventListener('pointercancel', end);
+    t.addEventListener('lostpointercapture', end);
+    t.addEventListener('click', function (e) { if (e.detail === 0) setFeatureManagerHidden(); });   // keyboard (Enter / Space on the focused tab)
+    vp.appendChild(t);
+    syncFmHidden();
+  }
+  UI.setFeatureManagerHidden = setFeatureManagerHidden;
+  UI.featureManagerHidden = function () { return fmHidden; };
   function fitWorkspace() { fitPanels(true); fitRibbon(); }
   (function initFit() {
     addSplitter($('left'), PANES.fm, 1);
+    addFmTab();
     addSplitter($('tp-panel'), PANES.tp, -1);
     fitPanels(false);
     var queued = false;
@@ -1833,18 +1899,16 @@
     ]); });
   }
   UI.HUD_ORDER = ['Zoom to Fit', 'Zoom to Area', 'Previous View', 'Section View', 'Dynamic Annotation Views', 'View Orientation', 'Display Style', 'Hide/Show Items', 'Edit Appearance', 'Apply Scene', 'Show Endpoints', 'View Settings'];
-  // Space (ui-app.js): the View Orientation menu at the mouse pointer when it is over the graphics area, else under
-  // the heads-up button
+  // the last pointer position (used below to place a popup at the pointer)
   var lastPointer = null;
   document.addEventListener('mousemove', function (e) { lastPointer = [e.clientX, e.clientY, e.target]; }, { passive: true });
+  // (user 2026-11-04: "when i click the spacebar the only thing that should pop up is the square view selection") Space
+  // shows the View Selector cube alone; the list of views stays on the heads-up View Orientation button's drop-down.
   function showOrientationMenu() {
-    var vp = UI.viewport || $('viewport');
-    // r14/viewui14: Space again closes the View Selector and the menu (SolidWorks toggles it)
+    // r14/viewui14: Space again closes the View Selector (SolidWorks toggles it)
     if (UI.viewSelectorShown && UI.viewSelectorShown()) { hideVS(); closeMenus(); return; }
+    closeMenus();
     if (UI.showViewSelector) UI.showViewSelector();
-    if (lastPointer && vp && vp.contains(lastPointer[2])) { showMenu(lastPointer[0], lastPointer[1], orientItems()); return; }
-    var b = $('hud').children[5];
-    if (b) b.click();
   }
 
   // ------------------------------------------------------------------ modal

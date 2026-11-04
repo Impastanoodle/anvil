@@ -1345,6 +1345,7 @@
     if (ctrl) return;
     if (k === 'Enter' && UI.hasPM()) { e.preventDefault(); UI.pmEnter(e.target); return; }   // lane BP: nothing typed here, so ✓ (ui-commands.js pmEnter)
     if (k === 'Delete' || k === 'Backspace') { UI.deleteSelection(); return; }
+    if (k === 'F9' && UI.setFeatureManagerHidden) { e.preventDefault(); UI.setFeatureManagerHidden(); return; }   // SolidWorks: F9 toggles the FeatureManager tree area
     if (k === 'F2' && App.sel && App.sel.kind === 'feature') { e.preventDefault(); UI.startRename(K.findFeature(App.model, App.sel.id)); return; }
     if (k === 'f' || k === 'F') { UI.zoomToFit(); return; }
     if (k === 'z') { UI.zoomView(1.25); return; }
