@@ -1,5 +1,6 @@
 // preload.js — the small bridge between Anvil's page and the desktop app (sandboxed, context-isolated).
-// window.anvilDesktop = { isDesktop: true, version, checkForUpdates() } tells the page it runs in the Windows app.
+// window.anvilDesktop = { isDesktop: true, version, checkForUpdates(), occtHost } tells the page it runs in the Windows
+// app; occtHost (null when the native engine is switched off) reaches OpenCascade for Windows (below).
 // The update prompt ("Anvil x.y.z is ready — Restart to update / Later") is drawn here, over the page, so Anvil's
 // own files need no change for it.
 'use strict';
@@ -8,10 +9,47 @@ const { contextBridge, ipcRenderer } = require('electron');
 let info = { version: '' };
 try { info = ipcRenderer.sendSync('anvil-desktop:info') || info; } catch (e) { /* main not ready */ }
 
+// OpenCascade for Windows (main.js starts occt-host.js in its own process and hands this page a MessagePort to it).
+// ui-occt.js wraps it as a Worker: id = start(onMessage), post(id, message), stop(id) (kills the process). A process
+// that cannot load the engine, or stops by itself, sends { type: 'hostFailed', message } and the page uses the
+// WebAssembly worker instead.
+const hosts = new Map();   // id -> { onMessage, port, queue }
+let hostSeq = 0;
+ipcRenderer.on('anvil-desktop:occt-port', (e, d) => {
+  const h = hosts.get(d && d.id), port = e.ports && e.ports[0];
+  if (!h || !port) { if (port) port.close(); return; }
+  h.port = port;
+  port.onmessage = (ev) => { if (hosts.get(d.id) === h) h.onMessage(ev.data); };
+  h.queue.splice(0).forEach((m) => port.postMessage(m));
+});
+ipcRenderer.on('anvil-desktop:occt-exit', (e, d) => {
+  const h = hosts.get(d && d.id);
+  if (h) h.onMessage({ type: 'hostFailed', message: d.message });
+});
+function stopHost(id) {
+  const h = hosts.get(id);
+  if (!h) return;
+  hosts.delete(id);
+  if (h.port) h.port.close();
+  ipcRenderer.send('anvil-desktop:occt-stop', id);
+}
+window.addEventListener('pagehide', () => { Array.from(hosts.keys()).forEach(stopHost); });
+const occtHost = !info.occtNative ? null : {
+  start: (onMessage) => {
+    const id = 'h' + (++hostSeq) + '-' + Date.now().toString(36);
+    hosts.set(id, { onMessage, port: null, queue: [] });
+    ipcRenderer.send('anvil-desktop:occt-start', id);
+    return id;
+  },
+  post: (id, m) => { const h = hosts.get(id); if (!h) return; if (h.port) h.port.postMessage(m); else h.queue.push(m); },
+  stop: stopHost
+};
+
 contextBridge.exposeInMainWorld('anvilDesktop', {
   isDesktop: true,
   version: info.version,
-  checkForUpdates: () => ipcRenderer.invoke('anvil-desktop:check-updates')
+  checkForUpdates: () => ipcRenderer.invoke('anvil-desktop:check-updates'),
+  occtHost
 });
 
 function el(tag, style, text) {

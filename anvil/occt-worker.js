@@ -91,8 +91,14 @@ function cacheFor(key) {
 const ready = (async () => {
   for (const f of ['csg.js', 'kernel.js', 'sketch-font.js', 'kernel-sketch.js', 'kernel-curves.js', 'kernel-equations.js', 'kernel-mesh.js', 'kernel-rebuild.js', 'kernel-features.js', 'kernel-sheetmetal.js', 'kernel-script.js', 'holewizard.js', 'exchange.js', 'occt-kernel.js']) await classic(f);
   const t0 = performance.now();
-  const [opencascade, wasmBinary] = await Promise.all([engineFactory(), engineBinary()]);
-  const oc = await new opencascade({ wasmBinary, locateFile: (p) => OCCT_DIR + p });
+  // the Windows app runs this same file in a process of its own (desktop/occt-host.js) and sets anvilNativeEngine,
+  // which returns OpenCascade built for Windows (desktop/native: the same `oc` API); a browser never has it
+  let oc;
+  if (typeof self.anvilNativeEngine === 'function') oc = await self.anvilNativeEngine();
+  else {
+    const [opencascade, wasmBinary] = await Promise.all([engineFactory(), engineBinary()]);
+    oc = await new opencascade({ wasmBinary, locateFile: (p) => OCCT_DIR + p });
+  }
   const loadMs = performance.now() - t0;
   self.postMessage({ type: 'ready', loadMs });
   return oc;

@@ -29,6 +29,28 @@ and change `updateFolder` in `settings.json`, then restart Anvil:
 { "updateFolder": "C:\\Users\\Lucas\\Desktop\\Output\\Anvil Releases", "checkEveryHours": 2 }
 ```
 
+## OpenCascade: which engine Anvil uses
+
+OpenCascade is the geometry engine that builds the exact solids (true fillets, holes, bends, STEP). The Windows app
+has two copies of it:
+
+- **OpenCascade for Windows** (OpenCascade 7.6.3 built as normal Windows DLLs). This is the one it uses. It runs in a
+  separate background process, uses all the PC's cores for Booleans and meshing, and builds a part several times faster
+  than the browser copy. Cancel, or opening another part, ends that process at once and a fresh one starts.
+- **The browser copy** (WebAssembly, the same engine the web version uses). It is only used if the Windows one cannot
+  start (a file missing or damaged, or it stopped). Anvil then switches by itself for the rest of the session; nothing
+  is lost and the part is built again.
+
+How to tell which one is running:
+
+- **Help ▸ About Anvil** (press Alt to show the menu bar) has a line *OpenCascade: 7.6.3 for Windows (native, loaded
+  in … ms)*, or *OpenCascade: WebAssembly engine (…)* with the reason.
+- Hover over the green **OpenCascade ✓** in the status bar: the tip ends in *[engine: OpenCascade 7.6.3 for Windows]*.
+  Without that ending it is the browser copy.
+
+To use the browser copy on purpose (for example to compare), add `"occtEngine": "wasm"` to `settings.json` (**Help ▸
+Open Update Settings**) and restart Anvil; remove it to go back.
+
 ## Where files go
 
 | What | Where |
@@ -53,9 +75,13 @@ npm run release -- --notes "Bend table fix"     the text shown in the update box
 ```
 
 The build needs the OpenCascade engine in `anvil\vendor\occt` (fetch it once with
-`powershell -ExecutionPolicy Bypass -File anvil\vendor\get-occt.ps1`); without it the build stops and says so.
-LibreDWG (`anvil\vendor\get-libredwg.ps1`) is included when it is there.
+`powershell -ExecutionPolicy Bypass -File anvil\vendor\get-occt.ps1`) and OpenCascade for Windows, the addon folder
+`Desktop\Output\Anvil Native\addon` (built by `desktop\native`, see its README; `ANVIL_OCCT_NATIVE` names another
+folder); without either the build stops and says so. The addon goes in the program's `resources\occt-native` folder,
+outside the app archive, and `occt-host.js` (the process that runs it) next to the archive. LibreDWG
+(`anvil\vendor\get-libredwg.ps1`) is included when it is there.
 
 Other commands: `npm start` runs Anvil from the source files; `npm run pack` builds `dist\win-unpacked\Anvil.exe`
 without an installer; `node check.js app`, `node check.js tests`, `node check.js update --folder <folder>` test a build
-by script; `npm run icon` redraws the icon.
+by script (`node check.js engines` only the OpenCascade part: Windows engine against the browser copy, Cancel, the
+fall-backs and a timing table); `npm run icon` redraws the icon.

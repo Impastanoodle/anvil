@@ -12,8 +12,12 @@
 // Test hooks (environment, for scripts only): ANVIL_ROOT serves another anvil folder (e.g. the repo, with its tests),
 // ANVIL_USER_DATA moves the user-data folder, ANVIL_TEST_SAVE_DIR saves downloads there without a dialog,
 // ANVIL_TEST_LOG appends one JSON line per event (downloads, update checks, converter runs) to that file.
+// - OpenCascade: the native engine (OpenCascade 7.6.3 for Windows, desktop/native) runs in its own process
+//   (occt-host.js); the page talks to it through a MessagePort and falls back to the WebAssembly worker if it cannot
+//   start. ANVIL_OCCT_NATIVE names another addon folder; ANVIL_OCCT_ENGINE=wasm (or "occtEngine": "wasm" in
+//   settings.json) keeps the WebAssembly engine.
 'use strict';
-const { app, BrowserWindow, protocol, session, shell, Menu, dialog, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, protocol, session, shell, Menu, dialog, ipcMain, screen, utilityProcess, MessageChannelMain } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const converters = require('./converters');
@@ -150,7 +154,7 @@ function setupDownloads() {
 function about() {
   dialog.showMessageBox(win, { type: 'info', title: 'About Anvil', buttons: ['OK'], icon: ICON, message: 'Anvil ' + VERSION,
     detail: 'Parametric CAD for sheet metal, parts, assemblies and drawings.\n\nElectron ' + process.versions.electron + ', Chromium ' + process.versions.chrome +
-      '\nProgram files: ' + ROOT + '\nSettings: ' + app.getPath('userData') });
+      '\n' + occtAbout() + '\nProgram files: ' + ROOT + '\nSettings: ' + app.getPath('userData') });
 }
 async function checkNow() {
   const r = await updater.check(true);
@@ -182,11 +186,57 @@ function setupMenu() {
   ]));
 }
 
+// ---- OpenCascade for Windows in its own process (occt-host.js) ---------------------------------------------------
+// One utility process per engine start (the page's startWorker); the page stops it (terminate: Cancel, a model switch)
+// by killing it, so a long build never blocks the next one. The page and the process talk directly on a MessagePort.
+const OCCT_ADDON = path.resolve(process.env.ANVIL_OCCT_NATIVE ||
+  (app.isPackaged ? path.join(process.resourcesPath, 'occt-native') : path.join(app.getPath('home'), 'Desktop', 'Output', 'Anvil Native', 'addon')));
+// shipped unpacked (asarUnpack), next to app.asar
+const OCCT_HOST = path.join(__dirname, 'occt-host.js').replace(/([\\/])app\.asar([\\/])/, '$1app.asar.unpacked$2');
+const occtHosts = new Map();   // id -> { child, wc, stopped }
+const occtInfo = { state: 'not started yet', loadMs: null, message: null };
+function occtNative() { return process.env.ANVIL_OCCT_ENGINE !== 'wasm' && settings().occtEngine !== 'wasm' && fs.existsSync(OCCT_HOST); }
+function occtStart(wc, id) {
+  const fail = (message) => { Object.assign(occtInfo, { state: 'failed', message }); testLog('occt-native-failed', { id, message }); if (!wc.isDestroyed()) wc.send('anvil-desktop:occt-exit', { id, message }); };
+  let child;
+  try { child = utilityProcess.fork(OCCT_HOST, ['--root', ROOT, '--addon', OCCT_ADDON], { serviceName: 'Anvil OpenCascade', stdio: 'pipe' }); }
+  catch (e) { fail('the engine process did not start: ' + e.message); return; }
+  const h = { child, wc, stopped: false, t0: Date.now() };
+  occtHosts.set(id, h);
+  const ch = new MessageChannelMain();
+  child.postMessage({ type: 'port' }, [ch.port1]);
+  wc.postMessage('anvil-desktop:occt-port', { id }, [ch.port2]);
+  let errText = '';
+  if (child.stdout) child.stdout.on('data', () => { });
+  if (child.stderr) child.stderr.on('data', (d) => { errText = (errText + d).slice(-2000); });
+  child.on('message', (m) => {
+    if (m && m.type === 'ready') { Object.assign(occtInfo, { state: 'native', loadMs: m.loadMs, message: null }); testLog('occt-native-ready', { id, pid: child.pid, loadMs: m.loadMs, startMs: Date.now() - h.t0 }); }
+    if (m && m.type === 'hostFailed') { Object.assign(occtInfo, { state: 'failed', message: m.message }); testLog('occt-native-failed', { id, message: m.message }); }
+  });
+  child.on('exit', (code) => {
+    occtHosts.delete(id);
+    testLog('occt-native-exit', { id, code, stopped: h.stopped });
+    if (!h.stopped) fail('the engine process stopped (exit code ' + code + ')' + (errText.trim() ? ': ' + errText.trim().split('\n').pop() : ''));
+  });
+}
+function occtStop(id) { const h = occtHosts.get(id); if (!h || h.stopped) return; h.stopped = true; try { h.child.kill(); } catch (e) { /* gone */ } }
+function occtStopAll(wc) { for (const [id, h] of occtHosts) if (!wc || h.wc === wc) occtStop(id); }
+function occtAbout() {
+  if (!occtNative()) return 'OpenCascade: WebAssembly engine (the Windows engine is switched off)';
+  if (occtInfo.state === 'native') return 'OpenCascade: 7.6.3 for Windows (native, loaded in ' + Math.round(occtInfo.loadMs) + ' ms)';
+  if (occtInfo.state === 'failed') return 'OpenCascade: WebAssembly engine (the Windows engine did not run: ' + occtInfo.message + ')';
+  return 'OpenCascade: 7.6.3 for Windows (' + occtInfo.state + ')';
+}
+ipcMain.on('anvil-desktop:occt-start', (e, id) => occtStart(e.sender, String(id)));
+ipcMain.on('anvil-desktop:occt-stop', (e, id) => occtStop(String(id)));
+app.on('web-contents-created', (e, wc) => { wc.once('destroyed', () => occtStopAll(wc)); wc.on('render-process-gone', () => occtStopAll(wc)); });
+app.on('before-quit', () => occtStopAll());
+
 // ---- updates -----------------------------------------------------------------------------------------------------
 let pageLoaded = false;   // set once the page has loaded; an offer found earlier is sent then (did-finish-load)
 function sendOffer(o) { if (win && pageLoaded) win.webContents.send('anvil-desktop:update', { version: o.version, notes: o.notes, current: VERSION }); }
 const updater = updates.create({ currentVersion: VERSION, settings, log: testLog, offer: (o) => sendOffer(o) });
-ipcMain.on('anvil-desktop:info', (e) => { e.returnValue = { version: VERSION }; });
+ipcMain.on('anvil-desktop:info', (e) => { e.returnValue = { version: VERSION, occtNative: occtNative() }; });
 ipcMain.handle('anvil-desktop:check-updates', () => updater.check(true));
 ipcMain.on('anvil-desktop:update-later', () => updater.later());
 ipcMain.on('anvil-desktop:update-restart', async (e) => {

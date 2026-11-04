@@ -4,10 +4,12 @@
 // pinned fingerprints of vendor/get-occt.ps1) and LibreDWG (vendor/libredwg, when it is there, with its licence).
 // Tests, docs, experiments, the Node runner and the local-server scripts are left out.
 // The engine is looked for in ../anvil/vendor/occt, else in %ANVIL_OCCT_DIR%.
+// Also OpenCascade for Windows (the native addon, required) into stage/occt-native; see the end of this file.
 'use strict';
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
 
 const SRC = path.resolve(__dirname, '..', 'anvil');
 const OUT = path.join(__dirname, 'stage', 'anvil');
@@ -70,3 +72,26 @@ if (fs.existsSync(path.join(dwg, 'dxf2dwg.exe'))) {
   withDwg = true;
 }
 console.log('stage.js: ' + files + ' files, ' + (bytes / 1048576).toFixed(1) + ' MB in stage/anvil (OpenCascade from ' + occt + (withDwg ? ', LibreDWG included' : ', no LibreDWG') + ')');
+
+// OpenCascade for Windows (desktop/native: index.js, occt_native.node, the OpenCascade DLLs and their licences):
+// required; electron-builder ships stage/occt-native as resources\occt-native, outside the asar (the app falls back to
+// the WebAssembly engine above if it cannot load). From ANVIL_OCCT_NATIVE, else Desktop\Output\Anvil Native\addon.
+const NATIVE = path.resolve(process.env.ANVIL_OCCT_NATIVE || path.join(os.homedir(), 'Desktop', 'Output', 'Anvil Native', 'addon'));
+const NOUT = path.join(__dirname, 'stage', 'occt-native');
+const need = ['index.js', 'occt_native.node', 'TKernel.dll', 'TKBO.dll', 'TKSTEP.dll', 'TKIGES.dll', 'TKMesh.dll'];
+const lacking = need.filter((f) => !fs.existsSync(path.join(NATIVE, f)));
+if (lacking.length) {
+  fail('The native OpenCascade engine is missing, so the installer was NOT built.\n' +
+    '  Expected ' + lacking.join(', ') + ' in ' + NATIVE + '.\n' +
+    '  Build it with desktop\\native (README.md there: npm run occt, gen, build, collect), or set ANVIL_OCCT_NATIVE to the addon folder.');
+}
+fs.rmSync(NOUT, { recursive: true, force: true });
+fs.mkdirSync(NOUT, { recursive: true });
+let nfiles = 0, nbytes = 0, dlls = 0;
+fs.readdirSync(NATIVE).forEach((f) => {
+  const src = path.join(NATIVE, f);
+  if (!fs.statSync(src).isFile() || !/\.(js|node|dll|txt)$/i.test(f)) return;
+  fs.copyFileSync(src, path.join(NOUT, f));
+  nfiles++; nbytes += fs.statSync(src).size; if (/\.dll$/i.test(f)) dlls++;
+});
+console.log('stage.js: ' + nfiles + ' files (' + dlls + ' DLLs), ' + (nbytes / 1048576).toFixed(1) + ' MB in stage/occt-native (from ' + NATIVE + ')');

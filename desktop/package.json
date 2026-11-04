@@ -31,13 +31,21 @@
       "preload.js",
       "converters.js",
       "updates.js",
+      "occt-host.js",
       "package.json",
       "assets/icon.png"
+    ],
+    "asarUnpack": [
+      "occt-host.js"
     ],
     "extraResources": [
       {
         "from": "stage/anvil",
         "to": "anvil"
+      },
+      {
+        "from": "stage/occt-native",
+        "to": "occt-native"
       }
     ],
     "electronLanguages": [

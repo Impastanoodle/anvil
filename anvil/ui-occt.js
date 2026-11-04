@@ -26,10 +26,36 @@
   try { var sw0 = localStorage.getItem('anvil.occtSwap'); if (sw0 === 'wait' || sw0 === 'quick') st.swap = sw0; } catch (e) { }
 
   function isAsm() { return UI.isAssembly ? UI.isAssembly() : !!(App.model && App.model.type === 'assembly'); }
+  // The Windows app (desktop/) runs OpenCascade built for Windows in a process of its own (desktop/occt-host.js runs
+  // this page's occt-worker.js there); window.anvilDesktop.occtHost reaches it and nativeWorker() dresses it as a
+  // Worker (postMessage / onmessage / terminate, which kills the process). If that process cannot load the engine or
+  // stops, the WebAssembly worker takes over for the rest of the session. Browsers have no anvilDesktop: unchanged.
+  var nativeOff = false;
+  function nativeWorker() {
+    var H = window.anvilDesktop && window.anvilDesktop.occtHost;
+    if (nativeOff || !H) return null;
+    var w = { native: true, onmessage: null, onerror: null }, dead = false, id = null;
+    id = H.start(function (m) {
+      if (dead) return;
+      if (m && m.type === 'hostFailed') { dead = true; H.stop(id); nativeFailed(w, m.message); return; }
+      if (w.onmessage) w.onmessage({ data: m });
+    });
+    w.postMessage = function (m) { if (!dead && m && m.type !== 'engine') H.post(id, m); };   // the native engine needs no engine file
+    w.terminate = function () { if (!dead) { dead = true; H.stop(id); } };
+    return w;
+  }
+  function nativeFailed(w, why) {
+    nativeOff = true;
+    console.warn('OpenCascade for Windows did not run (' + why + '); the WebAssembly engine is used for the rest of this session.');
+    if (st.worker !== w) return;
+    stopWorker(); startWorker();   // the current model is built again once it is ready (onMessage 'ready' -> request)
+    if (st.worker) Object.keys(imports).forEach(function (k) { st.worker.postMessage({ type: 'import', seq: +k, format: imports[k].format, text: imports[k].text }); });
+  }
   function startWorker() {
     if (st.worker || !window.Worker) return;
-    try { st.worker = new Worker('occt-worker.js', { type: 'module' }); }
+    try { st.worker = nativeWorker() || new Worker('occt-worker.js', { type: 'module' }); }
     catch (e) { st.state = 'failed'; st.error = e.message; refresh(); return; }
+    st.engine = st.worker.native ? 'native' : 'wasm';
     st.state = 'loading';
     // the worker uses a served engine when there is one; otherwise the file the user picked (kept in this browser), or none
     var w = st.worker;
@@ -775,7 +801,7 @@
 
   function status() {
     var r = st.result;
-    return { on: st.on, state: st.state, driving: st.driving, error: st.error, loadMs: st.loadMs,
+    return { on: st.on, state: st.state, driving: st.driving, error: st.error, loadMs: st.loadMs, engine: st.engine || null,
       unsupported: r && r.unsupported || null, faces: r && !r.unsupported ? r.faces.length : null, bodies: r ? r.bodies : null,
       volume: r ? r.volume : null, anvilVolume: st.anvilVolume, volumeDiff: st.volumeDiff, tolerance: r ? r.tolerance : null, beyond: st.state === 'ok' && st.beyond ? st.beyond.slice() : [],
       valid: r ? r.valid : null, ms: r ? r.ms : null, failedFeature: st.state === 'featureError' ? st.failedFeature : null };
@@ -813,6 +839,7 @@
       case 'error': txt = 'OpenCascade ✗ error'; cls += ' bad'; act = 'whatswrong'; tip = s.error || ''; break;
       default: txt = 'OpenCascade';
     }
+    if (st.engine === 'native' && s.state !== 'failed') tip += ' [engine: OpenCascade 7.6.3 for Windows]';   // the Windows app (desktop/)
     if (act === 'whatswrong') tip += ' (click for What\'s Wrong)';
     var html = '<span class="' + cls + '"' + (act ? ' data-act="' + act + '"' : '') + ' title="' + tip.replace(/"/g, '&quot;') + '">' + txt + '</span>';
     if (s.state !== 'building') st.lastChip = html;
@@ -829,7 +856,7 @@
       if (!st.worker) startWorker();
       if (!st.worker) { rej(new Error(st.error || 'OpenCascade did not start.')); return; }
       var s = ++importSeq;
-      imports[s] = { res: res, rej: rej };
+      imports[s] = { res: res, rej: rej, format: format, text: text };
       st.worker.postMessage({ type: 'import', seq: s, format: format, text: text });
     });
   }
