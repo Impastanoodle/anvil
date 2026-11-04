@@ -815,6 +815,7 @@
         dims: !!v.dims, hScheme: v.hScheme, vScheme: v.vScheme, hDatum: datum.h, vDatum: datum.v, hPlace: v.hPlace, vPlace: v.vPlace,
         entities: v.scope === 'selected' && sel0.length ? sel0 : null,
         skipH: auto && !v.horizontalDims, skipV: auto && !v.verticalDims,
+        units: UI.unitLabel && UI.unitLabel() === 'in' ? 'in' : 'mm',   // lane HP: SolidWorks' 10 mm / 6 mm offset distances
         minGap: 34 * (UI.cam.scale || 0)   // stacked dimension lines at least 34 px apart at the current zoom: their labels clear of each other
       };
     }

@@ -1323,6 +1323,18 @@ var SketchSolver = (function () {
     basis.push({ p: p, row: v });
     return true;
   }
+  // Where Fully Define / Autodimension put their rows: [first row's distance from the sketch box (origin included),
+  // distance between rows]. With opts.units ('in' | 'mm') as SolidWorks does (measured on a live SolidWorks 2022, lane
+  // HP 2026-11-04): Document Properties ▸ Dimensions ▸ Offset distances, 10 mm "from model" then 6 mm "from last
+  // dimension" (0.3937 / 0.2362 in). opts.gap: every row that far apart; no units: 8 % of the sketch size. opts.minGap
+  // (the UI's 34 px at the current zoom) is a floor so labels never overlap.
+  function placeGaps(opts, lo, hi) {
+    var mg = +opts.minGap || 0;
+    if (opts.gap > 0) return [+opts.gap, +opts.gap];
+    if (opts.units === 'in' || opts.units === 'mm') { var u = opts.units === 'in' ? 1 / 25.4 : 1; return [Math.max(10 * u, mg), Math.max(6 * u, mg)]; }
+    var g = Math.max(Math.max(hi[0] - lo[0], hi[1] - lo[1], 1) * 0.08, mg);
+    return [g, g];
+  }
   function fullyDefine(sketch, opts) {
     opts = opts || {};
     var ents = sketch.entities || [];
@@ -1423,14 +1435,14 @@ var SketchSolver = (function () {
     if (!isFinite(lo[0])) { lo = [0, 0]; hi = [0, 0]; }
     lo = [Math.min(lo[0], 0), Math.min(lo[1], 0)];
     hi = [Math.max(hi[0], 0), Math.max(hi[1], 0)];
-    var gap = opts.gap > 0 ? +opts.gap : Math.max(Math.max(hi[0] - lo[0], hi[1] - lo[1], 1) * 0.08, +opts.minGap || 0);
+    var gaps = placeGaps(opts, lo, hi), gap = gaps[0];
     var rows = [0, 0], dimRels = newRels.filter(function (r) { return r.type === 'distance' && r.dir; });
     var far = [opts.hPlace === 'above', opts.vPlace === 'right'];
     [0, 1].forEach(function (ax) {
       dimRels.filter(function (r) { return r.axis === ax; }).sort(function (a, b) { return a.v - b.v; }).forEach(function (r) {
         var P = refPoint(ents, parseRef(r.refs[0])), Q = refPoint(ents, parseRef(r.refs[1]));
         if (!P || !Q) return;
-        var step = gap * (1 + (chainOn(ax) ? 0 : rows[ax]++)), level = far[ax] ? hi[1 - ax] + step : lo[1 - ax] - step;
+        var step = gap + gaps[1] * (chainOn(ax) ? 0 : rows[ax]++), level = far[ax] ? hi[1 - ax] + step : lo[1 - ax] - step;
         var dirS = Q[ax] - P[ax] < 0 ? -1 : 1;
         r.off = Math.round((ax === 0 ? dirS * (level - P[1]) : -dirS * (level - P[0])) * 1e4) / 1e4;
       });
@@ -5912,7 +5924,7 @@ var SketchSolver = (function () {
     pointRefs: pointRefs, curveRefs: curveRefs, refName: refName, describe: describe,
     buildSystem: buildSystem, analyze: analyze, solve: solve, drag: drag,
     setDim: setDim, setRelValue: setRelValue, linkedItems: linkedItems, linkValues: linkValues, unlinkValue: unlinkValue, linkItemValue: itemValue, driveEntity: driveEntity, measure: measure, updateDriven: updateDriven, overDefines: overDefines, setDriven: setDriven,
-    applicable: applicable, addRelation: addRelation, deleteRelation: deleteRelation, fullyDefine: fullyDefine, relArgs: relArgs,
+    applicable: applicable, addRelation: addRelation, deleteRelation: deleteRelation, fullyDefine: fullyDefine, placeGaps: placeGaps, relArgs: relArgs,
     removeEntity: removeEntity, replaceEntity: replaceEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, explodePoly: explodePoly, explodeSlot: explodeSlot, explodeArcSlot: explodeArcSlot, slotCap: slotCap, slotAxisOf: slotAxisOf, clean: clean,
     infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, onCurveRef: onCurveRef,
     diagnose: diagnose, diagnoseApply: diagnoseApply, scanEqual: scanEqual, applyEqual: applyEqual,   // rfAR: SketchXpert, Scan Equal
@@ -6047,7 +6059,7 @@ var SketchSolver = (function () {
       S.pointRefs(sketch, i).forEach(function (p) { for (var a = 0; a < 2; a++) { lo[a] = Math.min(lo[a], p.pt[a]); hi[a] = Math.max(hi[a], p.pt[a]); } });
       if ((e.t === 'circle' || e.t === 'arc') && e.r > 0) for (var a2 = 0; a2 < 2; a2++) { var c = a2 ? e.cy : e.cx; lo[a2] = Math.min(lo[a2], c - e.r); hi[a2] = Math.max(hi[a2], c + e.r); }
     });
-    var gap = opts.gap > 0 ? +opts.gap : Math.max(Math.max(hi[0] - lo[0], hi[1] - lo[1], 1) * 0.08, +opts.minGap || 0);
+    var gap = S.placeGaps(opts, lo, hi)[0];
     r.ordinate = {};
     [['x', sh, opts.hPlace === 'above' ? hi[1] + gap : lo[1] - gap], ['y', sv, opts.vPlace === 'right' ? hi[0] + gap : lo[0] - gap]].forEach(function (q) {
       if (q[1] !== 'ordinate') return;
@@ -6353,7 +6365,8 @@ var SketchSolver = (function () {
     n = n | 0;
     if (!e) return { ok: false, error: 'Select a line, arc or circle.' };
     if (!(n >= 2 && n <= 1000)) return { ok: false, error: 'The number of segments is 2 or more.' };
-    if (!/^(line|arc|circle)$/.test(e.t)) return { ok: false, error: 'Segment divides a line, an arc or a circle.' };
+    if (/^(spline|ellipse|pellipse)$/.test(e.t)) return segmentFree(sk, i, n, opts);
+    if (!/^(line|arc|circle)$/.test(e.t)) return { ok: false, error: 'Segment divides a line, an arc, a circle, a spline or an ellipse.' };
     if (opts.split && e.t === 'circle') return { ok: false, error: 'A circle is divided by points (clear Sketch segments).' };
     var saved = save(sk), before = S.analyze(sk), added = [], pts = [], k;
     var m = e.t === 'circle' ? n : n - 1;
@@ -6407,6 +6420,46 @@ var SketchSolver = (function () {
     }
     return { ok: true, added: added, points: pts };
   }
+  // lane HP: Segment on a spline, style spline, ellipse or partial ellipse (SolidWorks' help: "equidistant points or
+  // segments in … splines, parabolas, ellipses, partial ellipses, and conics"; a live SolidWorks 2022 puts them at equal
+  // ARC LENGTH: a sine spline in 4 pieces of 1.067135 in each). Open curve: n - 1 points; closed: n, the first at its
+  // start. split: the curve is cut there (Split Entities' freeSplit: pieces of exactly its curve).
+  function freeEqualLength(fc, n) {
+    var N = Math.max(400, fc.n * 8), t0 = fc.t0, t1 = fc.t1, h = (t1 - t0) / N, cum = [0], k;
+    function sp(t) { var d = fc.d1(t); return Math.hypot(d[0], d[1]); }
+    function seg(a, b) { return (b - a) / 6 * (sp(a) + 4 * sp((a + b) / 2) + sp(b)); }   // Simpson
+    for (k = 0; k < N; k++) cum.push(cum[k] + seg(t0 + k * h, t0 + (k + 1) * h));
+    var L = cum[N], out = [];
+    for (k = fc.closed ? 0 : 1; k < n; k++) {
+      var s = L * k / n, j = 0;
+      while (j < N - 1 && cum[j + 1] < s) j++;
+      var a = t0 + j * h, t = a + h * (cum[j + 1] > cum[j] ? (s - cum[j]) / (cum[j + 1] - cum[j]) : 0);
+      for (var it = 0; it < 4; it++) { var v = sp(t); if (!(v > 0)) break; t -= (cum[j] + seg(a, t) - s) / v; }
+      out.push({ t: t, p: fc.pt(t) });
+    }
+    return { L: L, at: out };
+  }
+  function segmentFree(sk, i, n, opts) {
+    var E = sk.entities, fc = S.freeCurve ? S.freeCurve(E[i]) : null;
+    if (!fc) return { ok: false, error: 'That curve cannot be divided.' };
+    var eq = freeEqualLength(fc, n), pts = tidyPts(eq.at.map(function (q) { return q.p; }), sketchSize(sk));
+    if (opts.split) {
+      var r = S.freeSplit(sk, i, pts);
+      if (!r.ok) return { ok: false, error: r.error };
+      return { ok: true, added: r.pieces.slice(1), pieces: r.pieces, points: pts, length: eq.L };
+    }
+    var saved = save(sk), before = S.analyze(sk), added = [];
+    sk.rels = sk.rels || [];
+    pts.forEach(function (p) {
+      E.push({ t: 'point', x: p[0], y: p[1] });
+      added.push(E.length - 1);
+      sk.rels.push({ type: 'coincident', refs: [String(E.length - 1), String(i)] });
+    });
+    var res = S.solve(sk), an = S.analyze(sk);
+    if (!res.ok || an.conflicts > before.conflicts) { restore(sk, saved); return { ok: false, error: 'The segments conflict with the sketch\'s relations.' }; }
+    return { ok: true, added: added, points: pts, length: eq.L };
+  }
+  S.freeEqualLength = function (e, n) { var fc = S.freeCurve && S.freeCurve(e); return fc ? freeEqualLength(fc, n) : null; };
 
   // ---- Equation Driven Curve: the points of y = f(x) over [x1, x2] or of x(t), y(t) over [t1, t2]
   // eq { kind: 'explicit', y, x0, x1, n } | { kind: 'parametric', x, y, t0, t1, n } (n segments; 24 by default). The

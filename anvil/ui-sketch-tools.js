@@ -2073,10 +2073,12 @@
   // ------------------------------------------------------------------ Segment (rfAP)
   // SolidWorks: Tools ▸ Sketch Tools ▸ Segment. Pick a line, arc or circle; Number of instances divides it into that
   // many equal segments with sketch points (Coincident with it), or, with Sketch segments, splits it into equal pieces.
+  // lane HP: splines, style splines, ellipses and partial ellipses too (equal arc length, as a live SolidWorks does)
+  var SEG_TYPES = /^(line|arc|circle|spline|ellipse|pellipse)$/;
   function cmdSegment() {
     var f = sketch();
     if (!f) return;
-    var sel = selIdx(f).filter(function (i) { return /^(line|arc|circle)$/.test(f.entities[i].t); });
+    var sel = selIdx(f).filter(function (i) { return SEG_TYPES.test(f.entities[i].t); });
     var v = { entities: sel.slice(0, 1), n: 4, kind: 'points' };
     function preview() {
       var e = f.entities[v.entities[0]], out = [];
@@ -2088,22 +2090,22 @@
     }
     UI.openPM({
       title: 'Segment', icon: 'point', values: v,
-      message: 'Select a line, arc or circle, set the number of segments, then ✓.',
+      message: 'Select a line, arc, circle, spline or ellipse, set the number of segments, then ✓.',
       onSelection: function () {
-        var s = selIdx(f).filter(function (i) { return /^(line|arc|circle)$/.test(f.entities[i].t); });
+        var s = selIdx(f).filter(function (i) { return SEG_TYPES.test(f.entities[i].t); });
         var last = s.filter(function (i) { return v.entities.indexOf(i) < 0; })[0];
         if (last == null) last = s[0];
         v.entities = last == null ? [] : [last];
         UI.renderPM(); preview();
       },
       groups: [
-        { title: 'Segment Entity', fields: [entityBox(f, v, 'line', preview, { placeholder: 'Line, arc or circle' })] },
+        { title: 'Segment Entity', fields: [entityBox(f, v, 'line', preview, { placeholder: 'Line, arc, circle, spline or ellipse' })] },
         { title: 'Segment Parameters', fields: [
           { type: 'radio', key: 'kind', options: [['points', 'Sketch points'], ['segments', 'Sketch segments']] },
           { type: 'number', label: 'Number of instances', key: 'n', step: 1, min: 2 }] }
       ],
       onChange: preview,
-      okBlocked: function () { return !v.entities.length ? 'Select a line, arc or circle.' : !((v.n | 0) >= 2) ? 'Set 2 segments or more.' : ''; },
+      okBlocked: function () { return !v.entities.length ? 'Select a line, arc, circle, spline or ellipse.' : !((v.n | 0) >= 2) ? 'Set 2 segments or more.' : ''; },
       onOK: function () {
         var i = v.entities[0], r = step(function () { return S.segmentEntity(f, i, v.n | 0, { split: v.kind === 'segments' }); }, true);
         if (!r.ok) { UI.toast(r.error); return false; }

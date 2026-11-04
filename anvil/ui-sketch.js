@@ -1606,8 +1606,9 @@
     ['nearest', 'Nearest'], ['tangent', 'Tangent'], ['perpendicular', 'Perpendicular'], ['parallel', 'Parallel'],
     ['hvLines', 'Horizontal/Vertical'], ['hvPoints', 'Horizontal/Vertical to Points'], ['length', 'Length'], ['grid', 'Grid'], ['angle', 'Angle']
   ];
-  var QS_PX = 20, qsParallel = null;
+  var QS_PX = 20, qsParallel = null, QS_ANGLE = 45;
   UI.QUICK_SNAPS = QUICK_SNAPS;
+  UI.quickSnapAngle = function () { return QS_ANGLE; };
   UI.quickSnap = function (kind) {
     if (kind === undefined) return App.quickSnap || null;
     if (kind && !QUICK_SNAPS.some(function (q) { return q[0] === kind; })) throw new Error('Unknown quick snap ' + kind);
@@ -1710,7 +1711,17 @@
         if (!prev) return null;
         var ax2 = raw[0] - prev[0], ay2 = raw[1] - prev[1], R = Math.hypot(ax2, ay2);
         if (!(R > 1e-12)) return null;
-        var A = Math.round(Math.atan2(ay2, ax2) * 180 / Math.PI / 15) * 15 * Math.PI / 180, Rr = niceRound(R, h);
+        // lane HP: SolidWorks' Snap angle (System Options ▸ Relations/Snaps; 45° on the user's seat, was 15° here), measured
+        // from the line the point starts at the end of (its help: "the snap angle is based on the existing line"), else from X
+        var base = 0, st0 = QS_ANGLE * Math.PI / 180;
+        for (var li = f.entities.length - 1; li >= 0; li--) {
+          var L0 = f.entities[li];
+          if (!L0 || L0.t !== 'line' || L0.construction) continue;
+          var tolA = 1e-9 * Math.max(1, Math.abs(prev[0]), Math.abs(prev[1]));
+          if (Math.hypot(L0.x2 - prev[0], L0.y2 - prev[1]) <= tolA) { base = Math.atan2(L0.y2 - L0.y1, L0.x2 - L0.x1); break; }
+          if (Math.hypot(L0.x1 - prev[0], L0.y1 - prev[1]) <= tolA) { base = Math.atan2(L0.y1 - L0.y2, L0.x1 - L0.x2); break; }
+        }
+        var A = base + Math.round((Math.atan2(ay2, ax2) - base) / st0) * st0, Rr = niceRound(R, h);
         out.p = [prev[0] + Math.cos(A) * Rr, prev[1] + Math.sin(A) * Rr];
         if (Math.abs(out.p[0] - prev[0]) < 1e-12) out.p[0] = prev[0];
         if (Math.abs(out.p[1] - prev[1]) < 1e-12) out.p[1] = prev[1];
