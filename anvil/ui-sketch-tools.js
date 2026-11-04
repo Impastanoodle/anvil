@@ -652,9 +652,11 @@
           UI.setStatus('Offset ' + loops.length + ' face loop' + (loops.length === 1 ? '' : 's') + ' by ' + UI.fmtLen(+v.d) + '.');
           return;
         }
+        var dims0 = UI.dimsSnapshot ? UI.dimsSnapshot(f) : null;
         var r = step(function () { return S.offsetSelection(f, v.entities, opts()); }, true);
         if (!r.ok) { UI.toast(r.error); return false; }
         clearPreview(); changed();
+        if (dims0 && v.dims && UI.clearDimPlacement) { try { UI.clearDimPlacement(f, UI.newDimsSince(f, dims0)); } catch (err) { console.error('dimension placement: ' + (err && err.message)); } }   // rfHW: the offset dimension clear of the others
         UI.setStatus('Offset ' + r.added.length + ' entit' + (r.added.length === 1 ? 'y' : 'ies') + ' by ' + UI.fmtLen(+v.d) + (v.dims ? ', with the offset dimension.' : '.'));
       },
       onCancel: clearPreview

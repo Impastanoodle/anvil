@@ -826,6 +826,14 @@
       var r = S.fullyDefine(f, opts());
       applied = r;
       refresh();
+      // rfHW: a row whose label lands on another dimension's lines or label (or on the sketch) steps further out,
+      // the rows nearest the sketch first
+      if (r && r.ok !== false && UI.clearDimPlacement) {
+        var made = (r.dims || []).map(function (i) { return { dim: i, off: f.dims && f.dims[i] ? f.dims[i].off : 0 }; })
+          .concat((r.rels || []).filter(function (i) { var x = f.rels[i]; return x && x.v != null && typeof x.off === 'number'; }).map(function (i) { return { rel: i, off: f.rels[i].off }; }));
+        made.sort(function (a, b) { return Math.abs(a.off || 0) - Math.abs(b.off || 0); });
+        try { if (UI.clearDimPlacement(f, made)) refresh(); } catch (err) { console.error('dimension placement: ' + (err && err.message)); }
+      }
       var msg = r.ok === false && r.error ? r.error : 'Added ' + r.rels.filter(function (i) { return !(S.TYPES[f.rels[i].type] || {}).dim; }).length + ' relation(s) and ' + (r.dims.length + r.rels.filter(function (i) { return (S.TYPES[f.rels[i].type] || {}).dim; }).length) + ' dimension(s). ' + S.STATUS_TEXT[r.status] + (r.dof ? ' (' + r.dof + ' degrees of freedom left).' : '.');
       UI.setStatus(msg);
       spec.message = msg;

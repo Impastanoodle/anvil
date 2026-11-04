@@ -1315,6 +1315,7 @@
         else if (tv0.d != null && e0.t === 'circle') e0.r = tv0.d / 2;
         if (tv0.w != null && e0.t === 'slot' && App.tool === 'slot') { e0.w = tv0.w; var fc2 = slotFarCentre([e0.x1, e0.y1], st.pts[1], e0.w); e0.x2 = fc2[0]; e0.y2 = fc2[1]; }   // slot-overall: the exact width sets the far centre (the Centerpoint Straight Slot's own entities do this)
       }
+      var dimsBefore = UI.dimsSnapshot(f);   // rfHW: the dimensions this commit adds step clear of the others below
       var hkP = toolHook(), typedAll = dimAllOnCreate() ? Object.assign({}, ALL_TYPED, st.typed || {}) : st.typed;   // lane CV: only typed values with Create dimension only when value is entered
       if (!(hkP && hkP.commit && hkP.commit(ents, st, typedAll))) ents.forEach(function (e) { addEntity(e); });
       if (f && UI.sketchLayerNew) f.entities.slice(n0).forEach(function (e) { UI.sketchLayerNew(f, e); });   // sketch-layers: a tool's own commit
@@ -1323,6 +1324,7 @@
       if (f && typedAll && f.entities.length === n0 + 1) typedDims(f, n0, typedAll);
       if (hkP && hkP.after && f) hkP.after(f, n0, st);
       if (f && UI.sketchToolDefs[App.tool] && UI.sketchToolDefs[App.tool].after) UI.sketchToolDefs[App.tool].after(f, n0, f.entities.length - n0, st);   // p9-sketch-curves: Add dimensions, relations, the tool PM
+      if (f) { try { clearDimPlacement(f, UI.newDimsSince(f, dimsBefore)); } catch (err) { console.error('dimension placement: ' + (err && err.message)); } }   // rfHW: Add dimensions / typed values clear of the other dimensions (never breaks the commit)
       UI.afterSketchCommit(f, n0, st);   // sketch-hooks: the entities are in, with their dimensions and relations
       st.typed = null;
       if (App.tool === 'line' && !(hkP && hkP.single && hkP.single())) {
@@ -3019,6 +3021,87 @@
   var lastClashes = [];
   UI.dimLabelClashes = function (list) { return list ? lastClashes.slice() : lastClashes.length; };
   UI.dimKey = dimKey;   // rfAV: Instant2D (ui-sketch-dims.js)
+  // rfHW: a linear dimension placed automatically (Fully Define / Autodimension rows, a tool's Add dimensions, typed
+  // values) steps further out, one usual dimension spacing at a time (SolidWorks' 6 mm "from last dimension", at least
+  // 34 px at the current zoom), until its label sits clear of the other dimensions' lines and labels, and off the
+  // sketch geometry when such a place is found within CLEAR_STEPS steps (else the first place clear of the dimensions,
+  // else where it was). Out = away from its first point on the side it is on (the sign of `off`). A dimension the
+  // user placed or dragged is never passed here. made: [{ dim: i } | { rel: i }], handled in order, each one against
+  // the dimensions not in the list and the ones of the list already handled. Returns how many moved.
+  var CLEAR_STEPS = 8, SVG_NS = 'http://www.w3.org/2000/svg';
+  function defaultScreens(f, pl, keys) {   // key -> sc (laid out, label at its default place) of placed dims and rels
+    var out = {};
+    (f.dims || []).forEach(function (d, i) { var k = 'd' + i, e = f.entities[d.e], sc = keys[k] !== false && e ? dimScreen(pl, e, d) : null; if (sc) out[k] = dimLayout(sc); });
+    if (UI.drawRelations && f.rels && f.rels.length) {
+      var dummy = function () { return document.createElementNS(SVG_NS, 'g'); };
+      UI.drawRelations(f, pl, dummy(), { svg: dummy, text: function () {}, list: [], free: function () { return true; }, freeKeep: function () { return true; }, take: function () {},
+        drawOne: function (sc, it) { if (!it.temp && it.rel != null && keys['r' + it.rel] !== false && sc) out['r' + it.rel] = dimLayout(sc); } });
+    }
+    return out;
+  }
+  function defaultBox(sc) { var al = sc.along, s0 = al && al.shift || 0; return labelBox(sc, al ? al.u[0] * s0 : 0, al ? al.u[1] * s0 : 0); }
+  function boxesMeet(a, b) { return a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]; }
+  function placeClear(sc, others, geo) {
+    var b = defaultBox(sc);
+    for (var i = 0; i < others.length; i++) {
+      var o = others[i];
+      if (boxesMeet(b, o.box)) return false;
+      if (o.sc.lines.some(function (l) { return segHitsBox(l[0], l[1], b); })) return false;
+      if (sc.lines.slice(2).some(function (l) { return segHitsBox(l[0], l[1], o.box); })) return false;   // its dimension line (its extension lines run where its points are, wherever it sits)
+    }
+    return !(geo && geoSegs && onGeometry(b));
+  }
+  function clearDimPlacement(f, made) {
+    if (!f || !made || !made.length || App.mode !== 'sketch' || UI.activeSketchFeature() !== f || !UI.cam || !(UI.cam.scale > 0)) return 0;
+    var pl = UI.activePlane(), s = UI.cam.scale, mm = UI.unitLabel && UI.unitLabel() === 'in' ? 1 / 25.4 : 1;
+    var stepLen = Math.max(6 * mm, 34 * s), moved = 0;
+    var keyOf = function (m) { return m.rel != null ? 'r' + m.rel : 'd' + m.dim; };
+    var target = function (m) { return m.rel != null ? f.rels && f.rels[m.rel] : f.dims && f.dims[m.dim]; };
+    var pending = {};
+    made.forEach(function (m) { pending[keyOf(m)] = true; });
+    geoSegs = screenGeometry(f, pl);
+    try {
+      made.forEach(function (m) {
+        var key = keyOf(m), d = target(m);
+        delete pending[key];
+        if (!d || typeof d.off !== 'number' || !d.off) return;
+        var all = defaultScreens(f, pl, {}), sc = all[key];
+        if (!sc || !sc.lin) return;   // linear dimensions only (Ø / R turn by themselves: radialClear)
+        var others = [];
+        Object.keys(all).forEach(function (k) { if (k !== key && !pending[k]) others.push({ sc: all[k], box: defaultBox(all[k]) }); });
+        if (placeClear(sc, others, true)) return;
+        var off0 = d.off, sg = off0 < 0 ? -1 : 1, keep = null, found = null;
+        for (var k = 1; k <= CLEAR_STEPS && found == null; k++) {
+          d.off = Math.round((off0 + sg * k * stepLen) * 1e4) / 1e4;
+          var c = defaultScreens(f, pl, onlyKey(f, key))[key];
+          if (!c || !c.lin) continue;
+          if (placeClear(c, others, true)) found = d.off;
+          else if (keep == null && placeClear(c, others, false)) keep = d.off;
+        }
+        d.off = found != null ? found : keep != null ? keep : off0;
+        if (d.off !== off0) moved++;
+      });
+    } finally { geoSegs = null; }
+    if (moved) { App.dimsStale = true; if (UI.requestRender) UI.requestRender(); }
+    return moved;
+  }
+  function onlyKey(f, key) {   // the keys map that lays out one dimension only
+    var keys = {};
+    (f.dims || []).forEach(function (d, i) { keys['d' + i] = false; });
+    (f.rels || []).forEach(function (r, i) { keys['r' + i] = false; });
+    keys[key] = true;
+    return keys;
+  }
+  UI.clearDimPlacement = clearDimPlacement;
+  // the dimensions and distance relations of f added since `before` = { dims: [...], rels: [...] } (the arrays as they
+  // were), as clearDimPlacement's list
+  UI.newDimsSince = function (f, before) {
+    var out = [], oldD = new Set(before.dims), oldR = new Set(before.rels);
+    (f.dims || []).forEach(function (d, i) { if (!oldD.has(d)) out.push({ dim: i }); });
+    (f.rels || []).forEach(function (r, i) { if (!oldR.has(r) && r.v != null && r.off != null) out.push({ rel: i }); });
+    return out;
+  };
+  UI.dimsSnapshot = function (f) { return { dims: (f && f.dims || []).slice(), rels: (f && f.rels || []).slice() }; };
   function drawDimsIn(f) {
     if (!f || App.mode !== 'sketch') { clearFeedback(); if (dimEditing) closeDimEdit(false); return []; }
     var pl = UI.activePlane(), placed = f.dims || [], list = [], stale = [];
