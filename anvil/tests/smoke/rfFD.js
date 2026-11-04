@@ -52,6 +52,7 @@
     try {
       await anvil.newPart(); await idle();
       await anvil.run(RFFD_PART); await idle();
+      if (anvil.occtIdle) await anvil.occtIdle();   // (rfHO) chord counts are the mesh's: count them on the solid that stays (OpenCascade's exact one when it is on)
       anvil.selectionFilter({ faces: false, edges: false, vertices: false, bodies: false, components: false, sketch: false, suspended: false });
       if (UI.App.view.style !== 'shadedEdges') UI.setStyle('shadedEdges');
       await rfFDView('Isometric');
@@ -112,6 +113,7 @@
       anvil.selectHidden(false);
       await anvil.newPart(); await idle();
       await anvil.run(RFFD_PART); await idle();
+      if (anvil.occtIdle) await anvil.occtIdle();   // (rfHO) chord counts are the mesh's: count them on the solid that stays (OpenCascade's exact one when it is on)
       anvil.selectionFilter({ faces: false, edges: false, vertices: false, bodies: false, components: false, sketch: false, suspended: false });
       await rfFDView('Isometric');
       anvil.selectionMode('box');

@@ -16,6 +16,7 @@
     var errs0 = errors.length;
     await anvil.newPart(); await idle();
     await anvil.run('p.name("Plate").units("in");\np.sketch("Front").rect(0, 0, 6, 3).extrude(0.25);'); await idle();
+    if (anvil.occtIdle) await anvil.occtIdle();   // (rfHO) the files before and after are compared: both from the solid that stays (OpenCascade's lists the same lines in another order)
     anvil.drawing.make(); await idle(); await wait(60);
     await UI.drawing.ready();
     var svg0 = anvil.drawing.svg(), dxf0 = anvil.drawing.dxf({ version: 'R2000' }), dxf12 = anvil.drawing.dxf({ version: 'R12' });

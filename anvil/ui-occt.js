@@ -305,8 +305,49 @@
       var p0 = f && f.polys && f.polys[0];
       return at ? { s: s, at: at, body: f ? f.body || 0 : null, shared: p0 && p0.shared != null ? p0.shared : null, face: p0 && p0.face != null ? p0.face : null } : null;
     }
-    if (s.kind === 'edge') return s.edge && s.edge.mid ? { s: s, mid: s.edge.mid.slice(), len: s.edge.len, body: edgeBody(s.edge) } : null;
+    if (s.kind === 'edge') return s.edge && s.edge.mid ? { s: s, mid: s.edge.mid.slice(), len: s.edge.len, body: edgeBody(s.edge), a: s.edge.a && s.edge.a.slice(), b: s.edge.b && s.edge.b.slice(), curve: curveOf(s.edge) } : null;
     return { s: s };
+  }
+  // (rfHO) a chord of a circle or arc (e.curve, ui-core.js annotateCurveEdges): the circle it lies on. OpenCascade's
+  // mesh divides a circle into other chords than Anvil's, so the chord is found again by the circle and the stretch of
+  // it the old chord covered, not by its midpoint (that matched only the few chords that happened to coincide: a
+  // lasso round a hole kept a third of its rim selected once the exact solid landed)
+  function curveOf(e) {
+    var cv = e && e.curve != null && App.curves && App.curves[e.curve], C = cv && cv.curve;
+    return C && C.center && C.normal && C.radius > 0 ? { center: C.center.slice(), normal: C.normal.slice(), radius: C.radius } : null;
+  }
+  function sameCurve(C, P) {
+    if (!C || !C.center || !C.normal || !(C.radius > 0)) return false;
+    var tol = 1e-4 * Math.max(1, P.radius), dc = Math.hypot(C.center[0] - P.center[0], C.center[1] - P.center[1], C.center[2] - P.center[2]);
+    var dot = Math.abs(C.normal[0] * P.normal[0] + C.normal[1] * P.normal[1] + C.normal[2] * P.normal[2]);
+    return Math.abs(C.radius - P.radius) <= tol && dc <= tol && dot > 1 - 1e-6;
+  }
+  // the chords of the new mesh lying on the probe's circle and overlapping the stretch the old chord covered
+  function curveChords(p) {
+    var out = [], P = p.curve;
+    if (!P || !p.a || !p.b || !App.curves) return out;
+    var n = P.normal, x = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0], d0 = x[0] * n[0] + x[1] * n[1] + x[2] * n[2];
+    x = [x[0] - d0 * n[0], x[1] - d0 * n[1], x[2] - d0 * n[2]];
+    var xl = Math.hypot(x[0], x[1], x[2]); x = [x[0] / xl, x[1] / xl, x[2] / xl];
+    var y = [n[1] * x[2] - n[2] * x[1], n[2] * x[0] - n[0] * x[2], n[0] * x[1] - n[1] * x[0]];
+    function ang(q) { var d = [q[0] - P.center[0], q[1] - P.center[1], q[2] - P.center[2]]; return Math.atan2(d[0] * y[0] + d[1] * y[1] + d[2] * y[2], d[0] * x[0] + d[1] * x[1] + d[2] * x[2]); }
+    function rel(t, m) { var r = (t - m) % (2 * Math.PI); if (r > Math.PI) r -= 2 * Math.PI; if (r < -Math.PI) r += 2 * Math.PI; return r; }
+    function span(e) { var m = ang(e.mid), u = rel(ang(e.a), m), v = rel(ang(e.b), m); return { m: m, lo: Math.min(u, v), hi: Math.max(u, v) }; }
+    // the two stretches share more than a point (both seen from the old chord's middle; chords are short)
+    function overlap(e) {
+      var m = ang(e.mid);
+      if (Math.abs(rel(m, old.m)) > Math.PI / 2) return false;
+      var u = rel(ang(e.a), old.m), v = rel(ang(e.b), old.m);
+      return Math.min(old.hi, Math.max(u, v)) - Math.max(old.lo, Math.min(u, v)) > 1e-9;
+    }
+    var old = span({ a: p.a, b: p.b, mid: p.mid }), cis = {};
+    App.curves.forEach(function (cv, ci) { if (sameCurve(cv.curve, P)) cis[ci] = true; });
+    (App.edges || []).forEach(function (e) {
+      if (e.curve == null || !cis[e.curve] || !e.mid || !e.a || !e.b) return;
+      if (p.body != null && edgeBody(e) != null && edgeBody(e) !== p.body) return;
+      if (overlap(e)) out.push(e);
+    });
+    return out;
   }
   function selRestore(p) {
     if (!p) return null;
@@ -319,7 +360,12 @@
       out.index = hit;
       return out;
     }
-    var best = null, bestD = Math.max(0.05, (p.len || 0) * 0.02);
+    var best = null, bestD = Math.max(0.05, (p.len || 0) * 0.02), chords = curveChords(p);
+    if (chords.length) {   // (rfHO) a chord of a circle: the new chord over the same stretch, nearest first
+      chords.forEach(function (e) { var d = Math.hypot(e.mid[0] - p.mid[0], e.mid[1] - p.mid[1], e.mid[2] - p.mid[2]); if (!best || d < bestD) { bestD = d; best = e; } });
+      out.edge = best; out.index = App.edges.indexOf(best);
+      return out;
+    }
     (App.edges || []).forEach(function (e) {
       if (e.smooth || !e.mid) return;
       if (p.body != null && edgeBody(e) != null && edgeBody(e) !== p.body) return;   // r5/select5: not a touching part's edge
@@ -426,8 +472,24 @@
     App.sel = selRestore(p1); App.sel2 = selRestore(p2);
     if (!App.sel && App.sel2) { App.sel = App.sel2; App.sel2 = null; }
     if (pl && App.sel) {
-      var list = [App.sel];
-      pl.slice(1).forEach(function (p) { var r = selRestore(p); if (r) list.push(r); });
+      // (rfHO) every chord of the new mesh over a selected stretch of a circle, each edge once
+      var list = [App.sel], seen = {};
+      if (App.sel.kind === 'edge') seen[App.sel.index] = true;
+      pl.forEach(function (p, i) {
+        if (p && p.s.kind === 'edge' && p.curve) {
+          curveChords(p).forEach(function (e) {
+            var k = App.edges.indexOf(e);
+            if (seen[k]) return;
+            seen[k] = true;
+            var o = {}; for (var q in p.s) if (Object.prototype.hasOwnProperty.call(p.s, q)) o[q] = p.s[q];
+            o.edge = e; o.index = k; list.push(o);
+          });
+          return;
+        }
+        if (i === 0) return;
+        var r = selRestore(p);
+        if (r && !(r.kind === 'edge' && seen[r.index])) { if (r.kind === 'edge') seen[r.index] = true; list.push(r); }
+      });
       App.multi = list.length > 1 ? list : []; App.multiMesh = App.mesh; App.multiMode = App.mode;
     } else App.multi = [];
     UI.updateHighlights();
@@ -499,7 +561,9 @@
   }
   // after every applied build (ui-core.js applyBuild calls the UI.onBuild hooks); OpenCascade's own apply is skipped
   function afterBuild(build, opts) {
-    if (opts && opts.occt) return;
+    // (rfHO) a kept build (undo / redo of a drawing-only edit, ui-core.js keepSame): the solid on screen, exact or not,
+    // is the same model's, so nothing is asked of OpenCascade and a build already on its way stays current
+    if (opts && (opts.occt || opts.kept)) return;
     var wasDriving = st.driving;
     st.driving = false; st.anvilBuild = null;
     var now = performance.now(), burst = now - (st.lastBuildAt || -1e9) < QUIET;

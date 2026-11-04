@@ -3589,9 +3589,32 @@ var UI = (function () {
     warned: false        // the "background rebuild unavailable" toast is shown once
   };
 
+  // (rfHO) What the part's geometry is built from: the model less its drawings. App.geom = { key, build } names the
+  // model the build on screen was made from (set after a kernel build; an OpenCascade swap of that build carries it
+  // over, applyBuild). Undo / redo of an edit that left the geometry as it was (a drawing note, a hatch, a dimension)
+  // keeps the build and mesh on screen (`keepSame`), as SolidWorks does not rebuild the part for a drawing undo: no
+  // new mesh, so the drawing's views are not worked out again, and with OpenCascade on its exact solid stays instead
+  // of Anvil's approximation showing until OpenCascade has rebuilt the same part (the sheet waited for that, up to 3 s)
+  function geomKey(model) {
+    if (!model || model.type === 'assembly') return null;
+    try { return JSON.stringify(model, function (k, v) { return k === 'drawings' && this === model ? undefined : v; }); } catch (e) { return null; }
+  }
+  function noteGeom() { App.geom = App.build && !isAssembly() ? { key: geomKey(App.model), build: App.build } : null; }
+  function keepSame() {
+    var g = App.geom;
+    if (!g || !g.key || g.build !== App.build || !App.mesh || isAssembly()) return false;
+    if (App.rollback != null || roll.active || roll.committing || wk.inflight || wk.pending) return false;
+    return geomKey(App.model) === g.key;
+  }
   function rebuild(opts) {
     rollbarSync();   // rfGQ: a new feature goes in at the rollback bar
     opts = opts || {};
+    if (opts.keepSame && keepSame()) {
+      applyBuild(App.build, { noSave: !!opts.noSave, keepMs: true, kept: true });
+      var kept = Promise.resolve(App.build);
+      kept.applied = true;
+      return kept;
+    }
     // assemblies always build on the main thread (worker.js only knows part models)
     if (!App.workerOn || opts.sync || !window.Worker || isAssembly()) {
       // A request already posted to the worker is answered by this newer build; its reply is then ignored.
@@ -3637,6 +3660,7 @@ var UI = (function () {
     build = K.rebuild(App.model, App.buildCache);
     App.buildCache = build.cache;
     applyBuild(build, opts, performance.now() - t0);
+    if (App.build === build) noteGeom();   // (rfHO)
   }
 
   // Everything that happens after the kernel has built the body: mesh, edges, highlights, planes,
@@ -3651,14 +3675,18 @@ var UI = (function () {
     var t0 = performance.now();
     // lane FO: a body the mesher cannot read leaves the last good part on screen (and in App.build) instead of an
     // empty graphics area; the status bar says why
-    var newMesh;
-    try { newMesh = K.meshFromBody(build.body); } catch (e) {
+    var newMesh, prevBuild = App.build;
+    // (rfHO) a kept build (undo of an edit that left the geometry alone) keeps its mesh: same edges, same projections
+    if (opts.kept && build === App.build && App.mesh) newMesh = App.mesh;
+    else try { newMesh = K.meshFromBody(build.body); } catch (e) {
       console.warn('The rebuilt part could not be displayed:', e);
       if (UI.setStatus) UI.setStatus('The rebuilt part could not be displayed (' + ((e && e.message) || e) + '); the last good part is shown.');
       return App.build;
     }
     App.build = build;
     App.mesh = newMesh;
+    // (rfHO) OpenCascade's exact solid of the same model takes over the geometry key of the build it replaces
+    if (opts.occt && App.geom && App.geom.build === prevBuild) App.geom = { key: App.geom.key, build: build };
     // worker.js found the edges of this same mesh (edgesFor); its volume follows in a 'volume' message (onWorkerMessage)
     if (nextWorker && App.mesh) { App.mesh.workerEdges = nextWorker.edges; App.mesh.workerCurves = nextWorker.curves || null; App.mesh.workerSeq = nextWorker.seq; useWorkerNormals(App.mesh, nextWorker.normals); }
     nextWorker = null;
@@ -4148,6 +4176,7 @@ var UI = (function () {
         nextWorker = { edges: d.edges || null, curves: d.curves || null, normals: d.normals || null, seq: d.seq };   // found by the worker on the same mesh: the applyBuild below hands them on
         K.applyProfiles(App.model, build.profiles, build.facePlanes);   // the worker built its own copy; write the sketch profiles back onto ours
         applyBuild(build, req.opts, build.time);
+        if (App.build === build) { if (wk.pending) App.geom = null; else noteGeom(); }   // (rfHO) a newer model waiting: not this build's
         // Refresh the main-thread cache from the worker's result (guarded: older kernels have no cacheFromBuild).
         App.buildCache = K.cacheFromBuild ? K.cacheFromBuild(App.model, build) : null;
       } catch (e) { nextWorker = null; disableWorker(e); finishSync(req); return; }
@@ -4328,7 +4357,7 @@ var UI = (function () {
     if (App.activeSketch == null && App.mode === 'sketch' && UI.exitSketch) UI.exitSketch(true);
     App.sel = null; App.sel2 = null;
     if (UI.closePM) UI.closePM();
-    return rebuild();
+    return rebuild({ keepSame: true });   // (rfHO) a drawing-only step keeps the part as it is
   }
 
   function loadModel(model) {

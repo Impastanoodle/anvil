@@ -3,15 +3,15 @@
  "seconds": {
   "examples": 3,
   "ex-occt": 46,
-  "smoke": 328,
+  "smoke": 232,
   "occt": 197,
   "kernel": 382,
-  "wall": 197
+  "wall": 232
  },
  "counts": {
   "examples": 29,
   "ex-occt": 29,
-  "smoke": 980,
+  "smoke": 986,
   "occt": 176,
   "kernel": 2379
  }

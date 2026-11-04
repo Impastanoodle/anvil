@@ -538,16 +538,28 @@
   }
   // settle(): finishes a drawing that is still being worked out, here and now (the views left are worked out on the
   // main thread), so a click, an export or a script sees the whole sheet
+  // (rfHO) and a redraw still queued is done now: a queued render can wait up to 3 s for OpenCascade's exact solid
+  // (occtSwapComing), and a reader (hatchRegions, an export, a click) must not see the sheet from before an undo
   function settle() {
-    if (!D.prog || !D.active) return;
+    if (!D.active) return;
+    if (!D.prog && D.renderQueued) render(true);
+    if (!D.prog) return;
     dropBusyWorker();
     PJ.id++; PJ.mesh = null; PJ.jobs = {};
     D.prog.sync = true;
     render();
   }
   // a promise for when the drawing on screen is complete (tests; the views land in a few hundred ms at most)
+  // (rfHO) a redraw still queued counts too (it waits for OpenCascade's exact solid at most ~3 s; after 4 s it is done)
   function ready() {
-    return new Promise(function (res) { (function poll() { if (!D.prog || !D.active) res(); else setTimeout(poll, 10); })(); });
+    var t0 = performance.now();
+    return new Promise(function (res) {
+      (function poll() {
+        if (!D.active || (!D.prog && !D.renderQueued)) res();
+        else if (!D.prog && performance.now() - t0 > 4000) { render(true); res(); }
+        else setTimeout(poll, 10);
+      })();
+    });
   }
   // the sheet SVG from svgParts: built whole the first time (or when the sheet size or the list of layers changed),
   // afterwards only the changed layers' contents are replaced; transforms left by a live view drag are cleared
