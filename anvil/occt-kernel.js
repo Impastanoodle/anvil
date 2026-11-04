@@ -43,6 +43,8 @@ var OcctKernel = (function () {
   SUPPORTED.deleteBody = 1;   // rfHT: Delete/Keep Body
   SUPPORTED.helix = SUPPORTED.projCurve = SUPPORTED.compositeCurve = SUPPORTED.xyzCurve = SUPPORTED.refPtCurve = 1;   // rfFA: reference curves (no body)
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
+  // rfHL: faces whose normals turn by less than this across a shared edge are tangent (BRepLib::EncodeRegularity)
+  var TANGENT_ANG = Math.PI / 180;   // 1°
 
   function build(oc, K, model, opts) {
     opts = opts || {};
@@ -221,12 +223,17 @@ var OcctKernel = (function () {
       });
     }
     // solids made from each loop face, combined by nesting depth (outer adds, hole removes, island adds again)
+    // lane HU: one Boolean per nesting level (a General Fuse / Cut with every loop of that level as a tool), not one per
+    // loop: a perforated panel's 600 circles were 599 Fuses one after the other (43.5 of a 58 s build)
     function fromLoops(faces, makeSolid) {
-      var sorted = faces.slice().sort(function (p, q) { return p.depth - q.depth; }), acc = null;
-      sorted.forEach(function (lf) {
-        var s = makeSolid(lf.face, lf.depth % 2 === 1);
-        if (lf.depth % 2 === 0) acc = acc ? fuse(acc, s) : s;
-        else if (acc) acc = cut(acc, s);
+      var levels = [], acc = null;
+      faces.forEach(function (lf) { (levels[lf.depth] = levels[lf.depth] || []).push(makeSolid(lf.face, lf.depth % 2 === 1)); });
+      levels.forEach(function (list, depth) {
+        if (!list || !list.length) return;
+        if (depth % 2 === 0) {
+          if (!acc) acc = list.length === 1 ? list[0] : boolMany('fuse', list[0], list.slice(1), 'OpenCascade could not join the sketch\'s regions.');
+          else acc = boolMany('fuse', acc, list, 'OpenCascade could not join the sketch\'s regions.');
+        } else if (acc) acc = boolMany('cut', acc, list, 'OpenCascade could not cut the sketch\'s holes.');
       });
       if (!acc) throw new Error('Sketch has no closed profile.');
       return acc;
@@ -712,14 +719,10 @@ var OcctKernel = (function () {
       if (k < 0) throw new Error('Nothing to ' + f.type + ' yet.');
       // seam edges (where a cylinder or cone closes on itself) and degenerate ones are no edges to round: a pick on a
       // rim right where the seam meets it is as near the seam as the rim, and the fillet on the seam failed
-      var body = unify(bodies[k]), seams = N(new oc.TopTools_IndexedMapOfShape_1());
-      facesOf(body).forEach(function (fc) {
-        explore(fc, ENUM.TopAbs_EDGE).forEach(function (s) { var e = N(oc.TopoDS.Edge_1(s)); if (oc.BRep_Tool.IsClosed_2(e, fc) || oc.BRep_Tool.Degenerated(e)) seams.Add(e); });
-      });
-      var es = nearest(f.edges, edgesOf(body).filter(function (e) { return !seams.Contains(e); }), K.pickTol(m.units, size));   // r16/picktol
+      var body = unify(bodies[k]);
+      var es = pickedEdges(f, body, size);
       if (!es.length) throw new Error('No edges found for this ' + f.type + '. Select edges again.');
-      var mk = f.type === 'chamfer' ? N(new oc.BRepFilletAPI_MakeChamfer(body)) : N(new oc.BRepFilletAPI_MakeFillet(body, oc.ChFi3d_FilletShape.ChFi3d_Rational));
-      es.forEach(function (e) { mk.Add_2(size, e); });
+      var mk = edgeMaker(f, body, es, size);
       // a fillet / chamfer along a curved edge is polygonal in Anvil (it follows the edge's facets)
       if (es.some(function (e) { var t = N(new oc.BRepAdaptor_Curve_2(e)).GetType(); return (t && t.value != null ? t.value : t) !== 0; })) approx = true;
       // three or more picked edges meeting at one vertex: OpenCascade blends the corner (a sphere for fillets, a
@@ -737,8 +740,88 @@ var OcctKernel = (function () {
         if (Object.keys(at).some(function (key) { return at[key] >= 3; })) approx = true;
       }
       var res;
-      try { res = N(mk.Shape()); } catch (e) { throw new Error('OpenCascade could not ' + f.type + ' these edges (radius too large?).'); }
+      try { res = N(mk.Shape()); } catch (e) { res = null; }
+      if (!res) res = widenedEdgeOp(f, body, es, size);
+      if (!res) throw new Error('OpenCascade could not ' + f.type + ' these edges (' + (f.type === 'chamfer' ? 'distance' : 'radius') + ' too large?).');
       bodies[k] = res;
+    }
+    // the edges of body nearest the picks; seam edges (where a cylinder or cone closes on itself) and degenerate ones
+    // are no edges to round: a pick on a rim right where the seam meets it is as near the seam as the rim, and the
+    // fillet on the seam failed
+    function pickedEdges(f, body, size) {
+      var seams = N(new oc.TopTools_IndexedMapOfShape_1());
+      facesOf(body).forEach(function (fc) {
+        explore(fc, ENUM.TopAbs_EDGE).forEach(function (s) { var e = N(oc.TopoDS.Edge_1(s)); if (oc.BRep_Tool.IsClosed_2(e, fc) || oc.BRep_Tool.Degenerated(e)) seams.Add(e); });
+      });
+      return nearest(f.edges, edgesOf(body).filter(function (e) { return !seams.Contains(e); }), K.pickTol(m.units, size));   // r16/picktol
+    }
+    function edgeMaker(f, body, es, size) {
+      var mk = f.type === 'chamfer' ? N(new oc.BRepFilletAPI_MakeChamfer(body)) : N(new oc.BRepFilletAPI_MakeFillet(body, oc.ChFi3d_FilletShape.ChFi3d_Rational));
+      es.forEach(function (e) { mk.Add_2(size, e); });
+      return mk;
+    }
+    // lane HU: a fillet (or chamfer) whose size uses up a whole face next to its edge: Fillet2 R50 on the top edge of a
+    // block 50 deep (the user's part, 2026-11-04). The round's spring line lands exactly on that face's far edge and the
+    // face vanishes; SolidWorks builds it, OpenCascade's ChFi3d refuses it ("radius too large"), and a radius a hair
+    // under leaves a sliver face. So, for each straight picked edge and each planar face F beside it whose far edge
+    // (a line parallel to the picked one) lies exactly where the round or chamfer meets F, the faces W across that far
+    // edge are pushed out along F by delta (a prism of W, minus the body: material outside the body only), the round is
+    // made on that widened body, where F is wider than the round, and the added material is cut away again. Exact
+    // radius, no sliver: the round meets W along the old far edge. null when no face qualifies or the result is bad.
+    function widenedEdgeOp(f, body, es, size) {
+      var faces = facesOf(body), tol = 1e-7 * Math.max(size, 1), delta = 0.1 * size, tools = [];
+      function vtx(s) { var p = N(oc.BRep_Tool.Pnt(N(oc.TopoDS.Vertex_1(s)))); return [p.X(), p.Y(), p.Z()]; }
+      function lineOf(e) {
+        var t = N(new oc.BRepAdaptor_Curve_2(e)).GetType();
+        if ((t && t.value != null ? t.value : t) !== 0) return null;
+        var v = explore(e, ENUM.TopAbs_VERTEX).map(vtx), d = v.length >= 2 ? V.sub(v[1], v[0]) : null, L = d ? V.len(d) : 0;
+        return L > 1e-9 ? { a: v[0], t: V.scale(d, 1 / L) } : null;
+      }
+      function has(fc, e) { return explore(fc, ENUM.TopAbs_EDGE).some(function (x) { return x.IsSame(e); }); }
+      es.forEach(function (e) {
+        var ln = lineOf(e), beside = faces.filter(function (fc) { return has(fc, e); });
+        if (!ln || beside.length !== 2) return;
+        var pl = beside.map(draftPlaneOf);
+        if (!pl[0] || !pl[1]) return;
+        // where the round meets each face, measured from the edge: r·tan(θ/2), θ the angle between the faces' normals
+        // (r on a square edge, convex or concave); a chamfer's distance as it is
+        var th = Math.acos(Math.max(-1, Math.min(1, V.dot(pl[0].n, pl[1].n))));
+        var reach = f.type === 'chamfer' ? size : size * Math.tan(th / 2);
+        beside.forEach(function (F, i) {
+          // u: across F, away from the edge (the side F's vertices lie on)
+          var u = V.norm(V.cross(pl[i].n, ln.t)), side = 0, mixed = false;
+          explore(F, ENUM.TopAbs_VERTEX).map(vtx).forEach(function (p) {
+            var s = V.dot(V.sub(p, ln.a), u);
+            if (Math.abs(s) <= tol) return;
+            if (!side) side = s > 0 ? 1 : -1; else if ((s > 0 ? 1 : -1) !== side) mixed = true;
+          });
+          if (!side || mixed) return;
+          u = V.scale(u, side);
+          edgesOf(F).forEach(function (w) {
+            if (w.IsSame(e)) return;
+            var lw = lineOf(w);
+            if (!lw || Math.abs(Math.abs(V.dot(lw.t, ln.t)) - 1) > 1e-9) return;
+            var d = V.dot(V.sub(lw.a, ln.a), u);
+            if (Math.abs(d - reach) > tol) return;
+            faces.forEach(function (W) {
+              if (W.IsSame(F) || !has(W, w)) return;
+              var pr = N(N(new oc.BRepPrimAPI_MakePrism_1(W, Vec(V.scale(u, delta)), false, true)).Shape());
+              var out = cut(pr, body);
+              if (volumeOf(out) > 1e-9 * Math.pow(Math.max(size, 1e-3), 3)) tools.push(out);
+            });
+          });
+        });
+      });
+      if (!tools.length) return null;
+      try {
+        var wide = unify(boolMany('fuse', body, tools, 'OpenCascade could not widen the body.'));
+        var es2 = pickedEdges(f, wide, size);
+        if (es2.length !== es.length) return null;
+        var rounded = N(edgeMaker(f, wide, es2, size).Shape());
+        var res = unify(boolMany('cut', rounded, tools, 'OpenCascade could not trim the widened body.'));
+        if (!valid(res) || explore(res, ENUM.TopAbs_SOLID).length !== 1 || !(volumeOf(res) > 0)) return null;
+        return res;
+      } catch (err) { return null; }
     }
     // Shell: walls of thickness T inside the body; faces nearest the picked points are removed (open), none -> hollow
     function shellOp(f) {
@@ -1802,8 +1885,10 @@ var OcctKernel = (function () {
     // a mesh it only knew the facets' angle across the edge: a coarse B-spline face turns by more than the smooth angle
     // (22°) from one facet to the next, so a tangent seam between two freeform faces (loft pieces, a sweep's or a
     // boundary's patches, fillet faces on a spline) was drawn as short dark segments wherever the facets were coarse.
-    var TANGENT_ANG = Math.PI / 180;   // 1°
     function tangentFaces(bodyList, facesOut) {
+      // lane HU: TANGENT_ANG is module-wide; as a `var` here (below build's `return`) it was still undefined when this
+      // ran, so EncodeRegularity got NaN and only edges a fillet had already marked came out tangent
+      if (!(TANGENT_ANG > 0 && TANGENT_ANG < 0.1)) throw new Error('TANGENT_ANG is not set');
       var fi = 0;
       bodyList.forEach(function (body) {
         oc.BRepLib.EncodeRegularity_1(body, TANGENT_ANG);
@@ -2451,6 +2536,6 @@ var OcctKernel = (function () {
     return { edges: edges, start: flip ? pts[pts.length - 1] : pts[0], dir0: flip ? V.scale(rec.t1, -1) : rec.t0 };
   }
 
-  return { build: build, importFile: importFile, mapFaces: mapFaces, toBuild: toBuild, toBodies: toBodies, fromPacked: fromPacked, nearestTriangles: nearestTriangles, SUPPORTED: SUPPORTED };
+  return { build: build, importFile: importFile, mapFaces: mapFaces, toBuild: toBuild, toBodies: toBodies, fromPacked: fromPacked, nearestTriangles: nearestTriangles, SUPPORTED: SUPPORTED, TANGENT_ANG: TANGENT_ANG };
 })();
 if (typeof self !== 'undefined') self.OcctKernel = OcctKernel;
