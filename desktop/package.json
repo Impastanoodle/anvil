@@ -1,0 +1,64 @@
+{
+  "name": "anvil-desktop",
+  "productName": "Anvil",
+  "version": "0.1.0",
+  "description": "Anvil CAD as a Windows program",
+  "author": "Anvil",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "node stage.js && electron .",
+    "icon": "node make-icon.js",
+    "stage": "node stage.js",
+    "pack": "node stage.js && electron-builder --win dir",
+    "dist": "node stage.js && electron-builder --win nsis",
+    "release": "node release.js"
+  },
+  "devDependencies": {
+    "electron": "44.9.0",
+    "electron-builder": "26.17.0"
+  },
+  "build": {
+    "appId": "com.anvil.cad",
+    "productName": "Anvil",
+    "copyright": "Anvil",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "converters.js",
+      "updates.js",
+      "package.json",
+      "assets/icon.png"
+    ],
+    "extraResources": [
+      {
+        "from": "stage/anvil",
+        "to": "anvil"
+      }
+    ],
+    "electronLanguages": [
+      "en-US"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Anvil",
+      "uninstallDisplayName": "Anvil",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "artifactName": "Anvil Setup ${version}.${ext}"
+    }
+  }
+}

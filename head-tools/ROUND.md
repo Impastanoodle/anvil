@@ -82,3 +82,14 @@ app republish, board close and clean-up below stay at round end.
   `git worktree prune`, delete `HEAD.lock` (the heartbeat stops by itself).
 - Tell the user: what each lane did, the suite table, what is still open, usage — then suggest `/compact` before the
   next round.
+
+**Desktop app (user, 2026-11-04: "an installable Anvil package that i would use (and update) just like a user").** After
+the round's last push, when any app file changed, build the next version for the user's installed Anvil:
+```
+cd desktop; npm run release -- --notes "<one line per lane, plain English>"
+```
+It bumps the patch version, builds `Anvil Setup <version>.exe` (OpenCascade and LibreDWG bundled from `anvil/vendor/`)
+into `C:\Users\Lucas\Desktop\Output\Anvil Releases\` with `latest.json`, and keeps the newest 3; the installed app offers
+"Restart to update" within 2 hours. Commit the bumped `desktop/package.json` with the round notes. After a fresh
+`npm ci` in desktop/, run `node node_modules\electron\install.js` (npm blocks install scripts; it unpacks Electron from
+its local cache). `node check.js` (desktop/) proves the unpacked build: loads clean, builds a part, OpenCascade drives it.

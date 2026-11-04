@@ -12,3 +12,7 @@ anvil/vendor/libredwg/
 # the head session's live subagent registry (agent ids, per session)
 head-tools/agents.local.json
 __pycache__/
+# the Windows app (desktop/): its packages, the staged copy of anvil/ with the engine, and the built installers
+desktop/node_modules/
+desktop/stage/
+desktop/dist/
