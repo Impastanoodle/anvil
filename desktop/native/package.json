@@ -1,0 +1,18 @@
+{
+  "name": "anvil-occt-native",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenCascade 7.6.3 built for Windows behind a Node-API addon with the same `oc` API as opencascade.js, so Anvil's occt-kernel.js runs on it unchanged",
+  "main": "lib/index.js",
+  "license": "LGPL-2.1-only",
+  "scripts": {
+    "install": "node -e \"\"",
+    "occt": "powershell -NoProfile -ExecutionPolicy Bypass -File build-occt.ps1",
+    "gen": "node gen.js",
+    "build": "node-gyp rebuild --jobs 8",
+    "collect": "node collect.js"
+  },
+  "dependencies": {
+    "node-addon-api": "8.9.2"
+  }
+}

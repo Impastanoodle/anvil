@@ -14,7 +14,7 @@ const USAGE = [
   'usage: node anvil/headless/anvil.js <command> [options]',
   '',
   '  build <file> [--stl out] [--step out] [--dxf-flat out] [--dxf-face <index> out] [--dwg-flat out] [--dwg-face <index> out]',
-  '               [--json out] [--script out] [--occt]',
+  '               [--json out] [--script out] [--occt] [--native [dir]]',
   '               [--dxf-version r12|2000] [--dxf-style polyline|entities] [--no-bends] [--no-notes] [--no-origin] [--origin]',
   '      <file>: a part / assembly script (.js, the Builder API) or a saved model JSON. Prints a summary JSON.',
   '      --dxf-*: laser-ready (true circles and arcs, joined loops, units header), R12 by default; the flat at 0,0, a face',
@@ -25,7 +25,7 @@ const USAGE = [
   '  drawing <file> [--svg out] [--dxf out] [--dwg out] [--pdf out] [--views Front,Top,Right,Isometric] [--scale 1:2]',
   '               [--dxf-version r12|2000]   the sheet DXF (one layer per view) R12 by default; a DWG is made from R2000',
   '  example <name | index> [build options]     a bundled example (name case-insensitive, prefix allowed)',
-  '  example --all [--occt]                      every example against its documented volume',
+  '  example --all [--occt] [--native [dir]]     every example against its documented volume',
   '  examples                                    list the examples with their documented volumes',
   '  test [--only rfXX[,rfYY]] [--jobs N] [--serial] [--no-split] [--timings] [--save-timings] [--json out]',
   '      tests/kernel-tests.html under Node, each group file a job on its own process, longest first; a file longer than',
@@ -41,6 +41,8 @@ const USAGE = [
   '  dxf2sketch <file.dxf | file.dwg> [--dxf out] what File > Open brings into a sketch: units, layers, entities, extents,',
   '                                              Check Sketch summary (a DWG through the ODA File Converter or LibreDWG)',
   '',
+  '--native [dir]: with --occt (implied), OpenCascade 7.6.3 native for Windows (desktop/native) instead of the WebAssembly',
+  '      engine; dir holds index.js + occt_native.node + DLLs (default ANVIL_OCCT_NATIVE, else Desktop\\Output\\Anvil Native\\addon)',
   'Global options: --quiet (summary only on stdout), --verbose (list the engine files as they load).'
 ].join('\n');
 
@@ -53,6 +55,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a.slice(0, 2) !== '--') { out._.push(a); continue; }
     const name = a.slice(2), n = VALUED[name] || 0;
+    if (name === 'native' && argv[i + 1] && argv[i + 1].slice(0, 2) !== '--' && fs.existsSync(argv[i + 1]) && fs.statSync(argv[i + 1]).isDirectory()) { out.flags.native = argv[++i]; continue; }
     if (n === 0) { out.flags[name] = true; continue; }
     const vals = argv.slice(i + 1, i + 1 + n);
     if (vals.length < n || vals.some((v) => v.slice(0, 2) === '--')) throw usage('--' + name + ' needs ' + n + ' value' + (n > 1 ? 's' : ''));
@@ -61,6 +64,8 @@ function parseArgs(argv) {
   }
   return out;
 }
+// --native [dir]: OpenCascade from the native addon (headless/occt.js loadNative) instead of the WebAssembly engine
+let NATIVE = null;
 function usage(msg) { const e = new Error(msg + '\n\n' + USAGE); e.code = 2; return e; }
 
 // ------------------------------------------------------------------ helpers
@@ -162,7 +167,7 @@ async function withOcct(r, wantStep, quiet) {
   const { loadOpenCascade } = require('./occt');
   if (r.kind === 'assembly') { r.summary.occt = { skipped: 'OpenCascade comparison is for parts (an assembly builds each part on its own)' }; return null; }
   const t0 = performance.now();
-  const { oc, loadMs } = await loadOpenCascade();
+  const { oc, loadMs } = await loadOpenCascade({ native: NATIVE });
   note(quiet, 'OpenCascade loaded in ' + Math.round(loadMs) + ' ms');
   const o = OcctKernel.build(oc, Kernel, r.model, { exports: !!wantStep });
   const diff = r.mp.volume > 0 && o.volume != null ? Math.abs(o.volume - r.mp.volume) / r.mp.volume : null;
@@ -228,7 +233,7 @@ async function runBuildOptions(r, flags, quiet) {
     // OpenCascade's STEP read back by OpenCascade (in mm): its size must be the B-rep's own times 25.4 for an inch part
     if (exact && occ && occ.bbox) {
       const { OcctKernel } = load({ occt: true });
-      const { oc } = await require('./occt').loadOpenCascade();
+      const { oc } = await require('./occt').loadOpenCascade({ native: NATIVE });
       const imp = OcctKernel.importFile(oc, 'step', text), lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
       imp.solids.forEach((s) => { for (let i = 0; i < s.positions.length; i += 3) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], s.positions[i + k]); hi[k] = Math.max(hi[k], s.positions[i + k]); } });
       const k = want === 'in' ? 25.4 : 1, size = hi.map((x, i) => x - lo[i]), expect = [0, 1, 2].map((i) => (occ.bbox[1][i] - occ.bbox[0][i]) * k);
@@ -435,6 +440,7 @@ function cmdDxf2Sketch(file, flags) {
 // ------------------------------------------------------------------ main
 async function main(argv) {
   const args = parseArgs(argv), cmd = args._[0], flags = args.flags;
+  if (flags.native) { NATIVE = flags.native; flags.occt = true; }
   if (!cmd || flags.help || cmd === 'help') { process.stdout.write(USAGE + '\n'); return cmd ? 0 : 2; }
   if (flags.verbose) load({ verbose: true });
   switch (cmd) {

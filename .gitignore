@@ -16,3 +16,7 @@ __pycache__/
 desktop/node_modules/
 desktop/stage/
 desktop/dist/
+# the native OpenCascade addon (desktop/native): node-gyp's build folder and its npm packages; OpenCascade itself and
+# the collected addon live in Desktop\Output\Anvil Native, outside the repository
+desktop/native/build/
+desktop/native/node_modules/

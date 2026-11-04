@@ -1,0 +1,4048 @@
+{
+ "recorded": {
+  "constructors": {
+   "BRepAdaptor_Curve_2": {
+    "args": [
+     [
+      "class:TopoDS_Edge"
+     ]
+    ],
+    "count": 79
+   },
+   "BRepAdaptor_Surface_2": {
+    "args": [
+     [
+      "class:TopoDS_Face"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 6813
+   },
+   "BRepAlgoAPI_Common_3": {
+    "args": [
+     [
+      "class:TopoDS_Shape"
+     ],
+     [
+      "class:TopoDS_Solid",
+      "class:TopoDS_Shape"
+     ],
+     [
+      "class:Message_ProgressRange"
+     ]
+    ],
+    "count": 288
+   },
+   "BRepAlgoAPI_Cut_1": {
+    "args": [],
+    "count": 133
+   },
+   "BRepAlgoAPI_Cut_3": {
+    "args": [
+     [
+      "class:TopoDS_Shape"
+     ],
+     [
+      "class:TopoDS_Shape",
+      "class:TopoDS_Solid"
+     ],
+     [
+      "class:Message_ProgressRange"
+     ]
+    ],
+    "count": 321
+   },
+   "BRepAlgoAPI_Fuse_1": {
+    "args": [],
+    "count": 82
+   },
+   "BRepAlgoAPI_Fuse_3": {
+    "args": [
+     [
+      "class:TopoDS_Shape"
+     ],
+     [
+      "class:TopoDS_Shape"
+     ],
+     [
+      "class:Message_ProgressRange"
+     ]
+    ],
+    "count": 172
+   },
+   "BRepAlgoAPI_Splitter_1": {
+    "args": [],
+    "count": 2
+   },
+   "BRepBuilderAPI_MakeEdge_12": {
+    "args": [
+     [
+      "class:gp_Elips"
+     ]
+    ],
+    "count": 4
+   },
+   "BRepBuilderAPI_MakeEdge_13": {
+    "args": [
+     [
+      "class:gp_Elips"
+     ],
+     [
+      "int",
+      "real"
+     ],
+     [
+      "real"
+     ]
+    ],
+    "count": 2
+   },
+   "BRepBuilderAPI_MakeEdge_24": {
+    "args": [
+     [
+      "class:Handle_Geom_Curve"
+     ]
+    ],
+    "count": 528
+   },
+   "BRepBuilderAPI_MakeEdge_25": {
+    "args": [
+     [
+      "class:Handle_Geom_Curve"
+     ],
+     [
+      "int"
+     ],
+     [
+      "real"
+     ]
+    ],
+    "count": 1
+   },
+   "BRepBuilderAPI_MakeEdge_3": {
+    "args": [
+     [
+      "class:gp_Pnt"
+     ],
+     [
+      "class:gp_Pnt"
+     ]
+    ],
+    "count": 4553
+   },
+   "BRepBuilderAPI_MakeEdge_30": {
+    "args": [
+     [
+      "class:Handle_Geom2d_Curve"
+     ],
+     [
+      "class:Handle_Geom_Surface"
+     ]
+    ],
+    "count": 589
+   },
+   "BRepBuilderAPI_MakeEdge_8": {
+    "args": [
+     [
+      "class:gp_Circ"
+     ]
+    ],
+    "count": 203
+   },
+   "BRepBuilderAPI_MakeFace_15": {
+    "args": [
+     [
+      "class:TopoDS_Wire"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 1189
+   },
+   "BRepBuilderAPI_MakeFace_21": {
+    "args": [
+     [
+      "class:Handle_Geom_Surface"
+     ],
+     [
+      "class:TopoDS_Wire"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 123
+   },
+   "BRepBuilderAPI_MakeFace_8": {
+    "args": [
+     [
+      "class:Handle_Geom_Surface"
+     ],
+     [
+      "real"
+     ]
+    ],
+    "count": 38
+   },
+   "BRepBuilderAPI_MakeSolid_3": {
+    "args": [
+     [
+      "class:TopoDS_Shell"
+     ]
+    ],
+    "count": 9
+   },
+   "BRepBuilderAPI_MakeVertex": {
+    "args": [
+     [
+      "class:gp_Pnt"
+     ]
+    ],
+    "count": 1603
+   },
+   "BRepBuilderAPI_MakeWire_1": {
+    "args": [],
+    "count": 1345
+   },
+   "BRepBuilderAPI_Sewing": {
+    "args": [
+     [
+      "real"
+     ],
+     [
+      "bool"
+     ],
+     [
+      "bool"
+     ],
+     [
+      "bool"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 9
+   },
+   "BRepBuilderAPI_Transform_2": {
+    "args": [
+     [
+      "class:TopoDS_Face",
+      "class:TopoDS_Shape",
+      "class:TopoDS_Compound",
+      "class:TopoDS_Wire"
+     ],
+     [
+      "class:gp_Trsf"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 1407
+   },
+   "BRepCheck_Analyzer": {
+    "args": [
+     [
+      "class:TopoDS_Shape"
+     ],
+     [
+      "bool"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 305
+   },
+   "BRepClass3d_SolidClassifier_2": {
+    "args": [
+     [
+      "class:TopoDS_Shape"
+     ]
+    ],
+    "count": 3
+   },
+   "BRepExtrema_DistShapeShape_2": {
+    "args": [
+     [
+      "class:TopoDS_Vertex"
+     ],
+     [
+      "class:TopoDS_Shape",
+      "class:TopoDS_Edge",
+      "class:TopoDS_Face"
+     ],
+     [
+      "enum:Extrema_ExtFlag"
+     ],
+     [
+      "enum:Extrema_ExtAlgo"
+     ],
+     [
+      "class:Message_ProgressRange"
+     ]
+    ],
+    "count": 1603
+   },
+   "BRepFilletAPI_MakeChamfer": {
+    "args": [
+     [
+      "class:TopoDS_Shape"
+     ]
+    ],
+    "count": 9
+   },
+   "BRepFilletAPI_MakeFillet": {
+    "args": [
+     [
+      "class:TopoDS_Shape"
+     ],
+     [
+      "enum:ChFi3d_FilletShape"
+     ]
+    ],
+    "count": 25
+   },
+   "BRepGProp_Face_2": {
+    "args": [
+     [
+      "class:TopoDS_Face"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 42
+   },
+   "BRepMesh_IncrementalMesh_2": {
+    "args": [
+     [
+      "class:TopoDS_Shape",
+      "class:TopoDS_Compound",
+      "class:TopoDS_Solid"
+     ],
+     [
+      "real"
+     ],
+     [
+      "bool"
+     ],
+     [
+      "real"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 461
+   },
+   "BRepOffsetAPI_DraftAngle_2": {
+    "args": [
+     [
+      "class:TopoDS_Shape"
+     ]
+    ],
+    "count": 5
+   },
+   "BRepOffsetAPI_MakeOffsetShape": {
+    "args": [],
+    "count": 2
+   },
+   "BRepOffsetAPI_MakeOffset_2": {
+    "args": [
+     [
+      "class:TopoDS_Face"
+     ],
+     [
+      "enum:GeomAbs_JoinType"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 12
+   },
+   "BRepOffsetAPI_MakePipeShell": {
+    "args": [
+     [
+      "class:TopoDS_Wire"
+     ]
+    ],
+    "count": 22
+   },
+   "BRepOffsetAPI_MakeThickSolid": {
+    "args": [],
+    "count": 145
+   },
+   "BRepOffsetAPI_ThruSections": {
+    "args": [
+     [
+      "bool"
+     ],
+     [
+      "bool"
+     ],
+     [
+      "real"
+     ]
+    ],
+    "count": 17
+   },
+   "BRepPrimAPI_MakeHalfSpace_1": {
+    "args": [
+     [
+      "class:TopoDS_Face"
+     ],
+     [
+      "class:gp_Pnt"
+     ]
+    ],
+    "count": 153
+   },
+   "BRepPrimAPI_MakePrism_1": {
+    "args": [
+     [
+      "class:TopoDS_Shape",
+      "class:TopoDS_Face"
+     ],
+     [
+      "class:gp_Vec"
+     ],
+     [
+      "bool"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 967
+   },
+   "BRepPrimAPI_MakeRevol_1": {
+    "args": [
+     [
+      "class:TopoDS_Face"
+     ],
+     [
+      "class:gp_Ax1"
+     ],
+     [
+      "real"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 31
+   },
+   "BRep_Builder": {
+    "args": [],
+    "count": 85
+   },
+   "Bnd_Box_1": {
+    "args": [],
+    "count": 994
+   },
+   "GCE2d_MakeArcOfEllipse_1": {
+    "args": [
+     [
+      "class:gp_Elips2d"
+     ],
+     [
+      "real"
+     ],
+     [
+      "real"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 8
+   },
+   "GCE2d_MakeSegment_1": {
+    "args": [
+     [
+      "class:gp_Pnt2d"
+     ],
+     [
+      "class:gp_Pnt2d"
+     ]
+    ],
+    "count": 569
+   },
+   "GC_MakeArcOfCircle_4": {
+    "args": [
+     [
+      "class:gp_Pnt"
+     ],
+     [
+      "class:gp_Pnt"
+     ],
+     [
+      "class:gp_Pnt"
+     ]
+    ],
+    "count": 449
+   },
+   "GProp_GProps_1": {
+    "args": [],
+    "count": 2011
+   },
+   "Geom2d_BSplineCurve_1": {
+    "args": [
+     [
+      "class:TColgp_Array1OfPnt2d"
+     ],
+     [
+      "class:TColStd_Array1OfReal"
+     ],
+     [
+      "class:TColStd_Array1OfInteger"
+     ],
+     [
+      "int"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 12
+   },
+   "GeomAPI_PointsToBSpline_2": {
+    "args": [
+     [
+      "class:TColgp_Array1OfPnt"
+     ],
+     [
+      "int"
+     ],
+     [
+      "int"
+     ],
+     [
+      "enum:GeomAbs_Shape"
+     ],
+     [
+      "real"
+     ]
+    ],
+    "count": 8
+   },
+   "GeomFill_BSplineCurves_2": {
+    "args": [
+     [
+      "class:Handle_Geom_BSplineCurve"
+     ],
+     [
+      "class:Handle_Geom_BSplineCurve"
+     ],
+     [
+      "class:Handle_Geom_BSplineCurve"
+     ],
+     [
+      "class:Handle_Geom_BSplineCurve"
+     ],
+     [
+      "enum:GeomFill_FillingStyle"
+     ]
+    ],
+    "count": 14
+   },
+   "Geom_BSplineCurve_1": {
+    "args": [
+     [
+      "class:TColgp_Array1OfPnt"
+     ],
+     [
+      "class:TColStd_Array1OfReal"
+     ],
+     [
+      "class:TColStd_Array1OfInteger"
+     ],
+     [
+      "int"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 112
+   },
+   "Geom_BSplineCurve_2": {
+    "args": [
+     [
+      "class:TColgp_Array1OfPnt"
+     ],
+     [
+      "class:TColStd_Array1OfReal"
+     ],
+     [
+      "class:TColStd_Array1OfReal"
+     ],
+     [
+      "class:TColStd_Array1OfInteger"
+     ],
+     [
+      "int"
+     ],
+     [
+      "bool"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 16
+   },
+   "Geom_BSplineSurface_1": {
+    "args": [
+     [
+      "class:TColgp_Array2OfPnt"
+     ],
+     [
+      "class:TColStd_Array1OfReal"
+     ],
+     [
+      "class:TColStd_Array1OfReal"
+     ],
+     [
+      "class:TColStd_Array1OfInteger"
+     ],
+     [
+      "class:TColStd_Array1OfInteger"
+     ],
+     [
+      "int"
+     ],
+     [
+      "int"
+     ],
+     [
+      "bool"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 16
+   },
+   "Geom_BSplineSurface_2": {
+    "args": [
+     [
+      "class:TColgp_Array2OfPnt"
+     ],
+     [
+      "class:TColStd_Array2OfReal"
+     ],
+     [
+      "class:TColStd_Array1OfReal"
+     ],
+     [
+      "class:TColStd_Array1OfReal"
+     ],
+     [
+      "class:TColStd_Array1OfInteger"
+     ],
+     [
+      "class:TColStd_Array1OfInteger"
+     ],
+     [
+      "int"
+     ],
+     [
+      "int"
+     ],
+     [
+      "bool"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 8
+   },
+   "Geom_ConicalSurface_1": {
+    "args": [
+     [
+      "class:gp_Ax3"
+     ],
+     [
+      "real"
+     ],
+     [
+      "int"
+     ]
+    ],
+    "count": 1
+   },
+   "Geom_CylindricalSurface_1": {
+    "args": [
+     [
+      "class:gp_Ax3"
+     ],
+     [
+      "real",
+      "int"
+     ]
+    ],
+    "count": 123
+   },
+   "Geom_Plane_1": {
+    "args": [
+     [
+      "class:gp_Ax3"
+     ]
+    ],
+    "count": 1
+   },
+   "Handle_Geom2d_Curve_2": {
+    "args": [
+     [
+      "class:Geom2d_TrimmedCurve",
+      "class:Geom2d_BSplineCurve"
+     ]
+    ],
+    "count": 589
+   },
+   "Handle_Geom_BSplineCurve_2": {
+    "args": [
+     [
+      "class:Geom_BSplineCurve"
+     ]
+    ],
+    "count": 76
+   },
+   "Handle_Geom_Curve_2": {
+    "args": [
+     [
+      "class:Geom_TrimmedCurve",
+      "class:Geom_BSplineCurve"
+     ]
+    ],
+    "count": 529
+   },
+   "Handle_Geom_Surface_2": {
+    "args": [
+     [
+      "class:Geom_CylindricalSurface",
+      "class:Geom_BSplineSurface",
+      "class:Geom_ConicalSurface",
+      "class:Geom_Plane"
+     ]
+    ],
+    "count": 163
+   },
+   "IGESControl_Reader_1": {
+    "args": [],
+    "count": 2
+   },
+   "IGESControl_Writer_2": {
+    "args": [
+     [
+      "string"
+     ],
+     [
+      "int"
+     ]
+    ],
+    "count": 10
+   },
+   "Message_ProgressRange_1": {
+    "args": [],
+    "count": 2708
+   },
+   "STEPControl_Reader_1": {
+    "args": [],
+    "count": 7
+   },
+   "STEPControl_Writer_1": {
+    "args": [],
+    "count": 20
+   },
+   "ShapeUpgrade_UnifySameDomain_2": {
+    "args": [
+     [
+      "class:TopoDS_Shape",
+      "class:TopoDS_Solid"
+     ],
+     [
+      "bool"
+     ],
+     [
+      "bool"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 537
+   },
+   "TColStd_Array1OfInteger_2": {
+    "args": [
+     [
+      "int"
+     ],
+     [
+      "int"
+     ]
+    ],
+    "count": 188
+   },
+   "TColStd_Array1OfReal_2": {
+    "args": [
+     [
+      "int"
+     ],
+     [
+      "int"
+     ]
+    ],
+    "count": 204
+   },
+   "TColStd_Array2OfReal_2": {
+    "args": [
+     [
+      "int"
+     ],
+     [
+      "int"
+     ],
+     [
+      "int"
+     ],
+     [
+      "int"
+     ]
+    ],
+    "count": 8
+   },
+   "TColgp_Array1OfPnt2d_2": {
+    "args": [
+     [
+      "int"
+     ],
+     [
+      "int"
+     ]
+    ],
+    "count": 12
+   },
+   "TColgp_Array1OfPnt_2": {
+    "args": [
+     [
+      "int"
+     ],
+     [
+      "int"
+     ]
+    ],
+    "count": 136
+   },
+   "TColgp_Array2OfPnt_2": {
+    "args": [
+     [
+      "int"
+     ],
+     [
+      "int"
+     ],
+     [
+      "int"
+     ],
+     [
+      "int"
+     ]
+    ],
+    "count": 24
+   },
+   "TopExp_Explorer_2": {
+    "args": [
+     [
+      "class:TopoDS_Compound",
+      "class:TopoDS_Shape",
+      "class:TopoDS_Face",
+      "class:TopoDS_Edge",
+      "class:TopoDS_Solid"
+     ],
+     [
+      "enum:TopAbs_ShapeEnum"
+     ],
+     [
+      "enum:TopAbs_ShapeEnum"
+     ]
+    ],
+    "count": 6104
+   },
+   "TopLoc_Location_1": {
+    "args": [],
+    "count": 7007
+   },
+   "TopTools_IndexedMapOfShape_1": {
+    "args": [],
+    "count": 350
+   },
+   "TopTools_ListOfShape_1": {
+    "args": [],
+    "count": 457
+   },
+   "TopoDS_Compound": {
+    "args": [],
+    "count": 85
+   },
+   "gp_Ax1_2": {
+    "args": [
+     [
+      "class:gp_Pnt"
+     ],
+     [
+      "class:gp_Dir"
+     ]
+    ],
+    "count": 58
+   },
+   "gp_Ax2_2": {
+    "args": [
+     [
+      "class:gp_Pnt"
+     ],
+     [
+      "class:gp_Dir"
+     ],
+     [
+      "class:gp_Dir"
+     ]
+    ],
+    "count": 208
+   },
+   "gp_Ax2_3": {
+    "args": [
+     [
+      "class:gp_Pnt"
+     ],
+     [
+      "class:gp_Dir"
+     ]
+    ],
+    "count": 6
+   },
+   "gp_Ax2d_2": {
+    "args": [
+     [
+      "class:gp_Pnt2d"
+     ],
+     [
+      "class:gp_Dir2d"
+     ]
+    ],
+    "count": 8
+   },
+   "gp_Ax3_3": {
+    "args": [
+     [
+      "class:gp_Pnt"
+     ],
+     [
+      "class:gp_Dir"
+     ],
+     [
+      "class:gp_Dir"
+     ]
+    ],
+    "count": 125
+   },
+   "gp_Circ_2": {
+    "args": [
+     [
+      "class:gp_Ax2"
+     ],
+     [
+      "int",
+      "real"
+     ]
+    ],
+    "count": 203
+   },
+   "gp_Dir2d_4": {
+    "args": [
+     [
+      "int"
+     ],
+     [
+      "int"
+     ]
+    ],
+    "count": 8
+   },
+   "gp_Dir_4": {
+    "args": [
+     [
+      "int",
+      "real"
+     ],
+     [
+      "int",
+      "real"
+     ],
+     [
+      "int",
+      "real"
+     ]
+    ],
+    "count": 749
+   },
+   "gp_Elips2d_2": {
+    "args": [
+     [
+      "class:gp_Ax2d"
+     ],
+     [
+      "real"
+     ],
+     [
+      "real"
+     ],
+     [
+      "bool"
+     ]
+    ],
+    "count": 8
+   },
+   "gp_Elips_2": {
+    "args": [
+     [
+      "class:gp_Ax2"
+     ],
+     [
+      "int"
+     ],
+     [
+      "int"
+     ]
+    ],
+    "count": 6
+   },
+   "gp_Pln_3": {
+    "args": [
+     [
+      "class:gp_Pnt"
+     ],
+     [
+      "class:gp_Dir"
+     ]
+    ],
+    "count": 5
+   },
+   "gp_Pnt2d_3": {
+    "args": [
+     [
+      "real",
+      "int"
+     ],
+     [
+      "real",
+      "int"
+     ]
+    ],
+    "count": 1266
+   },
+   "gp_Pnt_1": {
+    "args": [],
+    "count": 332
+   },
+   "gp_Pnt_3": {
+    "args": [
+     [
+      "int",
+      "real"
+     ],
+     [
+      "int",
+      "real"
+     ],
+     [
+      "int",
+      "real"
+     ]
+    ],
+    "count": 14098
+   },
+   "gp_Trsf_1": {
+    "args": [],
+    "count": 1402
+   },
+   "gp_Vec_1": {
+    "args": [],
+    "count": 332
+   },
+   "gp_Vec_4": {
+    "args": [
+     [
+      "int",
+      "real"
+     ],
+     [
+      "int",
+      "real"
+     ],
+     [
+      "int",
+      "real"
+     ]
+    ],
+    "count": 1994
+   }
+  },
+  "enums": {
+   "BRepBuilderAPI_TransitionMode": [
+    "BRepBuilderAPI_RightCorner"
+   ],
+   "BRepOffset_Mode": [
+    "BRepOffset_Skin"
+   ],
+   "ChFi3d_FilletShape": [
+    "ChFi3d_Rational"
+   ],
+   "Extrema_ExtAlgo": [
+    "Extrema_ExtAlgo_Grad"
+   ],
+   "Extrema_ExtFlag": [
+    "Extrema_ExtFlag_MIN"
+   ],
+   "GeomAbs_CurveType": [
+    "GeomAbs_Circle"
+   ],
+   "GeomAbs_JoinType": [
+    "GeomAbs_Intersection"
+   ],
+   "GeomAbs_Shape": [
+    "GeomAbs_C0",
+    "GeomAbs_C1",
+    "GeomAbs_C2"
+   ],
+   "GeomFill_FillingStyle": [
+    "GeomFill_StretchStyle"
+   ],
+   "IFSelect_ReturnStatus": [
+    "IFSelect_RetDone"
+   ],
+   "STEPControl_StepModelType": [
+    "STEPControl_AsIs"
+   ],
+   "TopAbs_Orientation": [
+    "TopAbs_REVERSED"
+   ],
+   "TopAbs_ShapeEnum": [
+    "TopAbs_COMPOUND",
+    "TopAbs_SOLID",
+    "TopAbs_SHAPE",
+    "TopAbs_FACE",
+    "TopAbs_EDGE",
+    "TopAbs_VERTEX",
+    "TopAbs_WIRE",
+    "TopAbs_SHELL"
+   ],
+   "TopAbs_State": [
+    "TopAbs_IN"
+   ]
+  },
+  "fs": {
+   "readFile": 20,
+   "unlink": 29,
+   "writeFile": 9
+  },
+  "methods": {
+   "BRepAdaptor_Curve": {
+    "Circle": {
+     "args": [],
+     "count": 1,
+     "dyn": [
+      "gp_Circ"
+     ],
+     "recv": [
+      "BRepAdaptor_Curve"
+     ],
+     "ret": [
+      "class:gp_Circ"
+     ]
+    },
+    "GetType": {
+     "args": [],
+     "count": 79,
+     "recv": [
+      "BRepAdaptor_Curve"
+     ],
+     "ret": [
+      "enum:GeomAbs_CurveType"
+     ]
+    }
+   },
+   "BRepAdaptor_Surface": {
+    "Cone": {
+     "args": [],
+     "count": 87,
+     "dyn": [
+      "gp_Cone"
+     ],
+     "recv": [
+      "BRepAdaptor_Surface"
+     ],
+     "ret": [
+      "class:gp_Cone"
+     ]
+    },
+    "Cylinder": {
+     "args": [],
+     "count": 1076,
+     "dyn": [
+      "gp_Cylinder"
+     ],
+     "recv": [
+      "BRepAdaptor_Surface"
+     ],
+     "ret": [
+      "class:gp_Cylinder"
+     ]
+    },
+    "GetType": {
+     "args": [],
+     "count": 6813,
+     "recv": [
+      "BRepAdaptor_Surface"
+     ],
+     "ret": [
+      "enum:GeomAbs_SurfaceType"
+     ]
+    },
+    "Plane": {
+     "args": [],
+     "count": 80,
+     "dyn": [
+      "gp_Pln"
+     ],
+     "recv": [
+      "BRepAdaptor_Surface"
+     ],
+     "ret": [
+      "class:gp_Pln"
+     ]
+    },
+    "Sphere": {
+     "args": [],
+     "count": 8,
+     "dyn": [
+      "gp_Sphere"
+     ],
+     "recv": [
+      "BRepAdaptor_Surface"
+     ],
+     "ret": [
+      "class:gp_Sphere"
+     ]
+    },
+    "Torus": {
+     "args": [],
+     "count": 32,
+     "dyn": [
+      "gp_Torus"
+     ],
+     "recv": [
+      "BRepAdaptor_Surface"
+     ],
+     "ret": [
+      "class:gp_Torus"
+     ]
+    }
+   },
+   "BRepAlgoAPI_Algo": {
+    "Shape": {
+     "args": [],
+     "count": 998,
+     "dyn": [
+      "TopoDS_Shape"
+     ],
+     "recv": [
+      "BRepAlgoAPI_Cut",
+      "BRepAlgoAPI_Fuse",
+      "BRepAlgoAPI_Common",
+      "BRepAlgoAPI_Splitter"
+     ],
+     "ret": [
+      "class:TopoDS_Shape"
+     ]
+    }
+   },
+   "BRepAlgoAPI_BooleanOperation": {
+    "Build": {
+     "args": [
+      [
+       "class:Message_ProgressRange"
+      ]
+     ],
+     "count": 215,
+     "recv": [
+      "BRepAlgoAPI_Cut",
+      "BRepAlgoAPI_Fuse"
+     ]
+    },
+    "SetTools": {
+     "args": [
+      [
+       "class:TopTools_ListOfShape"
+      ]
+     ],
+     "count": 215,
+     "recv": [
+      "BRepAlgoAPI_Cut",
+      "BRepAlgoAPI_Fuse"
+     ]
+    }
+   },
+   "BRepAlgoAPI_BuilderAlgo": {
+    "SetArguments": {
+     "args": [
+      [
+       "class:TopTools_ListOfShape"
+      ]
+     ],
+     "count": 217,
+     "recv": [
+      "BRepAlgoAPI_Cut",
+      "BRepAlgoAPI_Fuse",
+      "BRepAlgoAPI_Splitter"
+     ]
+    }
+   },
+   "BRepAlgoAPI_Splitter": {
+    "Build": {
+     "args": [
+      [
+       "class:Message_ProgressRange"
+      ]
+     ],
+     "count": 2,
+     "recv": [
+      "BRepAlgoAPI_Splitter"
+     ]
+    },
+    "SetTools": {
+     "args": [
+      [
+       "class:TopTools_ListOfShape"
+      ]
+     ],
+     "count": 2,
+     "recv": [
+      "BRepAlgoAPI_Splitter"
+     ]
+    }
+   },
+   "BRepBuilderAPI_Command": {
+    "IsDone": {
+     "args": [],
+     "count": 1201,
+     "recv": [
+      "BRepAlgoAPI_Cut",
+      "BRepAlgoAPI_Fuse",
+      "BRepOffsetAPI_MakeThickSolid",
+      "BRepAlgoAPI_Common",
+      "BRepOffsetAPI_MakePipeShell",
+      "BRepOffsetAPI_ThruSections",
+      "BRepOffsetAPI_MakeOffset",
+      "BRepOffsetAPI_MakeOffsetShape",
+      "BRepOffsetAPI_DraftAngle",
+      "BRepAlgoAPI_Splitter"
+     ],
+     "ret": [
+      "bool"
+     ]
+    }
+   },
+   "BRepBuilderAPI_MakeEdge": {
+    "Edge": {
+     "args": [],
+     "count": 5880,
+     "dyn": [
+      "TopoDS_Edge"
+     ],
+     "recv": [
+      "BRepBuilderAPI_MakeEdge"
+     ],
+     "ret": [
+      "class:TopoDS_Edge"
+     ]
+    }
+   },
+   "BRepBuilderAPI_MakeFace": {
+    "Face": {
+     "args": [],
+     "count": 1350,
+     "dyn": [
+      "TopoDS_Face"
+     ],
+     "recv": [
+      "BRepBuilderAPI_MakeFace"
+     ],
+     "ret": [
+      "class:TopoDS_Face"
+     ]
+    },
+    "IsDone": {
+     "args": [],
+     "count": 525,
+     "recv": [
+      "BRepBuilderAPI_MakeFace"
+     ],
+     "ret": [
+      "bool"
+     ]
+    }
+   },
+   "BRepBuilderAPI_MakeShape": {
+    "Shape": {
+     "args": [],
+     "count": 2641,
+     "dyn": [
+      "TopoDS_Shape"
+     ],
+     "recv": [
+      "BRepBuilderAPI_Transform",
+      "BRepPrimAPI_MakePrism",
+      "BRepPrimAPI_MakeRevol",
+      "BRepOffsetAPI_MakeThickSolid",
+      "BRepFilletAPI_MakeFillet",
+      "BRepFilletAPI_MakeChamfer",
+      "BRepOffsetAPI_MakePipeShell",
+      "BRepOffsetAPI_ThruSections",
+      "BRepOffsetAPI_MakeOffset",
+      "BRepOffsetAPI_MakeOffsetShape",
+      "BRepOffsetAPI_DraftAngle"
+     ],
+     "ret": [
+      "class:TopoDS_Shape"
+     ]
+    }
+   },
+   "BRepBuilderAPI_MakeSolid": {
+    "Solid": {
+     "args": [],
+     "count": 9,
+     "dyn": [
+      "TopoDS_Solid"
+     ],
+     "recv": [
+      "BRepBuilderAPI_MakeSolid"
+     ],
+     "ret": [
+      "class:TopoDS_Solid"
+     ]
+    }
+   },
+   "BRepBuilderAPI_MakeVertex": {
+    "Vertex": {
+     "args": [],
+     "count": 1603,
+     "dyn": [
+      "TopoDS_Vertex"
+     ],
+     "recv": [
+      "BRepBuilderAPI_MakeVertex"
+     ],
+     "ret": [
+      "class:TopoDS_Vertex"
+     ]
+    }
+   },
+   "BRepBuilderAPI_MakeWire": {
+    "Add_1": {
+     "args": [
+      [
+       "class:TopoDS_Edge"
+      ]
+     ],
+     "count": 5880,
+     "recv": [
+      "BRepBuilderAPI_MakeWire"
+     ]
+    },
+    "IsDone": {
+     "args": [],
+     "count": 669,
+     "recv": [
+      "BRepBuilderAPI_MakeWire"
+     ],
+     "ret": [
+      "bool"
+     ]
+    },
+    "Wire": {
+     "args": [],
+     "count": 1345,
+     "dyn": [
+      "TopoDS_Wire"
+     ],
+     "recv": [
+      "BRepBuilderAPI_MakeWire"
+     ],
+     "ret": [
+      "class:TopoDS_Wire"
+     ]
+    }
+   },
+   "BRepBuilderAPI_Sewing": {
+    "Add": {
+     "args": [
+      [
+       "class:TopoDS_Face"
+      ]
+     ],
+     "count": 56,
+     "recv": [
+      "BRepBuilderAPI_Sewing"
+     ]
+    },
+    "Perform": {
+     "args": [
+      [
+       "class:Message_ProgressRange"
+      ]
+     ],
+     "count": 9,
+     "recv": [
+      "BRepBuilderAPI_Sewing"
+     ]
+    },
+    "SewedShape": {
+     "args": [],
+     "count": 9,
+     "dyn": [
+      "TopoDS_Shape"
+     ],
+     "recv": [
+      "BRepBuilderAPI_Sewing"
+     ],
+     "ret": [
+      "class:TopoDS_Shape"
+     ]
+    }
+   },
+   "BRepCheck_Analyzer": {
+    "IsValid_2": {
+     "args": [],
+     "count": 305,
+     "recv": [
+      "BRepCheck_Analyzer"
+     ],
+     "ret": [
+      "bool"
+     ]
+    }
+   },
+   "BRepClass3d_SClassifier": {
+    "State": {
+     "args": [],
+     "count": 444,
+     "recv": [
+      "BRepClass3d_SolidClassifier"
+     ],
+     "ret": [
+      "enum:TopAbs_State"
+     ]
+    }
+   },
+   "BRepClass3d_SolidClassifier": {
+    "Perform": {
+     "args": [
+      [
+       "class:gp_Pnt"
+      ],
+      [
+       "real"
+      ]
+     ],
+     "count": 444,
+     "recv": [
+      "BRepClass3d_SolidClassifier"
+     ]
+    }
+   },
+   "BRepExtrema_DistShapeShape": {
+    "IsDone": {
+     "args": [],
+     "count": 1603,
+     "recv": [
+      "BRepExtrema_DistShapeShape"
+     ],
+     "ret": [
+      "bool"
+     ]
+    },
+    "Value": {
+     "args": [],
+     "count": 1603,
+     "recv": [
+      "BRepExtrema_DistShapeShape"
+     ],
+     "ret": [
+      "int",
+      "real"
+     ]
+    }
+   },
+   "BRepFilletAPI_MakeChamfer": {
+    "Add_2": {
+     "args": [
+      [
+       "int"
+      ],
+      [
+       "class:TopoDS_Edge"
+      ]
+     ],
+     "count": 30,
+     "recv": [
+      "BRepFilletAPI_MakeChamfer"
+     ]
+    }
+   },
+   "BRepFilletAPI_MakeFillet": {
+    "Add_2": {
+     "args": [
+      [
+       "int",
+       "real"
+      ],
+      [
+       "class:TopoDS_Edge"
+      ]
+     ],
+     "count": 50,
+     "recv": [
+      "BRepFilletAPI_MakeFillet"
+     ]
+    }
+   },
+   "BRepGProp_Face": {
+    "Normal": {
+     "args": [
+      [
+       "real",
+       "int"
+      ],
+      [
+       "int",
+       "real"
+      ],
+      [
+       "class:gp_Pnt"
+      ],
+      [
+       "class:gp_Vec"
+      ]
+     ],
+     "count": 332,
+     "recv": [
+      "BRepGProp_Face"
+     ]
+    }
+   },
+   "BRepOffsetAPI_DraftAngle": {
+    "Add": {
+     "args": [
+      [
+       "class:TopoDS_Face"
+      ],
+      [
+       "class:gp_Dir"
+      ],
+      [
+       "real"
+      ],
+      [
+       "class:gp_Pln"
+      ],
+      [
+       "bool"
+      ]
+     ],
+     "count": 14,
+     "recv": [
+      "BRepOffsetAPI_DraftAngle"
+     ]
+    },
+    "AddDone": {
+     "args": [],
+     "count": 14,
+     "recv": [
+      "BRepOffsetAPI_DraftAngle"
+     ],
+     "ret": [
+      "bool"
+     ]
+    },
+    "Build": {
+     "args": [
+      [
+       "class:Message_ProgressRange"
+      ]
+     ],
+     "count": 5,
+     "recv": [
+      "BRepOffsetAPI_DraftAngle"
+     ]
+    }
+   },
+   "BRepOffsetAPI_MakeOffset": {
+    "Perform": {
+     "args": [
+      [
+       "real"
+      ],
+      [
+       "int"
+      ]
+     ],
+     "count": 12,
+     "recv": [
+      "BRepOffsetAPI_MakeOffset"
+     ]
+    }
+   },
+   "BRepOffsetAPI_MakeOffsetShape": {
+    "PerformByJoin": {
+     "args": [
+      [
+       "class:TopoDS_Shape"
+      ],
+      [
+       "int"
+      ],
+      [
+       "real"
+      ],
+      [
+       "enum:BRepOffset_Mode"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "enum:GeomAbs_JoinType"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "class:Message_ProgressRange"
+      ]
+     ],
+     "count": 2,
+     "recv": [
+      "BRepOffsetAPI_MakeOffsetShape"
+     ]
+    }
+   },
+   "BRepOffsetAPI_MakePipeShell": {
+    "Add_1": {
+     "args": [
+      [
+       "class:TopoDS_Wire"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "bool"
+      ]
+     ],
+     "count": 22,
+     "recv": [
+      "BRepOffsetAPI_MakePipeShell"
+     ]
+    },
+    "Build": {
+     "args": [
+      [
+       "class:Message_ProgressRange"
+      ]
+     ],
+     "count": 22,
+     "recv": [
+      "BRepOffsetAPI_MakePipeShell"
+     ]
+    },
+    "MakeSolid": {
+     "args": [],
+     "count": 22,
+     "recv": [
+      "BRepOffsetAPI_MakePipeShell"
+     ],
+     "ret": [
+      "bool"
+     ]
+    },
+    "SetMode_1": {
+     "args": [
+      [
+       "bool"
+      ]
+     ],
+     "count": 22,
+     "recv": [
+      "BRepOffsetAPI_MakePipeShell"
+     ]
+    },
+    "SetTransitionMode": {
+     "args": [
+      [
+       "enum:BRepBuilderAPI_TransitionMode"
+      ]
+     ],
+     "count": 22,
+     "recv": [
+      "BRepOffsetAPI_MakePipeShell"
+     ]
+    }
+   },
+   "BRepOffsetAPI_MakeThickSolid": {
+    "MakeThickSolidByJoin": {
+     "args": [
+      [
+       "class:TopoDS_Shape",
+       "class:TopoDS_Solid"
+      ],
+      [
+       "class:TopTools_ListOfShape"
+      ],
+      [
+       "int",
+       "real"
+      ],
+      [
+       "real"
+      ],
+      [
+       "enum:BRepOffset_Mode"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "enum:GeomAbs_JoinType"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "class:Message_ProgressRange"
+      ]
+     ],
+     "count": 23,
+     "recv": [
+      "BRepOffsetAPI_MakeThickSolid"
+     ]
+    },
+    "MakeThickSolidBySimple": {
+     "args": [
+      [
+       "class:TopoDS_Face"
+      ],
+      [
+       "real"
+      ]
+     ],
+     "count": 122,
+     "recv": [
+      "BRepOffsetAPI_MakeThickSolid"
+     ]
+    }
+   },
+   "BRepOffsetAPI_ThruSections": {
+    "AddWire": {
+     "args": [
+      [
+       "class:TopoDS_Wire"
+      ]
+     ],
+     "count": 34,
+     "recv": [
+      "BRepOffsetAPI_ThruSections"
+     ]
+    },
+    "Build": {
+     "args": [
+      [
+       "class:Message_ProgressRange"
+      ]
+     ],
+     "count": 17,
+     "recv": [
+      "BRepOffsetAPI_ThruSections"
+     ]
+    },
+    "FirstShape": {
+     "args": [],
+     "count": 1,
+     "dyn": [
+      "TopoDS_Shape"
+     ],
+     "recv": [
+      "BRepOffsetAPI_ThruSections"
+     ],
+     "ret": [
+      "class:TopoDS_Shape"
+     ]
+    },
+    "LastShape": {
+     "args": [],
+     "count": 1,
+     "dyn": [
+      "TopoDS_Shape"
+     ],
+     "recv": [
+      "BRepOffsetAPI_ThruSections"
+     ],
+     "ret": [
+      "class:TopoDS_Shape"
+     ]
+    }
+   },
+   "BRepPrimAPI_MakeHalfSpace": {
+    "Solid": {
+     "args": [],
+     "count": 153,
+     "dyn": [
+      "TopoDS_Solid"
+     ],
+     "recv": [
+      "BRepPrimAPI_MakeHalfSpace"
+     ],
+     "ret": [
+      "class:TopoDS_Solid"
+     ]
+    }
+   },
+   "Bnd_Box": {
+    "CornerMax": {
+     "args": [],
+     "count": 994,
+     "dyn": [
+      "gp_Pnt"
+     ],
+     "recv": [
+      "Bnd_Box"
+     ],
+     "ret": [
+      "class:gp_Pnt"
+     ]
+    },
+    "CornerMin": {
+     "args": [],
+     "count": 994,
+     "dyn": [
+      "gp_Pnt"
+     ],
+     "recv": [
+      "Bnd_Box"
+     ],
+     "ret": [
+      "class:gp_Pnt"
+     ]
+    },
+    "IsVoid": {
+     "args": [],
+     "count": 988,
+     "recv": [
+      "Bnd_Box"
+     ],
+     "ret": [
+      "bool"
+     ]
+    }
+   },
+   "GCE2d_MakeArcOfEllipse": {
+    "Value": {
+     "args": [],
+     "count": 8,
+     "dyn": [
+      "Handle_Geom2d_TrimmedCurve"
+     ],
+     "recv": [
+      "GCE2d_MakeArcOfEllipse"
+     ],
+     "ret": [
+      "class:Handle_Geom2d_TrimmedCurve"
+     ]
+    }
+   },
+   "GCE2d_MakeSegment": {
+    "Value": {
+     "args": [],
+     "count": 569,
+     "dyn": [
+      "Handle_Geom2d_TrimmedCurve"
+     ],
+     "recv": [
+      "GCE2d_MakeSegment"
+     ],
+     "ret": [
+      "class:Handle_Geom2d_TrimmedCurve"
+     ]
+    }
+   },
+   "GC_MakeArcOfCircle": {
+    "Value": {
+     "args": [],
+     "count": 449,
+     "dyn": [
+      "Handle_Geom_TrimmedCurve"
+     ],
+     "recv": [
+      "GC_MakeArcOfCircle"
+     ],
+     "ret": [
+      "class:Handle_Geom_TrimmedCurve"
+     ]
+    }
+   },
+   "GC_Root": {
+    "IsDone": {
+     "args": [],
+     "count": 67,
+     "recv": [
+      "GC_MakeArcOfCircle"
+     ],
+     "ret": [
+      "bool"
+     ]
+    }
+   },
+   "GProp_GProps": {
+    "CentreOfMass": {
+     "args": [],
+     "count": 321,
+     "dyn": [
+      "gp_Pnt"
+     ],
+     "recv": [
+      "GProp_GProps"
+     ],
+     "ret": [
+      "class:gp_Pnt"
+     ]
+    },
+    "Mass": {
+     "args": [],
+     "count": 1730,
+     "recv": [
+      "GProp_GProps"
+     ],
+     "ret": [
+      "real",
+      "int"
+     ]
+    }
+   },
+   "GeomAPI_PointsToBSpline": {
+    "Curve": {
+     "args": [],
+     "count": 8,
+     "dyn": [
+      "Handle_Geom_BSplineCurve"
+     ],
+     "recv": [
+      "GeomAPI_PointsToBSpline"
+     ],
+     "ret": [
+      "class:Handle_Geom_BSplineCurve"
+     ]
+    },
+    "IsDone": {
+     "args": [],
+     "count": 8,
+     "recv": [
+      "GeomAPI_PointsToBSpline"
+     ],
+     "ret": [
+      "bool"
+     ]
+    }
+   },
+   "GeomFill_BSplineCurves": {
+    "Surface": {
+     "args": [],
+     "count": 14,
+     "dyn": [
+      "Handle_Geom_BSplineSurface"
+     ],
+     "recv": [
+      "GeomFill_BSplineCurves"
+     ],
+     "ret": [
+      "class:Handle_Geom_BSplineSurface"
+     ]
+    }
+   },
+   "Handle_Geom2d_TrimmedCurve": {
+    "get": {
+     "args": [],
+     "count": 577,
+     "dyn": [
+      "Geom2d_TrimmedCurve"
+     ],
+     "recv": [
+      "Handle_Geom2d_TrimmedCurve"
+     ],
+     "ret": [
+      "class:Geom2d_TrimmedCurve"
+     ]
+    }
+   },
+   "Handle_Geom_BSplineCurve": {
+    "get": {
+     "args": [],
+     "count": 28,
+     "dyn": [
+      "Geom_BSplineCurve"
+     ],
+     "recv": [
+      "Handle_Geom_BSplineCurve"
+     ],
+     "ret": [
+      "class:Geom_BSplineCurve"
+     ]
+    }
+   },
+   "Handle_Geom_BSplineSurface": {
+    "get": {
+     "args": [],
+     "count": 14,
+     "dyn": [
+      "Geom_BSplineSurface"
+     ],
+     "recv": [
+      "Handle_Geom_BSplineSurface"
+     ],
+     "ret": [
+      "class:Geom_BSplineSurface"
+     ]
+    }
+   },
+   "Handle_Geom_TrimmedCurve": {
+    "get": {
+     "args": [],
+     "count": 449,
+     "dyn": [
+      "Geom_TrimmedCurve"
+     ],
+     "recv": [
+      "Handle_Geom_TrimmedCurve"
+     ],
+     "ret": [
+      "class:Geom_TrimmedCurve"
+     ]
+    }
+   },
+   "Handle_Poly_Triangulation": {
+    "IsNull": {
+     "args": [],
+     "count": 6748,
+     "recv": [
+      "Handle_Poly_Triangulation"
+     ],
+     "ret": [
+      "bool"
+     ]
+    },
+    "get": {
+     "args": [],
+     "count": 6748,
+     "dyn": [
+      "Poly_Triangulation"
+     ],
+     "recv": [
+      "Handle_Poly_Triangulation"
+     ],
+     "ret": [
+      "class:Poly_Triangulation"
+     ]
+    }
+   },
+   "IGESControl_Writer": {
+    "AddShape": {
+     "args": [
+      [
+       "class:TopoDS_Shape"
+      ],
+      [
+       "class:Message_ProgressRange"
+      ]
+     ],
+     "count": 10,
+     "recv": [
+      "IGESControl_Writer"
+     ],
+     "ret": [
+      "bool"
+     ]
+    },
+    "ComputeModel": {
+     "args": [],
+     "count": 10,
+     "recv": [
+      "IGESControl_Writer"
+     ]
+    },
+    "Write_2": {
+     "args": [
+      [
+       "string"
+      ],
+      [
+       "bool"
+      ]
+     ],
+     "count": 10,
+     "recv": [
+      "IGESControl_Writer"
+     ],
+     "ret": [
+      "bool"
+     ]
+    }
+   },
+   "Poly_Triangle": {
+    "Value": {
+     "args": [
+      [
+       "int"
+      ]
+     ],
+     "count": 1046364,
+     "recv": [
+      "Poly_Triangle"
+     ],
+     "ret": [
+      "int"
+     ]
+    }
+   },
+   "Poly_Triangulation": {
+    "HasUVNodes": {
+     "args": [],
+     "count": 42,
+     "recv": [
+      "Poly_Triangulation"
+     ],
+     "ret": [
+      "bool"
+     ]
+    },
+    "NbNodes": {
+     "args": [],
+     "count": 286845,
+     "recv": [
+      "Poly_Triangulation"
+     ],
+     "ret": [
+      "int"
+     ]
+    },
+    "NbTriangles": {
+     "args": [],
+     "count": 355536,
+     "recv": [
+      "Poly_Triangulation"
+     ],
+     "ret": [
+      "int"
+     ]
+    },
+    "Node": {
+     "args": [
+      [
+       "int"
+      ]
+     ],
+     "count": 280097,
+     "dyn": [
+      "gp_Pnt"
+     ],
+     "recv": [
+      "Poly_Triangulation"
+     ],
+     "ret": [
+      "class:gp_Pnt"
+     ]
+    },
+    "Triangle": {
+     "args": [
+      [
+       "int"
+      ]
+     ],
+     "count": 348788,
+     "dyn": [
+      "Poly_Triangle"
+     ],
+     "recv": [
+      "Poly_Triangulation"
+     ],
+     "ret": [
+      "class:Poly_Triangle"
+     ]
+    },
+    "UVNode": {
+     "args": [
+      [
+       "int"
+      ]
+     ],
+     "count": 996,
+     "dyn": [
+      "gp_Pnt2d"
+     ],
+     "recv": [
+      "Poly_Triangulation"
+     ],
+     "ret": [
+      "class:gp_Pnt2d"
+     ]
+    }
+   },
+   "STEPControl_Writer": {
+    "Transfer": {
+     "args": [
+      [
+       "class:TopoDS_Shape"
+      ],
+      [
+       "enum:STEPControl_StepModelType"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "class:Message_ProgressRange"
+      ]
+     ],
+     "count": 10,
+     "recv": [
+      "STEPControl_Writer"
+     ],
+     "ret": [
+      "enum:IFSelect_ReturnStatus"
+     ]
+    },
+    "Write": {
+     "args": [
+      [
+       "string"
+      ]
+     ],
+     "count": 10,
+     "recv": [
+      "STEPControl_Writer"
+     ],
+     "ret": [
+      "enum:IFSelect_ReturnStatus"
+     ]
+    }
+   },
+   "ShapeUpgrade_UnifySameDomain": {
+    "Build": {
+     "args": [],
+     "count": 537,
+     "recv": [
+      "ShapeUpgrade_UnifySameDomain"
+     ]
+    },
+    "Shape": {
+     "args": [],
+     "count": 537,
+     "dyn": [
+      "TopoDS_Shape"
+     ],
+     "recv": [
+      "ShapeUpgrade_UnifySameDomain"
+     ],
+     "ret": [
+      "class:TopoDS_Shape"
+     ]
+    }
+   },
+   "TColStd_Array1OfInteger": {
+    "SetValue": {
+     "args": [
+      [
+       "int"
+      ],
+      [
+       "int"
+      ]
+     ],
+     "count": 430,
+     "recv": [
+      "TColStd_Array1OfInteger"
+     ]
+    }
+   },
+   "TColStd_Array1OfReal": {
+    "SetValue": {
+     "args": [
+      [
+       "int"
+      ],
+      [
+       "int",
+       "real"
+      ]
+     ],
+     "count": 494,
+     "recv": [
+      "TColStd_Array1OfReal"
+     ]
+    }
+   },
+   "TColStd_Array2OfReal": {
+    "SetValue": {
+     "args": [
+      [
+       "int"
+      ],
+      [
+       "int"
+      ],
+      [
+       "int",
+       "real"
+      ]
+     ],
+     "count": 64,
+     "recv": [
+      "TColStd_Array2OfReal"
+     ]
+    }
+   },
+   "TColgp_Array1OfPnt": {
+    "SetValue": {
+     "args": [
+      [
+       "int"
+      ],
+      [
+       "class:gp_Pnt"
+      ]
+     ],
+     "count": 530,
+     "recv": [
+      "TColgp_Array1OfPnt"
+     ]
+    }
+   },
+   "TColgp_Array1OfPnt2d": {
+    "SetValue": {
+     "args": [
+      [
+       "int"
+      ],
+      [
+       "class:gp_Pnt2d"
+      ]
+     ],
+     "count": 120,
+     "recv": [
+      "TColgp_Array1OfPnt2d"
+     ]
+    }
+   },
+   "TColgp_Array2OfPnt": {
+    "SetValue": {
+     "args": [
+      [
+       "int"
+      ],
+      [
+       "int"
+      ],
+      [
+       "class:gp_Pnt"
+      ]
+     ],
+     "count": 512,
+     "recv": [
+      "TColgp_Array2OfPnt"
+     ]
+    }
+   },
+   "TopExp_Explorer": {
+    "Current": {
+     "args": [],
+     "count": 37412,
+     "dyn": [
+      "TopoDS_Shape"
+     ],
+     "recv": [
+      "TopExp_Explorer"
+     ],
+     "ret": [
+      "class:TopoDS_Shape"
+     ]
+    },
+    "More": {
+     "args": [],
+     "count": 43516,
+     "recv": [
+      "TopExp_Explorer"
+     ],
+     "ret": [
+      "bool"
+     ]
+    },
+    "Next": {
+     "args": [],
+     "count": 37412,
+     "recv": [
+      "TopExp_Explorer"
+     ]
+    }
+   },
+   "TopLoc_Location": {
+    "Transformation": {
+     "args": [],
+     "count": 6748,
+     "dyn": [
+      "gp_Trsf"
+     ],
+     "recv": [
+      "TopLoc_Location"
+     ],
+     "ret": [
+      "class:gp_Trsf"
+     ]
+    }
+   },
+   "TopTools_IndexedMapOfShape": {
+    "Add": {
+     "args": [
+      [
+       "class:TopoDS_Shape",
+       "class:TopoDS_Edge"
+      ]
+     ],
+     "count": 11893,
+     "recv": [
+      "TopTools_IndexedMapOfShape"
+     ],
+     "ret": [
+      "int"
+     ]
+    },
+    "Contains": {
+     "args": [
+      [
+       "class:TopoDS_Shape",
+       "class:TopoDS_Edge"
+      ]
+     ],
+     "count": 1503,
+     "recv": [
+      "TopTools_IndexedMapOfShape"
+     ],
+     "ret": [
+      "bool"
+     ]
+    },
+    "FindIndex": {
+     "args": [
+      [
+       "class:TopoDS_Shape"
+      ]
+     ],
+     "count": 22624,
+     "recv": [
+      "TopTools_IndexedMapOfShape"
+     ],
+     "ret": [
+      "int"
+     ]
+    },
+    "FindKey": {
+     "args": [
+      [
+       "int"
+      ]
+     ],
+     "count": 10711,
+     "dyn": [
+      "TopoDS_Shape"
+     ],
+     "recv": [
+      "TopTools_IndexedMapOfShape"
+     ],
+     "ret": [
+      "class:TopoDS_Shape"
+     ]
+    }
+   },
+   "TopTools_ListOfShape": {
+    "Append_1": {
+     "args": [
+      [
+       "class:TopoDS_Shape",
+       "class:TopoDS_Face",
+       "class:TopoDS_Compound"
+      ]
+     ],
+     "count": 883,
+     "dyn": [
+      "TopoDS_Shape"
+     ],
+     "recv": [
+      "TopTools_ListOfShape"
+     ],
+     "ret": [
+      "class:TopoDS_Shape"
+     ]
+    }
+   },
+   "TopoDS_Builder": {
+    "Add": {
+     "args": [
+      [
+       "class:TopoDS_Compound"
+      ],
+      [
+       "class:TopoDS_Shape",
+       "class:TopoDS_Face"
+      ]
+     ],
+     "count": 246,
+     "recv": [
+      "BRep_Builder"
+     ]
+    },
+    "MakeCompound": {
+     "args": [
+      [
+       "class:TopoDS_Compound"
+      ]
+     ],
+     "count": 85,
+     "recv": [
+      "BRep_Builder"
+     ]
+    }
+   },
+   "TopoDS_Shape": {
+    "IsSame": {
+     "args": [
+      [
+       "class:TopoDS_Face"
+      ]
+     ],
+     "count": 10,
+     "recv": [
+      "TopoDS_Face"
+     ],
+     "ret": [
+      "bool"
+     ]
+    },
+    "Moved": {
+     "args": [
+      [
+       "class:TopLoc_Location"
+      ],
+      [
+       "bool"
+      ]
+     ],
+     "count": 471,
+     "dyn": [
+      "TopoDS_Shape"
+     ],
+     "recv": [
+      "TopoDS_Shape",
+      "TopoDS_Compound",
+      "TopoDS_Solid"
+     ],
+     "ret": [
+      "class:TopoDS_Shape"
+     ]
+    },
+    "Orientation_1": {
+     "args": [],
+     "count": 6820,
+     "recv": [
+      "TopoDS_Face"
+     ],
+     "ret": [
+      "enum:TopAbs_Orientation"
+     ]
+    },
+    "Reversed": {
+     "args": [],
+     "count": 120,
+     "dyn": [
+      "TopoDS_Shape"
+     ],
+     "recv": [
+      "TopoDS_Shape"
+     ],
+     "ret": [
+      "class:TopoDS_Shape"
+     ]
+    },
+    "ShapeType": {
+     "args": [],
+     "count": 583,
+     "recv": [
+      "TopoDS_Shape",
+      "TopoDS_Compound",
+      "TopoDS_Face",
+      "TopoDS_Solid"
+     ],
+     "ret": [
+      "enum:TopAbs_ShapeEnum"
+     ]
+    }
+   },
+   "XSControl_Reader": {
+    "OneShape": {
+     "args": [],
+     "count": 9,
+     "dyn": [
+      "TopoDS_Shape"
+     ],
+     "recv": [
+      "STEPControl_Reader",
+      "IGESControl_Reader"
+     ],
+     "ret": [
+      "class:TopoDS_Shape"
+     ]
+    },
+    "ReadFile": {
+     "args": [
+      [
+       "string"
+      ]
+     ],
+     "count": 9,
+     "recv": [
+      "STEPControl_Reader",
+      "IGESControl_Reader"
+     ],
+     "ret": [
+      "enum:IFSelect_ReturnStatus"
+     ]
+    },
+    "TransferRoots": {
+     "args": [
+      [
+       "class:Message_ProgressRange"
+      ]
+     ],
+     "count": 9,
+     "recv": [
+      "STEPControl_Reader",
+      "IGESControl_Reader"
+     ],
+     "ret": [
+      "int"
+     ]
+    }
+   },
+   "gp_Ax1": {
+    "Direction": {
+     "args": [],
+     "count": 80,
+     "dyn": [
+      "gp_Dir"
+     ],
+     "recv": [
+      "gp_Ax1"
+     ],
+     "ret": [
+      "class:gp_Dir"
+     ]
+    },
+    "Location": {
+     "args": [],
+     "count": 32,
+     "dyn": [
+      "gp_Pnt"
+     ],
+     "recv": [
+      "gp_Ax1"
+     ],
+     "ret": [
+      "class:gp_Pnt"
+     ]
+    }
+   },
+   "gp_Ax3": {
+    "Direction": {
+     "args": [],
+     "count": 1203,
+     "dyn": [
+      "gp_Dir"
+     ],
+     "recv": [
+      "gp_Ax3"
+     ],
+     "ret": [
+      "class:gp_Dir"
+     ]
+    },
+    "Location": {
+     "args": [],
+     "count": 1203,
+     "dyn": [
+      "gp_Pnt"
+     ],
+     "recv": [
+      "gp_Ax3"
+     ],
+     "ret": [
+      "class:gp_Pnt"
+     ]
+    }
+   },
+   "gp_Circ": {
+    "Position": {
+     "args": [],
+     "count": 1,
+     "dyn": [
+      "gp_Ax2"
+     ],
+     "recv": [
+      "gp_Circ"
+     ],
+     "ret": [
+      "class:gp_Ax2"
+     ]
+    },
+    "Radius": {
+     "args": [],
+     "count": 2,
+     "recv": [
+      "gp_Circ"
+     ],
+     "ret": [
+      "real"
+     ]
+    }
+   },
+   "gp_Cone": {
+    "Position": {
+     "args": [],
+     "count": 87,
+     "dyn": [
+      "gp_Ax3"
+     ],
+     "recv": [
+      "gp_Cone"
+     ],
+     "ret": [
+      "class:gp_Ax3"
+     ]
+    },
+    "RefRadius": {
+     "args": [],
+     "count": 87,
+     "recv": [
+      "gp_Cone"
+     ],
+     "ret": [
+      "real",
+      "int"
+     ]
+    },
+    "SemiAngle": {
+     "args": [],
+     "count": 87,
+     "recv": [
+      "gp_Cone"
+     ],
+     "ret": [
+      "real"
+     ]
+    }
+   },
+   "gp_Cylinder": {
+    "Position": {
+     "args": [],
+     "count": 1076,
+     "dyn": [
+      "gp_Ax3"
+     ],
+     "recv": [
+      "gp_Cylinder"
+     ],
+     "ret": [
+      "class:gp_Ax3"
+     ]
+    },
+    "Radius": {
+     "args": [],
+     "count": 1076,
+     "recv": [
+      "gp_Cylinder"
+     ],
+     "ret": [
+      "int",
+      "real"
+     ]
+    }
+   },
+   "gp_Dir": {
+    "X": {
+     "args": [],
+     "count": 1283,
+     "recv": [
+      "gp_Dir"
+     ],
+     "ret": [
+      "int",
+      "real"
+     ]
+    },
+    "Y": {
+     "args": [],
+     "count": 1283,
+     "recv": [
+      "gp_Dir"
+     ],
+     "ret": [
+      "int",
+      "real"
+     ]
+    },
+    "Z": {
+     "args": [],
+     "count": 1283,
+     "recv": [
+      "gp_Dir"
+     ],
+     "ret": [
+      "int",
+      "real"
+     ]
+    }
+   },
+   "gp_Pln": {
+    "Axis": {
+     "args": [],
+     "count": 80,
+     "dyn": [
+      "gp_Ax1"
+     ],
+     "recv": [
+      "gp_Pln"
+     ],
+     "ret": [
+      "class:gp_Ax1"
+     ]
+    },
+    "Location": {
+     "args": [],
+     "count": 8,
+     "dyn": [
+      "gp_Pnt"
+     ],
+     "recv": [
+      "gp_Pln"
+     ],
+     "ret": [
+      "class:gp_Pnt"
+     ]
+    }
+   },
+   "gp_Pnt": {
+    "Transformed": {
+     "args": [
+      [
+       "class:gp_Trsf"
+      ]
+     ],
+     "count": 280097,
+     "dyn": [
+      "gp_Pnt"
+     ],
+     "recv": [
+      "gp_Pnt"
+     ],
+     "ret": [
+      "class:gp_Pnt"
+     ]
+    },
+    "X": {
+     "args": [],
+     "count": 284381,
+     "recv": [
+      "gp_Pnt"
+     ],
+     "ret": [
+      "real",
+      "int"
+     ]
+    },
+    "Y": {
+     "args": [],
+     "count": 284381,
+     "recv": [
+      "gp_Pnt"
+     ],
+     "ret": [
+      "real",
+      "int"
+     ]
+    },
+    "Z": {
+     "args": [],
+     "count": 284381,
+     "recv": [
+      "gp_Pnt"
+     ],
+     "ret": [
+      "real",
+      "int"
+     ]
+    }
+   },
+   "gp_Pnt2d": {
+    "X": {
+     "args": [],
+     "count": 996,
+     "recv": [
+      "gp_Pnt2d"
+     ],
+     "ret": [
+      "real",
+      "int"
+     ]
+    },
+    "Y": {
+     "args": [],
+     "count": 996,
+     "recv": [
+      "gp_Pnt2d"
+     ],
+     "ret": [
+      "int",
+      "real"
+     ]
+    }
+   },
+   "gp_Sphere": {
+    "Position": {
+     "args": [],
+     "count": 8,
+     "dyn": [
+      "gp_Ax3"
+     ],
+     "recv": [
+      "gp_Sphere"
+     ],
+     "ret": [
+      "class:gp_Ax3"
+     ]
+    },
+    "Radius": {
+     "args": [],
+     "count": 8,
+     "recv": [
+      "gp_Sphere"
+     ],
+     "ret": [
+      "int"
+     ]
+    }
+   },
+   "gp_Torus": {
+    "MajorRadius": {
+     "args": [],
+     "count": 32,
+     "recv": [
+      "gp_Torus"
+     ],
+     "ret": [
+      "int",
+      "real"
+     ]
+    },
+    "MinorRadius": {
+     "args": [],
+     "count": 32,
+     "recv": [
+      "gp_Torus"
+     ],
+     "ret": [
+      "int",
+      "real"
+     ]
+    },
+    "Position": {
+     "args": [],
+     "count": 32,
+     "dyn": [
+      "gp_Ax3"
+     ],
+     "recv": [
+      "gp_Torus"
+     ],
+     "ret": [
+      "class:gp_Ax3"
+     ]
+    }
+   },
+   "gp_Trsf": {
+    "SetMirror_3": {
+     "args": [
+      [
+       "class:gp_Ax2"
+      ]
+     ],
+     "count": 6,
+     "recv": [
+      "gp_Trsf"
+     ]
+    },
+    "SetRotation_1": {
+     "args": [
+      [
+       "class:gp_Ax1"
+      ],
+      [
+       "real"
+      ]
+     ],
+     "count": 124,
+     "recv": [
+      "gp_Trsf"
+     ]
+    },
+    "SetScale": {
+     "args": [
+      [
+       "class:gp_Pnt"
+      ],
+      [
+       "real"
+      ]
+     ],
+     "count": 1,
+     "recv": [
+      "gp_Trsf"
+     ]
+    },
+    "SetTranslation_1": {
+     "args": [
+      [
+       "class:gp_Vec"
+      ]
+     ],
+     "count": 1027,
+     "recv": [
+      "gp_Trsf"
+     ]
+    },
+    "SetValues": {
+     "args": [
+      [
+       "real",
+       "int"
+      ],
+      [
+       "int",
+       "real"
+      ],
+      [
+       "int",
+       "real"
+      ],
+      [
+       "real",
+       "int"
+      ],
+      [
+       "int",
+       "real"
+      ],
+      [
+       "real",
+       "int"
+      ],
+      [
+       "int",
+       "real"
+      ],
+      [
+       "real",
+       "int"
+      ],
+      [
+       "int",
+       "real"
+      ],
+      [
+       "int",
+       "real"
+      ],
+      [
+       "int",
+       "real"
+      ],
+      [
+       "int",
+       "real"
+      ]
+     ],
+     "count": 227,
+     "recv": [
+      "gp_Trsf"
+     ]
+    }
+   },
+   "gp_Vec": {
+    "X": {
+     "args": [],
+     "count": 664,
+     "recv": [
+      "gp_Vec"
+     ],
+     "ret": [
+      "int",
+      "real"
+     ]
+    },
+    "Y": {
+     "args": [],
+     "count": 664,
+     "recv": [
+      "gp_Vec"
+     ],
+     "ret": [
+      "int",
+      "real"
+     ]
+    },
+    "Z": {
+     "args": [],
+     "count": 664,
+     "recv": [
+      "gp_Vec"
+     ],
+     "ret": [
+      "int",
+      "real"
+     ]
+    }
+   }
+  },
+  "statics": {
+   "BRepBndLib": {
+    "Add": {
+     "args": [
+      [
+       "class:TopoDS_Shape",
+       "class:TopoDS_Compound",
+       "class:TopoDS_Solid"
+      ],
+      [
+       "class:Bnd_Box"
+      ],
+      [
+       "bool"
+      ]
+     ],
+     "count": 723
+    },
+    "AddOptimal": {
+     "args": [
+      [
+       "class:TopoDS_Shape",
+       "class:TopoDS_Compound"
+      ],
+      [
+       "class:Bnd_Box"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "bool"
+      ]
+     ],
+     "count": 271
+    }
+   },
+   "BRepGProp": {
+    "LinearProperties": {
+     "args": [
+      [
+       "class:TopoDS_Shape"
+      ],
+      [
+       "class:GProp_GProps"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "bool"
+      ]
+     ],
+     "count": 23
+    },
+    "SurfaceProperties_1": {
+     "args": [
+      [
+       "class:TopoDS_Shape",
+       "class:TopoDS_Face"
+      ],
+      [
+       "class:GProp_GProps"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "bool"
+      ]
+     ],
+     "count": 61
+    },
+    "SurfaceProperties_2": {
+     "args": [
+      [
+       "class:TopoDS_Shape"
+      ],
+      [
+       "class:GProp_GProps"
+      ],
+      [
+       "real"
+      ],
+      [
+       "bool"
+      ]
+     ],
+     "count": 280,
+     "ret": [
+      "real",
+      "int"
+     ]
+    },
+    "VolumePropertiesGK_1": {
+     "args": [
+      [
+       "class:TopoDS_Shape"
+      ],
+      [
+       "class:GProp_GProps"
+      ],
+      [
+       "real"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "bool"
+      ]
+     ],
+     "count": 280,
+     "ret": [
+      "real"
+     ]
+    },
+    "VolumeProperties_1": {
+     "args": [
+      [
+       "class:TopoDS_Shape",
+       "class:TopoDS_Solid"
+      ],
+      [
+       "class:GProp_GProps"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "bool"
+      ],
+      [
+       "bool"
+      ]
+     ],
+     "count": 1367
+    }
+   },
+   "BRepLib": {
+    "BuildCurves3d_1": {
+     "args": [
+      [
+       "class:TopoDS_Wire"
+      ],
+      [
+       "real"
+      ],
+      [
+       "enum:GeomAbs_Shape"
+      ],
+      [
+       "int"
+      ],
+      [
+       "int"
+      ]
+     ],
+     "count": 116,
+     "ret": [
+      "bool"
+     ]
+    },
+    "BuildCurves3d_2": {
+     "args": [
+      [
+       "class:TopoDS_Edge"
+      ]
+     ],
+     "count": 119,
+     "ret": [
+      "bool"
+     ]
+    },
+    "EncodeRegularity_1": {
+     "args": [
+      [
+       "class:TopoDS_Shape"
+      ],
+      [
+       "undefined"
+      ]
+     ],
+     "count": 280
+    }
+   },
+   "BRep_Tool": {
+    "Continuity_1": {
+     "args": [
+      [
+       "class:TopoDS_Edge"
+      ],
+      [
+       "class:TopoDS_Face"
+      ],
+      [
+       "class:TopoDS_Face"
+      ]
+     ],
+     "count": 10711,
+     "ret": [
+      "enum:GeomAbs_Shape"
+     ]
+    },
+    "Degenerated": {
+     "args": [
+      [
+       "class:TopoDS_Edge"
+      ]
+     ],
+     "count": 926,
+     "ret": [
+      "bool"
+     ]
+    },
+    "IsClosed_2": {
+     "args": [
+      [
+       "class:TopoDS_Edge"
+      ],
+      [
+       "class:TopoDS_Face"
+      ]
+     ],
+     "count": 1002,
+     "ret": [
+      "bool"
+     ]
+    },
+    "Pnt": {
+     "args": [
+      [
+       "class:TopoDS_Vertex"
+      ]
+     ],
+     "count": 400,
+     "dyn": [
+      "gp_Pnt"
+     ],
+     "ret": [
+      "class:gp_Pnt"
+     ]
+    },
+    "Triangulation": {
+     "args": [
+      [
+       "class:TopoDS_Face"
+      ],
+      [
+       "class:TopLoc_Location"
+      ],
+      [
+       "int"
+      ]
+     ],
+     "count": 6748,
+     "dyn": [
+      "Handle_Poly_Triangulation"
+     ],
+     "ret": [
+      "class:Handle_Poly_Triangulation"
+     ]
+    }
+   },
+   "Interface_Static": {
+    "SetCVal": {
+     "args": [
+      [
+       "string"
+      ],
+      [
+       "string"
+      ]
+     ],
+     "count": 40,
+     "ret": [
+      "bool"
+     ]
+    }
+   },
+   "TopoDS": {
+    "Edge_1": {
+     "args": [
+      [
+       "class:TopoDS_Shape"
+      ]
+     ],
+     "count": 12215,
+     "dyn": [
+      "TopoDS_Edge"
+     ],
+     "ret": [
+      "class:TopoDS_Edge"
+     ]
+    },
+    "Face_1": {
+     "args": [
+      [
+       "class:TopoDS_Shape"
+      ]
+     ],
+     "count": 12066,
+     "dyn": [
+      "TopoDS_Face"
+     ],
+     "ret": [
+      "class:TopoDS_Face"
+     ]
+    },
+    "Shell_1": {
+     "args": [
+      [
+       "class:TopoDS_Shape"
+      ]
+     ],
+     "count": 9,
+     "dyn": [
+      "TopoDS_Shell"
+     ],
+     "ret": [
+      "class:TopoDS_Shell"
+     ]
+    },
+    "Solid_1": {
+     "args": [
+      [
+       "class:TopoDS_Shape"
+      ]
+     ],
+     "count": 9,
+     "dyn": [
+      "TopoDS_Solid"
+     ],
+     "ret": [
+      "class:TopoDS_Solid"
+     ]
+    },
+    "Vertex_1": {
+     "args": [
+      [
+       "class:TopoDS_Shape"
+      ]
+     ],
+     "count": 400,
+     "dyn": [
+      "TopoDS_Vertex"
+     ],
+     "ret": [
+      "class:TopoDS_Vertex"
+     ]
+    },
+    "Wire_1": {
+     "args": [
+      [
+       "class:TopoDS_Shape"
+      ]
+     ],
+     "count": 69,
+     "dyn": [
+      "TopoDS_Wire"
+     ],
+     "ret": [
+      "class:TopoDS_Wire"
+     ]
+    }
+   }
+  }
+ },
+ "surface": {
+  "note": "resolved by gen.js: every constructor overload, method and static Anvil calls, with the opencascade.js signature",
+  "classes": 125,
+  "handles": 8,
+  "enums": 15,
+  "constructors": 89,
+  "methods": 138,
+  "statics": 22,
+  "constructorList": [
+   "BRepAdaptor_Curve_2(E: TopoDS_Edge)",
+   "BRepAdaptor_Surface_2(F: TopoDS_Face, R: Standard_Boolean)",
+   "BRepAlgoAPI_Common_3(S1: TopoDS_Shape, S2: TopoDS_Shape, theRange: Message_ProgressRange)",
+   "BRepAlgoAPI_Cut_1()",
+   "BRepAlgoAPI_Cut_3(S1: TopoDS_Shape, S2: TopoDS_Shape, theRange: Message_ProgressRange)",
+   "BRepAlgoAPI_Fuse_1()",
+   "BRepAlgoAPI_Fuse_3(S1: TopoDS_Shape, S2: TopoDS_Shape, theRange: Message_ProgressRange)",
+   "BRepAlgoAPI_Splitter_1()",
+   "BRepBuilderAPI_MakeEdge_12(L: gp_Elips)",
+   "BRepBuilderAPI_MakeEdge_13(L: gp_Elips, p1: Standard_Real, p2: Standard_Real)",
+   "BRepBuilderAPI_MakeEdge_24(L: Handle_Geom_Curve)",
+   "BRepBuilderAPI_MakeEdge_25(L: Handle_Geom_Curve, p1: Standard_Real, p2: Standard_Real)",
+   "BRepBuilderAPI_MakeEdge_3(P1: gp_Pnt, P2: gp_Pnt)",
+   "BRepBuilderAPI_MakeEdge_30(L: Handle_Geom2d_Curve, S: Handle_Geom_Surface)",
+   "BRepBuilderAPI_MakeEdge_8(L: gp_Circ)",
+   "BRepBuilderAPI_MakeFace_15(W: TopoDS_Wire, OnlyPlane: Standard_Boolean)",
+   "BRepBuilderAPI_MakeFace_21(S: Handle_Geom_Surface, W: TopoDS_Wire, Inside: Standard_Boolean)",
+   "BRepBuilderAPI_MakeFace_8(S: Handle_Geom_Surface, TolDegen: Standard_Real)",
+   "BRepBuilderAPI_MakeSolid_3(S: TopoDS_Shell)",
+   "BRepBuilderAPI_MakeVertex(P: gp_Pnt)",
+   "BRepBuilderAPI_MakeWire_1()",
+   "BRepBuilderAPI_Sewing(tolerance: Standard_Real, option1: Standard_Boolean, option2: Standard_Boolean, option3: Standard_Boolean, option4: Standard_Boolean)",
+   "BRepBuilderAPI_Transform_2(S: TopoDS_Shape, T: gp_Trsf, Copy: Standard_Boolean)",
+   "BRepCheck_Analyzer(S: TopoDS_Shape, GeomControls: Standard_Boolean, theIsParallel: Standard_Boolean)",
+   "BRepClass3d_SolidClassifier_2(S: TopoDS_Shape)",
+   "BRepExtrema_DistShapeShape_2(Shape1: TopoDS_Shape, Shape2: TopoDS_Shape, F: Extrema_ExtFlag, A: Extrema_ExtAlgo, theRange: Message_ProgressRange)",
+   "BRepFilletAPI_MakeChamfer(S: TopoDS_Shape)",
+   "BRepFilletAPI_MakeFillet(S: TopoDS_Shape, FShape: ChFi3d_FilletShape)",
+   "BRepGProp_Face_2(F: TopoDS_Face, IsUseSpan: Standard_Boolean)",
+   "BRepMesh_IncrementalMesh_2(theShape: TopoDS_Shape, theLinDeflection: Standard_Real, isRelative: Standard_Boolean, theAngDeflection: Standard_Real, isInParallel: Standard_Boolean)",
+   "BRepOffsetAPI_DraftAngle_2(S: TopoDS_Shape)",
+   "BRepOffsetAPI_MakeOffsetShape()",
+   "BRepOffsetAPI_MakeOffset_2(Spine: TopoDS_Face, Join: GeomAbs_JoinType, IsOpenResult: Standard_Boolean)",
+   "BRepOffsetAPI_MakePipeShell(Spine: TopoDS_Wire)",
+   "BRepOffsetAPI_MakeThickSolid()",
+   "BRepOffsetAPI_ThruSections(isSolid: Standard_Boolean, ruled: Standard_Boolean, pres3d: Standard_Real)",
+   "BRepPrimAPI_MakeHalfSpace_1(Face: TopoDS_Face, RefPnt: gp_Pnt)",
+   "BRepPrimAPI_MakePrism_1(S: TopoDS_Shape, V: gp_Vec, Copy: Standard_Boolean, Canonize: Standard_Boolean)",
+   "BRepPrimAPI_MakeRevol_1(S: TopoDS_Shape, A: gp_Ax1, D: Standard_Real, Copy: Standard_Boolean)",
+   "BRep_Builder()",
+   "Bnd_Box_1()",
+   "GCE2d_MakeArcOfEllipse_1(Elips: gp_Elips2d, Alpha1: Standard_Real, Alpha2: Standard_Real, Sense: Standard_Boolean)",
+   "GCE2d_MakeSegment_1(P1: gp_Pnt2d, P2: gp_Pnt2d)",
+   "GC_MakeArcOfCircle_4(P1: gp_Pnt, P2: gp_Pnt, P3: gp_Pnt)",
+   "GProp_GProps_1()",
+   "Geom2d_BSplineCurve_1(Poles: TColgp_Array1OfPnt2d, Knots: IntTools_CArray1OfReal, Multiplicities: TColStd_Array1OfInteger, Degree: Graphic3d_ZLayerId, Periodic: Standard_Boolean)",
+   "GeomAPI_PointsToBSpline_2(Points: TColgp_Array1OfPnt, DegMin: Graphic3d_ZLayerId, DegMax: Graphic3d_ZLayerId, Continuity: GeomAbs_Shape, Tol3D: Standard_Real)",
+   "GeomFill_BSplineCurves_2(C1: Handle_Geom_BSplineCurve, C2: Handle_Geom_BSplineCurve, C3: Handle_Geom_BSplineCurve, C4: Handle_Geom_BSplineCurve, Type: GeomFill_FillingStyle)",
+   "Geom_BSplineCurve_1(Poles: TColgp_Array1OfPnt, Knots: IntTools_CArray1OfReal, Multiplicities: TColStd_Array1OfInteger, Degree: Graphic3d_ZLayerId, Periodic: Standard_Boolean)",
+   "Geom_BSplineCurve_2(Poles: TColgp_Array1OfPnt, Weights: IntTools_CArray1OfReal, Knots: IntTools_CArray1OfReal, Multiplicities: TColStd_Array1OfInteger, Degree: Graphic3d_ZLayerId, Periodic: Standard_Boolean, CheckRational: Standard_Boolean)",
+   "Geom_BSplineSurface_1(Poles: TColgp_Array2OfPnt, UKnots: IntTools_CArray1OfReal, VKnots: IntTools_CArray1OfReal, UMults: TColStd_Array1OfInteger, VMults: TColStd_Array1OfInteger, UDegree: Graphic3d_ZLayerId, VDegree: Graphic3d_ZLayerId, UPeriodic: Standard_Boolean, VPeriodic: Standard_Boolean)",
+   "Geom_BSplineSurface_2(Poles: TColgp_Array2OfPnt, Weights: TColStd_Array2OfReal, UKnots: IntTools_CArray1OfReal, VKnots: IntTools_CArray1OfReal, UMults: TColStd_Array1OfInteger, VMults: TColStd_Array1OfInteger, UDegree: Graphic3d_ZLayerId, VDegree: Graphic3d_ZLayerId, UPeriodic: Standard_Boolean, VPeriodic: Standard_Boolean)",
+   "Geom_ConicalSurface_1(A3: gp_Ax3, Ang: Standard_Real, Radius: Standard_Real)",
+   "Geom_CylindricalSurface_1(A3: gp_Ax3, Radius: Standard_Real)",
+   "Geom_Plane_1(A3: gp_Ax3)",
+   "IGESControl_Reader_1()",
+   "IGESControl_Writer_2(unit: Standard_CString, modecr: Graphic3d_ZLayerId)",
+   "Message_ProgressRange_1()",
+   "STEPControl_Reader_1()",
+   "STEPControl_Writer_1()",
+   "ShapeUpgrade_UnifySameDomain_2(aShape: TopoDS_Shape, UnifyEdges: Standard_Boolean, UnifyFaces: Standard_Boolean, ConcatBSplines: Standard_Boolean)",
+   "TColStd_Array1OfInteger_2(theLower: Standard_Integer, theUpper: Standard_Integer)",
+   "TColStd_Array1OfReal_2(theLower: Standard_Integer, theUpper: Standard_Integer)",
+   "TColStd_Array2OfReal_2(theRowLower: Standard_Integer, theRowUpper: Standard_Integer, theColLower: Standard_Integer, theColUpper: Standard_Integer)",
+   "TColgp_Array1OfPnt2d_2(theLower: Standard_Integer, theUpper: Standard_Integer)",
+   "TColgp_Array1OfPnt_2(theLower: Standard_Integer, theUpper: Standard_Integer)",
+   "TColgp_Array2OfPnt_2(theRowLower: Standard_Integer, theRowUpper: Standard_Integer, theColLower: Standard_Integer, theColUpper: Standard_Integer)",
+   "TopExp_Explorer_2(S: TopoDS_Shape, ToFind: TopAbs_ShapeEnum, ToAvoid: TopAbs_ShapeEnum)",
+   "TopLoc_Location_1()",
+   "TopTools_IndexedMapOfShape_1()",
+   "TopTools_ListOfShape_1()",
+   "TopoDS_Compound()",
+   "gp_Ax1_2(theP: gp_Pnt, theV: gp_Dir)",
+   "gp_Ax2_2(P: gp_Pnt, N: gp_Dir, Vx: gp_Dir)",
+   "gp_Ax2_3(P: gp_Pnt, V: gp_Dir)",
+   "gp_Ax2d_2(theP: gp_Pnt2d, theV: gp_Dir2d)",
+   "gp_Ax3_3(theP: gp_Pnt, theN: gp_Dir, theVx: gp_Dir)",
+   "gp_Circ_2(theA2: gp_Ax2, theRadius: Standard_Real)",
+   "gp_Dir2d_4(theXv: Standard_Real, theYv: Standard_Real)",
+   "gp_Dir_4(theXv: Standard_Real, theYv: Standard_Real, theZv: Standard_Real)",
+   "gp_Elips2d_2(theMajorAxis: gp_Ax2d, theMajorRadius: Standard_Real, theMinorRadius: Standard_Real, theIsSense: Standard_Boolean)",
+   "gp_Elips_2(theA2: gp_Ax2, theMajorRadius: Standard_Real, theMinorRadius: Standard_Real)",
+   "gp_Pln_3(theP: gp_Pnt, theV: gp_Dir)",
+   "gp_Pnt2d_3(theXp: Standard_Real, theYp: Standard_Real)",
+   "gp_Pnt_1()",
+   "gp_Pnt_3(theXp: Standard_Real, theYp: Standard_Real, theZp: Standard_Real)",
+   "gp_Trsf_1()",
+   "gp_Vec_1()",
+   "gp_Vec_4(theXv: Standard_Real, theYv: Standard_Real, theZv: Standard_Real)"
+  ],
+  "methodList": [
+   "BRepAdaptor_Curve.Circle(): gp_Circ",
+   "BRepAdaptor_Curve.GetType(): GeomAbs_CurveType",
+   "BRepAdaptor_Surface.Cone(): gp_Cone",
+   "BRepAdaptor_Surface.Cylinder(): gp_Cylinder",
+   "BRepAdaptor_Surface.GetType(): GeomAbs_SurfaceType",
+   "BRepAdaptor_Surface.Plane(): gp_Pln",
+   "BRepAdaptor_Surface.Sphere(): gp_Sphere",
+   "BRepAdaptor_Surface.Torus(): gp_Torus",
+   "BRepAlgoAPI_Algo.Shape(): TopoDS_Shape",
+   "BRepAlgoAPI_BooleanOperation.Build(theRange: Message_ProgressRange): void",
+   "BRepAlgoAPI_BooleanOperation.SetTools(theLS: TopTools_ListOfShape): void",
+   "BRepAlgoAPI_BuilderAlgo.SetArguments(theLS: TopTools_ListOfShape): void",
+   "BRepAlgoAPI_Splitter.Build(theRange: Message_ProgressRange): void",
+   "BRepAlgoAPI_Splitter.SetTools(theLS: TopTools_ListOfShape): void",
+   "BRepBuilderAPI_Command.IsDone(): Standard_Boolean",
+   "BRepBuilderAPI_MakeEdge.Edge(): TopoDS_Edge",
+   "BRepBuilderAPI_MakeFace.Face(): TopoDS_Face",
+   "BRepBuilderAPI_MakeFace.IsDone(): Standard_Boolean",
+   "BRepBuilderAPI_MakeShape.Shape(): TopoDS_Shape",
+   "BRepBuilderAPI_MakeSolid.Solid(): TopoDS_Solid",
+   "BRepBuilderAPI_MakeVertex.Vertex(): TopoDS_Vertex",
+   "BRepBuilderAPI_MakeWire.Add_1(E: TopoDS_Edge): void   [C++ Add]",
+   "BRepBuilderAPI_MakeWire.IsDone(): Standard_Boolean",
+   "BRepBuilderAPI_MakeWire.Wire(): TopoDS_Wire",
+   "BRepBuilderAPI_Sewing.Add(shape: TopoDS_Shape): void",
+   "BRepBuilderAPI_Sewing.Perform(theProgress: Message_ProgressRange): void",
+   "BRepBuilderAPI_Sewing.SewedShape(): TopoDS_Shape",
+   "BRepCheck_Analyzer.IsValid_2(): Standard_Boolean   [C++ IsValid]",
+   "BRepClass3d_SClassifier.State(): TopAbs_State",
+   "BRepClass3d_SolidClassifier.Perform(P: gp_Pnt, Tol: Standard_Real): void",
+   "BRepExtrema_DistShapeShape.IsDone(): Standard_Boolean",
+   "BRepExtrema_DistShapeShape.Value(): Standard_Real",
+   "BRepFilletAPI_MakeChamfer.Add_2(Dis: Standard_Real, E: TopoDS_Edge): void   [C++ Add]",
+   "BRepFilletAPI_MakeFillet.Add_2(Radius: Standard_Real, E: TopoDS_Edge): void   [C++ Add]",
+   "BRepGProp_Face.Normal(U: Standard_Real, V: Standard_Real, P: gp_Pnt, VNor: gp_Vec): void",
+   "BRepOffsetAPI_DraftAngle.Add(F: TopoDS_Face, Direction: gp_Dir, Angle: Standard_Real, NeutralPlane: gp_Pln, Flag: Standard_Boolean): void",
+   "BRepOffsetAPI_DraftAngle.AddDone(): Standard_Boolean",
+   "BRepOffsetAPI_DraftAngle.Build(theRange: Message_ProgressRange): void",
+   "BRepOffsetAPI_MakeOffset.Perform(Offset: Standard_Real, Alt: Standard_Real): void",
+   "BRepOffsetAPI_MakeOffsetShape.PerformByJoin(S: TopoDS_Shape, Offset: Standard_Real, Tol: Standard_Real, Mode: BRepOffset_Mode, Intersection: Standard_Boolean, SelfInter: Standard_Boolean, Join: GeomAbs_JoinType, RemoveIntEdges: Standard_Boolean, theRange: Message_ProgressRange): void",
+   "BRepOffsetAPI_MakePipeShell.Add_1(Profile: TopoDS_Shape, WithContact: Standard_Boolean, WithCorrection: Standard_Boolean): void   [C++ Add]",
+   "BRepOffsetAPI_MakePipeShell.Build(theRange: Message_ProgressRange): void",
+   "BRepOffsetAPI_MakePipeShell.MakeSolid(): Standard_Boolean",
+   "BRepOffsetAPI_MakePipeShell.SetMode_1(IsFrenet: Standard_Boolean): void   [C++ SetMode]",
+   "BRepOffsetAPI_MakePipeShell.SetTransitionMode(Mode: BRepBuilderAPI_TransitionMode): void",
+   "BRepOffsetAPI_MakeThickSolid.MakeThickSolidByJoin(S: TopoDS_Shape, ClosingFaces: TopTools_ListOfShape, Offset: Standard_Real, Tol: Standard_Real, Mode: BRepOffset_Mode, Intersection: Standard_Boolean, SelfInter: Standard_Boolean, Join: GeomAbs_JoinType, RemoveIntEdges: Standard_Boolean, theRange: Message_ProgressRange): void",
+   "BRepOffsetAPI_MakeThickSolid.MakeThickSolidBySimple(theS: TopoDS_Shape, theOffsetValue: Standard_Real): void",
+   "BRepOffsetAPI_ThruSections.AddWire(wire: TopoDS_Wire): void",
+   "BRepOffsetAPI_ThruSections.Build(theRange: Message_ProgressRange): void",
+   "BRepOffsetAPI_ThruSections.FirstShape(): TopoDS_Shape",
+   "BRepOffsetAPI_ThruSections.LastShape(): TopoDS_Shape",
+   "BRepPrimAPI_MakeHalfSpace.Solid(): TopoDS_Solid",
+   "Bnd_Box.CornerMax(): gp_Pnt",
+   "Bnd_Box.CornerMin(): gp_Pnt",
+   "Bnd_Box.IsVoid(): Standard_Boolean",
+   "GCE2d_MakeArcOfEllipse.Value(): Handle_Geom2d_TrimmedCurve",
+   "GCE2d_MakeSegment.Value(): Handle_Geom2d_TrimmedCurve",
+   "GC_MakeArcOfCircle.Value(): Handle_Geom_TrimmedCurve",
+   "GC_Root.IsDone(): Standard_Boolean",
+   "GProp_GProps.CentreOfMass(): gp_Pnt",
+   "GProp_GProps.Mass(): Standard_Real",
+   "GeomAPI_PointsToBSpline.Curve(): Handle_Geom_BSplineCurve",
+   "GeomAPI_PointsToBSpline.IsDone(): Standard_Boolean",
+   "GeomFill_BSplineCurves.Surface(): Handle_Geom_BSplineSurface",
+   "IGESControl_Writer.AddShape(sh: TopoDS_Shape, theProgress: Message_ProgressRange): Standard_Boolean",
+   "IGESControl_Writer.ComputeModel(): void",
+   "IGESControl_Writer.Write_2(file: Standard_CString, fnes: Standard_Boolean): Standard_Boolean   [C++ Write]",
+   "Poly_Triangle.Value(theIndex: Graphic3d_ZLayerId): Graphic3d_ZLayerId",
+   "Poly_Triangulation.HasUVNodes(): Standard_Boolean",
+   "Poly_Triangulation.NbNodes(): Graphic3d_ZLayerId",
+   "Poly_Triangulation.NbTriangles(): Graphic3d_ZLayerId",
+   "Poly_Triangulation.Node(theIndex: Graphic3d_ZLayerId): gp_Pnt",
+   "Poly_Triangulation.Triangle(theIndex: Graphic3d_ZLayerId): Poly_Triangle",
+   "Poly_Triangulation.UVNode(theIndex: Graphic3d_ZLayerId): gp_Pnt2d",
+   "STEPControl_Writer.Transfer(sh: TopoDS_Shape, mode: STEPControl_StepModelType, compgraph: Standard_Boolean, theProgress: Message_ProgressRange): IFSelect_ReturnStatus",
+   "STEPControl_Writer.Write(filename: Standard_CString): IFSelect_ReturnStatus",
+   "ShapeUpgrade_UnifySameDomain.Build(): void",
+   "ShapeUpgrade_UnifySameDomain.Shape(): TopoDS_Shape",
+   "TColStd_Array1OfInteger.SetValue(theIndex: Standard_Integer, theItem: Standard_Integer): void",
+   "TColStd_Array1OfReal.SetValue(theIndex: Standard_Integer, theItem: Standard_Real): void",
+   "TColStd_Array2OfReal.SetValue(theRow: Standard_Integer, theCol: Standard_Integer, theItem: Standard_Real): void",
+   "TColgp_Array1OfPnt.SetValue(theIndex: Standard_Integer, theItem: gp_Pnt): void",
+   "TColgp_Array1OfPnt2d.SetValue(theIndex: Standard_Integer, theItem: gp_Pnt2d): void",
+   "TColgp_Array2OfPnt.SetValue(theRow: Standard_Integer, theCol: Standard_Integer, theItem: gp_Pnt): void",
+   "TopExp_Explorer.Current(): TopoDS_Shape",
+   "TopExp_Explorer.More(): Standard_Boolean",
+   "TopExp_Explorer.Next(): void",
+   "TopLoc_Location.Transformation(): gp_Trsf",
+   "TopTools_IndexedMapOfShape.Add(theKey1: TopoDS_Shape): Standard_Integer",
+   "TopTools_IndexedMapOfShape.Contains(theKey1: TopoDS_Shape): Standard_Boolean",
+   "TopTools_IndexedMapOfShape.FindIndex(theKey1: TopoDS_Shape): Standard_Integer",
+   "TopTools_IndexedMapOfShape.FindKey(theIndex: Standard_Integer): TopoDS_Shape",
+   "TopTools_ListOfShape.Append_1(theItem: TopoDS_Shape): TopoDS_Shape   [C++ Append]",
+   "TopoDS_Builder.Add(S: TopoDS_Shape, C: TopoDS_Shape): void",
+   "TopoDS_Builder.MakeCompound(C: TopoDS_Compound): void",
+   "TopoDS_Shape.IsSame(theOther: TopoDS_Shape): Standard_Boolean",
+   "TopoDS_Shape.Moved(thePosition: TopLoc_Location, theRaiseExc: Standard_Boolean): TopoDS_Shape",
+   "TopoDS_Shape.Orientation_1(): TopAbs_Orientation   [C++ Orientation]",
+   "TopoDS_Shape.Reversed(): TopoDS_Shape",
+   "TopoDS_Shape.ShapeType(): TopAbs_ShapeEnum",
+   "XSControl_Reader.OneShape(): TopoDS_Shape",
+   "XSControl_Reader.ReadFile(filename: Standard_CString): IFSelect_ReturnStatus",
+   "XSControl_Reader.TransferRoots(theProgress: Message_ProgressRange): Graphic3d_ZLayerId",
+   "gp_Ax1.Direction(): gp_Dir",
+   "gp_Ax1.Location(): gp_Pnt",
+   "gp_Ax3.Direction(): gp_Dir",
+   "gp_Ax3.Location(): gp_Pnt",
+   "gp_Circ.Position(): gp_Ax2",
+   "gp_Circ.Radius(): Standard_Real",
+   "gp_Cone.Position(): gp_Ax3",
+   "gp_Cone.RefRadius(): Standard_Real",
+   "gp_Cone.SemiAngle(): Standard_Real",
+   "gp_Cylinder.Position(): gp_Ax3",
+   "gp_Cylinder.Radius(): Standard_Real",
+   "gp_Dir.X(): Standard_Real",
+   "gp_Dir.Y(): Standard_Real",
+   "gp_Dir.Z(): Standard_Real",
+   "gp_Pln.Axis(): gp_Ax1",
+   "gp_Pln.Location(): gp_Pnt",
+   "gp_Pnt.Transformed(theT: gp_Trsf): gp_Pnt",
+   "gp_Pnt.X(): Standard_Real",
+   "gp_Pnt.Y(): Standard_Real",
+   "gp_Pnt.Z(): Standard_Real",
+   "gp_Pnt2d.X(): Standard_Real",
+   "gp_Pnt2d.Y(): Standard_Real",
+   "gp_Sphere.Position(): gp_Ax3",
+   "gp_Sphere.Radius(): Standard_Real",
+   "gp_Torus.MajorRadius(): Standard_Real",
+   "gp_Torus.MinorRadius(): Standard_Real",
+   "gp_Torus.Position(): gp_Ax3",
+   "gp_Trsf.SetMirror_3(theA2: gp_Ax2): void   [C++ SetMirror]",
+   "gp_Trsf.SetRotation_1(theA1: gp_Ax1, theAng: Standard_Real): void   [C++ SetRotation]",
+   "gp_Trsf.SetScale(theP: gp_Pnt, theS: Standard_Real): void",
+   "gp_Trsf.SetTranslation_1(theV: gp_Vec): void   [C++ SetTranslation]",
+   "gp_Trsf.SetValues(a11: Standard_Real, a12: Standard_Real, a13: Standard_Real, a14: Standard_Real, a21: Standard_Real, a22: Standard_Real, a23: Standard_Real, a24: Standard_Real, a31: Standard_Real, a32: Standard_Real, a33: Standard_Real, a34: Standard_Real): void",
+   "gp_Vec.X(): Standard_Real",
+   "gp_Vec.Y(): Standard_Real",
+   "gp_Vec.Z(): Standard_Real",
+   "static BRepBndLib.Add(S: TopoDS_Shape, B: Bnd_Box, useTriangulation: Standard_Boolean): void",
+   "static BRepBndLib.AddOptimal(S: TopoDS_Shape, B: Bnd_Box, useTriangulation: Standard_Boolean, useShapeTolerance: Standard_Boolean): void",
+   "static BRepGProp.LinearProperties(S: TopoDS_Shape, LProps: GProp_GProps, SkipShared: Standard_Boolean, UseTriangulation: Standard_Boolean): void",
+   "static BRepGProp.SurfaceProperties_1(S: TopoDS_Shape, SProps: GProp_GProps, SkipShared: Standard_Boolean, UseTriangulation: Standard_Boolean): void   [C++ SurfaceProperties]",
+   "static BRepGProp.SurfaceProperties_2(S: TopoDS_Shape, SProps: GProp_GProps, Eps: Standard_Real, SkipShared: Standard_Boolean): Standard_Real   [C++ SurfaceProperties]",
+   "static BRepGProp.VolumePropertiesGK_1(S: TopoDS_Shape, VProps: GProp_GProps, Eps: Standard_Real, OnlyClosed: Standard_Boolean, IsUseSpan: Standard_Boolean, CGFlag: Standard_Boolean, IFlag: Standard_Boolean, SkipShared: Standard_Boolean): Standard_Real   [C++ VolumePropertiesGK]",
+   "static BRepGProp.VolumeProperties_1(S: TopoDS_Shape, VProps: GProp_GProps, OnlyClosed: Standard_Boolean, SkipShared: Standard_Boolean, UseTriangulation: Standard_Boolean): void   [C++ VolumeProperties]",
+   "static BRepLib.BuildCurves3d_1(S: TopoDS_Shape, Tolerance: Standard_Real, Continuity: GeomAbs_Shape, MaxDegree: Graphic3d_ZLayerId, MaxSegment: Graphic3d_ZLayerId): Standard_Boolean   [C++ BuildCurves3d]",
+   "static BRepLib.BuildCurves3d_2(S: TopoDS_Shape): Standard_Boolean   [C++ BuildCurves3d]",
+   "static BRepLib.EncodeRegularity_1(S: TopoDS_Shape, TolAng: Standard_Real): void   [C++ EncodeRegularity]",
+   "static BRep_Tool.Continuity_1(E: TopoDS_Edge, F1: TopoDS_Face, F2: TopoDS_Face): GeomAbs_Shape   [C++ Continuity]",
+   "static BRep_Tool.Degenerated(E: TopoDS_Edge): Standard_Boolean",
+   "static BRep_Tool.IsClosed_2(E: TopoDS_Edge, F: TopoDS_Face): Standard_Boolean   [C++ IsClosed]",
+   "static BRep_Tool.Pnt(V: TopoDS_Vertex): gp_Pnt",
+   "static BRep_Tool.Triangulation(theFace: TopoDS_Face, theLocation: TopLoc_Location, theMeshPurpose: Poly_MeshPurpose): Handle_Poly_Triangulation",
+   "static Interface_Static.SetCVal(name: Standard_CString, val: Standard_CString): Standard_Boolean",
+   "static TopoDS.Edge_1(S: TopoDS_Shape): TopoDS_Edge   [C++ Edge]",
+   "static TopoDS.Face_1(S: TopoDS_Shape): TopoDS_Face   [C++ Face]",
+   "static TopoDS.Shell_1(S: TopoDS_Shape): TopoDS_Shell   [C++ Shell]",
+   "static TopoDS.Solid_1(S: TopoDS_Shape): TopoDS_Solid   [C++ Solid]",
+   "static TopoDS.Vertex_1(S: TopoDS_Shape): TopoDS_Vertex   [C++ Vertex]",
+   "static TopoDS.Wire_1(S: TopoDS_Shape): TopoDS_Wire   [C++ Wire]"
+  ],
+  "handleList": [
+   "Handle_Geom2d_Curve",
+   "Handle_Geom2d_TrimmedCurve",
+   "Handle_Geom_BSplineCurve",
+   "Handle_Geom_BSplineSurface",
+   "Handle_Geom_Curve",
+   "Handle_Geom_Surface",
+   "Handle_Geom_TrimmedCurve",
+   "Handle_Poly_Triangulation"
+  ],
+  "enumList": [
+   "BRepBuilderAPI_TransitionMode",
+   "BRepOffset_Mode",
+   "ChFi3d_FilletShape",
+   "Extrema_ExtAlgo",
+   "Extrema_ExtFlag",
+   "GeomAbs_CurveType",
+   "GeomAbs_JoinType",
+   "GeomAbs_Shape",
+   "GeomAbs_SurfaceType",
+   "GeomFill_FillingStyle",
+   "IFSelect_ReturnStatus",
+   "STEPControl_StepModelType",
+   "TopAbs_Orientation",
+   "TopAbs_ShapeEnum",
+   "TopAbs_State"
+  ],
+  "classList": [
+   "Adaptor3d_Curve",
+   "Adaptor3d_Surface",
+   "BRepAdaptor_Curve",
+   "BRepAdaptor_Surface",
+   "BRepAlgoAPI_Algo",
+   "BRepAlgoAPI_BooleanOperation",
+   "BRepAlgoAPI_BuilderAlgo",
+   "BRepAlgoAPI_Common",
+   "BRepAlgoAPI_Cut",
+   "BRepAlgoAPI_Fuse",
+   "BRepAlgoAPI_Splitter",
+   "BRepBndLib",
+   "BRepBuilderAPI_Command",
+   "BRepBuilderAPI_MakeEdge",
+   "BRepBuilderAPI_MakeFace",
+   "BRepBuilderAPI_MakeShape",
+   "BRepBuilderAPI_MakeSolid",
+   "BRepBuilderAPI_MakeVertex",
+   "BRepBuilderAPI_MakeWire",
+   "BRepBuilderAPI_ModifyShape",
+   "BRepBuilderAPI_Sewing",
+   "BRepBuilderAPI_Transform",
+   "BRepCheck_Analyzer",
+   "BRepClass3d_SClassifier",
+   "BRepClass3d_SolidClassifier",
+   "BRepExtrema_DistShapeShape",
+   "BRepFilletAPI_LocalOperation",
+   "BRepFilletAPI_MakeChamfer",
+   "BRepFilletAPI_MakeFillet",
+   "BRepGProp",
+   "BRepGProp_Face",
+   "BRepLib",
+   "BRepMesh_DiscretRoot",
+   "BRepMesh_IncrementalMesh",
+   "BRepOffsetAPI_DraftAngle",
+   "BRepOffsetAPI_MakeOffset",
+   "BRepOffsetAPI_MakeOffsetShape",
+   "BRepOffsetAPI_MakePipeShell",
+   "BRepOffsetAPI_MakeThickSolid",
+   "BRepOffsetAPI_ThruSections",
+   "BRepPrimAPI_MakeHalfSpace",
+   "BRepPrimAPI_MakePrism",
+   "BRepPrimAPI_MakeRevol",
+   "BRepPrimAPI_MakeSweep",
+   "BRep_Builder",
+   "BRep_Tool",
+   "Bnd_Box",
+   "GCE2d_MakeArcOfEllipse",
+   "GCE2d_MakeSegment",
+   "GCE2d_Root",
+   "GC_MakeArcOfCircle",
+   "GC_Root",
+   "GProp_GProps",
+   "Geom2d_BSplineCurve",
+   "Geom2d_BoundedCurve",
+   "Geom2d_Curve",
+   "Geom2d_Geometry",
+   "Geom2d_TrimmedCurve",
+   "GeomAPI_PointsToBSpline",
+   "GeomFill_BSplineCurves",
+   "Geom_BSplineCurve",
+   "Geom_BSplineSurface",
+   "Geom_BoundedCurve",
+   "Geom_BoundedSurface",
+   "Geom_ConicalSurface",
+   "Geom_Curve",
+   "Geom_CylindricalSurface",
+   "Geom_ElementarySurface",
+   "Geom_Geometry",
+   "Geom_Plane",
+   "Geom_Surface",
+   "Geom_TrimmedCurve",
+   "IGESControl_Reader",
+   "IGESControl_Writer",
+   "Interface_Static",
+   "Interface_TypedValue",
+   "Message_ProgressRange",
+   "MoniTool_TypedValue",
+   "NCollection_BaseList",
+   "NCollection_BaseMap",
+   "Poly_Triangle",
+   "Poly_Triangulation",
+   "STEPControl_Reader",
+   "STEPControl_Writer",
+   "ShapeUpgrade_UnifySameDomain",
+   "Standard_Transient",
+   "TColStd_Array1OfInteger",
+   "TColStd_Array1OfReal",
+   "TColStd_Array2OfReal",
+   "TColgp_Array1OfPnt",
+   "TColgp_Array1OfPnt2d",
+   "TColgp_Array2OfPnt",
+   "TopExp_Explorer",
+   "TopLoc_Location",
+   "TopTools_IndexedMapOfShape",
+   "TopTools_ListOfShape",
+   "TopoDS",
+   "TopoDS_Builder",
+   "TopoDS_Compound",
+   "TopoDS_Edge",
+   "TopoDS_Face",
+   "TopoDS_Shape",
+   "TopoDS_Shell",
+   "TopoDS_Solid",
+   "TopoDS_Vertex",
+   "TopoDS_Wire",
+   "XSControl_Reader",
+   "gp_Ax1",
+   "gp_Ax2",
+   "gp_Ax2d",
+   "gp_Ax3",
+   "gp_Circ",
+   "gp_Cone",
+   "gp_Cylinder",
+   "gp_Dir",
+   "gp_Dir2d",
+   "gp_Elips",
+   "gp_Elips2d",
+   "gp_Pln",
+   "gp_Pnt",
+   "gp_Pnt2d",
+   "gp_Sphere",
+   "gp_Torus",
+   "gp_Trsf",
+   "gp_Vec"
+  ],
+  "problems": []
+ }
+}
