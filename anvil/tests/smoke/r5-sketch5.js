@@ -163,7 +163,7 @@
     UI.setTool('dimension');
     rskClick([15, 0]); rskClick([15, -8]);
     assert(st() === 'Fully Defined' && UI.App.sketchState.status === 'full', 'placed: ' + st());
-    var white = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id; }).every(function (o) { return o.material.color.getHex() === 0xffffff; });
+    var white = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id; }).every(function (o) { return o.material.color.getHex() === UI.linePalette().sketch; });
     assert(white, 'rfBR: drawn white (fully defined as under defined; the status bar names it)');
     var inp = $('dim-edit').querySelector('input');
     inp.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));

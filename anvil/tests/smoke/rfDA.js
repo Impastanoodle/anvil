@@ -12,7 +12,9 @@
     return { L: 0.2126 * f(+m[0]) + 0.7152 * f(+m[1]) + 0.0722 * f(+m[2]), a: m.length > 3 ? +m[3] : 1 };
   }
   function rfDARatio(c1, c2) { var x = rfDALum(c1), y = rfDALum(c2); if (!x || !y) return 0; var a = x.L, b = y.L; return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05); }
-  var RFDA_GROUND = 'rgb(60, 60, 60)';   // the lightest part of the graphics area (the top of the gradient)
+  // the part of the graphics area that overlays contrast least with: the top of the gradient — the lightest on the dark
+  // ground (#3c3c3c), the darkest on the light ground of the light theme (#d6d8db, user 2026-11-04)
+  function rfDAground() { return UI.darkViewport() ? 'rgb(60, 60, 60)' : 'rgb(214, 216, 219)'; }
   async function rfDABox() {
     await anvil.newPart(); await idle();
     await anvil.run("p.sketch('Front').rect(0, 0, 4, 2).dim(0, 'w').dim(0, 'h').extrude(1);"); await idle();
@@ -90,7 +92,7 @@
     assert(errors.length === errs0, 'no errors: ' + errors.slice(errs0).join(' | '));
   });
 
-  step('rfDA: with the grey-black graphics area every CSS overlay is legible in the light and the dark theme and on all three backgrounds — Instant3D arrow, ruler, ticks, tick labels, value and dimension text, sketch dimension text, virtual-sharp lines, heads-up carets and bar, scale bar, sketch hint, the confirmation corner\'s icons', async function () {
+  step('rfDA: every CSS overlay is legible on the graphics area (grey-black, or light in the light theme on Gradient / Plain) in both themes and on all three backgrounds — Instant3D arrow, ruler, ticks, tick labels, value and dimension text, sketch dimension text, virtual-sharp lines, heads-up carets and bar, scale bar, sketch hint, the confirmation corner\'s icons', async function () {
     var errs0 = errors.length;
     var theme0 = UI.theme ? UI.theme() : 'light', bg0 = UI.App.view.bg;
     await rfDABox();
@@ -130,21 +132,21 @@
         UI.setTheme(THEMES[ti]); UI.setBackground(BGS[bi], true); await wait(10);
         var tag = THEMES[ti] + ' theme / ' + BGS[bi] + ': ', items = build();
         items.forEach(function (it) {
-          var col = W.getComputedStyle(it[1])[it[2]], r = rfDARatio(col, RFDA_GROUND);
+          var col = W.getComputedStyle(it[1])[it[2]], r = rfDARatio(col, rfDAground());
           if (r < it[3]) fails.push(tag + it[0] + ' ' + col + ' ' + r.toFixed(2) + ' : 1');
         });
-        // the halo behind Instant3D text is the dark ground's, not white
-        var halo = W.getComputedStyle(items[5][1]).stroke;
-        if (!rfDALum(halo) || rfDALum(halo).L > 0.1) fails.push(tag + 'Instant3D value halo is light: ' + halo);
+        // the halo behind Instant3D text is the ground's: dark on the dark ground, white on the light one
+        var halo = W.getComputedStyle(items[5][1]).stroke, darkG = UI.darkViewport();
+        if (!rfDALum(halo) || (darkG ? rfDALum(halo).L > 0.1 : rfDALum(halo).L < 0.6)) fails.push(tag + 'Instant3D value halo does not match the ground: ' + halo);
         made.forEach(function (e) { e.remove(); }); made = [];
-        if (caret) { var cc = W.getComputedStyle(caret).color, cr = rfDARatio(cc, RFDA_GROUND); if (cr < 4.5) fails.push(tag + 'heads-up caret ' + cc + ' ' + cr.toFixed(2)); }
+        if (caret) { var cc = W.getComputedStyle(caret).color, cr = rfDARatio(cc, rfDAground()); if (cr < 4.5) fails.push(tag + 'heads-up caret ' + cc + ' ' + cr.toFixed(2)); }
         // the heads-up bar's own ground (under the pointer; always on the Dark background) is dark, under light icons
         var hudBg = W.getComputedStyle(hud).getPropertyValue('--overlay').trim(), ink = W.getComputedStyle(hud).getPropertyValue('--icon-ink').trim();
         var hb = D.createElement('div'); hb.style.background = hudBg; hb.style.color = ink; hud.appendChild(hb);
         var hbg = W.getComputedStyle(hb).backgroundColor, hink = W.getComputedStyle(hb).color; hb.remove();
-        if (!rfDALum(hbg) || rfDALum(hbg).L > 0.1) fails.push(tag + 'heads-up bar ground is light: ' + hbg);
+        if (!rfDALum(hbg) || (darkG ? rfDALum(hbg).L > 0.1 : rfDALum(hbg).L < 0.6)) fails.push(tag + 'heads-up bar ground does not match the graphics area: ' + hbg);
         if (rfDARatio(hink, hbg.replace(/,\s*[\d.]+\)$/, ')').replace('rgba', 'rgb')) < 4.5) fails.push(tag + 'heads-up icons on their bar: ' + hink + ' on ' + hbg);
-        var sbc = W.getComputedStyle(scale).color; if (rfDARatio(sbc, RFDA_GROUND) < 4.5) fails.push(tag + 'scale bar ' + sbc);
+        var sbc = W.getComputedStyle(scale).color; if (rfDARatio(sbc, rfDAground()) < 4.5) fails.push(tag + 'scale bar ' + sbc);
       }
       // the confirmation corner and the sketch hint, in a sketch, light theme
       UI.setTheme('light'); UI.setBackground('gradient', true);
@@ -154,15 +156,15 @@
       assert(corner && !corner.hidden, 'the confirmation corner shows in the sketch');
       Array.prototype.forEach.call(corner.querySelectorAll('svg'), function (s, k) {
         var ink = W.getComputedStyle(s).color;
-        if (rfDARatio(ink, RFDA_GROUND) < 4.5) fails.push('corner icon ' + k + ' ink ' + ink);
+        if (rfDARatio(ink, rfDAground()) < 4.5) fails.push('corner icon ' + k + ' ink ' + ink);
         Array.prototype.forEach.call(s.querySelectorAll('[fill="#d9453b"], [stroke="#d9453b"]'), function (e) {
           var cs = W.getComputedStyle(e), red = e.getAttribute('fill') === '#d9453b' ? cs.fill : cs.stroke;
-          if (rfDARatio(red, RFDA_GROUND) < 3) fails.push('corner icon ' + k + ' red ' + red);
+          if (rfDARatio(red, rfDAground()) < 3) fails.push('corner icon ' + k + ' red ' + red);
         });
       });
       Array.prototype.forEach.call(D.querySelectorAll('#dim-layer text'), function (t) {
         var cs = W.getComputedStyle(t);
-        if (cs.display !== 'none' && rfDARatio(cs.fill, RFDA_GROUND) < 4.5) fails.push('sketch dimension text "' + t.textContent + '" ' + cs.fill);
+        if (cs.display !== 'none' && rfDARatio(cs.fill, rfDAground()) < 4.5) fails.push('sketch dimension text "' + t.textContent + '" ' + cs.fill);
       });
       var hint = D.getElementById('sketch-hint');
       if (hint && !hint.hidden) { var hs = W.getComputedStyle(hint); if (rfDARatio(hs.color, hs.backgroundColor.replace(/,\s*[\d.]+\)$/, ')').replace('rgba', 'rgb')) < 4.5) fails.push('sketch hint ' + hs.color + ' on ' + hs.backgroundColor); }

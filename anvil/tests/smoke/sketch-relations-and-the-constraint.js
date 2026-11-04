@@ -30,8 +30,8 @@
     UI.drawDims();
     // r5/sketch5: the three Coincidents that only join chain end points are merged points (no icon, as in SolidWorks)
     assert(D.querySelectorAll('#dim-layer .rel-badge').length === 0, 'rfBR: no relation icons next to the entities: ' + D.querySelectorAll('#dim-layer .rel-badge').length);
-    var white = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id; }).every(function (o) { return o.material.color.getHex() === 0xffffff; });
-    assert(white, 'rfBR: under-defined entities are white');
+    var white = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id; }).every(function (o) { return o.material.color.getHex() === UI.linePalette().sketch; });
+    assert(white, 'rfBR: under-defined entities in the plain line colour (white on the dark ground, near-black on the light)');
     return relList().length + ' inferred relations, DOF ' + st.dof;
   });
   step('sketch relations: Smart Dimensions 50 and 30 make it Fully Defined (black); editing 50 -> 65 re-solves the whole rectangle', async function () {
@@ -49,8 +49,8 @@
     var st = UI.sketchStatus();
     assert(st.status === 'full' && st.dof === 0 && st.entities.every(function (x) { return x === 'full'; }), JSON.stringify(st));
     assert(/Fully Defined/.test(statusRight()), 'status bar: ' + statusRight());
-    var white = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id; }).every(function (o) { return o.material.color.getHex() === 0xffffff; });
-    assert(white, 'rfBR: fully defined entities are white too (the status bar names the state)');
+    var white = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id; }).every(function (o) { return o.material.color.getHex() === UI.linePalette().sketch; });
+    assert(white, 'rfBR: fully defined entities the same colour (the status bar names the state)');
     var r3 = UI.editDim(0, '65');
     assert(r3.ok && Math.abs(r3.value - 65) < 1e-9, JSON.stringify(r3));
     var want = [[0, 0, 65, 0], [65, 0, 65, 30], [65, 30, 0, 30], [0, 30, 0, 0]];

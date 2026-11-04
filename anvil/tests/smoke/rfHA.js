@@ -96,14 +96,14 @@
     } finally { UI.setTheme(theme0); UI.setStyle(style); }
   });
 
-  step('rfHA: the ground keeps the grey-black gradient (#3c3c3c to #0e0e0e, eased with several stops) and a grain layer under the canvas, in both themes', async function () {
+  step('rfHA: the ground is an eased gradient of several grey stops with a grain layer under the canvas — grey-black (#3c3c3c to #0e0e0e) in the dark theme, light (#d6d8db to white) in the light theme (user 2026-11-04)', async function () {
     var theme0 = UI.theme(), vp = $('viewport');
     try {
       ['light', 'dark'].forEach(function (th) {
         UI.setTheme(th); UI.setBackground('gradient', true);
         var bg = W.getComputedStyle(vp).backgroundImage, stops = (bg.match(/rgb\(/g) || []).length;
-        assert(/rgb\(60, 60, 60\)/.test(bg) && /rgb\(14, 14, 14\)/.test(bg) && stops >= 5, th + ': gradient ' + bg);
-        assert(!/rgb\((\d+), (?!\1)\d+, \d+\)/.test(bg), th + ': grey stops only ' + bg);
+        assert((th === 'dark' ? /rgb\(60, 60, 60\)/.test(bg) && /rgb\(14, 14, 14\)/.test(bg) : /rgb\(214, 216, 219\)/.test(bg) && /rgb\(255, 255, 255\)/.test(bg)) && stops >= 5, th + ': gradient ' + bg);
+        assert(th === 'light' || !/rgb\((\d+), (?!\1)\d+, \d+\)/.test(bg), th + ': grey stops only ' + bg);   // the light ground's stops are a neutral grey within 5 levels (no blue: rfBR)
         var before = W.getComputedStyle(vp, '::before');
         assert(/^url\(/.test(before.backgroundImage) && before.pointerEvents === 'none' && before.position === 'absolute', th + ': grain layer ' + before.backgroundImage.slice(0, 40));
       });
@@ -140,7 +140,7 @@
     return 'ok';
   });
 
-  step('rfHA: sketch dimensions — light text with a dark halo, light 1 px lines over a dark 3 px casing, arrowheads cased; a horizontal dimension line sits on a pixel centre', async function () {
+  step('rfHA: sketch dimensions — text with a halo of the ground (light on dark in the dark theme, dark on light in the light theme), 1 px lines over a 3 px casing, arrowheads cased; a horizontal dimension line sits on a pixel centre', async function () {
     var theme0 = UI.theme();
     try {
       await anvil.newPart(); await idle();
@@ -161,9 +161,12 @@
         assert(dlh.getAttribute('d').indexOf(dl.getAttribute('d')) >= 0, th + ': the casing follows the line ' + dl.getAttribute('d'));
         function lum(c) { var m = (c.match(/[\d.]+/g) || [NaN, NaN, NaN]).map(Number); return (m[0] + m[1] + m[2]) / 3; }
         var ts = W.getComputedStyle(t), hs = W.getComputedStyle(dlh), ls = W.getComputedStyle(dl), as = W.getComputedStyle(da);
-        assert(lum(ts.fill) > 200 && lum(ts.stroke) < 60 && parseFloat(ts.strokeWidth) >= 2, th + ': text ' + ts.fill + ' halo ' + ts.stroke);
-        assert(lum(ls.stroke) > 150 && lum(hs.stroke) < 60 && parseFloat(hs.strokeWidth) >= 2.5 && parseFloat(hs.strokeWidth) > parseFloat(ls.strokeWidth), th + ': line ' + ls.stroke + ' / casing ' + hs.stroke + ' ' + hs.strokeWidth);
-        assert(lum(as.stroke) < 60 && /stroke/.test(as.paintOrder), th + ': arrow casing ' + as.stroke + ' ' + as.paintOrder);
+        var dk = UI.darkViewport();
+        function inkOK(c) { return dk ? lum(c) > 150 : lum(c) < 100; }
+        function caseOK(c) { return dk ? lum(c) < 60 : lum(c) > 200; }
+        assert((dk ? lum(ts.fill) > 200 : lum(ts.fill) < 60) && caseOK(ts.stroke) && parseFloat(ts.strokeWidth) >= 2, th + ': text ' + ts.fill + ' halo ' + ts.stroke);
+        assert(inkOK(ls.stroke) && caseOK(hs.stroke) && parseFloat(hs.strokeWidth) >= 2.5 && parseFloat(hs.strokeWidth) > parseFloat(ls.strokeWidth), th + ': line ' + ls.stroke + ' / casing ' + hs.stroke + ' ' + hs.strokeWidth);
+        assert(caseOK(as.stroke) && /stroke/.test(as.paintOrder), th + ': arrow casing ' + as.stroke + ' ' + as.paintOrder);
         out.push(th + ' ok');
       });
       var d = t.parentNode.querySelector('path.dl').getAttribute('d'), seg = d.match(/M(-?[\d.]+) (-?[\d.]+)L(-?[\d.]+) (-?[\d.]+)/g) || [], flat = 0;

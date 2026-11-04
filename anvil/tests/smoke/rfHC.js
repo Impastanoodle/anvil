@@ -114,7 +114,7 @@
       UI.setStyle('shadedEdges');
       var M = UI.mats;
       assert(M.sel.color.getHex() === 0x7ec8ff && Math.abs(M.sel.opacity - 0.45) < 1e-9 && M.hover.color.getHex() === 0xff9a2e, 'sel / hover materials');
-      assert(M.sketch.color.getHex() === 0xffffff && M.sketchSel.color.getHex() === 0xffd400 && M.edge.color.getHex() === 0x161616, 'sketch / selection / edge colours');
+      assert(M.sketch.color.getHex() === UI.linePalette().sketch && M.sketchSel.color.getHex() === UI.linePalette().sketchSel && M.edge.color.getHex() === 0x161616, 'sketch / selection / edge colours');
       assert(UI.renderer.toneMapping === W.THREE.NoToneMapping && UI.renderer.outputEncoding === W.THREE.LinearEncoding, 'the renderer stays linear: overlays are drawn as given');
       await rfHCView('Isometric');
       var p = [1.5, 1, 1], base = rfHCAt(rfHCRender(true), p);

@@ -3,10 +3,13 @@
   // background, either theme), white wireframe (sketch entities whatever their definition state, model edges in
   // Wireframe), a selection drawn yellow and dashed (sketch entity, model edge), and no relation icons at all — none
   // next to the entities, none by the cursor while drawing, no View ▸ Sketch Relations; the relations still exist.
+  // User 2026-11-04: the light theme's Gradient and Plain backgrounds are a light ground with near-black lines
+  // (UI.linePalette()); the dark theme and the Dark background keep the grey-black ground and white lines.
+  function rfBRpal() { return UI.linePalette(); }
   function rfBRrgb(css) { return (String(css).match(/rgba?\([^)]*\)/g) || []).map(function (s) { return s.match(/[\d.]+/g).slice(0, 3).map(Number); }); }
   function rfBRbluish(c) { return c[2] > c[0] + 12 && c[2] > c[1] + 4; }
   function rfBRline(f, i) { return UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id && o.userData.index === i; })[0]; }
-  step('rfBR: the graphics area is grey-black with no blue — Gradient, Plain and Dark in the light and the dark theme; the HUD, grid and plane tints neutral', async function () {
+  step('rfBR: the graphics area has no blue — grey-black with the dark theme or the Dark background, light with the light theme on Gradient / Plain; the HUD, grid and plane tints neutral', async function () {
     var vp = $('viewport'), theme0 = UI.theme(), bg0 = UI.App.view.bg, seen = [];
     try {
       ['light', 'dark'].forEach(function (th) {
@@ -15,8 +18,10 @@
           UI.setBackground(b);
           var cs = W.getComputedStyle(vp), cols = rfBRrgb(cs.backgroundImage).concat(cs.backgroundImage === 'none' ? rfBRrgb(cs.backgroundColor) : []);
           assert(cols.length >= 1, th + ' / ' + b + ': a background colour: ' + cs.backgroundImage + ' ' + cs.backgroundColor);
+          var darkGround = th === 'dark' || b === 'dark';
+          assert(vp.classList.contains('vp-light') === !darkGround && UI.darkViewport() === darkGround, th + ' / ' + b + ': vp-light ' + vp.classList.contains('vp-light'));
           cols.forEach(function (c) {
-            assert(!rfBRbluish(c) && Math.max(c[0], c[1], c[2]) <= 0x40, th + ' / ' + b + ': grey-black, no blue: rgb(' + c + ')');
+            assert(!rfBRbluish(c) && (darkGround ? Math.max(c[0], c[1], c[2]) <= 0x40 : Math.min(c[0], c[1], c[2]) >= 0xc8), th + ' / ' + b + ': ' + (darkGround ? 'grey-black' : 'light') + ', no blue: rgb(' + c + ')');
           });
           var hud = W.getComputedStyle(vp);
           ['--hud-hover-line', '--hud-on-line', '--sk-infer', '--sk-sel'].forEach(function (k) {
@@ -33,28 +38,29 @@
     } finally { UI.setTheme(theme0); UI.setBackground(bg0 || 'gradient'); }
     return seen.length + ' grounds';
   });
-  step('rfBR: sketch wireframe white (under and fully defined), construction light grey dashed; a selected line yellow and dashed, white again when the selection clears; box-selected the same', async function () {
+  step('rfBR: sketch wireframe one colour (under and fully defined: white on the dark ground, near-black on the light), construction grey dashed; a selected line yellow and dashed, plain again when the selection clears; box-selected the same', async function () {
     await rskNew();
+    var P = rfBRpal();
     var f = UI.activeSketchFeature();
     f.entities.push({ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 }, { t: 'line', x1: 0, y1: 10, x2: 30, y2: 10, construction: true });
     UI.updateSketches();
     var l0 = rfBRline(f, 0), c1 = rfBRline(f, 1);
-    assert(l0 && l0.material.color.getHex() === 0xffffff && !l0.material.isLineDashedMaterial, 'under defined line white, solid: #' + (l0 && l0.material.color.getHexString()));
-    assert(c1 && c1.material.isLineDashedMaterial && c1.material.color.getHex() === 0xa8a8a8, 'construction light grey dashed: #' + (c1 && c1.material.color.getHexString()));
+    assert(l0 && l0.material.color.getHex() === P.sketch && !l0.material.isLineDashedMaterial, 'under defined line plain colour, solid: #' + (l0 && l0.material.color.getHexString()));
+    assert(c1 && c1.material.isLineDashedMaterial && c1.material.color.getHex() === P.sketchConstr, 'construction grey dashed: #' + (c1 && c1.material.color.getHexString()));
     W.SketchSolver.addRelation(f, 'fix', ['0']); UI.updateSketches();
-    assert(rfBRline(f, 0).material.color.getHex() === 0xffffff, 'fully defined white too');
+    assert(rfBRline(f, 0).material.color.getHex() === P.sketch, 'fully defined the same colour');
     var pts = UI.groups.sketches.children.filter(function (o) { return o.isPoints && !(o.userData && o.userData.sketchOpenEnds); });
-    assert(pts.length && pts.every(function (o) { return o.material.color.getHex() === 0x2ee66b || o.material.color.getHex() === 0xa8a8a8; }), 'end points green on white lines (user 2026-10-14), grey on construction');
+    assert(pts.length && pts.every(function (o) { return o.material.color.getHex() === 0x2ee66b || o.material.color.getHex() === P.sketchConstr; }), 'end points green on plain lines (user 2026-10-14), grey on construction');
     UI.setSelection([{ kind: 'entity', index: 0 }]);
     var s0 = rfBRline(f, 0), m = s0.material;
-    assert(m === UI.mats.sketchSel && m.type === 'LineDashedMaterial' && m.color.getHex() === 0xffd400, 'selected: yellow LineDashedMaterial #' + m.color.getHexString() + ' ' + m.type);
+    assert(m === UI.mats.sketchSel && m.type === 'LineDashedMaterial' && m.color.getHex() === P.sketchSel, 'selected: yellow LineDashedMaterial #' + m.color.getHexString() + ' ' + m.type);
     assert(m.userData.dashPx > 0 && m.userData.gapPx > 0 && m.dashSize > 0 && m.gapSize > 0, 'dashes in screen pixels: ' + JSON.stringify([m.userData.dashPx, m.userData.gapPx, m.dashSize, m.gapSize]));
     assert(s0.geometry.getAttribute('lineDistance') && s0.geometry.getAttribute('lineDistance').count === s0.geometry.getAttribute('position').count, 'line distances computed');
     UI.render();
     var fat = s0.userData.fat;
     assert(!UI.thickLines() || (fat && fat.mesh && /DASHED/.test(JSON.stringify(fat.mesh.material.defines || {}))), 'the thick line is drawn dashed');
     UI.setSelection([]);
-    assert(rfBRline(f, 0).material.color.getHex() === 0xffffff && !rfBRline(f, 0).material.isLineDashedMaterial, 'white and solid again when cleared');
+    assert(rfBRline(f, 0).material.color.getHex() === P.sketch && !rfBRline(f, 0).material.isLineDashedMaterial, 'plain and solid again when cleared');
     // a window box round line 0 only: drawn the same, yellow dashed
     UI.setTool('select');
     var a = rskScr([-3, -3]), b = rskScr([33, 3]);
@@ -62,17 +68,18 @@
     var boxed = rfBRline(f, 0);
     assert(UI.entitySelected(0) && boxed.material === UI.mats.sketchSel, 'box-selected line yellow dashed: ' + JSON.stringify(anvil.selection()));
     UI.setSelection([]);
-    return 'white / #a8a8a8 dashed / #ffd400 dashed';
+    return [P.sketch, P.sketchConstr, P.sketchSel].map(function (n) { return '#' + n.toString(16); }).join(' / ');
   });
-  step('rfBR: model edges white in Wireframe / Hidden Lines Removed, dark on the shaded body, hidden lines mid grey; a selected edge yellow and dashed', async function () {
+  step('rfBR: model edges the ground\'s line colour in Wireframe / Hidden Lines Removed, dark on the shaded body, hidden lines mid grey; a selected edge yellow and dashed', async function () {
     await anvil.newPart(); await idle();
     await anvil.run('p.box(40, 20, 30);'); await idle();
     var style0 = UI.App.view.style;
     try {
+      var P = rfBRpal();
       UI.setStyle('wireframe');
-      assert(UI.mats.edge.color.getHex() === 0xffffff, 'Wireframe edges white: #' + UI.mats.edge.color.getHexString());
+      assert(UI.mats.edge.color.getHex() === P.edge, 'Wireframe edges in the line colour: #' + UI.mats.edge.color.getHexString());
       UI.setStyle('hlr');
-      assert(UI.mats.edge.color.getHex() === 0xffffff, 'HLR edges white: #' + UI.mats.edge.color.getHexString());
+      assert(UI.mats.edge.color.getHex() === P.edge, 'HLR edges in the line colour: #' + UI.mats.edge.color.getHexString());
       UI.setStyle('shadedEdges');
       assert(UI.mats.edge.color.getHex() < 0x303030, 'edges dark on the shaded body: #' + UI.mats.edge.color.getHexString());
       var e = UI.App.edges.filter(function (x) { return !x.smooth; })[0];

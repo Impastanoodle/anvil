@@ -202,8 +202,8 @@
     UI.setBackground('gradient'); UI.setTheme('dark');
     var theme = [v('--dim-text'), v('--blue')];
     UI.setTheme('light'); UI.setBackground('gradient');
-    // rfBR: the graphics area is grey-black with every background and theme: the dark-ground colours always, no blue
-    assert([light, dark, theme].every(function (x) { return x[0] === '#f2f2f2' && x[1] === '#e0e0e0'; }), 'light ' + light + ' / dark bg ' + dark + ' / dark theme ' + theme);
+    // rfBR: the dark grounds take the dark-ground colours, no blue; user 2026-11-04: the light theme's Gradient is a light ground
+    assert([dark, theme].every(function (x) { return x[0] === '#f2f2f2' && x[1] === '#e0e0e0'; }) && light[0] === '#1a1a1a' && light[1] === '#3a3a3a', 'light ' + light + ' / dark bg ' + dark + ' / dark theme ' + theme);
     var css = Array.prototype.filter.call(D.styleSheets, function (s) { return /style\.css$/.test(s.href || ''); })[0];
     assert(css && Array.prototype.some.call(css.cssRules, function (r) { return r.selectorText === '.lvl-row.main'; }), 'the Levels rules are not in style.css');
     return 'ok';

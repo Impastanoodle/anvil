@@ -1894,3 +1894,26 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 #modal-body .dl-hw-row select { height: var(--ctl); }
 #modal-body .dl-hw-info { display: grid; gap: 2px; padding: var(--sp-2); border: var(--hair) solid var(--c-line); border-radius: var(--radius); background: var(--c-field); }
 #modal-body .dl-hw-info .dl-muted { color: var(--c-muted); font-size: var(--fs-xs); }
+
+/* Light graphics area (user 2026-11-04: "in the light view the workspace background should be light"). ui-core.js
+   applyLinePalette sets #viewport.vp-light with the light theme and the Gradient or Plain background (the dark theme and
+   the Dark background keep the grey-black ground of rfBR) and switches the three.js lines to near-black. Here: the
+   ground, and every overlay ink that the rules above set light for the dark ground, set back to inks for a light one.
+   Text keeps 4.5 : 1 against the darkest part of the ground (#d6d8db, the top of the gradient); rfDA checks it. */
+#viewport.vp-light { --viewport: linear-gradient(180deg, #d6d8db 0%, #e2e4e6 22%, #eceeef 48%, #f6f6f7 76%, #ffffff 100%); --viewport-white: #f7f7f7;
+  --ov-ink: #3a3a3a; --ov-ink-2: #272727; --ov-muted: #555555; --ov-halo: #ffffff; --ov-icon: #545454; --ov-red: #c8372f;
+  --hud-hover: rgba(0,0,0,0.07); --hud-hover-line: #b4b4b4; --hud-on: rgba(0,0,0,0.12); --hud-on-line: #8c8c8c;
+  --sk-sel: #c49000; --sk-infer: #8c8c8c; --sk-infer-rel: #555555; }
+#viewport.vp-light::before { opacity: 0.5; }
+#viewport.vp-light #hud { --icon-ink: #3c3c3c; --overlay: rgba(250,250,250,0.92); --line: #c8c8c8; --sel: rgba(0,0,0,0.1); }
+#viewport.vp-light #hud button { color: #2a2a2a; }
+#viewport.vp-light #hud button svg { filter: drop-shadow(0 1px 0 rgba(255,255,255,0.75)); }
+#viewport.vp-light #hud button:active:not(.off) { background: rgba(0,0,0,0.16); }
+#viewport.vp-light #scale-bar { color: #3a3a3a; }
+#viewport.vp-light #zoom-box { border-color: #6a6a6a; background: rgba(0,0,0,0.04); }
+#viewport.vp-light #dim-layer, #viewport.vp-light #ord-layer, #viewport.vp-light #i3d-layer {
+  --dim: #4a4a4a; --sketch: #141414; --dim-ink: #4a4a4a; --dim-text: #1a1a1a; --dim-halo: rgba(255,255,255,0.9);
+  --blue: #3a3a3a; --green: #2e8c3e; --text: #1a1a1a; --menu-bg: #f4f4f4; }
+#viewport.vp-light #i2d-layer { --blue: #3a3a3a; --dim-halo: rgba(255,255,255,0.9); }
+#viewport.vp-light #i3d-layer .i3d-dim-text { fill: #1a1a1a; stroke: #ffffff; }
+#viewport.vp-light #dim-layer .dim.driven text { fill: #6e6e6e; } #viewport.vp-light #dim-layer .dim.driven .dl { stroke: #8a8a8a; } #viewport.vp-light #dim-layer .dim.driven .da { fill: #8a8a8a; }

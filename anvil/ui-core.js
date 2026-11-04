@@ -137,17 +137,21 @@ var UI = (function () {
   var bodyMesh = null, edgeLines = null;
 
   // ------------------------------------------------------------------ viewport theme
-  // The viewport background is CSS (the renderer clears to transparent). rfBR: it is grey-black with every background
-  // and either UI theme (Mastercam's graphics area), so the line palette no longer follows the theme: one set of
-  // colours, exactly the ones the materials are created with. The HLR body colour only occludes (colorWrite off).
+  // The viewport background is CSS (the renderer clears to transparent). rfBR: grey-black (Mastercam's graphics area)
+  // with the dark theme or the Dark background; user 2026-11-04 ("in the light view the workspace background should be
+  // light"): the light theme's Gradient and Plain backgrounds are a light ground (#viewport.vp-light, style.css) with
+  // near-black lines. LINE_PALETTE (dark ground) is exactly the colours the materials are created with. The HLR body
+  // colour only occludes (colorWrite off).
+  var LINE_PALETTE_LIGHT = { edge: 0x1a1a1a, grid: 0xcacaca, gridMajor: 0xa8a8a8, sketchDim: 0x5a5a5a, planeLine: 0x8c8c8c, hlr: 0xffffff, sketchFull: 0x141414, sketch: 0x141414, temp: 0x141414, sketchSel: 0xc49000, sketchConstr: 0x8c8c8c };
   var LINE_PALETTE = { edge: 0xffffff, grid: 0x4a4a4a, gridMajor: 0x626262, sketchDim: 0xc8c8c8, planeLine: 0x8c8c8c, hlr: 0x1e1e1e, sketchFull: 0xffffff, sketch: 0xffffff, temp: 0xffffff, sketchSel: 0xffd400, sketchConstr: 0xa8a8a8 };
   var viewportTheme = 'light';
   // r14/viewui14: model edges on a shaded body stay dark as in SolidWorks (light edges on a light grey body read as a
   // washed-out outline) and are white only where the body is not painted (HLR / HLV / wireframe).
   var EDGE_ON_BODY_DARK = 0x161616;
-  function darkViewport() { return true; }   // rfBR: the graphics area is always a dark ground
+  function darkViewport() { return viewportTheme === 'dark' || App.view.bg === 'dark'; }
   function applyLinePalette() {
-    var c = LINE_PALETTE;
+    var dark = darkViewport(), c = dark ? LINE_PALETTE : LINE_PALETTE_LIGHT;
+    if (viewport) viewport.classList.toggle('vp-light', !dark);
     Object.keys(c).forEach(function (k) { if (mats[k].color.getHex() !== c[k]) { mats[k].color.setHex(c[k]); mats[k].needsUpdate = true; } });
     var s = App.view.style, painted = s !== 'hlr' && s !== 'hlv' && s !== 'wireframe';
     if (painted && mats.edge.color.getHex() !== EDGE_ON_BODY_DARK) { mats.edge.color.setHex(EDGE_ON_BODY_DARK); mats.edge.needsUpdate = true; }
@@ -924,8 +928,10 @@ var UI = (function () {
     'vec3 rvToSRGB(vec3 c) { return mix(pow(max(c, vec3(0.0)), vec3(0.41666)) * 1.055 - 0.055, c * 12.92, vec3(lessThanEqual(c, vec3(0.0031308)))); }',
     // a soft shoulder above 0.62: mid tones stay as lit (the grey part reads as it does with RealView off), highlights roll to white
     'vec3 rvTone(vec3 c) { c *= rvExposure; vec3 k = max(c - 0.62, 0.0); return min(c, vec3(0.62)) + k / (1.0 + k / 0.38); }',
-    'float rvHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }',
-    'float rvHash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }'
+    // sine-free hashes (D. Hoskins): fract(sin(big)) loses precision on GPUs and drew the brushed grain as diagonal,
+    // crosshatched blocks on large parts and close up (user 2026-11-04: "the stainless kinda looks like crap")
+    'float rvHash(vec2 p) { p = mod(p, 8192.0); vec3 q = fract(vec3(p.xyx) * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }',
+    'float rvHash3(vec3 p) { p = mod(p, 8192.0); p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }'
   ].join('\n');
   // pattern 1 brushed: streaks along the world axis that lies best in the face, about 3 px apart (a whole octave of zoom
   // keeps the same streaks), each a little rougher / darker than the next; 2 galvanized spangle: crystal patches ~10 mm
@@ -940,10 +946,12 @@ var UI = (function () {
     '    ax = normalize(ax);',
     '    vec3 across = normalize(cross(rvN, ax));',
     '    float s = dot(vRvPos, across), px = max(fwidth(s), 1e-6), cell = exp2(ceil(log2(px * 2.5)));',
-    '    float a = rvHash(vec2(floor(s / cell), floor(dot(vRvPos, ax) / (cell * 60.0)))), b = rvHash(vec2(floor(s / (cell * 5.0)), 7.0));',
-    '    float g = (a * 0.65 + b * 0.35) - 0.5;',
-    '    roughnessFactor = clamp(roughnessFactor + g * 0.16, 0.04, 1.0);',
-    '    diffuseColor.rgb *= 1.0 + g * 0.1;',
+    '    float si = floor(s / cell), t = dot(vRvPos, ax) / (cell * 220.0), ti = floor(t), tf = smoothstep(0.0, 1.0, fract(t));',
+    '    float a = mix(rvHash(vec2(si, ti)), rvHash(vec2(si, ti + 1.0)), tf), b = rvHash(vec2(floor(s / (cell * 6.0)), 7.0));',
+    '    float rvFlat = 1.0 - smoothstep(0.004, 0.03, length(fwidth(rvN)));',
+    '    float g = ((a * 0.6 + b * 0.4) - 0.5) * rvFlat;',
+    '    roughnessFactor = clamp(roughnessFactor + g * 0.12, 0.04, 1.0);',
+    '    diffuseColor.rgb *= 1.0 + g * 0.08;',
     '  } else if (rvPat > 1.5 && rvPat < 2.5) {',
     // crystals: 3D Voronoi cells (~8 mm), each with its own sheen
     '    vec3 q = vRvPos * rvUnit / 8.0, i0 = floor(q), fq = fract(q);',
@@ -2804,7 +2812,8 @@ var UI = (function () {
     if (!pm) pm = ptMats[m.uuid] = new THREE.PointsMaterial({ size: 10, sizeAttenuation: false, map: ptTexture, alphaTest: 0.5, transparent: false, depthTest: false });
     // the same Color as the line (a state colour — over-defined red, selected yellow — shows on its dots too), except
     // plain white geometry, whose dots are green so they stand out on the white wireframe
-    pm.color = m.color.getHex() === 0xffffff ? PT_GREEN : m.color;
+    var mh = m.color.getHex();
+    pm.color = mh === 0xffffff || (mh === LINE_PALETTE_LIGHT.sketch && m !== mats.sketchConstr) ? PT_GREEN : m.color;
     return pm;
   }
   function sketchEndPoints(f, i, e, mat, ptsBy) {
@@ -4455,7 +4464,7 @@ var UI = (function () {
     applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
     rollbackTo: rollbackTo, rollForward: rollForward, rollbackCommit: rollbackCommit, rollbackSwap: rollbackSwap,   // r10/editpreview10: Edit Feature rollback
     rollbarTo: rollbarTo, rollbarIndex: rollbarIndex, rollbarRolled: rollbarRolled, rollbarSync: rollbarSync, rollbarForward: rollbarForward, rollbarEnd: rollbarEnd, rollbarPrevious: rollbarPrevious, rollbarPrevIndex: rollbarPrevIndex,   // rfGQ: the rollback bar
-    setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
+    setViewportTheme: setViewportTheme, viewportTheme: viewportTheme, darkViewport: darkViewport, linePalette: function () { return darkViewport() ? LINE_PALETTE : LINE_PALETTE_LIGHT; },
     // rfHC: RealView (physically based shading in a studio; the depthfx lane's toggles call setRealView)
     setRealView: setRealView, realView: realView, realViewInfo: realViewInfo, partFaceMaterial: partFaceMaterial,
     // r14/viewui14: background, triad, View Selector

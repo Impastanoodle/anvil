@@ -74,8 +74,9 @@
     });
     function lum(c) { var m = c.match(/\d+(\.\d+)?/g).map(Number); return (m[0] + m[1] + m[2]) / 3; }
     var cDrv = W.getComputedStyle(drv.t).fill, cDia = W.getComputedStyle(dia.t).fill, cLine = W.getComputedStyle(drv.dl).stroke;
-    assert(lum(cDia) > 200, 'driving dimension light (rfBR): ' + cDia);
-    assert(lum(cDrv) > 100 && lum(cDrv) < 180 && lum(cLine) > 120, 'driven dimension grey: text ' + cDrv + ', line ' + cLine);
+    var dkG = UI.darkViewport();   // user 2026-11-04: the light theme's ground is light, its dimension text dark
+    assert(dkG ? lum(cDia) > 200 : lum(cDia) < 60, 'driving dimension in the ground ink (rfBR): ' + cDia);
+    assert(lum(cDrv) > 60 && lum(cDrv) < 180 && Math.abs(lum(cDrv) - lum(cDia)) > 40 && (dkG ? lum(cLine) > 120 : lum(cLine) < 140), 'driven dimension grey: text ' + cDrv + ', line ' + cLine);
     // the same layout for a feature's sketch dimensions shown in the part (Instant3D)
     await anvil.newPart(); await idle();
     await anvil.run('p.sketch("Top").rect(-20, -10, 40, 20).dim(0, "w").dim(0, "h").extrude(10);'); await idle();

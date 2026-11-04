@@ -38,26 +38,27 @@
     assert(!za.classList.contains('active'), 'Zoom to Area off');
     return names.length + ' buttons';
   });
-  step('rfBH / rfBR: the default scene is Mastercam\'s grey-black gradient (#3c3c3c at the top to #0e0e0e) in both themes; Plain is a flat #1e1e1e; Dark is darker still', async function () {
+  step('rfBH / rfBR: the dark theme\'s scene is Mastercam\'s grey-black gradient (#3c3c3c at the top to #0e0e0e), Plain a flat #1e1e1e; the light theme\'s is light (user 2026-11-04), Plain #f7f7f7; Dark is darker still in both', async function () {
     var vp = $('viewport'), theme0 = UI.theme();
     UI.setTheme('light'); UI.setBackground('gradient');
     var bg = W.getComputedStyle(vp).backgroundImage;
-    assert(/linear-gradient/.test(bg) && /rgb\(60, 60, 60\)/.test(bg) && /rgb\(14, 14, 14\)/.test(bg), 'light theme gradient: ' + bg);
+    assert(/linear-gradient/.test(bg) && /rgb\(214, 216, 219\)/.test(bg) && /rgb\(255, 255, 255\)/.test(bg), 'light theme gradient: ' + bg);
     UI.setTheme('dark');
     bg = W.getComputedStyle(vp).backgroundImage;
-    assert(/rgb\(60, 60, 60\)/.test(bg), 'dark theme gradient: ' + bg);
-    UI.setTheme('light');
+    assert(/rgb\(60, 60, 60\)/.test(bg) && /rgb\(14, 14, 14\)/.test(bg), 'dark theme gradient: ' + bg);
     UI.setBackground('plain');
-    assert(W.getComputedStyle(vp).backgroundImage === 'none' && W.getComputedStyle(vp).backgroundColor === 'rgb(30, 30, 30)', 'Plain: flat grey-black ' + W.getComputedStyle(vp).backgroundColor);
+    assert(W.getComputedStyle(vp).backgroundImage === 'none' && W.getComputedStyle(vp).backgroundColor === 'rgb(30, 30, 30)', 'dark theme Plain: flat grey-black ' + W.getComputedStyle(vp).backgroundColor);
+    UI.setTheme('light');
+    assert(W.getComputedStyle(vp).backgroundImage === 'none' && W.getComputedStyle(vp).backgroundColor === 'rgb(247, 247, 247)', 'light theme Plain: flat light ' + W.getComputedStyle(vp).backgroundColor);
     UI.setBackground('dark');
     assert(/linear-gradient/.test(W.getComputedStyle(vp).backgroundImage) && !/60, 60, 60/.test(W.getComputedStyle(vp).backgroundImage), 'Dark scene');
     UI.setBackground('gradient');
     UI.setTheme(theme0);
     return 'ok';
   });
-  step('rfBH / rfBR: sketch colours as Mastercam — under and fully defined white, over defined red, selected yellow dashed; dimension text light with a dark halo, driven grey', async function () {
+  step('rfBH / rfBR: sketch colours as Mastercam on the dark ground (Dark background) — under and fully defined white, over defined red, selected yellow dashed; dimension text light with a dark halo, driven grey', async function () {
     await anvil.newPart(); await idle();
-    UI.setTheme('light'); UI.setBackground('gradient');
+    UI.setTheme('light'); UI.setBackground('dark', true);
     await UI.newSketchOnPlane('Front'); await idle();
     var f = UI.activeSketchFeature(), S = W.SketchSolver;
     f.entities.push({ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 });
@@ -81,6 +82,6 @@
     assert(lum > 200 && parseFloat(ts.strokeWidth) > 0, 'dimension text light with a halo: ' + ts.fill + ' / ' + ts.strokeWidth);
     UI.setTheme('dark');
     assert(parseFloat(W.getComputedStyle(t).strokeWidth) > 0, 'dark theme keeps a halo');
-    UI.setTheme('light');
+    UI.setTheme('light'); UI.setBackground('gradient', true);
     return 'ok';
   });

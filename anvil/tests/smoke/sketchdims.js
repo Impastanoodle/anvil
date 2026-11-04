@@ -281,12 +281,12 @@
     function hex(i) { var o = UI.groups.sketches.children.filter(function (x) { return x.userData && x.userData.sketch === f.id && x.userData.index === i; })[0]; return o && o.material.color.getHex(); }
     function row() { return Array.prototype.filter.call(D.querySelectorAll('#tree .ti .nm'), function (n) { return /Sketch\d/.test(n.textContent); }).pop().textContent; }
     function bar() { var s = D.querySelector('#status-right .sk-state'); return s ? s.textContent : ''; }
-    assert(hex(0) === 0xffffff && bar() === 'Under Defined' && /^\(-\) /.test(row()), 'under: ' + hex(0).toString(16) + ' ' + bar() + ' ' + row());
+    assert(hex(0) === UI.linePalette().sketch && bar() === 'Under Defined' && /^\(-\) /.test(row()), 'under: ' + hex(0).toString(16) + ' ' + bar() + ' ' + row());
     var dashed = UI.groups.sketches.children.filter(function (x) { return x.userData && x.userData.index === 1; })[0];
     assert(dashed && dashed.material.type === 'LineDashedMaterial', 'construction dashed');
     S.addRelation(f, 'fix', ['0']); S.addRelation(f, 'fix', ['1']);
     UI.updateSketches(); UI.refreshTree();
-    assert(hex(0) === 0xffffff && bar() === 'Fully Defined' && !/^\(/.test(row()), 'full: ' + hex(0).toString(16) + ' ' + bar() + ' ' + row());
+    assert(hex(0) === UI.linePalette().sketch && bar() === 'Fully Defined' && !/^\(/.test(row()), 'full: ' + hex(0).toString(16) + ' ' + bar() + ' ' + row());
     S.addRelation(f, 'horizontal', ['0']);
     UI.updateSketches(); UI.refreshTree();
     assert(hex(0) === 0xd9302c && bar() === 'Over Defined' && /^\(\+\) /.test(row()), 'over: ' + hex(0).toString(16) + ' ' + bar() + ' ' + row());

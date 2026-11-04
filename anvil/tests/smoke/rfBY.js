@@ -144,14 +144,18 @@
     return 'typed during the drag';
   });
 
-  step('rfBY: the grey-black graphics area in the light theme: the Heads-up toolbar glyphs use the light ink; the sketch hint is opaque and lets clicks through to the geometry', async function () {
+  step('rfBY: the Heads-up toolbar glyphs take the ground\'s ink (dark glyphs on the light theme\'s light ground, user 2026-11-04; light on the grey-black one); the sketch hint is opaque and lets clicks through to the geometry', async function () {
     var th = UI.theme();
     UI.setTheme('light'); await wait(30);
     var f = await rfBJNew(rfBJSquare(0, 0, 10));
     var ico = D.querySelector('#hud button .ico');
     assert(ico, 'a Heads-up toolbar icon');
     var c = W.getComputedStyle(ico).color.match(/\d+/g).map(Number);
-    assert(c[0] > 180 && c[1] > 180 && c[2] > 180, 'light glyphs on the dark graphics area: ' + W.getComputedStyle(ico).color);
+    assert(c[0] < 100 && c[1] < 100 && c[2] < 100, 'dark glyphs on the light graphics area: ' + W.getComputedStyle(ico).color);
+    UI.setBackground('dark', true);
+    c = W.getComputedStyle(ico).color.match(/\d+/g).map(Number);
+    assert(c[0] > 180 && c[1] > 180 && c[2] > 180, 'light glyphs on the Dark background: ' + W.getComputedStyle(ico).color);
+    UI.setBackground('gradient', true);
     var hint = $('sketch-hint');
     assert(!hint.hidden, 'the sketch hint shows');
     var cs = W.getComputedStyle(hint);
