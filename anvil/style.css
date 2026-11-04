@@ -1917,3 +1917,21 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 #viewport.vp-light #i2d-layer { --blue: #3a3a3a; --dim-halo: rgba(255,255,255,0.9); }
 #viewport.vp-light #i3d-layer .i3d-dim-text { fill: #1a1a1a; stroke: #ffffff; }
 #viewport.vp-light #dim-layer .dim.driven text { fill: #6e6e6e; } #viewport.vp-light #dim-layer .dim.driven .dl { stroke: #8a8a8a; } #viewport.vp-light #dim-layer .dim.driven .da { fill: #8a8a8a; }
+
+/* pm-narrow (user 2026-11-04, Mastercam's Rectangle panel: "make anvil more like mastercam's example"): a narrowed
+   PropertyManager keeps every label on one line, as Mastercam does, and the value boxes give up their width instead
+   (down to nothing); the labels broke letter by letter before (overflow-wrap: anywhere in a 1fr column beside a fixed
+   136 px box). A field's label column is at least its one-line width; the box column takes what is left, at most
+   --pm-ctl-w, so in the default panel the boxes still line up on the right. Check box, radio and title texts that do
+   not fit end in an ellipsis; an icon row (Rectangle Type, Flange Length…) moves its buttons under its label. */
+#pm .pm-row.pm-field:not(.check) { grid-template-columns: minmax(min-content, 1fr) minmax(0, var(--pm-ctl-w)); }
+#pm .pm-row.pm-field.pm-has-rev:not(.check) { grid-template-columns: minmax(min-content, 1fr) 24px minmax(0, var(--pm-ctl-w)); }
+#pm .pm-row.pm-field:not(.check):not(.pm-row-static) > label { white-space: nowrap; overflow-wrap: normal; }
+#pm .pm-row.pm-field > .pm-num-wrap, #pm .pm-row.pm-field > select, #pm .pm-row.pm-field > input[type=text] { min-width: 0; }
+#pm .pm-num-wrap { min-width: 0; overflow: hidden; }
+#pm .pm-num-wrap input.pm-num { min-width: 0; text-overflow: clip; }
+#pm .pm-row.check > label, #pm .pm-group > h4 .pm-gt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; min-width: 0; }
+#pm .pm-row.pm-row-icons { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; row-gap: 4px; }
+#pm .pm-row.pm-row-icons > label { flex: 1 1 auto; white-space: nowrap; overflow-wrap: normal; }
+#pm .pm-row.pm-row-icons > .pm-icons { flex: 0 1 auto; min-width: 0; max-width: 100%; flex-wrap: wrap; }
+#pm { overflow-x: hidden; }
