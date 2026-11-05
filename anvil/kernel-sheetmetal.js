@@ -4896,7 +4896,8 @@
   // bottom corner, its walls ripped) each stops R + T short and the (R + T) cube at the corner is cut out (Auto Relief
   // 'rect'; 'none' refuses such corners). The plates make a tree from the fixed face's plate (a closed ring of bends,
   // an unripped box, is refused: rip it first). Records (ctx.flanges[id]) are edge-flange shaped (Material Inside
-  // flanges from the plate nearer the fixed face), so flatPattern unfolds them with no new code.
+  // flanges from the plate nearer the fixed face), so flatPattern unfolds them with no new code. Lane rfIH: bends already
+  // rounded in the part (ibRoundBends) are taken as they are, with their own radius (the body does not change).
   // Convert to Sheet Metal { type: 'convertSM', fixedFace, bendEdges: [[x, y, z] | { at }], ripEdges?: [...] (absent:
   // found, the sharp edges between two kept faces that are not bend edges), gap (rip gap), autoRelief, radius,
   // sheetBase: true, name: 'Convert-Solid1' } on a solid: the faces kept are the fixed face and every face reached
@@ -4911,7 +4912,8 @@
     if (model.noBends) throw new Error('No Bends is on: the part is shown without its bends (click No Bends again to insert them).');
     var P = base.fixedFace, i = ibFaceAt(mesh, P, model.units === 'in' ? 0.01 : 0.25);
     if (i < 0) throw new Error('Flat pattern: the fixed face of ' + (base.name || 'Insert Bends') + ' is not there any more (at ' + bcPt(P) + ').');
-    var n = mesh.faces[i].normal.slice(), ax = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].sort(function (a, b) { return Math.abs(dot(a, n)) - Math.abs(dot(b, n)); })[0];
+    // rfIH: ties within 1e-9 keep x, y, z order (an OpenCascade face normal's 1e-17 noise turned the flat by 90°)
+    var n = mesh.faces[i].normal.slice(), ax = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].sort(function (a, b) { var q = Math.abs(dot(a, n)) - Math.abs(dot(b, n)); return Math.abs(q) < 1e-9 ? 0 : q; })[0];
     var x = norm(sub(ax, scale(n, dot(ax, n))));
     return { origin: sub(P, scale(n, dot(n, P) - mesh.faces[i].w)), x: x, y: cross(n, x), n: n };
   }
@@ -4943,6 +4945,106 @@
     ts.sort(function (a, b) { return a - b; });
     for (var k = 0; k < ts.length; k++) if (inside(sub(Q, scale(n, ts[k] - pr))) && !inside(sub(Q, scale(n, ts[k] + pr)))) return ts[k];
     throw new Error('Insert Bends: cannot find the wall thickness at ' + bcPt(P) + '.');
+  }
+  // lane rfIH: the bends already rounded in the part (SolidWorks' Insert Bends takes them with their own radius): a
+  // pair of concentric cylinders, inner radius R > 0 and outer R + T, on one axis and over the same angle (under 180°),
+  // with a flat wall T thick running on tangent from each end. Found from the facets' cylinder records (Anvil's
+  // extrudes and fillets, an imported STEP, OpenCascade's shapeToCSG with records). ibRoundBends(body, mesh, T, units)
+  // -> [{ R, RT, A, C0 (on the axis, C0·d = 0), d, n1, n2 (the walls' outer normals at the start / end of the arc,
+  // cross(n1, n2)·d > 0), s0, s1 (the extent along d), i1, i2 (the walls' outer faces in mesh), mid (a point on the
+  // outer surface half way), faces: { mesh face index: true } (the bend's facets) }]
+  function ibRoundBends(body, mesh, T, units) {
+    var groups = [], out = [], inside = body.pointTester(), pr = units === 'in' ? 1e-4 : 2.5e-3, dl = 1e-3 * T;
+    function sameAxis(a, b) {
+      if (Math.abs(dot(a.d, b.d)) < 1 - 1e-9) return false;
+      var v = sub(b.o, a.o);
+      return len(sub(v, scale(a.d, dot(v, a.d)))) <= 1e-7 * (1 + len(a.o));
+    }
+    (body.polygons || []).forEach(function (p) {
+      var s = p.surf && p.surf.s;
+      if (!s || s.t !== 'cyl' || !(s.r > 0)) return;
+      var g = null;
+      for (var i = 0; i < groups.length && !g; i++) if (groups[i].s === s || (Math.abs(groups[i].s.r - s.r) <= 1e-9 * (1 + s.r) && sameAxis(groups[i].s, s))) g = groups[i];
+      if (!g) groups.push(g = { s: s, polys: [] });
+      g.polys.push(p);
+    });
+    groups.forEach(function (g) {
+      var d = norm(g.s.d), big = 0;
+      for (var k = 1; k < 3; k++) if (Math.abs(d[k]) > Math.abs(d[big]) + 1e-9) big = k;
+      if (d[big] < 0) d = scale(d, -1);
+      var ax = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].sort(function (a, b) { return Math.abs(dot(a, d)) - Math.abs(dot(b, d)); })[0];
+      var e1 = norm(sub(ax, scale(d, dot(ax, d)))), e2 = cross(d, e1), o = sub(g.s.o, scale(d, dot(g.s.o, d))), r = g.s.r;
+      var th = [], z0 = Infinity, z1 = -Infinity;
+      g.polys.forEach(function (p) {
+        p.vertices.forEach(function (v) {
+          var q = sub([v.pos.x, v.pos.y, v.pos.z], o), z = dot(q, d), rad = sub(q, scale(d, z));
+          if (Math.abs(len(rad) - r) > 1e-5 * (1 + r)) return;
+          th.push(Math.atan2(dot(rad, e2), dot(rad, e1)));
+          z0 = Math.min(z0, z); z1 = Math.max(z1, z);
+        });
+      });
+      if (th.length < 2 || !(z1 - z0 > 1e-6)) return;
+      th.sort(function (a, b) { return a - b; });
+      var gap = th[0] + 2 * Math.PI - th[th.length - 1], start = th[0];
+      for (var i = 1; i < th.length; i++) if (th[i] - th[i - 1] > gap) { gap = th[i] - th[i - 1]; start = th[i]; }
+      var step = 0;   // the widest facet: its chord lies r(1 − cos(step / 2)) inside the true surface
+      for (i = 1; i < th.length; i++) if (th[i] - th[i - 1] < gap - 1e-12) step = Math.max(step, th[i] - th[i - 1]);
+      if (th[0] + 2 * Math.PI - th[th.length - 1] < gap - 1e-12) step = Math.max(step, th[0] + 2 * Math.PI - th[th.length - 1]);
+      g.f = { d: d, e1: e1, e2: e2, o: o, r: r, th0: start, A: 2 * Math.PI - gap, z0: z0, z1: z1, sag: r * (1 - Math.cos(Math.min(step, Math.PI) / 2)) };
+    });
+    function angDiff(a, b) { var x = (a - b) % (2 * Math.PI); if (x > Math.PI) x -= 2 * Math.PI; if (x < -Math.PI) x += 2 * Math.PI; return Math.abs(x); }
+    function wallFace(n, w) {
+      for (var i = 0; i < mesh.faces.length; i++) { var fc = mesh.faces[i]; if (dot(fc.normal, n) > 1 - 1e-6 && Math.abs(fc.w - w) <= pr) return i; }
+      return -1;
+    }
+    groups.forEach(function (gi) {
+      var a = gi.f;
+      if (!a || !(a.A > 1e-3) || a.A > Math.PI - 1e-3) return;
+      groups.forEach(function (go) {
+        var b = go.f;
+        if (!b || go === gi || Math.abs(b.r - a.r - T) > pr || !sameAxis(gi.s, go.s)) return;
+        // the same angle on both surfaces (the outer's frame: the axes may point opposite ways)
+        var e = function (f, t) { return add(scale(f.e1, Math.cos(t)), scale(f.e2, Math.sin(t))); };
+        var ia = e(a, a.th0), ib = e(a, a.th0 + a.A), oa = e(b, b.th0), ob = e(b, b.th0 + b.A);
+        if (dot(a.d, b.d) < 0) { var sw = oa; oa = ob; ob = sw; }
+        if (Math.abs(a.A - b.A) > 1e-3 || dot(ia, oa) < Math.cos(1e-3) || dot(ib, ob) < Math.cos(1e-3)) return;
+        var sg = dot(a.d, b.d) > 0 ? 1 : -1;   // both origins are the axis point with o·d = 0, so z on b is ±z on a
+        var s0 = Math.max(a.z0, Math.min(sg * b.z0, sg * b.z1)), s1 = Math.min(a.z1, Math.max(sg * b.z0, sg * b.z1));
+        if (!(s1 - s0 > 1e-6)) return;
+        var R = a.r, RT = R + T, A = a.A, C0 = a.o, d = a.d, n1 = ia, n2 = ib, t1 = cross(d, n1), t2 = cross(d, n2), sm = (s0 + s1) / 2;
+        // metal through the bend and on into both walls (tangent, T thick), air on both sides of it
+        var at = function (n, rr, t, dt, s) { return add(add(add(C0, scale(d, s)), scale(n, rr)), scale(t, dt)); }, ok = true, w = Math.min(T, 0.25 * RT);
+        [0.25, 0.5, 0.75].forEach(function (fr) {
+          var s = s0 + (s1 - s0) * fr, nm = e(a, a.th0 + A / 2);
+          ok = ok && inside(at(nm, R + T / 2, t1, 0, s)) && !inside(at(nm, R - a.sag - dl, t1, 0, s)) && !inside(at(nm, RT + dl, t1, 0, s)) &&
+            inside(at(n1, R + T / 2, t1, -w, s)) && !inside(at(n1, R - dl, t1, -w, s)) && !inside(at(n1, RT + dl, t1, -w, s)) &&
+            inside(at(n2, R + T / 2, t2, w, s)) && !inside(at(n2, R - dl, t2, w, s)) && !inside(at(n2, RT + dl, t2, w, s));
+        });
+        if (!ok) return;
+        var i1 = wallFace(n1, dot(n1, C0) + RT), i2 = wallFace(n2, dot(n2, C0) + RT);
+        if (i1 < 0 || i2 < 0) return;
+        var faces = {}, rset = [R, RT];
+        mesh.faces.forEach(function (fc, k) {
+          var on = fc.polys && fc.polys.length && fc.polys.every(function (p) {
+            return p.vertices.every(function (v) {
+              var q = sub([v.pos.x, v.pos.y, v.pos.z], C0), z = dot(q, d), rr = len(sub(q, scale(d, z)));
+              return z >= s0 - pr && z <= s1 + pr && rset.some(function (x) { return Math.abs(rr - x) <= pr; });
+            });
+          });
+          if (on && Math.abs(dot(fc.normal, d)) < 1e-6) faces[k] = true;
+        });
+        out.push({ R: R, RT: RT, A: A, C0: C0, d: d, n1: n1, n2: n2, s0: s0, s1: s1, i1: i1, i2: i2, faces: faces, mid: at(e(a, a.th0 + A / 2), RT, t1, 0, sm) });
+      });
+    });
+    return out;
+  }
+  // a point picked on (or stored for) a rounded bend: on either of its surfaces within tol, inside its length and arc
+  function ibNearRound(rb, at, tol) {
+    if (!at || at.length !== 3) return false;
+    var q = sub(at, rb.C0), z = dot(q, rb.d), rad = sub(q, scale(rb.d, z)), rr = len(rad);
+    if (z < rb.s0 - tol || z > rb.s1 + tol || !(Math.abs(rr - rb.R) <= tol || Math.abs(rr - rb.RT) <= tol)) return false;
+    var a1 = dot(rad, rb.n1), a2 = dot(rad, rb.n2), c = Math.cos(rb.A);   // inside the arc: between n1 and n2
+    return rr > 0 && (a1 - a2 * c) / rr >= -tol / rr && (a2 - a1 * c) / rr >= -tol / rr;
   }
   // insertBendsLayout(f, model, { body }) -> { fills, corners, wedges: [{ loop, plane, a, b }] (prisms of `loop` in
   // `plane` from a to b along plane.n; wedges also { R, RT, A, ov } for an exact build: the annulus R … RT from plane.x
@@ -4981,6 +5083,8 @@
     var bends = [], plates = [];
     function plateOf(n, w) {
       for (var i = 0; i < plates.length; i++) if (dot(plates[i].n, n) > 1 - 1e-9 && Math.abs(plates[i].w - w) < 1e-6 * (1 + Math.abs(w))) return i;
+      // lane rfIH: the same wall seen from its other face (a Z's web: the outside of one bend, the inside of the next)
+      for (i = 0; i < plates.length; i++) if (dot(plates[i].n, n) < -1 + 1e-9 && Math.abs(T - plates[i].w - w) < 1e-6 * (1 + Math.abs(w))) return i;
       plates.push({ n: n, w: w });
       return plates.length - 1;
     }
@@ -5007,6 +5111,14 @@
         if (!ok) return;
         bends.push({ L: L, P: P, s0: r[0], s1: r[1], A: Math.acos(Math.max(-1, Math.min(1, c))), p1: plateOf(L.n1, dot(L.n1, L.O0)), p2: plateOf(L.n2, dot(L.n2, L.O0)) });
       });
+    });
+    // lane rfIH: bends already rounded in the part keep their own radius (the PM's radius is for sharp corners only)
+    ibRoundBends(body, mesh, T, model.units).forEach(function (rb) {
+      if (f.edges && !f.edges.some(function (q) { return ibNearRound(rb, Array.isArray(q) ? q : q.at, tolU); })) return;
+      var c = Math.cos(rb.A), O0 = add(rb.C0, scale(add(rb.n1, rb.n2), rb.RT / (1 + c)));
+      var L = { i1: rb.i1, i2: rb.i2, n1: rb.n1, n2: rb.n2, d: rb.d, c: c, O0: O0 };
+      var P = function (a, b, s) { var al = (a - b * c) / (1 - c * c), be = (b - a * c) / (1 - c * c); return add(add(O0, add(scale(L.n1, al), scale(L.n2, be))), scale(L.d, s)); };
+      bends.push({ L: L, P: P, s0: rb.s0, s1: rb.s1, A: rb.A, round: rb, p1: plateOf(rb.n1, dot(rb.n1, O0)), p2: plateOf(rb.n2, dot(rb.n2, O0)) });
     });
     if (!bends.length) throw new Error(what + ': there is no sharp corner between two walls ' + bcNum(T) + ' thick to bend (the sheet thickness).');
     // the fixed face's plate (its outer face or the face T behind it)
@@ -5035,10 +5147,11 @@
     var corners = [], cornerKeys = {};
     bends.forEach(function (b, i) {
       b.trim = [false, false];
+      if (b.round) return;   // lane rfIH: a rounded bend is the part's own: nothing is cut at its ends
       [b.s0, b.s1].forEach(function (s, k) {
         var E = b.P(0, 0, s), tolE = 1e-5 * (1 + len(E));
         var j = -1;
-        bends.forEach(function (q, jj) { if (jj !== i && j < 0 && Math.abs(dot(q.L.d, b.L.d)) < 0.999 && (len(sub(q.P(0, 0, q.s0), E)) < tolE || len(sub(q.P(0, 0, q.s1), E)) < tolE)) j = jj; });
+        bends.forEach(function (q, jj) { if (jj !== i && j < 0 && !q.round && Math.abs(dot(q.L.d, b.L.d)) < 0.999 && (len(sub(q.P(0, 0, q.s0), E)) < tolE || len(sub(q.P(0, 0, q.s1), E)) < tolE)) j = jj; });
         if (j < 0) return;
         if (relief === 'none') throw new Error(what + ': two bends meet at ' + bcPt(E) + ': turn Auto Relief on (or rip the corner).');
         if (Math.abs(b.L.c) > 1e-6 || Math.abs(bends[j].L.c) > 1e-6 || Math.abs(dot(bends[j].L.d, b.L.d)) > 1e-6) throw new Error(what + ': two bends meet at ' + bcPt(E) + ' at a corner that is not square; only square corners are relieved.');
@@ -5050,23 +5163,27 @@
       });
     });
     var fills = [], wedges = [], info = [], segs = function (A) { return Math.max(4, Math.round(8 * A / (Math.PI / 2))); };
+    var Rs = R;
     bends.forEach(function (b) {
+      var R = b.round ? b.round.R : Rs, RT = R + T;   // lane rfIH: a rounded bend's own radius
       var L = b.L, c = L.c, A = b.A, sA = Math.sin(A), cA = Math.cos(A), tA = Math.tan(A / 2);
       var s0 = b.s0 + (b.trim[0] ? RT : 0), s1 = b.s1 - (b.trim[1] ? RT : 0), sm = (b.s0 + b.s1) / 2;
       if (!(s1 - s0 > 1e-6)) throw new Error(what + ': the bend at ' + bcPt(b.P(0, 0, sm)) + ' is shorter than its corner reliefs (R + T at each end).');
       var X = L.n1, Y = norm(sub(L.n2, scale(L.n1, c))), C0 = sub(L.O0, scale(add(L.n1, L.n2), RT / (1 + c)));
       var plane = { origin: C0, x: X, y: Y, n: L.d };
-      var bpp = Math.min(-RT, -RT + (R + T / 2) * c) - dl;
-      function free(s, sg) { var q = s + sg * dl; return !inside(b.P(-T / 2, -T / 2, q)) && !inside(b.P(-T / 2, bpp, q)) && !inside(b.P(bpp, -T / 2, q)); }
-      var e0 = b.trim[0] || free(b.s0, -1) ? eps : 0, e1 = b.trim[1] || free(b.s1, 1) ? eps : 0, RTe = RT + eps;
-      fills.push({ loop: [[0, 0], [RTe, 0], [RTe, RTe * tA], [RTe * cA, RTe * sA]], plane: plane, a: b.s0 - e0, b: b.s1 + e1 });
-      var n = segs(A), loop = [[R, -ov], [RT, -ov]], k;
-      for (k = 0; k <= n; k++) loop.push([RT * Math.cos(A * k / n), RT * Math.sin(A * k / n)]);
-      loop.push([RT * cA - ov * sA, RT * sA + ov * cA], [R * cA - ov * sA, R * sA + ov * cA]);
-      if (R > 0) for (k = n; k >= 0; k--) loop.push([R * Math.cos(A * k / n), R * Math.sin(A * k / n)]);
-      else loop.push([0, 0]);
-      if (signedArea(loop) < 0) loop.reverse();
-      wedges.push({ loop: loop, plane: plane, a: s0, b: s1, R: R, RT: RT, A: A, ov: ov });
+      if (!b.round) {   // lane rfIH: a rounded bend is already there; only its record is written
+        var bpp = Math.min(-RT, -RT + (R + T / 2) * c) - dl;
+        var free = function (s, sg) { var q = s + sg * dl; return !inside(b.P(-T / 2, -T / 2, q)) && !inside(b.P(-T / 2, bpp, q)) && !inside(b.P(bpp, -T / 2, q)); };
+        var e0 = b.trim[0] || free(b.s0, -1) ? eps : 0, e1 = b.trim[1] || free(b.s1, 1) ? eps : 0, RTe = RT + eps;
+        fills.push({ loop: [[0, 0], [RTe, 0], [RTe, RTe * tA], [RTe * cA, RTe * sA]], plane: plane, a: b.s0 - e0, b: b.s1 + e1 });
+        var n = segs(A), loop = [[R, -ov], [RT, -ov]], k;
+        for (k = 0; k <= n; k++) loop.push([RT * Math.cos(A * k / n), RT * Math.sin(A * k / n)]);
+        loop.push([RT * cA - ov * sA, RT * sA + ov * cA], [R * cA - ov * sA, R * sA + ov * cA]);
+        if (R > 0) for (k = n; k >= 0; k--) loop.push([R * Math.cos(A * k / n), R * Math.sin(A * k / n)]);
+        else loop.push([0, 0]);
+        if (signedArea(loop) < 0) loop.reverse();
+        wedges.push({ loop: loop, plane: plane, a: s0, b: s1, R: R, RT: RT, A: A, ov: ov });
+      }
       // the record: a Material Inside flange from the base plate (the one nearer the fixed face)
       var baseIs1 = b.base === b.p1, nb = baseIs1 ? L.n1 : L.n2, nw = baseIs1 ? L.n2 : L.n1, iw = baseIs1 ? L.i2 : L.i1;
       var o = norm(sub(nw, scale(nb, c))), u = scale(nb, -1);
@@ -5094,9 +5211,15 @@
     if (fixed < 0) throw new Error(what + ': there is no flat face at ' + bcPt(P0) + '.');
     var sharp = bodyEdges(mesh).filter(function (e) { return e.faces.length === 2 && !e.smooth && e.convex; });
     if (!f.bendEdges || !f.bendEdges.length) throw new Error(what + ': pick the bend edges.');
+    var round = null, facets = {};
     var bendE = f.bendEdges.map(function (s) {
       var at = Array.isArray(s) ? s : s.at, hit = resolveEdges([{ at: at, chain: false }], sharp, tol)[0];
-      if (!hit) throw new Error(what + ': there is no sharp edge at ' + bcPt(at) + '.');
+      if (!hit) {   // lane rfIH: a point on a rounded bend joins its two walls (its facets are kept, never shelled)
+        if (!round) round = ibRoundBends(body, mesh, T, model.units);
+        var rb = round.filter(function (q) { return ibNearRound(q, at, tol); })[0];
+        if (rb) { Object.keys(rb.faces).forEach(function (k) { facets[k] = true; }); return { faces: [rb.i1, rb.i2], mid: at.slice(), round: true }; }
+      }
+      if (!hit) throw new Error(what + ': there is no sharp edge or rounded bend at ' + bcPt(at) + '.');
       return hit;
     });
     var kept = {}, grew = true;
@@ -5111,7 +5234,7 @@
     bendE.forEach(function (e) { if (!kept[e.faces[0]]) throw new Error(what + ': the bend edge at ' + bcPt(e.mid) + ' does not reach the fixed face (directly or across other bend edges).'); });
     var removed = [];
     mesh.faces.forEach(function (g, i) {
-      if (kept[i]) return;
+      if (kept[i] || facets[i]) return;
       var o;
       try { o = faceOutline(mesh, i); } catch (e) { o = null; }
       var l = o && o.loops.filter(function (q) { return signedArea(q) > 0; }).sort(function (p, q) { return signedArea(q) - signedArea(p); })[0];
@@ -5143,7 +5266,8 @@
   // lane rfIE: Convert to Sheet Metal's Collect All Bends (SolidWorks 2024: the button under the Bend Edges list).
   // convertSMCollect(body, fixedFace, { thickness, units }) -> { bends: [[x, y, z]] (edge mid points, as hand picks are
   // stored), rips: [[x, y, z]] (what Convert will rip), T (the thickness used), wall (the part's thickness at the fixed
-  // face, null when it has none), rounded (tangent edges on the kept faces: rounded bends, which Convert cannot use) }.
+  // face, null when it has none), rounded (tangent edges on the kept faces that belong to no rounded bend) }. Lane rfIH:
+  // a rounded bend (ibRoundBends) joins its two walls like a sharp bend edge; its point is on its outer face.
   // A bend is a sharp convex edge between two flat faces with the inside corner T behind both (a concave edge on the
   // line where the two faces' planes, moved T inward, meet): the outside corner of two walls T thick. From the fixed
   // face the walls are reached across such edges, nearest first (a breadth-first tree); an edge that would close a ring
@@ -5171,6 +5295,10 @@
           return Math.abs(A.w - dot(A.normal, c.mid) - T) <= pr && Math.abs(B.w - dot(B.normal, c.mid) - T) <= pr;
         });
       });
+      // lane rfIH: a rounded bend (inner R, outer R + T, walls T thick on both ends) joins its two walls' outer faces
+      var round = [], facet = {};
+      try { round = ibRoundBends(body, mesh, T, units); } catch (e) { round = []; }
+      round.forEach(function (rb) { Object.keys(rb.faces).forEach(function (k) { facet[k] = true; }); cand.push({ faces: [rb.i1, rb.i2], mid: rb.mid }); });
       var kept = {}, tree = {}, queue = [fixed];
       kept[fixed] = true;
       function key(a, b) { return Math.min(a, b) + '|' + Math.max(a, b); }
@@ -5187,7 +5315,7 @@
         if (!kept[e.faces[0]] || !kept[e.faces[1]]) return;
         (tree[key(e.faces[0], e.faces[1])] ? bends : rips).push(e.mid.slice());
       });
-      var rounded = two.filter(function (e) { return e.smooth && (kept[e.faces[0]] || kept[e.faces[1]]); }).length;
+      var rounded = two.filter(function (e) { return e.smooth && (kept[e.faces[0]] || kept[e.faces[1]]) && !facet[e.faces[0]] && !facet[e.faces[1]]; }).length;   // rfIH: rounded edges that are no bend
       return { bends: bends, rips: rips, T: T, wall: wall, rounded: rounded };
     }
     var T = +opts.thickness > 0 ? +opts.thickness : wall;
@@ -5212,6 +5340,7 @@
     }
     if (model.noBends) return { body: body, info: [], tool: null };   // No Bends: the part as it was before its bends were inserted
     var lay = insertBendsLayout(g, model, { body: body });
+    if (!lay.wedges.length) return { body: body, info: lay.info, tool: null, bends: lay.info.length };   // lane rfIH: every bend was already rounded
     var cut = unionAll(lay.fills.concat(lay.corners).map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id); }));
     var put = unionAll(lay.wedges.map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id, bendCv(t.loop, [0, 0], [t.R, t.RT])); }));
     return { body: body.subtract(cut).union(put), info: lay.info, tool: put, bends: lay.info.length };
@@ -5387,6 +5516,7 @@
   K.unfoldCells = ufCells; K.unfoldLayers = ufLayers;   // lane DJ (OpenCascade folds added material / blind cuts with them)
   K.miterFlangeStages = miterFlangeStages; K.miterTail = miterTail; K.MITER_FLANGE_POSITIONS = MITER_FLANGE_POSITIONS.slice(); _.buildMiterFlange = buildMiterFlange;   // lane DL
   K.insertBendsLayout = insertBendsLayout; K.convertSMPlan = convertSMPlan; K.sheetThicknessAt = sheetThicknessAt; K.INSERT_BENDS_RELIEFS = IB_RELIEFS.slice(); K.convertSMInsert = convertSMInsert; K.convertSMCollect = convertSMCollect; K.convertSMRipGap = ibRipGap; K.insertBendsPreview = insertBendsPreview; _.buildInsertBends = buildInsertBends;   // lane DQ
+  K.insertBendsRounded = ibRoundBends;   // lane rfIH: ibRoundBends(body, mesh, T, units): the rounded bends a part already has
 
   // ------------------------------------------------------------------ Forming Tool (lane forming, rfHI)
   // SolidWorks' Design Library forming tools dropped on a flat sheet face: Dimple (round emboss), Extruded Hole (the

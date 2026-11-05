@@ -4016,7 +4016,7 @@
       var r;
       try { r = K.convertSMCollect(baseBody(), v.fixedFace, { thickness: +v.thickness, units: units }); } catch (e) { UI.toast(e.message); UI.setStatus(e.message); return; }
       if (!r.bends.length) {
-        var why = r.rounded ? 'Collect All Bends: this part has rounded bends; Convert to Sheet Metal uses sharp edges only, so there is nothing to collect (Insert Bends cannot use rounded bends yet either).'
+        var why = r.rounded ? 'Collect All Bends: the part has rounded edges, but none is a bend of this thickness (inside R, outside R + T, flat walls T thick on both ends).'
           : 'Collect All Bends: nothing to collect. No edge reached from the fixed face is the outside corner of two walls ' + UI.fmtNum(r.T || +v.thickness, 4) + ' thick' + (r.wall != null && r.wall > 2 * (+v.thickness) ? ' (a solid: click the edges that become bends).' : ' (pick an outside face as the fixed face, or click the edges).');
         UI.toast(why); UI.setStatus(why);
         return;

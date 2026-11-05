@@ -1356,7 +1356,7 @@ var OcctKernel = (function () {
       if (k < 0) throw new Error((f.type === 'convertSM' ? 'Convert to Sheet Metal' : 'Insert Bends') + ': there is no solid to bend yet.');
       var g = f, body = unify(bodies[k]);
       if (f.type === 'convertSM') {
-        var plan = K.convertSMPlan(f, m, { body: shapeToCSG(body) }), gap = K.convertSMRipGap(f, m);
+        var plan = K.convertSMPlan(f, m, { body: shapeToCSG(body, null, null, true) }), gap = K.convertSMRipGap(f, m);   // rfIH: with the cylinder records (rounded bends)
         if (!(gap > 0) || !isFinite(gap)) throw new Error('Convert to Sheet Metal: the rip gap must be a positive number.');
         if (!plan.thin) shellOp({ thickness: plan.T, faces: plan.removed.map(function (p) { return { at: p }; }) });
         body = unify(bodies[k]);
@@ -1368,7 +1368,8 @@ var OcctKernel = (function () {
         g = K.convertSMInsert(f, plan);
       }
       if (m.noBends) { bodies[k] = body; return; }   // No Bends
-      var lay = K.insertBendsLayout(g, m, { body: shapeToCSG(body) });
+      var lay = K.insertBendsLayout(g, m, { body: shapeToCSG(body, null, null, true) });   // rfIH: the records find the part's own rounded bends
+      if (!lay.wedges.length) { bodies[k] = body; return; }   // rfIH: every bend was already rounded: the part stays as it is
       body = boolMany('cut', body, lay.fills.concat(lay.corners).map(function (t) { return prismOf(t.loop, t.plane, t.a, t.b); }), 'Insert Bends: OpenCascade could not cut the sharp corners.');
       bodies[k] = boolMany('fuse', body, lay.wedges.map(ibWedge), 'Insert Bends: OpenCascade could not add the bends.');
     }

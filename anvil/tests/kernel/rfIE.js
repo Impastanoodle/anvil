@@ -3,7 +3,7 @@
   // thick, reached from the fixed face (a breadth-first tree; an edge that would close a ring is ripped by Convert).
   // A thin-walled U-channel (4 long, 2 × 2, walls .06) and a shelled 2 × 2 × 1 box with an open top: the collected
   // edges are the hand picks, Convert with them is the same part and flat (analytic, K .5); Convert of a part already T
-  // thick no longer shells it again; a solid block, an inside face and a part with rounded bends collect nothing.
+  // thick no longer shells it again; a solid block and an inside face collect nothing (rounded bends: collected since lane rfIH).
   (function () {
     group('rfIE: Collect All Bends (Convert to Sheet Metal): U-channel, open box, block, rounded bends, round trip');
     var W = 0.06, R = 0.06, G = 0.03, RT = R + W, BA = Math.PI / 2 * (R + 0.5 * W);
@@ -55,7 +55,7 @@
       assert(fa.loops.length === 1 && fa.bends.length === 4, 'loops ' + fa.loops.length + ', bends ' + fa.bends.length);
     });
 
-    test('rfIE: nothing to collect on a solid block, from an inside face, or with rounded bends (counted: Convert cannot use them yet)', function () {
+    test('rfIE: nothing to collect on a solid block or from an inside face; rounded bends are collected (lane rfIH)', function () {
       var c = K.convertSMCollect(rfIEbody(BLOCK), [2, 0, -1], { thickness: W, units: 'in' });
       assert(!c.bends.length && !c.rips.length && !c.rounded, 'block: ' + JSON.stringify(c));
       near(c.wall, 2, 1e-9, 'the block is 2 thick at its bottom');
@@ -63,7 +63,7 @@
       assert(!d.bends.length, 'inside face: ' + JSON.stringify(d));
       var RND = U + 'p.fillet(0.12, [[0, 0, 2], [2, 0, 2]]);\np.fillet(0.06, [[0.06, 0.06, 2], [1.94, 0.06, 2]]);\n';
       var e = K.convertSMCollect(rfIEbody(RND), [1, 0, 2], { thickness: W, units: 'in' });
-      assert(!e.bends.length && e.rounded > 0, 'rounded: ' + JSON.stringify(e));
+      assert(e.bends.length === 2 && !e.rounded, 'rounded: ' + JSON.stringify(e));
       var msg = '';
       try { K.convertSMCollect(rfIEbody(U), [9, 9, 9], { units: 'in' }); } catch (x) { msg = x.message; }
       assert(/no flat face at/.test(msg), msg);
