@@ -1416,7 +1416,11 @@ var UI = (function () {
     // has one weight at every display scale and never alternates between a hard and a soft pixel as the view turns
     var dpr = renderer.getPixelRatio();
     fm.uniforms.linewidth.value = Math.max(1, Math.round(w * dpr)) / dpr;
-    if (fm.transparent !== !!src.transparent) { fm.transparent = !!src.transparent; fm.needsUpdate = true; }
+    // rfIB: a line drawn over everything (depthTest off: the sketch being edited, previews, selection) is drawn in the
+    // transparent pass, in its renderOrder, so a translucent fill under it (the shaded sketch regions, renderOrder 9)
+    // never washes over its inner half: opacity 1, the same colour, the whole width
+    var tr = !!src.transparent || (!hidden && src.depthTest === false);
+    if (fm.transparent !== tr) { fm.transparent = tr; fm.needsUpdate = true; }
     if (!hidden) { fm.depthTest = src.depthTest; fm.depthWrite = src.depthWrite; }
     fm.clippingPlanes = src.clippingPlanes;
     fm.visible = src.visible;
@@ -3022,7 +3026,8 @@ var UI = (function () {
       ptTexture = new THREE.CanvasTexture(cv);
     }
     var pm = ptMats[m.uuid];
-    if (!pm) pm = ptMats[m.uuid] = new THREE.PointsMaterial({ size: 10, sizeAttenuation: false, map: ptTexture, alphaTest: 0.5, transparent: false, depthTest: false });
+    // (rfIB: in the transparent pass, after the shaded regions (renderOrder 9) and the lines (10.5), as the lines)
+    if (!pm) pm = ptMats[m.uuid] = new THREE.PointsMaterial({ size: 10, sizeAttenuation: false, map: ptTexture, alphaTest: 0.5, transparent: true, depthTest: false });
     // the same Color as the line (a state colour — over-defined red, selected yellow — shows on its dots too), except
     // plain white geometry, whose dots are green so they stand out on the white wireframe
     var mh = m.color.getHex();
@@ -4706,7 +4711,7 @@ var UI = (function () {
     applyCamera: applyCamera, resize: resize, rotateView: rotateView, panView: panView, zoomView: zoomView, zoomToFit: zoomToFit,
     setView: setView, viewNormalTo: viewNormalTo, previousView: previousView, pushViewHistory: pushViewHistory, VIEWS: VIEWS, modelBounds: modelBounds,
     updateBodyMesh: updateBodyMesh, applyDisplayStyle: applyDisplayStyle, partColor: partColor, updateHighlights: updateHighlights, updatePlanes: updatePlanes,
-    updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: screenPolylines, scaleBar: scaleBarInfo, updateTemp: updateTemp, disposeGroup: disposeGroup,
+    updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: screenPolylines, sketchSceneVersion: function () { return sceneVer; }, scaleBar: scaleBarInfo, updateTemp: updateTemp, disposeGroup: disposeGroup,
     sketchOverlayHooks: sketchOverlayHooks, tempEntityHooks: tempEntityHooks, sketchOverlayObjects: sketchOverlayObjects, tempEntitiesShown: tempEntitiesShown,   // sketch-hooks
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickRefGeo: pickRefGeo, updateRefGeo: updateRefGeo, drawRefGeo: drawRefGeo, pickEntity: pickEntity, pickEntityDist: pickEntityDist, pickEdge: pickEdge,

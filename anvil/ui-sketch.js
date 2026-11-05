@@ -2788,6 +2788,231 @@
     return false;
   }
   UI.sketchGeometryAt = function (b) { var f = UI.activeSketchFeature(); if (!f || App.mode !== 'sketch') return false; geoSegs = screenGeometry(f, UI.activePlane()); var r = onGeometry(b); geoSegs = null; return r; };
+
+  // rfIB (user 2026-11-05: "dont let smart dimensions take line size priority"). The dimension layer is an SVG over the
+  // WebGL canvas, so a dimension's 1 px line and its 3 px light casing (rfHA) replaced the sketch line wherever they ran
+  // along it — a distance between two parallel lines draws its extension lines from each line's middle, along the line,
+  // so half of every edge of a dimensioned rectangle was a hairline — and notched it (and the end dots) where they
+  // crossed it. Every dimension / extension line is now cut where it comes within GEO_CLEAR px of the active sketch's
+  // drawn curves (GEO_PT_CLEAR of its dots); an arrowhead whose tip lands on them steps back to touch them, and one
+  // they cross is masked (#dim-geo-mask: only those arrowheads, a mask costs a paint per element). So the geometry
+  // always shows at its full weight and colour, in every status colour, at every zoom. Text is left as it was (in front).
+  var GEO_CLEAR = 3, GEO_PT_CLEAR = 6.5, GEO_ARROW_CLEAR = 1.6, GEO_ARROW_PT = 5.75;   // px from a curve's centre (a 2 px line, a 1 px casing)
+  // per drawDims: { f, m (sketch -> screen, affine), grid (built on the first query), mSegs, mPts, mKeys (the mask's) }
+  var clipState = null;
+  var uvCache = { key: null, f: null, ents: null };
+  // the drawn curves (as ui-core draws them: UI.screenPolylines) and dots (sketchEndPoints' rule) of each shown entity of
+  // f in sketch coordinates, as flat arrays (seg: ax ay bx by …, pts: x y …); kept while the sketches are not redrawn
+  // (UI.sketchSceneVersion), so a zoom or pan frame only maps them to the screen
+  function clipEntitiesUV(f) {
+    var key = (UI.sketchSceneVersion ? UI.sketchSceneVersion() : NaN) + ':' + f.entities.length;
+    if (uvCache.f === f && uvCache.key === key) return uvCache.ents;
+    var S = window.SketchSolver, ents = [];
+    f.entities.forEach(function (e, i) {
+      if (!e) return;
+      var ly = UI.sketchLayerStyle ? UI.sketchLayerStyle(f, e, true) : null;
+      if (ly && ly.hidden) return;
+      var seg = [], pts = [];
+      if (e.t === 'point') pts.push(e.x, e.y);
+      else {
+        var pls;
+        try { pls = UI.screenPolylines ? UI.screenPolylines(e) : K.entityPolylines(e); } catch (err) { pls = []; }
+        (pls || []).forEach(function (l) {
+          var q = l.pts, n = q ? q.length : 0, cnt = l.closed ? n : n - 1;
+          for (var k = 0; k < cnt && n > 1; k++) { var a = q[k], b = q[(k + 1) % n]; seg.push(a[0], a[1], b[0], b[1]); }
+        });
+        if (S && S.pointRefs) {
+          try {
+            var inf = S.infSides ? S.infSides(e) : null;
+            S.pointRefs(f, i).forEach(function (pr) {
+              if (/\.mid$/.test(pr.ref) || (e.t === 'rect' && /\.c$/.test(pr.ref))) return;
+              if (inf && inf[pr.ref.split('.')[1]]) return;
+              if (App.view.showEndpoints === false && !/\.c$/.test(pr.ref)) return;
+              pts.push(pr.pt[0], pr.pt[1]);
+            });
+          } catch (err) { /* no dots */ }
+        }
+      }
+      if (seg.length || pts.length) ents.push({ seg: seg, pts: pts });
+    });
+    uvCache = { key: key, f: f, ents: ents };
+    return ents;
+  }
+  var geoClearOn = true;
+  // UI.dimGeometryClear(on?) -> whether dimension lines are cut clear of the sketch geometry (off: as before rfIB, for comparisons)
+  UI.dimGeometryClear = function (on) { if (on != null) { geoClearOn = !!on; App.dimsStale = true; } return geoClearOn; };
+  function clipBegin(f, pl) {
+    clipState = null;
+    if (!f || !pl || !geoClearOn) return;
+    // the view is orthographic, so sketch (u, v) -> screen is affine: three projections per draw, not one per point
+    var o = UI.worldToScreen(K.to3D(pl, 0, 0)), x = UI.worldToScreen(K.to3D(pl, 1, 0)), y = UI.worldToScreen(K.to3D(pl, 0, 1));
+    if (!o || !x || !y) return;
+    var m = [o[0], o[1], x[0] - o[0], x[1] - o[1], y[0] - o[0], y[1] - o[1]];
+    if (!(Math.abs(m[2] * m[5] - m[4] * m[3]) > 1e-12)) return;   // the sketch plane seen edge-on: nothing to keep clear
+    clipState = { f: f, m: m, grid: null, mSegs: [], mPts: [], mKeys: new Set() };
+  }
+  // The sketch on screen in a grid (built once per drawDims, on the first query): item k is a segment (xy[4k…4k+3]) or
+  // a dot (dot[k] = 1), listed in every cell its box meets. The grid spans the items' box (cut to the view and a
+  // margin: anything further out is clamped into the border cells, as a query is, so nothing is missed) in cells sized
+  // to the items' density, so a sketch zoomed far out (everything within a few pixels) still tests few per query
+  var GRID_MARGIN = 240, GRID_DENSE = 4;
+  function clipGrid() {
+    var st = clipState;
+    if (st.grid) return st.grid;
+    var m = st.m, W = UI.size ? UI.size.w : 2000, H = UI.size ? UI.size.h : 2000, xy = [], dot = [];
+    clipEntitiesUV(st.f).forEach(function (en) {
+      var s = en.seg, p = en.pts;
+      for (var j = 0; j < s.length; j += 4) { xy.push(m[0] + s[j] * m[2] + s[j + 1] * m[4], m[1] + s[j] * m[3] + s[j + 1] * m[5], m[0] + s[j + 2] * m[2] + s[j + 3] * m[4], m[1] + s[j + 2] * m[3] + s[j + 3] * m[5]); dot.push(0); }
+      for (var k = 0; k < p.length; k += 2) { var x = m[0] + p[k] * m[2] + p[k + 1] * m[4], y = m[1] + p[k] * m[3] + p[k + 1] * m[5]; xy.push(x, y, x, y); dot.push(1); }
+    });
+    var bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+    for (var a = 0; a < xy.length; a += 2) { if (xy[a] < bx0) bx0 = xy[a]; if (xy[a] > bx1) bx1 = xy[a]; if (xy[a + 1] < by0) by0 = xy[a + 1]; if (xy[a + 1] > by1) by1 = xy[a + 1]; }
+    bx0 = Math.max(bx0, -GRID_MARGIN); by0 = Math.max(by0, -GRID_MARGIN); bx1 = Math.min(bx1, W + GRID_MARGIN); by1 = Math.min(by1, H + GRID_MARGIN);
+    if (!(bx1 >= bx0)) { bx0 = bx1 = 0; } if (!(by1 >= by0)) { by0 = by1 = 0; }
+    var wB = bx1 - bx0 + 1, hB = by1 - by0 + 1, size = Math.sqrt(wB * hB / Math.max(1, dot.length)) * 2;
+    size = Math.max(size, Math.sqrt(wB * hB / 40000), 3);   // at most about 40 000 cells
+    size = Math.min(size, 48);
+    var nx = Math.max(1, Math.ceil(wB / size)), ny = Math.max(1, Math.ceil(hB / size)), cells = new Array(nx * ny);
+    function cx(x) { var c = Math.floor((x - bx0) / size); return c < 0 ? 0 : c >= nx ? nx - 1 : c; }
+    function cy(y) { var c = Math.floor((y - by0) / size); return c < 0 ? 0 : c >= ny ? ny - 1 : c; }
+    for (var k2 = 0; k2 < dot.length; k2++) {
+      var o = 4 * k2, i0 = cx(Math.min(xy[o], xy[o + 2])), i1 = cx(Math.max(xy[o], xy[o + 2])), j0 = cy(Math.min(xy[o + 1], xy[o + 3])), j1 = cy(Math.max(xy[o + 1], xy[o + 3]));
+      for (var jj = j0; jj <= j1; jj++) for (var ii = i0; ii <= i1; ii++) { var c = jj * nx + ii; (cells[c] || (cells[c] = [])).push(k2); }
+    }
+    // a sketch so far zoomed out that its curves average under GRID_DENSE px apart: no dimension line can be clear of
+    // them (nor read) there, so none is cut (it would cost a few ms a frame for nothing)
+    var spacing = Math.sqrt(wB * hB / Math.max(1, dot.length));
+    st.grid = { xy: xy, dot: dot, cells: cells, nx: nx, cx: cx, cy: cy, stamp: new Int32Array(dot.length), q: 0, spacing: spacing, dense: spacing < GRID_DENSE };
+    return st.grid;
+  }
+  // the part [spanLo, spanHi] of p + t·d (t over all reals) within r of the segment a–b: a capsule, convex, so one
+  // interval (the union of its two end discs' and its middle band's spans); false when the line misses it
+  var spanLo = 0, spanHi = 0;
+  function capsuleSpan(px, py, dx, dy, ax, ay, bx, by, r) {
+    var lo = Infinity, hi = -Infinity, A = dx * dx + dy * dy, r2s = r * r;
+    if (A < 1e-12) return false;
+    for (var e = 0; e < 2; e++) {
+      var cx = e ? bx : ax, cy = e ? by : ay;
+      if (e && bx === ax && by === ay) break;
+      var fx = px - cx, fy = py - cy, B = 2 * (fx * dx + fy * dy), C = fx * fx + fy * fy - r2s, D = B * B - 4 * A * C;
+      if (D < 0) continue;
+      var s = Math.sqrt(D), t0 = (-B - s) / (2 * A), t1 = (-B + s) / (2 * A);
+      if (t0 < lo) lo = t0;
+      if (t1 > hi) hi = t1;
+    }
+    var ex = bx - ax, ey = by - ay, L = Math.sqrt(ex * ex + ey * ey);
+    if (L > 1e-9) {
+      ex /= L; ey /= L;
+      var qx = px - ax, qy = py - ay, w0 = -Infinity, w1 = Infinity;
+      // along the segment 0 … L, across it −r … r
+      var u0 = qx * ex + qy * ey, du = dx * ex + dy * ey, v0 = -qx * ey + qy * ex, dv = -dx * ey + dy * ex;
+      for (var k = 0; k < 2; k++) {
+        var q0 = k ? v0 : u0, dq = k ? dv : du, mn = k ? -r : 0, mx = k ? r : L;
+        if (Math.abs(dq) < 1e-12) { if (q0 < mn || q0 > mx) w0 = Infinity; continue; }
+        var s0 = (mn - q0) / dq, s1 = (mx - q0) / dq;
+        if (s0 > s1) { var tt = s0; s0 = s1; s1 = tt; }
+        if (s0 > w0) w0 = s0;
+        if (s1 < w1) w1 = s1;
+      }
+      if (w0 <= w1) { if (w0 < lo) lo = w0; if (w1 > hi) hi = w1; }
+    }
+    if (!(lo <= hi)) return false;
+    spanLo = lo; spanHi = hi;
+    return true;
+  }
+  // calls fn(lo, hi, k, isDot) for every drawn segment / dot k of the sketch within r (rDot) of the line p–q (spans
+  // meeting its [0, 1] part): the grid cells its padded box meets, then a band test, then the exact one
+  function nearGeometry(p, q, r, rDot, fn) {
+    var g = clipGrid(), dx = q[0] - p[0], dy = q[1] - p[1], Lq = Math.sqrt(dx * dx + dy * dy);
+    if (Lq < 1e-9 || !g.dot.length || g.dense) return;
+    var pad = Math.max(r, rDot), xy = g.xy, stamp = g.stamp, qn = ++g.q;
+    var i0 = g.cx(Math.min(p[0], q[0]) - pad), i1 = g.cx(Math.max(p[0], q[0]) + pad), j0 = g.cy(Math.min(p[1], q[1]) - pad), j1 = g.cy(Math.max(p[1], q[1]) + pad);
+    var ux = dx / Lq, uy = dy / Lq, nc = -uy * p[0] + ux * p[1], tc = ux * p[0] + uy * p[1];
+    for (var j = j0; j <= j1; j++) for (var i = i0; i <= i1; i++) {
+      var cell = g.cells[j * g.nx + i];
+      if (!cell) continue;
+      for (var c = 0; c < cell.length; c++) {
+        var k = cell[c];
+        if (stamp[k] === qn) continue;
+        stamp[k] = qn;
+        var isDot = g.dot[k] === 1, rr = isDot ? rDot : r, o = 4 * k, Ax = xy[o], Ay = xy[o + 1], Bx = xy[o + 2], By = xy[o + 3];
+        var na = -uy * Ax + ux * Ay - nc, nb = -uy * Bx + ux * By - nc;
+        if ((na > rr && nb > rr) || (na < -rr && nb < -rr)) continue;
+        var ta = ux * Ax + uy * Ay - tc, tb = ux * Bx + uy * By - tc;
+        if ((ta < -rr && tb < -rr) || (ta > Lq + rr && tb > Lq + rr)) continue;
+        if (capsuleSpan(p[0], p[1], dx, dy, Ax, Ay, Bx, By, rr) && spanHi > 0 && spanLo < 1) fn(spanLo, spanHi, k, isDot);
+      }
+    }
+  }
+  // dimension / extension lines with the parts on or by the sketch's drawn curves and dots taken out
+  function clearOfGeometry(lines) {
+    if (!clipState) return lines;
+    var out = [], cuts;
+    function cut(lo, hi) { cuts.push(lo < 0 ? 0 : lo, hi > 1 ? 1 : hi); }
+    for (var i = 0; i < lines.length; i++) {
+      var p = lines[i][0], q = lines[i][1], L = Math.sqrt((q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]));
+      cuts = [];
+      if (L < 1e-6) { out.push(lines[i]); continue; }
+      nearGeometry(p, q, GEO_CLEAR, GEO_PT_CLEAR, cut);
+      if (!cuts.length) { out.push(lines[i]); continue; }
+      var order = [];
+      for (var c = 0; c < cuts.length; c += 2) order.push(c);
+      order.sort(function (a, b) { return cuts[a] - cuts[b]; });
+      var t = 0, minT = 0.75 / L;   // pieces under 3/4 px are dropped
+      for (var k = 0; k <= order.length; k++) {
+        var end = k < order.length ? cuts[order[k]] : 1;
+        if (end - t > minT) out.push([[p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t], [p[0] + (q[0] - p[0]) * end, p[1] + (q[1] - p[1]) * end]]);
+        if (k < order.length && cuts[order[k] + 1] > t) t = cuts[order[k] + 1];
+      }
+    }
+    return out;
+  }
+  // the arrowheads clear of the sketch's curves and dots: one test per arrowhead, along its axis (tip to the middle of
+  // its base) within ARROW_R (its half width and its casing). A tip that lands on a curve (or a dot) steps back along
+  // the arrow until it only touches it (GEO_ARROW_CLEAR from a curve's centre: its edge; at most half the arrow's
+  // length); a curve across the rest of it goes into the mask and the dimension's arrowheads are masked (arrowsMasked)
+  var ARROW_R = ARROW_HW + 0.75, arrowsMasked = false;
+  function arrowsClear(arrows) {
+    var st = clipState, g = clipGrid();
+    arrowsMasked = false;
+    function take(k, dot) {
+      arrowsMasked = true;
+      if (st.mKeys.has(k)) return;
+      st.mKeys.add(k);
+      var o = 4 * k;
+      if (dot) st.mPts.push([g.xy[o], g.xy[o + 1]]); else st.mSegs.push([g.xy[o], g.xy[o + 1], g.xy[o + 2], g.xy[o + 3]]);
+    }
+    return arrows.map(function (a) {
+      var hits = [], back = 0, base = [a.tip[0] - a.dir[0] * ARROW_L, a.tip[1] - a.dir[1] * ARROW_L];
+      nearGeometry(a.tip, base, ARROW_R, GEO_ARROW_PT, function (lo, hi, k, dot) { hits.push([lo, hi, k, dot]); });
+      if (!hits.length) return a;
+      hits.forEach(function (h) { if (h[0] <= 0.05) back = Math.max(back, h[3] ? h[1] : h[1] - (ARROW_R - GEO_ARROW_CLEAR) / ARROW_L); });
+      if (back > 0.5) back = 0;   // a curve along the arrow: it stays, masked
+      hits.forEach(function (h) { if (!(back > 0 && h[0] <= 0.05)) take(h[2], h[3]); });
+      if (!(back > 0)) return a;
+      var c = {}, key;
+      for (key in a) c[key] = a[key];
+      c.tip = [a.tip[0] - a.dir[0] * ARROW_L * back, a.tip[1] - a.dir[1] * ARROW_L * back];
+      return c;
+    });
+  }
+  // the mask's path data: the curves an arrowhead crosses (stroked, GEO_ARROW_CLEAR each side), their dots (filled)
+  function maskPaths() {
+    var st = clipState, dl = '', dp = '';
+    if (st) {
+      st.mSegs.forEach(function (g) { dl += 'M' + r2(g[0]) + ' ' + r2(g[1]) + 'L' + r2(g[2]) + ' ' + r2(g[3]); });
+      st.mPts.forEach(function (g) { var r = GEO_ARROW_PT; dp += 'M' + r2(g[0] - r) + ' ' + r2(g[1]) + 'a' + r + ' ' + r + ' 0 1 0 ' + 2 * r + ' 0a' + r + ' ' + r + ' 0 1 0 ' + -2 * r + ' 0Z'; });
+    }
+    return { lines: dl || 'M0 0', dots: dp || 'M0 0' };
+  }
+  // test hook: the dimension lines as drawn after the cut (screen px) for lines given in screen px
+  UI.dimLinesClearOfGeometry = function (lines) {
+    var f = UI.activeSketchFeature();
+    if (!f || App.mode !== 'sketch') return lines;
+    var keep = clipState;
+    clipBegin(f, UI.activePlane());
+    try { return clearOfGeometry(lines); } finally { clipState = keep; }
+  };
   function placeLabel(sc, it) {
     if (!sc.text) return;
     var own = it.temp ? null : dimKey(it);
@@ -2930,10 +3155,15 @@
     // rfHA: the lines also go into the layer's one dark casing path (path.dlh, 3 px, under every dimension: drawDimsIn)
     // so the light 1 px lines read on a light face as on the ground, as the text's halo does; the arrows take the same
     // casing from CSS (paint-order: stroke). One node for the whole layer keeps three children per dimension.
-    var dlD = linesPath(sc.box ? breakLines(sc.lines, sc.box) : sc.lines);
+    // rfIB: and where they run on or cross the sketch's own curves and dots (the geometry is drawn over them)
+    var dlD = linesPath(clearOfGeometry(sc.box ? breakLines(sc.lines, sc.box) : sc.lines));
     if (dimCasing != null) dimCasing += dlD;
     svg('path', { 'class': 'dl', d: dlD }, gEl);
-    svg('path', { 'class': 'da', d: arrowsPath(sc.arrows) }, gEl);
+    // rfIB: an arrowhead whose tip lands on the sketch's curves steps back to touch them, not cover them; one that still
+    // overlaps them (a curve running across its body) is masked
+    var arr = clipState ? arrowsClear(sc.arrows) : sc.arrows, daA = { 'class': 'da', d: arrowsPath(arr) };
+    if (clipState && arrowsMasked) daA.mask = 'url(#dim-geo-mask)';
+    svg('path', daA, gEl);
     var ta = { x: r2(sc.text.x), y: r2(sc.text.y), 'text-anchor': sc.text.anchor };
     if (!it.temp) { ta.tabindex = '0'; ta.role = 'button'; ta['aria-label'] = 'Dimension ' + sc.label + ', double-click to change, drag to move'; }
     var t = svg('text', ta, gEl);
@@ -2964,6 +3194,7 @@
     dimSegs = null; prevLabels = null;
     var fG = UI.activeSketchFeature();
     geoSegs = fG && App.mode === 'sketch' ? screenGeometry(fG, UI.activePlane()) : null;
+    clipBegin(fG && App.mode === 'sketch' ? fG : null, fG ? UI.activePlane() : null);   // rfIB
     // p9-sketch: a second pass when a label landed on another dimension's line, with every line as an obstacle
     // (and a third when a label moved in the second ran a neighbour's line on into another label). While the view or
     // the sketch changes every frame (zoom, pan, drag) one pass is drawn and the full layout follows 150 ms after the
@@ -2988,7 +3219,7 @@
     var withTurn = layout(true);
     if (radialTurned && withTurn > 0 && layout(false) > withTurn) layout(true);
     radialTurnOn = true;
-    dimSegs = null; geoSegs = null; prevLabels = null;
+    dimSegs = null; geoSegs = null; prevLabels = null; clipState = null;
     lastClashes = drawnLabels.filter(function (x) { return onOtherLines(x.box, x.owner, dimSegsNow); }).map(function (x) {
       return x.label + ' on ' + dimSegsNow.filter(function (g) { return g.owner !== x.owner && segHitsBox(g.a, g.b, x.box); }).map(function (g) { return g.owner; }).join('/');
     });
@@ -3106,6 +3337,12 @@
     if (!f || App.mode !== 'sketch') { clearFeedback(); if (dimEditing) closeDimEdit(false); return []; }
     var pl = UI.activePlane(), placed = f.dims || [], list = [], stale = [];
     var an = App.sketchState;
+    // rfIB: the mask of the arrowheads that touch the sketch's curves (filled in below with what they touch)
+    var BIG = 40000, mask = svg('mask', { id: 'dim-geo-mask', maskUnits: 'userSpaceOnUse', x: -BIG / 2, y: -BIG / 2, width: BIG, height: BIG }, svg('defs', {}, dimLayer));
+    svg('rect', { x: -BIG / 2, y: -BIG / 2, width: BIG, height: BIG, fill: '#fff' }, mask);
+    var maskL = svg('path', { fill: 'none', stroke: '#000', 'stroke-width': 2 * GEO_ARROW_CLEAR, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, mask);
+    var maskP = svg('path', { fill: '#000', stroke: 'none' }, mask);
+    if (clipState) { clipState.mSegs = []; clipState.mPts = []; clipState.mKeys = new Set(); }
     var casing = svg('path', { 'class': 'dlh' }, dimLayer);   // rfHA: filled in below, drawn under every dimension
     dimCasing = '';
     placed.forEach(function (d, i) { list.push({ d: d, index: i, state: d.driven ? 'driven' : an && an.dims ? an.dims[i] : null }); });
@@ -3123,6 +3360,9 @@
     var cd = dimCasing || 'M0 0';
     if (casing.getAttribute('d') !== cd) casing.setAttribute('d', cd);
     dimCasing = null;
+    var md = maskPaths();
+    if (maskL.getAttribute('d') !== md.lines) maskL.setAttribute('d', md.lines);
+    if (maskP.getAttribute('d') !== md.dots) maskP.setAttribute('d', md.dots);
     // placed dimensions whose entity vanished or changed type (delete, trim, mirror in place) are dropped
     if (stale.length) {
       f.dims = placed.filter(function (d, i) { return stale.indexOf(i) < 0; });
