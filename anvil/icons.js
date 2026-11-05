@@ -501,13 +501,15 @@ var IconsLib = (function () {
   function num(v) { return String(Math.round(v * 1000) / 1000); }
   // the class and target width (CSS px) of one stroke drawn w wide on the 16 grid, shown at size px
   function strokeClass(w, filled, self, size) {
-    var s = size / 16, big = size >= 24 ? 1 : 0;
+    // rfIA: above 32 px (an enlarged CommandManager) every class grows with the size, so a 64 px icon is the 32 px one
+    // scaled up (2.5 / 4 px lines), not the same 1-2 px hairlines on a bigger drawing
+    var s = size / 16, big = size >= 24 ? 1 : 0, up = size > 32 ? size / 32 : 1;
     if (filled && self) return ['self', w * s];
-    if (filled) return ['outline', WEIGHT.outline[big]];
+    if (filled) return ['outline', WEIGHT.outline[big] * up];
     if (w >= 1.9) return ['bold', w * s * (big ? WEIGHT.boldLarge : 1)];
-    if (w >= 1.3) return ['hero', WEIGHT.hero[big]];
-    if (w >= 0.85) return ['fine', WEIGHT.fine[big]];
-    return ['hair', Math.min(w * s, 1)];
+    if (w >= 1.3) return ['hero', WEIGHT.hero[big] * up];
+    if (w >= 0.85) return ['fine', WEIGHT.fine[big] * up];
+    return ['hair', Math.min(w * s, up)];
   }
   function ratio() { return (typeof window !== 'undefined' && window.devicePixelRatio) || 1; }
   // the offset (16-grid units) that puts a line of dw device px at coordinate c on whole pixels, at k device px per unit

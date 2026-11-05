@@ -1965,3 +1965,12 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 body.splitting #fm-tab { cursor: col-resize; }
 /* the Select tool's sketch help line, dismissed by a press in the graphics area (user 2026-11-04) */
 #sketch-hint.dismissed { display: none; }
+/* rfIA: the CommandManager's size grip along its bottom edge (ui-panels.js addRibbonGrip): drag down to enlarge the
+   ribbon (ui-panels.js rbApply scales every ribbon rule into <style id="ribbon-scale">), double-click for the default.
+   A 5 px strip over the bottom of the tab strip; a 2 px line in the focus ink shows on hover and while dragging. */
+#ribbon { position: relative; }
+#ribbon-grip { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; z-index: 3; cursor: row-resize; touch-action: none; }
+#ribbon-grip::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: transparent; transition: background-color 90ms ease-out; }
+#ribbon-grip:hover::after, #ribbon-grip.dragging::after { background: var(--c-focus); }
+body.splitting-v, body.splitting-v * { cursor: row-resize !important; }
+body.splitting-v #viewport { pointer-events: none; }

@@ -378,10 +378,10 @@
     var b = el('button', { class: 'rb' + (item.wide && !small ? ' rb-wide' : '') }), shown = null;   // wide: a long two-line label (Shaded Sketch Contours)
     function sync() {
       var s = itemState(item);
-      var face = s.id + '|' + s.label;
+      var face = s.id + '|' + s.label + '|' + rbIcon(small);   // rfIA: the CommandManager's size redraws the icon
       if (face !== shown) {
         shown = face;
-        b.innerHTML = Icons(s.icon, small ? 18 : 32) + '<span>' + (small ? item.label : s.label) + '</span>';
+        b.innerHTML = Icons(s.icon, rbIcon(small)) + '<span>' + (small ? item.label : s.label) + '</span>';
         b.setAttribute('aria-label', s.flat); b.dataset.icon = s.icon;
       }
       setTip(b, s.tip);
@@ -427,11 +427,11 @@
     var c = el('button', { class: 'rb-caret', html: '<span>▾</span>' });
     function sync() {
       var i = flyCurrent(item), s = itemState(item.items[i]);
-      var label = item.label || (small ? s.flat : s.label), face = s.id + '|' + label;
+      var label = item.label || (small ? s.flat : s.label), face = s.id + '|' + label + '|' + rbIcon(small);
       if (face !== shown) {
-        var refit = shown !== null;
+        var refit = shown !== null && shown.split('|').pop() === String(rbIcon(small));   // not on a size change (rbApply fits once)
         shown = face;
-        b.innerHTML = Icons(s.icon, small ? 18 : 32) + '<span>' + (small ? s.flat : label) + '</span>';
+        b.innerHTML = Icons(s.icon, rbIcon(small)) + '<span>' + (small ? s.flat : label) + '</span>';
         b.setAttribute('aria-label', item.label ? item.label.replace(/\n/g, ' ') : s.flat); b.dataset.icon = s.icon;
         c.setAttribute('aria-label', (item.label ? item.label.replace(/\n/g, ' ') : s.flat) + ' options');
         if (refit && wrap.isConnected) fitRibbon();   // a longer label may need the room of another button
@@ -542,7 +542,8 @@
   // r12/chrome12: the CommandManager fits the window as in SolidWorks. Level 1 drops the labels of the small stacked
   // buttons, level 2 the labels of the large ones; whatever still does not fit moves, from the right end, into a »
   // menu. Nothing scrolls. The buttons stay in the DOM (hidden ones only get .rb-over), so lookups by label still work.
-  function fitRibbon() {
+  function fitRibbon() { var r = fitRibbonLevels(); rbSnap(); return r; }
+  function fitRibbonLevels() {
     var rib = $('ribbon'), bar = $('ribbon-buttons');
     if (!rib || !bar) return;
     // the tab strip: greyed-out tabs that do not fit whole are left out rather than cut in half
@@ -608,6 +609,153 @@
     showMenu(r.right, r.bottom + 1, items, anchor);
     if (openMenu) openMenu.style.left = Math.max(4, r.right - openMenu.offsetWidth) + 'px';
   }
+
+  // rfIA (user 2026-11-05: "make the top menu able to be enlarged by dragging downwards, the icons have to keep their
+  // sharpness"): the CommandManager's size. A grip along its bottom edge (#ribbon-grip) drags it taller; everything in it
+  // grows with it: buttons, captions, stacks, the » and ▾, the tab strip. No transform / zoom: every ribbon rule of the
+  // style sheets is copied into one <style id="ribbon-scale"> with its px lengths (and px var() tokens) times the scale,
+  // rounded to whole px (hairlines of 1 px stay 1 px), and the icons are drawn again at the new size (icons.js weighs the
+  // strokes for it). Scale 1 = no sheet at all, so the default look is exactly the old one. The flyout / » menus keep
+  // their size. Kept in localStorage 'anvil.ribbonScale' (a ui-smoke frame uses its own key, so neither leaks).
+  var RB_MIN = 1, RB_MAX = 2.5, rbScale = 1, rbStyle = null, rbRules = null, rbSheetCount = -1;
+  var RB_KEY = (function () { var t = false; try { t = !!(window.frameElement && /\/tests\//.test(window.parent.location.pathname)); } catch (e) { } return t ? 'anvil.test.ribbonScale' : 'anvil.ribbonScale'; })();
+  function rbClamp(s) { s = +s; if (!(s > RB_MIN)) return RB_MIN; return Math.round(Math.min(RB_MAX, s) * 1000) / 1000; }
+  try { rbScale = rbClamp(parseFloat(localStorage.getItem(RB_KEY))); } catch (e) { }
+  // the icon sizes: large 32 px, small (stacks, grid) 16 px boxes (drawn at 18 at scale 1, as before)
+  function rbIcon(small) { return small ? (rbScale === 1 ? 18 : Math.round(16 * rbScale)) : Math.round(32 * rbScale); }
+  var RB_SEL = /#ribbon(?!-grip)|\.rtab(?![\w-])|\.rb(?![\w-])|\.rb-(?:stack|sep|fly|caret|more|grid|vgrid|wide|face|over|extra|caption|has-captions)/;
+  function rbSplitSel(t) {
+    var out = [], depth = 0, cur = '';
+    for (var i = 0; i < t.length; i++) {
+      var ch = t[i];
+      if (ch === '(' || ch === '[') depth++; else if (ch === ')' || ch === ']') depth--;
+      if (ch === ',' && depth === 0) { out.push(cur.trim()); cur = ''; } else cur += ch;
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+  }
+  // every style rule (in document order) that styles the CommandManager: { sel (its ribbon selectors only), text, wrap }
+  function rbCollect() {
+    var out = [];
+    function walk(rules, wrap) {
+      for (var i = 0; i < rules.length; i++) {
+        var r = rules[i];
+        if (r.selectorText != null) {
+          var parts = rbSplitSel(r.selectorText).filter(function (p) { return RB_SEL.test(p); });
+          if (parts.length && r.style && r.style.cssText) out.push({ sel: parts.join(', '), text: r.style.cssText, wrap: wrap });
+        } else if (r.cssRules && r.conditionText != null) walk(r.cssRules, (r.media ? '@media ' : '@supports ') + r.conditionText);
+      }
+    }
+    var sheets = document.styleSheets;
+    for (var i = 0; i < sheets.length; i++) {
+      if (rbStyle && sheets[i].ownerNode === rbStyle) continue;
+      try { walk(sheets[i].cssRules, null); } catch (e) { }
+    }
+    return out;
+  }
+  function rbScaled(text, s, cs) {
+    text = text.replace(/var\(\s*(--[\w-]+)\s*\)/g, function (all, v) { var x = cs.getPropertyValue(v).trim(); return /^-?[\d.]+px$/.test(x) ? x : all; });
+    return text.replace(/(-?\d*\.?\d+)px\b/g, function (all, n) { var v = parseFloat(n); return Math.abs(v) <= 1 ? all : Math.round(v * s) + 'px'; });
+  }
+  function rbSheetText(s) {
+    if (s === 1) return '';
+    var count = document.styleSheets.length - (rbStyle ? 1 : 0);
+    if (!rbRules || count !== rbSheetCount) { rbRules = rbCollect(); rbSheetCount = count; }
+    var cs = getComputedStyle($('ribbon') || document.documentElement);
+    var css = rbRules.map(function (r) { var t = r.sel + ' { ' + rbScaled(r.text, s, cs) + ' }'; return r.wrap ? r.wrap + ' { ' + t + ' }' : t; });
+    // ui-transform.js puts the group captions 15 px above the bottom of the buttons (16 px padding - 1): keep them in
+    // their own (scaled) padding band
+    css.push('#ribbon .rb-captions { margin-top: ' + (16 - Math.round(16 * s)) + 'px; }');
+    return css.join('\n');
+  }
+  function rbApply(atBoot) {
+    var text = rbSheetText(rbScale);
+    if (!rbStyle && text) { rbStyle = document.createElement('style'); rbStyle.id = 'ribbon-scale'; }
+    if (rbStyle) {
+      if (rbStyle.textContent !== text) rbStyle.textContent = text;
+      // after every other style sheet, so each copy wins over its original (same selector, later in the document)
+      var all = document.querySelectorAll('style, link[rel="stylesheet"]'), last = all[all.length - 1];
+      if (text && last !== rbStyle) (last && last.parentNode === document.body ? document.body : document.head).appendChild(rbStyle);
+      if (!text && rbStyle.parentNode) rbStyle.parentNode.removeChild(rbStyle);
+    }
+    var rib = $('ribbon');
+    if (rib) rib.classList.toggle('rb-scaled', rbScale !== 1);
+    var bar = $('ribbon-buttons');
+    if (bar) Array.prototype.forEach.call(bar.querySelectorAll('.rb'), function (b) { if (b._sync) b._sync(); });
+    if (atBoot) return;
+    fitRibbon();
+    if (UI.resize) UI.resize();   // the graphics area got shorter / taller: the 3D view follows at once
+  }
+  // an enlarged ribbon's boxes are whole px but centring can leave an icon on a half pixel (blurred): shift each icon
+  // (position: relative, no layout change, no transform) onto whole device pixels. Run after every fit (fitRibbon).
+  function rbSnap() {
+    var rib = $('ribbon');
+    if (!rib) return;
+    var icons = rib.querySelectorAll('.rb svg.ico'), dpr = window.devicePixelRatio || 1, moves = [], i;
+    for (i = 0; i < icons.length; i++) {
+      var ic = icons[i];
+      if (rbScale === 1) { if (ic.style.position) moves.push([ic, null]); continue; }
+      var r = ic.getBoundingClientRect();
+      if (!r.width) continue;
+      var x = r.left - (parseFloat(ic.style.left) || 0), y = r.top - (parseFloat(ic.style.top) || 0);
+      moves.push([ic, (Math.round(x * dpr) - x * dpr) / dpr, (Math.round(y * dpr) - y * dpr) / dpr]);
+    }
+    for (i = 0; i < moves.length; i++) {
+      var m = moves[i], st = m[0].style;
+      if (m[1] === null || (Math.abs(m[1]) < 0.005 && Math.abs(m[2]) < 0.005)) { if (st.position) { st.position = ''; st.left = ''; st.top = ''; } continue; }
+      st.position = 'relative'; st.left = (Math.round(m[1] * 1000) / 1000) + 'px'; st.top = (Math.round(m[2] * 1000) / 1000) + 'px';
+    }
+  }
+  // UI.setRibbonScale(s[, noSave]) -> the scale shown (1 .. 2.5); UI.ribbonScale() -> the scale
+  function setRibbonScale(s, noSave) {
+    s = rbClamp(s);
+    var changed = s !== rbScale;
+    rbScale = s;
+    if (changed) rbApply();
+    if (!noSave) try { if (s === 1) localStorage.removeItem(RB_KEY); else localStorage.setItem(RB_KEY, String(s)); } catch (e) { }
+    return rbScale;
+  }
+  // the scale that makes the CommandManager h px tall (heights are close to proportional; two corrections)
+  function rbScaleToHeight(h, from) {
+    var rib = $('ribbon'), s = rbClamp(from.s * h / from.h);
+    for (var k = 0; k < 3; k++) {
+      setRibbonScale(s, true);
+      var got = rib.getBoundingClientRect().height;
+      if (Math.abs(got - h) < 1 || !got) break;
+      var next = rbClamp(s * h / got);
+      if (next === s) break;
+      s = next;
+    }
+  }
+  function addRibbonGrip() {
+    var rib = $('ribbon');
+    if (!rib || $('ribbon-grip')) return;
+    var g = el('div', { id: 'ribbon-grip', title: 'Drag down to enlarge the CommandManager; double-click for the default size' });
+    var start = null;
+    g.addEventListener('pointerdown', function (e) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      start = { y: e.clientY, h: rib.getBoundingClientRect().height, s: rbScale };
+      try { g.setPointerCapture(e.pointerId); } catch (er) { }
+      g.classList.add('dragging'); document.body.classList.add('splitting-v');
+    });
+    g.addEventListener('pointermove', function (e) { if (start) rbScaleToHeight(start.h + e.clientY - start.y, start); });
+    function end() {
+      if (!start) return;
+      start = null;
+      g.classList.remove('dragging'); document.body.classList.remove('splitting-v');
+      setRibbonScale(rbScale);   // keep it
+      fitWorkspace();
+    }
+    g.addEventListener('pointerup', end);
+    g.addEventListener('pointercancel', end);
+    g.addEventListener('lostpointercapture', end);
+    g.addEventListener('dblclick', function () { setRibbonScale(1); fitWorkspace(); });
+    rib.appendChild(g);
+  }
+  UI.ribbonScale = function () { return rbScale; };
+  UI.setRibbonScale = function (s, noSave) { var r = setRibbonScale(s, noSave); fitWorkspace(); return r; };
+  UI.ribbonScaleLimits = { min: RB_MIN, max: RB_MAX, key: RB_KEY };
 
   // r12/chrome12: FeatureManager and Task Pane widths. Each has a drag handle on its inner edge (double-click: default
   // width); the width a user sets is kept in localStorage, and the shown width is clamped so the graphics area keeps
@@ -749,6 +897,8 @@
     addSplitter($('left'), PANES.fm, 1);
     addFmTab();
     addSplitter($('tp-panel'), PANES.tp, -1);
+    addRibbonGrip();   // rfIA
+    if (rbScale !== 1) rbApply(true);
     fitPanels(false);
     var queued = false;
     window.addEventListener('resize', function () { if (queued) return; queued = true; requestAnimationFrame(function () { queued = false; fitWorkspace(); }); });
