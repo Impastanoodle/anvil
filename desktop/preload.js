@@ -49,7 +49,17 @@ contextBridge.exposeInMainWorld('anvilDesktop', {
   isDesktop: true,
   version: info.version,
   checkForUpdates: () => ipcRenderer.invoke('anvil-desktop:check-updates'),
-  occtHost
+  occtHost,
+  // Windows' own Open / Save dialogs (main.js). open({ filters }) -> { path, name, data: Uint8Array } | { error } | null
+  // (cancelled); saveDialog({ name, filters, kind: 'document' | 'export', title }) -> { path, name } | null;
+  // write(path, data, { sibling }) -> { path, bytes } | { error, code } (only a path picked in a dialog this session);
+  // setDocument(path | null): the open document's file (the window title shows its name).
+  files: {
+    open: (o) => ipcRenderer.invoke('anvil-desktop:open-dialog', o || {}),
+    saveDialog: (o) => ipcRenderer.invoke('anvil-desktop:save-dialog', o || {}),
+    write: (p, data, o) => ipcRenderer.invoke('anvil-desktop:write-file', p, data, o || {}),
+    setDocument: (p) => ipcRenderer.invoke('anvil-desktop:set-document', p || null)
+  }
 });
 
 function el(tag, style, text) {

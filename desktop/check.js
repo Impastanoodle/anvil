@@ -10,6 +10,9 @@
 //                         timing table, WebAssembly against native, inside the app
 //   node check.js tests   [--only rfA]   the kernel tests (one slice) inside the app's app:// protocol (ANVIL_ROOT=../anvil)
 //   node check.js update  --folder <release folder> [--exe ...]  the app offers the update found in that folder
+//   node check.js files   [--exe ...]  File ▸ Open / Ctrl+S / Save As / exports through Windows' boxes (stood in for)
+//   node check.js update-restart [--exe ...]  Restart to update end to end with a stand-in installer (.cmd), both a
+//                         good install and a failed one; update.log
 'use strict';
 const fs = require('fs');
 const os = require('os');
@@ -352,6 +355,151 @@ async function checkUpdate() {
   await quit(page, child);
 }
 
+// ---- File ▸ Open / Save / Save As / exports through Windows' own boxes (stood in for by ANVIL_TEST_OPEN_FILE and
+// ANVIL_TEST_SAVE_DIR; main.js logs each box's defaults) --------------------------------------------------------
+async function checkFiles() {
+  const ud = path.join(WORK, 'userdata'), log = path.join(WORK, 'events.log'), inDir = path.join(WORK, 'Jobs in'), saveDir = path.join(WORK, 'saved');
+  fs.mkdirSync(ud, { recursive: true }); fs.mkdirSync(inDir, { recursive: true }); fs.mkdirSync(saveDir, { recursive: true });
+  fs.writeFileSync(path.join(ud, 'settings.json'), JSON.stringify({ updateFolder: path.join(WORK, 'no-such-folder'), occtEngine: 'wasm' }));
+  const part = path.join(inDir, 'HZ part.anvil.json');
+  const env = { ANVIL_USER_DATA: ud, ANVIL_TEST_LOG: log, ANVIL_TEST_SAVE_DIR: saveDir, ANVIL_TEST_OPEN_FILE: part, ANVIL_UPDATE_DELAY_MS: '3600000' };
+  const child = launch(env);
+  const page = await connect('app://anvil/');
+  try {
+    await page.waitFor('window.anvil && window.anvil.run && document.readyState === "complete"', 60000);
+    ok(await page.ev('!!(window.anvilDesktop && window.anvilDesktop.files && window.anvilDesktop.files.open)'), 'the bridge has files (open, saveDialog, write, setDocument)');
+    // a part file on disk, made by the app itself
+    await page.ev('anvil.run(\'p.name("HZPart").units("in");\\np.sketch("Front").rect(0,0,4,2).extrude(0.5);\')');
+    fs.writeFileSync(part, await page.ev('JSON.stringify(UI.App.model)'));
+    await page.ev('anvil.newPart().then(function () { UI.markClean(); return true; })');
+    // File ▸ Open: Windows' Open box (its filters), the part opens, the path is kept, the window title names the file
+    await page.ev('UI.fileOpen(); true');
+    await page.waitFor('UI.App.filePath', 20000).catch(() => null);
+    const opened = await page.ev('({ path: UI.App.filePath, name: UI.App.model.name, volume: anvil.mass().volume, modal: !document.getElementById("modal").hidden })');
+    const dOpen = readLog(log).find((e) => e.event === 'dialog-open');
+    ok(dOpen && dOpen.filters.some((f) => /step/.test(f)) && dOpen.filters.some((f) => /dxf/.test(f)) && opened.path === part && opened.name === 'HZPart' && Math.abs(opened.volume - 4) < 1e-9 && !opened.modal,
+      'File ▸ Open: Windows\' Open box, the part opens and keeps its path', { opened, filters: dOpen && dOpen.filters.slice(0, 3) });
+    let docLog = readLog(log).filter((e) => e.event === 'document').pop();
+    ok(docLog && docLog.path === part && /^HZ part\.anvil\.json( \*)? - Anvil$/.test(docLog.title), 'the window title names the file', docLog);
+    // Ctrl+S: straight to that file, no box
+    await page.ev('anvil.append(\'p.sketch("Front", 0.5).circle(1, 1, 0.25).cut("through", { reverse: true });\')');
+    const boxes0 = readLog(log).filter((e) => e.event === 'dialog-save').length;
+    await page.ev('document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true })); true');
+    await page.waitFor('!UI.isDirty()', 10000).catch(() => null);
+    const onDisk = JSON.parse(fs.readFileSync(part, 'utf8'));
+    ok(onDisk.features.length === await page.ev('UI.App.model.features.length') && readLog(log).filter((e) => e.event === 'dialog-save').length === boxes0 && !(await page.ev('UI.isDirty()')),
+      'Ctrl+S writes the opened file in place, no Save box', { features: onDisk.features.length });
+    ok(fs.readdirSync(inDir).every((f) => !/\.tmp$/.test(f)), 'no temporary file left beside it', fs.readdirSync(inDir));
+    // the page cannot write anywhere it likes
+    const evil = path.join(WORK, 'not-picked.txt');
+    const refused = await page.ev('anvilDesktop.files.write(' + JSON.stringify(evil) + ', "x")');
+    ok(refused && refused.code === 'NOTALLOWED' && !fs.existsSync(evil), 'a path not picked in a box is refused', refused);
+    const sib = await page.ev('anvilDesktop.files.write(' + JSON.stringify(part) + ', "x", { sibling: "..\\\\evil.mtl" })');
+    ok(sib && sib.code === 'NOTALLOWED', 'a companion file name with a folder is refused', sib);
+    // Save As: Windows' Save box in the document's folder with its name; the copy becomes the document
+    await page.ev('UI.fileSaveAs(); true');
+    const copy = path.join(saveDir, 'HZPart.anvil.json');
+    await page.waitFor('UI.App.filePath === ' + JSON.stringify(copy), 10000).catch(() => null);
+    const dAs = readLog(log).filter((e) => e.event === 'dialog-save').pop();
+    ok(dAs && dAs.defaultPath === path.join(inDir, 'HZPart.anvil.json') && dAs.filters[0] === 'json' && dAs.kind === 'document' && fs.existsSync(copy) && await page.ev('UI.App.filePath') === copy,
+      'Save As: Windows\' Save box in the part\'s folder, the copy is now the document', dAs);
+    // Export STEP: the last folder used, the STEP type first; the document stays where it is
+    await page.ev('UI.fileSaveAs("step"); true');
+    const step = path.join(saveDir, 'HZPart.step');
+    for (let i = 0; i < 40 && !fs.existsSync(step); i++) await sleep(250);
+    const dStep = readLog(log).filter((e) => e.event === 'dialog-save').pop();
+    ok(dStep && dStep.defaultPath === step && /^step/.test(dStep.filters[0]) && /^ISO-10303-21;/.test(fs.existsSync(step) ? fs.readFileSync(step, 'utf8') : '') && await page.ev('UI.App.filePath') === copy,
+      'Export STEP: Windows\' Save box in the last folder, the STEP written', dStep);
+    // a download from any command (UI.download): the box with that type
+    await page.ev('UI.download("flat.dxf", "0\\nEOF\\n", "application/dxf"); true');
+    for (let i = 0; i < 40 && !fs.existsSync(path.join(saveDir, 'flat.dxf')); i++) await sleep(250);
+    const dDxf = readLog(log).filter((e) => e.event === 'dialog-save').pop();
+    ok(dDxf.defaultPath === path.join(saveDir, 'flat.dxf') && dDxf.filters[0] === 'dxf' && fs.readFileSync(path.join(saveDir, 'flat.dxf'), 'utf8') === '0\nEOF\n', 'a DXF download: the Save box with a DXF filter, written byte for byte', dDxf);
+    // a read-only file: an Anvil message, the document stays open and unsaved, the file untouched
+    const before = fs.readFileSync(copy, 'utf8');
+    fs.chmodSync(copy, 0o444);
+    await page.ev('anvil.append(\'p.sketch("Front", 0.5).circle(3, 1, 0.25).cut("through", { reverse: true });\')');
+    await page.ev('UI.fileSave(); true');
+    await page.waitFor('!document.getElementById("modal").hidden', 10000).catch(() => null);
+    const ro = await page.ev('({ modal: !document.getElementById("modal").hidden, text: document.getElementById("modal-body").textContent, dirty: UI.isDirty(), path: UI.App.filePath })');
+    ok(ro.modal && /read-only/.test(ro.text) && ro.dirty && ro.path === copy && fs.readFileSync(copy, 'utf8') === before && fs.readdirSync(saveDir).every((f) => !/\.tmp$/.test(f)),
+      'a read-only file: a message, still unsaved, the file untouched', ro);
+    fs.chmodSync(copy, 0o666);
+    await page.ev('UI.closeModal(); UI.fileSave(); true');
+    await page.waitFor('!UI.isDirty()', 10000).catch(() => null);
+    ok(!(await page.ev('UI.isDirty()')) && JSON.parse(fs.readFileSync(copy, 'utf8')).features.length === await page.ev('UI.App.model.features.length'), 'saved once it can be written');
+    // New: no path, the title is the page's own again
+    await page.ev('anvil.newPart().then(function () { return true; })');
+    await sleep(300);
+    docLog = readLog(log).filter((e) => e.event === 'document').pop();
+    ok(await page.ev('UI.App.filePath == null') && docLog.path === null, 'File ▸ New: no document path', docLog);
+    // (a source folder without the OpenCascade engine, vendor/get-occt.ps1 not run there, 404s its probe)
+    const noEngine = !fs.existsSync(path.join(__dirname, '..', 'anvil', 'vendor', 'occt', 'opencascade.full.wasm'));
+    const errs = page.errors.concat(readLog(log).filter((e) => e.event === 'console-error').map((e) => e.message)).filter((m) => !(noEngine && /vendor\/occt\/opencascade/.test(m)));
+    ok(errs.length === 0, 'no console errors', errs.slice(0, 5));
+  } finally { await quit(page, child); }
+}
+
+// ---- Restart to update, end to end with a stand-in installer (a .cmd that records its arguments and starts the app
+// again; never a real installer) ----------------------------------------------------------------------------------
+async function updateRun(name, stubBody, opts) {
+  const ud = path.join(WORK, 'ud-' + name), log = path.join(WORK, 'events-' + name + '.log'), rel = path.join(WORK, 'releases-' + name), tmp = path.join(WORK, 'update-temp-' + name);
+  fs.mkdirSync(ud, { recursive: true }); fs.mkdirSync(rel, { recursive: true });
+  fs.writeFileSync(path.join(ud, 'settings.json'), JSON.stringify({ updateFolder: rel, occtEngine: 'wasm' }));
+  const stub = path.join(rel, 'Anvil Setup 99.0.0.cmd'), argsFile = path.join(WORK, 'stub-args-' + name + '.txt');
+  const relaunch = '"' + EXE + '"' + (args.includes('--dev') ? ' "' + __dirname + '"' : '') + ' --remote-debugging-port=' + PORT;
+  fs.writeFileSync(stub, '@echo off\r\necho %*> "' + argsFile + '"\r\n' + stubBody(relaunch).join('\r\n') + '\r\n');
+  const sha = require('crypto').createHash('sha256').update(fs.readFileSync(stub)).digest('hex');
+  fs.writeFileSync(path.join(rel, 'latest.json'), JSON.stringify({ version: '99.0.0', file: path.basename(stub), sha256: sha, notes: 'check.js stand-in' }));
+  const env = { ANVIL_USER_DATA: ud, ANVIL_TEST_LOG: log, ANVIL_UPDATE_DELAY_MS: '500', ANVIL_UPDATE_TEMP: tmp, ANVIL_UPDATE_SETTLE_MS: '20000',
+    ANVIL_TEST_UNLOAD_ANSWERS: opts.answers || 'close', ANVIL_TEST_DIALOGS: 'log' };
+  const child = launch(env);
+  let page = await connect('app://anvil/');
+  await page.waitFor("(document.getElementById('anvil-desktop-update') || {}).innerText", 60000);
+  if (opts.dirty) {
+    // unsaved work (a user gesture first, so the page's beforeunload may ask): the first Restart is cancelled at the question
+    await page.send('Runtime.evaluate', { expression: "anvil.run('p.sketch(\"Front\").rect(0,0,1,1).extrude(1)').then(function () { UI.App.dirty = true; })", awaitPromise: true, userGesture: true });
+    await page.ev("document.getElementById('anvil-desktop-update-restart').click(); true");
+    await page.waitFor("(function () { var b = document.getElementById('anvil-desktop-update-restart'); return !!b && !b.disabled; })()", 20000).catch(() => null);
+    for (let i = 0; i < 40 && !readLog(log).some((e) => e.event === 'update-cancelled'); i++) await sleep(250);
+    const q = readLog(log).find((e) => e.event === 'unload-question');
+    ok(q && q.updating && readLog(log).some((e) => e.event === 'update-cancelled') && await page.ev("!!document.getElementById('anvil-desktop-update-restart') && !document.getElementById('anvil-desktop-update-restart').disabled") && await page.ev('!!window.anvil'),
+      name + ': unsaved work: Restart asks first; Cancel keeps Anvil open with the update still offered', { question: q || null });
+  }
+  const pid0 = readLog(log).find((e) => e.event === 'started').pid;
+  await page.ev("document.getElementById('anvil-desktop-update-restart').click(); true");
+  const code = await Promise.race([child.exitPromise, sleep(30000).then(() => 'still running')]);
+  ok(code !== 'still running', name + ': Anvil quits for the install', { exit: code });
+  page.close();
+  // the helper runs the stand-in and Anvil comes back (started by it, or by the helper)
+  let started = null;
+  for (let i = 0; i < 160 && !started; i++) { await sleep(250); started = readLog(log).filter((e) => e.event === 'started' && e.pid !== pid0).pop(); }
+  ok(!!started, name + ': Anvil starts again', started);
+  const stubArgs = fs.existsSync(argsFile) ? fs.readFileSync(argsFile, 'utf8').trim() : null;
+  ok(stubArgs === '/S --updated --force-run', name + ': the installer was run silently, for this user, to start Anvil after (/S --updated --force-run)', stubArgs);
+  if (started) {
+    // the window is up once the result of the last update is written (main.js reportLastUpdate, at ready-to-show)
+    for (let i = 0; i < 240; i++) { const t = fs.readFileSync(path.join(ud, 'update.log'), 'utf8'); if (t.includes(opts.expectLast) && t.includes('helper-done')) break; await sleep(250); }
+  }
+  const steps = fs.existsSync(path.join(ud, 'update.log')) ? fs.readFileSync(path.join(ud, 'update.log'), 'utf8').split(/\r?\n/).filter(Boolean).map((l) => { try { return JSON.parse(l.replace(/^﻿/, '')); } catch (e) { return { step: '?' }; } }) : [];
+  if (started) { try { process.kill(started.pid); } catch (e) { /* gone */ } }
+  await sleep(1500);
+  return { steps: steps.map((s) => s.step + (s.exitCode != null ? '(' + s.exitCode + ')' : '')), log: readLog(log), stubArgs, started };
+}
+async function checkUpdateRestart() {
+  // 1. the installer works (exit 0) and starts the new version (the stand-in starts this app as 99.0.0)
+  const good = await updateRun('installs', (relaunch) => ['set ANVIL_TEST_VERSION=99.0.0', 'start "" ' + relaunch, 'exit /b 0'], { dirty: true, answers: 'cancel,close', expectLast: 'update-succeeded' });
+  const want = ['update-restart-clicked', 'update-armed', 'update-quitting', 'update-helper-started', 'helper-started', 'anvil-closed', 'installer-started', 'installer-finished(0)', 'update-succeeded'];
+  const got = good.steps.filter((s) => want.indexOf(s) >= 0);
+  const order = want.every((w, i) => got.indexOf(w) >= 0 && (i === 0 || got.indexOf(w) > got.indexOf(want[i - 1])));
+  ok(order && good.steps.indexOf('anvil-running-again') > 0 && good.steps.indexOf('helper-done') > 0, 'installs: update.log in the user-data folder has every step in order, then update-succeeded from the new version', good.steps);
+  // 2. the installer fails (exit 2, nothing installed): the helper starts Anvil again and it says so
+  const bad = await updateRun('fails', () => ['exit /b 2'], { expectLast: 'update-not-installed' });
+  ok(bad.steps.indexOf('installer-finished(2)') >= 0 && bad.steps.indexOf('install-failed(2)') >= 0 && bad.steps.indexOf('started-anvil') >= 0 && bad.steps.indexOf('update-not-installed') >= 0,
+    'fails: the helper starts the old Anvil again and update.log says why', bad.steps);
+  ok(bad.log.some((e) => e.event === 'update-not-installed-shown' && e.wanted === '99.0.0'), 'fails: the old Anvil tells the user the update was not installed');
+}
+
 (async () => {
   console.log('check.js ' + cmd + ': ' + EXE + ' (work folder ' + WORK + ')');
   try {
@@ -359,6 +507,8 @@ async function checkUpdate() {
     else if (cmd === 'engines') await checkEngines();
     else if (cmd === 'tests') await checkTests();
     else if (cmd === 'update') await checkUpdate();
+    else if (cmd === 'files') await checkFiles();
+    else if (cmd === 'update-restart') await checkUpdateRestart();
     else throw new Error('unknown check ' + cmd);
   } catch (e) { ok(false, 'check ran to the end', e.stack || e.message); }
   console.log(failures ? failures + ' FAILED' : 'all passed');

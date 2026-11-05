@@ -6,12 +6,16 @@
 //   recovered work and the engine store survive an update (they live in %APPDATA%\Anvil).
 // - app://anvil/api/dxf2dwg and api/dwg2dxf: the DWG converters of serve.ps1 (converters.js).
 // - downloads (parts, DXF, DWG, STEP, PDF, SVG) open the Windows Save As dialog with the suggested name; file inputs
-//   open the normal Open dialog (Chromium's own).
+//   open the normal Open dialog (Chromium's own). File ▸ Open / Save / Save As / exports go through anvilDesktop.files
+//   (preload.js): Windows' own Open / Save boxes, writes only to a path picked in one ("Open / Save dialogs" below).
 // - links to the web open in the user's browser; a minimal menu (Alt shows it); one instance; window size and place
 //   remembered; updates from a release folder (updates.js).
 // Test hooks (environment, for scripts only): ANVIL_ROOT serves another anvil folder (e.g. the repo, with its tests),
 // ANVIL_USER_DATA moves the user-data folder, ANVIL_TEST_SAVE_DIR saves downloads there without a dialog,
-// ANVIL_TEST_LOG appends one JSON line per event (downloads, update checks, converter runs) to that file.
+// ANVIL_TEST_LOG appends one JSON line per event (downloads, update checks, converter runs) to that file;
+// ANVIL_TEST_OPEN_FILE answers the Open box, ANVIL_TEST_UNLOAD_ANSWERS ("cancel,close") the unsaved-work question,
+// ANVIL_TEST_DIALOGS=log logs the "update not installed" box, ANVIL_TEST_VERSION plays another version,
+// ANVIL_UPDATE_TEMP / ANVIL_UPDATE_SETTLE_MS move the update's temp folder / shorten the helper's wait.
 // - OpenCascade: the native engine (OpenCascade 7.6.3 for Windows, desktop/native) runs in its own process
 //   (occt-host.js); the page talks to it through a MessagePort and falls back to the WebAssembly worker if it cannot
 //   start. ANVIL_OCCT_NATIVE names another addon folder; ANVIL_OCCT_ENGINE=wasm (or "occtEngine": "wasm" in
@@ -29,7 +33,7 @@ app.setAppUserModelId('com.anvil.cad');
 const ROOT = path.resolve(process.env.ANVIL_ROOT || (app.isPackaged ? path.join(process.resourcesPath, 'anvil') : path.join(__dirname, '..', 'anvil')));
 const ORIGIN = 'app://anvil';
 const ICON = path.join(__dirname, 'assets', 'icon.png');
-const VERSION = app.getVersion();
+const VERSION = process.env.ANVIL_TEST_VERSION || app.getVersion();   // a test can play the next version (check.js update-restart)
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json',
   '.wasm': 'application/wasm', '.mjs': 'text/javascript; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.md': 'text/plain; charset=utf-8', '.gz': 'application/gzip' };
 
@@ -98,7 +102,12 @@ function createWindow() {
   if (saved.maximized) win.maximize();
   win.once('ready-to-show', () => win.show());
   // a page title of Anvil's own wins; with none, "Anvil <version>"
-  win.on('page-title-updated', (e, title) => { if (!title || /^app:\/\//.test(title)) { e.preventDefault(); win.setTitle('Anvil ' + VERSION); } });
+  // an open document with a path on disk shows its file name ("bracket.anvil.json * - Anvil")
+  win.on('page-title-updated', (e, title) => {
+    const t = composeTitle(win.webContents, title);
+    if (t) { e.preventDefault(); win.setTitle(t); return; }
+    if (!title || /^app:\/\//.test(title)) { e.preventDefault(); win.setTitle('Anvil ' + VERSION); }
+  });
   win.on('close', () => {
     appState.window = { bounds: win.getNormalBounds(), maximized: win.isMaximized() };
     saveState();
@@ -118,15 +127,22 @@ function createWindow() {
     if (/^(https?|mailto):/i.test(url)) shell.openExternal(url);
   });
   // Anvil asks before leaving with unsaved changes (beforeunload): Electron would silently refuse to close, so ask here
+  // (Restart to update asks the same question, in its own words; Cancel keeps Anvil open and the update offered)
   wc.on('will-prevent-unload', (e) => {
-    testLog('unload-question', {});
-    const r = dialog.showMessageBoxSync(win, { type: 'question', buttons: ['Close Anvil', 'Cancel'], defaultId: 1, cancelId: 1, title: 'Anvil',
-      message: 'Close Anvil?', detail: 'Changes you made may not be saved. Anvil keeps a recovery copy of open work.' });
+    const updating = !!updater.state.pendingInstaller;
+    testLog('unload-question', { updating });
+    const q = updating
+      ? { buttons: ['Restart and update', 'Cancel'], message: 'Install Anvil ' + ((updater.state.offered || {}).version || '') + ' and restart?', detail: 'Changes you made may not be saved. Cancel, then save your work, and choose Restart to update again.' }
+      : { buttons: ['Close Anvil', 'Cancel'], message: 'Close Anvil?', detail: 'Changes you made may not be saved. Anvil keeps a recovery copy of open work.' };
+    const answers = process.env.ANVIL_TEST_UNLOAD_ANSWERS;   // a test stands in for the question: "cancel,close"
+    let r;
+    if (answers) { const list = answers.split(','); const a = list[unloadAnswered++] || list[list.length - 1]; r = a === 'close' ? 0 : 1; testLog('unload-answer', { answer: a }); }
+    else r = dialog.showMessageBoxSync(win, Object.assign({ type: 'question', defaultId: 1, cancelId: 1, title: 'Anvil' }, q));
     if (r === 0) e.preventDefault();
-    else updater.cancelInstall();
+    else if (updating) { updater.cancelInstall(); if (updater.state.offered) sendOffer(updater.state.offered); }
   });
   wc.on('console-message', (e) => { if (e.level === 'error') testLog('console-error', { message: e.message, source: e.sourceId, line: e.lineNumber }); });
-  wc.on('did-navigate', () => { pageLoaded = false; });
+  wc.on('did-navigate', () => { pageLoaded = false; docPaths.delete(wc.id); });
   wc.on('did-finish-load', () => { pageLoaded = true; if (updater.state.offered) sendOffer(updater.state.offered); });
   win.loadURL(ORIGIN + '/index.html');
 }
@@ -149,6 +165,118 @@ function setupDownloads() {
     });
   });
 }
+
+// ---- Windows' own Open / Save dialogs for the page (preload.js anvilDesktop.files) -------------------------------
+// The page never names a path to write on its own: a path is writable only once the user picked it in an Open or Save
+// dialog in this session (Open makes the opened document's own path writable, so Ctrl+S saves over it with no
+// dialog). Writes go to a temporary file beside the target first and then replace it, so a failed write (read-only,
+// locked, a network folder gone) leaves the old file as it was; the document stays open in Anvil either way.
+// Test hooks: ANVIL_TEST_SAVE_DIR answers the Save dialog with that folder + the suggested name, ANVIL_TEST_OPEN_FILE
+// answers the Open dialog with that file ("cancel": cancelled); both log 'dialog-save' / 'dialog-open'.
+const allowedPaths = new Set();   // lower-cased full paths picked in a dialog this session
+const docPaths = new Map();       // webContents id -> the open document's path (window title)
+function pathKey(p) { return path.resolve(String(p)).toLowerCase(); }
+function allow(p) { allowedPaths.add(pathKey(p)); }
+function lastFolder() {
+  return appState.saveFolder && fs.existsSync(appState.saveFolder) ? appState.saveFolder : app.getPath('documents');
+}
+function rememberFolder(p) { appState.saveFolder = path.dirname(p); saveState(); }
+function cleanName(n) { return String(n || 'Untitled').replace(/^.*[\\/]/, '').replace(/[<>:"|?*\x00-\x1f]+/g, '_') || 'Untitled'; }
+function cleanFilters(f) {
+  return (Array.isArray(f) ? f : []).slice(0, 20).map((x) => ({ name: String(x && x.name || 'Files').slice(0, 120),
+    extensions: (Array.isArray(x && x.extensions) ? x.extensions : ['*']).map((e) => String(e).replace(/[^\w*]/g, '')).filter(Boolean).slice(0, 20) }))
+    .filter((x) => x.extensions.length);
+}
+// a plain-English reason for a failed read / write
+function fileError(e, p) {
+  const name = path.basename(p || '');
+  const why = { EACCES: name + ' is read-only, or you do not have permission to change it.', EPERM: name + ' is read-only, or you do not have permission to change it.',
+    EBUSY: name + ' is open in another program. Close it there and save again.', ENOENT: 'The folder ' + path.dirname(p || '') + ' is not there (a network drive offline?).',
+    ENOTDIR: 'The folder ' + path.dirname(p || '') + ' is not there.', EROFS: name + ' is on a read-only drive.', ENOSPC: 'The drive is full.',
+    EEXIST: name + ' could not be replaced.' }[e && e.code];
+  return { error: why || ((e && e.message) || String(e)), code: (e && e.code) || null };
+}
+function toBuffer(data) {
+  if (typeof data === 'string') return Buffer.from(data, 'utf8');
+  if (data instanceof ArrayBuffer) return Buffer.from(new Uint8Array(data));
+  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  throw new Error('nothing to write');
+}
+async function writeSafely(target, data) {
+  const buf = toBuffer(data);
+  const tmp = target + '.anvil-' + process.pid + '-' + Date.now().toString(36) + '.tmp';
+  try {
+    await fs.promises.writeFile(tmp, buf);
+    await fs.promises.rename(tmp, target);
+  } catch (e) {
+    try { await fs.promises.unlink(tmp); } catch (e2) { /* never made */ }
+    throw e;
+  }
+  return buf.length;
+}
+function composeTitle(wc, pageTitle) {
+  const p = docPaths.get(wc.id);
+  if (!p) return null;
+  return path.basename(p) + (/ \*( - Anvil)?$/.test(pageTitle || '') ? ' *' : '') + ' - Anvil';
+}
+ipcMain.handle('anvil-desktop:open-dialog', async (e, o) => {
+  o = o || {};
+  const w = BrowserWindow.fromWebContents(e.sender) || win;
+  const opts = { title: 'Open', defaultPath: lastFolder(), properties: ['openFile'], filters: cleanFilters(o.filters) };
+  testLog('dialog-open', { defaultPath: opts.defaultPath, filters: opts.filters.map((f) => f.extensions.join(',')) });
+  let file;
+  if (process.env.ANVIL_TEST_OPEN_FILE) file = process.env.ANVIL_TEST_OPEN_FILE === 'cancel' ? null : process.env.ANVIL_TEST_OPEN_FILE;
+  else { const r = await dialog.showOpenDialog(w, opts); file = r.canceled ? null : r.filePaths[0]; }
+  if (!file) return null;
+  try {
+    const st = await fs.promises.stat(file);
+    if (st.size > 1024 * 1024 * 1024) return { error: path.basename(file) + ' is larger than 1 GB.' };
+    const data = await fs.promises.readFile(file);
+    allow(file); rememberFolder(file);
+    testLog('file-opened', { path: file, bytes: data.length });
+    return { path: file, name: path.basename(file), data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength) };
+  } catch (err) { return Object.assign({ path: file }, fileError(err, file)); }
+});
+ipcMain.handle('anvil-desktop:save-dialog', async (e, o) => {
+  o = o || {};
+  const w = BrowserWindow.fromWebContents(e.sender) || win;
+  const doc = docPaths.get(e.sender.id);
+  const dir = o.kind === 'document' && doc && fs.existsSync(path.dirname(doc)) ? path.dirname(doc) : lastFolder();
+  const opts = { title: o.title ? String(o.title).slice(0, 80) : 'Save As', defaultPath: path.join(dir, cleanName(o.name)), filters: cleanFilters(o.filters) };
+  testLog('dialog-save', { defaultPath: opts.defaultPath, filters: opts.filters.map((f) => f.extensions.join(',')), kind: o.kind || null });
+  let file;
+  if (process.env.ANVIL_TEST_SAVE_DIR) file = process.env.ANVIL_TEST_SAVE_DIR === 'cancel' ? null : path.join(process.env.ANVIL_TEST_SAVE_DIR, path.basename(opts.defaultPath));
+  else { const r = await dialog.showSaveDialog(w, opts); file = r.canceled ? null : r.filePath; }
+  if (!file) return null;
+  allow(file); rememberFolder(file);
+  return { path: file, name: path.basename(file) };
+});
+// write(path, data, { sibling }): path must have been picked in a dialog (or opened) this session; sibling writes
+// a companion file of that name (an OBJ's .mtl) into the same folder
+ipcMain.handle('anvil-desktop:write-file', async (e, target, data, o) => {
+  o = o || {};
+  if (!target || !allowedPaths.has(pathKey(target))) { testLog('write-refused', { path: String(target) }); return { error: 'Anvil can only save to a file you chose in a Save or Open box.', code: 'NOTALLOWED' }; }
+  let file = path.resolve(String(target));
+  if (o.sibling != null) {
+    const s = String(o.sibling);
+    if (!/^[^\\/:*?"<>|]+\.(mtl)$/i.test(s)) return { error: 'not a companion file name: ' + s, code: 'NOTALLOWED' };
+    file = path.join(path.dirname(file), s);
+  }
+  try {
+    const bytes = await writeSafely(file, data);
+    testLog('file-written', { path: file, bytes });
+    return { path: file, bytes };
+  } catch (err) { const r = fileError(err, file); testLog('write-failed', { path: file, code: r.code, message: r.error }); return r; }
+});
+// the page names its open document (null: none); only a path picked in a dialog is taken. The window title shows it.
+ipcMain.handle('anvil-desktop:set-document', (e, p) => {
+  const wc = e.sender;
+  if (p && allowedPaths.has(pathKey(p))) docPaths.set(wc.id, path.resolve(String(p))); else docPaths.delete(wc.id);
+  const w = BrowserWindow.fromWebContents(wc);
+  if (w) w.setTitle(composeTitle(wc, wc.getTitle()) || (wc.getTitle() && !/^app:\/\//.test(wc.getTitle()) ? wc.getTitle() : 'Anvil ' + VERSION));
+  testLog('document', { asked: p || null, path: docPaths.get(wc.id) || null, title: w ? w.getTitle() : null });
+  return docPaths.get(wc.id) || null;
+});
 
 // ---- menu (Anvil draws its own SolidWorks-style menus in the page; this one shows with Alt) -----------------------
 function about() {
@@ -235,15 +363,39 @@ app.on('before-quit', () => occtStopAll());
 // ---- updates -----------------------------------------------------------------------------------------------------
 let pageLoaded = false;   // set once the page has loaded; an offer found earlier is sent then (did-finish-load)
 function sendOffer(o) { if (win && pageLoaded) win.webContents.send('anvil-desktop:update', { version: o.version, notes: o.notes, current: VERSION }); }
-const updater = updates.create({ currentVersion: VERSION, settings, log: testLog, offer: (o) => sendOffer(o) });
+let unloadAnswered = 0;
+// relaunch: what the helper starts when the installer did not (this exe, with the arguments it was started with)
+const updater = updates.create({ currentVersion: VERSION, settings, log: testLog, offer: (o) => sendOffer(o), userData: app.getPath('userData'),
+  relaunch: () => ({ exe: process.execPath, args: process.argv.slice(1) }) });
+// the last run handed an update to the helper: did it install? (window-state.json pendingUpdate, then cleared)
+function reportLastUpdate() {
+  const pending = appState.pendingUpdate;
+  if (!pending) return;
+  delete appState.pendingUpdate; saveState();
+  const r = updater.afterRestart(pending);
+  if (!r || r.ok) return;
+  testLog('update-not-installed-shown', { wanted: r.to, running: VERSION });
+  if (process.env.ANVIL_TEST_DIALOGS === 'log') return;   // a test reads the log instead of the box
+  dialog.showMessageBox(win, { type: 'warning', title: 'Anvil update', buttons: ['OK', 'Open the update log'], defaultId: 0, cancelId: 0,
+    message: 'Anvil ' + r.to + ' was not installed.',
+    detail: 'You are still using Anvil ' + VERSION + '; your parts and settings are as they were. Try Restart to update again, or run "Anvil Setup ' + r.to + '.exe" from the update folder yourself.\n\nWhat happened is written in ' + r.log })
+    .then((x) => { if (x.response === 1) shell.openPath(r.log); }).catch(() => {});
+}
 ipcMain.on('anvil-desktop:info', (e) => { e.returnValue = { version: VERSION, occtNative: occtNative() }; });
 ipcMain.handle('anvil-desktop:check-updates', () => updater.check(true));
 ipcMain.on('anvil-desktop:update-later', () => updater.later());
 ipcMain.on('anvil-desktop:update-restart', async (e) => {
-  try { await updater.prepareInstall(); app.quit(); }
-  catch (err) { testLog('update-failed', { message: err.message }); e.sender.send('anvil-desktop:update-failed', err.message); }
+  try {
+    if (!(await updater.prepareInstall())) throw new Error('there is no update ready');
+    updater.log('update-quitting', {});
+    app.quit();
+  } catch (err) { updater.log('update-failed', { message: err.message }); e.sender.send('anvil-desktop:update-failed', err.message); }
 });
-app.on('will-quit', () => { testLog('quitting', {}); if (updater.runPendingInstall()) testLog('update-installing', {}); });
+app.on('will-quit', () => {
+  testLog('quitting', {});
+  const job = updater.runPendingInstall();
+  if (job) { appState.pendingUpdate = { from: job.from, to: job.to, at: new Date().toISOString() }; saveState(); testLog('update-installing', { to: job.to }); }
+});
 
 // ---- start -------------------------------------------------------------------------------------------------------
 if (!app.requestSingleInstanceLock()) {
@@ -255,7 +407,8 @@ if (!app.requestSingleInstanceLock()) {
     setupDownloads();
     setupMenu();
     createWindow();
-    testLog('started', { version: VERSION, root: ROOT, userData: app.getPath('userData') });
+    win.once('ready-to-show', reportLastUpdate);
+    testLog('started', { version: VERSION, root: ROOT, userData: app.getPath('userData'), pid: process.pid });
     updater.start();
   });
   app.on('window-all-closed', () => app.quit());

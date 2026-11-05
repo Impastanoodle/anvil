@@ -694,13 +694,118 @@
   }
 
   // ------------------------------------------------------------------ files & exports
+  // download(name, data, mime): in a browser, the browser's download; in the Windows app (desktop/preload.js
+  // anvilDesktop.files) Windows' own Save dialog in the last folder used, then the file is written there. Returns a
+  // Promise of { path } in the app (null when cancelled), undefined in a browser.
   function download(name, text, mime) {
+    if (desk()) return deskExport(name, text);
     try {
       var blob = new Blob([text], { type: mime || 'text/plain' });
       var a = el('a', { href: URL.createObjectURL(blob), download: name });
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
     } catch (e) { }
+  }
+  // ---- the Windows app's files (desktop/main.js): Open / Save dialogs, the document's own path (App.filePath) ----
+  // SolidWorks behaviour: File ▸ Open shows Windows' Open box and remembers the file's path; Save (Ctrl+S) writes
+  // straight back to that path; the first Save and Save As show Windows' Save box. App.fileName stays the name of a
+  // document saved in the browser's own storage (the Task Pane's list); a new or loaded model clears App.filePath.
+  function desk() { var d = window.anvilDesktop; return d && d.isDesktop && d.files ? d.files : null; }
+  var deskPending = null;   // { name, path, at }: the file Save As picked for a DXF / DWG the Output PropertyManager writes
+  var deskLastSaved = null; // { path, base, at }: an OBJ just saved, so its .mtl goes beside it without a second box
+  var EXT_FILTERS = { json: 'Anvil document', js: 'Anvil script', step: 'STEP', stp: 'STEP', igs: 'IGES', iges: 'IGES', stl: 'STL', obj: 'OBJ', mtl: 'OBJ materials',
+    '3mf': '3D Manufacturing Format', dxf: 'DXF', dwg: 'DWG', pdf: 'PDF', svg: 'SVG', png: 'PNG image', drawing: 'Anvil drawing', sldcrv: 'Curve file', sldblk: 'Sketch block' };
+  function extOf(name) { return ((/\.([a-z0-9]+)$/i.exec(String(name || '')) || [])[1] || '').toLowerCase(); }
+  function filtersFor(name) {
+    var ext = extOf(name);
+    return (ext ? [{ name: (EXT_FILTERS[ext] || ext.toUpperCase()) + ' (*.' + ext + ')', extensions: [ext] }] : []).concat([{ name: 'All files (*.*)', extensions: ['*'] }]);
+  }
+  function deskData(data) {
+    if (typeof Blob !== 'undefined' && data instanceof Blob) return data.arrayBuffer();
+    return Promise.resolve(data);
+  }
+  // a failed write: a normal Anvil message; the document stays open and unsaved
+  function deskFailed(what, r) {
+    var msg = (r && r.error) || String(r);
+    UI.setStatus('Not saved: ' + msg);
+    UI.showModal({ title: 'Anvil', body: el('div', {}, [el('p', { text: what + ' could not be saved.' }), el('p', { text: msg }),
+      el('p', { class: 'dlg-note', text: 'Your work is still open in Anvil. Save As to another folder, or fix the problem and save again.' })]),
+      buttons: [{ label: 'OK', primary: true, action: UI.closeModal }] });
+  }
+  function deskWrite(path, data, opts) {
+    return deskData(data).then(function (d) { return desk().write(path, d, opts); });
+  }
+  // an export: straight to the file Save As picked (DXF / DWG after the Output PropertyManager), beside its OBJ
+  // (.mtl), or Windows' Save box
+  function deskExport(name, data) {
+    var now = Date.now(), ext = extOf(name), p;
+    if (deskPending && deskPending.name === name && now - deskPending.at < 30 * 60000) { p = Promise.resolve({ path: deskPending.path }); deskPending = null; }
+    else if (ext === 'mtl' && deskLastSaved && deskLastSaved.base === name.replace(/\.mtl$/i, '') && now - deskLastSaved.at < 60000) {
+      var obj = deskLastSaved.path;
+      return deskWrite(obj, data, { sibling: name }).then(function (r) { if (r && r.error) { deskFailed(name, r); return null; } return r; });
+    }
+    else p = desk().saveDialog({ name: name, filters: filtersFor(name), kind: 'export' });
+    return p.then(function (pick) {
+      if (!pick) return null;
+      if (pick.error) { deskFailed(name, pick); return null; }
+      return deskWrite(pick.path, data).then(function (r) {
+        if (!r || r.error) { deskFailed(name, r); return null; }
+        if (ext === 'obj') deskLastSaved = { path: r.path, base: name.replace(/\.obj$/i, ''), at: Date.now() };
+        UI.setStatus('Saved ' + r.path);
+        return r;
+      });
+    }, function (e) { deskFailed(name, e && e.message || e); return null; });
+  }
+  function deskSetPath(p) {
+    App.filePath = p || null;
+    try { desk().setDocument(App.filePath); } catch (e) { }
+  }
+  function docBase() { return String(App.model.name || (isAsm() ? 'Assem1' : 'Part1')).replace(/[\\\/:*?"<>|]+/g, '_'); }
+  function docFilters() {
+    var doc = isAsm() ? 'Assembly' : 'Part';
+    return [{ name: 'Anvil ' + doc + ' (*.anvil.json)', extensions: ['json'] }, { name: 'Anvil script (*.anvil.js)', extensions: ['js'] }];
+  }
+  // writes the open document (JSON, or its script for a .js path) to path; onSaved runs after a good save
+  function deskSaveTo(path, onSaved) {
+    var data = /\.js$/i.test(path) ? modelScript() : JSON.stringify(App.model, null, 1), name = String(path).replace(/^.*[\\\/]/, '');
+    return deskWrite(path, data).then(function (r) {
+      if (!r || r.error) { deskFailed(name, r); return false; }
+      deskSetPath(r.path);
+      UI.markClean();
+      UI.toast('Saved ' + name);
+      UI.setStatus('Saved ' + r.path);
+      if (typeof onSaved === 'function') onSaved();
+      return true;
+    }, function (e) { deskFailed(name, e && e.message || e); return false; });
+  }
+  // Save As for the document: Windows' Save box in the document's folder (else the last folder)
+  function deskSaveDocAs(onSaved) {
+    return desk().saveDialog({ name: docBase() + (App.filePath && /\.js$/i.test(App.filePath) ? '.anvil.js' : '.anvil.json'), filters: docFilters(), kind: 'document' }).then(function (pick) {
+      if (!pick) return false;
+      return deskSaveTo(pick.path, onSaved);
+    });
+  }
+  function deskSave(onSaved) { return App.filePath ? deskSaveTo(App.filePath, onSaved) : deskSaveDocAs(onSaved); }
+  // File ▸ Open in the app: Windows' Open box with Anvil's file types; an Anvil document or script keeps its path
+  function deskOpen() {
+    var filters = OPEN_TYPES.map(function (t) {
+      return { name: t[1].replace(/\s*\(\*.*$/, '') + ' (' + t[2].split(',').map(function (x) { return '*' + x; }).join(';') + ')', extensions: t[2].split(',').map(function (x) { return x.replace(/^\./, ''); }) };
+    }).concat([{ name: 'All files (*.*)', extensions: ['*'] }]);
+    return desk().open({ filters: filters }).then(function (r) {
+      if (!r) return null;
+      if (r.error) { UI.showModal({ title: 'Open', body: el('div', {}, [el('p', { text: r.name || r.path || 'The file' }), el('p', { text: r.error })]), buttons: [{ label: 'OK', primary: true, action: UI.closeModal }] }); return null; }
+      // a document Anvil can write back (a part / assembly JSON or a script) keeps its path; an imported STEP, DXF …
+      // is a new part (Save asks where), and a drawing saves itself (File ▸ Save Drawing As)
+      var keep = /\.js$/i.test(r.name);
+      if (/\.json$/i.test(r.name)) { try { var j = JSON.parse(new TextDecoder('utf-8').decode(r.data)); keep = !!j && j.kind !== 'anvil-drawing' && (Array.isArray(j.features) || j.type === 'assembly'); } catch (e) { keep = false; } }
+      var d = r.data;
+      if (d && typeof d !== 'string' && ArrayBuffer.isView(d)) d = d.byteOffset === 0 && d.byteLength === d.buffer.byteLength ? d.buffer : d.slice().buffer;
+      return openFileData(r.name, d).then(function (s) {
+        if (keep) deskSetPath(r.path);
+        UI.setStatus('Opened ' + r.path);
+        return s;
+      }, function (e) { UI.toast('Could not open ' + r.name + ': ' + ((e && e.message) || e)); return null; });
+    });
   }
   function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { UI.toast('Copied to clipboard'); }, function () { UI.toast('Copy failed — select the text and press Ctrl+C'); });
@@ -764,7 +869,7 @@
     var dirty = opts.dirty != null ? !!opts.dirty : !!(UI.isDirty && UI.isDirty());
     if (!dirty) { onProceed(); return; }
     UI.showModal({ title: 'Anvil', body: el('div', { class: 'save-changes' }, [el('p', { text: 'Save changes to ' + (name || App.model.name || (isAsm() ? 'Assem1' : 'Part1')) + '?' })]), buttons: [
-      { label: 'Save', primary: true, action: function () { UI.closeModal(); if (App.fileName) { if (saveInBrowser(App.fileName)) onProceed(); } else fileSave(onProceed); } },
+      { label: 'Save', primary: true, action: function () { UI.closeModal(); if (desk()) deskSave(onProceed); else if (App.fileName) { if (saveInBrowser(App.fileName)) onProceed(); } else fileSave(onProceed); } },
       { label: "Don't Save", action: function () { UI.closeModal(); (opts.onDiscard || onProceed)(); } },
       { label: 'Cancel', action: UI.closeModal }
     ] });
@@ -871,7 +976,7 @@
     document.body.appendChild(inp);
     inp.click();
   }
-  function fileOpen() { confirmDiscard(null, showOpenDialog); }
+  function fileOpen() { confirmDiscard(null, desk() ? deskOpen : showOpenDialog); }
   // what a file of this name opens as, for the Open dialog's file card: [badge, line]
   function openKind(name) {
     var n = String(name || '').toLowerCase(), ext = (/\.([a-z0-9]+)$/.exec(n) || [])[1] || '';
@@ -980,7 +1085,9 @@
   }
   // File ▸ Save (Ctrl+S): asks for the name (the last one offered), saves in this browser; onSaved (a function) runs
   // after a successful save (the Save of "Save changes to Part1?")
+  // In the Windows app: straight to the document's file (App.filePath), else Windows' Save box.
   function fileSave(onSaved) {
+    if (desk()) return deskSave(onSaved);
     UI.promptDialog('Save', 'Save as (kept in this browser):', App.fileName || App.model.name, function (name) {
       name = (name || '').trim();
       if (!name) return;
@@ -995,6 +1102,40 @@
     UI.markClean();
     if (tpCurrent === 'files') openTaskPane('files');
     return true;
+  }
+  // File ▸ Save As in the Windows app: one Windows Save box whose types are File ▸ Save As's (preset first); the type
+  // is the extension of the file picked. The document types (JSON, script) become the document's file; STEP, STL …
+  // are exports; DXF / DWG open the DXF/DWG Output PropertyManager, whose OK writes to the file picked here.
+  var SAVE_EXT = { json: ['json'], script: ['js'], step: ['step', 'stp'], '3mf': ['3mf'], obj: ['obj'], stl: ['stl'], iges: ['igs', 'iges'], dxf: ['dxf'], dwg: ['dwg'] };
+  function saveTypeOf(path) {
+    var ext = extOf(path), hit = null;
+    Object.keys(SAVE_EXT).forEach(function (t) { if (!hit && SAVE_EXT[t].indexOf(ext) >= 0) hit = t; });
+    return hit;
+  }
+  function deskSaveAs(preset) {
+    var types = saveTypes();
+    if (preset) types.sort(function (a, b) { return (b[0] === preset) - (a[0] === preset); });
+    var first = types[0][0], base = docBase();
+    var ext0 = first === 'json' ? '.anvil.json' : first === 'script' ? '.anvil.js' : '.' + SAVE_EXT[first][0];
+    var filters = types.map(function (t) { return { name: t[1], extensions: SAVE_EXT[t[0]] || [t[0]] }; });
+    var isDoc = first === 'json' || first === 'script';
+    return desk().saveDialog({ name: base + ext0, filters: filters, kind: isDoc ? 'document' : 'export', title: isDoc ? 'Save As' : 'Export' }).then(function (pick) {
+      if (!pick) return null;
+      var type = saveTypeOf(pick.path) || first, fname = String(pick.path).replace(/^.*[\\\/]/, '');
+      var b = fname.replace(/\.(anvil\.json|anvil\.js|json|js|step|stp|3mf|obj|stl|igs|iges|dxf|dwg)$/i, '').replace(/[^\w\-]+/g, '_') || safeName();
+      if (type === 'json' || type === 'script') return deskSaveTo(pick.path);
+      var sketchOnly = (type === 'dxf' || type === 'dwg') && (App.model.features || []).some(function (f) { return f.type === 'sketch' && (f.entities || []).some(function (e) { return e.t !== 'point'; }); });
+      if (!App.mesh || (!App.mesh.triCount && !sketchOnly)) { UI.toast(type === 'dxf' || type === 'dwg' ? 'Nothing to export yet: draw a sketch or build a solid first.' : 'Nothing to export yet.'); return null; }
+      if (type === 'dxf' || type === 'dwg') { deskPending = { name: b + '.' + type, path: pick.path, at: Date.now() }; UI.cmdDxfOutput({ format: type, name: b }); return pick; }
+      var out;
+      try { out = exportData(type, b); } catch (e) { UI.toast('Export failed: ' + ((e && e.message) || e)); return null; }
+      return deskWrite(pick.path, out.data).then(function (r) {
+        if (!r || r.error) { deskFailed(fname, r); return null; }
+        var done = function (extra) { UI.setStatus('Saved ' + r.path + (extra ? ' and ' + out.extra.name : '') + ' (' + ((out.data.length || out.data.byteLength) / 1024).toFixed(1) + ' KB).'); return r; };
+        if (!out.extra) return done(false);
+        return deskWrite(pick.path, out.extra.data, { sibling: out.extra.name }).then(function (r2) { if (!r2 || r2.error) deskFailed(out.extra.name, r2); return done(r2 && !r2.error); });
+      });
+    });
   }
   // File ▸ Save As: the document (JSON), its script, or a neutral format through exchange.js (STEP AP214, 3MF, OBJ with
   // its .mtl, STL). exportData(type, base) -> { name, data, mime, extra? } is also what anvil.saveAs downloads.
@@ -1032,6 +1173,7 @@
     throw new Error('Unknown file type "' + type + '"');
   }
   function fileSaveAs(preset) {
+    if (desk()) return deskSaveAs(preset);
     var name = el('input', { type: 'text', value: safeName(), 'aria-label': 'File name', spellcheck: 'false' });
     var type = el('select', { 'aria-label': 'Save as type' });
     saveTypes().forEach(function (t) { var o = el('option', { value: t[0], text: t[1] }); if (t[0] === preset) o.selected = true; type.appendChild(o); });
@@ -1689,6 +1831,10 @@
   // ------------------------------------------------------------------ boot
   function boot() {
     if (UI.wrapOkPlusCommands) UI.wrapOkPlusCommands();   // ✓+ on the commands that make something (ui-commands.js)
+    // a model loaded by anything (New, Open, the Task Pane, a recovery) is no longer the file App.filePath names
+    // (the Windows app; in a browser App.filePath is never set)
+    var coreLoadModel = UI.loadModel;
+    UI.loadModel = function () { if (App.filePath) deskSetPath(null); return coreLoadModel.apply(this, arguments); };
     // theme first, before anything is drawn (index.html already set data-theme from localStorage to avoid a flash)
     var savedTheme = 'light';
     try { savedTheme = localStorage.getItem('anvil.theme') || 'light'; } catch (e) { }

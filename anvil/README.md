@@ -78,7 +78,7 @@ Then open <http://localhost:8812/>. The default port is 8765, but on some Window
 powershell -ExecutionPolicy Bypass -File .\launch-anvil.ps1
 ```
 
-This is not yet the desktop shell of the roadmap (native open / save dialogs): files still go through the browser's file picker and downloads.
+This shortcut is the browser way: files go through the browser's file picker and downloads. The Windows app (`desktop/`, see `desktop/README.md`) uses Windows' own Open and Save boxes instead: File ▸ Open remembers the file, Ctrl+S saves straight back to it, Save As and every export ask where with Windows' Save box (smoke group `rfHZ`).
 
 ## Headless (Node)
 

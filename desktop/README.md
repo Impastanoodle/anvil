@@ -16,8 +16,11 @@ folder below.
 
 When a new version is put in `Desktop\Output\Anvil Releases`, Anvil notices it (when it starts, and every two hours)
 and shows a small box at the bottom right: **Anvil 0.1.1 is ready — Restart to update / Later**.
-**Restart to update** closes Anvil (it asks first if something is not saved), installs the new version quietly and
-opens it again. **Later** leaves it for the next start. **Help ▸ Check for Updates** checks at once (press Alt to show
+**Restart to update** closes Anvil (it asks first if something is not saved; **Cancel** keeps Anvil open and the box
+stays), installs the new version quietly and opens it again. If the install fails, the old Anvil opens again and says
+the update was not installed; nothing you saved is touched. Every step (button pressed, installer copied and checked,
+Anvil closed, installer run and its result, Anvil started again) is written to `%APPDATA%\Anvil\update.log`, so a
+problem with an update can be followed afterwards. **Later** leaves it for the next start. **Help ▸ Check for Updates** checks at once (press Alt to show
 the small menu bar).
 
 Anvil only installs a file whose fingerprint matches `latest.json` in that folder, so a half-copied file is never used.
@@ -51,6 +54,22 @@ How to tell which one is running:
 To use the browser copy on purpose (for example to compare), add `"occtEngine": "wasm"` to `settings.json` (**Help ▸
 Open Update Settings**) and restart Anvil; remove it to go back.
 
+## Opening and saving files
+
+The Windows app uses Windows' own Open and Save boxes, as SolidWorks does:
+
+- **File ▸ Open** (Ctrl+O) shows the Open box with Anvil's file types (Anvil parts, assemblies and scripts, drawings,
+  STEP, IGES, STL, OBJ, 3MF, DXF, DWG). An Anvil part or assembly remembers its file, and the window title shows its
+  name. A STEP, DXF … opens as a new part (Save asks where to put it).
+- **Save** (Ctrl+S) writes straight to the document's file, with no box. A new document asks once, in the Save box.
+- **Save As** and the exports (Export STEP, DXF / DWG, flat pattern, STL, OBJ, PDF …) show the Save box with the right
+  name and type, in the last folder used.
+- If a file cannot be written (read-only, open in another program, a network folder that is gone) Anvil says why and
+  your work stays open and unsaved; the old file is left as it was.
+- Parts saved inside Anvil before this version are still in the Task Pane's *Saved in this browser* list; open one
+  there and press Ctrl+S to give it a file. The file a document came from is not remembered after Anvil is closed
+  (there is no recent-files list yet).
+
 ## Where files go
 
 | What | Where |
@@ -83,5 +102,8 @@ outside the app archive, and `occt-host.js` (the process that runs it) next to t
 
 Other commands: `npm start` runs Anvil from the source files; `npm run pack` builds `dist\win-unpacked\Anvil.exe`
 without an installer; `node check.js app`, `node check.js tests`, `node check.js update --folder <folder>` test a build
-by script (`node check.js engines` only the OpenCascade part: Windows engine against the browser copy, Cancel, the
+by script (`node check.js files`: Open, Ctrl+S in place, Save As, exports, a read-only file, with the boxes stood in
+for; `node check.js update-restart`: Restart to update end to end with a stand-in installer, a .cmd in a temporary
+folder, never a real one: the unsaved-work question, the silent installer arguments, Anvil started again, a failed
+install starting the old Anvil, and update.log; add `--dev --exe <electron.exe>` to run either on the source files) (`node check.js engines` only the OpenCascade part: Windows engine against the browser copy, Cancel, the
 fall-backs and a timing table); `npm run icon` redraws the icon.
