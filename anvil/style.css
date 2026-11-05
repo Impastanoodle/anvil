@@ -438,7 +438,7 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 }
 #hud button { height: 26px; min-width: 26px; padding: 0 2px; display: inline-flex; align-items: center; justify-content: center; gap: 0; border-radius: 2px; border: 1px solid transparent; background: transparent; color: var(--text); }
 #hud button.hud-dd { padding: 0 1px 0 3px; }
-#hud button svg { width: 20px; height: 20px; flex: none; }
+#hud button svg { width: 16px; height: 16px; flex: none; }
 #hud button:hover { background: var(--hud-hover); border-color: var(--hud-hover-line); }
 #hud button.active { background: var(--hud-on); border-color: var(--hud-on-line); }
 #hud button.off { opacity: 0.45; }
@@ -474,11 +474,11 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 #viewport, #viewport.bg-dark, html[data-theme="dark"] #viewport { --hud-hover: rgba(255,255,255,0.09); --hud-hover-line: #5c5c5c; --hud-on: rgba(255,255,255,0.16); --hud-on-line: #9a9a9a; }
 #hud { gap: 2px; }
 #hud button { height: 26px; min-width: 26px; border-radius: 3px; transition: background-color 80ms linear, border-color 80ms linear; }
-#hud button svg { width: 20px; height: 20px; display: block; filter: drop-shadow(0 1px 0 rgba(0,0,0,0.55)); }
+#hud button svg { width: 16px; height: 16px; display: block; filter: drop-shadow(0 1px 0 rgba(0,0,0,0.55)); }
 #hud button:active:not(.off) { background: rgba(255,255,255,0.22); }
 #hud button.active { box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); }
-#hud button.hud-dd { padding: 0 2px 0 3px; }
-#hud .caret { display: inline-flex; align-items: center; justify-content: center; width: 8px; height: 20px; margin-left: 1px; font-size: 0; }
+#hud button.hud-dd { padding: 0 0 0 1px; }   /* rfIL: 16 px art + 1 + 8 px caret fill the 26 px inside the borders from x 2 (whole px) */
+#hud .caret { display: inline-flex; align-items: center; justify-content: center; width: 8px; height: 16px; margin-left: 1px; font-size: 0; }
 #hud .caret svg { width: 7px; height: 4px; filter: none; }
 #hud button:hover .caret { color: #e6e6e6; }
 #scale-bar { text-shadow: 0 1px 1px rgba(0,0,0,0.7); }
@@ -1725,10 +1725,10 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 }
 /* title row: icon, name, round Help; ✓ ✗ under it, their icons on the title icon's left edge */
 #pm .pm-head { height: 36px; padding: 0 8px; gap: 8px; font-size: 13px; font-weight: 600; line-height: 16px; color: var(--text); }
-#pm .pm-head > svg { flex: none; width: 20px; height: 20px; }
+#pm .pm-head > svg { flex: none; width: 24px; height: 24px; }   /* rfIL: 24 px (pixel-hinted; 20 cannot be sharp at 100 %) */
 #pm .pm-head .pm-help { width: 20px; height: 20px; padding: 0; }
 #pm .pm-head .pm-help:focus-visible { outline: 1px solid var(--pm-focus); outline-offset: 1px; }
-#pm .pm-actions { gap: 4px; padding: 0 8px 8px 2px; align-items: center; border-bottom: 1px solid var(--sw-chrome-line, var(--line)); }
+#pm .pm-actions { gap: 4px; padding: 0 8px 8px 4px; align-items: center; border-bottom: 1px solid var(--sw-chrome-line, var(--line)); }
 #pm .pm-actions button { width: 32px; height: 28px; padding: 0; display: grid; place-items: center; border: 1px solid transparent; border-radius: 3px; background: transparent; box-shadow: none; }
 #pm .pm-actions button:hover { background: var(--sw-row-hover); border-color: var(--pm-ctl-line); }
 #pm .pm-actions button:active { background: var(--sw-row-sel); border-color: var(--pm-ctl-hover); }

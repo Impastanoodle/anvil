@@ -323,17 +323,17 @@
     root.innerHTML = '';
     // rfBG: SolidWorks 2024's title row: the command's icon and name, the round Help (?) button at its right (the "?"
     // is drawn by the stylesheet, so the head's text stays the title alone)
-    var head = el('div', { class: 'pm-head', html: Icons(spec.icon || 'generic', 20) + '<span>' + spec.title + '</span>' });
+    var head = el('div', { class: 'pm-head', html: Icons(spec.icon || 'generic', 24) + '<span>' + spec.title + '</span>' });
     head.appendChild(el('button', { class: 'pm-help', title: 'Help', 'aria-label': 'Help', onclick: function () { var sm = document.getElementById('status-msg'); UI.toast(spec.help || (spec.title + ': ' + (sm && sm.textContent && sm.textContent !== 'Ready' ? sm.textContent : 'fill the boxes below, then ✓ (Enter) to accept or ✗ (Esc) to cancel.'))); } }));
     root.appendChild(head);
     var actions = el('div', { class: 'pm-actions' });
     // Mastercam's order (user, 2026-10-27): the blue ✓+ first, then ✓ and ✗; a command's own ✓+ (Transform) takes its place
     var extra = spec.extraActions || [], ownPlus = extra.filter(function (a) { return a.icon === 'okPlus'; })[0];
-    if (ownPlus) actions.appendChild(el('button', { title: ownPlus.title, class: 'pm-okplus', html: Icons('okPlus', 20), onclick: ownPlus.onclick }));
-    else if (pm.again) actions.appendChild(el('button', { title: 'OK and start another (✓+): accept, then ' + String(spec.title).replace(/\d+$/, '') + ' again for the next one', class: 'pm-okplus', html: Icons('okPlus', 20), onclick: function () { pmOKPlus(); } }));
-    actions.appendChild(el('button', { title: 'OK (Enter)', class: 'pm-ok', html: Icons('ok', 20), onclick: pmOK }));
-    actions.appendChild(el('button', { title: 'Cancel (Esc)', class: 'pm-cancel', html: Icons('cancel', 18), onclick: pmCancel }));
-    extra.forEach(function (a) { if (a !== ownPlus) actions.appendChild(el('button', { title: a.title, html: Icons(a.icon, 20), onclick: a.onclick })); });
+    if (ownPlus) actions.appendChild(el('button', { title: ownPlus.title, class: 'pm-okplus', html: Icons('okPlus', 24), onclick: ownPlus.onclick }));
+    else if (pm.again) actions.appendChild(el('button', { title: 'OK and start another (✓+): accept, then ' + String(spec.title).replace(/\d+$/, '') + ' again for the next one', class: 'pm-okplus', html: Icons('okPlus', 24), onclick: function () { pmOKPlus(); } }));
+    actions.appendChild(el('button', { title: 'OK (Enter)', class: 'pm-ok', html: Icons('ok', 24), onclick: pmOK }));
+    actions.appendChild(el('button', { title: 'Cancel (Esc)', class: 'pm-cancel', html: Icons('cancel', 24), onclick: pmCancel }));
+    extra.forEach(function (a) { if (a !== ownPlus) actions.appendChild(el('button', { title: a.title, html: Icons(a.icon, 24), onclick: a.onclick })); });
     // rfBG: a PropertyManager that stays open after ✓ (Mate, Insert Component) shows SolidWorks' pressed Keep Visible pin
     if (spec.keepVisible) actions.appendChild(el('button', { class: 'pm-pin on', title: 'Keep Visible: this PropertyManager stays open after ✓ for the next one; ✗ (Esc) closes it', 'aria-pressed': 'true', html: Icons('fix', 16) }));
     root.appendChild(actions);
@@ -622,7 +622,7 @@
         f.options.forEach(function (o) {
           var on = String(v[f.key]) === String(o[0]);
           if (on) curName = o[1];
-          var ib = el('button', { type: 'button', title: o[1], 'aria-label': o[1], role: 'radio', 'aria-checked': on ? 'true' : 'false', 'data-key': f.key + ':' + o[0], html: Icons(o[2] || 'generic', 18) });
+          var ib = el('button', { type: 'button', title: o[1], 'aria-label': o[1], role: 'radio', 'aria-checked': on ? 'true' : 'false', 'data-key': f.key + ':' + o[0], html: Icons(o[2] || 'generic', 16) });
           if (on) ib.classList.add('on');
           ib.addEventListener('click', function () { if (String(v[f.key]) === String(o[0])) return; changed(o[0]); if (!f.rerender && pm.spec) renderPM(); });
           ibox.appendChild(ib);

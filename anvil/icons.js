@@ -16,6 +16,7 @@ var IconsLib = (function () {
   var G = '#2e9e48', GL = '#a6dcb3', GD = '#1f7a35';        // OK, relations, add
   var R = '#d9453b', RL = '#f4a795', RD = '#a8322a';        // cancel, errors, removed pieces
   var FY = '#f5c400', FYL = '#ffe57a', FYD = '#c08f00';     // feature faces (yellow highlight)
+  var FYI = '#a07600';                                      // rfIL: yellow drawn as a line alone (hems, Costing): 3:1 on both panels
   var Y = '#f2c230', YD = '#c9961a';                        // pencil, sketch accents
   var P = '#8a8a8a', PL = '#dedede';                        // reference geometry
   var F1 = '#e8e8e8', F2 = '#b8b8b8', F3 = '#8e8e8e';       // base solid: top, front, side faces
@@ -186,10 +187,10 @@ var IconsLib = (function () {
     lenInner: p(FLANGE_L, F2, S, 1) + ln('M8.5 10.5 H10.5 V8.5 M10.5 10.5 H14', R, 0.8, DASH) + ln('M15 2.5 V10.5 M14 2.5 h2 M14 10.5 h2', B, 1.1),
     lenTangent: p(FLANGE_L, F2, S, 1) + ln('M13.5 8.5 H14', R, 0.8, DASH) + ln('M15 2.5 V8.5 M14 2.5 h2 M14 8.5 h2', B, 1.1),
     // Hem Type, side view of the sheet edge: Closed (flat on the sheet), Open (a gap), Tear Drop, Rolled
-    hemClosed: ln('M1.5 7 H11.5 a1 1 0 0 1 0 2 H5', FYD, 1.8),
-    hemOpen: ln('M1.5 5.5 H11 a2.5 2.5 0 0 1 0 5 H5', FYD, 1.8),
-    hemTeardrop: ln('M1.5 5.5 H9.5 a3 3 0 0 1 0 6 L5 7', FYD, 1.8),
-    hemRolled: ln('M1.5 4.5 H9 a4 4 0 1 1 -4 4', FYD, 1.8),
+    hemClosed: ln('M1.5 7 H11.5 a1 1 0 0 1 0 2 H5', FYI, 1.8),
+    hemOpen: ln('M1.5 5.5 H11 a2.5 2.5 0 0 1 0 5 H5', FYI, 1.8),
+    hemTeardrop: ln('M1.5 5.5 H9.5 a3 3 0 0 1 0 6 L5 7', FYI, 1.8),
+    hemRolled: ln('M1.5 4.5 H9 a4 4 0 1 1 -4 4', FYI, 1.8),
     // Hem position against the edge the hem was made on (red dashes): Material Inside / Bend Outside
     hemInside: ln('M12 2 v12', R, 1, DASH) + ln('M1.5 6 H8.5 a2 2 0 0 1 0 4 H4', FYD, 1.8),
     hemOutside: ln('M8.5 2 v12', R, 1, DASH) + ln('M1.5 6 H11 a2 2 0 0 1 0 4 H6.5', FYD, 1.8),
@@ -198,7 +199,7 @@ var IconsLib = (function () {
     thickness: rect(2, 4, 4, 8, '#e2463b', 'none') + rect(6, 4, 4, 8, FY, 'none') + rect(10, 4, 4, 8, '#3ec25a', 'none') + rect(2, 4, 12, 8, 'none', S, 1.1),
     compareDocs: rect(1.5, 1.5, 8, 10, W, S, 1, 'rx="0.6"') + rect(6.5, 4.5, 8, 10, W, S, 1, 'rx="0.6"') + ln('M8.5 8 h4 M8.5 10.5 h4 M8.5 13 h2.5', B, 1),
     perfEval: p('M2 12 a6 6 0 0 1 12 0', 'none', S, 1.3) + ln('M3.5 12 h1 M11.5 12 h1 M8 6 v1', S, 1) + ln('M8 12 L11.5 7', R, 1.4) + circ(8, 12, 1.2, S, 'none'),
-    costing: circ(8, 8, 6, FYL, FYD, 1.1) + txt(8, 11.6, 9.5, '$', FYD, null, 700),
+    costing: circ(8, 8, 6, FYL, FYI, 1.1) + txt(8, 11.6, 9.5, '$', FYI, null, 700),
     convertSM: blk(1, 6.5, 7, 6, 3) + p('M10 14.5 h5 v-1.4 h-3.6 V4 H10 z', FY, S, 1),
     crossBreak: p('M1.5 4 h13 v8 h-13 z', F2, S, 1.1) + ln('M1.5 4 L14.5 12 M14.5 4 L1.5 12', FYD, 1.3),
     corners: p('M2 2 h3 v9 h-3 z', F2, S, 1) + p('M5 11 h9 v3 H5 z', F2, S, 1) + circ(5, 11, 1.8, FY, FYD, 1),
@@ -468,8 +469,14 @@ var IconsLib = (function () {
   })();
   // rfGZ: Smart Fasteners (a hex-head bolt) and Hole Alignment (two plates whose holes miss the shared axis), for the
   // greyed assembly buttons (ui-panels.js passes them as icon: 'smartFasteners' / 'holeAlignment')
-  I.smartFasteners = p('M2.5 2.5 h11 v3.5 h-11 z', F2, S, 1) + ln('M6 2.5 v3.5 M10 2.5 v3.5', S, 0.8) + rect(5.5, 6, 5, 8, F1, S, 1) + ln('M5.5 8.5 l5 -1 M5.5 10.5 l5 -1 M5.5 12.5 l5 -1', S, 0.8);
-  I.holeAlignment = p('M1.5 3.5 h5 v3 h-5 z M9.5 3.5 h5 v3 h-5 z', F2, S, 1) + p('M1.5 9.5 h6 v3 h-6 z M10.5 9.5 h4 v3 h-4 z', F1, S, 1) + ln('M8 1 v14', R, 1, DASH) + ln('M9 8 h0.5', R, 1);
+  // rfIL: redrawn so they read as the SolidWorks commands at 16 px: Smart Fasteners = a yellow hex bolt (the inserted
+  // fastener, feature yellow) through a grey plate's hole, Hole Alignment = two plates whose hole axes (grey above, red
+  // below) miss each other
+  I.smartFasteners = rect(1.5, 8.5, 4, 4, F2, S, 1) + rect(10.5, 8.5, 4, 4, F2, S, 1) +
+    rect(5.5, 5.5, 5, 9, FYL, S, 1) + ln('M5.5 8 l5 -1 M5.5 10.5 l5 -1 M5.5 13 l5 -1', FYD, 0.9) +
+    p('M3.5 1.5 h9 v4 h-9 z', FY, S, 1) + ln('M6.5 1.5 v4 M9.5 1.5 v4', FYD, 0.9);
+  I.holeAlignment = p('M1.5 2.5 h5 v4 h-5 z M9.5 2.5 h5 v4 h-5 z', F2, S, 1) + p('M1.5 9.5 h6 v4 h-6 z M10.5 9.5 h4 v4 h-4 z', F1, S, 1) +
+    ln('M8 0.5 v8', P, 1, DASH) + ln('M9 7.5 v8', R, 1.5) + ln('M8 8 h1', R, 1);
   // rfFB: Boundary Boss/Base (a yellow body between two profiles, its sides shaped by Direction 2 curves) and Boundary Cut
   I.boundary = p('M2.5 12.5 C2.5 8.5 5.5 7 5.5 3.5 H10.5 C10.5 7 13.5 8.5 13.5 12.5 z', FY, S, 1.1) + ell(8, 12.5, 5.5, 1.7, FYL, S, 1.1) + ell(8, 3.5, 2.5, 0.9, FYL, S, 1.1) + ln('M8 4.4 C8 7.5 8 9 8 14.2', B, 1.1, DASH);
   I.boundaryCut = blk(1.5, 5, 8, 6, 3.5) + p('M3.6 8.4 C4.4 7.6 5.6 7.4 6 5.6 H9.6 C9.4 7 8.8 7.8 8.4 8.4 z', FY, FYD, 1) + ln('M5.5 7.2 C6.8 7 8 6.6 8.2 5.6', B, 0.9, DASH);
@@ -535,11 +542,72 @@ var IconsLib = (function () {
     if (d > 0.5) d -= 1; if (d <= -0.5) d += 1;
     return Math.abs(d) < 0.02 ? 0 : d / k;
   }
+  // rfIL: pixel hinting. One translate per element (the nudge above) only works when every vertex shares one fraction
+  // and the scale is a whole number of device px per grid unit; at 24 px on a 100 % screen (1.5 px a unit) or 16 px at
+  // 125 % a rectangle's far edge lands half a pixel off whatever the shift. snapper(k, want, off) moves one coordinate
+  // (grid units, `off` = the CENTRE shift around the body) to the nearest device position whose fraction is `want`
+  // (0.5 centres an odd-width stroke on a pixel row, 0 puts an even one or a fill edge between rows).
+  function snapper(k, want, off) {
+    return function (c, axis) { var o = off[axis]; return (Math.floor((c + o) * k - want + 0.5) + want) / k - o; };
+  }
+  var PATH_TOK = /[a-zA-Z]|-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/g, PATH_N = { M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7, Z: 0 };
+  // the path's d rewritten in absolute coordinates with every vertex snapped (curve handles follow their end points,
+  // arcs keep their radii); null when the d does not parse, so the element is left as drawn
+  function hintD(d, snap) {
+    var t = String(d).match(PATH_TOK), out = [], i = 0, cmd = null, x = 0, y = 0, sx = 0, sy = 0, px = 0, py = 0;
+    if (!t || !/^[Mm]$/.test(t[0])) return null;
+    function n() { var v = parseFloat(t[i++]); if (isNaN(v)) throw 0; return v; }
+    function pair(rel) { var a = n(), b = n(); return rel ? [x + a, y + b] : [a, b]; }
+    try {
+      while (i < t.length) {
+        if (/[a-zA-Z]/.test(t[i])) cmd = t[i++];
+        else if (!cmd || PATH_N[cmd.toUpperCase()] === 0) return null;
+        var U = cmd.toUpperCase(), rel = cmd !== U, e, c1, c2, dx0, dy0;
+        if (PATH_N[U] == null) return null;
+        // the snapped current point's shift, for the first handle of a curve
+        dx0 = px - x; dy0 = py - y;
+        if (U === 'Z') { out.push('Z'); x = sx; y = sy; px = snap(x, 0); py = snap(y, 1); continue; }
+        if (U === 'H') { x = rel ? x + n() : n(); px = snap(x, 0); out.push('H' + num(px)); continue; }
+        if (U === 'V') { y = rel ? y + n() : n(); py = snap(y, 1); out.push('V' + num(py)); continue; }
+        if (U === 'A') {
+          var ar = [n(), n(), n(), n(), n()]; e = pair(rel);
+          x = e[0]; y = e[1]; px = snap(x, 0); py = snap(y, 1);
+          out.push('A' + ar.map(num).join(' ') + ' ' + num(px) + ' ' + num(py)); continue;
+        }
+        if (U === 'C') { c1 = pair(rel); c2 = pair(rel); }
+        else if (U === 'S' || U === 'Q') c2 = pair(rel);
+        e = pair(rel);
+        x = e[0]; y = e[1]; px = snap(x, 0); py = snap(y, 1);
+        var ex = px - x, ey = py - y, s2 = [];
+        if (c1) s2.push(num(c1[0] + dx0), num(c1[1] + dy0));
+        if (c2) s2.push(num(c2[0] + (U === 'Q' ? (dx0 + ex) / 2 : ex)), num(c2[1] + (U === 'Q' ? (dy0 + ey) / 2 : ey)));
+        s2.push(num(px), num(py));
+        out.push(U + s2.join(' '));
+        if (U === 'M') { sx = x; sy = y; cmd = rel ? 'l' : 'L'; }
+        c1 = c2 = null;
+      }
+    } catch (err) { return null; }
+    return out.join(' ');
+  }
+  function hint(tag, a, snap) {
+    if (tag === 'path') { var d = hintD(attr(a, 'd'), snap); return d ? setAttr(a, 'd', d) : null; }
+    var x = parseFloat(attr(a, 'x')), y = parseFloat(attr(a, 'y')), w = parseFloat(attr(a, 'width')), h = parseFloat(attr(a, 'height'));
+    if ([x, y, w, h].some(isNaN) || attr(a, 'rx')) return null;
+    var x0 = snap(x, 0), y0 = snap(y, 1), x1 = snap(x + w, 0), y1 = snap(y + h, 1);
+    if (x1 <= x0 || y1 <= y0) return null;
+    return setAttr(setAttr(setAttr(setAttr(a, 'x', num(x0)), 'y', num(y0)), 'width', num(x1 - x0)), 'height', num(y1 - y0));
+  }
   function weigh(body, size, dpr) {
     var s = size / 16, k = s * dpr, whole = Math.abs(k - Math.round(k)) < 0.01;
+    // the CENTRE shift wrapped around the body (icon `body()`), which moves every vertex by whole grid units
+    var g0 = /^<g transform="translate\((-?[\d.]+) (-?[\d.]+)\)">/.exec(body), off = g0 ? [+g0[1], +g0[2]] : [0, 0];
     return body.replace(SHAPE_RE, function (all, tag, a, close) {
       var stroke = attr(a, 'stroke');
-      if (!stroke || stroke === 'none') return all;
+      if (!stroke || stroke === 'none') {
+        // a filled rect with no stroke (sketch points): its edges between device pixels
+        var hf = tag === 'rect' && attr(a, 'fill') && attr(a, 'fill') !== 'none' && !attr(a, 'transform') ? hint(tag, a, snapper(k, 0, off)) : null;
+        return hf ? '<' + tag + hf + (close ? '/' : '') + '>' : all;
+      }
       var fill = attr(a, 'fill'), filled = fill != null && fill !== 'none';
       var w = parseFloat(attr(a, 'stroke-width') || '1');
       var c = strokeClass(w, filled, fill === stroke, size);
@@ -547,7 +615,13 @@ var IconsLib = (function () {
       if (c[0] !== 'self' && c[0] !== 'hair') dw = Math.max(1, Math.ceil(dw - 0.5));
       a = setAttr(a, 'stroke-width', num(dw / dpr / s));
       if (c[0] === 'outline' && stroke === 'currentColor' && !PAPER.test(fill) && !VIEW.test(fill)) a = setAttr(a, 'stroke', EDGE);
-      if (whole && dw >= 1 && Math.abs(dw - Math.round(dw)) < 0.01 && !attr(a, 'transform') && tag !== 'circle' && tag !== 'ellipse') {
+      var crisp = dw >= 1 && Math.abs(dw - Math.round(dw)) < 0.01 && !attr(a, 'transform');
+      // rfIL: paths and rects are hinted vertex by vertex at every scale (24 px at 1x, 16 px at 125 / 150 %, …)
+      if (crisp && (tag === 'path' || tag === 'rect')) {
+        var hinted = hint(tag, a, snapper(k, Math.round(dw) % 2 ? 0.5 : 0, off));
+        if (hinted) return '<' + tag + hinted + (close ? '/' : '') + '>';
+      }
+      if (whole && crisp && tag !== 'circle' && tag !== 'ellipse') {
         var x = null, y = null;
         if (tag === 'rect') { x = parseFloat(attr(a, 'x')); y = parseFloat(attr(a, 'y')); }
         else { var m = /^\s*M\s*(-?[\d.]+)[\s,]+(-?[\d.]+)/.exec(attr(a, 'd') || ''); if (m) { x = parseFloat(m[1]); y = parseFloat(m[2]); } }
