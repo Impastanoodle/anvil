@@ -60,7 +60,9 @@
 
   // ------------------------------------------------------------------ parameters (the PM's Parameters group)
   var PARAM_FIELDS = {
-    circle: [['cx', 'Center X', 'u'], ['cy', 'Center Y', 'u'], ['r', 'Radius', 'u']],
+    // rfIC (user): a circle's Parameters are its size only, Radius and Diameter (linked); the centre is placed with the
+    // mouse, a dimension or a relation. params() still reports cx / cy (scripts, tests, the entity PM's values).
+    circle: [['r', 'Radius', 'u'], ['dia', 'Diameter', 'u']],
     arc: [['cx', 'Center X', 'u'], ['cy', 'Center Y', 'u'], ['sx', 'Start X', 'u'], ['sy', 'Start Y', 'u'], ['ex', 'End X', 'u'], ['ey', 'End Y', 'u'], ['r', 'Radius', 'u'], ['ang', 'Angle', '°']],
     poly: [['n', 'Number of sides'], ['cx', 'Center X', 'u'], ['cy', 'Center Y', 'u'], ['dia', 'Circle diameter', 'u'], ['ang', 'Angle', '°']],
     slot: [['cx', 'Center X', 'u'], ['cy', 'Center Y', 'u'], ['w', 'Slot width', 'u'], ['len', 'Slot length', 'u']],
@@ -72,7 +74,7 @@
   function params(e) {
     if (!e) return null;
     switch (e.t) {
-      case 'circle': return { cx: e.cx, cy: e.cy, r: e.r };
+      case 'circle': return { cx: e.cx, cy: e.cy, r: e.r, dia: e.r != null ? 2 * e.r : null };
       case 'arc': { var s = at(e, e.a0), q = at(e, e.a1); return { cx: e.cx, cy: e.cy, sx: s[0], sy: s[1], ex: q[0], ey: q[1], r: e.r, ang: e.a1 - e.a0 }; }
       case 'poly': {
         var n = e.n | 0 || 6, k = e.ins ? Math.cos(Math.PI / n) : 1;
@@ -90,6 +92,7 @@
     switch (e.t) {
       case 'circle':
         if (key === 'r') { if (!(v > 0)) return 'The radius must be greater than 0.'; e.r = v; }
+        else if (key === 'dia') { if (!(v > 0)) return 'The diameter must be greater than 0.'; e.r = v / 2; }   // rfIC
         else if (key === 'cx' || key === 'cy') e[key] = v;
         return '';
       case 'arc': {
@@ -234,7 +237,9 @@
   // Parameters are shown and edited until the next one starts)
   // shape (rfH): the Polygon / Straight Slot placed last, which became lines (and arcs) as SolidWorks draws them
   // ({ kind, first, n, ins }, below): its Parameters are those of the shape as a whole
-  var tp = { last: null, sketch: null, shape: null }, carryConstruction = null;
+  // size (rfIC): a Radius / Diameter typed in the Circle tool PM before the circle is placed — the next circle gets
+  // that exact radius (the rim click only sets its direction); carried over a Circle / Perimeter Circle type switch
+  var tp = { last: null, sketch: null, shape: null, size: null }, carryConstruction = null, carrySize = null;
   function lastEntity(fam) {
     var f = sketch(), e = f && tp.last != null && f.id === tp.sketch ? f.entities[tp.last] : null;
     return e && FAM_TYPES[fam].indexOf(e.t) >= 0 ? tp.last : null;
@@ -406,7 +411,8 @@
   function openToolPM(tool) {
     var fam = FAM[tool];
     if (!fam) return;
-    tp = { last: null, sketch: null, shape: null };
+    tp = { last: null, sketch: null, shape: null, size: fam === 'circle' ? carrySize : null };
+    carrySize = null;
     if (carryConstruction != null) { App.drawConstruction = carryConstruction; carryConstruction = null; }
     var values = { type: tool, construction: !!App.drawConstruction };
     if (fam === 'slot') { values.slotDims = !!opt.slotDims; values.lenType = opt.overall ? 'overall' : 'cc'; }
@@ -430,6 +436,7 @@
     if (key === 'type') {
       if (v.type === App.tool) return;
       carryConstruction = !!App.drawConstruction;
+      carrySize = tp.size;
       UI.withToolPM(function () { UI.setTool(v.type); });
       UI.refreshRibbon();
       return;
@@ -456,12 +463,30 @@
     }
     if (NUM_KEYS.indexOf(key) < 0) return;   // (a relation group's own fields)
     if (sh && !drawing()) { applyShapeParam(f, key, v[key]); return; }
+    if (fam === 'circle' && (key === 'r' || key === 'dia') && (li == null || drawing())) { presetSize(key, v[key]); return; }
     if (li == null || drawing()) {
       UI.setStatus('Draw the ' + TITLES[fam].toLowerCase() + ' first: its parameters follow it while it is drawn and can be changed once it is placed.');
       refreshValues();
       return;
     }
     applyParam(f, li, key, v[key]);
+  }
+  // rfIC: a Radius / Diameter typed before the circle is placed sets the next circle's size (both boxes show it)
+  function presetSize(key, val) {
+    var v = +val;
+    if (!isFinite(v) || !(v > 0)) { UI.setStatus(key === 'dia' ? 'The diameter must be greater than 0.' : 'The radius must be greater than 0.'); refreshValues(); return; }
+    tp.size = key === 'dia' ? v / 2 : v;
+    UI.setStatus('The next circle is Ø ' + UI.fmtLen(2 * tp.size) + ' (R ' + UI.fmtLen(tp.size) + '): ' + (App.tool === 'pcircle' ? 'click two points on it, then the side it lies on.' : 'click its center, then the direction of a point on it.'));   // sketch-units
+    refreshValues();
+  }
+  // the pending size, used by the circle just committed (after hooks below): the exact radius
+  function usePresetSize(f, i0, st) {
+    var e = f && f.entities[i0], r = tp.size;
+    if (r == null || !e || e.t !== 'circle') return;
+    tp.size = null;
+    if (st && st.typed && (st.typed.r != null || st.typed.d != null)) return;   // a value typed in the on-screen box wins
+    if (Math.abs(e.r - r) > 1e-9 * Math.max(1, r)) return;   // the rim point did not follow the preset (a snap took it): it stands
+    e.r = r;
   }
   function newPolygon() {
     var spec0 = UI.pmSpec && UI.pmSpec();
@@ -534,6 +559,7 @@
       if (tmp && drawing() && FAM_TYPES[c.fam].indexOf(tmp.t) >= 0) e = tmp;
       else if (li != null && !drawing()) e = f.entities[li];
       else if (lsh && !drawing()) e = shapeEntity(f, lsh);
+      else if (c.fam === 'circle' && tp.size != null && !drawing()) e = { t: 'circle', r: tp.size };   // rfIC: the size typed for the next circle
     } else {
       e = f && f.entities[c.index];
       if (!e || e.t !== c.type) return;
@@ -586,9 +612,21 @@
   // ------------------------------------------------------------------ tool definitions (ui-sketch.js hooks)
   function after(f, i) { placed(f, i); }
   // the built-in tools: only the PM follows what they place
-  ['circle', 'arc', 'arc3'].forEach(function (t) {
+  ['arc', 'arc3'].forEach(function (t) {
     UI.sketchToolDefs[t] = { after: function (f, i0) { after(f, i0); } };
   });
+  // rfIC: Circle — a size typed in the PM before placing holds: the rim point goes at that radius in the cursor's
+  // direction (the preview shows it), and the circle committed gets the exact radius
+  UI.sketchToolDefs.circle = {
+    refine: function (out, raw, st) {
+      var r = tp.size, c = st.pts[0];
+      if (r == null || !c || st.pts.length !== 1) return;
+      var u = unit([raw[0] - c[0], raw[1] - c[1]]);
+      out.p = [c[0] + u[0] * r, c[1] + u[1] * r];
+      out.align = [];
+    },
+    after: function (f, i0, cnt, st) { usePresetSize(f, i0, st); after(f, i0); }
+  };
   UI.sketchToolDefs.slot = {
     // slot-overall: a typed overall length must be more than the width (ui-sketch.js places the far centre at L - w)
     accept: function (st, p, typed) {
@@ -664,8 +702,17 @@
       return t ? [{ t: 'circle', cx: t.cx, cy: t.cy, r: t.r }] : [];
     },
     accept: function (st, p) {
+      // rfIC: with a size typed in the PM the first two points must fit on that circle
+      if (st.pts.length === 1 && tp.size != null && Math.hypot(p[0] - st.pts[0][0], p[1] - st.pts[0][1]) > 2 * tp.size * (1 + 1e-9)) { UI.setStatus('The two points are farther apart than the diameter typed (' + UI.fmtLen(2 * tp.size) + '): click closer to the first.'); return false; }   // sketch-units
       if (st.pts.length === 2 && !geom().threePointArc(st.pts[0], st.pts[1], p)) { UI.setStatus('The three points are in a line: click a point off the line through the first two.'); return false; }
       return true;
+    },
+    // rfIC: a size typed in the PM: the third point goes on the circle of that radius through the first two, on the
+    // cursor's side
+    refine: function (out, raw, st) {
+      if (tp.size == null || st.pts.length !== 2) return;
+      out.p = arc3Through(st.pts[0], st.pts[1], raw, tp.size);
+      out.align = [];
     },
     readout: function (pts, p, n) { var e = this.entities(pts, p)[0]; return e ? 'R ' + n(e.r, 2) : ''; },
     // each point placed on an existing sketch point holds it on the circle (Coincident), as SolidWorks infers
@@ -675,6 +722,7 @@
         var ref = pointRefAt(f, q, i0);
         if (ref) S.addRelation(f, 'coincident', [ref, String(i0)], { rejectOver: true });
       });
+      usePresetSize(f, i0, st);
       after(f, i0);
     }
   };

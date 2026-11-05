@@ -32,14 +32,15 @@
   step('p9-sketch-curves: Circle PM (Circle Type, Options, Parameters) follows the circle being drawn, then edits the one placed; Perimeter Circle from its type button takes three points and holds them (Coincident on the origin); a selected circle opens Circle', async function () {
     await rskNew(); cvDefaults();
     UI.setTool('circle');
-    assert(UI.pmTitle() === 'Circle' && /Circle Type.*Options.*For construction.*Parameters.*Center X.*Center Y.*Radius/.test(cvPM()), 'Circle PM groups: ' + cvPM());
+    assert(UI.pmTitle() === 'Circle' && /Circle Type.*Options.*For construction.*Parameters.*Radius.*Diameter/.test(cvPM()) && !/Center X/.test(cvPM()), 'Circle PM groups: ' + cvPM());
     assert(D.activeElement === D.body || !D.getElementById('pm').contains(D.activeElement), 'the PM does not take the keyboard');
     rskClick([10, 5]); selEv('mousemove', rskScr([14, 5]));
     assert(cvVals().cx === 10 && cvVals().cy === 5 && cvVals().r === 4, 'live: ' + JSON.stringify(cvVals()));
     rskClick([14, 5]);
-    UI.pmSetField('r', '6'); UI.pmSetField('cx', '12');
+    // rfIC: the Circle PM has no Center X / Y (user): the size is edited (Radius, Diameter); the centre stays where clicked
+    UI.pmSetField('r', '6');
     var c = rskEnts()[0];
-    assert(c.t === 'circle' && c.r === 6 && c.cx === 12 && UI.App.tool === 'circle', 'edited after placing: ' + JSON.stringify(c));
+    assert(c.t === 'circle' && c.r === 6 && c.cx === 10 && UI.App.tool === 'circle', 'edited after placing: ' + JSON.stringify(c));
     cvBtn('type:pcircle').click();
     assert(UI.App.tool === 'pcircle' && UI.pmTitle() === 'Circle' && cvBtn('type:pcircle').classList.contains('on'), 'Perimeter Circle: ' + UI.App.tool);
     rskClick([0, 0]); rskClick([40, 0]); selEv('mousemove', rskScr([20, 20])); rskClick([20, 20]);
@@ -47,7 +48,7 @@
     near(p.cx, 20, 1e-9, 'perimeter centre x'); near(p.cy, 0, 1e-9, 'perimeter centre y'); near(p.r, 20, 1e-9, 'perimeter radius');
     assert((f.rels || []).some(function (r) { return r.type === 'coincident' && r.refs.indexOf('O') >= 0 && r.refs.indexOf('1') >= 0; }), 'on the origin: ' + JSON.stringify(f.rels));
     selKey('Escape');
-    UI.setTool('select'); rskClick([18, 5]);
+    UI.setTool('select'); rskClick([16, 5]);   // rfIC: the circle stayed at (10, 5) (no Center X box), R 6
     assert(UI.pmTitle() === 'Circle' && !/Circle Type/.test(cvPM()) && cvVals().r === 6, 'selected circle PM: ' + cvPM());
     UI.pmSetField('r', '7');
     assert(rskEnts()[0].r === 7, 'radius 7 from the selected circle PM');
