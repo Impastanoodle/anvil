@@ -128,6 +128,9 @@ async function runChrome(chrome, pageUrl, dbgPort, tag) {
     await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error('websocket failed')); });
     const page = new Page(ws);
     await page.send('Runtime.enable');
+    // the view glides (and their tests) are off under prefers-reduced-motion, which a machine with Windows animations
+    // turned off reports (GitHub's Windows runners): emulate the PC's "no preference" so every machine runs the same
+    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] }).catch(() => { });
     const t0 = Date.now();
     let last = '';
     let pageDone = false;
