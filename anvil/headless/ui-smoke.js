@@ -13,7 +13,7 @@
 // 25), --shards <n> (n Chromes at once, each running a consecutive block of the GROUPS files, `?files=a-b`, balanced
 // by headless/smoke-timings.json; every Chrome loads every group file, so helpers are all there, and the driver checks
 // the blocks ran each declared step exactly once), --save-timings (seconds per group file into smoke-timings.json),
-// --json <file> (passed, total, seconds, failures).
+// --json <file> (passed, total, seconds, failures), --part <i>/<n> (only block i of n, see above).
 'use strict';
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -28,6 +28,8 @@ const port = Number(opt('--port', 9333));
 const keep = args.includes('--keep');
 const slowest = args.includes('--slowest') ? (Number(opt('--slowest', 25)) || 25) : 0;
 const shards = Math.max(1, Math.floor(Number(opt('--shards', 1))) || 1);
+// --part i/n: run only block i (1-based) of the n --shards blocks, in one Chrome (CI runs each block on its own machine)
+const part = (/^(\d+)\/(\d+)$/.exec(opt('--part', '')) || []).slice(1).map(Number);
 const PAGE = path.join(__dirname, '..', 'tests', 'ui-smoke.html');
 const TIMINGS = path.join(__dirname, 'smoke-timings.json');
 const GAP_MS = 30;   // the page's pause between steps
@@ -106,7 +108,9 @@ function blocks(files, n) {
 async function runChrome(chrome, pageUrl, dbgPort, tag) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'anvil-ui-smoke-'));
   const proc = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-proxy-server', '--no-first-run', '--no-default-browser-check', '--hide-scrollbars',
-    '--window-size=1600,1000', '--remote-debugging-port=' + dbgPort, '--user-data-dir=' + profile, pageUrl], { stdio: ['ignore', 'ignore', 'pipe'] });
+    '--window-size=1600,1000', '--remote-debugging-port=' + dbgPort, '--user-data-dir=' + profile]
+    // ANVIL_CHROME_FLAGS: extra switches, space-separated (CI's Linux runners pass --no-sandbox)
+    .concat(String(process.env.ANVIL_CHROME_FLAGS || '').split(/\s+/).filter(Boolean), [pageUrl]), { stdio: ['ignore', 'ignore', 'pipe'] });
   let stderr = '';
   proc.stderr.on('data', (d) => { stderr += d; });
   const cleanup = () => { if (!keep) { try { proc.kill(); } catch (e) { } setTimeout(() => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) { } }, 500); } };
@@ -155,7 +159,7 @@ async function main() {
 
   const t0 = Date.now();
   const files = groupList();
-  const cuts = shards > 1 ? blocks(files, shards) : [null];
+  const cuts = part.length && part[1] > 1 ? [blocks(files, part[1])[part[0] - 1]] : shards > 1 ? blocks(files, shards) : [null];
   const runs = await Promise.all(cuts.map((c, i) => {
     const u = c ? url + (url.indexOf('?') >= 0 ? '&' : '?') + 'files=' + c[0] + '-' + c[1] : url;
     return runChrome(chrome, u, port + i, c ? 'shard ' + (i + 1) + '/' + cuts.length + ', ' : '');

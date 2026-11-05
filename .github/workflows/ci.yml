@@ -1,22 +1,35 @@
-# Anvil CI: the headless Node runner on every push and pull request.
-# `npm test` runs anvil/tests/kernel-tests.html under Node (no browser), each group file a job
-# in its own process; the runner has its 4 threads to itself here, so it takes all of them
-# (the default is half, for a PC someone is using);
-# `npm run examples` builds every bundled example and checks its documented volume.
-# The OpenCascade engine is not committed (anvil/vendor/get-occt.ps1 fetches it), so the
-# OpenCascade tests and the browser UI smoke test stay local; see CLAUDE.md step 4.
+# Anvil CI: the whole check that `node anvil/headless/verify.js` runs on the user's PC, on GitHub's machines instead,
+# on every push (any branch) and pull request. Jobs run side by side, each on its own Linux machine:
+#   headless     kernel tests (anvil/tests/kernel-tests.html under Node, no browser) and every example volume
+#   ui-smoke 1-4 anvil/tests/ui-smoke.html in headless Chrome, one quarter of the group files each (--part i/4)
+#   occt         the OpenCascade side: example volumes on OpenCascade and anvil/tests/occt-tests.html
+# The OpenCascade engine is not committed: the same pinned opencascade.js tarball anvil/vendor/get-occt.ps1 fetches is
+# downloaded once from the npm registry, its two files checked against the same SHA-256 values, and cached.
+# The pages are served by anvil/headless/static-serve.js (serve.ps1 needs Windows; no DWG converter here, so the
+# DWG tests take their "no converter" path).
 name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# a newer push to the same branch cancels the run still going for the older one
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OCCT_URL: https://registry.npmjs.org/opencascade.js/-/opencascade.js-2.0.0-beta.b5ff984.tgz
+  OCCT_WASM_SHA: 4b6a74398987eb3ca6bedc7d1b29d6a5af74d0613a9f3bf013a52d7d5d1b5937
+  OCCT_JS_SHA: 8016d504d881f5f3b9f9431524dc8dadd03088588b828e2d18e096bc5fedd5ba
+  ANVIL_CHROME_FLAGS: --no-sandbox
 
 jobs:
   headless:
     name: Kernel tests and examples (Node)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -26,3 +39,62 @@ jobs:
         run: npm test -- --jobs 4
       - name: Example volumes
         run: npm run examples
+
+  ui-smoke:
+    name: UI smoke ${{ matrix.part }}/4 (headless Chrome)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - &occt-cache
+        name: OpenCascade engine (cached)
+        id: occt-cache
+        uses: actions/cache@v4
+        with:
+          path: anvil/vendor/occt
+          key: occt-2.0.0-beta.b5ff984-${{ env.OCCT_WASM_SHA }}
+      - &occt-fetch
+        name: Fetch OpenCascade engine
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          curl -fsSL "$OCCT_URL" -o "$tmp/occt.tgz"
+          tar -xzf "$tmp/occt.tgz" -C "$tmp"
+          mkdir -p anvil/vendor/occt
+          for f in opencascade.full.js opencascade.full.wasm opencascade.full.d.ts; do cp "$tmp/package/dist/$f" anvil/vendor/occt/; done
+          cp "$tmp/package/LICENSE" anvil/vendor/occt/LICENSE-opencascade.js.txt
+          echo "$OCCT_WASM_SHA  anvil/vendor/occt/opencascade.full.wasm" | sha256sum -c -
+          echo "$OCCT_JS_SHA  anvil/vendor/occt/opencascade.full.js" | sha256sum -c -
+      - &serve
+        name: Serve anvil/ on port 8812
+        run: |
+          node anvil/headless/static-serve.js 8812 &
+          for i in $(seq 1 30); do curl -sfI http://localhost:8812/tests/ui-smoke.html >/dev/null && exit 0; sleep 1; done
+          echo "static-serve.js did not come up"; exit 1
+      - name: UI smoke, part ${{ matrix.part }} of 4
+        run: node anvil/headless/ui-smoke.js http://localhost:8812/tests/ui-smoke.html --part ${{ matrix.part }}/4 --timeout 1500 --slowest 10
+
+  occt:
+    name: OpenCascade examples and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - *occt-cache
+      - *occt-fetch
+      - *serve
+      - name: Example volumes on OpenCascade
+        run: node anvil/headless/anvil.js example --all --occt
+      - name: OpenCascade test page
+        run: node anvil/headless/ui-smoke.js http://localhost:8812/tests/occt-tests.html --timeout 1500
