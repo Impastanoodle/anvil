@@ -119,8 +119,8 @@
     sheetMouse('dblclick', boxMid(w1.box));
     assert(UI.hasPM() && D.querySelector('#pm .pm-head span').textContent === 'Dimension', 'Dimension PM');
     assert(/Sketch1/.test(D.querySelector('#pm').textContent), 'Drives Sketch1');
-    setInput(pmField('Tolerance'), 'bilateral');
-    setInput(pmField('Maximum variation'), '0.1'); setInput(pmField('Minimum variation'), '0.05'); setInput(pmField('Unit precision'), '2');
+    setInput(D.querySelector('#pm select[data-key="tolType"]'), 'bilateral');
+    setInput(pmField('Maximum variation'), '0.1'); setInput(pmField('Minimum variation'), '0.05'); setInput(D.querySelector('#pm select[data-key="prec"]'), '2');
     await UI.pmOK(); await wait(30);
     assert(anvil.drawing.summary().dims[0] === '100.00 +0.10/-0.05', 'tolerance ' + anvil.drawing.summary().dims[0]);
     assert(Array.prototype.some.call(D.querySelectorAll('#drawing-sheet g[data-layer="DIMENSIONS"] text'), function (t) { return t.textContent === '+0.10'; }), 'stacked tolerance drawn');

@@ -167,8 +167,8 @@
     assert(pl && pl.text === '6.000' && pl.tbox, 'path length on the sheet: ' + (pl && pl.text));
     rfCTClick(mid(pl.tbox)); await wait(30);
     assert(UI.hasPM() && UI.pmSpec().command === 'dimension', 'Dimension PM on a click');
-    assert(!pmField('Flip arrows') && pmField('Unit precision'), 'precision, no Flip arrows');
-    var pr = pmField('Unit precision'); pr.value = '2'; pr.dispatchEvent(new W.Event('change', { bubbles: true }));
+    assert(!pmField('Flip arrows') && D.querySelector('#pm select[data-key="prec"]'), 'precision, no Flip arrows');
+    var pr = D.querySelector('#pm select[data-key="prec"]'); pr.value = '2'; pr.dispatchEvent(new W.Event('change', { bubbles: true }));
     D.querySelector('#pm .pm-ok').click(); await idle(); await wait(30);
     assert(anvil.drawing.summary().dims.indexOf('6.00') >= 0, 'precision .12: ' + anvil.drawing.summary().dims.join(' | '));
     await UI.undo(); await idle(); await wait(40);
@@ -193,8 +193,8 @@
     if (UI.hasPM()) { UI.pmCancel(); await wait(20); }
     var ar = sdim('angrun');
     rfCTClick(mid(ar.tbox)); await wait(30);
-    assert(UI.hasPM() && UI.pmSpec().command === 'dimension' && !pmField('Tolerance') && !pmField('Text (<DIM>'), 'running set PM: precision only');
-    pr = pmField('Unit precision'); pr.value = '1'; pr.dispatchEvent(new W.Event('change', { bubbles: true }));
+    assert(UI.hasPM() && UI.pmSpec().command === 'dimension' && !D.querySelector('#pm select[data-key="tolType"]') && !pmField('Text (<DIM>'), 'running set PM: precision only');
+    pr = D.querySelector('#pm select[data-key="prec"]'); pr.value = '1'; pr.dispatchEvent(new W.Event('change', { bubbles: true }));
     D.querySelector('#pm .pm-ok').click(); await idle(); await wait(30);
     assert(anvil.drawing.summary().dims.indexOf('0°, 30.0°, 60.0°') >= 0, 'precision .1: ' + anvil.drawing.summary().dims.join(' | '));
     // close and reopen: kept

@@ -763,7 +763,7 @@
   }
   // a decimal inch with `prec` places and no leading zero: .030, -.500, 12.250; a value that rounds to zero is '0'
   function inchText(x, prec) {
-    prec = Math.max(0, Math.min(6, Math.round(+prec)));
+    prec = Math.max(0, Math.min(8, Math.round(+prec)));   // (rfIF: up to .12345678)
     var p = Math.pow(10, prec), r = Math.round(Math.abs(+x) * p) / p;
     if (r === 0) return '0';
     var s = r.toFixed(prec);
@@ -784,7 +784,7 @@
   // (doc.options.dimPrec, fractions, fracDenom); prec null is the default for the units
   function dimStyle(doc) {
     var o = (doc && doc.options) || {};
-    return { prec: o.dimPrec != null && o.dimPrec !== '' && +o.dimPrec >= 0 ? Math.min(6, Math.round(+o.dimPrec)) : null, fractions: !!o.fractions, denom: +o.fracDenom > 0 ? +o.fracDenom : 64 };
+    return { prec: o.dimPrec != null && o.dimPrec !== '' && +o.dimPrec >= 0 ? Math.min(8, Math.round(+o.dimPrec)) : null, fractions: !!o.fractions, denom: +o.fracDenom > 0 ? +o.fracDenom : 64 };
   }
   // (rfT) the dimension style's sizes (Document Properties > Dimensions), in the drawing's units: ANSI inch (ASME
   // Y14.2 / SolidWorks' ANSI template) .125 text, .125 x .042 arrows (3:1), a .0625 gap from the part and .125 beyond

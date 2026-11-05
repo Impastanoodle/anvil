@@ -3429,7 +3429,9 @@
     dimEditing = { d: it.d, auto: !!it.auto, index: it.index, rel: it.rel, sketchId: f.id, value: value, angle: rtype === 'angle' || rtype === 'runangle', range: dimAngleRange(rtype), scale: scale };
     dimEdit.hidden = false;
     dimUnit.textContent = dimEditing.angle ? '°' : (UI.unitLabel ? UI.unitLabel() : 'mm');
-    dimInput.value = String(Math.round(dimEditing.value * 1e4) / 1e4);
+    // rfIF: rounded to 4 places, or to the dimension's own / the document's precision when that is finer (up to 8)
+    var mPl = Math.max(4, UI.dimPlaces ? UI.dimPlaces(it.rel != null ? f.rels[it.rel] : it.d, dimEditing.angle) : 4);
+    dimInput.value = String(Math.round(dimEditing.value * Math.pow(10, mPl)) / Math.pow(10, mPl));
     // rfE: the text as shown (rounded to 4 places); ✓ / Enter / a click elsewhere with it untouched is no change (a √13
     // line keeps 3.6055513, not the 3.6056 shown), as the SolidWorks Modify box only shows the value rounded
     dimEditing.text = dimInput.value;

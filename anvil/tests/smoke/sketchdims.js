@@ -97,10 +97,10 @@
     setInput(pmField('Value'), '42');
     near(f.entities[0].x2 - f.entities[0].x1, 42, 1e-9, 'value drives the line');
     D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
-    setInput(pmField('Tolerance type'), 'symmetric');
+    setInput(D.querySelector('#pm select[data-key="tolType"]'), 'symmetric');
     setInput(pmField('Maximum variation'), '0.1');
     D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
-    setInput(pmField('Primary unit precision'), '2');
+    setInput(D.querySelector('#pm select[data-key="prec"]'), '2');
     D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
     setInput(pmField('Text before'), '2X');
     UI.drawDims();
@@ -109,7 +109,7 @@
     setInput(pmField('Name'), 'Width');
     assert(anvil.dimProps('dim', 0).name === 'Width@' + f.name, 'renamed ' + anvil.dimProps('dim', 0).name);
     assert(UI.App.undo.length === undo0 + 5, 'one undo step per change: ' + (UI.App.undo.length - undo0));
-    setInput(pmField('Tolerance type'), 'basic');
+    setInput(D.querySelector('#pm select[data-key="tolType"]'), 'basic');
     UI.drawDims();
     assert(D.querySelector('#dim-layer .dim .dbox'), 'Basic draws a box');
     // driven / driving

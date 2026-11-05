@@ -38,7 +38,7 @@
     if (inch && ms >= 1) ms = Math.round(ms / 25.4 * 1e4) / 1e4;   // (a pre-rfV paper-mm value, shown in inches)
     return { autoCenterMarks: !!o.autoCenterMarks, autoCenterlines: !!o.autoCenterlines, markSize: ms,
       extLines: o.extLines !== false, balloonQty: !!o.balloonQty, flatDims: o.flatDims === true, flatSizeNote: !!o.flatSizeNote,
-      bendNotes: o.bendNotes === 'table' || o.bendNotes === 'none' ? o.bendNotes : 'notes', dimPrec: st.prec, fractions: st.fractions, fracDenom: st.denom };
+      bendNotes: o.bendNotes === 'table' || o.bendNotes === 'none' ? o.bendNotes : 'notes', dimPrec: st.prec != null && +o.dimPrec > st.prec ? Math.min(8, Math.round(+o.dimPrec)) : st.prec, fractions: st.fractions, fracDenom: st.denom };   // (rfIF: up to 8 places)
   }
   function nextAnnotId(doc) { doc.nextAnnot = (doc.nextAnnot || 0) + 1; return doc.nextAnnot; }
 
@@ -1072,7 +1072,12 @@
   // (an explicit precision on an inch drawing still drops the leading zero, ANSI: .03, not 0.03)
   function numText(x, units, prec) {
     if (!(prec != null && prec !== '' && +prec >= 0)) return fmtDim(x, units);
-    return units === 'in' ? D.inchText(x, +prec) : (Math.round(+x * Math.pow(10, +prec)) / Math.pow(10, +prec)).toFixed(+prec);
+    prec = Math.min(8, Math.round(+prec));   // rfIF: up to 8 places (SolidWorks' .12345678)
+    if (units !== 'in') return (Math.round(+x * Math.pow(10, prec)) / Math.pow(10, prec)).toFixed(prec);
+    if (prec <= 6) return D.inchText(x, prec);
+    var s = Math.abs(+x).toFixed(prec);
+    if (+s === 0) return '0';
+    return (+x < 0 ? '-' : '') + s.replace(/^0\./, '.');
   }
   // dimLabel(d, units) -> { main, upper, lower, text }: main is null for a limit tolerance (upper over lower); text is
   // the one-line form ("100.00 +0.10/-0.05", "100.10/99.95", "100.00 ±0.05")
@@ -2425,7 +2430,7 @@
     if (spec.sizes !== undefined) t.sizes = (spec.sizes || []).map(Number).filter(function (d) { return d > 0; });
     ['all', 'combineTags', 'combineSizes'].forEach(function (q) { if (spec[q] != null) { if (spec[q]) t[q] = true; else delete t[q]; } });
     if (spec.tagStyle != null) { if (spec.tagStyle === 'numeric') t.tagStyle = 'numeric'; else delete t.tagStyle; }
-    if (spec.prec !== undefined) { if (spec.prec == null || spec.prec === '' || !(+spec.prec >= 0)) delete t.prec; else t.prec = Math.min(6, Math.round(+spec.prec)); }
+    if (spec.prec !== undefined) { if (spec.prec == null || spec.prec === '' || !(+spec.prec >= 0)) delete t.prec; else t.prec = Math.min(8, Math.round(+spec.prec)); }
     if (spec.x != null && spec.y != null) { t.x = +spec.x; t.y = +spec.y; }
     if (spec.x === null) { delete t.x; delete t.y; }
     if (!t.origin) throw new Error('A hole table needs an origin: a vertex, or an X-axis and a Y-axis edge');

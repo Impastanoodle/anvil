@@ -517,6 +517,23 @@
       body.appendChild(kv3);
       body.appendChild(el('p', { html: '<small>Curved faces are meshed so no chord strays more than this from the true surface' + (iq.segsR10 ? ' (a Ø20 circle: ' + iq.segsR10 + ' facets)' : '') + '. Mass properties use the exact surfaces at every setting.</small>' }));
     }
+    // rfIF: Dimensions (Tools ▸ Options ▸ Document Properties ▸ Dimensions ▸ Primary precision): the places every
+    // dimension without its own precision shows; saved in the document (model.dimPrecision), an undo step, redraws
+    if (UI.setDocDimPrecision && !asm) {
+      body.appendChild(el('h3', { text: 'Dimensions' }));
+      var kv4 = el('div', { class: 'kv', 'data-role': 'dim-precision' });
+      var precSel = function (angle) {
+        var s = el('select', { 'data-role': angle ? 'dim-prec-angular' : 'dim-prec-linear', title: angle ? 'Angular dimensions: primary precision' : 'Linear dimensions: primary precision' });
+        var cur = UI.docDimPrec(angle);
+        for (var i = 0; i <= UI.DIM_MAX_PREC; i++) { var o = el('option', { value: String(i), text: UI.dimPrecText(i) }); if (i === cur) o.selected = true; s.appendChild(o); }
+        s.addEventListener('change', function () { var o = {}; o[angle ? 'angular' : 'linear'] = +s.value; UI.setDocDimPrecision(o); tpProps(body); });
+        return s;
+      };
+      kv4.appendChild(el('span', { text: 'Primary precision (' + (m.units === 'in' ? 'in' : 'mm') + ')' })); kv4.appendChild(precSel(false));
+      kv4.appendChild(el('span', { text: 'Angular precision (°)' })); kv4.appendChild(precSel(true));
+      body.appendChild(kv4);
+      body.appendChild(el('p', { html: '<small>Decimal places of every dimension set to Document in its PropertyManager (defaults: inch .123, mm .12, angles .12).</small>' }));
+    }
     if (UI.occtOptionsSection) body.appendChild(UI.occtOptionsSection(function () { tpProps(body); }));   // r12/occtui12: OpenCascade kernel, After an edit
     // sheet metal: the part's parameters read-only here; Sheet metal parameters… opens the Sheet-Metal PropertyManager
     // (gauge, T, R, bend allowance method, bend table), which rebuilds and is undoable

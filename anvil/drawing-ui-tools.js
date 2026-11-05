@@ -1441,7 +1441,21 @@
   }
   // Dimension PropertyManager (double-click a dimension): Primary Value (a model item's value drives the part),
   // Tolerance/Precision (None, Bilateral, Limit, Symmetric; decimals), Dimension Text (<DIM> is the value), Leaders (flip)
-  var PREC_OPTIONS = [['auto', 'Document default'], ['0', '1'], ['1', '.1'], ['2', '.12'], ['3', '.123'], ['4', '.1234']];
+  // rfIF: SolidWorks' precision list: None, .1 … .12345678, then the drawing's own precision "(Document)" last (value
+  // 'auto': the dimension follows Document Properties ▸ Units ▸ Decimal places)
+  var MAX_PREC = 8;
+  function precText(n) { return +n > 0 ? '.' + '12345678'.slice(0, +n) : 'None'; }
+  function docPrecText() {
+    var o = Drawing.docOptions(doc());
+    if (o.fractions && units() === 'in') return 'Fractions';
+    return precText(o.dimPrec != null ? o.dimPrec : units() === 'in' ? 3 : 2);
+  }
+  function PREC_OPTIONS() {
+    var out = [];
+    for (var i = 0; i <= MAX_PREC; i++) out.push([String(i), precText(i)]);
+    out.push(['auto', docPrecText() + ' (Document)']);
+    return out;
+  }
   // noFocus (a single click on a dimension, SolidWorks): the PM opens with the keyboard left on the sheet, so Delete
   // still deletes the selected dimension; it closes on a model change (D.clickPM, see closeClickPM)
   function cmdDimensionPM(ref, onClose, noFocus) {
@@ -1470,10 +1484,10 @@
       groups: [
         { title: 'Primary Value', fields: primary },
         { title: 'Tolerance/Precision', fields: [
-          { type: 'select', key: 'tolType', label: 'Tolerance', options: Drawing.TOL_TYPES, rerender: true, show: function () { return d.kind !== 'angrun'; } },   // (lane CT: an angular running set takes a precision only)
+          { type: 'select', key: 'tolType', label: 'Tolerance', icon: 'dimTolType', options: Drawing.TOL_TYPES, rerender: true, show: function () { return d.kind !== 'angrun'; } },   // (lane CT: an angular running set takes a precision only)
           { type: 'number', key: 'plus', label: 'Maximum variation (+)', unit: 'u', show: function (v) { return v.tolType !== 'none'; } },
           { type: 'number', key: 'minus', label: 'Minimum variation (−)', unit: 'u', show: function (v) { return v.tolType === 'bilateral' || v.tolType === 'limit'; } },
-          { type: 'select', key: 'prec', label: 'Unit precision', options: PREC_OPTIONS }
+          { type: 'select', key: 'prec', label: 'Unit precision', icon: 'dimPrecision', options: PREC_OPTIONS }
         ] },
         { title: 'Dimension Text', show: function () { return d.kind !== 'angrun'; }, fields: [{ type: 'text', key: 'label', label: 'Text (<DIM> is the value)' }] },
         { title: 'Leaders', show: function () { return d.kind !== 'angrun' && d.kind !== 'pathlen'; }, fields: [{ type: 'check', key: 'flip', label: 'Flip arrows (outside)' }] }
@@ -1548,7 +1562,7 @@
       title: 'Hole Callout', icon: 'holeCallout', command: 'holeCallout',
       message: 'Reads ' + a.text + '. Text: <HOLE> is the callout from the hole; a new line starts with \\n.',
       values: { text: f.annotation.text || '<HOLE>', prec: f.annotation.prec != null ? String(f.annotation.prec) : 'auto' },
-      groups: [{ title: 'Dimension Text', fields: [{ type: 'text', key: 'text', label: 'Text' }, { type: 'select', key: 'prec', label: 'Unit precision', options: PREC_OPTIONS }] }],
+      groups: [{ title: 'Dimension Text', fields: [{ type: 'text', key: 'text', label: 'Text' }, { type: 'select', key: 'prec', label: 'Unit precision', icon: 'dimPrecision', options: PREC_OPTIONS }] }],
       onOK: function (v) {
         edit(function (dc) {
           var g = Drawing.findAnnotation(dc, a.id);
@@ -1573,7 +1587,8 @@
     var bn = el('select', { id: 'dw-opt-bend' }), pr = el('select', { id: 'dw-opt-prec' }), dn = el('select', { id: 'dw-opt-denom' }), inch = units() === 'in';
     fd.checked = o.flatDims; fs.checked = o.flatSizeNote; fr.checked = o.fractions;
     BEND_NOTE_OPTIONS.forEach(function (x) { var op = el('option', { value: x[0], text: x[1] }); if (x[0] === o.bendNotes) op.selected = true; bn.appendChild(op); });
-    [['', 'Default (' + (inch ? '.123' : 'up to 0.12') + ')'], ['0', '0'], ['1', inch ? '.1' : '0.1'], ['2', inch ? '.12' : '0.12'], ['3', inch ? '.123' : '0.123'], ['4', inch ? '.1234' : '0.1234']].forEach(function (x) {
+    // rfIF: None … .12345678 as SolidWorks lists them, after the default for the units
+    [['', 'Default (' + (inch ? '.123' : 'up to .12') + ')']].concat([0, 1, 2, 3, 4, 5, 6, 7, 8].map(function (n) { return [String(n), precText(n)]; })).forEach(function (x) {
       var op = el('option', { value: x[0], text: x[1] }); if (String(o.dimPrec == null ? '' : o.dimPrec) === x[0]) op.selected = true; pr.appendChild(op);
     });
     [8, 16, 32, 64].forEach(function (d) { var op = el('option', { value: String(d), text: '1/' + d }); if (o.fracDenom === d) op.selected = true; dn.appendChild(op); });

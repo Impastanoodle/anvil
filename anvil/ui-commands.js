@@ -583,6 +583,14 @@
           var raw = sel.value, match = opts.filter(function (o) { return String(Array.isArray(o) ? o[0] : o) === raw; })[0];
           changed(Array.isArray(match) ? match[0] : match);
         });
+        // rfIF: f.icon draws the list's label as a 16 px icon (SolidWorks' Tolerance/Precision rows); f.label is then
+        // its tooltip and the list's accessible name
+        if (f.icon) {
+          sel.setAttribute('aria-label', f.label); sel.title = f.label;
+          var ico = el('label', { class: 'pm-ico-label', title: f.label, 'aria-label': f.label, html: Icons(f.icon, 16) });
+          ico.addEventListener('mousedown', function (e) { e.preventDefault(); try { sel.focus(); } catch (er) { } });
+          return el('div', { class: 'pm-row pm-field pm-row-select pm-row-ico', 'data-icon': f.icon }, [ico, sel]);
+        }
         return el('div', { class: 'pm-row pm-field pm-row-select' }, [el('label', { text: f.label }), sel]);
       }
       case 'check': {

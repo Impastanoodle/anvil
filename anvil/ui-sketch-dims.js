@@ -41,13 +41,66 @@
   // ------------------------------------------------------------------ dimension text
   // A value as the dimension shows it: the document's style (inch: .500, mm: 12.5) unless the dimension has its own
   // precision (decimal places), then exactly that many places (inch without the leading zero, as ANSI prints them).
+  // rfIF: a dimension without its own precision follows the document's (docDimPrec); while that is the default for the
+  // units (inch .123, mm and angles .12) the text is exactly what it was before (mm drops trailing zeros), else the
+  // document's places are written like a dimension's own (.1234, 12.5000; a zero reads 0).
   function fmtVal(x, prec, angle) {
-    if (prec == null || prec === '' || prec === 'auto' || !(+prec >= 0)) return angle ? UI.fmtNum(x, 2) : (UI.fmtDim ? UI.fmtDim(x) : UI.fmtNum(x, 3));
-    var t = Math.abs(x).toFixed(+prec);
+    if (!ownPrec(prec)) {
+      var dp = docDimPrec(angle);
+      if (dp === defaultDocPrec(angle)) return angle ? UI.fmtNum(x, 2) : (UI.fmtDim ? UI.fmtDim(x) : UI.fmtNum(x, 3));
+      var s = fmtVal(x, dp, angle);
+      return +s === 0 ? '0' : s;
+    }
+    var t = Math.abs(x).toFixed(Math.min(MAX_PREC, Math.round(+prec)));
     if (!angle && inch() && /^0\./.test(t)) t = t.slice(1);
     if (+t === 0) return angle ? '0' : t;
     return (x < 0 ? '-' : '') + t;
   }
+  function ownPrec(prec) { return !(prec == null || prec === '' || prec === 'auto' || !(+prec >= 0)); }
+
+  // ------------------------------------------------------------------ document precision (rfIF)
+  // SolidWorks: Tools ▸ Options ▸ Document Properties ▸ Dimensions ▸ Primary precision. Stored in the model as
+  // model.dimPrecision = { linear, angular } (decimal places 0 … 8; a missing field is the default for the document's
+  // units: inch .123, mm .12, angles .12), saved with the part and written by generateScript (p.dimPrecision). Every
+  // sketch dimension without its own precision (d.prec) follows it.
+  var MAX_PREC = 8;
+  function defaultDocPrec(angle) { return angle ? 2 : inch() ? 3 : 2; }
+  function docDimPrec(angle) {
+    var dp = App.model && App.model.dimPrecision, x = dp ? (angle ? dp.angular : dp.linear) : null;
+    return x != null && x !== '' && +x >= 0 ? Math.min(MAX_PREC, Math.round(+x)) : defaultDocPrec(angle);
+  }
+  // the places a dimension shows: its own precision, else the document's
+  function dimPlaces(d, angle) { return d && ownPrec(d.prec) ? Math.min(MAX_PREC, Math.round(+d.prec)) : docDimPrec(angle); }
+  // the option text of a precision (SolidWorks' list): None, .1, .12 … .12345678
+  function precText(n) { return +n > 0 ? '.' + '12345678'.slice(0, +n) : 'None'; }
+  // the precision list of a Dimension PM: None … .12345678, then the document's value "(Document)" last (value 'auto')
+  function precOptions(docPlaces) {
+    var out = [];
+    for (var i = 0; i <= MAX_PREC; i++) out.push([String(i), precText(i)]);
+    out.push(['auto', precText(docPlaces) + ' (Document)']);
+    return out;
+  }
+  // setDocDimPrecision({ linear?, angular? }): places 0 … 8, null / '' = the default; an undo step unless unchanged;
+  // every dimension that follows the document redraws
+  function setDocDimPrecision(o) {
+    o = o || {};
+    var m = App.model, cur = m.dimPrecision || {}, next = {};
+    ['linear', 'angular'].forEach(function (k) {
+      var x = k in o ? o[k] : cur[k];
+      if (x != null && x !== '' && +x >= 0 && Math.min(MAX_PREC, Math.round(+x)) !== defaultDocPrec(k === 'angular')) next[k] = Math.min(MAX_PREC, Math.round(+x));   // (the default is not stored)
+    });
+    if (JSON.stringify(next) === JSON.stringify(m.dimPrecision || {})) return false;
+    UI.pushUndo();
+    if (Object.keys(next).length) m.dimPrecision = next; else delete m.dimPrecision;
+    App.dimsStale = true;
+    if (UI.refreshDimensionPM) UI.refreshDimensionPM();
+    if (UI.autosave) UI.autosave();
+    if (UI.requestRender) UI.requestRender();
+    return true;
+  }
+  UI.docDimPrec = docDimPrec; UI.dimPlaces = dimPlaces; UI.dimPrecText = precText; UI.dimPrecOptions = precOptions;
+  UI.setDocDimPrecision = setDocDimPrecision; UI.DIM_MAX_PREC = MAX_PREC;
+  // (script: p.dimPrecision({ linear, angular }), Builder method and generateScript line in kernel-script.js)
   // UI.dimLabelText(d, value, kind): the label of a sketch dimension (a Smart Dimension in sketch.dims or a distance /
   // angle / arc length relation), kind 'len' | 'dia' | 'r' | 'angle' | 'arclen'. Radius shown as diameter or the other
   // way (d.show), precision (d.prec), tolerance (d.tol: { type: none | basic | bilateral | limit | symmetric | min | max,
@@ -276,7 +329,6 @@
 
   // ------------------------------------------------------------------ the Dimension PropertyManager
   var TOL_TYPES = [['none', 'None'], ['basic', 'Basic'], ['bilateral', 'Bilateral'], ['limit', 'Limit'], ['symmetric', 'Symmetric'], ['min', 'MIN'], ['max', 'MAX']];
-  var PREC = [['auto', 'Document (' + 'default)'], ['0', '0'], ['1', '.1'], ['2', '.12'], ['3', '.123'], ['4', '.1234'], ['5', '.12345'], ['6', '.123456']];
   var ARC_COND = [['c', 'Center'], ['min', 'Min'], ['max', 'Max']];
   var dimPM = null;   // { d, spec, rerender } while the Dimension PM is open
   // rfE: Primary Value as SolidWorks shows it: the dimension's own precision (d.prec decimal places), else the
@@ -285,7 +337,7 @@
   function pmShown(x, prec, angle) {
     x = +x;
     if (!isFinite(x)) return x;
-    var p = prec != null && prec !== '' && prec !== 'auto' && +prec >= 0 ? +prec : angle ? 2 : inch() ? 3 : 2;
+    var p = ownPrec(prec) ? Math.min(MAX_PREC, Math.round(+prec)) : docDimPrec(angle);   // rfIF: the document's precision
     var r = +x.toFixed(p);
     return r === 0 && x !== 0 ? +x.toPrecision(3) : r;
   }
@@ -319,10 +371,11 @@
       title: 'Dimension', icon: 'dim', values: v, noFocus: true, keepSelection: true,
       groups: [
         { title: 'Tolerance/Precision', fields: [
-          { type: 'select', key: 'tolType', label: 'Tolerance type', options: TOL_TYPES, rerender: true },
+          { type: 'select', key: 'tolType', label: 'Tolerance type', icon: 'dimTolType', options: TOL_TYPES, rerender: true },
           { type: 'number', key: 'plus', label: 'Maximum variation (+)', unit: unit, show: function (x) { return /^(bilateral|limit|symmetric)$/.test(x.tolType); } },
           { type: 'number', key: 'minus', label: 'Minimum variation (−)', unit: unit, show: function (x) { return /^(bilateral|limit)$/.test(x.tolType); } },
-          { type: 'select', key: 'prec', label: 'Primary unit precision', options: PREC }
+          // rfIF: SolidWorks' list: None, .1 … .12345678, then the document's precision "(Document)" last
+          { type: 'select', key: 'prec', label: 'Primary unit precision', icon: 'dimPrecision', options: function () { return precOptions(docDimPrec(info.kindText === 'angle')); } }
         ] },
         { title: 'Primary Value', fields: [
           { type: 'text', key: 'name', label: 'Name' },
@@ -391,6 +444,9 @@
         if (!!v.mark === !d.driven) delete d.mark; else d.mark = !!v.mark;
       } else if (key === 'prec') {
         if (v.prec === 'auto') delete d.prec; else d.prec = +v.prec;
+        App.dimsStale = true;
+        rerender();   // rfIF: the Value box shows the new precision too
+        return;
       } else if (key === 'prefix' || key === 'suffix') {
         if (v[key]) d[key] = v[key]; else delete d[key];
       } else if (key === 'show') {

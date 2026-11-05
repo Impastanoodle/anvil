@@ -399,6 +399,22 @@ var IconsLib = (function () {
   // lane BS: Close Arc (Mastercam's: an arc, its blue end points, the closing piece dotted green) and Show Endpoints
   // (the heads-up toggle: a line with its two end dots)
   I.closeArc = ln('M8 13.5 A5.5 5.5 0 1 1 13.5 8', S, 1.5) + ln('M13.5 8 A5.5 5.5 0 0 1 8 13.5', G, 1.4, 'stroke-dasharray="1.3 1.3"') + pt(8, 13.5) + pt(13.5, 8) + ln('M7 8 h2 M8 7 v2', M, 0.9);
+  // rfIF: the Dimension PM's Tolerance/Precision icons, as SolidWorks draws them: tolerance type "1.50" with its "+.01"
+  // over "-.01" stack, unit precision ".01" over ".01". The figures are a 3 × 5 pixel font of whole-unit squares
+  // (filled, no stroke, so weigh leaves them alone): sharp at 16 px 1x and 32 px / 2x.
+  var PXF = { '0': ['###', '#.#', '#.#', '#.#', '###'], '1': ['.#', '##', '.#', '.#', '.#'], '5': ['###', '#..', '###', '..#', '###'],
+    '.': ['.', '.', '.', '.', '#'], '+': ['...', '.#.', '###', '.#.', '...'], '-': ['...', '...', '###', '...', '...'] };
+  function pxText(x, y, s, fill) {
+    var d = '';
+    s.split('').forEach(function (ch) {
+      var g = PXF[ch];
+      g.forEach(function (row, r) { for (var c = 0; c < row.length; c++) if (row.charAt(c) === '#') d += 'M' + (x + c) + ' ' + (y + r) + 'h1v1h-1z'; });
+      x += g[0].length + 1;
+    });
+    return '<path d="' + d + '" fill="' + (fill || S) + '" stroke="none"/>';
+  }
+  I.dimTolType = pxText(3, 0, '+.01', B) + pxText(1, 5, '1.50') + pxText(3, 10, '-.01', B);
+  I.dimPrecision = pxText(2, 2, '.01') + ln('M1.5 8.5 h13', M, 1) + pxText(6, 10, '.01', B);
   I.showEndpoints = ln('M3.5 12.5 L12.5 3.5', S, 1.4) + circ(3.5, 12.5, 2, B, 'none') + circ(12.5, 3.5, 2, B, 'none');
   // lane CD: the View ribbon tab (Mastercam-style, built by lane CC). Standard views: SolidWorks' wire cube with the
   // named face in yellow (a face at the back shows through paler, behind the dashed hidden edges); Isometric a true iso

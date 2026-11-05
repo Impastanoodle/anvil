@@ -1795,6 +1795,8 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 #pm .pm-row.pm-row-select select:focus, #pm .pm-row.pm-row-text input:focus { border-color: var(--pm-focus); outline: none; box-shadow: none; }
 #pm .pm-row.pm-row-select select:disabled, #pm .pm-row.pm-row-text input:disabled { opacity: .5; }
 #pm .pm-row .pm-expr-hint { line-height: 14px; margin-top: 0; }
+/* rfIF: a list labelled by an icon (the Dimension PM's Tolerance/Precision rows, SolidWorks): 16 px icon, the list takes the row */
+#pm .pm-row.pm-row-ico > label.pm-ico-label { display: flex; width: 16px; height: 16px; line-height: 0; color: var(--icon-ink, var(--text)); cursor: default; }
 /* check boxes and radios: drawn 14 px boxes centred on the first text line; checked = ink fill */
 #pm input[type=checkbox], #pm input[type=radio] {
   -webkit-appearance: none; appearance: none; flex: none; width: 14px; height: 14px; margin: 0; padding: 0; box-sizing: border-box;
@@ -1946,6 +1948,10 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 #pm .pm-row.pm-field.pm-row-select:not(.check) > label { flex: 0 0 auto; order: 0; margin-right: auto; white-space: nowrap; overflow-wrap: normal; }
 #pm .pm-row.pm-field.pm-row-select:not(.check) > .pm-rev { flex: 0 0 24px; order: 1; }
 #pm .pm-row.pm-field.pm-row-select:not(.check) > select { flex: 1 1 84px; order: 2; width: auto; min-width: 84px; max-width: var(--pm-ctl-w); }
+/* rfIF: an icon-labelled list (Tolerance/Precision) runs from the icon to the row's right edge, as in SolidWorks */
+#pm .pm-row.pm-field.pm-row-select.pm-row-ico:not(.check) { flex-wrap: nowrap; }
+#pm .pm-row.pm-field.pm-row-select.pm-row-ico:not(.check) > label { flex: 0 0 16px; margin-right: 0; }
+#pm .pm-row.pm-field.pm-row-select.pm-row-ico:not(.check) > select { flex: 1 1 auto; max-width: none; }
 
 /* fm-tab (user 2026-11-04: "the left panel ... able to be completely hidden with a pull tab always extruded"): the
    FeatureManager hides completely (#main.fm-hidden, --fm-w 0) and a pull tab always sticks out on the graphics area's
