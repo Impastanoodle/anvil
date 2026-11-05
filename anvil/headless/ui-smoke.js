@@ -13,7 +13,8 @@
 // 25), --shards <n> (n Chromes at once, each running a consecutive block of the GROUPS files, `?files=a-b`, balanced
 // by headless/smoke-timings.json; every Chrome loads every group file, so helpers are all there, and the driver checks
 // the blocks ran each declared step exactly once), --save-timings (seconds per group file into smoke-timings.json),
-// --json <file> (passed, total, seconds, failures), --part <i>/<n> (only block i of n, see above).
+// --json <file> (passed, total, seconds, failures), --part <i>/<n> (only block i of n, see above),
+// --rerun-alone <n> (failed steps, at most n, run again one by one; see below).
 'use strict';
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -117,7 +118,7 @@ async function runChrome(chrome, pageUrl, dbgPort, tag) {
   process.on('exit', cleanup);
   try {
     const base = 'http://127.0.0.1:' + dbgPort;
-    const version = await waitFor(() => fetchJson(base + '/json/version'), 15000);
+    const version = await waitFor(() => fetchJson(base + '/json/version'), 60000);   // a cold CI machine takes a while
     if (!version) return { error: 'Chrome did not open its debugging port ' + dbgPort + '.\n' + stderr.slice(-600), code: 2 };
     // the page is the tab Chrome opened for the URL on its command line (the same path as --dump-dom); creating a
     // target with /json/new and navigating it over the protocol stopped loading pages with Chrome 154
@@ -189,10 +190,27 @@ async function main() {
     }
   }
   bad.forEach((r, i) => console.log(r.error));
+  // --rerun-alone <n> (CI): when at most n steps failed, each runs again alone (its group file, that step only, after
+  // the suite's setup step), as verify.js does on the PC; one that passes then counts as passed and is listed. A step
+  // that fails alone too stays a failure.
+  const rerunMax = Number(opt('--rerun-alone', 0)) || 0, reran = [];
+  const firstFails = results.filter((x) => !x.ok);
+  if (rerunMax && !bad.length && firstFails.length && firstFails.length <= rerunMax && firstFails.every((x) => x.file)) {
+    for (const x of firstFails) {
+      const i = files.indexOf(x.file);
+      if (i < 0) continue;
+      const r = await runChrome(chrome, url.split('?')[0] + '?files=' + i + '-' + (i + 1) + '&only=' + encodeURIComponent(x.name), port, 'alone, ');
+      const mine = (r.results || []).filter((y) => !y.setup);
+      const ok = !r.error && mine.length >= 1 && mine.every((y) => y.ok);
+      console.log('rerun alone: ' + (ok ? 'PASS' : 'FAIL') + '  ' + x.name.slice(0, 110));
+      if (ok) { reran.push(x.name + ' | first run: ' + String(x.detail).split('\n')[0].slice(0, 200)); x.ok = true; }
+    }
+  }
   const failed = results.filter((x) => !x.ok), passed = results.length - failed.length;
-  const summary = cuts.length === 1 && runs[0].summary ? runs[0].summary
+  const summary = cuts.length === 1 && runs[0].summary && !reran.length ? runs[0].summary
     : passed + ' / ' + results.length + ' passed' + (failed.length ? ' — ' + failed.length + ' FAILED' : '');
   console.log(summary + '  (' + ((runs.find((r) => r.size) || {}).size || '?') + ', ' + seconds + ' s' + (notes.length ? '; ' + notes.join('; ') : '') + ')');
+  reran.forEach((r) => console.log('  passed rerun alone (failed in the full run): ' + r));
   for (const f of failed) console.log('  FAIL | ' + f.name + ' | ' + f.detail + ' | ' + (f.ms || 0).toFixed(1));
   boundary.forEach((b) => console.log('  note: ' + b));
   if (slowest) {

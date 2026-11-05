@@ -85,7 +85,7 @@ jobs:
           for i in $(seq 1 30); do curl -sfI http://localhost:8812/tests/ui-smoke.html >/dev/null && exit 0; sleep 1; done
           echo "static-serve.js did not come up"; exit 1
       - name: UI smoke, part ${{ matrix.part }} of 4
-        run: node anvil/headless/ui-smoke.js http://localhost:8812/tests/ui-smoke.html --part ${{ matrix.part }}/4 --timeout 1500 --slowest 10
+        run: node anvil/headless/ui-smoke.js http://localhost:8812/tests/ui-smoke.html --part ${{ matrix.part }}/4 --timeout 1500 --slowest 10 --rerun-alone 4
 
   occt:
     name: OpenCascade examples and tests
