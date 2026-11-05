@@ -755,6 +755,7 @@ A sketch may carry `rels`, geometric relations and two-entity driving dimensions
 | `"3.p1"`, `"3.p2"`, `"3.mid"` | start / end point (lines, slots, arcs), midpoint (lines, slots) |
 | `"3.c"` | centre (circles, arcs, polygons, rectangles, slots) |
 | `"3.v0"`, `"3.e0"` | corner / edge i of a rectangle, polygon or polyline (an edge is a line) |
+| `"3.e0.mid"` | midpoint of edge i of a rectangle, polygon or polyline, or of side 0 / 1 of a straight slot (a point: distances, Coincident, Smart Dimension's midpoint pick) |
 
 Types (SolidWorks names): `coincident` (point–point, point on line, point on circle), `horizontal` / `vertical` (a line, or two points), `parallel`, `perpendicular`, `collinear` (two lines), `tangent` (line–circle/arc, circle–circle; at a shared end point it is written as an angle condition there), `concentric`, `equal` (two lines or two circles/arcs), `midpoint` (point, line), `symmetric` (two points, two lines or two circles / arcs and the centerline they mirror about, refs `[a, b, axis]`: each mirrored pair has its midpoint on the axis and its chord perpendicular to it; lines pair their ends as they mirror when the relation is made; circles also get equal radii), `fix` (`at` holds the fixed values), and the driving dimensions `distance` (point / line / circle centre pairs; between a line and anything it is the perpendicular distance) and `angle` (two lines, degrees). Stored as `{ type, refs, v?, off?, at? }`:
 

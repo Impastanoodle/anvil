@@ -14,7 +14,7 @@
     App.activeSketch = id;
     App.sel = null; App.sel2 = null;
     App.sketchDirty = false;
-    woken = [];
+    woken = []; wokenLines = [];
     setTool('select');
     if (!(opts && opts.keepView)) { UI.viewNormalTo(UI.activePlane()); UI.zoomToFit(); }   // rfAY: Rapid Sketch keeps the view
     App.gridStale = true;
@@ -258,6 +258,10 @@
   // is shown, the free coordinates snap to it instead, as SolidWorks' Grid/Snap does.
   var INFER_PX = { point: 9, curve: 7, align: 6 };
   var woken = [];   // sketch points the cursor passed over (inference lines align with them); reset per sketch
+  // rfII: sketch lines the cursor passed over ("woken", as SolidWorks): a Line drawn from another point may then lock
+  // parallel or square to one of them and the click adds Parallel / Perpendicular. { e, a, b } (the line as it was
+  // woken: one that moved or went away is forgotten); the last 4; reset per sketch
+  var wokenLines = [];
   // the roundest number (multiples of 10^k, then 5·10^(k-1), …) within h of x
   function niceRound(x, h) {
     if (!(h > 0) || !isFinite(x)) return x;
@@ -754,7 +758,7 @@
     var bestDir = null;
     if (App.tool === 'line' && prev && !st.arcMode) {
       var w = [raw[0] - prev[0], raw[1] - prev[1]], sd = smoothDirs(f, prev);
-      sd.dirs.concat(curveTangentDirs(f, prev)).forEach(function (c) {
+      sd.dirs.concat(curveTangentDirs(f, prev), wokenLineDirs(f, prev)).forEach(function (c) {
         var s = w[0] * c.u[0] + w[1] * c.u[1], dd = Math.abs(w[0] * c.u[1] - w[1] * c.u[0]) / px;
         if (s > 0 && dd < INFER_PX.align && (!bestDir || dd < bestDir.d)) bestDir = { d: dd, c: c, s: s };
       });
@@ -764,6 +768,7 @@
     //    there) the direction lock wins while the cursor is nearer the locked direction than the curve; a pick on the
     //    curve itself (nearer the curve, or out of the 6 px lock) still lands on it.
     var onCurve = curveSnap(f, pl, [mx, my], INFER_PX.curve);
+    if (onCurve) wakeLine(f, onCurve.e);   // rfII: a line the cursor passes over is woken (parallel / perpendicular locks)
     if (onCurve && bestDir && bestDir.d <= onCurve.d && entityThrough(f.entities[onCurve.e], prev)) onCurve = null;
     if (onCurve) { out.p = onCurve.slice(); out.snap = { kind: 'on', pt: out.p, e: onCurve.e }; return out; }
     if (bestDir) {
@@ -771,6 +776,7 @@
       out.p = [prev[0] + u[0] * sl, prev[1] + u[1] * sl];
       out.dir = { type: bestDir.c.type, from: prev, u: u };
       if (bestDir.c.glyph) out.dir.glyph = bestDir.c.glyph;   // r15/tangent15: the Tangent glyph by the cursor
+      if (bestDir.c.rel) out.dir.rel = bestDir.c.rel;   // rfII: Parallel / Perpendicular to a woken line (the click adds it)
       return out;
     }
     // 3. aligned with the previous point (horizontal / vertical) or with another sketch point (inference lines);
@@ -909,20 +915,59 @@
     function axis(u) { return Math.abs(u[0]) < 1e-9 || Math.abs(u[1]) < 1e-9; }
     for (var i = f.entities.length - 1; i >= 0; i--) {
       var e = f.entities[i];
-      if (!e || (e.t !== 'line' && e.t !== 'arc')) continue;
+      // rfII: an open spline's / partial ellipse's end too (a line or tangent arc leaving it along its tangent: Tangent)
+      var freeEnd = e && ((e.t === 'spline' && !e.closed) || e.t === 'pellipse') && S.freeEndDir;
+      if (!e || (e.t !== 'line' && e.t !== 'arc' && !freeEnd)) continue;
       for (var k = 1; k <= 2; k++) {
         var q = S.refPoint(f, i + '.p' + k);
         if (!q || Math.abs(q[0] - P[0]) > tol || Math.abs(q[1] - P[1]) > tol) continue;
+        if (freeEnd) {
+          var tf = S.freeEndDir(e, q);   // the curve's direction of travel at that end
+          if (!tf) continue;
+          var ff = k === 2 ? tf : [-tf[0], -tf[1]];
+          if (!out.fwd) out.fwd = ff;
+          if (!axis(ff)) out.dirs.push({ type: 'tangent', u: ff, glyph: 'tangent' });
+          continue;
+        }
         var t = S.endDir(e, q);
         if (!t || !(Math.abs(t[0]) + Math.abs(t[1]) > 0.5)) continue;
         var fwd = k === 2 ? t : [-t[0], -t[1]];
         if (!out.fwd) out.fwd = fwd;
-        if (e.t === 'arc') { if (!axis(fwd)) out.dirs.push({ type: 'tangent', u: fwd }); }
-        else if (!axis(t)) out.dirs.push({ type: 'perpendicular', u: [-t[1], t[0]] }, { type: 'perpendicular', u: [t[1], -t[0]] });
+        // rfII: every lock names the relation its click adds (the cursor label, drawFeedback)
+        if (e.t === 'arc') { if (!axis(fwd)) out.dirs.push({ type: 'tangent', u: fwd, glyph: 'tangent' }); }
+        else if (!axis(t)) out.dirs.push({ type: 'perpendicular', u: [-t[1], t[0]], glyph: 'perpendicular' }, { type: 'perpendicular', u: [t[1], -t[0]], glyph: 'perpendicular' });
       }
     }
     return out;
   }
+  // rfII: wake line i of sketch f (the cursor passed over it): it joins wokenLines (the most recent last, at most 4)
+  function wakeLine(f, i) {
+    var e = f.entities[i];
+    if (!e || e.t !== 'line') return;
+    wokenLines = wokenLines.filter(function (w) { return w.e !== i; });
+    wokenLines.push({ e: i, a: [e.x1, e.y1], b: [e.x2, e.y2] });
+    if (wokenLines.length > 4) wokenLines.shift();
+  }
+  // rfII: the directions a Line leaving P may lock to, parallel and square to each woken line of sketch f:
+  // [{ type: 'parallel' | 'perpendicular', u, glyph, rel: { type, ref } }] (rel: the relation the click adds, through
+  // inferOpts' dirRels). A woken line that moved or went away is forgotten; one ending at P (smoothDirs gives its
+  // Perpendicular) or running through P (its own on-curve snap) adds nothing; axis-aligned directions are left to H / V.
+  function wokenLineDirs(f, P) {
+    var out = [], sc = Math.max(1, Math.abs(P[0]), Math.abs(P[1])), tol = 1e-9 * sc;
+    wokenLines = wokenLines.filter(function (w) { var e = f.entities[w.e]; return !!(e && e.t === 'line' && e.x1 === w.a[0] && e.y1 === w.a[1] && e.x2 === w.b[0] && e.y2 === w.b[1]); });
+    wokenLines.forEach(function (w) {
+      var e = f.entities[w.e], dx = e.x2 - e.x1, dy = e.y2 - e.y1, L = Math.hypot(dx, dy);
+      if (!(L > 1e-12) || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;
+      if (distPointLine(P, [e.x1, e.y1], [e.x2, e.y2]) < 1e-7 * sc + tol) return;   // (an end at P is on it too)
+      var d = [dx / L, dy / L];
+      if (Math.abs(d[0]) < 1e-9 || Math.abs(d[1]) < 1e-9) return;
+      var par = { type: 'parallel', ref: String(w.e) }, per = { type: 'perpendicular', ref: String(w.e) };
+      out.push({ type: 'parallel', u: d, glyph: 'parallel', rel: par }, { type: 'parallel', u: [-d[0], -d[1]], glyph: 'parallel', rel: par },
+        { type: 'perpendicular', u: [-d[1], d[0]], glyph: 'perpendicular', rel: per }, { type: 'perpendicular', u: [d[1], -d[0]], glyph: 'perpendicular', rel: per });
+    });
+    return out;
+  }
+  UI.sketchWokenLines = function () { return wokenLines.map(function (w) { return w.e; }); };   // rfII: test hook
   // r15/tangent15: Line tool, end tangent to a circle / arc. For each circle or arc of sketch f the cursor point raw is
   // within 7 px of, the two points where a line from P touches it (computed exactly: c + r (cos, sin)(th ± acos(r / d))),
   // an arc's only inside its sweep; the one nearest the cursor within 6 px: { p, e (entity index), from: P, d (px) },
@@ -1183,8 +1228,12 @@
   // centerpoint slot's far centre, a polygon's other corners) infers nothing even where it lands on a line. A chain's
   // closing click is not pushed into st.pts: its segment infers at every point (the loop closes on the first point).
   // pts: the points placed; e: the entity (null for none); closing: the chain-closing segment
-  function inferOpts(pts, e, closing) {
+  // rfII: dirRel ({ type: 'parallel' | 'perpendicular', ref }: the woken-line lock the point was placed with; default
+  // the tool state's, set by sketchClick) goes to the solver as opts.dirRels for a Line tool line
+  function inferOpts(pts, e, closing, dirRel) {
     var o = inferSkip(), st = App.toolState;
+    if (dirRel === undefined) dirRel = st ? st.dirRel : null;
+    if (dirRel && e && e.t === 'line' && App.tool === 'line') { o = Object.assign({}, o || {}); o.dirRels = [dirRel]; }
     if (closing || !pts || !pts.length) return o;
     o = o ? Object.assign({}, o) : {};
     o.placed = pts.map(function (q) { return [q[0], q[1]]; });
@@ -1195,7 +1244,7 @@
   function previewInferOpts(p, e) {
     var st = App.toolState, pts = st && st.pts ? st.pts : [];
     var closing = App.tool === 'line' && pts.length && st.chainStart && Math.abs(p[0] - st.chainStart[0]) < 1e-9 && Math.abs(p[1] - st.chainStart[1]) < 1e-9;
-    return inferOpts(pts.concat([p]), e, closing);
+    return inferOpts(pts.concat([p]), e, closing, st ? st.hoverDirRel || null : null);
   }
   function addEntity(e, closing) {
     var f = UI.activeSketchFeature();
@@ -1243,6 +1292,7 @@
     if (App.tool === 'dimension') { dimToolClick(raw, mx, my); return; }
     var info0 = inferPoint(raw, mx, my), p = info0.p, typed = null;
     App.toolState.lastSnap = info0.snap || null;   // r15/tanslide15: what the point landed on (a curve's index for the tangent slide)
+    App.toolState.dirRel = (info0.dir && info0.dir.rel) || null;   // rfII: a woken-line lock: its Parallel / Perpendicular (inferOpts)
     if (App.quickSnap) { App.quickSnap = null; qsParallel = null; if (UI.refreshRibbon) UI.refreshRibbon(); }   // rfAR: a Quick Snap is for one pick
     // values typed into the on-screen box hold (the length, the radius …); the click supplies the rest
     if (numBox) { typed = numValues(); if (Object.keys(typed).length) p = typedPoint(p, typed); else typed = null; closeNumBox(); }
@@ -1254,6 +1304,7 @@
     // stays, so by length nothing ever counted as pushed and the discarded segment came back on the next Ctrl+Z
     var fL = App.tool === 'line' ? UI.activeSketchFeature() : null, nL = fL ? fL.entities.length : 0, cleanL = !App.sketchDirty;
     placePoint(p, typed);
+    if (App.toolState) App.toolState.dirRel = null;
     if (fL && App.tool === 'line' && App.toolState) {
       var madeL = [];
       for (var kL = nL; kL < fL.entities.length; kL++) madeL.push(kL);
@@ -2248,6 +2299,7 @@
       updateNumLive(p);
       positionNumBox();
     }
+    if (drawing && App.toolState) App.toolState.hoverDirRel = (info && info.dir && info.dir.rel) || null;   // rfII: the preview's woken-line relation
     var readout = drawing && App.toolState.pts.length ? toolReadout(App.toolState.pts, p) : '';
     var cd = UI.unitLabel() === 'in' ? 3 : 2;   // sketch-units: inch coordinates read 3 places, as the dimensions do
     $('status-coords').textContent = 'X: ' + UI.fmtNum(p[0], cd).padStart(9) + '   Y: ' + UI.fmtNum(p[1], cd).padStart(9) + '  ' + UI.unitLabel() + (readout ? '   ' + readout : '');
@@ -2326,6 +2378,7 @@
     if (snap.isPoint) return 'Point';
     return SNAP_LABEL[snap.kind] || null;
   }
+  var DIR_LABEL = { tangent: 'Tangent', perpendicular: 'Perpendicular', parallel: 'Parallel' };   // rfII
   function cursorLabel(layer, mx, my, text, model) {
     var col = model ? MODEL_COLOR : '#e8891c', ly = my + 12, lw = Math.round(text.length * 6.2 + 10);
     var lg = svg('g', { 'class': 'sk-snap-label ' + (model ? 'sk-snap-label-model' : 'sk-snap-label-sketch') }, layer);
@@ -2343,7 +2396,7 @@
     if (!e) return null;
     switch (p.s) {
       case null: return ENTITY_LABEL[e.t] || null;
-      case 'mid': return 'Midpoint';
+      case 'mid': case 'em': return 'Midpoint';   // (rfII: 'em' a rectangle / polygon side's)
       case 'p': return 'Endpoint';
       case 'c': return 'Center';
       case 'h': return 'Spline handle';
@@ -2457,8 +2510,11 @@
     }
     // p9-modelsnap: a model snap adds no relation; a small label by the cursor names it. rfIG (user 2026-11-05: "a little
     // descriptor of what youre hovering over"): every snap is named, sketch ones in the sketch snap colour
-    var snapName = info.snap ? snapLabel(info.snap) : null;
-    if (snapName) cursorLabel(layer, mx, my, snapName, !!info.snap.model);
+    // rfII: a tangent / perpendicular / parallel lock is named after the relation (SolidWorks' inference glyph; shown
+    // with Automatic Relations off too, when the click adds nothing)
+    var snapName = info.tan ? 'Tangent' : info.snap ? snapLabel(info.snap) : null;
+    if (!snapName && info.dir && info.dir.glyph) snapName = DIR_LABEL[info.dir.glyph] || null;
+    if (snapName) cursorLabel(layer, mx, my, snapName, !!(info.snap && info.snap.model));
     if (readout) {
       var t = svg('text', { x: mx + 14, y: my - 10, style: 'fill:#e8e8e8;font-size:11px;pointer-events:none' }, layer);   // rfBR: light grey on the dark ground
       t.textContent = readout;
@@ -3673,7 +3729,7 @@
     if (st.dim) {
       // a second entity or point clicked: distance / angle between the two, as SolidWorks' Smart Dimension does
       var ref2 = dimPickRef(mx, my) || modelRef(mx, my, st);
-      if (ref2 && /\.mid$/.test(ref2) && ref2 === st.dim.e + '.mid') ref2 = null;   // rfIG: placing a line's dimension at its own middle
+      if (ref2 && /\.mid$/.test(ref2) && (ref2 === st.dim.e + '.mid' || ref2 === st.ref1 + '.mid')) ref2 = null;   // rfIG: placing a line's dimension at its own middle (rfII: a polygon side's)
       var two = ref2 && st.ref1 && UI.relDimFor ? UI.relDimFor(f, st.ref1, ref2) : null;
       if (two) {
         st.relDim = two; st.dim = null; App.tempDim = null;
@@ -3796,14 +3852,27 @@
     var pl = UI.activePlane(), best = null, bd = MID_PX;
     midKey = null;
     f.entities.forEach(function (e, i) {
-      if (!e || e.t !== 'line' || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;
-      S.pointRefs(f, i).forEach(function (pr) {   // (an infinite line or a ray has no midpoint)
-        if (!/\.mid$/.test(pr.ref)) return;
+      if (!e || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;
+      sideMids(f, i).forEach(function (pr) {
         var s = UI.worldToScreen(K.to3D(pl, pr.pt[0], pr.pt[1])), d = Math.hypot(s[0] - mx, s[1] - my);
         if (d < bd) { bd = d; best = pr.ref; midKey = f.id + ':' + pr.ref + '@' + Math.round(s[0]) + ',' + Math.round(s[1]); }
       });
     });
     return best;
+  }
+  // the midpoint refs of entity i's straight sides with their points: a line's '3.mid' (an infinite line or a ray has
+  // none), rfII: a rectangle's / polygon's / polyline's / straight slot's '3.e0.mid' … (SketchSolver.sideMid)
+  function sideMids(f, i) {
+    var S = window.SketchSolver, e = f.entities[i], out = [];
+    if (!e || !S) return out;
+    if (e.t === 'line') return S.pointRefs(f, i).filter(function (pr) { return /\.mid$/.test(pr.ref); });
+    if (!/^(rect|crect|poly|polyline|slot)$/.test(e.t)) return out;
+    for (var k = 0; ; k++) {
+      var r = i + '.e' + k + '.mid', q = S.refPoint(f, r);
+      if (!q) break;
+      out.push({ ref: r, pt: q });
+    }
+    return out;
   }
   // the ref Smart Dimension picks at (mx, my): pickSketchRef's, or a line's midpoint when the cursor is at one
   function dimPickRef(mx, my) {
@@ -3834,6 +3903,11 @@
     var f = UI.activeSketchFeature(), S = window.SketchSolver;
     if (!f || !S || App.tool !== 'dimension') return null;
     var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index];
+    if (e && e.t !== 'line') {   // rfII: a rectangle / polygon / polyline / slot side: its '3.e0.mid'
+      var er = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null, eq = er && /^\d+\.e\d+$/.test(er) ? S.refPoint(f, er + '.mid') : null;
+      if (!eq && e.t === 'slot') { var sm = sideMids(f, hit.index), pl = UI.activePlane(), sb = null, sd = Infinity; sm.forEach(function (m) { var q = UI.worldToScreen(K.to3D(pl, m.pt[0], m.pt[1])), d = Math.hypot(q[0] - mx, q[1] - my); if (d < sd) { sd = d; sb = m; } }); return sb; }
+      return eq ? { ref: er + '.mid', pt: eq } : null;
+    }
     if (!e || e.t !== 'line') return null;
     var mid = null;
     S.pointRefs(f, hit.index).forEach(function (pr) { if (/\.mid$/.test(pr.ref)) mid = pr; });

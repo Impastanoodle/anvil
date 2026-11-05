@@ -51,8 +51,10 @@ var SketchSolver = (function () {
   function parseRef(ref) {
     ref = String(ref);
     if (ref === 'O') return { o: true };
-    var m = /^(\d+)(?:\.([a-z]+)(\d*))?$/.exec(ref);
+    var m = /^(\d+)(?:\.([a-z]+)(\d*))?(\.mid)?$/.exec(ref);
     if (!m) return null;
+    // rfII: '3.e0.mid', the midpoint of side 0 of a rectangle / polygon / polyline / slot (a point ref: s 'em', k the side)
+    if (m[4]) return m[2] === 'e' && m[3] !== '' ? { e: +m[1], s: 'em', k: +m[3] } : null;
     return { e: +m[1], s: m[2] || null, k: m[3] === '' || m[3] == null ? null : +m[3] };
   }
   function corners(e) {
@@ -95,6 +97,7 @@ var SketchSolver = (function () {
         if (e.t === 'pellipse') return r.k === 1 ? ellipseAt(e, e.a0) : r.k === 2 ? ellipseAt(e, e.a1) : null;
         return null;
       case 'mid': return e.t === 'line' || e.t === 'slot' ? [(e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2] : null;
+      case 'em': return sideMid(e, r.k);
       case 'c':
         if (e.t === 'circle' || e.t === 'arc' || e.t === 'poly' || e.t === 'crect' || e.t === 'aslot' || e.t === 'ellipse' || e.t === 'pellipse') return [e.cx, e.cy];
         if (e.t === 'rect') return [e.x + e.w / 2, e.y + e.h / 2];
@@ -106,6 +109,23 @@ var SketchSolver = (function () {
       }
     }
     return null;
+  }
+  // rfII: the midpoint of straight side k of entity e ('3.e0.mid'), or null: a rectangle's / polygon's side k runs from
+  // corner k to the next, an open polyline has one side fewer than points, a straight slot's sides are 0 (left of its
+  // centre line p1 -> p2) and 1 (right)
+  function sideMid(e, k) {
+    if (k == null || k < 0) return null;
+    if (e.t === 'slot') {
+      if (k > 1) return null;
+      var dx = e.x2 - e.x1, dy = e.y2 - e.y1, L = Math.sqrt(dx * dx + dy * dy), h = (+e.w || 0) / 2 * (k ? -1 : 1);
+      if (!(L > 1e-15)) return null;
+      return [(e.x1 + e.x2) / 2 - dy / L * h, (e.y1 + e.y2) / 2 + dx / L * h];
+    }
+    if (!/^(rect|crect|poly|polyline)$/.test(e.t)) return null;
+    var c = corners(e), n = c ? c.length : 0;
+    if (k >= (closedCorners(e) ? n : n - 1)) return null;
+    var a = c[k], b = c[(k + 1) % n];
+    return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
   }
   // the curve a ref names: { kind: 'line', a, b } | { kind: 'circle', c, r } | null
   function refCurve(ents, r) {
@@ -2535,7 +2555,23 @@ var SketchSolver = (function () {
       else out.push({ type: 'coincident', refs: [pr.ref, hit.ref], at: pr.pt });
     });
     smoothCandidates(sketch, i, tol, placed).forEach(function (c) { out.push(c); });
+    // rfII: opts.dirRels [{ type: 'parallel' | 'perpendicular', ref }]: the Line tool locked this line parallel / square
+    // to a line the cursor woke (ui-sketch.js wokenLineDirs); listed when the line still runs that way
+    if (opts && opts.dirRels && e.t === 'line') opts.dirRels.forEach(function (dr) {
+      var j = dr && parseRef(dr.ref), o = j && !j.o && j.s === null && j.e !== i ? sketch.entities[j.e] : null;
+      if (!o || o.t !== 'line' || (dr.type !== 'parallel' && dr.type !== 'perpendicular')) return;
+      var u = unit([e.x2 - e.x1, e.y2 - e.y1]), v = unit([o.x2 - o.x1, o.y2 - o.y1]);
+      if (len(u) < 0.5 || len(v) < 0.5) return;
+      if (Math.abs(dr.type === 'parallel' ? crs(u, v) : dot(u, v)) < 1e-7) out.push({ type: dr.type, refs: [String(i), String(j.e)], at: [(e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2] });
+    });
     return out;
+  }
+  // rfII: the unit direction of travel (t0 -> t1) of open spline / partial ellipse e at its end nearest pt, or null
+  function freeEndDir(e, pt) {
+    var fc = isFree(e) ? freeCurve(e) : null;
+    if (!fc || fc.closed || !pt) return null;
+    var t = len(sub(fc.pt(fc.t0), pt)) <= len(sub(fc.pt(fc.t1), pt)) ? fc.t0 : fc.t1, d = unit(fc.d1(t));
+    return len(d) > 0.5 ? d : null;
   }
   // opts.placed as a test: function (pt) -> whether pt is one of the placed points (within ptol), or null (no list)
   function placedTest(list, ptol) {
@@ -2562,6 +2598,8 @@ var SketchSolver = (function () {
   function smoothCandidates(sketch, i, tol, placed) {
     var E = sketch.entities, e = E[i], out = [], ANG = 1e-7;
     if (!e || (e.t !== 'line' && e.t !== 'arc')) return out;
+    // rfII: an open spline's / partial ellipse's end counts as a curve end too (a line or arc leaving it along its tangent)
+    function openFree(o) { return !!o && ((o.t === 'spline' && !o.closed) || o.t === 'pellipse'); }
     function axis(d) { return Math.abs(d[0]) < ANG || Math.abs(d[1]) < ANG; }
     var seen = {};
     ['p1', 'p2'].forEach(function (s) {
@@ -2569,11 +2607,11 @@ var SketchSolver = (function () {
       if (!u || len(u) < 0.5 || (placed && !placed(pt))) return;
       for (var j = 0; j < E.length; j++) {
         var o = E[j];
-        if (j === i || seen[j] || !o || (o.t !== 'line' && o.t !== 'arc')) continue;
+        if (j === i || seen[j] || !o || (o.t !== 'line' && o.t !== 'arc' && !openFree(o))) continue;
         for (var k = 1; k <= 2; k++) {
           var q = refPoint(E, { e: j, s: 'p', k: k });
           if (!q || Math.abs(q[0] - pt[0]) >= tol || Math.abs(q[1] - pt[1]) >= tol) continue;
-          var v = endDir(o, q);
+          var v = openFree(o) ? freeEndDir(o, q) : endDir(o, q);
           if (!v || len(v) < 0.5) continue;
           if (e.t === 'line' && o.t === 'line') {
             if (Math.abs(dot(u, v)) < ANG && !(axis(u) && axis(v))) { out.push({ type: 'perpendicular', refs: [String(i), String(j)], at: pt }); seen[j] = true; }
@@ -5605,6 +5643,7 @@ var SketchSolver = (function () {
       case null: return base;
       case 'p': return base + (p.k === 1 ? ' start' : ' end');
       case 'mid': return base + ' midpoint';
+      case 'em': return base + ' edge ' + (p.k + 1) + ' midpoint';   // rfII
       case 'c': return base + ' center';
       case 'v':
         if (e && e.t === 'spline') return base + ' point ' + (p.k + 1);
@@ -5926,7 +5965,7 @@ var SketchSolver = (function () {
     setDim: setDim, setRelValue: setRelValue, linkedItems: linkedItems, linkValues: linkValues, unlinkValue: unlinkValue, linkItemValue: itemValue, driveEntity: driveEntity, measure: measure, updateDriven: updateDriven, overDefines: overDefines, setDriven: setDriven,
     applicable: applicable, addRelation: addRelation, deleteRelation: deleteRelation, fullyDefine: fullyDefine, placeGaps: placeGaps, relArgs: relArgs,
     removeEntity: removeEntity, replaceEntity: replaceEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, explodePoly: explodePoly, explodeSlot: explodeSlot, explodeArcSlot: explodeArcSlot, slotCap: slotCap, slotAxisOf: slotAxisOf, clean: clean,
-    infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, onCurveRef: onCurveRef,
+    infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, onCurveRef: onCurveRef, freeEndDir: freeEndDir, sideMid: sideMid,
     diagnose: diagnose, diagnoseApply: diagnoseApply, scanEqual: scanEqual, applyEqual: applyEqual,   // rfAR: SketchXpert, Scan Equal
     lineCorner: lineCorner, filletCorner: filletCorner, extendTarget: extendTarget, extendEntity: extendEntity, endDir: endDir, offsetEntity: offsetEntity, offsetRelations: offsetRelations, offsetDimensions: offsetDimensions,
     mirrorRelations: mirrorRelations, install: install,
