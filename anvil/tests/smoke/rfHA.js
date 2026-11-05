@@ -113,12 +113,12 @@
     } finally { UI.setTheme(theme0); UI.setBackground('gradient', true); }
   });
 
-  step('rfHA: Heads-up toolbar — every glyph in one 20 px box on one centre line, buttons one height, flyout arrows are 7 x 4 SVG chevrons beside their icons; the triad canvas matches the screen\'s pixels', async function () {
+  step('rfHA: Heads-up toolbar — every glyph in one 16 px box (rfIL: pixel-sharp on the 16-grid) on one centre line, buttons one height, flyout arrows are 7 x 4 SVG chevrons beside their icons; the triad canvas matches the screen\'s pixels', async function () {
     await anvil.newPart(); await idle();
     var hud = $('hud'), kids = Array.prototype.slice.call(hud.children), mids = [], heights = [];
     kids.forEach(function (b) {
       var ic = b.querySelector('svg').getBoundingClientRect(), br = b.getBoundingClientRect();
-      assert(Math.abs(ic.width - 20) < 0.01 && Math.abs(ic.height - 20) < 0.01, b.getAttribute('data-hud') + ': glyph ' + ic.width + ' x ' + ic.height);
+      assert(Math.abs(ic.width - 16) < 0.01 && Math.abs(ic.height - 16) < 0.01, b.getAttribute('data-hud') + ': glyph ' + ic.width + ' x ' + ic.height);
       mids.push(ic.top + ic.height / 2); heights.push(br.height);
       var ca = b.querySelector('.caret');
       if (ca) {
