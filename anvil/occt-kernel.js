@@ -1358,7 +1358,7 @@ var OcctKernel = (function () {
       if (f.type === 'convertSM') {
         var plan = K.convertSMPlan(f, m, { body: shapeToCSG(body) }), gap = K.convertSMRipGap(f, m);
         if (!(gap > 0) || !isFinite(gap)) throw new Error('Convert to Sheet Metal: the rip gap must be a positive number.');
-        shellOp({ thickness: plan.T, faces: plan.removed.map(function (p) { return { at: p }; }) });
+        if (!plan.thin) shellOp({ thickness: plan.T, faces: plan.removed.map(function (p) { return { at: p }; }) });
         body = unify(bodies[k]);
         if (plan.rips.length) {
           var rl = K.ripLayout({ id: f.id, edges: plan.rips, gap: gap, direction: 'both' }, m, { body: shapeToCSG(body) });

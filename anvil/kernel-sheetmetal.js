@@ -5119,6 +5119,12 @@
       if (q) removed.push(to3D(o.plane, q[0], q[1]));
     });
     if (!removed.length) throw new Error(what + ': every face of the solid is kept: there is no open side (pick the bend edges round one face).');
+    // lane rfIE: a part already T thick at the fixed face (a thin-walled channel, a shelled box) is not shelled again:
+    // its kept faces are the outer faces of walls T thick, so the rips and bends go straight on (Rip + Insert Bends)
+    var wall = null, pr = model.units === 'in' ? 1e-4 : 2.5e-3;
+    try { wall = sheetThicknessAt(body, P0, model.units); } catch (e) { wall = null; }
+    var thin = wall != null && Math.abs(wall - T) <= pr;
+    if (!thin && wall != null && wall < 2 * T + pr) throw new Error(what + ': the part is ' + bcNum(wall) + ' thick at the fixed face: set the thickness to ' + bcNum(wall) + ' to convert its walls as they are (or below ' + bcNum(wall / 2) + ' to shell a solid).');
     function pairOf(e) { return Math.min(e.faces[0], e.faces[1]) + '|' + Math.max(e.faces[0], e.faces[1]); }
     var bendPairs = {}, rips = [];
     bendE.forEach(function (e) { bendPairs[pairOf(e)] = true; });
@@ -5132,7 +5138,63 @@
         rips.push({ at: e.mid.slice() });
       });
     }
-    return { removed: removed, rips: rips, bends: bendE.map(function (e) { return e.mid.slice(); }), T: T };
+    return { removed: removed, rips: rips, bends: bendE.map(function (e) { return e.mid.slice(); }), T: T, thin: thin };
+  }
+  // lane rfIE: Convert to Sheet Metal's Collect All Bends (SolidWorks 2024: the button under the Bend Edges list).
+  // convertSMCollect(body, fixedFace, { thickness, units }) -> { bends: [[x, y, z]] (edge mid points, as hand picks are
+  // stored), rips: [[x, y, z]] (what Convert will rip), T (the thickness used), wall (the part's thickness at the fixed
+  // face, null when it has none), rounded (tangent edges on the kept faces: rounded bends, which Convert cannot use) }.
+  // A bend is a sharp convex edge between two flat faces with the inside corner T behind both (a concave edge on the
+  // line where the two faces' planes, moved T inward, meet): the outside corner of two walls T thick. From the fixed
+  // face the walls are reached across such edges, nearest first (a breadth-first tree); an edge that would close a ring
+  // of walls (a box's vertical corner) is left out: Convert rips it, exactly as when the bends are picked by hand. A
+  // solid block has no such edges (nothing is collected). T is opts.thickness; when nothing qualifies at it and the
+  // part's own wall at the fixed face does, the wall is used (T reports it).
+  function convertSMCollect(body, P0, opts) {
+    opts = opts || {};
+    var what = 'Collect All Bends', units = opts.units || 'mm';
+    if (!body || !body.polygons || !body.polygons.length) throw new Error(what + ': there is no solid to convert yet.');
+    if (!P0 || P0.length !== 3) throw new Error(what + ': pick the fixed face first.');
+    var mesh = meshFromBody(coplanarBody(body)), tol = units === 'in' ? 0.01 : 0.25, pr = units === 'in' ? 1e-4 : 2.5e-3;
+    var fixed = ibFaceAt(mesh, P0, tol);
+    if (fixed < 0) throw new Error(what + ': there is no flat face at ' + bcPt(P0) + '.');
+    var wall = null;
+    try { wall = sheetThicknessAt(body, P0, units); } catch (e) { wall = null; }
+    var edges = bodyEdges(mesh), two = edges.filter(function (e) { return e.faces.length === 2; });
+    var convex = two.filter(function (e) { return !e.smooth && e.convex; }), concave = two.filter(function (e) { return !e.smooth && e.convex === false; });
+    function collect(T) {
+      var cand = convex.filter(function (e) {
+        var A = mesh.faces[e.faces[0]], B = mesh.faces[e.faces[1]];
+        if (Math.abs(dot(A.normal, B.normal)) > 1 - 1e-9) return false;
+        return concave.some(function (c) {
+          if (Math.abs(dot(c.dir, e.dir)) < 1 - 1e-9) return false;
+          return Math.abs(A.w - dot(A.normal, c.mid) - T) <= pr && Math.abs(B.w - dot(B.normal, c.mid) - T) <= pr;
+        });
+      });
+      var kept = {}, tree = {}, queue = [fixed];
+      kept[fixed] = true;
+      function key(a, b) { return Math.min(a, b) + '|' + Math.max(a, b); }
+      while (queue.length) {
+        var i = queue.shift();
+        cand.forEach(function (e) {
+          var o = e.faces[0] === i ? e.faces[1] : e.faces[1] === i ? e.faces[0] : -1;
+          if (o < 0 || kept[o]) return;
+          kept[o] = true; tree[key(i, o)] = true; queue.push(o);
+        });
+      }
+      var bends = [], rips = [];
+      cand.forEach(function (e) {
+        if (!kept[e.faces[0]] || !kept[e.faces[1]]) return;
+        (tree[key(e.faces[0], e.faces[1])] ? bends : rips).push(e.mid.slice());
+      });
+      var rounded = two.filter(function (e) { return e.smooth && (kept[e.faces[0]] || kept[e.faces[1]]); }).length;
+      return { bends: bends, rips: rips, T: T, wall: wall, rounded: rounded };
+    }
+    var T = +opts.thickness > 0 ? +opts.thickness : wall;
+    if (!(T > 0)) return { bends: [], rips: [], T: null, wall: wall, rounded: 0 };
+    var r = collect(T);
+    if (!r.bends.length && wall != null && Math.abs(wall - T) > pr) { var w = collect(wall); if (w.bends.length) r = w; }
+    return r;
   }
   function ibRipGap(f, model) { return f.gap != null ? +f.gap : ripDefaultGap(model); }
   // the Insert Bends step Convert to Sheet Metal runs after its shell and rips (both kernels)
@@ -5144,7 +5206,7 @@
     if (f.type === 'convertSM') {
       var plan = convertSMPlan(f, model, ctx), gap = ibRipGap(f, model);
       if (!(gap > 0) || !isFinite(gap)) throw new Error('Convert to Sheet Metal: the rip gap must be a positive number.');
-      body = _.buildShell({ thickness: plan.T, faces: plan.removed.map(function (p) { return { at: p }; }) }, { body: body, units: model.units || 'mm' }).body;
+      if (!plan.thin) body = _.buildShell({ thickness: plan.T, faces: plan.removed.map(function (p) { return { at: p }; }) }, { body: body, units: model.units || 'mm' }).body;   // lane rfIE: thin walls stay
       if (plan.rips.length) body = body.subtract(buildRip({ id: f.id, edges: plan.rips, gap: gap, direction: 'both' }, model, { body: body }));
       g = convertSMInsert(f, plan);
     }
@@ -5324,7 +5386,7 @@
   K.unfoldStateAt = unfoldStateAt; K.unfoldStripFrame = ufStripFrame; K.unfoldWedgeSpec = ufWedgeSpec; _.mCompose = mCompose; _.mInv = mInv;   // lane DB2 (OpenCascade)
   K.unfoldCells = ufCells; K.unfoldLayers = ufLayers;   // lane DJ (OpenCascade folds added material / blind cuts with them)
   K.miterFlangeStages = miterFlangeStages; K.miterTail = miterTail; K.MITER_FLANGE_POSITIONS = MITER_FLANGE_POSITIONS.slice(); _.buildMiterFlange = buildMiterFlange;   // lane DL
-  K.insertBendsLayout = insertBendsLayout; K.convertSMPlan = convertSMPlan; K.sheetThicknessAt = sheetThicknessAt; K.INSERT_BENDS_RELIEFS = IB_RELIEFS.slice(); K.convertSMInsert = convertSMInsert; K.convertSMRipGap = ibRipGap; K.insertBendsPreview = insertBendsPreview; _.buildInsertBends = buildInsertBends;   // lane DQ
+  K.insertBendsLayout = insertBendsLayout; K.convertSMPlan = convertSMPlan; K.sheetThicknessAt = sheetThicknessAt; K.INSERT_BENDS_RELIEFS = IB_RELIEFS.slice(); K.convertSMInsert = convertSMInsert; K.convertSMCollect = convertSMCollect; K.convertSMRipGap = ibRipGap; K.insertBendsPreview = insertBendsPreview; _.buildInsertBends = buildInsertBends;   // lane DQ
 
   // ------------------------------------------------------------------ Forming Tool (lane forming, rfHI)
   // SolidWorks' Design Library forming tools dropped on a flat sheet face: Dimple (round emboss), Extruded Hole (the

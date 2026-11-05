@@ -58,7 +58,29 @@
     if (name) { if (vp.getAttribute('data-pmtool') !== name) vp.setAttribute('data-pmtool', name); }
     else if (vp.hasAttribute('data-pmtool')) vp.removeAttribute('data-pmtool');
   }
+  // lane rfIE: a feature PropertyManager with spec.pmUndo(redo) (-> true when it took a step of its own back, e.g. a
+  // selection list's change) gets Ctrl+Z / Ctrl+Y and Edit ▸ Undo / Redo first; with nothing of its own left, undo
+  // cancels the command as before (ui-app.js undoCommand). Hooked once, the first time such a PM opens (as
+  // drawing-ui-panels.js does for its PMs).
+  var pmUndoHooked = false;
+  function pmUndoTake(redo) { var s = pm.spec; return !!(s && s.pmUndo && s.pmUndo(redo)); }
+  function pmUndoHook() {
+    if (pmUndoHooked) return;
+    pmUndoHooked = true;
+    ['undoCommand', 'redoCommand'].forEach(function (name, i) {
+      var base = UI[name];
+      if (typeof base !== 'function') return;
+      UI[name] = function () { return pmUndoTake(i === 1) ? UI.whenIdle() : base.apply(this, arguments); };
+    });
+    window.addEventListener('keydown', function (e) {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || !/^[zZyY]$/.test(e.key) || !pm.spec || !pm.spec.pmUndo) return;
+      var t = e.target, inPM = !!(pm.root && t && pm.root.contains(t));
+      if (t && (t.tagName === 'TEXTAREA' || t.isContentEditable || (t.tagName === 'INPUT' && (!inPM || pmPending(t))))) return;   // typed text: its own undo
+      if (pmUndoTake(/^[yY]$/.test(e.key))) { e.preventDefault(); e.stopImmediatePropagation(); }
+    }, true);
+  }
   function openPM(spec) {
+    if (spec.pmUndo) pmUndoHook();
     // ✓+ (OKPLUS_COMMANDS): a PropertyManager opened while one of those commands runs offers the blue button; an edit,
     // a Keep Visible PM or one opened on its own (a double-click, a script) does not; a command's next PM keeps it
     if (editNext != null || spec.keepVisible || spec.noOkPlus) pm.again = null;
@@ -617,7 +639,9 @@
         // rfGY: f.tabs draws the row as SolidWorks' PropertyManager tabs (Hole Wizard Type / Positions)
         var row = el('div', { class: 'pm-btns' + (f.tabs ? ' pm-tabs' : ''), role: f.tabs ? 'tablist' : 'group' });
         f.buttons.forEach(function (b) {
-          var bt = el('button', { text: b.label, onclick: function () { b.onclick(v); } });
+          var bt = el('button', { text: b.label, onclick: function () { if (!bt.disabled) b.onclick(v); } });
+          if (b.title) bt.title = typeof b.title === 'function' ? b.title(v) : b.title;   // lane rfIE: a tooltip, and a button that waits for a pick
+          if (b.disabled && b.disabled(v)) { bt.disabled = true; bt.setAttribute('aria-disabled', 'true'); }
           if (b.active) { var on = !!b.active(v); bt.classList.toggle('on', on); bt.setAttribute('aria-pressed', on ? 'true' : 'false'); }   // r14/fixes14: a tab-like pair (Hole Wizard Type / Positions)
           row.appendChild(bt);
         });
@@ -3964,9 +3988,43 @@
     var infoShown = '';
     function renderInfo() { var t = infoText(); if (t !== infoShown) { infoShown = t; renderPM(); } }
     function infoText() { return info.err ? info.err : (info.bends == null ? '' : info.bends + ' bend' + (info.bends === 1 ? '' : 's') + (info.rips != null ? ', ' + info.rips + ' rip edge' + (info.rips === 1 ? '' : 's') + ' found' : '')); }
+    // lane rfIE: the Bend Edges list's changes (a click, a removal, Clear, Collect All Bends) are PM steps Ctrl+Z / Ctrl+Y
+    // take back (spec.pmUndo); Collect All Bends (SolidWorks 2024, under the list) fills it from K.convertSMCollect
+    var hist = { undo: [], redo: [] };
+    function snapEdges(v) { return { edges: v.bendEdges.map(function (p) { return p.slice(); }), thickness: v.thickness, useGauge: v.useGauge }; }
+    function remember(v) { hist.undo.push(snapEdges(v)); hist.redo.length = 0; }
+    function pmUndo(redo) {
+      var from = redo ? hist.redo : hist.undo, to = redo ? hist.undo : hist.redo, v = pm.values;
+      if (!isConv || !from.length || !v) return false;
+      to.push(snapEdges(v));
+      var s = from.pop();
+      v.bendEdges = s.edges; v.thickness = s.thickness; v.useGauge = s.useGauge;
+      renderPM(); preview();
+      UI.setStatus((redo ? 'Bend Edges change redone' : 'Bend Edges change undone') + ' (' + title + ' stays open).');
+      return true;
+    }
+    function collectAll(v) {
+      if (!v.fixedFace) { UI.toast('Collect All Bends: pick the fixed face first.'); return; }
+      var r;
+      try { r = K.convertSMCollect(baseBody(), v.fixedFace, { thickness: +v.thickness, units: units }); } catch (e) { UI.toast(e.message); UI.setStatus(e.message); return; }
+      if (!r.bends.length) {
+        var why = r.rounded ? 'Collect All Bends: this part has rounded bends; Convert to Sheet Metal uses sharp edges only, so there is nothing to collect (Insert Bends cannot use rounded bends yet either).'
+          : 'Collect All Bends: nothing to collect. No edge reached from the fixed face is the outside corner of two walls ' + UI.fmtNum(r.T || +v.thickness, 4) + ' thick' + (r.wall != null && r.wall > 2 * (+v.thickness) ? ' (a solid: click the edges that become bends).' : ' (pick an outside face as the fixed face, or click the edges).');
+        UI.toast(why); UI.setStatus(why);
+        return;
+      }
+      remember(v);
+      v.bendEdges = r.bends.map(ibRnd);
+      var tSet = r.T != null && Math.abs(r.T - (+v.thickness)) > 1e-9;
+      if (tSet) { v.thickness = Math.round(r.T * 1e9) / 1e9; v.useGauge = false; }
+      renderPM(); preview();
+      var msg = r.bends.length + ' bend' + (r.bends.length === 1 ? '' : 's') + ' collected' + (tSet ? '; Thickness set to ' + UI.fmtNum(v.thickness, 4) + ' (the part\'s walls)' : '') + '.';
+      UI.toast(msg);
+    }
     function pick(pk) {
       var v = pm.values;
       if (isConv && pk.kind === 'edge' && pk.edge) {
+        remember(v);
         var i = -1;
         v.bendEdges.forEach(function (q, k) { if (K.pointSegmentDistance(q, pk.edge.a, pk.edge.b) <= 1e-4 * (1 + pk.edge.len)) i = k; });
         if (i >= 0) v.bendEdges.splice(i, 1); else v.bendEdges.push(ibRnd(pk.edge.mid));
@@ -3994,8 +4052,10 @@
         { type: 'pick', icon: 'bend', placeholder: 'Edges that become bends…',
           value: function (v) { var n = v.bendEdges.length; return n ? n + ' edge' + (n === 1 ? '' : 's') : ''; },
           items: function (v) { return v.bendEdges.map(function (p, i) { return { label: 'Edge<' + (i + 1) + '>', at: p }; }); },
-          onRemove: function (v, i) { v.bendEdges.splice(i, 1); renderPM(); preview(); },
-          onClear: function (v) { v.bendEdges.length = 0; renderPM(); preview(); } },
+          onRemove: function (v, i) { remember(v); v.bendEdges.splice(i, 1); renderPM(); preview(); },
+          onClear: function (v) { if (v.bendEdges.length) remember(v); v.bendEdges = []; renderPM(); preview(); } },
+        { type: 'buttons', buttons: [{ label: 'Collect All Bends', onclick: collectAll, disabled: function (v) { return !v.fixedFace; },
+          title: function (v) { return v.fixedFace ? 'Select every edge of the part that becomes a bend from the fixed face (the outside corners of walls T thick)' : 'Pick the fixed face first'; } }] },
         { type: 'static', label: 'Rip edges found', value: function () { return info.rips == null ? '–' : String(info.rips); } }
       ] }, { title: 'Corner Defaults', fields: [{ type: 'number', label: 'Rip gap', key: 'gap', unit: 'u', min: 0 }] });
     }
@@ -4006,10 +4066,10 @@
       title: existing ? existing.name : title, icon: kind, values: v0,
       onRollback: function () { base = null; measured.at = null; lit(); },
       message: isConv
-        ? 'Click the <b>fixed face</b>, then the <b>edges</b> of the solid that become bends. The faces not joined to the fixed face across them are removed (a shell of T inward), the edges between kept faces are ripped, and the bends are inserted.'
+        ? 'Click the <b>fixed face</b>, then the <b>edges</b> of the solid that become bends (or <b>Collect All Bends</b> on a part with walls T thick). The faces not joined to the fixed face across them are removed (a shell of T inward; walls already T thick stay as they are), the edges between kept faces are ripped, and the bends are inserted.'
         : 'Click the <b>fixed face</b> (a flat face that stays put in the flat). Every sharp corner between two walls of the part\'s thickness becomes a bend of this radius; rip closed corners first (Rip).',
       command: isConv ? { faceList: [], edgeList: [], pickEdges: true, onPick: pick } : { faceList: [], onPick: pick },
-      groups: gs,
+      groups: gs, pmUndo: isConv ? pmUndo : null,
       onChange: function (v, key) {
         if (isConv && v.useGauge && (key === 'useGauge' || key === 'gaugeTable' || key === 'gauge') && applyGauge(v)) renderPM();
         preview();
