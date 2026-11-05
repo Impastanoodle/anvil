@@ -23,7 +23,9 @@ env:
   OCCT_URL: https://registry.npmjs.org/opencascade.js/-/opencascade.js-2.0.0-beta.b5ff984.tgz
   OCCT_WASM_SHA: 4b6a74398987eb3ca6bedc7d1b29d6a5af74d0613a9f3bf013a52d7d5d1b5937
   OCCT_JS_SHA: 8016d504d881f5f3b9f9431524dc8dadd03088588b828e2d18e096bc5fedd5ba
-  ANVIL_CHROME_FLAGS: --no-sandbox
+  # --window-size: Linux Chrome keeps 143 px of the window for itself (Windows 95 px, and 16 px of width), so this gives
+  # the page the 1584 x 905 it gets on the Windows PC the tests were written on (the later switch wins)
+  ANVIL_CHROME_FLAGS: --no-sandbox --window-size=1584,1048
 
 jobs:
   headless:
