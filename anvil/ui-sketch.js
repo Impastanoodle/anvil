@@ -146,6 +146,7 @@
     // the cursor, the next click places it); read before an entity's PropertyManager closes and drops the selection
     // rfAY: Rapid Sketch on and no sketch open: a drawing tool is armed (a plane / face click opens the sketch)
     if (App.mode !== 'sketch' && rapidOn() && name && name !== 'select' && name !== 'dimension') { rapidArm({ tool: name }); return; }
+    if (midHover) midReady(null);   // rfIG: a midpoint's hover clock starts again with the tool
     if (App.mode !== 'sketch' && (!name || name === 'select')) rapidDisarm();
     var presel = name === 'dimension' && App.mode === 'sketch' ? dimPreselection() : null;
     var statusBefore = $('status-msg') ? $('status-msg').textContent : null;
@@ -287,7 +288,7 @@
         S.pointRefs(f, i).forEach(function (pr) {
           var s = pr.ref.split('.')[1] || '';
           if (s === 'c' && (e.t === 'rect' || e.t === 'slot')) return;   // r15/snapaudit15: not sketch points (SolidWorks), the solver adds nothing there
-          pts.push({ pt: pr.pt, kind: s === 'mid' ? 'midpoint' : s === 'c' ? 'center' : 'end' });
+          pts.push({ pt: pr.pt, kind: s === 'mid' ? 'midpoint' : s === 'c' ? 'center' : 'end', isPoint: !s || undefined });   // (rfIG: a sketch point is named Point)
         });
         S.curveRefs(f, i).forEach(function (r) {
           var c = S.refCurve(f, r);
@@ -2253,9 +2254,9 @@
     if (!drawing) {
       // pre-highlight what a click would pick (select, Smart Dimension, Add Relations, Trim …), as SolidWorks does
       var own = !!(App.command && App.command.ownHover);   // r13/trim13: Trim highlights the span it would remove itself
-      var ref = UI.pickSketchRef && !App.zoomAreaMode && !own ? UI.pickSketchRef(mx, my) : null;
+      var ref = UI.pickSketchRef && !App.zoomAreaMode && !own ? dimPickRef(mx, my) : null;
       if (own) clearFeedback();
-      else drawHover(pl, ref === 'O' ? null : ref);
+      else hoverFeedback(pl, ref, mx, my);
       // a sketch command's own hover preview (Extend Entities shows where the end would go)
       if (App.command && App.command.onSketchMove) App.command.onSketchMove(raw, mx, my);
     }
@@ -2305,6 +2306,7 @@
     if (!ref || !f || !S) return;
     function scr(p) { return UI.worldToScreen(K.to3D(pl, p[0], p[1])); }
     var pr = S.parseRef(ref), p = S.refPoint(f, ref);
+    if (p && /\.mid$/.test(ref)) { drawMidMarker(scr(p)); return; }   // rfIG: a line's midpoint picked by Smart Dimension
     if (p) { var s = scr(p); svg('circle', { cx: s[0], cy: s[1], r: 4.5, style: 'stroke:#e8891c;stroke-width:1.5;fill:#e8891c;fill-opacity:0.35' }, layer); return; }
     var e = pr && !pr.o && f.entities[pr.e], c = S.refCurve(f, ref), pls;
     if (!e) return;
@@ -2315,6 +2317,64 @@
       if (l.closed && pts.length) pts.push(pts[0]);
       svg('polyline', { points: pts.join(' '), style: HOVER_STYLE }, layer);
     });
+  }
+  // rfIG: the descriptor by the cursor (SolidWorks' names): a small themed box below-right of the pointer (never under
+  // it), class sk-snap-label (+ sk-snap-label-model / -sketch); its text is what a click there takes
+  var SNAP_LABEL = { end: 'Endpoint', midpoint: 'Midpoint', center: 'Center', quadrant: 'Quadrant', intersection: 'Intersection', origin: 'Origin', on: 'On curve' };
+  function snapLabel(snap) {
+    if (snap.model) return snap.label || null;
+    if (snap.isPoint) return 'Point';
+    return SNAP_LABEL[snap.kind] || null;
+  }
+  function cursorLabel(layer, mx, my, text, model) {
+    var col = model ? MODEL_COLOR : '#e8891c', ly = my + 12, lw = Math.round(text.length * 6.2 + 10);
+    var lg = svg('g', { 'class': 'sk-snap-label ' + (model ? 'sk-snap-label-model' : 'sk-snap-label-sketch') }, layer);
+    svg('rect', { x: mx + 14, y: ly, width: lw, height: 16, rx: 3, style: 'fill:var(--menu-bg);stroke:' + col + ';stroke-width:1' }, lg);
+    var lt = svg('text', { x: mx + 19, y: ly + 12, style: 'fill:var(--text);font-size:11px' }, lg);
+    lt.textContent = text;
+    return lg;
+  }
+  // what sketch ref `ref` is, in SolidWorks' words
+  var ENTITY_LABEL = { line: 'Line', arc: 'Arc', circle: 'Circle', slot: 'Slot', aslot: 'Slot', spline: 'Spline', ellipse: 'Ellipse', pellipse: 'Partial Ellipse', point: 'Point', text: 'Text', poly: 'Polygon', rect: 'Rectangle', crect: 'Rectangle', polyline: 'Polyline' };
+  function refLabel(ref) {
+    var f = UI.activeSketchFeature(), S = window.SketchSolver;
+    if (ref === 'O') return 'Origin';
+    var p = f && S && ref ? S.parseRef(ref) : null, e = p && !p.o ? f.entities[p.e] : null;
+    if (!e) return null;
+    switch (p.s) {
+      case null: return ENTITY_LABEL[e.t] || null;
+      case 'mid': return 'Midpoint';
+      case 'p': return 'Endpoint';
+      case 'c': return 'Center';
+      case 'h': return 'Spline handle';
+      case 'e': return 'Line';
+      case 'v': return e.t === 'spline' ? 'Spline point' : e.t === 'ellipse' || e.t === 'pellipse' ? 'Quadrant' : 'Endpoint';
+    }
+    return null;
+  }
+  // the hover feedback of the Select tool, Smart Dimension and the picking commands: the highlight of what a click takes
+  // and (Select, Smart Dimension) the descriptor naming it; Smart Dimension in a sketch on a face also names the model
+  // edge / vertex / edge midpoint under the cursor
+  function hoverFeedback(pl, ref, mx, my) {
+    drawHover(pl, ref === 'O' ? null : ref);
+    var dim = App.tool === 'dimension', lab = null, model = false;
+    if (!dim && !(App.tool === 'select' && !(App.command && App.command.onSketchPoint))) return;
+    if (ref) lab = refLabel(ref);
+    else if (dim && !App.zoomAreaMode && App.edges && App.edges.length) {
+      var mm = modelMidAt(mx, my);
+      if (mm) { drawMidMarker(mm.s, true); lab = 'Midpoint'; }
+      else if (UI.pickVertex && UI.pickVertex(mx, my)) lab = 'Vertex';
+      else if (UI.pickEdge && UI.pickEdge(mx, my)) lab = 'Edge';
+      model = !!lab;
+    }
+    if (lab) cursorLabel(feedbackLayer(), mx, my, lab, model);
+  }
+  UI.sketchHoverLabel = function () { var n = fbLayer && fbLayer.querySelector('.sk-snap-label text'); return n ? n.textContent : null; };
+  // rfIG: the midpoint marker Smart Dimension shows at the middle of a line (or of a straight model edge, in the model
+  // colour): the point hover's ring, class sk-mid-hover (tests find it by that)
+  function drawMidMarker(s, model) {
+    var col = model ? MODEL_COLOR : '#e8891c';
+    svg('circle', { cx: s[0], cy: s[1], r: 4.5, 'class': 'sk-mid-hover', style: 'stroke:' + col + ';stroke-width:1.5;fill:' + col + ';fill-opacity:0.35' }, feedbackLayer());
   }
 
   // Live value next to the cursor while drawing (SolidWorks shows the length / radius / angle as you drag).
@@ -2395,14 +2455,10 @@
       var sCol = info.snap.model ? MODEL_COLOR : '#e8891c', sDot = info.snap.kind === 'on' || info.snap.kind === 'medge';
       svg('circle', { cx: sp[0], cy: sp[1], r: sDot ? 3 : 5, 'class': info.snap.model ? 'sk-model-snap' : 'sk-snap', style: 'fill:' + (sDot ? sCol : 'none') + ';stroke:' + sCol + ';stroke-width:1.5' }, layer);
     }
-    // p9-modelsnap: a model snap adds no relation; a small label by the cursor names it
-    if (info.snap && info.snap.model && info.snap.label) {
-      var ly = my + 12, lw = Math.round(info.snap.label.length * 6.2 + 10);
-      var lg = svg('g', { 'class': 'sk-snap-label' }, layer);
-      svg('rect', { x: mx + 14, y: ly, width: lw, height: 16, rx: 3, style: 'fill:var(--menu-bg);stroke:' + MODEL_COLOR + ';stroke-width:1' }, lg);
-      var lt = svg('text', { x: mx + 19, y: ly + 12, style: 'fill:var(--text);font-size:11px' }, lg);
-      lt.textContent = info.snap.label;
-    }
+    // p9-modelsnap: a model snap adds no relation; a small label by the cursor names it. rfIG (user 2026-11-05: "a little
+    // descriptor of what youre hovering over"): every snap is named, sketch ones in the sketch snap colour
+    var snapName = info.snap ? snapLabel(info.snap) : null;
+    if (snapName) cursorLabel(layer, mx, my, snapName, !!info.snap.model);
     if (readout) {
       var t = svg('text', { x: mx + 14, y: my - 10, style: 'fill:#e8e8e8;font-size:11px;pointer-events:none' }, layer);   // rfBR: light grey on the dark ground
       t.textContent = readout;
@@ -3616,7 +3672,8 @@
     }
     if (st.dim) {
       // a second entity or point clicked: distance / angle between the two, as SolidWorks' Smart Dimension does
-      var ref2 = (UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null) || modelRef(mx, my, st);
+      var ref2 = dimPickRef(mx, my) || modelRef(mx, my, st);
+      if (ref2 && /\.mid$/.test(ref2) && ref2 === st.dim.e + '.mid') ref2 = null;   // rfIG: placing a line's dimension at its own middle
       var two = ref2 && st.ref1 && UI.relDimFor ? UI.relDimFor(f, st.ref1, ref2) : null;
       if (two) {
         st.relDim = two; st.dim = null; App.tempDim = null;
@@ -3649,7 +3706,7 @@
     if (st.pt1) {
       // p9-sketch: a point clicked first (a circle's or a slot's centre, a sketch point): the second click names the
       // other point or entity of a distance dimension, as SolidWorks' Smart Dimension does
-      var refB = (UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null) || modelRef(mx, my, st), twoB = refB && UI.relDimFor ? UI.relDimFor(f, st.pt1, refB) : null;
+      var refB = dimPickRef(mx, my) || modelRef(mx, my, st), twoB = refB && UI.relDimFor ? UI.relDimFor(f, st.pt1, refB) : null;
       st.pt1 = null;
       if (!twoB) { $('sketch-hint').innerHTML = TOOL_HINTS.dimension; UI.setStatus('No distance between those two: click a point, then another point or a line.'); return; }
       st.relDim = twoB;
@@ -3663,9 +3720,17 @@
     if (cv) { hit = { index: cv.e }; t = { k: 'curv', i: cv.i }; }
     // p9-sketchfix: a sketch point (the virtual sharp on the origin after a fillet, a Point) has no dimension of its own:
     // it starts a distance too (it said "no dimension to place", and the circle clicked next got a second diameter)
+    // rfIG: at a line's midpoint (or Select Midpoint): the midpoint starts a distance, as a point does
+    var mid0 = cv ? null : dimPickRef(mx, my);
+    if (mid0 && /\.mid$/.test(mid0)) {
+      st.pt1 = mid0;
+      $('sketch-hint').innerHTML = 'Click a second point or a line for the distance from this midpoint.';
+      UI.setStatus('Midpoint of ' + (window.SketchSolver.refName ? SketchSolver.refName(f, mid0.replace(/\.mid$/, '')) : 'the line') + ' picked.');
+      return;
+    }
     if (!hit || !t) {
       // p9-sketch: a point that lies on no curve (a circle's or a slot's centre, a sketch point) starts a distance
-      var pr = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null, sp = pr && window.SketchSolver ? SketchSolver.parseRef(pr) : null;
+      var pr = dimPickRef(mx, my), sp = pr && window.SketchSolver ? SketchSolver.parseRef(pr) : null;
       var hdl = !!(sp && sp.s === 'h');   // lane DE: a spline handle starts an angle to a line
       if (pr && (pr === 'O' || hdl || (sp && window.SketchSolver.refKind(f, pr) === 'point'))) {
         st.pt1 = pr;
@@ -3692,8 +3757,115 @@
     var m = UI.pickModelRef ? UI.pickModelRef(mx, my) : null;
     if (!m) return null;
     (st.modelRefs = st.modelRefs || []).push(m.entity);
+    // rfIG: clicked at the middle of a straight model edge: the midpoint of the line it came in as
+    if (m.entity && m.entity.t === 'line' && App.tool === 'dimension') {
+      var pl = UI.activePlane(), e = m.entity, s = UI.worldToScreen(K.to3D(pl, (e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2));
+      if (Math.hypot(s[0] - mx, s[1] - my) < MID_PX && midReady('M' + Math.round(s[0]) + ',' + Math.round(s[1]))) return m.ref + '.mid';
+    }
     return m.ref;
   }
+  // rfIG (user 2026-11-05: "make the smart dimension able to select center points of any line"): as in SolidWorks, the
+  // Smart Dimension tool takes a line's midpoint as a dimension end. Within MID_PX of the middle of a line (any sketch
+  // line: a rectangle's / polygon's side, construction lines, centerlines) the midpoint is highlighted and a click picks
+  // it ('3.mid', a point: distances to points, lines, the origin, other midpoints, driven by the solver); elsewhere on
+  // the line the click still picks the line. Ends, centres and the origin (pickSketchRef's 7 px) come first. The marker
+  // shows once the cursor has rested by the midpoint MID_DWELL ms (SolidWorks' hover): a quick click on the middle of a
+  // line still picks the line, the commonest Smart Dimension pick (its length; the smoke groups click lines there).
+  // Right-click
+  // on a line ▸ Select Midpoint picks it too (dimMidMenu). pickSketchRef (ui-relations.js) leaves '.mid' out for every
+  // other tool (Add Relations picks the line itself, Angular Running Dimension wants the corners: its lineEnds skip
+  // '.mid' because a line's own pointRefs include it).
+  var MID_PX = 6, MID_DWELL = 150, forcedDimRef = null, midKey = null, midHover = { key: null, since: 0, timer: 0 };
+  // the cursor is by midpoint `key` (null: by none): true once it has stayed there MID_DWELL ms; arriving at a new one
+  // starts its clock and a timer that draws the marker when it is up (the cursor may not move again)
+  function midReady(key) {
+    var now = performance.now();
+    if (key !== midHover.key) {
+      if (midHover.timer) clearTimeout(midHover.timer);
+      midHover = { key: key, since: now, timer: 0 };
+      if (key && MID_DWELL > 0) midHover.timer = setTimeout(function () { midHover.timer = 0; if (midHover.key === key && App.tool === 'dimension' && lastMove) redrawDimHover(lastMove[0], lastMove[1]); }, MID_DWELL + 15);
+    }
+    return !!key && now - midHover.since >= MID_DWELL;
+  }
+  function redrawDimHover(mx, my) {
+    hoverFeedback(UI.activePlane(), dimPickRef(mx, my), mx, my);
+  }
+  function dimMidpointAt(mx, my) {
+    var f = UI.activeSketchFeature(), S = window.SketchSolver;
+    if (!f || !S) return null;
+    var pl = UI.activePlane(), best = null, bd = MID_PX;
+    midKey = null;
+    f.entities.forEach(function (e, i) {
+      if (!e || e.t !== 'line' || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;
+      S.pointRefs(f, i).forEach(function (pr) {   // (an infinite line or a ray has no midpoint)
+        if (!/\.mid$/.test(pr.ref)) return;
+        var s = UI.worldToScreen(K.to3D(pl, pr.pt[0], pr.pt[1])), d = Math.hypot(s[0] - mx, s[1] - my);
+        if (d < bd) { bd = d; best = pr.ref; midKey = f.id + ':' + pr.ref + '@' + Math.round(s[0]) + ',' + Math.round(s[1]); }
+      });
+    });
+    return best;
+  }
+  // the ref Smart Dimension picks at (mx, my): pickSketchRef's, or a line's midpoint when the cursor is at one
+  function dimPickRef(mx, my) {
+    if (forcedDimRef) return forcedDimRef;
+    var ref = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null;
+    if (App.tool !== 'dimension') return ref;
+    var f = UI.activeSketchFeature(), S = window.SketchSolver, p = ref && S ? S.parseRef(ref) : null;
+    if (ref === 'O' || (p && p.s === 'h') || (ref && f && S.refKind(f, ref) === 'point')) { midReady(null); return ref; }
+    var mid = dimMidpointAt(mx, my);
+    var key = mid ? midKey : null;   // (the sketch, the ref and where it is: a new sketch's '0.mid' starts afresh)
+    if (mid || ref) midReady(key);   // (nothing of the sketch here: modelMidAt tracks a model edge's midpoint)
+    return mid && midReady(key) ? mid : ref;
+  }
+  // the middle of a straight model edge under the cursor (sketch on a face), for the hover marker: { s: screen point }
+  function modelMidAt(mx, my) {
+    if (!App.edges || !App.edges.length || !UI.pickEdge || !UI.activeSketchFeature()) return null;
+    if (UI.pickVertex && UI.pickVertex(mx, my)) return null;
+    var ed = UI.pickEdge(mx, my), E = ed && ed.edge;
+    if (!E || !E.a || !E.b) return null;
+    var cv = E.curve != null && App.curves ? App.curves[E.curve] : null;
+    if (cv && cv.curve && cv.curve.radius > 0) return null;   // a circle / arc edge: no midpoint
+    var s = UI.worldToScreen([(E.a[0] + E.b[0]) / 2, (E.a[1] + E.b[1]) / 2, (E.a[2] + E.b[2]) / 2]);
+    var key = Math.hypot(s[0] - mx, s[1] - my) < MID_PX ? 'M' + Math.round(s[0]) + ',' + Math.round(s[1]) : null;
+    return midReady(key) ? { s: s } : null;
+  }
+  // right-click on a line while Smart Dimension runs: Select Midpoint (SolidWorks), Select, Exit Sketch
+  function dimMidLine(mx, my) {
+    var f = UI.activeSketchFeature(), S = window.SketchSolver;
+    if (!f || !S || App.tool !== 'dimension') return null;
+    var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index];
+    if (!e || e.t !== 'line') return null;
+    var mid = null;
+    S.pointRefs(f, hit.index).forEach(function (pr) { if (/\.mid$/.test(pr.ref)) mid = pr; });
+    return mid;
+  }
+  function dimMidMenu(mx, my, ev) {
+    var mid = dimMidLine(mx, my);
+    if (!mid) return false;
+    var items = [
+      { label: 'Select Midpoint', icon: 'dim', action: function () { if (App.mode === 'sketch' && App.tool === 'dimension') pickDimMidpoint(mid.ref); } },
+      { sep: true },
+      { label: 'Select', action: function () { if (App.mode === 'sketch') cancelTool(); } },
+      { label: 'Exit Sketch', icon: 'exitSketch', action: function () { if (App.mode === 'sketch') exitSketch(); } }
+    ];
+    UI.showMenu(ev.clientX, ev.clientY, items);
+    return true;
+  }
+  // the click Smart Dimension would get at midpoint ref (the menu's Select Midpoint)
+  function pickDimMidpoint(ref) {
+    var f = UI.activeSketchFeature(), p = f && window.SketchSolver ? SketchSolver.refPoint(f, ref) : null;
+    if (!p) return false;
+    var s = UI.worldToScreen(K.to3D(UI.activePlane(), p[0], p[1]));
+    forcedDimRef = ref;
+    try { dimToolClick(p.slice(), s[0], s[1]); } finally { forcedDimRef = null; }
+    App.dimsStale = true;
+    return true;
+  }
+  UI.dimMidpointAt = dimMidpointAt;
+  UI.dimMidDwell = function (ms) { if (ms != null) MID_DWELL = +ms; return MID_DWELL; };
+  UI.dimPickRef = dimPickRef;
+  UI.dimMidMenu = function (mx, my) { var r = viewport.getBoundingClientRect(); return dimMidMenu(mx, my, { clientX: r.left + mx, clientY: r.top + my }); };
+  UI.pickDimMidpoint = pickDimMidpoint;
   function dimToolMove(raw) {
     var f = UI.activeSketchFeature(), st = App.toolState;
     if (f && st.relDim) { App.tempRelDim = Object.assign({}, st.relDim, UI.relDimPlacement(f, st.relDim, raw)); App.dimsStale = true; return; }
@@ -3934,7 +4106,7 @@
     viewport.classList.remove('tool-grab');
     if (d.kind === 'hook') { d.hook.end(p); return; }
     if (d.kind === 'rotate' || d.kind === 'zoom' || (d.kind === 'pan' && d.moved)) return;
-    if (ev.button === 2) { if (App.mode === 'sketch') { if (App.tool === 'select' && !(App.command && App.command.onSketchPoint) && !(ev.target.closest && ev.target.closest('#dim-layer, #dim-edit, #sk-num, #hud, #exit-sketch'))) sketchMenu(p[0], p[1], ev); else if (chainMenuWanted(ev)) chainMenu(ev); else finishChain(); } return; }
+    if (ev.button === 2) { if (App.mode === 'sketch') { if (App.tool === 'select' && !(App.command && App.command.onSketchPoint) && !(ev.target.closest && ev.target.closest('#dim-layer, #dim-edit, #sk-num, #hud, #exit-sketch'))) sketchMenu(p[0], p[1], ev); else if (chainMenuWanted(ev)) chainMenu(ev); else if (App.tool === 'dimension' && !(ev.target.closest && ev.target.closest('#dim-layer, #dim-edit, #sk-num, #hud, #exit-sketch')) && dimMidMenu(p[0], p[1], ev)) { /* rfIG: Select Midpoint */ } else finishChain(); } return; }
     if (ev.button !== 0) return;
     if (p[0] < 0 || p[1] < 0 || p[0] > UI.size.w || p[1] > UI.size.h) return;
     if (ev.target.closest && ev.target.closest('#hud, #exit-sketch, #sketch-hint, #dim-layer, #dim-edit, #sk-num')) return;
@@ -4045,6 +4217,13 @@
       if (pk < 0) items.forEach(function (it, k) { if (pk < 0 && it && it.label === 'Delete') pk = k; });
       var edit = { label: 'Edit Polygon', icon: 'polygon', action: function () { if (App.mode === 'sketch') UI.editPolygon(sel[0]); } };
       if (pk < 0) items.unshift(edit); else items.splice(pk, 0, edit);
+    }
+    // rfIG: Select Chain on a curve (SolidWorks' entity menu has it at the top): the entity's chain end to end
+    // (ui-select.js sketchChain; Shift+click does the same)
+    var chainFrom = hit && f.entities[hit.index] && /^(line|arc|spline|pellipse)$/.test(f.entities[hit.index].t) ? hit.index : -1;
+    if (chainFrom >= 0 && UI.selectSketchChain) {
+      if (UI.sketchMenuItems && !items.sketchMenu) items = UI.sketchMenuItems(items);
+      items.unshift({ label: 'Select Chain', icon: 'select', action: function () { if (App.mode === 'sketch') UI.selectSketchChain(chainFrom, 'replace'); } }, { sep: true });
     }
     // lane CV: Dissolve Sketch Text on a sketch text (SolidWorks puts it above Properties…)
     if (sel.length === 1 && f.entities[sel[0]].t === 'text' && UI.dissolveSketchText) {

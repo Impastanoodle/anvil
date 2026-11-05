@@ -54,6 +54,7 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Done
 
+- local-2026-11-05d: dimension precision like SolidWorks + part / drawing defaults (rfIF); Smart Dimension line midpoints, hover descriptors, Shift+click Select Chain (rfIG).
 - local-2026-11-05c: Convert to Sheet Metal Collect All Bends (rfIE); Convert works on parts already sheet-thick.
 - local-2026-11-05b: CommandManager drag-to-enlarge with sharp icons (rfIA); Circle PM Radius + Diameter, no Center X / Y (rfIC); sketch lines keep full weight under Smart Dimensions (rfIB); drop files anywhere to open (rfID); repo public, GitHub Actions runs the whole verify (kernel on Linux, ui-smoke in 4 parts + OpenCascade on Windows).
 - local-2026-11-05a: Windows Open / Save dialogs in the desktop app (Ctrl+S to the open file, exports via the Save box), Restart to update hardened with update.log; rim streaks, dashed outlines and seam cracks fixed (depth precision, polygon offset), spheres / tori refine when zoomed, spline strips pick as one face. Left: real installer run on 0.1.7, patterned / mirrored spline extrudes and STL imports pick per strip, shell face lookup by point (kernel-features.js), recent-files list.

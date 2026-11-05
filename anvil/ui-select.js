@@ -532,6 +532,9 @@ if (typeof UI !== 'undefined') (function (UI) {
     }
     var item = sketchPickItem(mx, my);
     if (mod && !item) return true;
+    // rfIG (user 2026-11-05: "when i shift click a line in sketch i want it to select the chain"): Shift+click on an
+    // entity (Ctrl not held) adds its chain (SolidWorks' Select Chain); on a chain already all selected, takes it away
+    if (item && item.kind === 'entity' && ev && ev.shiftKey && !(ev.ctrlKey || ev.metaKey)) { selectSketchChain(item.index, 'toggle'); return true; }
     // p9-sketchfix: the selection is read before anything replaces the PropertyManager (closing one consumes the
     // selection, ui-commands.js closePM)
     var list = mod ? BoxSelect.combine(selection().filter(isSketchItem), [item], 'toggle', selKey) : item ? [item] : [];
@@ -539,6 +542,64 @@ if (typeof UI !== 'undefined') (function (UI) {
     sketchSelectionPM(list, true);
     return true;
   }
+  // rfIG: the chain of sketch entity i: the entities joined to it end to end (shared or coincident end points), followed
+  // both ways; a branch point (three or more curves ending there) or a free end stops it, a closed loop is the loop (as
+  // SolidWorks' Select Chain). Lines, arcs, open splines and partial ellipses chain; a closed curve (circle, ellipse,
+  // closed spline, slot, rectangle / polygon entity) is a chain of its own. Hidden layers and sketch points take no part.
+  function sketchChain(f, i) {
+    var SS = window.SketchSolver, E = f && f.entities;
+    if (!E || !E[i] || !SS) return [];
+    function ends(k) {
+      var e = E[k];
+      if (!e || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return null;
+      if (!(e.t === 'line' || e.t === 'arc' || e.t === 'pellipse' || (e.t === 'spline' && !e.closed))) return null;
+      var a = SS.refPoint(f, k + '.p1'), b = SS.refPoint(f, k + '.p2');
+      return a && b ? [a, b] : null;
+    }
+    if (!ends(i)) return [i];
+    var all = [], scale = 1;
+    E.forEach(function (e, k) { var q = ends(k); if (q) { all.push({ k: k, q: q }); q.forEach(function (p) { scale = Math.max(scale, Math.abs(p[0]), Math.abs(p[1])); }); } });
+    var tol = 1e-6 * scale;
+    function near(a, b) { return Math.abs(a[0] - b[0]) <= tol && Math.abs(a[1] - b[1]) <= tol; }
+    // the entity ends at point p: [{ k, end }]
+    function at(p) { var out = []; all.forEach(function (c) { c.q.forEach(function (q, j) { if (near(q, p)) out.push({ k: c.k, end: j }); }); }); return out; }
+    var chain = [i], seen = {};
+    seen[i] = true;
+    var q0 = ends(i);
+    [1, 0].forEach(function (side) {
+      var k = i, p = q0[side];
+      for (var guard = 0; guard < E.length; guard++) {
+        var here = at(p);
+        if (here.length !== 2) break;   // a free end or a branch point
+        var nx = here[0].k === k && here.length === 2 ? here[1] : here[0];
+        if (nx.k === k) break;   // (one entity's two ends together: a closed curve)
+        if (seen[nx.k]) break;   // round a closed loop back to the start
+        seen[nx.k] = true;
+        if (side === 1) chain.push(nx.k); else chain.unshift(nx.k);
+        k = nx.k; p = ends(k)[1 - nx.end];
+      }
+    });
+    return chain;
+  }
+  // Select Chain on sketch entity i: mode 'toggle' (Shift+click: add, or remove a chain already all selected), 'add',
+  // 'replace' (the right-click row)
+  function selectSketchChain(i, mode) {
+    var f = UI.activeSketchFeature();
+    if (!f || !f.entities[i]) return [];
+    var ids = sketchChain(f, i), cur = selection().filter(isSketchItem);
+    function has(k) { return cur.some(function (s) { return s.kind === 'entity' && s.index === k; }); }
+    var list;
+    if (mode === 'replace') list = [];
+    else if (mode === 'toggle' && ids.every(has)) list = cur.filter(function (s) { return !(s.kind === 'entity' && ids.indexOf(s.index) >= 0); });
+    else list = cur.slice();
+    if (!(mode === 'toggle' && ids.every(has))) ids.forEach(function (k) { if (!list.some(function (s) { return s.kind === 'entity' && s.index === k; })) list.push({ kind: 'entity', index: k }); });
+    setSelection(list, { quiet: false });
+    sketchSelectionPM(list, true);
+    UI.setStatus(list.length ? ids.length + ' entit' + (ids.length === 1 ? 'y' : 'ies') + ' in the chain; ' + list.length + ' selected.' : 'Chain deselected.');
+    return ids;
+  }
+  UI.sketchChain = function (i) { return sketchChain(UI.activeSketchFeature(), i); };
+  UI.selectSketchChain = selectSketchChain;
   // What a Select-tool click at (mx, my) selects in the active sketch: { kind: 'sketchPoint', ref } for a line's or an
   // arc's end point or a circle's / arc's centre within 9 px (when it is no farther than the curve under the cursor, or
   // within 4 px of it: a small hole's edge still selects the circle), else { kind: 'entity', index }, or null.

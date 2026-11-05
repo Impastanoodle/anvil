@@ -612,6 +612,16 @@
     });
     var ent = entityAt(p, false, true);
     if (ent && viewId != null && ent.view !== viewId) ent = null;
+    // (rfIG) Smart Dimension at the middle of a straight edge: its midpoint, once the pointer has rested there (the
+    // sketch's rule, ui-sketch.js dimMidpointAt: a quick click on an edge's middle still picks the edge); an end or
+    // centre nearer the pointer wins
+    var midHit = null;
+    if (D.tool === 'dim' && ent && !ent.circle && !ent.arc && !ent.ellipse && ent.la && ent.lb) {
+      var wm = sheetView(ent.view), mm = wm && [(ent.la[0] + ent.lb[0]) / 2, (ent.la[1] + ent.lb[1]) / 2], mq = mm && wm.toSheet(mm), dmid = mq ? Math.hypot(p[0] - mq[0], p[1] - mq[1]) : Infinity;
+      if (mq && dmid < tol && dmid < bd) midHit = { view: ent.view, w: wm, pick: { mid: [ent.la.slice(), ent.lb.slice()] }, hl: { pt: mq, mid: true }, key: ent.view + ':' + mq.map(function (v) { return Math.round(v * 1e4); }).join(',') };
+    }
+    if (!sdMidReady(midHit ? midHit.key : null)) midHit = null;
+    if (midHit) { midHit.at = p; return midHit; }
     if (best) {
       // a point wins when the pointer is on it (within 4 px) and not clearly nearer the edge or circle itself: a small
       // hole clicked on its outline is the circle, its middle is the centre; an edge's end is the vertex
@@ -630,13 +640,25 @@
     else pk = { edge: [ent.la.slice(), ent.lb.slice()] };
     return { view: ent.view, w: w0, pick: pk, at: p, hl: ent };
   }
+  // (rfIG) the pointer has stayed by midpoint `key` (null: none) for the Smart Dimension dwell (UI.dimMidDwell, the
+  // sketch's); arriving at a new one starts its clock and a timer that redraws the hover when it is up
+  var sdMid = { key: null, since: 0, timer: 0 };
+  function sdMidReady(key) {
+    var now = performance.now(), dwell = UI.dimMidDwell ? UI.dimMidDwell() : 150;
+    if (key !== sdMid.key) {
+      if (sdMid.timer) clearTimeout(sdMid.timer);
+      sdMid = { key: key, since: now, timer: 0 };
+      if (key && dwell > 0) sdMid.timer = setTimeout(function () { sdMid.timer = 0; if (sdMid.key === key && D.tool === 'dim' && D.lastSdMove) smartDimMove(D.lastSdMove.q, D.lastSdMove.e); }, dwell + 15);
+    }
+    return !!key && now - sdMid.since >= dwell;
+  }
   function samePick(a, b) { return a && b && a.view === b.view && JSON.stringify(a.pick) === JSON.stringify(b.pick); }
   // Shift on a circle pick: min when the side clicked is nearer the other pick than the centre is, else max
   function minmaxOf(P) {
     var cp = [P.first, P.second].filter(function (x) { return x && x.shift && (x.pick.circle || x.pick.arc); })[0];
     if (!cp || !P.second) return null;
     var other = cp === P.first ? P.second : P.first, w = cp.w, c = (cp.pick.circle || cp.pick.arc).c, clk = w.fromSheet(cp.at);
-    var op = other.pick.edge ? null : other.pick.point || (other.pick.center || other.pick.circle || other.pick.arc || other.pick.ellipse).c;
+    var om = other.pick.mid, op = other.pick.edge ? null : other.pick.point || (om ? [(om[0][0] + om[1][0]) / 2, (om[0][1] + om[1][1]) / 2] : (other.pick.center || other.pick.circle || other.pick.arc || other.pick.ellipse).c);
     function dist(q) {
       if (op) return Math.hypot(q[0] - op[0], q[1] - op[1]);
       var e = other.pick.edge, t = [e[1][0] - e[0][0], e[1][1] - e[0][1]], L = Math.hypot(t[0], t[1]) || 1;
@@ -685,7 +707,7 @@
       hit.shift = !!(e && e.shiftKey);
       D.pending = { view: hit.view, first: hit, second: null, at: p };
       D.hover = null; drawOverlay(); UI.refreshRibbon();
-      UI.setStatus(hit.pick.point || hit.pick.center ? sdName() + ': click a second item (a point, a centre, a circle or an edge). Esc cancels.'
+      UI.setStatus(hit.pick.point || hit.pick.center || hit.pick.mid ? sdName() + ': click a second item (a point, a centre, a circle or an edge). Esc cancels.'
         : sdName() + ': click where the dimension goes, or a second item (distance' + (D.dimLock ? '' : ' or angle') + '). Esc cancels.');
       return;
     }
@@ -702,7 +724,7 @@
       }
     }
     var w = P.first.w, spec = smartSpec(P, p);
-    if (!spec) { UI.setStatus(sdName() + (D.dimLock && P.first && !P.first.pick.point && !P.first.pick.center ? ': that item has no ' + (D.dimLock === 'h' ? 'horizontal' : 'vertical') + ' size; pick a second item. Esc cancels.' : ': a point needs a second item to measure to. Esc cancels.')); return; }
+    if (!spec) { UI.setStatus(sdName() + (D.dimLock && P.first && !P.first.pick.point && !P.first.pick.center && !P.first.pick.mid ? ': that item has no ' + (D.dimLock === 'h' ? 'horizontal' : 'vertical') + ' size; pick a second item. Esc cancels.' : ': a point needs a second item to measure to. Esc cancels.')); return; }
     var index = -1;
     edit(function (dc) {
       var v = Drawing.findView(dc, P.view);
@@ -752,9 +774,13 @@
   // the pointer over the sheet while the tool runs: what the next click picks, and the preview
   function smartDimMove(q, e) {
     var P = D.pending;
+    D.lastSdMove = { q: q.slice(), e: e ? { shiftKey: !!e.shiftKey } : null };
     if (P && P.first) { P.at = q; P.shiftNow = !!(e && e.shiftKey); }
     var hit = pickAt(q, P && P.first ? P.view : null);
     D.hover = hit ? (hit.hl.pt ? { kind: 'dimpt', view: hit.view, pt: hit.hl.pt } : hit.hl) : null;
+    // (rfIG) the descriptor by the pointer: what the next click picks (SolidWorks' names)
+    var pk = hit && hit.pick;
+    D.sdLabel = pk ? { at: q.slice(), text: pk.mid ? 'Midpoint' : pk.point ? 'Vertex' : pk.center ? 'Center' : pk.edge ? 'Edge' : pk.circle ? 'Circle' : pk.arc ? 'Arc' : pk.ellipse ? 'Ellipse' : '' } : null;
     drawOverlay();
   }
   // drawOverlay's part: the picked items, the point under the pointer, and the dimension as it would be placed
@@ -762,6 +788,14 @@
     var P = D.pending, col = { stroke: '#2a2a2a', fill: 'none' }, sw = pxToPaper(1.4);   // rfBU: near-black preview (was blue)
     function dot(q, r) { svgNode('circle', { class: 'dw-hot', cx: q[0], cy: H - q[1], r: r || pxToPaper(4), 'stroke-width': pxToPaper(2) }, g); }
     if (D.hover && D.hover.kind === 'dimpt') dot(D.hover.pt, pxToPaper(5));
+    // (rfIG) the descriptor: a small box below-right of the pointer, never under it
+    if (D.sdLabel && D.sdLabel.text && D.hover) {
+      var la = D.sdLabel.at, fs = pxToPaper(11), lx = la[0] + pxToPaper(14), ly = la[1] - pxToPaper(12), lw = pxToPaper(D.sdLabel.text.length * 6.2 + 10);
+      var lg = svgNode('g', { class: 'dw-snap-label' }, g);
+      svgNode('rect', { x: lx, y: H - ly, width: lw, height: pxToPaper(16), rx: pxToPaper(3), style: 'fill:var(--menu-bg);stroke:#e8891c', 'stroke-width': pxToPaper(1) }, lg);
+      var lt = svgNode('text', { x: lx + pxToPaper(5), y: H - ly + pxToPaper(12), 'font-size': fs, style: 'fill:var(--text)' }, lg);
+      lt.textContent = D.sdLabel.text;
+    }
     if (!P || !P.first) return;
     [P.first, P.second].forEach(function (x) {
       if (!x) return;

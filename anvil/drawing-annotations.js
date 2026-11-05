@@ -524,6 +524,12 @@
   // (rfS) one reference of a two-pick dimension: a circle / arc (by centre and radius), an edge, or a point (a vertex:
   // the nearest end of a visible edge or circle centre within a thousandth of the view size, else it is gone)
   function reattachRef(r, pr) {
+    // (rfIG) an edge's midpoint: the edge is found again as any edge reference is, the point is its new middle
+    if (r.kind === 'pt' && r.mid) {
+      var okM = reattachRef(r.mid, pr);
+      if (okM) r.p = [(r.mid.a[0] + r.mid.b[0]) / 2, (r.mid.a[1] + r.mid.b[1]) / 2];
+      return okM;
+    }
     if (r.kind === 'pt') {
       var b = pr.bounds, tol = Math.max(1e-9, Math.hypot(b.umax - b.umin, b.vmax - b.vmin)) * 1e-3, best = null, bd = tol;
       (pr.all || []).forEach(function (m) { [[m[0], m[1]], [m[2], m[3]]].forEach(function (q) { var dd = Math.hypot(q[0] - r.p[0], q[1] - r.p[1]); if (dd <= bd) { bd = dd; best = q; } }); });
@@ -543,7 +549,7 @@
   // SolidWorks' drawing Smart Dimension: the first pick, an optional second pick, then a placement click; the kind
   // follows the picks and where the pointer is. A pick (view model units, the view's 2D frame):
   //   { edge: [a, b] } | { circle: { c, r } } | { arc: { c, r, a0, a1 } } | { point: [x, y] } (a vertex / end point)
-  //   | { center: { c, r } } (a circle's or an arc's centre)
+  //   | { center: { c, r } } (a circle's or an arc's centre) | { mid: [a, b] } (rfIG: the midpoint of a straight edge)
   // smartDim(p1, p2 | null, at (the placement point, view model units), { scale (paper per model unit), minmax:
   // 'min' | 'max' (Shift: circle to circle / edge, nearest or farthest sides), aligned (rfZ, a True view: a length
   // runs along what it measures, never horizontal / vertical by the pointer) }) -> a view dimension (h, v, aligned,
@@ -573,6 +579,8 @@
     if (pk.arc) return { kind: 'arc', c: [+pk.arc.c[0], +pk.arc.c[1]], r: +pk.arc.r, a0: pk.arc.a0, a1: pk.arc.a1 };
     if (pk.center) return { kind: 'pt', p: [+pk.center.c[0], +pk.center.c[1]], center: true };
     if (pk.point) return { kind: 'pt', p: [+pk.point[0], +pk.point[1]] };
+    // (rfIG) the midpoint of a straight edge: a point that keeps its edge, so it follows the edge when the view updates
+    if (pk.mid) { var em = refFrom({ a: pk.mid[0], b: pk.mid[1] }); return { kind: 'pt', p: [(em.a[0] + em.b[0]) / 2, (em.a[1] + em.b[1]) / 2], mid: em }; }
     return null;
   }
   // (rfAL) how far from an ellipse's centre its outline is along direction w (any length): 1 / |M⁻¹ ŵ|, M = [ax ay]
