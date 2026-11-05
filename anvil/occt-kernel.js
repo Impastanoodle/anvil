@@ -1358,6 +1358,13 @@ var OcctKernel = (function () {
       if (f.type === 'convertSM') {
         var plan = K.convertSMPlan(f, m, { body: shapeToCSG(body, null, null, true) }), gap = K.convertSMRipGap(f, m);   // rfIH: with the cylinder records (rounded bends)
         if (!(gap > 0) || !isFinite(gap)) throw new Error('Convert to Sheet Metal: the rip gap must be a positive number.');
+        if (plan.reverse) {   // rfIM: Reverse thickness: the kept faces thickened outward (Kernel.convertSMReverse's slabs), then the grown solid converted
+          var rv = plan.reverse;
+          body = boolMany('fuse', body, rv.slabs.map(function (t) { return prismOf(t.loop, t.plane, t.a, t.b); }), 'Convert to Sheet Metal: OpenCascade could not thicken the faces (Reverse thickness).');
+          if (rv.holes.length) body = boolMany('cut', body, rv.holes.map(function (t) { return prismOf(t.loop, t.plane, t.a, t.b); }), 'Convert to Sheet Metal: OpenCascade could not keep the holes (Reverse thickness).');
+          bodies[k] = body = unify(body);
+          plan = K.convertSMPlan(K.convertSMReversed(f, rv), m, { body: shapeToCSG(body, null, null, true) });
+        }
         if (!plan.thin) shellOp({ thickness: plan.T, faces: plan.removed.map(function (p) { return { at: p }; }) });
         body = unify(bodies[k]);
         if (plan.rips.length) {

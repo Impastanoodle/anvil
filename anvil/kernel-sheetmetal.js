@@ -4946,20 +4946,15 @@
     for (var k = 0; k < ts.length; k++) if (inside(sub(Q, scale(n, ts[k] - pr))) && !inside(sub(Q, scale(n, ts[k] + pr)))) return ts[k];
     throw new Error('Insert Bends: cannot find the wall thickness at ' + bcPt(P) + '.');
   }
-  // lane rfIH: the bends already rounded in the part (SolidWorks' Insert Bends takes them with their own radius): a
-  // pair of concentric cylinders, inner radius R > 0 and outer R + T, on one axis and over the same angle (under 180°),
-  // with a flat wall T thick running on tangent from each end. Found from the facets' cylinder records (Anvil's
-  // extrudes and fillets, an imported STEP, OpenCascade's shapeToCSG with records). ibRoundBends(body, mesh, T, units)
-  // -> [{ R, RT, A, C0 (on the axis, C0·d = 0), d, n1, n2 (the walls' outer normals at the start / end of the arc,
-  // cross(n1, n2)·d > 0), s0, s1 (the extent along d), i1, i2 (the walls' outer faces in mesh), mid (a point on the
-  // outer surface half way), faces: { mesh face index: true } (the bend's facets) }]
-  function ibRoundBends(body, mesh, T, units) {
-    var groups = [], out = [], inside = body.pointTester(), pr = units === 'in' ? 1e-4 : 2.5e-3, dl = 1e-3 * T;
-    function sameAxis(a, b) {
-      if (Math.abs(dot(a.d, b.d)) < 1 - 1e-9) return false;
-      var v = sub(b.o, a.o);
-      return len(sub(v, scale(a.d, dot(v, a.d)))) <= 1e-7 * (1 + len(a.o));
-    }
+  // lane rfIM: the cylinder faces of a body grouped by surface (axis + radius), each with its frame and arc:
+  // [{ s (the record), polys, f: { d, e1, e2, o, r, th0, A, z0, z1, sag } }] (f absent: a cylinder too short to use)
+  function ibSameAxis(a, b) {
+    if (Math.abs(dot(a.d, b.d)) < 1 - 1e-9) return false;
+    var v = sub(b.o, a.o);
+    return len(sub(v, scale(a.d, dot(v, a.d)))) <= 1e-7 * (1 + len(a.o));
+  }
+  function ibCylGroups(body) {
+    var groups = [], sameAxis = ibSameAxis;
     (body.polygons || []).forEach(function (p) {
       var s = p.surf && p.surf.s;
       if (!s || s.t !== 'cyl' || !(s.r > 0)) return;
@@ -4992,6 +4987,17 @@
       if (th[0] + 2 * Math.PI - th[th.length - 1] < gap - 1e-12) step = Math.max(step, th[0] + 2 * Math.PI - th[th.length - 1]);
       g.f = { d: d, e1: e1, e2: e2, o: o, r: r, th0: start, A: 2 * Math.PI - gap, z0: z0, z1: z1, sag: r * (1 - Math.cos(Math.min(step, Math.PI) / 2)) };
     });
+    return groups;
+  }
+  // lane rfIH: the bends already rounded in the part (SolidWorks' Insert Bends takes them with their own radius): a
+  // pair of concentric cylinders, inner radius R > 0 and outer R + T, on one axis and over the same angle (under 180°),
+  // with a flat wall T thick running on tangent from each end. Found from the facets' cylinder records (Anvil's
+  // extrudes and fillets, an imported STEP, OpenCascade's shapeToCSG with records). ibRoundBends(body, mesh, T, units)
+  // -> [{ R, RT, A, C0 (on the axis, C0·d = 0), d, n1, n2 (the walls' outer normals at the start / end of the arc,
+  // cross(n1, n2)·d > 0), s0, s1 (the extent along d), i1, i2 (the walls' outer faces in mesh), mid (a point on the
+  // outer surface half way), faces: { mesh face index: true } (the bend's facets) }]
+  function ibRoundBends(body, mesh, T, units) {
+    var groups = ibCylGroups(body), out = [], inside = body.pointTester(), pr = units === 'in' ? 1e-4 : 2.5e-3, dl = 1e-3 * T, sameAxis = ibSameAxis;
     function angDiff(a, b) { var x = (a - b) % (2 * Math.PI); if (x > Math.PI) x -= 2 * Math.PI; if (x < -Math.PI) x += 2 * Math.PI; return Math.abs(x); }
     function wallFace(n, w) {
       for (var i = 0; i < mesh.faces.length; i++) { var fc = mesh.faces[i]; if (dot(fc.normal, n) > 1 - 1e-6 && Math.abs(fc.w - w) <= pr) return i; }
@@ -5035,6 +5041,32 @@
         });
         out.push({ R: R, RT: RT, A: A, C0: C0, d: d, n1: n1, n2: n2, s0: s0, s1: s1, i1: i1, i2: i2, faces: faces, mid: at(e(a, a.th0 + A / 2), RT, t1, 0, sm) });
       });
+    });
+    return out;
+  }
+  // lane rfIM: the rounded (filleted) convex edges of a solid, radius r > T, between two flat faces tangent to them:
+  // what Convert to Sheet Metal shells into rounded bends (inside radius r − T, outside r). Same records as
+  // ibRoundBends (R = r − T, RT = r, i1 / i2 the flat faces, faces the fillet's facets).
+  function ibSolidRounds(body, mesh, T, units) {
+    var out = [], inside = body.pointTester(), pr = units === 'in' ? 1e-4 : 2.5e-3;
+    function flatFace(n, w) {
+      for (var i = 0; i < mesh.faces.length; i++) { var fc = mesh.faces[i]; if (dot(fc.normal, n) > 1 - 1e-6 && Math.abs(fc.w - w) <= pr) return i; }
+      return -1;
+    }
+    ibCylGroups(body).forEach(function (g) {
+      var a = g.f;
+      if (!a || !(a.A > 1e-3) || a.A > Math.PI - 1e-3 || !(a.r > T + pr)) return;
+      var e = function (t) { return add(scale(a.e1, Math.cos(t)), scale(a.e2, Math.sin(t))); };
+      var n1 = e(a.th0), n2 = e(a.th0 + a.A), nm = e(a.th0 + a.A / 2), C0 = a.o, d = a.d, sm = (a.z0 + a.z1) / 2;
+      var at = function (n, rr) { return add(add(C0, scale(d, sm)), scale(n, rr)); };
+      if (!inside(at(nm, a.r - Math.min(T, a.r) / 2)) || inside(at(nm, a.r + 1e-3 * T))) return;   // a convex round
+      var i1 = flatFace(n1, dot(n1, C0) + a.r), i2 = flatFace(n2, dot(n2, C0) + a.r);
+      if (i1 < 0 || i2 < 0) return;
+      var faces = {};
+      mesh.faces.forEach(function (fc, k) {
+        if (fc.polys && fc.polys.length && fc.polys.every(function (p) { return p.surf && p.surf.s && (p.surf.s === g.s || g.polys.indexOf(p) >= 0); })) faces[k] = true;
+      });
+      out.push({ R: a.r - T, RT: a.r, A: a.A, C0: C0, d: d, n1: n1, n2: n2, s0: a.z0, s1: a.z1, i1: i1, i2: i2, faces: faces, mid: at(nm, a.r), solid: true });
     });
     return out;
   }
@@ -5154,8 +5186,23 @@
         bends.forEach(function (q, jj) { if (jj !== i && j < 0 && !q.round && Math.abs(dot(q.L.d, b.L.d)) < 0.999 && (len(sub(q.P(0, 0, q.s0), E)) < tolE || len(sub(q.P(0, 0, q.s1), E)) < tolE)) j = jj; });
         if (j < 0) return;
         if (relief === 'none') throw new Error(what + ': two bends meet at ' + bcPt(E) + ': turn Auto Relief on (or rip the corner).');
-        if (Math.abs(b.L.c) > 1e-6 || Math.abs(bends[j].L.c) > 1e-6 || Math.abs(dot(bends[j].L.d, b.L.d)) > 1e-6) throw new Error(what + ': two bends meet at ' + bcPt(E) + ' at a corner that is not square; only square corners are relieved.');
-        b.trim[k] = true;
+        var q = bends[j];
+        if (Math.abs(b.L.c) > 1e-6 || Math.abs(q.L.c) > 1e-6 || Math.abs(dot(q.L.d, b.L.d)) > 1e-6) {
+          // lane rfIM: a corner that is not square (walls off 90°: a tray with flared walls, a hopper; or a plate corner
+          // off 90°). Both bends leave the plate they share; each stops where its bend zone (the strip RT·tan(A/2)
+          // wide on that plate, from the outer sharp) leaves the other's: t = (S_q + max(0, S_b·cos φ)) / sin φ, φ
+          // the plate's corner angle, and its own corner kite is cut out over that length (the relief). Square
+          // corners keep the (R + T) cube (the same region).
+          if (!(b.p1 === q.p1 || b.p1 === q.p2 || b.p2 === q.p1 || b.p2 === q.p2)) throw new Error(what + ': two bends meet at ' + bcPt(E) + ' without a wall in common; rip the corner.');
+          var ub = scale(b.L.d, k ? -1 : 1), uq = scale(q.L.d, len(sub(q.P(0, 0, q.s0), E)) < tolE ? 1 : -1), cphi = dot(ub, uq), sphi = Math.sqrt(Math.max(0, 1 - cphi * cphi));
+          if (!(sphi > 1e-3)) throw new Error(what + ': two bends meet at ' + bcPt(E) + ' along one line.');
+          var Sb = RT * Math.tan(b.A / 2), Sq = RT * Math.tan(q.A / 2), tb = (Sq + Math.max(0, Sb * cphi)) / sphi;
+          b.trim[k] = tb;
+          var cA = Math.cos(b.A), sA = Math.sin(b.A), RTe = RT + eps, C0 = sub(b.L.O0, scale(add(b.L.n1, b.L.n2), RT / (1 + b.L.c)));
+          corners.push({ loop: [[0, 0], [RTe, 0], [RTe, RTe * Math.tan(b.A / 2)], [RTe * cA, RTe * sA]], plane: { origin: C0, x: b.L.n1, y: norm(sub(b.L.n2, scale(b.L.n1, b.L.c))), n: b.L.d }, a: k ? s - tb : s - eps, b: k ? s + eps : s + tb });
+          return;
+        }
+        b.trim[k] = RT;
         var key = E.map(function (x) { return Math.round(x * 1e5); }).join(',');
         if (cornerKeys[key]) return;
         cornerKeys[key] = true;
@@ -5167,7 +5214,7 @@
     bends.forEach(function (b) {
       var R = b.round ? b.round.R : Rs, RT = R + T;   // lane rfIH: a rounded bend's own radius
       var L = b.L, c = L.c, A = b.A, sA = Math.sin(A), cA = Math.cos(A), tA = Math.tan(A / 2);
-      var s0 = b.s0 + (b.trim[0] ? RT : 0), s1 = b.s1 - (b.trim[1] ? RT : 0), sm = (b.s0 + b.s1) / 2;
+      var s0 = b.s0 + (b.trim[0] || 0), s1 = b.s1 - (b.trim[1] || 0), sm = (b.s0 + b.s1) / 2;   // rfIM: trims are lengths
       if (!(s1 - s0 > 1e-6)) throw new Error(what + ': the bend at ' + bcPt(b.P(0, 0, sm)) + ' is shorter than its corner reliefs (R + T at each end).');
       var X = L.n1, Y = norm(sub(L.n2, scale(L.n1, c))), C0 = sub(L.O0, scale(add(L.n1, L.n2), RT / (1 + c)));
       var plane = { origin: C0, x: X, y: Y, n: L.d };
@@ -5195,8 +5242,59 @@
       info.push({ kind: 'edge', a: a3, b: b3, mid: mid, origin: mid, o: o, u: u, len: s1 - s0, angle: A, R: R, L: Lw, T: T, ba: null,
         mitred: [false, false], miterPlanes: [null, null] });
     });
-    return { fills: fills, corners: corners, wedges: wedges, info: info, T: T, R: R };
+    return { fills: fills, corners: corners, wedges: wedges, info: info, T: T, R: R, rounded: bends.filter(function (b) { return b.round; }).length };
   }
+  // lane rfIM: Convert to Sheet Metal's Reverse thickness (SolidWorks: the solid's faces become the inside of the
+  // sheet). The kept faces are thickened outward by T: a slab T thick on each, its outline grown across every edge to
+  // another kept face by T·tan(φ/2) (φ the dihedral turn; shrunk at a concave edge), so neighbouring slabs meet at
+  // the sharp offset corner, and not grown at an edge to a removed face (the open side stays flush). The grown solid
+  // is then converted as usual (shell T inward, rips, bends) with the bend edges moved to the offset corners
+  // (E + T(n1 + n2) / (1 + cos φ)) and the fixed face moved T out; the stored fixed face (the solid's face) is the
+  // inside face of the fixed wall afterwards. -> { slabs: [{ loop, plane, a, b }], holes: [same], bends, fixedFace }
+  // (plain data, both kernels)
+  function convertSMReverse(mesh, kept, bendE, T, P0, fixed, tol) {
+    var edges = bodyEdges(mesh).filter(function (e) { return e.faces.length === 2; }), slabs = [], holes = [];
+    function segDist(M, a, b) {
+      var ab = sub(b, a), L2 = dot(ab, ab), t = L2 > 0 ? Math.max(0, Math.min(1, dot(sub(M, a), ab) / L2)) : 0;
+      return len(sub(M, add(a, scale(ab, t))));
+    }
+    function grow(l, ds) {   // each edge moved ds[j] to its right ((dy, −dx): away from the region for outer and hole loops)
+      var n = l.length, lines = [];
+      for (var j = 0; j < n; j++) {
+        var p = l[j], q = l[(j + 1) % n], dx = q[0] - p[0], dy = q[1] - p[1], L = Math.hypot(dx, dy) || 1, m = [dy / L, -dx / L];
+        lines.push({ p: [p[0] + m[0] * ds[j], p[1] + m[1] * ds[j]], d: [dx / L, dy / L] });
+      }
+      return l.map(function (v, j) {
+        var A = lines[(j + n - 1) % n], B = lines[j], den = A.d[0] * B.d[1] - A.d[1] * B.d[0];
+        if (Math.abs(den) < 1e-9) return B.p.slice();
+        var t = ((B.p[0] - A.p[0]) * B.d[1] - (B.p[1] - A.p[1]) * B.d[0]) / den;
+        return [A.p[0] + A.d[0] * t, A.p[1] + A.d[1] * t];
+      });
+    }
+    Object.keys(kept).forEach(function (k) {
+      var i = +k, o = faceOutline(mesh, i), nf = mesh.faces[i].normal, sg = dot(o.plane.n, nf) > 0 ? 1 : -1;
+      o.loops.forEach(function (l) {
+        var ds = l.map(function (p, j) {
+          var q = l[(j + 1) % l.length], M = scale(add(to3D(o.plane, p[0], p[1]), to3D(o.plane, q[0], q[1])), 0.5);
+          var e = edges.filter(function (x) { return (x.faces[0] === i || x.faces[1] === i) && segDist(M, x.a, x.b) < 1e-6 * (1 + len(M)); })[0];
+          if (!e) return 0;
+          var jf = e.faces[0] === i ? e.faces[1] : e.faces[0];
+          if (!kept[jf]) return 0;
+          var d = T * Math.tan(Math.acos(Math.max(-1, Math.min(1, dot(e.normals[0], e.normals[1])))) / 2);
+          return e.convex === false ? -d : d;
+        });
+        var g = grow(l, ds), t = { loop: signedArea(g) < 0 ? g.slice().reverse() : g, plane: o.plane, a: sg > 0 ? 0 : -T, b: sg > 0 ? T : 0 };
+        (signedArea(l) > 0 ? slabs : holes).push(t);
+      });
+    });
+    var bends = bendE.map(function (e) {
+      var n1 = e.normals[0], n2 = e.normals[1];
+      return add(e.mid, scale(add(n1, n2), T / (1 + dot(n1, n2))));
+    });
+    return { slabs: slabs, holes: holes, bends: bends, fixedFace: add(P0, scale(mesh.faces[fixed].normal, T)) };
+  }
+  // the Convert feature as it runs on the grown solid of a Reverse thickness (both kernels)
+  function convertSMReversed(f, rv) { return Object.assign({}, f, { reverse: false, fixedFace: rv.fixedFace, bendEdges: rv.bends, ripEdges: null }); }
   // convertSMPlan(f, model, { body }) -> { removed: [[x, y, z]] (a point inside each face the shell removes), rips:
   // [{ at }], bends: [[x, y, z]] (the bend edges' mid points), T }: Convert to Sheet Metal's steps as plain data
   function convertSMPlan(f, model, ctx) {
@@ -5215,7 +5313,7 @@
     var bendE = f.bendEdges.map(function (s) {
       var at = Array.isArray(s) ? s : s.at, hit = resolveEdges([{ at: at, chain: false }], sharp, tol)[0];
       if (!hit) {   // lane rfIH: a point on a rounded bend joins its two walls (its facets are kept, never shelled)
-        if (!round) round = ibRoundBends(body, mesh, T, model.units);
+        if (!round) round = ibRoundBends(body, mesh, T, model.units).concat(ibSolidRounds(body, mesh, T, model.units));   // rfIM: a solid's fillets (shelled into bends)
         var rb = round.filter(function (q) { return ibNearRound(q, at, tol); })[0];
         if (rb) { Object.keys(rb.faces).forEach(function (k) { facets[k] = true; }); return { faces: [rb.i1, rb.i2], mid: at.slice(), round: true }; }
       }
@@ -5248,6 +5346,11 @@
     try { wall = sheetThicknessAt(body, P0, model.units); } catch (e) { wall = null; }
     var thin = wall != null && Math.abs(wall - T) <= pr;
     if (!thin && wall != null && wall < 2 * T + pr) throw new Error(what + ': the part is ' + bcNum(wall) + ' thick at the fixed face: set the thickness to ' + bcNum(wall) + ' to convert its walls as they are (or below ' + bcNum(wall / 2) + ' to shell a solid).');
+    if (f.reverse) {   // lane rfIM: Reverse thickness: the sheet goes outside the kept faces
+      if (thin) throw new Error(what + ': Reverse thickness is for a solid; this part is already ' + bcNum(T) + ' thick at the fixed face.');
+      if (Object.keys(facets).length || bendE.some(function (e) { return e.round; })) throw new Error(what + ': Reverse thickness works on sharp bend edges only (not on rounded edges).');
+      return { reverse: convertSMReverse(mesh, kept, bendE, T, P0, fixed, tol), T: T, thin: false };
+    }
     function pairOf(e) { return Math.min(e.faces[0], e.faces[1]) + '|' + Math.max(e.faces[0], e.faces[1]); }
     var bendPairs = {}, rips = [];
     bendE.forEach(function (e) { bendPairs[pairOf(e)] = true; });
@@ -5334,22 +5437,36 @@
     if (f.type === 'convertSM') {
       var plan = convertSMPlan(f, model, ctx), gap = ibRipGap(f, model);
       if (!(gap > 0) || !isFinite(gap)) throw new Error('Convert to Sheet Metal: the rip gap must be a positive number.');
+      if (plan.reverse) {   // lane rfIM: Reverse thickness: thicken outward, then convert the grown solid
+        var rv = plan.reverse;
+        body = body.union(unionAll(rv.slabs.map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id); })));
+        if (rv.holes.length) body = body.subtract(unionAll(rv.holes.map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id); })));
+        plan = convertSMPlan(convertSMReversed(f, rv), model, { body: body });
+      }
       if (!plan.thin) body = _.buildShell({ thickness: plan.T, faces: plan.removed.map(function (p) { return { at: p }; }) }, { body: body, units: model.units || 'mm' }).body;   // lane rfIE: thin walls stay
       if (plan.rips.length) body = body.subtract(buildRip({ id: f.id, edges: plan.rips, gap: gap, direction: 'both' }, model, { body: body }));
       g = convertSMInsert(f, plan);
     }
     if (model.noBends) return { body: body, info: [], tool: null };   // No Bends: the part as it was before its bends were inserted
     var lay = insertBendsLayout(g, model, { body: body });
-    if (!lay.wedges.length) return { body: body, info: lay.info, tool: null, bends: lay.info.length };   // lane rfIH: every bend was already rounded
+    if (!lay.wedges.length) return { body: body, info: lay.info, tool: null, bends: lay.info.length, rounded: lay.rounded };   // lane rfIH: every bend was already rounded
     var cut = unionAll(lay.fills.concat(lay.corners).map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id); }));
     var put = unionAll(lay.wedges.map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id, bendCv(t.loop, [0, 0], [t.R, t.RT])); }));
-    return { body: body.subtract(cut).union(put), info: lay.info, tool: put, bends: lay.info.length };
+    return { body: body.subtract(cut).union(put), info: lay.info, tool: put, bends: lay.info.length, rounded: lay.rounded };
   }
   // insertBendsPreview(f, model, body) -> { body: the bends (Insert Bends) or the converted part (Convert), bends: count }
   // for the PropertyManagers' preview (model carries the sheet the PM would write)
   function insertBendsPreview(f, model, body) {
     var r = buildInsertBends(f, model, { body: body });
-    return { body: f.type === 'convertSM' ? r.body : r.tool, bends: r.info.length };
+    return { body: f.type === 'convertSM' ? r.body : r.tool, bends: r.info.length, rounded: r.rounded || 0 };
+  }
+  // lane rfIM: the rounded bend under a point the user clicked (a bend already rounded, or a solid's fillet that
+  // Convert shells into one): { mid (a point on its outside face, as Collect stores it), R, RT, A } or null
+  function insertBendsRoundAt(body, P, T, units) {
+    if (!body || !body.polygons || !body.polygons.length || !P || !(T > 0)) return null;
+    var mesh = meshFromBody(coplanarBody(body)), tol = units === 'in' ? 0.01 : 0.25, hit = null;
+    ibRoundBends(body, mesh, T, units).concat(ibSolidRounds(body, mesh, T, units)).forEach(function (rb) { if (!hit && ibNearRound(rb, P, tol)) hit = rb; });
+    return hit && { mid: hit.mid.slice(), R: hit.R, RT: hit.RT, A: hit.A, solid: !!hit.solid };
   }
 
   // ------------------------------------------------------------------ Base Flange from an open profile (lane open-base)
@@ -5515,7 +5632,7 @@
   K.unfoldStateAt = unfoldStateAt; K.unfoldStripFrame = ufStripFrame; K.unfoldWedgeSpec = ufWedgeSpec; _.mCompose = mCompose; _.mInv = mInv;   // lane DB2 (OpenCascade)
   K.unfoldCells = ufCells; K.unfoldLayers = ufLayers;   // lane DJ (OpenCascade folds added material / blind cuts with them)
   K.miterFlangeStages = miterFlangeStages; K.miterTail = miterTail; K.MITER_FLANGE_POSITIONS = MITER_FLANGE_POSITIONS.slice(); _.buildMiterFlange = buildMiterFlange;   // lane DL
-  K.insertBendsLayout = insertBendsLayout; K.convertSMPlan = convertSMPlan; K.sheetThicknessAt = sheetThicknessAt; K.INSERT_BENDS_RELIEFS = IB_RELIEFS.slice(); K.convertSMInsert = convertSMInsert; K.convertSMCollect = convertSMCollect; K.convertSMRipGap = ibRipGap; K.insertBendsPreview = insertBendsPreview; _.buildInsertBends = buildInsertBends;   // lane DQ
+  K.insertBendsLayout = insertBendsLayout; K.convertSMPlan = convertSMPlan; K.sheetThicknessAt = sheetThicknessAt; K.INSERT_BENDS_RELIEFS = IB_RELIEFS.slice(); K.convertSMInsert = convertSMInsert; K.convertSMReversed = convertSMReversed; K.insertBendsRoundAt = insertBendsRoundAt; K.convertSMCollect = convertSMCollect; K.convertSMRipGap = ibRipGap; K.insertBendsPreview = insertBendsPreview; _.buildInsertBends = buildInsertBends;   // lane DQ
   K.insertBendsRounded = ibRoundBends;   // lane rfIH: ibRoundBends(body, mesh, T, units): the rounded bends a part already has
 
   // ------------------------------------------------------------------ Forming Tool (lane forming, rfHI)

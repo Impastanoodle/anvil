@@ -4477,6 +4477,8 @@ var SketchSolver = (function () {
       if (dot(t2, sb.dir) > -(1 - 1e-6)) return;
       var d1 = a1 / D2R, d2 = a2 / D2R, arc = ccw ? { a0: d1, a1: d1 + normDeg(d2 - d1) } : { a0: d2, a1: d2 + normDeg(d1 - d2) };
       if (arc.a1 - arc.a0 < 1e-6 || arc.a1 - arc.a0 > 360 - 1e-6) return;
+      // rfIQ: on a spline carried on past its end the fillet is a true corner round (under 180°), never a loop back
+      if (spec.ext && arc.a1 - arc.a0 >= 180 - 1e-6) return;
       // nearest the corner (or the clicks); of two fillets as near (a circle can be left either way) the shorter arc
       var s = (corner ? len(sub(T1, P)) + len(sub(T2, P)) : len(sub(T1, spec.uvi)) + len(sub(T2, spec.uvj))) + (arc.a1 - arc.a0) * 1e-7 * Math.max(1, r);
       if (s < bs) { bs = s; best = { C: C, sa: sa, sb: sb, ccw: ccw, arc: { t: 'arc', cx: C[0], cy: C[1], r: r, a0: arc.a0, a1: arc.a1 } }; }
@@ -4624,10 +4626,12 @@ var SketchSolver = (function () {
     if (!pl && !corner && (splineOpen(A) || splineOpen(B))) {
       // rfAX: SolidWorks extends the spline too when the line misses it (its extension does not reach the spline): the
       // spline's free ends are carried on (its end span's own curve, a style spline's own polynomial) and the fillet
-      // may touch the carried-on part. (A line that reaches the spline with no room for the radius stays refused.)
+      // may touch the carried-on part. rfIQ: also when the line (or an arc / circle) reaches the spline but the radius
+      // has no room on the spline itself (QUEUE 2026-10-12d): refused only when no tangent arc of r fits either way.
       var spx = splineOpen(A) ? A : B, spi = spx === A ? spec.i : spec.j, oth = spx === A ? B : A;
       var ext = { lo: spx.conic == null && !endJoined(sketch, spi + '.p1'), hi: spx.conic == null && !endJoined(sketch, spi + '.p2') };
-      if (oth.t === 'line' && !lineMeetsFree(oth, spx) && (ext.lo || ext.hi)) pl = filletPlan(E, { i: spec.i, uvi: spec.uvi, j: spec.j, uvj: spec.uvj, ext: ext }, r);
+      var triedExt = ext.lo || ext.hi;
+      if (triedExt) pl = filletPlan(E, { i: spec.i, uvi: spec.uvi, j: spec.j, uvj: spec.uvj, ext: ext }, r);
     }
     if (!pl) {
       if (corner && A.t === 'line' && B.t === 'line') {
@@ -4637,9 +4641,9 @@ var SketchSolver = (function () {
       // lane C: a line and a spline that do not meet. The line is extended (or cut back) to the fillet as SolidWorks does
       // (freeFilletPlan); what cannot be done is extending the spline, so say which it is
       if (!corner && (splineOpen(A) || splineOpen(B))) {
-        var sp = splineOpen(A) ? A : B, other = sp === A ? B : A;
-        if (other.t === 'line' && !lineMeetsFree(other, sp)) return { ok: false, error: 'No fillet of R' + fmtL(r) + ' fits between the line and the spline, even with the line extended and the spline carried on past its free ends: try another radius, or move the line.' };
-        return { ok: false, error: 'No fillet of R' + fmtL(r) + ' fits between the ' + other.t + ' and the spline' + (other.t === 'line' ? ' (the line is extended to it; the spline is not extended past its ends)' : '') + ': try a smaller radius.' };
+        var sp = splineOpen(A) ? A : B, other = sp === A ? B : A, ow = other.t === 'line' ? 'line' : other.t === 'arc' ? 'arc' : 'circle';
+        if (triedExt) return { ok: false, error: 'No fillet of R' + fmtL(r) + ' fits between the ' + ow + ' and the spline, even with the ' + ow + (ow === 'circle' ? '' : ' extended') + ' and the spline carried on past its free ends: try a smaller radius, or move the ' + ow + '.' };
+        return { ok: false, error: 'No fillet of R' + fmtL(r) + ' fits between the ' + ow + ' and the spline (its ends are joined to other geometry, so the spline is not carried on past them): try a smaller radius.' };
       }
       return { ok: false, error: corner ? 'Radius too large: the fillet would be longer than the entities.' : 'No fillet of that radius fits between those entities.' };
     }

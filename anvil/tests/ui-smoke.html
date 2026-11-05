@@ -385,6 +385,7 @@
     'smoke/rfDR.js',
     'smoke/rfDQ.js',
     'smoke/rfIE.js',
+    'smoke/rfIM.js',
     'smoke/rfFC.js',
     'smoke/rfDW.js',
     'smoke/rfDX.js',
@@ -437,8 +438,10 @@
     'smoke/rfIG.js',
     'smoke/rfIL.js',
     'smoke/rfIK.js',
+    'smoke/rfIP.js',
     'smoke/rfIJ.js',
     'smoke/rfII.js',
+    'smoke/rfIQ.js',
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'ui-smoke.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'ui-smoke.groups.js', error: e }); }

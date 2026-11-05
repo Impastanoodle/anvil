@@ -1404,6 +1404,7 @@
     if (opts.ripEdges && opts.ripEdges.length) f.ripEdges = opts.ripEdges.map(function (e) { return ibPt(Array.isArray(e) ? e : e.at, 'convertSheetMetal'); });
     f.gap = opts.gap != null ? num(opts.gap) : K.ripDefaultGap(this.model);
     ibRelief(f, opts);
+    if (opts.reverse) f.reverse = true;   // lane rfIM: Reverse thickness (the sheet outside the kept faces)
     if (opts.name) f.name = opts.name;
     this._add(f);
     return this;
@@ -1953,6 +1954,7 @@
           if (f.type === 'convertSM' && f.ripEdges && f.ripEdges.length) ibo.ripEdges = f.ripEdges.map(ibr);
           if (f.type === 'convertSM' && f.gap != null) ibo.gap = numOut(f.gap);
           if (f.autoRelief && f.autoRelief !== 'rect') ibo.autoRelief = f.autoRelief;
+          if (f.type === 'convertSM' && f.reverse) ibo.reverse = true;
           ibo.name = f.name;
           if (f.type === 'insertBends') out.push('var ' + v + ' = p.insertBends(' + JSON.stringify(ibr(f.fixedFace)) + ', ' + optsStr(ibo) + ').last();');
           else out.push('var ' + v + ' = p.convertSheetMetal(' + JSON.stringify(ibr(f.fixedFace)) + ', ' + JSON.stringify((f.bendEdges || []).map(ibr)) + ', ' + optsStr(ibo) + ').last();');

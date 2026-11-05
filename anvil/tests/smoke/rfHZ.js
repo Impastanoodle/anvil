@@ -112,6 +112,9 @@
       // an imported STEP opens as a new part with no path (Save asks where)
       b.opens.push({ path: 'C:\\Jobs\\HZ bracket.step', text: b.written['C:\\Jobs\\HZ bracket.step'] });
       UI.markClean(); rfHZKey('o'); await rfHZSettle(); await idle();
+      // with OpenCascade on (the desktop default) the STEP goes through its import first: wait for it (up to 20 s)
+      for (var wi = 0; wi < 200 && !UI.App.model.features.some(function (f) { return f.type === 'import'; }); wi++) await wait(100);
+      await idle();
       assert(UI.App.filePath == null && UI.App.model.features.some(function (f) { return f.type === 'import'; }), 'a STEP opens as a new part, no path ' + UI.App.filePath);
     } finally { delete W.anvilDesktop; if (UI.closeModal) UI.closeModal(); if (UI.closePM) UI.closePM(); }
     // a browser (no bridge): Anvil's own Open and Save dialogs, as before

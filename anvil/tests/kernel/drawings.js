@@ -412,7 +412,7 @@
       var r = drawingOf(PLATE), T = r.view('Top').view;
       assert(JSON.stringify(DW.detailScale([2, 1])) === '[4,1]' && JSON.stringify(DW.detailScale([1, 2])) === '[1,1]' && JSON.stringify(DW.detailScale([1, 5])) === '[1,2.5]', 'detail scales');
       var Dv = DW.addDetailView(r.doc, r.mesh, T.id, { c: [10, -10], r: 12, x: 330, y: 120 });
-      assert(Dv.label === 'A' && DW.scaleText(Dv.scale) === '4:1' && Dv.name === 'Detail View A (4:1)', Dv.name);
+      assert(Dv.label === 'A' && DW.scaleText(Dv.scale) === '4:1' && Dv.name === 'Detail View A (4 : 1)', Dv.name);
       var Dv2 = DW.addDetailView(r.doc, r.mesh, T.id, { c: [14, -10], r: 3, x: 330, y: 60, label: 'C' });
       recompute(r);
       var w = viewRec(r, Dv.id), w2 = viewRec(r, Dv2.id);

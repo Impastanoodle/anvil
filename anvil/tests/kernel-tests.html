@@ -452,8 +452,10 @@
     'kernel/rfDQ.js',
     'kernel/rfIE.js',
     'kernel/rfIH.js',
+    'kernel/rfIM.js',
     'kernel/rfIF.js',
     'kernel/rfII.js',
+    'kernel/rfIQ.js',
     'kernel/rfDU.js',
     'kernel/rfFC.js',
     'kernel/rfDW.js',
@@ -516,6 +518,7 @@
     'kernel/rfHV.js',
     'kernel/rfHU.js',
     'kernel/rfIJ.js',
+    'kernel/rfIN.js',
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'kernel-tests.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'kernel-tests.groups.js', error: e }); }

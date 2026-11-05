@@ -479,7 +479,7 @@
             // projected views keep the frame they were made with: no longer aligned with the turned parent
             dc.views.forEach(function (c) { if (c.parent === w.id && c.kind === 'projected') { c.parent = null; c.align = null; } });
           }
-          if (w.kind === 'detail' && val.scale !== 'sheet') w.name = 'Detail View ' + w.label + ' (' + val.scale + ')';
+          if (w.kind === 'detail' && val.scale !== 'sheet' && Drawing.parseScale(val.scale)) w.name = Drawing.detailName(w.label, Drawing.parseScale(val.scale));
           w.display = val.display; w.scale = val.scale === 'sheet' || val.scale === 'parent' ? null : Drawing.parseScale(val.scale);
           if (w.kind === 'section' && w.section) {   // (rfCX) Use parent scale: follows the parent
             var wp = val.scale === 'parent' ? Drawing.findView(dc, w.parent) : null;

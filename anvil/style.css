@@ -2005,3 +2005,7 @@ body.splitting-v #viewport { pointer-events: none; }
 #modal-body .recent-row.missing .recent-text, #modal-body .recent-row.missing .recent-ico { opacity: .5; }
 #modal-body .recent-row .recent-remove { flex: none; }
 #modal-body .open-hint { margin: 0 0 var(--sp-2); }
+
+/* rfIP: a dimmed menu row still runs (File ▸ a recent document that is not found: Remove / Keep) */
+.menu .mi.mi-dim { color: var(--c-disabled, var(--menu-disabled)); }
+.menu .mi.mi-dim .key { color: var(--c-disabled, var(--menu-disabled)); }

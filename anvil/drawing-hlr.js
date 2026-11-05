@@ -754,7 +754,7 @@
         if (hi - iv[1] > 1e-12 && hi - iv[1] <= reach && near(torusSil(ra, hi), ext.thHi)) out[1] = hi;
         return out;
       }
-      var tolS = diag * 3e-5 + 1e-9;
+      var tolS = Math.min(diag * 3e-5, 0.005) + 1e-9;   // (rfIN: at most 0.005 mm off the true outline, a large part too)
       rorder.forEach(function (key) {
         var ra = runs[key], eps = 2 * ra.dev, ext = torusExtent(ra);
         joinRuns(modMerge(ra.ivs, 1e-9), 1e-9).map(function (iv) { return extendRun(ra, iv, ext); }).forEach(function (iv) {
@@ -1080,6 +1080,8 @@
       if (!fa.arcs.length) return;
       res.lines[st] = fa.lines; res.arcs[st] = res.arcs[st].concat(fa.arcs); res.arcsAll = (res.arcsAll || []).concat(fa.arcs); fitted += fa.arcs.length;
     });
+    // (rfIN) facet chords on the circle of an exact arc, filling its gaps, are that arc
+    if (CV && !opts._keepGaps) ['visible', 'hidden'].forEach(function (st) { res.lines[st] = _.chordsToArcs(res.lines[st], res.arcs[st], res.circles[st]); });
     // tangent edges (opts.tangent 'visible' | 'font'): visible pieces only, joined, closed chains as circles; pieces
     // of true circles as exact circles, arcs and ellipses
     var tex = { circles: [], arcs: [], ellipses: [] };

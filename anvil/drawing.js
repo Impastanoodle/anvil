@@ -571,6 +571,65 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
     return lines;
   }
 
+  // chordsToArcs(lines, arcs, circles) (rfIN): short chords lying on the circle of a drawn exact arc (both ends on it,
+  // under 15° each) that fill a gap in it or carry it on are that arc: facet pieces where a curved face meets the
+  // next one (the Mug's handle seen from the right: its tube's end circle had 11.25° chords, one facet each, between
+  // its exact arcs, drawn twice). Chord runs that touch no arc of the circle stay lines. A circle closed all round
+  // becomes a full circle. -> lines left (arcs / circles changed in place)
+  function chordsToArcs(lines, arcs, circs) {
+    if (!lines.length || !arcs.length || lines.length > 20000) return lines;
+    var groups = [];
+    arcs.forEach(function (a) {
+      var g = null;
+      for (var i = 0; i < groups.length && !g; i++) { var q = groups[i]; if (Math.abs(q.r - a.r) <= 1e-7 * (1 + a.r) && Math.hypot(q.c[0] - a.c[0], q.c[1] - a.c[1]) <= 1e-7 * (1 + a.r)) g = q; }
+      if (!g) { g = { c: a.c, r: a.r, arcs: [], chords: [] }; groups.push(g); }
+      g.arcs.push(a);
+    });
+    var used = {}, D2R = Math.PI / 180;
+    function ang(p, g) { var t = Math.atan2(p[1] - g.c[1], p[0] - g.c[0]) / D2R; return t < 0 ? t + 360 : t; }
+    lines.forEach(function (l, li) {
+      groups.forEach(function (g) {
+        if (used[li] != null) return;
+        var tol = 3e-5 * g.r + 1e-6, A = [l[0], l[1]], B = [l[2], l[3]];
+        if (Math.abs(Math.hypot(A[0] - g.c[0], A[1] - g.c[1]) - g.r) > tol || Math.abs(Math.hypot(B[0] - g.c[0], B[1] - g.c[1]) - g.r) > tol) return;
+        var t0 = ang(A, g), t1 = ang(B, g), d = t1 - t0;
+        if (d > 180) d -= 360; else if (d < -180) d += 360;
+        if (Math.abs(d) > 15 || Math.abs(d) < 1e-9) return;
+        var lo = d > 0 ? t0 : t0 + d;
+        g.chords.push({ lo: lo, hi: lo + Math.abs(d), li: li });
+      });
+    });
+    var newArcs = [], dropArc = [], any = false;
+    groups.forEach(function (g) {
+      if (!g.chords.length) return;
+      var gap = 1e-3, items = [];
+      g.arcs.forEach(function (a) { var lo = ((a.a0 % 360) + 360) % 360, len = a.a1 - a.a0; items.push({ lo: lo, hi: lo + len, arc: a }); });
+      g.chords.forEach(function (c) { var lo = ((c.lo % 360) + 360) % 360; items.push({ lo: lo, hi: lo + (c.hi - c.lo), li: c.li }); });
+      items.sort(function (x, y) { return x.lo - y.lo; });
+      // runs on the circle (an item past 360 wraps onto the first run)
+      var runs = [];
+      items.forEach(function (it) {
+        var r = runs[runs.length - 1];
+        if (r && it.lo <= r.hi + gap) { r.hi = Math.max(r.hi, it.hi); r.items.push(it); } else runs.push({ lo: it.lo, hi: it.hi, items: [it] });
+      });
+      if (runs.length > 1) { var f = runs[0], l = runs[runs.length - 1]; if (l.hi - 360 >= f.lo - gap) { f.lo = l.lo - 360; f.hi = Math.max(f.hi, l.hi - 360); f.items = f.items.concat(l.items); runs.pop(); } }
+      runs.forEach(function (r) {
+        var arcsIn = r.items.filter(function (it) { return it.arc; }), chordsIn = r.items.filter(function (it) { return it.li != null; });
+        if (!arcsIn.length || !chordsIn.length) return;
+        any = true;
+        chordsIn.forEach(function (it) { used[it.li] = 1; });
+        arcsIn.forEach(function (it) { dropArc.push(it.arc); });
+        var base = arcsIn[0].arc, full = r.hi - r.lo >= 360 - gap;
+        if (full && circs) circs.push({ c: base.c, r: base.r, body: base.body, exact: true });
+        else newArcs.push(Object.assign({}, base, { a0: r.lo, a1: Math.min(r.hi, r.lo + 360) }));
+      });
+    });
+    if (!any) return lines;
+    var keep = arcs.filter(function (a) { return dropArc.indexOf(a) < 0; });
+    arcs.length = 0; keep.concat(newArcs).forEach(function (a) { arcs.push(a); });
+    return lines.filter(function (l, i) { return !used[i]; });
+  }
+
   // joinCollinear(lines, G, diag) (r11/hatch11): pieces of one body on one straight line (direction within 1e-6 rad,
   // offset within diag · 1e-6) that overlap or leave a gap under G are one line. mergeCollinear joins exactly touching
   // pieces only; what a cut cylinder's facets leave on OpenCascade (a section's cap edge in three pieces 0.002 mm
@@ -636,5 +695,5 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
   D.projectedFrame = projectedFrame; D.sectionFrame = sectionFrame;
   D.meshEdges = meshEdges; D.pairOpenEdges = pairOpenEdges; D.joinCollinear = joinCollinear;
   _.TWO_PI = TWO_PI; _.ORTHO = ORTHO; _.DIRS = DIRS; _.frameKey = frameKey; _.COS_SMOOTH = COS_SMOOTH; _.COS_CREASE = COS_CREASE;
-  _.meshDiag = meshDiag; _.closeEnds = closeEnds; _.closeFreeEnds = closeFreeEnds; _.closeSmallGaps = closeSmallGaps; _.weldEnds = weldEnds;
+  _.meshDiag = meshDiag; _.closeEnds = closeEnds; _.closeFreeEnds = closeFreeEnds; _.closeSmallGaps = closeSmallGaps; _.weldEnds = weldEnds; _.chordsToArcs = chordsToArcs;
 })(Drawing, Drawing._);

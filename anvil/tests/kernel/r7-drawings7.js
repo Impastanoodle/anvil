@@ -31,7 +31,7 @@
         var par = i % 2 ? T : F, dv = DW.addDetailView(r.doc, r.mesh, par.id, { c: [10 - 4 * i, -5], r: [6, 8, 5, 14, 6, 14][i], scale: i < 3 ? [10, 1] : null, fit: true });
         if (dv.offSheet) off++;
         assert(DW.scaleValue(dv.scale) > DW.scaleValue(par.scale || r.doc.sheet.scale || [1, 1]) + 1e-9, dv.name + ' larger than its parent');
-        assert(dv.name.indexOf('(' + DW.scaleText(dv.scale) + ')') > 0, 'name carries the scale: ' + dv.name);
+        assert(dv.name === DW.detailName(dv.label, dv.scale), 'name carries the scale (Detail View A (4 : 1), rfIN): ' + dv.name);
         out.push(dv.label + DW.scaleText(dv.scale) + (dv.offSheet ? '!' : ''));
       }
       var boxes = noOverlap(r, ['detail']);

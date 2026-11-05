@@ -75,7 +75,7 @@
     var strip = $('tp-strip');
     strip.innerHTML = '';
     TP.forEach(function (t) {
-      var b = el('button', { html: Icons(t[1] === 'appearances' ? 'appearance' : t[1], 20), title: t[2], onclick: function () { if (tpCurrent === t[0]) closeTaskPane(); else openTaskPane(t[0]); } });
+      var b = el('button', { html: Icons(t[1] === 'appearances' ? 'appearance' : t[1], 16), title: t[2], onclick: function () { if (tpCurrent === t[0]) closeTaskPane(); else openTaskPane(t[0]); } });
       b.dataset.id = t[0];
       strip.appendChild(b);
     });
@@ -85,7 +85,7 @@
     var def = TP.filter(function (t) { return t[0] === id; })[0];
     $('tp-panel').hidden = false;
     $('tp-title').innerHTML = '';
-    $('tp-title').appendChild(el('span', { html: Icons(def[1] === 'appearances' ? 'appearance' : def[1], 18) + ' ' + def[2] }));
+    $('tp-title').appendChild(el('span', { html: Icons(def[1] === 'appearances' ? 'appearance' : def[1], 16) + ' ' + def[2] }));
     $('tp-title').appendChild(el('button', { text: '✕', title: 'Close', onclick: closeTaskPane }));
     Array.prototype.forEach.call($('tp-strip').children, function (b) { b.classList.toggle('active', b.dataset.id === id); });
     var body = $('tp-body');
@@ -1429,7 +1429,7 @@
     if (l.length) {
       file.items.push({ sep: true, recent: true });
       l.forEach(function (x, i) {
-        file.items.push({ label: (i + 1) + '  ' + recentLabel(x) + (x.missing ? ' (not found)' : ''), key: x.path ? shortFolder(x.folder) : '', disabled: !!x.missing, recent: true,
+        file.items.push({ label: (i + 1) + '  ' + recentLabel(x) + (x.missing ? ' (not found)' : ''), key: x.path ? shortFolder(x.folder) : '', dimmed: !!x.missing, recent: true,   // rfIP: greyed, a click offers Remove / Keep
           action: function () { recentOpen(x); } });
       });
     }

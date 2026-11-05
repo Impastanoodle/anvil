@@ -90,6 +90,9 @@
     try {
       b.opens.push(A, B, C);
       for (var i = 0; i < 3; i++) { UI.markClean(); rfIKKey('o'); await rfIKSettle(); await idle(); }
+      // with OpenCascade on (the desktop default) the third, a STEP, goes through its import first: wait for it (up to 20 s)
+      for (var wi0 = 0; wi0 < 200 && UI.App.importPath !== C; wi0++) await wait(100);
+      await idle();
       await UI.recentDocuments.list(true);
       var names = UI.recentDocuments.cached().map(function (x) { return x.name; });
       assert(names.join('|') === 'IK plate.step|IK B.anvil.json|IK A.anvil.json', 'list order ' + names.join('|'));
@@ -120,7 +123,7 @@
       await UI.recentDocuments.list(true);
       rows = rfIKFileMenu(); rfIKCloseMenus();
       var rowB = rows.filter(function (r) { return /IK B\.anvil\.json/.test(r.text); })[0];
-      assert(rowB && rowB.disabled && /not found/.test(rowB.text), 'B greyed in the menu: ' + (rowB && rowB.text));
+      assert(rowB && rowB.row.classList.contains('mi-dim') && /not found/.test(rowB.text), 'B greyed in the menu: ' + (rowB && rowB.text));
       UI.showRecentDialog(); await rfIKSettle();
       var dRows = D.querySelectorAll('#modal .recent-row'), miss = D.querySelectorAll('#modal .recent-row.missing');
       assert(dRows.length === 3 && miss.length === 1 && /IK B/.test(miss[0].textContent) && miss[0].querySelector('.recent-remove'), 'dialog rows ' + dRows.length + ' missing ' + miss.length);
@@ -189,6 +192,9 @@
       // a STEP import: a new part with no file; the first Save asks, in the STEP's folder with its name
       b.opens.push(S);
       UI.markClean(); rfIKKey('o'); await rfIKSettle(); await idle();
+      // with OpenCascade on (the desktop default) the STEP goes through its import first: wait for the part (up to 20 s)
+      for (var wi = 0; wi < 200 && UI.App.importPath !== S; wi++) await wait(100);
+      await idle();
       assert(UI.App.filePath == null && UI.App.importPath === S && UI.App.model.features.some(function (x) { return x.type === 'import'; }), 'STEP opened as a new part ' + UI.App.importPath);
       b.saves.push('C:\\Jobs\\IK\\Imports\\IK bracket.anvil.json');
       rfIKKey('s'); await rfIKSettle();

@@ -309,7 +309,7 @@
         if (key !== 'length' && key !== 'angle' && App.toolState && App.toolState.pts && App.toolState.pts.length) UI.cancelTool(true);
         if (key === 'construction' || key === 'midpoint') {
           var head = $('pm') && $('pm').querySelector('.pm-head');
-          if (head) head.innerHTML = Icons(LM.midpoint ? 'midline' : LM.construction ? 'centerline' : 'line', 20) + '<span>Insert Line</span>';
+          if (head) head.innerHTML = Icons(LM.midpoint ? 'midline' : LM.construction ? 'centerline' : 'line', 24) + '<span>Insert Line</span>';
           UI.refreshRibbon();
         }
         lineHint();

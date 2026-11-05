@@ -54,7 +54,7 @@
     assert(row && row.querySelector('.badge').textContent === 'A-A', 'tree row');
     return 'area ' + fmt(S.sectionArea) + ', ' + S.hatch + ' hatch lines';
   });
-  step('drawing views: Detail View - centre on a Top view hole, radius, place: Detail View B (2:1) with the hole at 2x; Undo removes it, Redo brings it back', async function () {
+  step('drawing views: Detail View - centre on a Top view hole, radius, place: Detail View B (2 : 1) with the hole at 2x; Undo removes it, Redo brings it back', async function () {
     ribbonButton('Detail View').click();
     assert(UI.drawing.state.tool === 'detail', 'detail tool');
     var T = dwView('Top'), c = [T.box[0] + 10, T.box[3] - 10], n = anvil.drawing.summary().views.length;
@@ -65,7 +65,7 @@
     sheetMouse('mousemove', [330, 120]);
     sheetMouse('mousedown', [330, 120]);
     var Dv = dwKind('detail')[0];
-    assert(Dv && Dv.label === 'B' && Dv.scale === '2:1' && Dv.name === 'Detail View B (2:1)' && Dv.parent === T.id, 'detail ' + JSON.stringify(Dv));
+    assert(Dv && Dv.label === 'B' && Dv.scale === '2:1' && Dv.name === 'Detail View B (2 : 1)' && Dv.parent === T.id, 'detail ' + JSON.stringify(Dv));
     // mouse events carry whole pixels, so the radius is 7 to within half a pixel
     near(Dv.extents[0], 14, 1.5, 'extents 2r'); near(Dv.box[2] - Dv.box[0], Dv.extents[0] * 2, 0.01, 'box at 2:1');
     assert(Dv.stats.visibleCircles === 1, JSON.stringify(Dv.stats));

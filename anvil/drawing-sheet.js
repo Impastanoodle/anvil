@@ -30,6 +30,8 @@
   function scaleText(s) { return s[0] + ':' + s[1]; }
   // The scale as SolidWorks writes it under a view label: 'SCALE 2 : 1' (spaces round the colon).
   function scaleLabel(s) { return 'SCALE ' + s[0] + ' : ' + s[1]; }
+  // (rfIN) a detail view's FeatureManager name as SolidWorks 2024 writes it: 'Detail View A (2 : 1)'
+  function detailName(label, s) { return 'Detail View ' + label + ' (' + s[0] + ' : ' + s[1] + ')'; }
   function parseScale(txt) {
     var m = /^\s*(\d+(?:\.\d+)?)\s*[:\/]\s*(\d+(?:\.\d+)?)\s*$/.exec(String(txt));
     return m && +m[1] > 0 && +m[2] > 0 ? [+m[1], +m[2]] : null;
@@ -381,12 +383,12 @@
     _.detailOpts(dt, opts);
     var label = opts.label || nextLabel(doc), sc = opts.scale ? (Array.isArray(opts.scale) ? opts.scale : parseScale(opts.scale)) : detailScale(par.scale || doc.sheet.scale || [1, 1]);
     var s = scaleValue(sc), g = GAP * paperK(doc.units), pe = viewExtents(doc, mesh, par), ps = viewScale(doc, par);
-    var v = addView(doc, par.orient, { kind: 'detail', name: 'Detail View ' + label + ' (' + scaleText(sc) + ')', label: label, parent: par.id, align: null,
+    var v = addView(doc, par.orient, { kind: 'detail', name: detailName(label, sc), label: label, parent: par.id, align: null,
       detail: dt, scale: sc, display: par.display,
       x: opts.x != null ? opts.x : par.x + pe.w * ps / 2 + g + _.detailHalf(dt)[0] * s, y: opts.y != null ? opts.y : par.y });
     labelOpt(doc, v, opts);
     if (opts.x == null && opts.y == null && mesh) (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, null);
-    if (v.scale !== sc) v.name = 'Detail View ' + label + ' (' + scaleText(v.scale) + ')';
+    if (v.scale !== sc) v.name = detailName(label, v.scale);
     doc.layout = 'manual';
     return v;
   }
@@ -2411,7 +2413,7 @@
   D.deleteTableRow = deleteTableRow; D.deleteTableCol = deleteTableCol; D.deleteTable = deleteTable; D.moveTable = moveTable; D.setTableProps = setTableProps; D.drawingFile = drawingFile; D.readDrawingFile = readDrawingFile;
   _.TABLE_TEXT = TABLE_TEXT;
 
-  D.FORMATS = FORMATS; D.SCALES = SCALES; D.ANSI_SCALES = ANSI_SCALES; D.scalesFor = scalesFor; D.scaleValue = scaleValue; D.scaleText = scaleText; D.scaleLabel = scaleLabel; D.parseScale = parseScale; D.sheetSize = sheetSize;
+  D.FORMATS = FORMATS; D.SCALES = SCALES; D.ANSI_SCALES = ANSI_SCALES; D.scalesFor = scalesFor; D.scaleValue = scaleValue; D.scaleText = scaleText; D.scaleLabel = scaleLabel; D.detailName = detailName; D.parseScale = parseScale; D.sheetSize = sheetSize;
   D.newDrawing = newDrawing; D.addView = addView; D.projectionKey = projectionKey; D.putProjection = putProjection; D.sectionJob = sectionJob; D.putSection = putSection;
   // isSheetMetal(model): a part with sheet-metal parameters and a Base Flange (Model View offers Flat pattern)
   D.isSheetMetal = function (model) { return !!(model && model.type !== 'assembly' && model.sheet && (model.features || []).some(function (f) { return f.sheetBase && !f.suppressed; })); };

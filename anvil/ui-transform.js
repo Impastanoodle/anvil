@@ -175,7 +175,8 @@
   }
 
   // ------------------------------------------------------------------ the engine
-  function refIndex(r) { var m = /^(\d+)(?:\.([a-z]+)(\d*))?$/.exec(String(r)); return m ? +m[1] : -1; }
+  // (rfIQ: also a side midpoint '3.e0.mid', SketchSolver.parseRef's s 'em')
+  function refIndex(r) { var m = /^(\d+)(?:\.([a-z]+)(\d*))?(?:\.mid)?$/.exec(String(r)); return m ? +m[1] : -1; }
   function blockInstances(f) { return K.blockInstances ? K.blockInstances(f) : []; }
   function uniqSel(f, idx) {
     var seen = {}, out = [];

@@ -1527,7 +1527,8 @@
     var m = el('div', { class: 'menu' + (withIcons ? ' mi-icons' : '') });
     items.forEach(function (it) {
       if (it.sep) { m.appendChild(el('div', { class: 'sep' })); return; }
-      var row = el('div', { class: 'mi' + (it.icon ? ' mi-has-ico' : '') + (it.disabled ? ' disabled' : '') });
+      // rfIP: `dimmed` greys a row that still runs (a recent document that is not found: the click offers Remove / Keep)
+      var row = el('div', { class: 'mi' + (it.icon ? ' mi-has-ico' : '') + (it.disabled ? ' disabled' : '') + (it.dimmed && !it.disabled ? ' mi-dim' : '') });
       row.appendChild(el('span', { class: 'chk', text: it.checked ? '✓' : '' }));
       if (it.icon) row.appendChild(el('span', { class: 'mi-ico', html: Icons(it.icon, 16) }));   // r12/chrome12: ribbon overflow rows
       row.appendChild(el('span', { text: it.label }));

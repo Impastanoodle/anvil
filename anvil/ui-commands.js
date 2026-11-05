@@ -3933,6 +3933,7 @@
     v0.bendEdges = existing && existing.bendEdges ? existing.bendEdges.map(function (p) { return p.slice(); }) : [];
     v0.gap = existing && existing.gap != null ? existing.gap : (ibLast.gap != null ? ibLast.gap : K.ripDefaultGap(App.model));
     v0.cornerRelief = !(existing && existing.autoRelief === 'none');
+    v0.reverse = !!(existing && existing.reverse);   // lane rfIM: Convert's Reverse thickness
     if (existing && existing.name) v0.name = existing.name;
     // Insert Bends: T is the part's, measured under the fixed face
     var measured = { at: null, T: null, err: null };
@@ -3955,6 +3956,7 @@
       var f = isConv ? { type: 'convertSM', fixedFace: v.fixedFace ? v.fixedFace.slice() : null, bendEdges: v.bendEdges.map(function (p) { return p.slice(); }), gap: +v.gap, sheetBase: true }
         : { type: 'insertBends', fixedFace: v.fixedFace ? v.fixedFace.slice() : null, sheetBase: true };
       if (!v.cornerRelief) f.autoRelief = 'none';
+      if (isConv && v.reverse) f.reverse = true;
       if (v.name) f.name = v.name;
       return f;
     }
@@ -3974,28 +3976,28 @@
         UI.updateHighlights();
       }
     }
-    var info = { bends: null, rips: null, err: null };
+    var info = { bends: null, rips: null, err: null, rounded: 0 };
     function preview() {
       lit();
       var v = pm.values || v0;
       UI.disposeGroup(UI.groups.preview);
-      info = { bends: null, rips: null, err: null };
+      info = { bends: null, rips: null, err: null, rounded: 0 };
       if (!v.fixedFace) { UI.setStatus('Click the fixed face' + (isConv ? ', then the edges that become bends.' : ' (a flat face of the part that stays put in the flat).')); renderInfo(); return; }
       if (isConv && !v.bendEdges.length) { UI.setStatus('Click the edges of the solid that become bends.'); renderInfo(); return; }
       if (!isConv && thickness(v) == null) { info.err = measured.err; UI.setStatus(title + ': ' + measured.err); renderInfo(); return; }
       try {
         var m = modelOf(v), f = featOf(v);
-        if (isConv) info.rips = K.convertSMPlan(f, m, { body: baseBody() }).rips.length;
+        if (isConv) { var cpl = K.convertSMPlan(f, m, { body: baseBody() }); info.rips = cpl.rips ? cpl.rips.length : null; }   // rfIM: a Reverse plan rips after thickening
         var r = K.insertBendsPreview(f, m, baseBody());
-        info.bends = r.bends;
+        info.bends = r.bends; info.rounded = r.rounded || 0;
         if (r.body && r.body.polygons.length) addPreviewMesh(r.body, UI.mats.preview);
-        UI.setStatus(title + ': ' + r.bends + ' bend' + (r.bends === 1 ? '' : 's') + (isConv ? ', ' + info.rips + ' rip' + (info.rips === 1 ? '' : 's') : '') + ', T ' + UI.fmtNum(m.sheet.thickness, 4) + ', R ' + UI.fmtNum(m.sheet.bendRadius, 4) + '. Press Enter or ✓ to accept.');
+        UI.setStatus(title + ': ' + r.bends + ' bend' + (r.bends === 1 ? '' : 's') + (info.rounded ? ' (' + info.rounded + ' rounded, at their own radius)' : '') + (isConv ? ', ' + info.rips + ' rip' + (info.rips === 1 ? '' : 's') : '') + ', T ' + UI.fmtNum(m.sheet.thickness, 4) + ', R ' + UI.fmtNum(m.sheet.bendRadius, 4) + '. Press Enter or ✓ to accept.');
       } catch (e) { info.err = e.message; UI.setStatus('Preview: ' + e.message); }
       renderInfo();
     }
     var infoShown = '';
     function renderInfo() { var t = infoText(); if (t !== infoShown) { infoShown = t; renderPM(); } }
-    function infoText() { return info.err ? info.err : (info.bends == null ? '' : info.bends + ' bend' + (info.bends === 1 ? '' : 's') + (info.rips != null ? ', ' + info.rips + ' rip edge' + (info.rips === 1 ? '' : 's') + ' found' : '')); }
+    function infoText() { return info.err ? info.err : (info.bends == null ? '' : info.bends + ' bend' + (info.bends === 1 ? '' : 's') + (info.rounded ? ' (' + info.rounded + ' rounded)' : '') + (info.rips != null ? ', ' + info.rips + ' rip edge' + (info.rips === 1 ? '' : 's') + ' found' : '')); }
     // lane rfIE: the Bend Edges list's changes (a click, a removal, Clear, Collect All Bends) are PM steps Ctrl+Z / Ctrl+Y
     // take back (spec.pmUndo); Collect All Bends (SolidWorks 2024, under the list) fills it from K.convertSMCollect
     var hist = { undo: [], redo: [] };
@@ -4037,7 +4039,15 @@
         v.bendEdges.forEach(function (q, k) { if (K.pointSegmentDistance(q, pk.edge.a, pk.edge.b) <= 1e-4 * (1 + pk.edge.len)) i = k; });
         if (i >= 0) v.bendEdges.splice(i, 1); else v.bendEdges.push(ibRnd(pk.edge.mid));
       } else if (pk.kind === 'face' && pk.point) {
-        v.fixedFace = ibRnd(pk.point);
+        // lane rfIM: Convert: a click on a rounded bend face (a fillet the shell makes a bend, or a bend already
+        // rounded) adds that bend to Bend Edges, or takes it out again; any other face is the fixed face
+        var rb = isConv ? K.insertBendsRoundAt(baseBody(), pk.point, +v.thickness, units) : null;
+        if (rb) {
+          remember(v);
+          var j = -1;
+          v.bendEdges.forEach(function (q, k) { var o = K.insertBendsRoundAt(baseBody(), q, +v.thickness, units); if (o && K.pointSegmentDistance(o.mid, rb.mid, rb.mid) < 1e-6) j = k; });
+          if (j >= 0) v.bendEdges.splice(j, 1); else v.bendEdges.push(ibRnd(rb.mid));
+        } else v.fixedFace = ibRnd(pk.point);
       } else return false;
       renderPM(); preview();
       return true;
@@ -4050,14 +4060,16 @@
       onClear: function (v) { v.fixedFace = null; renderPM(); preview(); } };
     gs.forEach(function (g) {
       if (g.title !== 'Sheet Metal Parameters') return;
-      if (isConv) { g.fields = [fixedPick].concat(g.fields); return; }
+      if (isConv) { g.fields = [fixedPick].concat(g.fields, [{ type: 'check', label: 'Reverse thickness', key: 'reverse' }]); return; }   // rfIM
       g.title = 'Bend Parameters';
-      g.fields = [fixedPick, { type: 'static', label: 'Thickness  T', value: function (v) { var t = thickness(v); return t == null ? '(from the part at the fixed face)' : UI.fmtNum(t, 4) + ' (the part\'s)'; } }].concat(g.fields.filter(function (q) { return q.key !== 'thickness'; }));
+      g.fields = [fixedPick, { type: 'static', label: 'Thickness  T', value: function (v) { var t = thickness(v); return t == null ? '(from the part at the fixed face)' : UI.fmtNum(t, 4) + ' (the part\'s)'; } }].concat(g.fields.filter(function (q) { return q.key !== 'thickness'; }),
+        // lane rfIM: the bends already rounded in the part keep their own radius (the radius above is for sharp corners)
+        [{ type: 'static', label: 'Rounded bends', value: function () { return info.bends == null ? '–' : info.rounded ? info.rounded + ' found (their own radius)' : 'none'; } }]);
     });
     if (isConv) {
       var at = 1 + gs.map(function (g) { return g.title; }).indexOf('Sheet Metal Parameters');
       gs.splice(at, 0, { title: 'Bend Edges', fields: [
-        { type: 'pick', icon: 'bend', placeholder: 'Edges that become bends…',
+        { type: 'pick', icon: 'bend', placeholder: 'Edges or rounded faces that become bends…',
           value: function (v) { var n = v.bendEdges.length; return n ? n + ' edge' + (n === 1 ? '' : 's') : ''; },
           items: function (v) { return v.bendEdges.map(function (p, i) { return { label: 'Edge<' + (i + 1) + '>', at: p }; }); },
           onRemove: function (v, i) { remember(v); v.bendEdges.splice(i, 1); renderPM(); preview(); },
@@ -4074,8 +4086,8 @@
       title: existing ? existing.name : title, icon: kind, values: v0,
       onRollback: function () { base = null; measured.at = null; lit(); },
       message: isConv
-        ? 'Click the <b>fixed face</b>, then the <b>edges</b> of the solid that become bends (or <b>Collect All Bends</b> on a part with walls T thick). The faces not joined to the fixed face across them are removed (a shell of T inward; walls already T thick stay as they are), the edges between kept faces are ripped, and the bends are inserted.'
-        : 'Click the <b>fixed face</b> (a flat face that stays put in the flat). Every sharp corner between two walls of the part\'s thickness becomes a bend of this radius; rip closed corners first (Rip).',
+        ? 'Click the <b>fixed face</b>, then the <b>edges</b> (or rounded faces) of the solid that become bends (or <b>Collect All Bends</b> on a part with walls T thick). The faces not joined to the fixed face across them are removed (a shell of T inward; walls already T thick stay as they are), the edges between kept faces are ripped, and the bends are inserted.'
+        : 'Click the <b>fixed face</b> (a flat face that stays put in the flat). Every sharp corner between two walls of the part\'s thickness becomes a bend of this radius; bends already rounded keep their own radius; rip closed corners first (Rip).',
       command: isConv ? { faceList: [], edgeList: [], pickEdges: true, onPick: pick } : { faceList: [], onPick: pick },
       groups: gs, pmUndo: isConv ? pmUndo : null,
       onChange: function (v, key) {
