@@ -105,10 +105,13 @@ var UI = (function () {
     // (the sketch entity / model edge drawn dashed); no blue anywhere in the graphics area
     edge: new THREE.LineBasicMaterial({ color: 0xffffff }),
     // r14/viewui14: face highlights are a tint over the shaded face, not a repaint (rfBR: yellow for selected, orange for
-    // the pre-highlight), light enough that the face's shading (and its edges) still read through
+    // the pre-highlight), light enough that the face's shading (and its edges) still read through. rfHY: no slope factor
+    // (units only): a negative factor pulls a facet seen edge-on (a bore's wall at its left / right extreme) forward by
+    // its huge depth slope, so the tint streaked through the plate in front of it (the user's "blue lines tearing past
+    // the FOV"); the body's faces sit back by their slope (polygonOffsetFactor ≥ 1), so units alone keep the tint on top
     hover: new THREE.MeshBasicMaterial({ color: 0xff9a2e, transparent: true, opacity: 0.38,   // r5/select5: orange like edge / vertex / sketch pre-highlights (was light blue)
-      depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, side: THREE.DoubleSide }),
-    sel: new THREE.MeshBasicMaterial({ color: 0x7ec8ff, transparent: true, opacity: 0.45, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3, side: THREE.DoubleSide }),   // 2026-10-27 user: selected faces / solids light blue (rfBR yellow 0xffd400 stays for edges and sketch entities)
+      depthWrite: false, polygonOffset: true, polygonOffsetFactor: 0, polygonOffsetUnits: -2, side: THREE.DoubleSide }),
+    sel: new THREE.MeshBasicMaterial({ color: 0x7ec8ff, transparent: true, opacity: 0.45, depthWrite: false, polygonOffset: true, polygonOffsetFactor: 0, polygonOffsetUnits: -3, side: THREE.DoubleSide }),   // 2026-10-27 user: selected faces / solids light blue (rfBR yellow 0xffd400 stays for edges and sketch entities)
     preview: new THREE.MeshPhongMaterial({ color: 0xf2cf5b, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide }),
     previewCut: new THREE.MeshPhongMaterial({ color: 0xe8746a, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide }),
     // the sketch being edited is drawn on top of the body so it stays visible on hidden planes
@@ -187,10 +190,31 @@ var UI = (function () {
   // r14/viewui14: cheap edge darkening — faces that turn away from the viewer shade a little darker towards their
   // silhouette, so rounds, holes and bosses read with depth like SolidWorks' default appearance (one multiply in the
   // fragment shader; no extra pass, so orbit cost is unchanged).
-  mats.part.onBeforeCompile = function (sh) {
+  function edgeDarken(sh) {
     sh.fragmentShader = sh.fragmentShader.replace('#include <dithering_fragment>',
       'gl_FragColor.rgb *= mix(0.8, 1.0, smoothstep(0.04, 0.6, abs(normal.z)));\n#include <dithering_fragment>');
-  };
+  }
+  // rfHY: the body's faces sit back from their edge lines by their depth slope over the line's half width (an edge in an
+  // inside corner is not half buried by the face rising next to it), computed per vertex from the view-space normal
+  // (depth per pixel of a plane = worldPerPx × tan θ) with tan θ clamped at SLOPE.max, so a facet seen edge-on sinks a
+  // couple of pixels' worth, not "infinitely" as with glPolygonOffset's factor (see syncFatFrame). Orthographic only:
+  // NDC z moves by 2 D / (far − near) = −D · projectionMatrix[2][2]. A face turned away from the viewer (vertex normal)
+  // sinks twice the clamp, so it never wins over the front face at a silhouette (the light line along a flange's
+  // outline). extra (the crack filler: 1) sinks the filler's lines a further push behind their own faces: they fill a
+  // pinhole but no longer paint a 1-pixel line of one face's shade over its neighbour along every crease (the dark
+  // nicks on a bore's front rim).
+  var SLOPE = { on: true, max: 8 }, slopeU = { push: { value: 0 }, max: { value: 8 } };
+  function slopePatch(sh, extra) {
+    sh.uniforms.slopePush = slopeU.push; sh.uniforms.slopeMax = slopeU.max;
+    sh.vertexShader = 'uniform float slopePush;\nuniform float slopeMax;\n' + sh.vertexShader.replace('#include <project_vertex>', '#include <project_vertex>\n' +
+      '{ vec3 sn = normalMatrix * normal; float sl = length(sn.xy), sz = abs(sn.z); float st = ' + (extra || 0).toFixed(2) + ' + (sn.z < 0.0 ? 2.0 * slopeMax : sl > slopeMax * sz ? slopeMax : sl / max(sz, 1e-6));\n' +
+      '  gl_Position.z -= slopePush * st * projectionMatrix[2][2] * gl_Position.w; }');
+  }
+  mats.part.onBeforeCompile = function (sh) { edgeDarken(sh); slopePatch(sh); };
+  mats.part.customProgramCacheKey = function () { return 'anvil-part-hy'; };
+  mats.hlr.onBeforeCompile = function (sh) { slopePatch(sh); };
+  mats.hlr.customProgramCacheKey = function () { return 'anvil-hlr-hy'; };
+  mats.part.polygonOffsetFactor = 0; mats.hlr.polygonOffsetFactor = 0;
   mats.part.customProgramCacheKey = function () { return 'anvil-part-r14'; };
   // The materials exist before ui-app.js boots, so a stored dark theme is applied here as well (UI.setTheme repeats it).
   (function () {
@@ -724,15 +748,15 @@ var UI = (function () {
   //   crack filler: a boolean leaves T-junctions (a vertex of one facet on the edge of its neighbour); the rasterizer
   //     can leave single pixels between them unfilled, and on a thin plate the background shows through both faces as
   //     a sparkle. crackFill draws the body's triangle edges as 1-pixel lines in the same lit material after the
-  //     faces, without writing depth: on a face it lands on the face itself (same colour, the faces sit back by their
-  //     polygonOffset), behind a face it is hidden, in a pinhole it fills the pixel. Off in HLR / HLV / Wireframe and
+  //     faces, without writing depth, one slope push behind its own faces (rfHY slopePatch extra 1): on a face it is
+  //     hidden by the face itself, behind a face too, in a pinhole it fills the pixel. Off in HLR / HLV / Wireframe and
   //     in a section (where the inside of the body is seen, which the filler's front-facing light would stripe).
   //   normals: a smoothed normal that is not finite, has no length or points more than ~78° away from its facet is
   //     replaced by the facet's own (safeNormals), so no triangle shades black.
   //   section caps: SolidWorks' Section View shows the cut faces solid; the body is drawn twice more into the stencil
   //     (back faces +1, front faces -1, both clipped) and a plane on the section is drawn where the count is not zero.
   mats.partFill = new THREE.MeshPhongMaterial({ color: 0x8c8c8c, specular: 0x262626, shininess: 40, wireframe: true, depthWrite: false });
-  mats.partFill.onBeforeCompile = mats.part.onBeforeCompile;
+  mats.partFill.onBeforeCompile = function (sh) { edgeDarken(sh); slopePatch(sh, 1); };   // rfHY: one push behind its faces
   mats.partFill.customProgramCacheKey = function () { return 'anvil-part-fill-fo'; };
   var crackFill = null;
   // rfHG (panel seams): the filler's lines have no polygon offset, but the faces sit back by theirs, and on a big thin
@@ -1021,12 +1045,12 @@ var UI = (function () {
   var rvU = { direct: { value: 1.9 }, ambient: { value: 0.15 }, exposure: { value: 1.0 }, unit: { value: 1 }, bend: { value: new THREE.Vector3(1, 0, 0) } };
   function rvMaterial(vertex, wire) {
     var m = new THREE.MeshStandardMaterial({ color: 0x8c8c8c, metalness: 0.05, roughness: 0.42, side: THREE.DoubleSide,
-      polygonOffset: !wire, polygonOffsetFactor: 1, polygonOffsetUnits: 1, wireframe: !!wire, depthWrite: !wire, envMapIntensity: 1 });
+      polygonOffset: !wire, polygonOffsetFactor: 0, polygonOffsetUnits: 1, wireframe: !!wire, depthWrite: !wire, envMapIntensity: 1 });
     m.userData.rvPattern = { value: 0 };
     m.userData.realView = true;
     if (vertex) m.defines = { RV_VERTEX: '' };
     m.extensions = { derivatives: true };
-    m.onBeforeCompile = function (sh) { rvPatchShader.call(m, sh, vertex); };
+    m.onBeforeCompile = function (sh) { rvPatchShader.call(m, sh, vertex); slopePatch(sh, wire ? 1 : 0); };   // rfHY: slopePatch (see syncFatFrame); the filler one push further
     m.customProgramCacheKey = function () { return 'anvil-rv-hc' + (vertex ? '-v' : '') + (wire ? '-w' : ''); };
     return m;
   }
@@ -1322,6 +1346,9 @@ var UI = (function () {
       '  float dq = dot((q.xy / q.w - c.xy / c.w) * hr, nrm);',
       '  float ext = position.x * dq > 0.0 ? min(abs(dq), 4.0) : 0.0;',
       '  if (ext > 0.0) c.z = q.z / q.w * c.w;',
+      // rfHY: a few depth steps towards the viewer (1.5e-6 of the fitted depth range: far below any real gap between a
+      // line and a face in front of it), so a line lying on a face seen square-on wins the tie on every GPU
+      '  c.z -= 3e-6 * c.w;',
       '  vec2 off = nrm * position.x * (hw + ext) + dir * (atA ? -hw : hw);',
       '  c.xy += off / hr * c.w;',
       // rfHA: a line that runs square to the screen (a Normal To view, a sketch rectangle) is moved by under half a device
@@ -1522,8 +1549,14 @@ var UI = (function () {
     fatU.worldPerPx.value = (camera.right - camera.left) / Math.max(1, size.w);
     // the faces sit back by their slope over half an edge width, so an edge in an inside corner (a pocket floor, a boss
     // foot) is not half buried by the face that rises towards the viewer next to it (1 px was enough for 1-pixel lines)
+    // rfHY: no longer glPolygonOffset's factor (× the triangle's own depth slope): a facet seen edge-on (a round's or a
+    // bore's wall at its silhouette) has a near-infinite slope, so it sank far behind the surfaces it hides, and the
+    // back face of a flange, the far side of a bore or the background showed through at every silhouette and along a
+    // bore's front rim (light dotted lines and a sawtooth rim, Shaded with no edges, both engines). The same push is
+    // made in the vertex shader from the view-space normal (slopePush), clamped at SLOPE.max (8: ≈ 83°; at 2 the far rim of a washer tilted 3° lost half its line to the wall).
     var po = fatOn && fatOk ? 1 + Math.ceil(LINE_W.edge * renderer.getPixelRatio() * 2) / 4 : 1;
-    if (mats.part.polygonOffsetFactor !== po) { mats.part.polygonOffsetFactor = po; mats.hlr.polygonOffsetFactor = po; if (rv.mats) { rv.mats.part.polygonOffsetFactor = po; rv.mats.partV.polygonOffsetFactor = po; } }
+    slopeU.push.value = SLOPE.on ? po * fatU.worldPerPx.value : 0;
+    slopeU.max.value = SLOPE.max;
   }
   function lineMat(mat, w, extra) { mat.userData.lineWidth = w; if (extra) Object.keys(extra).forEach(function (k) { mat.userData[k] = extra[k]; }); return mat; }
   lineMat(mats.edge, LINE_W.edge, { hlv: true });
@@ -1613,6 +1646,17 @@ var UI = (function () {
       });
     }
     App.curves = asmE && asmE.curves ? asmE.curves : annotateCurveEdges(m, App.edges);   // r4/asm4: placed from the parts' curves
+    // rfHY: a smooth edge inside one picked face (the chord strips of an extruded spline, the rings of a revolved one,
+    // a sweep's facets: faceGroups) is a seam too, never drawn, picked or listed as a tangent edge
+    if (!asmE && App.mesh === m && m.faces.length && m.faces[0].polys) {
+      var G = null;
+      try { G = faceGroups(m); } catch (e) { G = null; }
+      if (G) App.edges.forEach(function (e) {
+        if (e.seam || !e.smooth || e.faces.length !== 2) return;
+        var g = G[e.faces[0]];
+        if (g && g.length > 1 && g.indexOf(e.faces[1]) >= 0) e.seam = true;
+      });
+    }
     return App.edges;
   }
 
@@ -1920,18 +1964,38 @@ var UI = (function () {
   // to the base mesh when nothing needs it (zoomed out). App.mesh, picking, exports, mass and the edges' topology stay
   // the kernel's: the drawn geometry maps each triangle back (zt.map → renderedTri), highlights are cut from it
   // (ztRangeGeometry), silhouettes of refined faces come from its sub-facets, and their rim lines drop the chord band.
-  // Spheres and tori are not refined yet. UI.zoomTess: { now, info, setLevel (0 off .. 1; the adaptive governor's
-  // hook), setBudget, enabled }.
+  // rfHY: spheres and tori too (projected along the ray from the centre / tube centre, k from the facets' measured gap). UI.zoomTess: { now, info, setLevel (0 off .. 1; the adaptive governor's
+  // hook), setBudget, enabled, deviation() (rfHY: per refined group, drawn vertices and facet middles off the surface, px) }.
   var ZT = { on: true, level: 1, budget: 400000, tolPx: 0.35, needPx: 0.5, maxK: 16, stillMs: 150 };
   function ztKey(x, y, z) { return Math.round(x * 1e4) + ',' + Math.round(y * 1e4) + ',' + Math.round(z * 1e4); }
-  function ztSurfKey(S) { function q(x) { return Math.round(x * 1e6); } return S.t + ':' + S.o.map(q) + ':' + S.d.map(q) + ':' + q(S.r) + ':' + q(S.k || 0); }
+  function ztSurfKey(S) { function q(x) { return Math.round(x * 1e6); } return S.t + ':' + S.o.map(q) + ':' + S.d.map(q) + ':' + q(S.r) + ':' + q(S.k || 0) + ':' + q(S.R || 0); }
   function ztRadiusAt(S, z) { return Math.abs(S.t === 'cone' ? S.r + (S.k || 0) * z : S.r); }
-  // p (3 numbers) moved onto S radially at its own axial coordinate -> [x, y, z]
+  // the surface's size (tolerances): a torus' outer radius, else the radius
+  function ztSize(S) { return S.t === 'tor' ? Math.abs(S.R || 0) + Math.abs(S.r) : ztRadiusAt(S, 0); }
+  // rfHY: the record kinds that are refined (sph / tor: fillet rounds on circular edges, spherical corners, revolved
+  // domes and springs' ends; cyl: also every sheet-metal bend)
+  function ztKind(S) { return !!(S && S.o && S.d && (S.t === 'cyl' || S.t === 'cone' || S.t === 'sph' || (S.t === 'tor' && S.r > 0))); }
+  // p (3 numbers) moved onto S -> [x, y, z]: a cylinder / cone radially at its own axial coordinate (a rim stays in its
+  // plane), a sphere along the ray from its centre, a torus along the ray from the tube centre nearest p
   function ztProj(S, x, y, z) {
-    var o = S.o, d = S.d, vx = x - o[0], vy = y - o[1], vz = z - o[2], h = vx * d[0] + vy * d[1] + vz * d[2];
+    var o = S.o, d = S.d, vx = x - o[0], vy = y - o[1], vz = z - o[2], s, l;
+    if (S.t === 'sph') {
+      l = Math.sqrt(vx * vx + vy * vy + vz * vz);
+      if (l < 1e-12) return [x, y, z];
+      s = Math.abs(S.r) / l;
+      return [o[0] + vx * s, o[1] + vy * s, o[2] + vz * s];
+    }
+    var h = vx * d[0] + vy * d[1] + vz * d[2];
     var rx = vx - d[0] * h, ry = vy - d[1] * h, rz = vz - d[2] * h, rl = Math.sqrt(rx * rx + ry * ry + rz * rz);
     if (rl < 1e-12) return [x, y, z];
-    var s = ztRadiusAt(S, h) / rl;
+    if (S.t === 'tor') {
+      var cR = (S.R || 0) / rl, cx = o[0] + rx * cR, cy = o[1] + ry * cR, cz = o[2] + rz * cR, wx = x - cx, wy = y - cy, wz = z - cz;
+      l = Math.sqrt(wx * wx + wy * wy + wz * wz);
+      if (l < 1e-12) return [x, y, z];
+      s = Math.abs(S.r) / l;
+      return [cx + wx * s, cy + wy * s, cz + wz * s];
+    }
+    s = ztRadiusAt(S, h) / rl;
     return [o[0] + d[0] * h + rx * s, o[1] + d[1] * h + ry * s, o[2] + d[2] * h + rz * s];
   }
   // per mesh, once: which triangles lie on which cylinder / cone, with each group's box, largest radius and the
@@ -1942,7 +2006,7 @@ var UI = (function () {
       var t = f.start;
       f.polys.forEach(function (p) {
         var n = p.vertices.length - 2, S = p.surf && p.surf.s, gi = -1;
-        if (S && (S.t === 'cyl' || S.t === 'cone') && !p.surf.fc && S.o && S.d) {
+        if (ztKind(S) && !p.surf.fc) {
           var key = ztSurfKey(S) + '|' + (f.body || 0);
           gi = byKey[key];
           if (gi == null) { gi = byKey[key] = gs.length; gs.push({ id: gi, S: S, tris: [], faces: {}, box: [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity], R: 0, theta: 0 }); }
@@ -1951,6 +2015,7 @@ var UI = (function () {
       });
     });
     gs.forEach(function (g) {
+      if (g.S.t === 'sph' || g.S.t === 'tor') { ztAnalyseRound(g, P, triG); return; }
       var S = g.S, d = S.d, e1 = Math.abs(d[0]) < 0.9 ? V.norm(V.cross(d, [1, 0, 0])) : V.norm(V.cross(d, [0, 1, 0])), e2 = V.cross(d, e1), keep = [];
       g.tris.forEach(function (t) {
         var a = [], ok = true;
@@ -1970,6 +2035,27 @@ var UI = (function () {
     });
     return { triG: triG, groups: gs.filter(function (g) { return g.tris.length && g.R > 0; }) };
   }
+  // rfHY: a sphere / torus group: box, size, and the largest gap between its facets and the surface (sag: edge middles
+  // and centroids projected onto the record), which sets k (the gap shrinks as 1 / k²)
+  function ztAnalyseRound(g, P, triG) {
+    var S = g.S, keep = [];
+    g.R = ztSize(S); g.sag = 0;
+    g.tris.forEach(function (t) {
+      var C = [], ok = true;
+      for (var c = 0; c < 3; c++) {
+        var o = t * 9 + c * 3, x = P[o], y = P[o + 1], z = P[o + 2], b = g.box;
+        if (x < b[0]) b[0] = x; if (y < b[1]) b[1] = y; if (z < b[2]) b[2] = z; if (x > b[3]) b[3] = x; if (y > b[4]) b[4] = y; if (z > b[5]) b[5] = z;
+        var q = ztProj(S, x, y, z);
+        if (Math.abs(q[0] - x) + Math.abs(q[1] - y) + Math.abs(q[2] - z) > 1e-4 * Math.max(1, g.R)) { ok = false; break; }   // a corner off the record: left as it is
+        C.push([x, y, z]);
+      }
+      if (!ok) { triG[t] = -1; return; }
+      keep.push(t);
+      var M = [V.scale(V.add(C[0], C[1]), 0.5), V.scale(V.add(C[1], C[2]), 0.5), V.scale(V.add(C[2], C[0]), 0.5), V.scale(V.add(V.add(C[0], C[1]), C[2]), 1 / 3)];
+      M.forEach(function (m) { var q = ztProj(S, m[0], m[1], m[2]), e = V.len(V.sub(q, m)); if (e > g.sag) g.sag = e; });
+    });
+    g.tris = keep;
+  }
   function ztEligible() {
     var m = App.mesh;
     return ZT.on && ZT.level > 0 && !!bodyMesh && !!m && m.triCount > 0 && !!m.faces && !!(m.faces[0] && m.faces[0].polys) &&
@@ -1981,12 +2067,13 @@ var UI = (function () {
     var m = App.mesh, A = m._zt || (m._zt = ztAnalyse(m)), s = cam.scale, tol = ZT.tolPx * s, need = ZT.needPx * s;
     var budget = ZT.budget * Math.max(0, Math.min(1, ZT.level)), cands = [], cx = size.w / 2, cy = size.h / 2;
     A.groups.forEach(function (g) {
-      if (g.R * (1 - Math.cos(g.theta / 2)) <= need) return;
+      var sag = g.sag != null ? g.sag : g.R * (1 - Math.cos(g.theta / 2));
+      if (sag <= need) return;
       var b = g.box, x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (var c = 0; c < 8; c++) { var q = worldToScreen([c & 1 ? b[3] : b[0], c & 2 ? b[4] : b[1], c & 4 ? b[5] : b[2]]); x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); y0 = Math.min(y0, q[1]); y1 = Math.max(y1, q[1]); }
       var w = Math.min(x1, size.w) - Math.max(x0, 0), h = Math.min(y1, size.h) - Math.max(y0, 0);
       if (!(w > 0 && h > 0)) return;   // off screen
-      var step = 2 * Math.acos(Math.max(-1, 1 - tol / g.R)), k = Math.min(ZT.maxK, Math.max(2, Math.ceil(g.theta / step - 1e-9)));
+      var step = 2 * Math.acos(Math.max(-1, 1 - tol / g.R)), k = Math.min(ZT.maxK, Math.max(2, g.sag != null ? Math.ceil(Math.sqrt(g.sag / tol) - 1e-9) : Math.ceil(g.theta / step - 1e-9)));
       cands.push({ g: g, k: k, area: w * h, dist: Math.hypot((x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy) });
     });
     cands.sort(function (a, b) { return b.area - a.area || a.dist - b.dist; });
@@ -2007,6 +2094,19 @@ var UI = (function () {
     plan.groups.forEach(function (g) { on[g.id] = g; Object.keys(g.faces).forEach(function (fi) { faceSet[fi] = 1; }); });
     function corner(t, c) { var o = t * 9 + c * 3; return [P[o], P[o + 1], P[o + 2]]; }
     function ck(p) { return ztKey(p[0], p[1], p[2]); }
+    // rfHY: a refined triangle's corners go onto its surface too (one place per vertex, shared by every triangle that
+    // uses it): a boolean leaves T-junction corners on a neighbour's chord (a wall's facet ending on a fillet's tangent
+    // ring sat up to the chord's sagitta inside the circle: a notch tens of pixels deep zoomed in); a corner already on
+    // the surface does not move
+    var moved = new Map();
+    function snap(p, S) {
+      var key = ck(p), q = moved.get(key);
+      if (q) return q;
+      q = ztProj(S, p[0], p[1], p[2]);
+      if (!(isFinite(q[0]) && isFinite(q[1]) && isFinite(q[2]))) q = p;
+      moved.set(key, q);
+      return q;
+    }
     // 1. split edges of the refined triangles: base edge key -> { a (key of the end the points start from), pts }
     var edges = new Map(), redges = [];
     plan.groups.forEach(function (g) {
@@ -2016,7 +2116,7 @@ var UI = (function () {
           var p = corner(t, e), q = corner(t, (e + 1) % 3), kp = ck(p), kq = ck(q), key = kp < kq ? kp + '|' + kq : kq + '|' + kp;
           if (edges.has(key)) continue;
           var a = kp < kq ? p : q, b = kp < kq ? q : p, pts = [];
-          for (var i = 0; i <= k; i++) { var u = i / k; pts.push(i === 0 ? a : i === k ? b : ztProj(g.S, a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u)); }
+          for (var i = 0; i <= k; i++) { var u = i / k; pts.push(i === 0 ? snap(a, g.S) : i === k ? snap(b, g.S) : ztProj(g.S, a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u)); }
           var en = { a: kp < kq ? kp : kq, pa: a, pb: b, pts: pts, g: g.id, S: g.S };
           edges.set(key, en); redges.push(en);
         }
@@ -2027,7 +2127,7 @@ var UI = (function () {
     // point lies on; such a point is moved onto the surface for every triangle that uses it (no crack), and a piece takes
     // the edge's points between its ends.
     var cell = 0, egrid = new Map(), eps = 0;
-    redges.forEach(function (e) { cell = Math.max(cell, V.len(V.sub(e.pb, e.pa))); eps = Math.max(eps, ztRadiusAt(e.S, 0)); });
+    redges.forEach(function (e) { cell = Math.max(cell, V.len(V.sub(e.pb, e.pa))); eps = Math.max(eps, ztSize(e.S)); });
     cell = cell || 1; eps = 2e-6 * Math.max(1, eps);
     function cellKey(x, y, z) { return Math.floor(x / cell) + ',' + Math.floor(y / cell) + ',' + Math.floor(z / cell); }
     redges.forEach(function (e, ei) {
@@ -2050,7 +2150,6 @@ var UI = (function () {
     var zbox = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
     plan.groups.forEach(function (g) { for (var i = 0; i < 3; i++) { zbox[i] = Math.min(zbox[i], g.box[i] - eps); zbox[i + 3] = Math.max(zbox[i + 3], g.box[i + 3] + eps); } });
     function inZbox(p) { return p[0] >= zbox[0] && p[0] <= zbox[3] && p[1] >= zbox[1] && p[1] <= zbox[4] && p[2] >= zbox[2] && p[2] <= zbox[5]; }
-    var moved = new Map();
     function place(p) {
       var key = ck(p), q = moved.get(key);
       if (q !== undefined) return q || p;
@@ -2096,6 +2195,7 @@ var UI = (function () {
     function triN(a, b, c) { return V.norm(V.cross(V.sub(b, a), V.sub(c, a))); }
     // rfHJ: a sub-facet pair of a bore (normals toward the axis: concave) is never an outline (buildSilhouettes)
     function concaveOn(S, p, n1, n2) {
+      if (S.t === 'sph' || S.t === 'tor') { var sn = K.surfNormalAt(S, p); return !!sn && V.dot(V.add(n1, n2), sn) < 0; }   // rfHY: toward the centre / tube centre
       var o = S.o, d = S.d, vx = p[0] - o[0], vy = p[1] - o[1], vz = p[2] - o[2], h = vx * d[0] + vy * d[1] + vz * d[2];
       return (n1[0] + n2[0]) * (vx - d[0] * h) + (n1[1] + n2[1]) * (vy - d[1] * h) + (n1[2] + n2[2]) * (vz - d[2] * h) < 0;
     }
@@ -2108,7 +2208,7 @@ var UI = (function () {
         // k × k: grid point (i, j) = C0 + (C1 − C0) i/k + (C2 − C0) j/k on the surface; normals from the surface, on the facet's side
         var S = G.S, fl = flat(t), grid = [], gn = [], idx = function (i, j) { return i * (k + 1) - (i * (i - 1)) / 2 + j; };
         for (var i = 0; i <= k; i++) for (var j = 0; j <= k - i; j++) {
-          var u = i / k, v = j / k, p = (i === 0 && j === 0) ? C0 : (i === k) ? C1 : (j === k) ? C2 : ztProj(S, C0[0] + (C1[0] - C0[0]) * u + (C2[0] - C0[0]) * v, C0[1] + (C1[1] - C0[1]) * u + (C2[1] - C0[1]) * v, C0[2] + (C1[2] - C0[2]) * u + (C2[2] - C0[2]) * v);
+          var u = i / k, v = j / k, p = (i === 0 && j === 0) ? snap(C0, S) : (i === k) ? snap(C1, S) : (j === k) ? snap(C2, S) : ztProj(S, C0[0] + (C1[0] - C0[0]) * u + (C2[0] - C0[0]) * v, C0[1] + (C1[1] - C0[1]) * u + (C2[1] - C0[1]) * v, C0[2] + (C1[2] - C0[2]) * u + (C2[2] - C0[2]) * v);
           var n = K.surfNormalAt(S, p, C0) || fl;
           if (V.dot(n, fl) < 0) n = [-n[0], -n[1], -n[2]];
           grid[idx(i, j)] = p; gn[idx(i, j)] = n;
@@ -2230,7 +2330,7 @@ var UI = (function () {
     if (!zt.base) zt.base = bodyMesh.geometry;
     else if (zt.disp) zt.disp.dispose();
     if (zt.sil) { groups.edges.remove(zt.sil); zt.sil.geometry.dispose(); }
-    zt.disp = built.geom; zt.map = built.map; zt.start = built.start; zt.faceSet = built.faceSet; zt.key = plan.key; zt.sil = built.sil;
+    zt.disp = built.geom; zt.map = built.map; zt.start = built.start; zt.faceSet = built.faceSet; zt.key = plan.key; zt.sil = built.sil; zt.groups = plan.groups;
     bodyMesh.geometry = built.geom;
     if (crackFill) crackFill.geometry = built.geom;
     zt.curveRefined = built.curveRefined;
@@ -2312,7 +2412,28 @@ var UI = (function () {
     level: function () { return ZT.level; },
     setBudget: function (n) { ZT.budget = Math.max(0, +n || 0); zt.doneKey = null; return ZT.budget; },
     enabled: function (on) { if (on != null) { ZT.on = !!on; zt.doneKey = null; if (!ZT.on) ztRestore(); } return ZT.on; },
-    options: ZT
+    options: ZT,
+    // rfHY: per refined record group of the drawn display mesh -> [{ t, faces, tris, vertPx (largest distance of a drawn
+    // vertex from the exact surface), sagPx (largest gap between a drawn triangle's edge middles / centroid and the
+    // surface) }], in pixels at the current zoom; [] on the base mesh
+    deviation: function () {
+      if (!zt.disp || !zt.map || !zt.groups || !App.mesh || !App.mesh._zt) return [];
+      var A = App.mesh._zt, P = zt.disp.attributes.position.array, s = cam.scale, out = {}, on = {};
+      zt.groups.forEach(function (g) { on[g.id] = out[g.id] = { t: g.S.t, faces: Object.keys(g.faces).map(Number), tris: 0, vertPx: 0, sagPx: 0 }; });
+      for (var d = 0; d < zt.map.length; d++) {
+        var gi = A.triG[zt.map[d]], r = gi >= 0 ? on[gi] : null;
+        if (!r) continue;
+        var S = zt.groups.filter(function (g) { return g.id === gi; })[0].S, C = [];
+        for (var c = 0; c < 3; c++) { var o = d * 9 + c * 3; C.push([P[o], P[o + 1], P[o + 2]]); }
+        r.tris++;
+        var M = [C[0], C[1], C[2], V.scale(V.add(C[0], C[1]), 0.5), V.scale(V.add(C[1], C[2]), 0.5), V.scale(V.add(C[2], C[0]), 0.5), V.scale(V.add(V.add(C[0], C[1]), C[2]), 1 / 3)];
+        for (var i = 0; i < M.length; i++) {
+          var q = ztProj(S, M[i][0], M[i][1], M[i][2]), e = V.len(V.sub(q, M[i])) / s;
+          if (i < 3) { if (e > r.vertPx) r.vertPx = e; } else if (e > r.sagPx) r.sagPx = e;
+        }
+      }
+      return Object.keys(out).map(function (k) { return out[k]; });
+    }
   };
 
   // UI.setBodyHidden(index, hidden): viewport-only; rebuilds the drawn geometry from the visible faces.
@@ -2466,8 +2587,84 @@ var UI = (function () {
       Object.keys(byRoot).forEach(function (r) { byRoot[r].forEach(function (i) { of[i] = byRoot[r]; }); });
     });
     freeformGroups(mesh, of);
+    try { freeCurveGroups(mesh, of); } catch (e) { console.warn('rfHY free-curve faces:', e); }
     mesh._faceGroups = of;
     return of;
+  }
+  // rfHY (user: "make sure facets are never 'Selectable' only entire curved surfaces"): Anvil's own kernel makes the
+  // side of an extruded spline / ellipse / conic out of planar chord strips with no record, and a revolved one out of
+  // one cone ring per chord (surf.fc), so each strip or ring picked, hovered and selected alone. Strips are joined when
+  // they lie on the same free sketch curve of the same feature and body and meet across a smooth edge (a line tangent
+  // to the spline keeps its own face, as in SolidWorks); rings when both carry a free-curve record (fc) of the same
+  // feature and body. OpenCascade's B-rep faces (occtFaceGroups) never need this.
+  function freeCurveGroups(mesh, of) {
+    if (!App.model || !App.model.features || !mesh.faces.length || !mesh.faces[0].polys) return;
+    var info = {}, tag = new Array(mesh.faces.length), any = false;
+    function featInfo(id) {
+      if (id in info) return info[id];
+      var f = K.findFeature(App.model, id), r = null;
+      if (f && f.sketch != null && f.type !== 'revolve' && f.type !== 'revolveCut') {
+        var s = K.findFeature(App.model, f.sketch), pl = null;
+        var frees = s && s.entities ? s.entities.map(function (e, k) { return K.isFreeCurve(e) && !e.construction ? { k: k, segs: [] } : null; }).filter(Boolean) : [];
+        if (frees.length) try { pl = K.resolvePlane(s.plane, App.model, App.build && App.build.planes); } catch (e) { pl = null; }
+        if (pl && pl.origin && pl.x && pl.y) {
+          frees.forEach(function (F) { (K.entityPolylines(s.entities[F.k], true) || []).forEach(function (pp) { var P = pp.pts; for (var i = 0; i + 1 < P.length + (pp.closed ? 1 : 0); i++) F.segs.push([P[i], P[(i + 1) % P.length]]); }); });
+          r = { pl: pl, frees: frees };
+        }
+      }
+      return (info[id] = r);
+    }
+    function onFree(F, q, tol) {
+      for (var i = 0; i < F.segs.length; i++) {
+        var a = F.segs[i][0], b = F.segs[i][1], dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
+        var t = l2 > 0 ? Math.max(0, Math.min(1, ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l2)) : 0;
+        if (Math.hypot(a[0] + dx * t - q[0], a[1] + dy * t - q[1]) <= tol) return true;
+      }
+      return false;
+    }
+    mesh.faces.forEach(function (f, i) {
+      if (!f.polys || !f.polys.length) return;
+      var p0 = f.polys[0], S = p0.surf;
+      if (S && S.fc) { tag[i] = 'fc|' + p0.shared + '|' + bodyOfFace(f) + '|' + f.part; any = true; return; }
+      if (of[i].length > 1 || S || p0.shared == null) return;
+      var I = featInfo(p0.shared);
+      if (!I) return;
+      var pl = I.pl, n = pl.n || V.cross(pl.x, pl.y), fn = f.normal;
+      if (!fn || Math.abs(V.dot(fn, n)) > 1e-6) return;   // a side face stands square to the sketch plane
+      // the face seen along the sketch normal is a segment: its two ends must both lie on one free curve's chords
+      var pts = [];
+      f.polys.forEach(function (p) { p.vertices.forEach(function (v) { var d = [v.pos.x - pl.origin[0], v.pos.y - pl.origin[1], v.pos.z - pl.origin[2]]; pts.push([V.dot(d, pl.x), V.dot(d, pl.y)]); }); });
+      var ax = [fn[1] * n[2] - fn[2] * n[1], fn[2] * n[0] - fn[0] * n[2], fn[0] * n[1] - fn[1] * n[0]], u = [V.dot(ax, pl.x), V.dot(ax, pl.y)], lo = null, hi = null, size = 0;
+      pts.forEach(function (q) { var t = q[0] * u[0] + q[1] * u[1]; if (!lo || t < lo.t) lo = { t: t, q: q }; if (!hi || t > hi.t) hi = { t: t, q: q }; });
+      if (!lo) return;
+      size = Math.max(1e-9, hi.t - lo.t);
+      for (var j = 0; j < I.frees.length; j++) {
+        var tol = 1e-6 * Math.max(1, size) + 1e-7;
+        if (onFree(I.frees[j], lo.q, tol) && onFree(I.frees[j], hi.q, tol)) { tag[i] = 'ff|' + p0.shared + '|' + I.frees[j].k + '|' + bodyOfFace(f) + '|' + f.part; any = true; return; }
+      }
+    });
+    if (!any) return;
+    var parent = {};
+    function find(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+    function root(i) { var g = of[i]; return g && g.length ? g[0] : i; }
+    edgesFor(mesh).forEach(function (e) {
+      if (!e.smooth || e.faces.length !== 2) return;
+      var a = e.faces[0], b = e.faces[1];
+      if (tag[a] == null || tag[a] !== tag[b]) return;
+      var ra = root(a), rb = root(b);
+      if (parent[ra] == null) parent[ra] = ra;
+      if (parent[rb] == null) parent[rb] = rb;
+      ra = find(ra); rb = find(rb);
+      if (ra !== rb) parent[ra] = rb;
+    });
+    var byRoot = {};
+    Object.keys(parent).forEach(function (r) { var x = find(+r); (byRoot[x] = byRoot[x] || []).push(+r); });
+    Object.keys(byRoot).forEach(function (x) {
+      var g = [];
+      byRoot[x].forEach(function (r) { g = g.concat(of[r] || [r]); });
+      g = g.filter(function (v, k, a) { return a.indexOf(v) === k; }).sort(function (p, q) { return p - q; });
+      g.forEach(function (i) { of[i] = g; });
+    });
   }
   // Freeform surfaces (a sweep's or loft's side, a fillet rolled along a curved edge) have no analytic record: their
   // facets are joined across smooth (tangent, < 22°) edges when both come from the same sweep, loft or fillet feature
@@ -3535,8 +3732,18 @@ var UI = (function () {
       var d = DIST - tmpV.sub(target).dot(dir);
       if (d < lo) lo = d; if (d > hi) hi = d;
     }
-    var pad = Math.max(1, (hi - lo) * 0.25);
-    camera.near = lo - pad; camera.far = hi + pad;
+    var pad = Math.max(1, (hi - lo) * 0.25), near = lo - pad, far = hi + pad;
+    // rfHY: the camera also moves up to just in front of the scene for the draw. At DIST (10 000) every view-space z the
+    // GPU computes in float32 is rounded to ~0.001 model units, hundreds of depth steps of a fitted range: an edge line
+    // lying on a face seen square-on (no slope offset) then won or lost against that face by rounding, segment by
+    // segment (the washer rim drawn as dashes, one per facet). In front of the scene the rounding is about one step.
+    var shift = near - Math.max(1e-3, (far - near) * 0.02);
+    if (shift > 0) {
+      camera.position.addScaledVector(dir, -shift);
+      camera.updateMatrixWorld();
+      near -= shift; far -= shift;
+    }
+    camera.near = near; camera.far = far;
     camera.updateProjectionMatrix();
   }
   // rfHD: { draw(info) -> true when it drew the frame, idle(now) -> true when it wants a still pass } (ui-render-fx.js)
@@ -4526,7 +4733,7 @@ var UI = (function () {
     rebuildPending: function () { return !!(wk.inflight || wk.pending); },
     getBodyMesh: function () { return bodyMesh; },
     // lane FO: display safety (crack filler, section caps, safe normals)
-    getCrackFill: function () { return crackFill; }, zoomTess: zoomTessApi, sectionCaps: function () { return capGroup; }, safeNormals: safeNormals,
+    getCrackFill: function () { return crackFill; }, zoomTess: zoomTessApi, slopeOffset: SLOPE, sectionCaps: function () { return capGroup; }, safeNormals: safeNormals,
     // multi-body parts (viewport side): see the "bodies" section
     // assembly documents
     isAssembly: isAssembly, componentIndex: componentIndex, selectComponent: selectComponent,
