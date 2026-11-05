@@ -13,6 +13,9 @@
 //   node check.js files   [--exe ...]  File ▸ Open / Ctrl+S / Save As / exports through Windows' boxes (stood in for)
 //   node check.js recent  [--exe ...]  File ▸ Recent Documents: kept across a restart, reopened files writable again,
 //                         a deleted file missing, a STEP's new part saved beside it (rfIK)
+//   node check.js occt-start [--launches 3] [--compare [--pairs 3]]  the WebAssembly OpenCascade engine's start, a cold
+//                         launch and warm ones, with occt-worker.js's phases; --compare reloads the page alternately with the
+//                         old start (localStorage anvil.occtPlainStart = 1) and the new one and prints both medians (rfIO)
 //   node check.js update-restart [--exe ...]  Restart to update end to end with a stand-in installer (.cmd), both a
 //                         good install and a failed one; update.log
 'use strict';
@@ -576,6 +579,62 @@ async function checkRecent() {
   } finally { await quit(page, child); }
 }
 
+// ---- rfIO: how long the WebAssembly OpenCascade engine takes to start, on a first launch (nothing cached) and on the
+// launches after it (same user-data folder), with the phases occt-worker.js reports; every launch must still build
+// the 4 x 2 x 0.5 plate (volume 4) and the fingerprint check must still refuse a changed engine ------------------
+async function checkOcctStart() {
+  const ud = path.join(WORK, 'userdata'), log = path.join(WORK, 'events.log');
+  fs.mkdirSync(ud, { recursive: true });
+  fs.writeFileSync(path.join(ud, 'settings.json'), JSON.stringify({ updateFolder: path.join(WORK, 'no-such-folder'), occtEngine: 'wasm' }));
+  const runs = [], n = +opt('launches', 3);
+  for (let i = 0; i < n; i++) {
+    const child = launch({ ANVIL_USER_DATA: ud, ANVIL_TEST_LOG: log, ANVIL_UPDATE_DELAY_MS: '3600000', ANVIL_OCCT_ENGINE: 'wasm' }, opt('js-flags') ? ['--js-flags=' + opt('js-flags')] : []);
+    const page = await connect('app://anvil/');
+    try {
+      await page.waitFor('window.anvil && window.UI && UI.App && UI.App.occt && document.readyState === "complete"', 60000);
+      const first = await page.ev(FIRST_READY, 300000);
+      const s = await page.ev('anvil.occt()');
+      const built = await timeRun(page, 'p.sketch("Front").rect(0,0,4,2).extrude(0.5)');
+      runs.push({ launch: i + 1, readyAt: r1(first.ms), loadMs: r1(first.loadMs), phases: s.loadPhases, engine: s.engine, volume: built.volume, state: built.state });
+      ok(!first.failed && s.engine === 'wasm' && built.state === 'ok' && Math.abs(built.volume - 4) < 1e-9, 'launch ' + (i + 1) + ': the WebAssembly engine starts and builds the plate (volume 4)', runs[i]);
+      // let a first launch finish writing what it keeps for the next one (the engine's compiled code)
+      if (i === 0) await sleep(+opt('settle', 6000));
+      ok(page.errors.length === 0, 'launch ' + (i + 1) + ': no console errors', page.errors.slice(0, 3));
+    } finally { await quit(page, child); }
+    await sleep(1000);
+  }
+  console.log('\nOpenCascade (WebAssembly) start in the app, ms     ready at   load   ' + 'phases');
+  runs.forEach((r) => console.log('  launch ' + r.launch + (r.launch === 1 ? ' (cold)' : ' (warm)') + '                          ' + String(r.readyAt).padStart(8) + String(r.loadMs).padStart(7) + '   ' + JSON.stringify(r.phases)));
+  // the fast start is in use: embind's ~85 000 invokers came from a few hundred compiled shapes
+  ok(runs.every((r) => r.phases && r.phases.functions && r.phases.functions.invokers > 10000 && r.phases.functions.compiled < 2000 && r.phases.functions.other === 0),
+    'every launch used the fast start (occt-worker.js fastFunction)', runs.map((r) => r.phases && r.phases.functions));
+  // --compare: in one more launch, the page reloaded alternately with the old start (localStorage
+  // anvil.occtPlainStart = '1') and the new one, so both are measured under the same machine load
+  if (args.includes('--compare')) {
+    const child = launch({ ANVIL_USER_DATA: ud, ANVIL_TEST_LOG: log, ANVIL_UPDATE_DELAY_MS: '3600000', ANVIL_OCCT_ENGINE: 'wasm' });
+    const page = await connect('app://anvil/');
+    const got = { plain: [], fast: [] };
+    try {
+      await page.waitFor('window.anvil && window.UI && UI.App && UI.App.occt && document.readyState === "complete"', 60000);
+      await page.ev(FIRST_READY, 300000);
+      const pairs = +opt('pairs', 3);
+      for (let k = 0; k < 2 * pairs; k++) {
+        const mode = k % 2 ? 'fast' : 'plain';
+        await page.ev('localStorage.setItem("anvil.occtPlainStart", ' + JSON.stringify(mode === 'plain' ? '1' : '0') + '); window.__rfIO = 1; setTimeout(function () { location.reload(); }, 0); true');
+        await page.waitFor('!window.__rfIO && window.UI && UI.App && UI.App.occt && document.readyState === "complete"', 60000);
+        const f = await page.ev(FIRST_READY, 300000);
+        const s = await page.ev('anvil.occt()');
+        ok(!f.failed && (mode === 'plain' ? s.loadPhases.functions === 'plain' : s.loadPhases.functions.invokers > 10000), 'compare: a ' + mode + ' start', { loadMs: r1(f.loadMs), functions: s.loadPhases && s.loadPhases.functions, ls: await page.ev('localStorage.getItem("anvil.occtPlainStart")') });
+        got[mode].push(Math.round(f.loadMs));
+      }
+      await page.ev('localStorage.removeItem("anvil.occtPlainStart"); true');
+    } finally { await quit(page, child); }
+    const med = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1];
+    console.log('\nsame launch, page reloaded: engine load ms   old start ' + JSON.stringify(got.plain) + ' median ' + med(got.plain) + '   new start ' + JSON.stringify(got.fast) + ' median ' + med(got.fast));
+    ok(med(got.fast) < med(got.plain), 'the new start is faster than the old one', { plain: med(got.plain), fast: med(got.fast) });
+  }
+}
+
 // ---- Restart to update, end to end with a stand-in installer (a .cmd that records its arguments and starts the app
 // again; never a real installer) ----------------------------------------------------------------------------------
 async function updateRun(name, stubBody, opts) {
@@ -645,6 +704,7 @@ async function checkUpdateRestart() {
     else if (cmd === 'update') await checkUpdate();
     else if (cmd === 'files') await checkFiles();
     else if (cmd === 'drop') await checkDrop();
+    else if (cmd === 'occt-start') await checkOcctStart();
     else if (cmd === 'recent') await checkRecent();
     else if (cmd === 'update-restart') await checkUpdateRestart();
     else throw new Error('unknown check ' + cmd);

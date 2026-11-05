@@ -51,9 +51,12 @@
     stopWorker(); startWorker();   // the current model is built again once it is ready (onMessage 'ready' -> request)
     if (st.worker) Object.keys(imports).forEach(function (k) { st.worker.postMessage({ type: 'import', seq: +k, format: imports[k].format, text: imports[k].text }); });
   }
+  // (rfIO) localStorage anvil.occtPlainStart = '1' starts the engine the old, slow way (desktop/check.js occt-start
+  // --compare measures both); occt-worker.js fastFunction is the default
+  function plainStart() { try { return localStorage.getItem('anvil.occtPlainStart') === '1'; } catch (e) { return false; } }
   function startWorker() {
     if (st.worker || !window.Worker) return;
-    try { st.worker = nativeWorker() || new Worker('occt-worker.js', { type: 'module' }); }
+    try { st.worker = nativeWorker() || new Worker('occt-worker.js' + (plainStart() ? '?plainstart' : ''), { type: 'module' }); }
     catch (e) { st.state = 'failed'; st.error = e.message; refresh(); return; }
     st.engine = st.worker.native ? 'native' : 'wasm';
     st.state = 'loading';
@@ -133,7 +136,7 @@
 
   function onMessage(e) {
     var m = e.data || {};
-    if (m.type === 'ready') { st.ready = true; st.loadMs = m.loadMs; request(); return; }
+    if (m.type === 'ready') { st.ready = true; st.loadMs = m.loadMs; st.loadPhases = m.phases || null; request(); return; }
     if (m.type === 'imported' || m.type === 'importError') {
       var w = imports[m.seq]; delete imports[m.seq];
       if (w) { if (m.type === 'imported') w.res(m.result); else w.rej(new Error(m.message)); }
@@ -801,7 +804,7 @@
 
   function status() {
     var r = st.result;
-    return { on: st.on, state: st.state, driving: st.driving, error: st.error, loadMs: st.loadMs, engine: st.engine || null,
+    return { on: st.on, state: st.state, driving: st.driving, error: st.error, loadMs: st.loadMs, loadPhases: st.loadPhases || null, engine: st.engine || null,
       unsupported: r && r.unsupported || null, faces: r && !r.unsupported ? r.faces.length : null, bodies: r ? r.bodies : null,
       volume: r ? r.volume : null, anvilVolume: st.anvilVolume, volumeDiff: st.volumeDiff, tolerance: r ? r.tolerance : null, beyond: st.state === 'ok' && st.beyond ? st.beyond.slice() : [],
       valid: r ? r.valid : null, ms: r ? r.ms : null, failedFeature: st.state === 'featureError' ? st.failedFeature : null };

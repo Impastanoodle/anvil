@@ -112,7 +112,8 @@ outside the app archive, and `occt-host.js` (the process that runs it) next to t
 Other commands: `npm start` runs Anvil from the source files; `npm run pack` builds `dist\win-unpacked\Anvil.exe`
 without an installer; `node check.js app`, `node check.js tests`, `node check.js update --folder <folder>` test a build
 by script (`node check.js files`: Open, Ctrl+S in place, Save As, exports, a read-only file, with the boxes stood in
-for; `node check.js recent`: Recent Documents across a restart, a reopened file saved in place, a deleted one
+for; `node check.js occt-start --compare`: how long the WebAssembly OpenCascade engine takes to start, cold and
+warm, and the old start against the new one; `node check.js recent`: Recent Documents across a restart, a reopened file saved in place, a deleted one
 missing, a STEP's new part saved beside it; `node check.js drop`: a part file dropped on the window keeps its real path, the title names it, Ctrl+S writes
 back to it and nothing else in its folder becomes writable (a File backed by the file on disk through DevTools'
 `DOM.setFileInputFiles`, then a DragEvent; a drag from Explorer itself cannot be scripted); `node check.js update-restart`: Restart to update end to end with a stand-in installer, a .cmd in a temporary

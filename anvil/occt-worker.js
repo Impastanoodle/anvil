@@ -63,6 +63,62 @@ async function engineFactory() {
   return (await import(url)).default;   // the same file, imported only once its bytes have checked out
 }
 
+// (rfIO) Why OpenCascade took ~3.5 s to start, measured in the Windows app (desktop/check.js occt-start) and a
+// profile: fetching + checking the 48 MB binary ~0.25 s, compiling it ~0.08 s (V8 compiles WebAssembly lazily),
+// instantiating ~0.05 s, and ~3.3 s in embind's start-up, which builds one JavaScript wrapper per bound C++ method with
+// `new Function(source)` (createNamedFunction, craftInvokerFunction): tens of thousands of pieces of source that V8
+// parses and compiles one by one, on every start (no code cache keeps eval'd code; a WebAssembly code cache would save
+// only the 0.08 s). fastFunction stands in for the global Function constructor while the engine starts, and for those
+// two shapes of source only: a createNamedFunction wrapper is made as a closure (no source at all), and an invoker's
+// source is compiled once per shape (its name, its comments and the method name in its error message taken out as
+// parameters) and reused for every method of that shape, so a few hundred compiles replace tens of thousands. The
+// functions it returns do what the generated ones did (same arguments, same name, same error text). Any other source
+// goes to the real Function. opencascade.full.js itself is untouched and still checked against its fingerprint.
+function fastFunction(RealFunction) {
+  const memo = new Map();
+  const NAMED = /^return function ([\w$]+)\(\) \{\n {4}"use strict"; {4}return body\.apply\(this, arguments\);\n\};\n$/;
+  const INVOKER = /^return function ([\w$]+)\(([\w, ]*)\) \{\nif \(arguments\.length !== (\d+)\) \{\nthrowBindingError\('function ([^'\\\n]*) called with ' \+ arguments\.length \+ ' arguments, expected \3 args!'\);\n\}\n/;
+  const stats = { named: 0, invokers: 0, compiled: 0, other: 0 };
+  function named(fn, name) { try { Object.defineProperty(fn, 'name', { value: name, configurable: true }); } catch (e) { } return fn; }
+  function F() {
+    const n = arguments.length, body = n ? String(arguments[n - 1]) : '';
+    const params = Array.prototype.slice.call(arguments, 0, Math.max(0, n - 1)).map(String);
+    let m;
+    if (params.length === 1 && params[0] === 'body' && (m = NAMED.exec(body))) {
+      const name = m[1];
+      stats.named++;
+      return function (b) { return named(function () { 'use strict'; return b.apply(this, arguments); }, name); };
+    }
+    if ((m = INVOKER.exec(body)) && params.every((p) => /^[\w$]+$/.test(p) && p !== '__anvilHuman')) {
+      const fname = m[1], human = m[4];
+      const rest = body.slice(m[0].length).replace(/ \/\/ [^\n]*\n/g, '\n');
+      const key = params.join(',') + '|' + m[2] + '|' + m[3] + '|' + rest;
+      let factory = memo.get(key);
+      if (!factory) {
+        factory = RealFunction.apply(null, params.concat(['__anvilHuman', 'return function (' + m[2] + ') {\nif (arguments.length !== ' + m[3] + ') {\n' +
+          "throwBindingError('function ' + __anvilHuman + ' called with ' + arguments.length + ' arguments, expected " + m[3] + " args!');\n}\n" + rest]));
+        memo.set(key, factory);
+        stats.compiled++;
+      }
+      stats.invokers++;
+      return function () { return named(factory.apply(this, Array.prototype.slice.call(arguments, 0, params.length).concat([human])), fname); };
+    }
+    stats.other++;
+    return RealFunction.apply(this, arguments);
+  }
+  F.prototype = RealFunction.prototype;   // `x instanceof Function` (embind's new_) answers as before
+  F.stats = stats;
+  return F;
+}
+// runs start() with fastFunction in place of the global Function, which comes back however start() ends
+async function withFastFunction(start, phases) {
+  if (/[?&]plainstart\b/.test(self.location.search)) { if (phases) phases.functions = 'plain'; return start(); }   // ui-occt.js plainStart (measuring only)
+  const Real = self.Function;
+  const fast = fastFunction(Real);
+  self.Function = fast;
+  try { return await start(); } finally { self.Function = Real; if (phases) phases.functions = fast.stats; }
+}
+
 async function classic(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(url + ': HTTP ' + res.status);
@@ -94,13 +150,25 @@ const ready = (async () => {
   // the Windows app runs this same file in a process of its own (desktop/occt-host.js) and sets anvilNativeEngine,
   // which returns OpenCascade built for Windows (desktop/native: the same `oc` API); a browser never has it
   let oc;
+  const phases = {};
   if (typeof self.anvilNativeEngine === 'function') oc = await self.anvilNativeEngine();
   else {
     const [opencascade, wasmBinary] = await Promise.all([engineFactory(), engineBinary()]);
-    oc = await new opencascade({ wasmBinary, locateFile: (p) => OCCT_DIR + p });
+    phases.bytesMs = performance.now() - t0;
+    let t1 = performance.now();
+    // the engine's own start-up (emscripten + embind), timed in phases: compile, instantiate, init (embind's wrappers)
+    const mod = await WebAssembly.compile(wasmBinary);
+    phases.compileMs = performance.now() - t1; t1 = performance.now();
+    let failed;
+    const failure = new Promise((res, rej) => { failed = rej; });
+    oc = await withFastFunction(() => Promise.race([failure, new opencascade({ locateFile: (p) => OCCT_DIR + p, instantiateWasm: (imports, done) => {
+      WebAssembly.instantiate(mod, imports).then((inst) => { phases.instantiateMs = performance.now() - t1; t1 = performance.now(); done(inst, mod); }).catch(failed);
+      return {};
+    } })]), phases);
+    phases.initMs = performance.now() - t1;
   }
   const loadMs = performance.now() - t0;
-  self.postMessage({ type: 'ready', loadMs });
+  self.postMessage({ type: 'ready', loadMs, phases });
   return oc;
 })();
 ready.catch((e) => self.postMessage({ type: 'error', seq: -1, message: 'OpenCascade did not load: ' + ((e && e.message) || e) + (/integrity/.test(String(e && e.message)) ? '' : ' (run vendor/get-occt.ps1)') }));
