@@ -1991,3 +1991,17 @@ body.splitting-v #viewport { pointer-events: none; }
 #drop-overlay.bad .drop-card { border-color: var(--red); }
 #drop-overlay.bad .drop-text { color: var(--red); }
 #drop-overlay.bad .drop-icon { opacity: .45; filter: grayscale(1); }
+/* rfIK: File ▸ Browse Recent Documents (ui-app.js showRecentDialog); a file that is not there any more is greyed */
+#modal-body .recent-dialog { display: flex; flex-direction: column; gap: var(--sp-2); min-width: min(520px, 80vw); }
+#modal-body .recent-list { display: flex; flex-direction: column; gap: 2px; max-height: 360px; overflow-y: auto; }
+#modal-body .recent-row { display: flex; align-items: center; gap: var(--sp-2); padding: 5px 6px; border: 1px solid transparent; border-radius: var(--radius); color: var(--c-text); cursor: default; }
+#modal-body .recent-row:hover { background: var(--c-hover); }
+#modal-body .recent-row:focus-visible { outline: 1px solid var(--c-focus); outline-offset: -1px; }
+#modal-body .recent-ico { flex: none; display: grid; }
+#modal-body .recent-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+#modal-body .recent-text b, #modal-body .recent-text small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#modal-body .recent-text b { font-weight: 600; }
+#modal-body .recent-text small { color: var(--c-muted); font-size: var(--fs-xs); }
+#modal-body .recent-row.missing .recent-text, #modal-body .recent-row.missing .recent-ico { opacity: .5; }
+#modal-body .recent-row .recent-remove { flex: none; }
+#modal-body .open-hint { margin: 0 0 var(--sp-2); }

@@ -11,6 +11,8 @@
 //   node check.js tests   [--only rfA]   the kernel tests (one slice) inside the app's app:// protocol (ANVIL_ROOT=../anvil)
 //   node check.js update  --folder <release folder> [--exe ...]  the app offers the update found in that folder
 //   node check.js files   [--exe ...]  File ▸ Open / Ctrl+S / Save As / exports through Windows' boxes (stood in for)
+//   node check.js recent  [--exe ...]  File ▸ Recent Documents: kept across a restart, reopened files writable again,
+//                         a deleted file missing, a STEP's new part saved beside it (rfIK)
 //   node check.js update-restart [--exe ...]  Restart to update end to end with a stand-in installer (.cmd), both a
 //                         good install and a failed one; update.log
 'use strict';
@@ -493,6 +495,87 @@ async function checkDrop() {
   } finally { await quit(page, child); }
 }
 
+// ---- File ▸ Recent Documents (rfIK): main.js recent.json in the user-data folder, paths only; the list survives a
+// restart; a file reopened from it is writable again (Ctrl+S in place, no box) while one not reopened stays refused;
+// a deleted file shows missing; a STEP opened as a new part saves beside the STEP under its name -----------------
+async function checkRecent() {
+  const ud = path.join(WORK, 'userdata'), log = path.join(WORK, 'events.log'), inDir = path.join(WORK, 'Jobs in'), saveDir = path.join(WORK, 'saved'), stepDir = path.join(WORK, 'Imports');
+  [ud, inDir, saveDir, stepDir].forEach((d) => fs.mkdirSync(d, { recursive: true }));
+  fs.writeFileSync(path.join(ud, 'settings.json'), JSON.stringify({ updateFolder: path.join(WORK, 'no-such-folder'), occtEngine: 'wasm' }));
+  const part = path.join(inDir, 'IK part.anvil.json'), copy = path.join(saveDir, 'IKPart.anvil.json'), step = path.join(stepDir, 'IK plate.step');
+  const base = { ANVIL_USER_DATA: ud, ANVIL_TEST_LOG: log, ANVIL_TEST_SAVE_DIR: saveDir, ANVIL_UPDATE_DELAY_MS: '3600000' };
+  let child = launch(Object.assign({ ANVIL_TEST_OPEN_FILE: part }, base));
+  let page = await connect('app://anvil/');
+  const errs = [];
+  try {
+    await page.waitFor('window.anvil && window.anvil.run && document.readyState === "complete"', 60000);
+    ok(await page.ev('!!(anvilDesktop.files.recent && anvilDesktop.files.recent.list)'), 'the bridge has files.recent');
+    await page.ev('anvil.run(\'p.name("IKPart").units("in");\\np.sketch("Front").rect(0,0,4,2).extrude(0.5);\')');
+    fs.writeFileSync(part, await page.ev('JSON.stringify(UI.App.model)'));
+    fs.writeFileSync(step, await page.ev('Exchange.exportSTEP(UI.App.model, UI.App.build, { fileName: "IK plate.step" })'));
+    await page.ev('anvil.newPart().then(function () { UI.markClean(); return true; })');
+    // Open, then Save As: both on the list, newest first; an export (STEP) is not a document and stays off
+    await page.ev('UI.fileOpen(); true');
+    await page.waitFor('UI.App.filePath', 20000).catch(() => null);
+    await page.ev('UI.fileSaveAs(); true');
+    await page.waitFor('UI.App.filePath === ' + JSON.stringify(copy), 10000).catch(() => null);
+    await page.ev('UI.fileSaveAs("step"); true');
+    for (let i = 0; i < 40 && !fs.existsSync(path.join(saveDir, 'IKPart.step')); i++) await sleep(250);
+    let list = await page.ev('anvilDesktop.files.recent.list()');
+    ok(list.map((x) => x.path).join('|') === [copy, part].join('|') && list.every((x) => !x.missing && x.name && x.folder), 'Open and Save As are listed newest first (the STEP export is not)', list);
+    const stored = JSON.parse(fs.readFileSync(path.join(ud, 'recent.json'), 'utf8'));
+    ok(stored.files.length === 2 && stored.files.every((f) => Object.keys(f).sort().join() === 'at,path'), 'recent.json in the user-data folder holds paths only', stored);
+    const refused = await page.ev('anvilDesktop.files.recent.add(' + JSON.stringify(path.join(WORK, 'never-picked.anvil.json')) + ').then(function (l) { return l.length; })');
+    ok(refused === 2 && readLog(log).some((e) => e.event === 'recent-refused'), 'a path never picked is not added', refused);
+    errs.push.apply(errs, page.errors);
+    await quit(page, child);
+    // a restart: the list is still there; reopening the first part from it makes it writable again, the copy is not
+    child = launch(Object.assign({ ANVIL_TEST_OPEN_FILE: step }, base));
+    page = await connect('app://anvil/');
+    await page.waitFor('window.anvil && window.anvil.run && document.readyState === "complete"', 60000);
+    await page.waitFor('UI.recentDocuments.cached().length === 2', 10000).catch(() => null);
+    const menu = await page.ev('(function () { var li = Array.prototype.filter.call(document.querySelectorAll("#menus > li"), function (l) { return l.textContent === "File"; })[0]; li.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));' +
+      ' var ms = document.querySelectorAll("body > .menu"), m = ms[ms.length - 1], t = Array.prototype.map.call(m.querySelectorAll(".mi"), function (r) { return r.textContent; }); UI.closeMenus(); return t; })()');
+    ok(menu.indexOf('Browse Recent Documents…') > 0 && menu.some((t) => /^1\s+IKPart\.anvil\.json/.test(t)) && menu.some((t) => /^2\s+IK part\.anvil\.json/.test(t)), 'after a restart the File menu lists both', menu.filter((t) => /^\d|Recent/.test(t)));
+    const before = readLog(log).filter((e) => e.event === 'dialog-save').length;
+    await page.ev('UI.recentDocuments.open(UI.recentDocuments.cached().filter(function (x) { return /IK part/.test(x.name); })[0]).then(function () { return true; })');
+    await page.waitFor('UI.App.filePath === ' + JSON.stringify(part), 20000).catch(() => null);
+    const opened = readLog(log).filter((e) => e.event === 'file-opened' && e.via === 'recent').pop();
+    ok(opened && opened.path === part && await page.ev('UI.App.model.name') === 'IKPart', 'reopened from the list', opened);
+    let docLog = readLog(log).filter((e) => e.event === 'document').pop();
+    ok(docLog && docLog.path === part && docLog.title === 'IK part.anvil.json - Anvil', 'the window title names the reopened file', docLog);
+    await page.ev('anvil.append(\'p.sketch("Front", 0.5).circle(1, 1, 0.25).cut("through", { reverse: true });\')');
+    ok(/^IK part\.anvil\.json \* - Anvil$/.test(await page.ev('document.title')), 'an edit adds the * to the title', await page.ev('document.title'));
+    await page.ev('document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true })); true');
+    await page.waitFor('!UI.isDirty()', 10000).catch(() => null);
+    ok(JSON.parse(fs.readFileSync(part, 'utf8')).features.length === await page.ev('UI.App.model.features.length') && readLog(log).filter((e) => e.event === 'dialog-save').length === before,
+      'Ctrl+S writes the reopened file in place, no box', JSON.parse(fs.readFileSync(part, 'utf8')).features.length);
+    await sleep(300);
+    ok(/^IK part\.anvil\.json - Anvil$/.test(await page.ev('document.title')), 'the * goes after the save', await page.ev('document.title'));
+    const notReopened = await page.ev('anvilDesktop.files.write(' + JSON.stringify(copy) + ', "x")');
+    ok(notReopened && notReopened.code === 'NOTALLOWED', 'the copy, listed but not reopened since the restart, is still refused', notReopened);
+    // the copy deleted: missing on the list, and recent-open says so
+    fs.unlinkSync(copy);
+    list = await page.ev('anvilDesktop.files.recent.list()');
+    const gone = await page.ev('anvilDesktop.files.recent.open(' + JSON.stringify(copy) + ')');
+    ok(list.find((x) => x.path === copy).missing && !list.find((x) => x.path === part).missing && gone && gone.missing, 'a deleted file is missing', { list, gone });
+    // a STEP opened as a new part: Save asks beside the STEP with its name
+    await page.ev('UI.markClean(); UI.fileOpen(); true');
+    await page.waitFor('UI.App.importPath === ' + JSON.stringify(step), 30000).catch(() => null);
+    await page.ev('UI.fileSave(); true');
+    const target = path.join(saveDir, 'IK plate.anvil.json');   // the stand-in box answers in saveDir with the suggested name
+    for (let i = 0; i < 40 && !fs.existsSync(target); i++) await sleep(250);
+    const dImp = readLog(log).filter((e) => e.event === 'dialog-save').pop();
+    ok(dImp && dImp.defaultPath === path.join(stepDir, 'IK plate.anvil.json') && dImp.near === true && dImp.kind === 'document' && fs.existsSync(target),
+      'a STEP\'s new part: the Save box starts beside the STEP with its name', dImp);
+    list = await page.ev('anvilDesktop.files.recent.list()');
+    ok(list[0].path === target && list[1].path === step, 'the import and its saved part are on the list', list.map((x) => x.name));
+    const noEngine = !fs.existsSync(path.join(__dirname, '..', 'anvil', 'vendor', 'occt', 'opencascade.full.wasm'));
+    const all = errs.concat(page.errors, readLog(log).filter((e) => e.event === 'console-error').map((e) => e.message)).filter((m) => !(noEngine && /vendor\/occt\/opencascade/.test(m)));
+    ok(all.length === 0, 'no console errors', all.slice(0, 5));
+  } finally { await quit(page, child); }
+}
+
 // ---- Restart to update, end to end with a stand-in installer (a .cmd that records its arguments and starts the app
 // again; never a real installer) ----------------------------------------------------------------------------------
 async function updateRun(name, stubBody, opts) {
@@ -562,6 +645,7 @@ async function checkUpdateRestart() {
     else if (cmd === 'update') await checkUpdate();
     else if (cmd === 'files') await checkFiles();
     else if (cmd === 'drop') await checkDrop();
+    else if (cmd === 'recent') await checkRecent();
     else if (cmd === 'update-restart') await checkUpdateRestart();
     else throw new Error('unknown check ' + cmd);
   } catch (e) { ok(false, 'check ran to the end', e.stack || e.message); }

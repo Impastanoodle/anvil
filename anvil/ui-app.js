@@ -768,6 +768,8 @@
       return deskWrite(pick.path, data).then(function (r) {
         if (!r || r.error) { deskFailed(name, r); return null; }
         if (ext === 'obj') deskLastSaved = { path: r.path, base: name.replace(/\.obj$/i, ''), at: Date.now() };
+        // (rfIK) File ▸ Save Drawing As: the open drawing now has this file, so Ctrl+S writes back to it
+        if (ext === 'drawing' && drawingDoc()) { App.drawingPath = { path: r.path, name: drawingDoc().name, part: partJson(), partDirty: !!(UI.isDirty && UI.isDirty()) }; recentNote(r.path); syncDocument(); }
         UI.setStatus('Saved ' + r.path);
         return r;
       });
@@ -775,7 +777,8 @@
   }
   function deskSetPath(p) {
     App.filePath = p || null;
-    try { desk().setDocument(App.filePath); } catch (e) { }
+    if (p) App.importPath = null;   // the imported file's new part has its own file now
+    syncDocument(true);
   }
   function docBase() { return String(App.model.name || (isAsm() ? 'Assem1' : 'Part1')).replace(/[\\\/:*?"<>|]+/g, '_'); }
   function docFilters() {
@@ -789,20 +792,67 @@
       if (!r || r.error) { deskFailed(name, r); return false; }
       deskSetPath(r.path);
       UI.markClean();
+      recentNote(r.path);
       UI.toast('Saved ' + name);
       UI.setStatus('Saved ' + r.path);
       if (typeof onSaved === 'function') onSaved();
       return true;
     }, function (e) { deskFailed(name, e && e.message || e); return false; });
   }
-  // Save As for the document: Windows' Save box in the document's folder (else the last folder)
+  // Save As for the document: Windows' Save box in the document's folder (else the last folder). (rfIK) A part made
+  // by opening a STEP, IGES, DXF, DWG, STL … (App.importPath) is saved beside that file under its name, as SolidWorks
+  // offers bracket.SLDPRT beside bracket.step; a part a drawing file was opened on goes beside the drawing.
+  function nearPath() { return App.importPath || (App.drawingPath && App.drawingPath.path) || null; }
+  function fileBase(p) { return String(p || '').replace(/^.*[\\\/]/, '').replace(/\.(anvil\.json|anvil\.js|[a-z0-9]+)$/i, '').replace(/[\\\/:*?"<>|]+/g, '_') || docBase(); }
   function deskSaveDocAs(onSaved) {
-    return desk().saveDialog({ name: docBase() + (App.filePath && /\.js$/i.test(App.filePath) ? '.anvil.js' : '.anvil.json'), filters: docFilters(), kind: 'document' }).then(function (pick) {
+    var o = { name: (App.importPath ? fileBase(App.importPath) : docBase()) + (App.filePath && /\.js$/i.test(App.filePath) ? '.anvil.js' : '.anvil.json'), filters: docFilters(), kind: 'document' };
+    if (nearPath()) o.near = nearPath();
+    return desk().saveDialog(o).then(function (pick) {
       if (!pick) return false;
       return deskSaveTo(pick.path, onSaved);
     });
   }
   function deskSave(onSaved) { return App.filePath ? deskSaveTo(App.filePath, onSaved) : deskSaveDocAs(onSaved); }
+  // (rfIK) a drawing opened from a .drawing file (or saved as one) in the Windows app: App.drawingPath = { path, name
+  // (the drawing's name in the part), part (the part's JSON less its drawings when the drawing was opened or saved),
+  // partDirty (the part had unsaved changes then) }. While that drawing shows, Save (Ctrl+S, the Save of "Save changes
+  // to …?") writes the drawing file back in place; when the part changed too, the part is saved as well (its own file,
+  // else Windows' Save box beside the drawing), as SolidWorks' Save Modified Documents saves both.
+  function drawingDoc() {
+    var DW = UI.drawingInternal;
+    if (!UI.drawingActive || !UI.drawingActive() || !DW || !DW.doc) return null;
+    return DW.doc() || null;
+  }
+  function partJson() {
+    var m = App.model, o = {};
+    if (!m) return '';
+    Object.keys(m).forEach(function (k) { if (k !== 'drawings') o[k] = m[k]; });
+    try { return JSON.stringify(o); } catch (e) { return ''; }
+  }
+  function drawingTarget() {
+    var dp = App.drawingPath, dc = dp && drawingDoc();
+    return dc && dc.name === dp.name ? dp : null;
+  }
+  function deskSaveDrawing(dp, onSaved) {
+    var DW = UI.drawingInternal, dc = drawingDoc(), name = String(dp.path).replace(/^.*[\\\/]/, '');
+    if (DW.settle) DW.settle();
+    var data = JSON.stringify(Drawing.drawingFile(dc, App.model, App.fileName || null), null, 1);
+    return deskWrite(dp.path, data).then(function (r) {
+      if (!r || r.error) { deskFailed(name, r); return false; }
+      if (DW.markDrawingClean) DW.markDrawingClean();
+      recentNote(dp.path);
+      UI.setStatus('Saved ' + r.path);
+      var pj = partJson();
+      if (!dp.partDirty && pj === dp.part) {
+        UI.markClean();
+        UI.toast('Saved ' + name);
+        if (typeof onSaved === 'function') onSaved();
+        return true;
+      }
+      UI.toast('Saved ' + name + '. ' + (App.model.name || 'The part') + ' changed too: saving it.');
+      return deskSave(function () { dp.part = partJson(); dp.partDirty = false; if (typeof onSaved === 'function') onSaved(); });
+    }, function (e) { deskFailed(name, e && e.message || e); return false; });
+  }
   // File ▸ Open in the app: Windows' Open box with Anvil's file types; an Anvil document or script keeps its path
   function deskOpen() {
     var filters = OPEN_TYPES.map(function (t) {
@@ -818,13 +868,28 @@
   // browser):
   // opened as File ▸ Open would. A document Anvil can write back (a part / assembly JSON or a script) keeps its path;
   // an imported STEP, DXF … is a new part (Save asks where), and a drawing saves itself (File ▸ Save Drawing As)
+  // (rfIK) In the Windows app an import (STEP, DXF …) keeps its file as App.importPath (Save asks where, starting
+  // beside it with its name) and a drawing file as App.drawingPath (Ctrl+S writes back to it); every file opened goes
+  // on File ▸ Recent Documents.
   function openDiskFile(r) {
-    var keep = /\.js$/i.test(r.name);
-    if (/\.json$/i.test(r.name)) { try { var j = JSON.parse(new TextDecoder('utf-8').decode(r.data)); keep = !!j && j.kind !== 'anvil-drawing' && (Array.isArray(j.features) || j.type === 'assembly'); } catch (e) { keep = false; } }
+    var keep = /\.js$/i.test(r.name), isDrawing = /\.drawing$/i.test(r.name);
+    if (/\.json$/i.test(r.name)) { try { var j = JSON.parse(new TextDecoder('utf-8').decode(r.data)); isDrawing = !!j && j.kind === 'anvil-drawing'; keep = !!j && !isDrawing && (Array.isArray(j.features) || j.type === 'assembly'); } catch (e) { keep = false; } }
     var d = r.data;
     if (d && typeof d !== 'string' && ArrayBuffer.isView(d)) d = d.byteOffset === 0 && d.byteLength === d.buffer.byteLength ? d.buffer : d.slice().buffer;
+    var model0 = App.model, dirty0 = !!(UI.isDirty && UI.isDirty());
     return openFileData(r.name, d).then(function (s) {
       if (keep && r.path) deskSetPath(r.path);
+      else if (r.path && isDrawing) {
+        var dc = s && drawingDoc();
+        if (dc) {
+          // the drawing came in on a part just opened (clean), or on the part already open (as clean as it was)
+          var partDirty = App.model === model0 && dirty0;
+          if (!partDirty) UI.markClean();
+          App.drawingPath = { path: r.path, name: dc.name, part: partJson(), partDirty: partDirty };
+        }
+      } else if (r.path && !keep) App.importPath = r.path;
+      if (s !== null || !isDrawing) recentNote(r.path || null, r.name);   // (a drawing whose part was not given: null)
+      syncDocument();
       UI.setStatus('Opened ' + (r.path || r.name));
       return s;
     }, function (e) { UI.toast('Could not open ' + r.name + ': ' + ((e && e.message) || e)); return null; });
@@ -891,7 +956,7 @@
     var dirty = opts.dirty != null ? !!opts.dirty : !!(UI.isDirty && UI.isDirty());
     if (!dirty) { onProceed(); return; }
     UI.showModal({ title: 'Anvil', body: el('div', { class: 'save-changes' }, [el('p', { text: 'Save changes to ' + (name || App.model.name || (isAsm() ? 'Assem1' : 'Part1')) + '?' })]), buttons: [
-      { label: 'Save', primary: true, action: function () { UI.closeModal(); if (desk()) deskSave(onProceed); else if (App.fileName) { if (saveInBrowser(App.fileName)) onProceed(); } else fileSave(onProceed); } },
+      { label: 'Save', primary: true, action: function () { UI.closeModal(); if (desk()) fileSave(onProceed); else if (App.fileName) { if (saveInBrowser(App.fileName)) onProceed(); } else fileSave(onProceed); } },
       { label: "Don't Save", action: function () { UI.closeModal(); (opts.onDiscard || onProceed)(); } },
       { label: 'Cancel', action: UI.closeModal }
     ] });
@@ -1017,12 +1082,13 @@
     return (isA ? 'assembly, ' + ((f.model.components || []).length) + ' components' : (typeof f.features === 'number' ? f.features : (f.features ? f.features.length : 0)) + ' features') + ' · ' + new Date(f.savedAt || 0).toLocaleString();
   }
   // a document saved in this browser (File ▸ Save) replaces the open one
-  function openSaved(n, f) { rememberPart(); UI.loadModel(JSON.parse(JSON.stringify(f.model))); App.fileName = n; UI.toast('Opened ' + n); }
+  function openSaved(n, f) { rememberPart(); UI.loadModel(JSON.parse(JSON.stringify(f.model))); App.fileName = n; UI.toast('Opened ' + n); recentNoteBrowser(n); }
   // File ▸ Open: the documents saved in this browser on the left; on the right a drop zone (drag a file in, or click /
   // Browse… for the system's file picker, narrowed by Files of type), the chosen file's card (type, name, size, what
   // it opens as), and "Paste text instead" (a model JSON, a script, or a STEP / ASCII STL / OBJ file's text).
   // Open opens the chosen file, else the selected saved document, else the pasted text. Double-click a saved one opens it.
-  function showOpenDialog() {
+  // hint (rfIK, Recent Documents in a browser): a line above the drop zone naming the file to choose again
+  function showOpenDialog(hint) {
     var chosen = null, reading = null, savedPick = null;
     var type = el('select', { 'aria-label': 'Files of type' });
     OPEN_TYPES.forEach(function (t) { type.appendChild(el('option', { value: t[0], text: t[1] })); });
@@ -1072,7 +1138,7 @@
     var paste = el('details', { class: 'open-paste' }, [el('summary', { text: 'Paste text instead' }), ta]);
     var body = el('div', { class: 'open-dialog' }, [
       el('div', { class: 'open-side' }, [el('h4', { text: 'Saved in this browser' }), list]),
-      el('div', { class: 'open-main' }, [zone, fileInp, card,
+      el('div', { class: 'open-main' }, [typeof hint === 'string' && hint ? el('p', { class: 'dlg-note open-hint', text: hint }) : null, zone, fileInp, card,
         el('label', { class: 'dlg-row' }, [el('span', { text: 'Files of type' }), type]), paste])
     ]);
     body.addEventListener('dragover', function (e) { e.preventDefault(); });   // a file dropped beside the zone is not opened by the browser
@@ -1215,11 +1281,214 @@
     window.addEventListener('dragend', hideDropOverlay);
     window.addEventListener('keydown', function (e) { if (e.key === 'Escape' && dropEl && !dropEl.hidden) hideDropOverlay(); }, true);
   }
+  // ---- Recent documents (rfIK) -----------------------------------------------------------------------------------
+  // SolidWorks lists the documents last opened at the foot of the File menu and in File ▸ Browse Recent Documents.
+  // Here: the last RECENT_MAX documents opened or saved (parts, assemblies, drawings, and imported STEP / DXF … too),
+  // newest first. A click opens it through File ▸ Open's own path ("Save changes?" first, then openDiskFile).
+  // Windows app: the list lives in the app's user-data folder (desktop/main.js recent.json, paths only); reopening
+  // one makes that path writable again as an Open-box pick does; a file that is not there any more is greyed and the
+  // Browse Recent Documents dialog offers to remove it (a click on it there asks).
+  // Browser: a browser cannot reopen a file by its path, so the list says what it can do: documents saved in this
+  // browser (File ▸ Save) reopen at once; a file opened from disk is listed by name only and its click shows the Open
+  // dialog asking for that file again. Kept in localStorage 'anvil.recent' (a test frame: 'anvil.test.recent').
+  // Entries: { path, name, folder, missing } (app) / { name, kind: 'browser' | 'disk', at, missing } (browser).
+  var RECENT_MAX = 10;
+  var RECENT_KEY = (function () { var t = false; try { t = !!(window.frameElement && /\/tests\//.test(window.parent.location.pathname)); } catch (e) { } return t ? 'anvil.test.recent' : 'anvil.recent'; })();
+  var recentCache = [];
+  function deskRecent() { var d = desk(); return d && d.recent ? d.recent : null; }
+  function browserRecent() {
+    var l = [];
+    try { l = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch (e) { l = []; }
+    var files = savedFiles();
+    return (Array.isArray(l) ? l : []).filter(function (x) { return x && x.name; }).slice(0, RECENT_MAX).map(function (x) {
+      return { name: String(x.name), kind: x.kind === 'browser' ? 'browser' : 'disk', at: x.at || 0, missing: x.kind === 'browser' && !(files[x.name] && files[x.name].model) };
+    });
+  }
+  function browserRecentWrite(l) { try { localStorage.setItem(RECENT_KEY, JSON.stringify(l.slice(0, RECENT_MAX).map(function (x) { return { name: x.name, kind: x.kind, at: x.at }; }))); } catch (e) { } }
+  function setRecent(l) { recentCache = Array.isArray(l) ? l.slice(0, RECENT_MAX) : []; return recentCache; }
+  // recentList(fresh) -> Promise of the list (fresh: ask the app again, so a file deleted meanwhile shows missing)
+  function recentList(fresh) {
+    var dr = deskRecent();
+    if (!dr) return Promise.resolve(setRecent(browserRecent()));
+    if (!fresh && recentCache.loaded) return Promise.resolve(recentCache);
+    return Promise.resolve().then(function () { return dr.list(); }).then(function (l) { setRecent(l); recentCache.loaded = true; return recentCache; }, function () { return recentCache; });
+  }
+  function recentNoteBrowser(name) {
+    if (desk()) return;
+    var l = browserRecent().filter(function (x) { return !(x.kind === 'browser' && x.name === name); });
+    l.unshift({ name: name, kind: 'browser', at: Date.now() });
+    browserRecentWrite(l); setRecent(browserRecent());
+  }
+  // a file opened from disk or saved to it: path in the app, name only in a browser
+  function recentNote(path, name) {
+    var dr = deskRecent();
+    if (dr) { if (path) Promise.resolve().then(function () { return dr.add(path); }).then(function (l) { setRecent(l); recentCache.loaded = true; }, function () { }); return; }
+    if (desk() || !name) return;
+    var l = browserRecent().filter(function (x) { return !(x.kind === 'disk' && x.name === name); });
+    l.unshift({ name: name, kind: 'disk', at: Date.now() });
+    browserRecentWrite(l); setRecent(browserRecent());
+  }
+  function recentRemove(entry) {
+    var dr = deskRecent();
+    if (dr) return Promise.resolve().then(function () { return dr.remove(entry.path); }).then(function (l) { setRecent(l); recentCache.loaded = true; return recentCache; });
+    browserRecentWrite(browserRecent().filter(function (x) { return !(x.kind === entry.kind && x.name === entry.name); }));
+    return Promise.resolve(setRecent(browserRecent()));
+  }
+  function recentClear() {
+    var dr = deskRecent();
+    if (dr) return Promise.resolve().then(function () { return dr.clear(); }).then(function () { setRecent([]); recentCache.loaded = true; return recentCache; });
+    browserRecentWrite([]);
+    return Promise.resolve(setRecent([]));
+  }
+  function recentLabel(x) { return x.path ? x.name : x.kind === 'browser' ? x.name + ' (saved in this browser)' : x.name; }
+  function shortFolder(f) {
+    var parts = String(f || '').split(/[\\\/]/).filter(Boolean);
+    return parts.length > 3 ? parts[0] + '\\…\\' + parts.slice(-2).join('\\') : String(f || '');
+  }
+  // the entry is not there any more: offer to take it off the list
+  function recentMissing(x, after) {
+    UI.showModal({ title: 'Anvil', body: el('div', { class: 'recent-missing' }, [
+      el('p', { text: x.path ? x.name + ' is not in ' + x.folder + ' any more.' : x.name + ' is no longer saved in this browser.' }),
+      el('p', { class: 'dlg-note', text: 'It was moved, renamed or deleted' + (x.path ? ', or its drive is not connected.' : '.') + ' Remove it from Recent Documents?' })]),
+      buttons: [{ label: 'Remove', primary: true, action: function () { UI.closeModal(); recentRemove(x).then(function () { if (after) after(); }); } },
+        { label: 'Keep', action: function () { UI.closeModal(); if (after) after(); } }] });
+  }
+  // recentOpen(entry) -> Promise of the summary (null: not opened). "Save changes?" first, as File ▸ Open.
+  function recentOpen(x) {
+    if (!x) return Promise.resolve(null);
+    if (x.missing) { recentMissing(x); return Promise.resolve(null); }
+    var dr = deskRecent();
+    return new Promise(function (res) {
+      confirmDiscard(null, function () {
+        if (dr) {
+          res(Promise.resolve().then(function () { return dr.open(x.path); }).then(function (r) {
+            if (!r) return null;
+            if (r.missing) { x.missing = true; recentList(true); recentMissing(x); return null; }
+            if (r.error) { UI.showModal({ title: 'Open', body: el('div', {}, [el('p', { text: r.name || x.name }), el('p', { text: r.error })]), buttons: [{ label: 'OK', primary: true, action: UI.closeModal }] }); return null; }
+            return openDiskFile(r);
+          }));
+          return;
+        }
+        if (x.kind === 'browser') {
+          var f = savedFiles()[x.name];
+          if (!f || !f.model) { recentMissing(x); res(null); return; }
+          openSaved(x.name, f);
+          res(window.anvil.summary());
+          return;
+        }
+        // a file from disk in a browser: ask for it again
+        showOpenDialog('Choose ' + x.name + ' again: a browser cannot reopen a file from its folder by itself.');
+        res(null);
+      });
+    });
+  }
+  // File ▸ Browse Recent Documents…: every entry with its folder; a greyed one is not there any more (Remove)
+  function showRecentDialog() {
+    var body = el('div', { class: 'recent-dialog' }), list = el('div', { class: 'recent-list', role: 'listbox', 'aria-label': 'Recent Documents' });
+    function iconFor(x) {
+      var n = x.name.toLowerCase();
+      return /\.drawing$/.test(n) ? 'drawing' : /\.(step|stp|igs|iges|stl|obj|3mf|dxf|dwg)$/.test(n) ? 'openDoc' : 'part';
+    }
+    function render(l) {
+      list.innerHTML = '';
+      if (!l.length) list.appendChild(el('p', { class: 'dlg-note', text: 'No recent documents yet. Files you open or save are listed here.' }));
+      l.forEach(function (x, i) {
+        var row = el('div', { class: 'recent-row' + (x.missing ? ' missing' : ''), role: 'option', tabindex: '0', 'data-i': String(i), title: x.path || recentLabel(x) }, [
+          el('span', { class: 'recent-ico', html: Icons(iconFor(x), 16) }),
+          el('span', { class: 'recent-text' }, [el('b', { text: recentLabel(x) }),
+            el('small', { text: x.path ? x.folder + (x.missing ? ' (not found)' : '') : x.kind === 'browser' ? (x.missing ? 'no longer saved in this browser' : 'opens at once') : 'opened from disk: asks for the file again' })])]);
+        if (x.missing) row.appendChild(el('button', { class: 'btn recent-remove', type: 'button', text: 'Remove', onclick: function (e) { e.stopPropagation(); recentRemove(x).then(render); } }));
+        function go() { if (x.missing) { recentMissing(x, showRecentDialog); return; } UI.closeModal(); recentOpen(x); }
+        row.addEventListener('click', go);
+        row.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); go(); } });
+        list.appendChild(row);
+      });
+    }
+    if (!desk()) body.appendChild(el('p', { class: 'dlg-note', text: 'In a browser Anvil cannot reopen a file from its folder: a file opened from disk asks for it again. Documents saved in this browser open at once.' }));
+    body.appendChild(list);
+    render(recentCache);
+    UI.showModal({ title: 'Recent Documents', body: body, buttons: [
+      { label: 'Remove missing', action: function () { var gone = recentCache.filter(function (x) { return x.missing; }); gone.reduce(function (p, x) { return p.then(function () { return recentRemove(x); }); }, Promise.resolve()).then(function () { render(recentCache); }); } },
+      { label: 'Clear list', action: function () { recentClear().then(render); } },
+      { label: 'Close', primary: true, action: UI.closeModal }
+    ] });
+    recentList(true).then(function (l) { if (document.body.contains(list)) render(l); });
+  }
+  // the File menu: Browse Recent Documents… after Open…, and the list itself at the foot (numbered, folder on the right).
+  // Installed at boot, outside every other file's hook, so a drawing's own File menu gets it too.
+  function installRecentMenu() {
+   var recentMenuBase = UI.menuHook;
+   UI.menuHook = function (menus) {
+    var out = recentMenuBase ? recentMenuBase(menus) || menus : menus;
+    var file = out.filter(function (m) { return m.label === 'File'; })[0];
+    if (!file || file.items.some(function (it) { return it && it.recent; })) return out;
+    var at = -1;
+    file.items.forEach(function (it, i) { if (it && it.label === 'Open…' && at < 0) at = i; });
+    file.items.splice(at >= 0 ? at + 1 : file.items.length, 0, { label: 'Browse Recent Documents…', action: showRecentDialog, recent: true });
+    var l = recentCache;
+    if (l.length) {
+      file.items.push({ sep: true, recent: true });
+      l.forEach(function (x, i) {
+        file.items.push({ label: (i + 1) + '  ' + recentLabel(x) + (x.missing ? ' (not found)' : ''), key: x.path ? shortFolder(x.folder) : '', disabled: !!x.missing, recent: true,
+          action: function () { recentOpen(x); } });
+      });
+    }
+    return out;
+   };
+  }
+  // ---- the window title (rfIK): "bracket.anvil.json * - Anvil" --------------------------------------------------
+  // ui-core.js showDirty writes "<model name> * - Anvil"; this names the document's file instead when it has one (the
+  // Windows app), the drawing ("Draw1 - Sheet1 *") while a drawing shows, with the "*" of unsaved changes. In the app
+  // main.js shows the page's title as the window's (setDocument passes it too).
+  var deskDocSent;
+  function baseName(p) { return String(p || '').replace(/^.*[\\\/]/, ''); }
+  function visiblePath() { var dp = drawingTarget(); return dp ? dp.path : App.filePath || null; }
+  function titleText() {
+    var name, dc = drawingDoc(), dp = drawingTarget();
+    if (dc) name = (dp ? baseName(dp.path) : dc.name || 'Drawing') + (dc.sheet && dc.sheet.name ? ' - ' + dc.sheet.name : '');
+    else if (App.filePath) name = baseName(App.filePath);
+    else name = App.model && App.model.name;
+    return name ? name + (App.dirty ? ' *' : '') + ' - Anvil' : 'Anvil';
+  }
+  var titleProp = null;   // Document.prototype's title accessor, when document.title is routed through titleText
+  function syncTitle() {
+    var t = titleText();
+    if (titleProp) { if (titleProp.get.call(document) !== t) titleProp.set.call(document, t); }
+    else if (document.title !== t) document.title = t;
+    return t;
+  }
+  function syncDocument(force) {
+    var t = syncTitle(), p = visiblePath(), d = desk();
+    if (d && (force || p !== deskDocSent)) { deskDocSent = p; try { d.setDocument(p, t); } catch (e) { } }
+  }
+  function initTitle() {
+    // ui-core.js showDirty (and anything else) writing document.title gets Anvil's title at once, so the window title
+    // never flickers between the model name and the file name; with no accessor to wrap, a MutationObserver puts it back
+    try {
+      var tp = Object.getOwnPropertyDescriptor(Document.prototype, 'title');
+      if (tp && tp.get && tp.set) {
+        Object.defineProperty(document, 'title', { configurable: true, get: function () { return tp.get.call(document); }, set: function () { syncTitle(); } });
+        titleProp = tp;
+      }
+    } catch (e) { titleProp = null; }
+    var t = document.querySelector('title');
+    if (!t) { t = document.createElement('title'); document.head.appendChild(t); }
+    if (!titleProp && window.MutationObserver) new MutationObserver(function () { syncTitle(); }).observe(t, { childList: true, characterData: true, subtree: true });
+    // a drawing opens or closes (drawing-ui.js redraws the ribbon then): the title and the app's document follow
+    var baseRibbon = UI.refreshRibbon;
+    UI.refreshRibbon = function () { var r = baseRibbon.apply(this, arguments); syncDocument(); return r; };
+    // a file deleted, moved or put back while Anvil was in the background shows as it is now
+    window.addEventListener('focus', function () { if (deskRecent()) recentList(true); });
+    installRecentMenu();
+    recentList(true);
+    syncDocument();
+  }
+
   // File ▸ Save (Ctrl+S): asks for the name (the last one offered), saves in this browser; onSaved (a function) runs
   // after a successful save (the Save of "Save changes to Part1?")
   // In the Windows app: straight to the document's file (App.filePath), else Windows' Save box.
   function fileSave(onSaved) {
-    if (desk()) return deskSave(onSaved);
+    if (desk()) { var dp = drawingTarget(); return dp ? deskSaveDrawing(dp, onSaved) : deskSave(onSaved); }
     UI.promptDialog('Save', 'Save as (kept in this browser):', App.fileName || App.model.name, function (name) {
       name = (name || '').trim();
       if (!name) return;
@@ -1230,6 +1499,7 @@
     var files = savedFiles();
     files[name] = { model: App.model, features: App.model.features.length, components: isAsm() ? (App.model.components || []).length : undefined, savedAt: Date.now() };
     try { localStorage.setItem('anvil.files', JSON.stringify(files)); App.fileName = name; UI.toast('Saved "' + name + '"'); } catch (e) { UI.toast('Could not save: ' + e.message); return false; }
+    recentNoteBrowser(name);
     if (UI.afterSaveHook) UI.afterSaveHook(name);   // an assembly also saves its edited referenced documents (ui-assembly.js)
     UI.markClean();
     if (tpCurrent === 'files') openTaskPane('files');
@@ -1247,11 +1517,13 @@
   function deskSaveAs(preset) {
     var types = saveTypes();
     if (preset) types.sort(function (a, b) { return (b[0] === preset) - (a[0] === preset); });
-    var first = types[0][0], base = docBase();
+    var first = types[0][0], base = App.importPath ? fileBase(App.importPath) : docBase();   // (rfIK) an import: its name and folder
     var ext0 = first === 'json' ? '.anvil.json' : first === 'script' ? '.anvil.js' : '.' + SAVE_EXT[first][0];
     var filters = types.map(function (t) { return { name: t[1], extensions: SAVE_EXT[t[0]] || [t[0]] }; });
     var isDoc = first === 'json' || first === 'script';
-    return desk().saveDialog({ name: base + ext0, filters: filters, kind: isDoc ? 'document' : 'export', title: isDoc ? 'Save As' : 'Export' }).then(function (pick) {
+    var so = { name: base + ext0, filters: filters, kind: isDoc ? 'document' : 'export', title: isDoc ? 'Save As' : 'Export' };
+    if (isDoc && nearPath()) so.near = nearPath();
+    return desk().saveDialog(so).then(function (pick) {
       if (!pick) return null;
       var type = saveTypeOf(pick.path) || first, fname = String(pick.path).replace(/^.*[\\\/]/, '');
       var b = fname.replace(/\.(anvil\.json|anvil\.js|json|js|step|stp|3mf|obj|stl|igs|iges|dxf|dwg)$/i, '').replace(/[^\w\-]+/g, '_') || safeName();
@@ -1966,7 +2238,7 @@
     // a model loaded by anything (New, Open, the Task Pane, a recovery) is no longer the file App.filePath names
     // (the Windows app; in a browser App.filePath is never set)
     var coreLoadModel = UI.loadModel;
-    UI.loadModel = function () { if (App.filePath) deskSetPath(null); return coreLoadModel.apply(this, arguments); };
+    UI.loadModel = function () { App.importPath = null; App.drawingPath = null; if (App.filePath) deskSetPath(null); return coreLoadModel.apply(this, arguments); };
     // theme first, before anything is drawn (index.html already set data-theme from localStorage to avoid a flash)
     var savedTheme = 'light';
     try { savedTheme = localStorage.getItem('anvil.theme') || 'light'; } catch (e) { }
@@ -1983,6 +2255,7 @@
     try { var lp = localStorage.getItem('anvil.lastPart'); if (lp) App.lastPart = JSON.parse(lp); } catch (e) { }
     App.model = model;
     App.model.nextId = App.model.nextId || (Math.max.apply(null, [0].concat(model.features.map(function (f) { return f.id; }))) + 1);
+    initTitle();   // (rfIK) the window title, the File menu's Recent Documents
     UI.renderMenuBar();
     UI.refreshRibbon();
     UI.resize();
@@ -2062,6 +2335,9 @@
   UI.openTaskPane = openTaskPane; UI.closeTaskPane = closeTaskPane; UI.runScript = runScript; UI.exportDialog = exportDialog; UI.download = download;
   UI.exportSTL = exportSTL; UI.exportFaceDXF = exportFaceDXF; UI.exportSketchDXF = exportSketchDXF; UI.exportScript = exportScript; UI.exportJSON = exportJSON; UI.screenshot = screenshot;
   UI.fileNew = fileNew; UI.fileOpen = fileOpen; UI.fileSave = fileSave; UI.fileSaveAs = fileSaveAs;
+  // (rfIK) Recent Documents and the window title
+  UI.recentDocuments = { list: recentList, cached: function () { return recentCache; }, open: recentOpen, remove: recentRemove, clear: recentClear, browse: showRecentDialog, key: RECENT_KEY };
+  UI.showRecentDialog = showRecentDialog; UI.syncTitle = syncTitle; UI.windowTitle = titleText;
   UI.cmdInsertImported = cmdInsertImported; UI.openFileData = openFileData; UI.openDroppedFiles = openDroppedFiles; UI.exportData = exportData;
   // File ▸ New ▸ Part / Assembly (menus): "Save changes to Part1?" first when the document has unsaved changes (the
   // promise waits for the answer and never settles on Cancel); anvil.newPart / newAssembly (scripts) never ask

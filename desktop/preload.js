@@ -51,9 +51,10 @@ contextBridge.exposeInMainWorld('anvilDesktop', {
   checkForUpdates: () => ipcRenderer.invoke('anvil-desktop:check-updates'),
   occtHost,
   // Windows' own Open / Save dialogs (main.js). open({ filters }) -> { path, name, data: Uint8Array } | { error } | null
-  // (cancelled); saveDialog({ name, filters, kind: 'document' | 'export', title }) -> { path, name } | null;
+  // (cancelled); saveDialog({ name, filters, kind: 'document' | 'export', title, near }) -> { path, name } | null
+  // (near: a file opened this session, an import or a drawing: the box starts in its folder);
   // write(path, data, { sibling }) -> { path, bytes } | { error, code } (only a path picked in a dialog this session);
-  // setDocument(path | null): the open document's file (the window title shows its name).
+  // setDocument(path | null, title?): the open document's file and the page's title for it (the window title).
   // dropped(file): a File the user dropped on the window (ui-app.js openDroppedFile) -> { path, name } | null. Only a
   // File that is a real file on disk has a path (webUtils.getPathForFile; a File the page made itself has none), and
   // main.js then lets Ctrl+S write back to that one path, as for a file picked in the Open box.
@@ -66,7 +67,17 @@ contextBridge.exposeInMainWorld('anvilDesktop', {
     open: (o) => ipcRenderer.invoke('anvil-desktop:open-dialog', o || {}),
     saveDialog: (o) => ipcRenderer.invoke('anvil-desktop:save-dialog', o || {}),
     write: (p, data, o) => ipcRenderer.invoke('anvil-desktop:write-file', p, data, o || {}),
-    setDocument: (p) => ipcRenderer.invoke('anvil-desktop:set-document', p || null)
+    setDocument: (p, title) => ipcRenderer.invoke('anvil-desktop:set-document', p || null, typeof title === 'string' ? title : null),
+    // File ▸ Recent Documents (main.js recent.json, paths only): list() -> [{ path, name, folder, at, missing }] newest
+    // first; add(path) (a path the page may already write) / remove(path) / clear() -> the list; open(path) -> as open()
+    // gives, or { missing: true, path, name } (only a path on the list; it becomes writable as an Open-box pick does)
+    recent: {
+      list: () => ipcRenderer.invoke('anvil-desktop:recent-list'),
+      add: (p) => ipcRenderer.invoke('anvil-desktop:recent-add', p),
+      remove: (p) => ipcRenderer.invoke('anvil-desktop:recent-remove', p),
+      clear: () => ipcRenderer.invoke('anvil-desktop:recent-clear'),
+      open: (p) => ipcRenderer.invoke('anvil-desktop:recent-open', p)
+    }
   }
 });
 

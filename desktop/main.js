@@ -214,10 +214,14 @@ async function writeSafely(target, data) {
   }
   return buf.length;
 }
+// the page writes its own title (ui-app.js titleText: "bracket.anvil.json * - Anvil", "Draw1 - Sheet1 * - Anvil");
+// a title of Anvil's own shape is shown as it is, else the document's file name with the page's "*"
 function composeTitle(wc, pageTitle) {
+  const t = String(pageTitle || '');
+  if (/ - Anvil$/.test(t) && t.length <= 300 && !/[\x00-\x1f]/.test(t)) return t;
   const p = docPaths.get(wc.id);
   if (!p) return null;
-  return path.basename(p) + (/ \*( - Anvil)?$/.test(pageTitle || '') ? ' *' : '') + ' - Anvil';
+  return path.basename(p) + (/ \*( - Anvil)?$/.test(t) ? ' *' : '') + ' - Anvil';
 }
 ipcMain.handle('anvil-desktop:open-dialog', async (e, o) => {
   o = o || {};
@@ -241,9 +245,12 @@ ipcMain.handle('anvil-desktop:save-dialog', async (e, o) => {
   o = o || {};
   const w = BrowserWindow.fromWebContents(e.sender) || win;
   const doc = docPaths.get(e.sender.id);
-  const dir = o.kind === 'document' && doc && fs.existsSync(path.dirname(doc)) ? path.dirname(doc) : lastFolder();
+  // near: a file this session opened (an imported STEP / DXF, a drawing): the box starts in its folder (SolidWorks
+  // saves an imported file's new part beside it). Only a path already allowed counts; the folder is just the default.
+  const near = o.near && allowedPaths.has(pathKey(o.near)) && fs.existsSync(path.dirname(path.resolve(String(o.near)))) ? path.dirname(path.resolve(String(o.near))) : null;
+  const dir = near || (o.kind === 'document' && doc && fs.existsSync(path.dirname(doc)) ? path.dirname(doc) : lastFolder());
   const opts = { title: o.title ? String(o.title).slice(0, 80) : 'Save As', defaultPath: path.join(dir, cleanName(o.name)), filters: cleanFilters(o.filters) };
-  testLog('dialog-save', { defaultPath: opts.defaultPath, filters: opts.filters.map((f) => f.extensions.join(',')), kind: o.kind || null });
+  testLog('dialog-save', { defaultPath: opts.defaultPath, filters: opts.filters.map((f) => f.extensions.join(',')), kind: o.kind || null, near: !!near });
   let file;
   if (process.env.ANVIL_TEST_SAVE_DIR) file = process.env.ANVIL_TEST_SAVE_DIR === 'cancel' ? null : path.join(process.env.ANVIL_TEST_SAVE_DIR, path.basename(opts.defaultPath));
   else { const r = await dialog.showSaveDialog(w, opts); file = r.canceled ? null : r.filePath; }
@@ -282,12 +289,68 @@ ipcMain.handle('anvil-desktop:write-file', async (e, target, data, o) => {
     return { path: file, bytes };
   } catch (err) { const r = fileError(err, file); testLog('write-failed', { path: file, code: r.code, message: r.error }); return r; }
 });
+// ---- Recent Documents (File menu, File ▸ Browse Recent Documents; ui-app.js "Recent documents (rfIK)") ----------
+// The last RECENT_MAX documents opened or saved, newest first, kept in recent.json in the user-data folder: paths only,
+// never file contents. The page can add only a path it may already write (picked in a box, dropped, or reopened from
+// this list); reopening one through recent-open makes that one path writable again, exactly as picking it in the Open
+// box does. A path that is not there any more is listed as missing (a network folder that does not answer within
+// 1.5 s is not called missing).
+const RECENT_MAX = 10;
+function recentFile() { return path.join(app.getPath('userData'), 'recent.json'); }
+function recentRead() {
+  const j = readJson(recentFile());
+  return (j && Array.isArray(j.files) ? j.files : []).filter((f) => f && typeof f.path === 'string' && path.isAbsolute(f.path)).slice(0, RECENT_MAX);
+}
+function recentWrite(list) { writeJson(recentFile(), { files: list.slice(0, RECENT_MAX) }); }
+function statQuick(p) {
+  return Promise.race([fs.promises.stat(p).then((st) => (st.isFile() ? 'file' : 'other'), () => 'missing'), new Promise((res) => setTimeout(() => res('slow'), 1500))]);
+}
+async function recentList() {
+  const list = recentRead();
+  const states = await Promise.all(list.map((f) => statQuick(f.path)));
+  return list.map((f, i) => ({ path: f.path, name: path.basename(f.path), folder: path.dirname(f.path), at: f.at || null, missing: states[i] === 'missing' || states[i] === 'other' }));
+}
+ipcMain.handle('anvil-desktop:recent-list', () => recentList());
+ipcMain.handle('anvil-desktop:recent-add', (e, p) => {
+  if (typeof p !== 'string' || !p || !allowedPaths.has(pathKey(p))) { testLog('recent-refused', { path: String(p) }); return recentList(); }
+  const file = path.resolve(p), k = pathKey(file);
+  recentWrite([{ path: file, at: new Date().toISOString() }].concat(recentRead().filter((f) => pathKey(f.path) !== k)));
+  testLog('recent-added', { path: file });
+  return recentList();
+});
+ipcMain.handle('anvil-desktop:recent-remove', (e, p) => {
+  const k = typeof p === 'string' && p ? pathKey(p) : null;
+  if (k) recentWrite(recentRead().filter((f) => pathKey(f.path) !== k));
+  testLog('recent-removed', { path: String(p) });
+  return recentList();
+});
+ipcMain.handle('anvil-desktop:recent-clear', () => { recentWrite([]); testLog('recent-cleared', {}); return []; });
+// reopen one: only a path on the list; { path, name, data } as the Open box gives, or { missing: true, path, name }
+ipcMain.handle('anvil-desktop:recent-open', async (e, p) => {
+  const k = typeof p === 'string' && p ? pathKey(p) : null;
+  const hit = k && recentRead().find((f) => pathKey(f.path) === k);
+  if (!hit) return { error: 'That file is not on the Recent Documents list.', code: 'NOTALLOWED' };
+  const file = path.resolve(hit.path);
+  let st;
+  try { st = await fs.promises.stat(file); } catch (err) { testLog('recent-missing', { path: file }); return { missing: true, path: file, name: path.basename(file) }; }
+  if (!st.isFile()) return { missing: true, path: file, name: path.basename(file) };
+  if (st.size > 1024 * 1024 * 1024) return { path: file, name: path.basename(file), error: path.basename(file) + ' is larger than 1 GB.' };
+  try {
+    const data = await fs.promises.readFile(file);
+    allow(file); rememberFolder(file);
+    testLog('file-opened', { path: file, bytes: data.length, via: 'recent' });
+    return { path: file, name: path.basename(file), data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength) };
+  } catch (err) { return Object.assign({ path: file, name: path.basename(file) }, fileError(err, file)); }
+});
+
 // the page names its open document (null: none); only a path picked in a dialog is taken. The window title shows it.
-ipcMain.handle('anvil-desktop:set-document', (e, p) => {
+// title: the page's title for it (ui-app.js syncDocument), which may not have reached wc.getTitle() yet
+ipcMain.handle('anvil-desktop:set-document', (e, p, title) => {
   const wc = e.sender;
   if (p && allowedPaths.has(pathKey(p))) docPaths.set(wc.id, path.resolve(String(p))); else docPaths.delete(wc.id);
   const w = BrowserWindow.fromWebContents(wc);
-  if (w) w.setTitle(composeTitle(wc, wc.getTitle()) || (wc.getTitle() && !/^app:\/\//.test(wc.getTitle()) ? wc.getTitle() : 'Anvil ' + VERSION));
+  const pt = typeof title === 'string' && title ? title : wc.getTitle();
+  if (w) w.setTitle(composeTitle(wc, pt) || (pt && !/^app:\/\//.test(pt) ? pt : 'Anvil ' + VERSION));
   testLog('document', { asked: p || null, path: docPaths.get(wc.id) || null, title: w ? w.getTitle() : null });
   return docPaths.get(wc.id) || null;
 });

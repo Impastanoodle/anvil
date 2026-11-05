@@ -60,15 +60,24 @@ The Windows app uses Windows' own Open and Save boxes, as SolidWorks does:
 
 - **File ▸ Open** (Ctrl+O) shows the Open box with Anvil's file types (Anvil parts, assemblies and scripts, drawings,
   STEP, IGES, STL, OBJ, 3MF, DXF, DWG). An Anvil part or assembly remembers its file, and the window title shows its
-  name. A STEP, DXF … opens as a new part (Save asks where to put it).
+  name. A STEP, DXF … opens as a new part: the first Save asks where to put it, starting in the STEP's folder with its
+  name (bracket.step -> bracket.anvil.json), as SolidWorks does.
 - **Save** (Ctrl+S) writes straight to the document's file, with no box. A new document asks once, in the Save box.
+  A drawing opened from a `.drawing` file (or saved with File ▸ Save Drawing As) is written back to that file; if its
+  part changed too, the part is saved as well.
+- **Recent documents**: the File menu lists the last 10 documents opened or saved (parts, assemblies, drawings,
+  imported STEP / DXF …), newest first, with their folders; **File ▸ Browse Recent Documents…** shows the same list.
+  A click opens it (Save changes? first). A file that was moved or deleted is greyed; the dialog offers to remove it.
+  The list is `recent.json` in the settings folder (paths only); a file reopened from it can be saved in place again.
+- The window title is the document's file name, with `*` while there are unsaved changes (a drawing: its name and
+  sheet).
 - **Save As** and the exports (Export STEP, DXF / DWG, flat pattern, STL, OBJ, PDF …) show the Save box with the right
   name and type, in the last folder used.
 - If a file cannot be written (read-only, open in another program, a network folder that is gone) Anvil says why and
   your work stays open and unsaved; the old file is left as it was.
 - Parts saved inside Anvil before this version are still in the Task Pane's *Saved in this browser* list; open one
-  there and press Ctrl+S to give it a file. The file a document came from is not remembered after Anvil is closed
-  (there is no recent-files list yet).
+  there and press Ctrl+S to give it a file. After Anvil is closed, the Recent Documents list is how a file is found
+  again.
 
 ## Where files go
 
@@ -103,7 +112,8 @@ outside the app archive, and `occt-host.js` (the process that runs it) next to t
 Other commands: `npm start` runs Anvil from the source files; `npm run pack` builds `dist\win-unpacked\Anvil.exe`
 without an installer; `node check.js app`, `node check.js tests`, `node check.js update --folder <folder>` test a build
 by script (`node check.js files`: Open, Ctrl+S in place, Save As, exports, a read-only file, with the boxes stood in
-for; `node check.js drop`: a part file dropped on the window keeps its real path, the title names it, Ctrl+S writes
+for; `node check.js recent`: Recent Documents across a restart, a reopened file saved in place, a deleted one
+missing, a STEP's new part saved beside it; `node check.js drop`: a part file dropped on the window keeps its real path, the title names it, Ctrl+S writes
 back to it and nothing else in its folder becomes writable (a File backed by the file on disk through DevTools'
 `DOM.setFileInputFiles`, then a DragEvent; a drag from Explorer itself cannot be scripted); `node check.js update-restart`: Restart to update end to end with a stand-in installer, a .cmd in a temporary
 folder, never a real one: the unsaved-work question, the silent installer arguments, Anvil started again, a failed
