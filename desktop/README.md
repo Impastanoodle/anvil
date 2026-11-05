@@ -103,7 +103,9 @@ outside the app archive, and `occt-host.js` (the process that runs it) next to t
 Other commands: `npm start` runs Anvil from the source files; `npm run pack` builds `dist\win-unpacked\Anvil.exe`
 without an installer; `node check.js app`, `node check.js tests`, `node check.js update --folder <folder>` test a build
 by script (`node check.js files`: Open, Ctrl+S in place, Save As, exports, a read-only file, with the boxes stood in
-for; `node check.js update-restart`: Restart to update end to end with a stand-in installer, a .cmd in a temporary
+for; `node check.js drop`: a part file dropped on the window keeps its real path, the title names it, Ctrl+S writes
+back to it and nothing else in its folder becomes writable (a File backed by the file on disk through DevTools'
+`DOM.setFileInputFiles`, then a DragEvent; a drag from Explorer itself cannot be scripted); `node check.js update-restart`: Restart to update end to end with a stand-in installer, a .cmd in a temporary
 folder, never a real one: the unsaved-work question, the silent installer arguments, Anvil started again, a failed
 install starting the old Anvil, and update.log; add `--dev --exe <electron.exe>` to run either on the source files) (`node check.js engines` only the OpenCascade part: Windows engine against the browser copy, Cancel, the
 fall-backs and a timing table); `npm run icon` redraws the icon.

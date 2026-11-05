@@ -173,7 +173,7 @@ function setupDownloads() {
 // locked, a network folder gone) leaves the old file as it was; the document stays open in Anvil either way.
 // Test hooks: ANVIL_TEST_SAVE_DIR answers the Save dialog with that folder + the suggested name, ANVIL_TEST_OPEN_FILE
 // answers the Open dialog with that file ("cancel": cancelled); both log 'dialog-save' / 'dialog-open'.
-const allowedPaths = new Set();   // lower-cased full paths picked in a dialog this session
+const allowedPaths = new Set();   // lower-cased full paths picked in a dialog (or dropped on the window) this session
 const docPaths = new Map();       // webContents id -> the open document's path (window title)
 function pathKey(p) { return path.resolve(String(p)).toLowerCase(); }
 function allow(p) { allowedPaths.add(pathKey(p)); }
@@ -249,6 +249,20 @@ ipcMain.handle('anvil-desktop:save-dialog', async (e, o) => {
   else { const r = await dialog.showSaveDialog(w, opts); file = r.canceled ? null : r.filePath; }
   if (!file) return null;
   allow(file); rememberFolder(file);
+  return { path: file, name: path.basename(file) };
+});
+// a file the user dropped on the window (preload.js files.dropped, which only has a path for a real File from a drop
+// or a file input): that exact file, if it is a plain file of at most 1 GB, becomes writable like one picked in the
+// Open box (Ctrl+S writes back to it). Nothing else is opened up: no folder, no other name.
+ipcMain.handle('anvil-desktop:dropped-file', async (e, p) => {
+  if (typeof p !== 'string' || !p || !path.isAbsolute(p)) return null;
+  const file = path.resolve(p);
+  try {
+    const st = await fs.promises.stat(file);
+    if (!st.isFile() || st.size > 1024 * 1024 * 1024) return null;
+  } catch (err) { return null; }
+  allow(file);
+  testLog('file-dropped', { path: file });
   return { path: file, name: path.basename(file) };
 });
 // write(path, data, { sibling }): path must have been picked in a dialog (or opened) this session; sibling writes

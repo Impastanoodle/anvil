@@ -440,6 +440,59 @@ async function checkFiles() {
   } finally { await quit(page, child); }
 }
 
+// ---- a file dropped on the window (rfID): it keeps its real path (preload.js webUtils.getPathForFile, main.js
+// 'anvil-desktop:dropped-file'), the title names it and Ctrl+S writes back to it. A drag from Explorer cannot be
+// scripted, so DevTools' DOM.setFileInputFiles gives the page a File backed by the file on disk (what a drop gives
+// it) and a DragEvent carrying it goes through Anvil's window-level drop handler ---------------------------------
+async function checkDrop() {
+  const ud = path.join(WORK, 'userdata'), log = path.join(WORK, 'events.log'), inDir = path.join(WORK, 'Dropped in');
+  fs.mkdirSync(ud, { recursive: true }); fs.mkdirSync(inDir, { recursive: true });
+  fs.writeFileSync(path.join(ud, 'settings.json'), JSON.stringify({ updateFolder: path.join(WORK, 'no-such-folder'), occtEngine: 'wasm' }));
+  const part = path.join(inDir, 'ID part.anvil.json');
+  const child = launch({ ANVIL_USER_DATA: ud, ANVIL_TEST_LOG: log, ANVIL_UPDATE_DELAY_MS: '3600000' });
+  const page = await connect('app://anvil/');
+  try {
+    await page.waitFor('window.anvil && window.anvil.run && document.readyState === "complete"', 60000);
+    ok(await page.ev('!!(window.anvilDesktop && window.anvilDesktop.files && window.anvilDesktop.files.dropped)'), 'the bridge has files.dropped');
+    await page.ev('anvil.run(\'p.name("IDPart").units("in");\\np.sketch("Front").rect(0,0,4,2).extrude(0.5);\')');
+    fs.writeFileSync(part, await page.ev('JSON.stringify(UI.App.model)'));
+    await page.ev('anvil.newPart().then(function () { UI.markClean(); return true; })');
+    // a File the page made itself has no path on disk: nothing is opened up
+    const none = await page.ev('anvilDesktop.files.dropped(new File(["{}"], "made.anvil.json"))');
+    ok(none === null && !readLog(log).some((e) => e.event === 'file-dropped'), 'a File with no path on disk gets none', none);
+    // the drop
+    await page.ev('(function () { var i = document.createElement("input"); i.type = "file"; i.id = "__idDrop"; i.style.display = "none"; document.body.appendChild(i); return true; })()');
+    const doc = await page.send('DOM.getDocument', {});
+    const q = await page.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: '#__idDrop' });
+    await page.send('DOM.setFileInputFiles', { nodeId: q.nodeId, files: [part] });
+    const href = await page.ev('location.href');
+    const cancelled = await page.ev('(function () { var inp = document.getElementById("__idDrop"), dt = new DataTransfer(); dt.items.add(inp.files[0]); inp.remove(); var out = {};' +
+      ' ["dragenter", "dragover", "drop"].forEach(function (k) { out[k] = !UI.viewport.dispatchEvent(new DragEvent(k, { bubbles: true, cancelable: true, dataTransfer: dt })); }); return out; })()');
+    await page.waitFor('UI.App.filePath', 20000).catch(() => null);
+    const opened = await page.ev('({ path: UI.App.filePath, name: UI.App.model.name, volume: anvil.mass().volume, href: location.href, dirty: UI.isDirty() })');
+    ok(cancelled.dragover && cancelled.drop && opened.path === part && opened.name === 'IDPart' && Math.abs(opened.volume - 4) < 1e-9 && opened.href === href && !opened.dirty,
+      'a dropped part opens with its real path (the page does not navigate)', { cancelled, opened });
+    const dropped = readLog(log).filter((e) => e.event === 'file-dropped');
+    ok(dropped.length === 1 && dropped[0].path === part, 'main.js allows exactly the dropped file', dropped);
+    const docLog = readLog(log).filter((e) => e.event === 'document').pop();
+    ok(docLog && docLog.path === part && /^ID part\.anvil\.json( \*)? - Anvil$/.test(docLog.title), 'the window title names the dropped file', docLog);
+    // Ctrl+S: straight to that file, no box
+    await page.ev('anvil.append(\'p.sketch("Front", 0.5).circle(1, 1, 0.25).cut("through", { reverse: true });\')');
+    await page.ev('document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true })); true');
+    await page.waitFor('!UI.isDirty()', 10000).catch(() => null);
+    const onDisk = JSON.parse(fs.readFileSync(part, 'utf8'));
+    ok(onDisk.features.length === await page.ev('UI.App.model.features.length') && onDisk.features.length > 2 && !readLog(log).some((e) => e.event === 'dialog-save') && !(await page.ev('UI.isDirty()')),
+      'Ctrl+S writes the dropped file in place, no Save box', { features: onDisk.features.length });
+    // only that file: its folder's other names stay refused
+    const other = path.join(inDir, 'other.anvil.json');
+    const refused = await page.ev('anvilDesktop.files.write(' + JSON.stringify(other) + ', "x")');
+    ok(refused && refused.code === 'NOTALLOWED' && !fs.existsSync(other), 'another file in the dropped file\'s folder is still refused', refused);
+    const noEngine = !fs.existsSync(path.join(__dirname, '..', 'anvil', 'vendor', 'occt', 'opencascade.full.wasm'));
+    const errs = page.errors.concat(readLog(log).filter((e) => e.event === 'console-error').map((e) => e.message)).filter((m) => !(noEngine && /vendor\/occt\/opencascade/.test(m)));
+    ok(errs.length === 0, 'no console errors', errs.slice(0, 5));
+  } finally { await quit(page, child); }
+}
+
 // ---- Restart to update, end to end with a stand-in installer (a .cmd that records its arguments and starts the app
 // again; never a real installer) ----------------------------------------------------------------------------------
 async function updateRun(name, stubBody, opts) {
@@ -508,6 +561,7 @@ async function checkUpdateRestart() {
     else if (cmd === 'tests') await checkTests();
     else if (cmd === 'update') await checkUpdate();
     else if (cmd === 'files') await checkFiles();
+    else if (cmd === 'drop') await checkDrop();
     else if (cmd === 'update-restart') await checkUpdateRestart();
     else throw new Error('unknown check ' + cmd);
   } catch (e) { ok(false, 'check ran to the end', e.stack || e.message); }

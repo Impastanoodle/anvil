@@ -794,18 +794,23 @@
     return desk().open({ filters: filters }).then(function (r) {
       if (!r) return null;
       if (r.error) { UI.showModal({ title: 'Open', body: el('div', {}, [el('p', { text: r.name || r.path || 'The file' }), el('p', { text: r.error })]), buttons: [{ label: 'OK', primary: true, action: UI.closeModal }] }); return null; }
-      // a document Anvil can write back (a part / assembly JSON or a script) keeps its path; an imported STEP, DXF …
-      // is a new part (Save asks where), and a drawing saves itself (File ▸ Save Drawing As)
-      var keep = /\.js$/i.test(r.name);
-      if (/\.json$/i.test(r.name)) { try { var j = JSON.parse(new TextDecoder('utf-8').decode(r.data)); keep = !!j && j.kind !== 'anvil-drawing' && (Array.isArray(j.features) || j.type === 'assembly'); } catch (e) { keep = false; } }
-      var d = r.data;
-      if (d && typeof d !== 'string' && ArrayBuffer.isView(d)) d = d.byteOffset === 0 && d.byteLength === d.buffer.byteLength ? d.buffer : d.slice().buffer;
-      return openFileData(r.name, d).then(function (s) {
-        if (keep) deskSetPath(r.path);
-        UI.setStatus('Opened ' + r.path);
-        return s;
-      }, function (e) { UI.toast('Could not open ' + r.name + ': ' + ((e && e.message) || e)); return null; });
+      return openDiskFile(r);
     });
+  }
+  // a file read from disk (r = { path, name, data }: Windows' Open box, or a file dropped on the window; path null in a
+  // browser):
+  // opened as File ▸ Open would. A document Anvil can write back (a part / assembly JSON or a script) keeps its path;
+  // an imported STEP, DXF … is a new part (Save asks where), and a drawing saves itself (File ▸ Save Drawing As)
+  function openDiskFile(r) {
+    var keep = /\.js$/i.test(r.name);
+    if (/\.json$/i.test(r.name)) { try { var j = JSON.parse(new TextDecoder('utf-8').decode(r.data)); keep = !!j && j.kind !== 'anvil-drawing' && (Array.isArray(j.features) || j.type === 'assembly'); } catch (e) { keep = false; } }
+    var d = r.data;
+    if (d && typeof d !== 'string' && ArrayBuffer.isView(d)) d = d.byteOffset === 0 && d.byteLength === d.buffer.byteLength ? d.buffer : d.slice().buffer;
+    return openFileData(r.name, d).then(function (s) {
+      if (keep && r.path) deskSetPath(r.path);
+      UI.setStatus('Opened ' + (r.path || r.name));
+      return s;
+    }, function (e) { UI.toast('Could not open ' + r.name + ': ' + ((e && e.message) || e)); return null; });
   }
   function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { UI.toast('Copied to clipboard'); }, function () { UI.toast('Copy failed — select the text and press Ctrl+C'); });
@@ -1055,6 +1060,7 @@
     ]);
     body.addEventListener('dragover', function (e) { e.preventDefault(); });   // a file dropped beside the zone is not opened by the browser
     body.addEventListener('drop', function (e) { if (!zone.contains(e.target)) { e.preventDefault(); choose(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); } });
+    openDlg = { zone: zone, choose: choose };   // a file dropped elsewhere on the window while this dialog shows (rfID)
     UI.showModal({ title: 'Open', body: body, buttons: [
       { label: 'Open', primary: true, action: function go() {
         if (reading) { reading.then(go); return; }
@@ -1082,6 +1088,115 @@
     pickFile('.step,.stp,.stl,.obj,.3mf', function (name, data) {
       importIntoCurrent(name, data).catch(function (e) { UI.toast((e && e.message) || String(e)); });
     });
+  }
+  // ---- a file dropped anywhere on the window (rfID) ----------------------------------------------------------------
+  // Any file File ▸ Open takes (OPEN_TYPES) opens through File ▸ Open's own path: "Save changes?" first
+  // (confirmDiscard), then openDiskFile -> openFileData. In the Windows app the dropped file keeps its path
+  // (anvilDesktop.files.dropped, desktop/preload.js + main.js), so the title names it and Ctrl+S writes back to it.
+  // A drop an element handles itself (calls preventDefault: the Open dialog's drop zone and its body) wins; while the
+  // Open dialog shows, a drop on its backdrop goes to the dialog. Anvil holds one document at a time: of several files
+  // the first one Anvil can open opens and a toast says so. A file drag always has its default cancelled, so the
+  // browser never opens or navigates to a dropped file. While dragging, a full-window overlay (#drop-overlay) says
+  // what a drop will do; Chrome hides file names until the drop, so then it judges by the file's MIME type only.
+  var openDlg = null;   // { zone, choose } of the Open dialog last shown
+  var OPEN_EXTS = OPEN_TYPES[0][2].split(',');
+  var OPEN_TYPES_TEXT = 'Anvil parts, assemblies, drawings and scripts (.json, .js, .drawing), STEP, IGES, STL, OBJ, 3MF, DXF and DWG';
+  var BAD_MIME = /^(image|video|audio|font)\/|^application\/(pdf|zip|x-zip|x-7z|x-rar|msword|vnd\.ms-|vnd\.openxmlformats|x-msdownload)|^text\/(html|csv)$/;
+  function canOpenName(name) { var n = String(name || '').toLowerCase(); return OPEN_EXTS.some(function (x) { return n.length > x.length && n.slice(-x.length) === x; }); }
+  function cantOpenText(name) { var x = extOf(name); return "Anvil can't open " + (x ? '.' + x + ' files' : String(name || 'that file')); }
+  function dragHasFiles(e) { var t = e.dataTransfer && e.dataTransfer.types; return !!t && Array.prototype.indexOf.call(t, 'Files') >= 0; }
+  function dragFiles(e) { var f = e.dataTransfer && e.dataTransfer.files; return f ? Array.prototype.slice.call(f) : []; }
+  function modalShown() { var m = $('modal'); return !!m && !m.hidden; }
+  function openDlgShown() { return !!(openDlg && modalShown() && document.body.contains(openDlg.zone)); }
+  // [can open, the overlay's line]
+  function dropVerdict(e) {
+    var files = dragFiles(e);
+    if (files.length) {
+      var good = files.filter(function (f) { return canOpenName(f.name); });
+      if (!good.length) return [false, cantOpenText(files[0].name)];
+      return [true, 'Drop to open ' + good[0].name];
+    }
+    var items = e.dataTransfer && e.dataTransfer.items, types = [];
+    for (var i = 0; items && i < items.length; i++) if (items[i].kind === 'file') types.push(items[i].type || '');
+    if (types.length && types.every(function (t) { return BAD_MIME.test(t); })) return [false, "Anvil can't open this type of file"];
+    return [true, types.length > 1 ? 'Drop to open the first file' : 'Drop to open the file'];
+  }
+  var dropEl = null, dropTimer = null, dropDepth = 0;
+  function showDropOverlay(v, several) {
+    if (!dropEl) {
+      dropEl = el('div', { id: 'drop-overlay', role: 'status' }, [el('div', { class: 'drop-card' }, [
+        el('div', { class: 'drop-icon', html: Icons('openDoc', 40) }), el('b', { class: 'drop-text' }), el('small', { class: 'drop-sub' })])]);
+      document.body.appendChild(dropEl);
+    }
+    dropEl.classList.toggle('bad', !v[0]);
+    dropEl.querySelector('.drop-text').textContent = v[1];
+    dropEl.querySelector('.drop-sub').textContent = !v[0] ? 'Anvil opens ' + OPEN_TYPES_TEXT + '.'
+      : several ? 'Anvil opens one document at a time: the first file opens.' : 'It opens as File ▸ Open would.';
+    dropEl.hidden = false;
+    clearTimeout(dropTimer);
+    dropTimer = setTimeout(hideDropOverlay, 1500);   // a drag that ended with no dragleave / drop reaching the page
+  }
+  function hideDropOverlay() { clearTimeout(dropTimer); dropDepth = 0; if (dropEl) dropEl.hidden = true; }
+  function onFileDrag(e) {
+    if (!dragHasFiles(e)) return;
+    var handled = e.defaultPrevented;   // an element under the pointer takes this drop itself (the Open dialog)
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    if (e.type === 'dragenter') dropDepth++;
+    if (handled || modalShown()) { if (dropEl) dropEl.hidden = true; return; }
+    var dt = e.dataTransfer, n = dt ? (dt.files.length || (dt.items ? dt.items.length : 0)) : 0;
+    showDropOverlay(dropVerdict(e), n > 1);
+  }
+  function onFileDragLeave(e) {
+    if (!dragHasFiles(e)) return;
+    dropDepth = Math.max(0, dropDepth - 1);
+    if (!dropDepth) hideDropOverlay();   // every dragenter has its dragleave; 0 = the pointer left the window
+  }
+  function onFileDrop(e) {
+    if (!dragHasFiles(e)) return;
+    var handled = e.defaultPrevented;
+    e.preventDefault();   // never let the browser open the file
+    hideDropOverlay();
+    if (handled) return;
+    var files = dragFiles(e);
+    if (openDlgShown()) { if (files[0]) openDlg.choose(files[0]); return; }
+    if (modalShown()) { UI.toast('Close the open dialog first, then drop the file again.'); return; }
+    openDroppedFiles(files);
+  }
+  // openDroppedFiles(files) -> Promise of the summary (null: nothing opened; never settles on Cancel in "Save changes?")
+  function openDroppedFiles(files) {
+    files = Array.prototype.slice.call(files || []);
+    if (!files.length) return Promise.resolve(null);
+    var good = files.filter(function (f) { return canOpenName(f.name); });
+    if (!good.length) {
+      var msg = cantOpenText(files[0].name) + '. It opens ' + OPEN_TYPES_TEXT + '.';
+      UI.toast(msg); UI.setStatus(msg);
+      return Promise.resolve(null);
+    }
+    var file = good[0], rest = files.length - 1;
+    return new Promise(function (res) {
+      confirmDiscard(null, function () {
+        res(openDroppedFile(file).then(function (s) {
+          if (s && rest) UI.toast('Opened ' + file.name + '. Anvil holds one document at a time, so the other ' + (rest === 1 ? 'file was' : rest + ' files were') + ' not opened.');
+          return s;
+        }));
+      });
+    });
+  }
+  function openDroppedFile(file) {
+    var d = desk();
+    var where = d && d.dropped ? Promise.resolve().then(function () { return d.dropped(file); }).catch(function () { return null; }) : Promise.resolve(null);
+    return Promise.all([readFile(file), where]).then(function (r) {
+      return openDiskFile({ name: file.name, path: (r[1] && r[1].path) || null, data: r[0] });
+    }, function (e) { UI.toast('Could not read ' + file.name + ': ' + ((e && e.message) || e)); return null; });
+  }
+  function initFileDrop() {
+    window.addEventListener('dragenter', onFileDrag);
+    window.addEventListener('dragover', onFileDrag);
+    window.addEventListener('dragleave', onFileDragLeave);
+    window.addEventListener('drop', onFileDrop);
+    window.addEventListener('dragend', hideDropOverlay);
+    window.addEventListener('keydown', function (e) { if (e.key === 'Escape' && dropEl && !dropEl.hidden) hideDropOverlay(); }, true);
   }
   // File ▸ Save (Ctrl+S): asks for the name (the last one offered), saves in this browser; onSaved (a function) runs
   // after a successful save (the Save of "Save changes to Part1?")
@@ -1871,6 +1986,7 @@
     holdStatusRight();
     UI.setStatus('Ready. Sketch tab → Sketch to start drawing, or open Automation / Script on the right to model in code.');
     initCommandSearch();
+    initFileDrop();
     offerRecovery();
   }
 
@@ -1929,7 +2045,7 @@
   UI.openTaskPane = openTaskPane; UI.closeTaskPane = closeTaskPane; UI.runScript = runScript; UI.exportDialog = exportDialog; UI.download = download;
   UI.exportSTL = exportSTL; UI.exportFaceDXF = exportFaceDXF; UI.exportSketchDXF = exportSketchDXF; UI.exportScript = exportScript; UI.exportJSON = exportJSON; UI.screenshot = screenshot;
   UI.fileNew = fileNew; UI.fileOpen = fileOpen; UI.fileSave = fileSave; UI.fileSaveAs = fileSaveAs;
-  UI.cmdInsertImported = cmdInsertImported; UI.openFileData = openFileData; UI.exportData = exportData;
+  UI.cmdInsertImported = cmdInsertImported; UI.openFileData = openFileData; UI.openDroppedFiles = openDroppedFiles; UI.exportData = exportData;
   // File ▸ New ▸ Part / Assembly (menus): "Save changes to Part1?" first when the document has unsaved changes (the
   // promise waits for the answer and never settles on Cancel); anvil.newPart / newAssembly (scripts) never ask
   UI.newAssembly = function (name) { return new Promise(function (res) { confirmDiscard(null, function () { res(newAssembly(name)); }); }); };

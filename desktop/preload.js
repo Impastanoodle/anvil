@@ -4,7 +4,7 @@
 // The update prompt ("Anvil x.y.z is ready — Restart to update / Later") is drawn here, over the page, so Anvil's
 // own files need no change for it.
 'use strict';
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 let info = { version: '' };
 try { info = ipcRenderer.sendSync('anvil-desktop:info') || info; } catch (e) { /* main not ready */ }
@@ -54,7 +54,15 @@ contextBridge.exposeInMainWorld('anvilDesktop', {
   // (cancelled); saveDialog({ name, filters, kind: 'document' | 'export', title }) -> { path, name } | null;
   // write(path, data, { sibling }) -> { path, bytes } | { error, code } (only a path picked in a dialog this session);
   // setDocument(path | null): the open document's file (the window title shows its name).
+  // dropped(file): a File the user dropped on the window (ui-app.js openDroppedFile) -> { path, name } | null. Only a
+  // File that is a real file on disk has a path (webUtils.getPathForFile; a File the page made itself has none), and
+  // main.js then lets Ctrl+S write back to that one path, as for a file picked in the Open box.
   files: {
+    dropped: (file) => {
+      let p = '';
+      try { p = webUtils.getPathForFile(file) || ''; } catch (e) { p = ''; }
+      return p ? ipcRenderer.invoke('anvil-desktop:dropped-file', p) : Promise.resolve(null);
+    },
     open: (o) => ipcRenderer.invoke('anvil-desktop:open-dialog', o || {}),
     saveDialog: (o) => ipcRenderer.invoke('anvil-desktop:save-dialog', o || {}),
     write: (p, data, o) => ipcRenderer.invoke('anvil-desktop:write-file', p, data, o || {}),
