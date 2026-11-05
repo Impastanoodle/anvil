@@ -247,10 +247,11 @@
   // nearest clear spot in any direction. When nothing on the sheet is clear it goes beyond the farthest view on its
   // side (r3/drawings3: section views added through the API used to land on the Right view).
   // Returns true when the spot is on the sheet (false: nothing on the sheet was clear, it went beside it).
-  function clearSpot(doc, mesh, v, free) {
-    var k = paperK(doc.units), S = sheetSize(doc, doc.units), g = GAP * k, sep = g * 0.6, b1 = BORDER * k;
+  // (rfIJ) tight: keep 4 mm round the view instead of 0.6 × GAP (13 mm), fitOnSheet's last tries on a crowded sheet
+  function clearSpot(doc, mesh, v, free, tight) {
+    var k = paperK(doc.units), S = sheetSize(doc, doc.units), g = GAP * k, sep = tight ? 4 * k : g * 0.6, b1 = BORDER * k;
     var obs = doc.views.filter(function (o) { return o !== v; }).map(function (o) { return viewPaperBox(doc, mesh, o); });
-    obs.push({ x0: S[0] - b1 - TB_W * k, y0: b1, x1: S[0] - b1, y1: b1 + TB_H * k });
+    tbRects(S, doc.units).forEach(function (r) { obs.push(r); });   // (rfIJ: and the blocks left of it when they fit)
     var rvb = revBox(doc, doc.units); if (rvb) obs.push(rvb);
     if (doc.bom && doc.bom.show !== false && doc.bomRows) { var bb = bomBox(doc, doc.units, doc.bomRows); obs.push({ x0: bb.x0, y0: bb.y0, x1: bb.x1, y1: bb.y1 }); }
     var me = viewPaperBox(doc, mesh, v), ox = v.x, oy = v.y;
@@ -297,10 +298,14 @@
     var x0 = v.x, y0 = v.y, sc0 = v.scale, al0 = v.align, s0 = viewScale(doc, v);
     var par = v.kind === 'detail' && v.parent != null ? findView(doc, v.parent) : null, lo = par ? viewScale(doc, par) : 0;
     var smaller = scalesFor(doc).filter(function (s) { var q = scaleValue(s); return q < s0 - 1e-9 && q >= s0 / 4 - 1e-9 && q > lo + 1e-9; });
-    function at(sc, align) { v.x = x0; v.y = y0; v.scale = sc; v.align = align; return clearSpot(doc, mesh, v, align ? free : null); }
-    var tries = al0 ? [[sc0, al0], [sc0, null]] : [[sc0, null]];
-    smaller.forEach(function (s) { if (al0) tries.push([s.slice(), al0]); tries.push([s.slice(), null]); });
-    for (var i = 0; i < tries.length; i++) if (at(tries[i][0], tries[i][1])) return true;
+    function at(sc, align, tight) { v.x = x0; v.y = y0; v.scale = sc; v.align = align; return clearSpot(doc, mesh, v, align ? free : null, tight); }
+    // (rfIJ) at each scale the usual gap first, then (a crowded sheet: ANSI A with four views) a narrow one, so the
+    // view keeps its scale where it can; a smaller scale only when neither fits
+    var tries = [];
+    [sc0].concat(smaller.map(function (s) { return s.slice(); })).forEach(function (s) {
+      [false, true].forEach(function (tight) { if (al0) tries.push([s, al0, tight]); tries.push([s, null, tight]); });
+    });
+    for (var i = 0; i < tries.length; i++) if (at(tries[i][0], tries[i][1], tries[i][2])) return true;
     at(sc0, al0);
     v.offSheet = true;
     return false;

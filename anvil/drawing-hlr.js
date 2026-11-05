@@ -1116,6 +1116,8 @@
     var tm = tanOn ? extractCircles(mergeCollinear(tan, [], diag).visible, diag) : null;
     res.lines.tangent = tm ? tm.lines : []; res.circles.tangent = tm ? tm.circles.concat(tex.circles) : [];
     res.arcs.tangent = tex.arcs; res.ellipses.tangent = tex.ellipses;
+    // (rfIJ) ends that meet to within rounding are one point (exact joins in the DXF)
+    if (!opts._keepGaps) ['visible', 'hidden', 'tangent'].forEach(function (st) { _.weldEnds(res.lines[st], res.ellipses[st], res.arcs[st]); });
     res.stats = { visibleLines: res.lines.visible.length, hiddenLines: res.lines.hidden.length, visibleCircles: res.circles.visible.length, hiddenCircles: res.circles.hidden.length, occluders: tris.length };
     if (CV || fitted) { res.stats.visibleArcs = res.arcs.visible.length; res.stats.hiddenArcs = res.arcs.hidden.length; res.stats.visibleEllipses = res.ellipses.visible.length; res.stats.hiddenEllipses = res.ellipses.hidden.length; }
     if (tanOn) res.stats.tangentLines = res.lines.tangent.length + res.circles.tangent.length + res.arcs.tangent.length + res.ellipses.tangent.length;

@@ -1359,6 +1359,10 @@
 
   // ------------------------------------------------------------------ writers
   function num(x) { return String(Math.round(x * 1e4) / 1e4); }
+  // (rfIJ) DXF geometry (lines, arcs, circles, ellipses, R12 polylines) to 1e-9: edges that meet on the sheet meet in the
+  // file (to 1e-4 a curve's end, worked out from its rounded centre, radius and angles, missed a line's end by up to
+  // 0.0001, and two ends a hair apart could round apart)
+  function gnum(x) { return String(Math.round(x * 1e9) / 1e9); }
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   // widths in paper mm
   // dimension, leader and balloon arrowheads: 3 mm long, 1 mm wide (ASME Y14.2, SolidWorks' ANSI default 1 × 3 mm;
@@ -1668,12 +1672,12 @@
       }
       // hatch lines leave out z (30 / 31, default 0): a dashed hatch pattern is thousands of lines (r6/drawings6)
       if (p.k === 'line' && p.style === 'hatch') { head('LINE', 'AcDbLine', true); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(11, num(p.b[0])); pr(21, num(p.b[1])); }
-      else if (p.k === 'line') { head('LINE', 'AcDbLine', true); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(30, 0); pr(11, num(p.b[0])); pr(21, num(p.b[1])); pr(31, 0); }
-      else if (p.k === 'circle') { head('CIRCLE', 'AcDbCircle', true); pr(10, num(p.c[0])); pr(20, num(p.c[1])); pr(30, 0); pr(40, num(p.r)); }
+      else if (p.k === 'line') { head('LINE', 'AcDbLine', true); pr(10, gnum(p.a[0])); pr(20, gnum(p.a[1])); pr(30, 0); pr(11, gnum(p.b[0])); pr(21, gnum(p.b[1])); pr(31, 0); }
+      else if (p.k === 'circle') { head('CIRCLE', 'AcDbCircle', true); pr(10, gnum(p.c[0])); pr(20, gnum(p.c[1])); pr(30, 0); pr(40, gnum(p.r)); }
       else if (p.k === 'arc') {
-        head('ARC', 'AcDbCircle', true); pr(10, num(p.c[0])); pr(20, num(p.c[1])); pr(30, 0); pr(40, num(p.r));
+        head('ARC', 'AcDbCircle', true); pr(10, gnum(p.c[0])); pr(20, gnum(p.c[1])); pr(30, 0); pr(40, gnum(p.r));
         if (r2000) pr(100, 'AcDbArc');
-        pr(50, num(((p.a0 % 360) + 360) % 360)); pr(51, num(((p.a1 % 360) + 360) % 360));
+        pr(50, gnum(((p.a0 % 360) + 360) % 360)); pr(51, gnum(((p.a1 % 360) + 360) % 360));
       } else if (p.k === 'ellipse' && r2000) {
         // R2000: a true ELLIPSE (major axis from the centre, minor / major ≤ 1, start / end parameters CCW in radians;
         // ellipseAt's parameter is the DXF one: c + major·cos t + (n × major)·ratio·sin t)
@@ -1682,14 +1686,14 @@
         var TWO = 2 * Math.PI, sw0 = p.full ? TWO : Math.min(TWO, t1 - t0), s0 = p.full ? 0 : ((t0 % TWO) + TWO) % TWO;
         var r9 = function (x) { return String(Math.round(x * 1e9) / 1e9); };
         head('ELLIPSE', 'AcDbEllipse', true);
-        pr(10, num(p.c[0])); pr(20, num(p.c[1])); pr(30, 0); pr(11, r9(M[0])); pr(21, r9(M[1])); pr(31, 0);
+        pr(10, gnum(p.c[0])); pr(20, gnum(p.c[1])); pr(30, 0); pr(11, r9(M[0])); pr(21, r9(M[1])); pr(31, 0);
         pr(210, 0); pr(220, 0); pr(230, 1); pr(40, r9(ratio)); pr(41, r9(s0)); pr(42, r9(s0 + sw0));
       } else if (p.k === 'ellipse') {
         // DXF R12 has no ELLIPSE entity: a 2D POLYLINE through points on the exact ellipse (chord error under 0.01 mm)
         var Rm = Math.hypot(p.major[0], p.major[1]), tolE = 0.01 * (inch ? 1 / MM : 1), sw = p.t1 - p.t0;
         var step = Rm > tolE ? 2 * Math.acos(Math.max(-1, 1 - tolE / Rm)) : Math.PI / 4, n = Math.max(8, Math.min(720, Math.ceil(sw / step)));
         head('POLYLINE'); pr(66, 1); pr(10, 0); pr(20, 0); pr(30, 0); pr(70, p.full ? 1 : 0);
-        for (var i = 0; i < (p.full ? n : n + 1); i++) { var ep = ellipseAt(p, p.t0 + sw * i / n).p; pr(0, 'VERTEX'); pr(8, p.layer); pr(10, num(ep[0])); pr(20, num(ep[1])); pr(30, 0); }
+        for (var i = 0; i < (p.full ? n : n + 1); i++) { var ep = ellipseAt(p, p.t0 + sw * i / n).p; pr(0, 'VERTEX'); pr(8, p.layer); pr(10, gnum(ep[0])); pr(20, gnum(ep[1])); pr(30, 0); }
         pr(0, 'SEQEND'); pr(8, p.layer);
       } else if (p.k === 'region' && r2000) {
         // (rfAG) a solid area fill: a HATCH entity, SOLID pattern, one polyline boundary path per loop (odd parity)

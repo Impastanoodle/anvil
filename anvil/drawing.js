@@ -530,6 +530,47 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
     return lines.filter(function (l) { return Math.hypot(l[2] - l[0], l[3] - l[1]) > 1e-9; }).concat(bridges);
   }
 
+  // weldEnds(lines, ells, arcs) (rfIJ): ends that meet only to within rounding (closeSmallGaps counts an end within
+  // 1e-6 × (1 + |u| + |v|) as meeting: up to 0.0003 mm on a large view, the Handlebar's isometric 0.0000035 mm) are made
+  // the same point, so the DXF (geometry written to 1e-9) has joined edges whose end points are equal (ends already
+  // within 1e-6 are left alone: exact geometry is not moved for noise below the DXF's join test). A line end goes to
+  // the end of a partial arc / ellipse within reach (the curve's end is its parameters', it does not move), else every
+  // line end of the cluster goes to the first one's point. A line is never shortened to nothing.
+  function weldEnds(lines, ells, arcs) {
+    if (!lines.length || lines.length > 20000) return lines;
+    function tolAt(p) { return 2e-6 * (1 + Math.abs(p[0]) + Math.abs(p[1])); }
+    var H = 1e-3, grid = {};
+    function key(x, y) { return Math.floor(x / H) + ',' + Math.floor(y / H); }
+    function put(e) { var k = key(e.p[0], e.p[1]); (grid[k] || (grid[k] = [])).push(e); }
+    function near(p, tol, test) {
+      var gx = Math.floor(p[0] / H), gy = Math.floor(p[1] / H), r = Math.ceil(tol / H), best = null, bd = tol;
+      for (var i = -r; i <= r; i++) for (var j = -r; j <= r; j++) (grid[(gx + i) + ',' + (gy + j)] || []).forEach(function (e) {
+        var d = Math.hypot(e.p[0] - p[0], e.p[1] - p[1]);
+        if (d <= bd && test(e)) { bd = d; best = e; }
+      });
+      return best;
+    }
+    (ells || []).forEach(function (q) {
+      if (q.full) return;
+      [q.t0, q.t1].forEach(function (t) { put({ p: [q.c[0] + Math.cos(t) * q.ax[0] + Math.sin(t) * q.ay[0], q.c[1] + Math.cos(t) * q.ax[1] + Math.sin(t) * q.ay[1]], fixed: true }); });
+    });
+    (arcs || []).forEach(function (a) {
+      if (a.a1 - a.a0 >= 360 - 1e-9) return;
+      [a.a0, a.a1].forEach(function (d) { var r = d * Math.PI / 180; put({ p: [a.c[0] + a.r * Math.cos(r), a.c[1] + a.r * Math.sin(r)], fixed: true }); });
+    });
+    lines.forEach(function (l) {
+      var L = Math.hypot(l[2] - l[0], l[3] - l[1]);
+      [0, 1].forEach(function (end) {
+        var p = end ? [l[2], l[3]] : [l[0], l[1]], tol = Math.min(tolAt(p), L / 4);
+        if (!(tol > 0)) return;
+        var f = near(p, tol, function (e) { return e.fixed; }) || near(p, tol, function (e) { return e.l !== l; });
+        if (f && Math.hypot(f.p[0] - p[0], f.p[1] - p[1]) > 1e-6) { if (end) { l[2] = f.p[0]; l[3] = f.p[1]; } else { l[0] = f.p[0]; l[1] = f.p[1]; } p = f.p; }
+        put({ p: p.slice(), l: l });
+      });
+    });
+    return lines;
+  }
+
   // joinCollinear(lines, G, diag) (r11/hatch11): pieces of one body on one straight line (direction within 1e-6 rad,
   // offset within diag · 1e-6) that overlap or leave a gap under G are one line. mergeCollinear joins exactly touching
   // pieces only; what a cut cylinder's facets leave on OpenCascade (a section's cap edge in three pieces 0.002 mm
@@ -595,5 +636,5 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
   D.projectedFrame = projectedFrame; D.sectionFrame = sectionFrame;
   D.meshEdges = meshEdges; D.pairOpenEdges = pairOpenEdges; D.joinCollinear = joinCollinear;
   _.TWO_PI = TWO_PI; _.ORTHO = ORTHO; _.DIRS = DIRS; _.frameKey = frameKey; _.COS_SMOOTH = COS_SMOOTH; _.COS_CREASE = COS_CREASE;
-  _.meshDiag = meshDiag; _.closeEnds = closeEnds; _.closeFreeEnds = closeFreeEnds; _.closeSmallGaps = closeSmallGaps;
+  _.meshDiag = meshDiag; _.closeEnds = closeEnds; _.closeFreeEnds = closeFreeEnds; _.closeSmallGaps = closeSmallGaps; _.weldEnds = weldEnds;
 })(Drawing, Drawing._);
