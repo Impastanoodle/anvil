@@ -344,7 +344,7 @@
   function exportDXFFlat(flat, units, opts) {
     opts = opts || {};
     units = units === 'in' ? 'in' : 'mm';
-    var d = new DXF(units, opts), style = opts.style === 'entities' ? 'entities' : 'polyline';
+    var d = new DXF(units, Object.assign({}, opts, { textExtents: false })), style = opts.style === 'entities' ? 'entities' : 'polyline';
     var cvs = flat.loops.map(function (l) { return dxfLoopCurves(l); });
     var box = curvesBox(cvs), shift = opts.origin === false || !isFinite(box.min[0]) ? [0, 0] : [-box.min[0], -box.min[1]];
     var rel = opts.reliefLayer ? flatReliefPolys(flat) : [];
@@ -471,6 +471,9 @@
     this.layerDefs = {};
     this.blocks = [];   // rfAU: [{ name, ents }] block definitions (BLOCKS section), placed by INSERT entities
     this.min = [Infinity, Infinity]; this.max = [-Infinity, -Infinity];
+    // (rfJU) textExtents false: TEXT leaves $EXTMIN / $EXTMAX alone (a flat's header is the blank's extents, what a
+    // nesting import reads as the part size; the bend notes sit outside it)
+    this.textExt = !(opts && opts.textExtents === false);
   }
   // rfAU: beginBlock(name) … endBlock(): the entities added in between make block `name` (block coordinates, base point
   // 0, 0) instead of going to ENTITIES; they do not count toward the extents (the INSERTs' placed geometry does, through
@@ -508,7 +511,7 @@
     var e = { k: 'TEXT', layer: layer, p: p, h: height, s: text };
     if (opts && opts.rot) e.rot = opts.rot;
     if (opts && opts.center) e.center = true;
-    this.ents.push(e); this._grow(p[0], p[1]);
+    this.ents.push(e); if (this.textExt) this._grow(p[0], p[1]);
   };
   // spline(layer, bez, knots): a cubic SPLINE (R2000 only) made of Bézier spans bez[i] = [B0, B1, B2, B3] running from
   // knot i to knot i + 1 (interior knots of multiplicity 3: each span is exact, the curve as continuous as the spans)

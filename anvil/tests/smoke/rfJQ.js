@@ -156,7 +156,7 @@
       assert(!Object.keys(anvil.summary().errors).length, 'box: ' + JSON.stringify(anvil.summary().errors));
       var fp = K.flatPattern(UI.App.model, UI.App.build, UI.App.mesh);
       near(fp.size[0], 10 + 2 * (2 - BD), 1e-6, 'box blank width 10 + 2 (2 − BD)');
-      assert(fp.loops.length === 3, 'blank + two relief holes: ' + fp.loops.length);
+      assert(fp.loops.length === 1, 'one blank, the reliefs in its mitred corners: ' + fp.loops.length);
       await rfJQFlatDxf(fp.size[0], fp.size[1], 'box flat');
       anvil.drawing.make({ fresh: true }); await UI.drawing.ready(); await wait(30);
       anvil.drawing.flatView({ bendNotes: 'table' }); await UI.drawing.ready(); await wait(30);

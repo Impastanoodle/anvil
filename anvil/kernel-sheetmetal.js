@@ -452,6 +452,12 @@
       eds.push({ e: e, nF: nF, o: o, u: u, plane: plane, loop: loop, wmax: wmax,
         ends: [{ P: e.a, t: ta, dIn: norm(sub(e.b, e.a)), sideTrim: trimmedEnd[0] }, { P: e.b, t: tb, dIn: norm(sub(e.a, e.b)), sideTrim: trimmedEnd[1] }] });
     });
+    // (rfJU) SolidWorks mitres every corner two edges of one Edge Flange share (Gap distance, default 0.01 in / 0.25
+    // mm). Unmitred, a flange the placement moves in off the edge (Material Inside / Outside, Bend from Virtual Sharp,
+    // Tangent to Bend: shift > 0) put both walls (and bends) through the corner: overlapping metal (folded over the
+    // blank × T), a non-manifold edge for Material Outside, no gap for Closed Corner. Those mitre as SolidWorks does;
+    // Bend Outside unmitred keeps its open corner (the walls stop at the edges' ends, a sound part).
+    if (!miter && !f.hem && f.type === 'flange' && shift > 1e-12) miter = true;
     // corners shared by two selected edges: mark them (no relief there) and, with `miter`, set up the mitre planes.
     // buttOK: a plain 90° edge flange. SolidWorks has no gap of zero here: no miterGap = its default, 0.01 in / 0.25 mm.
     // A Miter Flange's own stages, other angles, other corners and R ≤ gap/√2 (not measured) keep the bisector mitre.

@@ -77,12 +77,15 @@
       assert(tb.title === 'L-BRACKET' && tb.thickness === '.0598' && tb.material === 'Plain Carbon Steel', 'title block ' + JSON.stringify(tb));
       return 'blank 4 x ' + flat.size[1].toFixed(4);
     });
-    test('rfJQ: job b, 14 ga open box 10 x 6 x 2, hem .375 and two circular Corner Reliefs: blank (10 + 2 (2 − BD)) wide, one outline + two relief holes in the DXF, four bend lines; drawing clear of the blocks', function () {
+    test('rfJQ: job b, 14 ga open box 10 x 6 x 2, hem .375 and two circular Corner Reliefs: blank (10 + 2 (2 − BD)) wide, one outline with the two reliefs in the DXF, four bend lines; drawing clear of the blocks', function () {
       var r = build(JOB_B); noErrors(r);
       var flat = laser(r, 'box', { 'LWPOLYLINE@OUTLINE': 1, 'LINE@BEND': 5 });
       var BD = bd(0.075, T14, 0.44);
       near(flat.size[0], 10 + 2 * (2 - BD), 1e-9, 'width');
-      assert(flat.loops.length === 3, 'blank + 2 reliefs: ' + flat.loops.length);
+      // (rfJU) the box's corners are mitred (gap .01), so each relief opens the corner notch of the one blank outline
+      var plain = build(JOB_B.replace(/p\.cornerRelief\([^\n]*\n/, '')), pf = K.flatPattern(plain.model, plain.build, plain.mesh);
+      function area(f) { return f.loops.reduce(function (s, l, i) { return s + (i === 0 ? Math.abs(K.signedArea(l)) : -Math.abs(K.signedArea(l))); }, 0); }
+      assert(flat.loops.length === 1 && area(pf) - area(flat) > 1e-3, 'the reliefs cut the blank: ' + flat.loops.length + ' loops, ' + (area(pf) - area(flat)).toFixed(5) + ' in² less');
       var d = drawing(r);
       var bt = d.sheet.annotations.filter(function (a) { return a.type === 'bendTable'; })[0];
       assert(bt && bt.info.rows.length === 5, 'five bends (4 + the hem): ' + JSON.stringify(bt && bt.info.rows));

@@ -2581,6 +2581,12 @@
     if (spec && spec.punch && v.kind !== 'flat') throw new Error('Punch Table: ' + (v.name || 'that view') + ' is not a flat pattern view. A Punch Table lists the forming tools of a flat pattern.');
     var t = cleanHoleTable({ id: nextAnnotId(doc), view: v.id, holes: [], sizes: [] }, spec || {});
     htOriginCheck(t, w, v);
+    // (rfJU) SolidWorks inserts no Hole Table on a view with no holes: refused (a Punch Table on a flat with no forming
+    // tools keeps its empty table). w: the view as computed; without it the table is added as before.
+    if (!(spec && spec.punch) && w && w.proj && !w.pending) {
+      var seen = w.flat ? viewHoles(w) : ((w.proj.circles && w.proj.circles.visible) || []);
+      if (!seen.length) throw new Error('Hole Table: there are no holes in ' + (v.name || 'that view') + '. A Hole Table lists the round holes of a view seen along their axis.');
+    }
     (doc.holeTables || (doc.holeTables = [])).push(t);
     return t;
   }

@@ -2852,7 +2852,9 @@
         if (!P || !P.origin) { UI.toast('Hole Table: pick the origin first (a vertex, or an X-axis and a Y-axis edge).'); return false; }
         if (!v.all && !P.holes.length && !P.sizes.length) { UI.toast('Hole Table: pick the holes (or tick All holes in the view).'); return false; }
         var spec = Object.assign({ origin: P.origin, holes: P.holes, sizes: P.sizes, all: !!v.all }, htProps(v)), made = null;
-        if (!tryEdit(function (dc) { made = Drawing.addHoleTable(dc, P.view, spec); })) return false;
+        // (rfJU) the view as computed goes along: a view with no holes is refused (toast, no table, no undo step)
+        var hw = D.sheet && (D.sheet.views || []).filter(function (x) { return x.view.id === P.view; })[0];
+        if (!tryEdit(function (dc) { made = Drawing.addHoleTable(dc, P.view, spec, hw); })) return false;
         D.sel = { kind: 'holetable', id: made.id };
         var st = D.sheet && (D.sheet.holeTables || []).filter(function (t) { return t.id === made.id; })[0];
         UI.setStatus('Hole Table: ' + (st ? st.rows.length : 0) + ' holes. Drag the table to move it, double-click it for its properties.');
