@@ -2871,8 +2871,18 @@
       var g = { t: 'spline', pts: (src.pts || []).map(function (p) { return [+p[0], +p[1]]; }) };
       if (src.closed) g.closed = true;
       if (src.style) g.style = true;   // rfAH
-      if (src.tans) g.tans = src.tans.map(function (tg) { return tg ? [+tg[0], tg[1] == null ? 1 : +tg[1]].concat(tg[2] != null ? [+tg[2]] : []) : null; });
+      // lane sketchgaps: the whole handle, curvature control (tg[3], rfAY) included: the text follows the spline's real
+      // shape (it dropped tg[3], so text on a curvature-controlled spline followed the curve without it); a conic's rho too
+      if (src.tans) g.tans = src.tans.map(function (tg) {
+        if (!tg) return null;
+        var t = [+tg[0], tg[1] == null ? 1 : +tg[1]];
+        if (tg[2] != null || tg[3] != null) t.push(tg[2] == null ? null : +tg[2]);
+        if (tg[3] != null) t.push(+tg[3]);
+        return t;
+      });
       if (src.local) g.local = true;
+      if (src.conic != null) g.conic = +src.conic;   // rfAS
+      if (src.parabola) g.parabola = true;
       return g;
     }
     var o = { t: src.t, cx: +src.cx, cy: +src.cy, rx: +src.rx, ry: +src.ry, rot: +src.rot || 0 };
@@ -2954,7 +2964,7 @@
       else if (g && g.t === 'arc') { var c = P(g.cx, g.cy), a0 = normDeg(g.a0 + rot); o.path.g = { t: 'arc', cx: c[0], cy: c[1], r: g.r * k, a0: a0, a1: a0 + (g.a1 - g.a0) }; }
       else if (g && g.t === 'spline') {   // sketch-text2: a driving tangent turns with it (its weight is per unit of chord length)
         o.path.g.pts = g.pts.map(function (q) { return P(q[0], q[1]); });
-        if (g.tans) o.path.g.tans = g.tans.map(function (tg) { return tg ? [normDeg(+tg[0] + rot)].concat(tg.slice(1)) : null; });
+        if (g.tans) o.path.g.tans = g.tans.map(function (tg) { if (!tg) return null; var t = [normDeg(+tg[0] + rot)].concat(tg.slice(1)); if (t[3] != null && isFinite(+t[3])) t[3] = +t[3] / k; return t; });   // a curvature control (1 / R) scales as 1 / size
       } else if (g && (g.t === 'ellipse' || g.t === 'pellipse')) {
         var ce = P(g.cx, g.cy);
         o.path.g.cx = ce[0]; o.path.g.cy = ce[1]; o.path.g.rx = g.rx * k; o.path.g.ry = g.ry * k; o.path.g.rot = normDeg((+g.rot || 0) + rot);
@@ -3426,6 +3436,38 @@
     sketch.entities = keep;
     return { ok: true, dropped: dropped };
   }
+  // lane sketchgaps: SolidWorks' Blocks ▸ Add/Remove. Entities `add` (ordinary sketch geometry) join the definition of
+  // instance id's block, entities `remove` (pieces of that instance) leave it and stay in the sketch as ordinary geometry
+  // where they are; every instance of the block is placed again from the new definition (the pieces removed go from the
+  // other instances). Returns { ok, added, removed, dropped, error } (see redefineBlock).
+  function blockAddRemove(sketch, id, add, remove) {
+    var r = blockInstances(sketch).filter(function (q) { return q.id === String(id); })[0];
+    if (!r) return { ok: false, error: 'No block instance ' + id + '.' };
+    var E = sketch.entities;
+    add = (add || []).filter(function (i, k, a) { return E[i] && E[i].blk == null && a.indexOf(i) === k; });
+    remove = (remove || []).filter(function (i, k, a) { return r.ents.indexOf(i) >= 0 && a.indexOf(i) === k; });
+    if (!add.length && !remove.length) return { ok: false, error: 'Select sketch entities to add to the block, or pieces of the block to remove from it.' };
+    if (remove.length >= r.ents.length && !add.length) return { ok: false, error: 'A block keeps at least one entity: explode it instead.' };
+    remove.forEach(function (i) { delete E[i].blk; });
+    var q = redefineBlock(sketch, id, add);
+    if (!q.ok) { remove.forEach(function (i) { E[i].blk = r.id; }); return q; }
+    return { ok: true, added: add.length, removed: remove.length, dropped: q.dropped };
+  }
+  // lane sketchgaps: SolidWorks' Blocks ▸ Rebuild: every instance placed again from its definition (an instance whose
+  // pieces were left off its definition, by a script or a solve, comes back to it). Returns how many changed.
+  function rebuildBlocks(sketch) {
+    if (!sketch || !sketch.blocks) return 0;
+    var n = 0;
+    blockInstances(sketch).forEach(function (r) {
+      var want = blockPlaced(sketch, r), E = sketch.entities;
+      if (!want || want.length !== r.ents.length) return;
+      var diff = r.ents.some(function (i, k) { return blkStrip(E[i]) !== blkStrip(want[k]); });
+      if (!diff) return;
+      r.ents.forEach(function (i, k) { var w = want[k], keep = E[i]; w.blk = keep.blk; if (keep.construction) w.construction = true; if (keep.layer != null) w.layer = keep.layer; E[i] = w; });
+      n++;
+    });
+    return n;
+  }
   // rfAU: the definitions a sketch's instances use: sketch.blocks, plus, for a name an instance carries but the sketch
   // has no definition of (instances that came in from a DXF: DxfImport.parse with blocks), that instance's geometry in
   // its block coordinates (the first such instance). Pure; adoptBlocks writes the missing ones into sketch.blocks and
@@ -3480,6 +3522,7 @@
   K.blockInstances = blockInstances; K.makeBlock = makeBlock; K.insertBlock = insertBlock; K.explodeBlock = explodeBlock; K.syncBlocks = syncBlocks;
   K.setBlockInstance = setBlockInstance; K.redefineBlock = redefineBlock; K.blockEntity = blockEntity; K.blockXf = blockXf;
   K.blockDefs = blockDefs; K.adoptBlocks = adoptBlocks;   // rfAU
+  K.blockAddRemove = blockAddRemove; K.rebuildBlocks = rebuildBlocks;   // lane sketchgaps
   K.addBlockDef = addBlockDef; K.blockFile = blockFile; K.blockScriptLine = blockScriptLine; K.applyBlockScript = applyBlockScript;
 })(Kernel, Kernel._);
 

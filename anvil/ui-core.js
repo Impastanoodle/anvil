@@ -3164,14 +3164,27 @@ var UI = (function () {
   }
 
   // ------------------------------------------------------------------ grid on the active sketch plane
+  // lane sketchgaps: SolidWorks' Grid/Snap (Document Properties) is major 1 in with 4 minor lines, a snap point per minor
+  // (0.25 in), and Automatic scaling: inch documents step in powers of two with 4 minors (… 0.25, 0.5, 1, 2 …), so the
+  // Length / Grid Quick Snaps land on fractions a shop reads. mm documents keep 1-2-5 majors, with the minors 1-2-5 as
+  // well (major 10 → 2, 20 → 5, 50 → 10; was major / 5, which gave 4 mm and 0.4 mm steps).
   var GRID_STEPS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000];
+  var GRID_STEPS_IN = [1 / 256, 1 / 128, 1 / 64, 1 / 32, 1 / 16, 0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
+  function gridInch() { return !!(App.model && App.model.units === 'in'); }
   function gridStep() {
-    for (var i = 0; i < GRID_STEPS.length; i++) if (GRID_STEPS[i] / cam.scale >= 48) return GRID_STEPS[i];
-    return 5000;
+    var list = gridInch() ? GRID_STEPS_IN : GRID_STEPS;
+    for (var i = 0; i < list.length; i++) if (list[i] / cam.scale >= 48) return list[i];
+    return list[list.length - 1] * 2;
+  }
+  // minor lines per major: 4 in inches; 1-2-5 minors in mm (a 2·10ⁿ major splits in 4, the others in 5)
+  function gridMinors(g) {
+    if (gridInch()) return 4;
+    var m = g / Math.pow(10, Math.floor(Math.log(g) / Math.LN10 + 1e-9));
+    return Math.abs(m - 2) < 1e-6 ? 4 : 5;
   }
   function snapStep() {
-    var g = gridStep();
-    return g / 5 / cam.scale >= 7 ? g / 5 : g;
+    var g = gridStep(), m = g / gridMinors(g);
+    return m / cam.scale >= 7 ? m : g;
   }
   function visiblePlaneBox(pl) {
     var corners = [[0, 0], [size.w, 0], [0, size.h], [size.w, size.h]], min = [Infinity, Infinity], max = [-Infinity, -Infinity];
@@ -3192,7 +3205,7 @@ var UI = (function () {
     if (App.mode !== 'sketch' || !App.view.showGrid) return;
     var pl = activePlane(), box = visiblePlaneBox(pl);
     if (!box) return;
-    var step = gridStep(), minor = step / 5;
+    var step = gridStep(), minor = step / gridMinors(step);
     var span = Math.max(box.max[0] - box.min[0], box.max[1] - box.min[1]);
     if (span / minor > 400) minor = step;
     var lim = 20000;
@@ -4713,7 +4726,7 @@ var UI = (function () {
     updateBodyMesh: updateBodyMesh, applyDisplayStyle: applyDisplayStyle, partColor: partColor, updateHighlights: updateHighlights, updatePlanes: updatePlanes,
     updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: screenPolylines, sketchSceneVersion: function () { return sceneVer; }, scaleBar: scaleBarInfo, updateTemp: updateTemp, disposeGroup: disposeGroup,
     sketchOverlayHooks: sketchOverlayHooks, tempEntityHooks: tempEntityHooks, sketchOverlayObjects: sketchOverlayObjects, tempEntitiesShown: tempEntitiesShown,   // sketch-hooks
-    activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
+    activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep, gridMinors: gridMinors,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickRefGeo: pickRefGeo, updateRefGeo: updateRefGeo, drawRefGeo: drawRefGeo, pickEntity: pickEntity, pickEntityDist: pickEntityDist, pickEdge: pickEdge,
     lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, renderHooks: renderHooks, frame: frame, tick: tick, thickLines: thickLines, LINE_W: LINE_W, requestRender: requestRender,
     // view transitions and smooth zoom (see "view animation")

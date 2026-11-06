@@ -262,6 +262,74 @@
   UI.sketchExitHooks = UI.sketchExitHooks || [];
   UI.sketchExitHooks.push(function (f) { if (editing && editing.f === f) finishEdit(); else if (editing) { markEdit(editing.f, null); editing = null; } });
 
+  // ------------------------------------------------------------------ Add/Remove, Rebuild (lane sketchgaps)
+  // SolidWorks' Blocks ▸ Add/Remove (in Edit Block): the Add/Remove Entities PropertyManager lists the Block Entities;
+  // a click on sketch geometry adds it, a click on a piece of the block takes it out (it stays in the sketch as
+  // ordinary geometry); ✓ redefines the block and every instance follows. Run outside Edit Block it works on the
+  // selected instance (or the only one).
+  function cmdBlockAddRemove() {
+    var f = sketch();
+    if (!f) { UI.toast('Open a sketch first.'); return; }
+    var id = editing && editing.f === f ? editing.id : null, wasEditing = id != null;
+    if (id == null) {
+      var ids = selectedInstances(f), all = K.blockInstances(f);
+      if (!ids.length && all.length === 1) ids = [all[0].id];
+      if (ids.length !== 1) { UI.toast(all.length ? 'Select one block instance (or Edit Block) to add entities to or remove them from.' : 'This sketch has no blocks: Make Block first.'); return; }
+      id = ids[0];
+    }
+    // ordinary geometry already selected (other than the block's own pieces) starts in the add list
+    var v = { add: selected(f).filter(function (i) { return f.entities[i].blk == null; }), remove: [] };
+    if (wasEditing) finishEdit();
+    var r0 = instance(f, id);
+    if (!r0) return;
+    function count() { var r = instance(f, id); return r ? r.ents.length : 0; }
+    function toggle(list, i) { var k = list.indexOf(i); if (k >= 0) list.splice(k, 1); else list.push(i); }
+    function mark() {
+      if (UI.setSelection) UI.setSelection(v.add.concat(v.remove).map(function (i) { return { kind: 'entity', index: i }; }), { quiet: true });
+    }
+    UI.openPM({
+      title: 'Add/Remove Entities', icon: 'block', values: v, noFocus: true,
+      message: 'Block ' + r0.def + ': click sketch entities to add them to the block, click pieces of the block to remove them. ✓ updates every instance.',
+      onSelection: function () { },   // plain clicks come here (UI.pmCollectsSelection), each one to onEntityPick
+      onEntityPick: function (hit) {
+        var e = hit && hit.kind === 'entity' ? f.entities[hit.index] : null;
+        if (!e) return true;
+        if (e.blk != null && String(e.blk) === String(id)) toggle(v.remove, hit.index);
+        else if (e.blk == null) toggle(v.add, hit.index);
+        else { UI.setStatus('That entity is in another block instance: it cannot join ' + r0.def + '.'); return true; }
+        mark(); UI.renderPM();
+        return true;
+      },
+      groups: [{ title: 'Block Entities', fields: [
+        { type: 'static', label: 'In ' + r0.def, value: function () { return count() + ' entit' + (count() === 1 ? 'y' : 'ies'); } },
+        { type: 'static', label: 'To add', value: function () { return String(v.add.length); } },
+        { type: 'static', label: 'To remove', value: function () { return String(v.remove.length); } }] }],
+      okBlocked: function () { return v.add.length || v.remove.length ? null : 'Click sketch entities to add, or pieces of the block to remove.'; },
+      onOK: function () {
+        var r = undoStep(f, function () { return K.blockAddRemove(f, id, v.add, v.remove); });
+        if (!r.ok) { UI.toast(r.error || 'The block could not be changed.'); return false; }
+        changed();
+        UI.setStatus('Block ' + r0.def + ': ' + r.added + ' entit' + (r.added === 1 ? 'y' : 'ies') + ' added, ' + r.removed + ' removed; every instance follows.');
+        if (wasEditing) startEdit(f, id);
+      },
+      onCancel: function () { if (wasEditing) startEdit(f, id); }
+    });
+    mark();
+  }
+  // SolidWorks' Blocks ▸ Rebuild: the parent sketch picks up the block changes (Edit Block in progress is finished;
+  // every instance is placed again from its definition)
+  function cmdRebuildBlocks() {
+    var f = sketch();
+    if (!f) { UI.toast('Open a sketch first.'); return 0; }
+    if (editing && editing.f === f) finishEdit();
+    if (!K.blockInstances(f).length) { UI.setStatus('This sketch has no blocks to rebuild.'); return 0; }
+    var n = 0;
+    undoStep(f, function () { n = K.rebuildBlocks(f) + K.syncBlocks(f); return { ok: true }; });
+    changed();
+    UI.setStatus('Blocks rebuilt: ' + (n ? n + ' instance' + (n === 1 ? '' : 's') + ' placed again from ' + (n === 1 ? 'its' : 'their') + ' definition.' : 'every instance already matches its definition.'));
+    return n;
+  }
+
   // ------------------------------------------------------------------ Explode, Save
   function explode(f, ids) {
     var r = undoStep(f, function () {
@@ -297,6 +365,7 @@
     return saveBlock(f, r.def);
   }
 
+  UI.cmdBlockAddRemove = cmdBlockAddRemove; UI.cmdRebuildBlocks = cmdRebuildBlocks;   // lane sketchgaps
   UI.cmdMakeBlock = cmdMakeBlock; UI.cmdInsertBlock = cmdInsertBlock; UI.cmdEditBlock = cmdEditBlock; UI.cmdExplodeBlock = cmdExplodeBlock; UI.cmdSaveBlock = cmdSaveBlock;
   UI.blockProperties = function (id) { var f = sketch(); if (f) blockProperties(f, id); };
 })();

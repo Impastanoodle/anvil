@@ -1355,6 +1355,44 @@ var SketchSolver = (function () {
     var g = Math.max(Math.max(hi[0] - lo[0], hi[1] - lo[1], 1) * 0.08, mg);
     return [g, g];
   }
+  // the straight slots among entities `only`: a `slot` entity, or an exploded one (explodeSlot: a construction line whose
+  // ends are Coincident with the centres of two arcs, plus the lines Tangent to both arcs). -> [{ cl: the entity whose
+  // 'len' is the centre-to-centre length, centre: its centre ref, ends: the end-centre refs, members, first }]
+  function slotGroups(sketch, only) {
+    var ents = sketch.entities || [], rels = sketch.rels || [], out = [], set = {};
+    only.forEach(function (i) { set[i] = true; });
+    function refE(r) { var m = /^(\d+)\.(\w+)$/.exec(r); return m ? { e: +m[1], s: m[2] } : null; }
+    only.forEach(function (i) {
+      var e = ents[i];
+      if (!e) return;
+      if (e.t === 'slot') { out.push({ cl: i, centre: i + '.c', ends: [i + '.p1', i + '.p2'], members: [i], first: i }); return; }
+      if (e.t !== 'line' || !e.construction) return;
+      var arcAt = {};
+      rels.forEach(function (r) {
+        if (r.type !== 'coincident' || !r.refs || r.refs.length !== 2) return;
+        var a = refE(r.refs[0]), b = refE(r.refs[1]);
+        if (!a || !b) return;
+        if (b.e === i && a.s === 'c') { var t = a; a = b; b = t; }
+        if (a.e !== i || (a.s !== 'p1' && a.s !== 'p2') || b.s !== 'c' || !ents[b.e] || ents[b.e].t !== 'arc' || !set[b.e]) return;
+        arcAt[a.s] = b.e;
+      });
+      if (arcAt.p1 == null || arcAt.p2 == null || arcAt.p1 === arcAt.p2) return;
+      var A = arcAt.p1, B = arcAt.p2, tanTo = {};
+      rels.forEach(function (r) {
+        if (r.type !== 'tangent' || !r.refs || r.refs.length !== 2) return;
+        var x = +r.refs[0], y = +r.refs[1];
+        if (String(x) !== r.refs[0] || String(y) !== r.refs[1]) return;
+        [[x, y], [y, x]].forEach(function (p) {
+          if ((p[1] === A || p[1] === B) && ents[p[0]] && ents[p[0]].t === 'line' && !ents[p[0]].construction && set[p[0]]) (tanTo[p[0]] = tanTo[p[0]] || {})[p[1]] = true;
+        });
+      });
+      var sides = Object.keys(tanTo).filter(function (k) { return tanTo[k][A] && tanTo[k][B]; }).map(Number);
+      if (sides.length !== 2) return;
+      var members = [i, A, B].concat(sides);
+      out.push({ cl: i, centre: i + '.mid', ends: [i + '.p1', i + '.p2'], members: members, first: Math.min.apply(null, members) });
+    });
+    return out;
+  }
   function fullyDefine(sketch, opts) {
     opts = opts || {};
     var ents = sketch.entities || [];
@@ -1389,10 +1427,17 @@ var SketchSolver = (function () {
     var relOn = opts.relations !== false, relH = relOn && !(opts.relations && opts.relations.horizontal === false), relV = relOn && !(opts.relations && opts.relations.vertical === false);
     var tolDeg = opts.tolDeg != null ? +opts.tolDeg : 1, newRels = [], newDims = [];
     function chainOn(ax) { var sc = ax === 0 ? opts.hScheme : opts.vScheme; return (sc || opts.scheme) === 'chain'; }
+    // lane sketchgaps: straight slots are dimensioned as SolidWorks' Autodimension does, by their centre-to-centre length
+    // and the position of their centre point (a 1.75 → 4.25 slot: 2.5 long, centre 3.0 from the origin), not by the two
+    // end centres. A drawn slot is exploded (explodeSlot): its construction centerline, the two arcs centred on its ends
+    // and the two sides tangent to both are one slot; a `slot` entity is one too.
+    var slotSets = slotGroups(sketch, only), inSlot = {};
+    slotSets.forEach(function (sg) { sg.members.forEach(function (m) { inSlot[m] = sg; }); });
+    var onlyRel = only.slice().sort(function (a, b) { return (inSlot[b] && inSlot[b].cl === b ? 1 : 0) - (inSlot[a] && inSlot[a].cl === a ? 1 : 0); });
     // relations
-    only.forEach(function (i) {
+    onlyRel.forEach(function (i) {
       var e = ents[i];
-      if (!e || e.t !== 'line') return;
+      if (!e || (e.t !== 'line' && e.t !== 'slot')) return;
       var a = Math.abs(Math.atan2(e.y2 - e.y1, e.x2 - e.x1) / D2R) % 180;
       var t = relH && (a <= tolDeg || a >= 180 - tolDeg) ? 'horizontal' : relV && Math.abs(a - 90) <= tolDeg ? 'vertical' : null;
       if (!t) return;
@@ -1407,11 +1452,24 @@ var SketchSolver = (function () {
         var d = { e: i, k: k }, q = dimEquation(sys.ents, d);
         if (useful(q)) newDims.push(d);
       });
+      // slots: the centre-to-centre length (after the width / end radius above)
+      slotSets.forEach(function (sg) {
+        var d = { e: sg.cl, k: 'len' }, q = dimEquation(sys.ents, d);
+        if (useful(q)) newDims.push(d);
+      });
       // positions
       var hD = opts.hDatum != null ? String(opts.hDatum) : 'O', vD = opts.vDatum != null ? String(opts.vDatum) : 'O';
       var pts = [];
       only.forEach(function (i) {
-        var e = ents[i];
+        var e = ents[i], sg = inSlot[i];
+        if (sg) {   // a slot's points: its centre only, in the place of its first entity (the rest follow from it)
+          if (sg.first !== i) return;
+          var cp = refPoint(ents, parseRef(sg.centre));
+          if (cp) pts.push({ ref: sg.centre, pt: cp });
+          // the end centres after it: kept only when they still pin something (a slot at an angle: its turn)
+          sg.ends.forEach(function (r) { var ep = refPoint(ents, parseRef(r)); if (ep) pts.push({ ref: r, pt: ep, late: true }); });
+          return;
+        }
         pointRefs(sketch, i).forEach(function (pr) {
           if (/\.mid$/.test(pr.ref) || (/\.c$/.test(pr.ref) && (e.t === 'rect' || e.t === 'slot'))) return;
           pts.push(pr);
@@ -1423,7 +1481,7 @@ var SketchSolver = (function () {
       function axisCands(ax, datum) {
         var dk = refKind(ents, parseRef(datum)), list = pts.slice(), prev = datum, chain = chainOn(ax);
         var placed = dk === 'point' ? [{ ref: datum, pt: refPoint(ents, parseRef(datum)) }] : [];
-        if (chain) list.sort(function (a, b) { return a.pt[ax] - b.pt[ax]; });
+        if (chain) list = list.filter(function (q) { return !q.late; }).sort(function (a, b) { return a.pt[ax] - b.pt[ax]; }).concat(list.filter(function (q) { return q.late; }));   // a slot's end centres last
         function take(rel) {
           if (rel.type === 'distance') { rel.v = measure(sketch, 'distance', rel.refs, rel.dir); if (!(rel.v >= 0)) return false; }
           if (!useful(relEquation(sys.ents, rel, sketch.rels))) return false;

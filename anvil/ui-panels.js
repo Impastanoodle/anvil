@@ -1788,6 +1788,8 @@
         { label: 'Blocks ▸ Make…', icon: 'block', action: function () { UI.cmdMakeBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdMakeBlock },
         { label: 'Blocks ▸ Edit Block', icon: 'block', checked: !!(UI.blockEditing && UI.blockEditing()), action: function () { UI.cmdEditBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdEditBlock },
         { label: 'Blocks ▸ Insert…', icon: 'block', action: function () { UI.cmdInsertBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdInsertBlock },
+        { label: 'Blocks ▸ Add/Remove', icon: 'block', action: function () { UI.cmdBlockAddRemove(); }, disabled: App.mode !== 'sketch' || !UI.cmdBlockAddRemove },   // lane sketchgaps
+        { label: 'Blocks ▸ Rebuild', icon: 'block', action: function () { UI.cmdRebuildBlocks(); }, disabled: App.mode !== 'sketch' || !UI.cmdRebuildBlocks },
         { label: 'Blocks ▸ Explode', icon: 'block', action: function () { UI.cmdExplodeBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdExplodeBlock },
         { label: 'Blocks ▸ Save…', icon: 'block', action: function () { UI.cmdSaveBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdSaveBlock },
         { label: 'Relations ▸ Add…', icon: 'addRelation', action: function () { if (App.mode !== 'sketch') toast('Open a sketch first.'); else UI.cmdAddRelations(); }, disabled: App.mode !== 'sketch' },
