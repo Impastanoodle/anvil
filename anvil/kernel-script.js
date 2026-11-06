@@ -257,10 +257,87 @@
   }
   K.bendNotePlace = bendNotePlace;
 
+  // lane dxfout: points kept in a segment's frame (origin a, x along a->b, y to its left) back in the flat's frame
+  function fromLocal(a, b, pts) {
+    var dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+    dx /= l; dy /= l;
+    return pts.map(function (q) { return [a[0] + q[0] * dx - q[1] * dy, a[1] + q[0] * dy + q[1] * dx]; });
+  }
+  // the bend-relief notches of a flat (each bend's reliefs, in its line's frame) as polygons in the flat's frame
+  function flatReliefPolys(flat) {
+    var out = [];
+    (flat.bends || []).forEach(function (b) { (b.reliefs || []).forEach(function (pl) { out.push(fromLocal(b.a, b.b, pl)); }); });
+    return out;
+  }
+  // the segments of a loop (dxfLoopCurves segs) with their layer: a line, or the part of it, running along a relief
+  // polygon's edge, and an arc whose ends and middle lie on one, go on RELIEF; the rest keeps `layer`
+  var RELIEF_TOL = 2e-4;
+  function reliefPieces(segs, polys, layer) {
+    var tol = RELIEF_TOL, out = [];
+    function onPoly(p) {
+      return polys.some(function (pl) {
+        return pl.some(function (a, i) {
+          var b = pl[(i + 1) % pl.length], dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+          var t = L2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0;
+          return Math.hypot(a[0] + dx * t - p[0], a[1] + dy * t - p[1]) <= tol;
+        });
+      });
+    }
+    segs.forEach(function (s) {
+      if (s.t === 'arc') {
+        var a0 = Math.atan2(s.a[1] - s.c[1], s.a[0] - s.c[0]), am = a0 + s.sweep / 2, M = [s.c[0] + s.r * Math.cos(am), s.c[1] + s.r * Math.sin(am)];
+        out.push(Object.assign({}, s, { layer: onPoly(s.a) && onPoly(s.b) && onPoly(M) ? 'RELIEF' : layer }));
+        return;
+      }
+      var ux = s.b[0] - s.a[0], uy = s.b[1] - s.a[1], L = Math.hypot(ux, uy);
+      if (!(L > 0)) return;
+      ux /= L; uy /= L;
+      var iv = [];
+      polys.forEach(function (pl) {
+        pl.forEach(function (p, i) {
+          var q = pl[(i + 1) % pl.length];
+          function off(r) { return Math.abs((r[0] - s.a[0]) * uy - (r[1] - s.a[1]) * ux); }
+          if (off(p) > tol || off(q) > tol) return;
+          var tp = (p[0] - s.a[0]) * ux + (p[1] - s.a[1]) * uy, tq = (q[0] - s.a[0]) * ux + (q[1] - s.a[1]) * uy;
+          var lo = Math.max(0, Math.min(tp, tq)), hi = Math.min(L, Math.max(tp, tq));
+          if (hi - lo > tol) iv.push([lo, hi]);
+        });
+      });
+      iv.sort(function (x, y) { return x[0] - y[0]; });
+      var merged = [];
+      iv.forEach(function (x) { var m = merged[merged.length - 1]; if (m && x[0] <= m[1] + tol) m[1] = Math.max(m[1], x[1]); else merged.push(x.slice()); });
+      function at(t) { return t <= 0 ? s.a : t >= L ? s.b : [s.a[0] + ux * t, s.a[1] + uy * t]; }
+      var t0 = 0;
+      merged.forEach(function (x) {
+        var lo = x[0] <= tol ? 0 : x[0], hi = x[1] >= L - tol ? L : x[1];
+        if (lo > t0) out.push({ t: 'line', a: at(t0), b: at(lo), layer: layer });
+        out.push({ t: 'line', a: at(lo), b: at(hi), layer: 'RELIEF' });
+        t0 = hi;
+      });
+      if (t0 < L) out.push({ t: 'line', a: at(t0), b: s.b, layer: layer });
+    });
+    return out;
+  }
+  // a closed loop's pieces on more than one layer: LINE / ARC each, whatever the style (a laser chains them across
+  // the layers; an open polyline on a cut layer is what dxf-check and most CAM read as a broken contour)
+  function emitPieces(d, pcs, shift) {
+    function sh(q) { return [q[0] + shift[0], q[1] + shift[1]]; }
+    pcs.forEach(function (s) {
+      if (s.t === 'line') { d.line(s.layer, sh(s.a), sh(s.b)); return; }
+      var aa = Math.atan2(s.a[1] - s.c[1], s.a[0] - s.c[0]), ab = Math.atan2(s.b[1] - s.c[1], s.b[0] - s.c[0]);
+      if (s.ccw) d.arc(s.layer, sh(s.c), s.r, degrees(aa), degrees(ab)); else d.arc(s.layer, sh(s.c), s.r, degrees(ab), degrees(aa));
+    });
+  }
+
   // exportDXFFlat(flat, units, opts?) -> DXF text of a Kernel.flatPattern result. opts: { version: 'R12' (AC1009,
   // default) | 'R2000' (AC1015), style: 'polyline' (default) | 'entities', bendLines (default true), notes (default
   // true: the bend labels and the sheet note), origin (default true: the blank's lower-left corner at 0,0), etch
   // (default true: flat.etch, the marks sketched on the sheet's faces) }.
+  // Lane dxfout (SolidWorks' DXF/DWG Output entities, all off by default): boundaryBox (a rectangle round the blank,
+  // arcs' bulges included, on BOUNDARY), bendLayers: 'split' (bend lines on BEND_UP / BEND_DOWN instead of BEND, by
+  // each bend's up), reliefLayer (the edges of bend-relief notches, bend.reliefs, on RELIEF: that loop is then written
+  // as LINE / ARC entities, which still chain end to end), hiddenEdges (the far-side outline of each Forming Tool,
+  // farR / farPts on its mark, on HIDDEN with the HIDDEN line type).
   // Layers: OUTLINE (the blank), HOLES (every inner loop; round holes are CIRCLEs), BEND (bend centre lines), NOTES,
   // ETCH (marking: Etch text strokes and ETCH-layer lines / arcs / circles, colour from the sketch's layer, default 3).
   // Coordinates are in the part's units ($INSUNITS 1 inch / 4 mm, $MEASUREMENT 0 / 1).
@@ -270,7 +347,23 @@
     var d = new DXF(units, opts), style = opts.style === 'entities' ? 'entities' : 'polyline';
     var cvs = flat.loops.map(function (l) { return dxfLoopCurves(l); });
     var box = curvesBox(cvs), shift = opts.origin === false || !isFinite(box.min[0]) ? [0, 0] : [-box.min[0], -box.min[1]];
-    cvs.forEach(function (cv, i) { if (cv) emitLoop(d, i === 0 ? 'OUTLINE' : 'HOLES', cv, style, shift); });
+    var rel = opts.reliefLayer ? flatReliefPolys(flat) : [];
+    if (rel.length) d.layer('RELIEF', 2);
+    cvs.forEach(function (cv, i) {
+      if (!cv) return;
+      var ly = i === 0 ? 'OUTLINE' : 'HOLES', pcs = rel.length && cv.segs ? reliefPieces(cv.segs, rel, ly) : null;
+      if (pcs && pcs.some(function (q) { return q.layer === 'RELIEF'; })) emitPieces(d, pcs, shift);
+      else emitLoop(d, ly, cv, style, shift);
+    });
+    if (opts.boundaryBox && isFinite(box.min[0])) {
+      d.layer('BOUNDARY', 4);
+      var bx = [[box.min[0], box.min[1]], [box.max[0], box.min[1]], [box.max[0], box.max[1]], [box.min[0], box.max[1]]].map(function (q) { return [q[0] + shift[0], q[1] + shift[1]]; });
+      if (style === 'entities') bx.forEach(function (q, k) { d.line('BOUNDARY', q, bx[(k + 1) % 4]); });
+      else d.polyline('BOUNDARY', bx, true);
+    }
+    var split = opts.bendLayers === 'split';
+    function bendLayer(b) { return split ? (b.up ? 'BEND_UP' : 'BEND_DOWN') : 'BEND'; }
+    if (split && opts.bendLines !== false) { d.layer('BEND_UP', 3); d.layer('BEND_DOWN', 30); }
     var s = flat.sheet, T = +s.thickness, inch = units === 'in';
     var th = inch ? Math.max(0.08, T) : Math.max(1.5, T);
     function sh(q) { return [q[0] + shift[0], q[1] + shift[1]]; }
@@ -285,6 +378,11 @@
     formIts.forEach(function (it) {
       if (it.kind === 'cut') { if (it.t === 'line') d.line('HOLES', sh(it.a), sh(it.b)); return; }
       if (it.kind === 'note') { if (opts.notes !== false) d.text('NOTES', sh(it.a), th, it.text, { center: true }); return; }
+      if (opts.hiddenEdges && it.kind === 'mark' && (it.farR > 0 || it.farPts)) {
+        d.layer('HIDDEN', 8, { hidden: true });
+        if (it.t === 'circle' && it.farR > 0) d.circle('HIDDEN', sh(it.c), it.farR);
+        else if (it.farPts && it.pts && it.pts.length > 1) d.polyline('HIDDEN', fromLocal(it.pts[0], it.pts[1], it.farPts).map(sh), true);
+      }
       if (opts.bendLines === false) return;
       if (it.t === 'line') d.line('FORM', sh(it.a), sh(it.b));
       else if (it.t === 'circle') d.circle('FORM', sh(it.c), it.r);
@@ -292,7 +390,7 @@
     });
     (flat.etch || []).forEach(function (it) {
       if (!it.crossBreak) return;
-      if (opts.bendLines !== false) d.line('BEND', sh(it.a), sh(it.b));
+      if (opts.bendLines !== false) d.line(bendLayer(it), sh(it.a), sh(it.b));
       if (opts.notes !== false && it.note) {
         // on the line's first half, clear of the crossing
         var nb = { a: it.a, b: [(it.a[0] + it.b[0]) / 2, (it.a[1] + it.b[1]) / 2] }, np = bendNotePlace(nb, th);
@@ -310,7 +408,7 @@
       });
     }
     flat.bends.forEach(function (b) {
-      if (opts.bendLines !== false) d.line('BEND', sh(b.a), sh(b.b));
+      if (opts.bendLines !== false) d.line(bendLayer(b), sh(b.a), sh(b.b));
       if (opts.notes !== false) {
         var pl = bendNotePlace(b, th);
         d.text('NOTES', sh(pl.p), th, K.bendNoteText(b, units), { rot: pl.rot, center: true });
@@ -393,7 +491,8 @@
   // layer(name, aci, { dashed, off }): the colour and line type of a layer (sketch-layers); a layer named here takes
   // that colour even when it is one of the standard ones, a dashed one gets the DASHED line type, an off one a
   // negative colour (AutoCAD's layer Off)
-  DXF.prototype.layer = function (name, aci, o) { this.layerDefs[name] = { aci: aci, dashed: !!(o && o.dashed), off: !!(o && o.off) }; };
+  // (lane dxfout: { hidden } gives it AutoCAD's HIDDEN line type, a 0.25 dash and a 0.125 gap)
+  DXF.prototype.layer = function (name, aci, o) { this.layerDefs[name] = { aci: aci, dashed: !!(o && o.dashed), hidden: !!(o && o.hidden), off: !!(o && o.off) }; };
   DXF.prototype._grow = function (x, y, r) {
     r = r || 0;
     this.min[0] = Math.min(this.min[0], x - r); this.min[1] = Math.min(this.min[1], y - r);
@@ -459,6 +558,7 @@
     var cont = r2000 ? 'Continuous' : 'CONTINUOUS', defs = this.layerDefs;
     var dashed = Object.keys(defs).some(function (n) { return defs[n].dashed; });
     if (dashed) ltypes.push(['DASHED', 'Dashed __ __ __', 1]);
+    if (Object.keys(defs).some(function (n) { return defs[n].hidden; })) ltypes.push(['HIDDEN', 'Hidden __ __ __ __', 2]);
     var msBR = null, psBR = null, root = null, groups = null;
     if (r2000) {
       th = { BLOCK_RECORD: '1', LAYER: '2', STYLE: '3', LTYPE: '5', VIEW: '6', UCS: '7', VPORT: '8', APPID: '9', DIMSTYLE: 'A' };
@@ -492,8 +592,9 @@
       ltypes.forEach(function (lt, i) {
         record('LTYPE', 'LTYPE', 'AcDbLinetypeTableRecord', ['14', '15', '16'][i]); P(2, lt[0]); P(70, 0); P(3, lt[1]); P(72, 65);
         if (!lt[2]) { P(73, 0); P(40, 0); return; }
-        // sketch-layers: DASHED, a 0.5 dash and a 0.25 gap (drawing units; LTSCALE scales it)
-        P(73, 2); P(40, 0.75); P(49, 0.5); if (r2000) P(74, 0); P(49, -0.25); if (r2000) P(74, 0);
+        // sketch-layers: DASHED, a 0.5 dash and a 0.25 gap (drawing units; LTSCALE scales it); HIDDEN 0.25 / 0.125
+        var dash = lt[2] === 2 ? [0.25, 0.125] : [0.5, 0.25];
+        P(73, 2); P(40, dash[0] + dash[1]); P(49, dash[0]); if (r2000) P(74, 0); P(49, -dash[1]); if (r2000) P(74, 0);
       });
     });
     // the standard layers, plus any other layer an entity is on (e.g. a sketch's CONSTRUCTION, colour 8)
@@ -505,7 +606,7 @@
     table('LAYER', layers.length, function () {
       layers.forEach(function (l, i) {
         var d = defs[l[0]], c = d && d.aci ? d.aci : l[1];
-        record('LAYER', 'LAYER', 'AcDbLayerTableRecord', i ? null : '10'); P(2, l[0]); P(70, 0); P(62, d && d.off ? -c : c); P(6, d && d.dashed ? 'DASHED' : cont);
+        record('LAYER', 'LAYER', 'AcDbLayerTableRecord', i ? null : '10'); P(2, l[0]); P(70, 0); P(62, d && d.off ? -c : c); P(6, d && d.hidden ? 'HIDDEN' : d && d.dashed ? 'DASHED' : cont);
       });
     });
     table('STYLE', 1, function () {

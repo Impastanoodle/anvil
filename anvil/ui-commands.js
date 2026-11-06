@@ -4935,7 +4935,9 @@
   // dxfOutput(opts) -> DXF text, without the PropertyManager (anvil.dxfOutput):
   // { export: 'faces' | 'views' | 'sheet', face (index, default the selected face), views: ['Front', 'Top', 'Right',
   //   'Isometric'], current (bool: the viewport's orientation as one more view), bendLines, notes, etch (Sketches: the
-  //   ETCH marking), formingTools (the FORM marks) (sheet, default on),
+  //   ETCH marking), formingTools (the FORM marks) (sheet, default on), lane dxfout (sheet, default off): hiddenEdges
+  //   (the Forming Tools' far-side outlines, layer HIDDEN), boundaryBox (layer BOUNDARY), bendLayers: 'split' (BEND_UP /
+  //   BEND_DOWN), reliefLayer (corner / bend relief edges on RELIEF),
   //   version: 'R12' (default) | 'R2000' (faces, views, sketch and sheet), style: 'polyline' (default: one closed
   //   polyline per loop) | 'entities' (LINE / ARC; faces and sheet) }. Faces and the flat pattern come out laser
   //   ready (Kernel.exportDXFFlat): true circles and arcs, joined loops, the flat's lower-left corner at 0,0.
@@ -4964,8 +4966,10 @@
       // writes both when either is wanted and the one left out is dropped here; Sketches = the ETCH marking (etch)
       var bl = opts.bendLines !== false, ft = opts.formingTools !== false;
       wopts.bendLines = bl || ft; wopts.notes = opts.notes !== false; wopts.etch = opts.etch !== false;
+      wopts.hiddenEdges = !!opts.hiddenEdges; wopts.boundaryBox = !!opts.boundaryBox; wopts.reliefLayer = !!opts.reliefLayer;
+      if (opts.bendLayers === 'split') wopts.bendLayers = 'split';
       var drop = [];
-      if (!bl) drop.push('BEND');
+      if (!bl) drop.push('BEND', 'BEND_UP', 'BEND_DOWN');
       if (!ft) drop.push('FORM');
       return dropDxfLayers(K.exportDXFFlat(flat, dxfUnits(), wopts), drop);
     }
@@ -5045,7 +5049,8 @@
     var faceOk = !!(App.sel && App.sel.kind === 'face'), sheetOk = !!App.model.sheet, sketchOk = dxfSketches().length > 0;
     var sk0 = opts.sketch != null ? K.findFeature(App.model, +opts.sketch) : dxfDefaultSketch();
     var v = { export: opts.export === 'sketch' && sketchOk ? 'sketch' : opts.export === 'sheet' && sheetOk ? 'sheet' : dxfDefaultExport(), sketch: sk0 ? String(sk0.id) : '', construction: false, vFront: true, vTop: true, vRight: true, vIsometric: false, vCurrent: false,
-      format: opts.format === 'dwg' ? 'dwg' : 'dxf', version: 'R12', style: 'polyline', bendLines: true, notes: true, etch: true, formingTools: true, name: '' };
+      format: opts.format === 'dwg' ? 'dwg' : 'dxf', version: 'R12', style: 'polyline', bendLines: true, notes: true, etch: true, formingTools: true,
+      hiddenEdges: false, boundaryBox: false, bendSplit: false, reliefLayer: false, name: '' };
     var typed = opts.name && opts.name !== dxfSafeName() ? opts.name : null, auto = null;
     function autoName() { return dxfSafeName() + dxfSuffix(v); }
     v.name = typed || (auto = autoName());
@@ -5053,6 +5058,7 @@
     function optsOf(x) {
       // DWG: the converter gets an R2000 DXF (LibreDWG reads R12 entities without their model space)
       return { export: x.export, views: DXF_VIEW_NAMES.filter(function (n) { return x['v' + n]; }), current: !!x.vCurrent, bendLines: !!x.bendLines, notes: !!x.notes, etch: !!x.etch, formingTools: !!x.formingTools,
+        hiddenEdges: !!x.hiddenEdges, boundaryBox: !!x.boundaryBox, bendLayers: x.bendSplit ? 'split' : null, reliefLayer: !!x.reliefLayer,
         sketch: x.sketch !== '' && x.sketch != null ? +x.sketch : null, construction: !!x.construction,
         version: x.format === 'dwg' || x.version === 'R2000' ? 'R2000' : 'R12', style: x.style };
     }
@@ -5088,13 +5094,19 @@
           { type: 'check', label: 'Right', key: 'vRight', show: isViews }, { type: 'check', label: 'Isometric', key: 'vIsometric', show: isViews },
           { type: 'check', label: 'Current view', key: 'vCurrent', show: isViews },
           { type: 'html', show: isViews, html: '<div class="pm-note">Full size (1:1), one layer per view; no border or title block.</div>' },
-          // rfIY: SolidWorks' Entities to export, in its order (Hidden edges, Library features and Boundary box are not
-          // written yet: test-reports/2026-11-05-sheetmetal-pm-audit.md); Notes (bend notes, blank size) is Anvil's
+          // rfIY: SolidWorks' Entities to export, in its order: Geometry, Hidden edges, Bend lines, Sketches, (Library
+          // features: Anvil has none), Forming tools, Boundary box (lane dxfout); Notes (bend notes, blank size) is
+          // Anvil's. Lane dxfout: under Geometry the relief edges on their own layer, under Bend lines the up / down
+          // layers (SolidWorks' layer mapping)
           { type: 'html', show: isSheet, html: '<div class="pm-note" style="margin:4px 0 2px"><b>Entities to export:</b></div>' },
           { type: 'check', label: 'Geometry', key: 'geometry', disabled: true, show: isSheet },
-          { type: 'check', label: 'Bend lines', key: 'bendLines', show: isSheet },
+          { type: 'check', label: ' Corner reliefs on layer RELIEF', key: 'reliefLayer', show: isSheet },
+          { type: 'check', label: 'Hidden edges', key: 'hiddenEdges', show: isSheet },
+          { type: 'check', label: 'Bend lines', key: 'bendLines', show: isSheet, rerender: true },
+          { type: 'check', label: ' Up / down on BEND_UP / BEND_DOWN', key: 'bendSplit', show: function (x) { return isSheet(x) && !!x.bendLines; } },
           { type: 'check', label: 'Sketches', key: 'etch', show: isSheet },
           { type: 'check', label: 'Forming tools', key: 'formingTools', show: isSheet },
+          { type: 'check', label: 'Boundary box', key: 'boundaryBox', show: isSheet },
           { type: 'check', label: 'Notes (bend notes, blank size)', key: 'notes', show: isSheet }
         ] },
         { title: 'Output format', fields: [

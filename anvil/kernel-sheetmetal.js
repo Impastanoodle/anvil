@@ -2030,6 +2030,12 @@
   // wall face (real outline, holes included) with a rigid
   // map, recursively, so flanges on flanges and holes on walls all reach the flat. The regions are merged in 2D
   // (mergeFlatRegions; the CSG merge, csgMerge, only as its fallback) and every loop is cleaned (cleanFlatLoop).
+  // lane dxfout: points in a bend line's frame (origin bend.a, x along a→b, y to its left)
+  function bendLocal(bend, pts) {
+    var dx = bend.b[0] - bend.a[0], dy = bend.b[1] - bend.a[1], l = Math.hypot(dx, dy) || 1;
+    dx /= l; dy /= l;
+    return pts.map(function (p) { var x = p[0] - bend.a[0], y = p[1] - bend.a[1]; return [x * dx + y * dy, y * dx - x * dy]; });
+  }
   function flatPattern(model, build, mesh, opts) {
     // lane DB: opts.trace (an object) is filled with { faces, strips, plane, nB, wB }: every laid face piece and bend
     // strip with the rigid map it went into the flat with (Unfold / Fold use them to move material between the states)
@@ -2395,6 +2401,7 @@
         // bend reliefs at the ends: a notch w wide past the end, from d0 inside the edge line out to d1 past the flat
         // bend zone (BA, or the slot's R + T reach in the solid when that is longer), so the blank's relief clears the
         // whole bend allowance; an obround relief has its inner end rounded, as in the solid
+        var relPolys = [];
         (fi.reliefs || []).forEach(function (rl, kk) {
           if (!rl) return;
           var r = ends[kk], lo = -rl.d0, hi = Math.max(BA, fi.R + T) + rl.d1, w = rl.w, nt = [corner(r, hi, 0), corner(r, hi, w)];
@@ -2403,6 +2410,7 @@
             for (var q = 0; q <= 12; q++) { var ph = Math.PI / 2 + Math.PI * q / 12; nt.push(corner(r, lo + rr + rr * Math.cos(ph), rr + rr * Math.sin(ph))); }
           } else nt.push(corner(r, lo, w), corner(r, lo, 0));
           notches.push(signedArea(nt) < 0 ? nt.reverse() : nt);
+          relPolys.push(nt);   // lane dxfout: kept on the bend (bend.reliefs) so the DXF can put them on RELIEF
         });
         // holes / slots cut before the bend that cross it (fi.cutouts, [d, τ] from end a): cut from the blank in place
         (fi.cutouts || []).forEach(function (cl) {
@@ -2435,6 +2443,9 @@
         // (lane drawing) the bend's stable id: '<feature id>:<n>', n the record's place in build.flanges[feature], so a
         // drawing's dragged / hidden bend note stays with its bend when flanges are added, removed or reordered
         if (flangeIds[k]) bend.id = flangeIds[k].feature + ':' + flangeIds[k].index;
+        // lane dxfout: the bend's relief notches as [along a→b, left of it] from bend.a, so they follow any rigid move
+        // of the flat (flatOrient) with the bend line; exportDXFFlat's reliefLayer reads them back
+        if (relPolys.length) bend.reliefs = relPolys.map(function (nt) { return bendLocal(bend, nt); });
         bends.push(bend);
         if (trace && stripIdx >= 0) trace.strips[stripIdx].bend = bend;   // lane DB2
         var Pmid = add(add(fi.origin, scale(fi.o, Rt * sA)), scale(fi.u, fi.R - Rt * cA));
@@ -6154,6 +6165,27 @@
   // the flat pattern's part (flatPattern, before the merge): the footprint filled back to plain sheet, the Extruded
   // Hole's pre-pierce hole as a notch, and the marks (FORM outline + centre mark, lance slits, a note) as flat.etch
   // items tagged form: feature id (kind 'mark' | 'cut' | 'note'); exportDXFFlat takes them out of ETCH.
+  // lane dxfout: the far-side outline of a form in its own frame (where the face the form does not leave breaks; the
+  // DXF's HIDDEN edges): { r } (a circle round the centre) | { pts } (closed). Sloped sides of angle A from the
+  // normal (dimple, rib) break T·(1 − sin A) / cos A inside the mark, lance legs at angle α T·tan(α / 2) inside its
+  // ends, a louver's opening without its end walls, an extruded hole's collar at its mark. null when nothing is left.
+  function ftHidden(f, model, T) {
+    var t = ftTool(f.tool), d = {};
+    if (!t) return null;
+    t.params.forEach(function (p) { d[p.key] = f[p.key] == null ? (model.units === 'in' ? p.value : p.mm) : +f[p.key]; });
+    var k = Math.PI / 180, r, A;
+    switch (f.tool) {
+      case 'dimple': A = (+d.sideAngle || 0) * k; r = d.diameter / 2 - T * (1 - Math.sin(A)) / Math.cos(A); return r > 1e-9 ? { r: r } : null;
+      case 'extrudedHole': return { r: d.holeDiameter / 2 + T + (+d.radius || 0) };
+      case 'louver': return { pts: ftRect(-d.length / 2, -d.width / 2, d.length / 2, d.width / 2) };
+      case 'lance': {
+        var al = d.legAngle != null ? +d.legAngle : 45, dl = T * Math.tan(al * k / 2);
+        return d.length / 2 - dl > 1e-9 ? { pts: ftRect(-d.length / 2 + dl, -d.width / 2, d.length / 2 - dl, d.width / 2) } : null;
+      }
+      case 'rib': A = (+d.sideAngle || 0) * k; r = d.width / 2 - T * (1 - Math.sin(A)) / Math.cos(A); return r > 1e-9 ? { pts: ftObround(Math.max(0, d.length / 2 - d.width / 2), r, 64) } : null;
+    }
+    return null;
+  }
   function formingFlat(model, build, faceRecs, T, warn, regions, notches, items) {
     model.features.forEach(function (f) {
       if (f.type !== 'formingTool' || f.suppressed || (build.errors && build.errors[f.id])) return;
@@ -6185,9 +6217,19 @@
           note += ' PIERCE Ø' + ftNum(2 * rp);
         } else warn((f.name || 'Extruded Hole') + ': the collar takes more than the whole hole (developed pierce Ø ' + ftNum(2 * rp) + '): no pre-pierce hole in the flat.');
       }
-      rec.marks.forEach(function (m) {
-        if (m.t === 'circle') items.push({ t: 'circle', c: drop(m.c), r: m.r, form: f.id, kind: 'mark' });
-        else items.push({ t: 'poly', pts: m.pts.map(drop), closed: !!m.closed, form: f.id, kind: 'mark' });
+      // lane dxfout: the far-side outline rides on the first mark (farR: same centre; farPts: in the frame of the mark's
+      // first two points, so flatOrient's rigid move carries it), for exportDXFFlat's hiddenEdges
+      var hid = ftHidden(f, model, T);
+      function W3(q) { return add(rec.at, add(scale(rec.x, q[0]), scale(rec.y, q[1]))); }
+      rec.marks.forEach(function (m, mi) {
+        var it = m.t === 'circle' ? { t: 'circle', c: drop(m.c), r: m.r, form: f.id, kind: 'mark' } : { t: 'poly', pts: m.pts.map(drop), closed: !!m.closed, form: f.id, kind: 'mark' };
+        if (mi === 0 && hid && hid.r && it.t === 'circle') it.farR = hid.r;
+        else if (mi === 0 && hid && hid.pts && it.t === 'poly' && it.pts.length > 1) {
+          var o = it.pts[0], dx = it.pts[1][0] - o[0], dy = it.pts[1][1] - o[1], l = Math.hypot(dx, dy) || 1;
+          dx /= l; dy /= l;
+          it.farPts = hid.pts.map(function (q) { var Q = drop(W3(q)), x = Q[0] - o[0], y = Q[1] - o[1]; return [x * dx + y * dy, y * dx - x * dy]; });
+        }
+        items.push(it);
       });
       rec.centre.forEach(function (l) { items.push({ t: 'line', a: drop(l[0]), b: drop(l[1]), form: f.id, kind: 'mark' }); });
       // a lance cut is a real cut through the blank: a slit FT_SLIT wide (0.01 in / 0.25 mm, a laser kerf) centred on the

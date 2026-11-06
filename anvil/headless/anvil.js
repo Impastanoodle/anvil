@@ -16,10 +16,14 @@ const USAGE = [
   '  build <file> [--stl out] [--step out] [--dxf-flat out] [--dxf-face <index> out] [--dwg-flat out] [--dwg-face <index> out]',
   '               [--json out] [--script out] [--occt] [--native [dir]]',
   '               [--dxf-version r12|2000] [--dxf-style polyline|entities] [--no-bends] [--no-notes] [--no-origin] [--origin]',
+  '               [--dxf-boundary] [--dxf-bend-layers] [--dxf-relief] [--dxf-hidden]',
   '      <file>: a part / assembly script (.js, the Builder API) or a saved model JSON. Prints a summary JSON.',
   '      --dxf-*: laser-ready (true circles and arcs, joined loops, units header), R12 by default; the flat at 0,0, a face',
   '               in its own frame unless --origin; each file is read back by headless/dxf-check.js and the result is in',
   '               the summary (a failed check exits 1)',
+  '      flat only (the DXF/DWG Output entities): --dxf-boundary a rectangle round the blank on BOUNDARY,',
+  '               --dxf-bend-layers bend lines on BEND_UP / BEND_DOWN, --dxf-relief bend-relief edges on RELIEF,',
+  '               --dxf-hidden the forming tools\' far-side outlines on HIDDEN',
   "      --step: OpenCascade's exact STEP with --occt, else Anvil's own; the summary names the file's length unit",
   '      --dwg-*: the DXF through a converter (ODA File Converter, else vendor/libredwg from vendor/get-libredwg.ps1)',
   '  drawing <file> [--svg out] [--dxf out] [--dwg out] [--pdf out] [--views Front,Top,Right,Isometric] [--scale 1:2]',
@@ -194,12 +198,14 @@ function dxfOptions(flags, forDwg) {
   else throw usage('--dxf-version: r12 or 2000, not "' + flags['dxf-version'] + '"');
   const style = String(flags['dxf-style'] || 'polyline').toLowerCase();
   if (style !== 'polyline' && style !== 'entities') throw usage('--dxf-style: polyline or entities, not "' + flags['dxf-style'] + '"');
-  return { version: forDwg ? 'R2000' : version, style, bendLines: !flags['no-bends'], notes: !flags['no-notes'], origin: !flags['no-origin'] };
+  // lane dxfout: the flat's extra entities (exportDXFFlat ignores them for a face)
+  return { version: forDwg ? 'R2000' : version, style, bendLines: !flags['no-bends'], notes: !flags['no-notes'], origin: !flags['no-origin'],
+    boundaryBox: !!flags['dxf-boundary'], bendLayers: flags['dxf-bend-layers'] ? 'split' : undefined, reliefLayer: !!flags['dxf-relief'], hiddenEdges: !!flags['dxf-hidden'] };
 }
 // a written DXF read back (headless/dxf-check.js): the summary's `check`, and a failed check as a summary error
 function dxfChecked(text, units, summary, what) {
   const DxfCheck = require('./dxf-check');
-  const c = DxfCheck.check(text, { units });
+  const c = DxfCheck.check(text, { units, layers: ['OUTLINE', 'HOLES', 'RELIEF'] });   // lane dxfout: relief edges close the outline
   const loops = c.loops.length, circles = c.circles.length;
   const out = { ok: c.ok, version: c.version, insunits: c.insunits, loops, closed: c.loops.filter((l) => l.closed).length, circles,
     radii: Array.from(new Set(c.circles.map((q) => r6(q.r)))).sort((a, b) => a - b), counts: c.counts,

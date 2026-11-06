@@ -1972,7 +1972,8 @@
       var out = exportData(type, base); download(out.name, out.data, out.mime); if (out.extra) download(out.extra.name, out.extra.data, out.extra.mime); return out;
     },
     // dxfOutput({ export: 'faces' | 'views' | 'sheet', face, views: ['Front', 'Top', 'Right', 'Isometric'], current,
-    // bendLines, notes }) -> the DXF text the DXF/DWG Output PropertyManager would save, without opening it
+    // bendLines, notes, etch, formingTools, and (sheet, off by default) hiddenEdges, boundaryBox, bendLayers: 'split',
+    // reliefLayer }) -> the DXF text the DXF/DWG Output PropertyManager would save, without opening it
     dxfOutput: function (opts) { built('dxfOutput'); return UI.dxfOutput(opts); },
     dxfFace: function (i) { return K.exportDXFFace(App.mesh, i, App.model.units); },
     dxfSketch: function (id) { return K.exportDXFSketch(K.findFeature(App.model, id), App.model.units); },
