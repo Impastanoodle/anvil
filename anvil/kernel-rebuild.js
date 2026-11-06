@@ -1027,6 +1027,17 @@
               ctx.tools[f.id] = efr.cut || efr.add;
               break;
             }
+            // lane sweptflange-2: a Swept Flange that starts the part on a straight path is an open-profile Base Flange
+            // (kernel-sheetmetal.js sweptFlangeOpenBase): its bend records reach the flat, so cuts, holes and edge
+            // flanges after it unfold as on any sheet
+            var sfv = f.type === 'sweptFlange' && !ctx.bodies.length && _.sweptFlangeOpenBase ? _.sweptFlangeOpenBase(f, model, ctx) : null;
+            if (sfv) {
+              ctx.body = null;
+              var sfr = _.buildInsertBends(sfv, model, ctx);
+              ctx.flanges[f.id] = sfr.info;
+              ctx.tools[f.id] = sfr.tool || null;
+              break;
+            }
             if (featureTypes[f.type] && featureTypes[f.type].apply) {
               var ar = featureTypes[f.type].apply(f, { bodies: ctx.bodies.slice(), bodyFeatures: ctx.bodyFeatures.slice() }, model);
               ctx.bodies = ar.bodies; ctx.bodyFeatures = ar.bodyFeatures;

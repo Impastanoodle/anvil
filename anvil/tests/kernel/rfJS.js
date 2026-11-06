@@ -18,19 +18,21 @@
       var r = build(HEAD + code); noErrors(r);
       try { K.flatPattern(r.model, r.build, r.mesh); return ''; } catch (e) { return e.message; }
     }
+    function rfJSW(flat) { return Math.min(flat.size[0], flat.size[1]); }   // the developed width (the path is longer)
     function rfJSClosed(r) { var q = K.meshQuality(r.mesh); assert(q.closed && !q.openEdges && !q.nonManifoldEdges, 'closed solid ' + JSON.stringify(q)); }
 
     test('rfJS: straight path, an L profile (2 × 1, inside corner bent at R = T): flat = (flats + BA) × path length exactly, volume = flat × T (K .5), one bend line UP / DOWN mid-bend, closed DXF with a BEND line', function () {
       var r = rfJSB('var path = p.sketch("Top").line(0, 0, 0, -10).id();\nvar prof = p.sketch("Front").polyline([[0, 0], [2, 0], [2, 1]], false).id();\np.sweptFlange(prof, path);\n');
       var BA = Math.PI / 2 * (T + 0.5 * T), W = (2 - T) + (1 - T) + BA;
-      near(r.flat.sweptFlange.width, W, 1e-12, 'developed width');
+      near(rfJSW(r.flat), W, 1e-12, 'developed width');
       near(Math.abs(K.signedArea(r.flat.loops[0])), W * 10, 1e-9, 'flat = W × 10');
-      near(r.flat.size[0], W, 1e-12, 'flat width'); near(r.flat.size[1], 10, 1e-12, 'flat length');
+      near(Math.max(r.flat.size[0], r.flat.size[1]), 10, 1e-12, 'flat length');
       nearRel(r.mp.volume, W * 10 * T, 1e-9, 'volume = flat area × T');
       assert(r.flat.bends.length === 1, 'one bend line, got ' + r.flat.bends.length);
       var b = r.flat.bends[0];
       near(b.angle, 90, 1e-9, 'bend angle'); near(b.R, T, 1e-12, 'inside radius'); near(b.ba, BA, 1e-12, 'BA');
-      near(Math.abs(b.a[0]), 2 - T + BA / 2, 1e-12, 'bend line mid-bend');
+      var ax = Math.abs(b.a[0] - b.b[0]) < 1e-9 ? 0 : 1, off = Math.abs(b.a[ax] - r.flat.bbox.min[ax]);
+      assert(Math.abs(off - (2 - T + BA / 2)) < 1e-9 || Math.abs(off - (1 - T + BA / 2)) < 1e-9, 'bend line mid-bend: ' + off);
       near(Math.hypot(b.b[0] - b.a[0], b.b[1] - b.a[1]), 10, 1e-12, 'bend line the path length');
       rfJSClosed(r);
       var c = DxfCheck.check(K.exportDXFFlat(r.flat, 'in'), { units: 'in' });
@@ -39,7 +41,7 @@
       // Reverse direction: T on the other side: the corner's outside on the sketch, inside radius still R
       var rv = rfJSB('var path = p.sketch("Top").line(0, 0, 0, -10).id();\nvar prof = p.sketch("Front").polyline([[0, 0], [2, 0], [2, 1]], false).id();\np.sweptFlange(prof, path, { flip: true });\n');
       var Wf = (2 - 2 * T) + (1 - 2 * T) + BA;
-      near(rv.flat.sweptFlange.width, Wf, 1e-12, 'flipped: the sketch is the outside');
+      near(rfJSW(rv.flat), Wf, 1e-12, 'flipped: the sketch is the outside');
       nearRel(rv.mp.volume, Wf * 10 * T, 1e-9, 'flipped volume');
       assert(rv.flat.bends[0].up !== b.up, 'flipped: the bend reads the other way');
       return 'W ' + fmt(W) + ', bend ' + (b.up ? 'UP' : 'DOWN');
@@ -51,10 +53,11 @@
         'p.sweptFlange(prof, path, { bendAllowance: { type: "allowance", value: 0.2 }, name: "Channel" });\n');
       assert(r.flat.bends.length === 2, 'two bends, got ' + r.flat.bends.length);
       var arcIn = 0.25;   // T on the right of the chain as drawn: outside the U, so the sketch is the inside face
-      near(r.flat.bends[0].R, arcIn, 1e-12, 'profile arc → its inside radius');
-      near(r.flat.bends[1].R, T, 1e-12, 'sharp corner → sheet radius');
+      var Rs = r.flat.bends.map(function (q) { return q.R; }).sort(function (a, b) { return a - b; });
+      near(Rs[1], arcIn, 1e-12, 'profile arc → its inside radius');
+      near(Rs[0], T, 1e-12, 'sharp corner → sheet radius');
       var W = (1 - 0.25) + (2 - 0.25 - T) + (1 - T) + 0.4;
-      near(r.flat.sweptFlange.width, W, 1e-12, 'developed width with BA .2');
+      near(rfJSW(r.flat), W, 1e-12, 'developed width with BA .2');
       near(Math.abs(K.signedArea(r.flat.loops[0])), W * 12, 1e-9, 'flat area');
       var sec = (1 - 0.25) * T + (2 - 0.25 - T) * T + (1 - T) * T + Math.PI / 2 * T * (arcIn + T / 2) + Math.PI / 2 * T * (T + T / 2);
       nearRel(r.mp.volume, sec * 12, 1e-9, 'volume = section × 12');
@@ -126,7 +129,7 @@
       near(r2.mp.volume, r.mp.volume, 1e-12, 'same volume');
       var f2 = r2.model.features.filter(function (q) { return q.type === 'sweptFlange'; })[0];
       assert(f2.flip && f2.flatten === 'path' && +f2.radius === 0.1 && f2.bendAllowance.type === 'kfactor' && +f2.bendAllowance.value === 0.4 && f2.name === 'Lip', 'fields: ' + JSON.stringify(f2));
-      near(K.flatPattern(r2.model, r2.build, r2.mesh).sweptFlange.width, r.flat.sweptFlange.width, 1e-12, 'same flat');
+      near(rfJSW(K.flatPattern(r2.model, r2.build, r2.mesh)), rfJSW(r.flat), 1e-12, 'same flat');
       var re = rfJSB('p.sketch("Top").rect(0, -4, 6, 4).end().baseFlange();\nvar prof = p.sketch("Right").line(-4, ' + T + ', -4, ' + (T + 1) + ').id();\np.sweptFlange(prof, [[3, ' + T + ', 4]]);\n', true);
       var re2 = build(K.generateScript(re.model));
       noErrors(re2);

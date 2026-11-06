@@ -346,6 +346,15 @@
     var edges = bodyEdges(mesh).filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex; });
     var selected = resolveEdges((f.edges || []).map(function (e) { return { at: e.at, chain: false }; }), edges, EDGE_PICK_TOL * T);
     if (!selected.length) throw new Error('No edge selected for the flange.');
+    // lane sweptflange-2: a chord of a curved edge (the round side of a Swept Flange along an arc, a rolled part) is no
+    // flange edge: a face beside it is curved across it (SolidWorks takes linear edges only)
+    selected.forEach(function (e) {
+      (e.faces || []).forEach(function (fi) {
+        var fc = mesh.faces[fi], pg = fc && fc.polys && fc.polys[0], sf = pg && pg.surf && pg.surf.s;
+        if (sf && sf.d && Math.abs(dot(norm(sub(e.b, e.a)), norm(sf.d))) < 1 - 1e-6)
+          throw new Error((f.miter ? 'Miter Flange' : f.hem ? 'Hem' : 'Edge Flange') + ': the selected edge is not linear. Flanges can be created on linear edges only.');
+      });
+    });
     if ((+f.startOffset || 0) !== 0 || (+f.endOffset || 0) !== 0) selected = miterOffsetEnds(selected, f);   // lane DL: Miter Flange start / end offsets
     // placement: 'bendOutside' (default: bend and wall beyond the edge), 'outside' (Material Outside: the wall's inner
     // face at the edge), 'inside' (Material Inside: the wall's outer face at the edge), 'virtualSharp' (Bend from
@@ -2160,7 +2169,10 @@
     if (!sheet) throw new Error('No sheet metal parameters: create a Base Flange first (Sheet Metal tab).');
     var base = model.features.filter(function (f) { return f.sheetBase; })[0];
     var swf = model.features.filter(function (f) { return f.type === 'sweptFlange' && !f.suppressed; });   // lane sweptflange
-    if (swf.length && _.sweptFlangeFlat) return _.sweptFlangeFlat(swf, model, build, base);
+    // lane sweptflange-2: one that the rebuild made an open-profile Base Flange (its records in build.flanges) unfolds here
+    var sfv = !base && swf.length === 1 && build && build.flanges && build.flanges[swf[0].id] && _.sweptFlangeOpenBase ? _.sweptFlangeOpenBase(swf[0], model, { planes: build.planes || {}, sketches: {} }) : null;
+    if (sfv) { model = Object.assign({}, model, { features: model.features.map(function (f) { return f.id === sfv.id ? sfv : f; }) }); base = sfv; }
+    else if (swf.length && _.sweptFlangeFlat) return _.sweptFlangeFlat(swf, model, build, base, mesh);
     if (!base) {   // lane dxfout-2: a part made by a Lofted-Bend develops its own strip
       var lbf = model.features.filter(function (f) { return f.type === 'loftedBend' && !f.suppressed; })[0];
       if (lbf && _.loftedBendFlat) return _.loftedBendFlat(lbf, model, build);
@@ -6622,7 +6634,7 @@
       var bi = q >= fix ? q : q + 1, wi = q >= fix ? q + 1 : q;
       var nb = vec([-J.t * segs[bi].l[0], -J.t * segs[bi].l[1]]), nw = vec([-J.t * segs[wi].l[0], -J.t * segs[wi].l[1]]), c = dot(nb, nw);
       var C3 = to3D(plane, J.C[0], J.C[1]), a3 = add(add(C3, scale(nb, J.R)), scale(plane.n, a)), b3 = add(add(C3, scale(nb, J.R)), scale(plane.n, b));
-      info.push({ kind: 'edge', a: a3, b: b3, mid: scale(add(a3, b3), 0.5), origin: scale(add(a3, b3), 0.5), o: norm(sub(nw, scale(nb, c))), u: scale(nb, -1), len: D, angle: J.A, R: J.R, L: flats[wi], T: T, ba: null,
+      info.push({ kind: 'edge', a: a3, b: b3, mid: scale(add(a3, b3), 0.5), origin: scale(add(a3, b3), 0.5), o: norm(sub(nw, scale(nb, c))), u: scale(nb, -1), len: D, angle: J.A, R: J.R, L: flats[wi], T: T, ba: customBA(f),
         mitred: [false, false], miterPlanes: [null, null] });
       var e0 = vec([Math.cos(J.a0), Math.sin(J.a0)]), e1 = vec([-J.t * Math.sin(J.a0), J.t * Math.cos(J.a0)]);
       wedges.push({ plane: { origin: C3, x: e0, y: scale(e1, 1), n: plane.n }, a: a, b: b, R: J.R, RT: J.R + T, A: J.A, ov: Math.min(T / 2, flats[q], flats[q + 1]) });
@@ -6660,6 +6672,7 @@
   K.closedCornerName = closedCornerName; K.CLOSED_CORNER_TYPES = CC_TYPES.slice(); K.closedCornerDefaultGap = ccDefaultGap; K.closedCornerMinGap = ccMinGap;
   _.buildClosedCorner = buildClosedCorner; _.smBool = smBool; _.smScale = smScale;
   K.buildFlange = buildFlange; K.flangeLayout = flangeLayout; K.buildJog = buildJog; K.normalCutTool = normalCutTool;
+  _.mergeFlatRegions = mergeFlatRegions;   // lane sweptflange-2 (Swept Flange / Lofted-Bend cuts)
   K.flangeProfile = flangeProfile; K.flatPattern = flatPattern; K.flatOptions = flatOptions; K.flatOptionsOf = flatOptionsOf; K.FLAT_OPTION_DEFAULTS = FLAT_OPTION_DEFAULTS; K.sheetCutList = sheetCutList; K.CUT_LIST_NAMES = CUT_LIST_NAMES; K.cleanFlatLoop = cleanFlatLoop; K.snapFlatCircle = snapFlatCircle; K.flatCircleTol = flatCircleTol; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
   K.bendDeduction = bendDeduction; K.outsideSetback = outsideSetback; K.bendCalc = bendCalc; K.bendTableLookup = bendTableLookup;
   K.makeSheet = makeSheet; K.sheetKFactor = sheetKFactor; K.sheetNote = sheetNote; K.gaugeTables = GAUGE_TABLES; K.gaugeTable = gaugeTable; K.gaugeRow = gaugeRow;
@@ -7259,6 +7272,51 @@
   // loftedBendFlat(f, model, build) -> a flat pattern like Kernel.flatPattern's: the strip developed triangle by
   // triangle; seen from the side the first facet's normal points to; bend lines (Bent) on each diagonal between facets
   // that are not coplanar
+  // lane sweptflange-2: lbHoles(f, model, build, lay, at, outline) -> the holes cut in the facets after the Lofted-Bend
+  // (cuts, holes, Normal Cuts), CW, in the flat: each hole loop of a face on the sheet's +n side, moved onto the facet's
+  // mid-plane along its normal and laid by that facet's rigid map, so it keeps its true shape. A cut that crosses a
+  // bend line or the blank's edge is not laid (a warning in the flat would name it: none yet).
+  function lbHoles(f, model, build, lay, at, outline) {
+    var later = false, any = false;
+    model.features.forEach(function (q) {
+      if (q.id === f.id) { later = true; return; }
+      if (later && !q.suppressed && (K.isCut(q, model) || q.type === 'hole')) any = true;
+    });
+    if (!any || !build || !build.body || !_.faceOutline || !_.faceLoopsClassified) return [];
+    var T = lay.T, mesh = _.meshFromBody(build.body), out = [];
+    var facets = lay.tris.map(function (t) {
+      var n = triN(t), e1 = norm(sub(t.p[1], t.p[0])), e2 = cross(n, e1), a0 = at[tkey(t.tag[0])], a1 = at[tkey(t.tag[1])];
+      var fl = Math.hypot(a1[0] - a0[0], a1[1] - a0[1]), f1 = [(a1[0] - a0[0]) / fl, (a1[1] - a0[1]) / fl];
+      return { t: t, n: n, e1: e1, e2: e2, a0: a0, f1: f1, f2: [-f1[1], f1[0]], w: dot(n, t.p[0]) + T / 2 };
+    });
+    function inTri(F, X) {   // barycentric slack of X (on the facet's plane) in its mid triangle
+      var p = F.t.p, v0 = sub(p[1], p[0]), v1 = sub(p[2], p[0]), v2 = sub(X, p[0]);
+      var d00 = dot(v0, v0), d01 = dot(v0, v1), d11 = dot(v1, v1), d20 = dot(v2, v0), d21 = dot(v2, v1), den = d00 * d11 - d01 * d01;
+      var b = (d11 * d20 - d01 * d21) / den, c = (d00 * d21 - d01 * d20) / den;
+      return Math.min(b, c, 1 - b - c);
+    }
+    mesh.faces.forEach(function (fc, fi) {
+      var cands = facets.filter(function (F) { return dot(F.n, fc.normal) > 1 - 1e-9 && Math.abs(fc.w - F.w) < 1e-6 * (1 + Math.abs(F.w)); });
+      if (!cands.length) return;
+      var o = _.faceOutline(mesh, fi);
+      if (!o) return;
+      _.faceLoopsClassified(o).holes.forEach(function (l) {
+        var P3 = l.map(function (q) { return K.to3D(o.plane, q[0], q[1]); }), c = [0, 0, 0];
+        P3.forEach(function (X) { c = add(c, scale(X, 1 / P3.length)); });
+        var best = null, bs = -Infinity;
+        cands.forEach(function (F) { var sl = inTri(F, sub(c, scale(F.n, T / 2))); if (sl > bs) { bs = sl; best = F; } });
+        if (!best || bs < -1e-9) return;
+        var m = P3.map(function (X) {
+          var Y = sub(sub(X, scale(best.n, T / 2)), best.t.p[0]), u = dot(Y, best.e1), w = dot(Y, best.e2);
+          return [best.a0[0] + best.f1[0] * u + best.f2[0] * w, best.a0[1] + best.f1[1] * u + best.f2[1] * w];
+        });
+        if (!m.every(function (q) { return _.pointInPoly(q, outline); })) return;
+        if (K.signedArea(m) > 0) m.reverse();
+        out.push(m);
+      });
+    });
+    return out;
+  }
   function loftedBendFlat(f, model, build) {
     var lay = loftedBendLayout(f, model, { planes: build && build.planes, sketches: {} }), sheet = K.sheetParams(model), units = model.units;
     var at = {}, tris = lay.tris, i;
@@ -7304,8 +7362,8 @@
     var min = [Infinity, Infinity], max = [-Infinity, -Infinity];
     outline.forEach(function (p) { min[0] = Math.min(min[0], p[0]); min[1] = Math.min(min[1], p[1]); max[0] = Math.max(max[0], p[0]); max[1] = Math.max(max[1], p[1]); });
     var outSheet = Object.assign({}, sheet, { kFactor: K.sheetKFactor(sheet) });
-    var pl = lay.plane;
-    return { loops: [outline], bends: bends, plane: { origin: pl.origin.slice(), x: pl.x.slice(), y: pl.y.slice(), n: pl.n.slice(), offset: dot(pl.n, pl.origin) }, sheet: outSheet,
+    var pl = lay.plane, holes = lbHoles(f, model, build, lay, at, outline);
+    return { loops: [outline].concat(holes), bends: bends, plane: { origin: pl.origin.slice(), x: pl.x.slice(), y: pl.y.slice(), n: pl.n.slice(), offset: dot(pl.n, pl.origin) }, sheet: outSheet,
       bbox: { min: min, max: max }, size: [max[0] - min[0], max[1] - min[1]], note: 'T=' + sheet.thickness + ' LOFTED BEND ' + (lay.method === 'bent' ? bends.length + ' BENDS' : 'FORMED'), warnings: [], etch: [], etchLayer: null,
       loftedBend: { facets: tris.length, method: lay.method } };
   }
@@ -7455,6 +7513,22 @@
     });
     return { ob: ob, pieces: pieces, frames: frames, nSign: cn < 0 ? -1 : 1, T: T, flatten: flatten, plane: plane };
   }
+  // lane sweptflange-2: sweptFlangeOpenBase(f, model, ctx) -> the open-profile Base Flange (insertBends, openBase) that
+  // a Swept Flange along a straight path sketch is (the same section, extruded the path's length from the profile
+  // plane), or null (an arc in the path, a path of edges, another Base Flange in the part). The rebuild builds that
+  // feature in its place when the Swept Flange starts the part, so its bends are ordinary records: cuts, holes,
+  // Normal Cuts and Edge Flanges after it reach the flat through Kernel.flatPattern's own unfold.
+  function sweptFlangeOpenBase(f, model, ctx) {
+    if (!f || f.type !== 'sweptFlange' || (f.edges && f.edges.length)) return null;
+    if (model.features.some(function (q) { return q.sheetBase && !q.suppressed && q.id !== f.id; })) return null;
+    var lay = sweptFlangeLayout(f, model, ctx), L = 0;
+    if (lay.pieces.some(function (p) { return p.kind !== 'line'; })) return null;
+    lay.pieces.forEach(function (p) { L += len(sub(p.b, p.a)); });
+    var vf = { id: f.id, type: 'insertBends', openBase: true, sketch: f.profile, depth: L, end: 'blind', reverse: lay.nSign < 0, flip: !!f.flip, sheetBase: true, name: f.name, sweptFlange: true };
+    if (f.radius != null) vf.radius = f.radius;
+    if (f.bendAllowance) vf.bendAllowance = f.bendAllowance;
+    return vf;
+  }
   // buildSweptFlange(f, model, ctx) -> the sheet (CSG)
   function buildSweptFlange(f, model, ctx) {
     var lay = sweptFlangeLayout(f, model, ctx), ob = lay.ob, seg = ob.cv.map(function (c, i) { return c ? i : -1; });
@@ -7471,6 +7545,96 @@
       return _.buildRevolve({ id: f.id, angle: Math.abs(p.ang) * 180 / Math.PI, reverse: p.ang < 0, axis: { x1: 0, y1: 0, x2: 0, y2: 1 } }, fake, R);
     });
     return _.unionTree(parts);
+  }
+  // lane sweptflange-2: sfPointMap(lay, devPieces, ob, s) -> fn(X) = { at: [x, y] in the development, off: the
+  // distance through the sheet from the profile line's face (0 on it, T on the other), t: along the line } or null
+  // off the sheet. A point is taken to its piece (along a line, or its angle about an arc's axis), moved back to the
+  // piece's start and read in the profile's sketch coordinates; the development then places it: lines and cylinders
+  // by translation (r·θ on the neutral radius), cones and rings by the turn φ·sin β about the apex.
+  function sfPointMap(lay, devPieces, ob, s) {
+    if (!devPieces) return null;
+    var P0 = ob.pts[0], d2 = ob.segs[0].d, l2 = ob.segs[0].l, ell = Math.hypot(ob.pts[1][0] - ob.pts[0][0], ob.pts[1][1] - ob.pts[0][1]), tol = 1e-7 * (1 + ell);
+    return function (X) {
+      for (var k = 0; k < lay.pieces.length; k++) {
+        var p = lay.pieces[k], dp = devPieces[k], back, par;
+        if (p.kind === 'line') {
+          var dir = norm(sub(p.b, p.a));
+          par = dot(sub(X, p.a), dir);
+          if (par < -tol || par > dp.L + tol) continue;
+          back = sub(X, scale(dir, par));
+        } else {
+          var e = sub(p.a, p.C), w = sub(X, p.C), Dn = scale(p.D, p.ang < 0 ? -1 : 1);
+          e = sub(e, scale(p.D, dot(e, p.D))); w = sub(w, scale(p.D, dot(w, p.D)));
+          if (len(w) < 1e-12) continue;
+          par = Math.atan2(dot(cross(e, w), Dn), dot(e, w));
+          if (par < -1e-7 || par > dp.phi + 1e-7) continue;
+          back = _.rotatePoint(X, p.C, Dn, -par);
+        }
+        var F = lay.frames[k];
+        if (Math.abs(dot(sub(back, F.origin), norm(F.n))) > 1e-6 * (1 + ell)) continue;
+        var q = to2D(F, back), dq = [q[0] - P0[0], q[1] - P0[1]], t = dq[0] * d2[0] + dq[1] * d2[1], off = s * (dq[0] * l2[0] + dq[1] * l2[1]);
+        if (t < -tol || t > ell + tol) continue;
+        var r = [(dp.Q1[0] - dp.Q0[0]) / ell, (dp.Q1[1] - dp.Q0[1]) / ell], Y = [dp.Q0[0] + r[0] * t, dp.Q0[1] + r[1] * t];
+        if (dp.kind === 'line') Y = [Y[0] + dp.v[0] * par, Y[1] + dp.v[1] * par];
+        else if (dp.kind === 'cyl') Y = [Y[0] + dp.v[0] * dp.rN * par, Y[1] + dp.v[1] * dp.rN * par];
+        else {
+          var a = dp.sg * par * dp.sinb, c = Math.cos(a), sn = Math.sin(a), dx = Y[0] - dp.A2[0], dy = Y[1] - dp.A2[1];
+          Y = [dp.A2[0] + c * dx - sn * dy, dp.A2[1] + sn * dx + c * dy];
+        }
+        // the material's side at X (the sheet's normal there, toward face B)
+        var m3 = add(scale(F.x, s * l2[0]), scale(F.y, s * l2[1]));
+        if (p.kind !== 'line') m3 = _.rotatePoint(m3, [0, 0, 0], scale(p.D, p.ang < 0 ? -1 : 1), par);
+        return { at: Y, off: off, t: t, m: m3 };
+      }
+      return null;
+    };
+  }
+  // sfBodyLoops(body, map, T) -> the loops (outer first, CCW; holes CW) of the body's faces on the profile line's side,
+  // mapped into the development, or null
+  function sfBodyLoops(body, map, T) {
+    var polys = [];
+    body.polygons.forEach(function (pg) {
+      // a polygon of face A: its normal points away from the material (the chords of a curved face A lie a sagitta
+      // inside it, so a vertex is taken by its side of the mid-thickness, not by lying on the line's face)
+      var vs = pg.vertices.map(function (v) { return [v.pos.x, v.pos.y, v.pos.z]; }), nn = [0, 0, 0], c = [0, 0, 0], i;
+      for (i = 0; i < vs.length; i++) {
+        var a = vs[i], b = vs[(i + 1) % vs.length];
+        nn = add(nn, [(a[1] - b[1]) * (a[2] + b[2]), (a[2] - b[2]) * (a[0] + b[0]), (a[0] - b[0]) * (a[1] + b[1])]);
+        c = add(c, scale(a, 1 / vs.length));
+      }
+      if (len(nn) < 1e-18) return;
+      var rc = map(c);
+      if (!rc || dot(norm(nn), norm(rc.m)) > -0.5) return;
+      var m = [];
+      for (i = 0; i < vs.length; i++) {
+        var r = map(vs[i]);
+        if (!r || r.off > T / 2) return;
+        m.push(r.at);
+      }
+      var A = K.signedArea(m);
+      if (!(Math.abs(A) > 1e-14)) return;
+      if (A < 0) m.reverse();
+      polys.push({ vertices: m.map(function (q) { return { pos: { x: q[0], y: q[1], z: 0 } }; }) });
+    });
+    return sfOutline(polys);
+  }
+  // the outline of 2D polygons ({ vertices: [{ pos }] }, z = 0) as merged flat loops, largest outer first
+  function sfOutline(polys) {
+    if (!polys.length) return null;
+    var o = _.faceOutline({ faces: [{ normal: [0, 0, 1], w: 0, polys: polys }] }, 0);
+    if (!o || !o.loops.length) return null;
+    var loops = o.loops.map(function (l) { return l.map(function (q) { var X = to3D(o.plane, q[0], q[1]); return [X[0], X[1]]; }); });
+    var merged = _.mergeFlatRegions ? _.mergeFlatRegions([loops], [], 1e-4) : null;
+    if (!merged || !merged.length) return null;
+    var outs = merged.filter(function (l) { return K.signedArea(l) > 0; }).sort(function (a, b) { return K.signedArea(b) - K.signedArea(a); });
+    var holes = merged.filter(function (l) { return K.signedArea(l) < 0; });
+    return outs.concat(holes);
+  }
+  function sfSnap(l, units) {
+    if (!K.snapFlatCircle || !K.flatCircleTol) return l;
+    var mn = [Infinity, Infinity], mx = [-Infinity, -Infinity];
+    l.forEach(function (p) { mn[0] = Math.min(mn[0], p[0]); mn[1] = Math.min(mn[1], p[1]); mx[0] = Math.max(mx[0], p[0]); mx[1] = Math.max(mx[1], p[1]); });
+    return K.snapFlatCircle(l, K.flatCircleTol(units, Math.max(mx[0] - mn[0], mx[1] - mn[1]) / 2)) || l;
   }
   // sweptFlangeFlat(features, model, build, base) -> a flat like Kernel.flatPattern's (flatPattern hands it the part's
   // Swept Flanges when it has one); refused on a Base Flange part, along model edges or with two Swept Flanges
@@ -7495,7 +7659,7 @@
       bendAt.push({ x: x + bc.BA / 2, J: J, bc: bc });
       x += bc.BA;
     });
-    var W = x, loopPts, area, bends = [], i;
+    var W = x, loopPts, area, bends = [], i, devPieces = null;
     if (!hasArc) {
       var L = 0;
       lay.pieces.forEach(function (p) { L += len(sub(p.b, p.a)); });
@@ -7514,10 +7678,12 @@
       function offP(p, t) { return [p[0] + s * t * lo[0], p[1] + s * t * lo[1]]; }
       var Q0 = [0, 0], Q1 = [ell, 0], side0 = [Q0], side1 = [Q1];
       area = 0;
+      devPieces = [];   // lane sweptflange-2: each piece's map into the flat (sfPointMap)
       lay.pieces.forEach(function (p, k) {
         var F = lay.frames[k], v = [-(Q1[1] - Q0[1]) / ell, (Q1[0] - Q0[0]) / ell], j;
         if (p.kind === 'line') {
           var Lp = len(sub(p.b, p.a));
+          devPieces.push({ kind: 'line', Q0: Q0, Q1: Q1, v: v, L: Lp });
           Q0 = [Q0[0] + v[0] * Lp, Q0[1] + v[1] * Lp]; Q1 = [Q1[0] + v[0] * Lp, Q1[1] + v[1] * Lp];
           side0.push(Q0); side1.push(Q1); area += ell * Lp;
           return;
@@ -7531,6 +7697,7 @@
         var r0 = rad(N0), r1 = rad(N1), phi = Math.abs(p.ang), steps = Math.max(2, Math.ceil(phi / (2 * Math.PI / 180)));
         if (Math.abs(r1 - r0) <= 1e-9 * Math.max(1, ell)) {   // a cylinder: rolled straight
           var sh = r0 * phi;
+          devPieces.push({ kind: 'cyl', Q0: Q0, Q1: Q1, v: v, rN: r0, phi: phi });
           for (j = 1; j <= steps; j++) { side0.push([Q0[0] + v[0] * sh * j / steps, Q0[1] + v[1] * sh * j / steps]); side1.push([Q1[0] + v[0] * sh * j / steps, Q1[1] + v[1] * sh * j / steps]); }
           Q0 = side0[side0.length - 1]; Q1 = side1[side1.length - 1]; area += ell * sh;
           return;
@@ -7541,6 +7708,7 @@
         var X = s1 >= s0 ? Q1 : Q0, rx = [-(X[1] - A2[1]), X[0] - A2[0]], sg = rx[0] * v[0] + rx[1] * v[1] > 0 ? 1 : -1;
         function turnQ(Q, t) { var c = Math.cos(sg * t), sn = Math.sin(sg * t), dx = Q[0] - A2[0], dy = Q[1] - A2[1]; return [A2[0] + c * dx - sn * dy, A2[1] + sn * dx + c * dy]; }
         var q0 = Q0, q1 = Q1;
+        devPieces.push({ kind: 'cone', Q0: Q0, Q1: Q1, v: v, A2: A2, sg: sg, sinb: alpha / phi, phi: phi });
         for (j = 1; j <= steps; j++) { side0.push(turnQ(q0, alpha * j / steps)); side1.push(turnQ(q1, alpha * j / steps)); }
         Q0 = side0[side0.length - 1]; Q1 = side1[side1.length - 1];
         area += alpha / 2 * Math.abs(s1 * s1 - s0 * s0);
@@ -7548,27 +7716,41 @@
       function dedupe(l) { return l.filter(function (p, k) { return !k || Math.hypot(p[0] - l[k - 1][0], p[1] - l[k - 1][1]) > 1e-12; }); }
       loopPts = dedupe(dedupe(side0).concat(dedupe(side1).reverse()));
     }
+    // lane sweptflange-2: cuts, holes and Normal Cuts after the Swept Flange: the sheet's face on the profile line, as
+    // the body has it, mapped piece by piece into the development (planes rigidly, cylinders and cones by their angle
+    // on the neutral surface), its outline merged; Edge Flanges and the like on it are not unfolded (a warning)
+    var later = [], unfolded = [], holesLoops = null;
+    var afterF = false;
+    model.features.forEach(function (q) {
+      if (q.id === f.id) { afterF = true; return; }
+      if (!afterF || q.suppressed || q.type === 'sketch' || q.refgeo) return;
+      if (['flange', 'jog', 'hem', 'sketchedBend', 'closedCorner', 'unfold', 'fold'].indexOf(q.type) >= 0) later.push(q);
+      else if (K.isCut(q, model) || ['extrude', 'revolve', 'sweep', 'loft', 'hole', 'vent', 'rip', 'breakCorner', 'cornerRelief'].indexOf(q.type) >= 0) unfolded.push(q);
+    });
+    if (unfolded.length && build && build.body) {
+      var map = hasArc ? sfPointMap(lay, devPieces, ob, s) : sfPointMap(lay, null, ob, s, W, bendAt);
+      var fl = map && sfBodyLoops(build.body, map, T);
+      if (fl && fl.length) { loopPts = fl[0]; holesLoops = fl.slice(1); }
+      else warnings.push('Swept Flange: the cuts after it could not be laid into the flat; the blank is shown without them.');
+    }
     // the flat's frame: on the profile line's face at the path's start, looking away from the material
     var x3 = vec(ob.segs[0].d), n3 = scale(vec(ob.segs[0].l), -s), y3 = cross(n3, x3), d0 = pieceDir(lay.pieces[0], false), o3 = to3D(plane, ob.pts[0][0], ob.pts[0][1]);
     if (dot(y3, d0) < 0) {   // the path runs along −y of that frame: mirror the development's y
       loopPts = loopPts.map(function (p) { return [p[0], -p[1]]; });
+      if (holesLoops) holesLoops = holesLoops.map(function (l) { return l.map(function (p) { return [p[0], -p[1]]; }).reverse(); });
       bends.forEach(function (b) { b.a = [b.a[0], -b.a[1]]; b.b = [b.b[0], -b.b[1]]; });
     }
     if (K.signedArea(loopPts) < 0) loopPts.reverse();
-    // later features that change the part are not in this flat yet
-    var after = false;
-    model.features.forEach(function (q) {
-      if (q.id === f.id) { after = true; return; }
-      if (!after || q.suppressed || q.type === 'sketch' || q.refgeo) return;
-      if (K.isCut(q, model) || ['extrude', 'revolve', 'sweep', 'loft', 'flange', 'jog', 'hem', 'sketchedBend', 'hole'].indexOf(q.type) >= 0) {
-        var w = (q.name || q.type) + ' after the Swept Flange is not in its flat pattern yet.';
-        if (warnings.indexOf(w) < 0) warnings.push(w);
-      }
+    // bend features after it are not unfolded in this flat yet
+    later.forEach(function (q) {
+      var w = (q.name || q.type) + ' after the Swept Flange is not in its flat pattern yet.';
+      if (warnings.indexOf(w) < 0) warnings.push(w);
     });
     var min = [Infinity, Infinity], max = [-Infinity, -Infinity];
     loopPts.forEach(function (p) { min[0] = Math.min(min[0], p[0]); min[1] = Math.min(min[1], p[1]); max[0] = Math.max(max[0], p[0]); max[1] = Math.max(max[1], p[1]); });
     var outSheet = Object.assign({}, sheet, { kFactor: kf });
-    return { loops: [loopPts], bends: bends, plane: { origin: o3, x: x3, y: y3, n: n3, offset: dot(n3, o3) }, sheet: outSheet,
+    var allLoops = [loopPts].concat((holesLoops || []).map(function (l) { return sfSnap(l, model.units); }));
+    return { loops: allLoops, bends: bends, plane: { origin: o3, x: x3, y: y3, n: n3, offset: dot(n3, o3) }, sheet: outSheet,
       bbox: { min: min, max: max }, size: [max[0] - min[0], max[1] - min[1]], note: K.sheetNote(outSheet), warnings: warnings, etch: [], etchLayer: null,
       sweptFlange: { width: W, area: area, flatten: lay.flatten, pieces: lay.pieces.map(function (p) { return p.kind; }) } };
   }
@@ -7585,6 +7767,6 @@
       return 'var ' + v + ' = p.sweptFlange(' + (idVar[f.profile] || f.profile) + ', ' + path + ', ' + optsStr(o) + ').last();';
     }
   });
-  K.SWEPT_FLANGE_FLATTEN = SF_FLATTEN.slice();
-  K.sweptFlangeLayout = sweptFlangeLayout; K.buildSweptFlange = buildSweptFlange; K.sweptFlangeFlat = sweptFlangeFlat; _.sweptFlangeFlat = sweptFlangeFlat;
+  K.SWEPT_FLANGE_FLATTEN = SF_FLATTEN.slice(); _.sfPointMap = sfPointMap; _.sfBodyLoops = sfBodyLoops;
+  K.sweptFlangeLayout = sweptFlangeLayout; K.sweptFlangeOpenBase = sweptFlangeOpenBase; _.sweptFlangeOpenBase = sweptFlangeOpenBase; K.buildSweptFlange = buildSweptFlange; K.sweptFlangeFlat = sweptFlangeFlat; _.sweptFlangeFlat = sweptFlangeFlat;
 })(Kernel, Kernel._);
