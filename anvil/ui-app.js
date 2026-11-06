@@ -1982,6 +1982,8 @@
     // ...Async forms, which wait for it)
     flat: function () { built('flat'); return K.flatPattern(App.model, App.build, App.mesh); },
     dxfFlat: function () { built('dxfFlat'); return K.exportDXFFlat(K.flatPattern(App.model, App.build, App.mesh), App.model.units); },
+    // lane flatopts-2: the sheet-metal Cut-List Properties ({ rows: [{ name, value, text, unit }], values, error }, Kernel.sheetCutList)
+    cutList: function () { built('cutList'); var r = K.sheetCutList(App.model, App.build, App.mesh); return { rows: r.rows, values: r.values, error: r.error }; },
     flatAsync: function () { return UI.whenIdle().then(function () { return window.anvil.flat(); }); },
     dxfFlatAsync: function () { return UI.whenIdle().then(function () { return window.anvil.dxfFlat(); }); },
     edges: function () { return (App.edges || []).filter(function (e) { return !e.smooth && e.faces.length === 2; }).map(function (e, i) { return { mid: e.mid.map(function (x) { return +x.toFixed(3); }), len: +e.len.toFixed(3), convex: e.convex }; }); },

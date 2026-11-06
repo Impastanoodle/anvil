@@ -2709,6 +2709,84 @@
     flat.orient = { rotation: dA, fixed: !!model.flatFixed, grain: !!model.flatGrain };
     return flat;
   }
+  // lane flatopts-2 (rfJK): SolidWorks 2024's sheet-metal Cut-List Properties (Cut list ▸ Sheet<1> ▸ Properties…),
+  // what a shop quotes from. sheetCutList(model, build, mesh, flat?) -> { rows: [{ name, value, text, unit }], values:
+  // { name: value }, flat, error } computed from the flat pattern (flat given, else flatPattern(model, build, mesh)):
+  //  * Bounding Box Length / Width: the flat's size, the longer one first (the flat as laid: Fixed face / Grain follow)
+  //  * Bounding Box Area = length × width; Bounding Box Area-Blank = the blank's area (outline less cut outs)
+  //  * Cutting Length-Outer = the outline's length, Cutting Length-Inner = all cut outs' lengths, read as the laser
+  //    DXF writes them (Kernel.dxfLoopCurves: true circles and arcs, so a round hole is exactly 2πr); Cut Outs = their count
+  //  * Bends (count), Sheet Metal Thickness, Bend Radius, and the sheet's bend rule: K-Factor (value), Bend Allowance /
+  //    Bend Deduction (value) or Bend Table (its name), as the Sheet-Metal feature sets it
+  //  * Sheet Metal Gauge (the gauge table pick, '' without one), Material, Mass (Materials.massProps when loaded, in kg;
+  //    text lb for an inch part, g for mm), Description 'Sheet'
+  // Lengths are in the part's units (text: 4 decimals in inches, 2 in mm). A part without a sheet gives { error }.
+  var CUT_LIST_NAMES = ['Bounding Box Length', 'Bounding Box Width', 'Sheet Metal Thickness', 'Bend Radius', 'Bend Allowance', 'Bends', 'Cutting Length-Outer', 'Cutting Length-Inner', 'Cut Outs', 'Bounding Box Area', 'Bounding Box Area-Blank', 'Sheet Metal Gauge', 'Material', 'Mass', 'Description'];
+  function loopCutLength(l) {
+    var c = K.dxfLoopCurves ? K.dxfLoopCurves(l) : null, s = 0;
+    if (c && c.circle) return 2 * Math.PI * c.circle.r;
+    if (c && c.segs) { c.segs.forEach(function (g) { s += g.t === 'arc' ? Math.abs(g.sweep) * g.r : Math.hypot(g.b[0] - g.a[0], g.b[1] - g.a[1]); }); return s; }
+    l.forEach(function (p, i) { var q = l[(i + 1) % l.length]; s += Math.hypot(q[0] - p[0], q[1] - p[1]); });
+    return s;
+  }
+  // the loop's area with its arcs and circles true (as the DXF has them), for Bounding Box Area-Blank
+  function loopCutArea(l) {
+    var c = K.dxfLoopCurves ? K.dxfLoopCurves(l) : null, s = 0;
+    if (c && c.circle) return Math.PI * c.circle.r * c.circle.r;
+    if (c && c.segs) {
+      c.segs.forEach(function (g) {
+        s += (g.a[0] * g.b[1] - g.b[0] * g.a[1]) / 2;
+        if (g.t === 'arc') s += g.r * g.r / 2 * (g.sweep - Math.sin(g.sweep));
+      });
+      return Math.abs(s);
+    }
+    return Math.abs(signedArea(l));
+  }
+  function sheetCutList(model, build, mesh, flat) {
+    if (!model || !model.sheet) return { rows: [], values: {}, flat: null, error: 'Not a sheet metal part: create a Base Flange first.' };
+    var err = null;
+    if (!flat) { try { flat = flatPattern(model, build, mesh); } catch (e) { err = e.message; } }
+    var sheet = resolvedModel(model).model.sheet || model.sheet, inch = model.units === 'in', rows = [];
+    function len(x) { return inch ? (+x).toFixed(4) : (+x).toFixed(2); }
+    function row(name, value, text, unit) { rows.push({ name: name, value: value, text: text == null ? String(value) : text, unit: unit || '' }); }
+    var U = inch ? 'in' : 'mm';
+    if (flat) {
+      var w = Math.max(flat.size[0], flat.size[1]), h = Math.min(flat.size[0], flat.size[1]);
+      var outer = loopCutLength(flat.loops[0]), inner = 0, area = loopCutArea(flat.loops[0]);
+      flat.loops.slice(1).forEach(function (l) { inner += loopCutLength(l); area -= loopCutArea(l); });
+      row('Bounding Box Length', w, len(w), U);
+      row('Bounding Box Width', h, len(h), U);
+    }
+    var T = +sheet.thickness, R = +sheet.bendRadius, type = sheet.bendAllowanceType || 'kfactor';
+    row('Sheet Metal Thickness', T, len(T), U);
+    row('Bend Radius', R, len(R), U);
+    if (type === 'allowance') row('Bend Allowance', +sheet.bendAllowance, len(+sheet.bendAllowance), U);
+    else if (type === 'deduction') row('Bend Deduction', +sheet.bendDeduction, len(+sheet.bendDeduction), U);
+    else if (type === 'table') { var bt = sheet.bendTable, nm = bt && typeof bt === 'object' ? (bt.name || 'Bend table') : String(bt || 'Bend table'); row('Bend Table', nm, nm); }
+    else { var kf = sheetKFactor(sheet); row('K-Factor', kf, String(Math.round(kf * 1e6) / 1e6)); }
+    if (flat) {
+      row('Bends', flat.bends.length);
+      row('Cutting Length-Outer', outer, len(outer), U);
+      row('Cutting Length-Inner', inner, len(inner), U);
+      row('Cut Outs', flat.loops.length - 1);
+      row('Bounding Box Area', w * h, len(w * h), U + '^2');
+      row('Bounding Box Area-Blank', area, len(area), U + '^2');
+    }
+    row('Sheet Metal Gauge', sheet.gauge != null ? String(sheet.gauge) : '', sheet.gauge != null ? String(sheet.gauge) : '');
+    var MT = typeof Materials !== 'undefined' ? Materials : null, kg = null;
+    var mat = (MT && MT.materialName ? MT.materialName(model) : null) || model.materialName || '';
+    try { if (MT && MT.massProps) { var mp = MT.massProps(model, build, mesh); kg = mp.massKg; if (mp.material) mat = mat || mp.material; } } catch (e) { kg = null; }
+    if (kg == null && mesh && mesh.triCount) {
+      var vol = K.massProps ? K.massProps(mesh, model.density).volume : 0;
+      kg = vol * (inch ? 1.6387064e-5 : 1e-9) * (+model.density || 0);
+    }
+    row('Material', mat || 'Material <not specified>');
+    if (kg != null) row('Mass', kg, inch ? (kg / 0.45359237).toFixed(3) : (kg * 1000).toFixed(2), inch ? 'lb' : 'g');
+    row('Description', 'Sheet');
+    var values = {};
+    rows.forEach(function (r) { values[r.name] = r.value; });
+    return { rows: rows, values: values, flat: flat || null, error: err };
+  }
   // lane flatopts: Flat-Pattern1's Parameters / Corner Options check boxes, model.flatOptions = { mergeFaces,
   // simplifyBends, showSlit, cornerTreatment } (SolidWorks' IFlatPatternFeatureData MergeFace / SimplifyBends /
   // ShowSlitInCornerRelief / CornerTreatment). Only keys that differ from the default are stored; absent = default, so
@@ -5934,7 +6012,7 @@
   K.closedCornerName = closedCornerName; K.CLOSED_CORNER_TYPES = CC_TYPES.slice(); K.closedCornerDefaultGap = ccDefaultGap; K.closedCornerMinGap = ccMinGap;
   _.buildClosedCorner = buildClosedCorner; _.smBool = smBool; _.smScale = smScale;
   K.buildFlange = buildFlange; K.flangeLayout = flangeLayout; K.buildJog = buildJog; K.normalCutTool = normalCutTool;
-  K.flangeProfile = flangeProfile; K.flatPattern = flatPattern; K.flatOptions = flatOptions; K.flatOptionsOf = flatOptionsOf; K.FLAT_OPTION_DEFAULTS = FLAT_OPTION_DEFAULTS; K.cleanFlatLoop = cleanFlatLoop; K.snapFlatCircle = snapFlatCircle; K.flatCircleTol = flatCircleTol; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
+  K.flangeProfile = flangeProfile; K.flatPattern = flatPattern; K.flatOptions = flatOptions; K.flatOptionsOf = flatOptionsOf; K.FLAT_OPTION_DEFAULTS = FLAT_OPTION_DEFAULTS; K.sheetCutList = sheetCutList; K.CUT_LIST_NAMES = CUT_LIST_NAMES; K.cleanFlatLoop = cleanFlatLoop; K.snapFlatCircle = snapFlatCircle; K.flatCircleTol = flatCircleTol; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
   K.bendDeduction = bendDeduction; K.outsideSetback = outsideSetback; K.bendCalc = bendCalc; K.bendTableLookup = bendTableLookup;
   K.makeSheet = makeSheet; K.sheetKFactor = sheetKFactor; K.sheetNote = sheetNote; K.gaugeTables = GAUGE_TABLES; K.gaugeTable = gaugeTable; K.gaugeRow = gaugeRow;
   K.DEFAULT_K_FACTOR = DEFAULT_K; K.LEGACY_K_FACTOR = LEGACY_K; K.AUTO_RELIEF_RATIO = AUTO_RELIEF_RATIO; K.DEFAULT_GAUGE_TABLE = DEFAULT_GAUGE_TABLE; K.BEND_ALLOWANCE_TYPES = BA_TYPES.slice();

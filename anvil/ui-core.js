@@ -1259,6 +1259,15 @@ var UI = (function () {
           bl.userData.flatBends = true;
           flatGroup.add(bl);
         }
+        if (flat.regionLines && flat.regionLines.length) {   // lane flatopts-2: Merge faces cleared: the bend regions' tangent lines on both faces
+          var rs = [];
+          flat.regionLines.forEach(function (rl) { [fb.h0, fb.h1].forEach(function (hh) { var a = P(rl.a, hh), b = P(rl.b, hh); rs.push(a[0], a[1], a[2], b[0], b[1], b[2]); }); });
+          var rg = new THREE.BufferGeometry();
+          rg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(rs), 3));
+          var rln = new THREE.LineSegments(rg, mats.edge);
+          rln.userData.flatRegionLines = true;
+          flatGroup.add(rln);
+        }
         App.flat = flat;
         App.flatBounds = { min: lo, max: hi };
       } catch (e) { App.flatError = (e && e.message) || String(e); }

@@ -1058,6 +1058,7 @@
     tree.appendChild(root);
     [['folder', 'History'], ['sensor', 'Sensors'], ['annotations', 'Annotations']].forEach(function (s) { tree.appendChild(treeItem({ icon: s[0], name: s[1], depth: 1, cls: 'dim' })); });
     appendEquationsFolder(tree, filter);
+    if (m.sheet && !filter) appendCutListFolder(tree);   // lane flatopts-2
     appendBodiesFolder(tree, filter);
     // Material row (ui-materials.js: name, Edit Material on double-click, favourites on right-click)
     tree.appendChild(UI.materialTreeRow ? UI.materialTreeRow(treeItem) : treeItem({ icon: 'material', name: (m.materialName || 'Material <not specified>') + '  ·  ' + m.density + ' kg/m³', depth: 1, cls: 'dim' }));
@@ -1284,6 +1285,47 @@
     }
     return items;
   }
+  // lane flatopts-2 (rfJK): a sheet part's Cut list(1) folder holding Sheet<1>, as SolidWorks shows it; right-click
+  // either ▸ Properties… (or double-click Sheet<1>) opens Cut-List Properties: Kernel.sheetCutList's rows (Bounding
+  // Box Length / Width, Sheet Metal Thickness, Bend Radius, K-Factor…, Bends, Cutting Length-Outer / -Inner, Cut Outs,
+  // Bounding Box Area (-Blank), Sheet Metal Gauge, Material, Mass, Description), recomputed from the current build every
+  // time the tree refreshes while it is open. DOM: .ti.cl-folder, .ti.cl-row, #cutlist-dialog with tr.cl-row[data-name]
+  // (td.cl-name, td.cl-expr, td.cl-val).
+  function cutListMenu() { return [{ label: 'Properties…', action: function () { cmdCutListProperties(); } }]; }
+  function appendCutListFolder(tree) {
+    var open = expanded.cutList !== false;
+    var folder = treeItem({ icon: 'folder', name: 'Cut list(1)', depth: 1, cls: 'cl-folder', children: true, open: open, toggle: function () { expanded.cutList = !open; refreshTree(); } });
+    folder.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, cutListMenu()); });
+    tree.appendChild(folder);
+    var box = el('div', { class: 'tc' + (open ? ' open' : '') });
+    var row = treeItem({ icon: 'flange', name: 'Sheet<1>(1)', depth: 2, cls: 'cl-row', title: 'Sheet<1>: right-click ▸ Properties… for the Cut-List Properties (bounding box, cutting lengths, bends)' });
+    row.addEventListener('click', function () { setStatus('Sheet<1>: right-click ▸ Properties… (or double-click) for the Cut-List Properties.'); });
+    row.addEventListener('dblclick', function (e) { e.stopPropagation(); cmdCutListProperties(); });
+    row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, cutListMenu()); });
+    box.appendChild(row);
+    tree.appendChild(box);
+    if (!$('modal').hidden && $('cutlist-dialog')) fillCutList($('cutlist-dialog'));   // a rebuild refreshes the open dialog
+  }
+  function fillCutList(box) {
+    var r;
+    try { r = K.sheetCutList(App.model, App.build, App.mesh); } catch (e) { r = { rows: [], error: e.message }; }
+    box.innerHTML = '';
+    var tb = el('tbody');
+    r.rows.forEach(function (x) {
+      tb.appendChild(el('tr', { class: 'cl-row', 'data-name': x.name }, [el('td', { class: 'cl-name', text: x.name }), el('td', { class: 'cl-expr', text: '"SW-' + x.name + '@@@Sheet<1>"' }),
+        el('td', { class: 'cl-val', text: x.text + (x.unit ? ' ' + x.unit : '') })]));
+    });
+    box.appendChild(el('table', { class: 'cl-table', style: 'border-collapse: collapse; width: 100%' }, [
+      el('thead', {}, [el('tr', {}, [el('th', { text: 'Property Name' }), el('th', { text: 'Value / Text Expression' }), el('th', { text: 'Evaluated Value' })])]), tb]));
+    if (r.error) box.appendChild(el('p', { class: 'cl-err', style: 'color: #b00', text: r.error }));
+  }
+  function cmdCutListProperties() {
+    if (!App.model.sheet) { toast('Cut-List Properties: not a sheet metal part.'); return; }
+    var box = el('div', { id: 'cutlist-dialog', style: 'max-height: 60vh; overflow: auto' });
+    fillCutList(box);
+    showModal({ title: 'Cut-List Properties — Sheet<1>', body: box, buttons: [{ label: 'OK', primary: true, action: closeModal }] });
+  }
+  UI.cmdCutListProperties = cmdCutListProperties;
   function appendBodiesFolder(tree, filter) {
     var infos = [];
     try { infos = UI.bodyInfos ? UI.bodyInfos() : []; } catch (e) { infos = []; }
