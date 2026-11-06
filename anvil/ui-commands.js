@@ -4690,22 +4690,28 @@
   // folded part: the flat is laid in its plane, the face staying where it is; empty = the Base Flange's face) and Grain
   // direction (a straight edge on a flat face: the flat turns so it runs along +X), saved on the model as
   // model.flatFixed = [x, y, z] / model.flatGrain = { at, dir } and read by Kernel.flatPattern (flatOrient), so the
-  // Flatten state, the flat DXF, the drawing's flat-pattern view and its bend table all follow. Anvil always merges the
-  // faces and keeps bend arcs as arcs, and has no corner treatment, so SolidWorks' Merge faces / Simplify bends /
-  // Corner treatment boxes are not shown. Picks are made while folded (a flat part offers no faces to click).
+  // Flatten state, the flat DXF, the drawing's flat-pattern view and its bend table all follow. Lane flatopts: Merge
+  // faces / Simplify bends / Show slit and Corner Options ▸ Corner treatment (SolidWorks' order and wording) are
+  // model.flatOptions (only the keys that differ from Kernel.FLAT_OPTION_DEFAULTS), read by Kernel.flatPattern.
+  // Picks are made while folded (a flat part offers no faces to click).
   function cmdFlatPatternEdit() {
     if (App.mode === 'sketch') UI.exitSketch(true);
     if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
     var T = ufSheetT(), wasFlat = !!App.model.flatState;
     if (wasFlat) { delete App.model.flatState; UI.updateFlatState(); }   // show the folded part to pick on
     var v0 = { fixed: App.model.flatFixed ? App.model.flatFixed.slice() : null, grain: App.model.flatGrain ? { at: App.model.flatGrain.at.slice(), dir: App.model.flatGrain.dir.slice() } : null };
+    var FO = K.FLAT_OPTION_DEFAULTS, fo0 = K.flatOptionsOf(App.model);
+    Object.keys(FO).forEach(function (k) { v0[k] = fo0[k]; });
+    // the stored form: only the boxes that differ from the default (null = all default)
+    function foOf(v) { var o = {}, n = 0; Object.keys(FO).forEach(function (k) { if (!!v[k] !== FO[k]) { o[k] = !!v[k]; n++; } }); return n ? o : null; }
     var memo = { key: null, flat: null, err: null };
     function flatOf(v) {
-      var key = JSON.stringify([v.fixed, v.grain]);
+      var key = JSON.stringify([v.fixed, v.grain, foOf(v)]);
       if (memo.key === key) return memo;
       var m = {}; Object.keys(App.model).forEach(function (k) { m[k] = App.model[k]; });
       if (v.fixed) m.flatFixed = v.fixed; else delete m.flatFixed;
       if (v.grain) m.flatGrain = v.grain; else delete m.flatGrain;
+      if (foOf(v)) m.flatOptions = foOf(v); else delete m.flatOptions;
       delete m.flatState;
       memo = { key: key, flat: null, err: null };
       try { memo.flat = K.flatPattern(m, App.build, App.mesh); } catch (e) { memo.err = e.message; }
@@ -4759,6 +4765,7 @@
       title: 'Flat-Pattern1', icon: 'flatten', values: v0,
       message: 'Click a <b>flat face</b> that stays fixed (empty: the Base Flange\'s face) and a straight <b>edge</b> for the grain direction (the flat turns so the grain runs along X). The flat DXF, Flatten and the drawing\'s flat-pattern view follow.',
       command: { faceList: [], edgeList: [], pickEdges: true, onPick: pick },
+      onChange: function () { status(); },
       groups: [
         { title: 'Parameters', fields: [
           { type: 'pick', icon: 'flatten', placeholder: 'Fixed face (default: the Base Flange\'s face)…',
@@ -4770,9 +4777,14 @@
             value: function (v) { return v.grain ? 'Edge<1>' : ''; },
             items: function (v) { return v.grain ? [{ label: 'Edge<1>', at: v.grain.at }] : []; },
             onRemove: function (v) { v.grain = null; renderPM(); lit(); status(); },
-            onClear: function (v) { v.grain = null; renderPM(); lit(); status(); } }
-          // (rfIY) SolidWorks' Merge faces / Simplify bends / Show slit and Corner Options ▸ Corner treatment need kernel
-          // switches first (test-reports/2026-11-05-sheetmetal-pm-audit.md); lane DK: no greyed boxes for them meanwhile
+            onClear: function (v) { v.grain = null; renderPM(); lit(); status(); } },
+          // lane flatopts: each box has its kernel switch (Kernel.flatOptionsOf; see FLAT_OPTION_DEFAULTS)
+          { type: 'check', label: 'Merge faces', key: 'mergeFaces' },
+          { type: 'check', label: 'Simplify bends', key: 'simplifyBends' },
+          { type: 'check', label: 'Show slit', key: 'showSlit' }
+        ] },
+        { title: 'Corner Options', fields: [
+          { type: 'check', label: 'Corner treatment', key: 'cornerTreatment' }
         ] },
         { title: 'Flat Pattern', fields: [
           { type: 'static', label: 'Flat size', value: function (v) { var r = flatOf(v); return r.flat ? flatSizeText(r.flat).replace(/^Flat size /, '') : (r.err || ''); } },
@@ -4787,12 +4799,13 @@
       ],
       onCancel: function () { restoreFlat(); },
       onOK: function (v) {
-        var same = JSON.stringify([v.fixed, v.grain]) === JSON.stringify([App.model.flatFixed || null, App.model.flatGrain || null]);
+        var same = JSON.stringify([v.fixed, v.grain, foOf(v)]) === JSON.stringify([App.model.flatFixed || null, App.model.flatGrain || null, foOf(K.flatOptionsOf(App.model))]);
         if (!same) {
           if (wasFlat) App.model.flatState = true;   // the undo step keeps the state the part was in
           UI.pushUndo();
           if (v.fixed) App.model.flatFixed = v.fixed.slice(); else delete App.model.flatFixed;
           if (v.grain) App.model.flatGrain = { at: v.grain.at.slice(), dir: v.grain.dir.slice() }; else delete App.model.flatGrain;
+          if (foOf(v)) App.model.flatOptions = foOf(v); else delete App.model.flatOptions;   // lane flatopts
           // the drawing caches its flat on the mesh: drop it so a flat-pattern view redraws
           [App.mesh, App.build && App.build.mesh].forEach(function (ms) { if (ms && typeof ms === 'object') try { delete ms._drawingFlat; } catch (e) { } });
           if (UI.autosave) UI.autosave();

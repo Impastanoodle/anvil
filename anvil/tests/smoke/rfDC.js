@@ -49,8 +49,8 @@
       assert(mi && rfDCMenuItem('Unsuppress') && rfDCMenuItem('Flat Pattern'), 'Flat-Pattern1 menu: Edit Feature, Unsuppress, Flat Pattern…');
       mi.click(); await wait(30);
       assert(UI.hasPM() && UI.pmTitle() === 'Flat-Pattern1', 'Edit Feature opens the Flat-Pattern1 PM');
-      // lane DK: Fixed face / Grain direction picks; no greyed boxes for options Anvil does not have
-      assert(!pmField('Merge faces') && !pmField('Simplify bends') && /Fixed face/.test($('pm').textContent) && /Grain direction/.test($('pm').textContent), 'Fixed face / Grain direction, no dead boxes');
+      // lane DK: Fixed face / Grain direction picks; lane flatopts: Merge faces / Simplify bends are live boxes (no greyed ones)
+      assert(pmField('Merge faces') && !pmField('Merge faces').disabled && pmField('Simplify bends') && !pmField('Simplify bends').disabled && /Fixed face/.test($('pm').textContent) && /Grain direction/.test($('pm').textContent), 'Fixed face / Grain direction, no dead boxes');
       assert(/Flat size4 × 4.4017 in/.test($('pm').textContent), 'the flat size in the PM: ' + $('pm').textContent.slice(300, 700));
       UI.pmCancel(); await idle();
       assert(errors.length === errs0, 'no console errors: ' + errors.slice(errs0).join(' | '));

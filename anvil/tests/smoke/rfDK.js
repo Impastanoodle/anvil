@@ -24,7 +24,7 @@
       var w0 = anvil.flat().size;
       UI.cmdFlatPatternEdit(); await idle(); await wait(20);
       assert(UI.hasPM() && UI.pmTitle() === 'Flat-Pattern1', 'Flat-Pattern1 PM');
-      assert(!pmField('Merge faces') && !pmField('Corner treatment'), 'no dead boxes');
+      assert(['Merge faces', 'Corner treatment'].every(function (w) { var f = pmField(w); return f && !f.disabled; }), 'no dead boxes (lane flatopts: both live)');
       // the 2 in edge on top at x = 0 (z 0..2): its own middle on screen, checked with the app's own edge pick
       var e = rfDKEdge([0, T, 0], [0, T, 2]);
       assert(e, 'the 2 in edge exists');

@@ -1541,6 +1541,8 @@
   // flatPattern({ fixedFace: [x, y, z], grain: { at: [x, y, z], dir: [x, y, z] } }) (lane DK2): Flat-Pattern1's Fixed face
   // (a point on a flat face of the folded part) and Grain direction (a point on a straight edge and its direction):
   // model.flatFixed / model.flatGrain, read by Kernel.flatPattern. A key left out (or null) clears that option.
+  // Lane flatopts: mergeFaces / simplifyBends / showSlit / cornerTreatment (booleans, Kernel.FLAT_OPTION_DEFAULTS) go to
+  // model.flatOptions, only those that differ from the default (left out = the default).
   Builder.prototype.flatPattern = function (opts) {
     opts = opts || {};
     function pt(p) { if (!p || p.length !== 3 || !p.every(function (x) { return isFinite(+x); })) throw new Error('flatPattern: points are [x, y, z].'); return [+p[0], +p[1], +p[2]]; }
@@ -1550,6 +1552,9 @@
       if (!(Math.hypot(d[0], d[1], d[2]) > 0)) throw new Error('flatPattern: grain dir must not be zero.');
       this.model.flatGrain = { at: pt(opts.grain.at), dir: d };
     } else delete this.model.flatGrain;
+    var defs = K.FLAT_OPTION_DEFAULTS || {}, fo = {};
+    Object.keys(defs).forEach(function (k) { if (opts[k] != null && !!opts[k] !== defs[k]) fo[k] = !!opts[k]; });
+    if (Object.keys(fo).length) this.model.flatOptions = fo; else delete this.model.flatOptions;
     return this;
   };
   // unfold(fixedFace, bends, opts) / fold(bends, opts): Sheet Metal > Unfold / Fold (kernel-sheetmetal.js, lane DB).
@@ -2145,10 +2150,12 @@
       }
     });
     // lane DK2: Flat-Pattern1's options, after the features
-    if (model.flatFixed || (model.flatGrain && model.flatGrain.at && model.flatGrain.dir)) {
+    var fdefs = K.FLAT_OPTION_DEFAULTS || {}, fopts = Object.keys(fdefs).filter(function (k) { return model.flatOptions && model.flatOptions[k] != null && !!model.flatOptions[k] !== fdefs[k]; });
+    if (model.flatFixed || (model.flatGrain && model.flatGrain.at && model.flatGrain.dir) || fopts.length) {
       var r6 = function (q) { return q.map(function (x) { return Math.round(x * 1e6) / 1e6; }); }, fpo = {};
       if (model.flatFixed) fpo.fixedFace = r6(model.flatFixed);
       if (model.flatGrain && model.flatGrain.at && model.flatGrain.dir) fpo.grain = { at: r6(model.flatGrain.at), dir: r6(model.flatGrain.dir) };
+      fopts.forEach(function (k) { fpo[k] = !!model.flatOptions[k]; });   // lane flatopts
       out.push('p.flatPattern(' + JSON.stringify(fpo) + ');');
     }
     out = out.concat(suppressScript(model, idVar));   // rfFC

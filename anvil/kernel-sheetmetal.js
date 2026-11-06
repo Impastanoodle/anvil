@@ -2055,6 +2055,7 @@
     var openUnfold = ufOpenRecord(model, build);
     if (openUnfold && openUnfold.frame) plane = openUnfold.frame;
     var T = +sheet.thickness, warnings = [], kUsed = {};
+    var fopt = flatOptionsOf(model), regionLines = [], bendRegions = [], slitEnds = [];   // lane flatopts
     function warn(w) { if (w && warnings.indexOf(w) < 0) warnings.push(w); }
     mesh = planeFaces(mesh);
     var best = null;
@@ -2365,7 +2366,8 @@
           if (ml && dl > 1e-9) {
             // below 90° the line comes back to the edge line short of the base's corner (the walls lean out): the strip's
             // end then runs from the base's corner to the wall's line, as the folded bend's taper (not measured in SolidWorks)
-            r.ext = ml.ext; r.slope = ml.slope; r.t0 = Math.max(ml.ext - ml.slope * BA, ml.tB != null ? ml.tB : -Infinity); r.mitred = true; return r;
+            // (lane flatopts: Corner treatment cleared leaves that raw: the line runs on to the edge line)
+            r.ext = ml.ext; r.slope = ml.slope; r.t0 = Math.max(ml.ext - ml.slope * BA, ml.tB != null && fopt.cornerTreatment ? ml.tB : -Infinity); r.mitred = true; return r;
           }
           var mp = fi.miterPlanes && fi.miterPlanes[kk];
           if (!mp || dl <= 1e-9) return r;
@@ -2376,6 +2378,8 @@
           r.ext = r.t0 + kappa * Rt * sA;
           r.slope = kappa * cA;
           r.mitred = true;
+          // lane flatopts: Simplify bends cleared: the end is the developed curve t0 + κ·Rt·sin(A·s / BA), not the chord
+          if (!fopt.simplifyBends && Math.abs(kappa * Rt) > 1e-12) r.curve = { k: kappa * Rt, A: fi.angle };
           return r;
         });
         // point at o-distance d from the edge and t past end r along the edge line
@@ -2386,12 +2390,27 @@
         // pokes out past the wall's unfolded outline. With no wall after the bend (a rolled hem) the far side is BA itself.
         var far = fi.L > 1e-9 ? eps : 0;
         var back = fi.curlBack || eps;
+        // (lane flatopts) the points of a curved end (Simplify bends cleared) strictly between s = 0 and s = BA
+        function curvePts(r) {
+          var n = Math.max(4, Math.ceil(r.curve.A / (Math.PI / 32))), out = [];
+          for (var q = 1; q < n; q++) out.push(corner(r, BA * q / n, r.t0 + r.curve.k * Math.sin(r.curve.A * q / n)));
+          return out;
+        }
         var strip = [corner(eA, -back, eA.t0 - (eA.ext - eA.t0) * eps / BA), corner(eB, -back, eB.t0 - (eB.ext - eB.t0) * eps / BA)];
+        if (eB.curve) curvePts(eB).forEach(function (p) { strip.push(p); });
         if (eB.mitred || eB.tapered) strip.push(corner(eB, BA, eB.ext), corner(eB, BA + eps, eB.ext + eB.slope * eps));
         else strip.push(off(B2, BA + far));
         if (eA.mitred || eA.tapered) strip.push(corner(eA, BA + eps, eA.ext + eA.slope * eps), corner(eA, BA, eA.ext));
         else strip.push(off(A2, BA + far));
+        if (eA.curve) curvePts(eA).reverse().forEach(function (p) { strip.push(p); });
         regions.push([strip]);
+        // lane flatopts: Merge faces cleared keeps the bend region as a face: its polygon and its two tangent lines
+        if (!fopt.mergeFaces) {
+          bendRegions.push(strip.slice());
+          regionLines.push({ a: corner(eA, 0, eA.t0), b: corner(eB, 0, eB.t0), k: bends.length }, { a: corner(eA, BA, eA.mitred || eA.tapered ? eA.ext : 0), b: corner(eB, BA, eB.mitred || eB.tapered ? eB.ext : 0), k: bends.length });
+        }
+        // lane flatopts: Show slit: the base-side corners of the strip's ends, matched in pairs after the unfold
+        if (fopt.showSlit) [eA, eB].forEach(function (r) { if (!r.mitred && !r.tapered) slitEnds.push({ P: corner(r, 0, r.t0), o2: o2, dOut: r.dOut, R: fi.R, BA: BA, k: k }); });
         var stripIdx = -1;
         if (trace) {
           stripIdx = trace.strips.length;
@@ -2437,8 +2456,9 @@
           notches.push(signedArea(m) < 0 ? m.reverse() : m);
         });
         // bend line: mid-strip, reaching the mitre line at a mitred end
-        var bend = { a: addT[0] < 0 && !eA.mitred ? corner(eA, BA / 2, -addT[0]) : corner(eA, BA / 2, (eA.t0 + eA.ext) / 2),
-          b: addT[1] > Math.hypot(B2[0] - A2[0], B2[1] - A2[1]) && !eB.mitred ? corner(eA, BA / 2, -addT[1]) : corner(eB, BA / 2, (eB.t0 + eB.ext) / 2), up: trackedInner, angle: fi.angle * 180 / Math.PI, R: fi.R, ba: BA, bd: bc.BD, method: bc.type, source: bc.source };
+        function midT(r) { return r.curve ? r.t0 + r.curve.k * Math.sin(r.curve.A / 2) : (r.t0 + r.ext) / 2; }   // (lane flatopts)
+        var bend = { a: addT[0] < 0 && !eA.mitred ? corner(eA, BA / 2, -addT[0]) : corner(eA, BA / 2, midT(eA)),
+          b: addT[1] > Math.hypot(B2[0] - A2[0], B2[1] - A2[1]) && !eB.mitred ? corner(eA, BA / 2, -addT[1]) : corner(eB, BA / 2, midT(eB)), up: trackedInner, angle: fi.angle * 180 / Math.PI, R: fi.R, ba: BA, bd: bc.BD, method: bc.type, source: bc.source };
         bend.label = bendNoteText(bend, model.units);
         // (lane drawing) the bend's stable id: '<feature id>:<n>', n the record's place in build.flanges[feature], so a
         // drawing's dragged / hidden bend note stays with its bend when flanges are added, removed or reordered
@@ -2548,6 +2568,7 @@
     if (openUnfold) ufOpenBends(openUnfold, faceRecs, sheet, T, model.units, warn).forEach(function (b) { bends.push(b); });
     var formItems = [];
     formingFlat(model, build, faceRecs, T, warn, regions, notches, formItems);   // lane forming: Forming Tools laid back flat, marks, lance cuts
+    if (fopt.showSlit) flatSlits(model, slitEnds, T).forEach(function (nt) { notches.push(nt); });   // lane flatopts
     // merge: in 2D (mergeFlatRegions); the CSG merge stays as the fallback for a boundary that does not close
     var loops = flatOptions.merge === 'csg' ? null : mergeFlatRegions(regions, notches, FLAT_WELD);
     if (!loops) loops = csgMerge(regions, notches);
@@ -2571,6 +2592,11 @@
     formItems.forEach(function (it) { etch.items.push(it); });   // lane forming
     var res = { loops: loops, bends: bends, plane: plane, sheet: outSheet, bbox: { min: min, max: max }, size: [max[0] - min[0], max[1] - min[1]], note: sheetNote(outSheet), warnings: warnings,
       etch: etch.items, etchLayer: etch.layer };
+    if (!fopt.mergeFaces) {   // lane flatopts: the bend regions kept as faces (see FLAT_OPTION_DEFAULTS)
+      res.bendRegions = bendRegions;
+      res.regionLines = [];
+      regionLines.forEach(function (rl) { clipToBlank(rl.a, rl.b, loops).forEach(function (s) { s.bend = rl.k; res.regionLines.push(s); }); });
+    }
     // lane DK: Flat-Pattern1's Fixed face / Grain direction (model.flatFixed, model.flatGrain); not while an Unfold is
     // open (its frame wins) nor for the trace Unfold / Fold read (their maps are in the plain frame)
     if (!trace && !openUnfold && (model.flatFixed || model.flatGrain)) flatOrient(res, model, base, faceRecs, T, warn);
@@ -2667,6 +2693,8 @@
     var dA = Math.atan2(sn, cs) * 180 / Math.PI;
     flat.loops = flat.loops.map(function (l) { return l.map(P2); });
     flat.bends.forEach(function (bd) { bd.a = P2(bd.a); bd.b = P2(bd.b); });
+    if (flat.regionLines) flat.regionLines.forEach(function (rl) { rl.a = P2(rl.a); rl.b = P2(rl.b); });   // lane flatopts
+    if (flat.bendRegions) flat.bendRegions = flat.bendRegions.map(function (l) { return l.map(P2); });
     (flat.etch || []).forEach(function (it) {
       if (it.a) it.a = P2(it.a);
       if (it.b) it.b = P2(it.b);
@@ -2680,6 +2708,82 @@
     flat.plane = { origin: O.slice(), x: ex.slice(), y: ey.slice(), n: nv.slice(), offset: dot(nv, O) };
     flat.orient = { rotation: dA, fixed: !!model.flatFixed, grain: !!model.flatGrain };
     return flat;
+  }
+  // lane flatopts: Flat-Pattern1's Parameters / Corner Options check boxes, model.flatOptions = { mergeFaces,
+  // simplifyBends, showSlit, cornerTreatment } (SolidWorks' IFlatPatternFeatureData MergeFace / SimplifyBends /
+  // ShowSlitInCornerRelief / CornerTreatment). Only keys that differ from the default are stored; absent = default, so
+  // every old part's flat is unchanged. What each switch does in flatPattern (Anvil's choices, not measured in SolidWorks):
+  //  * mergeFaces (true): false keeps the bend regions as faces of their own: flat.bendRegions (each strip's polygon)
+  //    and flat.regionLines [{ a, b, bend }] (the two tangent lines of every bend region, clipped to the blank). The DXF
+  //    does not write them (a laser would cut them); the outline is the same.
+  //  * simplifyBends (true): false draws a mitre-plane end of a bend strip (hems, Miter Flange) as its developed curve
+  //    t(s) = t0 + κ·Rt·sin(A·s / BA) instead of the straight chord from the base corner to the wall corner.
+  //  * showSlit (false): true cuts a slit the rip gap wide (the first Rip / Convert gap, else ripDefaultGap) and R + T
+  //    long along the bisector into the blank at every corner where two bend regions meet end on (a ripped corner).
+  //  * cornerTreatment (true): false leaves the raw developed corner of a SolidWorks edge-flange mitre under 90° (walls
+  //    leaning out): its wall line runs on across the bend zone to the edge line short of the base's corner (no clamp
+  //    there, a small step at the corner). (A relief notch's reach was tried too: the solid's slot is in the face
+  //    outlines already, so it changed nothing.)
+  var FLAT_OPTION_DEFAULTS = { mergeFaces: true, simplifyBends: true, showSlit: false, cornerTreatment: true };
+  function flatOptionsOf(model) {
+    var o = (model && model.flatOptions) || {}, out = {};
+    Object.keys(FLAT_OPTION_DEFAULTS).forEach(function (k) { out[k] = o[k] == null ? FLAT_OPTION_DEFAULTS[k] : !!o[k]; });
+    return out;
+  }
+  // Show slit: ends = [{ P (base-side corner of a square strip end), o2, dOut, R, BA, k }]. Two ends of different strips
+  // whose end lines (P + o2·s) cross within both bend zones, each pointing out along the other's o2, are a corner where
+  // two bend regions meet (a ripped corner: Rip, Insert Bends, flanges on two edges that meet). The slit (g wide, R + T
+  // long) runs from the crossing along −(o2₁ + o2₂) into the blank, its start pushed g/2 out so the start edge's ends
+  // land on both strips' end lines (square corners)
+  function flatSlits(model, ends, T) {
+    var g = null;
+    model.features.forEach(function (f) { if (g == null && (f.type === 'rip' || f.type === 'convertSM') && +f.gap > 0) g = +f.gap; });
+    if (g == null) g = ripDefaultGap(model);
+    var out = [], done = {}, tol = 1e-6 * (1 + T);
+    function d2(a, b) { return a[0] * b[0] + a[1] * b[1]; }
+    ends.forEach(function (e1, i) {
+      ends.forEach(function (e2, j) {
+        if (j <= i || e1.k === e2.k || done[i] || done[j]) return;
+        if (d2(e1.dOut, e2.o2) < 0.5 || d2(e2.dOut, e1.o2) < 0.5) return;
+        var den = e1.o2[0] * -e2.o2[1] - e1.o2[1] * -e2.o2[0];
+        if (Math.abs(den) < 1e-9) return;
+        var w = [e2.P[0] - e1.P[0], e2.P[1] - e1.P[1]], s1 = (w[0] * -e2.o2[1] - w[1] * -e2.o2[0]) / den, s2 = (e1.o2[0] * w[1] - e1.o2[1] * w[0]) / den;
+        if (s1 < -tol || s2 < -tol || s1 > Math.min(e1.BA, e2.BA) + tol || s2 > Math.min(e1.BA, e2.BA) + tol) return;
+        var Q = [e1.P[0] + e1.o2[0] * s1, e1.P[1] + e1.o2[1] * s1];
+        var b = [-e1.o2[0] - e2.o2[0], -e1.o2[1] - e2.o2[1]], bl = Math.hypot(b[0], b[1]);
+        if (!(bl > 1e-9)) return;
+        b = [b[0] / bl, b[1] / bl];
+        var pp = [-b[1], b[0]], h = g / 2, Ls = Math.max(e1.R, e2.R) + T, C = [Q[0] - b[0] * h, Q[1] - b[1] * h];
+        function at(s, w) { return [C[0] + b[0] * s + pp[0] * w, C[1] + b[1] * s + pp[1] * w]; }
+        var nt = [at(0, -h), at(Ls + h, -h), at(Ls + h, h), at(0, h)];
+        out.push(signedArea(nt) < 0 ? nt.reverse() : nt);
+        done[i] = done[j] = true;
+      });
+    });
+    return out;
+  }
+  // the parts of segment a–b inside the blank (outer loop less holes), for the tangent lines of mergeFaces off
+  function clipToBlank(a, b, loops) {
+    var ts = [0, 1], d = [b[0] - a[0], b[1] - a[1]];
+    loops.forEach(function (l) {
+      l.forEach(function (p, i) {
+        var q = l[(i + 1) % l.length], e = [q[0] - p[0], q[1] - p[1]], den = d[0] * e[1] - d[1] * e[0];
+        if (Math.abs(den) < 1e-15) return;
+        var w = [p[0] - a[0], p[1] - a[1]], t = (w[0] * e[1] - w[1] * e[0]) / den, u = (w[0] * d[1] - w[1] * d[0]) / den;
+        if (t > 0 && t < 1 && u >= -1e-12 && u <= 1 + 1e-12) ts.push(t);
+      });
+    });
+    ts.sort(function (x, y) { return x - y; });
+    function inside(P) { return pointInPoly(P, loops[0]) && !loops.slice(1).some(function (h) { return pointInPoly(P, h); }); }
+    var out = [];
+    for (var i = 0; i + 1 < ts.length; i++) {
+      if (ts[i + 1] - ts[i] < 1e-9) continue;
+      var tm = (ts[i] + ts[i + 1]) / 2;
+      if (!inside([a[0] + d[0] * tm, a[1] + d[1] * tm])) continue;
+      var A = [a[0] + d[0] * ts[i], a[1] + d[1] * ts[i]], B = [a[0] + d[0] * ts[i + 1], a[1] + d[1] * ts[i + 1]], last = out[out.length - 1];
+      if (last && Math.abs(last.b[0] - A[0]) < 1e-12 && Math.abs(last.b[1] - A[1]) < 1e-12) last.b = B; else out.push({ a: A, b: B });
+    }
+    return out;
   }
   // lane DK: Close bend region: the extended flange's record, copied, runs `by` further past that end (its relief there
   // goes: the corner is closed)
@@ -5830,7 +5934,7 @@
   K.closedCornerName = closedCornerName; K.CLOSED_CORNER_TYPES = CC_TYPES.slice(); K.closedCornerDefaultGap = ccDefaultGap; K.closedCornerMinGap = ccMinGap;
   _.buildClosedCorner = buildClosedCorner; _.smBool = smBool; _.smScale = smScale;
   K.buildFlange = buildFlange; K.flangeLayout = flangeLayout; K.buildJog = buildJog; K.normalCutTool = normalCutTool;
-  K.flangeProfile = flangeProfile; K.flatPattern = flatPattern; K.flatOptions = flatOptions; K.cleanFlatLoop = cleanFlatLoop; K.snapFlatCircle = snapFlatCircle; K.flatCircleTol = flatCircleTol; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
+  K.flangeProfile = flangeProfile; K.flatPattern = flatPattern; K.flatOptions = flatOptions; K.flatOptionsOf = flatOptionsOf; K.FLAT_OPTION_DEFAULTS = FLAT_OPTION_DEFAULTS; K.cleanFlatLoop = cleanFlatLoop; K.snapFlatCircle = snapFlatCircle; K.flatCircleTol = flatCircleTol; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
   K.bendDeduction = bendDeduction; K.outsideSetback = outsideSetback; K.bendCalc = bendCalc; K.bendTableLookup = bendTableLookup;
   K.makeSheet = makeSheet; K.sheetKFactor = sheetKFactor; K.sheetNote = sheetNote; K.gaugeTables = GAUGE_TABLES; K.gaugeTable = gaugeTable; K.gaugeRow = gaugeRow;
   K.DEFAULT_K_FACTOR = DEFAULT_K; K.LEGACY_K_FACTOR = LEGACY_K; K.AUTO_RELIEF_RATIO = AUTO_RELIEF_RATIO; K.DEFAULT_GAUGE_TABLE = DEFAULT_GAUGE_TABLE; K.BEND_ALLOWANCE_TYPES = BA_TYPES.slice();

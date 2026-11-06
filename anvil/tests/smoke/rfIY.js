@@ -61,7 +61,7 @@
     return all.text.length + ' / ' + noForm.text.length + ' / ' + noBend.text.length + ' bytes';
     } finally { UI.download = down; }
   });
-  step('rfIY: Flat-Pattern1 ▸ Edit Feature (double-click on its tree row) opens SolidWorks\' Parameters group first, Fixed face above Grain direction, and no greyed boxes for Merge faces / Simplify bends / Show slit / Corner treatment (lane DK; they need kernel switches); Cancel leaves the part as it was', async function () {
+  step('rfIY: Flat-Pattern1 ▸ Edit Feature (double-click on its tree row) opens SolidWorks\' Parameters group first, Fixed face above Grain direction, and live (not greyed) boxes for Merge faces / Simplify bends / Show slit / Corner treatment (lane flatopts); Cancel leaves the part as it was', async function () {
     var errs0 = errors.length;
     await anvil.newPart(); await idle();
     await anvil.run(RFIY_PART); await idle();
@@ -73,7 +73,7 @@
     assert(heads[0] === 'Parameters', 'groups: ' + heads.join(' | '));
     var txt = $('pm').textContent, iF = txt.indexOf('Fixed face'), iG = txt.indexOf('Grain direction');
     assert(iF >= 0 && iG > iF, 'Fixed face, then Grain direction: ' + txt.slice(0, 300));
-    assert(['Merge faces', 'Simplify bends', 'Show slit', 'Corner treatment'].every(function (w) { return !pmField(w); }), 'no dead boxes');
+    assert(['Merge faces', 'Simplify bends', 'Show slit', 'Corner treatment'].every(function (w) { var f = pmField(w); return f && !f.disabled; }), 'no dead boxes (lane flatopts: all four live)');
     var before = JSON.stringify(anvil.model());
     UI.pmCancel(); await idle();
     assert(JSON.stringify(anvil.model()) === before, 'Cancel changes nothing');
