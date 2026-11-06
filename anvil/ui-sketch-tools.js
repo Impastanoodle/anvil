@@ -1710,10 +1710,41 @@
     } else return null;
     return R > 1e-9 ? { c: K.to2D(pl, c3), r: R } : null;
   }
-  // sketch entities where the sketch plane cuts the faces of one picked face: circles / arcs, else lines
+  // lane sketchgaps-3: the ellipse a cylinder makes in a sketch plane its axis crosses at an angle (SolidWorks gives an
+  // ellipse there, Anvil gave the facets' lines): centre where the axis meets the plane, minor semi-axis r square to
+  // the axis, major r / |cos| along the axis' shadow. -> { c, rx, ry, rot (degrees), frame } or null
+  function ixcEllipse(group, pl) {
+    var fc = App.mesh.faces[group[0]], p0 = fc && fc.polys && fc.polys[0], S0 = p0 && p0.surf && p0.surf.s, V = K.vec;
+    if (!S0 || S0.t !== 'cyl' || !S0.o || !S0.d || !(S0.r > 0)) return null;
+    var n = pl.n, d = V.norm(S0.d), dn = V.dot(d, n);
+    if (Math.abs(dn) < 1e-6 || Math.abs(Math.abs(dn) - 1) <= 1e-9) return null;   // along the plane (lines) or square (a circle)
+    var z = V.dot(V.sub(pl.origin, S0.o), n) / dn, c3 = V.add(S0.o, V.scale(d, z));
+    var w3 = V.norm(V.sub(d, V.scale(n, dn))), c = K.to2D(pl, c3), wTip = K.to2D(pl, V.add(c3, w3));
+    return { c: c, rx: S0.r / Math.abs(dn), ry: S0.r, rot: Math.atan2(wTip[1] - c[1], wTip[0] - c[0]) * 180 / Math.PI };
+  }
+  // sketch entities where the sketch plane cuts the faces of one picked face: circles / arcs, ellipses / partial
+  // ellipses, else lines
   function ixcGeometry(fi) {
     var pl = UI.activePlane(), group = ixcGroup(fi), chains = ixcChains(ixcSegments(group, pl)), circ = chains.length ? ixcCircle(group, pl) : null, out = [];
+    var ell = chains.length && !circ ? ixcEllipse(group, pl) : null;
     chains.forEach(function (ch) {
+      if (ell && ch.pts.length >= 2) {
+        var cr = Math.cos(ell.rot * Math.PI / 180), sr = Math.sin(ell.rot * Math.PI / 180);
+        var par = function (q) { var x = q[0] - ell.c[0], y = q[1] - ell.c[1]; return Math.atan2((-sr * x + cr * y) / ell.ry, (cr * x + sr * y) / ell.rx); };
+        var near = ch.pts.every(function (q) { var x = q[0] - ell.c[0], y = q[1] - ell.c[1], u = (cr * x + sr * y) / ell.rx, v = (-sr * x + cr * y) / ell.ry; return Math.abs(Math.hypot(u, v) - 1) <= 0.05; });
+        if (near) {
+          var base = { cx: r6(ell.c[0]), cy: r6(ell.c[1]), rx: r6(ell.rx), ry: r6(ell.ry), rot: r6(((ell.rot % 180) + 180) % 180) };
+          if (base.rot !== r6(ell.rot)) { cr = -cr; sr = -sr; }   // the axis turned by 180°: the parameter turns with it
+          var es = 0;
+          for (var q = 1; q < ch.pts.length; q++) { var du = par(ch.pts[q]) - par(ch.pts[q - 1]); while (du > Math.PI) du -= 2 * Math.PI; while (du < -Math.PI) du += 2 * Math.PI; es += du; }
+          if (ch.closed || Math.abs(es) >= 2 * Math.PI - 1e-6) { out.push(Object.assign({ t: 'ellipse' }, base)); return; }
+          var u0 = (es >= 0 ? par(ch.pts[0]) : par(ch.pts[ch.pts.length - 1])) * 180 / Math.PI, swE = Math.abs(es) * 180 / Math.PI;
+          while (u0 < 0) u0 += 360;
+          while (u0 >= 360) u0 -= 360;
+          out.push(Object.assign({ t: 'pellipse' }, base, { a0: r6(u0), a1: r6(u0 + swE) }));
+          return;
+        }
+      }
       if (circ && ch.pts.length >= 2) {
         var C = circ.c, R = circ.r, onIt = ch.pts.every(function (q) { return Math.abs(Math.hypot(q[0] - C[0], q[1] - C[1]) - R) <= 0.05 * R + 1e-6; });
         if (onIt) {

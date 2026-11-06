@@ -4540,7 +4540,9 @@ var SketchSolver = (function () {
       var d1 = a1 / D2R, d2 = a2 / D2R, arc = ccw ? { a0: d1, a1: d1 + normDeg(d2 - d1) } : { a0: d2, a1: d2 + normDeg(d1 - d2) };
       if (arc.a1 - arc.a0 < 1e-6 || arc.a1 - arc.a0 > 360 - 1e-6) return;
       // rfIQ: on a spline carried on past its end the fillet is a true corner round (under 180°), never a loop back
-      if (spec.ext && arc.a1 - arc.a0 >= 180 - 1e-6) return;
+      // lane sketchgaps-3: so too between a line / arc and a spline picked anywhere (no corner): a 250° "fillet" that
+      // wraps round the line's end was taken on the spline as drawn, and the carried-on spline was never tried
+      if ((spec.ext || (!corner && (splineOpen(A) || splineOpen(B)))) && arc.a1 - arc.a0 >= 180 - 1e-6) return;
       // nearest the corner (or the clicks); of two fillets as near (a circle can be left either way) the shorter arc
       var s = (corner ? len(sub(T1, P)) + len(sub(T2, P)) : len(sub(T1, spec.uvi)) + len(sub(T2, spec.uvj))) + (arc.a1 - arc.a0) * 1e-7 * Math.max(1, r);
       if (s < bs) { bs = s; best = { C: C, sa: sa, sb: sb, ccw: ccw, arc: { t: 'arc', cx: C[0], cy: C[1], r: r, a0: arc.a0, a1: arc.a1 } }; }
