@@ -2423,7 +2423,8 @@
         { id: 'cosmeticThread', label: 'Cosmetic Thread', run: function () { cmdCosmeticThread(); }, active: function () { return D.tool === 'cuthread'; } },
         { id: 'dowelPin', label: 'Dowel Pin Symbol', run: cmdDowelPin, active: function () { return D.tool === 'cudowel'; } }
       ] });
-      if (b.id === 'note') out.push({ id: 'multiJogLeader', label: 'Multi-jog\nLeader', run: cmdMultiJog, active: function () { return D.tool === 'culeader'; } });   // (rfCU)
+      if (b.id === 'note') out.push({ id: 'multiJogLeader', label: 'Multi-jog\nLeader', run: cmdMultiJog, active: function () { return D.tool === 'culeader'; } },   // (rfCU)
+        { id: 'flagNote', label: 'Flag\nNote', run: function () { DW.cmdFlagNote(); }, active: function () { return D.tool === 'flagnote'; } });   // (rfJI)
       if (b.id === 'revTable') out.push({ id: 'holeTable', label: 'Hole\nTable', run: cmdHoleTable, active: function () { return D.tool === 'holetable'; } }, { id: 'bendTable', icon: 'bendNote', label: 'Bend\nTable', run: cmdBendTable },   // (rfGT)
         { id: 'punchTable', label: 'Punch\nTable', run: cmdPunchTable, active: function () { return D.tool === 'punchtable'; } });   // (rfJG)
     });
@@ -2454,7 +2455,7 @@
           if (it && it.label === 'Annotations ▸ Centerline') add('Annotations ▸ Area Hatch/Fill', cmdAreaHatchTool);   // (rfAD)
           if (it && it.label === 'Annotations ▸ Auto Balloon') add('Annotations ▸ Magnetic Line', cmdMagLine);   // (rfAG)
           if (it && it.label === 'Annotations ▸ Geometric Tolerance…') { add('Annotations ▸ Weld Symbol…', function () { cmdSymbolAN('weld'); }); add('Annotations ▸ Revision Symbol…', function () { cmdSymbolAN('revision'); }); add('Annotations ▸ Revision Cloud', cmdCloud); add('Annotations ▸ Datum Target…', function () { cuSymbolPM('datumTarget'); }); add('Annotations ▸ Cosmetic Thread…', function () { cmdCosmeticThread(); }); add('Annotations ▸ Dowel Pin Symbol', cmdDowelPin); }   // (rfAN; rfCU)
-          if (it && it.label === 'Annotations ▸ Note') add('Annotations ▸ Multi-jog Leader', cmdMultiJog);   // (rfCU)
+          if (it && it.label === 'Annotations ▸ Note') { add('Annotations ▸ Multi-jog Leader', cmdMultiJog); add('Annotations ▸ Flag Note…', function () { DW.cmdFlagNote(); }); }   // (rfCU, rfJI)
           if (it && /^Tables ▸ (Revision|General) Table/.test(it.label || '')) { add('Tables ▸ Hole Table…', cmdHoleTable); add('Tables ▸ Bend Table…', cmdBendTable); add('Tables ▸ Punch Table…', cmdPunchTable); }   // (rfGT, rfJG)
         });
         if (D.active && !items.some(function (q) { return q && q.label === 'Tables ▸ Hole Table…'; })) items.push({ label: 'Tables ▸ Hole Table…', action: cmdHoleTable });
@@ -2677,6 +2678,7 @@
       D.preview = { kind: 'magline', a: P.a.slice(), b: e };
     }
     rfANOverlay(g, H, node);   // (rfAN) hole tables, the Hole Table / Revision Cloud tools
+    flagNoteOverlay(g, H, node);   // (rfJI) the Flag Note tool's arrow point
   }
   var magDrag = null, magHover = null;
   document.addEventListener('mousedown', function (e) {
@@ -3411,9 +3413,65 @@
     var n = Drawing.findNote(doc(), id);
     if (!n) return;
     openDrawingPM({ title: 'Note', icon: 'note', command: 'noteProps', message: String(n.text).split('\n')[0],
-      values: { border: n.border || 'none', list: n.list || 'none' },
-      groups: [{ title: 'Border', fields: [{ type: 'select', key: 'border', label: 'Style', options: Drawing.NOTE_BORDERS }] }, { title: 'Text Format', fields: [{ type: 'select', key: 'list', label: 'List (one item per line)', options: Drawing.NOTE_LISTS }] }],
-      onOK: function (v) { if (tryEdit(function (dc) { Drawing.editNote(dc, id, { border: v.border, list: v.list }); })) UI.setStatus('Note changed.'); else return false; } });
+      values: { border: n.border || 'none', list: n.list || 'none', bank: !!n.bank },
+      groups: [{ title: 'Border', fields: [{ type: 'select', key: 'border', label: 'Style', options: Drawing.NOTE_BORDERS },
+        { type: 'check', key: 'bank', label: 'Add to Flag Note Bank', show: function () { return !n.flag; } }] },   // (rfJI)
+        { title: 'Text Format', fields: [{ type: 'select', key: 'list', label: 'List (one item per line)', options: Drawing.NOTE_LISTS, show: function (val) { return !val.bank; } }] }],
+      onOK: function (v) {
+        var pr = n.flag ? { border: v.border === 'none' || v.border === 'underline' ? 'flag' : v.border } : { border: v.border, list: v.list, bank: !!v.bank };
+        if (tryEdit(function (dc) { Drawing.editNote(dc, id, pr); })) UI.setStatus(v.bank && !n.bank ? 'Note added to the Flag Note Bank: its lines are numbered; Insert ▸ Annotations ▸ Flag Note places their flags.' : 'Note changed.'); else return false;
+      } });
+  }
+  // ------------------------------------------------------------------ rfJI: Flag Note (Insert ▸ Annotations ▸ Flag Note)
+  // The PropertyManager lists the items of the sheet's Flag Note Banks (notes with Add to Flag Note Bank on); pick one,
+  // a Border shape (Flag Triangle by default) and Leader. With a leader: click the feature (the arrow), then where the
+  // flag goes; without: click where it goes. The tool stays on for the next flag until ✓ / Esc. Each flag is one undo step.
+  function flagBankOptions() {
+    var out = [];
+    (doc() && doc().notes || []).forEach(function (n) {
+      if (!n.bank) return;
+      String(n.text).split('\n').forEach(function (line, i) { if (line.trim()) out.push([n.id + ':' + (i + 1), (i + 1) + '. ' + (line.length > 40 ? line.slice(0, 38) + '…' : line) + ' (Note' + n.id + ')']); });
+    });
+    return out;
+  }
+  function cmdFlagNote() {
+    if (D.tool === 'flagnote') { endToolPM(); return; }
+    if (!doc()) return;
+    var opts = flagBankOptions();
+    if (!opts.length) { UI.toast('Flag Note: no Flag Note Bank yet. Write the numbered notes as a note, then its Properties ▸ Add to Flag Note Bank.'); return false; }
+    var shapes = Drawing.NOTE_BORDERS.filter(function (b) { return Drawing.FLAG_SHAPES[b[0]]; });
+    var vals = { item: opts[0][0], border: 'flag', leader: true };
+    toolPM({ title: 'Flag Note', icon: 'flagNote', command: 'flagNote',
+      message: 'Pick the bank item and the flag shape. Leader on: click the feature, then where the flag goes; off: click where it goes. ✓ or Esc ends.',
+      values: vals,
+      groups: [{ title: 'Flag Note Bank', fields: [{ type: 'select', key: 'item', label: 'Item', options: opts }] },
+        { title: 'Border', fields: [{ type: 'select', key: 'border', label: 'Style', options: shapes }] },
+        { title: 'Leader', fields: [{ type: 'check', key: 'leader', label: 'Leader' }] }],
+      onChange: function (v) { if (D.pending) { D.pending.values = v; if (!v.leader) D.pending.tip = null; } },
+      onOK: function () { } }, 'flagnote', { values: vals, tip: null });
+    UI.setStatus('Flag Note: click the feature the flag points to (the arrow), then where the flag goes.');
+    return true;
+  }
+  function flagNoteClick(p) {
+    var P = D.pending, v = P.values;
+    if (v.leader && !P.tip) { P.tip = p.slice(); drawOverlay(); UI.setStatus('Flag Note: now click where the flag goes.'); return; }
+    var parts = String(v.item).split(':'), made = null, tip = v.leader ? P.tip : null;
+    var att = DW.viewAt ? DW.viewAt(tip || p) : null;
+    if (tryEdit(function (dc) { made = Drawing.addFlagNote(dc, { bank: +parts[0], item: +parts[1], p: p, leader: tip, border: v.border, view: att ? att.view.id : null }); })) {
+      D.sel = made ? { kind: 'note', id: made.id } : null;
+      UI.setStatus('Flag ' + parts[1] + ' placed. Click the next feature, or ✓ / Esc to end.');
+    }
+    P.tip = null;
+    drawOverlay();
+  }
+  RF_TOOLS.flagnote = flagNoteClick;
+  DW.cmdFlagNote = cmdFlagNote;
+  // the flag's arrow point while the second click is awaited
+  function flagNoteOverlay(g, H, node) {
+    var P = D.pending;
+    if (D.tool !== 'flagnote' || !P || !P.tip) return;
+    node('circle', { class: 'dw-hot', cx: P.tip[0], cy: H - P.tip[1], r: pxToPaper(4), 'stroke-width': pxToPaper(2) }, g);
+    if (P.at) node('line', { class: 'dw-cut', x1: P.tip[0], y1: H - P.tip[1], x2: P.at[0], y2: H - P.at[1], 'stroke-width': pxToPaper(1.5) }, g);
   }
   // (rfCU2) the leader being clicked, as a rubber band: the placed segments, a live one to the pointer, and the end
   // (arrow / dot, the PM's Arrow style) where the next click would put the tip; group class dw-cu-leader

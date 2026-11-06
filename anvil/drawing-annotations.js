@@ -2975,7 +2975,10 @@
   }
   // (rfCU) note borders and lists: border 'circle' | 'triangle' | 'square' | 'hexagon' | 'flag' (Flag Triangle: the
   // flag note) round the note, list 'number' (1. 2. … per line, hanging indent) | 'bullet'
-  var NOTE_BORDERS = [['none', 'None'], ['circle', 'Circle'], ['triangle', 'Triangle'], ['square', 'Square'], ['hexagon', 'Hexagon'], ['flag', 'Flag Triangle']];
+  // (rfJI) + Box (SolidWorks' name for the square), Diamond, Pentagon, Flag Pentagon (a pentagon point up, the flag
+  // note's other shape), Underline
+  var NOTE_BORDERS = [['none', 'None'], ['circle', 'Circle'], ['triangle', 'Triangle'], ['square', 'Box'], ['diamond', 'Diamond'], ['hexagon', 'Hexagon'], ['pentagon', 'Pentagon'],
+    ['flag', 'Flag Triangle'], ['flagPentagon', 'Flag Pentagon'], ['underline', 'Underline']];
   var NOTE_LISTS = [['none', 'None'], ['number', 'Numbered'], ['bullet', 'Bulleted']];
   function cleanNoteFmt(nt, spec) {
     if (spec.border !== undefined) {
@@ -2984,32 +2987,106 @@
     if (spec.list !== undefined) {
       if (spec.list && spec.list !== 'none') { if (!NOTE_LISTS.some(function (b) { return b[0] === spec.list; })) throw new Error('No note list ' + spec.list); nt.list = spec.list; } else delete nt.list;
     }
+    // (rfJI) Add to Flag Note Bank: the note's lines are the numbered notes flag notes point to (a bank is numbered)
+    if (spec.bank !== undefined) { if (spec.bank) nt.bank = true; else delete nt.bank; }
+    if (nt.bank) nt.list = 'number';
     return nt;
+  }
+  // ------------------------------------------------------------------ rfJI: Flag notes
+  // A flag note is a note record { id, p, text: '3', border: 'flag' (any NOTE_BORDERS shape but none / underline),
+  // flag: { bank: note id, item: 3 (1-based), key: the item's text when placed }, leader? } that shows the number of
+  // item `item` of the bank note (one with bank: true, a numbered list). Every compute re-finds the item by its text
+  // first (lines moved or inserted above renumber the flag), else keeps the number while the bank still has it; a
+  // flag whose bank or item is gone keeps its last number, drawn dangling. The bank draws the flag's shape round the
+  // number of every item a flag note points to, as SolidWorks' flag note bank does.
+  var FLAG_SHAPES = { flag: 1, flagPentagon: 1, triangle: 1, circle: 1, square: 1, diamond: 1, hexagon: 1, pentagon: 1 };
+  function bankItems(bank) { return String(bank.text == null ? '' : bank.text).split('\n'); }
+  function addFlagNote(doc, spec) {
+    spec = spec || {};
+    var bank = findNote(doc, spec.bank);
+    if (!bank || !bank.bank) throw new Error('A flag note needs a Flag Note Bank: a note with Add to Flag Note Bank on');
+    var items = bankItems(bank), n = Math.round(+spec.item);
+    if (!(n >= 1 && n <= items.length) || !items[n - 1].trim()) throw new Error('The Flag Note Bank has no item ' + spec.item + ' (it has ' + items.length + ')');
+    if (!spec.p || !isFinite(+spec.p[0]) || !isFinite(+spec.p[1])) throw new Error('A flag note needs a position on the sheet');
+    var border = spec.border || 'flag';
+    if (!FLAG_SHAPES[border]) throw new Error('A flag note needs a closed border shape, not ' + border);
+    var nt = { id: nextAnnotId(doc), p: [+spec.p[0], +spec.p[1]], text: String(n), border: border, flag: { bank: bank.id, item: n, key: items[n - 1].trim() } };
+    if (spec.leader) nt.leader = [+spec.leader[0], +spec.leader[1]];
+    setAttach(nt, spec.view);
+    (doc.notes || (doc.notes = [])).push(nt);
+    return nt;
+  }
+  // resolveFlagNotes(doc) -> { byNote: { flag note id: { item, dangling } }, banks: { bank id: { item index (0-based): border } } }
+  // (updates each flag note's item / text to the bank as it is now)
+  function resolveFlagNotes(doc) {
+    var out = { byNote: {}, banks: {} };
+    (doc.notes || []).forEach(function (nt) {
+      if (!nt.flag) return;
+      var bank = findNote(doc, nt.flag.bank), r = { item: nt.flag.item, dangling: true };
+      if (bank && bank.bank) {
+        var items = bankItems(bank).map(function (x) { return x.trim(); }), at = nt.flag.key ? items.indexOf(nt.flag.key) : -1;
+        if (at < 0 && nt.flag.item >= 1 && nt.flag.item <= items.length && items[nt.flag.item - 1]) at = nt.flag.item - 1;
+        if (at >= 0) {
+          r = { item: at + 1, dangling: false };
+          nt.flag.item = at + 1; nt.flag.key = items[at]; nt.text = String(at + 1);
+          var bk = out.banks[bank.id] || (out.banks[bank.id] = {});
+          if (!bk[at] && !nt.hidden) bk[at] = nt.border || 'flag';
+        }
+      }
+      out.byNote[nt.id] = r;
+    });
+    return out;
+  }
+  // the outline of border shape b round centre c, half width hw / half height hh (paper) -> points, or a circle
+  function borderShape(b, cx, cy, W, H, m, r) {
+    if (b === 'circle') { var rc = Math.hypot(W, H) / 2; return { circle: { c: [cx, cy], r: rc } }; }
+    if (b === 'square') { var sq = Math.max(W, H) / 2; return { pts: [[cx - sq, cy - sq], [cx + sq, cy - sq], [cx + sq, cy + sq], [cx - sq, cy + sq]] }; }
+    if (b === 'diamond') { var dw = W / 2 + H / 2; return { pts: [[cx, cy - dw], [cx + dw, cy], [cx, cy + dw], [cx - dw, cy]] }; }
+    if (b === 'hexagon' || b === 'pentagon' || b === 'flagPentagon') {
+      var ns = b === 'hexagon' ? 6 : 5, rr = b === 'hexagon' ? Math.max(W / Math.sqrt(3), H / 1.5) * 0.75 + m : Math.max(W, H) / (2 * Math.cos(Math.PI / 5)) + m * 0.5, P = [];
+      if (b === 'flagPentagon') rr = Math.max(rr, 4 * m / 1.5);
+      for (var i = 0; i < ns; i++) { var t = (ns === 5 ? 90 + 72 * i : 60 * i) * Math.PI / 180; P.push([cx + rr * Math.cos(t), cy + rr * Math.sin(t)]); }
+      return { pts: P };
+    }
+    if (b === 'underline') return { line: [[r.x0, r.y0 - m * 0.6], [r.x1, r.y0 - m * 0.6]] };
+    // an equilateral triangle, point up, round the text (a Flag Triangle at least 7 mm a side, as a flag note)
+    var side = Math.max(W + 2 * H / Math.sqrt(3), (b === 'flag' ? 7 * m / 1.5 : 0)), yb = r.y0 - m;
+    return { pts: [[cx - side / 2, yb], [cx + side / 2, yb], [cx, yb + side * Math.sqrt(3) / 2]] };
   }
   // noteLayout(nt, lines, h, k, textWidth) -> { prims, box } (rfCU): the note's lines with their list markers (the text
   // on a hanging indent) and its border; box the text's box, or the border's
   function noteLayout(nt, lines, h, k, textWidth) {
     var out = [], r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity }, n = lines.length;
     var mark = function (i) { return nt.list === 'number' ? (i + 1) + '.' : nt.list === 'bullet' ? '•' : ''; };
-    var ind = nt.list ? textWidth(nt.list === 'number' ? n + '. ' : '•  ', h) + 0.5 * k : 0;
+    var ind = nt.list ? textWidth(nt.list === 'number' ? n + '. ' : '•  ', h) + 0.5 * k : 0, fl = nt._flagged || null;
+    // (rfJI) a bank item a flag note points to: its number inside the flag's shape (the indent made room for it)
+    var flagW = 0;
+    // (the number in the bank's flag is 0.62 × the note text, so the shape stays inside its line's 1.6 × h pitch and
+    // flags of neighbouring items do not touch)
+    var hn = 0.62 * h, yn = 0.12 * h;
+    function flagShape(b, num, cxm, y) { var tw = textWidth(num, hn), y0 = y + yn; return borderShape(b, cxm, y0 + hn / 2, tw + 0.6 * k, hn + 0.6 * k, 0.3 * k, { x0: cxm - tw / 2, x1: cxm + tw / 2, y0: y0, y1: y0 + hn }); }
+    function shapeW(sh) { if (sh.circle) return 2 * sh.circle.r; var xs = (sh.pts || []).map(function (q) { return q[0]; }); return xs.length ? Math.max.apply(null, xs) - Math.min.apply(null, xs) : 0; }
+    if (fl) Object.keys(fl).forEach(function (i) { flagW = Math.max(flagW, shapeW(flagShape(fl[i], String(+i + 1), 0, 0))); });
+    if (flagW) ind = Math.max(ind, flagW + 1.2 * k);
     lines.forEach(function (s, i) {
       var p = [nt.p[0], nt.p[1] - i * h * 1.6];
       if (s.length) {
-        if (nt.list && s.trim()) out.push({ k: 'text', p: p.slice(), h: h, text: mark(i), anchor: 'start', layer: 'NOTES', rot: 0, note: nt.id });
+        if (fl && fl[i] && s.trim()) {
+          var num = String(i + 1), cxm = p[0] + flagW / 2, sh = flagShape(fl[i], num, cxm, p[1]);
+          out.push({ k: 'text', p: [cxm, p[1] + yn], h: hn, text: num, anchor: 'middle', layer: 'NOTES', rot: 0, note: nt.id, flagItem: i + 1 });
+          if (sh.circle) out.push({ k: 'circle', c: sh.circle.c, r: sh.circle.r, layer: 'NOTES', style: 'thin', note: nt.id, flagItem: i + 1 });
+          (sh.pts || []).forEach(function (q, e) { out.push({ k: 'line', a: q, b: sh.pts[(e + 1) % sh.pts.length], layer: 'NOTES', style: 'thin', note: nt.id, flagItem: i + 1 }); });
+        }
+        else if (nt.list && s.trim()) out.push({ k: 'text', p: p.slice(), h: h, text: mark(i), anchor: 'start', layer: 'NOTES', rot: 0, note: nt.id });
         out.push({ k: 'text', p: [p[0] + ind, p[1]], h: h, text: s, anchor: 'start', layer: 'NOTES', rot: 0, note: nt.id });
       }
       r.x0 = Math.min(r.x0, p[0]); r.x1 = Math.max(r.x1, p[0] + ind + Math.max(textWidth(s, h), h * 0.5)); r.y0 = Math.min(r.y0, p[1]); r.y1 = Math.max(r.y1, p[1] + h);
     });
     if (nt.border) {
-      var m = 1.5 * k, cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2, W = r.x1 - r.x0 + 2 * m, H = r.y1 - r.y0 + 2 * m, P = null, b = nt.border;
-      if (b === 'circle') { var rc = Math.hypot(W, H) / 2; out.push({ k: 'circle', c: [cx, cy], r: rc, layer: 'NOTES', style: 'thin', note: nt.id }); r = { x0: cx - rc, x1: cx + rc, y0: cy - rc, y1: cy + rc }; }
-      else if (b === 'square') { var sq = Math.max(W, H) / 2; P = [[cx - sq, cy - sq], [cx + sq, cy - sq], [cx + sq, cy + sq], [cx - sq, cy + sq]]; }
-      else if (b === 'hexagon') { var hr = Math.max(W / Math.sqrt(3), H / 1.5) * 0.75 + m; P = []; for (var i = 0; i < 6; i++) { var t = 60 * i * Math.PI / 180; P.push([cx + hr * Math.cos(t), cy + hr * Math.sin(t)]); } }
-      else {
-        // an equilateral triangle, point up, round the text (a Flag Triangle at least 7 mm a side, as a flag note)
-        var side = Math.max(W + 2 * H / Math.sqrt(3), (b === 'flag' ? 7 : 0) * k), yb = r.y0 - m;
-        P = [[cx - side / 2, yb], [cx + side / 2, yb], [cx, yb + side * Math.sqrt(3) / 2]];
-      }
+      var m = 1.5 * k, cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2, W = r.x1 - r.x0 + 2 * m, H = r.y1 - r.y0 + 2 * m, b = nt.border;
+      var shp = borderShape(b, cx, cy, W, H, m, r), P = shp.pts || null;
+      if (shp.circle) { var rc = shp.circle.r; out.push({ k: 'circle', c: [cx, cy], r: rc, layer: 'NOTES', style: 'thin', note: nt.id }); r = { x0: cx - rc, x1: cx + rc, y0: cy - rc, y1: cy + rc }; }
+      if (shp.line) { out.push({ k: 'line', a: shp.line[0], b: shp.line[1], layer: 'NOTES', style: 'thin', note: nt.id }); r = { x0: r.x0, x1: r.x1, y0: shp.line[0][1], y1: r.y1 }; }
       if (P) {
         for (var e = 0; e < P.length; e++) out.push({ k: 'line', a: P[e], b: P[(e + 1) % P.length], layer: 'NOTES', style: 'thin', note: nt.id });
         r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
@@ -3021,6 +3098,7 @@
   D.addCosmeticThread = addCosmeticThread; D.addDowelPin = addDowelPin; D.editAnnotation = editAnnotation; D.threadForDia = threadForDia; D.threadCallout = threadCallout;
   D.TARGET_AREAS = TARGET_AREAS; D.LEADER_ENDS = LEADER_ENDS; D.NOTE_BORDERS = NOTE_BORDERS; D.NOTE_LISTS = NOTE_LISTS; D.nextTargetNum = nextTargetNum;
   _.noteLayout = noteLayout;
+  D.addFlagNote = addFlagNote; D.resolveFlagNotes = resolveFlagNotes; D.FLAG_SHAPES = FLAG_SHAPES;
 
   D.CLOUD_SHAPES = CLOUD_SHAPES; D.WELD_TYPES = WELD_TYPES; D.cloudArcs = cloudArcs; D.weldText = weldText;
   D.findHoleTable = findHoleTable; D.addHoleTable = addHoleTable; D.editHoleTable = editHoleTable; D.deleteHoleTable = deleteHoleTable; D.moveHoleTable = moveHoleTable;

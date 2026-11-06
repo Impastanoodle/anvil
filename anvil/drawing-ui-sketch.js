@@ -646,6 +646,13 @@
     var vm = out.filter(function (m) { return m.label === 'View'; })[0];
     if (vm && !vm.items.some(function (it) { return it && it.label === 'Hide/Show Annotations'; })) {
       vm.items.push({ sep: true }, { label: 'Hide/Show Annotations', checked: toolOn('hideann'), action: function () { startTool('hideann'); } });
+      // (rfJI) View ▸ Hide/Show, SolidWorks' list for what a drawing here has: All Annotations, Sketches (checked:
+      // shown), then the two per-item tools
+      var dsp = DW.doc && DW.doc() ? Drawing.displayOf(DW.doc()) : { annotations: true, sketches: true };
+      var hs = function (label, key) { return { label: 'Hide/Show ▸ ' + label, checked: dsp[key], action: function () { var o = {}; o[key] = !dsp[key]; edit(function (dc) { Drawing.setDisplay(dc, o); }); UI.setStatus(label + (dsp[key] ? ' hidden' : ' shown') + ' (View ▸ Hide/Show).'); } }; };
+      vm.items.push(hs('All Annotations', 'annotations'), hs('Sketches', 'sketches'),
+        { label: 'Hide/Show ▸ Hide/Show Edges', checked: toolOn('hideedges'), action: function () { startTool('hideedges'); } });
+      DW.hideShowItems = function () { return vm.items.filter(function (it) { return it && /^Hide\/Show ▸ /.test(it.label || ''); }).map(function (it) { return it.label; }); };
     }
     var tools = out.filter(function (m) { return m.label === 'Tools'; })[0];
     if (tools && !tools.items.some(function (it) { return it && it.label === 'Sketch Entities ▸ Line'; })) {

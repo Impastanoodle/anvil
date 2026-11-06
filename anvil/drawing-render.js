@@ -45,8 +45,33 @@
     // the angle dimensions (drawing-annotations.js), which need the views where they finally are
     _.viewKindMarks(doc, r);
     if (r && r.dims && r.prims) _.finishAngles(r);
+    if (r && r.prims) applyDisplay(doc, r);
     return r;
   }
+  // (rfJI) View ▸ Hide/Show (SolidWorks' drawing View menu): doc.display = { annotations: false (All Annotations:
+  // dimensions, notes, symbols, balloons, centre marks, bend notes and tags, area fills), sketches: false (the drawing
+  // sketch) } — saved with the drawing; what is hidden is left off the sheet, so SVG / DXF / PDF follow the screen.
+  // Tables, the title block and the views' linework stay. sheet.display echoes it.
+  var DISPLAY_LAYERS = { annotations: { DIMENSIONS: 1, ANNOTATIONS: 1, NOTES: 1, SYMBOLS: 1, BALLOONS: 1, BEND_NOTES: 1 }, sketches: { SKETCH: 1 } };
+  function displayOf(doc) { var d = doc && doc.display || {}; return { annotations: d.annotations !== false, sketches: d.sketches !== false }; }
+  function applyDisplay(doc, r) {
+    var dsp = displayOf(doc), off = Object.keys(DISPLAY_LAYERS).filter(function (key) { return !dsp[key]; });
+    r.display = dsp;
+    if (!off.length) return;
+    r.prims = r.prims.filter(function (q) { return !off.some(function (key) { return DISPLAY_LAYERS[key][q.layer]; }); });
+    // hidden annotations take no clicks either (their boxes go empty)
+    if (!dsp.annotations) ['dims', 'notes', 'symbols', 'annotations', 'balloons'].forEach(function (key) {
+      (r[key] || []).forEach(function (it) { if (it && it.box) { it.box = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity }; it.displayHidden = true; } });
+    });
+  }
+  D.displayOf = displayOf; D.DISPLAY_LAYERS = DISPLAY_LAYERS;
+  // setDisplay(doc, { annotations, sketches }): true shows, false hides (the default is shown)
+  D.setDisplay = function (doc, props) {
+    var d = doc.display || {};
+    Object.keys(props || {}).forEach(function (key) { if (!DISPLAY_LAYERS[key]) throw new Error('No Hide/Show item ' + key); if (props[key] === false) d[key] = false; else delete d[key]; });
+    if (Object.keys(d).length) doc.display = d; else delete doc.display;
+    return displayOf(doc);
+  };
   // (lane DW) the sheet sketch's Area Hatch/Fill regions (doc.sheet.areaFills), layer ANNOTATIONS
   function sheetAreaFills(doc, prims, out, hs, k) {
     if (!doc.sheet || !doc.sheet.areaFills || !doc.sheet.areaFills.length) return;
@@ -544,7 +569,14 @@
     };
     // (rfQ) notes and symbols placed on a view move with it
     D.followViews(doc, views, k);
-    var notePre = (doc.notes || []).map(function (nt) { return noteItem(nt, k, noteText); });
+    var flagInfo = D.resolveFlagNotes ? D.resolveFlagNotes(doc) : { byNote: {}, banks: {} };   // (rfJI) flag notes and their bank
+    var notePre = (doc.notes || []).map(function (nt) {
+      var it = noteItem(nt.bank && flagInfo.banks[nt.id] ? Object.assign({}, nt, { _flagged: flagInfo.banks[nt.id] }) : nt, k, noteText);
+      var fi = nt.flag ? flagInfo.byNote[nt.id] : null;
+      if (fi) { it.flag = { bank: nt.flag.bank, item: fi.item, dangling: !!fi.dangling }; if (fi.dangling) it.prims.forEach(function (x) { x.color = 'dangling'; }); }
+      if (nt.bank) it.bank = true;
+      return it;
+    });
     var symPre = (doc.symbols || []).map(function (sy) { var r = D.symbolPrims(sy, k, textWidth, ARROW_W, doc); r.id = sy.id; r.type = sy.type; return r; });
     function hideItem(it, rec) {
       if (!rec || !rec.hidden) return;
@@ -684,7 +716,7 @@
     var notes = notePre.map(function (it, i) {
       var of = (doc.notes[i] || {}).view || null;
       it.prims.forEach(function (x) { if (of) x.view = of; prims.push(x); });
-      return { id: it.id, text: it.text, lines: it.lines, p: it.p, h: it.h, box: it.box, raw: it.raw, leader: it.leader || null, view: of, hidden: !!it.hidden };
+      return { id: it.id, text: it.text, lines: it.lines, p: it.p, h: it.h, box: it.box, raw: it.raw, leader: it.leader || null, view: of, hidden: !!it.hidden, flag: it.flag || undefined, bank: it.bank || undefined };
     });
     var symbols = symPre.map(function (it, i) {
       var of = (doc.symbols[i] || {}).view || null;

@@ -1366,7 +1366,9 @@ All on the Annotation tab (Multi-jog Leader after Note; Datum Target / Cosmetic 
 - **Dowel Pin Symbol**: click a hole's circle: the circle, a cross and two opposite quadrants filled, at the hole's size.
 - **Datum Target**: click the target point, then where the symbol goes: a circle split across, the size above (the area's, or typed), `A1` below; a point target ends in an X, a circular / rectangular area is drawn in phantom at its view's scale with a dot. The number counts up per datum.
 - **Multi-jog Leader**: click the start (on a note: the leader hangs from the note's nearer side and follows it), each bend point, then double-click the end (or ✓ / Enter: the last click is the end). Arrow / Dot / None. Drag a bend point to move it; drag a segment to move the whole leader.
-- **Note ▸ Properties…** (right-click a note): *Border* None / Circle / Triangle / Square / Hexagon / Flag Triangle, *List* None / Numbered (`1.`, `2.` … on a hanging indent) / Bulleted.
+- **Note ▸ Properties…** (right-click a note): *Border* None / Circle / Triangle / Box / Diamond / Hexagon / Pentagon / Flag Triangle / Flag Pentagon / Underline (rfJI added Box's name, Diamond, Pentagon, Flag Pentagon, Underline), *Add to Flag Note Bank* (rfJI), *List* None / Numbered (`1.`, `2.` … on a hanging indent) / Bulleted.
+- **Flag notes** (rfJI; *Annotation ▸ Flag Note*, *Insert ▸ Annotations ▸ Flag Note…*): a note with *Add to Flag Note Bank* on is the drawing's numbered notes block (`NOTES: 1. DEBURR ALL EDGES …`). The Flag Note PropertyManager lists the bank's items; pick one, the *Border* shape (Flag Triangle by default) and *Leader*; with a leader click the feature, then where the flag goes, without one click where it goes; the tool stays on for the next flag. A flag shows its item's number and follows the item (lines inserted above renumber it; a changed text keeps the number; a deleted bank leaves it dangling). The bank draws each flagged item's number in the flag's shape. SVG / DXF / PDF like any note.
+- **View ▸ Hide/Show** (rfJI): *All Annotations* (dimensions, notes, symbols, balloons, centre marks, bend notes; tables and the title block stay) and *Sketches* (the drawing sketch) toggle what the drawing shows, saved with it (`doc.display`), one undo step each; the outputs follow the sheet. *Hide/Show Edges* and *Hide/Show Annotations* start the per-item tools.
 
 ```js
 Drawing.addCosmeticThread(doc, viewId, { c, r, size: '#10-32 UNF', end: 'blind', depth: 0.375, callout: true });
@@ -1375,6 +1377,10 @@ Drawing.editAnnotation(doc, id, { end: 'through' });
 Drawing.addSymbol(doc, { type: 'datumTarget', p, leader, datum: 'A', area: 'circle', aw: 0.5 });   // num: next for A
 Drawing.addSymbol(doc, { type: 'leader', p, jogs: [[x, y], [x, y]], leader: tip, end: 'arrow', note: noteId });
 Drawing.addNote(doc, { p, text: 'DEBURR\nBREAK EDGES', border: 'flag', list: 'number' });
+var bank = Drawing.addNote(doc, { p, text: 'DEBURR ALL EDGES\nPAINT BLACK', bank: true });   // rfJI: a Flag Note Bank (numbered)
+Drawing.addFlagNote(doc, { bank: bank.id, item: 2, p, leader: tip, border: 'flag' });   // { text: '2', flag: { bank, item, key } }
+Drawing.resolveFlagNotes(doc);   // { byNote: { id: { item, dangling } }, banks: { bankId: { itemIndex: border } } }
+Drawing.setDisplay(doc, { annotations: false, sketches: false });   // View ▸ Hide/Show; Drawing.displayOf(doc)
 ```
 
 In the app: `anvil.drawing.cosmeticThread(viewId, spec)`, `dowelPin(viewId, spec)`, `editAnnotation(id, props)`, `annotations()`, `datumTarget(spec)`, `leader(spec)`; `note()` / `editNote()` take `border` and `list`.

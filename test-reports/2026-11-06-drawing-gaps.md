@@ -21,10 +21,10 @@ Selected feature) with Hole Wizard locations and callouts. Shop audit: findings 
 |---|---|---|---|
 | 1 | **Punch Table** (Insert ▸ Tables) | **done here (rfJG)** | Forming Tools exist now (lane forming), so a flat with dimples / louvers / extruded holes needs their positions for the turret: tag per punch ID (A1, A2 … B1), X / Y LOC from a blank vertex, PUNCH ID = the tool's flat note (`DIMPLE Ø.75 X .125 UP`) |
 | 2 | **Bend Table's Fixed Face note** (3b) | **done here (rfJG)** | SolidWorks 2024 adds `Fixed Face` at the view centre with the table; Anvil now does, moved off the blank's lines / holes / form marks, draggable and hideable |
-| 3 | Flag notes (a note's numbered flag triangle placed on the view, linked to the note bank) | missing | customer prints use "NOTE 3" flags beside a feature; numbered lists exist, the flag symbol that points at item n does not |
-| 4 | View ▸ Hide/Show menu (annotations, sketches, dimension names) | partial | View menu: Zoom to Fit + tangent edge display; Hide/Show Annotations is on the Sketch tab only |
+| 3 | Flag notes (a note's numbered flag triangle placed on the view, linked to the note bank) | **done (rfJI)** | customer prints use "NOTE 3" flags beside a feature; numbered lists exist, the flag symbol that points at item n does not |
+| 4 | View ▸ Hide/Show menu (annotations, sketches, dimension names) | **done for All Annotations, Sketches, Hide/Show Edges (rfJI)**; dimension names, origins, planes have nothing to show on an Anvil drawing | View menu: Zoom to Fit + tangent edge display; Hide/Show Annotations is on the Sketch tab only |
 | 5 | Plain-hole callout spacing (`Ø.281 THRU ALL` vs wizard `Ø .28`) | to verify | shop audit 9: needs SolidWorks to read the plain-hole spacing |
-| 6 | Alternate Position View | missing | assemblies only (hinged guards); low for a parts shop |
+| 6 | Alternate Position View | missing, skipped (rfJI) | assemblies only (hinged guards); needs assembly configurations that change mate values / positions, which Anvil's configurations (suppress / hide / part config only) do not have |
 | 7 | Predefined View, Block (drawing), hyperlinks in notes | missing | low value |
 | 8 | Format Painter, Spell Checker, Design Checker | missing | low value |
 | — | Tangent edges Visible on new views (15b) | not changed | a user decision (changes every drawing test) |
@@ -47,3 +47,16 @@ bend), so Anvil's formed views match.
 Open question for SolidWorks: the default punch table template's column names (Anvil uses TAG / X LOC / Y LOC /
 PUNCH ID) and whether SolidWorks puts the Fixed Face note on the fixed face or the view's centre for a flat whose
 fixed face is not central.
+
+## Follow-up (lane drawgaps-2, rfJI, same day)
+
+- Flag notes: Note ▸ Properties ▸ *Add to Flag Note Bank* makes the note the numbered notes block; *Annotation ▸ Flag
+  Note* / *Insert ▸ Annotations ▸ Flag Note…* places numbered flags (Flag Triangle default, any closed border shape,
+  leader optional) that follow their item when lines are inserted, keep the number when the text changes, and dangle
+  when the bank is deleted. The bank draws each flagged item's number in the flag shape. Border list now has Box
+  (SolidWorks' name), Diamond, Pentagon, Flag Pentagon and Underline.
+- View ▸ Hide/Show ▸ All Annotations / Sketches (saved with the drawing, undoable, outputs follow) and ▸ Hide/Show
+  Edges, beside the existing Hide/Show Annotations tool.
+- Alternate Position View: skipped (see row 6).
+- To check in SolidWorks: the Flag Pentagon's exact outline (Anvil: a regular pentagon point up) and whether the bank
+  shows unflagged items as `1.` as Anvil does.
