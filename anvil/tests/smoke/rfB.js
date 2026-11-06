@@ -8,7 +8,7 @@
       '0', 'MTEXT', '8', 'MARK', '10', '40', '20', '30', '40', '3', '71', '5', '1', 'REV\\PB'].concat(extra || [],
       ['0', 'DIMENSION', '8', 'DIM', '2', '*D1', '0', 'DIMENSION', '8', 'DIM', '2', '*D2', '0', 'HATCH', '8', 'H', '0', 'ENDSEC', '0', 'EOF']).join('\n') + '\n';
   }
-  step('rfB: Sketch Text ▸ Cut ▸ Stencil (Bridge width 0.8 mm by default) keeps the islands of "O8B" attached (no hole in the profile; its PM edits the width); with a spline selected, Text takes it into Curves and ✓ runs the text along it (baselines on the spline, Spline<n> in the box)', async function () {
+  step('rfB: Sketch Text ▸ Cut ▸ Stencil (Bridge width 1.5 mm by default since rfJT) keeps the islands of "O8B" attached (no hole in the profile; its PM edits the width); with a spline selected, Text takes it into Curves and ✓ runs the text along it (baselines on the spline, Spline<n> in the box)', async function () {
     var errs0 = errors.length;
     UI.loadModel(K.newModel('Stencil')); await idle();
     UI.cmdSketch(); clickPmButton('Front Plane'); await idle();
@@ -21,10 +21,10 @@
     var st = pmField('Stencil');
     assert(st && st.type === 'checkbox' && !st.checked && !pmField('Bridge width'), 'Stencil box, off; no Bridge width yet');
     st.click();
-    assert(pmField('Bridge width') && Math.abs(+pmField('Bridge width').value - 0.8) < 1e-9, 'Bridge width 0.8: ' + (pmField('Bridge width') && pmField('Bridge width').value));
+    assert(pmField('Bridge width') && Math.abs(+pmField('Bridge width').value - 1.5) < 1e-9, 'Bridge width 1.5: ' + (pmField('Bridge width') && pmField('Bridge width').value));
     skClick(5, 5);
     var e = f.entities[0];
-    assert(e && e.t === 'text' && e.mode === 'outline' && e.stencil === true && e.bridge === 0.8, 'placed ' + JSON.stringify(e));
+    assert(e && e.t === 'text' && e.mode === 'outline' && e.stencil === true && e.bridge === 1.5, 'placed ' + JSON.stringify(e));
     var prof = K.sketchProfile(f);
     assert(prof.loops.length > 3 && !prof.loops.some(function (l) { return l.hole || l.cross; }), 'no island in the profile: ' + prof.loops.length + ' loops');
     assert(UI.pmTitle() === 'Sketch Text' && UI.pmSpec()._txtEntity, 'the new text\'s PM');

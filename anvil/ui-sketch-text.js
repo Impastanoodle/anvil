@@ -14,8 +14,9 @@
 //                 of the height; Rotation (free text); Flip horizontal (mirror) / Flip vertical
 //   Mode          Etch (single stroke: laser marking, on layer ETCH, never a region) or Cut (each stroke offset into a
 //                 closed outline Stroke width wide, which a Cut-Extrude cuts through; on the CUT or current layer);
-//                 Cut ▸ Stencil keeps the islands of O, A, B, 0, 8 … attached by bridges Bridge width wide (default
-//                 0.03 in / 0.8 mm), so a part number cut through the sheet does not drop its centres
+//                 Cut ▸ Stencil (an Anvil option: SolidWorks has no stencil switch) keeps the islands of O, A, B, 0, 8 …
+//                 attached by bridges Bridge width wide (default .06 in / 1.5 mm; scripts without a bridge keep
+//                 kernel-script.js' 0.03 in / 0.8 mm), so a part number cut through the sheet does not drop its centres
 //   Layer         the sketch layer the text goes on (ETCH is created from the shop preset when it is missing)
 (function () {
   'use strict';
@@ -33,7 +34,9 @@
   var HINT = 'Type the text in the PropertyManager, then click in the graphics area to place it. To run it along a line, arc, spline or ellipse, click the <b>Curves</b> box and pick the curve.';
   var PICK_HINT = 'Click a sketch line, arc, spline or ellipse for the text to follow.';
   var PATH_TYPES = K.TEXT_PATH_TYPES || ['line', 'arc'];
-  function bridgeDefault() { return inch() ? 0.03 : 0.8; }
+  // the Stencil bridge width the PM starts with: .06 in / 1.5 mm (a laser shop's usual tab; textBridges narrows a
+  // bridge to half the counter it crosses on small letters)
+  function bridgeDefault() { return inch() ? 0.06 : 1.5; }
 
   // ------------------------------------------------------------------ values <-> entity
   // PM values: { str, pathE, flip, align, valign, h, wf, sp, ls (%), rot, mirror, flipV, mode, sw, stencil, bw (bridge
@@ -143,7 +146,7 @@
       { title: 'Mode', fields: [
         { type: 'radio', key: 'mode', rerender: true, options: [['stroke', 'Etch (single stroke)'], ['outline', 'Cut (outline)']] },
         { type: 'number', label: 'Stroke width', key: 'sw', unit: 'u', min: 0, show: function (x) { return x.mode === 'outline'; } },
-        { type: 'check', label: 'Stencil (bridges keep the islands)', key: 'stencil', rerender: true, show: function (x) { return x.mode === 'outline'; } },
+        { type: 'check', label: 'Stencil (Anvil option: bridges keep the islands)', key: 'stencil', rerender: true, show: function (x) { return x.mode === 'outline'; } },
         { type: 'number', label: 'Bridge width', key: 'bw', unit: 'u', min: 0, show: function (x) { return x.mode === 'outline' && x.stencil; } },
         { type: 'select', label: 'Layer', key: 'layer', options: function (x) { return layerOptions(f, x); } }
       ] }
@@ -238,6 +241,14 @@
   UI.sketchToolPMs.text = function () {
     var f = UI.activeSketchFeature();
     if (!toolVals) toolVals = freshValues(f);
+    // rfJT: the values kept from a text in a document of the other units are scaled to this one's (a 1.5 mm bridge
+    // stayed "1.5" in an inch part: a 1.5 in bridge)
+    var un = inch() ? 'in' : 'mm';
+    if (toolVals.units && toolVals.units !== un) {
+      var k = un === 'in' ? 1 / 25.4 : 25.4;
+      ['h', 'sw', 'bw'].forEach(function (key) { if (+toolVals[key] > 0) toolVals[key] = clean(+toolVals[key] * k); });
+    }
+    toolVals.units = un;
     toolVals.pathE = null; toolVals.keepG = null; toolVals.flip = false;
     if (!toolVals.layerSet) toolVals.layer = defaultLayer(f, toolVals.mode);
     // a curve selected before the tool started is the one to follow (as SolidWorks takes it into Curves)
@@ -408,5 +419,6 @@
 
   // test / script hooks
   UI.sketchTextValues = function () { return cur ? cur.v : null; };
+  UI.resetSketchTextTool = function () { toolVals = null; };   // rfJT: the next Text tool starts from the defaults
   UI.sketchTextPick = function (on) { setPicking(on !== false); };
 })();
