@@ -15,8 +15,8 @@
 //   Mode          Etch (single stroke: laser marking, on layer ETCH, never a region) or Cut (each stroke offset into a
 //                 closed outline Stroke width wide, which a Cut-Extrude cuts through; on the CUT or current layer);
 //                 Cut ▸ Stencil (an Anvil option: SolidWorks has no stencil switch) keeps the islands of O, A, B, 0, 8 …
-//                 attached by bridges Bridge width wide (default .06 in / 1.5 mm; scripts without a bridge keep
-//                 kernel-script.js' 0.03 in / 0.8 mm), so a part number cut through the sheet does not drop its centres
+//                 attached by bridges Bridge width wide (default .06 in / 1.5 mm, the same for scripts
+//                 without a bridge), so a part number cut through the sheet does not drop its centres
 //   Layer         the sketch layer the text goes on (ETCH is created from the shop preset when it is missing)
 (function () {
   'use strict';

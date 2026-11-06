@@ -123,14 +123,14 @@
       return 'O ' + plainO.toFixed(6) + ', band ' + band.toFixed(6);
     });
 
-    test('rfCV: Stencil "B" 1 high with the script\'s default bridge (0.8 mm, wider than its counters): each bridge is cut down to half its counter\'s width, the letter keeps most of its area and stays two pieces joined only through the bridges\' gaps', function () {
+    test('rfCV: Stencil "B" 1 high with the script\'s default bridge (1.5 mm since rfJW, was 0.8: wider than its counters): each bridge is cut down to half its counter\'s width, the letter keeps most of its area and stays two pieces joined only through the bridges\' gaps', function () {
       var m = rfCVSketch(rfCVText('B', ', stencil: true')).model, e = m.features[0].entities[0];
-      assert(e.bridge === 0.8, 'the script default is 0.8: ' + e.bridge);
+      assert(e.bridge === 1.5, 'the script default is 1.5: ' + e.bridge);
       var br = K.textOutline(e).bridges;
       assert(br.length === 2, 'two bridges (two counters): ' + br.length);
       br.forEach(function (b, i) {
         var xs = b.map(function (p) { return p[0]; }), w = Math.max.apply(null, xs) - Math.min.apply(null, xs);
-        assert(w < 0.8 && w <= 0.5 * 0.61 + 1e-9, 'bridge ' + i + ' cut down to at most half the counter (about .55 wide): ' + w);
+        assert(w < 1.5 && w <= 0.5 * 0.61 + 1e-9, 'bridge ' + i + ' cut down to at most half the counter (about .55 wide): ' + w);
       });
       var plain = rfCVVol(rfCVText('B')), st = rfCVVol(rfCVText('B', ', stencil: true'));
       assert(st > 0.7 * plain && st < plain, 'most of the letter is kept: ' + st + ' of ' + plain);

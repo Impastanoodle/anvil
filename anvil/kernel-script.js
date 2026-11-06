@@ -1804,7 +1804,7 @@
   // height; default 3 mm / 0.125 in), rot (degrees), align ('left' | 'center' | 'right'), valign ('baseline' | 'middle' |
   // 'top'), widthFactor (1 = 100 %), spacing (1 = the normal gap), lineSpacing (in letter heights), mode ('stroke': Etch,
   // single-stroke marking, the default | 'outline': Cut, closed outlines strokeWidth wide), strokeWidth, stencil (Cut:
-  // islands kept by bridges), bridge (their width; default 0.03 in / 0.8 mm), mirror (Flip horizontal), flipV (Flip
+  // islands kept by bridges), bridge (their width; default .06 in / 1.5 mm, as the Sketch Text PM since rfJW), mirror (Flip horizontal), flipV (Flip
   // vertical), path (a line / arc / spline / ellipse / partial ellipse entity index the baseline follows, or { e, flip, g }) }
   SketchBuilder.prototype.text = function (x, y, str, opts) {
     opts = opts || {};
@@ -1819,7 +1819,7 @@
     });
     if (opts.rot) e.rot = s._v(opts.rot);
     ['widthFactor', 'spacing', 'lineSpacing', 'strokeWidth'].forEach(function (k) { if (opts[k] != null) e[k] = s._v(opts[k]); });
-    if (opts.stencil) { e.stencil = true; e.bridge = opts.bridge != null ? s._v(opts.bridge) : (inch ? 0.03 : 0.8); }   // sketch-text2
+    if (opts.stencil) { e.stencil = true; e.bridge = opts.bridge != null ? s._v(opts.bridge) : (inch ? 0.06 : 1.5); }   // sketch-text2; rfJW: the PM's .06 in / 1.5 mm (saved models and generateScript carry bridge)
     if (e.stencil && !(e.bridge > 0)) throw new Error('Stencil bridge width must be greater than zero.');
     if (opts.mirror) e.mirror = true;
     if (opts.flipV) e.flipV = true;

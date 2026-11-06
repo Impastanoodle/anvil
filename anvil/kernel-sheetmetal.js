@@ -1684,18 +1684,78 @@
         outl.forEach(function (fa) { var w = jointWedge(fa, nb, T + eps, tag, true); if (w) { prisms.push(w); fa.concave = true; } });
       });
     });
+    var cyls = toolCylChords(tool);
     outl.forEach(function (fo) {
       // through the thickness along −n: from just in front of the face to just past the far surface. In front of a
       // face at a concave joint the neighbour rises: the prism's front plane cuts the neighbour's surface a little
       // way from the joint (all through the part, as a BSP splits), so it stands well clear (0.05·T), or that strip
       // would be thin enough for the meshing's 1e-4 weld to fold and the flat to read a slit across the bend.
-      var front = fo.concave ? 0.05 * T : eps;
-      var solid = unionAll(fo.cl.outers.map(function (l) { return prism(l, fo.o.plane, -(T + eps), front, tag); }));
-      if (fo.cl.holes.length) solid = solid.subtract(unionAll(fo.cl.holes.map(function (l) { return prism(l, fo.o.plane, -(T + 2 * eps), front + eps, tag); })));
+      var front = fo.concave ? 0.05 * T : eps, pl = fo.o.plane, memo = [];
+      // rfJW: the outline's chords of the tool's own circles (a cut sketched parallel to the face) keep their
+      // cylinder records, so the prism's walls are true cylinders again (exact volumes, true circles), as a plain cut's
+      var cvOf = function (l) { return normalCutCurves(l, pl, cyls, memo); };
+      var solid = unionAll(fo.cl.outers.map(function (l) { return prism(l, pl, -(T + eps), front, tag, cvOf(l)); }));
+      if (fo.cl.holes.length) solid = solid.subtract(unionAll(fo.cl.holes.map(function (l) { return prism(l, pl, -(T + 2 * eps), front + eps, tag, cvOf(l)); })));
       prisms.push(solid);
     });
     if (!prisms.length) return tool;
     return unionTree(prisms);
+  }
+  // rfJW: toolCylChords(tool) -> [{ S, chords: [[A, B]] }]: the tool's cylinder records and, for each facet carrying
+  // one, the facet's chord (its corners seen along the axis: two points on the circle, in the plane through S.o)
+  function toolCylChords(tool) {
+    var out = [];
+    tool.polygons.forEach(function (pg) {
+      var F = pg.surf, S = F && F.s;
+      if (!S || S.t !== 'cyl' || !(S.r > 0)) return;
+      var rec = null;
+      for (var k = 0; k < out.length; k++) if (out[k].S === S) { rec = out[k]; break; }
+      if (!rec) { rec = { S: S, chords: [] }; out.push(rec); }
+      var tol = 1e-9 * Math.max(1, S.r), pts = [];
+      pg.vertices.forEach(function (v) {
+        var p = [v.pos.x, v.pos.y, v.pos.z], q = sub(p, scale(S.d, dot(sub(p, S.o), S.d)));
+        if (!pts.some(function (o) { return len(sub(o, q)) < tol; })) pts.push(q);
+      });
+      if (pts.length === 2) rec.chords.push(pts);
+    });
+    out.forEach(function (rec) {   // the widest angle one chord spans
+      rec.maxAng = rec.chords.reduce(function (m, ch) { return Math.max(m, 2 * Math.asin(Math.min(1, len(sub(ch[0], ch[1])) / (2 * rec.S.r)))); }, 0);
+    });
+    return out;
+  }
+  // rfJW: normalCutCurves(loop, plane, cyls, memo) -> per segment of the loop (2D in plane) the circle { c, r } (in the
+  // plane, one object per record: memo) it is a chord of, for prism()'s cv, or null when none is: a segment is one when
+  // a record whose axis is square to the plane has a facet chord with the same two ends (seen along the axis)
+  function normalCutCurves(loop, plane, cyls, memo) {
+    var n = plane.n, recs = cyls.filter(function (c) { return Math.abs(dot(c.S.d, n)) > 1 - 1e-9 && c.chords.length; });
+    if (!recs.length) return null;
+    var cv = [], any = false, N = loop.length;
+    for (var i = 0; i < N; i++) {
+      var A = to3D(plane, loop[i][0], loop[i][1]), B = to3D(plane, loop[(i + 1) % N][0], loop[(i + 1) % N][1]), hit = null;
+      for (var k = 0; k < recs.length && !hit; k++) {
+        var S = recs[k].S, tol = 1e-7 * Math.max(1, S.r);
+        var a = sub(A, scale(S.d, dot(sub(A, S.o), S.d))), b = sub(B, scale(S.d, dot(sub(B, S.o), S.d)));
+        if (!(len(sub(a, b)) > tol)) continue;
+        // a facet chord of the tool with the same two ends: the tool's own tagging (its ends may be off the circle where
+        // the profile kept partial chords of a union), copied as it is
+        if (recs[k].chords.some(function (ch) { return (len(sub(ch[0], a)) < tol && len(sub(ch[1], b)) < tol) || (len(sub(ch[0], b)) < tol && len(sub(ch[1], a)) < tol); })) { hit = S; continue; }
+        if (Math.abs(len(sub(a, S.o)) - S.r) > tol || Math.abs(len(sub(b, S.o)) - S.r) > tol) continue;
+        // the face outline can join two short chords into one (its vertex weld): a segment of the circle no longer
+        // than three of the record's own chords is still one of its chords (a straight side ending on the circle, a D's
+        // diameter, spans far more)
+        if (2 * Math.asin(Math.min(1, len(sub(a, b)) / (2 * S.r))) <= 3 * recs[k].maxAng + 1e-12 &&
+          recs[k].chords.some(function (ch) { return len(sub(ch[0], a)) < tol || len(sub(ch[1], a)) < tol; }) &&
+          recs[k].chords.some(function (ch) { return len(sub(ch[0], b)) < tol || len(sub(ch[1], b)) < tol; })) hit = S;
+      }
+      var C = null;
+      if (hit) {
+        for (var m = 0; m < memo.length; m += 2) if (memo[m] === hit) { C = memo[m + 1]; break; }
+        if (!C) { C = { c: to2D(plane, hit.o), r: hit.r }; memo.push(hit, C); }
+        any = true;
+      }
+      cv.push(C);
+    }
+    return any ? cv : null;
   }
   // the 3D corners of a mesh face's triangles
   function faceVerts(mesh, i) {

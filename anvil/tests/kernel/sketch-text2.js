@@ -70,18 +70,18 @@
       assert(!K.sketchProfile({ entities: [every] }).loops.some(function (l) { return l.cross; }), 'every character as plain Cut text: no self-crossing');
       return n + ' islands bridged';
     });
-    test('sketch-text2: .text(…, { stencil: true }) bridges 0.8 mm / 0.03 in by default; generateScript writes stencil and bridge back; Scale takes the bridge along; Etch text ignores Stencil (no outline)', function () {
+    test('sketch-text2: .text(…, { stencil: true }) bridges 1.5 mm / .06 in by default (rfJW; was 0.8 / 0.03); generateScript writes stencil and bridge back; Scale takes the bridge along; Etch text ignores Stencil (no outline)', function () {
       var mm = build('p.sketch("Front").rect(-1, -1, 30, 10).text(0, 0, "B8", { h: 5, mode: "outline", stencil: true }).extrude(1);');
       var inch = build('p.units("in");\np.sketch("Front").rect(-0.1, -0.1, 2, 1).text(0, 0, "B8", { h: 0.25, mode: "outline", stencil: true }).extrude(0.05);');
       noErrors(mm); noErrors(inch);
       var em = mm.model.features[0].entities[1], ei = inch.model.features[0].entities[1];
-      assert(em.stencil === true && em.bridge === 0.8 && ei.bridge === 0.03, 'defaults ' + em.bridge + ' / ' + ei.bridge);
+      assert(em.stencil === true && em.bridge === 1.5 && ei.bridge === 0.06, 'defaults ' + em.bridge + ' / ' + ei.bridge);
       var gen = K.generateScript(mm.model);
-      assert(gen.indexOf('"stencil":true,"bridge":0.8') > 0, 'script ' + gen);
+      assert(gen.indexOf('"stencil":true,"bridge":1.5') > 0, 'script ' + gen);
       var m2 = K.newModel('T2'); K.runScript(m2, gen);
       assert(JSON.stringify(m2.features[0].entities[1]) === JSON.stringify(em), 'round trip ' + JSON.stringify(m2.features[0].entities[1]));
       nearRel(K.massProps(K.meshFromBody(K.rebuild(m2).body), 1).volume, mm.mp.volume, 1e-9, 'round-trip volume');
-      assert(K.transformText(em, { s: 2, cx: 0, cy: 0 }).bridge === 1.6, 'scaled bridge');
+      assert(K.transformText(em, { s: 2, cx: 0, cy: 0 }).bridge === 3, 'scaled bridge');
       var etch = { t: 'text', x: 0, y: 0, str: 'B8', h: 5, stencil: true, bridge: 0.8 };
       assert(!K.sketchProfile({ entities: [etch] }).loops.length && K.textLayout(etch).strokes.length > 5, 'Etch text: strokes, no outline');
       var bad1 = null; try { K.runScript(K.newModel('T3'), 'p.sketch("Front").text(0, 0, "O", { mode: "outline", stencil: true, bridge: 0 });'); } catch (err) { bad1 = err.message; }
