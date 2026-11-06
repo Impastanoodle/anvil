@@ -398,7 +398,9 @@
   function refFrom(x) {
     if (x.c) return { kind: 'dia', c: [+x.c[0], +x.c[1]], r: +x.r || 0, value: 2 * (+x.r || 0) };
     var a = [+x.a[0], +x.a[1]], b = [+x.b[0], +x.b[1]], dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
-    return { kind: Math.abs(dy) <= L * 1e-9 ? 'h' : Math.abs(dx) <= L * 1e-9 ? 'v' : 'aligned', a: a, b: b, value: L };
+    var out = { kind: Math.abs(dy) <= L * 1e-9 ? 'h' : Math.abs(dx) <= L * 1e-9 ? 'v' : 'aligned', a: a, b: b, value: L };
+    if (x.bend != null) out.bend = x.bend;   // (rfJM) a bend line of a flat pattern view
+    return out;
   }
   function refPos(ref, axis) { return ref.kind === 'dia' ? ref.c[axis] : (ref.a[axis] + ref.b[axis]) / 2; }
   // addOrdinate / addBaseline(doc, viewId, { dir: 'h' | 'v', base, refs: [...], side, at }): ordinate dimensions
@@ -420,7 +422,11 @@
   // gtStations(pr, dir) -> [{ pos, ref, pick }] along the view's u (dir 'h') or v ('v'), one per place, ordered: the
   // straight edges across that direction (the longest of each place), then the holes at a place no edge holds.
   // ref is what addOrdinate / addBaseline take, pick what smartDim takes.
-  function gtStations(pr, dir) {
+  // (rfJM) a flat pattern's bend lines across the direction are stations too (after the edges, before the holes; ref
+  // { a, b, bend: key }, found again by reattachBendRef), unless opts.bends is false; opts.select (Entities to
+  // dimension: Selected) keeps the origin station and those matching a selected edge / circle / bend line.
+  function gtStations(pr, dir, opts) {
+    opts = opts || {};
     var ax = dir === 'h' ? 0 : 1, xs = [];
     (pr.lines.visible || []).forEach(function (l) { xs.push(Math.abs(l[0]), Math.abs(l[1]), Math.abs(l[2]), Math.abs(l[3])); });
     (pr.circles.visible || []).forEach(function (c) { xs.push(Math.abs(c.c[0]), Math.abs(c.c[1])); });
@@ -433,10 +439,45 @@
       if (!q) out.push({ pos: l[ax], L: L, ref: { a: a, b: b }, pick: { edge: [a, b] } });
       else if (L > q.L) { q.L = L; q.ref = { a: a, b: b }; q.pick = { edge: [a, b] }; }
     });
+    if (pr.flat && opts.bends !== false) (pr.bends || []).forEach(function (b) {
+      if (!b.a || !b.b || Math.abs(b.a[ax] - b.b[ax]) > tol || at(b.a[ax])) return;
+      var key = b.key || true;
+      out.push({ pos: b.a[ax], L: 0, bend: true, ref: { a: b.a.slice(), b: b.b.slice(), bend: key }, pick: { edge: [b.a.slice(), b.b.slice()] } });
+    });
     (pr.circles.visible || []).forEach(function (c) {
       if (!at(c.c[ax])) out.push({ pos: c.c[ax], L: 0, ref: { c: c.c.slice(), r: c.r }, pick: { circle: { c: c.c.slice(), r: c.r } } });
     });
     return out.sort(function (x, y) { return x.pos - y.pos; });
+  }
+  // does station q match a selected entity (an edge { a, b }, a circle { c, r }, or a bend line { a, b })?
+  function gtSelected(q, sel, pr) {
+    var b = pr.bounds, tol = 1e-6 * (1 + Math.hypot(b.umax - b.umin, b.vmax - b.vmin));
+    return (sel || []).some(function (e) {
+      if (e.c && q.ref.c) return Math.hypot(e.c[0] - q.ref.c[0], e.c[1] - q.ref.c[1]) <= tol && Math.abs((+e.r || q.ref.r) - q.ref.r) <= tol;
+      if (!e.a || !e.b || !q.ref.a) return false;
+      var A = q.ref.a, B = q.ref.b, d = [B[0] - A[0], B[1] - A[1]], L = Math.hypot(d[0], d[1]) || 1;
+      return [e.a, e.b].every(function (P) { return Math.abs((P[0] - A[0]) * d[1] - (P[1] - A[1]) * d[0]) / L <= tol; });
+    });
+  }
+  // reattachBendRef(r, pr): a bend-line reference ({ a, b, bend: key }) to the flat's bend with that key, else the
+  // parallel bend line nearest its old middle (a quarter of the view at most)
+  function reattachBendRef(r, pr) {
+    var bs = pr.bends || [], best = null, bd = Infinity, b = pr.bounds, reach = 0.25 * Math.hypot(b.umax - b.umin, b.vmax - b.vmin);
+    var m0 = [(r.a[0] + r.b[0]) / 2, (r.a[1] + r.b[1]) / 2], t0 = [r.b[0] - r.a[0], r.b[1] - r.a[1]], L0 = Math.hypot(t0[0], t0[1]) || 1;
+    if (typeof r.bend === 'string') best = bs.filter(function (q) { return q.key === r.bend; })[0] || null;
+    if (!best) bs.forEach(function (q) {
+      var t = [q.b[0] - q.a[0], q.b[1] - q.a[1]], L = Math.hypot(t[0], t[1]) || 1;
+      if (Math.abs(t[0] * t0[1] - t[1] * t0[0]) / (L * L0) > 1e-6) return;
+      var dd = Math.hypot((q.a[0] + q.b[0]) / 2 - m0[0], (q.a[1] + q.b[1]) / 2 - m0[1]);
+      if (dd < bd && dd <= reach) { bd = dd; best = q; }
+    });
+    if (!best) { r.dangling = true; return false; }
+    var flip = (best.b[0] - best.a[0]) * t0[0] + (best.b[1] - best.a[1]) * t0[1] < 0;
+    r.a = (flip ? best.b : best.a).slice(); r.b = (flip ? best.a : best.b).slice();
+    if (best.key) r.bend = best.key;
+    r.value = Math.hypot(r.b[0] - r.a[0], r.b[1] - r.a[1]);
+    delete r.dangling;
+    return true;
   }
   // autodimension(doc, viewId, proj, { h: { scheme: 'baseline' | 'chain' | 'ordinate', origin: 'left' | 'right', place:
   // 'above' | 'below' }, v: { scheme, origin: 'bottom' | 'top', place: 'left' | 'right' }, scale, units }) -> the
@@ -447,10 +488,12 @@
     ['h', 'v'].forEach(function (dir) {
       var o = opts[dir];
       if (!o || !o.scheme || o.scheme === 'none') return;
-      var st = gtStations(pr, dir), ax = dir === 'h' ? 1 : 0, far = o.origin === 'right' || o.origin === 'top';
+      var st = gtStations(pr, dir, opts), ax = dir === 'h' ? 1 : 0, far = o.origin === 'right' || o.origin === 'top';
       var side = o.place === 'below' || o.place === 'left' ? -1 : 1;
       if (st.length < 2) return;
       if (far) st.reverse();
+      // (rfJM) Entities to dimension: Selected — the origin edge and the selected entities only
+      if (opts.select) { var o0 = st[0]; st = [o0].concat(st.slice(1).filter(function (q) { return gtSelected(q, opts.select, pr); })); if (st.length < 2) return; }
       if (o.scheme !== 'chain') {
         (o.scheme === 'ordinate' ? addOrdinate : addBaseline)(doc, viewId, { dir: dir, base: st[0].ref, refs: st.slice(1).map(function (q) { return q.ref; }), side: side });
         n += st.length - 1;
@@ -461,13 +504,79 @@
       (pr.circles.visible || []).forEach(function (c) { cross.push(c.c[ax] - c.r, c.c[ax] + c.r); });
       var edge = side > 0 ? Math.max.apply(null, cross) + gap : Math.min.apply(null, cross) - gap;
       st.slice(1).forEach(function (q, i) {
-        var mid = (q.pos + st[i].pos) / 2;
-        if (addSmartDim(doc, viewId, st[i].pick, q.pick, dir === 'h' ? [mid, edge] : [edge, mid], { lock: dir, scale: sc })) n++;
+        var mid = (q.pos + st[i].pos) / 2, dm = addSmartDim(doc, viewId, st[i].pick, q.pick, dir === 'h' ? [mid, edge] : [edge, mid], { lock: dir, scale: sc });
+        if (!dm) return;
+        n++;
+        // (rfJM) a bend line picked: its reference follows the bend, not a model edge
+        [st[i], q].forEach(function (s0, j) { var rf = dm.refs && dm.refs[j]; if (s0.bend && rf && rf.a) rf.bend = s0.ref.bend; });
       });
     });
     return n;
   }
-  D.autodimension = autodimension;
+  D.autodimension = autodimension; D.gtStations = gtStations; D.reattachBendRef = reattachBendRef;
+  // (rfJM) flatAutodimension(doc, viewId, w, sheet, opts) -> { n, h, v } (the places used): Autodimension on a flat
+  // pattern view for a shop print. Defaults: Ordinate both ways from the blank's lower-left (Left edge / Bottom edge),
+  // bend lines included, placed Above / Right of the view; each direction goes to the other side when its strip (the
+  // dimension's 10 mm offset + its texts) would run onto the title block, a table (Bend / Hole / Punch Table, BOM,
+  // revisions), another view or off the sheet and the other side is clear. w / sheet: the view and sheet as computed.
+  function flatAutodimension(doc, viewId, w, sheet, opts) {
+    opts = opts || {};
+    if (!w || !w.proj) throw new Error('Autodimension: the view is not worked out yet');
+    if (!w.flat && !w.proj.flat) throw new Error('Autodimension: ' + (w.view && w.view.name || 'that view') + ' is not a flat pattern view');
+    var units = doc.units === 'mm' ? 'mm' : 'in', k = units === 'in' ? 1 / 25.4 : 1, bx = { x0: w.box.x0, y0: w.box.y0, x1: w.box.x1, y1: w.box.y1 }, S = sheet && sheet.size;
+    var th = (_.DIMGEO && +_.DIMGEO.text > 0 ? +_.DIMGEO.text : 3.5) * k, fb = (w.flat && w.flat.bbox) || w.proj.bounds;
+    // how far the ordinates reach past the view: the 10 mm offset, the 1 mm gap and the longest value's text
+    var big = Math.max(fb.umax - fb.umin, fb.vmax - fb.vmin), tw = D.textRect ? D.textRect({ k: 'text', p: [0, 0], h: th, text: numText(big, units, null), anchor: 'start', rot: 0 }) : null;
+    var deep = (10 + 1 + 1.5) * k + (tw ? tw.x1 - tw.x0 : th * 4);
+    var obs = [];
+    if (sheet) {
+      if (D.tbRects && S) D.tbRects(S, units).forEach(function (r) { obs.push(r); });
+      (sheet.views || []).forEach(function (o) { if (o !== w && o.box) obs.push(o.box); });
+      (sheet.holeTables || []).forEach(function (t) { if (t.box) obs.push(t.box); });
+      (sheet.annotations || []).forEach(function (a) { if (a.view === w.view.id && (a.type === 'bendTable') && a.box && isFinite(a.box.x0)) obs.push(a.box); });
+      (sheet.tables || []).forEach(function (t) { if (t.box) obs.push(t.box); });
+      if (sheet.bom && sheet.bom.box) obs.push(sheet.bom.box);
+    }
+    function strip(dir, side) {
+      if (dir === 'h') return side > 0 ? { x0: bx.x0, x1: bx.x1, y0: bx.y1, y1: bx.y1 + deep } : { x0: bx.x0, x1: bx.x1, y0: bx.y0 - deep, y1: bx.y0 };
+      return side > 0 ? { x0: bx.x1, x1: bx.x1 + deep, y0: bx.y0, y1: bx.y1 } : { x0: bx.x0 - deep, x1: bx.x0, y0: bx.y0, y1: bx.y1 };
+    }
+    function clear(r) {
+      var m = 5 * k;
+      if (S && (r.x0 < m || r.y0 < m || r.x1 > S[0] - m || r.y1 > S[1] - m)) return false;
+      return !obs.some(function (o) { return o.x0 < r.x1 && r.x0 < o.x1 && o.y0 < r.y1 && r.y0 < o.y1; });
+    }
+    var place = { h: opts.hPlace || 'above', v: opts.vPlace || 'right' }, used = {}, shift = [0, 0];
+    var spec = { scale: w.scale, units: units, bends: opts.bends !== false, select: opts.select || null };
+    function moved(r, d) { return { x0: r.x0 + d[0], x1: r.x1 + d[0], y0: r.y0 + d[1], y1: r.y1 + d[1] }; }
+    var dirs = ['h', 'v'].filter(function (dir) { var sc = opts[dir + 'Scheme'] || 'ordinate'; return opts[dir] !== false && sc !== 'none'; });
+    dirs.forEach(function (dir) {
+      var side = place[dir] === 'below' || place[dir] === 'left' ? -1 : 1;
+      if (!opts.keepPlace && !clear(strip(dir, side)) && clear(strip(dir, -side))) side = -side;
+      // neither side clear (a view or the border too near): slide the view away across the dimensions' direction, the
+      // least that clears the strip and keeps the view itself clear (2 mm steps, up to 40 mm; SolidWorks users drag it)
+      if (!opts.keepPlace && !clear(strip(dir, side))) {
+        var best = null;
+        for (var st = 1; st <= 20 && !best; st++) [side, -side].forEach(function (sd) {
+          [st * 2 * k, -st * 2 * k].forEach(function (dd) {
+            if (best) return;
+            var d = dir === 'h' ? [0, dd] : [dd, 0], keep = bx;
+            bx = moved(keep, d);
+            var ok = clear({ x0: bx.x0 - 1 * k, y0: bx.y0 - 1 * k, x1: bx.x1 + 1 * k, y1: bx.y1 + 1 * k }) && clear(strip(dir, sd)) && dirs.every(function (o) { return o === dir || !used[o] || clear(strip(o, used[o] === 'above' || used[o] === 'right' ? 1 : -1)); });
+            bx = keep;
+            if (ok) best = { d: d, side: sd };
+          });
+        });
+        if (best) { bx = moved(bx, best.d); shift[0] += best.d[0]; shift[1] += best.d[1]; side = best.side; }
+      }
+      used[dir] = dir === 'h' ? (side > 0 ? 'above' : 'below') : (side > 0 ? 'right' : 'left');
+      spec[dir] = { scheme: opts[dir + 'Scheme'] || 'ordinate', origin: opts[dir + 'Origin'] || (dir === 'h' ? 'left' : 'bottom'), place: used[dir] };
+    });
+    if (shift[0] || shift[1]) { var vr = findView(doc, viewId); if (vr) { vr.x += shift[0]; vr.y += shift[1]; } }
+    var n = autodimension(doc, viewId, w.proj, spec);
+    return { n: n, h: used.h || null, v: used.v || null, moved: shift[0] || shift[1] ? shift : null };
+  }
+  D.flatAutodimension = flatAutodimension;
   // addChamferDim(doc, viewId, { a, b (the chamfer edge), ref: { a, b } (the lead-in edge), lead }): "1 X 45°"
   function addChamferDim(doc, viewId, spec) {
     var v = findView(doc, viewId);
@@ -493,7 +602,7 @@
   function reattachUserDim(d, pr) {
     if (d.kind === 'angrun' || d.kind === 'pathlen') return reattachCT(d, pr);   // (lane CT)
     if (d.kind === 'ordinate' || d.kind === 'baseline') {
-      var ok = [d.base].concat(d.refs).map(function (r) { return reattachDim(r, pr); }).every(Boolean);
+      var ok = [d.base].concat(d.refs).map(function (r) { return r.bend != null ? reattachBendRef(r, pr) : reattachDim(r, pr); }).every(Boolean);   // (rfJM: bend lines)
       if (ok) delete d.dangling; else d.dangling = true;
       var ax = d.dir === 'v' ? 1 : 0, b0 = refPos(d.base, ax);
       d.values = d.refs.map(function (r) { return refPos(r, ax) - b0; });
@@ -524,6 +633,7 @@
   // (rfS) one reference of a two-pick dimension: a circle / arc (by centre and radius), an edge, or a point (a vertex:
   // the nearest end of a visible edge or circle centre within a thousandth of the view size, else it is gone)
   function reattachRef(r, pr) {
+    if (r.bend != null && r.a) return reattachBendRef(r, pr);   // (rfJM) a flat pattern's bend line
     // (rfIG) an edge's midpoint: the edge is found again as any edge reference is, the point is its new middle
     if (r.kind === 'pt' && r.mid) {
       var okM = reattachRef(r.mid, pr);

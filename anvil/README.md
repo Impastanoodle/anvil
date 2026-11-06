@@ -1361,6 +1361,15 @@ anvil.drawing.punchTable(viewId, { origin? , … });   // its id (origin default
 
 A **Bend Table** on a flat view also adds SolidWorks' `Fixed Face` note at the view centre (moved off the blank's lines, holes and form marks; flat item `fixedFace`: drag / hide it like a bend note; `view.fixedFaceNote = false` leaves it off).
 
+**Autodimension on a flat pattern view** (rfJM; *Tools ▸ Dimensions ▸ Autodimension* with the flat view selected, or click it): *Entities to Dimension* All entities in view / Selected entities (click edges, holes and bend lines; again to drop one), *Bend lines (flat pattern)*, and per direction *Scheme* Baseline / Chain / Ordinate (Ordinate is preselected on a flat), *Origin* Left / Right and Bottom / Top edge, *Placement* Above / Below and Right / Left. On the 6 × 4 blank: `0, .750, 1.500, 3.000, 4.500, 6.000` across (hole, bend, holes, bend, edge) and `0, 1.000 … 4.000` up. Bend-line references follow their bend (by its key) when the part changes. A side whose dimensions would run onto the title block, a Bend / Hole / Punch Table, the BOM, another view or off the sheet swaps to the other side; when neither side is clear the flat view slides (2 mm steps, up to 40 mm) until one is, and the status bar says so.
+
+```js
+Drawing.flatAutodimension(doc, flatId, sheetView, sheet, { hScheme: 'ordinate', vScheme: 'ordinate', hOrigin: 'left', vOrigin: 'bottom', hPlace: 'above', vPlace: 'right', bends: true, select: [{ c, r } | { a, b }], h: true, v: true, keepPlace: false });   // { n, h, v, moved }
+Drawing.autodimension(doc, viewId, proj, { h: { scheme, origin, place }, v: { … }, bends, select, scale, units });   // any orthographic view
+```
+
+With *Merge faces* off (Flat-Pattern1, `p.flatPattern({ mergeFaces: false })`) the flat view also draws the two tangent lines of each bend region (`flat.regionLines`) as thin tangent edges on the view's layer (phantom with Tangent Edges With Font), turned with the flat; SVG / DXF / PDF carry them. Merge faces on (the default) draws none.
+
 ### Cosmetic Thread, Dowel Pin Symbol, Datum Target, Multi-jog Leader, note borders and lists (rfCU)
 
 All on the Annotation tab (Multi-jog Leader after Note; Datum Target / Cosmetic Thread / Dowel Pin Symbol in the flyout after the weld symbols) and in *Insert ▸ Annotations*. Each opens its PropertyManager; Esc or ✓ ends, every placement is one undo step, double-click edits, Delete removes.

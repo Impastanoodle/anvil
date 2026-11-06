@@ -277,6 +277,12 @@
       // says why in the view
       var fd = ct.flat && !ct.flat.error ? ct.flat : null;
       if (ct.flat && ct.flat.error) text([v.x, v.y], 3.5 * k, 'FLAT PATTERN: ' + ct.flat.error, 'middle', layer);
+      // (rfJM) Merge faces off (Flat-Pattern1, lane flatopts): the two tangent lines of each bend region, as thin
+      // tangent edges on the view's layer (with the view's Tangent Edges With Font: phantom); none when Merge faces is on
+      if (fd && fd.regionLines && fd.regionLines.length) {
+        var rst = v.tangent === 'font' ? 'tanfont' : 'tangent';
+        fd.regionLines.forEach(function (rl) { prims.push({ k: 'line', a: toSheet(rl.a), b: toSheet(rl.b), layer: layer, style: rst, view: v.id, regionLine: rl.bend != null ? rl.bend : true }); });
+      }
       if (fd) fd.bends.forEach(function (bnd) {
         var A = toSheet(bnd.a), B = toSheet(bnd.b), dx = B[0] - A[0], dy = B[1] - A[1], L = Math.hypot(dx, dy) || 1, e = BEND_EXT * k;
         prims.push({ k: 'line', a: [A[0] - dx / L * e, A[1] - dy / L * e], b: [B[0] + dx / L * e, B[1] + dy / L * e], layer: bnd.up ? 'BEND_UP' : 'BEND_DOWN', style: bnd.up ? 'bendup' : 'benddown', view: v.id, bend: bnd.i });

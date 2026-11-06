@@ -793,6 +793,7 @@
           return x;
         }),
         etch: (flat.etch || []).map(function (it) { return JSON.parse(JSON.stringify(it)); }),
+        regionLines: flat.regionLines ? flat.regionLines.map(function (rl) { return { a: rl.a.slice(0, 2), b: rl.b.slice(0, 2), bend: rl.bend }; }) : null,   // (rfJM) Merge faces off
         bbox: { umin: bb.min[0], umax: bb.max[0], vmin: bb.min[1], vmax: bb.max[1] }, sheet: flat.sheet, loops: flat.loops.length };
     } catch (e) { res = { units: units, error: String(e && e.message || e) }; }
     if (mesh && typeof mesh === 'object') try { Object.defineProperty(mesh, '_drawingFlat', { value: res, configurable: true, writable: true, enumerable: false }); } catch (e4) { }

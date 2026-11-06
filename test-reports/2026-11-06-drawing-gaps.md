@@ -60,3 +60,13 @@ fixed face is not central.
 - Alternate Position View: skipped (see row 6).
 - To check in SolidWorks: the Flag Pentagon's exact outline (Anvil: a regular pentagon point up) and whether the bank
   shows unflagged items as `1.` as Anvil does.
+
+## Follow-up (lane drawgaps-3, rfJM, same day)
+
+- Autodimension on a flat pattern view: what existed (rfGT) dimensioned the blank's edges and holes but not the bend
+  lines and had no Selected entities. Now bend lines are stations (and follow their bend), Ordinate from the blank's
+  lower-left is preselected on a flat, *Selected entities* works, and the dimensions go to the side that is clear of
+  the title block, tables and other views (the view slides when neither is). Model Items on flats was not changed.
+- Merge faces off: the bend-region tangent lines are drawn in the flat view (thin tangent edges, SVG / DXF / PDF).
+- Seen, not changed: on a crowded sheet the Bend Table's free-paper search keeps clear of the views' boxes but not of
+  their model-item dimensions (a Front view dimension under its view can sit on the table).

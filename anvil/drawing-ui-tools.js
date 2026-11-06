@@ -2679,6 +2679,13 @@
     }
     rfANOverlay(g, H, node);   // (rfAN) hole tables, the Hole Table / Revision Cloud tools
     flagNoteOverlay(g, H, node);   // (rfJI) the Flag Note tool's arrow point
+    if (D.tool === 'autodim' && D.pending && D.pending.select && D.pending.select.length && sheetView(D.pending.view)) {   // (rfJM) Selected entities
+      var aw = sheetView(D.pending.view);
+      D.pending.select.forEach(function (q) {
+        if (q.c) { var cc = aw.toSheet(q.c); node('circle', { class: 'dw-hot', cx: cc[0], cy: H - cc[1], r: q.r * aw.scale, 'stroke-width': pxToPaper(3) }, g); }
+        else { var qa = aw.toSheet(q.a), qb = aw.toSheet(q.b); node('line', { class: 'dw-hot', x1: qa[0], y1: H - qa[1], x2: qb[0], y2: H - qb[1], 'stroke-width': pxToPaper(3) }, g); }
+      });
+    }
   }
   var magDrag = null, magHover = null;
   document.addEventListener('mousedown', function (e) {
@@ -2750,10 +2757,15 @@
     if (!doc() || !D.sheet || !D.sheet.views.length) { UI.toast('Add a drawing view first.'); return; }
     var w0 = D.sel && D.sel.kind === 'view' ? sheetView(D.sel.id) : D.sheet.views.length === 1 ? D.sheet.views[0] : null;
     if (!gtOrtho(w0)) w0 = null;
+    // (rfJM) a flat pattern view: Ordinate from the blank's lower-left by default, bend lines included
+    var flat0 = !!(w0 && w0.view.kind === 'flat'), sch0 = flat0 ? 'ordinate' : 'baseline';
     toolPM({ title: 'Autodimension', icon: 'dim', command: 'autodimension',
-      message: 'Click the view to dimension, set each direction\'s scheme, then ✓. Every edge and hole position gets a dimension from the origin side.',
-      values: { h: true, hScheme: 'baseline', hOrigin: 'left', hPlace: 'above', v: true, vScheme: 'baseline', vOrigin: 'bottom', vPlace: 'right' },
+      message: 'Click the view to dimension, set each direction\'s scheme, then ✓. Every edge and hole position (and a flat pattern\'s bend lines) gets a dimension from the origin side. Selected entities: click the edges, holes or bend lines to dimension.',
+      values: { entities: 'all', bends: true, h: true, hScheme: sch0, hOrigin: 'left', hPlace: 'above', v: true, vScheme: sch0, vOrigin: 'bottom', vPlace: 'right' },
+      onChange: function (v) { if (D.pending) D.pending.values = v; },
       groups: [
+        { title: 'Entities to Dimension', fields: [{ type: 'radio', key: 'entities', label: 'Entities', options: [['all', 'All entities in view'], ['selected', 'Selected entities']] },
+          { type: 'check', key: 'bends', label: 'Bend lines (flat pattern)' }] },   // (rfJM)
         { title: 'Horizontal Dimensions', fields: [{ type: 'check', key: 'h', label: 'Horizontal dimensions' }, { type: 'select', key: 'hScheme', label: 'Scheme', options: GT_SCHEME },
           { type: 'select', key: 'hOrigin', label: 'Origin', options: [['left', 'Left edge'], ['right', 'Right edge']] }, { type: 'select', key: 'hPlace', label: 'Dimension placement', options: [['above', 'Above view'], ['below', 'Below view']] }] },
         { title: 'Vertical Dimensions', fields: [{ type: 'check', key: 'v', label: 'Vertical dimensions' }, { type: 'select', key: 'vScheme', label: 'Scheme', options: GT_SCHEME },
@@ -2762,16 +2774,41 @@
       onOK: function (v) {
         var w = D.pending && D.pending.view != null ? sheetView(D.pending.view) : null;
         if (!w) { UI.toast('Autodimension: click an orthographic view first.'); return false; }
-        var spec = { scale: w.scale, units: units(), h: v.h ? { scheme: v.hScheme, origin: v.hOrigin, place: v.hPlace } : null, v: v.v ? { scheme: v.vScheme, origin: v.vOrigin, place: v.vPlace } : null }, made = 0;
+        var sel = v.entities === 'selected' ? (D.pending.select || []) : null;
+        if (sel && !sel.length) { UI.toast('Autodimension: Selected entities is on: click the edges, holes or bend lines to dimension first.'); return false; }
+        var spec = { scale: w.scale, units: units(), select: sel, bends: v.bends !== false, h: v.h ? { scheme: v.hScheme, origin: v.hOrigin, place: v.hPlace } : null, v: v.v ? { scheme: v.vScheme, origin: v.vOrigin, place: v.vPlace } : null }, made = 0;
+        // (rfJM) on a flat pattern view the dimensions go clear of the title block, the tables and the other views
+        if (w.view.kind === 'flat') {
+          var fo = { select: sel, bends: v.bends !== false, h: !!v.h, v: !!v.v, hScheme: v.hScheme, vScheme: v.vScheme, hOrigin: v.hOrigin, vOrigin: v.vOrigin, hPlace: v.hPlace, vPlace: v.vPlace }, fr = null;
+          if (!tryEdit(function (dc) { fr = Drawing.flatAutodimension(dc, w.view.id, w, D.sheet, fo); made = fr.n; })) return false;
+          if (made && fr && (fr.moved || (v.h && fr.h !== v.hPlace) || (v.v && fr.v !== v.vPlace))) UI.toast('Autodimension: ' + [fr.moved ? 'the flat view moved to make room' : '', v.h && fr.h !== v.hPlace ? 'horizontal dimensions ' + fr.h + ' the view' : '', v.v && fr.v !== v.vPlace ? 'vertical dimensions ' + fr.v + ' of the view' : ''].filter(Boolean).join('; ') + ' (the other place was not clear).');
+          if (!made) { UI.toast('Autodimension: that view has nothing to dimension in those directions.'); return false; }
+          UI.setStatus('Autodimension: ' + made + ' dimensions on ' + w.view.name + '.');
+          return;
+        }
         if (!tryEdit(function (dc) { made = Drawing.autodimension(dc, w.view.id, w.proj, spec); })) return false;
         if (!made) { UI.toast('Autodimension: that view has nothing to dimension in those directions.'); return false; }
         UI.setStatus('Autodimension: ' + made + ' dimensions on ' + w.view.name + '.');
-      } }, 'autodim', { view: w0 ? w0.view.id : null });
+      } }, 'autodim', { view: w0 ? w0.view.id : null, select: [], values: { entities: 'all' } });
     UI.setStatus(w0 ? 'Autodimension: ' + w0.view.name + ' selected. Set the schemes, then ✓, or click another view.' : 'Autodimension: click an orthographic view.');
   }
   function gtAutodimClick(p) {
     var w = DW.viewAt ? DW.viewAt(p) : null;
     if (!gtOrtho(w)) { UI.setStatus('Autodimension: click an orthographic view.'); return; }
+    // (rfJM) Selected entities: a click in the chosen view adds the bend line, hole or edge under it (again: removes it)
+    var P = D.pending;
+    if (P.values && P.values.entities === 'selected' && P.view === w.view.id) {
+      var tol = pxToPaper(6), pick = null, bd = tol;
+      ((w.flat && w.flat.bends) || []).forEach(function (b) { var d = segDist(p, w.toSheet(b.a), w.toSheet(b.b)); if (d < bd) { bd = d; pick = { a: b.a.slice(), b: b.b.slice() }; } });
+      var ent = pick ? null : entityAt(p);
+      if (!pick && ent && ent.view === w.view.id) pick = ent.circle ? { c: ent.mc.c.slice(), r: ent.mc.r } : ent.la ? { a: ent.la.slice(), b: ent.lb.slice() } : null;
+      if (!pick) { UI.setStatus('Autodimension: click an edge, a hole or a bend line of ' + w.view.name + '.'); return; }
+      var same = function (q) { return JSON.stringify(q) === JSON.stringify(pick); }, had = P.select.some(same);
+      P.select = had ? P.select.filter(function (q) { return !same(q); }) : P.select.concat([pick]);
+      drawOverlay();
+      UI.setStatus('Autodimension: ' + P.select.length + ' entit' + (P.select.length === 1 ? 'y' : 'ies') + ' selected. ✓ dimensions them from the origin edges.');
+      return;
+    }
     D.pending.view = w.view.id; D.sel = { kind: 'view', id: w.view.id }; drawOverlay(); DW.renderTree();
     UI.setStatus('Autodimension: ' + w.view.name + ' selected. Set the schemes, then ✓.');
   }
