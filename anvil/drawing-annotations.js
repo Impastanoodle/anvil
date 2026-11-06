@@ -2442,6 +2442,8 @@
     if (spec.x != null && spec.y != null) { t.x = +spec.x; t.y = +spec.y; }
     if (spec.x === null) { delete t.x; delete t.y; }
     if (!t.origin) throw new Error('A hole table needs an origin: a vertex, or an X-axis and a Y-axis edge');
+    if (spec.punch != null) { if (spec.punch) t.punch = true; else delete t.punch; }
+    if (t.punch) { delete t.holes; delete t.sizes; t.all = true; return t; }   // (rfJG) a Punch Table: every forming tool of the flat view
     if (!t.all && !(t.holes && t.holes.length) && !(t.sizes && t.sizes.length)) throw new Error('A hole table needs holes: pick hole edges, or Select all holes of the same size');
     return t;
   }
@@ -2466,6 +2468,7 @@
   function addHoleTable(doc, viewId, spec, w) {
     var v = findView(doc, viewId);
     if (!v) throw new Error('No drawing view ' + viewId);
+    if (spec && spec.punch && v.kind !== 'flat') throw new Error('Punch Table: ' + (v.name || 'that view') + ' is not a flat pattern view. A Punch Table lists the forming tools of a flat pattern.');
     var t = cleanHoleTable({ id: nextAnnotId(doc), view: v.id, holes: [], sizes: [] }, spec || {});
     htOriginCheck(t, w, v);
     (doc.holeTables || (doc.holeTables = [])).push(t);
@@ -2517,6 +2520,7 @@
     }
     var b = pr.bounds, sz = Math.hypot(b.umax - b.umin, b.vmax - b.vmin), tol = sz * 1e-7 + 1e-9, list = [];
     function add(h) { if (!list.some(function (q) { return Math.hypot(q.c[0] - h.c[0], q.c[1] - h.c[1]) <= tol * 10; })) list.push(h); }
+    if (t.punch) return punchTableRows(t, w, O, units, dangling, tol);
     var vh = (t.all || (t.sizes && t.sizes.length)) ? viewHoles(w, mesh) : [];
     (t.holes || []).forEach(function (h) {
       var ref = { kind: 'dia', c: h.c, r: h.r };
@@ -2569,6 +2573,43 @@
       });
     });
     return { origin: O.slice(), rows: rows, dangling: dangling };
+  }
+  // (rfJG) Punch Table (SolidWorks: Insert > Tables > Punch Table): a hole table record with punch: true on a flat
+  // pattern view. viewPunches(w) -> [{ form (feature id), c (the tool's centre, flat coordinates: the middle of its
+  // centre mark), r (half its centre mark, for the tag's offset), id (the tool's flat note, 'DIMPLE Ø.75 X .125 UP') }]
+  // from Kernel.flatPattern's etch items (kind 'mark' / 'note', tagged form). Rows: one per tool, a tag letter per
+  // PUNCH ID (A1, A2 ... B1, as the hole table's sizes), X / Y LOC from the origin vertex.
+  function viewPunches(w) {
+    var by = {}, order = [];
+    ((w.flat && w.flat.etch) || []).forEach(function (it) {
+      if (it.form == null) return;
+      var id = String(it.form), q = by[id];
+      if (!q) { q = by[id] = { form: id, c: null, r: 0, id: '' }; order.push(q); }
+      if (it.kind === 'note') q.id = String(it.text || '').trim();
+      else if (it.t === 'line' && !q.c && it.a && it.b) { q.c = [(it.a[0] + it.b[0]) / 2, (it.a[1] + it.b[1]) / 2]; q.r = Math.hypot(it.b[0] - it.a[0], it.b[1] - it.a[1]) / 2; }
+      else if (it.t === 'circle' && !q.c0) q.c0 = [+it.c[0], +it.c[1]];
+    });
+    return order.filter(function (q) { q.c = q.c || q.c0; delete q.c0; return !!q.c; }).map(function (q) { q.id = q.id || 'FORMING TOOL'; return q; });
+  }
+  function punchTableRows(t, w, O, units, dangling, tol) {
+    var groups = {}, order = [];
+    viewPunches(w).forEach(function (q) {
+      if (!groups[q.id]) { groups[q.id] = { key: q.id, holes: [] }; order.push(groups[q.id]); }
+      groups[q.id].holes.push(q);
+    });
+    var q6 = function (x) { return Math.round(x / (tol * 100)); }, rows = [], n = 0;
+    order.forEach(function (g, gi) {
+      g.holes.sort(function (h1, h2) { return q6(h1.c[0]) - q6(h2.c[0]) || q6(h1.c[1]) - q6(h2.c[1]); });
+      g.holes.forEach(function (h, j) {
+        var x = h.c[0] - O[0], y = h.c[1] - O[1];
+        if (Math.abs(x) < tol) x = 0;
+        if (Math.abs(y) < tol) y = 0;
+        n++;
+        var tag = t.tagStyle === 'numeric' ? String(n) : holeTag(gi) + (t.combineTags ? '' : String(j + 1));
+        rows.push({ tag: tag, c: h.c.slice(), r: h.r, x: x, y: y, xText: numText(x, units, t.prec), yText: numText(y, units, t.prec), size: [g.key], group: gi, form: h.form, dangling: false });
+      });
+    });
+    return { origin: O.slice(), rows: rows, dangling: dangling, punch: true };
   }
   // holeTablePrims(t, w, k, mesh, doc, units, ends, holeNames, textWidth, sheetBox) -> { prims, box (the table), tagBoxes,
   // rows, origin (paper), dangling, text }
@@ -2674,7 +2715,7 @@
         ln([colX[cj], yy], [colX[cj + 1], yy], TL);
       }
     }
-    HT_COLS.forEach(function (c, i) { tx([(colX[i] + colX[i + 1]) / 2, rowY[1] + (rh - th) / 2], c[0], 'middle', TL); });
+    HT_COLS.forEach(function (c, i) { tx([(colX[i] + colX[i + 1]) / 2, rowY[1] + (rh - th) / 2], i === 3 && t.punch ? 'PUNCH ID' : c[0], 'middle', TL); });
     // the middle of the cells of rows i0 … i1
     function cellMid(i0, i1) { return (rowY[i0 + 1] + rowY[i1 + 2]) / 2; }
     function sizeLines(lines, mid) { lines.forEach(function (s, j) { tx([colX[3] + 1.5 * k, mid - th / 2 + ((lines.length - 1) / 2 - j) * rh], s, 'start', TL); }); }
@@ -2694,7 +2735,7 @@
     });
     if (R.dangling || R.rows.some(function (row) { return row.dangling; })) for (var dj = nTags; dj < out.length; dj++) out[dj].color = 'dangling';
     return { prims: out, box: { x0: x0, y0: y0, x1: x0 + W, y1: y1 }, tagBoxes: tagBoxes, rows: R.rows, origin: Os, originView: R.origin, dangling: R.dangling, colX: colX, rowY: rowY,
-      text: 'Hole Table (' + R.rows.length + ' hole' + (R.rows.length === 1 ? '' : 's') + ')' };
+      text: t.punch ? 'Punch Table (' + R.rows.length + ' punch' + (R.rows.length === 1 ? '' : 'es') + ')' : 'Hole Table (' + R.rows.length + ' hole' + (R.rows.length === 1 ? '' : 's') + ')', punch: !!t.punch };
   }
   // (rfIR) htFreeSpot(sheetBox, W, H, want, k, ok) -> the top-left corner [x0, y1] of a W × H table nearest to `want`
   // (a 2 mm grid over the sheet inside the border) where ok([x0, y1]) holds, or null
@@ -2983,7 +3024,7 @@
 
   D.CLOUD_SHAPES = CLOUD_SHAPES; D.WELD_TYPES = WELD_TYPES; D.cloudArcs = cloudArcs; D.weldText = weldText;
   D.findHoleTable = findHoleTable; D.addHoleTable = addHoleTable; D.editHoleTable = editHoleTable; D.deleteHoleTable = deleteHoleTable; D.moveHoleTable = moveHoleTable;
-  D.viewHoles = viewHoles; D.holeTableRows = holeTableRows; D.holeTablePrims = holeTablePrims; D.holeTableAt = holeTableAt;
+  D.viewHoles = viewHoles; D.viewPunches = viewPunches; D.holeTableRows = holeTableRows; D.holeTablePrims = holeTablePrims; D.holeTableAt = holeTableAt;
   D.GTOL_CHARS = GTOL_CHARS; D.SF_SYMBOLS = SF_SYMBOLS; D.nextDatum = nextDatum; D.addSymbol = addSymbol; D.findSymbol = findSymbol; D.editSymbol = editSymbol; D.deleteSymbol = deleteSymbol;
   D.symbolText = symbolText; D.symbolPrims = symbolPrims; D.datumRef = datumRef;
 

@@ -2424,7 +2424,8 @@
         { id: 'dowelPin', label: 'Dowel Pin Symbol', run: cmdDowelPin, active: function () { return D.tool === 'cudowel'; } }
       ] });
       if (b.id === 'note') out.push({ id: 'multiJogLeader', label: 'Multi-jog\nLeader', run: cmdMultiJog, active: function () { return D.tool === 'culeader'; } });   // (rfCU)
-      if (b.id === 'revTable') out.push({ id: 'holeTable', label: 'Hole\nTable', run: cmdHoleTable, active: function () { return D.tool === 'holetable'; } }, { id: 'bendTable', icon: 'bendNote', label: 'Bend\nTable', run: cmdBendTable });   // (rfGT)
+      if (b.id === 'revTable') out.push({ id: 'holeTable', label: 'Hole\nTable', run: cmdHoleTable, active: function () { return D.tool === 'holetable'; } }, { id: 'bendTable', icon: 'bendNote', label: 'Bend\nTable', run: cmdBendTable },   // (rfGT)
+        { id: 'punchTable', label: 'Punch\nTable', run: cmdPunchTable, active: function () { return D.tool === 'punchtable'; } });   // (rfJG)
     });
     Object.defineProperty(out, '_rfAD', { value: true });
     return out;
@@ -2454,10 +2455,11 @@
           if (it && it.label === 'Annotations ▸ Auto Balloon') add('Annotations ▸ Magnetic Line', cmdMagLine);   // (rfAG)
           if (it && it.label === 'Annotations ▸ Geometric Tolerance…') { add('Annotations ▸ Weld Symbol…', function () { cmdSymbolAN('weld'); }); add('Annotations ▸ Revision Symbol…', function () { cmdSymbolAN('revision'); }); add('Annotations ▸ Revision Cloud', cmdCloud); add('Annotations ▸ Datum Target…', function () { cuSymbolPM('datumTarget'); }); add('Annotations ▸ Cosmetic Thread…', function () { cmdCosmeticThread(); }); add('Annotations ▸ Dowel Pin Symbol', cmdDowelPin); }   // (rfAN; rfCU)
           if (it && it.label === 'Annotations ▸ Note') add('Annotations ▸ Multi-jog Leader', cmdMultiJog);   // (rfCU)
-          if (it && /^Tables ▸ (Revision|General) Table/.test(it.label || '')) { add('Tables ▸ Hole Table…', cmdHoleTable); add('Tables ▸ Bend Table…', cmdBendTable); }   // (rfGT)
+          if (it && /^Tables ▸ (Revision|General) Table/.test(it.label || '')) { add('Tables ▸ Hole Table…', cmdHoleTable); add('Tables ▸ Bend Table…', cmdBendTable); add('Tables ▸ Punch Table…', cmdPunchTable); }   // (rfGT, rfJG)
         });
         if (D.active && !items.some(function (q) { return q && q.label === 'Tables ▸ Hole Table…'; })) items.push({ label: 'Tables ▸ Hole Table…', action: cmdHoleTable });
         if (D.active && !items.some(function (q) { return q && q.label === 'Tables ▸ Bend Table…'; })) items.push({ label: 'Tables ▸ Bend Table…', action: cmdBendTable });
+        if (D.active && !items.some(function (q) { return q && q.label === 'Tables ▸ Punch Table…'; })) items.push({ label: 'Tables ▸ Punch Table…', action: cmdPunchTable });
         menu.items = items;
       });
       return m;
@@ -2585,6 +2587,14 @@
     // (rfJB) the view as computed goes along, so an origin that is not a vertex of it is refused (toast + null)
     function htView(viewId) { settle(); if (!D.sheet) render(); return D.sheet && (D.sheet.views || []).filter(function (x) { return x.view.id === viewId; })[0] || null; }
     api.holeTable = function (viewId, spec) { var t = null; if (!doc()) return null; var w = htView(viewId); return tryEdit(function (dc) { t = Drawing.addHoleTable(dc, viewId, spec || {}, w); }) ? t.id : null; };
+    // (rfJG) punchTable(viewId, { origin: { p } (a vertex of the flat; default the blank's lower-left corner), tagStyle,
+    // combineTags, combineSizes, prec, x, y }) -> its id: Insert ▸ Tables ▸ Punch Table on a flat pattern view
+    api.punchTable = function (viewId, spec) {
+      var t = null; if (!doc()) return null;
+      var w = htView(viewId), o = Object.assign({}, spec || {}, { punch: true });
+      if (!o.origin && w && w.flat && w.flat.bbox) o.origin = { p: DW.ptCorner(w) };
+      return tryEdit(function (dc) { t = Drawing.addHoleTable(dc, viewId, o, w); }) ? t.id : null;
+    };
     api.holeTableEdit = function (id, props) {
       if (!doc()) return null;
       if (props == null) return Drawing.findHoleTable(doc(), id) ? (deleteHoleTable(id), api.holeTables()) : null;
@@ -2837,14 +2847,62 @@
   }
   RF_TOOLS.holetable = holeTableClick;
   function holeTableAt(p) { return D.sheet ? Drawing.holeTableAt(D.sheet, p) : null; }
+  // ------------------------------------------------------------------ rfJG: Punch Table (Insert ▸ Tables ▸ Punch Table)
+  // SolidWorks: the PropertyManager asks for an origin on a flat pattern view and lists the view's forming tools (one
+  // row each, tagged A1, A2 … by punch ID). The flat view selected (or the sheet's only one) starts with the blank's
+  // lower-left corner as the origin, so ✓ alone places the table; a click on another vertex moves the origin.
+  // ptCorner(w) -> the vertex of the flat's lines nearest its lower-left bounding-box corner (view coordinates)
+  function ptCorner(w) {
+    var b = w.flat.bbox, best = [b.umin, b.vmin], bd = Infinity;
+    ((w.proj && w.proj.all) || []).forEach(function (m) {
+      [[m[0], m[1]], [m[2], m[3]]].forEach(function (q) { var d = Math.hypot(q[0] - b.umin, q[1] - b.vmin); if (d < bd) { bd = d; best = q; } });
+    });
+    return best.slice();
+  }
+  DW.ptCorner = ptCorner;
+  function cmdPunchTable() {
+    if (D.tool === 'punchtable') { endToolPM(); return; }
+    var flats = (D.sheet ? D.sheet.views : []).filter(function (w) { return w.view.kind === 'flat' && w.flat && w.flat.bbox; });
+    if (!flats.length) { UI.toast('Punch Table: this sheet has no flat pattern view. Add one with Model View first.'); return false; }
+    var sel = D.sel && D.sel.kind === 'view' ? flats.filter(function (w) { return w.view.id === D.sel.id; })[0] : null;
+    var w0 = sel || (flats.length === 1 ? flats[0] : null);
+    var vals = { tagStyle: 'alpha', combineTags: false, combineSizes: false, prec: '' };
+    toolPM({ title: 'Punch Table', icon: 'punchTable', command: 'punchTable',
+      message: 'Origin: click a vertex of the flat pattern view (X / Y LOC are measured from it). Every forming tool of the view gets a row and a tag. ✓ places the table beside the view.',
+      values: vals, groups: htGroups(true),
+      onOK: function (v) {
+        var P = D.pending, w = P && P.view != null ? sheetView(P.view) : null;
+        if (!w || !P.origin) { UI.toast('Punch Table: click a vertex of a flat pattern view for the origin first.'); return false; }
+        var spec = Object.assign({ punch: true, origin: P.origin }, htProps(v)), made = null;
+        if (!tryEdit(function (dc) { made = Drawing.addHoleTable(dc, P.view, spec, w); })) return false;
+        D.sel = { kind: 'holetable', id: made.id };
+        var st = D.sheet && (D.sheet.holeTables || []).filter(function (t) { return t.id === made.id; })[0], n = st ? st.rows.length : 0;
+        UI.setStatus('Punch Table: ' + n + ' forming tool' + (n === 1 ? '' : 's') + (n ? '' : ' (the view has none)') + '. Drag the table to move it, double-click it for its properties.');
+      } }, 'punchtable', { view: w0 ? w0.view.id : null, origin: w0 ? { p: ptCorner(w0) } : null, holes: [], sizes: [], punch: true });
+    UI.setStatus(w0 ? 'Punch Table: origin at the lower-left corner of the blank in ' + w0.view.name + '. Click another vertex to move it, or ✓.' : 'Punch Table: click a vertex of a flat pattern view for the origin.');
+    drawOverlay();
+    return true;
+  }
+  function punchTableClick(p) {
+    var P = D.pending, ent = entityAt(p), w = ent ? sheetView(ent.view) : null;
+    if (!ent || ent.circle || ent.arc || ent.ellipse || !w || w.view.kind !== 'flat') { UI.setStatus('Punch Table: click a vertex (an end of an edge) of a flat pattern view.'); return; }
+    var tol = pxToPaper(8), da = Math.hypot(p[0] - ent.a[0], p[1] - ent.a[1]), db = Math.hypot(p[0] - ent.b[0], p[1] - ent.b[1]);
+    if (Math.min(da, db) > tol) { UI.setStatus('Punch Table: click nearer the end of the edge (a vertex).'); return; }
+    P.view = ent.view; P.origin = { p: (da <= db ? ent.la : ent.lb).slice() };
+    drawOverlay();
+    UI.setStatus('Punch Table: origin set on ' + w.view.name + '. ✓ places the table.');
+  }
+  RF_TOOLS.punchtable = punchTableClick;
+  DW.cmdPunchTable = cmdPunchTable;
   function cmdHoleTableProps(id) {
     var t = Drawing.findHoleTable(doc(), id);
     if (!t) return;
     D.sel = { kind: 'holetable', id: id };
-    openDrawingPM({ title: 'Hole Table', icon: 'holeTable', command: 'holeTable',
-      message: 'Hole Table' + id + ': its tags, merged cells and the X / Y LOC precision. OK applies (one undo step).',
+    var nm = t.punch ? 'Punch Table' : 'Hole Table';
+    openDrawingPM({ title: nm, icon: t.punch ? 'punchTable' : 'holeTable', command: t.punch ? 'punchTable' : 'holeTable',
+      message: nm + id + ': its tags, merged cells and the X / Y LOC precision. OK applies (one undo step).',
       values: { tagStyle: t.tagStyle || 'alpha', combineTags: !!t.combineTags, combineSizes: !!t.combineSizes, prec: t.prec != null ? String(t.prec) : '' }, groups: htGroups(true),
-      onOK: function (v) { if (tryEdit(function (dc) { Drawing.editHoleTable(dc, id, htProps(v)); })) UI.setStatus('Hole Table changed.'); } });
+      onOK: function (v) { if (tryEdit(function (dc) { Drawing.editHoleTable(dc, id, htProps(v)); })) UI.setStatus(nm + ' changed.'); } });
   }
   function holeTableMenu(id) {
     var t = Drawing.findHoleTable(doc(), id);
@@ -2872,7 +2930,7 @@
     D.sel = { kind: 'holetable', id: t.id };
     htDrag = { id: t.id, start: p, x0: t.box.x0, y0: t.box.y1, moved: false };
     drawOverlay(); DW.renderTree();
-    UI.setStatus('Hole Table' + t.id + ' (' + t.rows.length + ' holes) — drag to move it, double-click for its properties, Delete removes it.');
+    UI.setStatus((t.punch ? 'Punch Table' : 'Hole Table') + t.id + ' (' + t.rows.length + (t.punch ? ' punches' : ' holes') + ') — drag to move it, double-click for its properties, Delete removes it.');
   }, true);
   document.addEventListener('mousemove', function (e) {
     if (!htDrag) {
@@ -2920,6 +2978,7 @@
       node('rect', { class: 'dw-dbox' + (sel ? ' sel' : ''), x: t.box.x0 - pad / 2, y: H - t.box.y1 - pad / 2, width: t.box.x1 - t.box.x0 + pad, height: t.box.y1 - t.box.y0 + pad, 'stroke-width': sw }, g);
     });
     var P = D.pending;
+    if (D.tool === 'punchtable' && P && P.origin && P.origin.p && P.view != null && sheetView(P.view)) { var po = sheetView(P.view).toSheet(P.origin.p); node('circle', { class: 'dw-hot', cx: po[0], cy: H - po[1], r: pxToPaper(5), 'stroke-width': pxToPaper(2.5) }, g); }   // (rfJG)
     if (D.tool === 'holetable' && P && P.view != null) {
       var w = sheetView(P.view);
       if (w) {

@@ -693,7 +693,7 @@
     });
     var holeTables = htPre.map(function (it) {
       it.prims.forEach(function (x) { prims.push(x); });
-      return { id: it.id, view: it.view, box: it.box, text: it.text, dangling: !!it.dangling, missing: !!it.missing, origin: it.origin || null, colX: it.colX || null, rowY: it.rowY || null,
+      return { id: it.id, view: it.view, box: it.box, text: it.text, punch: !!it.punch, dangling: !!it.dangling, missing: !!it.missing, origin: it.origin || null, colX: it.colX || null, rowY: it.rowY || null,
         rows: (it.rows || []).map(function (r) { return { tag: r.tag, x: r.x, y: r.y, xText: r.xText, yText: r.yText, size: r.size.join(' '), lines: r.size.slice(), c: r.c.slice(), r: r.r, dangling: r.dangling }; }) };
     });
     sheetAreaFills(doc, prims, areaFills, HATCH * k, k);
@@ -940,6 +940,35 @@
       var stx = D.scaleLabel(v.scale);
       item('scale', 'flatScale', stx, [{ k: 'text', p: [cx, yTop - 3 * k], h: 3 * k, text: stx, anchor: 'middle', layer: w.layer, rot: 0 }], {});
       yTop -= 8 * k;
+    }
+    // (rfJG, test-reports/2026-11-02-unchecked-items.md 3b) a Bend Table on a flat view adds a 'Fixed Face' note at the
+    // view's centre, as SolidWorks 2024 does; key 'fixedFace' (dragged / hidden like the bend notes). Kept off the
+    // blank's lines, holes and the bend tags: the centre first, then up / down in text-height steps.
+    if (mode === 'table' && fd.bends.length && v.fixedFaceNote !== false) {
+      var ffh = noteH() * k, fft = 'Fixed Face', ffw = textWidth(fft, ffh), ffc = w.toSheet([(fd.bbox.umin + fd.bbox.umax) / 2, (fd.bbox.vmin + fd.bbox.vmax) / 2]);
+      var ffSegs = ((w.proj && w.proj.all) || []).map(function (m) { return [w.toSheet([m[0], m[1]]), w.toSheet([m[2], m[3]])]; });
+      fd.bends.forEach(function (b) { ffSegs.push([w.toSheet(b.a), w.toSheet(b.b)]); });
+      var ffCirc = [];
+      ['circles', 'arcs'].forEach(function (key) { var c = w.proj && w.proj[key]; ((c && (c.visible || c)) || []).forEach(function (q) { if (q && q.c && q.r > 0) ffCirc.push({ c: w.toSheet(q.c), r: q.r * w.scale }); }); });
+      if (v.showEtch !== false) (fd.etch || []).forEach(function (it) {
+        if (it.t === 'line') ffSegs.push([w.toSheet(it.a), w.toSheet(it.b)]);
+        else if ((it.t === 'circle' || it.t === 'arc') && it.c) ffCirc.push({ c: w.toSheet(it.c), r: it.r * w.scale });
+        else if (it.t === 'poly' && it.pts) for (var pq = 0; pq + 1 < it.pts.length + (it.closed ? 1 : 0); pq++) ffSegs.push([w.toSheet(it.pts[pq]), w.toSheet(it.pts[(pq + 1) % it.pts.length])]);
+      });
+      var ffTaken = out.map(function (x) { return x.box; }), ffAt = null, gg = 0.8 * k;
+      var ffClear = function (p0) {
+        var r = { x0: p0[0] - ffw / 2 - gg, y0: p0[1] - gg, x1: p0[0] + ffw / 2 + gg, y1: p0[1] + ffh + gg };
+        if (r.x0 < box.x0 || r.x1 > box.x1 || r.y0 < box.y0 || r.y1 > box.y1) return false;
+        if (ffTaken.some(function (o) { return o.x0 < r.x1 && r.x0 < o.x1 && o.y0 < r.y1 && r.y0 < o.y1; })) return false;
+        if (ffCirc.some(function (q) { var dx = Math.max(r.x0 - q.c[0], 0, q.c[0] - r.x1), dy = Math.max(r.y0 - q.c[1], 0, q.c[1] - r.y1); var far = Math.max(Math.hypot(r.x0 - q.c[0], r.y0 - q.c[1]), Math.hypot(r.x1 - q.c[0], r.y0 - q.c[1]), Math.hypot(r.x0 - q.c[0], r.y1 - q.c[1]), Math.hypot(r.x1 - q.c[0], r.y1 - q.c[1]));
+          return Math.hypot(dx, dy) < q.r && (far > q.r || q.r < 3 * ffh); })) return false;   // (on its outline, or inside a small hole)
+        return !ffSegs.some(function (sg) { return _.segHitsRect ? _.segHitsRect(sg[0], sg[1], r) : false; });
+      };
+      for (var ffi = 0; ffi <= 40 && !ffAt; ffi++) {
+        var dy0 = Math.ceil(ffi / 2) * ffh * 0.75 * (ffi % 2 ? 1 : -1), p1 = [ffc[0], ffc[1] - ffh / 2 + dy0];
+        if (ffClear(p1)) ffAt = p1;
+      }
+      item('fixedFace', 'fixedFace', fft, [{ k: 'text', p: ffAt || [ffc[0], ffc[1] - ffh / 2], h: ffh, text: fft, anchor: 'middle', layer: 'BEND_NOTES', rot: 0 }], {});
     }
     if (mode === 'table' && fd.bends.length) {
       var spec = bendTableCols(v), rh = TABLE_ROW * k, th = TABLE_H * k, T = fd.sheet && +fd.sheet.thickness || 0;

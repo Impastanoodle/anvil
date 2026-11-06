@@ -1348,6 +1348,16 @@ Drawing.addSymbol(doc, { type: 'weld', p, leader, arrow: { type: 'fillet', size:
 
 In the app: `anvil.drawing.holeTable(viewId, spec)` (its id), `holeTableEdit(id, props | null)`, `holeTables()`; the symbols through `anvil.drawing.symbol({ type: 'weld' | 'revision' | 'revCloud', … })`.
 
+**Punch Table** (rfJG; *Annotation ▸ Punch Table* after *Bend Table*, *Insert ▸ Tables ▸ Punch Table…*): on a flat-pattern view, one row per Forming Tool (dimple, louver, extruded hole, lance, rib), tagged `A1, A2 … B1` by punch ID (or `1, 2, 3 …`), X LOC / Y LOC of the tool's centre from a vertex of the blank, PUNCH ID = the tool's flat note (`DIMPLE Ø.75 X .125 UP`). The PropertyManager starts with the selected (or only) flat view's lower-left blank corner as the origin; click another vertex to move it, ✓ places the table. It is a hole table record with `punch: true` (same drag / properties / Delete / outputs); refused on a view that is not a flat pattern.
+
+```js
+Drawing.addHoleTable(doc, flatId, { punch: true, origin: { p: [u, v] }, tagStyle, combineTags, combineSizes, prec }, sheetView);
+Drawing.viewPunches(sheetView);   // [{ form, c, r, id }]
+anvil.drawing.punchTable(viewId, { origin? , … });   // its id (origin default: the blank's lower-left corner)
+```
+
+A **Bend Table** on a flat view also adds SolidWorks' `Fixed Face` note at the view centre (moved off the blank's lines, holes and form marks; flat item `fixedFace`: drag / hide it like a bend note; `view.fixedFaceNote = false` leaves it off).
+
 ### Cosmetic Thread, Dowel Pin Symbol, Datum Target, Multi-jog Leader, note borders and lists (rfCU)
 
 All on the Annotation tab (Multi-jog Leader after Note; Datum Target / Cosmetic Thread / Dowel Pin Symbol in the flyout after the weld symbols) and in *Insert ▸ Annotations*. Each opens its PropertyManager; Esc or ✓ ends, every placement is one undo step, double-click edits, Delete removes.

@@ -365,6 +365,8 @@ var IconsLib = (function () {
     // (rfAN) Hole Table (a table and a tagged hole), Weld Symbol (arrow, reference line, fillet), Revision Symbol
     // (the triangle), Revision Cloud (scallops)
     holeTable: rect(1.5, 1.5, 9, 8, W, S, 1) + ln('M1.5 4 h9 M5 1.5 v8', S, 0.8) + circ(12, 12, 2.5, W, B, 1.1) + ln('M12 10.5 v3 M10.5 12 h3', B, 0.7),
+    // (rfJG) Punch Table: the table and a punched form (a louver hood)
+    punchTable: rect(1.5, 1.5, 9, 8, W, S, 1) + ln('M1.5 4 h9 M5 1.5 v8', S, 0.8) + p('M9.5 13.5 h5 a2.5 2.5 0 0 0 -5 0 z', W, B, 1.1),
     weldSymbol: ln('M1.5 13.5 L6 8 H15', S, 1.1) + p('M1.5 13.5 l0.6 -2.2 1.6 1.6 z', S, S, 0.6) + p('M9 8 v4 l4 -4 z', W, B, 1.1),
     revisionSymbol: p('M8 1.8 L14.5 13.5 H1.5 z', W, S, 1.1) + txt(8, 12, 6.5, 'A', B, 'Arial', 700),
     revisionCloud: ln('M3 5 a2 2 0 0 1 3.5 -1.5 a2 2 0 0 1 3.5 0 a2 2 0 0 1 3 2 a2 2 0 0 1 0.5 3.5 a2 2 0 0 1 -2 3.5 a2 2 0 0 1 -3.5 0.5 a2 2 0 0 1 -3.5 -0.5 a2 2 0 0 1 -1.5 -3.5 a2 2 0 0 1 1.5 -3.5', B, 1.1),
