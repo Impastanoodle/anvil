@@ -2086,6 +2086,7 @@
     // strip with the rigid map it went into the flat with (Unfold / Fold use them to move material between the states)
     var trace = opts && opts.trace ? opts.trace : null;
     if (trace) { trace.faces = []; trace.strips = []; }
+    if (!trace && hasWelds(model)) return weldFreeFlat(model, build, opts);   // lane smcorner: no weld metal in the flat
     var rmodel = resolvedModel(model);
     if (rmodel.sheetError) throw new Error(rmodel.sheetError);
     model = rmodel.model;
@@ -3999,6 +4000,156 @@
       var os = optsStr(o);
       if (f.centeredOnBend === false) os = os.replace(/reliefType: "[A-Za-z]+"/, function (m) { return m + ', centeredOnBend: false'; });
       return 'var ' + v + ' = p.cornerRelief(' + JSON.stringify((f.corners || []).map(function (p) { return p.map(function (x) { return Math.round(x * 1e4) / 1e4; }); })) + ', ' + size + ', ' + os + ').last();';
+    }
+  });
+
+  // ------------------------------------------------------------------ Welded Corner (lane smcorner)
+  // SolidWorks' Sheet Metal ▸ Corners ▸ Welded Corner: fills the gap where two walls meet at an open, closed or mitred
+  // corner with weld metal. Feature JSON { type: 'weldedCorner', faces: [[x, y, z]] (a point on a side face of each
+  // corner: the end face of a wall, through T, facing the other wall across the gap), fillet (radius of a fillet in the
+  // sharp inside corner of the weld; 0 / null = none), addTexture (cosmetic: stored and shown, no geometry), name }.
+  // In the frame of the picked end face of wall A (a along its outward normal, toward wall B; w across A's thickness, A
+  // at w between wOut and wIn; h up the wall): B's inside face is the nearest flat face facing back across at most
+  // dMax whose h range overlaps A's straight wall; B's outside is T beyond it, and B's inside face starts at wB (its end
+  // nearest the corner) and runs away from A. The weld is the air [0, aIn] × [wOut, wIn] ∪ [aIn, aIn + T] × [wOut, wB]
+  // (the second part only when B stops short of A's outside) over the two straight walls' common h range: the bend
+  // region stays open. A fillet adds the quarter round (16 chords) in the inside corner (aIn, wIn): r² less the chorded
+  // quarter disc. The weld is added to the folded part only: flatPattern lays out the part with its Welded Corners
+  // suppressed (weldFreeFlat), as SolidWorks suppresses them in the flat. A registered boss (cut: false).
+  var WC_FILLET_N = 16;
+  // weldedCornerLayout(f, model, ctx) -> { adds: [{ loop, plane, a, b }], corners: [{ at, face, gap, area, fillet }] }
+  function weldedCornerLayout(f, model, ctx) {
+    var sheet = model.sheet;
+    if (!sheet) throw new Error('Welded Corner needs a sheet-metal part: make a Base Flange first (Sheet Metal tab).');
+    if (!ctx.body || !ctx.body.polygons || !ctx.body.polygons.length) throw new Error('Welded Corner: there are no flanges yet.');
+    var T = +sheet.thickness, R = +sheet.bendRadius;
+    var r = f.fillet == null || f.fillet === '' ? 0 : +f.fillet;
+    if (!isFinite(r) || r < 0) throw new Error('Welded Corner: the fillet radius must be zero or more.');
+    if (!f.faces || !f.faces.length) throw new Error('Welded Corner: pick a side face of the corner to weld.');
+    var mesh = meshFromBody(coplanarBody(ctx.body)), outl = {}, tol = 1e-6 * (1 + T), dMax = 10 * T + 2 * R;
+    function curved(face) { return (face.polys || []).some(function (p) { return !!p.surf; }); }
+    function comps(fi) {
+      if (outl[fi] !== undefined) return outl[fi];
+      var o = faceOutline(mesh, fi);
+      if (!o || !o.loops.length) return (outl[fi] = []);
+      var cl = faceLoopsClassified(o);
+      return (outl[fi] = cl.outers.map(function (l) { return { fi: fi, plane: o.plane, outer: l, holes: cl.holes.filter(function (h) { return pointInPoly(h[0], l); }) }; }));
+    }
+    function inComp(c, uv) { return pointInPoly(uv, c.outer) && !c.holes.some(function (h) { return pointInPoly(uv, h); }); }
+    var adds = [], corners = [];
+    f.faces.forEach(function (p) {
+      p = Array.isArray(p) ? p : p.at;
+      var C = null, bd = 1e-3 * (1 + T);
+      mesh.faces.forEach(function (face, fi) {
+        if (curved(face)) return;
+        var off = Math.abs(dot(face.normal, p) - face.w);
+        if (off > bd) return;
+        comps(fi).forEach(function (c) { if (inComp(c, to2D(c.plane, p))) { bd = off; C = c; } });
+      });
+      if (!C) throw new Error('Welded Corner: there is no flat face at ' + bcPt(p) + '.');
+      var face = mesh.faces[C.fi], ne = face.normal, Cp = C.plane;
+      // the end face's straight sides: h along the longest edge, A's two sides the edges parallel to it T apart
+      var sl = straightLoop(C.outer), eds = [], hd = null, hl = 0, k;
+      for (k = 0; k < sl.length; k++) {
+        var q0 = sl[k], q1 = sl[(k + 1) % sl.length], l = Math.hypot(q1[0] - q0[0], q1[1] - q0[1]);
+        eds.push({ p0: q0, p1: q1, l: l });
+        if (l > hl) { hl = l; hd = [(q1[0] - q0[0]) / l, (q1[1] - q0[1]) / l]; }
+      }
+      if (!hd) throw new Error('Welded Corner: the face at ' + bcPt(p) + ' is not the end of a wall.');
+      var wd = [hd[1], -hd[0]], sides = [];
+      eds.forEach(function (e) {
+        var dx = (e.p1[0] - e.p0[0]) / e.l, dy = (e.p1[1] - e.p0[1]) / e.l;
+        if (e.l < 1e-6 || Math.abs(dx * hd[1] - dy * hd[0]) > 1e-9) return;
+        var h0 = e.p0[0] * hd[0] + e.p0[1] * hd[1], h1 = e.p1[0] * hd[0] + e.p1[1] * hd[1];
+        sides.push({ w: e.p0[0] * wd[0] + e.p0[1] * wd[1], h: [Math.min(h0, h1), Math.max(h0, h1)], l: e.l });
+      });
+      sides.sort(function (x, y) { return y.l - x.l; });
+      var s1 = sides[0], s2 = null;
+      sides.forEach(function (s) {
+        if (s === s1 || Math.abs(Math.abs(s.w - s1.w) - T) > 1e-4 * (1 + T)) return;
+        var ov = Math.min(s.h[1], s1.h[1]) - Math.max(s.h[0], s1.h[0]);
+        if (ov > 0 && (!s2 || ov > s2.ov)) { s2 = s; s2.ov = ov; }
+      });
+      if (!s2) throw new Error('Welded Corner: the face at ' + bcPt(p) + ' is not the end of a wall ' + bcNum(T) + ' thick (pick the side face of the corner, through the thickness).');
+      var hA = [Math.max(s1.h[0], s2.h[0]), Math.min(s1.h[1], s2.h[1])], wc = (s1.w + s2.w) / 2;
+      var O3 = to3D(Cp, 0, 0), X3 = sub(to3D(Cp, 1, 0), O3), Y3 = sub(to3D(Cp, 0, 1), O3);
+      var wd3 = add(scale(X3, wd[0]), scale(Y3, wd[1])), hd3 = add(scale(X3, hd[0]), scale(Y3, hd[1]));
+      // wall B: the nearest flat face facing back at the end face whose h range meets A's straight wall
+      var B = null;
+      mesh.faces.forEach(function (g, gi) {
+        if (curved(g) || dot(g.normal, ne) > -1 + 1e-6) return;
+        var aIn = -g.w - face.w;
+        if (!(aIn > tol) || aIn > dMax) return;
+        comps(gi).forEach(function (M) {
+          var w0 = Infinity, w1 = -Infinity, h0 = Infinity, h1 = -Infinity;
+          M.outer.forEach(function (q) { var P3 = sub(to3D(M.plane, q[0], q[1]), O3), w = dot(P3, wd3), h = dot(P3, hd3); w0 = Math.min(w0, w); w1 = Math.max(w1, w); h0 = Math.min(h0, h); h1 = Math.max(h1, h); });
+          var hh = [Math.max(h0, hA[0]), Math.min(h1, hA[1])];
+          if (hh[1] - hh[0] < 1e-3 * T) return;
+          var off = Math.max(0, w0 - (wc + T / 2), (wc - T / 2) - w1);
+          if (off > dMax) return;   // B's inside face starts across A's thickness, or at most dMax past its side
+          if (!B || aIn < B.aIn - tol || (aIn < B.aIn + tol && hh[1] - hh[0] > B.hh[1] - B.hh[0])) B = { aIn: aIn, w: [w0, w1], hh: hh };
+        });
+      });
+      if (!B) throw new Error('Welded Corner: no wall across a gap from the face at ' + bcPt(p) + ' (pick the end face of a wall that faces the other wall of the corner).');
+      var s = Math.abs(B.w[0] - wc) > Math.abs(B.w[1] - wc) ? (B.w[0] > wc ? 1 : -1) : (B.w[1] > wc ? 1 : -1);
+      var wOut = wc - s * T / 2, wIn = wc + s * T / 2, wB = s > 0 ? B.w[0] : B.w[1], aIn = B.aIn, aOut = aIn + T;
+      var ext = s * (wB - wOut), loop;
+      if (ext <= tol) loop = [[0, wOut], [aIn, wOut], [aIn, wIn], [0, wIn]];
+      else if (Math.abs(wB - wIn) <= tol) loop = [[0, wOut], [aOut, wOut], [aOut, wIn], [0, wIn]];
+      else loop = [[0, wOut], [aOut, wOut], [aOut, wB], [aIn, wB], [aIn, wIn], [0, wIn]];
+      if (signedArea(loop) < 0) loop.reverse();
+      var pl = { origin: O3.slice(), x: ne.slice(), y: wd3, n: cross(ne, wd3) }, sh = dot(pl.n, hd3) > 0 ? 1 : -1;
+      var za = Math.min(sh * B.hh[0], sh * B.hh[1]), zb = Math.max(sh * B.hh[0], sh * B.hh[1]);
+      adds.push({ loop: loop, plane: pl, a: za, b: zb });
+      var fa = 0;
+      if (r > 0) {
+        var room = s > 0 ? B.w[1] - wIn : wIn - B.w[0];
+        if (!(r < room - tol)) throw new Error('Welded Corner: the fillet radius ' + bcNum(r) + ' is larger than the wall it runs onto (' + bcNum(Math.max(0, room)) + ').');
+        var cA = aIn - r, cW = wIn + s * r, fl = [[aIn, wIn]];
+        for (k = 0; k <= WC_FILLET_N; k++) { var t = Math.PI / 2 * k / WC_FILLET_N; fl.push([cA + r * Math.sin(t), cW - s * r * Math.cos(t)]); }
+        if (signedArea(fl) < 0) fl.reverse();
+        fa = Math.abs(signedArea(fl));
+        adds.push({ loop: fl, plane: pl, a: za, b: zb });
+      }
+      corners.push({ at: to3D(Cp, wOut * wd[0] + (hA[0] + hA[1]) / 2 * hd[0], wOut * wd[1] + (hA[0] + hA[1]) / 2 * hd[1]), face: p.slice(), gap: aIn, area: Math.abs(signedArea(loop)), fillet: fa, height: zb - za });
+    });
+    return { adds: adds, corners: corners };
+  }
+  function buildWeldedCorner(f, model, ctx) {
+    var lay = weldedCornerLayout(f, model, ctx);
+    var solids = lay.adds.map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id); });
+    return solids.length ? unionAll(solids) : null;
+  }
+  // Welded Corner1, Welded Corner2, …
+  function weldedCornerName(model) {
+    var max = 0;
+    (model.features || []).forEach(function (g) { var mm = /^Welded Corner(\d+)$/.exec(g.name || ''); if (mm && +mm[1] > max) max = +mm[1]; });
+    return 'Welded Corner' + (max + 1);
+  }
+  // the flat of a part with Welded Corners: the same part with them suppressed (rebuilt once per build, from its cache)
+  function hasWelds(model) { return (model.features || []).some(function (g) { return g.type === 'weldedCorner' && !g.suppressed; }); }
+  function weldFreeFlat(model, build, opts) {
+    var m2 = JSON.parse(JSON.stringify(model));
+    m2.features.forEach(function (g) { if (g.type === 'weldedCorner') g.suppressed = true; });
+    var key = JSON.stringify(m2), memo = build && build.__weldFree, b2, mesh2;
+    if (memo && memo.key === key) { b2 = memo.build; mesh2 = memo.mesh; }
+    else {
+      b2 = K.rebuild(m2, build && build.cache && build.cache.steps ? build.cache : undefined);
+      if (!b2.body) throw new Error('Flat pattern: the part without its Welded Corners has no body.');
+      mesh2 = meshFromBody(b2.body);
+      if (build && typeof build === 'object') Object.defineProperty(build, '__weldFree', { value: { key: key, build: b2, mesh: mesh2 }, configurable: true, writable: true, enumerable: false });
+    }
+    return flatPattern(m2, b2, mesh2, opts);
+  }
+  K.registerFeature('weldedCorner', {
+    cut: false,
+    build: buildWeldedCorner,
+    script: function (f, v, idVar, optsStr) {
+      var o = {};
+      if (+f.fillet > 0 || K.isExpression(f.fillet)) o.fillet = f.fillet;
+      if (f.addTexture) o.addTexture = true;
+      o.name = f.name;
+      return 'var ' + v + ' = p.weldedCorner(' + JSON.stringify((f.faces || []).map(function (p) { return p.map(function (x) { return Math.round(x * 1e6) / 1e6; }); })) + ', ' + optsStr(o) + ').last();';
     }
   });
 
@@ -6322,6 +6473,7 @@
   K.buildBreakCorner = buildBreakCorner; K.breakCornerLayout = breakCornerLayout; K.breakCornerCandidates = breakCornerCandidates;
   K.cornerReliefLayout = cornerReliefLayout; K.buildCornerRelief = buildCornerRelief; K.cornerReliefCandidates = cornerReliefCandidates; K.cornerReliefName = cornerReliefName;   // lane smtrim
   K.CORNER_RELIEF_TYPES = CORNER_RELIEF_TYPES; K.cornerReliefDefaultSize = cornerReliefDefaultSize;
+  K.weldedCornerLayout = weldedCornerLayout; K.buildWeldedCorner = buildWeldedCorner; K.weldedCornerName = weldedCornerName;   // lane smcorner
   K.breakCornerName = breakCornerName; K.BREAK_CORNER_KINDS = BC_KINDS.slice();
   _.buildSketchedBend = buildSketchedBend; _.sketchedBendPoint = sketchedBendPoint;
   // Unfold / Fold (lane DB)

@@ -3788,6 +3788,115 @@
     preview();
   }
 
+  // ------------------------------------------------------------------ sheet metal: Welded Corner (lane smcorner)
+  // SolidWorks' Sheet Metal ▸ Corners ▸ Welded Corner (Kernel.weldedCornerLayout, a registered boss): Corner to Weld (a
+  // click on a side face of a corner, the end face of a wall facing the other wall across the gap, adds it; a second
+  // click removes it), Add fillet + Fillet radius (the weld's inside corner), Add texture (cosmetic). The weld is in the
+  // folded part only: the flat leaves it out. The preview is built on the main thread; ✓ is one undo step; the fillet
+  // and texture choices are remembered for the next Welded Corner of the session.
+  var wcLast = { addFillet: false, fillet: null, addTexture: false };
+  function cmdWeldedCorner(existing) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
+    if (!App.build || !App.build.body) { UI.toast('Create a Base Flange and edge flanges first.'); return; }
+    var sheet = previewModel().sheet || App.model.sheet, T = +sheet.thickness;
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'weldedCorner', faces: [], fillet: wcLast.fillet, addTexture: wcLast.addTexture };
+    f.faces = (f.faces || []).map(function (p) { return p.slice(); });
+    f.addFillet = existing ? +existing.fillet > 0 || K.isExpression(existing.fillet) : wcLast.addFillet;
+    if (f.fillet == null || f.fillet === 0) f.fillet = Math.round(2 * T * 1e4) / 1e4;
+    f.addTexture = !!f.addTexture;
+    var base = null;
+    function baseBody() { if (!base) base = existing ? bodyBefore(existing.id) : App.build.body; return base; }
+    // a pick's corner (the kernel's own rule) or the reason it is not one; kept per point until the part shown changes
+    var memo = {};
+    function cornerOf(p) {
+      var key = p.join(',');
+      if (memo[key]) return memo[key];
+      try {
+        var lay = K.weldedCornerLayout({ faces: [p] }, previewModel(), { body: baseBody() });
+        memo[key] = { key: lay.corners[0].at.map(function (x) { return Math.round(x * 1e4); }).join(',') };
+      } catch (e) { memo[key] = { error: e.message.replace(/^Welded Corner: /, '') }; }
+      return memo[key];
+    }
+    function featOf(v) {
+      var out = { type: 'weldedCorner', faces: v.faces.map(function (p) { return p.slice(); }) };
+      if (v.addFillet && (K.isExpression(v.fillet) || +v.fillet > 0)) out.fillet = K.isExpression(v.fillet) ? v.fillet : +v.fillet;
+      if (v.addTexture) out.addTexture = true;
+      if (v.name) out.name = v.name;
+      return out;
+    }
+    function tol() { return K.pickTol(App.model.units, T / 2); }
+    function lit() {
+      var idx = [];
+      if (App.mesh && (!existing || App.rollback != null)) f.faces.forEach(function (p) { try { var k = K.resolveFaces([{ at: p }], App.mesh, tol())[0]; if (k != null && k >= 0) idx.push(k); } catch (e) { } });
+      if (App.command) App.command.faceList = idx;
+      UI.updateHighlights();
+    }
+    function status(extra) {
+      var n = f.faces.length;
+      UI.setStatus((extra ? extra + ' ' : '') + 'Welded Corner: ' + n + ' corner' + (n === 1 ? '' : 's') + ' to weld. Press Enter or ✓ to accept.');
+    }
+    function preview() {
+      lit();
+      UI.disposeGroup(UI.groups.preview);
+      if (!f.faces.length) { UI.setStatus('Click a side face of each corner to weld (the end face of a flange, through the thickness, facing the next flange).'); return; }
+      try {
+        var tool = K.buildWeldedCorner(featOf(f), previewModel(), { body: baseBody() });
+        if (tool && tool.polygons.length) addPreviewMesh(tool, UI.mats.preview);
+        status();
+      } catch (e) { UI.setStatus('Preview: ' + e.message); }
+    }
+    function pick(pk) {
+      if (pk.kind !== 'face' || !pk.point) return false;
+      var p = pk.point.map(function (x) { return Math.round(x * 1e6) / 1e6; }), r = cornerOf(p);
+      if (r.error) { UI.setStatus(r.error); return true; }
+      var hit = -1;
+      f.faces.forEach(function (q, k) { var o = cornerOf(q); if (o.key === r.key) hit = k; });
+      if (hit >= 0) f.faces.splice(hit, 1); else f.faces.push(p);
+      renderPM(); preview();
+      return true;
+    }
+    // pre-selected side faces move into the PropertyManager
+    if (!existing && UI.selection) {
+      var used = false;
+      UI.selection().forEach(function (s) {
+        if (s.kind !== 'face' || !App.mesh || !App.mesh.faces[s.index]) return;
+        var at = (s.point || App.mesh.faces[s.index].centroid).slice();
+        if (!cornerOf(at).error) { f.faces.push(at); used = true; }
+      });
+      if (used && UI.setSelection) UI.setSelection([]);
+    }
+    openPM({
+      title: existing ? existing.name : 'Welded Corner', icon: 'weldedCorner', values: f,
+      onRollback: function () { memo = {}; lit(); },
+      message: 'Click a <b>side face</b> of each corner to weld (the end face of a flange facing the next flange across the gap). The weld is left out of the flat pattern.',
+      command: { faceList: [], onPick: pick },
+      groups: [
+        { title: 'Corner to Weld', fields: [
+          { type: 'pick', icon: 'weldedCorner', placeholder: 'Side faces of corners…',
+            value: function (v) { var n = v.faces.length; return n ? n + ' corner' + (n === 1 ? '' : 's') : ''; },
+            items: function (v) { return v.faces.map(function (p, i) { return { label: 'Face<' + (i + 1) + '>', at: p }; }); },
+            onRemove: function (v, i) { v.faces.splice(i, 1); renderPM(); preview(); },
+            onClear: function (v) { v.faces.length = 0; renderPM(); preview(); } },
+          { type: 'check', label: 'Add fillet', key: 'addFillet', rerender: true },
+          { type: 'number', label: 'Fillet radius', key: 'fillet', unit: 'u', min: 0, show: function (v) { return !!v.addFillet; } },
+          { type: 'check', label: 'Add texture', key: 'addTexture' }
+        ] },
+        { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ],
+      onChange: function () { preview(); },
+      onOK: function (v) {
+        if (!v.faces.length) { UI.toast('Select a side face of at least one corner to weld.'); return false; }
+        if (v.addFillet && !K.isExpression(v.fillet) && !(+v.fillet > 0)) { UI.toast('The fillet radius must be more than 0.'); return false; }
+        var feat = featOf(v);
+        if (!existing && !feat.name) feat.name = K.weldedCornerName(App.model);
+        wcLast = { addFillet: !!v.addFillet, fillet: +v.fillet > 0 ? +v.fillet : null, addTexture: !!v.addTexture };
+        return commitFeature(feat, existing);
+      }
+    });
+    preview();
+  }
+
   // ------------------------------------------------------------------ sheet metal: Cross-Break (lane cross-break)
   // SolidWorks' Sheet Metal ▸ Cross-Break (Kernel.crossBreakLayout, cosmetic: a rebuild case that keeps the body): a
   // planar sheet face, Radius, Angle, Reverse Direction and Edit Cross-Break Sketch, which opens a sketch on the face
@@ -6431,6 +6540,7 @@
       case 'sketchedBend': UI.cmdSketchedBend(f); break;
       case 'breakCorner': UI.cmdBreakCorner(f); break;
       case 'cornerRelief': UI.cmdCornerRelief(f); break;   // lane smtrim
+      case 'weldedCorner': UI.cmdWeldedCorner(f); break;   // lane smcorner
       case 'closedCorner': UI.cmdClosedCorner(f); break;
       case 'unfold': UI.cmdUnfold(f); break;   // lane DB
       case 'fold': UI.cmdFold(f); break;
@@ -6570,6 +6680,7 @@
   ].forEach(function (c) { UI[c[0]] = partOnly(UI[c[0]], c[1]); });
   UI.cmdSketchedBend = partOnly(cmdSketchedBend, 'Sketched Bend');
   UI.cmdCornerRelief = partOnly(cmdCornerRelief, 'Corner Relief');   // Sheet Metal ▸ Corners ▸ Corner Relief (lane smtrim)
+  UI.cmdWeldedCorner = partOnly(cmdWeldedCorner, 'Welded Corner');   // Sheet Metal ▸ Corners ▸ Welded Corner (lane smcorner)
   UI.cmdBreakCorner = partOnly(cmdBreakCorner, 'Break-Corner');   // Sheet Metal ▸ Break-Corner/Corner-Trim PropertyManager (lane CP)
   UI.cmdClosedCorner = partOnly(cmdClosedCorner, 'Closed Corner');   // Sheet Metal ▸ Closed Corner PropertyManager (lane CS)
   UI.cmdUnfold = partOnly(cmdUnfold, 'Unfold'); UI.cmdFold = partOnly(cmdFold, 'Fold');   // Sheet Metal ▸ Unfold / Fold (lane DB)

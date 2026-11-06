@@ -34,6 +34,7 @@ var OcctKernel = (function () {
   SUPPORTED.refaxis = SUPPORTED.refpoint = SUPPORTED.csys = 1;   // lane CZ: reference geometry makes no body (skipped below)
   SUPPORTED.rip = 1;   // lane DI
   SUPPORTED.cornerRelief = 1;   // lane smtrim
+  SUPPORTED.weldedCorner = 1;   // lane smcorner
   SUPPORTED.crossBreak = 1;   // rfGK: cosmetic, makes no body (skipped below)
   SUPPORTED.vent = 1;   // lane DT
   SUPPORTED.draft = 1;   // rfDX
@@ -1328,6 +1329,18 @@ var OcctKernel = (function () {
       });
       return acc;
     }
+    // Welded Corner (lane smcorner; as Kernel.buildWeldedCorner, from Kernel.weldedCornerLayout found on the bodies'
+    // tessellation): planar prisms of the gap fill and the chorded fillet; the rebuild fuses the tool (a registered boss)
+    function weldedCornerTool(f) {
+      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      if (!bodies.length) throw new Error('Welded Corner: there are no flanges yet.');
+      var polys = [];
+      bodies.forEach(function (b) { Array.prototype.push.apply(polys, shapeToCSG(b).polygons); });
+      var lay = K.weldedCornerLayout(f, m, { body: CSGlib.fromPolygons(polys) }), acc = null;
+      lay.adds.forEach(function (t) { var s = prismOf(t.loop, t.plane, t.a, t.b); acc = acc ? fuse(acc, s) : s; });
+      return acc;
+    }
     // Vent (lane DT; as Kernel.buildVent, from Kernel.ventLayout found on the bodies' tessellation): the boundary prism
     // less the ribs / spars / fill-in prisms (taller), every circle an exact circle; the rebuild cuts the tool
     function ventTool(f) {
@@ -1817,6 +1830,7 @@ var OcctKernel = (function () {
             case 'breakCorner': tool = breakCornerTool(f); break;
             case 'rip': tool = ripTool(f); break;   // lane DI
             case 'cornerRelief': tool = cornerReliefTool(f); break;   // lane smtrim
+            case 'weldedCorner': tool = weldedCornerTool(f); break;   // lane smcorner
             case 'vent': tool = ventTool(f); break;   // lane DT
             case 'wrap': tool = wrapOp(f); break;   // rfDZ
             case 'closedCorner': closedCornerOp(f); break;

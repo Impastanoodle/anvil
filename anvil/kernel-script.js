@@ -1521,6 +1521,19 @@
     this._add(f);
     return this;
   };
+  // weldedCorner(faces, opts) (lane smcorner): Sheet Metal ▸ Corners ▸ Welded Corner (kernel-sheetmetal.js
+  // weldedCornerLayout). faces: [[x, y, z], …] a point on a side face of each corner (a wall's end face facing the other
+  // wall across the gap); opts: fillet (radius in the weld's inside corner, default none), addTexture (cosmetic), name.
+  // The weld is in the folded part only: the flat pattern leaves it out.
+  Builder.prototype.weldedCorner = function (faces, opts) {
+    opts = opts || {};
+    var f = { type: 'weldedCorner', faces: (faces || []).map(function (p) { return [+p[0], +p[1], +p[2]]; }) };
+    if (opts.fillet != null && (isExpression(opts.fillet) || +opts.fillet > 0)) f.fillet = num(opts.fillet);
+    if (opts.addTexture) f.addTexture = true;
+    f.name = opts.name || K.weldedCornerName(this.model);
+    this._add(f);
+    return this;
+  };
   // insertBends(fixedFace, opts) / convertSheetMetal(fixedFace, bendEdges, opts): Sheet Metal ▸ Insert Bends and
   // Convert to Sheet Metal (kernel-sheetmetal.js, lane DQ). fixedFace: [x, y, z] on a flat face that stays put (the flat
   // is laid from it). Insert Bends works on a part of constant thickness (a shell, a thin extrude): every sharp corner

@@ -446,6 +446,7 @@
   // footprint on the bend's inside surface pushed radially through T = T·(R + T/2)·∫ 2√(r² − R² sin²θ) dθ (was: the
   // OpenCascade tool kept only the part of the bend below the sketch plane, half the metal). Both kernels' flats:
   // same size, loops and bends; DXF entity counts equal for the corner cases (ARCs for the fillets). ---
+  var SMC_TRAY = [[2, SH_T, 0], [4, SH_T, 1.5], [2, SH_T, 3], [0, SH_T, 1.5]].map(function (e) { return 'p.flange(1, [' + JSON.stringify(e) + '], { position: "inside", lengthRef: "outer" });\n'; }).join('');   // lane smcorner
   var CW_HEAD = 'p.units("in");\np.sheet(' + SH_T + ', ' + SH_T + ', 0.5);\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();\n';
   var CW_L = CW_HEAD + 'p.flange(1.5, [[0, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\n';
   var CW_BC = function (size, corners, opts) { return 'p.breakCorner(' + size + ', ' + JSON.stringify(corners) + ', ' + JSON.stringify(opts) + ');\n'; };
@@ -590,7 +591,16 @@
       code: CW_HEAD + 'p.flange(1, [[4, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\np.flange(1, [[2, ' + SH_T + ', 3]], { position: "inside", lengthRef: "outer" });\np.cornerRelief([[3.88, 0.06, 2.88]], 0.25);',
       removed: (function () { var BA = Math.PI / 2 * 1.5 * SH_T, a = 0.125 - BA / 2; return SH_T * (2 * a * a + BA * (2 * a + 2 * SH_T) + a * (a + 2 * SH_T)); })(), loops: 1, dxf: true },
     { name: 'smtrim: Corner Relief, Circular Ø.25 at that corner, wrapped across both bends: OpenCascade = Anvil; one blank',
-      code: CW_HEAD + 'p.flange(1, [[4, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\np.flange(1, [[2, ' + SH_T + ', 3]], { position: "inside", lengthRef: "outer" });\np.cornerRelief([[3.88, 0.06, 2.88]], 0.25, { reliefType: "circular" });', loops: 1 }
+      code: CW_HEAD + 'p.flange(1, [[4, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\np.flange(1, [[2, ' + SH_T + ', 3]], { position: "inside", lengthRef: "outer" });\np.cornerRelief([[3.88, 0.06, 2.88]], 0.25, { reliefType: "circular" });', loops: 1 },
+    // lane smcorner: Welded Corner on the 4 × 3 tray with four separate Material Inside flanges (each later wall stops R
+    // short of its neighbour): the weld fills the gap in front of the left wall's end over the straight walls, R·T·H
+    // (H = 1 − 2T), plus with a fillet .1 the chorded quarter round r² − 8r²·sin(π/32); the flat is the tray's
+    { name: 'smcorner: Welded Corner at the front-left corner: + R·T·H exactly; the flat is the tray\'s, one blank',
+      plain: CW_HEAD + SMC_TRAY, code: CW_HEAD + SMC_TRAY + 'p.weldedCorner([[' + SH_T / 2 + ', 0.6, ' + 2 * SH_T + ']]);',
+      removed: -SH_T * SH_T * (1 - 2 * SH_T), loops: 1, dxf: true },
+    { name: 'smcorner: Welded Corner with a fillet .1 in the inside corner: + H·(R·T + the chorded quarter round) exactly',
+      plain: CW_HEAD + SMC_TRAY, code: CW_HEAD + SMC_TRAY + 'p.weldedCorner([[' + SH_T / 2 + ', 0.6, ' + 2 * SH_T + ']], { fillet: 0.1 });',
+      removed: -(1 - 2 * SH_T) * (SH_T * SH_T + 0.01 - 8 * 0.01 * Math.sin(Math.PI / 32)), loops: 1 }
   ];
   for (var cwk = 0; cwk < CW_CASES.length; cwk++) {
     var cw = CW_CASES[cwk], tcw = performance.now();

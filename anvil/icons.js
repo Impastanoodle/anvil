@@ -177,6 +177,9 @@ var IconsLib = (function () {
     // lane CS: Closed Corner (top view of a box corner: the far wall grey, the near wall's extension closing the gap in
     // yellow) and its corner types (the extended flange yellow, the matching flange grey)
     closedCorner: p('M1.5 1.5 h13 v3 h-13 z', F2, S) + p('M1.5 7.5 h3 v7 h-3 z', F2, S) + p('M1.5 5.2 h3 v2.3 h-3 z', FY, S),
+    // lane smcorner: Welded Corner (top view of a box corner: both walls grey, the weld filling the gap and rounding the
+    // inside corner in yellow, a bead ripple line across it)
+    weldedCorner: p('M1.5 1.5 h13 v3 h-13 z', F2, S) + p('M1.5 7.5 h3 v7 h-3 z', F2, S) + p('M1.5 4.5 h3 v3 h-3 z M4.5 4.5 h3 a3 3 0 0 0 -3 3 z', FY, S) + ln('M2 6 l1.2 -1 l1.2 1', B, 0.9),
     // lane smtrim: Corner Relief (two bend zones meeting at a corner, grey; the relief cut at the corner, yellow)
     cornerRelief: p('M1.5 14.5 V6.5 h5 v8 z', F2, S) + p('M6.5 1.5 h8 v5 h-8 z', F2, S) + p('M1.5 1.5 h5 v5 h-5 z', FY, S, 1) + ln('M4 4 h0.01', B, 1.4),
     ccButt: p('M2 2 h12.5 v3 H2 z', F2, S) + p('M2 6 h3 v8.5 H2 z', FY, S),
