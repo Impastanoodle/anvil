@@ -1029,7 +1029,8 @@ var DxfImport = (function () {
   // left as they are. No point moves more than tol.
   function repair(E, opts) {
     opts = opts || {};
-    var tol = opts.tol > 0 ? opts.tol : 1e-3 * scaleOf(E || []);
+    // lane sketchgaps-2: a gap of exactly the tolerance closes (10.0005 - 10 is 0.000500000000000611 in floating point)
+    var tol = (opts.tol > 0 ? opts.tol : 1e-3 * scaleOf(E || [])) * (1 + 1e-6);
     var on = function (k, def) { return opts[k] == null ? def : !!opts[k]; };
     var R = (E || []).map(function (e, i) { return { e: clone(e), src: i, alive: true, changed: false }; });
     var rep = { removed: 0, merged: 0, gaps: 0, joined: 0, split: 0, maxMove: 0, spots: [], joints: [] };
@@ -1216,7 +1217,54 @@ var DxfImport = (function () {
     return out;
   }
 
+  // ------------------------------------------------------------------ the DXF/DWG Import pipeline (lane sketchgaps-2)
+  // prepare(parsed, opts) -> { entities, report, scale }: what the DXF/DWG Import PropertyManager adds to the sketch
+  // (ui-sketch-import.js), here so it runs and is tested without the UI. parsed: parse()'s result. opts: { partUnits
+  // 'in' | 'mm', units: 'file' | 'in' | 'mm' (the file's data units; 'file': $INSUNITS / $MEASUREMENT, else the part's),
+  // layers: { name: false } (layers left out), origin: 'file' | 'lowerleft' | 'center', dx, dy, rot, tol (Merge points
+  // closer than: ends snapped together), repair (default true: tiny entities removed, duplicates and overlaps merged,
+  // gaps up to opts.gap closed), gap (Close gaps up to; default 0.001 in / 0.025 mm) }. Block instances keep their
+  // insertion point while any of their geometry is on and are not repaired (their geometry is their definition's).
+  // Layer "0" becomes the sketch's default layer (no layer field).
+  function prepare(parsed, opts) {
+    opts = opts || {};
+    var pu = opts.partUnits === 'in' ? 'in' : 'mm', off = opts.layers || {};
+    var src = opts.units === 'in' || opts.units === 'mm' ? opts.units : (parsed.units || pu);
+    var s = src === pu ? 1 : src === 'in' ? 25.4 : 1 / 25.4;
+    var ents = parsed.entities.filter(function (e) { return off[e.layer] !== false; });
+    var live = {}, ins = {};
+    ents.forEach(function (e) { if (e.blk != null && e.blkDef == null) live[e.blk] = true; });
+    parsed.entities.forEach(function (e) { if (e.blkDef != null) ins[e.blk] = e; });
+    ents = ents.filter(function (e) { return e.blkDef == null || live[e.blk]; });
+    Object.keys(live).forEach(function (id) { if (ins[id] && ents.indexOf(ins[id]) < 0) ents.push(ins[id]); });
+    ents = transform(ents, { s: s });
+    var b = bounds(ents), o = [0, 0];
+    if (b && opts.origin === 'lowerleft') o = [b[0], b[1]];
+    else if (b && opts.origin === 'center') o = [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+    ents = transform(ents, { dx: -o[0], dy: -o[1] });
+    ents = transform(ents, { rot: +opts.rot || 0, dx: +opts.dx || 0, dy: +opts.dy || 0 });
+    var tol = Math.max(0, +(opts.tol != null ? opts.tol : pu === 'in' ? 0.0005 : 0.01) || 0), fix = opts.repair !== false;
+    var inBlk = ents.filter(function (e) { return e.blk != null; }), plain = ents.filter(function (e) { return e.blk == null; });
+    var rep = plain.length ? repair(plain, { tol: tol || 1e-9, closeGaps: tol > 0, merge: fix, removeTiny: fix, join: false, split: false }) : { entities: [], report: null };
+    // Repair after import also closes the gaps customer DXFs carry, so a flat comes in as one closed profile that
+    // extrudes or makes a Base Flange without a Repair Sketch step; only ends move, none more than the gap
+    var gap = Math.max(0, +(opts.gap != null ? opts.gap : pu === 'in' ? 0.001 : 0.025) || 0);
+    if (fix && gap > tol && rep.entities.length) {
+      var rep2 = repair(rep.entities, { tol: gap, closeGaps: true, merge: true, removeTiny: false, join: false, split: false });
+      if (rep.report) {
+        rep2.report.gaps += rep.report.gaps; rep2.report.merged += rep.report.merged; rep2.report.removed += rep.report.removed;
+        rep2.report.maxMove = Math.max(rep2.report.maxMove, rep.report.maxMove);
+        rep2.report.spots = rep.report.spots.concat(rep2.report.spots);
+      }
+      rep = rep2;
+    }
+    var out = rep.entities.concat(inBlk);
+    out.forEach(function (e) { if (e.layer == null || e.layer === '' || e.layer === '0') delete e.layer; });
+    return { entities: out, report: rep.report, scale: s };
+  }
+
   return {
+    prepare: prepare,
     parse: parse, check: check, repair: repair, transform: transform, bounds: bounds, endJoints: endJoints, summary: summary,
     ends: ends, crossings: crossings, overlaps: overlaps,
     // internals, for the tests

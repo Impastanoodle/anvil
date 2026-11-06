@@ -6,7 +6,7 @@
 //                                      sketch (a new sketch on the Top Plane when none is open); a .dwg is converted to DXF
 //                                      by the local server first (UI.dwgToDxf, UI.importDWGData, UI.openDWGFile below)
 //   UI.importDXFText(text, opts?)      the same from DXF text (scripts, tests): opts { name, units: 'file' | 'in' | 'mm',
-//                                      origin: 'file' | 'lowerleft' | 'center', dx, dy, rot, tol, repair, relations,
+//                                      origin: 'file' | 'lowerleft' | 'center', dx, dy, rot, tol, gap, repair, relations,
 //                                      layers: { name: false }, blocks (false: blocks exploded), ok: true (accept at
 //                                      once) } -> the PM values, or null. AZ: the file's INSERTs come in as sketch
 //                                      blocks (Tools > Blocks: rigid instances of one definition each, Kernel.adoptBlocks)
@@ -157,7 +157,7 @@
     if (!f) { UI.toast('Could not open a sketch for the DXF.'); return null; }
     var pu = partUnits();
     var v = { units: opts.units || 'file', origin: opts.origin || 'file', dx: +opts.dx || 0, dy: +opts.dy || 0, rot: +opts.rot || 0,
-      tol: opts.tol != null ? +opts.tol : mergeTol(), repair: opts.repair !== false, rels: true, blocks: opts.blocks !== false };
+      tol: opts.tol != null ? +opts.tol : mergeTol(), gap: opts.gap != null ? +opts.gap : gapTol(), repair: opts.repair !== false, rels: true, blocks: opts.blocks !== false };
     parsed.layers.forEach(function (l, i) { v['L' + i] = !(opts.layers && opts.layers[l.name] === false); });
     var built = null;
     function srcUnits() { return v.units === 'in' || v.units === 'mm' ? v.units : (parsed.units || pu); }
@@ -196,30 +196,11 @@
       geo.forEach(function (e) { if (e.blkDef != null && rename[e.blkDef]) e.blkDef = rename[e.blkDef]; });
     }
     function build() {
-      var on = {};
-      parsed.layers.forEach(function (l, i) { if (v['L' + i]) on[l.name] = true; });
-      var ents = parsed.entities.filter(function (e) { return on[e.layer]; });
-      // a block instance keeps its insertion point while any of its geometry is on, and goes with all of it
-      var live = {}, ins = {};
-      ents.forEach(function (e) { if (e.blk != null && e.blkDef == null) live[e.blk] = true; });
-      parsed.entities.forEach(function (e) { if (e.blkDef != null) ins[e.blk] = e; });
-      ents = ents.filter(function (e) { return e.blkDef == null || live[e.blk]; });
-      Object.keys(live).forEach(function (id) { if (ins[id] && ents.indexOf(ins[id]) < 0) ents.push(ins[id]); });
-      var s = conv(srcUnits(), pu);
-      ents = DxfImport.transform(ents, { s: s });
-      var b = DxfImport.bounds(ents), o = [0, 0];
-      if (b && v.origin === 'lowerleft') o = [b[0], b[1]];
-      else if (b && v.origin === 'center') o = [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
-      ents = DxfImport.transform(ents, { dx: -o[0], dy: -o[1] });
-      ents = DxfImport.transform(ents, { rot: +v.rot || 0, dx: +v.dx || 0, dy: +v.dy || 0 });
-      var tol = Math.max(0, +v.tol || 0);
-      // (block instances are not repaired: their geometry is their definition's)
-      var inBlk = ents.filter(function (e) { return e.blk != null; }), plain = ents.filter(function (e) { return e.blk == null; });
-      var rep = plain.length ? DxfImport.repair(plain, { tol: tol || 1e-9, closeGaps: tol > 0, merge: !!v.repair, removeTiny: !!v.repair, join: false, split: false }) : { entities: [], report: null };
-      rep.entities = rep.entities.concat(inBlk);
-      // DXF layers become sketch layers (ui-sketch-layers.js); layer "0" is the sketch's default layer
-      rep.entities.forEach(function (e) { if (e.layer == null || e.layer === '' || e.layer === '0') delete e.layer; });
-      built = { entities: rep.entities, report: rep.report, scale: s };
+      // lane sketchgaps-2: the pipeline is DxfImport.prepare (dxf-import.js): layers on / off, data units, position,
+      // Merge points closer than, Repair after import (tiny entities, duplicates / overlaps, gaps up to Close gaps up to)
+      var off = {};
+      parsed.layers.forEach(function (l, i) { if (!v['L' + i]) off[l.name] = false; });
+      built = DxfImport.prepare(parsed, { partUnits: pu, units: srcUnits(), layers: off, origin: v.origin, dx: v.dx, dy: v.dy, rot: v.rot, tol: Math.max(0, +v.tol || 0), gap: v.gap, repair: !!v.repair });
       return built;
     }
     function preview() {
@@ -262,6 +243,7 @@
         { title: 'Options', fields: [
           { type: 'number', label: 'Merge points closer than', key: 'tol', unit: 'u', min: 0 },
           { type: 'check', label: 'Repair after import', key: 'repair' },
+          { type: 'number', label: 'Close gaps up to', key: 'gap', unit: 'u', min: 0, show: function () { return !!v.repair; } },
           { type: 'check', label: 'Add Coincident relations', key: 'rels' },
           { type: 'check', label: 'Import blocks as blocks', key: 'blocks', show: function () { return hasBlocks; } },
           { type: 'html', show: function () { return nJoints > MAX_AUTO_RELS; }, html: '<div class="pm-note">' + nJoints + ' joints: with that many relations the sketch solves slowly, so they start off. The ends are snapped together either way.</div>' }

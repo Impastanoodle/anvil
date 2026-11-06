@@ -1181,7 +1181,7 @@ MC  L122  — MC: modular char, signed (7 bits per byte, 0x80 = more; the last b
 lwIndex  L223  — DXF 370 (hundredths of a mm; -1 ByLayer, -2 ByBlock, -3 Default) -> the DWG index
 more: crc16 L28, readPairs L154, Rec L163, parseDXF L168, upper L230, fromDXF L233
 
-## dxf-import.js (1225 lines)
+## dxf-import.js (1273 lines)
 > DXF into sketches (no DOM; loaded after the kernel files, and by the Node runner through
 DxfImport.pairs  L40  — [[code, value]] pairs: CRLF / CR / LF, trailing and leading spaces, a byte-order mark; a …
 sections  L53  — { NAME: [pairs between SECTION/2 NAME and ENDSEC] }
@@ -1220,7 +1220,8 @@ DxfImport.endJoints  L938  — endJoints(entities, eps?) -> [[ref, ref, …]] th
 DxfImport.check  L948  — check(entities, tol) -> [{ type, at, entities: [i], size?, msg }] with issues.summary, …
 DxfImport.summary  L1010  — "2 open contours, 3 gaps < 0.001 in, 1 duplicate" (or "No problems found")
 DxfImport.repair  L1030  — repair(entities, { tol, removeTiny = true, merge = true, closeGaps = true, join = true, …
-DxfImport.splitAt  L1187  — a line, arc or circle cut at the points pts (on it) -> pieces, in order; null for other …
+DxfImport.splitAt  L1188  — a line, arc or circle cut at the points pts (on it) -> pieces, in order; null for other …
+DxfImport.prepare  L1229  — prepare(parsed, opts) -> { entities, report, scale }: what the DXF/DWG Import …
 more: Kern L30, clone L31, hyp L32, dist L33, normDeg L34, fmtN L35, num L87, str L91, mul L99, ap L103,
 more: apv L104, isId L105, cross3 L106, unit3 L107, normalOf L108, conicThrough L149, bezAt L192, bezSize L196,
 more: arcPt L670, ellPt L671, scaleOf L726, boxHit L758, angIn L759, lineDir L838, ptLineDist L839,
@@ -3975,7 +3976,7 @@ more: keyOf L1933, el L1934, layerEl L1940, snapValue L2026, fmt L2032, itemByKe
 more: ball L2076, drawRuler L2086, startDrag L2106, restore L2120, apply L2125, move L2142, finish L2155,
 more: up L2178, key L2179
 
-## ui-sketch-import.js (539 lines)
+## ui-sketch-import.js (521 lines)
 > DXF into a sketch (Insert DXF, File ▸ Open of a .dxf), Check Sketch for Feature and Repair
 mergeTol  L28  — SolidWorks' defaults: merge points closer than 0.0005 in (0.01 mm); a gap is anything …
 undoStep  L34  — One sketch action, one undo step: fn() returns { ok, error }; a failure takes the undo …
@@ -3986,16 +3987,16 @@ remapSketch  L84  — map: old entity index -> new (-1 removed); changed: new in
 addJoints  L108  — Coincident relations for each list of end refs that meet (the first end with each of the …
 plainJoints  L136  — the joints between ends of the entities, block instances' entities left out (a block is …
 UI.importDXFText  L141
-UI.dwgToDxf  L342
-UI.openDWGFile  L362
-UI.importDWGData  L366
-UI.cmdInsertDXF  L377  — Insert DXF / DWG (Sketch tab, File ▸ Import DXF / DWG into Sketch…, Tools ▸ Sketch Tools)
-UI.openDXFFile  L395  — File ▸ Open of a .dxf: a new part named after the file with the DXF in Sketch1 on the …
-UI.cmdCheckSketch  L415
-UI.cmdRepairSketch  L478  — SolidWorks: Tools ▸ Sketch Tools ▸ Repair Sketch, with each repair as an option and the …
+UI.dwgToDxf  L324
+UI.openDWGFile  L344
+UI.importDWGData  L348
+UI.cmdInsertDXF  L359  — Insert DXF / DWG (Sketch tab, File ▸ Import DXF / DWG into Sketch…, Tools ▸ Sketch Tools)
+UI.openDXFFile  L377  — File ▸ Open of a .dxf: a new part named after the file with the DXF in Sketch1 on the …
+UI.cmdCheckSketch  L397
+UI.cmdRepairSketch  L460  — SolidWorks: Tools ▸ Sketch Tools ▸ Repair Sketch, with each repair as an option and the …
 more: partUnits L24, conv L25, gapTol L29, isAsm L30, esc L31, plural L32, changed L41, clearPreview L42,
-more: setMarks L57, drawMarks L58, shiftRef L122, jointCount L139, blockIds L140, decode L318, isDwg L333,
-more: dwgBytes L334, noServer L341
+more: setMarks L57, drawMarks L58, shiftRef L122, jointCount L139, blockIds L140, decode L300, isDwg L315,
+more: dwgBytes L316, noServer L323
 
 ## ui-sketch-layers.js (564 lines)
 > sketch layers (AutoCAD layers), shaded closed regions with open ends flagged (Fusion 360 /
