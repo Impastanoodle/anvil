@@ -994,6 +994,31 @@ var Exchange = (function () {
     if (Math.abs(len(sub(A, C)) - S.r) > tol || Math.abs(len(sub(B, C)) - S.r) > tol) return null;
     return { t: 'c', c: circleOf(C, m, S.r), lat: false };
   }
+  // stepout-2: a mesh edge AB of a cylinder patch whose neighbour across it is the planar face pf, cut obliquely (a
+  // mitred bend end, a tube cut at an angle): a chord of the ELLIPSE where pf's plane meets the cylinder, or null.
+  // A and B lie on the plane; on the cylinder or inside it by at most a chord's sagitta (a faceted bend cut by a
+  // plane puts every other point on a facet's chord: those points are not written, the run's ends are checked).
+  // The ellipse: centre on the axis, x = the axis projected into the plane (semi-axis r / |n·d|), y = n × x (r), so
+  // its parameter t is the cylinder's angle measured from x.
+  function ellipseOf(S, pn, w) {
+    var n = canonDir(norm(pn)), cs = dot(n, S.d), t = (w * (dot(pn, n) > 0 ? 1 : -1) - dot(n, S.o)) / cs;
+    var C = add(S.o, scale(S.d, t)), X = norm(sub(S.d, scale(n, cs)));
+    var a = S.r / Math.abs(cs);
+    return { center: C, normal: n, xdir: X, a: a, b: S.r, key: 'e' + C.map(qk).join(',') + '|' + n.map(qk).join(',') + '|' + qk(S.r) + '|' + qk(a) };
+  }
+  function ellipseEdge(S, A, B, pf, tol) {
+    if (S.t !== 'cyl' || !pf || !pf.normal) return null;
+    var pn = norm(pf.normal), cs = Math.abs(dot(pn, S.d));
+    if (cs < 1e-6 || cs > 1 - 1e-9) return null;
+    if (Math.abs(dot(pn, A) - pf.w) > tol || Math.abs(dot(pn, B) - pf.w) > tol) return null;
+    var ra = axial(S, A).rho, rb = axial(S, B).rho, sag = 0.05 * S.r;
+    if (ra > S.r + tol || rb > S.r + tol || ra < S.r - sag || rb < S.r - sag) return null;
+    if (Math.abs(ra - S.r) > tol && Math.abs(rb - S.r) > tol) return null;   // a chord has one end on the surface at least
+    return { t: 'e', e: ellipseOf(S, pn, pf.w) };
+  }
+  // the parameter of a point on (or next to) an ellipse
+  function ellipseParam(E, p) { var v = sub(p, E.center); return Math.atan2(dot(v, cross(E.normal, E.xdir)) / E.b, dot(v, E.xdir) / E.a); }
+
   // the loops (vertex lists) of a set of triangles: directed edges without a reverse twin in the set, chained
   // rfHV: the directed edges are counted per start vertex (compressed rows over the set's own vertices, filled in
   // triangle order) instead of in an "a>b" string map: next[a] gets its b's in the order the old map first met a>b,
@@ -1089,6 +1114,8 @@ var Exchange = (function () {
 
     var groups, loopsOf, owner, ecls, shape;
     function eget(a, b) { return a < b ? ecls.get(a, b) : ecls.get(b, a); }
+    // stepout-2: a mesh face that is a true plane (no triangle of it carries a curved surface's record)
+    function truePlane(fi) { var ts = groups[fi]; for (var k = 0; k < ts.length; k++) if (triRec[ts[k]] >= 0) return false; return ts.length > 0; }
     function build() {
       // faces: analytic patches (group nF + comp) and planes (group = the mesh face index)
       groups = [];
@@ -1125,6 +1152,9 @@ var Exchange = (function () {
         loopsOf[g].forEach(function (l) {
           for (var i = 0; i < l.length && !bad; i++) {
             var a = l[i], b = l[(i + 1) % l.length], A = P(a), B = P(b), cl = classifyEdge(S, A, B, tol), nb = owner.get(b, a);
+            // stepout-2: an oblique plane's cut is an ELLIPSE, where a true plane is beside (not the facets of a
+            // curved face that fell back to facets: their planes are not the cut)
+            if (!cl && nb != null && nb < nF && truePlane(nb)) { cl = ellipseEdge(S, A, B, mesh.faces[nb], tol); if (cl) c.oblique = true; }
             if (!cl || nb == null) { bad = true; break; }
             if (nb >= nF) {
               var c2 = classifyEdge(comps[nb - nF].surf, A, B, tol);
@@ -1136,8 +1166,33 @@ var Exchange = (function () {
             ecls.set(a < b ? a : b, a < b ? b : a, cl);
           }
         });
+        // stepout-2: an ELLIPSE run's end points are vertices of the file, so they must lie on the cylinder (its inner
+        // points may sit on the facets' chords, where a plane cut a faceted bend: they are not written)
+        if (!bad) loopsOf[g].forEach(function (l) {
+          var n = l.length;
+          function run(i, j, k) { var x = eget(l[j % n], l[k % n]), y = eget(l[i % n], l[j % n]); return x && y && x.t === 'e' && y.t === 'e' && x.e.key === y.e.key && owner.get(l[k % n], l[j % n]) === owner.get(l[j % n], l[i % n]); }
+          for (var i = 0; i < n && !bad; i++) {
+            var c0 = eget(l[i], l[(i + 1) % n]);
+            if (!c0 || c0.t !== 'e') continue;
+            if (!run(i + n - 1, i, i + 1) && Math.abs(axial(S, P(l[i])).rho - S.r) > tol) bad = true;
+            if (!run(i, i + 1, i + 2) && Math.abs(axial(S, P(l[(i + 1) % n])).rho - S.r) > tol) bad = true;
+          }
+        });
         var sh = bad ? null : patchShape(c, loopsOf[g]);
         if (!sh) { c.ok = false; failed = true; } else shape[g] = sh;
+      });
+      // stepout-2: a bend is written whole or not at all. An obliquely cut cylinder (ELLIPSE edges) whose coaxial
+      // partner of another radius (the other side of the sheet) keeps its facets goes back to facets too: one exact
+      // side of a faceted bend adds that side's curve correction alone (the read-back volume gets worse than all
+      // facets), and SolidWorks' Insert Bends needs both cylinders anyway
+      comps.forEach(function (c) {
+        if (!c.ok || !c.oblique) return;
+        var S = c.surf;
+        for (var k = 0; k < comps.length; k++) {
+          var o = comps[k], S2 = o.surf;
+          if (o === c || o.ok || !S2 || S2.t !== 'cyl' || Math.abs(S2.r - S.r) <= tol) continue;
+          if (len(cross(S.d, S2.d)) < 1e-9 && axial(S, S2.o).rho < tol) { c.ok = false; failed = true; return; }
+        }
       });
       return !failed;
     }
@@ -1205,6 +1260,7 @@ var Exchange = (function () {
     function vertexAt(key, p) { return cv[key] || (cv[key] = W.add('VERTEX_POINT(\'\',' + pt(p) + ')')); }
     function circleVertex(c) { return vertexAt('c' + c.key, add(c.center, scale(c.xdir, c.radius))); }
     function circleE(c) { return cg[c.key] || (cg[c.key] = W.add('CIRCLE(\'\',' + axisE(c.center, c.normal, c.xdir) + ',' + stepReal(c.radius) + ')')); }
+    function ellipseE(E) { return cg[E.key] || (cg[E.key] = W.add('ELLIPSE(\'\',' + axisE(E.center, E.normal, E.xdir) + ',' + stepReal(E.a) + ',' + stepReal(E.b) + ')')); }
     function lineE(A, B) { var d = sub(B, A); return W.add('LINE(\'\',' + pt(A) + ',' + W.add('VECTOR(\'\',' + dirE(norm(d)) + ',' + stepReal(len(d)) + ')') + ')'); }
     function oe(id, fwd) { return W.add('ORIENTED_EDGE(\'\',*,*,' + id + ',' + (fwd ? '.T.' : '.F.') + ')'); }
     function ccw(c, A, B) { return dot(cross(sub(A, c.center), sub(B, c.center)), c.normal) > 0; }
@@ -1212,7 +1268,11 @@ var Exchange = (function () {
     function loopEdges(l, g) {
       var n = l.length, cls = [], nbs = [], i;
       for (i = 0; i < n; i++) { cls.push(eget(l[i], l[(i + 1) % n]) || { t: 'l' }); nbs.push(owner.get(l[(i + 1) % n], l[i])); }
-      function same(i1, i2) { return cls[i1].t === 'c' && cls[i2].t === 'c' && cls[i1].c.key === cls[i2].c.key && nbs[i1] === nbs[i2]; }
+      function same(i1, i2) {
+        if (nbs[i1] !== nbs[i2]) return false;
+        if (cls[i1].t === 'e' && cls[i2].t === 'e') return cls[i1].e.key === cls[i2].e.key;   // stepout-2
+        return cls[i1].t === 'c' && cls[i2].t === 'c' && cls[i1].c.key === cls[i2].c.key;
+      }
       var breaks = [];
       for (i = 0; i < n; i++) if (!same((i + n - 1) % n, i)) breaks.push(i);
       if (!breaks.length) return [closedCircleEdge(cls[0].c, P(l[0]), P(l[1]))];
@@ -1229,7 +1289,9 @@ var Exchange = (function () {
       var fk = vs.join(','), rk = vs.slice().reverse().join(','), key = fk < rk ? fk : rk, ch = chains[key];
       if (ch) return oe(ch.id, ch.fk === fk);
       var A = P(vs[0]), B = P(vs[1]), geom, sense = '.T.';
-      if (cl.t === 'c') { geom = circleE(cl.c); sense = ccw(cl.c, A, B) ? '.T.' : '.F.'; } else geom = lineE(A, P(vs[vs.length - 1]));
+      if (cl.t === 'c') { geom = circleE(cl.c); sense = ccw(cl.c, A, B) ? '.T.' : '.F.'; }
+      else if (cl.t === 'e') { geom = ellipseE(cl.e); sense = wrapAngle(ellipseParam(cl.e, B) - ellipseParam(cl.e, A)) > 0 ? '.T.' : '.F.'; }
+      else geom = lineE(A, P(vs[vs.length - 1]));
       ch = chains[key] = { id: W.add('EDGE_CURVE(\'\',' + vertex(vs[0]) + ',' + vertex(vs[vs.length - 1]) + ',' + geom + ',' + sense + ')'), fk: fk };
       return oe(ch.id, true);
     }
@@ -1767,6 +1829,12 @@ var Exchange = (function () {
         info.circle = { c: T.position, n: [T.rotation[2], T.rotation[5], T.rotation[8]], r: +geom.a[2] };
         var cp = circlePoints(info.circle, p1, p2, same, toMM);
         info.pts = cp.pts; info.mid = cp.mid; info.full = cp.full;
+      } else if (geom.t === 'ELLIPSE' && +geom.a[2] > 0 && +geom.a[3] > 0) {   // stepout-2: a plane's oblique cut of a cylinder
+        var TE = placement(geom.a[1]);
+        info.kind = 'ellipse';
+        info.ellipse = { center: TE.position, normal: [TE.rotation[2], TE.rotation[5], TE.rotation[8]], xdir: [TE.rotation[0], TE.rotation[3], TE.rotation[6]], a: +geom.a[2], b: +geom.a[3] };
+        var ep = ellipsePoints(info.ellipse, p1, p2, same, toMM);
+        info.pts = ep.pts; info.full = ep.full;
       } else if (geom.t === 'B_SPLINE_CURVE_WITH_KNOTS' && +geom.a[1] > 1) {   // rfGO: info.raw on the curve, info.pts area-true; degree 1 stays a chord
         var raw = bsCurvePoints(+geom.a[1], (geom.a[2] || []).map(point), bsFlat(geom.a[7], geom.a[6]));
         if (!same) raw.reverse();
@@ -1915,7 +1983,7 @@ var Exchange = (function () {
         if (S.t === 'cone') return Math.abs(a.rho - (S.r + S.k * a.z)) < tol;
         return Math.abs(Math.hypot(a.rho - Cr, a.z) - S.r) < tol;
       }
-      var seams = [], lats = [], rulings = [];
+      var seams = [], lats = [], rulings = [], ells = [];
       // rfFF2: a fillet's spherical corner (Anvil's own export, OpenCascade's rounded box): one loop of three quarter
       // great circles in mutually perpendicular planes
       var octTris = S.t === 'sph' && loops.length === 1 && !vloops.length && loops[0].length === 3 ? sphereOctant(loops[0]) : null;
@@ -1962,6 +2030,12 @@ var Exchange = (function () {
         if (info.kind === 'line' && (S.t === 'cyl' || S.t === 'cone') && onSurface(info.start) && onSurface(info.end)) {
           var a1 = ax(info.start), a2 = ax(info.end);
           if (a1.rho < tol || a2.rho < tol || Math.abs(wrapAngle(a1.ang - a2.ang)) * Math.max(a1.rho, a2.rho) < tol) { rulings.push({ x: x, loop: li, idx: xi }); continue; }
+        }
+        // stepout-2: an oblique plane's cut of the cylinder (a mitred bend end): the ellipse's centre on the axis, its
+        // minor semi-axis the radius and square to the axis
+        if (info.kind === 'ellipse' && S.t === 'cyl' && !info.full && onSurface(info.start) && onSurface(info.end)) {
+          var EL = info.ellipse, ey = cross(norm(EL.normal), EL.xdir);
+          if (ax(EL.center).rho < tol && Math.abs(EL.b - S.r) < tol && Math.abs(dot(ey, S.d)) < 1e-9) { ells.push(x); continue; }
         }
         return false;
       }
@@ -2035,7 +2109,7 @@ var Exchange = (function () {
       else if (S.t === 'cyl' || S.t === 'cone') {
         if (levels.length === 2 && full.length === 2 && !rulings.length) zip(ring(levels[0]), ring(levels[1]), true, rec());
         else if (S.t === 'cone' && levels.length === 1 && full.length === 1 && !rulings.length && Math.abs(S.k) > 1e-12) zip(ring(levels[0]), pointRow(add(S.o, scale(S.d, -S.r / S.k))), true, rec());
-        else if (levels.length === 2 && loops.length === 1 && rulingRuns(loops[0]) === 2) {
+        else if ((levels.length === 2 || (ells.length && !full.length)) && loops.length === 1 && rulingRuns(loops[0]) === 2) {
           // a patch between two arcs and two rulings: the loop is arcs at one level, a ruling, arcs at the other, a ruling
           // (stepout: a ruling may come split in collinear pieces where other faces meet it, as Anvil writes a fillet
           // whose side is met by a chamfer's end: each run of rulings is one side)
@@ -2059,6 +2133,9 @@ var Exchange = (function () {
           var ua = unwrap(A), ub = unwrap(B), sg = ua[ua.length - 1].a >= 0 ? 1 : -1;
           var off2 = wrapAngle(ax(B[0]).ang - ax(A[0]).ang);
           ua.forEach(function (u) { u.a *= sg; }); ub.forEach(function (u) { u.a = (u.a + off2) * sg; });
+          // stepout-2: each side must run one way round the axis (sides of ellipse arcs are not latitude rows)
+          function monotone(us) { for (var mi = 1; mi < us.length; mi++) if (us[mi].a < us[mi - 1].a - 1e-9) return false; return true; }
+          if (ells.length && (!monotone(ua) || !monotone(ub))) return false;
           zip(ua, ub, false, rec());
         } else return false;
       } else {
@@ -2250,6 +2327,23 @@ var Exchange = (function () {
     else for (k = Math.ceil(a1 / step - eps) - 1; k * step > a1 - sweep + eps; k--) pts.push(at(k * step));
     pts.push(p2);
     return { pts: pts, full: full, mid: at(ccw ? a1 + sweep / 2 : a1 - sweep / 2) };
+  }
+  // stepout-2: ellipsePoints(E, p1, p2, sameSense, toMM) -> { pts, full }: an EDGE_CURVE on an ELLIPSE from p1 to p2
+  // (increasing parameter when sameSense) as p1, the points at the grid of Kernel.segsForRadius(b in mm) parameters
+  // strictly between, p2. For a cylinder's oblique cut (b = r, x = the axis projected into the plane) the parameter is
+  // the cylinder's angle, so the points are where the cut meets evenly spaced rulings.
+  function ellipsePoints(E, p1, p2, sameSense, toMM) {
+    var y = cross(E.normal, E.xdir);
+    function par(p) { var v = sub(p, E.center); return Math.atan2(dot(v, y) / E.b, dot(v, E.xdir) / E.a); }
+    function at(t) { return add(E.center, add(scale(E.xdir, E.a * Math.cos(t)), scale(y, E.b * Math.sin(t)))); }
+    var N = K.segsForRadius(E.b * (toMM || 1)), step = 2 * Math.PI / N, t1 = par(p1);
+    var full = len(sub(p1, p2)) <= 1e-9 * Math.max(1, E.a), sweep = 2 * Math.PI;
+    if (!full) { var t2 = par(p2); sweep = sameSense ? mod2pi(t2 - t1) : mod2pi(t1 - t2); if (sweep < 1e-12) sweep = 2 * Math.PI; }
+    var pts = [p1], eps = 1e-9, k;
+    if (sameSense) for (k = Math.floor(t1 / step + eps) + 1; k * step < t1 + sweep - eps; k++) pts.push(at(k * step));
+    else for (k = Math.ceil(t1 / step - eps) - 1; k * step > t1 - sweep + eps; k--) pts.push(at(k * step));
+    pts.push(p2);
+    return { pts: pts, full: full };
   }
   function dedupeRing(pts) {
     var out = [];

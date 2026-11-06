@@ -37,6 +37,19 @@ Files are ASCII only.
    `writeBrepAnalytic`, and teach the reader's `curvedFace` to tessellate a cylinder patch bounded by ellipses (rows
    in (angle, z) between the two boundary curves). exchange.js, not done (too large for this lane); tested as a
    known limit in rfJZ (round trip 1e-3).
+   **Update (stepout-2, rfKB):** the writer now writes a bend cut by one true plane as its `CYLINDRICAL_SURFACE`
+   bounded by the cut's `ELLIPSE`, and the reader reads `ELLIPSE` edges on cylinders. An L-bracket with a corner cut
+   off across the bend at an angle, and one with both ends cut obliquely, round-trip to 1e-11, and OpenCascade reads
+   the same files at the same volume (9e-12). The mitred tray and the Closed Corner box are **still faceted**. The
+   cause is in the kernel, not the writer: the inner bends end on one mitre plane each, which is fine. The outer bends
+   (R + T) end on a fan of planar faces whose normals turn about 3° from one facet to the next (e.g. (0.962, 0, −0.272)
+   then (0.962, −0.053, −0.267) at the tray's corner, about 16° off square rather than the 45° bisector). Those faces
+   meet the cylinder at vertices on the facets' chords, 5.8e-4 in inside it, and no single plane or ellipse fits them.
+   The writer now keeps a bend whole: if the outer side cannot be written, the inner side stays faceted too. Writing
+   only one side made the read-back volume worse than all facets (tray −6.2e-4 against −4.7e-4), and SolidWorks
+   needs both cylinders to Insert Bends. **Needed in kernel-sheetmetal.js (multi-edge mitre / Closed Corner trims):**
+   cut the outer bend's end with one plane, the same mitre plane the walls and the inner bend use. The STEP writer
+   then writes every bend of both parts exactly with no further change.
 2. **A bend next to an auto relief can carry a vertex 0.0005 in off its cylinder** (two inside flanges on adjacent
    edges of a plate, no Closed Corner): the patch fails the on-surface test and goes to facets (round trip −1.5e-4).
    The mesh vertex comes from the flange / relief build — kernel-sheetmetal.js (report to the sheet-metal owner).
