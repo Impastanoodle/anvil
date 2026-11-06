@@ -49,3 +49,31 @@ Coplanar faces); Break Corner (Break Corner Options, Chamfer / Fillet, Distance 
 3. Edge-Flange: Use default radius. Flange Length order is Length end condition (Blind), Reverse direction, Length, Measured from. Position order is inside / outside / bendOutside / virtualSharp. Miter corners shows Gap distance. Custom relief list is Rectangle / Obround / None. A Material Inside flange builds with no errors.
 
 No existing smoke test pinned a label renamed here, so none was changed.
+
+
+## Lane rfIY: flat-pattern export and Flat-Pattern1 (2026-11-05)
+
+### DXF/DWG Output on a sheet-metal part (File ▸ Save As DXF / Sheet Metal ▸ Flat to DXF)
+| SolidWorks 2024 | Anvil before | Now |
+|---|---|---|
+| Export: Sheet metal, Faces/Loops/Edges, Annotation views | Faces / loops / edges, Views, Sheet metal, Sketch | **fixed**: Sheet metal, Faces/Loops/Edges, Annotation views, then Sketch (Anvil's). The `data-key`s are unchanged. |
+| Entities to export: Geometry (always), Hidden edges, Bend lines, Sketches, Library features, Forming tools, Boundary box **(unsure of the exact 2024 list and order)** | Geometry, Bend lines, Notes | **fixed**: an *Entities to export* heading, then Geometry, Bend lines, Sketches (the writer's `etch`: ETCH marking), Forming tools (layer FORM), and Notes (Anvil's bend notes and blank size). Each box changes the file. The writer ties FORM to `bendLines`, so the PM asks for both and drops the unwanted layer with `dropDxfLayers`. `anvil.dxfOutput` takes `etch` and `formingTools`. |
+| Hidden edges | none | **kernel** (exportDXFFlat): `hiddenEdges`, the far-side outlines of forming tools on a HIDDEN layer. |
+| Library features | none | **kernel**: no library features yet. |
+| Boundary box | none | **kernel**: `opts.boundaryBox` → a rectangle round the blank on layer BOUNDARY (the box is already computed in exportDXFFlat). |
+| Bend lines Up / Down as separate entities (layer mapping) | one BEND layer; the UP / DOWN direction is in the notes | **kernel**: `opts.bendLayers: 'split'` → BEND_UP / BEND_DOWN from `flat.bends[i].up`. |
+| Corner reliefs (as their own entities) | relief notches are part of OUTLINE | **kernel**: tag relief segments in `flat.loops` and give them a layer option. |
+| Preview window with Remove entity; Export options (one file per body / cut-list item) | no preview; one body | **UI later**: a preview using `flatSvg` (cmdFlatten) with click-to-remove needs the writer to take an entity filter (kernel: `opts.exclude: [entity ids]`). One file per body waits for multibody sheet metal. |
+
+### Flat-Pattern1 ▸ Edit Feature
+SolidWorks' Parameters group: Fixed face, Grain direction, Merge faces, Simplify bends, Show slit; Corner Options ▸ Corner treatment. Anvil already has Parameters with Fixed face and then Grain direction, so it matches that far. The kernel has no switch for the other four (`flatPattern` always merges and always straightens bends, and has no slits or corner treatment). Lane DK chose not to show greyed boxes for missing options (rfDC and rfDK assert it), so they are left out. **kernel**: `model.flatOptions = { mergeFaces, simplifyBends, showSlit, cornerTreatment }`, read in `flatPattern`.
+
+### Leftover UI-only rows from the audit
+- **fixed**: the Corners flyout row now says *Break-Corner/Corner-Trim* (rfCS and rfCP match it as a substring).
+- **UI later**: Edge-Flange Flange Position, Jog Position / Dimension position and Sketched Bend Bend position as icon rows. p9-pm, rfK and rfDC set them through the lists, so switching them to icons needs those tests rewritten, not just a label changed.
+- Hem "Hem length" (SolidWorks: Length, **unsure**) is kept.
+
+### Smoke steps (rfIY, 3 / 3, real clicks)
+1. Ribbon *Flat to DXF* on a part with a flange and a dimple: Export list order and names; Entities to export order; Geometry always on and greyed. ✓ writes FORM, BEND and NOTES. Unchecking Forming tools drops FORM and keeps BEND. Unchecking Bend lines drops BEND and keeps FORM and OUTLINE.
+2. Double-click on Flat-Pattern1: Parameters group first, Fixed face before Grain direction, no dead boxes. Cancel changes nothing.
+3. Corners flyout ▸ Break-Corner/Corner-Trim opens the Break-Corner PM.

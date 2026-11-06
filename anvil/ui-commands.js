@@ -4698,6 +4698,8 @@
             items: function (v) { return v.grain ? [{ label: 'Edge<1>', at: v.grain.at }] : []; },
             onRemove: function (v) { v.grain = null; renderPM(); lit(); status(); },
             onClear: function (v) { v.grain = null; renderPM(); lit(); status(); } }
+          // (rfIY) SolidWorks' Merge faces / Simplify bends / Show slit and Corner Options ▸ Corner treatment need kernel
+          // switches first (test-reports/2026-11-05-sheetmetal-pm-audit.md); lane DK: no greyed boxes for them meanwhile
         ] },
         { title: 'Flat Pattern', fields: [
           { type: 'static', label: 'Flat size', value: function (v) { var r = flatOf(v); return r.flat ? flatSizeText(r.flat).replace(/^Flat size /, '') : (r.err || ''); } },
@@ -4859,7 +4861,8 @@
   }
   // dxfOutput(opts) -> DXF text, without the PropertyManager (anvil.dxfOutput):
   // { export: 'faces' | 'views' | 'sheet', face (index, default the selected face), views: ['Front', 'Top', 'Right',
-  //   'Isometric'], current (bool: the viewport's orientation as one more view), bendLines, notes (sheet, default on),
+  //   'Isometric'], current (bool: the viewport's orientation as one more view), bendLines, notes, etch (Sketches: the
+  //   ETCH marking), formingTools (the FORM marks) (sheet, default on),
   //   version: 'R12' (default) | 'R2000' (faces, views, sketch and sheet), style: 'polyline' (default: one closed
   //   polyline per loop) | 'entities' (LINE / ARC; faces and sheet) }. Faces and the flat pattern come out laser
   //   ready (Kernel.exportDXFFlat): true circles and arcs, joined loops, the flat's lower-left corner at 0,0.
@@ -4884,8 +4887,14 @@
     if (what === 'sheet') {
       if (!App.model.sheet) throw new Error('Sheet metal needs a Base Flange.');
       var flat = K.flatPattern(App.model, App.build, App.mesh);
-      wopts.bendLines = opts.bendLines !== false; wopts.notes = opts.notes !== false;
-      return K.exportDXFFlat(flat, dxfUnits(), wopts);
+      // rfIY: SolidWorks' Entities to export. The writer ties the Forming Tool marks (layer FORM) to bendLines, so it
+      // writes both when either is wanted and the one left out is dropped here; Sketches = the ETCH marking (etch)
+      var bl = opts.bendLines !== false, ft = opts.formingTools !== false;
+      wopts.bendLines = bl || ft; wopts.notes = opts.notes !== false; wopts.etch = opts.etch !== false;
+      var drop = [];
+      if (!bl) drop.push('BEND');
+      if (!ft) drop.push('FORM');
+      return dropDxfLayers(K.exportDXFFlat(flat, dxfUnits(), wopts), drop);
     }
     throw new Error('Unknown export "' + what + '" (faces, views, sheet or sketch).');
   }
@@ -4963,14 +4972,14 @@
     var faceOk = !!(App.sel && App.sel.kind === 'face'), sheetOk = !!App.model.sheet, sketchOk = dxfSketches().length > 0;
     var sk0 = opts.sketch != null ? K.findFeature(App.model, +opts.sketch) : dxfDefaultSketch();
     var v = { export: opts.export === 'sketch' && sketchOk ? 'sketch' : opts.export === 'sheet' && sheetOk ? 'sheet' : dxfDefaultExport(), sketch: sk0 ? String(sk0.id) : '', construction: false, vFront: true, vTop: true, vRight: true, vIsometric: false, vCurrent: false,
-      format: opts.format === 'dwg' ? 'dwg' : 'dxf', version: 'R12', style: 'polyline', bendLines: true, notes: true, name: '' };
+      format: opts.format === 'dwg' ? 'dwg' : 'dxf', version: 'R12', style: 'polyline', bendLines: true, notes: true, etch: true, formingTools: true, name: '' };
     var typed = opts.name && opts.name !== dxfSafeName() ? opts.name : null, auto = null;
     function autoName() { return dxfSafeName() + dxfSuffix(v); }
     v.name = typed || (auto = autoName());
     if (v.format === 'dwg' && !(dwgState.probed && dwgState.ok)) v.format = 'dxf';
     function optsOf(x) {
       // DWG: the converter gets an R2000 DXF (LibreDWG reads R12 entities without their model space)
-      return { export: x.export, views: DXF_VIEW_NAMES.filter(function (n) { return x['v' + n]; }), current: !!x.vCurrent, bendLines: !!x.bendLines, notes: !!x.notes,
+      return { export: x.export, views: DXF_VIEW_NAMES.filter(function (n) { return x['v' + n]; }), current: !!x.vCurrent, bendLines: !!x.bendLines, notes: !!x.notes, etch: !!x.etch, formingTools: !!x.formingTools,
         sketch: x.sketch !== '' && x.sketch != null ? +x.sketch : null, construction: !!x.construction,
         version: x.format === 'dwg' || x.version === 'R2000' ? 'R2000' : 'R12', style: x.style };
     }
@@ -4993,7 +5002,7 @@
       message: 'Choose what to export and the format; ✓ downloads the file.',
       groups: [
         { title: 'Export', fields: [
-          { type: 'radio', key: 'export', rerender: true, options: [['faces', 'Faces / loops / edges'], ['views', 'Views'], ['sheet', 'Sheet metal'], ['sketch', 'Sketch']],
+          { type: 'radio', key: 'export', rerender: true, options: [['sheet', 'Sheet metal'], ['faces', 'Faces/Loops/Edges'], ['views', 'Annotation views'], ['sketch', 'Sketch']],   // rfIY: SolidWorks 2024's order and names (Sketch is Anvil's)
             disabledOption: function (val) {
               if (val === 'sketch') return sketchOk ? null : 'Draw a sketch first';
               if (!hasSolid()) return 'No solid yet';
@@ -5006,8 +5015,14 @@
           { type: 'check', label: 'Right', key: 'vRight', show: isViews }, { type: 'check', label: 'Isometric', key: 'vIsometric', show: isViews },
           { type: 'check', label: 'Current view', key: 'vCurrent', show: isViews },
           { type: 'html', show: isViews, html: '<div class="pm-note">Full size (1:1), one layer per view; no border or title block.</div>' },
+          // rfIY: SolidWorks' Entities to export, in its order (Hidden edges, Library features and Boundary box are not
+          // written yet: test-reports/2026-11-05-sheetmetal-pm-audit.md); Notes (bend notes, blank size) is Anvil's
+          { type: 'html', show: isSheet, html: '<div class="pm-note" style="margin:4px 0 2px"><b>Entities to export:</b></div>' },
           { type: 'check', label: 'Geometry', key: 'geometry', disabled: true, show: isSheet },
-          { type: 'check', label: 'Bend lines', key: 'bendLines', show: isSheet }, { type: 'check', label: 'Notes', key: 'notes', show: isSheet }
+          { type: 'check', label: 'Bend lines', key: 'bendLines', show: isSheet },
+          { type: 'check', label: 'Sketches', key: 'etch', show: isSheet },
+          { type: 'check', label: 'Forming tools', key: 'formingTools', show: isSheet },
+          { type: 'check', label: 'Notes (bend notes, blank size)', key: 'notes', show: isSheet }
         ] },
         { title: 'Output format', fields: [
           { type: 'radio', key: 'format', rerender: true, options: [['dxf', 'DXF'], ['dwg', 'DWG']],
