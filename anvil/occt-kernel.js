@@ -1277,7 +1277,13 @@ var OcctKernel = (function () {
     function sketchJogOp(f) {
       // lane DK: Fix projected length stretches the sheet at the line first (Kernel.buildSketchJog): Anvil's solid stays
       if (f.fixLength) throw unsupportedErr('Jog with Fix projected length');
-      sketchedBendOp(K.jogBendFeature(f, m, { sketches: sketches, planes: planes }));
+      // lane dxfout-2: an Up To Vertex / Surface end condition measures from the sheet's face: the body goes along as CSG
+      var jctx = { sketches: sketches, planes: planes };
+      if (f.offsetEnd && f.offsetEnd !== 'blind') {
+        var jat = K._ && K._.sketchedBendPoint ? K._.sketchedBendPoint(f, m, jctx) : null, jk = pickBody(jat);
+        if (jk >= 0) jctx.body = shapeToCSG(bodies[jk] = unify(bodies[jk]));
+      }
+      sketchedBendOp(K.jogBendFeature(f, m, jctx));
     }
     // Break Corner (lane CP; as Kernel.buildBreakCorner, from Kernel.breakCornerLayout found on the bodies'
     // tessellation): one prism per corner, its section's fillet an exact arc; the rebuild cuts the tool (a registered cut)

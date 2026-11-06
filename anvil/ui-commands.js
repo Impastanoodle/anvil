@@ -3028,6 +3028,10 @@
     cmdSketchJog(existing);
   }
   var JOG_OFFSET_REFS = [['outside', 'Outside Offset'], ['inside', 'Inside Offset'], ['overall', 'Overall Dimension']];
+  var JOG_OFFSET_ENDS = [['blind', 'Blind'], ['upToVertex', 'Up To Vertex'], ['upToSurface', 'Up To Surface'], ['offsetFromSurface', 'Offset From Surface']];   // lane dxfout-2
+  var JOG_ENDS_LABEL = {}; JOG_OFFSET_ENDS.forEach(function (o) { JOG_ENDS_LABEL[o[0]] = o[1]; });
+  // a jog target plane's name: a standard plane, else the reference plane feature's name
+  function jogPlaneName(ref) { if (typeof ref === 'string') return ref; var pf = K.findFeature(App.model, ref); return pf && pf.name ? pf.name : String(ref); }
   var jogLast = null;   // the offset / reference / position / angle last accepted this session
   function cmdSketchJog(existing) {
     if (!existing && App.mode !== 'sketch' && selectedSketchId() == null && pickDefaultSketch(null) == null && App.sel && App.sel.kind === 'face' && App.model.sheet) {
@@ -3048,6 +3052,13 @@
       f.radiusValue = f.radius != null ? f.radius : sheet.bendRadius;
       f.fixProjected = !!f.fixLength;   // lane DK: Fix projected length (fixLength: material is added for the jog)
       delete f.fixLength;
+      // lane dxfout-2: Jog Offset end condition (Kernel.jogBendFeature): the target box takes a vertex (Up To Vertex), a
+      // face or a plane (Up To Surface / Offset From Surface) while it is active; otherwise a face click is the fixed face
+      if (!f.offsetEnd) f.offsetEnd = 'blind';
+      if (f.offsetDistance == null) f.offsetDistance = Math.round(UI.lenDefault(5) * 1e4) / 1e4;
+      f.offsetFlip = !!f.offsetFlip;
+      f.tgActive = f.offsetEnd !== 'blind' && f.offsetTarget == null;
+      if (f.offset == null) f.offset = Math.round(UI.lenDefault(10) * 1e4) / 1e4;
       var cba = f.bendAllowance || null, kSheet = K.sheetKFactor(sheet), R0 = +sheet.bendRadius, BA0 = K.bendAllowance(Math.PI / 2, R0, T, kSheet);
       f.useCustomBA = !!cba;
       f.cbaType = cba ? cba.type : 'kfactor';
@@ -3056,8 +3067,14 @@
       f.cbaBD = cba && cba.type === 'deduction' ? cba.value : Math.round(K.bendDeduction(Math.PI / 2, R0, T, BA0) * 1e4) / 1e4;
       delete f.bendAllowance;
       var CBA_KEY = { kfactor: 'cbaK', allowance: 'cbaBA', deduction: 'cbaBD' };
-      var base = null;
+      var base = null, jogCmd = null, jogTargetKind = f.offsetEnd;
       function baseBody() { if (!base) base = existing ? bodyBefore(existing.id) : (App.build ? App.build.body : null); return base; }
+      function jogTargetOn(v) {
+        v.tgActive = true;
+        if (jogCmd) jogCmd.pickPlane = v.offsetEnd !== 'upToVertex';
+        UI.setStatus(v.offsetEnd === 'upToVertex' ? 'Up To Vertex: click the vertex the jog goes to.' : 'Click the face or plane (parallel to the sheet) the jog goes to.');
+        renderPM();
+      }
       function toFeature(v, forOK) {
         var out = JSON.parse(JSON.stringify(v));
         out.radius = v.useDefaultRadius ? null : +v.radiusValue;
@@ -3067,7 +3084,12 @@
           if (v.cbaType !== 'table') out.bendAllowance.value = forOK ? pmExpr(CBA_KEY[v.cbaType], +v[CBA_KEY[v.cbaType]]) : +v[CBA_KEY[v.cbaType]];
         } else delete out.bendAllowance;
         if (v.fixProjected) out.fixLength = true;
-        ['useDefaultRadius', 'radiusValue', 'useCustomBA', 'cbaType', 'cbaK', 'cbaBA', 'cbaBD', 'fixProjected'].forEach(function (k) { delete out[k]; });
+        if (v.offsetEnd === 'blind') { delete out.offsetEnd; delete out.offsetTarget; delete out.offsetDistance; delete out.offsetFlip; }
+        else {
+          if (v.offsetEnd !== 'offsetFromSurface') { delete out.offsetDistance; delete out.offsetFlip; }
+          else { out.offsetDistance = forOK ? pmExpr('offsetDistance', +v.offsetDistance) : +v.offsetDistance; if (!v.offsetFlip) delete out.offsetFlip; }
+        }
+        ['useDefaultRadius', 'radiusValue', 'useCustomBA', 'cbaType', 'cbaK', 'cbaBA', 'cbaBD', 'fixProjected', 'tgActive'].forEach(function (k) { delete out[k]; });
         if (!forOK) out.offset = +v.offset;
         return out;
       }
@@ -3082,23 +3104,32 @@
           if (!baseBody()) throw new Error('Create a Base Flange first.');
           var r = K.buildSketchJog(feat, previewModel(), { body: baseBody(), sketches: {}, planes: (App.build && App.build.planes) || {}, flanges: {}, tools: {} });
           if (r.tool && r.tool.polygons.length) addPreviewMesh(r.tool, UI.mats.preview);
-          UI.setStatus('Jog preview: ' + f.offsetRef + ' offset ' + UI.fmtNum(+f.offset, 4) + ' ' + UI.unitLabel() + ', ' + (f.fixed ? 'fixed face picked' : 'the larger side fixed') + ', straight riser ' + UI.fmtNum(r.g, 4) + ' ' + UI.unitLabel() + '.');
+          UI.setStatus('Jog preview: ' + f.offsetRef + ' offset ' + (f.offsetEnd === 'blind' ? UI.fmtNum(+f.offset, 4) + ' ' + UI.unitLabel() : JOG_ENDS_LABEL[f.offsetEnd]) + ', ' + (f.fixed ? 'fixed face picked' : 'the larger side fixed') + ', straight riser ' + UI.fmtNum(r.g, 4) + ' ' + UI.unitLabel() + '.');
         } catch (e) { UI.setStatus('Preview: ' + e.message); }
       }
       var groups = [
         { title: 'Selections', fields: [
           sketchPickerField(f),
-          { type: 'pick', icon: 'jog', value: function (v) { return v.fixed ? 'Fixed face <1>' : ''; }, placeholder: 'Fixed face (default: the larger side)…' },
+          { type: 'pick', icon: 'jog', value: function (v) { return v.fixed ? 'Fixed face <1>' : ''; }, placeholder: 'Fixed face (default: the larger side)…',
+            active: function (v) { return v.offsetEnd !== 'blind' && !v.tgActive; },   // lane dxfout-2: two boxes, clicks go to the active one
+            onActivate: function (v) { if (!v.tgActive) return; v.tgActive = false; jogCmd.pickPlane = false; renderPM(); } },
           { type: 'buttons', show: function (v) { return !!v.fixed; }, buttons: [{ label: 'Clear fixed face', onclick: function (v) { v.fixed = null; renderPM(); preview(); } }] },
           { type: 'check', label: 'Use default radius (' + sheet.bendRadius + ')', key: 'useDefaultRadius', rerender: true },
           { type: 'number', label: 'Bend radius', key: 'radiusValue', unit: 'u', min: 0, show: function (v) { return !v.useDefaultRadius; } }
         ] },
         { title: 'Jog Offset', fields: [
-          { type: 'static', label: 'End condition', value: 'Blind' },
+          // SolidWorks 2024: End condition, Reverse, the vertex / surface box, the distance, Dimension position
+          { type: 'select', label: 'End condition', key: 'offsetEnd', options: JOG_OFFSET_ENDS, rerender: true },
           { type: 'check', label: 'Reverse direction', key: 'reverse' },
-          { type: 'number', label: 'Offset distance', key: 'offset', unit: 'u', min: 0 },
+          { type: 'pick', icon: 'point', show: function (v) { return v.offsetEnd !== 'blind'; },
+            placeholder: 'Select a vertex, face or plane…',
+            value: function (v) { return v.offsetTarget == null ? '' : Array.isArray(v.offsetTarget) ? (v.offsetEnd === 'upToVertex' ? 'Vertex<1>' : 'Face<1>') : 'Plane: ' + jogPlaneName(v.offsetTarget); },
+            active: function (v) { return !!v.tgActive; }, onActivate: function (v) { jogTargetOn(v); } },
+          { type: 'number', label: 'Offset distance', key: 'offset', unit: 'u', min: 0, show: function (v) { return v.offsetEnd === 'blind'; } },
+          { type: 'number', label: 'Offset distance', key: 'offsetDistance', unit: 'u', min: 0, show: function (v) { return v.offsetEnd === 'offsetFromSurface'; } },
+          { type: 'check', label: 'Reverse offset', key: 'offsetFlip', show: function (v) { return v.offsetEnd === 'offsetFromSurface'; } },
           { type: 'select', label: 'Dimension position', key: 'offsetRef', options: JOG_OFFSET_REFS, rerender: true },
-          { type: 'static', label: 'Smallest offset', value: minText },
+          { type: 'static', label: 'Smallest offset', value: minText, show: function (v) { return v.offsetEnd === 'blind'; } },
           { type: 'check', label: 'Fix projected length', key: 'fixProjected' }
         ] },
         { title: 'Jog Position', fields: [{ type: 'select', label: 'Jog position', key: 'position', options: SKETCHED_BEND_POSITIONS }] },
@@ -3115,10 +3146,23 @@
       openPM({
         title: existing ? existing.name : 'Jog', icon: 'jog', values: f,
         exprMap: { radiusValue: 'radius' },
-        message: 'Sketch <b>one line</b> on a flat face of the sheet where the jog starts. Click the <b>face that stays fixed</b> (default: the larger side); the other side is offset by two bends. <b>Fix projected length</b> keeps the jogged side\'s far end where it was (material is added); without it the jog uses up length and the flat keeps the plate\'s size.',
-        command: {
+        message: 'Sketch <b>one line</b> on a flat face of the sheet where the jog starts. Click the <b>face that stays fixed</b> (default: the larger side); the other side is offset by two bends. <b>Fix projected length</b> keeps the jogged side\'s far end where it was (material is added); without it the jog uses up length and the flat keeps the plate\'s size. <b>Up To Vertex / Surface</b>: the jogged flange\'s far face goes to it (its near face with Inside Offset).',
+        command: jogCmd = {
           sketchId: f.sketch,
+          pickPlane: f.tgActive && f.offsetEnd !== 'upToVertex',
+          pickRefGeo: true, refKinds: ['point'], pickVertices: function () { return f.offsetEnd === 'upToVertex' && !!f.tgActive; },
           onPick: function (pk) {
+            if (f.tgActive && f.offsetEnd !== 'blind') {
+              var tg = null;
+              if (f.offsetEnd === 'upToVertex') { if (pk.kind !== 'face' && pk.kind !== 'edge' && pk.point) tg = pk.point; }
+              else if (pk.kind === 'plane' && pk.ref != null) tg = pk.ref;
+              else if (pk.kind === 'face' && pk.point) tg = pk.point;
+              if (tg == null) return false;
+              f.offsetTarget = Array.isArray(tg) ? tg.map(function (x) { return Math.round(x * 1e6) / 1e6; }) : tg;
+              f.tgActive = false; jogCmd.pickPlane = false;
+              renderPM(); preview();
+              return true;
+            }
             if (pk.kind !== 'face' || !pk.point) return false;
             f.fixed = pk.point.map(function (x) { return Math.round(x * 1e4) / 1e4; });
             renderPM(); preview();
@@ -3128,11 +3172,22 @@
         groups: groups,
         onChange: function (v, key) {
           if (key === 'sketch' && App.command) { App.command.sketchId = v.sketch; UI.updateSketches(); }
+          if (key === 'offsetEnd') {
+            if (v.offsetEnd === 'blind') { v.tgActive = false; jogCmd.pickPlane = false; }
+            else {
+              // a vertex is no surface and back: the target goes when it no longer fits
+              if (v.offsetTarget != null && (v.offsetEnd === 'upToVertex') !== (jogTargetKind === 'upToVertex')) v.offsetTarget = null;
+              if (v.offsetTarget == null) jogTargetOn(v);
+            }
+            jogTargetKind = v.offsetEnd;
+            renderPM();
+          }
           preview();
         },
         onOK: function (v) {
           if (v.sketch == null || v.sketch < 0) { UI.toast('Select the sketch with the jog line.'); return false; }
-          if (!(+v.offset > 0)) { UI.toast('Jog offset must be greater than zero.'); return false; }
+          if (v.offsetEnd !== 'blind' && v.offsetTarget == null) { UI.toast(v.offsetEnd === 'upToVertex' ? 'Up To Vertex: select the vertex.' : 'Select the face or plane the jog goes to.'); return false; }
+          if (v.offsetEnd === 'blind' && !(+v.offset > 0)) { UI.toast('Jog offset must be greater than zero.'); return false; }
           var feat = toFeature(v, true);
           if (!feat.name) delete feat.name;
           jogLast = { offset: feat.offset, offsetRef: feat.offsetRef, position: feat.position, angle: feat.angle };
@@ -3142,6 +3197,79 @@
       preview();
     });
   }
+  // lane dxfout-2: SolidWorks' Lofted-Bend PropertyManager (Kernel.buildLoftedBend / loftedBendFlat): Method (Formed /
+  // Bent), Profiles (two sketches, each one open chain of lines and arcs), Faceting options (Number of bends per arc,
+  // Segment length, Segment chord tolerance; Bent only), Thickness (the sheet's: set here when the part has none yet).
+  var LB_FACETING_UI = [['count', 'Number of bends'], ['length', 'Segment length'], ['chord', 'Segment chord tolerance']];
+  function cmdLoftedBend(existing) {
+    var sks = dxfSketches();
+    if (!existing && sks.length < 2) { UI.toast('Lofted-Bend: sketch two open profiles first (one in each sketch, on two planes).'); return; }
+    var sheet0 = App.model.sheet, T0 = sheet0 ? +sheet0.thickness : Math.round(UI.lenDefault(1.5) * 1e4) / 1e4;
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'loftedBend', sketches: sks.slice(-2).map(function (s) { return s.id; }), method: 'bent', faceting: 'count', facetValue: 4 };
+    f.p1 = String(f.sketches[0]); f.p2 = String(f.sketches[1]);
+    f.method = f.method || 'bent'; f.faceting = f.faceting || 'count';
+    if (f.facetValue == null) f.facetValue = 4;
+    f.thickness = T0;
+    function toFeature(v) {
+      var out = { type: 'loftedBend', sketches: [+v.p1, +v.p2], method: v.method, faceting: v.faceting, facetValue: +v.facetValue };
+      if (v.name) out.name = v.name;
+      return out;
+    }
+    function pmModel(v) {
+      var m = previewModel();
+      if (!m.sheet) m = Object.assign({}, m, { sheet: K.makeSheet({ thickness: +v.thickness, bendRadius: +v.thickness, kFactor: 0.5 }) });
+      return m;
+    }
+    function preview() {
+      UI.disposeGroup(UI.groups.preview);
+      try {
+        var tool = K.buildLoftedBend(toFeature(f), pmModel(f), { planes: (App.build && App.build.planes) || {}, sketches: {} });
+        if (tool && tool.polygons.length) addPreviewMesh(tool, UI.mats.preview);
+        UI.setStatus('Lofted-Bend preview: ' + (f.method === 'bent' ? 'bent facets' : 'formed') + '.');
+      } catch (e) { UI.setStatus('Preview: ' + e.message); }
+    }
+    function sketchOpts() { return dxfSketches().map(function (s) { return [String(s.id), s.name]; }); }
+    function isBent(v) { return v.method === 'bent'; }
+    openPM({
+      title: existing ? existing.name : 'Lofted-Bend', icon: 'loft', values: f,
+      message: 'Pick the two <b>open profiles</b> (lines and arcs, one sketch each, with a small gap where the seam goes). They are the sheet\'s mid-surface. <b>Bent</b> makes flat facets with bend lines in the flat pattern; <b>Formed</b> a rolled transition without bend lines.',
+      groups: [
+        { title: 'Manufacturing Method', fields: [{ type: 'radio', key: 'method', rerender: true, options: [['formed', 'Formed'], ['bent', 'Bent']] }] },
+        { title: 'Profiles', fields: [
+          { type: 'select', label: 'Profile 1', key: 'p1', options: sketchOpts },
+          { type: 'select', label: 'Profile 2', key: 'p2', options: sketchOpts }
+        ] },
+        { title: 'Faceting Options', show: isBent, fields: [
+          { type: 'radio', key: 'faceting', rerender: true, show: isBent, options: LB_FACETING_UI },
+          { type: 'number', label: 'Bends per arc', key: 'facetValue', min: 1, step: 1, show: function (v) { return isBent(v) && v.faceting === 'count'; } },
+          { type: 'number', label: 'Segment length', key: 'facetValue', unit: 'u', min: 0, show: function (v) { return isBent(v) && v.faceting === 'length'; } },
+          { type: 'number', label: 'Chord tolerance', key: 'facetValue', unit: 'u', min: 0, show: function (v) { return isBent(v) && v.faceting === 'chord'; } }
+        ] },
+        { title: 'Thickness', fields: sheet0 ? [{ type: 'static', label: 'Thickness', value: String(sheet0.thickness) + ' ' + UI.unitLabel() + ' (the sheet\'s)' }] : [{ type: 'number', label: 'Thickness', key: 'thickness', unit: 'u', min: 0 }] },
+        { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ],
+      onChange: function () { preview(); },
+      onOK: function (v) {
+        if (v.p1 === v.p2) { UI.toast('Lofted-Bend: pick two different profiles.'); return false; }
+        if (!(+v.facetValue > 0)) { UI.toast('Lofted-Bend: the faceting value must be greater than zero.'); return false; }
+        if (!App.model.sheet) {
+          if (!(+v.thickness > 0)) { UI.toast('Lofted-Bend: the thickness must be greater than zero.'); return false; }
+          App.model.sheet = K.makeSheet({ thickness: +v.thickness, bendRadius: +v.thickness, kFactor: 0.5 });
+        }
+        var feat = toFeature(v);
+        if (!feat.name && !existing) feat.name = 'Lofted-Bend' + (App.model.features.filter(function (q) { return q.type === 'loftedBend'; }).length + 1);
+        return commitFeature(feat, existing);
+      }
+    });
+    preview();
+  }
+  UI.cmdLoftedBend = cmdLoftedBend;
+  // the Sheet Metal ribbon's Lofted-Bend button (ui-panels.js lists it without a command; it loads after this file)
+  setTimeout(function wireLoftedBend() {
+    var list = UI.RIBBON && UI.RIBBON['Sheet Metal'];
+    if (!list) return;
+    list.forEach(function (it) { if (it && it.id === 'loft' && !it.run) { it.run = function () { cmdLoftedBend(); }; it.help = 'Sheet metal lofted between two open profiles (square to round, transitions): Bent facets with bend lines, or Formed'; } });
+  }, 0);
   // lane DL (fidelity #11): SolidWorks' Miter Flange. The flange section comes from a profile sketch (an open chain of
   // lines, tangent arcs between them, on a plane normal to an edge, starting on it: Kernel.miterFlangeStages); the PM
   // has SolidWorks' groups: Miter Parameters (the edges to run along, the profile sketch, Use default radius / Bend
@@ -6299,6 +6427,7 @@
       case 'fillet': cmdFillet(f); break;
       case 'flange': cmdEdgeFlange(f); break;
       case 'jog': cmdJog(f); break;
+      case 'loftedBend': cmdLoftedBend(f); break;   // lane dxfout-2
       case 'sketchedBend': UI.cmdSketchedBend(f); break;
       case 'breakCorner': UI.cmdBreakCorner(f); break;
       case 'cornerRelief': UI.cmdCornerRelief(f); break;   // lane smtrim

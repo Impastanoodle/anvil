@@ -1353,12 +1353,36 @@
       edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name }, opts.bendAllowance));
     return this;
   };
+  // lane dxfout-2: loftedBend([sketchA, sketchB], { method: 'bent' (default) | 'formed', faceting: 'count' (default) |
+  // 'length' | 'chord', facetValue (4 segments per arc by default), name }) — SolidWorks' Lofted-Bend between two open
+  // profiles (the sheet's mid-surface); needs p.sheet(T, …) first. Its flat is Kernel.flatPattern's like any sheet part.
+  Builder.prototype.loftedBend = function (sketches, opts) {
+    opts = opts || {};
+    if (!Array.isArray(sketches) || sketches.length !== 2) throw new Error('loftedBend: give the two profile sketches.');
+    if (!this.model.sheet) throw new Error('loftedBend: set the sheet first (p.sheet(thickness, radius, k)).');
+    var method = opts.method || 'bent', fac = opts.faceting || 'count';
+    if (K.LOFTED_BEND_METHODS.indexOf(method) < 0) throw new Error('loftedBend method must be one of ' + K.LOFTED_BEND_METHODS.join(', ') + '.');
+    if (K.LOFTED_BEND_FACETING.indexOf(fac) < 0) throw new Error('loftedBend faceting must be one of ' + K.LOFTED_BEND_FACETING.join(', ') + '.');
+    var f = { type: 'loftedBend', sketches: sketches.map(Number), method: method, faceting: fac, facetValue: opts.facetValue != null ? num(opts.facetValue) : (fac === 'count' ? 4 : null), name: opts.name || 'Lofted-Bend' + (this.model.features.filter(function (q) { return q.type === 'loftedBend'; }).length + 1) };
+    if (!(+f.facetValue > 0)) throw new Error('loftedBend facetValue must be greater than zero.');
+    this._add(f);
+    return this;
+  };
   Builder.prototype._sketchJog = function (offset, opts) {
     var position = opts.position || 'centerline', ref = opts.offsetRef || 'outside';
     if (K.SKETCHED_BEND_POSITIONS.indexOf(position) < 0) throw new Error('jog position must be one of ' + K.SKETCHED_BEND_POSITIONS.join(', ') + '.');
     if (K.JOG_OFFSET_REFS.indexOf(ref) < 0) throw new Error('jog offsetRef must be one of ' + K.JOG_OFFSET_REFS.join(', ') + '.');
-    var f = { type: 'jog', sketch: this._sketchId(opts), offset: num(offset), offsetRef: ref, angle: opts.angle == null ? 90 : num(opts.angle), position: position,
+    // lane dxfout-2: offsetEnd 'blind' (default) | 'upToVertex' | 'upToSurface' | 'offsetFromSurface', offsetTarget ([x, y, z]
+    // or a plane name / reference plane id), offsetDistance, offsetFlip; the offset is then not used (pass null)
+    var end = opts.offsetEnd || 'blind';
+    if (K.JOG_OFFSET_ENDS.indexOf(end) < 0) throw new Error('jog offsetEnd must be one of ' + K.JOG_OFFSET_ENDS.join(', ') + '.');
+    var f = { type: 'jog', sketch: this._sketchId(opts), offset: offset == null && end !== 'blind' ? null : num(offset), offsetRef: ref, angle: opts.angle == null ? 90 : num(opts.angle), position: position,
       reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, fixed: opts.fixed ? [+opts.fixed[0], +opts.fixed[1], +opts.fixed[2]] : null, name: opts.name };
+    if (end !== 'blind') {
+      f.offsetEnd = end;
+      f.offsetTarget = Array.isArray(opts.offsetTarget) ? opts.offsetTarget.map(Number) : opts.offsetTarget;
+      if (end === 'offsetFromSurface') { f.offsetDistance = num(opts.offsetDistance || 0); if (opts.offsetFlip) f.offsetFlip = true; }
+    }
     if (opts.fixLength) f.fixLength = true;   // lane DK2: Fix projected length
     this._add(customBendAllowance(f, opts.bendAllowance));
     return this;
@@ -2052,7 +2076,12 @@
             if (f.radius != null) sjo.radius = numOut(f.radius);
             if (f.bendAllowance) sjo.bendAllowance = bendAllowanceOut(f.bendAllowance);
             if (f.fixLength) sjo.fixLength = true;   // lane DK2
-            out.push('var ' + v + ' = p.jog(' + nv(f.offset) + ', ' + optsStr(sjo) + ').last();');
+            if (f.offsetEnd && f.offsetEnd !== 'blind') {   // lane dxfout-2: Up To Vertex / Up To Surface / Offset From Surface
+              sjo.offsetEnd = f.offsetEnd;
+              sjo.offsetTarget = Array.isArray(f.offsetTarget) ? f.offsetTarget.map(function (x) { return Math.round(x * 1e6) / 1e6; }) : typeof f.offsetTarget === 'number' && idVar[f.offsetTarget] ? '@' + idVar[f.offsetTarget] : f.offsetTarget;
+              if (f.offsetEnd === 'offsetFromSurface') { sjo.offsetDistance = numOut(f.offsetDistance || 0); if (f.offsetFlip) sjo.offsetFlip = true; }
+            }
+            out.push('var ' + v + ' = p.jog(' + (f.offset == null ? 'null' : nv(f.offset)) + ', ' + optsStr(sjo) + ').last();');
             break;
           }
           var jspecs = JSON.stringify((f.edges || []).map(function (e) { return e.at.map(function (x) { return Math.round(x * 1e4) / 1e4; }); }));

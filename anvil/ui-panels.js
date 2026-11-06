@@ -1003,6 +1003,7 @@
   FEATURE_ICON.vent = 'vent';   // lane DT
   FEATURE_ICON.crossBreak = 'crossBreak';   // lane cross-break
   FEATURE_ICON.cornerRelief = 'cornerRelief';   // lane smtrim (Corners flyout)
+  FEATURE_ICON.loftedBend = 'loft';   // lane dxfout-2 (Lofted-Bend)
   FEATURE_ICON.formingTool = 'formingTool';   // lane forming
   FEATURE_ICON.draft = 'draft';   // rfDX
   FEATURE_ICON.helix = 'helix'; FEATURE_ICON.projCurve = 'projCurve'; FEATURE_ICON.compositeCurve = 'compositeCurve'; FEATURE_ICON.xyzCurve = 'xyzCurve'; FEATURE_ICON.refPtCurve = 'refPtCurve';   // rfFA

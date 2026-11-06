@@ -2092,7 +2092,11 @@
     var sheet = model.sheet;
     if (!sheet) throw new Error('No sheet metal parameters: create a Base Flange first (Sheet Metal tab).');
     var base = model.features.filter(function (f) { return f.sheetBase; })[0];
-    if (!base) throw new Error('No Base Flange feature found.');
+    if (!base) {   // lane dxfout-2: a part made by a Lofted-Bend develops its own strip
+      var lbf = model.features.filter(function (f) { return f.type === 'loftedBend' && !f.suppressed; })[0];
+      if (lbf && _.loftedBendFlat) return _.loftedBendFlat(lbf, model, build);
+      throw new Error('No Base Flange feature found.');
+    }
     var obFlat = null;   // lane open-base: a Base Flange from an open profile lays the flat from its fixed plate
     if (isOpenBase(base)) { var obl = openBaseLayout(base, model, { planes: build.planes }); base = Object.assign({}, base, { fixedFace: obl.fixed }); obFlat = obl.flatPlane; }
     var plane = obFlat || ibFlatPlane(base, mesh, model) || resolvePlane(findFeature(model, base.sketch).plane, model, build.planes);   // lane DQ: Insert Bends lays the flat from its fixed face
@@ -3531,15 +3535,75 @@
   }
   // the Sketched Bend feature that builds a jog (both kernels): the first bend at the line; sketchedBendLayout lays the
   // second out from f.jogBack, the straight riser g between the bends
+  // lane dxfout-2: SolidWorks' Jog Offset end conditions. f.offsetEnd 'blind' (absent: f.offset) | 'upToVertex'
+  // (f.offsetTarget: [x, y, z], any point) | 'upToSurface' (f.offsetTarget: a point on a face of the sheet parallel to
+  // it, or a plane: 'Front' / 'Top' / 'Right' / a reference plane's id) | 'offsetFromSurface' (that surface, then
+  // f.offsetDistance further along the jog, toward the sheet with f.offsetFlip). The target plane takes the end of the
+  // dimension: with Inside Offset the jogged flange's near face (the one facing the sheet) lies on it, with Outside
+  // Offset / Overall Dimension its far face. Heights are measured along the jog from the sheet's face on the jog side.
+  // -> the offset as f.offsetRef measures it (what Blind would need)
+  var JOG_OFFSET_ENDS = ['blind', 'upToVertex', 'upToSurface', 'offsetFromSurface'];
+  function jogTargetOffset(f, model, ctx, sk, T, ref) {
+    var end = f.offsetEnd || 'blind';
+    if (JOG_OFFSET_ENDS.indexOf(end) < 0) throw new Error('Unknown jog offset end condition "' + end + '" (blind, upToVertex, upToSurface or offsetFromSurface).');
+    if (end === 'blind') return +f.offset;
+    var n = norm(sk.plane.n), up = f.reverse ? scale(n, -1) : n, ln = sk.lines[0], tg = f.offsetTarget;
+    var what = end === 'upToVertex' ? 'vertex' : 'surface', h;
+    if (tg == null) throw new Error('Jog: pick the ' + what + ' the jog offset goes up to.');
+    // the sheet's face on the jog side (the sketch face, or the face T behind it when the jog goes through the sheet)
+    var s = 0;
+    if (ctx.body) {
+      var inside = ctx.body.pointTester();
+      [0.5, 0.25, 0.75, 0.1, 0.9].some(function (t) {
+        var q = add(ln.P1, scale(sub(ln.P2, ln.P1), t)), a = inside(add(q, scale(n, T / 2))), b = inside(sub(q, scale(n, T / 2)));
+        if (a !== b) s = a ? 1 : -1;
+        return s !== 0;
+      });
+    }
+    if (!s) throw new Error('Jog: the line does not lie on a flat face of the sheet.');
+    var B = add(ln.P1, scale(n, dot(up, n) * s > 0 ? s * T : 0));
+    if (Array.isArray(tg)) {
+      var X = [+tg[0], +tg[1], +tg[2]];
+      if (!X.every(isFinite)) throw new Error('Jog: the ' + what + ' must be three numbers.');
+      if (end !== 'upToVertex' && ctx.body) {
+        // a face of the sheet through the point must be parallel to the sheet
+        var faces = ctx.body.polygons.filter(function (pg) {
+          var pn = [pg.plane.normal.x, pg.plane.normal.y, pg.plane.normal.z];
+          if (Math.abs(dot(pn, X) - pg.plane.w) > 1e-6 * (1 + len(X))) return false;
+          var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+          pg.vertices.forEach(function (v) { var q = [v.pos.x, v.pos.y, v.pos.z]; for (var k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], q[k]); hi[k] = Math.max(hi[k], q[k]); } });
+          for (var k = 0; k < 3; k++) if (X[k] < lo[k] - 1e-6 || X[k] > hi[k] + 1e-6) return false;
+          return true;
+        });
+        if (faces.length && !faces.some(function (pg) { return Math.abs(Math.abs(pg.plane.normal.x * n[0] + pg.plane.normal.y * n[1] + pg.plane.normal.z * n[2]) - 1) < 1e-6; }))
+          throw new Error('Jog: the surface must be parallel to the sheet.');
+      }
+      h = dot(up, sub(X, B));
+    } else {
+      if (end === 'upToVertex') throw new Error('Jog: the vertex must be a point [x, y, z].');
+      var pref = typeof tg === 'string' ? { ref: tg, offset: 0 } : typeof tg === 'number' ? { featureId: tg } : tg;
+      var pl = resolvePlane(pref, model, ctx.planes || {});
+      if (!pl || Math.abs(Math.abs(dot(norm(pl.n), n)) - 1) > 1e-6) throw new Error('Jog: the surface must be parallel to the sheet.');
+      h = dot(up, sub(pl.origin, B));
+    }
+    if (end === 'offsetFromSurface') {
+      var od = +f.offsetDistance;
+      if (!isFinite(od) || od < 0) throw new Error('Jog: the offset from the surface must be a number of 0 or more.');
+      h += f.offsetFlip ? -od : od;
+    }
+    if (!(h > 0)) throw new Error('Jog: the ' + what + ' lies on the other side of the sheet: use Reverse direction.');
+    return ref === 'overall' ? h + T : h;
+  }
   function jogBendFeature(f, model, ctx) {
     var sheet = sheetParams(model), T = +sheet.thickness, R = f.radius != null ? +f.radius : +sheet.bendRadius;
-    var deg = f.angle == null ? 90 : +f.angle, A = deg * Math.PI / 180, D = +f.offset, ref = f.offsetRef || 'outside';
+    var deg = f.angle == null ? 90 : +f.angle, A = deg * Math.PI / 180, ref = f.offsetRef || 'outside';
     if (JOG_OFFSET_REFS.indexOf(ref) < 0) throw new Error('Unknown jog offset "' + ref + '" (outside, inside or overall).');
-    if (!isFinite(D) || !isFinite(A)) throw new Error('Jog offset and angle must be a number each.');
-    if (!(A > 0.05 && A < Math.PI - 0.05)) throw new Error('Jog angle must be between 3° and 177°.');
     if (!(R > 0)) throw new Error('Bend radius must be greater than zero.');
     var sk = sketchedBendLines(f, model, ctx);
     if (sk.lines.length !== 1) throw new Error('Jog: the sketch must hold exactly one line, on a flat face of the sheet (it has ' + sk.lines.length + ').');
+    var D = jogTargetOffset(f, model, ctx, sk, T, ref);
+    if (!isFinite(D) || !isFinite(A)) throw new Error('Jog offset and angle must be a number each.');
+    if (!(A > 0.05 && A < Math.PI - 0.05)) throw new Error('Jog angle must be between 3° and 177°.');
     var inner = jogInsideOffset(D, ref, T);
     var g = (inner - 2 * R * (1 - Math.cos(A)) + T * Math.cos(A)) / Math.sin(A);
     if (!(g > -1e-9)) throw new Error('Jog offset is too small for this bend radius and angle: at least ' + fmtN(jogMinOffset(A, R, T, ref)) + ' (' + ref + ' offset).');
@@ -6263,7 +6327,7 @@
   // Unfold / Fold (lane DB)
   K.buildUnfold = buildUnfold; K.buildFold = buildFold; K.sheetBends = sheetBends; K.sheetBendAt = sheetBendAt; K.unfoldedBendAt = unfoldedBendAt; K.unfoldPreview = unfoldPreview; _.buildUnfold = buildUnfold; _.buildFold = buildFold;
   // lane DC: Jog from a sketch line, the Flat-Pattern solid
-  K.buildSketchJog = buildSketchJog; K.isSketchJog = isSketchJog; K.JOG_OFFSET_REFS = JOG_OFFSET_REFS.slice(); K.jogMinOffset = jogMinOffset; K.jogBendFeature = jogBendFeature; K.flatBody = flatBody;
+  K.buildSketchJog = buildSketchJog; K.isSketchJog = isSketchJog; K.JOG_OFFSET_REFS = JOG_OFFSET_REFS.slice(); K.JOG_OFFSET_ENDS = JOG_OFFSET_ENDS.slice(); K.jogMinOffset = jogMinOffset; K.jogBendFeature = jogBendFeature; K.flatBody = flatBody;
   _.buildSketchJog = buildSketchJog; _.isSketchJog = isSketchJog;
   K.unfoldStateAt = unfoldStateAt; K.unfoldStripFrame = ufStripFrame; K.unfoldWedgeSpec = ufWedgeSpec; _.mCompose = mCompose; _.mInv = mInv;   // lane DB2 (OpenCascade)
   K.unfoldCells = ufCells; K.unfoldLayers = ufLayers;   // lane DJ (OpenCascade folds added material / blind cuts with them)
@@ -6672,4 +6736,235 @@
   });
   K.FORMING_TOOLS = FORMING_TOOLS; K.formingToolDefaults = formingToolDefaults; K.formingToolName = ftName; K.formingToolLayout = formingToolLayout;
   K.formingToolGeometry = formingToolGeometry; K.buildFormingTool = buildFormingTool; _.buildFormingTool = buildFormingTool; _.formingFlat = formingFlat;
+})(Kernel, Kernel._);
+
+// ------------------------------------------------------------------ Lofted-Bend (lane dxfout-2)
+// SolidWorks' Lofted-Bend (Sheet Metal ▸ Lofted-Bend): a sheet-metal part lofted between two open profiles (square to
+// round, rectangle to rectangle, any transition), each sketched in its own sketch. Feature JSON { type: 'loftedBend',
+// sketches: [a, b], method: 'bent' (default: flat facets with bend lines, as a press brake makes it) | 'formed' (rolled:
+// the same development, fine facets, no bend lines), faceting: 'count' (facetValue segments per arc, default 4) |
+// 'length' (arcs cut into chords of at most facetValue) | 'chord' (chords at most facetValue from the arc), name }.
+// The profiles are the sheet's mid-surface (the mean line a shop develops on); the sheet is T thick, T / 2 either side.
+// Lines stay single segments; arcs are cut into chords; the two chains are joined by the triangulation of least total
+// diagonal length (corners fan to their arc, as hand triangulation does). The flat is that strip developed triangle by
+// triangle (exact: every edge keeps its true length), its bend lines the diagonals between facets that are not
+// coplanar, UP / DOWN and the angle between the facets, R 0 (a brake bend of the facets).
+(function (K, _) {
+  'use strict';
+  var add = _.add, sub = _.sub, scale = _.scale, dot = _.dot, cross = _.cross, len = _.len, norm = _.norm;
+  var LB_METHODS = ['bent', 'formed'], LB_FACETING = ['count', 'length', 'chord'];
+  // a sketch's open chain as 3D points (arcs cut per faceting), in chain order: { pts, plane }
+  function lbChain(sk, f, model, ctx) {
+    var plane = K.resolvePlane(sk.plane, model, ctx.planes || {}), segs = [];
+    var mode = f.faceting || 'count', val = f.facetValue != null ? +f.facetValue : (mode === 'count' ? 4 : NaN);
+    if (LB_FACETING.indexOf(mode) < 0) throw new Error('Lofted-Bend: unknown faceting "' + mode + '" (count, length or chord).');
+    if (!(val > 0)) throw new Error('Lofted-Bend: the faceting value must be greater than zero.');
+    var formed = f.method === 'formed';
+    function arcSegs(r, sweep) {
+      if (formed) return Math.max(8, Math.ceil(sweep / (2 * Math.acos(1 - 2e-4)) - 1e-9));   // chords within 2e-4·r
+      if (mode === 'count') return Math.max(1, Math.round(val));
+      if (mode === 'length') return Math.max(1, Math.ceil(r * sweep / val - 1e-9));
+      return val >= r ? 1 : Math.max(1, Math.ceil(sweep / (2 * Math.acos(1 - val / r)) - 1e-9));
+    }
+    (sk.entities || []).forEach(function (e) {
+      if (e.construction || e.t === 'point' || e.t === 'text') return;
+      if (e.t === 'line') segs.push([[+e.x1, +e.y1], [+e.x2, +e.y2]]);
+      else if (e.t === 'polyline') {
+        if (e.closed) throw new Error('Lofted-Bend: the profiles must be open (leave a gap where the seam goes).');
+        for (var i = 0; i + 1 < e.pts.length; i++) segs.push([[+e.pts[i][0], +e.pts[i][1]], [+e.pts[i + 1][0], +e.pts[i + 1][1]]]);
+      } else if (e.t === 'arc') {
+        var a0 = +e.a0 * Math.PI / 180, a1 = +e.a1 * Math.PI / 180, sw = a1 - a0, r = +e.r;
+        while (sw <= 0) sw += 2 * Math.PI;
+        var n = arcSegs(r, sw), pts = [];
+        for (var k = 0; k <= n; k++) { var t = a0 + sw * k / n; pts.push([+e.cx + r * Math.cos(t), +e.cy + r * Math.sin(t)]); }
+        segs.push(pts);
+      } else if (e.t === 'circle') throw new Error('Lofted-Bend: the profiles must be open: sketch the round end as an arc with a small gap.');
+      else throw new Error('Lofted-Bend: a profile may hold lines and arcs only (it has a ' + e.t + ').');
+    });
+    if (!segs.length) throw new Error('Lofted-Bend: sketch ' + (sk.name || sk.id) + ' has no profile.');
+    // chain the pieces end to end (either way round), from a free end
+    var tol = 1e-6, used = segs.map(function () { return false; });
+    function same(p, q) { return Math.hypot(p[0] - q[0], p[1] - q[1]) <= tol * (1 + Math.hypot(p[0], p[1])); }
+    var ends = [];
+    segs.forEach(function (s, i) { [s[0], s[s.length - 1]].forEach(function (p) { var c = 0; segs.forEach(function (q, j) { if (j !== i && (same(p, q[0]) || same(p, q[q.length - 1]))) c++; }); if (!c) ends.push({ i: i, first: p === s[0] }); }); });
+    if (ends.length !== 2) throw new Error('Lofted-Bend: each profile must be one open chain of lines and arcs (' + (ends.length ? ends.length + ' free ends' : 'closed') + ').');
+    var chain = [], cur = ends[0];
+    var s0 = segs[cur.i]; used[cur.i] = true;
+    chain = (cur.first ? s0 : s0.slice().reverse()).slice();
+    for (var guard = 0; guard < segs.length; guard++) {
+      var tail = chain[chain.length - 1], nxt = -1, rev = false;
+      segs.forEach(function (q, j) { if (used[j] || nxt >= 0) return; if (same(tail, q[0])) { nxt = j; rev = false; } else if (same(tail, q[q.length - 1])) { nxt = j; rev = true; } });
+      if (nxt < 0) break;
+      used[nxt] = true;
+      var add2 = rev ? segs[nxt].slice().reverse() : segs[nxt];
+      chain = chain.concat(add2.slice(1));
+    }
+    if (used.some(function (u) { return !u; })) throw new Error('Lofted-Bend: each profile must be one connected open chain.');
+    // straight runs through a point (a line split in two) stay one facet edge
+    var out = [chain[0]];
+    for (var m = 1; m + 1 < chain.length; m++) {
+      var p = out[out.length - 1], q = chain[m], r2 = chain[m + 1];
+      var cr = (q[0] - p[0]) * (r2[1] - p[1]) - (q[1] - p[1]) * (r2[0] - p[0]);
+      if (Math.abs(cr) > 1e-12 * (1 + Math.hypot(r2[0] - p[0], r2[1] - p[1])) * Math.hypot(r2[0] - p[0], r2[1] - p[1])) out.push(q);
+    }
+    out.push(chain[chain.length - 1]);
+    return { pts: out.map(function (p) { return K.to3D(plane, p[0], p[1]); }), plane: plane };
+  }
+  // loftedBendLayout(f, model, ctx) -> { A, B (3D chains, B turned to run the way A does), tris: [[pa, pb, pc]] (points,
+  // in strip order, oriented alike), T, plane } (plain data)
+  function loftedBendLayout(f, model, ctx) {
+    var sheet = K.sheetParams(model), T = +sheet.thickness;
+    if (!(T > 0)) throw new Error('Lofted-Bend needs the sheet thickness (p.sheet).');
+    var method = f.method || 'bent';
+    if (LB_METHODS.indexOf(method) < 0) throw new Error('Lofted-Bend: unknown method "' + method + '" (bent or formed).');
+    var ids = f.sketches || [];
+    if (ids.length !== 2) throw new Error('Lofted-Bend: select two profile sketches.');
+    var sks = ids.map(function (id) {
+      var s = (ctx.sketches && ctx.sketches[id]) || K.findFeature(model, id);
+      if (!s || s.type !== 'sketch') throw new Error('Lofted-Bend: profile ' + id + ' is not a sketch.');
+      return s;
+    });
+    var ca = lbChain(sks[0], f, model, ctx), cb = lbChain(sks[1], f, model, ctx), A = ca.pts, B = cb.pts;
+    if (Math.abs(dot(norm(ca.plane.n), sub(cb.plane.origin, ca.plane.origin))) < 1e-9 && Math.abs(Math.abs(dot(norm(ca.plane.n), norm(cb.plane.n))) - 1) < 1e-9)
+      throw new Error('Lofted-Bend: the two profiles lie in one plane.');
+    function d(p, q) { return len(sub(p, q)); }
+    if (d(A[0], B[0]) + d(A[A.length - 1], B[B.length - 1]) > d(A[0], B[B.length - 1]) + d(A[A.length - 1], B[0])) B = B.slice().reverse();
+    // least total diagonal length (dynamic programming over the strip)
+    var m = A.length - 1, n = B.length - 1, INF = Infinity, cost = [], from = [];
+    for (var i = 0; i <= m; i++) { cost.push([]); from.push([]); for (var j = 0; j <= n; j++) { cost[i].push(INF); from[i].push(0); } }
+    cost[0][0] = d(A[0], B[0]);
+    for (i = 0; i <= m; i++) for (j = 0; j <= n; j++) {
+      if (i === 0 && j === 0) continue;
+      var best = INF, how = 0;
+      if (i > 0 && cost[i - 1][j] + d(A[i], B[j]) < best) { best = cost[i - 1][j] + d(A[i], B[j]); how = 1; }
+      if (j > 0 && cost[i][j - 1] + d(A[i], B[j]) < best - 1e-12) { best = cost[i][j - 1] + d(A[i], B[j]); how = 2; }
+      cost[i][j] = best; from[i][j] = how;
+    }
+    var steps = [];
+    for (i = m, j = n; i > 0 || j > 0;) { var h = from[i][j]; steps.push(h); if (h === 1) i--; else j--; }
+    steps.reverse();
+    var tris = [];
+    for (i = 0, j = 0, k = 0; k < steps.length; k++) {
+      if (steps[k] === 1) { tris.push({ p: [A[i], A[i + 1], B[j]], tag: [['A', i], ['A', i + 1], ['B', j]], newv: 1, edge: [['A', i], ['B', j]] }); i++; }
+      else { tris.push({ p: [A[i], B[j + 1], B[j]], tag: [['A', i], ['B', j + 1], ['B', j]], newv: 1, edge: [['A', i], ['B', j]] }); j++; }
+    }
+    var k;
+    tris = tris.filter(function (t) { return len(cross(sub(t.p[1], t.p[0]), sub(t.p[2], t.p[0]))) > 1e-12; });
+    if (!tris.length) throw new Error('Lofted-Bend: the profiles make no surface.');
+    return { A: A, B: B, tris: tris, T: T, plane: ca.plane, method: method };
+  }
+  function triN(t) { return norm(cross(sub(t.p[1], t.p[0]), sub(t.p[2], t.p[0]))); }
+  function tkey(tg) { return tg[0] + tg[1]; }
+  // buildLoftedBend(f, model, ctx) -> the sheet (CSG): each mid-surface point moved ±o, o the least-squares solution of
+  // n·o = T / 2 over its facets (the mitre where two facets meet), so the solid is closed and T thick across each bend
+  function buildLoftedBend(f, model, ctx) {
+    var lay = loftedBendLayout(f, model, ctx), T = lay.T, eqs = {}, pos = {};
+    lay.tris.forEach(function (t) { var nn = triN(t); t.n = nn; t.tag.forEach(function (tg, q) { var kk = tkey(tg); (eqs[kk] = eqs[kk] || []).push(nn); pos[kk] = t.p[q]; }); });
+    var off = {};
+    Object.keys(eqs).forEach(function (kk) {
+      // normal equations with a small ridge (min-norm for one or two facets)
+      var N = eqs[kk], M = [[1e-12, 0, 0], [0, 1e-12, 0], [0, 0, 1e-12]], rhs = [0, 0, 0];
+      var uniq = [];
+      N.forEach(function (nn) { if (!uniq.some(function (u) { return dot(u, nn) > 1 - 1e-12; })) uniq.push(nn); });
+      if (uniq.length === 1) { off[kk] = scale(uniq[0], T / 2); return; }
+      if (uniq.length === 2) {
+        // the mitre: o in the span of the two normals with n1·o = n2·o = T/2
+        var c = dot(uniq[0], uniq[1]), s = (T / 2) / (1 + c);
+        off[kk] = scale(add(uniq[0], uniq[1]), s);
+        return;
+      }
+      uniq.forEach(function (nn) { for (var a = 0; a < 3; a++) { rhs[a] += nn[a] * T / 2; for (var b = 0; b < 3; b++) M[a][b] += nn[a] * nn[b]; } });
+      off[kk] = solve3(M, rhs);
+    });
+    var polys = [];
+    function P(kk, sg) { return add(pos[kk], scale(off[kk], sg)); }
+    function tri(list, a, b, c) { _.pushPoly(list, [a, b, c]); }
+    lay.tris.forEach(function (t) {
+      var k0 = tkey(t.tag[0]), k1 = tkey(t.tag[1]), k2 = tkey(t.tag[2]);
+      tri(polys, P(k0, 1), P(k1, 1), P(k2, 1));
+      tri(polys, P(k2, -1), P(k1, -1), P(k0, -1));
+    });
+    function wall(ka, kb) { tri(polys, P(kb, 1), P(ka, 1), P(ka, -1)); tri(polys, P(kb, 1), P(ka, -1), P(kb, -1)); }
+    var m = lay.A.length - 1, n = lay.B.length - 1, i;
+    for (i = 0; i < m; i++) wall('A' + i, 'A' + (i + 1));
+    for (i = 0; i < n; i++) wall('B' + (i + 1), 'B' + i);
+    wall('B0', 'A0');
+    wall('A' + m, 'B' + n);
+    return _.ensureOutward(polys);
+  }
+  function solve3(M, r) {
+    var a = M.map(function (row, i) { return row.concat([r[i]]); });
+    for (var c = 0; c < 3; c++) {
+      var p = c;
+      for (var i = c + 1; i < 3; i++) if (Math.abs(a[i][c]) > Math.abs(a[p][c])) p = i;
+      var tmp = a[c]; a[c] = a[p]; a[p] = tmp;
+      for (i = 0; i < 3; i++) if (i !== c) { var k = a[i][c] / a[c][c]; for (var j = c; j < 4; j++) a[i][j] -= k * a[c][j]; }
+    }
+    return [a[0][3] / a[0][0], a[1][3] / a[1][1], a[2][3] / a[2][2]];
+  }
+  // loftedBendFlat(f, model, build) -> a flat pattern like Kernel.flatPattern's: the strip developed triangle by
+  // triangle; seen from the side the first facet's normal points to; bend lines (Bent) on each diagonal between facets
+  // that are not coplanar
+  function loftedBendFlat(f, model, build) {
+    var lay = loftedBendLayout(f, model, { planes: build && build.planes, sketches: {} }), sheet = K.sheetParams(model), units = model.units;
+    var at = {}, tris = lay.tris, i;
+    tris.forEach(function (t) { t.n = triN(t); });
+    function d(p, q) { return len(sub(p, q)); }
+    // the first facet: its first edge along +x
+    var t0 = tris[0], e0 = d(t0.p[0], t0.p[1]);
+    at[tkey(t0.tag[0])] = [0, 0]; at[tkey(t0.tag[1])] = [e0, 0];
+    function place(t) {
+      var known = [], unk = -1;
+      t.tag.forEach(function (tg, q) { if (at[tkey(tg)]) known.push(q); else unk = q; });
+      if (unk < 0) return;
+      // the new point at its true distances from the other two, on the side that keeps the facet's orientation
+      var qa = (unk + 1) % 3, qb = (unk + 2) % 3, Pa = at[tkey(t.tag[qa])], Pb = at[tkey(t.tag[qb])];
+      var ra = d(t.p[unk], t.p[qa]), rb = d(t.p[unk], t.p[qb]), L = Math.hypot(Pb[0] - Pa[0], Pb[1] - Pa[1]);
+      var x = (ra * ra - rb * rb + L * L) / (2 * L), y = Math.sqrt(Math.max(0, ra * ra - x * x));
+      var ux = (Pb[0] - Pa[0]) / L, uy = (Pb[1] - Pa[1]) / L;
+      // orientation (unk, qa, qb) is that of (q0, q1, q2), counterclockwise: the point is to the left of Pa→Pb
+      var c1 = [Pa[0] + ux * x - uy * y, Pa[1] + uy * x + ux * y];
+      at[tkey(t.tag[unk])] = c1;
+    }
+    place(t0);
+    for (i = 1; i < tris.length; i++) place(tris[i]);
+    var pts2 = function (chain, tagc) { return chain.map(function (p, k) { return at[tagc + k]; }); };
+    var outline = pts2(lay.A, 'A').concat(pts2(lay.B, 'B').reverse());
+    if (outline.some(function (p) { return !p; })) throw new Error('Lofted-Bend: the strip could not be developed (a facet of no area).');
+    if (K.signedArea(outline) < 0) {   // never for a strip laid as above; kept for safety
+      outline.reverse();
+    }
+    // bend lines: the shared diagonal of consecutive facets that are not coplanar
+    var bends = [];
+    if (lay.method === 'bent') for (i = 1; i < tris.length; i++) {
+      var a = tris[i - 1], b = tris[i], c = dot(a.n, b.n);
+      if (c > 1 - 1e-10) continue;
+      var shared = a.tag.filter(function (tg) { return b.tag.some(function (u) { return tkey(u) === tkey(tg); }); });
+      if (shared.length !== 2) continue;
+      var third = b.p[b.tag.map(tkey).indexOf(b.tag.filter(function (u) { return !a.tag.some(function (tg) { return tkey(tg) === tkey(u); }); }).map(tkey)[0])];
+      var up = dot(a.n, sub(third, a.p[0])) > 0;
+      var bd = { a: at[tkey(shared[0])].slice(), b: at[tkey(shared[1])].slice(), up: up, angle: Math.acos(Math.max(-1, Math.min(1, c))) * 180 / Math.PI, R: 0, ba: 0, method: 'loftedBend', id: f.id + ':' + (i - 1) };
+      bd.label = K.bendNoteText(bd, units);
+      bends.push(bd);
+    }
+    var min = [Infinity, Infinity], max = [-Infinity, -Infinity];
+    outline.forEach(function (p) { min[0] = Math.min(min[0], p[0]); min[1] = Math.min(min[1], p[1]); max[0] = Math.max(max[0], p[0]); max[1] = Math.max(max[1], p[1]); });
+    var outSheet = Object.assign({}, sheet, { kFactor: K.sheetKFactor(sheet) });
+    var pl = lay.plane;
+    return { loops: [outline], bends: bends, plane: { origin: pl.origin.slice(), x: pl.x.slice(), y: pl.y.slice(), n: pl.n.slice(), offset: dot(pl.n, pl.origin) }, sheet: outSheet,
+      bbox: { min: min, max: max }, size: [max[0] - min[0], max[1] - min[1]], note: 'T=' + sheet.thickness + ' LOFTED BEND ' + (lay.method === 'bent' ? bends.length + ' BENDS' : 'FORMED'), warnings: [], etch: [], etchLayer: null,
+      loftedBend: { facets: tris.length, method: lay.method } };
+  }
+  K.registerFeature('loftedBend', {
+    cut: false, build: buildLoftedBend,
+    script: function (f, v, idVar, optsStr) {
+      var o = { name: f.name };
+      if (f.method === 'formed') o.method = 'formed';
+      if (f.faceting && f.faceting !== 'count') o.faceting = f.faceting;
+      if (f.facetValue != null && !((!f.faceting || f.faceting === 'count') && +f.facetValue === 4)) o.facetValue = +f.facetValue;
+      return 'var ' + v + ' = p.loftedBend([' + (f.sketches || []).map(function (id) { return idVar[id] || id; }).join(', ') + '], ' + optsStr(o) + ').last();';
+    }
+  });
+  K.LOFTED_BEND_METHODS = LB_METHODS.slice(); K.LOFTED_BEND_FACETING = LB_FACETING.slice();
+  K.loftedBendLayout = loftedBendLayout; K.buildLoftedBend = buildLoftedBend; K.loftedBendFlat = loftedBendFlat; _.loftedBendFlat = loftedBendFlat;
 })(Kernel, Kernel._);
