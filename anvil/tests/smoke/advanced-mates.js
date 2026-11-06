@@ -12,7 +12,7 @@
     ['Mate Selections', 'Standard Mates', 'Advanced Mates', 'Mechanical Mates', 'Mate alignment'].forEach(function (t) { assert(heads.indexOf(t) >= 0, 'group ' + t + ' in ' + JSON.stringify(heads)); });
     assert(optionValues(pmSelect('type')).join() === 'coincident,parallel,perpendicular,tangent,concentric,distance,angle', optionValues(pmSelect('type')).join());
     assert(optionValues(pmSelect('advType')).join() === ',profilecenter,symmetric,width,linearcoupler,limitdistance,limitangle', optionValues(pmSelect('advType')).join());
-    assert(optionValues(pmSelect('mechType')).join() === ',slot,hinge,gear', optionValues(pmSelect('mechType')).join());
+    assert(optionValues(pmSelect('mechType')).join() === ',slot,hinge,gear,rackpinion,screw', optionValues(pmSelect('mechType')).join());
     setInput(pmSelect('advType'), 'width');
     await idle();
     assert(pmSelect('type').value === 'width' && /\u2014/.test(pmSelect('type').selectedOptions[0].textContent), 'Standard Mates shows — for an Advanced type');

@@ -10,7 +10,7 @@
     await idle();
     UI.cmdMate();
     assert(gvOptions(gvSelect('advType')).join() === '—,Profile Center,Symmetric,Width,Linear/Linear Coupler,Limit Distance,Limit Angle', gvOptions(gvSelect('advType')).join());
-    assert(gvOptions(gvSelect('mechType')).join() === '—,Slot,Hinge,Gear', gvOptions(gvSelect('mechType')).join());
+    assert(gvOptions(gvSelect('mechType')).join() === '—,Slot,Hinge,Gear,Rack Pinion,Screw', gvOptions(gvSelect('mechType')).join());
     UI.mateSelect({ component: 2, cylinder: [5, 15, 0] });
     await idle();
     setInput(gvSelect('mechType'), 'hinge');

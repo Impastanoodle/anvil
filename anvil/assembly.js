@@ -78,7 +78,7 @@ var Assembly = (function () {
 
   function examplesList() { return (typeof AnvilExamples !== 'undefined' && AnvilExamples) ? AnvilExamples : []; }
 
-  function isAssemblyScript(code) { return /\b(a|asm)\.(insert|mate|coincident|concentric|distance|angle|parallel|perpendicular|tangent|width|gear|limitDistance|limitAngle|symmetric|slot|hinge|linearCoupler|profileCenter|linearPattern|circularPattern|mirrorComponents|explode)\s*\(/.test(String(code || '')); }
+  function isAssemblyScript(code) { return /\b(a|asm)\.(insert|mate|coincident|concentric|distance|angle|parallel|perpendicular|tangent|width|gear|limitDistance|limitAngle|symmetric|slot|hinge|linearCoupler|profileCenter|screw|rackPinion|linearPattern|circularPattern|mirrorComponents|explode)\s*\(/.test(String(code || '')); }
 
   // ------------------------------------------------------------------ documents: live links to part / assembly files
   // A component source { file: name } is a live link to a document in the document store instead of an embedded copy
@@ -314,13 +314,13 @@ var Assembly = (function () {
 
   var MATE_BASE = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle',
     parallel: 'Parallel', perpendicular: 'Perpendicular', tangent: 'Tangent', width: 'Width', gear: 'Gear',
-    limitdistance: 'LimitDistance', limitangle: 'LimitAngle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'LinearCoupler', profilecenter: 'ProfileCenter' };
-  var MATE_TYPES = ['coincident', 'concentric', 'distance', 'angle', 'parallel', 'perpendicular', 'tangent', 'width', 'gear', 'limitdistance', 'limitangle', 'symmetric', 'slot', 'hinge', 'linearcoupler', 'profilecenter'];
+    limitdistance: 'LimitDistance', limitangle: 'LimitAngle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'LinearCoupler', profilecenter: 'ProfileCenter', screw: 'Screw', rackpinion: 'RackPinion' };
+  var MATE_TYPES = ['coincident', 'concentric', 'distance', 'angle', 'parallel', 'perpendicular', 'tangent', 'width', 'gear', 'limitdistance', 'limitangle', 'symmetric', 'slot', 'hinge', 'linearcoupler', 'profilecenter', 'screw', 'rackpinion'];
   // Mate PropertyManager groups, as in SolidWorks (types Anvil does not have yet are left out)
   var MATE_GROUPS = {
     standard: ['coincident', 'parallel', 'perpendicular', 'tangent', 'concentric', 'distance', 'angle'],
     advanced: ['profilecenter', 'symmetric', 'width', 'linearcoupler', 'limitdistance', 'limitangle'],   // (SolidWorks 2024 lists Linear/Linear Coupler among the Advanced Mates)
-    mechanical: ['slot', 'hinge', 'gear']
+    mechanical: ['slot', 'hinge', 'gear', 'rackpinion', 'screw']   // (rfKA: SolidWorks 2024 order Cam, Slot, Hinge, Gear, Rack Pinion, Screw)
   };
   // every key of a mate that holds a reference (Width: a2 / b2 the second faces; Symmetric: a2 the symmetry plane;
   // Hinge: a / b Concentric Selections, a2 / b2 Coincident Selections, a3 / b3 Angle Selections of its angle limit)
@@ -374,11 +374,27 @@ var Assembly = (function () {
   // along its direction when the mate was first solved.
   // Profile Center { offset, flip, lock } (rfJA): two planar faces' profiles centred on each other, the faces Offset apart
   // (flip: the other side), lock: Lock rotation (phase: the in-plane angle held, degrees, stored at the first solve).
-  var FLIP_TYPES = { distance: 1, angle: 1, coincident: 1, tangent: 1, gear: 1, limitdistance: 1, limitangle: 1, slot: 1, linearcoupler: 1, profilecenter: 1 };
+  var FLIP_TYPES = { distance: 1, angle: 1, coincident: 1, tangent: 1, gear: 1, limitdistance: 1, limitangle: 1, slot: 1, linearcoupler: 1, profilecenter: 1, screw: 1, rackpinion: 1 };
+  // Screw { pitch, pitchBy, flip } (rfKA): Concentric plus B's travel along the axis = pitch per revolution of B about
+  // it (relative to A; flip: Reverse). pitchBy 'revolutions' shows it as Revolutions per unit (1 / pitch), else
+  // Distance/revolution. Rack Pinion { pitch, pitchBy, flip } (rfKA): a = the rack (a linear edge, an axis or a
+  // cylinder: its direction), b = the pinion (a cylindrical face or axis); the rack travels `pitch` along its direction
+  // per revolution of the pinion about its axis (pitchBy 'diameter': shown as the pinion pitch diameter, pitch / pi).
+  // Both store phase [s, deg] at the first solve (where they stood along / about the axis), as Gear does.
+  var PITCH_TYPES = { screw: 1, rackpinion: 1 };
   function setMateValues(m, opts) {
     opts = opts || {};
     ['distance', 'angle', 'offset', 'min', 'max', 'percent'].forEach(function (k) { if (opts[k] != null) m[k] = +opts[k]; });
     if (opts.constraint != null) m.constraint = String(opts.constraint).toLowerCase();
+    if (opts.pitch != null) m.pitch = +opts.pitch;
+    if (opts.pitchBy != null) m.pitchBy = String(opts.pitchBy).toLowerCase();
+    if (opts.diameter != null) { m.pitch = Math.PI * +opts.diameter; m.pitchBy = 'diameter'; }      // Rack Pinion: pinion pitch diameter
+    if (opts.revolutions != null) { m.pitch = 1 / +opts.revolutions; m.pitchBy = 'revolutions'; }   // Screw: revolutions per unit
+    if (!PITCH_TYPES[m.type]) { delete m.pitch; delete m.pitchBy; }
+    else {
+      if (m.pitch == null) m.pitch = m.type === 'screw' ? 1 : Math.PI * 10;
+      if (m.pitchBy !== (m.type === 'screw' ? 'revolutions' : 'diameter')) delete m.pitchBy;
+    }
     if (opts.limit != null) { if (opts.limit) m.limit = true; else delete m.limit; }
     if (opts.lock != null) { if (opts.lock) m.lock = true; else delete m.lock; }
     if (m.type !== 'profilecenter') delete m.lock;
@@ -395,7 +411,7 @@ var Assembly = (function () {
     if ((m.type !== 'coincident' && m.type !== 'profilecenter') || !m.offset) delete m.offset;
     if (!limit) { delete m.min; delete m.max; }
     if (m.type !== 'gear' && m.type !== 'linearcoupler') delete m.ratio;
-    if (m.type !== 'gear' && m.type !== 'linearcoupler' && !(m.type === 'profilecenter' && m.lock)) delete m.phase;
+    if (m.type !== 'gear' && m.type !== 'linearcoupler' && !PITCH_TYPES[m.type] && !(m.type === 'profilecenter' && m.lock)) delete m.phase;
     if (m.type !== 'width' && m.type !== 'hinge' && m.type !== 'symmetric') delete m.a2;
     if (m.type !== 'width' && m.type !== 'hinge') delete m.b2;
     if (m.type !== 'hinge' || !m.limit) { delete m.a3; delete m.b3; }
@@ -889,7 +905,12 @@ var Assembly = (function () {
       out.kind = 'axis'; out.refKind = 'cylinder'; out.dir = cy.dir.slice();
       out.point = add(cy.point, scale(cy.dir, dot(sub(pc, cy.point), cy.dir))); // axis point nearest the given point
       out.radius = cy.radius;
-    } else throw new Error('A mate reference needs face, plane, cylinder or axis');
+    } else if (ref.edge) {   // rfKA: a linear edge (or sketch line): [[x, y, z], [x, y, z]], its two ends in the part's frame
+      if (!comp) throw new Error('An edge reference needs a component');
+      var e0 = copy3(ref.edge[0] || []), e1 = copy3(ref.edge[1] || []), ed = sub(e1, e0);
+      if (!(len(ed) > 1e-9)) throw new Error('The edge on ' + comp.name + ' has no length');
+      out.kind = 'axis'; out.refKind = 'edge'; out.point = e0; out.dir = norm(ed);
+    } else throw new Error('A mate reference needs face, plane, cylinder, axis or edge');
     // an axis carries a fixed reference direction square to it: the Gear mate measures the component's turn with it
     if (out.dir) out.ref = perpTo(out.dir);
     return out;
@@ -915,7 +936,7 @@ var Assembly = (function () {
   }
 
   // ------------------------------------------------------------------ mate residuals
-  function isAxisRef(r) { return !!(r && (r.cylinder || r.axis != null)); }
+  function isAxisRef(r) { return !!(r && (r.cylinder || r.edge || r.axis != null)); }
   // Default alignment: Coincident / Distance / Limit Distance between two faces are anti-aligned (the faces touch), with a
   // plane aligned; Concentric and Angle aligned. The newer mates (Parallel, Perpendicular, Tangent, Width, a Distance
   // that involves a cylinder or axis) take the closest alignment, as SolidWorks does: 'closest' keeps whichever sign the
@@ -925,7 +946,7 @@ var Assembly = (function () {
     // SolidWorks' CreateMateData defaults (measured, rfGW): Slot and Hinge closest, Symmetric aligned
     if (t === 'symmetric') return 'aligned';
     if (t === 'profilecenter') return 'anti-aligned';
-    if (t === 'slot' || t === 'hinge') return 'closest';
+    if (t === 'slot' || t === 'hinge' || t === 'screw') return 'closest';
     if (t === 'parallel' || t === 'perpendicular' || t === 'tangent' || t === 'width' || t === 'gear') return 'closest';
     if (t === 'coincident' || t === 'distance' || t === 'limitdistance') {
       if (t !== 'coincident' && (isAxisRef(m.a) || isAxisRef(m.b))) return 'closest';
@@ -934,7 +955,7 @@ var Assembly = (function () {
     return 'aligned';
   }
   // every mate but Gear has an alignment (Aligned / Anti-Aligned / Closest) the user may flip
-  function hasAlignment(m) { return !!(m && m.type !== 'gear' && m.type !== 'linearcoupler'); }
+  function hasAlignment(m) { return !!(m && m.type !== 'gear' && m.type !== 'linearcoupler' && m.type !== 'rackpinion'); }
   function alignSign(m) { var a = m.alignment || defaultAlignment(m); return a === 'anti-aligned' ? -1 : a === 'closest' ? 0 : 1; }
 
   // Signed plane gap a Coincident / Distance mate holds: B's plane lies `target` along A's normal (flip: the other side).
@@ -972,6 +993,12 @@ var Assembly = (function () {
   function axisDistance(A, B) { var v = sub(B.point, A.point); return len(sub(v, scale(A.dir, dot(v, A.dir)))); }
   function planeGap(P, X) { return dot(sub(X.point, P.point), P.normal); }   // X's point above P, along P's normal
   function couplerPos(W) { return dot(W.point, dirOf(W)); }   // where a Linear Coupler ref stands along its own direction
+  // Screw / Rack Pinion coupling (rfKA): travel t and turn th (radians) against the phase, as a length: k * wrap((t - t0)/k
+  // - +-(th - th0)), k = pitch / 2 pi, so a whole turn more is the same place one pitch further (periodic, never a jump)
+  function pitchRow(pm, t, th) {
+    var k = pm.pitch / (2 * Math.PI);
+    return k * wrapAngle((t - pm.phase[0]) / k - (pm.mate.flip ? -1 : 1) * (th - pm.phase[1]));
+  }
   function axisTurn(W) { return signedAngle(perpTo(W.dir), W.ref, W.dir); }   // the component's turn about its axis
   function limitRange(pm, toRad) {
     var f = toRad ? Math.PI / 180 : 1, lo = (+pm.mate.min || 0) * f, hi = (+pm.mate.max || 0) * f;
@@ -1043,6 +1070,13 @@ var Assembly = (function () {
     }
     if (pm.type === 'linearcoupler') {   // B's travel along its direction minus ±(b/a)·A's, both from the phase
       return [(couplerPos(B) - pm.phase[1]) - (pm.mate.flip ? -1 : 1) * pm.ratio * (couplerPos(A) - pm.phase[0])];
+    }
+    if (pm.type === 'screw') {   // rfKA: Concentric, and the travel along the axis = +-pitch per turn (both from the phase)
+      var dq = sub(A.dir, scale(B.dir, s || 1)), vq = sub(B.point, A.point), aq = dot(vq, A.dir), pq = sub(vq, scale(A.dir, aq));
+      return [dq[0], dq[1], dq[2], pq[0], pq[1], pq[2], pitchRow(pm, aq, signedAngle(A.ref, B.ref, A.dir))];
+    }
+    if (pm.type === 'rackpinion') {   // rfKA: the rack's travel along its direction = +-pitch per turn of the pinion
+      return [pitchRow(pm, dot(sub(A.point, B.point), A.dir), signedAngle(A.dir, B.ref, B.dir))];
     }
     if (pm.type === 'gear') {
       var phs = pm.phase, dA = wrapAngle(axisTurn(A) - phs[0]), dB = wrapAngle(axisTurn(B) - phs[1]);
@@ -1166,6 +1200,15 @@ var Assembly = (function () {
           if (!(isFinite(+cr[0]) && isFinite(+cr[1]) && +cr[0] > 0 && +cr[1] > 0)) throw new Error('Linear/Linear Coupler ratio must be two numbers > 0');
           pm.ratio = +cr[1] / +cr[0];
         }
+        if (PITCH_TYPES[m.type]) {   // rfKA
+          var nmP = m.type === 'screw' ? 'Screw' : 'Rack Pinion';
+          if (pm.pair !== 'aa') throw new Error(m.type === 'screw' ? 'Screw needs two cylindrical faces or axes' : 'Rack Pinion needs a linear edge, axis or cylindrical face (the rack) and a cylindrical face or axis (the pinion)');
+          if (!pm.A.comp || !pm.B.comp || pm.A.comp === pm.B.comp) throw new Error(nmP + ' needs selections on two components');
+          if (m.type === 'screw' && (pm.A.refKind === 'edge' || pm.B.refKind === 'edge')) throw new Error('Screw needs two cylindrical faces or axes');
+          if (m.type === 'rackpinion' && pm.B.refKind === 'edge') throw new Error('Rack Pinion: the pinion must be a cylindrical face or axis');
+          if (!(isFinite(+m.pitch) && +m.pitch > 0)) throw new Error(m.type === 'screw' ? 'Screw: the pitch must be a number > 0' : 'Rack Pinion: the pitch diameter / rack travel must be a number > 0');
+          pm.pitch = +m.pitch;
+        }
         if (m.type === 'profilecenter') {
           if (pm.pair !== 'pp' || pm.A.refKind !== 'face' || pm.B.refKind !== 'face') throw new Error('Profile Center needs two planar faces (a rectangular or circular profile on each)');
           if (!pm.A.comp || !pm.B.comp || pm.A.comp === pm.B.comp) throw new Error('Profile Center needs faces on two components');
@@ -1249,6 +1292,14 @@ var Assembly = (function () {
           m.phase = [r6(wrapAngle(a0) * 180 / Math.PI)];
         }
         pm.lockAngle = +m.phase[0] * Math.PI / 180;
+      }
+      if (PITCH_TYPES[pm.type]) {   // rfKA: [travel, turn (degrees)] when first solved
+        if (!(m.phase && m.phase.length === 2 && isFinite(+m.phase[0]) && isFinite(+m.phase[1]))) {
+          var Aw1 = worldOf(pm.A, transforms[pm.ca.id]), Bw1 = worldOf(pm.B, transforms[pm.cb.id]);
+          m.phase = pm.type === 'screw' ? [dot(sub(Bw1.point, Aw1.point), Aw1.dir), signedAngle(Aw1.ref, Bw1.ref, Aw1.dir) * 180 / Math.PI]
+            : [dot(sub(Aw1.point, Bw1.point), Aw1.dir), signedAngle(Aw1.dir, Bw1.ref, Bw1.dir) * 180 / Math.PI];
+        }
+        pm.phase = [+m.phase[0], +m.phase[1] * Math.PI / 180];
       }
       if (pm.type === 'linearcoupler') {
         if (!(m.phase && m.phase.length === 2 && isFinite(+m.phase[0]) && isFinite(+m.phase[1]))) {
@@ -1369,6 +1420,17 @@ var Assembly = (function () {
           transforms[C.id] = { rotation: transforms[C.id].rotation, position: add(transforms[C.id].position, scale(cd, amt)) };
         }
         lockTrans(L, cd);
+        if (!oc || grounded[oc.id]) grounded[C.id] = true;
+        return;
+      }
+      if (pm.type === 'rackpinion') {   // rfKA: slide the rack along its direction, or turn the pinion about its axis
+        var er = residualOf(pm)[0], Mr = W(mine, C);
+        if (Math.abs(er) > TOL_DONE) {
+          if (!moveB) transforms[C.id] = { rotation: transforms[C.id].rotation, position: add(transforms[C.id].position, scale(Mr.dir, -er)) };
+          else rotateAbout(C.id, rotVec(scale(Mr.dir, er * 2 * Math.PI / (pm.pitch * (pm.mate.flip ? -1 : 1)))), Mr.point);
+        }
+        if (!moveB) lockTrans(L, Mr.dir);
+        else if (L.axis && len(cross(L.axis, Mr.dir)) < 1e-6) L.full = true;
         if (!oc || grounded[oc.id]) grounded[C.id] = true;
         return;
       }
@@ -1493,9 +1555,18 @@ var Assembly = (function () {
       if (!oc || grounded[oc.id]) grounded[C.id] = true;
     }
     var HELD = { symmetric: 1, slot: 1, hinge: 1, profilecenter: 1 };
-    var MORE = { parallel: 1, perpendicular: 1, tangent: 1, width: 1, gear: 1, limitdistance: 1, linearcoupler: 1 };
+    var MORE = { parallel: 1, perpendicular: 1, tangent: 1, width: 1, gear: 1, limitdistance: 1, linearcoupler: 1, rackpinion: 1 };
     function greedy(pm) {
       if (pm.rigid) return;
+      if (pm.type === 'screw') {   // rfKA: placed as a Concentric, then slid along the axis to the pitch
+        var sh = Object.create(pm); sh.type = 'concentric';
+        greedy(sh);
+        var mvB = moverIsB(pm), Cq = mvB ? pm.cb : pm.ca;
+        if (!movable(Cq)) return;
+        var eq = residualOf(pm)[6], ax = worldOf(pm.A, pm.ca ? transforms[pm.ca.id] : null).dir;
+        if (Math.abs(eq) > TOL_DONE) transforms[Cq.id] = { rotation: transforms[Cq.id].rotation, position: add(transforms[Cq.id].position, scale(ax, mvB ? -eq : eq)) };
+        return;
+      }
       if (pm.type === 'angle' || pm.type === 'limitangle') { greedyAngle(pm); return; }
       if (HELD[pm.type]) { greedyHeld(pm); return; }
       if (MORE[pm.type] || (pm.type === 'distance' && pm.pair === 'aa')) { greedyMore(pm); return; }
@@ -2832,6 +2903,23 @@ var Assembly = (function () {
     return { component: comp.id, face: lp };
   }
 
+  // rfKA: refFromEdgePick(model, build, edge { a, b (world), faces: [mesh face indices] }, mesh) -> a mate ref for a picked
+  // edge: a circular edge is its cylindrical face (Rack Pinion's pinion, Screw), a straight one { component, edge: [a, b] }
+  // (its ends in the part's frame: the rack's direction); null when it is not on a component
+  function refFromEdgePick(model, build, edge, mesh) {
+    if (!model || !build || !edge || !edge.a || !edge.b || !mesh || !mesh.faces) return null;
+    var fs = edge.faces || [], mid = scale(add(edge.a, edge.b), 0.5), i, r;
+    for (i = 0; i < fs.length; i++) { try { r = refFromPick(model, build, fs[i], mid, mesh); } catch (e) { r = null; } if (r && r.cylinder) return r; }
+    var face = mesh.faces[fs[0]], comp = face ? model.components[face.body || 0] : null;
+    if (!comp) return null;
+    var pbs = build.partBuilds && build.partBuilds[comp.id];
+    if (pbs && pbs.assembly) return null;   // (an edge inside a sub-assembly: not yet)
+    var off = build.explode && build.explode.offsets && build.explode.offsets[comp.id], T = tf(comp.transform);
+    function loc(p) { return inverseTransformPoint(T, off ? sub(p, off) : p).map(r6); }
+    var a = loc(edge.a), b = loc(edge.b);
+    return len(sub(b, a)) > 1e-6 ? { component: comp.id, edge: [a, b] } : null;
+  }
+
   // pickInner(subModel, subBuild, p, n) -> { path: [inner ids], point (the leaf part's local coords), cylinder, d }: the
   // inner part whose face lies nearest p (a point in the sub-assembly's frame), preferring faces with normal n
   function pickInner(sm, sb, p, n) {
@@ -3017,6 +3105,11 @@ var Assembly = (function () {
   Builder.prototype.gear = function (a, b, ratio, opts) { return this.mate('gear', a, b, withValue(opts, 'ratio', ratio)); };
   // linearCoupler(a, b, ratio ([a, b] or a number r: B moves r times as far), opts { flip (Reverse), phase })
   Builder.prototype.linearCoupler = function (a, b, ratio, opts) { return this.mate('linearcoupler', a, b, withValue(opts, 'ratio', ratio)); };
+  // rfKA: screw(axisA, axisB, pitch (distance per revolution), opts { revolutions (per unit, instead of pitch), flip
+  // (Reverse), alignment, phase }); rackPinion(rack (edge / axis / cylinder), pinion (cylinder / axis), pitch (rack travel
+  // per revolution), opts { diameter (pinion pitch diameter, instead of pitch), flip, phase })
+  Builder.prototype.screw = function (a, b, pitch, opts) { return this.mate('screw', a, b, withValue(opts, 'pitch', pitch)); };
+  Builder.prototype.rackPinion = function (a, b, pitch, opts) { return this.mate('rackpinion', a, b, withValue(opts, 'pitch', pitch)); };
   // profileCenter(faceA, faceB, opts { offset, flip, lock, alignment })
   Builder.prototype.profileCenter = function (a, b, opts) { return this.mate('profilecenter', a, b, opts); };
   Builder.prototype.limitDistance = function (a, b, min, max, opts) { return this.mate('limitdistance', a, b, withValue(withValue(opts, 'min', min), 'max', max)); };
@@ -3126,6 +3219,7 @@ var Assembly = (function () {
     if (ref.component != null) parts.push('component: ' + (varOf[ref.component] || JSON.stringify(ref.component)));
     if (ref.path && ref.path.length) parts.push('path: ' + JSON.stringify(ref.path));
     ['face', 'cylinder'].forEach(function (k) { if (ref[k]) parts.push(k + ': ' + numList(ref[k])); });
+    if (ref.edge) parts.push('edge: [' + numList(ref.edge[0]) + ', ' + numList(ref.edge[1]) + ']');
     ['plane', 'axis'].forEach(function (k) { if (ref[k] != null) parts.push(k + ': ' + JSON.stringify(ref[k])); });
     return '{ ' + parts.join(', ') + ' }';
   }
@@ -3180,6 +3274,8 @@ var Assembly = (function () {
       if (m.limit) opts.push('limit: true');
       if (m.lock) opts.push('lock: true');
       if (m.ratio) opts.push('ratio: ' + numList(m.ratio));
+      if (m.pitch != null) opts.push('pitch: ' + String(+m.pitch));   // (full precision: a diameter's pi * d round-trips exactly)
+      if (m.pitchBy) opts.push('pitchBy: ' + JSON.stringify(m.pitchBy));
       if (m.phase) opts.push('phase: ' + numList(m.phase));
       if (m.a2) opts.push('a2: ' + refText(m.a2, varOf));
       if (m.b2) opts.push('b2: ' + refText(m.b2, varOf));
@@ -3300,7 +3396,7 @@ var Assembly = (function () {
     isAssembly: isAssembly, newAssembly: newAssembly, partModel: partModel,
     insert: insert, addMate: addMate, removeComponent: removeComponent, removeMate: removeMate,
     findComponent: findComponent, findMate: findMate, setFixed: setFixed, componentIndex: componentIndex,
-    rebuild: rebuild, setPartBuilder: setPartBuilder, solve: solve, resolveRef: resolveRef, refFromPick: refFromPick, massProps: massProps,
+    rebuild: rebuild, setPartBuilder: setPartBuilder, solve: solve, resolveRef: resolveRef, refFromPick: refFromPick, refFromEdgePick: refFromEdgePick, massProps: massProps,
     transformPoint: transformPoint, inverseTransformPoint: inverseTransformPoint, transformDir: transformDir,
     Builder: Builder, runScript: runScript, isAssemblyScript: isAssemblyScript, generateScript: generateScript,
     defaultAlignment: defaultAlignment, hasAlignment: hasAlignment, setMateValues: setMateValues, MATE_TYPES: MATE_TYPES.slice(),
