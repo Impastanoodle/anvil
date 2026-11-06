@@ -337,7 +337,14 @@
     // lane DC2: Jog from a sketch line (two bends of one Sketched Bend layout; K .5 rolls each strip up with its metal, so the volume is the plate's exactly)
     { name: 'Jog 120°, Outside Offset .5 (lane jogs-rips: the second bend no longer takes the base the wall leans over)', code: SH_HEAD + 'p.sketch("Top", ' + SH_T + ').line(3, 0, 3, -4).jog(0.5, { fixed: [1, 0, 2], angle: 120 });', size: [6, 4], bends: 2, loops: 1, exact: 24 * SH_T },
     { name: 'Jog from a sketch line, Outside Offset .5, 90°', code: SH_HEAD + 'p.sketch("Top", ' + SH_T + ').line(3, 0, 3, -4).jog(0.5, { fixed: [1, 0, 2] });', size: [6, 4], bends: 2, loops: 1, exact: 24 * SH_T },
-    { name: 'Jog 45°, Inside Offset .4, Material Inside, a Ø.4 hole on the jogged side', code: SH_HEAD + 'p.sketch("Top", ' + SH_T + ').circle(5, -2, 0.2).cut("through", { reverse: true });\np.sketch("Top", ' + SH_T + ').line(3, 0, 3, -4).jog(0.4, { fixed: [1, 0, 2], angle: 45, offsetRef: "inside", position: "inside" });', size: [6, 4], bends: 2, loops: 2, exact: (24 - Math.PI * 0.04) * SH_T }
+    { name: 'Jog 45°, Inside Offset .4, Material Inside, a Ø.4 hole on the jogged side', code: SH_HEAD + 'p.sketch("Top", ' + SH_T + ').circle(5, -2, 0.2).cut("through", { reverse: true });\np.sketch("Top", ' + SH_T + ').line(3, 0, 3, -4).jog(0.4, { fixed: [1, 0, 2], angle: 45, offsetRef: "inside", position: "inside" });', size: [6, 4], bends: 2, loops: 2, exact: (24 - Math.PI * 0.04) * SH_T },
+    // lane sweptflange: Swept Flange (no Base Flange): the open-base section swept along the path, prisms and revolves
+    { name: 'Swept Flange, an L (2 × 1) along a straight 10: flat (flats + BA) × 10, volume = flat × T', code: 'p.units("in");\np.sheet(' + SH_T + ', ' + SH_T + ', 0.5);\nvar path = p.sketch("Top").line(0, 0, 0, -10).id();\nvar prof = p.sketch("Front").polyline([[0, 0], [2, 0], [2, 1]], false).id();\np.sweptFlange(prof, path);',
+      size: [3 - 2 * SH_T + Math.PI * 0.75 * SH_T, 10], bends: 1, loops: 1, exact: (3 - 2 * SH_T + Math.PI * 0.75 * SH_T) * 10 * SH_T },
+    { name: 'Swept Flange, a radial line 5 → 7 along a quarter arc R5: a ring sector, π/4·24·T exactly', code: 'p.units("in");\np.sheet(' + SH_T + ', ' + SH_T + ', 0.5);\nvar path = p.sketch("Top").arc(0, 0, 5, 0, 90).id();\nvar prof = p.sketch("Front").line(5, 0, 7, 0).id();\np.sweptFlange(prof, path);',
+      size: [7, 7], bends: 0, loops: 1, arcs: 2, exact: Math.PI / 4 * 24 * SH_T },
+    { name: 'Swept Flange, a cylinder (a line square to the arc path), Flatten along path: 2 × π/2·(5 + T/2)', code: 'p.units("in");\np.sheet(' + SH_T + ', ' + SH_T + ', 0.5);\nvar path = p.sketch("Top").arc(0, 0, 5, 0, 90).id();\nvar prof = p.sketch("Front").line(5, 0, 5, 2).id();\np.sweptFlange(prof, path, { flatten: "path" });',
+      size: [2, Math.PI / 2 * (5 + SH_T / 2)], bends: 0, loops: 1, exact: 2 * Math.PI / 2 * (5 + SH_T / 2) * SH_T }
   ];
   function shDxf(flat) {
     var d = K.exportDXFFlat(flat, 'in', { version: 'R2000', style: 'entities' }), out = {}, re = /\n0\n([A-Z]+)\n(?:(?!\n0\n)[\s\S])*?\n8\n([A-Z]+)\n/g, mm;

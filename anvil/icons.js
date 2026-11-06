@@ -171,6 +171,8 @@ var IconsLib = (function () {
     miter: p('M1.5 12.5 L5.5 9.5 h8 l-4 3 z', F2, S) + p('M5.5 9.5 v-5 h8 v5 z', FY, S) + p('M13.5 9.5 l-4 3 v-5 l4 -3 z', FYD, S) + ln('M13.5 4.5 v5', B, 1.2, DASH),
     hem: p('M2 9 h9 v2 H2 z', F2, S) + p('M11 9 a2.5 2.5 0 0 1 0 5 h-5 v-2 h5 a0.5 0.5 0 0 0 0 -1 z', FY, S),
     jog: p('M1.5 12.5 h4 v2 h-4 z M10 4.5 h4.5 v2 H10 z', F2, S) + p('M5.5 12.5 l4.5 -8 v2 l-4.5 8 z', FY, S),
+    // lane sweptflange: Swept Flange — a sheet band following an arc path, its L profile standing at the far end
+    sweptFlange: p('M1.5 14.5 A12.5 12.5 0 0 1 12 3.2 V6.8 A9 9 0 0 0 5 14.5 z', F2, S) + p('M12 3.2 h2.5 v-1.7 h-1.2 v0.6 H12 z', FY, S, 1) + ln('M1.5 14.5 A12.5 12.5 0 0 1 12 3.2', FY, 1.6) + ln('M3.3 14.5 A10.7 10.7 0 0 1 12 5', B, 1, DASH),
     sketchedBend: p('M1.5 12 h5.5 a2 2 0 0 0 2 -2 V2.5 h2.5 V10 a4.5 4.5 0 0 1 -4.5 4.5 H1.5 z', F2, S) + p('M7 12 a2 2 0 0 0 2 -2 h2.5 a4.5 4.5 0 0 1 -4.5 4.5 z', FY, S, 1) + ln('M7.2 15 l5.6 -5.6', B, 1.2, DASH),
     // lane CP: Break-Corner/Corner-Trim — a sheet with one corner chamfered and one rounded, the breaks in yellow
     breakCorner: p('M1.5 14 V7.5 L4.5 4.5 H9.5 a4.5 4.5 0 0 1 4.5 4.5 V14 z', F2, S) + p('M1.5 14 h12.5 v1 H1.5 z', FYD, S, 0.8) + ln('M1.5 7.5 L4.5 4.5 M9.5 4.5 a4.5 4.5 0 0 1 4.5 4.5', FY, 2.2),

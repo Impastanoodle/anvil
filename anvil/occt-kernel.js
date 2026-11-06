@@ -35,6 +35,7 @@ var OcctKernel = (function () {
   SUPPORTED.rip = 1;   // lane DI
   SUPPORTED.cornerRelief = 1;   // lane smtrim
   SUPPORTED.weldedCorner = 1;   // lane smcorner
+  SUPPORTED.sweptFlange = 1;   // lane sweptflange
   SUPPORTED.crossBreak = 1;   // rfGK: cosmetic, makes no body (skipped below)
   SUPPORTED.vent = 1;   // lane DT
   SUPPORTED.draft = 1;   // rfDX
@@ -1386,6 +1387,47 @@ var OcctKernel = (function () {
       var face = N(N(new oc.BRepBuilderAPI_MakeFace_15(N(mw.Wire()), true)).Face());
       return N(N(new oc.BRepPrimAPI_MakePrism_1(face, Vec(V.scale(t.plane.n, t.b - t.a)), false, true)).Shape());
     }
+    // lane sweptflange: Swept Flange (Kernel.sweptFlangeLayout): the open-base section with its bends as true arcs, a
+    // prism along each line of the path and a revolve about each arc's axis, fused
+    function sweptFlangeTool(f) {
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      var ctx = { planes: planes, sketches: sketches };
+      if (f.edges && f.edges.length) { if (!bodies.length) throw new Error('Swept Flange: the part has no edges for the path yet.'); ctx.body = shapeToCSG(bodies[0]); }
+      var lay = K.sweptFlangeLayout(f, m, ctx), ob = lay.ob, loop = ob.loop, cv = ob.cv, n = loop.length;
+      function sectionFace(F) {
+        var to3 = function (p) { return K.to3D(F, p[0], p[1]); }, mw = N(new oc.BRepBuilderAPI_MakeWire_1()), i = 0;
+        while (i < n) {
+          var C = cv[i];
+          if (!C) {
+            var p = loop[i], q = loop[(i + 1) % n];
+            if (Math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-9) mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_3(P(to3(p)), P(to3(q)))).Edge()));
+            i++; continue;
+          }
+          var j = i;   // a run of chords on one circle: one exact arc
+          while (j + 1 < n && cv[j + 1] && Math.hypot(cv[j + 1].c[0] - C.c[0], cv[j + 1].c[1] - C.c[1]) < 1e-9 && Math.abs(cv[j + 1].r - C.r) < 1e-9) j++;
+          // the arc's middle: the middle vertex of an even run (equal chords), else the middle chord's midpoint pushed
+          // out onto the circle
+          var a = loop[i], b = loop[(j + 1) % n], cnt = j - i + 1, h = Math.floor(cnt / 2), mid;
+          if (cnt % 2 === 0) mid = loop[i + h];
+          else {
+            var m0 = loop[i + h], m1 = loop[(i + h + 1) % n], mx = (m0[0] + m1[0]) / 2 - C.c[0], my = (m0[1] + m1[1]) / 2 - C.c[1], ml = Math.hypot(mx, my) || 1;
+            mid = [C.c[0] + C.r * mx / ml, C.c[1] + C.r * my / ml];
+          }
+          var mk = N(new oc.GC_MakeArcOfCircle_4(P(to3(a)), P(to3(mid)), P(to3(b))));
+          mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_24(N(new oc.Handle_Geom_Curve_2(N(mk.Value()).get())))).Edge()));
+          i = j + 1;
+        }
+        if (!mw.IsDone()) throw new Error('Swept Flange: OpenCascade could not make the section.');
+        return N(N(new oc.BRepBuilderAPI_MakeFace_15(N(mw.Wire()), true)).Face());
+      }
+      var parts = lay.pieces.map(function (p, k) {
+        var face = sectionFace(lay.frames[k]);
+        if (p.kind === 'line') return N(N(new oc.BRepPrimAPI_MakePrism_1(face, Vec(V.scale(lay.frames[k].n, lay.nSign * V.len(V.sub(p.b, p.a)))), false, true)).Shape());
+        var ax1 = N(new oc.gp_Ax1_2(P(p.C), Dir(p.ang < 0 ? V.scale(p.D, -1) : p.D)));
+        return N(N(new oc.BRepPrimAPI_MakeRevol_1(face, ax1, Math.abs(p.ang), false)).Shape());
+      });
+      return parts.length > 1 ? boolMany('fuse', parts[0], parts.slice(1), 'Swept Flange: OpenCascade could not join the pieces.') : parts[0];
+    }
     function insertBendsOp(f) {
       if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
       if (rm.sheetError) throw new Error(rm.sheetError);
@@ -1831,6 +1873,7 @@ var OcctKernel = (function () {
             case 'rip': tool = ripTool(f); break;   // lane DI
             case 'cornerRelief': tool = cornerReliefTool(f); break;   // lane smtrim
             case 'weldedCorner': tool = weldedCornerTool(f); break;   // lane smcorner
+            case 'sweptFlange': tool = sweptFlangeTool(f); break;   // lane sweptflange
             case 'vent': tool = ventTool(f); break;   // lane DT
             case 'wrap': tool = wrapOp(f); break;   // rfDZ
             case 'closedCorner': closedCornerOp(f); break;

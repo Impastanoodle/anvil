@@ -835,6 +835,10 @@
     model.features.forEach(function (f) { if (f.type === 'sketchedBend' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // bend lines are open too
     model.features.forEach(function (f) { if (f.type === 'insertBends' && f.openBase && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // rfGL: an open-profile Base Flange
     model.features.forEach(function (f) { if (f.type === 'jog' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // lane DC: a jog's line
+    model.features.forEach(function (f) {   // Swept Flange profile / path and Lofted-Bend profiles are open sketches (local-2026-11-06a)
+      if (f.type === 'sweptFlange') [f.profile, f.path].forEach(function (id) { if (typeof id === 'number') pathIds[id] = true; });
+      if (f.type === 'loftedBend') (f.sketches || []).forEach(function (id) { if (typeof id === 'number') pathIds[id] = true; });
+    });
     model.features.forEach(function (f) { if (f.type === 'projCurve' || f.type === 'compositeCurve') { pathIds[f.sketch] = pathIds[f.sketch2] = true; (f.edges || []).forEach(function (r) { if (r && r.sketch != null) pathIds[r.sketch] = true; }); } });   // rfFA: curves from open sketches
     model.features.forEach(function (f) { if (f.type === 'flange' && f.miterFlange && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // lane DL: a miter flange's profile
     model.features.forEach(function (f) { if (f.type === 'rib' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // rfDY: a rib's open lines

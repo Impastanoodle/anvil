@@ -1368,6 +1368,25 @@
     this._add(f);
     return this;
   };
+  // lane sweptflange: sweptFlange(profileSketch, path, { flip (Reverse direction: T on the left of the profile as
+  // drawn), radius, flatten: 'profile' (default) | 'path' (Flatten along path), bendAllowance: { type, value }, name })
+  // — SolidWorks' Swept Flange: an open profile swept along a path sketch, or along edges of the part (path = a list
+  // of points on them, [[x, y, z], ...]); needs p.sheet(T, R, k) first.
+  Builder.prototype.sweptFlange = function (profile, path, opts) {
+    opts = opts || {};
+    if (!this.model.sheet) throw new Error('sweptFlange: set the sheet first (p.sheet(thickness, radius, k)).');
+    if (profile == null) throw new Error('sweptFlange: give the profile sketch.');
+    var flatten = opts.flatten || 'profile';
+    if (K.SWEPT_FLANGE_FLATTEN.indexOf(flatten) < 0) throw new Error('sweptFlange flatten must be one of ' + K.SWEPT_FLANGE_FLATTEN.join(', ') + '.');
+    var f = { type: 'sweptFlange', profile: Number(profile), flip: !!opts.flip, flatten: flatten };
+    if (Array.isArray(path)) f.edges = path.map(function (e) { return { at: (Array.isArray(e) ? e : e.at).map(num) }; });
+    else if (path == null) throw new Error('sweptFlange: give the path sketch (or points on the path edges).');
+    else f.path = Number(path);
+    if (opts.radius != null) f.radius = num(opts.radius);
+    f.name = opts.name || 'Swept Flange' + (this.model.features.filter(function (q) { return q.type === 'sweptFlange'; }).length + 1);
+    this._add(customBendAllowance(f, opts.bendAllowance));
+    return this;
+  };
   Builder.prototype._sketchJog = function (offset, opts) {
     var position = opts.position || 'centerline', ref = opts.offsetRef || 'outside';
     if (K.SKETCHED_BEND_POSITIONS.indexOf(position) < 0) throw new Error('jog position must be one of ' + K.SKETCHED_BEND_POSITIONS.join(', ') + '.');

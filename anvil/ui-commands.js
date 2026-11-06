@@ -3270,6 +3270,120 @@
     if (!list) return;
     list.forEach(function (it) { if (it && it.id === 'loft' && !it.run) { it.run = function () { cmdLoftedBend(); }; it.help = 'Sheet metal lofted between two open profiles (square to round, transitions): Bent facets with bend lines, or Formed'; } });
   }, 0);
+  // lane sweptflange: SolidWorks' Swept Flange PropertyManager (Kernel.buildSweptFlange / sweptFlangeFlat): Profile and
+  // Path (a path sketch, or edges of the part picked in the viewport), Sheet Metal Parameters (thickness: the sheet's,
+  // set here when the part has none; Reverse direction; Use default radius / Bend radius), Custom Bend Allowance,
+  // Flat-Pattern Options (Flatten along path). Session memory sfLast (flip, flatten).
+  var sfLast = {};
+  function cmdSweptFlange(existing) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    var sks = dxfSketches();
+    if (!existing && sks.length < 2) { UI.toast('Swept Flange: sketch the open profile (on a plane normal to the path at its start) and the path first.'); return; }
+    var sheet0 = App.model.sheet, T0 = sheet0 ? +sheet0.thickness : Math.round(UI.lenDefault(1.5) * 1e4) / 1e4;
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'sweptFlange', profile: sks[sks.length - 1].id, path: sks[sks.length - 2].id, flip: !!sfLast.flip, flatten: sfLast.flatten || 'profile' };
+    f.prof = String(f.profile); f.pathSk = f.path != null ? String(f.path) : String(sks.length > 1 ? sks[sks.length - 2].id : '');
+    f.edges = (f.edges || []).map(function (e) { return { at: (e.at || e).slice() }; });
+    f.pathKind = f.edges.length ? 'edges' : 'sketch';
+    f.alongPath = f.flatten === 'path';
+    f.useDefaultRadius = f.radius == null; f.radiusValue = f.radius != null ? +f.radius : (sheet0 ? +sheet0.bendRadius : T0);
+    f.thickness = T0;
+    var cba = f.bendAllowance || null, kSheet = sheet0 ? K.sheetKFactor(sheet0) : 0.5;
+    f.useCustomBA = !!cba; f.cbaType = cba ? cba.type : 'kfactor';
+    f.cbaK = cba && cba.type === 'kfactor' ? cba.value : kSheet;
+    f.cbaBA = cba && cba.type === 'allowance' ? cba.value : Math.round(K.bendAllowance(Math.PI / 2, f.radiusValue, T0, kSheet) * 1e4) / 1e4;
+    f.cbaBD = cba && cba.type === 'deduction' ? cba.value : Math.round(K.bendDeduction(Math.PI / 2, f.radiusValue, T0, K.bendAllowance(Math.PI / 2, f.radiusValue, T0, kSheet)) * 1e4) / 1e4;
+    var CBA_KEY = { kfactor: 'cbaK', allowance: 'cbaBA', deduction: 'cbaBD' };
+    function toFeature(v) {
+      var out = { type: 'sweptFlange', profile: +v.prof, flip: !!v.flip, flatten: v.alongPath ? 'path' : 'profile' };
+      if (v.pathKind === 'edges') out.edges = v.edges.map(function (e) { return { at: e.at.slice() }; }); else out.path = +v.pathSk;
+      if (!v.useDefaultRadius) out.radius = +v.radiusValue;
+      if (v.useCustomBA) { out.bendAllowance = { type: v.cbaType }; if (v.cbaType !== 'table') out.bendAllowance.value = +v[CBA_KEY[v.cbaType]]; }
+      if (v.name) out.name = v.name;
+      return out;
+    }
+    function pmModel(v) {
+      var m = previewModel();
+      if (!m.sheet) m = Object.assign({}, m, { sheet: K.makeSheet({ thickness: +v.thickness, bendRadius: +v.thickness, kFactor: 0.5 }) });
+      return m;
+    }
+    var base = null;
+    function baseBody() { if (!base) base = existing ? bodyBefore(existing.id) : (App.build && App.build.body); return base; }
+    function lit() {
+      var list = f.pathKind === 'edges' ? (App.edges || []).filter(function (e) { return f.edges.some(function (q) { return K.pointSegmentDistance(q.at, e.a, e.b) <= 1e-4 * (1 + e.len); }); }) : [];
+      if (App.command) App.command.edgeList = list;
+      if (UI.updateHighlights) UI.updateHighlights();
+    }
+    function preview() {
+      lit();
+      UI.disposeGroup(UI.groups.preview);
+      if (f.pathKind === 'edges' && !f.edges.length) { UI.setStatus('Swept Flange: click the edges of the part the flange runs along.'); return; }
+      try {
+        var tool = K.buildSweptFlange(toFeature(f), pmModel(f), { planes: (App.build && App.build.planes) || {}, sketches: {}, body: f.pathKind === 'edges' ? baseBody() : null });
+        if (tool && tool.polygons.length) addPreviewMesh(tool, UI.mats.preview);
+        UI.setStatus('Swept Flange preview. Press Enter or ✓ to accept.');
+      } catch (e) { UI.setStatus('Preview: ' + e.message); }
+    }
+    function pick(pk) {
+      if (f.pathKind !== 'edges' || pk.kind !== 'edge' || !pk.edge) return false;
+      var e = pk.edge, i = -1;
+      f.edges.forEach(function (q, k) { if (K.pointSegmentDistance(q.at, e.a, e.b) <= 1e-4 * (1 + e.len)) i = k; });
+      if (i >= 0) f.edges.splice(i, 1); else f.edges.push({ at: e.mid.map(function (x) { return Math.round(x * 1e6) / 1e6; }) });
+      renderPM(); preview();
+      return true;
+    }
+    function sketchOpts() { return dxfSketches().map(function (s) { return [String(s.id), s.name]; }); }
+    function isEdges(v) { return v.pathKind === 'edges'; }
+    openPM({
+      title: existing ? existing.name : 'Swept Flange', icon: 'sweptFlange', values: f,
+      message: 'Pick the open <b>profile</b> (lines, arcs between them; sketched on a plane normal to the path at its start) and the <b>path</b> (a sketch of tangent lines and arcs, or edges of the part). The sketch line is one face of the sheet; each sharp corner gets the bend radius.',
+      command: { pickEdges: true, edgeList: [], onPick: pick },
+      groups: [
+        { title: 'Profile and Path', fields: [
+          { type: 'select', label: 'Profile', key: 'prof', options: sketchOpts },
+          { type: 'radio', key: 'pathKind', rerender: true, options: [['sketch', 'Path sketch'], ['edges', 'Edges of the part']] },
+          { type: 'select', label: 'Path', key: 'pathSk', options: sketchOpts, show: function (v) { return !isEdges(v); } },
+          { type: 'pick', icon: 'sweptFlange', placeholder: 'Path edges…', show: isEdges,
+            value: function (v) { var n = v.edges.length; return n ? n + ' edge' + (n === 1 ? '' : 's') : ''; },
+            items: function (v) { return v.edges.map(function (e, i) { return { label: 'Edge<' + (i + 1) + '>', at: e.at }; }); },
+            onRemove: function (v, i) { v.edges.splice(i, 1); renderPM(); preview(); },
+            onClear: function (v) { v.edges.length = 0; renderPM(); preview(); } }
+        ] },
+        { title: 'Sheet Metal Parameters', fields: [
+          sheet0 ? { type: 'static', label: 'Thickness', value: String(sheet0.thickness) + ' ' + UI.unitLabel() + ' (the sheet\'s)' } : { type: 'number', label: 'Thickness', key: 'thickness', unit: 'u', min: 0 },
+          { type: 'check', label: 'Reverse direction', key: 'flip' },
+          { type: 'check', label: 'Use default radius', key: 'useDefaultRadius', rerender: true },
+          { type: 'number', label: 'Bend radius', key: 'radiusValue', unit: 'u', min: 0, show: function (v) { return !v.useDefaultRadius; } }
+        ] },
+        { title: 'Custom Bend Allowance', collapsed: !f.useCustomBA, fields: [
+          { type: 'check', label: 'Custom bend allowance', key: 'useCustomBA', rerender: true },
+          { type: 'select', label: 'Type', key: 'cbaType', options: BA_OPTIONS, rerender: true, show: function (v) { return v.useCustomBA; } },
+          { type: 'number', label: 'K-factor', key: 'cbaK', step: 0.01, min: 0, show: function (v) { return v.useCustomBA && v.cbaType === 'kfactor'; } },
+          { type: 'number', label: 'Bend allowance', key: 'cbaBA', unit: 'u', min: 0, show: function (v) { return v.useCustomBA && v.cbaType === 'allowance'; } },
+          { type: 'number', label: 'Bend deduction', key: 'cbaBD', unit: 'u', show: function (v) { return v.useCustomBA && v.cbaType === 'deduction'; } }
+        ] },
+        { title: 'Flat-Pattern Options', fields: [
+          { type: 'check', label: 'Flatten along path', key: 'alongPath' },
+          { type: 'static', label: '', value: 'Off: the profile\'s bends are unbent (a straight path, or a ring in the path\'s plane). On: a one-line profile is developed along an arc path (cylinder, cone).' }
+        ] },
+        { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ],
+      onChange: function () { preview(); },
+      onOK: function (v) {
+        if (v.pathKind === 'edges' ? !v.edges.length : v.prof === v.pathSk) { UI.toast(v.pathKind === 'edges' ? 'Swept Flange: pick the path edges.' : 'Swept Flange: the profile and the path must be two sketches.'); return false; }
+        if (!v.useDefaultRadius && !(+v.radiusValue >= 0)) { UI.toast('Swept Flange: the bend radius must be zero or more.'); return false; }
+        if (!App.model.sheet) {
+          if (!(+v.thickness > 0)) { UI.toast('Swept Flange: the thickness must be greater than zero.'); return false; }
+          App.model.sheet = K.makeSheet({ thickness: +v.thickness, bendRadius: +v.thickness, kFactor: 0.5 });
+        }
+        sfLast = { flip: !!v.flip, flatten: v.alongPath ? 'path' : 'profile' };
+        var feat = toFeature(v);
+        if (!feat.name && !existing) feat.name = 'Swept Flange' + (App.model.features.filter(function (q) { return q.type === 'sweptFlange'; }).length + 1);
+        return commitFeature(feat, existing);
+      }
+    });
+    preview();
+  }
+  UI.cmdSweptFlange = cmdSweptFlange;
   // lane DL (fidelity #11): SolidWorks' Miter Flange. The flange section comes from a profile sketch (an open chain of
   // lines, tangent arcs between them, on a plane normal to an edge, starting on it: Kernel.miterFlangeStages); the PM
   // has SolidWorks' groups: Miter Parameters (the edges to run along, the profile sketch, Use default radius / Bend
@@ -6537,6 +6651,7 @@
       case 'flange': cmdEdgeFlange(f); break;
       case 'jog': cmdJog(f); break;
       case 'loftedBend': cmdLoftedBend(f); break;   // lane dxfout-2
+      case 'sweptFlange': cmdSweptFlange(f); break;   // lane sweptflange
       case 'sketchedBend': UI.cmdSketchedBend(f); break;
       case 'breakCorner': UI.cmdBreakCorner(f); break;
       case 'cornerRelief': UI.cmdCornerRelief(f); break;   // lane smtrim

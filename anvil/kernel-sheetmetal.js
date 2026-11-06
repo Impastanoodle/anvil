@@ -2093,6 +2093,8 @@
     var sheet = model.sheet;
     if (!sheet) throw new Error('No sheet metal parameters: create a Base Flange first (Sheet Metal tab).');
     var base = model.features.filter(function (f) { return f.sheetBase; })[0];
+    var swf = model.features.filter(function (f) { return f.type === 'sweptFlange' && !f.suppressed; });   // lane sweptflange
+    if (swf.length && _.sweptFlangeFlat) return _.sweptFlangeFlat(swf, model, build, base);
     if (!base) {   // lane dxfout-2: a part made by a Lofted-Bend develops its own strip
       var lbf = model.features.filter(function (f) { return f.type === 'loftedBend' && !f.suppressed; })[0];
       if (lbf && _.loftedBendFlat) return _.loftedBendFlat(lbf, model, build);
@@ -6440,7 +6442,8 @@
     for (k = 1; k < 3; k++) if (Math.abs(xf[k]) > Math.abs(xf[big]) + 1e-9) big = k;
     if (xf[big] < 0) xf = scale(xf, -1);
     var P3 = add(to3D(plane, P2[0], P2[1]), scale(plane.n, (a + b) / 2));
-    return { plane: plane, a: a, b: b, loop: loop, cv: cv, plates: plates, wedges: wedges, info: info, fixed: P3, flatPlane: { origin: P3, x: xf, y: cross(nf, xf), n: nf }, flats: flats, T: T };
+    return { plane: plane, a: a, b: b, loop: loop, cv: cv, plates: plates, wedges: wedges, info: info, fixed: P3, flatPlane: { origin: P3, x: xf, y: cross(nf, xf), n: nf }, flats: flats, T: T,
+      pts: pts, segs: segs, joints: joints, side: s };   // lane sweptflange: the chain, its segments / joints and the material side (+1 left)
   }
   // buildOpenBase(f, model, ctx) -> { body, info, tool, bends }: rebuildModel's Insert Bends case. A first feature has no
   // body slot for its putBody, so the solid is put in ctx.bodies here; on an existing body it is added to it.
@@ -7119,4 +7122,270 @@
   });
   K.LOFTED_BEND_METHODS = LB_METHODS.slice(); K.LOFTED_BEND_FACETING = LB_FACETING.slice();
   K.loftedBendLayout = loftedBendLayout; K.buildLoftedBend = buildLoftedBend; K.loftedBendFlat = loftedBendFlat; _.loftedBendFlat = loftedBendFlat;
+})(Kernel, Kernel._);
+
+// ------------------------------------------------------------------ Swept Flange (lane sweptflange)
+// SolidWorks' Swept Flange (Sheet Metal ▸ Swept Flange): an open profile swept along a tangent-continuous path of lines
+// and arcs. The profile is an open-profile Base Flange's (openBaseLayout: the sketch line is one face of the sheet, T on
+// its right as drawn, `flip` = Reverse direction, every sharp corner gets the bend radius, arcs between lines are
+// bends), sketched on a plane normal to the path through its start. Feature JSON { type: 'sweptFlange', profile (sketch
+// id), path (sketch id) | edges: [{ at }] (edges of the part, chained as Edge Flange picks), flip, radius?, flatten:
+// 'profile' (default: unbend the profile) | 'path' (Flatten along path: develop the sheet along the path),
+// bendAllowance? ({ type, value }), name }. Solid: the section as a prism along each line piece and revolved about each
+// arc piece's axis, its bends tagged { c, r }, so massProps is exact (Pappus). Flat (sweptFlangeFlat): a straight path
+// gives the profile developed (flats + BA per bend) × the path length, bend lines mid-bend; a path with arcs needs a
+// profile of one line: its pieces (planes, cylinders, cones, rings) are developed exactly on the neutral surface K·T
+// from the concave face. A profile with bends along an arc is not developable (refused); 'profile' on an arc path takes
+// only a ring (the line in the path's plane): a cylinder or cone needs Flatten along path.
+(function (K, _) {
+  'use strict';
+  var add = _.add, sub = _.sub, scale = _.scale, dot = _.dot, cross = _.cross, len = _.len, norm = _.norm, to2D = _.to2D, to3D = _.to3D;
+  var SF_FLATTEN = ['profile', 'path'];
+  function sfErr(m) { return new Error('Swept Flange: ' + m); }
+  function num(x) { return Math.round(x * 1e6) / 1e6; }
+  function pieceDir(p, end) {
+    if (p.kind === 'line') return norm(sub(p.b, p.a));
+    return scale(norm(cross(p.D, sub(end ? p.b : p.a, p.C))), p.ang < 0 ? -1 : 1);
+  }
+  function revPiece(p) { return { kind: p.kind, a: p.b, b: p.a, C: p.C, D: p.D, ang: -p.ang, r: p.r }; }
+  // pieces end to end (either way round) into one open chain; tangent joins when `tangent`
+  function chainPieces(raw, what, tangent) {
+    function near(p, q) { return len(sub(p, q)) <= 1e-6 * (1 + len(p)); }
+    raw = raw.filter(function (p) { return len(sub(p.b, p.a)) > 1e-9; });
+    if (!raw.length) throw sfErr(what + ' is empty.');
+    var chain = [raw.shift()], guard = 0;
+    while (raw.length && guard++ < 100000) {
+      var head = chain[0].a, tail = chain[chain.length - 1].b, found = false;
+      for (var k = 0; k < raw.length && !found; k++) {
+        var p = raw[k];
+        if (near(p.a, tail)) { chain.push(p); found = true; }
+        else if (near(p.b, tail)) { chain.push(revPiece(p)); found = true; }
+        else if (near(p.b, head)) { chain.unshift(p); found = true; }
+        else if (near(p.a, head)) { chain.unshift(revPiece(p)); found = true; }
+        if (found) raw.splice(k, 1);
+      }
+      if (!found) throw sfErr(what + ' must be one connected chain.');
+    }
+    if (chain.length > 1 && near(chain[0].a, chain[chain.length - 1].b)) throw sfErr('a closed path is not supported: leave a gap in it.');
+    if (tangent) for (var i = 1; i < chain.length; i++) if (dot(pieceDir(chain[i - 1], true), pieceDir(chain[i], false)) < 1 - 1e-6)
+      throw sfErr('the path must be tangent-continuous: fillet its corner at the end of piece ' + i + '.');
+    return chain;
+  }
+  // a path sketch's lines and arcs as 3D pieces { kind, a, b, C, D, ang (signed: a rotated about (C, D) by ang is b) }
+  function sketchPieces(sk, plane) {
+    var raw = [], D = norm(cross(plane.x, plane.y));
+    (sk.entities || []).forEach(function (e) {
+      if (!e || e.construction || e.t === 'point' || e.t === 'text' || (K.noProfileEntity && K.noProfileEntity(sk, e))) return;
+      if (e.t === 'line') raw.push({ kind: 'line', a: to3D(plane, +e.x1, +e.y1), b: to3D(plane, +e.x2, +e.y2) });
+      else if (e.t === 'polyline') {
+        if (e.closed) throw sfErr('the path must be open (a closed path is not supported).');
+        for (var i = 0; i + 1 < e.pts.length; i++) raw.push({ kind: 'line', a: to3D(plane, +e.pts[i][0], +e.pts[i][1]), b: to3D(plane, +e.pts[i + 1][0], +e.pts[i + 1][1]) });
+      } else if (e.t === 'arc') {
+        var s0 = +e.a0 * Math.PI / 180, sw = +e.a1 * Math.PI / 180 - s0, r = +e.r;
+        while (sw <= 0) sw += 2 * Math.PI;
+        if (sw >= 2 * Math.PI - 1e-9) throw sfErr('a full circle cannot be a path: leave a gap.');
+        var o = { kind: 'arc', C: to3D(plane, +e.cx, +e.cy), D: D, ang: sw, r: r,
+          a: to3D(plane, +e.cx + r * Math.cos(s0), +e.cy + r * Math.sin(s0)), b: to3D(plane, +e.cx + r * Math.cos(s0 + sw), +e.cy + r * Math.sin(s0 + sw)) };
+        if (len(sub(_.rotatePoint(o.a, o.C, o.D, o.ang), o.b)) > 1e-6 * Math.max(1, r)) o.ang = -o.ang;
+        raw.push(o);
+      } else if (e.t === 'circle') throw sfErr('a full circle cannot be a path: sketch an arc with a gap.');
+      else throw sfErr('the path may hold lines and arcs only (it has a ' + e.t + ').');
+    });
+    return chainPieces(raw, 'the path sketch', true);
+  }
+  // edges of the part (picked points) as pieces: collinear runs become one line, runs of equal chords turning alike
+  // (a mesh arc, at most 20° each) one arc through their ends
+  function edgePieces(f, ctx, T) {
+    if (!ctx.body) throw sfErr('the part has no edges for the path yet: sketch the path instead.');
+    var edges = _.bodyEdges(_.meshFromBody(ctx.body)).filter(function (e) { return !e.smooth && e.faces.length === 2; });
+    var sel = _.resolveEdges((f.edges || []).map(function (e) { return { at: e.at || e }; }), edges, 0.75 * T);
+    if (!sel.length) throw sfErr('no edge of the part at the picked points.');
+    var ch = chainPieces(sel.map(function (e) { return { kind: 'line', a: e.a.slice(), b: e.b.slice() }; }), 'the path edges', false);
+    var P = [ch[0].a].concat(ch.map(function (p) { return p.b; })), n = ch.length, i;
+    var dirs = ch.map(function (p) { return norm(sub(p.b, p.a)); }), lens = ch.map(function (p) { return len(sub(p.b, p.a)); });
+    function turn(i) { return Math.acos(Math.max(-1, Math.min(1, dot(dirs[i - 1], dirs[i])))); }
+    var out = [];
+    for (i = 0; i < n;) {
+      var j = i + 1;
+      while (j < n && turn(j) < 1e-7) j++;
+      if (j > i + 1 || j >= n || turn(j) > 20 * Math.PI / 180) { out.push({ kind: 'line', a: P[i], b: P[j] }); i = j; continue; }
+      // an arc: equal chords, equal turns about one axis
+      var th = turn(j), ax = norm(cross(dirs[i], dirs[j])), k = j;
+      while (k + 1 < n && Math.abs(turn(k + 1) - th) < 1e-6 * Math.max(1, th) && Math.abs(lens[k + 1] - lens[i]) < 1e-6 * (1 + lens[i]) && dot(norm(cross(dirs[k], dirs[k + 1])), ax) > 1 - 1e-6) k++;
+      if (Math.abs(lens[j] - lens[i]) > 1e-6 * (1 + lens[i])) { out.push({ kind: 'line', a: P[i], b: P[i + 1] }); i++; continue; }
+      var m = k - i + 1, r = lens[i] / (2 * Math.sin(th / 2));
+      var C = add(scale(add(P[i], P[i + 1]), 0.5), scale(norm(cross(ax, dirs[i])), r * Math.cos(th / 2)));
+      out.push({ kind: 'arc', a: P[i], b: P[k + 1], C: C, D: ax, ang: m * th, r: r });
+      i = k + 1;
+    }
+    for (i = 1; i < out.length; i++) if (dot(pieceDir(out[i - 1], true), pieceDir(out[i], false)) < 1 - 1e-4)
+      throw sfErr('the path edges must be tangent-continuous (they turn a corner at the end of piece ' + i + ').');
+    return out;
+  }
+  // sweptFlangeLayout(f, model, ctx) -> { ob (openBaseLayout's), pieces (from the end at the profile), frames (the
+  // profile plane at each piece's start), nSign (+1: the path leaves along the profile plane's +n), T, flatten }
+  function sweptFlangeLayout(f, model, ctx) {
+    var flatten = f.flatten || 'profile';
+    if (SF_FLATTEN.indexOf(flatten) < 0) throw sfErr('unknown flat-pattern option "' + flatten + '" (profile or path).');
+    if (f.profile == null) throw sfErr('select the profile sketch.');
+    var ob;
+    try { ob = K.openBaseLayout({ sketch: f.profile, depth: 1, flip: !!f.flip, radius: f.radius }, model, ctx); }
+    catch (e) { throw sfErr(String(e.message).replace(/^Base Flange:\s*/i, '').replace(/base flange/gi, 'swept flange')); }
+    var T = ob.T, plane = ob.plane, pieces;
+    if (f.edges && f.edges.length) pieces = edgePieces(f, ctx, T);
+    else {
+      if (f.path == null) throw sfErr('select the path (a sketch of lines and arcs, or edges of the part).');
+      if (+f.path === +f.profile) throw sfErr('the profile and the path must be two sketches.');
+      var ps = (ctx.sketches && ctx.sketches[f.path]) || K.findFeature(model, f.path);
+      if (!ps || ps.type !== 'sketch') throw sfErr('the path ' + f.path + ' is not a sketch.');
+      pieces = sketchPieces(ps, K.resolvePlane(ps.plane, model, ctx.planes || {}));
+    }
+    var c0 = [0, 0];
+    ob.loop.forEach(function (p) { c0[0] += p[0] / ob.loop.length; c0[1] += p[1] / ob.loop.length; });
+    var c3 = to3D(plane, c0[0], c0[1]), n = pieces.length;
+    if (len(sub(pieces[n - 1].b, c3)) < len(sub(pieces[0].a, c3))) pieces = pieces.slice().reverse().map(revPiece);
+    var d0 = pieceDir(pieces[0], false), cn = dot(norm(plane.n), d0);
+    if (Math.abs(cn) < 1 - 1e-6) throw sfErr('sketch the profile on a plane normal to the path at its start.');
+    if (Math.abs(dot(norm(plane.n), sub(pieces[0].a, plane.origin))) > 1e-6 * (1 + len(pieces[0].a))) throw sfErr('the profile\'s plane must pass through the start of the path.');
+    var F = { origin: plane.origin, x: plane.x, y: plane.y, n: plane.n }, frames = [];
+    pieces.forEach(function (p) {
+      frames.push(F);
+      if (p.kind === 'line') { var dv = sub(p.b, p.a); F = { origin: add(F.origin, dv), x: F.x, y: F.y, n: F.n }; return; }
+      function rot(v) { return _.rotatePoint(v, [0, 0, 0], p.D, p.ang); }
+      F = { origin: _.rotatePoint(F.origin, p.C, p.D, p.ang), x: rot(F.x), y: rot(F.y), n: rot(F.n) };
+    });
+    return { ob: ob, pieces: pieces, frames: frames, nSign: cn < 0 ? -1 : 1, T: T, flatten: flatten, plane: plane };
+  }
+  // buildSweptFlange(f, model, ctx) -> the sheet (CSG)
+  function buildSweptFlange(f, model, ctx) {
+    var lay = sweptFlangeLayout(f, model, ctx), ob = lay.ob, seg = ob.cv.map(function (c, i) { return c ? i : -1; });
+    var parts = lay.pieces.map(function (p, i) {
+      var F = lay.frames[i];
+      if (p.kind === 'line') return _.prism(ob.loop, F, 0, len(sub(p.b, p.a)) * lay.nSign, f.id, ob.cv);
+      var e = sub(p.a, p.C); e = norm(sub(e, scale(p.D, dot(e, p.D))));
+      var R = { origin: p.C, x: e, y: p.D, n: cross(e, p.D) };
+      function map2(u, v) { return to2D(R, to3D(F, u, v)); }
+      var pts = ob.loop.map(function (q) { return map2(q[0], q[1]); });
+      if (pts.some(function (q) { return q[0] < 1e-9; })) throw sfErr('the path arc of radius ' + num(len(sub(p.a, p.C))) + ' is tighter than the profile reaches: the sheet would cross its centre.');
+      var cvs = ob.cv.map(function (C) { if (!C) return C; var o = {}; Object.keys(C).forEach(function (k) { o[k] = C[k]; }); o.c = map2(C.c[0], C.c[1]); return o; });
+      var fake = { profile: { loops: [{ pts: pts, hole: false, seg: seg }], curves: cvs }, entities: [] };
+      return _.buildRevolve({ id: f.id, angle: Math.abs(p.ang) * 180 / Math.PI, reverse: p.ang < 0, axis: { x1: 0, y1: 0, x2: 0, y2: 1 } }, fake, R);
+    });
+    return _.unionTree(parts);
+  }
+  // sweptFlangeFlat(features, model, build, base) -> a flat like Kernel.flatPattern's (flatPattern hands it the part's
+  // Swept Flanges when it has one); refused on a Base Flange part, along model edges or with two Swept Flanges
+  function sweptFlangeFlat(list, model, build, base) {
+    if (base) throw sfErr('the flat pattern of a Swept Flange added to a Base Flange is not supported yet (a part that starts with the Swept Flange flattens).');
+    if (list.length > 1) throw sfErr('a part with more than one Swept Flange does not flatten yet.');
+    var f = list[0];
+    if (f.edges && f.edges.length) throw sfErr('the flat pattern of a Swept Flange along model edges is not supported yet: sketch the path.');
+    var lay = sweptFlangeLayout(f, model, { planes: (build && build.planes) || {}, sketches: {} });
+    var ob = lay.ob, T = lay.T, sheet = K.sheetParams(model), kf = K.sheetKFactor(sheet), units = model.units, warnings = [];
+    var custom = f.bendAllowance && f.bendAllowance.type ? { type: f.bendAllowance.type, value: f.bendAllowance.value == null ? null : +f.bendAllowance.value } : null;
+    var plane = lay.plane, s = ob.side, hasArc = lay.pieces.some(function (p) { return p.kind === 'arc'; });
+    function vec(v) { return add(scale(plane.x, v[0]), scale(plane.y, v[1])); }
+    // the developed profile: x along it from its first point; a bend line mid-bend
+    var xs = [], x = 0, bendAt = [];
+    ob.segs.forEach(function (g, q) {
+      x += ob.flats[q];
+      var J = ob.joints[q];
+      if (!J) return;
+      var bc = K.bendCalc(sheet, J.A, J.R, T, custom);
+      if (bc.warning && warnings.indexOf(bc.warning) < 0) warnings.push(bc.warning);
+      bendAt.push({ x: x + bc.BA / 2, J: J, bc: bc });
+      x += bc.BA;
+    });
+    var W = x, loopPts, area, bends = [], i;
+    if (!hasArc) {
+      var L = 0;
+      lay.pieces.forEach(function (p) { L += len(sub(p.b, p.a)); });
+      loopPts = [[0, 0], [W, 0], [W, L], [0, L]]; area = W * L;
+      bendAt.forEach(function (b, q) {
+        var bd = { a: [b.x, 0], b: [b.x, L], up: b.J.t !== s, angle: b.J.A * 180 / Math.PI, R: b.J.R, ba: b.bc.BA, bd: b.bc.BD, method: b.bc.type, source: b.bc.source, id: f.id + ':' + q };
+        bd.label = K.bendNoteText(bd, units);
+        bends.push(bd);
+      });
+    } else {
+      if (ob.joints.length) throw sfErr('a profile with bends along a path with arcs is not developable: use a straight path, or a profile of one line.');
+      var ldir = vec(ob.segs[0].d);
+      if (lay.flatten === 'profile' && lay.pieces.some(function (p) { return p.kind === 'arc' && Math.abs(dot(ldir, p.D)) > 1e-9; }))
+        throw sfErr('the profile is not in the path\'s plane, so unbending it does not lay the part flat: check Flatten along path.');
+      var P0 = ob.pts[0], P1 = ob.pts[1], lo = ob.segs[0].l, ell = len(sub(vec(P1), vec(P0)));
+      function offP(p, t) { return [p[0] + s * t * lo[0], p[1] + s * t * lo[1]]; }
+      var Q0 = [0, 0], Q1 = [ell, 0], side0 = [Q0], side1 = [Q1];
+      area = 0;
+      lay.pieces.forEach(function (p, k) {
+        var F = lay.frames[k], v = [-(Q1[1] - Q0[1]) / ell, (Q1[0] - Q0[0]) / ell], j;
+        if (p.kind === 'line') {
+          var Lp = len(sub(p.b, p.a));
+          Q0 = [Q0[0] + v[0] * Lp, Q0[1] + v[1] * Lp]; Q1 = [Q1[0] + v[0] * Lp, Q1[1] + v[1] * Lp];
+          side0.push(Q0); side1.push(Q1); area += ell * Lp;
+          return;
+        }
+        function rad(X) { var w = sub(X, p.C); return len(sub(w, scale(p.D, dot(w, p.D)))); }
+        // the neutral line: K·T from the concave face (the face nearer the axis)
+        var fA = [to3D(F, P0[0], P0[1]), to3D(F, P1[0], P1[1])], oB0 = offP(P0, T), oB1 = offP(P1, T), fB = [to3D(F, oB0[0], oB0[1]), to3D(F, oB1[0], oB1[1])];
+        var mA = rad(scale(add(fA[0], fA[1]), 0.5)), mB = rad(scale(add(fB[0], fB[1]), 0.5));
+        var inner = mA <= mB ? fA : fB, outer = mA <= mB ? fB : fA;
+        var N0 = add(inner[0], scale(sub(outer[0], inner[0]), kf)), N1 = add(inner[1], scale(sub(outer[1], inner[1]), kf));
+        var r0 = rad(N0), r1 = rad(N1), phi = Math.abs(p.ang), steps = Math.max(2, Math.ceil(phi / (2 * Math.PI / 180)));
+        if (Math.abs(r1 - r0) <= 1e-9 * Math.max(1, ell)) {   // a cylinder: rolled straight
+          var sh = r0 * phi;
+          for (j = 1; j <= steps; j++) { side0.push([Q0[0] + v[0] * sh * j / steps, Q0[1] + v[1] * sh * j / steps]); side1.push([Q1[0] + v[0] * sh * j / steps, Q1[1] + v[1] * sh * j / steps]); }
+          Q0 = side0[side0.length - 1]; Q1 = side1[side1.length - 1]; area += ell * sh;
+          return;
+        }
+        // a cone (a ring when the line is radial): about the apex, by φ·sin β
+        var tA = -r0 / (r1 - r0), A2 = [Q0[0] + tA * (Q1[0] - Q0[0]), Q0[1] + tA * (Q1[1] - Q0[1])];
+        var alpha = phi * Math.min(1, Math.abs(r1 - r0) / ell), s0 = Math.hypot(Q0[0] - A2[0], Q0[1] - A2[1]), s1 = Math.hypot(Q1[0] - A2[0], Q1[1] - A2[1]);
+        var X = s1 >= s0 ? Q1 : Q0, rx = [-(X[1] - A2[1]), X[0] - A2[0]], sg = rx[0] * v[0] + rx[1] * v[1] > 0 ? 1 : -1;
+        function turnQ(Q, t) { var c = Math.cos(sg * t), sn = Math.sin(sg * t), dx = Q[0] - A2[0], dy = Q[1] - A2[1]; return [A2[0] + c * dx - sn * dy, A2[1] + sn * dx + c * dy]; }
+        var q0 = Q0, q1 = Q1;
+        for (j = 1; j <= steps; j++) { side0.push(turnQ(q0, alpha * j / steps)); side1.push(turnQ(q1, alpha * j / steps)); }
+        Q0 = side0[side0.length - 1]; Q1 = side1[side1.length - 1];
+        area += alpha / 2 * Math.abs(s1 * s1 - s0 * s0);
+      });
+      function dedupe(l) { return l.filter(function (p, k) { return !k || Math.hypot(p[0] - l[k - 1][0], p[1] - l[k - 1][1]) > 1e-12; }); }
+      loopPts = dedupe(dedupe(side0).concat(dedupe(side1).reverse()));
+    }
+    // the flat's frame: on the profile line's face at the path's start, looking away from the material
+    var x3 = vec(ob.segs[0].d), n3 = scale(vec(ob.segs[0].l), -s), y3 = cross(n3, x3), d0 = pieceDir(lay.pieces[0], false), o3 = to3D(plane, ob.pts[0][0], ob.pts[0][1]);
+    if (dot(y3, d0) < 0) {   // the path runs along −y of that frame: mirror the development's y
+      loopPts = loopPts.map(function (p) { return [p[0], -p[1]]; });
+      bends.forEach(function (b) { b.a = [b.a[0], -b.a[1]]; b.b = [b.b[0], -b.b[1]]; });
+    }
+    if (K.signedArea(loopPts) < 0) loopPts.reverse();
+    // later features that change the part are not in this flat yet
+    var after = false;
+    model.features.forEach(function (q) {
+      if (q.id === f.id) { after = true; return; }
+      if (!after || q.suppressed || q.type === 'sketch' || q.refgeo) return;
+      if (K.isCut(q, model) || ['extrude', 'revolve', 'sweep', 'loft', 'flange', 'jog', 'hem', 'sketchedBend', 'hole'].indexOf(q.type) >= 0) {
+        var w = (q.name || q.type) + ' after the Swept Flange is not in its flat pattern yet.';
+        if (warnings.indexOf(w) < 0) warnings.push(w);
+      }
+    });
+    var min = [Infinity, Infinity], max = [-Infinity, -Infinity];
+    loopPts.forEach(function (p) { min[0] = Math.min(min[0], p[0]); min[1] = Math.min(min[1], p[1]); max[0] = Math.max(max[0], p[0]); max[1] = Math.max(max[1], p[1]); });
+    var outSheet = Object.assign({}, sheet, { kFactor: kf });
+    return { loops: [loopPts], bends: bends, plane: { origin: o3, x: x3, y: y3, n: n3, offset: dot(n3, o3) }, sheet: outSheet,
+      bbox: { min: min, max: max }, size: [max[0] - min[0], max[1] - min[1]], note: K.sheetNote(outSheet), warnings: warnings, etch: [], etchLayer: null,
+      sweptFlange: { width: W, area: area, flatten: lay.flatten, pieces: lay.pieces.map(function (p) { return p.kind; }) } };
+  }
+  K.registerFeature('sweptFlange', {
+    cut: false, build: buildSweptFlange,
+    script: function (f, v, idVar, optsStr) {
+      var o = { name: f.name };
+      if (f.flip) o.flip = true;
+      if (f.radius != null) o.radius = +f.radius;
+      if (f.flatten === 'path') o.flatten = 'path';
+      if (f.bendAllowance && f.bendAllowance.type) o.bendAllowance = f.bendAllowance;
+      var path = f.edges && f.edges.length ? '[' + f.edges.map(function (e) { return '[' + (e.at || e).map(function (c) { return String(Math.round(c * 1e6) / 1e6); }).join(', ') + ']'; }).join(', ') + ']'
+        : (idVar[f.path] || f.path);
+      return 'var ' + v + ' = p.sweptFlange(' + (idVar[f.profile] || f.profile) + ', ' + path + ', ' + optsStr(o) + ').last();';
+    }
+  });
+  K.SWEPT_FLANGE_FLATTEN = SF_FLATTEN.slice();
+  K.sweptFlangeLayout = sweptFlangeLayout; K.buildSweptFlange = buildSweptFlange; K.sweptFlangeFlat = sweptFlangeFlat; _.sweptFlangeFlat = sweptFlangeFlat;
 })(Kernel, Kernel._);
