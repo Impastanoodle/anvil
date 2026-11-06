@@ -2758,6 +2758,7 @@
       f.useOffset = f.offset != null;
       f.offsetDist = f.offset == null ? 0 : typeof f.offset === 'object' ? f.offset.distance : f.offset;
       delete f.offset;
+      f.trimSideBends = !!f.trimSideBends;   // lane smtrim: Flange Position ▸ Trim side bends
     }
     var memKind = isHem ? 'hem' : isFlange ? 'flange' : null, mem = memKind && smMemory[memKind];
     if (!existing && mem && mem.units === App.model.units) {
@@ -2810,6 +2811,7 @@
         if (v.lengthEnd === 'upToVertex') { out.lengthEnd = 'upToVertex'; out.lengthVertex = v.lengthVertex ? v.lengthVertex.slice() : null; out.lengthVertexMode = v.lengthVertexMode === 'parallel' ? 'parallel' : 'normal'; }
         else { delete out.lengthEnd; delete out.lengthVertex; delete out.lengthVertexMode; }
         if (v.useOffset) out.offset = { end: 'blind', distance: +v.offsetDist || 0 }; else delete out.offset;
+        if (v.trimSideBends) out.trimSideBends = true; else delete out.trimSideBends;
         delete out.vxActive; delete out.useOffset; delete out.offsetDist;
       }
       if (isHem) {
@@ -2940,6 +2942,8 @@
       ] },
       { title: 'Flange Position', fields: [
         { type: 'select', label: 'Position', key: 'position', options: function (v) { return +v.angle >= 90 - 1e-9 ? FLANGE_POSITIONS : FLANGE_POSITIONS.filter(function (o) { return o[0] !== 'tangentToBend'; }); } },
+        // lane smtrim: Trim side bends (Material Inside / Outside: an earlier bend running on past an end is cut back)
+        { type: 'check', label: 'Trim side bends', key: 'trimSideBends' },
         // rfJC: SolidWorks' Offset (end condition Blind, distance)
         { type: 'check', label: 'Offset', key: 'useOffset', rerender: true },
         { type: 'static', label: 'Offset end condition', value: 'Blind', show: function (v) { return v.useOffset; } },
@@ -3182,7 +3186,7 @@
       if (f.endOffset == null) f.endOffset = 0;
       f.useDefaultRadius = f.radius == null;
       f.radiusValue = f.radius != null ? f.radius : sheet.bendRadius;
-      f.trimSideBends = false;
+      f.trimSideBends = !!f.trimSideBends;   // lane smtrim
       f.useOffset = !!(+f.startOffset || +f.endOffset);
       f.useCustomRelief = f.relief != null;
       if (!f.relief) f.relief = 'none';
@@ -3219,7 +3223,9 @@
           out.bendAllowance = { type: v.cbaType };
           if (v.cbaType !== 'table') out.bendAllowance.value = forOK ? pmExpr(CBA_KEY[v.cbaType], +v[CBA_KEY[v.cbaType]]) : +v[CBA_KEY[v.cbaType]];
         } else delete out.bendAllowance;
+        var trimSB = !!v.trimSideBends;
         ['useDefaultRadius', 'radiusValue', 'trimSideBends', 'useOffset', 'useCustomRelief', 'useCustomBA', 'cbaType', 'cbaK', 'cbaBA', 'cbaBD', 'length', 'angle', 'lengthRef', 'toward', 'reverse'].forEach(function (k) { delete out[k]; });
+        if (trimSB) out.trimSideBends = true;
         return out;
       }
       function previewStatus(feat, info) {
@@ -3254,7 +3260,7 @@
           { type: 'check', label: 'Use default radius (' + sheet.bendRadius + ')', key: 'useDefaultRadius', rerender: true },
           { type: 'number', label: 'Bend radius', key: 'radiusValue', unit: 'u', min: 0, show: function (v) { return !v.useDefaultRadius; } },
           { type: 'iconRadio', label: 'Flange position', key: 'position', options: MITER_POSITIONS },
-          { type: 'check', label: 'Trim side bends (not available)', key: 'trimSideBends', disabled: true },
+          { type: 'check', label: 'Trim side bends', key: 'trimSideBends' },
           { type: 'number', label: 'Gap distance', key: 'miterGap', unit: 'u', min: 0 }
         ] },
         { title: 'Start/End Offset', fields: [
@@ -3541,6 +3547,113 @@
         feat.size = +v.size;   // an equation typed in the box goes back in through commitFeature (applyExpressions)
         if (!existing && !feat.name) feat.name = K.breakCornerName(App.model);
         bcLast = { kind: v.kind, size: +v.size };
+        return commitFeature(feat, existing);
+      }
+    });
+    preview();
+  }
+
+  // ------------------------------------------------------------------ sheet metal: Corner Relief (lane smtrim)
+  // SolidWorks' Sheet Metal ▸ Corners ▸ Corner Relief (Kernel.cornerReliefLayout, a registered cut): Corner Type (2 Bend
+  // corner), Scope (the sheet body), Corners (a click near a corner where two bends meet adds it, a second click
+  // removes it; Collect all corners takes every such corner of the part), Relief Options (Rectangular, Circular, Tear,
+  // Obround, Constant Width; Centered on bend lines; size). The preview is built on the main thread; ✓ is one undo
+  // step; type, size and centring are remembered for the next Corner Relief of the session.
+  var crLast = { reliefType: 'rect', size: null, centeredOnBend: true };
+  var CR_TYPES = [['rect', 'Rectangular'], ['circular', 'Circular'], ['tear', 'Tear'], ['obround', 'Obround'], ['constantWidth', 'Constant Width']];
+  function cmdCornerRelief(existing) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
+    if (!App.build || !App.build.body) { UI.toast('Create a Base Flange first.'); return; }
+    var sheet = previewModel().sheet || App.model.sheet, T = +sheet.thickness;
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'cornerRelief', corners: [], reliefType: crLast.reliefType, size: crLast.size != null ? crLast.size : Math.round(2 * T * 1e4) / 1e4, centeredOnBend: crLast.centeredOnBend };
+    f.corners = (f.corners || []).map(function (p) { return p.slice(); });
+    if (f.size == null) f.size = Math.round(2 * T * 1e4) / 1e4;
+    f.centeredOnBend = f.centeredOnBend !== false;
+    f.cornerType = '2bend';
+    function flangesNow() { return Object.assign({}, (App.build && App.build.flanges) || {}); }
+    function base() { return existing ? bodyBefore(existing.id) : App.build.body; }
+    var cands = null;
+    function corners() {
+      if (!cands) { try { cands = K.cornerReliefCandidates(App.model, { flanges: flangesNow() }).filter(function () { return true; }); } catch (e) { cands = []; } }
+      return cands;
+    }
+    function cornerNear(p) {
+      var best = null, lim = 6 * (+sheet.bendRadius + T) + (+f.size || 0);
+      corners().forEach(function (c) { var d = K.dist ? K.dist(c.at, p) : Math.sqrt(Math.pow(c.at[0] - p[0], 2) + Math.pow(c.at[1] - p[1], 2) + Math.pow(c.at[2] - p[2], 2)); if (d <= lim && (!best || d < best.d)) best = { d: d, c: c }; });
+      return best && best.c;
+    }
+    function sameCorner(a, b) { return Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) < 1e-4 * (1 + T); }
+    function featOf(v) {
+      var out = { type: 'cornerRelief', corners: v.corners.map(function (p) { return p.slice(); }), reliefType: v.reliefType, size: +v.size };
+      if (v.centeredOnBend === false) out.centeredOnBend = false;
+      if (v.name) out.name = v.name;
+      return out;
+    }
+    function status(extra) {
+      var n = f.corners.length;
+      UI.setStatus((extra ? extra + ' ' : '') + 'Corner Relief: ' + n + ' corner' + (n === 1 ? '' : 's') + ' selected. Press Enter or ✓ to accept.');
+    }
+    function preview() {
+      UI.disposeGroup(UI.groups.preview);
+      if (!f.corners.length) { UI.setStatus('Click near the corners where two bends meet, or Collect all corners.'); return; }
+      try {
+        var tool = K.buildCornerRelief(featOf(f), previewModel(), { body: base(), flanges: flangesNow() });
+        if (tool && tool.polygons.length) addPreviewMesh(tool, UI.mats.previewCut);
+        status();
+      } catch (e) { UI.setStatus('Preview: ' + e.message); }
+    }
+    function toggle(p) {
+      var c = cornerNear(p);
+      if (!c) { UI.setStatus('No corner where two bends meet there: click near the corner of two flanges on neighbouring edges.'); return; }
+      var i = -1;
+      f.corners.forEach(function (q, k) { if (sameCorner(q, c.at)) i = k; });
+      if (i >= 0) f.corners.splice(i, 1); else f.corners.push(c.at.map(function (x) { return Math.round(x * 1e6) / 1e6; }));
+    }
+    function collectAll(v) {
+      var all = corners();
+      if (!all.length) { UI.toast('The part has no corner where two bends meet.'); return; }
+      v.corners = all.map(function (c) { return c.at.map(function (x) { return Math.round(x * 1e6) / 1e6; }); });
+      f.corners = v.corners;
+      renderPM(); preview();
+    }
+    function pick(pk) {
+      var p = pk.kind === 'edge' && pk.edge ? pk.edge.mid : pk.kind === 'face' && pk.point ? pk.point : null;
+      if (!p) return false;
+      toggle(p);
+      renderPM(); preview();
+      return true;
+    }
+    openPM({
+      title: existing ? existing.name : 'Corner Relief', icon: 'cornerRelief', values: f,
+      onRollback: function () { cands = null; },
+      message: 'Click near the <b>corners</b> where two bends meet (or <b>Collect all corners</b>), then choose the relief.',
+      command: { pickEdges: true, edgeList: [], onPick: pick },
+      groups: [
+        { title: 'Corner Type', fields: [{ type: 'radio', key: 'cornerType', options: [['2bend', '2 Bend corner']] }] },
+        { title: 'Scope', fields: [{ type: 'static', label: 'Body', value: 'Sheet-metal body' }] },
+        { title: 'Corners', fields: [
+          { type: 'pick', icon: 'cornerRelief', placeholder: 'Corners…',
+            value: function (v) { var n = v.corners.length; return n ? n + ' corner' + (n === 1 ? '' : 's') : ''; },
+            items: function (v) { return v.corners.map(function (p, i) { return { label: 'Corner<' + (i + 1) + '>', at: p }; }); },
+            onRemove: function (v, i) { v.corners.splice(i, 1); renderPM(); preview(); },
+            onClear: function (v) { v.corners.length = 0; renderPM(); preview(); } },
+          { type: 'buttons', buttons: [{ label: 'Collect all corners', onclick: function (v) { collectAll(v); } }] }
+        ] },
+        { title: 'Relief Options', fields: [
+          { type: 'select', label: 'Relief type', key: 'reliefType', options: CR_TYPES, rerender: true },
+          { type: 'check', label: 'Centered on bend lines', key: 'centeredOnBend', show: function (v) { return v.reliefType !== 'tear' && v.reliefType !== 'constantWidth'; } },
+          { type: 'number', label: 'Size', key: 'size', unit: 'u', min: 0, show: function (v) { return v.reliefType !== 'tear'; } }
+        ] },
+        { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ],
+      onChange: function () { preview(); },
+      onOK: function (v) {
+        if (!v.corners.length) { UI.toast('Select at least one corner (or Collect all corners).'); return false; }
+        if (v.reliefType !== 'tear' && !(+v.size > 0)) { UI.toast('The relief size must be more than 0.'); return false; }
+        var feat = featOf(v);
+        if (!existing && !feat.name) feat.name = K.cornerReliefName(App.model);
+        crLast = { reliefType: v.reliefType, size: +v.size, centeredOnBend: v.centeredOnBend !== false };
         return commitFeature(feat, existing);
       }
     });
@@ -6188,6 +6301,7 @@
       case 'jog': cmdJog(f); break;
       case 'sketchedBend': UI.cmdSketchedBend(f); break;
       case 'breakCorner': UI.cmdBreakCorner(f); break;
+      case 'cornerRelief': UI.cmdCornerRelief(f); break;   // lane smtrim
       case 'closedCorner': UI.cmdClosedCorner(f); break;
       case 'unfold': UI.cmdUnfold(f); break;   // lane DB
       case 'fold': UI.cmdFold(f); break;
@@ -6326,6 +6440,7 @@
     ['editSketch', 'Edit Sketch']
   ].forEach(function (c) { UI[c[0]] = partOnly(UI[c[0]], c[1]); });
   UI.cmdSketchedBend = partOnly(cmdSketchedBend, 'Sketched Bend');
+  UI.cmdCornerRelief = partOnly(cmdCornerRelief, 'Corner Relief');   // Sheet Metal ▸ Corners ▸ Corner Relief (lane smtrim)
   UI.cmdBreakCorner = partOnly(cmdBreakCorner, 'Break-Corner');   // Sheet Metal ▸ Break-Corner/Corner-Trim PropertyManager (lane CP)
   UI.cmdClosedCorner = partOnly(cmdClosedCorner, 'Closed Corner');   // Sheet Metal ▸ Closed Corner PropertyManager (lane CS)
   UI.cmdUnfold = partOnly(cmdUnfold, 'Unfold'); UI.cmdFold = partOnly(cmdFold, 'Fold');   // Sheet Metal ▸ Unfold / Fold (lane DB)

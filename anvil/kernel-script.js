@@ -1269,6 +1269,7 @@
     if (opts.reliefDepth != null) f.reliefDepth = num(opts.reliefDepth);
     if (opts.reliefRatio != null) f.reliefRatio = num(opts.reliefRatio);
     if (f.hem) return;
+    if (opts.trimSideBends) f.trimSideBends = true;   // lane smtrim: Trim side bends (flangeLayout's sideBendTrim), flange only
     if (opts.lengthEnd != null && opts.lengthEnd !== 'blind') {
       if (opts.lengthEnd !== 'upToVertex') throw new Error('lengthEnd must be "blind" or "upToVertex".');
       if (!Array.isArray(opts.lengthVertex) || opts.lengthVertex.length !== 3) throw new Error('lengthEnd "upToVertex" needs lengthVertex: [x, y, z].');
@@ -1300,6 +1301,7 @@
     if (opts.relief != null) f.relief = opts.relief === 'rect' || opts.relief === 'obround' ? opts.relief : 'none';
     if (opts.reliefWidth != null) f.reliefWidth = num(opts.reliefWidth);
     if (opts.reliefDepth != null) f.reliefDepth = num(opts.reliefDepth);
+    if (opts.trimSideBends) f.trimSideBends = true;   // lane smtrim
     customBendAllowance(f, opts.bendAllowance);
     if (!f.name) f.name = 'Miter Flange' + (this.model.features.filter(function (q) { return q.type === 'flange' && q.miterFlange; }).length + 1);
     this._add(f);
@@ -1386,6 +1388,20 @@
     var f = { type: 'breakCorner', kind: kind, size: num(size), corners: (corners || []).map(pt) };
     if (opts.faces && opts.faces.length) f.faces = opts.faces.map(pt);
     f.name = opts.name || K.breakCornerName(this.model);
+    this._add(f);
+    return this;
+  };
+  // lane smtrim: cornerRelief(corners, size, opts): Sheet Metal ▸ Corners ▸ Corner Relief, 2 Bend corners
+  // (kernel-sheetmetal.js cornerReliefLayout). corners: [[x, y, z]] near the corners (K.cornerReliefCandidates); size
+  // (null = 2 × T; unused by 'tear'); opts: reliefType ('rect' (default) | 'circular' | 'tear' | 'obround' |
+  // 'constantWidth'), centeredOnBend (default true), name
+  Builder.prototype.cornerRelief = function (corners, size, opts) {
+    opts = opts || {};
+    var type = opts.reliefType || 'rect';
+    if (K.CORNER_RELIEF_TYPES.indexOf(type) < 0) throw new Error('cornerRelief reliefType must be one of ' + K.CORNER_RELIEF_TYPES.join(', ') + '.');
+    var f = { type: 'cornerRelief', corners: (corners || []).map(function (p) { return [+p[0], +p[1], +p[2]]; }), reliefType: type, size: size == null ? null : num(size) };
+    if (opts.centeredOnBend === false) f.centeredOnBend = false;
+    f.name = opts.name || K.cornerReliefName(this.model);
     this._add(f);
     return this;
   };
@@ -1990,6 +2006,7 @@
             if (f.relief) mfo.relief = f.relief;
             if (f.reliefWidth != null) mfo.reliefWidth = numOut(f.reliefWidth);
             if (f.reliefDepth != null) mfo.reliefDepth = numOut(f.reliefDepth);
+            if (f.trimSideBends) mfo.trimSideBends = true;   // lane smtrim
             if (f.bendAllowance) mfo.bendAllowance = bendAllowanceOut(f.bendAllowance);
             out.push('var ' + v + ' = p.miterFlange(' + fspecs + ', ' + optsStr(mfo) + ').last();');
             break;
@@ -2008,6 +2025,7 @@
           if (f.reliefRatio != null) fo.reliefRatio = numOut(f.reliefRatio);
           if (f.lengthEnd === 'upToVertex') { fo.lengthEnd = 'upToVertex'; fo.lengthVertex = f.lengthVertex; if (f.lengthVertexMode) fo.lengthVertexMode = f.lengthVertexMode; }
           if (f.offset != null) fo.offset = numOut(typeof f.offset === 'object' ? f.offset.distance : f.offset);
+          if (f.trimSideBends && !f.hem) fo.trimSideBends = true;   // lane smtrim
           if (f.bendAllowance) fo.bendAllowance = bendAllowanceOut(f.bendAllowance);
           if (f.hem) {
             var ho = !f.hemType || f.hemType === 'open' ? { gap: f.gap != null ? numOut(f.gap) : Math.round(f.radius * 2 * 1e4) / 1e4, name: f.name } : { name: f.name };

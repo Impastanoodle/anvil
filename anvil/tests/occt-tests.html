@@ -577,7 +577,20 @@
       code: 'p.units("in");\np.sketch("Top").rect(0, 0, 2, 2).end().extrude(1);\np.convertSheetMetal([1, 0, -1], [[1, 0, 0], [2, 0, -1], [1, 0, -2], [0, 0, -1]], { thickness: 0.06, radius: 0.06, gap: 0.03 });',
       removed: 0.652973662 - 0.635963686, loops: 1 },
     { name: 'DQ: Insert Bends on a thin L extrude (1.5 × 1, T .06, 2 long; free ends): one exact bend', plain: DQ_L,
-      code: DQ_L + 'p.insertBends([0.75, 0, 1], { radius: 0.06 });', removed: 2 * (1 - Math.PI / 4) * DQ_F, loops: 1 }
+      code: DQ_L + 'p.insertBends([0.75, 0, 1], { radius: 0.06 });', removed: 2 * (1 - Math.PI / 4) * DQ_F, loops: 1 },
+    // lane smtrim: the 4 × 3 base with Material Inside flanges on the right and front edges (16 ga, R = T, K .5). Trim side
+    // bends cuts the right bend's last R + T (its exact quarter annulus); the rectangular Corner Relief .25 centred on the
+    // bend lines takes T × its area of the blank (a = .125 − BA/2: face a², both strips BA wide, both walls)
+    { name: 'smtrim: Trim side bends on the front flange: the right bend loses its last R + T, π/4·((2T)² − T²)·2T exactly; one blank',
+      plain: CW_HEAD + 'p.flange(1, [[4, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\np.flange(1, [[2, ' + SH_T + ', 3]], { position: "inside", lengthRef: "outer" });',
+      code: CW_HEAD + 'p.flange(1, [[4, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\np.flange(1, [[2, ' + SH_T + ', 3]], { position: "inside", lengthRef: "outer", trimSideBends: true });',
+      removed: Math.PI / 4 * 3 * SH_T * SH_T * 2 * SH_T, loops: 1, dxf: true },
+    { name: 'smtrim: Corner Relief, Rectangular .25 centred on the bend lines, at that corner: T × the relief\'s area of the blank exactly; one blank',
+      plain: CW_HEAD + 'p.flange(1, [[4, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\np.flange(1, [[2, ' + SH_T + ', 3]], { position: "inside", lengthRef: "outer" });',
+      code: CW_HEAD + 'p.flange(1, [[4, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\np.flange(1, [[2, ' + SH_T + ', 3]], { position: "inside", lengthRef: "outer" });\np.cornerRelief([[3.88, 0.06, 2.88]], 0.25);',
+      removed: (function () { var BA = Math.PI / 2 * 1.5 * SH_T, a = 0.125 - BA / 2; return SH_T * (2 * a * a + BA * (2 * a + 2 * SH_T) + a * (a + 2 * SH_T)); })(), loops: 1, dxf: true },
+    { name: 'smtrim: Corner Relief, Circular Ø.25 at that corner, wrapped across both bends: OpenCascade = Anvil; one blank',
+      code: CW_HEAD + 'p.flange(1, [[4, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\np.flange(1, [[2, ' + SH_T + ', 3]], { position: "inside", lengthRef: "outer" });\np.cornerRelief([[3.88, 0.06, 2.88]], 0.25, { reliefType: "circular" });', loops: 1 }
   ];
   for (var cwk = 0; cwk < CW_CASES.length; cwk++) {
     var cw = CW_CASES[cwk], tcw = performance.now();

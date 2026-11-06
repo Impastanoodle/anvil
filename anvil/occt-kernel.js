@@ -33,6 +33,7 @@ var OcctKernel = (function () {
   SUPPORTED.unfold = SUPPORTED.fold = 1;   // lane DB2
   SUPPORTED.refaxis = SUPPORTED.refpoint = SUPPORTED.csys = 1;   // lane CZ: reference geometry makes no body (skipped below)
   SUPPORTED.rip = 1;   // lane DI
+  SUPPORTED.cornerRelief = 1;   // lane smtrim
   SUPPORTED.crossBreak = 1;   // rfGK: cosmetic, makes no body (skipped below)
   SUPPORTED.vent = 1;   // lane DT
   SUPPORTED.draft = 1;   // rfDX
@@ -241,6 +242,7 @@ var OcctKernel = (function () {
 
     var rm = K.resolvedModel(model), m = rm.model;
     var planes = {}, sketches = {}, tools = {}, bodies = [], bodyFeatures = [], status = {}, unsupported = null;
+    var smFlanges = {};   // lane smtrim: edge-flange records by feature id (flangeLayout's Trim side bends looks up the side bends)
     // a feature Anvil's kernel only approximates was built (a shell of curved faces, three picked edges meeting at one
     // corner): the volume check against Anvil uses the loose tolerance (see out.tolerance)
     var approx = false;
@@ -1188,15 +1190,20 @@ var OcctKernel = (function () {
     function flangeOp(f) {
       if (f.miterFlange && f.sketch != null) { miterFlangeOp(f); return; }   // lane DL
       var k = sheetBody(f);
-      applyLayout(k, K.flangeLayout(f, m, { body: shapeToCSG(bodies[k]) }), true);
+      var lay = K.flangeLayout(f, m, { body: shapeToCSG(bodies[k]), flanges: smFlanges });
+      applyLayout(k, lay, true);
+      smFlanges[f.id] = lay.info;
     }
     // lane DL: Miter Flange from a profile sketch (as Kernel's buildMiterFlange): Kernel.miterFlangeStages plans the
     // stages; each is an edge-flange layout built with exact bend arcs on the part as the stages before it left it
     function miterFlangeOp(f) {
       var k = sheetBody(f), csg = shapeToCSG(bodies[k]);
+      var infos = [];
       K.miterFlangeStages(f, m, { body: csg, sketches: sketches, planes: planes }, function (fk) {
-        var lay = K.flangeLayout(fk, m, { body: csg });
+        var lay = K.flangeLayout(fk, m, { body: csg, flanges: smFlanges });
         applyLayout(k, lay, true);
+        infos = infos.concat(lay.info);
+        smFlanges[f.id] = infos;
         csg = shapeToCSG(bodies[k] = unify(bodies[k]));
         return { info: lay.info, body: csg };
       });
@@ -1299,6 +1306,20 @@ var OcctKernel = (function () {
       bodies.forEach(function (b) { Array.prototype.push.apply(polys, shapeToCSG(b).polygons); });
       var lay = K.ripLayout(f, m, { body: CSGlib.fromPolygons(polys) }), acc = null;
       lay.tools.forEach(function (t) { var s = prismOf(t.pts, t.plane, t.a, t.b); acc = acc ? fuse(acc, s) : s; });
+      return acc;
+    }
+    // Corner Relief (lane smtrim; as Kernel.buildCornerRelief, from Kernel.cornerReliefLayout on the edge-flange records
+    // smFlanges): planar prisms on the face and walls, exact radial sectors (chords outside the bend) for a rectangle
+    // across a bend, else the wrapped cutter of a cut across a bend; the rebuild cuts the tool (a registered cut)
+    function cornerReliefTool(f) {
+      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      if (!bodies.length) throw new Error('Corner Relief: there is no sheet yet.');
+      var lay = K.cornerReliefLayout(f, m, { flanges: smFlanges }), acc = null;
+      lay.tools.forEach(function (t) {
+        var s = t.wrap ? wrappedCutter(t.wrap.loops[0], t.wrap.plane, t.wrap.sec, t.wrap.BA) : prismOf((t.prism || t.sector).loop, (t.prism || t.sector).plane, (t.prism || t.sector).a, (t.prism || t.sector).b);
+        acc = acc ? fuse(acc, s) : s;
+      });
       return acc;
     }
     // Vent (lane DT; as Kernel.buildVent, from Kernel.ventLayout found on the bodies' tessellation): the boundary prism
@@ -1789,6 +1810,7 @@ var OcctKernel = (function () {
             case 'sketchedBend': sketchedBendOp(f); break;
             case 'breakCorner': tool = breakCornerTool(f); break;
             case 'rip': tool = ripTool(f); break;   // lane DI
+            case 'cornerRelief': tool = cornerReliefTool(f); break;   // lane smtrim
             case 'vent': tool = ventTool(f); break;   // lane DT
             case 'wrap': tool = wrapOp(f); break;   // rfDZ
             case 'closedCorner': closedCornerOp(f); break;
