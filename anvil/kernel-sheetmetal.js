@@ -3934,10 +3934,58 @@
     }
     return out;
   }
-  // the corners a part offers (the Corner Relief PM's Collect all corners): [{ at }]
-  function cornerReliefCandidates(model, build) {
+  // lane smcorner-2: bend3Corners(model, flanges, skipId) -> [{ at, A, B1, B2, e1, e2, yA, x1, d2, yB2 }]: every corner
+  // where three bends meet: bend A (a bend of the base, e.g. one of a U channel's), B1 on the edge of A's face that
+  // meets A's start line square (its line across e1 = A.o, its o along A's line: the end of the part) and B2 on the
+  // end edge of A's wall (its o the same as B1's, its line along the wall). P = A's start line at B1's start line (on
+  // A's origin plane); the corner frame x = e1 (across A), y = e2 = B1.o (across B1, toward the part's end).
+  //   yA   A's extent along y (A runs at most R + T past B1's start line, its end yA[1] ≥ 0)
+  //   x1   B1's extent along x (it ends on A's start line: x1[1] = 0)
+  //   d2   B2's extent along A's wall (from A's wall tangent line: d2[0] = 0); yB2 its start line's y
+  function bend3Corners(model, flanges, skipId) {
+    var sheet = sheetParams(model), T = +sheet.thickness, recs = [], out = [], tol = 1e-4 * Math.max(1, 10 * T);
+    (model.features || []).forEach(function (g) {
+      if (skipId != null && String(g.id) === String(skipId)) return;
+      (flanges[g.id] || []).forEach(function (r, i) {
+        if (!r || r.kind !== 'edge' || !r.a || !r.b || !r.o || !r.u || !r.origin || !(r.angle > 1e-6 && r.angle < Math.PI - 1e-6)) return;
+        recs.push({ id: g.id, index: i, rec: r, BA: cornerRecordBA(sheet, r), n: norm(cross(r.o, r.u)) });
+      });
+    });
+    function ext(r, P, d) { var p = [dot(sub(r.a, P), d), dot(sub(r.b, P), d)]; return [Math.min(p[0], p[1]), Math.max(p[0], p[1])]; }
+    recs.forEach(function (A) {
+      var ra = A.rec, R = +ra.R, sA = Math.sin(+ra.angle), cA = Math.cos(+ra.angle);
+      var W0 = add(add(ra.origin, scale(ra.o, R * sA)), scale(ra.u, R - R * cA)), wd = add(scale(ra.o, cA), scale(ra.u, sA)), tn = sub(scale(ra.o, sA), scale(ra.u, cA));
+      recs.forEach(function (B1) {
+        var r1 = B1.rec;
+        if (B1 === A || Math.abs(Math.abs(dot(r1.o, A.n)) - 1) > 1e-6 || Math.abs(Math.abs(dot(B1.n, ra.o)) - 1) > 1e-6) return;
+        if (Math.abs(dot(sub(r1.origin, ra.origin), ra.u)) > T + tol) return;   // on A's face (either side)
+        var P = add(ra.origin, scale(A.n, dot(sub(r1.origin, ra.origin), A.n))), e1 = ra.o, e2 = r1.o;
+        var yA = ext(ra, P, e2), x1 = ext(r1, P, e1);
+        if (!(yA[0] < -T && yA[1] > -tol && yA[1] < +ra.R + T + tol && Math.abs(x1[1]) < tol && x1[0] < -T)) return;
+        recs.forEach(function (B2) {
+          var r2 = B2.rec;
+          if (B2 === A || B2 === B1 || dot(r2.o, e2) < 0.999 || Math.abs(Math.abs(dot(B2.n, wd)) - 1) > 1e-6) return;
+          if (Math.abs(dot(sub(r2.origin, W0), tn)) > T + tol) return;   // on A's wall (either side)
+          var d2 = ext(r2, W0, wd), yB2 = dot(sub(r2.origin, P), e2);
+          if (!(Math.abs(d2[0]) < tol && d2[1] > T && Math.abs(yB2) < +ra.R + T + tol)) return;
+          out.push({ at: P, A: A, B1: B1, B2: B2, e1: e1, e2: e2, yA: yA, x1: x1, d2: d2, yB2: yB2, W0: W0, wd: wd });
+        });
+      });
+    });
+    return out;
+  }
+  // the 2 Bend corners that are not part of a 3 Bend corner
+  function bendCorners2(model, flanges, skipId) {
+    var three = bend3Corners(model, flanges, skipId);
+    return bendCorners(model, flanges, skipId).filter(function (c) {
+      return !three.some(function (k) { return (k.A.rec === c.A.rec && k.B1.rec === c.B.rec) || (k.A.rec === c.B.rec && k.B1.rec === c.A.rec); });
+    });
+  }
+  // the corners a part offers (the Corner Relief PM's Collect all corners): [{ at }]; type '3bend' the 3 Bend corners
+  function cornerReliefCandidates(model, build, type) {
     if (!model || !model.sheet || !build || !build.flanges) return [];
-    return bendCorners(resolvedModel(model).model, build.flanges, null).map(function (c) { return { at: c.at.slice() }; });
+    var rm = resolvedModel(model).model;
+    return (type === '3bend' ? bend3Corners(rm, build.flanges, null) : bendCorners2(rm, build.flanges, null)).map(function (c) { return { at: c.at.slice() }; });
   }
   // convex polygon clipped to a·p ≤ c
   function clipHalf(poly, a, c) {
@@ -3978,6 +4026,8 @@
   // cornerReliefLayout(f, model, ctx) -> { tools: [{ prism: { loop, plane, a, b } } | { wrap: { loops, sec, BA, plane } } |
   // { sector: { loop, plane, a, b } }], recs: [{ kind: 'foldCutouts', feature, index, cutouts }], corners: [P] } (plain data)
   function cornerReliefLayout(f, model, ctx) {
+    if (f.cornerType === '3bend') return corner3Layout(f, model, ctx);   // lane smcorner-2
+    if (f.cornerType != null && f.cornerType !== '2bend') throw new Error('Corner Relief: the corner type must be 2bend or 3bend.');
     var sheet = sheetParams(model), T = +sheet.thickness;
     var type = f.reliefType || 'rect';
     if (CORNER_RELIEF_TYPES.indexOf(type) < 0) throw new Error('Corner Relief: unknown relief type "' + type + '" (' + CORNER_RELIEF_TYPES.join(', ') + ').');
@@ -3985,7 +4035,7 @@
     if (type !== 'tear' && !(size > 0)) throw new Error('Corner Relief: the relief size must be greater than zero.');
     var picks = f.corners || [];
     if (!picks.length) throw new Error('Corner Relief: select the corners (or Collect all corners).');
-    var all = bendCorners(model, ctx.flanges || {}, f.id);
+    var all = bendCorners2(model, ctx.flanges || {}, f.id);
     if (!all.length) throw new Error('Corner Relief: the part has no corner where two bends meet (2 Bend corner: flanges on two neighbouring edges of one face).');
     var tools = [], recs = [], used = [], eps = 0.05 * T, centered = f.centeredOnBend !== false;
     picks.forEach(function (q) {
@@ -4041,6 +4091,88 @@
     });
     return { tools: tools, recs: recs, corners: used.map(function (c) { return c.at; }) };
   }
+  // lane smcorner-2: SolidWorks' Corner Relief ▸ 3 Bend corner, where a bend A of the base (a U channel's) meets the
+  // bends B1 (on the base's end edge) and B2 (on A's wall's end edge): bend3Corners. The relief (cornerReliefShape on
+  // BA_A, BA_B1: centred on the crossing of A's and the end bends' centre lines, or on P) is cut in the flat's corner
+  // frame from: the face (x ≤ 0, y ≤ 0: a prism), A's strip (0 ≤ x ≤ BA_A, up to A's end: A runs on R + T or R past
+  // the end bends' start line between them), A's wall (x ≥ BA_A, y ≤ B2's start), B1's strip and wall (x ≤ 0, y ≥ 0)
+  // and B2's strip and wall (x ≥ BA_A, y ≥ its start): strips by exact radial planes for a rectangle (else wrapped),
+  // walls by prisms; the strips' parts ride to the flat as foldCutouts of their records. Types: rect, tear
+  // (tear: the bend zones' square [0, BA_A] × [0, BA_B1], A's stub between the end bends).
+  var CORNER3_TYPES = ['rect', 'tear'];   // a circle wrapped across three bends cracks the BSP (wrapCut): not offered
+  // one bend's part of a relief: poly in the corner frame (clipped to the bend's strip or wall), st: corner (x, y) ->
+  // the bend's (s from its start line, t along its line from its origin)
+  function crBendCut(bd, poly, st, wall, tools, recs, eps, T) {
+    var r = bd.rec, BA = bd.BA, R = +r.R, Ang = +r.angle;
+    if (!poly) return;
+    if (!wall) {
+      var lp = poly.map(st);
+      if (signedArea(lp) < 0) lp.reverse();
+      var sMin = Infinity, sMax = -Infinity, tMin = Infinity, tMax = -Infinity;
+      lp.forEach(function (p) { sMin = Math.min(sMin, p[0]); sMax = Math.max(sMax, p[0]); tMin = Math.min(tMin, p[1]); tMax = Math.max(tMax, p[1]); });
+      var boxA = (sMax - sMin) * (tMax - tMin), plane = { origin: r.origin.slice(), x: r.o.slice(), y: r.u.slice(), n: bd.n.slice() };
+      if (Math.abs(Math.abs(signedArea(lp)) - boxA) < 1e-9 * Math.max(1e-12, boxA)) {
+        var th0 = Ang * sMin / BA, th1 = Ang * sMax / BA, nn = Math.max(2, Math.ceil((th1 - th0) / (Math.PI / 16)) + 1), rr = R + 1.5 * T, loop = [[0, R]];
+        for (var k = 0; k <= nn; k++) { var th = th0 + (th1 - th0) * k / nn; loop.push([rr * Math.sin(th), R - rr * Math.cos(th)]); }
+        if (signedArea(loop) < 0) loop.reverse();
+        tools.push({ sector: { loop: loop, plane: plane, a: tMin, b: tMax } });
+      } else tools.push({ wrap: { loops: [lp], sec: { A: Ang, R: R, T: T }, BA: BA, plane: plane } });
+      var ta = dot(sub(r.a, r.origin), bd.n), tb = dot(sub(r.b, r.origin), bd.n), sg = tb >= ta ? 1 : -1;
+      recs.push({ kind: 'foldCutouts', feature: bd.id, index: bd.index, cutouts: [lp.map(function (p) { return [p[0], (p[1] - ta) * sg]; })] });
+      return;
+    }
+    var sA = Math.sin(Ang), cA = Math.cos(Ang);
+    var W0 = add(add(r.origin, scale(r.o, R * sA)), scale(r.u, R - R * cA)), wd = add(scale(r.o, cA), scale(r.u, sA)), tn = sub(scale(r.o, sA), scale(r.u, cA));
+    var plw = { origin: W0, x: wd, y: bd.n.slice(), n: norm(cross(wd, bd.n)) }, sgw = dot(plw.n, tn) > 0;
+    var lw = poly.map(function (p) { var q = st(p); return [q[0] - BA, q[1]]; });
+    if (signedArea(lw) < 0) lw.reverse();
+    tools.push({ prism: { loop: lw, plane: plw, a: sgw ? -eps : -T - eps, b: sgw ? T + eps : eps } });
+  }
+  function corner3Layout(f, model, ctx) {
+    var sheet = sheetParams(model), T = +sheet.thickness;
+    var type = f.reliefType || 'rect';
+    if (CORNER3_TYPES.indexOf(type) < 0) throw new Error('Corner Relief: a 3 Bend corner relief is ' + CORNER3_TYPES.join(', ') + ' (not "' + type + '").');
+    var size = f.size == null ? cornerReliefDefaultSize(model) : +f.size;
+    if (type !== 'tear' && !(size > 0)) throw new Error('Corner Relief: the relief size must be greater than zero.');
+    var picks = f.corners || [];
+    if (!picks.length) throw new Error('Corner Relief: select the corners (or Collect all corners).');
+    var all = bend3Corners(model, ctx.flanges || {}, f.id);
+    if (!all.length) throw new Error('Corner Relief: the part has no corner where three bends meet (3 Bend corner: a bend of the base with edge flanges on the end edges of its face and of its wall).');
+    var tools = [], recs = [], used = [], eps = 0.05 * T, centered = f.centeredOnBend !== false;
+    picks.forEach(function (q) {
+      q = Array.isArray(q) ? q : q.at;
+      var best = null;
+      all.forEach(function (c) { var dd = len(sub(c.at, q)); if (!best || dd < best.d) best = { d: dd, c: c }; });
+      var lim = 4 * (+best.c.A.rec.R + T) + 2 * Math.max(best.c.A.BA, best.c.B1.BA) + (size || 0);
+      if (best.d > lim) throw new Error('Corner Relief: no corner of three bends near ' + q.map(function (x) { return fmtN(+x); }).join(', ') + '.');
+      if (used.indexOf(best.c) >= 0) return;
+      used.push(best.c);
+      var c = best.c, P = c.at, A = c.A, B1 = c.B1, B2 = c.B2, BAa = A.BA, BA1 = B1.BA, BA2 = B2.BA, yB2 = c.yB2;
+      var Q = type === 'tear' ? [[0, 0], [BAa, 0], [BAa, BA1], [0, BA1]] : cornerReliefShape(type, size, BAa, BA1, centered);
+      // the face: x ≤ 0, y ≤ 0
+      var fp = clipBox(Q, c.x1[0], 0, c.yA[0], 0);
+      if (fp) {
+        var pl0 = { origin: P.slice(), x: c.e1.slice(), y: c.e2.slice(), n: norm(cross(c.e1, c.e2)) }, sg0 = dot(pl0.n, A.rec.u) > 0;
+        tools.push({ prism: { loop: fp, plane: pl0, a: sg0 ? -T - eps : -eps, b: sg0 ? eps : T + eps } });
+      }
+      // A: s = x, t along its line from y
+      var tPA = dot(sub(P, A.rec.origin), A.n), sgA = dot(c.e2, A.n) > 0 ? 1 : -1;
+      function stA(p) { return [p[0], tPA + sgA * p[1]]; }
+      crBendCut(A, clipBox(Q, 0, BAa, c.yA[0], c.yA[1]), stA, false, tools, recs, eps, T);
+      crBendCut(A, clipBox(Q, BAa, null, c.yA[0], Math.min(c.yA[1], yB2)), stA, true, tools, recs, eps, T);
+      // B1: s = y, t along its line from x
+      var tP1 = dot(sub(P, B1.rec.origin), B1.n), sg1 = dot(c.e1, B1.n) > 0 ? 1 : -1;
+      function st1(p) { return [p[1], tP1 + sg1 * p[0]]; }
+      crBendCut(B1, clipBox(Q, c.x1[0], 0, 0, BA1), st1, false, tools, recs, eps, T);
+      crBendCut(B1, clipBox(Q, c.x1[0], 0, BA1, null), st1, true, tools, recs, eps, T);
+      // B2 (on A's wall): s = y − its start, t along its line from x − BA_A (the distance up A's wall)
+      var tW2 = dot(sub(c.W0, B2.rec.origin), B2.n), sg2 = dot(c.wd, B2.n) > 0 ? 1 : -1;
+      function st2(p) { return [p[1] - yB2, tW2 + sg2 * (p[0] - BAa)]; }
+      crBendCut(B2, clipBox(Q, BAa, BAa + c.d2[1], yB2, yB2 + BA2), st2, false, tools, recs, eps, T);
+      crBendCut(B2, clipBox(Q, BAa, BAa + c.d2[1], yB2 + BA2, null), st2, true, tools, recs, eps, T);
+    });
+    return { tools: tools, recs: recs, corners: used.map(function (c) { return c.at; }) };
+  }
   function buildCornerRelief(f, model, ctx) {
     var lay = cornerReliefLayout(f, model, ctx);
     if (ctx.flanges) ctx.flanges[f.id] = lay.recs;
@@ -4067,6 +4199,7 @@
       // optsStr drops false values: centeredOnBend: false is spliced in after the type
       var os = optsStr(o);
       if (f.centeredOnBend === false) os = os.replace(/reliefType: "[A-Za-z]+"/, function (m) { return m + ', centeredOnBend: false'; });
+      if (f.cornerType === '3bend') os = os.replace(/^\{ /, '{ cornerType: "3bend", ');   // lane smcorner-2
       return 'var ' + v + ' = p.cornerRelief(' + JSON.stringify((f.corners || []).map(function (p) { return p.map(function (x) { return Math.round(x * 1e4) / 1e4; }); })) + ', ' + size + ', ' + os + ').last();';
     }
   });
@@ -6541,7 +6674,7 @@
   // Break Corner (lane CP)
   K.buildBreakCorner = buildBreakCorner; K.breakCornerLayout = breakCornerLayout; K.breakCornerCandidates = breakCornerCandidates;
   K.cornerReliefLayout = cornerReliefLayout; K.buildCornerRelief = buildCornerRelief; K.cornerReliefCandidates = cornerReliefCandidates; K.cornerReliefName = cornerReliefName;   // lane smtrim
-  K.CORNER_RELIEF_TYPES = CORNER_RELIEF_TYPES; K.cornerReliefDefaultSize = cornerReliefDefaultSize;
+  K.CORNER_RELIEF_TYPES = CORNER_RELIEF_TYPES; K.cornerReliefDefaultSize = cornerReliefDefaultSize; K.CORNER3_TYPES = CORNER3_TYPES;   // lane smcorner-2
   K.weldedCornerLayout = weldedCornerLayout; K.buildWeldedCorner = buildWeldedCorner; K.weldedCornerName = weldedCornerName;   // lane smcorner
   K.breakCornerName = breakCornerName; K.BREAK_CORNER_KINDS = BC_KINDS.slice();
   _.buildSketchedBend = buildSketchedBend; _.sketchedBendPoint = sketchedBendPoint;

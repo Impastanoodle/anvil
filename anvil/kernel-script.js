@@ -1440,12 +1440,16 @@
   // lane smtrim: cornerRelief(corners, size, opts): Sheet Metal ▸ Corners ▸ Corner Relief, 2 Bend corners
   // (kernel-sheetmetal.js cornerReliefLayout). corners: [[x, y, z]] near the corners (K.cornerReliefCandidates); size
   // (null = 2 × T; unused by 'tear'); opts: reliefType ('rect' (default) | 'circular' | 'tear' | 'obround' |
-  // 'constantWidth'), centeredOnBend (default true), name
+  // 'constantWidth'), centeredOnBend (default true), cornerType ('2bend' default | '3bend': lane smcorner-2, where a
+  // base bend meets edge flanges on the end edges of its face and wall; rect, tear), name
   Builder.prototype.cornerRelief = function (corners, size, opts) {
     opts = opts || {};
     var type = opts.reliefType || 'rect';
-    if (K.CORNER_RELIEF_TYPES.indexOf(type) < 0) throw new Error('cornerRelief reliefType must be one of ' + K.CORNER_RELIEF_TYPES.join(', ') + '.');
+    var three = opts.cornerType === '3bend', types = three ? K.CORNER3_TYPES : K.CORNER_RELIEF_TYPES;   // lane smcorner-2
+    if (opts.cornerType != null && opts.cornerType !== '2bend' && !three) throw new Error('cornerRelief cornerType must be "2bend" or "3bend".');
+    if (types.indexOf(type) < 0) throw new Error('cornerRelief reliefType must be one of ' + types.join(', ') + (three ? ' on a 3 Bend corner' : '') + '.');
     var f = { type: 'cornerRelief', corners: (corners || []).map(function (p) { return [+p[0], +p[1], +p[2]]; }), reliefType: type, size: size == null ? null : num(size) };
+    if (three) f.cornerType = '3bend';
     if (opts.centeredOnBend === false) f.centeredOnBend = false;
     f.name = opts.name || K.cornerReliefName(this.model);
     this._add(f);

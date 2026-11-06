@@ -3812,14 +3812,17 @@
     f.corners = (f.corners || []).map(function (p) { return p.slice(); });
     if (f.size == null) f.size = Math.round(2 * T * 1e4) / 1e4;
     f.centeredOnBend = f.centeredOnBend !== false;
-    f.cornerType = '2bend';
+    f.cornerType = existing && existing.cornerType === '3bend' ? '3bend' : '2bend';   // lane smcorner-2: 3 Bend corner
     function flangesNow() { return Object.assign({}, (App.build && App.build.flanges) || {}); }
     function base() { return existing ? bodyBefore(existing.id) : App.build.body; }
-    var cands = null;
+    var cands = {};
     function corners() {
-      if (!cands) { try { cands = K.cornerReliefCandidates(App.model, { flanges: flangesNow() }).filter(function () { return true; }); } catch (e) { cands = []; } }
-      return cands;
+      var ct = f.cornerType;
+      if (!cands[ct]) { try { cands[ct] = K.cornerReliefCandidates(App.model, { flanges: flangesNow() }, ct); } catch (e) { cands[ct] = []; } }
+      return cands[ct];
     }
+    function three() { return f.cornerType === '3bend'; }
+    function where() { return three() ? 'three bends meet' : 'two bends meet'; }
     function cornerNear(p) {
       var best = null, lim = 6 * (+sheet.bendRadius + T) + (+f.size || 0);
       corners().forEach(function (c) { var d = K.dist ? K.dist(c.at, p) : Math.sqrt(Math.pow(c.at[0] - p[0], 2) + Math.pow(c.at[1] - p[1], 2) + Math.pow(c.at[2] - p[2], 2)); if (d <= lim && (!best || d < best.d)) best = { d: d, c: c }; });
@@ -3828,6 +3831,7 @@
     function sameCorner(a, b) { return Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) < 1e-4 * (1 + T); }
     function featOf(v) {
       var out = { type: 'cornerRelief', corners: v.corners.map(function (p) { return p.slice(); }), reliefType: v.reliefType, size: +v.size };
+      if (v.cornerType === '3bend') out.cornerType = '3bend';
       if (v.centeredOnBend === false) out.centeredOnBend = false;
       if (v.name) out.name = v.name;
       return out;
@@ -3838,7 +3842,7 @@
     }
     function preview() {
       UI.disposeGroup(UI.groups.preview);
-      if (!f.corners.length) { UI.setStatus('Click near the corners where two bends meet, or Collect all corners.'); return; }
+      if (!f.corners.length) { UI.setStatus('Click near the corners where ' + where() + ', or Collect all corners.'); return; }
       try {
         var tool = K.buildCornerRelief(featOf(f), previewModel(), { body: base(), flanges: flangesNow() });
         if (tool && tool.polygons.length) addPreviewMesh(tool, UI.mats.previewCut);
@@ -3847,14 +3851,14 @@
     }
     function toggle(p) {
       var c = cornerNear(p);
-      if (!c) { UI.setStatus('No corner where two bends meet there: click near the corner of two flanges on neighbouring edges.'); return; }
+      if (!c) { UI.setStatus(three() ? 'No corner where three bends meet there: click near the end of a bend where edge flanges on the end edges meet it.' : 'No corner where two bends meet there: click near the corner of two flanges on neighbouring edges.'); return; }
       var i = -1;
       f.corners.forEach(function (q, k) { if (sameCorner(q, c.at)) i = k; });
       if (i >= 0) f.corners.splice(i, 1); else f.corners.push(c.at.map(function (x) { return Math.round(x * 1e6) / 1e6; }));
     }
     function collectAll(v) {
       var all = corners();
-      if (!all.length) { UI.toast('The part has no corner where two bends meet.'); return; }
+      if (!all.length) { UI.toast('The part has no corner where ' + where() + '.'); return; }
       v.corners = all.map(function (c) { return c.at.map(function (x) { return Math.round(x * 1e6) / 1e6; }); });
       f.corners = v.corners;
       renderPM(); preview();
@@ -3868,11 +3872,11 @@
     }
     openPM({
       title: existing ? existing.name : 'Corner Relief', icon: 'cornerRelief', values: f,
-      onRollback: function () { cands = null; },
-      message: 'Click near the <b>corners</b> where two bends meet (or <b>Collect all corners</b>), then choose the relief.',
+      onRollback: function () { cands = {}; },
+      message: 'Choose the corner type, click near the <b>corners</b> where the bends meet (or <b>Collect all corners</b>), then choose the relief.',
       command: { pickEdges: true, edgeList: [], onPick: pick },
       groups: [
-        { title: 'Corner Type', fields: [{ type: 'radio', key: 'cornerType', options: [['2bend', '2 Bend corner']] }] },
+        { title: 'Corner Type', fields: [{ type: 'radio', key: 'cornerType', options: [['2bend', '2 Bend corner'], ['3bend', '3 Bend corner']], rerender: true }] },
         { title: 'Scope', fields: [{ type: 'static', label: 'Body', value: 'Sheet-metal body' }] },
         { title: 'Corners', fields: [
           { type: 'pick', icon: 'cornerRelief', placeholder: 'Corners…',
@@ -3883,13 +3887,21 @@
           { type: 'buttons', buttons: [{ label: 'Collect all corners', onclick: function (v) { collectAll(v); } }] }
         ] },
         { title: 'Relief Options', fields: [
-          { type: 'select', label: 'Relief type', key: 'reliefType', options: CR_TYPES, rerender: true },
+          { type: 'select', label: 'Relief type', key: 'reliefType', options: function (v) { return v.cornerType === '3bend' ? CR_TYPES.filter(function (o) { return K.CORNER3_TYPES.indexOf(o[0]) >= 0; }) : CR_TYPES; }, rerender: true },
           { type: 'check', label: 'Centered on bend lines', key: 'centeredOnBend', show: function (v) { return v.reliefType !== 'tear' && v.reliefType !== 'constantWidth'; } },
           { type: 'number', label: 'Size', key: 'size', unit: 'u', min: 0, show: function (v) { return v.reliefType !== 'tear'; } }
         ] },
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
-      onChange: function () { preview(); },
+      onChange: function (v, key) {
+        // a new corner type: its own corners, and a relief type it offers
+        if (key === 'cornerType') {
+          v.corners.length = 0;
+          if (v.cornerType === '3bend' && K.CORNER3_TYPES.indexOf(v.reliefType) < 0) v.reliefType = 'rect';
+          renderPM();
+        }
+        preview();
+      },
       onOK: function (v) {
         if (!v.corners.length) { UI.toast('Select at least one corner (or Collect all corners).'); return false; }
         if (v.reliefType !== 'tear' && !(+v.size > 0)) { UI.toast('The relief size must be more than 0.'); return false; }

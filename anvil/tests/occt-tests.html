@@ -454,6 +454,8 @@
   // OpenCascade tool kept only the part of the bend below the sketch plane, half the metal). Both kernels' flats:
   // same size, loops and bends; DXF entity counts equal for the corner cases (ARCs for the fillets). ---
   var SMC_TRAY = [[2, SH_T, 0], [4, SH_T, 1.5], [2, SH_T, 3], [0, SH_T, 1.5]].map(function (e) { return 'p.flange(1, [' + JSON.stringify(e) + '], { position: "inside", lengthRef: "outer" });\n'; }).join('');   // lane smcorner
+  var SMC_U = 'p.units("in");\np.sheet(0.06, 0.06, 0.5);\np.sketch("Front").polyline([[0, 2], [0, 0], [3, 0], [3, 2]], false).end().baseFlange(null, { depth: 4 });\n' +
+    [[1.5, 0, 0], [0, 1, 0], [3, 1, 0]].map(function (e) { return 'p.flange(1, [' + JSON.stringify(e) + '], { position: "inside", lengthRef: "outer", reverse: true });\n'; }).join('');   // lane smcorner-2
   var CW_HEAD = 'p.units("in");\np.sheet(' + SH_T + ', ' + SH_T + ', 0.5);\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();\n';
   var CW_L = CW_HEAD + 'p.flange(1.5, [[0, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\n';
   var CW_BC = function (size, corners, opts) { return 'p.breakCorner(' + size + ', ' + JSON.stringify(corners) + ', ' + JSON.stringify(opts) + ');\n'; };
@@ -607,7 +609,17 @@
       removed: -SH_T * SH_T * (1 - 2 * SH_T), loops: 1, dxf: true },
     { name: 'smcorner: Welded Corner with a fillet .1 in the inside corner: + H·(R·T + the chorded quarter round) exactly',
       plain: CW_HEAD + SMC_TRAY, code: CW_HEAD + SMC_TRAY + 'p.weldedCorner([[' + SH_T / 2 + ', 0.6, ' + 2 * SH_T + ']], { fillet: 0.1 });',
-      removed: -(1 - 2 * SH_T) * (SH_T * SH_T + 0.01 - 8 * 0.01 * Math.sin(Math.PI / 32)), loops: 1 }
+      removed: -(1 - 2 * SH_T) * (SH_T * SH_T + 0.01 - 8 * 0.01 * Math.sin(Math.PI / 32)), loops: 1 },
+    // lane smcorner-2: Corner Relief ▸ 3 Bend corner on a U channel (T = R = .06) with end flanges on the base (down) and
+    // both walls (outward), Material Inside: the U bend runs R + T past the end bends' start line between them. A
+    // Rectangular .25 centred on the bend lines takes T × (.25² less its part over the corner notch) per corner; Tear
+    // takes the U bend's stub, BA × (R + T) × T per corner
+    { name: 'smcorner-2: Corner Relief 3 Bend corner, Rectangular .25 at both corners of a U channel\'s end flanges: exact; one blank',
+      plain: SMC_U, code: SMC_U + 'p.cornerRelief([[0.06, 0, 0.12], [2.94, 0, 0.12]], 0.25, { cornerType: "3bend" });',
+      removed: (function () { var BA = Math.PI / 2 * 0.09; return 2 * 0.06 * (0.0625 - BA * (BA / 2 + 0.125 - 0.12)); })(), loops: 1, dxf: true },
+    { name: 'smcorner-2: Corner Relief 3 Bend corner, Tear: the U bends\' stubs between the end bends, 2·BA·(R + T)·T exactly; one blank',
+      plain: SMC_U, code: SMC_U + 'p.cornerRelief([[0.06, 0, 0.12], [2.94, 0, 0.12]], null, { cornerType: "3bend", reliefType: "tear" });',
+      removed: 2 * Math.PI / 2 * 0.09 * 0.12 * 0.06, loops: 1 }
   ];
   for (var cwk = 0; cwk < CW_CASES.length; cwk++) {
     var cw = CW_CASES[cwk], tcw = performance.now();

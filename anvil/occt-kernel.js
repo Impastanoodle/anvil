@@ -1433,6 +1433,7 @@ var OcctKernel = (function () {
       if (rm.sheetError) throw new Error(rm.sheetError);
       if (f.openBase) {   // lane open-base: Base Flange from an open profile: the flat plates fused with the exact bends
         var obl = K.openBaseLayout(f, m, { planes: planes, sketches: sketches });
+        smFlanges[f.id] = obl.info;   // lane smcorner-2: its bends' records (Corner Relief's 3 Bend corners)
         var obs = obl.plates.map(function (t) { return prismOf(t.pts, obl.plane, obl.a, obl.b); }).concat(obl.wedges.map(ibWedge));
         var obb = obs.length > 1 ? boolMany('fuse', obs[0], obs.slice(1), 'Base Flange: OpenCascade could not join the bends.') : obs[0];
         if (bodies.length) bodies[0] = boolMany('fuse', bodies[0], [obb], 'Base Flange: OpenCascade could not join the flange.'); else { bodies.push(obb); bodyFeatures.push(f.id); }
