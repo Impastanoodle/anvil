@@ -188,7 +188,7 @@
       assert(s.m.mates.length === 0, 'the mate went with the door');
     });
     test('Mate groups as in SolidWorks: Symmetric among Advanced Mates, Slot and Hinge among Mechanical Mates', function () {
-      assert(AS.MATE_GROUPS.advanced.indexOf('symmetric') === 0, AS.MATE_GROUPS.advanced.join());
+      assert(AS.MATE_GROUPS.advanced.indexOf('symmetric') === 1, AS.MATE_GROUPS.advanced.join());
       assert(AS.MATE_GROUPS.mechanical.join() === 'slot,hinge,gear', AS.MATE_GROUPS.mechanical.join());
     });
   })();

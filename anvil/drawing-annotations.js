@@ -2445,18 +2445,37 @@
     if (!t.all && !(t.holes && t.holes.length) && !(t.sizes && t.sizes.length)) throw new Error('A hole table needs holes: pick hole edges, or Select all holes of the same size');
     return t;
   }
-  // addHoleTable(doc, viewId, { origin, holes, sizes, all, tagStyle, combineTags, combineSizes, prec, x, y }) -> the table
-  function addHoleTable(doc, viewId, spec) {
+  // addHoleTable(doc, viewId, { origin, holes, sizes, all, tagStyle, combineTags, combineSizes, prec, x, y }, w?) -> the table
+  // (rfJB, shop audit 8) w: the view as computed (a compute()'s sheet.views entry): an origin that is not a vertex of
+  // it (or X / Y edges that are not its edges) is refused, as SolidWorks' Hole Table PM needs a vertex or two edges,
+  // instead of a table that silently dangles
+  function htOriginCheck(t, w, v) {
+    if (!w || !w.proj || w.pending || !t.origin) return;
+    var b = w.proj.bounds, tol = Math.max(1e-9, Math.hypot(b.umax - b.umin, b.vmax - b.vmin)) * 1e-3;
+    // an axis edge must be found on its own line (reattach also takes a parallel edge, which follows a moved part)
+    var onLine = function (e) {
+      var e0 = JSON.parse(JSON.stringify(e));
+      if (!reattachRef(e, w.proj)) return false;
+      var d = [e.b[0] - e.a[0], e.b[1] - e.a[1]], L = Math.hypot(d[0], d[1]) || 1;
+      return [e0.a, e0.b].every(function (q) { return Math.abs((q[0] - e.a[0]) * d[1] - (q[1] - e.a[1]) * d[0]) / L <= tol; });
+    };
+    var o = JSON.parse(JSON.stringify(t.origin)), ok = o.kind === 'pt' ? reattachRef(o, w.proj) : onLine(o.x) && onLine(o.y);
+    if (!ok) throw new Error(o.kind === 'pt' ? 'Hole Table: the origin (' + o.p.map(function (x) { return +(+x).toFixed(4); }).join(', ') + ') is not a vertex of ' + (v.name || 'the view') + '. Pick a vertex, or an X-axis and a Y-axis edge.' :
+      'Hole Table: the X / Y axis edges are not edges of ' + (v.name || 'the view') + '. Pick two edges of the view, or a vertex.');
+  }
+  function addHoleTable(doc, viewId, spec, w) {
     var v = findView(doc, viewId);
     if (!v) throw new Error('No drawing view ' + viewId);
     var t = cleanHoleTable({ id: nextAnnotId(doc), view: v.id, holes: [], sizes: [] }, spec || {});
+    htOriginCheck(t, w, v);
     (doc.holeTables || (doc.holeTables = [])).push(t);
     return t;
   }
-  function editHoleTable(doc, id, props) {
+  function editHoleTable(doc, id, props, w) {
     var t = findHoleTable(doc, id);
     if (!t) throw new Error('No hole table ' + id);
     var c = cleanHoleTable(JSON.parse(JSON.stringify(t)), props || {});
+    if (props && props.origin !== undefined) htOriginCheck(c, w, findView(doc, t.view) || {});
     Object.keys(t).forEach(function (q) { delete t[q]; }); Object.assign(t, c);
     return t;
   }
@@ -2559,13 +2578,41 @@
     function tx(p, s, anchor, layer) { out.push({ k: 'text', p: p, h: th, text: s, anchor: anchor || 'start', layer: layer, rot: 0, holeTable: id }); }
     function arrowAt(tip, d) { var aw = (_.ARROW_W || 0.5) * k, al = 3 * k; out.push({ k: 'fill', pts: [tip, [tip[0] - d[0] * al + d[1] * aw, tip[1] - d[1] * al - d[0] * aw], [tip[0] - d[0] * al - d[1] * aw, tip[1] - d[1] * al + d[0] * aw]], layer: AL, holeTable: id }); }
     // tags beside the holes, up and right of each (paper), and the X / Y datum arrows at the origin
-    var tagBoxes = [];
-    R.rows.forEach(function (row) {
-      var c = w.toSheet(row.c), o = row.r * w.scale * 0.72 + 0.8 * k, p = [c[0] + o, c[1] + o];
-      tx(p, row.tag, 'start', AL);
+    // (rfJB, shop audit 7) at the dimension text height (SolidWorks: the note font, not the table's), and moved off
+    // their neighbours: up-right first, then the other diagonals, sides and further out, the first spot whose box
+    // stays clear of the other tags, the holes and the view's edges and bend lines (on a 1 : 4 flat they touched)
+    var tagBoxes = [], tth = (_.DIMGEO ? _.DIMGEO.text : 3.5) * k, tg = 0.4 * k;
+    var holesS = R.rows.map(function (row) { var c = w.toSheet(row.c), rr = row.r * w.scale; return { x0: c[0] - rr, y0: c[1] - rr, x1: c[0] + rr, y1: c[1] + rr }; });
+    var segsS = null;
+    function tagSegs() {
+      if (segsS) return segsS;
+      segsS = [];
+      ((w.proj && w.proj.all) || []).forEach(function (m) { segsS.push([w.toSheet([m[0], m[1]]), w.toSheet([m[2], m[3]])]); });
+      ((w.flat && w.flat.bends) || []).forEach(function (b) { if (b.a && b.b) segsS.push([w.toSheet(b.a), w.toSheet(b.b)]); });
+      return segsS;
+    }
+    function tagClear(bx, self) {
+      var e = { x0: bx.x0 - tg, y0: bx.y0 - tg, x1: bx.x1 + tg, y1: bx.y1 + tg }, meet = function (o) { return o.x0 < e.x1 && e.x0 < o.x1 && o.y0 < e.y1 && e.y0 < o.y1; };
+      if (tagBoxes.some(meet) || holesS.some(function (h, i) { return i !== self && meet(h); })) return false;
+      return !tagSegs().some(function (s) { return _.segHitsRect ? _.segHitsRect(s[0], s[1], e) : false; });
+    }
+    R.rows.forEach(function (row, ri) {
+      var c = w.toSheet(row.c), o = row.r * w.scale * 0.72 + 0.8 * k, tw = textWidth(row.tag, tth), pick = null;
+      // candidates: [dx, dy] of the text's lower-left corner from the centre
+      var cands = [];
+      [1, 1.8, 2.8].forEach(function (f) {
+        var q = o * f, s = row.r * w.scale * f + 0.8 * k;
+        cands.push([q, q], [-q - tw, q], [q, -q - tth], [-q - tw, -q - tth], [s, -tth / 2], [-s - tw, -tth / 2], [-tw / 2, s], [-tw / 2, -s - tth]);
+      });
+      for (var ci = 0; ci < cands.length && !pick; ci++) {
+        var p0 = [c[0] + cands[ci][0], c[1] + cands[ci][1]];
+        if (tagClear({ x0: p0[0], y0: p0[1], x1: p0[0] + tw, y1: p0[1] + tth }, ri)) pick = p0;
+      }
+      var p = pick || [c[0] + o, c[1] + o];
+      out.push({ k: 'text', p: p, h: tth, text: row.tag, anchor: 'start', layer: AL, rot: 0, holeTable: id });
       out[out.length - 1].holeTag = row.tag;
       if (row.dangling) out[out.length - 1].color = 'dangling';
-      tagBoxes.push({ x0: p[0], y0: p[1], x1: p[0] + textWidth(row.tag, th), y1: p[1] + th });
+      tagBoxes.push({ x0: p[0], y0: p[1], x1: p[0] + tw, y1: p[1] + tth });
     });
     var Os = w.toSheet(R.origin), L = 10 * k, n0 = out.length;
     ln(Os, [Os[0] + L, Os[1]], AL); arrowAt([Os[0] + L, Os[1]], [1, 0]); tx([Os[0] + L + 1.2 * k, Os[1] - th / 2], 'X', 'start', AL);

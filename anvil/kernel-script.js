@@ -1147,10 +1147,8 @@
       edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name,
       miter: !!opts.miter };
     // lane CS: no relief given = the sheet's Auto Relief (none on a sheet without one, as before); 'none' turns it off
-    if (opts.relief != null) f.relief = opts.relief === 'rect' || opts.relief === 'obround' ? opts.relief : 'none';
     if (opts.miterGap != null) f.miterGap = num(opts.miterGap);
-    if (opts.reliefWidth != null) f.reliefWidth = num(opts.reliefWidth);
-    if (opts.reliefDepth != null) f.reliefDepth = num(opts.reliefDepth);
+    flangeExtras(f, opts);
     if (opts.lengthRef != null) {
       if (K.FLANGE_LENGTH_REFS.indexOf(opts.lengthRef) < 0) throw new Error('lengthRef must be one of ' + K.FLANGE_LENGTH_REFS.join(', ') + '.');
       f.lengthRef = opts.lengthRef;
@@ -1159,6 +1157,33 @@
     this._add(f);
     return this;
   };
+  // lane rfJC: the options of lane rfIZ (kernel flangeLayout) for p.flange / p.hem: relief ('rect' | 'obround' | 'tear' |
+  // 'none'), reliefWidth / reliefDepth, reliefRatio (Rectangle / Obround: width = depth = ratio × T); flange only:
+  // lengthEnd ('blind' | 'upToVertex') with lengthVertex [x, y, z] and lengthVertexMode ('normal' | 'parallel'), offset
+  // (a distance, or { end: 'blind', distance })
+  var FLANGE_RELIEFS = ['rect', 'obround', 'tear'];
+  function flangeExtras(f, opts) {
+    if (opts.relief != null) f.relief = FLANGE_RELIEFS.indexOf(opts.relief) >= 0 ? opts.relief : 'none';
+    if (opts.reliefWidth != null) f.reliefWidth = num(opts.reliefWidth);
+    if (opts.reliefDepth != null) f.reliefDepth = num(opts.reliefDepth);
+    if (opts.reliefRatio != null) f.reliefRatio = num(opts.reliefRatio);
+    if (f.hem) return;
+    if (opts.lengthEnd != null && opts.lengthEnd !== 'blind') {
+      if (opts.lengthEnd !== 'upToVertex') throw new Error('lengthEnd must be "blind" or "upToVertex".');
+      if (!Array.isArray(opts.lengthVertex) || opts.lengthVertex.length !== 3) throw new Error('lengthEnd "upToVertex" needs lengthVertex: [x, y, z].');
+      f.lengthEnd = 'upToVertex';
+      f.lengthVertex = opts.lengthVertex.map(num);
+      if (opts.lengthVertexMode != null) {
+        if (opts.lengthVertexMode !== 'normal' && opts.lengthVertexMode !== 'parallel') throw new Error('lengthVertexMode must be "normal" or "parallel".');
+        f.lengthVertexMode = opts.lengthVertexMode;
+      }
+    }
+    if (opts.offset != null) {
+      var o = typeof opts.offset === 'object' ? opts.offset : { distance: opts.offset };
+      if (o.end != null && o.end !== 'blind') throw new Error('offset.end must be "blind".');
+      f.offset = { end: 'blind', distance: num(o.distance) };
+    }
+  }
   // lane DL: miterFlange(edges, opts): Sheet Metal ▸ Miter Flange from a profile sketch (Kernel.miterFlangeStages). edges:
   // [[x,y,z], …] points on the straight edges to run along (the one the profile starts on is added when missing). opts:
   // sketch (default: the last sketch; an open chain of lines (+ tangent arcs) on a plane normal to an edge, starting on
@@ -1206,6 +1231,9 @@
     else if (isExpression(gap) || isExpression(T)) { f.gap = gap; f.radius = null; }
     else f.radius = Math.max(gap / 2, 0.02 * T);
     f.name = f.name || featureName(this.model, 'hem');
+    // lane rfJC: Miter Gap (hems on adjacent edges mitred at their corner) and the Custom Relief Type fields
+    if (opts.miter) { f.miter = true; if (opts.miterGap != null) f.miterGap = num(opts.miterGap); }
+    flangeExtras(f, opts);
     customBendAllowance(f, opts.bendAllowance);
     this._add(f);
     return this;
@@ -1871,6 +1899,9 @@
           if (f.relief && (f.relief !== 'none' || (model.sheet && model.sheet.relief))) fo.relief = f.relief;   // 'none' matters only against an Auto Relief
           if (f.reliefWidth != null) fo.reliefWidth = numOut(f.reliefWidth);
           if (f.reliefDepth != null) fo.reliefDepth = numOut(f.reliefDepth);
+          if (f.reliefRatio != null) fo.reliefRatio = numOut(f.reliefRatio);
+          if (f.lengthEnd === 'upToVertex') { fo.lengthEnd = 'upToVertex'; fo.lengthVertex = f.lengthVertex; if (f.lengthVertexMode) fo.lengthVertexMode = f.lengthVertexMode; }
+          if (f.offset != null) fo.offset = numOut(typeof f.offset === 'object' ? f.offset.distance : f.offset);
           if (f.bendAllowance) fo.bendAllowance = bendAllowanceOut(f.bendAllowance);
           if (f.hem) {
             var ho = !f.hemType || f.hemType === 'open' ? { gap: f.gap != null ? numOut(f.gap) : Math.round(f.radius * 2 * 1e4) / 1e4, name: f.name } : { name: f.name };
@@ -1879,6 +1910,8 @@
             if (f.hemRadius != null) ho.hemRadius = numOut(f.hemRadius);
             if (f.hemAngle != null) ho.hemAngle = numOut(f.hemAngle);
             if (f.reverse) ho.reverse = true;
+            if (f.miter) { ho.miter = true; if (f.miterGap != null) ho.miterGap = numOut(f.miterGap); }
+            ['relief', 'reliefWidth', 'reliefDepth', 'reliefRatio'].forEach(function (k) { if (fo[k] != null) ho[k] = fo[k]; });
             if (f.bendAllowance) ho.bendAllowance = bendAllowanceOut(f.bendAllowance);
             out.push('var ' + v + ' = p.hem(' + nv(f.length) + ', ' + fspecs + ', ' + optsStr(ho) + ').last();');
           } else out.push('var ' + v + ' = p.flange(' + nv(f.length) + ', ' + fspecs + ', ' + optsStr(fo) + ').last();');

@@ -78,7 +78,7 @@ var Assembly = (function () {
 
   function examplesList() { return (typeof AnvilExamples !== 'undefined' && AnvilExamples) ? AnvilExamples : []; }
 
-  function isAssemblyScript(code) { return /\b(a|asm)\.(insert|mate|coincident|concentric|distance|angle|parallel|perpendicular|tangent|width|gear|limitDistance|limitAngle|symmetric|slot|hinge|linearCoupler|linearPattern|circularPattern|mirrorComponents|explode)\s*\(/.test(String(code || '')); }
+  function isAssemblyScript(code) { return /\b(a|asm)\.(insert|mate|coincident|concentric|distance|angle|parallel|perpendicular|tangent|width|gear|limitDistance|limitAngle|symmetric|slot|hinge|linearCoupler|profileCenter|linearPattern|circularPattern|mirrorComponents|explode)\s*\(/.test(String(code || '')); }
 
   // ------------------------------------------------------------------ documents: live links to part / assembly files
   // A component source { file: name } is a live link to a document in the document store instead of an embedded copy
@@ -314,12 +314,12 @@ var Assembly = (function () {
 
   var MATE_BASE = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle',
     parallel: 'Parallel', perpendicular: 'Perpendicular', tangent: 'Tangent', width: 'Width', gear: 'Gear',
-    limitdistance: 'LimitDistance', limitangle: 'LimitAngle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'LinearCoupler' };
-  var MATE_TYPES = ['coincident', 'concentric', 'distance', 'angle', 'parallel', 'perpendicular', 'tangent', 'width', 'gear', 'limitdistance', 'limitangle', 'symmetric', 'slot', 'hinge', 'linearcoupler'];
+    limitdistance: 'LimitDistance', limitangle: 'LimitAngle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'LinearCoupler', profilecenter: 'ProfileCenter' };
+  var MATE_TYPES = ['coincident', 'concentric', 'distance', 'angle', 'parallel', 'perpendicular', 'tangent', 'width', 'gear', 'limitdistance', 'limitangle', 'symmetric', 'slot', 'hinge', 'linearcoupler', 'profilecenter'];
   // Mate PropertyManager groups, as in SolidWorks (types Anvil does not have yet are left out)
   var MATE_GROUPS = {
     standard: ['coincident', 'parallel', 'perpendicular', 'tangent', 'concentric', 'distance', 'angle'],
-    advanced: ['symmetric', 'width', 'linearcoupler', 'limitdistance', 'limitangle'],   // (SolidWorks 2024 lists Linear/Linear Coupler among the Advanced Mates)
+    advanced: ['profilecenter', 'symmetric', 'width', 'linearcoupler', 'limitdistance', 'limitangle'],   // (SolidWorks 2024 lists Linear/Linear Coupler among the Advanced Mates)
     mechanical: ['slot', 'hinge', 'gear']
   };
   // every key of a mate that holds a reference (Width: a2 / b2 the second faces; Symmetric: a2 the symmetry plane;
@@ -372,12 +372,16 @@ var Assembly = (function () {
   // Linear/Linear Coupler { ratio: [a, b] } (rfIV): A moving a along its direction moves B b along its own (SolidWorks'
   // Ratio a : b, a number r means [1, r]); flip is Reverse. phase [sA, sB] (model units) as Gear's: where each one stood
   // along its direction when the mate was first solved.
-  var FLIP_TYPES = { distance: 1, angle: 1, coincident: 1, tangent: 1, gear: 1, limitdistance: 1, limitangle: 1, slot: 1, linearcoupler: 1 };
+  // Profile Center { offset, flip, lock } (rfJA): two planar faces' profiles centred on each other, the faces Offset apart
+  // (flip: the other side), lock: Lock rotation (phase: the in-plane angle held, degrees, stored at the first solve).
+  var FLIP_TYPES = { distance: 1, angle: 1, coincident: 1, tangent: 1, gear: 1, limitdistance: 1, limitangle: 1, slot: 1, linearcoupler: 1, profilecenter: 1 };
   function setMateValues(m, opts) {
     opts = opts || {};
     ['distance', 'angle', 'offset', 'min', 'max', 'percent'].forEach(function (k) { if (opts[k] != null) m[k] = +opts[k]; });
     if (opts.constraint != null) m.constraint = String(opts.constraint).toLowerCase();
     if (opts.limit != null) { if (opts.limit) m.limit = true; else delete m.limit; }
+    if (opts.lock != null) { if (opts.lock) m.lock = true; else delete m.lock; }
+    if (m.type !== 'profilecenter') delete m.lock;
     if (opts.ratio != null) m.ratio = Array.isArray(opts.ratio) ? [+opts.ratio[0], +opts.ratio[1]] : m.type === 'linearcoupler' ? [1, +opts.ratio] : [+opts.ratio, 1];
     if (opts.flip != null) { if (opts.flip) m.flip = true; else delete m.flip; }
     if (m.type !== 'hinge') delete m.limit;
@@ -388,9 +392,10 @@ var Assembly = (function () {
     if (!slotPct) delete m.percent; else if (m.percent == null) m.percent = 50;
     if (m.type !== 'distance' && !slotDist) delete m.distance;
     if (m.type !== 'angle') delete m.angle;
-    if (m.type !== 'coincident' || !m.offset) delete m.offset;
+    if ((m.type !== 'coincident' && m.type !== 'profilecenter') || !m.offset) delete m.offset;
     if (!limit) { delete m.min; delete m.max; }
-    if (m.type !== 'gear' && m.type !== 'linearcoupler') { delete m.ratio; delete m.phase; }
+    if (m.type !== 'gear' && m.type !== 'linearcoupler') delete m.ratio;
+    if (m.type !== 'gear' && m.type !== 'linearcoupler' && !(m.type === 'profilecenter' && m.lock)) delete m.phase;
     if (m.type !== 'width' && m.type !== 'hinge' && m.type !== 'symmetric') delete m.a2;
     if (m.type !== 'width' && m.type !== 'hinge') delete m.b2;
     if (m.type !== 'hinge' || !m.limit) { delete m.a3; delete m.b3; }
@@ -399,7 +404,7 @@ var Assembly = (function () {
     if (limit && m.min == null) m.min = 0;
     if (limit && m.max == null) m.max = m.min;
     if ((m.type === 'gear' || m.type === 'linearcoupler') && m.ratio == null) m.ratio = [1, 1];
-    if (!FLIP_TYPES[m.type] || (m.type === 'coincident' && !m.offset)) delete m.flip;
+    if (!FLIP_TYPES[m.type] || ((m.type === 'coincident' || m.type === 'profilecenter') && !m.offset)) delete m.flip;
     return m;
   }
 
@@ -753,6 +758,54 @@ var Assembly = (function () {
     return { arc: true, center: best.C, axis: first ? best.d : scale(best.d, -1), p1: first ? best.from : best.to, p2: first ? best.to : best.from,
       dir: best.d, radius: best.r, R: best.R, sweep: best.sweep, length: best.R * best.sweep };
   }
+  // rfJA, Profile Center: the planar face through / nearest local point p as a profile: { center (its area centroid: a
+  // rectangle's or a circle's centre), normal, axis (the in-plane long axis of an oblong profile; null for a circle or a
+  // square), area }. A face with holes is centred on its area centroid (the outer profile's centre when the holes are
+  // symmetric about it).
+  function faceProfile(geom, p) {
+    var hit = patchesByDistance(geom, p)[0], tol = Math.max(1e-4, 1e-5 * geom.size);
+    if (!hit || hit.d > tol || patchCylinder(geom, hit.pt)) return null;
+    var pt = hit.pt;
+    if (pt.profile !== undefined) return pt.profile;
+    var n = pt.normal, e1 = perpTo(n), e2 = cross(n, e1), tris = [], A = 0, cx = 0, cy = 0, o = null;
+    pt.polys.forEach(function (poly) {
+      var vs = poly.vertices.map(function (v) { var q = arr(v.pos); if (!o) o = q; var d = sub(q, o); return [dot(d, e1), dot(d, e2)]; });
+      for (var i = 1; i + 1 < vs.length; i++) {
+        var a = vs[0], b = vs[i], c = vs[i + 1], ar = 0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]));
+        tris.push([a, b, c, ar]); A += ar; cx += ar * (a[0] + b[0] + c[0]) / 3; cy += ar * (a[1] + b[1] + c[1]) / 3;
+      }
+    });
+    if (!(Math.abs(A) > 1e-12)) return (pt.profile = null);
+    cx /= A; cy /= A;
+    var Ixx = 0, Iyy = 0, Ixy = 0;
+    tris.forEach(function (t) {
+      var x = [t[0][0] - cx, t[1][0] - cx, t[2][0] - cx], y = [t[0][1] - cy, t[1][1] - cy, t[2][1] - cy], ar = t[3];
+      Ixx += ar / 6 * (x[0] * x[0] + x[1] * x[1] + x[2] * x[2] + x[0] * x[1] + x[1] * x[2] + x[0] * x[2]);
+      Iyy += ar / 6 * (y[0] * y[0] + y[1] * y[1] + y[2] * y[2] + y[0] * y[1] + y[1] * y[2] + y[0] * y[2]);
+      Ixy += ar / 12 * (2 * x[0] * y[0] + 2 * x[1] * y[1] + 2 * x[2] * y[2] + x[0] * y[1] + x[1] * y[0] + x[0] * y[2] + x[2] * y[0] + x[1] * y[2] + x[2] * y[1]);
+    });
+    var center = add(o, add(scale(e1, cx), scale(e2, cy))), tr = Ixx + Iyy, df = Math.sqrt((Ixx - Iyy) * (Ixx - Iyy) / 4 + Ixy * Ixy), axis = null;
+    if (df > 1e-4 * Math.abs(tr)) {   // the long axis: the direction of the larger second moment, sign made canonical
+      var th = 0.5 * Math.atan2(2 * Ixy, Ixx - Iyy);
+      axis = canonicalDir(norm(add(scale(e1, Math.cos(th)), scale(e2, Math.sin(th)))));
+    }
+    return (pt.profile = { center: center, normal: n.slice(), axis: axis, area: Math.abs(A) });
+  }
+  function profileOfRef(model, partBuilds, ref) {
+    var comp = findComponent(model, ref.component);
+    if (!comp || !ref.face) return null;
+    if (ref.path && ref.path.length) {
+      var sb = partBuilds && partBuilds[comp.id], inner = sb && sb.model ? findComponent(sb.model, ref.path[0]) : null;
+      if (!inner) return null;
+      var iref = JSON.parse(JSON.stringify(ref));
+      iref.component = inner.id;
+      if (ref.path.length > 1) iref.path = ref.path.slice(1); else delete iref.path;
+      var f = profileOfRef(sb.model, sb.partBuilds, iref), Ti = tf(inner.transform);
+      return f && { center: transformPoint(Ti, f.center), normal: transformDir(Ti, f.normal), axis: f.axis && transformDir(Ti, f.axis), area: f.area };
+    }
+    var g = partGeom(partBuilds && partBuilds[comp.id]);
+    return g ? faceProfile(g, copy3(ref.face)) : null;
+  }
   // the slot of a mate reference, in its component's local frame (through a sub-assembly: as localRef does)
   function slotOfRef(model, partBuilds, ref) {
     var comp = findComponent(model, ref.component);
@@ -871,6 +924,7 @@ var Assembly = (function () {
     var t = m.type;
     // SolidWorks' CreateMateData defaults (measured, rfGW): Slot and Hinge closest, Symmetric aligned
     if (t === 'symmetric') return 'aligned';
+    if (t === 'profilecenter') return 'anti-aligned';
     if (t === 'slot' || t === 'hinge') return 'closest';
     if (t === 'parallel' || t === 'perpendicular' || t === 'tangent' || t === 'width' || t === 'gear') return 'closest';
     if (t === 'coincident' || t === 'distance' || t === 'limitdistance') {
@@ -885,7 +939,7 @@ var Assembly = (function () {
 
   // Signed plane gap a Coincident / Distance mate holds: B's plane lies `target` along A's normal (flip: the other side).
   function gapTarget(m) {
-    var v = m.type === 'distance' ? +m.distance || 0 : m.type === 'coincident' ? +m.offset || 0 : 0;
+    var v = m.type === 'distance' ? +m.distance || 0 : m.type === 'coincident' || m.type === 'profilecenter' ? +m.offset || 0 : 0;
     return m.flip ? -v : v;
   }
   // Signed angle an Angle mate holds (radians), measured from A's direction to B's (times the alignment sign) about the
@@ -981,6 +1035,12 @@ var Assembly = (function () {
       if (pm.A3) rh.push(hingeExcess(pm, A, A3, B3));
       return rh;
     }
+    if (pm.type === 'profilecenter') {   // Coincident (Offset) and the profile centres on one normal; Lock rotation: the turn
+      var dP = sub(A.normal, scale(B.normal, s)), vP = sub(B.point, A.point), hP = dot(vP, A.normal), cP = sub(vP, scale(A.normal, hP));
+      var rP = [dP[0], dP[1], dP[2], 0.5 * (hP + s * dot(vP, B.normal)) - pm.target, cP[0], cP[1], cP[2]];
+      if (pm.lockAngle != null) rP.push(wrapAngle(signedAngle(A.ref, B.ref, A.normal) - pm.lockAngle));
+      return rP;
+    }
     if (pm.type === 'linearcoupler') {   // B's travel along its direction minus ±(b/a)·A's, both from the phase
       return [(couplerPos(B) - pm.phase[1]) - (pm.mate.flip ? -1 : 1) * pm.ratio * (couplerPos(A) - pm.phase[0])];
     }
@@ -1064,7 +1124,7 @@ var Assembly = (function () {
         if (MATE_TYPES.indexOf(m.type) < 0) throw new Error('Unknown mate type "' + m.type + '"');
         if (m.type === 'distance' && !(isFinite(+m.distance) && +m.distance >= 0)) throw new Error('Distance must be a number ≥ 0');
         if (m.type === 'angle' && !(isFinite(+m.angle) && +m.angle >= 0 && +m.angle <= 180)) throw new Error('Angle must be between 0° and 180°');
-        if (m.type === 'coincident' && m.offset != null && !(isFinite(+m.offset) && +m.offset >= 0)) throw new Error('Offset must be a number ≥ 0');
+        if ((m.type === 'coincident' || m.type === 'profilecenter') && m.offset != null && !(isFinite(+m.offset) && +m.offset >= 0)) throw new Error('Offset must be a number ≥ 0');
         pm.A = localRef(model, partBuilds, m.a);
         pm.B = localRef(model, partBuilds, m.b);
         pm.pair = (pm.A.kind === 'plane' ? 'p' : 'a') + (pm.B.kind === 'plane' ? 'p' : 'a');
@@ -1106,11 +1166,25 @@ var Assembly = (function () {
           if (!(isFinite(+cr[0]) && isFinite(+cr[1]) && +cr[0] > 0 && +cr[1] > 0)) throw new Error('Linear/Linear Coupler ratio must be two numbers > 0');
           pm.ratio = +cr[1] / +cr[0];
         }
+        if (m.type === 'profilecenter') {
+          if (pm.pair !== 'pp' || pm.A.refKind !== 'face' || pm.B.refKind !== 'face') throw new Error('Profile Center needs two planar faces (a rectangular or circular profile on each)');
+          if (!pm.A.comp || !pm.B.comp || pm.A.comp === pm.B.comp) throw new Error('Profile Center needs faces on two components');
+          var fa = profileOfRef(model, partBuilds, m.a), fb = profileOfRef(model, partBuilds, m.b);
+          if (!fa || !fb) throw new Error('Profile Center needs two planar faces (a rectangular or circular profile on each)');
+          pm.A = { kind: 'plane', refKind: 'face', comp: pm.A.comp, point: fa.center, normal: fa.normal, ref: fa.axis || perpTo(fa.normal) };
+          pm.B = { kind: 'plane', refKind: 'face', comp: pm.B.comp, point: fb.center, normal: fb.normal, ref: fb.axis || perpTo(fb.normal) };
+          pm.lockSnap = fa.axis && fb.axis ? Math.PI : 0;   // two oblong profiles: their long sides parallel
+        }
         if (m.type === 'symmetric') {
           if (!m.a2) throw new Error('Symmetric needs a symmetry plane and two entities to mate');
           pm.A2 = localRef(model, partBuilds, m.a2);
           if (pm.A2.kind !== 'plane') throw new Error('The Symmetry Plane must be a plane or a planar face');
           if (pm.pair !== 'pp' && pm.pair !== 'aa') throw new Error('Symmetric needs two entities of one kind: two planar faces or planes, or two cylindrical faces or axes');
+          // rfJA: SolidWorks refuses two entities on one side of the symmetry plane (where they stand in the model, not
+          // where a drag slid them); an entity on the plane is either side
+          var sideOf = function (lr) { var W = worldOf(lr, lr.comp ? tf(lr.comp.transform) : null), P = worldOf(pm.A2, pm.A2.comp ? tf(pm.A2.comp.transform) : null); return dot(sub(W.point, P.point), P.normal); };
+          var sA = sideOf(pm.A), sB = sideOf(pm.B), sTol = 1e-6 * Math.max(1, Math.abs(sA), Math.abs(sB));
+          if ((sA > sTol && sB > sTol) || (sA < -sTol && sB < -sTol)) throw new Error('Symmetric: the entities to mate are both on the same side of the symmetry plane');
         }
         if (m.type === 'slot') {
           if (m.constraint !== 'free' && m.constraint !== 'center' && m.constraint !== 'distance' && m.constraint !== 'percent') throw new Error('Unknown slot constraint "' + m.constraint + '"');
@@ -1166,6 +1240,15 @@ var Assembly = (function () {
           m.phase = [axisTurn(worldOf(pm.A, transforms[pm.ca.id])) * 180 / Math.PI, axisTurn(worldOf(pm.B, transforms[pm.cb.id])) * 180 / Math.PI];
         }
         pm.phase = [+m.phase[0] * Math.PI / 180, +m.phase[1] * Math.PI / 180];
+      }
+      if (pm.type === 'profilecenter' && m.lock) {
+        // Lock rotation holds the in-plane turn of B's profile against A's as first solved (long sides parallel when both are oblong)
+        if (!(m.phase && m.phase.length === 1 && isFinite(+m.phase[0]))) {
+          var Aw0 = worldOf(pm.A, transforms[pm.ca.id]), Bw0 = worldOf(pm.B, transforms[pm.cb.id]), a0 = signedAngle(Aw0.ref, Bw0.ref, Aw0.normal);
+          if (pm.lockSnap) a0 = Math.round(a0 / pm.lockSnap) * pm.lockSnap;
+          m.phase = [r6(wrapAngle(a0) * 180 / Math.PI)];
+        }
+        pm.lockAngle = +m.phase[0] * Math.PI / 180;
       }
       if (pm.type === 'linearcoupler') {
         if (!(m.phase && m.phase.length === 2 && isFinite(+m.phase[0]) && isFinite(+m.phase[1]))) {
@@ -1368,6 +1451,16 @@ var Assembly = (function () {
         delta = sub(add(add(Aa.point, scale(Aa.dir, at.h)), scale(rad, Rc)), Ba.point);
         if (!moveB) delta = scale(delta, -1);
         lockE = ga != null ? [rad, cross(Aa.dir, rad)] : [rad];
+      } else if (pm.type === 'profilecenter') {   // rfJA: turn to the locked angle about the normal, then centre B's profile on A's
+        if (pm.lockAngle != null && !L.full) {
+          var ex = residualOf(pm), ea = ex[ex.length - 1];
+          if (Math.abs(ea) > TOL_DONE) { rotateAbout(C.id, rotVec(scale(W(pm.A).normal, moveB ? -ea : ea)), M.point); M = W(mine); }
+        }
+        var Ap = W(pm.A), Bp = W(pm.B);
+        delta = sub(add(Ap.point, scale(Ap.normal, pm.target)), Bp.point);
+        if (!moveB) delta = scale(delta, -1);
+        var pe = perpTo(Ap.normal);
+        lockE = [Ap.normal, pe, cross(Ap.normal, pe)];
       } else if (pm.type === 'slot') {
         var A = W(pm.A), B = W(pm.B), e = norm(sub(W(pm.A2).point, A.point)), w = cross(A.dir, e), u = sub(B.point, A.point), t = dot(u, e), g = slotTarget(pm);
         var goal = g != null ? g : Math.max(0, Math.min(pm.slotLength, t));
@@ -1399,7 +1492,7 @@ var Assembly = (function () {
       lockE.forEach(function (d) { lockTrans(L, d); });
       if (!oc || grounded[oc.id]) grounded[C.id] = true;
     }
-    var HELD = { symmetric: 1, slot: 1, hinge: 1 };
+    var HELD = { symmetric: 1, slot: 1, hinge: 1, profilecenter: 1 };
     var MORE = { parallel: 1, perpendicular: 1, tangent: 1, width: 1, gear: 1, limitdistance: 1, linearcoupler: 1 };
     function greedy(pm) {
       if (pm.rigid) return;
@@ -2643,6 +2736,69 @@ var Assembly = (function () {
     return b;
   }
 
+  // rfJA: collisionStep(model, cache, prev, opts) -> the pose build of the model as it stands (a Rotate Component frame,
+  // solved already) with `collision: { hit, t, pairs, stopped }`: the components that moved from `prev` ({ id: transform },
+  // the last pose without a collision) are checked against the others (opts as collisionDrag's); on a collision each
+  // moved component is turned back toward its `prev` placement (rotation about its centre and the centre's path
+  // interpolated, the mates solved again at each try) by 12 bisections, so it stops at first contact.
+  function rotLog(R) {   // the rotation vector of a proper rotation matrix
+    var c = Math.max(-1, Math.min(1, (R[0] + R[4] + R[8] - 1) / 2)), a = Math.acos(c), v = [R[7] - R[5], R[2] - R[6], R[3] - R[1]], s = len(v);
+    if (a < 1e-12) return [0, 0, 0];
+    if (s > 1e-9) return scale(v, a / s);
+    // half a turn: the axis is the column of R + I with the largest norm
+    var cols = [[R[0] + 1, R[3], R[6]], [R[1], R[4] + 1, R[7]], [R[2], R[5], R[8] + 1]], best = cols[0];
+    cols.forEach(function (q) { if (len(q) > len(best)) best = q; });
+    return scale(norm(best), a);
+  }
+  function collisionStep(model, cache, prev, opts) {
+    opts = opts || {};
+    var N = {}, pbs = {};
+    model.components.forEach(function (c) { N[c.id] = tf(c.transform); });
+    var b = rebuild(model, cache, { poseOnly: true, quick: opts.quick !== false });
+    cache = b.cache; pbs = b.partBuilds;
+    function moved(c) {
+      var P = prev[c.id] && tf(prev[c.id]), T = tf(c.transform), k;
+      if (!P) return false;
+      for (k = 0; k < 9; k++) if (Math.abs(T.rotation[k] - P.rotation[k]) > 1e-12) return true;
+      for (k = 0; k < 3; k++) if (Math.abs(T.position[k] - P.position[k]) > 1e-10) return true;
+      return false;
+    }
+    var ids = model.components.filter(moved).map(function (c) { return c.id; });
+    if (opts.dragged != null && opts.draggedOnly) ids = ids.filter(function (id) { return id === opts.dragged; });
+    if (!ids.length) { b.collision = { hit: false, t: 1, pairs: [], stopped: false }; return b; }
+    var skip = {}, keep = {};
+    model.components.forEach(function (c) { keep[c.id] = c.transform; if (prev[c.id]) c.transform = tf(prev[c.id]); });
+    collision(model, b, ids, { against: opts.against }).pairs.forEach(function (p) { skip[collisionKey(p.a, p.b)] = true; });
+    model.components.forEach(function (c) { c.transform = keep[c.id]; });
+    var h = collision(model, b, ids, { against: opts.against, skip: skip });
+    if (!h.hit) { b.collision = { hit: false, t: 1, pairs: [], stopped: false }; return b; }
+    if (opts.stop === false) { b.collision = { hit: true, t: 1, pairs: h.pairs, stopped: false }; return b; }
+    var path = {};
+    ids.forEach(function (id) {
+      var P = tf(prev[id]), T = N[id], g = partGeom(pbs[id]), lc = g ? g.center : [0, 0, 0];
+      path[id] = { R0: P.rotation, w: rotLog(matMul(T.rotation, [P.rotation[0], P.rotation[3], P.rotation[6], P.rotation[1], P.rotation[4], P.rotation[7], P.rotation[2], P.rotation[5], P.rotation[8]])), c0: transformPoint(P, lc), c1: transformPoint(T, lc), lc: lc };
+    });
+    function at(t) {
+      model.components.forEach(function (c) {
+        var q = path[c.id];
+        if (!q) { c.transform = { position: N[c.id].position.slice(), rotation: N[c.id].rotation.slice() }; return; }
+        var R = matMul(rotVec(scale(q.w, t)), q.R0), ctr = add(q.c0, scale(sub(q.c1, q.c0), t));
+        c.transform = { rotation: R, position: sub(ctr, matVec(R, q.lc)) };
+      });
+      var r = rebuild(model, cache, { poseOnly: true, quick: opts.quick !== false });
+      cache = r.cache;
+      return r;
+    }
+    var lo = 0, hi = 1, hitPairs = h.pairs;
+    for (var k = 0; k < (opts.steps || 12); k++) {
+      var mid = (lo + hi) / 2, bm = at(mid), hm = collision(model, bm, ids, { against: opts.against, skip: skip });
+      if (hm.hit) { hi = mid; hitPairs = hm.pairs; } else lo = mid;
+    }
+    b = at(lo);
+    b.collision = { hit: true, t: lo, pairs: hitPairs, stopped: true };
+    return b;
+  }
+
   // ------------------------------------------------------------------ picking
   function r6(x) { var r = Math.round(x * 1e6) / 1e6; return Math.abs(r) < 1e-9 ? 0 : r; }
 
@@ -2861,6 +3017,8 @@ var Assembly = (function () {
   Builder.prototype.gear = function (a, b, ratio, opts) { return this.mate('gear', a, b, withValue(opts, 'ratio', ratio)); };
   // linearCoupler(a, b, ratio ([a, b] or a number r: B moves r times as far), opts { flip (Reverse), phase })
   Builder.prototype.linearCoupler = function (a, b, ratio, opts) { return this.mate('linearcoupler', a, b, withValue(opts, 'ratio', ratio)); };
+  // profileCenter(faceA, faceB, opts { offset, flip, lock, alignment })
+  Builder.prototype.profileCenter = function (a, b, opts) { return this.mate('profilecenter', a, b, opts); };
   Builder.prototype.limitDistance = function (a, b, min, max, opts) { return this.mate('limitdistance', a, b, withValue(withValue(opts, 'min', min), 'max', max)); };
   Builder.prototype.limitAngle = function (a, b, min, max, opts) { return this.mate('limitangle', a, b, withValue(withValue(opts, 'min', min), 'max', max)); };
   // symmetric(symmetryPlane, a, b, opts); slot(slotFace, pin, opts { constraint, distance, percent, flip });
@@ -3020,6 +3178,7 @@ var Assembly = (function () {
       ['distance', 'angle', 'offset', 'min', 'max', 'percent'].forEach(function (k) { if (m[k] != null) opts.push(k + ': ' + String(r6(+m[k]))); });
       if (m.constraint) opts.push('constraint: ' + JSON.stringify(m.constraint));
       if (m.limit) opts.push('limit: true');
+      if (m.lock) opts.push('lock: true');
       if (m.ratio) opts.push('ratio: ' + numList(m.ratio));
       if (m.phase) opts.push('phase: ' + numList(m.phase));
       if (m.a2) opts.push('a2: ' + refText(m.a2, varOf));
@@ -3146,7 +3305,7 @@ var Assembly = (function () {
     Builder: Builder, runScript: runScript, isAssemblyScript: isAssemblyScript, generateScript: generateScript,
     defaultAlignment: defaultAlignment, hasAlignment: hasAlignment, setMateValues: setMateValues, MATE_TYPES: MATE_TYPES.slice(),
     moveComponent: moveComponent, rotateComponent: rotateComponent, componentCenter: componentCenter, interference: interference,
-    collision: collision, collisionDrag: collisionDrag,
+    collision: collision, collisionDrag: collisionDrag, collisionStep: collisionStep, faceProfile: faceProfile,
     MATE_GROUPS: JSON.parse(JSON.stringify(MATE_GROUPS)), MATE_NAMES: JSON.parse(JSON.stringify(MATE_BASE)),
     addPattern: addPattern, removePattern: removePattern, findPattern: findPattern, setPatternValues: setPatternValues, syncPatterns: syncPatterns,
     addExplodedView: addExplodedView, addExplodeStep: addExplodeStep, removeExplodeStep: removeExplodeStep, removeExplodedView: removeExplodedView,

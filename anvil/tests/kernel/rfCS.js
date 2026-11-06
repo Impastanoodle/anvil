@@ -200,8 +200,8 @@
       try { K.makeSheet({ thickness: T, relief: 'rect', reliefRatio: 0 }); } catch (e) { bad = /ratio must be greater than zero/.test(e.message); }
       assert(bad, 'ratio 0 refused');
       bad = false;
-      try { K.makeSheet({ thickness: T, relief: 'tear' }); } catch (e) { bad = /Unknown auto relief type/.test(e.message); }
-      assert(bad, 'tear refused (not built)');
+      try { K.makeSheet({ thickness: T, relief: 'circular' }); } catch (e) { bad = /Unknown auto relief type/.test(e.message); }
+      assert(bad, 'an unknown type refused (lane rfIZ: Tear is built now, see rfIZ)');
       var hemAuto = build(part({ relief: 'rect' }, null, true)), hemBare = build(part(null, null, true));
       noErrors(hemAuto); noErrors(hemBare);
       nearRel(hemAuto.mp.volume, hemBare.mp.volume, 1e-12, 'a hem takes no auto relief');

@@ -2582,11 +2582,14 @@
     // combineSizes, prec, x, y }) -> its id; holeTableEdit(id, props | null) changes or deletes one; holeTables() -> [{ id,
     // view, box, origin, rows: [{ tag, x, y, xText, yText, size, lines, c, r }] }] of the active sheet. Weld Symbol,
     // Revision Symbol and Revision Cloud go through symbol({ type: 'weld' | 'revision' | 'revCloud', … }).
-    api.holeTable = function (viewId, spec) { var t = null; return doc() && tryEdit(function (dc) { t = Drawing.addHoleTable(dc, viewId, spec || {}); }) ? t.id : null; };
+    // (rfJB) the view as computed goes along, so an origin that is not a vertex of it is refused (toast + null)
+    function htView(viewId) { settle(); if (!D.sheet) render(); return D.sheet && (D.sheet.views || []).filter(function (x) { return x.view.id === viewId; })[0] || null; }
+    api.holeTable = function (viewId, spec) { var t = null; if (!doc()) return null; var w = htView(viewId); return tryEdit(function (dc) { t = Drawing.addHoleTable(dc, viewId, spec || {}, w); }) ? t.id : null; };
     api.holeTableEdit = function (id, props) {
       if (!doc()) return null;
       if (props == null) return Drawing.findHoleTable(doc(), id) ? (deleteHoleTable(id), api.holeTables()) : null;
-      return tryEdit(function (dc) { Drawing.editHoleTable(dc, id, props); }) ? api.holeTables() : null;
+      var ht = Drawing.findHoleTable(doc(), id), hw = ht && props.origin !== undefined ? htView(ht.view) : null;
+      return tryEdit(function (dc) { Drawing.editHoleTable(dc, id, props, hw); }) ? api.holeTables() : null;
     };
     api.holeTables = function () {
       if (!doc()) return [];

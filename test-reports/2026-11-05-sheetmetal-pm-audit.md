@@ -77,3 +77,16 @@ SolidWorks' Parameters group: Fixed face, Grain direction, Merge faces, Simplify
 1. Ribbon *Flat to DXF* on a part with a flange and a dimple: Export list order and names; Entities to export order; Geometry always on and greyed. ✓ writes FORM, BEND and NOTES. Unchecking Forming tools drops FORM and keeps BEND. Unchecking Bend lines drops BEND and keeps FORM and OUTLINE.
 2. Double-click on Flat-Pattern1: Parameters group first, Fixed face before Grain direction, no dead boxes. Cancel changes nothing.
 3. Corners flyout ▸ Break-Corner/Corner-Trim opens the Break-Corner PM.
+
+
+## Lane rfJC: kernel options of lane rfIZ in the PMs (2026-11-05)
+The following rows of the ranked table are now **done**:
+- **#2** Tangent to Bend: in the list at 90° and up only.
+- **#3** Up To Vertex: End condition list, vertex box, Normal to flange plane / Parallel to base flange.
+- **#6** Tear and Use relief ratio / Ratio.
+- **#7** Offset: Blind + distance. Trim side bends is still kernel work.
+- **#10** Hem: Miter Gap group and Custom Relief Type.
+
+`p.flange` / `p.hem` take the fields and `generateScript` writes them (kernel test group rfJC: the JSON build, the Builder build and the script round trip agree in fields and volume, 1e-12). Smoke rfJC, 4 steps with real clicks: each option is set in the PM, built, and shown again by Edit Feature.
+
+Tests updated for the changed controls: in rfIU (this audit's own group), the Flange Length row is now the `End condition` list (the label was 'Length end condition', which `pmField('Length')` would have matched); Position adds tangentToBend; the relief list adds Tear.

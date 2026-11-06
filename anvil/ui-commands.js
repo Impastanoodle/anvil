@@ -2680,16 +2680,17 @@
   var LENGTH_REFS = [['outer', 'Outer Virtual Sharp', 'lenOuter'], ['inner', 'Inner Virtual Sharp', 'lenInner'], ['tangent', 'Tangent Bend', 'lenTangent']];
   // rfIU: SolidWorks 2024's Flange Position order (Tangent to Bend needs kernel work) and its Custom Relief Type names
   // (Tear needs kernel work; None is Anvil's: no relief)
-  var FLANGE_POSITIONS = [['inside', 'Material Inside'], ['outside', 'Material Outside'], ['bendOutside', 'Bend Outside'], ['virtualSharp', 'Bend from Virtual Sharp']];
-  var CUSTOM_RELIEFS = [['rect', 'Rectangle'], ['obround', 'Obround'], ['none', 'None']];
+  // rfJC: Tangent to Bend and Tear (kernel lane rfIZ); Tangent to Bend is offered at 90° and up only, as SolidWorks greys it
+  var FLANGE_POSITIONS = [['inside', 'Material Inside'], ['outside', 'Material Outside'], ['bendOutside', 'Bend Outside'], ['virtualSharp', 'Bend from Virtual Sharp'], ['tangentToBend', 'Tangent to Bend']];
+  var CUSTOM_RELIEFS = [['rect', 'Rectangle'], ['tear', 'Tear'], ['obround', 'Obround'], ['none', 'None']];
   var HEM_TYPES = [['closed', 'Closed', 'hemClosed'], ['open', 'Open', 'hemOpen'], ['teardrop', 'Tear Drop', 'hemTeardrop'], ['rolled', 'Rolled', 'hemRolled']];
   var HEM_POSITIONS = [['inside', 'Material Inside', 'hemInside'], ['outside', 'Bend Outside', 'hemOutside']];
   var HEM_ANGLE = { teardrop: 200, rolled: 270 };   // SolidWorks' starting angles of a Tear Drop and a Rolled hem
   // p9-pm: the Edge Flange and Hem PropertyManagers start with the values last accepted in this session, as SolidWorks
   // does (per document units: a length remembered in inches is not offered to a millimetre part)
   var smMemory = { flange: null, hem: null };
-  var FLANGE_MEMORY_KEYS = ['length', 'angle', 'position', 'lengthRef', 'useCustomRelief', 'relief', 'useDefaultReliefWidth', 'reliefWidthValue', 'useDefaultReliefDepth', 'reliefDepthValue'];
-  var HEM_MEMORY_KEYS = ['hemType', 'hemPosition', 'length', 'gap', 'hemRadius', 'hemAngle'];
+  var FLANGE_MEMORY_KEYS = ['length', 'angle', 'position', 'lengthRef', 'useCustomRelief', 'relief', 'useDefaultReliefWidth', 'reliefWidthValue', 'useDefaultReliefDepth', 'reliefDepthValue', 'useReliefRatio', 'reliefRatioValue'];
+  var HEM_MEMORY_KEYS = ['hemType', 'hemPosition', 'length', 'gap', 'hemRadius', 'hemAngle', 'miterGap'];
   // UI.sheetMetalMemory() -> copy of what is remembered; UI.sheetMetalMemory(null) forgets it (tests)
   UI.sheetMetalMemory = function (set) {
     if (set === null) smMemory = { flange: null, hem: null };
@@ -2726,10 +2727,14 @@
     f.cbaBA = cba && cba.type === 'allowance' ? cba.value : Math.round(K.bendAllowance(Math.PI / 2, +sheet.bendRadius, T, kSheet) * 1e4) / 1e4;
     f.cbaBD = cba && cba.type === 'deduction' ? cba.value : Math.round(K.bendDeduction(Math.PI / 2, +sheet.bendRadius, T, K.bendAllowance(Math.PI / 2, +sheet.bendRadius, T, kSheet)) * 1e4) / 1e4;
     delete f.bendAllowance;
-    if (isFlange) {
+    if (isFlange || isHem) {
       // older flanges lack the miter/relief fields: fill the defaults, then split relief sizes into UI-only check + value pairs
       if (f.miter == null) f.miter = false;
       if (f.miterGap == null) f.miterGap = 0;
+      // rfJC: Custom Relief Type ▸ Use relief ratio (UI-only check + value; the feature keeps reliefRatio)
+      f.useReliefRatio = f.reliefRatio != null;
+      f.reliefRatioValue = f.reliefRatio != null ? f.reliefRatio : 0.5;
+      delete f.reliefRatio;
       // lane CS: SolidWorks' Custom Relief Type check: off (no `relief` in the feature) takes the sheet's Auto Relief
       f.useCustomRelief = f.relief != null;
       if (!f.relief) f.relief = 'none';
@@ -2739,6 +2744,20 @@
       f.reliefWidthValue = f.reliefWidth != null ? f.reliefWidth : T;
       f.useDefaultReliefDepth = f.reliefDepth == null;
       f.reliefDepthValue = f.reliefDepth != null ? f.reliefDepth : T / 2;
+    }
+    // rfJC: Hem ▸ Miter Gap (written as miter + miterGap when the hem runs along two or more edges; SolidWorks mitres hems
+    // that meet). The gap starts at the Closed Corner default, 0.01 in / 0.25 mm.
+    if (isHem && !(f.miter && f.miterGap > 0)) f.miterGap = App.model.units === 'in' ? 0.01 : 0.25;
+    // rfJC: Flange Length ▸ End condition (Blind / Up To Vertex, the vertex and Normal to flange plane / Parallel to base
+    // flange) and Flange Position ▸ Offset (UI-only check + distance; the feature keeps offset: { end: 'blind', distance })
+    if (isFlange) {
+      f.lengthEnd = f.lengthEnd === 'upToVertex' ? 'upToVertex' : 'blind';
+      f.lengthVertex = Array.isArray(f.lengthVertex) ? f.lengthVertex.slice() : null;
+      f.lengthVertexMode = f.lengthVertexMode === 'parallel' ? 'parallel' : 'normal';
+      f.vxActive = f.lengthEnd === 'upToVertex' && !f.lengthVertex;
+      f.useOffset = f.offset != null;
+      f.offsetDist = f.offset == null ? 0 : typeof f.offset === 'object' ? f.offset.distance : f.offset;
+      delete f.offset;
     }
     var memKind = isHem ? 'hem' : isFlange ? 'flange' : null, mem = memKind && smMemory[memKind];
     if (!existing && mem && mem.units === App.model.units) {
@@ -2751,7 +2770,7 @@
       smMemory[memKind] = m;
     }
     var titles ={ flange: 'Edge-Flange', miter: 'Miter-Flange', hem: 'Hem', jog: 'Jog' };
-    var RELIEF_NAMES = { none: 'None', rect: 'Rectangle', obround: 'Obround' };
+    var RELIEF_NAMES = { none: 'None', rect: 'Rectangle', obround: 'Obround', tear: 'Tear' };
     if (!existing && App.sel && App.sel.kind === 'edge') f.edges.push({ at: App.sel.edge.mid.slice() });
     var edgeList = [];
     function resolveList() {
@@ -2787,12 +2806,25 @@
       if (isFlange) {
         out.miter = !!v.miter;
         out.miterGap = out.miter ? Math.max(0, +v.miterGap || 0) : 0;
+        // rfJC: Up To Vertex and Offset
+        if (v.lengthEnd === 'upToVertex') { out.lengthEnd = 'upToVertex'; out.lengthVertex = v.lengthVertex ? v.lengthVertex.slice() : null; out.lengthVertexMode = v.lengthVertexMode === 'parallel' ? 'parallel' : 'normal'; }
+        else { delete out.lengthEnd; delete out.lengthVertex; delete out.lengthVertexMode; }
+        if (v.useOffset) out.offset = { end: 'blind', distance: +v.offsetDist || 0 }; else delete out.offset;
+        delete out.vxActive; delete out.useOffset; delete out.offsetDist;
+      }
+      if (isHem) {
+        if (v.edges.length > 1) { out.miter = true; out.miterGap = Math.max(0, +v.miterGap || 0); } else { delete out.miter; delete out.miterGap; }
+      }
+      if (isFlange || isHem) {
         if (v.useCustomRelief) {
           out.relief = RELIEF_NAMES[v.relief] ? v.relief : 'none';
-          out.reliefWidth = out.relief !== 'none' && !v.useDefaultReliefWidth ? +v.reliefWidthValue : null;
-          out.reliefDepth = out.relief !== 'none' && !v.useDefaultReliefDepth ? +v.reliefDepthValue : null;
-        } else { delete out.relief; delete out.reliefWidth; delete out.reliefDepth; }
-        delete out.useCustomRelief;
+          // Tear has no size (kernel: the Rip gap); Use relief ratio sizes a Rectangle / Obround by ratio × T
+          var sized = out.relief === 'rect' || out.relief === 'obround', byRatio = sized && !!v.useReliefRatio;
+          out.reliefWidth = sized && !byRatio && !v.useDefaultReliefWidth ? +v.reliefWidthValue : null;
+          out.reliefDepth = sized && !byRatio && !v.useDefaultReliefDepth ? +v.reliefDepthValue : null;
+          if (byRatio) out.reliefRatio = forOK ? pmExpr('reliefRatioValue', +v.reliefRatioValue) : +v.reliefRatioValue; else delete out.reliefRatio;
+        } else { delete out.relief; delete out.reliefWidth; delete out.reliefDepth; delete out.reliefRatio; }
+        delete out.useCustomRelief; delete out.useReliefRatio; delete out.reliefRatioValue;
       }
       if (v.useCustomBA) {
         out.bendAllowance = { type: v.cbaType };
@@ -2847,6 +2879,21 @@
       { type: 'check', label: 'Use default radius (' + sheet.bendRadius + ')', key: 'useDefaultRadius', rerender: true },
       { type: 'number', label: 'Bend radius', key: 'radiusValue', unit: 'u', min: 0, show: function (v) { return !v.useDefaultRadius; } }
     ];
+    function sizedRelief(v) { return v.useCustomRelief && (v.relief === 'rect' || v.relief === 'obround'); }
+    var reliefGroup = { title: 'Custom Relief Type', fields: [   // rfK: SolidWorks' group name on the Edge-Flange PM (Auto Relief is the sheet's default, in the Sheet-Metal feature)
+      { type: 'check', label: 'Custom relief type', key: 'useCustomRelief', rerender: true },
+      { type: 'static', label: 'Auto Relief', value: function () { return isHem ? 'None (a hem takes no Auto Relief)' : sheet.relief ? RELIEF_NAMES[sheet.relief] + (sheet.relief === 'tear' ? '' : ', ratio ' + sheet.reliefRatio) + ' (sheet default)' : 'None (sheet default)'; }, show: function (v) { return !v.useCustomRelief; } },
+      { type: 'select', label: 'Relief type', key: 'relief', options: CUSTOM_RELIEFS, rerender: true, show: function (v) { return v.useCustomRelief; } },
+      // rfJC: SolidWorks' Use relief ratio (Rectangle / Obround; Tear has no size)
+      { type: 'check', label: 'Use relief ratio', key: 'useReliefRatio', rerender: true, show: sizedRelief },
+      { type: 'number', label: 'Ratio', key: 'reliefRatioValue', step: 0.05, min: 0, show: function (v) { return sizedRelief(v) && v.useReliefRatio; } },
+      { type: 'check', label: 'Use default width (T = ' + T + ')', key: 'useDefaultReliefWidth', rerender: true, show: function (v) { return sizedRelief(v) && !v.useReliefRatio; } },
+      { type: 'number', label: 'Relief width', key: 'reliefWidthValue', unit: 'u', min: 0, show: function (v) { return sizedRelief(v) && !v.useReliefRatio && !v.useDefaultReliefWidth; } },
+      { type: 'check', label: 'Use default depth (T/2 = ' + T / 2 + ')', key: 'useDefaultReliefDepth', rerender: true, show: function (v) { return sizedRelief(v) && !v.useReliefRatio; } },
+      { type: 'number', label: 'Relief depth', key: 'reliefDepthValue', unit: 'u', min: 0, show: function (v) { return sizedRelief(v) && !v.useReliefRatio && !v.useDefaultReliefDepth; } }
+    ] };
+    function upTo(v) { return v.lengthEnd === 'upToVertex'; }
+    var tbShown = +f.angle >= 90 - 1e-9;   // rfJC: Tangent to Bend is in the Position list
     var groups = isJog ? [
       { title: 'Jog Parameters', fields: [
         { type: 'pick', icon: 'flange', value: function (v) { return v.edges.length ? v.edges.length + ' edge' + (v.edges.length > 1 ? 's' : '') : ''; }, placeholder: 'Select edges…', items: flangeItems, onRemove: flangeRemove, onClear: flangeClear },
@@ -2870,29 +2917,39 @@
         { type: 'number', label: 'Gap distance', key: 'gap', unit: 'u', min: 0, show: function (v) { return v.hemType === 'open'; } },
         { type: 'number', label: 'Angle', key: 'hemAngle', unit: '°', min: 0, show: function (v) { return v.hemType === 'teardrop' || v.hemType === 'rolled'; } },
         { type: 'number', label: 'Radius', key: 'hemRadius', unit: 'u', min: 0, show: function (v) { return v.hemType === 'teardrop' || v.hemType === 'rolled'; } }
-      ] }
+      ] },
+      // rfJC: SolidWorks' Miter Gap (used where hems on two edges meet)
+      { title: 'Miter Gap', fields: [{ type: 'number', label: 'Miter gap', key: 'miterGap', unit: 'u', min: 0 }] },
+      reliefGroup
     ] : [
       { title: 'Flange Parameters', fields: [
         { type: 'pick', icon: 'flange', value: function (v) { return v.edges.length ? v.edges.length + ' edge' + (v.edges.length > 1 ? 's' : '') : ''; }, placeholder: 'Select edges…', items: flangeItems, onRemove: flangeRemove, onClear: flangeClear }
       ].concat(radiusFields, [{ type: 'buttons', buttons: [{ label: 'Clear selection', onclick: function (v) { v.edges.length = 0; renderPM(); resolveList(); preview(); } }] }]) },
       { title: 'Angle', fields: [{ type: 'number', label: 'Flange angle', key: 'angle', unit: '°', min: 0 }] },
-      // rfIU: SolidWorks' Flange Length order: end condition (Blind; Up To Vertex needs kernel work) with Reverse
-      // Direction beside it, then the length and the three length references
-      { title: 'Flange Length', fields: [{ type: 'static', label: 'Length end condition', value: 'Blind' }, { type: 'check', label: 'Reverse direction', key: 'reverse' }, { type: 'number', label: 'Length', key: 'length', unit: 'u', min: 0 }, { type: 'iconRadio', label: 'Measured from', key: 'lengthRef', options: lengthRefs }] },
-      { title: 'Flange Position', fields: [{ type: 'select', label: 'Position', key: 'position', options: FLANGE_POSITIONS }] },
+      // rfIU / rfJC: SolidWorks' Flange Length order: the end condition (Blind / Up To Vertex) with Reverse Direction
+      // beside it, then the length and the three length references (Blind), or the vertex and Normal to flange plane /
+      // Parallel to base flange (Up To Vertex, which measures to the vertex, not from a reference)
+      { title: 'Flange Length', fields: [
+        { type: 'select', label: 'End condition', key: 'lengthEnd', options: [['blind', 'Blind'], ['upToVertex', 'Up To Vertex']], rerender: true },
+        { type: 'check', label: 'Reverse direction', key: 'reverse' },
+        { type: 'number', label: 'Length', key: 'length', unit: 'u', min: 0, show: function (v) { return !upTo(v); } },
+        { type: 'iconRadio', label: 'Measured from', key: 'lengthRef', options: lengthRefs, show: function (v) { return !upTo(v); } },
+        { type: 'pick', icon: 'point', placeholder: 'Select a vertex…', show: upTo, value: function (v) { return v.lengthVertex ? 'Vertex<1>' : ''; },
+          active: function (v) { return !!v.vxActive; }, onActivate: function (v) { v.vxActive = true; renderPM(); UI.setStatus('Up To Vertex: click the vertex the flange runs to.'); } },
+        { type: 'radio', key: 'lengthVertexMode', show: upTo, options: [['normal', 'Normal to flange plane'], ['parallel', 'Parallel to base flange']] }
+      ] },
+      { title: 'Flange Position', fields: [
+        { type: 'select', label: 'Position', key: 'position', options: function (v) { return +v.angle >= 90 - 1e-9 ? FLANGE_POSITIONS : FLANGE_POSITIONS.filter(function (o) { return o[0] !== 'tangentToBend'; }); } },
+        // rfJC: SolidWorks' Offset (end condition Blind, distance)
+        { type: 'check', label: 'Offset', key: 'useOffset', rerender: true },
+        { type: 'static', label: 'Offset end condition', value: 'Blind', show: function (v) { return v.useOffset; } },
+        { type: 'number', label: 'Offset distance', key: 'offsetDist', unit: 'u', show: function (v) { return v.useOffset; } }
+      ] },
       { title: 'Miter', fields: [
         { type: 'check', label: 'Miter corners', key: 'miter', rerender: true },
         { type: 'number', label: 'Gap distance', key: 'miterGap', unit: 'u', min: 0, show: function (v) { return !!v.miter; } }
       ] },
-      { title: 'Custom Relief Type', fields: [   // rfK: SolidWorks' group name on the Edge-Flange PM (Auto Relief is the sheet's default, in the Sheet-Metal feature)
-        { type: 'check', label: 'Custom relief type', key: 'useCustomRelief', rerender: true },
-        { type: 'static', label: 'Auto Relief', value: function () { return sheet.relief ? RELIEF_NAMES[sheet.relief] + ', ratio ' + sheet.reliefRatio + ' (sheet default)' : 'None (sheet default)'; }, show: function (v) { return !v.useCustomRelief; } },
-        { type: 'select', label: 'Relief type', key: 'relief', options: CUSTOM_RELIEFS, rerender: true, show: function (v) { return v.useCustomRelief; } },
-        { type: 'check', label: 'Use default width (T = ' + T + ')', key: 'useDefaultReliefWidth', rerender: true, show: function (v) { return v.useCustomRelief && v.relief !== 'none'; } },
-        { type: 'number', label: 'Relief width', key: 'reliefWidthValue', unit: 'u', min: 0, show: function (v) { return v.useCustomRelief && v.relief !== 'none' && !v.useDefaultReliefWidth; } },
-        { type: 'check', label: 'Use default depth (T/2 = ' + T / 2 + ')', key: 'useDefaultReliefDepth', rerender: true, show: function (v) { return v.useCustomRelief && v.relief !== 'none'; } },
-        { type: 'number', label: 'Relief depth', key: 'reliefDepthValue', unit: 'u', min: 0, show: function (v) { return v.useCustomRelief && v.relief !== 'none' && !v.useDefaultReliefDepth; } }
-      ] }
+      reliefGroup
     ];
     groups.push({ title: 'Custom Bend Allowance', collapsed: !f.useCustomBA, fields: [
       { type: 'check', label: 'Custom bend allowance', key: 'useCustomBA', rerender: true },
@@ -2908,13 +2965,20 @@
     groups.push({ title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] });
     openPM({
       title: existing ? existing.name : titles[kind], icon: isMiter ? 'miter' : 'flange', values: f,
-      exprMap: { radiusValue: 'radius', reliefWidthValue: 'reliefWidth', reliefDepthValue: 'reliefDepth' },   // (cbaK / cbaBA / cbaBD: toFeature(v, true))
+      exprMap: { radiusValue: 'radius', reliefWidthValue: 'reliefWidth', reliefDepthValue: 'reliefDepth' },   // (cbaK / cbaBA / cbaBD, reliefRatioValue: toFeature(v, true))
       message: isJog ? 'Click <b>straight edges</b>: the sheet steps up by the jog height and continues flat. Reverse steps it down.' : isHem ? 'Click <b>straight edges</b> to fold the sheet back over itself. <i>Material Inside</i> keeps the hem inside the edge; <i>Bend Outside</i> adds the bend beyond it. An Open hem\'s gap is the opening between the two flats.' :
         (isMiter ? 'Click <b>two or more adjacent straight edges</b> of the flat sheet; the flanges are joined at each shared corner.' : 'Click <b>straight edges</b> of the flat sheet. Placement is <i>Bend Outside</i>; use Reverse to flip the flange to the other side.') +
         ' <i>Miter</i> joins flanges on adjacent edges at their corner, and <i>Relief</i> cuts a slot where a flange ends inside the plate.',
       command: {
         pickEdges: true, edgeList: edgeList,
+        // rfJC: Up To Vertex: while its vertex box is active a click takes a vertex of the part
+        pickRefGeo: isFlange, refKinds: ['point'], pickVertices: function () { return isFlange && f.lengthEnd === 'upToVertex' && !!f.vxActive; },
         onPick: function (pk) {
+          if (pk.kind === 'vertex' && isFlange && f.lengthEnd === 'upToVertex' && pk.point) {
+            f.lengthVertex = pk.point.slice(); f.vxActive = false;
+            renderPM(); preview();
+            return true;
+          }
           if (pk.kind !== 'edge') return false;
           var e = pk.edge, idx = -1;
           f.edges.forEach(function (spec, i) { if (K.pointSegmentDistance(spec.at, e.a, e.b) < 0.5) idx = i; });
@@ -2927,10 +2991,19 @@
       onChange: function (v, key) {
         // a Tear Drop and a Rolled hem start at their own angle (200°, 270°) unless one was typed
         if (isHem && key === 'hemType' && HEM_ANGLE[v.hemType] && (v.hemAngle === HEM_ANGLE.teardrop || v.hemAngle === HEM_ANGLE.rolled) && v.hemAngle !== HEM_ANGLE[v.hemType]) { v.hemAngle = HEM_ANGLE[v.hemType]; renderPM(); }
+        // rfJC: below 90° Tangent to Bend is not offered (SolidWorks greys it): Material Inside instead; the Position list
+        // is redrawn when the angle crosses 90°
+        if (isFlange && key === 'angle') {
+          var tb = +v.angle >= 90 - 1e-9;
+          if (!tb && v.position === 'tangentToBend') v.position = 'inside';
+          if (tb !== tbShown) { tbShown = tb; renderPM(); }
+        }
+        if (isFlange && key === 'lengthEnd') { v.vxActive = v.lengthEnd === 'upToVertex' && !v.lengthVertex; renderPM(); if (v.vxActive) UI.setStatus('Up To Vertex: click the vertex the flange runs to.'); }
         resolveList(); preview();
       },
       onOK: function (v) {
         if (!v.edges.length) { UI.toast('Select at least one edge.'); return false; }
+        if (isFlange && v.lengthEnd === 'upToVertex' && !v.lengthVertex) { UI.toast('Up To Vertex: select the vertex the flange runs to.'); return false; }
         remember(v);
         var feat = toFeature(v, true);
         if (!feat.name) {

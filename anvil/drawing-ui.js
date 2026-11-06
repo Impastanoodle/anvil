@@ -441,6 +441,10 @@
       } else { var pg = D.prog; D.prog = null; if ((pg.insert || pg.ids) && Drawing.autoInsert(dc, m, pg.ids || undefined)) { UI.autosave(); D.sheet = Drawing.compute(dc, m, App.model, cctx()); if (!D.dirty) markDrawingClean(); } D.openMs = performance.now() - pg.t0; }
     }
     D.sheetMesh = m; D.sheetDoc = dc;
+    // (rfJB) what the sheet could not place cleanly (a Bend Table with no free paper) goes to the status bar once
+    var wn = (D.sheet.warnings || []).join(' ');
+    if (wn && wn !== D.lastWarn && UI.setStatus) UI.setStatus(wn);
+    D.lastWarn = wn;
     D.occtDrove = !!(UI.occt && UI.occt.status && UI.occt.status().driving);
     D.rendered = {};
     D.sheet.views.forEach(function (w) { D.rendered[w.view.id] = [w.view.x, w.view.y]; });

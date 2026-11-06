@@ -101,3 +101,24 @@ Measured on a section view (`tests/kernel/rfIR.js` cases). Hatch cost = file wit
 - Finding 2 partly reverted: the side flip now refuses a side whose extension lines would run through the view (the
   plate in smoke rfQ got a dimension covering its Front view, which took the click that drags the view). The bracket's
   Front 2.000 is in the tolerance block again: open, needs Standard 3 View to leave room under the bottom row.
+
+## Follow-up (lane rfJB / drawroom, same day)
+
+- Finding 2 / open note above: *fixed*. Standard 3 View (`layout`) reserves one model-dimension row under the bottom
+  row of views (10 mm offset + extension past the line + 1.5 mm, above the title and tolerance blocks) and one left of
+  the left column (sized from the overall sizes' texts); top / right keep half the inch margin. The bracket stays at
+  2 : 1 and its Front 2.000 now sits above UNLESS OTHERWISE SPECIFIED. Kernel rfJB checks the channel, box and bracket
+  sheets (no dimension in the blocks, across another view or past the border) plus a plate, a tall part, first angle
+  and A3 mm. Metric sheets keep their full view-gap margins. Some small inch parts drop one scale (the 4 × 2 plate is
+  1 : 1 now, its isometric no longer fitting at half scale above the raised Front).
+- Finding 6: *fixed*. A Bend Table with no free paper goes where it covers the least of the views / blocks inside the
+  border (not on top of the Front view), its item is marked `noRoom`, and `sheet.warnings` (also `summary().warnings`
+  and the status bar) says so.
+- Finding 7: *fixed*. Hole Table tags use the dimension text height (.125 in / 3.5 mm) and try up-right first, then the
+  other diagonals, the sides and further out, until clear of other tags, other holes and the view's edges / bend
+  lines (channel flat at 1 : 4: five tags, none touching).
+- Finding 8: *fixed*. `Drawing.addHoleTable(doc, viewId, spec, w)` / `editHoleTable(…, w)` with the computed view refuse
+  an origin that is not a vertex (or X / Y edges that are not the view's own lines) with a message; the app's
+  `anvil.drawing.holeTable` passes the view, so a bad origin is a status message and no undo step. Without `w` the
+  engine behaves as before.
+- Findings 9 and 10 left: 9 needs SolidWorks to check the plain-hole callout spacing; 10 matches SolidWorks already.

@@ -2455,15 +2455,16 @@
   // have their own PropertyManager here, titled and grouped the same (Mate Selections, Standard / Advanced / Mechanical
   // Mates, Mate alignment), and the two swap as the mate type changes, keeping the picks: gvHookBase adds the three to the
   // base PM's Advanced / Mechanical selects, and choosing one there, or a base type here, opens the other.
-  var GV_LABEL = { symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'Linear/Linear Coupler' };
+  var GV_LABEL = { symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'Linear/Linear Coupler', profilecenter: 'Profile Center' };
   // (rfIV: Linear/Linear Coupler is an Advanced Mate in SolidWorks 2024, like Symmetric)
-  var GV_ADV = { symmetric: 1, linearcoupler: 1 };
-  var GV_ALL_LABEL = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle', parallel: 'Parallel', perpendicular: 'Perpendicular', tangent: 'Tangent', width: 'Width', gear: 'Gear', limitdistance: 'Limit Distance', limitangle: 'Limit Angle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'Linear/Linear Coupler' };
+  var GV_ADV = { symmetric: 1, linearcoupler: 1, profilecenter: 1 };
+  var GV_ALL_LABEL = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle', parallel: 'Parallel', perpendicular: 'Perpendicular', tangent: 'Tangent', width: 'Width', gear: 'Gear', limitdistance: 'Limit Distance', limitangle: 'Limit Angle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'Linear/Linear Coupler', profilecenter: 'Profile Center' };
   function gvSvg(body) { return '<svg class="ico" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>'; }
   var GV_ICON = {
     symmetric: gvSvg('<path d="M8 1.5v13" stroke-dasharray="2 1.6" stroke="#939393"/><path d="M6 4L2 8l4 4z" fill="#c9b6e6" stroke="#8a5cc2"/><path d="M10 4l4 4-4 4z" fill="#c9b6e6" stroke="#8a5cc2"/>'),
     slot: gvSvg('<path d="M5 4.5h6a3.5 3.5 0 0 1 0 7H5a3.5 3.5 0 0 1 0-7z"/><circle cx="6" cy="8" r="2" fill="#c9b6e6" stroke="#8a5cc2"/>'),
     hinge: gvSvg('<path d="M1.5 3.5h5.5v9H1.5z" fill="#c9b6e6" stroke="#8a5cc2"/><path d="M9 3.5h5.5v9H9z"/><path d="M8 2v12" stroke-width="2.2"/>'),
+    profilecenter: gvSvg('<rect x="1.5" y="3.5" width="13" height="9" rx="1"/><circle cx="8" cy="8" r="2.6" fill="#c9b6e6" stroke="#8a5cc2"/><path d="M8 4.5v7M4.5 8h7" stroke="#8a5cc2" stroke-width="0.9"/>'),
     linearcoupler: gvSvg('<path d="M1.5 4.5h6M5.5 2.5l2 2-2 2" stroke="#8a5cc2"/><path d="M1.5 11.5h13M12.5 9.5l2 2-2 2"/><path d="M3 6v4" stroke-dasharray="1.4 1.2" stroke="#939393"/>')
   };
   // ui-panels.js draws a mate row before it knows these three: the row gets its icon here
@@ -2494,7 +2495,7 @@
     var X = existing || {}, snapshot = JSON.stringify(App.model), previewed = false, alignSet = !!X.alignment;
     function start(k) { return X[k] ? clone(X[k]) : seed && seed[k] ? clone(seed[k]) : null; }
     var v = { type: type, advType: GV_ADV[type] ? type : '', mechType: GV_ADV[type] ? '' : type,
-      ratioA: X.ratio ? +X.ratio[0] : 1, ratioB: X.ratio ? +X.ratio[1] : 1,
+      ratioA: X.ratio ? +X.ratio[0] : 1, ratioB: X.ratio ? +X.ratio[1] : 1, offset: X.offset != null ? X.offset : 0, lock: !!X.lock,
       a: start('a'), b: start('b'), a2: start('a2'), b2: start('b2'), a3: start('a3'), b3: start('b3'),
       constraint: X.constraint || 'free', distance: X.distance != null ? X.distance : 0, percent: X.percent != null ? X.percent : 50, flip: !!X.flip,
       limit: !!X.limit, min: X.min != null ? X.min : 0, max: X.max != null ? X.max : 90 };
@@ -2502,13 +2503,14 @@
     if (type !== 'hinge' && type !== 'symmetric') v.a2 = null;
     v.alignment = X.alignment || AS.defaultAlignment({ type: type, a: v.a, b: v.b, a2: v.a2, b2: v.b2 });
     // the selections, in pick order
-    function slots() { return type === 'symmetric' ? ['a2', 'a', 'b'] : type === 'slot' || type === 'linearcoupler' ? ['a', 'b'] : v.limit ? ['a', 'b', 'a2', 'b2', 'a3', 'b3'] : ['a', 'b', 'a2', 'b2']; }
+    function slots() { return type === 'symmetric' ? ['a2', 'a', 'b'] : type === 'slot' || type === 'linearcoupler' || type === 'profilecenter' ? ['a', 'b'] : v.limit ? ['a', 'b', 'a2', 'b2', 'a3', 'b3'] : ['a', 'b', 'a2', 'b2']; }
     function ready() { return slots().every(function (k) { return !!v[k]; }); }
     function restore() { App.model = JSON.parse(snapshot); }
     function values() {
       if (type === 'slot') return { constraint: v.constraint, distance: v.constraint === 'distance' ? +v.distance || 0 : null, percent: v.constraint === 'percent' ? +v.percent || 0 : null, flip: !!v.flip };
       if (type === 'hinge') return { limit: !!v.limit, min: v.limit ? +v.min || 0 : null, max: v.limit ? +v.max || 0 : null };
       if (type === 'linearcoupler') return { ratio: [+v.ratioA, +v.ratioB], flip: !!v.flip };
+      if (type === 'profilecenter') return { offset: +v.offset || 0, flip: !!v.flip, lock: !!v.lock };
       return {};
     }
     function apply(m) {
@@ -2519,6 +2521,7 @@
         if (x.type !== type) { delete x.phase; x.name = AS.MATE_NAMES[type] + x.id; }
         // a new ratio or Reverse starts from where the two parts stand now (nothing jumps)
         else if (type === 'linearcoupler' && JSON.stringify([x.ratio, !!x.flip]) !== JSON.stringify([vals.ratio, !!vals.flip])) delete x.phase;
+        else if (type === 'profilecenter') delete x.phase;   // Lock rotation holds the turn the parts have now
         x.type = type; x.a = clone(v.a); x.b = clone(v.b);
         ['a2', 'b2', 'a3', 'b3'].forEach(function (k) { if (refs[k]) x[k] = refs[k]; else delete x[k]; });
         if (alignSet) x.alignment = v.alignment; else delete x.alignment;
@@ -2534,6 +2537,7 @@
     function hint() {
       return type === 'symmetric' ? 'Symmetric: select the Symmetry Plane, then the two entities to mate.'
         : type === 'slot' ? 'Slot: select a face of the slot and a cylindrical face or axis (the pin).'
+        : type === 'profilecenter' ? 'Profile Center: select a planar face with a rectangular or circular profile on each of two components.'
         : type === 'linearcoupler' ? 'Linear/Linear Coupler: select a direction on each of two components (a planar face, a cylindrical face, a plane or an axis). The first one drives the second by the ratio.'
         : 'Hinge: select two cylindrical faces (Concentric Selections), then two planar faces (Coincident Selections)' + (v.limit ? ', then two faces (Angle Selections).' : '.');
     }
@@ -2580,6 +2584,7 @@
       ? [label('Symmetry Plane'), box(['a2'], 'plane', 'Symmetry plane…'), label('Entities to Mate'), box(['a', 'b'], 'component', 'Two entities to mate…')]
       : type === 'slot' ? [box(['a', 'b'], 'component', 'Slot face and pin…')]
       : type === 'linearcoupler' ? [label('Entities to Mate'), box(['a', 'b'], 'component', 'A direction on each component…')]
+      : type === 'profilecenter' ? [label('Entities to Mate'), box(['a', 'b'], 'component', 'Two planar faces (profiles)…')]
       : [label('Concentric Selections'), box(['a', 'b'], 'concentric', 'Two cylindrical faces or axes…'),
         label('Coincident Selections'), box(['a2', 'b2'], 'coincident', 'Two planar faces or planes…'),
         { type: 'check', label: 'Define angle limit', key: 'limit', rerender: true },
@@ -2599,6 +2604,11 @@
       { type: 'number', label: 'Ratio (first)', key: 'ratioA', unit: 'u', min: 0 },
       { type: 'number', label: 'Ratio (second)', key: 'ratioB', unit: 'u', min: 0 },
       { type: 'check', label: 'Reverse', key: 'flip' }
+    ]);
+    if (type === 'profilecenter') adv = adv.concat([   // SolidWorks: Offset distance, Flip dimension, Lock rotation
+      { type: 'number', label: 'Offset distance', key: 'offset', unit: 'u', min: 0 },
+      { type: 'check', label: 'Flip dimension', key: 'flip' },
+      { type: 'check', label: 'Lock rotation', key: 'lock' }
     ]);
     if (type === 'hinge') mech = mech.concat([
       { type: 'number', label: 'Maximum Value', key: 'max', unit: '°', show: function (x) { return !!x.limit; } },
@@ -2649,7 +2659,7 @@
       onClose: function () { gvSession = null; },
       onOK: function () {
         if (type === 'linearcoupler' && !(+v.ratioA > 0 && +v.ratioB > 0)) { UI.toast('Linear/Linear Coupler: the ratio must be two numbers > 0.'); return false; }
-        if (!ready()) { UI.toast('Select ' + (type === 'hinge' ? 'the Concentric and Coincident Selections' : type === 'slot' ? 'a slot face and a pin' : type === 'linearcoupler' ? 'a direction on each of two components' : 'the Symmetry Plane and two entities') + ' first.'); return false; }
+        if (!ready()) { UI.toast('Select ' + (type === 'hinge' ? 'the Concentric and Coincident Selections' : type === 'slot' ? 'a slot face and a pin' : type === 'linearcoupler' ? 'a direction on each of two components' : type === 'profilecenter' ? 'a planar face on each of two components' : 'the Symmetry Plane and two entities') + ' first.'); return false; }
         restore(); previewed = false;
         return gvCommit(apply, function (mt) {
           var st = statusOf(mt);
@@ -2703,10 +2713,10 @@
   // These components, Stop at collision, Dragged part only; Advanced Options ▸ Highlight faces, Sound. The PM itself is
   // ui-commands.js' cmdMoveComponent: its two groups are added here, and while a Move drag runs with Collision Detection
   // on, the drag's solves (Assembly.rebuild with opts.drag, every frame and the release) go through
-  // Assembly.collisionDrag, so the dragged parts stop at first contact. Rotate drags are not checked yet.
+  // Assembly.collisionDrag (Rotate drags, rfJA: Assembly.collisionStep), so the dragged parts stop at first contact.
   var cd = { mode: 'standard', between: 'all', these: [], stop: true, draggedOnly: false, highlight: true, sound: false };   // kept between opens, as SolidWorks
   var cdRun = null;   // the drag running with Collision Detection: { last: collision result, beeped }
-  function cdOn() { return cd.mode === 'collision' && App.command && App.command.dragComponents === 'move'; }
+  function cdOn() { return cd.mode === 'collision' && App.command && !!App.command.dragComponents; }
   function cdBeep() {
     try {
       var C = window.AudioContext || window.webkitAudioContext;
@@ -2757,23 +2767,30 @@
   var cdRebuild = AS.rebuild;
   AS.rebuild = function (model, cache, opts) {
     if (!cdRun || !opts || !opts.drag || opts.explodeT != null) return cdRebuild.apply(this, arguments);
-    var co = { against: cd.between === 'these' ? cd.these.slice() : null, draggedOnly: !!cd.draggedOnly, stop: !!cd.stop, quick: !!opts.quick };
-    var r = AS.collisionDrag(model, cache, opts.drag, co);
+    var co = { against: cd.between === 'these' ? cd.these.slice() : null, draggedOnly: !!cd.draggedOnly, stop: !!cd.stop, quick: !!opts.quick }, r;
+    if (cdRun.rotate) {   // rfJA: a Rotate drag: solve the frame, then turn back from where it collides toward the last good pose
+      var pr = cdRebuild.call(this, model, cache, opts);
+      co.dragged = cdRun.id;
+      r = AS.collisionStep(model, pr.cache, cdRun.prev, co);
+      if (!r.collision.hit) cdRun.prev = cdSnap(model);
+    } else r = AS.collisionDrag(model, cache, opts.drag, co);
     cdNote(r.collision);
     if (opts.poseOnly) return r;
     var o2 = {};
     Object.keys(opts).forEach(function (k) { if (k !== 'drag' && k !== 'quick') o2[k] = opts[k]; });
     return cdRebuild.call(this, model, r.cache, o2);   // the full build at the place the drag stopped
   };
+  function cdSnap(model) { var o = {}; (model.components || []).forEach(function (c) { o[c.id] = JSON.parse(JSON.stringify(c.transform)); }); return o; }
+  function cdNew(s, rotate) { return { last: null, beeped: false, rotate: rotate, id: s.component && s.component.id, prev: cdSnap(App.model) }; }
   var cdDragBase = UI.componentDragHook;
   UI.componentDragHook = function (p, ev, force) {
     var s = cdDragBase ? cdDragBase(p, ev, force) : null;
-    if (!s || force === 'rotate' || !cdOn() || !s.end) return s;
-    var start = s.start, end = s.end;
-    cdRun = { last: null, beeped: false };
-    s.start = function () { cdRun = { last: null, beeped: false }; if (App.command) App.command.faceList = []; if (UI.updateHighlights) UI.updateHighlights(); return start.apply(this, arguments); };
+    if (!s || !cdOn() || !s.end) return s;
+    var start = s.start, end = s.end, rotate = force === 'rotate' || App.command.dragComponents === 'rotate';
+    cdRun = cdNew(s, rotate);
+    s.start = function () { cdRun = cdNew(s, rotate); if (App.command) App.command.faceList = []; if (UI.updateHighlights) UI.updateHighlights(); return start.apply(this, arguments); };
     s.end = function () {
-      if (!cdRun) cdRun = { last: null, beeped: false };
+      if (!cdRun) cdRun = cdNew(s, rotate);
       var ret;
       try { ret = end.apply(this, arguments); } catch (e) { cdRun = null; throw e; }
       var run = cdRun;

@@ -214,7 +214,7 @@
       assert(m.ratio == null && m.flip == null, JSON.stringify(m));
       var G = AS.MATE_GROUPS;
       assert(G.standard.join() === 'coincident,parallel,perpendicular,tangent,concentric,distance,angle', G.standard.join());
-      assert(G.advanced.join() === 'symmetric,width,linearcoupler,limitdistance,limitangle' && G.mechanical.join() === 'slot,hinge,gear', G.advanced.join() + ' / ' + G.mechanical.join());
+      assert(G.advanced.join() === 'profilecenter,symmetric,width,linearcoupler,limitdistance,limitangle' && G.mechanical.join() === 'slot,hinge,gear', G.advanced.join() + ' / ' + G.mechanical.join());
       assert(AS.isAssemblyScript('a.gear(x, y, 2);') && AS.isAssemblyScript('a.linearPattern([c], {});') && AS.isAssemblyScript('a.explode([c], "y", 5);'), 'isAssemblyScript knows the new calls');
     });
     test('script round trip of every new mate (Builder shortcuts → generateScript → runScript): same transforms, generateScript a fixed point', function () {

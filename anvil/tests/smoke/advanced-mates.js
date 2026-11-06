@@ -11,7 +11,7 @@
     var heads = Array.prototype.map.call(D.querySelectorAll('#pm .pm-group h4'), function (h) { return h.textContent.replace(/^[^A-Z]*/, ''); });
     ['Mate Selections', 'Standard Mates', 'Advanced Mates', 'Mechanical Mates', 'Mate alignment'].forEach(function (t) { assert(heads.indexOf(t) >= 0, 'group ' + t + ' in ' + JSON.stringify(heads)); });
     assert(optionValues(pmSelect('type')).join() === 'coincident,parallel,perpendicular,tangent,concentric,distance,angle', optionValues(pmSelect('type')).join());
-    assert(optionValues(pmSelect('advType')).join() === ',symmetric,width,linearcoupler,limitdistance,limitangle', optionValues(pmSelect('advType')).join());
+    assert(optionValues(pmSelect('advType')).join() === ',profilecenter,symmetric,width,linearcoupler,limitdistance,limitangle', optionValues(pmSelect('advType')).join());
     assert(optionValues(pmSelect('mechType')).join() === ',slot,hinge,gear', optionValues(pmSelect('mechType')).join());
     setInput(pmSelect('advType'), 'width');
     await idle();

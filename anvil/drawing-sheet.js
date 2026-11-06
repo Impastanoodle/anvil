@@ -649,6 +649,15 @@
     _.carryAux(doc, before);
     return r;
   }
+  // (rfJB) dimRoom(doc, units, sizes) -> { b, l } paper units: how far the model items' first row reaches out of a view
+  // (render's dimPrims: the dimension line 10 mm out, extension lines DIM ext past it, horizontal text centred on it)
+  // plus 1.5 mm clear; l from the widest of the model sizes' texts (a vertical dimension's text is horizontal, ANSI)
+  var DIM_ROW0 = 10, DIM_CLEAR = 1.5;
+  function dimRoom(doc, units, sizes) {
+    var G = D.dimGeometry(doc), k = paperK(units), w = 0;
+    (sizes || []).forEach(function (x) { if (isFinite(x)) w = Math.max(w, String(fmtDim(x, units)).length * G.text * 0.78); });
+    return { b: (DIM_ROW0 + Math.max(G.ext, G.text / 2) + DIM_CLEAR) * k, l: (DIM_ROW0 + w / 2 + 1 + DIM_CLEAR) * k };
+  }
   function layout(doc, mesh, units) {
     var k = paperK(units), A = usableArea(doc, units), g = GAP * k;
     var byRole = {}, before = {};
@@ -668,12 +677,16 @@
     // (rfT) the margin round the Front / Top / Right block: a full view gap on metric sheets; a quarter of one on inch
     // sheets, so a part fills the sheet at the largest ANSI scale that fits (a 6 x 4 bracket on ANSI B at 1:1)
     var m = units === 'in' ? g / 4 : g;
+    // (rfJB) the room Insert Model Items needs: one dimension row under the bottom row of views (above the title block
+    // and the tolerance block) and one left of the left column (its text horizontal), as SolidWorks leaves it; the top
+    // and right sides keep the margin (half of it at least on inch sheets, where nothing is dimensioned by default)
+    var DR = dimRoom(doc, units, [Hm, Dm, Wm]), mb = Math.max(m, DR.b), ml = Math.max(m, DR.l), mt = units === 'in' ? m / 2 : m, mr = mt;
     function place(sv, packed) {
       var W = Wm * sv, H = Hm * sv, D = Dm * sv, blockW = W + g + D, blockH = H + g + D, P = {};
-      var left = A.x0 + Math.max(m, (availW - blockW) / 2), bottom = A.y0 + Math.max(m, (availH - blockH) / 2);
+      var left = A.x0 + Math.max(ml, (availW - blockW) / 2), bottom = A.y0 + Math.max(mb, (availH - blockH) / 2);
       if (packed) {
-        left = bomK && /left/.test(bomK.anchor) ? A.x1 - m - blockW : A.x0 + m;
-        bottom = bomK && /bottom/.test(bomK.anchor) ? A.y1 - m - blockH : A.y0 + m;
+        left = bomK && /left/.test(bomK.anchor) ? A.x1 - mr - blockW : A.x0 + ml;
+        bottom = bomK && /bottom/.test(bomK.anchor) ? A.y1 - mt - blockH : A.y0 + mb;
       }
       if (doc.sheet.projection === 'first') {
         // first angle: Top below Front, Right to the left of Front
@@ -696,7 +709,7 @@
       var bw0 = P.isoBox.x1 - P.isoBox.x0 - g / 2, bh0 = P.isoBox.y1 - P.isoBox.y0 - g / 2;
       return Iso.w * sv / 2 <= bw0 + 1e-9 && Iso.h * sv / 2 <= bh0 + 1e-9;
     }
-    function fits(sv) { return (Wm + Dm) * sv + g + 2 * m <= availW && (Hm + Dm) * sv + g + 2 * m <= availH && (isoFits(place(sv), sv) || isoFits(place(sv, true), sv)); }
+    function fits(sv) { return (Wm + Dm) * sv + g + ml + mr <= availW + 1e-9 && (Hm + Dm) * sv + g + mb + mt <= availH + 1e-9 && (isoFits(place(sv), sv) || isoFits(place(sv, true), sv)); }
     var SC = scalesFor(units);
     if (doc.sheet.autoScale || !doc.sheet.scale) {
       var s = SC[SC.length - 1];

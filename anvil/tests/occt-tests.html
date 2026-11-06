@@ -553,8 +553,11 @@
       code: DL_MF(DL_I, { miterGap: 0.01, startOffset: 0.25 }), removed: 0.25 * (DL_AP - 2 * DL_T * DL_T), loops: 1 },
     { name: 'DL: Miter Flange end offset .25 (the left flange from z = 2): removes .25·(A+ − (R + T)·T)', plain: DL_MF(DL_I, { miterGap: 0.01 }),
       code: DL_MF(DL_I, { miterGap: 0.01, endOffset: 0.25 }), removed: 0.25 * (DL_AP - 2 * DL_T * DL_T), loops: 1 },
-    { name: 'DL: Miter Flange L profile (1 up, .5 out), gap .02 against .01: two bends along the chain, mitred at both levels, removes √2·.01·(A1 + A2)', plain: DL_MF(DL_L, { miterGap: 0.01 }),
-      code: DL_MF(DL_L, { miterGap: 0.02 }), removed: Math.SQRT2 * 0.01 * (DL_A1 + DL_A2), loops: 1, dxf: true },
+    // lane rfIZ (2026-11-05): the L profile's first-line strips now end square as in SolidWorks (its flat matches SolidWorks to
+    // the digit at 10 corners), so the gap no longer takes the diagonal √2·gap·(A1 + A2): this row checks OpenCascade = Anvil
+    // (volume 1e-4, flat size, loops) without the old closed form
+    { name: 'DL: Miter Flange L profile (1 up, .5 out), gap .02: two bends along the chain, mitred at both levels, square-ended strips as in SolidWorks (OpenCascade = Anvil)',
+      code: DL_MF(DL_L, { miterGap: 0.02 }), loops: 1, dxf: true },
     { name: 'DL: Miter Flange Bend Outside, gap .01: the square notch',
       code: DL_MF(DL_I, { position: 'bendOutside', miterGap: 0.01 }), exact: 0.875831833, loops: 1 },
     // lane DT: Vent (Ø2 boundary, two ribs .1 through the centre, a Ø1 spar .1) on a 4 × 4 × .06 base: removes T × the

@@ -574,7 +574,7 @@
     htPre.forEach(function (it) { if (it.box) keepOut.push(it.box); (it.tagBoxes || []).forEach(function (b) { keepOut.push(b); }); });
     // flat-pattern views: bend notes (or Bend Table tags and the table) and the FLAT SIZE note, worked out before the
     // dimensions so those keep clear of them; a Bend Table goes on free paper (flatCtx: what it must keep clear of)
-    var flatPre = [], flatCtx = { views: views, tb: tbRect, bom: bom, sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 }, taken: [] };
+    var flatPre = [], warnings = [], flatCtx = { views: views, tb: tbRect, bom: bom, sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 }, taken: [], warnings: warnings };
     Object.keys(annPre).forEach(function (key) { annPre[key].prims.forEach(function (x) { if (x.k === 'text') flatCtx.taken.push(textRect(x)); }); });
     notePre.forEach(function (it) { flatCtx.taken.push(it.box); });
     keepOut.forEach(function (b) { flatCtx.taken.push(b); });
@@ -699,6 +699,7 @@
     sheetAreaFills(doc, prims, areaFills, HATCH * k, k);
     return { size: S, units: units, prims: prims, views: views, areaFills: areaFills, dims: dims, magLines: magLines, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations, notes: notes, symbols: symbols, revisions: revisions,
       format: fmtList, tables: tables,   // (rfAE) the sheet format's items, the General Tables
+      warnings: warnings,   // (rfJB) [text]: what the sheet could not place cleanly (a Bend Table with no free paper)
       holeTables: holeTables,   // (rfAN) [{ id, view, box, rows: [{ tag, x, y, xText, yText, size, lines, c, r }], origin (paper) }]
       // (rfT) the dimension style: geo in paper mm (D.dimGeometry), paper in the sheet's units (what prims use: text,
       // arrow, arrowW (full width), gap, ext), prec the decimal places (null: the units' default)
@@ -784,7 +785,26 @@
       // the first clear spot from the top left
       for (y = sh.y1 - g; y - H >= sh.y0; y -= step) for (x = sh.x0 + g; x + W <= sh.x1; x += step) if (fits(x, y, obs)) return [x, y];
     }
-    return under;
+    // (rfJB, shop audit 6) no free paper: the spot inside the border that covers the least of the other views, the
+    // title block and what is placed (views count 4 x), nearest the old place under the view; marked noRoom so the
+    // sheet says so (sheet.warnings) instead of quietly drawing the table over a view
+    var tight = obstacles(0), best = null, bc = Infinity, bd = Infinity;
+    function cover(x0, y1) {
+      var r = { x0: x0, y0: y1 - H, x1: x0 + W, y1: y1 }, c = 0;
+      tight.forEach(function (o, i) {
+        var ix = Math.min(r.x1, o.x1) - Math.max(r.x0, o.x0), iy = Math.min(r.y1, o.y1) - Math.max(r.y0, o.y0);
+        if (ix > 0 && iy > 0) c += ix * iy * (i > 0 && i <= ctx.views.length + (ctx.bom ? 1 : 0) ? 4 : 1);
+      });
+      return c;
+    }
+    var st2 = 4 * k;
+    for (y = sh.y1 - g; y - H >= sh.y0 + g - 1e-9; y -= st2) for (x = sh.x0 + g; x + W <= sh.x1 - g + 1e-9; x += st2) {
+      var cv = cover(x, y), dv = Math.hypot(x - under[0], y - under[1]);
+      if (cv < bc - 1e-12 || (Math.abs(cv - bc) <= 1e-12 && dv < bd)) { bc = cv; bd = dv; best = [x, y]; }
+    }
+    var res = (best && bc < cover(under[0], under[1]) ? best : under).slice();
+    res.noRoom = true;
+    return res;
   }
   function rectOfText(p, h, text, rot, anchor) {
     var w = textWidth(text, h), a = (rot || 0) * Math.PI / 180, t = [Math.cos(a), Math.sin(a)], n = [-t[1], t[0]], s0 = anchor === 'middle' ? -w / 2 : anchor === 'end' ? -w : 0;
@@ -943,7 +963,8 @@
       [spec.map(function (c) { return c[2]; })].concat(rows).forEach(function (r, ri) {
         r.forEach(function (s, ci) { ps.push({ k: 'text', p: [(cxs[ci] + cxs[ci + 1]) / 2, y1 - (ri + 1) * rh + (rh - th) / 2], h: th, text: s, anchor: 'middle', layer: 'BEND_NOTES', rot: 0 }); });
       });
-      item('table', 'bendTable', 'Bend Table (' + rows.length + ')', ps, { rows: rows, columns: spec.map(function (c) { return c[2]; }), keys: spec.map(function (c) { return c[0]; }) });
+      item('table', 'bendTable', 'Bend Table (' + rows.length + ')', ps, { rows: rows, columns: spec.map(function (c) { return c[2]; }), keys: spec.map(function (c) { return c[0]; }), noRoom: !!spot.noRoom });
+      if (spot.noRoom && ctx.warnings && !(v.flatAnn && v.flatAnn.table && v.flatAnn.table.off)) ctx.warnings.push('Bend Table of ' + (v.name || 'the flat pattern') + ': no free paper on the sheet, so it covers part of the drawing. Drag it, use a larger sheet, or put the flat pattern on its own sheet.');
     }
     out.forEach(function (it) { if (!it.hidden) ctx.taken.push(it.box); });
     return out;
@@ -1964,5 +1985,6 @@
 
   D.compute = compute; D.toSVG = toSVG; D.svgParts = svgParts; D.toDXF = toDXF; D.toPDF = toPDF; D.textRect = textRect; D.STROKE = STROKE; D.plainText = plainText;
   _.dimPrims = dimPrims;   // (rfDD: the Smart Dimension preview draws the dimension as it will be placed)
+  _.segHitsRect = segHitsRect;   // (rfJB: Hole Table tags keep off the view's edges and bend lines)
   _.ARROW_W = ARROW_W; _.SHOULDER = SHOULDER; _.TEXT_GAP = TEXT_GAP; _.CAP_EM = CAP_EM; _.DW_FONT = DW_FONT; _.textWidth = textWidth; _.arcEnds = arcEnds; _.ellipseAt = ellipseAt;
 })(Drawing, Drawing._);

@@ -52,7 +52,8 @@
     // gets where it stops short of the sheet's end: 'rect' | 'obround', ratio × T wide and ratio × T past the bend
     // (SolidWorks' default Rectangular, 0.5). Absent ('none'): no relief, as every sheet made before it.
     if (o.relief === 'rect' || o.relief === 'obround') { s.relief = o.relief; s.reliefRatio = o.reliefRatio != null && o.reliefRatio !== '' ? o.reliefRatio : AUTO_RELIEF_RATIO; }
-    else if (o.relief != null && o.relief !== 'none') throw new Error('Unknown auto relief type "' + o.relief + '" (rect, obround or none).');
+    else if (o.relief === 'tear') s.relief = 'tear';   // lane rfIZ: SolidWorks' Tear (no ratio): see flangeLayout's relief
+    else if (o.relief != null && o.relief !== 'none') throw new Error('Unknown auto relief type "' + o.relief + '" (rect, obround, tear or none).');
     if (typeof s.reliefRatio === 'number' && !(s.reliefRatio > 0)) throw new Error('Auto relief ratio must be greater than zero.');
     return s;
   }
@@ -268,6 +269,7 @@
   // kept where n·p >= w for each clip, less the holes / slots of the sheet across its bend: voids, see bendVoids), cuts: [{ loop, plane, a, b }] (prisms taken from the sheet first: trim-back and reliefs),
   // info (ctx.flanges' records), section: { A, R, T, L, ov } (flangeProfile's parameters) }. buildFlange builds it with
   // the CSG kernel; occt-kernel.js builds the same layout with exact bend arcs.
+  var SWJ_CHORDS = 12;   // lane rfIZ: the true curve to 2e-6 in³ a corner on 16 ga (SolidWorks reads 1.5e-5 under it, as the first stage)
   function flangeLayout(f, model, ctx) {
     if (!ctx.body) throw new Error('Create a Base Flange before adding edge flanges.');
     var sheet = sheetParams(model);
@@ -292,6 +294,18 @@
       if (isFinite(L) && !(L - (R + T) > 1e-6)) throw new Error('Hem length must be longer than ' + fmtN(R + T) + ' (the fold, R + T).');
       L -= R + T;
     }
+    // lane rfIZ: Flange Length end condition (SolidWorks' Edge-Flange: Blind | Up To Vertex). Up To Vertex runs the wall to
+    // the vertex f.lengthVertex ([x, y, z]): 'normal' (default, SolidWorks' Normal to flange plane) ends the wall in the
+    // plane through the vertex square to the wall; 'parallel' (Parallel to base flange) ends it where its top (the higher
+    // end corner) is level with the vertex above the base. The reference the length is measured from does not move the
+    // wall's end, so lengthRef is not read. One vertex for every edge of the feature; the first edge's frame sets it.
+    var lengthEnd = f.hem || f.lengthEnd == null ? 'blind' : String(f.lengthEnd), upTo = lengthEnd === 'upToVertex', upToMode = f.lengthVertexMode == null ? 'normal' : String(f.lengthVertexMode), upToL = null;
+    if (lengthEnd !== 'blind' && !upTo) throw new Error('Unknown flange length end condition "' + lengthEnd + '" (blind or upToVertex).');
+    if (upTo) {
+      if (!Array.isArray(f.lengthVertex) || f.lengthVertex.length !== 3 || !f.lengthVertex.every(function (x) { return isFinite(+x); })) throw new Error('Up To Vertex: pick the vertex the flange runs to.');
+      if (upToMode !== 'normal' && upToMode !== 'parallel') throw new Error('Up To Vertex: the mode must be normal (to the flange plane) or parallel (to the base flange).');
+      L = 1;
+    }
     if (!isFinite(L)) throw new Error('Flange length must be a number.');
     if (!isFinite(A)) throw new Error('Flange angle must be a number.');
     if (!(L > 0) && !curl) throw new Error('Flange length must be greater than zero.');
@@ -303,7 +317,7 @@
     // ('wall': L is the straight wall). L becomes the straight wall after the bend.
     var lengthRef = f.hem ? null : (f.lengthRef == null ? null : String(f.lengthRef));
     if (lengthRef && LENGTH_REFS.indexOf(lengthRef) < 0) throw new Error('Unknown flange length reference "' + lengthRef + '" (outer, inner, tangent or wall).');
-    if (lengthRef === 'outer' || lengthRef === 'inner' || lengthRef === 'tangent') {
+    if (!upTo && (lengthRef === 'outer' || lengthRef === 'inner' || lengthRef === 'tangent')) {
       if (lengthRef !== 'tangent' && !(A < Math.PI - 0.01)) throw new Error('A flange length to the ' + lengthRef + ' virtual sharp needs an angle below 180°; use Tangent Bend.');
       var toSharp = lengthRef === 'tangent' ? outsideSetback(A, R, T) : (lengthRef === 'outer' ? R + T : R) * Math.tan(A / 2);
       var what = lengthRef === 'tangent' ? 'the outside of the bend' : 'the ' + lengthRef + ' virtual sharp';
@@ -312,11 +326,20 @@
     }
     var miter = !!f.miter, gap = Math.max(0, +f.miterGap || 0);
     // a flange (not a hem, not a jog's halves) without its own relief takes the sheet's Auto Relief (makeSheet)
-    var auto = f.type === 'flange' && !f.hem && f.relief == null && (sheet.relief === 'rect' || sheet.relief === 'obround');
-    var relief = auto ? sheet.relief : (f.relief === 'rect' || f.relief === 'obround' ? f.relief : 'none');
-    var ratio = auto ? +sheet.reliefRatio : NaN;
-    if (auto && !(ratio > 0)) throw new Error('Auto relief ratio must be greater than zero.');
-    var rw = f.reliefWidth != null ? +f.reliefWidth : (auto ? ratio * T : T), rd = f.reliefDepth != null ? +f.reliefDepth : (auto ? ratio * T : T / 2);
+    var auto = f.type === 'flange' && !f.hem && f.relief == null && (sheet.relief === 'rect' || sheet.relief === 'obround' || sheet.relief === 'tear');
+    var relief = auto ? sheet.relief : (f.relief === 'rect' || f.relief === 'obround' || f.relief === 'tear' ? f.relief : 'none');
+    var ratio = auto && relief !== 'tear' ? +sheet.reliefRatio : NaN;
+    if (auto && relief !== 'tear' && !(ratio > 0)) throw new Error('Auto relief ratio must be greater than zero.');
+    // lane rfIZ: a flange's own relief ratio (SolidWorks' Custom Relief Type ▸ Use relief ratio): width and depth ratio × T
+    if (!auto && relief !== 'none' && relief !== 'tear' && f.reliefRatio != null) {
+      ratio = +f.reliefRatio;
+      if (!(ratio > 0)) throw new Error('Relief ratio must be greater than zero.');
+    }
+    var rw = f.reliefWidth != null ? +f.reliefWidth : (ratio > 0 ? ratio * T : T), rd = f.reliefDepth != null ? +f.reliefDepth : (ratio > 0 ? ratio * T : T / 2);
+    // lane rfIZ: Tear (SolidWorks: the sheet is torn at the bend's end, no relief cut out): a slit the Rip gap wide
+    // (ripDefaultGap: 0.004 in / 0.1 mm, unless reliefWidth) reaching that far past the bend's start into the sheet, so
+    // the bend's end and the sheet beside it do not touch along a line (not measured in SolidWorks)
+    if (relief === 'tear') { rw = f.reliefWidth != null ? +f.reliefWidth : ripDefaultGap(model); rd = f.reliefDepth != null ? +f.reliefDepth : rw; }
     if (relief !== 'none' && !(rw > 0)) throw new Error('Relief width must be greater than zero.');
     if (relief !== 'none' && !(rd >= 0)) throw new Error('Relief depth must be zero or more.');
     var mesh = meshFromBody(coplanarBody(ctx.body));   // r12/inchflange12: see coplanarBody
@@ -336,7 +359,10 @@
       position = f.hemPosition === 'inside' ? 'inside' : 'bendOutside';
     }
     if (position === 'virtualSharp' && !(A < Math.PI - 0.01)) throw new Error('Bend from Virtual Sharp needs a flange angle below 180°.');
-    var shift = position === 'inside' ? R + T : (position === 'outside' ? R : (position === 'virtualSharp' ? (R + T) * Math.tan(A / 2) : 0));
+    // lane rfIZ: Tangent to Bend (SolidWorks' fifth Flange Position, for angles of 90° and more): the bend's outer surface
+    // stays tangent to the plane of the sheet's side face, so the bend starts R + T back from the edge (not measured)
+    if (position === 'tangentToBend' && !(A >= Math.PI / 2 - 1e-9)) throw new Error('Tangent to Bend needs a flange angle of 90° or more.');
+    var shift = position === 'inside' || position === 'tangentToBend' ? R + T : (position === 'outside' ? R : (position === 'virtualSharp' ? (R + T) * Math.tan(A / 2) : 0));
     // SolidWorks 2022 (lanes DI2 and flanges, rfDO / rfGD, measured at 30° to 135°, 16 ga to 11 ga): at every angle
     // Material Inside keeps the wall's OUTER face running through the base's top outside edge, so the bend starts
     // ((R + T) − R·cos A) / sin A back from the edge and the outer virtual sharp lands s = −T·cot A past it. Material
@@ -346,9 +372,21 @@
       if (position === 'inside') shift = ((R + T) - R * Math.cos(A)) / Math.sin(A);
       else if (position === 'outside') shift = R * Math.tan(A / 2);
     }
+    // lane rfIZ: Flange Position ▸ Offset (SolidWorks: end condition Blind and a distance): the flange moves that far out
+    // from where its position puts it, the sheet running on flat to its bend (a negative distance trims further back).
+    // f.offset = { end: 'blind', distance } (or a number). Not on hems.
+    var offD = 0;
+    if (!f.hem && f.offset != null) {
+      var offEnd = typeof f.offset === 'object' ? (f.offset.end == null ? 'blind' : String(f.offset.end)) : 'blind';
+      if (offEnd !== 'blind') throw new Error('Flange offset: only the Blind end condition is supported.');
+      offD = typeof f.offset === 'object' ? +f.offset.distance : +f.offset;
+      if (!isFinite(offD)) throw new Error('Flange offset distance must be a number.');
+    }
+    shift -= offD;
     // overlap into the sheet so the union is watertight; a roll past 270° comes back round over that strip (its section
     // would cross itself past 300° at R = T), so it meets the sheet on the bend's start plane instead
     var ov = hemType === 'rolled' && A > 1.5 * Math.PI ? 0 : Math.min(T, 0.5);
+    if (shift < 0) ov -= shift;   // lane rfIZ: an offset flange: the overlap strip carries the sheet out to the bend
     var tools = [], cuts = [], info = [], eds = [], trimTest = null;
     selected.forEach(function (e) {
       var fa = mesh.faces[e.faces[0]], fb = mesh.faces[e.faces[1]];
@@ -360,7 +398,8 @@
       var o = nT;                               // outward, away from the sheet
       // the bend's inside face is the sheet face on the side the flange folds toward
       var origin = dot(u, nF) > 0 ? e.mid : sub(e.mid, scale(nF, T));
-      if (shift) {
+      if (shift < 0) origin = sub(origin, scale(o, shift));   // lane rfIZ: offset out past the edge
+      else if (shift) {
         var cutPlane = { origin: origin, x: o, y: u, n: norm(cross(o, u)) };
         var tca = dot(sub(e.a, e.mid), cutPlane.n), tcb = dot(sub(e.b, e.mid), cutPlane.n);
         // rfBZ: the trim runs 0.01 past an end of the edge only where the sheet stops there; where it continues (the
@@ -385,6 +424,17 @@
         origin = sub(origin, scale(o, shift));
       }
       var plane = { origin: origin, x: o, y: u, n: norm(cross(o, u)) };
+      if (upTo && upToL == null) {
+        var vv = sub(f.lengthVertex.map(Number), origin), vo = dot(vv, o), vu = dot(vv, u), sA0 = Math.sin(A), cA0 = Math.cos(A);
+        var Iw = [R * sA0, R - R * cA0], Ow = [(R + T) * sA0, R - (R + T) * cA0];
+        if (upToMode === 'normal') upToL = (vo - Iw[0]) * cA0 + (vu - Iw[1]) * sA0;
+        else {
+          if (!(sA0 > 1e-6)) throw new Error('Up To Vertex parallel to the base flange needs a wall that rises from the sheet.');
+          upToL = (vu - Math.max(Iw[1], Ow[1])) / sA0;
+        }
+        if (!(upToL > 1e-6)) throw new Error('Up To Vertex: the vertex at ' + f.lengthVertex.map(function (x) { return fmtN(+x); }).join(', ') + ' does not lie past the bend: the wall would be ' + fmtN(upToL) + ' long.');
+        L = upToL;
+      }
       var loop = noRepeatLoop(flangeProfile(A, R, T, L, ov));
       var wmax = 0;
       loop.forEach(function (p) { wmax = Math.max(wmax, p[0]); });
@@ -404,7 +454,18 @@
       if (f.miterJoin) tol = Math.max(tol, +f.miterJoin);   // lane DL: a Miter Flange's later bends join wall ends a gap apart
       for (var ki = 0; ki < 2; ki++) for (var kj = 0; kj < 2; kj++) {
         var ea = ei.ends[ki], eb = ej.ends[kj];
-        if (len(sub(ea.P, eb.P)) > tol) continue;
+        // lane rfIZ: a Miter Flange's later stage on square-ended walls (f.swJoin): the two edges stop short of the corner
+        // where their lines cross (each T + g/√2 back); that crossing is the corner
+        var joinV = null;
+        if (len(sub(ea.P, eb.P)) > tol) {
+          if (!f.swJoin) continue;
+          var dij = dot(ea.dIn, eb.dIn), den = 1 - dij * dij;
+          if (!(den > 1e-6)) continue;
+          var w0 = sub(ea.P, eb.P), sa = (dij * dot(w0, eb.dIn) - dot(w0, ea.dIn)) / den, sb = (dot(w0, eb.dIn) - dij * dot(w0, ea.dIn)) / den;
+          var Xa = add(ea.P, scale(ea.dIn, sa)), Xb = add(eb.P, scale(eb.dIn, sb)), reach = 2 * T + gap + 1e-6;
+          if (len(sub(Xa, Xb)) > 1e-6 * (1 + T) || sa > 1e-9 || sb > 1e-9 || -sa > reach || -sb > reach) continue;
+          joinV = scale(add(Xa, Xb), 0.5);
+        }
         ea.shared = eb.shared = true;
         if (!miter || ea.miter || eb.miter || ea.butt || eb.butt) continue;
         var di = ea.dIn, dj = eb.dIn;
@@ -432,7 +493,7 @@
           continue;
         }
         // corner of the (possibly trimmed-back) edge lines, and the bisector plane through it containing the sheet normal
-        var V = scale(add(ea.P, eb.P), 0.5);
+        var V = joinV || scale(add(ea.P, eb.P), 0.5);
         if (shift) V = sub(V, scale(add(ei.o, ej.o), shift / (1 + c)));
         var nb = norm(sub(di, dj));
         // lane rfIS (SolidWorks 2022, report 2026-11-02 5d: 120° on a square corner, 90° on a trapezoid): an edge flange's
@@ -442,7 +503,7 @@
         // end (a helicoid, as a Butt corner's); in the flat each strip runs the wall's line on straight across the bend
         // zone until the two lines meet, past the corner. SolidWorks' folded part then reads 3.9e-4 to 8.1e-4 under its
         // own blank × T (the helicoid is not the strip wrapped), Anvil's lands within 2e-5 of it.
-        var swMiter = !f.miterJoin && !f.miterStage && !f.hem;
+        var swMiter = (!f.miterJoin || !!joinV) && !f.miterStage && !f.hem;
         var mGap = swMiter && !(gap > 0) ? ccDefaultGap(model) : gap;
         [[ei, ea, nb], [ej, eb, scale(nb, -1)]].forEach(function (q) {
           var ed = q[0], en = q[1], n = q[2];
@@ -460,7 +521,8 @@
           var sA = Math.sin(A), cA = Math.cos(A), iO = R * sA, iU = R - R * cA;
           var mExt = tauAt(iO, iU), mSlope = tauAt(iO + cA, iU + sA) - mExt;
           // the base's corner (the trimmed edge lines' corner V) on this edge's τ
-          en.swMiter = { tB: -dot(sub(V, en.P), en.dIn), ext: mExt, slope: mSlope,
+          // the base's corner: the trimmed edge lines' corner V, or (a joined later stage) the wall's end the edge stops at
+          en.swMiter = { tB: joinV ? 0 : -dot(sub(V, en.P), en.dIn), ext: mExt, slope: mSlope,
             // the wall cut: a plane square to the wall through that line, kept on the edge's side
             wall: (function () {
               var wd = add(scale(ed.o, cA), scale(ed.u, sA));
@@ -493,7 +555,12 @@
           if (!sm) return;
           var dir = -dot(en.dIn, ed.plane.n), tM = swMax(sm), tE = tM + 0.1 * (tM - Math.min(sm.tB, sm.ext)) + 0.01 * T;
           var tB = en.t + dir * sm.tB, tW = en.t + dir * sm.ext, tEnd = en.t + dir * tM, tOut = en.t + dir * tE;
-          var tl = [[-ov, tB], [0, tB], [sBA, tW], [sBA, tOut], [-ov, tOut]];
+          var tl = [[-ov, tB], [0, tB]];
+          // a Miter Flange's later stage (lane rfIZ, report 5d's L profile): its end face follows SolidWorks' Miter Flange
+          // rule, the end running out as the bend leaves the wall it starts on, t − tB = (tW − tB)·(1 − cos θ)/(1 − cos A)
+          // (the first stage's sin θ, turned), on SWJ_CHORDS chords; an edge flange's end runs straight in (angle, t)
+          if (f.swJoin) for (var kc = 1; kc < SWJ_CHORDS; kc++) { var thc = A * kc / SWJ_CHORDS; tl.push([sBA * kc / SWJ_CHORDS, tB + (tW - tB) * (1 - Math.cos(thc)) / (1 - Math.cos(A))]); }
+          tl.push([sBA, tW], [sBA, tOut], [-ov, tOut]);
           part.tapers.push(signedArea(tl) < 0 ? tl.reverse() : tl);
           if ((tEnd - tB) * dir > 1e-12) part.tails.push({ t0: Math.min(tB, tEnd), t1: Math.max(tB, tEnd) });
           part.wallClips.push({ n: sm.wall.n, w: sm.wall.w });
@@ -562,7 +629,7 @@
         if (!inside(add(past, scale(ed.o, -0.25 * T))) && !inside(add(past, scale(ed.o, (R + T) / 2)))) return;
         var beyond = -dot(en.dIn, ed.plane.n); // sign of t past the end
         var tA = beyond > 0 ? en.t : en.t - rw, tB = beyond > 0 ? en.t + rw : en.t;
-        var o0 = -(f.reliefFromBend ? rd : shift + rd), o1 = R + T + rd;
+        var o0 = -(f.reliefFromBend ? rd : Math.max(shift, 0) + rd) + Math.min(shift, 0), o1 = R + T + rd;
         var slot = [[o1, tA], [o1, tB]];
         if (relief === 'obround') {
           var r = rw / 2, oc = o0 + r, tc = (tA + tB) / 2;
@@ -669,7 +736,13 @@
     var bare = ov ? loop.filter(function (p) { return p[0] !== -ov; }) : noRepeatLoop(loop);   // the section from the bend line on
     var lim = 0.01 * T * T * T;
     var solids = eds.map(function (ed) {
-      return prism(bare, ed.plane, Math.min(ed.ends[0].t, ed.ends[1].t), Math.max(ed.ends[0].t, ed.ends[1].t));
+      // lane rfIZ: a mitred hem (SolidWorks' Hem ▸ Miter Gap) is tested as built: swept past its mitred ends, clipped there
+      var tA = Math.min(ed.ends[0].t, ed.ends[1].t), tB = Math.max(ed.ends[0].t, ed.ends[1].t), mt = ed.ends.filter(function (en) { return en.miter; });
+      if (!mt.length) return prism(bare, ed.plane, tA, tB);
+      ed.ends.forEach(function (en) { if (en.miter) { if (en.t <= tA + 1e-12) tA = Math.min(tA, en.miter.tExt); else tB = Math.max(tB, en.miter.tExt); } });
+      var sm = prism(bare, ed.plane, tA, tB);
+      mt.forEach(function (en) { sm = sm.clipByPlane(en.miter.n, en.miter.w); });
+      return sm;
     });
     var rest = cuts.length ? ctx.body.subtract(unionAll(cuts.map(function (c) { return prism(c.loop, c.plane, c.a, c.b); }))) : ctx.body;
     function pt(p) { return '(' + p.map(function (x) { return fmtN(Math.round(x * 1e4) / 1e4); }).join(', ') + ')'; }
@@ -1428,7 +1501,7 @@
     // bend's end straight from that wall's end to the 45° wall line; the later stages here find their corner by the wall
     // ends being a gap apart, which square ends are not: not done yet)
     var f1 = { id: f.id, type: 'flange', edges: edges, angle: A1 * 180 / Math.PI, length: L1, lengthRef: 'inner', position: position, radius: f.radius, toward: u,
-      miter: true, miterStage: true, miterSquare: segs.length === 1, miterGap: gap, startOffset: +f.startOffset || 0, endOffset: +f.endOffset || 0, startAt: S, bendAllowance: f.bendAllowance };
+      miter: true, miterStage: true, miterSquare: true, miterGap: gap, startOffset: +f.startOffset || 0, endOffset: +f.endOffset || 0, startAt: S, bendAllowance: f.bendAllowance };
     // a relief at a Start / End Offset (SolidWorks, rfDU): T/2 wide unless sized, T/2 past the bend's start line
     if (f.relief != null) { f1.relief = f.relief; f1.reliefWidth = f.reliefWidth != null ? f.reliefWidth : T / 2; f1.reliefDepth = f.reliefDepth != null ? f.reliefDepth : T / 2; }
     f1.reliefFromBend = true;
@@ -1447,7 +1520,7 @@
         return { at: dot(tw, outerDir) > 0 ? add(innerEnd, scale(outerDir, T)) : innerEnd, tr: tr };
       });
       var fk = { id: f.id, type: 'flange', edges: picks.map(function (pk) { return { at: pk.at }; }), angle: jt.A * 180 / Math.PI, length: wall, position: 'bendOutside',
-        radius: jt.R, miter: true, miterGap: gap, miterJoin: gap + 1e-4, relief: 'none', bendAllowance: f.bendAllowance };
+        radius: jt.R, miter: true, miterGap: gap, miterJoin: gap + 1e-4, swJoin: true, relief: 'none', bendAllowance: f.bendAllowance };
       stages.push(fk);
       r = run(fk, k);
       r.info.forEach(function (rec) {
