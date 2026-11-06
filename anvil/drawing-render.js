@@ -113,6 +113,22 @@
     var b0 = BORDER * k * 0.5, b1 = BORDER * k;
     fmtItem('border', function () { rect([b1, b1], [S[0] - b1, S[1] - b1], 'SHEET', 'thick'); });
     void b0;
+    // (rfJR) zones (D.sheetZones): a short tick out from the border at each zone line and the zone's number / letter
+    // centred in the margin, on all four sides; an item of the sheet format (Edit Sheet Format can delete it)
+    var zones = D.sheetZones(doc, units);
+    if (zones) fmtItem('zones', function () {
+      var zb = zones.box, tk = b1 * 0.5, zh = 3.5 * k, zy = (b1 - zh * CAP_EM) / 2, ci, ri;
+      for (ci = 1; ci < zones.cols; ci++) { var zx = zb.x1 - ci * zones.colW; line([zx, zb.y0], [zx, zb.y0 - tk], 'SHEET', 'thin'); line([zx, zb.y1], [zx, zb.y1 + tk], 'SHEET', 'thin'); }
+      for (ri = 1; ri < zones.rows; ri++) { var zyl = zb.y0 + ri * zones.rowH; line([zb.x0, zyl], [zb.x0 - tk, zyl], 'SHEET', 'thin'); line([zb.x1, zyl], [zb.x1 + tk, zyl], 'SHEET', 'thin'); }
+      for (ci = 0; ci < zones.cols; ci++) {
+        var cx = zb.x1 - (ci + 0.5) * zones.colW;
+        text([cx, zy], zh, String(ci + 1), 'middle', 'SHEET'); text([cx, S[1] - b1 + zy], zh, String(ci + 1), 'middle', 'SHEET');
+      }
+      for (ri = 0; ri < zones.rows; ri++) {
+        var cy = zb.y0 + (ri + 0.5) * zones.rowH - zh * CAP_EM / 2, L = zones.at([zb.x1 - 1e-9, zb.y0 + (ri + 0.5) * zones.rowH]).replace(/\d+$/, '');
+        text([b1 / 2, cy], zh, L, 'middle', 'SHEET'); text([S[0] - b1 / 2, cy], zh, L, 'middle', 'SHEET');
+      }
+    });
     var tw = TB_W * k, th = TB_H * k, tx0 = S[0] - b1 - tw, ty0 = b1, row = th / 3;
     fmtItem('tb', function () { rect([tx0, ty0], [S[0] - b1, ty0 + th], 'SHEET', 'thick'); });
     fmtItem('tb-row1', function () { line([tx0, ty0 + row], [S[0] - b1, ty0 + row], 'SHEET', 'thin'); });
@@ -575,6 +591,16 @@
     };
     // (rfQ) notes and symbols placed on a view move with it
     D.followViews(doc, views, k);
+    // (rfJR) a revision row with no ZONE typed shows the zone of each Revision Symbol naming it (SolidWorks fills the
+    // column from where the symbol is), worked out now the symbols have followed their views; revisions.rows[i].zoneAuto
+    if (revBx && revisions && zones) (doc.revisions.rows || []).forEach(function (r, ri) {
+      if (r.zone) return;
+      var zl = [];
+      (doc.symbols || []).forEach(function (sy) { if (sy.type === 'revision' && !sy.hidden && sy.p && D.revRow(doc, sy) === r) { var z = zones.at(sy.p); if (zl.indexOf(z) < 0) zl.push(z); } });
+      if (!zl.length) return;
+      rcell(ri + 2, 0, zl.join(', '));
+      revisions.rows[ri].zoneAuto = zl.join(', ');
+    });
     var flagInfo = D.resolveFlagNotes ? D.resolveFlagNotes(doc) : { byNote: {}, banks: {} };   // (rfJI) flag notes and their bank
     var notePre = (doc.notes || []).map(function (nt) {
       var it = noteItem(nt.bank && flagInfo.banks[nt.id] ? Object.assign({}, nt, { _flagged: flagInfo.banks[nt.id] }) : nt, k, noteText);
@@ -591,48 +617,6 @@
     }
     notePre.forEach(function (it, i) { hideItem(it, (doc.notes || [])[i]); });
     symPre.forEach(function (it, i) { hideItem(it, (doc.symbols || [])[i]); });
-    // (rfAN) Hole Tables: each one's rows worked out from its view (reattached origin and holes, sizes, tags), the table
-    // on the TABLES layer and the tags and datum arrows on ANNOTATIONS (moving with the view)
-    var htTaken = [tbRect].concat(revBx ? [revBx] : [], bom ? [bom.box] : [], tables.map(function (t) { return t.box; }), tbBoxes.slice(1));
-    var htPre = (doc.holeTables || []).map(function (t) {
-      var w = views.filter(function (x) { return x.view.id === t.view; })[0];
-      if (!w || w.pending) return { id: t.id, view: t.view, prims: [], box: null, rows: [], missing: !w, pending: !!w, text: 'Hole Table' };
-      // (a table not placed yet goes beside its view, clear of the other views and tables)
-      // (rfIR) views: every view's box (its own too), kept HT_ROOM clear for dimensions where the sheet allows
-      var sheetBox = { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1, avoid: htTaken.concat(views.filter(function (x) { return x !== w; }).map(function (x) { return x.box; })),
-        views: views.map(function (x) { return x.box; }) };
-      var r = D.holeTablePrims(t, w, k, mesh, doc, units, holeEnds, holeNames, textWidth, sheetBox);
-      if (r.box) htTaken.push(r.box);
-      r.id = t.id; r.view = t.view;
-      r.prims.forEach(function (x) { if (x.layer !== 'TABLES') x.view = t.view; });
-      return r;
-    });
-    // what dimensions and Bend Tables keep clear of besides: the Revision Table, the sheet format's left blocks, symbols
-    var keepOut = (revBx ? [revBx] : []).concat(tbBoxes.slice(1), symPre.map(function (it) { return it.box; }));
-    htPre.forEach(function (it) { if (it.box) keepOut.push(it.box); (it.tagBoxes || []).forEach(function (b) { keepOut.push(b); }); });
-    // flat-pattern views: bend notes (or Bend Table tags and the table) and the FLAT SIZE note, worked out before the
-    // dimensions so those keep clear of them; a Bend Table goes on free paper (flatCtx: what it must keep clear of)
-    var flatPre = [], warnings = [], flatCtx = { views: views, tb: tbRect, bom: bom, sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 }, taken: [], warnings: warnings };
-    Object.keys(annPre).forEach(function (key) { annPre[key].prims.forEach(function (x) { if (x.k === 'text') flatCtx.taken.push(textRect(x)); }); });
-    notePre.forEach(function (it) { flatCtx.taken.push(it.box); });
-    keepOut.forEach(function (b) { flatCtx.taken.push(b); });
-    views.forEach(function (w) { if (w.flat) flatPre = flatPre.concat(flatItems(w, doc, units, k, flatCtx)); });
-    // the flat views' overall width and height (Document Properties ▸ Flat pattern ▸ overall dimensions): model items
-    // of their own, kept like the others (styles, suppressed keys), whether or not Model Items is on
-    if (D.docOptions(doc).flatDims) views.forEach(function (w) {
-      if (!w.flat) return;
-      var b = w.flat.bbox, list = [{ view: w.view.id, kind: 'h', a: [b.umin, b.vmin], b: [b.umax, b.vmin], side: -1, value: b.umax - b.umin, auto: true, flat: true },
-        { view: w.view.id, kind: 'v', a: [b.umin, b.vmin], b: [b.umin, b.vmax], side: -1, value: b.vmax - b.vmin, auto: true, flat: true }];
-      list.forEach(function (d) {
-        d.key = autoDimKey(d);
-        var sk = d.view + ':' + d.kind; nth[sk] = nth[sk] || 0; d.style = styleKey(d, nth[sk]++);
-        var pp = doc.dimProps && doc.dimProps[d.style];
-        if (pp) setDimProps(d, pp);
-        d.text = dimText(d, units);
-        if (suppressed.indexOf(d.key) < 0) dims.push(d);
-      });
-    });
-    var placed = [], shown = [];
     // what a leader's text must keep clear of: the drawn geometry of every view (it may sit on empty paper inside its
     // own view, beside the hole it names), the other views, the title block, the BOM, and every dimension placed before
     var geo = { segs: [], circles: [] }, viewLayers = {};
@@ -652,6 +636,83 @@
         }
       }
     });
+    // (rfJR) where the dimensions will land: a dry run of their placement (below) before the tables are placed, so a
+    // Hole / Punch Table or a Bend Table put on free paper keeps clear of them as well as of the views (a Right-view
+    // 2X R.060 under the channel's Bend Table on ANSI B). Only when a table will look for paper.
+    var dimTaken = dryDimBoxes();
+    function dryDimBoxes() {
+      var needs = (doc.holeTables || []).some(function (t) { return !(t.x != null && t.y != null); }) ||
+        views.some(function (w) { return w.flat && (w.view.bendNotes || D.docOptions(doc).bendNotes) === 'table'; });
+      if (!needs || !dims.length) return [];
+      var g2 = { segs: geo.segs.slice(), circles: geo.circles }, ob = { texts: [], segs: [], geo: g2, sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 },
+        boxes: views.map(function (w) { return { box: w.box, view: w.view.id }; }).concat([{ box: tbRect }], bom ? [{ box: bom.box }] : [],
+          (revBx ? [revBx] : []).concat(tbBoxes.slice(1), symPre.map(function (it) { return it.box; })).map(function (b) { return { box: b }; })) };
+      Object.keys(annPre).forEach(function (key) { annPre[key].prims.forEach(function (x) { if (x.k === 'line') g2.segs.push([x.a, x.b]); else if (x.k === 'text') ob.texts.push(textRect(x)); }); });
+      notePre.forEach(function (it) { if (!it.hidden) ob.texts.push(it.box); });
+      prims.forEach(function (p) { if (p.bend != null) g2.segs.push([p.a, p.b]); });
+      var pl = [], out = [];
+      dims.forEach(function (d) {
+        var hid = (d.index == null && d.key != null && hidKeys.indexOf(d.key) >= 0) || (d.index != null && !!d.hidden);
+        var vw = !hid && views.filter(function (w) { return w.view.id === d.view; })[0];
+        if (!vw || vw.pending) return;
+        var had = Object.prototype.hasOwnProperty.call(d, 'side'), s0 = d.side;
+        var p = placeDim(d, vw, k, pl, ob), pg = primGeo(p);
+        if (had) d.side = s0; else delete d.side;   // (placeDim may turn it to the other side: the real pass decides again)
+        ob.texts = ob.texts.concat(pg.texts); ob.segs = ob.segs.concat(pg.segs);
+        var bx = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+        p.forEach(function (x) {
+          var r = x.k === 'text' ? textRect(x) : x.a ? { x0: Math.min(x.a[0], x.b[0]), y0: Math.min(x.a[1], x.b[1]), x1: Math.max(x.a[0], x.b[0]), y1: Math.max(x.a[1], x.b[1]) } : null;
+          if (r) { bx.x0 = Math.min(bx.x0, r.x0); bx.y0 = Math.min(bx.y0, r.y0); bx.x1 = Math.max(bx.x1, r.x1); bx.y1 = Math.max(bx.y1, r.y1); }
+        });
+        d.box = bx; pl.push(d);
+        if (bx.x1 > bx.x0 - 1e-12) out.push(bx);
+      });
+      return out;
+    }
+    // (rfAN) Hole Tables: each one's rows worked out from its view (reattached origin and holes, sizes, tags), the table
+    // on the TABLES layer and the tags and datum arrows on ANNOTATIONS (moving with the view)
+    var htTaken = [tbRect].concat(revBx ? [revBx] : [], bom ? [bom.box] : [], tables.map(function (t) { return t.box; }), tbBoxes.slice(1));
+    var htPre = (doc.holeTables || []).map(function (t) {
+      var w = views.filter(function (x) { return x.view.id === t.view; })[0];
+      if (!w || w.pending) return { id: t.id, view: t.view, prims: [], box: null, rows: [], missing: !w, pending: !!w, text: 'Hole Table' };
+      // (a table not placed yet goes beside its view, clear of the other views and tables)
+      // (rfIR) views: every view's box (its own too), kept HT_ROOM clear for dimensions where the sheet allows
+      var sheetBox = { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1, avoid: htTaken.concat(views.filter(function (x) { return x !== w; }).map(function (x) { return x.box; })),
+        views: views.map(function (x) { return x.box; }), dims: dimTaken };   // (rfJR) dims: where the dimensions go
+      var r = D.holeTablePrims(t, w, k, mesh, doc, units, holeEnds, holeNames, textWidth, sheetBox);
+      if (r.box) htTaken.push(r.box);
+      r.id = t.id; r.view = t.view;
+      r.prims.forEach(function (x) { if (x.layer !== 'TABLES') x.view = t.view; });
+      return r;
+    });
+    // what dimensions and Bend Tables keep clear of besides: the Revision Table, the sheet format's left blocks, symbols
+    var keepOut = (revBx ? [revBx] : []).concat(tbBoxes.slice(1), symPre.map(function (it) { return it.box; }));
+    htPre.forEach(function (it) { if (it.box) keepOut.push(it.box); (it.tagBoxes || []).forEach(function (b) { keepOut.push(b); }); });
+    // flat-pattern views: bend notes (or Bend Table tags and the table) and the FLAT SIZE note, worked out before the
+    // dimensions so those keep clear of them; a Bend Table goes on free paper (flatCtx: what it must keep clear of)
+    var flatPre = [], warnings = [], flatCtx = { views: views, tb: tbRect, bom: bom, sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 }, taken: [], warnings: warnings };
+    Object.keys(annPre).forEach(function (key) { annPre[key].prims.forEach(function (x) { if (x.k === 'text') flatCtx.taken.push(textRect(x)); }); });
+    notePre.forEach(function (it) { flatCtx.taken.push(it.box); });
+    keepOut.forEach(function (b) { flatCtx.taken.push(b); });
+    dimTaken.forEach(function (b) { flatCtx.taken.push(b); });   // (rfJR) where the dimensions go
+    views.forEach(function (w) { if (w.flat) flatPre = flatPre.concat(flatItems(w, doc, units, k, flatCtx)); });
+    // the flat views' overall width and height (Document Properties ▸ Flat pattern ▸ overall dimensions): model items
+    // of their own, kept like the others (styles, suppressed keys), whether or not Model Items is on
+    if (D.docOptions(doc).flatDims) views.forEach(function (w) {
+      if (!w.flat) return;
+      var b = w.flat.bbox, list = [{ view: w.view.id, kind: 'h', a: [b.umin, b.vmin], b: [b.umax, b.vmin], side: -1, value: b.umax - b.umin, auto: true, flat: true },
+        { view: w.view.id, kind: 'v', a: [b.umin, b.vmin], b: [b.umin, b.vmax], side: -1, value: b.vmax - b.vmin, auto: true, flat: true }];
+      list.forEach(function (d) {
+        d.key = autoDimKey(d);
+        var sk = d.view + ':' + d.kind; nth[sk] = nth[sk] || 0; d.style = styleKey(d, nth[sk]++);
+        var pp = doc.dimProps && doc.dimProps[d.style];
+        if (pp) setDimProps(d, pp);
+        d.text = dimText(d, units);
+        if (suppressed.indexOf(d.key) < 0) dims.push(d);
+      });
+    });
+    var placed = [], shown = [];
+    // (geo: the views' drawn geometry, worked out above for the dry run)
     var obs = { texts: [], segs: [], geo: geo, boxes: views.map(function (w) { return { box: w.box, view: w.view.id }; }).concat([{ box: tbRect }]),
       sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 } };
     if (bom) obs.boxes.push({ box: bom.box });
@@ -737,6 +798,7 @@
     sheetAreaFills(doc, prims, areaFills, HATCH * k, k);
     return { size: S, units: units, prims: prims, views: views, areaFills: areaFills, dims: dims, magLines: magLines, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations, notes: notes, symbols: symbols, revisions: revisions,
       format: fmtList, tables: tables,   // (rfAE) the sheet format's items, the General Tables
+      zones: zones ? { cols: zones.cols, rows: zones.rows, colW: zones.colW, rowH: zones.rowH, box: zones.box } : null,   // (rfJR) the sheet's zones
       warnings: warnings,   // (rfJB) [text]: what the sheet could not place cleanly (a Bend Table with no free paper)
       holeTables: holeTables,   // (rfAN) [{ id, view, box, rows: [{ tag, x, y, xText, yText, size, lines, c, r }], origin (paper) }]
       // (rfT) the dimension style: geo in paper mm (D.dimGeometry), paper in the sheet's units (what prims use: text,

@@ -872,6 +872,7 @@
       if (props.scale === 'auto' || props.scale === null) dc.sheet.autoScale = true;
       else if (props.scale) { var sc = Array.isArray(props.scale) ? props.scale : Drawing.parseScale(props.scale); if (sc) { dc.sheet.scale = sc; dc.sheet.autoScale = false; } }
       if (props.name) dc.sheet.name = String(props.name);
+      if (props.zones != null) { if (props.zones === 'auto') delete dc.sheet.zones; else dc.sheet.zones = !!props.zones; }   // (rfJR) border zones
       if (props.titleBlock) applyTitleBlock(dc, props.titleBlock);   // same undo step as the sheet change
       // re-place the standard views for the new sheet / scale / projection
       if (dc.views.some(function (v) { return v.role; })) { var manual = dc.layout === 'manual'; relayout(dc); if (manual) dc.layout = 'manual'; }
@@ -884,9 +885,16 @@
     Object.keys(Drawing.FORMATS).forEach(function (f) { var o = el('option', { value: f, text: f + ' (' + Drawing.FORMATS[f].map(function (x) { return units() === 'in' ? (x / 25.4).toFixed(1) : Math.round(x); }).join(' \u00d7 ') + ' ' + units() + ')' }); if (f === s.format) o.selected = true; fmt.appendChild(o); });
     [['auto', 'Automatic (' + Drawing.scaleText(s.scale) + ')']].concat(Drawing.SCALES.map(function (x) { return [Drawing.scaleText(x), Drawing.scaleText(x)]; })).forEach(function (o) { var op = el('option', { value: o[0], text: o[1] }); if ((s.autoScale && o[0] === 'auto') || (!s.autoScale && o[0] === Drawing.scaleText(s.scale))) op.selected = true; sc.appendChild(op); });
     [['third', 'Third angle'], ['first', 'First angle']].forEach(function (o) { var op = el('option', { value: o[0], text: o[1] }); if (s.projection === o[0]) op.selected = true; proj.appendChild(op); });
+    // (rfJR) Zones: the border's zone numbers and letters (on by default for the ANSI sizes)
+    var zon = el('input', { type: 'checkbox', id: 'dw-sheet-zones', title: 'Zone numbers and letters round the border; the Revision Table\'s ZONE follows each revision symbol' });
+    zon.checked = !!Drawing.sheetZones(dc, units());
+    var zonDirty = false;
+    zon.onchange = function () { zonDirty = true; };
+    fmt.addEventListener('change', function () { if (!zonDirty) zon.checked = s.zones === false ? false : s.zones === true || !!Drawing.ZONES[fmt.value]; });
     var body = el('div', { class: 'dw-props' }, [
       el('label', { text: 'Name' }), nm, el('label', { text: 'Sheet format / size' }), fmt,
-      el('label', { text: 'Scale' }), sc, el('label', { text: 'Type of projection' }), proj
+      el('label', { text: 'Scale' }), sc, el('label', { text: 'Type of projection' }), proj,
+      el('label', { text: 'Zones', 'for': 'dw-sheet-zones' }), zon
     ]);
     // title block: each field's text with its links ($PRPSHEET:"Material" reads the model's custom property)
     var own = dc.titleBlock || {}, shown = Drawing.titleBlock(dc, App.model, cctx()), tbInputs = {};
@@ -897,7 +905,7 @@
       body.appendChild(el('label', { text: f.label })); body.appendChild(inp);
     });
     UI.showModal({ title: 'Sheet Properties', body: body, buttons: [
-      { label: 'Apply Changes', primary: true, action: function () { UI.closeModal(); var tb = {}; Object.keys(tbInputs).forEach(function (k) { tb[k] = tbInputs[k].value; }); setSheet({ name: nm.value, format: fmt.value, scale: sc.value, projection: proj.value, titleBlock: tb }); } },
+      { label: 'Apply Changes', primary: true, action: function () { UI.closeModal(); var tb = {}; Object.keys(tbInputs).forEach(function (k) { tb[k] = tbInputs[k].value; }); setSheet({ name: nm.value, format: fmt.value, scale: sc.value, projection: proj.value, titleBlock: tb, zones: zonDirty || s.zones != null ? zon.checked : undefined }); } },
       { label: 'Cancel', action: UI.closeModal }
     ] });
   }

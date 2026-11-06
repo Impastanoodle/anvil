@@ -411,6 +411,27 @@
   }
   // Title block and border sizes in paper mm (converted by paperK for inch sheets); HATCH is the ANSI31 line spacing
   var BORDER = 10, TB_W = 180, TB_H = 40, GAP = 22, HATCH = 2.5;
+  // (rfJR) Sheet zones (ASME Y14.1): the border of a sheet cut into zones, numbered right to left from the lower right
+  // corner along the top and bottom (1, 2 …) and lettered bottom to top up the sides (A, B …, no I or O), so a print
+  // can say "zone B3" and the Revision Table's ZONE column says where each change is. The ANSI counts keep a zone
+  // about 4.25 × 5.5 in: A 2 × 2, B 4 × 2, C 4 × 4, D 8 × 4 (columns × rows). doc.sheet.zones: true / false; unset =
+  // on for the ANSI formats, off for ISO and custom paper (zones: true on ISO: fields about 50 mm, even counts).
+  var ZONES = { 'ANSI A': [2, 2], 'ANSI B': [4, 2], 'ANSI C': [4, 4], 'ANSI D': [8, 4] }, ZONE_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  // sheetZones(doc, units) -> null (no zones) or { cols, rows, box (the border, paper), colW, rowH, at(p) -> 'B3' }
+  function sheetZones(doc, units) {
+    var s = doc.sheet || {}, n = ZONES[s.format];
+    if (s.zones === false || (s.paper && s.zones !== true) || (!n && s.zones !== true)) return null;
+    var S = sheetSize(doc, units), b = BORDER * paperK(units), box = { x0: b, y0: b, x1: S[0] - b, y1: S[1] - b };
+    if (!n) { var mm = 1 / paperK(units); n = [Math.max(2, 2 * Math.round((box.x1 - box.x0) * mm / 100)), Math.max(2, 2 * Math.round((box.y1 - box.y0) * mm / 100))]; }
+    var cw = (box.x1 - box.x0) / n[0], rh = (box.y1 - box.y0) / n[1];
+    return { cols: n[0], rows: n[1], box: box, colW: cw, rowH: rh,
+      at: function (p) {
+        var c = Math.min(n[0], Math.max(1, Math.floor((box.x1 - p[0]) / cw) + 1)), r = Math.min(n[1] - 1, Math.max(0, Math.floor((p[1] - box.y0) / rh)));
+        return ZONE_LETTERS[r] + c;
+      } };
+  }
+  // zoneAt(doc, p, units) -> the zone ('B3') paper point p is in, or '' on a sheet without zones
+  function zoneAt(doc, p, units) { var z = sheetZones(doc, units || doc.units); return z && p ? z.at(p) : ''; }
   // Title block (180 × 40 mm, three rows): each field is a text with links, SolidWorks style — $PRPSHEET:"name" is the
   // custom property of the model shown on the sheet (Materials.sheetProperty: File ▸ Properties, Configuration
   // Specific first; Material and Mass fall back to the part's material and mass), $PRP:"name" the drawing's own
@@ -2178,7 +2199,8 @@
     l.push({ sheet: { name: nm, format: opts.format || cur.format || 'A3', scale: sc || (cur.scale || [1, 1]).slice(), autoScale: sc ? false : cur.autoScale !== false,
       projection: opts.projection === 'first' || opts.projection === 'third' ? opts.projection : cur.projection || 'third' },
       views: [], notes: [], symbols: [], bom: null, bomRows: 0, layout: 'auto', tables: [], holeTables: [] });
-    var i = l.length - 1;
+    var i = l.length - 1, zz = opts.zones != null ? !!opts.zones : opts.format && opts.format !== cur.format ? null : cur.zones;
+    if (zz != null) l[i].sheet.zones = zz;   // (rfJR) a new sheet of the same format keeps the zones setting
     if (opts.activate !== false) activateSheet(doc, i);
     return i;
   }
@@ -2452,6 +2474,7 @@
   _.TABLE_TEXT = TABLE_TEXT;
 
   D.FORMATS = FORMATS; D.SCALES = SCALES; D.ANSI_SCALES = ANSI_SCALES; D.scalesFor = scalesFor; D.scaleValue = scaleValue; D.scaleText = scaleText; D.scaleLabel = scaleLabel; D.detailName = detailName; D.parseScale = parseScale; D.sheetSize = sheetSize;
+  D.ZONES = ZONES; D.sheetZones = sheetZones; D.zoneAt = zoneAt;   // (rfJR)
   D.newDrawing = newDrawing; D.addView = addView; D.projectionKey = projectionKey; D.putProjection = putProjection; D.sectionJob = sectionJob; D.putSection = putSection;
   // isSheetMetal(model): a part with sheet-metal parameters and a Base Flange (Model View offers Flat pattern)
   D.isSheetMetal = function (model) { return !!(model && model.type !== 'assembly' && model.sheet && (model.features || []).some(function (f) { return f.sheetBase && !f.suppressed; })); };

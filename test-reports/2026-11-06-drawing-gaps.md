@@ -70,3 +70,20 @@ fixed face is not central.
 - Merge faces off: the bend-region tangent lines are drawn in the flat view (thin tangent edges, SVG / DXF / PDF).
 - Seen, not changed: on a crowded sheet the Bend Table's free-paper search keeps clear of the views' boxes but not of
   their model-item dimensions (a Front view dimension under its view can sit on the table).
+
+## Follow-up (lane drawfix2, rfJR, same day)
+
+- The Bend Table's free-paper search (the "Seen, not changed" item above) and the Hole / Punch Table's now keep clear
+  of the sheet's dimensions: the sheet works out where its dimensions go (a dry run of the same placement) before it
+  places the tables. The box's flat dragged left of its Front view on ANSI B had the Front 6.000 under its Bend Table;
+  now it does not. Sweeps over an ANSI B sheet: 7 Bend Tables and 24 Hole Tables used to sit on a dimension, none now.
+- Sheet zones (ASME Y14.1, new): ANSI A 2 × 2, B 4 × 2, C 4 × 4, D 8 × 4, numbers right to left along top and bottom,
+  letters bottom to top on both sides, ticks at the zone lines; Sheet Properties ▸ Zones; an item of the sheet format;
+  in SVG / DXF / PDF. ISO sheets have none unless asked.
+- Revision Table ZONE fills from the Revision Symbols naming the row (e.g. `B3`), follows a moved symbol, a typed ZONE
+  wins.
+- Already there, not changed: ANSI A–D sheet sizes, the title block (it keeps its size on every sheet), Sheet
+  Properties switching the format (standard views re-laid out, placed views keep their paper position), General Table.
+- To check in SolidWorks: whether its ANSI sheet formats use these zone counts (taken from ASME Y14.1's 4.25 × 5.5 in
+  zone, not measured), the zone label height, and how its Revision Table writes two symbols' zones (Anvil: `A1, B4`).
+- Still needs SolidWorks: plain-hole callout spacing (row 5).

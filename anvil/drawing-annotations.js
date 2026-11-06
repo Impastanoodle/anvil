@@ -2798,18 +2798,22 @@
       // (rfIR) the other views with room round them for their dimensions first (a table on a view's dimension
       // lines, or over the title block, was what the shop audit found), then the views alone; beside the view first,
       // else the free paper nearest to its right
-      var clearOf = function (room) {
+      // (rfJR) and clear of where the sheet's dimensions go (sheetBox.dims, render's dry run) before the old tiers
+      var clearOf = function (room, dimsToo) {
         return function (sp) {
           var bb = { x0: sp[0], x1: sp[0] + W, y0: sp[1] - Ht, y1: sp[1] };
           if (sheetBox && (bb.x0 < sheetBox.x0 || bb.x1 > sheetBox.x1 || bb.y0 < sheetBox.y0 || bb.y1 > sheetBox.y1)) return false;
           var hit = function (o, m) { return o.x0 - m < bb.x1 && bb.x0 < o.x1 + m && o.y0 - m < bb.y1 && bb.y0 < o.y1 + m; };
           return !((sheetBox && sheetBox.avoid) || []).some(function (o) { return hit(o, 0); }) &&
-            !((sheetBox && sheetBox.views) || []).some(function (o) { return hit(o, room); });
+            !((sheetBox && sheetBox.views) || []).some(function (o) { return hit(o, room); }) &&
+            !(dimsToo && sheetBox && sheetBox.dims || []).some(function (o) { return hit(o, 1 * k); });
         };
       };
-      var roomy = clearOf(HT_ROOM * k), clear = clearOf(0);
-      var pick = spots.filter(roomy)[0] || (sheetBox && htFreeSpot(sheetBox, W, Ht, spots[0], k, roomy)) || spots.filter(clear)[0] ||
-        (sheetBox && htFreeSpot(sheetBox, W, Ht, spots[0], k, clear)) || spots[0];
+      var tiers = sheetBox && sheetBox.dims && sheetBox.dims.length ? [clearOf(HT_ROOM * k, true), clearOf(0, true)] : [];
+      tiers.push(clearOf(HT_ROOM * k), clearOf(0));
+      var pick = null;
+      for (var ti = 0; ti < tiers.length && !pick; ti++) pick = spots.filter(tiers[ti])[0] || (sheetBox && htFreeSpot(sheetBox, W, Ht, spots[0], k, tiers[ti])) || null;
+      pick = pick || spots[0];
       x0 = pick[0]; y1 = pick[1];
     }
     var colX = [x0]; colW.forEach(function (cw) { colX.push(colX[colX.length - 1] + cw); });

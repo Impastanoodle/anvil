@@ -681,7 +681,7 @@
     if (D.active && D.renderQueued) render();   // a script reads the sheet as it is now, not a held / queued one
     if (!D.sheet || !D.active) { syncBom(dc); if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units()); D.sheet = Drawing.compute(dc, mesh(), App.model, cctx()); }
     return {
-      name: dc.name, open: D.active, warnings: (D.sheet.warnings || []).slice(), sheet: { name: dc.sheet.name, format: dc.sheet.format, size: D.sheet.size, scale: Drawing.scaleText(dc.sheet.scale), autoScale: !!dc.sheet.autoScale, projection: dc.sheet.projection, index: dc.activeSheet | 0, count: Drawing.sheetCount(dc) }, sheets: Drawing.sheets(dc),
+      name: dc.name, open: D.active, warnings: (D.sheet.warnings || []).slice(), sheet: { name: dc.sheet.name, format: dc.sheet.format, size: D.sheet.size, scale: Drawing.scaleText(dc.sheet.scale), autoScale: !!dc.sheet.autoScale, projection: dc.sheet.projection, zones: D.sheet.zones ? D.sheet.zones.cols + " x " + D.sheet.zones.rows : null, index: dc.activeSheet | 0, count: Drawing.sheetCount(dc) }, sheets: Drawing.sheets(dc),
       views: D.sheet.views.map(function (w) {
         var b = w.proj.bounds;
         return { id: w.view.id, name: w.view.name, orient: w.view.orient, role: w.view.role, kind: w.view.kind || 'model', label: w.view.label || null, parent: w.view.parent, showLabel: Drawing.viewLabelShown(w.view),
