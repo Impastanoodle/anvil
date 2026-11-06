@@ -2189,7 +2189,7 @@ AnvilLibrary.shape  L368
 AnvilLibrary.icons  L376
 more: r6 L16, n L17, circA L25, lens L26, pick L148, opt L186, A L191, C L192, place L271, pa L372, ci L373
 
-## materials.js (525 lines)
+## materials.js (540 lines)
 > Anvil materials and custom properties (global `Materials`, no DOM). Loaded after kernel.js and assembly.js.
 M  L26  — density kg/m³; E, yield, tensile in N/mm² (MPa); nu Poisson's ratio. Values from common …
 Materials.CLASSES  L31
@@ -2232,17 +2232,17 @@ Materials.setProperty  L346  — setProperty(model, name, value | null, { type, 
 Materials.effective  L360  — effective(model, cfg?) -> [{ name, type, value, source: 'custom' | 'config' }]: Custom …
 Materials.context  L371  — context(model, { build, mesh, config }) -> a memo for evaluate(): mass properties are …
 Materials.system  L385  — system(model, name, ctx) -> the value a "SW-name" link shows, or null for a name it does …
-Materials.evaluate  L413  — evaluate(model, text, ctx?) -> the text with every "SW-…" link replaced by its value …
-Materials.isLinked  L417
-Materials.property  L419  — property(model, name, ctx?) -> the evaluated value of a custom / configuration-specific …
-Materials.sheetProperty  L428
-Materials.evaluated  L436  — evaluated(model, ctx?) -> [{ name, type, value, evaluated, source }]
-Materials.headLines  L455  — the document lines generateScript gains after `p.name(…).units(…);`
-Materials.install  L472
-Materials.NONE  L514
-Materials.DEFAULT_COLOR  L514
+Materials.evaluate  L427  — evaluate(model, text, ctx?) -> the text with every "SW-…" link replaced by its value …
+Materials.isLinked  L431
+Materials.property  L433  — property(model, name, ctx?) -> the evaluated value of a custom / configuration-specific …
+Materials.sheetProperty  L443
+Materials.evaluated  L451  — evaluated(model, ctx?) -> [{ name, type, value, evaluated, source }]
+Materials.headLines  L470  — the document lines generateScript gains after `p.name(…).units(…);`
+Materials.install  L487
+Materials.NONE  L529
+Materials.DEFAULT_COLOR  L529
 more: bodyList L143, finishCopy L191, trimNum L288, normType L310, normList L311, tidy L344, unitsOf L383,
-more: propLine L442, propertyLines L448, insertAfterHead L466
+more: propLine L457, propertyLines L463, insertAfterHead L481
 
 ## nest.js (571 lines)
 > Geometry Nesting (Mastercam's Transform ▸ Geometry Nesting): true-shape nesting of flat parts on sheets.

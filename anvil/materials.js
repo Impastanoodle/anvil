@@ -406,8 +406,22 @@ var Materials = (function () {
       case 'file name': case 'title': return String(model.name || '');
       case 'configuration name': return ctx.config != null ? String(ctx.config) : activeConfigName(model);
     }
+    // (lane flatopts-3, rfJN) a sheet part's Cut-List Properties (Kernel.sheetCutList, one call per context): the
+    // number as a title block shows it (4 decimals in inches, 2 in mm, trailing zeros trimmed), '' on a part with no
+    // sheet or a name the sheet's bend rule does not give; Material / Mass / Description / Sheet Metal Thickness keep
+    // the rows above (a sheet part's title is not 'Sheet')
+    if (CUT_LIST_LINKS[n] && !asm) {
+      if (!model || !model.sheet || typeof Kernel === 'undefined' || !Kernel.sheetCutList) return '';
+      if (!ctx.cutList) { try { ctx.cutList = Kernel.sheetCutList(model, ctx.build, ctx.mesh); } catch (e) { ctx.cutList = { rows: [] }; } }
+      var row = ctx.cutList.rows.filter(function (r) { return r.name.toLowerCase() === n; })[0];
+      if (!row) return '';
+      return typeof row.value === 'number' ? trimNum(row.value, u === 'in' ? 4 : 2) : String(row.text);
+    }
     return null;
   }
+  var CUT_LIST_LINKS = {};
+  ['Bounding Box Length', 'Bounding Box Width', 'Bend Radius', 'K-Factor', 'Bend Allowance', 'Bend Deduction', 'Bend Table', 'Bends', 'Cutting Length-Outer',
+    'Cutting Length-Inner', 'Cut Outs', 'Bounding Box Area', 'Bounding Box Area-Blank', 'Sheet Metal Gauge'].forEach(function (nm) { CUT_LIST_LINKS[nm.toLowerCase()] = nm; });
   var LINK_RE = /"SW-([^"@]+)(?:@[^"]*)?"/g;
   // evaluate(model, text, ctx?) -> the text with every "SW-…" link replaced by its value (unknown links stay as typed)
   function evaluate(model, text, ctx) {
@@ -425,6 +439,7 @@ var Materials = (function () {
   // sheetProperty(model, name, ctx?) -> what a drawing's $PRPSHEET:"name" shows: the property, else (for the names a
   // title block links by default) the system value, so a part without File Properties still fills MATERIAL / MASS
   var SHEET_FALLBACK = { material: 'Material', mass: 'Mass', weight: 'Mass', density: 'Density', volume: 'Volume', thickness: 'Thickness', gauge: 'Gauge', 'sheet metal thickness': 'Sheet Metal Thickness' };   // (rfIW) sheet metal
+  Object.keys(CUT_LIST_LINKS).forEach(function (k) { SHEET_FALLBACK[k] = CUT_LIST_LINKS[k]; });   // (lane flatopts-3) $PRPSHEET:"Bounding Box Length" …
   function sheetProperty(model, name, ctx) {
     ctx = ctx || context(model);
     var v = property(model, name, ctx);
