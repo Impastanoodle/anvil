@@ -867,6 +867,7 @@
   }
   function setSheet(props) {
     edit(function (dc) {
+      var S0 = Drawing.sheetSize(dc, units());   // (rfJX) the old size: hand-placed views keep their place on the new one
       if (props.format && Drawing.FORMATS[props.format]) dc.sheet.format = props.format;
       if (props.projection) dc.sheet.projection = props.projection === 'first' ? 'first' : 'third';
       if (props.scale === 'auto' || props.scale === null) dc.sheet.autoScale = true;
@@ -876,6 +877,7 @@
       if (props.titleBlock) applyTitleBlock(dc, props.titleBlock);   // same undo step as the sheet change
       // re-place the standard views for the new sheet / scale / projection
       if (dc.views.some(function (v) { return v.role; })) { var manual = dc.layout === 'manual'; relayout(dc); if (manual) dc.layout = 'manual'; }
+      Drawing.refitSheet(dc, mesh(), S0, units());
     });
     fitSheet();
   }

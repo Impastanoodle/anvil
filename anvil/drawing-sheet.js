@@ -194,14 +194,19 @@
       x: opts.x != null ? +opts.x : S[0] / 2, y: opts.y != null ? +opts.y : S[1] / 2 });
     labelOpt(doc, v, opts);
     if (opts.bendNotes === 'notes' || opts.bendNotes === 'table' || opts.bendNotes === 'none') v.bendNotes = opts.bendNotes;
-    var onSheet = opts.x == null && opts.y == null && mesh ? (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, null) : true;
+    // (rfJX, shop flow 3) fit keeps the flat at the sheet scale (or opts.scale), as SolidWorks inserts a flat-pattern
+    // view (View Palette / Model View: Use sheet scale; it never shrinks a view or moves it to another sheet by
+    // itself): a clear spot on this sheet at that scale, else a new sheet at that scale (below); it shrinks only on the
+    // new sheet, when the blank does not fit even an empty sheet. opts.newSheet false keeps rfIW's way (half the scale
+    // on this sheet, else beside it).
+    var newOk = opts.fit && opts.newSheet !== false;
+    var onSheet = opts.x == null && opts.y == null && mesh ? (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, null, newOk ? { noShrink: true } : null) : true;
     delete v.offSheet;
     doc.layout = 'manual';
-    // (rfIW) fit: a flat with no room on this sheet (not even at half its scale) goes to a new sheet, as a SolidWorks
-    // shop puts the blank on Sheet2: the active sheet's format, scale and projection, its own title block (SHEET 2 OF 2),
-    // the flat at the sheet scale (or the largest that fits). The new sheet becomes the active one. opts.newSheet false:
-    // stay beside the sheet as before.
-    if (opts.fit && !onSheet && opts.newSheet !== false && opts.x == null && opts.y == null) {
+    // (rfIW) fit: a flat with no room on this sheet goes to a new sheet, as a SolidWorks shop puts the blank on Sheet2:
+    // the active sheet's format, scale and projection, its own title block (SHEET 2 OF 2), the flat at the sheet scale
+    // (or the largest that fits). The new sheet becomes the active one. opts.newSheet false: stay beside the sheet.
+    if (newOk && !onSheet && opts.x == null && opts.y == null) {
       doc.views.splice(doc.views.indexOf(v), 1);
       addSheet(doc, {});
       doc.views.push(v);
@@ -310,13 +315,14 @@
   // same scale); then the next smaller standard scales (down to a quarter), aligned and then anywhere. When nothing
   // fits it goes beside the sheet, aligned and clear of every view, marked v.offSheet (the UI warns and drops the
   // mark). It never overlaps a view.
-  function fitOnSheet(doc, mesh, v, free) {
-    var x0 = v.x, y0 = v.y, sc0 = v.scale, al0 = v.align, s0 = viewScale(doc, v);
+  // (rfJX) fopts.noShrink: its own scale only (the flat view before addFlatView tries a new sheet)
+  function fitOnSheet(doc, mesh, v, free, fopts) {
+    var x0 = v.x, y0 = v.y, sc0 = v.scale, al0 = v.align, s0 = viewScale(doc, v), noShrink = !!(fopts && fopts.noShrink);
     var par = v.kind === 'detail' && v.parent != null ? findView(doc, v.parent) : null, lo = par ? viewScale(doc, par) : 0;
     // (rfIW) a flat-pattern view shrinks to half the sheet scale at most (its hole tags and bend notes stay readable);
     // when that does not fit, addFlatView puts it on a new sheet (rfIR had let it go to an eighth)
     var minF = v.kind === 'flat' ? 2 : 4;
-    var smaller = scalesFor(doc).filter(function (s) { var q = scaleValue(s); return q < s0 - 1e-9 && q >= s0 / minF - 1e-9 && q > lo + 1e-9; });
+    var smaller = noShrink ? [] : scalesFor(doc).filter(function (s) { var q = scaleValue(s); return q < s0 - 1e-9 && q >= s0 / minF - 1e-9 && q > lo + 1e-9; });
     function at(sc, align, tight) { v.x = x0; v.y = y0; v.scale = sc; v.align = align; return clearSpot(doc, mesh, v, align ? free : null, tight); }
     // (rfIJ) at each scale the usual gap first, then (a crowded sheet: ANSI A with four views) a narrow one, so the
     // view keeps its scale where it can; a smaller scale only when neither fits
@@ -328,6 +334,51 @@
     at(sc0, al0);
     v.offSheet = true;
     return false;
+  }
+  // (rfJX) refitSheet(doc, mesh, S0, units, moved): after Sheet Properties changed the sheet size from S0 (paper units)
+  // to the current one. The standard views were placed again by layout (moved: their ids and their aligned children's);
+  // every other view (flat, model, detail, section placed by hand), the sheet's own notes / symbols and placed Hole
+  // Tables keep their place relative to the border (the same fraction across and up it, so a flat at the right of an
+  // ANSI B sheet is at the right of a C sheet too); a view aligned with a parent keeps the parent's line. A view that
+  // then covers another view or the title block, or runs past the border, goes to the nearest clear spot (clearSpot,
+  // same scale). Returns the ids of the views it moved.
+  function refitSheet(doc, mesh, S0, units, moved) {
+    var k = paperK(units), b = BORDER * k, S1 = sheetSize(doc, units), out = [];
+    if (!S0 || (Math.abs(S0[0] - S1[0]) < 1e-9 && Math.abs(S0[1] - S1[1]) < 1e-9)) return out;
+    var fx = (S1[0] - 2 * b) / (S0[0] - 2 * b), fy = (S1[1] - 2 * b) / (S0[1] - 2 * b);
+    function mx(x) { return b + (x - b) * fx; }
+    function my(y) { return b + (y - b) * fy; }
+    var skip = {};
+    if (moved) moved.forEach(function (id) { skip[id] = 1; });
+    else {
+      // (unset: the standard views and the views aligned with them, which layout moved)
+      var laid = doc.views.some(function (v) { return v.role; });
+      var follows = function (v, d) { if (!laid || d > 20) return false; if (v.role) return true; var p = v.align && v.parent != null ? findView(doc, v.parent) : null; return !!p && follows(p, d + 1); };
+      doc.views.forEach(function (v) { if (follows(v, 0)) skip[v.id] = 1; });
+    }
+    var mapped = [];
+    doc.views.forEach(function (v) {
+      if (skip[v.id]) return;
+      var par = v.align && v.parent != null ? findView(doc, v.parent) : null;
+      if (par && v.align === 'x') { v.x = par.x; v.y = my(v.y); }
+      else if (par && v.align === 'y') { v.y = par.y; v.x = mx(v.x); }
+      else { v.x = mx(v.x); v.y = my(v.y); }
+      mapped.push(v); out.push(v.id);
+    });
+    (doc.notes || []).concat(doc.symbols || []).forEach(function (a) {
+      if (a.view || !a.p) return;   // (attached ones follow their view)
+      var dx = mx(a.p[0]) - a.p[0], dy = my(a.p[1]) - a.p[1];
+      a.p = [a.p[0] + dx, a.p[1] + dy];
+      if (a.leader) a.leader = [a.leader[0] + dx, a.leader[1] + dy];
+    });
+    (doc.holeTables || []).forEach(function (t) { if (t.x != null && t.y != null) { t.x = mx(t.x); t.y = my(t.y); } });
+    if (mesh) mapped.forEach(function (v) {
+      var par = v.align && v.parent != null ? findView(doc, v.parent) : null;
+      var keep = [v.x, v.y];
+      // (no clear spot on the sheet: it stays where the border took it rather than going beside the sheet)
+      if (!clearSpot(doc, mesh, v, par ? (v.align === 'x' ? 'y' : 'x') : null)) { v.x = keep[0]; v.y = keep[1]; }
+    });
+    return out;
   }
   // addSectionView(doc, mesh, parentId, { axis: 'h' | 'v', at, sign, x, y, label, fit }): a full section on a cutting
   // line through the parent, horizontal at v = at or vertical at u = at (model units in the parent's view frame).
@@ -472,6 +523,11 @@
   function tbBlocks(S, units) {
     var k = paperK(units), room = (S[0] - 2 * BORDER * k) / k - TB_W, out = {};
     Object.keys(TB_BLOCKS).forEach(function (b) { out[b] = room >= -TB_BLOCKS[b] - 1e-9; });
+    // (rfJX) an inch sheet too narrow for both (ANSI A: 79 mm beside the title block) keeps the general tolerances, which a
+    // shop print cannot do without, right against the title block (shift.tol: paper mm right), and drops COMPANY /
+    // DRAWN / CHECKED
+    out.shift = {};
+    if (units === 'in' && !out.tol && room >= TB_BLOCKS.eng - TB_BLOCKS.tol - 1e-9) { out.tol = true; out.eng = false; out.shift.tol = -TB_BLOCKS.eng; }
     return out;
   }
   // the inch general tolerances (ASME Y14.5 decimal-place tolerances, a sheet-metal shop's usual block) and mm ones
@@ -482,7 +538,8 @@
   // fieldRect(f, S, units) -> the paper rectangle of title block field f
   function fieldRect(f, S, units) {
     var k = paperK(units), b1 = BORDER * k, tw = TB_W * k, th = TB_H * k, tx0 = S[0] - b1 - tw, ty0 = b1, row = th / 3;
-    return { x0: tx0 + f.x0 * k, x1: tx0 + f.x1 * k, y1: ty0 + th - f.row * row, y0: ty0 + th - (f.row + (f.rows || 1)) * row };
+    var sh = f.block ? tbBlocks(S, units).shift[f.block] || 0 : 0;
+    return { x0: tx0 + (f.x0 + sh) * k, x1: tx0 + (f.x1 + sh) * k, y1: ty0 + th - f.row * row, y0: ty0 + th - (f.row + (f.rows || 1)) * row };
   }
   function drawingProp(doc, name, units) {
     switch (String(name).trim().toLowerCase()) {
@@ -533,7 +590,7 @@
   // tbRects(S, units) -> the paper boxes of the title block and the left blocks that fit (kept clear of annotations)
   function tbRects(S, units) {
     var k = paperK(units), b1 = BORDER * k, x1 = S[0] - b1, tx0 = x1 - TB_W * k, on = tbBlocks(S, units), out = [{ x0: tx0, y0: b1, x1: x1, y1: b1 + TB_H * k }];
-    var lo = 0; Object.keys(TB_BLOCKS).forEach(function (b) { if (on[b]) lo = Math.min(lo, TB_BLOCKS[b]); });
+    var lo = 0; Object.keys(TB_BLOCKS).forEach(function (b) { if (on[b]) lo = Math.min(lo, TB_BLOCKS[b] + (on.shift[b] || 0)); });
     if (lo < 0) out.push({ x0: tx0 + lo * k, y0: b1, x1: tx0, y1: b1 + TB_H * k });
     return out;
   }
@@ -2475,6 +2532,7 @@
 
   D.FORMATS = FORMATS; D.SCALES = SCALES; D.ANSI_SCALES = ANSI_SCALES; D.scalesFor = scalesFor; D.scaleValue = scaleValue; D.scaleText = scaleText; D.scaleLabel = scaleLabel; D.detailName = detailName; D.parseScale = parseScale; D.sheetSize = sheetSize;
   D.ZONES = ZONES; D.sheetZones = sheetZones; D.zoneAt = zoneAt;   // (rfJR)
+  D.refitSheet = refitSheet;   // (rfJX)
   D.newDrawing = newDrawing; D.addView = addView; D.projectionKey = projectionKey; D.putProjection = putProjection; D.sectionJob = sectionJob; D.putSection = putSection;
   // isSheetMetal(model): a part with sheet-metal parameters and a Base Flange (Model View offers Flat pattern)
   D.isSheetMetal = function (model) { return !!(model && model.type !== 'assembly' && model.sheet && (model.features || []).some(function (f) { return f.sheetBase && !f.suppressed; })); };

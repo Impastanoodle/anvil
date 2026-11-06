@@ -87,3 +87,19 @@ fixed face is not central.
 - To check in SolidWorks: whether its ANSI sheet formats use these zone counts (taken from ASME Y14.1's 4.25 × 5.5 in
   zone, not measured), the zone label height, and how its Revision Table writes two symbols' zones (Anvil: `A1, B4`).
 - Still needs SolidWorks: plain-hole callout spacing (row 5).
+
+## Follow-up (lane drawfix2-2, rfJX, same day)
+
+- Shop flow finding 3 (flat view at half the sheet scale): `anvil.drawing.flatView()` keeps the sheet scale, as
+  SolidWorks inserts a flat-pattern view (Use sheet scale; it never shrinks a view or moves it to another sheet by
+  itself). Where this sheet has room at that scale it goes there. Otherwise it goes to Sheet2 at that scale, and shrinks
+  there only when the blank cannot fit an empty sheet. Job a's L-bracket on its 1 : 1 ANSI B sheet: Sheet2 at 1 : 1
+  (was 1 : 2 beside the views). Mouse placement (Model View PM) already used the sheet scale.
+- Inch shop sizes A, B, C, D landscape: every size has the full title block (MATERIAL, THICKNESS, SCALE, SIZE with its
+  letter, FINISH, SHEET) and its zones. ANSI A is too narrow for both blocks left of the title block: it now keeps the
+  general tolerances, against the title block, and leaves COMPANY / DRAWN / CHECKED off (it had kept those and dropped
+  the tolerances). Metric A4 is unchanged.
+- Sheet Properties size change: the standard views are laid out again as before. A flat or other hand-placed view, a
+  sheet note and a placed Hole Table now keep their place relative to the border (they had kept their paper position,
+  so going B to A put them off the sheet). A view that would then cover another view goes to the nearest clear spot.
+- To check in SolidWorks: whether its `a - landscape` format carries a tolerance block, and where.

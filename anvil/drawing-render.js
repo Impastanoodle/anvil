@@ -156,7 +156,8 @@
     }
     TB_FIELDS.forEach(function (f) {
       if (f.block && !blocks[f.block]) return;
-      var x0 = tx0 + f.x0 * k, x1 = tx0 + f.x1 * k, yTop = ty0 + th - f.row * row;
+      var fsh = f.block ? blocks.shift[f.block] || 0 : 0;   // (rfJX) ANSI A: the tolerance block against the title block
+      var x0 = tx0 + (f.x0 + fsh) * k, x1 = tx0 + (f.x1 + fsh) * k, yTop = ty0 + th - f.row * row;
       if ((f.x0 > 0 || (f.block && f.x0 > D.TB_BLOCKS[f.block])) && !colX[f.row + ':' + f.x0]) { colX[f.row + ':' + f.x0] = 1; fmtItem('col:' + f.row + ':' + f.x0, function () { line([x0, yTop - row * (f.rows || 1)], [x0, yTop], 'SHEET', 'thin'); }); }
       fmtItem('field:' + f.key, function () {
         var v = tb[f.key], h = f.big ? big : val, w = x1 - x0 - 2 * pad, capBase = yTop - pad - lab * CAP_EM, yBot = yTop - row * (f.rows || 1);
