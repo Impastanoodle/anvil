@@ -644,7 +644,7 @@ var OcctKernel = (function () {
     function sketchPathEdges(id, c0) {
       var sk = sketchById(id, 'Select a path sketch for the sweep.'), pl = K.resolvePlane(sk.plane, m, planes), segs = [];
       (sk.entities || []).forEach(function (e) {
-        if (e.construction || e.t === 'text' || K.noProfileEntity(sk, e)) return;   // sketch-layers: ETCH / BEND entities (and text) are not the path
+        if (e.construction || e.t === 'text' || K.noProfileEntity(sk, e) || (K.notPathMember && K.notPathMember(sk, e))) return;   // sketch-layers: ETCH / BEND entities (and text) are not the path
         if (e.t === 'line') segs.push({ a: [e.x1, e.y1], b: [e.x2, e.y2] });
         else if (e.t === 'arc') {
           var a0 = e.a0 * Math.PI / 180, a1 = e.a1 * Math.PI / 180, am = (a0 + a1) / 2;
@@ -983,6 +983,10 @@ var OcctKernel = (function () {
         // a Miter Flange's square end: the bend's taper, and the overlap strip stops at the base's corner
         (p.tapers || []).forEach(function (l) { cutters.push(cylinderCutter(l, p.plane, lay.section, p.BA)); });
         if (!p.voids) (p.tails || []).forEach(function (r) { cutters.push(prismOf(K.miterTail(lay.section), p.plane, r.t0, r.t1)); });
+        // lane rfIS: the overlap strip's sliver past an acute corner of the sheet (Kernel.flangeLayout's endCuts), and a
+        // wall cut square to itself where that plane would cut the bend too (wallCuts: below 90°, the wall's part only)
+        (p.endCuts || []).forEach(function (c) { cutters.push(prismOf(c.loop, c.plane, c.a, c.b)); });
+        (p.wallCuts || []).forEach(function (c) { cutters.push(clipKeep(prismOf(c.loop, p.plane, c.t0, c.t1), V.scale(c.n, -1), -c.w)); });
         // a butt corner (Kernel.flangeLayout's p.taper): the sweep runs on past both ends, the bend's ends are tapered from
         // the base corner to the wall's end and only then are the walls cut square, so the taper does not have to find
         // its corner on the tangent line where bend meets wall at the very end of the sweep.

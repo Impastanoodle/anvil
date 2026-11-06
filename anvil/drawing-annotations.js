@@ -2597,12 +2597,21 @@
       // beside the view: right of it, under it, left of it, over it — the first spot on the sheet clear of the other
       // views, the title block and the tables (sheetBox.avoid), else right of it
       var wb = w.box, g12 = 12 * k, spots = [[wb.x1 + g12, wb.y1], [wb.x0, wb.y0 - g12], [wb.x0 - g12 - W, wb.y1], [wb.x0, wb.y1 + g12 + Ht]];
-      var clear = function (sp) {
-        var bb = { x0: sp[0], x1: sp[0] + W, y0: sp[1] - Ht, y1: sp[1] };
-        if (sheetBox && (bb.x0 < sheetBox.x0 || bb.x1 > sheetBox.x1 || bb.y0 < sheetBox.y0 || bb.y1 > sheetBox.y1)) return false;
-        return !((sheetBox && sheetBox.avoid) || []).some(function (o) { return o.x0 < bb.x1 && bb.x0 < o.x1 && o.y0 < bb.y1 && bb.y0 < o.y1; });
+      // (rfIR) the other views with room round them for their dimensions first (a table on a view's dimension
+      // lines, or over the title block, was what the shop audit found), then the views alone; beside the view first,
+      // else the free paper nearest to its right
+      var clearOf = function (room) {
+        return function (sp) {
+          var bb = { x0: sp[0], x1: sp[0] + W, y0: sp[1] - Ht, y1: sp[1] };
+          if (sheetBox && (bb.x0 < sheetBox.x0 || bb.x1 > sheetBox.x1 || bb.y0 < sheetBox.y0 || bb.y1 > sheetBox.y1)) return false;
+          var hit = function (o, m) { return o.x0 - m < bb.x1 && bb.x0 < o.x1 + m && o.y0 - m < bb.y1 && bb.y0 < o.y1 + m; };
+          return !((sheetBox && sheetBox.avoid) || []).some(function (o) { return hit(o, 0); }) &&
+            !((sheetBox && sheetBox.views) || []).some(function (o) { return hit(o, room); });
+        };
       };
-      var pick = spots.filter(clear)[0] || spots[0];
+      var roomy = clearOf(HT_ROOM * k), clear = clearOf(0);
+      var pick = spots.filter(roomy)[0] || (sheetBox && htFreeSpot(sheetBox, W, Ht, spots[0], k, roomy)) || spots.filter(clear)[0] ||
+        (sheetBox && htFreeSpot(sheetBox, W, Ht, spots[0], k, clear)) || spots[0];
       x0 = pick[0]; y1 = pick[1];
     }
     var colX = [x0]; colW.forEach(function (cw) { colX.push(colX[colX.length - 1] + cw); });
@@ -2639,6 +2648,17 @@
     if (R.dangling || R.rows.some(function (row) { return row.dangling; })) for (var dj = nTags; dj < out.length; dj++) out[dj].color = 'dangling';
     return { prims: out, box: { x0: x0, y0: y0, x1: x0 + W, y1: y1 }, tagBoxes: tagBoxes, rows: R.rows, origin: Os, originView: R.origin, dangling: R.dangling, colX: colX, rowY: rowY,
       text: 'Hole Table (' + R.rows.length + ' hole' + (R.rows.length === 1 ? '' : 's') + ')' };
+  }
+  // (rfIR) htFreeSpot(sheetBox, W, H, want, k, ok) -> the top-left corner [x0, y1] of a W × H table nearest to `want`
+  // (a 2 mm grid over the sheet inside the border) where ok([x0, y1]) holds, or null
+  var HT_ROOM = 12;   // paper mm kept round the views for their dimensions
+  function htFreeSpot(sb, W, H, want, k, ok) {
+    var st = 2 * k, best = null, bd = Infinity;
+    for (var y = sb.y0 + H; y <= sb.y1 + 1e-9; y += st) for (var x = sb.x0; x + W <= sb.x1 + 1e-9; x += st) {
+      var d = Math.hypot(x - want[0], y - want[1]);
+      if (d < bd && ok([x, y])) { bd = d; best = [x, y]; }
+    }
+    return best;
   }
   // holeTableAt(sheet, p) -> the sheet's hole table whose box holds paper point p, or null
   function holeTableAt(sheet, p) {

@@ -527,6 +527,12 @@ if (typeof UI !== 'undefined') (function (UI) {
       var hitC = UI.pickEntity(mx, my);
       if (!hitC) return true;
       if (UI.pmEntityPick && UI.pmEntityPick(hitC)) return true;
+      var pathC = hitC.kind === 'entity' ? pathMembers(UI.activeSketchFeature(), hitC.index) : null;   // rfIT: a path goes as one
+      if (pathC) {
+        var curC = selection().filter(function (s) { return s.kind === 'entity'; }), inC = pathC.every(function (p) { return curC.some(function (s) { return s.index === p.index; }); });
+        setSelection(inC ? curC.filter(function (s) { return !pathC.some(function (p) { return p.index === s.index; }); }) : curC.concat(pathC.filter(function (p) { return !curC.some(function (s) { return s.index === p.index; }); })));
+        return true;
+      }
       setSelection(BoxSelect.combine(selection().filter(function (s) { return s.kind === 'entity'; }), [hitC], 'toggle', selKey));
       return true;
     }
@@ -537,11 +543,32 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (item && item.kind === 'entity' && ev && ev.shiftKey && !(ev.ctrlKey || ev.metaKey)) { selectSketchChain(item.index, 'toggle'); return true; }
     // p9-sketchfix: the selection is read before anything replaces the PropertyManager (closing one consumes the
     // selection, ui-commands.js closePM)
+    // rfIT: a member of a Make Path path selects the whole path (SolidWorks selects a path as one); Ctrl+click toggles
+    // the whole path
+    var pathItems = item && item.kind === 'entity' ? pathMembers(UI.activeSketchFeature(), item.index) : null;
+    if (pathItems) {
+      var curP = selection().filter(isSketchItem), allIn = pathItems.every(function (p) { return curP.some(function (s) { return selKey(s) === selKey(p); }); });
+      var listP = !mod ? pathItems : allIn ? curP.filter(function (s) { return !pathItems.some(function (p) { return selKey(s) === selKey(p); }); }) : curP.concat(pathItems.filter(function (p) { return !curP.some(function (s) { return selKey(s) === selKey(p); }); }));
+      setSelection(listP, { quiet: !mod });
+      sketchSelectionPM(listP, true);
+      UI.setStatus('Path' + f0PathId(item.index) + ' selected: ' + pathItems.length + ' entit' + (pathItems.length === 1 ? 'y' : 'ies') + '.');
+      return true;
+    }
     var list = mod ? BoxSelect.combine(selection().filter(isSketchItem), [item], 'toggle', selKey) : item ? [item] : [];
     setSelection(list, { quiet: !mod });
     sketchSelectionPM(list, true);
     return true;
   }
+  // rfIT: the selection items of the Make Path path entity i belongs to (null: not in a path, or a path of one entity)
+  function pathMembers(f, i) {
+    var e = f && f.entities && f.entities[i];
+    if (!e || e.pathId == null) return null;
+    var out = [];
+    f.entities.forEach(function (o, k) { if (o && o.pathId === e.pathId) out.push({ kind: 'entity', index: k }); });
+    return out.length > 1 ? out : null;
+  }
+  function f0PathId(i) { var f = UI.activeSketchFeature(), e = f && f.entities[i]; return e ? e.pathId : ''; }
+  UI.sketchPathMembers = function (i) { var m = pathMembers(UI.activeSketchFeature(), i); return m ? m.map(function (s) { return s.index; }) : null; };
   // rfIG: the chain of sketch entity i: the entities joined to it end to end (shared or coincident end points), followed
   // both ways; a branch point (three or more curves ending there) or a free end stops it, a closed loop is the loop (as
   // SolidWorks' Select Chain). Lines, arcs, open splines and partial ellipses chain; a closed curve (circle, ellipse,

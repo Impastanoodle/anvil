@@ -604,7 +604,7 @@
           { type: 'html', html: '<div class="rel-list" id="rel-picks">' + (picks.length ? picks.map(function (r) { return '<div class="rel-row">' + S.refName(f, r) + '</div>'; }).join('') : '<div class="rel-empty">Nothing selected</div>') + '</div>' },
           { type: 'buttons', buttons: [{ label: 'Clear Selections', onclick: function () { App.relPick = []; render(); } }] }
         ] },
-        { title: 'Existing Relations', fields: [{ type: 'html', html: '<div class="rel-list">' + (existing.length ? existing.map(function (x) { return '<div class="rel-row">' + Icons(iconName(x.rel.type), 14) + ' ' + S.describe(f, x.rel) + '</div>'; }).join('') : '<div class="rel-empty">None</div>') + '</div>' }] },
+        { title: 'Existing Relations', fields: [{ type: 'html', html: '<div class="rel-list">' + (existing.length ? existing.map(function (x) { return '<div class="rel-row">' + Icons(iconName(x.rel.type), 16) + ' ' + S.describe(f, x.rel) + '</div>'; }).join('') : '<div class="rel-empty">None</div>') + '</div>' }] },
         { title: 'Add Relations', fields: types.length ? [{ type: 'buttons', buttons: types.map(function (t) { return { label: S.TYPES[t].name, onclick: function () { add(t); } }; }) }] : [{ type: 'static', label: '', value: picks.length ? 'No relation applies to this selection.' : 'Select entities first.' }] }
       ];
       UI.openPM(spec);
@@ -689,7 +689,7 @@
         { title: 'Relations', fields: [
           { type: 'select', label: 'Filter', key: 'filter', options: [['all', 'All in this sketch'], ['over', 'Overdefining/Not Solved'], ['selected', 'Selected Entities']] },
           { type: 'html', html: '<div class="rel-list" id="rel-display" role="listbox" aria-label="Relations">' + (list.length ? list.map(function (x) {
-            var key = rowKey(x), icon = x.dim ? Icons('dim', 14) : Icons(iconName(x.rel.type), 14);
+            var key = rowKey(x), icon = x.dim ? Icons('dim', 16) : Icons(iconName(x.rel.type), 16);
             return '<div class="rel-row ' + x.state + (key === sk ? ' sel' : '') + '" role="option" data-key="' + key + '"' + (x.dim ? '' : ' data-rel="' + x.i + '"') + ' tabindex="0">' + icon + '<span>' + (x.dim ? dimText(x) : S.describe(f, x.rel)) + '</span><em>' + stateText(x.state) + '</em></div>';
           }).join('') : '<div class="rel-empty">' + (v.filter === 'selected' && !(App.sel && App.sel.kind === 'entity') ? 'Click an entity in the graphics area' : 'No relations') + '</div>') + '</div>' },
           { type: 'buttons', buttons: [

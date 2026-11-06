@@ -435,22 +435,78 @@
         var V = scale(add(ea.P, eb.P), 0.5);
         if (shift) V = sub(V, scale(add(ei.o, ej.o), shift / (1 + c)));
         var nb = norm(sub(di, dj));
+        // lane rfIS (SolidWorks 2022, report 2026-11-02 5d: 120° on a square corner, 90° on a trapezoid): an edge flange's
+        // mitre has no gap of zero either (its default 0.01 in / 0.25 mm), and it is not a plane through the whole flange.
+        // Each wall is cut square to itself along the line where the bisector plane (moved gap/2 off) meets its INSIDE
+        // face; the bend's end runs straight in (angle, t) from the base's corner at its start to that wall line at its
+        // end (a helicoid, as a Butt corner's); in the flat each strip runs the wall's line on straight across the bend
+        // zone until the two lines meet, past the corner. SolidWorks' folded part then reads 3.9e-4 to 8.1e-4 under its
+        // own blank × T (the helicoid is not the strip wrapped), Anvil's lands within 2e-5 of it.
+        var swMiter = !f.miterJoin && !f.miterStage && !f.hem;
+        var mGap = swMiter && !(gap > 0) ? ccDefaultGap(model) : gap;
         [[ei, ea, nb], [ej, eb, scale(nb, -1)]].forEach(function (q) {
           var ed = q[0], en = q[1], n = q[2];
           // extend the sweep past the corner far enough for the outermost point of the section to reach the bisector
           var ext = ed.wmax * dot(ed.o, n) / dot(en.dIn, n);
           ext = Math.max(0, Math.min(ext, 4 * ed.wmax)) + 1;
           if (f.miterJoin) ext = 2 * ed.loop.reduce(function (mx, p) { return Math.max(mx, Math.abs(p[0]), Math.abs(p[1])); }, 0) / Math.max(0.1, Math.abs(dot(en.dIn, n))) + 1;
-          en.miter = { n: n, w: dot(V, n) + gap / 2, tExt: dot(sub(V, ed.plane.origin), ed.plane.n) - dot(en.dIn, ed.plane.n) * ext };
+          en.miter = { n: n, w: dot(V, n) + mGap / 2, tExt: dot(sub(V, ed.plane.origin), ed.plane.n) - dot(en.dIn, ed.plane.n) * ext };
+          if (!swMiter) return;
+          var dn = dot(en.dIn, n);
+          if (!(dn > 1e-9)) return;
+          // τ past the end point P (along −dIn) where the plane meets the section point (o, u) of ed.plane
+          var Pe = add(ed.plane.origin, scale(ed.plane.n, en.t));
+          var tauAt = function (o, u) { return (dot(n, add(add(Pe, scale(ed.o, o)), scale(ed.u, u))) - en.miter.w) / dn; };
+          var sA = Math.sin(A), cA = Math.cos(A), iO = R * sA, iU = R - R * cA;
+          var mExt = tauAt(iO, iU), mSlope = tauAt(iO + cA, iU + sA) - mExt;
+          // the base's corner (the trimmed edge lines' corner V) on this edge's τ
+          en.swMiter = { tB: -dot(sub(V, en.P), en.dIn), ext: mExt, slope: mSlope,
+            // the wall cut: a plane square to the wall through that line, kept on the edge's side
+            wall: (function () {
+              var wd = add(scale(ed.o, cA), scale(ed.u, sA));
+              var Q0 = add(add(add(Pe, scale(ed.o, iO)), scale(ed.u, iU)), scale(en.dIn, -mExt));
+              var along = add(wd, scale(en.dIn, -mSlope));                   // the line's direction
+              var thick = sub(scale(ed.o, sA), scale(ed.u, cA));             // across the wall's thickness
+              var nw = norm(cross(along, thick));
+              if (dot(nw, en.dIn) < 0) nw = scale(nw, -1);
+              return { n: nw, w: dot(nw, Q0) };
+            })() };
         });
       }
     }
     var inside = null;
     eds.forEach(function (ed) {
-      function endAt(en) { return en.square ? en.t - dot(en.dIn, ed.plane.n) * en.square.ext : en.miter ? en.miter.tExt : en.butt ? buttWallT(ed, en) : en.t; }
+      function swMax(sm) { return Math.max(sm.ext, sm.ext + sm.slope * L, sm.tB); }
+      function endAt(en) { return en.square ? en.t - dot(en.dIn, ed.plane.n) * en.square.ext : en.swMiter ? en.t - dot(en.dIn, ed.plane.n) * swMax(en.swMiter) : en.miter ? en.miter.tExt : en.butt ? buttWallT(ed, en) : en.t; }
       var t0 = endAt(ed.ends[0]), t1 = endAt(ed.ends[1]);
       var part = { loop: ed.loop, plane: ed.plane, t0: Math.min(t0, t1), t1: Math.max(t0, t1),
-        clips: ed.ends.filter(function (en) { return en.miter; }).map(function (en) { return { n: en.miter.n, w: en.miter.w }; }) };
+        clips: ed.ends.filter(function (en) { return en.miter && !en.swMiter; }).map(function (en) { return { n: en.miter.n, w: en.miter.w }; }) };
+      // lane rfIS: SolidWorks' edge-flange mitre (see swMiter above): the bend's end a taper from the base's corner to the
+      // wall's line (part.tapers, as a Miter Flange's square end, but straight in (angle, t)), the overlap strip stopping
+      // at the base's corner (tails), the wall cut square to itself (wallClips; OpenCascade: a clip of the whole sweep
+      // when the plane leaves the bend alone, the wall's slope ≤ 0 (90° and up), else a cut of the wall only, wallCuts)
+      if (ed.ends[0].swMiter || ed.ends[1].swMiter) {
+        var sBA = zoneBA(sheet, A, R, T, f);
+        part.BA = sBA; part.tapers = []; part.tails = []; part.wallClips = []; part.wallCuts = [];
+        ed.ends.forEach(function (en) {
+          var sm = en.swMiter;
+          if (!sm) return;
+          var dir = -dot(en.dIn, ed.plane.n), tM = swMax(sm), tE = tM + 0.1 * (tM - Math.min(sm.tB, sm.ext)) + 0.01 * T;
+          var tB = en.t + dir * sm.tB, tW = en.t + dir * sm.ext, tEnd = en.t + dir * tM, tOut = en.t + dir * tE;
+          var tl = [[-ov, tB], [0, tB], [sBA, tW], [sBA, tOut], [-ov, tOut]];
+          part.tapers.push(signedArea(tl) < 0 ? tl.reverse() : tl);
+          if ((tEnd - tB) * dir > 1e-12) part.tails.push({ t0: Math.min(tB, tEnd), t1: Math.max(tB, tEnd) });
+          part.wallClips.push({ n: sm.wall.n, w: sm.wall.w });
+          if (sm.slope <= 1e-9) part.clips.push({ n: sm.wall.n, w: sm.wall.w });
+          else {
+            // the wall's section from its start (w = 0) on, grown past its free end and both faces, swept over the end
+            var sA2 = Math.sin(A), cA2 = Math.cos(A), dg = 0.05 * T, I0 = [R * sA2, R - R * cA2], wv = [cA2, sA2], nv = [sA2, -cA2];
+            var pt = function (w, h) { return [I0[0] + wv[0] * w + nv[0] * h, I0[1] + wv[1] * w + nv[1] * h]; };
+            var wl = [pt(0, -dg), pt(L + dg, -dg), pt(L + dg, T + dg), pt(0, T + dg)];
+            part.wallCuts.push({ n: sm.wall.n, w: sm.wall.w, loop: signedArea(wl) < 0 ? wl.reverse() : wl, t0: Math.min(tB, tW, tOut) - dg, t1: Math.max(tB, tW, tOut) + dg });
+          }
+        });
+      }
       if (ed.ends[0].butt || ed.ends[1].butt) part.taper = buttTaper(ed, zoneBA(sheet, A, R, T, f), flangeWallLoop({ A: A, R: R, T: T, L: L }));
       if (ed.ends[0].square || ed.ends[1].square) {
         var mBA = zoneBA(sheet, A, R, T, f);
@@ -468,6 +524,34 @@
       var band = { s0: -ov, s1: shift, t0: Math.min(ed.ends[0].t, ed.ends[1].t), t1: Math.max(ed.ends[0].t, ed.ends[1].t) };
       var voids = bendVoids(ctx.body, ed.plane, band, T, { ends: false });
       if (voids.length) { part.voids = voids; part.band = band; part.BA = zoneBA(sheet, A, R, T, f); ed.cutouts = flatCutouts(voids, ed.ends[0].t, ed.ends[1].t >= ed.ends[0].t ? 1 : -1); }
+      // lane rfIS: at a free end where the sheet's corner is acute (its side edge runs back into the sheet from the end,
+      // a trapezoid's corner) the overlap strip [−ov, 0] would stick out past that side as a sliver (ov·ov·cot / 2 of
+      // area, in the part and in the blank: 3.6e-5 in³ on 16 ga at 71.6°). endCuts: that sliver, outside the sheet and
+      // past the flange's end, cut from the flange's tool (both kernels)
+      ed.ends.forEach(function (en) {
+        if (en.shared || !(ov > 0)) return;
+        var d2 = null, tolP = 1e-6 * (1 + ed.e.len);
+        edges.forEach(function (g) {
+          if (d2 || g === ed.e) return;
+          var far = len(sub(g.a, en.P)) < tolP ? g.b : len(sub(g.b, en.P)) < tolP ? g.a : null;
+          if (!far) return;
+          var dd = norm(sub(far, en.P));
+          if (Math.abs(dot(dd, ed.nF)) > 1e-6 || len(cross(dd, en.dIn)) < 1e-6) return;
+          d2 = dd;
+        });
+        if (!d2) return;
+        var ca = dot(d2, en.dIn), cs = -dot(d2, ed.o);
+        if (!(ca > 1e-6 && cs > 1e-6)) return;   // a square or obtuse corner: the strip stays on the sheet
+        var dl = 0.01 * T + ov * 0.01, sOut = ov + dl, lam = sOut / cs;
+        // in the sheet plane: x = −dIn (past the end), y = −o (into the sheet), n = ±nF so the prism runs through T
+        var sp = { origin: en.P, x: scale(en.dIn, -1), y: scale(ed.o, -1), n: cross(scale(en.dIn, -1), scale(ed.o, -1)) };
+        var Q2 = add(en.P, scale(d2, lam));
+        var loop2 = [[0, 0], [dl, 0], [dl, sOut], [dot(sub(Q2, en.P), sp.x), sOut]];
+        if (signedArea(loop2) < 0) loop2.reverse();
+        var nn = dot(sp.n, ed.nF) > 0 ? 1 : -1;   // the sheet lies between the face of the edge and T below it
+        var a0 = nn > 0 ? -T - dl : -dl, b0 = nn > 0 ? dl : T + dl;
+        (part.endCuts = part.endCuts || []).push({ loop: loop2, plane: sp, a: a0, b: b0 });
+      });
       tools.push(part);
       if (relief !== 'none') ed.ends.forEach(function (en) {
         if (en.shared) return;
@@ -502,6 +586,9 @@
       // a Miter Flange's square end: the flat is a square notch, the strip's end straight at the wall's (SolidWorks): the
       // same field as a Closed Corner's cut end, flagged `square` because the bend's taper is not in the flat
       if (ed.ends[0].square || ed.ends[1].square) rec.ccEnds = ed.ends.map(function (en) { return en.square ? { t0: en.square.ext, ext: en.square.ext, square: true } : null; });
+      // lane rfIS: SolidWorks' edge-flange mitre: per end, the wall's mitre line on its inside face as τ past the end
+      // (ext at the wall's start, slope per unit of wall), run on straight across the bend zone in the flat
+      if (ed.ends[0].swMiter || ed.ends[1].swMiter) rec.miterLines = ed.ends.map(function (en) { return en.swMiter ? { ext: en.swMiter.ext, slope: en.swMiter.slope, tB: en.swMiter.tB } : null; });
       // cutouts: the voids that cross the bend (bendVoids), as loops of [d, τ]: d from the (trimmed) edge line across the
       // flat strip, τ along the edge from a toward b; flatPattern cuts them from the blank where the flat put them
       if (ed.cutouts && ed.cutouts.length) rec.cutouts = ed.cutouts;
@@ -1107,14 +1194,20 @@
       .map(function (l) { return l.map(function (p) { return [p[0], (p[1] - ta) * sign]; }); });
   }
 
+  // lane rfIS: flangeLayout's endCuts (the overlap strip's sliver past an acute corner of the sheet) out of a part's tool
+  function endCut(tool, p, T) {
+    if (!p.endCuts || !p.endCuts.length) return tool;
+    return smBool(tool, 'subtract', p.endCuts.map(function (c) { return prism(c.loop, c.plane, c.a, c.b); }), T);
+  }
   function buildFlange(f, model, ctx) {
     if (f.miterFlange && f.sketch != null) return buildMiterFlange(f, model, ctx);   // lane DL: Miter Flange from a profile sketch
     var lay = flangeLayout(f, model, ctx);
     var tools = lay.parts.map(function (p) {
-      if (p.taper) return buttPart(p, lay.section, f.id);
-      if (p.tapers) return miterSquarePart(p, lay, f);
+      if (p.taper) return endCut(buttPart(p, lay.section, f.id), p, lay.section.T);
+      if (p.tapers) return endCut(miterSquarePart(p, lay, f), p, lay.section.T);
       var tool = prism(p.loop, p.plane, p.t0, p.t1, f.id, secCv(p.loop, lay.section));
       p.clips.forEach(function (c) { tool = tool.clipByPlane(c.n, c.w); });
+      tool = endCut(tool, p, lay.section.T);
       // cuts across the bend zone (bendVoids): wrapped round the bend and taken out of it
       if (p.voids && p.voids.length) {
         var w = wrapCut(p.voids, lay.section, p.BA, p.plane, { grow: { s0: p.band.s0 }, shared: f.id });
@@ -1139,7 +1232,9 @@
     p.tails.forEach(function (r) { if (r.t0 <= lo + 1e-12) lo = r.t1; if (r.t1 >= hi - 1e-12) hi = r.t0; });
     var bend = wrapRegion(p.tapers.concat(p.voids || []), sec, p.BA, p.plane, p.t0, p.t1, { shared: f.id });
     function ccw(l) { return signedArea(l) < 0 ? l.slice().reverse() : l; }
-    var rest = [prism(ccw(wall), p.plane, p.t0, p.t1, f.id)];
+    var wl = prism(ccw(wall), p.plane, p.t0, p.t1, f.id);
+    (p.wallClips || []).forEach(function (c) { wl = wl.clipByPlane(c.n, c.w); });   // lane rfIS: the wall cut square to itself
+    var rest = [wl];
     if (!p.voids) rest.push(prism(ccw(strip), p.plane, lo, hi, f.id));
     return smBool(bend, 'union', rest, T);
   }
@@ -1328,7 +1423,10 @@
     if (!(L1 - R0 * Math.tan(A1 / 2) > 1e-6)) throw new Error('Miter Flange: line 1 of the profile is too short for the bend' + (joints.length ? 's' : '') + '.');
     var gap = f.miterGap == null ? ccDefaultGap(model) : Math.max(0, +f.miterGap || 0);
     // miterStage: a corner with no gap is refused (SolidWorks: "The miter flanges interfere with each other"). miterSquare:
-    // a straight profile's corner is a square notch; an L profile keeps its 45° mitres: SolidWorks' was not measured
+    // a straight profile's corner is a square notch; an L profile keeps its 45° mitres. (lane rfIS, report 2026-11-02 5d:
+    // SolidWorks' L profile also ends the first line's strips square, T + g/√2 past the base's corner, and runs each later
+    // bend's end straight from that wall's end to the 45° wall line; the later stages here find their corner by the wall
+    // ends being a gap apart, which square ends are not: not done yet)
     var f1 = { id: f.id, type: 'flange', edges: edges, angle: A1 * 180 / Math.PI, length: L1, lengthRef: 'inner', position: position, radius: f.radius, toward: u,
       miter: true, miterStage: true, miterSquare: segs.length === 1, miterGap: gap, startOffset: +f.startOffset || 0, endOffset: +f.endOffset || 0, startAt: S, bendAllowance: f.bendAllowance };
     // a relief at a Start / End Offset (SolidWorks, rfDU): T/2 wide unless sized, T/2 past the bend's start line
@@ -2182,6 +2280,14 @@
           // lane DV: an end a Closed Corner cut (fi.ccEnds): straight from t0 at the bend's start to ext at its end
           var ce = fi.ccEnds && fi.ccEnds[kk];
           if (ce && dl > 1e-9) { r.t0 = ce.t0; r.ext = ce.ext; r.tapered = true; if (ce.square) r.mitred = true; return r; }
+          // lane rfIS: SolidWorks' edge-flange mitre: the wall's line run on straight across the bend zone (the strip's
+          // end side from d = 0 to BA), so the two strips meet past the corner where their lines cross
+          var ml = fi.miterLines && fi.miterLines[kk];
+          if (ml && dl > 1e-9) {
+            // below 90° the line comes back to the edge line short of the base's corner (the walls lean out): the strip's
+            // end then runs from the base's corner to the wall's line, as the folded bend's taper (not measured in SolidWorks)
+            r.ext = ml.ext; r.slope = ml.slope; r.t0 = Math.max(ml.ext - ml.slope * BA, ml.tB != null ? ml.tB : -Infinity); r.mitred = true; return r;
+          }
           var mp = fi.miterPlanes && fi.miterPlanes[kk];
           if (!mp || dl <= 1e-9) return r;
           var dIn = norm(sub(kk === 0 ? fi.b : fi.a, P)), dn = dot(dIn, mp.n);
@@ -4080,7 +4186,30 @@
         own: { plane: { origin: P3(x0, hb + hs * R, 0), x: ex, y: ey, n: en }, sec: { A: Math.PI / 2, R: R, T: T }, BA: BA, sf: dot(N3, en) > 0 ? 1 : -1 },
         wrap: { loop: loop, plane: { origin: P3(0, hb + hs * R, dc), x: N3.slice(), y: y, n: n }, sec: { A: Math.PI / 2, R: R, T: T }, BA: BA, ts: [t0, tE, sn * match.bEnd] } };
     }
-    work.forEach(function (wk) {
+    // lane rfIS (SolidWorks 2022, report 2026-11-02 5c): an end face flush with the other wall's inside face (d = 0: two
+    // Material Outside walls that both stop at the corner) has nothing in front of it to close to. SolidWorks builds it as
+    // if that other wall's end were picked: that end runs on to this wall's inside face and this wall's end is set back
+    // gap/√2 (the same blank as that pick, 0.822070059 on the 16 ga tray). ccSwap -> the other wall's end face, or null
+    function ccSwap(C, face) {
+      var ne = face.normal, flush = mesh.faces.some(function (g) { return !curved(g) && dot(g.normal, ne) < -1 + 1e-6 && Math.abs(-g.w - face.w) <= 1e-6 * (1 + T); });
+      if (!flush) return null;
+      var cc = loopInteriorPoint(C.outer), P0 = cc ? to3D(C.plane, cc[0], cc[1]) : null, best = null;
+      if (!P0) return null;
+      mesh.faces.forEach(function (g, gi) {
+        if (curved(g) || Math.abs(dot(g.normal, ne)) > 1e-6) return;
+        comps(gi).forEach(function (M) {
+          var q = loopInteriorPoint(M.outer), Q = q ? to3D(M.plane, q[0], q[1]) : null;
+          if (!Q) return;
+          var across = dot(ne, Q) - face.w;
+          if (across < 0 || across > T + 1e-6) return;   // the other wall's end: on its side of the flush plane, within its thickness
+          var toC = sub(P0, Q), dist = len(toC);
+          if (!(dot(g.normal, toC) > 1e-6) || dist > dMax) return;
+          if (!best || dist < best.dist) best = { c: M, at: Q, dist: dist };
+        });
+      });
+      return best;
+    }
+    for (var wi = 0; wi < work.length; wi++) (function (wk) {
       var C = wk.c, face = mesh.faces[C.fi], ne = face.normal, Cp = C.plane, cb = bbox(C.outer), why = null;
       // the end face's frame: h along its longest straight edge (the wall's height), w across the wall's thickness
       var sl = straightLoop(C.outer), hd = null, hl = 0;
@@ -4127,6 +4256,14 @@
           if (sg * (bEnd - wIn) > dMax || sg * ((sg > 0 ? mw[1] : mw[0]) - wIn) < T) return;
           match = { d: d, O: O, h0: h0, h1: h1, mh: mh, sg: sg, wIn: wIn, wOut: wOut, bEnd: bEnd, tA: ow[1] - ow[0] };
         });
+      }
+      if (!match && wk.picked && !wk.swapped && why !== 'wide') {
+        var sw = ccSwap(C, face);
+        if (sw) {
+          var skey = sw.c.fi + ':' + sw.c.k;
+          if (!seen[skey]) work.push(seen[skey] = { c: sw.c, picked: sw.at, swapped: true });
+          return;
+        }
       }
       if (!match) {
         if (wk.picked) throw new Error(why === 'wide' ? 'Closed Corner: the face at ' + bcPt(wk.picked) + ' is not the end of a flange: pick the narrow face through the thickness where the flange stops at the corner.' :
@@ -4200,7 +4337,7 @@
         }
       }
       corners.push({ at: to3D(Cp, (cb[0] + cb[2]) / 2, (cb[1] + cb[3]) / 2), d: d, faceAt: wk.picked });
-    });
+    })(work[wi]);
     if (!adds.length) throw new Error('Closed Corner: nothing to close.');
     // the extensions must run through empty space (after the trim): anything else in their way is a flange that is
     // not the matching one (a hem, a tab), and a union would weld it on

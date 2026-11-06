@@ -12,10 +12,17 @@
   // ------------------------------------------------------------------ sweep & loft
   // Chain a sketch's open entities (lines, arcs, open polylines) into one 3D polyline path.
   // `info.dropped` receives the number of entities that did not connect to the chain.
+  // rfIX: a path sketch with Make Path members (entity field pathId, kernel-sketch.js makeSketchPath) sweeps along that
+  // path only, as SolidWorks does: the other entities of the sketch are not the path (the first path when there are several)
+  function notPathMember(sketch, e) {
+    var id = null;
+    (sketch.entities || []).forEach(function (o) { if (o && o.pathId != null && !o.construction && (id == null || o.pathId < id)) id = o.pathId; });
+    return id != null && e.pathId !== id;
+  }
   function sketchPath(sketch, plane, info) {
     var chains = [];
     (sketch.entities || []).forEach(function (e) {
-      if (e.construction || e.t === 'text' || K.noProfileEntity(sketch, e)) return;   // sketch-layers: ETCH / BEND entities (and text) are not the path
+      if (e.construction || e.t === 'text' || K.noProfileEntity(sketch, e) || notPathMember(sketch, e)) return;   // sketch-layers: ETCH / BEND entities (and text) are not the path
       entityPolylines(e).forEach(function (pl) { chains.push(pl.closed ? pl.pts.concat([pl.pts[0]]) : pl.pts.slice()); });
     });
     if (!chains.length) throw new Error('Path sketch has no lines or arcs.');
@@ -99,7 +106,7 @@
   function sketchPathPieces(sketch, plane) {
     var raw = [], other = false, arcs = 0;
     (sketch.entities || []).forEach(function (e) {
-      if (e.construction || e.t === 'text' || e.t === 'point' || K.noProfileEntity(sketch, e)) return;
+      if (e.construction || e.t === 'text' || e.t === 'point' || K.noProfileEntity(sketch, e) || notPathMember(sketch, e)) return;
       if (e.t === 'line') raw.push({ kind: 'line', a: [e.x1, e.y1], b: [e.x2, e.y2] });
       else if (e.t === 'polyline' && !e.closed) for (var i = 0; i + 1 < e.pts.length; i++) raw.push({ kind: 'line', a: e.pts[i].slice(0, 2), b: e.pts[i + 1].slice(0, 2) });
       else if (e.t === 'arc' && Math.abs(e.a1 - e.a0) > 1e-9 && Math.abs(e.a1 - e.a0) < 360 - 1e-9) {
@@ -2353,7 +2360,7 @@
 
 
   // ------------------------------------------------------------------ public API (Kernel.*)
-  K.sketchPath = sketchPath; K.buildSweep = buildSweep; K.buildLoft = buildLoft; K.resolveFaces = resolveFaces; K.buildShell = buildShell;
+  K.sketchPath = sketchPath; K.notPathMember = notPathMember; K.buildSweep = buildSweep; K.buildLoft = buildLoft; K.resolveFaces = resolveFaces; K.buildShell = buildShell;
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   K.resolveRefGeo = resolveRefGeo; K.toCsys = toCsys; K.dirToCsys = dirToCsys; _.resolveRefGeo = resolveRefGeo; _.revolveOnRefAxis = revolveOnRefAxis;   // lane CZ
   _.buildLoft = buildLoft; _.blendLoftLoops = blendLoftLoops; _.loftPatches = loftPatches; _.joinLoftPatches = joinLoftPatches; _.buildShell = buildShell; _.buildSweep = buildSweep; _.faceLoopsClassified = faceLoopsClassified;

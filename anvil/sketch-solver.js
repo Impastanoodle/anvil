@@ -1695,9 +1695,13 @@ var SketchSolver = (function () {
     if (!hold.length) return null;
     var at = hold.map(function (h) { var p = refPoint(E, h) || refCenter(E, h); return p ? [p[0], p[1]] : null; });
     if (at.some(function (p) { return !p; })) return null;
-    var extra = [{ n: 2 * hold.length, ents: [z], f: function (Ents) {
+    // rfIT: a radial distance between two concentric curves (Offset Entities' dimension) also holds the first one's
+    // radius, so a new value moves the offset and not the original (the centre alone left both radii to the solve)
+    var r0 = kz === 'circle' && rel.dir === 'r' && R[0].s === null && (E[z].t === 'circle' || E[z].t === 'arc') && E[tg] && (E[tg].t === 'circle' || E[tg].t === 'arc') ? +E[z].r : null;
+    var extra = [{ n: 2 * hold.length + (r0 != null ? 1 : 0), ents: [z], f: function (Ents) {
       var out = [];
       hold.forEach(function (h, i) { var p = refPoint(Ents, h) || refCenter(Ents, h) || at[i]; out.push(p[0] - at[i][0], p[1] - at[i][1]); });
+      if (r0 != null) out.push(Ents[z].r - r0);
       return out;
     } }];
     var mob = null;
@@ -6892,4 +6896,105 @@ var SketchSolver = (function () {
     return { ok: true, entities: out.map(function (x) { var e = toEntity(subPiece(x.g, x.run[0], x.run[1])); if (x.g.corner) e.corner = true; return e; }) };
   }
   S.contourOffset = contourOffset;
+})(typeof SketchSolver !== 'undefined' ? SketchSolver : null);
+
+// rfIX: Align Grid/Origin (SolidWorks: Tools ▸ Sketch Tools ▸ Align ▸ Grid/Origin). The sketch's origin moves to a
+// point and its X axis turns along a line; the geometry stays where it is in space, so its coordinates change and the
+// sketch plane gets the new frame. S.alignGrid(sketch, plane (resolved), { origin: [u, v], dir: [du, dv] | null })
+// -> { ok, plane (the sketch's new plane record), u0, v0, ang (degrees the grid turned), map(p) (old uv -> new uv) }
+// | { ok: false, error }. Relations to the old origin go to a Fixed construction point left there; on a turn that is
+// not a quarter turn, Horizontal / Vertical of a line become Parallel to a Fixed construction line along the old axis
+// and a horizontal / vertical dimension of a line becomes its length (as Rotate Entities); a horizontal / vertical
+// distance or a Horizontal / Vertical between points cannot be kept and refuses with its name. Fixed / On Edge hold
+// where they were. A sketch on a reference plane feature keeps that plane's frame: refused.
+(function (S) {
+  if (!S) return;
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function pget(e, n) { return typeof n === 'number' ? e.pts[n >> 1][n & 1] : (+e[n] || 0); }
+  function normDeg(a) { a = a % 360; if (a <= -180) a += 360; if (a > 180) a -= 360; return a; }
+  function alignGrid(sk, pl, o) {
+    o = o || {};
+    if (!sk || !pl) return { ok: false, error: 'Open a sketch first.' };
+    if (sk.plane && sk.plane.featureId != null) return { ok: false, error: 'Align Grid/Origin works on a sketch on a standard plane or a face: this sketch\'s plane is a reference plane, whose own origin it keeps.' };
+    var P0 = o.origin || [0, 0], u0 = +P0[0] || 0, v0 = +P0[1] || 0;
+    var ang = 0;
+    if (o.dir) {
+      var L = Math.hypot(o.dir[0], o.dir[1]);
+      if (!(L > 1e-12)) return { ok: false, error: 'The X axis line has no length.' };
+      ang = normDeg(Math.atan2(o.dir[1], o.dir[0]) * 180 / Math.PI);
+      if (Math.abs(ang) < 1e-9) ang = 0;
+    }
+    var moves = Math.abs(u0) > 1e-12 || Math.abs(v0) > 1e-12;
+    if (!moves && !ang) return { ok: false, error: 'The grid is already there: pick another point or line.' };
+    var quarter = Math.abs(Math.abs(ang) - 90) < 1e-9 || Math.abs(Math.abs(ang) - 180) < 1e-9;
+    var rels = sk.rels || [];
+    if (ang && !quarter) {
+      for (var k = 0; k < rels.length; k++) {
+        var r = rels[k], pts = r.refs.length >= 2 && (r.type === 'horizontal' || r.type === 'vertical');
+        if (pts || (r.type === 'distance' && (r.dir === 'h' || r.dir === 'v'))) {
+          return { ok: false, error: S.describe(sk, r) + ' is measured along the sketch\'s X / Y axes and cannot be kept on a grid turned ' + Math.abs(ang).toFixed(2).replace(/\.?0+$/, '') + '°: delete it or make it driven first.' };
+        }
+      }
+    }
+    if (ang && rels.some(function (r) { return r.ordAxis; })) return { ok: false, error: 'An ordinate dimension set is measured along the sketch\'s axes: move only the origin, or delete the set first.' };
+    var saved = clone({ entities: sk.entities, rels: sk.rels || null, dims: sk.dims || null });
+    function restore() { sk.entities = saved.entities; if (saved.rels) sk.rels = saved.rels; else delete sk.rels; if (saved.dims) sk.dims = saved.dims; else delete sk.dims; }
+    try {
+      var E = sk.entities;
+      // the old origin: a Fixed construction point stands in for it
+      if (rels.some(function (r) { return r.refs.some(function (x) { return x === 'O'; }); })) {
+        E.push({ t: 'point', x: 0, y: 0, construction: true });
+        var oi = E.length - 1;
+        rels.forEach(function (r) { r.refs = r.refs.map(function (x) { return x === 'O' ? String(oi) : x; }); });
+        rels.push({ type: 'fix', refs: [String(oi)], at: [0, 0] });
+      }
+      // a turn that is no quarter turn: Horizontal / Vertical lines hold Parallel to the old axes
+      if (ang && !quarter) {
+        var axis = {};
+        var axisLine = function (which) {
+          if (axis[which] != null) return axis[which];
+          E.push(which === 'h' ? { t: 'line', x1: 0, y1: 0, x2: 1, y2: 0, construction: true } : { t: 'line', x1: 0, y1: 0, x2: 0, y2: 1, construction: true });
+          axis[which] = E.length - 1;
+          rels.push({ type: 'fix', refs: [String(axis[which])] });
+          return axis[which];
+        };
+        rels.forEach(function (r) {
+          if ((r.type === 'horizontal' || r.type === 'vertical') && r.refs.length === 1) { var w = r.type === 'horizontal' ? 'h' : 'v'; r.type = 'parallel'; r.refs = [r.refs[0], String(axisLine(w))]; }
+        });
+      }
+      if (rels.length && !sk.rels) sk.rels = rels;
+      // Fixed / On Edge: free while everything moves, then held where they are again
+      var held = (sk.rels || []).filter(function (r) { return r.type === 'fix' || r.type === 'onEdge'; });
+      held.forEach(function (r) { delete r.at; });
+      var all = sk.entities.map(function (e, i) { return i; }), res;
+      if (moves) {
+        res = S.transformEntities(sk, all, { dx: -u0, dy: -v0 }, { keepRelations: true });
+        if (!res.ok) { restore(); return { ok: false, error: res.error }; }
+        (sk.rels || []).forEach(function (r) { if (r.ordAt != null) r.ordAt -= r.ordAxis === 'y' ? u0 : v0; });
+      }
+      if (ang) {
+        all = sk.entities.map(function (e, i) { return i; });
+        res = S.transformEntities(sk, all, { rot: -ang, cx: 0, cy: 0 }, { keepRelations: true });
+        if (!res.ok) { restore(); return { ok: false, error: res.error }; }
+      }
+      held.forEach(function (r) {
+        var p = S.parseRef(r.refs[0]), e = p && !p.o ? sk.entities[p.e] : null;
+        if (!e) return;
+        if (p.s === null && e.t !== 'point') r.at = S.paramNames(e).map(function (nm) { return pget(e, nm); });
+        else { var q = S.refPoint(sk, r.refs[0]); if (q) r.at = [q[0], q[1]]; }
+      });
+      var an = S.analyze(sk), an0 = S.analyze({ entities: saved.entities, rels: saved.rels || undefined, dims: saved.dims || undefined });
+      if (an.conflicts > an0.conflicts) { restore(); return { ok: false, error: 'The sketch\'s relations do not hold on the new grid.' }; }
+    } catch (err) { restore(); return { ok: false, error: 'Align Grid/Origin could not be done: ' + err.message }; }
+    var c = Math.cos(ang * Math.PI / 180), s = Math.sin(ang * Math.PI / 180);
+    function add(a, b, k) { return [a[0] + k * b[0], a[1] + k * b[1], a[2] + k * b[2]]; }
+    var org = add(add(pl.origin, pl.x, u0), pl.y, v0), nx = add(pl.x.map(function (x) { return x * c; }), pl.y, s), ny = add(pl.y.map(function (y) { return y * c; }), pl.x, -s);
+    var np = sk.plane && sk.plane.custom ? clone(sk.plane) : { custom: true };
+    np.origin = org; np.x = nx; np.y = ny; np.n = pl.n.slice();
+    delete np.offset; delete np.ref;
+    if (typeof Kernel !== 'undefined' && Kernel.tidyPlane) Kernel.tidyPlane(np);
+    function map(p) { var x = p[0] - u0, y = p[1] - v0; return [c * x + s * y, -s * x + c * y]; }
+    return { ok: true, plane: np, u0: u0, v0: v0, ang: ang, map: map };
+  }
+  S.alignGrid = alignGrid;
 })(typeof SketchSolver !== 'undefined' ? SketchSolver : null);

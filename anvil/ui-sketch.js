@@ -3915,13 +3915,17 @@
   }
   function dimMidMenu(mx, my, ev) {
     var mid = dimMidLine(mx, my);
-    if (!mid) return false;
-    var items = [
-      { label: 'Select Midpoint', icon: 'dim', action: function () { if (App.mode === 'sketch' && App.tool === 'dimension') pickDimMidpoint(mid.ref); } },
+    // rfIT: on a member of a Make Path path, Smart Dimension offers the path's length (the path dimensioned as one)
+    var ph = UI.pickEntity(mx, my), pm = ph && UI.sketchPathMembers ? UI.sketchPathMembers(ph.index) : null;
+    if (!mid && !pm) return false;
+    var items = [];
+    if (mid) items.push({ label: 'Select Midpoint', icon: 'dim', action: function () { if (App.mode === 'sketch' && App.tool === 'dimension') pickDimMidpoint(mid.ref); } });
+    if (pm) items.push({ label: 'Path Length Dimension', icon: 'pathLengthDim', action: function () { if (App.mode === 'sketch' && UI.pathLengthDimForPath) UI.pathLengthDimForPath(ph.index); } });
+    items.push(
       { sep: true },
       { label: 'Select', action: function () { if (App.mode === 'sketch') cancelTool(); } },
       { label: 'Exit Sketch', icon: 'exitSketch', action: function () { if (App.mode === 'sketch') exitSketch(); } }
-    ];
+    );
     UI.showMenu(ev.clientX, ev.clientY, items);
     return true;
   }

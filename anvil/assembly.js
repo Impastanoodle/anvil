@@ -78,7 +78,7 @@ var Assembly = (function () {
 
   function examplesList() { return (typeof AnvilExamples !== 'undefined' && AnvilExamples) ? AnvilExamples : []; }
 
-  function isAssemblyScript(code) { return /\b(a|asm)\.(insert|mate|coincident|concentric|distance|angle|parallel|perpendicular|tangent|width|gear|limitDistance|limitAngle|linearPattern|circularPattern|mirrorComponents|explode)\s*\(/.test(String(code || '')); }
+  function isAssemblyScript(code) { return /\b(a|asm)\.(insert|mate|coincident|concentric|distance|angle|parallel|perpendicular|tangent|width|gear|limitDistance|limitAngle|symmetric|slot|hinge|linearCoupler|linearPattern|circularPattern|mirrorComponents|explode)\s*\(/.test(String(code || '')); }
 
   // ------------------------------------------------------------------ documents: live links to part / assembly files
   // A component source { file: name } is a live link to a document in the document store instead of an embedded copy
@@ -314,12 +314,12 @@ var Assembly = (function () {
 
   var MATE_BASE = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle',
     parallel: 'Parallel', perpendicular: 'Perpendicular', tangent: 'Tangent', width: 'Width', gear: 'Gear',
-    limitdistance: 'LimitDistance', limitangle: 'LimitAngle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge' };
-  var MATE_TYPES = ['coincident', 'concentric', 'distance', 'angle', 'parallel', 'perpendicular', 'tangent', 'width', 'gear', 'limitdistance', 'limitangle', 'symmetric', 'slot', 'hinge'];
+    limitdistance: 'LimitDistance', limitangle: 'LimitAngle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'LinearCoupler' };
+  var MATE_TYPES = ['coincident', 'concentric', 'distance', 'angle', 'parallel', 'perpendicular', 'tangent', 'width', 'gear', 'limitdistance', 'limitangle', 'symmetric', 'slot', 'hinge', 'linearcoupler'];
   // Mate PropertyManager groups, as in SolidWorks (types Anvil does not have yet are left out)
   var MATE_GROUPS = {
     standard: ['coincident', 'parallel', 'perpendicular', 'tangent', 'concentric', 'distance', 'angle'],
-    advanced: ['symmetric', 'width', 'limitdistance', 'limitangle'],
+    advanced: ['symmetric', 'width', 'linearcoupler', 'limitdistance', 'limitangle'],   // (SolidWorks 2024 lists Linear/Linear Coupler among the Advanced Mates)
     mechanical: ['slot', 'hinge', 'gear']
   };
   // every key of a mate that holds a reference (Width: a2 / b2 the second faces; Symmetric: a2 the symmetry plane;
@@ -369,13 +369,16 @@ var Assembly = (function () {
   // Distance Along Slot, Percent Along Slot; along the slot's centre line from the first end's arc centre, flip: from
   // the other end). Hinge { limit: true, min, max } (Define angle limit, degrees, signed about the Concentric axis; the
   // angle is measured between a3 and b3). Keys that do not belong to the mate type are removed.
-  var FLIP_TYPES = { distance: 1, angle: 1, coincident: 1, tangent: 1, gear: 1, limitdistance: 1, limitangle: 1, slot: 1 };
+  // Linear/Linear Coupler { ratio: [a, b] } (rfIV): A moving a along its direction moves B b along its own (SolidWorks'
+  // Ratio a : b, a number r means [1, r]); flip is Reverse. phase [sA, sB] (model units) as Gear's: where each one stood
+  // along its direction when the mate was first solved.
+  var FLIP_TYPES = { distance: 1, angle: 1, coincident: 1, tangent: 1, gear: 1, limitdistance: 1, limitangle: 1, slot: 1, linearcoupler: 1 };
   function setMateValues(m, opts) {
     opts = opts || {};
     ['distance', 'angle', 'offset', 'min', 'max', 'percent'].forEach(function (k) { if (opts[k] != null) m[k] = +opts[k]; });
     if (opts.constraint != null) m.constraint = String(opts.constraint).toLowerCase();
     if (opts.limit != null) { if (opts.limit) m.limit = true; else delete m.limit; }
-    if (opts.ratio != null) m.ratio = Array.isArray(opts.ratio) ? [+opts.ratio[0], +opts.ratio[1]] : [+opts.ratio, 1];
+    if (opts.ratio != null) m.ratio = Array.isArray(opts.ratio) ? [+opts.ratio[0], +opts.ratio[1]] : m.type === 'linearcoupler' ? [1, +opts.ratio] : [+opts.ratio, 1];
     if (opts.flip != null) { if (opts.flip) m.flip = true; else delete m.flip; }
     if (m.type !== 'hinge') delete m.limit;
     if (m.type !== 'slot') delete m.constraint;
@@ -387,7 +390,7 @@ var Assembly = (function () {
     if (m.type !== 'angle') delete m.angle;
     if (m.type !== 'coincident' || !m.offset) delete m.offset;
     if (!limit) { delete m.min; delete m.max; }
-    if (m.type !== 'gear') { delete m.ratio; delete m.phase; }
+    if (m.type !== 'gear' && m.type !== 'linearcoupler') { delete m.ratio; delete m.phase; }
     if (m.type !== 'width' && m.type !== 'hinge' && m.type !== 'symmetric') delete m.a2;
     if (m.type !== 'width' && m.type !== 'hinge') delete m.b2;
     if (m.type !== 'hinge' || !m.limit) { delete m.a3; delete m.b3; }
@@ -395,7 +398,7 @@ var Assembly = (function () {
     if (m.type === 'angle' && m.angle == null) m.angle = 0;
     if (limit && m.min == null) m.min = 0;
     if (limit && m.max == null) m.max = m.min;
-    if (m.type === 'gear' && m.ratio == null) m.ratio = [1, 1];
+    if ((m.type === 'gear' || m.type === 'linearcoupler') && m.ratio == null) m.ratio = [1, 1];
     if (!FLIP_TYPES[m.type] || (m.type === 'coincident' && !m.offset)) delete m.flip;
     return m;
   }
@@ -704,9 +707,51 @@ var Assembly = (function () {
       var t = Math.max(0, Math.min(L, dot(sub(p, pa), e))), err = Math.abs(len(sub(p, add(pa, scale(e, t)))) - r);
       if (err < bestErr) { bestErr = err; best = { a: pa, b: pb, dir: d, radius: r, length: L, e: e }; }
     }
-    if (!best || bestErr > 0.1 * best.radius + 10 * tol) return null;
+    if (!best || bestErr > 0.1 * best.radius + 10 * tol) return findArcSlot(geom, p, endPicked, cs, tol);
     var first = endPicked ? len(sub(p, best.a)) <= len(sub(p, best.b)) : dot(best.e, canonicalDir(best.e)) > 0;
     return { p1: first ? best.a : best.b, p2: first ? best.b : best.a, dir: best.dir, radius: best.radius, length: best.length };
+  }
+  // rfIV: an arc slot (SolidWorks' Arc Slot; the sketch's arcSlot): two end cylinders of radius r whose axes lie Rc from
+  // a centre axis, joined by the inner and outer walls (cylinders of radius Rc - r and Rc + r about it). -> { arc: true,
+  // center, axis (unit, so that the slot runs positive about it from p1 to p2), p1, p2, dir, radius, R (Rc), sweep (rad),
+  // length (Rc · sweep, along the centre line) }. p1: the picked end, or for a wall the end the slot runs counter-
+  // clockwise from about the canonical axis.
+  function findArcSlot(geom, p, endPicked, cs, tol) {
+    var best = null, bestErr = Infinity;
+    for (var i = 0; i < cs.length; i++) for (var j = i + 1; j < cs.length; j++) {
+      var a = cs[i], b = cs[j], r = a.radius;
+      if (Math.abs(a.radius - b.radius) > tol || len(cross(a.dir, b.dir)) > 1e-6) continue;
+      for (var k = 0; k < cs.length; k++) {
+        var c = cs[k];
+        if (k === i || k === j || len(cross(c.dir, a.dir)) > 1e-6) continue;
+        var R = axisDistance(c, a);
+        if (R <= r + tol || Math.abs(axisDistance(c, b) - R) > tol * 10) continue;
+        // both walls about c's axis
+        var walls = cs.filter(function (w) { return len(cross(w.dir, c.dir)) < 1e-6 && axisDistance(w, c) < tol * 10 && (Math.abs(w.radius - (R - r)) < tol * 10 || Math.abs(w.radius - (R + r)) < tol * 10); });
+        if (walls.length < 2) continue;
+        var d = canonicalDir(a.dir), C = c.point, h = dot(sub(p, C), d);
+        var onPlane = function (q) { return sub(q, scale(d, dot(sub(q, C), d))); };
+        var pa = onPlane(a.point), pb = onPlane(b.point), Cp = onPlane(C);
+        var ea = norm(sub(pa, Cp)), eb = norm(sub(pb, Cp)), ang = Math.atan2(dot(d, cross(ea, eb)), dot(ea, eb));   // a -> b about d
+        if (ang < 0) ang += 2 * Math.PI;
+        // which way round is the slot: the outer wall lies at the middle of the arc from a to b about d, or of the other
+        var wallAt = function (phi) {
+          var e2 = cross(d, ea), q = add(add(Cp, scale(ea, (R + r) * Math.cos(phi))), scale(e2, (R + r) * Math.sin(phi)));
+          var hit = patchesByDistance(geom, add(q, scale(d, h)))[0];
+          return hit && hit.d <= tol * 20;
+        };
+        var ccw = wallAt(ang / 2), cw = wallAt(ang / 2 + Math.PI);
+        if (!ccw && !cw) continue;
+        var from = ccw ? a : b, to = ccw ? b : a, sweep = ccw ? ang : 2 * Math.PI - ang;
+        // the point lies on the slot's wall: on a wall cylinder or an end
+        var v = onPlane(p), rho = len(sub(v, Cp)), err = Math.min(Math.abs(rho - (R - r)), Math.abs(rho - (R + r)), Math.abs(len(sub(v, pa)) - r), Math.abs(len(sub(v, pb)) - r));
+        if (err < bestErr) { bestErr = err; best = { from: onPlane(from.point), to: onPlane(to.point), C: Cp, d: d, r: r, R: R, sweep: sweep, h: h }; }
+      }
+    }
+    if (!best || bestErr > 0.1 * best.r + 10 * tol) return null;
+    var first = endPicked ? len(sub(p, best.from)) <= len(sub(p, best.to)) : true;
+    return { arc: true, center: best.C, axis: first ? best.d : scale(best.d, -1), p1: first ? best.from : best.to, p2: first ? best.to : best.from,
+      dir: best.d, radius: best.r, R: best.R, sweep: best.sweep, length: best.R * best.sweep };
   }
   // the slot of a mate reference, in its component's local frame (through a sub-assembly: as localRef does)
   function slotOfRef(model, partBuilds, ref) {
@@ -719,7 +764,10 @@ var Assembly = (function () {
       iref.component = inner.id;
       if (ref.path.length > 1) iref.path = ref.path.slice(1); else delete iref.path;
       var s = slotOfRef(sb.model, sb.partBuilds, iref), Ti = tf(inner.transform);
-      return s && { p1: transformPoint(Ti, s.p1), p2: transformPoint(Ti, s.p2), dir: transformDir(Ti, s.dir), radius: s.radius, length: s.length };
+      if (!s) return null;
+      var o = { p1: transformPoint(Ti, s.p1), p2: transformPoint(Ti, s.p2), dir: transformDir(Ti, s.dir), radius: s.radius, length: s.length };
+      if (s.arc) { o.arc = true; o.center = transformPoint(Ti, s.center); o.axis = transformDir(Ti, s.axis); o.R = s.R; o.sweep = s.sweep; }
+      return o;
     }
     var g = partGeom(partBuilds && partBuilds[comp.id]), p = ref.cylinder || ref.face;
     return g && p ? findSlot(g, copy3(p), !!ref.cylinder) : null;
@@ -832,7 +880,7 @@ var Assembly = (function () {
     return 'aligned';
   }
   // every mate but Gear has an alignment (Aligned / Anti-Aligned / Closest) the user may flip
-  function hasAlignment(m) { return !!(m && m.type !== 'gear'); }
+  function hasAlignment(m) { return !!(m && m.type !== 'gear' && m.type !== 'linearcoupler'); }
   function alignSign(m) { var a = m.alignment || defaultAlignment(m); return a === 'anti-aligned' ? -1 : a === 'closest' ? 0 : 1; }
 
   // Signed plane gap a Coincident / Distance mate holds: B's plane lies `target` along A's normal (flip: the other side).
@@ -869,6 +917,7 @@ var Assembly = (function () {
   function clampExcess(v, lo, hi) { return v < lo ? v - lo : v > hi ? v - hi : 0; }
   function axisDistance(A, B) { var v = sub(B.point, A.point); return len(sub(v, scale(A.dir, dot(v, A.dir)))); }
   function planeGap(P, X) { return dot(sub(X.point, P.point), P.normal); }   // X's point above P, along P's normal
+  function couplerPos(W) { return dot(W.point, dirOf(W)); }   // where a Linear Coupler ref stands along its own direction
   function axisTurn(W) { return signedAngle(perpTo(W.dir), W.ref, W.dir); }   // the component's turn about its axis
   function limitRange(pm, toRad) {
     var f = toRad ? Math.PI / 180 : 1, lo = (+pm.mate.min || 0) * f, hi = (+pm.mate.max || 0) * f;
@@ -916,6 +965,10 @@ var Assembly = (function () {
       var da = sub(Am.dir, scale(B.dir, s)), pa = sub(va, scale(Am.dir, dot(va, Am.dir)));
       return [da[0], da[1], da[2], pa[0], pa[1], pa[2]];
     }
+    if (pm.type === 'slot' && pm.slotArc) {   // rfIV: an arc slot: on the centre-line arc, at / between its ends (arc length)
+      var ar = arcSlotAt(pm, A, A2, B), dR = sub(A.dir, scale(B.dir, s || 1)), gA = slotTarget(pm), sA = pm.slotArc.R * ar.phi;
+      return [dR[0], dR[1], dR[2], ar.rho - pm.slotArc.R, gA != null ? sA - gA : pm.noLimit ? 0 : clampExcess(sA, 0, pm.slotLength)];
+    }
     if (pm.type === 'slot') {        // the pin's axis parallel to the slot, on its centre line, at / between the ends
       var eS = norm(sub(A2.point, A.point)), wS = cross(A.dir, eS), vS = sub(B.point, A.point), tS = dot(vS, eS), dS = sub(A.dir, scale(B.dir, s || 1));
       var goal = slotTarget(pm);
@@ -927,6 +980,9 @@ var Assembly = (function () {
       var rh = [dh[0], dh[1], dh[2], ph[0], ph[1], ph[2], nh[0], nh[1], nh[2], 0.5 * (dot(vc, A2.normal) + pm.sign2 * dot(vc, B2.normal))];
       if (pm.A3) rh.push(hingeExcess(pm, A, A3, B3));
       return rh;
+    }
+    if (pm.type === 'linearcoupler') {   // B's travel along its direction minus ±(b/a)·A's, both from the phase
+      return [(couplerPos(B) - pm.phase[1]) - (pm.mate.flip ? -1 : 1) * pm.ratio * (couplerPos(A) - pm.phase[0])];
     }
     if (pm.type === 'gear') {
       var phs = pm.phase, dA = wrapAngle(axisTurn(A) - phs[0]), dB = wrapAngle(axisTurn(B) - phs[1]);
@@ -944,6 +1000,15 @@ var Assembly = (function () {
     if (W.normal) o.normal = mirrorDir(W.normal, P);
     if (W.dir) o.dir = mirrorDir(W.dir, P);
     return o;
+  }
+  // Arc slot: the pin B about the arc's centre axis A, from the first end A2: { e1, e2 (the in-plane frame, e1 towards the
+  // first end), h (B along the axis), rho (B's distance from the axis), phi (radians from the first end, positive about
+  // A.dir, continuous round the slot: -π + sweep/2 .. π + sweep/2) }
+  function arcSlotAt(pm, A, A2, B) {
+    var ax = A.dir, e0 = sub(A2.point, A.point), e1 = norm(sub(e0, scale(ax, dot(e0, ax)))), e2 = cross(ax, e1);
+    var v = sub(B.point, A.point), h = dot(v, ax), vp = sub(v, scale(ax, h)), sw = pm.slotArc.sweep;
+    var phi = sw / 2 + wrapAngle(Math.atan2(dot(vp, e2), dot(vp, e1)) - sw / 2);
+    return { e1: e1, e2: e2, h: h, rho: len(vp), phi: phi };
   }
   // Slot: the along-slot position its constraint holds (null: Free), measured from pm.A's end
   function slotTarget(pm) {
@@ -1035,6 +1100,12 @@ var Assembly = (function () {
           if (!(isFinite(+ratio[0]) && isFinite(+ratio[1]) && +ratio[0] > 0 && +ratio[1] > 0)) throw new Error('Gear ratio must be two numbers > 0');
           pm.ratio = +ratio[0] / +ratio[1];
         }
+        if (m.type === 'linearcoupler') {
+          if (!pm.A.comp || !pm.B.comp || pm.A.comp === pm.B.comp) throw new Error('Linear/Linear Coupler needs a direction (an edge, face or axis) on each of two components');
+          var cr = m.ratio || [1, 1];
+          if (!(isFinite(+cr[0]) && isFinite(+cr[1]) && +cr[0] > 0 && +cr[1] > 0)) throw new Error('Linear/Linear Coupler ratio must be two numbers > 0');
+          pm.ratio = +cr[1] / +cr[0];
+        }
         if (m.type === 'symmetric') {
           if (!m.a2) throw new Error('Symmetric needs a symmetry plane and two entities to mate');
           pm.A2 = localRef(model, partBuilds, m.a2);
@@ -1047,9 +1118,15 @@ var Assembly = (function () {
           if (m.constraint === 'percent' && !(isFinite(+m.percent) && +m.percent >= 0 && +m.percent <= 100)) throw new Error('Percent must be between 0 and 100');
           if (pm.B.kind !== 'axis') throw new Error('Slot needs a slot face and a cylindrical face or axis (the pin)');
           var sl = pm.A.comp ? slotOfRef(model, partBuilds, m.a) : null;
-          if (!sl) throw new Error('Slot needs a face of a straight slot: its flat sides or round ends');
-          pm.A = { kind: 'axis', refKind: 'cylinder', comp: pm.A.comp, point: sl.p1, dir: sl.dir, ref: perpTo(sl.dir), radius: sl.radius };
-          pm.A2 = { kind: 'axis', refKind: 'cylinder', comp: pm.A.comp, point: sl.p2, dir: sl.dir, ref: perpTo(sl.dir), radius: sl.radius };
+          if (!sl) throw new Error('Slot needs a face of a straight slot or an arc slot: its sides or round ends');
+          if (sl.arc) {   // rfIV: A the arc's centre axis, A2 the first end's axis (the angle is measured from it)
+            pm.A = { kind: 'axis', refKind: 'cylinder', comp: pm.A.comp, point: sl.center, dir: sl.axis, ref: perpTo(sl.axis), radius: sl.radius };
+            pm.A2 = { kind: 'axis', refKind: 'cylinder', comp: pm.A.comp, point: sl.p1, dir: sl.axis, ref: perpTo(sl.axis), radius: sl.radius };
+            pm.slotArc = { R: sl.R, sweep: sl.sweep };
+          } else {
+            pm.A = { kind: 'axis', refKind: 'cylinder', comp: pm.A.comp, point: sl.p1, dir: sl.dir, ref: perpTo(sl.dir), radius: sl.radius };
+            pm.A2 = { kind: 'axis', refKind: 'cylinder', comp: pm.A.comp, point: sl.p2, dir: sl.dir, ref: perpTo(sl.dir), radius: sl.radius };
+          }
           pm.slotLength = sl.length; pm.pair = 'aa';
         }
         if (m.type === 'hinge') {
@@ -1089,6 +1166,12 @@ var Assembly = (function () {
           m.phase = [axisTurn(worldOf(pm.A, transforms[pm.ca.id])) * 180 / Math.PI, axisTurn(worldOf(pm.B, transforms[pm.cb.id])) * 180 / Math.PI];
         }
         pm.phase = [+m.phase[0] * Math.PI / 180, +m.phase[1] * Math.PI / 180];
+      }
+      if (pm.type === 'linearcoupler') {
+        if (!(m.phase && m.phase.length === 2 && isFinite(+m.phase[0]) && isFinite(+m.phase[1]))) {
+          m.phase = [couplerPos(worldOf(pm.A, transforms[pm.ca.id])), couplerPos(worldOf(pm.B, transforms[pm.cb.id]))];
+        }
+        pm.phase = [+m.phase[0], +m.phase[1]];
       }
       pm.rigid = (pm.ca && pm.cb && pm.ca === pm.cb && !pm.extra) || !mateComps(pm).some(movable);
       if (pm.type === 'angle' || pm.type === 'limitangle') setAngleAxis(pm, null);
@@ -1196,6 +1279,16 @@ var Assembly = (function () {
       var moveB = moverIsB(pm), C = moveB ? pm.cb : pm.ca, oc = moveB ? pm.ca : pm.cb, L = locks[C.id];
       var mine = moveB ? pm.B : pm.A, other = moveB ? pm.A : pm.B;
       function W(lr, comp) { return worldOf(lr, comp ? transforms[comp.id] : null); }
+      if (pm.type === 'linearcoupler') {   // slide the moving one along its own direction
+        var ce = residualOf(pm)[0], Mc = W(mine, C), cd = dirOf(Mc);
+        if (Math.abs(ce) > TOL_DONE) {
+          var amt = moveB ? -ce : ce / ((pm.mate.flip ? -1 : 1) * pm.ratio);
+          transforms[C.id] = { rotation: transforms[C.id].rotation, position: add(transforms[C.id].position, scale(cd, amt)) };
+        }
+        lockTrans(L, cd);
+        if (!oc || grounded[oc.id]) grounded[C.id] = true;
+        return;
+      }
       if (pm.type === 'gear') {
         var err = residualOf(pm)[0], Mg = W(mine, C);
         if (Math.abs(err) > TOL_DONE) {
@@ -1268,7 +1361,14 @@ var Assembly = (function () {
       }
       O = target();
       var delta, v = sub(O.point, M.point), dir = dirOf(M), lockE = [];
-      if (pm.type === 'slot') {
+      if (pm.type === 'slot' && pm.slotArc) {   // rfIV: onto the centre-line arc, at the angle the constraint holds
+        var Aa = W(pm.A), Ba = W(pm.B), at = arcSlotAt(pm, Aa, W(pm.A2), Ba), Rc = pm.slotArc.R, ga = slotTarget(pm);
+        var ph = ga != null ? ga / Rc : Math.max(0, Math.min(pm.slotArc.sweep, at.phi));
+        var rad = add(scale(at.e1, Math.cos(ph)), scale(at.e2, Math.sin(ph)));
+        delta = sub(add(add(Aa.point, scale(Aa.dir, at.h)), scale(rad, Rc)), Ba.point);
+        if (!moveB) delta = scale(delta, -1);
+        lockE = ga != null ? [rad, cross(Aa.dir, rad)] : [rad];
+      } else if (pm.type === 'slot') {
         var A = W(pm.A), B = W(pm.B), e = norm(sub(W(pm.A2).point, A.point)), w = cross(A.dir, e), u = sub(B.point, A.point), t = dot(u, e), g = slotTarget(pm);
         var goal = g != null ? g : Math.max(0, Math.min(pm.slotLength, t));
         delta = add(scale(w, -dot(u, w)), scale(e, goal - t));
@@ -1300,7 +1400,7 @@ var Assembly = (function () {
       if (!oc || grounded[oc.id]) grounded[C.id] = true;
     }
     var HELD = { symmetric: 1, slot: 1, hinge: 1 };
-    var MORE = { parallel: 1, perpendicular: 1, tangent: 1, width: 1, gear: 1, limitdistance: 1 };
+    var MORE = { parallel: 1, perpendicular: 1, tangent: 1, width: 1, gear: 1, limitdistance: 1, linearcoupler: 1 };
     function greedy(pm) {
       if (pm.rigid) return;
       if (pm.type === 'angle' || pm.type === 'limitangle') { greedyAngle(pm); return; }
@@ -1517,8 +1617,14 @@ var Assembly = (function () {
         var piv = {};
         group.forEach(function (id) { piv[id] = pivotOf(findComponent(model, id)); });
         var n = group.length * 6, i, j, k, N = [];
-        if (mates.length) {
-          var Jm = jacobian(mates, group, piv), M = [], maxe = 0;
+        // rfIV: the free motions as if no limit held (Limit Distance / Limit Angle, a Free slot's ends, a Hinge's angle
+        // limit): a part stopped at a limit can still be dragged back off it (at the bound the limit row's numeric
+        // derivative is not 0, so the motion was locked there); lm() below holds the limit again
+        var jm = mates.filter(function (pm) { return pm.type !== 'limitdistance' && pm.type !== 'limitangle'; });
+        if (jm.length) {
+          jm.forEach(function (pm) { pm.noLimit = true; });
+          var Jm, M = [], maxe = 0;
+          try { Jm = jacobian(jm, group, piv); } finally { jm.forEach(function (pm) { delete pm.noLimit; }); }
           for (i = 0; i < n; i++) { M.push([]); for (j = 0; j < n; j++) { var s = 0; for (k = 0; k < Jm[i].length; k++) s += Jm[i][k] * Jm[j][k]; M[i].push(s); } }
           var eg = eigSym(M);
           eg.values.forEach(function (v) { if (v > maxe) maxe = v; });
@@ -2418,6 +2524,125 @@ var Assembly = (function () {
     return { pairs: pairs, volume: pairs.reduce(function (s, p) { return s + p.volume; }, 0), checked: checked, tolerance: tol };
   }
 
+  // ------------------------------------------------------------------ rfIV: Collision Detection while moving
+  // collision(model, build, moving, opts) -> { hit, pairs: [{ a, b, aName, bName, aIndex, bIndex, volume, points }],
+  // checked }: the components `moving` (ids) against the others at the transforms the model holds now (a drag frame's
+  // pose: no world bodies are rebuilt; build gives the part bodies). opts.against (ids): Check between These components
+  // (pairs inside that set only; default All components); opts.skip: pair keys 'a|b' left out (pairs that already
+  // overlapped when the drag began). Touching faces are no collision; an overlap of more than opts.minVolume (default
+  // 1e-9 · the pair's box diagonal³) is. `points` are the common solid's vertices (world), where the faces meet.
+  function localBox(b) {
+    if (b.__box !== undefined) return b.__box;
+    var bx = b.polygons && b.polygons.length ? bodyBox(b) : null;
+    try { Object.defineProperty(b, '__box', { value: bx, enumerable: false, configurable: true, writable: true }); } catch (e) { }
+    return bx;
+  }
+  function worldBox(bx, T) {
+    var min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (var i = 0; i < 8; i++) {
+      var q = transformPoint(T, [i & 1 ? bx.max[0] : bx.min[0], i & 2 ? bx.max[1] : bx.min[1], i & 4 ? bx.max[2] : bx.min[2]]);
+      for (var k = 0; k < 3; k++) { if (q[k] < min[k]) min[k] = q[k]; if (q[k] > max[k]) max[k] = q[k]; }
+    }
+    return { min: min, max: max };
+  }
+  function collisionKey(a, b) { return a < b ? a + '|' + b : b + '|' + a; }
+  function collision(model, build, moving, opts) {
+    opts = opts || {};
+    var pbs = (build && build.partBuilds) || {}, mv = {}, inSet = null, skip = opts.skip || {}, items = [];
+    (moving || []).forEach(function (id) { var c = findComponent(model, id); if (c) mv[c.id] = true; });
+    if (opts.against && opts.against.length) { inSet = {}; opts.against.forEach(function (id) { var c = findComponent(model, id); if (c) inSet[c.id] = true; }); }
+    (model.components || []).forEach(function (c, i) {
+      var pb = pbs[c.id], body = pb && pb.body ? partBody(pb.body) : null, bx = body ? localBox(body) : null;
+      if (!bx || compState(model, c).suppressed) return;
+      if (inSet && !inSet[c.id]) return;
+      var T = tf(c.transform);
+      items.push({ c: c, index: i, body: body, T: T, box: worldBox(bx, T) });
+    });
+    var pairs = [], checked = 0;
+    items.forEach(function (A) {
+      if (!mv[A.c.id]) return;
+      items.forEach(function (B) {
+        if (B === A || (mv[B.c.id] && B.index < A.index) || skip[collisionKey(A.c.id, B.c.id)]) return;
+        var a = A.box, b = B.box;
+        var d = len(sub([Math.max(a.max[0], b.max[0]), Math.max(a.max[1], b.max[1]), Math.max(a.max[2], b.max[2])], [Math.min(a.min[0], b.min[0]), Math.min(a.min[1], b.min[1]), Math.min(a.min[2], b.min[2])]));
+        var e = 1e-9 * Math.max(1, d);
+        if (a.min[0] > b.max[0] - e || b.min[0] > a.max[0] - e || a.min[1] > b.max[1] - e || b.min[1] > a.max[1] - e || a.min[2] > b.max[2] - e || b.min[2] > a.max[2] - e) return;
+        checked++;
+        A.world = A.world || worldBody(A.body, A.T); B.world = B.world || worldBody(B.body, B.T);
+        var common = A.world.intersect(B.world), v = common.polygons.length ? common.volume() : 0;
+        var tol = opts.minVolume != null ? +opts.minVolume : Math.max(1e-12, 1e-9 * d * d * d);
+        if (v > tol) {
+          var pts = [];
+          common.polygons.forEach(function (p) { p.vertices.forEach(function (x) { if (pts.length < 400) pts.push([x.pos.x, x.pos.y, x.pos.z]); }); });
+          pairs.push({ a: A.c.id, b: B.c.id, aName: A.c.name, bName: B.c.name, aIndex: A.index, bIndex: B.index, volume: v, points: pts });
+        }
+      });
+    });
+    pairs.sort(function (p, q) { return q.volume - p.volume; });
+    return { hit: pairs.length > 0, pairs: pairs, checked: checked };
+  }
+  // collisionDrag(model, cache, drag, opts) -> the pose build of rebuild(model, cache, { drag, poseOnly, quick }) with
+  // `collision: { hit, t, pairs, stopped }`: Move Component ▸ Collision Detection ▸ Stop at collision. The components
+  // the drag moves are checked against the others (opts.against: These components; opts.draggedOnly: Dragged part
+  // only); when they would collide the drag target is pulled back toward the grabbed point's place before this step
+  // (opts.from, default where the model holds it now) by bisection, so they stop at first contact (to 1/4096 of the
+  // step). Pairs that already overlap before the step are left out (a part dragged out of an interference is not held).
+  // opts.stop false: no stop, the collision is only reported (Highlight faces without Stop at collision).
+  function collisionDrag(model, cache, drag, opts) {
+    opts = opts || {};
+    var T0 = {}, F0 = {}, c0 = findComponent(model, String(drag.id).split('/')[0]) || findComponent(model, drag.id);
+    if (c0 == null && typeof drag.id === 'string' && /^\d+/.test(drag.id)) c0 = findComponent(model, parseInt(drag.id, 10));
+    model.components.forEach(function (c) { T0[c.id] = tf(c.transform); if (c.flexState) F0[c.id] = clone(c.flexState); });
+    var from = opts.from ? copy3(opts.from) : (c0 && String(drag.id).indexOf('/') < 0 ? transformPoint(T0[c0.id], copy3(drag.point)) : copy3(drag.target)), to = copy3(drag.target);
+    function restore() {
+      model.components.forEach(function (c) { c.transform = { position: T0[c.id].position.slice(), rotation: T0[c.id].rotation.slice() }; if (F0[c.id]) c.flexState = clone(F0[c.id]); });
+    }
+    function at(t) {
+      restore();
+      var tg = [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t, from[2] + (to[2] - from[2]) * t];
+      var r = rebuild(model, cache, { drag: { id: drag.id, point: drag.point, target: tg }, poseOnly: true, quick: opts.quick !== false });
+      cache = r.cache;   // (the part builds are made once)
+      return r;
+    }
+    function movedIds() {
+      return model.components.filter(function (c) {
+        var T = tf(c.transform), P = T0[c.id], k;
+        if (opts.draggedOnly && c0 && c.id !== c0.id) return false;
+        for (k = 0; k < 9; k++) if (Math.abs(T.rotation[k] - P.rotation[k]) > 1e-12) return true;
+        for (k = 0; k < 3; k++) if (Math.abs(T.position[k] - P.position[k]) > 1e-10) return true;
+        return false;
+      }).map(function (c) { return c.id; });
+    }
+    var skip = {}, b = at(1), ids = movedIds();
+    if (!ids.length) { b.collision = { hit: false, t: 1, pairs: [], stopped: false }; return b; }
+    restore();   // pairs that overlap before the step (at T0) do not stop it
+    collision(model, b, ids, { against: opts.against }).pairs.forEach(function (p) { skip[collisionKey(p.a, p.b)] = true; });
+    // samples along the step, so a fast drag cannot carry a part through a thin one between two frames
+    var n = 1, dist = len(sub(to, from)), ext = Infinity, all = 0;
+    model.components.forEach(function (c) {
+      var pb = b.partBuilds && b.partBuilds[c.id], bx = pb && pb.body ? localBox(partBody(pb.body)) : null;
+      if (!bx) return;
+      for (var q = 0; q < 3; q++) if (bx.max[q] - bx.min[q] > 1e-9) ext = Math.min(ext, bx.max[q] - bx.min[q]);
+      all = Math.max(all, len(sub(bx.max, bx.min)));
+    });
+    if (isFinite(ext) && all) n = Math.max(1, Math.min(48, Math.ceil(dist / (0.5 * Math.max(ext, all / 50)))));
+    var lo = 0, hi = null, hitPairs = null;
+    function hitAt(t) {
+      var bt = at(t), mi = movedIds(), r = mi.length ? collision(model, bt, mi, { against: opts.against, skip: skip }) : { hit: false, pairs: [] };
+      return r.hit ? r : null;
+    }
+    for (var i = 1; i <= n; i++) { var hs = hitAt(i / n); if (hs) { hi = i / n; hitPairs = hs.pairs; break; } lo = i / n; }
+    if (hi == null) { b = at(1); b.collision = { hit: false, t: 1, pairs: [], stopped: false }; return b; }
+    if (opts.stop === false) { b = at(1); b.collision = { hit: true, t: 1, pairs: hitPairs, stopped: false }; return b; }
+    for (var k = 0; k < (opts.steps || 12); k++) {
+      var mid = (lo + hi) / 2, hm = hitAt(mid);
+      if (hm) { hi = mid; hitPairs = hm.pairs; } else lo = mid;
+    }
+    b = at(lo);
+    b.collision = { hit: true, t: lo, pairs: hitPairs, stopped: true };
+    return b;
+  }
+
   // ------------------------------------------------------------------ picking
   function r6(x) { var r = Math.round(x * 1e6) / 1e6; return Math.abs(r) < 1e-9 ? 0 : r; }
 
@@ -2634,6 +2859,8 @@ var Assembly = (function () {
     return this.mate('width', a, b, o);
   };
   Builder.prototype.gear = function (a, b, ratio, opts) { return this.mate('gear', a, b, withValue(opts, 'ratio', ratio)); };
+  // linearCoupler(a, b, ratio ([a, b] or a number r: B moves r times as far), opts { flip (Reverse), phase })
+  Builder.prototype.linearCoupler = function (a, b, ratio, opts) { return this.mate('linearcoupler', a, b, withValue(opts, 'ratio', ratio)); };
   Builder.prototype.limitDistance = function (a, b, min, max, opts) { return this.mate('limitdistance', a, b, withValue(withValue(opts, 'min', min), 'max', max)); };
   Builder.prototype.limitAngle = function (a, b, min, max, opts) { return this.mate('limitangle', a, b, withValue(withValue(opts, 'min', min), 'max', max)); };
   // symmetric(symmetryPlane, a, b, opts); slot(slotFace, pin, opts { constraint, distance, percent, flip });
@@ -2919,6 +3146,7 @@ var Assembly = (function () {
     Builder: Builder, runScript: runScript, isAssemblyScript: isAssemblyScript, generateScript: generateScript,
     defaultAlignment: defaultAlignment, hasAlignment: hasAlignment, setMateValues: setMateValues, MATE_TYPES: MATE_TYPES.slice(),
     moveComponent: moveComponent, rotateComponent: rotateComponent, componentCenter: componentCenter, interference: interference,
+    collision: collision, collisionDrag: collisionDrag,
     MATE_GROUPS: JSON.parse(JSON.stringify(MATE_GROUPS)), MATE_NAMES: JSON.parse(JSON.stringify(MATE_BASE)),
     addPattern: addPattern, removePattern: removePattern, findPattern: findPattern, setPatternValues: setPatternValues, syncPatterns: syncPatterns,
     addExplodedView: addExplodedView, addExplodeStep: addExplodeStep, removeExplodeStep: removeExplodeStep, removeExplodedView: removeExplodedView,

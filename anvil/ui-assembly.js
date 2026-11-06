@@ -2455,13 +2455,16 @@
   // have their own PropertyManager here, titled and grouped the same (Mate Selections, Standard / Advanced / Mechanical
   // Mates, Mate alignment), and the two swap as the mate type changes, keeping the picks: gvHookBase adds the three to the
   // base PM's Advanced / Mechanical selects, and choosing one there, or a base type here, opens the other.
-  var GV_LABEL = { symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge' };
-  var GV_ALL_LABEL = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle', parallel: 'Parallel', perpendicular: 'Perpendicular', tangent: 'Tangent', width: 'Width', gear: 'Gear', limitdistance: 'Limit Distance', limitangle: 'Limit Angle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge' };
+  var GV_LABEL = { symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'Linear/Linear Coupler' };
+  // (rfIV: Linear/Linear Coupler is an Advanced Mate in SolidWorks 2024, like Symmetric)
+  var GV_ADV = { symmetric: 1, linearcoupler: 1 };
+  var GV_ALL_LABEL = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle', parallel: 'Parallel', perpendicular: 'Perpendicular', tangent: 'Tangent', width: 'Width', gear: 'Gear', limitdistance: 'Limit Distance', limitangle: 'Limit Angle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'Linear/Linear Coupler' };
   function gvSvg(body) { return '<svg class="ico" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>'; }
   var GV_ICON = {
     symmetric: gvSvg('<path d="M8 1.5v13" stroke-dasharray="2 1.6" stroke="#939393"/><path d="M6 4L2 8l4 4z" fill="#c9b6e6" stroke="#8a5cc2"/><path d="M10 4l4 4-4 4z" fill="#c9b6e6" stroke="#8a5cc2"/>'),
     slot: gvSvg('<path d="M5 4.5h6a3.5 3.5 0 0 1 0 7H5a3.5 3.5 0 0 1 0-7z"/><circle cx="6" cy="8" r="2" fill="#c9b6e6" stroke="#8a5cc2"/>'),
-    hinge: gvSvg('<path d="M1.5 3.5h5.5v9H1.5z" fill="#c9b6e6" stroke="#8a5cc2"/><path d="M9 3.5h5.5v9H9z"/><path d="M8 2v12" stroke-width="2.2"/>')
+    hinge: gvSvg('<path d="M1.5 3.5h5.5v9H1.5z" fill="#c9b6e6" stroke="#8a5cc2"/><path d="M9 3.5h5.5v9H9z"/><path d="M8 2v12" stroke-width="2.2"/>'),
+    linearcoupler: gvSvg('<path d="M1.5 4.5h6M5.5 2.5l2 2-2 2" stroke="#8a5cc2"/><path d="M1.5 11.5h13M12.5 9.5l2 2-2 2"/><path d="M3 6v4" stroke-dasharray="1.4 1.2" stroke="#939393"/>')
   };
   // ui-panels.js draws a mate row before it knows these three: the row gets its icon here
   function gvRowIcon(row, mt) {
@@ -2490,7 +2493,8 @@
     if (!(UI.isAssembly ? UI.isAssembly() : App.model && App.model.type === 'assembly')) { UI.toast('Open an assembly first (File \u25b8 New \u25b8 Assembly).'); return; }
     var X = existing || {}, snapshot = JSON.stringify(App.model), previewed = false, alignSet = !!X.alignment;
     function start(k) { return X[k] ? clone(X[k]) : seed && seed[k] ? clone(seed[k]) : null; }
-    var v = { type: type, advType: type === 'symmetric' ? type : '', mechType: type === 'symmetric' ? '' : type,
+    var v = { type: type, advType: GV_ADV[type] ? type : '', mechType: GV_ADV[type] ? '' : type,
+      ratioA: X.ratio ? +X.ratio[0] : 1, ratioB: X.ratio ? +X.ratio[1] : 1,
       a: start('a'), b: start('b'), a2: start('a2'), b2: start('b2'), a3: start('a3'), b3: start('b3'),
       constraint: X.constraint || 'free', distance: X.distance != null ? X.distance : 0, percent: X.percent != null ? X.percent : 50, flip: !!X.flip,
       limit: !!X.limit, min: X.min != null ? X.min : 0, max: X.max != null ? X.max : 90 };
@@ -2498,12 +2502,13 @@
     if (type !== 'hinge' && type !== 'symmetric') v.a2 = null;
     v.alignment = X.alignment || AS.defaultAlignment({ type: type, a: v.a, b: v.b, a2: v.a2, b2: v.b2 });
     // the selections, in pick order
-    function slots() { return type === 'symmetric' ? ['a2', 'a', 'b'] : type === 'slot' ? ['a', 'b'] : v.limit ? ['a', 'b', 'a2', 'b2', 'a3', 'b3'] : ['a', 'b', 'a2', 'b2']; }
+    function slots() { return type === 'symmetric' ? ['a2', 'a', 'b'] : type === 'slot' || type === 'linearcoupler' ? ['a', 'b'] : v.limit ? ['a', 'b', 'a2', 'b2', 'a3', 'b3'] : ['a', 'b', 'a2', 'b2']; }
     function ready() { return slots().every(function (k) { return !!v[k]; }); }
     function restore() { App.model = JSON.parse(snapshot); }
     function values() {
       if (type === 'slot') return { constraint: v.constraint, distance: v.constraint === 'distance' ? +v.distance || 0 : null, percent: v.constraint === 'percent' ? +v.percent || 0 : null, flip: !!v.flip };
       if (type === 'hinge') return { limit: !!v.limit, min: v.limit ? +v.min || 0 : null, max: v.limit ? +v.max || 0 : null };
+      if (type === 'linearcoupler') return { ratio: [+v.ratioA, +v.ratioB], flip: !!v.flip };
       return {};
     }
     function apply(m) {
@@ -2512,6 +2517,8 @@
       if (existing) {
         var x = AS.findMate(m, existing.id);
         if (x.type !== type) { delete x.phase; x.name = AS.MATE_NAMES[type] + x.id; }
+        // a new ratio or Reverse starts from where the two parts stand now (nothing jumps)
+        else if (type === 'linearcoupler' && JSON.stringify([x.ratio, !!x.flip]) !== JSON.stringify([vals.ratio, !!vals.flip])) delete x.phase;
         x.type = type; x.a = clone(v.a); x.b = clone(v.b);
         ['a2', 'b2', 'a3', 'b3'].forEach(function (k) { if (refs[k]) x[k] = refs[k]; else delete x[k]; });
         if (alignSet) x.alignment = v.alignment; else delete x.alignment;
@@ -2527,6 +2534,7 @@
     function hint() {
       return type === 'symmetric' ? 'Symmetric: select the Symmetry Plane, then the two entities to mate.'
         : type === 'slot' ? 'Slot: select a face of the slot and a cylindrical face or axis (the pin).'
+        : type === 'linearcoupler' ? 'Linear/Linear Coupler: select a direction on each of two components (a planar face, a cylindrical face, a plane or an axis). The first one drives the second by the ratio.'
         : 'Hinge: select two cylindrical faces (Concentric Selections), then two planar faces (Coincident Selections)' + (v.limit ? ', then two faces (Angle Selections).' : '.');
     }
     function statusOf(mt) { return UI.mateStatus ? UI.mateStatus(mt) : { error: null }; }
@@ -2571,6 +2579,7 @@
     var picks = type === 'symmetric'
       ? [label('Symmetry Plane'), box(['a2'], 'plane', 'Symmetry plane…'), label('Entities to Mate'), box(['a', 'b'], 'component', 'Two entities to mate…')]
       : type === 'slot' ? [box(['a', 'b'], 'component', 'Slot face and pin…')]
+      : type === 'linearcoupler' ? [label('Entities to Mate'), box(['a', 'b'], 'component', 'A direction on each component…')]
       : [label('Concentric Selections'), box(['a', 'b'], 'concentric', 'Two cylindrical faces or axes…'),
         label('Coincident Selections'), box(['a2', 'b2'], 'coincident', 'Two planar faces or planes…'),
         { type: 'check', label: 'Define angle limit', key: 'limit', rerender: true },
@@ -2584,6 +2593,12 @@
       { type: 'number', label: 'Distance', key: 'distance', unit: 'u', min: 0, show: function (x) { return x.constraint === 'distance'; } },
       { type: 'number', label: 'Percent', key: 'percent', unit: '%', min: 0, show: function (x) { return x.constraint === 'percent'; } },
       { type: 'check', label: 'Flip Dimension', key: 'flip', show: function (x) { return x.constraint === 'distance' || x.constraint === 'percent'; } }
+    ]);
+    var adv = [{ type: 'select', label: 'Advanced', key: 'advType', rerender: true, options: function () { return [['', '—']].concat(group('advanced')); } }];
+    if (type === 'linearcoupler') adv = adv.concat([   // SolidWorks: Ratio  first : second, Reverse
+      { type: 'number', label: 'Ratio (first)', key: 'ratioA', unit: 'u', min: 0 },
+      { type: 'number', label: 'Ratio (second)', key: 'ratioB', unit: 'u', min: 0 },
+      { type: 'check', label: 'Reverse', key: 'flip' }
     ]);
     if (type === 'hinge') mech = mech.concat([
       { type: 'number', label: 'Maximum Value', key: 'max', unit: '°', show: function (x) { return !!x.limit; } },
@@ -2615,14 +2630,15 @@
       groups: [
         { title: 'Mate Selections', fields: picks },
         { title: 'Standard Mates', fields: [{ type: 'select', label: 'Mate type', key: 'type', rerender: true, options: function () { return [[type, '—']].concat(group('standard')); } }] },
-        { title: 'Advanced Mates', fields: [{ type: 'select', label: 'Advanced', key: 'advType', rerender: true, options: function () { return [['', '—']].concat(group('advanced')); } }] },
-        { title: 'Mechanical Mates', fields: mech },
+        { title: 'Advanced Mates', fields: adv },
+        { title: 'Mechanical Mates', fields: mech }
+      ].concat(type === 'linearcoupler' ? [] : [   // (a coupler has no alignment, as Gear)
         { title: 'Mate alignment', fields: [{ type: 'select', label: 'Alignment', key: 'alignment', options: [['aligned', 'Aligned'], ['anti-aligned', 'Anti-Aligned'], ['closest', 'Closest']] }] }
-      ],
+      ]),
       onChange: function (x, key) {
         if (key === 'type' || key === 'advType' || key === 'mechType') {
           var t = x[key];
-          if (!t || t === type) { x.type = type; x.advType = type === 'symmetric' ? type : ''; x.mechType = type === 'symmetric' ? '' : type; UI.renderPM(); return; }
+          if (!t || t === type) { x.type = type; x.advType = GV_ADV[type] ? type : ''; x.mechType = GV_ADV[type] ? '' : type; UI.renderPM(); return; }
           switchTo(t);
           return;
         }
@@ -2632,7 +2648,8 @@
       onCancel: function () { if (previewed) { restore(); previewed = false; UI.rebuild({ noSave: true }); } },
       onClose: function () { gvSession = null; },
       onOK: function () {
-        if (!ready()) { UI.toast('Select ' + (type === 'hinge' ? 'the Concentric and Coincident Selections' : type === 'slot' ? 'a slot face and a pin' : 'the Symmetry Plane and two entities') + ' first.'); return false; }
+        if (type === 'linearcoupler' && !(+v.ratioA > 0 && +v.ratioB > 0)) { UI.toast('Linear/Linear Coupler: the ratio must be two numbers > 0.'); return false; }
+        if (!ready()) { UI.toast('Select ' + (type === 'hinge' ? 'the Concentric and Coincident Selections' : type === 'slot' ? 'a slot face and a pin' : type === 'linearcoupler' ? 'a direction on each of two components' : 'the Symmetry Plane and two entities') + ' first.'); return false; }
         restore(); previewed = false;
         return gvCommit(apply, function (mt) {
           var st = statusOf(mt);
@@ -2680,4 +2697,149 @@
   UI.editMate = function (m) { return UI.cmdMate(m); };
   UI.mateSelect = function (ref) { return gvSession ? gvSession.addRef(clone(ref)) : gvSelect(ref); };
   if (UI.commands) { UI.commands.mate = UI.cmdMate; UI.commands.editMate = UI.editMate; }
+
+  // ------------------------------------------------------------------ rfIV: Move Component ▸ Collision Detection
+  // SolidWorks' Move / Rotate Component PM: Options ▸ Standard Drag | Collision Detection, Check between All components |
+  // These components, Stop at collision, Dragged part only; Advanced Options ▸ Highlight faces, Sound. The PM itself is
+  // ui-commands.js' cmdMoveComponent: its two groups are added here, and while a Move drag runs with Collision Detection
+  // on, the drag's solves (Assembly.rebuild with opts.drag, every frame and the release) go through
+  // Assembly.collisionDrag, so the dragged parts stop at first contact. Rotate drags are not checked yet.
+  var cd = { mode: 'standard', between: 'all', these: [], stop: true, draggedOnly: false, highlight: true, sound: false };   // kept between opens, as SolidWorks
+  var cdRun = null;   // the drag running with Collision Detection: { last: collision result, beeped }
+  function cdOn() { return cd.mode === 'collision' && App.command && App.command.dragComponents === 'move'; }
+  function cdBeep() {
+    try {
+      var C = window.AudioContext || window.webkitAudioContext;
+      if (!C) return;
+      var ac = cdBeep.ac || (cdBeep.ac = new C()), o = ac.createOscillator(), g = ac.createGain();
+      o.frequency.value = 880; g.gain.value = 0.06; o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime + 0.12);
+    } catch (e) { }
+  }
+  // the faces of App.mesh on the two components of each pair that the contact points lie on
+  function cdFaces(pairs) {
+    var m = App.mesh, out = [];
+    if (!m || !m.faces || !m.positions || !pairs || !pairs.length) return out;
+    var P = m.positions, size = 0;
+    for (var q = 0; q + 2 < P.length && q < 9 * 4000; q += 3) size = Math.max(size, Math.abs(P[q]), Math.abs(P[q + 1]), Math.abs(P[q + 2]));
+    var eps = Math.max(1e-6, 2e-4 * (size || 1));
+    var want = {};
+    pairs.forEach(function (p) { want[p.aIndex] = p.points; want[p.bIndex] = (want[p.bIndex] || []).concat(p.points); });
+    function onTri(t, x) {
+      var o = t * 9, a = [P[o], P[o + 1], P[o + 2]], b = [P[o + 3], P[o + 4], P[o + 5]], c = [P[o + 6], P[o + 7], P[o + 8]];
+      var u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]], w = [x[0] - a[0], x[1] - a[1], x[2] - a[2]];
+      var n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]], nl = Math.hypot(n[0], n[1], n[2]);
+      if (nl < 1e-15 || Math.abs((n[0] * w[0] + n[1] * w[1] + n[2] * w[2]) / nl) > eps) return false;
+      var uu = u[0] * u[0] + u[1] * u[1] + u[2] * u[2], vv = v[0] * v[0] + v[1] * v[1] + v[2] * v[2], uv = u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+      var wu = w[0] * u[0] + w[1] * u[1] + w[2] * u[2], wv = w[0] * v[0] + w[1] * v[1] + w[2] * v[2], den = uu * vv - uv * uv;
+      if (Math.abs(den) < 1e-30) return false;
+      var s = (vv * wu - uv * wv) / den, r = (uu * wv - uv * wu) / den, tol = eps / Math.sqrt(Math.max(uu, vv));
+      return s >= -tol && r >= -tol && s + r <= 1 + tol;
+    }
+    m.faces.forEach(function (f, i) {
+      var pts = want[f.body || 0];
+      if (!pts) return;
+      for (var t = f.start; t < f.start + f.count; t++) {
+        for (var k = 0; k < pts.length; k += Math.max(1, Math.floor(pts.length / 120))) if (onTri(t, pts[k])) { out.push(i); return; }
+      }
+    });
+    return out;
+  }
+  function cdNote(col) {
+    if (!cdRun || !col) return;
+    if (col.hit) {
+      var p = col.pairs[0];
+      cdRun.last = col;
+      UI.setStatus('Collision: ' + p.aName + ' and ' + p.bName + (col.stopped ? ' (stopped at contact)' : ''));
+      if (cd.sound && !cdRun.beeped) { cdRun.beeped = true; cdBeep(); }
+    } else if (cdRun.last && !cdRun.last.stopped) cdRun.last = null;
+  }
+  // the drag's solves, while a Collision Detection drag runs
+  var cdRebuild = AS.rebuild;
+  AS.rebuild = function (model, cache, opts) {
+    if (!cdRun || !opts || !opts.drag || opts.explodeT != null) return cdRebuild.apply(this, arguments);
+    var co = { against: cd.between === 'these' ? cd.these.slice() : null, draggedOnly: !!cd.draggedOnly, stop: !!cd.stop, quick: !!opts.quick };
+    var r = AS.collisionDrag(model, cache, opts.drag, co);
+    cdNote(r.collision);
+    if (opts.poseOnly) return r;
+    var o2 = {};
+    Object.keys(opts).forEach(function (k) { if (k !== 'drag' && k !== 'quick') o2[k] = opts[k]; });
+    return cdRebuild.call(this, model, r.cache, o2);   // the full build at the place the drag stopped
+  };
+  var cdDragBase = UI.componentDragHook;
+  UI.componentDragHook = function (p, ev, force) {
+    var s = cdDragBase ? cdDragBase(p, ev, force) : null;
+    if (!s || force === 'rotate' || !cdOn() || !s.end) return s;
+    var start = s.start, end = s.end;
+    cdRun = { last: null, beeped: false };
+    s.start = function () { cdRun = { last: null, beeped: false }; if (App.command) App.command.faceList = []; if (UI.updateHighlights) UI.updateHighlights(); return start.apply(this, arguments); };
+    s.end = function () {
+      if (!cdRun) cdRun = { last: null, beeped: false };
+      var ret;
+      try { ret = end.apply(this, arguments); } catch (e) { cdRun = null; throw e; }
+      var run = cdRun;
+      cdRun = null;
+      function light() {
+        var col = run && run.last;
+        if (col && col.hit && cd.highlight && App.command && App.command.dragComponents) { App.command.faceList = cdFaces(col.pairs); if (UI.updateHighlights) UI.updateHighlights(); }
+        if (col && col.hit) UI.setStatus('Collision: ' + col.pairs[0].aName + ' and ' + col.pairs[0].bName + (col.stopped ? ': stopped at contact.' : '.'));
+        UI.asmCollision.last = col || null;
+        return col;
+      }
+      return ret && ret.then ? ret.then(function (x) { light(); return x; }) : (light(), ret);
+    };
+    return s;
+  };
+  function cdSelectedComponent() {
+    if (!App.sel || !App.model || !App.model.components) return null;
+    var i = App.sel.kind === 'body' ? App.sel.index : App.sel.kind === 'face' && App.mesh && App.mesh.faces[App.sel.index] ? App.mesh.faces[App.sel.index].body || 0 : -1;
+    return App.model.components[i] || null;
+  }
+  function cdGroups(spec) {
+    var v = spec.values;
+    v.cdMode = cd.mode; v.cdBetween = cd.between; v.cdStop = cd.stop; v.cdDragged = cd.draggedOnly; v.cdHighlight = cd.highlight; v.cdSound = cd.sound;
+    function on(x) { return x.cdMode === 'collision'; }
+    function names() { return cd.these.map(function (id) { var c = AS.findComponent(App.model, id); return c ? c.name : null; }).filter(Boolean); }
+    spec.groups.push({ title: 'Options', fields: [
+      { type: 'select', label: 'Options', key: 'cdMode', rerender: true, options: [['standard', 'Standard Drag'], ['collision', 'Collision Detection']] },
+      { type: 'select', label: 'Check between', key: 'cdBetween', rerender: true, options: [['all', 'All components'], ['these', 'These components']], show: on },
+      { type: 'pick', icon: 'component', placeholder: 'Components for collision check…', show: function (x) { return on(x) && x.cdBetween === 'these'; },
+        value: function () { var n = names().length; return n ? n + ' selected' : ''; },
+        items: function () { return names().map(function (n) { return { label: n }; }); },
+        onRemove: function (x, i) { cd.these.splice(i, 1); UI.renderPM(); }, onClear: function () { cd.these = []; UI.renderPM(); } },
+      { type: 'buttons', show: function (x) { return on(x) && x.cdBetween === 'these'; }, buttons: [{ label: 'Add Selected', onclick: function () {
+        var c = cdSelectedComponent();
+        if (!c) { UI.toast('Select a component first (click it in the graphics area or the FeatureManager).'); return; }
+        if (cd.these.indexOf(c.id) < 0) cd.these.push(c.id);
+        UI.renderPM();
+      } }] },
+      { type: 'check', label: 'Stop at collision', key: 'cdStop', show: on },
+      { type: 'check', label: 'Dragged part only', key: 'cdDragged', show: on }
+    ] });
+    spec.groups.push({ title: 'Advanced Options', show: on, fields: [
+      { type: 'check', label: 'Highlight faces', key: 'cdHighlight' },
+      { type: 'check', label: 'Sound', key: 'cdSound' }
+    ] });
+    var change = spec.onChange, close = spec.onClose;
+    spec.onChange = function (x, key) {
+      if (key === 'cdMode' || key === 'cdBetween' || key === 'cdStop' || key === 'cdDragged' || key === 'cdHighlight' || key === 'cdSound') {
+        cd.mode = x.cdMode; cd.between = x.cdBetween; cd.stop = !!x.cdStop; cd.draggedOnly = !!x.cdDragged; cd.highlight = !!x.cdHighlight; cd.sound = !!x.cdSound;
+        if (cd.mode !== 'collision' && App.command) { App.command.faceList = []; if (UI.updateHighlights) UI.updateHighlights(); }
+        if (key === 'cdMode' || key === 'cdBetween') UI.renderPM();
+        return undefined;
+      }
+      return change ? change.apply(this, arguments) : undefined;
+    };
+    spec.onClose = function () { cdRun = null; return close ? close.apply(this, arguments) : undefined; };
+    UI.renderPM();
+  }
+  function cdWrap(base) {
+    return function () {
+      var r = base.apply(this, arguments), sp = UI.pmSpec && UI.pmSpec();
+      if (sp && sp.groups && App.command && App.command.dragComponents && !sp.groups.some(function (g) { return g.title === 'Options'; })) cdGroups(sp);
+      return r;
+    };
+  }
+  if (UI.cmdMoveComponent) UI.cmdMoveComponent = cdWrap(UI.cmdMoveComponent);
+  if (UI.cmdRotateComponent) UI.cmdRotateComponent = cdWrap(UI.cmdRotateComponent);
+  UI.asmCollision = { options: cd, last: null, faces: cdFaces };
 })(UI);

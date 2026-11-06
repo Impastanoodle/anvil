@@ -913,7 +913,7 @@
     if (kind === 'svg') UI.exportDialog('Save Drawing as SVG', safeName() + '.svg', Drawing.toSVG(sh), 'image/svg+xml');
     else if (kind === 'dxf') {
       var ver = D.dxfVersion = opts && opts.version === 'R2000' ? 'R2000' : opts && opts.version ? 'R12' : D.dxfVersion || 'R12';
-      UI.exportDialog('Save Drawing as DXF (one layer per view)', safeName() + '.dxf', Drawing.toDXF(sh, { version: ver }), 'application/dxf');
+      UI.exportDialog('Save Drawing as DXF (one layer per view)', safeName() + '.dxf', Drawing.toDXF(sh, { version: ver, hatch: true }), 'application/dxf');
       var ta = document.querySelector('#modal textarea');
       if (ta) {
         var sel = el('select', { id: 'dw-dxf-version', title: 'DXF version' });
@@ -933,7 +933,7 @@
   // the writer throws or did not load). Returns a promise of { name, bytes } (null when nothing was saved).
   var DWG_NOTE = 'DWG needs the local server\'s converter (dwg-writer.js did not load)';
   function saveDWG(sh) {
-    var text = Drawing.toDXF(sh, { version: 'R2000' }), name = safeName() + '.dwg';
+    var text = Drawing.toDXF(sh, { version: 'R2000', hatch: true }), name = safeName() + '.dwg';
     if (document.getElementById('modal') && !$('modal').hidden) UI.closeModal();
     var probe = UI.dwgConverter ? UI.dwgConverter() : Promise.resolve(null);
     UI.setStatus('Save Drawing as DWG…');

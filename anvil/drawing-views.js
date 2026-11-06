@@ -1763,14 +1763,24 @@
   // Display label is on (view.showLabel: stored only when it differs from the default). viewLabelShown(v) -> boolean
   function labelDefault(v) { return !!(v && (v.kind === 'section' || v.kind === 'detail' || v.kind === 'aux')); }
   function viewLabelShown(v) { return v && v.showLabel != null ? !!v.showLabel : labelDefault(v); }
+  // (rfIW) a flat-pattern view drawn at a scale other than the sheet's, whose label is not shown, still says so:
+  // 'SCALE 1 : 2' under its FLAT SIZE note (the blank is what the shop cuts; the audit's flat at 1 : 4 on a 1 : 1 sheet
+  // said nothing, and the title block gives the sheet's scale). Model and projected views keep SolidWorks' default, no
+  // label even at their own scale (rfCQ pins it). Display label off (showLabel false) hides it too.
+  function viewScaleNote(v, sheetScale) {
+    if (!v || v.kind !== 'flat' || v.showLabel === false || viewLabelShown(v) || !v.scale) return false;
+    return Math.abs(D.scaleValue(v.scale) - D.scaleValue(sheetScale || [1, 1])) > 1e-12;
+  }
   // setViewLabel(doc, id, on | null) -> the view (null: back to the default for its kind)
   function setViewLabel(doc, id, on) {
     var v = findV(doc, id);
     if (!v) throw new Error('No drawing view ' + id);
-    if (on == null || !!on === labelDefault(v)) delete v.showLabel; else v.showLabel = !!on;
+    // (rfIW) Display label off on a flat view with its own scale is kept (it hides the SCALE n : m note too)
+    if (on === false && v.kind === 'flat' && v.scale) v.showLabel = false;
+    else if (on == null || !!on === labelDefault(v)) delete v.showLabel; else v.showLabel = !!on;
     return v;
   }
-  D.viewLabelShown = viewLabelShown; D.setViewLabel = setViewLabel;
+  D.viewLabelShown = viewLabelShown; D.setViewLabel = setViewLabel; D.viewScaleNote = viewScaleNote;
   // setDimType(doc, id, 'true' | 'projected') -> the view (True is a model view's option; Projected is the default)
   function setDimType(doc, id, t) {
     var v = findV(doc, id);

@@ -194,9 +194,22 @@
       x: opts.x != null ? +opts.x : S[0] / 2, y: opts.y != null ? +opts.y : S[1] / 2 });
     labelOpt(doc, v, opts);
     if (opts.bendNotes === 'notes' || opts.bendNotes === 'table' || opts.bendNotes === 'none') v.bendNotes = opts.bendNotes;
-    if (opts.x == null && opts.y == null && mesh) (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, null);
+    var onSheet = opts.x == null && opts.y == null && mesh ? (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, null) : true;
     delete v.offSheet;
     doc.layout = 'manual';
+    // (rfIW) fit: a flat with no room on this sheet (not even at half its scale) goes to a new sheet, as a SolidWorks
+    // shop puts the blank on Sheet2: the active sheet's format, scale and projection, its own title block (SHEET 2 OF 2),
+    // the flat at the sheet scale (or the largest that fits). The new sheet becomes the active one. opts.newSheet false:
+    // stay beside the sheet as before.
+    if (opts.fit && !onSheet && opts.newSheet !== false && opts.x == null && opts.y == null) {
+      doc.views.splice(doc.views.indexOf(v), 1);
+      addSheet(doc, {});
+      doc.views.push(v);
+      v.scale = sc; v.x = S[0] / 2; v.y = S[1] / 2;
+      fitOnSheet(doc, mesh, v, null);
+      delete v.offSheet;
+      doc.layout = 'manual';
+    }
     return v;
   }
   // addProjectedView(doc, mesh, parentId, dir, { x, y, fit }): a view projected up / down / left / right from a parent,
@@ -240,6 +253,7 @@
       var o = D.docOptions(doc), fd = D.flatData(mesh), nb = fd && fd.bends ? fd.bends.length : 0;
       lab = (o.flatDims ? 16 : 4) * k + ((v.flatSize != null ? v.flatSize : o.flatSizeNote) ? 9 * k : 0) + ((v.bendNotes || o.bendNotes) === 'table' && nb ? (nb + 1) * 6 * k + 4 * k : 0);
       if (o.flatDims) left = 16 * k;
+      if (D.viewScaleNote(v, doc.sheet.scale)) lab += 9 * k;
     }
     return { x0: v.x - hw - left, x1: v.x + hw, y0: v.y - hh - lab, y1: v.y + hh };
   }
@@ -299,7 +313,10 @@
   function fitOnSheet(doc, mesh, v, free) {
     var x0 = v.x, y0 = v.y, sc0 = v.scale, al0 = v.align, s0 = viewScale(doc, v);
     var par = v.kind === 'detail' && v.parent != null ? findView(doc, v.parent) : null, lo = par ? viewScale(doc, par) : 0;
-    var smaller = scalesFor(doc).filter(function (s) { var q = scaleValue(s); return q < s0 - 1e-9 && q >= s0 / 4 - 1e-9 && q > lo + 1e-9; });
+    // (rfIW) a flat-pattern view shrinks to half the sheet scale at most (its hole tags and bend notes stay readable);
+    // when that does not fit, addFlatView puts it on a new sheet (rfIR had let it go to an eighth)
+    var minF = v.kind === 'flat' ? 2 : 4;
+    var smaller = scalesFor(doc).filter(function (s) { var q = scaleValue(s); return q < s0 - 1e-9 && q >= s0 / minF - 1e-9 && q > lo + 1e-9; });
     function at(sc, align, tight) { v.x = x0; v.y = y0; v.scale = sc; v.align = align; return clearSpot(doc, mesh, v, align ? free : null, tight); }
     // (rfIJ) at each scale the usual gap first, then (a crowded sheet: ANSI A with four views) a narrow one, so the
     // view keeps its scale where it can; a smaller scale only when neither fits
@@ -403,14 +420,20 @@
     { key: 'title', label: 'TITLE', row: 0, x0: 0, x1: 105, big: true, upper: true, link: '$PRPSHEET:"Description"', fallback: true },
     { key: 'partNo', label: 'PART NO.', row: 0, x0: 105, x1: 150, link: '$PRPSHEET:"Part Number"', fallback: true },
     { key: 'rev', label: 'REV', row: 0, x0: 150, x1: 180, link: '$PRPSHEET:"Revision"' },
-    { key: 'dwgNo', label: 'DWG. NO.', row: 1, x0: 0, x1: 45, link: '$PRP:"SW-File Name"' },
-    { key: 'material', label: 'MATERIAL', row: 1, x0: 45, x1: 105, link: '$PRPSHEET:"Material"' },
-    { key: 'scale', label: 'SCALE', row: 1, x0: 105, x1: 140, link: '$PRP:"SW-Sheet Scale"' },
-    { key: 'units', label: 'UNITS', row: 1, x0: 140, x1: 180, link: '$PRP:"SW-Units"' },
-    { key: 'date', label: 'DATE', row: 2, x0: 0, x1: 45, link: '$PRP:"SW-Date"' },
-    { key: 'mass', label: 'MASS', row: 2, x0: 45, x1: 105, link: '$PRPSHEET:"Mass"' },
-    { key: 'projection', label: 'PROJECTION', row: 2, x0: 105, x1: 140, link: '$PRP:"SW-Projection"' },
-    { key: 'sheet', label: 'SHEET', row: 2, x0: 140, x1: 180, link: '$PRP:"SW-Sheet"' },
+    // (rfIW, shop audit) a sheet-metal shop's cells: THICKNESS (the gauge and the sheet thickness, materials.js
+    // 'Thickness'), FINISH (the part's custom property) and SIZE (the sheet's size letter), as SolidWorks' ANSI
+    // template carries FINISH and SIZE; MATERIAL / MASS / UNITS / SHEET narrowed to make room
+    { key: 'dwgNo', label: 'DWG. NO.', row: 1, x0: 0, x1: 35, link: '$PRP:"SW-File Name"' },
+    { key: 'material', label: 'MATERIAL', row: 1, x0: 35, x1: 75, link: '$PRPSHEET:"Material"' },
+    { key: 'thickness', label: 'THICKNESS', row: 1, x0: 75, x1: 105, link: '$PRPSHEET:"Thickness"' },
+    { key: 'scale', label: 'SCALE', row: 1, x0: 105, x1: 130, link: '$PRP:"SW-Sheet Scale"' },
+    { key: 'size', label: 'SIZE', row: 1, x0: 130, x1: 150, link: '$PRP:"SW-Sheet Size"' },
+    { key: 'units', label: 'UNITS', row: 1, x0: 150, x1: 180, link: '$PRP:"SW-Units"' },
+    { key: 'date', label: 'DATE', row: 2, x0: 0, x1: 35, link: '$PRP:"SW-Date"' },
+    { key: 'finish', label: 'FINISH', row: 2, x0: 35, x1: 75, link: '$PRPSHEET:"Finish"' },
+    { key: 'mass', label: 'MASS', row: 2, x0: 75, x1: 105, link: '$PRPSHEET:"Mass"' },
+    { key: 'projection', label: 'PROJECTION', row: 2, x0: 105, x1: 150, link: '$PRP:"SW-Projection"' },
+    { key: 'sheet', label: 'SHEET', row: 2, x0: 150, x1: 180, link: '$PRP:"SW-Sheet"' },
     // the sheet format's left blocks (rfM), in the strip left of the title block (it is kept clear of views already):
     // COMPANY, DRAWN / CHECKED with their dates (the drawing's own properties, SolidWorks' template names), and the
     // GENERAL TOLERANCES block (UNLESS OTHERWISE SPECIFIED, inch defaults .XX ±.01 .XXX ±.005 ANGLES ±1°). `block`
@@ -449,6 +472,8 @@
       case 'sw-date': return doc.date;
       case 'sw-projection': return doc.sheet.projection === 'first' ? 'FIRST ANGLE' : 'THIRD ANGLE';
       case 'sw-sheet': return ((doc.activeSheet | 0) + 1) + ' OF ' + sheetCount(doc);
+      // (rfIW) the size letter of an ANSI sheet ('ANSI B' -> 'B'), else the format's name ('A3')
+      case 'sw-sheet size': { var fm = String(doc.sheet.format || ''); return /^ANSI\s+/i.test(fm) ? fm.replace(/^ANSI\s+/i, '') : fm; }
     }
     var own = doc.properties || {}, key = String(name).trim().toLowerCase();
     for (var k in own) if (k.toLowerCase() === key) return String(own[k]);

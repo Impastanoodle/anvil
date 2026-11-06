@@ -9,7 +9,7 @@
     await anvil.insert({ script: GV_PIN }, { position: [110, 40, 53] });
     await idle();
     UI.cmdMate();
-    assert(gvOptions(gvSelect('advType')).join() === '—,Symmetric,Width,Limit Distance,Limit Angle', gvOptions(gvSelect('advType')).join());
+    assert(gvOptions(gvSelect('advType')).join() === '—,Symmetric,Width,Linear/Linear Coupler,Limit Distance,Limit Angle', gvOptions(gvSelect('advType')).join());
     assert(gvOptions(gvSelect('mechType')).join() === '—,Slot,Hinge,Gear', gvOptions(gvSelect('mechType')).join());
     UI.mateSelect({ component: 2, cylinder: [5, 15, 0] });
     await idle();

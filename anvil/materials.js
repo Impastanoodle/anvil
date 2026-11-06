@@ -394,6 +394,15 @@ var Materials = (function () {
       }
       case 'volume': return (ctx.mass().volume || 0).toFixed(2) + ' ' + u + '^3';
       case 'surface area': return (ctx.mass().area || 0).toFixed(2) + ' ' + u + '^2';
+      // (rfIW) sheet metal (model.sheet): 'Sheet Metal Thickness' (SolidWorks' cut-list name: the number, inch without
+      // its leading zero), 'Gauge' ('16 GA', empty without a gauge table pick) and 'Thickness' (both: '16 GA (.0598)',
+      // what a shop's title block shows); empty for a part that is not sheet metal
+      case 'sheet metal thickness': case 'gauge': case 'thickness': {
+        var sh = !asm && model && model.sheet, T = sh && +sh.thickness;
+        if (!(T > 0)) return '';
+        var tn = u === 'in' ? trimNum(T, 4).replace(/^0\./, '.') : trimNum(T, 2), ga = sh.gauge != null && sh.gauge !== '' ? sh.gauge + ' GA' : '';
+        return n === 'gauge' ? ga : n === 'sheet metal thickness' || !ga ? tn : ga + ' (' + tn + ')';
+      }
       case 'file name': case 'title': return String(model.name || '');
       case 'configuration name': return ctx.config != null ? String(ctx.config) : activeConfigName(model);
     }
@@ -415,7 +424,7 @@ var Materials = (function () {
   }
   // sheetProperty(model, name, ctx?) -> what a drawing's $PRPSHEET:"name" shows: the property, else (for the names a
   // title block links by default) the system value, so a part without File Properties still fills MATERIAL / MASS
-  var SHEET_FALLBACK = { material: 'Material', mass: 'Mass', weight: 'Mass', density: 'Density', volume: 'Volume' };
+  var SHEET_FALLBACK = { material: 'Material', mass: 'Mass', weight: 'Mass', density: 'Density', volume: 'Volume', thickness: 'Thickness', gauge: 'Gauge', 'sheet metal thickness': 'Sheet Metal Thickness' };   // (rfIW) sheet metal
   function sheetProperty(model, name, ctx) {
     ctx = ctx || context(model);
     var v = property(model, name, ctx);

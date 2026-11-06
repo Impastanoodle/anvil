@@ -521,7 +521,7 @@
   function relRowHtml(f, x, state, opts) {
     var sel = App.sel && App.sel.kind === 'rel' && App.sel.index === x.i;
     return '<div class="rel-row ' + state + (sel ? ' sel' : '') + '" role="option" tabindex="0" data-relrow="' + x.i + '" data-rel="' + x.i + '" title="' + esc(stateText(state)) + '">' +
-      '<i class="rel-state">' + (STATE_ICON[state] || STATE_ICON.ok) + '</i>' + Icons(iconName(x.rel.type), 14) + '<span>' + esc(S.describe(f, x.rel)) + '</span>' +
+      '<i class="rel-state">' + (STATE_ICON[state] || STATE_ICON.ok) + '</i>' + Icons(iconName(x.rel.type), 16) + '<span>' + esc(S.describe(f, x.rel)) + '</span>' +
       (opts && opts.noDelete ? '' : '<button type="button" class="rel-del" data-reldel="' + x.i + '" title="Delete this relation" aria-label="Delete relation">×</button>') + '</div>';
   }
   function existingHtml(f, refs, owner) {
@@ -780,7 +780,7 @@
         { title: 'Relations', fields: [
           { type: 'select', label: 'Filter', key: 'filter', options: FILTERS },
           { type: 'html', html: '<div class="rel-list" id="rel-display" role="listbox" aria-label="Relations">' + (list.length ? list.map(function (x) {
-            var key = rowKey(x), icon = x.dim ? Icons('dim', 14) : Icons(iconName(x.rel.type), 14);
+            var key = rowKey(x), icon = x.dim ? Icons('dim', 16) : Icons(iconName(x.rel.type), 16);
             return '<div class="rel-row ' + x.state + (key === sk ? ' sel' : '') + '" role="option" data-key="' + key + '"' + (x.dim ? '' : ' data-rel="' + x.i + '"') + ' tabindex="0"><i class="rel-state">' + (STATE_ICON[x.state] || '') + '</i>' + icon + '<span>' + esc(x.dim ? dimText(x) : S.describe(f, x.rel)) + '</span><em>' + stateText(x.state) + '</em></div>';
           }).join('') : '<div class="rel-empty">' + empty + '</div>') + '</div>' },
           { type: 'check', key: 'suppressed', label: 'Suppressed', disabled: si == null },
@@ -1552,12 +1552,16 @@
     }
     return out;
   }
-  function cmdPathLengthDim() {
+  // o (rfIT, optional): { refs: [entity indices], place: true } starts with those entities picked and (place) waits for
+  // the click that places the label, as after ✓
+  function cmdPathLengthDim(o) {
     var f = UI.activeSketchFeature();
     if (!f) { UI.toast('Open a sketch first.'); return null; }
-    var refs = selectedEntities().map(String).filter(function (r) { return S.measure(f, 'pathlength', [r]) != null; });
+    var refs = (o && o.refs ? o.refs : selectedEntities()).map(String).filter(function (r) { return S.measure(f, 'pathlength', [r]) != null; });
+    // rfIT: a selected member of a Make Path path stands for the whole path
+    refs.slice().forEach(function (r) { var m = UI.sketchPathMembers ? UI.sketchPathMembers(+r) : null; if (m) m.forEach(function (k) { if (refs.indexOf(String(k)) < 0) refs.push(String(k)); }); });
     UI.setTool('select');
-    var stage = 'pick', made = null;
+    var stage = o && o.place && refs.length ? 'place' : 'pick', made = null;
     function hint() { return stage === 'pick' ? 'Click the lines and arcs of the path (or one, then Select Chain), then ✓.' : 'Click where the path length dimension goes.'; }
     function end() { App.tempRelDim = null; App.dimsStale = true; }
     var spec = {
@@ -1577,6 +1581,14 @@
           if (!p || p.o) { UI.setStatus(hint()); return; }
           var whole = p.s === null ? ref : S.refKind(f, ref) === 'line' ? ref : String(p.e);
           if (S.measure(f, 'pathlength', [whole]) == null) { UI.setStatus('A path runs along lines, arcs and circles.'); return; }
+          // rfIT: a member of a Make Path path brings in (or takes out) the whole path
+          var mem = p.s === null && UI.sketchPathMembers ? UI.sketchPathMembers(p.e) : null;
+          if (mem) {
+            var all = mem.map(String), inAll = all.every(function (r) { return refs.indexOf(r) >= 0; });
+            all.forEach(function (r) { var at = refs.indexOf(r); if (inAll && at >= 0) refs.splice(at, 1); else if (!inAll && at < 0) refs.push(r); });
+            render();
+            return;
+          }
           var k = refs.indexOf(whole);
           if (k >= 0) refs.splice(k, 1); else refs.push(whole);
           render();
@@ -1611,6 +1623,11 @@
     return spec;
   }
   UI.cmdPathLengthDim = cmdPathLengthDim;
+  // rfIT: the Path Length dimension of the Make Path path entity i belongs to, waiting for the click that places it
+  UI.pathLengthDimForPath = function (i) {
+    var m = UI.sketchPathMembers ? UI.sketchPathMembers(i) : null;
+    return m ? cmdPathLengthDim({ refs: m, place: true }) : null;
+  };
 
   // Angular Running Dimension: the 0° line (clicked near the vertex end), where the arcs go, then lines and points
   var runPM = null;

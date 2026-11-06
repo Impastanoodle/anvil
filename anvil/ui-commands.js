@@ -424,6 +424,8 @@
         var inp = el('input', { type: exprText != null ? 'text' : 'number', step: f.step || 'any', class: 'pm-num' + (exprText != null ? ' expr' : ''), 'data-key': key });
         inp.value = exprText != null ? exprText : (v[key] == null ? '' : v[key]);
         if (f.min != null) inp.min = f.min;
+        // rfIU: f.disabled (bool or fn(v)) greys a locked value box that still shows its value (a gauge's thickness)
+        if (typeof f.disabled === 'function' ? f.disabled(v) : f.disabled) { inp.disabled = true; inp.classList.add('locked'); }
         var hint = el('span', { class: 'pm-expr-hint', 'data-key': key });
         var showHint = function () {
           var ex = pm.exprs[key], er = pm.exprErrors[key];
@@ -2288,7 +2290,7 @@
   // or '__custom'), customGauge (the part's own gauge table), gauge.
   var BA_OPTIONS = [['table', 'Bend Table'], ['kfactor', 'K-Factor'], ['allowance', 'Bend Allowance'], ['deduction', 'Bend Deduction']];
   var BA_NAMES = { table: 'Bend Table', kfactor: 'K-Factor', allowance: 'Bend Allowance', deduction: 'Bend Deduction' };
-  var SHEET_PM_KEYS = ['thickness', 'bendRadius', 'kFactor', 'baType', 'bendAllowance', 'bendDeduction', 'bendTable', 'useGauge', 'gaugeTable', 'customGauge', 'gauge', 'autoRelief', 'reliefRatio'];
+  var SHEET_PM_KEYS = ['thickness', 'bendRadius', 'kFactor', 'baType', 'bendAllowance', 'bendDeduction', 'bendTable', 'useGauge', 'gaugeTable', 'customGauge', 'gauge', 'autoRelief', 'reliefRatio', 'overrideThickness', 'overrideRadius', 'gaugeRadius'];
   var EXAMPLE_NOTE = 'example — replace with your shop\'s values';
   // a new part's sheet: 2 mm (or 3/32 in) thick, R = T, K = 0.5
   // lane CS: and SolidWorks' default Auto Relief, Rectangular, ratio 0.5 (a part's saved sheet keeps what it has)
@@ -2308,9 +2310,32 @@
     v.gauge = sm.gauge != null ? String(sm.gauge) : '16';
     v.autoRelief = sm.relief === 'rect' || sm.relief === 'obround' ? sm.relief : 'none';
     v.reliefRatio = sm.reliefRatio != null ? sm.reliefRatio : K.AUTO_RELIEF_RATIO;
+    // rfIU: SolidWorks' Override thickness / Override radius (UI only): on when the part's value is not the table's
+    // (an equation, or a number no row of the gauge has)
+    var rows = v.useGauge ? gaugeChoices(v) : [];
+    v.overrideThickness = !!(v.useGauge && rows.length && !rows.some(function (r) { return typeof sm.thickness === 'number' && Math.abs(r.thickness - sm.thickness) < 1e-9; }));
+    v.overrideRadius = !!(v.useGauge && rows.length && !rows.some(function (r) { return typeof v.bendRadius === 'number' && Math.abs(r.radius - v.bendRadius) < 1e-9; }));
+    var at = -1;
+    rows.forEach(function (r, i) { if (at < 0 && typeof v.bendRadius === 'number' && Math.abs(r.radius - v.bendRadius) < 1e-9) at = i; });
+    v.gaugeRadius = String(Math.max(0, at));
     return v;
   }
   function gaugeRef(v) { return v.gaugeTable === '__custom' ? v.customGauge : v.gaugeTable; }
+  // rfIU: every row of the table for the chosen gauge, in the part's units (a SolidWorks gauge table offers several
+  // bend radii per gauge: the Bend radius list)
+  function gaugeChoices(v) {
+    var t = K.gaugeTable(gaugeRef(v));
+    if (!t) return [];
+    var g = String(v.gauge), u = App.model.units === 'in' ? 'in' : 'mm', k = (t.units || 'in') === u ? 1 : (t.units === 'in' || !t.units ? 25.4 : 1 / 25.4);
+    return (t.rows || []).filter(function (r) { return String(r.gauge) === g; }).map(function (r) {
+      var o = { gauge: String(r.gauge), thickness: +r.thickness * k, radius: (r.radius != null ? +r.radius : +r.thickness) * k };
+      if (r.bendDeduction != null) o.bendDeduction = +r.bendDeduction * k; else o.kFactor = r.kFactor != null ? +r.kFactor : K.DEFAULT_K_FACTOR;
+      return o;
+    });
+  }
+  function gaugeRadiusOptions(v) {
+    return gaugeChoices(v).map(function (r, i) { return [String(i), UI.fmtNum(r.radius, 4) + ' ' + UI.unitLabel() + (r.bendDeduction != null ? ' (BD ' + UI.fmtNum(r.bendDeduction, 4) + ')' : ' (K ' + UI.fmtNum(r.kFactor, 3) + ')')]; });
+  }
   // model.sheet from the PM values; `exprs` keeps equation fields as their text (on ✓), else the evaluated numbers
   function sheetFromValues(v, exprs) {
     function val(k) { return exprs ? pmExpr(k, +v[k]) : +v[k]; }
@@ -2320,14 +2345,29 @@
       relief: v.autoRelief || 'none', reliefRatio: v.autoRelief && v.autoRelief !== 'none' ? +v.reliefRatio : null });
   }
   // a gauge pick fills T, R and K (or BD) from the table's row
+  // rfIU: Override thickness / Override radius keep the typed value; a gauge with several radii takes the one picked
+  // in the Bend radius list (v.gaugeRadius, an index into gaugeChoices)
   function applyGauge(v) {
     var row = K.gaugeRow(gaugeRef(v), v.gauge, App.model.units);
     if (!row) return false;
-    ['thickness', 'bendRadius', 'kFactor', 'bendDeduction'].forEach(function (k) { if (pm.exprs) { delete pm.exprs[k]; delete pm.exprErrors[k]; } });
-    v.thickness = Math.round(row.thickness * 1e6) / 1e6; v.bendRadius = Math.round(row.radius * 1e6) / 1e6;
+    var rows = gaugeChoices(v), pick = rows[+v.gaugeRadius || 0];
+    if (pick && pick.gauge === row.gauge) row = pick; else v.gaugeRadius = '0';
+    ['thickness', 'bendRadius', 'kFactor', 'bendDeduction'].forEach(function (k) {
+      if ((k === 'thickness' && v.overrideThickness) || (k === 'bendRadius' && v.overrideRadius)) return;
+      if (pm.exprs) { delete pm.exprs[k]; delete pm.exprErrors[k]; }
+    });
+    if (!v.overrideThickness) v.thickness = Math.round(row.thickness * 1e6) / 1e6;
+    if (!v.overrideRadius) v.bendRadius = Math.round(row.radius * 1e6) / 1e6;
     if (row.bendDeduction != null) { v.bendDeduction = Math.round(row.bendDeduction * 1e6) / 1e6; v.baType = 'deduction'; }
     else { v.kFactor = row.kFactor; if (v.baType !== 'table') v.baType = 'kfactor'; }
     return true;
+  }
+  // a gauge-table control changed: fill the values from the table (true = the PM must be redrawn)
+  function gaugeChanged(v, key) {
+    if (!v.useGauge) return key === 'useGauge';
+    if (key === 'gauge' || key === 'gaugeTable') v.gaugeRadius = '0';
+    if (key === 'useGauge' || key === 'gaugeTable' || key === 'gauge' || key === 'gaugeRadius' || key === 'overrideThickness' || key === 'overrideRadius') { applyGauge(v); return true; }
+    return false;
   }
   function gaugeOptions(v) {
     var t = K.gaugeTable(gaugeRef(v)), u = UI.unitLabel(), k = (t && t.units || 'in') === u ? 1 : (u === 'mm' ? 25.4 : 1 / 25.4);
@@ -2442,7 +2482,17 @@
         { type: 'html', html: '<div class="pm-note" style="margin:2px 0 4px">Thicknesses are the published standard gauges; the bend radius and K-factor in this table are an <b>' + EXAMPLE_NOTE + '</b>.</div>', show: function (v) { return v.useGauge && isBuiltIn(v); } },
         { type: 'buttons', show: function (v) { return v.useGauge; }, buttons: [{ label: 'Edit gauge table…', onclick: editGaugeTable }] }
       ] },
-      { title: 'Sheet Metal Parameters', fields: [{ type: 'number', label: 'Thickness  T', key: 'thickness', unit: 'u', min: 0 }, { type: 'number', label: 'Bend radius', key: 'bendRadius', unit: 'u', min: 0 }].concat(extra || []) },
+      // rfIU: SolidWorks' order (Thickness, Reverse direction, Bend radius); with a gauge table the thickness and radius
+      // come from the table and are locked unless Override thickness / Override radius is checked; a gauge with
+      // several radii in the table offers them in a list
+      { title: 'Sheet Metal Parameters', fields: [
+        { type: 'check', label: 'Override thickness', key: 'overrideThickness', rerender: true, show: function (v) { return v.useGauge; } },
+        { type: 'number', label: 'Thickness  T', key: 'thickness', unit: 'u', min: 0, disabled: function (v) { return v.useGauge && !v.overrideThickness; } }
+      ].concat(extra || [], [
+        { type: 'select', label: 'Table bend radius', key: 'gaugeRadius', options: gaugeRadiusOptions, rerender: true, show: function (v) { return v.useGauge && !v.overrideRadius && gaugeChoices(v).length > 1; } },
+        { type: 'check', label: 'Override radius', key: 'overrideRadius', rerender: true, show: function (v) { return v.useGauge; } },
+        { type: 'number', label: 'Bend radius', key: 'bendRadius', unit: 'u', min: 0, disabled: function (v) { return v.useGauge && !v.overrideRadius; } }
+      ]) },
       { title: 'Bend Allowance', fields: [
         { type: 'select', label: 'Type', key: 'baType', options: BA_OPTIONS, rerender: true },
         { type: 'number', label: 'K-factor', key: 'kFactor', step: 0.01, min: 0, show: function (v) { return v.baType === 'kfactor' || v.baType === 'table'; } },
@@ -2493,7 +2543,7 @@
         title: 'Base Flange/Tab', icon: 'flange', values: f, command: { sketchId: f.sketch },
         groups: [{ title: 'Sketch', fields: [sketchPickerField(f)] }].concat(sheetGroups([{ type: 'check', label: 'Reverse direction', key: 'reverse' }])),
         onChange: function (v, key) {
-          if (v.useGauge && (key === 'useGauge' || key === 'gaugeTable' || key === 'gauge') && applyGauge(v)) renderPM();
+          if (gaugeChanged(v, key)) renderPM();
           v.depth = v.thickness; App.command.sketchId = v.sketch; UI.updateSketches();
           var err = showPreview(feature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing base flange (thickness ' + v.thickness + ').');
         },
@@ -2547,7 +2597,7 @@
         { type: 'check', label: 'Reverse Direction', key: 'reverse' }
       ] }].concat(sheetGroups([{ type: 'check', label: 'Reverse direction', key: 'flip' }])),
       onChange: function (v, key) {
-        if (v.useGauge && (key === 'useGauge' || key === 'gaugeTable' || key === 'gauge') && applyGauge(v)) renderPM();
+        if (gaugeChanged(v, key)) renderPM();
         preview();
       },
       onOK: function (v) {
@@ -2595,7 +2645,7 @@
         { type: 'html', html: function () { return cache.warnings && cache.warnings.length ? '<div class="pm-note" style="margin:2px 0 4px">' + cache.warnings.map(function (w) { return smEsc(w); }).join('<br>') + '</div>' : ''; } }
       ] }]),
       onChange: function (v, key) {
-        if (v.useGauge && (key === 'useGauge' || key === 'gaugeTable' || key === 'gauge') && applyGauge(v)) renderPM();
+        if (gaugeChanged(v, key)) renderPM();
         else if (key !== 'useGauge' && key !== 'baType' && key !== 'gaugeTable' && key !== 'gauge') renderPM();   // the flat size follows the typed value
         UI.setStatus('Sheet metal: flat size ' + flatText(v) + '.');
       },
@@ -2628,6 +2678,10 @@
   // an old part does not move when it is edited). Hems carry hemType ('closed' | 'open' | 'teardrop' | 'rolled'), hemPosition ('inside' Material Inside |
   // 'outside' Bend Outside; an old hem without it shows Bend Outside), and for Tear Drop / Rolled hemRadius, hemAngle.
   var LENGTH_REFS = [['outer', 'Outer Virtual Sharp', 'lenOuter'], ['inner', 'Inner Virtual Sharp', 'lenInner'], ['tangent', 'Tangent Bend', 'lenTangent']];
+  // rfIU: SolidWorks 2024's Flange Position order (Tangent to Bend needs kernel work) and its Custom Relief Type names
+  // (Tear needs kernel work; None is Anvil's: no relief)
+  var FLANGE_POSITIONS = [['inside', 'Material Inside'], ['outside', 'Material Outside'], ['bendOutside', 'Bend Outside'], ['virtualSharp', 'Bend from Virtual Sharp']];
+  var CUSTOM_RELIEFS = [['rect', 'Rectangle'], ['obround', 'Obround'], ['none', 'None']];
   var HEM_TYPES = [['closed', 'Closed', 'hemClosed'], ['open', 'Open', 'hemOpen'], ['teardrop', 'Tear Drop', 'hemTeardrop'], ['rolled', 'Rolled', 'hemRolled']];
   var HEM_POSITIONS = [['inside', 'Material Inside', 'hemInside'], ['outside', 'Bend Outside', 'hemOutside']];
   var HEM_ANGLE = { teardrop: 200, rolled: 270 };   // SolidWorks' starting angles of a Tear Drop and a Rolled hem
@@ -2790,7 +2844,7 @@
       } catch (e) { UI.setStatus('Preview: ' + e.message); }
     }
     var radiusFields = [
-      { type: 'check', label: 'Use default bend radius (' + sheet.bendRadius + ')', key: 'useDefaultRadius', rerender: true },
+      { type: 'check', label: 'Use default radius (' + sheet.bendRadius + ')', key: 'useDefaultRadius', rerender: true },
       { type: 'number', label: 'Bend radius', key: 'radiusValue', unit: 'u', min: 0, show: function (v) { return !v.useDefaultRadius; } }
     ];
     var groups = isJog ? [
@@ -2822,16 +2876,18 @@
         { type: 'pick', icon: 'flange', value: function (v) { return v.edges.length ? v.edges.length + ' edge' + (v.edges.length > 1 ? 's' : '') : ''; }, placeholder: 'Select edges…', items: flangeItems, onRemove: flangeRemove, onClear: flangeClear }
       ].concat(radiusFields, [{ type: 'buttons', buttons: [{ label: 'Clear selection', onclick: function (v) { v.edges.length = 0; renderPM(); resolveList(); preview(); } }] }]) },
       { title: 'Angle', fields: [{ type: 'number', label: 'Flange angle', key: 'angle', unit: '°', min: 0 }] },
-      { title: 'Flange Length', fields: [{ type: 'number', label: 'Length', key: 'length', unit: 'u', min: 0 }, { type: 'iconRadio', label: 'Measured from', key: 'lengthRef', options: lengthRefs }, { type: 'check', label: 'Reverse direction', key: 'reverse' }] },
-      { title: 'Flange Position', fields: [{ type: 'select', label: 'Position', key: 'position', options: [['bendOutside', 'Bend Outside'], ['outside', 'Material Outside'], ['inside', 'Material Inside'], ['virtualSharp', 'Bend from Virtual Sharp']] }] },
+      // rfIU: SolidWorks' Flange Length order: end condition (Blind; Up To Vertex needs kernel work) with Reverse
+      // Direction beside it, then the length and the three length references
+      { title: 'Flange Length', fields: [{ type: 'static', label: 'Length end condition', value: 'Blind' }, { type: 'check', label: 'Reverse direction', key: 'reverse' }, { type: 'number', label: 'Length', key: 'length', unit: 'u', min: 0 }, { type: 'iconRadio', label: 'Measured from', key: 'lengthRef', options: lengthRefs }] },
+      { title: 'Flange Position', fields: [{ type: 'select', label: 'Position', key: 'position', options: FLANGE_POSITIONS }] },
       { title: 'Miter', fields: [
         { type: 'check', label: 'Miter corners', key: 'miter', rerender: true },
-        { type: 'number', label: 'Gap', key: 'miterGap', unit: 'u', min: 0, show: function (v) { return !!v.miter; } }
+        { type: 'number', label: 'Gap distance', key: 'miterGap', unit: 'u', min: 0, show: function (v) { return !!v.miter; } }
       ] },
       { title: 'Custom Relief Type', fields: [   // rfK: SolidWorks' group name on the Edge-Flange PM (Auto Relief is the sheet's default, in the Sheet-Metal feature)
         { type: 'check', label: 'Custom relief type', key: 'useCustomRelief', rerender: true },
         { type: 'static', label: 'Auto Relief', value: function () { return sheet.relief ? RELIEF_NAMES[sheet.relief] + ', ratio ' + sheet.reliefRatio + ' (sheet default)' : 'None (sheet default)'; }, show: function (v) { return !v.useCustomRelief; } },
-        { type: 'select', label: 'Relief type', key: 'relief', options: [['none', 'None'], ['rect', 'Rectangle'], ['obround', 'Obround']], rerender: true, show: function (v) { return v.useCustomRelief; } },
+        { type: 'select', label: 'Relief type', key: 'relief', options: CUSTOM_RELIEFS, rerender: true, show: function (v) { return v.useCustomRelief; } },
         { type: 'check', label: 'Use default width (T = ' + T + ')', key: 'useDefaultReliefWidth', rerender: true, show: function (v) { return v.useCustomRelief && v.relief !== 'none'; } },
         { type: 'number', label: 'Relief width', key: 'reliefWidthValue', unit: 'u', min: 0, show: function (v) { return v.useCustomRelief && v.relief !== 'none' && !v.useDefaultReliefWidth; } },
         { type: 'check', label: 'Use default depth (T/2 = ' + T / 2 + ')', key: 'useDefaultReliefDepth', rerender: true, show: function (v) { return v.useCustomRelief && v.relief !== 'none'; } },
@@ -3142,7 +3198,7 @@
         ] },
         { title: 'Custom Relief Type', collapsed: !f.useCustomRelief, fields: [
           { type: 'check', label: 'Custom relief type', key: 'useCustomRelief', rerender: true },
-          { type: 'select', label: 'Relief type', key: 'relief', options: [['none', 'None'], ['rect', 'Rectangle'], ['obround', 'Obround']], show: function (v) { return v.useCustomRelief; } }
+          { type: 'select', label: 'Relief type', key: 'relief', options: CUSTOM_RELIEFS, show: function (v) { return v.useCustomRelief; } }
         ] },
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ];
@@ -4062,7 +4118,7 @@
       if (g.title !== 'Sheet Metal Parameters') return;
       if (isConv) { g.fields = [fixedPick].concat(g.fields, [{ type: 'check', label: 'Reverse thickness', key: 'reverse' }]); return; }   // rfIM
       g.title = 'Bend Parameters';
-      g.fields = [fixedPick, { type: 'static', label: 'Thickness  T', value: function (v) { var t = thickness(v); return t == null ? '(from the part at the fixed face)' : UI.fmtNum(t, 4) + ' (the part\'s)'; } }].concat(g.fields.filter(function (q) { return q.key !== 'thickness'; }),
+      g.fields = [fixedPick, { type: 'static', label: 'Thickness  T', value: function (v) { var t = thickness(v); return t == null ? '(from the part at the fixed face)' : UI.fmtNum(t, 4) + ' (the part\'s)'; } }].concat(g.fields.filter(function (q) { return q.key !== 'thickness' && q.key !== 'overrideThickness'; }),
         // lane rfIM: the bends already rounded in the part keep their own radius (the radius above is for sharp corners)
         [{ type: 'static', label: 'Rounded bends', value: function () { return info.bends == null ? '–' : info.rounded ? info.rounded + ' found (their own radius)' : 'none'; } }]);
     });
@@ -4091,7 +4147,7 @@
       command: isConv ? { faceList: [], edgeList: [], pickEdges: true, onPick: pick } : { faceList: [], onPick: pick },
       groups: gs, pmUndo: isConv ? pmUndo : null,
       onChange: function (v, key) {
-        if (isConv && v.useGauge && (key === 'useGauge' || key === 'gaugeTable' || key === 'gauge') && applyGauge(v)) renderPM();
+        if (isConv && gaugeChanged(v, key)) renderPM();
         preview();
       },
       onOK: function (v) {

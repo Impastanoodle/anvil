@@ -83,7 +83,7 @@
     (f.rels || []).forEach(function (rel, i) {
       if (!rel.refs.some(function (r) { return ents.indexOf(refEntity(r)) >= 0; })) return;
       var st = an && an.rels[i], word = st === 'conflict' ? 'Not Solved' : st === 'redundant' ? 'Over Defining' : st === 'driven' ? 'Driven' : 'Satisfied';
-      rows.push('<div class="rel-row" data-rel="' + i + '">' + Icons(REL_ICON[rel.type] || 'relations', 14) + '<span>' + esc(S.describe(f, rel)) + '</span><em>' + word + '</em></div>');
+      rows.push('<div class="rel-row" data-rel="' + i + '">' + Icons(REL_ICON[rel.type] || 'relations', 16) + '<span>' + esc(S.describe(f, rel)) + '</span><em>' + word + '</em></div>');
     });
     var est = ents.length === 1 && an && an.entities ? an.entities[ents[0]] : null;
     var stText = est === 'full' ? 'Fully Defined' : est === 'over' || est === 'conflict' ? 'Over Defined' : 'Under Defined';

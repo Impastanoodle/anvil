@@ -194,9 +194,15 @@
             [pr.circles.visible, pr.circles.hidden, pr.arcs && pr.arcs.visible, pr.arcs && pr.arcs.hidden].forEach(function (list) { (list || []).forEach(function (c) { rims.push({ c: toSheet(c.c), r: c.r * s }); }); });
           }
           var hl = snapHatch(patternLines(loops, hs * hst.spacing, hst.angle, pat), loops, rims);
+          // (rfIR) the lines of one region remember it (hidden key _hg: loops, pattern, angle, spacing, the lines), so
+          // an R2000 DXF writes one HATCH entity for them while every one of them is still on the sheet unchanged
+          var hg = !clip && !merge && _.HATCH_PATTERNS[pat] ? { loops: loops, pattern: pat, angle: hst.angle, sp: hs * hst.spacing, lines: [] } : null;
           (merge ? _.mergeSegs(hl) : hl).forEach(function (h) {   // (lane DW2: a partly hidden face's pieces, joined again)
             var q = clip ? clipSeg(h, clip.c, clip.r) : h;
-            if (q) { put(Object.assign({ k: 'line', a: [q[0], q[1]], b: [q[2], q[3]], layer: layer, style: 'hatch' }, extra)); n++; }
+            if (!q) return;
+            var lp = Object.assign({ k: 'line', a: [q[0], q[1]], b: [q[2], q[3]], layer: layer, style: 'hatch' }, extra);
+            if (hg) { Object.defineProperty(lp, '_hg', { value: hg }); hg.lines.push(lp); }
+            put(lp); n++;
           });
         }
         return n;
@@ -554,7 +560,9 @@
       var w = views.filter(function (x) { return x.view.id === t.view; })[0];
       if (!w || w.pending) return { id: t.id, view: t.view, prims: [], box: null, rows: [], missing: !w, pending: !!w, text: 'Hole Table' };
       // (a table not placed yet goes beside its view, clear of the other views and tables)
-      var sheetBox = { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1, avoid: htTaken.concat(views.filter(function (x) { return x !== w; }).map(function (x) { return x.box; })) };
+      // (rfIR) views: every view's box (its own too), kept HT_ROOM clear for dimensions where the sheet allows
+      var sheetBox = { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1, avoid: htTaken.concat(views.filter(function (x) { return x !== w; }).map(function (x) { return x.box; })),
+        views: views.map(function (x) { return x.box; }) };
       var r = D.holeTablePrims(t, w, k, mesh, doc, units, holeEnds, holeNames, textWidth, sheetBox);
       if (r.box) htTaken.push(r.box);
       r.id = t.id; r.view = t.view;
@@ -907,6 +915,12 @@
       item('size', 'flatSize', ts, [{ k: 'text', p: [cx, yTop - noteH() * k], h: noteH() * k, text: ts, anchor: 'middle', layer: 'NOTES', rot: 0 }], { w: W, h: H });
       yTop -= (noteH() + 5) * k;
     }
+    // (rfIW) a flat drawn at another scale than the sheet's says so under its notes: SCALE 1 : 2
+    if (D.viewScaleNote(v, doc.sheet && doc.sheet.scale)) {
+      var stx = D.scaleLabel(v.scale);
+      item('scale', 'flatScale', stx, [{ k: 'text', p: [cx, yTop - 3 * k], h: 3 * k, text: stx, anchor: 'middle', layer: w.layer, rot: 0 }], {});
+      yTop -= 8 * k;
+    }
     if (mode === 'table' && fd.bends.length) {
       var spec = bendTableCols(v), rh = TABLE_ROW * k, th = TABLE_H * k, T = fd.sheet && +fd.sheet.thickness || 0;
       var tprec = v.bendPrec != null && v.bendPrec !== '' ? +v.bendPrec : _.DIMSTYLE && _.DIMSTYLE.prec != null ? _.DIMSTYLE.prec : null;
@@ -1073,8 +1087,42 @@
     delete d.tx;
     return p;
   }
-  // dimPrims for a dimension, an unplaced radius / diameter (no dragged leader) trying ALT_* until it is clear
+  // (rfIR) a model item's horizontal / vertical dimension whose text or lines land on the title block, the sheet
+  // format's blocks, a table or the BOM (paper boxes with no view), or off the sheet, goes to the view's other side
+  // when that side is clear of them (the shop audit's bracket: the Front view's width dimension inside UNLESS
+  // OTHERWISE SPECIFIED). Placed dimensions (dragged, flipped, a text position) keep their side.
   function placeDim(d, vw, k, placed, obs) {
+    var p = placeDim0(d, vw, k, placed, obs);
+    if (!obs || !d.auto || !/^(h|v)$/.test(d.kind) || !(d.side === 1 || d.side === -1) || d.tx != null || d.flip || d.tside != null || d.off != null || d.at != null) return p;
+    if (!onPaperBlock(p, obs, k)) return p;
+    var s0 = d.side;
+    d.side = -s0;
+    var q = placeDim0(d, vw, k, placed, obs);
+    // (rfIW) only when its extension lines stay out of the view: points on the far edge would draw them across the
+    // part (and the dimension would cover the view, taking the clicks that drag it: smoke rfQ)
+    if (!onPaperBlock(q, obs, k) && !acrossView(q, vw.box, k)) return q;
+    d.side = s0;
+    return placeDim0(d, vw, k, placed, obs);
+  }
+  // do the lines of dimension p reach into view box B (more than 1 mm in from its edges)? Extension lines from points
+  // on the far edge run the height of the view, along or across the part
+  function acrossView(p, B, k) {
+    var m = 1 * k, e = 1e-6 * (1 + Math.abs(B.x1) + Math.abs(B.y1));
+    return p.some(function (x) {
+      if (x.k !== 'line') return false;
+      var lo = [Math.min(x.a[0], x.b[0]), Math.min(x.a[1], x.b[1])], hi = [Math.max(x.a[0], x.b[0]), Math.max(x.a[1], x.b[1])];
+      if (lo[0] > B.x1 + e || hi[0] < B.x0 - e || lo[1] > B.y1 + e || hi[1] < B.y0 - e) return false;
+      return Math.min(hi[0], B.x1) - Math.max(lo[0], B.x0) > m || Math.min(hi[1], B.y1) - Math.max(lo[1], B.y0) > m;
+    });
+  }
+  function onPaperBlock(p, obs, k) {
+    var g = primGeo(p), S = obs.sheet, blocks = obs.boxes.filter(function (b) { return b.view == null; }).map(function (b) { return b.box; });
+    var off = function (r) { return S && (r.x0 < S.x0 || r.y0 < S.y0 || r.x1 > S.x1 || r.y1 > S.y1); };
+    return g.texts.some(function (t) { return off(t) || blocks.some(function (b) { return rectsMeet(t, b, 0); }); }) ||
+      g.segs.some(function (s) { var r = { x0: Math.min(s[0][0], s[1][0]), y0: Math.min(s[0][1], s[1][1]), x1: Math.max(s[0][0], s[1][0]), y1: Math.max(s[0][1], s[1][1]) }; return off(r) || blocks.some(function (b) { return segHitsRect(s[0], s[1], b); }); });
+  }
+  // dimPrims for a dimension, an unplaced radius / diameter (no dragged leader) trying ALT_* until it is clear
+  function placeDim0(d, vw, k, placed, obs) {
     if (obs && /^(h|v|aligned)$/.test(d.kind) && d.tx == null && !d.flip && d.tside == null) return placeLinearOut(d, vw, k, placed, obs);
     if ((d.kind !== 'rad' && d.kind !== 'dia') || d.lead || !obs) return dimPrims(d, vw, k, placed);
     var alts = d.kind === 'rad' ? ALT_RAD : ALT_DIA, best = 0, bestCost = Infinity;
@@ -1363,6 +1411,8 @@
   // file (to 1e-4 a curve's end, worked out from its rounded centre, radius and angles, missed a line's end by up to
   // 0.0001, and two ends a hair apart could round apart)
   function gnum(x) { return String(Math.round(x * 1e9) / 1e9); }
+  // (rfIR) num without the leading zero (SVG hatch paths): 0.25 -> '.25', -0.5 -> '-.5'
+  function hnum(x) { return num(x).replace(/^(-?)0\./, '$1.'); }
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   // widths in paper mm
   // dimension, leader and balloon arrowheads: 3 mm long, 1 mm wide (ASME Y14.2, SolidWorks' ANSI default 1 × 3 mm;
@@ -1467,9 +1517,10 @@
           for (var hj = pi; lst[hj] && lst[hj].k === 'line' && lst[hj].style === 'hatch' && !lst[hj].color; hj++) {
             // relative moves from the point drawn so far (rounded), so the numbers stay short and errors never add up
             var ax = lst[hj].a[0], ay = H - lst[hj].a[1], bx = lst[hj].b[0], by = H - lst[hj].b[1], mx, my, lx, ly;
-            if (cx === null) { cx = rd(ax); cy = rd(ay); hd.push('M' + num(cx) + ' ' + num(cy)); }
-            else { mx = rd(ax - cx); my = rd(ay - cy); cx += mx; cy += my; hd.push('m' + num(mx) + ' ' + num(my)); }
-            lx = rd(bx - cx); ly = rd(by - cy); cx += lx; cy += ly; hd.push('l' + num(lx) + ' ' + num(ly));
+            // (rfIR) and no leading zero ('.1234', '-.05'): most relative numbers are under 1, two bytes each saved
+            if (cx === null) { cx = rd(ax); cy = rd(ay); hd.push('M' + hnum(cx) + ' ' + hnum(cy)); }
+            else { mx = rd(ax - cx); my = rd(ay - cy); cx += mx; cy += my; hd.push('m' + hnum(mx) + ' ' + hnum(my)); }
+            lx = rd(bx - cx); ly = rd(by - cy); cx += lx; cy += ly; hd.push('l' + hnum(lx) + ' ' + hnum(ly));
           }
           out.push('<path class="hatch" d="' + hd.join('') + '" stroke-width="' + num(STROKE.hatch * k) + '"/>');
           return;
@@ -1640,6 +1691,21 @@
       pr(0, 'ENDSEC');
     }
     pr(0, 'SECTION'); pr(2, 'ENTITIES');
+    // (rfIR) R2000: a hatched region whose lines are all still on the sheet as they were made (none clipped by a detail
+    // profile, split round a label or greyed) is one HATCH entity with the pattern's line families (acad.pat's ANSI
+    // families, so a reader that regenerates it from its own acad.pat draws the same), not a LINE per hatch line;
+    // only with opts.hatch (the app's File > Save as DXF / DWG pass it; the engine default keeps the lines other tests
+    // count). R12 has no HATCH: lines.
+    var hwrite = {};
+    if (r2000 && opts && opts.hatch) {
+      sheet.prims.forEach(function (p) {
+        var g = p._hg;
+        if (!g) return;
+        if (g._w !== hwrite) { g._w = hwrite; g._n = 0; g._ok = false; g._done = false; }
+        if (!p.color && p.k === 'line' && p.style === 'hatch') g._n++;
+      });
+      sheet.prims.forEach(function (p) { var g = p._hg; if (g && g._w === hwrite && g._n === g.lines.length && g.lines.length) g._ok = true; });
+    }
     sheet.prims.forEach(function (p) { if (!(p.dimIx != null && dimOf[p.dimIx])) entity(p, msBR); });
     dimGroups.forEach(function (g) {
       var d = g.d, X = g.d.dxf, type = { linear: 0, aligned: 1, dia: 3, rad: 4, angular: 5 }[X.type];
@@ -1671,6 +1737,38 @@
         if (r2000 && sub) pr(100, sub);
       }
       // hatch lines leave out z (30 / 31, default 0): a dashed hatch pattern is thousands of lines (r6/drawings6)
+      if (p.k === 'line' && p.style === 'hatch' && p._hg && p._hg._w === hwrite && p._hg._ok) {
+        if (p._hg._done) return;
+        p._hg._done = true;
+        var hg = p._hg, hl2 = hg.loops.map(function (l) { return l.filter(function (q, i) { var nq = l[(i + 1) % l.length]; return Math.hypot(nq[0] - q[0], nq[1] - q[1]) > 1e-9; }); }).filter(function (l) { return l.length >= 3; });
+        if (!hl2.length) return;
+        head('HATCH', 'AcDbHatch', true);
+        pr(10, 0); pr(20, 0); pr(30, 0); pr(210, 0); pr(220, 0); pr(230, 1);
+        pr(2, hg.pattern); pr(70, 0); pr(71, 0); pr(91, hl2.length);
+        hl2.forEach(function (l, li) {
+          pr(92, li ? 2 : 3); pr(72, 0); pr(73, 1); pr(93, l.length);
+          l.forEach(function (q) { pr(10, num(q[0])); pr(20, num(q[1])); });
+          pr(97, 0);
+        });
+        // odd parity, predefined; the angle and scale against acad.pat (its ANSI families at 45°, 1/8 in apart; acadiso.pat
+        // 3.175 mm), then the families as drawn: anchored at the sheet origin, offsets and dashes in drawing units
+        var fams = _.HATCH_PATTERNS[hg.pattern], defs = [], sp = hg.sp;
+        fams.forEach(function (fam) {
+          var a = hg.angle + fam.da, ar = a * Math.PI / 180, d = [Math.cos(ar), Math.sin(ar)], n = [-d[1], d[0]], sh = (fam.shift || 0) * sp, per = sp * fam.period;
+          fam.offs.forEach(function (o) {
+            defs.push({ a: a, base: [n[0] * sp * o, n[1] * sp * o], off: [d[0] * sh + n[0] * per, d[1] * sh + n[1] * per],
+              dash: (fam.dash || []).map(function (x, i) { return i % 2 ? -x * sp : x * sp; }) });
+          });
+        });
+        pr(75, 0); pr(76, 1); pr(52, num(((hg.angle - 45) % 360 + 360) % 360)); pr(41, gnum(sp / (inch ? 0.125 : 3.175))); pr(77, 0); pr(78, defs.length);
+        defs.forEach(function (df) {
+          pr(53, num(((df.a % 360) + 360) % 360)); pr(43, gnum(df.base[0])); pr(44, gnum(df.base[1])); pr(45, gnum(df.off[0])); pr(46, gnum(df.off[1])); pr(79, df.dash.length);
+          df.dash.forEach(function (x) { pr(49, gnum(x)); });
+        });
+        var hseed = (D.interiorPoint ? D.interiorPoint(hg.loops) : null) || hg.loops[0][0];
+        pr(98, 1); pr(10, num(hseed[0])); pr(20, num(hseed[1]));
+        return;
+      }
       if (p.k === 'line' && p.style === 'hatch') { head('LINE', 'AcDbLine', true); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(11, num(p.b[0])); pr(21, num(p.b[1])); }
       else if (p.k === 'line') { head('LINE', 'AcDbLine', true); pr(10, gnum(p.a[0])); pr(20, gnum(p.a[1])); pr(30, 0); pr(11, gnum(p.b[0])); pr(21, gnum(p.b[1])); pr(31, 0); }
       else if (p.k === 'circle') { head('CIRCLE', 'AcDbCircle', true); pr(10, gnum(p.c[0])); pr(20, gnum(p.c[1])); pr(30, 0); pr(40, gnum(p.r)); }

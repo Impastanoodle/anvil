@@ -1764,6 +1764,7 @@
         { label: 'Sketch Tools ▸ Repair Sketch…', action: function () { UI.cmdRepairSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdRepairSketch },
         { label: 'Sketch Tools ▸ SketchXpert…', icon: 'relations', action: function () { UI.cmdSketchXpert(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchXpert },
         { label: 'Sketch Tools ▸ Modify…', icon: 'moveEnt', action: function () { UI.cmdModifySketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdModifySketch },
+        { label: 'Sketch Tools ▸ Align ▸ Grid/Origin…', icon: 'moveEnt', action: function () { UI.cmdAlignGrid(); }, disabled: App.mode !== 'sketch' || !UI.cmdAlignGrid },   // lane rfIX
         { label: 'Sketch Tools ▸ Replace Entity…', icon: 'moveEnt', action: function () { UI.cmdReplaceEntity(); }, disabled: App.mode !== 'sketch' || !UI.cmdReplaceEntity },   // rfCR: ui-sketch-tools.js
         { label: 'Sketch Tools ▸ Close Sketch to Model…', icon: 'closeArc', action: function () { UI.cmdCloseSketchToModel(); }, disabled: App.mode !== 'sketch' || !UI.cmdCloseSketchToModel },   // lane sketch-path: ui-sketch-tools.js
         { label: 'Sketch Tools ▸ Create Sketch from Selections', action: function () { UI.cmdSketchFromSelections(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchFromSelections },   // rfGS

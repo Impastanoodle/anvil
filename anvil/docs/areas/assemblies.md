@@ -1,0 +1,39 @@
+# Assemblies — agent map
+Read this first; find line numbers with `grep -n <name> anvil/docs/INDEX.md` (sections `assembly.js`, `ui-assembly.js`). README *Assemblies* is the user-level description (model JSON, refs, every mate, script API, kernel API). Update this card at the end of any lane that touched this area.
+
+## Files — one line each
+- `assembly.js` — global `Assembly` (no DOM, loaded after the kernel files; also in tests/kernel-tests.html and headless/load.js): model, live-link document store (`Documents`), refs (`localRef`, `worldOf`, `resolveRef`, `refFromPick`), the mate solver (`solve`), `rebuild` (part builds cached by `entryKey`, `virtualModel` for Flexible sub-assemblies, `poseOnly` drag frames), patterns, exploded views, interference / collision, mass props, configurations, the `Builder` script API and `generateScript`.
+- `ui-assembly.js` — everything assembly in the UI beyond ui-commands.js' Insert / Mate / Move PMs: pose drags (`UI.asmPose`), SmartMates, pop-up toolbars, patterns / explode PMs, ConfigurationManager, sub-assembly tree rows, Edit Part, Pack and Go, BOM; at the end two wrapper blocks: **rfGV** (Symmetric / Slot / Hinge / Linear Coupler PM, `gvMate`) and **rfIV** (Move Component ▸ Collision Detection).
+- `ui-commands.js` (sheet-metal / commands lane, not this one) — `cmdMate` (Standard mates, Width, Gear, Limits), `cmdMoveComponent`, `componentDragHook`, `UI.asm.*` (insert, mate, move, rotate…). This area wraps them rather than editing them.
+- `ui-panels.js` — ribbon (Assembly tab: `moveComponent` etc.) and the tree's mate rows (it does not know the newer mate types: `UI.gvRowIcon` sets their icon).
+- Tests: kernel `tests/kernel/advanced-mates.js`, `distance-angle-mates.js`, `sub-assemblies.js`, `r4-asm4.js`, `rfGV.js`, `rfGW.js`, `rfIV.js`; smoke `tests/smoke/advanced-mates.js`, `distance-angle-mates.js`, `r3-assembly3.js` … `r13-asmui13.js`, `rfGV.js`, `rfIV.js`.
+
+## Data shapes
+- Component `{ id, name, source, fixed?, transform: { position, rotation (row-major 3×3) }, flexible?, flexState?, pattern?, seed?, config?, suppressed?, transparent? }`.
+- Mate `{ id, name, type, a, b, a2?, b2?, a3?, b3?, alignment?, flip?, suppressed?, distance?, angle?, offset?, min?, max?, ratio?, phase?, constraint?, percent?, limit? }`. `REF_KEYS` lists every ref key (deleting a component deletes the mates using it).
+- Types (`MATE_TYPES`): coincident, concentric, distance, angle, parallel, perpendicular, tangent, width, gear, limitdistance, limitangle, symmetric, slot, hinge, linearcoupler. `MATE_GROUPS` = the Mate PM's Standard / Advanced / Mechanical lists (SolidWorks 2024 order; Linear Coupler is Advanced). `MATE_BASE` / `MATE_NAMES` = name stems (`LinearCoupler1`).
+- `setMateValues(m, opts)` drops keys a type does not use — a new key needs a line there, or it vanishes on the next edit.
+- `phase` (Gear: degrees; Linear Coupler: model units along each direction) is stored the first time the mate is solved; it is what makes a reopened assembly hold its place. Delete it when the ratio changes (gvMate's apply does for the coupler).
+- Slot: `findSlot` (straight: two end cylinders joined by flat sides) then `findArcSlot` (two end cylinders + inner / outer wall cylinders about a centre axis). The prepared mate gets `pm.A` / `pm.A2` (straight: the two end axes; arc: centre axis and first-end axis) and `pm.slotArc = { R, sweep }`; `slotTarget` gives the along-slot goal (arc length).
+
+## Solver (assembly.js `solve`) — how a mate is added
+1. Prepare (`model.mates.forEach` in `solve`): validate, `localRef` each ref, set `pm.pair` ('pp', 'aa', 'ap', 'pa'), `pm.target`, `pm.sign` (alignment; 0 = closest, fixed at the first solve).
+2. `mateResidual(pm, A, B, k, A2, B2, A3, B3)`: the residual rows (world refs). Limits use `clampExcess` and return 0 when `pm.noLimit` (set while counting DOF and while dragTo's null space is computed).
+3. Greedy placement: `greedy` dispatches to `greedyAngle`, `greedyHeld` (`HELD`: symmetric, slot, hinge), `greedyMore` (`MORE`: parallel … gear, linearcoupler); each moves the "mover" (`moverIsB`) and records locks (`lockTrans`, `L.axis`).
+4. `lm` (Levenberg–Marquardt, numeric Jacobian) per independent group (`groupsOf`); a mate that cannot be met is rejected with *Mate cannot be satisfied*.
+5. DOF: null space of the holding mates' Jacobian per component.
+New mate type checklist: `MATE_BASE`, `MATE_TYPES`, `MATE_GROUPS`, `setMateValues` (+ `FLIP_TYPES`), `hasAlignment` / `defaultAlignment`, prepare validation, `mateResidual`, a greedy branch, `isAssemblyScript` regex, a `Builder.prototype` shortcut, README, the GV PM (`GV_LABEL`, `GV_ICON`, `GV_ADV` if Advanced, `slots()`, `values()`, `hint()`, `picks`), tests.
+
+## Drags
+- `rebuild(model, cache, { drag: { id, point (local), target (world) }, poseOnly, quick })`: `solve` → `dragTo`: Gauss–Newton on the pull inside the mates' null space, then `lm` makes the mates exact. The UI (`componentDragHook` in ui-commands.js) runs a poseOnly solve per frame (`UI.asmPose.apply`) and one rebuild on release.
+- rfIV: dragTo's null space ignores limits (Limit Distance / Angle rows left out, slot ends / hinge limits via `noLimit`), so a part stopped at a limit drags back off it; `lm` re-imposes the limit.
+- Collision: `Assembly.collision(model, build, moving, opts)` (CSG intersect of world bodies whose boxes overlap; touching = no collision) and `Assembly.collisionDrag(model, cache, drag, opts)` (samples along the step, then 12 bisections of the drag target). The UI turns it on by wrapping `Assembly.rebuild` while a Collision Detection drag runs (`cdRun` in ui-assembly.js), so ui-commands.js' drag code is unchanged; `UI.asmCollision = { options, last, faces }`.
+
+## Traps
+- The Mate PM in ui-commands.js cannot hold the selections of Symmetric / Slot / Hinge / Linear Coupler: `UI.cmdMate`, `UI.editMate`, `UI.mateSelect` are wrapped by the rfGV block and the two PMs swap on a type change. Tests pin the Advanced / Mechanical option lists (kernel advanced-mates, smoke advanced-mates and rfGV): adding a type changes three assertions.
+- `phase` is written into the model during a solve (it is model data, not a cache): a preview solve on a scratch copy does not keep it; the OK commit does.
+- A Free slot or a Limit mate removes no DOF in the count (`holding` filter / `noLimit`), as SolidWorks reports.
+- Collision checks use `partBody(pb.body)` placed by the current `c.transform` (`worldBody`); pose frames never build world bodies, so `collision` builds the two it needs (cached per call only).
+- `Assembly.rebuild` is replaced by the rfIV wrapper on the global object: anything calling it with `opts.drag` while `cdRun` is set goes through collisionDrag (explode animations pass `explodeT` and are skipped).
+- Rotate Component drags are not collision-checked yet (the rotate session replaces App.model per frame).
+- Units: assembly numbers are in the assembly's units; inch parts in an inch assembly (`m.units = 'in'`) need no scaling.

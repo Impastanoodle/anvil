@@ -2692,10 +2692,128 @@
       items.forEach(function (it, k) { if (it && it.label === 'Properties…') at = k; });
       var rows = [{ label: 'Edit Path', icon: 'pathLengthDim', action: function () { if (App.mode === 'sketch') UI.editSketchPath(who); } },
         { label: 'Dissolve Path', icon: 'pathLengthDim', action: function () { if (App.mode === 'sketch') UI.dissolveSketchPath(who); } }];
-      if (at < 0) items.push(rows[0], rows[1]); else items.splice(at, 0, rows[0], rows[1]);
+      // rfIT: the path's length as one dimension (Path Length Dimension with the whole path picked)
+      if (UI.pathLengthDimForPath && UI.sketchPathMembers && UI.sketchPathMembers(who)) rows.push({ label: 'Path Length Dimension', icon: 'pathLengthDim', action: function () { if (App.mode === 'sketch') UI.pathLengthDimForPath(who); } });
+      if (at < 0) items.push.apply(items, rows); else items.splice.apply(items, [at, 0].concat(rows));
       return items;
     };
   }
+
+  // ------------------------------------------------------------------ Align Grid/Origin (rfIX)
+  // SolidWorks' Tools ▸ Sketch Tools ▸ Align ▸ Grid/Origin: the sketch origin moves to the point picked (a sketch point
+  // or a model vertex) and its X axis turns along the line picked (a sketch line or a model edge; Reverse direction
+  // turns it the other way); the geometry stays where it is (S.alignGrid, sketch-solver.js), the sketch plane takes the
+  // new frame, and Selected Contours of the features on the sketch follow. One undo step.
+  function alignFrom(f, pick) {
+    var pl = UI.activePlane(), p = pick && pick.ref ? null : pick;
+    if (!pick) return null;
+    if (pick.ref) {
+      var q = S.refPoint(f, pick.ref);
+      if (q) return { kind: 'point', uv: q, label: S.refName(f, pick.ref) };
+      var c = S.refCurve(f, pick.ref);
+      if (c && c.kind === 'line') return { kind: 'line', dir: [c.b[0] - c.a[0], c.b[1] - c.a[1]], at: c.a, label: S.refName(f, pick.ref) };
+      return null;
+    }
+    if (p.vertex) return { kind: 'point', uv: K.to2D(pl, p.vertex), label: 'Vertex' };
+    if (p.edge) {
+      var a = K.to2D(pl, p.edge.a), b = K.to2D(pl, p.edge.b);
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-9) return null;   // an edge square to the sketch
+      return { kind: 'line', dir: [b[0] - a[0], b[1] - a[1]], at: a, label: 'Edge' };
+    }
+    return null;
+  }
+  function alignApply(f, o) {
+    var pl = UI.activePlane(), r = S.alignGrid(f, pl, o);
+    if (!r.ok) return r;
+    f.plane = r.plane;
+    delete f.profile;
+    (App.model.features || []).forEach(function (g) {
+      if (g === f || !Array.isArray(g.contours) || (g.sketch !== f.id && g.profile !== f.id)) return;
+      g.contours = g.contours.map(function (p) { var q = r.map(p); return [Math.round(q[0] * 1e9) / 1e9, Math.round(q[1] * 1e9) / 1e9]; });
+    });
+    return r;
+  }
+  function alignMessage(r) {
+    var parts = [];
+    if (Math.abs(r.u0) > 1e-12 || Math.abs(r.v0) > 1e-12) parts.push('origin moved ' + UI.fmtLen(r.u0) + ', ' + UI.fmtLen(r.v0));
+    if (r.ang) parts.push('X axis turned ' + (+r.ang.toFixed(4)) + '°');
+    return 'Grid aligned: ' + parts.join(', ') + '; the geometry stays where it is.';
+  }
+  function cmdAlignGrid() {
+    var f = sketch();
+    if (!f) return;
+    var v = { org: null, xax: null, reverse: false, box: 'org' }, spec = null;
+    var HELP = 'Select the point or vertex for the origin, then the line or edge for the X axis. ✓ aligns the sketch grid and origin; the geometry stays where it is.';
+    var pre = UI.selection ? UI.selection() : [];
+    pre.forEach(function (s) {
+      var it = s.kind === 'sketchPoint' || s.kind === 'sketchRef' ? alignFrom(f, { ref: s.ref }) : s.kind === 'entity' ? alignFrom(f, { ref: String(s.index) }) : null;
+      if (it && it.kind === 'point' && !v.org) v.org = it;
+      else if (it && it.kind === 'line' && !v.xax) v.xax = it;
+    });
+    if (v.org && !v.xax) v.box = 'xax';
+    function fresh() { var g = UI.activeSketchFeature(); if (g) f = g; }
+    function opts() {
+      var d = v.xax ? (v.reverse ? [-v.xax.dir[0], -v.xax.dir[1]] : v.xax.dir) : null;
+      return { origin: v.org ? v.org.uv : [0, 0], dir: d };
+    }
+    function hint() { UI.setStatus(!v.org && !v.xax ? 'Align Grid/Origin: select the point for the origin and the line for the X axis.' : 'Align Grid/Origin: ' + (v.org ? 'origin at ' + v.org.label : 'origin stays') + ', ' + (v.xax ? 'X axis along ' + v.xax.label : 'X axis stays') + '; press ✓.'); }
+    function preview() {
+      UI.sketchFeedbackClear();
+      var o = opts(), L = 30 * ((UI.cam && UI.cam.scale) || 0.01), d = o.dir ? o.dir : [1, 0], n = Math.hypot(d[0], d[1]), ux = [d[0] / n, d[1] / n], uy = [-ux[1], ux[0]], c = o.origin;
+      UI.sketchPreview([[c, [c[0] + L * ux[0], c[1] + L * ux[1]]], [c, [c[0] + L * uy[0], c[1] + L * uy[1]]]], HOT_STYLE, 'sk-align-axes');
+      if (UI.sketchPreviewText) { UI.sketchPreviewText([c[0] + L * ux[0], c[1] + L * ux[1]], 'X', 'sk-align-label', 4, 0); UI.sketchPreviewText([c[0] + L * uy[0], c[1] + L * uy[1]], 'Y', 'sk-align-label', 4, 0); }
+    }
+    function pickBox(key, icon, placeholder) {
+      return { type: 'pick', icon: icon, placeholder: placeholder, value: function (x) { return x[key] ? x[key].label : ''; },
+        active: function (x) { return x.box === key; }, onActivate: function () { v.box = key; UI.renderPM(); hint(); },
+        items: function (x) { return x[key] ? [{ label: x[key].label }] : []; },
+        onRemove: function (x) { x[key] = null; x.box = key; UI.renderPM(); preview(); hint(); },
+        onClear: function (x) { x[key] = null; x.box = key; UI.renderPM(); preview(); hint(); } };
+    }
+    spec = {
+      title: 'Align Grid/Origin', icon: 'moveEnt', values: v, message: HELP, keepSelection: true,
+      command: { onSketchPoint: function (uv, mx, my) {
+        fresh();
+        var ref = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null, it = null;
+        if (ref && ref !== 'O') it = alignFrom(f, { ref: ref });
+        if (!it && UI.pickVertex) { var vx = UI.pickVertex(mx, my); if (vx && vx.point) it = alignFrom(f, { vertex: vx.point }); }
+        if (!it && UI.pickEdge) { var ed = UI.pickEdge(mx, my); if (ed && ed.edge && ed.edge.a && ed.edge.b) it = alignFrom(f, { edge: ed.edge }); }
+        if (!it) { UI.setStatus('Click a sketch point or model vertex for the origin, a sketch line or straight model edge for the X axis.'); return; }
+        if (it.kind === 'point') { v.org = it; if (!v.xax) v.box = 'xax'; }
+        else { v.xax = it; if (!v.org) v.box = 'org'; }
+        UI.renderPM(); preview(); hint();
+      } },
+      groups: [
+        { title: 'Selections', fields: [pickBox('org', 'point', 'Origin (point or vertex)…'), pickBox('xax', 'line', 'X axis (line or edge)…'),
+          { type: 'check', key: 'reverse', label: 'Reverse direction' }] }
+      ],
+      onChange: preview,
+      okBlocked: function () { return v.org || v.xax ? '' : 'Select the point for the origin or the line for the X axis.'; },
+      onOK: function () {
+        fresh();
+        var o = opts(), r = step(function () { return alignApply(f, o); }, true);
+        if (!r.ok) { UI.toast(r.error); return false; }
+        clearPreview(); changed();
+        UI.setStatus(alignMessage(r));
+        return true;
+      },
+      onCancel: function () { clearPreview(); UI.setStatus('Align Grid/Origin cancelled.'); },
+      onClose: function () { UI.sketchFeedbackClear(); },
+      help: 'Align Grid/Origin: moves the sketch origin to a point and turns its X axis along a line or edge; the sketch geometry stays where it is.'
+    };
+    UI.openPM(spec);
+    preview(); hint();
+    return spec;
+  }
+  UI.cmdAlignGrid = cmdAlignGrid;
+  // UI.alignSketchGrid({ origin: [u, v], dir: [du, dv] }) aligns at once (one undo step), as the PropertyManager's ✓
+  UI.alignSketchGrid = function (o) {
+    var f = sketch();
+    if (!f) return { ok: false, error: 'Open a sketch first.' };
+    var r = step(function () { return alignApply(f, o || {}); }, true);
+    if (r.ok) { changed(); UI.setStatus(alignMessage(r)); }
+    return r;
+  };
 
   // UI.closeArcs([entity indices]) closes those arcs of the open sketch at once (one undo step): { ok, closed,
   // relations, dimensions } (the counts removed), as the PropertyManager's ✓ does
