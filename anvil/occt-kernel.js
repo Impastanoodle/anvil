@@ -1940,7 +1940,7 @@ var OcctKernel = (function () {
       if (opts.exports && out.valid) {
         // STEP AP214 and IGES 5.3 straight from the B-rep: every face exact (planes, cylinders, cones, spheres, tori,
         // B-splines), in the model's units, the product named after the part
-        var inch = m.units === 'in', name = String(m.name || 'Part').replace(/'/g, '');
+        var inch = m.units === 'in', name = String(m.name || 'Part');
         try {
           // write.step.unit only names the unit in the file: OpenCascade takes the shape to be in xstep.cascade.unit
           // (default MM) and scales it into the file's unit, so an inch part also sets the shape's unit to INCH (it was
@@ -1956,7 +1956,7 @@ var OcctKernel = (function () {
             sw.Transfer(all, oc.STEPControl_StepModelType.STEPControl_AsIs, true, R());
             sw.Write('/anvil-export.step');
           } finally { if (oc.Interface_Static) { oc.Interface_Static.SetCVal('xstep.cascade.unit', 'MM'); oc.Interface_Static.SetCVal('write.step.unit', 'MM'); } }
-          out.step = String(oc.FS.readFile('/anvil-export.step', { encoding: 'utf8' })).replace(/PRODUCT\s*\(\s*'[^']*'\s*,\s*'[^']*'/g, "PRODUCT('" + name + "','" + name + "'");
+          out.step = stepHeader(String(oc.FS.readFile('/anvil-export.step', { encoding: 'utf8' })), name);
           oc.FS.unlink('/anvil-export.step');
         } catch (e) { out.exportError = 'STEP: ' + (e.message || e); }
         try {
@@ -2634,6 +2634,31 @@ var OcctKernel = (function () {
     return { edges: edges, start: flip ? pts[pts.length - 1] : pts[0], dir0: flip ? V.scale(rec.t1, -1) : rec.t0 };
   }
 
-  return { build: build, importFile: importFile, mapFaces: mapFaces, toBuild: toBuild, toBodies: toBodies, fromPacked: fromPacked, nearestTriangles: nearestTriangles, SUPPORTED: SUPPORTED, TANGENT_ANG: TANGENT_ANG };
+  // stepout: OpenCascade's STEP with Anvil's header and the part's name. OpenCascade writes FILE_NAME('Open CASCADE
+  // Shape Model', …, ('Author'), ('Open CASCADE'), …, 'Open CASCADE 7.6', 'Unknown') and names the product "Open
+  // CASCADE STEP translator 7.6 1"; SolidWorks names the imported part after PRODUCT, a viewer shows FILE_NAME. The
+  // name is a Part 21 string (quotes doubled, non-ASCII as \X2\hhhh\X0\, as exchange.js writes it).
+  function stepStr(s) {
+    var out = '';
+    String(s == null ? '' : s).split('').forEach(function (ch) {
+      var c = ch.charCodeAt(0);
+      if (ch === '\'') out += '\'\'';
+      else if (ch === '\\') out += '\\\\';
+      else if (c < 32 || c > 126) out += '\\X2\\' + ('000' + c.toString(16).toUpperCase()).slice(-4) + '\\X0\\';
+      else out += ch;
+    });
+    return '\'' + out + '\'';
+  }
+  function stepHeader(text, name) {
+    var q = stepStr(name), file = stepStr(String(name || 'part').replace(/[^\w\-]+/g, '_') + '.step');
+    var head = text.indexOf('DATA;'), h = head < 0 ? text : text.slice(0, head), body = head < 0 ? '' : text.slice(head);
+    h = h.replace(/FILE_DESCRIPTION\s*\(\s*\([\s\S]*?\)\s*,\s*('[^']*')\s*\)\s*;/, function (m, lvl) { return 'FILE_DESCRIPTION((' + stepStr(name + ' - Anvil model') + '),' + lvl + ');'; });
+    h = h.replace(/FILE_NAME\s*\(\s*'[^']*'\s*,\s*('[^']*')\s*,\s*\([^)]*\)\s*,\s*\([^)]*\)\s*,\s*('[^']*')\s*,\s*'[^']*'\s*,\s*'[^']*'\s*\)\s*;/,
+      function (m, stamp, pre) { return 'FILE_NAME(' + file + ',' + stamp + ',(\'\'),(\'\'),' + pre + ',\'Anvil\',\'\');'; });
+    body = body.replace(/PRODUCT\s*\(\s*'[^']*'\s*,\s*'[^']*'/g, function () { return 'PRODUCT(' + q + ',' + q; });
+    return h + body;
+  }
+
+  return { build: build, importFile: importFile, mapFaces: mapFaces, toBuild: toBuild, toBodies: toBodies, fromPacked: fromPacked, nearestTriangles: nearestTriangles, stepHeader: stepHeader, SUPPORTED: SUPPORTED, TANGENT_ANG: TANGENT_ANG };
 })();
 if (typeof self !== 'undefined') self.OcctKernel = OcctKernel;

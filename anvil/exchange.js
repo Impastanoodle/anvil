@@ -1509,7 +1509,9 @@ var Exchange = (function () {
     if (build && build.occt && build.occt.step && !opts.faceted && !(model && model.type === 'assembly')) return build.occt.step;
     var doc = docParts(model, build), W = new StepWriter();
     var fileName = opts.fileName || safeName(doc.name) + '.step';
-    var stamp = (opts.time || new Date()).toISOString().replace(/\.\d+Z$/, '');
+    // Part 21's time stamp is local time without a zone (as SolidWorks writes it); toISOString was UTC
+    var tm = opts.time || new Date(), p2 = function (x) { return (x < 10 ? '0' : '') + x; };
+    var stamp = tm.getFullYear() + '-' + p2(tm.getMonth() + 1) + '-' + p2(tm.getDate()) + 'T' + p2(tm.getHours()) + ':' + p2(tm.getMinutes()) + ':' + p2(tm.getSeconds());
     var appCtx = W.add('APPLICATION_CONTEXT(\'core data for automotive mechanical design processes\')');
     W.add('APPLICATION_PROTOCOL_DEFINITION(\'international standard\',\'automotive_design\',2000,' + appCtx + ')');
     var prodCtx = W.add('PRODUCT_CONTEXT(\'\',' + appCtx + ',\'mechanical\')');
@@ -2022,13 +2024,21 @@ var Exchange = (function () {
         }
       }
       function circleRow(q) { return { row: ring(q), rho: q.rho, z: q.z }; }
+      // the runs of consecutive rulings round a loop
+      function rulingRuns(L) {
+        var isR = L.map(function (x) { return rulings.some(function (r) { return r.x === x; }); }), runs = 0;
+        for (var i = 0; i < L.length; i++) if (isR[i] && !isR[(i + 1) % L.length]) runs++;
+        return runs;
+      }
       var seamMid = seams.length && seams[0].kind === 'circle' ? seams[0].mid : null;
       if (octTris) tris = octTris;   // rfFF2
       else if (S.t === 'cyl' || S.t === 'cone') {
         if (levels.length === 2 && full.length === 2 && !rulings.length) zip(ring(levels[0]), ring(levels[1]), true, rec());
         else if (S.t === 'cone' && levels.length === 1 && full.length === 1 && !rulings.length && Math.abs(S.k) > 1e-12) zip(ring(levels[0]), pointRow(add(S.o, scale(S.d, -S.r / S.k))), true, rec());
-        else if (levels.length === 2 && rulings.length === 2 && loops.length === 1) {
+        else if (levels.length === 2 && loops.length === 1 && rulingRuns(loops[0]) === 2) {
           // a patch between two arcs and two rulings: the loop is arcs at one level, a ruling, arcs at the other, a ruling
+          // (stepout: a ruling may come split in collinear pieces where other faces meet it, as Anvil writes a fillet
+          // whose side is met by a chamfer's end: each run of rulings is one side)
           var L = loops[0], n = L.length, start = -1;
           for (var s = 0; s < n && start < 0; s++) if (rulings.some(function (r) { return r.idx === s; }) && !rulings.some(function (r) { return r.idx === (s + 1) % n; })) start = (s + 1) % n;
           if (start < 0) return false;
