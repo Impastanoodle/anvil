@@ -33,6 +33,7 @@
     if (ref.face) return 'Face@' + who;
     if (ref.cylinder) return 'Cylindrical Face@' + who;
     if (ref.edge) return 'Edge@' + who;
+    if (ref.vertex) return 'Vertex@' + who;   // rfKF
     if (ref.plane) return ref.plane + ' Plane@' + who;
     if (ref.axis) return 'Axis ' + String(ref.axis).toUpperCase() + '@' + who;
     return who;
@@ -2456,11 +2457,11 @@
   // have their own PropertyManager here, titled and grouped the same (Mate Selections, Standard / Advanced / Mechanical
   // Mates, Mate alignment), and the two swap as the mate type changes, keeping the picks: gvHookBase adds the three to the
   // base PM's Advanced / Mechanical selects, and choosing one there, or a base type here, opens the other.
-  var GV_LABEL = { symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'Linear/Linear Coupler', profilecenter: 'Profile Center', rackpinion: 'Rack Pinion', screw: 'Screw' };
+  var GV_LABEL = { symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'Linear/Linear Coupler', profilecenter: 'Profile Center', rackpinion: 'Rack Pinion', screw: 'Screw', cam: 'Cam', universaljoint: 'Universal Joint' };
   var GV_PITCH = { screw: 1, rackpinion: 1 };   // rfKA: Mechanical Mates with a pitch (a travel per revolution)
   // (rfIV: Linear/Linear Coupler is an Advanced Mate in SolidWorks 2024, like Symmetric)
   var GV_ADV = { symmetric: 1, linearcoupler: 1, profilecenter: 1 };
-  var GV_ALL_LABEL = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle', parallel: 'Parallel', perpendicular: 'Perpendicular', tangent: 'Tangent', width: 'Width', gear: 'Gear', limitdistance: 'Limit Distance', limitangle: 'Limit Angle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'Linear/Linear Coupler', profilecenter: 'Profile Center', rackpinion: 'Rack Pinion', screw: 'Screw' };
+  var GV_ALL_LABEL = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle', parallel: 'Parallel', perpendicular: 'Perpendicular', tangent: 'Tangent', width: 'Width', gear: 'Gear', limitdistance: 'Limit Distance', limitangle: 'Limit Angle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'Linear/Linear Coupler', profilecenter: 'Profile Center', rackpinion: 'Rack Pinion', screw: 'Screw', cam: 'Cam', universaljoint: 'Universal Joint' };
   function gvSvg(body) { return '<svg class="ico" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>'; }
   var GV_ICON = {
     symmetric: gvSvg('<path d="M8 1.5v13" stroke-dasharray="2 1.6" stroke="#939393"/><path d="M6 4L2 8l4 4z" fill="#c9b6e6" stroke="#8a5cc2"/><path d="M10 4l4 4-4 4z" fill="#c9b6e6" stroke="#8a5cc2"/>'),
@@ -2470,7 +2471,10 @@
     linearcoupler: gvSvg('<path d="M1.5 4.5h6M5.5 2.5l2 2-2 2" stroke="#8a5cc2"/><path d="M1.5 11.5h13M12.5 9.5l2 2-2 2"/><path d="M3 6v4" stroke-dasharray="1.4 1.2" stroke="#939393"/>'),
     // rfKA: a pinion on a toothed rack; a screw thread (a bolt with its helix) and a nut on it
     rackpinion: gvSvg('<circle cx="8" cy="6" r="3.6" fill="#c9b6e6" stroke="#8a5cc2"/><circle cx="8" cy="6" r="0.9" fill="#8a5cc2" stroke="none"/><path d="M1 12.5h14M2 12.5v-1.6M4.6 12.5v-1.6M7.2 12.5v-1.6M9.8 12.5v-1.6M12.4 12.5v-1.6M15 12.5v-1.6"/>'),
-    screw: gvSvg('<path d="M6 1.5v13M10 1.5v13"/><path d="M6 4l4-1.5M6 7l4-1.5M6 10l4-1.5M6 13l4-1.5" stroke-width="1"/><rect x="3" y="6.5" width="10" height="3.5" rx="0.6" fill="#c9b6e6" stroke="#8a5cc2"/>')
+    screw: gvSvg('<path d="M6 1.5v13M10 1.5v13"/><path d="M6 4l4-1.5M6 7l4-1.5M6 10l4-1.5M6 13l4-1.5" stroke-width="1"/><rect x="3" y="6.5" width="10" height="3.5" rx="0.6" fill="#c9b6e6" stroke="#8a5cc2"/>'),
+    // rfKF: a lobed cam on its shaft and a follower riding on it; two shafts joined by a yoke cross at an angle
+    cam: gvSvg('<path d="M8 6.2c2.6 0 5 1.6 5 4.3a5 5 0 0 1-10 0c0-2.7 2.4-4.3 5-4.3z" fill="#c9b6e6" stroke="#8a5cc2"/><circle cx="8" cy="10.5" r="1" fill="#8a5cc2" stroke="none"/><path d="M8 1.2v5M6 1.2h4"/>'),
+    universaljoint: gvSvg('<path d="M1.5 12.5l5-4.5"/><path d="M9.5 8h5"/><circle cx="8" cy="8" r="2.2" fill="#c9b6e6" stroke="#8a5cc2"/><path d="M6.4 6.4l3.2 3.2M9.6 6.4l-3.2 3.2" stroke="#8a5cc2" stroke-width="0.9"/>')
   };
   // ui-panels.js draws a mate row before it knows these three: the row gets its icon here
   function gvRowIcon(row, mt) {
@@ -2484,6 +2488,7 @@
     if (ref.face) return 'Face@' + who;
     if (ref.cylinder) return 'Cylindrical Face@' + who;
     if (ref.edge) return 'Edge@' + who;
+    if (ref.vertex) return 'Vertex@' + who;   // rfKF
     if (ref.plane) return ref.plane + ' Plane@' + who;
     if (ref.axis) return 'Axis ' + String(ref.axis).toUpperCase() + '@' + who;
     return who;
@@ -2511,10 +2516,13 @@
     if (X.pitch != null) v.pitchVal = Math.round(v.pitchVal * 1e9) / 1e9;
     var pitchTyped = X.pitch != null; v.pitchTravel = X.pitch != null ? +X.pitch : null;   // (the exact pitch while the shown value is only a conversion of it)
     if (type !== 'hinge') { v.b2 = null; v.a3 = null; v.b3 = null; }
-    if (type !== 'hinge' && type !== 'symmetric') v.a2 = null;
+    if (type !== 'hinge' && type !== 'symmetric' && type !== 'universaljoint') v.a2 = null;
+    v.jointPoint = !!X.jointPoint;   // rfKF: Universal Joint ▸ Define joint point (a2: the point)
+    if (type === 'universaljoint' && !v.jointPoint) v.a2 = null;
     v.alignment = X.alignment || AS.defaultAlignment({ type: type, a: v.a, b: v.b, a2: v.a2, b2: v.b2 });
     // the selections, in pick order
-    function slots() { return type === 'symmetric' ? ['a2', 'a', 'b'] : type === 'slot' || type === 'linearcoupler' || type === 'profilecenter' || GV_PITCH[type] ? ['a', 'b'] : v.limit ? ['a', 'b', 'a2', 'b2', 'a3', 'b3'] : ['a', 'b', 'a2', 'b2']; }
+    function slots() { return type === 'symmetric' ? ['a2', 'a', 'b'] : type === 'universaljoint' ? (v.jointPoint ? ['a', 'b', 'a2'] : ['a', 'b'])
+      : type === 'slot' || type === 'linearcoupler' || type === 'profilecenter' || type === 'cam' || GV_PITCH[type] ? ['a', 'b'] : v.limit ? ['a', 'b', 'a2', 'b2', 'a3', 'b3'] : ['a', 'b', 'a2', 'b2']; }
     function ready() { return slots().every(function (k) { return !!v[k]; }); }
     function restore() { App.model = JSON.parse(snapshot); }
     function values() {
@@ -2522,6 +2530,7 @@
       if (type === 'hinge') return { limit: !!v.limit, min: v.limit ? +v.min || 0 : null, max: v.limit ? +v.max || 0 : null };
       if (type === 'linearcoupler') return { ratio: [+v.ratioA, +v.ratioB], flip: !!v.flip };
       if (type === 'profilecenter') return { offset: +v.offset || 0, flip: !!v.flip, lock: !!v.lock };
+      if (type === 'universaljoint') return { jointPoint: !!v.jointPoint };
       if (GV_PITCH[type]) {
         var pv = +v.pitchVal, by = v.pitchBy;
         if (v.pitchTravel != null) return { pitch: v.pitchTravel, pitchBy: by, flip: !!v.flip };
@@ -2539,6 +2548,7 @@
         else if (type === 'linearcoupler' && JSON.stringify([x.ratio, !!x.flip]) !== JSON.stringify([vals.ratio, !!vals.flip])) delete x.phase;
         else if (type === 'profilecenter') delete x.phase;   // Lock rotation holds the turn the parts have now
         else if (GV_PITCH[type] && (JSON.stringify([x.pitch, !!x.flip]) !== JSON.stringify([vals.pitch, !!vals.flip]) || JSON.stringify([x.a, x.b]) !== JSON.stringify([v.a, v.b]))) delete x.phase;
+        else if (type === 'universaljoint' && JSON.stringify([x.a, x.b]) !== JSON.stringify([v.a, v.b])) delete x.phase;   // rfKF: new shafts start square where they stand
         x.type = type; x.a = clone(v.a); x.b = clone(v.b);
         ['a2', 'b2', 'a3', 'b3'].forEach(function (k) { if (refs[k]) x[k] = refs[k]; else delete x[k]; });
         if (alignSet) x.alignment = v.alignment; else delete x.alignment;
@@ -2557,6 +2567,8 @@
         : type === 'profilecenter' ? 'Profile Center: select a planar face with a rectangular or circular profile on each of two components.'
         : type === 'screw' ? 'Screw: select two cylindrical faces or axes (the screw and the nut). Turning one moves it along the other by the pitch.'
         : type === 'rackpinion' ? 'Rack Pinion: select a linear edge of the rack, then a cylindrical face or circular edge of the pinion (gear).'
+        : type === 'cam' ? 'Cam: select a face of the cam path (a closed loop of tangent faces), then the cam follower: a vertex, a cylindrical face (a roller) or a planar face.'
+        : type === 'universaljoint' ? 'Universal Joint: select a cylindrical face or axis on each of the two shafts' + (v.jointPoint ? ', then the joint point (a vertex).' : '. Turning one turns the other by the Cardan relation.')
         : type === 'linearcoupler' ? 'Linear/Linear Coupler: select a direction on each of two components (a planar face, a cylindrical face, a plane or an axis). The first one drives the second by the ratio.'
         : 'Hinge: select two cylindrical faces (Concentric Selections), then two planar faces (Coincident Selections)' + (v.limit ? ', then two faces (Angle Selections).' : '.');
     }
@@ -2588,6 +2600,9 @@
       // Rack Pinion: a linear edge is the rack; a cylinder or circular edge fills the Pinion/Gear box first
       var slotK = slots().filter(function (k) { return !v[k]; })[0];
       if (type === 'rackpinion') slotK = ref.edge ? (v.a ? slotK : 'a') : !v.b ? 'b' : slotK;
+      if (type === 'cam' && ref.vertex) slotK = 'b';   // rfKF: a vertex is the follower (the path is a face)
+      if (type === 'universaljoint' && ref.vertex) slotK = v.jointPoint ? 'a2' : null;
+      if (!slotK) { UI.setStatus('Select a cylindrical face or axis.'); return false; }
       v[slotK] = ref;
       // SolidWorks fills the pinion pitch diameter from the pinion picked (until a value is typed)
       if (type === 'rackpinion' && slotK === 'b' && !pitchTyped && v.pitchBy === 'diameter' && ref.cylinder) {
@@ -2613,6 +2628,10 @@
       : type === 'screw' ? [label('Entities to Mate'), box(['a', 'b'], 'concentric', 'Two cylindrical faces or axes…')]
       : type === 'rackpinion' ? [label('Rack'), box(['a'], 'component', 'A linear edge of the rack…'), label('Pinion/Gear'), box(['b'], 'concentric', 'A cylindrical face or circular edge…')]
       : type === 'profilecenter' ? [label('Entities to Mate'), box(['a', 'b'], 'component', 'Two planar faces (profiles)…')]
+      : type === 'cam' ? [label('Entities to Mate'), box(['a'], 'component', 'A face of the cam path…'), label('Cam Follower'), box(['b'], 'component', 'A vertex, cylindrical or planar face…')]
+      : type === 'universaljoint' ? [label('Entities to Mate'), box(['a', 'b'], 'concentric', 'Two cylindrical faces or axes…'),
+        { type: 'check', label: 'Define joint point', key: 'jointPoint', rerender: true },
+        box(['a2'], 'component', 'A vertex (the joint point)…', function (x) { return !!x.jointPoint; })]
       : [label('Concentric Selections'), box(['a', 'b'], 'concentric', 'Two cylindrical faces or axes…'),
         label('Coincident Selections'), box(['a2', 'b2'], 'coincident', 'Two planar faces or planes…'),
         { type: 'check', label: 'Define angle limit', key: 'limit', rerender: true },
@@ -2651,6 +2670,7 @@
     function pick(pk) {
       var ref = null;
       if (pk.kind === 'face') { try { ref = AS.refFromPick(App.model, App.build, pk.index, pk.point, App.mesh); } catch (e) { ref = null; } }
+      else if (pk.kind === 'vertex' && pk.point && AS.refFromVertexPick) { try { ref = AS.refFromVertexPick(App.model, App.build, pk.point); } catch (e) { ref = null; } }   // rfKF
       else if (pk.kind === 'edge' && pk.edge && AS.refFromEdgePick) { try { ref = AS.refFromEdgePick(App.model, App.build, pk.edge, App.mesh); } catch (e) { ref = null; } }   // rfKA
       else if (pk.kind === 'axis' && typeof pk.ref === 'string') ref = { axis: pk.ref };
       else if (pk.kind === 'plane' && typeof pk.ref === 'string') ref = { plane: pk.ref };
@@ -2671,13 +2691,16 @@
     }
     var pmSpec = {
       title: existing ? existing.name : 'Mate', icon: 'mate', values: v, noFocus: !existing, message: hint(),
-      command: { pickPlane: true, quietPlanes: true, faceList: [], onPick: pick, pickEdges: !!GV_PITCH[type], edgeList: [] },
+      command: { pickPlane: true, quietPlanes: true, faceList: [], onPick: pick, pickEdges: !!GV_PITCH[type], edgeList: [],
+        // rfKF: a vertex is picked once the next box takes one (the Cam Follower, a Universal Joint's joint point)
+        pickRefGeo: type === 'cam' || type === 'universaljoint', refKinds: ['point'],
+        pickVertices: function () { return type === 'cam' ? !!v.a && !v.b : type === 'universaljoint' && v.jointPoint && !!v.a && !!v.b && !v.a2; } },
       groups: [
         { title: 'Mate Selections', fields: picks },
         { title: 'Standard Mates', fields: [{ type: 'select', label: 'Mate type', key: 'type', rerender: true, options: function () { return [[type, '—']].concat(group('standard')); } }] },
         { title: 'Advanced Mates', fields: adv },
         { title: 'Mechanical Mates', fields: mech }
-      ].concat(type === 'linearcoupler' || type === 'rackpinion' ? [] : [   // (a coupler or a rack pinion has no alignment, as Gear)
+      ].concat(type === 'linearcoupler' || type === 'rackpinion' || type === 'cam' || type === 'universaljoint' ? [] : [   // (a coupler, rack pinion, cam or universal joint has no alignment, as Gear)
         { title: 'Mate alignment', fields: [{ type: 'select', label: 'Alignment', key: 'alignment', options: [['aligned', 'Aligned'], ['anti-aligned', 'Anti-Aligned'], ['closest', 'Closest']] }] }
       ]),
       onChange: function (x, key) {
@@ -2702,7 +2725,7 @@
       onOK: function () {
         if (type === 'linearcoupler' && !(+v.ratioA > 0 && +v.ratioB > 0)) { UI.toast('Linear/Linear Coupler: the ratio must be two numbers > 0.'); return false; }
         if (GV_PITCH[type] && !(+v.pitchVal > 0)) { UI.toast(GV_LABEL[type] + ': the value must be a number > 0.'); return false; }
-        if (!ready()) { UI.toast('Select ' + (type === 'hinge' ? 'the Concentric and Coincident Selections' : type === 'slot' ? 'a slot face and a pin' : type === 'linearcoupler' ? 'a direction on each of two components' : type === 'screw' ? 'two cylindrical faces or axes' : type === 'rackpinion' ? 'the rack (a linear edge) and the pinion (a cylindrical face)' : type === 'profilecenter' ? 'a planar face on each of two components' : 'the Symmetry Plane and two entities') + ' first.'); return false; }
+        if (!ready()) { UI.toast('Select ' + (type === 'hinge' ? 'the Concentric and Coincident Selections' : type === 'slot' ? 'a slot face and a pin' : type === 'linearcoupler' ? 'a direction on each of two components' : type === 'screw' ? 'two cylindrical faces or axes' : type === 'rackpinion' ? 'the rack (a linear edge) and the pinion (a cylindrical face)' : type === 'profilecenter' ? 'a planar face on each of two components' : type === 'cam' ? 'a face of the cam path and a cam follower' : type === 'universaljoint' ? 'a cylindrical face or axis on each shaft' + (v.jointPoint ? ' and the joint point' : '') : 'the Symmetry Plane and two entities') + ' first.'); return false; }
         restore(); previewed = false;
         return gvCommit(apply, function (mt) {
           var st = statusOf(mt);

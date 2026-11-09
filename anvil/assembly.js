@@ -78,7 +78,7 @@ var Assembly = (function () {
 
   function examplesList() { return (typeof AnvilExamples !== 'undefined' && AnvilExamples) ? AnvilExamples : []; }
 
-  function isAssemblyScript(code) { return /\b(a|asm)\.(insert|mate|coincident|concentric|distance|angle|parallel|perpendicular|tangent|width|gear|limitDistance|limitAngle|symmetric|slot|hinge|linearCoupler|profileCenter|screw|rackPinion|linearPattern|circularPattern|mirrorComponents|explode)\s*\(/.test(String(code || '')); }
+  function isAssemblyScript(code) { return /\b(a|asm)\.(insert|mate|coincident|concentric|distance|angle|parallel|perpendicular|tangent|width|gear|limitDistance|limitAngle|symmetric|slot|hinge|linearCoupler|profileCenter|screw|rackPinion|cam|universalJoint|linearPattern|circularPattern|mirrorComponents|explode)\s*\(/.test(String(code || '')); }
 
   // ------------------------------------------------------------------ documents: live links to part / assembly files
   // A component source { file: name } is a live link to a document in the document store instead of an embedded copy
@@ -314,13 +314,14 @@ var Assembly = (function () {
 
   var MATE_BASE = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle',
     parallel: 'Parallel', perpendicular: 'Perpendicular', tangent: 'Tangent', width: 'Width', gear: 'Gear',
-    limitdistance: 'LimitDistance', limitangle: 'LimitAngle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'LinearCoupler', profilecenter: 'ProfileCenter', screw: 'Screw', rackpinion: 'RackPinion' };
-  var MATE_TYPES = ['coincident', 'concentric', 'distance', 'angle', 'parallel', 'perpendicular', 'tangent', 'width', 'gear', 'limitdistance', 'limitangle', 'symmetric', 'slot', 'hinge', 'linearcoupler', 'profilecenter', 'screw', 'rackpinion'];
+    limitdistance: 'LimitDistance', limitangle: 'LimitAngle', symmetric: 'Symmetric', slot: 'Slot', hinge: 'Hinge', linearcoupler: 'LinearCoupler', profilecenter: 'ProfileCenter', screw: 'Screw', rackpinion: 'RackPinion',
+    cam: 'CamMateTangent', universaljoint: 'UniversalJoint' };   // (rfKF: a Cam with a vertex follower is CamMateCoincident, as SolidWorks names it)
+  var MATE_TYPES = ['coincident', 'concentric', 'distance', 'angle', 'parallel', 'perpendicular', 'tangent', 'width', 'gear', 'limitdistance', 'limitangle', 'symmetric', 'slot', 'hinge', 'linearcoupler', 'profilecenter', 'screw', 'rackpinion', 'cam', 'universaljoint'];
   // Mate PropertyManager groups, as in SolidWorks (types Anvil does not have yet are left out)
   var MATE_GROUPS = {
     standard: ['coincident', 'parallel', 'perpendicular', 'tangent', 'concentric', 'distance', 'angle'],
     advanced: ['profilecenter', 'symmetric', 'width', 'linearcoupler', 'limitdistance', 'limitangle'],   // (SolidWorks 2024 lists Linear/Linear Coupler among the Advanced Mates)
-    mechanical: ['slot', 'hinge', 'gear', 'rackpinion', 'screw']   // (rfKA: SolidWorks 2024 order Cam, Slot, Hinge, Gear, Rack Pinion, Screw)
+    mechanical: ['cam', 'slot', 'hinge', 'gear', 'rackpinion', 'screw', 'universaljoint']   // (SolidWorks 2024 order; rfKF: Cam, Universal Joint)
   };
   // every key of a mate that holds a reference (Width: a2 / b2 the second faces; Symmetric: a2 the symmetry plane;
   // Hinge: a / b Concentric Selections, a2 / b2 Coincident Selections, a3 / b3 Angle Selections of its angle limit)
@@ -341,7 +342,7 @@ var Assembly = (function () {
     opts = opts || {};
     ensureLists(model);
     type = String(type || '').toLowerCase().replace(/[^a-z]/g, '');
-    var base = MATE_BASE[type] || 'Mate';
+    var base = type === 'cam' && b && b.vertex ? 'CamMateCoincident' : MATE_BASE[type] || 'Mate';
     var m = {
       id: model.nextId++,
       name: opts.name || (base + nextNumber(model.mates.map(function (x) { return x.name; }), base)),
@@ -382,6 +383,13 @@ var Assembly = (function () {
   // per revolution of the pinion about its axis (pitchBy 'diameter': shown as the pinion pitch diameter, pitch / pi).
   // Both store phase [s, deg] at the first solve (where they stood along / about the axis), as Gear does.
   var PITCH_TYPES = { screw: 1, rackpinion: 1 };
+  // Cam (rfKF): a = a face of the cam path (a closed loop of tangent faces: an extruded profile of lines, arcs, splines),
+  // b = the follower: a vertex (kept on the path: CamMateCoincident), a cylindrical face, edge or axis parallel to the
+  // path's axis (kept tangent, a roller), or a planar face / plane (kept tangent, a flat follower). No values.
+  // Universal Joint (rfKF): a, b = the two shafts (cylindrical faces or axes); the cross between the yokes keeps them
+  // square, so B turns by the Cardan relation tan(b) = tan(a) cos(beta) from where they stood when first solved (phase
+  // [deg, deg]: each yoke's turn against its shaft's reference direction). jointPoint: true (Define joint point) makes
+  // the two axes meet, at a2 (a vertex / point) when given.
   function setMateValues(m, opts) {
     opts = opts || {};
     ['distance', 'angle', 'offset', 'min', 'max', 'percent'].forEach(function (k) { if (opts[k] != null) m[k] = +opts[k]; });
@@ -411,8 +419,10 @@ var Assembly = (function () {
     if ((m.type !== 'coincident' && m.type !== 'profilecenter') || !m.offset) delete m.offset;
     if (!limit) { delete m.min; delete m.max; }
     if (m.type !== 'gear' && m.type !== 'linearcoupler') delete m.ratio;
-    if (m.type !== 'gear' && m.type !== 'linearcoupler' && !PITCH_TYPES[m.type] && !(m.type === 'profilecenter' && m.lock)) delete m.phase;
-    if (m.type !== 'width' && m.type !== 'hinge' && m.type !== 'symmetric') delete m.a2;
+    if (opts.jointPoint != null) { if (opts.jointPoint) m.jointPoint = true; else delete m.jointPoint; }   // rfKF: Universal Joint ▸ Define joint point
+    if (m.type !== 'universaljoint') delete m.jointPoint;
+    if (m.type !== 'gear' && m.type !== 'linearcoupler' && !PITCH_TYPES[m.type] && m.type !== 'universaljoint' && !(m.type === 'profilecenter' && m.lock)) delete m.phase;
+    if (m.type !== 'width' && m.type !== 'hinge' && m.type !== 'symmetric' && !(m.type === 'universaljoint' && m.jointPoint)) delete m.a2;
     if (m.type !== 'width' && m.type !== 'hinge') delete m.b2;
     if (m.type !== 'hinge' || !m.limit) { delete m.a3; delete m.b3; }
     if ((m.type === 'distance' || slotDist) && m.distance == null) m.distance = 0;
@@ -842,6 +852,128 @@ var Assembly = (function () {
     return g && p ? findSlot(g, copy3(p), !!ref.cylinder) : null;
   }
 
+  // rfKF, Cam: the cam path through / nearest local point p: the closed loop of tangent faces parallel to one axis (an
+  // extruded profile of lines, arcs and splines) as a 2D profile in the plane square to that axis -> { o, axis, e1, e2,
+  // els, size } | null. Each face facet is one element: an arc (an exact cylinder record: centre c, radius R, s = +1
+  // when the material is inside the circle (convex), -1 when outside (concave), angular span mid + [lo, hi]) or a line
+  // (outward normal n, offset w, span [lo, hi] along t). 2D coordinates are (x . e1, x . e2) with x from o.
+  function camPath(geom, p, near) {   // near: a cylinder point (on the true surface, a chord height off its facets)
+    var hit = patchesByDistance(geom, p)[0], tol = Math.max(1e-4, (near ? 1e-2 : 1e-5) * geom.size);
+    if (!hit || hit.d > tol) return null;
+    var seed = hit.pt;
+    if (geom.cams && geom.cams[seed.index] !== undefined) return geom.cams[seed.index];
+    var P = geom.patches, axis = null, ac = analyticCylinder(geom, seed);
+    if (ac) axis = ac.dir;
+    else seed.neighbors.forEach(function (qi) {
+      if (axis) return;
+      var c = dot(seed.normal, P[qi].normal);
+      if (c < MIN_TURN && c > MAX_TURN) axis = canonicalDir(norm(cross(seed.normal, P[qi].normal)));
+    });
+    var out = null;
+    if (axis) {
+      var inR = {}, region = [seed], queue = [seed];
+      inR[seed.index] = true;
+      while (queue.length) {
+        var r = queue.shift();
+        r.neighbors.forEach(function (qi) {
+          var q = P[qi];
+          if (inR[qi] || Math.abs(dot(q.normal, axis)) > 2e-3 || dot(q.normal, r.normal) < MAX_TURN) return;
+          inR[qi] = true; region.push(q); queue.push(q);
+        });
+      }
+      var e1 = perpTo(axis), e2 = cross(axis, e1), els = [], normals = [];
+      var to2 = function (x) { return [dot(x, e1), dot(x, e2)]; };
+      region.forEach(function (pt) {
+        var vs = [], seen = {};
+        pt.polys.forEach(function (poly) { poly.vertices.forEach(function (v) { var q = arr(v.pos), k = vkey(q); if (!seen[k]) { seen[k] = true; vs.push(to2(q)); } }); });
+        if (vs.length < 2) return;
+        var gx = 0, gy = 0;
+        vs.forEach(function (q) { gx += q[0]; gy += q[1]; });
+        gx /= vs.length; gy /= vs.length;
+        var n2 = to2(pt.normal), nl = Math.hypot(n2[0], n2[1]);
+        n2 = [n2[0] / nl, n2[1] / nl];
+        var cy = analyticCylinder(geom, pt), S = cy && Math.abs(dot(cy.dir, axis)) > 1 - 1e-9 ? cy.surf : null;
+        if (S) {
+          var c = to2(copy3(S.o)), rx = gx - c[0], ry = gy - c[1], s = n2[0] * rx + n2[1] * ry > 0 ? 1 : -1, mid = Math.atan2(ry, rx), lo = Infinity, hi = -Infinity;
+          vs.forEach(function (q) { var a = wrapAngle(Math.atan2(q[1] - c[1], q[0] - c[0]) - mid); if (a < lo) lo = a; if (a > hi) hi = a; });
+          els.push({ arc: true, c: c, R: Math.abs(+S.r), s: s, mid: mid, lo: lo, hi: hi });
+          normals.push([mid + lo + (s < 0 ? Math.PI : 0), hi - lo]);
+        } else {
+          var t2 = [-n2[1], n2[0]], w = 0, tl = Infinity, th = -Infinity;
+          vs.forEach(function (q) { var t = q[0] * t2[0] + q[1] * t2[1]; w += q[0] * n2[0] + q[1] * n2[1]; if (t < tl) tl = t; if (t > th) th = t; });
+          els.push({ arc: false, n: n2, t: t2, w: w / vs.length, lo: tl, hi: th });
+          normals.push([Math.atan2(n2[1], n2[0]), 0]);
+        }
+      });
+      // closed: the outward normals turn all the way round (no gap wider than one facet's turn)
+      var iv = normals.map(function (q) { var a = q[0] % (2 * Math.PI); if (a < 0) a += 2 * Math.PI; return [a, a + q[1]]; }).sort(function (x, y) { return x[0] - y[0]; });
+      var reach = iv.length ? iv[0][1] : 0, gap = iv.length ? 0 : 7;
+      for (var i = 1; i < iv.length; i++) { gap = Math.max(gap, iv[i][0] - reach); reach = Math.max(reach, iv[i][1]); }
+      if (iv.length) gap = Math.max(gap, iv[0][0] + 2 * Math.PI - reach);
+      if (els.length >= 2 && gap < 45 * Math.PI / 180) out ={ o: [0, 0, 0], axis: axis, e1: e1, e2: e2, els: els, size: geom.size };
+    }
+    if (!geom.cams) geom.cams = {};
+    geom.cams[seed.index] = out;
+    return out;
+  }
+  // the cam path of a mate reference (its face or cylinder point), in its component's local frame
+  function camOfRef(model, partBuilds, ref) {
+    var comp = findComponent(model, ref.component);
+    if (!comp) return null;
+    if (ref.path && ref.path.length) {
+      var sb = partBuilds && partBuilds[comp.id], inner = sb && sb.model ? findComponent(sb.model, ref.path[0]) : null;
+      if (!inner) return null;
+      var iref = JSON.parse(JSON.stringify(ref));
+      iref.component = inner.id;
+      if (ref.path.length > 1) iref.path = ref.path.slice(1); else delete iref.path;
+      var cp = camOfRef(sb.model, sb.partBuilds, iref), Ti = tf(inner.transform);
+      if (!cp) return null;
+      var o = transformPoint(Ti, cp.o), ax = transformDir(Ti, cp.axis), e1 = transformDir(Ti, cp.e1);
+      return { o: o, axis: ax, e1: e1, e2: cross(ax, e1), els: cp.els, size: cp.size };
+    }
+    var g = partGeom(partBuilds && partBuilds[comp.id]), p = ref.face || ref.cylinder;
+    return g && p ? camPath(g, copy3(p), !ref.face) : null;
+  }
+  // signed distance from 2D point q to the cam profile (> 0 outside the material)
+  function camDistance(cam, q) {
+    var best = Infinity, sd = 0;
+    function endAt(P, nx, ny) {
+      var dx = q[0] - P[0], dy = q[1] - P[1], d = Math.hypot(dx, dy);
+      if (d < best) { best = d; sd = dx * nx + dy * ny < 0 ? -d : d; }
+    }
+    cam.els.forEach(function (el) {
+      if (el.arc) {
+        var du = q[0] - el.c[0], dv = q[1] - el.c[1], rel = wrapAngle(Math.atan2(dv, du) - el.mid);
+        if (rel >= el.lo - 1e-12 && rel <= el.hi + 1e-12) {
+          var d = el.s * (Math.hypot(du, dv) - el.R);
+          if (Math.abs(d) < best) { best = Math.abs(d); sd = d; }
+        } else [el.mid + el.lo, el.mid + el.hi].forEach(function (a) {
+          var ca = Math.cos(a), sa = Math.sin(a);
+          endAt([el.c[0] + el.R * ca, el.c[1] + el.R * sa], el.s * ca, el.s * sa);
+        });
+      } else {
+        var t = q[0] * el.t[0] + q[1] * el.t[1];
+        if (t >= el.lo - 1e-12 && t <= el.hi + 1e-12) {
+          var dl = q[0] * el.n[0] + q[1] * el.n[1] - el.w;
+          if (Math.abs(dl) < best) { best = Math.abs(dl); sd = dl; }
+        } else [el.lo, el.hi].forEach(function (tt) { endAt([el.n[0] * el.w + el.t[0] * tt, el.n[1] * el.w + el.t[1] * tt], el.n[0], el.n[1]); });
+      }
+    });
+    return sd;
+  }
+  // the least value of x . n over the cam profile (n a 2D direction): where a flat follower facing along -n touches it
+  function camSupportMin(cam, n) {
+    var m = Infinity;
+    cam.els.forEach(function (el) {
+      if (el.arc) {
+        var ends = [el.mid + el.lo, el.mid + el.hi], an = wrapAngle(Math.atan2(-n[1], -n[0]) - el.mid);
+        if (an >= el.lo && an <= el.hi) ends.push(el.mid + an);
+        ends.forEach(function (a) { var v = (el.c[0] + el.R * Math.cos(a)) * n[0] + (el.c[1] + el.R * Math.sin(a)) * n[1]; if (v < m) m = v; });
+      } else [el.lo, el.hi].forEach(function (tt) { var v = (el.n[0] * el.w + el.t[0] * tt) * n[0] + (el.n[1] * el.w + el.t[1] * tt) * n[1]; if (v < m) m = v; });
+    });
+    return m;
+  }
+
   // ------------------------------------------------------------------ references
   var STD_PLANE_NORMALS = { front: [0, 0, 1], top: [0, 1, 0], right: [1, 0, 0] };
   var AXIS_DIRS = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
@@ -910,7 +1042,9 @@ var Assembly = (function () {
       var e0 = copy3(ref.edge[0] || []), e1 = copy3(ref.edge[1] || []), ed = sub(e1, e0);
       if (!(len(ed) > 1e-9)) throw new Error('The edge on ' + comp.name + ' has no length');
       out.kind = 'axis'; out.refKind = 'edge'; out.point = e0; out.dir = norm(ed);
-    } else throw new Error('A mate reference needs face, plane, cylinder, axis or edge');
+    } else if (ref.vertex) {   // rfKF: a vertex / point [x, y, z] in the part's frame (a Cam follower, a Universal Joint's joint point; no geometry check)
+      out.kind = 'point'; out.refKind = 'vertex'; out.point = copy3(ref.vertex);
+    } else throw new Error('A mate reference needs face, plane, cylinder, axis, edge or vertex');
     // an axis carries a fixed reference direction square to it: the Gear mate measures the component's turn with it
     if (out.dir) out.ref = perpTo(out.dir);
     return out;
@@ -930,6 +1064,7 @@ var Assembly = (function () {
     var T = lr.comp ? ((transforms && transforms[lr.comp.id]) || lr.comp.transform) : null;
     var w = worldOf(lr, T);
     if (w.kind === 'plane') return { kind: 'plane', point: w.point, normal: w.normal };
+    if (w.kind === 'point') return { kind: 'point', point: w.point };
     var o = { kind: 'axis', point: w.point, dir: w.dir };
     if (lr.radius != null) o.radius = lr.radius;
     return o;
@@ -955,7 +1090,7 @@ var Assembly = (function () {
     return 'aligned';
   }
   // every mate but Gear has an alignment (Aligned / Anti-Aligned / Closest) the user may flip
-  function hasAlignment(m) { return !!(m && m.type !== 'gear' && m.type !== 'linearcoupler' && m.type !== 'rackpinion'); }
+  function hasAlignment(m) { return !!(m && m.type !== 'gear' && m.type !== 'linearcoupler' && m.type !== 'rackpinion' && m.type !== 'cam' && m.type !== 'universaljoint'); }
   function alignSign(m) { var a = m.alignment || defaultAlignment(m); return a === 'anti-aligned' ? -1 : a === 'closest' ? 0 : 1; }
 
   // Signed plane gap a Coincident / Distance mate holds: B's plane lies `target` along A's normal (flip: the other side).
@@ -1000,6 +1135,8 @@ var Assembly = (function () {
     return k * wrapAngle((t - pm.phase[0]) / k - (pm.mate.flip ? -1 : 1) * (th - pm.phase[1]));
   }
   function axisTurn(W) { return signedAngle(perpTo(W.dir), W.ref, W.dir); }   // the component's turn about its axis
+  // rfKF: a Universal Joint yoke: the axis ref's square reference direction turned ph (radians) about the axis
+  function yokeDir(W, ph) { return add(scale(W.ref, Math.cos(ph)), scale(cross(W.dir, W.ref), Math.sin(ph))); }
   function limitRange(pm, toRad) {
     var f = toRad ? Math.PI / 180 : 1, lo = (+pm.mate.min || 0) * f, hi = (+pm.mate.max || 0) * f;
     return pm.mate.flip && pm.pair !== 'aa' ? [-hi, -lo] : [lo, hi];
@@ -1077,6 +1214,23 @@ var Assembly = (function () {
     }
     if (pm.type === 'rackpinion') {   // rfKA: the rack's travel along its direction = +-pitch per turn of the pinion
       return [pitchRow(pm, dot(sub(A.point, B.point), A.dir), signedAngle(A.dir, B.ref, B.dir))];
+    }
+    if (pm.type === 'cam') {   // rfKF: the follower on (vertex) or tangent to (roller, flat) the cam path, in the path's plane
+      var cE2 = cross(A.dir, A.ref), cAt = function (X) { var v = sub(X, A.point); return [dot(v, A.ref), dot(v, cE2)]; };
+      if (pm.follow === 'point') return [camDistance(pm.cam, cAt(B.point))];
+      if (pm.follow === 'axis') {
+        var cd = sub(A.dir, scale(B.dir, dot(A.dir, B.dir) < 0 ? -1 : 1));
+        return [cd[0], cd[1], cd[2], camDistance(pm.cam, cAt(B.point)) - pm.radius];
+      }
+      var cn = scale(B.normal, pm.side), cn2 = [dot(cn, A.ref), dot(cn, cE2)], cp2 = cAt(B.point);
+      return [dot(B.normal, A.dir), camSupportMin(pm.cam, cn2) - (cp2[0] * cn2[0] + cp2[1] * cn2[1])];
+    }
+    if (pm.type === 'universaljoint') {   // rfKF: the cross keeps the two yokes square; Define joint point: the axes meet
+      // B's yoke is square to A's and to B's axis, on the side it started (dB x yA): one turn, not two half a turn apart
+      var ru = [wrapAngle(signedAngle(yokeDir(B, pm.phase[1]), cross(B.dir, yokeDir(A, pm.phase[0])), B.dir))];
+      if (pm.joint && A2) [A, B].forEach(function (W) { var v = sub(A2.point, W.point), pp = sub(v, scale(W.dir, dot(v, W.dir))); ru.push(pp[0], pp[1], pp[2]); });
+      else if (pm.joint) { var cj = cross(A.dir, B.dir), lj = len(cj); ru.push(lj > 1e-9 ? dot(sub(B.point, A.point), cj) / lj : 0); }
+      return ru;
     }
     if (pm.type === 'gear') {
       var phs = pm.phase, dA = wrapAngle(axisTurn(A) - phs[0]), dB = wrapAngle(axisTurn(B) - phs[1]);
@@ -1162,6 +1316,30 @@ var Assembly = (function () {
         pm.A = localRef(model, partBuilds, m.a);
         pm.B = localRef(model, partBuilds, m.b);
         pm.pair = (pm.A.kind === 'plane' ? 'p' : 'a') + (pm.B.kind === 'plane' ? 'p' : 'a');
+        if ((pm.A.kind === 'point' || pm.B.kind === 'point') && !(m.type === 'cam' && pm.A.kind !== 'point')) throw new Error(m.type === 'cam' ? 'Cam: the cam path must be a face' : (MATE_BASE[m.type] || 'This mate') + ' cannot use a vertex (a vertex is a Cam follower)');
+        if (m.type === 'cam') {   // rfKF: A becomes the cam path's frame (point o, dir its axis, ref e1), B the follower
+          if (!pm.A.comp || !pm.B.comp || pm.A.comp === pm.B.comp) throw new Error('Cam needs the cam path on one component and the follower on another');
+          var cpth = (m.a.face || m.a.cylinder) ? camOfRef(model, partBuilds, m.a) : null;
+          if (!cpth) throw new Error('Cam needs a face of a closed loop of tangent faces (the cam path)');
+          pm.A = { kind: 'axis', refKind: 'cam', comp: pm.A.comp, point: cpth.o, dir: cpth.axis, ref: cpth.e1 };
+          pm.cam = cpth;
+          pm.follow = pm.B.kind;
+          pm.radius = pm.B.refKind === 'cylinder' ? +pm.B.radius || 0 : 0;
+          if (pm.follow === 'plane') {   // the follower's face looks at the cam (a plane: the side the cam is on now)
+            var Pw0 = worldOf(pm.B, tf(pm.B.comp.transform)), Cw0 = worldOf(pm.A, tf(pm.A.comp.transform));
+            pm.side = pm.B.refKind === 'face' ? 1 : dot(sub(Cw0.point, Pw0.point), Pw0.normal) < 0 ? -1 : 1;
+          }
+          pm.pair = 'cam';
+        }
+        if (m.type === 'universaljoint') {   // rfKF
+          if (pm.pair !== 'aa' || pm.A.refKind === 'edge' || pm.B.refKind === 'edge') throw new Error('Universal Joint needs two cylindrical faces or axes (the two shafts)');
+          if (!pm.A.comp || !pm.B.comp || pm.A.comp === pm.B.comp) throw new Error('Universal Joint needs shafts on two components');
+          pm.joint = !!m.jointPoint;
+          if (pm.joint && m.a2) {
+            pm.A2 = localRef(model, partBuilds, m.a2);
+            if (pm.A2.kind !== 'point') throw new Error('Universal Joint: the joint point must be a vertex or point');
+          }
+        }
         if (m.type === 'coincident' && pm.pair !== 'pp') throw new Error('Coincident needs two planar faces or planes');
         if (m.type === 'concentric' && pm.pair !== 'aa') throw new Error('Concentric needs two cylindrical faces or axes');
         // Distance / Limit Distance: between two planes, or between two cylinders (axes: centre distance)
@@ -1300,6 +1478,14 @@ var Assembly = (function () {
             : [dot(sub(Aw1.point, Bw1.point), Aw1.dir), signedAngle(Aw1.dir, Bw1.ref, Bw1.dir) * 180 / Math.PI];
         }
         pm.phase = [+m.phase[0], +m.phase[1] * Math.PI / 180];
+      }
+      if (pm.type === 'universaljoint') {   // rfKF: the yokes when first solved: A's square to both shafts, B's square to it
+        if (!(m.phase && m.phase.length === 2 && isFinite(+m.phase[0]) && isFinite(+m.phase[1]))) {
+          var Ua = worldOf(pm.A, transforms[pm.ca.id]), Ub = worldOf(pm.B, transforms[pm.cb.id]), cu = cross(Ua.dir, Ub.dir);
+          var y1 = len(cu) > 1e-9 ? norm(cu) : Ua.ref, c2 = cross(Ub.dir, y1), y2 = len(c2) > 1e-9 ? norm(c2) : Ub.ref;
+          m.phase = [signedAngle(Ua.ref, y1, Ua.dir) * 180 / Math.PI, signedAngle(Ub.ref, y2, Ub.dir) * 180 / Math.PI];
+        }
+        pm.phase = [+m.phase[0] * Math.PI / 180, +m.phase[1] * Math.PI / 180];
       }
       if (pm.type === 'linearcoupler') {
         if (!(m.phase && m.phase.length === 2 && isFinite(+m.phase[0]) && isFinite(+m.phase[1]))) {
@@ -1554,7 +1740,85 @@ var Assembly = (function () {
       lockE.forEach(function (d) { lockTrans(L, d); });
       if (!oc || grounded[oc.id]) grounded[C.id] = true;
     }
-    var HELD = { symmetric: 1, slot: 1, hinge: 1, profilecenter: 1 };
+    // rfKF: slide the moving component (in the directions earlier mates leave it) until the last residual row (the cam
+    // contact, a Universal Joint's joint) is met: Newton steps on numeric slopes, halved while they do not help
+    function slideToRow(pm, C, row) {
+      var L = locks[C.id], free = [];
+      [[1, 0, 0], [0, 1, 0], [0, 0, 1]].forEach(function (d) {
+        L.trans.concat(free).forEach(function (t) { d = sub(d, scale(t, dot(d, t))); });
+        if (len(d) > 1e-6) free.push(norm(d));
+      });
+      if (!free.length) return;
+      function at(delta) {
+        var T0 = transforms[C.id];
+        transforms[C.id] = { rotation: T0.rotation, position: add(T0.position, delta) };
+        var r = residualOf(pm), v = row == null ? r[r.length - 1] : r[row];
+        transforms[C.id] = T0;
+        return v;
+      }
+      var h = 1e-6 * Math.max(1, pm.cam ? pm.cam.size : 1);
+      for (var it = 0; it < 40; it++) {
+        var e = at([0, 0, 0]);
+        if (!(Math.abs(e) > TOL_DONE)) return;
+        var g = free.map(function (f) { return (at(scale(f, h)) - at(scale(f, -h))) / (2 * h); }), gg = 0;
+        g.forEach(function (x) { gg += x * x; });
+        if (!(gg > 1e-12)) return;
+        var step = [0, 0, 0];
+        free.forEach(function (f, i) { step = add(step, scale(f, -e * g[i] / gg)); });
+        var k = 0;
+        while (k < 30 && !(Math.abs(at(step)) < Math.abs(e))) { step = scale(step, 0.5); k++; }
+        if (k >= 30) return;
+        transforms[C.id] = { rotation: transforms[C.id].rotation, position: add(transforms[C.id].position, step) };
+      }
+    }
+    // Cam: turn a roller / flat follower square to the path's plane, then slide it onto the path
+    function greedyCam(pm) {
+      var moveB = moverIsB(pm), C = moveB ? pm.cb : pm.ca, oc = moveB ? pm.ca : pm.cb;
+      if (!movable(C)) return;
+      var L = locks[C.id];
+      if (!L.full && pm.follow !== 'point') {
+        var Aw = refAt(pm.A, transforms), Bw = refAt(pm.B, transforms), M = moveB ? Bw : Aw, R = null;
+        if (pm.follow === 'axis') { var sg = dot(Aw.dir, Bw.dir) < 0 ? -1 : 1; R = moveB ? alignRotation(Bw.dir, scale(Aw.dir, sg), L) : alignRotation(Aw.dir, scale(Bw.dir, sg), L); }
+        else if (Math.abs(dot(Bw.normal, Aw.dir)) > TOL_DONE) R = moveB ? perpRotation(Bw.normal, Aw.dir, L.axis) : perpRotation(Aw.dir, Bw.normal, L.axis);
+        if (R) rotateAbout(C.id, R, L.axis ? L.point : M.point);
+      }
+      slideToRow(pm, C, null);
+      if (!oc || grounded[oc.id]) grounded[C.id] = true;
+    }
+    // Universal Joint: turn the moving shaft about its axis until the yokes are square (Newton on the first row; B's
+    // turn is the row itself), then (Define joint point) slide it so the axes meet
+    function greedyJoint(pm) {
+      var moveB = moverIsB(pm), C = moveB ? pm.cb : pm.ca, oc = moveB ? pm.ca : pm.cb;
+      if (!movable(C)) return;
+      var L = locks[C.id], M = refAt(moveB ? pm.B : pm.A, transforms);
+      function turned(t) {
+        var T0 = transforms[C.id];
+        rotateAbout(C.id, rotVec(scale(M.dir, t)), M.point);
+        var v = residualOf(pm)[0];
+        transforms[C.id] = T0;
+        return v;
+      }
+      for (var it = 0; it < 20; it++) {
+        var e = turned(0);
+        if (!(Math.abs(e) > TOL_DONE)) break;
+        var g = (turned(1e-6) - turned(-1e-6)) / 2e-6;
+        if (!(Math.abs(g) > 1e-9)) break;
+        var t = -e / g, k = 0;
+        while (k < 30 && !(Math.abs(turned(t)) < Math.abs(e))) { t *= 0.5; k++; }
+        if (k >= 30) break;
+        rotateAbout(C.id, rotVec(scale(M.dir, t)), M.point);
+      }
+      if (pm.joint) {
+        if (pm.A2) {
+          var Pj = refAt(pm.A2, transforms).point, Mw = refAt(moveB ? pm.B : pm.A, transforms), v = sub(Pj, Mw.point), d = sub(v, scale(Mw.dir, dot(v, Mw.dir)));
+          L.trans.forEach(function (tr) { d = sub(d, scale(tr, dot(d, tr))); });
+          transforms[C.id] = { rotation: transforms[C.id].rotation, position: add(transforms[C.id].position, d) };
+        } else slideToRow(pm, C, null);
+      }
+      if (L.axis && len(cross(L.axis, refAt(moveB ? pm.B : pm.A, transforms).dir)) < 1e-6) L.full = true;
+      if (!oc || grounded[oc.id]) grounded[C.id] = true;
+    }
+    var HELD ={ symmetric: 1, slot: 1, hinge: 1, profilecenter: 1 };
     var MORE = { parallel: 1, perpendicular: 1, tangent: 1, width: 1, gear: 1, limitdistance: 1, linearcoupler: 1, rackpinion: 1 };
     function greedy(pm) {
       if (pm.rigid) return;
@@ -1568,6 +1832,8 @@ var Assembly = (function () {
         return;
       }
       if (pm.type === 'angle' || pm.type === 'limitangle') { greedyAngle(pm); return; }
+      if (pm.type === 'cam') { greedyCam(pm); return; }             // rfKF
+      if (pm.type === 'universaljoint') { greedyJoint(pm); return; }
       if (HELD[pm.type]) { greedyHeld(pm); return; }
       if (MORE[pm.type] || (pm.type === 'distance' && pm.pair === 'aa')) { greedyMore(pm); return; }
       var moveB = moverIsB(pm);
@@ -2920,6 +3186,21 @@ var Assembly = (function () {
     return len(sub(b, a)) > 1e-6 ? { component: comp.id, edge: [a, b] } : null;
   }
 
+  // rfKF: refFromVertexPick(model, build, worldPoint) -> { component, vertex: [x, y, z] (the part's frame) }: the part
+  // whose faces meet at a picked vertex (a Cam follower); null off every part or inside a sub-assembly
+  function refFromVertexPick(model, build, worldPoint) {
+    if (!model || !build || !worldPoint) return null;
+    var best = null, bd = Infinity;
+    (model.components || []).forEach(function (c) {
+      var pbs = build.partBuilds && build.partBuilds[c.id], g = pbs && !pbs.assembly ? partGeom(pbs) : null;
+      if (!g || c.suppressed) return;
+      var off = build.explode && build.explode.offsets && build.explode.offsets[c.id];
+      var p = inverseTransformPoint(tf(c.transform), off ? sub(worldPoint, off) : worldPoint), hit = patchesByDistance(g, p)[0];
+      if (hit && hit.d <= Math.max(1e-4, 1e-5 * g.size) && hit.d < bd) { bd = hit.d; best = { component: c.id, vertex: p.map(r6) }; }
+    });
+    return best;
+  }
+
   // pickInner(subModel, subBuild, p, n) -> { path: [inner ids], point (the leaf part's local coords), cylinder, d }: the
   // inner part whose face lies nearest p (a point in the sub-assembly's frame), preferring faces with normal n
   function pickInner(sm, sb, p, n) {
@@ -3110,6 +3391,14 @@ var Assembly = (function () {
   // per revolution), opts { diameter (pinion pitch diameter, instead of pitch), flip, phase })
   Builder.prototype.screw = function (a, b, pitch, opts) { return this.mate('screw', a, b, withValue(opts, 'pitch', pitch)); };
   Builder.prototype.rackPinion = function (a, b, pitch, opts) { return this.mate('rackpinion', a, b, withValue(opts, 'pitch', pitch)); };
+  // rfKF: cam(pathFace (face / cylinder point on the cam path), follower (vertex / cylinder / face / plane / axis), opts);
+  // universalJoint(shaftA, shaftB, opts { jointPoint: true, a2 (the joint point: a vertex ref), phase })
+  Builder.prototype.cam = function (path, follower, opts) { return this.mate('cam', path, follower, opts); };
+  Builder.prototype.universalJoint = function (a, b, opts) {
+    var o = JSON.parse(JSON.stringify(opts || {}));
+    if (o.a2) o.a2 = builderRef(this.model, o.a2);
+    return this.mate('universaljoint', a, b, o);
+  };
   // profileCenter(faceA, faceB, opts { offset, flip, lock, alignment })
   Builder.prototype.profileCenter = function (a, b, opts) { return this.mate('profilecenter', a, b, opts); };
   Builder.prototype.limitDistance = function (a, b, min, max, opts) { return this.mate('limitdistance', a, b, withValue(withValue(opts, 'min', min), 'max', max)); };
@@ -3218,7 +3507,7 @@ var Assembly = (function () {
     var parts = [];
     if (ref.component != null) parts.push('component: ' + (varOf[ref.component] || JSON.stringify(ref.component)));
     if (ref.path && ref.path.length) parts.push('path: ' + JSON.stringify(ref.path));
-    ['face', 'cylinder'].forEach(function (k) { if (ref[k]) parts.push(k + ': ' + numList(ref[k])); });
+    ['face', 'cylinder', 'vertex'].forEach(function (k) { if (ref[k]) parts.push(k + ': ' + numList(ref[k])); });
     if (ref.edge) parts.push('edge: [' + numList(ref.edge[0]) + ', ' + numList(ref.edge[1]) + ']');
     ['plane', 'axis'].forEach(function (k) { if (ref[k] != null) parts.push(k + ': ' + JSON.stringify(ref[k])); });
     return '{ ' + parts.join(', ') + ' }';
@@ -3273,6 +3562,7 @@ var Assembly = (function () {
       if (m.constraint) opts.push('constraint: ' + JSON.stringify(m.constraint));
       if (m.limit) opts.push('limit: true');
       if (m.lock) opts.push('lock: true');
+      if (m.jointPoint) opts.push('jointPoint: true');   // rfKF
       if (m.ratio) opts.push('ratio: ' + numList(m.ratio));
       if (m.pitch != null) opts.push('pitch: ' + String(+m.pitch));   // (full precision: a diameter's pi * d round-trips exactly)
       if (m.pitchBy) opts.push('pitchBy: ' + JSON.stringify(m.pitchBy));
@@ -3396,7 +3686,7 @@ var Assembly = (function () {
     isAssembly: isAssembly, newAssembly: newAssembly, partModel: partModel,
     insert: insert, addMate: addMate, removeComponent: removeComponent, removeMate: removeMate,
     findComponent: findComponent, findMate: findMate, setFixed: setFixed, componentIndex: componentIndex,
-    rebuild: rebuild, setPartBuilder: setPartBuilder, solve: solve, resolveRef: resolveRef, refFromPick: refFromPick, refFromEdgePick: refFromEdgePick, massProps: massProps,
+    rebuild: rebuild, setPartBuilder: setPartBuilder, solve: solve, resolveRef: resolveRef, refFromPick: refFromPick, refFromEdgePick: refFromEdgePick, refFromVertexPick: refFromVertexPick, massProps: massProps,
     transformPoint: transformPoint, inverseTransformPoint: inverseTransformPoint, transformDir: transformDir,
     Builder: Builder, runScript: runScript, isAssemblyScript: isAssemblyScript, generateScript: generateScript,
     defaultAlignment: defaultAlignment, hasAlignment: hasAlignment, setMateValues: setMateValues, MATE_TYPES: MATE_TYPES.slice(),
@@ -3411,6 +3701,7 @@ var Assembly = (function () {
     packAndGo: packAndGo, setFlexible: setFlexible, setTransparent: setTransparent, isSubAssemblySource: isSubAssemblySource, bom: bom, leafBodies: leafBodies,
     composeTransforms: composeT, relativeTransform: relativeT, interferenceKey: interferenceKey, setInterferenceIgnored: setInterferenceIgnored, ignoreSide: ignoreSide, migrateIgnored: migrateIgnored,
     findCylinder: function (build, p) { var g = partGeom(build); return g ? findCylinder(g, p) : null; },
+    camPath: function (build, p, near) { var g = partGeom(build); return g ? camPath(g, copy3(p), near) : null; },   // rfKF
     compState: compState, entryKey: entryKey, partConfigurations: partConfigurations, setComponentState: setComponentState,   // rfFC
     asmConfigurations: asmConfigList, findAsmConfiguration: findAsmConfig, activeAsmConfiguration: activeAsmConfig
   };

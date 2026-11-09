@@ -189,6 +189,6 @@
     });
     test('Mate groups as in SolidWorks: Symmetric among Advanced Mates, Slot and Hinge among Mechanical Mates', function () {
       assert(AS.MATE_GROUPS.advanced.indexOf('symmetric') === 1, AS.MATE_GROUPS.advanced.join());
-      assert(AS.MATE_GROUPS.mechanical.join() === 'slot,hinge,gear,rackpinion,screw', AS.MATE_GROUPS.mechanical.join());
+      assert(AS.MATE_GROUPS.mechanical.join() === 'cam,slot,hinge,gear,rackpinion,screw,universaljoint', AS.MATE_GROUPS.mechanical.join());
     });
   })();

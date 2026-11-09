@@ -157,7 +157,7 @@
       var r = AS.rebuild(m);
       assert(/the pinion must be a cylindrical face or axis/.test(r.errors[a.id] || ''), JSON.stringify(r.errors));
       assert(/Rack Pinion needs a linear edge/.test(r.errors[c.id] || ''), JSON.stringify(r.errors));
-      assert(AS.MATE_GROUPS.mechanical.join() === 'slot,hinge,gear,rackpinion,screw', AS.MATE_GROUPS.mechanical.join());
+      assert(AS.MATE_GROUPS.mechanical.join() === 'cam,slot,hinge,gear,rackpinion,screw,universaljoint', AS.MATE_GROUPS.mechanical.join());
       assert(AS.MATE_NAMES.screw === 'Screw' && AS.MATE_NAMES.rackpinion === 'RackPinion', 'names');
     });
   })();
