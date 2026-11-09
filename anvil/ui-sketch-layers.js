@@ -453,6 +453,7 @@
     var o = clone(e);
     LEN_KEYS.forEach(function (k) { if (typeof o[k] === 'number') o[k] *= s; });
     if (Array.isArray(o.pts)) o.pts = o.pts.map(function (p) { return [p[0] * s, p[1] * s]; });
+    if (o.fit && typeof o.fit.tol === 'number') { o.fit.tol *= s; delete o.fit.sig; }   // fitspline2: a fit spline's tolerance is a length
     // rfCY: a spline's curvature control (tans[k][3], 1 / R) scales as 1 / s; the tangent directions and weights stay
     if (Array.isArray(o.tans)) o.tans = o.tans.map(function (tg) { if (!tg) return tg; var t = tg.slice(); if (t[3] != null && isFinite(+t[3])) t[3] = +t[3] / s; return t; });
     return o;
@@ -488,6 +489,7 @@
     markDirty();
     var base = f.entities.length, map = {};
     moved(c, p).forEach(function (e, k) { map[k] = base + k; f.entities.push(e); });
+    if (K.relinkFitCopies) K.relinkFitCopies(f, base, c.entities.length);   // fitspline2: a copied Constrained fit spline follows its copied chain
     c.rels.forEach(function (r) { var q = clone(r); q.refs = mapRefs(q.refs, map); if (q.refs) (f.rels = f.rels || []).push(q); });
     c.dims.forEach(function (d) { var q = clone(d); q.e = map[q.e]; (f.dims = f.dims || []).push(q); });
     (c.layers || []).forEach(function (l) { if (!layerRec(f, l.name)) (f.layers = f.layers || []).push(clone(l)); });

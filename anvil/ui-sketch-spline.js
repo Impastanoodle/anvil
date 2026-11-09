@@ -681,7 +681,7 @@
     // degree choice; a Constrained one says so and offers its Tolerance (the spline refits)
     if (bs && e.fit) v.fitTol = e.fit.tol;
     var fitGroup = bs ? [{ title: e.fit ? 'Fit Spline (Constrained)' : 'B-spline', fields: [
-      { type: 'static', label: 'Spans', value: function () { return String(e.knots.length - 7) + ', degree ' + (e.deg || 3); } }].concat(e.fit ? [
+      { type: 'static', label: 'Spans', value: function () { return String(e.knots.filter(function (u, z) { return z && u > e.knots[z - 1]; }).length) + ', degree ' + (e.deg || 3); } }].concat(e.fit ? [
       { type: 'static', label: '', value: function () { return 'Linked to ' + K.fitSources(f, e).length + ' construction entities: it refits when they change.'; } },
       { type: 'number', label: 'Tolerance', key: 'fitTol', unit: u, min: 0 }] : []) }] : [];
     UI.openPM({
@@ -1093,7 +1093,7 @@
     if (mode === 'fixed') { f.rels = f.rels || []; f.rels.push({ type: 'fix', refs: [String(ni)] }); }
     S.clean(f);
     S.solve(f);
-    return { ok: true, index: ni, points: sp.pts.length, spans: sp.knots.length - 7, dev: r.dev, mode: mode, del: del };
+    return { ok: true, index: ni, points: sp.pts.length, spans: r.spans, dev: r.dev, mode: mode, del: del };
   }
   UI.fitSpline = fitSpline;   // test hook: (f, idx, { tol, closed, del, mode })
   function selectedEntities(f) {
@@ -1360,11 +1360,9 @@
   // that changes the curve least first). smoothing: tangent-driving goes from the points kept, as SolidWorks' Smoothing.
   function simplifySpline(e, tol, smoothing) {
     if (K.isBSpline(e)) {
-      // lane fitspline: a B-spline is fitted again to its own curve (finely sampled) within the tolerance: fewer spans
-      var refB = curveSamples(e, 16), poly = { t: 'polyline', pts: curveSamples(e, 48), closed: !!e.closed };
-      var rb = K.fitSplineEntity([poly], [0], { tol: Math.max(+tol || 0, 1e-9) * 0.95, closed: !!e.closed });
-      if (!rb.ok || rb.e.pts.length >= e.pts.length) return { e: JSON.parse(JSON.stringify(e)), dev: 0 };
-      ['construction', 'layer', 'showCurvature', 'showInflection', 'showMinRadius'].forEach(function (k) { if (e[k] != null) rb.e[k] = e[k]; });
+      // (fitspline2: its knots removed one at a time, the rest refitted, Kernel.simplifyBSpline)
+      var refB = curveSamples(e, 16), rb = K.simplifyBSpline(e, Math.max(+tol || 0, 1e-9) * 0.95);
+      if (!rb) return { e: JSON.parse(JSON.stringify(e)), dev: 0 };
       return { e: rb.e, dev: devFrom(rb.e, refB) };
     }
     var ref = curveSamples(e, 16), cur = JSON.parse(JSON.stringify(e)), min = e.closed ? 3 : 2;

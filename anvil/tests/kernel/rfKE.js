@@ -53,8 +53,9 @@
       return Math.abs(a);
     }
     function rfKERoundRect() {
-      return [{ t: 'line', x1: 1, y1: 0, x2: 5, y2: 0 }, { t: 'arc', cx: 5, cy: 1, r: 1, a0: -90, a1: 0 }, { t: 'line', x1: 6, y1: 1, x2: 6, y2: 3 }, { t: 'arc', cx: 5, cy: 3, r: 1, a0: 0, a1: 90 },
-        { t: 'line', x1: 5, y1: 4, x2: 1, y2: 4 }, { t: 'arc', cx: 1, cy: 3, r: 1, a0: 90, a1: 180 }, { t: 'line', x1: 0, y1: 3, x2: 0, y2: 1 }, { t: 'arc', cx: 1, cy: 1, r: 1, a0: 180, a1: 270 }];
+      // (rfKL: the chain starts in the middle of its bottom line, so the seam is a plain C2 joint)
+      return [{ t: 'line', x1: 3, y1: 0, x2: 5, y2: 0 }, { t: 'arc', cx: 5, cy: 1, r: 1, a0: -90, a1: 0 }, { t: 'line', x1: 6, y1: 1, x2: 6, y2: 3 }, { t: 'arc', cx: 5, cy: 3, r: 1, a0: 0, a1: 90 },
+        { t: 'line', x1: 5, y1: 4, x2: 1, y2: 4 }, { t: 'arc', cx: 1, cy: 3, r: 1, a0: 90, a1: 180 }, { t: 'line', x1: 0, y1: 3, x2: 0, y2: 1 }, { t: 'arc', cx: 1, cy: 1, r: 1, a0: 180, a1: 270 }, { t: 'line', x1: 1, y1: 0, x2: 3, y2: 0 }];
     }
 
     test('rfKE: 3 lines + 2 tangent arcs become ONE B-spline (clamped cubic, knots + control points) within the tolerance, both ways, at .001 and .0001 in', function () {
@@ -70,13 +71,17 @@
         var dv = rfKEDev(e, ch);
         assert(dv < tol, 'deviation ' + dv + ' under ' + tol);
         assert(r.dev < tol && r.dev >= dv * 0.5, 'reported deviation ' + r.dev + ' (measured ' + dv + ')');
-        out.push(tol + ': ' + (e.knots.length - 7) + ' spans, ' + dv.toExponential(2));
+        // rfKL: double knots at the four joints where the curvature jumps (C1 there, as the chain): few control points
+        assert(e.pts.length <= (tol < 5e-4 ? 25 : 18), 'rfKL: control points ' + e.pts.length + ' at ' + tol + ' (were 48 / 100)');
+        [4, 4 + Math.PI / 2, 6 + Math.PI / 2, 6 + 3 * Math.PI / 2].forEach(function (s) { assert(e.knots.filter(function (u) { return Math.abs(u - s) < 1e-9; }).length === 2, 'double knot at ' + s + ': ' + JSON.stringify(e.knots)); });
+        out.push(tol + ': ' + e.pts.length + ' control points, ' + r.spans + ' spans, ' + dv.toExponential(2));
       });
       return out.join('; ');
     });
 
     test('rfKE: a closed fit (rounded rectangle 6 × 4, R1 corners, Closed spline) at .0001 extrudes .5 deep to the spline\'s own area × .5 within 1e-6, its area within the tolerance of the chain\'s', function () {
-      var r = K.fitSplineEntity(rfKERoundRect(), [0, 1, 2, 3, 4, 5, 6, 7], { tol: 1e-4, closed: true });
+      var r = K.fitSplineEntity(rfKERoundRect(), [0, 1, 2, 3, 4, 5, 6, 7, 8], { tol: 1e-4, closed: true });
+      assert(r.ok && r.e.pts.length <= 40, 'rfKL: a handful of control points: ' + (r.e && r.e.pts.length));
       assert(r.ok && r.e.closed, 'closed: ' + JSON.stringify(r.e && r.e.closed));
       var e = r.e, P = e.pts;
       assert(P[0][0] === P[P.length - 1][0] && P[0][1] === P[P.length - 1][1], 'first and last control points equal');

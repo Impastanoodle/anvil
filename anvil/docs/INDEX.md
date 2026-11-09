@@ -2037,7 +2037,7 @@ more: ventPrism L4896, ufWedge L5532, ufBendIndex L5553, isInsertBends L6027, ib
 more: ftTool L6858, ftNum L6872, ftCircle L6915, ftRect L6920, ftSegsCross L7040, ftSolid L7110, triN L7336,
 more: tkey L7337, solve3 L7375, sfErr L7611, num L7612, pieceDir L7613, revPiece L7617, sfSnap L7892
 
-## kernel-sketch.js (4115 lines)
+## kernel-sketch.js (4198 lines)
 > Anvil kernel, sketches: sketch entities -> polylines (tessellation settings TESS), profiles (closed
 Kernel._.TESS  L27  — Tessellation of circles and arcs (true curves, cloud-2026-09-25p). Curves stay exact in …
 Kernel.segsForRadius, Kernel._.segsForRadius  L28
@@ -2188,12 +2188,16 @@ Kernel.derivedScriptLine  L3844  — the script line: p.sketch('Top').line(…).
 Kernel.fitChain  L3887  — the selected entities as one chain of exact pieces: { pieces: [{ k: 'line', a, b } | { …
 basis  L3927  — B-spline basis: the p + 1 functions not zero on span j at u (knot accessor T(i)), Cox-de …
 bandSolve  L3938  — the symmetric positive definite band system M x = R (row i holds columns i − bw … i + …
-Kernel.fitBSpline  L3960  — fitBSpline(chain (fitChain's), tol, closed) -> { knots, pts, closed, dev, spans } or null
-Kernel.fitSplineEntity  L4062  — the B-spline entity fitted to entities idx of ents: { ok, e, dev, chain } or { ok: …
-Kernel.fitSourceSig (srcSig)  L4072
-Kernel.fitSources  L4082  — the source entities of Constrained fit spline e (fitSrc === e.fit.id), in sketch order
-Kernel.syncFitSplines  L4089  — refit every Constrained fit spline of sketch f whose sources changed; returns how many …
-Kernel.newFitId  L4108  — a new fit id for sketch f
+lsSolve  L3963  — fitspline2: the least-squares cubic B-spline on the knots b (b[0] = 0, then every knot …
+Kernel.simplifyBSpline  L4014  — fitspline2: Simplify Spline on a B-spline: interior knots removed one at a time (the one …
+Kernel.fitBSpline  L4046  — fitBSpline(chain (fitChain's), tol, closed) -> { knots, pts, closed, dev, spans } or null
+spanCount  L4122  — the knot intervals of non-zero length (the spline's spans)
+Kernel.fitSplineEntity  L4124  — the B-spline entity fitted to entities idx of ents: { ok, e, dev, chain } or { ok: …
+Kernel.fitSourceSig (srcSig)  L4134
+Kernel.fitSources  L4144  — the source entities of Constrained fit spline e (fitSrc === e.fit.id), in sketch order
+Kernel.syncFitSplines  L4151  — refit every Constrained fit spline of sketch f whose sources changed; returns how many …
+Kernel.newFitId  L4170  — a new fit id for sketch f
+Kernel.relinkFitCopies  L4179  — fitspline2: entities first … first + count − 1 were just copied in (paste): each …
 more: arcPoints L51, conicGeom L235, bsDeg L266, dedupeLoop L825, onPolyEdge L932, loopsCross L940,
 more: lineCircle L1154, regionGraph L1206, regionFaces L1408, freeEval L1456, freeDeriv L1461, freeSliver L1469,
 more: reflect2 L1724, segDist2 L1960, angleIn L2047, primParamAt L2104, primPoint L2119, r2d L2123,
@@ -4094,7 +4098,7 @@ more: partUnits L24, conv L25, gapTol L29, isAsm L30, esc L31, plural L32, chang
 more: setMarks L57, drawMarks L58, shiftRef L122, jointCount L139, blockIds L140, decode L300, isDwg L315,
 more: dwgBytes L316, noServer L323
 
-## ui-sketch-layers.js (564 lines)
+## ui-sketch-layers.js (566 lines)
 > sketch layers (AutoCAD layers), shaded closed regions with open ends flagged (Fusion 360 /
 setCurrentLayer  L21  — levels (ui-levels.js): making a layer current makes its level the part's main level
 UI.entityLayerHidden  L26
@@ -4112,14 +4116,14 @@ UI.sketchRegionHover  L358
 mapRefs  L408  — refs "3", "3.p1" … through map (old index -> new index); null when a ref is not a copied …
 UI.sketchCopy  L417
 unitsOf  L446  — paste between unit systems: a copy from an inch document pasted into a mm one (or back) …
-scaledClip  L462  — the clipboard in the active document's units: -> { clip, scale }
-placeClip  L485  — puts the clipboard into the active sketch with its anchor at p: -> { first, count } (one …
-UI.sketchPaste  L503
-UI.sketchClipboard  L547
+scaledClip  L463  — the clipboard in the active document's units: -> { clip, scale }
+placeClip  L486  — puts the clipboard into the active sketch with its anchor at p: -> { first, count } (one …
+UI.sketchPaste  L505
+UI.sketchClipboard  L549
 more: layerRec L14, currentLayer L15, entityLayerName L25, layerMat L29, markDirty L58, refresh L59,
 more: selectedEntities L60, uniqueName L66, validName L71, esc L166, regionData L275, regionMats L304,
 more: noRaycast L314, regionAt L359, setHover L367, readClip L393, clone L398, extents L399, clipScale L447,
-more: scaleEntity L449, scaleTol L460, scaleNote L479, moved L480
+more: scaleEntity L449, scaleTol L461, scaleNote L480, moved L481
 
 ## ui-sketch-lines.js (1182 lines)
 > Line / Centerline / Midpoint Line / Parallel Line, Rectangle types, Point: their SolidWorks PropertyManagers (on the tool and for a selected entity).
@@ -4187,7 +4191,7 @@ more: shown L102, addPictures L112, normalise L148, nextName L157, rec L203, val
 more: apply L209, closeScaleBox L230, setScaleTool L231, snapUV L239, drawPicks L248, scaleMove L255,
 more: scalePick L256, openPicturePM L311
 
-## ui-sketch-spline.js (1700 lines)
+## ui-sketch-spline.js (1698 lines)
 > Spline, Ellipse and Partial Ellipse (Sketch tab): the drawing tools (through the
 styleDegree  L98  — SolidWorks' Style Spline: one Bézier span of degree 3, 5 or 7 shaped by its control …
 ellipseFrom  L148  — centre c, major axis end a, and a point q: the minor radius is q's distance from the …
@@ -4229,22 +4233,22 @@ UI.splineInflections (inflections)  L1311  — Show Inflection Points: where the
 UI.cmdShowInflectionPoints  L1335
 devFrom  L1346  — the most a spline e strays from the reference curve samples ref (points along the …
 UI.simplifySpline  L1361  — Simplify Spline: fewer points, the curve within tol of the original (interior points …
-UI.relaxSpline  L1389  — Relax Spline: the spline smooths out to the natural C2 curve through its points …
-UI.cmdSimplifySpline  L1402
-UI.cmdRelaxSpline  L1436
-UI.splineView  L1446  — Show Spline Handles (every spline of the active sketch shows its tangent handles) and …
-UI.cmdShowSplineHandles  L1448
-UI.cmdShowCurvature  L1449
-UI.splineMenuItems  L1467  — the spline's right-click rows (ui-panels.js sketchMenuItems)
-UI.splineMinRadius (minRadius)  L1493  — SolidWorks' right-click a spline ▸ Show Minimum Radius: the smallest radius of curvature …
-UI.cmdShowMinimumRadius  L1520
-UI.splineMinRadiusLabels  L1556
-UI.drawDims  L1559
-parabolaFrame  L1569  — Parabola: click the focus, then the apex (the vertex: the parabola opens towards the …
-UI.parabolaEntity  L1576
-UI.conicEntity  L1582
-conicFields  L1639  — the Conic / Parabola fields of its PropertyManager and their values
-UI.setConicRho  L1680  — script / test hook
+UI.relaxSpline  L1387  — Relax Spline: the spline smooths out to the natural C2 curve through its points …
+UI.cmdSimplifySpline  L1400
+UI.cmdRelaxSpline  L1434
+UI.splineView  L1444  — Show Spline Handles (every spline of the active sketch shows its tangent handles) and …
+UI.cmdShowSplineHandles  L1446
+UI.cmdShowCurvature  L1447
+UI.splineMenuItems  L1465  — the spline's right-click rows (ui-panels.js sketchMenuItems)
+UI.splineMinRadius (minRadius)  L1491  — SolidWorks' right-click a spline ▸ Show Minimum Radius: the smallest radius of curvature …
+UI.cmdShowMinimumRadius  L1518
+UI.splineMinRadiusLabels  L1554
+UI.drawDims  L1557
+parabolaFrame  L1567  — Parabola: click the focus, then the apex (the vertex: the parabola opens towards the …
+UI.parabolaEntity  L1574
+UI.conicEntity  L1580
+conicFields  L1637  — the Conic / Parabola fields of its PropertyManager and their values
+UI.setConicRho  L1678  — script / test hook
 more: $ L21, SS L22, clean L23, copyPt L24, scr L25, pxDist L26, markDirty L27, refresh L28, fmt L29, esc L30,
 more: setHint L31, wrap L32, deg360 L33, nearFirst L49, splineOpts L50, makeSpline L51, styleEntity L99,
 more: makeStyleSpline L106, tidyEllipse L172, watchMade L178, angDeg L236, minorOf L237, ellipseNum L241,
@@ -4252,8 +4256,8 @@ more: renderToolPMSoon L287, lastMade L293, openToolPM L301, ellipseFields L386,
 more: openEllipsePM L417, tangentAt L443, splineValues L451, insertPoint L478, deletePoint L490,
 more: openSplinePM L540, styleValues L664, openStyleSplinePM L670, syncOpenPM L748, combLines L775,
 more: updateComb L803, dist2 L879, tolOf L880, isPlainSpline L881, refreshAll L884, conicPiece L983,
-more: selectedEntities L1099, fitPreview L1105, curveSamples L1352, splineTarget L1395, drawMinRadius L1533,
-more: rhoFrom L1588, watchConic L1595, conicValues L1648, applyConic L1655, openConicPM L1665
+more: selectedEntities L1099, fitPreview L1105, curveSamples L1352, splineTarget L1393, drawMinRadius L1531,
+more: rhoFrom L1586, watchConic L1593, conicValues L1646, applyConic L1653, openConicPM L1663
 
 ## ui-sketch-text.js (424 lines)
 > Sketch Text (Sketch tab ▸ Text, SolidWorks' Sketch Text): its PropertyManager on the tool
