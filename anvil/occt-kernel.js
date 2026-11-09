@@ -1460,6 +1460,11 @@ var OcctKernel = (function () {
           body = unify(body);
         }
         g = K.convertSMInsert(f, plan);
+      } else if (f.ripEdges && f.ripEdges.length) {   // lane insertbends3: Insert Bends' Rip Parameters (as Kernel's buildInsertBends)
+        var rg = K.convertSMRipGap(f, m);
+        if (!(rg > 0) || !isFinite(rg)) throw new Error('Insert Bends: the rip gap must be a positive number.');
+        var rr = K.ripLayout({ id: f.id, edges: f.ripEdges.map(function (s) { return { at: (Array.isArray(s) ? s : s.at).slice() }; }), gap: rg, direction: 'both' }, m, { body: shapeToCSG(body) });
+        body = unify(boolMany('cut', body, rr.tools.map(function (t) { return prismOf(t.pts, t.plane, t.a, t.b); }), 'Insert Bends: OpenCascade could not rip the corners.'));
       }
       if (m.noBends) { bodies[k] = body; return; }   // No Bends
       var lay = K.insertBendsLayout(g, m, { body: shapeToCSG(body, null, null, true) });   // rfIH: the records find the part's own rounded bends

@@ -6299,7 +6299,7 @@
       var t1 = cross(d, n1), t2 = cross(d, n2), w = Math.min(T, 0.25 * (r + T));
       var at = function (n, rr, t, dt) { return add(add(add(C0, scale(d, sm)), scale(n, rr)), scale(t, dt)); };
       var convex = inside(at(nm, r - Math.min(T, r) / 2, t1, 0)) && !inside(at(nm, r + dl, t1, 0));
-      var concave = !convex && !inside(at(nm, r - dl, t1, 0)) && inside(at(nm, r + Math.min(T, r) / 2, t1, 0));
+      var concave = !convex && !inside(at(nm, r - a.sag - dl, t1, 0)) && inside(at(nm, r + Math.min(T, r) / 2, t1, 0));   // insertbends3: OpenCascade's odd facet count puts a chord (sag inside r) at mid-arc
       if (!convex && !concave) return;
       // the walls past the tangent lines: T thick (outside fillet: metal from r − T to r; inside: from r to r + T)
       var lo = convex ? r - T : r, hi = convex ? r : r + T, ok = true;
@@ -6324,7 +6324,9 @@
       if (!sharp && !near) return;
       out.push({ side: convex ? 'outside' : 'inside', r: r, other: other, at: at(nm, r, t1, 0), C0: C0, d: d, n1: n1, n2: n2, R: r, RT: r, A: a.A, s0: a.z0, s1: a.z1 });
     });
-    return out;
+    // insertbends3: in x, y, z order, so both kernels (their facets come in different orders) name the same corner first
+    var key = function (q) { return q.at.map(function (x) { return Math.round(x * 1e5); }); };
+    return out.sort(function (p, q) { var a = key(p), b = key(q); return a[0] - b[0] || a[1] - b[1] || a[2] - b[2]; });
   }
   function ibLoneError(what, lr, T) {
     var fix = lr.side === 'inside'
