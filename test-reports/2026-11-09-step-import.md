@@ -60,24 +60,30 @@ Bends PM with the base clicked, ✓, Flatten, Flat to DXF ▸ ✓). Changed: `te
    CLOSED_SHELL) were also imported as loose solids. Now one solid, the voids subtracted exactly (Enclosure lid:
    OpenCascade 31809.455547, Anvil 2e-15 off).
 
+## Lane stepin2 (2026-11-09): the Unresolved list worked off
+
+Tests: `tests/kernel/rfKI.js` (6), `tests/smoke/rfKI.js` (1), `tests/occt-tests.html` rows "rfKI" (8).
+
+| Was | Now |
+|---|---|
+| **OpenCascade's mitred tray**: Insert Bends found 4 bends, the flat was the base and the strips only (12.19 in² of 25.66), no warning | Fixed. Not the mitre: the flat's wall search took the first mesh face within 2.6° of the wall, and OpenCascade's file lists the bend faces first, read in 1° facets; an imported mesh has no face ids, so the bend facets were not sorted last. Curved facets are now taken as a wall only when no plane matches. Blank = the tray's own flat (8e-9). Reproduced without OpenCascade: Anvil's tray STEP with the cylinders first in the shell, read at 2°. |
+| A flat could drop metal silently | An Insert Bends flat is weighed against the part (volume / T, corrected for each bend's BA): more than 1 % short gives a warning in the flat (Flat Pattern dialog, status, `flat.warnings`): "the blank holds … % less metal than the part …". |
+| **A hole or slot through a bend** refused by the reader | Read: any cylinder face whose loops stay on one side of the axis is unrolled to (r·angle, z), ear clipped and refined to the circle's grid (`cylPatch`), each triangle with the cylinder record (exact volume). Insert Bends finds the slotted bend (its probes no longer all sit in the slot) and the flat lays the slot. U channel R .25, .25 × .75 slot through one bend: slot area .1875 to 5e-11, place to 1e-9, from Anvil's STEP, a rational-B-spline rewrite of it, OpenCascade's STEP and OpenCascade's NURBS STEP, read by Anvil's reader or by OpenCascade's import. A Ø.2 round hole through the bend from OpenCascade: laid too (a 192-point loop, 0.031410 vs π·0.1² = 0.031416; the DXF writes a circle). |
+| With the OpenCascade import, an exact B-spline cylinder got no cylinder record | Marked: a B-spline / Bezier face is sampled 9 × 9 and classified as the STEP reader does (`Exchange.surfaceGridKind`); OpenCascade's NURBS L bracket through the OpenCascade import → Insert Bends finds the bend, flat analytic. |
+| Anvil's STEP wrote a bend notched by a Rectangle / Obround auto relief as facets | Written whole (the reader takes the L-shaped patch): both bends 2 cylinders each, round trip 3e-15 (rect) / 5e-12 (obround), OpenCascade reads Anvil's volume (rows "rfKI: a bend notched by a … auto relief"). |
+
 ## Still refused or wrong, ranked by shop value
 
-1. **A hole or slot through a bend** (a cylinder face with an inner loop): the reader tessellates cylinder patches as
-   two sides + two rulings only, so the file is refused ("trimmed by curves other than circles and rulings"). Needs a
-   general trimmed-cylinder tessellation (unroll to (angle, z), triangulate in angle strips). Common enough on
-   customer parts (a lightening hole near a bend, a slot across one). Workaround: none in Anvil's reader; OpenCascade
-   reads it, but Insert Bends then needs the bend's two cylinders whole.
-2. **OpenCascade's own mitred tray** (Anvil's four inside flanges, no corner notches) imports closed, Insert Bends finds
-   the 4 bends, but the flat comes out as the base and the bend strips only (walls missing, no warning). Its bend ends
-   are twisted ruled faces (the kernel's fan mitre, audit item 1: kernel-sheetmetal.js, the mitre lane), which a real
-   customer's file would not have; not traced further here. A customer's mitred / closed-corner box with planar mitres
-   was not available to test (SolidWorks not used).
+1. **A round hole through a bend in Anvil's own STEP**: the hole's edge on the bend is a wrapped circle (no line, circle
+   or ellipse), so Anvil's writer keeps that bend as facets; Insert Bends on the file then finds the other bends only
+   and the flat warns "less metal than the part" (was silent). Needs B-spline edges in Anvil's STEP writer. OpenCascade's
+   STEP of the same part is fine.
+2. **A mitred tray with large radii (R .5) through Anvil's STEP**: Insert Bends' rounded-bend records end square at the
+   cylinder's full extent, so the tapered (fan-mitred) bend ends are notched by `bendSurfaceNotches` and the blank is
+   2 % short of the tray's own flat (27.80 vs 29.04 in²): now warned, was silent. R .06 trays are exact. Needs the
+   rounded record's ends to follow the bend's mitre (`insertBendsLayout`, both lanes that own Insert Bends).
 3. **A bend written as a non-rational B-spline** (an approximated cylinder) is read as a ruled strip without a record,
    so Insert Bends does not see it as a bend ("no sharp corner …"); SolidWorks' Insert Bends also needs true
-   cylinders. With Tools ▸ OpenCascade kernel on, B-spline cylinders (exact, rational) also get no record (OpenCascade
-   reports them as B-spline surfaces): Anvil's own reader (OpenCascade off) handles those.
+   cylinders.
 4. Cones (countersinks), spheres and tori bounded by B-spline edges are still refused by Anvil's reader (read with the
-   OpenCascade kernel on).
-5. Not this lane (kernel): Anvil's own STEP of a tray with auto-relief bends writes those bends as facets (audit item 2, kernel), so
-   Insert Bends on Anvil's own tray STEP finds no bends; the corner-notched tray (no relief vertex off the cylinder)
-   writes true cylinders and passes.
+   OpenCascade kernel on); a cylinder band (a full turn) with holes in it still keeps its facets in Anvil's writer.

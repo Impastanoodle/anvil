@@ -63,7 +63,7 @@
       nearRel(r.back.mp.volume, r.src.mp.volume, 1e-12, 'round trip to 1e-12');
     });
 
-    test('rfKC: the same with a Rectangle / Obround auto relief: the relief notches the first bend (an L in (angle, t) Anvil\'s reader cannot take), so both its sides stay faceted together; read back closed', function () {
+    test('rfKC: the same with a Rectangle / Obround auto relief: the relief notches the first bend (an L in (angle, t)); since lane stepin2 the reader takes it and the bend is written whole; read back closed', function () {
       ['rect', 'obround'].forEach(function (rl) {
         var r = rfKCtrip(HEAD.replace('0.5);', '0.5, { relief: "' + rl + '" });') + 'p.flange(1, [[2, ' + T + ', 0]], { position: "inside" });\np.flange(1, [[4, ' + T + ', 1.5]], { position: "inside" });\n');
         var rs = [];

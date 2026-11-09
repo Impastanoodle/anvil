@@ -2331,6 +2331,20 @@ var OcctKernel = (function () {
   function importCylRecord(oc, f, N) {
     try {
       var ad = N(new oc.BRepAdaptor_Surface_2(f, true)), t = ad.GetType(), tv = t && t.value != null ? t.value : t;
+      // lane stepin2: a B-spline / Bezier face that IS a cylinder (another CAD's rational bend, OpenCascade's own NURBS
+      // conversion): a 9 x 9 grid of its points over the face's parameter box, classified as exchange.js reads such
+      // a face (straight one way, every point at r from one axis, 1e-9 of the size)
+      if ((SURF[tv] === 'bspline' || SURF[tv] === 'bezier') && typeof Exchange !== 'undefined' && Exchange.surfaceGridKind) {
+        var u0 = ad.FirstUParameter(), u1 = ad.LastUParameter(), v0 = ad.FirstVParameter(), v1 = ad.LastVParameter(), G = [], n = 8;
+        if (!(isFinite(u0) && isFinite(u1) && isFinite(v0) && isFinite(v1)) || !(u1 > u0) || !(v1 > v0)) return null;
+        for (var i = 0; i <= n; i++) {
+          var col = [];
+          for (var j = 0; j <= n; j++) { var q = N(ad.Value(u0 + (u1 - u0) * i / n, v0 + (v1 - v0) * j / n)); col.push([q.X(), q.Y(), q.Z()]); }
+          G.push(col);
+        }
+        var k = Exchange.surfaceGridKind(G);
+        return k && k.cyl ? { s: { t: 'cyl', o: k.cyl.o, d: k.cyl.d, r: k.cyl.r } } : null;
+      }
       if (SURF[tv] !== 'cylinder') return null;
       var cy = N(ad.Cylinder()), a = N(cy.Position()), o = N(a.Location()), d = N(a.Direction());
       return { s: { t: 'cyl', o: [o.X(), o.Y(), o.Z()], d: [d.X(), d.Y(), d.Z()], r: cy.Radius() } };

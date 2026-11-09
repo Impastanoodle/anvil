@@ -1248,17 +1248,10 @@ var Exchange = (function () {
         // takes back (curvedFace: one loop, two runs of rulings, the rest arcs at two levels or ellipse runs); a bend
         // notched by a relief slot (an L in (angle, t): three runs of rulings), or a band with holes (the Mug's body where
         // the faceted handle meets it) keeps its facets
-        if (sh && c.snapped) {
-          var ls = loopsOf[g], runs = 0, lv = {}, nlv = 0, hasE = false;
-          if (ls.length !== 1 || sh.kind !== 'plain' || S.t !== 'cyl') sh = null;
-          else for (var li = 0, ln = ls[0].length; li < ln; li++) {
-            var ex = eget(ls[0][li], ls[0][(li + 1) % ln]), ey = eget(ls[0][(li + 1) % ln], ls[0][(li + 2) % ln]);
-            if (ex.t === 'l' && ey.t !== 'l') runs++;
-            if (ex.t === 'c' && !lv[ex.c.key]) { lv[ex.c.key] = 1; nlv++; }
-            if (ex.t === 'e') hasE = true;
-          }
-          if (sh && !(runs === 2 && (nlv === 2 || (hasE && nlv <= 2)))) sh = null;
-        }
+        // (lane stepin2: the reader's cylPatch now takes any cylinder patch whose loops stay on one side of the axis, the
+        // 'plain' shape: an L-shaped patch a relief notched, a bend with a hole or slot through it; so those are written
+        // whole too. Was: one loop of two ruling runs only)
+        if (sh && c.snapped && (sh.kind !== 'plain' || S.t !== 'cyl')) sh = null;
         if (!sh) { c.ok = false; failed = true; } else shape[g] = sh;
       });
       // stepout-2: a bend is written whole or not at all. An obliquely cut cylinder (ELLIPSE edges) whose coaxial
@@ -2240,12 +2233,13 @@ var Exchange = (function () {
     // whole spheres and tori, and cylinder / cone patches bounded by two latitude arcs and two rulings. Seam edges (an
     // EDGE_CURVE the face uses twice) only say which way round a sphere or torus band goes.
     function curvedFace(fa, S, sameSense, out) {
-      var loops = [], vloops = [], uses = {}, ok = true;
+      var loops = [], vloops = [], uses = {}, ok = true, outerI = -1;
       (fa[1] || []).forEach(function (bRef) {
         var b = ent(bRef), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
         if (!l) { ok = false; return; }
         if (l.t === 'VERTEX_LOOP') { var vpt = vertexPoint(l.a[1]); if (vpt) vloops.push(vpt); return; }
         if (l.t !== 'EDGE_LOOP') { ok = false; return; }
+        if (has(b, 'FACE_OUTER_BOUND')) outerI = loops.length;   // lane stepin2 (cylPatch)
         var list = loopEdgeList(l);
         list.forEach(function (x) { uses[x.info.id] = (uses[x.info.id] || 0) + 1; });
         loops.push(list);
@@ -2385,15 +2379,101 @@ var Exchange = (function () {
         for (var i = 0; i < L.length; i++) if (isR[i] && !isR[(i + 1) % L.length]) runs++;
         return runs;
       }
-      var seamMid = seams.length && seams[0].kind === 'circle' ? seams[0].mid : null;
+      // lane stepin2: a cylinder patch of any other shape (a hole or slot through a bend: an inner loop; a bend notched
+      // by a neighbour's relief: an L in (angle, z), three runs of rulings; sides of any curves lying on it): every loop
+      // unrolled to (u = r·angle, v = z), ear clipped there, then every interior edge longer than one segment of the
+      // circle's canonical grid (segsForRadius) halved, its new point on the surface, until none is; the boundary keeps
+      // the edges' own points (watertight with the faces beside it). Each triangle carries the cylinder record, so
+      // massProps stays exact and Insert Bends sees the bend. A loop that winds round the axis (a band) is not taken.
+      function cylPatch() {
+        if (S.t !== 'cyl' || vloops.length || !loops.length) return false;
+        var V = [], rings = [], mean0 = null, r = S.r;
+        for (var k = 0; k < loops.length; k++) {
+          var pts = [];
+          loops[k].forEach(function (x) { var q = orientedPts(x); pts = pts.concat(q.slice(0, Math.max(1, q.length - 1))); });
+          pts = dedupeRing(pts);
+          if (pts.length < 3) return false;
+          var acc = 0, prev = null, a0 = null, uv = [];
+          for (var q2 = 0; q2 < pts.length; q2++) {
+            var A2 = ax(pts[q2]);
+            if (prev != null) { var st = wrapAngle(A2.ang - prev); if (Math.abs(st) > Math.PI / 2) return false; acc += st; } else a0 = A2.ang;
+            prev = A2.ang; uv.push([a0 + acc, A2.z]);
+          }
+          if (Math.abs(acc + wrapAngle(a0 - prev)) > 1e-6) return false;   // winds round the axis
+          var mean = 0;
+          uv.forEach(function (p) { mean += p[0]; });
+          mean /= uv.length;
+          if (mean0 == null) mean0 = mean;
+          else { var sh = 2 * Math.PI * Math.round((mean0 - mean) / (2 * Math.PI)); uv.forEach(function (p) { p[0] += sh; }); }
+          var idx = [];
+          uv.forEach(function (p, j) { idx.push(V.length); V.push({ p: pts[j], u: p[0] * r, v: p[1] }); });
+          rings.push(idx);
+        }
+        function area(ix) { var s = 0; for (var i = 0; i < ix.length; i++) { var a = V[ix[i]], b = V[ix[(i + 1) % ix.length]]; s += a.u * b.v - b.u * a.v; } return s / 2; }
+        var oi = outerI;
+        if (oi < 0) { var big = -1; rings.forEach(function (ix, k2) { var a = Math.abs(area(ix)); if (a > big) { big = a; oi = k2; } }); }
+        rings = rings.map(function (ix, k2) { return (k2 === oi) !== (area(ix) > 0) ? ix.slice().reverse() : ix; });
+        var P2 = V.map(function (x) { return [x.u, x.v]; }), tl = earcut(P2, rings[oi], rings.filter(function (ix, k2) { return k2 !== oi; }));
+        var T3 = [];
+        for (var t = 0; t + 2 < tl.length; t += 3) T3.push([tl[t], tl[t + 1], tl[t + 2]]);
+        if (!T3.length) return false;
+        var ea = 0;
+        T3.forEach(function (t3) { ea += (P2[t3[1]][0] - P2[t3[0]][0]) * (P2[t3[2]][1] - P2[t3[0]][1]) - (P2[t3[2]][0] - P2[t3[0]][0]) * (P2[t3[1]][1] - P2[t3[0]][1]); });
+        var want = rings.reduce(function (s, ix) { return s + area(ix); }, 0);
+        if (!(Math.abs(ea / 2 - want) <= 1e-6 * Math.max(Math.abs(want), 1e-12))) return false;   // the ear clipping failed
+        var stepU = 2 * Math.PI / K.segsForRadius(r * toMM) * r * (1 + 1e-6);
+        // longest-edge (in u) bisection along the longest-edge propagation path: the edge split is the longest of both
+        // its triangles, so the third vertices lie within its u range and every new edge spans at most half of it
+        var em = {};
+        function ek(a, b) { return a < b ? a + ',' + b : b + ',' + a; }
+        function span(a, b) { return Math.abs(V[a].u - V[b].u); }
+        function addT(ti) { var t3 = T3[ti]; for (var e = 0; e < 3; e++) { var key = ek(t3[e], t3[(e + 1) % 3]); (em[key] || (em[key] = [])).push(ti); } }
+        function remT(ti) { var t3 = T3[ti]; for (var e = 0; e < 3; e++) { var l = em[ek(t3[e], t3[(e + 1) % 3])], at = l.indexOf(ti); if (at >= 0) l.splice(at, 1); } }
+        function longest(ti) { var t3 = T3[ti], best = 0; for (var e = 1; e < 3; e++) if (span(t3[e], t3[(e + 1) % 3]) > span(t3[best], t3[(best + 1) % 3])) best = e; return [t3[best], t3[(best + 1) % 3]]; }
+        function splitEdge(a, b) {
+          var u = (V[a].u + V[b].u) / 2, v = (V[a].v + V[b].v) / 2, an = u / r, m = V.length, ts = em[ek(a, b)].slice();
+          V.push({ p: add(add(S.o, scale(S.d, v)), scale(add(scale(xc, Math.cos(an)), scale(yc, Math.sin(an))), r)), u: u, v: v });
+          ts.forEach(function (ti) {
+            var t3 = T3[ti], e = 0;
+            while (e < 3 && !((t3[e] === a && t3[(e + 1) % 3] === b) || (t3[e] === b && t3[(e + 1) % 3] === a))) e++;
+            var i = t3[e], j = t3[(e + 1) % 3], c = t3[(e + 2) % 3];
+            remT(ti);
+            T3[ti] = [i, m, c]; addT(ti);
+            T3.push([m, j, c]); addT(T3.length - 1);
+            queue.push(ti, T3.length - 1);
+          });
+        }
+        T3.forEach(function (t3, ti) { addT(ti); });
+        var queue = T3.map(function (t3, ti) { return ti; }), guard = 0;
+        while (queue.length && guard < 200000) {
+          var ti0 = queue.pop(), e0 = longest(ti0);
+          if (span(e0[0], e0[1]) <= stepU) continue;
+          var cur = ti0, edge = e0;
+          for (var walk = 0; walk < 1000; walk++) {
+            guard++;
+            var nbs = em[ek(edge[0], edge[1])], nb = nbs.length === 2 ? (nbs[0] === cur ? nbs[1] : nbs[0]) : -1;
+            if (nb < 0) { edge = null; break; }   // a boundary edge: kept (the edges' own points)
+            var en = longest(nb);
+            if (span(en[0], en[1]) <= span(edge[0], edge[1]) * (1 + 1e-12)) break;
+            cur = nb; edge = en;
+          }
+          if (!edge) continue;
+          splitEdge(edge[0], edge[1]);
+          queue.push(ti0);
+        }
+        T3.forEach(function (t3) { tris.push([V[t3[0]].p, V[t3[1]].p, V[t3[2]].p, rec()]); });
+        return true;
+      }
+      var seamMid = seams.length && seams[0].kind === 'circle' ? seams[0].mid : null, general = false;
       if (octTris) tris = octTris;   // rfFF2
       else if (S.t === 'cyl' || S.t === 'cone') {
         if (levels.length === 2 && full.length === 2 && !rulings.length) zip(ring(levels[0]), ring(levels[1]), true, rec());
         else if (S.t === 'cone' && levels.length === 1 && full.length === 1 && !rulings.length && Math.abs(S.k) > 1e-12) zip(ring(levels[0]), pointRow(add(S.o, scale(S.d, -S.r / S.k))), true, rec());
-        else if ((levels.length === 2 || (ells.length && !full.length)) && loops.length === 1 && rulingRuns(loops[0]) === 2) {
+        else if ((levels.length === 2 || (ells.length && !full.length)) && loops.length === 1 && rulingRuns(loops[0]) === 2 && (function () {
           // a patch between two arcs and two rulings: the loop is arcs at one level, a ruling, arcs at the other, a ruling
           // (stepout: a ruling may come split in collinear pieces where other faces meet it, as Anvil writes a fillet
-          // whose side is met by a chamfer's end: each run of rulings is one side)
+          // whose side is met by a chamfer's end: each run of rulings is one side) (lane stepin2: false = not that
+          // shape after all, cylPatch below tries it)
           var L = loops[0], n = L.length, start = -1;
           for (var s = 0; s < n && start < 0; s++) if (rulings.some(function (r) { return r.idx === s; }) && !rulings.some(function (r) { return r.idx === (s + 1) % n; })) start = (s + 1) % n;
           if (start < 0) return false;
@@ -2418,7 +2498,8 @@ var Exchange = (function () {
           function monotone(us) { for (var mi = 1; mi < us.length; mi++) if (us[mi].a < us[mi - 1].a - 1e-9) return false; return true; }
           if (ells.length && (!monotone(ua) || !monotone(ub))) return false;
           zip(ua, ub, false, rec());
-        } else return false;
+          return true;
+        })()) { /* zipped */ } else general = true;
       } else {
         var circles = levels.map(circleRow);
         if (!levels.length && !rulings.length) {
@@ -2438,6 +2519,7 @@ var Exchange = (function () {
           zipRows(betaRows(bc, bp, bp > bc ? 1 : -1, circles[0], null));
         } else return false;
       }
+      if (general && !cylPatch()) return false;   // lane stepin2
       // orient every triangle outward (along the surface normal, or against it for a face with same_sense .F.)
       tris.forEach(function (t) {
         var A = t[0], B = t[1], C = t[2], nrm = cross(sub(B, A), sub(C, A));
@@ -3165,6 +3247,7 @@ var Exchange = (function () {
     importFeature: importFeature, newPartFromImport: newPartFromImport, importedName: importedName, featureInfo: featureInfo,
     encodeSolids: encodeSolids, solidMesh: solidMesh, solidCSG: solidCSG, signedVolume: signedVolume, earcut: earcut,
     b64encode: b64encode, b64decode: b64decode, utf8: utf8, fromUtf8: fromUtf8,
+    surfaceGridKind: bsSurfClassify,   // lane stepin2: occt-kernel.js importCylRecord (B-spline faces that are cylinders)
     FORMATS: [
       { id: 'step', label: 'STEP AP214 (*.step;*.stp)', ext: 'step', import: true, export: true },
       { id: '3mf', label: '3D Manufacturing Format (*.3mf)', ext: '3mf', import: true, export: true },

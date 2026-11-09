@@ -2204,6 +2204,7 @@
     var T = +sheet.thickness, warnings = [], kUsed = {};
     var fopt = flatOptionsOf(model), regionLines = [], bendRegions = [], slitEnds = [];   // lane flatopts
     function warn(w) { if (w && warnings.indexOf(w) < 0) warnings.push(w); }
+    var meshIn = mesh;   // (lane stepin2) the part's own mesh, for ibMetalCheck
     mesh = planeFaces(mesh);
     var best = null;
     mesh.faces.forEach(function (face, i) {
@@ -2333,6 +2334,11 @@
             lo = Math.min(lo, q.th); hi = Math.max(hi, q.th);
             return q.r >= rmin && q.r <= rmax && q.th >= -atol && q.th <= A + atol;
           });
+          // (lane stepin2) a facet carrying this surface's own cylinder record IS the surface, however thin or tilted
+          // (an imported bend round a hole: OpenCascade's or the STEP reader's triangles between the hole's curve and
+          // the bend's sides; dropping the slivers made gaps that swallowed the hole)
+          var ps = p.surf && p.surf.s;
+          if (on && ps && ps.t === 'cyl' && Math.abs(ps.r - Rs) <= rtol && Math.abs(Math.abs(dot(norm(ps.d), ax)) - 1) < 1e-6) return true;
           if (!on || !(hi - lo > 1e-4)) return false;   // (a sliver of the sheet along the edge line is no facet)
           var d = sub(scale(cen, 1 / p.vertices.length), C), rad = sub(d, scale(ax, dot(d, ax))), rl = Math.hypot(rad[0], rad[1], rad[2]);
           return rl > 0 && Math.abs(dot(fc.normal, rad)) > 0.9 * rl;
@@ -2628,7 +2634,16 @@
         etchStrips.push({ fi: fi, BA: BA, Rt: Rt, Ro: trackedInner ? fi.R + T : fi.R, startMap: map, wallMap: wallMap, A2: A2, B2: B2, o2: o2 });   // lane DP
         var wIdx = -1;
         // (a rolled hem is all bend: no wall after it)
-        if (fi.L > 1e-9) mesh.faces.forEach(function (fc, i) { if (wIdx < 0 && dot(fc.normal, wn) > 0.999 && Math.abs(dot(fc.normal, Pmid) - fc.w) < 1e-3) wIdx = i; });
+        // (lane stepin2) a facet of a curved face (polygon.surf: the bend's own cylinder, finely tessellated in an
+        // imported file: OpenCascade's mitred tray has facets 1° from the wall at the wall's start line) is never the
+        // wall; it is taken only when no plane matches (an imported mesh has no `face` ids, so planeFaces does not
+        // put the curved facets last). Was: the wall was that sliver and the flat lost every wall, silently.
+        var wCurved = -1;
+        if (fi.L > 1e-9) mesh.faces.forEach(function (fc, i) {
+          if (wIdx >= 0 || !(dot(fc.normal, wn) > 0.999 && Math.abs(dot(fc.normal, Pmid) - fc.w) < 1e-3)) return;
+          if ((fc.polys || []).some(function (p) { return !!p.surf; })) { if (wCurved < 0) wCurved = i; } else wIdx = i;
+        });
+        if (wIdx < 0) wIdx = wCurved;
         if (wIdx < 0) {
           if (fi.L > 1e-9) regions.push([[corner(eA, BA - eps, eA.ext - eA.slope * eps), corner(eB, BA - eps, eB.ext - eB.slope * eps),
             corner(eB, BA + fi.L, eB.ext + eB.slope * fi.L), corner(eA, BA + fi.L, eA.ext + eA.slope * fi.L)]]);
@@ -2735,6 +2750,7 @@
     Object.keys(kUsed).forEach(function (k) {
       if (+k > 0.5 + 1e-9 || +k < 0) warn('K-factor ' + fmtN(+k) + ' is outside 0–0.5: the neutral axis would lie outside the sheet. If ' + fmtN(+k) + ' is a shop "material in bend" constant (BA = ' + fmtN(+k) + '·T + 1.571·R at 90°), the K-factor is ' + fmtN(+k) + ' / 1.5708 = ' + fmtN(Math.round(+k / (Math.PI / 2) * 1000) / 1000) + '.');
     });
+    if (isInsertBends(base) && !trace && !openUnfold) ibMetalCheck(meshIn, loops, bends, T, model.units, warn);   // lane stepin2
     var outSheet = Object.assign({}, sheet, { kFactor: sheetKFactor(sheet) });
     var etch = flatEtch(model, build, faceRecs, T, warn, etchStrips);
     crossBreakFlat(model, build, faceRecs, T, warn, etch.items);   // lane cross-break: its marks ride with the etch items
@@ -6029,6 +6045,25 @@
   // Insert Bends runs on the bend edges only.
   var IB_RELIEFS = ['rect', 'none'];
   function isInsertBends(f) { return !!f && (f.type === 'insertBends' || f.type === 'convertSM') && !!f.fixedFace; }
+  // lane stepin2: a flat must never drop metal silently. An Insert Bends part (often a customer's STEP) is the case where
+  // a face the unfold could not reach is lost without any other sign, so its blank is weighed against the part: the
+  // part's volume / T, less each bend's metal (A·(R + T/2)·len) plus its strip (BA·len), is the net area the blank should
+  // have. More than 1 % short gives a warning naming the shortfall (Flatten / the DXF / the drawing's flat view show it).
+  function ibMetalCheck(mesh, loops, bends, T, units, warn) {
+    if (!K.massProps || !(T > 0)) return;
+    var v;
+    try { v = Math.abs(K.massProps(mesh).volume); } catch (e) { return; }
+    var want = v / T, got = 0;
+    bends.forEach(function (b) {
+      var l = Math.hypot(b.b[0] - b.a[0], b.b[1] - b.a[1]), A = b.angle * Math.PI / 180;
+      if (b.ba != null && isFinite(l)) want += l * (b.ba - A * (b.R + T / 2));
+    });
+    loops.forEach(function (l, i) { var a = Math.abs(signedArea(l)); got += i ? -a : a; });
+    if (!(want > 0) || got >= want * 0.99) return;
+    var u = units === 'mm' ? ' mm²' : ' in²';
+    warn('Flat pattern: the blank holds ' + fmtN(Math.round((1 - got / want) * 1000) / 10) + ' % less metal than the part (' + fmtN(+(want - got).toPrecision(4)) + u +
+      ' short): a face of the part was not laid flat. Do not cut this blank; check the fixed face and the bends Insert Bends found.');
+  }
   // flatPattern's plane for a part made sheet metal by Insert Bends / Convert to Sheet Metal (the sheetBase feature):
   // on the fixed face, n its outward normal, x the world axis least along n (so a box's flat lies square); else null
   function ibFlatPlane(base, mesh, model) {
@@ -6195,14 +6230,16 @@
         if (!(s1 - s0 > 1e-6)) return;
         var R = a.r, RT = R + T, A = a.A, C0 = a.o, d = a.d, n1 = ia, n2 = ib, t1 = cross(d, n1), t2 = cross(d, n2), sm = (s0 + s1) / 2;
         // metal through the bend and on into both walls (tangent, T thick), air on both sides of it
-        var at = function (n, rr, t, dt, s) { return add(add(add(C0, scale(d, s)), scale(n, rr)), scale(t, dt)); }, ok = true, w = Math.min(T, 0.25 * RT);
-        [0.25, 0.5, 0.75].forEach(function (fr) {
+        var at = function (n, rr, t, dt, s) { return add(add(add(C0, scale(d, s)), scale(n, rr)), scale(t, dt)); }, ok = true, w = Math.min(T, 0.25 * RT), metal = 0;
+        // (lane stepin2) air on both sides everywhere, metal through the bend and both walls at some of the stations
+        // (was all of .25 / .5 / .75: a hole or slot through the bend at a station hid the bend)
+        [0.25, 0.5, 0.75, 0.375, 0.625].forEach(function (fr) {
           var s = s0 + (s1 - s0) * fr, nm = e(a, a.th0 + A / 2);
-          ok = ok && inside(at(nm, R + T / 2, t1, 0, s)) && !inside(at(nm, R - a.sag - dl, t1, 0, s)) && !inside(at(nm, RT + dl, t1, 0, s)) &&
-            inside(at(n1, R + T / 2, t1, -w, s)) && !inside(at(n1, R - dl, t1, -w, s)) && !inside(at(n1, RT + dl, t1, -w, s)) &&
-            inside(at(n2, R + T / 2, t2, w, s)) && !inside(at(n2, R - dl, t2, w, s)) && !inside(at(n2, RT + dl, t2, w, s));
+          ok = ok && !inside(at(nm, R - a.sag - dl, t1, 0, s)) && !inside(at(nm, RT + dl, t1, 0, s)) &&
+            !inside(at(n1, R - dl, t1, -w, s)) && !inside(at(n1, RT + dl, t1, -w, s)) && !inside(at(n2, R - dl, t2, w, s)) && !inside(at(n2, RT + dl, t2, w, s));
+          if (inside(at(nm, R + T / 2, t1, 0, s)) && inside(at(n1, R + T / 2, t1, -w, s)) && inside(at(n2, R + T / 2, t2, w, s))) metal++;
         });
-        if (!ok) return;
+        if (!ok || !metal) return;
         var i1 = wallFace(n1, dot(n1, C0) + RT), i2 = wallFace(n2, dot(n2, C0) + RT);
         if (i1 < 0 || i2 < 0) return;
         var faces = {}, rset = [R, RT];
