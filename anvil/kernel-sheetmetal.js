@@ -4110,8 +4110,10 @@
   // the end bends' start line between them), A's wall (x ≥ BA_A, y ≤ B2's start), B1's strip and wall (x ≤ 0, y ≥ 0)
   // and B2's strip and wall (x ≥ BA_A, y ≥ its start): strips by exact radial planes for a rectangle (else wrapped),
   // walls by prisms; the strips' parts ride to the flat as foldCutouts of their records. Types: rect, tear
-  // (tear: the bend zones' square [0, BA_A] × [0, BA_B1], A's stub between the end bends).
-  var CORNER3_TYPES = ['rect', 'tear'];   // a circle wrapped across three bends cracks the BSP (wrapCut): not offered
+  // (tear: the bend zones' square [0, BA_A] × [0, BA_B1], A's stub between the end bends), circular and obround (lane
+  // smflat: centred on the bend lines' crossing or on P, cut normal to the sheet in the flat and folded; each bend's
+  // piece goes in by cornerReliefApply, the bend band out and its metal less the piece back).
+  var CORNER3_TYPES = ['rect', 'tear', 'circular', 'obround'];   // lane smflat: circular / obround rebuild the bends' metal (cornerReliefApply)
   // one bend's part of a relief: poly in the corner frame (clipped to the bend's strip or wall), st: corner (x, y) ->
   // the bend's (s from its start line, t along its line from its origin)
   function crBendCut(bd, poly, st, wall, tools, recs, eps, T) {
@@ -4128,7 +4130,15 @@
         for (var k = 0; k <= nn; k++) { var th = th0 + (th1 - th0) * k / nn; loop.push([rr * Math.sin(th), R - rr * Math.cos(th)]); }
         if (signedArea(loop) < 0) loop.reverse();
         tools.push({ sector: { loop: loop, plane: plane, a: tMin, b: tMax } });
-      } else tools.push({ wrap: { loops: [lp], sec: { A: Ang, R: R, T: T }, BA: BA, plane: plane } });
+      } else {
+        // lane smflat: a wrapped tool across three bends cracks the BSP (Circular: 300 open edges), so the rebuild
+        // takes `direct`: the bend's band [t0, t1] (the piece ± T, inside the record) cut out by exact radial planes
+        // and its metal less the piece put back (wrapRegion, cornerReliefApply), as Fold does. `grow`: where the piece
+        // ends on the bend's own end, the wrapped tool (OpenCascade, the PM preview) runs on past that end face.
+        var te0 = dot(sub(r.a, r.origin), bd.n), te1 = dot(sub(r.b, r.origin), bd.n), tlo = Math.min(te0, te1), thi = Math.max(te0, te1);
+        tools.push({ wrap: { loops: [lp], sec: { A: Ang, R: R, T: T }, BA: BA, plane: plane, grow: { t0: tlo, t1: thi },
+          direct: { t0: Math.max(tlo, tMin - T), t1: Math.min(thi, tMax + T) } } });
+      }
       var ta = dot(sub(r.a, r.origin), bd.n), tb = dot(sub(r.b, r.origin), bd.n), sg = tb >= ta ? 1 : -1;
       recs.push({ kind: 'foldCutouts', feature: bd.id, index: bd.index, cutouts: [lp.map(function (p) { return [p[0], (p[1] - ta) * sg]; })] });
       return;
@@ -4192,9 +4202,44 @@
     lay.tools.forEach(function (t) {
       if (t.prism) solids.push(prism(t.prism.loop, t.prism.plane, t.prism.a, t.prism.b, f.id));
       else if (t.sector) solids.push(prism(t.sector.loop, t.sector.plane, t.sector.a, t.sector.b, f.id));
-      else if (t.wrap) { var w = wrapCut(t.wrap.loops, t.wrap.sec, t.wrap.BA, t.wrap.plane, { shared: f.id }); if (w) solids.push(w); }
+      else if (t.wrap) { var w = wrapCut(t.wrap.loops, t.wrap.sec, t.wrap.BA, t.wrap.plane, { shared: f.id, grow: t.wrap.grow }); if (w) solids.push(w); }
     });
     return solids.length ? unionAll(solids) : null;
+  }
+  // lane smflat: cornerReliefApply(f, model, ctx, body) -> { body, tool } for a relief with `direct` pieces (a 3 Bend
+  // corner's Circular / Obround across a bend), else null (the plain cut tool does). Each such piece's band, when it
+  // holds plain bend metal (body ∩ band = the band's own metal), is cut out whole (bendSector: exact radial planes) and
+  // its metal less the piece is put back (wrapRegion: caps on the chord facets, no boolean through the bend), so the
+  // folded relief is the flat's shape exactly and the solid stays closed; a band that does not hold plain metal (an
+  // earlier cut there) takes the wrapped tool. The face / wall prisms and rectangle sectors are cut as before.
+  function cornerReliefApply(f, model, ctx, body) {
+    if (f.cornerType !== '3bend' || !body) return null;
+    var lay = cornerReliefLayout(f, model, ctx);
+    if (!lay.tools.some(function (t) { return t.wrap && t.wrap.direct; })) return null;
+    if (ctx.flanges) ctx.flanges[f.id] = lay.recs;
+    var T = +sheetParams(model).thickness, cuts = [], sectors = [], metals = [];
+    lay.tools.forEach(function (t) {
+      if (t.prism || t.sector) { var q = t.prism || t.sector; cuts.push(prism(q.loop, q.plane, q.a, q.b, f.id)); return; }
+      var w = t.wrap, d = w.direct;
+      if (d && d.t1 - d.t0 > 1e-9 * Math.max(1, T)) {
+        var sector = bendSector(w.sec, w.plane, d.t0, d.t1), plain = wrapRegion([], w.sec, w.BA, w.plane, d.t0, d.t1, { shared: f.id });
+        var want = plain ? plain.volume() : 0, have = want > 0 ? smBool(body, 'intersect', sector, T).volume() : -1;
+        if (want > 0 && Math.abs(have - want) <= 1e-7 * want) {
+          var metal = wrapRegion(w.loops, w.sec, w.BA, w.plane, d.t0, d.t1, { shared: f.id });
+          sectors.push(sector);
+          if (metal) metals.push(metal);
+          return;
+        }
+      }
+      var wc = wrapCut(w.loops, w.sec, w.BA, w.plane, { shared: f.id, grow: w.grow });
+      if (wc) cuts.push(wc);
+    });
+    var all = cuts.concat(sectors), out = all.length ? smBool(body, 'subtract', all, T) : body;
+    if (metals.length) out = smBool(out, 'union', metals, T);
+    var gone = !sectors.length ? null : metals.length ? smBool(unionAll(sectors), 'subtract', metals, T) : unionAll(sectors);
+    var tool = cuts.length ? unionAll(cuts) : null;
+    if (gone) tool = tool ? tool.union(gone) : gone;
+    return { body: out, tool: tool };
   }
   // Corner-Relief1, Corner-Relief2, …
   function cornerReliefName(model) {
@@ -6686,7 +6731,7 @@
   K.bendVoids = bendVoids; K.bandSlabSpec = bandSlabSpec; K.wrapCut = wrapCut; K.wrapRegion = wrapRegion; K.bendSector = bendSector; K.bendZoneMap = bendZoneMap;
   // Break Corner (lane CP)
   K.buildBreakCorner = buildBreakCorner; K.breakCornerLayout = breakCornerLayout; K.breakCornerCandidates = breakCornerCandidates;
-  K.cornerReliefLayout = cornerReliefLayout; K.buildCornerRelief = buildCornerRelief; K.cornerReliefCandidates = cornerReliefCandidates; K.cornerReliefName = cornerReliefName;   // lane smtrim
+  K.cornerReliefLayout = cornerReliefLayout; K.buildCornerRelief = buildCornerRelief; _.cornerReliefApply = cornerReliefApply; K.cornerReliefCandidates = cornerReliefCandidates; K.cornerReliefName = cornerReliefName;   // lane smtrim
   K.CORNER_RELIEF_TYPES = CORNER_RELIEF_TYPES; K.cornerReliefDefaultSize = cornerReliefDefaultSize; K.CORNER3_TYPES = CORNER3_TYPES;   // lane smcorner-2
   K.weldedCornerLayout = weldedCornerLayout; K.buildWeldedCorner = buildWeldedCorner; K.weldedCornerName = weldedCornerName;   // lane smcorner
   K.breakCornerName = breakCornerName; K.BREAK_CORNER_KINDS = BC_KINDS.slice();
@@ -7272,48 +7317,115 @@
   // loftedBendFlat(f, model, build) -> a flat pattern like Kernel.flatPattern's: the strip developed triangle by
   // triangle; seen from the side the first facet's normal points to; bend lines (Bent) on each diagonal between facets
   // that are not coplanar
-  // lane sweptflange-2: lbHoles(f, model, build, lay, at, outline) -> the holes cut in the facets after the Lofted-Bend
-  // (cuts, holes, Normal Cuts), CW, in the flat: each hole loop of a face on the sheet's +n side, moved onto the facet's
-  // mid-plane along its normal and laid by that facet's rigid map, so it keeps its true shape. A cut that crosses a
-  // bend line or the blank's edge is not laid (a warning in the flat would name it: none yet).
+  // lbHoles(f, model, build, lay, at, outline) -> the holes cut after the Lofted-Bend (cuts, holes, Normal Cuts), CW,
+  // in the flat. Lane smflat: the body is sliced by the mid-surface (the profiles' surface the flat develops): every
+  // body polygon that crosses a facet's mid-plane gives a segment there, clipped to that facet's mid triangle and laid
+  // by the facet's rigid map; the segments chain into loops. A hole across a fold is so developed facet by facet (its
+  // pieces meet on the bend line) and comes out one loop of its true developed shape; a hole in one facet is its
+  // section at mid-thickness (a prism's sections are congruent: the shape the +n face shows). The loop of the sheet's
+  // own edges (the slice of the side walls, kinked by the mitres) and any loop touching it (a notch from the blank's
+  // edge) are not laid: the outline stays the exact development of the profiles.
   function lbHoles(f, model, build, lay, at, outline) {
     var later = false, any = false;
     model.features.forEach(function (q) {
       if (q.id === f.id) { later = true; return; }
       if (later && !q.suppressed && (K.isCut(q, model) || q.type === 'hole')) any = true;
     });
-    if (!any || !build || !build.body || !_.faceOutline || !_.faceLoopsClassified) return [];
-    var T = lay.T, mesh = _.meshFromBody(build.body), out = [];
+    if (!any || !build || !build.body || !build.body.polygons) return [];
+    var T = lay.T, out = [], mn = [Infinity, Infinity], mx = [-Infinity, -Infinity];
+    outline.forEach(function (p) { mn[0] = Math.min(mn[0], p[0]); mn[1] = Math.min(mn[1], p[1]); mx[0] = Math.max(mx[0], p[0]); mx[1] = Math.max(mx[1], p[1]); });
+    var size = Math.hypot(mx[0] - mn[0], mx[1] - mn[1]), tol = 1e-10 * (1 + size), jtol = 1e-7 * (1 + size);
     var facets = lay.tris.map(function (t) {
       var n = triN(t), e1 = norm(sub(t.p[1], t.p[0])), e2 = cross(n, e1), a0 = at[tkey(t.tag[0])], a1 = at[tkey(t.tag[1])];
       var fl = Math.hypot(a1[0] - a0[0], a1[1] - a0[1]), f1 = [(a1[0] - a0[0]) / fl, (a1[1] - a0[1]) / fl];
-      return { t: t, n: n, e1: e1, e2: e2, a0: a0, f1: f1, f2: [-f1[1], f1[0]], w: dot(n, t.p[0]) + T / 2 };
+      var lo = [0, 1, 2].map(function (k) { return Math.min(t.p[0][k], t.p[1][k], t.p[2][k]) - T; }), hi = [0, 1, 2].map(function (k) { return Math.max(t.p[0][k], t.p[1][k], t.p[2][k]) + T; });
+      // the triangle's edges with their inward normals in its plane (the strip's triangles turn counterclockwise about n)
+      var eds = [0, 1, 2].map(function (k) { var P = t.p[k], e = sub(t.p[(k + 1) % 3], P); return { P: P, m: cross(n, e), l: len(e) }; });
+      return { t: t, n: n, e1: e1, e2: e2, a0: a0, f1: f1, f2: [-f1[1], f1[0]], w: dot(n, t.p[0]), lo: lo, hi: hi, eds: eds };
     });
-    function inTri(F, X) {   // barycentric slack of X (on the facet's plane) in its mid triangle
-      var p = F.t.p, v0 = sub(p[1], p[0]), v1 = sub(p[2], p[0]), v2 = sub(X, p[0]);
-      var d00 = dot(v0, v0), d01 = dot(v0, v1), d11 = dot(v1, v1), d20 = dot(v2, v0), d21 = dot(v2, v1), den = d00 * d11 - d01 * d01;
-      var b = (d11 * d20 - d01 * d21) / den, c = (d00 * d21 - d01 * d20) / den;
-      return Math.min(b, c, 1 - b - c);
+    function lay2(F, X) {
+      var Y = sub(X, F.t.p[0]), u = dot(Y, F.e1), w = dot(Y, F.e2);
+      return [F.a0[0] + F.f1[0] * u + F.f2[0] * w, F.a0[1] + F.f1[1] * u + F.f2[1] * w];
     }
-    mesh.faces.forEach(function (fc, fi) {
-      var cands = facets.filter(function (F) { return dot(F.n, fc.normal) > 1 - 1e-9 && Math.abs(fc.w - F.w) < 1e-6 * (1 + Math.abs(F.w)); });
-      if (!cands.length) return;
-      var o = _.faceOutline(mesh, fi);
-      if (!o) return;
-      _.faceLoopsClassified(o).holes.forEach(function (l) {
-        var P3 = l.map(function (q) { return K.to3D(o.plane, q[0], q[1]); }), c = [0, 0, 0];
-        P3.forEach(function (X) { c = add(c, scale(X, 1 / P3.length)); });
-        var best = null, bs = -Infinity;
-        cands.forEach(function (F) { var sl = inTri(F, sub(c, scale(F.n, T / 2))); if (sl > bs) { bs = sl; best = F; } });
-        if (!best || bs < -1e-9) return;
-        var m = P3.map(function (X) {
-          var Y = sub(sub(X, scale(best.n, T / 2)), best.t.p[0]), u = dot(Y, best.e1), w = dot(Y, best.e2);
-          return [best.a0[0] + best.f1[0] * u + best.f2[0] * w, best.a0[1] + best.f1[1] * u + best.f2[1] * w];
-        });
-        if (!m.every(function (q) { return _.pointInPoly(q, outline); })) return;
-        if (K.signedArea(m) > 0) m.reverse();
-        out.push(m);
+    // a polygon edge's crossing of a plane, computed from the same end whichever polygon holds the edge
+    function cross3(a, b, da, db) {
+      if (a[0] > b[0] || (a[0] === b[0] && (a[1] > b[1] || (a[1] === b[1] && a[2] > b[2])))) { var tp = a; a = b; b = tp; var td = da; da = db; db = td; }
+      var u = da / (da - db);
+      return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];
+    }
+    var polys = build.body.polygons.map(function (pg) {
+      var vs = pg.vertices.map(function (v) { return [v.pos.x, v.pos.y, v.pos.z]; }), lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      vs.forEach(function (X) { for (var k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], X[k]); hi[k] = Math.max(hi[k], X[k]); } });
+      return { vs: vs, lo: lo, hi: hi };
+    });
+    var segs = [];
+    facets.forEach(function (F) {
+      polys.forEach(function (pg) {
+        for (var k = 0; k < 3; k++) if (pg.hi[k] < F.lo[k] || pg.lo[k] > F.hi[k]) return;
+        var vs = pg.vs, d = vs.map(function (X) { return dot(F.n, X) - F.w; }), pos = false, neg = false, i;
+        d.forEach(function (x) { if (x > tol) pos = true; else if (x < -tol) neg = true; });
+        if (!pos || !neg) return;
+        var pts = [];
+        for (i = 0; i < vs.length; i++) {
+          var j = (i + 1) % vs.length;
+          if (Math.abs(d[i]) <= tol) pts.push(vs[i]);
+          else if ((d[i] > tol && d[j] < -tol) || (d[i] < -tol && d[j] > tol)) pts.push(cross3(vs[i], vs[j], d[i], d[j]));
+        }
+        if (pts.length < 2) return;
+        var P = pts[0], Q = pts[1];
+        if (pts.length > 2) { var far = 0; pts.forEach(function (X) { pts.forEach(function (Y) { var dd = len(sub(X, Y)); if (dd > far) { far = dd; P = X; Q = Y; } }); }); }
+        var D = sub(Q, P), t0 = 0, t1 = 1;
+        for (i = 0; i < 3; i++) {
+          var e = F.eds[i], fP = dot(e.m, sub(P, e.P)), fD = dot(e.m, D), te = tol * e.l;
+          if (Math.abs(fD) <= 1e-15 * e.l * (1 + len(D))) { if (fP < -te) return; continue; }
+          var tt = -fP / fD;
+          if (fD > 0) t0 = Math.max(t0, tt); else t1 = Math.min(t1, tt);
+        }
+        if (!(t1 - t0 > 1e-12)) return;
+        var A2 = lay2(F, add(P, scale(D, t0))), B2 = lay2(F, add(P, scale(D, t1)));
+        if (Math.hypot(B2[0] - A2[0], B2[1] - A2[1]) > jtol) segs.push([A2, B2]);
       });
+    });
+    // chain the segments end to end (either way round) into closed loops
+    function near2(p, q) { return Math.abs(p[0] - q[0]) <= jtol && Math.abs(p[1] - q[1]) <= jtol; }
+    var cell = 4 * jtol, grid = {}, used = segs.map(function () { return false; });
+    function gkey(p, dx, dy) { return (Math.floor(p[0] / cell) + dx) + ',' + (Math.floor(p[1] / cell) + dy); }
+    segs.forEach(function (sg, i) { [0, 1].forEach(function (e) { var kk = gkey(sg[e], 0, 0); (grid[kk] = grid[kk] || []).push({ i: i, e: e }); }); });
+    function next(p) {
+      for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) {
+        var l = grid[gkey(p, dx, dy)];
+        if (l) for (var q = 0; q < l.length; q++) if (!used[l[q].i] && near2(segs[l[q].i][l[q].e], p)) return l[q];
+      }
+      return null;
+    }
+    var loops = [];
+    segs.forEach(function (sg, i) {
+      if (used[i]) return;
+      used[i] = true;
+      var loop = [sg[0], sg[1]], guard = 0;
+      while (guard++ < segs.length) {
+        var nx = next(loop[loop.length - 1]);
+        if (!nx) break;
+        used[nx.i] = true;
+        loop.push(segs[nx.i][1 - nx.e]);
+      }
+      if (loop.length > 3 && near2(loop[0], loop[loop.length - 1])) { loop.pop(); loops.push(loop); }
+    });
+    var oA = Math.abs(K.signedArea(outline));
+    loops.forEach(function (m) {
+      // drop the repeated and the collinear points (a straight wall crossing several facets)
+      var c = [];
+      m.forEach(function (p) { if (!c.length || !near2(c[c.length - 1], p)) c.push(p); });
+      if (c.length > 1 && near2(c[0], c[c.length - 1])) c.pop();
+      c = c.filter(function (p, k) {
+        var a = c[(k + c.length - 1) % c.length], b = c[(k + 1) % c.length], ab = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        return !(ab > 0) || Math.abs((p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])) > 1e-9 * ab;
+      });
+      var A = K.signedArea(c);
+      if (c.length < 3 || !(Math.abs(A) > 1e-12 * (1 + oA)) || Math.abs(A) > 0.5 * oA) return;
+      if (!c.every(function (q) { return _.pointInPoly(q, outline); })) return;
+      if (A > 0) c.reverse();
+      out.push(c);
     });
     return out;
   }
@@ -7573,7 +7685,7 @@
         var F = lay.frames[k];
         if (Math.abs(dot(sub(back, F.origin), norm(F.n))) > 1e-6 * (1 + ell)) continue;
         var q = to2D(F, back), dq = [q[0] - P0[0], q[1] - P0[1]], t = dq[0] * d2[0] + dq[1] * d2[1], off = s * (dq[0] * l2[0] + dq[1] * l2[1]);
-        if (t < -tol || t > ell + tol) continue;
+        if (t < -lay.T || t > ell + lay.T) continue;   // lane smflat: a flange's weld strip may overhang a curved side by a hair
         var r = [(dp.Q1[0] - dp.Q0[0]) / ell, (dp.Q1[1] - dp.Q0[1]) / ell], Y = [dp.Q0[0] + r[0] * t, dp.Q0[1] + r[1] * t];
         if (dp.kind === 'line') Y = [Y[0] + dp.v[0] * par, Y[1] + dp.v[1] * par];
         else if (dp.kind === 'cyl') Y = [Y[0] + dp.v[0] * dp.rN * par, Y[1] + dp.v[1] * dp.rN * par];
@@ -7588,6 +7700,55 @@
       }
       return null;
     };
+  }
+  // lane smflat: sfFlangeMap(rec, baseMap, sheet, T, units, warnings) -> { map, bend } or null: an Edge Flange record
+  // (kind 'edge') on the Swept Flange laid into its development. The record's edge line maps by baseMap (a line the
+  // bend starts on past the sheet's end, Bend Outside and the like, is carried out from a point T + R back on the
+  // sheet); the strip runs BA (bendCalc) out from it across the line, the wall on past it. map(X) is sfPointMap's
+  // { at, off, t, m } for a point of the bend (radius R … R + T about its axis, angle 0 … A: s = BA·θ / A) or of the
+  // wall (its true length past the bend), with off and m measured from the surface that carries the profile line's
+  // face on (the bend's inside when that face looks toward the bend's axis); else null.
+  function sfFlangeMap(rec, baseMap, sheet, T, units, warnings) {
+    if (!rec || rec.kind !== 'edge' || !rec.a || !rec.b || !rec.o || !rec.u || !rec.origin || !(rec.angle > 1e-9)) return null;
+    var e3 = sub(rec.b, rec.a), ln = len(e3);
+    if (!(ln > 1e-9)) return null;
+    e3 = scale(e3, 1 / ln);
+    // the edge line in the flat: its middle and its direction (two points either side), all on the sheet
+    var back = 0, M = rec.mid, rm = baseMap(M);
+    if (!rm) { back = +rec.R + 2 * T; M = sub(rec.mid, scale(rec.o, back)); rm = baseMap(M); }
+    var dl = 0.25 * ln, rp = baseMap(add(M, scale(e3, dl))), rq = baseMap(sub(M, scale(e3, dl))), ri = baseMap(sub(M, scale(rec.o, T)));
+    if (!rm || !rp || !rq || !ri) return null;
+    var d2 = [rp.at[0] - rq.at[0], rp.at[1] - rq.at[1]], l2 = Math.hypot(d2[0], d2[1]);
+    if (Math.abs(l2 - 2 * dl) > 1e-6 * (1 + ln)) return null;   // the edge line is not laid at its true length
+    var e2 = [d2[0] / l2, d2[1] / l2], o2 = [-e2[1], e2[0]];
+    if ((ri.at[0] - rm.at[0]) * o2[0] + (ri.at[1] - rm.at[1]) * o2[1] > 0) o2 = [-o2[0], -o2[1]];
+    var tm = dot(sub(rec.mid, rec.a), e3), A2 = [rm.at[0] + o2[0] * back - e2[0] * tm, rm.at[1] + o2[1] * back - e2[1] * tm];
+    var R = +rec.R, A = +rec.angle, L = +rec.L || 0, sA = Math.sin(A), cA = Math.cos(A);
+    var bc = K.bendCalc(sheet, A, R, T, rec.ba || null), BA = bc.BA;
+    if (bc.warning && warnings.indexOf(bc.warning) < 0) warnings.push(bc.warning);
+    // the flange's section is built in the frame (o, u) at its origin (u is the picked face's normal: on a curved sheet
+    // a facet's, a hair off square to o); points are read back in that frame: x along o, y along u, centre (0, R)
+    var oo = dot(rec.o, rec.o), ou = dot(rec.o, rec.u), uu = dot(rec.u, rec.u), det = oo * uu - ou * ou;
+    if (!(Math.abs(det) > 1e-12)) return null;
+    function sec(X) { var d = sub(X, rec.origin), p = dot(d, rec.o), q = dot(d, rec.u); return [(uu * p - ou * q) / det, (oo * q - ou * p) / det]; }
+    function v3(x, y) { return add(scale(rec.o, x), scale(rec.u, y)); }
+    var inner = dot(rec.u, ri.m) < 0, Rt = inner ? R : R + T;
+    var Pw = [Rt * sA, R - Rt * cA], tw = [cA, sA], wn = inner ? [-sA, cA] : [sA, -cA], mW = norm(v3(-wn[0], -wn[1]));
+    var tolT = 1e-6 * (1 + ln), tolR = 0.25 * T;
+    function at(tau, d) { return [A2[0] + e2[0] * tau + o2[0] * d, A2[1] + e2[1] * tau + o2[1] * d]; }
+    function map(X) {
+      var tau = dot(sub(X, rec.a), e3);
+      if (tau < -tolT || tau > ln + tolT) return null;
+      var q = sec(X), dx = q[0] - Pw[0], dy = q[1] - Pw[1], w = dx * tw[0] + dy * tw[1], off = -(dx * wn[0] + dy * wn[1]);
+      if (w >= -tolT && w <= L + tolT && off >= -tolT && off <= T + tolT) return { at: at(tau, BA + w), off: off, t: tau, m: mW };
+      var x = q[0], y = q[1] - R, r = Math.hypot(x, y), th = Math.atan2(x, -y);
+      if (r < R - tolR || r > R + T + tolR || th < -1e-9 || th > A + 1e-9) return null;
+      var rad = r > 0 ? norm(v3(x / r, y / r)) : rec.o;
+      return { at: at(tau, BA * th / A), off: inner ? r - R : R + T - r, t: tau, m: inner ? rad : scale(rad, -1) };
+    }
+    var bend = { a: at(0, BA / 2), b: at(ln, BA / 2), up: inner, angle: A * 180 / Math.PI, R: R, ba: BA, bd: bc.BD, method: bc.type, source: bc.source };
+    bend.label = K.bendNoteText(bend, units);
+    return { map: map, bend: bend };
   }
   // sfBodyLoops(body, map, T) -> the loops (outer first, CCW; holes CW) of the body's faces on the profile line's side,
   // mapped into the development, or null
@@ -7718,7 +7879,7 @@
     }
     // lane sweptflange-2: cuts, holes and Normal Cuts after the Swept Flange: the sheet's face on the profile line, as
     // the body has it, mapped piece by piece into the development (planes rigidly, cylinders and cones by their angle
-    // on the neutral surface), its outline merged; Edge Flanges and the like on it are not unfolded (a warning)
+    // on the neutral surface), its outline merged; hems, Miter Flanges, jogs and the like on it are not unfolded (a warning)
     var later = [], unfolded = [], holesLoops = null;
     var afterF = false;
     model.features.forEach(function (q) {
@@ -7727,8 +7888,22 @@
       if (['flange', 'jog', 'hem', 'sketchedBend', 'closedCorner', 'unfold', 'fold'].indexOf(q.type) >= 0) later.push(q);
       else if (K.isCut(q, model) || ['extrude', 'revolve', 'sweep', 'loft', 'hole', 'vent', 'rip', 'breakCorner', 'cornerRelief'].indexOf(q.type) >= 0) unfolded.push(q);
     });
-    if (unfolded.length && build && build.body) {
-      var map = hasArc ? sfPointMap(lay, devPieces, ob, s) : sfPointMap(lay, null, ob, s, W, bendAt);
+    // lane smflat: Edge Flanges on a Swept Flange along an arc: each record's bend and wall are laid onto the development
+    // from its edge line (sfFlangeMap), so the body's face on the profile line's side (cuts across those bends and
+    // walls included) maps into the flat through them; the flange's bend line joins the flat's
+    var baseMap = hasArc && build && build.body ? sfPointMap(lay, devPieces, ob, s) : null, flMaps = [];
+    if (baseMap && build.flanges) later = later.filter(function (q) {
+      if (q.type !== 'flange' || q.hem || q.miterFlange || (build.errors && build.errors[q.id])) return true;
+      var recs = build.flanges[q.id] || [], got = [];
+      if (!recs.length || !recs.every(function (rc) { var g = sfFlangeMap(rc, baseMap, sheet, T, units, warnings); if (g) got.push(g); return !!g; })) return true;
+      got.forEach(function (g, j) { g.bend.id = q.id + ':' + j; flMaps.push(g); bends.push(g.bend); });
+      return false;
+    });
+    if ((unfolded.length || flMaps.length) && build && build.body) {
+      var map = !hasArc ? sfPointMap(lay, null, ob, s, W, bendAt) : !flMaps.length ? baseMap : function (X) {
+        for (var k = 0; k < flMaps.length; k++) { var r = flMaps[k].map(X); if (r) return r; }
+        return baseMap(X);
+      };
       var fl = map && sfBodyLoops(build.body, map, T);
       if (fl && fl.length) { loopPts = fl[0]; holesLoops = fl.slice(1); }
       else warnings.push('Swept Flange: the cuts after it could not be laid into the flat; the blank is shown without them.');

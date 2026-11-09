@@ -83,15 +83,16 @@
       });
     });
 
-    test('rfJV: one corner only, errors (no 3 Bend corner, far pick, a circle refused) and round trip', function () {
+    test('rfJV: one corner only, errors (no 3 Bend corner, far pick, Constant Width refused) and round trip', function () {
       var a = plain('inside', false), at = K.cornerReliefCandidates(a.model, a.build, '3bend').map(function (c) { return c.at; });
       var one = make(part('inside', false) + cr([at[0]], 0.25, { cornerType: '3bend' }));
       exact(one, 'one corner');
       near(a.mp.volume - one.mp.volume, T * relief(0.25, true, STUB.inside), 1e-12, 'one corner: removed');
       assert(/no corner where three bends meet/.test(errOf(make(U + fl([1.5, 0, 0], { position: 'inside', lengthRef: 'outer', reverse: true }) + cr([[0.06, 0, 0.12]], 0.25, { cornerType: '3bend' })))), 'no 3 Bend corner');
       assert(/no corner of three bends near/.test(errOf(make(part('inside', false) + cr([[1.5, 0, 3]], 0.25, { cornerType: '3bend' })))), 'far pick');
-      var bad = ''; try { make(part('inside', false) + cr(at, 0.25, { cornerType: '3bend', reliefType: 'circular' })); } catch (e) { bad = e.message; }
-      assert(/rect, tear on a 3 Bend corner/.test(bad), 'circular refused on a 3 Bend corner: ' + bad);
+      // lane smflat (rfKG): Circular and Obround are built on a 3 Bend corner now; Constant Width is still refused
+      var bad = ''; try { make(part('inside', false) + cr(at, 0.25, { cornerType: '3bend', reliefType: 'constantWidth' })); } catch (e) { bad = e.message; }
+      assert(/rect, tear, circular, obround on a 3 Bend corner/.test(bad), 'constant width refused on a 3 Bend corner: ' + bad);
       var r = make(part('inside', false) + cr(at, 0.2, { cornerType: '3bend', centeredOnBend: false }));
       var f = r.model.features[r.model.features.length - 1];
       assert(f.type === 'cornerRelief' && f.cornerType === '3bend' && f.reliefType === 'rect' && f.size === 0.2 && f.centeredOnBend === false, 'feature JSON: ' + JSON.stringify(f));

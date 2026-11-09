@@ -39,7 +39,7 @@
       rfJVRadio('3bend').click(); await wait(30);
       assert(rfJVRadio('3bend').checked && UI.pmSpec().values.cornerType === '3bend', '3 Bend corner chosen');
       var sel = pmField('Relief type');
-      assert(sel && Array.prototype.map.call(sel.options, function (o) { return o.textContent; }).join() === 'Rectangular,Tear', '3 Bend relief types: ' + (sel && Array.prototype.map.call(sel.options, function (o) { return o.textContent; }).join()));
+      assert(sel && Array.prototype.map.call(sel.options, function (o) { return o.textContent; }).join() === 'Rectangular,Circular,Tear,Obround', '3 Bend relief types: ' + (sel && Array.prototype.map.call(sel.options, function (o) { return o.textContent; }).join()));
       clickPmButton('Collect all corners'); await wait(20);
       assert(UI.pmSpec().values.corners.length === 2, 'two 3 Bend corners collected: ' + UI.pmSpec().values.corners.length);
       setInput(pmField('Size'), 0.25); await wait(20);

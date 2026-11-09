@@ -1047,6 +1047,13 @@
             }
             // lane DI: a Tab (Base Flange/Tab on an existing sheet) is extruded T into the sheet face it is sketched on
             if (f.type === 'extrude' && f.tab && !f.cut) { var tbs = ctx.sketches[f.sketch] || findFeature(model, f.sketch); if (tbs) f = _.tabFeature(f, model, resolvePlane(tbs.plane, model, ctx.planes), ctx.body); }
+            // lane smflat: a 3 Bend corner's Circular / Obround relief cuts each bend band out and puts its metal back
+            // less the relief (kernel-sheetmetal.js cornerReliefApply: a wrapped tool across three bends cracks the BSP)
+            if (f.type === 'cornerRelief' && f.cornerType === '3bend' && _.cornerReliefApply && ctx.bodies.length) {
+              var crp = (f.corners || [])[0], crk = Math.max(0, bodyNearPoint(ctx.bodies, (crp && (Array.isArray(crp) ? crp : crp.at)) || [0, 0, 0]));
+              var cra = _.cornerReliefApply(f, model, ctx, ctx.bodies[crk]);
+              if (cra) { putBody(crk, cra.body); ctx.tools[f.id] = cra.tool; break; }
+            }
             var cut = isCut(f, model);
             // rfFS: a Cut-Extrude with no direction (a script cut without `reverse` / `dir`) goes into the material,
             // as SolidWorks' does: +n first; when that removes nothing and −n does, −n. The direction found is
