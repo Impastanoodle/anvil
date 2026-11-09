@@ -1519,25 +1519,30 @@ var Exchange = (function () {
     out.push(U[end]);
     return out;
   }
-  function bsCurvePoints(deg, poles, U) {
+  // W (lane importbend): the weights of a rational curve / surface (RATIONAL_B_SPLINE_CURVE / _SURFACE), else null
+  function bsCurvePoints(deg, poles, U, W) {
     return bsParams(U, deg).map(function (t) {
-      var b = bsBasis(deg, U, t), p = [0, 0, 0];
-      for (var k = 0; k <= deg; k++) { var q = poles[b.s - deg + k]; p[0] += b.N[k] * q[0]; p[1] += b.N[k] * q[1]; p[2] += b.N[k] * q[2]; }
-      return p;
+      var b = bsBasis(deg, U, t), p = [0, 0, 0], ws = 0;
+      for (var k = 0; k <= deg; k++) {
+        var q = poles[b.s - deg + k], c = W ? b.N[k] * W[b.s - deg + k] : b.N[k];
+        p[0] += c * q[0]; p[1] += c * q[1]; p[2] += c * q[2]; ws += c;
+      }
+      return W ? scale(p, 1 / ws) : p;
     });
   }
   // G[i][j]: i along u (the first index of the poles), j along v
-  function bsSurfaceGrid(du, dv, poles, U, V) {
+  function bsSurfaceGrid(du, dv, poles, U, V, W) {
     var bv = bsParams(V, dv).map(function (t) { return bsBasis(dv, V, t); });
     return bsParams(U, du).map(function (t) {
       var bu = bsBasis(du, U, t);
       return bv.map(function (b) {
-        var p = [0, 0, 0];
+        var p = [0, 0, 0], ws = 0;
         for (var i = 0; i <= du; i++) for (var j = 0; j <= dv; j++) {
           var q = poles[bu.s - du + i][b.s - dv + j], w = bu.N[i] * b.N[j];
-          p[0] += w * q[0]; p[1] += w * q[1]; p[2] += w * q[2];
+          if (W) w *= W[bu.s - du + i][b.s - dv + j];
+          p[0] += w * q[0]; p[1] += w * q[1]; p[2] += w * q[2]; ws += w;
         }
-        return p;
+        return W ? scale(p, 1 / ws) : p;
       });
     });
   }
@@ -1568,6 +1573,76 @@ var Exchange = (function () {
     }
   }
   function columnOf(G, j) { return G.map(function (c) { return c[j]; }); }
+  // lane importbend: bsSurfClassify(G) -> { plane: n } | { cyl: { t: 'cyl', o, d, r }, flip } | null for a grid of
+  // surface points G[i][j] (bsSurfaceGrid): all on one plane (n along the surface's dPdu x dPdv), or straight along one
+  // parameter with every point at r from one axis (flip: dPdu x dPdv points at the axis). Within 1e-9 of the size, so
+  // only a surface that IS a plane or a cylinder (rational for the cylinder) is read as one.
+  function bsSurfClassify(G) {
+    var nu = G.length - 1, nv = G[0].length - 1, all = [], a = G[0][0], ext = 0;
+    G.forEach(function (c) { c.forEach(function (p) { all.push(p); ext = Math.max(ext, len(sub(p, a))); }); });
+    if (!(ext > 0) || nu < 1 || nv < 1) return null;
+    var tol = 1e-9 * Math.max(ext, len(a), 1), im = nu >> 1, jm = nv >> 1;
+    var sn = cross(sub(G[Math.min(nu, im + 1)][jm], G[Math.max(0, im - 1)][jm]), sub(G[im][Math.min(nv, jm + 1)], G[im][Math.max(0, jm - 1)]));
+    var far = a, fl = 0, best = null, bl = 0;
+    all.forEach(function (p) { var l = len(sub(p, a)); if (l > fl) { fl = l; far = p; } });
+    all.forEach(function (p) { var x = cross(sub(far, a), sub(p, a)), l = len(x); if (l > bl) { bl = l; best = x; } });
+    if (best && bl > 1e-12 * fl * fl) {
+      var pn = norm(best);
+      if (all.every(function (p) { return Math.abs(dot(sub(p, a), pn)) <= tol; })) { pn = dot(pn, sn) < 0 ? scale(pn, -1) : pn; return { plane: pn, w: dot(pn, a), tol: tol }; }
+    }
+    for (var dir = 0; dir < 2; dir++) {
+      var lines = dir === 0 ? G : G[0].map(function (q, j) { return columnOf(G, j); }), d = null, ok = true;
+      lines.forEach(function (L) {
+        if (!ok) return;
+        var ch = sub(L[L.length - 1], L[0]), lc = len(ch);
+        if (!(lc > 1e-6 * ext)) { ok = false; return; }
+        var u = scale(ch, 1 / lc);
+        if (!L.every(function (p) { var v = sub(p, L[0]); return len(sub(v, scale(u, dot(v, u)))) <= tol; })) { ok = false; return; }
+        if (!d) d = u; else if (Math.abs(dot(d, u)) < 1 - 1e-12) ok = false;
+      });
+      if (!ok || !d) continue;
+      var s0 = lines[0][0], sec = lines.map(function (L) { var p = L[0]; return sub(p, scale(d, dot(sub(p, s0), d))); });
+      var f = bsFitCurve(sec), C = f && f.circle;
+      if (!C || Math.abs(Math.abs(dot(C.n, d)) - 1) > 1e-9) continue;
+      if (!all.every(function (p) { var v = sub(p, C.c); return Math.abs(len(sub(v, scale(d, dot(v, d)))) - C.r) <= tol; })) continue;
+      var mv = sub(G[im][jm], C.c), radial = sub(mv, scale(d, dot(mv, d)));
+      return { cyl: { t: 'cyl', o: C.c, d: d, r: C.r }, flip: dot(sn, radial) < 0 };
+    }
+    return null;
+  }
+  // lane importbend: the samples of a B-spline edge's curve cut to its vertices p1 .. p2 (a curve may run past them, a
+  // closed one start elsewhere); the end samples become the vertices
+  function bsTrim(raw, p1, p2) {
+    var n = raw.length;
+    function near(p) { var k = 0, d = Infinity; raw.forEach(function (q, i) { var e = len(sub(q, p)); if (e < d) { d = e; k = i; } }); return k; }
+    var closed = len(sub(raw[0], raw[n - 1])) <= 1e-9 * (1 + len(raw[0])), i1 = near(p1), i2 = near(p2), out = raw;
+    if (closed && len(sub(p1, p2)) <= 1e-9 * (1 + len(p1))) { if (i1 !== 0 && i1 !== n - 1) out = raw.slice(i1).concat(raw.slice(1, i1 + 1)); }
+    else if (i1 === n - 1 && closed) out = raw.slice(0, i2 + 1);   // the closed curve's start is p1
+    else if (i2 === 0 && closed) out = raw.slice(i1);
+    else if (i1 < i2) out = raw.slice(i1, i2 + 1);
+    else if (closed && i1 > i2) out = raw.slice(i1).concat(raw.slice(1, i2 + 1));
+    out = out.slice();
+    if (out.length < 2) out = [p1, p2];
+    out[0] = p1; out[out.length - 1] = p2;
+    return out;
+  }
+  // bsFitCurve(raw) -> { line: true } | { circle: { c, n, r } } (n: the curve runs counter-clockwise about it) | null:
+  // a B-spline edge that is exactly a straight line or a circular arc (a rational B-spline circle), within 1e-9 of its size
+  function bsFitCurve(raw) {
+    var n = raw.length, a = raw[0], z = raw[n - 1], ext = 0;
+    raw.forEach(function (p) { ext = Math.max(ext, len(sub(p, a))); });
+    if (!(ext > 0)) return null;
+    var tol = 1e-9 * Math.max(ext, len(a), 1), ch = sub(z, a), lc = len(ch);
+    if (lc > 1e-6 * ext && raw.every(function (p) { var v = sub(p, a); return len(sub(v, scale(ch, dot(v, ch) / (lc * lc)))) <= tol; })) return { line: true };
+    if (n < 3) return null;
+    var closed = lc <= 1e-9 * Math.max(ext, 1), b = raw[closed ? Math.round(n / 3) : Math.floor(n / 2)], c = closed ? raw[Math.round(2 * n / 3)] : z;
+    var ab = sub(b, a), ac = sub(c, a), nr = cross(ab, ac), l2 = dot(nr, nr);
+    if (!(l2 > 1e-24 * ext * ext * ext * ext)) return null;
+    var C = add(a, scale(add(scale(cross(nr, ab), dot(ac, ac)), scale(cross(ac, nr), dot(ab, ab))), 1 / (2 * l2))), N = norm(nr), r = len(sub(a, C)), turn = 0;
+    if (!raw.every(function (p) { var v = sub(p, C); return Math.abs(dot(v, N)) <= tol && Math.abs(len(v) - r) <= tol; })) return null;
+    for (var k = 0; k + 1 < n; k++) turn += dot(cross(sub(raw[k], C), sub(raw[k + 1], C)), N);
+    return { circle: { c: C, n: turn < 0 ? scale(N, -1) : N, r: r } };
+  }
   // the closed shell of a loft's patches: signed volume (+ when dPdu x dPdv points outward) and bounds
   function loftShellInfo(faces) {
     var o = faces[0].poles[0][0], v = 0, low = [], high = [], lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
@@ -1899,14 +1974,14 @@ var Exchange = (function () {
       if (cb && /DEG/i.test(String(cb[0]))) angleUnit = Math.PI / 180;
     });
     function vertexPoint(ref) { var v = ent(ref), va = v && args(v, 'VERTEX_POINT'); return va ? point(va[1]) : null; }
-    var edgeCache = {};
+    var edgeCache = {}, keepSpline = {};
     function edgeInfo(ref) {
       var id = ref && ref.r;
       if (id == null) return null;
       if (edgeCache[id]) return edgeCache[id];
       var ec = ent(ref), ea = ec && args(ec, 'EDGE_CURVE');
       if (!ea) return null;
-      var p1 = vertexPoint(ea[1]), p2 = vertexPoint(ea[2]), geom = ent(ea[3]), same = !(ea[4] && ea[4].e === 'F');
+      var p1 = vertexPoint(ea[1]), p2 = vertexPoint(ea[2]), geom = ent(ea[3]), same = !(ea[4] && ea[4].e === 'F'), bc;
       // SURFACE_CURVE / SEAM_CURVE / INTERSECTION_CURVE wrap the 3D curve they lie on
       while (geom && (geom.t === 'SURFACE_CURVE' || geom.t === 'SEAM_CURVE' || geom.t === 'INTERSECTION_CURVE' || geom.t === 'BOUNDED_SURFACE_CURVE')) geom = ent(geom.a[1]);
       var info = { id: id, start: p1, end: p2, kind: 'other', type: geom ? geom.t || 'complex' : 'none', pts: [] };
@@ -1928,13 +2003,44 @@ var Exchange = (function () {
         info.ellipse = { center: TE.position, normal: [TE.rotation[2], TE.rotation[5], TE.rotation[8]], xdir: [TE.rotation[0], TE.rotation[3], TE.rotation[6]], a: +geom.a[2], b: +geom.a[3] };
         var ep = ellipsePoints(info.ellipse, p1, p2, same, toMM);
         info.pts = ep.pts; info.full = ep.full;
-      } else if (geom.t === 'B_SPLINE_CURVE_WITH_KNOTS' && +geom.a[1] > 1) {   // rfGO: info.raw on the curve, info.pts area-true; degree 1 stays a chord
-        var raw = bsCurvePoints(+geom.a[1], (geom.a[2] || []).map(point), bsFlat(geom.a[7], geom.a[6]));
+      } else if ((bc = bsCurveOf(geom)) && bc.deg >= 1 && bc.poles.length > bc.deg && bc.poles.every(Boolean)) {
+        // rfGO: info.raw on the curve, info.pts area-true. Lane importbend: rational curves (a circle written as a
+        // RATIONAL_B_SPLINE_CURVE), a curve running past its vertices (trimmed to them), and a B-spline that is a
+        // straight line or a circle read as that LINE / CIRCLE (other CAD systems write every edge as a B-spline), so
+        // the faces either side tessellate it as they would the true curve
+        var raw = bsCurvePoints(bc.deg, bc.poles, bc.U, bc.W);
         if (!same) raw.reverse();
-        raw[0] = p1; raw[raw.length - 1] = p2;
-        info.kind = 'bspline'; info.raw = raw; info.pts = areaTruePath(raw);
+        raw = bsTrim(raw, p1, p2);
+        if (keepSpline[id]) {   // a free-form face's side: as before (degree 1 a chord)
+          if (bc.deg > 1) { info.kind = 'bspline'; info.raw = raw; info.pts = areaTruePath(raw); } else { info.kind = bc.poles.length === 2 ? 'line' : 'other'; info.pts = [p1, p2]; }
+          return (edgeCache[id] = info);
+        }
+        var fit = bsFitCurve(raw, bc);
+        if (fit && fit.line) { info.kind = 'line'; info.pts = [p1, p2]; info.fromSpline = true; }
+        else if (fit && fit.circle) {
+          info.kind = 'circle'; info.circle = fit.circle; info.fromSpline = true;
+          var cps = circlePoints(fit.circle, p1, p2, true, toMM);
+          info.pts = cps.pts; info.mid = cps.mid; info.full = cps.full;
+        } else if (bc.deg === 1) { info.kind = 'poly'; info.pts = raw.filter(function (p, k) { return k === 0 || k === raw.length - 1 || len(sub(p, raw[k - 1])) > 0; }); }
+        else { info.kind = 'bspline'; info.raw = raw; info.pts = areaTruePath(raw); }
       } else info.pts = [p1, p2];
       return (edgeCache[id] = info);
+    }
+    // lane importbend: B-spline curves and surfaces as plain data, the simple entity or the complex (rational) one
+    function bsCurveOf(g) {
+      if (!g) return null;
+      if (g.t === 'B_SPLINE_CURVE_WITH_KNOTS') return { deg: +g.a[1], poles: (g.a[2] || []).map(point), U: bsFlat(g.a[7], g.a[6]), W: null };
+      var P = g.parts, c = P && P.B_SPLINE_CURVE, kn = P && P.B_SPLINE_CURVE_WITH_KNOTS, rw = P && P.RATIONAL_B_SPLINE_CURVE;
+      if (!c || !kn) return null;
+      return { deg: +c[0], poles: (c[1] || []).map(point), U: bsFlat(kn[1], kn[0]), W: rw && rw[0] ? rw[0].map(Number) : null };
+    }
+    function bsSurfOf(g) {
+      if (!g) return null;
+      var pts = function (rows) { return (rows || []).map(function (row) { return row.map(point); }); };
+      if (g.t === 'B_SPLINE_SURFACE_WITH_KNOTS') return { du: +g.a[1], dv: +g.a[2], poles: pts(g.a[3]), U: bsFlat(g.a[10], g.a[8]), V: bsFlat(g.a[11], g.a[9]), W: null };
+      var P = g.parts, c = P && P.B_SPLINE_SURFACE, kn = P && P.B_SPLINE_SURFACE_WITH_KNOTS, rw = P && P.RATIONAL_B_SPLINE_SURFACE;
+      if (!c || !kn) return null;
+      return { du: +c[0], dv: +c[1], poles: pts(c[2]), U: bsFlat(kn[2], kn[0]), V: bsFlat(kn[3], kn[1]), W: rw && rw[0] ? rw[0].map(function (r) { return r.map(Number); }) : null };
     }
     // the oriented edges of an EDGE_LOOP: [{ info, fwd }]
     function loopEdgeList(l) {
@@ -1985,12 +2091,19 @@ var Exchange = (function () {
           normal = [T.rotation[2], T.rotation[5], T.rotation[8]];
           if (fa[3] && fa[3].e === 'F') normal = scale(normal, -1);
         } else if (surf) {
-          if (surf.t === 'B_SPLINE_SURFACE_WITH_KNOTS' && splineFace(fa, surf, !(fa[3] && fa[3].e === 'F'), out)) return;
-          var S = surf.t ? surfRecord(surf) : null;
-          if (S && curvedFace(fa, S, !(fa[3] && fa[3].e === 'F'), out)) return;
-          var key = (surf.t || 'complex surface') + (S ? ' (trimmed by curves other than circles and rulings)' : '');
-          nonPlanar[key] = (nonPlanar[key] || 0) + 1;
-          return;
+          // lane importbend: a B-spline surface that is exactly a plane or a cylinder (as other CAD systems write every
+          // face) is read as that surface: its normal from the B-spline's own (u, v) sense
+          var sense = !(fa[3] && fa[3].e === 'F'), bk = bsSurfKind(fa[2].r, surf);
+          if (bk && bk.plane) { normal = sense ? bk.plane : scale(bk.plane, -1); var bplane = bk; }
+          else {
+            if (surf.t === 'B_SPLINE_SURFACE_WITH_KNOTS' && splineFace(fa, surf, sense, out)) return;
+            var S = bk && bk.cyl ? bk.cyl : surf.t ? surfRecord(surf) : null;
+            if (S && curvedFace(fa, S, bk && bk.cyl ? sense === !bk.flip : sense, out)) return;
+            if (!S && ruledFace(fa, surf, out)) return;
+            var key = (surf.t || 'complex surface') + (S ? ' (trimmed by curves other than circles and rulings)' : '');
+            nonPlanar[key] = (nonPlanar[key] || 0) + 1;
+            return;
+          }
         }
       }
       var loops = [], outerIdx = -1;
@@ -2010,11 +2123,83 @@ var Exchange = (function () {
         var best = -1;
         loops.forEach(function (l, k) { var a = len(newell(l)); if (a > best) { best = a; outerIdx = k; } });
       }
+      // lane importbend: a B-spline plane's bounds must lie on it (else the face is not that plane: refused by name)
+      if (bplane && !loops.every(function (l) { return l.every(function (p) { return Math.abs(dot(p, bplane.plane) - bplane.w) <= Math.max(bplane.tol, 1e-6 * (1 + len(p))); }); })) {
+        var bkey = surf.t || 'complex surface';
+        nonPlanar[bkey] = (nonPlanar[bkey] || 0) + 1;
+        return;
+      }
       if (!normal) normal = norm(newell(loops[outerIdx]));
       if (len(normal) < 0.5) return;
       var t0 = out.tris.length;
       triangulateFace(loops, outerIdx, normal, out);
       for (var t = t0; t < out.tris.length; t += 3) out.recs.push(null);
+    }
+    // lane importbend: what a B-spline surface is ({ plane: n } | { cyl: S, flip } | null), once per surface entity
+    var surfKinds = {};
+    function bsSurfKind(id, surf) {
+      if (surfKinds[id] !== undefined) return surfKinds[id];
+      var d = bsSurfOf(surf), res = null;
+      if (d && d.poles.length && d.poles.every(function (row) { return row.length && row.every(Boolean); })) res = bsSurfClassify(bsSurfaceGrid(d.du, d.dv, d.poles, d.U, d.V, d.W));
+      return (surfKinds[id] = res);
+    }
+    // the edges of free-form B-spline faces (a loft's patches: splineFace matches their sides against the surface's own
+    // B-spline sides) stay B-splines even where one is straight or a circle
+    Object.keys(E).forEach(function (id) {
+      var fa = args(E[id], 'ADVANCED_FACE'), sf = fa && fa[2] && ent(fa[2]);
+      if (!sf || sf.t === 'PLANE' || !bsSurfOf(sf) || bsSurfKind(fa[2].r, sf)) return;
+      (fa[1] || []).forEach(function (bRef) {
+        var b = ent(bRef), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
+        if (l && l.t === 'EDGE_LOOP') (l.a[1] || []).forEach(function (oeRef) { var oa = args(ent(oeRef), 'ORIENTED_EDGE'); if (oa && oa[3]) keepSpline[oa[3].r] = true; });
+      });
+    });
+    // the B-spline edges of faces on cylinders, cones, spheres and tori (true or B-spline) are tessellated at their
+    // curve's own points, on the surface (the area-true move is for faces bounded by B-splines on both sides)
+    Object.keys(E).forEach(function (id) {
+      var fa = args(E[id], 'ADVANCED_FACE'), sf = fa && fa[2] && ent(fa[2]);
+      if (!sf || sf.t === 'PLANE') return;
+      var curved = sf.t ? /^(CYLINDRICAL|CONICAL|SPHERICAL|TOROIDAL)_SURFACE$/.test(sf.t) : false;
+      if (!curved) { var k = bsSurfKind(fa[2].r, sf); curved = !!(k && k.cyl); }
+      if (!curved) return;
+      (fa[1] || []).forEach(function (bRef) {
+        var b = ent(bRef), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
+        if (l && l.t === 'EDGE_LOOP') loopEdgeList(l).forEach(function (x) { if (x.info.kind === 'bspline') x.info.pts = x.info.raw; });
+      });
+    });
+    // lane importbend: a ruled B-spline face (degree 1 one way: a twisted bend end, a relief wall) bounded by two
+    // straight edges and two rails: the rails' points zipped by arc length, triangles turning with the face's loop
+    function ruledFace(fa, surf, out) {
+      var d = bsSurfOf(surf), bs = fa[1] || [];
+      if (!d || (d.du !== 1 && d.dv !== 1) || bs.length !== 1) return false;
+      var b = ent(bs[0]), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
+      if (!l || l.t !== 'EDGE_LOOP') return false;
+      var list = loopEdgeList(l), n = list.length, lines = [];
+      list.forEach(function (x, k) { if (x.info.kind === 'line') lines.push(k); });
+      if (lines.length !== 2 && n === 4) {
+        // four edges, not two of them straight: the rails are the longer opposite pair
+        var el = list.map(function (x) { var q = x.info.pts, s = 0; for (var k = 1; k < q.length; k++) s += len(sub(q[k], q[k - 1])); return s; });
+        lines = el[0] + el[2] >= el[1] + el[3] ? [1, 3] : [0, 2];
+      }
+      if (lines.length !== 2 || lines[1] - lines[0] < 2 || n - (lines[1] - lines[0]) < 2) return false;
+      function chain(from, to) {
+        var pts = [];
+        for (var k = from; k !== to; k = (k + 1) % n) { var q = orientedPts(list[k]); pts = pts.length ? pts.concat(q.slice(1)) : q.slice(); }
+        return pts;
+      }
+      function fracs(P) { var acc = [0], t = 0; for (var k = 1; k < P.length; k++) { t += len(sub(P[k], P[k - 1])); acc.push(t); } return acc.map(function (a) { return t > 0 ? a / t : 0; }); }
+      var A = chain(lines[0] + 1, lines[1]), B = chain((lines[1] + 1) % n, lines[0]).reverse(), fa1 = fracs(A), fb = fracs(B), i = 0, j = 0, flip = ba[2] && ba[2].e === 'F';
+      function tri(p, q, r) {
+        if (flip) { var t = q; q = r; r = t; }
+        var base = out.pos.length / 3;
+        out.pos.push(p[0], p[1], p[2], q[0], q[1], q[2], r[0], r[1], r[2]);
+        out.tris.push(base, base + 1, base + 2);
+        out.recs.push(null);
+      }
+      while (i < A.length - 1 || j < B.length - 1) {
+        if (j >= B.length - 1 || (i < A.length - 1 && fa1[i + 1] <= fb[j + 1])) { tri(A[i], A[i + 1], B[j]); i++; }
+        else { tri(A[i], B[j + 1], B[j]); j++; }
+      }
+      return true;
     }
     // rfGO: a B-spline face bounded by four B-spline edges along the surface's own sides, in rows through the edges' points
     function splineFace(fa, surf, sameSense, out) {
@@ -2130,6 +2315,9 @@ var Exchange = (function () {
           var EL = info.ellipse, ey = cross(norm(EL.normal), EL.xdir);
           if (ax(EL.center).rho < tol && Math.abs(EL.b - S.r) < tol && Math.abs(dot(ey, S.d)) < 1e-9) { ells.push(x); continue; }
         }
+        // lane importbend: a B-spline edge on the cylinder (another CAD system's oblique or relief cut, OpenCascade's
+        // approximated intersection curves): a side like an ellipse, its own points on the surface
+        if (info.kind === 'bspline' && S.t === 'cyl' && info.pts.every(onSurface)) { ells.push(x); continue; }
         return false;
       }
       // latitude levels
@@ -2291,7 +2479,14 @@ var Exchange = (function () {
       var e = E[id];
       if (has(e, 'MANIFOLD_SOLID_BREP') || has(e, 'FACETED_BREP') || has(e, 'BREP_WITH_VOIDS')) solidIds.push(+id);
     });
-    solidIds.forEach(function (id) { var a = args(E[id], 'MANIFOLD_SOLID_BREP') || args(E[id], 'FACETED_BREP') || args(E[id], 'BREP_WITH_VOIDS'); if (a && a[1]) shellsUsed[a[1].r] = true; });
+    // lane importbend: a BREP_WITH_VOIDS' void shells (ORIENTED_CLOSED_SHELL of a CLOSED_SHELL) are its own, not loose
+    // shells to import as solids of their own (that made a part with sealed voids 0.6 % heavy)
+    function useShell(ref) { if (!ref || ref.r == null) return; shellsUsed[ref.r] = true; var oa = args(E[ref.r], 'ORIENTED_CLOSED_SHELL'); if (oa && oa[2]) useShell(oa[2]); }
+    solidIds.forEach(function (id) {
+      var a = args(E[id], 'MANIFOLD_SOLID_BREP') || args(E[id], 'FACETED_BREP') || args(E[id], 'BREP_WITH_VOIDS'), bw = args(E[id], 'BREP_WITH_VOIDS');
+      if (a) useShell(a[1]);
+      if (bw) (bw[2] || []).forEach(useShell);
+    });
     // shells that no solid wraps (a SHELL_BASED_SURFACE_MODEL, or a bare CLOSED_SHELL) are imported as solids too
     Object.keys(E).forEach(function (id) { var e = E[id]; if (e.t === 'CLOSED_SHELL' && !shellsUsed[id]) { var used = false; Object.keys(E).forEach(function (j) { var ej = E[j]; if (ej.t === 'SHELL_BASED_SURFACE_MODEL' && (ej.a[1] || []).some(function (r) { return r.r === +id; })) used = true; }); solidIds.push(+id); } });
     if (!solidIds.length) throw new Error('No solid bodies (MANIFOLD_SOLID_BREP / FACETED_BREP / CLOSED_SHELL) in this STEP file.');

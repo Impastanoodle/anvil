@@ -1952,8 +1952,13 @@ var OcctKernel = (function () {
             oc.Interface_Static.SetCVal('xstep.cascade.unit', inch ? 'INCH' : 'MM'); oc.Interface_Static.SetCVal('write.step.unit', inch ? 'INCH' : 'MM');
           }
           var sw = N(new oc.STEPControl_Writer_1());
+          // lane importbend (tests only): opts.stepNurbs (or a test model's stepNurbs: true, which tests/occt-tests.html
+          // sends through the worker) writes every face as a B_SPLINE_SURFACE and every edge as a B_SPLINE_CURVE
+          // (rational where the geometry is a circle), as some CAD systems export
+          var stepShape = all;
+          if (opts.stepNurbs || model.stepNurbs === true) { var nc = N(new oc.BRepBuilderAPI_NurbsConvert_2(all, true)); stepShape = nc.Shape(); }
           try {
-            sw.Transfer(all, oc.STEPControl_StepModelType.STEPControl_AsIs, true, R());
+            sw.Transfer(stepShape, oc.STEPControl_StepModelType.STEPControl_AsIs, true, R());
             sw.Write('/anvil-export.step');
           } finally { if (oc.Interface_Static) { oc.Interface_Static.SetCVal('xstep.cascade.unit', 'MM'); oc.Interface_Static.SetCVal('write.step.unit', 'MM'); } }
           out.step = stepHeader(String(oc.FS.readFile('/anvil-export.step', { encoding: 'utf8' })), name);
@@ -2321,6 +2326,16 @@ var OcctKernel = (function () {
     }
     return out;
   }
+  // lane importbend: { s: { t: 'cyl', o, d, r } } for a face on a cylinder (the adaptor applies the face's location),
+  // else null
+  function importCylRecord(oc, f, N) {
+    try {
+      var ad = N(new oc.BRepAdaptor_Surface_2(f, true)), t = ad.GetType(), tv = t && t.value != null ? t.value : t;
+      if (SURF[tv] !== 'cylinder') return null;
+      var cy = N(ad.Cylinder()), a = N(cy.Position()), o = N(a.Location()), d = N(a.Direction());
+      return { s: { t: 'cyl', o: [o.X(), o.Y(), o.Z()], d: [d.X(), d.Y(), d.Z()], r: cy.Radius() } };
+    } catch (e) { return null; }
+  }
   // importFile(oc, format, text) -> { solids: [{ name, positions, triangles }] (millimetres; exchange.js finishImport
   // welds and names them), faces, ms }: every solid tessellated finely enough for Anvil's booleans against it
   function importFile(oc, format, text) {
@@ -2333,20 +2348,27 @@ var OcctKernel = (function () {
         var b = N(new oc.Bnd_Box_1()); oc.BRepBndLib.Add(sol, b, false);
         var lo = N(b.CornerMin()), hi = N(b.CornerMax()), diag = Math.hypot(hi.X() - lo.X(), hi.Y() - lo.Y(), hi.Z() - lo.Z());
         N(new oc.BRepMesh_IncrementalMesh_2(sol, Math.max(0.05, diag * 5e-4), false, 0.35, false));
-        var pos = [], tris = [];
+        var pos = [], tris = [], recs = [], anyRec = false;
         for (var x = N(new oc.TopExp_Explorer_2(sol, E.TopAbs_FACE, E.TopAbs_SHAPE)); x.More(); x.Next()) {
           var f = N(oc.TopoDS.Face_1(N(x.Current()))), loc = N(new oc.TopLoc_Location_1());
           var h = N(oc.BRep_Tool.Triangulation(f, loc, oc.Poly_MeshPurpose ? oc.Poly_MeshPurpose.Poly_MeshPurpose_NONE : 0));
           faces++;
           if (h.IsNull()) continue;
           var tri = h.get(), tr = N(loc.Transformation()), rev = f.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED, base = pos.length / 3;
+          // lane importbend: a cylinder face's triangles carry Anvil's cylinder record (exact mass properties, and
+          // Insert Bends finds the bends already rounded in the customer's part from them)
+          var rec = importCylRecord(oc, f, N);
+          if (rec) anyRec = true;
           for (var i = 1; i <= tri.NbNodes(); i++) { var p = N(N(tri.Node(i)).Transformed(tr)); pos.push(p.X(), p.Y(), p.Z()); }
           for (var j = 1; j <= tri.NbTriangles(); j++) {
             var T = N(tri.Triangle(j)), a = T.Value(1) - 1, c = T.Value(3) - 1, bb = T.Value(2) - 1;
             if (rev) tris.push(base + a, base + c, base + bb); else tris.push(base + a, base + bb, base + c);
+            recs.push(rec);
           }
         }
-        return { name: 'Solid' + (si + 1), positions: pos, triangles: tris };
+        var out = { name: 'Solid' + (si + 1), positions: pos, triangles: tris };
+        if (anyRec) out.recs = recs;
+        return out;
       });
       return { solids: solids, faces: faces, ms: now() - t0 };
     } finally {

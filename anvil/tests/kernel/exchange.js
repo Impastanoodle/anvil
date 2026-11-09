@@ -290,10 +290,11 @@
       var cyl = cube.replace("#41=FACETED_BREP('Cube',#40);", "#41=MANIFOLD_SOLID_BREP('Cyl',#40);#60=ADVANCED_FACE('',(#21),#61,.T.);#61=CYLINDRICAL_SURFACE('',#62,5.);#62=AXIS2_PLACEMENT_3D('',#1,$,$);").replace("#40=CLOSED_SHELL('',(#11,", "#40=CLOSED_SHELL('',(#60,#11,");
       var msg = '';
       // true curves: cylinders are read now, but only bounded by circles, rulings and seams; this one's POLY_LOOP bound is
-      // refused by name, and a B-spline face is still refused outright
+      // refused by name, and a B-spline face is still refused outright (a twisted one: lane importbend reads a B-spline
+      // patch that is exactly a plane, as this one through #1 #2 #4 #3 was, as that plane)
       try { X.importFile('cyl.step', cyl); } catch (e) { msg = e.message; }
       assert(/curved faces \(1 CYLINDRICAL_SURFACE \(trimmed by curves other than circles and rulings\)\)/.test(msg) && /planar-face and faceted B-reps, and cylinders, cones, spheres and tori/.test(msg), 'message: ' + msg);
-      var bsp = cyl.replace("#61=CYLINDRICAL_SURFACE('',#62,5.);", "#61=B_SPLINE_SURFACE_WITH_KNOTS('',1,1,((#1,#2),(#4,#3)),.UNSPECIFIED.,.F.,.F.,.F.,(2,2),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.);");
+      var bsp = cyl.replace("#61=CYLINDRICAL_SURFACE('',#62,5.);", "#61=B_SPLINE_SURFACE_WITH_KNOTS('',1,1,((#1,#2),(#4,#7)),.UNSPECIFIED.,.F.,.F.,.F.,(2,2),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.);");
       msg = '';
       try { X.importFile('bsp.step', bsp); } catch (e) { msg = e.message; }
       assert(/curved faces \(1 B_SPLINE_SURFACE_WITH_KNOTS\)/.test(msg), 'B-spline message: ' + msg);

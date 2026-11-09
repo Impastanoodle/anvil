@@ -6053,6 +6053,42 @@
     });
     return best;
   }
+  // lane importbend: ibRegionKey(mesh, n, w, Q, cache) -> 'face:region' for the connected region of the plane's
+  // polygons (a mesh face holds every polygon of one plane, joined or not) that holds Q, else null. Polygons join where
+  // they share a vertex or a vertex of one lies on an edge of the other.
+  function ibRegionKey(mesh, n, w, Q, cache) {
+    for (var i = 0; i < mesh.faces.length; i++) {
+      var fc = mesh.faces[i];
+      if (dot(fc.normal, n) < 1 - 1e-6 || Math.abs(fc.w - w) > 1e-6 * (1 + Math.abs(w)) || !fc.polys || !fc.polys.length) continue;
+      var c = cache[i] || (cache[i] = ibRegions(fc)), q = to2D(c.plane, Q);
+      for (var k = 0; k < c.loops.length; k++) if (pointInPoly(q, c.loops[k])) return i + ':' + c.root(k);
+    }
+    return null;
+  }
+  function ibRegions(fc) {
+    var polys = fc.polys, n = fc.normal, par = polys.map(function (p, i) { return i; }), at = {};
+    var ax = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].sort(function (a, b) { return Math.abs(dot(a, n)) - Math.abs(dot(b, n)); })[0];
+    var x = norm(sub(ax, scale(n, dot(ax, n)))), plane = { origin: scale(n, fc.w), x: x, y: cross(n, x) };
+    function root(a) { while (par[a] !== a) { par[a] = par[par[a]]; a = par[a]; } return a; }
+    function join(a, b) { a = root(a); b = root(b); if (a !== b) par[a] = b; }
+    var loops = polys.map(function (p) { return p.vertices.map(function (v) { return to2D(plane, [v.pos.x, v.pos.y, v.pos.z]); }); });
+    loops.forEach(function (l, i) { l.forEach(function (q) { var key = Math.round(q[0] * 1e7) + ',' + Math.round(q[1] * 1e7); if (at[key] == null) at[key] = i; else join(at[key], i); }); });
+    // T-junctions: a vertex on another polygon's edge (only between regions still apart; small faces only)
+    if (polys.length <= 400) {
+      for (var i = 0; i < loops.length; i++) for (var j = 0; j < loops.length; j++) {
+        if (i === j || root(i) === root(j)) continue;
+        var A = loops[i], B = loops[j], touch = false;
+        for (var a = 0; a < A.length && !touch; a++) for (var b = 0; b < B.length && !touch; b++) {
+          var p = B[b], q = B[(b + 1) % B.length], dx = q[0] - p[0], dy = q[1] - p[1], L2 = dx * dx + dy * dy;
+          if (!(L2 > 0)) continue;
+          var t = ((A[a][0] - p[0]) * dx + (A[a][1] - p[1]) * dy) / L2, ex = p[0] + t * dx - A[a][0], ey = p[1] + t * dy - A[a][1];
+          if (t > -1e-9 && t < 1 + 1e-9 && ex * ex + ey * ey < 1e-14 * (1 + L2)) touch = true;
+        }
+        if (touch) join(i, j);
+      }
+    }
+    return { plane: plane, loops: loops, root: root };
+  }
   // sheetThicknessAt(body, P, units) -> the wall thickness under the flat face through P (the nearest face facing the
   // other way behind it); the Builder / PM measure the sheet's T with it
   function sheetThicknessAt(body, P, units) {
@@ -6232,12 +6268,21 @@
       if (!hit) lines.push(hit = { i1: i1, i2: i2, n1: n1, n2: n2, d: d, c: c, O0: O0, segs: [] });
       hit.segs.push([Math.min(sa, sb), Math.max(sa, sb)]);
     });
-    var bends = [], plates = [];
-    function plateOf(n, w) {
-      for (var i = 0; i < plates.length; i++) if (dot(plates[i].n, n) > 1 - 1e-9 && Math.abs(plates[i].w - w) < 1e-6 * (1 + Math.abs(w))) return i;
+    var bends = [], plates = [], regionCache = {};
+    // lane importbend: Q, a point on the wall's face (n, w) past the bend: walls in one plane are one plate only where
+    // their faces join (a hat channel's two brims lie in one plane and are two plates; as one they read as a ring)
+    function regionKeys(n, w, Q) {
+      if (!Q) return [];
+      return [ibRegionKey(mesh, n, w, Q, regionCache), ibRegionKey(mesh, scale(n, -1), T - w, sub(Q, scale(n, T)), regionCache)].filter(function (k) { return k != null; });
+    }
+    function sameRegion(pl, keys) { return !keys.length || !pl.keys.length || keys.some(function (k) { return pl.keys.indexOf(k) >= 0; }); }
+    function plateOf(n, w, Q) {
+      var keys = regionKeys(n, w, Q), i;
+      function hit(k) { keys.forEach(function (x) { if (plates[k].keys.indexOf(x) < 0) plates[k].keys.push(x); }); return k; }
+      for (i = 0; i < plates.length; i++) if (dot(plates[i].n, n) > 1 - 1e-9 && Math.abs(plates[i].w - w) < 1e-6 * (1 + Math.abs(w)) && sameRegion(plates[i], keys)) return hit(i);
       // lane rfIH: the same wall seen from its other face (a Z's web: the outside of one bend, the inside of the next)
-      for (i = 0; i < plates.length; i++) if (dot(plates[i].n, n) < -1 + 1e-9 && Math.abs(T - plates[i].w - w) < 1e-6 * (1 + Math.abs(w))) return i;
-      plates.push({ n: n, w: w });
+      for (i = 0; i < plates.length; i++) if (dot(plates[i].n, n) < -1 + 1e-9 && Math.abs(T - plates[i].w - w) < 1e-6 * (1 + Math.abs(w)) && sameRegion(plates[i], keys)) return hit(i);
+      plates.push({ n: n, w: w, keys: keys });
       return plates.length - 1;
     }
     lines.forEach(function (L) {
@@ -6261,7 +6306,7 @@
         // bend across the rip gap and the box read as a closed ring (rfGA G42)
         for (var k = 0; ok && k <= 4; k++) { var dk = -T - dl + (bp + T + dl) * k / 4; ok = inside(P(dk, -T / 2, sm)) && inside(P(-T / 2, dk, sm)); }
         if (!ok) return;
-        bends.push({ L: L, P: P, s0: r[0], s1: r[1], A: Math.acos(Math.max(-1, Math.min(1, c))), p1: plateOf(L.n1, dot(L.n1, L.O0)), p2: plateOf(L.n2, dot(L.n2, L.O0)) });
+        bends.push({ L: L, P: P, s0: r[0], s1: r[1], A: Math.acos(Math.max(-1, Math.min(1, c))), p1: plateOf(L.n1, dot(L.n1, L.O0), P(0, bp, sm)), p2: plateOf(L.n2, dot(L.n2, L.O0), P(bp, 0, sm)) });
       });
     });
     // lane rfIH: bends already rounded in the part keep their own radius (the PM's radius is for sharp corners only)
@@ -6270,14 +6315,24 @@
       var c = Math.cos(rb.A), O0 = add(rb.C0, scale(add(rb.n1, rb.n2), rb.RT / (1 + c)));
       var L = { i1: rb.i1, i2: rb.i2, n1: rb.n1, n2: rb.n2, d: rb.d, c: c, O0: O0 };
       var P = function (a, b, s) { var al = (a - b * c) / (1 - c * c), be = (b - a * c) / (1 - c * c); return add(add(O0, add(scale(L.n1, al), scale(L.n2, be))), scale(L.d, s)); };
-      bends.push({ L: L, P: P, s0: rb.s0, s1: rb.s1, A: rb.A, round: rb, p1: plateOf(rb.n1, dot(rb.n1, O0)), p2: plateOf(rb.n2, dot(rb.n2, O0)) });
+      // a point on each wall's outer face just past the tangent line (the walls run on along -d x n1 and +d x n2)
+      var sm = (rb.s0 + rb.s1) / 2, wq = Math.min(T, 0.25 * rb.RT), Cm = add(rb.C0, scale(rb.d, sm));
+      var Q1 = add(add(Cm, scale(rb.n1, rb.RT)), scale(cross(rb.d, rb.n1), -wq)), Q2 = add(add(Cm, scale(rb.n2, rb.RT)), scale(cross(rb.d, rb.n2), wq));
+      bends.push({ L: L, P: P, s0: rb.s0, s1: rb.s1, A: rb.A, round: rb, p1: plateOf(rb.n1, dot(rb.n1, O0), Q1), p2: plateOf(rb.n2, dot(rb.n2, O0), Q2) });
     });
     if (!bends.length) throw new Error(what + ': there is no sharp corner between two walls ' + bcNum(T) + ' thick to bend (the sheet thickness).');
     // the fixed face's plate (its outer face or the face T behind it)
     var fixed = -1, fd = Infinity;
     plates.forEach(function (pl, i) {
       var w = dot(pl.n, P0), dd = Math.min(Math.abs(w - pl.w), Math.abs(w - (pl.w - T)));
-      if (dd < tolU && dd < fd) { fixed = i; fd = dd; }
+      if (!(dd < tolU)) return;
+      // lane importbend: of plates in one plane, the one whose region holds the point
+      if (pl.keys.length) {
+        var on = Math.abs(w - pl.w) <= Math.abs(w - (pl.w - T)), Q = sub(P0, scale(pl.n, w - (on ? pl.w : pl.w - T)));
+        var k = on ? ibRegionKey(mesh, pl.n, pl.w, Q, regionCache) : ibRegionKey(mesh, scale(pl.n, -1), T - pl.w, Q, regionCache);
+        if (k != null && pl.keys.indexOf(k) < 0) dd += tolU;
+      }
+      if (dd < fd) { fixed = i; fd = dd; }
     });
     if (fixed < 0) throw new Error(what + ': the fixed face at ' + bcPt(P0) + ' is not a wall next to a bend.');
     // the plates as a tree from the fixed one: each bend is unfolded from the plate nearer the fixed face
