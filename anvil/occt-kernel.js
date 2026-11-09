@@ -985,7 +985,12 @@ var OcctKernel = (function () {
         // a part whose band holds a hole / slot of the sheet (p.voids): no overlap strip, and the cut wrapped round the bend
         var cutters = p.voids ? bendCutters(src, srcCSG || (srcCSG = shapeToCSG(src)), p.plane, p.band, lay.section, p.BA, false) : [];
         // a Miter Flange's square end: the bend's taper, and the overlap strip stops at the base's corner
-        (p.tapers || []).forEach(function (l) { cutters.push(cylinderCutter(l, p.plane, lay.section, p.BA)); });
+        // lane mitrefid2: SolidWorks' edge-flange mitre (flangeLayout's swMiter, the part has wallClips) is a polygon in
+        // (s, t), straight between its points as Anvil's (the end straight in (angle, t); a Miter Flange's later stage on
+        // the bend's zone lines), not a smooth run: a shallow mitre (turn under 0.5 rad) made [−ov, tB], [0, tB], [BA, tW]
+        // one elliptic arc, 6e-5 to 1.6e-4 under Anvil. A Miter Flange's square end (miterTaper: points on the true sin
+        // curve) keeps the smooth run, SolidWorks' curve (DL rows)
+        (p.tapers || []).forEach(function (l) { cutters.push(cylinderCutter(l, p.plane, lay.section, p.BA, null, !!p.wallClips)); });
         if (!p.voids) (p.tails || []).forEach(function (r) { cutters.push(prismOf(K.miterTail(lay.section), p.plane, r.t0, r.t1)); });
         // lane rfIS: the overlap strip's sliver past an acute corner of the sheet (Kernel.flangeLayout's endCuts), and a
         // wall cut square to itself where that plane would cut the bend too (wallCuts: below 90°, the wall's part only)
@@ -1037,14 +1042,14 @@ var OcctKernel = (function () {
     // those coordinates) and thickened radially through the thickness (ε past the outer face): its walls are the exact
     // radial walls of the wrapped cut. The cylinder carries on past the bend's ends, where the sweep has no metal.
     // (lane DJ: zr = [z0, z1], the depth range from the inner face instead: material added on the flat, a blind cut)
-    function cylinderCutter(l, plane, sec, BA, zr) {
+    function cylinderCutter(l, plane, sec, BA, zr, straight) {
       var R0 = sec.R, T = sec.T, eps = Math.min(0.01 * T, 0.5 * R0), z0 = zr ? zr[0] : -eps, z1 = zr ? zr[1] : T + eps;
       if (!(R0 + z0 > 1e-9)) throw unsupportedErr('material wrapped round a bend down to its axis');
       // axis through the bend centre along the edge; angle 0 at the sheet (−y from the centre), growing toward +x
       var ax = N(new oc.gp_Ax3_3(P(V.add(plane.origin, V.scale(plane.y, R0))), Dir(plane.n), Dir(V.scale(plane.y, -1))));
       var surf = N(new oc.Handle_Geom_Surface_2(N(new oc.Geom_CylindricalSurface_1(ax, R0 + z0))));
       var ku = sec.A / BA, uv = l.map(function (q) { return [ku * q[0], q[1]]; });
-      var wire = outlineWire(l, surf, ku);
+      var wire = outlineWire(l, surf, ku, straight);
       // the cutter's volume: the outline's area in (angle, t) times the annulus between the two radii per unit angle
       var area = 0;
       uv.forEach(function (a, j) { var b = uv[(j + 1) % uv.length]; area += a[0] * b[1] - b[0] * a[1]; });
@@ -1064,7 +1069,8 @@ var OcctKernel = (function () {
     // lane FZ: a band loop (Kernel.bendVoids: points on the void's true edge) as exact edges on surf, whose (u, v) are
     // (ku·q[0], q[1]): a run on one circle is that circle (an ellipse when ku ≠ 1), another smooth run the C1 cubic
     // through its points, two points a straight edge. Shared by cylinderCutter (the bend) and exactPrism (the flat).
-    function outlineWire(l, surf, ku) {
+    // (lane mitrefid2: straight = every point a corner, the outline a polygon in (u, v): helical edges on the cylinder)
+    function outlineWire(l, surf, ku, straight) {
       var mw = N(new oc.BRepBuilderAPI_MakeWire_1());
       function pnt2(q) { return N(new oc.gp_Pnt2d_3(ku * q[0], q[1])); }
       // the outline's points lie on the cut's true edge (a circle's, a slot's): between corners (a turn of more than
@@ -1073,7 +1079,7 @@ var OcctKernel = (function () {
       var n = l.length, corners = [];
       l.forEach(function (p, i) {
         var a = l[(i + n - 1) % n], b = l[(i + 1) % n], d1 = [p[0] - a[0], p[1] - a[1]], d2 = [b[0] - p[0], b[1] - p[1]];
-        if (Math.abs(Math.atan2(d1[0] * d2[1] - d1[1] * d2[0], d1[0] * d2[0] + d1[1] * d2[1])) > 0.5) corners.push(i);
+        if (straight || Math.abs(Math.atan2(d1[0] * d2[1] - d1[1] * d2[0], d1[0] * d2[0] + d1[1] * d2[1])) > 0.5) corners.push(i);
       });
       var runs = [];
       if (!corners.length) runs.push({ pts: l.concat([l[0]]), closed: true });
