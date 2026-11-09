@@ -40,7 +40,7 @@
         'p.flange(2, [[0, ' + T + ', 2], [2, ' + T + ', 2]], { position: "inside" });\np.unfold([1, ' + T + ', 2], null);\n' +
         'p.sketch("Top")' + cut + '.end().extrude(1, { cut: true, through: true, both: true });\np.fold(null);\n';
     }
-    var USLOT = rfKIu('.rect(' + (UMID - 0.125) + ', -2.375, 0.25, 0.75)'), UHOLE = rfKIu('.circle(' + UMID + ', -2, 0.1)');
+    var USLOT = rfKIu('.rect(' + (UMID - 0.125) + ', -2.375, 0.25, 0.75)');
 
     test('rfKI: a mitred tray with its bend faces first in the file, read in 2° facets (as OpenCascade sends it): the Insert Bends flat has all four walls (was the base and the bend strips only, 12.19 in², no warning)', function () {
       var src = build(TRAY); noErrors(src);
@@ -56,9 +56,30 @@
       return 'blank ' + rfKIarea(r.flat.loops).toFixed(6) + ' in²';
     });
 
-    test('rfKI: a flat that holds less metal than the part says so (a bend Anvil\'s STEP writes as facets: a round hole through it; Insert Bends finds the other bend only and the leg past the faceted one is not laid)', function () {
-      var src = build(UHOLE); noErrors(src);
-      var r = rfKIinsert(Exchange.exportSTEP(src.model, src.build, { faceted: true }), [1, 0, 2]);
+    // (lane stepout3: Anvil's STEP now writes a bend with a round hole through it whole, so the short flat comes from a bend
+    // another CAD wrote as an approximated, non-rational B-spline surface: read as a ruled strip, no bend)
+    test('rfKI: a flat that holds less metal than the part says so (one bend of a U channel written as a non-rational B-spline surface, as an approximating CAD writes it: Insert Bends finds the other bend only and the leg past it is not laid)', function () {
+      var src = build(rfKIu('.circle(1, -1, 0.1)')); noErrors(src);   // (the hole in the base: the bends plain)
+      var s = Exchange.exportSTEP(src.model, src.build, { faceted: true }), E = Exchange.parseStep(s).ents, rep = {}, next = 1, extra = [];
+      Object.keys(E).forEach(function (id) { next = Math.max(next, +id + 1); });
+      function P(ref) { return E[ref.r].a[1].map(Number); }
+      function D(ref) { var d = P(ref), l = Math.hypot(d[0], d[1], d[2]); return d.map(function (x) { return x / l; }); }
+      function pt(p) { var id = next++; extra.push('#' + id + '=CARTESIAN_POINT(\'\',(' + p.map(function (x) { return (+x).toPrecision(15).replace(/e/, 'E'); }).join(',') + '));'); return '#' + id; }
+      Object.keys(E).forEach(function (id) {
+        var e = E[id];
+        if (e.t !== 'CYLINDRICAL_SURFACE') return;
+        var a = E[e.a[1].r].a, o = P(a[1]), z = D(a[2]), x = D(a[3]), y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]], r = +e.a[2];
+        if (o[0] > 1 || (Math.abs(r - UR) > 1e-9 && Math.abs(r - UR - T) > 1e-9)) return;   // the bend at x = R + T only
+        // the rational circle's poles without its weights: a near-circle, not a cylinder
+        function ring(h) { var out = []; for (var i = 0; i < 9; i++) { var th = i * Math.PI / 4, rr = i % 2 ? r * Math.SQRT2 : r; out.push(pt([0, 1, 2].map(function (k) { return o[k] + rr * (Math.cos(th) * x[k] + Math.sin(th) * y[k]) + h * z[k]; }))); } return out; }
+        var lo = ring(-10), hi = ring(10);
+        rep[id] = 'B_SPLINE_SURFACE_WITH_KNOTS(\'\',2,1,(' + lo.map(function (q, i) { return '(' + q + ',' + hi[i] + ')'; }).join(',') + '),.UNSPECIFIED.,.F.,.F.,.F.,(3,2,2,2,3),(2,2),(0.,1.,2.,3.,4.),(0.,1.),.UNSPECIFIED.)';
+      });
+      assert(Object.keys(rep).length === 2, 'two cylinders of one bend rewritten: ' + Object.keys(rep).length);
+      s = s.replace(/^#(\d+)=(.*);$/gm, function (m, id) { return rep[id] ? '#' + id + '=' + rep[id] + ';' : m; }).replace(/^ENDSEC;\s*\nEND-ISO/m, extra.join('\n') + '\nENDSEC;\nEND-ISO');
+      var imp = Exchange.importFile('customer.step', s, { units: 'in' }), m = Exchange.newPartFromImport(imp);
+      new K.Builder(m).insertBends([1, 0, 2], { kFactor: KF });
+      var b = K.rebuild(m), r = { flat: K.flatPattern(m, b, K.meshFromBody(b.body)) };
       assert(r.flat.bends.length === 1, 'one bend found: ' + r.flat.bends.length);
       var w = r.flat.warnings.filter(function (x) { return /less metal than the part/.test(x); });
       assert(w.length === 1, 'the warning: ' + r.flat.warnings.join('; '));

@@ -1113,6 +1113,123 @@ var Exchange = (function () {
     });
     var snaps = [];
     snapToCylinders();
+    // lane stepout3: walls of holes folded through a bend (Unfold, cut, Fold: wrapCut lays the hole's points on the bend's
+    // facets' chords, each wall a strip of triangles along two radial lines, from a point on the inner bend to the same
+    // angle and height on the outer one, Fold's mid-thickness point between). Each strip becomes a face of its own: the
+    // ruled surface of radial lines between two rails, each rail a rational cubic on its cylinder (railOf: exact on the
+    // cylinder, so the bend is written whole). The hole's points move onto the true cylinders, in the file only. In (angle,
+    // height) a rail is the chord plus an odd bump of 1e-10, so the hole's area there, its volume and its developed size
+    // are the polygon's: the solid the Fold meant (Anvil's reader and OpenCascade read it to 1e-12).
+    var nW = nF + comps.length, walls = [], wallOf = new Int32Array(nT).fill(-1), wallHome = {};
+    radialWalls();
+    function radialWalls() {
+      var dirTri = new PairMap(), vTris = [], t, e;
+      for (t = 0; t < nT; t++) for (e = 0; e < 3; e++) { var v0 = tri[t * 3 + e]; dirTri.set(v0, tri[t * 3 + (e + 1) % 3], t); (vTris[v0] = vTris[v0] || []).push(t); }
+      function third(t1, a, b) { for (var k = 0; k < 3; k++) { var v = tri[t1 * 3 + k]; if (v !== a && v !== b) return v; } return -1; }
+      function cylComp(ci) { var c = comps[ci]; return ci >= 0 && c.ok && c.surf.t === 'cyl' ? c.surf : null; }
+      function onCyl(S, v) { var rho = axial(S, P(v)).rho; return rho <= S.r + tol && rho >= S.r - 0.05 * S.r; }
+      function coaxial(S, S2) { return S !== S2 && len(cross(S.d, S2.d)) < 1e-9 && axial(S, S2.o).rho < tol && Math.abs(S.r - S2.r) > tol; }
+      function aligned(S, u, v) {
+        var A = axial(S, P(u)), B = axial(S, P(v));
+        return Math.abs(A.z - B.z) <= tol && A.rho > tol && B.rho > tol && dot(A.v, B.v) > 0 && len(cross(scale(A.v, 1 / A.rho), scale(B.v, 1 / B.rho))) <= 1e-7;
+      }
+      // the outer comp across the edge u→v (a triangle of a coaxial cylinder of another radius), or -1
+      function compAcross(u, v) { var t1 = dirTri.get(v, u); return t1 == null ? -1 : compOf[t1]; }
+      var cand = [], taken = {};
+      comps.forEach(function (c, ci) {
+        var S = cylComp(ci);
+        if (!S) return;
+        c.tris.forEach(function (t0) {
+          for (var k = 0; k < 3; k++) {
+            var a = tri[t0 * 3 + k], b = tri[t0 * 3 + (k + 1) % 3], t1 = dirTri.get(b, a);
+            if (t1 == null || triRec[t1] >= 0 || taken[t1] || classifyEdge(S, P(a), P(b), tol)) continue;
+            if (!onCyl(S, a) || !onCyl(S, b) || aligned(S, a, b)) continue;
+            // only where the hole's points lie on the facets' chords: a bend end whose points are all on the cylinder
+            // (a mitred tray's tapered end, its points on the zone lines) is written by its planes' ELLIPSES as before
+            if (Math.abs(axial(S, P(a)).rho - S.r) <= tol && Math.abs(axial(S, P(b)).rho - S.r) <= tol) continue;
+            // walk the strip of plain triangles across the sheet: the front edge (p on a's radial line, q on b's) moves on
+            // by the third point of the triangle beyond it, which must lie on one of the two lines, until the triangle
+            // beyond is a coaxial cylinder's (the wall may have points between: Fold's mid-thickness layer)
+            var p = a, q = b, from = [b, a], tris = [], la = [a], lb = [b], co = -1, S2 = null, steps = 0, ok2 = true;
+            while (ok2) {
+              var t2 = dirTri.get(from[0], from[1]);
+              if (t2 == null || ++steps > 32) { ok2 = false; break; }
+              if (triRec[t2] >= 0) {
+                co = compOf[t2]; S2 = cylComp(co);
+                if (co === ci || !S2 || !coaxial(S, S2) || !onCyl(S2, p) || !onCyl(S2, q)) ok2 = false;
+                break;
+              }
+              var x = third(t2, p, q);
+              if (x < 0 || taken[t2] || tris.indexOf(t2) >= 0) { ok2 = false; break; }
+              tris.push(t2);
+              // the new front edge as it runs in t2 (x→q or p→x), crossed the other way
+              if (x !== p && aligned(S, p, x)) { la.push(x); p = x; from = [x, q]; }
+              else if (x !== q && aligned(S, q, x)) { lb.push(x); q = x; from = [p, x]; }
+              else { ok2 = false; break; }
+              // t2's own direction for the front edge: from is reversed when t2 runs it the other way
+              var inT = false;
+              for (var k2 = 0; k2 < 3; k2++) if (tri[t2 * 3 + k2] === from[0] && tri[t2 * 3 + (k2 + 1) % 3] === from[1]) inT = true;
+              from = inT ? [from[1], from[0]] : from;
+            }
+            if (!ok2 || !S2 || tris.length < 2) continue;
+            tris.forEach(function (t3) { taken[t3] = true; });
+            cand.push({ tris: tris, a: a, b: b, pa: p, pb: q, la: la, lb: lb, ci: ci, co: co, S: S, S2: S2, live: true });
+          }
+        });
+      });
+      if (!cand.length) return;
+      // where each point goes: onto its cylinder, keeping its angle and height (a partner takes its inner point's)
+      function foot(S, X, r) { var ax = axial(S, X); return add(add(S.o, scale(S.d, ax.z)), scale(ax.v, r / ax.rho)); }
+      // [vertex, place] for every point of wall w: the inner line at S.r, the outer at S2.r, points between at their own
+      // distance, all at the inner end's angle and height
+      function places(w) {
+        var out = [];
+        [[w.la, w.a], [w.lb, w.b]].forEach(function (L) {
+          L[0].forEach(function (v, k) { out.push([v, foot(w.S, P(L[1]), k === 0 ? w.S.r : k === L[0].length - 1 ? w.S2.r : axial(w.S, P(v)).rho)]); });
+        });
+        return out;
+      }
+      var ok = false;
+      while (!ok) {
+        ok = true;
+        var target = {}, allowed = {};
+        cand.forEach(function (w) {
+          if (!w.live) return;
+          w.tris.forEach(function (t1) { allowed[t1] = true; });
+          comps[w.ci].tris.forEach(function (t1) { allowed[t1] = true; });
+          comps[w.co].tris.forEach(function (t1) { allowed[t1] = true; });
+        });
+        cand.forEach(function (w) {
+          if (!w.live) return;
+          places(w).forEach(function (s) {
+            var v = s[0], X = s[1];
+            if (target[v] && len(sub(target[v], X)) > tol) { w.live = false; ok = false; }
+            target[v] = X;
+          });
+        });
+        cand.forEach(function (w) {
+          if (!w.live) return;
+          places(w).forEach(function (s) {
+            var v = s[0];
+            if (!w.live || len(sub(s[1], P(v))) <= tol) return;
+            if (vTris[v].some(function (t1) { return !allowed[t1]; })) { w.live = false; ok = false; }
+          });
+        });
+      }
+      var moveTo = {};
+      cand.forEach(function (w) {
+        if (!w.live) return;
+        w.tris.forEach(function (t1) { wallOf[t1] = walls.length; });
+        walls.push(w);
+        places(w).forEach(function (s) { moveTo[s[0]] = s[1]; });
+      });
+      if (walls.length && pos === mesh.positions) pos = Float64Array.from(pos);
+      Object.keys(moveTo).forEach(function (k) {
+        var v = +k, X = moveTo[k];
+        wallHome[v] = P(v);
+        pos[v * 3] = X[0]; pos[v * 3 + 1] = X[1]; pos[v * 3 + 2] = X[2];
+      });
+    }
 
     var groups, loopsOf, owner, ecls, shape;
     // lane mitreplane (rfKC): a vertex where a cut crosses a faceted bend (a relief slot's floor and side, a neighbour's
@@ -1184,8 +1301,8 @@ var Exchange = (function () {
     function build() {
       // faces: analytic patches (group nF + comp) and planes (group = the mesh face index)
       groups = [];
-      for (var g = 0; g < nF + comps.length; g++) groups.push([]);
-      for (var t2 = 0; t2 < nT; t2++) groups[compOf[t2] >= 0 && comps[compOf[t2]].ok ? nF + compOf[t2] : triPlane[t2]].push(t2);
+      for (var g = 0; g < nW + walls.length; g++) groups.push([]);
+      for (var t2 = 0; t2 < nT; t2++) groups[wallOf[t2] >= 0 && walls[wallOf[t2]].live ? nW + wallOf[t2] : compOf[t2] >= 0 && comps[compOf[t2]].ok ? nF + compOf[t2] : triPlane[t2]].push(t2);
       loopsOf = groups.map(function (ts) { return ts.length ? trisLoops(tri, ts) : []; });
       // drop split points: a vertex used by exactly two loop occurrences in the whole body, collinear in both
       var uses = {};
@@ -1220,6 +1337,8 @@ var Exchange = (function () {
             // stepout-2: an oblique plane's cut is an ELLIPSE, where a true plane is beside (not the facets of a
             // curved face that fell back to facets: their planes are not the cut)
             if (!cl && nb != null && nb < nF && truePlane(nb)) { cl = ellipseEdge(S, A, B, mesh.faces[nb], tol); if (cl) c.oblique = true; }
+            // lane stepout3: the edge of a radial wall (a hole folded through the bend) is that wall's rail, whatever it is
+            if (nb != null && nb >= nW) { cl = { t: 'w', S: S }; ecls.set(a < b ? a : b, a < b ? b : a, cl); continue; }
             if (!cl || nb == null) { bad = true; break; }
             if (nb >= nF) {
               var c2 = classifyEdge(comps[nb - nF].surf, A, B, tol);
@@ -1331,6 +1450,15 @@ var Exchange = (function () {
       live.forEach(function (sn) { sn.all.forEach(function (ci) { comps[ci].snapped = true; }); });
       for (var iter = 0; iter < comps.length + 2 && !build(); iter++) { /* a patch fell back to facets: rebuild the topology */ }
       var undo = live.filter(function (sn) { return sn.comps.some(function (ci) { return !comps[ci].ok; }); });
+      // lane stepout3: a radial wall whose bend fell back to facets goes back to its triangles, its points where they were
+      var wUndo = walls.filter(function (w) { return w.live && (!comps[w.ci].ok || !comps[w.co].ok); });
+      if (wUndo.length || (round >= 3 && walls.some(function (w) { return w.live; }))) {
+        (round >= 3 ? walls : wUndo).forEach(function (w) { w.live = false; });
+        var still = {};
+        walls.forEach(function (w) { if (w.live) w.la.concat(w.lb).forEach(function (v) { still[v] = true; }); });
+        Object.keys(wallHome).forEach(function (k) { if (!still[k]) { var X = wallHome[k]; pos[k * 3] = X[0]; pos[k * 3 + 1] = X[1]; pos[k * 3 + 2] = X[2]; delete wallHome[k]; } });
+        if (!undo.length) continue;
+      }
       if (!undo.length) break;
       if (round >= 3) undo = live;   // (still failing: no moved vertex at all)
       undo.forEach(function (sn) { pos[sn.v * 3] = sn.X[0]; pos[sn.v * 3 + 1] = sn.X[1]; pos[sn.v * 3 + 2] = sn.X[2]; });
@@ -1377,6 +1505,7 @@ var Exchange = (function () {
       var A = P(vs[0]), B = P(vs[1]), geom, sense = '.T.';
       if (cl.t === 'c') { geom = circleE(cl.c); sense = ccw(cl.c, A, B) ? '.T.' : '.F.'; }
       else if (cl.t === 'e') { geom = ellipseE(cl.e); sense = wrapAngle(ellipseParam(cl.e, B) - ellipseParam(cl.e, A)) > 0 ? '.T.' : '.F.'; }
+      else if (cl.t === 'w') { var rl = railOf(cl.S, A, B); geom = rationalCurve(rl.poles, rl.w); }   // lane stepout3
       else geom = lineE(A, P(vs[vs.length - 1]));
       ch = chains[key] = { id: W.add('EDGE_CURVE(\'\',' + vertex(vs[0]) + ',' + vertex(vs[vs.length - 1]) + ',' + geom + ',' + sense + ')'), fk: fk };
       return oe(ch.id, true);
@@ -1389,6 +1518,39 @@ var Exchange = (function () {
       return oe(ch.id, true);
     }
     function edgeLoop(oes) { return W.add('EDGE_LOOP(\'\',' + stepList(oes) + ')'); }
+    // lane stepout3: a radial wall's rail from A to B on cylinder S (both on it): the circle's arc between their angles as
+    // a rational cubic (the quadratic arc, weight cos(Δ/2) on the corner of the tangents, raised to degree 3), so it is
+    // exact on the cylinder; the height of its two inner poles is free, set so the height runs with the angle (the
+    // middle pair symmetric about the half way height, matched at a quarter: off a straight line in (angle, height) by
+    // O(Δz·Δ⁴), 1e-10 on a hole's edge, where the quadratic's own bump was 2e-6 and left a vertex in the flat). The odd
+    // symmetry keeps the (angle, height) area of every edge that of its chord. Straight along a ruling when Δ = 0.
+    function railOf(S, A, B) {
+      var a = axial(S, A), b = axial(S, B), ua = scale(a.v, 1 / a.rho), ub = scale(b.v, 1 / b.rho);
+      var D = Math.atan2(dot(cross(ua, ub), S.d), dot(ua, ub)), w = Math.abs(D) < 1e-12 ? 1 : Math.cos(D / 2), r = (a.rho + b.rho) / 2;
+      var um = Math.abs(D) < 1e-12 ? ua : norm(add(ua, ub)), m1 = scale(um, r / w), w1 = (1 + 2 * w) / 3, h = (b.z - a.z) / 2, zm = (a.z + b.z) / 2;
+      var phi = Math.abs(D) < 1e-12 ? -0.25 : 2 * Math.atan(Math.tan(D / 4) * -0.5) / D;   // the angle's fraction at t = 1/4
+      var c = (-(28 + 36 * w1) * 2 * h * phi - 26 * h) / (18 * w1);
+      function pole(rad, z) { return add(add(S.o, scale(S.d, z)), rad); }
+      var q1 = scale(add(scale(ua, a.rho), scale(m1, 2 * w)), 1 / (1 + 2 * w)), q2 = scale(add(scale(ub, b.rho), scale(m1, 2 * w)), 1 / (1 + 2 * w));
+      return { poles: [A, pole(q1, zm - c), pole(q2, zm + c), B], w: Math.abs(w1 - 1) < 1e-15 ? 1 : w1 };
+    }
+    function rationalCurve(poles, w) {
+      var ps = stepList(poles.map(pt));
+      if (w === 1) return W.add('B_SPLINE_CURVE_WITH_KNOTS(\'\',3,' + ps + ',.UNSPECIFIED.,.F.,.F.,(4,4),(0.,1.),.UNSPECIFIED.)');
+      return W.add('(BOUNDED_CURVE()B_SPLINE_CURVE(3,' + ps + ',.UNSPECIFIED.,.F.,.F.)B_SPLINE_CURVE_WITH_KNOTS((4,4),(0.,1.),.UNSPECIFIED.)CURVE()GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE((1.,' + stepReal(w) + ',' + stepReal(w) + ',1.))REPRESENTATION_ITEM(\'\'))');
+    }
+    // the wall face of radial strip wq: degree 3 along the rails (inner a → b, outer its partners), 1 across, the
+    // rails' weights: every line across is radial
+    function wallFace(wq, loop, g) {
+      var ri = railOf(wq.S, P(wq.a), P(wq.b)), ro = railOf(wq.S, P(wq.pa), P(wq.pb)), wt = ri.w, ws = stepReal(wt);
+      var rows = [0, 1, 2, 3].map(function (k) { return '(' + pt(ri.poles[k]) + ',' + pt(ro.poles[k]) + ')'; });
+      var surf = wt === 1 ? W.add('B_SPLINE_SURFACE_WITH_KNOTS(\'\',3,1,(' + rows.join(',') + '),.UNSPECIFIED.,.F.,.F.,.F.,(4,4),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.)')
+        : W.add('(BOUNDED_SURFACE()B_SPLINE_SURFACE(3,1,(' + rows.join(',') + '),.UNSPECIFIED.,.F.,.F.,.F.)B_SPLINE_SURFACE_WITH_KNOTS((4,4),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.)GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_SURFACE(((1.,1.),(' + ws + ',' + ws + '),(' + ws + ',' + ws + '),(1.,1.)))REPRESENTATION_ITEM(\'\')SURFACE())');
+      // same_sense: dPdu × dPdv (along the rail × outward across) against the triangles' outward normal
+      var nb = cross(sub(ri.poles[3], ri.poles[0]), sub(scale(add(ro.poles[1], ro.poles[2]), 0.5), scale(add(ri.poles[1], ri.poles[2]), 0.5))), nt = [0, 0, 0];
+      wq.tris.forEach(function (t2) { var A = P(tri[t2 * 3]); nt = add(nt, cross(sub(P(tri[t2 * 3 + 1]), A), sub(P(tri[t2 * 3 + 2]), A))); });
+      return W.add('ADVANCED_FACE(\'\',(' + W.add('FACE_OUTER_BOUND(\'\',' + edgeLoop(loopEdges(loop, g)) + ',.T.)') + '),' + surf + ',' + (dot(nb, nt) > 0 ? '.T.' : '.F.') + ')');
+    }
 
     // the seam of a band or cap from V1 (on circle c1) to the point p2: a ruling LINE, or a meridian arc of a sphere /
     // torus, the one that crosses the patch
@@ -1433,6 +1595,7 @@ var Exchange = (function () {
     var faceIds = [];
     groups.forEach(function (ts, g) {
       if (!ts.length || (g < nF && !loopsOf[g].length)) return;
+      if (g >= nW) { if (loopsOf[g].length === 1) faceIds.push(wallFace(walls[g - nW], loopsOf[g][0], g)); return; }   // lane stepout3
       if (g < nF) {
         // a planar face: every counter-clockwise loop (seen along the normal) is an outer bound, every clockwise loop a
         // hole of the smallest outer loop that contains it
@@ -2156,9 +2319,32 @@ var Exchange = (function () {
       if (!curved) return;
       (fa[1] || []).forEach(function (bRef) {
         var b = ent(bRef), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
-        if (l && l.t === 'EDGE_LOOP') loopEdgeList(l).forEach(function (x) { if (x.info.kind === 'bspline') x.info.pts = x.info.raw; });
+        if (l && l.t === 'EDGE_LOOP') loopEdgeList(l).forEach(function (x) { if (x.info.kind === 'bspline') x.info.pts = cylSubsample(x.info, sf.t === 'CYLINDRICAL_SURFACE' ? surfRecord(sf) : k && k.cyl); });
       });
     });
+    // lane stepout3: a B-spline edge lying exactly on a cylinder (Anvil's rails round a hole through a bend: 24 samples
+    // a span made every short edge 25 points and the hole 20 k triangles) keeps, per span, every k-th sample (k a divisor
+    // of 24, the most whose step stays inside the cylinder's own angular step); a span's samples are symmetric, so
+    // the (angle, height) area of an edge whose bump is odd (railOf) is unchanged
+    function cylSubsample(info, S) {
+      var raw = info.raw, n = raw.length - 1;
+      if (info.cylSub) return info.cylSub;
+      if (!S || S.t !== 'cyl' || n % SPLINE_SEGS || !(S.r > 0)) return raw;
+      var tolC = 1e-10 * Math.max(1, S.r), ths = [];
+      for (var i = 0; i <= n; i++) {
+        var ax = axial(S, raw[i]);
+        if (Math.abs(ax.rho - S.r) > tolC) return raw;
+        ths.push(ax.v);
+      }
+      var stepA = 2 * Math.PI / K.segsForRadius(S.r * (toMM || 1)), out = [raw[0]];
+      for (var s0 = 0; s0 < n; s0 += SPLINE_SEGS) {
+        var dmax = 0;
+        for (i = s0; i < s0 + SPLINE_SEGS; i++) dmax = Math.max(dmax, Math.acos(Math.max(-1, Math.min(1, dot(ths[i], ths[i + 1]) / (len(ths[i]) * len(ths[i + 1]))))));
+        var kk = [24, 12, 8, 6, 4, 3, 2, 1].filter(function (k) { return k * dmax <= stepA; })[0] || 1;
+        for (i = s0 + kk; i <= s0 + SPLINE_SEGS; i += kk) out.push(raw[i]);
+      }
+      return (info.cylSub = out);
+    }
     // lane importbend: a ruled B-spline face (degree 1 one way: a twisted bend end, a relief wall) bounded by two
     // straight edges and two rails: the rails' points zipped by arc length, triangles turning with the face's loop
     function ruledFace(fa, surf, out) {
@@ -2166,7 +2352,19 @@ var Exchange = (function () {
       if (!d || (d.du !== 1 && d.dv !== 1) || bs.length !== 1) return false;
       var b = ent(bs[0]), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
       if (!l || l.t !== 'EDGE_LOOP') return false;
-      var list = loopEdgeList(l), n = list.length, lines = [];
+      var list = loopEdgeList(l), n, lines = [];
+      // lane stepout3: a straight side split in two (a radial wall's line where a point between the sheet's faces is
+      // shared with a face beside it) is one side
+      for (var mg = 0; mg < list.length && list.length > 2; mg++) {
+        var x0 = list[mg], x1 = list[(mg + 1) % list.length];
+        if (x0.info.kind !== 'line' || x1.info.kind !== 'line') continue;
+        var q0 = orientedPts(x0), q1 = orientedPts(x1), u0 = sub(q0[q0.length - 1], q0[0]), u1 = sub(q1[q1.length - 1], q1[0]);
+        if (len(cross(u0, u1)) > 1e-9 * len(u0) * len(u1) || dot(u0, u1) <= 0) continue;
+        list.splice(mg, 1, { info: { kind: 'line', pts: [q0[0], q1[q1.length - 1]] }, fwd: true });
+        list.splice((mg + 1) % (list.length), 1);
+        mg = -1;
+      }
+      n = list.length;
       list.forEach(function (x, k) { if (x.info.kind === 'line') lines.push(k); });
       if (lines.length !== 2 && n === 4) {
         // four edges, not two of them straight: the rails are the longer opposite pair
@@ -2181,6 +2379,19 @@ var Exchange = (function () {
       }
       function fracs(P) { var acc = [0], t = 0; for (var k = 1; k < P.length; k++) { t += len(sub(P[k], P[k - 1])); acc.push(t); } return acc.map(function (a) { return t > 0 ? a / t : 0; }); }
       var A = chain(lines[0] + 1, lines[1]), B = chain((lines[1] + 1) % n, lines[0]).reverse(), fa1 = fracs(A), fb = fracs(B), i = 0, j = 0, flip = ba[2] && ba[2].e === 'F';
+      // lane stepout3: rails that are the surface's own sides, sampled at the same parameters (Anvil's radial walls of a
+      // hole through a bend), are joined point to point: every line across is then the surface's ruling (by arc length
+      // the outer rail's points slid round from the inner's and the wall twisted: 4e-9 of the part's volume)
+      if (A.length === B.length && A.length > 2) {
+        var G = bsSurfaceGrid(d.du, d.dv, d.poles, d.U, d.V, d.W), ext = 0, side = function (k) { return d.du === 1 ? G[k] : columnOf(G, k); };
+        G.forEach(function (c) { c.forEach(function (p) { ext = Math.max(ext, len(p)); }); });
+        var s0 = side(0), s1 = side(d.du === 1 ? G.length - 1 : G[0].length - 1), tolG = 1e-9 * Math.max(1, ext);
+        // the indices of P2's points along side Q (a rail may keep every k-th sample: cylSubsample), or null
+        var at = function (P2, Q) { var out = [], i0 = 0; for (var k = 0; k < P2.length; k++) { while (i0 < Q.length && len(sub(P2[k], Q[i0])) > tolG) i0++; if (i0 >= Q.length) return null; out.push(i0); } return out; };
+        var idx = function (P2) { var r = []; [s0, s1].forEach(function (Q) { [Q, Q.slice().reverse()].forEach(function (Q2, rev) { var x = at(P2, Q2); if (x) r.push(rev + ':' + x.join()); }); }); return r; };
+        var ia = idx(A), ib = idx(B);
+        if (ia.some(function (x) { return ib.indexOf(x) >= 0; })) { fa1 = A.map(function (p, k) { return k / (A.length - 1); }); fb = fa1.map(function (x) { return x + 1e-12; }); fb[fb.length - 1] = 1; }
+      }
       function tri(p, q, r) {
         if (flip) { var t = q; q = r; r = t; }
         var base = out.pos.length / 3;

@@ -2374,20 +2374,28 @@
       // a relief here, or another record ends within 3 (R + T) of it (a Virtual Sharp corner trims (R + T)·tan(A/2)
       // back from the corner) and that record's own bend still has metal at that end (a corner notch cut through both
       // bends leaves nobody owning the corner; a relief's bite leaves the neighbour's bend whole).
-      function bendMetal(g, near) {
+      function bendMetal(g, near, fr) {
         var dg = sub(g.b, g.a), lg = Math.hypot(dg[0], dg[1], dg[2]);
         if (!(lg > 1e-9)) return true;
         dg = scale(dg, 1 / lg);
-        var Cg = add(g.origin, scale(g.u, g.R)), rg = g.R + g.T / 2, hg = Math.min(g.T / 2, lg / 4), tg = near === 0 ? hg : lg - hg;
-        var P = add(add(Cg, scale(g.o, rg * Math.sin(g.angle / 2))), scale(g.u, -rg * Math.cos(g.angle / 2)));
+        var Cg = add(g.origin, scale(g.u, g.R)), rg = g.R + g.T / 2, hg = Math.min(g.T / 2, lg / 4), tg = near === 0 ? hg : lg - hg, th = g.angle * (fr == null ? 0.5 : fr);
+        var P = add(add(Cg, scale(g.o, rg * Math.sin(th))), scale(g.u, -rg * Math.cos(th)));
         return inBody(add(P, scale(dg, tg - dot(sub(Cg, g.a), dg))));
+      }
+      // lane stepout3: Insert Bends' rounded bends end where the part's bend ends; at a mitred corner of large radii
+      // (R .5 tray) that end is tapered (the bend runs to the corner at one side of the strip only), so the middle of
+      // the neighbour's end is air T/2 in and the corner read as nobody's: both strips were notched there and the blank
+      // came out 2 % short. Between two such records the neighbour has metal at its end at some angle across it.
+      function endMetal(g, near) {
+        if (!(fi.ibRound && g.ibRound)) return bendMetal(g, near);
+        return [0.5, 0.05, 0.95, 0.25, 0.75].some(function (fr) { return bendMetal(g, near, fr); });
       }
       function cornerAt(kk) {
         if ((fi.reliefs && fi.reliefs[kk]) || (fi.ccEnds && fi.ccEnds[kk])) return true;   // (lane DV: a Closed Corner's cut end)
         var E = kk === 0 ? fi.a : fi.b, reach = 3 * (fi.R + fi.T) + 1e-3;
         return flanges.some(function (g) {
           if (g === fi || !g.a || !g.b || !g.origin) return false;
-          return [g.a, g.b].some(function (P, near) { var d = sub(P, E); return Math.hypot(d[0], d[1], d[2]) < reach && bendMetal(g, near); });
+          return [g.a, g.b].some(function (P, near) { var d = sub(P, E); return Math.hypot(d[0], d[1], d[2]) < reach && endMetal(g, near); });
         });
       }
       var corner = [cornerAt(0), cornerAt(1)];
@@ -6186,14 +6194,21 @@
       if (d[big] < 0) d = scale(d, -1);
       var ax = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].sort(function (a, b) { return Math.abs(dot(a, d)) - Math.abs(dot(b, d)); })[0];
       var e1 = norm(sub(ax, scale(d, dot(ax, d)))), e2 = cross(d, e1), o = sub(g.s.o, scale(d, dot(g.s.o, d))), r = g.s.r;
-      var th = [], z0 = Infinity, z1 = -Infinity;
+      var th = [], z0 = Infinity, z1 = -Infinity, span = 0;
       g.polys.forEach(function (p) {
+        var lo = Infinity, hi = -Infinity, ref = null;
         p.vertices.forEach(function (v) {
           var q = sub([v.pos.x, v.pos.y, v.pos.z], o), z = dot(q, d), rad = sub(q, scale(d, z));
+          // lane stepout3: each facet's own angular width (below)
+          var tv = Math.atan2(dot(rad, e2), dot(rad, e1));
+          if (ref == null) ref = tv;
+          var dv = tv - ref; while (dv > Math.PI) dv -= 2 * Math.PI; while (dv < -Math.PI) dv += 2 * Math.PI;
+          lo = Math.min(lo, dv); hi = Math.max(hi, dv);
           if (Math.abs(len(rad) - r) > 1e-5 * (1 + r)) return;
-          th.push(Math.atan2(dot(rad, e2), dot(rad, e1)));
+          th.push(tv);
           z0 = Math.min(z0, z); z1 = Math.max(z1, z);
         });
+        if (hi > lo) span = Math.max(span, hi - lo);
       });
       if (th.length < 2 || !(z1 - z0 > 1e-6)) return;
       th.sort(function (a, b) { return a - b; });
@@ -6202,6 +6217,10 @@
       var step = 0;   // the widest facet: its chord lies r(1 − cos(step / 2)) inside the true surface
       for (i = 1; i < th.length; i++) if (th[i] - th[i - 1] < gap - 1e-12) step = Math.max(step, th[i] - th[i - 1]);
       if (th[0] + 2 * Math.PI - th[th.length - 1] < gap - 1e-12) step = Math.max(step, th[0] + 2 * Math.PI - th[th.length - 1]);
+      // lane stepout3: and no less than the widest facet's own width: the gaps between all the points' angles miss a
+      // long facet next to a dense run of points at other heights (a hole's edge read from Anvil's STEP: the inner air
+      // probe sat inside the facet, in metal, and the bend was not found)
+      step = Math.max(step, Math.min(span, 2 * Math.PI - gap));
       g.f = { d: d, e1: e1, e2: e2, o: o, r: r, th0: start, A: 2 * Math.PI - gap, z0: z0, z1: z1, sag: r * (1 - Math.cos(Math.min(step, Math.PI) / 2)) };
     });
     return groups;
@@ -6547,7 +6566,7 @@
       if (ol) ol.loops.forEach(function (l) { l.forEach(function (p) { Lw = Math.max(Lw, dot(sub(to3D(ol.plane, p[0], p[1]), Wt), tw)); }); });
       if (!(Lw > ov)) throw new Error(what + ': the wall at ' + bcPt(b.P(0, 0, sm)) + ' is too short for the bend (R + T = ' + bcNum(RT) + ').');
       info.push({ kind: 'edge', a: a3, b: b3, mid: mid, origin: mid, o: o, u: u, len: s1 - s0, angle: A, R: R, L: Lw, T: T, ba: null,
-        mitred: [false, false], miterPlanes: [null, null] });
+        mitred: [false, false], miterPlanes: [null, null], ibRound: !!b.round });   // (lane stepout3: flatPattern's corner test)
     });
     return { fills: fills, corners: corners, wedges: wedges, info: info, T: T, R: R, rounded: bends.filter(function (b) { return b.round; }).length };
   }
