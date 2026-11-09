@@ -634,11 +634,15 @@
         if (!d2) return;
         var ca = dot(d2, en.dIn), cs = -dot(d2, ed.o);
         if (!(ca > 1e-6 && cs > 1e-6)) return;   // a square or obtuse corner: the strip stays on the sheet
-        var dl = 0.01 * T + ov * 0.01, sOut = ov + dl, lam = sOut / cs;
+        // lane mitrefid: a placement that moves the bend in off the edge (Material Inside / Outside, Virtual Sharp,
+        // Tangent to Bend: shift > 0) has its overlap strip at [shift, shift + ov] from the edge, not [0, ov]: the old
+        // cut took the bend's own end off over [0, ov] (a notched flat, 20 outline corners) and left the strip's sliver
+        // (T deep, past the side) in the part and the blank. The bend keeps its square end (the flange is as wide as
+        // its edge, SolidWorks'); only the strip goes.
+        var dl = 0.01 * T + ov * 0.01, s0 = Math.max(shift, 0), sOut = s0 + ov + dl, kx = -ca / cs;
         // in the sheet plane: x = −dIn (past the end), y = −o (into the sheet), n = ±nF so the prism runs through T
         var sp = { origin: en.P, x: scale(en.dIn, -1), y: scale(ed.o, -1), n: cross(scale(en.dIn, -1), scale(ed.o, -1)) };
-        var Q2 = add(en.P, scale(d2, lam));
-        var loop2 = [[0, 0], [dl, 0], [dl, sOut], [dot(sub(Q2, en.P), sp.x), sOut]];
+        var loop2 = [[kx * s0, s0], [dl, s0], [dl, sOut], [kx * sOut, sOut]];
         if (signedArea(loop2) < 0) loop2.reverse();
         var nn = dot(sp.n, ed.nF) > 0 ? 1 : -1;   // the sheet lies between the face of the edge and T below it
         var a0 = nn > 0 ? -T - dl : -dl, b0 = nn > 0 ? dl : T + dl;
