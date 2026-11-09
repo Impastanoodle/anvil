@@ -1061,6 +1061,10 @@ var SketchSolver = (function () {
   // On failure (a conflict, no convergence) the geometry is left as it was unless opts.force. Returns
   // { ok, it, res, moved }.
   function writeBack(sketch, sys) {
+    writeBackOnly(sketch, sys);
+    if (K && K.syncFitSplines) K.syncFitSplines(sketch);   // lane fitspline: Constrained fit splines follow their source chains
+  }
+  function writeBackOnly(sketch, sys) {
     // lane DE: the handle angles a relation turned (unknowns beyond paramNames)
     sys.vars.forEach(function (v) {
       var e = sys.ents[v.e], o = sketch.entities[v.e];
@@ -2528,6 +2532,8 @@ var SketchSolver = (function () {
       // ends, a partial ellipse's ends too
       case 'spline': {
         var sn = e.pts.length;
+        // lane fitspline: a B-spline's control points lie off its curve (dozens of them on a fit): its ends only
+        if (K && K.isBSpline && K.isBSpline(e)) { if (!e.closed) { add('p1'); add('p2'); } break; }
         if (!e.closed) add('p1');
         for (var sk = e.closed ? 0 : 1; sk < (e.closed ? sn : sn - 1); sk++) add('v' + sk);
         if (!e.closed) add('p2');
@@ -3162,6 +3168,24 @@ var SketchSolver = (function () {
   function bzD1(B, s) { var u = 1 - s, d0 = 3 * u * u, d1 = 6 * u * s, d2 = 3 * s * s; return [d0 * (B[1][0] - B[0][0]) + d1 * (B[2][0] - B[1][0]) + d2 * (B[3][0] - B[2][0]), d0 * (B[1][1] - B[0][1]) + d1 * (B[2][1] - B[1][1]) + d2 * (B[3][1] - B[2][1])]; }
   function freeCurve(e) {
     if (!isFree(e)) return null;
+    if (K && K.isBSpline && K.isBSpline(e)) {
+      // lane fitspline: a B-spline (Fit Spline): t in [0, 1] over its knot domain, evaluated on its exact cubic pieces
+      // (the end pieces' polynomials carried on past t0 / t1: Extend); a closed one wraps
+      var gb = K.splineGeom(e);
+      if (!gb || !gb.bez.length) return null;
+      var kb = gb.knots, mb = gb.bez.length, ua = kb[0], Lb = kb[mb] - ua, cb = !!gb.closed;
+      var atb = function (t) {
+        if (cb) t = ((t % 1) + 1) % 1;
+        var u = ua + t * Lb, lo = 0, hi = mb - 1;
+        while (lo < hi) { var mid = (lo + hi + 1) >> 1; if (kb[mid] <= u) lo = mid; else hi = mid - 1; }
+        var h = kb[lo + 1] - kb[lo];
+        return { B: gb.bez[lo], s: (u - kb[lo]) / h, h: h };
+      };
+      return { e: e, g: gb, style: true, bs: true, t0: 0, t1: 1, closed: cb, per: 1, n: Math.max(32, 12 * mb), reach: 1,
+        pt: function (t) { var q = atb(t); return bzPt(q.B, q.s); },
+        d1: function (t) { var q = atb(t), d = bzD1(q.B, q.s), k = Lb / q.h; return [d[0] * k, d[1] * k]; },
+        knotD1: function (t) { var q = atb(t), d = bzD1(q.B, q.s); return [d[0] / q.h, d[1] / q.h]; } };
+    }
     if (e.t === 'spline' && e.style && K && K.bzPoint) {
       // rfAH: a style spline: its one Bézier span exactly, t in [0, 1] (the polynomial carried on past its ends: Extend)
       var SP = (e.pts || []).map(function (q) { return [+q[0], +q[1]]; });
@@ -3346,7 +3370,12 @@ var SketchSolver = (function () {
       // rfAS: the piece of a conic / parabola is a conic of its own through the same curve (ui-sketch-spline.js)
       return K.conicPieceAt(e, fc.pt(ta), fc.pt(tb));
     }
-    if (e.t === 'spline' && e.style) {
+    if (K && K.isBSpline && K.isBSpline(e)) {
+      // lane fitspline: the piece of a B-spline is a B-spline (its own pieces cut there, exactly)
+      o = bsPieceT(e, ta, tb);
+      if (!o) return null;
+      if (e.showCurvature) o.showCurvature = true;
+    } else if (e.t === 'spline' && e.style) {
       // rfAH: the piece of a style spline is a style spline of the same degree (the Bézier's own sub-span, exactly)
       o = { t: 'spline', style: true, pts: K.bzSub(e.pts, ta, tb).map(function (q) { return [r6(q[0]), r6(q[1])]; }) };
       if (e.showCurvature) o.showCurvature = true;
@@ -3655,7 +3684,7 @@ var SketchSolver = (function () {
   function freeOffset(e, d) {
     var fc = freeCurve(e);
     if (!fc) return null;
-    var ts = [], k, n = e.t === 'spline' ? (fc.style ? 4 * Math.max(4, e.pts.length) : fc.t1 * 4) : 24;   // rfAH: a style spline: 4 per control vertex
+    var ts = [], k, n = e.t === 'spline' ? (fc.bs ? 16 * fc.g.bez.length : fc.style ? 4 * Math.max(4, e.pts.length) : fc.t1 * 4) : 24;   // rfAH: a style spline: 4 per control vertex
     for (k = 0; k <= n; k++) ts.push(fc.t0 + (fc.t1 - fc.t0) * k / n);
     if (fc.closed) ts.pop();
     var sm = freeSamples(fc), area = 0;
@@ -3668,6 +3697,13 @@ var SketchSolver = (function () {
     }
     // folded over: an offset chord running against the curve
     for (k = 0; k + 1 < ts.length; k++) if (dot(sub(pts[k + 1], pts[k]), sub(fc.pt(ts[k + 1]), fc.pt(ts[k]))) <= 0) return null;
+    if (fc.bs && K.fitSplineEntity) {
+      // lane fitspline: a B-spline's offset is a B-spline fitted to its offset points (1e-5 of its size)
+      var ext = 0;
+      pts.forEach(function (q) { ext = Math.max(ext, len(sub(q, pts[0]))); });
+      var fb = K.fitSplineEntity([{ t: 'polyline', pts: pts, closed: !!fc.closed }], [0], { tol: 1e-5 * Math.max(1, ext), closed: !!fc.closed });
+      if (fb.ok) { if (e.construction) fb.e.construction = true; return fb.e; }
+    }
     var o = { t: 'spline', pts: pts };
     if (fc.closed) o.closed = true;
     if (e.construction) o.construction = true;
@@ -4271,9 +4307,21 @@ var SketchSolver = (function () {
   // rfAH: a style spline carried on (Extend, Corner) to its Bézier from a to b (one of them past [0, 1]): its control
   // vertices are redrawn, so the relations on its inner vertices and on the end that moved go (the other end, a point
   // lying on the curve and its dimensions stay)
+  // lane fitspline: the piece of B-spline e from t = ta to tb (freeCurve's t: 0 … 1 over its knots) as a B-spline entity
+  function bsPieceT(e, ta, tb) {
+    var p = e.deg > 0 ? e.deg | 0 : 3, U = e.knots, ua = +U[p], L = +U[e.pts.length] - ua;
+    var o = K.bsSub(e, ua + ta * L, ua + tb * L);
+    if (!o) return null;
+    if (e.construction) o.construction = true;
+    if (e.layer != null) o.layer = e.layer;
+    return o;
+  }
   function styleRegrow(sketch, i, a, b, end) {
     var e = sketch.entities[i];
-    e.pts = K.bzSub(e.pts, a, b).map(function (q) { return [Math.round(q[0] * 1e6) / 1e6, Math.round(q[1] * 1e6) / 1e6]; });
+    if (K.isBSpline && K.isBSpline(e)) {   // lane fitspline
+      var nb = bsPieceT(e, a, b);
+      if (nb) { e.knots = nb.knots; e.pts = nb.pts; e.deg = 3; delete e.closed; delete e.fit; }
+    } else e.pts = K.bzSub(e.pts, a, b).map(function (q) { return [Math.round(q[0] * 1e6) / 1e6, Math.round(q[1] * 1e6) / 1e6]; });
     if (!sketch.rels) return;
     sketch.rels = sketch.rels.filter(function (rel) {
       return !rel.refs.some(function (r) { var p = parseRef(r); return p && !p.o && p.e === i && (p.s === 'v' || (p.s === 'p' && (end === 'p2' ? p.k === 2 : p.k === 1))); });

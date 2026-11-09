@@ -534,7 +534,24 @@ var DxfImport = (function () {
       var rational = W.length === C.length && W.some(function (w) { return Math.abs(w - W[0]) > 1e-12 * Math.abs(W[0]); });
       if (good && deg <= 3 && !rational) {
         var spans = bezSpans(Cw, U, deg), size = bezSize(spans), tol = 1e-6 * Math.max(1, size) + 2e-6;
-        spansToSplines(spans, tol).forEach(add);
+        var Kb = Kern(), bezier = true, inner = U.slice(deg + 1, C.length), km = 0;
+        for (var kq = 0; kq < inner.length; kq++) { km++; if (kq + 1 === inner.length || inner[kq + 1] !== inner[kq]) { if (km % deg) bezier = false; km = 0; } }
+        var asSpl = bezier ? spansToSplines(spans, tol) : null;
+        // lane fitspline: a true B-spline (an interior knot of multiplicity below the degree: not the Bézier spans
+        // Anvil writes a through-points spline as) comes in as ONE B-spline entity, its knots and control points
+        // clamped (SolidWorks reads a DXF spline as one spline); so does Bézier spans no spline of Anvil's reproduces
+        if (deg >= 2 && Kb && Kb.bsPieces && (!bezier || !(asSpl.length === 1 && !asSpl[0].tans))) {
+          var pcs = Kb.bsPieces(U, Cw, deg);
+          pcs.forEach(function (pc, z) { if (z) pc.mult = Math.min(3, pc.mult + 3 - deg); });
+          var bs = pcs.length ? Kb.bsFromPieces(pcs) : null;
+          if (bs) {
+            var be = { t: 'spline', style: true, deg: 3, knots: bs.knots, pts: bs.pts }, nb = bs.pts.length;
+            if (nb > 4 && dist(bs.pts[0], bs.pts[nb - 1]) <= tol) { be.closed = true; be.pts[nb - 1] = be.pts[0].slice(); }
+            add(be);
+            return;
+          }
+        }
+        asSpl.forEach(add);
         return;
       }
       if (good) {

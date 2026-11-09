@@ -666,10 +666,16 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (lg && (!pe.hit || lg.d + 1e-9 < pe.d)) return { kind: 'sketchRef', ref: lg.ref };
     return pe.hit;
   }
+  // lane fitspline: a B-spline's control polygon is shown (and picked) only while its own PropertyManager is open
+  function bsPolyHidden(i, e) {
+    if (!(K.isBSpline && K.isBSpline(e))) return false;
+    var sp = UI.pmSpec && UI.pmSpec();
+    return !(sp && sp._skEntity && sp._skEntity.index === i);
+  }
   function pickStyleLeg(f, mx, my) {
     var pl = UI.activePlane(), best = null, bd = 5;
     f.entities.forEach(function (e, i) {
-      if (!e || e.t !== 'spline' || !e.style || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;
+      if (!e || e.t !== 'spline' || !e.style || bsPolyHidden(i, e) || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;
       for (var k = 0; k + 1 < e.pts.length; k++) {
         var a = UI.worldToScreen(K.to3D(pl, e.pts[k][0], e.pts[k][1])), b = UI.worldToScreen(K.to3D(pl, e.pts[k + 1][0], e.pts[k + 1][1]));
         var dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy, t = l2 > 0 ? Math.max(0, Math.min(1, ((mx - a[0]) * dx + (my - a[1]) * dy) / l2)) : 0;
@@ -685,7 +691,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   function pickStyleVertex(f, mx, my) {
     var pl = UI.activePlane(), best = null, bd = 9;
     f.entities.forEach(function (e, i) {
-      if (!e || e.t !== 'spline' || !e.style || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;
+      if (!e || e.t !== 'spline' || !e.style || bsPolyHidden(i, e) || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;
       e.pts.forEach(function (p) {
         var q = UI.worldToScreen(K.to3D(pl, p[0], p[1])), d = Math.hypot(q[0] - mx, q[1] - my);
         if (d < bd) { bd = d; best = i; }

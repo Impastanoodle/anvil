@@ -517,9 +517,10 @@
   // knot i to knot i + 1 (interior knots of multiplicity 3: each span is exact, the curve as continuous as the spans)
   // rfAH: style (a style spline's { cps, degree, L }) writes its single Bézier span exactly instead: degree n, clamped
   // knots [0 × (n + 1), L × (n + 1)], its control vertices
-  DXF.prototype.spline = function (layer, bez, knots, style) {
+  // lane fitspline: bs (a B-spline's { deg, knots, cps }) writes its own knots and control points, exactly
+  DXF.prototype.spline = function (layer, bez, knots, style, bs) {
     var self = this;
-    this.ents.push({ k: 'SPLINE', layer: layer, bez: bez, knots: knots, style: style && style.degree > 3 ? style : null });
+    this.ents.push({ k: 'SPLINE', layer: layer, bez: bez, knots: knots, style: style && style.degree > 3 ? style : null, bs: bs || null });
     bez.forEach(function (B) { for (var i = 0; i <= 8; i++) { var p = K.bezPoint(B, i / 8); self._grow(p[0], p[1]); } });
   };
   // ellipse(layer, centre, major (vector from the centre to the major axis end), ratio (minor / major ≤ 1), start,
@@ -688,6 +689,7 @@
           for (var sk = 0; sk <= deg; sk++) kn.push(0);
           for (sk = 0; sk <= deg; sk++) kn.push(e.style.L);
         }
+        if (e.bs) { deg = e.bs.deg; cps = e.bs.cps; kn = e.bs.knots; }   // lane fitspline: a B-spline as it is
         head('SPLINE', e.layer, 'AcDbSpline');
         P(210, 0); P(220, 0); P(230, 1); P(70, 8); P(71, deg); P(72, kn.length); P(73, cps.length); P(74, 0);
         P(42, '0.0000000001'); P(43, '0.0000000001');
@@ -785,7 +787,7 @@
     if (e.t === 'spline') {
       var g = K.splineGeom(e);
       if (!g) return;
-      if (r2000) { d.spline(layer, g.bez, g.knots, g.style); return; }
+      if (r2000) { d.spline(layer, g.bez, g.knots, g.style, g.bs); return; }
       if (g.style && g.style.degree > 3) {   // rfAH: R12: arcs along the style spline's own Bézier
         var SP = g.style.cps;
         emitArcs(freeArcs(function (s) { return K.bzPoint(SP, s); }, 0, 1, tol, 1));
@@ -1805,6 +1807,23 @@
     if (deg !== P.length - 1) P = K.bzDegree(P, deg).map(function (q) { return [Math.round(q[0] * 1e9) / 1e9, Math.round(q[1] * 1e9) / 1e9]; });
     return this._e({ t: 'spline', style: true, pts: P });
   };
+  // lane fitspline: bspline(controlPoints, knots, opts?): a clamped B-spline of degree opts.degree (3), knots.length =
+  // controlPoints.length + degree + 1 (what Fit Spline makes and a DXF SPLINE reads in as; Kernel.splineGeom). opts
+  // { closed (a closed fit: first and last control points equal), fit: { id, tol, closed } (Constrained: refitted to
+  // the entities marked with fitSource(id)) }
+  SketchBuilder.prototype.bspline = function (pts, knots, opts) {
+    var s = this, deg = opts && opts.degree != null ? +opts.degree : 3, e = { t: 'spline', style: true, deg: deg, knots: knots.map(Number), pts: pts.map(function (p) { return [s._v(p[0]), s._v(p[1])]; }) };
+    if (opts && opts.closed) e.closed = true;
+    if (opts && opts.fit) e.fit = { id: +opts.fit.id, tol: +opts.fit.tol, closed: !!opts.fit.closed };
+    if (!K.bsValid(e)) throw new Error('bspline: ' + e.pts.length + ' control points of degree ' + deg + ' need ' + (e.pts.length + deg + 1) + ' non-decreasing knots, clamped.');
+    return this._e(e);
+  };
+  // lane fitspline: fitSource(id, [entity indices]): those entities are the source chain of Constrained fit spline id
+  SketchBuilder.prototype.fitSource = function (id, idx) {
+    var f = this.f;
+    (idx || []).forEach(function (i) { if (f.entities[i]) f.entities[i].fitSrc = +id; });
+    return this;
+  };
   SketchBuilder.prototype.ellipse = function (cx, cy, rx, ry, rot) { var s = this; return this._e({ t: 'ellipse', cx: s._v(cx), cy: s._v(cy), rx: s._v(rx), ry: s._v(ry), rot: s._v(rot || 0) }); };
   SketchBuilder.prototype.partialEllipse = function (cx, cy, rx, ry, rot, a0, a1) { var s = this; return this._e({ t: 'pellipse', cx: s._v(cx), cy: s._v(cy), rx: s._v(rx), ry: s._v(ry), rot: s._v(rot || 0), a0: s._v(a0), a1: s._v(a1) }); };
   // sketch-text: text(x, y, str, opts?) — Sketch Text in Anvil's single-stroke font (Kernel.textLayout): opts { h (letter
@@ -1931,6 +1950,15 @@
 
   // sketch-text: the .text() options of a text entity (only what differs from the defaults; a path keeps its geometry so
   // a text whose curve was deleted stays where it was)
+  // lane fitspline: a B-spline's script options
+  function bsDegOf(e) { return e.deg > 0 ? e.deg | 0 : 3; }
+  function bsOpts(e) {
+    var o = {};
+    if (bsDegOf(e) !== 3) o.degree = bsDegOf(e);
+    if (e.closed) o.closed = true;
+    if (e.fit) o.fit = { id: e.fit.id, tol: e.fit.tol, closed: !!e.fit.closed };
+    return o;
+  }
   function textOptsOut(e) {
     var o = { h: e.h };
     ['rot', 'align', 'valign', 'widthFactor', 'spacing', 'lineSpacing', 'mode', 'strokeWidth'].forEach(function (k) { if (e[k] != null && e[k] !== 0 && e[k] !== '') o[k] = e[k]; });
@@ -2010,7 +2038,8 @@
               case 'aslot': s += '\n  .arcSlot(' + [e.cx, e.cy, e.r, e.a0, e.a1, e.w].join(', ') + ')'; break;
               case 'polyline': s += '\n  .polyline(' + JSON.stringify(e.pts) + ', ' + !!e.closed + ')'; break;
               case 'point': s += '\n  .point(' + e.x + ', ' + e.y + ')'; break;
-              case 'spline': if (e.style) { s += '\n  .styleSpline(' + JSON.stringify(e.pts) + ', { degree: ' + (e.pts.length - 1) + ' })'; break; }   // rfAH
+              case 'spline': if (K.isBSpline(e)) { s += '\n  .bspline(' + JSON.stringify(e.pts) + ', ' + JSON.stringify(e.knots) + (e.closed || e.fit || bsDegOf(e) !== 3 ? ', ' + JSON.stringify(bsOpts(e)) : '') + ')'; break; }   // lane fitspline
+                if (e.style) { s += '\n  .styleSpline(' + JSON.stringify(e.pts) + ', { degree: ' + (e.pts.length - 1) + ' })'; break; }   // rfAH
                 var spo = (e.local ? ['local: true'] : []).concat(e.eq ? ['eq: ' + JSON.stringify(e.eq)] : []);   // rfAP: an Equation Driven Curve keeps its equation
                 if (e.conic != null) spo.push('conic: ' + e.conic + (e.parabola ? ', parabola: true' : ''));   // rfAS: a Conic / Parabola
                 s += '\n  .spline(' + JSON.stringify(e.pts) + ', ' + !!e.closed + (e.tans && e.tans.some(Boolean) ? ', ' + JSON.stringify(e.tans) : spo.length ? ', null' : '') + (spo.length ? ', { ' + spo.join(', ') + ' }' : '') + ')'; break;
@@ -2019,6 +2048,10 @@
               case 'text': s += '\n  .text(' + [e.x, e.y, JSON.stringify(String(e.str == null ? '' : e.str))].join(', ') + ', ' + JSON.stringify(textOptsOut(e)) + ')'; break;   // sketch-text
             }
           });
+          // lane fitspline: the source chains of Constrained fit splines
+          var fitSrcs = {};
+          f.entities.forEach(function (e, i) { if (e.fitSrc != null) (fitSrcs[e.fitSrc] = fitSrcs[e.fitSrc] || []).push(i); });
+          Object.keys(fitSrcs).forEach(function (id) { s += '\n  .fitSource(' + id + ', ' + JSON.stringify(fitSrcs[id]) + ')'; });
           (f.dims || []).forEach(function (d) {
             var o = {};
             if (d.i != null) o.i = d.i;

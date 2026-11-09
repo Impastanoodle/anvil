@@ -252,7 +252,119 @@
     });
     return { bez: bez, knots: knots, closed: false, conic: c };
   }
+  // ---- lane fitspline: B-spline { t: 'spline', style: true, deg: 3, knots: [U0 … Um], pts: [CP0 … CPn], closed?,
+  // fit?, fitSrc? }: a multi-span B-spline of degree deg (3) given by its control points and its clamped knot vector
+  // (m = n + deg + 1; the first and last deg + 1 knots equal, so the curve starts at CP0 and ends at CPn): what Fit
+  // Spline makes (one entity fitted to a chain within a tolerance, SolidWorks' Fit Spline) and what a cubic DXF SPLINE
+  // reads in as. `style: true` because, as a Style Spline's, its points are control vertices, not points on the curve:
+  // every control-polygon path (solver unknowns, leg refs, the polygon drawn, no handles / tangent driving) applies;
+  // the paths that evaluate the curve dispatch on isBSpline. Knots are in length units (Fit Spline: arc length along
+  // the chain), so splineGeom's knots stay about the curve's length as a spline's are. closed: a closed fit (start and
+  // end control points equal, the curve C2 across the seam as fitted). fit (Constrained): { id, tol, closed, sig }, the
+  // source entities carrying fitSrc === id; syncFitSplines refits the spline whenever they move.
+  function isBSpline(e) { return !!e && e.t === 'spline' && !!e.style && Array.isArray(e.knots); }
+  function bsDeg(e) { return e && e.deg > 0 ? e.deg | 0 : 3; }
+  function bsValid(e) {
+    if (!isBSpline(e) || !e.pts) return false;
+    var p = bsDeg(e), U = e.knots, n = e.pts.length;
+    if (n < p + 1 || U.length !== n + p + 1) return false;
+    for (var i = 1; i < U.length; i++) if (!(+U[i] >= +U[i - 1])) return false;
+    return +U[n] > +U[p];
+  }
+  // the blossom of the B-spline (knots U, control points P, degree p) on span j (U[j] <= u < U[j + 1]) at ts (p values):
+  // de Boor's triangle with ts[r - 1] at level r; ts all u is the point at u (u past the span carries its polynomial on)
+  function bsBlossom(U, P, p, j, ts) {
+    var d = [], k, r;
+    for (k = 0; k <= p; k++) d.push([+P[j - p + k][0], +P[j - p + k][1]]);
+    for (r = 1; r <= p; r++) for (k = p; k >= r; k--) {
+      var i = j - p + k, den = U[i + p + 1 - r] - U[i], a = den > 0 ? (ts[r - 1] - U[i]) / den : 0;
+      d[k] = [(1 - a) * d[k - 1][0] + a * d[k][0], (1 - a) * d[k - 1][1] + a * d[k][1]];
+    }
+    return d[p];
+  }
+  // the B-spline's polynomial pieces as cubic Béziers: [{ B, lo, hi, mult (the multiplicity of the knot at lo; 0 for
+  // the first piece) }], one per knot interval of non-zero length (a degree below 3 elevated: the same curve)
+  function bsPieces(U, P, p) {
+    var out = [], n = P.length - 1;
+    for (var j = p; j <= n; j++) {
+      if (!(U[j + 1] > U[j])) continue;
+      var B = [];
+      for (var k = 0; k <= p; k++) { var ts = []; for (var q = 0; q < p; q++) ts.push(q < p - k ? U[j] : U[j + 1]); B.push(bsBlossom(U, P, p, j, ts)); }
+      while (B.length < 4) B = bzElevate(B);
+      var mult = 0;
+      if (out.length) for (var z = 0; z < U.length; z++) if (U[z] === U[j]) mult++;
+      out.push({ B: B, lo: U[j], hi: U[j + 1], mult: mult });
+    }
+    return out;
+  }
+  // cubic pieces [{ B, lo, hi, mult }] (end to end, each interior knot of multiplicity mult, 1 when absent) as one
+  // clamped cubic B-spline { knots, pts }: each control point is the blossom of a piece its support covers at its knots
+  function bsFromPieces(pcs) {
+    var U = [], i, j, k;
+    if (!pcs.length) return null;
+    for (k = 0; k < 4; k++) U.push(pcs[0].lo);
+    for (i = 1; i < pcs.length; i++) for (k = 0; k < Math.max(1, Math.min(3, pcs[i].mult || 1)); k++) U.push(pcs[i].lo);
+    for (k = 0; k < 4; k++) U.push(pcs[pcs.length - 1].hi);
+    var n = U.length - 4, P = [];
+    for (i = 0; i < n; i++) {
+      var pc = null;
+      for (j = i; j <= i + 3 && !pc; j++) if (U[j + 1] > U[j]) for (k = 0; k < pcs.length; k++) if (pcs[k].lo === U[j]) { pc = pcs[k]; break; }
+      if (!pc) return null;
+      var h = pc.hi - pc.lo;
+      P.push(bzBlossom(pc.B, [(U[i + 1] - pc.lo) / h, (U[i + 2] - pc.lo) / h, (U[i + 3] - pc.lo) / h]));
+    }
+    return { knots: U, pts: P };
+  }
+  // splineGeom of a B-spline: its exact cubic pieces; bs = { deg, knots, cps } is what DXF SPLINE writes
+  function bsGeom(e) {
+    if (!bsValid(e)) return null;
+    var p = bsDeg(e), U = e.knots.map(Number), P = e.pts.map(function (q) { return [+q[0], +q[1]]; }), pcs = bsPieces(U, P, p);
+    if (!pcs.length) return null;
+    var knots = [0];   // from 0, as a spline's (a closed curve's period is the last)
+    pcs.forEach(function (pc) { knots.push(pc.hi - pcs[0].lo); });
+    return { bez: pcs.map(function (pc) { return pc.B; }), knots: knots, closed: !!e.closed, bs: { deg: p, knots: U, cps: P }, pieces: pcs };
+  }
+  // the piece of B-spline e from knot value ua to ub (either may lie past an open end: the end piece's polynomial
+  // carried on; a closed one wraps, ub up to ua + its period) as a new B-spline entity, the same curve exactly
+  function bsSub(e, ua, ub) {
+    var g = bsGeom(e);
+    if (!g || !(ub > ua)) return null;
+    var pcs = g.pieces, a = pcs[0].lo, b = pcs[pcs.length - 1].hi, L = b - a, out = [], s, k;
+    var closed = !!e.closed;
+    if (closed) { while (ua < a) { ua += L; ub += L; } while (ua >= b) { ua -= L; ub -= L; } }
+    for (s = 0; s <= (closed ? 2 : 0); s++) pcs.forEach(function (pc, i) {
+      var lo = pc.lo + s * L, hi = pc.hi + s * L;
+      if (!closed && i === 0) lo = Math.min(lo, ua);
+      if (!closed && i === pcs.length - 1) hi = Math.max(hi, ub);
+      var x0 = Math.max(lo, ua), x1 = Math.min(hi, ub);
+      if (!(x1 > x0 + 1e-14 * Math.max(1, Math.abs(L)))) return;
+      var h = pc.hi - pc.lo, o = pc.lo + s * L;
+      out.push({ B: bzSub(pc.B, (x0 - o) / h, (x1 - o) / h), lo: x0, hi: x1, mult: out.length ? (x0 === pc.lo + s * L && i === 0 && s > 0 ? 3 : pc.mult || 1) : 0 });
+    });
+    if (!out.length) return null;
+    for (k = 1; k < out.length; k++) out[k].lo = out[k - 1].hi;
+    var r = bsFromPieces(out);
+    if (!r) return null;
+    var o2 = { t: 'spline', style: true, deg: 3, knots: r.knots, pts: r.pts };
+    return o2;
+  }
+  // B-spline e with the knot u inserted once (Boehm): one control point more, the same curve
+  function bsInsertKnot(e, u) {
+    if (!bsValid(e)) return null;
+    var p = bsDeg(e), U = e.knots.map(Number), P = e.pts.map(function (q) { return [+q[0], +q[1]]; }), n = P.length - 1, j = p;
+    if (!(u > U[p] && u < U[n + 1])) return null;
+    while (j < n && u >= U[j + 1]) j++;
+    var Q = [];
+    for (var i = 0; i <= n + 1; i++) {
+      if (i <= j - p) Q.push(P[i]);
+      else if (i > j) Q.push(P[i - 1]);
+      else { var a = (u - U[i]) / (U[i + p] - U[i]); Q.push([(1 - a) * P[i - 1][0] + a * P[i][0], (1 - a) * P[i - 1][1] + a * P[i][1]]); }
+    }
+    var V = U.slice(0, j + 1).concat([u], U.slice(j + 1));
+    return { knots: V, pts: Q };
+  }
   function splineGeom(e) {
+    if (isBSpline(e)) return bsGeom(e);   // lane fitspline
     if (isStyle(e)) return styleGeom(e);
     if (e && e.conic != null) { var cg = conicGeom(e); if (cg) return cg; }   // rfAS
     var P = (e.pts || []).map(function (p) { return [+p[0], +p[1]]; }), n = P.length;
@@ -657,7 +769,9 @@
       case 'aslot': { var D = Math.PI / 180; return [[e.cx, e.cy], [e.cx + e.r * Math.cos(e.a0 * D), e.cy + e.r * Math.sin(e.a0 * D)], [e.cx + e.r * Math.cos(e.a1 * D), e.cy + e.r * Math.sin(e.a1 * D)]]; }
       case 'polyline': return e.pts.slice();
       case 'point': return [[e.x, e.y]];
-      case 'spline': return e.pts.map(function (p) { return [p[0], p[1]]; });
+      case 'spline':
+        if (isBSpline(e)) return e.closed ? [] : [e.pts[0], e.pts[e.pts.length - 1]].map(function (p) { return [p[0], p[1]]; });   // lane fitspline: its control points lie off the curve
+        return e.pts.map(function (p) { return [p[0], p[1]]; });
       case 'ellipse': case 'pellipse': {
         var ep = [[e.cx, e.cy]];
         for (var q = 0; q < 4; q++) ep.push(ellipsePoint(e, q * Math.PI / 2));
@@ -1656,6 +1770,7 @@
         out = { t: 'spline', pts: e.pts.map(function (q) { return m(q[0], q[1]); }) };
         if (e.closed) out.closed = true;
         if (e.style) out.style = true;   // rfAH: a style spline's control polygon mirrors: the mirrored curve exactly
+        if (e.knots) { out.knots = e.knots.slice(); out.deg = bsDeg(e); }   // lane fitspline: a B-spline's knots stay (its control points mirror)
         if (e.tans) out.tans = e.tans.map(function (tg) { return tg ? [2 * phi - tg[0]].concat(tg.slice(1, 3), tg[3] != null ? [-tg[3]] : []) : null; });   // rfAY: a curvature control bends the other way
         break;
       }
@@ -2871,6 +2986,7 @@
       var g = { t: 'spline', pts: (src.pts || []).map(function (p) { return [+p[0], +p[1]]; }) };
       if (src.closed) g.closed = true;
       if (src.style) g.style = true;   // rfAH
+      if (src.knots) { g.knots = src.knots.map(Number); g.deg = bsDeg(src); }   // lane fitspline: a B-spline
       // lane sketchgaps: the whole handle, curvature control (tg[3], rfAY) included: the text follows the spline's real
       // shape (it dropped tg[3], so text on a curvature-controlled spline followed the curve without it); a conic's rho too
       if (src.tans) g.tans = src.tans.map(function (tg) {
@@ -3111,6 +3227,7 @@
   K.sketchRegions = sketchRegions; K.regionAt = regionAt; K.contourProfile = contourProfile; K.contourSketch = contourSketch; K.regionsAmbiguous = regionsAmbiguous;   // lane CO: Selected Contours
   K.isStyleSpline = isStyle; K.bzPoint = bzPoint; K.bzDeriv = bzDeriv; K.bzSub = bzSub; K.bzElevate = bzElevate; K.bzDegree = bzDegree;   // rfAH: Style Spline
   K.splineCurvatureAt = splineCurvatureAt;   // rfAY
+  K.isBSpline = isBSpline; K.bsValid = bsValid; K.bsBlossom = bsBlossom; K.bsPieces = bsPieces; K.bsFromPieces = bsFromPieces; K.bsSub = bsSub; K.bsInsertKnot = bsInsertKnot; K.bzBlossom = bzBlossom;   // lane fitspline
   K.splineGeom = splineGeom; K.conicData = conicData; K.conicPoint = conicPoint; K.ellipsePoint = ellipsePoint; K.bezPoint = bezPoint; K.freeSamples = freeSamples; K.isFreeCurve = isFree;
   K.sketchLayer = sketchLayer; K.noProfileEntity = noProfileEntity; K.LAYER_PRESETS = LAYER_PRESETS;   // sketch-layers
   K.textLayout = textLayout; K.textOutline = textOutline; K.textDxf = textDxf; K.textStrokeWidth = textStrokeWidth;   // sketch-text
@@ -3745,4 +3862,254 @@
   var basePictureScript = K.installPictureScript;   // kernel-script.js calls it once the Builder exists
   K.installPictureScript = function () { basePictureScript(); installDerivedScript(); };
   K.syncDerivedSketches = syncDerivedSketches; K.deriveSketch = deriveSketch; K.underiveSketch = underiveSketch; K.derivedScriptLine = derivedScriptLine;
+})(Kernel);
+
+// ------------------------------------------------------------------ lane fitspline: Fit Spline as one B-spline
+// SolidWorks' Fit Spline (Tools ▸ Spline Tools ▸ Fit Spline): a chain of lines, arcs and polylines, end to end, becomes
+// ONE spline entity within a Tolerance of it: here a clamped cubic B-spline (isBSpline above) fitted by least squares
+// to the chain parameterised by arc length, with a knot inserted (the span halved) wherever the curve strays further
+// than 0.8 × the tolerance, until it does nowhere. The deviation is |C(s) − chain(s)| at 24 points per span, an upper
+// bound of the distance both ways (the spline from the chain and the chain from the spline). A closed chain with Closed
+// spline gives a periodic fit (C2 through the seam too), stored clamped with its first and last control points equal.
+// Constrained: the spline keeps fit = { id, tol, closed, sig } and its source entities fitSrc = id; every solve
+// (SketchSolver writeBack) calls syncFitSplines, which refits a spline whose sources moved.
+(function (K) {
+  'use strict';
+  var TAU = 2 * Math.PI;
+  function d2(a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1]); }
+  function pStart(p) { return p.k === 'line' ? p.a : [p.c[0] + p.r * Math.cos(p.a0), p.c[1] + p.r * Math.sin(p.a0)]; }
+  function pEnd(p) { return p.k === 'line' ? p.b : [p.c[0] + p.r * Math.cos(p.a0 + p.sw), p.c[1] + p.r * Math.sin(p.a0 + p.sw)]; }
+  function pRev(p) { return p.k === 'line' ? { k: 'line', a: p.b, b: p.a } : { k: 'arc', c: p.c, r: p.r, a0: p.a0 + p.sw, sw: -p.sw }; }
+  function pLen(p) { return p.k === 'line' ? d2(p.a, p.b) : p.r * Math.abs(p.sw); }
+  function pAt(p, f) { return p.k === 'line' ? [p.a[0] + (p.b[0] - p.a[0]) * f, p.a[1] + (p.b[1] - p.a[1]) * f] : [p.c[0] + p.r * Math.cos(p.a0 + p.sw * f), p.c[1] + p.r * Math.sin(p.a0 + p.sw * f)]; }
+  // the selected entities as one chain of exact pieces: { pieces: [{ k: 'line', a, b } | { k: 'arc', c, r, a0, sw }]
+  // (radians, sw signed), closed, ends: [start ref, end ref], diag } or { error }
+  function fitChain(ents, idx) {
+    var segs = [], xs = [], ys = [];
+    idx.forEach(function (i) {
+      var e = ents[i];
+      if (!e) return;
+      if (e.t === 'line') segs.push({ pcs: [{ k: 'line', a: [+e.x1, +e.y1], b: [+e.x2, +e.y2] }], refs: [i + '.p1', i + '.p2'] });
+      else if (e.t === 'arc') {
+        var sw = (+e.a1 - +e.a0) * Math.PI / 180;
+        while (sw <= 0) sw += TAU;
+        segs.push({ pcs: [{ k: 'arc', c: [+e.cx, +e.cy], r: +e.r, a0: +e.a0 * Math.PI / 180, sw: sw }], refs: [i + '.p1', i + '.p2'] });
+      } else if (e.t === 'polyline' && e.pts && e.pts.length >= 2) {
+        var Q = e.pts.map(function (q) { return [+q[0], +q[1]]; }), pc = [];
+        if (e.closed) Q.push(Q[0]);
+        for (var k = 0; k + 1 < Q.length; k++) if (d2(Q[k], Q[k + 1]) > 0) pc.push({ k: 'line', a: Q[k], b: Q[k + 1] });
+        if (pc.length) segs.push({ pcs: pc, refs: [null, null] });
+      }
+    });
+    if (!segs.length) return { error: 'Select lines, arcs or a polyline: a chain of them, end to end.' };
+    segs.forEach(function (s) { s.pcs.forEach(function (p) { [pStart(p), pEnd(p)].forEach(function (q) { xs.push(q[0]); ys.push(q[1]); }); }); });
+    var diag = Math.hypot(Math.max.apply(null, xs) - Math.min.apply(null, xs), Math.max.apply(null, ys) - Math.min.apply(null, ys)) || 1;
+    var tol = 1e-6 * Math.max(1, diag), first = segs.shift(), chain = { pcs: first.pcs.slice(), refs: first.refs.slice() };
+    while (segs.length) {
+      var hit = -1, how = null, c0 = pStart(chain.pcs[0]), c1 = pEnd(chain.pcs[chain.pcs.length - 1]);
+      for (var j = 0; j < segs.length && hit < 0; j++) {
+        var s = segs[j], a0 = pStart(s.pcs[0]), a1 = pEnd(s.pcs[s.pcs.length - 1]);
+        if (d2(a0, c1) < tol) { hit = j; how = 'end'; }
+        else if (d2(a1, c1) < tol) { hit = j; how = 'endRev'; }
+        else if (d2(a1, c0) < tol) { hit = j; how = 'start'; }
+        else if (d2(a0, c0) < tol) { hit = j; how = 'startRev'; }
+      }
+      if (hit < 0) return { error: 'The selected entities do not form one chain: they must join end to end.' };
+      var sg = segs.splice(hit, 1)[0], P = sg.pcs.slice(), R = sg.refs.slice();
+      if (how === 'endRev' || how === 'startRev') { P = P.reverse().map(pRev); R.reverse(); }
+      if (how === 'end' || how === 'endRev') { chain.pcs = chain.pcs.concat(P); chain.refs[1] = R[1]; }
+      else { chain.pcs = P.concat(chain.pcs); chain.refs[0] = R[0]; }
+    }
+    var closed = chain.pcs.length > 1 && d2(pStart(chain.pcs[0]), pEnd(chain.pcs[chain.pcs.length - 1])) < tol;
+    return { pieces: chain.pcs, closed: closed, ends: chain.refs, diag: diag };
+  }
+  // B-spline basis: the p + 1 functions not zero on span j at u (knot accessor T(i)), Cox-de Boor (NURBS book A2.2)
+  function basis(T, j, u, p) {
+    var N = [1], left = [0], right = [0];
+    for (var r = 1; r <= p; r++) {
+      left[r] = u - T(j + 1 - r); right[r] = T(j + r) - u;
+      var saved = 0;
+      for (var k = 0; k < r; k++) { var den = right[k + 1] + left[r - k], tmp = den !== 0 ? N[k] / den : 0; N[k] = saved + right[k + 1] * tmp; saved = left[r - k] * tmp; }
+      N[r] = saved;
+    }
+    return N;
+  }
+  // the symmetric positive definite band system M x = R (row i holds columns i − bw … i + bw), two right-hand sides
+  function bandSolve(M, R, bw) {
+    var n = M.length, i, r, c;
+    for (i = 0; i < n; i++) {
+      var piv = M[i][bw];
+      if (!(Math.abs(piv) > 1e-300)) return null;
+      for (r = i + 1; r <= Math.min(n - 1, i + bw); r++) {
+        var f = M[r][i - r + bw] / piv;
+        if (!f) continue;
+        for (c = i; c <= Math.min(n - 1, i + bw); c++) M[r][c - r + bw] -= f * M[i][c - i + bw];
+        R[r][0] -= f * R[i][0]; R[r][1] -= f * R[i][1];
+      }
+    }
+    var x = new Array(n);
+    for (i = n - 1; i >= 0; i--) {
+      var sx = R[i][0], sy = R[i][1];
+      for (c = i + 1; c <= Math.min(n - 1, i + bw); c++) { sx -= M[i][c - i + bw] * x[c][0]; sy -= M[i][c - i + bw] * x[c][1]; }
+      x[i] = [sx / M[i][bw], sy / M[i][bw]];
+    }
+    return x;
+  }
+  var LS_PER_SPAN = 10, ERR_PER_SPAN = 24, MAX_CPS = 1500, MAX_CLOSED = 400, MAX_IT = 60;
+  // fitBSpline(chain (fitChain's), tol, closed) -> { knots, pts, closed, dev, spans } or null
+  function fitBSpline(ch, tol, wantClosed) {
+    var P = ch.pieces, S = [0], i, j, k;
+    P.forEach(function (p) { S.push(S[S.length - 1] + pLen(p)); });
+    var L = S[S.length - 1];
+    if (!(L > 0)) return null;
+    var closed = !!wantClosed && !!ch.closed;
+    tol = +tol > 0 ? +tol : 1e-3 * ch.diag;
+    function at(s) {
+      if (closed) { s = s % L; if (s < 0) s += L; } else s = Math.max(0, Math.min(L, s));
+      var lo = 0, hi = P.length - 1;
+      while (lo < hi) { var mid = (lo + hi + 1) >> 1; if (S[mid] <= s) lo = mid; else hi = mid - 1; }
+      var l = S[lo + 1] - S[lo];
+      return pAt(P[lo], l > 0 ? Math.min(1, (s - S[lo]) / l) : 0);
+    }
+    // first breakpoints: the chain's own joints (an arc cut every 60°) when there are few of them, else even spans
+    var br = [];
+    if (P.length <= 80) {
+      P.forEach(function (p, q) {
+        var nsub = p.k === 'arc' ? Math.max(1, Math.ceil(Math.abs(p.sw) / (Math.PI / 3))) : 1;
+        for (k = 1; k < nsub; k++) br.push(S[q] + (S[q + 1] - S[q]) * k / nsub);
+        if (q + 1 < P.length) br.push(S[q + 1]);
+      });
+    } else for (k = 1; k < 24; k++) br.push(L * k / 24);
+    var minGap = L * 1e-9;
+    function tidy(list) {
+      list.sort(function (a, b) { return a - b; });
+      var out = [];
+      list.forEach(function (x) { if (x > minGap && x < L - minGap && (!out.length || x - out[out.length - 1] > minGap)) out.push(x); });
+      return out;
+    }
+    br = tidy(br);
+    while (br.length + 1 < (closed ? 4 : 1)) {
+      var all = [0].concat(br, [L]), wi = 0;
+      for (k = 1; k + 1 < all.length; k++) if (all[k + 1] - all[k] > all[wi + 1] - all[wi]) wi = k;
+      br = tidy(br.concat([(all[wi] + all[wi + 1]) / 2]));
+    }
+    var best = null;
+    for (var it = 0; it < MAX_IT; it++) {
+      var b = [0].concat(br), m = b.length, Ux, nP, cpOf, nu;
+      // the knots, and the map from control point q (of the spline Ux describes) to its unknown (-1: a fixed end)
+      if (closed) {
+        var T = function (q) { var w = Math.floor(q / m); return b[q - w * m] + w * L; };
+        Ux = [];
+        for (k = 0; k < m + 7; k++) Ux.push(T(k - 3));
+        nP = m + 3; nu = m;
+        cpOf = function (q) { return (((q - 3) % m) + m) % m; };
+      } else {
+        Ux = [0, 0, 0, 0].concat(br, [L, L, L, L]);
+        nP = Ux.length - 4; nu = nP - 2;
+        cpOf = function (q) { return q === 0 || q === nP - 1 ? -1 : q - 1; };
+      }
+      if (nu > (closed ? MAX_CLOSED : MAX_CPS)) break;
+      var E0 = at(0), E1 = at(L), fixedVal = function (q) { return q === 0 ? E0 : E1; };
+      var bw = closed ? Math.max(0, nu - 1) : 3, M = [], R = [], UxF = function (q) { return Ux[q]; };
+      for (i = 0; i < nu; i++) { M.push(new Float64Array(2 * bw + 1)); R.push([0, 0]); }
+      for (j = 3; j < nP; j++) {
+        var lo = Ux[j], hi = Ux[j + 1];
+        if (!(hi > lo)) continue;
+        for (k = 0; k < LS_PER_SPAN; k++) {
+          var u = lo + (hi - lo) * (k + 0.5) / LS_PER_SPAN, N = basis(UxF, j, u, 3), tgt = at(u), rx = tgt[0], ry = tgt[1], idx = [], w = [];
+          for (var a = 0; a <= 3; a++) {
+            var q = j - 3 + a, ci = cpOf(q);
+            if (ci < 0) { var fv = fixedVal(q); rx -= N[a] * fv[0]; ry -= N[a] * fv[1]; continue; }
+            var at2 = idx.indexOf(ci);
+            if (at2 >= 0) w[at2] += N[a]; else { idx.push(ci); w.push(N[a]); }
+          }
+          for (var x1 = 0; x1 < idx.length; x1++) {
+            R[idx[x1]][0] += w[x1] * rx; R[idx[x1]][1] += w[x1] * ry;
+            for (var x2 = 0; x2 < idx.length; x2++) { var off = idx[x2] - idx[x1] + bw; if (off >= 0 && off <= 2 * bw) M[idx[x1]][off] += w[x1] * w[x2]; }
+          }
+        }
+      }
+      var X = nu ? bandSolve(M, R, bw) : [];
+      if (!X) break;
+      var Px = [];
+      for (k = 0; k < nP; k++) { var c = cpOf(k); Px.push(c < 0 ? fixedVal(k).slice() : X[c].slice()); }
+      // each span's deviation; the spans over 0.8 × tol are halved
+      var add = [], dev = 0;
+      for (j = 3; j < nP; j++) {
+        var l2 = Ux[j], h2 = Ux[j + 1], worst = 0;
+        if (!(h2 > l2)) continue;
+        for (k = 0; k <= ERR_PER_SPAN; k++) { var uu = l2 + (h2 - l2) * k / ERR_PER_SPAN, pc = K.bsBlossom(Ux, Px, 3, j, [uu, uu, uu]); worst = Math.max(worst, d2(pc, at(uu))); }
+        dev = Math.max(dev, worst);
+        if (worst > tol * 0.8 && h2 - l2 > L * 1e-7) add.push((l2 + h2) / 2);
+      }
+      best = { Ux: Ux, Px: Px, dev: dev, spans: m - (closed ? 0 : 0) };
+      if (!add.length) break;
+      br = tidy(br.concat(add));
+    }
+    if (!best) return null;
+    var out;
+    if (closed) {
+      var pcs = K.bsPieces(best.Ux, best.Px, 3);
+      pcs.forEach(function (pc, z) { pc.mult = z ? 1 : 0; });
+      out = K.bsFromPieces(pcs);
+      if (!out) return null;
+      out.pts[out.pts.length - 1] = out.pts[0].slice();
+    } else out = { knots: best.Ux.slice(), pts: best.Px };
+    function cl(v) { var r = Math.round(v * 1e12) / 1e12; return Math.abs(r - v) < 1e-13 * Math.max(1, Math.abs(v)) ? r : v; }
+    return { knots: out.knots.map(cl), pts: out.pts.map(function (q) { return [cl(q[0]), cl(q[1])]; }), closed: closed, dev: best.dev, spans: out.knots.length - 7 };
+  }
+  // the B-spline entity fitted to entities idx of ents: { ok, e, dev, chain } or { ok: false, error }
+  function fitSplineEntity(ents, idx, opts) {
+    opts = opts || {};
+    var ch = fitChain(ents, idx);
+    if (ch.error) return { ok: false, error: ch.error };
+    var fit = fitBSpline(ch, opts.tol, opts.closed !== false);
+    if (!fit) return { ok: false, error: 'No spline fits that chain.' };
+    var e = { t: 'spline', style: true, deg: 3, knots: fit.knots, pts: fit.pts };
+    if (fit.closed) e.closed = true;
+    return { ok: true, e: e, dev: fit.dev, chain: ch };
+  }
+  function srcSig(ents, idx) {
+    function r(v) { return Math.round(+v * 1e10) / 1e10; }
+    return idx.map(function (i) {
+      var e = ents[i];
+      if (e.t === 'line') return [i, r(e.x1), r(e.y1), r(e.x2), r(e.y2)].join(',');
+      if (e.t === 'arc') return [i, r(e.cx), r(e.cy), r(e.r), r(e.a0), r(e.a1)].join(',');
+      return i + ':' + (e.pts || []).map(function (q) { return r(q[0]) + ',' + r(q[1]); }).join(';') + (e.closed ? 'c' : '');
+    }).join('|');
+  }
+  // the source entities of Constrained fit spline e (fitSrc === e.fit.id), in sketch order
+  function fitSources(f, e) {
+    var out = [];
+    if (!e || !e.fit) return out;
+    (f.entities || []).forEach(function (x, k) { if (x && x !== e && x.fitSrc === e.fit.id) out.push(k); });
+    return out;
+  }
+  // refit every Constrained fit spline of sketch f whose sources changed; returns how many were refitted
+  function syncFitSplines(f) {
+    var n = 0;
+    if (!f || !f.entities) return 0;
+    f.entities.forEach(function (e) {
+      if (!e || !e.fit || !K.isBSpline(e)) return;
+      var src = fitSources(f, e);
+      if (!src.length) return;
+      var sig = srcSig(f.entities, src);
+      if (sig === e.fit.sig) return;
+      var r = fitSplineEntity(f.entities, src, { tol: e.fit.tol, closed: !!e.fit.closed });
+      e.fit.sig = sig;
+      if (!r.ok) return;
+      e.knots = r.e.knots; e.pts = r.e.pts;
+      if (r.e.closed) e.closed = true; else delete e.closed;
+      n++;
+    });
+    return n;
+  }
+  // a new fit id for sketch f
+  function newFitId(f) {
+    var m = 0;
+    (f.entities || []).forEach(function (e) { if (e && e.fit && +e.fit.id > m) m = +e.fit.id; if (e && +e.fitSrc > m) m = +e.fitSrc; });
+    return m + 1;
+  }
+  K.fitChain = fitChain; K.fitBSpline = fitBSpline; K.fitSplineEntity = fitSplineEntity; K.syncFitSplines = syncFitSplines;
+  K.fitSources = fitSources; K.fitSourceSig = srcSig; K.newFitId = newFitId;
 })(Kernel);

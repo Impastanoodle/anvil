@@ -676,15 +676,23 @@
       lastPress = null;
     }
     splineSel.pt = Math.max(0, Math.min(e.pts.length - 1, splineSel.pt));
-    var v = styleValues(e, {}), u = 'u';
+    var v = styleValues(e, {}), u = 'u', bs = K.isBSpline(e);
+    // lane fitspline: a B-spline (Fit Spline, a DXF SPLINE) shows the same control-point PM as Spline, without a
+    // degree choice; a Constrained one says so and offers its Tolerance (the spline refits)
+    if (bs && e.fit) v.fitTol = e.fit.tol;
+    var fitGroup = bs ? [{ title: e.fit ? 'Fit Spline (Constrained)' : 'B-spline', fields: [
+      { type: 'static', label: 'Spans', value: function () { return String(e.knots.length - 7) + ', degree ' + (e.deg || 3); } }].concat(e.fit ? [
+      { type: 'static', label: '', value: function () { return 'Linked to ' + K.fitSources(f, e).length + ' construction entities: it refits when they change.'; } },
+      { type: 'number', label: 'Tolerance', key: 'fitTol', unit: u, min: 0 }] : []) }] : [];
     UI.openPM({
-      title: 'Style Spline', icon: 'styleSpline', values: v, noFocus: true, _skEntity: { index: index, t: 'spline', style: true },
+      title: bs ? 'Spline' : 'Style Spline', icon: bs ? 'spline' : 'styleSpline', values: v, noFocus: true, _skEntity: { index: index, t: 'spline', style: true },
       groups: relationGroups(f, index, [index + '.v' + splineSel.pt]).concat([
         { title: 'Options', fields: [
           { type: 'check', label: 'For construction', key: 'construction' },
           { type: 'check', label: 'Show curvature', key: 'curv' }
-        ] },
-        { title: 'Spline Degree', fields: [{ type: 'radio', key: 'degree', options: [['3', 'Degree 3'], ['5', 'Degree 5'], ['7', 'Degree 7']] }] },
+        ] }
+      ], fitGroup, bs ? [] : [
+        { title: 'Spline Degree', fields: [{ type: 'radio', key: 'degree', options: [['3', 'Degree 3'], ['5', 'Degree 5'], ['7', 'Degree 7']] }] }], [
         { title: 'Parameters', fields: [
           { type: 'static', label: 'Control vertices', value: function () { return String(e.pts.length); } },
           { type: 'number', label: 'Control vertex number', key: 'pt', step: 1, min: 1 },
@@ -713,7 +721,8 @@
         markDirty();
         if (key === 'construction') { if (vals.construction) e.construction = true; else delete e.construction; }
         else if (key === 'curv') { if (vals.curv) e.showCurvature = true; else delete e.showCurvature; }
-        else if (key === 'degree') { setStyleDegree(f, index, e, +vals.degree); refresh(); openStyleSplinePM(index, e, f); return; }
+        else if (key === 'degree') { if (!bs) setStyleDegree(f, index, e, +vals.degree); refresh(); openStyleSplinePM(index, e, f); return; }
+        else if (key === 'fitTol') { if (e.fit && +vals.fitTol > 0) { e.fit.tol = +vals.fitTol; delete e.fit.sig; K.syncFitSplines(f); } }
         else if (key === 'x' || key === 'y') {
           if (!isFinite(+vals[key])) return;
           e.pts[i][key === 'x' ? 0 : 1] = +vals[key];
@@ -795,7 +804,7 @@
     if (typeof THREE === 'undefined' || !UI.scene) return;
     var f = App.mode === 'sketch' ? UI.activeSketchFeature() : null, spec = UI.pmSpec && UI.pmSpec();
     var mark = spec && spec._skEntity && spec._skEntity.t === 'spline' ? spec._skEntity.index : null;
-    var list = f ? f.entities.map(function (e, i) { return e && e.t === 'spline' && (e.showCurvature || e.showInflection || e.style || i === mark || (splineView.handles && !e.style)) ? i : -1; }).filter(function (i) { return i >= 0; }) : [];   // rfAH: style splines show their control polygon
+    var list = f ? f.entities.map(function (e, i) { return e && e.t === 'spline' && (e.showCurvature || e.showInflection || (e.style && (!K.isBSpline(e) || splineView.handles)) || i === mark || (splineView.handles && !e.style)) ? i : -1; }).filter(function (i) { return i >= 0; }) : [];   // rfAH: style splines show their control polygon
     var sig = list.length ? JSON.stringify([splineView, f.id, App.activeSketch, list.map(function (i) { return f.entities[i]; }), mark, mark != null ? splineSel.pt : null, UI.cam ? UI.cam.scale : 0]) : '';
     if (sig === combSig) return;
     combSig = sig;
@@ -812,7 +821,7 @@
           for (var k5 = 0; k5 < 4; k5++) push(mpos, dm[k5], dm[(k5 + 1) % 4]);
         });
         if (splineView.handles && !e.style) handleLines(e).forEach(function (s) { push(cpos, s[0], s[1]); });   // rfAS: Show Spline Handles
-        if (e.style) for (var cq = 0; cq + 1 < e.pts.length; cq++) push(cpos, e.pts[cq], e.pts[cq + 1]);   // rfAH: the control polygon
+        if (e.style && (!K.isBSpline(e) || i === mark || splineView.handles)) for (var cq = 0; cq + 1 < e.pts.length; cq++) push(cpos, e.pts[cq], e.pts[cq + 1]);   // rfAH: the control polygon (lane fitspline: a B-spline's while its PM is open)
         if (i === mark && e.pts[splineSel.pt]) {   // the picked spline point: a small square, 4 px a side
           var q = e.pts[splineSel.pt], h = 4 * (UI.cam ? UI.cam.scale : 0.1);
           var sq = [[q[0] - h, q[1] - h], [q[0] + h, q[1] - h], [q[0] + h, q[1] + h], [q[0] - h, q[1] + h]];
@@ -870,6 +879,8 @@
   function dist2(a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1]); }
   function tolOf(p) { return 1e-6 * Math.max(1, Math.abs(p[0]), Math.abs(p[1])); }
   function isPlainSpline(e) { return !!e && e.t === 'spline' && !e.style && e.conic == null && !!e.pts && e.pts.length >= 2; }
+  // lane fitspline: a spline Insert Spline Point / Simplify Spline / Relax Spline take: a through-points spline or a B-spline
+  function isToolSpline(e) { return isPlainSpline(e) || (!!K.isBSpline && K.isBSpline(e)); }
   function refreshAll() { App.dimsStale = true; refresh(); if (UI.refreshStatus) UI.refreshStatus(); }
   // one undo step around fn(f) -> { ok, error }: a failure leaves the sketch exactly as it was
   function undoStep(fn) {
@@ -1041,150 +1052,70 @@
   // The Split Entities command (ui-sketch-construct.js) hands its clicks on ellipses, partial ellipses and conics here.
 
   // ------------------------------------------------------------------ Fit Spline (Tools ▸ Spline Tools)
-  // SolidWorks' Fit Spline: the selected lines, arcs and polylines (one chain end to end, e.g. an imported DXF
-  // polyline) become one spline within Tolerance of them. The spline runs through the chain's vertices and arc
-  // midpoints, and more chain points are added where it strays further than the tolerance (both ways: the chain from
-  // the spline and the spline from the chain). Options: Closed spline (a chain that closes on itself), and what
-  // becomes of the geometry: Delete geometry, Constrained (it stays as construction geometry, the spline's ends
-  // Coincident with its ends), Unconstrained (it stays as it was).
-  // the selected entities as one ordered chain: { dense: [{ p, v }], closed, ends: [startRef, endRef] } or { error }
-  function chainOf(f, idx) {
-    var segs = [], diag = 0, xs = [], ys = [];
-    idx.forEach(function (i) {
-      var e = f.entities[i];
-      if (!e) return;
-      if (e.t === 'line') segs.push({ i: i, pts: [[e.x1, e.y1], [e.x2, e.y2]], refs: [i + '.p1', i + '.p2'] });
-      else if (e.t === 'arc') {
-        var sw = e.a1 - e.a0, n = Math.max(2, Math.ceil(sw / 3)), P = [];
-        for (var k = 0; k <= n; k++) { var a = (e.a0 + sw * k / n) * D2R; P.push([e.cx + e.r * Math.cos(a), e.cy + e.r * Math.sin(a)]); }
-        segs.push({ i: i, pts: P, arc: true, refs: [i + '.p1', i + '.p2'] });
-      } else if (e.t === 'polyline' && e.pts && e.pts.length >= 2) {
-        var Q = e.pts.map(copyPt);
-        if (e.closed) Q.push(copyPt(e.pts[0]));
-        segs.push({ i: i, pts: Q, refs: [null, null] });
-      }
-    });
-    if (!segs.length) return { error: 'Select lines, arcs or a polyline: a chain of them, end to end.' };
-    segs.forEach(function (s) { s.pts.forEach(function (p) { xs.push(p[0]); ys.push(p[1]); }); });
-    diag = Math.hypot(Math.max.apply(null, xs) - Math.min.apply(null, xs), Math.max.apply(null, ys) - Math.min.apply(null, ys)) || 1;
-    var tol = 1e-6 * Math.max(1, diag), chain = segs.shift();
-    chain = { pts: chain.pts.slice(), refs: chain.refs.slice() };
-    while (segs.length) {
-      var hit = -1, how = null;
-      for (var j = 0; j < segs.length && hit < 0; j++) {
-        var s = segs[j], a0 = s.pts[0], a1 = s.pts[s.pts.length - 1], c0 = chain.pts[0], c1 = chain.pts[chain.pts.length - 1];
-        if (dist2(a0, c1) < tol) { hit = j; how = 'end'; }
-        else if (dist2(a1, c1) < tol) { hit = j; how = 'endRev'; }
-        else if (dist2(a1, c0) < tol) { hit = j; how = 'start'; }
-        else if (dist2(a0, c0) < tol) { hit = j; how = 'startRev'; }
-      }
-      if (hit < 0) return { error: 'The selected entities do not form one chain: they must join end to end.' };
-      var sg = segs.splice(hit, 1)[0], P = sg.pts.slice(), R = sg.refs.slice();
-      if (how === 'endRev' || how === 'startRev') { P.reverse(); R.reverse(); }
-      if (how === 'end' || how === 'endRev') { sg.at = chain.pts.length - 1; chain.pts = chain.pts.concat(P.slice(1)); chain.refs[1] = R[1]; }
-      else { chain.pts = P.slice(0, -1).concat(chain.pts); chain.refs[0] = R[0]; }
-    }
-    // dense samples (lines cut so no step is over 1/400 of the size); v: a vertex of the chain (line ends, arc ends
-    // and midpoints): the spline's first through points
-    var dense = [], step = diag / 400, P0 = chain.pts;
-    for (var q = 0; q + 1 < P0.length; q++) {
-      var A = P0[q], Bq = P0[q + 1], L = dist2(A, Bq), m = Math.max(1, Math.ceil(L / step));
-      for (var k2 = 0; k2 < m; k2++) dense.push({ p: [A[0] + (Bq[0] - A[0]) * k2 / m, A[1] + (Bq[1] - A[1]) * k2 / m], v: k2 === 0 });
-    }
-    dense.push({ p: P0[P0.length - 1].slice(), v: true });
-    // arc interior samples are not vertices except an arc's midpoint (every few degrees an arc is sampled: the turn
-    // between neighbours there is small)
-    var turns = dense.map(function (d, i) {
-      if (i === 0 || i === dense.length - 1 || !d.v) return 0;
-      var a = dense[i - 1].p, b = d.p, c = dense[i + 1].p, u = [b[0] - a[0], b[1] - a[1]], w = [c[0] - b[0], c[1] - b[1]];
-      return Math.abs(Math.atan2(u[0] * w[1] - u[1] * w[0], u[0] * w[0] + u[1] * w[1]));
-    });
-    dense.forEach(function (d, i) { if (d.v && i > 0 && i < dense.length - 1 && turns[i] < 4.5 * D2R) d.v = false; });
-    var closed = dist2(dense[0].p, dense[dense.length - 1].p) < tol;
-    // keep at least the middle of every long run without vertices (an arc: its midpoint)
-    var lastV = 0;
-    for (var z = 1; z < dense.length; z++) if (dense[z].v || z === dense.length - 1) { if (z - lastV > 8) dense[Math.round((z + lastV) / 2)].v = true; lastV = z; }
-    return { dense: dense, closed: closed, ends: chain.refs, diag: diag };
-  }
-  // the spline (through points of the chain) within tol of the dense chain samples: { pts, dev } or null
-  function fitThrough(dense, tol, closed) {
-    var S = SS(), n = dense.length, use = [], i;
-    if (closed) n--;   // the last sample repeats the first
-    for (i = 0; i < n; i++) if (dense[i].v || i === 0 || (!closed && i === n - 1)) use.push(i);
-    function segDist(p) {   // distance from p to the dense chain (a polyline)
-      var best = Infinity;
-      for (var k = 0; k + 1 < dense.length; k++) {
-        var a = dense[k].p, b = dense[k + 1].p, d = [b[0] - a[0], b[1] - a[1]], l2 = d[0] * d[0] + d[1] * d[1], t = l2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / l2)) : 0;
-        best = Math.min(best, Math.hypot(p[0] - a[0] - t * d[0], p[1] - a[1] - t * d[1]));
-      }
-      return best;
-    }
-    var e = null, dev = 0;
-    for (var it = 0; it < 30; it++) {
-      if (closed && use.length < 3) { use = [0, Math.floor(n / 3), Math.floor(2 * n / 3)]; }
-      e = { t: 'spline', pts: use.map(function (k) { return [clean(dense[k].p[0]), clean(dense[k].p[1])]; }) };
-      if (closed) e.closed = true;
-      var fc = S.freeCurve(e), g = K.splineGeom(e);
-      if (!fc || !g) return null;
-      var gaps = use.length - (closed ? 0 : 1), add = [];
-      dev = 0;
-      for (var gi = 0; gi < gaps; gi++) {
-        var lo = use[gi], hi = gi + 1 < use.length ? use[gi + 1] : use[0] + n, worst = 0, at = -1;
-        for (var k = lo + 1; k < hi; k++) { var dd = fc && S.freeClosest(fc, dense[k % n].p).d; if (dd > worst) { worst = dd; at = k; } }
-        var B = g.bez[gi];
-        if (B) for (var s = 1; s < 8; s++) { var q = K.bezPoint(B, s / 8), d2 = segDist(q); if (d2 > worst) { worst = d2; at = Math.round(lo + (hi - lo) * s / 8); } }
-        dev = Math.max(dev, worst);
-        if (worst > tol && hi - lo > 1) add.push(at > lo && at < hi ? at : Math.round((lo + hi) / 2));
-      }
-      if (!add.length) break;
-      add.forEach(function (k) { k = k % n; if (use.indexOf(k) < 0) use.push(k); });
-      use.sort(function (a, b) { return a - b; });
-    }
-    return { pts: e.pts, closed: !!e.closed, dev: dev };
-  }
-  // Fit Spline on sketch f: idx the entities, opts { tol, closed, mode: 'delete' | 'constrained' | 'unconstrained' }
+  // SolidWorks' Fit Spline: the selected lines, arcs and polylines (one chain end to end, e.g. an imported DXF polyline)
+  // become ONE spline within Tolerance of them (lane fitspline: a multi-span cubic B-spline, Kernel.fitSplineEntity;
+  // before, a through-points spline that kept the chain's vertices). Parameters as SolidWorks 2024: Delete geometry,
+  // Closed spline (a chain that closes on itself), Constrained (the spline is linked to the geometry: it becomes
+  // construction and the spline refits whenever it changes, Kernel.syncFitSplines), Unconstrained (it stays as it was,
+  // unlinked), Fixed (the spline gets a Fix relation), Tolerance. With Delete geometry the link has nothing to hold.
+  // opts { tol, closed, del (Delete geometry), mode: 'constrained' | 'unconstrained' | 'fixed' } (mode 'delete' = del
+  // with Unconstrained, as before)
   function fitSpline(f, idx, opts) {
     opts = opts || {};
-    var ch = chainOf(f, idx);
-    if (ch.error) return { ok: false, error: ch.error };
-    var tol = +opts.tol > 0 ? +opts.tol : ch.diag * 1e-3, closed = ch.closed && opts.closed !== false;
-    var fit = fitThrough(ch.dense, tol, closed);
-    if (!fit || fit.pts.length < 2) return { ok: false, error: 'No spline fits that chain.' };
-    var S = SS(), sp = { t: 'spline', pts: fit.pts };
-    if (fit.closed) sp.closed = true;
-    var mode = opts.mode || 'delete', first = f.entities[idx[0]];
+    var mode = opts.mode || 'unconstrained', del = !!opts.del;
+    if (mode === 'delete') { del = true; mode = 'unconstrained'; }
+    if (del && mode === 'constrained') mode = 'unconstrained';
+    var unit = UI.unitLabel ? UI.unitLabel() : 'mm', tol = +opts.tol > 0 ? +opts.tol : unit === 'in' ? 0.001 : 0.025;
+    var r = K.fitSplineEntity(f.entities, idx, { tol: tol, closed: opts.closed !== false });
+    if (!r.ok) return r;
+    var S = SS(), sp = r.e, ch = r.chain, first = f.entities[idx[0]];
     if (first && first.construction && mode !== 'constrained') sp.construction = true;
-    if (mode === 'delete') {
+    if (first && first.layer != null) sp.layer = first.layer;
+    if (del) {
       idx.slice().sort(function (a, b) { return b - a; }).forEach(function (i) {
         S.removeEntity(f, i);
         f.entities.splice(i, 1);
         if (f.dims) { f.dims = f.dims.filter(function (d) { return d.e !== i; }); f.dims.forEach(function (d) { if (d.e > i) d.e--; }); if (!f.dims.length) delete f.dims; }
       });
-    } else if (mode === 'constrained') idx.forEach(function (i) { if (f.entities[i]) f.entities[i].construction = true; });
+    } else if (mode === 'constrained') {
+      var id = K.newFitId(f);
+      idx.forEach(function (i) { if (f.entities[i]) { f.entities[i].construction = true; f.entities[i].fitSrc = id; } });
+      sp.fit = { id: id, tol: tol, closed: opts.closed !== false };
+      sp.fit.sig = K.fitSourceSig(f.entities, K.fitSources({ entities: f.entities.concat([sp]) }, sp));
+    }
     f.entities.push(sp);
     var ni = f.entities.length - 1;
-    if (mode === 'constrained' && !fit.closed) {
+    if (mode === 'constrained' && !sp.closed) {
       f.rels = f.rels || [];
       if (ch.ends[0]) f.rels.push({ type: 'coincident', refs: [ni + '.p1', ch.ends[0]] });
       if (ch.ends[1]) f.rels.push({ type: 'coincident', refs: [ni + '.p2', ch.ends[1]] });
     }
+    if (mode === 'fixed') { f.rels = f.rels || []; f.rels.push({ type: 'fix', refs: [String(ni)] }); }
     S.clean(f);
     S.solve(f);
-    return { ok: true, index: ni, points: fit.pts.length, dev: fit.dev };
+    return { ok: true, index: ni, points: sp.pts.length, spans: sp.knots.length - 7, dev: r.dev, mode: mode, del: del };
   }
-  UI.fitSpline = fitSpline;   // test hook: (f, idx, { tol, closed, mode })
+  UI.fitSpline = fitSpline;   // test hook: (f, idx, { tol, closed, del, mode })
   function selectedEntities(f) {
     var sel = [];
     if (UI.selection) UI.selection().forEach(function (s) { if (s.kind === 'entity' && sel.indexOf(s.index) < 0) sel.push(s.index); });
     if (App.sel && App.sel.kind === 'entity' && sel.indexOf(App.sel.index) < 0) sel.push(App.sel.index);
     return sel.filter(function (i) { return f && f.entities[i]; });
   }
+  function fitPreview(f, picked, v) {
+    if (!UI.sketchPreview) return;
+    var r = picked.length && f ? K.fitSplineEntity(f.entities, picked, { tol: +v.tol, closed: !!v.closed }) : null;
+    if (!r || !r.ok) { if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); return; }
+    if (UI.sketchFeedbackClear) UI.sketchFeedbackClear();
+    UI.sketchPreview(K.entityPolylines(r.e).map(function (pl) { return pl.closed ? pl.pts.concat([pl.pts[0]]) : pl.pts; }));
+  }
   UI.cmdFitSpline = function () {
     var f = UI.activeSketchFeature();
     if (App.mode !== 'sketch' || !f) { UI.toast('Open a sketch first.'); return; }
     if (App.tool !== 'select') UI.setTool('select');
     var picked = selectedEntities(f).filter(function (i) { var e = f.entities[i]; return e.t === 'line' || e.t === 'arc' || e.t === 'polyline'; });
-    var unit = UI.unitLabel ? UI.unitLabel() : 'mm', v = { tol: unit === 'in' ? 0.001 : 0.025, closed: true, mode: 'delete' };
+    var unit = UI.unitLabel ? UI.unitLabel() : 'mm', v = { tol: unit === 'in' ? 0.001 : 0.025, closed: true, del: true, mode: 'constrained' };
+    function clear() { if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); }
     UI.openPM({
       title: 'Fit Spline', icon: 'spline', values: v, noFocus: true, keepSelection: true,
       message: 'Select the lines, arcs or polyline to fit (one chain, end to end): click them in the graphics area. The spline stays within the tolerance of them.',
@@ -1195,23 +1126,30 @@
         if (k >= 0) picked.splice(k, 1); else picked.push(hit.index);
         if (UI.setSelection) UI.setSelection(picked.map(function (i) { return { kind: 'entity', index: i }; }));
         UI.renderPM();
+        fitPreview(g, picked, v);
       } },
       groups: [
         { title: 'Entities', fields: [{ type: 'static', label: '', value: function () { return picked.length ? picked.length + ' entit' + (picked.length === 1 ? 'y' : 'ies') + ' selected' : 'Click the lines, arcs or polyline to fit'; } }] },
         { title: 'Parameters', fields: [
+          { type: 'check', label: 'Delete geometry', key: 'del' },
           { type: 'check', label: 'Closed spline', key: 'closed' },
-          { type: 'radio', key: 'mode', options: [['delete', 'Delete geometry'], ['constrained', 'Constrained'], ['unconstrained', 'Unconstrained']] },
-          { type: 'number', label: 'Tolerance', key: 'tol', unit: 'u', min: 0 }] }
+          { type: 'radio', key: 'mode', options: [['constrained', 'Constrained'], ['unconstrained', 'Unconstrained'], ['fixed', 'Fixed']] },
+          { type: 'static', label: '', value: function () { return v.del && v.mode === 'constrained' ? 'With Delete geometry the spline has nothing to stay linked to: it is placed unconstrained.' : ''; } }] },
+        { title: 'Tolerance', fields: [{ type: 'number', label: 'Tolerance', key: 'tol', unit: 'u', min: 0 }] }
       ],
+      onChange: function (vals) { v = vals; fitPreview(UI.activeSketchFeature(), picked, vals); },
+      onCancel: clear,
       onOK: function (vals) {
+        clear();
         if (!picked.length) { UI.toast('Select the lines, arcs or polyline to fit.'); return false; }
-        var r = undoStep(function (g) { return fitSpline(g, picked, { tol: +vals.tol, closed: !!vals.closed, mode: vals.mode }); });
+        var r = undoStep(function (g) { return fitSpline(g, picked, { tol: +vals.tol, closed: !!vals.closed, del: !!vals.del, mode: vals.mode }); });
         if (!r.ok) { UI.toast(r.error); return false; }
         if (UI.setSelection) UI.setSelection([]);
         App.sel = null;
-        UI.setStatus('Fit Spline: a spline through ' + r.points + ' points, within ' + fmt(r.dev, 4) + ' of the geometry.');
+        UI.setStatus('Fit Spline: one spline of ' + r.spans + ' span' + (r.spans === 1 ? '' : 's') + ' (' + r.points + ' control points), within ' + fmt(r.dev, 5) + ' of the geometry' + (r.mode === 'constrained' ? ', linked to it (Constrained).' : r.mode === 'fixed' ? ', fixed.' : '.'));
       }
     });
+    fitPreview(f, picked, v);
   };
 
   // ------------------------------------------------------------------ Insert Spline Point, Simplify, Relax
@@ -1220,6 +1158,19 @@
   // keeps a cut spline: SketchSolver.freeSplit's pieces put back together).
   function insertSplinePointAt(f, i, uv) {
     var S = SS(), e = f.entities[i];
+    if (K.isBSpline(e)) {
+      // lane fitspline: on a B-spline (Fit Spline) the point is a knot inserted where clicked (Boehm): one control
+      // point more, the curve exactly as it was
+      var fb = S.freeCurve(e), cb = fb && S.freeClosest(fb, uv);
+      if (!cb) return { ok: false, error: 'Click on the spline.' };
+      var pb = e.deg > 0 ? e.deg | 0 : 3, ub = +e.knots[pb] + cb.t * (+e.knots[e.pts.length] - +e.knots[pb]);
+      var ins = K.bsInsertKnot(e, ub);
+      if (!ins) return { ok: false, error: 'Click inside the spline, away from its ends.' };
+      e.knots = ins.knots; e.pts = ins.pts;
+      if (e.fit) delete e.fit;   // an edited fit spline is no longer the fit of its geometry
+      S.solve(f);
+      return { ok: true, at: e.pts.length - 1 };
+    }
     if (!isPlainSpline(e)) return { ok: false, error: 'Insert Spline Point works on splines.' };
     var fc = S.freeCurve(e), c = fc && S.freeClosest(fc, uv);
     if (!c) return { ok: false, error: 'Click on the spline.' };
@@ -1299,7 +1250,7 @@
       message: 'Click on a spline where the new spline point goes (open or closed). The curve keeps its shape.',
       command: { onSketchPoint: function (uv, mx, my) {
         var hit = UI.pickEntity(mx, my), g = UI.activeSketchFeature(), e = hit && g && g.entities[hit.index];
-        if (!isPlainSpline(e)) { UI.setStatus('Click on a spline.'); return; }
+        if (!isToolSpline(e)) { UI.setStatus('Click on a spline.'); return; }
         if (!uv) uv = UI.screenToPlane(mx, my, UI.activePlane());
         var r = undoStep(function (h) { return insertSplinePointAt(h, hit.index, uv); });
         if (!r.ok) { UI.toast(r.error); return; }
@@ -1408,6 +1359,14 @@
   // Simplify Spline: fewer points, the curve within tol of the original (interior points dropped one at a time, the one
   // that changes the curve least first). smoothing: tangent-driving goes from the points kept, as SolidWorks' Smoothing.
   function simplifySpline(e, tol, smoothing) {
+    if (K.isBSpline(e)) {
+      // lane fitspline: a B-spline is fitted again to its own curve (finely sampled) within the tolerance: fewer spans
+      var refB = curveSamples(e, 16), poly = { t: 'polyline', pts: curveSamples(e, 48), closed: !!e.closed };
+      var rb = K.fitSplineEntity([poly], [0], { tol: Math.max(+tol || 0, 1e-9) * 0.95, closed: !!e.closed });
+      if (!rb.ok || rb.e.pts.length >= e.pts.length) return { e: JSON.parse(JSON.stringify(e)), dev: 0 };
+      ['construction', 'layer', 'showCurvature', 'showInflection', 'showMinRadius'].forEach(function (k) { if (e[k] != null) rb.e[k] = e[k]; });
+      return { e: rb.e, dev: devFrom(rb.e, refB) };
+    }
     var ref = curveSamples(e, 16), cur = JSON.parse(JSON.stringify(e)), min = e.closed ? 3 : 2;
     if (smoothing) { delete cur.tans; delete cur.local; }
     for (var guard = 0; guard < 400 && cur.pts.length > min; guard++) {
@@ -1434,17 +1393,17 @@
   }
   UI.relaxSpline = relaxSpline;
   function splineTarget(f) {
-    var sel = selectedEntities(f).filter(function (i) { return isPlainSpline(f.entities[i]); });
+    var sel = selectedEntities(f).filter(function (i) { return isToolSpline(f.entities[i]); });
     if (sel.length) return sel[0];
     var spec = UI.pmSpec && UI.pmSpec();
-    if (spec && spec._skEntity && spec._skEntity.t === 'spline' && isPlainSpline(f.entities[spec._skEntity.index])) return spec._skEntity.index;
+    if (spec && spec._skEntity && spec._skEntity.t === 'spline' && isToolSpline(f.entities[spec._skEntity.index])) return spec._skEntity.index;
     return -1;
   }
   UI.cmdSimplifySpline = function (index) {
     var f = UI.activeSketchFeature();
     if (App.mode !== 'sketch' || !f) { UI.toast('Open a sketch first.'); return; }
     var i = index != null ? index : splineTarget(f);
-    if (i < 0 || !isPlainSpline(f.entities[i])) { UI.toast('Select a spline first, then Simplify Spline.'); return; }
+    if (i < 0 || !isToolSpline(f.entities[i])) { UI.toast('Select a spline first, then Simplify Spline.'); return; }
     var orig = JSON.parse(JSON.stringify(f.entities[i])), diag = 0;
     orig.pts.forEach(function (p) { diag = Math.max(diag, dist2(p, orig.pts[0])); });
     var v = { tol: clean(+(diag * 0.002).toPrecision(2)) || 0.01, smoothing: false }, pushed = false;
@@ -1509,7 +1468,7 @@
     var e = f && f.entities[i];
     if (!e || e.t !== 'spline') return [];
     var out = [{ sep: true }];
-    if (isPlainSpline(e)) {
+    if (isToolSpline(e)) {
       out.push({ label: 'Insert Spline Point', icon: 'spline', action: function () { UI.cmdInsertSplinePoint(); } });
       out.push({ label: 'Simplify Spline…', icon: 'spline', action: function () { UI.cmdSimplifySpline(i); } });
       out.push({ label: 'Relax Spline', icon: 'spline', action: function () { UI.cmdRelaxSpline(i); } });

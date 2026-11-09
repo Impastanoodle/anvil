@@ -229,6 +229,7 @@
         if (e.style) o.style = e.style;
         if (e.conic != null) o.conic = e.conic;
         if (e.parabola) o.parabola = e.parabola;
+        if (e.knots) { o.knots = e.knots.slice(); o.deg = e.deg; }   // a B-spline's control points are affine-exact too (rfKE)
         out = [carry(e, o)];
         break;
       }
