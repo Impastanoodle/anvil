@@ -92,7 +92,7 @@
   // an assembly drawing's BOM row count drives where Standard 3 View leaves room for the table
   // the build the sheet reads mass and bodies from (the open document's)
   // (lane drawing) showHidden: View ▸ Hide/Show Annotations runs, so hidden annotations are drawn grey to be clicked back
-  function cctx() { return { build: App.build || null, showHidden: D.tool === 'sk:hideann' }; }
+  function cctx() { return { build: App.build || null, mesh: App.mesh || null, showHidden: D.tool === 'sk:hideann' }; }   // (rfKM) mesh: Cut-List links in the title block
   function syncBom(dc) { dc = dc || doc(); if (dc && dc.bom) dc.bomRows = Drawing.bomRows(App.model, mesh(), dc.bom, cctx()).length; return dc; }
   function relayout(dc) { syncBom(dc); Drawing.layout(dc, mesh(), units()); }
   function units() { return App.model.units === 'in' ? 'in' : 'mm'; }

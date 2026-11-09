@@ -140,7 +140,9 @@
     var lab = 2.8 * k, val = 3.5 * k, pad = 1.5 * k, big = 6 * k;
     // title block fields: each a text with $PRPSHEET:"name" (the model's custom property) / $PRP:"name" (the
     // drawing's) links, evaluated now; doc.titleBlock overrides a field's text
-    var tb = titleBlock(doc, model, ctx), scale = doc.sheet.scale || [1, 1];
+    // (rfKM) with the part's mesh, so a $PRPSHEET Cut-List link (Bounding Box Length …) resolves on the sheet and in every
+    // export (it was empty there: the app's context carries the build only)
+    var tb = titleBlock(doc, model, ctx.mesh ? ctx : Object.assign({}, ctx, { mesh: mesh })), scale = doc.sheet.scale || [1, 1];
     var tbRect = { x0: tx0, y0: ty0, x1: S[0] - b1, y1: ty0 + th };
     var colX = {}, blocks = D.tbBlocks(S, units), tbBoxes = D.tbRects(S, units);
     // (rfM) the sheet format's left blocks: COMPANY / DRAWN / CHECKED and the general tolerances, when they fit

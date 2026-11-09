@@ -537,12 +537,14 @@
       (sheet.tables || []).forEach(function (t) { if (t.box) obs.push(t.box); });
       if (sheet.bom && sheet.bom.box) obs.push(sheet.bom.box);
     }
+    // (rfKM) along the view the strip runs on by a text height each way: the first and last ordinate values are centred
+    // on the view's edges, so half of each sticks out past them (across the border when the view sits near it)
     function strip(dir, side) {
-      if (dir === 'h') return side > 0 ? { x0: bx.x0, x1: bx.x1, y0: bx.y1, y1: bx.y1 + deep } : { x0: bx.x0, x1: bx.x1, y0: bx.y0 - deep, y1: bx.y0 };
-      return side > 0 ? { x0: bx.x1, x1: bx.x1 + deep, y0: bx.y0, y1: bx.y1 } : { x0: bx.x0 - deep, x1: bx.x0, y0: bx.y0, y1: bx.y1 };
+      if (dir === 'h') return side > 0 ? { x0: bx.x0 - th, x1: bx.x1 + th, y0: bx.y1, y1: bx.y1 + deep } : { x0: bx.x0 - th, x1: bx.x1 + th, y0: bx.y0 - deep, y1: bx.y0 };
+      return side > 0 ? { x0: bx.x1, x1: bx.x1 + deep, y0: bx.y0 - th, y1: bx.y1 + th } : { x0: bx.x0 - deep, x1: bx.x0, y0: bx.y0 - th, y1: bx.y1 + th };
     }
     function clear(r) {
-      var m = 5 * k;
+      var m = ((_.BORDER || 10) + 1) * k;   // (rfKM) inside the border frame (was 5 mm: ordinates ran across the border)
       if (S && (r.x0 < m || r.y0 < m || r.x1 > S[0] - m || r.y1 > S[1] - m)) return false;
       return !obs.some(function (o) { return o.x0 < r.x1 && r.x0 < o.x1 && o.y0 < r.y1 && r.y0 < o.y1; });
     }
@@ -557,10 +559,11 @@
       // least that clears the strip and keeps the view itself clear (2 mm steps, up to 40 mm; SolidWorks users drag it)
       if (!opts.keepPlace && !clear(strip(dir, side))) {
         var best = null;
-        for (var st = 1; st <= 20 && !best; st++) [side, -side].forEach(function (sd) {
+        // (rfKM) then along it, when no slide across clears the strip (its ends run past the border: a view near a corner)
+        for (var pass = 0; pass < 2 && !best; pass++) for (var st = 1; st <= 20 && !best; st++) [side, -side].forEach(function (sd) {
           [st * 2 * k, -st * 2 * k].forEach(function (dd) {
             if (best) return;
-            var d = dir === 'h' ? [0, dd] : [dd, 0], keep = bx;
+            var d = (dir === 'h') === (pass === 0) ? [0, dd] : [dd, 0], keep = bx;
             bx = moved(keep, d);
             var ok = clear({ x0: bx.x0 - 1 * k, y0: bx.y0 - 1 * k, x1: bx.x1 + 1 * k, y1: bx.y1 + 1 * k }) && clear(strip(dir, sd)) && dirs.every(function (o) { return o === dir || !used[o] || clear(strip(o, used[o] === 'above' || used[o] === 'right' ? 1 : -1)); });
             bx = keep;
