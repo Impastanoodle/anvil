@@ -6038,8 +6038,14 @@
     if (i < 0) throw new Error('Flat pattern: the fixed face of ' + (base.name || 'Insert Bends') + ' is not there any more (at ' + bcPt(P) + ').');
     // rfIH: ties within 1e-9 keep x, y, z order (an OpenCascade face normal's 1e-17 noise turned the flat by 90°)
     var n = mesh.faces[i].normal.slice(), ax = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].sort(function (a, b) { var q = Math.abs(dot(a, n)) - Math.abs(dot(b, n)); return Math.abs(q) < 1e-9 ? 0 : q; })[0];
-    var x = norm(sub(ax, scale(n, dot(ax, n))));
-    return { origin: sub(P, scale(n, dot(n, P) - mesh.faces[i].w)), x: x, y: cross(n, x), n: n };
+    var x = norm(sub(ax, scale(n, dot(ax, n)))), O = sub(P, scale(n, dot(n, P) - mesh.faces[i].w));
+    // lane insertbends2: Insert Bends' Reverse direction: the sheet's thickness is taken the other way from the picked
+    // face, so the flat lies on the wall's other face (T behind it) and is seen from there: mirrored, UP <-> DOWN
+    if (base.type === 'insertBends' && base.reverse && !base.openBase) {
+      var T = +resolvedModel(model).model.sheet.thickness;
+      O = sub(O, scale(n, T)); n = scale(n, -1);
+    }
+    return { origin: O, x: x, y: cross(n, x), n: n };
   }
   // the face of a coplanar mesh that holds P (its plane within tol, P inside its outline), else -1
   function ibFaceAt(mesh, P, tol) {
@@ -6169,6 +6175,16 @@
       groups.forEach(function (go) {
         var b = go.f;
         if (!b || go === gi || Math.abs(b.r - a.r - T) > pr || !sameAxis(gi.s, go.s)) return;
+        pair(a, b);
+      });
+      // lane insertbends2: a bend of radius 0 (SolidWorks' own R 0 bend): the outside rounded T, the inside sharp (no
+      // inner cylinder; the same probes with R = 0 find the sharp inside corner on the axis)
+      if (Math.abs(a.r - T) <= pr && !groups.some(function (q) { return q.f && q !== gi && q.f.r < a.r && Math.abs(q.f.r - a.r + T) <= pr && sameAxis(gi.s, q.s); }))
+        pair(Object.assign({}, a, { r: 0, sag: 0 }), a);
+    });
+    return out;
+    function pair(a, b) {
+      {
         // the same angle on both surfaces (the outer's frame: the axes may point opposite ways)
         var e = function (f, t) { return add(scale(f.e1, Math.cos(t)), scale(f.e2, Math.sin(t))); };
         var ia = e(a, a.th0), ib = e(a, a.th0 + a.A), oa = e(b, b.th0), ob = e(b, b.th0 + b.A);
@@ -6200,9 +6216,8 @@
           if (on && Math.abs(dot(fc.normal, d)) < 1e-6) faces[k] = true;
         });
         out.push({ R: R, RT: RT, A: A, C0: C0, d: d, n1: n1, n2: n2, s0: s0, s1: s1, i1: i1, i2: i2, faces: faces, mid: at(e(a, a.th0 + A / 2), RT, t1, 0, sm) });
-      });
-    });
-    return out;
+      }
+    }
   }
   // lane rfIM: the rounded (filleted) convex edges of a solid, radius r > T, between two flat faces tangent to them:
   // what Convert to Sheet Metal shells into rounded bends (inside radius r − T, outside r). Same records as
@@ -6229,6 +6244,57 @@
       out.push({ R: a.r - T, RT: a.r, A: a.A, C0: C0, d: d, n1: n1, n2: n2, s0: a.z0, s1: a.z1, i1: i1, i2: i2, faces: faces, mid: at(nm, a.r), solid: true });
     });
     return out;
+  }
+  // lane insertbends2: a corner of the part's walls rounded on one side only (an inside fillet with the outside sharp,
+  // an outside fillet with the inside sharp or of another radius than inside + T). SolidWorks' Insert Bends needs a
+  // uniform thickness (sharp corners, or concentric rounds R and R + T) and refuses such a part. ibLoneRounds(body,
+  // mesh, T, units, rbs) -> [{ side: 'inside' | 'outside', r, other (the opposite round's radius, or 0: sharp), at (a
+  // point on it), C0, d, n1, n2, R, RT, A, s0, s1 (as ibNearRound reads) }]: arcs under 180° whose two flat tangent
+  // walls are T thick past it, not one of the bends in rbs (a cutout's rounded corner in a plate is no wall corner)
+  function ibLoneRounds(body, mesh, T, units, rbs) {
+    var out = [], inside = body.pointTester(), pr = units === 'in' ? 1e-4 : 2.5e-3, dl = 1e-3 * T, groups = ibCylGroups(body);
+    groups.forEach(function (g) {
+      var a = g.f;
+      if (!a || !(a.A > 1e-3) || a.A > Math.PI - 1e-3) return;
+      if (rbs.some(function (rb) { return ibSameAxis(g.s, { d: rb.d, o: rb.C0 }) && (Math.abs(a.r - rb.R) <= pr || Math.abs(a.r - rb.RT) <= pr); })) return;
+      var e = function (t) { return add(scale(a.e1, Math.cos(t)), scale(a.e2, Math.sin(t))); };
+      var n1 = e(a.th0), n2 = e(a.th0 + a.A), nm = e(a.th0 + a.A / 2), d = a.d, C0 = a.o, sm = (a.z0 + a.z1) / 2, r = a.r;
+      var t1 = cross(d, n1), t2 = cross(d, n2), w = Math.min(T, 0.25 * (r + T));
+      var at = function (n, rr, t, dt) { return add(add(add(C0, scale(d, sm)), scale(n, rr)), scale(t, dt)); };
+      var convex = inside(at(nm, r - Math.min(T, r) / 2, t1, 0)) && !inside(at(nm, r + dl, t1, 0));
+      var concave = !convex && !inside(at(nm, r - dl, t1, 0)) && inside(at(nm, r + Math.min(T, r) / 2, t1, 0));
+      if (!convex && !concave) return;
+      // the walls past the tangent lines: T thick (outside fillet: metal from r − T to r; inside: from r to r + T)
+      var lo = convex ? r - T : r, hi = convex ? r : r + T, ok = true;
+      if (convex) w += Math.max(0, T - r);   // a sharp inside corner lies T − r past the outside round's tangent line
+      [[n1, t1, -w], [n2, t2, w]].forEach(function (q) {
+        ok = ok && inside(at(q[0], (lo + hi) / 2, q[1], q[2])) && !inside(at(q[0], hi + dl, q[1], q[2])) && !inside(at(q[0], lo - dl, q[1], q[2]));
+      });
+      if (!ok) return;
+      var other = 0;   // the round on the other side of the corner (same axis), if any
+      groups.forEach(function (q) { if (q !== g && q.f && ibSameAxis(g.s, q.s) && (convex ? q.f.r < r : q.f.r > r)) other = q.f.r; });
+      if (convex && Math.abs(r - T) <= pr && !other) return;   // R 0: a bend (ibRoundBends)
+      // the other side of the corner: sharp (just past its corner point toward the axis: air inside, metal outside) or
+      // a round of another radius / axis (a cylinder parallel to this one within T + r); anything else (a curved face
+      // with no cylinder record: an approximated import) is left alone, as before (no bend is found there)
+      var cH = dot(n1, n2), oc = convex ? r - T : r + T, Pc = add(add(C0, scale(d, sm)), scale(add(n1, n2), oc / (1 + cH)));
+      var sharp = convex ? !inside(sub(Pc, scale(nm, dl))) : inside(sub(Pc, scale(nm, dl)));
+      var near = groups.some(function (q) {
+        if (q === g || !q.f || Math.abs(dot(q.f.d, d)) < 1 - 1e-9) return false;
+        var v = sub(q.f.o, C0);
+        return len(sub(v, scale(d, dot(v, d)))) < r + T;
+      });
+      if (!sharp && !near) return;
+      out.push({ side: convex ? 'outside' : 'inside', r: r, other: other, at: at(nm, r, t1, 0), C0: C0, d: d, n1: n1, n2: n2, R: r, RT: r, A: a.A, s0: a.z0, s1: a.z1 });
+    });
+    return out;
+  }
+  function ibLoneError(what, lr, T) {
+    var fix = lr.side === 'inside'
+      ? 'the inside of that corner is rounded R' + bcNum(lr.r) + ' but its outside is not R' + bcNum(lr.r + T) + ' (inside + T) round the same axis: round the outside R' + bcNum(lr.r + T) + ', or remove the inside fillet'
+      : lr.r > T ? 'the outside of that corner is rounded R' + bcNum(lr.r) + ' but its inside is not R' + bcNum(lr.r - T) + ' (outside − T) round the same axis: round the inside R' + bcNum(lr.r - T) + ', or remove the outside fillet'
+      : 'the outside of that corner is rounded R' + bcNum(lr.r) + ', less than T: an outside round needs a radius of T or more (T over a sharp inside, R + T over an inside R), or remove the outside fillet';
+    return new Error(what + ': the part is not one thickness at ' + bcPt(lr.at) + ': ' + fix + '. Bends need a uniform thickness (sharp inside and outside, or rounds R and R + T on one axis).');
   }
   // a point picked on (or stored for) a rounded bend: on either of its surfaces within tol, inside its length and arc
   function ibNearRound(rb, at, tol) {
@@ -6314,7 +6380,14 @@
       });
     });
     // lane rfIH: bends already rounded in the part keep their own radius (the PM's radius is for sharp corners only)
-    ibRoundBends(body, mesh, T, model.units).forEach(function (rb) {
+    var rbs = ibRoundBends(body, mesh, T, model.units);
+    // lane insertbends2: a corner rounded on one side only is not one thickness: refused, as SolidWorks does
+    ibLoneRounds(body, mesh, T, model.units, rbs).forEach(function (lr) {
+      var Os = add(lr.C0, scale(add(lr.n1, lr.n2), (lr.side === 'inside' ? lr.r + T : lr.r) / (1 + dot(lr.n1, lr.n2))));   // the outer corner (sharp or virtual)
+      if (f.edges && !f.edges.some(function (q) { var at = Array.isArray(q) ? q : q.at, v = sub(at, Os); return ibNearRound(lr, at, tolU) || len(sub(v, scale(lr.d, dot(v, lr.d)))) < tolU; })) return;
+      throw ibLoneError(what, lr, T);
+    });
+    rbs.forEach(function (rb) {
       if (f.edges && !f.edges.some(function (q) { return ibNearRound(rb, Array.isArray(q) ? q : q.at, tolU); })) return;
       var c = Math.cos(rb.A), O0 = add(rb.C0, scale(add(rb.n1, rb.n2), rb.RT / (1 + c)));
       var L = { i1: rb.i1, i2: rb.i2, n1: rb.n1, n2: rb.n2, d: rb.d, c: c, O0: O0 };
@@ -6348,7 +6421,7 @@
         if (b.base != null) return;
         var other = b.p1 === pk ? b.p2 : (b.p2 === pk ? b.p1 : null);
         if (other == null) return;
-        if (other in parent && parent[other] !== pk) throw new Error(what + ': the bends close a ring at ' + bcPt(b.P(0, 0, (b.s0 + b.s1) / 2)) + ': rip a corner first (Sheet Metal ▸ Rip) so the part can unfold.');
+        if (other in parent && parent[other] !== pk) throw new Error(what + ': the bends close a ring at ' + bcPt(b.P(0, 0, (b.s0 + b.s1) / 2)) + ': rip a corner first (Sheet Metal ▸ Rip, or ' + (f.type === 'convertSM' ? 'the rip edges' : 'Rip Parameters ▸ Edges to rip') + ') so the part can unfold.');
         b.base = pk;
         if (!(other in parent)) { parent[other] = pk; queue.push(other); }
       });
@@ -6625,6 +6698,12 @@
       if (!plan.thin) body = _.buildShell({ thickness: plan.T, faces: plan.removed.map(function (p) { return { at: p }; }) }, { body: body, units: model.units || 'mm' }).body;   // lane rfIE: thin walls stay
       if (plan.rips.length) body = body.subtract(buildRip({ id: f.id, edges: plan.rips, gap: gap, direction: 'both' }, model, { body: body }));
       g = convertSMInsert(f, plan);
+    } else if (f.ripEdges && f.ripEdges.length) {
+      // lane insertbends2: Insert Bends' Rip Parameters (SolidWorks: Edges to rip, Rip gap): the closed corners of a
+      // shelled tray / box are ripped ('both', the gap) before the bends go in, as Convert does with its rips
+      var rgap = ibRipGap(f, model);
+      if (!(rgap > 0) || !isFinite(rgap)) throw new Error('Insert Bends: the rip gap must be a positive number.');
+      body = body.subtract(buildRip({ id: f.id, edges: f.ripEdges.map(function (s) { return { at: (Array.isArray(s) ? s : s.at).slice() }; }), gap: rgap, direction: 'both' }, model, { body: body }));
     }
     if (model.noBends) return { body: body, info: [], tool: null };   // No Bends: the part as it was before its bends were inserted
     var lay = insertBendsLayout(g, model, { body: body });
@@ -6818,6 +6897,7 @@
   K.miterFlangeStages = miterFlangeStages; K.miterTail = miterTail; K.MITER_FLANGE_POSITIONS = MITER_FLANGE_POSITIONS.slice(); _.buildMiterFlange = buildMiterFlange;   // lane DL
   K.insertBendsLayout = insertBendsLayout; K.convertSMPlan = convertSMPlan; K.sheetThicknessAt = sheetThicknessAt; K.INSERT_BENDS_RELIEFS = IB_RELIEFS.slice(); K.convertSMInsert = convertSMInsert; K.convertSMReversed = convertSMReversed; K.insertBendsRoundAt = insertBendsRoundAt; K.convertSMCollect = convertSMCollect; K.convertSMRipGap = ibRipGap; K.insertBendsPreview = insertBendsPreview; _.buildInsertBends = buildInsertBends;   // lane DQ
   K.insertBendsRounded = ibRoundBends;   // lane rfIH: ibRoundBends(body, mesh, T, units): the rounded bends a part already has
+  _.ibLoneRounds = ibLoneRounds;   // lane insertbends2: corners rounded on one side only (refused by insertBendsLayout)
 
   // ------------------------------------------------------------------ Forming Tool (lane forming, rfHI)
   // SolidWorks' Design Library forming tools dropped on a flat sheet face: Dimple (round emboss), Extruded Hole (the

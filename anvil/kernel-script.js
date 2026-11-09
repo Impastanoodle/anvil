@@ -1571,7 +1571,9 @@
   // at the fixed face; Convert: required unless the part has a sheet), radius (inside bend radius, default T),
   // kFactor (0.5) or bendAllowanceType / bendAllowance / bendDeduction / bendTable (as sheet()), autoRelief ('rect',
   // the default | 'none'), Convert also ripEdges ([[x, y, z], …]; default: found) and gap (rip gap, default 0.004 in /
-  // 0.1 mm); name. With no sheet yet they set one; after sheet(...) (a script written back) they keep it and change
+  // 0.1 mm), reverse (Reverse thickness); name. Insert Bends also takes ripEdges (Rip Parameters: the closed corners
+  // ripped 'both' before the bends; none by default), gap, and reverse (Reverse direction: the flat on the fixed wall's
+  // other face). With no sheet yet they set one; after sheet(...) (a script written back) they keep it and change
   // only what they are given.
   function ibPt(p, what) {
     if (!p || p.length !== 3 || !p.every(function (x) { return isFinite(+x); })) throw new Error(what + ': points are [x, y, z].');
@@ -1602,6 +1604,12 @@
     ibSheet(this, opts, function () { return K.sheetThicknessAt(K.rebuild(m).body, P, m.units); });
     var f = { type: 'insertBends', fixedFace: P, sheetBase: true };
     ibRelief(f, opts);
+    // lane insertbends2: Rip Parameters (edges to rip, gap) and Reverse direction (the flat on the wall's other face)
+    if (opts.ripEdges && opts.ripEdges.length) {
+      f.ripEdges = opts.ripEdges.map(function (e) { return ibPt(Array.isArray(e) ? e : e.at, 'insertBends'); });
+      f.gap = opts.gap != null ? num(opts.gap) : K.ripDefaultGap(m);
+    }
+    if (opts.reverse) f.reverse = true;
     if (opts.name) f.name = opts.name;
     this._add(f);
     return this;
@@ -2209,10 +2217,10 @@
           // lane DQ: the sheet (T, R, K) is the p.sheet(...) line at the top
           var ibr = function (q) { return q.map(function (x) { return Math.round(x * 1e4) / 1e4; }); };
           var ibo = {};
-          if (f.type === 'convertSM' && f.ripEdges && f.ripEdges.length) ibo.ripEdges = f.ripEdges.map(ibr);
-          if (f.type === 'convertSM' && f.gap != null) ibo.gap = numOut(f.gap);
+          if (f.ripEdges && f.ripEdges.length) ibo.ripEdges = f.ripEdges.map(ibr);   // lane insertbends2: Insert Bends' rips too
+          if ((f.type === 'convertSM' || (f.ripEdges && f.ripEdges.length)) && f.gap != null) ibo.gap = numOut(f.gap);
           if (f.autoRelief && f.autoRelief !== 'rect') ibo.autoRelief = f.autoRelief;
-          if (f.type === 'convertSM' && f.reverse) ibo.reverse = true;
+          if (f.reverse) ibo.reverse = true;
           ibo.name = f.name;
           if (f.type === 'insertBends') out.push('var ' + v + ' = p.insertBends(' + JSON.stringify(ibr(f.fixedFace)) + ', ' + optsStr(ibo) + ').last();');
           else out.push('var ' + v + ' = p.convertSheetMetal(' + JSON.stringify(ibr(f.fixedFace)) + ', ' + JSON.stringify((f.bendEdges || []).map(ibr)) + ', ' + optsStr(ibo) + ').last();');

@@ -4538,7 +4538,8 @@
     v0.bendEdges = existing && existing.bendEdges ? existing.bendEdges.map(function (p) { return p.slice(); }) : [];
     v0.gap = existing && existing.gap != null ? existing.gap : (ibLast.gap != null ? ibLast.gap : K.ripDefaultGap(App.model));
     v0.cornerRelief = !(existing && existing.autoRelief === 'none');
-    v0.reverse = !!(existing && existing.reverse);   // lane rfIM: Convert's Reverse thickness
+    v0.reverse = !!(existing && existing.reverse);   // lane rfIM: Convert's Reverse thickness; lane insertbends2: Insert Bends' Reverse direction
+    v0.ripEdges = existing && existing.ripEdges ? existing.ripEdges.map(function (p) { return p.slice(); }) : [];   // lane insertbends2: Insert Bends' Rip Parameters
     if (existing && existing.name) v0.name = existing.name;
     // Insert Bends: T is the part's, measured under the fixed face
     var measured = { at: null, T: null, err: null };
@@ -4560,8 +4561,9 @@
     function featOf(v) {
       var f = isConv ? { type: 'convertSM', fixedFace: v.fixedFace ? v.fixedFace.slice() : null, bendEdges: v.bendEdges.map(function (p) { return p.slice(); }), gap: +v.gap, sheetBase: true }
         : { type: 'insertBends', fixedFace: v.fixedFace ? v.fixedFace.slice() : null, sheetBase: true };
+      if (!isConv && v.ripEdges.length) { f.ripEdges = v.ripEdges.map(function (p) { return p.slice(); }); f.gap = +v.gap; }   // lane insertbends2
       if (!v.cornerRelief) f.autoRelief = 'none';
-      if (isConv && v.reverse) f.reverse = true;
+      if (v.reverse) f.reverse = true;
       if (v.name) f.name = v.name;
       return f;
     }
@@ -4576,8 +4578,10 @@
     function lit() {
       var v = pm.values || v0, T = thickness(v) || +v.thickness || 0;
       if (v.fixedFace) ufLit([v.fixedFace], T); else if (App.command) { App.command.faceList = []; UI.updateHighlights(); }
-      if (isConv && App.command) {
-        App.command.edgeList = (App.edges || []).filter(function (e) { return v.bendEdges.some(function (q) { return K.pointSegmentDistance(q, e.a, e.b) <= 1e-4 * (1 + e.len); }); });
+      if (App.command) {
+        if (!isConv) App.command.pickEdges = !!v.fixedFace;   // lane insertbends2: the fixed face first, then edges to rip (a first click is a face)
+        var lst = isConv ? v.bendEdges : (v.ripEdges || []);   // lane insertbends2: Insert Bends lights its rip edges
+        App.command.edgeList = (App.edges || []).filter(function (e) { return lst.some(function (q) { return K.pointSegmentDistance(q, e.a, e.b) <= 1e-4 * (1 + e.len); }); });
         UI.updateHighlights();
       }
     }
@@ -4643,6 +4647,10 @@
         var i = -1;
         v.bendEdges.forEach(function (q, k) { if (K.pointSegmentDistance(q, pk.edge.a, pk.edge.b) <= 1e-4 * (1 + pk.edge.len)) i = k; });
         if (i >= 0) v.bendEdges.splice(i, 1); else v.bendEdges.push(ibRnd(pk.edge.mid));
+      } else if (!isConv && pk.kind === 'edge' && pk.edge) {   // lane insertbends2: Rip Parameters ▸ Edges to rip (a second click takes it out)
+        var ri = -1;
+        v.ripEdges.forEach(function (q, k) { if (K.pointSegmentDistance(q, pk.edge.a, pk.edge.b) <= 1e-4 * (1 + pk.edge.len)) ri = k; });
+        if (ri >= 0) v.ripEdges.splice(ri, 1); else v.ripEdges.push(ibRnd(pk.edge.mid));
       } else if (pk.kind === 'face' && pk.point) {
         // lane rfIM: Convert: a click on a rounded bend face (a fillet the shell makes a bend, or a bend already
         // rounded) adds that bend to Bend Edges, or takes it out again; any other face is the fixed face
@@ -4667,7 +4675,7 @@
       if (g.title !== 'Sheet Metal Parameters') return;
       if (isConv) { g.fields = [fixedPick].concat(g.fields, [{ type: 'check', label: 'Reverse thickness', key: 'reverse' }]); return; }   // rfIM
       g.title = 'Bend Parameters';
-      g.fields = [fixedPick, { type: 'static', label: 'Thickness  T', value: function (v) { var t = thickness(v); return t == null ? '(from the part at the fixed face)' : UI.fmtNum(t, 4) + ' (the part\'s)'; } }].concat(g.fields.filter(function (q) { return q.key !== 'thickness' && q.key !== 'overrideThickness'; }),
+      g.fields = [fixedPick, { type: 'check', label: 'Reverse direction', key: 'reverse' }, { type: 'static', label: 'Thickness  T', value: function (v) { var t = thickness(v); return t == null ? '(from the part at the fixed face)' : UI.fmtNum(t, 4) + ' (the part\'s)'; } }].concat(g.fields.filter(function (q) { return q.key !== 'thickness' && q.key !== 'overrideThickness'; }),
         // lane rfIM: the bends already rounded in the part keep their own radius (the radius above is for sharp corners)
         [{ type: 'static', label: 'Rounded bends', value: function () { return info.bends == null ? '–' : info.rounded ? info.rounded + ' found (their own radius)' : 'none'; } }]);
     });
@@ -4684,6 +4692,16 @@
         { type: 'static', label: 'Rip edges found', value: function () { return info.rips == null ? '–' : String(info.rips); } }
       ] }, { title: 'Corner Defaults', fields: [{ type: 'number', label: 'Rip gap', key: 'gap', unit: 'u', min: 0 }] });
     }
+    if (!isConv) {   // lane insertbends2: SolidWorks' Rip Parameters (a closed tray / box: rip its corner edges so it can unfold)
+      gs.push({ title: 'Rip Parameters', fields: [
+        { type: 'pick', icon: 'rip', placeholder: 'Edges to rip…',
+          value: function (v) { var n = v.ripEdges.length; return n ? n + ' edge' + (n === 1 ? '' : 's') : ''; },
+          items: function (v) { return v.ripEdges.map(function (p, i) { return { label: 'Edge<' + (i + 1) + '>', at: p }; }); },
+          onRemove: function (v, i) { v.ripEdges.splice(i, 1); renderPM(); preview(); },
+          onClear: function (v) { v.ripEdges = []; renderPM(); preview(); } },
+        { type: 'number', label: 'Rip gap', key: 'gap', unit: 'u', min: 0 }
+      ] });
+    }
     gs.push({ title: 'Corner Relief', fields: [{ type: 'check', label: 'Relieve corners where two bends meet (R + T square)', key: 'cornerRelief' }] });
     gs.push({ title: 'Result', fields: [{ type: 'static', label: '', value: function () { return infoText() || '–'; } }] });
     gs.push({ title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] });
@@ -4692,8 +4710,8 @@
       onRollback: function () { base = null; measured.at = null; lit(); },
       message: isConv
         ? 'Click the <b>fixed face</b>, then the <b>edges</b> (or rounded faces) of the solid that become bends (or <b>Collect All Bends</b> on a part with walls T thick). The faces not joined to the fixed face across them are removed (a shell of T inward; walls already T thick stay as they are), the edges between kept faces are ripped, and the bends are inserted.'
-        : 'Click the <b>fixed face</b> (a flat face that stays put in the flat). Every sharp corner between two walls of the part\'s thickness becomes a bend of this radius; bends already rounded keep their own radius; rip closed corners first (Rip).',
-      command: isConv ? { faceList: [], edgeList: [], pickEdges: true, onPick: pick } : { faceList: [], onPick: pick },
+        : 'Click the <b>fixed face</b> (a flat face that stays put in the flat). Every sharp corner between two walls of the part\'s thickness becomes a bend of this radius; bends already rounded keep their own radius. A closed tray or box: click its corner <b>edges to rip</b> (Rip Parameters).',
+      command: { faceList: [], edgeList: [], pickEdges: true, onPick: pick },
       groups: gs, pmUndo: isConv ? pmUndo : null,
       onChange: function (v, key) {
         if (isConv && gaugeChanged(v, key)) renderPM();
@@ -4702,12 +4720,12 @@
       onOK: function (v) {
         if (!v.fixedFace) { UI.toast('Pick the fixed face.'); return false; }
         if (isConv && !v.bendEdges.length) { UI.toast('Pick the edges that become bends.'); return false; }
-        if (isConv && !(+v.gap > 0)) { UI.toast('The rip gap must be more than 0.'); return false; }
+        if ((isConv || v.ripEdges.length) && !(+v.gap > 0)) { UI.toast('The rip gap must be more than 0.'); return false; }
         if (!isConv && thickness(v) == null) { UI.toast(measured.err || 'Cannot read the part\'s thickness at the fixed face.'); return false; }
         var sheet;
         try { sheet = sheetOf(v, true); } catch (e) { UI.toast(e.message); return false; }
         var feat = featOf(v);
-        ibLast = { radius: +v.bendRadius, gap: isConv ? +v.gap : ibLast.gap, thickness: isConv ? +v.thickness : ibLast.thickness };
+        ibLast = { radius: +v.bendRadius, gap: isConv || v.ripEdges.length ? +v.gap : ibLast.gap, thickness: isConv ? +v.thickness : ibLast.thickness };
         // one undo step takes back the sheet with the feature: the snapshot is taken before the sheet changes and the
         // one commitFeature takes (sheet already set) is dropped
         UI.pushUndo();
