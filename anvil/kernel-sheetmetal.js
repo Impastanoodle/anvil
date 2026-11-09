@@ -7411,7 +7411,7 @@
       var eds = [0, 1, 2].map(function (k) { var P = t.p[k], e = sub(t.p[(k + 1) % 3], P); return { P: P, m: cross(n, e), l: len(e) }; });
       return { t: t, n: n, e1: e1, e2: e2, a0: a0, f1: f1, f2: [-f1[1], f1[0]], w: dot(n, t.p[0]), lo: lo, hi: hi, eds: eds };
     });
-    function lay2(F, X) {
+    function lay2(F, X) {   // (X on the facet's plane or a plane parallel to it: the offset is along n, read away)
       var Y = sub(X, F.t.p[0]), u = dot(Y, F.e1), w = dot(Y, F.e2);
       return [F.a0[0] + F.f1[0] * u + F.f2[0] * w, F.a0[1] + F.f1[1] * u + F.f2[1] * w];
     }
@@ -7426,11 +7426,14 @@
       vs.forEach(function (X) { for (var k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], X[k]); hi[k] = Math.max(hi[k], X[k]); } });
       return { vs: vs, lo: lo, hi: hi };
     });
-    var segs = [];
+    // sliceHoles(dl): the hole loops of the slice dl from the mid-surface (each facet's plane moved dl along its normal)
+    function sliceHoles(dl) {
+    var segs = [], out = [];
     facets.forEach(function (F) {
+      var w = F.w + dl, sh = scale(F.n, dl);
       polys.forEach(function (pg) {
         for (var k = 0; k < 3; k++) if (pg.hi[k] < F.lo[k] || pg.lo[k] > F.hi[k]) return;
-        var vs = pg.vs, d = vs.map(function (X) { return dot(F.n, X) - F.w; }), pos = false, neg = false, i;
+        var vs = pg.vs, d = vs.map(function (X) { return dot(F.n, X) - w; }), pos = false, neg = false, i;
         d.forEach(function (x) { if (x > tol) pos = true; else if (x < -tol) neg = true; });
         if (!pos || !neg) return;
         var pts = [];
@@ -7444,7 +7447,7 @@
         if (pts.length > 2) { var far = 0; pts.forEach(function (X) { pts.forEach(function (Y) { var dd = len(sub(X, Y)); if (dd > far) { far = dd; P = X; Q = Y; } }); }); }
         var D = sub(Q, P), t0 = 0, t1 = 1;
         for (i = 0; i < 3; i++) {
-          var e = F.eds[i], fP = dot(e.m, sub(P, e.P)), fD = dot(e.m, D), te = tol * e.l;
+          var e = F.eds[i], fP = dot(e.m, sub(P, add(e.P, sh))), fD = dot(e.m, D), te = tol * e.l;
           if (Math.abs(fD) <= 1e-15 * e.l * (1 + len(D))) { if (fP < -te) return; continue; }
           var tt = -fP / fD;
           if (fD > 0) t0 = Math.max(t0, tt); else t1 = Math.min(t1, tt);
@@ -7496,6 +7499,33 @@
       out.push(c);
     });
     return out;
+    }
+    // lane smflat-2: the laser's hole is the through hole: a hole inside one facet whose slice just inside either face
+    // is smaller (a countersink or counterbore from the other side) lays that one. A prism's slices are congruent (same
+    // area: the mid one stays). A hole across a fold keeps its mid-surface slice (off it, the facets' offset planes
+    // overlap or gap at the bend line, so those slices are not the hole's).
+    var mids = sliceHoles(0);
+    var tri2 = facets.map(function (F) { return F.t.tag.map(function (tg) { return at[tkey(tg)]; }); });
+    function inOne(h) {
+      return tri2.some(function (tr) {
+        return h.every(function (q) {
+          for (var k = 0; k < 3; k++) { var a = tr[k], b = tr[(k + 1) % 3]; if ((b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0]) < -1e-9 * (1 + size)) return false; }
+          return true;
+        });
+      });
+    }
+    if (!mids.some(inOne)) return mids;
+    var hd = T / 2 * (1 - 1e-3), sides = sliceHoles(hd).concat(sliceHoles(-hd));
+    function cen(l) { var c = [0, 0]; l.forEach(function (q) { c[0] += q[0] / l.length; c[1] += q[1] / l.length; }); return c; }
+    return mids.map(function (h) {
+      if (!inOne(h)) return h;
+      var best = h, bA = Math.abs(K.signedArea(h));
+      sides.forEach(function (g) {
+        var ag = Math.abs(K.signedArea(g)), cg = cen(g);
+        if (ag < bA * (1 - 1e-6) && _.pointInPoly(cg, h) && g.every(function (q) { return _.pointInPoly(q, h); })) { best = g; bA = ag; }
+      });
+      return best;
+    });
   }
   function loftedBendFlat(f, model, build) {
     var lay = loftedBendLayout(f, model, { planes: build && build.planes, sketches: {} }), sheet = K.sheetParams(model), units = model.units;

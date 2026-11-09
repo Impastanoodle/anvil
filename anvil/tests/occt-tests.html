@@ -456,6 +456,30 @@
   var SMC_TRAY = [[2, SH_T, 0], [4, SH_T, 1.5], [2, SH_T, 3], [0, SH_T, 1.5]].map(function (e) { return 'p.flange(1, [' + JSON.stringify(e) + '], { position: "inside", lengthRef: "outer" });\n'; }).join('');   // lane smcorner
   var SMC_U = 'p.units("in");\np.sheet(0.06, 0.06, 0.5);\np.sketch("Front").polyline([[0, 2], [0, 0], [3, 0], [3, 2]], false).end().baseFlange(null, { depth: 4 });\n' +
     [[1.5, 0, 0], [0, 1, 0], [3, 1, 0]].map(function (e) { return 'p.flange(1, [' + JSON.stringify(e) + '], { position: "inside", lengthRef: "outer", reverse: true });\n'; }).join('');   // lane smcorner-2
+  // lane smflat-2: the U channel with Material Outside end flanges, and a 3 Bend corner relief's area in the blank (the
+  // shape as cornerReliefShape draws it, centred on the bend lines' crossing (BA / 2, BA / 2), less its part over the
+  // corner notch [0, BA] × [stub, ∞))
+  var SMC_UO = SMC_U.replace(/position: "inside"/g, 'position: "outside"');
+  function smfRelief(type, size, stub) {
+    var BA = Math.PI / 2 * 0.09, C = [BA / 2, BA / 2], h = size / 2, pts = [], i, d = Math.SQRT1_2, a0 = Math.atan2(d, -d);
+    if (type === 'circular') for (i = 0; i < 32; i++) pts.push([C[0] + h * Math.cos(2 * Math.PI * i / 32), C[1] + h * Math.sin(2 * Math.PI * i / 32)]);
+    else {
+      var ca = [C[0] - d * h, C[1] - d * h], cb = [C[0] + d * h, C[1] + d * h];
+      for (i = 0; i <= 16; i++) pts.push([cb[0] + h * Math.cos(a0 - Math.PI * i / 16), cb[1] + h * Math.sin(a0 - Math.PI * i / 16)]);
+      for (i = 0; i <= 16; i++) pts.push([ca[0] + h * Math.cos(a0 + Math.PI - Math.PI * i / 16), ca[1] + h * Math.sin(a0 + Math.PI - Math.PI * i / 16)]);
+    }
+    function clip(poly, a, c) {
+      var out = [];
+      for (var k = 0; k < poly.length; k++) {
+        var P = poly[k], Q = poly[(k + 1) % poly.length], dp = a[0] * P[0] + a[1] * P[1] - c, dq = a[0] * Q[0] + a[1] * Q[1] - c;
+        if (dp <= 0) out.push(P);
+        if ((dp < 0 && dq > 0) || (dp > 0 && dq < 0)) { var t = dp / (dp - dq); out.push([P[0] + (Q[0] - P[0]) * t, P[1] + (Q[1] - P[1]) * t]); }
+      }
+      return out;
+    }
+    var notch = clip(clip(clip(pts, [-1, 0], 0), [1, 0], BA), [0, -1], -stub);
+    return Math.abs(K.signedArea(pts)) - (notch.length > 2 ? Math.abs(K.signedArea(notch)) : 0);
+  }
   var CW_HEAD = 'p.units("in");\np.sheet(' + SH_T + ', ' + SH_T + ', 0.5);\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();\n';
   var CW_L = CW_HEAD + 'p.flange(1.5, [[0, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\n';
   var CW_BC = function (size, corners, opts) { return 'p.breakCorner(' + size + ', ' + JSON.stringify(corners) + ', ' + JSON.stringify(opts) + ');\n'; };
@@ -621,7 +645,22 @@
       removed: (function () { var BA = Math.PI / 2 * 0.09; return 2 * 0.06 * (0.0625 - BA * (BA / 2 + 0.125 - 0.12)); })(), loops: 1, dxf: true },
     { name: 'smcorner-2: Corner Relief 3 Bend corner, Tear: the U bends\' stubs between the end bends, 2·BA·(R + T)·T exactly; one blank',
       plain: SMC_U, code: SMC_U + 'p.cornerRelief([[0.06, 0, 0.12], [2.94, 0, 0.12]], null, { cornerType: "3bend", reliefType: "tear" });',
-      removed: 2 * Math.PI / 2 * 0.09 * 0.12 * 0.06, loops: 1 }
+      removed: 2 * Math.PI / 2 * 0.09 * 0.12 * 0.06, loops: 1 },
+    // lane smflat-2: Circular Ø.12 and Obround .12 on the same corners, Material Inside and Outside (U bend stub R + T / R):
+    // OpenCascade's wrapped cutter (cornerReliefTool) gives a valid solid of the blank's volume (T × the relief's shape
+    // less its part over the corner notch, per corner), as Anvil's band rebuild does
+    { name: 'smflat-2: Corner Relief 3 Bend corner, Circular Ø.12 centred, Material Inside: T × (the 32-gon less the notch) per corner; one blank',
+      plain: SMC_U, code: SMC_U + 'p.cornerRelief([[0.06, 0, 0.12], [2.94, 0, 0.12]], 0.12, { cornerType: "3bend", reliefType: "circular" });',
+      removed: 2 * 0.06 * smfRelief('circular', 0.12, 0.12), loops: 1 },
+    { name: 'smflat-2: Corner Relief 3 Bend corner, Obround .12 centred, Material Inside: T × (the slot less the notch) per corner; one blank',
+      plain: SMC_U, code: SMC_U + 'p.cornerRelief([[0.06, 0, 0.12], [2.94, 0, 0.12]], 0.12, { cornerType: "3bend", reliefType: "obround" });',
+      removed: 2 * 0.06 * smfRelief('obround', 0.12, 0.12), loops: 1 },
+    { name: 'smflat-2: Corner Relief 3 Bend corner, Circular Ø.12 centred, Material Outside: T × (the 32-gon less the notch) per corner; one blank',
+      plain: SMC_UO, code: SMC_UO + 'p.cornerRelief([[0.06, 0, 0.06], [2.94, 0, 0.06]], 0.12, { cornerType: "3bend", reliefType: "circular" });',
+      removed: 2 * 0.06 * smfRelief('circular', 0.12, 0.06), loops: 1 },
+    { name: 'smflat-2: Corner Relief 3 Bend corner, Obround .12 centred, Material Outside: T × (the slot less the notch) per corner; one blank',
+      plain: SMC_UO, code: SMC_UO + 'p.cornerRelief([[0.06, 0, 0.06], [2.94, 0, 0.06]], 0.12, { cornerType: "3bend", reliefType: "obround" });',
+      removed: 2 * 0.06 * smfRelief('obround', 0.12, 0.06), loops: 1 }
   ];
   for (var cwk = 0; cwk < CW_CASES.length; cwk++) {
     var cw = CW_CASES[cwk], tcw = performance.now();
