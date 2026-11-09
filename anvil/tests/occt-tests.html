@@ -556,7 +556,9 @@
       code: DJ_BR + 'p.unfold([1, ' + SH_T + ', 1], null);\np.sketch("Top").rect(1, ' + (-(DB2_ZB + 0.25)) + ', 1, 0.5).cut(' + 0.4 * SH_T + ');\np.fold();',
       removed: (0.5 - DB2_BA) * 0.4 * SH_T + Math.PI / 4 * (4 * SH_T * SH_T - 1.6 * 1.6 * SH_T * SH_T), loops: 1 },
     { name: 'DL: Miter Flange, 1 in straight profile along two edges, Material Inside, gap .01: the square notch (SolidWorks 0.817915; its end face reads 1.5e-5 in³ under the true curve)',
-      code: DL_MF(DL_I, { miterGap: 0.01 }), exact: 0.817924081, loops: 1, dxf: true },
+      // (lane mitreplane, rfKC: the taper now runs on the bend's zone lines, read off the 3-chord polyline, so OpenCascade's
+      // end curve follows it: 0.817924081 on the true curve before, now SolidWorks' own 0.817915 to 6e-7)
+      code: DL_MF(DL_I, { miterGap: 0.01 }), exact: 0.81791452, loops: 1, dxf: true },
     { name: 'rfGE: M03, four mitred flanges = SolidWorks\' Butt corners: base + walls + tapered bends (38 faces in SolidWorks and here)', plain: null,
       code: 'p.units("in");\np.sheet(0.0598, 0.0598, 0.5);\np.sketch("Top").rect(0, -4, 6, 4).end().baseFlange();\np.flange(1, [[3, 0.0598, 0], [3, 0.0598, 4], [0, 0.0598, 2], [6, 0.0598, 2]], { position: "inside", lengthRef: "outer", miter: true });\n', exact: 2.482605583125422, loops: 1 },
     { name: 'DL: Miter Flange start offset .25 (the front flange from x = 4): removes .25·(A+ − (R + T)·T)', plain: DL_MF(DL_I, { miterGap: 0.01 }),
@@ -569,7 +571,7 @@
     { name: 'DL: Miter Flange L profile (1 up, .5 out), gap .02: two bends along the chain, mitred at both levels, square-ended strips as in SolidWorks (OpenCascade = Anvil)',
       code: DL_MF(DL_L, { miterGap: 0.02 }), loops: 1, dxf: true },
     { name: 'DL: Miter Flange Bend Outside, gap .01: the square notch',
-      code: DL_MF(DL_I, { position: 'bendOutside', miterGap: 0.01 }), exact: 0.875831833, loops: 1 },
+      code: DL_MF(DL_I, { position: 'bendOutside', miterGap: 0.01 }), exact: 0.87582227, loops: 1 },   // (rfKC: 0.875831833 on the true curve)
     // lane DT: Vent (Ø2 boundary, two ribs .1 through the centre, a Ø1 spar .1) on a 4 × 4 × .06 base: removes T × the
     // exact open area (dtOpen); a partial Unfold of a U-channel with a Tab folded across a bend keeps the tab's bend part
     { name: 'DT: Vent Ø2, ribs .1 (two, through the centre), spar Ø1 .1, on a 4 × 4 × .06 base flange: removes T × the exact open area; the flat has the 8 vent holes',
@@ -1357,6 +1359,39 @@
     counts[whyT.length ? 'fail' : 'pass']++;
   } catch (e) { row('bad', 'rfHU OpenCascade tangent faces: 0.5° apart tangent, 2° apart not (TANGENT_ANG set before use)', e.message); counts.fail++; }
   // --- end rfHU ---
+  // --- rfKC (lane mitreplane, 2026-11-09; tests/kernel/rfKC.js): Anvil's own STEP of a mitred tray, a Closed Corner
+  // box, a Miter Flange corner and two flanges meeting at a corner (14 ga, R .06, inches) writes every bend as its two
+  // cylinders (ELLIPSE ends); OpenCascade reads each file back as a valid solid of Anvil's exact volume
+  var KC = (function () {
+    var T = 0.0747, R = 0.06, RT = R + T, H = 'p.name("Tray").units("in");\np.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();\n';
+    var E4 = '[[2, ' + T + ', 0], [4, ' + T + ', 1.5], [2, ' + T + ', 3], [0, ' + T + ', 1.5]]';
+    return [
+      { name: 'mitred tray', bends: 4, code: H + 'p.flange(1, ' + E4 + ', { position: "inside" });\n' },
+      { name: 'Closed Corner box', bends: 4, code: H + E4 + '.forEach(function (e) { p.flange(1, [e], { position: "inside", lengthRef: "outer" }); });\n' +
+        'p.closedCorner([[' + T / 2 + ', 0.6, ' + RT + '], [' + (4 - RT) + ', 0.6, ' + (3 - T / 2) + '], [' + T / 2 + ', 0.6, ' + (3 - RT) + ']], { cornerType: "butt", gap: 0.01 });\n' },
+      { name: 'Miter Flange corner', bends: 2, code: 'p.units("in");\np.sheet(' + T + ', ' + R + ', 0.5);\np.sketch("Top").rect(0, -2, 4, 2).end().baseFlange();\np.sketch("Right").line(-2, ' + T + ', -2, ' + (T + 1) + ').end();\np.miterFlange([[2, ' + T + ', 2], [4, ' + T + ', 1]], { position: "inside", miterGap: 0.01 });\n' },
+      { name: 'two flanges meeting at a corner', bends: 2, code: H + 'p.flange(1, [[2, ' + T + ', 0]], { position: "inside" });\np.flange(1, [[4, ' + T + ', 1.5]], { position: "inside" });\n' }
+    ];
+  })();
+  for (var kc = 0; kc < KC.length; kc++) {
+    var tkc = performance.now(), whyKC = [], cs = KC[kc];
+    try {
+      var mKC = K.newModel('T'); K.runScript(mKC, cs.code);
+      var bKC = K.rebuild(mKC), volKC = K.massProps(K.meshFromBody(bKC.body), 1).volume, stKC = Exchange.exportSTEP(mKC, bKC, { faceted: true });
+      var nCyl = (stKC.match(/CYLINDRICAL_SURFACE\(/g) || []).length;
+      if (nCyl !== 2 * cs.bends) whyKC.push(nCyl + ' cylinders in the file, want ' + 2 * cs.bends + ' (every bend whole)');
+      var impKC = await occtImport('step', stKC), resKC = Exchange.finishImport('step', { units: 'in' }, impKC.solids, 1, []);
+      var imKC = K.newModel('RT'); imKC.units = 'in';
+      imKC.features.push({ id: 1, type: 'import', name: 'Imported1', file: 'tray.step', format: 'step', units: 'in', solids: Exchange.encodeSolids(resKC.solids), brep: { format: 'step', text: stKC } });
+      imKC.nextId = 2;
+      var backKC = await occt(imKC), dKC = Math.abs(backKC.volume - volKC) / volKC;
+      if (backKC.unsupported || !backKC.valid) whyKC.push('OpenCascade read it as ' + (backKC.unsupported || 'an invalid solid'));
+      if (!(dKC < 1e-7)) whyKC.push('OpenCascade reads ' + backKC.volume.toFixed(7) + ' in³, Anvil built ' + volKC.toFixed(7) + ' (d ' + dKC.toExponential(1) + ')');
+      row(whyKC.length ? 'bad' : 'ok', 'rfKC: ' + cs.name + ' → Anvil\'s STEP (bends whole) → OpenCascade reads the same volume', whyKC.join('\n') || nCyl + ' cylinders, volume d ' + dKC.toExponential(1), performance.now() - tkc);
+      counts[whyKC.length ? 'fail' : 'pass']++;
+    } catch (e) { row('bad', 'rfKC: ' + cs.name + ' → Anvil\'s STEP → OpenCascade', e.message); counts.fail++; }
+  }
+  // --- end rfKC ---
   var s = document.getElementById('summary');
   s.textContent = counts.pass + ' / ' + (counts.pass + counts.fail) + ' passed' + (counts.fail ? ' — ' + counts.fail + ' FAILED' : '') + ' · ' + counts.todo + ' parts need features not built by OpenCascade yet · engine loaded in ' + loadMs.toFixed(0) + ' ms · Anvil ' + totals.anvil.toFixed(0) + ' ms, OpenCascade ' + totals.occt.toFixed(0) + ' ms';
   s.className = counts.fail ? 'bad' : 'ok';

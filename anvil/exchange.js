@@ -1111,8 +1111,73 @@ var Exchange = (function () {
       var S = c.surf;
       c.ok = (S.t === 'cyl' || S.t === 'cone' || S.t === 'sph' || S.t === 'tor') && S.r > tol && (S.t !== 'tor' || Math.abs(S.R) > S.r + tol) && (S.t !== 'cone' || Math.abs(S.k) > 1e-9);
     });
+    var snaps = [];
+    snapToCylinders();
 
     var groups, loopsOf, owner, ecls, shape;
+    // lane mitreplane (rfKC): a vertex where a cut crosses a faceted bend (a relief slot's floor and side, a neighbour's
+    // bend start) is where the cut's planes meet the bend's CHORD, inside its cylinder by up to the sagitta, so the bend
+    // failed the on-surface test and was written as facets (step audit item 2). Such a vertex is moved, in the file
+    // only, along the line its planes fix (two planes that are not parallel, one plane and the ruling of another
+    // cylinder it lies on, or one plane along the axis) to where that line meets the cylinder: the point the true cut and the true bend share, the
+    // solid curveCorrection's exact volume describes. A vertex its planes fix completely, or with no such line, stays.
+    function snapToCylinders() {
+      var faceCurved = mesh.faces.map(function (f) { for (var k = 0; k < f.tris.length; k++) if (triRec[f.tris[k]] >= 0) return true; return false; });
+      var vTris = {}, cand = {};
+      for (var t2 = 0; t2 < nT; t2++) for (var e2 = 0; e2 < 3; e2++) { var v0 = tri[t2 * 3 + e2]; (vTris[v0] = vTris[v0] || []).push(t2); }
+      comps.forEach(function (c) {
+        var S = c.surf;
+        if (!c.ok || S.t !== 'cyl') return;
+        c.tris.forEach(function (t3) { for (var e3 = 0; e3 < 3; e3++) { var v1 = tri[t3 * 3 + e3], off = Math.abs(axial(S, P(v1)).rho - S.r); if (off > tol && off <= 0.05 * S.r) cand[v1] = true; } });
+      });
+      var moved = null;
+      Object.keys(cand).forEach(function (vk) {
+        var v = +vk, X = P(v), planes = [], onCyl = [], offCyl = [], seen = {};
+        vTris[v].forEach(function (t4) {
+          if (triRec[t4] < 0) { var fi = triPlane[t4]; if (!faceCurved[fi] && !seen['f' + fi]) { seen['f' + fi] = 1; planes.push(mesh.faces[fi]); } return; }
+          var si = recSurf[triRec[t4]];
+          if (seen['s' + si]) return;
+          seen['s' + si] = 1;
+          var S2 = surfaces[si];
+          if (!S2 || S2.t !== 'cyl') { offCyl.push(null); return; }
+          (Math.abs(axial(S2, X).rho - S2.r) <= tol ? onCyl : offCyl).push(S2);
+        });
+        if (offCyl.length !== 1 || !offCyl[0]) return;
+        var S = offCyl[0], ns = [];
+        for (var i = 0; i < planes.length; i++) {
+          var n = norm(planes[i].normal);
+          if (Math.abs(dot(n, X) - planes[i].w) > tol) return;
+          if (!ns.some(function (m) { return len(cross(m, n)) < 1e-9; })) ns.push(n);
+        }
+        var L = null, w0 = sub(X, S.o), wp = sub(w0, scale(S.d, dot(w0, S.d)));
+        if (ns.length === 2) L = norm(cross(ns[0], ns[1]));
+        else if (ns.length === 1) {
+          onCyl.forEach(function (S3) { if (!L && Math.abs(dot(ns[0], S3.d)) < 1e-9) L = S3.d.slice(); });
+          // else radially, in the plane: a split point on a chord of the plane's cut (a ruling of a plane along the axis,
+          // the circle of a cap square to it) whose neighbours moved onto the cylinder
+          if (!L && onCyl.length === 0) { var rp = sub(wp, scale(ns[0], dot(ns[0], wp))); if (len(rp) > 0.5 * S.r) L = norm(rp); }
+        }
+        if (!L || len(cross(L, S.d)) < 1e-6) return;
+        var Lp = sub(L, scale(S.d, dot(L, S.d)));
+        var qa = dot(Lp, Lp), qb = 2 * dot(wp, Lp), qc = dot(wp, wp) - S.r * S.r, disc = qb * qb - 4 * qa * qc;
+        if (!(disc >= 0)) return;
+        var r1 = (-qb + Math.sqrt(disc)) / (2 * qa), r2 = (-qb - Math.sqrt(disc)) / (2 * qa), lam = Math.abs(r1) < Math.abs(r2) ? r1 : r2;
+        if (Math.abs(lam) > 0.05 * S.r) return;
+        var Y = add(X, scale(L, lam));
+        if (planes.some(function (pf) { return Math.abs(dot(norm(pf.normal), Y) - pf.w) > tol; })) return;
+        if (onCyl.some(function (S4) { return Math.abs(axial(S4, Y).rho - S4.r) > tol; })) return;
+        if (!moved) { moved = true; pos = Float64Array.from(pos); }
+        pos[v * 3] = Y[0]; pos[v * 3 + 1] = Y[1]; pos[v * 3 + 2] = Y[2];
+        var sn = { v: v, X: X, comps: [], all: [] };
+        vTris[v].forEach(function (t5) {
+          var ci = compOf[t5];
+          if (ci < 0 || sn.all.indexOf(ci) >= 0) return;
+          sn.all.push(ci);
+          if (comps[ci].surf === S) sn.comps.push(ci);
+        });
+        snaps.push(sn);
+      });
+    }
     function eget(a, b) { return a < b ? ecls.get(a, b) : ecls.get(b, a); }
     // stepout-2: a mesh face that is a true plane (no triangle of it carries a curved surface's record)
     function truePlane(fi) { var ts = groups[fi]; for (var k = 0; k < ts.length; k++) if (triRec[ts[k]] >= 0) return false; return ts.length > 0; }
@@ -1179,6 +1244,21 @@ var Exchange = (function () {
           }
         });
         var sh = bad ? null : patchShape(c, loopsOf[g]);
+        // lane mitreplane (rfKC): a patch made exact by snapToCylinders is written only in the form Anvil's reader
+        // takes back (curvedFace: one loop, two runs of rulings, the rest arcs at two levels or ellipse runs); a bend
+        // notched by a relief slot (an L in (angle, t): three runs of rulings), or a band with holes (the Mug's body where
+        // the faceted handle meets it) keeps its facets
+        if (sh && c.snapped) {
+          var ls = loopsOf[g], runs = 0, lv = {}, nlv = 0, hasE = false;
+          if (ls.length !== 1 || sh.kind !== 'plain' || S.t !== 'cyl') sh = null;
+          else for (var li = 0, ln = ls[0].length; li < ln; li++) {
+            var ex = eget(ls[0][li], ls[0][(li + 1) % ln]), ey = eget(ls[0][(li + 1) % ln], ls[0][(li + 2) % ln]);
+            if (ex.t === 'l' && ey.t !== 'l') runs++;
+            if (ex.t === 'c' && !lv[ex.c.key]) { lv[ex.c.key] = 1; nlv++; }
+            if (ex.t === 'e') hasE = true;
+          }
+          if (sh && !(runs === 2 && (nlv === 2 || (hasE && nlv <= 2)))) sh = null;
+        }
         if (!sh) { c.ok = false; failed = true; } else shape[g] = sh;
       });
       // stepout-2: a bend is written whole or not at all. An obliquely cut cylinder (ELLIPSE edges) whose coaxial
@@ -1186,7 +1266,7 @@ var Exchange = (function () {
       // side of a faceted bend adds that side's curve correction alone (the read-back volume gets worse than all
       // facets), and SolidWorks' Insert Bends needs both cylinders anyway
       comps.forEach(function (c) {
-        if (!c.ok || !c.oblique) return;
+        if (!c.ok || !(c.oblique || c.snapped)) return;   // (lane mitreplane: or made exact by snapToCylinders)
         var S = c.surf;
         for (var k = 0; k < comps.length; k++) {
           var o = comps[k], S2 = o.surf;
@@ -1249,7 +1329,20 @@ var Exchange = (function () {
       }
       return null;
     }
-    for (var iter = 0; iter < comps.length + 2 && !build(); iter++) { /* a patch fell back to facets: rebuild the topology */ }
+    // lane mitreplane: a vertex moved onto a cylinder whose patch falls back to facets anyway goes back where it was (its
+    // facets' planes hold it there) and everything is built again from the start, as if it had never moved, until no
+    // patch with a moved vertex fails
+    var ok0 = comps.map(function (c) { return c.ok; }), live = snaps.slice();
+    for (var round = 0; ; round++) {
+      comps.forEach(function (c, ci) { c.ok = ok0[ci]; c.oblique = false; c.snapped = false; });
+      live.forEach(function (sn) { sn.all.forEach(function (ci) { comps[ci].snapped = true; }); });
+      for (var iter = 0; iter < comps.length + 2 && !build(); iter++) { /* a patch fell back to facets: rebuild the topology */ }
+      var undo = live.filter(function (sn) { return sn.comps.some(function (ci) { return !comps[ci].ok; }); });
+      if (!undo.length) break;
+      if (round >= 3) undo = live;   // (still failing: no moved vertex at all)
+      undo.forEach(function (sn) { pos[sn.v * 3] = sn.X[0]; pos[sn.v * 3 + 1] = sn.X[1]; pos[sn.v * 3 + 2] = sn.X[2]; });
+      live = live.filter(function (sn) { return undo.indexOf(sn) < 0; });
+    }
 
     // ---- writing
     var vp = {}, cv = {}, cg = {}, chains = {};

@@ -269,7 +269,6 @@
   // kept where n·p >= w for each clip, less the holes / slots of the sheet across its bend: voids, see bendVoids), cuts: [{ loop, plane, a, b }] (prisms taken from the sheet first: trim-back and reliefs),
   // info (ctx.flanges' records), section: { A, R, T, L, ov } (flangeProfile's parameters) }. buildFlange builds it with
   // the CSG kernel; occt-kernel.js builds the same layout with exact bend arcs.
-  var SWJ_CHORDS = 12;   // lane rfIZ: the true curve to 2e-6 in³ a corner on 16 ga (SolidWorks reads 1.5e-5 under it, as the first stage)
   function flangeLayout(f, model, ctx) {
     if (!ctx.body) throw new Error('Create a Base Flange before adding edge flanges.');
     var sheet = sheetParams(model);
@@ -582,8 +581,10 @@
           var tl = [[-ov, tB], [0, tB]];
           // a Miter Flange's later stage (lane rfIZ, report 5d's L profile): its end face follows SolidWorks' Miter Flange
           // rule, the end running out as the bend leaves the wall it starts on, t − tB = (tW − tB)·(1 − cos θ)/(1 − cos A)
-          // (the first stage's sin θ, turned), on SWJ_CHORDS chords; an edge flange's end runs straight in (angle, t)
-          if (f.swJoin) for (var kc = 1; kc < SWJ_CHORDS; kc++) { var thc = A * kc / SWJ_CHORDS; tl.push([sBA * kc / SWJ_CHORDS, tB + (tW - tB) * (1 - Math.cos(thc)) / (1 - Math.cos(A))]); }
+          // (the first stage's sin θ, turned), on the bend's own facets (lane mitreplane, rfKC: wrapRegion's zones, so every
+          // corner of the end lies on both cylinders and the STEP writer writes the bend whole; rfIZ's 12 chords put most of
+          // them inside facets); an edge flange's end runs straight in (angle, t)
+          if (f.swJoin) for (var kc = 1, nz = Math.max(4, Math.round(8 * A / (Math.PI / 2))); kc < nz; kc++) { var thc = A * kc / nz; tl.push([sBA * kc / nz, tB + (tW - tB) * (1 - Math.cos(thc)) / (1 - Math.cos(A))]); }
           tl.push([sBA, tW], [sBA, tOut], [-ov, tOut]);
           part.tapers.push(signedArea(tl) < 0 ? tl.reverse() : tl);
           if ((tEnd - tB) * dir > 1e-12) part.tails.push({ t0: Math.min(tB, tEnd), t1: Math.max(tB, tEnd) });
@@ -606,7 +607,7 @@
           if (!en.square) return;
           var dir = -dot(en.dIn, ed.plane.n), tB = en.t + dir * en.square.base, tW = en.t + dir * en.square.ext;
           if (!((tW - tB) * dir > 1e-9)) return;   // the gap took the wall end back past the base's corner: nothing to taper
-          part.tapers.push(miterTaper(mBA, tB, tW, ov));
+          part.tapers.push(miterTaper(mBA, tB, tW, ov, Math.max(4, Math.round(8 * A / (Math.PI / 2)))));
           part.tails.push({ t0: Math.min(tB, tW), t1: Math.max(tB, tW) });
         });
       }
@@ -778,9 +779,14 @@
   // on 3 chords (they average 0.622 across, the true curve 2/π): SolidWorks' own volume reads about 1.5e-5 in³ under the
   // true curve per corner at any size, and 3 chords land on it on 16 ga. Carried past the band so a cutter never ends on
   // a face of the sweep.
-  function miterTaper(BA, tB, tW, ov) {
+  // lane mitreplane (rfKC): that 3-chord polyline read at the bend's own zone lines (n = wrapRegion's zones, 8 at 90°),
+  // so every corner of the end lies on both cylinders (folded volume within 2e-6 of the 3 chords): the 3 chords' own
+  // corners sat inside facets (5e-4 off the true bend) and the STEP writer wrote the whole bend as facets.
+  function miterTaper(BA, tB, tW, ov, n) {
     var pts = [[-ov, tB]], e = (tW - tB) * 0.1;
-    [0, 1, 2, 3].forEach(function (k) { pts.push([BA * k / 3, tB + (tW - tB) * Math.sin(Math.PI / 2 * k / 3)]); });
+    function at3(u) { var j = Math.min(2, Math.floor(u * 3)), f = u * 3 - j, a = Math.sin(Math.PI / 6 * j), b = Math.sin(Math.PI / 6 * (j + 1)); return a + (b - a) * f; }
+    n = n || 3;
+    for (var k = 0; k <= n; k++) pts.push([k === n ? BA : BA * k / n, tB + (tW - tB) * at3(k / n)]);
     pts.push([BA, tW + e], [-ov, tW + e]);
     return signedArea(pts) < 0 ? pts.reverse() : pts;
   }
@@ -1059,9 +1065,13 @@
           // is then one straight edge of the tool, not a crossing of nearly coplanar triangles, which left near-collinear
           // kinks and 1e-5 cracks there) and each band halved at its true mid line (m), the halves split along opposite
           // diagonals (p0–m1, then m1–q0): their errors against the patch are equal and opposite, so the volume is exact.
+          // lane mitreplane (rfKC): halved through its depth instead (pm, qm on the radial lines p0–p1, q0–q1; the halves'
+          // twists are equal, the opposite diagonals p0–qm, qm–p1 cancel just the same): a midpoint on the edge p0–q0 sat
+          // on the chord inside the bend's cylinder (by its sagitta), where the cut meets the bend, so the STEP writer
+          // could not bound the cylinder there and wrote the whole bend as facets (Closed Corner box, step audit)
           if (split) {
-            var m0 = at(mid, za, zone), m1 = at(mid, zb, zone);
-            tris.push([p0, p1, m1], [p0, m1, m0], [m0, m1, q0], [m1, q1, q0]);
+            var zm = (za + zb) / 2, pm = at(p, zm, zone), qm = at(q, zm, zone);
+            tris.push([p0, pm, qm], [p0, qm, q0], [pm, p1, qm], [p1, q1, qm]);
             continue;
           }
           var cm = at(mid, (za + zb) / 2, zone);
@@ -1189,9 +1199,12 @@
       // the wall over the boundary edge A → B (region on its left): planar, or a twisted bilinear patch split exactly
       var a0 = at(A, 0, zone), b0 = at(B, 0, zone), a1 = at(A, T, zone), b1 = at(B, T, zone);
       if (len(sub(sub(b1, b0), sub(a1, a0))) < 1e-9 * Math.max(1, T)) { faces.push([a0, b0, b1, a1]); return; }
-      // (lane FX: the 3D midpoints, on the cap edges a0 b0 / a1 b1 whatever the s map within the zone)
-      var m0 = scale(add(a0, b0), 0.5), m1 = scale(add(a1, b1), 0.5);
-      faces.push([a0, m0, m1], [a0, m1, a1], [m0, b0, m1], [m1, b0, b1]);
+      // lane mitreplane (rfKC): halved through the depth (am, bm on the radial lines a0–a1, b0–b1), the halves split
+      // along opposite diagonals (a0–bm, bm–a1: equal twists, so their errors cancel and the volume stays the patch's).
+      // Midpoints on the cap edges sat on the chords inside the cylinders (by the sagitta), where a mitred / tapered
+      // bend end meets them, so the STEP writer could not bound the bend there and wrote it as facets (step audit).
+      var am = at(A, T / 2, zone), bm = at(B, T / 2, zone);
+      faces.push([a0, b0, bm], [a0, bm, am], [am, bm, a1], [bm, b1, a1]);
     }
     var below = null, sideZ = {};
     for (var k = 0; k + 1 < E.length; k++) {
