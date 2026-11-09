@@ -3040,7 +3040,15 @@
         // lane DV: ccEnd: the strip's end runs from t0 past the end (bend start) to ext past it (bend end)
         if (x.kind === 'ccEnd') { r.ccEnds = (r.ccEnds || [null, null]).slice(); r.ccEnds[x.end] = { t0: x.t0, ext: x.ext }; }
         else {
-          if (x.end) r.b = add(r.b, scale(d, x.by)); else r.a = sub(r.a, scale(d, x.by));
+          if (x.end) r.b = add(r.b, scale(d, x.by));
+          else {
+            // lane smfix: τ in the record's cutouts / adds / fills is measured from the bend's own end a (the records a
+            // Corner Relief or Fold made from the unextended bend): moving a back by `by` moves them on by `by` (was:
+            // the relief's circle drawn `by` off its place on the strip, so the flat had it twice, with slivers between)
+            r.a = sub(r.a, scale(d, x.by));
+            r.tau0 = (r.tau0 || 0) + x.by;
+            ccShiftTau(r, x.by);
+          }
           // rfGJ: a helicoid's end: no notch, the strip stays square out to the wall's end (bendSurfaceNotches: a corner)
           if (x.square) { r.ccEnds = (r.ccEnds || [null, null]).slice(); r.ccEnds[x.end] = { t0: 0, ext: 0 }; }
         }
@@ -3048,6 +3056,13 @@
         flanges[k] = r;
       }
     });
+  }
+  // lane smfix: a record's [d, τ] loops moved by dt along τ (copies)
+  function tauLoops(ls, dt) { return ls.map(function (l) { return l.map(function (p) { return [p[0], p[1] + dt]; }); }); }
+  function ccShiftTau(r, dt) {
+    if (r.cutouts) r.cutouts = tauLoops(r.cutouts, dt);
+    if (r.adds) r.adds = tauLoops(r.adds, dt);
+    if (r.fills) r.fills = r.fills.map(function (rg) { return tauLoops(rg, dt); });
   }
   // A layer of marks, not cuts: a noProfile layer (the ETCH preset, or any such layer of the user's) other than BEND
   // (bend lines come from the flat's own bends)
@@ -5500,8 +5515,9 @@
       for (var k = 0; k < flanges.length; k++) {
         var id = ids[k];
         if (id && id.feature === r.feature && id.index === r.index) {
-          var o = {};
-          o[key] = (flanges[k][key] || []).concat(r[key]);
+          var o = {}, dt = flanges[k].tau0 || 0, add2 = r[key];   // lane smfix: a Closed Corner moved end a back by tau0
+          if (dt) add2 = key === 'fills' ? add2.map(function (rg) { return tauLoops(rg, dt); }) : tauLoops(add2, dt);
+          o[key] = (flanges[k][key] || []).concat(add2);
           flanges[k] = Object.assign({}, flanges[k], o);
           return;
         }
@@ -7461,7 +7477,14 @@
   // buildLoftedBend(f, model, ctx) -> the sheet (CSG): each mid-surface point moved ±o, o the least-squares solution of
   // n·o = T / 2 over its facets (the mitre where two facets meet), so the solid is closed and T thick across each bend
   function buildLoftedBend(f, model, ctx) {
-    var lay = loftedBendLayout(f, model, ctx), T = lay.T, eqs = {}, pos = {};
+    var lay = loftedBendLayout(f, model, ctx), sol = lbSolid(lay), polys = [];
+    sol.faces.concat(sol.walls).forEach(function (q) { _.pushPoly(polys, q); });
+    return _.ensureOutward(polys);
+  }
+  // lane smfix: lbSolid(lay) -> { faces, walls }: the sheet's triangles (faces: the two offset surfaces; walls: the side
+  // and seam walls), shared by buildLoftedBend and lbHoles (which tells the walls' slice from a cut's by them)
+  function lbSolid(lay) {
+    var T = lay.T, eqs = {}, pos = {};
     lay.tris.forEach(function (t) { var nn = triN(t); t.n = nn; t.tag.forEach(function (tg, q) { var kk = tkey(tg); (eqs[kk] = eqs[kk] || []).push(nn); pos[kk] = t.p[q]; }); });
     var off = {};
     Object.keys(eqs).forEach(function (kk) {
@@ -7479,21 +7502,20 @@
       uniq.forEach(function (nn) { for (var a = 0; a < 3; a++) { rhs[a] += nn[a] * T / 2; for (var b = 0; b < 3; b++) M[a][b] += nn[a] * nn[b]; } });
       off[kk] = solve3(M, rhs);
     });
-    var polys = [];
+    var faces = [], walls = [];
     function P(kk, sg) { return add(pos[kk], scale(off[kk], sg)); }
-    function tri(list, a, b, c) { _.pushPoly(list, [a, b, c]); }
     lay.tris.forEach(function (t) {
       var k0 = tkey(t.tag[0]), k1 = tkey(t.tag[1]), k2 = tkey(t.tag[2]);
-      tri(polys, P(k0, 1), P(k1, 1), P(k2, 1));
-      tri(polys, P(k2, -1), P(k1, -1), P(k0, -1));
+      faces.push([P(k0, 1), P(k1, 1), P(k2, 1)]);
+      faces.push([P(k2, -1), P(k1, -1), P(k0, -1)]);
     });
-    function wall(ka, kb) { tri(polys, P(kb, 1), P(ka, 1), P(ka, -1)); tri(polys, P(kb, 1), P(ka, -1), P(kb, -1)); }
+    function wall(ka, kb) { walls.push([P(kb, 1), P(ka, 1), P(ka, -1)]); walls.push([P(kb, 1), P(ka, -1), P(kb, -1)]); }
     var m = lay.A.length - 1, n = lay.B.length - 1, i;
     for (i = 0; i < m; i++) wall('A' + i, 'A' + (i + 1));
     for (i = 0; i < n; i++) wall('B' + (i + 1), 'B' + i);
     wall('B0', 'A0');
     wall('A' + m, 'B' + n);
-    return _.ensureOutward(polys);
+    return { faces: faces, walls: walls };
   }
   function solve3(M, r) {
     var a = M.map(function (row, i) { return row.concat([r[i]]); });
@@ -7522,7 +7544,7 @@
       if (q.id === f.id) { later = true; return; }
       if (later && !q.suppressed && (K.isCut(q, model) || q.type === 'hole')) any = true;
     });
-    if (!any || !build || !build.body || !build.body.polygons) return [];
+    if (!any || !build || !build.body || !build.body.polygons) return { holes: [], outline: outline, warnings: [] };
     var T = lay.T, out = [], mn = [Infinity, Infinity], mx = [-Infinity, -Infinity];
     outline.forEach(function (p) { mn[0] = Math.min(mn[0], p[0]); mn[1] = Math.min(mn[1], p[1]); mx[0] = Math.max(mx[0], p[0]); mx[1] = Math.max(mx[1], p[1]); });
     var size = Math.hypot(mx[0] - mn[0], mx[1] - mn[1]), tol = 1e-10 * (1 + size), jtol = 1e-7 * (1 + size);
@@ -7547,7 +7569,22 @@
     var polys = build.body.polygons.map(function (pg) {
       var vs = pg.vertices.map(function (v) { return [v.pos.x, v.pos.y, v.pos.z]; }), lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
       vs.forEach(function (X) { for (var k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], X[k]); hi[k] = Math.max(hi[k], X[k]); } });
-      return { vs: vs, lo: lo, hi: hi };
+      var pn = pg.plane && pg.plane.normal;
+      return { vs: vs, lo: lo, hi: hi, wall: false, n: pn ? [pn.x, pn.y, pn.z] : null };
+    });
+    // lane smfix: the polygons on the sheet's own side / seam walls (lbSolid's wall triangles): their slice is the
+    // blank's edge, the rest of the slice is the cuts' (a hole, or a notch where a cut runs through an edge)
+    var wtol = 1e-8 * (1 + size);
+    lbSolid(lay).walls.forEach(function (tw) {
+      var wn = cross(sub(tw[1], tw[0]), sub(tw[2], tw[0])), wl = len(wn);
+      if (!(wl > 1e-15)) return;
+      wn = scale(wn, 1 / wl);
+      var ww = dot(wn, tw[0]), lo = [0, 1, 2].map(function (k) { return Math.min(tw[0][k], tw[1][k], tw[2][k]) - wtol; }), hi = [0, 1, 2].map(function (k) { return Math.max(tw[0][k], tw[1][k], tw[2][k]) + wtol; });
+      polys.forEach(function (pg) {
+        if (pg.wall || (pg.n && Math.abs(dot(pg.n, wn)) < 1 - 1e-6)) return;
+        for (var k = 0; k < 3; k++) if (pg.hi[k] < lo[k] || pg.lo[k] > hi[k]) return;
+        if (pg.vs.every(function (X) { return Math.abs(dot(wn, X) - ww) <= wtol; })) pg.wall = true;
+      });
     });
     // sliceHoles(dl): the hole loops of the slice dl from the mid-surface (each facet's plane moved dl along its normal)
     function sliceHoles(dl) {
@@ -7555,6 +7592,7 @@
     facets.forEach(function (F) {
       var w = F.w + dl, sh = scale(F.n, dl);
       polys.forEach(function (pg) {
+        if (pg.wall) return;   // lane smfix: the blank's edge is the exact development, not this slice
         for (var k = 0; k < 3; k++) if (pg.hi[k] < F.lo[k] || pg.lo[k] > F.hi[k]) return;
         var vs = pg.vs, d = vs.map(function (X) { return dot(F.n, X) - w; }), pos = false, neg = false, i;
         d.forEach(function (x) { if (x > tol) pos = true; else if (x < -tol) neg = true; });
@@ -7592,7 +7630,7 @@
       }
       return null;
     }
-    var loops = [];
+    var loops = [], chains = [];
     segs.forEach(function (sg, i) {
       if (used[i]) return;
       used[i] = true;
@@ -7603,8 +7641,48 @@
         used[nx.i] = true;
         loop.push(segs[nx.i][1 - nx.e]);
       }
-      if (loop.length > 3 && near2(loop[0], loop[loop.length - 1])) { loop.pop(); loops.push(loop); }
+      if (loop.length > 3 && near2(loop[0], loop[loop.length - 1])) { loop.pop(); loops.push(loop); return; }
+      // lane smfix: an open chain (a cut through the blank's edge: its two ends on the edge) runs on backwards too
+      while (guard++ < 2 * segs.length) {
+        var pv = next(loop[0]);
+        if (!pv) break;
+        used[pv.i] = true;
+        loop.unshift(segs[pv.i][1 - pv.e]);
+      }
+      chains.push(loop);
     });
+    // lane smfix: the open chains' ends joined across a crack of the cut body (the BSP leaves gaps up to ~T in a cut wall
+    // where it meets the seam's skewed end wall), nearest first, under T: two chains (never two notches' ends that both
+    // lie on the blank's edge), or a chain's own two ends (a hole) unless both lie on the edge (a narrow notch)
+    function chLen(c) { var s = 0; for (var q = 1; q < c.length; q++) s += Math.hypot(c[q][0] - c[q - 1][0], c[q][1] - c[q - 1][1]); return s; }
+    function onEdge(p) { return lbFoot(outline, p).d < 0.1 * T; }
+    for (var guard2 = 0; chains.length && guard2 < 1000; guard2++) {
+      var bestJ = null;
+      chains.forEach(function (ca, ia) {
+        [0, 1].forEach(function (ea) {
+          var pa = ea ? ca[ca.length - 1] : ca[0];
+          chains.forEach(function (cb, ib) {
+            if (ib < ia) return;
+            [0, 1].forEach(function (eb) {
+              if (ib === ia && eb <= ea) return;
+              var pb = eb ? cb[cb.length - 1] : cb[0], g = Math.hypot(pa[0] - pb[0], pa[1] - pb[1]);
+              if (!(g < T) || (bestJ && g >= bestJ.g)) return;
+              var edges = onEdge(pa) && onEdge(pb);
+              if (ib === ia ? edges || ca.length < 3 || chLen(ca) < 4 * g : edges && chLen(ca) >= T && chLen(cb) >= T) return;
+              bestJ = { g: g, ia: ia, ea: ea, ib: ib, eb: eb };
+            });
+          });
+        });
+      });
+      if (!bestJ) break;
+      var ca = chains[bestJ.ia];
+      if (bestJ.ia === bestJ.ib) { loops.push(ca); chains.splice(bestJ.ia, 1); continue; }
+      var cb = chains[bestJ.ib], a1 = bestJ.ea ? ca : ca.slice().reverse(), b1 = bestJ.eb ? cb.slice().reverse() : cb;
+      chains[bestJ.ia] = a1.concat(b1);
+      chains.splice(bestJ.ib, 1);
+    }
+    out.chains = chains.filter(function (c) { return chLen(c) >= 0.01 * T; });   // (a crumb of a slice, no cut)
+    out.dropped = 0;
     var oA = Math.abs(K.signedArea(outline));
     loops.forEach(function (m) {
       // drop the repeated and the collinear points (a straight wall crossing several facets)
@@ -7616,8 +7694,8 @@
         return !(ab > 0) || Math.abs((p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])) > 1e-9 * ab;
       });
       var A = K.signedArea(c);
-      if (c.length < 3 || !(Math.abs(A) > 1e-12 * (1 + oA)) || Math.abs(A) > 0.5 * oA) return;
-      if (!c.every(function (q) { return _.pointInPoly(q, outline); })) return;
+      if (c.length < 3 || !(Math.abs(A) > 1e-12 * (1 + oA))) return;
+      if (Math.abs(A) > 0.5 * oA || !c.every(function (q) { return _.pointInPoly(q, outline); })) { out.dropped++; return; }
       if (A > 0) c.reverse();
       out.push(c);
     });
@@ -7637,10 +7715,20 @@
         });
       });
     }
-    if (!mids.some(inOne)) return mids;
+    var warns = [], lost = mids.dropped;
+    // lane smfix: a cut through the blank's edge (a hole across the seam, a notch from a side) is an open chain whose
+    // two ends lie on the edge: it is spliced into the outline (a hole across the seam lands as a notch on each of the
+    // blank's two seam edges, as SolidWorks shows it). Nothing is dropped without a warning.
+    var outl = outline;
+    mids.chains.forEach(function (ch) {
+      var r = lbSplice(outl, ch, 0.5 * T, jtol);
+      if (r) outl = r; else lost++;
+    });
+    if (lost) warns.push('Lofted-Bend flat: ' + lost + ' cut' + (lost > 1 ? 's' : '') + ' made after the Lofted-Bend could not be laid in the flat pattern (missing from the blank).');
+    if (!mids.some(inOne)) return { holes: mids, outline: outl, warnings: warns };
     var hd = T / 2 * (1 - 1e-3), sides = sliceHoles(hd).concat(sliceHoles(-hd));
     function cen(l) { var c = [0, 0]; l.forEach(function (q) { c[0] += q[0] / l.length; c[1] += q[1] / l.length; }); return c; }
-    return mids.map(function (h) {
+    return { holes: mids.map(function (h) {
       if (!inOne(h)) return h;
       var best = h, bA = Math.abs(K.signedArea(h));
       sides.forEach(function (g) {
@@ -7648,7 +7736,54 @@
         if (ag < bA * (1 - 1e-6) && _.pointInPoly(cg, h) && g.every(function (q) { return _.pointInPoly(q, h); })) { best = g; bA = ag; }
       });
       return best;
-    });
+    }), outline: outl, warnings: warns };
+  }
+  // lane smfix: lbSplice(outline, chain, reach, tol) -> the outline (CCW) with the open chain spliced in: each end of the
+  // chain dropped onto the nearest outline edge (within `reach`), the stretch of outline between them replaced by the
+  // chain, the way round that leaves the larger blank (less than the old one); null when the chain cannot be laid (an
+  // end off the edge, or the cut would split the blank in two)
+  // lbFoot(outline, p) -> { e, t, p, d }: the nearest point of the closed outline to p (edge e from outline[e], t along it)
+  function lbFoot(outline, p) {
+    var best = null, n = outline.length;
+    for (var i = 0; i < n; i++) {
+      var a = outline[i], b = outline[(i + 1) % n], dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+      var t = L2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0;
+      var q = [a[0] + dx * t, a[1] + dy * t], dd = Math.hypot(p[0] - q[0], p[1] - q[1]);
+      if (!best || dd < best.d) best = { e: i, t: t, p: q, d: dd };
+    }
+    return best;
+  }
+  function lbSplice(outline, ch, reach, tol) {
+    var n = outline.length;
+    if (ch.length < 2) return null;
+    var s0 = lbFoot(outline, ch[0]), s1 = lbFoot(outline, ch[ch.length - 1]);
+    if (!s0 || !s1 || s0.d > reach || s1.d > reach) return null;
+    // the outline from `from` round (counterclockwise) to `to`, both ends included
+    function walk(from, to) {
+      var pts = [from.p];
+      if (from.e === to.e && to.t >= from.t) { pts.push(to.p); return pts; }
+      var k = from.e;
+      do { k = (k + 1) % n; pts.push(outline[k]); } while (k !== to.e);
+      pts.push(to.p);
+      return pts;
+    }
+    function clean(l) {
+      var c = [];
+      l.forEach(function (p) { if (!c.length || Math.hypot(p[0] - c[c.length - 1][0], p[1] - c[c.length - 1][1]) > tol) c.push(p); });
+      while (c.length > 1 && Math.hypot(c[0][0] - c[c.length - 1][0], c[0][1] - c[c.length - 1][1]) <= tol) c.pop();
+      return c;
+    }
+    var mid = ch.slice(1, ch.length - 1);
+    var A = clean([s0.p].concat(mid, walk(s1, s0).slice(0, -1)));
+    var B = clean([s1.p].concat(mid.slice().reverse(), walk(s0, s1).slice(0, -1)));
+    var a0 = K.signedArea(outline), aA = K.signedArea(A), aB = K.signedArea(B);
+    var okA = A.length >= 3 && aA > 0 && aA < a0, okB = B.length >= 3 && aB > 0 && aB < a0;
+    // the two ways round add up to the blank: one is the blank less the notch, the other the notch itself. A "notch"
+    // of a tenth of the blank or more is taken for a cut right across it (two pieces): not laid (a warning)
+    if (okA && okB && Math.min(aA, aB) > 0.1 * a0) return null;
+    if (okA && (!okB || aA >= aB)) return A;
+    if (okB) return B;
+    return null;
   }
   function loftedBendFlat(f, model, build) {
     var lay = loftedBendLayout(f, model, { planes: build && build.planes, sketches: {} }), sheet = K.sheetParams(model), units = model.units;
@@ -7692,12 +7827,13 @@
       bd.label = K.bendNoteText(bd, units);
       bends.push(bd);
     }
+    var outSheet = Object.assign({}, sheet, { kFactor: K.sheetKFactor(sheet) });
+    var pl = lay.plane, lh = lbHoles(f, model, build, lay, at, outline);
+    outline = lh.outline;   // lane smfix: notches from cuts through the blank's edge
     var min = [Infinity, Infinity], max = [-Infinity, -Infinity];
     outline.forEach(function (p) { min[0] = Math.min(min[0], p[0]); min[1] = Math.min(min[1], p[1]); max[0] = Math.max(max[0], p[0]); max[1] = Math.max(max[1], p[1]); });
-    var outSheet = Object.assign({}, sheet, { kFactor: K.sheetKFactor(sheet) });
-    var pl = lay.plane, holes = lbHoles(f, model, build, lay, at, outline);
-    return { loops: [outline].concat(holes), bends: bends, plane: { origin: pl.origin.slice(), x: pl.x.slice(), y: pl.y.slice(), n: pl.n.slice(), offset: dot(pl.n, pl.origin) }, sheet: outSheet,
-      bbox: { min: min, max: max }, size: [max[0] - min[0], max[1] - min[1]], note: 'T=' + sheet.thickness + ' LOFTED BEND ' + (lay.method === 'bent' ? bends.length + ' BENDS' : 'FORMED'), warnings: [], etch: [], etchLayer: null,
+    return { loops: [outline].concat(lh.holes), bends: bends, plane: { origin: pl.origin.slice(), x: pl.x.slice(), y: pl.y.slice(), n: pl.n.slice(), offset: dot(pl.n, pl.origin) }, sheet: outSheet,
+      bbox: { min: min, max: max }, size: [max[0] - min[0], max[1] - min[1]], note: 'T=' + sheet.thickness + ' LOFTED BEND ' + (lay.method === 'bent' ? bends.length + ' BENDS' : 'FORMED'), warnings: lh.warnings, etch: [], etchLayer: null,
       loftedBend: { facets: tris.length, method: lay.method } };
   }
   K.registerFeature('loftedBend', {

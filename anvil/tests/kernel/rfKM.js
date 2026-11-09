@@ -144,11 +144,11 @@
       return want;
     });
 
-    test('rfKM TODO: Closed Corner (bend region closed) + Circular Corner Relief leaves sliver loops (about .008 x .013 in) in the flat at the two corners where one wall\'s end was picked (laser pierces): kernel finding for the head', function () {
+    test('rfKM: Closed Corner (bend region closed) + Circular Corner Relief: no sliver loops in the flat (there were two, about .008 x .013 in, where one wall\'s end was picked: lane smfix, kernel/rfKP.js)', function () {
       var r = build(BOX + RELIEF); noErrors(r);
       var fl = K.flatPattern(r.model, r.build, r.mesh);
-      var tiny = fl.loops.slice(1).filter(function (l) { return Math.abs(K.signedArea(l)) < 1e-3; });
-      return tiny.length ? tiny.length + ' sliver loop(s), ' + tiny.map(function (l) { return Math.abs(K.signedArea(l)).toExponential(2) + ' in²'; }).join(', ') + ' (promote to a hard test once none)' : 'no sliver loops: promote to a hard test';
+      assert(fl.loops.length === 1, 'loops ' + fl.loops.length + ': ' + fl.loops.slice(1).map(function (l) { return Math.abs(K.signedArea(l)).toExponential(2) + ' in²'; }).join(', '));
+      return 'one loop, ' + fl.loops[0].length + ' points';
     });
 
     // job c: the transition (Lofted-Bend, square 6 x 6 to round Ø4, 4 tall, 14 ga) and the Swept Flange channel
@@ -174,10 +174,12 @@
       return 'transition ' + ft.size.map(function (x) { return x.toFixed(3); }).join(' x ') + ', channel ' + want.toFixed(4) + ' x 10';
     });
 
-    test('rfKM TODO: a hole through the Lofted-Bend\'s seam (Front sketch Ø.5 at x 0, cut toward +Z) is cut in the part but missing from the flat, with no warning: kernel finding for the head', function () {
+    test('rfKM: a hole through the Lofted-Bend\'s seam (Front sketch Ø.5 at x 0, cut toward +Z) reaches the flat as a notch on each seam edge, area × T = the metal cut (1 %), no warning (it was missing: lane smfix, kernel/rfKP.js)', function () {
       var t0 = build(LOFT), t = build(LOFT + 'p.sketch("Front").circle(0, 1, 0.25).end().extrude(4, { cut: true });\n'); noErrors(t);
       var f0 = K.flatPattern(t0.model, t0.build, t0.mesh), ft = K.flatPattern(t.model, t.build, t.mesh);
       var cut = t0.mp.volume - t.mp.volume, lost = (rfKMarea(f0) - rfKMarea(ft)) * T14;
-      return 'part loses ' + cut.toFixed(5) + ' in³, flat ' + lost.toFixed(5) + ' in³, ' + ft.loops.length + ' loop(s), warnings ' + ft.warnings.length + (lost < cut / 2 && !ft.warnings.length ? ' (still missing: promote once laid or warned)' : ': promote to a hard test');
+      assert(ft.loops.length === 1 && !ft.warnings.length, ft.loops.length + ' loop(s) ' + ft.warnings.join('; '));
+      nearRel(lost, cut, 0.01, 'flat vs part');
+      return 'part loses ' + cut.toFixed(5) + ' in³, flat ' + lost.toFixed(5) + ' in³';
     });
   })();
