@@ -1332,6 +1332,8 @@
   DW.requestClose = requestClose; DW.drawingDirty = drawingDirty; DW.markDrawingClean = markDrawingClean;
   DW.activateSheet = activateSheet; DW.addSheet = addSheet; DW.deleteSheet = deleteSheet; DW.renameSheet = renameSheet; DW.sheetTabMenu = sheetTabMenu; DW.renderTabs = renderTabs;
   DW.workerState = function () { return { off: !!PJ.off, why: PJ.why || null, fails: PJ.fails || 0, worker: !!PJ.worker, cooling: Math.max(0, (PJ.coolUntil || 0) - performance.now()) }; };   // (rfDN: tests)
+  // lane profnav2: a key's zoom (a profile's Page Up / Page Down / Alt+F2) about the middle of the sheet window
+  DW.zoomBy = function (f) { if (!D.active || !D.vb) return; stopVbAnim(); ZM.pending = 0; var r = D.host.getBoundingClientRect(); zoomAbout(f, r.left + r.width / 2, r.top + r.height / 2); };
   DW.render = render; DW.settle = settle; DW.ready = ready; DW.queueRender = queueRender; DW.svgEl = svgEl; DW.fitBox = fitBox; DW.fitSheet = fitSheet; DW.glideTo = glideTo;
   DW.toPaper = toPaper; DW.pxToPaper = pxToPaper; DW.liveOffset = liveOffset; DW.drawOverlay = drawOverlay; DW.dimMatches = dimMatches; DW.viewAt = viewAt; DW.dimAt = dimAt; DW.entityAt = entityAt; DW.segDist = segDist; DW.ellipsePts = ellipsePts; DW.ellipsePath = ellipsePath;
 })();

@@ -146,23 +146,8 @@
     if (t) { e.preventDefault(); openSetting(); }
   });
 
-  // keys in a drawing: drawing-ui-panels.js takes every key while a drawing is open (capture on window); a key the
-  // active profile binds is run here first (this file loads before the drawing files, so this listener runs first)
-  window.addEventListener('keydown', function (e) {
-    if (current === 'solidworks' || !(UI.drawingActive && UI.drawingActive()) || !UI.keys) return;
-    var tag = (e.target.tagName || '').toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || tag === 'select' || (e.target && e.target.isContentEditable) || !document.getElementById('modal').hidden) return;
-    var c = UI.keys.canon((e.ctrlKey || e.metaKey ? 'Ctrl+' : '') + (e.shiftKey ? 'Shift+' : '') + (e.altKey ? 'Alt+' : '') + (e.key === ' ' ? 'Space' : e.key));
-    var p = defs[current], cmd = null;
-    Object.keys(p.keys || {}).forEach(function (k) { if ([].concat(p.keys[k]).some(function (x) { return UI.keys.canon(x) === c; })) cmd = k; });
-    if (!cmd) return;
-    if (UI.Commands.get(cmd, 'drawing')) { e.preventDefault(); e.stopImmediatePropagation(); UI.Commands.run(cmd, 'drawing'); return; }
-    // a key action the drawing has its own key for (Zoom to Fit = F, Delete): hand the drawing that key
-    var dflt = UI.keys.defaults().filter(function (d) { return d.action === cmd && /^[A-Z]$|^Del$/.test(d.key); })[0];
-    if (!dflt) return;
-    e.preventDefault(); e.stopImmediatePropagation();
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: dflt.key === 'Del' ? 'Delete' : dflt.key.toLowerCase(), bubbles: true, cancelable: true }));
-  }, true);
+  // keys in a drawing: drawing-ui-panels.js's keydown asks UI.keys.profileActionFor(e) (ui-app.js) and runs its own
+  // fit / delete / zoom / drawing command for a key this profile binds (lane profnav2)
 
   // ------------------------------------------------------------------ the profiles
   register({ id: 'solidworks', name: 'SolidWorks', note: 'CommandManager tabs, names, keys and mouse as SOLIDWORKS 2024 has them.' });
@@ -235,6 +220,13 @@
   UI.Profiles = { register: register, unregister: unregister, list: list, get: get, def: def, active: active, set: set, onChange: onChange, labelFor: labelFor, tabOf: tabOf, check: check,
     optionsSection: optionsSection, openSetting: openSetting, storageKey: KEY };
 
+  // lane profnav2: the saved profile's mouse at once (ui-core.js has loaded), so the graphics area navigates the
+  // profile's way from the first frame; boot below lays out the rest once every file is in
+  (function earlyMouse() {
+    var id = null;
+    try { id = localStorage.getItem(KEY); } catch (e) { }
+    if (id && defs[id] && UI.setNavMap) { try { UI.setNavMap(defs[id].mouse || null); } catch (e) { console.warn('setNavMap', e); } }
+  })();
   // boot: the saved profile (after every file has loaded: the drawing tabs and the mouse map come later)
   function boot() {
     var id = 'solidworks';

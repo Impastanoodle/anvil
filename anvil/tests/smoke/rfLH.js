@@ -239,7 +239,7 @@
       rfLHKey('z'); await wait(10);
       assert(zoom.calls.length === 1 && zoom.calls[0][0] === 1.25, 'Z: ' + JSON.stringify(zoom.calls));
       rfLHKey('PageDown'); await wait(10);
-      assert(zoom.calls.length === 2 && zoom.calls[1][0] === 0.8, 'PageDown: ' + JSON.stringify(zoom.calls));
+      assert(zoom.calls.length === 2 && zoom.calls[1][0] === 1.25, 'PageDown (Mastercam: zooms out, as Z; lane profnav2 fixed the swapped zoomIn / zoomOut): ' + JSON.stringify(zoom.calls));
       var n = view.calls.length;
       rfLHKey('1', { ctrlKey: true }); await wait(20);
       assert(view.calls.length === n + 1 && view.calls[n][0] === 'Front', 'Ctrl+1: ' + JSON.stringify(view.calls.slice(n)));

@@ -634,12 +634,26 @@
       drawOverlay(); renderTree();
       return;
     }
+    // lane profnav2: a key the active interface profile binds (Mastercam's Alt+F1, Page Up …) does the drawing's own
+    // job for that action; keys the profile does not bind keep the drawing's SolidWorks keys below
+    var pa = UI.keys && UI.keys.profileActionFor ? UI.keys.profileActionFor(e) : null;
     e.stopImmediatePropagation();
+    if (pa) { e.preventDefault(); drawingKeyAction(pa, e); return; }
     if (ctrl) return;
     if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); deleteSelection(); return; }
     if (k === 'f' || k === 'F') { if (D.sheet) glideTo(fitBox(), e.isTrusted); else fitSheet(); drawOverlay(); return; }
     if (k === 'd' || k === 'D') { cmdSmartDimension(); return; }
   }, true);
+  // what a key action means on the sheet: fit, delete, zoom, Smart Dimension, or a drawing command the profile names;
+  // view orientations, levels and the like have no meaning in a drawing and do nothing
+  function drawingKeyAction(act, e) {
+    if (act === 'fit') { if (D.sheet) glideTo(fitBox(), !!(e && e.isTrusted)); else fitSheet(); drawOverlay(); return true; }
+    if (act === 'delete') { deleteSelection(); return true; }
+    if (act === 'zoomIn' || act === 'zoomOut') { if (DW.zoomBy) DW.zoomBy(act === 'zoomIn' ? 0.8 : 1.25); return true; }
+    if (act === 'dim') { cmdSmartDimension(); return true; }
+    if (UI.Commands && UI.Commands.get(act, 'drawing')) { UI.Commands.run(act, 'drawing'); return true; }
+    return false;
+  }
   // follow the part: every applied rebuild (and undo / redo / load) re-renders the open drawing
   var baseRefreshTree = UI.refreshTree;
   UI.refreshTree = function () {

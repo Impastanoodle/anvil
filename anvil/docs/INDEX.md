@@ -642,7 +642,7 @@ more: dimRoom L887, layout L892, moveOneView L1000, modelItemDims L1139, orthoTa
 more: inSlot L1521, bboxText L1863, nonEmpty L1881, envelopeText L1982, revIndex L2266, sheetsOf L2376,
 more: stash L2381, freeSheetName L2417, r6 L2525, segDist L2591, needTable L2687
 
-## drawing-ui-panels.js (1535 lines)
+## drawing-ui-panels.js (1549 lines)
 > the drawing document's panels and automation (drawing-ui.js holds the state and the sheet,
 UI.makeDrawing  L13
 withUnitScales  L26  — An inch drawing lists the ANSI scales (1:1, 1:2, 1:4, 1:8 …): Sheet Properties and the …
@@ -663,52 +663,53 @@ DW.revTableMenu  L303
 DW.cmdDrawingProps  L321
 DW.renderTree  L355
 ordFixed  L448  — (rfW, SolidWorks 2024) View Layout holds the drawing views only (Auxiliary View, Break …
-UI.ribbonTabsFor  L491 (also L1385)  — the View Layout and Annotation tabs exist only in a drawing document; part tabs are …
+UI.ribbonTabsFor  L491 (also L1399)  — the View Layout and Annotation tabs exist only in a drawing document; part tabs are …
 viewDisplayItems  L497  — (rfGT) View ▸ Display: the selected view's tangent edges (SolidWorks' View ▸ Display), …
 DW.menuHookBase  L505
-UI.menuHook  L506 (also L1393)
+UI.menuHook  L506 (also L1407)
 undoCancelsDrawingPM  L587  — lane CA (user, 2026-10-13): Ctrl+Z / Ctrl+Y, Edit ▸ Undo / Redo and the Undo / Redo …
 UI.undoCancelsPM  L613
-UI.refreshTree  L645
-UI.loadModel  L655
-partNames  L663  — the names of an assembly's part tags (polygon.part, numbered as Assembly.rebuild does: …
-flatSummary  L717  — a flat-pattern view in the summary: its bends (sheet points, direction, angle, radius, …
-viewApi  L729  — runs an engine call on a scratch copy first, so a refused view (missing parent, detail …
-DW.cutApi  L745  — (rfDN) cutApi(fn): viewApi for a view whose linework is a CSG cut (Section View, Removed …
-DW.laterSummary (later)  L766  — (rfDR) the summary after a call that left views to be worked out in the worker (a closed …
-UI.openDrawing  L945
-UI.closeDrawing  L945
-UI.drawingActive  L945
-UI.drawing  L946
-DW.setFormatEdit  L958
-snapFmt  L978  — a line end snaps to a format line's end within 6 px, then the line to horizontal / …
-cmdTemplates  L1073  — Tools ▸ Drawing Templates…: the saved templates and sheet formats, with Export, Delete, …
-chooseTemplate  L1094  — the template chooser of New Drawing / Make Drawing from Part: with no saved template it …
-newDrawing  L1114  — newDrawing(template): a new drawing of the open part / assembly from a template (name or …
-cmdMakeDrawing  L1122  — Make Drawing from Part / Assembly: the part's drawing opens when it has one; else a new …
-tableAt  L1131  — General Table (Insert ▸ Tables ▸ General Table, Annotation tab): its PropertyManager …
-DW.cmdGeneralTable  L1132
-DW.closeInlineEdit  L1222
-DW.aeDown  L1225  — the sheet's mouse (drawing-ui.js calls these first): the format tools, General Table …
-DW.aeDragMove  L1272
-DW.aeHover  L1281
-DW.aeDblClick  L1291
-DW.aeContext  L1302
-DW.aeOverlay  L1313
-DW.deleteSelection  L1336 (also L1345, L1351)
-DW.sheetMenu  L1357
-DW.fmtTreeMenu  L1362
-DW.tableTreeMenu  L1363
-saveDrawingFile  L1422  — The .drawing document. File ▸ Save Drawing As writes the open drawing as <name>.drawing …
-UI.openDrawingFile  L1451  — openDrawingFile(name, data, opts) -> Promise of the drawing summary (null when the part …
+drawingKeyAction  L649  — what a key action means on the sheet: fit, delete, zoom, Smart Dimension, or a drawing …
+UI.refreshTree  L659
+UI.loadModel  L669
+partNames  L677  — the names of an assembly's part tags (polygon.part, numbered as Assembly.rebuild does: …
+flatSummary  L731  — a flat-pattern view in the summary: its bends (sheet points, direction, angle, radius, …
+viewApi  L743  — runs an engine call on a scratch copy first, so a refused view (missing parent, detail …
+DW.cutApi  L759  — (rfDN) cutApi(fn): viewApi for a view whose linework is a CSG cut (Section View, Removed …
+DW.laterSummary (later)  L780  — (rfDR) the summary after a call that left views to be worked out in the worker (a closed …
+UI.openDrawing  L959
+UI.closeDrawing  L959
+UI.drawingActive  L959
+UI.drawing  L960
+DW.setFormatEdit  L972
+snapFmt  L992  — a line end snaps to a format line's end within 6 px, then the line to horizontal / …
+cmdTemplates  L1087  — Tools ▸ Drawing Templates…: the saved templates and sheet formats, with Export, Delete, …
+chooseTemplate  L1108  — the template chooser of New Drawing / Make Drawing from Part: with no saved template it …
+newDrawing  L1128  — newDrawing(template): a new drawing of the open part / assembly from a template (name or …
+cmdMakeDrawing  L1136  — Make Drawing from Part / Assembly: the part's drawing opens when it has one; else a new …
+tableAt  L1145  — General Table (Insert ▸ Tables ▸ General Table, Annotation tab): its PropertyManager …
+DW.cmdGeneralTable  L1146
+DW.closeInlineEdit  L1236
+DW.aeDown  L1239  — the sheet's mouse (drawing-ui.js calls these first): the format tools, General Table …
+DW.aeDragMove  L1286
+DW.aeHover  L1295
+DW.aeDblClick  L1305
+DW.aeContext  L1316
+DW.aeOverlay  L1327
+DW.deleteSelection  L1350 (also L1359, L1365)
+DW.sheetMenu  L1371
+DW.fmtTreeMenu  L1376
+DW.tableTreeMenu  L1377
+saveDrawingFile  L1436  — The .drawing document. File ▸ Save Drawing As writes the open drawing as <name>.drawing …
+UI.openDrawingFile  L1465  — openDrawingFile(name, data, opts) -> Promise of the drawing summary (null when the part …
 more: everySheet L130, symSpec L214, symGroups L219, addRevision L284, setDrawingProps L314, row L342,
-more: cancelDrawingPM L599, summary L678, laterSummary L754, annotApi L768, current L774, fmtSheetSize L956,
-more: fmtItemAt L957, fmtTool L970, fmtEditNote L989, fmtDelete L997, resetSheetFormat L1004, fmtMenu L1005,
-more: templates L1025, storeTemplates L1026, findTemplate L1027, keepTemplate L1028, deleteTemplate L1034,
-more: makeTemplate L1035, templateFileName L1040, exportTemplate L1041, cmdSaveTemplate L1042,
-more: importTemplateData L1052, pickJSON L1058, cmdNewDrawing L1120, placeTable L1147, tableEdit L1155,
-more: tableMenu L1156, openCellEdit L1176, closeCell L1212, savedFiles L1431, partMatches L1432,
-more: attachDrawing L1438
+more: cancelDrawingPM L599, summary L692, laterSummary L768, annotApi L782, current L788, fmtSheetSize L970,
+more: fmtItemAt L971, fmtTool L984, fmtEditNote L1003, fmtDelete L1011, resetSheetFormat L1018, fmtMenu L1019,
+more: templates L1039, storeTemplates L1040, findTemplate L1041, keepTemplate L1042, deleteTemplate L1048,
+more: makeTemplate L1049, templateFileName L1054, exportTemplate L1055, cmdSaveTemplate L1056,
+more: importTemplateData L1066, pickJSON L1072, cmdNewDrawing L1134, placeTable L1161, tableEdit L1169,
+more: tableMenu L1170, openCellEdit L1190, closeCell L1226, savedFiles L1445, partMatches L1446,
+more: attachDrawing L1452
 
 ## drawing-ui-sketch.js (702 lines)
 > the drawing's Sketch tab (rfAO; only when `UI` exists): Line, Centerline, Rectangle, Circle,
@@ -923,7 +924,7 @@ more: cloudMake L3330, cloudClick L3339, pathPick L3413, cuThreadOptions L3479, 
 more: cuThreadSpec L3490, cuHoleClick L3512, cuTargetGroups L3534, cuTargetSpec L3541, cuLeaderGroups L3542,
 more: cuTargetClick L3565, cuLeaderClick L3589, cuLeaderMake L3598, flagNoteClick L3690
 
-## drawing-ui.js (1337 lines)
+## drawing-ui.js (1339 lines)
 > the drawing document UI (only when `UI` exists; tests/kernel-tests.html and drawing-worker.js load
 UI.drawingInternal  L15  — UI.drawingInternal (DW): the state object D and the functions the drawing-ui*.js files …
 DW.D  L86
@@ -992,6 +993,7 @@ DW.revTableAt  L1310
 DW.leaderTipAt  L1312  — the leader arrow tip within 4 px of p: { kind: 'note' | 'symbol', id, tip }, or null
 DW.noteMenu  L1320  — a note's right-click menu: Add / Remove Leader (the arrow goes down-left of the note; …
 DW.workerState  L1334  — (rfDN: tests)
+DW.zoomBy  L1336  — lane profnav2: a key's zoom (a profile's Page Up / Page Down / Alt+F2) about the middle …
 more: ensureDom L159, startRenameTab L290, projWorker L467, flushProjections L500, onProjected L534,
 more: applyViewBox L646, strokeFloor L683, svgNode L727, onMove L1066, onUp L1183, smoothOn L1199,
 more: zoomAbout L1204, stepZoom L1215, onWheel L1225, stopVbAnim L1242, onDblClick L1257, onContext L1283
@@ -2709,7 +2711,7 @@ more: r4 L6704, isPt L6785, ptOf L6786, dist L6867, normRad L6869, angDiffRad L6
 more: segLen L6891, offSeg L6892, lineParam L6904, distTo L6905, lineCircle L6918, carrierHits L6926,
 more: subPiece L6947, toEntity L6951
 
-## ui-app.js (2500 lines)
+## ui-app.js (2507 lines)
 > task pane (resources, library, files, views, appearance, properties, script console), files & exports,
 UI.EXAMPLES  L8
 UI.openTaskPane  L83
@@ -2780,30 +2782,31 @@ UI.showAbout  L1743
 UI.shortcutFor  L1754
 keyCanon  L1806  — 'shift+ctrl+z' / 'Ctrl+Shift+Z' -> 'Ctrl+Shift+Z'; null for text that is not one key (a …
 activeKeyMap  L1830  — the active table: combo -> action (rebuilt when the profile changes)
-keyAction  L1845  — the action a key event runs: the exact combo, then without Alt, then (no Ctrl) without …
-UI.activeKey  L1861  — the key a tooltip / menu shows for a ribbon id or key action (its own `key` text as the …
-UI.menuKeyText  L1871
-UI.keys  L1880
-typingIn  L1884  — Typing goes to a text box, a list or an editable element that is still on screen; a …
-pmIsCommand  L1901  — lane BY (user, 2026-10-13): Ctrl+Z / Ctrl+Y, Edit ▸ Undo / Redo and the Undo / Redo …
-UI.undoCancelsPM  L1906
-UI.undoMark  L1928  — rfCM: `target` is the key's target for Ctrl+Z / Ctrl+Y, null for Edit ▸ Undo / Redo and …
-UI.undoCommand  L1979
-UI.redoCommand  L1980
-UI.theme  L2019
-UI.setTheme  L2020
-window.anvil  L2032
-searchCommands  L2271  — the matches for q, best first: { name, icon, where, enabled, run }
-UI.searchCommands  L2321
-UI.placeGfxCentre  L2326  — lane DA: toasts sit over the middle of the graphics area (between the FeatureManager and …
-holdStatusRight  L2337  — lane DA: the status-bar coordinates must not jump when a chip to their right changes …
-UI.loadModel  L2357
-UI.offerRecovery  L2405  — A recovery copy (ui-core.js, localStorage 'anvil.recover') left by a session that closed …
-UI.recoverDocument  L2428
-UI.refreshTaskPane  L2450  — the Properties panel shows the material and density: redraw it after a material change …
-UI.recentDocuments  L2455  — (rfIK) Recent Documents and the window title
-UI.newAssembly  L2460  — File ▸ New ▸ Part / Assembly (menus): "Save changes to Part1?" first when the document …
-UI.newPart  L2461
+keyHit  L1845  — the action a key event runs: the exact combo, then without Alt, then (no Ctrl) without …
+profileKeyAction  L1858  — lane profnav2: the action only when the active profile bound that combo (not SolidWorks' …
+UI.activeKey  L1868  — the key a tooltip / menu shows for a ribbon id or key action (its own `key` text as the …
+UI.menuKeyText  L1878
+UI.keys  L1887
+typingIn  L1891  — Typing goes to a text box, a list or an editable element that is still on screen; a …
+pmIsCommand  L1908  — lane BY (user, 2026-10-13): Ctrl+Z / Ctrl+Y, Edit ▸ Undo / Redo and the Undo / Redo …
+UI.undoCancelsPM  L1913
+UI.undoMark  L1935  — rfCM: `target` is the key's target for Ctrl+Z / Ctrl+Y, null for Edit ▸ Undo / Redo and …
+UI.undoCommand  L1986
+UI.redoCommand  L1987
+UI.theme  L2026
+UI.setTheme  L2027
+window.anvil  L2039
+searchCommands  L2278  — the matches for q, best first: { name, icon, where, enabled, run }
+UI.searchCommands  L2328
+UI.placeGfxCentre  L2333  — lane DA: toasts sit over the middle of the graphics area (between the FeatureManager and …
+holdStatusRight  L2344  — lane DA: the status-bar coordinates must not jump when a chip to their right changes …
+UI.loadModel  L2364
+UI.offerRecovery  L2412  — A recovery copy (ui-core.js, localStorage 'anvil.recover') left by a session that closed …
+UI.recoverDocument  L2435
+UI.refreshTaskPane  L2457  — the Properties panel shows the material and density: redraw it after a material change …
+UI.recentDocuments  L2462  — (rfIK) Recent Documents and the window title
+UI.newAssembly  L2467  — File ▸ New ▸ Part / Assembly (menus): "Save changes to Part1?" first when the document …
+UI.newPart  L2468
 more: renderTaskStrip L74, tpHome L103, dlSvg L127, dlIcon L128, dlName L140, dlParent L147, dlSubs L148,
 more: formingTools L153, tpLibrary L169, dlOpen L220, savedFiles L419, tpFiles L420, tpViews L438,
 more: tpAppearance L449, tpProps L464, tpMacro L560, isAsm L621, hasAssembly L622, docCount L624,
@@ -2818,10 +2821,10 @@ more: onFileDrop L1239, openDroppedFile L1270, initFileDrop L1277, deskRecent L1
 more: browserRecentWrite L1308, setRecent L1309, recentNoteBrowser L1317, recentRemove L1332, recentClear L1338,
 more: recentLabel L1344, shortFolder L1345, baseName L1445, visiblePath L1446, syncDocument L1461,
 more: initTitle L1465, saveInBrowser L1499, saveTypeOf L1513, deskSaveAs L1518, sketchKey L1773,
-more: eventCombo L1816, profileKeys L1828, profKey L1842, runKeyAction L1855, pmIsSketchTool L1905,
-more: insideSteps L1929, insideCan L1936, undoInside L1937, undoCommand L1949, rebuilding L2184, built L2185,
-more: needAsm L2186, asmSummary L2187, cmdSearchIndex L2218, drawingTab L2269, initCommandSearch L2293,
-more: boot L2352, names L2481, sum L2482
+more: eventCombo L1816, profileKeys L1828, profKey L1842, keyAction L1855, runKeyAction L1862,
+more: pmIsSketchTool L1912, insideSteps L1936, insideCan L1943, undoInside L1944, undoCommand L1956,
+more: rebuilding L2191, built L2192, needAsm L2193, asmSummary L2194, cmdSearchIndex L2225, drawingTab L2276,
+more: initCommandSearch L2300, boot L2359, names L2488, sum L2489
 
 ## ui-assembly.js (2928 lines)
 > assembly commands added in run cloud-2026-09-25l: Linear / Circular Component Pattern and Mirror
@@ -3742,15 +3745,15 @@ more: cfgNeedSelection L2635, cfgPromptAdd L2640, cfgPromptRename L2643, cfgConf
 more: cfgMenu L2654, setTip L2746, adoptTitle L2762, renderTip L2770, showTip L2779, hideTip L2793,
 more: scContext L2838, scFind L2843, shortcutBarItems L2858, scMark L2867, scPress L2872, dtColumnChoices L2977
 
-## ui-profiles.js (249 lines)
+## ui-profiles.js (241 lines)
 > interface profiles (lane profiles, user 2026-11-11: "a setting that rearranges the ui to be similar
 unregister  L40  — unregister(id): a profile registered for a test goes again (the built-in ones stay); the …
 swTabOf  L53  — the SolidWorks name of the tab under a profile ('Wireframe' -> 'Sketch'), so a switch …
 tabOf  L83  — the tab of the active profile's CommandManager a command is on now (null with …
 check  L94  — the cmds a profile names (tabs, labels, keys) that no document type has and no key …
 UI.profileStatusHtml  L138
-UI.Profiles  L235
-boot  L239  — boot: the saved profile (after every file has loaded: the drawing tabs and the mouse map …
+UI.Profiles  L220
+boot  L231  — boot: the saved profile (after every file has loaded: the drawing tabs and the mouse map …
 more: clone L26, flat L27, register L29, list L46, get L47, active L48, def L49, onChange L50, apply L58,
 more: set L69, labelFor L78, el L112, optionsSection L118, openSetting L133
 

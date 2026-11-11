@@ -1763,7 +1763,7 @@
     ['Ctrl+8', 'normalTo'], ['Ctrl+Shift+Z', 'prevView'], ['Ctrl+Z', 'undo'], ['Ctrl+Y', 'redo'], ['Ctrl+Shift+Y', 'redo', 1],
     ['Ctrl+S', 'save'], ['Ctrl+Shift+S', 'save', 1], ['Ctrl+B', 'rebuild'], ['Ctrl+Shift+B', 'rebuild', 1], ['Ctrl+N', 'new'], ['Ctrl+Shift+N', 'new', 1],
     ['Ctrl+O', 'open'], ['Ctrl+Shift+O', 'open', 1],
-    ['Del', 'delete'], ['Backspace', 'delete', 1], ['F9', 'toggleTree'], ['F2', 'rename'], ['F', 'fit'], ['Z', 'zoomIn'], ['Shift+Z', 'zoomOut'], ['Space', 'orient'],
+    ['Del', 'delete'], ['Backspace', 'delete', 1], ['F9', 'toggleTree'], ['F2', 'rename'], ['F', 'fit'], ['Z', 'zoomOut'], ['Shift+Z', 'zoomIn'], ['Space', 'orient'],
     ['S', 'shortcutBar'], ['L', 'line'], ['R', 'rect'], ['C', 'circle'], ['A', 'arc'], ['P', 'polygon'], ['T', 'slot'], ['D', 'dim'], ['E', 'extrude']
   ];
   var KEY_FIXED = { Enter: 1, Esc: 1, S: 1 };
@@ -1793,8 +1793,8 @@
     toggleTree: function (e) { if (UI.setFeatureManagerHidden) { e.preventDefault(); UI.setFeatureManagerHidden(); } },   // SolidWorks: F9 toggles the FeatureManager tree area
     rename: function (e) { if (App.sel && App.sel.kind === 'feature') { e.preventDefault(); UI.startRename(K.findFeature(App.model, App.sel.id)); } },
     fit: function () { UI.zoomToFit(); },
-    zoomIn: function () { UI.zoomView(1.25); },
-    zoomOut: function () { UI.zoomView(0.8); },
+    zoomIn: function () { UI.zoomView(0.8); },   // lane profnav2: zoomView(f < 1) zooms in (SolidWorks: Shift+Z in, Z out)
+    zoomOut: function () { UI.zoomView(1.25); },
     orient: function (e) { e.preventDefault(); if (UI.showOrientationMenu) { UI.showOrientationMenu(); return; } var hb = $('hud').children[5]; if (hb) hb.click(); },
     shortcutBar: function () { if (UI.showShortcutBar) UI.showShortcutBar(); else { UI.cmdSketch(); UI.refreshRibbon(); } },   // r14/commands14: ui-panels.js takes S first
     line: sketchKey('line'), rect: sketchKey('rect'), circle: sketchKey('circle'), arc: sketchKey('arc'), polygon: sketchKey('polygon'), slot: sketchKey('slot'), dim: sketchKey('dimension'),
@@ -1817,7 +1817,7 @@
     var k = e.key;
     if (k == null) return null;
     var ctrl = e.ctrlKey || e.metaKey, shift = e.shiftKey;
-    // a plain letter's case is its Shift (Caps Lock z / Z as the handler always read them: z zooms in, Z out)
+    // a plain letter's case is its Shift (Caps Lock z / Z as the handler always read them: z zooms out, Z in)
     if (!ctrl && k.length === 1 && k.toLowerCase() !== k.toUpperCase()) shift = k !== k.toLowerCase();
     k = KEY_NAMES[k] || (k.length === 1 ? k.toUpperCase() : k);
     return (ctrl ? 'Ctrl+' : '') + (shift && !noShift ? 'Shift+' : '') + (e.altKey && !noAlt ? 'Alt+' : '') + k;
@@ -1842,15 +1842,22 @@
   function profKey(p, id) { var k = p.keys[id]; return k == null ? null : [].concat(k)[0] || null; }
   // the action a key event runs: the exact combo, then without Alt, then (no Ctrl) without Shift, as the handler
   // always ignored those on plain keys (Shift+F fits, Alt+L is the Line tool)
-  function keyAction(e) {
+  function keyHit(e) {   // the combo of the table that a key event matches (null: none)
     var map = activeKeyMap(), ctrl = e.ctrlKey || e.metaKey, c;
-    c = eventCombo(e); if (map[c]) return map[c];
-    if (e.altKey) { c = eventCombo(e, true); if (map[c]) return map[c]; }
+    c = eventCombo(e); if (map[c]) return c;
+    if (e.altKey) { c = eventCombo(e, true); if (map[c]) return c; }
     if (!ctrl) {
-      c = eventCombo(e, false, true); if (map[c]) return map[c];
-      c = eventCombo(e, true, true); if (map[c]) return map[c];
+      c = eventCombo(e, false, true); if (map[c]) return c;
+      c = eventCombo(e, true, true); if (map[c]) return c;
     }
     return null;
+  }
+  function keyAction(e) { var c = keyHit(e); return c ? activeKeyMap()[c] : null; }
+  // lane profnav2: the action only when the active profile bound that combo (not SolidWorks' own key), for handlers
+  // that keep their own SolidWorks keys and add the profile's (the drawing's keydown, drawing-ui-panels.js)
+  function profileKeyAction(e) {
+    var c = profileKeys() ? keyHit(e) : null, map = c ? activeKeyMap() : null;
+    return c && map[c] !== DEFAULT_MAP[c] ? map[c] : null;
   }
   function runKeyAction(name, e) {
     if (KEY_ACTIONS[name]) { KEY_ACTIONS[name](e); return true; }
@@ -1878,7 +1885,7 @@
   }
   UI.activeKey = activeKey; UI.menuKeyText = menuKeyText;
   UI.keys = { canon: keyCanon, defaults: function () { return KEY_DEFAULTS.filter(function (d) { return !d[2]; }).map(function (d) { return { key: d[0], action: d[1] }; }); },
-    map: function () { return Object.assign({}, activeKeyMap()); }, actionFor: keyAction, run: runKeyAction, fixed: Object.keys(KEY_FIXED), reset: function () { keyMap = null; } };
+    map: function () { return Object.assign({}, activeKeyMap()); }, actionFor: keyAction, profileActionFor: profileKeyAction, run: runKeyAction, fixed: Object.keys(KEY_FIXED), reset: function () { keyMap = null; } };
   // Typing goes to a text box, a list or an editable element that is still on screen; a check box, a button or a box
   // that went away with its PropertyManager (✓ leaves the focus on a PM control) does not keep the view keys (F, Z…).
   function typingIn(t) {
