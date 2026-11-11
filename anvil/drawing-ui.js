@@ -955,9 +955,12 @@
     if (ZM.pending) { ZM.pending = 0; }
     if (e.button === 1 || e.button === 2 && e.shiftKey) {
       // middle drag pans; a middle double-click fits the sheet (as in the 3D view)
-      var now = performance.now();
-      if (e.button === 1 && now - (D.mmbAt || -1e9) < 350) { D.mmbAt = 0; D.drag = null; glideTo(fitBox(), e.isTrusted); return; }
+      // (lane profnav) the navigation map: a middle press it binds to anything pans (the sheet does not rotate or
+      // drag-zoom), one it leaves unbound does nothing; the double-click fits only while middleDouble is 'fit'
+      var now = performance.now(), nm = UI.navMap ? UI.navMap() : null;
+      if (e.button === 1 && (!nm || nm.middleDouble === 'fit') && now - (D.mmbAt || -1e9) < 350) { D.mmbAt = 0; D.drag = null; glideTo(fitBox(), e.isTrusted); return; }
       if (e.button === 1) D.mmbAt = now;
+      if (e.button === 1 && UI.navActionFor && !UI.navActionFor(e)) { D.drag = null; return; }
       D.drag = { kind: 'pan', x: e.clientX, y: e.clientY, vb: D.vb && JSON.parse(JSON.stringify(D.vb)) };
       return;
     }
@@ -1222,13 +1225,16 @@
   function onWheel(e) {
     if (!D.active || !D.vb) return;
     e.preventDefault(); e.stopPropagation();
-    var dy = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1);
+    // (lane profnav) the navigation map's wheel: its direction, and about the cursor or the middle of the window
+    var dy = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1) * (UI.navWheelSign ? UI.navWheelSign(e) : 1);
     var d = Math.max(-0.7, Math.min(0.7, dy * (e.ctrlKey ? 0.01 : WHEEL_K)));
     if (!d) return;
     stopVbAnim();
-    if (!e.isTrusted || !smoothOn()) { ZM.pending = 0; zoomAbout(Math.exp(d), e.clientX, e.clientY); return; }
+    var cx = e.clientX, cy = e.clientY, nm = UI.navMap ? UI.navMap() : null;
+    if (nm && nm.wheel.about === 'center') { var hr = D.host.getBoundingClientRect(); cx = hr.left + hr.width / 2; cy = hr.top + hr.height / 2; }
+    if (!e.isTrusted || !smoothOn()) { ZM.pending = 0; zoomAbout(Math.exp(d), cx, cy); return; }
     if (!ZM.pending) ZM.last = performance.now();
-    ZM.pending += d; ZM.cx = e.clientX; ZM.cy = e.clientY;
+    ZM.pending += d; ZM.cx = cx; ZM.cy = cy;
     if (!ZM.raf) ZM.raf = requestAnimationFrame(stepZoom);
   }
   // the sheet glides to a new pan / zoom (F, a middle double-click) over 250 ms; at once for scripts / reduced motion

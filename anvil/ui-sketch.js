@@ -4193,17 +4193,21 @@
     // r4/asm4: Alt + drag on a floating component is SmartMates (ui-assembly.js); elsewhere Alt + drag rotates the view
     var smart = ev.button === 0 && ev.altKey && !App.zoomAreaMode && UI.smartMateHook ? UI.smartMateHook(p, ev) : null;
     if (smart) { drag = { kind: 'maybe-hook', hook: smart, last: p, moved: false }; ev.preventDefault(); return; }
-    if (ev.button === 1 || (ev.button === 0 && (ev.altKey)) || (ev.button === 0 && App.zoomAreaMode)) {
-      if (App.zoomAreaMode && ev.button === 0) { zoomBox = { start: p }; $('zoom-box').hidden = false; return; }
-      // SolidWorks: middle drag rotates, Ctrl + middle pans, Shift + middle zooms (about the press point)
-      drag = { kind: ev.ctrlKey ? 'pan' : ev.shiftKey ? 'zoom' : 'rotate', last: p };
+    if (App.zoomAreaMode && ev.button === 0) { zoomBox = { start: p }; $('zoom-box').hidden = false; return; }
+    // lane profnav: which button + modifiers rotate, pan or zoom comes from the navigation map (ui-core.js navActionFor;
+    // SolidWorks by default: middle drag rotates, Ctrl + middle pans, Shift + middle zooms about the press point, Alt +
+    // left rotates). A middle press the map leaves unbound does nothing; an unbound Alt + left press selects as usual.
+    var nav = UI.navActionFor ? UI.navActionFor(ev) : (ev.ctrlKey ? 'pan' : ev.shiftKey ? 'zoom' : 'rotate');
+    if (ev.button === 1 || (ev.button === 0 && ev.altKey && nav)) {
+      if (nav) drag = { kind: nav, last: p, button: ev.button };
       ev.preventDefault();
       return;
     }
     // r5/asm5: in an assembly a right-mouse drag on a floating component rotates it (SolidWorks); elsewhere it pans
+    // (lane profnav: the right drag does what the map's 'right' says; a right click with no drag still opens the menus)
     var rot = ev.button === 2 && App.mode !== 'sketch' && !App.zoomAreaMode && UI.componentDragHook ? UI.componentDragHook(p, ev, 'rotate') : null;
     if (rot) { drag = { kind: 'maybe-hook', hook: rot, last: p, moved: false }; ev.preventDefault(); return; }
-    if (ev.button === 2) { drag = { kind: 'pan', last: p, moved: false }; return; }
+    if (ev.button === 2) { drag = { kind: nav || 'none', last: p, moved: false, button: 2 }; return; }
     // assemblies: pressing on a floating component drags it (Move / Rotate Component) instead of rotating the view
     // (r13/trim13: a sketch command may take the drag itself, as Power trim does)
     var hook = ev.button !== 0 ? null : (App.mode === 'sketch' && App.command && App.command.onSketchDrag && !App.zoomAreaMode ? App.command.onSketchDrag(p, ev) : null) ||
@@ -4211,7 +4215,7 @@
     // a press on empty space starts a box selection (ui-select.js); on the model it still rotates the view
     if (!hook && ev.button === 0 && UI.boxSelectHook) hook = UI.boxSelectHook(p, ev);
     if (hook) { drag = { kind: 'maybe-hook', hook: hook, last: p, moved: false }; ev.preventDefault(); return; }
-    if (ev.button === 0) drag = { kind: 'maybe-rotate', last: p, moved: false };
+    if (ev.button === 0) drag = { kind: 'maybe-rotate', nav: nav || 'none', last: p, moved: false };   // lane profnav: the map's 'left'
   });
 
   window.addEventListener('mousemove', function (ev) {
@@ -4226,7 +4230,7 @@
       if (fbLayer && fbLayer.firstChild && drag.kind !== 'maybe-rotate' && drag.kind !== 'maybe-hook') clearFeedback();
       var dx = p[0] - drag.last[0], dy = p[1] - drag.last[1];
       if (drag.kind === 'maybe-rotate') {
-        if (Math.hypot(p[0] - downPos[0], p[1] - downPos[1]) > 4) { drag.kind = 'rotate'; drag.moved = true; viewport.classList.add('tool-grab'); }
+        if (Math.hypot(p[0] - downPos[0], p[1] - downPos[1]) > 4) { drag.kind = drag.nav || 'rotate'; drag.moved = true; viewport.classList.add('tool-grab'); }
         else return;
       }
       if (drag.kind === 'maybe-hook') {
@@ -4236,7 +4240,8 @@
       if (drag.kind === 'hook') { drag.hook.move(p); drag.last = p; return; }
       if (drag.kind === 'rotate') UI.rotateView(dx, dy);
       else if (drag.kind === 'zoom') UI.zoomView(Math.exp(dy * 0.006), downPos[0], downPos[1]);   // drag up zooms in
-      else if (drag.kind === 'pan') { UI.panView(dx, dy); drag.moved = drag.moved || Math.abs(dx) + Math.abs(dy) > 0; }
+      else if (drag.kind === 'pan') UI.panView(dx, dy);
+      drag.moved = drag.moved || Math.abs(dx) + Math.abs(dy) > 0;
       drag.last = p;
       return;
     }
@@ -4283,7 +4288,8 @@
     var d = drag; drag = null;
     viewport.classList.remove('tool-grab');
     if (d.kind === 'hook') { d.hook.end(p); return; }
-    if (d.kind === 'rotate' || d.kind === 'zoom' || (d.kind === 'pan' && d.moved)) return;
+    // a navigation drag is not a click; a right press that did not move is (its menus), whatever the map binds to it
+    if (d.button === 2 ? d.moved : (d.kind === 'rotate' || d.kind === 'zoom' || d.kind === 'none' || (d.kind === 'pan' && d.moved))) return;
     if (ev.button === 2) { if (App.mode === 'sketch') { if (App.tool === 'select' && !(App.command && App.command.onSketchPoint) && !(ev.target.closest && ev.target.closest('#dim-layer, #dim-edit, #sk-num, #hud, #exit-sketch'))) sketchMenu(p[0], p[1], ev); else if (chainMenuWanted(ev)) chainMenu(ev); else if (App.tool === 'dimension' && !(ev.target.closest && ev.target.closest('#dim-layer, #dim-edit, #sk-num, #hud, #exit-sketch')) && dimMidMenu(p[0], p[1], ev)) { /* rfIG: Select Midpoint */ } else finishChain(); } return; }
     if (ev.button !== 0) return;
     if (p[0] < 0 || p[1] < 0 || p[0] > UI.size.w || p[1] > UI.size.h) return;

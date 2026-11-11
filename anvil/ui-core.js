@@ -573,7 +573,8 @@ var UI = (function () {
   var zoomMomentum = { pending: 0, x: 0, y: 0, last: 0 };
   var WHEEL_K = Math.log(1.12) / 100;
   function wheelZoom(ev, mx, my) {
-    var dy = ev.deltaY * (ev.deltaMode === 1 ? 33 : ev.deltaMode === 2 ? 400 : 1);
+    var dy = ev.deltaY * (ev.deltaMode === 1 ? 33 : ev.deltaMode === 2 ? 400 : 1) * navWheelSign(ev);
+    if (navResolved.wheel.about === 'center') { mx = size.w / 2; my = size.h / 2; }   // lane profnav: the map's wheel
     var k = ev.ctrlKey ? 0.01 : WHEEL_K;   // ctrl + wheel is a trackpad pinch: small deltas, faster response
     var d = Math.max(-0.7, Math.min(0.7, dy * k));
     if (!d) return;
@@ -4688,13 +4689,69 @@ var UI = (function () {
     var r = viewport.getBoundingClientRect();
     return [lastClient[0] - r.left, lastClient[1] - r.top];
   }
+  // ------------------------------------------------------------------ lane profnav: the navigation map
+  // One table says which mouse button + modifiers rotate, pan or zoom the view, which way the wheel zooms and about
+  // what, and what a middle double-click does. Every viewport handler asks it (ui-sketch.js mousedown / wheel, the
+  // middle double-click below, drawing-ui.js on the sheet), so an interface profile (ui-profiles.js) can lay the
+  // mouse out like the software the user comes from. Schema (agreed with lane profiles):
+  //   { drag: { 'middle': 'rotate', 'ctrl+middle': 'pan', 'shift+middle': 'zoom', 'alt+left': 'rotate', 'right': 'pan' },
+  //     wheel: { zoom: 1 | -1, about: 'cursor' | 'center' }, middleDouble: 'fit' | null }
+  // A drag key is the modifiers in the order ctrl, shift, alt, then the button (left, middle, right). A key the map
+  // names (null = nothing) wins; a key it does not name does what SolidWorks does (navSW). null or {} is SolidWorks.
+  // 'left' is the plain left drag that started on the model (box select and sketch tools take the press first).
+  var NAV_ACTIONS = { rotate: 1, pan: 1, zoom: 1 };
+  function navKey(ev) {
+    var b = ev.button === 0 ? 'left' : ev.button === 1 ? 'middle' : ev.button === 2 ? 'right' : null;
+    if (!b) return null;
+    return (ev.ctrlKey ? 'ctrl+' : '') + (ev.shiftKey ? 'shift+' : '') + (ev.altKey ? 'alt+' : '') + b;
+  }
+  // what the viewport did before the map existed (SolidWorks): middle, or Alt + left, rotate; with Ctrl they pan, with
+  // Shift they zoom; the right drag pans; a left drag that starts on the model (nothing else took it) rotates
+  function navSW(key) {
+    if (!key) return null;
+    var btn = key.replace(/^.*\+/, ''), ctrl = /ctrl\+/.test(key), shift = /shift\+/.test(key), alt = /alt\+/.test(key);
+    if (btn === 'middle' || (btn === 'left' && alt)) return ctrl ? 'pan' : shift ? 'zoom' : 'rotate';
+    if (btn === 'right') return 'pan';
+    if (btn === 'left') return 'rotate';   // a plain (or Ctrl / Shift) left drag that started on the model
+    return null;
+  }
+  var NAV_SW_KEYS = ['middle', 'ctrl+middle', 'shift+middle', 'alt+left', 'right', 'left'];
+  var navUser = null, navResolved = null;
+  function resolveNav(map) {
+    var r = { drag: {}, wheel: { zoom: 1, about: 'cursor' }, middleDouble: 'fit' };
+    NAV_SW_KEYS.forEach(function (k) { r.drag[k] = navSW(k); });
+    if (map && map.drag) Object.keys(map.drag).forEach(function (k) {
+      var v = map.drag[k], key = String(k).toLowerCase().replace(/\s+/g, '');
+      r.drag[key] = v && NAV_ACTIONS[v] ? v : null;
+    });
+    if (map && map.wheel) {
+      if (map.wheel.zoom === -1 || map.wheel.zoom === 1) r.wheel.zoom = map.wheel.zoom;
+      if (map.wheel.about === 'center' || map.wheel.about === 'cursor') r.wheel.about = map.wheel.about;
+    }
+    if (map && Object.prototype.hasOwnProperty.call(map, 'middleDouble')) r.middleDouble = map.middleDouble === 'fit' ? 'fit' : null;
+    return r;
+  }
+  navResolved = resolveNav(null);
+  function setNavMap(map) { navUser = map && typeof map === 'object' ? JSON.parse(JSON.stringify(map)) : null; navResolved = resolveNav(navUser); lastMiddle = middleDown = null; return navMap(); }
+  function navMap() { return JSON.parse(JSON.stringify(navResolved)); }
+  // 'rotate' | 'pan' | 'zoom' | null for a mousedown (or any mouse event with button and modifiers)
+  function navActionFor(ev) {
+    var key = navKey(ev);
+    if (!key) return null;
+    return Object.prototype.hasOwnProperty.call(navResolved.drag, key) ? navResolved.drag[key] : navSW(key);
+  }
+  // +1 when the wheel zooms as in SolidWorks (wheel toward you zooms out), -1 reversed; a trackpad pinch (Ctrl + wheel
+  // from the browser) keeps its own direction
+  function navWheelSign(ev) { return ev && ev.ctrlKey ? 1 : navResolved.wheel.zoom; }
+
   // SolidWorks: a double-click of the middle button is Zoom to Fit (browsers send no dblclick for it)
   // (two plain middle clicks, each released where it was pressed, within 400 ms; a middle drag is not a click)
+  // (lane profnav) only while the navigation map says middleDouble: 'fit' (the default)
   var lastMiddle = null, middleDown = null;
   function nearPt(ev, p) { return Math.abs(ev.clientX - p.x) + Math.abs(ev.clientY - p.y) < 6; }
   viewport.addEventListener('mousedown', function (ev) {
     lastClient = null;
-    if (ev.button !== 1 || ev.ctrlKey || ev.shiftKey || ev.altKey) { lastMiddle = middleDown = null; return; }
+    if (ev.button !== 1 || ev.ctrlKey || ev.shiftKey || ev.altKey || navResolved.middleDouble !== 'fit') { lastMiddle = middleDown = null; return; }
     var t = performance.now();
     if (lastMiddle && t - lastMiddle.t < 400 && nearPt(ev, lastMiddle)) { lastMiddle = middleDown = null; zoomToFit(); return; }
     middleDown = { t: t, x: ev.clientX, y: ev.clientY };
@@ -4774,6 +4831,8 @@ var UI = (function () {
     setTangentEdges: setTangentEdges, tangentEdges: function () { return App.view.tangentEdges; }, tangentEdgesMenuItems: tangentEdgesMenuItems,
     tangentEdgeList: function () { return tangentEdgeList(App.mesh); }, tangentLines: function () { return tanLines; },
     // lane DC: Flatten (the flat state's display)
-    updateFlatState: updateFlatState, flatShown: flatShown, flatGroup: flatGroup
+    updateFlatState: updateFlatState, flatShown: flatShown, flatGroup: flatGroup,
+    // lane profnav: the navigation map (mouse rotate / pan / zoom, wheel, middle double-click)
+    setNavMap: setNavMap, navMap: navMap, navActionFor: navActionFor, navWheelSign: navWheelSign, navKey: navKey
   };
 })();
