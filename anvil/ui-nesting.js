@@ -70,7 +70,10 @@
     if (typeof DxfImport === 'undefined') return { error: 'The DXF reader (dxf-import.js) is not loaded.' };
     var d;
     try { d = DxfImport.parse(text); } catch (e) { return { error: 'DXF: ' + ((e && e.message) || e) }; }
-    var ents = (d.entities || []).filter(function (e) { return e.t !== 'text' && e.t !== 'point'; });
+    // a layer the file has frozen or off stays out of the nest, as in the sketch import (local-2026-11-11a)
+    var hid = {};
+    (d.layers || []).forEach(function (l) { if (l.frozen || l.off) hid[l.name] = true; });
+    var ents = (d.entities || []).filter(function (e) { return e.t !== 'text' && e.t !== 'point' && !hid[e.layer]; });
     var prof;
     try { prof = K.sketchProfile({ entities: ents }); } catch (e2) { return { error: 'DXF profiles: ' + ((e2 && e2.message) || e2) }; }
     // the file's units into the document's

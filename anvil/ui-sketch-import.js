@@ -158,7 +158,9 @@
     var pu = partUnits();
     var v = { units: opts.units || 'file', origin: opts.origin || 'file', dx: +opts.dx || 0, dy: +opts.dy || 0, rot: +opts.rot || 0,
       tol: opts.tol != null ? +opts.tol : mergeTol(), gap: opts.gap != null ? +opts.gap : gapTol(), repair: opts.repair !== false, rels: true, blocks: opts.blocks !== false };
-    parsed.layers.forEach(function (l, i) { v['L' + i] = !(opts.layers && opts.layers[l.name] === false); });
+    // lane dxfaudit: a layer the file has frozen or off starts unchecked (AutoCAD does not show it); opts.layers wins
+    function layerOn(l) { var o = opts.layers && opts.layers[l.name]; return o != null ? !!o : !(l.frozen || l.off); }
+    parsed.layers.forEach(function (l, i) { v['L' + i] = layerOn(l); });
     var built = null;
     function srcUnits() { return v.units === 'in' || v.units === 'mm' ? v.units : (parsed.units || pu); }
     // the DXF layers the imported entities use, added to the sketch's layer table: a preset's settings for CUT /
@@ -180,7 +182,7 @@
         g.layers.push(L);
       });
     }
-    function layerFields() { return parsed.layers.map(function (l, i) { return { type: 'check', label: l.name + ' (' + l.count + ')', key: 'L' + i }; }); }
+    function layerFields() { return parsed.layers.map(function (l, i) { return { type: 'check', label: l.name + ' (' + l.count + ')' + (l.frozen ? ', frozen in the file' : l.off ? ', off in the file' : ''), key: 'L' + i }; }); }
     // the imported blocks' definitions into sketch g: a name g already uses for other geometry gets a suffix (-2, -3 ...)
     // on the imported instances; one it uses for the same geometry is shared
     function adoptImported(g, geo) {
@@ -199,7 +201,7 @@
       // lane sketchgaps-2: the pipeline is DxfImport.prepare (dxf-import.js): layers on / off, data units, position,
       // Merge points closer than, Repair after import (tiny entities, duplicates / overlaps, gaps up to Close gaps up to)
       var off = {};
-      parsed.layers.forEach(function (l, i) { if (!v['L' + i]) off[l.name] = false; });
+      parsed.layers.forEach(function (l, i) { off[l.name] = !!v['L' + i]; });   // (true: a frozen / off layer checked on)
       built = DxfImport.prepare(parsed, { partUnits: pu, units: srcUnits(), layers: off, origin: v.origin, dx: v.dx, dy: v.dy, rot: v.rot, tol: Math.max(0, +v.tol || 0), gap: v.gap, repair: !!v.repair });
       return built;
     }
@@ -208,12 +210,18 @@
       App.tempEntities = built.entities.slice();
       UI.updateTemp();
       var rep = built.report;
+      // lane dxfaudit: gaps a little wider than Close gaps up to (a customer's .002 in at a corner) are named with their
+      // size, so the profile is not left open without a word; raising the field closes them
+      var gl = v.repair ? Math.max(0, +v.gap || 0) : 0, E = built.entities.filter(function (e) { return e.t !== 'text' && e.t !== 'point' && e.blk == null; });
+      var wide = E.length && E.length <= 5000 ? DxfImport.check(E, Math.max(10 * gl, pu === 'in' ? 0.01 : 0.25)).filter(function (i) { return i.type === 'gap' && i.size > gl; }) : [];
+      built.openGaps = wide.map(function (i) { return i.size; });
       if (spec) {
         var nTxt = built.entities.filter(function (e) { return e.t === 'text' && e.blk == null; }).length, bi = blockIds(built.entities), nIns = Object.keys(bi).length;
         var nDef = Object.keys(bi).map(function (k) { return bi[k]; }).filter(function (n, i, a) { return a.indexOf(n) === i; }).length;
         spec.message = '<b>' + esc(name) + '</b>: ' + plural(built.entities.length, 'entity', 'entities') + ' to import' + (nTxt ? ', ' + plural(nTxt, 'text') + ' as Etch Sketch Text' : '') +
           (nIns ? ', ' + plural(nIns, 'block instance') + ' of ' + plural(nDef, 'block') : '') +
           (rep && (rep.gaps || rep.merged || rep.removed) ? ' (' + [rep.gaps ? plural(rep.gaps, 'gap') + ' closed' : '', rep.merged ? plural(rep.merged, 'duplicate') + ' merged' : '', rep.removed ? plural(rep.removed, 'tiny entity', 'tiny entities') + ' removed' : ''].filter(Boolean).join(', ') + ')' : '') + '.' +
+          (wide.length ? ' ' + plural(wide.length, 'gap') + ' left open (' + (wide.length === 1 ? '' : 'largest ') + UI.fmtNum(Math.max.apply(null, built.openGaps), 4) + ' ' + pu + '): ' + (v.repair ? 'raise Close gaps up to' : 'turn on Repair after import') + ' to close ' + (wide.length === 1 ? 'it' : 'them') + '.' : '') +
           (parsed.skippedNote ? ' ' + esc(parsed.skippedNote.charAt(0).toUpperCase() + parsed.skippedNote.slice(1)) + '.' : '') +
           (parsed.warnings.length ? '<br>' + parsed.warnings.map(esc).join('<br>') : '');
         UI.renderPM();
@@ -258,7 +266,7 @@
           if (v.blocks && !parsedB) parsedB = DxfImport.parse(text, { blocks: true });
           parsed = v.blocks ? parsedB : parsedX;
           Object.keys(v).forEach(function (k) { if (/^L\d+$/.test(k)) delete v[k]; });
-          parsed.layers.forEach(function (l, i) { v['L' + i] = was[l.name] !== false; });
+          parsed.layers.forEach(function (l, i) { v['L' + i] = was[l.name] != null ? was[l.name] : layerOn(l); });
           spec.groups[1].fields = layerFields();
         }
         preview();

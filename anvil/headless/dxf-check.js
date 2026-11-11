@@ -332,7 +332,169 @@
       loops: loops, extents: isFinite(min[0]) ? { min: min, max: max } : null, gap: gap, entities: d.entities.length, dimensions: dims, hatches: hatches, inserts: inserts };
   }
 
-  var api = { parse: parse, check: check };
+  // lane dxfaudit: audit(text, opts?) -> { ok, errors, warnings, version, sections, layers: { NAME: { aci, ltype } },
+  //   ltypes, handles, extents (the geometry's, text left out), check } — the DXF reference checks a strict CAM / CAD
+  //   importer makes on top of check(): sections present and in order, EOF last; $INSUNITS / $MEASUREMENT (check);
+  //   $EXTMIN / $EXTMAX holding the geometry (opts.extents 'exact': equal to it to 1e-6 · size); every entity's layer in
+  //   the LAYER table with a colour 1–255 (negative: off) and a line type of the LTYPE table; R2000: every handle (5,
+  //   105) unique, $HANDSEED above them all; R12: no R2000-only entity (LWPOLYLINE, SPLINE, ELLIPSE, MTEXT, HATCH …),
+  //   no subclass markers or owner handles; nothing off z = 0 (codes 30–38, an extrusion other than 0, 0, 1); no
+  //   zero-length LINE, no zero-radius ARC / CIRCLE, no duplicate entity on any layer; TEXT at least opts.minText high
+  //   (default 0.06 in / 1.5 mm); bend layers (opts.bendLayers, default BEND, BEND_UP, BEND_DOWN): LINE only (an end on
+  //   a cut-layer contour end is a warning), opts.bendLtype the line type they must have;
+  //   faceted arcs on the cut layers (three or more equal LINEs end to end turning by one angle under 30°: an arc
+  //   written as chords) unless opts.facets. Plus every error of check(text, opts).
+  var R2000_ONLY = { LWPOLYLINE: 1, SPLINE: 1, ELLIPSE: 1, MTEXT: 1, HATCH: 1, LEADER: 1, MLINE: 1, RAY: 1, XLINE: 1, REGION: 1, '3DSOLID': 1, BODY: 1, TOLERANCE: 1, IMAGE: 1, WIPEOUT: 1 };
+  function audit(text, opts) {
+    opts = opts || {};
+    var c0 = check(text, opts), errors = c0.errors.slice(), warnings = [], P = pairs(text), i;
+    var r12 = c0.version === 'AC1009', r13codes = false;
+    // sections, in order, then EOF
+    var secs = [];
+    for (i = 0; i < P.length; i++) if (P[i][0] === 0 && P[i][1].trim() === 'SECTION' && P[i + 1] && P[i + 1][0] === 2) secs.push(P[i + 1][1].trim());
+    var order = ['HEADER', 'CLASSES', 'TABLES', 'BLOCKS', 'ENTITIES', 'OBJECTS'], last = -1;
+    secs.forEach(function (s) { var k = order.indexOf(s); if (k < 0) warnings.push('unknown section ' + s); else if (k <= last) errors.push('section ' + s + ' out of order (' + secs.join(', ') + ')'); else last = k; });
+    ['HEADER', 'TABLES', 'ENTITIES'].concat(r12 ? [] : ['CLASSES', 'BLOCKS', 'OBJECTS']).forEach(function (s) { if (secs.indexOf(s) < 0) errors.push('no ' + s + ' section'); });
+    var tail = P.length ? P[P.length - 1] : null;
+    if (!tail || tail[0] !== 0 || tail[1].trim() !== 'EOF') errors.push('the file does not end with 0 / EOF');
+    // TABLES: layers (name, colour, line type), line types; handles; per entity its layer, z values and extrusion
+    var layers = {}, ltypes = {}, rec = null, section = null, handles = {}, dupH = [], maxH = 0, ents = [], ent = null;
+    function endRec() {
+      if (rec && rec.type === 'LAYER' && rec.name != null) layers[rec.name.toUpperCase()] = { name: rec.name, aci: rec.aci, ltype: rec.lt };
+      if (rec && rec.type === 'LTYPE' && rec.name != null) ltypes[rec.name.toUpperCase()] = true;
+      rec = null;
+    }
+    for (i = 0; i < P.length; i++) {
+      var c = P[i][0], v = P[i][1].trim();
+      if (c === 0 && v === 'SECTION') { endRec(); section = P[i + 1] ? P[i + 1][1].trim() : null; i++; continue; }
+      if (c === 0 && v === 'ENDSEC') { endRec(); section = null; continue; }
+      if (section !== 'HEADER' && (c === 5 || c === 105) && !r12) {
+        if (!/^[0-9A-Fa-f]+$/.test(v)) errors.push('handle "' + v + '" is not hexadecimal');
+        else { if (handles[v.toUpperCase()]) dupH.push(v); handles[v.toUpperCase()] = true; maxH = Math.max(maxH, parseInt(v, 16)); }
+      }
+      if (r12 && !r13codes && (c === 100 || c === 330 || c === 360 || c === 102)) { errors.push('group code ' + c + ' (R13 and later) in an R12 file'); r13codes = true; }
+      if (section === 'TABLES') {
+        if (c === 0) { endRec(); if (v === 'LAYER' || v === 'LTYPE') rec = { type: v, name: null, aci: null, lt: null }; }
+        else if (rec && c === 2) rec.name = v;
+        else if (rec && c === 62) rec.aci = parseInt(v, 10);
+        else if (rec && c === 6) rec.lt = v;
+        continue;
+      }
+      if (section === 'ENTITIES' || section === 'BLOCKS') {
+        if (c === 0) { ent = { type: v, layer: '0', z: [], ext: null }; ents.push(ent); continue; }
+        if (!ent) continue;
+        if (c === 8) ent.layer = v;
+        else if (c >= 30 && c <= 38 && parseFloat(v) !== 0) ent.z.push(c + '=' + v);
+        else if (c === 210 || c === 220 || c === 230) { ent.ext = ent.ext || [0, 0, 1]; ent.ext[(c - 210) / 10] = parseFloat(v); }
+      }
+    }
+    endRec();
+    if (dupH.length) errors.push('duplicate handles: ' + dupH.slice(0, 5).join(', '));
+    var d = parse(text);
+    if (!r12 && c0.version) {
+      var seed = d.header.$HANDSEED, sv = parseInt(seed, 16);
+      if (!(sv > maxH)) errors.push('$HANDSEED ' + seed + ' is not above the largest handle ' + maxH.toString(16).toUpperCase());
+    }
+    if (!Object.keys(layers).length) errors.push('no LAYER table');
+    Object.keys(layers).forEach(function (n) {
+      var L = layers[n];
+      if (L.aci == null || !(Math.abs(L.aci) >= 1 && Math.abs(L.aci) <= 255)) errors.push('layer ' + L.name + ' has colour ' + L.aci);
+      if (!L.ltype) errors.push('layer ' + L.name + ' has no line type');
+      else if (!ltypes[L.ltype.toUpperCase()]) errors.push('layer ' + L.name + ' uses line type ' + L.ltype + ', not in the LTYPE table');
+    });
+    var bendLayers = (opts.bendLayers || ['BEND', 'BEND_UP', 'BEND_DOWN']).map(function (n) { return n.toUpperCase(); });
+    var skip = { VERTEX: 1, SEQEND: 1, BLOCK: 1, ENDBLK: 1 };
+    ents.forEach(function (e) {
+      if (!skip[e.type] && !layers[e.layer.toUpperCase()]) errors.push(e.type + ' on layer ' + e.layer + ', which the LAYER table does not have');
+      if (r12 && R2000_ONLY[e.type]) errors.push(e.type + ' (R2000 only) in an R12 file');
+      if (e.z.length) errors.push(e.type + ' on ' + e.layer + ' off z = 0 (' + e.z.slice(0, 3).join(', ') + ')');
+      if (e.ext && (Math.abs(e.ext[0]) > 1e-12 || Math.abs(e.ext[1]) > 1e-12 || e.ext[2] !== 1)) errors.push(e.type + ' on ' + e.layer + ' with extrusion ' + e.ext.join(', '));
+      if (bendLayers.indexOf(e.layer.toUpperCase()) >= 0 && !skip[e.type] && e.type !== 'LINE') errors.push(e.type + ' on bend layer ' + e.layer + ' (LINE only)');
+    });
+    if (opts.bendLtype) bendLayers.forEach(function (n) { if (layers[n] && String(layers[n].ltype).toUpperCase() !== opts.bendLtype.toUpperCase()) errors.push('layer ' + layers[n].name + ' line type ' + layers[n].ltype + ', expected ' + opts.bendLtype); });
+    // geometry: every entity, INSERTs exploded, on every layer
+    var all = explodeInserts(d, [], []), units = c0.insunits === 1 ? 'in' : 'mm';
+    var minText = opts.minText != null ? opts.minText : units === 'in' ? 0.06 : 1.5, sigs = {};
+    var gmin = [Infinity, Infinity], gmax = [-Infinity, -Infinity];
+    function g(q, r) { r = r || 0; gmin[0] = Math.min(gmin[0], q[0] - r); gmin[1] = Math.min(gmin[1], q[1] - r); gmax[0] = Math.max(gmax[0], q[0] + r); gmax[1] = Math.max(gmax[1], q[1] + r); }
+    function garc(cc, r, a0, sw) {
+      var en = arcEnds({ c: cc, r: r, a0: a0, a1: a0 + sw });
+      g(en[0]); g(en[1]);
+      for (var k = 0; k < 4; k++) { var d0 = ((k * 90 - a0) % 360 + 360) % 360; if (d0 <= sw) g([cc[0] + r * Math.cos(k * Math.PI / 2), cc[1] + r * Math.sin(k * Math.PI / 2)]); }
+    }
+    var cutLayers = opts.layers || ['OUTLINE', 'HOLES'], cutEnds = [], bendEnds = [], cutLines = [];
+    all.forEach(function (e) {
+      if (e.type === 'INSERT') return;
+      var sig = JSON.stringify([e.type, e.layer, e.a, e.b, e.c, e.r, e.a0, e.a1, e.pts, e.p, e.text, e.cps, e.major, e.t0]);
+      if (sigs[sig]) errors.push('duplicate ' + e.type + ' on ' + e.layer);
+      sigs[sig] = true;
+      if (e.type === 'LINE') {
+        if (Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1]) < 1e-9) errors.push('zero-length LINE on ' + e.layer);
+        g(e.a); g(e.b);
+        if (bendLayers.indexOf(e.layer.toUpperCase()) >= 0) bendEnds.push(e.a, e.b);
+        if (cutLayers.indexOf(e.layer) >= 0) { cutEnds.push(e.a, e.b); cutLines.push(e); }
+      } else if (e.type === 'ARC' || e.type === 'CIRCLE') {
+        if (!(e.r > 1e-9)) errors.push('zero-radius ' + e.type + ' on ' + e.layer);
+        if (e.type === 'CIRCLE') g(e.c, e.r); else garc(e.c, e.r, e.a0, sweepDeg(e));
+        if (e.type === 'ARC' && cutLayers.indexOf(e.layer) >= 0) { var ae = arcEnds(e); cutEnds.push(ae[0], ae[1]); }
+      } else if (e.type === 'LWPOLYLINE' || e.type === 'POLYLINE') {
+        e.pts.forEach(function (q, k) {
+          g(q);
+          var b = e.bulges[k] || 0, q2 = e.pts[(k + 1) % e.pts.length];
+          if (!b || (!e.closed && k + 1 === e.pts.length)) return;
+          var cl = Math.hypot(q2[0] - q[0], q2[1] - q[1]) / 2;
+          if (!(cl > 0)) return;
+          var sw = 4 * Math.atan(b), r = cl / Math.sin(Math.abs(sw) / 2), hgt = cl / Math.tan(sw / 2);
+          var cc = [(q[0] + q2[0]) / 2 - (q2[1] - q[1]) / (2 * cl) * hgt, (q[1] + q2[1]) / 2 + (q2[0] - q[0]) / (2 * cl) * hgt], from = sw > 0 ? q : q2;
+          garc(cc, r, Math.atan2(from[1] - cc[1], from[0] - cc[0]) * 180 / Math.PI, Math.abs(sw) * 180 / Math.PI);
+        });
+        if (e.pts.length >= 2 && !e.closed && cutLayers.indexOf(e.layer) >= 0) cutEnds.push(e.pts[0], e.pts[e.pts.length - 1]);
+      } else if (e.type === 'ELLIPSE') {
+        var sw2 = ellipseSweep(e);
+        for (var q2 = 0; q2 <= 256; q2++) g(ellipsePt(e, e.t0 + sw2 * q2 / 256));
+      } else if (e.type === 'SPLINE') {
+        var rg = splineRange(e);
+        if (splinePt(e, rg[0])) for (var q3 = 0; q3 <= 256; q3++) g(splinePt(e, q3 === 256 ? rg[1] : rg[0] + (rg[1] - rg[0]) * q3 / 256));
+      } else if (e.type === 'TEXT') {
+        if (!(e.h >= minText - 1e-12)) errors.push('TEXT "' + e.text + '" on ' + e.layer + ' is ' + e.h + ' high (below ' + minText + ')');
+      }
+    });
+    var size = isFinite(gmin[0]) ? Math.max(gmax[0] - gmin[0], gmax[1] - gmin[1], 1e-9) : 1, tol = 1e-6 * (1 + size);
+    // (a Lofted-Bend's bend lines run corner to corner of its facets, as SolidWorks draws them: a layer-blind chainer
+    // would see three ends meet there, so it is a warning, not an error)
+    var onEnd = bendEnds.filter(function (q) { return cutEnds.some(function (p) { return Math.hypot(p[0] - q[0], p[1] - q[1]) <= tol; }); }).length;
+    if (onEnd) warnings.push(onEnd + ' bend-line end' + (onEnd === 1 ? '' : 's') + ' on a cut-layer contour vertex');
+    if (!opts.facets) {
+      var byStart = {}, faceted = 0;
+      var key = function (q) { return Math.round(q[0] / tol) + ',' + Math.round(q[1] / tol); };
+      var turn = function (p, q) { var t = Math.atan2(q.b[1] - q.a[1], q.b[0] - q.a[0]) - Math.atan2(p.b[1] - p.a[1], p.b[0] - p.a[0]); while (t > Math.PI) t -= 2 * Math.PI; while (t < -Math.PI) t += 2 * Math.PI; return t; };
+      var len = function (p) { return Math.hypot(p.b[0] - p.a[0], p.b[1] - p.a[1]); };
+      cutLines.forEach(function (e) { byStart[key(e.a)] = e; });
+      cutLines.forEach(function (e) {
+        var n1 = byStart[key(e.b)], n2 = n1 && byStart[key(n1.b)];
+        if (!n1 || !n2) return;
+        var L0 = len(e), t1 = turn(e, n1), t2 = turn(n1, n2);
+        if (Math.abs(L0 - len(n1)) < 1e-6 * L0 && Math.abs(L0 - len(n2)) < 1e-6 * L0 && Math.abs(t1) > 1e-6 && Math.abs(t1) < Math.PI / 6 && Math.abs(t1 - t2) < 1e-6) faceted++;
+      });
+      if (faceted) errors.push(faceted + ' run' + (faceted === 1 ? '' : 's') + ' of equal LINEs on a cut layer turning by one angle: an arc written as chords');
+    }
+    // the header's extents hold the geometry (text left out: a flat's notes sit outside the blank)
+    var em = d.header.$EXTMIN, ex = d.header.$EXTMAX;
+    if (!em || !ex) errors.push('no $EXTMIN / $EXTMAX in the header');
+    else if (isFinite(gmin[0])) {
+      var mn = [+em[0], +em[1]], mx = [+ex[0], +ex[1]];
+      if (+em[2] || +ex[2]) errors.push('$EXTMIN / $EXTMAX off z = 0');
+      if (mn[0] > gmin[0] + tol || mn[1] > gmin[1] + tol || mx[0] < gmax[0] - tol || mx[1] < gmax[1] - tol) errors.push('$EXTMIN / $EXTMAX (' + mn + ' – ' + mx + ') do not hold the geometry (' + gmin + ' – ' + gmax + ')');
+      else if (opts.extents === 'exact' && (Math.abs(mn[0] - gmin[0]) > tol || Math.abs(mn[1] - gmin[1]) > tol || Math.abs(mx[0] - gmax[0]) > tol || Math.abs(mx[1] - gmax[1]) > tol)) errors.push('$EXTMIN / $EXTMAX (' + mn + ' – ' + mx + ') are not the geometry\'s extents (' + gmin + ' – ' + gmax + ')');
+    }
+    var uniq = [], lout = {};
+    errors.forEach(function (e) { if (uniq.indexOf(e) < 0) uniq.push(e); });
+    Object.keys(layers).forEach(function (n) { lout[layers[n].name] = { aci: layers[n].aci, ltype: layers[n].ltype }; });
+    return { ok: !uniq.length, errors: uniq, warnings: warnings, version: c0.version, sections: secs, layers: lout, ltypes: Object.keys(ltypes),
+      handles: Object.keys(handles).length, extents: isFinite(gmin[0]) ? { min: gmin, max: gmax } : null, check: c0 };
+  }
+
+  var api = { parse: parse, check: check, audit: audit };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.DxfCheck = api;
 })(typeof self !== 'undefined' ? self : this);

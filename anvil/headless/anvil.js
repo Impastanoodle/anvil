@@ -211,6 +211,10 @@ function dxfChecked(text, units, summary, what) {
     radii: Array.from(new Set(c.circles.map((q) => r6(q.r)))).sort((a, b) => a - b), counts: c.counts,
     extents: c.extents ? { min: c.extents.min.map(r6), max: c.extents.max.map(r6) } : null };
   if (!c.ok) { out.errors = c.errors.slice(0, 20); summary.errors.push({ id: null, feature: 'DXF check (' + what + ')', message: c.errors.slice(0, 5).join('; ') }); }
+  // lane dxfaudit: the DXF reference audit on top (tables, handles, R12 entity set, z, extents, chord-faceted arcs):
+  // its findings ride in the summary as `audit` (a list; 'ok' when clean), not as errors
+  const a = DxfCheck.audit(text, { units, layers: ['OUTLINE', 'HOLES', 'RELIEF'] }), extra = a.errors.filter((e) => c.errors.indexOf(e) < 0);
+  out.audit = extra.length || a.warnings.length ? extra.concat(a.warnings).slice(0, 20) : 'ok';
   return out;
 }
 // the length unit a STEP file declares: 'in', 'mm' (or another SI prefix + 'm'), null when none is found
@@ -437,7 +441,7 @@ function cmdDxf2Sketch(file, flags) {
   p.entities.forEach((e) => { byType[e.t] = (byType[e.t] || 0) + 1; });
   const b = DxfImport.bounds(p.entities), tol = p.units === 'in' ? 0.001 : 0.025, issues = DxfImport.check(p.entities, tol, { unit: p.units || '' });
   const summary = { file: f, converter, version: ver ? 'AC' + ver[1] : null, units: p.units, entities: p.entities.length, byType,
-    layers: p.layers.map((l) => ({ name: l.name, color: l.color, count: l.count })),
+    layers: p.layers.map((l) => Object.assign({ name: l.name, color: l.color, count: l.count }, l.frozen ? { frozen: true } : {}, l.off ? { off: true } : {})),
     extents: b ? { min: [r6(b[0]), r6(b[1])], max: [r6(b[2]), r6(b[3])], size: [r6(b[2] - b[0]), r6(b[3] - b[1])] } : null,
     check: issues.summary || 'No problems found', contours: issues.contours || null, warnings: p.warnings, outputs };
   process.stdout.write(JSON.stringify(summary, null, 2) + '\n');

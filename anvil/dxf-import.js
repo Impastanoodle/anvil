@@ -1,6 +1,6 @@
 // dxf-import.js — DXF into sketches (no DOM; loaded after the kernel files, and by the Node runner through
 // tests/kernel-tests.html). Three parts:
-//   DxfImport.parse(text) -> { units: 'in' | 'mm' | null, layers: [{ name, color, count }], entities: [sketch entities
+//   DxfImport.parse(text) -> { units: 'in' | 'mm' | null, layers: [{ name, color, count, frozen?, off? }], entities: [sketch entities
 //     with a `layer` field], warnings: [] }. LINE, ARC, CIRCLE, LWPOLYLINE and POLYLINE / VERTEX (bulges become arcs),
 //     SPLINE (as an Anvil spline when its cubic spans map onto one exactly, else a chain of lines), ELLIPSE (full or
 //     partial), POINT and INSERT of BLOCKS (exploded with base point, scale, rotation and MINSERT arrays; nested), in R12
@@ -297,13 +297,17 @@ var DxfImport = (function () {
     else if (meas === 0) units = 'in';
     else if (meas === 1) units = 'mm';
     // TABLES: layer colours
-    var layerColor = {}, layerOrder = [];
+    // lane dxfaudit: a layer's state too: frozen (70 & 1) or off (a negative colour); names match without case, as in
+    // AutoCAD (an entity on "cut" is on layer CUT)
+    var layerColor = {}, layerOrder = [], layerState = {};
     records(sec.TABLES || []).forEach(function (r) {
       if (r.type !== 'LAYER') return;
       var nm = str(r, 2, null);
       if (nm == null) return;
       if (layerColor[nm] == null) layerOrder.push(nm);
-      layerColor[nm] = Math.abs(num(r, 62, 7));
+      var c62 = num(r, 62, 7);
+      layerColor[nm] = Math.abs(c62);
+      layerState[nm.toUpperCase()] = { frozen: (num(r, 70, 0) & 1) === 1, off: c62 < 0 };
     });
     // BLOCKS
     var blocks = {}, blk = null;
@@ -329,7 +333,14 @@ var DxfImport = (function () {
       counts[e.layer]++;
       if (CONSTRUCTION_LAYER.test(e.layer) && e.t !== 'point') e.construction = true;
     });
-    var layers = layerOrder.filter(function (n) { return counts[n]; }).map(function (n) { return { name: n, color: layerColor[n] == null ? 7 : layerColor[n], count: counts[n] }; });
+    var layers = layerOrder.filter(function (n) { return counts[n]; }).map(function (n) {
+      var L = { name: n, color: layerColor[n] == null ? 7 : layerColor[n], count: counts[n] }, st = layerState[String(n).toUpperCase()];
+      if (st && st.frozen) L.frozen = true;
+      if (st && st.off) L.off = true;
+      return L;
+    });
+    var hid = layers.filter(function (l) { return l.frozen || l.off; });
+    if (hid.length) warnings.push('Layer' + (hid.length === 1 ? ' ' : 's ') + hid.map(function (l) { return l.name + ' (' + (l.frozen ? 'frozen' : 'off') + ')'; }).join(', ') + (hid.length === 1 ? ' is' : ' are') + ' not shown in the file: left out unless turned on.');
     if (ctx.text) warnings.push('Skipped ' + ctx.text + ' text entit' + (ctx.text === 1 ? 'y' : 'ies') + ' (empty, or with no height).');
     var sk = Object.keys(ctx.skipped);
     if (sk.length) warnings.push('Skipped ' + sk.map(function (k) { return ctx.skipped[k] + ' ' + k; }).join(', ') + '.');
@@ -1044,6 +1055,22 @@ var DxfImport = (function () {
   // snapping of an end: joined, merged, split), report: { removed, merged, gaps, joined, split, maxMove, spots: [{ type,
   // at }], joints: [[ref, ref]] (the ends a closed gap joined, new indices) } }. Construction geometry and points are
   // left as they are. No point moves more than tol.
+  // lane dxfaudit: where the two ends of a gap (x, y: { p }, of entities a, b) should meet: two lines that are not
+  // parallel at their crossing, a line and a curve at the curve's end; null (the middle is used) when that point is
+  // more than tol from either end
+  function gapCorner(a, x, b, y, tol) {
+    var t = null;
+    if (a.t === 'line' && b.t === 'line') {
+      var d1 = [a.x2 - a.x1, a.y2 - a.y1], d2 = [b.x2 - b.x1, b.y2 - b.y1], cr = d1[0] * d2[1] - d1[1] * d2[0];
+      var l1 = hyp(d1[0], d1[1]), l2 = hyp(d2[0], d2[1]);
+      if (!(l1 > 0) || !(l2 > 0) || Math.abs(cr) < 1e-6 * l1 * l2) return null;   // parallel: the middle keeps both on the line
+      var s = ((b.x1 - a.x1) * d2[1] - (b.y1 - a.y1) * d2[0]) / cr;
+      t = [a.x1 + d1[0] * s, a.y1 + d1[1] * s];
+    } else if (a.t === 'line' && b.t !== 'line') t = y.p;
+    else if (b.t === 'line' && a.t !== 'line') t = x.p;
+    if (!t || dist(t, x.p) > tol || dist(t, y.p) > tol) return null;
+    return [t[0], t[1]];
+  }
   function repair(E, opts) {
     opts = opts || {};
     // lane sketchgaps-2: a gap of exactly the tolerance closes (10.0005 - 10 is 0.000500000000000611 in floating point)
@@ -1116,6 +1143,10 @@ var DxfImport = (function () {
         else {
           var bestC = 1;
           pts.forEach(function (x) { var c = pts.filter(function (y) { return dist(x.p, y.p) <= eps; }).length; if (c > bestC) { bestC = c; target = x.p; } });
+          // lane dxfaudit (opts.corners, the import's repair): two ends of a gap at a corner: two lines meet where they
+          // cross (each keeps its direction, a horizontal edge stays horizontal), a line and a curve at the curve's end
+          // (the curve keeps its shape); Repair Sketch keeps the middle (no end moves more than half the gap)
+          if (!target && pts.length === 2 && opts.corners) target = gapCorner(ents3[pts[0].i], pts[0], ents3[pts[1].i], pts[1], tol);
           if (!target) target = pts.length === 2 ? [(pts[0].p[0] + pts[1].p[0]) / 2, (pts[0].p[1] + pts[1].p[1]) / 2] : seed.p;
         }
         target = [target[0], target[1]];
@@ -1238,7 +1269,8 @@ var DxfImport = (function () {
   // prepare(parsed, opts) -> { entities, report, scale }: what the DXF/DWG Import PropertyManager adds to the sketch
   // (ui-sketch-import.js), here so it runs and is tested without the UI. parsed: parse()'s result. opts: { partUnits
   // 'in' | 'mm', units: 'file' | 'in' | 'mm' (the file's data units; 'file': $INSUNITS / $MEASUREMENT, else the part's),
-  // layers: { name: false } (layers left out), origin: 'file' | 'lowerleft' | 'center', dx, dy, rot, tol (Merge points
+  // layers: { name: false } (layers left out; lane dxfaudit: { name: true } brings in a layer the file has frozen or
+  // off, parse()'s layers[i].frozen / .off, which stay out otherwise), origin: 'file' | 'lowerleft' | 'center', dx, dy, rot, tol (Merge points
   // closer than: ends snapped together), repair (default true: tiny entities removed, duplicates and overlaps merged,
   // gaps up to opts.gap closed), gap (Close gaps up to; default 0.001 in / 0.025 mm) }. Block instances keep their
   // insertion point while any of their geometry is on and are not repaired (their geometry is their definition's).
@@ -1248,7 +1280,10 @@ var DxfImport = (function () {
     var pu = opts.partUnits === 'in' ? 'in' : 'mm', off = opts.layers || {};
     var src = opts.units === 'in' || opts.units === 'mm' ? opts.units : (parsed.units || pu);
     var s = src === pu ? 1 : src === 'in' ? 25.4 : 1 / 25.4;
-    var ents = parsed.entities.filter(function (e) { return off[e.layer] !== false; });
+    // lane dxfaudit: a frozen or off layer of the file stays out unless opts.layers names it true
+    var hidden = {};
+    (parsed.layers || []).forEach(function (l) { if (l.frozen || l.off) hidden[l.name] = true; });
+    var ents = parsed.entities.filter(function (e) { return off[e.layer] === true || (off[e.layer] !== false && !hidden[e.layer]); });
     var live = {}, ins = {};
     ents.forEach(function (e) { if (e.blk != null && e.blkDef == null) live[e.blk] = true; });
     parsed.entities.forEach(function (e) { if (e.blkDef != null) ins[e.blk] = e; });
@@ -1264,10 +1299,11 @@ var DxfImport = (function () {
     var inBlk = ents.filter(function (e) { return e.blk != null; }), plain = ents.filter(function (e) { return e.blk == null; });
     var rep = plain.length ? repair(plain, { tol: tol || 1e-9, closeGaps: tol > 0, merge: fix, removeTiny: fix, join: false, split: false }) : { entities: [], report: null };
     // Repair after import also closes the gaps customer DXFs carry, so a flat comes in as one closed profile that
-    // extrudes or makes a Base Flange without a Repair Sketch step; only ends move, none more than the gap
+    // extrudes or makes a Base Flange without a Repair Sketch step; only ends move, none more than the gap (lane dxfaudit:
+    // corners: two lines of a gap meet where they cross, so an edge keeps its direction)
     var gap = Math.max(0, +(opts.gap != null ? opts.gap : pu === 'in' ? 0.001 : 0.025) || 0);
     if (fix && gap > tol && rep.entities.length) {
-      var rep2 = repair(rep.entities, { tol: gap, closeGaps: true, merge: true, removeTiny: false, join: false, split: false });
+      var rep2 = repair(rep.entities, { tol: gap, closeGaps: true, merge: true, removeTiny: false, join: false, split: false, corners: true });
       if (rep.report) {
         rep2.report.gaps += rep.report.gaps; rep2.report.merged += rep.report.merged; rep2.report.removed += rep.report.removed;
         rep2.report.maxMove = Math.max(rep2.report.maxMove, rep.report.maxMove);

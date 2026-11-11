@@ -363,7 +363,9 @@
     }
     var split = opts.bendLayers === 'split';
     function bendLayer(b) { return split ? (b.up ? 'BEND_UP' : 'BEND_DOWN') : 'BEND'; }
-    if (split && opts.bendLines !== false) { d.layer('BEND_UP', 3); d.layer('BEND_DOWN', 30); }
+    // lane dxfaudit: bend lines in the CENTER line type (layer colour and name unchanged: CAM keys on the layer)
+    if (opts.bendLines !== false) d.layer('BEND', 3, { center: true });
+    if (split && opts.bendLines !== false) { d.layer('BEND_UP', 3, { center: true }); d.layer('BEND_DOWN', 30, { center: true }); }
     var s = flat.sheet, T = +s.thickness, inch = units === 'in';
     var th = inch ? Math.max(0.08, T) : Math.max(1.5, T);
     function sh(q) { return [q[0] + shift[0], q[1] + shift[1]]; }
@@ -495,7 +497,7 @@
   // that colour even when it is one of the standard ones, a dashed one gets the DASHED line type, an off one a
   // negative colour (AutoCAD's layer Off)
   // (lane dxfout: { hidden } gives it AutoCAD's HIDDEN line type, a 0.25 dash and a 0.125 gap)
-  DXF.prototype.layer = function (name, aci, o) { this.layerDefs[name] = { aci: aci, dashed: !!(o && o.dashed), hidden: !!(o && o.hidden), off: !!(o && o.off) }; };
+  DXF.prototype.layer = function (name, aci, o) { this.layerDefs[name] = { aci: aci, dashed: !!(o && o.dashed), hidden: !!(o && o.hidden), center: !!(o && o.center), off: !!(o && o.off) }; };
   DXF.prototype._grow = function (x, y, r) {
     r = r || 0;
     this.min[0] = Math.min(this.min[0], x - r); this.min[1] = Math.min(this.min[1], y - r);
@@ -563,6 +565,9 @@
     var dashed = Object.keys(defs).some(function (n) { return defs[n].dashed; });
     if (dashed) ltypes.push(['DASHED', 'Dashed __ __ __', 1]);
     if (Object.keys(defs).some(function (n) { return defs[n].hidden; })) ltypes.push(['HIDDEN', 'Hidden __ __ __ __', 2]);
+    // lane dxfaudit: CENTER (a flat's bend lines, as a press-brake print draws them): AutoCAD's CENTER2 proportions,
+    // a 0.75 dash, 0.125 gap, 0.125 dot, 0.125 gap in inches (19.05 / 3.175 mm), so a 2 in bend line shows its pattern
+    if (Object.keys(defs).some(function (n) { return defs[n].center; })) ltypes.push(['CENTER', 'Center ____ _ ____ _', this.units === 'in' ? [0.75, -0.125, 0.125, -0.125] : [19.05, -3.175, 3.175, -3.175]]);
     var msBR = null, psBR = null, root = null, groups = null;
     if (r2000) {
       th = { BLOCK_RECORD: '1', LAYER: '2', STYLE: '3', LTYPE: '5', VIEW: '6', UCS: '7', VPORT: '8', APPID: '9', DIMSTYLE: 'A' };
@@ -597,8 +602,9 @@
         record('LTYPE', 'LTYPE', 'AcDbLinetypeTableRecord', ['14', '15', '16'][i]); P(2, lt[0]); P(70, 0); P(3, lt[1]); P(72, 65);
         if (!lt[2]) { P(73, 0); P(40, 0); return; }
         // sketch-layers: DASHED, a 0.5 dash and a 0.25 gap (drawing units; LTSCALE scales it); HIDDEN 0.25 / 0.125
-        var dash = lt[2] === 2 ? [0.25, 0.125] : [0.5, 0.25];
-        P(73, 2); P(40, dash[0] + dash[1]); P(49, dash[0]); if (r2000) P(74, 0); P(49, -dash[1]); if (r2000) P(74, 0);
+        var dash = lt[2] === 2 ? [0.25, -0.125] : Array.isArray(lt[2]) ? lt[2] : [0.5, -0.25];
+        P(73, dash.length); P(40, fmtD(dash.reduce(function (s, x) { return s + Math.abs(x); }, 0)));
+        dash.forEach(function (x) { P(49, fmtD(x)); if (r2000) P(74, 0); });
       });
     });
     // the standard layers, plus any other layer an entity is on (e.g. a sketch's CONSTRUCTION, colour 8)
@@ -610,7 +616,7 @@
     table('LAYER', layers.length, function () {
       layers.forEach(function (l, i) {
         var d = defs[l[0]], c = d && d.aci ? d.aci : l[1];
-        record('LAYER', 'LAYER', 'AcDbLayerTableRecord', i ? null : '10'); P(2, l[0]); P(70, 0); P(62, d && d.off ? -c : c); P(6, d && d.hidden ? 'HIDDEN' : d && d.dashed ? 'DASHED' : cont);
+        record('LAYER', 'LAYER', 'AcDbLayerTableRecord', i ? null : '10'); P(2, l[0]); P(70, 0); P(62, d && d.off ? -c : c); P(6, d && d.hidden ? 'HIDDEN' : d && d.dashed ? 'DASHED' : d && d.center ? 'CENTER' : cont);
       });
     });
     table('STYLE', 1, function () {
