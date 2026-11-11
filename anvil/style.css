@@ -2009,3 +2009,32 @@ body.splitting-v #viewport { pointer-events: none; }
 /* rfIP: a dimmed menu row still runs (File ▸ a recent document that is not found: Remove / Keep) */
 .menu .mi.mi-dim { color: var(--c-disabled, var(--menu-disabled)); }
 .menu .mi.mi-dim .key { color: var(--c-disabled, var(--menu-disabled)); }
+
+/* rfLF: one CommandManager height on every tab and document (rfGX pins 76.28 + 22 + 1). A large button's label is two
+   lines at most: a line too long for the 64 px button widens the button (.rb-long, ui-panels.js longLabels) instead of
+   wrapping to a third line. The Transform / View tabs' group captions (ui-transform.js) sit in the same height: their
+   large buttons take 24 px icons and 1.0 line labels (58 px buttons), small rows 18 px, the captions the 14 px left. */
+#ribbon #ribbon-buttons { min-height: 76.28125px; }   /* the same with every label hidden (a narrow window: fit-2) */
+#ribbon #ribbon-buttons > .rb > span, #ribbon .rb-fly:not(.rb-fly-small) > .rb > span { max-height: 2.3em; overflow: hidden; }
+#ribbon .rb.rb-long { width: auto; min-width: 64px; padding-left: var(--sp-1); padding-right: var(--sp-1); }
+#ribbon .rb.rb-long > span { white-space: pre; }
+#ribbon.rb-has-captions #ribbon-buttons { padding-bottom: 14.28125px; }
+#ribbon.rb-has-captions #ribbon-buttons > .rb, #ribbon.rb-has-captions .rb-fly:not(.rb-fly-small) > .rb { gap: 2px; }
+#ribbon.rb-has-captions #ribbon-buttons > .rb > .ico, #ribbon.rb-has-captions .rb-fly:not(.rb-fly-small) > .rb > .ico { width: 24px; height: 24px; }
+#ribbon.rb-has-captions #ribbon-buttons > .rb > span, #ribbon.rb-has-captions .rb-fly:not(.rb-fly-small) > .rb > span { line-height: 1; max-height: 2em; }
+#ribbon.rb-has-captions .rb-stack:not(.rb-grid) .rb, #ribbon.rb-has-captions .rb-grid .rb { height: 18px; }
+#ribbon.rb-has-captions .rb-stack.rb-grid { grid-template-rows: repeat(3, 18px); }
+#ribbon.rb-has-captions .rb-stack .rb-fly-small { height: 18px; box-sizing: border-box; }
+#ribbon.rb-has-captions .rb-stack .rb-fly-small > .rb, #ribbon.rb-has-captions .rb-stack .rb-fly-small > .rb-caret { height: 16px; }
+
+/* rfLF: a menu, flyout or context menu taller than the window scrolls: the wheel and SolidWorks' small arrows at the
+   top and bottom (ui-panels.js menuScroll; no scroll bar); a submenu row (`items`) shows ▸ and stays lit while open */
+.menu.menu-scroll { scrollbar-width: none; overscroll-behavior: contain; }
+.menu.menu-scroll::-webkit-scrollbar { display: none; }
+.menu .mi-scroll { position: sticky; z-index: 1; height: 16px; display: flex; align-items: center; justify-content: center; background: var(--c-raised); color: var(--c-text); font-size: 8px; line-height: 1; cursor: default; user-select: none; }
+.menu .mi-scroll-up { top: calc(-1 * var(--sp-1)); border-bottom: var(--hair) solid var(--c-line-soft); }
+.menu .mi-scroll-down { bottom: calc(-1 * var(--sp-1)); border-top: var(--hair) solid var(--c-line-soft); }
+.menu .mi-scroll:hover:not(.off) { background: var(--c-hover); }
+.menu .mi-scroll.off { color: var(--c-disabled); }
+.menu .mi .mi-arrow { margin-left: auto; padding-left: var(--sp-4); font-size: 10px; color: var(--c-muted); }
+.menu .mi.mi-subhost.open { background: var(--c-hover); }

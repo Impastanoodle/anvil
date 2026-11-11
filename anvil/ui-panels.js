@@ -553,6 +553,7 @@
       var offs = Array.prototype.filter.call(tabs.children, function (t) { if (t.style.display) t.style.display = ''; return t.classList.contains('off'); });
       for (var k = offs.length - 1; k >= 0 && tabs.scrollWidth > tabs.clientWidth + 1; k--) offs[k].style.display = 'none';
     }
+    longLabels(bar);
     var more = bar.querySelector('.rb-more');
     if (!more) {
       var wasOpen = false;
@@ -595,6 +596,18 @@
       return bar.querySelectorAll(':scope > .rb-over.rb, :scope > .rb-over .rb').length;
     }
   }
+  // rfLF: the CommandManager keeps one height on every tab (rfGX pins it): a large button's label is two lines at most.
+  // A line that would wrap again inside the 64 px button (Linear Component / Pattern made three lines and the bar grew
+  // 13 px) widens that button instead (.rb-long: its \n lines kept whole), as SolidWorks sizes a button to its label.
+  function longLabels(bar) {
+    Array.prototype.forEach.call(bar.querySelectorAll(':scope > .rb, :scope > .rb-fly:not(.rb-fly-small) > .rb'), function (b) {
+      var s = b.querySelector(':scope > span');
+      if (b.classList.contains('rb-long')) b.classList.remove('rb-long');
+      if (!s || !s.offsetHeight) return;
+      var lh = parseFloat(window.getComputedStyle(s).lineHeight) || 13;
+      if (s.scrollHeight > lh * 2.5) b.classList.add('rb-long');
+    });
+  }
   function showRibbonOverflow(anchor) {
     var items = [];
     Array.prototype.forEach.call($('ribbon-buttons').children, function (c) {
@@ -624,7 +637,7 @@
   try { rbScale = rbClamp(parseFloat(localStorage.getItem(RB_KEY))); } catch (e) { }
   // the icon sizes: large 32 px, small (stacks, grid) 16 px boxes (drawn at 18 at scale 1, as before)
   function rbIcon(small) { return small ? (rbScale === 1 ? 18 : Math.round(16 * rbScale)) : Math.round(32 * rbScale); }
-  var RB_SEL = /#ribbon(?!-grip)|\.rtab(?![\w-])|\.rb(?![\w-])|\.rb-(?:stack|sep|fly|caret|more|grid|vgrid|wide|face|over|extra|caption|has-captions)/;
+  var RB_SEL = /#ribbon(?!-grip)|\.rtab(?![\w-])|\.rb(?![\w-])|\.rb-(?:stack|sep|fly|caret|more|grid|vgrid|wide|long|face|over|extra|caption|has-captions)/;
   function rbSplitSel(t) {
     var out = [], depth = 0, cur = '';
     for (var i = 0; i < t.length; i++) {
@@ -1568,41 +1581,19 @@
   function showMenu(x, y, items, anchorLi) {
     closeMenus();
     if (!anchorLi && isSketchMenu(items)) items = sketchMenuItems(items);
-    // rfHF: a menu with icons is marked (and so is each row with one), so the check column and the icon column are laid
-    // out side by side by plain CSS (style.css "rfHF menus"), never on top of each other
-    var withIcons = items.some(function (it) { return it && !it.sep && it.icon; });
-    var m = el('div', { class: 'menu' + (withIcons ? ' mi-icons' : '') });
-    items.forEach(function (it) {
-      if (it.sep) { m.appendChild(el('div', { class: 'sep' })); return; }
-      // rfIP: `dimmed` greys a row that still runs (a recent document that is not found: the click offers Remove / Keep)
-      var row = el('div', { class: 'mi' + (it.icon ? ' mi-has-ico' : '') + (it.disabled ? ' disabled' : '') + (it.dimmed && !it.disabled ? ' mi-dim' : '') });
-      row.appendChild(el('span', { class: 'chk', text: it.checked ? '✓' : '' }));
-      if (it.icon) row.appendChild(el('span', { class: 'mi-ico', html: Icons(it.icon, 16) }));   // r12/chrome12: ribbon overflow rows
-      row.appendChild(el('span', { text: it.label }));
-      if (it.key) row.appendChild(el('span', { class: 'key', text: it.key }));
-      if (!it.disabled) {
-        // p9-pm: a row runs on the release of the button over it (a Windows menu: press on File, drag, release on the
-        // item also works) and the click that ends the same press is swallowed, so it never lands on the ribbon button
-        // that was under the menu; click alone (keyboard, scripted) still runs it, once
-        var ran = false;
-        var run = function () { if (ran) return; ran = true; closeMenus(); it.action(); syncViewTab(); };   // lane CC: View tab toggles follow the menus
-        row.addEventListener('mouseup', function (e) { if (e.button !== 0) return; e.stopPropagation(); if (e.detail > 0) guardClick(e); run(); });
-        row.addEventListener('click', run);
-      }
-      m.appendChild(row);
-    });
+    var m = menuBox(items);
     document.body.appendChild(m);
     var mw = m.offsetWidth, mh = m.offsetHeight, W = window.innerWidth, H = window.innerHeight;
     // p9-pm: a menu taller than the room below its title scrolls instead of moving up over the menu bar (where the next
     // click on File would land on one of its rows) or past the top of the window
     var room = H - 4 - (anchorLi ? y : 0);
-    if (anchorLi && mh > room) { m.style.maxHeight = Math.max(80, room) + 'px'; m.style.overflowY = 'auto'; mh = m.offsetHeight; }
+    if (anchorLi && mh > room) { menuScroll(m, Math.max(80, room)); mh = m.offsetHeight; mw = m.offsetWidth; }
     if (anchorLi) { m.style.left = Math.max(0, Math.min(x, W - mw - 4)) + 'px'; m.style.top = y + 'px'; }
     else {
       // rfC: a context menu opens beside the clicked point and never over it (as Windows menus do): below and to the
       // right when there is room, else to the left and / or above it; one taller than the window scrolls (the point
       // stays clear, the menu being beside it)
-      if (mh > H - 8) { m.style.maxHeight = (H - 8) + 'px'; m.style.overflowY = 'auto'; mh = m.offsetHeight; }
+      if (mh > H - 8) { menuScroll(m, H - 8); mh = m.offsetHeight; mw = m.offsetWidth; }
       var left = x + 1, top = y + 1;
       if (left + mw > W - 4) left = Math.max(0, x - mw - 1);
       if (top + mh > H - 4) top = Math.max(4, Math.min(y - mh - 1, H - 4 - mh));
@@ -1611,6 +1602,103 @@
     openMenu = m;
     if (anchorLi) anchorLi.classList.add('open');
   }
+  // the rows of a menu (or a submenu): { label, action, key, icon, checked, disabled, dimmed, sep, items }
+  function menuBox(items, sub) {
+    // rfHF: a menu with icons is marked (and so is each row with one), so the check column and the icon column are laid
+    // out side by side by plain CSS (style.css "rfHF menus"), never on top of each other
+    var withIcons = items.some(function (it) { return it && !it.sep && it.icon; });
+    var m = el('div', { class: 'menu' + (withIcons ? ' mi-icons' : '') + (sub ? ' menu-sub' : '') });
+    items.forEach(function (it) {
+      if (!it) return;
+      if (it.sep) { m.appendChild(el('div', { class: 'sep' })); return; }
+      // rfIP: `dimmed` greys a row that still runs (a recent document that is not found: the click offers Remove / Keep)
+      var row = el('div', { class: 'mi' + (it.icon ? ' mi-has-ico' : '') + (it.disabled ? ' disabled' : '') + (it.dimmed && !it.disabled ? ' mi-dim' : '') });
+      row.appendChild(el('span', { class: 'chk', text: it.checked ? '✓' : '' }));
+      if (it.icon) row.appendChild(el('span', { class: 'mi-ico', html: Icons(it.icon, 16) }));   // r12/chrome12: ribbon overflow rows
+      row.appendChild(el('span', { text: it.label }));
+      if (it.key) row.appendChild(el('span', { class: 'key', text: it.key }));
+      if (it.items && it.items.length) {
+        // rfLF: a row with `items` opens them as a submenu beside it (on hover, or a click)
+        row.classList.add('mi-subhost');
+        row.appendChild(el('span', { class: 'mi-arrow', text: '▸' }));
+        if (!it.disabled) {
+          row.addEventListener('mouseenter', function () { openSubmenu(m, row, it.items); });
+          row.addEventListener('click', function () { openSubmenu(m, row, it.items); });
+        }
+      } else {
+        row.addEventListener('mouseenter', function () { closeSubmenu(m); });
+        if (!it.disabled) {
+          // p9-pm: a row runs on the release of the button over it (a Windows menu: press on File, drag, release on the
+          // item also works) and the click that ends the same press is swallowed, so it never lands on the ribbon button
+          // that was under the menu; click alone (keyboard, scripted) still runs it, once
+          var ran = false;
+          var run = function () { if (ran) return; ran = true; closeMenus(); it.action(); syncViewTab(); };   // lane CC: View tab toggles follow the menus
+          row.addEventListener('mouseup', function (e) { if (e.button !== 0) return; e.stopPropagation(); if (e.detail > 0) guardClick(e); run(); });
+          row.addEventListener('click', run);
+        }
+      }
+      m.appendChild(row);
+    });
+    return m;
+  }
+  // rfLF: a submenu opens to the right of its row, level with it; one that would run off the right edge flips to the
+  // left of its menu, one that would run off the bottom moves up, one taller than the window scrolls. It is a child of
+  // its menu (position: fixed), so a press in it counts as inside the menu and closeMenus takes it with the menu.
+  function closeSubmenu(m) { if (m._sub) { m._sub.remove(); m._sub = null; } if (m._subRow) { m._subRow.classList.remove('open'); m._subRow = null; } }
+  function openSubmenu(m, row, items) {
+    if (m._subRow === row && m._sub) return;
+    closeSubmenu(m);
+    var s = menuBox(items, true), W = window.innerWidth, H = window.innerHeight;
+    s.style.left = '0px'; s.style.top = '0px';
+    m.appendChild(s);
+    var sw = s.offsetWidth, sh = s.offsetHeight;
+    if (sh > H - 8) { menuScroll(s, H - 8); sh = s.offsetHeight; sw = s.offsetWidth; }
+    var r = row.getBoundingClientRect(), mr = m.getBoundingClientRect();
+    var left = mr.right - 2, top = r.top - 5;
+    if (left + sw > W - 4) left = mr.left - sw + 2;   // flips to the left of its menu
+    left = Math.max(0, Math.min(left, W - sw));
+    if (top + sh > H - 4) top = H - 4 - sh;
+    top = Math.max(4, top);
+    s.style.left = left + 'px'; s.style.top = top + 'px';
+    m._sub = s; m._subRow = row; row.classList.add('open');
+  }
+  // rfLF: a menu taller than the room it has scrolls as SolidWorks' do: the wheel, and a small arrow at the top and at
+  // the bottom that scrolls while the pointer rests on it (faster while pressed); an arrow with nothing more that way is
+  // greyed. The arrows stay put (position: sticky) while the rows move under them.
+  var MENU_STEP = 24;
+  function menuScroll(m, maxH) {
+    if (m._scroll) return;
+    m._scroll = true;
+    m.classList.add('menu-scroll');
+    m.style.maxHeight = Math.round(maxH) + 'px'; m.style.overflowY = 'auto';
+    var up = el('div', { class: 'mi-scroll mi-scroll-up', html: '<span>▲</span>', 'aria-label': 'Scroll up' }), down = el('div', { class: 'mi-scroll mi-scroll-down', html: '<span>▼</span>', 'aria-label': 'Scroll down' });
+    m.insertBefore(up, m.firstChild); m.appendChild(down);
+    function sync() {
+      var top = m.scrollTop <= 0, end = m.scrollTop + m.clientHeight >= m.scrollHeight - 1;
+      if (up.classList.contains('off') !== top) up.classList.toggle('off', top);
+      if (down.classList.contains('off') !== end) down.classList.toggle('off', end);
+    }
+    function by(d) { m.scrollTop += d; sync(); }
+    [[up, -1], [down, 1]].forEach(function (a) {
+      var b = a[0], dir = a[1], timer = 0, fast = false;
+      function stop() { if (timer) { clearInterval(timer); timer = 0; } fast = false; }
+      function start() { if (timer) return; timer = setInterval(function () { if (!m.isConnected) { stop(); return; } by(dir * (fast ? MENU_STEP : MENU_STEP / 3)); }, 40); }
+      b.addEventListener('mouseenter', function () { closeSubmenu(m); start(); });
+      b.addEventListener('mouseleave', stop);
+      b.addEventListener('mousedown', function (e) { e.preventDefault(); e.stopPropagation(); fast = true; by(dir * MENU_STEP); start(); });
+      b.addEventListener('mouseup', function (e) { e.stopPropagation(); fast = false; });
+      b.addEventListener('click', function (e) { e.stopPropagation(); });
+    });
+    m.addEventListener('scroll', sync);
+    m.addEventListener('wheel', function (e) {
+      if (e.target.closest && e.target.closest('.menu') !== m) return;   // a submenu's own wheel
+      e.preventDefault(); e.stopPropagation();
+      closeSubmenu(m);
+      by(e.deltaMode === 1 ? e.deltaY * MENU_STEP : e.deltaMode === 2 ? e.deltaY * m.clientHeight : e.deltaY);
+    }, { passive: false });
+    sync();
+  }
+  UI.menuScrollBy = function (d) { if (openMenu) { openMenu.scrollTop += d; openMenu.dispatchEvent(new Event('scroll')); } };   // test hook
   // p9-pm: the click that completes a press which ran a menu row, or which closed a menu-bar menu by pressing outside
   // it, goes nowhere (as in Windows): it never starts the ribbon command under the pointer. Matched by position, so a
   // later click elsewhere is not affected; any new press clears it.

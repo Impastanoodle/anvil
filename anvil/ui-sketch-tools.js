@@ -2929,4 +2929,640 @@
     });
   }
   UI.sketchInnerCenterlines = function (sel) { var f = UI.activeSketchFeature(); return f ? innerCenterlines(f, sel) : []; };
+  // ================================================================== rfLF: Check Sketch for Feature, Repair Sketch
+  // These two commands moved here from ui-sketch-import.js (lane sketchfix, 2026-11-11); they are installed on UI after
+  // every script has loaded (see the end), so they win over the older copies there. The geometry tests are dxf-import.js'
+  // (DxfImport.check / ends / overlaps / crossings, its arc3 / setEnd / splitAt / repair for one merge or join at a time).
+  var LF_SVG = 'http://www.w3.org/2000/svg';
+  function lfEsc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function lfPlural(n, one, many) { return n + ' ' + (n === 1 ? one : many || one + 's'); }
+  // SolidWorks' defaults: a gap is anything under 0.001 in (0.025 mm)
+  function lfGapTol() { return App.model && App.model.units === 'in' ? 0.001 : 0.025; }
+  function lfDist(p, q) { return Math.hypot(p[0] - q[0], p[1] - q[1]); }
+  function lfClone(o) { return JSON.parse(JSON.stringify(o)); }
+  function lfName(e, i) { return entityLabel(e, i); }
+  function lfLen(x) { return UI.fmtLen ? UI.fmtLen(x) : String(Math.round(x * 1e6) / 1e6); }
+  // frame the sketch box b ([x0, y0, x1, y1]) in the graphics area (at least minW wide)
+  function lfFrame(b, minW) {
+    if (!b || !UI.zoomToArea || !UI.size || !UI.cam) return;
+    if (UI.finishViewAnimation) UI.finishViewAnimation();
+    var pl = UI.activePlane(), c = [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2], s = UI.worldToScreen(K.to3D(pl, c[0], c[1]));
+    var w = Math.max(b[2] - b[0], (b[3] - b[1]) * UI.size.w / Math.max(1, UI.size.h), minW || 0) * 1.5;
+    if (!(w > 0) || !isFinite(s[0])) return;
+    UI.zoomToArea(s[0], s[1], w / (UI.size.w * UI.cam.scale));
+  }
+  // markers over the sketch, redrawn with the dimension layer: { list: [{ at, kind: 'issue' | 'fix' | 'skip' }], cur }
+  var lfMarks = null, lfLayer = null;
+  function lfSetMarks(m) { lfMarks = m; App.dimsStale = true; if (UI.requestRender) UI.requestRender(); lfDrawMarks(); }
+  function lfDrawMarks() {
+    var host = $('dim-layer');
+    if (!host) return;
+    if (!lfLayer) { lfLayer = document.createElementNS(LF_SVG, 'g'); lfLayer.setAttribute('class', 'dxi-marks'); lfLayer.setAttribute('pointer-events', 'none'); }
+    while (lfLayer.firstChild) lfLayer.removeChild(lfLayer.firstChild);
+    if (!lfMarks || App.mode !== 'sketch' || !lfMarks.list.length) { if (lfLayer.parentNode) lfLayer.parentNode.removeChild(lfLayer); return; }
+    host.appendChild(lfLayer);
+    var pl = UI.activePlane();
+    lfMarks.list.forEach(function (m, i) {
+      var s = UI.worldToScreen(K.to3D(pl, m.at[0], m.at[1])), cur = i === lfMarks.cur, col = m.kind === 'fix' ? '#2f9e5b' : m.kind === 'skip' ? '#b08a1e' : '#d9453b';
+      var c = document.createElementNS(LF_SVG, 'circle');
+      c.setAttribute('cx', s[0]); c.setAttribute('cy', s[1]); c.setAttribute('r', cur ? 11 : 7);
+      c.setAttribute('class', 'dxi-mark' + (cur ? ' cur' : '') + (m.kind === 'skip' ? ' skip' : ''));
+      c.setAttribute('style', 'fill:' + col + ';fill-opacity:' + (cur ? 0.25 : 0.12) + ';stroke:' + col + ';stroke-width:' + (cur ? 2.5 : 1.6));
+      lfLayer.appendChild(c);
+    });
+  }
+  if (UI.drawDims) {
+    var lfBaseDrawDims = UI.drawDims;
+    UI.drawDims = function () { var r = lfBaseDrawDims.apply(this, arguments); lfDrawMarks(); return r; };
+  }
+  function lfHighlight(list) { if (UI.setSelection) UI.setSelection((list || []).map(function (i) { return { kind: 'entity', index: i }; })); }
+  var lfRowClick = null;
+  if ($('pm')) $('pm').addEventListener('click', function (ev) {
+    var t = ev.target && ev.target.closest ? ev.target.closest('[data-lfi]') : null;
+    if (t && lfRowClick) lfRowClick(+t.getAttribute('data-lfi'));
+  });
+
+  // ------------------------------------------------------------------ contours
+  // the profile geometry (not construction, points, text) joined at its ends: [{ ents, open, branch }]
+  function lfGeom(e) { return !!e && !e.construction && e.t !== 'point' && e.t !== 'text'; }
+  function lfFix(e) { return lfGeom(e) && !e.blk; }   // a block instance's entities are rigid: never repaired
+  function lfContours(E, eps) {
+    var par = E.map(function (e, i) { return i; }), pts = [];
+    function find(i) { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; }
+    E.forEach(function (e, i) { if (lfGeom(e)) DxfImport.ends(e).forEach(function (en) { pts.push({ i: i, p: en.p }); }); });
+    var cl = [];
+    pts.forEach(function (x) {
+      for (var k = 0; k < cl.length; k++) if (lfDist(cl[k].p, x.p) <= eps) { cl[k].n.push(x.i); return; }
+      cl.push({ p: x.p, n: [x.i] });
+    });
+    cl.forEach(function (c) { for (var k = 1; k < c.n.length; k++) par[find(c.n[k])] = find(c.n[0]); });
+    var by = {};
+    E.forEach(function (e, i) { if (lfGeom(e)) { var r = find(i); (by[r] = by[r] || { ents: [], open: false, branch: false, ends: [] }).ents.push(i); } });
+    cl.forEach(function (c) {
+      var g = by[find(c.n[0])];
+      if (!g) return;
+      if (c.n.length === 1) { g.open = true; g.ends.push(c.p); }
+      if (c.n.length >= 3) g.branch = true;
+    });
+    return Object.keys(by).map(function (k) { return by[k]; });
+  }
+
+  // ------------------------------------------------------------------ Feature usage (Check Sketch for Feature)
+  // SolidWorks 2024: Tools ▸ Sketch Tools ▸ Check Sketch for Feature: Feature usage, and the Contour type the usage needs
+  // (read-only). Rules: open 'none' | 'single' (one open contour and nothing else) | 'any'; closed 'none' | 'single' |
+  // 'multi'; one: exactly one contour; lines / linesArcs: entity types; cross / branch: crossings and endpoints shared by
+  // three or more entities allowed; need: 'closed' (at least one closed contour)
+  var LF_USAGES = [
+    { id: 'general', label: 'General (any feature)', contour: 'Any', open: 'any', closed: 'multi', cross: false, branch: false, general: true },
+    { id: 'extrude', label: 'Base / Boss Extrude', contour: 'Disjoint or nested closed contours, or one open contour (thin feature)', open: 'single', closed: 'multi' },
+    { id: 'cutExtrude', label: 'Cut Extrude', contour: 'Disjoint or nested closed contours, or one open contour (thin feature)', open: 'single', closed: 'multi' },
+    { id: 'revolve', label: 'Revolve / Cut Revolve', contour: 'Closed contours, or one open contour (thin feature), on one side of the centerline', open: 'single', closed: 'multi', axis: true },
+    { id: 'sweepSection', label: 'Sweep section', contour: 'Single closed contour (one open contour: thin feature)', open: 'single', closed: 'single', one: true },
+    { id: 'sweepPath', label: 'Sweep path', contour: 'Single open or closed contour, no self-intersection', open: 'single', closed: 'single', one: true },
+    { id: 'loftSection', label: 'Loft section', contour: 'Single open or closed contour', open: 'single', closed: 'single', one: true },
+    { id: 'rib', label: 'Rib', contour: 'Open contours', open: 'any', closed: 'none', cross: true, branch: true },
+    { id: 'baseFlange', label: 'Base Flange', contour: 'Single open contour, or disjoint / nested closed contours', open: 'single', closed: 'multi' },
+    { id: 'edgeFlange', label: 'Edge Flange profile', contour: 'Single open contour', open: 'single', closed: 'none', one: true },
+    { id: 'miterFlange', label: 'Miter Flange profile', contour: 'Single open contour of lines and arcs', open: 'single', closed: 'none', one: true, linesArcs: true },
+    { id: 'sketchedBend', label: 'Sketched Bend', contour: 'Lines only (one or more bend lines)', open: 'any', closed: 'none', lines: true, cross: true, branch: true },
+    { id: 'loftedBend', label: 'Lofted-Bend profile', contour: 'Single open contour of lines and arcs', open: 'single', closed: 'none', one: true, linesArcs: true },
+    { id: 'jog', label: 'Hem / Jog line', contour: 'Single line', open: 'single', closed: 'none', lines: true, single: true },
+    { id: 'vent', label: 'Vent', contour: 'A closed boundary, with lines and closed contours for ribs, spars and fill-in', open: 'any', closed: 'multi', cross: true, branch: true, need: 'closed' }
+  ];
+  function lfUsage(id) { return LF_USAGES.filter(function (u) { return u.id === id; })[0] || LF_USAGES[0]; }
+  // the usage of the feature that uses sketch f (the feature being edited), else General
+  function lfUsageOf(f) {
+    var feats = (App.model && App.model.features) || [], id = f && f.id;
+    for (var i = 0; i < feats.length; i++) {
+      var x = feats[i];
+      if (!x || x === f) continue;
+      if (x.type === 'sweep') { if (x.profile === id) return 'sweepSection'; if (x.path === id) return 'sweepPath'; continue; }
+      if (x.type === 'loft' && (x.sketches || []).indexOf(id) >= 0) return 'loftSection';
+      if (x.type === 'loftedBend' && (x.sketches || []).indexOf(id) >= 0) return 'loftedBend';
+      if (x.sketch !== id) continue;
+      switch (x.type) {
+        case 'extrude': return x.sheetBase && !x.tab ? 'baseFlange' : x.cut ? 'cutExtrude' : 'extrude';
+        case 'revolve': return 'revolve';
+        case 'rib': return 'rib';
+        case 'sketchedBend': return 'sketchedBend';
+        case 'jog': case 'hem': return 'jog';
+        case 'vent': return 'vent';
+        case 'miterFlange': return 'miterFlange';
+        case 'flange': return 'edgeFlange';
+      }
+    }
+    return 'general';
+  }
+  // the problems of sketch f for a usage: DxfImport.check's list (gaps, open ends, shared ends, duplicates, tiny,
+  // crossings), kept or dropped by the usage's rules, then one message per broken contour rule
+  function lfCheck(f, usageId, tol, unit) {
+    var u = lfUsage(usageId), E = f.entities;
+    var base = DxfImport.check(E, tol, { unit: unit });
+    if (u.general) return base;
+    var b = DxfImport.bounds(E.filter(lfGeom)), scale = b ? Math.max(1, Math.hypot(b[2] - b[0], b[3] - b[1])) : 1, eps = 1e-9 * scale;
+    var cs = lfContours(E, eps), open = cs.filter(function (c) { return c.open; }), closed = cs.filter(function (c) { return !c.open; });
+    var singleOpen = open.length === 1 && cs.length === 1 && u.open !== 'none';
+    var out = base.filter(function (x) {
+      if (x.type === 'open') return u.open === 'none' || (u.open === 'single' && !singleOpen);
+      if (x.type === 'cross' || x.type === 'touch') return !u.cross;
+      if (x.type === 'branch') return !u.branch;
+      return true;
+    });
+    function all(list) { var o = []; list.forEach(function (c) { o = o.concat(c.ents); }); return o; }
+    function at(list) { var bb = DxfImport.bounds(all(list).map(function (i) { return E[i]; })); return bb ? [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2] : [0, 0]; }
+    function add(msg, list, ents) { out.push({ type: 'contour', at: at(list), entities: ents || all(list), msg: msg }); }
+    var need = u.label + ' needs: ' + u.contour.charAt(0).toLowerCase() + u.contour.slice(1) + '.';
+    if (!cs.length) out.push({ type: 'contour', at: [0, 0], entities: [], msg: 'The sketch has no profile geometry. ' + need });
+    else {
+      if (u.one && cs.length > 1) add('The sketch has ' + cs.length + ' contours. ' + need, cs);
+      else {
+        if (u.open === 'none' && open.length) add(lfPlural(open.length, 'open contour') + '. ' + need, open);
+        if (u.open === 'single' && open.length && cs.length > 1) add(lfPlural(open.length, 'open contour') + ' with ' + lfPlural(cs.length - open.length, 'other contour') + '. ' + need, open);
+        if (u.closed === 'none' && closed.length) add(lfPlural(closed.length, 'closed contour') + '. ' + need, closed);
+        if (u.closed === 'single' && closed.length > 1) add(lfPlural(closed.length, 'closed contour') + '. ' + need, closed);
+      }
+      if (u.need === 'closed' && !closed.length) add('No closed boundary. ' + need, cs);
+      if (u.lines || u.linesArcs) {
+        var bad = [];
+        E.forEach(function (e, i) { if (lfGeom(e) && e.t !== 'line' && !(u.linesArcs && e.t === 'arc')) bad.push(i); });
+        if (bad.length) out.push({ type: 'contour', at: DxfImport.bounds([E[bad[0]]]) ? (function (bb) { return [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2]; })(DxfImport.bounds([E[bad[0]]])) : [0, 0], entities: bad,
+          msg: (bad.length === 1 ? lfName(E[bad[0]], bad[0]) + ' is not a ' + (u.linesArcs ? 'line or an arc' : 'line') : lfPlural(bad.length, 'entity', 'entities') + ' are not ' + (u.linesArcs ? 'lines or arcs' : 'lines')) + '. ' + need });
+      }
+      if (u.single) { var n = E.filter(lfGeom).length; if (n > 1) add('The sketch has ' + n + ' entities. ' + need, cs); }
+      if (u.axis) {
+        var cls = E.map(function (e, i) { return e && e.t === 'line' && e.construction ? i : -1; }).filter(function (i) { return i >= 0; });
+        if (cls.length === 1) {
+          var c = E[cls[0]], d = [c.x2 - c.x1, c.y2 - c.y1], L = Math.hypot(d[0], d[1]), side = {};
+          if (L > 0) E.forEach(function (e, i) {
+            if (!lfGeom(e)) return;
+            K.entityPolylines(e).forEach(function (pl) { pl.pts.forEach(function (p) { var s = ((p[0] - c.x1) * d[1] - (p[1] - c.y1) * d[0]) / L; if (s > tol) side.r = i + 1; if (s < -tol) side.l = i + 1; }); });
+          });
+          if (side.l && side.r) add('The profile crosses the centerline ' + lfName(c, cls[0]) + ' (it has to lie on one side of the axis). ' + need, cs, [side.l - 1, side.r - 1, cls[0]]);
+        }
+      }
+    }
+    out.contours = { open: open.length, closed: closed.length };
+    var nonC = out.filter(function (x) { return x.type !== 'contour'; }), parts = [];
+    var nOpen = nonC.filter(function (x) { return x.type === 'open'; }).length;
+    if (nOpen) parts.push(lfPlural(nOpen, 'open endpoint'));
+    if (nonC.length > nOpen) { var s1 = DxfImport.summary(nonC, tol, unit); if (s1 !== 'No problems found') parts.push(s1); }
+    if (out.length > nonC.length) parts.push(lfPlural(out.length - nonC.length, 'contour problem'));
+    out.summary = parts.length ? parts.join(', ') : 'No problems found';
+    return out;
+  }
+
+  function cmdCheckSketch() {
+    var f = UI.activeSketchFeature();
+    if (!f || App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; }
+    if (UI.cancelTool) UI.cancelTool();
+    var v = { usage: lfUsageOf(f), tol: lfGapTol(), cur: -1 }, issues = [], spec = null;
+    function run() {
+      var g = UI.activeSketchFeature();
+      if (g) f = g;
+      issues = lfCheck(f, v.usage, +v.tol > 0 ? +v.tol : lfGapTol(), UI.unitLabel());
+      if (v.cur >= issues.length) v.cur = issues.length - 1;
+      lfSetMarks({ list: issues.map(function (x) { return { at: x.at, kind: 'issue' }; }), cur: v.cur });
+      if (spec) {
+        var cc = issues.contours || { open: 0, closed: 0 };
+        spec.message = (issues.length ? lfEsc(issues.summary) : 'No problems found: the sketch is good for ' + (v.usage === 'general' ? 'a feature' : lfEsc(lfUsage(v.usage).label)) + '.') + '<br>' + lfPlural(cc.closed, 'closed contour') + ', ' + lfPlural(cc.open, 'open contour') + '.';
+        spec.messageOk = !issues.length;
+      }
+    }
+    function go(d) {
+      if (!issues.length) return;
+      v.cur = v.cur < 0 ? (d > 0 ? 0 : issues.length - 1) : (v.cur + d + issues.length) % issues.length;
+      show();
+    }
+    function show() {
+      var x = issues[v.cur];
+      lfSetMarks({ list: issues.map(function (y) { return { at: y.at, kind: 'issue' }; }), cur: v.cur });
+      lfHighlight(x.entities);
+      var b = DxfImport.bounds((x.entities || []).map(function (i) { return f.entities[i]; }).filter(Boolean)) || DxfImport.bounds(f.entities), span = b ? Math.hypot(b[2] - b[0], b[3] - b[1]) : 1;
+      var w = Math.max((x.size || 0) * 60, x.type === 'contour' ? span : span * 0.08);
+      lfFrame(x.type === 'contour' && b ? b : [x.at[0] - w / 2, x.at[1] - w / 2, x.at[0] + w / 2, x.at[1] + w / 2], w);
+      UI.setStatus((v.cur + 1) + ' of ' + issues.length + ': ' + x.msg);
+      UI.renderPM();
+    }
+    lfRowClick = function (i) { if (issues[i]) { v.cur = i; show(); } };
+    function listHtml() {
+      if (!issues.length) return '<div class="pm-note">No problems found.</div>';
+      var rows = issues.slice(0, 200).map(function (x, i) {
+        return '<div class="pm-row dxi-issue' + (i === v.cur ? ' sel' : '') + '" data-lfi="' + i + '" data-dxi="' + i + '" style="cursor:pointer;' + (i === v.cur ? 'font-weight:600;' : '') + '">' +
+          '<span style="color:#d9453b">●</span>&nbsp;' + lfEsc(x.msg) + '</div>';
+      });
+      if (issues.length > 200) rows.push('<div class="pm-note">… and ' + (issues.length - 200) + ' more</div>');
+      return rows.join('');
+    }
+    spec = {
+      title: 'Check Sketch for Feature', icon: 'checkSketch', values: v, noFocus: true, keepSelection: true, message: '',
+      groups: [
+        { title: 'Feature usage', fields: [
+          { type: 'select', label: 'Feature usage', key: 'usage', options: LF_USAGES.map(function (u) { return [u.id, u.label]; }) },
+          { type: 'static', label: 'Contour type', value: function (x) { return lfUsage(x.usage).contour; } },
+          { type: 'number', label: 'Gap tolerance', key: 'tol', unit: 'u', min: 0 },
+          { type: 'buttons', buttons: [{ label: 'Check', onclick: function () { v.cur = -1; run(); UI.renderPM(); UI.setStatus('Check Sketch: ' + (issues.length ? issues.summary : 'no problems found') + '.'); } }] }
+        ] },
+        { title: 'Results', fields: [
+          { type: 'buttons', buttons: [{ label: 'Previous', onclick: function () { go(-1); } }, { label: 'Next', onclick: function () { go(1); } }, { label: 'Repair Sketch…', onclick: function () { cmdRepairSketch(); } }] },
+          { type: 'html', html: listHtml }
+        ] }
+      ],
+      onChange: function (vals, key) { if (key === 'usage') v.cur = -1; run(); UI.renderPM(); },
+      onOK: function () { },
+      onClose: function () { lfRowClick = null; lfSetMarks(null); }
+    };
+    UI.openPM(spec);   // its onChange runs the first check
+    if (!spec.message) { run(); UI.renderPM(); }
+    UI.setStatus(issues.length ? 'Check Sketch: ' + issues.summary + '. Next / Previous zoom to each problem.' : 'Check Sketch: no problems found.');
+    return issues;
+  }
+
+  // ------------------------------------------------------------------ Repair Sketch
+  // SolidWorks: Tools ▸ Sketch Tools ▸ Repair Sketch. Each repair is an option with its count; the list shows every
+  // repair to be made (green) or skipped with the reason (amber); ✓ applies them as one undo step. As SolidWorks closes a
+  // gap: two lines meet where they cross (each keeps its direction: extended or trimmed), a line and an arc meet on the
+  // arc (its centre and radius kept), collinear overlapping lines merge into one, zero-length entities go. An end that
+  // is held (fixed, dimensioned, at the origin, or already joined to other ends) does not move: the other end comes to
+  // it. Relations and dimensions of the repaired entities are kept (a merged entity's move to the one that stays); a
+  // repair that would over-define the sketch, change a dimension or move other geometry by more than the tolerance is
+  // skipped and listed with the reason. Construction geometry, points and text are left alone.
+  var LF_LABELS = { gaps: 'Close gaps', merge: 'Merge overlapping / duplicate entities', join: 'Join collinear lines and co-radial arcs', tiny: 'Remove zero-length / tiny entities (below tolerance)', split: 'Split at crossings' };
+  function lfSave(sk) { return { entities: lfClone(sk.entities), rels: sk.rels ? lfClone(sk.rels) : null, dims: sk.dims ? lfClone(sk.dims) : null }; }
+  function lfRestore(sk, s) { sk.entities = lfClone(s.entities); if (s.rels) sk.rels = lfClone(s.rels); else delete sk.rels; if (s.dims) sk.dims = lfClone(s.dims); else delete sk.dims; }
+  function lfEndPt(e, k) {
+    if (e.t === 'line') return k === 1 ? [e.x1, e.y1] : [e.x2, e.y2];
+    var en = DxfImport.ends(e).filter(function (x) { return x.k === k; })[0];
+    return en ? en.p : null;
+  }
+  // the points of an entity a relation can name, for the drift check
+  function lfKeyPts(e) {
+    if (!e) return [];
+    var out = DxfImport.ends(e).map(function (x) { return x.p; });
+    if (e.cx != null) out.push([e.cx, e.cy]);
+    if (e.r != null) out.push([e.r, 0]);
+    if (e.x != null && e.y != null) out.push([e.x, e.y]);
+    return out;
+  }
+  // is end k of entity i held where it is: fixed, at the origin, named by a dimension (its entity's own, or a distance /
+  // angle to it), or joined to another entity's end (a Coincident, or the same point)
+  function lfHeld(sk, i, k, eps) {
+    var ref = i + '.p' + k, whole = String(i), held = false, p = lfEndPt(sk.entities[i], k);
+    (sk.dims || []).forEach(function (d) { if (d.e === i && !d.driven) held = true; });
+    (sk.rels || []).forEach(function (r) {
+      var refs = r.refs || [];
+      if (r.type === 'fix' && (refs.indexOf(ref) >= 0 || refs.indexOf(whole) >= 0)) held = true;
+      if ((r.type === 'distance' || r.type === 'angle') && r.v != null && !r.driven && refs.indexOf(ref) >= 0) held = true;
+      if (r.type === 'coincident' && refs.indexOf(ref) >= 0 && refs.some(function (x) { return x !== ref && (x === 'O' || /^\d+\.(p\d|c)$/.test(x)); })) held = true;
+    });
+    if (!held && p) sk.entities.forEach(function (e, j) {
+      if (j === i || !lfFix(e)) return;
+      DxfImport.ends(e).forEach(function (en) { if (lfDist(en.p, p) <= eps) held = true; });
+    });
+    return held;
+  }
+  function lfLinked(sk, a, b) { return (sk.rels || []).some(function (r) { return r.type === 'coincident' && r.refs.indexOf(a) >= 0 && r.refs.indexOf(b) >= 0; }); }
+  function lfLineCircle(l, c, r) {
+    var d = [l.x2 - l.x1, l.y2 - l.y1], f = [l.x1 - c[0], l.y1 - c[1]], A = d[0] * d[0] + d[1] * d[1], B = 2 * (f[0] * d[0] + f[1] * d[1]), C = f[0] * f[0] + f[1] * f[1] - r * r, D = B * B - 4 * A * C;
+    if (!(A > 0) || D < 0) return [];
+    var s = Math.sqrt(D);
+    return [(-B - s) / (2 * A), (-B + s) / (2 * A)].map(function (t) { return [l.x1 + d[0] * t, l.y1 + d[1] * t]; });
+  }
+  function lfCircleCircle(c1, r1, c2, r2) {
+    var d = lfDist(c1, c2);
+    if (!(d > 0) || d > r1 + r2 || d < Math.abs(r1 - r2)) return [];
+    var a = (r1 * r1 - r2 * r2 + d * d) / (2 * d), h = Math.sqrt(Math.max(0, r1 * r1 - a * a)), ux = (c2[0] - c1[0]) / d, uy = (c2[1] - c1[1]) / d, px = c1[0] + ux * a, py = c1[1] + uy * a;
+    return [[px - uy * h, py + ux * h], [px + uy * h, py - ux * h]];
+  }
+  function lfNearest(list, p) { var best = null, bd = Infinity; list.forEach(function (q) { var d = lfDist(q, p); if (d < bd) { bd = d; best = q; } }); return best; }
+  // move end k of e to p: a line's end, an arc's end along its circle when p is on it (centre and radius kept), else the
+  // arc through its middle (DxfImport's setEnd)
+  function lfSetEnd(e, k, p, tol) {
+    if (e.t === 'arc' && Math.abs(lfDist([e.cx, e.cy], p) - e.r) <= 1e-9 * Math.max(1, e.r)) {
+      var a = Math.atan2(p[1] - e.cy, p[0] - e.cx) * 180 / Math.PI, ref = k === 1 ? e.a0 : e.a1;
+      while (a - ref > 180) a -= 360;
+      while (a - ref < -180) a += 360;
+      if (k === 1) e.a0 = a; else e.a1 = a;
+      if (e.a1 <= e.a0) return false;
+      while (e.a0 < 0) { e.a0 += 360; e.a1 += 360; }
+      while (e.a0 >= 360) { e.a0 -= 360; e.a1 -= 360; }
+      return true;
+    }
+    return DxfImport._.setEnd(e, k, p);
+  }
+  // where a gap's two ends meet when neither is held
+  function lfMeet(ea, pa, eb, pb, tol) {
+    var mid = [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2], t = null;
+    if (ea.t === 'line' && eb.t === 'line') {
+      var d1 = [ea.x2 - ea.x1, ea.y2 - ea.y1], d2 = [eb.x2 - eb.x1, eb.y2 - eb.y1], cr = d1[0] * d2[1] - d1[1] * d2[0], l1 = Math.hypot(d1[0], d1[1]), l2 = Math.hypot(d2[0], d2[1]);
+      if (l1 > 0 && l2 > 0 && Math.abs(cr) > 1e-6 * l1 * l2) {
+        var s = ((eb.x1 - ea.x1) * d2[1] - (eb.y1 - ea.y1) * d2[0]) / cr;
+        t = [ea.x1 + d1[0] * s, ea.y1 + d1[1] * s];
+      }
+    } else if (ea.t === 'line' && eb.t === 'arc') t = lfNearest(lfLineCircle(ea, [eb.cx, eb.cy], eb.r), mid);
+    else if (eb.t === 'line' && ea.t === 'arc') t = lfNearest(lfLineCircle(eb, [ea.cx, ea.cy], ea.r), mid);
+    else if (ea.t === 'arc' && eb.t === 'arc') t = lfNearest(lfCircleCircle([ea.cx, ea.cy], ea.r, [eb.cx, eb.cy], eb.r), mid);
+    if (t && lfDist(t, pa) <= tol && lfDist(t, pb) <= tol) return t;
+    // a line and a curve that do not cross near the gap: the line comes to the curve's end (the curve keeps its shape)
+    if (ea.t === 'line' && eb.t !== 'line') return pb;
+    if (eb.t === 'line' && ea.t !== 'line') return pa;
+    return mid;
+  }
+  // the end refs of an entity, as the solver names them
+  function lfEndRef(sk, i, k) { return i + '.p' + k; }
+  function lfRelName(r) { return (S.TYPES && S.TYPES[r.type] && (S.TYPES[r.type].name || S.TYPES[r.type])) || r.type; }
+  // entity b (merged or joined into a) goes; a takes geometry geom. Every relation and dimension of a and b is moved onto
+  // the new a: an end to the end of a now at the same place (a Coincident there to a's line instead, when that end is now
+  // inside it), the whole entity to a, a centre / midpoint where it stays. A relation that cannot move, or a dimension
+  // whose value would change, refuses the repair ({ why }). Relations that now tie a to itself go; repeats go.
+  function lfMergeInto(sk, a, b, geom, tol) {
+    var E = sk.entities, A0 = lfClone(E[a]), B0 = lfClone(E[b]);
+    var ne = lfClone(E[a]);
+    Object.keys(ne).forEach(function (k) { if (k !== 'layer' && k !== 'construction' && k !== 'style' && k !== 'color') delete ne[k]; });
+    Object.keys(geom).forEach(function (k) { if (k !== 'layer' && k !== 'construction') ne[k] = geom[k]; });
+    var newEnds = [1, 2].map(function (k) { return { k: k, p: lfEndPt(ne, k) }; }).filter(function (x) { return x.p; });
+    function mapRef(r, rel) {
+      var p = S.parseRef(r);
+      if (!p || p.o || (p.e !== a && p.e !== b)) return r;
+      var old = p.e === a ? A0 : B0;
+      if (p.s === null) return String(a);
+      if (p.s === 'p') {
+        var at = lfEndPt(old, p.k), hit = null;
+        if (!at) return null;
+        newEnds.forEach(function (x) { if (!hit && lfDist(x.p, at) <= tol) hit = a + '.p' + x.k; });
+        if (hit) return hit;
+        return rel.type === 'coincident' ? String(a) : null;
+      }
+      if ((p.s === 'c' || p.s === 'mid') && old.t === ne.t) {
+        if (p.s === 'c' && ne.cx != null && lfDist([old.cx, old.cy], [ne.cx, ne.cy]) <= tol) return a + '.c';
+        if (p.s === 'mid' && old.t === 'line' && lfDist([(old.x1 + old.x2) / 2, (old.y1 + old.y2) / 2], [(ne.x1 + ne.x2) / 2, (ne.y1 + ne.y2) / 2]) <= tol) return a + '.mid';
+      }
+      return null;
+    }
+    var why = null, seen = {};
+    var rels = [];
+    (sk.rels || []).forEach(function (rel) {
+      if (why) return;
+      var touches = (rel.refs || []).some(function (r) { var p = S.parseRef(r); return p && !p.o && (p.e === a || p.e === b); });
+      if (!touches) { rels.push(rel); return; }
+      var refs = rel.refs.map(function (r) { return mapRef(r, rel); });
+      if (refs.some(function (r) { return r == null; })) { why = 'its ' + lfRelName(rel) + ' relation cannot move to the merged entity'; return; }
+      var onA = refs.every(function (r) { var p = S.parseRef(r); return p && !p.o && p.e === a; });
+      if (onA && rel.refs.length > 1) return;   // it tied the two together: nothing to hold now
+      var key = rel.type + ':' + refs.slice().sort().join(',') + ':' + (rel.v == null ? '' : rel.v);
+      if (seen[key]) return;
+      seen[key] = true;
+      var c = lfClone(rel);
+      c.refs = refs;
+      rels.push(c);
+    });
+    if (why) return { why: why };
+    var dims = [], dseen = {};
+    (sk.dims || []).forEach(function (d) {
+      if (why) return;
+      if (d.e !== a && d.e !== b) { dims.push(d); return; }
+      var v0 = K.dimValue(d.e === a ? A0 : B0, d), v1 = K.dimValue(ne, d);
+      if (v0 == null || v1 == null || Math.abs(v0 - v1) > Math.max(tol, 1e-9)) { why = 'a dimension on it would change' + (v0 != null && v1 != null ? ' from ' + lfLen(v0) + ' to ' + lfLen(v1) : ''); return; }
+      var key = d.k + ':' + (d.i == null ? '' : d.i);
+      if (dseen[key]) return;
+      dseen[key] = true;
+      var c = lfClone(d); c.e = a; dims.push(c);
+    });
+    if (why) return { why: why };
+    E[a] = ne;
+    sk.rels = rels; if (!sk.rels.length) delete sk.rels;
+    sk.dims = dims; if (!sk.dims.length) delete sk.dims;
+    S.removeEntity(sk, b);
+    E.splice(b, 1);
+    (sk.dims || []).forEach(function (d) { if (d.e > b) d.e--; });
+    return { ok: true };
+  }
+  // remove entity z (zero-length or tiny); the ends it joined are joined to each other when it had no length
+  function lfRemove(sk, z, zero) {
+    var E = sk.entities, groups = [[], []];
+    if ((sk.dims || []).some(function (d) { return d.e === z && !d.driven; })) return { why: 'it has a dimension' };
+    if (zero) (sk.rels || []).forEach(function (r) {
+      if (r.type !== 'coincident') return;
+      [1, 2].forEach(function (k) { if (r.refs.indexOf(z + '.p' + k) >= 0) r.refs.forEach(function (x) { var p = S.parseRef(x); if (x !== z + '.p' + k && (p && (p.o || p.e !== z))) groups[k - 1].push(x); }); });
+    });
+    S.removeEntity(sk, z);
+    E.splice(z, 1);
+    if (sk.dims) { sk.dims = sk.dims.filter(function (d) { return d.e !== z; }).map(function (d) { if (d.e > z) d.e--; return d; }); if (!sk.dims.length) delete sk.dims; }
+    function shift(x) { var p = S.parseRef(x); return !p || p.o || p.e < z ? x : (p.e - 1) + String(x).slice(String(p.e).length); }
+    var all = groups[0].concat(groups[1]).map(shift).filter(function (x, i, arr) { return arr.indexOf(x) === i; });
+    for (var k = 1; k < all.length; k++) if (!lfLinked(sk, all[0], all[k])) (sk.rels = sk.rels || []).push({ type: 'coincident', refs: [all[0], all[k]] });
+    return { ok: true };
+  }
+  // the whole repair on a copy of sketch f: { sk, items: [{ type, at, msg, ok, why }], count: { gaps, merge, join, tiny, split } }
+  function lfRepair(f, o) {
+    var sk = Object.assign({}, f);
+    sk.entities = lfClone(f.entities);
+    if (f.rels) sk.rels = lfClone(f.rels); else delete sk.rels;
+    if (f.dims) sk.dims = lfClone(f.dims); else delete sk.dims;
+    var tol = o.tol * (1 + 1e-6), items = [], count = { gaps: 0, merge: 0, join: 0, tiny: 0, split: 0 };
+    var b0 = DxfImport.bounds(sk.entities.filter(lfGeom)), scale = b0 ? Math.max(1, Math.hypot(b0[2] - b0[0], b0[3] - b0[1])) : 1, eps = 1e-9 * scale;
+    var solver = !!((sk.rels && sk.rels.length) || (sk.dims && sk.dims.length));
+    var an0 = solver ? S.analyze(sk) : null, tried = {};
+    function key(type, list) { return type + ':' + JSON.stringify(list.map(function (i) { return sk.entities[i]; })); }
+    function attempt(type, opt, at, msg, fn) {
+      var saved = lfSave(sk), r;
+      try { r = fn(); } catch (e) { r = { why: e.message }; }
+      if (r && r.why) { lfRestore(sk, saved); items.push({ type: type, at: at, msg: msg, ok: false, why: r.why }); return false; }
+      if (solver) {
+        var planned = sk.entities.map(lfKeyPts), res = S.solve(sk), an = res && res.ok ? S.analyze(sk) : null, drift = 0;
+        if (an) sk.entities.forEach(function (e, i) { var q = lfKeyPts(e); (planned[i] || []).forEach(function (p, j) { if (q[j]) drift = Math.max(drift, lfDist(p, q[j])); }); });
+        var whyS = !an ? 'it would over-define the sketch (its relations and dimensions could not all hold)' : an.conflicts > an0.conflicts || an.redundant > an0.redundant || (an.status === 'over' && an0.status !== 'over') ? 'it would over-define the sketch' : drift > tol ? 'it would move other geometry ' + lfLen(drift) : null;
+        if (whyS) { lfRestore(sk, saved); items.push({ type: type, at: at, msg: msg, ok: false, why: whyS }); return false; }
+        an0 = an;
+      }
+      items.push({ type: type, at: at, msg: msg, ok: true });
+      count[opt]++;
+      return true;
+    }
+    // 1. zero-length and tiny entities
+    if (o.tiny) for (var g1 = 0; g1 < 500; g1++) {
+      var z = -1, E1 = sk.entities;
+      for (var i = 0; i < E1.length && z < 0; i++) if (lfFix(E1[i]) && DxfImport._.entLength(E1[i]) < tol && !tried[key('tiny', [i])]) z = i;
+      if (z < 0) break;
+      tried[key('tiny', [z])] = true;
+      var L = DxfImport._.entLength(E1[z]), zero = L <= eps, mid = DxfImport.bounds([E1[z]]);
+      mid = mid ? [(mid[0] + mid[2]) / 2, (mid[1] + mid[3]) / 2] : [0, 0];
+      attempt('removed', 'tiny', mid, (zero ? 'Zero-length ' : 'Tiny ') + lfName(E1[z], z) + (zero ? '' : ' (' + lfLen(L) + ')') + ' removed', (function (zz, zr) { return function () { return lfRemove(sk, zz, zr); }; })(z, zero));
+    }
+    // 2. duplicates and overlaps: the one with more relations and dimensions stays, the union of both
+    if (o.merge) for (var g2 = 0; g2 < 500; g2++) {
+      var E2 = sk.entities, hits = DxfImport.overlaps(E2, tol).filter(function (h) { return !tried[key('merge', [h.i, h.j])]; });
+      if (!hits.length) break;
+      var h = hits[0];
+      tried[key('merge', [h.i, h.j])] = true;
+      var w = function (i) { return (sk.rels || []).filter(function (r) { return r.refs.some(function (x) { var p = S.parseRef(x); return p && !p.o && p.e === i; }); }).length + (sk.dims || []).filter(function (d) { return d.e === i; }).length; };
+      var keep = w(h.j) > w(h.i) ? h.j : h.i, gone = keep === h.i ? h.j : h.i;
+      var rr = DxfImport.repair([E2[keep], E2[gone]], { tol: o.tol, merge: true, closeGaps: false, join: false, removeTiny: false, split: false });
+      if (rr.entities.length !== 1) { items.push({ type: 'merged', at: h.at, msg: (h.kind === 'duplicate' ? 'Duplicate ' : 'Overlapping ') + lfName(E2[gone], gone) + ' and ' + lfName(E2[keep], keep), ok: false, why: 'they do not merge into one entity' }); continue; }
+      attempt('merged', 'merge', h.at, (h.kind === 'duplicate' ? 'Duplicate ' : 'Overlapping ') + lfName(E2[gone], gone) + ' merged into ' + lfName(E2[keep], keep), (function (kk, gg, geom) { return function () { return lfMergeInto(sk, kk, gg, geom, tol); }; })(keep, gone, rr.entities[0]));
+    }
+    // 3. gaps: each free end and the nearest end of another entity within the tolerance
+    if (o.gaps) for (var g3 = 0; g3 < 2000; g3++) {
+      var E3 = sk.entities, ends = [], best = null;
+      E3.forEach(function (e, i) { if (lfFix(e)) DxfImport.ends(e).forEach(function (en) { ends.push({ i: i, k: en.k, p: en.p, rigid: !!en.rigid }); }); });
+      ends.forEach(function (x) {
+        // a free end: no other entity's end on it
+        if (ends.some(function (y) { return y.i !== x.i && lfDist(y.p, x.p) <= eps; })) return;
+        ends.forEach(function (y) {
+          if (y.i === x.i) return;
+          var d = lfDist(x.p, y.p);
+          if (d <= eps || d > tol) return;
+          var kk = x.i < y.i ? key('gap', [x.i, y.i]) + x.k + y.k : key('gap', [y.i, x.i]) + y.k + x.k;   // either way round
+          if (tried[kk] || (best && best.d <= d)) return;
+          if (lfLinked(sk, lfEndRef(sk, x.i, x.k), lfEndRef(sk, y.i, y.k))) return;
+          best = { x: x, y: y, d: d, key: kk };
+        });
+      });
+      if (!best) break;
+      tried[best.key] = true;
+      (function (bx) {
+        var x = bx.x, y = bx.y, ex = sk.entities[x.i], ey = sk.entities[y.i];
+        var hx = x.rigid || lfHeld(sk, x.i, x.k, eps), hy = y.rigid || lfHeld(sk, y.i, y.k, eps);
+        var at = [(x.p[0] + y.p[0]) / 2, (x.p[1] + y.p[1]) / 2], msg = 'Gap of ' + lfLen(bx.d) + ' between ' + lfName(ex, x.i) + ' and ' + lfName(ey, y.i) + ' closed';
+        if (hx && hy) { items.push({ type: 'gap', at: at, msg: msg, ok: false, why: 'both ends are held (fixed, dimensioned or joined)' }); return; }
+        attempt('gap', 'gaps', at, msg, function () {
+          var t = hx ? x.p : hy ? y.p : lfMeet(ex, x.p, ey, y.p, tol);
+          t = [t[0], t[1]];
+          if ((!hx && lfDist(t, x.p) > tol) || (!hy && lfDist(t, y.p) > tol)) return { why: 'the ends would move more than the tolerance' };
+          if (!hx && lfDist(t, x.p) > 0 && !lfSetEnd(sk.entities[x.i], x.k, t, tol)) return { why: lfName(ex, x.i) + ' cannot reach the other end' };
+          if (!hy && lfDist(t, y.p) > 0 && !lfSetEnd(sk.entities[y.i], y.k, t, tol)) return { why: lfName(ey, y.i) + ' cannot reach the other end' };
+          (sk.rels = sk.rels || []).push({ type: 'coincident', refs: [lfEndRef(sk, x.i, x.k), lfEndRef(sk, y.i, y.k)] });
+          return { ok: true };
+        });
+      })(best);
+    }
+    // 4. collinear lines and co-radial arcs meeting end to end (and nothing else there): one entity
+    if (o.join) for (var g4 = 0; g4 < 500; g4++) {
+      var E4 = sk.entities, ends4 = [], pair = null;
+      E4.forEach(function (e, i) { if (lfFix(e) && (e.t === 'line' || e.t === 'arc')) DxfImport.ends(e).forEach(function (en) { ends4.push({ i: i, k: en.k, p: en.p }); }); });
+      var allEnds = [];
+      E4.forEach(function (e, i) { if (lfFix(e)) DxfImport.ends(e).forEach(function (en) { allEnds.push({ i: i, p: en.p }); }); });
+      for (var a4 = 0; a4 < ends4.length && !pair; a4++) for (var b4 = a4 + 1; b4 < ends4.length && !pair; b4++) {
+        var x4 = ends4[a4], y4 = ends4[b4];
+        if (x4.i === y4.i || E4[x4.i].t !== E4[y4.i].t || lfDist(x4.p, y4.p) > eps) continue;
+        if (allEnds.filter(function (q) { return lfDist(q.p, x4.p) <= eps; }).length !== 2) continue;
+        var k4 = key('join', [x4.i, y4.i]);
+        if (tried[k4]) continue;
+        var j = DxfImport.repair([E4[x4.i], E4[y4.i]], { tol: o.tol, merge: false, closeGaps: false, join: true, removeTiny: false, split: false });
+        if (j.entities.length !== 1) continue;
+        tried[k4] = true;
+        pair = { a: x4.i, b: y4.i, at: x4.p, geom: j.entities[0], keep: j.map[0] === 0 };
+      }
+      if (!pair) break;
+      (function (pr) {
+        var keep = pr.keep ? pr.a : pr.b, gone = keep === pr.a ? pr.b : pr.a;
+        attempt('joined', 'join', pr.at, lfName(sk.entities[gone], gone) + ' joined to ' + lfName(sk.entities[keep], keep), function () { return lfMergeInto(sk, keep, gone, pr.geom, tol); });
+      })(pair);
+    }
+    // 5. split lines, arcs and circles where they cross (entities with no relations or dimensions)
+    if (o.split) for (var g5 = 0; g5 < 500; g5++) {
+      var E5 = sk.entities, xs = DxfImport.crossings(E5, Math.max(eps, Math.min(tol, 1e-6 * scale))).filter(function (c) { return !c.touch && !tried['split:' + c.at.join(',')]; });
+      if (!xs.length) break;
+      var c5 = xs[0];
+      tried['split:' + c5.at.join(',')] = true;
+      (function (c) {
+        var held = [c.i, c.j].filter(function (i) { return (sk.rels || []).some(function (r) { return r.refs.some(function (x) { var p = S.parseRef(x); return p && !p.o && p.e === i; }); }) || (sk.dims || []).some(function (d) { return d.e === i; }); });
+        var msg = lfName(E5[c.i], c.i) + ' and ' + lfName(E5[c.j], c.j) + ' split where they cross';
+        if (held.length) { items.push({ type: 'split', at: c.at, msg: msg, ok: false, why: lfName(E5[held[0]], held[0]) + ' has relations or dimensions (use Trim Entities)' }); return; }
+        attempt('split', 'split', c.at, msg, function () {
+          var hi = Math.max(c.i, c.j), lo = Math.min(c.i, c.j), add = [];
+          [hi, lo].forEach(function (i) {
+            var pcs = DxfImport._.splitAt(sk.entities[i], [c.at], tol);
+            if (!pcs || pcs.length < 2) return;
+            var e0 = sk.entities[i];
+            pcs.forEach(function (p) { if (e0.layer) p.layer = e0.layer; });
+            sk.entities[i] = pcs[0];
+            add = add.concat(pcs.slice(1));
+          });
+          if (!add.length) return { why: 'nothing to split' };
+          add.forEach(function (p) { sk.entities.push(p); });
+          return { ok: true };
+        });
+      })(c5);
+    }
+    if (S.clean) S.clean(sk);
+    return { sk: sk, items: items, count: count };
+  }
+
+  function cmdRepairSketch() {
+    var f = UI.activeSketchFeature();
+    if (!f || App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; }
+    if (UI.cancelTool) UI.cancelTool();
+    var v = { tol: lfGapTol(), gaps: true, merge: true, join: true, tiny: true, split: false }, res = null, spec = null;
+    var F = {};
+    Object.keys(LF_LABELS).forEach(function (k) { F[k] = { type: 'check', label: LF_LABELS[k], key: k }; });
+    function opts() { return { tol: +v.tol > 0 ? +v.tol : lfGapTol(), gaps: !!v.gaps, merge: !!v.merge, join: !!v.join, tiny: !!v.tiny, split: !!v.split }; }
+    function made(r) { return r.items.filter(function (x) { return x.ok; }).length; }
+    function run() {
+      var g = UI.activeSketchFeature();
+      if (g) f = g;
+      res = lfRepair(f, opts());
+      Object.keys(F).forEach(function (k) { F[k].label = LF_LABELS[k] + (v[k] ? ' (' + res.count[k] + ')' : ''); });
+      lfSetMarks({ list: res.items.map(function (x) { return { at: x.at, kind: x.ok ? 'fix' : 'skip' }; }), cur: -1 });
+      var n = made(res), skipped = res.items.length - n;
+      spec.message = n ? 'Repairs to make: ' + lfPlural(n, 'repair') + (skipped ? ', ' + lfPlural(skipped, 'skipped') : '') + '. ✓ applies them as one undo step.' : skipped ? 'Nothing can be repaired: ' + lfPlural(skipped, 'repair') + ' skipped (see the list).' : 'Nothing to repair at this tolerance.';
+      spec.messageOk = !res.items.length;
+    }
+    lfRowClick = function (i) {
+      var x = res && res.items[i];
+      if (!x) return;
+      lfSetMarks({ list: res.items.map(function (y) { return { at: y.at, kind: y.ok ? 'fix' : 'skip' }; }), cur: i });
+      var b = DxfImport.bounds(f.entities), span = b ? Math.hypot(b[2] - b[0], b[3] - b[1]) : 1, w = Math.max(+v.tol * 60, span * 0.08);
+      lfFrame([x.at[0] - w / 2, x.at[1] - w / 2, x.at[0] + w / 2, x.at[1] + w / 2], w);
+      UI.setStatus(x.msg + (x.ok ? '.' : ': skipped, ' + x.why + '.'));
+    };
+    function listHtml() {
+      if (!res || !res.items.length) return '<div class="pm-note">Nothing to repair.</div>';
+      return res.items.slice(0, 200).map(function (x, i) {
+        return '<div class="pm-row lf-repair' + (x.ok ? '' : ' lf-skip') + '" data-lfi="' + i + '" style="cursor:pointer">' +
+          '<span style="color:' + (x.ok ? '#2f9e5b' : '#b08a1e') + '">●</span>&nbsp;' + lfEsc(x.msg) + (x.ok ? '' : ' — skipped: ' + lfEsc(x.why)) + '</div>';
+      }).join('') + (res.items.length > 200 ? '<div class="pm-note">… and ' + (res.items.length - 200) + ' more</div>' : '');
+    }
+    spec = {
+      title: 'Repair Sketch', icon: 'repairSketch', values: v, noFocus: true, message: '',
+      groups: [
+        { title: 'Tolerance', fields: [{ type: 'number', label: 'Gap tolerance', key: 'tol', unit: 'u', min: 0 }] },
+        { title: 'Options', fields: [F.gaps, F.merge, F.join, F.tiny, F.split] },
+        { title: 'Repairs', fields: [{ type: 'html', html: listHtml }] }
+      ],
+      onChange: function () { run(); UI.renderPM(); },
+      okBlocked: function () { return res && made(res) ? '' : res && res.items.length ? 'Nothing can be repaired: every repair is skipped (see the list).' : 'Nothing to repair at this tolerance.'; },
+      onOK: function () {
+        var out = null;
+        var r = step(function () {
+          var g = UI.activeSketchFeature() || f, rr = lfRepair(g, opts());
+          if (!made(rr)) return { ok: false, error: 'Nothing to repair at this tolerance.' };
+          g.entities = rr.sk.entities;
+          if (rr.sk.rels && rr.sk.rels.length) g.rels = rr.sk.rels; else delete g.rels;
+          if (rr.sk.dims && rr.sk.dims.length) g.dims = rr.sk.dims; else delete g.dims;
+          out = rr;
+          return { ok: true };
+        }, true);
+        if (!r.ok) { UI.toast(r.error); return false; }
+        changed();
+        var c = out.count, sk = out.items.filter(function (x) { return !x.ok; }).length;
+        UI.setStatus('Repaired: ' + [lfPlural(c.gaps, 'gap') + ' closed', lfPlural(c.merge, 'duplicate') + ' merged', lfPlural(c.join, 'join'), lfPlural(c.tiny, 'tiny entity', 'tiny entities') + ' removed'].concat(c.split ? [lfPlural(c.split, 'split')] : []).concat(sk ? [lfPlural(sk, 'repair') + ' skipped'] : []).join(', ') + '.');
+      },
+      onClose: function () { lfRowClick = null; lfSetMarks(null); }
+    };
+    UI.openPM(spec);   // its onChange runs the first preview
+    if (!res) { run(); UI.renderPM(); }
+    return res;
+  }
+  // test hooks: the plans without the PropertyManagers
+  UI.sketchRepairPlan = function (opts) { var f = UI.activeSketchFeature(); return f ? lfRepair(f, Object.assign({ tol: lfGapTol(), gaps: true, merge: true, join: true, tiny: true, split: false }, opts || {})) : null; };
+  UI.sketchCheckFor = function (usage, tol) { var f = UI.activeSketchFeature(); return f ? lfCheck(f, usage, tol || lfGapTol(), UI.unitLabel()) : null; };
+  UI.sketchUsageOf = function () { return lfUsageOf(UI.activeSketchFeature()); };
+  UI.sketchFeatureUsages = function () { return LF_USAGES.map(function (u) { return { id: u.id, label: u.label, contour: u.contour }; }); };
+  // installed after every script (ui-sketch-import.js, later in index.html, still assigns its older copies)
+  function lfInstall() {
+    UI.cmdCheckSketch = cmdCheckSketch; UI.cmdRepairSketch = cmdRepairSketch;
+    UI.sketchCheckMarks = function () { return lfMarks ? { cur: lfMarks.cur, list: lfMarks.list.slice() } : null; };
+  }
+  lfInstall();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', lfInstall);
 })();
