@@ -256,6 +256,8 @@ var UI = (function () {
     needsRender = true;
     App.gridStale = true;
     App.dimsStale = true;
+    // lane mcdirect2: the profile's view labels follow the camera here, not on the next rendered frame
+    if (typeof UI !== 'undefined' && UI && UI.viewFurnitureTick) { try { UI.viewFurnitureTick(); } catch (e) { /* the view change goes on */ } }
   }
 
   // (user 2026-11-04: "the pulling of the panel should not change the position of the part relative to the screen")
@@ -4797,7 +4799,7 @@ var UI = (function () {
     sketchOverlayHooks: sketchOverlayHooks, tempEntityHooks: tempEntityHooks, sketchOverlayObjects: sketchOverlayObjects, tempEntitiesShown: tempEntitiesShown,   // sketch-hooks
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep, gridMinors: gridMinors,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickRefGeo: pickRefGeo, updateRefGeo: updateRefGeo, drawRefGeo: drawRefGeo, pickEntity: pickEntity, pickEntityDist: pickEntityDist, pickEdge: pickEdge,
-    lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, renderHooks: renderHooks, frame: frame, tick: tick, thickLines: thickLines, LINE_W: LINE_W, requestRender: requestRender,
+    lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, renderHooks: renderHooks, frame: frame, renderLoop: frame /* lane mcdirect2: boot starts the loop by this name; ui-panels.js reuses UI.frame for the profile's window frame */, tick: tick, thickLines: thickLines, LINE_W: LINE_W, requestRender: requestRender,
     // view transitions and smooth zoom (see "view animation")
     finishViewAnimation: finishViewAnimation, viewAnimating: viewAnimating, viewPose: viewPose, wheelZoom: wheelZoom, zoomToArea: zoomToArea,
     camVersion: function () { return camVer; },
@@ -4858,7 +4860,9 @@ var UI = (function () {
   // the six named construction planes: the sketch frame a sketch on it gets (x = y × n, as Anvil's standard planes)
   var CP_FRAMES = {
     Top: { ref: 'Top' }, Front: { ref: 'Front' }, Right: { ref: 'Right' },
-    Back: { x: [-1, 0, 0], y: [0, 1, 0], n: [0, 0, -1] }, Bottom: { x: [1, 0, 0], y: [0, 0, 1], n: [0, -1, 0] }, Left: { x: [0, 0, 1], y: [0, 1, 0], n: [-1, 0, 0] }
+    Back: { x: [-1, 0, 0], y: [0, 1, 0], n: [0, 0, -1] }, Bottom: { x: [1, 0, 0], y: [0, 0, 1], n: [0, -1, 0] }, Left: { x: [0, 0, 1], y: [0, 1, 0], n: [-1, 0, 0] },
+    // lane mcdirect2: Mastercam's Planes manager lists Isometric too: the plane square to the isometric view, its up
+    Isometric: (function () { var r = 1 / Math.sqrt(3), n = [r, r, r], y = [-1 / Math.sqrt(6), 2 / Math.sqrt(6), -1 / Math.sqrt(6)]; return { x: K.vec.cross(y, n), y: y, n: n }; })()
   };
   var cp = 'Top', cpListeners = [];
   function planeFeature(id) { var f = App.model && K.findFeature(App.model, id); return f && f.type === 'plane' ? f : null; }
@@ -4866,6 +4870,9 @@ var UI = (function () {
     if (typeof name === 'string' && /^\d+$/.test(name)) name = +name;
     if (typeof name === 'number') return planeFeature(name) ? name : null;
     if (typeof name !== 'string') return null;
+    // lane mcdirect2: a plane feature by its name (the Planes manager and the CPLANE list name them)
+    var byName = App.model && (App.model.features || []).filter(function (f) { return f.type === 'plane' && f.name === name; })[0];
+    if (byName && !CP_FRAMES[name]) return byName.id;
     var k = Object.keys(CP_FRAMES).filter(function (n) { return n.toLowerCase() === name.toLowerCase(); })[0];
     return k || null;
   }

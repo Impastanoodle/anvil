@@ -751,7 +751,7 @@
     var pl = f && App.build && App.build.planes ? App.build.planes[f.id] : null;
     return pl || K.makePlane('Top', 0);
   }
-  function frameCplane() { return UI.cplane ? (UI.cplane() || framePlanes.c) : framePlanes.c; }
+  function frameCplane() { return UI.cplaneLabel ? (UI.cplaneLabel() || framePlanes.c) : framePlanes.c; }   // lane mcdirect2: by name (a plane feature's id reads as its name)
   function framePlaneSet(col, name) {
     if (col === 'g') {
       if (STD_PLANE_ROWS.indexOf(name) >= 0) UI.setView(name);
@@ -2453,7 +2453,9 @@
       var it = leaves.filter(function (x) { return x.id === id && (!icon || x.icon === icon); })[0];
       if (!it) return null;
       var has = !!(it.run || it.tool), flat = it.label.replace(/\s*\n\s*/g, ' ');
-      var needs = id !== 'plane' && id !== 'sketch';
+      // lane mcdirect2: a drawing tool starts a sketch with none open (UI.sketchToolStart), as its ribbon button does
+      var starts = !!it.tool && it.tool !== 'dimension' && !!UI.sketchToolStart && !isAsm();
+      var needs = id !== 'plane' && id !== 'sketch' && !starts;
       return { label: group + ' ▸ ' + flat, icon: it.icon || it.id, disabled: !has || (needs && App.mode !== 'sketch'), action: function () { if (it.tool && !it.run) UI.setTool(it.tool); else it.run(); refreshRibbon(); } };
     }).filter(Boolean);
   }

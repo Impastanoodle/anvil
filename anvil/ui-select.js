@@ -1831,7 +1831,16 @@ if (typeof UI !== 'undefined') (function (UI) {
   // in SolidWorks); hovering a row pre-highlights its face, a click selects it (Ctrl / Shift: added; an open
   // PropertyManager's selection box takes it). A right-drag pans and shows no menu.
   var rDown = null, soMenu = null;
-  viewport.addEventListener('mousedown', function (ev) { if (ev.button === 2) rDown = pos(ev); }, true);
+  viewport.addEventListener('mousedown', function (ev) { if (ev.button === 2) { rDown = pos(ev); rDown.t = Date.now(); rUp = null; } }, true);
+  // lane mcdirect2: a right-click is a drag only when its own press and release (just now) are apart; the press alone,
+  // kept from an earlier gesture, used to swallow every later right-click whose point was elsewhere (no menu at all)
+  var rUp = null;
+  window.addEventListener('mouseup', function (ev) { if (ev.button === 2 && rDown) { var r = viewport.getBoundingClientRect(); rUp = { p: [ev.clientX - r.left, ev.clientY - r.top], t: Date.now() }; } }, true);
+  function rightDragged(p) {
+    if (!rDown) return false;
+    if (rUp) return Date.now() - rUp.t < 600 && Math.hypot(rUp.p[0] - rDown[0], rUp.p[1] - rDown[1]) > 4;
+    return Date.now() - rDown.t < 2000 && Math.hypot(p[0] - rDown[0], p[1] - rDown[1]) > 4;   // still held: the menu point against the press
+  }
   function faceLabel(i) {
     var f = App.mesh && App.mesh.faces[i];
     if (!f) return 'Face';
@@ -1862,8 +1871,9 @@ if (typeof UI !== 'undefined') (function (UI) {
   viewport.addEventListener('contextmenu', function (ev) {
     if (App.mode !== 'part' || drawingOn() || !App.mesh || !UI.pickFacesAll || !UI.showMenu) return;
     var p = pos(ev);
-    if (rDown && Math.hypot(p[0] - rDown[0], p[1] - rDown[1]) > 4) return;   // a right-drag panned the view
+    if (rightDragged(p)) return;   // a right-drag panned the view
     if (ev.target.closest && ev.target.closest('#hud, #i3d-edit, #i3d-layer .i3d')) return;
+    if (mastercamMenuOn()) return;   // lane mcdirect2: Mastercam's menu is the same on the model and off it (below)
     var faces = UI.pickFacesAll(p[0], p[1]), add = ev.ctrlKey || ev.shiftKey;
     if (!faces.length) return;
     var items = [{ label: 'Select Other', action: function () { selectOther(faces, ev.clientX, ev.clientY, add); } }];
@@ -2090,15 +2100,18 @@ if (typeof UI !== 'undefined') (function (UI) {
   viewport.addEventListener('contextmenu', function (ev) {
     if (App.mode !== 'part' || drawingOn() || !UI.showMenu) return;
     var p = pos(ev);
-    if (rDown && Math.hypot(p[0] - rDown[0], p[1] - rDown[1]) > 4) return;   // a right-drag panned the view
+    if (rightDragged(p)) return;   // a right-drag panned the view
     if (ev.target.closest && ev.target.closest('#hud, #i3d-edit, #i3d-layer .i3d')) return;
+    // lane mcdirect / mcdirect2: Mastercam's list, built from data at the click, wherever the click is (no pick first)
+    if (mastercamMenuOn()) { UI.showMenu(ev.clientX, ev.clientY, mastercamMenuItems(p)); return; }
     if (App.mesh && UI.pickFacesAll && UI.pickFacesAll(p[0], p[1]).length) return;   // on the model: Select Other (above)
-    var vp = UI.viewportProfile && UI.viewportProfile();
-    if (vp && vp.contextMenu === 'mastercam') { UI.showMenu(ev.clientX, ev.clientY, mastercamMenuItems(p)); return; }   // lane mcdirect
     var items = selectionModeMenuItems();
     if (selection().length) items.push({ sep: true }, { label: 'Clear Selection', action: function () { setSelection([], { quiet: true }); } });
     UI.showMenu(ev.clientX, ev.clientY, items);
   });
+  // lane mcdirect2: the press is used up by its own right-click (see rightDragged)
+  viewport.addEventListener('contextmenu', function () { setTimeout(function () { rDown = null; rUp = null; }, 0); });
+  function mastercamMenuOn() { var vp = UI.viewportProfile && UI.viewportProfile(); return !!(vp && vp.contextMenu === 'mastercam'); }
 
   // ================================================================== lane mcdirect: Mastercam's graphics window
   // Built from the active profile's `viewport` section (ui-core.js UI.viewportProfile / viewportProfileHooks); nothing

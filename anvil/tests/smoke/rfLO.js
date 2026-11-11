@@ -33,7 +33,8 @@
     b.click(); await idle();
     return b;
   }
-  async function rfLOSettle() { var t0 = Date.now(); while (UI.viewAnimating && UI.viewAnimating() && Date.now() - t0 < 3000) await wait(30); await idle(); await wait(40); }
+  async function rfLOUntil(fn, what, ms) { var t0 = Date.now(); while (!fn()) { if (Date.now() - t0 > (ms || 2000)) throw new Error('timed out waiting: ' + (typeof what === 'function' ? what() : what)); await wait(10); } }
+  async function rfLOSettle() { var t0 = Date.now(); while (UI.viewAnimating && UI.viewAnimating() && Date.now() - t0 < 3000) await wait(30); await idle(); }
   function rfLOScr(uv) { return UI.worldToScreen(K.to3D(UI.activePlane(), uv[0], uv[1])); }
   function rfLOSketches() { return UI.App.model.features.filter(function (f) { return f.type === 'sketch'; }); }
   async function rfLOReset() {
@@ -76,8 +77,8 @@
       // the prompt again, the Front plane picked by mouse
       await rfLOTool('Line');
       assert(UI.pmTitle() === 'Edit Sketch' && /plane/i.test($('pm').textContent), 'prompt names the plane: ' + UI.pmTitle());
-      await wait(40);
-      var p = rfLOPlanePoint('Front');
+      var p = null;
+      await rfLOUntil(function () { return !!(p = rfLOPlanePoint('Front')); }, 'the Front plane is shown under the prompt');
       assert(p, 'the Front plane is shown under the prompt');
       rfLOClick(p); await idle(); await rfLOSettle();
       var f = UI.activeSketchFeature();
@@ -155,7 +156,8 @@
       var r = f2.entities[0].r;
       assert(UI.App.tool === 'circle', 'Circle stays on');
       // a solids command closes the geometry and takes it (Mastercam's chain)
-      UI.cmdExtrude(); await idle(); await wait(30);
+      UI.cmdExtrude(); await idle();
+      await rfLOUntil(function () { return UI.pmTitle() === 'Boss-Extrude'; }, function () { return 'Boss-Extrude: ' + UI.pmTitle(); });
       assert(UI.App.mode !== 'sketch' && UI.pmTitle() === 'Boss-Extrude', 'Extrude on the closed geometry: ' + UI.App.mode + ' / ' + UI.pmTitle());
       setInput(D.querySelector('#pm input[data-key="depth"]'), 10); await idle();
       await pmAccept(); await idle();
@@ -204,42 +206,54 @@
       await anvil.run('p.box(40, 40, 20, { centered: true });'); await idle();
       assert(!D.getElementById('vp-labels') || D.getElementById('vp-labels').hidden, 'no labels under SolidWorks');
       assert(W.getComputedStyle($('hud')).display !== 'none', 'heads-up toolbar under SolidWorks');
-      UI.Profiles.register(RFLO_PROFILE); anvil.profile('rflo-test'); await idle(); await wait(60);
+      UI.Profiles.register(RFLO_PROFILE); anvil.profile('rflo-test'); await idle();
       var gv = $('viewport').style.getPropertyValue('--viewport');
       assert(/linear-gradient/.test(gv) && /#1c1c1c/i.test(gv) && /#b8b8b8/i.test(gv), 'the gradient: ' + gv);
       assert(/linear-gradient/.test(W.getComputedStyle($('viewport')).backgroundImage), 'drawn: ' + W.getComputedStyle($('viewport')).backgroundImage);
       assert(W.getComputedStyle($('hud')).display === 'none', 'heads-up toolbar hidden');
-      UI.setView('Top'); await rfLOSettle(); await wait(60);
+      // no fixed sleeps: each check waits for its condition (at most 2 s); the labels follow the camera at once
+      UI.setView('Top'); await rfLOSettle();
       var lab = D.getElementById('vp-labels');
-      assert(lab && !lab.hidden && lab.querySelector('[data-label="gview"]').textContent === 'Top' && lab.querySelector('[data-label="cplane"]').textContent === 'Top', 'labels: ' + (lab && lab.textContent));
-      UI.setCplane('Front'); await wait(60);
-      assert(lab.querySelector('[data-label="cplane"]').textContent === 'Front' && lab.querySelector('[data-label="tplane"]').textContent === 'Front', 'C / T follow setCplane: ' + lab.textContent);
-      UI.setView('Isometric'); await rfLOSettle(); await wait(60);
-      assert(lab.querySelector('[data-label="gview"]').textContent === 'Isometric', 'Gview follows the view: ' + lab.textContent);
-      UI.rotateView(30, 10); await wait(60);
-      assert(lab.querySelector('[data-label="gview"]').textContent === 'Not saved', 'a free view: ' + lab.textContent);
+      function L(k) { var e = lab && lab.querySelector('[data-label="' + k + '"]'); return e ? e.textContent : null; }
+      assert(lab && !lab.hidden, 'the labels are shown');
+      await rfLOUntil(function () { return L('gview') === 'Top' && L('cplane') === 'Top'; }, 'labels Top / Top: ' + lab.textContent);
+      UI.setCplane('Front');
+      assert(L('cplane') === 'Front' && L('tplane') === 'Front', 'C / T follow setCplane at once: ' + lab.textContent);
+      UI.setView('Isometric');
+      assert(L('gview') === 'Isometric', 'Gview follows the view at once: ' + lab.textContent);
+      await rfLOSettle();
+      UI.rotateView(30, 10);
+      assert(L('gview') === 'Not saved', 'a free view: ' + lab.textContent);
       // the labels sit right of the triad, the scale lower right
       var tr = $('triad').getBoundingClientRect(), lr = lab.getBoundingClientRect();
       assert(lr.left >= tr.right - 0.5, 'labels clear of the triad: ' + lr.left + ' / ' + tr.right);
       assert(!$('scale-bar').hidden && /\d/.test($('scale-bar-label').textContent), 'the scale readout');
-      // right-click on empty graphics
-      UI.setView('Front'); await rfLOSettle(); UI.zoomView(3); await wait(40);
+      // right-click on empty graphics, after a right press left over from an earlier gesture far away
+      UI.setView('Front'); await rfLOSettle(); UI.zoomView(3);
       var empty = null;
       for (var y = 60; y < UI.size.h - 60 && !empty; y += 10) for (var x = 60; x < UI.size.w - 60; x += 10) if (!UI.pickFacesAll(x, y).length) { empty = [x, y]; break; }
       assert(empty, 'an empty spot');
-      rfLOEv('contextmenu', empty, $('viewport'), { button: 2, buttons: 0 }); await wait(30);
+      rfLOEv('mousedown', [UI.size.w - 40, UI.size.h - 40], $('viewport'), { button: 2, buttons: 2 }); rfLOEv('mouseup', [UI.size.w - 40, UI.size.h - 40], null, { button: 2, buttons: 0 });
+      if (UI.closeMenus) UI.closeMenus();
+      rfLOEv('contextmenu', empty, $('viewport'), { button: 2, buttons: 0 });
       var want = ['Zoom Window', 'Unzoom 80 %', 'Dynamic Rotation', 'Fit', 'Top (WCS)', 'Front (WCS)', 'Right (WCS)', 'Isometric (WCS)', 'GView', 'Delete Entities', 'Analyze Distance', 'Analyze Entity Properties'];
-      var got = rfLOMenuRows().map(function (m) { return m.textContent.replace(/[▸✓]/g, '').trim(); });
+      function rows() { return rfLOMenuRows().map(function (m) { return m.textContent.replace(/[▸✓]/g, '').trim(); }); }
+      await rfLOUntil(function () { return rows().length > 0; }, 'a menu opened');
+      var got = rows();
       want.forEach(function (w) { assert(got.indexOf(w) >= 0, 'menu lacks ' + w + ': ' + got.join(' | ')); });
       var s0 = UI.cam.scale;
       rfLOMenuRow('Fit').dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 })); await rfLOSettle();
       assert(UI.cam.scale < s0 * 0.6, 'Fit zoomed back in on the part: ' + s0 + ' -> ' + UI.cam.scale);
-      rfLOEv('contextmenu', [8, UI.size.h / 2], $('viewport'), { button: 2, buttons: 0 }); await wait(30);
+      // on the model the same list (Mastercam has no Select Other there)
+      var on = UI.worldToScreen([0, 0, 10]);
+      assert(UI.pickFacesAll(on[0], on[1]).length, 'the part is under ' + on);
+      rfLOEv('contextmenu', on, $('viewport'), { button: 2, buttons: 0 });
+      await rfLOUntil(function () { return !!rfLOMenuRow('Top (WCS)'); }, 'the menu on the model: ' + rows().join(' | '));
       rfLOMenuRow('Top (WCS)').dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 })); await rfLOSettle();
       assert(UI.cam.dir.y > 1 - 1e-9, 'Top (WCS): ' + UI.cam.dir.toArray());
       if (UI.closeMenus) UI.closeMenus();
       // back on SolidWorks: everything as before
-      anvil.profile('solidworks'); await idle(); await wait(60);
+      anvil.profile('solidworks'); await idle();
       assert(W.getComputedStyle($('hud')).display !== 'none', 'heads-up toolbar back');
       assert(!$('viewport').style.getPropertyValue('--viewport'), 'SolidWorks gradient back');
       assert(lab.hidden && D.getElementById('vp-qmask').hidden && D.getElementById('vp-selbar').hidden, 'no Mastercam furniture under SolidWorks');
@@ -254,7 +268,8 @@
       await rfLOReset();
       await anvil.newPart(); await idle();
       await anvil.run('p.box(200, 200, 20, { centered: true });'); await idle();
-      UI.Profiles.register(RFLO_PROFILE); anvil.profile('rflo-test'); await idle(); await wait(40);
+      UI.Profiles.register(RFLO_PROFILE); anvil.profile('rflo-test'); await idle();
+      await rfLOUntil(function () { var q = D.getElementById('vp-qmask'); return q && !q.hidden; }, 'the quick masks are built');
       var strip = D.getElementById('vp-qmask'), bar = D.getElementById('vp-selbar');
       assert(strip && !strip.hidden && strip.querySelectorAll('button[data-qmask]').length >= 8, 'the quick-mask column');
       function maskBtn(k) { return strip.querySelector('button[data-qmask="' + k + '"]'); }
@@ -270,7 +285,7 @@
       var at = { lines: rfLOScr([-45, -40]), arcs: rfLOScr([52, 30]), points: rfLOScr([-50, 40]) };
       at.splines = rfLOScr([30 + 20 * Math.cos(1.0), -60 + 8 * Math.sin(1.0)]);
       function picked() { var s = UI.selection(); return s.length === 1 && s[0].kind === 'entity' ? f.entities[s[0].index].t : s.length ? s.map(function (x) { return x.kind; }).join(',') : 'none'; }
-      async function clickAt(p) { UI.setSelection([]); if (UI.hasPM()) UI.closePM(); rfLOClick(p); await idle(); await wait(20); return picked(); }
+      async function clickAt(p) { UI.setSelection([]); if (UI.hasPM()) UI.closePM(); rfLOClick(p); await idle(); return picked(); }
       var T = { lines: 'line', arcs: 'circle', points: 'point', splines: 'ellipse' }, keys = Object.keys(T);
       for (var i = 0; i < keys.length; i++) {
         var k = keys[i];
@@ -284,7 +299,8 @@
         maskBtn(k).click(); await idle();
       }
       // dimensions: with only Lines masked a label lets the click through; with Dimensions masked too it takes it
-      UI.drawDims(); await wait(30);
+      UI.drawDims();
+      await rfLOUntil(function () { return !!D.querySelector('#dim-layer .dim text'); }, 'a dimension label');
       var lt = D.querySelector('#dim-layer .dim text');
       assert(lt, 'a dimension label');
       var lb = lt.getBoundingClientRect(), vr = $('viewport').getBoundingClientRect(), lp = [lb.left + lb.width / 2 - vr.left, lb.top + lb.height / 2 - vr.top];
@@ -305,11 +321,11 @@
       var fz = UI.App.mesh.faces.filter(function (fc) { return fc.normal[2] > 0.999; })[0];
       assert(fz, 'the front face');
       var fs = UI.worldToScreen(fz.centroid);
-      UI.zoomView(0.25, fs[0], fs[1]); await wait(60);
+      UI.zoomView(0.25, fs[0], fs[1]);
       vr = $('viewport').getBoundingClientRect();
       var mid = [UI.size.w * 0.45, UI.size.h * 0.55];
       function onFace(p) { var h = UI.pickFace(p[0], p[1]); return !!h && UI.App.mesh.faces[h.index].normal[2] > 0.999; }
-      async function solidAt(p) { assert(onFace(p), 'the front face is under ' + p.map(Math.round) + ' (view ' + UI.cam.dir.toArray().map(function (x) { return x.toFixed(3); }) + ')'); UI.setSelection([]); rfLOClick(p); await idle(); await wait(20); var s = UI.selection(); return s.length ? s[0].kind : 'none'; }
+      async function solidAt(p) { assert(onFace(p), 'the front face is under ' + p.map(Math.round) + ' (view ' + UI.cam.dir.toArray().map(function (x) { return x.toFixed(3); }) + ')'); UI.setSelection([]); rfLOClick(p); await idle(); var s = UI.selection(); return s.length ? s[0].kind : 'none'; }
       var r0 = await solidAt(mid);
       assert(r0 === 'face', 'no mask: the face: ' + r0);
       maskBtn('edges').click(); await idle();
@@ -340,7 +356,8 @@
     try {
       await rfLOReset();
       await anvil.newPart(); await idle();
-      UI.Profiles.register(RFLO_PROFILE); anvil.profile('rflo-test'); await idle(); await wait(40);
+      UI.Profiles.register(RFLO_PROFILE); anvil.profile('rflo-test'); await idle();
+      await rfLOUntil(function () { var q = D.getElementById('vp-selbar'); return q && !q.hidden; }, 'the selection bar is built');
       var bar = D.getElementById('vp-selbar');
       function sb(k) { return bar.querySelector('[data-sb="' + k + '"]'); }
       assert(bar && !bar.hidden && sb('autocursor') && sb('mode-chain') && sb('all') && sb('clear'), 'the selection bar');
@@ -394,4 +411,176 @@
       assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
       return f.name + ' kept';
     } finally { await rfLOReset(); }
+  });
+
+  // --- rfLO (lane mcdirect2): the real mastercam profile, chosen through the setting, with lane mcframe's window ---
+  // a real click at the middle of an element that must be on top there (press, release, click)
+  function rfLOElClick(el, label, fx) {   // fx: where across the element (a quick mask is half off the edge: its visible half)
+    assert(el, 'nothing to click: ' + label);
+    var r = el.getBoundingClientRect(), x = Math.round(r.left + r.width * (fx || 0.5)), y = Math.round(r.top + r.height / 2), hit = D.elementFromPoint(x, y);
+    assert(r.width > 0 && r.height > 0, label + ' is not shown');
+    assert(hit && (hit === el || el.contains(hit)), label + ' is covered by ' + (hit && (hit.id || hit.className || hit.tagName)));
+    ['mousedown', 'mouseup', 'click'].forEach(function (t) { el.dispatchEvent(new W.MouseEvent(t, { bubbles: true, cancelable: true, button: 0, buttons: t === 'mousedown' ? 1 : 0, clientX: x, clientY: y, detail: 1 })); });
+  }
+  // Tools > Options… (SolidWorks' menu bar) or File > Options (Mastercam's backstage), then the profile's radio
+  async function rfLOChooseProfile(id) {
+    if (UI.frameBackstage && UI.frameBackstage.has && UI.frameBackstage.has()) {
+      rfLOElClick($('mc-file'), 'File tab');
+      await rfLOUntil(function () { return !!D.querySelector('#mc-backstage'); }, 'the backstage');
+      var nav = Array.prototype.filter.call(D.querySelectorAll('#mc-backstage button'), function (b) { return b.textContent.trim() === 'Options'; })[0];
+      rfLOElClick(nav, 'Options');
+    } else {
+      var tools = Array.prototype.filter.call(D.querySelectorAll('#menus > li'), function (li) { return /^Tools/.test(li.textContent.trim()); })[0];
+      assert(tools, 'no Tools menu');
+      tools.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+      var row = Array.prototype.filter.call(D.querySelectorAll('.menu .mi'), function (m) { return /^\s*Options…/.test(m.textContent) && m.textContent.indexOf('▸') < 0; })[0];
+      assert(row, 'no Tools > Options… row');
+      row.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
+    }
+    var radio = null;
+    await rfLOUntil(function () { radio = D.querySelector('[data-role="interface-profiles"] input[data-profile="' + id + '"]'); return !!radio; }, 'the ' + id + ' radio');
+    radio.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+    radio.click();
+    await rfLOUntil(function () { return UI.Profiles.active() === id; }, 'profile ' + id);
+    if (UI.frameBackstage && UI.frameBackstage.isOpen && UI.frameBackstage.isOpen()) UI.frameBackstage.close();
+    if (UI.closeTaskPane) UI.closeTaskPane();
+    await idle();
+  }
+  function rfLORect(el) { var r = el.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; }
+  function rfLOApart(a, b) { return a.right <= b.left + 0.5 || b.right <= a.left + 0.5 || a.bottom <= b.top + 0.5 || b.bottom <= a.top + 0.5; }
+  function rfLOShown(el) { return !!el && !el.hidden && el.getClientRects().length > 0 && W.getComputedStyle(el).display !== 'none'; }
+
+  step('rfLO: (e) Mastercam chosen in Tools > Options: labels, quick masks, selection bar and the right-click menu are there and work, beside mcframe\'s status bar, manager panel and viewsheet strip, none overlapping', async function () {
+    var errs0 = errors.length;
+    try {
+      await rfLOReset();
+      await anvil.newPart(); await idle();
+      await anvil.run('p.box(200, 200, 20, { centered: true });'); await idle();
+      await rfLOChooseProfile('mastercam');
+      assert(UI.frame && UI.frame(), 'mcframe\'s window frame is on');
+      var lab = D.getElementById('vp-labels'), qm = D.getElementById('vp-qmask'), sb = D.getElementById('vp-selbar');
+      assert(rfLOShown(lab) && rfLOShown(qm) && rfLOShown(sb), 'labels / quick masks / selection bar shown');
+      assert(W.getComputedStyle($('hud')).display === 'none', 'no heads-up toolbar');
+      assert(/#1c1c1c/.test($('viewport').style.getPropertyValue('--viewport')), 'Mastercam\'s gradient');
+      UI.setView('Top'); await rfLOSettle();
+      assert(lab.querySelector('[data-label="gview"]').textContent === 'Top' && lab.querySelector('[data-label="cplane"]').textContent === 'Top', 'labels: ' + lab.textContent);
+      // nothing of this lane overlaps mcframe's status bar, manager panel or viewsheet strip, nor the gnomon / scale
+      var vr = rfLORect($('viewport')), strip = { left: vr.left, right: vr.right, top: vr.bottom - 18, bottom: vr.bottom };
+      var theirs = { status: rfLORect($('mc-status')), left: rfLORect($('left')), viewsheet: strip };
+      var mine = { labels: rfLORect(lab), masks: rfLORect(qm), selbar: rfLORect(sb), triad: rfLORect($('triad')), scale: rfLORect($('scale-bar')) };
+      Object.keys(mine).forEach(function (m) {
+        Object.keys(theirs).forEach(function (t) { assert(rfLOApart(mine[m], theirs[t]), m + ' overlaps ' + t + ': ' + JSON.stringify([mine[m], theirs[t]])); });
+      });
+      assert(rfLOApart(mine.labels, mine.triad) && rfLOApart(mine.labels, mine.scale) && rfLOApart(mine.masks, mine.scale), 'labels / masks clear of the gnomon and the scale');
+      // quick masks: Solid Edges blocks the face, Solid Faces lets it through
+      UI.setView('Front'); await rfLOSettle(); UI.zoomToFit(); await rfLOSettle();
+      var fz = UI.App.mesh.faces.filter(function (fc) { return fc.normal[2] > 0.999; })[0], fs = UI.worldToScreen(fz.centroid);
+      UI.zoomView(0.4, fs[0], fs[1]);
+      var mid = [UI.size.w * 0.45, UI.size.h * 0.5];
+      async function kindAt(p) { UI.setSelection([]); rfLOClick(p); await idle(); var s = UI.selection(); return s.length ? s[0].kind : 'none'; }
+      rfLOElClick(qm.querySelector('[data-qmask="edges"]'), 'Solid Edges mask', 0.25); await idle();
+      assert(await kindAt(mid) === 'none', 'Solid Edges: the face is blocked');
+      rfLOElClick(qm.querySelector('[data-qmask="edges"]'), 'Solid Edges mask', 0.25); rfLOElClick(qm.querySelector('[data-qmask="faces"]'), 'Solid Faces mask', 0.25); await idle();
+      assert(await kindAt(mid) === 'face', 'Solid Faces: the face');
+      rfLOElClick(qm.querySelector('[data-qmask="clear"]'), 'clear masks', 0.25); await idle();
+      // selection bar: Select All selects the body, mcframe's status bar counts it
+      rfLOElClick(sb.querySelector('[data-sb="all"]'), 'Select All'); await idle();
+      assert(UI.selection().length === 1 && UI.selection()[0].kind === 'body', 'Select All: ' + JSON.stringify(UI.selection().map(function (s) { return s.kind; })));
+      await rfLOUntil(function () { return /1/.test(UI.frameStatus().selected || ''); }, function () { return 'SELECTED ENTITIES: ' + UI.frameStatus().selected; });
+      rfLOElClick(sb.querySelector('[data-sb="clear"]'), 'Clear'); await idle();
+      // the right-click menu, on the part, then Fit
+      UI.zoomToFit(); await rfLOSettle(); var fitS = UI.cam.scale; UI.zoomView(3);
+      var s0 = UI.cam.scale;
+      rfLOEv('contextmenu', mid, $('viewport'), { button: 2, buttons: 0 });
+      await rfLOUntil(function () { return !!rfLOMenuRow('Fit'); }, 'Mastercam\'s menu');
+      assert(rfLOMenuRow('Zoom Window') && rfLOMenuRow('Analyze Entity Properties') && rfLOMenuRow('GView'), 'its rows');
+      rfLOMenuRow('Fit').dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 })); await rfLOSettle();
+      assert(Math.abs(UI.cam.scale / fitS - 1) < 0.05 && s0 > fitS * 2, 'Fit: ' + s0 + ' -> ' + UI.cam.scale + ' (fit ' + fitS + ')');
+      assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+      return 'ok';
+    } finally { await rfLOReset(); }
+  });
+
+  step('rfLO: (f) Mastercam: a C cell of the Planes manager and the CPLANE status list drive UI.setCplane; Line Endpoints from the Wireframe tab draws at once on that plane; back on SolidWorks nothing of either lane is left', async function () {
+    var errs0 = errors.length;
+    try {
+      await rfLOReset();
+      await anvil.newPart(); await idle();
+      await rfLOChooseProfile('mastercam');
+      UI.setView('Isometric'); await rfLOSettle();
+      rfLOElClick(D.querySelector('#mc-mgr-tabs [data-mgr="planes"]'), 'Planes tab');
+      await rfLOUntil(function () { return rfLOShown($('mc-planes')) && !!D.querySelector('#mc-planes tr[data-plane="Front"] [data-col="c"]'); }, 'the Planes manager');
+      rfLOElClick(D.querySelector('#mc-planes tr[data-plane="Front"] [data-col="c"]'), 'C of Front');
+      assert(UI.cplane() === 'Front', 'the C cell set the construction plane: ' + UI.cplane());
+      assert(D.getElementById('vp-labels').querySelector('[data-label="cplane"]').textContent === 'Front', 'the C label follows');
+      await rfLOUntil(function () { return /Front/.test(UI.frameStatus().cplane || ''); }, function () { return 'CPLANE: ' + UI.frameStatus().cplane; });
+      async function lineEndpoints() {
+        var tab = Array.prototype.filter.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (t) { return t.textContent === 'Wireframe'; })[0];
+        rfLOElClick(tab, 'Wireframe tab'); await idle();
+        var b = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (x) { return /^Line\s*Endpoints$/.test(x.getAttribute('aria-label') || '') && x.offsetWidth; })[0];
+        assert(b && !b.disabled, 'Line Endpoints enabled with no sketch open');
+        rfLOElClick(b, 'Line Endpoints'); await idle();
+        assert(UI.App.mode === 'sketch' && UI.App.tool === 'line' && UI.pmTitle() !== 'Edit Sketch', 'drawing at once: ' + UI.App.mode + ' ' + UI.App.tool + ' ' + UI.pmTitle());
+        var c = [UI.size.w / 2, UI.size.h / 2];
+        rfLOClick([c[0] - 90, c[1] + 25]); await idle();
+        rfLOClick([c[0] + 80, c[1] - 30]); await idle();
+        var f = UI.activeSketchFeature();
+        assert(f && f.entities.length === 1 && f.entities[0].t === 'line', 'one line: ' + JSON.stringify(f && f.entities));
+        rfLOKey('Escape'); await idle(); rfLOKey('Escape'); await idle();
+        assert(UI.App.mode !== 'sketch', 'Esc, Esc closes it');
+        return f;
+      }
+      var f1 = await lineEndpoints();
+      assert(f1.plane.ref === 'Front', 'the line is on Front: ' + JSON.stringify(f1.plane));
+      // the CPLANE item of the status bar: its list
+      rfLOElClick(D.querySelector('#mc-status [data-mc="cplane"]'), 'CPLANE');
+      await rfLOUntil(function () { return !!rfLOMenuRow('Right'); }, 'the plane list');
+      rfLOMenuRow('Right').dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 })); await idle();
+      assert(UI.cplane() === 'Right', 'CPLANE list set Right: ' + UI.cplane());
+      var f2 = await lineEndpoints();
+      assert(f2.plane.ref === 'Right' && f2.id !== f1.id, 'the next line is on Right: ' + JSON.stringify(f2.plane));
+      // Isometric from the table is a plane too
+      rfLOElClick(D.querySelector('#mc-mgr-tabs [data-mgr="planes"]'), 'Planes tab');
+      await rfLOUntil(function () { return !!D.querySelector('#mc-planes tr[data-plane="Isometric"] [data-col="c"]'); }, 'the table again');
+      rfLOElClick(D.querySelector('#mc-planes tr[data-plane="Isometric"] [data-col="c"]'), 'C of Isometric');
+      await rfLOUntil(function () { var r = D.querySelector('#mc-planes tr[data-plane="Isometric"]'); return UI.cplane() === 'Isometric' && r && r.classList.contains('current'); }, function () { return 'Isometric: ' + UI.cplane(); });
+      // back on SolidWorks through the setting: nothing of either lane is left
+      await rfLOChooseProfile('solidworks');
+      var left = ['mc-file', 'mc-backstage', 'mc-mgr-head', 'mc-mgr-tabs', 'mc-solids', 'mc-planes', 'mc-recent', 'mc-status'].filter(function (id) { return D.getElementById(id); });
+      assert(!left.length && !D.documentElement.hasAttribute('data-profile') && !/\bmc-/.test($('app').className), 'mcframe left: ' + left.join());
+      ['vp-labels', 'vp-qmask', 'vp-selbar'].forEach(function (id) { assert(!rfLOShown(D.getElementById(id)), id + ' still shown'); });
+      assert(W.getComputedStyle($('hud')).display !== 'none' && !$('viewport').style.getPropertyValue('--viewport') && !$('viewport').classList.contains('mc-direct'), 'graphics window back');
+      assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+      return f1.name + ' on Front, ' + f2.name + ' on Right';
+    } finally { await rfLOReset(); }
+  });
+
+  step('rfLO: (g) Tools > Sketch Entities and Search Commands start a sketch with none open, as the ribbon button does (the Edit Sketch prompt)', async function () {
+    var errs0 = errors.length;
+    try {
+      await rfLOReset();
+      await anvil.newPart(); await idle();
+      var row = null;
+      var tools = Array.prototype.filter.call(D.querySelectorAll('#menus > li'), function (li) { return /^Tools/.test(li.textContent.trim()); })[0];
+      assert(tools, 'no Tools menu');
+      tools.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+
+      await rfLOUntil(function () { row = Array.prototype.filter.call(D.querySelectorAll('.menu .mi'), function (m) { return /Sketch Entities ▸ Circle\s*$/.test(m.textContent.trim()) || /^Circle$/.test(m.textContent.trim()); })[0]; return !!row; },
+        function () { return 'a Sketch Entities ▸ Circle row: ' + Array.prototype.map.call(D.querySelectorAll('.menu .mi'), function (m) { return m.textContent.trim(); }).slice(0, 60).join(' | '); });
+      assert(!row.classList.contains('disabled'), 'Circle row greyed with no sketch');
+      row.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 })); await idle();
+      assert(UI.pmTitle() === 'Edit Sketch' && UI.App.mode !== 'sketch', 'Tools row: the prompt: ' + UI.pmTitle());
+      rfLOKey('Escape'); await idle();
+      assert(!UI.hasPM(), 'Esc cancelled');
+      if (UI.closeMenus) UI.closeMenus();
+      // Search Commands: type Line, Enter
+      var box = $('cmd-search');
+      assert(box, 'no Search Commands box');
+      box.focus(); box.value = 'Line'; box.dispatchEvent(new W.Event('input', { bubbles: true }));
+      box.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); await idle();
+      assert(UI.pmTitle() === 'Edit Sketch', 'Search Commands: the prompt: ' + UI.pmTitle() + ' / ' + statusText());
+      rfLOKey('Escape'); await idle();
+      assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+      return 'ok';
+    } finally { if (UI.closeMenus) UI.closeMenus(); await rfLOReset(); }
   });

@@ -2249,7 +2249,8 @@
         add({ name: name, alias: alias, icon: it.icon || it.id, where: where + (here ? '' : drawingTab(tab) ? ' (drawing)' : ''), enabled: can, here: here, sketchTool: !!it.tool, tab: tab,
           run: function () {
             if (!here) { UI.toast(drawingTab(tab) && !drawing ? 'Open a drawing first: ' + name + ' is on its ' + tab + ' tab.' : name + ' is not on this document\'s CommandManager.'); return; }
-            if (it.tool && !it.run) { if (App.mode !== 'sketch') { UI.toast('Open a sketch first: ' + name + ' is a sketch tool.'); return; } UI.setTool(it.tool); }
+            // lane mcdirect2: with no sketch open a drawing tool starts one (UI.setTool -> UI.sketchToolStart), as the ribbon does
+            if (it.tool && !it.run) { if (App.mode !== 'sketch' && !(UI.sketchToolStart && it.tool !== 'dimension')) { UI.toast('Open a sketch first: ' + name + ' is a sketch tool.'); return; } UI.setTool(it.tool); }
             else it.run();
             UI.refreshRibbon();
           } });
@@ -2385,7 +2386,10 @@
     UI.rebuild({ noSave: true, sync: true });   // boot builds on the main thread so the first frame already shows the body
     UI.holdRecovery(true);   // the start-up part is clean, and an earlier session's recovery copy waits for offerRecovery
     UI.markClean();
-    UI.frame();
+    // lane mcdirect2: the render loop (ui-core.js). It was started as UI.frame(), but ui-panels.js (lane mcframe)
+    // reassigned UI.frame to the profile's window-frame getter, so the loop never started: every view change waited
+    // for some other redraw (the labels by the triad, the right-click menu, overlays lagged a view behind)
+    UI.renderLoop();
     // fit once the viewport has real dimensions (the pane may still be laying out)
     var fitTries = 0;
     (function fitWhenReady() {
