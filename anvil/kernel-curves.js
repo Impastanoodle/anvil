@@ -134,6 +134,9 @@
 
   function unionAll(list) {
     if (!list.length) return null;
+    // rfLD: copies apart from each other (a pattern of holes) are one solid with all their polygons, no booleans
+    var apart = list.length > 2 && CSG.unionApart ? CSG.unionApart(list) : null;
+    if (apart) return apart;
     var acc = list[0];
     for (var i = 1; i < list.length; i++) acc = acc.union(list[i]);
     return acc;
@@ -282,13 +285,26 @@
     if (!plateOptions.on || !loops || loops.length < plateOptions.minLoops) return null;
     var X = plane.x, Y = plane.y, N = plane.n, O = plane.origin, i;
     if (Math.abs(dot(X, Y)) > 1e-9 || Math.abs(dot(X, N)) > 1e-9 || Math.abs(dot(Y, N)) > 1e-9) return null;
-    var pts = [], areaMin = Infinity, areaAll = 0;
+    var pts = [];
     for (i = 0; i < loops.length; i++) {
       if (loops[i].hole || loops[i].depth || loops[i].cross) return null;
-      var ar = Math.abs(signedArea(loops[i].pts));
-      areaMin = Math.min(areaMin, ar); areaAll += ar;
       pts.push(loops[i].pts);
     }
+    // the hole walls from lo to hi (nlo / nhi: N·lo, N·hi), outward from the hole
+    function wallsOf(l, nlo, nhi) {
+      var L = pts[l], n = L.length, bottom = new Array(n), top = new Array(n), sides = [], j;
+      for (j = 0; j < n; j++) { var b3 = to3D(plane, L[j][0], L[j][1]); bottom[j] = add(b3, nlo); top[j] = add(b3, nhi); }
+      for (j = 0; j < n; j++) { var m = (j + 1) % n; sides.push(poly([bottom[j], bottom[m], top[m], top[j]], f.id)); }
+      tagSides(sides, loopCurves(profile, loops[l]), function (C) { return cylSurf(plane, C); });
+      return sides.filter(function (s) { return s; });
+    }
+    return plateCore(body, plane, pts, wallsOf, range);
+  }
+  // rfLD: plateCore(body, plane, pts, wallsOf(l, nlo, nhi, lo, hi), range): plateCut's work once the holes are known —
+  // pts[l] the outline of hole l in the plane's 2D frame, wallsOf its walls between the plate's two cap levels
+  function plateCore(body, plane, pts, wallsOf, range) {
+    var X = plane.x, Y = plane.y, N = plane.n, O = plane.origin, i, areaMin = Infinity, areaAll = 0;
+    for (i = 0; i < pts.length; i++) { var ar = Math.abs(signedArea(pts[i])); areaMin = Math.min(areaMin, ar); areaAll += ar; }
     var bb = body.getBounds();
     var gap = 1e-5 * Math.max(1, Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]));
     if (!plateApart(pts, gap)) return null;
@@ -332,14 +348,7 @@
     var areaUp = plateArea(capsUp), areaDown = plateArea(capsDown);
     // the hole walls, outward from the hole for now: they are the hole's BSP, and flipped they face the plate's material
     var walls = [], trees = new Array(pts.length), nlo = scale(N, lo), nhi = scale(N, hi);
-    function wallsOf(l) {
-      var L = pts[l], n = L.length, bottom = new Array(n), top = new Array(n), sides = [], j;
-      for (j = 0; j < n; j++) { var b3 = to3D(plane, L[j][0], L[j][1]); bottom[j] = add(b3, nlo); top[j] = add(b3, nhi); }
-      for (j = 0; j < n; j++) { var m = (j + 1) % n; sides.push(poly([bottom[j], bottom[m], top[m], top[j]], f.id)); }
-      tagSides(sides, loopCurves(profile, loops[l]), function (C) { return cylSurf(plane, C); });
-      return sides.filter(function (s) { return s; });
-    }
-    for (i = 0; i < pts.length; i++) walls.push(wallsOf(i));
+    for (i = 0; i < pts.length; i++) walls.push(wallsOf(i, nlo, nhi, lo, hi));
     function treeOf(l) { return trees[l] || (trees[l] = new CSG.Node(walls[l])); }
     var cutPlanes = [X, Y], W = [dot(O, X), dot(O, Y)], out = [];
     // a k-d split of the holes, along the wider spread, at a gap between them when there is one near the median
@@ -375,6 +384,83 @@
     Object.defineProperty(csg, '_ghTouch', { value: { nm: 0, lumps: null, touch: false }, enumerable: false, writable: true, configurable: true });
     plateOptions.last = { holes: pts.length, polygons: res.length };
     return csg;
+  }
+  // rfLD: plateCutParts(body, parts) -> the body with every part taken out without a boolean, or null (the caller then
+  // does the boolean). parts = the solids of a pattern's / mirror's tool when they are apart (CSG.unionApart's list,
+  // tool._parts): copies of a through cut's tool. Each part must be a right prism along one direction N (tried: the
+  // first few face normals of part 0): every polygon a cap (normal ±N) or a wall (normal ⟂ N), every wall corner on
+  // one of the part's two cap levels, which span the plate; its outline is chained from the walls' top edges. Then
+  // plateCore exactly as for a sketch of holes (rfGM): holes apart, on the caps, clear of every other face, the area
+  // check. The walls are the part's own (surf records and feature tags kept), moved onto the plate's caps.
+  function plateCutParts(body, parts) {
+    if (!plateOptions.on || !parts || parts.length < plateOptions.minLoops) return null;
+    var p0 = parts[0].polygons, cands = [], c;
+    for (c = 0; c < p0.length && cands.length < 3; c++) {
+      var nm = p0[c].plane.normal, n = [nm.x, nm.y, nm.z], dup = false;
+      for (var k = 0; k < cands.length; k++) if (Math.abs(Math.abs(dot(cands[k], n)) - 1) < 1e-9) dup = true;
+      if (!dup) cands.push(n);
+    }
+    for (c = 0; c < cands.length; c++) {
+      var r = plateParts(body, parts, cands[c]);
+      if (r) return r;
+    }
+    return null;
+  }
+  function plateParts(body, parts, N) {
+    var a = Math.abs(N[0]) < 0.6 ? [1, 0, 0] : [0, 1, 0], X = norm(cross(a, N)), Y = cross(N, X);
+    var plane = { x: X, y: Y, n: N, origin: [0, 0, 0] }, info = [], lo0 = -Infinity, hi0 = Infinity;
+    function hOf(P) { return P.x * N[0] + P.y * N[1] + P.z * N[2]; }
+    function uvKey(P) { return Math.round((P.x * X[0] + P.y * X[1] + P.z * X[2]) * 1e9) + ',' + Math.round((P.x * Y[0] + P.y * Y[1] + P.z * Y[2]) * 1e9); }
+    for (var k = 0; k < parts.length; k++) {
+      var ps = parts[k].polygons, hmin = Infinity, hmax = -Infinity, walls = [], i, j, P, h;
+      for (i = 0; i < ps.length; i++) {
+        var pn = ps[i].plane.normal, nz = Math.abs(pn.x * N[0] + pn.y * N[1] + pn.z * N[2]);
+        if (nz < 1e-12) walls.push(ps[i]);
+        else if (nz < 1 - 1e-12) return null;
+        for (j = 0; j < ps[i].vertices.length; j++) { h = hOf(ps[i].vertices[j].pos); if (h < hmin) hmin = h; if (h > hmax) hmax = h; }
+      }
+      if (!walls.length || !(hmax - hmin > 1e-9)) return null;
+      var tol = 1e-9 * Math.max(1, Math.abs(hmin), Math.abs(hmax)), next = {}, nE = 0, start = null;
+      for (i = 0; i < walls.length; i++) {
+        var vs = walls[i].vertices;
+        for (j = 0; j < vs.length; j++) {
+          var A = vs[j].pos, B = vs[(j + 1) % vs.length].pos, ha = hOf(A), hb = hOf(B);
+          if (Math.abs(ha - hmin) > tol && Math.abs(ha - hmax) > tol) return null;
+          if (Math.abs(ha - hmax) <= tol && Math.abs(hb - hmax) <= tol) {
+            var ka = uvKey(A), kb = uvKey(B);
+            if (ka === kb) continue;
+            if (next[ka]) return null;
+            next[ka] = { k: kb, p: A }; nE++;
+            if (start == null) start = ka;
+          }
+        }
+      }
+      // the top edges chained into one closed loop
+      var loop = [], at = start;
+      for (i = 0; i <= nE; i++) {
+        var e = next[at];
+        if (!e) return null;
+        loop.push([e.p.x * X[0] + e.p.y * X[1] + e.p.z * X[2], e.p.x * Y[0] + e.p.y * Y[1] + e.p.z * Y[2]]);
+        at = e.k;
+        if (at === start) break;
+      }
+      if (at !== start || loop.length !== nE || loop.length < 3) return null;
+      info.push({ pts: loop, walls: walls, hmin: hmin, hmax: hmax, tol: tol });
+      lo0 = Math.max(lo0, hmin); hi0 = Math.min(hi0, hmax);
+    }
+    function wallsOf(l, nlo, nhi, lo, hi) {
+      var I = info[l];
+      return I.walls.map(function (w) {
+        var c = w.clone();
+        c._bs = null;
+        c.vertices.forEach(function (v) {
+          var P = v.pos, h = hOf(P), s = (Math.abs(h - I.hmin) <= I.tol ? lo : hi) - h;
+          v.pos = new CSG.Vector(P.x + N[0] * s, P.y + N[1] * s, P.z + N[2] * s);
+        });
+        return c;
+      });
+    }
+    return plateCore(body, plane, info.map(function (I) { return I.pts; }), wallsOf, [lo0, hi0]);
   }
   function ids0(n) { var a = new Array(n); for (var i = 0; i < n; i++) a[i] = i; return a; }
 
@@ -1223,7 +1309,8 @@
   function polysOf(x) {
     if (!x) return [];
     if (x.polygons) return x.polygons;
-    if (x.faces) { var out = []; x.faces.forEach(function (f) { if (f.polys) out = out.concat(f.polys); }); return out; }
+    // rfLD: push, not out = out.concat(f.polys): the concat copied the whole list per face (quadratic; 75 s at 1800 holes)
+    if (x.faces) { var out = []; x.faces.forEach(function (f) { var ps = f.polys; if (ps) for (var i = 0; i < ps.length; i++) out.push(ps[i]); }); return out; }
     return x;
   }
   function surfKey(S) {
@@ -1839,6 +1926,7 @@
   K.analyticNormals = analyticNormals; K.surfNormalAt = surfNormalAt;   // rfFE: K.smoothOptions (crease, exact, carry) is set above
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   K.plateOptions = plateOptions; _.plateCut = plateCut; _.plateApart = plateApart;   // rfGM
+  _.plateCutParts = plateCutParts;   // rfLD
   _.THROUGH = THROUGH; _.buildExtrude = buildExtrude; _.buildRevolve = buildRevolve; _.extrudeRange = extrudeRange; _.mirrorBody = mirrorBody;
   _.prism = prism; _.rotateBody = rotateBody; _.rotatePoint = rotatePoint; _.translateBody = translateBody; _.unionAll = unionAll;
   _.unionTree = unionTree;

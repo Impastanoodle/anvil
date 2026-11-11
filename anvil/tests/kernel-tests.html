@@ -581,6 +581,7 @@
     'kernel/rfLA.js',
     'kernel/rfLB.js',
     'kernel/rfLG.js',
+    'kernel/rfLD.js',
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'kernel-tests.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'kernel-tests.groups.js', error: e }); }

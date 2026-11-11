@@ -32,13 +32,13 @@
       return 'mm ' + mm + ', in ' + inch;
     });
 
-    test('rfHG: a 200-hole Ø8 panel (600 × 300 × 1.5) stays at 32 chords per rim and within the measured triangle budget (28 350); exact volume', function () {
+    test('rfHG: a 200-hole Ø8 panel (600 × 300 × 1.5) stays at 32 chords per rim and within the measured triangle budget (28 650; rfLD: the pattern now takes the plate path, 28 602); exact volume', function () {
       var r = rfHGBuild('p.units("mm"); p.box(600, 300, 1.5); p.hole("Top", 30, -30, 8, { offset: 1.5 }); p.linearPattern({ dir: "x", spacing: 28, count: 20, dir2: "z", spacing2: 22, count2: 10 });');
       noErrors(r);
       var c = rfHGChords(r.mesh, 4);
       var hist = {}; c.forEach(function (n) { hist[n] = (hist[n] || 0) + 1; });
       assert(c.length === 400 && c.every(function (n) { return n >= 32 && n <= 40; }), 'rims ' + c.length + ' ' + JSON.stringify(hist));   // 32, a few chords split at T-junctions
-      assert(r.mesh.triCount <= 28350, 'triangles ' + r.mesh.triCount);
+      assert(r.mesh.triCount <= 28650, 'triangles ' + r.mesh.triCount);
       nearRel(r.mp.volume, 600 * 300 * 1.5 - 200 * Math.PI * 16 * 1.5, 1e-9, 'exact volume');
       return r.mesh.triCount + ' triangles';
     });

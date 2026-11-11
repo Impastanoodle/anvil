@@ -1559,6 +1559,41 @@ var CSG = (function () {
     if (parts) out.parts = parts;   // assembly part tags (r10/asmfaces10)
     return out;
   };
+  // rfLD: CSG.unionApart(list) -> the union of solids whose bounding boxes are pairwise apart (by the union's own
+  // early-out test, boundsOverlap with farEps), which is just their polygons together (cloned, list order); null when
+  // any two boxes meet, so the caller does the booleans. A sweep over x-sorted boxes: n log n for a pattern's copies,
+  // which a running union (its box growing over the others) made quadratic (600 copies of a hole: tens of seconds).
+  CSG.unionApart = function (list) {
+    if (!list || list.length < 2) return null;
+    // a solid made by unionApart counts as its parts (a pattern of a pattern: rows patterned again)
+    var parts = [], bs = [], i, j, U = null;
+    for (i = 0; i < list.length; i++) {
+      if (!list[i]) return null;
+      var sub = list[i]._parts || [list[i]];
+      for (j = 0; j < sub.length; j++) parts.push(sub[j]);
+    }
+    for (i = 0; i < parts.length; i++) {
+      var b = parts[i].getBounds();
+      if (!b) return null;
+      bs.push(b);
+      U = U ? { min: [Math.min(U.min[0], b.min[0]), Math.min(U.min[1], b.min[1]), Math.min(U.min[2], b.min[2])], max: [Math.max(U.max[0], b.max[0]), Math.max(U.max[1], b.max[1]), Math.max(U.max[2], b.max[2])] } : b;
+    }
+    var eMax = farEps(U, U);
+    bs.sort(function (u, v) { return u.min[0] - v.min[0]; });
+    for (i = 0; i < bs.length; i++) {
+      for (j = i + 1; j < bs.length; j++) {
+        var bi = bs[i], bj = bs[j];
+        if (bj.min[0] > bi.max[0] + eMax) break;
+        if (boundsOverlap(bi, bj, farEps(bi, bj))) return null;
+      }
+    }
+    var polys = [];
+    for (i = 0; i < parts.length; i++) { var ps = parts[i].polygons; for (j = 0; j < ps.length; j++) polys.push(ps[j].clone()); }
+    var out = CSG.fromPolygons(polys);
+    // the parts, for a cut that can take them out one by one (kernel-curves.js plateCutParts); not packed or cloned
+    Object.defineProperty(out, '_parts', { value: parts, enumerable: false, writable: true, configurable: true });
+    return out;
+  };
   CSG.unpack = function (obj) {
     var counts = obj.counts, verts = obj.verts, planes = obj.planes, shared = obj.shared || null;
     var polys = [], k = 0;

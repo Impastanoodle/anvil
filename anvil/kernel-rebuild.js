@@ -159,11 +159,28 @@
     if (!src || !tool) return tool || null;
     if (src.type === 'lpattern' || src.type === 'cpattern' || (src.type === 'mirror' && !src.body)) {
       var seed = familyTool(src.feature, model, ctx);
-      return seed ? seed.union(tool) : tool;
+      if (!seed) return tool;
+      // rfLD: seed and copies apart (holes): their polygons together, the parts kept for the plate path
+      return (tool._parts || seed._parts) && CSG.unionApart([seed, tool]) || seed.union(tool);
     }
     return tool;
   }
 
+  // rfLD: copiesOf(src, moves) -> the union of moves[k](src): when src is made of parts apart (a pattern of holes,
+  // CSG.unionApart's _parts) and the moved parts stay apart, their polygons together with the parts kept, so the
+  // cut takes the plate path (kernel-curves.js plateCutParts) and no boolean unions them; else whole copies unioned
+  // (unionAll, which also skips the booleans for copies apart) as before
+  function copiesOf(src, moves) {
+    var k, q;
+    if (src._parts) {
+      var parts = [];
+      for (k = 0; k < moves.length; k++) for (q = 0; q < src._parts.length; q++) parts.push(moves[k](src._parts[q]));
+      var ap = CSG.unionApart(parts);
+      if (ap) return ap;
+    }
+    var whole = moves.map(function (m) { return m(src); });
+    return whole.length === 1 ? whole[0] : unionAll(whole);
+  }
   // rfGB: the point maps of a pattern / mirror feature's own copies (not the seed): translations, rotations, a reflection
   function familyMaps(f, ctx) {
     var out = [];
@@ -380,10 +397,10 @@
         var d2 = f.d2 ? scale(AXES[f.d2], f.rev2 ? -1 : 1) : [0, 0, 0];
         for (var i = 0; i < n1; i++) for (var j = 0; j < n2; j++) {
           if (i === 0 && j === 0) continue;
-          copies.push(translateBody(src, add(scale(d1, i * (+f.s1 || 0)), scale(d2, j * (+f.s2 || 0)))));
+          (function (t) { copies.push(function (b) { return translateBody(b, t); }); })(add(scale(d1, i * (+f.s1 || 0)), scale(d2, j * (+f.s2 || 0))));
         }
         if (!copies.length) throw new Error('Pattern needs at least 2 instances.');
-        return unionAll(copies);
+        return copiesOf(src, copies);
       }
       case 'cpattern': {
         var csrc = familyTool(f.feature, model, ctx);
@@ -392,8 +409,8 @@
         var step = (f.equal === false) ? total : (Math.abs(total) >= 360 ? total / count : total / (count - 1));
         var ccopies = [];
         var cax = _.refAxisId(f) != null ? refAxisFor(f, ctx) : null;   // lane CZ: about a reference axis
-        for (var k = 1; k < count; k++) ccopies.push(rotateBody(csrc, cax ? cax.o : f.center || [0, 0, 0], cax ? cax.d : AXES[f.axis || 'z'], step * k));
-        return unionAll(ccopies);
+        for (var k = 1; k < count; k++) (function (a) { ccopies.push(function (b) { return rotateBody(b, cax ? cax.o : f.center || [0, 0, 0], cax ? cax.d : AXES[f.axis || 'z'], a); }); })(step * k);
+        return copiesOf(csrc, ccopies);
       }
       case 'mirror': {
         var mplane = makePlane(f.plane || 'Right', f.offset || 0);
@@ -403,7 +420,7 @@
         }
         var msrc = familyTool(f.feature, model, ctx);
         if (!msrc) throw new Error('Mirror source feature has no geometry.');
-        return mirrorBody(msrc, mplane);
+        return copiesOf(msrc, [function (b) { return mirrorBody(b, mplane); }]);
       }
       default:
         if (featureTypes[f.type] && featureTypes[f.type].build) return featureTypes[f.type].build(f, model, ctx);
@@ -730,7 +747,8 @@
       var scope = cutScope(f, ctx.bodies.length), changed = false, res = [];
       for (var s = 0; s < scope.length; s++) {
         var i = scope[s], b = ctx.bodies[i], volBefore = b.volume();
-        var nb = plateCutOf(b, f) || b.subtract(tool), vol = nb.polygons.length ? nb.volume() : 0;
+        // rfLD: a pattern / mirror of through holes (tool._parts: copies apart) takes the plate path too
+        var nb = plateCutOf(b, f) || (tool._parts && _.plateCutParts(b, tool._parts)) || b.subtract(tool), vol = nb.polygons.length ? nb.volume() : 0;
         if (Math.abs(vol - volBefore) >= 1e-6) changed = true;
         res.push({ i: i, nb: nb, vol: vol });
       }
