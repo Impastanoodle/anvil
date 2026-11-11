@@ -337,7 +337,10 @@
       var dc = Drawing.newDrawing(App.model, Object.assign({ options: DW.defaultDocOptions() }, opts));
       syncBom(dc);
       // (the centre marks / centrelines of Auto insert need the views' linework: they go in once it is worked out)
-      Drawing.standard3View(dc, App.mesh, units(), Object.assign({}, opts, { autoInsert: false }));
+      // (rfLG) File ▸ Make Drawing from Part (opts.layout 'part'): the same views every time (Drawing.partViews: a plate's
+      // face and edge views; else Front / Top / Right, the isometric when it fits, a sheet-metal part's flat)
+      if (opts.layout === 'part' && !isAsm()) Drawing.partViews(dc, App.mesh, units(), { model: App.model, build: App.build, autoInsert: false });
+      else Drawing.standard3View(dc, App.mesh, units(), Object.assign({}, opts, { autoInsert: false }));
       list.push(dc);
       UI.autosave();
       D.index = list.length - 1;

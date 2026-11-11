@@ -126,7 +126,7 @@
       await anvil.newPart(); await idle();
       await anvil.run(code); await idle();
       assert(!Object.keys(anvil.summary().errors || {}).length, 'part: ' + JSON.stringify(anvil.summary().errors));
-      rfKTMenu('File', 'Make Drawing from Part'); await wait(30);
+      anvil.drawing.make(); await wait(30);   // (rfLG: the menu adds the flat now; this job places it on Sheet2 itself)
       if (modalOpen()) clickModalButton('OK');
       await rfKTDone(); await wait(20);
       assert(UI.drawingActive(), 'drawing open');

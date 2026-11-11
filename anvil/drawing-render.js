@@ -1351,7 +1351,83 @@
     delete d._alt;
     return p;
   }
+  // (rfLG) a horizontal / vertical / ordinate / baseline dimension turned with its view (Rotate View at an angle that is
+  // not a multiple of 90°: d.rot degrees): drawn as it was before the turn, in a copy of the dimension whose points are
+  // turned back (the view's paper turned back about its centre is still a plain scaled view), then the lines, arrows
+  // and texts turned onto the sheet. Texts keep the ANSI reading direction (horizontal stays horizontal, others upright),
+  // each label (a value with its tolerance stack) moving as one.
+  var ROT_PTS = { a: 1, b: 1, c: 1, p: 1, lead: 1, pos: 1, attach: 1, end: 1 };
   function dimPrims(d, vw, k, placed) {
+    var rho = (d.kind === 'h' || d.kind === 'v' || d.kind === 'ordinate' || d.kind === 'baseline') && +d.rot ? +d.rot : 0;
+    if (!rho || vw.breakMap) return dimPrims0(d, vw, k, placed);
+    var r = rho * Math.PI / 180, cs = Math.cos(r), sn = Math.sin(r);
+    var back = function (q) { return [cs * q[0] + sn * q[1], -sn * q[0] + cs * q[1]]; };
+    function copy(o, top) {
+      if (Array.isArray(o)) return o.map(function (x) { return copy(x, false); });
+      if (!o || typeof o !== 'object') return o;
+      var c = {};
+      Object.keys(o).forEach(function (q) {
+        var x = o[q];
+        if (ROT_PTS[q] && Array.isArray(x) && x.length === 2 && typeof x[0] === 'number' && typeof x[1] === 'number') c[q] = back(x);
+        else c[q] = q === 'tol' || q === 'dxf' ? x : copy(x, false);
+      });
+      if (!top && c.a && c.b && (c.kind === 'h' || c.kind === 'v' || c.kind === 'aligned')) {
+        var dx = c.b[0] - c.a[0], dy = c.b[1] - c.a[1], L = Math.hypot(dx, dy);
+        c.kind = Math.abs(dy) <= L * 1e-9 ? 'h' : Math.abs(dx) <= L * 1e-9 ? 'v' : 'aligned';
+      }
+      return c;
+    }
+    var d2 = copy(d, true);
+    delete d2.rot;
+    // the view's paper turned back by rho about the middle of its box Vc (model point mc there): a plain scaled view
+    // again, toSheet'(q) = Vc + s (q - mc'), mc' = mc turned back; turnP(toSheet(p), -rho) = toSheet'(back(p))
+    var V = vw.toSheet([0, 0]), sc = vw.toSheet([1, 0])[0] - V[0], Vc = vw.box ? [(vw.box.x0 + vw.box.x1) / 2, (vw.box.y0 + vw.box.y1) / 2] : V;
+    var mcb = back(vw.fromSheet(Vc));
+    var to2 = function (q) { return [Vc[0] + sc * (q[0] - mcb[0]), Vc[1] + sc * (q[1] - mcb[1])]; };
+    var from2 = function (P) { return [(P[0] - Vc[0]) / sc + mcb[0], (P[1] - Vc[1]) / sc + mcb[1]]; };
+    var turnP = function (P, a) { var x = P[0] - Vc[0], y = P[1] - Vc[1], c1 = Math.cos(a), s1 = Math.sin(a); return [Vc[0] + c1 * x - s1 * y, Vc[1] + s1 * x + c1 * y]; };
+    var box2 = null;
+    if (vw.box) {
+      var bx = vw.box, cn = [[bx.x0, bx.y0], [bx.x1, bx.y0], [bx.x1, bx.y1], [bx.x0, bx.y1]].map(function (q) { return turnP(q, -r); });
+      box2 = { x0: Math.min.apply(null, cn.map(function (q) { return q[0]; })), x1: Math.max.apply(null, cn.map(function (q) { return q[0]; })),
+        y0: Math.min.apply(null, cn.map(function (q) { return q[1]; })), y1: Math.max.apply(null, cn.map(function (q) { return q[1]; })) };
+    }
+    var vw2 = Object.assign({}, vw, { toSheet: to2, fromSheet: from2, box: box2 || vw.box, scale: vw.scale });
+    d2._rho = r;
+    var out = dimPrims0(d2, vw2, k, placed);
+    ['lineAt', 'txNow', 'offNow', 'leadNow', 'outerNow'].forEach(function (q) { if (q in d2) d[q] = d2[q]; else delete d[q]; });
+    if (d2.dxf) {
+      var X = Object.assign({}, d2.dxf);
+      ['p10', 'p11', 'p13', 'p14'].forEach(function (q) { if (X[q]) X[q] = turnP(X[q], r); });
+      if (X.ang != null) X.ang = ((X.ang + rho) % 360 + 360) % 360;
+      d.dxf = X;
+    } else delete d.dxf;
+    // lines and arrows turn; each label (texts pushed by one label() call, _lg) moves as one, its texts' directions kept
+    // readable: horizontal stays horizontal (ANSI unidirectional), any other turns and is kept upright
+    var groups = {};
+    out.forEach(function (x) {
+      if (x.k === 'line') { x.a = turnP(x.a, r); x.b = turnP(x.b, r); }
+      else if (x.k === 'fill' && x.pts) x.pts = x.pts.map(function (q) { return turnP(q, r); });
+      else if (x.k === 'text') { var g = x._lg != null ? 'g' + x._lg : 't' + out.indexOf(x); (groups[g] = groups[g] || []).push(x); }
+    });
+    Object.keys(groups).forEach(function (g) {
+      var l = groups[g], t0 = l[0], ra = (t0.rot || 0) * Math.PI / 180, tt = [Math.cos(ra), Math.sin(ra)], nn = [-tt[1], tt[0]];
+      var w = textWidth(t0.text || '', t0.h), off = t0.anchor === 'middle' ? 0 : t0.anchor === 'end' ? -w / 2 : w / 2;
+      var cen = [t0.p[0] + tt[0] * off + nn[0] * t0.h / 2, t0.p[1] + tt[1] * off + nn[1] * t0.h / 2], cen2 = turnP(cen, r);
+      var rot0 = t0.rot || 0, rot1 = rot0;
+      if (Math.abs(rot0) > 1e-9) { rot1 = rot0 + rho; while (rot1 > 90 + 1e-9) rot1 -= 180; while (rot1 <= -90 + 1e-9) rot1 += 180; }
+      var turn = (rot1 - rot0) * Math.PI / 180;
+      l.forEach(function (x) {
+        // the label turned about its first text's centre by the change of reading direction, then moved with that centre
+        var px = x.p[0] - cen[0], py = x.p[1] - cen[1], c1 = Math.cos(turn), s1 = Math.sin(turn);
+        x.p = [cen2[0] + c1 * px - s1 * py, cen2[1] + s1 * px + c1 * py];
+        x.rot = Math.abs(rot1) < 1e-12 ? 0 : rot1;
+        delete x._lg;
+      });
+    });
+    return out;
+  }
+  function dimPrims0(d, vw, k, placed) {
     // (rfT) text height, arrow and extension-line sizes from the drawing's dimension style (D.dimGeometry, paper mm)
     var G = _.DIMGEO || { text: 3.5, arrow: 3, arrowW: 2 * ARROW_W, gap: 1.5, ext: 2 };
     var out = [], L = 'DIMENSIONS', th = G.text * k, ar = G.arrow * k, aw = G.arrowW / 2 * k, units = k === 1 ? 'mm' : 'in';
@@ -1362,7 +1438,13 @@
       out.push({ k: 'fill', pts: [tip, [tip[0] - dir[0] * ar + n[0] * aw, tip[1] - dir[1] * ar + n[1] * aw], [tip[0] - dir[0] * ar - n[0] * aw, tip[1] - dir[1] * ar - n[1] * aw]], layer: L });
     }
     // the dimension text at p (anchor, rotation): one text, or the value with its tolerance stacked beside it
+    var LG = d._rho ? out : null;   // (rfLG) a turned dimension: the texts of one label are tagged to move as one
     function label(p, anchor, rot, lab) {
+      var n0 = out.length;
+      label1(p, anchor, rot, lab);
+      if (LG) for (var li = n0; li < out.length; li++) if (out[li].k === 'text') out[li]._lg = n0;
+    }
+    function label1(p, anchor, rot, lab) {
       if (lab.upper == null) {
         out.push({ k: 'text', p: p, h: th, text: lab.main, anchor: anchor, layer: L, rot: rot });
         // sketch-ordinate: a Basic dimension (from the sketch's Dimension PM) in a box
@@ -1500,6 +1582,10 @@
       line(P(a[i0], a[i1] + sg * gapE), P(a[i0], pos + sg * ext)); line(P(b[i0], b[i1] + sg * gapE), P(b[i0], pos + sg * ext));
       var lo = Math.min(a[i0], b[i0]), hi = Math.max(a[i0], b[i0]), xo = ar + 4 * k, g = TEXT_GAP * k;
       var half = (hz ? labWidth(lab) / 2 : (lab.upper != null ? 0.75 : 0.5) * th) + g, mid = (lo + hi) / 2;
+      if (d._rho) {   // (rfLG) turned on the sheet: the horizontal text's reach along the turned line
+        var lc = Math.abs(Math.cos(d._rho)), ls = Math.abs(Math.sin(d._rho)), hW = labWidth(lab) / 2, hH = (lab.upper != null ? 0.75 : 0.5) * th;
+        half = (hz ? lc * hW + ls * hH : ls * hW + lc * hH) + g;
+      }
       var fits = hi - lo >= 2 * half + 2 * ar + g, out = !!d.flip || !fits;
       var c = mid + (tx || 0);
       // (lane CA) placed by a click (d.tside, Drawing.smartDim): between the extension lines the text stays there when it
@@ -1936,7 +2022,7 @@
       if (isFinite(d.value) && X.type !== 'angular') pr(42, num(d.value));   // (an angle's measurement would be radians: left to the reader)
       pr(1, dxfText(d.text || '')); pr(3, 'Standard');
       if (X.type === 'linear' || X.type === 'aligned') { pr(100, 'AcDbAlignedDimension'); pt(13, X.p13); pt(14, X.p14); }
-      if (X.type === 'linear') { pr(50, X.ang); pr(100, 'AcDbRotatedDimension'); }
+      if (X.type === 'linear') { pr(50, num(X.ang)); pr(100, 'AcDbRotatedDimension'); }
       if (X.type === 'dia') { pr(100, 'AcDbDiametricDimension'); pt(15, X.p15); pr(40, num(X.lead || 0)); }
       if (X.type === 'rad') { pr(100, 'AcDbRadialDimension'); pt(15, X.p15); pr(40, num(X.lead || 0)); }
       // (rfV) an angle: 3-point angular, 13 / 14 on the two lines, 15 the vertex, 10 on the dimension arc

@@ -1121,7 +1121,7 @@
   // Make Drawing from Part / Assembly: the part's drawing opens when it has one; else a new one from a chosen template
   function cmdMakeDrawing() {
     if ((App.model.drawings || []).length) { makeDrawing(); return; }
-    chooseTemplate(function (t) { makeDrawing(t ? { template: t } : {}); });
+    chooseTemplate(function (t) { makeDrawing(t ? { template: t, layout: 'part' } : { layout: 'part' }); });   // (rfLG) partViews
   }
 
   // General Table (Insert ▸ Tables ▸ General Table, Annotation tab): its PropertyManager asks for the columns and rows

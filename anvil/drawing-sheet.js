@@ -157,7 +157,10 @@
     if (Math.abs(by) < 1e-9) return v;
     var q = Math.round(by / 90), right = Math.abs(by - 90 * q) < 1e-9;
     var items = (v.dims || []).concat(v.annotations || [], v.balloons || []);
-    if ((items.length || (v.breaks && v.breaks.length) || v.crop) && !right) throw new Error((v.name || 'That view') + ' has dimensions, annotations, a break or a crop: it turns in steps of 90°');
+    // (rfLG) any angle, as SolidWorks: the dimensions, centre marks, balloons and the notes / symbols whose leaders are
+    // on the view turn with the geometry. A break or a rectangular crop (its sides along the view's axes) turns in
+    // steps of 90° only.
+    if (((v.breaks && v.breaks.length) || (v.crop && v.crop.type !== 'circle')) && !right) throw new Error((v.name || 'That view') + ' has a break or a crop: it turns in steps of 90°');
     var a = by * Math.PI / 180, c = Math.cos(a), s = Math.sin(a), rd = function (x) { return Math.abs(x - Math.round(x)) < 1e-12 ? Math.round(x) : x; };
     var R = function (p) { return [rd(c * p[0] - s * p[1]), rd(s * p[0] + c * p[1])]; };
     var odd = right && q % 2 === 1;
@@ -173,9 +176,27 @@
       });
       if (!top && o.a && o.b && Array.isArray(o.a)) edgeKind(o);
     }
+    // (rfLG) a horizontal / vertical / ordinate / baseline dimension keeps measuring along its turned axis: d.rot (deg);
+    // at, tx and side are in that turned frame, unchanged. Back on a multiple of 90° it is a plain one again.
+    function turnAxis(d) {
+      var hz = d.kind === 'h' || d.kind === 'v', k0 = hz ? d.kind : (d.dir === 'v' ? 'v' : 'h'), rot = (((+d.rot || 0) + by) % 360 + 540) % 360 - 180;
+      var q4 = Math.round(rot / 90);
+      if (Math.abs(rot - 90 * q4) > 1e-9) { d.rot = rot; return; }
+      delete d.rot;
+      var t = _.dimAxis(k0, rot), nl = k0 === 'h' ? _.dimAxis('v', rot) : _.dimAxis('h', rot), rd2 = function (x) { return Math.round(x); };
+      t = t.map(rd2); nl = nl.map(rd2);
+      var k1 = Math.abs(t[0]) === 1 ? 'h' : 'v', n1 = k1 === 'h' ? [0, 1] : [1, 0], t1 = k1 === 'h' ? [1, 0] : [0, 1];
+      var sn = nl[0] * n1[0] + nl[1] * n1[1], st = t[0] * t1[0] + t[1] * t1[1];
+      if (hz) d.kind = k1; else if (d.dir || k1 === 'v') d.dir = k1;
+      if (d.at != null) d.at = d.at * sn;
+      if (d.tx != null) d.tx = d.tx * st;
+      if (d.side === 1 || d.side === -1) d.side = d.side * sn;
+    }
     items.forEach(function (d) {
       var kind0 = d.kind, at0 = d.at;
       walk(d, true);
+      if (d.type === 'centerMark') { var mr = (((+d.rot || 0) + by) % 90 + 90) % 90; if (Math.abs(mr) < 1e-9 || Math.abs(mr - 90) < 1e-9) delete d.rot; else d.rot = mr; return; }
+      if ((kind0 === 'h' || kind0 === 'v' || kind0 === 'ordinate' || kind0 === 'baseline') && (!right || d.rot)) { turnAxis(d); return; }
       if (kind0 === 'h' || kind0 === 'v') {
         // the dimension line through (any, at) for h / (at, any) for v, turned
         var pt = R(kind0 === 'h' ? [0, +at0 || 0] : [+at0 || 0, 0]);
@@ -193,6 +214,15 @@
       if (flip) { o.a = -bk.b; o.b = -bk.a; }
       return o;
     }).sort(function (x, y) { return x.a - y.a; });
+    // (rfLG) the notes / symbols whose leaders are anchored on the view's geometry: their anchors turn with it (the arrow
+    // follows on the next compute, the text stays where it is on the paper)
+    (doc.notes || []).concat(doc.symbols || []).forEach(function (n) {
+      if (!n || n.view !== v.id || !n.anchor) return;
+      if (n.anchor.ref) walk(n.anchor, false);
+      if (n.anchor.ref && (n.anchor.ref.kind === 'dia' || n.anchor.ref.kind === 'arc') && typeof n.anchor.t === 'number') n.anchor.t += by;
+      if (Array.isArray(n.anchor.pt) && n.anchor.pt.length === 2) n.anchor.pt = R(n.anchor.pt);
+      n.anchor.snap = true;   // (the arrow goes onto the turned point at the next compute: anchorLeaders)
+    });
     if (v.crop && v.crop.type === 'circle') v.crop.c = R(v.crop.c);
     else if (v.crop && v.crop.a && v.crop.b) { var ca = R(v.crop.a), cb = R(v.crop.b); v.crop.a = [Math.min(ca[0], cb[0]), Math.min(ca[1], cb[1])]; v.crop.b = [Math.max(ca[0], cb[0]), Math.max(ca[1], cb[1])]; }
     if (to) v.rotate = to; else delete v.rotate;
@@ -777,6 +807,60 @@
     if (opts.autoInsert !== false) D.autoInsert(doc, mesh);
     return doc;
   }
+  // (rfLG) plateOf(mesh) -> { axis (0 X, 1 Y, 2 Z), T, ext } when the part is a flat plate: every vertex on one of two
+  // levels along its thinnest axis (one thickness: no bends, steps, counterbores or countersinks) and that thickness a
+  // quarter of the next-smallest size or less; else null
+  function plateOf(mesh) {
+    var P = mesh && (mesh.positions64 || mesh.positions);
+    if (!P || !P.length) return null;
+    var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], i, j;
+    for (i = 0; i < P.length; i += 3) for (j = 0; j < 3; j++) { if (P[i + j] < lo[j]) lo[j] = P[i + j]; if (P[i + j] > hi[j]) hi[j] = P[i + j]; }
+    var ext = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], ord = [0, 1, 2].sort(function (a, b) { return ext[a] - ext[b]; }), ax = ord[0], T = ext[ax];
+    if (!(T > 0) || T > ext[ord[1]] / 4) return null;
+    var tol = Math.max(T * 1e-6, 1e-9);
+    for (i = ax; i < P.length; i += 3) if (Math.abs(P[i] - lo[ax]) > tol && Math.abs(P[i] - hi[ax]) > tol) return null;
+    return { axis: ax, T: T, ext: ext };
+  }
+  // (rfLG) partViews(doc, mesh, units, { model, build, autoInsert }) -> doc: File ▸ Make Drawing from Part's views, the
+  // same every time (the script's anvil.drawing.make() keeps the Standard 3 View unless asked: { layout: 'part' }):
+  //  * a flat plate (plateOf): the face view and one edge view, projected from it (Front + Top or Right for a plate
+  //    lying in the Front plane, Top + Front for one on the Top plane, Right + Front on the Right plane), no isometric;
+  //  * any other part: Front / Top / Right, and the isometric in the upper right when it fits there at half the sheet
+  //    scale or more (the three views are never made smaller for it);
+  //  * a sheet-metal part with bends: its Flat Pattern view too (bend lines and notes), at the sheet scale on a clear
+  //    spot of Sheet1, else on Sheet2 (addFlatView fit); Sheet1 stays the active sheet.
+  // The sheet scale is the largest standard one that leaves the dimension rows' room (layout's dimRoom).
+  function partViews(doc, mesh, units, opts) {
+    opts = opts || {};
+    var pl = plateOf(mesh), roles;
+    doc.views = []; doc.nextView = 1;
+    if (pl) {
+      var Fx = extentsOf(mesh, 'Front');
+      roles = pl.axis === 2 ? (Fx.w >= Fx.h ? ['front', 'top'] : ['front', 'right']) : pl.axis === 1 ? ['front', 'top'] : ['front', 'right'];
+    } else roles = ['front', 'top', 'right', 'iso'];
+    var front = addView(doc, 'Front', { role: 'front' });
+    if (roles.indexOf('top') >= 0) addView(doc, 'Top', { role: 'top', parent: front.id, align: 'x' });
+    if (roles.indexOf('right') >= 0) addView(doc, 'Right', { role: 'right', parent: front.id, align: 'y' });
+    var iso = roles.indexOf('iso') >= 0 ? addView(doc, 'Isometric', { role: 'iso' }) : null;
+    doc.layout = 'auto';
+    layoutViews(doc, mesh, units, { isoOptional: true });
+    if (iso && (iso.scale && scaleValue(iso.scale) < scaleValue(doc.sheet.scale) / 2 - 1e-12)) {
+      doc.views.splice(doc.views.indexOf(iso), 1);
+      iso = null;
+    }
+    if (opts.autoInsert !== false) D.autoInsert(doc, mesh);
+    if (!pl && opts.model && opts.model.sheet && opts.model.type !== 'assembly') {
+      var fd = null;
+      try { fd = D.flatData(mesh, opts.model, opts.build); } catch (e) { fd = null; }
+      if (fd && !fd.error && fd.bends && fd.bends.length) {
+        try {
+          addFlatView(doc, mesh, { model: opts.model, build: opts.build, fit: true });
+          if ((doc.activeSheet | 0) !== 0) activateSheet(doc, 0);
+        } catch (e2) { /* no flat to show: the views stay */ }
+      }
+    }
+    return doc;
+  }
   function extentsOf(mesh, orient) {
     var O = frameOf(orient), P = mesh.positions64 || mesh.positions;
     var b = { umin: Infinity, umax: -Infinity, vmin: Infinity, vmax: -Infinity };
@@ -805,13 +889,18 @@
     (sizes || []).forEach(function (x) { if (isFinite(x)) w = Math.max(w, String(fmtDim(x, units)).length * G.text * 0.78); });
     return { b: (DIM_ROW0 + Math.max(G.ext, G.text / 2) + DIM_CLEAR) * k, l: (DIM_ROW0 + w / 2 + 1 + DIM_CLEAR) * k };
   }
-  function layout(doc, mesh, units) {
+  function layout(doc, mesh, units, lopts) {
     var k = paperK(units), A = usableArea(doc, units), g = GAP * k;
     var byRole = {}, before = {};
     doc.views.forEach(function (v) { before[v.id] = [v.x, v.y]; });
     doc.views.forEach(function (v) { if (v.role) byRole[v.role] = v; });
     var F = extentsOf(mesh, 'Front'), T = extentsOf(mesh, 'Top'), R = extentsOf(mesh, 'Right');
     var Wm = F.w, Hm = F.h, Dm = T.h;
+    // (rfLG) a two-view plate drawing (Front + Top, or Front + Right: partViews) leaves out the missing view's row /
+    // column, so the pair is centred and scaled as itself; isoOptional: the scale is chosen for the orthographic views
+    // alone (the caller drops an isometric that would not fit at half the sheet scale)
+    var noTop = !byRole.top && !!byRole.front && !!byRole.right, noRight = !byRole.right && !!byRole.front && !!byRole.top;
+    var gT = noTop ? 0 : g, gR = noRight ? 0 : g, DT = noTop ? 0 : Dm, DR0 = noRight ? 0 : Dm, isoOpt = !!(lopts && lopts.isoOptional);
     var availW = A.x1 - A.x0, availH = A.y1 - A.y0;
     // an assembly drawing's Bill of Materials is a keep-out box: the Front / Top / Right block must not cover it
     var bomK = doc.bom && doc.bom.show !== false && doc.bomRows ? bomBox(doc, units, doc.bomRows) : null;
@@ -829,7 +918,7 @@
     // and right sides keep the margin (half of it at least on inch sheets, where nothing is dimensioned by default)
     var DR = dimRoom(doc, units, [Hm, Dm, Wm]), mb = Math.max(m, DR.b), ml = Math.max(m, DR.l), mt = units === 'in' ? m / 2 : m, mr = mt;
     function place(sv, packed) {
-      var W = Wm * sv, H = Hm * sv, D = Dm * sv, blockW = W + g + D, blockH = H + g + D, P = {};
+      var W = Wm * sv, H = Hm * sv, D = Dm * sv, blockW = W + gR + DR0 * sv, blockH = H + gT + DT * sv, P = {};
       var left = A.x0 + Math.max(ml, (availW - blockW) / 2), bottom = A.y0 + Math.max(mb, (availH - blockH) / 2);
       if (packed) {
         left = bomK && /left/.test(bomK.anchor) ? A.x1 - mr - blockW : A.x0 + ml;
@@ -845,7 +934,10 @@
         P.fy = bottom + H / 2; P.ry = P.fy; P.ty = bottom + H + g + D / 2;
         P.isoBox = { x0: left + W + g / 2, x1: A.x1, y0: bottom + H + g / 2, y1: A.y1 };
       }
-      var boxes = [[P.fx, P.fy, W, H], [P.tx, P.ty, W, D], [P.rx, P.ry, D, H]].map(function (q) { return { x0: q[0] - q[2] / 2, x1: q[0] + q[2] / 2, y0: q[1] - q[3] / 2, y1: q[1] + q[3] / 2 }; });
+      if (doc.sheet.projection !== 'first' && noTop) P.isoBox.y0 = bottom + H + g / 2;
+      if (doc.sheet.projection === 'first' && noRight) { P.fx -= D + g; P.tx = P.fx; }
+      if (doc.sheet.projection === 'first' && noTop) { P.fy -= D + g; P.ry = P.fy; }
+      var boxes = [[P.fx, P.fy, W, H], [P.tx, P.ty, W, D], [P.rx, P.ry, D, H]].filter(function (q, i) { return !(i === 1 && noTop) && !(i === 2 && noRight); }).map(function (q) { return { x0: q[0] - q[2] / 2, x1: q[0] + q[2] / 2, y0: q[1] - q[3] / 2, y1: q[1] + q[3] / 2 }; });
       if (boxes.some(hitsBom)) return null;
       return P;
     }
@@ -856,7 +948,7 @@
       var bw0 = P.isoBox.x1 - P.isoBox.x0 - g / 2, bh0 = P.isoBox.y1 - P.isoBox.y0 - g / 2;
       return Iso.w * sv / 2 <= bw0 + 1e-9 && Iso.h * sv / 2 <= bh0 + 1e-9;
     }
-    function fits(sv) { return (Wm + Dm) * sv + g + ml + mr <= availW + 1e-9 && (Hm + Dm) * sv + g + mb + mt <= availH + 1e-9 && (isoFits(place(sv), sv) || isoFits(place(sv, true), sv)); }
+    function fits(sv) { return (Wm + DR0) * sv + gR + ml + mr <= availW + 1e-9 && (Hm + DT) * sv + gT + mb + mt <= availH + 1e-9 && (isoOpt ? !!(place(sv) || place(sv, true)) : isoFits(place(sv), sv) || isoFits(place(sv, true), sv)); }
     var SC = scalesFor(units);
     if (doc.sheet.autoScale || !doc.sheet.scale) {
       var s = SC[SC.length - 1];
@@ -2680,7 +2772,7 @@
   D.SHEET_KEYS = SHEET_KEYS; D.sheetCount = sheetCount; D.sheets = sheets; D.sheetIndex = sheetIndex; D.sheetDoc = sheetDoc; D.activateSheet = activateSheet;
   D.addSheet = addSheet; D.deleteSheet = deleteSheet; D.renameSheet = renameSheet; D.moveViewToSheet = moveViewToSheet;
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
-  D.standard3View = standard3View; D.extentsOf = extentsOf; D.layout = layoutViews; D.moveView = moveView; D.deleteView = deleteView; D.viewDependents = viewDependents; D.findView = findView;
+  D.standard3View = standard3View; D.partViews = partViews; D.plateOf = plateOf; D.extentsOf = extentsOf; D.layout = layoutViews; D.moveView = moveView; D.deleteView = deleteView; D.viewDependents = viewDependents; D.findView = findView;
   D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.autoDims = autoDims; D.modelItems = modelItems; D.dimSizes = dimSizes; D.dimGeometry = dimGeometry; D.DIM_SIZES = DIM_SIZES; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
   D.arcSlotsIn = arcSlotsIn; D.sketchOrdinates = sketchOrdinates; D.sketchDistances = sketchDistances;
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;

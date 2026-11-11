@@ -130,12 +130,68 @@ across the break read 60.000, crop / auxiliary / 1:4 label (SCALE 1 : 4) / hidde
 - Window ▸ the part (or the part tab under the sheet) closes the drawing and asks "Save changes to Draw1?" when it was
   changed; SolidWorks switches windows and keeps both open. Pinned by close-drawing-asks-to-save ("Don't Save (Window
   ▸ part)"); needs the user's call. rfLA saves first.
-- Rotate View to an angle other than a multiple of 90° is refused while the view holds dimensions, annotations, a break
-  or a crop (their h / v kinds have no meaning there); a new drawing's views carry centre marks, so in practice only an
+- ~~Rotate View to an angle other than a multiple of 90° is refused while the view holds dimensions, annotations, a break
+  or a crop~~ Fixed (rfLG, Round 4 finding 2): any angle; a break or a rectangular crop still 90° steps. Was: (their h / v kinds have no meaning there); a new drawing's views carry centre marks, so in practice only an
   Isometric or a bare view turns freely. SolidWorks turns them all.
 - A model / projected view at its own scale shows no SCALE under it unless Display label is on (rfCQ pins SolidWorks'
   default); the flat does (rfIW).
-- Make Drawing from Part always lays out the Standard 3 View; a flat-only print starts by deleting them (SolidWorks
+- ~~Make Drawing from Part always lays out the Standard 3 View;~~ Fixed (rfLG, Round 4 finding 1). Was: a flat-only print starts by deleting them (SolidWorks
   opens the View Palette instead).
 - `Drawing.newDrawing(model, { scale: '1:1' })` takes only [1, 1] (a string gives NaN views); the UI always passes the
   array.
+
+## Round 4 (lane drawflow4, group rfLG)
+
+Two changes the head decided, then four more drawings made with mouse and key events in headless Chrome
+(`tests/smoke/rfLG.js`; the console builds the parts, changes the model as its PropertyManagers would and reads the
+results), engine checks in `tests/kernel/rfLG.js`.
+
+| Flow | What was made | Result |
+|---|---|---|
+| 0 | File ▸ Make Drawing from Part on a 16 ga blank and on the formed bracket | Blank: Top (face) + Front (edge), 1:1, no isometric; bracket: Front / Top / Right + isometric upper right, its flat (bend notes) on Sheet2, Sheet1 shown; one undo step |
+| 1 | Rotate View 30° (right-click ▸ Rotate View) on a Top view with a 3.000 and a .750 | both stay on the hole centres at 30°, read the same, texts horizontal; the 3.000 dragged across its turned line; Ctrl+Z back square |
+| a | flat for the laser / brake: Autodimension ordinates from the lower-left, overall size by Smart Dimension clicks, Bend Table, a MATERIAL / THICKNESS ($PRPSHEET links) / GRAIN note; File ▸ Save Drawing as DXF / PDF / DWG | DXF audited (see 3), every note, bend note and dimension text at its sheet place in the DXF, PDF has them, DWG AC1015 |
+| b | Pinned plate assembly exploded (cap up 40), Make Drawing from Assembly, Auto Balloon, a third pin inserted | BOM Pin QTY 2 → 3 on the sheet, balloons keep items 1–3 attached; Ctrl+Z back to 2 |
+| c | sheet C, Isometric moved to Sheet2; Section A-A, Detail B, Auxiliary C-C, Break, Crop, a dimension in each, the flat dimensioned; then the 120° flange 2 → 2.5 and the Ø.500 cut suppressed | every view worked out again, the slanted flange edge +.500, the 6.000 across the break kept, the Ø.500 dangles, nothing dropped |
+| d | File ▸ Properties (Drawn by), Edit Sheet Format (COMPANY dragged), 2X Ø.281 → .344 by double-click, Revision Table row, Revision Symbol with leader, Revision Cloud; saved with the part and opened again | all kept after fix 3 |
+
+### Findings, ranked by how often a daily user hits them
+
+1. **Make Drawing from Part always gave Standard 3 View + Isometric (high). Fixed (decided by the head).**
+   `Drawing.partViews(doc, mesh, units, { model, build })` (drawing-sheet.js), used by File ▸ Make Drawing from Part
+   (`makeDrawing({ layout: 'part' })`; `anvil.drawing.make()` and `standard3View` unchanged unless asked): a flat
+   plate (`Drawing.plateOf`: every vertex on one of two levels along the thinnest axis, that thickness ≤ ¼ of the next
+   size) gets its face view and one edge view (Front + Top or Right for the Front plane, Top + Front, Right + Front);
+   any other part Front / Top / Right and the isometric upper right only when it fits there at half the sheet scale or
+   more (`layout(..., { isoOptional })`: the scale is the orthographic views' own); a sheet-metal part with bends also
+   its flat at the sheet scale on a clear spot of Sheet1, else on Sheet2 (`addFlatView fit`), Sheet1 left active.
+   `layout` leaves out a missing Top / Right row or column (a two-view pair is centred and scaled as itself). Tests:
+   kernel rfLG 1–2, smoke rfLG 0. Smoke rfKT a / c, rfKM job a and rfKX (which place their own flat or need three views
+   of a plate) now start from `anvil.drawing.make()` (one line each).
+2. **Rotate View refused any angle but 90° steps on a dimensioned view (high for long parts). Fixed.** As SolidWorks,
+   the view turns by any angle and its dimensions, centre marks and notes turn with the geometry: a horizontal /
+   vertical / ordinate / baseline dimension keeps measuring along its turned axis (`d.rot`; `at`, `tx`, `side` stay in
+   that frame, `Drawing._.dimAxis` / `dimSpan` measure it, `reattachUserDim` turns ordinate values), drawn by the render
+   in a copy turned back and then turned onto the sheet (`dimPrims` wrapper over `dimPrims0`), texts kept ANSI
+   unidirectional (horizontal stays horizontal, ordinate texts upright, a tolerance stack moves as one); DXF R2000
+   DIMENSION at the angle (group 50), PDF / SVG from the same primitives; dragging moves it along / across its turned
+   line; back on a multiple of 90° it is a plain h / v again (0° restores kinds, `at`, side). Centre marks turn
+   (`an.rot`), anchored note / symbol leaders follow (`anchor.snap`). A break or a rectangular crop still turns in 90°
+   steps (their sides are along the view's axes). Tests: kernel rfLG 3, smoke rfLG 1.
+3. **Editing a "2X Ø.281" model dimension changed one of the two holes (medium).** Repro: Make Drawing from Part on the
+   bracket (two Ø.281 holes, separate features), double-click 2X Ø.281, .344, ✓. Expected: both holes Ø.344 (the
+   dimension names both). Got: one hole Ø.344, the other Ø.281, the sheet then read Ø.344 and Ø.281. Fix:
+   drawing-ui-tools.js `applyDimensionPM` drives the sketch circle of every same-size circle of the view a counted
+   diameter model item stands for (`sameSizeSources`), tried on a copy first. Test: smoke rfLG d.
+4. **DxfCheck.audit calls any two arrowheads on one layer "duplicate SOLID" (medium, test tooling). Left (headless
+   lane).** `headless/dxf-check.js` `shape()` has no case for SOLID, so every SOLID's signature is its type and layer;
+   a drawing DXF with two dimensions fails the audit. rfLG a compares the SOLIDs by their corners instead and ignores
+   only that message.
+5. **No per-view exploded state (medium for assembly prints). Left.** The drawing shows the assembly as it is in the
+   model: exploded, every view is exploded (SolidWorks: a view's Show in exploded state, so the three views stay
+   collapsed and only the isometric explodes). Needs a second (exploded) mesh per view: a drawing + assembly change.
+6. Seen, not changed: on the 6 × 3 bracket at 1:1 on ANSI B the flat has no room on Sheet1 (it goes to Sheet2, by the
+   rule); an Auxiliary View off the 120° flange has room on sheet C only after the isometric goes to Sheet2 (its
+   preview slides along the projection line over other views, as SolidWorks lets it); Insert Model Items on the
+   bracket gives no flange length (SolidWorks brings the Edge Flange's length when it is marked for drawings); the
+   DWG is checked by its AC1015 header only in the browser (no DWG reader there).

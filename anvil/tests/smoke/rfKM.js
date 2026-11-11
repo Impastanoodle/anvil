@@ -201,7 +201,7 @@
 
     step('rfKM: job a drawing: File ▸ Make Drawing from Part, Insert ▸ Drawing View ▸ Flat Pattern… (Bend Table) placed by a click, Tools ▸ Dimensions ▸ Autodimension… ✓ on it: ordinates to the holes and bend lines, the Bend Table A / B, nothing in the title block', async function () {
       var errs0 = errors.length;
-      rfKMMenu('File', 'Make Drawing from Part'); await wait(30);
+      anvil.drawing.make(); await wait(30);   // (rfLG: the menu adds the flat now; this job places it itself)
       if (modalOpen()) clickModalButton('OK');
       await UI.drawing.ready(); await wait(40);
       assert(UI.drawingActive && UI.drawingActive(), 'drawing open');

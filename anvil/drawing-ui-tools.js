@@ -1024,7 +1024,8 @@
       ].concat(moveToSheetItems(v), [{ label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }]);
   }
   // (rfLA) SolidWorks' Rotate Drawing View dialog: Drawing view angle (degrees, counter-clockwise), Apply; one undo
-  // step. A view with dimensions or annotations turns in steps of 90° (Drawing.setViewRotation says so).
+  // step. Any angle: its dimensions, centre marks and notes turn with it (rfLG); a break or a rectangular crop turns in
+  // steps of 90° (Drawing.setViewRotation says so).
   function cmdRotateView(id) {
     var v = Drawing.findView(doc(), id);
     if (!v) return;
@@ -1733,18 +1734,38 @@
     return { tol: tol,
       prec: v.prec === 'auto' || v.prec == null ? null : +v.prec, label: label.trim() === '' || label === '<DIM>' ? null : label, flip: !!v.flip };
   }
+  // (rfLG) the model sources of a diameter model item that counts several holes (d.count > 1): src, then the sketch
+  // circle of every other visible / hidden circle of the view with the same size (each once)
+  function sameSizeSources(d, src) {
+    var out = [src];
+    if (d.kind !== 'dia' || !(d.count > 1) || !d.auto) return out;
+    var w = sheetView(d.view);
+    if (!w || !w.proj || !w.proj.circles) return out;
+    var tol = Math.max(1e-9, d.value * 1e-6), key = function (s1) { var o = {}; Object.keys(s1).forEach(function (k) { if (k !== 'value' && k !== 'featureName' && k !== 'expr') o[k] = s1[k]; }); return JSON.stringify(o); };
+    var seen = {}; seen[key(src)] = 1;
+    (w.proj.circles.visible || []).concat(w.proj.circles.hidden || []).forEach(function (c) {
+      if (Math.abs(2 * c.r - d.value) > tol) return;
+      var s2 = null;
+      try { s2 = Drawing.dimSource(App.model, App.build, w, { kind: 'dia', c: c.c, r: c.r, value: 2 * c.r, auto: true }); } catch (e) { s2 = null; }
+      if (s2 && !seen[key(s2)]) { seen[key(s2)] = 1; out.push(s2); }
+    });
+    return out;
+  }
   function applyDimensionPM(d, src, v, live, same) {   // live: the PM already applied its props (one undo step taken); same: (rfKT) nothing changed
     var props = dimPropsFromPM(v), val = +v.value;
     if (src && isFinite(val) && Math.abs(val - d.value) > 1e-9) {
+      // (rfLG) a "2X Ø.281" model item stands for every hole of that size in the view: each one's own sketch circle is
+      // driven, so the holes the dimension names all change (one hole changed and the other left made the 2X false)
+      var srcs = sameSizeSources(d, src);
       // drive the part: try it on a copy first, so a refused value leaves no undo step
-      try { Drawing.driveDim(JSON.parse(JSON.stringify(App.model)), src, val); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return false; }
+      try { var cp = JSON.parse(JSON.stringify(App.model)); srcs.forEach(function (s1) { Drawing.driveDim(cp, s1, val); }); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return false; }
       if (!live) UI.pushUndo();
       D.dirty = true;
       var t = dimTarget(doc(), d);
       if (t) Drawing.setDimProps(t, props);
       cleanDimProps(doc());
-      Drawing.driveDim(App.model, src, val);
-      UI.setStatus('Dimension ' + Drawing.numText(d.value, units()) + ' → ' + Drawing.numText(val, units()) + ': ' + src.featureName + ' ' + src.what + ' changed, rebuilding.');
+      srcs.forEach(function (s1) { Drawing.driveDim(App.model, s1, val); });
+      UI.setStatus('Dimension ' + Drawing.numText(d.value, units()) + ' → ' + Drawing.numText(val, units()) + ': ' + srcs.map(function (s1) { return s1.featureName; }).join(', ') + ' ' + src.what + ' changed, rebuilding.');
       return UI.rebuild().then(function () { if (D.active) render(); });
     }
     if (live) { var t2 = dimTarget(doc(), d); if (t2) Drawing.setDimProps(t2, props); cleanDimProps(doc()); UI.autosave(); render(); } else if (!same) setDimProps(d, props);   // (rfKT) ✓ with nothing changed (the next Smart Dimension pick closes the PM) makes no empty undo step
@@ -1953,7 +1974,7 @@
   function snapDim(d, w, props) {
     D.snapGuide = null;
     var tol = pxToPaper(6), best = null, bd = tol, me = dimRef(d);
-    if ((d.kind === 'h' || d.kind === 'v') && props.at != null) {
+    if ((d.kind === 'h' || d.kind === 'v') && props.at != null && !d.rot) {
       var ax = d.kind === 'h' ? 1 : 0, cur = w.toSheet(ax ? [0, props.at] : [props.at, 0])[ax];
       D.sheet.dims.forEach(function (o) {
         if (o.kind !== d.kind || o.lineAt == null || dimMatches(me, o) || !o.box) return;
@@ -1986,7 +2007,13 @@
       var tb = d.tbox && isFinite(d.tbox.x0) ? [(d.tbox.x0 + d.tbox.x1) / 2, (d.tbox.y0 + d.tbox.y1) / 2] : dg.start;
       var u0 = w.breakMap.inv(tb), u1 = w.breakMap.inv([tb[0] + dx, tb[1] + dy]); dx = u1[0] - u0[0]; dy = u1[1] - u0[1];
     }
-    if (d.kind === 'h') { props.at = d.lineAt + dy / w.scale; props.tx = (d.txNow != null ? d.txNow : d.tx || 0) + dx; }
+    if ((d.kind === 'h' || d.kind === 'v') && d.rot) {
+      // (rfLG) a dimension turned with its view: the pointer's move taken along / across its turned line
+      var rr = d.rot * Math.PI / 180, ux = [Math.cos(rr), Math.sin(rr)], uy = [-ux[1], ux[0]], mx = dx * ux[0] + dy * ux[1], my = dx * uy[0] + dy * uy[1];
+      if (d.kind === 'h') { props.at = d.lineAt + my / w.scale; props.tx = (d.txNow != null ? d.txNow : d.tx || 0) + mx; }
+      else { props.at = d.lineAt + mx / w.scale; props.tx = (d.txNow != null ? d.txNow : d.tx || 0) + my; }
+    }
+    else if (d.kind === 'h') { props.at = d.lineAt + dy / w.scale; props.tx = (d.txNow != null ? d.txNow : d.tx || 0) + dx; }
     else if (d.kind === 'v') { props.at = d.lineAt + dx / w.scale; props.tx = (d.txNow != null ? d.txNow : d.tx || 0) + dy; }
     else if (d.kind === 'aligned') {
       var a = w.toSheet(d.a), b = w.toSheet(d.b), t = [b[0] - a[0], b[1] - a[1]], L = Math.hypot(t[0], t[1]) || 1; t = [t[0] / L, t[1] / L];

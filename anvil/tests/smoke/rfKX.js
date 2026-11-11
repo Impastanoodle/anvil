@@ -41,7 +41,7 @@
       await anvil.newPart(); await idle();
       await anvil.run(RFKX_PLATE); await idle();
       assert(!Object.keys(anvil.summary().errors || {}).length, 'part: ' + JSON.stringify(anvil.summary().errors));
-      rfKXMenu('File', 'Make Drawing from Part'); await wait(30);
+      anvil.drawing.make(); await wait(30);   // (rfLG: the menu lays out the part's own views now; this job keeps the Standard 3 View)
       if (modalOpen()) clickModalButton('OK');
       await rfKXDone(); await wait(20);
       assert(UI.drawingActive(), 'drawing open');

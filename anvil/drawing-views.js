@@ -470,6 +470,21 @@
   // so a moved full-length edge beats a short collinear leftover; circles by centre (a hole whose size changed), then
   // by radius near the old centre (a hole that moved). The dimension then takes the new geometry and value. With no match it is
   // flagged `dangling` and keeps its last geometry (drawn in the dangling colour), so undoing the change reattaches it.
+  // (rfLG) dimAxis(kind, rot) -> the unit direction a horizontal / vertical dimension measures along in its view's
+  // frame: [1, 0] / [0, 1] turned by rot degrees (d.rot: the view was turned by Rotate View at an angle that is not a
+  // multiple of 90°, and the dimension went with the geometry); null for any other kind. dimSpan(d, A, B): its value.
+  function dimAxis(kind, rot) {
+    if (kind !== 'h' && kind !== 'v') return null;
+    var r = (+rot || 0) * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+    return kind === 'h' ? [c, s] : [-s, c];
+  }
+  function dimSpan(d, A, B) {
+    var t = dimAxis(d.kind, d.rot);
+    if (!t) return Math.hypot(B[0] - A[0], B[1] - A[1]);
+    if (!d.rot) return Math.abs(B[d.kind === 'h' ? 0 : 1] - A[d.kind === 'h' ? 0 : 1]);
+    return Math.abs((B[0] - A[0]) * t[0] + (B[1] - A[1]) * t[1]);
+  }
+  _.dimAxis = dimAxis; _.dimSpan = dimSpan;
   function reattachDim(d, pr) {
     var b = pr.bounds, size = Math.max(1e-9, Math.hypot(b.umax - b.umin, b.vmax - b.vmin)), tol = size * 1e-6, reach = size * 0.25;
     var best = null, bs = Infinity;
@@ -546,7 +561,7 @@
     var m0 = [hit.m[0], hit.m[1]], m1 = [hit.m[2], hit.m[3]], bd = bound(hit.m);
     d.a = hit.forward ? m0 : m1; d.b = hit.forward ? m1 : m0;
     if (bd) d.bound = bd; else delete d.bound;
-    d.value = d.kind === 'h' ? Math.abs(d.b[0] - d.a[0]) : d.kind === 'v' ? Math.abs(d.b[1] - d.a[1]) : hit.hi - hit.lo;
+    d.value = d.kind === 'h' || d.kind === 'v' ? dimSpan(d, d.a, d.b) : hit.hi - hit.lo;
     delete d.dangling;
     return true;
   }

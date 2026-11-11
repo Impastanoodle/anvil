@@ -608,6 +608,11 @@
       var ok = [d.base].concat(d.refs).map(function (r) { return r.bend != null ? reattachBendRef(r, pr) : reattachDim(r, pr); }).every(Boolean);   // (rfJM: bend lines)
       if (ok) delete d.dangling; else d.dangling = true;
       var ax = d.dir === 'v' ? 1 : 0, b0 = refPos(d.base, ax);
+      if (d.rot) {   // (rfLG) a set turned with its view (Rotate View at an angle): the values along its turned axis
+        var oax = _.dimAxis(ax ? 'v' : 'h', d.rot), op = function (r) { return refPos(r, 0) * oax[0] + refPos(r, 1) * oax[1]; };
+        b0 = op(d.base); d.values = d.refs.map(function (r) { return op(r) - b0; });
+        return ok;
+      }
       d.values = d.refs.map(function (r) { return refPos(r, ax) - b0; });
       return ok;
     }
@@ -752,12 +757,13 @@
     var A = refPt(r1).slice(), B = refPt(r2).slice();
     if (d.minmax && (r1.r || r2.r)) {
       // circle to circle (or to a point), Shift: the nearest / farthest sides along what the dimension measures
-      var dir = d.kind === 'h' ? [B[0] >= A[0] ? 1 : -1, 0] : d.kind === 'v' ? [0, B[1] >= A[1] ? 1 : -1] : unit([B[0] - A[0], B[1] - A[1]]), sgn = d.minmax === 'min' ? 1 : -1;
+      var dax = _.dimAxis(d.kind, d.rot), dsg = dax && (B[0] - A[0]) * dax[0] + (B[1] - A[1]) * dax[1] < 0 ? -1 : 1;
+      var dir = dax ? [dax[0] * dsg, dax[1] * dsg] : unit([B[0] - A[0], B[1] - A[1]]), sgn = d.minmax === 'min' ? 1 : -1;
       if (r1.r) A = [A[0] + dir[0] * r1.r * sgn, A[1] + dir[1] * r1.r * sgn];
       if (r2.r) B = [B[0] - dir[0] * r2.r * sgn, B[1] - dir[1] * r2.r * sgn];
     }
     d.a = A; d.b = B;
-    d.value = d.kind === 'h' ? Math.abs(B[0] - A[0]) : d.kind === 'v' ? Math.abs(B[1] - A[1]) : Math.hypot(B[0] - A[0], B[1] - A[1]);
+    d.value = _.dimSpan(d, A, B);
     return d;
   }
   // a point to an edge's line: a horizontal edge -> a vertical dimension to the edge's nearer end, a vertical edge -> a
@@ -767,7 +773,7 @@
     if (d.kind === 'h' || d.kind === 'v') q = Math.hypot(er.a[0] - p[0], er.a[1] - p[1]) <= Math.hypot(er.b[0] - p[0], er.b[1] - p[1]) ? er.a.slice() : er.b.slice();
     else { var s = (p[0] - er.a[0]) * te[0] + (p[1] - er.a[1]) * te[1]; q = [er.a[0] + te[0] * s, er.a[1] + te[1] * s]; }
     d.a = edgeFirst ? q : p.slice(); d.b = edgeFirst ? p.slice() : q;
-    d.value = d.kind === 'h' ? Math.abs(q[0] - p[0]) : d.kind === 'v' ? Math.abs(q[1] - p[1]) : Math.hypot(q[0] - p[0], q[1] - p[1]);
+    d.value = _.dimSpan(d, p, q);
     return d;
   }
   function smartDim(p1, p2, at, opts) {
@@ -1285,7 +1291,7 @@
     function view2(p) { return [V.dot(p, F.u), V.dot(p, F.v)]; }
     var t2 = null, t3 = null, dm = null;
     if (d.kind !== 'dia') {
-      t2 = d.kind === 'h' ? [1, 0] : d.kind === 'v' ? [0, 1] : (function () { var x = d.b[0] - d.a[0], y = d.b[1] - d.a[1], L = Math.hypot(x, y); return [x / L, y / L]; })();
+      t2 = d.kind === 'h' || d.kind === 'v' ? _.dimAxis(d.kind, d.rot) : (function () { var x = d.b[0] - d.a[0], y = d.b[1] - d.a[1], L = Math.hypot(x, y); return [x / L, y / L]; })();
       t3 = V.add(V.scale(F.u, t2[0]), V.scale(F.v, t2[1]));
       dm = [(d.a[0] + d.b[0]) / 2, (d.a[1] + d.b[1]) / 2];
     }
@@ -1799,11 +1805,14 @@
     function mark(cs, rr, size, ext, only) {
       // the small cross, then (extended lines) a gap and a centre line past the circle on each side
       var s = size * k, g = MARK_GAP * k, e = MARK_EXT * k;
-      line([cs[0] - s, cs[1]], [cs[0] + s, cs[1]]); line([cs[0], cs[1] - s], [cs[0], cs[1] + s]);
+      // (rfLG) an.rot: the mark turned with its view (Rotate View at an angle; SolidWorks' Rotate center marks with view)
+      var mr = (+an.rot || 0) * Math.PI / 180, mc = Math.cos(mr), ms = Math.sin(mr), X = [mc, ms], Y = [-ms, mc];
+      line([cs[0] - X[0] * s, cs[1] - X[1] * s], [cs[0] + X[0] * s, cs[1] + X[1] * s]); line([cs[0] - Y[0] * s, cs[1] - Y[1] * s], [cs[0] + Y[0] * s, cs[1] + Y[1] * s]);
       if (!ext || rr + e <= s + g) return;
       [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d) {
         if (only && !only(d)) return;
-        line([cs[0] + d[0] * (s + g), cs[1] + d[1] * (s + g)], [cs[0] + d[0] * (rr + e), cs[1] + d[1] * (rr + e)], 'center');
+        var dd = [d[0] * X[0] + d[1] * Y[0], d[0] * X[1] + d[1] * Y[1]];
+        line([cs[0] + dd[0] * (s + g), cs[1] + dd[1] * (s + g)], [cs[0] + dd[0] * (rr + e), cs[1] + dd[1] * (rr + e)], 'center');
       });
     }
     if (an.type === 'centerMark') {
@@ -2156,7 +2165,8 @@
         if (!reattachRef(ref, w.proj)) { a.dangling = true; return; }
         delete a.dangling;
         var np = anchorPoint(ref, an.t);
-        if (Math.hypot(np[0] - an.pt[0], np[1] - an.pt[1]) > 1e-12) {
+        if (an.snap) { a.leader = w.toSheet(np); delete an.snap; }   // (rfLG) its view was turned (setViewRotation)
+        else if (Math.hypot(np[0] - an.pt[0], np[1] - an.pt[1]) > 1e-12) {
           var s0 = w.toSheet(an.pt), s1 = w.toSheet(np);
           a.leader = [a.leader[0] + s1[0] - s0[0], a.leader[1] + s1[1] - s0[1]];
         }
