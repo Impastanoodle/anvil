@@ -629,7 +629,8 @@
       if (UI.hasPM && UI.hasPM()) return;
       e.stopImmediatePropagation(); e.preventDefault();
       UI.closeMenus();
-      if (D.tool) { D.tool = null; D.pending = null; D.hover = null; UI.refreshRibbon(); UI.setStatus('Ready'); } else D.sel = null;
+      if (D.tool === 'holecallout' && D.pending && D.pending.pick) { D.pending = {}; UI.setStatus('Hole Callout: click the edge of a hole in a view. Esc ends.'); }   // (rfKX) Esc drops the picked hole; the tool stays
+      else if (D.tool) { D.tool = null; D.pending = null; D.hover = null; UI.refreshRibbon(); UI.setStatus('Ready'); } else D.sel = null;
       drawOverlay(); renderTree();
       return;
     }
@@ -804,7 +805,7 @@
       },
       // (rfCQ) viewLabel(id, on | null): a view's Display label (null: its kind's default); one undo step, the summary
       viewLabel: function (id, on) { return annotApi(function (dc) { return Drawing.setViewLabel(dc, id, on); }); },
-      deleteView: function (id) { deleteView(id); return summary(); },
+      deleteView: function (id) { deleteView(id, true); return summary(); },   // (rfKX) as Confirm Delete ▸ Yes
       tangent: function (id, mode) { setViewTangent(id, mode); return later(); },   // (rfDR: the new edges come from the worker)
       // assembly drawings: Auto Balloon on a view (default: the selected view, else the isometric), the Bill of
       // Materials (anchor 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left', or { x, y } for its top-left corner),

@@ -56,7 +56,11 @@
     await rfDDDrawing();
     var w = rfDDFront(), n0 = UI.App.undo.length;
     UI.drawing.holeCallout(); await wait(10);
-    rfDDClick(w.toSheet([2.1875, 1])); await idle(); await UI.drawing.ready(); await wait(20);
+    // (rfKX) two clicks, as SolidWorks: the end arc picks the slot, the callout follows the pointer, the next click places it
+    var se = w.toSheet([2.1875, 1]), sp = [se[0] + 0.6, se[1] + 0.5];
+    rfDDClick(se); await wait(10);
+    assert(UI.App.undo.length === n0 && UI.drawing.state.pending && UI.drawing.state.pending.pick, 'the first click picks the slot end, nothing placed yet');
+    rfDDClick(sp); await idle(); await UI.drawing.ready(); await wait(20);
     var sd = UI.drawing.state.sheet.dims.filter(function (d) { return d.view === w.view.id && d.slotCallout; })[0];
     assert(sd && sd.text === '.375 X 1.375 SLOT', 'slot callout: ' + JSON.stringify(sd && sd.text) + ' | ' + UI.drawing.state.sheet.dims.map(function (d) { return d.text; }).join(' | '));
     assert(UI.App.undo.length === n0 + 1, 'one undo step');

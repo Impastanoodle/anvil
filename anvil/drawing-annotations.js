@@ -38,7 +38,7 @@
     if (inch && ms >= 1) ms = Math.round(ms / 25.4 * 1e4) / 1e4;   // (a pre-rfV paper-mm value, shown in inches)
     return { autoCenterMarks: !!o.autoCenterMarks, autoCenterlines: !!o.autoCenterlines, markSize: ms,
       extLines: o.extLines !== false, balloonQty: !!o.balloonQty, flatDims: o.flatDims === true, flatSizeNote: !!o.flatSizeNote,
-      bendNotes: o.bendNotes === 'table' || o.bendNotes === 'none' ? o.bendNotes : 'notes', dimPrec: st.prec != null && +o.dimPrec > st.prec ? Math.min(8, Math.round(+o.dimPrec)) : st.prec, fractions: st.fractions, fracDenom: st.denom };   // (rfIF: up to 8 places)
+      bendNotes: o.bendNotes === 'table' || o.bendNotes === 'none' ? o.bendNotes : 'notes', dimPrec: st.prec != null && +o.dimPrec > st.prec ? Math.min(8, Math.round(+o.dimPrec)) : st.prec, fractions: st.fractions, fracDenom: st.denom, tolPrec: st.tolPrec };   // (rfIF: up to 8 places; rfKX: tolPrec, null = Same as nominal)
   }
   function nextAnnotId(doc) { doc.nextAnnot = (doc.nextAnnot || 0) + 1; return doc.nextAnnot; }
 
@@ -1188,7 +1188,11 @@
 
   // ------------------------------------------------------------------ dimension text: precision, tolerance, text
   // d.prec (decimal places; default: up to 2 in mm / 3 in inches, trailing zeros dropped), d.tol = { type: 'none' |
-  // 'bilateral' | 'limit' | 'symmetric', plus, minus, prec }, d.label (dimension text, "<DIM>" is the value)
+  // 'bilateral' | 'limit' | 'symmetric', plus, minus, prec }, d.label (dimension text, "<DIM>" is the value).
+  // (rfKX) tol.prec is SolidWorks' Tolerance precision: places, or 'nominal' (Same as nominal: the value's precision);
+  // unset: the document's (Document Properties > Dimensions > Tolerance precision, _.DIMSTYLE.tolPrec), whose default
+  // is Same as nominal. So +.010 / -.005 under a 2-place nominal reads +.010 / -.005 at .123 (trailing zeros as the
+  // value: kept on inch drawings and with a set precision).
   var TOL_TYPES = [['none', 'None'], ['bilateral', 'Bilateral'], ['limit', 'Limit'], ['symmetric', 'Symmetric']];
   // (an explicit precision on an inch drawing still drops the leading zero, ANSI: .03, not 0.03)
   function numText(x, units, prec) {
@@ -1214,10 +1218,11 @@
     }
     var out = { main: base(d.value), upper: null, lower: null };
     if (tol) {
-      var tp = tol.prec != null && tol.prec !== '' ? +tol.prec : prec, plus = Math.abs(+tol.plus || 0), minus = Math.abs(+tol.minus || 0);
+      var isAng = d.kind === 'angle', plus = Math.abs(+tol.plus || 0), minus = Math.abs(+tol.minus || 0);
+      var docTp = !isAng && _.DIMSTYLE && _.DIMSTYLE.tolPrec != null ? _.DIMSTYLE.tolPrec : null;
+      var tp = tol.prec === 'nominal' ? prec : tol.prec != null && tol.prec !== '' && +tol.prec >= 0 ? +tol.prec : docTp != null ? docTp : prec;
       // rfBC: an angle's tolerance is an angle (ASME Y14.5: degrees keep the leading zero, ±0.5°, in inch drawings too);
       // only the lengths of an inch drawing drop it (.500)
-      var isAng = d.kind === 'angle';
       var tn = isAng ? function (x) { return (tp != null && +tp >= 0 ? (+x).toFixed(+tp) : fmtAngle(x)) + '°'; } : function (x) { return numText(x, units, tp); };
       if (tol.type === 'symmetric') out.main += ' ±' + tn(plus);
       else if (tol.type === 'bilateral') {
@@ -1922,6 +1927,21 @@
     return { prims: out, dangling: dangling, text: text, info: info };
   }
 
+  // (rfKX) holeCalloutLines(doc, w, mesh, model, { c, r }) -> { lines, th (text height, paper units), shoulder, gap }:
+  // the text a Hole Callout on that circle of computed view w will read, with the drawing's dimension style, for the
+  // Hole Callout tool's preview that follows the pointer before the second click places it
+  function holeCalloutLines(doc, w, mesh, model, spec) {
+    var units = model && model.units === 'in' ? 'in' : 'mm', k = units === 'in' ? 1 / 25.4 : 1;
+    var ps = _.DIMSTYLE, pg = _.DIMGEO;
+    _.DIMSTYLE = D.dimStyle(doc); _.DIMGEO = D.dimGeometry(doc);
+    try {
+      var an = { type: 'holeCallout', c: [+spec.c[0], +spec.c[1]], r: +spec.r, lead: [1, 1] };
+      var r = annotationPrims(an, w, k, mesh, doc, units, partThreads(model), holeSizeNames(model), holeEnds(model));
+      var t = r.prims.filter(function (x) { return x.k === 'text'; })[0];
+      return { lines: r.info && r.info.lines ? r.info.lines.slice() : [r.text], th: t ? t.h : 3.5 * k, shoulder: _.SHOULDER * k, gap: _.TEXT_GAP * k };
+    } finally { _.DIMSTYLE = ps; _.DIMGEO = pg; }
+  }
+  D.holeCalloutLines = holeCalloutLines;
   D.circlesAlong = circlesAlong; D.holeInfo = holeInfo; D.holeText = holeText; D.cylAxes = cylAxes; D.fitCircle = fitCircle; D.lineIntervals = lineIntervals;
   D.addCenterMark = addCenterMark; D.autoCenterMarks = autoCenterMarks; D.addCenterline = addCenterline; D.autoCenterlines = autoCenterlines; D.autoInsert = autoInsert;
   D.addHoleCallout = addHoleCallout; D.slotAt = slotAt; D.addSlotCallout = addSlotCallout; D.insertWizardCallouts = insertWizardCallouts; D.wizardHoles = wizardHoles; D.findAnnotation = findAnnotation; D.deleteAnnotation = deleteAnnotation; D.docOptions = docOptions; D.markPaper = markPaper;

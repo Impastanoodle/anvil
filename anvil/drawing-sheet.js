@@ -851,17 +851,41 @@
     if (depth > 20) return;
     doc.views.forEach(function (c) { if (c.parent === id && c.align) { c.x += dx; c.y += dy; shiftAligned(doc, c.id, dx, dy, depth + 1); } });
   }
-  // deleteView(doc, id): removes a view with the section and detail views cut from it (they cannot exist without
-  // it); projected views keep their frame and become ordinary views
-  function deleteView(doc, id) {
-    var gone = {}; gone[id] = 1;
-    for (var changed = true; changed;) {
-      changed = false;
-      doc.views.forEach(function (v) { if (!gone[v.id] && gone[v.parent] && (v.kind === 'section' || v.kind === 'detail')) { gone[v.id] = 1; changed = true; } });
-    }
+  // deleteView(doc, id, opts): removes a view with the section and detail views cut from it (they cannot exist without
+  // it); projected views keep their frame and become ordinary views. (rfKX) opts.dependents: as SolidWorks' Delete
+  // with its Confirm Delete answered Yes: every view made from it (projected ones too, and their children) goes, and
+  // so do the notes, symbols (weld, surface finish, datum, GTol ...) and Hole Tables that belong to any of those views
+  // (a.view: a leader on the view or placed on it); the dimensions, centre marks, hole callouts and balloons live on
+  // the view and always go with it. Notes and tables on the sheet itself stay. Returns the number of views removed.
+  function deleteView(doc, id, opts) {
+    var dep = viewDependents(doc, id, opts && opts.dependents), gone = {};
+    dep.views.forEach(function (q) { gone[q] = 1; });
     doc.views = doc.views.filter(function (v) { return !gone[v.id]; });
     doc.views.forEach(function (v) { if (gone[v.parent]) { v.parent = null; v.align = null; } });
-    return Object.keys(gone).length;
+    if (opts && opts.dependents) ['notes', 'symbols', 'holeTables'].forEach(function (k) {
+      if (doc[k] && doc[k].some(function (a) { return a && gone[a.view]; })) doc[k] = doc[k].filter(function (a) { return !(a && gone[a.view]); });
+    });
+    return dep.views.length;
+  }
+  // viewDependents(doc, id, all) -> { views: [id, ...the views that go with it], children: [{ id, name }] (the views
+  // made from it that go too), dims, annotations, balloons, notes, symbols, holeTables (counts of what goes) }: the
+  // Confirm Delete list. all: every view made from it (deleteView's opts.dependents); else only the section and
+  // detail views (always deleted), and notes / symbols / Hole Tables are not counted (they stay on the sheet)
+  function viewDependents(doc, id, all) {
+    var gone = {}, ids = [id], views = doc.views || [];
+    gone[id] = 1;
+    for (var changed = true; changed;) {
+      changed = false;
+      views.forEach(function (v) { if (!gone[v.id] && gone[v.parent] && (all || v.kind === 'section' || v.kind === 'detail')) { gone[v.id] = 1; ids.push(v.id); changed = true; } });
+    }
+    var out = { views: ids, children: [], dims: 0, annotations: 0, balloons: 0, notes: 0, symbols: 0, holeTables: 0 };
+    views.forEach(function (v) {
+      if (!gone[v.id]) return;
+      if (v.id !== id) out.children.push({ id: v.id, name: v.name || (v.label ? (v.kind === 'section' ? 'Section View ' : v.kind === 'detail' ? 'Detail View ' : 'View ') + v.label : (v.orient || 'Drawing View' + v.id)) });
+      out.dims += (v.dims || []).length; out.annotations += (v.annotations || []).length; out.balloons += (v.balloons || []).length;
+    });
+    if (all) ['notes', 'symbols', 'holeTables'].forEach(function (k) { out[k] = (doc[k] || []).filter(function (a) { return a && gone[a.view]; }).length; });
+    return out;
   }
   function findView(doc, id) { for (var i = 0; i < doc.views.length; i++) if (doc.views[i].id === id) return doc.views[i]; return null; }
 
@@ -904,10 +928,12 @@
     return (+x < 0 ? '-' : '') + s;
   }
   // dimStyle(doc) -> { prec, fractions, denom }: the drawing's dimension style from its Document Properties
-  // (doc.options.dimPrec, fractions, fracDenom); prec null is the default for the units
+  // (doc.options.dimPrec, fractions, fracDenom); prec null is the default for the units. (rfKX) tolPrec: Document
+  // Properties > Dimensions > Tolerance precision (doc.options.tolPrec, places), null: Same as nominal
   function dimStyle(doc) {
     var o = (doc && doc.options) || {};
-    return { prec: o.dimPrec != null && o.dimPrec !== '' && +o.dimPrec >= 0 ? Math.min(8, Math.round(+o.dimPrec)) : null, fractions: !!o.fractions, denom: +o.fracDenom > 0 ? +o.fracDenom : 64 };
+    return { prec: o.dimPrec != null && o.dimPrec !== '' && +o.dimPrec >= 0 ? Math.min(8, Math.round(+o.dimPrec)) : null, fractions: !!o.fractions, denom: +o.fracDenom > 0 ? +o.fracDenom : 64,
+      tolPrec: o.tolPrec != null && o.tolPrec !== '' && +o.tolPrec >= 0 ? Math.min(8, Math.round(+o.tolPrec)) : null };
   }
   // (rfT) the dimension style's sizes (Document Properties > Dimensions), in the drawing's units: ANSI inch (ASME
   // Y14.2 / SolidWorks' ANSI template) .125 text, .125 x .042 arrows (3:1), a .0625 gap from the part and .125 beyond
@@ -2585,7 +2611,7 @@
   D.SHEET_KEYS = SHEET_KEYS; D.sheetCount = sheetCount; D.sheets = sheets; D.sheetIndex = sheetIndex; D.sheetDoc = sheetDoc; D.activateSheet = activateSheet;
   D.addSheet = addSheet; D.deleteSheet = deleteSheet; D.renameSheet = renameSheet; D.moveViewToSheet = moveViewToSheet;
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
-  D.standard3View = standard3View; D.extentsOf = extentsOf; D.layout = layoutViews; D.moveView = moveView; D.deleteView = deleteView; D.findView = findView;
+  D.standard3View = standard3View; D.extentsOf = extentsOf; D.layout = layoutViews; D.moveView = moveView; D.deleteView = deleteView; D.viewDependents = viewDependents; D.findView = findView;
   D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.autoDims = autoDims; D.modelItems = modelItems; D.dimSizes = dimSizes; D.dimGeometry = dimGeometry; D.DIM_SIZES = DIM_SIZES; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
   D.arcSlotsIn = arcSlotsIn; D.sketchOrdinates = sketchOrdinates; D.sketchDistances = sketchDistances;
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;

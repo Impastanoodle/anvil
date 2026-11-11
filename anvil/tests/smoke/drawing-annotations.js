@@ -49,6 +49,7 @@
     assert(lin.length === 1 && lin[0].text === 'Linear Center Mark (2)' && UI.drawing.state.tool === null, 'linear mark ' + JSON.stringify(lin));
     ribbonButton('Hole Callout').click();
     sheetMouse('mousedown', [x0 + 20 + 8, y1 - 100]);
+    sheetMouse('mousedown', [x0 + 20 + 8, y1 - 100]);   // (rfKX) the second click places it (on the hole: its default place)
     key('Escape');
     var hc = annots('holeCallout');
     assert(hc.length === 1 && hc[0].text === '4X Ø8 THRU ALL', 'callout ' + JSON.stringify(hc));

@@ -504,9 +504,35 @@
   function setViewTangent(id, mode) {
     edit(function (dc) { var v = Drawing.findView(dc, id); if (v) { if (mode === 'visible' || mode === 'font') v.tangent = mode; else delete v.tangent; } });
   }
-  function deleteView(id) {
-    edit(function (dc) { Drawing.deleteView(dc, id); });
+  // (rfKX) deleteView(id, confirmed): SolidWorks' Delete of a drawing view takes its dimensions, centre marks, hole
+  // callouts, balloons and the notes / symbols / Hole Tables on it along (one undo step); a view with views made from
+  // it (projected, section, detail) asks first ("Confirm Delete" listing them and what goes) and Yes deletes them too.
+  // confirmed true (the API, anvil.drawing.deleteView) skips the question.
+  function deleteView(id, confirmed) {
+    var dc0 = doc(), v0 = dc0 && Drawing.findView(dc0, id);
+    if (!v0) return false;
+    var dep = Drawing.viewDependents(dc0, id, true);
+    if (!confirmed && dep.children.length) {
+      var name = v0.name || (v0.label ? 'View ' + v0.label : v0.orient || 'the view'), what = [];
+      [['dims', 'dimension'], ['annotations', 'annotation'], ['balloons', 'balloon'], ['notes', 'note'], ['symbols', 'symbol'], ['holeTables', 'Hole Table']].forEach(function (q) {
+        if (dep[q[0]]) what.push(dep[q[0]] + ' ' + q[1] + (dep[q[0]] === 1 ? '' : 's'));
+      });
+      var list = el('ul', { class: 'dw-del-list' });
+      list.appendChild(el('li', { text: name }));
+      dep.children.forEach(function (c) { list.appendChild(el('li', { text: c.name + ' (dependent view)' })); });
+      if (what.length) list.appendChild(el('li', { text: what.join(', ') }));
+      var body = el('div', {});
+      body.appendChild(el('p', { text: 'Delete ' + name + ' and its dependent items?' }));
+      body.appendChild(list);
+      UI.showModal({ title: 'Confirm Delete', body: body, buttons: [
+        { label: 'Yes', primary: true, action: function () { UI.closeModal(); deleteView(id, true); } },
+        { label: 'No', action: UI.closeModal }
+      ] });
+      return false;
+    }
+    edit(function (dc) { Drawing.deleteView(dc, id, { dependents: true }); });
     D.sel = null; render();
+    return true;
   }
   function deleteSelection() {
     var s = D.sel;
@@ -813,7 +839,7 @@
     if (!P.at) return;
     var d = smartSpec(P, P.at);
     if (!d) return;
-    var w = P.first.w, k = paperK(), th = 3.5 * k, u = units(), text;
+    var w = P.first.w, k = paperK(), th = Drawing.dimGeometry(doc()).text * k, u = units(), text;   // (rfKX) the dimension style's text height (was 3.5 mm on inch sheets too)
     if (d.kind === 'angle') text = Math.round(d.value * 100) / 100 + '°'; else text = Drawing.dimText(d, u);
     function ln(a, b) { svgNode('line', { x1: a[0], y1: H - a[1], x2: b[0], y2: H - b[1], stroke: col.stroke, 'stroke-width': sw, class: 'dw-sdprev' }, g); }
     function tx(q) { var t = svgNode('text', { x: q[0], y: H - q[1], 'font-size': th / 0.72, 'text-anchor': 'middle', fill: col.stroke, class: 'dw-sdprev' }, g); t.textContent = text; }
@@ -1373,26 +1399,77 @@
     startTool('holecallout', {});
     UI.setStatus('Hole Callout: click the edge of a hole in a view. Esc ends.');
   }
+  // (rfKX) SolidWorks' Hole Callout: a click on a hole's edge (or a slot's end arc) picks it; the callout then follows
+  // the pointer with its leader (calloutOverlay) and the next click places it there (one undo step). Esc drops the
+  // pick and the tool stays on for the next hole; Esc again ends it. anvil.drawing.holeCallout places in one call.
   function holeCalloutClick(p) {
+    var P = D.pending || (D.pending = {});
+    if (P.pick) {
+      var pk = P.pick, pw = sheetView(pk.view);
+      P.pick = null; P.at = null;
+      if (!pw) { drawOverlay(); return; }
+      var cs = pw.toSheet(pk.c), lead = [p[0] - cs[0], p[1] - cs[1]];
+      if (Math.hypot(lead[0], lead[1]) < pk.r * pw.scale + pxToPaper(2)) lead = null;   // a click on the hole itself: the default place
+      if (pk.slot) {
+        var d = null;
+        edit(function (dc) { d = Drawing.addSlotCallout(dc, pk.view, pw.proj, { c: pk.c, r: pk.r, lead: lead }); });
+        var vd = d && doc().views.filter(function (x) { return x.id === pk.view; })[0], ix = vd && vd.dims ? vd.dims.length - 1 : -1;
+        var sd = (D.sheet.dims || []).filter(function (x) { return x.view === pk.view && x.index === ix; })[0];
+        drawOverlay();
+        UI.setStatus('Hole Callout: ' + (sd ? sd.text : 'slot') + ' placed — click the next hole, Esc ends.');
+        return;
+      }
+      var an;
+      edit(function (dc) { an = Drawing.addHoleCallout(dc, pk.view, { c: pk.c, r: pk.r, lead: lead }); });
+      var s = (D.sheet.annotations || []).filter(function (a) { return a.id === an.id; })[0];
+      D.sel = { kind: 'annot', id: an.id }; drawOverlay();
+      UI.setStatus('Hole Callout: ' + (s ? s.text : '') + ' placed — click the next hole, Esc ends.');
+      return;
+    }
     var ent = entityAt(p);
     // (rfDD) a slot's end arc (or an arc slot's side): the slot callout, as SolidWorks' Hole Callout on a slot
     if (ent && ent.arc && ent.ma) {
-      var sw = sheetView(ent.view), d = null;
+      var sw = sheetView(ent.view);
       if (!sw || !sw.proj || !Drawing.slotAt(sw.proj, ent.ma.c, ent.ma.r)) { UI.setStatus('Hole Callout: that arc is not the end of a slot. Click a hole or the end of a slot.'); return; }
-      edit(function (dc) { d = Drawing.addSlotCallout(dc, ent.view, sw.proj, { c: ent.ma.c, r: ent.ma.r }); });
-      var vd = d && doc().views.filter(function (x) { return x.id === ent.view; })[0], ix = vd && vd.dims ? vd.dims.length - 1 : -1;
-      var sd = (D.sheet.dims || []).filter(function (x) { return x.view === ent.view && x.index === ix; })[0];
-      UI.setStatus('Hole Callout: ' + (sd ? sd.text : 'slot') + ' — drag it to move it.');
+      var txt = '';
+      try { var fd = { views: [{ id: ent.view, dims: [] }] }, d0 = Drawing.addSlotCallout(fd, ent.view, sw.proj, { c: ent.ma.c, r: ent.ma.r }); txt = Drawing.dimText(d0, units()); } catch (e) { txt = ''; }
+      P.pick = { view: ent.view, c: ent.ma.c.slice(), r: ent.ma.r, slot: true, lines: [txt || 'SLOT'] };
+      P.at = p.slice(); drawOverlay();
+      UI.setStatus('Hole Callout: ' + (txt || 'slot') + ' — click where it goes. Esc cancels.');
       return;
     }
     if (!ent || !ent.circle) { UI.setStatus('Hole Callout: click the edge of a hole or slot in an orthographic view.'); return; }
     var w = sheetView(ent.view);
     if (!Drawing.holeInfo(mesh(), w.frame, ent.mc.c, ent.mc.r)) { UI.setStatus('Hole Callout: that circle is not a hole.'); return; }
-    var an;
-    edit(function (dc) { an = Drawing.addHoleCallout(dc, ent.view, { c: ent.mc.c, r: ent.mc.r }); });
-    var s = (D.sheet.annotations || []).filter(function (a) { return a.id === an.id; })[0];
-    D.sel = { kind: 'annot', id: an.id }; drawOverlay();
-    UI.setStatus('Hole Callout: ' + (s ? s.text : '') + ' — drag it to move it.');
+    var hl = null;
+    try { hl = Drawing.holeCalloutLines(doc(), w, mesh(), App.model, { c: ent.mc.c, r: ent.mc.r }); } catch (e) { hl = null; }
+    P.pick = { view: ent.view, c: ent.mc.c.slice(), r: ent.mc.r, lines: hl ? hl.lines : [] };
+    P.at = p.slice(); drawOverlay();
+    UI.setStatus('Hole Callout: ' + (hl ? hl.lines.join(' ') : '') + ' — click where it goes. Esc cancels.');
+  }
+  // the picked hole's callout as it will be placed, following the pointer: leader from the hole's edge, the shoulder and
+  // the text lines (the drawing's dimension text height)
+  function calloutOverlay(g, H, svgNode) {
+    var P = D.pending, pk = P && P.pick;
+    if (!pk || !P.at) return;
+    var w = sheetView(pk.view);
+    if (!w) return;
+    var k = paperK(), G = Drawing.dimGeometry(doc()), th = G.text * k, ar = G.arrow * k, aw = (Drawing._.ARROW_W || 0.5) * k;
+    var sh = (Drawing._.SHOULDER || 4) * k, gap = (Drawing._.TEXT_GAP || 1) * k;
+    var c = w.toSheet(pk.c), rr = pk.r * w.scale, lead = [P.at[0] - c[0], P.at[1] - c[1]], ll = Math.hypot(lead[0], lead[1]);
+    if (ll < 1e-9) return;
+    var u = [lead[0] / ll, lead[1] / ll], tip = [c[0] + u[0] * rr, c[1] + u[1] * rr], elbow = P.at, sg = lead[0] >= 0 ? 1 : -1, sw = pxToPaper(1.5);
+    function ln(a, b) { svgNode('line', { class: 'dw-sdprev', x1: a[0], y1: H - a[1], x2: b[0], y2: H - b[1], stroke: '#2a2a2a', 'stroke-width': sw }, g); }
+    svgNode('circle', { class: 'dw-hot', cx: c[0], cy: H - c[1], r: rr, fill: 'none', 'stroke-width': pxToPaper(2) }, g);
+    ln(tip, elbow); ln(elbow, [elbow[0] + sg * sh, elbow[1]]);
+    var nn = [-u[1], u[0]];
+    svgNode('path', { class: 'dw-sdprev', d: 'M' + tip[0] + ' ' + (H - tip[1]) + ' L' + (tip[0] + u[0] * ar + nn[0] * aw) + ' ' + (H - tip[1] - u[1] * ar - nn[1] * aw) + ' L' + (tip[0] + u[0] * ar - nn[0] * aw) + ' ' + (H - tip[1] - u[1] * ar + nn[1] * aw) + ' Z', fill: '#2a2a2a', stroke: 'none' }, g);
+    var n = pk.lines.length;
+    pk.lines.forEach(function (s, i) {
+      var y = elbow[1] - th / 2 + ((n - 1) / 2 - i) * th * 1.6;
+      var t = svgNode('text', { class: 'dw-sdprev dw-sdprev-text', x: elbow[0] + sg * (sh + gap), y: H - y, 'font-size': th / (Drawing._.CAP_EM || 0.72), 'text-anchor': sg > 0 ? 'start' : 'end', fill: '#2a2a2a' }, g);
+      t.textContent = s;
+    });
   }
   // Ordinate / Baseline Dimension: pick the direction, click the base (an edge or a hole), then every feature to
   // dimension from it; ✓ ends. The first feature creates the dimension (one undo step), the next ones extend it.
@@ -1540,6 +1617,14 @@
     if (o.fractions && units() === 'in') return 'Fractions';
     return precText(o.dimPrec != null ? o.dimPrec : units() === 'in' ? 3 : 2);
   }
+  // (rfKX) the Dimension PM's Tolerance precision: Same as nominal, None ... .12345678, then the document's
+  function docTolPrecText() { var o = Drawing.docOptions(doc()); return o.tolPrec != null ? precText(o.tolPrec) : 'Same as nominal'; }
+  function TOL_PREC_OPTIONS() {
+    var out = [['nominal', 'Same as nominal']];
+    for (var i = 0; i <= MAX_PREC; i++) out.push([String(i), precText(i)]);
+    out.push(['auto', docTolPrecText() + ' (Document)']);
+    return out;
+  }
   function PREC_OPTIONS() {
     var out = [];
     for (var i = 0; i <= MAX_PREC; i++) out.push([String(i), precText(i)]);
@@ -1553,7 +1638,7 @@
     if (!d) return;
     var w = sheetView(d.view), src = d.auto && d.kind !== 'ordinate' && d.kind !== 'baseline' ? Drawing.dimSource(App.model, App.build, w, d) : null;
     var tol = d.tol || { type: 'none' }, u = units();
-    var values = { value: d.value != null ? +d.value.toFixed(8) : 0, tolType: tol.type || 'none', plus: tol.plus != null ? tol.plus : 0, minus: tol.minus != null ? tol.minus : 0, prec: d.prec != null ? String(d.prec) : 'auto', label: d.label != null ? d.label : '<DIM>', flip: !!d.flip };
+    var values = { value: d.value != null ? +d.value.toFixed(8) : 0, tolType: tol.type || 'none', plus: tol.plus != null ? tol.plus : 0, minus: tol.minus != null ? tol.minus : 0, prec: d.prec != null ? String(d.prec) : 'auto', tolPrec: tol.prec != null && tol.prec !== '' ? String(tol.prec) : 'auto', label: d.label != null ? d.label : '<DIM>', flip: !!d.flip };
     var single = d.kind !== 'ordinate' && d.kind !== 'baseline' && d.kind !== 'angrun';
     var primary = src ? [{ type: 'number', key: 'value', label: 'Value', unit: 'u' }, { type: 'static', label: 'Drives', value: src.featureName + ' (' + src.what + ')' + (src.expr ? ' — equation ' + src.expr : '') }]
       : [{ type: 'static', label: 'Value', value: single ? (d.kind === 'angle' ? (Math.round(d.value * 1e4) / 1e4) + '°' : Drawing.numText(d.value, u) + ' ' + u) + (d.auto ? ' (no model parameter found)' : ' (reference: driven by the model)') : d.text }];
@@ -1577,7 +1662,8 @@
           { type: 'select', key: 'tolType', label: 'Tolerance', icon: 'dimTolType', options: Drawing.TOL_TYPES, rerender: true, show: function () { return d.kind !== 'angrun'; } },   // (lane CT: an angular running set takes a precision only)
           { type: 'number', key: 'plus', label: 'Maximum variation (+)', unit: 'u', show: function (v) { return v.tolType !== 'none'; } },
           { type: 'number', key: 'minus', label: 'Minimum variation (−)', unit: 'u', show: function (v) { return v.tolType === 'bilateral' || v.tolType === 'limit'; } },
-          { type: 'select', key: 'prec', label: 'Unit precision', icon: 'dimPrecision', options: PREC_OPTIONS }
+          { type: 'select', key: 'prec', label: 'Unit precision', icon: 'dimPrecision', options: PREC_OPTIONS },
+          { type: 'select', key: 'tolPrec', label: 'Tolerance precision', icon: 'dimPrecision', options: TOL_PREC_OPTIONS, show: function (v) { return v.tolType === 'bilateral' || v.tolType === 'symmetric'; } }   // (rfKX)
         ] },
         { title: 'Dimension Text', show: function () { return d.kind !== 'angrun'; }, fields: [{ type: 'text', key: 'label', label: 'Text (<DIM> is the value)' }] },
         { title: 'Leaders', show: function () { return d.kind !== 'angrun' && d.kind !== 'pathlen'; }, fields: [{ type: 'check', key: 'flip', label: 'Flip arrows (outside)' }] }
@@ -1623,7 +1709,9 @@
   }
   function dimPropsFromPM(v) {
     var label = String(v.label == null ? '' : v.label);
-    return { tol: v.tolType && v.tolType !== 'none' ? { type: v.tolType, plus: Math.abs(+v.plus || 0), minus: v.tolType === 'symmetric' ? Math.abs(+v.plus || 0) : Math.abs(+v.minus || 0) } : null,
+    var tol = v.tolType && v.tolType !== 'none' ? { type: v.tolType, plus: Math.abs(+v.plus || 0), minus: v.tolType === 'symmetric' ? Math.abs(+v.plus || 0) : Math.abs(+v.minus || 0) } : null;
+    if (tol && (tol.type === 'bilateral' || tol.type === 'symmetric') && v.tolPrec != null && v.tolPrec !== 'auto' && v.tolPrec !== '') tol.prec = v.tolPrec === 'nominal' ? 'nominal' : +v.tolPrec;   // (rfKX)
+    return { tol: tol,
       prec: v.prec === 'auto' || v.prec == null ? null : +v.prec, label: label.trim() === '' || label === '<DIM>' ? null : label, flip: !!v.flip };
   }
   function applyDimensionPM(d, src, v, live, same) {   // live: the PM already applied its props (one undo step taken); same: (rfKT) nothing changed
@@ -1682,6 +1770,11 @@
       var op = el('option', { value: x[0], text: x[1] }); if (String(o.dimPrec == null ? '' : o.dimPrec) === x[0]) op.selected = true; pr.appendChild(op);
     });
     [8, 16, 32, 64].forEach(function (d) { var op = el('option', { value: String(d), text: '1/' + d }); if (o.fracDenom === d) op.selected = true; dn.appendChild(op); });
+    // (rfKX) Dimensions > Tolerance precision: Same as nominal (default) or None ... .12345678
+    var tpr = el('select', { id: 'dw-opt-tolprec' });
+    [['', 'Same as nominal']].concat([0, 1, 2, 3, 4, 5, 6, 7, 8].map(function (n) { return [String(n), precText(n)]; })).forEach(function (x) {
+      var op = el('option', { value: x[0], text: x[1] }); if (String(o.tolPrec == null ? '' : o.tolPrec) === x[0]) op.selected = true; tpr.appendChild(op);
+    });
     var body = el('div', { class: 'dw-props dw-docprops' }, [
       el('div', { class: 'dw-tb-head', text: 'Detailing ▸ Auto insert on view creation' }),
       chk(cm, 'Center marks-holes'), chk(cl, 'Centerlines'),
@@ -1690,7 +1783,8 @@
       el('div', { class: 'dw-tb-head', text: 'Balloons' }),
       chk(bq, 'Show quantity (QTY) on new balloons'),
       el('div', { class: 'dw-tb-head', text: 'Units ▸ Dimensions (' + (inch ? 'inches, ANSI: .030' : 'millimetres') + ')' }),
-      el('label', { text: 'Decimal places' }), pr
+      el('label', { text: 'Decimal places' }), pr,
+      el('label', { text: 'Tolerance precision' }), tpr
     ].concat(inch ? [chk(fr, 'Fractions'), el('label', { text: 'Finest fraction' }), dn] : []).concat([
       el('div', { class: 'dw-tb-head', text: 'Sheet Metal ▸ Flat-pattern views' }),
       chk(fd, 'Overall dimensions (blank width and height)'), chk(fs, 'FLAT SIZE note'),
@@ -1698,7 +1792,7 @@
     ]));
     UI.showModal({ title: 'Document Properties - Detailing', body: body, buttons: [
       { label: 'OK', primary: true, id: 'dw-opt-ok', action: function () { UI.closeModal(); setDocOptions({ autoCenterMarks: cm.checked, autoCenterlines: cl.checked, extLines: ex.checked, markSize: +sz.value, balloonQty: bq.checked,
-        flatDims: fd.checked, flatSizeNote: fs.checked, bendNotes: bn.value, dimPrec: pr.value === '' ? '' : +pr.value, fractions: inch ? fr.checked : o.fractions, fracDenom: +dn.value || 64 }); } },
+        flatDims: fd.checked, flatSizeNote: fs.checked, bendNotes: bn.value, dimPrec: pr.value === '' ? '' : +pr.value, tolPrec: tpr.value === '' ? '' : +tpr.value, fractions: inch ? fr.checked : o.fractions, fracDenom: +dn.value || 64 }); } },
       { label: 'Cancel', action: UI.closeModal }
     ] });
   }
@@ -3624,7 +3718,7 @@
   DW.defaultBalloonView = defaultBalloonView; DW.autoBalloonView = autoBalloonView; DW.cmdAutoBalloon = cmdAutoBalloon; DW.setBom = setBom; DW.cmdBOM = cmdBOM; DW.setTitleBlock = setTitleBlock;
   DW.bomMenu = bomMenu; DW.bomAt = bomAt; DW.balloonAt = balloonAt; DW.dimRef = dimRef; DW.setDimProps = setDimProps; DW.annotAt = annotAt; DW.edgeAt = edgeAt;
   DW.cmdCenterMark = cmdCenterMark; DW.centerMarkClick = centerMarkClick; DW.cmdCenterline = cmdCenterline; DW.centerlineClick = centerlineClick; DW.cmdHoleCallout = cmdHoleCallout;
-  DW.holeCalloutClick = holeCalloutClick; DW.cmdChainDim = cmdChainDim; DW.chainDimClick = chainDimClick; DW.cmdChamferDim = cmdChamferDim; DW.chamferClick = chamferClick;
+  DW.holeCalloutClick = holeCalloutClick; DW.calloutOverlay = calloutOverlay; DW.cmdChainDim = cmdChainDim; DW.chainDimClick = chainDimClick; DW.cmdChamferDim = cmdChamferDim; DW.chamferClick = chamferClick;
   DW.cmdBalloon = cmdBalloon; DW.balloonClick = balloonClick; DW.cmdBalloonProps = cmdBalloonProps; DW.setBalloonProps = setBalloonProps; DW.cmdDimensionPM = cmdDimensionPM; DW.sectionPreview = sectionPreview; DW.liveOverlay = liveOverlay; DW.openClickDimPM = openClickDimPM; DW.closeClickPM = closeClickPM; DW.clickPM = clickPM;
   DW.applyDimensionPM = applyDimensionPM; DW.cmdCalloutProps = cmdCalloutProps; DW.cmdDocProps = cmdDocProps; DW.setDocOptions = setDocOptions; DW.defaultDocOptions = defaultDocOptions;
   DW.autoInsertViews = autoInsertViews; DW.startDimDrag = startDimDrag; DW.FLIP_KINDS = FLIP_KINDS; DW.arrowAt = arrowAt; DW.flipArrows = flipArrows; DW.openInlineEdit = openInlineEdit;

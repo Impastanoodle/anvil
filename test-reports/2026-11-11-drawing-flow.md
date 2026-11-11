@@ -46,10 +46,12 @@ Ctrl+Z restores. No console errors.
    on a smaller sheet), its dimensions, annotations, Hole Tables and the notes / symbols on it; the views made from it
    go along; a view that has a parent is refused ("move its parent"), because Anvil works a child view out on its
    parent's sheet. Tests: kernel rfKT (family, notes, refusal, smaller sheet), smoke rfKT c (right-click, undo / redo).
-5. **Deleting a view leaves its notes and symbols on the sheet (low, left).** Its dimensions go (they live on the
-   view); a note with a leader on it, a weld symbol on it and its Hole Table stay on paper. That is rfQ's tested choice
-   ("deleting the view leaves its notes on the sheet"); SolidWorks may take them with the view (its Confirm Delete lists
-   dependent items). Not changed: needs the user's call / a look in SolidWorks.
+5. **Deleting a view leaves its notes and symbols on the sheet (low). Fixed (lane drawflow2, rfKX).** As SolidWorks:
+   Delete on a view takes its dimensions, centre marks, callouts, balloons and the notes / symbols (weld, datum,
+   surface finish …) / Hole Tables on it (a leader on it or placed on it) in one undo step; a view with views made
+   from it (projected, section, detail) asks first (Confirm Delete listing them and what goes), Yes takes them too.
+   Sheet notes stay. `Drawing.deleteView(doc, id, { dependents: true })`, `Drawing.viewDependents`; the plain
+   engine call keeps its old behaviour (kernel rfQ / drawings). Tests: kernel + smoke rfKX.
 6. **An ordinate set's 0 printed on the Hole Table's datum Y (medium).** Repro: job b, ordinates from the Top view's
    left edge (the set goes above the view), then a Hole Table with the top-left vertex as origin. Got: the datum's Y
    label and the ordinate 0 on one spot. Fix: the datum X / Y labels are now keep-out boxes for dimensions
@@ -64,12 +66,14 @@ Ctrl+Z restores. No console errors.
 
 ## Seen, not changed
 
-- Hole Callout places itself at the click (SolidWorks: the callout follows the pointer, a second click places it).
-  Changing it would change every callout test (rfDD, rfGT); the callout is dragged afterwards.
-- A bilateral tolerance takes the dimension's precision (+.010 / -.005 at .12 shows +.01 / -.01), as SolidWorks'
-  "Same as nominal" tolerance precision; there is no separate tolerance precision box.
+- ~~Hole Callout places itself at the click~~ Fixed (rfKX): the click on the hole picks it, the callout follows the
+  pointer with its leader, the second click places it; Esc drops the pick, the tool stays. rfDD, rfKT and
+  drawing-annotations click twice now; `anvil.drawing.holeCallout(...)` still places in one call.
+- ~~No separate tolerance precision~~ Fixed (rfKX): the Dimension PM has Tolerance precision (Same as nominal,
+  None … .12345678, (Document)) and Document Properties > Units > Dimensions has the document default (Same as
+  nominal); +.010 / -.005 under a 2-place nominal at .123 prints +.010 / -.005 on the sheet, DXF / DWG and PDF.
 - Ordinate chain: features after the first extend the set without their own undo step (Ctrl+Z takes the whole set).
 - At the fit zoom the box's .0747 walls are 2 px apart: a click on the outer edge can take the inner one (ordinate
   9.925 for 10.000). SolidWorks has the same pick at that zoom; zoom in.
-- Smart Dimension's angle preview text rounds to 0.01° and the non-linear preview text is 3.5 mm on inch sheets
-  (`smartDimOverlay`); the placed dimension is right.
+- Smart Dimension's non-linear preview text now uses the dimension style's height (.125 in on inch sheets, rfKX);
+  the angle preview rounds to 0.01° as the placed angle does (no change needed).

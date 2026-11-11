@@ -165,7 +165,8 @@
       rfKTEnd();
       // Hole Callout on the Ø.281
       rfKTRibbon('Hole Callout').click(); await wait(10);
-      rfKTClick(T.toSheet([1.5 + 0.1405, -0.75])); await rfKTDone();
+      rfKTClick(T.toSheet([1.5 + 0.1405, -0.75])); await wait(10);
+      rfKTClick(T.toSheet([1.5 + 0.1405, -0.75])); await rfKTDone();   // (rfKX) the second click places it (on the hole: its default place)
       var hc = (st.sheet.annotations || []).filter(function (a) { return a.type === 'holeCallout'; })[0];
       assert(hc && hc.text === '2X Ø.281 THRU ALL', 'hole callout: ' + (hc && hc.text));
       rfKTEnd();
@@ -363,7 +364,7 @@
       var ss = D.querySelectorAll('#pm select');
       ss[0].value = 'bilateral'; ss[0].dispatchEvent(new W.Event('change', { bubbles: true })); await wait(10);
       setInput(pmField('Maximum'), 0.01); setInput(pmField('Minimum'), 0.005);
-      ss = D.querySelectorAll('#pm select'); ss[ss.length - 1].value = '2'; ss[ss.length - 1].dispatchEvent(new W.Event('change', { bubbles: true }));
+      var ps = D.querySelector('#pm select[data-key="prec"]'); ps.value = '2'; ps.dispatchEvent(new W.Event('change', { bubbles: true }));   // (rfKX: by its key; Tolerance precision now follows it)
       await UI.pmOK(); await rfKTDone();
       var d6 = st.sheet.dims.filter(function (d) { return /^6\.24/.test(d.text); })[0];
       assert(d6 && d6.text === '6.24 +.01/-.01' || d6.text === '6.24 +.010/-.005', 'tolerance and precision: ' + (d6 && d6.text));
