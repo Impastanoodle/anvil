@@ -26,12 +26,16 @@
   function key(k) { W.dispatchEvent(new W.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); }
   function plateCode() { return W.AnvilExamples.filter(function (e) { return e.name === 'Plate with bolt holes'; })[0].code; }
 
-  step('drawing: File > Make Drawing from Part opens Draw1 (Standard 3 View + Isometric), the Drawing tab and the drawing FeatureManager', async function () {
+  step('drawing: File > Make Drawing from Part opens Draw1 (the plate face and edge views: Front, Top; rfLG), then Standard 3 View gives Front / Top / Right + Isometric, the Drawing tab and the drawing FeatureManager', async function () {
     await anvil.run(plateCode());
     var rows = menuRows('Make Drawing from Part');
     assert(rows.length && rows[0].menu === 'File', 'File menu item missing');
     rows[0].row.click();
     assert(UI.drawingActive() && !$('drawing-doc').hidden, 'drawing document not shown');
+    // (rfLG) the plate's own layout from the menu; the rest of the group is written for the Standard 3 View + Isometric
+    await UI.drawing.ready();
+    assert(anvil.drawing.summary().views.map(function (v) { return v.orient; }).join() === 'Front,Top', 'the plate two views: ' + anvil.drawing.summary().views.map(function (v) { return v.orient; }));
+    UI.drawing.standard3View(); await UI.drawing.ready();
     assert(JSON.stringify(ribbonTabs().slice(0, 1)) === '["View Layout"]' && ribbonTabs().indexOf('Features') < 0, 'tabs ' + ribbonTabs());
     // (rfW) View Layout holds the views only, as SolidWorks 2024; dimensions, Model Items and Sheet Properties live elsewhere
     var vl = Array.prototype.map.call(D.querySelectorAll('#ribbon-buttons button'), function (x) { return x.getAttribute('aria-label') || ''; });
