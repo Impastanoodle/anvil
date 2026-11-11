@@ -688,7 +688,7 @@
   _.linkThickness = linkThickness;
   function rebuildModel(model, cache) {
     var t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-    var errors = {}, warnings = {}, facePlanes = {}, cutDirs = {};
+    var errors = {}, warnings = {}, facePlanes = {}, cutDirs = {}, sketchRefs = {};
     var origFeatures = model.features, resolved = resolvedModel(model);
     model = linkThickness(resolved.model);
     var resolveErrors = resolved.featureErrors, sheetError = resolved.sheetError;
@@ -974,11 +974,20 @@
               if (fp.plane !== f.plane) { f.plane = fp.plane; origFeatures[p + j].plane = fp.plane; keys[p + j] = featureKey(f, model); }
               facePlanes[f.id] = f.plane;
             }
+            // lane sketchref: reference geometry follows the model edges / vertices it came from (kernel-sketch.js)
+            var sr = _.resolveSketchRefs ? _.resolveSketchRefs(f, resolvePlane(f.plane, model, ctx.planes), ctx.bodies) : null;
+            if (sr && sr.changed) {
+              var of = origFeatures[p + j];
+              if (of !== f) { of.entities = f.entities; of.rels = f.rels; }
+              sketchRefs[f.id] = { entities: f.entities, rels: f.rels };
+              keys[p + j] = featureKey(f, model);
+            }
             f.profile = sketchProfile(f);
             origFeatures[p + j].profile = f.profile; // the UI reads profiles off the model's own feature objects
             ctx.sketches[f.id] = f;
             if (f.profile.warnings.length && !pathIds[f.id]) warnings[f.id] = f.profile.warnings.join(' ');
             if (fp && fp.warning) warnings[f.id] = fp.warning + (warnings[f.id] ? ' ' + warnings[f.id] : '');
+            if (sr && sr.warning) warnings[f.id] = sr.warning + (warnings[f.id] ? ' ' + warnings[f.id] : '');
             break;
           }
           case 'wrap': { var wk = ctx.bodies.length ? Math.max(0, bodyNearPoint(ctx.bodies, f.face || [0, 0, 0])) : -1; ctx.body = wk >= 0 ? ctx.bodies[wk] : null; var wr = _.buildWrap(f, model, ctx); putBody(wk, wr.body); ctx.tools[f.id] = wr.tool; break; }   // rfDZ: Wrap on the body its face is on
@@ -1099,7 +1108,7 @@
     // can hand them back to the original with applyProfiles
     var profiles = {};
     Object.keys(ctx.sketches).forEach(function (id) { profiles[id] = ctx.sketches[id].profile || null; });
-    return { body: ctx.body, bodies: ctx.bodies, bodyFeatures: ctx.bodyFeatures, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles, facePlanes: withCutDirs(facePlanes, cutDirs), cutDirs: cutDirs,
+    return { body: ctx.body, bodies: ctx.bodies, bodyFeatures: ctx.bodyFeatures, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles, facePlanes: withCutDirs(facePlanes, cutDirs, sketchRefs), cutDirs: cutDirs, sketchRefs: sketchRefs,
       equations: resolved.vars, equationErrors: resolved.errors, configuration: resolved.configuration, suppressed: resolved.suppressed || {} };
   }
 
@@ -1125,7 +1134,7 @@
       bodyFeatures: bodies.map(function (b, i) { return build.bodyFeatures && build.bodyFeatures[i] != null ? build.bodyFeatures[i] : null; }),
       body: !bodies.length && build.body ? build.body.pack() : null, tools: tools,
       planes: build.planes || {}, flanges: build.flanges || {}, errors: build.errors || {}, warnings: build.warnings || {},
-      time: build.time || 0, reused: build.reused || 0, profiles: profiles, facePlanes: build.facePlanes || {}, cutDirs: build.cutDirs || {},
+      time: build.time || 0, reused: build.reused || 0, profiles: profiles, facePlanes: build.facePlanes || {}, cutDirs: build.cutDirs || {}, sketchRefs: build.sketchRefs || {},
       equations: build.equations || {}, equationErrors: build.equationErrors || {}, configuration: build.configuration || null, suppressed: build.suppressed || {}
     };
   }
@@ -1151,7 +1160,7 @@
     return {
       body: combineBodies(bodies), bodies: bodies, bodyFeatures: bodyFeatures, tools: tools,
       planes: obj.planes || {}, flanges: obj.flanges || {}, errors: obj.errors || {}, warnings: obj.warnings || {},
-      time: obj.time || 0, reused: obj.reused || 0, profiles: obj.profiles || {}, facePlanes: withCutDirs(obj.facePlanes || {}, obj.cutDirs || {}), cutDirs: obj.cutDirs || {}, cache: null,
+      time: obj.time || 0, reused: obj.reused || 0, profiles: obj.profiles || {}, facePlanes: withCutDirs(obj.facePlanes || {}, obj.cutDirs || {}, obj.sketchRefs || {}), cutDirs: obj.cutDirs || {}, sketchRefs: obj.sketchRefs || {}, cache: null,
       equations: obj.equations || {}, equationErrors: obj.equationErrors || {}, configuration: obj.configuration || null, suppressed: obj.suppressed || {}
     };
   }
@@ -1164,17 +1173,21 @@
   // a script cut that had no direction
   function applyProfiles(model, profiles, facePlanes) {
     if (!profiles && !facePlanes) return model;
-    var dirs = facePlanes && facePlanes.cutDirs;
+    var dirs = facePlanes && facePlanes.cutDirs, refs = facePlanes && facePlanes.sketchRefs;   // lane sketchref: sketches moved by their model references
     model.features.forEach(function (f) {
+      if (f.type === 'sketch' && refs && refs[f.id] && refs[f.id].entities) { f.entities = refs[f.id].entities; f.rels = refs[f.id].rels; }
       if (f.type === 'sketch' && profiles && profiles[f.id]) f.profile = profiles[f.id];
       if (f.type === 'sketch' && facePlanes && facePlanes[f.id] && f.plane && f.plane.face) f.plane = facePlanes[f.id];
       if (f.type === 'extrude' && dirs && typeof dirs[f.id] === 'boolean' && f.reverse == null) f.reverse = dirs[f.id];
     });
     return model;
   }
-  function withCutDirs(facePlanes, cutDirs) {
+  function withCutDirs(facePlanes, cutDirs, sketchRefs) {
     if (facePlanes && cutDirs && Object.keys(cutDirs).length) {
       try { Object.defineProperty(facePlanes, 'cutDirs', { value: cutDirs, enumerable: false, writable: true, configurable: true }); } catch (e) { /* frozen */ }
+    }
+    if (facePlanes && sketchRefs && Object.keys(sketchRefs).length) {
+      try { Object.defineProperty(facePlanes, 'sketchRefs', { value: sketchRefs, enumerable: false, writable: true, configurable: true }); } catch (e) { /* frozen */ }
     }
     return facePlanes;
   }

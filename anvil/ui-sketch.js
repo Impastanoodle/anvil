@@ -377,9 +377,11 @@
   // (vertices, edge midpoints, arc / hole centres and quadrants, the centres of the faces parallel to the sketch, the
   // part's centre in the sketch view and its centre of mass) and its edges are projected straight onto the sketch plane,
   // worked out once per model rebuild and sketch plane (modelSnaps), so a mouse move is a distance scan. They come after
-  // the sketch's own points (a sketch point as near wins) and after sketch curves, add no relation (a sketch has no
-  // external references: SketchSolver.inferCandidates only sees sketch geometry) and are drawn in their own colour with
-  // a label naming them. View ▸ Snap to Model turns them off (App.view.snapModel).
+  // the sketch's own points (a sketch point as near wins) and after sketch curves and are drawn in their own colour with
+  // a label naming them. View ▸ Snap to Model turns them off (App.view.snapModel). Lane sketchref: a point placed on a
+  // vertex / edge midpoint / round edge's centre / edge gets Coincident / Midpoint to that model geometry, brought in as
+  // reference geometry that follows the model (UI.modelSnapRelations; snaps carry `src`, the 3D geometry); face / part
+  // centres and quadrants add none.
   var MODEL_RANK = { mvertex: 0, mref: 0, mcenter: 1, mmid: 2, mquad: 3, mface: 4, mpart: 5, mmass: 6 };   // lane DF: mref
   var MODEL_LABEL = { mvertex: 'Vertex', mcenter: 'Center', mmid: 'Midpoint', mquad: 'Quadrant', mface: 'Face center', mpart: 'Part center', mmass: 'Center of mass', medge: 'On edge' };
   var MODEL_MAX = 5000, MODEL_FACES_MAX = 400, MODEL_COLOR = '#c2409f';
@@ -403,10 +405,11 @@
   function buildModelSnaps(m, pl, res) {
     var V = K.vec, n = pl.n, th = App.triHidden, curves = App.curves || [], edges = App.edges || [], seen = {};
     function p2(p) { return K.to2D(pl, p); }
-    function add(q, kind) {
+    // lane sketchref: src, the 3D model geometry behind a vertex / centre / midpoint (UI.modelSnapRelations)
+    function add(q, kind, src) {
       var k = Math.round(q[0] * 1e5) + ',' + Math.round(q[1] * 1e5), o = seen[k];
-      if (o) { if (MODEL_RANK[kind] < MODEL_RANK[o.kind]) { o.kind = kind; o.label = MODEL_LABEL[kind]; } return; }
-      seen[k] = o = { pt: [q[0], q[1]], kind: kind, model: true, label: MODEL_LABEL[kind] };
+      if (o) { if (MODEL_RANK[kind] < MODEL_RANK[o.kind]) { o.kind = kind; o.label = MODEL_LABEL[kind]; o.src = src || null; } return; }
+      seen[k] = o = { pt: [q[0], q[1]], kind: kind, model: true, label: MODEL_LABEL[kind], src: src || null };
       res.pts.push(o);
     }
     function faceShown(fi) { var fc = m.faces[fi]; return !!fc && !(th && th[fc.start]); }
@@ -434,12 +437,12 @@
         var a = Math.atan2(cy, cx);
         [a, a + Math.PI].forEach(function (b) { if (within(b)) grow(p2(at(b))); });
       });
-      if (!full) { add(p2(at(C.a0)), 'mvertex'); add(p2(at(C.a1)), 'mvertex'); }
+      if (!full) { add(p2(at(C.a0)), 'mvertex', { k: 'vertex', p: at(C.a0) }); add(p2(at(C.a1)), 'mvertex', { k: 'vertex', p: at(C.a1) }); }
       if (!square(C.normal)) return;
-      var cen = p2(C.center), s0 = p2(at(C.a0));
-      var ar = arcOf[ci] = { c: cen, r: C.radius, full: full, a0: Math.atan2(s0[1] - cen[1], s0[0] - cen[0]), sw: sweep, sg: V.dot(C.normal, n) > 0 ? 1 : -1 };
+      var cen = p2(C.center), s0 = p2(at(C.a0)), csrc = { k: 'circle', c: C.center.slice(), n: C.normal.slice(), r: C.radius, full: full };
+      var ar = arcOf[ci] = { c: cen, r: C.radius, full: full, a0: Math.atan2(s0[1] - cen[1], s0[0] - cen[0]), sw: sweep, sg: V.dot(C.normal, n) > 0 ? 1 : -1, src: full ? csrc : null };
       res.arcs.push(ar);
-      add(cen, 'mcenter');
+      add(cen, 'mcenter', csrc);
       if (!full) add(p2(at((C.a0 + C.a1) / 2)), 'mmid');
       [0, 0.5, 1, 1.5].forEach(function (t) { var a = t * Math.PI; if (onModelArc(ar, a)) add([cen[0] + C.radius * Math.cos(a), cen[1] + C.radius * Math.sin(a)], 'mquad'); });
     });
@@ -478,11 +481,11 @@
         }
         return p;
       }
-      var A = walk(L.ka), B = walk(L.kb), a = p2(A), b = p2(B);
-      add(a, 'mvertex'); add(b, 'mvertex');
+      var A = walk(L.ka), B = walk(L.kb), a = p2(A), b = p2(B), esrc = { k: 'edge', a: A.slice(), b: B.slice() };
+      add(a, 'mvertex', { k: 'vertex', p: A.slice() }); add(b, 'mvertex', { k: 'vertex', p: B.slice() });
       if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-6) return;   // square to the sketch: a point
-      add([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], 'mmid');
-      if (res.segs.length < MODEL_MAX) res.segs.push({ a: a, b: b, lo: [Math.min(a[0], b[0]), Math.min(a[1], b[1])], hi: [Math.max(a[0], b[0]), Math.max(a[1], b[1])] });
+      add([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], 'mmid', esrc);
+      if (res.segs.length < MODEL_MAX) res.segs.push({ a: a, b: b, lo: [Math.min(a[0], b[0]), Math.min(a[1], b[1])], hi: [Math.max(a[0], b[0]), Math.max(a[1], b[1])], src: esrc });
     });
     // faces parallel to the sketch (the one it sits on first): the area centroid of each connected region
     var nf = 0, onPlane = [], other = [], fedges = {};
@@ -823,7 +826,7 @@
         var qa = modelEdgeAt(mE, fx.k, fx.al.c.pt[fx.k], raw), sa = qa && scr(qa);
         if (qa && Math.hypot(sa[0] - mx, sa[1] - my) < INFER_PX.curve) { qE = qa; out.align.push({ from: fx.al.c.pt, axis: fx.k ? 'y' : 'x', prev: !!fx.al.c.prev }); }
       }
-      out.p = qE.slice(); out.snap = { kind: 'medge', pt: out.p, model: true, label: MODEL_LABEL.medge };
+      out.p = qE.slice(); out.snap = { kind: 'medge', pt: out.p, model: true, label: MODEL_LABEL.medge, src: (mE.seg && mE.seg.src) || (mE.arc && mE.arc.src) || null };
       return out;
     }
     var h = 0.5 * px * 1.05, grid = App.view.showGrid ? UI.snapStep() : 0;
@@ -1325,6 +1328,8 @@
     // automatic relations, as SolidWorks infers them while sketching (coincident / horizontal / vertical …), for the
     // points the tool placed (rfH)
     if (window.SketchSolver) SketchSolver.infer(f, f.entities.length - 1, inferOpts(App.toolState && App.toolState.pts, e, closing === true));
+    // lane sketchref: points placed on a model vertex / midpoint / edge / centre are related to it (SolidWorks)
+    if (UI.modelSnapRelations && App.toolState && App.toolState.modelSnaps && App.toolState.modelSnaps.length && skSetting('autoRelations')) { try { UI.modelSnapRelations(f, f.entities.indexOf(e), App.toolState.modelSnaps); } catch (err) { console.error('model snap relations: ' + (err && err.message)); } }
     // rfAR: Automatic Relations off still keeps a Line chain in one piece (SolidWorks: the segments share their ends)
     var stC = App.toolState;
     if (window.SketchSolver && !skSetting('autoRelations') && App.tool === 'line' && f.entities.length > 1 && stC && stC.chainStart) {
@@ -1360,6 +1365,7 @@
     }
     if (App.tool === 'dimension') { dimToolClick(raw, mx, my); return; }
     var info0 = inferPoint(raw, mx, my), p = info0.p, typed = null;
+    if (info0.snap && info0.snap.model && info0.snap.src) { var msl = App.toolState.modelSnaps = App.toolState.modelSnaps || []; msl.push({ pt: info0.p.slice(), snap: info0.snap }); if (msl.length > 8) msl.shift(); }   // lane sketchref
     App.toolState.lastSnap = info0.snap || null;   // r15/tanslide15: what the point landed on (a curve's index for the tangent slide)
     App.toolState.dirRel = (info0.dir && info0.dir.rel) || null;   // rfII: a woken-line lock: its Parallel / Perpendicular (inferOpts)
     if (App.quickSnap) { App.quickSnap = null; qsParallel = null; if (UI.refreshRibbon) UI.refreshRibbon(); }   // rfAR: a Quick Snap is for one pick
@@ -2577,7 +2583,7 @@
       var sCol = info.snap.model ? MODEL_COLOR : '#e8891c', sDot = info.snap.kind === 'on' || info.snap.kind === 'medge';
       svg('circle', { cx: sp[0], cy: sp[1], r: sDot ? 3 : 5, 'class': info.snap.model ? 'sk-model-snap' : 'sk-snap', style: 'fill:' + (sDot ? sCol : 'none') + ';stroke:' + sCol + ';stroke-width:1.5' }, layer);
     }
-    // p9-modelsnap: a model snap adds no relation; a small label by the cursor names it. rfIG (user 2026-11-05: "a little
+    // p9-modelsnap: a small label by the cursor names a model snap (lane sketchref: the click relates the point to it). rfIG (user 2026-11-05: "a little
     // descriptor of what youre hovering over"): every snap is named, sketch ones in the sketch snap colour
     // rfII: a tangent / perpendicular / parallel lock is named after the relation (SolidWorks' inference glyph; shown
     // with Automatic Relations off too, when the click adds nothing)
@@ -3526,7 +3532,7 @@
     if (clipState) { clipState.mSegs = []; clipState.mPts = []; clipState.mKeys = new Set(); }
     var casing = svg('path', { 'class': 'dlh' }, dimLayer);   // rfHA: filled in below, drawn under every dimension
     dimCasing = '';
-    placed.forEach(function (d, i) { list.push({ d: d, index: i, state: d.driven ? 'driven' : an && an.dims ? an.dims[i] : null }); });
+    placed.forEach(function (d, i) { list.push({ d: d, index: i, state: d.driven ? 'driven' : UI.danglingEntity && UI.danglingEntity(f, d.e) ? 'dangling' : an && an.dims ? an.dims[i] : null }); });   // lane sketchref: dangling
     if (App.view.showDims) f.entities.forEach(function (e, i) { autoDims(e, i, placed).forEach(function (d) { list.push({ d: d, auto: true }); }); });
     if (App.tempDim) list.push({ d: App.tempDim, temp: true });
     list.forEach(function (it) {

@@ -5797,6 +5797,16 @@ var SketchSolver = (function () {
     return o;
   }
   function relArgs(rel) {
+    // lane sketchref: reference geometry held to a model edge / vertex (mref; dangling when it is gone)
+    if ((rel.type === 'fix' || rel.type === 'onEdge') && rel.mref) {
+      var om0 = {};
+      if (rel.at) om0.at = rel.at;
+      om0.mref = rel.mref;
+      if (rel.dangling) om0.dangling = true;
+      var exm = extras(rel, REL_EXTRA);
+      if (exm) Object.keys(exm).forEach(function (k) { om0[k] = exm[k]; });
+      return JSON.stringify(rel.type) + ', ' + JSON.stringify(rel.refs) + ', ' + JSON.stringify(om0);
+    }
     var ex = extras(rel, REL_EXTRA);
     if (ex) {
       var o3 = {};
@@ -5851,7 +5861,12 @@ var SketchSolver = (function () {
         return this;
       }
       if ((type === 'fix' || type === 'onEdge') && opt && Array.isArray(opt.at)) {
-        (this.f.rels = this.f.rels || []).push({ type: type, refs: refs.map(String), at: opt.at.map(Number) });
+        var fr = { type: type, refs: refs.map(String), at: opt.at.map(Number) };
+        if (opt.mref && typeof opt.mref === 'object') fr.mref = clone(opt.mref);   // lane sketchref
+        if (opt.mref && opt.dangling) fr.dangling = true;
+        var exf = extras(opt, REL_EXTRA);
+        if (exf) Object.keys(exf).forEach(function (k) { fr[k] = exf[k]; });
+        (this.f.rels = this.f.rels || []).push(fr);
         solve(this.f);
         return this;
       }

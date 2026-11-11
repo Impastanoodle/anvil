@@ -680,6 +680,7 @@
     var e = f.entities[i];
     if (!e || !e.construction) return false;
     if (e.ext) return true;
+    if ((f.rels || []).some(function (r) { return r.mref && r.refs[0] === String(i); })) return true;   // lane sketchref
     return (f.rels || []).some(function (r) { return r.type === 'fix' && r.refs.length === 1 && r.refs[0] === String(i); }) && !!(App.edges && App.edges.length);
   }
   // model edges brought into the sketch are tagged, so External finds them
@@ -695,6 +696,15 @@
       title: 'Display/Delete Relations', icon: 'relations', values: v,
       groups: [],
       command: { onSketchPoint: function (uv, mx, my) {
+        // lane sketchref: Replace: the click re-attaches the selected reference to the model geometry under it
+        if (v.replacing != null) {
+          var rr = UI.reattachModelRef ? UI.reattachModelRef(f, v.replacing, mx, my) : { ok: false, error: 'Replace is not available.' };
+          if (!rr.ok) { UI.toast(rr.error); return; }
+          UI.setStatus(S.describe(f, f.rels[v.replacing]) + ' now follows the picked model geometry.');
+          v.replacing = null; render();
+          if (UI.rebuild) UI.rebuild();
+          return;
+        }
         var hit = UI.pickEntity(mx, my);
         App.sel = hit ? { kind: 'entity', index: hit.index } : null;
         v.filter = hit ? 'selected' : 'all';
@@ -723,7 +733,7 @@
     }
     function rows() {
       var an = analysis(f), selEnt = App.sel && App.sel.kind === 'entity' ? App.sel.index : null;
-      var out = (f.rels || []).map(function (rel, i) { return { rel: rel, i: i, state: an.rels[i] || 'ok' }; });
+      var out = (f.rels || []).map(function (rel, i) { return { rel: rel, i: i, state: rel.dangling ? 'invalid' : an.rels[i] || 'ok' }; });   // lane sketchref: a reference whose model edge is gone
       // over-defining / unsolved Smart Dimensions are listed too (they can be deleted here)
       (f.dims || []).forEach(function (d, i) { var st = an.dims && an.dims[i]; if (st && st !== 'ok' && !d.driven) out.push({ dim: d, i: i, state: st }); });
       out = out.filter(function (x) {
@@ -787,6 +797,14 @@
           { type: 'check', key: 'suppressed', label: 'Suppressed', disabled: si == null },
           { type: 'buttons', buttons: [
             { label: 'Delete', onclick: deleteSelected },
+            // lane sketchref: re-attach an On Edge / Fixed reference to other model geometry (SolidWorks' Replace)
+            { label: v.replacing != null ? 'Click a model edge…' : 'Replace', onclick: function () {
+              var i = selRel();
+              if (i == null || (f.rels[i].type !== 'fix' && f.rels[i].type !== 'onEdge')) { UI.toast('Select an On Edge or Fixed relation (a Dangling one) in the list first.'); return; }
+              v.replacing = v.replacing === i ? null : i;
+              UI.setStatus(v.replacing != null ? 'Click the model edge or vertex that ' + S.refName(f, f.rels[i].refs[0]) + ' should follow.' : '');
+              render();
+            } },
             { label: 'Delete All', onclick: function () {
               var gone = rows().filter(function (x) { return !x.dim; }).map(function (x) { return x.i; });
               if (!gone.length) return;

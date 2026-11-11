@@ -629,7 +629,7 @@
         g.construction = true;
         tgt.entities.push(g);
         idx.push(tgt.entities.length - 1);
-        if (!prev) { var ar = S.addRelation(tgt, 'onEdge', [String(tgt.entities.length - 1)]); if (!ar.ok) throw new Error(ar.error); }
+        if (!prev) { var ar = S.addRelation(tgt, 'onEdge', [String(tgt.entities.length - 1)]); if (!ar.ok) throw new Error(ar.error); if (g._src && UI.attachModelRef && ar.rels && ar.rels.length) UI.attachModelRef(tgt, ar.rels[0], g._src); }
       });
       return S.offsetSelection(tgt, idx, opts(prev ? { preview: true } : null));
     }
@@ -1046,6 +1046,9 @@
     return loops.sort(function (a, b) { return size(b) - size(a); });
   }
   // sketch entities for model edges: one circle / arc per true curve that lies square to the sketch, else lines
+  // lane sketchref: each entity carries the model edge it came from as a non-enumerable `_src` (3D: { k: 'edge', a, b }
+  // with a, b at x1 y1 / x2 y2, or { k: 'circle', c, n, r, full }), for UI.attachModelRef
+  function withSrc(e, src) { try { Object.defineProperty(e, '_src', { value: src, enumerable: false, writable: true, configurable: true }); } catch (err) { } return e; }
   function convertGeometry(edges, keepPieces) {
     var pl = UI.activePlane(), V = K.vec, out = [], seenCurve = {};
     function r6(x) { return Math.round(x * 1e6) / 1e6; }
@@ -1056,18 +1059,18 @@
         if (seenCurve[e.curve]) return;
         seenCurve[e.curve] = true;
         var C = c.curve, yd = V.cross(C.normal, C.xdir), at = function (a) { return V.add(C.center, V.add(V.scale(C.xdir, Math.cos(a) * C.radius), V.scale(yd, Math.sin(a) * C.radius))); };
-        var cen = p2(C.center), sweep = C.a1 - C.a0;
-        if (sweep >= 2 * Math.PI - 1e-6) { out.push({ t: 'circle', cx: cen[0], cy: cen[1], r: r6(C.radius) }); return; }
+        var cen = p2(C.center), sweep = C.a1 - C.a0, csrc = { k: 'circle', c: C.center.slice(), n: C.normal.slice(), r: C.radius, full: sweep >= 2 * Math.PI - 1e-6 };
+        if (sweep >= 2 * Math.PI - 1e-6) { out.push(withSrc({ t: 'circle', cx: cen[0], cy: cen[1], r: r6(C.radius) }, csrc)); return; }
         var s0 = p2(at(C.a0)), s1 = p2(at(C.a1)), b0 = Math.atan2(s0[1] - cen[1], s0[0] - cen[0]) * 180 / Math.PI, b1 = Math.atan2(s1[1] - cen[1], s1[0] - cen[0]) * 180 / Math.PI;
         var sw = sweep * 180 / Math.PI, a0 = V.dot(C.normal, pl.n) > 0 ? b0 : b1;
         while (a0 < 0) a0 += 360;
         while (a0 >= 360) a0 -= 360;
-        out.push({ t: 'arc', cx: cen[0], cy: cen[1], r: r6(C.radius), a0: r6(a0), a1: r6(a0 + sw) });
+        out.push(withSrc({ t: 'arc', cx: cen[0], cy: cen[1], r: r6(C.radius), a0: r6(a0), a1: r6(a0 + sw) }, csrc));
         return;
       }
       var a = p2(e.a), b = p2(e.b);
       if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-6) return;   // square to the sketch: a point, nothing to draw
-      out.push({ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] });
+      out.push(withSrc({ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }, { k: 'edge', a: e.a.slice(), b: e.b.slice() }));
     });
     if (keepPieces) return out;   // Close Sketch to Model: edges projected onto one another must not be joined here
     // collinear pieces of one straight edge (a face outline split it) join into one line
@@ -1081,8 +1084,8 @@
           if (Math.hypot(ends[p][0] - mends[q][0], ends[p][1] - mends[q][1]) > 1e-6) continue;
           var u = [ends[1][0] - ends[0][0], ends[1][1] - ends[0][1]], w = [mends[1][0] - mends[0][0], mends[1][1] - mends[0][1]];
           if (Math.abs(u[0] * w[1] - u[1] * w[0]) > 1e-9 * Math.hypot(u[0], u[1]) * Math.hypot(w[0], w[1])) continue;
-          var A = ends[1 - p], B = mends[1 - q];
-          out[i] = { t: 'line', x1: A[0], y1: A[1], x2: B[0], y2: B[1] };
+          var A = ends[1 - p], B = mends[1 - q], sL = L._src, sM = M._src;
+          out[i] = withSrc({ t: 'line', x1: A[0], y1: A[1], x2: B[0], y2: B[1] }, sL && sM ? { k: 'edge', a: p === 0 ? sL.b : sL.a, b: q === 0 ? sM.b : sM.a } : null);
           out.splice(j, 1);
           again = true;
         }
@@ -1171,6 +1174,7 @@
             f.entities.push(g);
             var ar = S.addRelation(f, gi < geo.length ? 'onEdge' : 'fix', [String(f.entities.length - 1)]);   // lane DF2: reference geometry is Fixed
             if (!ar.ok) throw new Error(ar.error);
+            if (gi < geo.length && g._src && UI.attachModelRef && ar.rels && ar.rels.length) UI.attachModelRef(f, ar.rels[0], g._src);   // lane sketchref: follows its edge
             n++;
           });
           return n ? { ok: true } : { ok: false, error: 'Those edges are already in the sketch.' };

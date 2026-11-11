@@ -76,6 +76,28 @@
   function pickModelRef(mx, my) {
     var f = UI.activeSketchFeature();
     if (!f || App.mode !== 'sketch' || !App.edges || !App.edges.length) return null;
+    var mp = modelPickAt(mx, my);
+    if (!mp) return null;
+    var ent = mp.ent, src = mp.src;
+    ent.construction = true;
+    var keys = S.paramNames(ent), tol = 1e-6;
+    for (var i = 0; i < f.entities.length; i++) {
+      var o = f.entities[i];
+      if (!o || o.t !== ent.t || !o.construction) continue;
+      if (keys.every(function (k) { return Math.abs((+o[k] || 0) - ent[k]) < tol * Math.max(1, Math.abs(ent[k])); }) && (f.rels || []).some(function (r) { return r.type === 'fix' && r.refs.length === 1 && r.refs[0] === String(i); })) return { ref: String(i), entity: o };
+    }
+    markDirty();
+    f.entities.push(ent);
+    var idx = f.entities.length - 1;
+    var ar = S.addRelation(f, 'fix', [String(idx)]), linked = ar && ar.ok && ar.rels && ar.rels.length ? attachModelRef(f, ar.rels[0], src) : false;
+    refresh();
+    UI.setStatus('Model ' + (ent.t === 'point' ? 'vertex' : 'edge') + ' brought into the sketch as ' + (linked ? 'reference geometry that follows the model' : 'fixed construction geometry') + ' (' + S.refName(f, String(idx)) + ').');
+    return { ref: String(idx), entity: ent };
+  }
+  // the model vertex / edge / round edge under the cursor as a sketch entity projected onto the active sketch plane
+  // (ent) and the 3D geometry it came from (src: null for a tilted circle, which comes in as an ellipse), or null
+  function modelPickAt(mx, my) {
+    if (!App.edges || !App.edges.length) return null;
     var pl = UI.activePlane(), v = UI.pickVertex ? UI.pickVertex(mx, my) : null, ent = null;
     function r4(x) { return Math.round(x * 1e6) / 1e6; }
     // rfAK: a facet of a true circle / arc (a hole's rim) lying square to the sketch comes in as that circle / arc, as
@@ -90,13 +112,15 @@
       var arcEnd = C0.a1 - C0.a0 < 2 * Math.PI - 1e-6 && [C0.a0, C0.a1].some(function (u) { var yd0 = V.cross(C0.normal, C0.xdir), P = V.add(C0.center, V.add(V.scale(C0.xdir, Math.cos(u) * C0.radius), V.scale(yd0, Math.sin(u) * C0.radius))); return V.len(V.sub(P, v.point)) < 1e-6 * Math.max(1, C0.radius); });
       if (!arcEnd) v = null;
     }
-    if (v && v.point) { var q = K.to2D(pl, v.point); ent = { t: 'point', x: r4(q[0]), y: r4(q[1]) }; }
+    var src = null;   // lane sketchref: the model geometry it came from (K.modelRefFor names it)
+    if (v && v.point) { var q = K.to2D(pl, v.point); ent = { t: 'point', x: r4(q[0]), y: r4(q[1]) }; src = { k: 'vertex', p: v.point.slice() }; }
     else {
       var ed = ed0;
       if (!ed || !ed.edge || !ed.edge.a || !ed.edge.b) return null;
       var C = C0;
       if (onTrue) {
         var cen = K.to2D(pl, C.center), sweep = C.a1 - C.a0;
+        src = { k: 'circle', c: C.center.slice(), n: C.normal.slice(), r: C.radius, full: !(sweep < 2 * Math.PI - 1e-6) };
         if (!(sweep < 2 * Math.PI - 1e-6)) ent = { t: 'circle', cx: r4(cen[0]), cy: r4(cen[1]), r: r4(C.radius) };
         else {
           var yd = V.cross(C.normal, C.xdir), at = function (u) { var q = K.to2D(pl, V.add(C.center, V.add(V.scale(C.xdir, Math.cos(u) * C.radius), V.scale(yd, Math.sin(u) * C.radius)))); return Math.atan2(q[1] - cen[1], q[0] - cen[0]) * 180 / Math.PI; };
@@ -108,26 +132,116 @@
       } else if (onTilt) ent = tiltedEllipse(pl, C0, r4);
       else {
         var a = K.to2D(pl, ed.edge.a), b = K.to2D(pl, ed.edge.b);
+        src = { k: 'edge', a: ed.edge.a.slice(), b: ed.edge.b.slice() };
         // an edge square to the sketch plane projects to a point
         if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-6 * Math.max(1, Math.abs(a[0]), Math.abs(a[1]))) ent = { t: 'point', x: r4(a[0]), y: r4(a[1]) };
         else ent = { t: 'line', x1: r4(a[0]), y1: r4(a[1]), x2: r4(b[0]), y2: r4(b[1]) };
       }
     }
+    return { ent: ent, src: src };
+  }
+  // lane sketchref: Replace (Display/Delete Relations) / re-attach: reference entity i (held by fix / onEdge relation
+  // ri) takes the model geometry under the cursor; its relations and dimensions stay on it and now measure to that
+  // edge or vertex. -> { ok, error }
+  function reattachModelRef(f, ri, mx, my) {
+    var rel = f && f.rels && f.rels[ri];
+    if (!rel || (rel.type !== 'fix' && rel.type !== 'onEdge')) return { ok: false, error: 'Select an On Edge or Fixed relation to model geometry.' };
+    var i = +rel.refs[0], ent = f.entities[i], mp = modelPickAt(mx, my);
+    if (!mp || !mp.src) return { ok: false, error: 'Click a model edge or vertex to attach it to.' };
+    if (mp.ent.t !== ent.t && !(ent.t === 'arc' && mp.ent.t === 'circle')) return { ok: false, error: S.refName(f, String(i)) + ' is a ' + ent.t + ': click a model ' + (ent.t === 'point' ? 'vertex' : ent.t === 'line' ? 'straight edge' : 'round edge') + '.' };
+    markDirty();
+    var saved = clone({ e: ent, r: rel });
+    S.paramNames(ent).forEach(function (k) { if (mp.ent[k] != null) ent[k] = mp.ent[k]; });
+    rel.at = ent.t === 'point' ? [ent.x, ent.y] : S.paramNames(ent).map(function (k) { return ent[k]; });
+    if (!attachModelRef(f, ri, mp.src)) { f.entities[i] = saved.e; f.rels[ri] = saved.r; return { ok: false, error: 'That geometry cannot be referenced (it is made after this sketch).' }; }
+    S.solve(f);
+    refresh();
+    return { ok: true };
+  }
+  UI.reattachModelRef = reattachModelRef;
+  // lane sketchref: the features sketch f may reference (those before it, and not rolled back)
+  function refFids(f) {
+    var feats = (App.model && App.model.features) || [], out = [], k = feats.indexOf(f);
+    for (var i = 0; i < feats.length; i++) {
+      if (feats[i] === f || feats[i].id === f.id || (k >= 0 && i >= k) || (App.rollback != null && i >= App.rollback)) break;
+      out.push(feats[i].id);
+    }
+    return out;
+  }
+  function modelBodies() { var b = App.build; return b ? (b.bodies && b.bodies.length ? b.bodies : b.body ? [b.body] : []) : []; }
+  // the model topology src ({ k: 'vertex', p } | { k: 'edge', a, b } | { k: 'circle', c, n, r, full }, 3D) named on
+  // f.rels[ri] (a fix / onEdge relation on reference geometry) as rel.mref, so the rebuild moves the entity with the
+  // model (kernel-sketch.js resolveSketchRefs). false: it could not be named (a later feature's face; no model): the
+  // relation stays a plain Fix / On Edge, as before.
+  function attachModelRef(f, ri, src) {
+    var rel = f && f.rels && f.rels[ri];
+    if (!rel || !src || !K.modelRefFor || (rel.type !== 'fix' && rel.type !== 'onEdge')) return false;
+    var m = null;
+    try { m = K.modelRefFor(modelBodies(), src, { fids: refFids(f) }); } catch (e) { m = null; }
+    if (!m) return false;
+    rel.mref = m;
+    delete rel.dangling;
+    return true;
+  }
+  UI.attachModelRef = attachModelRef;
+  // lane sketchref: entity i of f is reference geometry whose model edge / vertex is gone (drawn and dimensioned in the
+  // dangling colour, SolidWorks' olive)
+  function danglingEntity(f, i) { return !!(f && f.rels && f.rels.some(function (r) { return r.dangling && r.refs[0] === String(i); })); }
+  UI.danglingEntity = danglingEntity;
+  (function () {
+    if (typeof document === 'undefined' || document.getElementById('sketchref-css')) return;
+    var st = document.createElement('style');
+    st.id = 'sketchref-css';
+    st.textContent = '#dim-layer .dim.dangling text { fill: #a88300; } #dim-layer .dim.dangling .dl { stroke: #a88300; } #dim-layer .dim.dangling .da { fill: #a88300; } .rel-row.invalid em { color: #a88300; } .rel-row.invalid { background: rgba(168,131,0,0.12); }';
+    (document.head || document.documentElement).appendChild(st);
+  })();
+  UI.sketchRefFids = refFids;
+  // lane sketchref: reference geometry for model geometry src (3D), as pickModelRef brings it in, without a pick: a
+  // construction point (a vertex, or a round edge's centre: as: 'point') or line (an edge) or circle, Fixed and named
+  // (mref). One already there (same place, held, same mref kind) is reused. -> entity index, or -1
+  function modelRefEntity(f, src, as) {
+    var pl = UI.activePlane(), ent = null;
+    if (!f || !src || !pl) return -1;
+    if (src.k === 'vertex' || as === 'point') { var q = K.to2D(pl, src.k === 'circle' ? src.c : src.p); ent = { t: 'point', x: q[0], y: q[1] }; }
+    else if (src.k === 'edge') { var a = K.to2D(pl, src.a), b = K.to2D(pl, src.b); if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-9) return -1; ent = { t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }; }
+    else if (src.k === 'circle' && src.full !== false) { var c = K.to2D(pl, src.c); ent = { t: 'circle', cx: c[0], cy: c[1], r: src.r }; }
+    if (!ent) return -1;
     ent.construction = true;
-    var keys = S.paramNames(ent), tol = 1e-6;
+    var keys = S.paramNames(ent);
     for (var i = 0; i < f.entities.length; i++) {
       var o = f.entities[i];
-      if (!o || o.t !== ent.t || !o.construction) continue;
-      if (keys.every(function (k) { return Math.abs((+o[k] || 0) - ent[k]) < tol * Math.max(1, Math.abs(ent[k])); }) && (f.rels || []).some(function (r) { return r.type === 'fix' && r.refs.length === 1 && r.refs[0] === String(i); })) return { ref: String(i), entity: o };
+      if (!o || o.t !== ent.t || !o.construction || !keys.every(function (k) { return Math.abs((+o[k] || 0) - ent[k]) < 1e-6 * Math.max(1, Math.abs(ent[k])); })) continue;
+      if ((f.rels || []).some(function (r) { return (r.type === 'fix' || r.type === 'onEdge') && r.refs.length === 1 && r.refs[0] === String(i); })) return i;
     }
-    markDirty();
     f.entities.push(ent);
-    var idx = f.entities.length - 1;
-    S.addRelation(f, 'fix', [String(idx)]);
-    refresh();
-    UI.setStatus('Model ' + (ent.t === 'point' ? 'vertex' : 'edge') + ' brought into the sketch as fixed construction geometry (' + S.refName(f, String(idx)) + ').');
-    return { ref: String(idx), entity: ent };
+    var idx = f.entities.length - 1, ar = S.addRelation(f, 'fix', [String(idx)]);
+    if (!ar || !ar.ok) { f.entities.pop(); S.removeEntity(f, idx); return -1; }
+    if (!attachModelRef(f, ar.rels[0], src)) { f.rels.splice(ar.rels[0], 1); f.entities.pop(); S.removeEntity(f, idx); return -1; }
+    return idx;
   }
+  UI.modelRefEntity = modelRefEntity;
+  // lane sketchref: the points of new entity i that a drawing tool placed on a model snap (snaps: [{ pt, snap }],
+  // snap.src the 3D model geometry, snap.kind mvertex / mcenter / mmid / medge) get the relation SolidWorks adds:
+  // Coincident with the vertex / centre / edge, Midpoint of the edge; each to reference geometry that follows the
+  // model. A relation that would over-define the sketch is not added. -> the number added
+  function modelSnapRelations(f, i, snaps) {
+    if (!f || !snaps || !snaps.length || !f.entities[i]) return 0;
+    var n = 0;
+    S.pointRefs(f, i).forEach(function (pr) {
+      var hit = null;
+      snaps.forEach(function (s) { if (s && s.snap && s.snap.src && Math.abs(s.pt[0] - pr.pt[0]) < 1e-9 && Math.abs(s.pt[1] - pr.pt[1]) < 1e-9) hit = s.snap; });
+      if (!hit) return;
+      var kind = hit.kind, src = hit.src, type = kind === 'mmid' ? 'midpoint' : 'coincident';
+      if (kind === 'mmid' && src.k !== 'edge') return;
+      var ri = modelRefEntity(f, src, kind === 'mcenter' ? 'point' : null);
+      if (ri < 0) return;
+      var r = S.addRelation(f, type, [pr.ref, String(ri)], { rejectOver: true });
+      if (r && r.ok) n++;
+      else if (!(f.rels || []).some(function (x) { return x.refs.some(function (q) { var pq = S.parseRef(q); return pq && !pq.o && pq.e === ri && x.type !== 'fix'; }); })) dropUnusedModelRefs([f.entities[ri]]);
+    });
+    return n;
+  }
+  UI.modelSnapRelations = modelSnapRelations;
   // lane DE2: the projection onto sketch plane pl of model circle / arc C ({ center, normal, xdir, radius, a0, a1 }):
   // P(t) = c + a cos t + b sin t (a, b the projected radius vectors along xdir and normal × xdir) turned to principal
   // axes (u0, the major axis first): an ellipse, or a partial ellipse over the arc's sweep (its parameter angles in
@@ -501,6 +615,7 @@
       var t = S.TYPES[rel.type];
       if (!t || !t.dim) return;
       var state = an && an.rels ? an.rels[i] : 'ok';
+      if (rel.refs.some(function (r) { var p = S.parseRef(r); return p && !p.o && danglingEntity(f, p.e); })) state = 'dangling';   // lane sketchref
       var sc = relDimScreenData(f, pl, rel);
       if (sc) { var it = { d: rel, rel: i, state: rel.driven ? 'driven' : state }; h.drawOne(sc, it); h.list.push(it); }
     });
@@ -676,7 +791,7 @@
     };
     function rows() {
       var an = App.sketchState || S.analyze(f), selEnt = App.sel && App.sel.kind === 'entity' ? App.sel.index : null;
-      var out = (f.rels || []).map(function (rel, i) { return { rel: rel, i: i, state: an.rels[i] || 'ok' }; });
+      var out = (f.rels || []).map(function (rel, i) { return { rel: rel, i: i, state: rel.dangling ? 'invalid' : an.rels[i] || 'ok' }; });
       // over-defining / unsolved Smart Dimensions are listed too (they can be deleted here)
       (f.dims || []).forEach(function (d, i) { var st = an.dims && an.dims[i]; if (st && st !== 'ok' && !d.driven) out.push({ dim: d, i: i, state: st }); });
       out = out.filter(function (x) {

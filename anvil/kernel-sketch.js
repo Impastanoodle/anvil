@@ -4196,3 +4196,287 @@
   }
   K.fitSources = fitSources; K.fitSourceSig = srcSig; K.newFitId = newFitId; K.relinkFitCopies = relinkFitCopies; K.simplifyBSpline = simplifyBSpline;
 })(Kernel);
+
+// ------------------------------------------------------------------ lane sketchref: sketch references to the model
+// A sketch's reference geometry (a construction entity held by a `fix` / `onEdge` relation: Convert Entities, Offset of
+// a face loop, a model edge / vertex picked for a Smart Dimension or a relation, a snap to a model vertex / midpoint /
+// edge / centre) carries `rel.mref`, the model topology it came from, in the identity the rest of Anvil uses for a
+// face (ui-model-dims.js refs): a face sig `{ fid, n }` = the feature id that made the face (CSG polygon.shared) and
+// its normal (null for a curved face).
+//   { k: 'vertex', at: [x, y, z], sigs: [face sig, …] }                                   the faces round the vertex
+//   { k: 'edge',   at: [x, y, z] (midpoint), d: [unit dir], sig: [face sig, face sig] }    a straight edge
+//   { k: 'circle', c: [x, y, z], n, r, full, sig: [plane face sig, cylinder face sig] }    a round edge
+// On every rebuild, before the sketch's feature builds (kernel-rebuild.js case 'sketch'), resolveSketchRefs re-finds
+// each one on the bodies made so far (the candidate nearest its last position `at` / `c`), projects it into the sketch
+// plane, moves the entity and its rel.at there and solves the sketch with it as fixed outside geometry, so whatever is
+// dimensioned or related to it follows the model. One that is gone gets `rel.dangling: true`: the entity keeps its last
+// position, the build goes on, and the sketch gets a Dangling warning. No mref: nothing changes (older files).
+(function (K, _) {
+  'use strict';
+  function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+  function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+  function len(a) { return Math.sqrt(dot(a, a)); }
+  function scale(a, s) { return [a[0] * s, a[1] * s, a[2] * s]; }
+  function add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+  function crs(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+  function unit(a) { var l = len(a); return l > 1e-15 ? scale(a, 1 / l) : [0, 0, 0]; }
+  function segDist(p, a, b) { var ab = sub(b, a), t = dot(sub(p, a), ab) / Math.max(dot(ab, ab), 1e-30); t = Math.max(0, Math.min(1, t)); return len(sub(p, add(a, scale(ab, t)))); }
+  function r9(x) { var q = Math.round(x * 1e9) / 1e9; return Math.abs(x - q) < 1e-12 ? q + 0 : x; }
+  function perp(n) { return unit(Math.abs(n[0]) < 0.9 ? crs(n, [1, 0, 0]) : crs(n, [0, 1, 0])); }
+
+  // the polygons of the bodies as plain records { fid, n, w, curved, surf, pts }; cached per body (a CSG solid is not
+  // changed in place)
+  var cache = typeof WeakMap === 'function' ? new WeakMap() : null;
+  function polysOf(bodies) {
+    var out = [];
+    (bodies || []).forEach(function (b) {
+      if (!b || !b.polygons) return;
+      var list = cache && cache.get(b);
+      if (!list) {
+        list = b.polygons.map(function (p) {
+          var s = p.surf && (p.surf.s || p.surf);
+          return { fid: p.shared == null ? null : p.shared, n: [p.plane.normal.x, p.plane.normal.y, p.plane.normal.z], w: p.plane.w, curved: !!s, surf: s || null,
+            pts: p.vertices.map(function (v) { return [v.pos.x, v.pos.y, v.pos.z]; }) };
+        });
+        if (cache) cache.set(b, list);
+      }
+      for (var i = 0; i < list.length; i++) out.push(list[i]);
+    });
+    return out;
+  }
+  function sigOf(P) { return { fid: P.fid, n: P.curved ? null : P.n.map(r9) }; }
+  function sigMatch(a, b) {
+    if (!a || !b || a.fid !== b.fid) return false;
+    if (!a.n || !b.n) return !a.n && !b.n;
+    return dot(a.n, b.n) > 1 - 1e-6;
+  }
+  function polyMatch(P, s) { return P.fid === s.fid && (s.n ? !P.curved && dot(P.n, s.n) > 1 - 1e-6 : P.curved); }
+  function tolOf(polys) {
+    var m = 1, step = Math.max(1, polys.length >> 6);
+    for (var i = 0; i < polys.length; i += step) polys[i].pts.forEach(function (q) { m = Math.max(m, Math.abs(q[0]), Math.abs(q[1]), Math.abs(q[2])); });
+    return 1e-5 * m;
+  }
+  // is q on polygon P (on its plane within tol, inside or on its boundary)?
+  function onPoly(q, P, tol) {
+    if (Math.abs(dot(P.n, q) - P.w) > tol) return false;
+    var pts = P.pts, k, nk = pts.length;
+    for (k = 0; k < nk; k++) if (segDist(q, pts[k], pts[(k + 1) % nk]) <= tol) return true;
+    var ax = Math.abs(P.n[0]) > Math.abs(P.n[1]) ? (Math.abs(P.n[0]) > Math.abs(P.n[2]) ? 0 : 2) : (Math.abs(P.n[1]) > Math.abs(P.n[2]) ? 1 : 2), u = (ax + 1) % 3, v = (ax + 2) % 3, odd = false;
+    for (k = 0; k < nk; k++) {
+      var A = pts[k], B = pts[(k + 1) % nk];
+      if ((A[v] > q[v]) !== (B[v] > q[v]) && q[u] < (B[u] - A[u]) * (q[v] - A[v]) / (B[v] - A[v]) + A[u]) odd = !odd;
+    }
+    return odd;
+  }
+  function addSig(list, s) { if (!list.some(function (t) { return sigMatch(s, t); })) list.push(s); }
+
+  // modelRefFor(bodies, geom, opts) -> an mref naming model geometry picked in a sketch, or null when it cannot be named
+  // (the reference then stays a plain Fix, as before). geom: { k: 'vertex', p } | { k: 'edge', a, b } |
+  // { k: 'circle', c, n, r, full }. opts.fids: the feature ids that may be referenced (the features before the sketch;
+  // SolidWorks takes no reference to a later feature).
+  function modelRefFor(bodies, g, opts) {
+    var polys = polysOf(bodies);
+    if (!g || !polys.length) return null;
+    var tol = tolOf(polys), ok = function (s) { return s.fid != null && (!opts || !opts.fids || opts.fids.indexOf(s.fid) >= 0); }, out = null;
+    if (g.k === 'vertex') {
+      var sigs = [];
+      polys.forEach(function (P) { if (onPoly(g.p, P, tol)) addSig(sigs, sigOf(P)); });
+      if (sigs.length >= 2 && sigs.every(ok)) out = { k: 'vertex', at: g.p.map(r9), sigs: sigs };
+    } else if (g.k === 'edge') {
+      var m = scale(add(g.a, g.b), 0.5), es = [];
+      polys.forEach(function (P) { if (Math.abs(dot(P.n, g.a) - P.w) <= tol && Math.abs(dot(P.n, g.b) - P.w) <= tol && onPoly(m, P, tol)) addSig(es, sigOf(P)); });
+      if (es.length > 2) {   // more than two faces touch it: the two most unlike
+        var bi = 0, bj = 1, bd = Infinity;
+        for (var i = 0; i < es.length; i++) for (var j = i + 1; j < es.length; j++) { var d = es[i].n && es[j].n ? dot(es[i].n, es[j].n) : 0; if (d < bd) { bd = d; bi = i; bj = j; } }
+        es = [es[bi], es[bj]];
+      }
+      if (es.length === 2 && es.every(ok)) out = { k: 'edge', at: m.map(r9), d: unit(sub(g.b, g.a)).map(r9), sig: es };
+    } else if (g.k === 'circle') {
+      var cyl = null, pln = null, n = unit(g.n), x = perp(n), y = crs(n, x);
+      polys.forEach(function (P) {
+        var s = P.surf;
+        if (!cyl && s && s.t === 'cyl' && Math.abs(Math.abs(dot(unit(s.d), n)) - 1) < 1e-6 && len(crs(sub(g.c, s.o), unit(s.d))) <= tol && Math.abs(s.r - g.r) <= tol) cyl = sigOf(P);
+        if (!pln && !P.curved && Math.abs(Math.abs(dot(P.n, n)) - 1) < 1e-6 && Math.abs(dot(P.n, g.c) - P.w) <= tol) {
+          for (var a = 0; a < 16 && !pln; a++) { var t = a * Math.PI / 8, q = add(g.c, add(scale(x, g.r * Math.cos(t)), scale(y, g.r * Math.sin(t)))); if (onPoly(q, P, tol * 100)) pln = sigOf(P); }
+        }
+      });
+      if (cyl && pln && ok(cyl) && ok(pln)) out = { k: 'circle', c: g.c.map(r9), n: n.map(r9), r: r9(g.r), full: g.full !== false, sig: [pln, cyl] };
+    }
+    return out;
+  }
+
+  // resolveModelRef(bodies, mref) -> the geometry now: { k: 'vertex', p } | { k: 'edge', a, b } |
+  // { k: 'circle', c, n, r, full, x, y, a0?, a1? } (an arc's ends as angles about n from x towards y), or null (gone)
+  function resolveModelRef(bodies, ref) {
+    var polys = polysOf(bodies);
+    if (!ref || !polys.length) return null;
+    var tol = tolOf(polys);
+    if (ref.k === 'vertex') {
+      var s0 = ref.sigs && ref.sigs[0], others = (ref.sigs || []).slice(1).map(function (s) { return polys.filter(function (P) { return polyMatch(P, s); }); }), bestV = null, bdV = Infinity, seen = {};
+      if (!s0 || others.some(function (l) { return !l.length; })) return null;
+      polys.forEach(function (P) {
+        if (!polyMatch(P, s0)) return;
+        P.pts.forEach(function (q) {
+          var key = q.map(function (x) { return Math.round(x / tol); }).join(',');
+          if (seen[key]) return;
+          seen[key] = 1;
+          if (!others.every(function (l) { return l.some(function (Q) { return onPoly(q, Q, tol); }); })) return;
+          var d = len(sub(q, ref.at));
+          if (d < bdV) { bdV = d; bestV = q; }
+        });
+      });
+      return bestV ? { k: 'vertex', p: bestV.slice() } : null;
+    }
+    if (ref.k === 'edge') {
+      var A = polys.filter(function (P) { return polyMatch(P, ref.sig[0]); }), B = polys.filter(function (P) { return polyMatch(P, ref.sig[1]); }), segs = [];
+      if (!A.length || !B.length) return null;
+      // a planar B: its planes' offsets first (most pieces of A are nowhere near them), then the polygons
+      var Bw = [];
+      if (ref.sig[1].n) B.forEach(function (Q) { if (!Bw.some(function (w) { return Math.abs(w - Q.w) <= tol; })) Bw.push(Q.w); });
+      var onB = function (q) {
+        if (Bw.length) { var h = dot(ref.sig[1].n, q); if (!Bw.some(function (w) { return Math.abs(h - w) <= tol * 2; })) return false; }
+        return B.some(function (Q) { return onPoly(q, Q, tol); });
+      };
+      A.forEach(function (P) {
+        for (var k = 0; k < P.pts.length; k++) {
+          var a = P.pts[k], b = P.pts[(k + 1) % P.pts.length];
+          if (len(sub(b, a)) <= tol) continue;
+          if (onB(a) && onB(b) && onB(scale(add(a, b), 0.5))) segs.push([a, b]);
+        }
+      });
+      if (!segs.length) return null;
+      var best = null, bd = Infinity;
+      segs.forEach(function (s) { var d = segDist(ref.at, s[0], s[1]); if (d < bd - 1e-12) { bd = d; best = s; } });
+      // the whole edge: every collinear piece joined to it end to end (the booleans split edges)
+      var d0 = unit(sub(best[1], best[0])), o = best[0], lo = 0, hi = dot(sub(best[1], o), d0);
+      var onLine = function (q) { var w = sub(q, o); return len(sub(w, scale(d0, dot(w, d0)))) <= tol; };
+      var ivs = segs.filter(function (s) { return onLine(s[0]) && onLine(s[1]); }).map(function (s) { var t0 = dot(sub(s[0], o), d0), t1 = dot(sub(s[1], o), d0); return [Math.min(t0, t1), Math.max(t0, t1)]; });
+      for (var grew = true; grew;) {
+        grew = false;
+        for (var q = 0; q < ivs.length; q++) { var iv = ivs[q]; if (iv[0] <= hi + tol && iv[1] >= lo - tol && (iv[0] < lo - 1e-12 || iv[1] > hi + 1e-12)) { lo = Math.min(lo, iv[0]); hi = Math.max(hi, iv[1]); grew = true; } }
+      }
+      var ea = add(o, scale(d0, lo)), eb = add(o, scale(d0, hi));
+      if (ref.d && dot(sub(eb, ea), ref.d) < 0) { var t = ea; ea = eb; eb = t; }
+      return { k: 'edge', a: ea, b: eb };
+    }
+    if (ref.k === 'circle') {
+      var n = ref.n, cands = [];
+      polys.forEach(function (P) {
+        var s = P.surf;
+        if (!s || s.t !== 'cyl' || P.fid !== ref.sig[1].fid || Math.abs(Math.abs(dot(unit(s.d), n)) - 1) > 1e-6) return;
+        var key = s.o.concat(unit(s.d), [s.r]).map(function (x) { return Math.round(x / tol); }).join(',');
+        var c = null;
+        for (var i = 0; i < cands.length; i++) if (cands[i].key === key) c = cands[i];
+        if (!c) cands.push(c = { key: key, s: s, pts: [] });
+        P.pts.forEach(function (q) { c.pts.push(q); });
+      });
+      var planes = polys.filter(function (P) { return polyMatch(P, ref.sig[0]); }), bestC = null, bdC = Infinity;
+      cands.forEach(function (c) {
+        var d = unit(c.s.d);
+        planes.forEach(function (Q) {
+          var dn = dot(d, Q.n);
+          if (Math.abs(dn) < 1e-9) return;
+          var on = c.pts.filter(function (q) { return Math.abs(dot(Q.n, q) - Q.w) <= tol && onPoly(q, Q, tol); });
+          if (!on.length) return;
+          var cen = add(c.s.o, scale(d, (Q.w - dot(Q.n, c.s.o)) / dn)), dd = len(sub(cen, ref.c)) + 0.01 * Math.abs(c.s.r - ref.r);
+          if (dd < bdC - 1e-12) { bdC = dd; bestC = { c: cen, r: c.s.r, on: on }; }
+        });
+      });
+      if (!bestC) return null;
+      var x = perp(n), y = crs(n, x), res = { k: 'circle', c: bestC.c, n: n.slice(), r: bestC.r, full: ref.full !== false, x: x, y: y };
+      if (!res.full) {
+        // the arc: the angles of the facet corners on the plane; the widest gap between them is where it is open
+        var angs = bestC.on.map(function (q) { var w = sub(q, bestC.c); return Math.atan2(dot(w, y), dot(w, x)); }).sort(function (p, q) { return p - q; }), gap = -1, gi = 0;
+        for (var j = 0; j < angs.length; j++) { var nx = j + 1 < angs.length ? angs[j + 1] : angs[0] + 2 * Math.PI; if (nx - angs[j] > gap) { gap = nx - angs[j]; gi = j; } }
+        if (angs.length < 2) res.full = true;
+        else { res.a0 = gi + 1 < angs.length ? angs[gi + 1] : angs[0]; res.a1 = angs[gi]; while (res.a1 <= res.a0) res.a1 += 2 * Math.PI; }
+      }
+      return res;
+    }
+    return null;
+  }
+
+  // the entity's parameters for resolved geometry g in sketch plane pl (null: g no longer fits the entity)
+  function entityParams(ent, g, pl) {
+    var to2D = K.to2D;
+    function r(x) { return Math.round(x * 1e9) / 1e9; }
+    if (g.k === 'vertex') { if (ent.t !== 'point') return null; var q = to2D(pl, g.p); return { x: r(q[0]), y: r(q[1]) }; }
+    if (g.k === 'edge') {
+      var a = to2D(pl, g.a), b = to2D(pl, g.b);
+      if (ent.t === 'point') return Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-9 ? { x: r(a[0]), y: r(a[1]) } : null;
+      if (ent.t !== 'line' || Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-9) return null;
+      if ((b[0] - a[0]) * (ent.x2 - ent.x1) + (b[1] - a[1]) * (ent.y2 - ent.y1) < 0) { var t = a; a = b; b = t; }   // keep the line's own direction
+      return { x1: r(a[0]), y1: r(a[1]), x2: r(b[0]), y2: r(b[1]) };
+    }
+    if (g.k === 'circle') {
+      if (Math.abs(Math.abs(dot(g.n, pl.n)) - 1) > 1e-6) return null;
+      var c = to2D(pl, g.c);
+      if (ent.t === 'point') return { x: r(c[0]), y: r(c[1]) };
+      if (ent.t === 'circle') return { cx: r(c[0]), cy: r(c[1]), r: r(g.r) };
+      if (ent.t !== 'arc') return null;
+      if (g.full || g.a0 == null) return { cx: r(c[0]), cy: r(c[1]), r: r(g.r) };
+      var ang = function (u) { var q2 = to2D(pl, add(g.c, add(scale(g.x, g.r * Math.cos(u)), scale(g.y, g.r * Math.sin(u))))); return Math.atan2(q2[1] - c[1], q2[0] - c[0]) * 180 / Math.PI; };
+      var sw = (g.a1 - g.a0) * 180 / Math.PI, a0 = dot(g.n, pl.n) > 0 ? ang(g.a0) : ang(g.a1);
+      while (a0 < 0) a0 += 360;
+      while (a0 >= 360) a0 -= 360;
+      return { cx: r(c[0]), cy: r(c[1]), r: r(g.r), a0: r(a0), a1: r(a0 + sw) };
+    }
+    return null;
+  }
+
+  // the sketch solver: a global on the page and under Node; worker.js does not load it, so it is fetched there the first
+  // time a sketch with model references builds
+  function solver() {
+    if (typeof SketchSolver !== 'undefined') return SketchSolver;
+    var g = typeof self !== 'undefined' ? self : (typeof globalThis !== 'undefined' ? globalThis : null);
+    if (g && g.SketchSolver) return g.SketchSolver;
+    if (g && typeof g.importScripts === 'function' && typeof g.document === 'undefined') {
+      try { g.importScripts('sketch-solver.js'); } catch (e) { return null; }
+      return g.SketchSolver || (typeof SketchSolver !== 'undefined' ? SketchSolver : null);
+    }
+    return null;
+  }
+  K.sketchSolver = solver;
+
+  // resolveSketchRefs(f, plane, bodies) -> null (f has no model references) | { changed, moved, dangling: [rel index],
+  // warning? }: f's reference entities moved to where the model has their edges / vertices now, f solved (in place)
+  function resolveSketchRefs(f, pl, bodies) {
+    var rels = f && f.rels;
+    if (!rels || !rels.some(function (r) { return r && r.mref; })) return null;
+    var changed = false, moved = false, dangling = [], S = solver();
+    rels.forEach(function (rel, i) {
+      if (!rel || !rel.mref || rel.suppressed) return;
+      var ent = f.entities[+rel.refs[0]];
+      if (!ent || !/^\d+$/.test(String(rel.refs[0]))) return;
+      var g = null;
+      try { g = resolveModelRef(bodies, rel.mref); } catch (e) { g = null; }
+      var np = g ? entityParams(ent, g, pl) : null;
+      if (!np) { if (!rel.dangling) { rel.dangling = true; changed = true; } dangling.push(i); return; }
+      if (rel.dangling) { delete rel.dangling; changed = true; }
+      // found: its last position is where it is now
+      if (g.k === 'vertex') rel.mref.at = g.p.map(r9);
+      else if (g.k === 'edge') rel.mref.at = scale(add(g.a, g.b), 0.5).map(r9);
+      else { rel.mref.c = g.c.map(r9); rel.mref.r = r9(g.r); }
+      var keys = Object.keys(np);
+      if (keys.every(function (k) { return Math.abs((+ent[k] || 0) - np[k]) < 1e-9; })) return;
+      keys.forEach(function (k) { ent[k] = np[k]; });
+      rel.at = ent.t === 'point' ? [ent.x, ent.y] : (S ? S.paramNames(ent) : keys).map(function (nm) { return ent[nm]; });
+      changed = moved = true;
+    });
+    if (moved && S) { try { S.solve(f); } catch (e) { /* the references moved; the rest stays */ } }
+    var out = { changed: changed, moved: moved, dangling: dangling };
+    if (dangling.length) {
+      var one = dangling.length === 1;
+      out.warning = 'Dangling: ' + dangling.length + ' sketch relation' + (one ? '' : 's') + ' to model geometry that is gone (' + dangling.map(function (i) { var r = rels[i]; return (r.type === 'onEdge' ? 'On Edge' : 'Fixed') + ' ' + entName(f, +r.refs[0]); }).join(', ') + '); ' + (one ? 'it stays' : 'they stay') + ' at the last position. Delete or replace ' + (one ? 'it' : 'them') + ' in Display/Delete Relations.';
+    }
+    return out;
+  }
+  function entName(f, i) {
+    var S = solver();
+    if (S && S.refName) return S.refName(f, String(i));
+    var e = f.entities[i], T = { line: 'Line', point: 'Point', circle: 'Arc', arc: 'Arc' };
+    return (e && T[e.t] || 'Entity') + (i + 1);
+  }
+  K.modelRefFor = modelRefFor; K.resolveModelRef = resolveModelRef; K.resolveSketchRefs = resolveSketchRefs;
+  _.resolveSketchRefs = resolveSketchRefs;
+})(Kernel, Kernel._);
