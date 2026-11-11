@@ -1657,6 +1657,225 @@ var Exchange = (function () {
   // samples is the integral to O(h^4)), so a tessellation of SPLINE_SEGS chords per knot span keeps the volume.
   var SPLINE_SEGS = 24;
   function bsFlat(knots, mults) { var U = []; knots.forEach(function (k, i) { for (var m = 0; m < +mults[i]; m++) U.push(+k); }); return U; }
+  // lane realfiles: the knot vector a B-spline's form implies (QUASI_UNIFORM_*: clamped, even inside; UNIFORM_*: even,
+  // unclamped; BEZIER_*: one span) for n poles of degree p
+  function bsImplicit(t) { var m = /^(QUASI_UNIFORM|UNIFORM|BEZIER)_(CURVE|SURFACE)$/.exec(t || ''); return m ? m[1] : null; }
+  function bsImplicitParts(P, what) { return P['QUASI_UNIFORM_' + what] ? 'QUASI_UNIFORM' : P['UNIFORM_' + what] ? 'UNIFORM' : P['BEZIER_' + what] ? 'BEZIER' : null; }
+  function bsKnotsOf(kind, n, p) {
+    var U = [], k;
+    if (kind === 'UNIFORM') { for (k = 0; k < n + p + 1; k++) U.push(k - p); return U; }
+    if (kind === 'BEZIER') { for (k = 0; k < n + p + 1; k++) U.push(k <= p ? 0 : 1); return U; }
+    for (k = 0; k <= p; k++) U.push(0);
+    for (k = 1; k < n - p; k++) U.push(k);
+    for (k = 0; k <= p; k++) U.push(Math.max(1, n - p));
+    return U;
+  }
+  // lane realfiles: one point of a B-spline surface ({ du, dv, poles, U, V, W } as bsSurfOf gives it) at (u, v)
+  function bsSurfPoint(d, u, v) {
+    var bu = bsBasis(d.du, d.U, u), bv = bsBasis(d.dv, d.V, v), p = [0, 0, 0], ws = 0;
+    for (var i = 0; i <= d.du; i++) for (var j = 0; j <= d.dv; j++) {
+      var q = d.poles[bu.s - d.du + i][bv.s - d.dv + j], w = bu.N[i] * bv.N[j];
+      if (d.W) w *= d.W[bu.s - d.du + i][bv.s - d.dv + j];
+      p[0] += w * q[0]; p[1] += w * q[1]; p[2] += w * q[2]; ws += w;
+    }
+    return d.W ? scale(p, 1 / ws) : p;
+  }
+  function bsCurvePoint(deg, poles, U, W, t) {
+    var b = bsBasis(deg, U, t), p = [0, 0, 0], ws = 0;
+    for (var i = 0; i <= deg; i++) { var q = poles[b.s - deg + i], w = b.N[i] * (W ? W[b.s - deg + i] : 1); p[0] += w * q[0]; p[1] += w * q[1]; p[2] += w * q[2]; ws += w; }
+    return W ? scale(p, 1 / ws) : p;
+  }
+  // lane realfiles: paramPatch(loops, outerI, A) -> { V: [{ p, u, v }], T: [[i, j, k]] } or null. A face on any surface
+  // with a parametrisation A = { uv(p) -> [u, v, pole?] | null, at(u, v) -> p, pu, pv (periods, 0 = none), hs, ht
+  // (largest parameter step of a triangle edge; Infinity = straight that way), su, sv (scales making (u·su, v·sv)
+  // roughly lengths, for the ear clipping) }. Every loop (3D points, the edges' own: watertight with the faces beside
+  // it) is unrolled into (u, v) by continuity (a seam the loop runs up and back down unrolls to a rectangle; a pole, where
+  // u is not defined, becomes a segment from the u before it to the u after it), ear clipped, then every interior edge
+  // longer than one step is halved, longest first along its propagation path, its new point on the surface. A loop
+  // winding round a period (a band with no seam edge) is not taken.
+  // lane realfiles: delaunayFlips(T, P) flips, in place, every interior edge of the counter-clockwise triangles T (index
+  // triples into the 2D points P) whose far vertex lies inside the other triangle's circumcircle (Lawson), so a fan the
+  // ear clipping left becomes well shaped; edges with one triangle (the loops) never move
+  function delaunayFlips(T, P) {
+    var em = {}, stack = [], guard = 0, sc = 0;
+    P.forEach(function (p) { sc = Math.max(sc, Math.abs(p[0]), Math.abs(p[1])); });
+    var eps = 1e-12 * Math.pow(sc || 1, 4);
+    function ek(a, b) { return a < b ? a + ',' + b : b + ',' + a; }
+    function link(ti, on) { var t = T[ti]; for (var e = 0; e < 3; e++) { var k = ek(t[e], t[(e + 1) % 3]), l = em[k] || (em[k] = []); if (on) l.push(ti); else l.splice(l.indexOf(ti), 1); if (on) stack.push(k); } }
+    function inCircle(a, b, c, d) {
+      var ax = a[0] - d[0], ay = a[1] - d[1], bx = b[0] - d[0], by = b[1] - d[1], cx = c[0] - d[0], cy = c[1] - d[1];
+      return (ax * ax + ay * ay) * (bx * cy - cx * by) - (bx * bx + by * by) * (ax * cy - cx * ay) + (cx * cx + cy * cy) * (ax * by - bx * ay) > eps;
+    }
+    function orient(a, b, c) { return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]); }
+    function rot(t, a) { var i = t.indexOf(a); return [t[i], t[(i + 1) % 3], t[(i + 2) % 3]]; }
+    for (var ti = 0; ti < T.length; ti++) link(ti, true);
+    while (stack.length && guard++ < 2000000) {
+      var key = stack.pop(), l = em[key];
+      if (!l || l.length !== 2) continue;
+      var ab = key.split(',').map(Number), t1 = rot(T[l[0]], ab[0]), i1 = l[0], i2 = l[1];
+      if (t1[1] !== ab[1]) { t1 = rot(T[l[1]], ab[0]); i1 = l[1]; i2 = l[0]; }
+      if (t1[1] !== ab[1]) continue;
+      var a = t1[0], b = t1[1], c = t1[2], t2 = rot(T[i2], b);
+      if (t2[1] !== a) continue;
+      var d = t2[2];
+      if (!inCircle(P[a], P[b], P[c], P[d])) continue;
+      // the quad a, d, b, c must be convex for c-d to replace a-b
+      if (!(orient(P[d], P[b], P[c]) > 0 && orient(P[a], P[d], P[c]) > 0)) continue;
+      link(i1, false); link(i2, false);
+      T[i1] = [a, d, c]; T[i2] = [d, b, c];
+      link(i1, true); link(i2, true);
+    }
+  }
+  function paramPatch(loops, outerI, A) {
+    var V = [], rings = [], mean0 = null, bands = [];
+    function wrapP(d, P) { return P ? d - P * Math.round(d / P) : d; }
+    for (var k = 0; k < loops.length; k++) {
+      var pts = loops[k], n = pts.length;
+      if (n < 3) return null;
+      var raw = pts.map(function (p) { return A.uv(p); });
+      if (raw.some(function (q) { return !q || !isFinite(q[0]) || !isFinite(q[1]); })) return null;
+      var first = -1;
+      for (var i = 0; i < n && first < 0; i++) if (!raw[i][2] && raw[(i + n - 1) % n][2]) first = i;   // just past a pole: the loop winds there
+      for (i = 0; i < n && first < 0; i++) if (!raw[i][2]) first = i;
+      if (first < 0) return null;
+      var uw = new Array(n), prev = null, pole = false, accU = 0, accV = 0;
+      for (var j = 0; j <= n; j++) {
+        var ii = (first + j) % n, q = raw[ii];
+        if (q[2]) { pole = true; continue; }
+        if (prev) {
+          var du = wrapP(q[0] - prev.r[0], A.pu), dv = wrapP(q[1] - prev.r[1], A.pv);
+          if (!pole && ((A.pu && Math.abs(du) > A.pu / 4) || (A.pv && Math.abs(dv) > A.pv / 4))) return null;
+          if (j === n) { accU += du; accV += dv; break; }
+          uw[ii] = [prev.w[0] + du, prev.w[1] + dv]; accU += du; accV += dv;
+        } else uw[ii] = [q[0], q[1]];
+        prev = { r: q, w: uw[ii] }; pole = false;
+      }
+      // a loop through a pole may wind once round u (a cap: the circle, up the seam to the pole and back: the pole is
+      // the segment closing it)
+      var poled = raw.some(function (q2) { return q2[2]; });
+      if (poled && A.pu && Math.abs(Math.abs(accU) - A.pu) <= 1e-6 * A.pu) accU = 0;
+      var windU = A.pu && Math.abs(accU) > 1e-6 * A.pu, windV = A.pv && Math.abs(accV) > 1e-6 * A.pv;
+      if (windU || windV) {
+        // a band: a loop winding once round one period (a partial revolve's torus between two meridian circles, a
+        // cylinder between two closed curves with no seam edge); two such loops are joined below
+        if ((windU && windV) || poled || Math.abs(Math.abs(windU ? accU : accV) - (windU ? A.pu : A.pv)) > 1e-6 * (windU ? A.pu : A.pv)) return null;
+        var line = [];
+        for (j = 0; j < n; j++) { var at0 = (first + j) % n; line.push({ p: pts[at0], u: uw[at0][0], v: uw[at0][1] }); }
+        line.push({ p: pts[first], u: uw[first][0] + accU, v: uw[first][1] + accV });   // the start again, one period on
+        if ((windU ? accU : accV) < 0) line.reverse();
+        bands.push({ dir: windU ? 0 : 1, line: line });
+        continue;
+      }
+      var ring = [];
+      for (j = 0; j < n; j++) {
+        var at = (first + j) % n;
+        if (uw[at]) { ring.push({ p: pts[at], u: uw[at][0], v: uw[at][1] }); continue; }
+        var b4 = null, af = null;
+        for (var s = 1; s < n && !b4; s++) b4 = uw[(at - s + n) % n];
+        for (s = 1; s < n && !af; s++) af = uw[(at + s) % n];
+        // the pole's segment carries a point every step (all the pole itself): the triangles along it then reach it
+        // a step apart, as rows do; one long segment left a fan of triangles that is a line in space (area lost)
+        var npole = Math.max(1, Math.ceil(Math.abs(af[0] - b4[0]) / A.hs - 1e-9));
+        for (var pk = 0; pk <= npole; pk++) if (pk === 0 || Math.abs(af[0] - b4[0]) > 1e-12) ring.push({ p: pts[at], u: b4[0] + (af[0] - b4[0]) * pk / npole, v: raw[at][1] });
+      }
+      var mu = 0, mv = 0;
+      ring.forEach(function (x) { mu += x.u; mv += x.v; });
+      mu /= ring.length; mv /= ring.length;
+      if (mean0 == null) mean0 = [mu, mv];
+      else {
+        var shU = A.pu ? A.pu * Math.round((mean0[0] - mu) / A.pu) : 0, shV = A.pv ? A.pv * Math.round((mean0[1] - mv) / A.pv) : 0;
+        ring.forEach(function (x) { x.u += shU; x.v += shV; });
+      }
+      var idx = [];
+      ring.forEach(function (x) { idx.push(V.length); V.push(x); });
+      rings.push(idx);
+    }
+    if (bands.length) {
+      // two band loops winding the same way: cut the band along the period at the first one's start; the ring runs up
+      // one loop (one period on), across, back down the other, across: the cut's two copies stay unsplit (boundary
+      // edges in (u, v)), so the triangles either side of it meet point for point
+      if (bands.length !== 2 || bands[0].dir !== bands[1].dir) return null;
+      var dI = bands[0].dir, Pd = dI ? A.pv : A.pu, key = dI ? 'v' : 'u', oth = dI ? 'u' : 'v';
+      var L1 = bands[0].line, L2 = bands[1].line, s0 = L1[0][key], sh2 = Pd * Math.round((s0 - L2[0][key]) / Pd);
+      L2.forEach(function (x) { x[key] += sh2; });
+      if (rings.length) {   // holes beside the band: into its period window
+        var mo = 0; L1.forEach(function (x) { mo += x[oth]; });
+        rings.forEach(function (ix) { var m2 = 0; ix.forEach(function (q) { m2 += V[q][key]; }); m2 /= ix.length; var sh3 = Pd * Math.floor((m2 - s0) / Pd); ix.forEach(function (q) { V[q][key] -= sh3; }); });
+      }
+      // the cut runs on the surface: points every step along it, the same parameters on both copies (one period apart:
+      // the same points in space)
+      var bring = [], a0 = L1[0], b0 = L2[0], cutPts = [];
+      var m = Math.ceil(Math.max(Math.abs(b0.u - a0.u) / A.hs, Math.abs(b0.v - a0.v) / A.ht) - 1e-9);
+      for (var c2 = 1; c2 < m; c2++) { var u2 = a0.u + (b0.u - a0.u) * c2 / m, v2 = a0.v + (b0.v - a0.v) * c2 / m; cutPts.push({ p: A.at(u2, v2), u: u2, v: v2 }); }
+      L1.forEach(function (x) { bring.push(V.length); V.push(x); });
+      cutPts.forEach(function (x) { var y = { p: x.p, u: x.u, v: x.v }; y[key] += Pd; bring.push(V.length); V.push(y); });   // the top copy
+      L2.slice().reverse().forEach(function (x) { bring.push(V.length); V.push(x); });
+      cutPts.slice().reverse().forEach(function (x) { bring.push(V.length); V.push(x); });
+      rings.unshift(bring);
+      outerI = 0;
+    }
+    function sOf(x) { return [x.u * A.su, x.v * A.sv]; }
+    var P2 = V.map(sOf);
+    function area(ix) { var s2 = 0; for (var i2 = 0; i2 < ix.length; i2++) { var a = P2[ix[i2]], b = P2[ix[(i2 + 1) % ix.length]]; s2 += a[0] * b[1] - b[0] * a[1]; } return s2 / 2; }
+    var oi = outerI;
+    if (oi == null || oi < 0 || oi >= rings.length) { var big = -1; rings.forEach(function (ix, k2) { var a = Math.abs(area(ix)); if (a > big) { big = a; oi = k2; } }); }
+    rings = rings.map(function (ix, k2) { return (k2 === oi) !== (area(ix) > 0) ? ix.slice().reverse() : ix; });
+    var tl = earcut(P2, rings[oi], rings.filter(function (ix, k2) { return k2 !== oi; })), T3 = [];
+    for (var t = 0; t + 2 < tl.length; t += 3) T3.push([tl[t], tl[t + 1], tl[t + 2]]);
+    if (!T3.length) return null;
+    var ea = 0;
+    T3.forEach(function (t3) { ea += (P2[t3[1]][0] - P2[t3[0]][0]) * (P2[t3[2]][1] - P2[t3[0]][1]) - (P2[t3[2]][0] - P2[t3[0]][0]) * (P2[t3[1]][1] - P2[t3[0]][1]); });
+    var want = rings.reduce(function (s2, ix) { return s2 + area(ix); }, 0);
+    if (!(Math.abs(ea / 2 - want) <= 1e-6 * Math.max(Math.abs(want), 1e-12))) return null;   // the ear clipping failed
+    // fans of the ear clipping made well shaped first, in the refinement's own measure (one step = 1 each way; a straight
+    // direction scaled as lengths), so the refinement then adds few points
+    var hsF = isFinite(A.hs) ? A.hs : A.ht * A.sv / A.su, htF = isFinite(A.ht) ? A.ht : A.hs * A.su / A.sv;
+    delaunayFlips(T3, isFinite(hsF) && isFinite(htF) ? V.map(function (x) { return [x.u / hsF, x.v / htF]; }) : P2);
+    var em = {};
+    function ek(a, b) { return a < b ? a + ',' + b : b + ',' + a; }
+    // an edge is halved when it spans more than SPLIT steps: halves of an edge just over one step would double the
+    // density each way (bisection makes edges of 1 and 1/2), so edges end between 0.7 and 1.4 steps, a step on average
+    var SPLIT = 1.4;
+    function span(a, b) { return Math.max(Math.abs(V[a].u - V[b].u) / A.hs, Math.abs(V[a].v - V[b].v) / A.ht); }
+    function addT(ti) { var t3 = T3[ti]; for (var e = 0; e < 3; e++) { var key = ek(t3[e], t3[(e + 1) % 3]); (em[key] || (em[key] = [])).push(ti); } }
+    function remT(ti) { var t3 = T3[ti]; for (var e = 0; e < 3; e++) { var l = em[ek(t3[e], t3[(e + 1) % 3])], at2 = l.indexOf(ti); if (at2 >= 0) l.splice(at2, 1); } }
+    function longest(ti) { var t3 = T3[ti], best = 0; for (var e = 1; e < 3; e++) if (span(t3[e], t3[(e + 1) % 3]) > span(t3[best], t3[(best + 1) % 3])) best = e; return [t3[best], t3[(best + 1) % 3]]; }
+    var queue;
+    function splitEdge(a, b) {
+      var u = (V[a].u + V[b].u) / 2, v = (V[a].v + V[b].v) / 2, m = V.length, ts = em[ek(a, b)].slice();
+      V.push({ p: A.at(u, v), u: u, v: v });
+      ts.forEach(function (ti) {
+        var t3 = T3[ti], e = 0;
+        while (e < 3 && !((t3[e] === a && t3[(e + 1) % 3] === b) || (t3[e] === b && t3[(e + 1) % 3] === a))) e++;
+        var i3 = t3[e], j3 = t3[(e + 1) % 3], c = t3[(e + 2) % 3];
+        remT(ti);
+        T3[ti] = [i3, m, c]; addT(ti);
+        T3.push([m, j3, c]); addT(T3.length - 1);
+        queue.push(ti, T3.length - 1);
+      });
+    }
+    T3.forEach(function (t3, ti) { addT(ti); });
+    queue = T3.map(function (t3, ti) { return ti; });
+    var guard = 0;
+    while (queue.length && guard < 400000) {
+      var ti0 = queue.pop(), e0 = longest(ti0);
+      if (span(e0[0], e0[1]) <= SPLIT) continue;
+      var cur = ti0, edge = e0;
+      for (var walk = 0; walk < 1000; walk++) {
+        guard++;
+        var nbs = em[ek(edge[0], edge[1])], nb = nbs.length === 2 ? (nbs[0] === cur ? nbs[1] : nbs[0]) : -1;
+        if (nb < 0) { edge = null; break; }   // a boundary edge: kept (the edges' own points)
+        var en = longest(nb);
+        if (span(en[0], en[1]) <= span(edge[0], edge[1]) * (1 + 1e-12)) break;
+        cur = nb; edge = en;
+      }
+      if (!edge) continue;
+      splitEdge(edge[0], edge[1]);
+      queue.push(ti0);
+    }
+    if (guard >= 400000) return null;
+    return { V: V, T: T3 };
+  }
   function bsBasis(deg, U, t) {
     var last = U.length - deg - 2, s = deg;
     while (s < last && !(t < U[s + 1])) s++;
@@ -2186,17 +2405,24 @@ var Exchange = (function () {
     function bsCurveOf(g) {
       if (!g) return null;
       if (g.t === 'B_SPLINE_CURVE_WITH_KNOTS') return { deg: +g.a[1], poles: (g.a[2] || []).map(point), U: bsFlat(g.a[7], g.a[6]), W: null };
-      var P = g.parts, c = P && P.B_SPLINE_CURVE, kn = P && P.B_SPLINE_CURVE_WITH_KNOTS, rw = P && P.RATIONAL_B_SPLINE_CURVE;
-      if (!c || !kn) return null;
-      return { deg: +c[0], poles: (c[1] || []).map(point), U: bsFlat(kn[1], kn[0]), W: rw && rw[0] ? rw[0].map(Number) : null };
+      // lane realfiles: QUASI_UNIFORM / UNIFORM / BEZIER curves (Mastercam writes them) carry no knots: the form gives them
+      var ik = bsImplicit(g.t), P = g.parts;
+      if (ik) return { deg: +g.a[1], poles: (g.a[2] || []).map(point), U: bsKnotsOf(ik, (g.a[2] || []).length, +g.a[1]), W: null };
+      var c = P && P.B_SPLINE_CURVE, kn = P && P.B_SPLINE_CURVE_WITH_KNOTS, rw = P && P.RATIONAL_B_SPLINE_CURVE, ikc = P && bsImplicitParts(P, 'CURVE');
+      if (!c || !(kn || ikc)) return null;
+      return { deg: +c[0], poles: (c[1] || []).map(point), U: kn ? bsFlat(kn[1], kn[0]) : bsKnotsOf(ikc, (c[1] || []).length, +c[0]), W: rw && rw[0] ? rw[0].map(Number) : null };
     }
     function bsSurfOf(g) {
       if (!g) return null;
       var pts = function (rows) { return (rows || []).map(function (row) { return row.map(point); }); };
       if (g.t === 'B_SPLINE_SURFACE_WITH_KNOTS') return { du: +g.a[1], dv: +g.a[2], poles: pts(g.a[3]), U: bsFlat(g.a[10], g.a[8]), V: bsFlat(g.a[11], g.a[9]), W: null };
-      var P = g.parts, c = P && P.B_SPLINE_SURFACE, kn = P && P.B_SPLINE_SURFACE_WITH_KNOTS, rw = P && P.RATIONAL_B_SPLINE_SURFACE;
-      if (!c || !kn) return null;
-      return { du: +c[0], dv: +c[1], poles: pts(c[2]), U: bsFlat(kn[2], kn[0]), V: bsFlat(kn[3], kn[1]), W: rw && rw[0] ? rw[0].map(function (r) { return r.map(Number); }) : null };
+      var ik = bsImplicit(g.t), P = g.parts;
+      if (ik) { var pp = pts(g.a[3]); return pp.length && pp[0].length ? { du: +g.a[1], dv: +g.a[2], poles: pp, U: bsKnotsOf(ik, pp.length, +g.a[1]), V: bsKnotsOf(ik, pp[0].length, +g.a[2]), W: null } : null; }
+      var c = P && P.B_SPLINE_SURFACE, kn = P && P.B_SPLINE_SURFACE_WITH_KNOTS, rw = P && P.RATIONAL_B_SPLINE_SURFACE, iks = P && bsImplicitParts(P, 'SURFACE');
+      if (!c || !(kn || iks)) return null;
+      var cp = pts(c[2]);
+      if (!kn && !(cp.length && cp[0].length)) return null;
+      return { du: +c[0], dv: +c[1], poles: cp, U: kn ? bsFlat(kn[2], kn[0]) : bsKnotsOf(iks, cp.length, +c[0]), V: kn ? bsFlat(kn[3], kn[1]) : bsKnotsOf(iks, cp[0].length, +c[1]), W: rw && rw[0] ? rw[0].map(function (r) { return r.map(Number); }) : null };
     }
     // the oriented edges of an EDGE_LOOP: [{ info, fwd }]
     function loopEdgeList(l) {
@@ -2256,6 +2482,7 @@ var Exchange = (function () {
             var S = bk && bk.cyl ? bk.cyl : surf.t ? surfRecord(surf) : null;
             if (S && curvedFace(fa, S, bk && bk.cyl ? sense === !bk.flip : sense, out)) return;
             if (!S && ruledFace(fa, surf, out)) return;
+            if (!S && freeFace(fa, surf, sense, out)) return;   // lane realfiles
             var key = (surf.t || 'complex surface') + (S ? ' (trimmed by curves other than circles and rulings)' : '');
             nonPlanar[key] = (nonPlanar[key] || 0) + 1;
             return;
@@ -2370,6 +2597,10 @@ var Exchange = (function () {
         // four edges, not two of them straight: the rails are the longer opposite pair
         var el = list.map(function (x) { var q = x.info.pts, s = 0; for (var k = 1; k < q.length; k++) s += len(sub(q[k], q[k - 1])); return s; });
         lines = el[0] + el[2] >= el[1] + el[3] ? [1, 3] : [0, 2];
+        // lane realfiles: the sides taken for rulings keep only their ends, so they must be two points: a B-spline side
+        // sampled along (SolidWorks' slot ends: rail, rail, ruling, a short curve; a nearly straight cubic) would leave
+        // its points unmatched on the face beside it (open edges): freeFace takes such a face
+        if (list[lines[0]].info.pts.length > 2 || list[lines[1]].info.pts.length > 2) return false;
       }
       if (lines.length !== 2 || lines[1] - lines[0] < 2 || n - (lines[1] - lines[0]) < 2) return false;
       function chain(from, to) {
@@ -2439,12 +2670,131 @@ var Exchange = (function () {
       }
       return false;
     }
+    // lane realfiles: freeFace(faceArgs, surf, sameSense, out) -> true when a free-form face no shape above takes was
+    // tessellated: a B-spline surface (any knots, rational or not, quasi-uniform) or a SURFACE_OF_LINEAR_EXTRUSION of a
+    // B-spline curve, trimmed by any edges. Boundary points are projected into the surface's (u, v) (nearest sample, then
+    // Newton), paramPatch triangulates, new points lie on the surface; the steps keep a chord within the canonical grid's
+    // angle for the local radius of curvature. No surface record (as splineFace).
+    function freeFace(fa, surf, sameSense, out) {
+      var A = null, d = bsSurfOf(surf);
+      if (d && d.poles.length && d.poles.every(function (row) { return row.length && row.every(Boolean); }) && d.U.length === d.poles.length + d.du + 1 && d.V.length === d.poles[0].length + d.dv + 1) A = bsAdaptor(d);
+      else if (surf.t === 'SURFACE_OF_LINEAR_EXTRUSION') A = extrusionAdaptor(surf);
+      if (!A) return false;
+      var lp = [], outerI = -1, ok = true;
+      (fa[1] || []).forEach(function (bRef) {
+        var b = ent(bRef), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
+        if (!l || l.t !== 'EDGE_LOOP') { ok = false; return; }
+        var pts = [];
+        loopEdgeList(l).forEach(function (x) { if (x.info.kind === 'other') ok = false; var q = orientedPts(x); pts = pts.concat(q.slice(0, Math.max(1, q.length - 1))); });
+        pts = dedupeRing(pts);
+        if (has(b, 'FACE_OUTER_BOUND')) outerI = lp.length;
+        lp.push(pts);
+      });
+      if (!ok || !lp.length) return false;
+      var res = paramPatch(lp, outerI, A);
+      if (!res) return false;
+      res.T.forEach(function (t3) {
+        var a = res.V[t3[0]], b = res.V[t3[1]], c = res.V[t3[2]], n3 = cross(sub(b.p, a.p), sub(c.p, a.p));
+        if (!(len(n3) > 0)) return;
+        if ((dot(n3, A.normal((a.u + b.u + c.u) / 3, (a.v + b.v + c.v) / 3)) > 0) !== sameSense) { var tmp = b; b = c; c = tmp; }
+        var base = out.pos.length / 3;
+        out.pos.push(a.p[0], a.p[1], a.p[2], b.p[0], b.p[1], b.p[2], c.p[0], c.p[1], c.p[2]);
+        out.tris.push(base, base + 1, base + 2);
+        out.recs.push(null);
+      });
+      return true;
+    }
+    // (u, v) of p on at(u, v) from a start: Gauss-Newton with central differences; lo / hi bound u and v (null: free)
+    function projectUV(at, p, u, v, lo, hi, hu, hv) {
+      for (var it = 0; it < 40; it++) {
+        var P = at(u, v), r = sub(p, P), Su = scale(sub(at(u + hu, v), at(u - hu, v)), 1 / (2 * hu)), Sv = scale(sub(at(u, v + hv), at(u, v - hv)), 1 / (2 * hv));
+        var a = dot(Su, Su), b = dot(Su, Sv), c = dot(Sv, Sv), e = dot(Su, r), f = dot(Sv, r), det = a * c - b * b;
+        if (!(det > 1e-30 * (a * c + 1e-300))) break;
+        var du = (c * e - b * f) / det, dv = (a * f - b * e) / det;
+        u += du; v += dv;
+        if (lo && lo[0] != null) u = Math.max(lo[0], Math.min(hi[0], u));
+        if (lo && lo[1] != null) v = Math.max(lo[1], Math.min(hi[1], v));
+        if (Math.abs(du) <= hu * 1e-6 && Math.abs(dv) <= hv * 1e-6) break;
+      }
+      return [u, v];
+    }
+    // the largest parameter step along a row of samples (params ts, points ps) whose chord stays inside the canonical
+    // grid's angle at the local radius of curvature (Infinity for a straight row)
+    function rowStep(ts, ps) {
+      var best = Infinity;
+      for (var i = 1; i + 1 < ps.length; i++) {
+        var d1 = sub(ps[i], ps[i - 1]), d2 = sub(ps[i + 1], ps[i]), l1 = len(d1), l2 = len(d2);
+        if (!(l1 > 0) || !(l2 > 0)) continue;
+        var th = Math.acos(Math.max(-1, Math.min(1, dot(d1, d2) / (l1 * l2))));
+        if (!(th > 1e-9)) continue;
+        var Rc = (l1 + l2) / 2 / th, al = 2 * Math.PI / K.segsForRadius(Rc * (toMM || 1));
+        best = Math.min(best, (ts[i + 1] - ts[i - 1]) / 2 * al / th);
+      }
+      return best;
+    }
+    function bsAdaptor(d) {
+      var nu = d.poles.length, nv = d.poles[0].length, u0 = d.U[d.du], u1 = d.U[nu], v0 = d.V[d.dv], v1 = d.V[nv];
+      if (!(u1 > u0) || !(v1 > v0)) return null;
+      function sameRow(a, b) { for (var k = 0; k < a.length; k++) if (len(sub(a[k], b[k])) > 1e-9 * (1 + len(a[k]))) return false; return true; }
+      var cu = sameRow(d.poles[0], d.poles[nu - 1]), cv = sameRow(columnOf(d.poles, 0), columnOf(d.poles, nv - 1));
+      function at(u, v) {
+        if (cu) u = u0 + mod(u - u0, u1 - u0); else u = Math.max(u0, Math.min(u1, u));
+        if (cv) v = v0 + mod(v - v0, v1 - v0); else v = Math.max(v0, Math.min(v1, v));
+        return bsSurfPoint(d, u, v);
+      }
+      function mod(x, P) { x = x % P; return x < 0 ? x + P : x; }
+      var tsU = bsParams(d.U, d.du), tsV = bsParams(d.V, d.dv), G = tsU.map(function (u) { return tsV.map(function (v) { return bsSurfPoint(d, u, v); }); });
+      var hs = Infinity, ht = Infinity, size = 0, lo = G[0][0].slice(), hi = G[0][0].slice();
+      G.forEach(function (col) { col.forEach(function (p) { for (var k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[k]); hi[k] = Math.max(hi[k], p[k]); } }); });
+      size = len(sub(hi, lo)) || 1;
+      for (var j = 0; j < tsV.length; j++) hs = Math.min(hs, rowStep(tsU, columnOf(G, j)));
+      for (var i = 0; i < tsU.length; i++) ht = Math.min(ht, rowStep(tsV, G[i]));
+      // a step no finer than an eighth of the grid's (24 samples a knot span)
+      hs = Math.max(hs, (u1 - u0) / Math.max(1, tsU.length - 1) / 8); ht = Math.max(ht, (v1 - v0) / Math.max(1, tsV.length - 1) / 8);
+      // seeds: every third grid sample
+      var seeds = [];
+      for (i = 0; i < tsU.length; i += 3) for (j = 0; j < tsV.length; j += 3) seeds.push([tsU[i], tsV[j], G[i][j]]);
+      var hu = 1e-7 * (u1 - u0), hv = 1e-7 * (v1 - v0), far = 1e-3 * size;
+      return {
+        at: at, pu: cu ? u1 - u0 : 0, pv: cv ? v1 - v0 : 0, hs: hs, ht: ht,
+        su: size / (u1 - u0), sv: size / (v1 - v0),
+        uv: function (p) {
+          var bs = null, bd = Infinity;
+          seeds.forEach(function (s) { var dd = len(sub(s[2], p)); if (dd < bd) { bd = dd; bs = s; } });
+          var q = projectUV(at, p, bs[0], bs[1], [cu ? null : u0, cv ? null : v0], [u1, v1], hu, hv);
+          return len(sub(at(q[0], q[1]), p)) <= far ? [q[0], q[1]] : null;
+        },
+        normal: function (u, v) { return cross(sub(at(u + hu * 10, v), at(u - hu * 10, v)), sub(at(u, v + hv * 10), at(u, v - hv * 10))); }
+      };
+    }
+    function extrusionAdaptor(surf) {
+      var bc = bsCurveOf(ent(surf.a[1])), va = args(ent(surf.a[2]), 'VECTOR'), D = va ? direction(va[1], null) : null;
+      if (!bc || !D || !(bc.poles.length > bc.deg) || !bc.poles.every(Boolean) || bc.U.length !== bc.poles.length + bc.deg + 1) return null;
+      var u0 = bc.U[bc.deg], u1 = bc.U[bc.poles.length];
+      if (!(u1 > u0)) return null;
+      function c(u) { return bsCurvePoint(bc.deg, bc.poles, bc.U, bc.W, Math.max(u0, Math.min(u1, u))); }
+      function at(u, w) { return add(c(u), scale(D, w)); }
+      var ts = bsParams(bc.U, bc.deg), ps = ts.map(c), lo = ps[0].slice(), hi = ps[0].slice();
+      ps.forEach(function (p) { for (var k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[k]); hi[k] = Math.max(hi[k], p[k]); } });
+      var size = len(sub(hi, lo)) || 1, hu = 1e-7 * (u1 - u0), hw = 1e-7 * size, far = 1e-3 * size;
+      var hs = Math.max(rowStep(ts, ps), (u1 - u0) / Math.max(1, ts.length - 1) / 8);
+      return {
+        at: at, pu: 0, pv: 0, hs: hs, ht: Infinity, su: size / (u1 - u0), sv: 1,
+        uv: function (p) {
+          var bs = 0, bd = Infinity;
+          ps.forEach(function (q, k) { var w = sub(p, q), pr = sub(w, scale(D, dot(w, D))), dd = len(pr); if (dd < bd) { bd = dd; bs = k; } });
+          var q2 = projectUV(at, p, ts[bs], dot(sub(p, ps[bs]), D), [u0, null], [u1, null], hu, hw);
+          return len(sub(at(q2[0], q2[1]), p)) <= far ? q2 : null;
+        },
+        normal: function (u, w) { return cross(sub(c(u + hu * 10), c(u - hu * 10)), D); }
+      };
+    }
     // curvedFace(faceArgs, S, sameSense, out) -> true when the face was tessellated. Supported: bands between two full
     // latitude circles (cylinder, cone, sphere, torus), caps from one circle to a cone's apex or a sphere's pole,
     // whole spheres and tori, and cylinder / cone patches bounded by two latitude arcs and two rulings. Seam edges (an
     // EDGE_CURVE the face uses twice) only say which way round a sphere or torus band goes.
     function curvedFace(fa, S, sameSense, out) {
-      var loops = [], vloops = [], uses = {}, ok = true, outerI = -1;
+      var loops = [], vloops = [], uses = {}, ok = true, outerI = -1, lflip = [];
       (fa[1] || []).forEach(function (bRef) {
         var b = ent(bRef), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
         if (!l) { ok = false; return; }
@@ -2454,6 +2804,7 @@ var Exchange = (function () {
         var list = loopEdgeList(l);
         list.forEach(function (x) { uses[x.info.id] = (uses[x.info.id] || 0) + 1; });
         loops.push(list);
+        lflip.push(!!(ba[2] && ba[2].e === "F"));   // lane realfiles (surfPatch: which side of a lone circle a cap lies)
       });
       if (!ok || !(S.r > 0) || len(S.d) < 0.5) return false;
       var Cr = S.t === 'tor' ? S.R : 0, ext = Math.max(1, S.r, Math.abs(Cr), len(S.o)), tol = 1e-6 * ext;
@@ -2503,6 +2854,7 @@ var Exchange = (function () {
         }
         return res;
       }
+      var odd = false;
       for (var li = 0; !octTris && li < loops.length; li++) for (var xi = 0; xi < loops[li].length; xi++) {
         var x = loops[li][xi], info = x.info;
         if (uses[info.id] > 1) { if (seams.indexOf(info) < 0) seams.push(info); continue; }
@@ -2523,7 +2875,7 @@ var Exchange = (function () {
         // lane importbend: a B-spline edge on the cylinder (another CAD system's oblique or relief cut, OpenCascade's
         // approximated intersection curves): a side like an ellipse, its own points on the surface
         if (info.kind === 'bspline' && S.t === 'cyl' && info.pts.every(onSurface)) { ells.push(x); continue; }
-        return false;
+        odd = true;   // lane realfiles: an edge none of the shapes below takes: the general patch (surfPatch)
       }
       // latitude levels
       var levels = [];
@@ -2675,8 +3027,65 @@ var Exchange = (function () {
         T3.forEach(function (t3) { tris.push([V[t3[0]].p, V[t3[1]].p, V[t3[2]].p, rec()]); });
         return true;
       }
+      // lane realfiles: any other patch of a cylinder, cone, sphere or torus (a fillet's corner bounded by meridians, a
+      // cone or a band cut by B-spline intersection curves, a cylinder side whose loop runs up and down a seam, a cone
+      // reaching its apex): paramPatch in (angle, height) or (angle, meridian angle), the steps the canonical grid's
+      // (segsForRadius of the largest radius on the face; the tube's for a sphere / torus). Cylinder and cone triangles
+      // carry the surface record (exact massProps), sphere and torus triangles the surface only (no profile chord).
+      function surfPatch() {
+        if (vloops.length || !loops.length) return false;
+        var round = S.t === 'sph' || S.t === 'tor', lp = [], rmax = 0;
+        for (var k = 0; k < loops.length; k++) {
+          var pts = [];
+          loops[k].forEach(function (x) { var q = orientedPts(x); pts = pts.concat(q.slice(0, Math.max(1, q.length - 1))); });
+          pts = dedupeRing(pts);
+          if (pts.length < 3) return false;
+          pts.forEach(function (p) { rmax = Math.max(rmax, ax(p).rho); });
+          lp.push(pts);
+        }
+        // a boundary far off the surface is not this face's (1e-4 of its size: intersection curves are approximate)
+        var far = 1e-4 * ext;
+        if (lp.some(function (pts) { return pts.some(function (p) { var a = ax(p); return Math.abs(S.t === 'cyl' ? a.rho - S.r : S.t === 'cone' ? (a.rho - (S.r + S.k * a.z)) / Math.sqrt(1 + S.k * S.k) : Math.hypot(a.rho - Cr, a.z) - S.r) > far; }); })) return false;
+        if (!(rmax > 0)) return false;
+        var A = {
+          uv: function (p) { var a = ax(p), v = round ? Math.atan2(a.z, a.rho - Cr) : a.z; return [a.ang, v, a.rho < tol]; },
+          at: function (u, v) {
+            var rho = round ? Cr + S.r * Math.cos(v) : S.r + (S.k || 0) * v, z = round ? S.r * Math.sin(v) : v;
+            return add(add(S.o, scale(S.d, z)), scale(add(scale(xc, Math.cos(u)), scale(yc, Math.sin(u))), rho));
+          },
+          pu: 2 * Math.PI, pv: S.t === 'tor' ? 2 * Math.PI : 0,
+          hs: 2 * Math.PI / K.segsForRadius(rmax * toMM) * (1 + 1e-6), ht: round ? 2 * Math.PI / K.segsForRadius(S.r * toMM) * (1 + 1e-6) : Infinity,
+          su: rmax, sv: round ? S.r : 1
+        };
+        // a cap of a sphere or cone bounded by one circle alone (no seam, no vertex loop: SolidWorks' dome, a countersink
+        // to its point): the loop closes through the pole on the face's side, the side its normal and the loop's sense
+        // give (the face lies left of its boundary seen from outside)
+        if (lp.length === 1 && (S.t === 'sph' || (S.t === 'cone' && Math.abs(S.k) > 1e-12))) {
+          var L0 = lp[0], acc = 0, nL = L0.length;
+          for (var q = 0; q < nL; q++) acc += wrapAngle(ax(L0[(q + 1) % nL]).ang - ax(L0[q]).ang);
+          if (Math.abs(Math.abs(acc) - 2 * Math.PI) < 1e-6 && L0.every(function (p) { return ax(p).rho >= tol; })) {
+            var pole;
+            if (S.t === 'cone') pole = add(S.o, scale(S.d, -S.r / S.k));
+            else {
+              var P0 = lflip[0] ? L0[1] : L0[0], P1 = lflip[0] ? L0[0] : L0[1], nOut = scale(norm(sub(P0, S.o)), sameSense ? 1 : -1);
+              pole = add(S.o, scale(S.d, dot(cross(nOut, sub(P1, P0)), S.d) > 0 ? S.r : -S.r));
+            }
+            lp[0] = L0.concat([L0[0], pole]);
+          }
+        }
+        var res = paramPatch(lp, outerI, A);
+        if (!res) return false;
+        var rg = round ? { s: S } : rec();
+        // they all turn one way in (u, v): the area-weighted vote of the surface normal decides for all of them
+        var vote = 0;
+        res.T.forEach(function (t3) { var A0 = res.V[t3[0]].p, B0 = res.V[t3[1]].p, C0 = res.V[t3[2]].p; vote += dot(cross(sub(B0, A0), sub(C0, A0)), norm(gOf(scale(add(add(A0, B0), C0), 1 / 3)))); });
+        var flip = (vote > 0) !== sameSense;
+        res.T.forEach(function (t3) { tris.push([res.V[t3[0]].p, res.V[t3[1]].p, res.V[t3[2]].p, rg, flip]); });
+        return true;
+      }
       var seamMid = seams.length && seams[0].kind === 'circle' ? seams[0].mid : null, general = false;
-      if (octTris) tris = octTris;   // rfFF2
+      if (odd) general = true;
+      else if (octTris) tris = octTris;   // rfFF2
       else if (S.t === 'cyl' || S.t === 'cone') {
         if (levels.length === 2 && full.length === 2 && !rulings.length) zip(ring(levels[0]), ring(levels[1]), true, rec());
         else if (S.t === 'cone' && levels.length === 1 && full.length === 1 && !rulings.length && Math.abs(S.k) > 1e-12) zip(ring(levels[0]), pointRow(add(S.o, scale(S.d, -S.r / S.k))), true, rec());
@@ -2728,19 +3137,22 @@ var Exchange = (function () {
           var sm = seams[0], far = Math.abs(betaOf(sm.start) - betaOf(circles[0].row[0].p)) > Math.abs(betaOf(sm.end) - betaOf(circles[0].row[0].p)) ? sm.start : sm.end;
           var bp = ax(far).z > 0 ? Math.PI / 2 : -Math.PI / 2, bc = betaOf(circles[0].row[0].p);
           zipRows(betaRows(bc, bp, bp > bc ? 1 : -1, circles[0], null));
-        } else return false;
+        } else general = true;   // lane realfiles (surfPatch)
       }
-      if (general && !cylPatch()) return false;   // lane stepin2
-      // orient every triangle outward (along the surface normal, or against it for a face with same_sense .F.)
+      if (general && !cylPatch() && !surfPatch()) return false;   // lane stepin2, lane realfiles
+      // orient every triangle outward (along the surface normal, or against it for a face with same_sense .F.); a
+      // surfPatch triangle carries its answer in t[4] (they all turn one way in (u, v): the largest decides for all)
+      function gOf(X) {
+        var a = ax(X), rel = sub(X, S.o), er = norm(sub(rel, scale(S.d, a.z)));
+        if (S.t === 'cyl') return er;
+        if (S.t === 'cone') return sub(er, scale(S.d, S.k));
+        if (S.t === 'sph') return rel;
+        return sub(rel, add(scale(S.d, a.z), scale(er, Cr)));
+      }
       tris.forEach(function (t) {
         var A = t[0], B = t[1], C = t[2], nrm = cross(sub(B, A), sub(C, A));
         if (len(nrm) < 1e-14 * ext * ext) return;
-        var X = scale(add(add(A, B), C), 1 / 3), a = ax(X), rel = sub(X, S.o), er = norm(sub(rel, scale(S.d, a.z))), g;
-        if (S.t === 'cyl') g = er;
-        else if (S.t === 'cone') g = sub(er, scale(S.d, S.k));
-        else if (S.t === 'sph') g = rel;
-        else g = sub(rel, add(scale(S.d, a.z), scale(er, Cr)));
-        if ((dot(nrm, g) > 0) !== sameSense) { var tmp = B; B = C; C = tmp; }
+        if (t[4] != null ? t[4] : (dot(nrm, gOf(scale(add(add(A, B), C), 1 / 3))) > 0) !== sameSense) { var tmp = B; B = C; C = tmp; }
         var base = out.pos.length / 3;
         out.pos.push(A[0], A[1], A[2], B[0], B[1], B[2], C[0], C[1], C[2]);
         out.tris.push(base, base + 1, base + 2);
@@ -2797,6 +3209,27 @@ var Exchange = (function () {
     function union(a, b) { a = find(a); b = find(b); if (a !== b) parent[a] = b; }
     Object.keys(reps).forEach(function (id) { parent[id] = +id; });
     var ups = [];
+    // lane realfiles: which side of a placing relationship is the assembly. Writers differ (Anvil and OpenCascade put
+    // the component first, SolidWorks the assembly first); the CONTEXT_DEPENDENT_SHAPE_REPRESENTATION names the
+    // NEXT_ASSEMBLY_USAGE_OCCURRENCE (relating = the assembly), and SHAPE_DEFINITION_REPRESENTATIONs give each product
+    // definition's representation. Without that link the component is taken to be first, as before.
+    var pdRep = {}, parentFirst = {};
+    Object.keys(E).forEach(function (id) {
+      var e = E[id];
+      if (e.t !== 'SHAPE_DEFINITION_REPRESENTATION' || !e.a[0] || !e.a[1]) return;
+      var pds = ent(e.a[0]);
+      if (pds && pds.t === 'PRODUCT_DEFINITION_SHAPE' && pds.a[2] && pds.a[2].r != null) pdRep[pds.a[2].r] = e.a[1].r;
+    });
+    Object.keys(E).forEach(function (id) {
+      var e = E[id];
+      if (e.t !== 'CONTEXT_DEPENDENT_SHAPE_REPRESENTATION' || !e.a[0] || !e.a[1]) return;
+      var rel = ent(e.a[0]), rra = rel && (args(rel, 'REPRESENTATION_RELATIONSHIP') || args(rel, 'SHAPE_REPRESENTATION_RELATIONSHIP'));
+      var pds = ent(e.a[1]), na = pds && pds.a && ent(pds.a[2]), naa = na && args(na, 'NEXT_ASSEMBLY_USAGE_OCCURRENCE');
+      if (!rra || !rra[2] || !rra[3] || !naa || !naa[3] || !naa[4]) return;
+      var par = pdRep[naa[3].r], chi = pdRep[naa[4].r];
+      if (par == null || chi == null) return;
+      if (rra[2].r === par && rra[3].r === chi) parentFirst[e.a[0].r] = true;
+    });
     Object.keys(E).forEach(function (id) {
       var e = E[id];
       var rr = args(e, 'REPRESENTATION_RELATIONSHIP') || args(e, 'SHAPE_REPRESENTATION_RELATIONSHIP');
@@ -2804,9 +3237,10 @@ var Exchange = (function () {
       var r1 = rr[2].r, r2 = rr[3].r, wt = args(e, 'REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION');
       if (reps[r1] == null || reps[r2] == null) return;
       if (wt && wt[0]) {
-        var idt = ent(wt[0]), ia = idt && args(idt, 'ITEM_DEFINED_TRANSFORMATION');
-        var T = ia ? tfCompose(placement(ia[3]), tfInverse(placement(ia[2]))) : tf(null);
-        ups.push({ child: r1, parent: r2, T: T });
+        var idt = ent(wt[0]), ia = idt && args(idt, 'ITEM_DEFINED_TRANSFORMATION'), pf = !!parentFirst[id];
+        // transform_item_1 lies in rep_1, transform_item_2 in rep_2: the component's item maps onto the assembly's
+        var T = ia ? (pf ? tfCompose(placement(ia[2]), tfInverse(placement(ia[3]))) : tfCompose(placement(ia[3]), tfInverse(placement(ia[2])))) : tf(null);
+        ups.push(pf ? { child: r2, parent: r1, T: T } : { child: r1, parent: r2, T: T });
       } else union(r1, r2);
     });
     // MAPPED_ITEM (REPRESENTATION_MAP) instancing
@@ -2960,7 +3394,17 @@ var Exchange = (function () {
     for (var t = 0; t < tri.length; t++) out.tris.push(tri[t] + base);
   }
   // earcut(pts2, outer: [idx], holes: [[idx]]) -> [i, j, k, …] counter-clockwise triangles
+  // lane realfiles: when the clipping sticks (no ear left in a ring that is more than collinear runs: ties on the
+  // axis-aligned geometry of a part with many holes bridged holes to the wrong vertices), it is run again on the points
+  // turned by an angle no drawing uses; the turned run is kept when it does not stick
   function earcut(P, outer, holes) {
+    var st = {}, tri = earcutOnce(P, outer, holes, st);
+    if (!st.stuck) return tri;
+    var c = Math.cos(0.6180339887), s = Math.sin(0.6180339887), st2 = {};
+    var tri2 = earcutOnce(P.map(function (p) { return p ? [p[0] * c - p[1] * s, p[0] * s + p[1] * c] : p; }), outer, holes, st2);
+    return st2.stuck ? tri : tri2;
+  }
+  function earcutOnce(P, outer, holes, st) {
     var ring = outer.slice();
     if (!holes.length && ring.length === 3) return ring.slice();
     var pending = holes.slice().sort(function (a, b) { return maxX(b) - maxX(a); });
@@ -3008,6 +3452,7 @@ var Exchange = (function () {
       if (!clipped) { // degenerate leftovers (collinear runs): drop the flattest vertex
         var worst = 0, wv = Infinity;
         for (var w = 0; w < ring.length; w++) { var cv = Math.abs(cross2(P[ring[(w + ring.length - 1) % ring.length]], P[ring[w]], P[ring[(w + 1) % ring.length]])); if (cv < wv) { wv = cv; worst = w; } }
+        if (st && wv > 1e-14 * (1 + Math.abs(P[ring[worst]][0]) + Math.abs(P[ring[worst]][1]))) st.stuck = true;
         ring.splice(worst, 1);
       }
     }

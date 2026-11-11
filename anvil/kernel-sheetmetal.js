@@ -6085,6 +6085,17 @@
     }
     return { origin: O, x: x, y: cross(n, x), n: n };
   }
+  // lane realfiles: true when the body is a flat plate T thick from the flat face at P: its (faceted) volume is that
+  // face's area × T (1e-6), so every hole and edge goes straight through
+  function ibFlatPlate(body, mesh, P, T, tol) {
+    var i = ibFaceAt(mesh, P, tol), o;
+    if (i < 0) return false;
+    try { o = faceOutline(mesh, i); } catch (e) { return false; }
+    var A = 0;
+    o.loops.forEach(function (l) { A += signedArea(l); });
+    var mp = K.massProps(mesh), V = mp.polygonal ? mp.polygonal.volume : mp.volume;
+    return A > 0 && V > 0 && Math.abs(V - Math.abs(A) * T) <= 1e-6 * V;
+  }
   // the face of a coplanar mesh that holds P (its plane within tol, P inside its outline), else -1
   function ibFaceAt(mesh, P, tol) {
     var best = -1, bd = Infinity;
@@ -6455,7 +6466,13 @@
       var Q1 = add(add(Cm, scale(rb.n1, rb.RT)), scale(cross(rb.d, rb.n1), -wq)), Q2 = add(add(Cm, scale(rb.n2, rb.RT)), scale(cross(rb.d, rb.n2), wq));
       bends.push({ L: L, P: P, s0: rb.s0, s1: rb.s1, A: rb.A, round: rb, p1: plateOf(rb.n1, dot(rb.n1, O0), Q1), p2: plateOf(rb.n2, dot(rb.n2, O0), Q2) });
     });
-    if (!bends.length) throw new Error(what + ': there is no sharp corner between two walls ' + bcNum(T) + ' thick to bend (the sheet thickness).');
+    if (!bends.length) {
+      // lane realfiles: a flat plate (a blank a customer sends as a solid): SolidWorks' Insert Bends makes it a
+      // sheet-metal part with no bends, its flat the plate. Taken when the body is the fixed face's outline T thick
+      // (volume = that face's area × T, 1e-6); anything else still has nothing to bend
+      if (f.type !== 'convertSM' && ibFlatPlate(body, mesh, P0, T, tolU)) return { fills: [], corners: [], wedges: [], info: [], T: T, R: R, rounded: 0, plate: true };
+      throw new Error(what + ': there is no sharp corner between two walls ' + bcNum(T) + ' thick to bend (the sheet thickness).');
+    }
     // the fixed face's plate (its outer face or the face T behind it)
     var fixed = -1, fd = Infinity;
     plates.forEach(function (pl, i) {
