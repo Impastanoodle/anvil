@@ -17,7 +17,26 @@
 //             { fly, label, items: [cmd] }] } ] } | { name, sw: '<SolidWorks tab kept whole>' } ] },
 //     tabAlias: { part: { Sketch: 'Wireframe', Features: 'Solids' } },   // where Anvil's "show the Sketch tab" lands
 //     labels: { cmd: 'Name' },  keys: { cmd | key action: 'Alt+F1' },  mouse: { drag, wheel, middleDouble },
-//     dock: { tree: 'left' | 'right' } }
+//     dock: { tree: 'left' | 'right' },
+//     frame: { ... },        // lane mcframe: the window around the graphics area (ui-panels.js UI.setFrame), see below
+//     wireframe: { direct: true, plane: 'Top' },   // lane mcdirect reads it: wireframe tools draw without entering a
+//                            // sketch, on the construction plane named here (ui-sketch*.js; this file only holds the data)
+//     viewport: { background: ['#top', '#bottom'], labels, headsUp, quickMasks, selectionBar, contextMenu: 'mastercam' } }
+//                            // lane mcdirect reads it: graphics-window gradient (top, bottom), view-name labels, the
+//                            // heads-up toolbar shown or not, Quick Masks column, selection bar, right-click menu style
+//   A tab's group item may also be { menu: 'Edit', row: 'Delete', label, icon } (runs that menu row: Home ▸ Delete
+//   Entities) or { fn: 'manager' | 'search', arg, label, icon } (a frame function: a manager panel tab, Command Finder).
+//   A tab kept whole ({ sw }) may name the captions of its runs between separators: captions: ['Base', 'Flanges' …].
+//   frame (left out = SolidWorks' window; every key optional):
+//     ribbon: { tabsOnTop, fileTab ('File': opens the backstage), qat (title-row Quick Access Toolbar), captions (a
+//               caption under every group, every tab and document type) },
+//     menubar: false          (no classic menu bar: File rows in the backstage, the other menus as buttons on More),
+//     managers: { tabs: ['solids', 'planes', 'levels', 'recent'], titles: { solids: 'Solids' … } }   (the left column
+//               as a manager panel with its tabs at the bottom; a PropertyManager shows there as a function panel),
+//     functionTitles: { cmd: 'Solid Extrude' },   (the function panel's title for a command started from the ribbon;
+//               else the profile's label),
+//     status: ['section', 'selected', 'xyz', 'cplane', 'tplane', 'wcs', 'styles'],   (the status bar, left to right),
+//     theme: { name: 'mastercam' (html data-profile), vars: { light: { '--mc-x': … }, dark: { … } } }
 (function (UI) {
   'use strict';
   var App = UI.App;
@@ -62,6 +81,7 @@
     if (UI.keys) UI.keys.reset();
     if (UI.setNavMap) { try { UI.setNavMap(p.mouse || null); } catch (e) { console.warn('setNavMap', e); } }   // lane profnav (ui-core.js)
     if (UI.setTreeDock) UI.setTreeDock(p.dock && p.dock.tree === 'right' ? 'right' : 'left');
+    if (UI.setFrame) { try { UI.setFrame(p.frame || null); } catch (e) { console.warn('setFrame', e); } }   // lane mcframe (ui-panels.js)
     if (UI.refreshRibbon) UI.refreshRibbon();
     if (UI.refreshStatus) UI.refreshStatus();
     if (UI.refreshTaskPane) UI.refreshTaskPane();
@@ -100,7 +120,13 @@
     function see(c, where) { if (typeof c === 'string' && !known[c]) bad.push(where + ': ' + c); }
     Object.keys(p.tabs || {}).forEach(function (dt) {
       (p.tabs[dt] || []).forEach(function (t) {
-        (t.groups || []).forEach(function (g) { (g.items || []).forEach(function (x) { if (typeof x === 'string') see(x, dt + ' ' + t.name); else (x.stack || x.grid || x.items || []).forEach(function (c) { see(c, dt + ' ' + t.name); }); }); });
+        (t.groups || []).forEach(function (g) {
+          (g.items || []).forEach(function (x) {
+            if (typeof x === 'string') see(x, dt + ' ' + t.name);
+            else if (x.menu || x.fn) { if (!x.label) bad.push(dt + ' ' + t.name + ': a menu / fn item without a label'); }
+            else (x.stack || x.grid || x.items || []).forEach(function (c) { see(c, dt + ' ' + t.name); });
+          });
+        });
       });
     });
     Object.keys(p.labels || {}).forEach(function (c) { see(c, 'labels'); });
@@ -127,10 +153,12 @@
       opts.appendChild(el('label', { 'data-profile': p.id }, [r, el('span', { text: p.name + (p.id === 'solidworks' ? ' (default)' : '') }), p.note ? el('small', { text: p.note }) : null]));
     });
     box.appendChild(opts);
-    box.appendChild(el('p', { html: '<small>Moves the CommandManager tabs and names, the keys and the mouse; what each command does, the menus and your files stay the same. The status bar names the profile while it is not SolidWorks.</small>' }));
+    box.appendChild(el('p', { html: '<small>Moves the CommandManager tabs and names, the keys, the mouse and the window around the graphics area (Mastercam: File backstage, managers, status bar); what each command does and your files stay the same. The status bar names the profile while it is not SolidWorks.</small>' }));
     return box;
   }
   function openSetting() {
+    // lane mcframe: a frame with a File backstage keeps the setting there (File ▸ Options), as Mastercam's Configuration
+    if (UI.frameBackstage && UI.frameBackstage.has()) { UI.frameBackstage.open('options'); return; }
     if (UI.openTaskPane) UI.openTaskPane('props');
     var s = document.querySelector('[data-role="interface-profiles"]');
     if (s) { if (s.scrollIntoView) s.scrollIntoView({ block: 'nearest' }); var r = s.querySelector('input:checked'); if (r) r.focus(); }
@@ -159,55 +187,92 @@
   // entries (the reference marks them) are listed in anvil/docs/areas/ui-core.md *Interface profiles*.
   register({
     id: 'mastercam', name: 'Mastercam',
-    note: 'Wireframe, Solids, Drafting, Transform and View tabs with Mastercam names, Alt+F1 / Alt+1… keys, middle-drag rotate, Shift+middle pan.',
+    note: 'The whole window as Mastercam lays it out: File backstage, Home / Wireframe / Solids / Drafting / Transform / View tabs above the buttons, Solids / Planes / Levels managers, the Mastercam status bar; Alt+F1 / Alt+1… keys, middle-drag rotate, Shift+middle pan.',
+    // lane mcframe: the tabs, groups and names of the user's own Mastercam (screenshots of 2026-11-11, transcribed in the
+    // lane's scratchpad mastercam-screens.txt): File (the backstage, not a tab of buttons), Home, Wireframe, Solids,
+    // Sheet Metal (Anvil's own), Drafting, Transform, View, More. A Mastercam button with nothing behind it in Anvil is
+    // left out (Surfaces, Model Prep, Mesh, Machine; Cut, Copy Image, Undelete, Blank, Unzoom 50 % / 80 % …).
     tabs: {
       part: [
+        { name: 'Home', groups: [
+          { name: 'Clipboard', items: [{ menu: 'Edit', row: 'Paste', label: 'Paste', icon: 'pasteSketch', help: 'Paste the copied sketch entities (Edit ▸ Paste; in a sketch)' }, { stack: [{ menu: 'Edit', row: 'Copy', label: 'Copy', icon: 'copyEnt', help: 'Copy the selected sketch entities (Edit ▸ Copy; in a sketch)' }] }] },
+          { name: 'Attributes', items: ['appearance', { stack: ['construction', 'levels'] }] },
+          { name: 'Delete', items: [{ menu: 'Edit', row: 'Delete', label: 'Delete\nEntities', icon: 'deleteEnt', help: 'Delete the selection (Edit ▸ Delete, Del)' }] },
+          { name: 'Display', items: [{ stack: ['showEndpoints', 'vSketches', 'filter'] }] },
+          { name: 'Analyze', items: ['measure', { stack: ['check', 'sectionProps', 'mass'] }, { stack: ['clearance', 'draftAnalysis', 'zebra'] }] },
+          { name: 'Add-Ins', items: [{ menu: 'Tools', row: 'Macro ▸ Run script…', label: 'Run\nAdd-In', icon: 'macro', help: 'Run a script on the model (Tools ▸ Macro ▸ Run script…)' }, { fn: 'search', label: 'Command\nFinder', icon: 'search', help: 'Find any command by its name (Mastercam or SolidWorks)' }] }
+        ] },
         { name: 'Wireframe', groups: [
           { name: 'Sketch', items: ['sketch', { fly: 'relations', items: ['relations', 'addRelation', 'fullyDefine'] }, { stack: ['repairSketch', 'checkSketch', 'construction'] }] },
           { name: 'Points', items: ['point'] },
-          { name: 'Lines', items: ['line', { grid: ['parallelLine', 'perpLine', 'bisectorLine', 'centerline', 'midline', 'tangentLine'] }] },
-          { name: 'Arcs', items: ['circle', { grid: ['pcircle', 'arc', 'arc3', 'tarc', 'tangentCircle'] }] },
+          { name: 'Lines', items: ['line', { grid: ['parallelLine', 'perpLine', 'tangentLine', 'bisectorLine', 'centerline', 'midline'] }] },
+          { name: 'Arcs', items: ['circle', { grid: ['arc3', 'tarc', 'pcircle', 'arc', 'tangentCircle'] }] },
           { name: 'Splines', items: ['spline', { stack: ['styleSpline', 'eqnCurve'] }] },
-          { name: 'Curves', items: [{ stack: ['convert', 'intersectCurve', 'projCurve'] }] },
-          { name: 'Shapes', items: ['rect', { grid: ['crect', 'rect3', 'crect3', 'parallelogram', 'slot', 'cslot', 'aslot3', 'aslot', 'polygon'] }, { stack: ['ellipse', 'pellipse', 'helix'] }, 'text'] },
-          { name: 'Modify', items: ['trim', { grid: ['extend', 'splitEnt', 'joinEnt', 'skFillet', 'skChamfer', 'closeArc'] }, 'offset'] }
+          { name: 'Shapes', items: ['rect', { grid: ['crect', 'rect3', 'crect3', 'parallelogram', 'slot', 'cslot', 'aslot3', 'aslot', 'polygon'] }, { stack: ['ellipse', 'pellipse', 'parabola'] }, 'text'] },
+          { name: 'Curves', items: [{ stack: ['intersectCurve', 'projCurve', 'helix'] }] },
+          { name: 'Modify', items: ['trim', { grid: ['extend', 'joinEnt', 'skFillet', 'skChamfer', 'closeArc', 'mirrorEnt'] }, 'splitEnt', 'offset', 'convert'] }
         ] },
         { name: 'Solids', groups: [
-          { name: 'Create', items: ['extrude', 'revolve', { stack: ['sweep', 'loft', 'boundary'] }, 'cut', 'revolveCut', { stack: ['sweptCut', 'loftedCut', 'boundaryCut'] }] },
-          { name: 'Modify', items: [{ fly: 'fillet', items: ['fillet', 'chamfer'] }, 'shell', 'draft', 'holeWizard', { stack: ['intersect', 'rib', 'wrap'] }] },
-          { name: 'Pattern', items: ['lpattern', 'cpattern', 'mirror'] },
+          { name: 'Create', items: ['extrude', { stack: ['revolve', 'loft', 'sweep'] }, { stack: ['boundary', 'cut', 'revolveCut'] }, { stack: ['sweptCut', 'loftedCut', 'boundaryCut'] }, 'holeWizard', { stack: ['lpattern', 'cpattern', 'mirror'] }] },
+          { name: 'Modify', items: [{ stack: ['fillet', 'shell', 'draft'] }, 'chamfer', { stack: ['intersect', 'rib', 'wrap'] }] },
           { name: 'Reference', items: [{ fly: 'refgeo', label: 'Reference\nGeometry', items: ['plane', 'refAxis', 'csys', 'refPoint'] }] }
         ] },
-        { name: 'Sheet Metal', sw: 'Sheet Metal' },
+        { name: 'Sheet Metal', sw: 'Sheet Metal', captions: ['Create', 'Flanges', 'Cut', 'Flat Pattern'] },
         { name: 'Drafting', groups: [
-          { name: 'Dimension', items: ['dim', { grid: ['horizDim', 'vertDim', 'ordinateDim', 'ordinateH', 'ordinateV', 'chamferDim', 'angRunDim', 'pathLengthDim', 'autodim'] }] }
+          { name: 'Dimension', items: ['dim', { grid: ['horizDim', 'vertDim', 'angRunDim', 'chamferDim', 'pathLengthDim', 'autodim'] }] },
+          { name: 'Ordinate', items: [{ stack: ['ordinateDim', 'ordinateH', 'ordinateV'] }] }
         ] },
         { name: 'Transform', sw: 'Transform' },
-        { name: 'View', sw: 'View' }
+        { name: 'View', groups: [
+          { name: 'Zoom', items: ['vZoomFit', { stack: ['zoomArea', 'prevView'] }] },
+          { name: 'Graphics View', items: ['vTop', { grid: ['vIso', 'vFront', 'vBack', 'vBottom', 'vRight', 'vLeft', 'vNormalTo'] }, 'section'] },
+          { name: 'Appearance', items: [{ stack: ['dsWireframe', 'dsShadedEdges', 'dsShaded'] }, { stack: ['dsHLR', 'dsHLV', 'scene'] }, { fly: 'vBackground', items: ['vBgGradient', 'vBgPlain', 'vBgDark'] }, 'vTheme'] },
+          { name: 'Display', items: [{ stack: ['vOrigins', 'vPlanes', 'vRegions'] }, { stack: ['vSketchDims', 'vSnapModel'] }] },
+          { name: 'Grid', items: ['vGrid'] },
+          { name: 'Managers', items: [{ stack: [{ fn: 'manager', arg: 'solids', label: 'Solids', icon: 'tree' }, { fn: 'manager', arg: 'planes', label: 'Planes', icon: 'plane' }, { fn: 'manager', arg: 'levels', label: 'Levels', icon: 'levels' }] }, { stack: [{ fn: 'manager', arg: 'recent', label: 'Recent Functions', icon: 'recentFns' }] }] }
+        ] }
       ],
       drawing: [
-        { name: 'View Layout', sw: 'View Layout' },
+        { name: 'View Layout', sw: 'View Layout', captions: ['Views', 'Cut Views', 'Modify Views'] },
         { name: 'Drafting', groups: [
-          { name: 'Dimension', items: ['dim', { grid: ['horizDim', 'vertDim', 'baselineDim', 'ordinateDim', 'ordinateH', 'ordinateV', 'angRunDim', 'chamferDim', 'pathLengthDim'] }, 'modelItems'] },
-          { name: 'Annotate', items: ['note', { grid: ['balloon', 'autoBalloon', 'stackBalloon', 'holeCallout', 'magLine', 'multiJogLeader', 'flagNote', 'areaHatch', 'centerMark', 'centerline'] }] },
+          { name: 'Dimension', items: ['dim', { grid: ['horizDim', 'vertDim', 'baselineDim', 'angRunDim', 'chamferDim', 'pathLengthDim'] }, 'modelItems'] },
+          { name: 'Ordinate', items: [{ stack: ['ordinateDim', 'ordinateH', 'ordinateV'] }] },
+          { name: 'Annotate', items: ['note', 'holeTable', { grid: ['areaHatch', 'multiJogLeader', 'magLine', 'flagNote', 'centerMark', 'centerline', 'holeCallout'] }] },
+          { name: 'Balloons', items: [{ stack: ['balloon', 'autoBalloon', 'stackBalloon'] }] },
           { name: 'Symbols', items: [{ grid: ['surfaceFinish', 'datumFeature', 'gtol', 'weldSymbol', 'datumTarget', 'cosmeticThread', 'dowelPin', 'revisionSymbol', 'revisionCloud'] }] },
-          { name: 'Tables', items: [{ grid: ['bom', 'revTable', 'generalTable', 'holeTable', 'bendTable', 'punchTable'] }, 'docProps'] }
+          { name: 'Tables', items: [{ grid: ['bom', 'revTable', 'generalTable', 'bendTable', 'punchTable'] }, 'docProps'] }
         ] },
         { name: 'Sketch', sw: 'Sketch' },
         { name: 'Sheet Format', sw: 'Sheet Format' }
       ]
     },
-    tabAlias: { part: { Sketch: 'Wireframe', Features: 'Solids', Evaluate: 'More' }, drawing: { Annotation: 'Drafting' } },
+    tabAlias: { part: { Sketch: 'Wireframe', Features: 'Solids', Evaluate: 'Home' }, drawing: { Annotation: 'Drafting' } },
     labels: {
-      extrude: 'Extrude', revolve: 'Revolve', sweep: 'Sweep', loft: 'Loft', holeWizard: 'Hole', fillet: 'Constant\nFillet',
+      extrude: 'Extrude', revolve: 'Revolve', sweep: 'Sweep', loft: 'Loft', holeWizard: 'Hole', fillet: 'Constant\nFillet', chamfer: 'One Distance\nChamfer',
       lpattern: 'Rectangular\nPattern', cpattern: 'Circular\nPattern', draft: 'Draft\nFaces',
       line: 'Line\nEndpoints', parallelLine: 'Line Parallel', perpLine: 'Line Perpendicular', bisectorLine: 'Line Bisect',
       point: 'Point\nPosition', rect: 'Rectangle', circle: 'Circle\nCenter Point', pcircle: 'Circle Edge Point', arc: 'Arc Polar', arc3: 'Arc 3 Points', tarc: 'Arc Tangent',
-      text: 'Letters', trim: 'Dynamic\nTrim', skFillet: 'Fillet Entities', skChamfer: 'Chamfer Entities',
-      horizDim: 'Horizontal', vertDim: 'Vertical', ordinateDim: 'Ordinate', baselineDim: 'Baseline',
-      measure: 'Analyze\nDistance', mass: 'Analyze Solid\nProperties',
-      vZoomFit: 'Fit', zoomArea: 'Window', vGrid: 'Display Grid', vFeatureTree: 'Solids Manager', levels: 'Levels', vLevels: 'Levels Manager'
+      spline: 'Spline\nManual', text: 'Create\nLetters', trim: 'Dynamic\nTrim', splitEnt: 'Break Two\nPieces', joinEnt: 'Join Entities', skFillet: 'Fillet Entities', skChamfer: 'Chamfer Entities',
+      offset: 'Offset\nEntity', convert: 'Project', closeArc: 'Close Arc',
+      dim: 'Smart\nDimension', horizDim: 'Horizontal', vertDim: 'Vertical', ordinateDim: 'Ordinate', baselineDim: 'Baseline', holeTable: 'Hole\nTable', areaHatch: 'Cross Hatch', multiJogLeader: 'Leader',
+      measure: 'Analyze\nDistance', mass: 'Analyze Solid Properties', check: 'Check Solid', sectionProps: '2D Area',
+      vZoomFit: 'Fit', zoomArea: 'Window', vTop: 'Top', dsShadedEdges: 'Outline Shaded', vGrid: 'Show\nGrid', vFeatureTree: 'Solids Manager', levels: 'Levels', vLevels: 'Levels Manager'
     },
+    // lane mcframe: the window itself (ui-panels.js UI.setFrame)
+    frame: {
+      ribbon: { tabsOnTop: true, fileTab: true, qat: true, captions: true },
+      menubar: false,
+      managers: { tabs: ['solids', 'planes', 'levels', 'recent'], titles: { solids: 'Solids', planes: 'Planes', levels: 'Levels', recent: 'Recent Functions' } },
+      functionTitles: { extrude: 'Solid Extrude', revolve: 'Revolve', cut: 'Solid Extrude', fillet: 'Constant Fillet', chamfer: 'One Distance Chamfer', holeWizard: 'Hole', shell: 'Shell', draft: 'Draft Faces', lpattern: 'Rectangular Pattern', cpattern: 'Circular Pattern' },
+      status: ['section', 'selected', 'xyz', 'cplane', 'tplane', 'wcs', 'styles'],
+      theme: { name: 'mastercam', vars: {
+        light: { '--mc-blue': '#1f5aa6', '--mc-blue-text': '#ffffff', '--mc-title': '#1f5aa6', '--mc-ribbon': '#ffffff', '--mc-strip': '#ffffff', '--mc-line': '#d4d4d4', '--mc-tab-on': '#ffffff', '--mc-hover': '#dce8f6', '--mc-press': '#c3d9f1', '--mc-press-line': '#7da2ce', '--mc-panel': '#ffffff', '--mc-mgr-tab': '#f3f3f3', '--mc-text': '#1e1e1e' },
+        dark: { '--mc-blue': '#2c5f9e', '--mc-blue-text': '#ffffff', '--mc-title': '#7fb0e8', '--mc-ribbon': '#2b2b2b', '--mc-strip': '#2b2b2b', '--mc-line': '#454545', '--mc-tab-on': '#383838', '--mc-hover': '#34465c', '--mc-press': '#2f4d70', '--mc-press-line': '#4f78a8', '--mc-panel': '#262626', '--mc-mgr-tab': '#303030', '--mc-text': '#e4e4e4' }
+      } }
+    },
+    // read by lane mcdirect (ui-sketch*.js, ui-core.js); written here only
+    wireframe: { direct: true, plane: 'Top' },
+    viewport: { background: ['#1c1c1c', '#b8b8b8'], labels: true, headsUp: false, quickMasks: true, selectionBar: true, contextMenu: 'mastercam' },
     keys: {
       vTop: 'Alt+1', vFront: 'Alt+2', vBack: 'Alt+3', vBottom: 'Alt+4', vRight: 'Alt+5', vLeft: 'Alt+6', vIso: 'Alt+7', prevView: 'Alt+P',
       fit: 'Alt+F1', zoomArea: 'F1', vOrigins: 'F9', levels: 'Alt+Z', vFeatureTree: 'Alt+I', trim: 'Shift+T',

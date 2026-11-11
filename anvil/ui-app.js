@@ -2455,6 +2455,9 @@
 
   // the Properties panel shows the material and density: redraw it after a material change made elsewhere
   UI.refreshTaskPane = function () { if (tpCurrent === 'props' && !$('tp-panel').hidden) openTaskPane('props'); };
+  // lane mcframe: a Task Pane page drawn into another host (the Mastercam frame's File ▸ Options page), and the page open now
+  UI.taskPaneContent = function (id, body) { var f = { home: tpHome, library: tpLibrary, files: tpFiles, views: tpViews, appearance: tpAppearance, props: tpProps, macro: tpMacro }[id]; if (f) f(body); return !!f; };
+  UI.taskPaneCurrent = function () { return $('tp-panel').hidden ? null : tpCurrent; };
   UI.openTaskPane = openTaskPane; UI.closeTaskPane = closeTaskPane; UI.runScript = runScript; UI.exportDialog = exportDialog; UI.download = download;
   UI.exportSTL = exportSTL; UI.exportFaceDXF = exportFaceDXF; UI.exportSketchDXF = exportSketchDXF; UI.exportScript = exportScript; UI.exportJSON = exportJSON; UI.screenshot = screenshot;
   UI.fileNew = fileNew; UI.fileOpen = fileOpen; UI.fileSave = fileSave; UI.fileSaveAs = fileSaveAs;

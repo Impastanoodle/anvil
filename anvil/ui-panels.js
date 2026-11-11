@@ -38,6 +38,7 @@
     var html = (UI.profileStatusHtml ? UI.profileStatusHtml() : '') + skTxt + (UI.occtStatusHtml ? UI.occtStatusHtml() : '') + (UI.rebuildStatusHtml ? UI.rebuildStatusHtml() : '<span>' + (errs ? errs + ' rebuild error' + (errs > 1 ? 's' : '') : 'Fully rebuilt') + '</span>') + (UI.levelStatusHtml && !asm ? UI.levelStatusHtml() : '') + '<span>' + mode + '</span><span>' + units + '</span><span class="st-ms">' + (App.lastRebuildMs != null ? UI.fmtNum(App.lastRebuildMs, 0) + ' ms' : '') + '</span>';
     var sr = $('status-right');
     if (sr._html !== html) { sr.innerHTML = html; sr._html = html; }
+    if (frame) frameStatusSync();   // lane mcframe
     var title = App.model.name + (App.mode === 'sketch' ? '  —  sketch' : '');
     if ($('doc-title').textContent !== title) $('doc-title').textContent = title;
   }
@@ -374,33 +375,42 @@
       if (group) w.group = group;
       return w;
     }
-    // a SolidWorks item list with the profile's names (the layout, flyout memory and captions unchanged)
-    function mapItems(list) {
+    // a SolidWorks item list with the profile's names (the layout, flyout memory and captions unchanged); lane mcframe:
+    // with a frame that captions every group, a run between separators without one gets captions[i] or the tab's name
+    var capAll = !!(p.frame && p.frame.ribbon && p.frame.ribbon.captions);
+    function mapItems(list, tabName, caps) {
+      var run = 0, cap = function () { return (caps && caps[run]) || tabName; };
       return list.map(function (it) {
-        if (!it || it.sep) return it;
-        if (it.stack) { var s = Object.create(it); s.stack = mapItems(it.stack); return s; }
-        if (it.fly) { var f = Object.create(it); f.items = mapItems(it.items); return f; }
-        return wrap(it, null);
+        if (!it || it.sep) { if (it && it.sep) run++; return it; }
+        var g = capAll && tabName && !it.group ? cap() : null;
+        if (it.stack) { var s = Object.create(it); s.stack = mapItems(it.stack); if (g) s.group = g; return s; }
+        if (it.fly) { var f = Object.create(it); f.items = mapItems(it.items); if (g) f.group = g; return f; }
+        return wrap(it, g);
       });
     }
     function leafOf(c) { var e = byCmd[c]; return e ? e.item : null; }
     function profItem(x, group) {
       if (typeof x === 'string') { var l = leafOf(x); return l ? wrap(l, group) : null; }
       if (!x) return null;
-      var list = (x.stack || x.grid || x.items || []).map(function (c) { var l = leafOf(c); return l ? wrap(l, null) : null; }).filter(Boolean);
+      if (x.menu || x.fn) return frameItem(x, group);   // lane mcframe: a menu row or a frame function as a button
+      var list = (x.stack || x.grid || x.items || []).map(function (c) {
+        if (c && typeof c === 'object' && (c.menu || c.fn)) return frameItem(c, null);
+        var l = leafOf(c); return l ? wrap(l, null) : null;
+      }).filter(Boolean);
       if (!list.length) return null;
       if (x.items) return { fly: 'p-' + p.id + '-' + x.fly, label: x.label, items: list, group: group };
       return { stack: list, grid: !!x.grid, group: group };
     }
     var set = {};
     if (!tabsDef) {
-      swTabsOf(docType).forEach(function (t) { set[t.name] = mapItems(t.items); });
+      swTabsOf(docType).forEach(function (t) { set[t.name] = mapItems(t.items, t.name); });
+      frameMenusTab(p, set);
       return set;
     }
     var sw = {};
     swTabsOf(docType).forEach(function (t) { sw[t.name] = t.items; });
     tabsDef.forEach(function (tab) {
-      if (tab.sw) { if (sw[tab.sw]) set[tab.name] = mapItems(sw[tab.sw]); return; }   // a SolidWorks tab kept whole (Sheet Metal, Transform, View)
+      if (tab.sw) { if (sw[tab.sw]) set[tab.name] = mapItems(sw[tab.sw], tab.name, tab.captions); return; }   // a SolidWorks tab kept whole (Sheet Metal, Transform)
       var out = [];
       (tab.groups || []).forEach(function (g) {
         var items = (g.items || []).map(function (x) { return profItem(x, g.name); }).filter(Boolean);
@@ -421,6 +431,7 @@
       });
       set[p.moreTab || 'More'] = more;
     }
+    frameMenusTab(p, set);
     return set;
   }
   // a SolidWorks tab name (Sketch, Features …: ui-sketch.js, drawing-ui.js and others ask for these) as the active
@@ -436,6 +447,522 @@
   UI.profileRibbon = function (docType) { return profileSet(docType); };
   UI.profileTabName = tabName;
   UI.profileRibbonReset = function () { profCache = {}; ribbonBuilt = null; };
+
+  // ------------------------------------------------------------------ the window frame of a profile (lane mcframe)
+  // User 2026-11-11: choosing Mastercam should turn the whole window into Mastercam's. profile.frame (ui-profiles.js,
+  // schema there) is read here only: UI.setFrame(frame | null) on every profile change. null = SolidWorks' window, which
+  // is what the page was before this lane (nothing below runs, nothing is left in the DOM). Pieces, each optional:
+  //  ribbon   tabs above the buttons (#app.mc-tabs-top), a File tab (#mc-file) opening the backstage (#mc-backstage),
+  //           the title-row Quick Access Toolbar (#app.mc-qat), a caption under every group of every tab and document
+  //           type (.mc-captions, laid out here; ui-transform.js's .rb-captions are hidden under the frame)
+  //  menubar  false: #menus hidden (#app.mc-no-menubar); File rows live in the backstage, the other menus are buttons
+  //           in the More tab's Menus group (frameMenusTab), so every menu row stays reachable
+  //  managers the left column as a manager panel: #mc-mgr-head (big title, tool row), #mc-solids / #mc-planes /
+  //           #mc-recent (and ui-levels.js's #levels-panel), #mc-mgr-tabs at the bottom; an open PropertyManager is
+  //           the function panel (#left.mc-fn, its title from functionTitles / the profile's label)
+  //  status   #mc-status in the status bar (SECTION VIEW, SELECTED ENTITIES, X Y Z, CPLANE, TPLANE, WCS, styles)
+  //  theme    html[data-profile] + the profile's colours as --mc-l-* / --mc-d-* on <html> (style.css "lane mcframe")
+  var frame = null, frameDoc = null, frameCapObs = null, frameMgr = 'solids', frameRecent = [], frameLastRun = null, framePmObs = null, frameCapFrame = 0;
+  var framePlanes = { g: 'Top', wcs: 'Top', c: 'Top', t: 'Top' };
+  var FRAME_MENUS = [['Edit', 'undo'], ['View', 'display'], ['Insert', 'extrude'], ['Tools', 'settings'], ['Window', 'palette'], ['Help', 'home']];
+  function frameRibbon(k) { return !!(frame && frame.ribbon && frame.ribbon[k]); }
+  function frameMgrOn() { return !!(frame && frame.managers); }
+  // a menu row by its menu and label, as the menus of the open document have it now
+  function menuRow(menu, label) {
+    var ms = MENUS();
+    for (var i = 0; i < ms.length; i++) {
+      if (ms[i].label !== menu) continue;
+      var items = ms[i].items || [];
+      for (var j = 0; j < items.length; j++) if (items[j] && items[j].label === label) return items[j];
+    }
+    return null;
+  }
+  // a profile item that is not a SolidWorks command: { menu, row } runs a menu row, { fn } a frame function
+  function frameItem(x, group) {
+    var it = { id: x.icon || 'generic', icon: x.icon || 'generic', label: x.label, help: x.help || '' };
+    if (group) it.group = group;
+    if (x.menu) {
+      it.cmd = 'menu:' + x.menu + '/' + x.row;
+      it.run = function () {
+        var r = menuRow(x.menu, x.row);
+        if (r && !r.disabled && r.action) r.action();
+        else toast(flatLabel(x.label) + ' is not available now' + (/^(Copy|Paste)$/.test(x.row) ? ': open a sketch and select entities first.' : '.'));
+      };
+    } else if (x.fn === 'manager') {
+      it.cmd = 'manager:' + x.arg;
+      it.run = function () { frameShowManager(x.arg, true); };
+      it.active = function () { return !!frame && frameMgr === x.arg && $('pm').hidden; };
+    } else if (x.fn === 'search') {
+      it.cmd = 'search';
+      it.run = function () { var s = $('cmd-search'); if (s) { s.focus(); s.select(); } };
+    } else if (x.fn === 'menu') {
+      it.cmd = 'menu:' + x.arg;
+      it.help = x.help || 'The ' + x.arg + ' menu (Mastercam has no menu bar: its rows are here)';
+      it.run = function () { frameOpenMenu(x.arg); };
+    }
+    return it;
+  }
+  // menubar: false — the menus other than File as buttons on More (File is the backstage)
+  function frameMenusTab(p, set) {
+    if (!p.frame || p.frame.menubar !== false) return;
+    var key = p.moreTab || 'More', more = set[key] || (set[key] = []);
+    var btns = FRAME_MENUS.map(function (m) { return frameItem({ fn: 'menu', arg: m[0], label: m[0], icon: m[1] }, null); });
+    // first on More, so a narrow window's » never hides them
+    more.unshift({ stack: btns.slice(0, 3), group: 'Menus' }, { stack: btns.slice(3), group: 'Menus' }, { sep: true });
+    if (more[more.length - 1].sep) more.pop();
+  }
+  function frameOpenMenu(label) {
+    var m = MENUS().filter(function (x) { return x.label === label; })[0];
+    if (!m || !(m.items || []).length) { toast('The ' + label + ' menu has nothing for this document.'); return; }
+    var b = Array.prototype.filter.call(document.querySelectorAll('#ribbon-buttons .rb'), function (x) { return x.getAttribute('aria-label') === label && x.offsetWidth; })[0];
+    var r = b ? b.getBoundingClientRect() : { left: window.innerWidth / 2, bottom: 120 };
+    showMenu(r.left, r.bottom + 1, m.items);
+  }
+  // Recent Functions: the last ten commands run from the ribbon (a click runs one again)
+  function frameNoteRun(item) {
+    if (!frame) return;
+    var c = cmdOf(item);
+    if (!c || /^(manager:|menu:|search$)/.test(c)) return;
+    var s = itemState(item), label = flatLabel(item.label || s.label);
+    frameLastRun = { cmd: c, title: (frame.functionTitles && frame.functionTitles[c]) || label, t: Date.now() };
+    frameRecent = frameRecent.filter(function (r) { return r.cmd !== c; });
+    frameRecent.unshift({ cmd: c, label: label, icon: s.icon, item: item });
+    if (frameRecent.length > 10) frameRecent.length = 10;
+    if (frameMgr === 'recent') frameRecentRender();
+  }
+
+  // ---- File: the backstage
+  var BS_NAV = [['info', 'Info'], ['new', 'New'], ['open', 'Open'], ['save', 'Save'], ['saveas', 'Save As'], ['export', 'Convert / Export'], ['print', 'Print'], ['recent', 'Recent'], ['options', 'Options'], ['help', 'Help']];
+  var bs = null;
+  function fileRows() {
+    var f = MENUS().filter(function (m) { return m.label === 'File'; })[0];
+    return f ? (f.items || []).filter(function (it) { return it && !it.sep && it.label; }) : [];
+  }
+  // which page offers which File row (every row is on one page): New…, Open…, Save As…, recent documents, Properties…,
+  // the rest (imports, exports, Pack and Go, screenshots) on Convert / Export
+  function bsPartition() {
+    var out = { info: [], new: [], open: [], save: [], saveas: [], export: [], print: [], recent: [] };
+    fileRows().forEach(function (r) {
+      var l = r.label;
+      if (r.recent || /^Browse Recent/.test(l)) out.recent.push(r);
+      else if (/^New\b/.test(l)) out.new.push(r);
+      else if (/^Open\b/.test(l)) out.open.push(r);
+      else if (l === 'Save') out.save.push(r);
+      else if (/^Save .*As\b|^Save As\b/.test(l) && !/DXF|DWG/.test(l)) out.saveas.push(r);
+      else if (/^Print/.test(l)) out.print.push(r);
+      else if (/^Properties|Properties…$/.test(l) && !/Sheet/.test(l)) out.info.push(r);
+      else out.export.push(r);
+    });
+    return out;
+  }
+  function bsRowButton(r, big) {
+    var b = el('button', { class: 'bs-row' + (big ? ' bs-big' : '') + (r.dimmed ? ' mi-dim' : ''), 'data-row': r.label });
+    b.innerHTML = (r.icon ? Icons(r.icon, big ? 32 : 16) : '') + '<span>' + escHtml(r.label) + '</span>' + (r.key ? '<small>' + escHtml(r.key) + '</small>' : '');
+    if (r.disabled) b.disabled = true;
+    b.addEventListener('click', function () { bsClose(); if (r.action) r.action(); });
+    return b;
+  }
+  function bsRun(label, fallback) { var r = menuRow('File', label); bsClose(); if (r && !r.disabled && r.action) r.action(); else if (fallback) fallback(); }
+  function bsOpen(page) {
+    if (!frameRibbon('fileTab')) return false;
+    if (!bs) {
+      closeMenus();
+      bs = { el: el('div', { id: 'mc-backstage', role: 'dialog', 'aria-label': 'File' }), page: null, focus: document.activeElement, tpProps: false };
+      var nav = el('nav', { class: 'bs-nav', 'aria-label': 'File' });
+      nav.appendChild(el('button', { class: 'bs-back', title: 'Back (Esc)', 'aria-label': 'Back', html: '<svg viewBox="0 0 16 16" width="24" height="24" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M9.5 4.8 L6.3 8 L9.5 11.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>', onclick: function () { bsClose(); } }));
+      BS_NAV.forEach(function (n) { nav.appendChild(el('button', { class: 'bs-nav-item', 'data-page': n[0], text: n[1], onclick: function () { bsPage(n[0]); } })); });
+      bs.el.appendChild(nav);
+      bs.el.appendChild(el('div', { class: 'bs-page' }));
+      document.body.appendChild(bs.el);
+      document.addEventListener('keydown', bsKey, true);
+      var fb = $('mc-file'); if (fb) fb.classList.add('active');
+    }
+    bsPage(page || 'info');
+    var back = bs && bs.el.querySelector('.bs-back');
+    if (back && !(page === 'options')) back.focus();
+    return true;
+  }
+  function bsKey(e) { if (bs && e.key === 'Escape' && !(document.getElementById('modal') && !$('modal').hidden)) { e.preventDefault(); e.stopPropagation(); bsClose(); } }
+  function bsClose() {
+    if (!bs) return;
+    var b = bs;
+    bs = null;
+    document.removeEventListener('keydown', bsKey, true);
+    b.el.remove();
+    var fb = $('mc-file'); if (fb) fb.classList.remove('active');
+    if (b.tpProps && UI.openTaskPane) UI.openTaskPane('props');   // the Task Pane's Options went to the backstage meanwhile
+    var f = b.focus && b.focus.isConnected && b.focus !== document.body ? b.focus : $('mc-file');
+    try { if (f && f.focus) f.focus(); else if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) { }
+  }
+  function bsPage(page) {
+    if (!bs) return;
+    if (page === 'save') { bsRun('Save', UI.fileSave); return; }
+    bs.page = page;
+    Array.prototype.forEach.call(bs.el.querySelectorAll('.bs-nav-item'), function (b) { b.classList.toggle('active', b.getAttribute('data-page') === page); });
+    var body = bs.el.querySelector('.bs-page'), part = bsPartition(), title = (BS_NAV.filter(function (n) { return n[0] === page; })[0] || [0, ''])[1];
+    body.innerHTML = '';
+    body.setAttribute('data-page', page);
+    body.appendChild(el('h2', { text: page === 'options' ? 'Configuration' : title }));
+    function list(rows, big) { var w = el('div', { class: 'bs-list' + (big ? ' bs-tiles' : '') }); rows.forEach(function (r) { w.appendChild(bsRowButton(r, big)); }); body.appendChild(w); return w; }
+    if (page === 'info') {
+      var m = App.model || {}, units = m.units === 'in' ? 'Inches (IPS)' : 'Millimeters (MMGS)';
+      var kind = UI.drawingActive && UI.drawingActive() ? 'Drawing' : isAsm() ? 'Assembly' : 'Part';
+      var facts = [['Name', m.name || ''], ['Type', kind], ['File', App.filePath || App.fileName || '(not saved yet)'], ['Units', units], [isAsm() ? 'Components' : 'Features', String(((isAsm() ? m.components : m.features) || []).length)], ['Changes', App.dirty ? 'Not saved' : 'Saved']];
+      body.appendChild(el('div', { class: 'bs-facts', html: facts.map(function (f) { return '<span>' + escHtml(f[0]) + '</span><b>' + escHtml(f[1]) + '</b>'; }).join('') }));
+      list(part.info);
+    } else if (page === 'new') list(part.new, true);
+    else if (page === 'open') { list(part.open, true); body.appendChild(el('h3', { text: 'Recent' })); list(part.recent); }
+    else if (page === 'saveas') list(part.saveas, true);
+    else if (page === 'export') list(part.export);
+    else if (page === 'print') {
+      list(part.print, true);
+      if (!part.print.length) list([{ label: 'Print', icon: 'printDoc', action: function () { window.print(); } }], true);
+    } else if (page === 'recent') {
+      var w = list(part.recent);
+      if (!part.recent.length) w.appendChild(el('p', { class: 'bs-note', text: 'No recent documents yet: the files you open and save are listed here.' }));
+    } else if (page === 'options') {
+      var host = el('div', { class: 'bs-options' });
+      body.appendChild(host);
+      if (UI.taskPaneContent) {
+        if (!$('tp-panel').hidden && UI.taskPaneCurrent && UI.taskPaneCurrent() === 'props') { bs.tpProps = true; UI.closeTaskPane(); }   // one Options at a time (ids)
+        UI.taskPaneContent('props', host);
+      }
+      var r = host.querySelector('[data-role="interface-profiles"] input:checked');
+      if (r) r.focus();
+    } else if (page === 'help') {
+      var hm = MENUS().filter(function (x) { return x.label === 'Help'; })[0];
+      list(((hm && hm.items) || []).filter(function (it) { return it && !it.sep; }));
+    }
+  }
+  UI.frameBackstage = {
+    has: function () { return frameRibbon('fileTab'); },
+    open: bsOpen, close: bsClose, isOpen: function () { return !!bs; }, page: function () { return bs ? bs.page : null; },
+    // the File rows each page offers: { page: [labels] } (tests: every File row is on one page)
+    rows: function () { var p = bsPartition(), o = {}; Object.keys(p).forEach(function (k) { o[k] = p[k].map(function (r) { return r.label; }); }); return o; }
+  };
+
+  // ---- the manager panel
+  var MGR_TOOLS = {
+    solids: [['rebuild', 'Regenerate all (Ctrl+B)', function () { var r = menuRow('Edit', 'Rebuild'); if (r) r.action(); }], ['undo', 'Undo (Ctrl+Z)', function () { (UI.undoCommand || UI.undo)(); }], ['redo', 'Redo (Ctrl+Y)', function () { (UI.redoCommand || UI.redo)(); }], ['deleteEnt', 'Delete the selected operation (Del)', function () { var r = menuRow('Edit', 'Delete'); if (r && !r.disabled) r.action(); else toast('Select an operation first.'); }]],
+    planes: [['plane', 'New plane', function () { if (UI.cmdPlane) UI.cmdPlane(); }], ['back', 'Reset: Top as the graphics view, WCS, construction and tool plane', function () { framePlaneSet('g', 'Top'); framePlaneSet('wcs', 'Top'); framePlaneSet('c', 'Top'); framePlaneSet('t', 'Top'); }]],
+    levels: [],
+    recent: [['cancel', 'Clear the list', function () { frameRecent = []; frameRecentRender(); }]]
+  };
+  function mgrTitle(n) { return (frame && frame.managers && frame.managers.titles && frame.managers.titles[n]) || n; }
+  function mgrBuild() {
+    var left = $('left');
+    if (!left || $('mc-mgr-head')) return;
+    var head = el('div', { id: 'mc-mgr-head' });
+    head.appendChild(el('div', { class: 'mc-mgr-titlebar', html: '<span class="mc-mgr-title"></span>' }));
+    head.firstChild.appendChild(el('button', { class: 'mc-mgr-close', title: 'Close the manager panel (the pull tab on the graphics area brings it back)', 'aria-label': 'Close the manager panel', text: '✕', onclick: function () { UI.setFeatureManagerHidden(true); } }));
+    head.appendChild(el('div', { class: 'mc-mgr-tools', role: 'toolbar' }));
+    left.insertBefore(head, left.firstChild);
+    var pmEl = $('pm');
+    ['mc-solids', 'mc-planes', 'mc-recent'].forEach(function (id) { var d = el('div', { id: id, class: 'mc-mgr-pane' }); d.hidden = true; left.insertBefore(d, pmEl); });
+    var tabs = el('div', { id: 'mc-mgr-tabs', role: 'tablist', 'aria-label': 'Managers' });
+    (frame.managers.tabs || []).forEach(function (n) {
+      tabs.appendChild(el('button', { role: 'tab', 'data-mgr': n, text: mgrTitle(n), onclick: function () { frameShowManager(n, true); } }));
+    });
+    left.appendChild(tabs);
+    $('mc-planes').addEventListener('click', framePlanesClick);
+    framePmObs = new MutationObserver(framePmDecorate);
+    framePmObs.observe(pmEl, { childList: true });
+  }
+  function mgrTeardown() {
+    ['mc-mgr-head', 'mc-solids', 'mc-planes', 'mc-recent', 'mc-mgr-tabs'].forEach(function (id) { var e = $(id); if (e) e.remove(); });
+    if (framePmObs) { framePmObs.disconnect(); framePmObs = null; }
+    var t = document.querySelector('#pm .mc-fn-title'); if (t) t.remove();
+    var pmEl = $('pm'); if (pmEl) { pmEl._mcTitle = null; pmEl._mcAt = 0; }
+    $('left').classList.remove('mc-fn');
+  }
+  // the manager shown (or the function panel while a PropertyManager is open); `user`: picked by a click
+  function frameShowManager(name, user) {
+    if (!frameMgrOn()) return;
+    if (name && (frame.managers.tabs || []).indexOf(name) >= 0) frameMgr = name;
+    var left = $('left'), pmOpen = !$('pm').hidden;
+    frameDoc = docTypeNow();
+    if (user && pmOpen) { toast('Finish or cancel the active function first (OK or Cancel).'); }
+    left.classList.toggle('mc-fn', pmOpen);
+    if (!pmOpen) { $('pm')._mcTitle = null; $('pm')._mcAt = 0; }
+    var part = !isAsm() && !(UI.drawingActive && UI.drawingActive());
+    var showTree = !pmOpen && (frameMgr === 'solids' && !part);
+    $('fm-tree').hidden = !showTree;
+    var cp = $('config-panel'); if (cp) cp.hidden = true;
+    var lp = $('levels-panel'); if (lp) lp.hidden = pmOpen || frameMgr !== 'levels';
+    ['solids', 'planes', 'recent'].forEach(function (n) { var d = $('mc-' + n); if (d) d.hidden = pmOpen || frameMgr !== n || (n === 'solids' && !part); });
+    App.fmTab = pmOpen ? 'pm' : frameMgr === 'levels' ? 'levels' : 'tree';
+    levelsSticky = frameMgr === 'levels';
+    Array.prototype.forEach.call(document.querySelectorAll('#mc-mgr-tabs [data-mgr]'), function (b) { var on = b.getAttribute('data-mgr') === frameMgr; b.classList.toggle('active', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });
+    var t = document.querySelector('#mc-mgr-head .mc-mgr-title'); if (t && t.textContent !== mgrTitle(frameMgr)) t.textContent = mgrTitle(frameMgr);
+    var tools = document.querySelector('#mc-mgr-head .mc-mgr-tools');
+    if (tools && tools.getAttribute('data-mgr') !== frameMgr) {
+      tools.setAttribute('data-mgr', frameMgr); tools.innerHTML = '';
+      (MGR_TOOLS[frameMgr] || []).forEach(function (d) { var b = el('button', { class: 'mc-tool', 'aria-label': d[1], html: Icons(d[0], 16), onclick: d[2] }); setTip(b, { name: d[1] }); tools.appendChild(b); });
+    }
+    if (frameMgr === 'levels' && !pmOpen && UI.refreshLevelsPanel) UI.refreshLevelsPanel();
+    if (frameMgr === 'solids') frameSolidsRender();
+    if (frameMgr === 'planes') framePlanesRender();
+    if (frameMgr === 'recent') frameRecentRender();
+    if (pmOpen) framePmDecorate();
+    syncViewTab();
+    if (ribbonBuilt) Array.prototype.forEach.call($('ribbon-buttons').querySelectorAll('.rb'), function (b) { if (b._sync) b._sync(); });
+  }
+  // Solids: the solid, then its operations in order (a sketch under the operation that uses it)
+  function frameSolidsRender() {
+    var box = $('mc-solids');
+    if (!box || box.hidden) return;
+    var m = App.model, feats = (m && m.features) || [], used = {};
+    feats.forEach(function (f) { if (f.sketch != null) used[f.sketch] = f.id; (f.sketches || []).forEach(function (s) { used[s] = f.id; }); });
+    var errs = (App.build && App.build.errors) || {};
+    var sig = JSON.stringify([m && m.name, feats.map(function (f) { return [f.id, f.name, f.type, !!f.suppressed, !!errs[f.id]]; }), App.sel && App.sel.kind === 'feature' ? App.sel.id : null, App.build && App.build.bodies ? App.build.bodies.length : 0]);
+    if (box._sig === sig) return;
+    box._sig = sig;
+    box.innerHTML = '';
+    var nb = App.build && App.build.bodies ? App.build.bodies.length : 1;
+    box.appendChild(el('div', { class: 'mc-sol-row mc-sol-body', html: Icons('body', 16) + '<span>Solid' + (nb > 1 ? 's (' + nb + ')' : '') + ' — ' + escHtml(m.name || '') + '</span>' }));
+    function row(f, depth) {
+      var sel = App.sel && App.sel.kind === 'feature' && App.sel.id === f.id;
+      var r = el('div', { class: 'mc-sol-row' + (sel ? ' selected' : '') + (errs[f.id] ? ' err' : '') + (f.suppressed ? ' suppressed' : ''), 'data-fid': String(f.id), style: 'padding-left:' + (8 + depth * 18) + 'px', title: featureTitle(f) });
+      r.innerHTML = Icons(errs[f.id] ? 'error' : featureIcon(f), 16) + '<span>' + escHtml(f.name) + '</span>';
+      r.addEventListener('click', function () { App.sel = { kind: 'feature', id: f.id }; App.sel2 = null; UI.updateHighlights(); UI.updateSketches(); refreshTree(); if (UI.onSelectionChanged) UI.onSelectionChanged(); setStatus(f.name); });
+      r.addEventListener('dblclick', function (e) { e.stopPropagation(); UI.editFeature(f); });
+      r.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); App.sel = { kind: 'feature', id: f.id }; UI.updateHighlights(); refreshTree(); showMenu(e.clientX, e.clientY, featureMenu(f)); });
+      box.appendChild(r);
+    }
+    feats.forEach(function (f) {
+      if (f.type === 'sketch' && used[f.id] != null) return;
+      if (f.type === 'plane') return;   // planes: the Planes manager
+      row(f, 1);
+      if (f.sketch != null) { var s = K.findFeature(m, f.sketch); if (s) row(s, 2); }
+      (f.sketches || []).forEach(function (id) { var s2 = K.findFeature(m, id); if (s2) row(s2, 2); });
+    });
+  }
+  // Planes: Top … Isometric and every reference plane; G sets the graphics view, WCS / C / T mark the plane
+  var STD_PLANE_ROWS = ['Top', 'Front', 'Right', 'Back', 'Bottom', 'Left', 'Isometric'];
+  function framePlaneRows() {
+    var rows = STD_PLANE_ROWS.slice();
+    ((App.model && App.model.features) || []).forEach(function (f) { if (f.type === 'plane' && !isAsm()) rows.push(f.name); });
+    return rows;
+  }
+  function framePlaneOf(name) {
+    var base = { Back: 'Front', Bottom: 'Top', Left: 'Right', Isometric: 'Top' }[name] || name;
+    if (STD_PLANE_ROWS.indexOf(name) >= 0) return K.makePlane(base, 0);
+    var f = ((App.model && App.model.features) || []).filter(function (x) { return x.type === 'plane' && x.name === name; })[0];
+    var pl = f && App.build && App.build.planes ? App.build.planes[f.id] : null;
+    return pl || K.makePlane('Top', 0);
+  }
+  function frameCplane() { return UI.cplane ? (UI.cplane() || framePlanes.c) : framePlanes.c; }
+  function framePlaneSet(col, name) {
+    if (col === 'g') {
+      if (STD_PLANE_ROWS.indexOf(name) >= 0) UI.setView(name);
+      else UI.viewNormalTo(framePlaneOf(name));
+    } else if (col === 'c' && UI.setCplane) { UI.setCplane(name); }   // lane mcdirect's construction plane (ui-core.js)
+    framePlanes[col] = name;
+    framePlanesRender(true); frameStatusSync();
+  }
+  function framePlanesRender(force) {
+    var box = $('mc-planes');
+    if (!box || box.hidden) return;
+    framePlanes.c = frameCplane();
+    var rows = framePlaneRows(), sig = JSON.stringify([rows, framePlanes]);
+    if (!force && box._sig === sig) return;
+    box._sig = sig;
+    var cols = [['g', 'G', 'Graphics view: click to look at the model along this plane'], ['wcs', 'WCS', 'Work coordinate system'], ['c', 'C', 'Construction plane: wireframe is drawn on it'], ['t', 'T', 'Tool plane']];
+    box.innerHTML = '<table class="mc-planes" role="grid" aria-label="Planes"><thead><tr><th></th><th>Name</th>' + cols.map(function (c) { return '<th title="' + c[2] + '">' + c[1] + '</th>'; }).join('') + '</tr></thead><tbody>' +
+      rows.map(function (n) {
+        var cur = framePlanes.c === n;
+        return '<tr class="' + (cur ? 'current' : '') + '" data-plane="' + escHtml(n) + '"><td class="mc-pl-chk">' + (cur ? '✓' : '') + '</td><td class="mc-pl-name">' + escHtml(n) + '</td>' +
+          cols.map(function (c) { return '<td class="mc-pl-cell" data-col="' + c[0] + '" title="' + c[2] + '">' + (framePlanes[c[0]] === n ? c[1] : '') + '</td>'; }).join('') + '</tr>';
+      }).join('') + '</tbody></table>' +
+      '<p class="mc-pl-note">' + (UI.setCplane ? 'C sets the construction plane the wireframe tools draw on.' : 'C and T mark the plane only: this build has no construction-plane drawing yet.') + ' G sets the graphics view.</p>';
+  }
+  function framePlanesClick(e) {
+    var td = e.target.closest && e.target.closest('td'), tr = td && td.closest('tr[data-plane]');
+    if (!tr) return;
+    var name = tr.getAttribute('data-plane'), col = td.getAttribute('data-col') || 'g';
+    framePlaneSet(col, name);
+  }
+  function frameRecentRender() {
+    var box = $('mc-recent');
+    if (!box || box.hidden) return;
+    box.innerHTML = '';
+    if (!frameRecent.length) { box.appendChild(el('p', { class: 'mc-pl-note', text: 'The functions you run from the ribbon are listed here, newest first. Click one to run it again.' })); return; }
+    frameRecent.forEach(function (r) {
+      var b = el('button', { class: 'mc-recent-row', 'data-cmd': r.cmd, html: Icons(r.icon, 16) + '<span>' + escHtml(r.label) + '</span>' });
+      b.addEventListener('click', function () { runItem(r.item); refreshRibbon(); });
+      box.appendChild(b);
+    });
+  }
+  // the function panel: an open PropertyManager titled with the Mastercam function's name
+  function framePmDecorate() {
+    var pmEl = $('pm');
+    if (!frameMgrOn() || !pmEl || pmEl.hidden) return;
+    var head = pmEl.querySelector('.pm-head');
+    if (!head) return;
+    if (frameLastRun && Date.now() - frameLastRun.t < 3000 && frameLastRun.t > (pmEl._mcAt || 0)) { pmEl._mcTitle = frameLastRun.title; pmEl._mcAt = frameLastRun.t; }
+    if (!pmEl._mcTitle) { pmEl._mcTitle = UI.pmTitle ? UI.pmTitle() : ''; pmEl._mcAt = Date.now(); }
+    var span = head.querySelector('.mc-fn-title');
+    if (!span) { span = el('span', { class: 'mc-fn-title' }); head.insertBefore(span, head.firstChild); }
+    if (span.textContent !== pmEl._mcTitle) span.textContent = pmEl._mcTitle;
+    if (!$('left').classList.contains('mc-fn')) $('left').classList.add('mc-fn');
+  }
+  UI.frameFunctionTitle = function () { var s = document.querySelector('#pm:not([hidden]) .mc-fn-title'); return s ? s.textContent : null; };
+
+  // ---- the status bar
+  var FRAME_STYLES = [['wireframe', 'dsWireframe', 'Wireframe'], ['hlr', 'dsHLR', 'Hidden lines removed'], ['shaded', 'dsShaded', 'Shaded'], ['shadedEdges', 'dsShadedEdges', 'Shaded with edges (Outline Shaded)']];
+  var frameXYZ = [0, 0, 0];
+  function frameStatusBuild() {
+    var bar = $('statusbar');
+    if (!bar || $('mc-status')) return;
+    var box = el('div', { id: 'mc-status' });
+    (frame.status || []).forEach(function (k) {
+      if (k === 'section') box.appendChild(el('button', { class: 'mc-st', 'data-mc': 'section', title: 'Section View: click to turn it on or off', onclick: function () { UI.cmdSection(); setTimeout(frameStatusSync, 0); } }));
+      else if (k === 'selected') box.appendChild(el('span', { class: 'mc-st', 'data-mc': 'selected' }));
+      else if (k === 'xyz') ['x', 'y', 'z'].forEach(function (a) { box.appendChild(el('span', { class: 'mc-st mc-xyz', 'data-mc': a })); });
+      else if (k === 'cplane') box.appendChild(el('button', { class: 'mc-st', 'data-mc': 'cplane', title: 'Construction plane: click for the list', onclick: function (e) { var r = e.currentTarget.getBoundingClientRect(); showMenu(r.left, r.top - 4, framePlaneRows().map(function (n) { return { label: n, checked: frameCplane() === n, action: function () { framePlaneSet('c', n); } }; })); } }));
+      else if (k === 'tplane' || k === 'wcs') box.appendChild(el('span', { class: 'mc-st', 'data-mc': k, title: k === 'wcs' ? 'Work coordinate system (Planes manager, WCS column)' : 'Tool plane (Planes manager, T column)' }));
+      else if (k === 'styles') {
+        var g = el('span', { class: 'mc-styles', 'data-mc': 'styles' });
+        FRAME_STYLES.forEach(function (s) { var b = el('button', { class: 'mc-style', 'data-style': s[0], 'aria-label': s[2], html: Icons(s[1], 16), onclick: function () { setStyle(s[0]); frameStatusSync(); } }); setTip(b, { name: s[2] }); g.appendChild(b); });
+        box.appendChild(g);
+      }
+    });
+    bar.insertBefore(box, $('status-right'));
+    $('viewport').addEventListener('mousemove', frameMouse, { passive: true });
+    frameStatusSync();
+  }
+  function frameStatusTeardown() { var b = $('mc-status'); if (b) b.remove(); var v = $('viewport'); if (v) v.removeEventListener('mousemove', frameMouse); }
+  var frameMouseRaf = 0, frameMouseAt = null;
+  function frameMouse(e) {
+    frameMouseAt = e;
+    if (frameMouseRaf) return;
+    frameMouseRaf = requestAnimationFrame(function () {
+      frameMouseRaf = 0;
+      if (!frame || !frameMouseAt) return;
+      var r = $('viewport').getBoundingClientRect(), pl = framePlaneOf(frameCplane()), uv = null;
+      try { uv = UI.screenToPlane(frameMouseAt.clientX - r.left, frameMouseAt.clientY - r.top, pl); } catch (er) { uv = null; }
+      if (uv) frameXYZ = K.to3D(pl, uv[0], uv[1]);
+      frameStatusSync();
+    });
+  }
+  function frameSet(k, html) { var e = document.querySelector('#mc-status [data-mc="' + k + '"]'); if (e && e._h !== html) { e.innerHTML = html; e._h = html; } }
+  function frameStatusSync() {
+    if (!frame || !$('mc-status')) return;
+    var n = UI.selection ? UI.selection().length : App.sel ? 1 : 0;
+    frameSet('section', 'SECTION VIEW: <b>' + (App.view.section ? 'ON' : 'OFF') + '</b>');
+    frameSet('selected', 'SELECTED ENTITIES: <b>' + n + '</b>');
+    ['x', 'y', 'z'].forEach(function (a, i) { frameSet(a, a.toUpperCase() + ': <b>' + (Math.abs(frameXYZ[i]) < 5e-6 ? 0 : frameXYZ[i]).toFixed(5) + '</b>'); });
+    frameSet('cplane', 'CPLANE: <b>' + escHtml(frameCplane()) + '</b>');
+    frameSet('tplane', 'TPLANE: <b>' + escHtml(framePlanes.t) + '</b>');
+    frameSet('wcs', 'WCS: <b>' + escHtml(framePlanes.wcs) + '</b>');
+    Array.prototype.forEach.call(document.querySelectorAll('#mc-status .mc-style'), function (b) { var on = App.view.style === b.getAttribute('data-style'); if (b.classList.contains('active') !== on) b.classList.toggle('active', on); });
+  }
+  UI.frameStatus = function () { var o = {}; Array.prototype.forEach.call(document.querySelectorAll('#mc-status [data-mc]'), function (e) { o[e.getAttribute('data-mc')] = e.textContent; }); return o; };
+
+  // ---- group captions under every group (any tab, any document type)
+  function frameCaptionsSoon() { if (!frameCapFrame) frameCapFrame = requestAnimationFrame(function () { frameCapFrame = 0; frameCaptions(); }); }
+  function frameCaptions() {
+    var rib = $('ribbon'), bar = $('ribbon-buttons'), layer = rib && rib.querySelector(':scope > .mc-captions');
+    if (!frameRibbon('captions') || !ribbonBuilt) { if (layer) layer.remove(); return; }
+    if (!layer) { layer = el('div', { class: 'mc-captions', 'aria-hidden': 'true' }); rib.insertBefore(layer, bar.nextSibling); }
+    var items = ribbonBuilt.items, kids = Array.prototype.filter.call(bar.children, function (c) { return !c.classList.contains('rb-more'); });
+    // the bar is between two builds: look again on the next frames (a few times), so no tab is left without captions
+    if (kids.length !== items.length || !bar.getBoundingClientRect().width) { if ((frameCaptions.retry = (frameCaptions.retry || 0) + 1) < 30) frameCaptionsSoon(); return; }
+    frameCaptions.retry = 0;
+    var rr = rib.getBoundingClientRect(), br = bar.getBoundingClientRect(), groups = [], cur = null;
+    items.forEach(function (it, i) {
+      if (it.sep || !it.group) { cur = null; return; }
+      var n = kids[i], r = n.getBoundingClientRect();
+      if (n.classList.contains('rb-over') || !r.width) return;
+      if (!cur || cur.name !== it.group) { cur = { name: it.group, l: r.left, r: r.right }; groups.push(cur); }
+      cur.l = Math.min(cur.l, r.left); cur.r = Math.max(cur.r, r.right);
+    });
+    var prevR = -Infinity;
+    groups.forEach(function (g, k) {
+      var need = String(g.name).length * 6 + 10, w = g.r - g.l;
+      if (w >= need) { prevR = g.r; return; }
+      var nextL = k + 1 < groups.length ? groups[k + 1].l : rr.right, l = (g.l + g.r) / 2 - need / 2;
+      l = Math.max(prevR + 2, Math.min(nextL - 2 - need, l));
+      g.l = l; g.r = l + need; prevR = g.r;
+    });
+    var html = groups.map(function (g) { return '<span class="mc-caption" style="left:' + Math.round(g.l - rr.left) + 'px;width:' + Math.round(g.r - g.l) + 'px">' + escHtml(g.name) + '</span>'; }).join('');
+    layer.style.top = Math.round(br.bottom - rr.top - 15) + 'px';
+    if (layer._html !== html) { layer.innerHTML = html; layer._html = html; }
+  }
+  UI.frameCaptions = function () { frameCaptions(); var l = document.querySelector('#ribbon > .mc-captions'); return l ? Array.prototype.map.call(l.children, function (c) { return c.textContent; }) : []; };
+  // the File tab at the head of the tab row (refreshRibbon puts it back when the tab strip is rebuilt)
+  function frameFileTab() {
+    var tabs = $('ribbon-tabs'), fb = $('mc-file');
+    if (!frameRibbon('fileTab')) { if (fb) fb.remove(); return; }
+    if (!fb) { fb = el('button', { id: 'mc-file', class: 'mc-file', text: 'File', 'aria-haspopup': 'dialog', onclick: function () { if (bs) bsClose(); else bsOpen('info'); } }); setTip(fb, { name: 'File', desc: 'Info, New, Open, Save, Save As, Convert / Export, Print, Recent, Options (Configuration), Help' }); }
+    if (tabs.firstChild !== fb) tabs.insertBefore(fb, tabs.firstChild);
+  }
+
+  // ---- UI.setFrame(frame | null)
+  var FRAME_CLASSES = ['mc-tabs-top', 'mc-qat', 'mc-no-menubar', 'mc-managers', 'mc-status', 'mc-ribbon-caps'];
+  function frameThemeVars(on) {
+    var root = document.documentElement, th = on && frame.theme;
+    var old = root._mcVars || [];
+    old.forEach(function (k) { root.style.removeProperty(k); });
+    root._mcVars = [];
+    if (th && th.name) root.setAttribute('data-profile', th.name); else root.removeAttribute('data-profile');
+    if (th && th.vars) ['light', 'dark'].forEach(function (mode) {
+      var v = th.vars[mode] || {};
+      Object.keys(v).forEach(function (k) { var n = k.replace(/^--mc-/, '--mc-' + mode.charAt(0) + '-'); root.style.setProperty(n, v[k]); root._mcVars.push(n); });
+    });
+    if (!root.getAttribute('style')) root.removeAttribute('style');
+  }
+  UI.setFrame = function (f) {
+    var was = frame;
+    if (!was && !f) return null;
+    // tear the old frame down completely first (switching between two framed profiles rebuilds it)
+    if (was) {
+      bsClose();
+      if (UI.closeMenus) closeMenus();
+      mgrTeardown(); frameStatusTeardown();
+      var fb = $('mc-file'); if (fb) fb.remove();
+      var cl = document.querySelector('#ribbon > .mc-captions'); if (cl) cl.remove();
+      if (frameCapObs) { frameCapObs.disconnect(); frameCapObs = null; }
+      FRAME_CLASSES.forEach(function (c) { $('app').classList.remove(c); });
+      frame = null;
+      frameThemeVars(false);
+      // back to SolidWorks' FeatureManager tabs: the tree (or the PropertyManager still open)
+      var lp = $('levels-panel'); if (lp && App.fmTab !== 'levels') lp.hidden = true;
+      if ($('pm').hidden) { levelsSticky = App.fmTab === 'levels'; setFmTab(App.fmTab === 'levels' ? 'levels' : 'tree'); }
+      else { $('fm-tree').hidden = true; setFmTab('pm'); }
+    }
+    frame = f || null;
+    if (frame) {
+      var app = $('app'), r = frame.ribbon || {};
+      app.classList.toggle('mc-tabs-top', !!r.tabsOnTop);
+      app.classList.toggle('mc-qat', !!r.qat);
+      app.classList.toggle('mc-ribbon-caps', !!r.captions);
+      app.classList.toggle('mc-no-menubar', frame.menubar === false);
+      if (r.captions && window.MutationObserver) { frameCapObs = new MutationObserver(frameCaptionsSoon); frameCapObs.observe($('ribbon-buttons'), { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] }); }
+      frameThemeVars(true);
+      if (frame.managers) {
+        app.classList.add('mc-managers');
+        mgrBuild();
+        frameMgr = App.fmTab === 'levels' ? 'levels' : (frame.managers.tabs || ['solids'])[0];
+        frameShowManager(frameMgr);
+      }
+      if (frame.status) { app.classList.add('mc-status'); frameStatusBuild(); }
+      var dm = document.activeElement; if (dm && dm.closest && dm.closest('#menus')) dm.blur();
+    }
+    UI.profileRibbonReset();
+    if (UI.fitWorkspace) UI.fitWorkspace();
+    if (UI.resize) setTimeout(UI.resize, 0);
+    return frame;
+  };
+  UI.frame = function () { return frame; };
+  var frameSoonRaf = 0;
+  function frameSoon() { if (!frameSoonRaf) frameSoonRaf = requestAnimationFrame(function () { frameSoonRaf = 0; if (!frame) return; if (frameMgrOn() && frameDoc !== docTypeNow()) frameShowManager(null); frameSolidsRender(); framePlanesRender(); frameStatusSync(); }); }
+  ['mouseup', 'keyup'].forEach(function (t) { document.addEventListener(t, function () { if (frame) frameSoon(); }, true); });
+  window.addEventListener('resize', function () { if (frame) frameCaptionsSoon(); });
+  UI.frameManager = function (name) { if (name) frameShowManager(name, true); return frameMgrOn() ? frameMgr : null; };
+  UI.framePlanes = function () { return { g: framePlanes.g, wcs: framePlanes.wcs, c: frameCplane(), t: framePlanes.t }; };
+  UI.frameRecent = function () { return frameRecent.map(function (r) { return r.cmd; }); };
+  if (UI.onCplane) { try { UI.onCplane(function () { framePlanesRender(true); frameStatusSync(); }); } catch (e) { } }   // lane mcdirect
 
   // One-line descriptions for the ribbon tooltips, keyed by the button label (ids such as 'bend' are shared by several buttons).
   var RIBBON_HELP = {
@@ -525,6 +1052,7 @@
     return { id: id, icon: (d && d.icon) || (d ? id : item.icon || id), label: label, flat: flat, disabled: !enabled || needsSketch, active: active, tip: ribbonTip(id, flat, enabled, needsSketch, item.help, item.key) };
   }
   function runItem(item) {
+    if (frame) frameNoteRun(item);   // lane mcframe: Recent Functions, the function panel's title
     if (item.tool && item.tool !== 'dimension' && App.mode !== 'sketch' && UI.rapidSketchOn && UI.rapidSketchOn()) { UI.rapidSketchArm(item); refreshRibbon(); return; }   // rfAY: Rapid Sketch
     if (item.tool && !item.run) UI.setTool(itemState(item).active ? 'select' : item.tool);
     else if (item.run) { item.run(); refreshRibbon(); }
@@ -635,7 +1163,9 @@
     }
     return true;
   }
-  function refreshRibbon() {
+  // lane mcframe: the frame's File tab and group captions follow every refresh
+  function refreshRibbon() { refreshRibbon0(); if (frame) { frameFileTab(); frameCaptionsSoon(); frameSoon(); } }
+  function refreshRibbon0() {
     var bar = $('ribbon-buttons');
     var set = ribbonSet();
     if (!set[App.ribbonTab]) App.ribbonTab = set[tabName(App.ribbonTab)] ? tabName(App.ribbonTab) : Object.keys(set)[0];
@@ -1110,6 +1640,12 @@
   // setFmTab('tree' | 'config' | 'pm'): marks the tab and shows its pane. The PropertyManager (ui-commands openPM /
   // closePM) shows and hides #pm and #fm-tree itself; here 'pm' only hides the ConfigurationManager.
   function setFmTab(name) {
+    // lane mcframe: under a frame with managers the left column is the manager panel (or the function panel)
+    if (frameMgrOn() && name !== 'config') {
+      if (name === 'levels') frameMgr = 'levels';
+      frameShowManager(null);
+      return;
+    }
     // levels: a PropertyManager closing (pm -> tree) goes back to the Levels Manager while that is the tab in use
     if (name === 'tree' && levelsSticky && (App.fmTab === 'pm' || App.fmTab === 'levels') && $('levels-panel')) name = 'levels';
     var lp = $('levels-panel');
@@ -1236,6 +1772,7 @@
   }
   function refreshTree() {
     syncStdToolbar();
+    if (frame) frameSoon();   // lane mcframe: the Solids / Planes managers and the status bar follow the tree
     if (isAsm()) { refreshAssemblyTree(); return; }
     var tree = $('tree');
     tree.innerHTML = '';
@@ -2230,7 +2767,7 @@
     UI.setStatus(App.view.showEndpoints ? 'Sketch end points shown.' : 'Sketch end points hidden: they still select and snap.');
   }
   UI.toggleShowEndpoints = toggleShowEndpoints;
-  function setStyle(s) { App.view.style = s; UI.applyDisplayStyle(); refreshHud(); }
+  function setStyle(s) { App.view.style = s; UI.applyDisplayStyle(); refreshHud(); if (frame) frameStatusSync(); }
   function setBg(b) { return UI.setBackground(b); }   // r14/viewui14: keeps the viewport's other classes (was className =), remembered
   function normalToSelection() {
     if (App.sel && App.sel.kind === 'face' && App.mesh) { var f = App.mesh.faces[App.sel.index]; UI.viewNormalTo(K.planeFromFace(f.normal, f.centroid)); }

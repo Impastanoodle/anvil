@@ -152,7 +152,7 @@
     mc.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
     mc.click(); await wait(60);
     assert(UI.Profiles.active() === 'mastercam', 'profile ' + UI.Profiles.active());
-    assert(rfLHTabNames().join() === 'Wireframe,Solids,Sheet Metal,Drafting,Transform,View,More', 'Mastercam tabs ' + rfLHTabNames().join());
+    assert(rfLHTabNames().join() === 'Home,Wireframe,Solids,Sheet Metal,Drafting,Transform,View,More', 'Mastercam tabs ' + rfLHTabNames().join());
     var chip = D.querySelector('#status-right .st-profile');
     assert(chip && chip.textContent === 'Mastercam', 'status bar ' + $('status-right').textContent);
     try { assert(W.localStorage.getItem(UI.Profiles.storageKey) === 'mastercam', 'not kept'); } catch (e) { if (/kept/.test(e.message)) throw e; }
@@ -283,15 +283,15 @@
     var part = UI.profileRibbon('part');
     var moreGroups = part.More.filter(function (it) { return it.group; }).map(function (it) { return it.group; });
     assert(moreGroups.indexOf('Evaluate') >= 0 && moreGroups.indexOf('Sketch') >= 0, 'More groups ' + moreGroups.join(', '));
-    assert(Object.keys(UI.profileRibbon('drawing')).join() === 'View Layout,Drafting,Sketch,Sheet Format', 'drawing tabs ' + Object.keys(UI.profileRibbon('drawing')).join());
+    assert(Object.keys(UI.profileRibbon('drawing')).join() === 'View Layout,Drafting,Sketch,Sheet Format,More', 'drawing tabs ' + Object.keys(UI.profileRibbon('drawing')).join());
     var asm = UI.profileRibbon('assembly');
-    assert(Object.keys(asm).join() === 'Assembly,Evaluate,View', 'assembly tabs ' + Object.keys(asm).join());
+    assert(Object.keys(asm).join() === 'Assembly,Evaluate,View,More', 'assembly tabs ' + Object.keys(asm).join());
     assert(UI.ribbonLeaves(asm.Evaluate).some(function (it) { return UI.ribbonItemState(it).flat === 'Analyze Distance'; }), 'assembly Measure not renamed');
     // the drawing document: Annotation (SolidWorks) lands on Drafting
     await anvil.newPart(); await idle(); await anvil.run(RFLH_BOX); await idle();
     UI.makeDrawing({ fresh: true }); await wait(300); await idle();
     try {
-      assert(rfLHTabNames().join() === 'View Layout,Drafting,Sketch,Sheet Format', 'drawing tab strip ' + rfLHTabNames().join());
+      assert(rfLHTabNames().join() === 'View Layout,Drafting,Sketch,Sheet Format,More', 'drawing tab strip ' + rfLHTabNames().join());
       UI.setRibbonTab('Annotation'); await wait(20);
       assert(UI.App.ribbonTab === 'Drafting', 'Annotation -> ' + UI.App.ribbonTab);
       assert(rfLHBtn('Smart Dimension'), 'no Smart Dimension on Drafting');
@@ -315,7 +315,7 @@
       }
       assert(w2 && w2.UI && w2.UI.Profiles, 'the second frame did not boot');
       got = Array.prototype.map.call(w2.document.querySelectorAll('#ribbon-tabs .rtab:not(.off)'), function (t) { return t.textContent; }).join();
-      assert(w2.UI.Profiles.active() === 'mastercam' && got === 'Wireframe,Solids,Sheet Metal,Drafting,Transform,View,More', 'reloaded: ' + w2.UI.Profiles.active() + ' ' + got);
+      assert(w2.UI.Profiles.active() === 'mastercam' && got === 'Home,Wireframe,Solids,Sheet Metal,Drafting,Transform,View,More', 'reloaded: ' + w2.UI.Profiles.active() + ' ' + got);
       assert(w2.document.querySelector('#status-right .st-profile'), 'reloaded status bar');
     } finally { f.src = 'about:blank'; await wait(50); f.remove(); }
     assert(anvil.profile('solidworks') === 'solidworks', 'anvil.profile(solidworks)');

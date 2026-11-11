@@ -2099,3 +2099,111 @@ body.splitting-v #viewport { pointer-events: none; }
 #vp-selbar .sb-btn:hover { border-color: #7a7a7a; }
 #vp-selbar .sb-btn.on { background: #ffe57a; border-color: #c08f00; }
 #vp-selbar .sb-sep { width: 1px; height: 18px; background: #b8b8b8; margin: 0 3px; }
+/* lane mcframe: the window frame of an interface profile (ui-panels.js UI.setFrame; data in ui-profiles.js frame).
+   Layout by #app classes (one per frame piece), the look by :root[data-profile]; the colours are the profile's own
+   (--mc-l-* light, --mc-d-* dark, set on <html> from the profile data), so this sheet names none of them. */
+:root[data-profile] { --mc-blue: var(--mc-l-blue); --mc-blue-text: var(--mc-l-blue-text); --mc-title: var(--mc-l-title); --mc-ribbon: var(--mc-l-ribbon); --mc-strip: var(--mc-l-strip); --mc-line: var(--mc-l-line); --mc-tab-on: var(--mc-l-tab-on); --mc-hover: var(--mc-l-hover); --mc-press: var(--mc-l-press); --mc-press-line: var(--mc-l-press-line); --mc-panel: var(--mc-l-panel); --mc-mgr-tab: var(--mc-l-mgr-tab); --mc-text: var(--mc-l-text); }
+:root[data-profile][data-theme="dark"] { --mc-blue: var(--mc-d-blue); --mc-blue-text: var(--mc-d-blue-text); --mc-title: var(--mc-d-title); --mc-ribbon: var(--mc-d-ribbon); --mc-strip: var(--mc-d-strip); --mc-line: var(--mc-d-line); --mc-tab-on: var(--mc-d-tab-on); --mc-hover: var(--mc-d-hover); --mc-press: var(--mc-d-press); --mc-press-line: var(--mc-d-press-line); --mc-panel: var(--mc-d-panel); --mc-mgr-tab: var(--mc-d-mgr-tab); --mc-text: var(--mc-d-text); }
+/* title row: no menu bar; the Quick Access Toolbar keeps New, Open, Save, Print, Undo, Redo */
+#app.mc-no-menubar #menus { display: none; }
+#app.mc-qat #std-select, #app.mc-qat #std-rebuild, #app.mc-qat #std-fileprops, #app.mc-qat #std-options, #app.mc-qat #std-select + .std-sep, #app.mc-qat #std-redo + .std-sep { display: none; }
+#app.mc-qat #menubar #std-toolbar { border-right: 0; }
+#app.mc-qat #menubar #doc-title { flex: 1; text-align: center; }
+/* the ribbon: tabs above the buttons, the File tab first, captions under every group */
+#app.mc-tabs-top #ribbon { display: flex; flex-direction: column; position: relative; }
+#app.mc-tabs-top #ribbon-tabs { order: -1; border-top: 0; border-bottom: 1px solid var(--mc-line, var(--line)); align-items: stretch; height: 24px; padding: 0 8px 0 0; }
+#app.mc-tabs-top #ribbon-tabs .rtab { height: 23px; border-radius: 0; border: 1px solid transparent; border-top: 0; border-bottom: 0; margin-bottom: 0; padding: 0 12px; font-weight: 400; }
+#app.mc-tabs-top #ribbon-tabs .rtab.active { border-color: var(--mc-line, var(--line)); background: var(--mc-tab-on, var(--panel)); margin-bottom: -1px; height: 24px; }
+#mc-file { flex: none; padding: 0 18px; margin-right: 6px; border: 0; border-radius: 0; background: var(--mc-blue); color: var(--mc-blue-text); font-weight: 600; letter-spacing: 0.02em; }
+#mc-file:hover, #mc-file.active { filter: brightness(1.12); }
+#app.mc-ribbon-caps #ribbon-buttons, #app.mc-ribbon-caps #ribbon.rb-has-captions #ribbon-buttons { padding-bottom: 16px; }
+#app.mc-ribbon-caps #ribbon .rb-captions { display: none; }
+#app.mc-ribbon-caps #ribbon-buttons > .rb, #app.mc-ribbon-caps #ribbon .rb-fly:not(.rb-fly-small) > .rb { gap: 2px; }
+#app.mc-ribbon-caps #ribbon-buttons > .rb > .ico, #app.mc-ribbon-caps #ribbon .rb-fly:not(.rb-fly-small) > .rb > .ico { width: 24px; height: 24px; }
+#app.mc-ribbon-caps #ribbon-buttons > .rb > span, #app.mc-ribbon-caps #ribbon .rb-fly:not(.rb-fly-small) > .rb > span { line-height: 1; max-height: 2em; }
+#app.mc-ribbon-caps #ribbon .rb-stack:not(.rb-grid) .rb, #app.mc-ribbon-caps #ribbon .rb-grid .rb { height: 18px; }
+#app.mc-ribbon-caps #ribbon .rb-stack.rb-grid { grid-template-rows: repeat(3, 18px); }
+#ribbon > .mc-captions { position: absolute; left: 0; right: 0; height: 14px; pointer-events: none; }
+#ribbon > .mc-captions .mc-caption { position: absolute; top: 0; height: 14px; line-height: 14px; font-size: 11px; text-align: center; color: var(--mc-text, var(--muted)); opacity: 0.85; white-space: nowrap; overflow: hidden; }
+:root[data-profile] #app.mc-tabs-top #ribbon { background: var(--mc-ribbon); }
+:root[data-profile] #app.mc-tabs-top #ribbon-tabs { background: var(--mc-strip); }
+:root[data-profile] #app #ribbon-buttons .rb-sep { background: var(--mc-line); }
+:root[data-profile] #app #ribbon .rb:hover:not(:disabled) { background: var(--mc-hover); border-color: var(--mc-press-line); }
+:root[data-profile] #app #ribbon .rb.active, :root[data-profile] #app #ribbon .rb.active:hover { background: var(--mc-press); border-color: var(--mc-press-line); box-shadow: none; }
+/* the backstage (File) */
+#mc-backstage { position: fixed; inset: 0; z-index: 900; display: grid; grid-template-columns: 220px minmax(0, 1fr); background: var(--c-raised, var(--panel)); color: var(--text); }
+#mc-backstage .bs-nav { display: flex; flex-direction: column; padding: 8px 0; background: var(--mc-blue, var(--c-sunken)); color: var(--mc-blue-text, var(--text)); }
+#mc-backstage .bs-back { align-self: flex-start; margin: 4px 0 12px 12px; width: 36px; height: 36px; border: 0; border-radius: 50%; background: none; color: inherit; display: grid; place-items: center; }
+#mc-backstage .bs-nav-item { text-align: left; padding: 9px 24px; border: 0; border-radius: 0; background: none; color: inherit; font-size: 14px; }
+#mc-backstage .bs-nav-item:hover, #mc-backstage .bs-back:hover { background: rgba(255, 255, 255, 0.14); }
+#mc-backstage .bs-nav-item.active { background: rgba(255, 255, 255, 0.24); font-weight: 600; }
+#mc-backstage .bs-page { padding: 24px 40px; overflow: auto; }
+#mc-backstage .bs-page h2 { font-size: 26px; font-weight: 300; margin: 6px 0 18px; }
+#mc-backstage .bs-page h3 { font-size: 14px; margin: 20px 0 8px; }
+#mc-backstage .bs-list { display: flex; flex-direction: column; gap: 2px; max-width: 560px; }
+#mc-backstage .bs-tiles { flex-direction: row; flex-wrap: wrap; gap: 8px; max-width: none; }
+#mc-backstage .bs-row { display: flex; align-items: center; gap: 10px; min-height: 30px; padding: 4px 10px; text-align: left; border: 1px solid transparent; border-radius: var(--radius, 3px); background: none; color: inherit; }
+#mc-backstage .bs-row small { margin-left: auto; color: var(--muted); }
+#mc-backstage .bs-row:hover:not(:disabled) { background: var(--mc-hover, var(--hover)); border-color: var(--mc-press-line, var(--line)); }
+#mc-backstage .bs-row:disabled { opacity: 0.45; }
+#mc-backstage .bs-big { flex-direction: column; justify-content: center; width: 132px; height: 96px; gap: 6px; text-align: center; border-color: var(--mc-line, var(--line)); }
+#mc-backstage .bs-big small { margin: 0; }
+#mc-backstage .bs-facts { display: grid; grid-template-columns: 110px auto; gap: 6px 16px; margin-bottom: 18px; font-size: 13px; }
+#mc-backstage .bs-facts span { color: var(--muted); }
+#mc-backstage .bs-options { max-width: 640px; }
+#mc-backstage .bs-options table { font-size: inherit; }
+#mc-backstage .bs-note { color: var(--muted); }
+/* the manager panel: big title, tool row, tabs at the bottom; the function panel */
+#app.mc-managers #fm-tabs { display: none; }
+#mc-mgr-head { flex: none; padding: 4px 8px 0; background: var(--mc-panel, var(--panel)); }
+#mc-mgr-head .mc-mgr-titlebar { display: flex; align-items: center; height: 30px; }
+#mc-mgr-head .mc-mgr-title { flex: 1; font-size: 18px; font-weight: 400; color: var(--mc-title, var(--text)); }
+#mc-mgr-head .mc-mgr-close { width: 22px; height: 22px; border: 0; background: none; color: var(--muted); border-radius: var(--radius, 3px); }
+#mc-mgr-head .mc-mgr-close:hover { background: var(--mc-hover, var(--hover)); }
+#mc-mgr-head .mc-mgr-tools { display: flex; gap: 1px; min-height: 26px; align-items: center; border-bottom: 1px solid var(--mc-line, var(--line)); padding-bottom: 2px; }
+#mc-mgr-head .mc-tool { width: 26px; height: 24px; border: 1px solid transparent; background: none; border-radius: var(--radius, 3px); color: var(--icon-ink, var(--text)); display: grid; place-items: center; }
+#mc-mgr-head .mc-tool:hover { background: var(--mc-hover, var(--hover)); border-color: var(--mc-press-line, var(--line)); }
+#app.mc-managers #left.mc-fn #mc-mgr-head, #app.mc-managers #left.mc-fn #mc-mgr-tabs { display: none; }
+#mc-mgr-tabs { flex: none; order: 9; display: flex; gap: 0; border-top: 1px solid var(--mc-line, var(--line)); background: var(--mc-mgr-tab, var(--panel-2)); padding: 0 4px 2px; }
+#mc-mgr-tabs button { padding: 3px 10px; border: 1px solid transparent; border-top: 0; border-radius: 0 0 3px 3px; background: none; color: var(--mc-text, var(--text)); font-size: 12px; }
+#mc-mgr-tabs button:hover { background: var(--mc-hover, var(--hover)); }
+#mc-mgr-tabs button.active { background: var(--mc-panel, var(--panel)); border-color: var(--mc-line, var(--line)); margin-top: -1px; font-weight: 600; }
+.mc-mgr-pane { flex: 1; min-height: 0; overflow: auto; background: var(--mc-panel, var(--panel)); }
+#app.mc-managers #levels-panel .lvl-head { display: none; }
+.mc-sol-row { display: flex; align-items: center; gap: 5px; height: 22px; padding-right: 6px; white-space: nowrap; cursor: default; color: var(--mc-text, var(--text)); }
+.mc-sol-row:hover { background: var(--mc-hover, var(--hover)); }
+.mc-sol-row.selected { background: var(--mc-press, var(--sel)); }
+.mc-sol-row.err span { color: #d9302c; }
+.mc-sol-row.suppressed { opacity: 0.5; }
+.mc-sol-body { padding-left: 6px; font-weight: 600; }
+table.mc-planes { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.mc-planes th { text-align: left; font-weight: 600; padding: 3px 4px; border-bottom: 1px solid var(--mc-line, var(--line)); color: var(--muted); }
+table.mc-planes td { padding: 2px 4px; height: 20px; cursor: default; }
+table.mc-planes td.mc-pl-cell { width: 34px; text-align: center; font-weight: 600; color: var(--mc-title, var(--text)); }
+table.mc-planes td.mc-pl-cell:hover { background: var(--mc-hover, var(--hover)); }
+table.mc-planes td.mc-pl-chk { width: 14px; color: var(--mc-title, var(--text)); }
+table.mc-planes tr.current td { background: var(--mc-press, var(--sel)); }
+.mc-pl-note { margin: 8px; color: var(--muted); font-size: 11.5px; }
+.mc-recent-row { display: flex; align-items: center; gap: 6px; width: 100%; height: 26px; padding: 0 8px; border: 0; background: none; text-align: left; color: var(--mc-text, var(--text)); }
+.mc-recent-row:hover { background: var(--mc-hover, var(--hover)); }
+#app.mc-managers #pm .pm-head > span:not(.mc-fn-title) { display: none; }
+#app.mc-managers #pm .pm-head > .mc-fn-title { flex: 1; font-size: 17px; font-weight: 400; color: var(--mc-title, var(--text)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#app.mc-managers #pm .pm-actions button { border-radius: 50%; }
+/* the status bar: the profile's solid bar, items right-aligned */
+#mc-status { display: flex; align-items: center; height: 100%; margin-left: auto; flex: none; }
+#mc-status .mc-st { display: inline-flex; align-items: center; gap: 3px; height: 100%; padding: 0 9px; border: 0; border-left: 1px solid rgba(255, 255, 255, 0.28); border-radius: 0; background: none; color: inherit; font: inherit; white-space: nowrap; }
+#mc-status button.mc-st:hover, #mc-status .mc-style:hover { background: rgba(255, 255, 255, 0.16); }
+#mc-status .mc-xyz { min-width: 92px; }
+#mc-status .mc-styles { display: inline-flex; align-items: center; gap: 1px; height: 100%; padding: 0 4px; border-left: 1px solid rgba(255, 255, 255, 0.28); }
+#mc-status .mc-style { width: 22px; height: 20px; border: 1px solid transparent; border-radius: 50%; background: none; color: inherit; display: grid; place-items: center; }
+#mc-status .mc-style .ico { color: inherit; }
+#mc-status .mc-style.active { background: rgba(255, 255, 255, 0.26); border-color: rgba(255, 255, 255, 0.5); }
+#app.mc-status #status-coords { display: none; }
+#app.mc-status #status-right { min-width: 0 !important; width: auto !important; flex: none; }
+#app.mc-status #status-right > :not(.st-profile) { display: none; }
+#app.mc-status #status-msg { flex: 1; }
+:root[data-profile] #app.mc-status #statusbar { background: var(--mc-blue); color: var(--mc-blue-text); border-top-color: var(--mc-blue); }
+:root[data-profile] #app.mc-status #status-msg, :root[data-profile] #app.mc-status #status-right .st-profile { color: var(--mc-blue-text); }
+:root[data-profile] #app.mc-status #status-right > .st-profile { border-left-color: rgba(255, 255, 255, 0.28); }
+/* the viewsheet strip under the graphics window (one sheet: the view shown) */
+:root[data-profile] #app.mc-managers #viewport::after { content: 'Viewsheet-1'; position: absolute; left: 0; right: 0; bottom: 0; height: 18px; line-height: 18px; padding-left: 10px; font-size: 11px; color: var(--mc-text); background: var(--mc-panel); border-top: 1px solid var(--mc-line); pointer-events: none; z-index: 3; }

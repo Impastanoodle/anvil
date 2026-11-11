@@ -277,6 +277,9 @@ var IconsLib = (function () {
     cancel: ln('M4 4 l8 8 M12 4 L4 12', R, 2.6),
     generic: rect(3.5, 3.5, 9, 9, F2, S, 1.1, 'rx="1"'),
     search: circ(7, 7, 3.5, 'none', S) + ln('M9.5 9.5 l3.5 3.5', S, 1.6),
+    // lane mcframe: Mastercam frame commands (Home ▸ Delete Entities, the manager panel's Recent Functions)
+    deleteEnt: ln('M2.5 12.5 L10.5 4.5', S, 1.5) + ln('M9 9 l4.5 4.5 M13.5 9 L9 13.5', R, 1.6),
+    recentFns: circ(8, 8, 5.5, 'none', S, 1.25) + ln('M8 4.5 V8 h2.5', S, 1.25),
     filter: p('M2 3 h12 l-4.5 5 v4.5 l-3 1.5 v-6 z', F2, S),
     part: blk(2, 3, 7, 8, 4, F2, F1, F3, S, 1),
     body: blk(2, 3, 7, 8, 4, '#b8b8b8', '#e0e0e0', '#8e8e8e', S, 1),
