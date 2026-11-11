@@ -4130,33 +4130,10 @@
         var tP = dot(sub(P, r.origin), bd.n), sgn = dot(along, bd.n) > 0 ? 1 : -1;
         function st(p) { var s = ax ? p[1] : p[0], w = ax ? p[0] : p[1]; return [s, tP + sgn * w]; }
         function strip(lo, hi) { return ax ? clipBox(Q, ext[0], ext[1], lo, hi) : clipBox(Q, lo, hi, ext[0], ext[1]); }
-        var plane = { origin: r.origin.slice(), x: r.o.slice(), y: r.u.slice(), n: bd.n.slice() };
-        var sp = strip(0, BA);
-        if (sp) {
-          var lp = sp.map(st);
-          if (signedArea(lp) < 0) lp.reverse();
-          var sMin = Infinity, sMax = -Infinity, tMin = Infinity, tMax = -Infinity;
-          lp.forEach(function (p) { sMin = Math.min(sMin, p[0]); sMax = Math.max(sMax, p[0]); tMin = Math.min(tMin, p[1]); tMax = Math.max(tMax, p[1]); });
-          var boxA = (sMax - sMin) * (tMax - tMin);
-          if (Math.abs(Math.abs(signedArea(lp)) - boxA) < 1e-9 * Math.max(1e-12, boxA)) {
-            // a rectangle across the strip: the sector between the radial planes at its two s values, exactly
-            var th0 = Ang * sMin / BA, th1 = Ang * sMax / BA, nn = Math.max(2, Math.ceil((th1 - th0) / (Math.PI / 16)) + 1), rr = R + 1.5 * T, loop = [[0, R]];
-            for (var k = 0; k <= nn; k++) { var th = th0 + (th1 - th0) * k / nn; loop.push([rr * Math.sin(th), R - rr * Math.cos(th)]); }
-            if (signedArea(loop) < 0) loop.reverse();
-            tools.push({ sector: { loop: loop, plane: plane, a: tMin, b: tMax } });
-          } else tools.push({ wrap: { loops: [lp], sec: { A: Ang, R: R, T: T }, BA: BA, plane: plane } });
-          var ta = dot(sub(r.a, r.origin), bd.n), tb = dot(sub(r.b, r.origin), bd.n), sg = tb >= ta ? 1 : -1;
-          recs.push({ kind: 'foldCutouts', feature: bd.id, index: bd.index, cutouts: [lp.map(function (p) { return [p[0], (p[1] - ta) * sg]; })] });
-        }
-        var wp = strip(BA, null);
-        if (wp) {
-          var sA = Math.sin(Ang), cA = Math.cos(Ang);
-          var W0 = add(add(r.origin, scale(r.o, R * sA)), scale(r.u, R - R * cA)), wd = add(scale(r.o, cA), scale(r.u, sA)), tn = sub(scale(r.o, sA), scale(r.u, cA));
-          var plw = { origin: W0, x: wd, y: bd.n.slice(), n: norm(cross(wd, bd.n)) }, sgw = dot(plw.n, tn) > 0;
-          var lw = wp.map(function (p) { var q2 = st(p); return [q2[0] - BA, q2[1]]; });
-          if (signedArea(lw) < 0) lw.reverse();
-          tools.push({ prism: { loop: lw, plane: plw, a: sgw ? -eps : -T - eps, b: sgw ? T + eps : eps } });
-        }
+        // lane occtparity-2: the strip and wall through crBendCut (as the 3 Bend corner): a strip piece that is not a
+        // rectangle carries `direct` (its band cut out by radial planes, its metal less the piece put back: cornerReliefApply)
+        crBendCut(bd, strip(0, BA), st, false, tools, recs, eps, T);
+        crBendCut(bd, strip(BA, null), st, true, tools, recs, eps, T);
       });
     });
     return { tools: tools, recs: recs, corners: used.map(function (c) { return c.at; }) };
@@ -4271,7 +4248,7 @@
   // folded relief is the flat's shape exactly and the solid stays closed; a band that does not hold plain metal (an
   // earlier cut there) takes the wrapped tool. The face / wall prisms and rectangle sectors are cut as before.
   function cornerReliefApply(f, model, ctx, body) {
-    if (f.cornerType !== '3bend' || !body) return null;
+    if (!body) return null;   // lane occtparity-2: 2 Bend corners too
     var lay = cornerReliefLayout(f, model, ctx);
     if (!lay.tools.some(function (t) { return t.wrap && t.wrap.direct; })) return null;
     if (ctx.flanges) ctx.flanges[f.id] = lay.recs;
