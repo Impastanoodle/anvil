@@ -2274,6 +2274,46 @@
     if (l.length === 1) { delete doc.sheets; delete doc.activeSheet; }
     return true;
   }
+  // (rfKT) moveViewToSheet(doc, viewId, i | name) -> the ids moved. SolidWorks moves a drawing view to another sheet
+  // (drag it onto the sheet in the FeatureManager, or cut / paste): it keeps its place on the paper, its dimensions,
+  // annotations and Hole Tables. Anvil works a view out from its parent on the same sheet, so the view's own family
+  // goes along (the views made from it: projected, section, detail, …); a view that has a parent stays on its parent's
+  // sheet (move the parent). Sheet notes / symbols attached to a moved view go with it. The views keep their x / y,
+  // pulled inside the new sheet when it is smaller.
+  function moveViewToSheet(doc, viewId, which) {
+    var to = sheetIndex(doc, which), from = doc.activeSheet | 0;
+    if (to < 0) throw new Error('No sheet ' + which);
+    if (to === from) throw new Error('The view is on that sheet already');
+    var v = (doc.views || []).filter(function (x) { return x.id === viewId; })[0];
+    if (!v) throw new Error('No drawing view ' + viewId + ' on the active sheet');
+    var par = v.parent != null ? (doc.views || []).filter(function (x) { return x.id === v.parent; })[0] : null;
+    if (par) throw new Error((v.name || 'That view') + ' is made from ' + (par.name || 'another view') + ': move ' + (par.name || 'its parent') + ' and it goes along');
+    var ids = [v.id], grew = true;
+    while (grew) { grew = false; (doc.views || []).forEach(function (x) { if (x.parent != null && ids.indexOf(x.parent) >= 0 && ids.indexOf(x.id) < 0) { ids.push(x.id); grew = true; } }); }
+    var T = sheetDoc(doc, to), S0 = doc.sheet ? sheetSize(doc, doc.units || 'mm') : null, S1 = sheetSize(T, T.units || doc.units || 'mm');
+    function take(list) { var out = [], keep = []; (list || []).forEach(function (a) { (a && ids.indexOf(a.view) >= 0 ? out : keep).push(a); }); return { out: out, keep: keep }; }
+    var vs = take((doc.views || []).map(function (x) { return { view: x.id, x: x }; }));
+    doc.views = vs.keep.map(function (o) { return o.x; });
+    var moved = vs.out.map(function (o) { return o.x; });
+    // keep the paper place; a smaller sheet pulls the family in by one shift (its views stay aligned)
+    if (S0 && S1 && moved.length) {
+      var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      moved.forEach(function (x) { if (isFinite(x.x) && isFinite(x.y)) { x0 = Math.min(x0, x.x); x1 = Math.max(x1, x.x); y0 = Math.min(y0, x.y); y1 = Math.max(y1, x.y); } });
+      var dx = x1 > S1[0] ? S1[0] * 0.9 - x1 : 0, dy = y1 > S1[1] ? S1[1] * 0.9 - y1 : 0;
+      if (isFinite(x0) && (dx || dy)) moved.forEach(function (x) { x.x += dx; x.y += dy; });
+    }
+    T.views = (T.views || []).concat(moved);
+    ['notes', 'symbols', 'holeTables'].forEach(function (k) {
+      var t = take(doc[k]);
+      if (!t.out.length) return;
+      doc[k] = t.keep; T[k] = (T[k] || []).concat(t.out);
+    });
+    // the target's record holds the lists (sheetDoc copies them by reference; a new list is written back)
+    var rec = doc.sheets[to];
+    SHEET_KEYS.forEach(function (q) { if (T[q] !== undefined) rec[q] = T[q]; });
+    if (doc.layout === 'auto' && ids.length) doc.layout = 'manual';   // the views left keep their places
+    return ids;
+  }
   // renameSheet(doc, i | name, newName) -> the new name (sheet names are unique, case-insensitive)
   function renameSheet(doc, which, name) {
     var i = sheetIndex(doc, which), nm = String(name == null ? '' : name).trim();
@@ -2543,7 +2583,7 @@
   D.revRow = revRow; D.editRevision = editRevision; D.deleteRevision = deleteRevision; D.deleteRevisionTable = deleteRevisionTable; D.revBox = revBox; D.revRowAt = revRowAt;
   _.REV_TEXT = REV_TEXT;
   D.SHEET_KEYS = SHEET_KEYS; D.sheetCount = sheetCount; D.sheets = sheets; D.sheetIndex = sheetIndex; D.sheetDoc = sheetDoc; D.activateSheet = activateSheet;
-  D.addSheet = addSheet; D.deleteSheet = deleteSheet; D.renameSheet = renameSheet;
+  D.addSheet = addSheet; D.deleteSheet = deleteSheet; D.renameSheet = renameSheet; D.moveViewToSheet = moveViewToSheet;
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
   D.standard3View = standard3View; D.extentsOf = extentsOf; D.layout = layoutViews; D.moveView = moveView; D.deleteView = deleteView; D.findView = findView;
   D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.autoDims = autoDims; D.modelItems = modelItems; D.dimSizes = dimSizes; D.dimGeometry = dimGeometry; D.DIM_SIZES = DIM_SIZES; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;

@@ -630,7 +630,11 @@
       else if (ent && ent.arc) de = Math.abs(Math.hypot(p[0] - ent.arc.c[0], p[1] - ent.arc.c[1]) - ent.arc.r);
       else if (ent && ent.ellipse) de = ent.ellipse.pts.reduce(function (m, q, i, A) { return i ? Math.min(m, segDist(p, A[i - 1], q)) : m; }, Infinity);
       else if (ent) de = segDist(p, ent.a, ent.b);
-      if (!ent || (bd <= pxToPaper(4) && bd < de + pxToPaper(2))) { best.at = p; return best; }
+      // (rfKT) a small arc or circle (a bend's R.060 at the sheet's fit zoom is 3 px): its own centre wins only when the
+      // pointer is nearer the centre than the curve, so a click on the arc is the arc (a radius), not its centre
+      var own = best.pick.center && ent && (ent.mc || ent.ma);
+      if (own && Math.hypot(own.c[0] - best.pick.center.c[0], own.c[1] - best.pick.center.c[1]) < 1e-9 && !(bd < de)) best = null;
+      else if (!ent || (bd <= pxToPaper(4) && bd < de + pxToPaper(2))) { best.at = p; return best; }
     }
     if (!ent) return null;
     var w0 = sheetView(ent.view), pk;
@@ -970,8 +974,7 @@
         { label: 'FLAT SIZE Note', checked: v.flatSize != null ? !!v.flatSize : Drawing.docOptions(doc()).flatSizeNote, action: function () { setFlatViewProps(v.id, { flatSize: !(v.flatSize != null ? v.flatSize : Drawing.docOptions(doc()).flatSizeNote) }); } },
         { label: 'Show Etch Marks', checked: v.showEtch !== false, action: function () { setFlatViewProps(v.id, { showEtch: v.showEtch === false }); } },
         { sep: true },
-        { label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }
-      ];
+        ].concat(moveToSheetItems(v), [{ label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }]);
     }
     return [
       { label: 'Properties\u2026', action: function () { cmdViewProperties(v.id); } },
@@ -991,8 +994,24 @@
       { label: 'Broken-out Section ▸ Remove', disabled: !(v.brokenOut && v.brokenOut.length), action: function () { removeBrokenOut(v.id); } },
       { label: 'Area Hatch/Fill…', disabled: !hatchUnder(v), action: function () { var h = hatchUnder(v); if (h) cmdAreaHatch(v.id, h.g); } },
       { sep: true },
-      { label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }
-    ];
+      ].concat(moveToSheetItems(v), [{ label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }]);
+  }
+  // (rfKT) a view's right-click ▸ Move to Sheet ▸ <sheet>: the view (with the views made from it) goes to that sheet,
+  // keeping its place on the paper, its dimensions and annotations (Drawing.moveViewToSheet; one undo step)
+  function moveToSheetItems(v) {
+    var l = Drawing.sheets ? Drawing.sheets(doc()) : [];
+    if (l.length < 2) return [];
+    return l.filter(function (s) { return !s.active; }).map(function (s) {
+      return { label: 'Move to Sheet ▸ ' + s.name, action: function () { moveViewToSheet(v.id, s.index); } };
+    }).concat([{ sep: true }]);
+  }
+  function moveViewToSheet(id, to) {
+    var ids = null;
+    if (!tryEdit(function (dc) { ids = Drawing.moveViewToSheet(dc, id, to); })) return null;
+    D.sel = null; render(); DW.renderTree();
+    var nm = Drawing.sheets(doc())[to].name;
+    UI.setStatus((ids.length > 1 ? ids.length + ' views' : 'The view') + ' moved to ' + nm + '.');
+    return ids;
   }
   function sheetMenu() {
     return [
@@ -1159,15 +1178,42 @@
     startTool('note', {});
     UI.setStatus('Note: click on the sheet where the note goes, then type it (Enter: new line; Ctrl+Enter or ✓ places it). Esc ends.');
   }
-  function noteClick(p) { openNoteEdit(null, p); }
-  function openNoteEdit(note, p) {
+  // (rfKT) SolidWorks' Note: a first click on a model edge, circle or arc of a view is the leader's arrow point (the note
+  // then follows that view); the next click is where the note goes. A click on paper places a note without a leader.
+  function noteClick(p) {
+    var P = D.pending || (D.pending = {});
+    if (!P.tip) {
+      var ent = entityAt(p, true, true);
+      if (ent && !(D.sheet.notes || []).some(function (n) { var b = n.box, t = pxToPaper(3); return b && p[0] >= b.x0 - t && p[0] <= b.x1 + t && p[1] >= b.y0 - t && p[1] <= b.y1 + t; })) {
+        P.tip = noteTipOn(ent, p); P.at = p.slice(); drawOverlay();
+        UI.setStatus('Note: the leader points here; now click where the note goes. Esc cancels.');
+        return;
+      }
+    }
+    var tip = P.tip; P.tip = null;
+    openNoteEdit(null, p, tip);
+  }
+  // the point on the picked edge / curve nearest the click (the arrow touches the line, not the paper beside it)
+  function noteTipOn(ent, p) {
+    if (ent.circle || ent.arc) { var c = (ent.circle || ent.arc).c, r = (ent.circle || ent.arc).r, d = Math.hypot(p[0] - c[0], p[1] - c[1]) || 1; return [c[0] + (p[0] - c[0]) * r / d, c[1] + (p[1] - c[1]) * r / d]; }
+    if (ent.a && ent.b) { var dx = ent.b[0] - ent.a[0], dy = ent.b[1] - ent.a[1], L = dx * dx + dy * dy, t = L ? ((p[0] - ent.a[0]) * dx + (p[1] - ent.a[1]) * dy) / L : 0; t = Math.max(0, Math.min(1, t)); return [ent.a[0] + t * dx, ent.a[1] + t * dy]; }
+    return p.slice();
+  }
+  // the leader from the picked point to the pointer while the note's place is chosen
+  function noteLeaderOverlay(g, H, svgNode) {
+    var P = D.pending;
+    if (!P || !P.tip || !P.at) return;
+    svgNode('line', { class: 'dw-cut', x1: P.tip[0], y1: H - P.tip[1], x2: P.at[0], y2: H - P.at[1], 'stroke-width': pxToPaper(1.5) }, g);
+    svgNode('circle', { class: 'dw-cut', cx: P.tip[0], cy: H - P.tip[1], r: pxToPaper(3), 'stroke-width': pxToPaper(1.5), fill: 'none' }, g);
+  }
+  function openNoteEdit(note, p, tip) {
     closeInlineEdit(false);
     var ta = el('textarea', { rows: '3', spellcheck: 'false', 'aria-label': 'Note text' });
     var ok = el('button', { class: 'dw-edit-btn ok', title: 'OK (Ctrl+Enter)', text: '✓' }), no = el('button', { class: 'dw-edit-btn', title: 'Cancel (Esc)', text: '✗' });
     var box = el('div', { id: 'dw-edit', class: 'note' }, [ta, el('div', { class: 'dw-edit-col' }, [ok, no])]);
     ta.value = note ? note.text : '';
     D.root.appendChild(box);
-    D.inline = { box: box, inp: ta, note: { id: note ? note.id : null, p: note ? note.p.slice() : p.slice(), shown: note ? note.text : '' }, autoCommit: true };
+    D.inline = { box: box, inp: ta, note: { id: note ? note.id : null, p: note ? note.p.slice() : p.slice(), shown: note ? note.text : '', leader: !note && tip ? tip.slice() : null }, autoCommit: true };
     positionInlineEdit();
     ta.addEventListener('keydown', function (ev) {
       ev.stopPropagation();
@@ -1192,7 +1238,7 @@
     if (I.note.id == null) {
       if (!txt.trim()) return;
       var nt = null;
-      edit(function (dc) { nt = Drawing.addNote(dc, { p: I.note.p, text: txt }); });
+      edit(function (dc) { nt = Drawing.addNote(dc, I.note.leader ? { p: I.note.p, text: txt, leader: I.note.leader } : { p: I.note.p, text: txt }); });
       D.sel = nt ? { kind: 'note', id: nt.id } : null;
       drawOverlay();
       UI.setStatus('Note placed' + (D.tool === 'note' ? ': click for the next one, Esc ends.' : '.'));
@@ -1551,7 +1597,7 @@
           if (App.undo.length === live.undo && App.undo[App.undo.length - 1] === live.top) App.undo.pop();
         }
       },
-      onOK: function (v) { return applyDimensionPM(d, src, v, live.on); }, onClose: onClose
+      onOK: function (v) { return applyDimensionPM(d, src, v, live.on, JSON.stringify(dimPropsFromPM(v)) === JSON.stringify(dimPropsFromPM(values0))); }, onClose: onClose
     });
   }
   // The Dimension PM a single click opened (spec.clickDim), or null. It shows the dimension as it was when clicked, so a
@@ -1580,7 +1626,7 @@
     return { tol: v.tolType && v.tolType !== 'none' ? { type: v.tolType, plus: Math.abs(+v.plus || 0), minus: v.tolType === 'symmetric' ? Math.abs(+v.plus || 0) : Math.abs(+v.minus || 0) } : null,
       prec: v.prec === 'auto' || v.prec == null ? null : +v.prec, label: label.trim() === '' || label === '<DIM>' ? null : label, flip: !!v.flip };
   }
-  function applyDimensionPM(d, src, v, live) {   // live: the PM already applied its props (one undo step taken)
+  function applyDimensionPM(d, src, v, live, same) {   // live: the PM already applied its props (one undo step taken); same: (rfKT) nothing changed
     var props = dimPropsFromPM(v), val = +v.value;
     if (src && isFinite(val) && Math.abs(val - d.value) > 1e-9) {
       // drive the part: try it on a copy first, so a refused value leaves no undo step
@@ -1594,7 +1640,7 @@
       UI.setStatus('Dimension ' + Drawing.numText(d.value, units()) + ' → ' + Drawing.numText(val, units()) + ': ' + src.featureName + ' ' + src.what + ' changed, rebuilding.');
       return UI.rebuild().then(function () { if (D.active) render(); });
     }
-    if (live) { var t2 = dimTarget(doc(), d); if (t2) Drawing.setDimProps(t2, props); cleanDimProps(doc()); UI.autosave(); render(); } else setDimProps(d, props);
+    if (live) { var t2 = dimTarget(doc(), d); if (t2) Drawing.setDimProps(t2, props); cleanDimProps(doc()); UI.autosave(); render(); } else if (!same) setDimProps(d, props);   // (rfKT) ✓ with nothing changed (the next Smart Dimension pick closes the PM) makes no empty undo step
     var nd = sheetDim(dimRef(d));
     UI.setStatus('Dimension ' + (nd ? nd.text : '') + '.');
   }
@@ -3569,12 +3615,12 @@
   DW.cmdBrokenOut = cmdBrokenOut; DW.cmdAreaHatch = cmdAreaHatch; DW.cmdAreaHatchTool = cmdAreaHatchTool; DW.cmdAreaFill = cmdAreaFill; DW.fillAt = fillAt;   // (lane DW)   // (rfAD)
   DW.cmdMagLine = cmdMagLine; DW.magLineClick = magLineClick; DW.magOverlay = magOverlay; DW.magSnap = magSnap; DW.magAt = magAt; DW.deleteMagLine = deleteMagLine;   // (rfAG)
   DW.smartDimClick = smartDimClick; DW.smartDimMove = smartDimMove; DW.smartDimOverlay = smartDimOverlay; DW.pickAt = pickAt; DW.saveDWG = saveDWG;
-  DW.cmdNote = cmdNote; DW.noteClick = noteClick; DW.noteAt = noteAt; DW.openNoteEdit = openNoteEdit; DW.cmdFlatView = cmdFlatView; DW.setFlatViewProps = setFlatViewProps; DW.flatReady = flatReady; DW.sheetMetal = sheetMetal;
+  DW.cmdNote = cmdNote; DW.noteClick = noteClick; DW.noteLeaderOverlay = noteLeaderOverlay; DW.noteAt = noteAt; DW.openNoteEdit = openNoteEdit; DW.cmdFlatView = cmdFlatView; DW.setFlatViewProps = setFlatViewProps; DW.flatReady = flatReady; DW.sheetMetal = sheetMetal;
   DW.cmdStandard3View = cmdStandard3View; DW.cmdModelView = cmdModelView; DW.startPlacing = startPlacing; DW.placePending = placePending; DW.sheetView = sheetView;
   DW.cmdProjectedView = cmdProjectedView; DW.projectPlacement = projectPlacement; DW.projectClick = projectClick; DW.cmdSectionView = cmdSectionView; DW.sectionLineAt = sectionLineAt;
   DW.sectionPlacement = sectionPlacement; DW.partialLine = partialLine; DW.sectionClick = sectionClick; DW.cmdDetailView = cmdDetailView; DW.detailClick = detailClick; DW.cmdViewProperties = cmdViewProperties;
   DW.setViewTangent = setViewTangent; DW.deleteView = deleteView; DW.deleteSelection = deleteSelection; DW.addDimension = addDimension; DW.cmdSmartDimension = cmdSmartDimension;
-  DW.cmdModelItems = cmdModelItems; DW.setSheet = setSheet; DW.cmdSheetProperties = cmdSheetProperties; DW.exportAs = exportAs; DW.viewMenu = viewMenu; DW.sheetMenu = sheetMenu;
+  DW.cmdModelItems = cmdModelItems; DW.setSheet = setSheet; DW.cmdSheetProperties = cmdSheetProperties; DW.exportAs = exportAs; DW.viewMenu = viewMenu; DW.moveViewToSheet = moveViewToSheet; DW.sheetMenu = sheetMenu;
   DW.defaultBalloonView = defaultBalloonView; DW.autoBalloonView = autoBalloonView; DW.cmdAutoBalloon = cmdAutoBalloon; DW.setBom = setBom; DW.cmdBOM = cmdBOM; DW.setTitleBlock = setTitleBlock;
   DW.bomMenu = bomMenu; DW.bomAt = bomAt; DW.balloonAt = balloonAt; DW.dimRef = dimRef; DW.setDimProps = setDimProps; DW.annotAt = annotAt; DW.edgeAt = edgeAt;
   DW.cmdCenterMark = cmdCenterMark; DW.centerMarkClick = centerMarkClick; DW.cmdCenterline = cmdCenterline; DW.centerlineClick = centerlineClick; DW.cmdHoleCallout = cmdHoleCallout;

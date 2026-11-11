@@ -871,6 +871,7 @@
     if (D.tool === 'rmsec' && D.pending && DW.rmsecOverlay) DW.rmsecOverlay(g, H, svgNode, ghost);   // (rfCX) Removed Section
     if (DW.magOverlay) DW.magOverlay(g, H, svgNode);   // (rfAG) magnetic lines (not printed)
     if (D.tool === 'culeader' && DW.cuLeaderOverlay) DW.cuLeaderOverlay(g, H, svgNode);   // (rfCU2) the multi-jog leader being clicked
+    if (D.tool === 'note' && DW.noteLeaderOverlay) DW.noteLeaderOverlay(g, H, svgNode);   // (rfKT) a note's leader before the note is placed
     if (DW.aeOverlay) DW.aeOverlay(g, H, svgNode, sw, pad);
     if (DW.skOverlay) DW.skOverlay(g, H, svgNode, sw, pad);   // (rfAO) sketch selection, tool previews, hidden edges   // (rfAE) sheet format items, General Tables, their tools
   }
@@ -1136,6 +1137,7 @@
       var q = toPaper(e), h = null;
       if (DW.skHover && DW.skHover(q, e)) return;   // (rfAO)
       if (/^(place|project|section|detail|culeader)$/.test(D.tool) && D.pending) { D.pending.at = q; drawOverlay(); return; }   // (rfCU2: culeader, the multi-jog leader's rubber band)
+      if (D.tool === 'note' && D.pending && D.pending.tip) { D.pending.at = q; drawOverlay(); return; }   // (rfKT) the note's leader follows the pointer
       // (rfW) Auxiliary / Crop / Break follow the pointer; before its edge is picked, Auxiliary pre-highlights straight edges
       if (/^(aux|crop|brk|bko|ahatch|magline|rmsec)$/.test(D.tool) && D.pending) {
         D.pending.at = q;

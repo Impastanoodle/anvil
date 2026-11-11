@@ -751,6 +751,7 @@
       placed.push(d); shown.push(d);
     });
     dims = shown;
+    ktCalloutsClear(views, annPre, dims, prims, notePre, k, mesh, doc, units, threads, holeNames, holeEnds);
     // cosmetic threads (holewizard.js Straight Tap holes): a dashed circle at the major diameter in views along the axis
     views.forEach(function (w) {
       if (!w.ortho || w.section || w.clip || w.pending) return;
@@ -1154,6 +1155,52 @@
     return r;
   }
   function rectsMeet(a, b, m) { return a.x0 < b.x1 + m && b.x0 < a.x1 + m && a.y0 < b.y1 + m && b.y0 < a.y1 + m; }
+  // (rfKT) a Hole Callout that sits where the click put it by default (no lead of its own) is worked out before the
+  // dimensions; a dimension placed by a click keeps its place, so the callout's text could land on the dimension's
+  // text or lines (a .750 from the hole to the edge, then Hole Callout on that hole). Its leader is turned round the
+  // hole (±25°, ±50°, ±75°, then the other side) and run out further until its text is clear of every dimension, note
+  // and other annotation text; the first clear one is kept (nothing changes when the default is clear or none is).
+  function ktCalloutsClear(views, annPre, dims, prims, notePre, k, mesh, doc, units, threads, holeNames, holeEnds) {
+    var dTexts = [], dSegs = [];
+    prims.forEach(function (p) { if (p.dimIx == null) return; if (p.k === 'text') dTexts.push(textRect(p)); else if (p.k === 'line') dSegs.push([p.a, p.b]); });
+    if (!dTexts.length && !dSegs.length) return;
+    var m = 0.6 * k;
+    views.forEach(function (w) {
+      if (w.pending) return;
+      (w.view.annotations || []).forEach(function (an, i) {
+        var key = w.view.id + ':' + i, r = annPre[key];
+        if (!r || an.type !== 'holeCallout' || an.lead || an.hidden || !an.leadNow) return;
+        var others = [];
+        Object.keys(annPre).forEach(function (k2) { if (k2 !== key) annPre[k2].prims.forEach(function (x) { if (x.k === 'text') others.push(textRect(x)); }); });
+        (notePre || []).forEach(function (it) { if (!it.hidden && it.box && isFinite(it.box.x0)) others.push(it.box); });
+        var S = doc && D.sheetSize ? D.sheetSize(doc, units) : null;
+        function clashes(pr, strict) {
+          var n = 0;
+          pr.forEach(function (x) {
+            if (x.k !== 'text') return;
+            var t = textRect(x), tt = { x0: t.x0 - m, y0: t.y0 - m, x1: t.x1 + m, y1: t.y1 + m };
+            dTexts.forEach(function (b) { if (rectsMeet(tt, b, 0)) n += 2; });
+            dSegs.forEach(function (s) { if (segHitsRect(s[0], s[1], tt)) n++; });
+            others.forEach(function (b) { if (rectsMeet(tt, b, 0)) n += 2; });
+            if (!strict) return;
+            views.forEach(function (w2) { if (w2 !== w && rectsMeet(tt, w2.box, 0)) n += 2; });
+            if (S && (t.x0 < 12 * k || t.y0 < 12 * k || t.x1 > S[0] - 12 * k || t.y1 > S[1] - 12 * k)) n += 2;
+          });
+          return n;
+        }
+        if (!clashes(r.prims)) return;
+        var L0 = an.leadNow, ln = Math.hypot(L0[0], L0[1]) || 1, a0 = Math.atan2(L0[1], L0[0]), best = null;
+        var turns = [25, -25, 50, -50, 75, -75, 155, -155, 180, 130, -130], runs = [1, 1.4, 1.8];
+        for (var j = 0; j < runs.length && !best; j++) for (var t = 0; t < turns.length && !best; t++) {
+          var a = a0 + turns[t] * Math.PI / 180, cand = [Math.cos(a) * ln * runs[j], Math.sin(a) * ln * runs[j]];
+          var tr = annotationPrims(Object.assign({}, an, { lead: cand }), w, k, mesh, doc, units, threads, holeNames, holeEnds);
+          if (!clashes(tr.prims, true)) best = { lead: cand, r: tr };
+        }
+        if (!best) return;
+        annPre[key] = best.r; an.leadNow = best.lead.slice();
+      });
+    });
+  }
   function segHitsRect(a, b, r) {
     var t0 = 0, t1 = 1, dx = b[0] - a[0], dy = b[1] - a[1];
     var ps = [-dx, dx, -dy, dy], qs = [a[0] - r.x0, r.x1 - a[0], a[1] - r.y0, r.y1 - a[1]];
@@ -1246,6 +1293,18 @@
   // OTHERWISE SPECIFIED). Placed dimensions (dragged, flipped, a text position) keep their side.
   function placeDim(d, vw, k, placed, obs) {
     var p = placeDim0(d, vw, k, placed, obs);
+    // (rfKT) an ordinate set's values on a paper block (a Hole Table's datum X / Y, a table, the title block): the set's
+    // values go to the view's other side when that is clear, else the line goes out 4 mm at a time (up to 16) until its
+    // texts are clear; nothing moves when none is clear
+    if (obs && d.kind === 'ordinate' && d.at == null && d.outer == null && onPaperBlock(p, obs, k, true)) {
+      var hs = Object.prototype.hasOwnProperty.call(d, 'side'), sd0 = d.side;
+      d.side = -(d.side || 1);   // the view's other side first, when nothing there is in the way
+      var pf = placeDim0(d, vw, k, placed, obs);
+      if (!onPaperBlock(pf, obs, k) && !acrossView(pf, vw.box, k)) return pf;
+      if (hs) d.side = sd0; else delete d.side;
+      for (var oi = 4; oi <= 16; oi += 4) { d.outer = oi; var po = placeDim0(d, vw, k, placed, obs); if (!onPaperBlock(po, obs, k, true)) { delete d.outer; d.outerNow = oi; return po; } }
+      delete d.outer;
+    }
     if (!obs || !d.auto || !/^(h|v)$/.test(d.kind) || !(d.side === 1 || d.side === -1) || d.tx != null || d.flip || d.tside != null || d.off != null || d.at != null) return p;
     if (!onPaperBlock(p, obs, k)) return p;
     var s0 = d.side;
@@ -1268,9 +1327,10 @@
       return Math.min(hi[0], B.x1) - Math.max(lo[0], B.x0) > m || Math.min(hi[1], B.y1) - Math.max(lo[1], B.y0) > m;
     });
   }
-  function onPaperBlock(p, obs, k) {
+  function onPaperBlock(p, obs, k, textsOnly) {
     var g = primGeo(p), S = obs.sheet, blocks = obs.boxes.filter(function (b) { return b.view == null; }).map(function (b) { return b.box; });
     var off = function (r) { return S && (r.x0 < S.x0 || r.y0 < S.y0 || r.x1 > S.x1 || r.y1 > S.y1); };
+    if (textsOnly) return g.texts.some(function (t) { return blocks.some(function (b) { return rectsMeet(t, b, 0); }); });
     return g.texts.some(function (t) { return off(t) || blocks.some(function (b) { return rectsMeet(t, b, 0); }); }) ||
       g.segs.some(function (s) { var r = { x0: Math.min(s[0][0], s[1][0]), y0: Math.min(s[0][1], s[1][1]), x1: Math.max(s[0][0], s[1][0]), y1: Math.max(s[0][1], s[1][1]) }; return off(r) || blocks.some(function (b) { return segHitsRect(s[0], s[1], b); }); });
   }

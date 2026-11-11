@@ -2777,6 +2777,8 @@
     var Os = w.toSheet(R.origin), L = 10 * k, n0 = out.length;
     ln(Os, [Os[0] + L, Os[1]], AL); arrowAt([Os[0] + L, Os[1]], [1, 0]); tx([Os[0] + L + 1.2 * k, Os[1] - th / 2], 'X', 'start', AL);
     ln(Os, [Os[0], Os[1] + L], AL); arrowAt([Os[0], Os[1] + L], [0, 1]); tx([Os[0], Os[1] + L + 1.2 * k], 'Y', 'middle', AL);
+    // (rfKT) the X / Y labels are kept clear by the dimensions too (an ordinate set's 0 stood on the Y of a top-left origin)
+    out.slice(n0).forEach(function (x) { if (x.k === 'text') { var lw = textWidth(x.text, x.h), lx = x.anchor === 'middle' ? x.p[0] - lw / 2 : x.p[0]; tagBoxes.push({ x0: lx, y0: x.p[1], x1: lx + lw, y1: x.p[1] + x.h }); } });
     if (R.dangling) for (var di = n0; di < out.length; di++) out[di].color = 'dangling';
     var nTags = out.length;
     // the table: TAG / X LOC / Y LOC / SIZE, a row per hole (a size of several lines: a taller row), merged cells
