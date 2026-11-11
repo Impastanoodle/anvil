@@ -155,6 +155,47 @@
     var LOFT = 'p.name("Transition").units("in");\np.sheet(' + T14 + ', ' + T14 + ', 0.5);\n' +
       'var a = p.sketch("Top").polyline([[0, -3], [3, -3], [3, 3], [-3, 3], [-3, -3], [-0.001, -3]], false).id();\n' +
       'var b = p.sketch("Top", 4).arc(0, 0, 2, 270.03, 360).arc(0, 0, 2, 0, 90).arc(0, 0, 2, 90, 180).arc(0, 0, 2, 180, 270).id();\np.loftedBend([a, b]);\n';
+    // lane smsolid-b: the notch the flat should hold: the cut's mid-surface slice developed facet by facet (what lbHoles
+    // lays). The cut is a prism along `ax` ('z' from the Front plane, 'x' from the Right plane) round c (its sketch centre,
+    // (x, y) or (y, z)), radius r: its polygon is read from the part's walls, clipped by each mid-surface facet seen along
+    // the prism, and the piece's area taken back onto the facet's plane (rigid development keeps areas)
+    function rfKMdev(t, ax, c, r) {
+      var lb = t.model.features.filter(function (f) { return f.type === 'loftedBend'; })[0];
+      var lay = K.loftedBendLayout(lb, t.model, { planes: t.build.planes, sketches: {} });
+      var i0 = ax === 'z' ? 0 : 1, i1 = ax === 'z' ? 1 : 2, ia = ax === 'z' ? 2 : 0, seen = {}, H = [], A = 0;
+      t.body.polygons.forEach(function (p) {
+        var n = [p.plane.normal.x, p.plane.normal.y, p.plane.normal.z];
+        if (Math.abs(n[ia]) > 1e-9) return;
+        p.vertices.forEach(function (v) {
+          var q = [v.pos.x, v.pos.y, v.pos.z], u = [q[i0], q[i1]], d = Math.hypot(u[0] - c[0], u[1] - c[1]), k = Math.round(u[0] * 1e9) + ',' + Math.round(u[1] * 1e9);
+          if (d > 0.9 * r && d < r * (1 + 1e-9) && !seen[k]) { seen[k] = 1; H.push(u); }
+        });
+      });
+      H.sort(function (a, b) { return Math.atan2(a[1] - c[1], a[0] - c[0]) - Math.atan2(b[1] - c[1], b[0] - c[0]); });
+      function sa(l) { var s = 0; for (var i = 0; i < l.length; i++) { var a = l[i], b = l[(i + 1) % l.length]; s += a[0] * b[1] - a[1] * b[0]; } return s / 2; }
+      lay.tris.forEach(function (tr) {
+        var p = tr.p, n = K.vec.cross(K.vec.sub(p[1], p[0]), K.vec.sub(p[2], p[0])), nl = K.vec.len(n);
+        if (Math.abs(n[ia]) < 1e-12 * nl || p[0][ia] + p[1][ia] + p[2][ia] < 0) return;   // the facets the cut (toward +ax) reaches
+        var out = p.map(function (q) { return [q[i0], q[i1]]; });
+        if (sa(out) < 0) out.reverse();
+        for (var i = 0; i < H.length && out.length; i++) {
+          var a = H[i], b = H[(i + 1) % H.length], inp = out;
+          out = [];
+          var side = function (P) { return (b[0] - a[0]) * (P[1] - a[1]) - (b[1] - a[1]) * (P[0] - a[0]); };
+          for (var j = 0; j < inp.length; j++) {
+            var P = inp[j], Q = inp[(j + 1) % inp.length], sp = side(P), sq = side(Q);
+            if (sp >= 0) out.push(P);
+            if ((sp >= 0) !== (sq >= 0)) out.push([P[0] + (Q[0] - P[0]) * sp / (sp - sq), P[1] + (Q[1] - P[1]) * sp / (sp - sq)]);
+          }
+        }
+        if (out.length > 2) A += Math.abs(sa(out)) * nl / Math.abs(n[ia]);
+      });
+      return A;
+    }
+    function rfKMseg(p, a, b) {
+      var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy, t = L2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0;
+      return Math.hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t);
+    }
     var SWEPT = 'p.name("Swept-Channel").units("in");\np.sheet(' + T16 + ', 0.06, ' + KF + ');\nvar path = p.sketch("Top").line(0, 0, 0, -10).id();\n' +
       'var prof = p.sketch("Front").polyline([[0, 1], [0, 0], [2, 0], [2, 1]], false).id();\np.sweptFlange(prof, path);\n' +
       'p.sketch("Top", 0).circle(1, -2, 0.1405).circle(1, -8, 0.1405).end().extrude(1, { cut: true, through: true, both: true });\n';
@@ -174,12 +215,20 @@
       return 'transition ' + ft.size.map(function (x) { return x.toFixed(3); }).join(' x ') + ', channel ' + want.toFixed(4) + ' x 10';
     });
 
-    test('rfKM: a hole through the Lofted-Bend\'s seam (Front sketch Ø.5 at x 0, cut toward +Z) reaches the flat as a notch on each seam edge, area × T = the metal cut (1 %), no warning (it was missing: lane smfix, kernel/rfKP.js)', function () {
+    test('rfKM: a hole through the Lofted-Bend\'s seam (Front sketch Ø.5 at x 0, cut toward +Z) reaches the flat as a notch on each seam edge, notch area = the cut\'s mid-surface slice developed (1e-9; × T vs the metal cut 5 %), no warning (it was missing: lane smfix, kernel/rfKP.js)', function () {
       var t0 = build(LOFT), t = build(LOFT + 'p.sketch("Front").circle(0, 1, 0.25).end().extrude(4, { cut: true });\n'); noErrors(t);
       var f0 = K.flatPattern(t0.model, t0.build, t0.mesh), ft = K.flatPattern(t.model, t.build, t.mesh);
       var cut = t0.mp.volume - t.mp.volume, lost = (rfKMarea(f0) - rfKMarea(ft)) * T14;
       assert(ft.loops.length === 1 && !ft.warnings.length, ft.loops.length + ' loop(s) ' + ft.warnings.join('; '));
-      nearRel(lost, cut, 0.01, 'flat vs part');
+      nearRel(lost / T14, rfKMdev(t, 'z', [0, 1], 0.25), 1e-9, 'notch area = the cut\'s mid-surface slice, developed');
+      // the notch points: on the blank's two seam edges (its first and last outline edges: A0 → the outline end, B's first)
+      var o0 = f0.loops[0], o1 = ft.loops[0], sA = [o0[o0.length - 1], o0[0]], sB = [o0[5], o0[6]], onA = 0, onB = 0, add = o1.filter(function (p) { return !o0.some(function (q, i) { return rfKMseg(p, q, o0[(i + 1) % o0.length]) < 1e-9; }); });
+      add.forEach(function (p) { if (rfKMseg(p, sA[0], sA[1]) < 0.3) onA++; else if (rfKMseg(p, sB[0], sB[1]) < 0.3) onB++; });
+      assert(add.length > 10 && onA > 5 && onB > 5 && onA + onB === add.length, 'notch points on the seam edges: ' + onA + ' + ' + onB + ' of ' + add.length);
+      // the part's metal is only a sanity check: the facets at a seam corner are up to ±6 % off T (lane smsolid: the seam's end
+      // points are offset square to the gap so the two seam walls stay flat and apart; one point cannot also sit T/2 off
+      // every facet of its fan)
+      nearRel(lost, cut, 0.05, 'flat vs part');
       return 'part loses ' + cut.toFixed(5) + ' in³, flat ' + lost.toFixed(5) + ' in³';
     });
   })();

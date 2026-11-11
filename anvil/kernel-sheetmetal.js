@@ -2388,7 +2388,9 @@
       // came out 2 % short. Between two such records the neighbour has metal at its end at some angle across it.
       function endMetal(g, near) {
         if (!(fi.ibRound && g.ibRound)) return bendMetal(g, near);
-        return [0.5, 0.05, 0.95, 0.25, 0.75].some(function (fr) { return bendMetal(g, near, fr); });
+        // lane smsolid (rfKR): and nearer the ends of its arc: an R 1 tray's bend tapers so fast that T/2 in from its end
+        // only the last 2 % of the angle has metal (none of the five probes found it: both strips notched, 12 % short)
+        return [0.5, 0.05, 0.95, 0.25, 0.75, 0.02, 0.98, 0.005, 0.995].some(function (fr) { return bendMetal(g, near, fr); });
       }
       function cornerAt(kk) {
         if ((fi.reliefs && fi.reliefs[kk]) || (fi.ccEnds && fi.ccEnds[kk])) return true;   // (lane DV: a Closed Corner's cut end)
@@ -6268,8 +6270,13 @@
         var at = function (n, rr, t, dt, s) { return add(add(add(C0, scale(d, s)), scale(n, rr)), scale(t, dt)); }, ok = true, w = Math.min(T, 0.25 * RT), metal = 0;
         // (lane stepin2) air on both sides everywhere, metal through the bend and both walls at some of the stations
         // (was all of .25 / .5 / .75: a hole or slot through the bend at a station hid the bend)
+        // lane smsolid (rfKR): the stations keep R + T off both ends when the bend is long enough. At a mitred corner the
+        // neighbouring bend's metal fills this bend's inside within R + T of its end, so a big radius on a short side (R 1
+        // on a tray's 3 in side: the .25 / .75 stations 1 in from the corner) put the inside air probe in metal, the bend
+        // was not found and the one-thickness check refused its outside round
+        var sm0 = s1 - s0 > 2 * RT + 1e-6 ? RT : 0;
         [0.25, 0.5, 0.75, 0.375, 0.625].forEach(function (fr) {
-          var s = s0 + (s1 - s0) * fr, nm = e(a, a.th0 + A / 2);
+          var s = s0 + sm0 + (s1 - s0 - 2 * sm0) * fr, nm = e(a, a.th0 + A / 2);
           ok = ok && !inside(at(nm, R - a.sag - dl, t1, 0, s)) && !inside(at(nm, RT + dl, t1, 0, s)) &&
             !inside(at(n1, R - dl, t1, -w, s)) && !inside(at(n1, RT + dl, t1, -w, s)) && !inside(at(n2, R - dl, t2, w, s)) && !inside(at(n2, RT + dl, t2, w, s));
           if (inside(at(nm, R + T / 2, t1, 0, s)) && inside(at(n1, R + T / 2, t1, -w, s)) && inside(at(n2, R + T / 2, t2, w, s))) metal++;
@@ -7521,6 +7528,32 @@
       uniq.forEach(function (nn) { for (var a = 0; a < 3; a++) { rhs[a] += nn[a] * T / 2; for (var b = 0; b < 3; b++) M[a][b] += nn[a] * nn[b]; } });
       off[kk] = solve3(M, rhs);
     });
+    // lane smsolid (rfKR): a seam (the two profiles' ends within 10 T). Its four end points are fan vertices whose
+    // least-squares offset leans along the profile (~.02 for a 14 ga round transition, its end facets tilted ±11° to the
+    // gap): more than a .001 gap, so the two seam walls crossed, the solid self-intersected and every cut through the
+    // seam left open edges (22 for a Ø.5 hole). Their offset is now solved square to the gap (w: the mean gap direction,
+    // made square to each end edge): least squares of n·o = T/2 over the fan with o·w = 0, so each seam wall is flat and
+    // the two stay the gap apart. Where the fan's facets are square to the gap (a hopper's flat side) nothing changes;
+    // where they lean (a round transition) the fan's facets are up to ~6 % off T at that corner (one point cannot sit
+    // T/2 off three planes and in the seam plane). Free ends (no seam) are left as they were.
+    var m = lay.A.length - 1, n = lay.B.length - 1, gap = add(sub(lay.A[0], lay.A[m]), sub(lay.B[0], lay.B[n]));
+    if ((len(sub(lay.A[0], lay.A[m])) < 10 * T || len(sub(lay.B[0], lay.B[n])) < 10 * T) && len(gap) > 1e-12) {
+      [['A0', 'B0'], ['A' + m, 'B' + n]].forEach(function (e) {
+        if (!pos[e[0]] || !pos[e[1]]) return;
+        var ed = norm(sub(pos[e[1]], pos[e[0]])), g = norm(gap), w = sub(g, scale(ed, dot(g, ed)));
+        if (!(len(w) > 0.5)) return;
+        w = norm(w);
+        var u = norm(sub(ed, scale(w, dot(ed, w)))), v = cross(w, u);
+        e.forEach(function (kk) {
+          var uniq = [], m11 = 0, m12 = 0, m22 = 0, su = 0, sv = 0;
+          eqs[kk].forEach(function (nn) { if (!uniq.some(function (q) { return dot(q, nn) > 1 - 1e-12; })) uniq.push(nn); });
+          uniq.forEach(function (nn) { var a = dot(nn, u), b = dot(nn, v); m11 += a * a; m12 += a * b; m22 += b * b; su += a; sv += b; });
+          var det = m11 * m22 - m12 * m12, tr = m11 + m22, s2;
+          if (Math.abs(det) > 1e-9 * tr * tr) { s2 = T / 2; off[kk] = add(scale(u, s2 * (su * m22 - sv * m12) / det), scale(v, s2 * (m11 * sv - m12 * su) / det)); }
+          else { s2 = (T / 2) * uniq.length / (su * su + sv * sv); off[kk] = add(scale(u, su * s2), scale(v, sv * s2)); }
+        });
+      });
+    }
     var faces = [], walls = [];
     function P(kk, sg) { return add(pos[kk], scale(off[kk], sg)); }
     lay.tris.forEach(function (t) {
@@ -7529,7 +7562,7 @@
       faces.push([P(k2, -1), P(k1, -1), P(k0, -1)]);
     });
     function wall(ka, kb) { walls.push([P(kb, 1), P(ka, 1), P(ka, -1)]); walls.push([P(kb, 1), P(ka, -1), P(kb, -1)]); }
-    var m = lay.A.length - 1, n = lay.B.length - 1, i;
+    var i;
     for (i = 0; i < m; i++) wall('A' + i, 'A' + (i + 1));
     for (i = 0; i < n; i++) wall('B' + (i + 1), 'B' + i);
     wall('B0', 'A0');

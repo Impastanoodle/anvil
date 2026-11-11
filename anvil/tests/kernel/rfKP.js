@@ -22,18 +22,59 @@
       'var a = p.sketch("Top").polyline([[0, -3], [3, -3], [3, 3], [-3, 3], [-3, -3], [-0.001, -3]], false).id();\n' +
       'var b = p.sketch("Top", 4).arc(0, 0, 2, 270.03, 360).arc(0, 0, 2, 0, 90).arc(0, 0, 2, 90, 180).arc(0, 0, 2, 180, 270).id();\np.loftedBend([a, b]);\n';
     var SEAM = 'p.sketch("Front").circle(0, 1, 0.25).end().extrude(4, { cut: true });\n';
+    // lane smsolid-b: the notch the flat should hold: the cut's mid-surface slice developed facet by facet (what lbHoles
+    // lays). The cut is a prism along `ax` ('z' from the Front plane, 'x' from the Right plane) round c (its sketch centre,
+    // (x, y) or (y, z)), radius r: its polygon is read from the part's walls, clipped by each mid-surface facet seen along
+    // the prism, and the piece's area taken back onto the facet's plane (rigid development keeps areas)
+    function rfKPdev(t, ax, c, r) {
+      var lb = t.model.features.filter(function (f) { return f.type === 'loftedBend'; })[0];
+      var lay = K.loftedBendLayout(lb, t.model, { planes: t.build.planes, sketches: {} });
+      var i0 = ax === 'z' ? 0 : 1, i1 = ax === 'z' ? 1 : 2, ia = ax === 'z' ? 2 : 0, seen = {}, H = [], A = 0;
+      t.body.polygons.forEach(function (p) {
+        var n = [p.plane.normal.x, p.plane.normal.y, p.plane.normal.z];
+        if (Math.abs(n[ia]) > 1e-9) return;
+        p.vertices.forEach(function (v) {
+          var q = [v.pos.x, v.pos.y, v.pos.z], u = [q[i0], q[i1]], d = Math.hypot(u[0] - c[0], u[1] - c[1]), k = Math.round(u[0] * 1e9) + ',' + Math.round(u[1] * 1e9);
+          if (d > 0.9 * r && d < r * (1 + 1e-9) && !seen[k]) { seen[k] = 1; H.push(u); }
+        });
+      });
+      H.sort(function (a, b) { return Math.atan2(a[1] - c[1], a[0] - c[0]) - Math.atan2(b[1] - c[1], b[0] - c[0]); });
+      function sa(l) { var s = 0; for (var i = 0; i < l.length; i++) { var a = l[i], b = l[(i + 1) % l.length]; s += a[0] * b[1] - a[1] * b[0]; } return s / 2; }
+      lay.tris.forEach(function (tr) {
+        var p = tr.p, n = K.vec.cross(K.vec.sub(p[1], p[0]), K.vec.sub(p[2], p[0])), nl = K.vec.len(n);
+        if (Math.abs(n[ia]) < 1e-12 * nl || p[0][ia] + p[1][ia] + p[2][ia] < 0) return;   // the facets the cut (toward +ax) reaches
+        var out = p.map(function (q) { return [q[i0], q[i1]]; });
+        if (sa(out) < 0) out.reverse();
+        for (var i = 0; i < H.length && out.length; i++) {
+          var a = H[i], b = H[(i + 1) % H.length], inp = out;
+          out = [];
+          var side = function (P) { return (b[0] - a[0]) * (P[1] - a[1]) - (b[1] - a[1]) * (P[0] - a[0]); };
+          for (var j = 0; j < inp.length; j++) {
+            var P = inp[j], Q = inp[(j + 1) % inp.length], sp = side(P), sq = side(Q);
+            if (sp >= 0) out.push(P);
+            if ((sp >= 0) !== (sq >= 0)) out.push([P[0] + (Q[0] - P[0]) * sp / (sp - sq), P[1] + (Q[1] - P[1]) * sp / (sp - sq)]);
+          }
+        }
+        if (out.length > 2) A += Math.abs(sa(out)) * nl / Math.abs(n[ia]);
+      });
+      return A;
+    }
     var rfKPloft0 = null;
     function rfKPbase() {
       if (!rfKPloft0) { var t0 = build(LOFT); noErrors(t0); rfKPloft0 = { t: t0, fl: K.flatPattern(t0.model, t0.build, t0.mesh) }; }
       return rfKPloft0;
     }
 
-    test('rfKP: a Ø.5 hole through the Lofted-Bend\'s seam (Front sketch at x 0, cut toward +Z) reaches the flat: a notch on each of the blank\'s two seam edges (no hole loop, no warning), notch area × T = the metal cut (1 %), blank size unchanged; laser DXF one OUTLINE, no HOLES', function () {
+    test('rfKP: a Ø.5 hole through the Lofted-Bend\'s seam (Front sketch at x 0, cut toward +Z) reaches the flat: a notch on each of the blank\'s two seam edges (no hole loop, no warning), notch area = the cut\'s mid-surface slice developed (1e-9; × T vs the metal cut 5 %), blank size unchanged; laser DXF one OUTLINE, no HOLES', function () {
       var b0 = rfKPbase(), t = build(LOFT + SEAM); noErrors(t);
       var ft = K.flatPattern(t.model, t.build, t.mesh), o0 = b0.fl.loops[0], o1 = ft.loops[0];
       assert(ft.loops.length === 1 && !ft.warnings.length, 'outline only: ' + ft.loops.length + ' loops, ' + ft.warnings.join('; '));
       var cut = b0.t.mp.volume - t.mp.volume, lost = (rfKParea(b0.fl) - rfKParea(ft)) * T14;
-      nearRel(lost, cut, 0.01, 'notch area × T vs the metal the cut removed');
+      nearRel(lost / T14, rfKPdev(t, 'z', [0, 1], 0.25), 1e-9, 'notch area = the cut\'s mid-surface slice, developed');
+      // the part's metal is only a sanity check: the facets at a seam corner are up to ±6 % off T (lane smsolid: the seam's end
+      // points are offset square to the gap so the two seam walls stay flat and apart; one point cannot also sit T/2 off
+      // every facet of its fan)
+      nearRel(lost, cut, 0.05, 'notch area × T vs the metal the cut removed');
       // the two seam edges: A0 → (outline end) B0 and the last A → first B (the strip's two end walls)
       var seamA = [o0[o0.length - 1], o0[0]], seamB = [o0[5], o0[6]];   // (6 points of A, then B reversed)
       var add = rfKPnew(o1, o0), onA = 0, onB = 0;
@@ -45,12 +86,16 @@
       return 'cut ' + cut.toFixed(5) + ' in³, flat ' + lost.toFixed(5) + ' in³, notch points ' + onA + ' + ' + onB;
     });
 
-    test('rfKP: the seam hole and a Ø.5 hole in a side facet together: the side hole stays one HOLES loop, the seam hole two notches; area × T = the metal cut (1 %)', function () {
+    test('rfKP: the seam hole and a Ø.5 hole in a side facet together: the side hole stays one HOLES loop, the seam hole two notches; flat area lost = both cuts\' mid-surface slices developed (1e-9; × T vs the metal cut 5 %)', function () {
       var b0 = rfKPbase(), t = build(LOFT + SEAM + 'p.sketch("Right").circle(0, 1, 0.25).end().extrude(4, { cut: true });\n'); noErrors(t);
       var ft = K.flatPattern(t.model, t.build, t.mesh);
       assert(ft.loops.length === 2 && !ft.warnings.length, 'outline + one hole: ' + ft.loops.length + ' ' + ft.warnings.join('; '));
       var cut = b0.t.mp.volume - t.mp.volume, lost = (rfKParea(b0.fl) - rfKParea(ft)) * T14;
-      nearRel(lost, cut, 0.01, 'area × T vs the metal cut');
+      nearRel(lost / T14, rfKPdev(t, 'z', [0, 1], 0.25) + rfKPdev(t, 'x', [1, 0], 0.25), 1e-9, 'area lost = the two cuts\' mid-surface slices, developed');
+      // the part's metal is only a sanity check: the facets at a seam corner are up to ±6 % off T (lane smsolid: the seam's end
+      // points are offset square to the gap so the two seam walls stay flat and apart; one point cannot also sit T/2 off
+      // every facet of its fan)
+      nearRel(lost, cut, 0.05, 'area × T vs the metal cut');
       assert(rfKPnew(ft.loops[0], b0.fl.loops[0]).length > 10, 'the notches');
       return 'cut ' + cut.toFixed(5) + ' in³, flat ' + lost.toFixed(5) + ' in³';
     });
