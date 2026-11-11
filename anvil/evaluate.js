@@ -851,7 +851,362 @@ var Evaluate = (function () {
     return { pairs: pairs, volume: pairs.reduce(function (s, p) { return s + p.volume; }, 0), checked: checked, tolerance: tol };
   }
 
+  // ================================================================== lane evalgrey (rfLP): the commands that were greyed
+  // ------------------------------------------------------------------ Undercut Analysis
+  // undercut(mesh, pull, opts?) -> { faces: [{ index, cls, dot }], surfaces: [{ faces, cls }], counts, faceCounts, pull }
+  // A two-plate mold opens along ±pull. Each triangle casts a ray from just off its centre along +pull and −pull
+  // against the part: a facet that faces +pull (n·d > tol) is released by the direction-1 half only if its +ray is
+  // free, one that faces −pull by the direction-2 half only if its −ray is free, a wall parallel to the pull (no draft)
+  // by either. A facet nothing can release is an occluded undercut. A face takes its triangles' class; a surface
+  // (tangent faces joined, as Draft Analysis groups them) with faces released both ways is a straddle face.
+  // Classes: 'dir1' (Direction 1), 'dir2' (Direction 2), 'occluded' (Occluded undercut), 'straddle', 'nodraft'.
+  var UNDERCUT_COLORS = { dir1: '#3cb04a', dir2: '#3f7fd8', occluded: '#d9412e', straddle: '#f2c230', nodraft: '#9a9a9a' };
+  var UNDERCUT_LABEL = { dir1: 'Direction 1 (released by the first half)', dir2: 'Direction 2 (released by the second half)', occluded: 'Occluded undercut', straddle: 'Straddle faces', nodraft: 'No draft (parallel to the pull)' };
+  function rayBlocked(node, tris, p, q, skip) {
+    if (!node) return false;
+    // segment against the node box (slab test)
+    var t0 = 0, t1 = 1;
+    for (var k = 0; k < 3; k++) {
+      var d = q[k] - p[k];
+      if (Math.abs(d) < 1e-300) { if (p[k] < node.box.min[k] || p[k] > node.box.max[k]) return false; continue; }
+      var a = (node.box.min[k] - p[k]) / d, b = (node.box.max[k] - p[k]) / d;
+      if (a > b) { var s = a; a = b; b = s; }
+      t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+      if (t0 > t1) return false;
+    }
+    if (node.items) {
+      for (var i = 0; i < node.items.length; i++) {
+        var ti = node.items[i];
+        if (ti === skip) continue;
+        var t = tris[ti], h = segTri(p, q, [t[0], t[1], t[2]], [t[3], t[4], t[5]], [t[6], t[7], t[8]], false, 0);
+        if (h && h.t > 1e-9) return true;
+      }
+      return false;
+    }
+    return rayBlocked(node.left, tris, p, q, skip) || rayBlocked(node.right, tris, p, q, skip);
+  }
+  function undercut(mesh, pull, opts) {
+    opts = opts || {};
+    var d = norm(pull), tolDot = Math.sin((opts.angle != null ? +opts.angle : 0.01) / DEG);
+    if (!(len(d) > 0.5)) throw new Error('Pick a pull direction.');
+    var tris = trianglesOf(mesh), bvh = buildBVH(tris);
+    var diag = bvh ? boxDiag(bvh.box) : 1, eps = 1e-7 * Math.max(diag, 1e-9), L = 2 * diag + 1;
+    var faces = mesh.faces.map(function (f, fi) {
+      var c = dot(f.normal, d), seen = {}, list = [];
+      for (var t = f.start; t < f.start + f.count; t++) {
+        var tr = tris[t];
+        if (!tr) continue;
+        var ctr = [(tr[0] + tr[3] + tr[6]) / 3, (tr[1] + tr[4] + tr[7]) / 3, (tr[2] + tr[5] + tr[8]) / 3];
+        var nn = norm(cross(sub([tr[3], tr[4], tr[5]], [tr[0], tr[1], tr[2]]), sub([tr[6], tr[7], tr[8]], [tr[0], tr[1], tr[2]])));
+        if (!(len(nn) > 0.5)) continue;
+        var cn = dot(nn, d), p0 = add(ctr, scale(nn, eps));
+        var up = !rayBlocked(bvh, tris, p0, add(p0, scale(d, L)), t), down = !rayBlocked(bvh, tris, p0, add(p0, scale(d, -L)), t);
+        var cls = cn > tolDot ? (up ? 'dir1' : 'occluded') : cn < -tolDot ? (down ? 'dir2' : 'occluded') : up || down ? 'nodraft' : 'occluded';
+        if (!seen[cls]) { seen[cls] = true; list.push(cls); }
+      }
+      var cl = !list.length ? (Math.abs(c) <= tolDot ? 'nodraft' : c > 0 ? 'dir1' : 'dir2') : list.length === 1 ? list[0]
+        : seen.occluded ? 'occluded' : seen.dir1 && seen.dir2 ? 'straddle' : seen.dir1 ? 'dir1' : 'dir2';
+      return { index: fi, cls: cl, dot: c };
+    });
+    var parent = faces.map(function (f, i) { return i; });
+    function find(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+    (opts.edges || K.bodyEdges(mesh)).forEach(function (e) {
+      if (!e.smooth || e.faces.length < 2) return;
+      for (var k = 1; k < e.faces.length; k++) { var a = find(e.faces[0]), b = find(e.faces[k]); if (a !== b) parent[a] = b; }
+    });
+    var groups = {};
+    faces.forEach(function (f) { (groups[find(f.index)] = groups[find(f.index)] || []).push(f); });
+    var surfaces = Object.keys(groups).map(function (k) {
+      var g = groups[k], has = {};
+      g.forEach(function (f) { has[f.cls] = true; });
+      var cls = has.occluded ? 'occluded' : has.straddle || (has.dir1 && has.dir2) ? 'straddle' : has.dir1 ? 'dir1' : has.dir2 ? 'dir2' : 'nodraft';
+      if (cls === 'straddle') g.forEach(function (f) { if (f.cls !== 'occluded') f.cls = 'straddle'; });
+      return { faces: g.map(function (f) { return f.index; }), cls: cls };
+    });
+    var counts = { dir1: 0, dir2: 0, occluded: 0, straddle: 0, nodraft: 0 }, faceCounts = { dir1: 0, dir2: 0, occluded: 0, straddle: 0, nodraft: 0 };
+    surfaces.forEach(function (s) { counts[s.cls]++; });
+    faces.forEach(function (f) { faceCounts[f.cls]++; });
+    return { faces: faces, surfaces: surfaces, counts: counts, faceCounts: faceCounts, pull: d };
+  }
+
+  // ------------------------------------------------------------------ Compare Documents
+  // compare(a, b) with a / b = { model, mesh? } -> { features: { added: [{ id, name, type }], removed: [...],
+  //   changed: [{ id, name, changes: [{ key, a, b }] }] }, geometry: { a: { volume, bbox, faces }, b: {...},
+  //   onlyA: [face index], onlyB: [face index], volumeDelta } }
+  // Features are matched by id (a renamed feature is a change of `name`); changed values are listed by their path
+  // (`depth`, `sketch.entities.3.r`). A face is matched when the other mesh has a face with the same normal, plane and
+  // area (to 1e-6 of the size) and centroid; the rest are the faces only in one.
+  function flatDiff(a, b, path, out) {
+    if (out.length > 200) return;
+    var ta = a === null ? 'null' : Array.isArray(a) ? 'array' : typeof a, tb = b === null ? 'null' : Array.isArray(b) ? 'array' : typeof b;
+    if (ta !== tb || (ta !== 'object' && ta !== 'array')) {
+      if (ta === 'number' && tb === 'number' ? Math.abs(a - b) > 1e-12 * Math.max(1, Math.abs(a)) : JSON.stringify(a) !== JSON.stringify(b)) out.push({ key: path, a: a, b: b });
+      return;
+    }
+    var keys = {};
+    Object.keys(a).forEach(function (k) { keys[k] = 1; });
+    Object.keys(b).forEach(function (k) { keys[k] = 1; });
+    Object.keys(keys).forEach(function (k) { flatDiff(a[k], b[k], path ? path + '.' + k : k, out); });
+  }
+  function geomSummary(mesh) {
+    if (!mesh || !mesh.triCount) return { volume: 0, bbox: null, faces: 0 };
+    var mp = K.massProps(mesh, 1);
+    return { volume: mp.volume, bbox: mp.bbox, faces: mesh.faces.length };
+  }
+  function faceKeyMatch(fa, fb, tol) {
+    return len(sub(fa.normal, fb.normal)) < 1e-6 && Math.abs(fa.area - fb.area) <= tol * tol + 1e-6 * Math.max(fa.area, fb.area) && len(sub(fa.centroid, fb.centroid)) <= tol;
+  }
+  function compare(A, B) {
+    var fa = (A.model && A.model.features) || [], fb = (B.model && B.model.features) || [];
+    var byA = {}, byB = {};
+    fa.forEach(function (f) { byA[f.id] = f; });
+    fb.forEach(function (f) { byB[f.id] = f; });
+    function brief(f) { return { id: f.id, name: f.name, type: f.type }; }
+    var added = fb.filter(function (f) { return !byA[f.id]; }).map(brief), removed = fa.filter(function (f) { return !byB[f.id]; }).map(brief), changed = [];
+    fa.forEach(function (f) {
+      var g = byB[f.id];
+      if (!g) return;
+      var ch = [];
+      flatDiff(f, g, '', ch);
+      if (ch.length) changed.push({ id: f.id, name: g.name, changes: ch });
+    });
+    var ga = geomSummary(A.mesh), gb = geomSummary(B.mesh), onlyA = [], onlyB = [];
+    if (A.mesh && B.mesh) {
+      var bb = ga.bbox || gb.bbox, tol = bb ? 1e-6 * Math.max(1, boxDiag(bb)) : 1e-6;
+      var usedB = {};
+      A.mesh.faces.forEach(function (f, i) {
+        var j = -1;
+        for (var k = 0; k < B.mesh.faces.length; k++) if (!usedB[k] && faceKeyMatch(f, B.mesh.faces[k], tol)) { j = k; break; }
+        if (j < 0) onlyA.push(i); else usedB[j] = true;
+      });
+      B.mesh.faces.forEach(function (f, k) { if (!usedB[k]) onlyB.push(k); });
+    }
+    return { features: { added: added, removed: removed, changed: changed }, geometry: { a: ga, b: gb, onlyA: onlyA, onlyB: onlyB, volumeDelta: gb.volume - ga.volume } };
+  }
+
+  // ------------------------------------------------------------------ Performance Evaluation
+  // performance(model, opts?) -> { total, features: [{ id, name, type, ms, pct }] (sorted, slowest first), order (the
+  // same in tree order), triangles, faces }. A real rebuild feature by feature: the first i features are rebuilt with the
+  // cached steps of the first i − 1, so each feature's time is its own (sketches, planes and errors included).
+  function now() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
+  function performanceOf(model, opts) {
+    opts = opts || {};
+    var m = JSON.parse(JSON.stringify(model)), feats = m.features || [], steps = [], rows = [], t = 0, last = null;
+    for (var i = 0; i < feats.length; i++) {
+      var mi = JSON.parse(JSON.stringify(m));
+      mi.features = feats.slice(0, i + 1);
+      var t0 = now(), b = K.rebuild(mi, { steps: steps.slice(0, i) }), ms = now() - t0;
+      steps = b.cache && b.cache.steps ? b.cache.steps : steps;
+      rows.push({ id: feats[i].id, name: feats[i].name, type: feats[i].type, ms: ms, error: b.errors && b.errors[feats[i].id] || null });
+      t += ms; last = b;
+    }
+    rows.forEach(function (r) { r.pct = t > 0 ? r.ms / t * 100 : 0; });
+    var mesh = last && last.body ? K.meshFromBody(last.body) : null;
+    return { total: t, order: rows, features: rows.slice().sort(function (p, q) { return q.ms - p.ms; }), triangles: mesh ? mesh.triCount : 0, faces: mesh ? mesh.faces.length : 0 };
+  }
+
+  // ------------------------------------------------------------------ Sensors
+  // A sensor { id, name, type: 'mass' | 'volume' | 'dimension' | 'measure' | 'interference', feature?, key? (dimension),
+  // a?, b? ({ point, normal }: measure), limit?: { op: 'gt' | 'lt' | 'between' | 'none', a, b? }, alert?: false } is kept
+  // in model.sensors and written by generateScript (p.sensor({...}) / a.sensor({...})). sensorLimit(limit, value) ->
+  // true when the alert condition holds. As in SolidWorks the alert fires when the condition is true: 'gt 2' alerts above
+  // 2, 'lt' below, 'between a b' inside [a, b], 'outside' (is not between) outside it.
+  var SENSOR_OPS = [['gt', 'is greater than'], ['lt', 'is less than'], ['between', 'is between'], ['outside', 'is not between']];
+  function sensorLimit(limit, v) {
+    if (!limit || !limit.op || limit.op === 'none' || v == null || !isFinite(v)) return false;
+    var a = +limit.a, b = +limit.b, lo = Math.min(a, b), hi = Math.max(a, b);
+    if (limit.op === 'gt') return v > a;
+    if (limit.op === 'lt') return v < a;
+    if (limit.op === 'between') return v >= lo && v <= hi;
+    if (limit.op === 'outside') return v < lo || v > hi;
+    return false;
+  }
+  // the face of the mesh a stored pick { point, normal } refers to now: the same normal, nearest the point
+  function faceForPick(mesh, pk) {
+    var best = -1, bd = Infinity;
+    mesh.faces.forEach(function (f, i) {
+      if (pk.normal && len(sub(f.normal, pk.normal)) > 1e-4) return;
+      var dd = Math.abs(dot(f.normal, sub(pk.point, f.centroid)));
+      var dc = len(sub(pk.point, f.centroid));
+      var s = dd * 1e3 + dc;
+      if (s < bd) { bd = s; best = i; }
+    });
+    return best;
+  }
+  // measureValue(mesh, a, b): two parallel planar faces -> the distance between their planes; else between the centroids
+  function measureValue(mesh, a, b) {
+    if (!mesh || !mesh.faces.length) return null;
+    var i = faceForPick(mesh, a), j = faceForPick(mesh, b);
+    if (i < 0 || j < 0) return null;
+    var fa = mesh.faces[i], fb = mesh.faces[j];
+    if (len(cross(fa.normal, fb.normal)) < 1e-6) return Math.abs(dot(fa.normal, sub(fb.centroid, fa.centroid)));
+    return len(sub(fb.centroid, fa.centroid));
+  }
+  // sensorValue(sensor, ctx) with ctx = { model, mesh, massKg?, units, interference? } -> { value, unit, text }
+  function sensorValue(s, ctx) {
+    var model = ctx.model, inch = model && model.units === 'in';
+    if (s.type === 'mass') {
+      var kg = ctx.massKg != null ? ctx.massKg : null;
+      if (kg == null && ctx.mesh && ctx.mesh.triCount) kg = K.massProps(ctx.mesh, model.density > 0 ? model.density : 1000).volume * (inch ? 1.6387064e-5 : 1e-9) * (model.density > 0 ? model.density : 1000);
+      return kg == null ? { value: null, unit: inch ? 'lb' : 'g' } : inch ? { value: kg / 0.45359237, unit: 'lb' } : { value: kg * 1000, unit: 'g' };
+    }
+    if (s.type === 'volume') return { value: ctx.mesh && ctx.mesh.triCount ? K.massProps(ctx.mesh, 1).volume : 0, unit: inch ? 'in^3' : 'mm^3' };
+    if (s.type === 'dimension') {
+      var rm = K.resolvedModel ? K.resolvedModel(model).model : model, f = null;
+      (rm.features || []).forEach(function (x) { if (x.id === s.feature) f = x; });
+      var v = f ? f[s.key] : null;
+      return { value: v == null || !isFinite(+v) ? null : +v, unit: /angle/i.test(s.key || '') ? 'deg' : inch ? 'in' : 'mm' };
+    }
+    if (s.type === 'measure') return { value: s.a && s.b ? measureValue(ctx.mesh, s.a, s.b) : null, unit: inch ? 'in' : 'mm' };
+    if (s.type === 'interference') return { value: ctx.interference ? ctx.interference.volume : null, count: ctx.interference ? ctx.interference.pairs.length : 0, unit: inch ? 'in^3' : 'mm^3' };
+    return { value: null, unit: '' };
+  }
+  function evaluateSensors(model, ctx) {
+    return (model.sensors || []).map(function (s) {
+      var v = sensorValue(s, Object.assign({ model: model }, ctx || {}));
+      return { id: s.id, name: s.name, type: s.type, value: v.value, unit: v.unit, count: v.count, alert: s.alert !== false && sensorLimit(s.limit, v.value), missing: v.value == null };
+    });
+  }
+  function sensorName(model, type) {
+    var base = { mass: 'Mass', volume: 'Volume', dimension: 'Dimension', measure: 'Measurement', interference: 'Interference Detection' }[type] || 'Sensor', n = 1;
+    var names = (model.sensors || []).map(function (s) { return s.name; });
+    while (names.indexOf(base + n) >= 0) n++;
+    return base + n;
+  }
+  // addSensor(model, spec) -> the sensor (id and name filled in)
+  function addSensor(model, spec) {
+    model.sensors = model.sensors || [];
+    var s = JSON.parse(JSON.stringify(spec || {}));
+    if (!s.type) throw new Error('A sensor needs a type: mass, volume, dimension, measure or interference.');
+    if (s.id == null) s.id = 's' + (model.sensors.reduce(function (m, x) { var n = parseInt(String(x.id).replace(/\D/g, ''), 10); return isFinite(n) ? Math.max(m, n) : m; }, 0) + 1);
+    if (!s.name) s.name = sensorName(model, s.type);
+    model.sensors.push(s);
+    return s;
+  }
+  function sensorScript(model, prefix, idVar) {
+    return (model.sensors || []).map(function (s) {
+      var o = {}, ref = null;
+      Object.keys(s).forEach(function (k) { if (k !== 'id' && k !== 'feature') o[k] = s[k]; });
+      if (s.feature != null) ref = idVar && idVar[s.feature] ? idVar[s.feature] : JSON.stringify(s.feature);
+      var js = JSON.stringify(o);
+      if (ref) js = js.replace(/^\{/, '{ "feature": ' + ref + (Object.keys(o).length ? ', ' : ' '));
+      return prefix + '.sensor(' + js + ');';
+    });
+  }
+  (function installSensorScript() {
+    if (K.registerScriptSection && K.Builder && !K.Builder.prototype.sensor) {
+      K.Builder.prototype.sensor = function (spec) { addSensor(this.model, spec); return this; };
+      K.registerScriptSection({ tail: function (model, idVar) { return sensorScript(model, 'p', idVar); } });
+    }
+    if (typeof Assembly !== 'undefined' && Assembly.Builder && !Assembly.Builder.prototype.sensor) {
+      Assembly.Builder.prototype.sensor = function (spec) { addSensor(this.model, spec); return this; };
+      var agen = Assembly.generateScript;
+      Assembly.generateScript = function (model) {
+        var s = agen.apply(this, arguments), lines = sensorScript(model, 'a', null);
+        return lines.length ? s.replace(/\s*$/, '') + '\n' + lines.join('\n') + '\n' : s;
+      };
+    }
+  })();
+
+  // ------------------------------------------------------------------ holes (Hole Alignment, Smart Fasteners)
+  // holes(body, opts?) -> [{ point (on the axis, at the hole's low end), dir (unit, canonical), r, from, to (axial
+  // coordinates along dir from `point` 0 .. length), length, body }] — every cylindrical face of the body that is a hole
+  // (its facets face the axis), from the exact cylinder records the facets carry. Coaxial pieces of one radius that
+  // touch along the axis are one hole. opts.all: shafts too (outward cylinders, hole: false).
+  function canon(d) {
+    var a = [Math.abs(d[0]), Math.abs(d[1]), Math.abs(d[2])], k = a[0] >= a[1] && a[0] >= a[2] ? 0 : a[1] >= a[2] ? 1 : 2;
+    return d[k] < 0 ? scale(d, -1) : d.slice();
+  }
+  function holes(body, opts) {
+    opts = opts || {};
+    var bySurf = [], out = [];
+    (body && body.polygons || []).forEach(function (pg) {
+      var S = pg.surf && pg.surf.s;
+      if (!S || S.t !== 'cyl') return;
+      var e = bySurf.filter(function (x) { return x.S === S; })[0];
+      if (!e) { e = { S: S, polys: [] }; bySurf.push(e); }
+      e.polys.push(pg);
+    });
+    bySurf.forEach(function (e) {
+      var S = e.S, d = canon(norm(copy(S.d))), o = copy(S.o), inward = 0, lo = Infinity, hi = -Infinity;
+      e.polys.forEach(function (pg) {
+        var c = [0, 0, 0];
+        pg.vertices.forEach(function (v) { var p = arr(v.pos); c = add(c, p); var t = dot(sub(p, o), d); lo = Math.min(lo, t); hi = Math.max(hi, t); });
+        c = scale(c, 1 / pg.vertices.length);
+        var radial = sub(sub(c, o), scale(d, dot(sub(c, o), d)));
+        inward += dot(arr(pg.plane.normal), radial) < 0 ? 1 : -1;
+      });
+      if ((inward <= 0 && !opts.all) || !(hi > lo)) return;
+      var p = add(o, scale(d, lo));
+      var h = { point: p, dir: d, r: Math.abs(+S.r), length: hi - lo, body: opts.body != null ? opts.body : 0, hole: inward > 0 };
+      // join coaxial pieces of one radius that meet along the axis (a hole split by a CSG seam)
+      var same = out.filter(function (x) { return x.hole === h.hole && Math.abs(x.r - h.r) < 1e-7 * Math.max(1, h.r) && len(cross(x.dir, h.dir)) < 1e-9 && axisDist(x, h) < 1e-7 * Math.max(1, h.r); })[0];
+      if (same) {
+        var a0 = 0, a1 = same.length, b0 = dot(sub(h.point, same.point), same.dir), b1 = b0 + h.length;
+        if (b0 <= a1 + 1e-9 && b1 >= a0 - 1e-9) { var n0 = Math.min(a0, b0), n1 = Math.max(a1, b1); same.point = add(same.point, scale(same.dir, n0)); same.length = n1 - n0; return; }
+      }
+      out.push(h);
+    });
+    return out;
+  }
+  function copy(v) { return Array.isArray(v) ? v.slice() : arr(v); }
+  function axisDist(a, b) { var w = sub(b.point, a.point); return len(sub(w, scale(a.dir, dot(w, a.dir)))); }
+  // holeAlignment(bodies, names, opts?) -> { pairs: [{ a, b, aName, bName, offset, ra, rb, point }], holes: count,
+  //   tolerance }. SolidWorks' Hole Alignment: holes in different components whose axes are parallel and whose
+  // centres are off by more than 0 and at most opts.deviation (default 1 mm / 0.04 in by opts.units), and that overlap
+  // or meet along the axis (a stack of plates). opts.exact (1e-6 of the size): closer than this counts as aligned.
+  function holeAlignment(bodies, names, opts) {
+    opts = opts || {};
+    var dev = opts.deviation != null ? +opts.deviation : opts.units === 'in' ? 0.04 : 1, all = [];
+    bodies.forEach(function (b, i) { holes(b, { body: i }).forEach(function (h) { all.push(h); }); });
+    var size = 0;
+    all.forEach(function (h) { size = Math.max(size, len(h.point), h.length); });
+    var exact = opts.exact != null ? +opts.exact : 1e-6 * Math.max(1, size), pairs = [];
+    for (var i = 0; i < all.length; i++) for (var j = i + 1; j < all.length; j++) {
+      var a = all[i], b = all[j];
+      if (a.body === b.body || len(cross(a.dir, b.dir)) > 1e-6) continue;
+      var off = axisDist(a, b);
+      if (off <= exact || off > dev) continue;
+      var b0 = dot(sub(b.point, a.point), a.dir), b1 = b0 + b.length, gap = Math.max(b0 - a.length, -b1, 0);
+      if (gap > exact * 10 + 1e-9) continue;
+      pairs.push({ a: a.body, b: b.body, aName: names ? names[a.body] : 'Body' + (a.body + 1), bName: names ? names[b.body] : 'Body' + (b.body + 1), offset: off, ra: a.r, rb: b.r, point: a.point, dir: a.dir, pb: b.point });
+    }
+    pairs.sort(function (p, q) { return q.offset - p.offset; });
+    return { pairs: pairs, holes: all.length, tolerance: dev };
+  }
+  // holeStacks(bodies, opts?) -> [{ dir, top (the stack's end along +dir, on the axis), bottom, r (smallest radius),
+  //   length (grip), bodies: [indices], holes }] — coaxial holes (axes within opts.exact) of different bodies that meet
+  // along the axis, as Smart Fasteners finds them; a single hole through one body is a stack too.
+  function holeStacks(bodies, opts) {
+    opts = opts || {};
+    var all = [];
+    bodies.forEach(function (b, i) { holes(b, { body: i }).forEach(function (h) { all.push(h); }); });
+    var tol = opts.exact != null ? +opts.exact : 1e-5, used = {}, out = [];
+    all.forEach(function (h, i) {
+      if (used[i]) return;
+      var grp = [h], ref = h;
+      used[i] = true;
+      var grew = true;
+      while (grew) {
+        grew = false;
+        all.forEach(function (g, j) {
+          if (used[j] || len(cross(g.dir, ref.dir)) > 1e-6 || axisDist(ref, g) > tol) return;
+          var meets = grp.some(function (x) { var g0 = dot(sub(g.point, x.point), ref.dir), g1 = g0 + g.length; return g0 <= x.length + tol && g1 >= -tol; });
+          if (meets) { grp.push(g); used[j] = true; grew = true; }
+        });
+      }
+      var lo = Infinity, hi = -Infinity, rmin = Infinity, bs = [];
+      grp.forEach(function (x) { var t = dot(sub(x.point, ref.point), ref.dir); lo = Math.min(lo, t); hi = Math.max(hi, t + x.length); rmin = Math.min(rmin, x.r); if (bs.indexOf(x.body) < 0) bs.push(x.body); });
+      out.push({ dir: ref.dir, bottom: add(ref.point, scale(ref.dir, lo)), top: add(ref.point, scale(ref.dir, hi)), r: rmin, length: hi - lo, bodies: bs, holes: grp.length });
+    });
+    return out;
+  }
+
   return {
+    undercut: undercut, UNDERCUT_COLORS: UNDERCUT_COLORS, UNDERCUT_LABEL: UNDERCUT_LABEL,
+    compare: compare, performance: performanceOf,
+    SENSOR_OPS: SENSOR_OPS, sensorLimit: sensorLimit, sensorValue: sensorValue, evaluateSensors: evaluateSensors, addSensor: addSensor, measureValue: measureValue, faceForPick: faceForPick,
+    holes: holes, holeAlignment: holeAlignment, holeStacks: holeStacks,
     checkMesh: checkMesh, checkBody: checkBody, check: check, KIND_LABEL: KIND_LABEL,
     smoothNormals: smoothNormals,
     sectionFromLoops: sectionFromLoops, sectionOfFace: sectionOfFace, sectionOfSketch: sectionOfSketch,

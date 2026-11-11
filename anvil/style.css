@@ -2055,3 +2055,25 @@ body.splitting-v #viewport { pointer-events: none; }
 .prof-opts { display: flex; flex-direction: column; gap: var(--sp-1); margin: var(--sp-1) 0 var(--sp-2); }
 .prof-opts label { display: grid; grid-template-columns: 18px 1fr; column-gap: var(--sp-1); align-items: start; cursor: pointer; }
 .prof-opts label small { grid-column: 2; color: var(--c-muted); }
+
+/* lane evalgrey: Costing task pane, Performance Evaluation, Compare Documents, Hole Alignment, Smart Fasteners, Sensors */
+#tp-body.cost-pane { gap: 6px; }
+.cost-row { display: grid; grid-template-columns: 1fr 96px 64px; align-items: center; gap: 6px; }
+.cost-row input, .cost-row select { width: 100%; min-width: 0; }
+.cost-row select { grid-column: 2 / 4; }
+.cost-unit { color: var(--muted); font-size: 11px; }
+.cost-table, .perf-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cost-table th, .cost-table td, .perf-table th, .perf-table td { padding: 3px 4px; border-bottom: 1px solid var(--line-2); text-align: right; }
+.cost-table th:first-child, .cost-table td:first-child, .perf-table th:first-child, .perf-table td:first-child { text-align: left; }
+.cost-sum td { font-weight: 600; }
+.cost-total { display: flex; flex-direction: column; gap: 4px; padding: 8px; border: 1px solid var(--blue-line); border-radius: 4px; background: var(--sel); }
+.cost-total div { display: flex; justify-content: space-between; }
+.cost-total b { font-size: 14px; }
+.cost-error { color: #c0392b; }
+.perf-eval { display: flex; flex-direction: column; gap: 8px; min-width: 420px; max-height: 60vh; overflow: auto; }
+.perf-bar { display: inline-block; width: 60px; height: 8px; margin-right: 6px; background: var(--line-2); vertical-align: middle; }
+.perf-bar i { display: block; height: 100%; background: var(--blue); }
+.cmp-sec ul, .ha-list, .sf-list { margin: 2px 0 6px; padding-left: 18px; }
+.cmp-sec li ul { padding-left: 14px; color: var(--muted); }
+.ev-kv .sw, .cmp-sec .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; }
+#tree .ti.sensor-alert > .nm { color: #c0392b; font-weight: 600; }

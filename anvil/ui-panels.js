@@ -193,13 +193,15 @@
       { id: 'section', label: 'Section\nView', run: function () { UI.cmdSection(); } },
       { sep: true },
       { id: 'dxf', cmd: 'faceDxf', label: 'Face\nto DXF', run: function () { UI.exportFaceDXF(); } },
-      { id: 'check', label: 'Check', run: function () { UI.cmdCheck(); } }, { id: 'sensor', label: 'Sensor' },
+      { id: 'check', label: 'Check', run: function () { UI.cmdCheck(); } }, { id: 'sensor', label: 'Sensor', help: 'Watch mass, volume, a dimension or a measurement after every rebuild, with an alert when it passes a limit', run: function () { UI.cmdSensor(); } },   // lane evalgrey
       { id: 'zebra', label: 'Zebra\nStripes', run: function () { UI.cmdZebra(); }, active: function () { return !!(UI.evaluate && UI.evaluate.zebra.state().on); } },
       { id: 'draftAnalysis', label: 'Draft\nAnalysis', run: function () { UI.cmdDraftAnalysis(); } },
       { id: 'clearance', label: 'Clearance\nVerification', run: function () { UI.cmdClearance(); } },
-      { stack: [{ id: 'generic', icon: 'undercut', label: 'Undercut Analysis' }, { id: 'generic', icon: 'thickness', label: 'Thickness Analysis', run: function () { UI.cmdThickness(); } }] },
+      { stack: [{ id: 'generic', icon: 'undercut', label: 'Undercut Analysis', help: 'Colour the faces a two-plate mold opening along a direction can or cannot release', run: function () { UI.cmdUndercut(); } }, { id: 'generic', icon: 'thickness', label: 'Thickness Analysis', run: function () { UI.cmdThickness(); } }] },
       { sep: true },
-      { id: 'generic', icon: 'compareDocs', label: 'Compare\nDocuments' }, { id: 'generic', icon: 'perfEval', label: 'Performance\nEvaluation' }, { id: 'generic', icon: 'costing', label: 'Costing' }
+      { id: 'generic', icon: 'compareDocs', label: 'Compare\nDocuments', help: 'Compare this part with a saved part: features added, removed and changed, volume and the faces only in one', run: function () { UI.cmdCompare(); } },   // lane evalgrey
+      { id: 'generic', icon: 'perfEval', label: 'Performance\nEvaluation', help: 'Rebuild time of each feature, slowest first, the triangle count and the engine', run: function () { UI.cmdPerformance(); } },
+      { id: 'generic', icon: 'costing', label: 'Costing', help: 'Quote the part: material, laser cut, pierces, bends, setup and markup (sheet metal), or stock and removal (machined)', run: function () { UI.cmdCosting(); } }
     ],
     'Sheet Metal': [
       { id: 'flange', label: 'Base\nFlange/Tab', run: function () { UI.cmdBaseFlange(); } },
@@ -264,7 +266,7 @@
       { id: 'moveComponent', label: 'Move\nComponent', run: function () { UI.cmdMoveComponent(); } },
       { id: 'rotateComponent', label: 'Rotate\nComponent', run: function () { UI.cmdRotateComponent(); } },
       { id: 'generic', icon: 'explode', label: 'Exploded\nView' },
-      { stack: [{ id: 'generic', icon: 'smartFasteners', label: 'Smart Fasteners' }, { id: 'generic', icon: 'bom', label: 'Bill of Materials' }, { id: 'generic', icon: 'instant', label: 'Instant3D' }] }
+      { stack: [{ id: 'generic', icon: 'smartFasteners', label: 'Smart Fasteners', help: 'Add Design Library hex bolts, washers and nuts sized to every hole stack', run: function () { UI.cmdSmartFasteners(); } }, /* lane evalgrey */ { id: 'generic', icon: 'bom', label: 'Bill of Materials' }, { id: 'generic', icon: 'instant', label: 'Instant3D' }] }
     ],
     Evaluate: [
       { id: 'measure', label: 'Measure', run: function () { UI.cmdMeasure(); } },
@@ -272,7 +274,7 @@
       { id: 'sectionProps', label: 'Section\nProperties', run: function () { UI.cmdSectionProperties(); } },
       { id: 'section', label: 'Section\nView', run: function () { UI.cmdSection(); } },
       { sep: true },
-      { id: 'interference', label: 'Interference\nDetection', run: function () { UI.cmdInterference(); } }, { id: 'clearance', label: 'Clearance\nVerification', run: function () { UI.cmdClearance(); } }, { id: 'generic', icon: 'holeAlignment', label: 'Hole Alignment' },
+      { id: 'interference', label: 'Interference\nDetection', run: function () { UI.cmdInterference(); } }, { id: 'clearance', label: 'Clearance\nVerification', run: function () { UI.cmdClearance(); } }, { id: 'generic', icon: 'holeAlignment', label: 'Hole Alignment', help: 'Find holes in different components that are off each other\'s axis', run: function () { UI.cmdHoleAlignment(); } },   // lane evalgrey
       { sep: true },
       { id: 'check', label: 'Check', run: function () { UI.cmdCheck(); } },
       { id: 'zebra', label: 'Zebra\nStripes', run: function () { UI.cmdZebra(); }, active: function () { return !!(UI.evaluate && UI.evaluate.zebra.state().on); } },
@@ -2049,6 +2051,11 @@
         { label: 'Evaluate ▸ Draft Analysis', action: function () { UI.cmdDraftAnalysis(); } },
         { label: 'Evaluate ▸ Clearance Verification', action: function () { UI.cmdClearance(); } },
         { label: 'Evaluate ▸ Interference Detection', action: function () { UI.cmdInterference(); }, disabled: !isAsm() },
+        { label: 'Evaluate ▸ Sensor…', action: function () { UI.cmdSensor(); } },   // lane evalgrey: the Evaluate commands that were greyed
+        { label: isAsm() ? 'Evaluate ▸ Hole Alignment…' : 'Evaluate ▸ Undercut Analysis…', action: function () { if (isAsm()) UI.cmdHoleAlignment(); else UI.cmdUndercut(); } },
+        { label: 'Evaluate ▸ Compare Documents…', action: function () { UI.cmdCompare(); }, disabled: isAsm() },
+        { label: 'Evaluate ▸ Performance Evaluation…', action: function () { UI.cmdPerformance(); }, disabled: isAsm() },
+        { label: 'Evaluate ▸ Costing', action: function () { UI.cmdCosting(); }, disabled: isAsm() },
         { sep: true },
         // rfAP: Tools ▸ Sketch Entities / Sketch Tools / Relations / Dimensions with every sketch command, in
         // SolidWorks 2024's order (the rows run the Sketch tab's own items: sketchMenuRows)

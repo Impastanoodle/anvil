@@ -140,7 +140,7 @@
         obj.renderOrder = 1;
         analysis.add(obj);
       }
-    } catch (e) { UI.setStatus(({ zebra: 'Zebra Stripes', draft: 'Draft Analysis', thickness: 'Thickness Analysis' })[display.kind] + ': ' + (e.message || e)); }
+    } catch (e) { UI.setStatus(({ zebra: 'Zebra Stripes', draft: 'Draft Analysis', thickness: 'Thickness Analysis', undercut: 'Undercut Analysis' })[display.kind] + ': ' + (e.message || e)); }
     UI.render();
   }
   // after every rebuild (UI.refreshStatus runs at the end of applyBuild) and when bodies are hidden / shown
@@ -910,6 +910,403 @@
     ['name', 'source', 'area', 'perimeter', 'centroid', 'centroid2', 'Ixx', 'Iyy', 'Ixy', 'J', 'I1', 'I2', 'angle', 'axis1World', 'axis2World', 'normal', 'origin'].forEach(function (k) { if (r[k] != null) o[k] = r[k]; });
     return o;
   }
+  // ================================================================== lane evalgrey (rfLP): the commands that were greyed
+  // Undercut Analysis, Performance Evaluation, Compare Documents, Sensors (part and assembly) and Hole Alignment
+  // (assembly). The maths is in evaluate.js; Costing is ui-costing.js, Smart Fasteners ui-assembly.js.
+
+  // ------------------------------------------------------------------ Undercut Analysis
+  // SolidWorks' Undercut Analysis PropertyManager: a direction of pull (a plane direction, or a planar face picked in
+  // the graphics area), faces coloured by class with the count of each (Evaluate.undercut: per facet, rays along
+  // ±pull). The colours stay while the PropertyManager is open; ✓ or Esc ends it.
+  var uc = { result: null, values: null, faceNormal: null };
+  var UC_KEYS = ['dir1', 'dir2', 'occluded', 'straddle', 'nodraft'];
+  function ucPull(v) { var d = v.direction === 'face' ? uc.faceNormal : DIR_VEC[v.direction]; return d ? (v.reverse ? d.map(function (x) { return -x; }) : d.slice()) : null; }
+  function buildUndercut(mesh) {
+    var pull = ucPull(uc.values);
+    if (!pull) { uc.result = null; return null; }
+    uc.result = E.undercut(mesh, pull, { edges: mesh === App.mesh && App.edges ? App.edges : null });
+    var col = new Float32Array(mesh.triCount * 9);
+    uc.result.faces.forEach(function (f) {
+      var fc = mesh.faces[f.index], c = hexToRgb(E.UNDERCUT_COLORS[f.cls]);
+      for (var o = fc.start * 9; o < (fc.start + fc.count) * 9; o += 3) { col[o] = c[0]; col[o + 1] = c[1]; col[o + 2] = c[2]; }
+    });
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    return new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+  }
+  function ucHtml() {
+    var r = uc.result;
+    if (!r) return '<span class="static">Pick a direction of pull: a direction above, or a planar face in the graphics area.</span>';
+    return '<div class="ev-legend">' + UC_KEYS.map(function (k) {
+      return '<div class="ev-leg" data-cls="' + k + '"><span class="sw" style="background:' + E.UNDERCUT_COLORS[k] + '"></span><span>' + E.UNDERCUT_LABEL[k] + '</span><b>' + r.counts[k] + '</b></div>';
+    }).join('') + '</div><div class="ev-note">Pull ' + fmtV(r.pull, 3) + '. Counts are faces (tangent faces count once).</div>';
+  }
+  function ucApply() {
+    setDisplay('undercut', buildUndercut);
+    rerender();
+    var c = uc.result && uc.result.counts;
+    UI.setStatus(c ? 'Undercut Analysis: ' + c.dir1 + ' direction 1, ' + c.dir2 + ' direction 2, ' + c.occluded + ' occluded undercut, ' + c.straddle + ' straddle, ' + c.nodraft + ' no draft.' : 'Undercut Analysis: pick a direction of pull.');
+  }
+  function closeUndercut() { if (display.kind === 'undercut') setDisplay(null, null); uc.result = null; }
+  function cmdUndercut() {
+    if (isAsm()) { UI.toast('Undercut Analysis works on a part.'); return; }
+    if (!App.mesh || !App.mesh.triCount) { UI.toast('Build a solid first.'); return; }
+    if (zebra.on) zebraOff();
+    var sf = App.sel && App.sel.kind === 'face' && App.mesh.faces[App.sel.index] ? App.mesh.faces[App.sel.index] : null;
+    uc.faceNormal = sf ? sf.normal.slice() : null;
+    var v = uc.values = { direction: sf ? 'face' : '+y', reverse: false };
+    UI.openPM({
+      title: 'Undercut Analysis', icon: 'undercut', values: v,
+      message: 'Faces are coloured by whether a two-plate mold opening along the direction of pull can release them. Click a planar face to use its normal.',
+      command: {
+        onPick: function (pk) {
+          if (!pk || pk.kind !== 'face' || !App.mesh.faces[pk.index]) return false;
+          uc.faceNormal = App.mesh.faces[pk.index].normal.slice(); v.direction = 'face';
+          ucApply();
+          return true;
+        }
+      },
+      groups: [
+        { title: 'Analysis Parameters', fields: [
+          { type: 'select', label: 'Direction of Pull', key: 'direction', options: DRAFT_DIRS },
+          { type: 'check', label: 'Reverse direction', key: 'reverse' }
+        ] },
+        { title: 'Undercut Faces', fields: [{ type: 'html', html: ucHtml }] }
+      ],
+      onChange: function () { ucApply(); },
+      onClose: function () { closeUndercut(); },
+      onOK: function () { }
+    });
+    ucApply();
+  }
+
+  // ------------------------------------------------------------------ Performance Evaluation
+  // SolidWorks' Performance Evaluation dialog: the part is rebuilt feature by feature (Evaluate.performance) and each
+  // feature's rebuild time is listed, slowest first, with its share of the total; plus the triangle and face counts and
+  // the engine that built the part. Rebuild measures again.
+  function engineName() {
+    var occ = UI.occt && UI.occt.on && UI.occt.on();
+    var w = App.build && App.build.fromWorker;
+    return (occ ? 'OpenCascade B-rep (Tools ▸ OpenCascade kernel), checked against ' : '') + 'Anvil kernel (BSP solids, exact curve records)' + (w ? ', rebuilt in a worker' : '');
+  }
+  var perf = { res: null };
+  function perfBody() {
+    var r = perf.res, unit = function (ms) { return ms < 10 ? ms.toFixed(2) + ' ms' : ms < 1000 ? ms.toFixed(1) + ' ms' : (ms / 1000).toFixed(2) + ' s'; };
+    var box = el('div', { class: 'perf-eval' });
+    box.appendChild(el('div', { class: 'ev-kv', html: kv([['Rebuild time', '<b data-role="perf-total">' + unit(r.total) + '</b>'], ['Features', String(r.order.length)], ['Triangles', '<span data-role="perf-tris">' + r.triangles + '</span>'], ['Faces', String(r.faces)], ['Engine', esc(engineName())]]).replace(/^<div class="ev-kv">|<\/div>$/g, '') }));
+    var t = el('table', { class: 'perf-table' });
+    t.appendChild(el('tr', {}, [el('th', { text: 'Feature' }), el('th', { text: 'Time' }), el('th', { text: '%' })]));
+    r.features.forEach(function (f) {
+      t.appendChild(el('tr', { 'data-feature': String(f.id), title: f.error ? f.name + ': ' + f.error : f.name }, [
+        el('td', { text: f.name + (f.error ? ' (error)' : '') }), el('td', { text: unit(f.ms) }),
+        el('td', {}, [el('span', { class: 'perf-bar' }, [el('i', { style: 'width:' + Math.max(0, Math.min(100, f.pct)).toFixed(1) + '%' })]), el('span', { text: f.pct.toFixed(1) })])
+      ]));
+    });
+    box.appendChild(t);
+    return box;
+  }
+  function cmdPerformance() {
+    if (isAsm()) { UI.toast('Performance Evaluation works on a part.'); return; }
+    if (!App.model || !App.model.features.length) { UI.toast('The part has no features yet.'); return; }
+    UI.setStatus('Performance Evaluation: rebuilding the part feature by feature…');
+    perf.res = E.performance(App.model);
+    UI.showModal({ title: 'Performance Evaluation — ' + App.model.name, body: perfBody(), buttons: [
+      { label: 'Rebuild', action: function () { UI.closeModal(); cmdPerformance(); } },
+      { label: 'Close', primary: true }
+    ] });
+    var top = perf.res.features[0];
+    UI.setStatus('Performance Evaluation: ' + perf.res.total.toFixed(1) + ' ms for ' + perf.res.order.length + ' features' + (top ? '; slowest ' + top.name + ' (' + top.pct.toFixed(0) + ' %)' : '') + '.');
+    return perf.res;
+  }
+
+  // ------------------------------------------------------------------ Compare Documents
+  // SolidWorks' Compare (Utilities ▸ Compare Documents / Features / Geometry): the part against a saved document (the
+  // last saved state of this one by default, or another part saved in this browser). Features added / removed / changed
+  // with the changed values, then the geometry: volume, bounding box, and the faces only in one, shown in the graphics
+  // area in two colours (only in the reference: red, see-through; only in this part: green).
+  var cmpc = { res: null, ref: null, refMesh: null };
+  var CMP_ONLY_REF = 0xd9412e, CMP_ONLY_CUR = 0x3cb04a;
+  function savedParts() {
+    var f = {};
+    try { f = JSON.parse(localStorage.getItem('anvil.files') || '{}') || {}; } catch (e) { f = {}; }
+    return Object.keys(f).filter(function (n) { return f[n] && f[n].model && f[n].model.type !== 'assembly'; }).map(function (n) { return { name: n, model: f[n].model }; });
+  }
+  function cmpRun(v) {
+    var list = savedParts(), pick = list.filter(function (x) { return x.name === v.ref; })[0];
+    cmpc.res = null; cmpc.ref = pick || null; cmpc.refMesh = null;
+    clearPreview();
+    if (!pick) { rerender(); return null; }
+    var rm = JSON.parse(JSON.stringify(pick.model)), rb = K.rebuild(rm);
+    cmpc.refMesh = K.meshFromBody(rb.body);
+    cmpc.res = E.compare({ model: rm, mesh: cmpc.refMesh }, { model: App.model, mesh: App.mesh });
+    cmpDraw();
+    rerender();
+    var f = cmpc.res.features;
+    UI.setStatus('Compare with "' + pick.name + '": ' + f.added.length + ' added, ' + f.removed.length + ' removed, ' + f.changed.length + ' changed; ' + cmpc.res.geometry.onlyA.length + ' faces only there, ' + cmpc.res.geometry.onlyB.length + ' only here.');
+    return cmpc.res;
+  }
+  function meshFaceTris(mesh, list) {
+    var p = mesh.positions64 || mesh.positions, out = [];
+    list.forEach(function (fi) {
+      var f = mesh.faces[fi];
+      for (var t = f.start; t < f.start + f.count; t++) { var o = t * 9; out.push([[p[o], p[o + 1], p[o + 2]], [p[o + 3], p[o + 4], p[o + 5]], [p[o + 6], p[o + 7], p[o + 8]]]); }
+    });
+    return out;
+  }
+  function cmpDraw() {
+    clearPreview();
+    var r = cmpc.res;
+    if (!r) return;
+    addTris(UI.groups.preview, meshFaceTris(cmpc.refMesh, r.geometry.onlyA), CMP_ONLY_REF, 0.35);
+    addTris(UI.groups.preview, meshFaceTris(App.mesh, r.geometry.onlyB), CMP_ONLY_CUR, 0.6);
+    UI.render();
+  }
+  function valText(x) { return x == null ? '—' : typeof x === 'number' ? fmt(x, 4) : typeof x === 'object' ? esc(JSON.stringify(x)).slice(0, 60) : esc(String(x)); }
+  function cmpHtml() {
+    var r = cmpc.res;
+    if (!r) return '<span class="static">' + (savedParts().length ? 'Pick the saved part to compare with.' : 'No saved part to compare with: File ▸ Save keeps a copy in this browser.') + '</span>';
+    var f = r.features, g = r.geometry, h = '';
+    function list(title, rows, cls) { return '<div class="cmp-sec ' + cls + '"><b>' + title + ' (' + rows.length + ')</b>' + (rows.length ? '<ul>' + rows.join('') + '</ul>' : '') + '</div>'; }
+    h += list('Added', f.added.map(function (x) { return '<li>' + esc(x.name) + '</li>'; }), 'cmp-added');
+    h += list('Removed', f.removed.map(function (x) { return '<li>' + esc(x.name) + '</li>'; }), 'cmp-removed');
+    h += list('Changed', f.changed.map(function (x) {
+      return '<li>' + esc(x.name) + '<ul>' + x.changes.slice(0, 8).map(function (c) { return '<li data-key="' + esc(c.key) + '">' + esc(c.key) + ': ' + valText(c.a) + ' → ' + valText(c.b) + '</li>'; }).join('') + (x.changes.length > 8 ? '<li>… ' + (x.changes.length - 8) + ' more</li>' : '') + '</ul></li>';
+    }), 'cmp-changed');
+    function bb(b) { return b ? fmtV(b.min, 3) + ' .. ' + fmtV(b.max, 3) : '—'; }
+    h += kv([['Volume (saved)', fmt(g.a.volume, 3)], ['Volume (this part)', '<span data-role="cmp-vol">' + fmt(g.b.volume, 3) + '</span>'], ['Change', fmt(g.volumeDelta, 3)],
+      ['Box (saved)', bb(g.a.bbox)], ['Box (this part)', bb(g.b.bbox)],
+      ['<span class="sw" style="background:#d9412e"></span> Faces only in the saved part', '<b data-role="cmp-only-a">' + g.onlyA.length + '</b>'],
+      ['<span class="sw" style="background:#3cb04a"></span> Faces only in this part', '<b data-role="cmp-only-b">' + g.onlyB.length + '</b>']]);
+    return h;
+  }
+  function cmdCompare() {
+    if (isAsm()) { UI.toast('Compare Documents works on a part.'); return; }
+    if (!App.mesh || !App.mesh.triCount) { UI.toast('Build a solid first.'); return; }
+    var list = savedParts(), def = App.fileName && list.some(function (x) { return x.name === App.fileName; }) ? App.fileName : list.length ? list[0].name : '';
+    var v = { ref: def };
+    UI.openPM({
+      title: 'Compare Documents', icon: 'compareDocs', values: v,
+      message: 'Compares this part with a saved part (its own last saved state by default): features and geometry.',
+      groups: [
+        { title: 'Reference document', fields: [{ type: 'select', label: 'Saved part', key: 'ref', options: list.map(function (x) { return [x.name, x.name + (x.name === App.fileName ? ' (last saved state)' : '')]; }) }] },
+        { title: 'Results', fields: [{ type: 'html', html: cmpHtml }] }
+      ],
+      onChange: function () { cmpRun(v); },
+      onClose: function () { cmpc.res = null; clearPreview(); UI.render(); },
+      onOK: function () { }
+    });
+    if (def) cmpRun(v); else rerender();
+  }
+
+  // ------------------------------------------------------------------ Sensors
+  // SolidWorks' Sensor PropertyManager: Mass Properties (mass or volume), Dimension (a feature's value), Measurement
+  // (the distance between two picked faces) or, in an assembly, Interference Detection; an alert with a limit (is
+  // greater than / is less than / is between / is not between). The sensors are model data (model.sensors, undoable,
+  // saved, p.sensor / a.sensor in generateScript), listed under the Sensors folder of the FeatureManager with their
+  // values; they are evaluated after every rebuild and a sensor whose alert holds shows the alert icon and a status
+  // message (a toast the first time it trips).
+  var sens = { results: [], tripped: {} };
+  var DIM_KEYS = /^(depth\d?|distance\d?|radius|r|diameter|dia|angle\d?|offset\d?|thickness|thick|length|width|height|count\d?|spacing\d?|size|gap|value|d|w|h)$/i;
+  function dimOptions() {
+    var out = [];
+    (App.model.features || []).forEach(function (f) {
+      Object.keys(f).forEach(function (k) { if (DIM_KEYS.test(k) && typeof f[k] === 'number' && isFinite(f[k])) out.push([f.id + ':' + k, f.name + ': ' + k + ' = ' + fmt(f[k], 4)]); });
+    });
+    return out;
+  }
+  function sensorCtx() {
+    var model = App.model, ctx = { mesh: App.mesh };
+    var need = function (t) { return (model.sensors || []).some(function (s) { return s.type === t; }); };
+    if (need('mass')) {
+      try {
+        if (isAsm()) { var am = typeof Materials !== 'undefined' && Materials.assemblyMass ? Materials.assemblyMass(model, App.build) : null; ctx.massKg = am ? am.massKg : null; }
+        else if (typeof Materials !== 'undefined' && Materials.massProps) ctx.massKg = Materials.massProps(model, App.build, App.mesh).massKg;
+      } catch (e) { ctx.massKg = null; }
+    }
+    if (need('interference') && isAsm()) { try { ctx.interference = UI.interference(); } catch (e) { ctx.interference = null; } }
+    return ctx;
+  }
+  function limitText(l) {
+    if (!l || !l.op || l.op === 'none') return '';
+    var name = (E.SENSOR_OPS.filter(function (o) { return o[0] === l.op; })[0] || ['', l.op])[1];
+    return name + ' ' + fmt(+l.a, 3) + (l.op === 'between' || l.op === 'outside' ? ' and ' + fmt(+l.b, 3) : '');
+  }
+  function sensorText(r) { return r.missing ? 'not available' : (r.type === 'interference' ? r.count + ' interference' + (r.count === 1 ? '' : 's') + ', ' : '') + fmt(r.value, 4) + ' ' + r.unit; }
+  function evaluateSensors() {
+    var m = App.model;
+    if (!m || !(m.sensors && m.sensors.length) || !App.build) { sens.results = []; decorateSensorTree(); return sens.results; }
+    sens.results = E.evaluateSensors(m, sensorCtx());
+    var newly = [];
+    sens.results.forEach(function (r) { if (r.alert && !sens.tripped[r.id]) newly.push(r); sens.tripped[r.id] = r.alert; });
+    if (newly.length) {
+      var s = (m.sensors || []).filter(function (x) { return x.id === newly[0].id; })[0];
+      var msg = 'Sensor alert: ' + newly[0].name + ' = ' + sensorText(newly[0]) + ' (' + limitText(s && s.limit) + ').';
+      UI.setStatus(msg); UI.toast(msg);
+    }
+    decorateSensorTree();
+    return sens.results;
+  }
+  function sensorsRow() {
+    var rows = document.querySelectorAll('#tree .ti');
+    for (var i = 0; i < rows.length; i++) { var nm = rows[i].querySelector('.nm'); if (nm && nm.textContent === 'Sensors' && !rows[i].classList.contains('sensor-row')) return rows[i]; }
+    return null;
+  }
+  function decorateSensorTree() {
+    var head = sensorsRow(), m = App.model;
+    if (!head || !m) return;
+    var tree = head.parentNode;
+    Array.prototype.forEach.call(tree.querySelectorAll('.sensor-row'), function (r) { r.parentNode.removeChild(r); });
+    var list = m.sensors || [];
+    head.classList.toggle('dim', !list.length);
+    head.title = list.length ? list.length + ' sensor' + (list.length === 1 ? '' : 's') : 'Sensors (Evaluate ▸ Sensor adds one)';
+    var anyAlert = sens.results.some(function (r) { return r.alert; });
+    head.classList.toggle('sensor-alert', anyAlert);
+    var depth = parseFloat(head.style.paddingLeft) || 20, after = head;
+    list.forEach(function (s) {
+      var r = sens.results.filter(function (x) { return x.id === s.id; })[0] || { missing: true };
+      var row = el('div', { class: 'ti sensor-row' + (r.alert ? ' sensor-alert' : '') });
+      row.style.paddingLeft = (depth + 14) + 'px';
+      row.setAttribute('data-sensor', String(s.id));
+      row.appendChild(el('span', { class: 'tw leaf', text: '▸' }));
+      var ic = el('span'); ic.appendChild(el('span', { html: Icons(r.alert ? 'warn' : 'sensor', 16) })); row.appendChild(ic);
+      row.appendChild(el('span', { class: 'nm', text: s.name + (r.missing ? '' : ' = ' + sensorText(r)) }));
+      row.title = s.name + ': ' + sensorText(r) + (s.limit && s.limit.op && s.limit.op !== 'none' ? '. Alert when ' + limitText(s.limit) + (r.alert ? ' — ALERT' : '') : '');
+      row.addEventListener('dblclick', function (e) { e.stopPropagation(); cmdSensor(s); });
+      row.addEventListener('contextmenu', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        UI.showMenu(e.clientX, e.clientY, [{ label: 'Edit Sensor', action: function () { cmdSensor(s); } }, { sep: true }, { label: 'Delete', action: function () { removeSensor(s.id); } }]);
+      });
+      tree.insertBefore(row, after.nextSibling);
+      after = row;
+    });
+  }
+  var baseRefreshTree = UI.refreshTree;
+  UI.refreshTree = function () { var r = baseRefreshTree.apply(this, arguments); try { decorateSensorTree(); } catch (e) { /* the tree is drawn without them */ } return r; };
+  UI.onBuild = UI.onBuild || [];
+  UI.onBuild.push(function () { evaluateSensors(); });
+  function sensorCommit(fn, msg) {
+    UI.pushUndo();
+    var r = fn(App.model);
+    return UI.afterRebuild(UI.rebuild(), function () { UI.refreshTree(); evaluateSensors(); if (msg) UI.setStatus(msg); return r; });
+  }
+  function removeSensor(id) {
+    return sensorCommit(function (m) { m.sensors = (m.sensors || []).filter(function (s) { return s.id !== id; }); if (!m.sensors.length) delete m.sensors; delete sens.tripped[id]; }, 'Sensor deleted.');
+  }
+  function cmdSensor(existing) {
+    if (!App.model || !App.build) { UI.toast('Open a part or an assembly first.'); return; }
+    var asm = isAsm();
+    var types = [['mass', 'Mass Properties: Mass'], ['volume', 'Mass Properties: Volume']].concat(asm ? [['interference', 'Interference Detection']] : [['dimension', 'Dimension'], ['measure', 'Measurement (two faces)']]);
+    var s0 = existing || {}, lim = s0.limit || { op: 'gt', a: 0, b: 0 };
+    var v = { type: s0.type || 'mass', dim: s0.feature != null ? s0.feature + ':' + s0.key : '', alert: !!(s0.limit && s0.limit.op && s0.limit.op !== 'none') || !existing, op: lim.op && lim.op !== 'none' ? lim.op : 'gt', a: +lim.a || 0, b: +lim.b || 0, name: s0.name || '' };
+    var picks = { a: s0.a || null, b: s0.b || null };
+    var dims = asm ? [] : dimOptions();
+    if (!v.dim && dims.length) v.dim = dims[0][0];
+    function spec() {
+      var o = { type: v.type };
+      if (v.name) o.name = v.name;
+      if (v.type === 'dimension') { var p = String(v.dim).split(':'); o.feature = +p[0]; o.key = p[1]; }
+      if (v.type === 'measure') { o.a = picks.a; o.b = picks.b; }
+      o.limit = v.alert ? { op: v.op, a: +v.a, b: +v.b } : { op: 'none' };
+      if (o.limit.op !== 'between' && o.limit.op !== 'outside') delete o.limit.b;
+      return o;
+    }
+    function current() {
+      var sp = spec(), r = E.evaluateSensors({ units: App.model.units, density: App.model.density, features: App.model.features, sensors: [sp] }, sensorCtxFor(sp))[0];
+      return r;
+    }
+    function sensorCtxFor(sp) { var keep = App.model.sensors; App.model.sensors = [sp]; try { return sensorCtx(); } finally { App.model.sensors = keep; } }
+    function valueHtml() {
+      if (v.type === 'measure' && !(picks.a && picks.b)) return '<span class="static">Pick two faces in the graphics area (' + (picks.a ? 1 : 0) + ' of 2).</span>';
+      var r = current();
+      return kv([['Value', '<b data-role="sensor-value">' + sensorText(r) + '</b>'], ['Alert now', r.alert ? '<b class="ev-bad">yes</b>' : 'no']]);
+    }
+    UI.openPM({
+      title: existing ? existing.name : 'Sensor', icon: 'sensor', values: v,
+      message: 'A sensor watches a value of the model after every rebuild and alerts when its limit is passed.',
+      command: {
+        onPick: function (pk) {
+          if (v.type !== 'measure' || !pk || pk.kind !== 'face' || !App.mesh.faces[pk.index]) return false;
+          var f = App.mesh.faces[pk.index], rec = { point: f.centroid.slice(), normal: f.normal.slice() };
+          if (!picks.a || (picks.a && picks.b)) { picks.a = rec; picks.b = null; } else picks.b = rec;
+          rerender();
+          return true;
+        }
+      },
+      groups: [
+        { title: 'Sensor Type', fields: [{ type: 'select', label: 'Type', key: 'type', options: types, rerender: true }] },
+        { title: 'Properties', fields: [
+          { type: 'select', label: 'Dimension', key: 'dim', options: dims, rerender: true, show: function () { return v.type === 'dimension'; } },
+          { type: 'html', html: valueHtml }
+        ] },
+        { title: 'Alert', fields: [
+          { type: 'check', label: 'Alert', key: 'alert', rerender: true },
+          { type: 'select', label: 'Condition', key: 'op', options: E.SENSOR_OPS, rerender: true, show: function () { return v.alert; } },
+          { type: 'number', label: 'Value', key: 'a', step: 0.1, show: function () { return v.alert; } },
+          { type: 'number', label: 'and', key: 'b', step: 0.1, show: function () { return v.alert && (v.op === 'between' || v.op === 'outside'); } }
+        ] }
+      ],
+      onChange: function () { rerender(); },
+      onOK: function () {
+        if (v.type === 'measure' && !(picks.a && picks.b)) { UI.toast('Pick two faces for the measurement.'); return false; }
+        if (v.type === 'dimension' && !v.dim) { UI.toast('The part has no dimension to watch.'); return false; }
+        var sp = spec();
+        sensorCommit(function (m) {
+          if (existing) { var s = (m.sensors || []).filter(function (x) { return x.id === existing.id; })[0]; if (s) { Object.keys(s).forEach(function (k) { if (k !== 'id' && k !== 'name') delete s[k]; }); Object.keys(sp).forEach(function (k) { s[k] = sp[k]; }); delete sens.tripped[s.id]; } return s; }
+          return E.addSensor(m, sp);
+        }, null).then(function (s) { var r = sens.results.filter(function (x) { return s && x.id === s.id; })[0]; if (r && !r.alert) UI.setStatus((s.name) + ' = ' + sensorText(r) + (s.limit && s.limit.op !== 'none' ? ' (alert when ' + limitText(s.limit) + ')' : '') + '.'); });
+      }
+    });
+  }
+
+  // ------------------------------------------------------------------ Hole Alignment (assembly)
+  // SolidWorks' Hole Alignment PropertyManager: Hole center deviation, Calculate, the misaligned holes listed with their
+  // offset (Evaluate.holeAlignment over the collapsed world bodies); a selected row (or all of them) is marked in the
+  // graphics area by a red line between the two hole axes' points.
+  var ha = { res: null };
+  function haCalc(v) {
+    ha.res = E.holeAlignment(collapsedBodies(), bodyNames(), { deviation: +v.deviation, units: App.model.units });
+    clearPreview();
+    ha.res.pairs.forEach(function (p, i) {
+      var o = explodeOffset(p.a), ob = explodeOffset(p.b), a = shifted(p.point, o), b0 = shifted(p.pb, ob);
+      var w = [b0[0] - a[0], b0[1] - a[1], b0[2] - a[2]], t = w[0] * p.dir[0] + w[1] * p.dir[1] + w[2] * p.dir[2];
+      var b = [b0[0] - p.dir[0] * t, b0[1] - p.dir[1] * t, b0[2] - p.dir[2] * t];
+      addLines(UI.groups.preview, [[a, b]], 0xd9412e);
+      addPoint(UI.groups.preview, a, 0xd9412e, modelSize() * 0.006);
+      addPoint(UI.groups.preview, b, 0xd9412e, modelSize() * 0.006);
+    });
+    UI.render(); rerender();
+    UI.setStatus('Hole Alignment: ' + ha.res.pairs.length + ' misaligned hole pair' + (ha.res.pairs.length === 1 ? '' : 's') + ' among ' + ha.res.holes + ' holes (deviation ' + fmt(+v.deviation, 4) + ').' + (exploded() ? COLLAPSED_NOTE : ''));
+    return ha.res;
+  }
+  function haHtml() {
+    var r = ha.res;
+    if (!r) return '<span class="static">Click Calculate.</span>';
+    if (!r.pairs.length) return '<span class="static" data-role="ha-none">No misaligned holes (' + r.holes + ' holes checked).</span>';
+    return '<ol class="ha-list">' + r.pairs.map(function (p) { return '<li data-offset="' + p.offset + '">' + esc(p.aName) + ' ⟷ ' + esc(p.bName) + ': off by <b>' + fmt(p.offset, 4) + '</b> (Ø ' + fmt(2 * p.ra, 4) + ' / Ø ' + fmt(2 * p.rb, 4) + ')</li>'; }).join('') + '</ol>';
+  }
+  function cmdHoleAlignment() {
+    if (!isAsm()) { UI.toast('Hole Alignment works on an assembly.'); return; }
+    if (!bodies().length) { UI.toast('Insert components first.'); return; }
+    var v = { deviation: App.model.units === 'in' ? 0.04 : 1 };
+    ha.res = null;
+    UI.openPM({
+      title: 'Hole Alignment', icon: 'holeAlignment', values: v,
+      message: 'Finds holes in different components whose axes are parallel but off by up to the hole center deviation.',
+      groups: [
+        { title: 'Hole Alignment', fields: [
+          { type: 'number', label: 'Hole center deviation', key: 'deviation', min: 0, step: App.model.units === 'in' ? 0.005 : 0.1, unit: UI.unitLabel ? UI.unitLabel() : '' },
+          { type: 'buttons', buttons: [{ label: 'Calculate', onclick: function () { haCalc(v); } }] }
+        ] },
+        { title: 'Results', fields: [{ type: 'html', html: haHtml }] }
+      ],
+      onClose: function () { ha.res = null; clearPreview(); UI.render(); },
+      onOK: function () { }
+    });
+    haCalc(v);
+  }
+
   if (window.anvil) {
     // check() -> { ok, counts: { open, nonManifold, zeroArea, selfIntersection }, bodies: [{ name, triangles, edges, ok }] }
     window.anvil.check = function () {
@@ -957,6 +1354,8 @@
   UI.Icons_ = function (name) { return Icons(name, 16); };
   UI.cmdCheck = cmdCheck; UI.cmdZebra = cmdZebra; UI.cmdSectionProperties = cmdSectionProperties;
   UI.cmdDraftAnalysis = cmdDraftAnalysis; UI.cmdThickness = cmdThickness; UI.cmdClearance = cmdClearance; UI.cmdInterference = cmdInterference;
+  UI.cmdUndercut = cmdUndercut; UI.cmdPerformance = cmdPerformance; UI.cmdCompare = cmdCompare; UI.cmdSensor = function () { cmdSensor(null); }; UI.cmdHoleAlignment = cmdHoleAlignment;   // lane evalgrey
+  UI.sensors = { results: function () { return sens.results; }, evaluate: evaluateSensors, edit: cmdSensor, remove: removeSensor };
   UI.interferenceSession = function () { return intfSession; };
   // the whole assembly, collapsed (anvil.interference() in ui-app.js reads this)
   UI.interference = function () {
@@ -973,6 +1372,8 @@
     setDraft: function (o) { if (!draft.values) return null; Object.keys(o).forEach(function (k) { draft.values[k] = o[k]; }); draftApply(); return draft.result; },
     thickness: function () { return thick.res; }, thicknessValues: function () { return thick.values; }, thicknessCalculate: calcThick,
     clearanceSession: function () { return clrSession; },
-    display: function () { return display.kind; }, analysisGroup: function () { return analysis; }
+    display: function () { return display.kind; }, analysisGroup: function () { return analysis; },
+    undercut: function () { return uc.result; }, setUndercut: function (o) { if (!uc.values) return null; Object.keys(o).forEach(function (k) { uc.values[k] = o[k]; }); ucApply(); return uc.result; },
+    performance: function () { return perf.res; }, compare: function () { return cmpc.res; }, holeAlignment: function () { return ha.res; }
   };
 })(UI);

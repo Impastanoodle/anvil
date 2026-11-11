@@ -2835,6 +2835,84 @@ var Assembly = (function () {
     });
   }
 
+  // ------------------------------------------------------------------ Smart Fasteners (lane evalgrey, rfLP)
+  // smartFasteners(model, build, opts?) -> [{ stack, bolt: { size, len, d, name, code, H }, head: washer | null,
+  //   nutWasher: washer | null, nut: { size, name, code, H } | null, grip, need, placements: [{ role, name, code,
+  //   position, rotation }], error? }] — one bolt per hole stack (Evaluate.holeStacks over the collapsed world bodies),
+  // sized from the Design Library's inch hardware (AnvilLibrary): the largest hex bolt whose shank fits the smallest
+  // hole of the stack with at most 3/16 in clearance, and the shortest library length that covers the stack, the
+  // washers and the nut plus two threads. opts: { washers: 'none' | 'head' | 'nut' | 'both' ('both'), nut (true),
+  // series: 'USS' | 'SAE' ('USS'), stacks: [indices] (all) }. The library is inch: an assembly in mm is refused.
+  // The bolt's head sits on the stack's end along +dir (the axis' canonical direction), the nut on the other end.
+  function frameY(u) {
+    var a = Math.abs(u[0]) < 0.9 ? [1, 0, 0] : [0, 0, 1], x = norm(sub(a, scale(u, dot(a, u)))), z = cross(x, u);
+    return [x[0], u[0], z[0], x[1], u[1], z[1], x[2], u[2], z[2]];
+  }
+  function smartFasteners(model, build, opts) {
+    opts = opts || {};
+    if (typeof Evaluate === 'undefined' || typeof AnvilLibrary === 'undefined') throw new Error('Smart Fasteners needs evaluate.js and the Design Library.');
+    if (model.units !== 'in') throw new Error('Smart Fasteners uses the Design Library\'s inch hardware: set the assembly units to inches.');
+    build = build || rebuild(model);
+    var L = AnvilLibrary, boltFam = L.family('hexBolt'), sizes = boltFam.choices[0].items, lengths = boltFam.choices[1].items;
+    var wash = opts.washers || 'both', series = opts.series === 'SAE' ? 'SAE' : 'USS', withNut = opts.nut !== false;
+    var wb = explodedBodies(model, build, null, 0), stacks = Evaluate.holeStacks(wb), shafts = [];
+    wb.forEach(function (b, i) { Evaluate.holes(b, { body: i, all: true }).forEach(function (h) { if (!h.hole) shafts.push(h); }); });
+    var out = [];
+    stacks.forEach(function (st, si) {
+      if (opts.stacks && opts.stacks.indexOf(si) < 0) return;
+      // a stack that already holds a shaft on its axis (a bolt or pin) is fastened: skipped, as SolidWorks does
+      var held = shafts.some(function (h) {
+        var w = sub(h.point, st.bottom);
+        if (len(cross(h.dir, st.dir)) > 1e-6 || len(sub(w, scale(st.dir, dot(w, st.dir)))) > 1e-5) return false;
+        var t0 = dot(w, st.dir), t1 = t0 + h.length;
+        return t1 > 1e-6 && t0 < st.length - 1e-6;
+      });
+      if (held) return;
+      var D = 2 * st.r, fit = null;
+      sizes.forEach(function (s) { if (s.d <= D - 0.004 && D - s.d <= 0.1875 + 1e-9 && (!fit || s.d > fit.d)) fit = s; });
+      var row = { stack: st, index: si, grip: st.length };
+      if (!fit) { row.error = 'No library bolt fits a ' + D.toFixed(4) + ' in hole (1/4 to 1/2 in hex bolts, 3/16 in clearance at most).'; out.push(row); return; }
+      var nom = fit.label.split('-')[0];
+      function washer(on) { return on ? L.part('washer', nom + ' ' + series) : null; }
+      var head = washer(wash === 'head' || wash === 'both'), nw = withNut ? washer(wash === 'nut' || wash === 'both') : null;
+      var nut = withNut ? L.part('hexNut', fit.label) : null;
+      var tw = function (w) { return w ? +/([\d.]+) thick/.exec(w.note)[1] : 0; };
+      var nutH = nut ? L.family('hexNut').choices[0].items.filter(function (x) { return x.label === fit.label; })[0].H : 0;
+      var tpi = +fit.label.split('-')[1] || 16, need = st.length + tw(head) + tw(nw) + nutH + (withNut ? 2 / tpi : 0);
+      var ln = lengths.filter(function (x) { return x.value >= need - 1e-9; })[0];
+      if (!ln) { row.error = 'The stack needs a ' + fit.label + ' bolt ' + need.toFixed(3) + ' in long: longer than the library\'s ' + lengths[lengths.length - 1].label + ' in.'; out.push(row); return; }
+      var bolt = L.part('hexBolt', fit.label, ln.label), u = st.dir, Ru = frameY(u), Rd = frameY(scale(u, -1));
+      row.bolt = { size: fit.label, len: ln.label, length: ln.value, d: fit.d, name: bolt.name, code: bolt.code, H: fit.H };
+      row.head = head ? { name: head.name, code: head.code, t: tw(head) } : null;
+      row.nutWasher = nw ? { name: nw.name, code: nw.code, t: tw(nw) } : null;
+      row.nut = nut ? { size: fit.label, name: nut.name, code: nut.code, H: nutH } : null;
+      row.need = need;
+      var pl = [];
+      if (head) pl.push({ role: 'washer', name: head.name, code: head.code, position: st.top.slice(), rotation: Ru });
+      pl.push({ role: 'bolt', name: bolt.name, code: bolt.code, position: add(st.top, scale(u, tw(head))), rotation: Ru });
+      if (nw) pl.push({ role: 'washer', name: nw.name, code: nw.code, position: st.bottom.slice(), rotation: Rd });
+      if (nut) pl.push({ role: 'nut', name: nut.name, code: nut.code, position: add(st.bottom, scale(u, -tw(nw))), rotation: Rd });
+      row.placements = pl;
+      out.push(row);
+    });
+    return out;
+  }
+  // addSmartFasteners(model, build, opts?) -> { added: [component ids], fasteners: smartFasteners(...) }: inserts every
+  // stack's washers, bolt and nut where smartFasteners placed them (floating, as library parts by their script), in
+  // the order head washer, bolt, nut washer, nut. A stack it cannot fit is skipped (its row keeps the error).
+  function addSmartFasteners(model, build, opts) {
+    var list = smartFasteners(model, build, opts), added = [];
+    list.forEach(function (row) {
+      if (row.error) return;
+      row.components = [];
+      row.placements.forEach(function (p) {
+        var c = insert(model, { script: p.code }, { position: p.position, rotation: p.rotation });
+        added.push(c.id); row.components.push(c.id);
+      });
+    });
+    return { added: added, fasteners: list };
+  }
+
   // ------------------------------------------------------------------ Move / Rotate Component
   // These only change a floating component's stored transform; the next rebuild re-solves the mates, so the component
   // keeps the part of the move its free degrees of freedom allow (SolidWorks: dragging respects mates).
@@ -3696,7 +3774,7 @@ var Assembly = (function () {
     addPattern: addPattern, removePattern: removePattern, findPattern: findPattern, setPatternValues: setPatternValues, syncPatterns: syncPatterns,
     addExplodedView: addExplodedView, addExplodeStep: addExplodeStep, removeExplodeStep: removeExplodeStep, removeExplodedView: removeExplodedView,
     findExplodedView: findExplodedView, findExplodeStep: findExplodeStep, setExploded: setExploded, explodeOffsets: explodeOffsets,
-    explodedBodies: explodedBodies, explodeDir: explodeDir,
+    explodedBodies: explodedBodies, explodeDir: explodeDir, smartFasteners: smartFasteners, addSmartFasteners: addSmartFasteners,   // lane evalgrey
     Documents: Documents, documents: Documents, resolveSource: resolveSource, references: references, saveReferences: saveReferences,
     packAndGo: packAndGo, setFlexible: setFlexible, setTransparent: setTransparent, isSubAssemblySource: isSubAssemblySource, bom: bom, leafBodies: leafBodies,
     composeTransforms: composeT, relativeTransform: relativeT, interferenceKey: interferenceKey, setInterferenceIgnored: setInterferenceIgnored, ignoreSide: ignoreSide, migrateIgnored: migrateIgnored,

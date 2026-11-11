@@ -47,3 +47,8 @@ New mate type checklist: `MATE_BASE`, `MATE_TYPES`, `MATE_GROUPS`, `setMateValue
 - Profile Center centres on the face's area centroid (`faceProfile`, cached on the patch as `pt.profile`); Lock rotation stores `phase: [deg]` — delete it when the selections change (gvMate does on every edit).
 - Symmetric one-side check reads the stored `c.transform`, not the drag-slid transforms: a drag frame that slides a part across the plane does not make the mate fail.
 - Units: assembly numbers are in the assembly's units; inch parts in an inch assembly (`m.units = 'in'`) need no scaling.
+
+## Smart Fasteners and Hole Alignment (lane evalgrey, rfLP, 2026-11-11)
+- `Assembly.smartFasteners(model, build, opts)` / `addSmartFasteners`: hole stacks from `Evaluate.holeStacks(explodedBodies(…, 0))` (coaxial hole cylinders from the facets' exact `surf` records, `Evaluate.holes`), skipping stacks that already hold a shaft (an outward cylinder on the axis); bolt = the largest `AnvilLibrary` hex bolt with d ≤ hole − 0.004 and clearance ≤ 3/16; length = the shortest library length ≥ grip + washers + nut + 2 threads; placed by `frameY(u)` (local +Y → the stack's +dir for the head washer and bolt, −dir for the nut side). Inserted floating with `{ script }` sources, no mates. Inch assemblies only (the library is inch; no unit scaling exists for components).
+- `Evaluate.holeAlignment(bodies, names, { deviation, units })`: pairs of hole axes in different components, parallel, 0 < offset ≤ deviation (0.04 in / 1 mm), overlapping or meeting along the axis.
+- UI: ui-assembly.js last IIFE "lane evalgrey" (Smart Fasteners PM: Populate All, washers / nut / series, preview lines on the axes, ✓ one undo step); Hole Alignment PM in ui-evaluate.js.

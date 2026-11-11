@@ -2926,3 +2926,84 @@
   if (UI.cmdRotateComponent) UI.cmdRotateComponent = cdWrap(UI.cmdRotateComponent);
   UI.asmCollision = { options: cd, last: null, faces: cdFaces };
 })(UI);
+
+// ================================================================== lane evalgrey (rfLP): Smart Fasteners
+// SolidWorks' Smart Fasteners PropertyManager: Populate All finds every hole stack of the assembly (coaxial holes of
+// the components, Evaluate.holeStacks) that holds no fastener yet and proposes a Design Library hex bolt sized to it
+// (Assembly.smartFasteners: the largest bolt the smallest hole clears by 3/16 in at most, the shortest library length
+// over the grip, the washers and the nut), with washers under the head and / or the nut and the nut as options (Series
+// USS / SAE). The proposals are drawn on their axes (green; a stack nothing fits, red) and listed; ✓ inserts them as
+// components (one undo step), Esc inserts nothing. The Design Library hardware is inch: an mm assembly is refused.
+(function (UI) {
+  'use strict';
+  if (typeof Assembly === 'undefined' || !UI || !UI.App) return;
+  var App = UI.App, AS = Assembly;
+  function isAsm() { return UI.isAssembly ? UI.isAssembly() : !!(App.model && App.model.type === 'assembly'); }
+  function esc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  var sf = { rows: null, error: null };
+  var lineMats = {};
+  function lineMat(c) { if (!lineMats[c]) { lineMats[c] = new THREE.LineBasicMaterial({ color: c, depthTest: false, transparent: true }); lineMats[c].userData.lineWidth = 3; } return lineMats[c]; }
+  function opts(v) { return { washers: v.washers, nut: !!v.nut, series: v.series }; }
+  function plan(v) {
+    sf.error = null; sf.rows = null;
+    try { sf.rows = AS.smartFasteners(App.model, App.build, opts(v)); } catch (e) { sf.error = e.message; }
+    UI.disposeGroup(UI.groups.preview);
+    (sf.rows || []).forEach(function (r) {
+      var st = r.stack, u = st.dir, ext = r.bolt ? r.bolt.H + (r.head ? r.head.t : 0) : 0.1, below = r.bolt ? r.bolt.length - st.length - (r.head ? r.head.t : 0) : 0.1;
+      var a = [st.top[0] + u[0] * ext, st.top[1] + u[1] * ext, st.top[2] + u[2] * ext], b = [st.bottom[0] - u[0] * below, st.bottom[1] - u[1] * below, st.bottom[2] - u[2] * below];
+      var g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute([a[0], a[1], a[2], b[0], b[1], b[2]], 3));
+      var o = new THREE.LineSegments(g, lineMat(r.error ? 0xd9412e : 0x2e9e44));
+      o.renderOrder = 20;
+      UI.groups.preview.add(o);
+    });
+    UI.render();
+    if (UI.renderPM) UI.renderPM();
+    var ok = (sf.rows || []).filter(function (r) { return !r.error; }).length;
+    UI.setStatus(sf.error ? 'Smart Fasteners: ' + sf.error : 'Smart Fasteners: ' + ok + ' fastener' + (ok === 1 ? '' : 's') + ' for ' + (sf.rows || []).length + ' hole stack' + ((sf.rows || []).length === 1 ? '' : 's') + '.');
+    return sf.rows;
+  }
+  function listHtml() {
+    if (sf.error) return '<span class="static ev-bad">' + esc(sf.error) + '</span>';
+    if (!sf.rows) return '<span class="static">Click Populate All.</span>';
+    if (!sf.rows.length) return '<span class="static" data-role="sf-none">No open hole stacks: every hole through the components already holds a fastener, or there are none.</span>';
+    return '<ol class="sf-list">' + sf.rows.map(function (r) {
+      if (r.error) return '<li class="ev-bad">Stack ' + (r.index + 1) + ': ' + esc(r.error) + '</li>';
+      return '<li data-bolt="' + esc(r.bolt.name) + '"><b>' + esc(r.bolt.name) + '</b> (grip ' + UI.fmtNum(r.grip, 4) + ' in, ' + r.stack.bodies.length + ' part' + (r.stack.bodies.length === 1 ? '' : 's') + ')' +
+        (r.head ? '<br>Head: ' + esc(r.head.name) : '') + (r.nutWasher ? '<br>Nut: ' + esc(r.nutWasher.name) : '') + (r.nut ? '<br>' + esc(r.nut.name) : '') + '</li>';
+    }).join('') + '</ol>';
+  }
+  function cmdSmartFasteners() {
+    if (!isAsm()) { UI.toast('Smart Fasteners works in an assembly.'); return; }
+    if (!(App.model.components || []).length) { UI.toast('Insert components first.'); return; }
+    var v = { washers: 'both', nut: true, series: 'USS' };
+    sf.rows = null; sf.error = null;
+    UI.openPM({
+      title: 'Smart Fasteners', icon: 'smartFasteners', values: v,
+      message: 'Adds a hex bolt from the Design Library to every hole stack, sized to the holes and the grip.',
+      groups: [
+        { title: 'Selection', fields: [{ type: 'buttons', buttons: [{ label: 'Populate All', onclick: function () { plan(v); } }] }] },
+        { title: 'Fastener', fields: [
+          { type: 'select', label: 'Washers', key: 'washers', options: [['both', 'Under head and nut'], ['head', 'Under the head'], ['nut', 'Under the nut'], ['none', 'None']] },
+          { type: 'check', label: 'Hex nut', key: 'nut' },
+          { type: 'select', label: 'Washer series', key: 'series', options: [['USS', 'USS (wide)'], ['SAE', 'SAE (narrow)']] }
+        ] },
+        { title: 'Results', fields: [{ type: 'html', html: listHtml }] }
+      ],
+      onChange: function () { plan(v); },
+      onClose: function () { sf.rows = null; UI.disposeGroup(UI.groups.preview); UI.render(); },
+      onOK: function () {
+        var rows = sf.rows || plan(v);
+        if (sf.error) { UI.toast(sf.error); return false; }
+        var n = (rows || []).filter(function (r) { return !r.error; }).length;
+        if (!n) { UI.toast('No fastener to add.'); return false; }
+        UI.pushUndo();
+        var res = AS.addSmartFasteners(App.model, App.build, opts(v));
+        UI.afterRebuild(UI.rebuild(), function () { UI.refreshTree(); UI.refreshStatus(); UI.setStatus('Smart Fasteners: ' + res.added.length + ' components added (' + n + ' bolt' + (n === 1 ? '' : 's') + ').'); });
+      }
+    });
+    plan(v);
+  }
+  UI.cmdSmartFasteners = cmdSmartFasteners;
+  UI.smartFastenersPlan = function () { return sf.rows; };
+})(UI);

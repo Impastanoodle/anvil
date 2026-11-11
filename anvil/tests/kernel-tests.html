@@ -56,6 +56,7 @@
 <script src="../drawing-annotations.js"></script>
 <script src="../drawing-render.js"></script>
 <script src="../evaluate.js"></script>
+<script src="../costing.js"></script>
 <script src="../ui-select.js"></script>
 <script src="../headless/dxf-check.js"></script>
 <script>
@@ -583,6 +584,7 @@
     'kernel/rfLB.js',
     'kernel/rfLG.js',
     'kernel/rfLD.js',
+    'kernel/rfLP.js',
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'kernel-tests.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'kernel-tests.groups.js', error: e }); }
