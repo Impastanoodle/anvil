@@ -49,9 +49,28 @@ var OcctKernel = (function () {
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
   // rfHL: faces whose normals turn by less than this across a shared edge are tangent (BRepLib::EncodeRegularity)
   var TANGENT_ANG = Math.PI / 180;   // 1°
+  // rfKV (lane occtperf): perforated plates. on: holes through a flat plate without a Boolean (build's kvTryCut);
+  // minHoles: fewer holes than this in one feature take the Boolean; defer: holes wait across Edge Flanges; mesh: faces
+  // with at least meshMinWires inner wires (and their hole walls) are triangulated here, not by BRepMesh (kvTessellate);
+  // last: what the last build did
+  var PLATE = { on: true, minHoles: 16, defer: true, mesh: true, meshMinWires: 16, last: null };
 
   function build(oc, K, model, opts) {
     opts = opts || {};
+    // rfKV: a plate whose deferred holes could not be laid in after a flange is built again in plain feature order
+    if (!opts.kvInner) {
+      try { return build(oc, K, model, Object.assign({}, opts, { kvInner: true })); } catch (eKV) {
+        if (!eKV || !eKV.kvRedo) throw eKV;
+        // the rebuild cache's snapshots hold the deferred holes: dropped, and the cache refilled by the plain build
+        var kc = opts.readOnly ? null : opts.cache;
+        if (kc && kc.states) {
+          kc.states.forEach(function (S) { S.bodies.forEach(function (b) { try { b.delete(); } catch (e) { } }); });
+          Object.keys(kc.tools || {}).forEach(function (id) { try { kc.tools[id].delete(); } catch (e) { } });
+          kc.keys = []; kc.states = []; kc.tools = {};
+        }
+        return build(oc, K, model, Object.assign({}, opts, { kvInner: true, kvNoDefer: true, cache: kc }));
+      }
+    }
     var t0 = now(), arena = [], V = K.vec;
     // every OpenCascade object made here goes into the arena and is deleted at the end
     function N(o) { arena.push(o); return o; }
@@ -286,7 +305,12 @@ var OcctKernel = (function () {
       // draft (as Kernel.buildExtrude): the section shrinks (grows with draftOut) by |t|·tan(angle) at distance t from
       // the sketch plane; a hole loop does the opposite. Ruled loft between the two offset sections.
       var k = draft ? Math.tan(draft * Math.PI / 180) * (f.draftOut ? 1 : -1) : 0;
-      var solid = fromLoops(loopFaces(sk, plane), function (face, hole) {
+      // rfKV: an outline with many holes: the first body's outline now (its holes by the plate path, kvBossHoles), else
+      // one face with the holes and one prism
+      var kvs = !k && !f.cut ? kvSlabInfo(sk, plane, range[0], range[1]) : null, solid = null;
+      if (kvs && !bodies.length && f.merge !== false) { solid = kvOuterPrism(kvs); kvBossHoles = { f: f, info: kvs }; }
+      else if (kvs) solid = kvSlab(kvs);
+      if (!solid) solid = fromLoops(loopFaces(sk, plane), function (face, hole) {
         var a = range[0], b = range[1];
         if (!k) return N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(face, a, plane), Vec([plane.n[0] * (b - a), plane.n[1] * (b - a), plane.n[2] * (b - a)]), false, true)).Shape());
         var s = hole ? -1 : 1;
@@ -459,7 +483,7 @@ var OcctKernel = (function () {
     }
     // what a pattern or mirror copies: the source's tool plus, for a pattern of a pattern, its seed (as familyTool)
     function familyTool(id) {
-      var tool = tools[id], src = K.findFeature(m, id);
+      var tool = tools[id] || kvTool(id), src = K.findFeature(m, id);   // rfKV: kvTool
       if (!src || !tool) return tool || null;
       if (src.type === 'lpattern' || src.type === 'cpattern' || (src.type === 'mirror' && !src.body)) {
         var seed = familyTool(src.feature);
@@ -1853,6 +1877,384 @@ var OcctKernel = (function () {
       if (!next.length) throw new Error('OpenCascade\'s cut removed every body.');
       bodies = next; bodyFeatures = nextF;
     }
+    // ---- rfKV (lane occtperf): perforated plates without a Boolean. A Cut-Extrude of many separate loops (or an
+    // LPattern of a Cut-Extrude) straight through a flat plate is built directly: each hole's wall is the prism of its
+    // loop between the two plate faces it passes through, and those faces get the loop as an inner wire (BRep_Builder,
+    // the same edges as the wall). The General Fuse it replaces rebuilt both faces with every hole (2.6 s at 200 holes,
+    // 9 s at 600, ~30 s at 1800 in wasm), the check after it is quadratic in the holes of one face (BRepCheck_Face
+    // IntersectWires: 27 s native at 1800). Conditions, checked on the body (else the Boolean runs as before): one
+    // solid with one shell, every hole's interior point inside exactly two planar faces square to the cut (entry facing
+    // -n, exit facing +n) within the cut's range, its box clear of every edge of those faces and of every other face
+    // of the body, and of every other hole. A probe with one hole of each kind must come out the body's volume less
+    // the hole's (1e-9): that holds the wire and wall orientations.
+    // Holes are deferred (PLATE.defer) across Edge Flanges and plain sketches, which are built on the plate without
+    // the holes (a flange's Boolean against a face with 1800 inner wires is as slow as the cut), and laid in at the
+    // next feature that needs the faces, or at the end; if the plate no longer meets the conditions there (a flange
+    // folded over the holes), the part is built again without deferring, so the result is always the feature order's.
+    // (a model's kvPlate { on, defer, mesh, check, … } overrides PLATE for its build: tests/occt-tests.html sends it
+    // through the worker; check: BRepCheck the plate path's bodies anyway, the answer in out.plate.checked)
+    var PLT = m.kvPlate || model.kvPlate ? Object.assign({}, PLATE, m.kvPlate || model.kvPlate) : PLATE;
+    var kvLazy = {}, kvPending = [], kvCuts = {}, kvKnown = [], kvAcross = false, kvNoDefer = !!opts.kvNoDefer || !PLT.defer, kvWires = [];
+    var kvStats = PLATE.last = { holes: 0, plate: 0, boolean: 0, deferred: false, redo: !!opts.kvNoDefer && !!opts.kvInner, checkSkipped: 0, propsKnown: 0, meshFaces: 0, why: null };
+    function kvRedo(why) { var e = new Error('rfKV: ' + why); e.kvRedo = true; return e; }
+    function kvShoelace(pts) { var a = 0; for (var i = 0, n = pts.length; i < n; i++) { var p = pts[i], q = pts[(i + 1) % n]; a += p[0] * q[1] - q[0] * p[1]; } return a / 2; }
+    function kvInside(pts, u, v) {
+      var c = false;
+      for (var i = 0, n = pts.length, j = n - 1; i < n; j = i++) {
+        var a = pts[i], b = pts[j];
+        if ((a[1] > v) !== (b[1] > v) && u < (b[0] - a[0]) * (v - a[1]) / (b[1] - a[1]) + a[0]) c = !c;
+      }
+      return c;
+    }
+    // a profile loop as a hole: 2D box and interior point in its sketch plane, orientation of its wire about plane.n,
+    // and (circles) the exact area, perimeter and centroid
+    function kvLoop(l, profile) {
+      var pts = l.pts, lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+      pts.forEach(function (p) { for (var q = 0; q < 2; q++) { if (p[q] < lo[q]) lo[q] = p[q]; if (p[q] > hi[q]) hi[q] = p[q]; } });
+      var curves = profile.curves || [], seg = l.seg, C = seg && seg.length && seg.every(function (k) { return k === seg[0] && k >= 0; }) && curves[seg[0]] && curves[seg[0]].full ? curves[seg[0]] : null;
+      if (C) return { l: l, circle: true, wo: 1, lo: [C.c[0] - C.r, C.c[1] - C.r], hi: [C.c[0] + C.r, C.c[1] + C.r], ip: C.c.slice(), area: Math.PI * C.r * C.r, perim: 2 * Math.PI * C.r, cen: C.c.slice() };
+      if (l.fseg && l.fseg.some(function (q) { return q !== -1; })) return null;   // splines / ellipses: the Boolean
+      var A = kvShoelace(pts), cx = 0, cy = 0;
+      for (var i = 0, n = pts.length; i < n; i++) { var p = pts[i], q = pts[(i + 1) % n], c = p[0] * q[1] - q[0] * p[1]; cx += (p[0] + q[0]) * c; cy += (p[1] + q[1]) * c; }
+      if (!(Math.abs(A) > 0)) return null;
+      var ip = [cx / (6 * A), cy / (6 * A)];
+      if (!kvInside(pts, ip[0], ip[1])) {   // a concave loop: the middle of the widest run of a horizontal line through its box centre
+        var v = (lo[1] + hi[1]) / 2, xs = [];
+        for (var k = 0, m2 = pts.length; k < m2; k++) { var a = pts[k], b = pts[(k + 1) % m2]; if ((a[1] > v) !== (b[1] > v)) xs.push(a[0] + (b[0] - a[0]) * (v - a[1]) / (b[1] - a[1])); }
+        xs.sort(function (x, y) { return x - y; });
+        var best = -1;
+        for (var t = 0; t + 1 < xs.length; t += 2) if (xs[t + 1] - xs[t] > best) { best = xs[t + 1] - xs[t]; ip = [(xs[t] + xs[t + 1]) / 2, v]; }
+        if (!(best > 0) || !kvInside(pts, ip[0], ip[1])) return null;
+      }
+      // (the box of a loop with arcs is its chords': they bulge out by at most the chord sag, inside kvPlace's pad)
+      return { l: l, circle: false, wo: A > 0 ? 1 : -1, lo: lo, hi: hi, ip: ip, area: null, perim: null, cen: null };
+    }
+    // f -> { f, plane, profile, range, loops } for a plain Cut-Extrude whose loops are all at depth 0, else null
+    function kvCutInfo(f) {
+      if (!PLT.on || f.type !== 'extrude' || (+f.draft || 0) !== 0 || f.thin || f.normalCut || f.tab || f.sheetBase || f.dir2 && f.end2 && f.end2 !== 'through') return null;
+      var sk = K.contourSketch(f, sketchOf(f)), plane = K.resolvePlane(sk.plane, m, planes);
+      var profile = sk.profile || K.sketchProfile(sk);
+      K.checkProfile(profile);
+      if (!profile.loops.length || profile.loops.some(function (l) { return l.depth !== 0; })) return null;
+      var loops = [];
+      for (var i = 0; i < profile.loops.length; i++) { var L = kvLoop(profile.loops[i], profile); if (!L) return null; L.index = i; loops.push(L); }
+      return { f: f, plane: plane, profile: profile, range: K.extrudeRange(f, K.THROUGH), loops: loops };
+    }
+    // the loop's wire on its sketch plane (exact circles / arcs), made once per build
+    function kvBaseWire(info, L) {
+      for (var i = 0; i < kvWires.length; i++) if (kvWires[i].L === L) return kvWires[i].w;
+      var w = loopWire(L.l, info.profile, info.plane);
+      kvWires.push({ L: L, w: w });
+      return w;
+    }
+    // exact area, perimeter and centroid (sketch coordinates) of a loop with arcs, from its planar face
+    function kvLoopProps(info, L) {
+      if (L.area != null) return;
+      var fc = N(N(new oc.BRepBuilderAPI_MakeFace_15(kvBaseWire(info, L), true)).Face()), g = N(new oc.GProp_GProps_1()), gl = N(new oc.GProp_GProps_1());
+      oc.BRepGProp.SurfaceProperties_1(fc, g, false, false);
+      oc.BRepGProp.LinearProperties(kvBaseWire(info, L), gl, false, false);
+      var c = N(g.CentreOfMass()), c3 = [c.X(), c.Y(), c.Z()], pl = info.plane, o = pl.origin || [0, 0, 0];
+      L.area = g.Mass(); L.perim = gl.Mass(); L.cen = [V.dot(V.sub(c3, o), pl.x), V.dot(V.sub(c3, o), pl.y)];
+    }
+    // the holes' common frame: the first hole's sketch plane; every hole must have the same normal
+    function kvFrame(h) { var pl = h.info.plane; return { o: pl.origin || [0, 0, 0], x: pl.x, y: pl.y, n: pl.n }; }
+    function kvSameDir(a, b) { return V.dot(a.info.plane.n, b.info.plane.n) > 1 - 1e-12; }
+    // a hole's 2D box, interior point and range (along n) in frame F
+    function kvPlace(h, F) {
+      var pl = h.info.plane, o = pl.origin || [0, 0, 0], d = V.sub(V.add(o, h.t), F.o);
+      var du = V.dot(d, F.x), dv = V.dot(d, F.y), xu = V.dot(pl.x, F.x), xv = V.dot(pl.x, F.y), yu = V.dot(pl.y, F.x), yv = V.dot(pl.y, F.y);
+      function map(p) { return [du + p[0] * xu + p[1] * yu, dv + p[0] * xv + p[1] * yv]; }
+      var L = h.L, c = [map(L.lo), map([L.hi[0], L.lo[1]]), map(L.hi), map([L.lo[0], L.hi[1]])];
+      var lo = [Math.min(c[0][0], c[1][0], c[2][0], c[3][0]), Math.min(c[0][1], c[1][1], c[2][1], c[3][1])], hi = [Math.max(c[0][0], c[1][0], c[2][0], c[3][0]), Math.max(c[0][1], c[1][1], c[2][1], c[3][1])];
+      var pad = 0.02 * Math.max(hi[0] - lo[0], hi[1] - lo[1]) + 1e-6;
+      var w0 = V.dot(V.add(o, h.t), F.n);
+      h.box = [[lo[0] - pad, lo[1] - pad], [hi[0] + pad, hi[1] + pad]]; h.ip = map(L.ip);
+      h.range = [w0 + h.info.range[0], w0 + h.info.range[1]];
+    }
+    function kvBox2(bb, F) {   // a 3D box's corners in frame F: [[u0, v0], [u1, v1]], [w0, w1]
+      var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      for (var c = 0; c < 8; c++) {
+        var p = [bb[c & 1 ? 1 : 0][0], bb[c & 2 ? 1 : 0][1], bb[c & 4 ? 1 : 0][2]], d = V.sub(p, F.o), q = [V.dot(d, F.x), V.dot(d, F.y), V.dot(p, F.n)];
+        for (var k = 0; k < 3; k++) { if (q[k] < lo[k]) lo[k] = q[k]; if (q[k] > hi[k]) hi[k] = q[k]; }
+      }
+      return lo[0] === Infinity ? null : { lo: lo, hi: hi };
+    }
+    function kvInSegs(segs, u, v) {
+      var c = false;
+      for (var i = 0; i < segs.length; i++) {
+        var a = segs[i][0], b = segs[i][1];
+        if ((a[1] > v) !== (b[1] > v) && u < (b[0] - a[0]) * (v - a[1]) / (b[1] - a[1]) + a[0]) c = !c;
+      }
+      return c;
+    }
+    function kvMeet2(a, b) { return !(a.lo[0] > b[1][0] || b[0][0] > a.hi[0] || a.lo[1] > b[1][1] || b[0][1] > a.hi[1]); }
+    // holes -> { caps, F } with h.lo / h.hi set (cap indices), or a reason string
+    function kvPlan(body, holes) {
+      var F = kvFrame(holes[0]);
+      var sols = explore(body, ENUM.TopAbs_SOLID);
+      if (sols.length !== 1 || explore(sols[0], ENUM.TopAbs_SHELL).length !== 1) return 'not one solid with one shell';
+      holes.forEach(function (h) { kvPlace(h, F); });
+      // holes apart from each other (sort and sweep over u)
+      var ord = holes.slice().sort(function (a, b) { return a.box[0][0] - b.box[0][0]; });
+      for (var i = 0; i < ord.length; i++) for (var j = i + 1; j < ord.length && ord[j].box[0][0] <= ord[i].box[1][0]; j++) {
+        var A = ord[i].box, B = ord[j].box;
+        if (!(A[0][1] > B[1][1] || B[0][1] > A[1][1])) return 'two holes are too close';
+      }
+      var faces = facesOf(sols[0]), caps = [], all = [], size = 0;
+      faces.forEach(function (fc, k) {
+        var bb = bboxOf(fc), b2 = bb && kvBox2(bb, F), pp = draftPlaneOf(fc), rec = { fc: fc, k: k, b: b2 };
+        if (b2) size = Math.max(size, b2.hi[0] - b2.lo[0], b2.hi[1] - b2.lo[1], b2.hi[2] - b2.lo[2]);
+        if (pp && Math.abs(V.dot(pp.n, F.n)) > 1 - 1e-9) { rec.s = V.dot(pp.n, F.n) > 0 ? 1 : -1; rec.w = rec.s * pp.w; caps.push(rec); }
+        all.push(rec);
+      });
+      var eps = Math.max(1e-7, 1e-9 * size), tol = Math.max(1e-7, 1e-9 * size);
+      // the boxes of a face's edges, and its edges as 2D segments through points of each edge
+      function edgeBoxes(cap) {
+        if (cap.e) return cap.e;
+        cap.e = []; cap.segs = [];
+        edgesOf(cap.fc).forEach(function (e) {
+          var bb = bboxOf(e), b2 = bb && kvBox2(bb, F);
+          if (b2) cap.e.push(b2);
+          if (cap.segs.length > 8000) return;
+          var ac = N(new oc.BRepAdaptor_Curve_2(e)), t = kvTypeOf(ac.GetType()), u0 = ac.FirstParameter(), u1 = ac.LastParameter(), k = t === 0 ? 1 : 64, prev = null;
+          for (var i = 0; i <= k; i++) {
+            var q = N(ac.Value(u0 + (u1 - u0) * i / k)), d = V.sub([q.X(), q.Y(), q.Z()], F.o), uv = [V.dot(d, F.x), V.dot(d, F.y)];
+            if (prev) cap.segs.push([prev, uv]);
+            prev = uv;
+          }
+        });
+        return cap.e;
+      }
+      var cls = null;
+      for (var hi2 = 0; hi2 < holes.length; hi2++) {
+        var h = holes[hi2], hits = [];
+        for (var c = 0; c < caps.length; c++) {
+          var cp = caps[c];
+          if (!cp.b || cp.w < h.range[0] - eps || cp.w > h.range[1] + eps) continue;
+          if (cp.b.lo[0] > h.box[0][0] || cp.b.hi[0] < h.box[1][0] || cp.b.lo[1] > h.box[0][1] || cp.b.hi[1] < h.box[1][1]) {
+            if (kvMeet2(cp.b, h.box) && !(cp.b.lo[2] > cp.w + eps || cp.b.hi[2] < cp.w - eps)) return 'a hole runs off a face';
+            continue;
+          }
+          // the hole's box clear of the face's edges: then its interior point is in or out of the face as the whole
+          // hole is, and a polygon through points of the edges (inside their boxes) classifies it as the face would
+          var eb0 = edgeBoxes(cp);
+          for (var x0 = 0; x0 < eb0.length; x0++) if (kvMeet2(eb0[x0], h.box)) return 'a hole is too close to an edge';
+          var inF;
+          if (cp.segs.length <= 8000) inF = kvInSegs(cp.segs, h.ip[0], h.ip[1]);
+          else {
+            var p3 = V.add(V.add(F.o, V.add(V.scale(F.x, h.ip[0]), V.scale(F.y, h.ip[1]))), V.scale(F.n, cp.w - V.dot(F.o, F.n)));
+            cls = N(new oc.BRepClass_FaceClassifier_4(cp.fc, P(p3), tol, true, 0.1));
+            if (cls.State() === oc.TopAbs_State.TopAbs_ON) return 'a hole is on an edge';
+            inF = cls.State() === oc.TopAbs_State.TopAbs_IN;
+          }
+          if (inF) hits.push(cp);
+        }
+        if (hits.length !== 2) return hits.length + ' faces in the way of a hole';
+        hits.sort(function (a, b) { return a.w - b.w; });
+        if (hits[0].s !== -1 || hits[1].s !== 1 || !(hits[1].w - hits[0].w > eps)) return 'a hole does not run through the plate';
+        if (h.range[0] > hits[0].w + eps || h.range[1] < hits[1].w - eps) return 'a hole stops inside the plate';
+        // clear of every edge of both faces and of every other face of the body in the cut's span
+        for (var q = 0; q < 2; q++) { var eb = edgeBoxes(hits[q]); for (var x = 0; x < eb.length; x++) if (kvMeet2(eb[x], h.box)) return 'a hole is too close to an edge'; }
+        var w0 = Math.max(h.range[0], -Infinity) - eps, w1 = h.range[1] + eps;
+        for (var a = 0; a < all.length; a++) {
+          var r = all[a];
+          if (r === hits[0] || r === hits[1] || !r.b) continue;
+          if (r.b.lo[2] > w1 || r.b.hi[2] < w0) continue;
+          if (kvMeet2(r.b, h.box)) return 'another face is in the way of a hole';
+        }
+        h.lo = hits[0].k; h.hi = hits[1].k; h.wLo = hits[0].w; h.wHi = hits[1].w; h.sLo = hits[0].s; h.sHi = hits[1].s;
+      }
+      return { F: F, faces: faces, sol: sols[0] };
+    }
+    // body k with the holes laid in (plan from kvPlan): the new solid, or a reason string
+    function kvApply(k, holes, plan) {
+      var F = plan.F, n = F.n, wF = V.dot(F.o, n), capWires = {}, walls = [], removed = 0;
+      holes.forEach(function (h) {
+        var info = h.info, pl = info.plane, w0 = kvBaseWire(info, h.L);
+        var sh = V.add(h.t, V.scale(n, h.wLo - V.dot(n, V.add(pl.origin || [0, 0, 0], h.t))));
+        var tr = N(new oc.gp_Trsf_1()); tr.SetTranslation_1(Vec(sh));
+        var wb = N(oc.TopoDS.Wire_1(transformed(w0, tr)));
+        var mp = N(new oc.BRepPrimAPI_MakePrism_1(wb, Vec(V.scale(n, h.wHi - h.wLo)), false, true));
+        var bot = N(oc.TopoDS.Wire_1(N(mp.FirstShape_1()))), top = N(oc.TopoDS.Wire_1(N(mp.LastShape_1())));
+        // inner wires run clockwise about the face's outward normal; the walls face into the hole
+        (capWires[h.lo] = capWires[h.lo] || []).push(h.L.wo * h.sLo > 0 ? N(oc.TopoDS.Wire_1(N(bot.Reversed()))) : bot);
+        (capWires[h.hi] = capWires[h.hi] || []).push(h.L.wo * h.sHi > 0 ? N(oc.TopoDS.Wire_1(N(top.Reversed()))) : top);
+        // (a prism of a wire counter-clockwise about its direction has its faces toward the loop's inside already)
+        facesOf(N(mp.Shape())).forEach(function (fc) { walls.push(h.L.wo < 0 ? N(oc.TopoDS.Face_1(N(fc.Reversed()))) : fc); });
+        if (h.L.area == null) kvLoopProps(info, h.L);
+        removed += h.L.area * (h.wHi - h.wLo);
+      });
+      var B = N(new oc.BRep_Builder()), shell = N(new oc.TopoDS_Shell()), solid = N(new oc.TopoDS_Solid());
+      B.MakeShell(shell);
+      plan.faces.forEach(function (fc, i) {
+        if (!capWires[i]) { B.Add(shell, fc); return; }
+        var mf = N(new oc.BRepBuilderAPI_MakeFace_2(fc));
+        capWires[i].forEach(function (w) { mf.Add(w); });
+        if (!mf.IsDone()) throw new Error('rfKV: face');
+        B.Add(shell, N(mf.Face()));
+      });
+      walls.forEach(function (fc) { B.Add(shell, fc); });
+      shell.Closed_2(true);
+      B.MakeSolid(solid); B.Add(solid, shell);
+      return { solid: solid, removed: removed };
+    }
+    // exact mass properties as the final stage computes them (Gauss-Kronrod volume, area to 1e-9, centre fixed rule)
+    function kvProps(b) {
+      var g = N(new oc.GProp_GProps_1()), s = N(new oc.GProp_GProps_1()), gv = N(new oc.GProp_GProps_1());
+      oc.BRepGProp.VolumeProperties_1(b, g, false, false, false);
+      oc.BRepGProp.VolumePropertiesGK_1(b, gv, 1e-9, false, true, false, false, false);
+      oc.BRepGProp.SurfaceProperties_2(b, s, 1e-9, false);
+      var c = N(g.CentreOfMass());
+      return { volume: gv.Mass(), area: s.Mass(), centroid: [c.X(), c.Y(), c.Z()] };
+    }
+    function kvCount(sh) { return explore(sh, ENUM.TopAbs_FACE).length; }
+    // an extrude of one outer loop with many holes (a Base Flange or Boss-Extrude of a perforated sheet's sketch): one
+    // face with the holes as inner wires, one prism (it was a prism of the outline cut by every hole's prism: the same
+    // faces). The sketch's loops never cross (Kernel.sketchProfile), so the slab is valid by construction and its mass
+    // properties are the face's area times the depth; the face's area guards the wires' orientation.
+    // The first body of a part (a Base Flange of a perforated blank) is the outline's prism alone, its holes laid in by
+    // the plate path like a cut's (kvBossHoles, taken by the feature loop after addBoss), so Edge Flanges added next
+    // are built on the plain plate and the holes wait for them (deferred, kvCommutes).
+    var kvSlabLast = null, kvBossHoles = null;
+    // the sketch as { outer, Ls (holes as kvLoop), profile, plane, range } when it is one outline with many holes
+    function kvSlabInfo(sk, plane, a, b) {
+      if (!PLT.on) return null;
+      var profile = sk.profile || K.sketchProfile(sk), loops = profile.loops || [];
+      var outer = loops.filter(function (l) { return l.depth === 0; }), holes = loops.filter(function (l) { return l.depth === 1; });
+      if (outer.length !== 1 || holes.length < PLT.minHoles || holes.length + 1 !== loops.length || !(b > a)) return null;
+      var Ls = holes.map(function (l) { return kvLoop(l, profile); });
+      if (Ls.some(function (L) { return !L; })) return null;
+      K.checkProfile(profile);
+      return { outer: outer[0], Ls: Ls, loops: Ls, profile: profile, plane: plane, range: [a, b] };
+    }
+    function kvOuterPrism(si) {
+      var a = si.range[0], b = si.range[1], face = N(N(new oc.BRepBuilderAPI_MakeFace_15(loopWire(si.outer, si.profile, si.plane), true)).Face());
+      return N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(face, a, si.plane), Vec(V.scale(si.plane.n, b - a)), false, true)).Shape());
+    }
+    function kvSlab(si) {
+      var profile = si.profile, plane = si.plane, a = si.range[0], b = si.range[1], Ls = si.Ls, outer = [si.outer];
+      var face = N(N(new oc.BRepBuilderAPI_MakeFace_15(loopWire(outer[0], profile, plane), true)).Face()), pp = draftPlaneOf(face);
+      if (!pp) return null;
+      var sF = V.dot(pp.n, plane.n) > 0 ? 1 : -1, mf = N(new oc.BRepBuilderAPI_MakeFace_2(face)), info = si, Ah = 0;
+      Ls.forEach(function (L) { var w = kvBaseWire(info, L); mf.Add(L.wo * sF > 0 ? N(oc.TopoDS.Wire_1(N(w.Reversed()))) : w); Ah += Math.abs(kvShoelace(L.l.pts)); });
+      if (!mf.IsDone()) return null;
+      var f2 = N(mf.Face()), g = N(new oc.GProp_GProps_1()), gl = N(new oc.GProp_GProps_1());
+      oc.BRepGProp.SurfaceProperties_2(f2, g, 1e-9, false);
+      var A = g.Mass(), Ap = Math.abs(kvShoelace(outer[0].pts)) - Ah;
+      if (!(Math.abs(A - Ap) < 0.25 * Ah)) return null;
+      oc.BRepGProp.LinearProperties(f2, gl, false, false);
+      var c = N(g.CentreOfMass()), d = b - a, cen = V.add([c.X(), c.Y(), c.Z()], V.scale(plane.n, (a + b) / 2));
+      var prism = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(f2, a, plane), Vec(V.scale(plane.n, d)), false, true)).Shape());
+      kvSlabLast = { shape: prism, props: { volume: A * d, area: 2 * A + gl.Mass() * d, centroid: cen }, faces: null, round: Ls.every(function (L) { return L.circle; }) };
+      if (!kvSlabLast.round) kvSlabLast.faces = kvCount(prism);
+      kvStats.slab = (kvStats.slab || 0) + Ls.length;
+      return prism;
+    }
+    // lay every pending hole into the body (or, when the plate no longer allows it, the Boolean / a rebuild)
+    function kvFlush() {
+      if (!kvPending.length) return;
+      var groups = kvPending, across = kvAcross, holes = [];
+      kvPending = []; kvAcross = false;
+      groups.forEach(function (g) { Array.prototype.push.apply(holes, g.holes); });
+      var why = null;
+      try {
+        if (bodies.length !== 1) why = 'not one body';
+        // (the body is unified first, as the final stage does, so that stage finds nothing left to merge)
+        var known = !why && kvKnown[0] && kvKnown[0].shape === bodies[0] ? kvKnown[0] : null, pre = why ? null : known ? bodies[0] : unify(bodies[0]);
+        var tq = now(), plan = why ? null : kvPlan(pre, holes);
+        kvStats.planMs = now() - tq;
+        if (typeof plan === 'string') { why = plan; plan = null; }
+        if (plan) {
+          var props0 = known ? known.props : kvProps(pre), ok0 = known ? true : valid(pre), bb0 = known ? known.bbox : bboxOf(pre, true);
+          // the orientation of the inner wires and walls, checked on a probe: the same construction with one hole of
+          // each kind (loop direction, entry and exit face), whose volume must be the body's less the hole's to 1e-9
+          // (the whole result's volume took 1.5 s at 1800 holes)
+          tq = now();
+          var kinds = {}, probe = [];
+          holes.forEach(function (h) { var key = h.L.wo + '|' + h.lo + '|' + h.hi + '|' + h.L.circle; if (!kinds[key]) { kinds[key] = true; probe.push(h); } });
+          var pr = kvApply(0, probe, plan), vol = volumeOf(pr.solid), wantP = props0.volume - pr.removed;
+          kvStats.volMs = now() - tq; tq = now();
+          if (!(Math.abs(vol - wantP) <= 1e-9 * Math.max(props0.volume, 1e-300))) why = 'volume ' + vol + ' for ' + wantP;
+          else {
+            var res = kvApply(0, holes, plan), want = props0.volume - res.removed;
+            kvStats.applyMs = now() - tq;
+            // area: the faces lose each hole twice and gain its wall; centre: the holes' volume moments taken away
+            var area = props0.area, mom = V.scale(props0.centroid, props0.volume);
+            holes.forEach(function (h) {
+              var d = h.wHi - h.wLo, pl = h.info.plane, c3 = V.add(K.to3D(pl, h.L.cen[0], h.L.cen[1]), h.t);
+              c3 = V.add(c3, V.scale(plan.F.n, (h.wLo + h.wHi) / 2 - V.dot(plan.F.n, c3)));
+              area += h.L.perim * d - 2 * h.L.area;
+              mom = V.sub(mom, V.scale(c3, h.L.area * d));
+            });
+            bodies[0] = res.solid;
+            kvKnown[0] = ok0 ? { shape: res.solid, props: { volume: want, area: area, centroid: V.scale(mom, 1 / want) }, bbox: bb0, faces: null, round: holes.every(function (h) { return h.L.circle; }) } : null;
+            if (kvKnown[0] && !kvKnown[0].round) kvKnown[0].faces = kvCount(res.solid);
+            kvStats.plate += holes.length;
+            return;
+          }
+        }
+      } catch (e) { if (e && e.kvRedo) throw e; why = 'error ' + (e && e.message || e); }
+      kvStats.why = why;
+      // deferred across a flange: only a rebuild in feature order gives the right part
+      if (across) throw kvRedo(why);
+      kvStats.boolean += holes.length;
+      groups.forEach(function (g) {
+        try { applyCut(kvTool(g.f.id), g.f); } catch (e) { status[g.f.id] = 'error: ' + (e.message || String(e)); }
+      });
+    }
+    // a feature the pending holes can wait across: it is built on the plate without them and reads nothing they change
+    function kvCommutes(f) {
+      if (f.suppressed || f.type === 'plane' || f.type === 'crossBreak') return true;
+      if (f.type === 'sketch') return !(f.plane && f.plane.custom);
+      if (f.type === 'flange') return !kvNoDefer;
+      return false;
+    }
+    // a plate-path group of holes for feature f; false: f is built the usual way (pending holes laid in first)
+    function kvAdd(f, holes) {
+      if (bodies.length !== 1 || holes.length < PLT.minHoles) { kvFlush(); return false; }
+      if (kvPending.length && !kvSameDir(kvPending[0].holes[0], holes[0])) kvFlush();
+      // (the plate is checked when the holes are laid in: if it does not allow them there and nothing was deferred
+      // across them, the Boolean of each feature in turn is exactly what this feature would have done now)
+      kvPending.push({ f: f, holes: holes }); kvLazy[f.id] = true;
+      kvStats.holes += holes.length;
+      if (kvNoDefer) kvFlush();
+      return true;
+    }
+    function kvTryCut(f) {
+      var info = kvCutInfo(f);
+      if (!info) { kvFlush(); return false; }
+      kvCuts[f.id] = info;
+      if (info.loops.length < PLT.minHoles || bodies.length !== 1) { kvFlush(); return false; }
+      return kvAdd(f, info.loops.map(function (L) { return { L: L, info: info, t: [0, 0, 0] }; }));
+    }
+    function kvTryPattern(f) {
+      var info = kvCuts[f.feature];
+      if (!info || status[f.feature] !== 'ok' || f.bodies || f.type !== 'lpattern' || !K.isCut(f, m)) { kvFlush(); return false; }
+      var d1 = K.AXES[f.d1 || 'x'].map(function (x) { return x * (f.rev1 ? -1 : 1); }), n1 = Math.max(1, f.n1 | 0), n2 = f.d2 ? Math.max(1, f.n2 | 0) : 1;
+      var d2 = f.d2 ? K.AXES[f.d2].map(function (x) { return x * (f.rev2 ? -1 : 1); }) : [0, 0, 0], holes = [];
+      if ((n1 * n2 - 1) * info.loops.length < PLT.minHoles || bodies.length !== 1) { kvFlush(); return false; }
+      for (var i = 0; i < n1; i++) for (var j = 0; j < n2; j++) {
+        if (i === 0 && j === 0) continue;
+        var t = [0, 1, 2].map(function (k) { return d1[k] * i * (+f.s1 || 0) + d2[k] * j * (+f.s2 || 0); });
+        info.loops.forEach(function (L) { holes.push({ L: L, info: info, t: t }); });
+      }
+      return kvAdd(f, holes);
+    }
+    // the tool of a feature the plate path built, made when something asks for it (a pattern or mirror of the cut that
+    // the plate path does not take, the Boolean when the plate does not allow the holes): one prism per loop, not
+    // joined; a pattern's translated copies of its seed's tool
+    function kvTool(id) {
+      if (tools[id] || !kvLazy[id]) return tools[id] || null;
+      var info = kvCuts[id], f = K.findFeature(m, id);
+      if (info && info.outer && f && f.type === 'extrude') tools[id] = kvSlab(info) || null;
+      else if (info && f && f.type === 'extrude') {
+        tools[id] = compound(info.loops.map(function (L) {
+          var fc = N(N(new oc.BRepBuilderAPI_MakeFace_15(kvBaseWire(info, L), true)).Face()), a = info.range[0], b = info.range[1];
+          return N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(fc, a, info.plane), Vec(V.scale(info.plane.n, b - a)), false, true)).Shape());
+        }));
+      } else if (f && f.type === 'lpattern') tools[id] = patternTool(f);
+      return tools[id] || null;
+    }
 
     // ---- rebuild cache (opts.cache, kept by the worker between builds): after each feature, a snapshot of the bodies,
     // tools, planes, sketches and statuses; the longest prefix of unchanged features (same resolved JSON, same sheet
@@ -1890,11 +2292,16 @@ var OcctKernel = (function () {
         Object.keys(cache.tools).forEach(function (id) { if (before[id]) tools[id] = cache.tools[id]; });
         Object.keys(S0.status).forEach(function (id) { status[id] = S0.status[id]; });
         approx = !!S0.approx;
+        kvPending = (S0.kvPending || []).slice(); kvAcross = !!S0.kvAcross; Object.assign(kvCuts, S0.kvCuts || {}); Object.assign(kvLazy, S0.kvLazy || {});
+        kvKnown = (S0.kvKnown || []).map(function (x) { return x && Object.assign({}, x); });
       }
     }
     function snapshot(i) {
       if (!cache || readOnly) return;
       var S = { bodies: bodies.map(keep), bodyFeatures: bodyFeatures.slice(), planes: {}, sketches: {}, status: {}, unsupported: unsupported, approx: approx };
+      // rfKV: holes still waiting, the cuts patterns may copy, and which bodies the plate path made
+      S.kvPending = kvPending.slice(); S.kvAcross = kvAcross; S.kvCuts = Object.assign({}, kvCuts); S.kvLazy = Object.assign({}, kvLazy);
+      S.kvKnown = kvKnown.map(function (x, i) { return x && x.shape === bodies[i] ? Object.assign({}, x, { shape: S.bodies[i] }) : null; });
       Object.keys(planes).forEach(function (id) { S.planes[id] = planes[id]; });
       Object.keys(sketches).forEach(function (id) { S.sketches[id] = sketches[id]; });
       Object.keys(status).forEach(function (id) { S.status[id] = status[id]; });
@@ -1912,6 +2319,7 @@ var OcctKernel = (function () {
         if (!SUPPORTED[f.type]) { unsupported = f.type; status[f.id] = 'unsupported'; return; }
         var tf = now();   // r11/occtswap11: per-feature build time (out.ms.features)
         try {
+          if (kvPending.length) { if (kvCommutes(f)) kvAcross = kvAcross || f.type === 'flange'; else if (f.type !== 'extrude' && f.type !== 'lpattern') kvFlush(); }   // rfKV
           if (rm.featureErrors[f.id]) throw new Error(rm.featureErrors[f.id]);
           var tool = null;
           switch (f.type) {
@@ -1926,7 +2334,7 @@ var OcctKernel = (function () {
               if (fp && fp.plane !== f.plane) { f.plane = fp.plane; keys[fi] = featureKey(f); }
               if (!f.profile) f.profile = K.sketchProfile(f); sketches[f.id] = f; break;
             }
-            case 'extrude': tool = extrudeTool(f); break;
+            case 'extrude': if (K.isCut(f, m) ? kvTryCut(f) : (kvFlush(), false)) break; tool = extrudeTool(f); break;   // rfKV
             case 'revolve': tool = revolveTool(f); break;
             case 'loft': tool = loftTool(f); break;
             case 'boundary': tool = rfFBBoundary(oc, K, f, m, { N: N, R: R, explore: explore, volumeOf: volumeOf, sketches: sketches, planes: planes, unsupportedErr: unsupportedErr, loft: function (ids) { return loftTool({ sketches: ids }); }, loftWires: function (ids) { return ids.map(function (id) { var s = sketchById(id, 'A Direction 1 profile sketch was not found.'), o = outerLoop(s, 'Each Direction 1 sketch must contain exactly one closed profile.'); return loopWire(o.loop, o.profile, K.resolvePlane(s.plane, m, planes)); }); } }); break;   // rfFB
@@ -1955,20 +2363,33 @@ var OcctKernel = (function () {
             case 'deleteBody': rfHTdeleteBody(f); break;   // rfHT: Delete/Keep Body
             case 'shell': shellOp(f); break;
             case 'draft': draftOp(f); break;   // rfDX
-            default: tool = patternTool(f);
+            default: if (f.type === 'lpattern' ? kvTryPattern(f) : (kvFlush(), false)) break; tool = patternTool(f);   // rfKV
           }
           if (tool) {
             tools[f.id] = tool;
             if (K.isCut(f, m)) applyCut(tool, f); else addBoss(tool, f);
+            if (kvSlabLast && kvSlabLast.shape === tool) { var kbi = bodies.indexOf(tool); if (kbi >= 0) kvKnown[kbi] = Object.assign({}, kvSlabLast, { bbox: bboxOf(tool, true) }); }   // rfKV
+            if (kvBossHoles && bodies.length === 1 && bodies[0] === tool) {
+              var kbh = kvBossHoles; kvBossHoles = null;
+              kvCuts[f.id] = kbh.info; delete tools[f.id];
+              if (!kvAdd(f, kbh.info.Ls.map(function (L) { return { L: L, info: kbh.info, t: [0, 0, 0] }; }))) {
+                var ksl = kvSlab(kbh.info);
+                if (!ksl) throw new Error('OpenCascade could not make the holes of the sketch.');
+                bodies[0] = tools[f.id] = ksl;
+              }
+            }
+            kvSlabLast = null; kvBossHoles = null;
           }
           status[f.id] = 'ok';
         } catch (e) {
+          if (e && e.kvRedo) throw e;
           if (e.unsupported) { unsupported = e.unsupported; status[f.id] = 'unsupported'; return; }
           status[f.id] = 'error: ' + (e.message || String(e));
         }
         featMs[f.id] = now() - tf;
         snapshot(fi);
       });
+      if (kvPending.length) { var tKV = now(); kvStats.deferred = kvStats.deferred || kvAcross; kvFlush(); featMs.kvFlush = now() - tKV; }   // rfKV: the holes still waiting
       var tBuild = now() - t0;
       var out = { ok: !unsupported && Object.keys(status).every(function (k) { return status[k] === 'ok'; }), status: status, unsupported: unsupported,
         bodies: bodies.length, bodyFeatures: bodyFeatures.slice(), valid: true, volume: 0, bbox: null, faces: [], mesh: null, ms: { build: tBuild, mesh: 0, features: featMs }, reused: reused,
@@ -1980,15 +2401,35 @@ var OcctKernel = (function () {
         tolerance: approx || m.features.some(function (f) {
           return f.type === 'sweep' || f.type === 'loft' || f.type === 'boundary' || f.type === 'import' || f.type === 'flange' || f.type === 'jog' || f.type === 'sketchedBend' || f.type === 'insertBends' || f.type === 'convertSM' || ((f.type === 'fillet' || f.type === 'chamfer') && (f.edges || []).some(function (e) { return e.chain === false; }));
         }) ? 2e-2 : 1e-4 };
+      out.plate = kvStats;   // rfKV
       if (unsupported || !bodies.length) return out;
+      var tS = now();
       // booleans leave faces split along old seams (a pocket floor in pieces): merge faces on the same surface
-      bodies = bodies.map(function (b) {
-        try { var u = N(new oc.ShapeUpgrade_UnifySameDomain_2(b, true, true, false)); u.Build(); return N(u.Shape()); } catch (e) { return b; }
+      // rfKV: a body the plate path made stays known (valid, exact properties, box) while unify leaves its faces alone
+      var known = bodies.map(function (b, i) { return kvKnown[i] && kvKnown[i].shape === b ? kvKnown[i] : null; });
+      bodies = bodies.map(function (b, i) {
+        // (round holes add nothing UnifySameDomain could merge: one cylinder each, on a body unified before them)
+        if (known[i] && known[i].round) return b;
+        try {
+          var u = N(new oc.ShapeUpgrade_UnifySameDomain_2(b, true, true, false)); u.Build();
+          var ub = N(u.Shape());
+          if (known[i] && kvCount(ub) !== known[i].faces) known[i] = null;
+          return ub;
+        } catch (e) { return b; }
       });
       bodies = wrapScribeAll(bodies);   // rfDZ: Wrap scribes split the final faces (UnifySameDomain would merge a split made earlier)
+      if (m.features.some(function (f) { return f.type === 'wrap' && f.mode === 'scribe'; })) known = known.map(function () { return null; });
       // exact mass properties per body (volume, surface area, centre of volume): Kernel.massProps prefers them
-      out.bodyProps = bodies.map(function (b) {
-        if (!valid(b)) out.valid = false;
+      out.ms.unify = now() - tS; tS = now();
+      // rfKV: the plate path's holes are apart and clear of every edge (kvPlan), the body before them passed the check
+      bodies.forEach(function (b, i) {
+        if (!known[i]) { if (!valid(b)) out.valid = false; return; }
+        kvStats.checkSkipped++;
+        if (PLT.check) kvStats.checked = (kvStats.checked !== false) && valid(b);
+      });
+      out.ms.valid = now() - tS; tS = now();
+      out.bodyProps = bodies.map(function (b, i) {
+        if (known[i]) { kvStats.propsKnown++; out.volume += known[i].props.volume; return { volume: known[i].props.volume, area: known[i].props.area, centroid: known[i].props.centroid.slice() }; }
         var g = N(new oc.GProp_GProps_1()), s = N(new oc.GProp_GProps_1());
         // lane FZ2: Gauss-Kronrod over the knot spans to a relative error of 1e-9. The fixed-order Gauss rule was 1.2e-4
         // heavy on a handwheel whose spokes meet the rim and hub in B-spline intersection curves (rfGA G01) and 5e-5
@@ -2005,7 +2446,8 @@ var OcctKernel = (function () {
         return { volume: v, area: s.Mass(), centroid: [c.X(), c.Y(), c.Z()] };
       });
       var all = bodies.length === 1 ? bodies[0] : compound(bodies);
-      out.bbox = bboxOf(all, true);
+      out.bbox = bodies.length === 1 && known[0] ? known[0].bbox : bboxOf(all, true);   // rfKV: holes inside the plate leave its box
+      out.ms.props = now() - tS;
       if (opts.exports && out.valid) {
         // STEP AP214 and IGES 5.3 straight from the B-rep: every face exact (planes, cylinders, cones, spheres, tori,
         // B-splines), in the model's units, the product named after the part
@@ -2045,7 +2487,9 @@ var OcctKernel = (function () {
         out.mesh = tessellate(all, bodies, opts.chord, out.faces);
         out.ms.mesh = now() - t1;
       }
+      tS = now();
       if (out.mesh) { try { tangentFaces(bodies, out.faces); } catch (eT) { /* no tangency info: edges fall back to the facet angle */ } }
+      out.ms.tangent = now() - tS;
       return out;
     } finally {
       for (var a = arena.length - 1; a >= 0; a--) { try { if (arena[a] && arena[a].delete && !(arena[a].isDeleted && arena[a].isDeleted())) arena[a].delete(); } catch (e) { } }
@@ -2100,21 +2544,220 @@ var OcctKernel = (function () {
     // (default 12°; 0 = off -> 20°). It was 0.35 rad (20°): a Ø.0625 spring wire came out an 18-gon and the Trumpet
     // Funnel's flare 372 triangles, both faceted and lumpy. Cap like Anvil's maxSegs 128: the chord never goes below
     // 1.5e-4 of the bounding diagonal (a circle as large as the part stays <= 128 segments).
+    // ---- rfKV: the display mesh of a perforated face. BRepMesh triangulates a planar face with many inner wires in
+    // far more than linear time (Watson: 2.1 s at 200 holes, 14 s at 600, 69 s at 1800 in wasm; Delabella ~2.5x less,
+    // still superlinear). Planar faces with at least PLATE.meshMinWires inner wires are triangulated here (kvEarcut,
+    // boundary points only), and so are the walls of their round through holes (a cylinder band between two full
+    // circles on such faces): each circle in Kernel.segsForRadius points, as Anvil's own mesh (the same facets on
+    // both engines). BRepMesh does every other face, which also lays the points of the edges those faces share with a
+    // perforated face (read back through PolygonOnTriangulation). Any doubt (an edge with no points, a loop that does
+    // not close) and the whole part is meshed by BRepMesh as before.
+    function kvSegs(r) {
+      var T = (K._ && K._.TESS) || { chordTol: 0.05, minSegs: 16, maxSegs: 128, maxAngle: 12 };
+      var tq = (m && m.tessellation) || (m && m.units === 'in' ? { chordTol: 0.002 } : {});
+      var ct = tq.chordTol != null ? +tq.chordTol : T.chordTol, mn = tq.minSegs != null ? +tq.minSegs : T.minSegs, mx = tq.maxSegs != null ? +tq.maxSegs : T.maxSegs;
+      var ma = tq.maxAngle != null ? +tq.maxAngle : T.maxAngle, legacy = tq.legacy != null ? !!tq.legacy : !!T.legacy;
+      if (legacy) return Math.max(16, Math.min(72, Math.round(8 * Math.sqrt(Math.max(r, 0.01)))));
+      r = Math.max(+r || 0, 0.01);
+      var c = 1 - ct / r, n = c <= -1 ? mn : Math.ceil(Math.PI / Math.acos(Math.max(-1, Math.min(1, c))) - 1e-9);
+      if (ma > 0) n = Math.max(n, Math.ceil(360 / ma - 1e-9));
+      n = Math.ceil(n / 8) * 8;
+      return Math.max(mn, Math.min(mx, n));
+    }
+    function kvTypeOf(t) { return t && t.value != null ? t.value : t; }
+    // which faces kvMeshBuild triangulates: null when none
+    function kvMeshPlan(bodyList) {
+      var faces = [], emap = N(new oc.TopTools_IndexedMapOfShape_1()), edgeFaces = [], any = false;
+      bodyList.forEach(function (body) {
+        explore(body, ENUM.TopAbs_FACE).forEach(function (s) {
+          var f = N(oc.TopoDS.Face_1(s)), gi = faces.length, ad = N(new oc.BRepAdaptor_Surface_2(f, true)), rec = { f: f, t: kvTypeOf(ad.GetType()), edges: [] };
+          faces.push(rec);
+          if (rec.t === 0 && explore(f, ENUM.TopAbs_WIRE).length > PLT.meshMinWires) { rec.big = true; any = true; }
+          explore(f, ENUM.TopAbs_EDGE).forEach(function (se) {
+            var idx = emap.FindIndex(se);
+            if (!idx) idx = emap.Add(se);
+            rec.edges.push(idx);
+            var l = edgeFaces[idx] || (edgeFaces[idx] = []);
+            if (l.indexOf(gi) < 0) l.push(gi);
+          });
+        });
+      });
+      if (!any) return null;
+      var circleEdge = {};
+      faces.forEach(function (rec, gi) {
+        if (rec.t !== 1) return;
+        var u = rec.edges.filter(function (x, i) { return rec.edges.indexOf(x) === i; });
+        if (u.length !== 3) return;
+        var circ = u.filter(function (x) { return edgeFaces[x].length === 2 && edgeFaces[x].some(function (g) { return g !== gi && faces[g].big; }); });
+        var seam = u.filter(function (x) { return edgeFaces[x].length === 1; });
+        if (circ.length !== 2 || seam.length !== 1) return;
+        var ok = circ.every(function (x) {
+          var ac = N(new oc.BRepAdaptor_Curve_2(N(oc.TopoDS.Edge_1(emap.FindKey(x)))));
+          return kvTypeOf(ac.GetType()) === 1 && Math.abs(ac.LastParameter() - ac.FirstParameter() - 2 * Math.PI) < 1e-9;
+        });
+        if (!ok) return;
+        rec.wall = true; rec.circles = circ;
+        circ.forEach(function (x) { circleEdge[x] = true; });
+      });
+      var rest = [];
+      faces.forEach(function (rec) { if (!rec.big && !rec.wall) rest.push(rec.f); });
+      return { faces: faces, emap: emap, edgeFaces: edgeFaces, circleEdge: circleEdge, rest: rest };
+    }
+    // the triangles of every face kvMeshPlan picked ({ gi: [x, y, z, …] }), or null (then BRepMesh does them all)
+    function kvMeshBuild(kp) {
+      var faces = kp.faces, pts = {}, triCache = {}, outerCircle = {};
+      function edgeOf(idx) { return N(oc.TopoDS.Edge_1(kp.emap.FindKey(idx))); }
+      function circlePts(idx) {
+        if (pts[idx]) return pts[idx];
+        var ac = N(new oc.BRepAdaptor_Curve_2(edgeOf(idx))), ci = N(ac.Circle()), o = N(ci.Location()), r = ci.Radius();
+        var xd = N(N(ci.XAxis()).Direction()), yd = N(N(ci.YAxis()).Direction()), u0 = ac.FirstParameter(), n = kvSegs(r), out = [];
+        for (var k = 0; k < n; k++) {
+          var u = u0 + 2 * Math.PI * k / n, cu = Math.cos(u) * r, su = Math.sin(u) * r;
+          out.push([o.X() + cu * xd.X() + su * yd.X(), o.Y() + cu * xd.Y() + su * yd.Y(), o.Z() + cu * xd.Z() + su * yd.Z()]);
+        }
+        out.closed = true; out.c = [o.X(), o.Y(), o.Z()]; out.r = r;
+        return (pts[idx] = out);
+      }
+      function triOf(gi) {
+        if (triCache[gi]) return triCache[gi];
+        var loc = N(new oc.TopLoc_Location_1()), h = N(oc.BRep_Tool.Triangulation(faces[gi].f, loc, oc.Poly_MeshPurpose ? oc.Poly_MeshPurpose.Poly_MeshPurpose_NONE : 0));
+        return (triCache[gi] = h.IsNull() ? null : { h: h, tri: h.get(), loc: loc, tr: N(loc.Transformation()) });
+      }
+      function restPts(idx) {
+        if (pts[idx]) return pts[idx];
+        var g = kp.edgeFaces[idx].filter(function (x) { return !faces[x].big && !faces[x].wall; })[0];
+        if (g == null) {   // between two perforated faces (a box of perforated sheet): a straight edge is its two ends
+          var al = N(new oc.BRepAdaptor_Curve_2(edgeOf(idx)));
+          if (kvTypeOf(al.GetType()) !== 0) return null;
+          var e0 = N(al.Value(al.FirstParameter())), e1 = N(al.Value(al.LastParameter()));
+          return (pts[idx] = [[e0.X(), e0.Y(), e0.Z()], [e1.X(), e1.Y(), e1.Z()]]);
+        }
+        var T = triOf(g);
+        if (!T) return null;
+        var ph = N(oc.BRep_Tool.PolygonOnTriangulation_1(edgeOf(idx), T.h, T.loc));
+        if (ph.IsNull()) return null;
+        var poly = ph.get(), out = [];
+        for (var i = 1; i <= poly.NbNodes(); i++) { var p = N(N(T.tri.Node(poly.Node(i))).Transformed(T.tr)); out.push([p.X(), p.Y(), p.Z()]); }
+        return (pts[idx] = out);
+      }
+      function same(a, b, tol) { return Math.abs(a[0] - b[0]) <= tol && Math.abs(a[1] - b[1]) <= tol && Math.abs(a[2] - b[2]) <= tol; }
+      var res = {};
+      for (var gi = 0; gi < faces.length; gi++) {
+        var rec = faces[gi];
+        if (!rec.big) continue;
+        var pl = draftPlaneOf(rec.f);
+        if (!pl) return null;
+        var n = pl.n, ux = V.norm(V.cross(n, Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), vy = V.cross(n, ux), loops = [];
+        var wires = explore(rec.f, ENUM.TopAbs_WIRE);
+        for (var wi = 0; wi < wires.length; wi++) {
+          var runs = [], circ = null;
+          var es = explore(wires[wi], ENUM.TopAbs_EDGE);
+          for (var ei = 0; ei < es.length; ei++) {
+            var idx = kp.emap.FindIndex(es[ei]);
+            if (!idx) return null;
+            if (kp.circleEdge[idx]) { if (es.length !== 1) return null; circ = idx; runs.push(circlePts(idx)); }
+            else { var rp = restPts(idx); if (!rp || rp.length < 2) return null; runs.push(rp); }
+          }
+          // chain the runs end to end into one closed ring (no point repeated)
+          var ring;
+          if (runs.length === 1 && (runs[0].closed || same(runs[0][0], runs[0][runs[0].length - 1], 1e-9 + 1e-9 * V.len(runs[0][0])))) ring = runs[0].closed ? runs[0].slice() : runs[0].slice(0, -1);
+          else {
+            var sz = 0; runs.forEach(function (r0) { r0.forEach(function (p) { sz = Math.max(sz, Math.abs(p[0]), Math.abs(p[1]), Math.abs(p[2])); }); });
+            var tol = 1e-7 * (1 + sz), left = runs.slice(1);
+            ring = runs[0].slice();
+            while (left.length) {
+              var end = ring[ring.length - 1], hit = -1, rev = false;
+              for (var q = 0; q < left.length; q++) {
+                if (same(left[q][0], end, tol)) { hit = q; break; }
+                if (same(left[q][left[q].length - 1], end, tol)) { hit = q; rev = true; break; }
+              }
+              if (hit < 0) return null;
+              var nx = left.splice(hit, 1)[0];
+              if (rev) nx = nx.slice().reverse();
+              for (var t = 1; t < nx.length; t++) ring.push(nx[t]);
+            }
+            if (!same(ring[0], ring[ring.length - 1], tol)) return null;
+            ring.pop();
+          }
+          if (ring.length < 3) return null;
+          var r2 = ring.map(function (p) { return [V.dot(p, ux), V.dot(p, vy)]; }), A = 0;
+          for (var a = 0; a < r2.length; a++) { var p1 = r2[a], p2 = r2[(a + 1) % r2.length]; A += p1[0] * p2[1] - p2[0] * p1[1]; }
+          loops.push({ ring: ring, r2: r2, area: Math.abs(A / 2), circ: circ });
+        }
+        var oi = 0;
+        loops.forEach(function (l, k) { if (l.area > loops[oi].area) oi = k; });
+        var order = [loops[oi]].concat(loops.filter(function (l, k) { return k !== oi; })), data = [], holes = [], P3 = [];
+        order.forEach(function (l, k) {
+          if (k) holes.push(P3.length);
+          l.r2.forEach(function (p, j) { data.push(p[0], p[1]); P3.push(l.ring[j]); });
+          if (l.circ != null) outerCircle[l.circ] = k === 0;
+        });
+        var tris = kvEarcut(data, holes), out = [];
+        // every vertex of the face is on its boundary: Σ triangles = vertices + 2·holes - 2 when nothing was dropped
+        if (tris.length / 3 !== P3.length + 2 * (order.length - 1) - 2) return null;
+        for (var ti = 0; ti < tris.length; ti += 3) {
+          var ia = tris[ti], ib = tris[ti + 1], ic = tris[ti + 2];
+          var cr = (data[2 * ib] - data[2 * ia]) * (data[2 * ic + 1] - data[2 * ia + 1]) - (data[2 * ib + 1] - data[2 * ia + 1]) * (data[2 * ic] - data[2 * ia]);
+          if (cr < 0) { var x = ib; ib = ic; ic = x; }
+          out.push(P3[ia][0], P3[ia][1], P3[ia][2], P3[ib][0], P3[ib][1], P3[ib][2], P3[ic][0], P3[ic][1], P3[ic][2]);
+        }
+        res[gi] = out;
+      }
+      // hole walls: a band of quads between the two circles' points (lined up at the seam), facing the hole's axis
+      // for a hole (the circle an inner loop of its face), away from it for a rim
+      for (gi = 0; gi < faces.length; gi++) {
+        rec = faces[gi];
+        if (!rec.wall) continue;
+        var Ar = circlePts(rec.circles[0]), Br = circlePts(rec.circles[1]), nA = Ar.length;
+        if (Br.length !== nA || outerCircle[rec.circles[0]] == null || outerCircle[rec.circles[0]] !== outerCircle[rec.circles[1]]) return null;
+        var j0 = 0, dmin = Infinity;
+        Br.forEach(function (p, j) { var d = V.len(V.sub(p, Ar[0])); if (d < dmin) { dmin = d; j0 = j; } });
+        var dir = V.len(V.sub(Br[(j0 + 1) % nA], Ar[1])) <= V.len(V.sub(Br[(j0 + nA - 1) % nA], Ar[1])) ? 1 : -1;
+        var ax = V.sub(Br.c, Ar.c), axl = V.len(ax);
+        if (!(axl > 0)) return null;
+        ax = V.scale(ax, 1 / axl);
+        var sgn = outerCircle[rec.circles[0]] ? 1 : -1, wout = [];
+        for (var k = 0; k < nA; k++) {
+          var a0 = Ar[k], a1 = Ar[(k + 1) % nA], b0 = Br[(j0 + dir * k + nA * 2) % nA], b1 = Br[(j0 + dir * (k + 1) + nA * 2) % nA];
+          [[a0, a1, b1], [a0, b1, b0]].forEach(function (T3) {
+            var nrm = V.cross(V.sub(T3[1], T3[0]), V.sub(T3[2], T3[0])), cc = V.scale(V.add(V.add(T3[0], T3[1]), T3[2]), 1 / 3), d0 = V.sub(cc, Ar.c);
+            var rad = V.sub(d0, V.scale(ax, V.dot(d0, ax)));
+            if (V.dot(nrm, rad) * sgn < 0) T3 = [T3[0], T3[2], T3[1]];
+            wout.push(T3[0][0], T3[0][1], T3[0][2], T3[1][0], T3[1][1], T3[1][2], T3[2][0], T3[2][1], T3[2][2]);
+          });
+        }
+        res[gi] = wout;
+      }
+      return res;
+    }
     function tessellate(all, bodyList, chord, facesOut) {
       var tq = (m && m.tessellation) || {}, inch = m && m.units === 'in';
       chord = chord || tq.chordTol || (inch ? 0.05 / 25.4 : 0.05);
       var bb = bboxOf(all, false), diag = bb ? Math.hypot(bb[1][0] - bb[0][0], bb[1][1] - bb[0][1], bb[1][2] - bb[0][2]) : 0;
       chord = Math.max(chord, diag * 1.5e-4);
       var deg = tq.maxAngle != null ? +tq.maxAngle : 12;
-      N(new oc.BRepMesh_IncrementalMesh_2(all, chord, false, (deg > 0 ? Math.min(deg, 20) : 20) * Math.PI / 180, false));
-      var pos = [], faceOf = [];
+      var ang = (deg > 0 ? Math.min(deg, 20) : 20) * Math.PI / 180, kp = null, own = null, tq = now();
+      try { kp = PLT.mesh ? kvMeshPlan(bodyList) : null; } catch (eP) { kp = null; }
+      kvStats.meshPlanMs = now() - tq;
+      if (kp) {   // rfKV: perforated faces and their hole walls here, the rest by BRepMesh
+        tq = now();
+        if (kp.rest.length) N(new oc.BRepMesh_IncrementalMesh_2(compound(kp.rest), chord, false, ang, false));
+        kvStats.brepMeshMs = now() - tq; tq = now();
+        try { own = kvMeshBuild(kp); } catch (eB) { own = null; }
+        kvStats.meshBuildMs = now() - tq;
+        if (!own) oc.BRepTools.Clean(all, true);
+        else kvStats.meshFaces = Object.keys(own).length;
+      }
+      if (!own) N(new oc.BRepMesh_IncrementalMesh_2(all, chord, false, ang, false));
+      var pos = [], faceOf = [], gAll = 0;
       bodyList.forEach(function (body, bi) {
         explore(body, ENUM.TopAbs_FACE).forEach(function (s) {
-          var f = N(oc.TopoDS.Face_1(s)), fi = facesOut.length;
+          var f = N(oc.TopoDS.Face_1(s)), fi = facesOut.length, gi = gAll++;
           var ad = N(new oc.BRepAdaptor_Surface_2(f, true)), t = ad.GetType(), type = SURF[t && t.value != null ? t.value : t] || 'other';
           var info = { body: bi, type: type }, sr = surfRecord(ad, type);
           if (sr) info.surf = sr;
           facesOut.push(info);
+          if (own && own[gi]) { var ow = own[gi]; for (var q = 0; q < ow.length; q++) pos.push(ow[q]); for (q = 0; q < ow.length; q += 9) faceOf.push(fi); return; }
           var loc = N(new oc.TopLoc_Location_1()), h = N(oc.BRep_Tool.Triangulation(f, loc, oc.Poly_MeshPurpose ? oc.Poly_MeshPurpose.Poly_MeshPurpose_NONE : 0));
           if (h.IsNull()) return;
           var tri = h.get(), tr = N(loc.Transformation()), rev = f.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED, nodes = [];
@@ -2368,6 +3011,307 @@ var OcctKernel = (function () {
         } catch (e) { return b; }
       });
     }
+  }
+
+  // ---- rfKV: triangulation of a planar face with many holes (kvTessellate). The ear-clipping algorithm of
+  // mapbox/earcut 2.2 (ISC License, Copyright (c) 2016, Mapbox): holes bridged to the outer ring from their leftmost
+  // vertex, ears found through a z-order index once the ring is big. kvEarcut(data [x0, y0, x1, y1, …], holeStarts
+  // [vertex index of each hole's first point]) -> [i, j, k, …] vertex indices.
+  //
+  // ISC License
+  // Copyright (c) 2016, Mapbox
+  // Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby
+  // granted, provided that the above copyright notice and this permission notice appear in all copies.
+  // THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL
+  // IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+  // INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+  // AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+  // PERFORMANCE OF THIS SOFTWARE.
+  function kvEarcut(data, holeIndices) {
+    var hasHoles = holeIndices && holeIndices.length, outerLen = hasHoles ? holeIndices[0] * 2 : data.length;
+    var outerNode = ecLinked(data, 0, outerLen, true), tris = [];
+    if (!outerNode || outerNode.next === outerNode.prev) return tris;
+    var minX = 0, minY = 0, invSize = 0;
+    if (hasHoles) outerNode = ecHoles(data, holeIndices, outerNode);
+    if (data.length > 160) {
+      var maxX = data[0], maxY = data[1]; minX = maxX; minY = maxY;
+      for (var i = 2; i < outerLen; i += 2) { var x = data[i], y = data[i + 1]; if (x < minX) minX = x; if (y < minY) minY = y; if (x > maxX) maxX = x; if (y > maxY) maxY = y; }
+      invSize = Math.max(maxX - minX, maxY - minY); invSize = invSize !== 0 ? 32767 / invSize : 0;
+    }
+    ecLinkedEar(outerNode, tris, minX, minY, invSize, 0);
+    return tris;
+  }
+  function EcNode(i, x, y) { this.i = i; this.x = x; this.y = y; this.prev = null; this.next = null; this.z = 0; this.prevZ = null; this.nextZ = null; this.steiner = false; }
+  function ecLinked(data, start, end, clockwise) {
+    var i, j, last, sum = 0;
+    for (i = start, j = end - 2; i < end; i += 2) { sum += (data[j] - data[i]) * (data[i + 1] + data[j + 1]); j = i; }
+    if (clockwise === (sum > 0)) { for (i = start; i < end; i += 2) last = ecInsert(i / 2, data[i], data[i + 1], last); }
+    else { for (i = end - 2; i >= start; i -= 2) last = ecInsert(i / 2, data[i], data[i + 1], last); }
+    if (last && ecEquals(last, last.next)) { ecRemove(last); last = last.next; }
+    return last;
+  }
+  function ecFilter(start, end) {
+    if (!start) return start;
+    if (!end) end = start;
+    var p = start, again;
+    do {
+      again = false;
+      if (!p.steiner && (ecEquals(p, p.next) || ecArea(p.prev, p, p.next) === 0)) {
+        ecRemove(p); p = end = p.prev;
+        if (p === p.next) break;
+        again = true;
+      } else p = p.next;
+    } while (again || p !== end);
+    return end;
+  }
+  function ecLinkedEar(ear, tris, minX, minY, invSize, pass) {
+    if (!ear) return;
+    if (!pass && invSize) ecIndexCurve(ear, minX, minY, invSize);
+    var stop = ear, prev, next;
+    while (ear.prev !== ear.next) {
+      prev = ear.prev; next = ear.next;
+      if (invSize ? ecIsEarHashed(ear, minX, minY, invSize) : ecIsEar(ear)) {
+        tris.push(prev.i, ear.i, next.i);
+        ecRemove(ear);
+        ear = next.next; stop = next.next;
+        continue;
+      }
+      ear = next;
+      if (ear === stop) {
+        if (!pass) ecLinkedEar(ecFilter(ear), tris, minX, minY, invSize, 1);
+        else if (pass === 1) ecLinkedEar(ecCure(ecFilter(ear), tris), tris, minX, minY, invSize, 2);
+        else if (pass === 2) ecSplit(ear, tris, minX, minY, invSize);
+        break;
+      }
+    }
+  }
+  function ecIsEar(ear) {
+    var a = ear.prev, b = ear, c = ear.next;
+    if (ecArea(a, b, c) >= 0) return false;
+    var ax = a.x, bx = b.x, cx = c.x, ay = a.y, by = b.y, cy = c.y;
+    var x0 = Math.min(ax, bx, cx), y0 = Math.min(ay, by, cy), x1 = Math.max(ax, bx, cx), y1 = Math.max(ay, by, cy);
+    for (var p = c.next; p !== a; p = p.next) {
+      if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1 && ecInTri(ax, ay, bx, by, cx, cy, p.x, p.y) && ecArea(p.prev, p, p.next) >= 0) return false;
+    }
+    return true;
+  }
+  function ecIsEarHashed(ear, minX, minY, invSize) {
+    var a = ear.prev, b = ear, c = ear.next;
+    if (ecArea(a, b, c) >= 0) return false;
+    var ax = a.x, bx = b.x, cx = c.x, ay = a.y, by = b.y, cy = c.y;
+    var x0 = Math.min(ax, bx, cx), y0 = Math.min(ay, by, cy), x1 = Math.max(ax, bx, cx), y1 = Math.max(ay, by, cy);
+    var minZ = ecZ(x0, y0, minX, minY, invSize), maxZ = ecZ(x1, y1, minX, minY, invSize), p = ear.prevZ, n = ear.nextZ;
+    function blocks(q) { return q.x >= x0 && q.x <= x1 && q.y >= y0 && q.y <= y1 && q !== a && q !== c && ecInTri(ax, ay, bx, by, cx, cy, q.x, q.y) && ecArea(q.prev, q, q.next) >= 0; }
+    while (p && p.z >= minZ && n && n.z <= maxZ) {
+      if (blocks(p)) return false;
+      p = p.prevZ;
+      if (blocks(n)) return false;
+      n = n.nextZ;
+    }
+    while (p && p.z >= minZ) { if (blocks(p)) return false; p = p.prevZ; }
+    while (n && n.z <= maxZ) { if (blocks(n)) return false; n = n.nextZ; }
+    return true;
+  }
+  function ecCure(start, tris) {
+    var p = start;
+    do {
+      var a = p.prev, b = p.next.next;
+      if (!ecEquals(a, b) && ecIntersects(a, p, p.next, b) && ecLocallyInside(a, b) && ecLocallyInside(b, a)) {
+        tris.push(a.i, p.i, b.i);
+        ecRemove(p); ecRemove(p.next);
+        p = start = b;
+      }
+      p = p.next;
+    } while (p !== start);
+    return ecFilter(p);
+  }
+  function ecSplit(start, tris, minX, minY, invSize) {
+    var a = start;
+    do {
+      var b = a.next.next;
+      while (b !== a.prev) {
+        if (a.i !== b.i && ecValidDiagonal(a, b)) {
+          var c = ecSplitPolygon(a, b);
+          a = ecFilter(a, a.next); c = ecFilter(c, c.next);
+          ecLinkedEar(a, tris, minX, minY, invSize, 0);
+          ecLinkedEar(c, tris, minX, minY, invSize, 0);
+          return;
+        }
+        b = b.next;
+      }
+      a = a.next;
+    } while (a !== start);
+  }
+  function ecHoles(data, holeIndices, outerNode) {
+    var queue = [];
+    for (var i = 0, len = holeIndices.length; i < len; i++) {
+      var start = holeIndices[i] * 2, end = i < len - 1 ? holeIndices[i + 1] * 2 : data.length, list = ecLinked(data, start, end, false);
+      if (!list) continue;
+      if (list === list.next) list.steiner = true;
+      queue.push(ecLeftmost(list));
+    }
+    queue.sort(function (a, b) { return a.x - b.x; });
+    // rfKV: with many holes the bridge search runs on a grid of the ring's edges instead of walking the whole ring
+    // (earcut walks it twice per hole: 4.2 of 4.6 s at 1800 holes); same candidates, same choice rules
+    var G = queue.length > 32 ? ecGrid(data, outerNode) : null;
+    ecG = G;
+    try {
+      for (i = 0; i < queue.length; i++) {
+        var bridge = G ? ecBridgeGrid(queue[i], G) : ecBridge(queue[i], outerNode);
+        if (!bridge) continue;
+        if (G) { var h = queue[i]; do { ecGAdd(G, h); h = h.next; } while (h !== queue[i]); }
+        var rev = ecSplitPolygon(bridge, queue[i]);
+        if (G) { ecGAdd(G, bridge); ecGAdd(G, rev); ecGAdd(G, rev.next); }
+        ecFilter(rev, rev.next);
+        outerNode = ecFilter(bridge, bridge.next);
+      }
+    } finally { ecG = null; }
+    return outerNode;
+  }
+  // the grid: G.n x G.n cells over the polygon's box, each a list of nodes whose edge (node -> node.next) crosses it
+  var ecG = null;
+  function ecGrid(data, outerNode) {
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (var i = 0; i < data.length; i += 2) { var x = data[i], y = data[i + 1]; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    var n = Math.max(1, Math.min(512, Math.ceil(Math.sqrt(data.length / 4)))), G = { x0: x0, y0: y0, sx: (x1 - x0) / n || 1, sy: (y1 - y0) / n || 1, n: n, cells: new Array(n * n), stamp: 0 };
+    var p = outerNode;
+    do { ecGAdd(G, p); p = p.next; } while (p !== outerNode);
+    return G;
+  }
+  function ecGcx(G, x) { var c = Math.floor((x - G.x0) / G.sx); return c < 0 ? 0 : c >= G.n ? G.n - 1 : c; }
+  function ecGcy(G, y) { var c = Math.floor((y - G.y0) / G.sy); return c < 0 ? 0 : c >= G.n ? G.n - 1 : c; }
+  function ecGAdd(G, p) {
+    var q = p.next, ca = ecGcx(G, Math.min(p.x, q.x)), cb = ecGcx(G, Math.max(p.x, q.x)), ra = ecGcy(G, Math.min(p.y, q.y)), rb = ecGcy(G, Math.max(p.y, q.y));
+    for (var r = ra; r <= rb; r++) for (var c = ca; c <= cb; c++) { var k = r * G.n + c; (G.cells[k] || (G.cells[k] = [])).push(p); }
+  }
+  // ecBridge on the grid: phase 1 walks the hole's row of cells leftwards from it (an edge further left cannot beat a
+  // hit already found right of that cell); phase 2 visits the cells of the triangle's box
+  function ecBridgeGrid(hole, G) {
+    var hx = hole.x, hy = hole.y, qx = -Infinity, m = null, row = ecGcy(G, hy), stamp = ++G.stamp, c, k, list, j, p;
+    for (c = ecGcx(G, hx); c >= 0; c--) {
+      if (G.x0 + (c + 1) * G.sx < qx) break;
+      list = G.cells[row * G.n + c];
+      if (!list) continue;
+      for (j = 0; j < list.length; j++) {
+        p = list[j];
+        if (p.removed || p.seen === stamp) continue;
+        p.seen = stamp;
+        if (hy <= p.y && hy >= p.next.y && p.next.y !== p.y) {
+          var x = p.x + (hy - p.y) * (p.next.x - p.x) / (p.next.y - p.y);
+          if (x <= hx && x > qx) { qx = x; m = p.x < p.next.x ? p : p.next; if (x === hx) return m; }
+        }
+      }
+    }
+    if (!m) return null;
+    var mx = m.x, my = m.y, tanMin = Infinity, tan, best = m;
+    var ca = ecGcx(G, Math.min(mx, qx, hx)), cb = ecGcx(G, hx), ra = ecGcy(G, Math.min(hy, my)), rb = ecGcy(G, Math.max(hy, my));
+    stamp = ++G.stamp;
+    for (var r = ra; r <= rb; r++) for (c = ca; c <= cb; c++) {
+      list = G.cells[r * G.n + c];
+      if (!list) continue;
+      for (j = 0; j < list.length; j++) {
+        p = list[j];
+        if (p.removed || p.seen === stamp) continue;
+        p.seen = stamp;
+        if (hx >= p.x && p.x >= mx && hx !== p.x && ecInTri(hy < my ? hx : qx, hy, mx, my, hy < my ? qx : hx, hy, p.x, p.y)) {
+          tan = Math.abs(hy - p.y) / (hx - p.x);
+          if (ecLocallyInside(p, hole) && (tan < tanMin || (tan === tanMin && (p.x > best.x || (p.x === best.x && ecArea(best.prev, best, p.prev) < 0 && ecArea(p.next, best, best.next) < 0))))) { best = p; tanMin = tan; }
+        }
+      }
+    }
+    return best;
+  }
+  function ecBridge(hole, outerNode) {
+    var p = outerNode, hx = hole.x, hy = hole.y, qx = -Infinity, m;
+    do {
+      if (hy <= p.y && hy >= p.next.y && p.next.y !== p.y) {
+        var x = p.x + (hy - p.y) * (p.next.x - p.x) / (p.next.y - p.y);
+        if (x <= hx && x > qx) { qx = x; m = p.x < p.next.x ? p : p.next; if (x === hx) return m; }
+      }
+      p = p.next;
+    } while (p !== outerNode);
+    if (!m) return null;
+    var stop = m, mx = m.x, my = m.y, tanMin = Infinity, tan;
+    p = m;
+    do {
+      if (hx >= p.x && p.x >= mx && hx !== p.x && ecInTri(hy < my ? hx : qx, hy, mx, my, hy < my ? qx : hx, hy, p.x, p.y)) {
+        tan = Math.abs(hy - p.y) / (hx - p.x);
+        if (ecLocallyInside(p, hole) && (tan < tanMin || (tan === tanMin && (p.x > m.x || (p.x === m.x && ecArea(m.prev, m, p.prev) < 0 && ecArea(p.next, m, m.next) < 0))))) { m = p; tanMin = tan; }
+      }
+      p = p.next;
+    } while (p !== stop);
+    return m;
+  }
+  function ecIndexCurve(start, minX, minY, invSize) {
+    var p = start;
+    do { if (p.z === 0) p.z = ecZ(p.x, p.y, minX, minY, invSize); p.prevZ = p.prev; p.nextZ = p.next; p = p.next; } while (p !== start);
+    p.prevZ.nextZ = null; p.prevZ = null;
+    var list = p, i, q, e, tail, numMerges, pSize, qSize, inSize = 1;
+    do {
+      p = list; list = null; tail = null; numMerges = 0;
+      while (p) {
+        numMerges++; q = p; pSize = 0;
+        for (i = 0; i < inSize; i++) { pSize++; q = q.nextZ; if (!q) break; }
+        qSize = inSize;
+        while (pSize > 0 || (qSize > 0 && q)) {
+          if (pSize !== 0 && (qSize === 0 || !q || p.z <= q.z)) { e = p; p = p.nextZ; pSize--; } else { e = q; q = q.nextZ; qSize--; }
+          if (tail) tail.nextZ = e; else list = e;
+          e.prevZ = tail; tail = e;
+        }
+        p = q;
+      }
+      tail.nextZ = null; inSize *= 2;
+    } while (numMerges > 1);
+  }
+  function ecZ(x, y, minX, minY, invSize) {
+    x = (x - minX) * invSize | 0; y = (y - minY) * invSize | 0;
+    x = (x | (x << 8)) & 0x00FF00FF; x = (x | (x << 4)) & 0x0F0F0F0F; x = (x | (x << 2)) & 0x33333333; x = (x | (x << 1)) & 0x55555555;
+    y = (y | (y << 8)) & 0x00FF00FF; y = (y | (y << 4)) & 0x0F0F0F0F; y = (y | (y << 2)) & 0x33333333; y = (y | (y << 1)) & 0x55555555;
+    return x | (y << 1);
+  }
+  function ecLeftmost(start) { var p = start, l = start; do { if (p.x < l.x || (p.x === l.x && p.y < l.y)) l = p; p = p.next; } while (p !== start); return l; }
+  function ecInTri(ax, ay, bx, by, cx, cy, px, py) { return (cx - px) * (ay - py) >= (ax - px) * (cy - py) && (ax - px) * (by - py) >= (bx - px) * (ay - py) && (bx - px) * (cy - py) >= (cx - px) * (by - py); }
+  function ecValidDiagonal(a, b) {
+    return a.next.i !== b.i && a.prev.i !== b.i && !ecIntersectsPolygon(a, b) &&
+      (ecLocallyInside(a, b) && ecLocallyInside(b, a) && ecMiddleInside(a, b) && (ecArea(a.prev, a, b.prev) || ecArea(a, b.prev, b)) ||
+        ecEquals(a, b) && ecArea(a.prev, a, a.next) > 0 && ecArea(b.prev, b, b.next) > 0);
+  }
+  function ecArea(p, q, r) { return (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y); }
+  function ecEquals(p1, p2) { return p1.x === p2.x && p1.y === p2.y; }
+  function ecSign(v) { return v > 0 ? 1 : v < 0 ? -1 : 0; }
+  function ecOnSeg(p, q, r) { return q.x <= Math.max(p.x, r.x) && q.x >= Math.min(p.x, r.x) && q.y <= Math.max(p.y, r.y) && q.y >= Math.min(p.y, r.y); }
+  function ecIntersects(p1, q1, p2, q2) {
+    var o1 = ecSign(ecArea(p1, q1, p2)), o2 = ecSign(ecArea(p1, q1, q2)), o3 = ecSign(ecArea(p2, q2, p1)), o4 = ecSign(ecArea(p2, q2, q1));
+    if (o1 !== o2 && o3 !== o4) return true;
+    return (o1 === 0 && ecOnSeg(p1, p2, q1)) || (o2 === 0 && ecOnSeg(p1, q2, q1)) || (o3 === 0 && ecOnSeg(p2, p1, q2)) || (o4 === 0 && ecOnSeg(p2, q1, q2));
+  }
+  function ecIntersectsPolygon(a, b) {
+    var p = a;
+    do { if (p.i !== a.i && p.next.i !== a.i && p.i !== b.i && p.next.i !== b.i && ecIntersects(p, p.next, a, b)) return true; p = p.next; } while (p !== a);
+    return false;
+  }
+  function ecLocallyInside(a, b) { return ecArea(a.prev, a, a.next) < 0 ? ecArea(a, b, a.next) >= 0 && ecArea(a, a.prev, b) >= 0 : ecArea(a, b, a.prev) < 0 || ecArea(a, a.next, b) < 0; }
+  function ecMiddleInside(a, b) {
+    var p = a, inside = false, px = (a.x + b.x) / 2, py = (a.y + b.y) / 2;
+    do { if (((p.y > py) !== (p.next.y > py)) && p.next.y !== p.y && (px < (p.next.x - p.x) * (py - p.y) / (p.next.y - p.y) + p.x)) inside = !inside; p = p.next; } while (p !== a);
+    return inside;
+  }
+  function ecSplitPolygon(a, b) {
+    var a2 = new EcNode(a.i, a.x, a.y), b2 = new EcNode(b.i, b.x, b.y), an = a.next, bp = b.prev;
+    a.next = b; b.prev = a; a2.next = an; an.prev = a2; b2.next = a2; a2.prev = b2; bp.next = b2; b2.prev = bp;
+    return b2;
+  }
+  function ecInsert(i, x, y, last) {
+    var p = new EcNode(i, x, y);
+    if (!last) { p.prev = p; p.next = p; } else { p.next = last.next; p.prev = last; last.next.prev = p; last.next = p; }
+    return p;
+  }
+  function ecRemove(p) {
+    p.next.prev = p.prev; p.prev.next = p.next;
+    if (p.prevZ) p.prevZ.nextZ = p.nextZ;
+    if (p.nextZ) p.nextZ.prevZ = p.prevZ;
+    p.removed = true;
+    if (ecG) ecGAdd(ecG, p.prev);   // its edge now runs to p.next
   }
 
   function now() { return typeof performance !== 'undefined' ? performance.now() : Date.now(); }
@@ -2764,6 +3708,6 @@ var OcctKernel = (function () {
     return h + body;
   }
 
-  return { build: build, importFile: importFile, mapFaces: mapFaces, toBuild: toBuild, toBodies: toBodies, fromPacked: fromPacked, nearestTriangles: nearestTriangles, stepHeader: stepHeader, SUPPORTED: SUPPORTED, TANGENT_ANG: TANGENT_ANG };
+  return { build: build, importFile: importFile, mapFaces: mapFaces, toBuild: toBuild, toBodies: toBodies, fromPacked: fromPacked, nearestTriangles: nearestTriangles, stepHeader: stepHeader, SUPPORTED: SUPPORTED, TANGENT_ANG: TANGENT_ANG, plateOptions: PLATE, earcut: kvEarcut };
 })();
 if (typeof self !== 'undefined') self.OcctKernel = OcctKernel;
