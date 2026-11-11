@@ -1010,6 +1010,7 @@
       { sep: true },
       { label: 'Display \u25b8 Hidden Lines Visible', checked: v.display === 'hlv', action: function () { setViewDisplay(v.id, 'hlv'); } },
       { label: 'Display \u25b8 Hidden Lines Removed', checked: v.display === 'hlr', action: function () { setViewDisplay(v.id, 'hlr'); } },
+      { label: 'Zoom/Pan/Rotate \u25b8 Rotate View\u2026', disabled: v.kind === 'detail' || v.kind === 'section', action: function () { cmdRotateView(v.id); } },   // (rfLA)
       { sep: true },
       { label: 'Tangent Edge \u25b8 Tangent Edges Visible', disabled: v.kind === 'detail', checked: v.tangent === 'visible', action: function () { setViewTangent(v.id, 'visible'); } },
       { label: 'Tangent Edge \u25b8 Tangent Edges With Font', disabled: v.kind === 'detail', checked: v.tangent === 'font', action: function () { setViewTangent(v.id, 'font'); } },
@@ -1021,6 +1022,24 @@
       { label: 'Area Hatch/Fill…', disabled: !hatchUnder(v), action: function () { var h = hatchUnder(v); if (h) cmdAreaHatch(v.id, h.g); } },
       { sep: true },
       ].concat(moveToSheetItems(v), [{ label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }]);
+  }
+  // (rfLA) SolidWorks' Rotate Drawing View dialog: Drawing view angle (degrees, counter-clockwise), Apply; one undo
+  // step. A view with dimensions or annotations turns in steps of 90° (Drawing.setViewRotation says so).
+  function cmdRotateView(id) {
+    var v = Drawing.findView(doc(), id);
+    if (!v) return;
+    var inp = el('input', { type: 'number', step: '1', value: String(+v.rotate || 0), id: 'dw-rotate-angle' });
+    function apply() {
+      var a = +inp.value;
+      if (!isFinite(a)) { UI.toast('Rotate View: type an angle in degrees.'); return false; }
+      if (!tryEdit(function (dc) { Drawing.setViewRotation(dc, id, a); })) return false;
+      UI.setStatus((v.name || 'View') + ' rotated to ' + ((a % 360 + 360) % 360) + '°.');
+      return true;
+    }
+    UI.showModal({ title: 'Rotate Drawing View', body: el('div', { class: 'dw-props' }, [el('label', { text: 'Drawing view angle (°, counter-clockwise)' }), inp]), buttons: [
+      { label: 'Apply', primary: true, action: function () { if (apply()) UI.closeModal(); } },
+      { label: 'Close', action: UI.closeModal }
+    ] });
   }
   // (rfKT) a view's right-click ▸ Move to Sheet ▸ <sheet>: the view (with the views made from it) goes to that sheet,
   // keeping its place on the paper, its dimensions and annotations (Drawing.moveViewToSheet; one undo step)
@@ -3713,7 +3732,7 @@
   DW.cmdStandard3View = cmdStandard3View; DW.cmdModelView = cmdModelView; DW.startPlacing = startPlacing; DW.placePending = placePending; DW.sheetView = sheetView;
   DW.cmdProjectedView = cmdProjectedView; DW.projectPlacement = projectPlacement; DW.projectClick = projectClick; DW.cmdSectionView = cmdSectionView; DW.sectionLineAt = sectionLineAt;
   DW.sectionPlacement = sectionPlacement; DW.partialLine = partialLine; DW.sectionClick = sectionClick; DW.cmdDetailView = cmdDetailView; DW.detailClick = detailClick; DW.cmdViewProperties = cmdViewProperties;
-  DW.setViewTangent = setViewTangent; DW.deleteView = deleteView; DW.deleteSelection = deleteSelection; DW.addDimension = addDimension; DW.cmdSmartDimension = cmdSmartDimension;
+  DW.setViewTangent = setViewTangent; DW.cmdRotateView = cmdRotateView; DW.deleteView = deleteView; DW.deleteSelection = deleteSelection; DW.addDimension = addDimension; DW.cmdSmartDimension = cmdSmartDimension;
   DW.cmdModelItems = cmdModelItems; DW.setSheet = setSheet; DW.cmdSheetProperties = cmdSheetProperties; DW.exportAs = exportAs; DW.viewMenu = viewMenu; DW.moveViewToSheet = moveViewToSheet; DW.sheetMenu = sheetMenu;
   DW.defaultBalloonView = defaultBalloonView; DW.autoBalloonView = autoBalloonView; DW.cmdAutoBalloon = cmdAutoBalloon; DW.setBom = setBom; DW.cmdBOM = cmdBOM; DW.setTitleBlock = setTitleBlock;
   DW.bomMenu = bomMenu; DW.bomAt = bomAt; DW.balloonAt = balloonAt; DW.dimRef = dimRef; DW.setDimProps = setDimProps; DW.annotAt = annotAt; DW.edgeAt = edgeAt;

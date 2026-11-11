@@ -610,9 +610,10 @@
       var fi = nt.flag ? flagInfo.byNote[nt.id] : null;
       if (fi) { it.flag = { bank: nt.flag.bank, item: fi.item, dangling: !!fi.dangling }; if (fi.dangling) it.prims.forEach(function (x) { x.color = 'dangling'; }); }
       if (nt.bank) it.bank = true;
+      if (nt.dangling) { it.dangling = true; it.prims.forEach(function (x) { x.color = 'dangling'; }); }   // (rfLA) its leader's geometry is gone
       return it;
     });
-    var symPre = (doc.symbols || []).map(function (sy) { var r = D.symbolPrims(sy, k, textWidth, ARROW_W, doc); r.id = sy.id; r.type = sy.type; return r; });
+    var symPre = (doc.symbols || []).map(function (sy) { var r = D.symbolPrims(sy, k, textWidth, ARROW_W, doc); r.id = sy.id; r.type = sy.type; if (sy.dangling) { r.dangling = true; r.prims.forEach(function (x) { x.color = 'dangling'; }); } return r; });   // (rfLA: dangling)
     function hideItem(it, rec) {
       if (!rec || !rec.hidden) return;
       it.hidden = true;
@@ -787,12 +788,12 @@
     var notes = notePre.map(function (it, i) {
       var of = (doc.notes[i] || {}).view || null;
       it.prims.forEach(function (x) { if (of) x.view = of; prims.push(x); });
-      return { id: it.id, text: it.text, lines: it.lines, p: it.p, h: it.h, box: it.box, raw: it.raw, leader: it.leader || null, view: of, hidden: !!it.hidden, flag: it.flag || undefined, bank: it.bank || undefined };
+      return { id: it.id, text: it.text, lines: it.lines, p: it.p, h: it.h, box: it.box, raw: it.raw, leader: it.leader || null, view: of, hidden: !!it.hidden, flag: it.flag || undefined, bank: it.bank || undefined, dangling: !!it.dangling };
     });
     var symbols = symPre.map(function (it, i) {
       var of = (doc.symbols[i] || {}).view || null;
       it.prims.forEach(function (x) { if (of) x.view = of; prims.push(x); });
-      return { id: it.id, type: it.type, text: it.text, box: it.box, view: of, pts: it.pts || undefined, hidden: !!it.hidden };   // (rfCU) pts: a multi-jog leader's polyline
+      return { id: it.id, type: it.type, text: it.text, box: it.box, view: of, pts: it.pts || undefined, hidden: !!it.hidden, dangling: !!it.dangling };   // (rfCU) pts: a multi-jog leader's polyline
     });
     var holeTables = htPre.map(function (it) {
       it.prims.forEach(function (x) { prims.push(x); });
@@ -1634,9 +1635,15 @@
   var STROKE = { visible: 0.5, hidden: 0.35, thin: 0.25, thick: 0.7, hatch: 0.18, chain: 0.7, center: 0.25, tangent: 0.35, tanfont: 0.25, bendup: 0.25, benddown: 0.25, etch: 0.25 };
   var CENTER_DASH = [6, 1.5, 1.5, 1.5];   // centre marks and centrelines: long dash, short dash (paper mm)
   // plainText(s): text for writers without the ASME symbol glyphs (DXF R12, PDF Helvetica): ↧ 10 -> X 10 DEEP,
-  // ⌴ -> CBORE, ⌵ -> CSK (the words the symbols replaced)
+  // ⌴ -> CBORE, ⌵ -> CSK (the words the symbols replaced). (rfLA) Characters neither writer's font has are written
+  // the way a shop types them: arrows -> -> <- <-> (a GRAIN → note), dashes -, curly quotes ' ", • *, … ..., ½ ¼ ¾
+  // 1/2 1/4 3/4 (after a digit with a space: 1 1/2), ≤ ≥ <= >=, ≈ ~ (was a '?')
+  var PLAIN = { '\u2192': '->', '\u2190': '<-', '\u2194': '<->', '\u27f6': '->', '\u27f5': '<-', '\u27f7': '<->', '\u21d2': '=>', '\u2191': '^', '\u2193': 'v',
+    '\u2013': '-', '\u2014': '-', '\u2212': '-', '\u2018': "'", '\u2019': "'", '\u201c': '"', '\u201d': '"', '\u2022': '*', '\u2026': '...', '\u2264': '<=', '\u2265': '>=', '\u2248': '~' };
   function plainText(t) {
-    return String(t).replace(/\u21a7\s*([^\s,]+)/g, 'X $1 DEEP').replace(/\u2334\s*/g, 'CBORE ').replace(/\u2335\s*/g, 'CSK ');
+    return String(t).replace(/\u21a7\s*([^\s,]+)/g, 'X $1 DEEP').replace(/\u2334\s*/g, 'CBORE ').replace(/\u2335\s*/g, 'CSK ')
+      .replace(/(\d)([\u00bd\u00bc\u00be])/g, '$1 $2').replace(/\u00bd/g, '1/2').replace(/\u00bc/g, '1/4').replace(/\u00be/g, '3/4')
+      .replace(/[\u2192\u2190\u2194\u27f6\u27f5\u27f7\u21d2\u2191\u2193\u2013\u2014\u2212\u2018\u2019\u201c\u201d\u2022\u2026\u2264\u2265\u2248]/g, function (c) { return PLAIN[c]; });
   }
   // SolidWorks draws dangling annotations (their model reference is gone) in olive brown; a flat pattern's etch marks
   // are green, as the sketches' ETCH layer (ACI 3)
@@ -2130,6 +2137,7 @@
         else if (ch === 0xb0) out += '\\260';
         else if (ch === 40 || ch === 41 || ch === 92) out += '\\' + s[i];
         else if (ch >= 32 && ch < 127) out += s[i];
+        else if (ch >= 0xa1 && ch <= 0xff) out += '\\' + ch.toString(8);   // (rfLA) Latin-1 letters (é, ñ, µ, ²): WinAnsi has them at the same codes
         else out += '?';
       }
       return out;

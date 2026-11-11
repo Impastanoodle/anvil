@@ -2103,7 +2103,69 @@
         a.vxy = [v.x, v.y];
       });
     });
+    anchorLeaders(doc, byId, k);
   }
+  // (rfLA) A leader whose arrow was put on a model edge, circle or arc of its view is attached to that geometry, as in
+  // SolidWorks: a.anchor = { ref (the edge { kind, a, b } / circle { kind: 'dia', c, r } / arc { kind: 'arc', c, r, a0,
+  // a1 }, view model units), t (along the edge 0..1, or the angle in degrees on a circle / arc), pt (the arrow's point
+  // on it when last worked out) }. Each compute finds the geometry again (reattachRef, as Smart Dimensions do) and moves
+  // the arrow with it (the text stays where it is); when it is gone the note / symbol is dangling (a.dangling: drawn in
+  // the dangling colour, the arrow left where it was) until the part brings it back or the arrow is dragged onto
+  // geometry (a new leader re-anchors it). A new leader on a view is anchored at the first compute when its tip is on
+  // a visible edge / circle / arc (0.6 mm on paper).
+  function anchorPoint(ref, t) {
+    if (ref.kind === 'dia' || ref.kind === 'arc') { var an = t * Math.PI / 180; return [ref.c[0] + ref.r * Math.cos(an), ref.c[1] + ref.r * Math.sin(an)]; }
+    return [ref.a[0] + (ref.b[0] - ref.a[0]) * t, ref.a[1] + (ref.b[1] - ref.a[1]) * t];
+  }
+  function findAnchor(w, tip, k) {
+    if (!w.proj || !w.fromSheet || !(w.scale > 0)) return null;
+    var q = w.fromSheet(tip), tol = 0.6 * (k || 1) / w.scale, best = null, bd = tol, pr = w.proj;
+    (pr.lines && pr.lines.visible || []).forEach(function (l) {
+      var dx = l[2] - l[0], dy = l[3] - l[1], L2 = dx * dx + dy * dy;
+      if (!(L2 > 0)) return;
+      var t = Math.max(0, Math.min(1, ((q[0] - l[0]) * dx + (q[1] - l[1]) * dy) / L2)), d = Math.hypot(l[0] + dx * t - q[0], l[1] + dy * t - q[1]);
+      if (d < bd) { bd = d; best = { ref: refFrom({ a: [l[0], l[1]], b: [l[2], l[3]] }), t: t }; }
+    });
+    (pr.circles && pr.circles.visible || []).forEach(function (c) {
+      var d = Math.abs(Math.hypot(q[0] - c.c[0], q[1] - c.c[1]) - c.r);
+      if (d < bd) { bd = d; best = { ref: { kind: 'dia', c: c.c.slice(), r: c.r }, t: Math.atan2(q[1] - c.c[1], q[0] - c.c[0]) * 180 / Math.PI }; }
+    });
+    (pr.arcs && pr.arcs.visible || []).forEach(function (c) {
+      var d = Math.abs(Math.hypot(q[0] - c.c[0], q[1] - c.c[1]) - c.r), ang = Math.atan2(q[1] - c.c[1], q[0] - c.c[0]) * 180 / Math.PI, inside = false;
+      for (var j = -2; j <= 2; j++) if (ang + 360 * j >= c.a0 - 1e-6 && ang + 360 * j <= c.a1 + 1e-6) inside = true;
+      if (inside && d < bd) { bd = d; best = { ref: { kind: 'arc', c: c.c.slice(), r: c.r, a0: c.a0, a1: c.a1 }, t: ang }; }
+    });
+    if (best) best.pt = anchorPoint(best.ref, best.t);
+    return best;
+  }
+  function anchorLeaders(doc, byId, k) {
+    [doc.notes || [], doc.symbols || []].forEach(function (list) {
+      list.forEach(function (a) {
+        if (!a.leader || a.jogs || CU_SYMBOLS[a.type]) return;
+        if (!a.view) { delete a.anchor; delete a.dangling; return; }
+        var w = byId[a.view];
+        if (!w || w.pending || !w.proj) return;
+        if (!a.anchor) {
+          if (a.anchorTried) return;
+          var f = findAnchor(w, a.leader, k);
+          a.anchorTried = true;
+          if (f) a.anchor = f;
+          return;
+        }
+        var an = a.anchor, ref = JSON.parse(JSON.stringify(an.ref));
+        if (!reattachRef(ref, w.proj)) { a.dangling = true; return; }
+        delete a.dangling;
+        var np = anchorPoint(ref, an.t);
+        if (Math.hypot(np[0] - an.pt[0], np[1] - an.pt[1]) > 1e-12) {
+          var s0 = w.toSheet(an.pt), s1 = w.toSheet(np);
+          a.leader = [a.leader[0] + s1[0] - s0[0], a.leader[1] + s1[1] - s0[1]];
+        }
+        an.ref = ref; an.pt = np;
+      });
+    });
+  }
+  // a leader moved by hand: found again on the geometry under it at the next compute
+  function reanchor(a) { delete a.anchor; delete a.anchorTried; delete a.dangling; }
   function addNote(doc, spec) {
     if (!spec || !spec.p || !isFinite(+spec.p[0]) || !isFinite(+spec.p[1])) throw new Error('A note needs a position on the sheet');
     var t = String(spec.text == null ? '' : spec.text);
@@ -2124,7 +2186,11 @@
     if (props.text != null) { var t = String(props.text); if (!t.trim()) { deleteNote(doc, id); return null; } nt.text = t; }
     if (props.p) nt.p = [+props.p[0], +props.p[1]];
     if (props.h != null) { if (+props.h > 0) nt.h = +props.h; else delete nt.h; }
-    if (props.leader !== undefined) { if (props.leader) nt.leader = [+props.leader[0], +props.leader[1]]; else delete nt.leader; }
+    if (props.leader !== undefined) {
+      var l0 = nt.leader;
+      if (props.leader) nt.leader = [+props.leader[0], +props.leader[1]]; else delete nt.leader;
+      if (!l0 || !nt.leader || l0[0] !== nt.leader[0] || l0[1] !== nt.leader[1]) reanchor(nt);   // (rfLA)
+    }
     cleanNoteFmt(nt, props);   // (rfCU) border, list
     setAttach(nt, props.view);
     return nt;
@@ -2215,7 +2281,11 @@
     if (CU_SYMBOLS[s.type]) return cleanCU(s, spec);   // (rfCU)
     if (spec.p) s.p = [+spec.p[0], +spec.p[1]];
     setAttach(s, spec.view);
-    if (spec.leader !== undefined) { if (spec.leader) s.leader = [+spec.leader[0], +spec.leader[1]]; else delete s.leader; }
+    if (spec.leader !== undefined) {
+      var l0 = s.leader;
+      if (spec.leader) s.leader = [+spec.leader[0], +spec.leader[1]]; else delete s.leader;
+      if (!l0 || !s.leader || l0[0] !== s.leader[0] || l0[1] !== s.leader[1]) reanchor(s);   // (rfLA)
+    }
     if (s.type === 'surfaceFinish') {
       if (spec.symbol != null) s.symbol = spec.symbol === 'machined' || spec.symbol === 'prohibited' ? spec.symbol : 'basic';
       ['ra', 'method'].forEach(function (q) { if (spec[q] != null) { if (String(spec[q]).trim()) s[q] = String(spec[q]).trim(); else delete s[q]; } });

@@ -129,7 +129,76 @@
       var P = viewFrame(doc, par, (depth || 0) + 1);
       return v.kind === 'section' ? sectionFrame(P, v.section.axis, v.section.sign) : P;
     }
-    return v.frame ? frameOf({ e: v.frame.e, u: v.frame.u, v: v.frame.v, name: v.orient }) : orientation(v.orient);
+    var F = v.frame ? frameOf({ e: v.frame.e, u: v.frame.u, v: v.frame.v, name: v.orient }) : orientation(v.orient);
+    return v.rotate ? rotateFrame(F, v.rotate) : F;   // (rfLA) Rotate View
+  }
+  // (rfLA) Rotate View (SolidWorks: right-click a view ▸ Zoom/Pan/Rotate ▸ Rotate View, degrees counter-clockwise on the
+  // sheet): v.rotate turns the view's frame about its line of sight, so the linework, picks, dimensions and exports all
+  // work in the turned frame. rotateFrame(F, deg) -> the frame whose (u, v) are (u, v) turned deg CCW on paper.
+  function rotateFrame(F, deg) {
+    var a = deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a), r = function (x) { return Math.abs(x) < 1e-15 ? 0 : x; };
+    var u = [0, 1, 2].map(function (i) { return r(c * F.u[i] - s * F.v[i]); }), w = [0, 1, 2].map(function (i) { return r(s * F.u[i] + c * F.v[i]); });
+    var out = frameOf({ e: F.e.slice(), u: u, v: w, name: F.name });
+    out.name = F.name;
+    return out;
+  }
+  // setViewRotation(doc, id, deg) -> the view: the view turned to deg (absolute, counter-clockwise; 0 takes it off). The
+  // dimensions, callouts, centre marks and balloons stored on it are turned with it (their references are in the view's
+  // frame), so they stay on the same geometry; a view holding any of them turns in steps of 90° only (a horizontal /
+  // vertical dimension stays one). Flat-pattern, detail and section views turn with their own rules: refused.
+  var ROT_KEYS = { a: 1, b: 1, c: 1, p: 1, lead: 1, pos: 1, attach: 1, end: 1 };
+  function setViewRotation(doc, id, deg) {
+    var v = findView(doc, id);
+    if (!v) throw new Error('No drawing view ' + id);
+    if (v.kind === 'flat' || v.kind === 'detail' || v.kind === 'section') throw new Error('A ' + (v.kind === 'flat' ? 'flat-pattern' : v.kind) + ' view cannot be rotated here');
+    var to = ((+deg % 360) + 360) % 360;
+    if (!isFinite(to)) throw new Error('Rotate View needs an angle in degrees');
+    var by = ((to - (+v.rotate || 0)) % 360 + 360) % 360;
+    if (Math.abs(by) < 1e-9) return v;
+    var q = Math.round(by / 90), right = Math.abs(by - 90 * q) < 1e-9;
+    var items = (v.dims || []).concat(v.annotations || [], v.balloons || []);
+    if ((items.length || (v.breaks && v.breaks.length) || v.crop) && !right) throw new Error((v.name || 'That view') + ' has dimensions, annotations, a break or a crop: it turns in steps of 90°');
+    var a = by * Math.PI / 180, c = Math.cos(a), s = Math.sin(a), rd = function (x) { return Math.abs(x - Math.round(x)) < 1e-12 ? Math.round(x) : x; };
+    var R = function (p) { return [rd(c * p[0] - s * p[1]), rd(s * p[0] + c * p[1])]; };
+    var odd = right && q % 2 === 1;
+    function edgeKind(o) { if (o.kind !== 'h' && o.kind !== 'v' && o.kind !== 'aligned') return; var dx = o.b[0] - o.a[0], dy = o.b[1] - o.a[1], L = Math.hypot(dx, dy); o.kind = Math.abs(dy) <= L * 1e-9 ? 'h' : Math.abs(dx) <= L * 1e-9 ? 'v' : 'aligned'; }
+    function walk(o, top) {
+      if (!o || typeof o !== 'object') return;
+      Object.keys(o).forEach(function (k) {
+        var x = o[k];
+        if (ROT_KEYS[k] && Array.isArray(x) && x.length === 2 && typeof x[0] === 'number' && typeof x[1] === 'number') o[k] = R(x);
+        else if (k === 'a0' || k === 'a1') { if (typeof x === 'number') o[k] = x + by; }
+        else if (Array.isArray(x)) x.forEach(function (y) { walk(y, false); });
+        else if (x && typeof x === 'object' && k !== 'tol' && k !== 'slot') walk(x, false);
+      });
+      if (!top && o.a && o.b && Array.isArray(o.a)) edgeKind(o);
+    }
+    items.forEach(function (d) {
+      var kind0 = d.kind, at0 = d.at;
+      walk(d, true);
+      if (kind0 === 'h' || kind0 === 'v') {
+        // the dimension line through (any, at) for h / (at, any) for v, turned
+        var pt = R(kind0 === 'h' ? [0, +at0 || 0] : [+at0 || 0, 0]);
+        d.kind = odd ? (kind0 === 'h' ? 'v' : 'h') : kind0;
+        if (at0 != null) d.at = d.kind === 'h' ? pt[1] : pt[0];
+        if (d.at != null && d.a && d.b) { var mid = d.kind === 'h' ? (d.a[1] + d.b[1]) / 2 : (d.a[0] + d.b[0]) / 2; d.side = d.at >= mid ? 1 : -1; }
+      } else if ((kind0 === 'ordinate' || kind0 === 'baseline') && odd && d.dir) d.dir = d.dir === 'v' ? 'h' : 'v';
+    });
+    // its breaks (positions along u / v) and crop turn with it
+    if (v.breaks) v.breaks = v.breaks.map(function (bk) {
+      var vert = bk.dir === 'vertical', o = Object.assign({}, bk), q4 = ((q % 4) + 4) % 4;
+      // a vertical break (u in [a, b]) after 90°: v' = u (horizontal, same); 180°: u' = -u; 270°: v' = -u
+      var flip = vert ? (q4 === 2 || q4 === 3) : (q4 === 1 || q4 === 2);
+      if (q4 % 2 === 1) o.dir = vert ? 'horizontal' : 'vertical';
+      if (flip) { o.a = -bk.b; o.b = -bk.a; }
+      return o;
+    }).sort(function (x, y) { return x.a - y.a; });
+    if (v.crop && v.crop.type === 'circle') v.crop.c = R(v.crop.c);
+    else if (v.crop && v.crop.a && v.crop.b) { var ca = R(v.crop.a), cb = R(v.crop.b); v.crop.a = [Math.min(ca[0], cb[0]), Math.min(ca[1], cb[1])]; v.crop.b = [Math.max(ca[0], cb[0]), Math.max(ca[1], cb[1])]; }
+    if (to) v.rotate = to; else delete v.rotate;
+    if (v.align) v.align = null;   // (a turned view is no longer lined up with its parent, as SolidWorks breaks the alignment)
+    doc.layout = 'manual';
+    return v;
   }
   // A–Z without I, O and Q (ASME Y14.3), the first letter no section or detail view of the drawing uses yet (on any
   // of its sheets, rfAL: SolidWorks never writes SECTION A-A twice in one drawing)
@@ -2603,7 +2672,7 @@
   // isSheetMetal(model): a part with sheet-metal parameters and a Base Flange (Model View offers Flat pattern)
   D.isSheetMetal = function (model) { return !!(model && model.type !== 'assembly' && model.sheet && (model.features || []).some(function (f) { return f.sheetBase && !f.suppressed; })); };
   D.addFlatView = addFlatView; D.addEmptyView = addEmptyView; D.emptyExtents = emptyExtents; D.flatExtents = flatExtents; D.viewExtents = viewExtents;
-  D.viewFrame = viewFrame; D.nextLabel = nextLabel; D.addProjectedView = addProjectedView; D.addSectionView = addSectionView; D.detailScale = detailScale; D.addDetailView = addDetailView;
+  D.viewFrame = viewFrame; D.rotateFrame = rotateFrame; D.setViewRotation = setViewRotation; D.nextLabel = nextLabel; D.addProjectedView = addProjectedView; D.addSectionView = addSectionView; D.detailScale = detailScale; D.addDetailView = addDetailView;
   D.TB_BLOCKS = TB_BLOCKS; D.tbBlocks = tbBlocks; D.tbRects = tbRects; D.fieldRect = fieldRect; D.generalTolerances = generalTolerances;
   D.todayISO = todayISO; D.REV_COLS = REV_COLS; D.revLetter = revLetter; D.nextRev = nextRev; D.latestRev = latestRev; D.insertRevisionTable = insertRevisionTable; D.addRevision = addRevision;
   D.revRow = revRow; D.editRevision = editRevision; D.deleteRevision = deleteRevision; D.deleteRevisionTable = deleteRevisionTable; D.revBox = revBox; D.revRowAt = revRowAt;

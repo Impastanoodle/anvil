@@ -514,7 +514,7 @@
     }
     var a = d.a, bb = d.b, L = Math.hypot(bb[0] - a[0], bb[1] - a[1]);
     if (L < 1e-12) { d.dangling = true; return false; }
-    var t = [(bb[0] - a[0]) / L, (bb[1] - a[1]) / L], hit = null;
+    var t = [(bb[0] - a[0]) / L, (bb[1] - a[1]) / L], hit = null, hitC = null, bsC = Infinity;
     // an edge on the view's outline (its left / right / bottom / top extreme) keeps that role: a part that grows moves
     // it past nearer parallel edges (a hole silhouette must not take the place of the moved side)
     function bound(m) {
@@ -534,7 +534,14 @@
       else if (off <= tol && ov > tol) s = sc;                      // collinear: any overlap
       else if (off <= reach && jac >= 0.5) s = sc;                  // parallel: most of it
       if (s < bs) { bs = s; hit = { m: m, lo: lo, hi: hi, forward: p1 >= p0 }; }
+      if (off <= tol && ov > tol && (Math.abs(lo) <= tol || Math.abs(hi - L) <= tol) && sc < bsC) { bsC = sc; hitC = { m: m, lo: lo, hi: hi, forward: p1 >= p0 }; }
     });
+    // (rfLA) while a piece of the edge itself is still drawn (on its line, from one of its own ends: a flange added on
+    // that edge leaves the corners' ends of it), the dimension stays on that line: a parallel edge nearby is other
+    // geometry (a bend's inner face), and taking it would show a wrong value as if nothing had happened. A whole edge
+    // that moved (a thicker gauge, a longer part) leaves no such piece and is followed as before (a short leftover
+    // in the middle of the old line, a blind hole's bottom, is not the edge).
+    if (hitC && hit && hit !== hitC && bs > -1) hit = hitC;
     if (!hit) { d.dangling = true; return false; }
     var m0 = [hit.m[0], hit.m[1]], m1 = [hit.m[2], hit.m[3]], bd = bound(hit.m);
     d.a = hit.forward ? m0 : m1; d.b = hit.forward ? m1 : m0;

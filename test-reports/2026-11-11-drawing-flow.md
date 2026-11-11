@@ -77,3 +77,65 @@ Ctrl+Z restores. No console errors.
   9.925 for 10.000). SolidWorks has the same pick at that zoom; zoom in.
 - Smart Dimension's non-linear preview text now uses the dimension style's height (.125 in on inch sheets, rfKX);
   the angle preview rounds to 0.01° as the placed angle does (no change needed).
+
+## Round 2 (lane drawflow3, group rfLA)
+
+Three more flows made with mouse and key events in headless Chrome (`tests/smoke/rfLA.js`; the console builds the parts,
+changes the model as its PropertyManagers would and reads the results), engine checks in `tests/kernel/rfLA.js`.
+
+| Flow | What was made | Result |
+|---|---|---|
+| 1 | 16 ga bracket: Smart Dimensions by clicks (.750 hole to edge, 3.000 centres, Ø.500, 1.500 flange), a two-click Hole Callout, two notes with leaders (on a hole, on the right edge); then flange 1.5 → 2, 16 → 14 ga, Ø.281 → Ø.344, hole 2 deleted, a flange added, the Ø.500 cut suppressed, each time Window ▸ part, change, Window ▸ drawing; saved (part JSON) and loaded | passes after fixes 1–2 |
+| 2 | flat-pattern-only print: model views deleted (Confirm Delete), sheet C at 1:1, Insert ▸ Flat Pattern, Autodimension (ordinates to holes and both bend lines, .48 apart), Bend Table, GRAIN note, PDF and DXF | passes after fix 3 |
+| 3 | 60 in 12 ga channel: Break on the Top view, Crop View on the Isometric, Auxiliary View off the 120° flange, the Isometric at 1:4 with its label, Rotate View 90°, Hidden Lines Removed / Visible and Tangent Edges per view | passes after fix 4 |
+
+What passed as it was: every Smart Dimension followed its geometry (2.000 after the flange change, 1.635 after the gauge
+change), the 3.000 to the deleted hole dangled in the dangling colour and came back with it, the callout read Ø.344
+THRU ALL (no 2X once the holes differ), THICKNESS in the title block went .0598 → .0747, the Bend Table went to three
+rows, the dangling state survived save / load; the flat sat at 1:1 (the 6.000 blank edge is 432 pt in the PDF, the C
+page 1584 × 1224 pt), the ordinates read 0, 1.000, 5.000, 6.000 and 0, 1.080, 1.321, 1.561, 2.642, the bend notes .48
+apart did not touch each other or a bend line, bend lines on BEND_UP and notes on BEND_NOTES in the DXF; the dimension
+across the break read 60.000, crop / auxiliary / 1:4 label (SCALE 1 : 4) / hidden lines / tangent edges as SolidWorks.
+
+### Findings
+
+1. **A note's leader did not follow its geometry and never dangled (high). Fixed.** Repro: a note with its arrow on the
+   Top view's right edge, then 16 → 14 ga; a note on a hole, then the hole deleted. Expected (SolidWorks): the arrow
+   stays on the edge as it moves; with the hole gone the note is dangling (brown), re-attachable. Got: the arrow stayed
+   on the old paper spot (off the edge by .015 in) and pointed at nothing once the hole was gone, drawn as normal. Fix:
+   drawing-annotations.js `anchorLeaders` (called at the end of `followViews`): a leader whose tip lies on a visible
+   edge / circle / arc of its view (0.6 mm) is anchored (`a.anchor = { ref, t, pt }`), found again each compute with
+   Smart Dimension's `reattachRef`; the arrow moves with it, the text stays; when it is gone `a.dangling` (drawn in the
+   dangling colour, summary `dangling`); dragging the arrow re-anchors it (`editNote` / `cleanSymbol`). Same for symbols
+   with a leader (datum, weld, surface finish). Tests: kernel rfLA 1, smoke rfLA 1.
+2. **A flange added on the edge a dimension measured to moved the dimension onto the bend's inner face (high).** Repro:
+   .750 from a hole to the base's back edge, then a flange on that edge. Expected: .750 (the edge's line) or dangling.
+   Got: .810, silently (the parallel inner face 0.06 away won over the pieces of the old line left at the corners).
+   Fix: drawing-views.js `reattachDim`: while a piece of the edge's own line from one of its ends is still drawn, the
+   dimension stays on that line (a whole edge that moved, or a short leftover in the middle such as a blind hole's
+   bottom, as before). Tests: kernel rfLA 2 (and kernel drawings' "moved full-length edge" still passes), smoke rfLA 1.
+3. **Characters the PDF / DXF fonts lack printed as "?" (medium).** Repro: a note "GRAIN DIRECTION →". Got "GRAIN
+   DIRECTION ?" in the PDF and the DXF. Fix: drawing-render.js `plainText`: arrows → -> <- <->, dashes, curly quotes,
+   bullet, ellipsis, ½ ¼ ¾, ≤ ≥ ≈ written as a shop types them; Latin-1 letters (é, µ, ²) kept in the PDF (WinAnsi
+   octal). Tests: kernel rfLA 4, smoke rfLA 2.
+4. **No Rotate View (high for long parts).** Expected: right-click a view ▸ Zoom/Pan/Rotate ▸ Rotate View, an angle.
+   Got: nothing. Fix: `Drawing.setViewRotation(doc, id, deg)` (drawing-sheet.js; `v.rotate` turns the view's frame in
+   `viewFrame`, so linework, picks and exports follow), the dialog `DW.cmdRotateView` (drawing-ui-tools.js, Rotate
+   Drawing View, one undo step), `anvil.drawing.rotateView(id, deg)`. The view's dimensions, callouts, centre marks,
+   breaks and crop turn with it (h ↔ v at 90° / 270°) and stay on their geometry; the view leaves its alignment. Tests:
+   kernel rfLA 3, smoke rfLA 3.
+
+### Seen, not changed
+
+- Window ▸ the part (or the part tab under the sheet) closes the drawing and asks "Save changes to Draw1?" when it was
+  changed; SolidWorks switches windows and keeps both open. Pinned by close-drawing-asks-to-save ("Don't Save (Window
+  ▸ part)"); needs the user's call. rfLA saves first.
+- Rotate View to an angle other than a multiple of 90° is refused while the view holds dimensions, annotations, a break
+  or a crop (their h / v kinds have no meaning there); a new drawing's views carry centre marks, so in practice only an
+  Isometric or a bare view turns freely. SolidWorks turns them all.
+- A model / projected view at its own scale shows no SCALE under it unless Display label is on (rfCQ pins SolidWorks'
+  default); the flat does (rfIW).
+- Make Drawing from Part always lays out the Standard 3 View; a flat-only print starts by deleting them (SolidWorks
+  opens the View Palette instead).
+- `Drawing.newDrawing(model, { scale: '1:1' })` takes only [1, 1] (a string gives NaN views); the UI always passes the
+  array.

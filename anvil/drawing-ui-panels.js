@@ -694,8 +694,8 @@
           flat: w.view.kind === 'flat' ? flatSummary(w) : undefined };
       }),
       revisions: D.sheet.revisions ? { rows: D.sheet.revisions.rows, latest: D.sheet.revisions.latest, anchor: D.sheet.revisions.anchor, box: ['x0', 'y0', 'x1', 'y1'].map(function (q) { return +D.sheet.revisions.box[q].toFixed(3); }) } : null,
-      symbols: (D.sheet.symbols || []).map(function (y) { var s0 = Drawing.findSymbol(dc, y.id) || {}; return { id: y.id, type: y.type, text: y.text, p: s0.p, leader: s0.leader || null, view: y.view || null, box: [y.box.x0, y.box.y0, y.box.x1, y.box.y1].map(function (x) { return +x.toFixed(3); }) }; }),
-      notes: (D.sheet.notes || []).map(function (n) { return { id: n.id, text: n.text, raw: n.raw, leader: n.leader, view: n.view || null, flag: n.flag || undefined, bank: n.bank || undefined, p: [+n.p[0].toFixed(3), +n.p[1].toFixed(3)], box: [n.box.x0, n.box.y0, n.box.x1, n.box.y1].map(function (x) { return +x.toFixed(3); }) }; }),
+      symbols: (D.sheet.symbols || []).map(function (y) { var s0 = Drawing.findSymbol(dc, y.id) || {}; return { id: y.id, type: y.type, text: y.text, p: s0.p, leader: s0.leader || null, view: y.view || null, dangling: y.dangling || undefined, box: [y.box.x0, y.box.y0, y.box.x1, y.box.y1].map(function (x) { return +x.toFixed(3); }) }; }),
+      notes: (D.sheet.notes || []).map(function (n) { return { id: n.id, text: n.text, raw: n.raw, leader: n.leader, view: n.view || null, dangling: n.dangling || undefined, flag: n.flag || undefined, bank: n.bank || undefined, p: [+n.p[0].toFixed(3), +n.p[1].toFixed(3)], box: [n.box.x0, n.box.y0, n.box.x1, n.box.y1].map(function (x) { return +x.toFixed(3); }) }; }),
       bom: D.sheet.bom ? { anchor: dc.bom.x != null ? 'moved' : dc.bom.anchor, box: ['x0', 'y0', 'x1', 'y1'].map(function (q) { return +D.sheet.bom.box[q].toFixed(3); }),
         type: D.sheet.bom.type, columns: D.sheet.bom.columns.map(function (c) { return c.title; }), cells: D.sheet.bom.cells.map(function (r) { return r.map(function (x) { return String(x); }); }),
         rows: D.sheet.bom.rows.map(function (r, i) { var o = { item: r.item, partNumber: r.partNumber, description: r.description, qty: r.qty, components: r.components.map(function (id) { var c = Assembly.findComponent(App.model, id); return c ? c.name : id; }) }; D.sheet.bom.columns.forEach(function (c, j) { if (c.type === 'property') o[c.prop] = String(D.sheet.bom.cells[i][j]); }); return o; }) } : null,
@@ -807,6 +807,7 @@
       viewLabel: function (id, on) { return annotApi(function (dc) { return Drawing.setViewLabel(dc, id, on); }); },
       deleteView: function (id) { deleteView(id, true); return summary(); },   // (rfKX) as Confirm Delete ▸ Yes
       tangent: function (id, mode) { setViewTangent(id, mode); return later(); },   // (rfDR: the new edges come from the worker)
+      rotateView: function (id, deg) { if (!doc()) return null; edit(function (dc) { Drawing.setViewRotation(dc, id, deg); }); return later(); },   // (rfLA) Rotate View
       // assembly drawings: Auto Balloon on a view (default: the selected view, else the isometric), the Bill of
       // Materials (anchor 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left', or { x, y } for its top-left corner),
       // bom(null) removes it
