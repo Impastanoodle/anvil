@@ -69,7 +69,7 @@
       { id: 'wrap', label: 'Wrap', run: function () { UI.cmdWrap(); } },   // rfDZ
       { sep: true },
       { fly: 'refgeo', label: 'Reference\nGeometry', items: [{ id: 'plane', label: 'Plane', run: function () { UI.cmdPlane(); } }, { id: 'refAxis', label: 'Axis', help: 'Create a reference axis: a line, edge, two planes, two points, a cylindrical face, or a point and a face', run: function () { UI.cmdRefAxis(); } }, { id: 'csys', label: 'Coordinate\nSystem', help: 'Create a coordinate system: an origin and X / Y / Z directions', run: function () { UI.cmdCsys(); } }, { id: 'refPoint', label: 'Point', help: 'Create a reference point: arc centre, face centre, intersection, projection, on a point, or along a curve', run: function () { UI.cmdRefPoint(); } }] },   // lane CZ
-      { fly: 'curves', label: 'Curves', items: [{ id: 'splitLine', label: 'Split Line' }, { id: 'projCurve', label: 'Projected\nCurve', help: 'Project a sketch onto faces, or make the 3D curve where two sketches’ extrusions meet', run: function () { UI.cmdProjectedCurve(); } }, { id: 'compositeCurve', label: 'Composite\nCurve', help: 'Join connected edges, sketch entities and curves into one curve', run: function () { UI.cmdCompositeCurve(); } }, { id: 'xyzCurve', label: 'Curve Through\nXYZ Points', help: 'A spline through points typed in a table or read from a .sldcrv / .txt file', run: function () { UI.cmdCurveXYZ(); } }, { id: 'refPtCurve', label: 'Curve Through\nReference Points', help: 'A spline through picked sketch points, vertices and reference points', run: function () { UI.cmdCurveRefPoints(); } }, { id: 'helix', label: 'Helix and\nSpiral', help: 'A helix or spiral from a sketched circle: pitch, revolutions, height, taper', run: function () { UI.cmdHelix(); } }] },   // rfFA: SolidWorks' order
+      { fly: 'curves', label: 'Curves', items: [{ id: 'splitLine', label: 'Split Line', help: 'Split faces into separate faces: by a projected sketch, a plane or a silhouette', run: function () { UI.cmdSplitLine(); } }, { id: 'projCurve', label: 'Projected\nCurve', help: 'Project a sketch onto faces, or make the 3D curve where two sketches’ extrusions meet', run: function () { UI.cmdProjectedCurve(); } }, { id: 'compositeCurve', label: 'Composite\nCurve', help: 'Join connected edges, sketch entities and curves into one curve', run: function () { UI.cmdCompositeCurve(); } }, { id: 'xyzCurve', label: 'Curve Through\nXYZ Points', help: 'A spline through points typed in a table or read from a .sldcrv / .txt file', run: function () { UI.cmdCurveXYZ(); } }, { id: 'refPtCurve', label: 'Curve Through\nReference Points', help: 'A spline through picked sketch points, vertices and reference points', run: function () { UI.cmdCurveRefPoints(); } }, { id: 'helix', label: 'Helix and\nSpiral', help: 'A helix or spiral from a sketched circle: pitch, revolutions, height, taper', run: function () { UI.cmdHelix(); } }] },   // rfFA: SolidWorks' order
       { id: 'instant', label: 'Instant3D', run: function () { if (UI.toggleInstant3D) UI.toggleInstant3D(); }, active: function () { return !!(UI.instant3DOn && UI.instant3DOn()); } }
     ],
     // rfC: the Sketch tab as SolidWorks 2024's CommandManager lays it out: Sketch ▾ (3D Sketch) and Smart Dimension ▾
@@ -83,8 +83,8 @@
     // when the id is shared with another command; an item with neither run nor tool is SolidWorks' and greyed.
     Sketch: [
       { fly: 'sketch', items: [{ id: 'sketch', label: 'Sketch', run: function () { UI.cmdSketch(); }, dyn: function () { return App.mode === 'sketch' ? { id: 'exitSketch', label: 'Exit\nSketch' } : null; } },
-        { id: 'sketch3d', label: '3D Sketch', help: 'Sketch lines, splines and points in space, not on a plane' },
-        { id: 'sketch3dPlane', label: '3D Sketch On Plane', help: 'Sketch on a plane inside a 3D sketch' }] },
+        { id: 'sketch3d', label: '3D Sketch', help: 'Sketch lines, splines and points in space, not on a plane', run: function () { if (UI.cmdSketch3D) UI.cmdSketch3D(); } },   // rfLQ: ui-sketch-3d.js
+        { id: 'sketch3dPlane', label: '3D Sketch On Plane', help: 'Sketch on a plane inside a 3D sketch', run: function () { if (UI.cmdSketch3DOnPlane) UI.cmdSketch3DOnPlane(); } }] },
       // sketch-ordinate: the Smart Dimension flyout (SolidWorks): Horizontal / Vertical Dimension and Horizontal / Vertical
       // Ordinate Dimension (ui-sketch-dims.js)
       { fly: 'dim', items: [{ id: 'dim', label: 'Smart\nDimension', tool: 'dimension' },
@@ -145,7 +145,7 @@
         { id: 'joinEnt', label: 'Join\nEntities', help: 'Join collinear lines, or arcs on one circle, into one', run: function () { if (UI.cmdJoinEntities) UI.cmdJoinEntities(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('joinEnt')); } }] },
       { fly: 'convert', items: [{ id: 'convert', label: 'Convert\nEntities', run: function () { UI.cmdConvertEntities(); } }, { id: 'intersectCurve', label: 'Intersection\nCurve', run: function () { if (UI.cmdIntersectionCurve) UI.cmdIntersectionCurve(); }, active: function () { return !!(UI.intersectionCurveOpen && UI.intersectionCurveOpen()); } }] },
       { id: 'offset', label: 'Offset\nEntities', run: function () { UI.cmdOffsetEntities(); } },
-      { id: 'offsetSurface', icon: 'offset', label: 'Offset\nOn Surface', help: 'Offset the edges of a face or surface along it (3D)' },
+      { id: 'offsetSurface', icon: 'offset', label: 'Offset\nOn Surface', help: 'Offset the edges of a face or surface along it (3D)', run: function () { if (UI.cmdOffsetOnSurface) UI.cmdOffsetOnSurface(); } },   // rfLQ: ui-sketch-3d.js
       { stack: [{ fly: 'mirrorEnt', items: [{ id: 'mirrorEnt', label: 'Mirror Entities', run: function () { UI.cmdMirrorEntities(); } }, { id: 'dynMirror', label: 'Dynamic Mirror', run: function () { if (UI.cmdDynamicMirror) UI.cmdDynamicMirror(); }, active: function () { return !!(UI.dynamicMirrorOn && UI.dynamicMirrorOn()); } }] },
         { fly: 'skPattern', items: [{ id: 'sketchPattern', label: 'Linear Sketch Pattern', run: function () { UI.cmdSketchPattern(); } }, { id: 'cSketchPattern', label: 'Circular Sketch Pattern', run: function () { UI.cmdCircularSketchPattern(); } }] },
         { fly: 'moveEnt', items: [{ id: 'moveEnt', label: 'Move Entities', run: function () { UI.cmdMoveEntities(); } }, { id: 'copyEnt', label: 'Copy Entities', run: function () { UI.cmdCopyEntities(); } }, { id: 'rotateEnt', label: 'Rotate Entities', run: function () { UI.cmdRotateEntities(); } }, { id: 'scaleEnt', label: 'Scale Entities', run: function () { UI.cmdScaleEntities(); } }, { id: 'stretchEnt', label: 'Stretch Entities', run: function () { UI.cmdStretchEntities(); } }] }] },
@@ -1193,6 +1193,7 @@
   FEATURE_ICON.sweptFlange = 'sweptFlange';   // lane sweptflange (Swept Flange)
   FEATURE_ICON.formingTool = 'formingTool';   // lane forming
   FEATURE_ICON.draft = 'draft';   // rfDX
+  FEATURE_ICON.splitLine = 'splitLine'; FEATURE_ICON.sketch3d = 'sketch3d';   // rfLQ
   FEATURE_ICON.helix = 'helix'; FEATURE_ICON.projCurve = 'projCurve'; FEATURE_ICON.compositeCurve = 'compositeCurve'; FEATURE_ICON.xyzCurve = 'xyzCurve'; FEATURE_ICON.refPtCurve = 'refPtCurve';   // rfFA
   FEATURE_ICON.wrap = 'wrap';   // rfDZ
   FEATURE_ICON.insertBends = 'insertBends'; FEATURE_ICON.convertSM = 'convertSM';   // lane DQ
@@ -2035,9 +2036,10 @@
         { label: 'Pattern/Mirror ▸ Mirror', action: function () { UI.cmdMirror(); } },
         { sep: true },
         { label: 'Sketch', action: UI.cmdSketch },
+        { label: '3D Sketch', icon: 'sketch3d', action: function () { UI.cmdSketch3D(); } }, { label: '3D Sketch On Plane', icon: 'sketch3dPlane', action: function () { UI.cmdSketch3DOnPlane(); } },   // rfLQ
         { label: 'Derived Sketch', action: function () { UI.cmdDerivedSketch(); }, disabled: !UI.cmdDerivedSketch },   // rfGS
         { label: 'Reference Geometry ▸ Plane', action: function () { UI.cmdPlane(); } },
-        { label: 'Curve ▸ Split Line…', icon: 'splitLine', disabled: true }, { label: 'Curve ▸ Projected…', icon: 'projCurve', action: function () { UI.cmdProjectedCurve(); } }, { label: 'Curve ▸ Composite…', icon: 'compositeCurve', action: function () { UI.cmdCompositeCurve(); } }, { label: 'Curve ▸ Curve Through XYZ Points…', icon: 'xyzCurve', action: function () { UI.cmdCurveXYZ(); } }, { label: 'Curve ▸ Curve Through Reference Points…', icon: 'refPtCurve', action: function () { UI.cmdCurveRefPoints(); } }, { label: 'Curve ▸ Helix/Spiral…', icon: 'helix', action: function () { UI.cmdHelix(); } },   // rfFA
+        { label: 'Curve ▸ Split Line…', icon: 'splitLine', action: function () { UI.cmdSplitLine(); } }, { label: 'Curve ▸ Projected…', icon: 'projCurve', action: function () { UI.cmdProjectedCurve(); } }, { label: 'Curve ▸ Composite…', icon: 'compositeCurve', action: function () { UI.cmdCompositeCurve(); } }, { label: 'Curve ▸ Curve Through XYZ Points…', icon: 'xyzCurve', action: function () { UI.cmdCurveXYZ(); } }, { label: 'Curve ▸ Curve Through Reference Points…', icon: 'refPtCurve', action: function () { UI.cmdCurveRefPoints(); } }, { label: 'Curve ▸ Helix/Spiral…', icon: 'helix', action: function () { UI.cmdHelix(); } },   // rfFA
         { label: 'Sheet Metal ▸ Base Flange', action: UI.cmdBaseFlange },
         { label: 'Sheet Metal ▸ Edge Flange', action: function () { UI.cmdEdgeFlange(); } },
         { label: 'Sheet Metal ▸ Miter Flange', action: function () { UI.cmdMiterFlange(); } },

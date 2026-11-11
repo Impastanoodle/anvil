@@ -6678,6 +6678,8 @@
       case 'plane': cmdPlane(f); break;
       case 'refaxis': case 'refpoint': case 'csys': cmdRefGeo(f.type, f); break;   // lane CZ
       case 'helix': case 'projCurve': case 'compositeCurve': case 'xyzCurve': case 'refPtCurve': faEdit(f); break;   // rfFA
+      case 'splitLine': cmdSplitLine(f); break;   // rfLQ
+      case 'sketch3d': if (UI.cmdSketch3D) UI.cmdSketch3D(f); break;   // rfLQ (ui-sketch-3d.js)
       case 'chamfer': cmdChamfer(f); break;
       case 'fillet': cmdFillet(f); break;
       case 'flange': cmdEdgeFlange(f); break;
@@ -7691,6 +7693,81 @@
   try { if (typeof localStorage !== 'undefined' && localStorage.getItem('anvil.fly.curves') == null) localStorage.setItem('anvil.fly.curves', '5'); } catch (e) { }
   UI.cmdHelix = cmdHelix; UI.cmdProjectedCurve = cmdProjectedCurve; UI.cmdCompositeCurve = cmdCompositeCurve; UI.cmdCurveXYZ = cmdCurveXYZ; UI.cmdCurveRefPoints = cmdCurveRefPoints;
   UI.curveXYZLoadText = function (text) { return pm.values && pm.values.type === 'xyzCurve' ? faLoadText(pm.values, text) : false; };
+  // ------------------------------------------------------------------ rfLQ: Split Line (Insert ▸ Curve ▸ Split Line)
+  // SolidWorks' PropertyManager: Type of Split (Silhouette / Projection / Intersection), Selections (Projection: the
+  // sketch to project, the faces to split, Single direction, Reverse direction; Intersection: the splitting plane or
+  // planar face, the faces; Silhouette: the direction of pull (a plane), the faces). The faces inside become faces of
+  // their own (kernel-features.js buildSplitLine); the body is unchanged. Preview: the split is tried on the part
+  // before the feature and its count of face pieces shown.
+  function slPlaneOptions() {
+    var out = [['Front', 'Front Plane'], ['Top', 'Top Plane'], ['Right', 'Right Plane']];
+    App.model.features.forEach(function (g) { if (g.type === 'plane') out.push(['f' + g.id, g.name]); });
+    return out;
+  }
+  function slPlaneRef(key) { return /^f\d+$/.test(key) ? { featureId: +key.slice(1) } : { ref: key, offset: 0 }; }
+  function slPlaneKey(ref) { return ref && ref.featureId != null ? 'f' + ref.featureId : ref && ref.ref ? ref.ref : 'Front'; }
+  function cmdSplitLine(existing) {
+    if (isAsm()) { refusePart('Split Line'); return; }
+    withSketch(function (sid) {
+      var sks = App.model.features.filter(function (s) { return s.type === 'sketch'; });
+      var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'splitLine', mode: sks.length ? 'projection' : 'intersection', faces: [] };
+      if (f.mode === 'projection' && f.sketch == null && sks.length) f.sketch = sid != null ? sid : sks[sks.length - 1].id;
+      if (!Array.isArray(f.faces)) f.faces = [];
+      f.toolKey = f.tool && !f.tool.at ? slPlaneKey(f.tool) : 'Right'; f.dirKey = slPlaneKey(f.dir || { ref: 'Front' });
+      var before = refBuildBefore(existing ? existing.id : null), st = { err: null };
+      var tol = function () { return K.pickTol(App.model.units); };
+      var faceIdx = function (spec) { try { var m = before && before.body ? K.meshFromBody(before.body) : App.mesh; return K.resolveFaces([spec], m, tol())[0]; } catch (e) { return -1; } };
+      function clean(v) {
+        var o = { type: 'splitLine', mode: v.mode, faces: v.faces.map(function (s) { return { at: s.at }; }) };
+        if (v.mode === 'projection') { o.sketch = +v.sketch; if (v.single) o.single = true; if (v.single && v.reverse) o.reverse = true; }
+        if (v.mode === 'intersection') o.tool = slPlaneRef(v.toolKey);
+        if (v.mode === 'silhouette') o.dir = slPlaneRef(v.dirKey);
+        if (v.name) o.name = v.name;
+        return o;
+      }
+      function preview() {
+        st.err = null;
+        var v = pm.values;
+        if (!v.faces.length) { st.err = 'Select the faces to split.'; UI.setStatus('Split Line: ' + st.err); return; }
+        try {
+          var m = K.resolvedModel ? K.resolvedModel(App.model).model : App.model, ctx = { planes: Object.assign({}, (before && before.planes) || {}), sketches: {}, body: before ? before.body : null, units: App.model.units || 'mm' };
+          var g = clean(v); g.id = existing ? existing.id : App.model.nextId;
+          var r = K.buildSplitLine(g, m, ctx);
+          UI.setStatus('Split Line preview: ' + r.count + ' face piece' + (r.count === 1 ? '' : 's') + ' split off. Press Enter or ✓ to accept.');
+        } catch (e) { st.err = e.message; UI.setStatus('Preview: ' + e.message); }
+      }
+      openPM({
+        title: existing ? existing.name : 'Split Line', icon: 'splitLine', values: f,
+        groups: [
+          { title: 'Type of Split', fields: [{ type: 'radio', key: 'mode', rerender: true, options: [['silhouette', 'Silhouette'], ['projection', 'Projection'], ['intersection', 'Intersection']] }] },
+          { title: 'Selections', fields: [
+            { type: 'select', label: 'Sketch to project', key: 'sketch', show: function (v) { return v.mode === 'projection'; }, options: faSketchOptions() },
+            { type: 'select', label: 'Splitting plane', key: 'toolKey', show: function (v) { return v.mode === 'intersection'; }, options: slPlaneOptions },
+            { type: 'select', label: 'Direction of pull', key: 'dirKey', show: function (v) { return v.mode === 'silhouette'; }, options: slPlaneOptions },
+            { type: 'pick', icon: 'splitLine', placeholder: 'Faces to split…', value: function (v) { return v.faces.length ? v.faces.length + ' face' + (v.faces.length > 1 ? 's' : '') : ''; },
+              items: function (v) { return v.faces.map(function (s, i) { return { label: 'Face<' + (i + 1) + '>', at: s.at }; }); },
+              onRemove: function (v, i) { v.faces.splice(i, 1); renderPM(); preview(); }, onClear: function (v) { v.faces.length = 0; renderPM(); preview(); } },
+            { type: 'check', label: 'Single direction', key: 'single', show: function (v) { return v.mode === 'projection'; } },
+            { type: 'check', label: 'Reverse direction', key: 'reverse', show: function (v) { return v.mode === 'projection' && !!v.single; } }] },
+          { title: 'Feature', collapsed: !existing, fields: [{ type: 'text', label: 'Name', key: 'name' }] }],
+        command: { faceList: [], onPick: function (pk) {
+          var v = pm.values;
+          if (pk.kind !== 'face' || !pk.point) return false;
+          var grp = UI.faceGroup ? UI.faceGroup(pk.index) : [pk.index], hit = -1;
+          v.faces.forEach(function (s, i) { if (grp.indexOf(faceIdx(s)) >= 0) hit = i; });
+          if (hit >= 0) v.faces.splice(hit, 1); else v.faces.push({ at: pk.point.map(function (x) { return Math.round(x * 1e6) / 1e6; }) });
+          renderPM(); preview();
+          return true;
+        } },
+        message: 'Projection: a sketch projected onto the faces splits them along its lines. Intersection: a plane splits the faces where it crosses them. Silhouette: cylindrical faces split along their outline seen along the direction of pull. Click the faces to split.',
+        onChange: function () { preview(); },
+        okBlocked: function (v) { return !v.faces.length ? 'Select the faces to split.' : v.mode === 'projection' && !(v.sketch >= 0) ? 'Select the sketch to project.' : null; },
+        onOK: function (v) { preview(); if (st.err) { UI.toast(st.err); return false; } return commitFeature(clean(v), existing); }
+      });
+      preview();
+    });
+  }
+  UI.cmdSplitLine = cmdSplitLine; UI.commitFeature = commitFeature;
   // ------------------------------------------------------------------ rfDZ: Wrap
   // Insert ▸ Features ▸ Wrap (Features tab ▸ Wrap): SolidWorks' PropertyManager — Wrap Type (Emboss / Deboss / Scribe),
   // Wrap Method (Analytical), Wrap Parameters (Source Sketch, Face for Wrap Sketch, Thickness, Reverse direction).

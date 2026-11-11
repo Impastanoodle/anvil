@@ -214,6 +214,9 @@
       path = f.path.map(function (p) { return [+p[0], +p[1], +p[2]]; });
       path.forEach(function (p) { if (!isFinite(p[0]) || !isFinite(p[1]) || !isFinite(p[2])) throw new Error('Every sweep path coordinate must be a number.'); });
     } else if (isCurveFeature(findFeature(model, f.path))) {   // rfFA: a reference curve (helix, projected, composite, …)
+      // rfLQ: a 3D sketch of lines and tangent arcs (sketch fillets) sweeps exactly, piece by piece, as a sketch path does
+      var exPieces = sk3dSweepPieces(f.path, ctx), ex3 = exPieces && sweepAlongPieces(f, exPieces, profile, profPlane);
+      if (ex3) return ex3;
       cpath = _.curveSweepPath(f.path, ctx); path = cpath.pts;
     } else {
       var ps = ctx.sketches[f.path] || findFeature(model, f.path);
@@ -1686,10 +1689,10 @@
     var body = needBody(ctx), poly = polyAt(body, at, refTol(ctx));
     if (!poly) throw refErr('A referenced face is gone (nothing at ' + fmtPt(at) + ').');
     var s = surfOf(poly);
-    if (curvedSurf(s)) return { kind: s.t, o: s.o.slice(), d: s.d ? norm(s.d) : [0, 0, 1], surf: s, polys: body.polygons.filter(function (q) { return sameSurf(surfOf(q), s); }) };
+    if (curvedSurf(s)) return { kind: s.t, o: s.o.slice(), d: s.d ? norm(s.d) : [0, 0, 1], surf: s, polys: body.polygons.filter(function (q) { return sameSurf(surfOf(q), s) && splitTag(q) === splitTag(poly); }) };
     // a planar face: the polygons of its plane connected to the picked one through shared vertices
-    var n = polyN(poly), w = poly.plane.w;
-    var pool = body.polygons.filter(function (q) { return !curvedSurf(surfOf(q)) && dot(polyN(q), n) > 1 - 1e-9 && Math.abs(q.plane.w - w) < 1e-7 * (1 + Math.abs(w)); });
+    var n = polyN(poly), w = poly.plane.w, stag = splitTag(poly);   // rfLQ: a Split Line face is a face of its own
+    var pool = body.polygons.filter(function (q) { return !curvedSurf(surfOf(q)) && dot(polyN(q), n) > 1 - 1e-9 && Math.abs(q.plane.w - w) < 1e-7 * (1 + Math.abs(w)) && splitTag(q) === stag; });
     var seen = [poly], keys = {}, grew = true;
     polyPts(poly).forEach(function (P) { keys[_.ekey(P)] = 1; });
     while (grew) {
@@ -2903,7 +2906,7 @@
   //    { t: 'line', a, b }, { t: 'arc', a, m, b }, { t: 'circle', c, n, r, x }, { t: 'bez', bez: [[P0, P1, P2, P3], …] }
   //    (a C1 cubic chain), { t: 'helix', o, n, x, r0, a0, du, v1, cone, rev? } (a line in the (u, v) of a cylinder /
   //    cone about n: exact). A curve is a Sweep path (`sweep.path` = its id): see curveSweepPath.
-  var FA_TYPES = { helix: 1, projCurve: 1, compositeCurve: 1, xyzCurve: 1, refPtCurve: 1 };
+  var FA_TYPES = { helix: 1, projCurve: 1, compositeCurve: 1, xyzCurve: 1, refPtCurve: 1, sketch3d: 1 };   // rfLQ: 3D Sketch (below)
   function isCurveFeature(f) { return !!(f && FA_TYPES[typeof f === 'string' ? f : f.type]); }
   function faNum(x, what) { var v = +x; if (x === '' || x == null || !isFinite(v)) throw refErr(what + ' must be a number.'); return v; }
   function faLen(pts) { var L = 0; for (var i = 1; i < pts.length; i++) L += len(sub(pts[i], pts[i - 1])); return L; }
@@ -3284,6 +3287,7 @@
       case 'compositeCurve': return resolveComposite(f, model, ctx);
       case 'xyzCurve': return resolveXyz(f, model, ctx);
       case 'refPtCurve': return resolveRefPtCurve(f, model, ctx);
+      case 'sketch3d': return resolveSketch3d(f, model, ctx);   // rfLQ
     }
     throw refErr('Unknown curve type ' + f.type + '.');
   }
@@ -3346,7 +3350,8 @@
     },
     refPtCurve: function (f, v, idVar, optsStr) {
       return 'var ' + v + ' = p.refPointCurve([' + (f.points || []).map(function (r) { return faRefOut(r, idVar); }).join(', ') + '], ' + optsStr({ closed: !!f.closed, name: f.name }) + ');';
-    }
+    },
+    sketch3d: function (f, v) { return 'var ' + v + ' = p.sketch3d(' + JSON.stringify(sk3dData(f)) + ');'; }   // rfLQ
   };
   Object.keys(FA_TYPES).forEach(function (t) { K.registerFeature(t, { cut: false, script: FA_SCRIPT[t] }); });
   // .sldcrv-style text (Curve Through XYZ Points ▸ Browse / Save): one point a line, "x y z", each value optionally
@@ -3634,4 +3639,361 @@
     }
   });
   K.wrapLayout = wrapLayout; K.wrapHeights = wrapHeights; K.wrapZones = wrapZones; K.buildWrap = buildWrap; _.buildWrap = buildWrap;
+
+  // ------------------------------------------------------------------ rfLQ: 3D Sketch, Offset On Surface, Split Line
+  // 3D Sketch (Sketch ▸ 3D Sketch / 3D Sketch On Plane) is a reference-curve feature type like rfFA's (no body change; a
+  // Sweep path, a Composite Curve piece, drawn as a curve):
+  //   { type: 'sketch3d', pts: [[x, y, z], …], ents: [ent], rels?: [rel], dims?: [dim], planes?: [planeRef] }
+  //   ent: { t: 'line', a, b, construction?, pl? } (a, b: point indices; construction = a centerline), { t: 'point', p },
+  //        { t: 'spline', p: [i, …], pl? }, { t: 'fillet', at: i, r } (Sketch Fillet: rounds the corner at point i between
+  //        the two lines ending there), { t: 'arc', c, n, r, x, ang } (a circle / arc in space, ang degrees, 360 = full:
+  //        Offset On Surface makes these)
+  //   rel: { type: 'alongX' | 'alongY' | 'alongZ', e } (a line), { type: 'fix', p }, { type: 'onPlane', p, pl }
+  //   dim: { k: 'len', e, v } (a line), { k: 'dist', a, b, v } (two points)
+  //   planes: the 3D Sketch On Plane planes, plane refs as a sketch's ({ ref: 'Front' | 'Top' | 'Right', offset } |
+  //     { featureId }); an entity drawn on one carries pl (its index)
+  // The stored point positions are the solved state (ui-sketch-3d.js solves relations and dimensions while editing), so the
+  // rebuild only reads them -> a curve record (curveRecord) whose runs are the connected chains of non-construction
+  // pieces, plus aux: { lines (construction), points } for display.
+  function splitTag(q) { return typeof q.shared === 'string' ? q.shared : null; }
+  function sk3dData(f) {
+    var o = { pts: (f.pts || []).map(function (p) { return [+p[0], +p[1], +p[2]]; }), ents: f.ents || [] };
+    ['rels', 'dims', 'planes'].forEach(function (k) { if (f[k] && f[k].length) o[k] = f[k]; });
+    if (f.name) o.name = f.name;
+    return o;
+  }
+  function sk3dPt(f, i, what) {
+    var p = (f.pts || [])[i];
+    if (!p || p.length < 3 || !isFinite(+p[0]) || !isFinite(+p[1]) || !isFinite(+p[2])) throw refErr('3D sketch: ' + (what || 'a point') + ' (point ' + (i + 1) + ') is missing.');
+    return [+p[0], +p[1], +p[2]];
+  }
+  // a fillet at point i: { lines: [k1, k2], A, B (tangent points on line k1 / k2), C, D (axis), ang, m (arc middle) }
+  function sk3dFillet(f, e) {
+    var i = e.at, r = +e.r, ls = [];
+    (f.ents || []).forEach(function (g, k) { if (g.t === 'line' && !g.construction && (g.a === i || g.b === i)) ls.push(k); });
+    if (ls.length !== 2) throw refErr('3D sketch: a fillet needs exactly two lines ending at its corner (point ' + (i + 1) + ' has ' + ls.length + ').');
+    if (!(r > 0)) throw refErr('3D sketch: the fillet radius must be more than 0.');
+    var P = sk3dPt(f, i), L1 = f.ents[ls[0]], L2 = f.ents[ls[1]];
+    var Q1 = sk3dPt(f, L1.a === i ? L1.b : L1.a), Q2 = sk3dPt(f, L2.a === i ? L2.b : L2.a);
+    var u = norm(sub(Q1, P)), v = norm(sub(Q2, P)), c = Math.max(-1, Math.min(1, dot(u, v))), th = Math.acos(c);
+    if (th < 1e-9 || th > Math.PI - 1e-9) throw refErr('3D sketch: the lines at point ' + (i + 1) + ' are in line; there is no corner to fillet.');
+    var t = r / Math.tan(th / 2);
+    if (t > len(sub(Q1, P)) + 1e-12 || t > len(sub(Q2, P)) + 1e-12) throw refErr('3D sketch: the fillet radius ' + r + ' is too large for the lines at point ' + (i + 1) + '.');
+    var A = add(P, scale(u, t)), B = add(P, scale(v, t)), C = add(P, scale(norm(add(u, v)), r / Math.sin(th / 2)));
+    var D = norm(cross(sub(A, C), sub(B, C))), ang = Math.PI - th;
+    return { lines: ls, A: A, B: B, C: C, D: D, ang: ang, r: r, m: rotatePoint(A, C, D, ang / 2) };
+  }
+  function sk3dArcPts(C, D, A, ang, r) {
+    var n = Math.max(4, Math.ceil((K.segsForRadius ? K.segsForRadius(r) : 64) * Math.abs(ang) / (2 * Math.PI))), out = [];
+    for (var k = 0; k <= n; k++) out.push(k === 0 ? A.slice() : rotatePoint(A, C, D, ang * k / n));
+    return out;
+  }
+  // the pieces { pts, edges } of a 3D sketch (non-construction), fillets trimming their lines
+  function sk3dPieces(f) {
+    var ents = f.ents || [], trims = {}, pieces = [], aux = { lines: [], points: [] };
+    ents.forEach(function (e) {
+      if (e.t !== 'fillet') return;
+      var fl = sk3dFillet(f, e);
+      fl.lines.forEach(function (k, j) {
+        var L = ents[k], at = j === 0 ? fl.A : fl.B, tr = trims[k] || (trims[k] = {});
+        tr[L.a === e.at ? 'a' : 'b'] = at;
+      });
+      pieces.push({ pts: sk3dArcPts(fl.C, fl.D, fl.A, fl.ang, fl.r), edges: [{ t: 'arc', a: fl.A, m: fl.m, b: fl.B }] });
+    });
+    ents.forEach(function (e, k) {
+      if (e.t === 'point') { aux.points.push(sk3dPt(f, e.p)); return; }
+      if (e.t === 'line') {
+        var A = sk3dPt(f, e.a, 'a line end'), B = sk3dPt(f, e.b, 'a line end');
+        if (e.construction) { aux.lines.push([A, B]); return; }
+        if (trims[k] && trims[k].a) A = trims[k].a;
+        if (trims[k] && trims[k].b) B = trims[k].b;
+        if (len(sub(B, A)) < 1e-9 * (1 + len(A))) return;   // a line used up by its fillets
+        pieces.push({ pts: [A, B], edges: [{ t: 'line', a: A, b: B }] });
+        return;
+      }
+      if (e.t === 'spline') {
+        var P = (e.p || []).map(function (i) { return sk3dPt(f, i, 'a spline point'); });
+        if (P.length < 2) return;
+        if (P.length === 2) { pieces.push({ pts: P, edges: [{ t: 'line', a: P[0], b: P[1] }] }); return; }
+        var bez = hermiteBez(P, false);
+        if (e.construction) { aux.lines.push(sampleBez(bez, 12)); return; }
+        pieces.push({ pts: sampleBez(bez, 12), edges: [{ t: 'bez', bez: bez }] });
+        return;
+      }
+      if (e.t === 'arc') {
+        var C = e.c.map(Number), D = norm(e.n.map(Number)), X = norm(e.x.map(Number)), r = +e.r, ang = (+e.ang || 360) * Math.PI / 180;
+        var S = add(C, scale(X, r)), pts = sk3dArcPts(C, D, S, ang, r);
+        if (e.construction) { aux.lines.push(pts); return; }
+        if (Math.abs(ang) >= 2 * Math.PI - 1e-9) { pts[pts.length - 1] = S.slice(); pieces.push({ pts: pts, edges: [{ t: 'circle', c: C, n: D, r: r, x: X }] }); }
+        else pieces.push({ pts: pts, edges: [{ t: 'arc', a: S, m: rotatePoint(S, C, D, ang / 2), b: pts[pts.length - 1] }] });
+      }
+    });
+    return { pieces: pieces, aux: aux };
+  }
+  function resolveSketch3d(f) {
+    var pc = sk3dPieces(f), rec;
+    if (!pc.pieces.length) rec = { refgeo: 'curve', kind: 'sketch3d', runs: [], pts: [], edges: [], closed: false, length: 0, t0: [1, 0, 0], t1: [1, 0, 0] };
+    else rec = curveRecord('sketch3d', chainPieces(pc.pieces, false));
+    if (pc.pieces.length) rec.length = rec.runs.length === 1 ? sk3dLength(rec.runs[0].edges) : rec.length;
+    rec.aux = pc.aux;
+    return rec;
+  }
+  // the true length of a run's edges (lines, arcs, circles; Bézier spans by Simpson)
+  function sk3dLength(edges) {
+    var L = 0;
+    edges.forEach(function (e) {
+      if (e.t === 'line') L += len(sub(e.b, e.a));
+      else if (e.t === 'arc') { var a = arc3(e.a, e.m, e.b); L += a ? a.r * a.ang : len(sub(e.b, e.a)); }
+      else if (e.t === 'circle') L += 2 * Math.PI * e.r;
+      else if (e.t === 'bez') e.bez.forEach(function (B) {
+        var M = 64, s = 0;
+        for (var k = 0; k <= M; k++) {
+          var t = k / M, u = 1 - t, d = [0, 1, 2].map(function (j) { return 3 * (u * u * (B[1][j] - B[0][j]) + 2 * u * t * (B[2][j] - B[1][j]) + t * t * (B[3][j] - B[2][j])); });
+          s += (k === 0 || k === M ? 1 : k % 2 ? 4 : 2) * len(d);
+        }
+        L += s / M / 3;
+      });
+    });
+    return L;
+  }
+  // the circle through a, m, b (m between a and b on it): { C, D (a -> m -> b turns positively about D), r, ang (0..2π) }
+  function arc3(a, m, b) {
+    var u = sub(m, a), w = sub(b, a), n = cross(u, w), nn = dot(n, n);
+    if (nn < 1e-24) return null;
+    var C = add(a, scale(add(scale(cross(w, n), dot(u, u)), scale(cross(n, u), dot(w, w))), 1 / (2 * nn)));
+    var D = norm(n), x = norm(sub(a, C)), y = cross(D, x), vb = sub(b, C), ang = Math.atan2(dot(vb, y), dot(vb, x));
+    if (ang <= 0) ang += 2 * Math.PI;
+    return { C: C, D: D, r: len(sub(a, C)), ang: ang };
+  }
+  // the exact sweep pieces (sweepAlongPieces) of a 3D sketch path in one run of lines and arcs; null otherwise
+  function sk3dSweepPieces(id, ctx) {
+    var g = ctx.planes && ctx.planes[id];
+    if (!g || g.refgeo !== 'curve' || g.kind !== 'sketch3d' || !g.runs || g.runs.length !== 1 || g.closed) return null;
+    if (!g.edges.some(function (e) { return e.t === 'arc'; })) return null;   // lines only: the mitred sweep, as before
+    var out = [];
+    for (var i = 0; i < g.edges.length; i++) {
+      var e = g.edges[i];
+      if (e.t === 'line') { out.push({ kind: 'line', a: e.a, b: e.b }); continue; }
+      if (e.t !== 'arc') return null;
+      var c = arc3(e.a, e.m, e.b);
+      if (!c) return null;
+      out.push({ kind: 'arc', a: e.a, b: e.b, C: c.C, D: c.D, ang: c.ang });
+    }
+    return out;
+  }
+
+  // Offset On Surface (Sketch ▸ Offset On Surface): the edges of a face moved across it by distance d (geodesic: in the
+  // plane of a planar face; along the axis / round it on a cylinder), as 3D sketch entities in world space:
+  //   offsetOnSurface(body, at, d, { reverse, units }) -> { kind: 'plane' | 'cyl', lines: [[A, B]], arcs: [{ c, n, r, x, ang }] }
+  // Planar faces: every outline loop moves to the inside of the face (a hole grows), straight edges exactly, a loop
+  // that is a whole circle (its corners on one circle) as a true circle; reverse = outward. Cylinders: the end circles
+  // (or arcs) move along the axis, the straight edges of a partial cylinder round it by d / R.
+  function offsetOnSurface(body, at, d, opts) {
+    opts = opts || {};
+    var ctx = { body: body, units: opts.units || 'mm' }, rf = refFace(at, ctx), s = opts.reverse ? -1 : 1, D = s * +d;
+    if (!(+d > 0)) throw refErr('Offset On Surface: the distance must be more than 0.');
+    var out = { kind: rf.kind, lines: [], arcs: [] };
+    if (rf.kind === 'plane') {
+      var mesh = meshFromBody(body), fi = -1, best = Infinity;
+      mesh.faces.forEach(function (fc, i) {
+        if (dot(fc.normal, rf.n) < 1 - 1e-9 || Math.abs(fc.w - rf.w) > 1e-7 * (1 + Math.abs(rf.w))) return;
+        fc.polys.forEach(function (q) { var sc = polyScore(q, at); if (sc < best) { best = sc; fi = i; } });
+      });
+      if (fi < 0) throw refErr('Offset On Surface: no face at the picked point.');
+      var o = faceOutline(mesh, fi);
+      o.loops.forEach(function (loop) {
+        var P = loop.map(function (q) { return [q[0], q[1]]; }), n = P.length, i;
+        // a whole circle: every corner as far from the centre
+        var cx = 0, cy = 0; P.forEach(function (p) { cx += p[0]; cy += p[1]; }); cx /= n; cy /= n;
+        var rs = P.map(function (p) { return Math.hypot(p[0] - cx, p[1] - cy); }), r0 = rs[0];
+        if (n >= 8 && rs.every(function (r) { return Math.abs(r - r0) < 1e-6 * (1 + r0); })) {
+          var ccw = signedArea(P) > 0, R = ccw ? r0 - D : r0 + D;
+          if (!(R > 1e-9)) throw refErr('Offset On Surface: the distance is larger than the radius of a round edge.');
+          var C3 = to3D(o.plane, cx, cy);
+          out.arcs.push({ c: C3, n: o.plane.n.slice(), r: R, x: o.plane.x.slice(), ang: 360 });
+          return;
+        }
+        // straight sides: drop corners in line, move every side to its left (the face is left of each side)
+        var Q = [];
+        for (i = 0; i < n; i++) {
+          var a = P[(i + n - 1) % n], b = P[i], c = P[(i + 1) % n];
+          if (Math.abs((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])) > 1e-12 * (1 + Math.hypot(b[0], b[1])) * (1 + Math.hypot(c[0] - a[0], c[1] - a[1]))) Q.push(b);
+        }
+        var m = Q.length, V = [];
+        if (m < 3) return;
+        for (i = 0; i < m; i++) {
+          var p0 = Q[(i + m - 1) % m], p1 = Q[i], p2 = Q[(i + 1) % m];
+          var d1 = norm2(p1[0] - p0[0], p1[1] - p0[1]), d2 = norm2(p2[0] - p1[0], p2[1] - p1[1]);
+          var o1 = [p0[0] - d1[1] * D, p0[1] + d1[0] * D], o2 = [p1[0] - d2[1] * D, p1[1] + d2[0] * D];
+          var den = d1[0] * d2[1] - d1[1] * d2[0];
+          if (Math.abs(den) < 1e-14) { V.push([o2[0], o2[1]]); continue; }
+          var t = ((o2[0] - o1[0]) * d2[1] - (o2[1] - o1[1]) * d2[0]) / den;
+          V.push([o1[0] + d1[0] * t, o1[1] + d1[1] * t]);
+        }
+        if (Math.abs(signedArea(V)) < 1e-12 || (signedArea(V) > 0) !== (signedArea(Q) > 0)) throw refErr('Offset On Surface: the distance is too large for the face.');
+        for (i = 0; i < m; i++) out.lines.push([to3D(o.plane, V[i][0], V[i][1]), to3D(o.plane, V[(i + 1) % m][0], V[(i + 1) % m][1])]);
+      });
+      return out;
+    }
+    if (rf.kind !== 'cyl') throw refErr('Offset On Surface: pick a planar or cylindrical face.');
+    var S = rf.surf, dd = norm(S.d), Rc = S.r, e1 = Math.abs(dd[0]) < 0.9 ? norm(cross(dd, [1, 0, 0])) : norm(cross(dd, [0, 1, 0])), e2 = cross(dd, e1);
+    var z0 = Infinity, z1 = -Infinity, ths = [];
+    rf.polys.forEach(function (q) {
+      polyPts(q).forEach(function (P) {
+        var v = sub(P, S.o), z = dot(v, dd);
+        z0 = Math.min(z0, z); z1 = Math.max(z1, z);
+        ths.push(Math.atan2(dot(v, e2), dot(v, e1)));
+      });
+    });
+    ths.sort(function (a, b) { return a - b; });
+    var gap = 0, gi = -1;
+    for (var k = 0; k < ths.length; k++) { var nx = k + 1 < ths.length ? ths[k + 1] : ths[0] + 2 * Math.PI, g = nx - ths[k]; if (g > gap) { gap = g; gi = k; } }
+    var segs = K.segsForRadius ? K.segsForRadius(Rc) : 64, full = gap < 1.5 * 2 * Math.PI / segs;
+    if (z1 - z0 <= 2 * D + 1e-9) throw refErr('Offset On Surface: the distance is too large for the face.');
+    var at0 = z0 + D, at1 = z1 - D, onAxis = function (z) { return add(S.o, scale(dd, z)); };
+    if (full) {
+      out.arcs.push({ c: onAxis(at0), n: dd.slice(), r: Rc, x: e1.slice(), ang: 360 });
+      out.arcs.push({ c: onAxis(at1), n: dd.slice(), r: Rc, x: e1.slice(), ang: 360 });
+      return out;
+    }
+    var th0 = (gi + 1 < ths.length ? ths[gi + 1] : ths[0]) + D / Rc, sweep = 2 * Math.PI - gap - 2 * D / Rc;
+    if (!(sweep > 1e-9)) throw refErr('Offset On Surface: the distance is too large for the face.');
+    var dirAt = function (th) { return add(scale(e1, Math.cos(th)), scale(e2, Math.sin(th))); };
+    var x0 = dirAt(th0), x1 = dirAt(th0 + sweep);
+    out.arcs.push({ c: onAxis(at0), n: dd.slice(), r: Rc, x: x0, ang: sweep * 180 / Math.PI });
+    out.arcs.push({ c: onAxis(at1), n: dd.slice(), r: Rc, x: x0, ang: sweep * 180 / Math.PI });
+    out.lines.push([add(onAxis(at0), scale(x0, Rc)), add(onAxis(at1), scale(x0, Rc))]);
+    out.lines.push([add(onAxis(at0), scale(x1, Rc)), add(onAxis(at1), scale(x1, Rc))]);
+    return out;
+  }
+  function norm2(x, y) { var l = Math.hypot(x, y) || 1; return [x / l, y / l]; }
+
+  // Split Line (Insert ▸ Curve ▸ Split Line, Features ▸ Curves): faces split into separate faces, the body unchanged.
+  //   { type: 'splitLine', mode: 'projection' | 'intersection' | 'silhouette', faces: [{ at }],
+  //     sketch (projection), single?, reverse? (projection: one direction, which), tool (intersection: a plane ref as a
+  //     sketch's, or { at } a planar face), dir (silhouette: a plane ref; its normal is the direction of pull) }
+  // The body is cut by a tool solid (body ∩ tool and body − tool: the BSP split leaves the volume as it was) and the
+  // pieces of the selected faces inside the tool become their own faces: their polygons' shared is the Split Line's id
+  // as a string (meshFromBody keeps them apart, Kernel.wrapSplit draws the edge between, refFace keeps them apart) and a
+  // curved one's surface record is a copy marked w (as a Wrap scribe). Projection: the sketch's closed contours through
+  // all (both ways, or one with single); an open chain splits along itself (the side to its left). Intersection: the
+  // plane. Silhouette: on each selected cylinder, the plane through its axis square to the direction.
+  function splitBox(frame, D, a, b) { return prism([[-D, -D], [D, -D], [D, D], [-D, D]], frame, a, b, { split: true }); }
+  function splitTools(f, model, ctx, body) {
+    var bb = body.getBounds(), D = 4 * Math.max(1, len(sub(bb.max, bb.min)) + len(bb.max) + len(bb.min)), mode = f.mode || 'projection', tools = [];
+    if (mode === 'projection') {
+      var sk = (ctx.sketches && ctx.sketches[f.sketch]) || findFeature(model, f.sketch);
+      if (!sk || sk.type !== 'sketch') throw refErr('Split Line: select the sketch to project.');
+      var pl = resolvePlane(sk.plane, model, ctx.planes || {}), prof = sk.profile || sketchProfile(sk);
+      var a = f.single ? (f.reverse ? -D : 0) : -D, b = f.single ? (f.reverse ? 0 : D) : D, solids = [];
+      (prof.loops || []).forEach(function (l) { if (!l.hole && !(l.depth % 2)) solids.push(prism(l.pts, pl, a, b, { split: true }, l.seg && prof.curves ? l.seg.map(function (k) { return k >= 0 ? prof.curves[k] : null; }) : null)); });
+      var holes = (prof.loops || []).filter(function (l) { return l.depth % 2 === 1; }).map(function (l) { return prism(l.pts, pl, a - 1, b + 1, { split: true }); });
+      if (solids.length) { var acc = unionAll(solids); if (holes.length) acc = acc.subtract(unionAll(holes)); tools.push(acc); }
+      // open chains: the region to the left of the chain, its ends carried on far along their directions
+      var chains = [];
+      (sk.entities || []).forEach(function (e) {
+        if (e.construction || e.t === 'text' || e.t === 'point' || K.noProfileEntity(sk, e)) return;
+        entityPolylines(e).forEach(function (q) { if (!q.closed) chains.push(q.pts.slice()); });
+      });
+      chainOpen(chains).forEach(function (c) {
+        if (c.length < 2 || Math.hypot(c[0][0] - c[c.length - 1][0], c[0][1] - c[c.length - 1][1]) < 1e-9) return;
+        var d0 = norm2(c[0][0] - c[1][0], c[0][1] - c[1][1]), d1 = norm2(c[c.length - 1][0] - c[c.length - 2][0], c[c.length - 1][1] - c[c.length - 2][1]);
+        var s0 = [c[0][0] + d0[0] * D, c[0][1] + d0[1] * D], s1 = [c[c.length - 1][0] + d1[0] * D, c[c.length - 1][1] + d1[1] * D];
+        var l1 = [-d1[1], d1[0]], l0 = [-d0[1], d0[0]];   // left of the chain's direction at the end, and (reversed) at the start
+        var poly = [s0].concat(c, [s1, [s1[0] + l1[0] * 2 * D, s1[1] + l1[1] * 2 * D], [s0[0] - l0[0] * 2 * D, s0[1] - l0[1] * 2 * D]]);
+        if (signedArea(poly) < 0) poly.reverse();
+        tools.push(prism(poly, pl, a, b, { split: true }));
+      });
+      if (!tools.length) throw refErr('Split Line: the sketch has no lines or contours to project.');
+    } else if (mode === 'intersection') {
+      var t = f.tool, fr;
+      if (t && (t.at || Array.isArray(t))) { var tf = refFace(Array.isArray(t) ? t : t.at, ctx); if (tf.kind !== 'plane') throw refErr('Split Line: the splitting face must be planar.'); fr = { origin: tf.o, n: tf.n, x: norm(Math.abs(tf.n[0]) < 0.9 ? cross(tf.n, [1, 0, 0]) : cross(tf.n, [0, 1, 0])) }; fr.y = cross(fr.n, fr.x); }
+      else { if (!t) throw refErr('Split Line: select the splitting plane.'); fr = resolvePlane(t, model, ctx.planes || {}); }
+      tools.push(splitBox(fr, D, 0, D));
+    } else if (mode === 'silhouette') {
+      if (!f.dir) throw refErr('Split Line: select the direction of pull (a plane).');
+      var dv = norm(resolvePlane(f.dir, model, ctx.planes || {}).n);
+      (f.faces || []).forEach(function (r) {
+        var F = refFace(Array.isArray(r) ? r : r.at, ctx);
+        if (F.kind !== 'cyl') throw refErr('Split Line: Silhouette splits cylindrical faces (a planar face has no silhouette).');
+        var ax = norm(F.d), m = cross(ax, dv);
+        if (len(m) < 1e-9) throw refErr('Split Line: the direction of pull runs along the cylinder\'s axis; its silhouette is its rim.');
+        m = norm(m);
+        tools.push(splitBox({ origin: F.surf.o.slice(), n: m, x: ax, y: cross(m, ax) }, D, 0, D));
+      });
+    } else throw refErr('Split Line: unknown type "' + mode + '".');
+    return tools;
+  }
+  // open polylines joined end to end (2D, exact ends)
+  function chainOpen(list) {
+    var left = list.slice(), out = [];
+    while (left.length) {
+      var c = left.shift(), grew = true;
+      while (grew) {
+        grew = false;
+        for (var i = 0; i < left.length && !grew; i++) {
+          var q = left[i], h = c[0], t = c[c.length - 1];
+          if (key2(q[0]) === key2(t)) c = c.concat(q.slice(1));
+          else if (key2(q[q.length - 1]) === key2(t)) c = c.concat(q.slice().reverse().slice(1));
+          else if (key2(q[q.length - 1]) === key2(h)) c = q.slice(0, -1).concat(c);
+          else if (key2(q[0]) === key2(h)) c = q.slice().reverse().slice(0, -1).concat(c);
+          else continue;
+          left.splice(i, 1); grew = true;
+        }
+      }
+      out.push(c);
+    }
+    return out;
+  }
+  function splitMark(p, id, memo) {
+    p.shared = String(id);
+    if (!p.surf || !p.surf.s) return;
+    var i = memo.from.indexOf(p.surf);
+    if (i < 0) {
+      var w = {}, s = {}, k;
+      for (k in p.surf) if (Object.prototype.hasOwnProperty.call(p.surf, k) && k.charAt(0) !== '_') w[k] = p.surf[k];
+      for (k in p.surf.s) if (Object.prototype.hasOwnProperty.call(p.surf.s, k) && k.charAt(0) !== '_') s[k] = p.surf.s[k];
+      s.w = 'split' + id; w.s = s;
+      memo.from.push(p.surf); memo.to.push(w); i = memo.from.length - 1;
+    }
+    p.surf = memo.to[i];
+  }
+  // buildSplitLine(f, model, ctx) -> { body, count (pieces marked) }: ctx.body is the body the first face is on
+  function buildSplitLine(f, model, ctx) {
+    var body = needBody(ctx), refs = f.faces || [];
+    if (!refs.length) throw refErr('Split Line: select the faces to split.');
+    var faces = refs.map(function (r) { return refFace(Array.isArray(r) ? r : r.at, ctx); }), tol = refTol(ctx) * 0.02;
+    var onFace = function (q) {
+      var pts = polyPts(q), c = [0, 0, 0];
+      pts.forEach(function (P) { c = add(c, P); });
+      c = scale(c, 1 / pts.length);
+      return faces.some(function (F) { return F.polys.some(function (g) { return dot(polyN(g), polyN(q)) > 1 - 1e-6 && polyScore(g, c) < tol; }); });
+    };
+    var cur = body, marked = 0, memo = { from: [], to: [] };
+    splitTools(f, model, ctx, body).forEach(function (tool) {
+      var inside = cur.intersect(tool), outside = cur.subtract(tool), keep = [], n = 0;
+      outside.polygons.forEach(function (p) { if (!(p.shared && p.shared.split)) keep.push(p); });
+      inside.polygons.forEach(function (p) {
+        if (p.shared && p.shared.split) return;
+        if (onFace(p)) { splitMark(p, f.id, memo); n++; }
+        keep.push(p);
+      });
+      if (n) { cur = CSG.fromPolygons(keep); marked += n; }
+    });
+    if (!marked) throw refErr('Split Line: the ' + ((f.mode || 'projection') === 'projection' ? 'sketch does not project onto' : (f.mode === 'intersection' ? 'plane does not cross' : 'silhouette does not cross')) + ' the selected faces.');
+    return { body: cur, count: marked };
+  }
+  K.registerFeature('splitLine', {
+    cut: false,
+    script: function (f, v, idVar, optsStr) {
+      var o = { mode: f.mode || 'projection', faces: (f.faces || []).map(function (r) { return faR4(Array.isArray(r) ? r : r.at); }) };
+      if (o.mode === 'projection') { o.sketch = '@' + (idVar[f.sketch] || f.sketch); if (f.single) o.single = true; if (f.reverse) o.reverse = true; }
+      if (o.mode === 'intersection') o.tool = f.tool && (f.tool.at || Array.isArray(f.tool)) ? { at: faR4(Array.isArray(f.tool) ? f.tool : f.tool.at) } : f.tool;
+      if (o.mode === 'silhouette') o.dir = f.dir;
+      o.name = f.name;
+      return 'var ' + v + ' = p.splitLine(' + optsStr(o) + ').last();';
+    }
+  });
+  K.sketch3dPieces = sk3dPieces; K.sketch3dFillet = sk3dFillet; K.sketch3dData = sk3dData; K.arc3 = arc3;
+  K.offsetOnSurface = offsetOnSurface; K.buildSplitLine = buildSplitLine; _.buildSplitLine = buildSplitLine;
 })(Kernel, Kernel._);

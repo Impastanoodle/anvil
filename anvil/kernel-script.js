@@ -2521,6 +2521,32 @@
     if (opts && opts.closed) f.closed = true;
     return this._addCurve(f, opts);
   };
+  // ------------------------------------------------------------------ rfLQ: 3D Sketch and Split Line (kernel-features.js)
+  // p.sketch3d({ pts: [[x,y,z], …], ents: [{ t: 'line', a, b, construction? } | { t: 'point', p } | { t: 'spline', p: [i…] } |
+  //   { t: 'fillet', at, r } | { t: 'arc', c, n, r, x, ang }], rels?, dims?, planes?, name? }) -> the feature's id (a curve:
+  //   a Sweep path)
+  // p.splitLine({ mode: 'projection' | 'intersection' | 'silhouette', faces: [[x,y,z], …], sketch (projection), single?,
+  //   reverse?, tool (intersection: a plane ref or { at }), dir (silhouette: a plane ref), name? })
+  Builder.prototype.sketch3d = function (data) {
+    data = data || {};
+    var f = { type: 'sketch3d', pts: (data.pts || []).map(function (p) { return [num(p[0]), num(p[1]), num(p[2])]; }), ents: JSON.parse(JSON.stringify(data.ents || [])) };
+    ['rels', 'dims', 'planes'].forEach(function (k) { if (data[k] && data[k].length) f[k] = JSON.parse(JSON.stringify(data[k])); });
+    return this._addCurve(f, data);
+  };
+  Builder.prototype.splitLine = function (opts) {
+    opts = opts || {};
+    var mode = opts.mode || 'projection';
+    if (mode !== 'projection' && mode !== 'intersection' && mode !== 'silhouette') throw new Error('splitLine: mode must be projection, intersection or silhouette.');
+    var f = { type: 'splitLine', mode: mode, faces: (opts.faces || []).map(function (p) { return { at: (Array.isArray(p) ? p : p.at).map(Number) }; }) };
+    if (mode === 'projection') { f.sketch = opts.sketch != null ? opts.sketch : this.lastSketchId; if (opts.single) f.single = true; if (opts.reverse) f.reverse = true; }
+    if (mode === 'intersection') f.tool = opts.tool && !Array.isArray(opts.tool) && !opts.tool.at ? opts.tool : { at: (Array.isArray(opts.tool) ? opts.tool : (opts.tool || {}).at || []).map(Number) };
+    if (mode === 'silhouette') f.dir = opts.dir;
+    if (opts.name) f.name = opts.name;
+    var keep = this.lastSolidId;
+    this._add(f);
+    this.lastSolidId = keep;
+    return this;
+  };
   // ------------------------------------------------------------------ rfDZ: Wrap
   // wrap(opts): Insert ▸ Features ▸ Wrap (kernel-features.js). opts: face ([x, y, z] on the cylindrical, conical or
   // planar face to wrap onto, required), sketch (default: the last sketch), mode ('emboss', the default | 'deboss' |

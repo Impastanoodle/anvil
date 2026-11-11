@@ -118,7 +118,9 @@
   function meshFromBody(body) {
     if (!body) return { positions: new Float32Array(0), normals: new Float32Array(0), faces: [], triCount: 0 };
     var diag = bodyDiag(body.polygons), ptol = planeTol(diag), clusters = planeClusters(ptol), order = [];
-    function tagOf(p) { return (p.body || 0) + (p.face != null ? '|f' + p.face : '') + (p.part != null ? '|p' + p.part : '') + (p.surf && p.surf.s && p.surf.s.w != null ? '|w' + p.surf.s.w : ''); }   // OpenCascade faces / assembly parts stay apart
+    // OpenCascade faces / assembly parts stay apart; rfLQ: so does the face a Split Line cut off (its polygons' shared is
+    // the Split Line's id as a string: kernel-features.js splitMark)
+    function tagOf(p) { return (p.body || 0) + (p.face != null ? '|f' + p.face : '') + (p.part != null ? '|p' + p.part : '') + (p.surf && p.surf.s && p.surf.s.w != null ? '|w' + p.surf.s.w : '') + (typeof p.shared === 'string' ? '|s' + p.shared : ''); }
     // rfHL: groups that are not flat are split into edge-connected, coplanar pieces. Flat faces (every example part's
     // planar faces: within 3e-10 of their plane, 2e-12 of the size) stay as they were; what the loose test wrongly joined
     // (the facets of a nearly flat stretch of a loft: 1e-6 .. 8e-4 off) does not, nor does any group of a curved B-rep face
@@ -2219,7 +2221,8 @@
     var fa = mesh.faces[i], fb = mesh.faces[j], pa = fa && fa.polys && fa.polys[0], pb = fb && fb.polys && fb.polys[0];
     if (!pa || !pb || (fa.body || 0) !== (fb.body || 0) || fa.part !== fb.part) return false;
     var sa = pa.surf && pa.surf.s, sb = pb.surf && pb.surf.s, wa = sa && sa.w != null ? sa.w : null, wb = sb && sb.w != null ? sb.w : null;
-    if (wa === wb && (pa.face == null || pb.face == null || pa.face === pb.face)) return false;
+    var ta = typeof pa.shared === 'string' ? pa.shared : null, tb = typeof pb.shared === 'string' ? pb.shared : null;   // rfLQ: Split Line faces
+    if (wa === wb && ta === tb && (pa.face == null || pb.face == null || pa.face === pb.face)) return false;
     if (!sa && !sb) return dot(fa.normal, fb.normal) > 1 - 1e-9 && Math.abs(fa.w - fb.w) < 1e-6 * (1 + Math.abs(fa.w));
     if (!sa || !sb || sa.t !== sb.t || Math.abs((sa.r || 0) - (sb.r || 0)) > 1e-7 * (1 + Math.abs(sa.r || 0)) || Math.abs((sa.k || 0) - (sb.k || 0)) > 1e-9) return false;
     if (Math.abs(Math.abs(dot(norm(sa.d), norm(sb.d))) - 1) > 1e-9) return false;

@@ -28,17 +28,17 @@
     UI.setView('Isometric'); UI.zoomToFit(); await idle(); await wait(60);
   }
 
-  step('rfFA: Curves flyout and Insert ▸ Curve list SolidWorks’ six commands in order with Split Line greyed; the flyout face is Helix and Spiral', async function () {
+  step('rfFA: Curves flyout and Insert ▸ Curve list SolidWorks’ six commands in order, Split Line enabled (rfLQ); the flyout face is Helix and Spiral', async function () {
     await rfFAPart('p.units("mm");\np.sketch("Front").rect(0, 0, 40, 30).end().extrude(10);');
     var rows = rfFAFlyRows(), txt = rows.map(function (r) { return r.textContent.replace(/\s+/g, ' ').trim(); });
     assert(JSON.stringify(txt) === JSON.stringify(['Split Line', 'Projected Curve', 'Composite Curve', 'Curve Through XYZ Points', 'Curve Through Reference Points', 'Helix and Spiral']), 'flyout rows: ' + JSON.stringify(txt));
-    assert(rows[0].classList.contains('disabled') && !rows[5].classList.contains('disabled'), 'Split Line greyed, Helix enabled');
+    assert(!rows[0].classList.contains('disabled') && !rows[5].classList.contains('disabled'), 'Split Line (rfLQ) and Helix enabled');
     if (UI.closeMenus) UI.closeMenus(); await idle();
     var face = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb-fly'), function (x) { return x._fly && x._fly.fly === 'curves'; })[0].querySelector('.rb-face');
     assert(face.dataset.icon === 'helix' && !face.disabled, 'the face runs Helix and Spiral: ' + face.dataset.icon);
     var cv = menuRows('Curve ▸').map(function (r) { return r.text.replace(/\s+/g, ' ').trim() + (r.row.classList.contains('disabled') ? ' (off)' : ''); });
     if (UI.closeMenus) UI.closeMenus();
-    assert(JSON.stringify(cv) === JSON.stringify(['Curve ▸ Split Line… (off)', 'Curve ▸ Projected…', 'Curve ▸ Composite…', 'Curve ▸ Curve Through XYZ Points…', 'Curve ▸ Curve Through Reference Points…', 'Curve ▸ Helix/Spiral…']), 'Insert ▸ Curve: ' + JSON.stringify(cv));
+    assert(JSON.stringify(cv) === JSON.stringify(['Curve ▸ Split Line…', 'Curve ▸ Projected…', 'Curve ▸ Composite…', 'Curve ▸ Curve Through XYZ Points…', 'Curve ▸ Curve Through Reference Points…', 'Curve ▸ Helix/Spiral…']), 'Insert ▸ Curve: ' + JSON.stringify(cv));
     return txt.length + ' rows';
   });
 

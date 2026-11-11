@@ -28,7 +28,7 @@
   NAME_BASE.rip = 'Rip'; NAME_BASE.tab = 'Tab';   // lane DI
   NAME_BASE.vent = 'Vent';   // lane DT
   NAME_BASE.draft = 'Draft';   // rfDX
-  NAME_BASE.wrap = 'Wrap';   // rfDZ
+  NAME_BASE.wrap = 'Wrap'; NAME_BASE.splitLine = 'Split Line'; NAME_BASE.sketch3d = '3DSketch';   // rfLQ   // rfDZ
   NAME_BASE.insertBends = 'Process-Bends'; NAME_BASE.convertSM = 'Convert-Solid';   // lane DQ (SolidWorks' names)
   NAME_BASE.rib = 'Rib'; NAME_BASE.intersect = 'Intersect';   // rfDY
   NAME_BASE.boundary = 'Boundary-Boss'; NAME_BASE.boundaryCut = 'Boundary-Cut';   // rfFB (SolidWorks' names)
@@ -860,6 +860,7 @@
     model.features.forEach(function (f) { if (f.type === 'projCurve' || f.type === 'compositeCurve') { pathIds[f.sketch] = pathIds[f.sketch2] = true; (f.edges || []).forEach(function (r) { if (r && r.sketch != null) pathIds[r.sketch] = true; }); } });   // rfFA: curves from open sketches
     model.features.forEach(function (f) { if (f.type === 'flange' && f.miterFlange && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // lane DL: a miter flange's profile
     model.features.forEach(function (f) { if (f.type === 'rib' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // rfDY: a rib's open lines
+    model.features.forEach(function (f) { if (f.type === 'splitLine' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // rfLQ: a Split Line's open lines
     model.features.forEach(function (f) { if (f.type === 'boundary') (f.dir2 || []).forEach(function (c) { var id = c && typeof c === 'object' ? c.sketch : c; if (typeof id === 'number') pathIds[id] = true; }); });   // rfFB: Direction 2 curves are open
     var keys = model.features.map(function (f) { return featureKey(f, model); });
     var prev = cache && cache.steps ? cache.steps : [], steps = [], p = 0;
@@ -1008,6 +1009,7 @@
             if (sr && sr.warning) warnings[f.id] = sr.warning + (warnings[f.id] ? ' ' + warnings[f.id] : '');
             break;
           }
+          case 'splitLine': { var slr = f.faces && f.faces.length ? f.faces[0] : null, slk = ctx.bodies.length ? Math.max(0, bodyNearPoint(ctx.bodies, slr ? (Array.isArray(slr) ? slr : slr.at) : [0, 0, 0])) : -1; ctx.body = slk >= 0 ? ctx.bodies[slk] : null; putBody(slk, _.buildSplitLine(f, model, ctx).body); ctx.tools[f.id] = null; break; }   // rfLQ: Split Line, on the body its first face is on
           case 'wrap': { var wk = ctx.bodies.length ? Math.max(0, bodyNearPoint(ctx.bodies, f.face || [0, 0, 0])) : -1; ctx.body = wk >= 0 ? ctx.bodies[wk] : null; var wr = _.buildWrap(f, model, ctx); putBody(wk, wr.body); ctx.tools[f.id] = wr.tool; break; }   // rfDZ: Wrap on the body its face is on
           case 'shell': {
             var sk = pickBody(f);
@@ -1022,7 +1024,7 @@
             break;
           case 'intersect': _.applyIntersect(f, model, ctx); syncBody(); break;   // rfDY (kernel-features.js)
           case 'deleteBody': applyDeleteBody(f, ctx); syncBody(); ctx.tools[f.id] = null; break;   // rfHT: Delete/Keep Body
-          case 'helix': case 'projCurve': case 'compositeCurve': case 'xyzCurve': case 'refPtCurve': ctx.planes[f.id] = _.resolveCurve(f, model, ctx); break;   // rfFA: reference curves, no body change
+          case 'helix': case 'projCurve': case 'compositeCurve': case 'xyzCurve': case 'refPtCurve': case 'sketch3d': ctx.planes[f.id] = _.resolveCurve(f, model, ctx); break;   // rfFA: reference curves, no body change
           case 'refaxis': case 'refpoint': case 'csys':   // lane CZ: reference geometry, no body change; the record rides in planes
             ctx.planes[f.id] = _.resolveRefGeo(f, model, ctx);
             exactFaceCenter(f, ctx);   // lane DF
