@@ -1,7 +1,8 @@
 // dxf-import.js — DXF into sketches (no DOM; loaded after the kernel files, and by the Node runner through
 // tests/kernel-tests.html). Three parts:
 //   DxfImport.parse(text) -> { units: 'in' | 'mm' | null, layers: [{ name, color, count, frozen?, off? }], entities: [sketch entities
-//     with a `layer` field], warnings: [] }. LINE, ARC, CIRCLE, LWPOLYLINE and POLYLINE / VERTEX (bulges become arcs),
+//     with a `layer` field], warnings: [], unitsFrom: 'INSUNITS' | 'MEASUREMENT' | null (lane dwgin: MEASUREMENT = assumed,
+//     said in the warnings), tilted / offZ: counts of 3D records (projected / placed on the sketch plane, warned) }. LINE, ARC, CIRCLE, LWPOLYLINE and POLYLINE / VERTEX (bulges become arcs),
 //     SPLINE (as an Anvil spline when its cubic spans map onto one exactly, else a chain of lines), ELLIPSE (full or
 //     partial), POINT and INSERT of BLOCKS (exploded with base point, scale, rotation and MINSERT arrays; nested), in R12
 //     and R2000+ layouts, in model space only (paper space is skipped with a warning). $INSUNITS (1 in, 4 mm; feet, cm and
@@ -278,8 +279,9 @@ var DxfImport = (function () {
   var QUIET = { VERTEX: 1, SEQEND: 1, VIEWPORT: 1 };
   // skipped without a warning, counted for the import message: a drawing's annotation, not geometry to cut
   var SKIP_QUIET = { DIMENSION: 'dimension', HATCH: 'hatch', ATTDEF: 'attribute definition' };
-  // layers whose lines are not part of the outline: Anvil's own construction and bend-line layers
-  var CONSTRUCTION_LAYER = /^(CONSTRUCTION|BEND)$/i;
+  // layers whose lines are not part of the outline: Anvil's own construction and bend-line layers (lane dwgin: also
+  // BEND_UP / BEND_DOWN, which DXF/DWG Output's bend layers split writes, and the usual BEND LINES / BENDLINES)
+  var CONSTRUCTION_LAYER = /^(CONSTRUCTION|BEND([_ -]?(UP|DOWN|LINES?))?|BENDLINES?)$/i;
   function parse(text, opts) {
     opts = opts || {};
     var P = pairs(text), sec = sections(P), warnings = [];
@@ -292,10 +294,16 @@ var DxfImport = (function () {
     var vars = {}, cur = null;
     (sec.HEADER || []).forEach(function (p) { if (p[0] === 9) { cur = p[1].toUpperCase(); vars[cur] = vars[cur] || {}; } else if (cur && vars[cur][p[0]] == null) vars[cur][p[0]] = p[1]; });
     var ins = vars.$INSUNITS ? parseInt(vars.$INSUNITS[70], 10) : 0, meas = vars.$MEASUREMENT ? parseInt(vars.$MEASUREMENT[70], 10) : null;
-    var units = null, uscale = 1;
-    if (UNITS[ins]) { units = UNITS[ins][0]; uscale = UNITS[ins][1]; if (uscale !== 1) warnings.push('The file is in ' + UNIT_NAMES[ins] + ': converted to ' + (units === 'in' ? 'inches' : 'millimetres') + '.'); }
-    else if (meas === 0) units = 'in';
-    else if (meas === 1) units = 'mm';
+    var units = null, uscale = 1, unitsFrom = null;
+    if (UNITS[ins]) { units = UNITS[ins][0]; uscale = UNITS[ins][1]; unitsFrom = 'INSUNITS'; if (uscale !== 1) warnings.push('The file is in ' + UNIT_NAMES[ins] + ': converted to ' + (units === 'in' ? 'inches' : 'millimetres') + '.'); }
+    // lane dwgin: no $INSUNITS (0, unitless: what AutoCAD R14 and many DWG savers leave) but $MEASUREMENT: an assumption,
+    // so it is said (the PM's File units and the message)
+    else if (meas === 0 || meas === 1) {
+      units = meas === 0 ? 'in' : 'mm'; unitsFrom = 'MEASUREMENT';
+      warnings.push('No units in the file ($INSUNITS ' + (vars.$INSUNITS ? ins : 'not set') + '): taken as ' + (units === 'in' ? 'inches' : 'millimetres') + ' from $MEASUREMENT ' + meas + ' (' + (meas === 0 ? 'English' : 'metric') + ').');
+    }
+    // lane dwgin: a TEXT / MTEXT with no height (a converter that lost it) takes its style's fixed height, else $TEXTSIZE
+    var textSize = vars.$TEXTSIZE ? parseFloat(vars.$TEXTSIZE[40]) : NaN, styleH = {};
     // TABLES: layer colours
     // lane dxfaudit: a layer's state too: frozen (70 & 1) or off (a negative colour); names match without case, as in
     // AutoCAD (an entity on "cut" is on layer CUT)
@@ -309,6 +317,7 @@ var DxfImport = (function () {
       layerColor[nm] = Math.abs(c62);
       layerState[nm.toUpperCase()] = { frozen: (num(r, 70, 0) & 1) === 1, off: c62 < 0 };
     });
+    records(sec.TABLES || []).forEach(function (r) { if (r.type === 'STYLE' && num(r, 40, 0) > 0) styleH[String(str(r, 2, '')).toUpperCase()] = num(r, 40, 0); });
     // BLOCKS
     var blocks = {}, blk = null;
     records(sec.BLOCKS || []).forEach(function (r) {
@@ -316,7 +325,7 @@ var DxfImport = (function () {
       if (r.type === 'ENDBLK') { blk = null; return; }
       if (blk) blk.ents.push(r);
     });
-    var ctx = { out: [], skipped: {}, quiet: {}, text: 0, paper: 0, tilted: 0, splineLines: 0, splineFit: 0, missing: {}, deep: 0, badSpline: 0, mesh: 0,
+    var ctx = { out: [], skipped: {}, quiet: {}, text: 0, paper: 0, tilted: 0, offZ: 0, zoff: 0, zeroScale: 0, textSize: textSize > 0 ? textSize : 0, styleH: styleH, splineLines: 0, splineFit: 0, missing: {}, deep: 0, badSpline: 0, mesh: 0,
       blocks: !!opts.blocks && !!(Kern() && Kern().blockEntity), blkPrefix: opts.idPrefix != null ? String(opts.idPrefix) : 'x' + (++parseCount).toString(36) + Date.now().toString(36).slice(-5) + '_', nBlk: 0, blkDefs: {},
       curveTol: opts.curveTol || (units === 'in' ? 1e-4 : units === 'mm' ? 2.5e-3 : 0) };
     var top = records(sec.ENTITIES || []);
@@ -345,7 +354,9 @@ var DxfImport = (function () {
     var sk = Object.keys(ctx.skipped);
     if (sk.length) warnings.push('Skipped ' + sk.map(function (k) { return ctx.skipped[k] + ' ' + k; }).join(', ') + '.');
     if (ctx.paper) warnings.push('Skipped ' + ctx.paper + ' entit' + (ctx.paper === 1 ? 'y' : 'ies') + ' in paper space (only model space is imported).');
-    if (ctx.tilted) warnings.push(ctx.tilted + ' entit' + (ctx.tilted === 1 ? 'y is' : 'ies are') + ' not parallel to the XY plane: projected onto it.');
+    if (ctx.tilted) warnings.push(ctx.tilted + ' entit' + (ctx.tilted === 1 ? 'y is' : 'ies are') + ' not parallel to the XY plane (3D): projected onto it.');
+    if (ctx.offZ) warnings.push(ctx.offZ + ' entit' + (ctx.offZ === 1 ? 'y lies' : 'ies lie') + ' off z = 0 (3D, at another elevation): placed on the sketch plane.');
+    if (ctx.zeroScale) warnings.push(ctx.zeroScale + ' block insertion' + (ctx.zeroScale === 1 ? '' : 's') + ' with a scale of 0 (not valid in AutoCAD): read as the other scale.');
     if (ctx.splineLines) warnings.push(ctx.splineLines + ' spline' + (ctx.splineLines === 1 ? '' : 's') + ' (rational or above degree 3) converted to lines within ' + fmtN(ctx.curveTol || 1e-4) + '.');
     if (ctx.splineFit) warnings.push(ctx.splineFit + ' spline' + (ctx.splineFit === 1 ? '' : 's') + ' given by fit points only: drawn through them.');
     if (ctx.badSpline) warnings.push(ctx.badSpline + ' spline' + (ctx.badSpline === 1 ? '' : 's') + ' with inconsistent knots skipped.');
@@ -357,7 +368,7 @@ var DxfImport = (function () {
     var qk = Object.keys(SKIP_QUIET).filter(function (k) { return ctx.quiet[k]; }), parts = qk.map(function (k) { return ctx.quiet[k] + ' ' + SKIP_QUIET[k] + (ctx.quiet[k] === 1 ? '' : (SKIP_QUIET[k] === 'hatch' ? 'es' : 's')); });
     var note = parts.length ? (parts.length > 1 ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1] : parts[0]) + ' skipped' : '';
     var nText = out.filter(function (e) { return e.t === 'text'; }).length;
-    return { units: units, layers: layers, entities: out, warnings: warnings, skipped: ctx.quiet, skippedNote: note, texts: nText };
+    return { units: units, unitsFrom: unitsFrom, layers: layers, entities: out, warnings: warnings, skipped: ctx.quiet, skippedNote: note, texts: nText, tilted: ctx.tilted, offZ: ctx.offZ };
   }
   // ------------------------------------------------------------------ text (TEXT, MTEXT, ATTRIB -> Sketch Text)
   // DXF text to plain characters: %%c %%d %%p (Ø ° ±), %%% (%), %%nnn (a character code), \U+xxxx; %%u / %%o (underline
@@ -396,6 +407,7 @@ var DxfImport = (function () {
   // (× 5/3 of the height, AutoCAD's single spacing).
   function textEntity(r, M, ctx) {
     var mt = r.type === 'MTEXT', s = mt ? mtextString(r) : plainDxfText(str(r, 1, '')), h = num(r, 40, 0);
+    if (!(h > 0) && ctx) h = ctx.styleH[String(str(r, 7, 'STANDARD')).toUpperCase()] || ctx.textSize;   // lane dwgin
     s = s.replace(/\r\n?/g, '\n').replace(/\s+$/, '');
     if (!s.replace(/\s+/g, '') || !(h > 0)) return null;
     var p, rot, wf = num(r, 41, 1) > 0 && !mt ? num(r, 41, 1) : 1, align = 'left', valign = 'baseline', mir = false, up = false, ls = null, Mt = M;
@@ -449,13 +461,25 @@ var DxfImport = (function () {
     if (insLayer != null && layer === '0') layer = insLayer;
     function add(e) { if (!e) return; e.layer = layer; ctx.out.push(e); }
     function line(p, q) { add({ t: 'line', x1: p[0], y1: p[1], x2: q[0], y2: q[1] }); }
+    // lane dwgin: 3D. The z values of one record (world z, or the elevation of an entity in its OCS): different ones
+    // make it tilted (projected: ctx.tilted), one value off 0 (with the INSERTs' z it sits in) an elevated one (ctx.offZ)
+    function zs(codes) {
+      var lo = Infinity, hi = -Infinity;
+      r.g.forEach(function (p) { if (codes.indexOf(p[0]) >= 0) { var z = parseFloat(p[1]) || 0; if (z < lo) lo = z; if (z > hi) hi = z; } });
+      if (!(hi >= lo)) lo = hi = 0;
+      var tol = 1e-9 * Math.max(1, Math.abs(lo), Math.abs(hi));
+      if (hi - lo > tol) ctx.tilted++;
+      else if (Math.abs(lo + ctx.zoff) > tol) ctx.offZ++;
+    }
     switch (r.type) {
       case 'LINE': {
+        zs([30, 31]);
         line(ap(M, num(r, 10, 0), num(r, 20, 0)), ap(M, num(r, 11, 0), num(r, 21, 0)));
         return;
       }
-      case 'POINT': { var pt = ap(M, num(r, 10, 0), num(r, 20, 0)); add({ t: 'point', x: pt[0], y: pt[1] }); return; }
+      case 'POINT': { zs([30]); var pt = ap(M, num(r, 10, 0), num(r, 20, 0)); add({ t: 'point', x: pt[0], y: pt[1] }); return; }
       case 'CIRCLE': case 'ARC': {
+        zs([30]);
         var Mo = mul(M, ocs(r, num(r, 30, 0), ctx)), rad = num(r, 40, 0);
         if (!(rad > 0)) return;
         if (r.type === 'CIRCLE') { add(conicThrough(Mo, [num(r, 10, 0), num(r, 20, 0)], [rad, 0], [0, rad], 0, TAU, true)); return; }
@@ -469,6 +493,7 @@ var DxfImport = (function () {
         var p0 = num(r, 41, 0), p1 = num(r, 42, TAU);
         while (p1 <= p0) p1 += TAU;
         if (Math.abs(N[2]) < 1 - 1e-9) ctx.tilted++;
+        else zs([30]);
         add(conicThrough(M, [num(r, 10, 0), num(r, 20, 0)], [maj[0], maj[1]], [ratio * mn[0], ratio * mn[1]], p0, p1, p1 - p0 >= TAU - 1e-9));
         return;
       }
@@ -479,6 +504,7 @@ var DxfImport = (function () {
           else if (v && p[0] === 20) v.y = parseFloat(p[1]) || 0;
           else if (v && p[0] === 42) v.b = parseFloat(p[1]) || 0;
         });
+        zs([38]);
         poly(verts, (num(r, 70, 0) & 1) === 1, mul(M, ocs(r, num(r, 38, 0), ctx)));
         return;
       }
@@ -486,17 +512,21 @@ var DxfImport = (function () {
         var fl = num(r, 70, 0);
         if (fl & (16 | 64)) { ctx.mesh++; return; }
         var three = (fl & 8) === 8, Mp = three ? M : mul(M, ocs(r, num(r, 30, 0), ctx));
-        var vs = (r.verts || []).filter(function (x) { return !(num(x, 70, 0) & 16); }).map(function (x) { return { x: num(x, 10, 0), y: num(x, 20, 0), b: three ? 0 : num(x, 42, 0) }; });
+        var vs0 = (r.verts || []).filter(function (x) { return !(num(x, 70, 0) & 16); });
+        if (three) { var rg = r.g; r.g = [].concat.apply([], vs0.map(function (x) { return x.g; })); zs([30]); r.g = rg; } else zs([30]);
+        var vs = vs0.map(function (x) { return { x: num(x, 10, 0), y: num(x, 20, 0), b: three ? 0 : num(x, 42, 0) }; });
         poly(vs, (fl & 1) === 1, Mp);
         return;
       }
-      case 'SPLINE': { spline(r); return; }
+      case 'SPLINE': { zs([30, 31]); spline(r); return; }
       case 'INSERT': {
         var b = blocks[str(r, 2, '').toUpperCase()];
         if (!b) { ctx.missing[str(r, 2, '?')] = 1; return; }
         if (depth >= 16) { ctx.deep++; return; }
-        if (ctx.blocks && depth === 0 && M === ID && blockInstance(r, b, layer, ctx, blocks)) return;   // rfAU
-        var Mo2 = mul(M, ocs(r, num(r, 30, 0), ctx)), sx = num(r, 41, 1), sy = num(r, 42, 1), rot = num(r, 50, 0) * D2R;
+        if (ctx.blocks && depth === 0 && M === ID && blockInstance(r, b, layer, ctx, blocks)) { zs([30]); return; }   // rfAU
+        var sc = insScale(r, ctx), Mo2 = mul(M, ocs(r, num(r, 30, 0), ctx)), sx = sc[0], sy = sc[1], rot = num(r, 50, 0) * D2R;
+        var zo = ctx.zoff, N2 = normalOf(r);
+        if (Math.abs(N2[2]) > 1 - 1e-9) ctx.zoff = zo + N2[2] * num(r, 30, 0);
         var cols = Math.max(1, num(r, 70, 1) | 0), rows = Math.max(1, num(r, 71, 1) | 0), csp = num(r, 44, 0), rsp = num(r, 45, 0);
         var cs = Math.cos(rot), sn = Math.sin(rot);
         for (var ci = 0; ci < cols; ci++) for (var ri = 0; ri < rows; ri++) {
@@ -504,12 +534,14 @@ var DxfImport = (function () {
           var Mb = mul(Mo2, mul([cs, sn, -sn, cs, num(r, 10, 0), num(r, 20, 0)], mul([1, 0, 0, 1, ci * csp, ri * rsp], [sx, 0, 0, sy, -sx * b.base[0], -sy * b.base[1]])));
           b.ents.forEach(function (be) { if (num(be, 67, 0) !== 1) emit(be, Mb, layer, depth + 1, ctx, blocks); });
         }
+        ctx.zoff = zo;
         // its attributes (part numbers, revisions …) stand where the INSERT puts them already: through M only
         (r.attribs || []).forEach(function (at) { if (!(num(at, 70, 0) & 1)) emit(at, M, layer, depth, ctx, blocks); });
         return;
       }
     }
-    if (TEXT_TYPES[r.type]) { var te = textEntity(r, M, ctx); if (te) add(te); else ctx.text++; return; }
+    // (an ATTRIB left empty, a title block's unfilled field, is no loss: not counted)
+    if (TEXT_TYPES[r.type]) { var te = textEntity(r, M, ctx); if (te) add(te); else if (r.type !== 'ATTRIB' || /\S/.test(str(r, 1, ''))) ctx.text++; return; }
     if (SKIP_QUIET[r.type]) { ctx.quiet[r.type] = (ctx.quiet[r.type] || 0) + 1; return; }
     if (!QUIET[r.type]) ctx.skipped[r.type] = (ctx.skipped[r.type] || 0) + 1;
 
@@ -614,9 +646,16 @@ var DxfImport = (function () {
     var ok = ents.length && ents.every(function (e) { return BLK_TYPES[e.t]; });
     return (ctx.blkDefs[key] = ok ? ents : null);
   }
+  // lane dwgin: an INSERT's X / Y scale; AutoCAD never writes 0, a converter can (LibreDWG's DWG writer gives a mirrored
+  // insertion a Y scale of 0), which would flatten the block into zero-length lines: 0 takes the other one's size
+  function insScale(r, ctx) {
+    var sx = num(r, 41, 1), sy = num(r, 42, 1);
+    if (sx === 0 || sy === 0) { ctx.zeroScale++; if (sx === 0 && sy === 0) sx = sy = 1; else if (sx === 0) sx = Math.abs(sy); else sy = Math.abs(sx); }
+    return [sx, sy];
+  }
   // an INSERT (r, of block b, on layer) as block instances into ctx.out; false when it has to be exploded
   function blockInstance(r, b, layer, ctx, blocks) {
-    var N = normalOf(r), sx = num(r, 41, 1), sy = num(r, 42, 1);
+    var N = normalOf(r), sc = insScale({ g: r.g }, { zeroScale: 0 }), sx = sc[0], sy = sc[1];
     if (Math.abs(N[0]) > 1e-12 || Math.abs(N[1]) > 1e-12 || !(N[2] > 0)) return false;
     if (!(sx > 0) || Math.abs(sx - sy) > 1e-12 * sx) return false;
     var def = blockDef(b, ctx, blocks), K = Kern();

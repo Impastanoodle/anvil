@@ -230,7 +230,8 @@
     try { build(); } catch (e) { built = null; }
     var nJoints = built ? jointCount(built.entities) : 0;
     v.rels = opts.relations != null ? !!opts.relations : nJoints <= MAX_AUTO_RELS;
-    var fileUnits = parsed.units ? UNIT_TEXT[parsed.units] : 'Not set (taken as ' + UNIT_TEXT[pu].toLowerCase() + ')';
+    // lane dwgin: units the file only implies ($INSUNITS 0, $MEASUREMENT 0 / 1) say so
+    var fileUnits = parsed.units ? UNIT_TEXT[parsed.units] + (parsed.unitsFrom === 'MEASUREMENT' ? ' (assumed: no $INSUNITS, $MEASUREMENT ' + (parsed.units === 'in' ? '0' : '1') + ')' : '') : 'Not set (taken as ' + UNIT_TEXT[pu].toLowerCase() + ')';
     var spec = null;
     spec = {
       title: 'DXF/DWG Import', icon: 'importDxf', values: v, noFocus: true,
