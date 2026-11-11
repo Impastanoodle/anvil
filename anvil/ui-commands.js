@@ -1259,7 +1259,9 @@
     var f = UI.activeSketchFeature();
     if (!f) { UI.toast('Open a sketch first.'); return; }
     if (!f.entities.length) { UI.toast('Draw something to mirror first.'); return; }
-    var pre = sketchSelectionIndices(f), cls = pre.filter(function (i) { var e = f.entities[i]; return e.t === 'line' && e.construction; }), axis0 = '';
+    // rfKU: a slot's own centerline (ui-sketch-tools.js sketchInnerCenterlines) is an entity to mirror, never Mirror about
+    var pre = sketchSelectionIndices(f), inner = UI.sketchInnerCenterlines ? UI.sketchInnerCenterlines(pre) : [];
+    var cls = pre.filter(function (i) { var e = f.entities[i]; return e.t === 'line' && e.construction && inner.indexOf(i) < 0; }), axis0 = '';
     if (cls.length === 1) { axis0 = String(cls[0]); pre = pre.filter(function (i) { return i !== cls[0]; }); }
     var v = { entities: pre, axis: axis0, copy: true, box: pre.length && !axis0 ? 'axis' : 'entities' };
     function axisIndex() { return /^\d+$/.test(String(v.axis)) ? +v.axis : -1; }

@@ -770,7 +770,15 @@
     var onCurve = curveSnap(f, pl, [mx, my], INFER_PX.curve);
     if (onCurve) wakeLine(f, onCurve.e);   // rfII: a line the cursor passes over is woken (parallel / perpendicular locks)
     if (onCurve && bestDir && bestDir.d <= onCurve.d && entityThrough(f.entities[onCurve.e], prev)) onCurve = null;
-    if (onCurve) { out.p = onCurve.slice(); out.snap = { kind: 'on', pt: out.p, e: onCurve.e }; return out; }
+    if (onCurve) {
+      out.p = onCurve.slice(); out.snap = { kind: 'on', pt: out.p, e: onCurve.e };
+      // rfKU: on a curve *and* in line with the previous point (or a woken point), as SolidWorks: the point goes where
+      // the horizontal / vertical inference line crosses the curve, so a line drawn level to an edge ends on it level
+      // (it took the nearest point on the curve, 1-2 px off the level, and the click added no Horizontal)
+      var ac = curveAlign(f, onCurve, raw, px, st, prev, ownSnap);
+      if (ac) { out.p = ac.p; out.snap.pt = out.p; out.align.push(ac.align); }
+      return out;
+    }
     if (bestDir) {
       var sl = App.view.showGrid ? bestDir.s : niceRound(bestDir.s, 0.5 * px * 1.05), u = bestDir.c.u;
       out.p = [prev[0] + u[0] * sl, prev[1] + u[1] * sl];
@@ -834,6 +842,57 @@
     }
     if (UI.sketchToolDefs[App.tool] && UI.sketchToolDefs[App.tool].refine) UI.sketchToolDefs[App.tool].refine(out, raw, st, h, grid);   // p9-sketch-curves: a tool's own rounding (ui-sketch-*.js)
     return out;
+  }
+  // rfKU: where a horizontal / vertical inference line (through the previous point first, else a woken point, within
+  // INFER_PX.align of the cursor) crosses the line / circle / arc the cursor is on, within INFER_PX.curve of the
+  // cursor -> { p, align } or null
+  function curveAlign(f, oc, raw, px, st, prev, ownSnap) {
+    var e = f.entities[oc.e];
+    if (!e || !(e.t === 'line' || e.t === 'circle' || e.t === 'arc')) return null;
+    var pl = UI.activePlane(), tol = INFER_PX.align * px, boxTool = App.tool === 'rect' || App.tool === 'crect';
+    var cs = [];
+    if (prev && !boxTool && ownSnap) cs.push({ pt: prev, prev: true });
+    woken.forEach(function (p) { if (!(prev && p[0] === prev[0] && p[1] === prev[1]) && !(boxTool && st.pts[0] && p[0] === st.pts[0][0] && p[1] === st.pts[0][1])) cs.push({ pt: p }); });
+    var best = null;
+    cs.forEach(function (c) {
+      [0, 1].forEach(function (k) {
+        var d = Math.abs(raw[k] - c.pt[k]);
+        if (d >= tol) return;
+        var q = curveAtCoord(e, k, c.pt[k], raw);
+        if (!q) return;
+        var s = UI.worldToScreen(K.to3D(pl, q[0], q[1])), s0 = UI.worldToScreen(K.to3D(pl, raw[0], raw[1]));
+        if (Math.hypot(s[0] - s0[0], s[1] - s0[1]) >= INFER_PX.curve) return;
+        if (q[0] === c.pt[0] && q[1] === c.pt[1]) return;   // the aligned point itself (a point snap handles it)
+        var key = (c.prev ? 0 : 1) + d / tol;   // the previous point's alignment first
+        if (!best || key < best.key) best = { key: key, p: q, align: { from: c.pt, axis: k ? 'y' : 'x', prev: !!c.prev } };
+      });
+    });
+    return best;
+  }
+  // the point of line / circle / arc e whose coordinate k is v, nearest raw (null: none)
+  function curveAtCoord(e, k, v, raw) {
+    if (e.t === 'line') {
+      var a = [e.x1, e.y1], b = [e.x2, e.y2], d = b[k] - a[k];
+      if (Math.abs(d) < 1e-12) return null;
+      var t = (v - a[k]) / d;
+      var inf = window.SketchSolver && window.SketchSolver.infSides ? window.SketchSolver.infSides(e) : null;
+      if ((t < 0 && !(inf && inf.p1)) || (t > 1 && !(inf && inf.p2))) return null;
+      var q = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+      q[k] = v;
+      return q;
+    }
+    var c = [+e.cx, +e.cy], off = v - c[k];
+    if (Math.abs(off) > e.r) return null;
+    var o = Math.sqrt(Math.max(0, e.r * e.r - off * off)), best = null;
+    [o, -o].forEach(function (s) {
+      var q = [0, 0]; q[k] = v; q[1 - k] = c[1 - k] + s;
+      if (e.t === 'arc') {
+        var ang = Math.atan2(q[1] - c[1], q[0] - c[0]) * 180 / Math.PI, rel = ((ang - e.a0) % 360 + 360) % 360, sw = ((e.a1 - e.a0) % 360 + 360) % 360;
+        if (rel > sw + 1e-9 && e.a1 - e.a0 < 360) return;
+      }
+      if (!best || Math.hypot(q[0] - raw[0], q[1] - raw[1]) < Math.hypot(best[0] - raw[0], best[1] - raw[1])) best = q;
+    });
+    return best;
   }
   function snap(uv, mx, my) { return inferPoint(uv, mx, my).p; }
   UI.sketchInferPoint = inferPoint;   // r9/sketch9: script / test hook (where a drawing tool would put its next point)

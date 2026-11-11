@@ -2855,4 +2855,24 @@
     if (r.ok) { changed(); UI.setStatus(closeArcMessage(r)); }
     return r;
   };
+
+  // rfKU: Mirror Entities with a box-selected slot. A centrepoint / straight slot carries a construction centerline
+  // between its cap centres; with that the only centerline in the preselection, the PM (ui-commands.js) took it as
+  // *Mirror about* and mirrored the part about the slot's own axis, and the next click on the real centerline was added
+  // to the entities. A centerline whose end holds a selected arc's / circle's centre is part of that geometry: it opens
+  // as an entity to mirror and Mirror about waits for the click, as in SolidWorks.
+  function innerCenterlines(f, sel) {
+    var on = {};
+    sel.forEach(function (i) { on[i] = true; });
+    return sel.filter(function (i) {
+      var e = f.entities[i];
+      if (!e || e.t !== 'line' || !e.construction) return false;
+      return (f.rels || []).some(function (r) {
+        if (r.type !== 'coincident') return false;
+        var mine = r.refs.some(function (x) { return x === i + '.p1' || x === i + '.p2'; });
+        return mine && r.refs.some(function (x) { var m = /^(\d+)\.c$/.exec(x); return m && +m[1] !== i && on[+m[1]]; });
+      });
+    });
+  }
+  UI.sketchInnerCenterlines = function (sel) { var f = UI.activeSketchFeature(); return f ? innerCenterlines(f, sel) : []; };
 })();

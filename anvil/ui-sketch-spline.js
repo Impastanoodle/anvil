@@ -820,7 +820,7 @@
           var h5 = 5 * (UI.cam ? UI.cam.scale : 0.1), dm = [[q[0] - h5, q[1]], [q[0], q[1] - h5], [q[0] + h5, q[1]], [q[0], q[1] + h5]];
           for (var k5 = 0; k5 < 4; k5++) push(mpos, dm[k5], dm[(k5 + 1) % 4]);
         });
-        if (splineView.handles && !e.style) handleLines(e).forEach(function (s) { push(cpos, s[0], s[1]); });   // rfAS: Show Spline Handles
+        if ((splineView.handles || i === mark) && !e.style) handleLines(e).forEach(function (s) { push(cpos, s[0], s[1]); });   // rfAS: Show Spline Handles; rfKU: the selected spline's too (SolidWorks), to drag
         if (e.style && (!K.isBSpline(e) || i === mark || splineView.handles)) for (var cq = 0; cq + 1 < e.pts.length; cq++) push(cpos, e.pts[cq], e.pts[cq + 1]);   // rfAH: the control polygon (lane fitspline: a B-spline's while its PM is open)
         if (i === mark && e.pts[splineSel.pt]) {   // the picked spline point: a small square, 4 px a side
           var q = e.pts[splineSel.pt], h = 4 * (UI.cam ? UI.cam.scale : 0.1);
@@ -852,6 +852,71 @@
     return out;
   }
   UI.splineHandles = handleLines;
+  // rfKU: drag a spline handle in the graphics area, as SolidWorks: with a spline selected (its PropertyManager open)
+  // its handles show; pressing within 7 px of a handle tip and dragging turns the handle (Tangent Driving goes on at
+  // that point, the angle follows the pointer) and stretches it (the Tangent Weighting scales with the handle's length).
+  // One undo step per drag. handleTips(e) -> [{ k (spline point), tip, s (+1 the leg leaving the point, -1 entering) }]
+  function handleTips(e) {
+    var g = K.splineGeom(e), out = [];
+    if (!g || e.conic != null || e.style) return out;
+    g.bez.forEach(function (B, j) { out.push({ k: j, tip: B[1], s: 1 }, { k: j + 1, tip: B[2], s: -1 }); });
+    if (e.closed) out.forEach(function (h) { h.k = h.k % e.pts.length; });
+    return out;
+  }
+  var hDrag = null;
+  function handleAt(f, i, mx, my) {
+    var e = f.entities[i], pl = UI.activePlane(), best = null, bd = 7;
+    handleTips(e).forEach(function (h) {
+      var s = UI.worldToScreen(K.to3D(pl, h.tip[0], h.tip[1])), P = e.pts[h.k], sp = UI.worldToScreen(K.to3D(pl, P[0], P[1]));
+      if (Math.hypot(s[0] - sp[0], s[1] - sp[1]) < 4) return;   // a handle shorter than the point dot: the point wins
+      var d = Math.hypot(s[0] - mx, s[1] - my);
+      if (d < bd) { bd = d; best = h; }
+    });
+    return best;
+  }
+  UI.splineHandleAt = function (mx, my) {
+    var f = UI.activeSketchFeature(), spec = UI.pmSpec && UI.pmSpec(), se = spec && spec._skEntity;
+    if (!f || !se || !f.entities[se.index] || f.entities[se.index].t !== 'spline') return null;
+    var h = handleAt(f, se.index, mx, my);
+    return h ? { index: se.index, k: h.k, s: h.s, tip: h.tip.slice() } : null;
+  };
+  if (UI.viewport) UI.viewport.addEventListener('mousedown', function (ev) {
+    if (App.mode !== 'sketch' || ev.button !== 0 || ev.ctrlKey || ev.shiftKey || (App.tool && App.tool !== 'select')) return;
+    var r = UI.viewport.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
+    var h = UI.splineHandleAt(mx, my), f = UI.activeSketchFeature();
+    if (!h || !f) return;
+    var e = f.entities[h.index], S = SS();
+    if (!S || !S.handleDrive) return;
+    ev.preventDefault(); ev.stopImmediatePropagation();
+    markDirty();
+    if (!S.handleDrive(e, h.k)) return;
+    var P = e.pts[h.k];
+    hDrag = { f: f, e: e, index: h.index, k: h.k, s: h.s, w0: +e.tans[h.k][1], w2: e.tans[h.k][2], L0: Math.hypot(h.tip[0] - P[0], h.tip[1] - P[1]) || 1, moved: false };
+    splineSel = { index: h.index, pt: h.k };
+  }, true);
+  window.addEventListener('mousemove', function (ev) {
+    if (!hDrag) return;
+    var r = UI.viewport.getBoundingClientRect(), uv = UI.screenToPlane(ev.clientX - r.left, ev.clientY - r.top, UI.activePlane());
+    if (!uv) return;
+    var e = hDrag.e, P = e.pts[hDrag.k], v = [(uv[0] - P[0]) * hDrag.s, (uv[1] - P[1]) * hDrag.s], L = Math.hypot(v[0], v[1]);
+    if (!(L > 1e-9)) return;
+    var sc = L / hDrag.L0, tg = e.tans[hDrag.k] || [];
+    var nt = [Math.round(Math.atan2(v[1], v[0]) / D2R * 1e4) / 1e4, hDrag.w0 * sc].concat(tg.length > 2 ? tg.slice(2) : []);
+    if (nt.length > 2 && hDrag.w2 != null && isFinite(+hDrag.w2)) nt[2] = +hDrag.w2 * sc;
+    e.tans[hDrag.k] = nt;
+    hDrag.moved = true;
+    solveAfterEdit(hDrag.f, hDrag.index);
+    UI.updateSketches();
+  });
+  window.addEventListener('mouseup', function () {
+    if (!hDrag) return;
+    var d = hDrag, e = d.e, tg = e.tans && e.tans[d.k];
+    hDrag = null;
+    refresh();
+    if (d.moved && tg) UI.setStatus('Spline point ' + (d.k + 1) + ': Tangent Driving on, ' + fmt(tg[0], 1) + '°, weighting ' + fmt(tg[1], 3) + '.');
+    var spec = UI.pmSpec && UI.pmSpec();
+    if (spec && spec._skEntity && spec._skEntity.index === d.index && UI.sketchEntityPMs.spline) UI.sketchEntityPMs.spline(d.index, e, d.f);   // its PM shows the point and the new tangent
+  });
   // lane DE: are spline i's handles on screen (Show Spline Handles)? Smart Dimension picks only the handles shown
   // (ui-relations.js pickSketchRef)
   UI.splineHandlesShownFor = function (i) { return !!splineView.handles; };

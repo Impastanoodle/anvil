@@ -720,6 +720,65 @@ if (typeof UI !== 'undefined') (function (UI) {
     return !!(spec && (spec === selPMSpec || spec.selectionPM || spec.entityIndex != null || spec._skEntity || spec._txtEntity || (spec._curves && spec._curves.kind === 'entity')));
   }
   function sketchSelectionPM(list, byClick) {
+    sketchSelectionPM0(list, byClick);
+    if (byClick) ctxBar(list || selection()); else ctxBarHide();
+  }
+  // rfKU: the sketch context toolbar (SolidWorks: the relations that apply pop up by the pointer when entities are
+  // clicked: Make Horizontal / Vertical / Collinear / Equal …). A Select-tool click that leaves sketch items selected
+  // shows one icon button per relation SketchSolver.applicable offers (as the Properties PM's Add Relations, which
+  // stays); a button adds the relation (one undo step) and the bar goes. It goes too when the pointer moves 140 px
+  // away, on Esc, on the next press in the graphics area, or when the selection empties.
+  var ctxEl = null, ctxAt = null, lastUp = null;
+  window.addEventListener('mouseup', function (ev) {
+    var r = viewport.getBoundingClientRect();
+    lastUp = [ev.clientX - r.left, ev.clientY - r.top];
+  }, true);
+  function ctxBarHide() { if (ctxEl) { ctxEl.remove(); ctxEl = null; ctxAt = null; } }
+  function ctxIcon(t) { return t === 'distance' || t === 'angle' ? t : 'rel' + t.charAt(0).toUpperCase() + t.slice(1); }
+  function ctxBar(items) {
+    ctxBarHide();
+    var f = UI.activeSketchFeature(), SS = window.SketchSolver;
+    if (!f || !SS || App.mode !== 'sketch' || (App.tool && App.tool !== 'select') || !lastUp) return;
+    var sk = (items || []).filter(isSketchItem);
+    if (!sk.length) return;
+    var refs = selectedSketchRefs(sk), types = refs.length ? SS.applicable(f, refs) : [];
+    if (!types.length) return;
+    ctxEl = el('div', { id: 'sk-ctx', role: 'toolbar', 'aria-label': 'Add relation' });
+    ctxEl.style.cssText = 'position:absolute;z-index:30;display:flex;gap:2px;padding:3px;background:rgba(250,250,250,.97);border:1px solid #b8bec6;border-radius:4px;box-shadow:0 2px 6px rgba(0,0,0,.25)';
+    types.forEach(function (t) {
+      var name = t === 'coincident' && refs.length === 2 && refs.every(function (r) { return r !== 'O' && SS.refKind(f, r) === 'point'; }) ? 'Merge' : SS.TYPES[t].name;
+      var b = el('button', { type: 'button', title: 'Make ' + name, 'aria-label': 'Make ' + name, 'data-rel': t });
+      b.style.cssText = 'width:26px;height:26px;padding:0;border:1px solid transparent;border-radius:3px;background:none;cursor:pointer;display:flex;align-items:center;justify-content:center';
+      b.innerHTML = window.Icons ? Icons(ctxIcon(t), 18) : name.charAt(0);
+      b.addEventListener('mousedown', function (ev) { ev.stopPropagation(); ev.preventDefault(); });
+      b.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        ctxBarHide();
+        sketchDirty();
+        var r = SS.addRelation(f, t, refs);
+        if (!r.ok) { UI.toast(r.error); return; }
+        App.gridStale = true; UI.updateSketches(); UI.refreshTree();
+        UI.setStatus(name + ' added. ' + (r.analysis ? SS.STATUS_TEXT[r.analysis.status] + (r.analysis.dof ? ' (' + r.analysis.dof + ' degrees of freedom left).' : '.') : ''));
+        sketchSelectionPM0(selection(), true);   // the PM shows the new relation
+      });
+      ctxEl.appendChild(b);
+    });
+    viewport.appendChild(ctxEl);
+    // above-right of the pointer, kept inside the viewport
+    var w = ctxEl.offsetWidth || types.length * 28, x = Math.min(Math.max(4, lastUp[0] + 14), UI.size.w - w - 4), y = Math.max(4, lastUp[1] - 44);
+    ctxEl.style.left = x + 'px'; ctxEl.style.top = y + 'px';
+    ctxAt = [x + w / 2, y + 15];
+  }
+  window.addEventListener('mousemove', function (ev) {
+    if (!ctxEl || !ctxAt) return;
+    var r = viewport.getBoundingClientRect(), d = Math.hypot(ev.clientX - r.left - ctxAt[0], ev.clientY - r.top - ctxAt[1]);
+    ctxEl.style.opacity = d > 60 ? String(Math.max(0, 1 - (d - 60) / 80)) : '1';
+    if (d > 140) ctxBarHide();
+  });
+  viewport.addEventListener('mousedown', function (ev) { if (ctxEl && !ctxEl.contains(ev.target)) ctxBarHide(); }, true);
+  document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') ctxBarHide(); }, true);
+  UI.sketchContextBar = function () { return ctxEl ? Array.prototype.map.call(ctxEl.querySelectorAll('button'), function (b) { return b.getAttribute('data-rel'); }) : null; };
+  function sketchSelectionPM0(list, byClick) {
     var spec = UI.pmSpec ? UI.pmSpec() : null;
     if (spec && !byClick && !showsSelection(spec)) return;
     var items = (list || selection()).filter(isSketchItem);

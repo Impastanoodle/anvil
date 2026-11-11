@@ -203,6 +203,17 @@
     if (S.measure(f, 'distance', [r1, r2]) != null) return { type: 'distance', refs: [r1, r2] };
     return null;
   }
+  // rfKU: a centerline (a construction line, whole) and a point / circle: { li (the centerline's index in refs), P (the
+  // point or centre) }, else null
+  function doubledSide(f, refs) {
+    if (!refs || refs.length !== 2) return null;
+    for (var li = 0; li < 2; li++) {
+      var pl = S.parseRef(refs[li]), e = pl && !pl.o && pl.s === null && f.entities[pl.e], ko = S.refKind(f, refs[1 - li]);
+      if (!e || e.t !== 'line' || !e.construction || (ko !== 'point' && ko !== 'circle')) continue;
+      return { li: li, P: ko === 'point' ? S.refPoint(f, refs[1 - li]) : S.refCurve(f, refs[1 - li]).c };
+    }
+    return null;
+  }
   // The two sketch points a distance dimension runs between, and the angle construction of an angle dimension.
   function relDimGeometry(f, rel) {
     var ents = f.entities, R = rel.refs, k0 = S.refKind(f, R[0]), k1 = S.refKind(f, R[1]);
@@ -237,6 +248,8 @@
       P = ctr(R[1 - li], li ? k0 : k1);
       var dx = L.b[0] - L.a[0], dy = L.b[1] - L.a[1], L2 = dx * dx + dy * dy || 1, u = ((P[0] - L.a[0]) * dx + (P[1] - L.a[1]) * dy) / L2;
       Q = [L.a[0] + dx * u, L.a[1] + dy * u];
+      // rfKU: a doubled distance runs from the point to its mirror image across the centerline
+      if (Array.isArray(rel.ac) && rel.ac[li] === 'dbl') Q = [2 * Q[0] - P[0], 2 * Q[1] - P[1]];
     }
     // the direction the distance is measured along: horizontal / vertical (rel.dir 'h' / 'v', two points or centres)
     // or aligned with P -> Q; flipped so the value reads positive (the placement offset is along its left normal)
@@ -252,6 +265,18 @@
   function relDimPlacement(f, rel, uv) {
     if (UI.relDimPlacementExt) { var ext = UI.relDimPlacementExt(f, rel, uv); if (ext) return ext; }   // sketchdims: arc length
     var out = {};
+    // rfKU: a distance from a centerline to a point / circle being placed on the far side of the centerline is the
+    // doubled (linear diameter) distance, as SolidWorks' Smart Dimension (revolve profiles, parts mirrored about a
+    // centerline): kept as the arc-condition entry 'dbl' on the centerline's ref, so every measure / solve reads it
+    var cl = rel.type === 'distance' && rel.v == null && !rel.driven && rel.dir !== 'r' ? doubledSide(f, rel.refs) : null;
+    if (cl) {
+      var Lc = S.refCurve(f, rel.refs[cl.li]), side = function (q) { return (Lc.b[0] - Lc.a[0]) * (q[1] - Lc.a[1]) - (Lc.b[1] - Lc.a[1]) * (q[0] - Lc.a[0]); };
+      var sp = side(cl.P), su = side(uv), far = sp * su < 0;
+      var ac = Array.isArray(rel.ac) ? rel.ac.slice() : [null, null];
+      ac[cl.li] = far ? 'dbl' : (ac[cl.li] === 'dbl' ? 'c' : ac[cl.li]);
+      out.ac = ac.some(function (c) { return c === 'dbl' || c === 'min' || c === 'max'; }) ? ac.map(function (c) { return c || 'c'; }) : undefined;
+      rel = Object.assign({}, rel, { ac: out.ac });
+    }
     if (rel.type === 'distance' && rel.v == null && !rel.driven && rel.dir !== 'r') {
       var k0 = S.refKind(f, rel.refs[0]), k1 = S.refKind(f, rel.refs[1]);
       if (k0 && k1 && k0 !== 'line' && k1 !== 'line') {
@@ -298,6 +323,7 @@
     var value = rel.v != null && !rel.driven ? rel.v : S.measure(f, rel.type, rel.refs, rel.dir, rel.sup, rel.ac);
     var label = rel.type === 'angle' ? UI.fmtNum(value, 2) + '°' : UI.fmtDim ? UI.fmtDim(value) : UI.fmtNum(value, 2);   // p9-sketch: inch distances read like the other dimensions (.500)
     if (UI.dimLabelText) label = UI.dimLabelText(rel, value, rel.type === 'angle' ? 'angle' : 'len');   // sketchdims: tolerance, precision, text
+    if (rel.type === 'distance' && Array.isArray(rel.ac) && rel.ac.indexOf('dbl') >= 0 && !rel.prefix) label = 'Ø' + label;   // rfKU: SolidWorks' linear diameter dimension
     if (rel.driven) label = '(' + label + ')';
     if (g.type === 'distance') {
       var ld = UI.linearDimScreen(pl, g.P, g.Q, g.dir, rel.off, rel.tx);
@@ -348,7 +374,7 @@
   function placeRelDim(f, rd, uv) {
     var pl = relDimPlacement(f, rd, uv);
     markDirty();
-    var r = S.addRelation(f, rd.type, rd.refs, { off: pl.off, dir: pl.dir || rd.dir, tx: pl.tx, sup: pl.sup, q: pl.q, ta: pl.ta });
+    var r = S.addRelation(f, rd.type, rd.refs, { off: pl.off, dir: pl.dir || rd.dir, tx: pl.tx, sup: pl.sup, q: pl.q, ta: pl.ta, ac: pl.ac || rd.ac });
     if (!r.ok) { UI.toast(r.error); return; }
     var idx = r.rels[0];
     App.sel = { kind: 'rel', index: idx };
@@ -1184,6 +1210,7 @@
   UI.dropUnusedModelRefs = dropUnusedModelRefs;
   UI.relDimFor = relDimFor;
   UI.relDimPlacement = relDimPlacement;
+  UI.relDimDoubledSide = doubledSide;   // rfKU test hook
   UI.placeRelDim = placeRelDim;
   UI.relDimScreen = function (f, index) { var rel = f && f.rels && f.rels[index]; var sc = rel && relDimScreenData(f, UI.activePlane(), rel); return sc ? { text: sc.text } : null; };
   UI.drawRelations = drawRelations;

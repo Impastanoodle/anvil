@@ -217,6 +217,8 @@
         if (edit) { App.sel = null; cur = null; UI.updateSketches(); return; }
         // with a curve picked, ✓ places the text on it (no click needed)
         if ((v.pathE != null) && String(v.str || '').trim()) { place([0, 0]); return false; }
+        // rfKU: clicked in the graphics area first, typed after: ✓ places it where the click was (it was dropped)
+        if (st.pending && String(v.str || '').trim()) { place(st.pending); return false; }
         cur = null;
         if (App.tool === 'text') UI.cancelTool();
       },
@@ -254,7 +256,7 @@
     // a curve selected before the tool started is the one to follow (as SolidWorks takes it into Curves)
     var sel = App.sel && App.sel.kind === 'entity' ? App.sel.index : null, se = sel != null && f ? f.entities[sel] : null;
     if (se && PATH_TYPES.indexOf(se.t) >= 0) toolVals.pathE = sel;
-    st.at = null;
+    st.at = null; st.pending = null;
     openTextPM(toolVals, f, null);
     preview();
   };
@@ -262,8 +264,8 @@
   function preview() {
     if (App.mode !== 'sketch' || App.tool !== 'text' || !cur || cur.edit) return;
     var v = cur.v, f = UI.activeSketchFeature();
-    if (!String(v.str || '').trim() || invalid(v) || (v.pathE == null && !st.at)) { App.tempEntities = []; UI.updateTemp(); return; }
-    var e = entityFrom(v, st.at || [0, 0], f);
+    if (!String(v.str || '').trim() || invalid(v) || (v.pathE == null && !st.at && !st.pending)) { App.tempEntities = []; UI.updateTemp(); return; }
+    var e = entityFrom(v, st.pending || st.at || [0, 0], f);
     App.tempEntities = [e];
     UI.updateTemp();
   }
@@ -271,7 +273,9 @@
     var f = UI.activeSketchFeature();
     if (!f || !cur || cur.edit) return;
     var v = cur.v;
-    if (!String(v.str || '').trim()) { UI.setStatus('Type the text in the PropertyManager first.'); return; }
+    // rfKU: a click before any text is typed marks where it goes (SolidWorks takes the click first too): typing shows
+    // it there, ✓ places it
+    if (!String(v.str || '').trim()) { st.pending = p.slice(); UI.setStatus('Type the text in the PropertyManager: it goes where you clicked (✓ places it).'); return; }
     var why = invalid(v);
     if (why) { UI.setStatus(why); return; }
     markDirty();   // the undo step comes before the layer is added

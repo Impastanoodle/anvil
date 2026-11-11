@@ -615,6 +615,8 @@ var SketchSolver = (function () {
           var acAdj = [];
           R.forEach(function (r, i) { var cd = rel.ac[i]; if (kinds[i] === 'circle' && (cd === 'min' || cd === 'max')) acAdj.push({ r: r, s: cd === 'min' ? -1 : 1 }); });
           if (acAdj.length) { var fb = f; f = function (E) { var x = fb(E)[0]; acAdj.forEach(function (q) { x += q.s * C(q.r, E).r; }); return [x]; }; }
+          // rfKU: a doubled distance (ac 'dbl' on the centerline's ref) holds twice the distance
+          if (isDoubled(rel.ac, kinds)) { var fdb = f; f = function (E) { return [2 * (fdb(E)[0] + v) - v]; }; }
         }
         break;
       }
@@ -1787,8 +1789,11 @@ var SketchSolver = (function () {
     var base = measureBase(sketch, type, R, kinds, p, dir, sup);
     if (base == null || type !== 'distance' || dir === 'r' || !Array.isArray(ac)) return base;
     R.forEach(function (r, i) { if (kinds[i] === 'circle' && (ac[i] === 'min' || ac[i] === 'max')) base += (ac[i] === 'min' ? -1 : 1) * refCurve(ents, r).r; });
+    if (isDoubled(ac, kinds)) base *= 2;   // rfKU: doubled distance from a centerline
     return base;
   }
+  // rfKU: the doubled (linear diameter) distance from a centerline: arc-condition entry 'dbl' on a line ref
+  function isDoubled(ac, kinds) { return Array.isArray(ac) && ac.some(function (c, i) { return c === 'dbl' && kinds[i] === 'line'; }); }
   function measureBase(sketch, type, R, kinds, p, dir, sup) {
     var ents = sketch.entities, A = R[p[0]], B = R[p[1]], kA = kinds[p[0]], kB = kinds[p[1]];
     if (type === 'angle') { var ag = Math.abs(angleDeg(refCurve(ents, A), refCurve(ents, B))); return sup ? 180 - ag : ag; }
@@ -1864,7 +1869,7 @@ var SketchSolver = (function () {
         if (type === 'angle' && +opts.q === -1) rel.q = -1;
         if (type === 'angle' && opts.ta != null) rel.ta = +opts.ta;
         // sketchdims: arc conditions of a distance to whole circles / arcs ('c' centre, 'min', 'max'; refs order)
-        if (type === 'distance' && Array.isArray(opts.ac) && opts.ac.some(function (c) { return c === 'min' || c === 'max'; })) rel.ac = opts.ac.map(function (c) { return c === 'min' || c === 'max' ? c : 'c'; });
+        if (type === 'distance' && Array.isArray(opts.ac) && opts.ac.some(function (c) { return c === 'min' || c === 'max' || c === 'dbl'; })) rel.ac = opts.ac.map(function (c) { return c === 'min' || c === 'max' || c === 'dbl' ? c : 'c'; });   // rfKU: 'dbl'
         rel.v = opts.value != null && !opts.driven ? +opts.value : measure(sketch, type, groups[g], rel.dir, rel.sup, rel.ac);
         if (opts.off != null) rel.off = +opts.off;
         if (opts.tx != null && type === 'distance') rel.tx = +opts.tx;
