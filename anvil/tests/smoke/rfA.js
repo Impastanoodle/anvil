@@ -398,7 +398,7 @@
     assert(errors.length === rfAErr0, 'console errors: ' + errors.slice(rfAErr0).join(' | '));
     return 'keyboard back, Spline / Ellipse PMs closed';
   });
-  step('rfA: Snap to Model — a line started on a model edge (not at one of its points) lands on the edge at a round coordinate (x -15 on the block\'s bottom edge, not -14.95…), as a free point is rounded; no relation is added', async function () {
+  step('rfA: Snap to Model — a line started on a model edge (not at one of its points) lands on the edge at a round coordinate (x -15 on the block\'s bottom edge, not -14.95…), as a free point is rounded; the point is Coincident with a reference to the edge', async function () {
     await anvil.newPart(); await idle();
     await anvil.run(BLOCK); await idle();
     await UI.newSketchOnPlane('Front'); await idle();
@@ -412,7 +412,10 @@
     f = UI.activeSketchFeature();
     var l = f.entities[0];
     assert(l && l.t === 'line' && l.x1 === -15 && l.y1 === 0 && l.x2 === -5 && l.y2 === 0, 'on the edge at round coordinates: ' + JSON.stringify(l));
-    assert(!(f.rels || []).some(function (r) { return r.type !== 'horizontal'; }), 'no relation to the model: ' + rfARels().join(' '));
+    // lane sketchref (local-2026-11-11b): a point drawn on a model edge is Coincident with a reference to that edge (rel.mref), as in SolidWorks; nothing else is added
+    var rfARs = f.rels || [];
+    assert(rfARs.some(function (r) { return r.mref; }) && rfARs.some(function (r) { return r.type === 'coincident'; }), 'Coincident to a reference of the model edge: ' + rfARels().join(' '));
+    assert(!rfARs.some(function (r) { return r.type !== 'horizontal' && r.type !== 'coincident' && !r.mref; }), 'no other relation: ' + rfARels().join(' '));
     selKey('Escape');
     UI.exitSketch(true); await idle();
     return 'line (-15, 0) → (-5, 0)';
