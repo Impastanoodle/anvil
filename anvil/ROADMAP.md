@@ -88,6 +88,7 @@ Deferred indefinitely (do not plan them from the roadmap; only on an explicit us
 - [x] Equations: expressions in PropertyManager fields (`= t * 2`) (2026-09-25T15: `model.equations`, `=` strings in any numeric feature field, Tools ▸ Equations dialog, Equations folder, `=` in PM fields and the sketch Modify box, script round trip, `anvil.equations()`)
 - [x] Theme: dark UI option (View ▸ Theme ▸ Light / Dark, `UI.setTheme`, `anvil.theme`, persisted in `anvil.theme`; every stylesheet colour is a `:root` variable, the three.js edge/grid/HLR materials follow through `UI.setViewportTheme`)
 - [ ] Desktop shell (Tauri or Electron) wrapping the same static files: own window, native open/save dialogs, no server step. The browser build stays the primary target; the shell must not fork the code. (Step taken in local-2026-10-03i: `launch-anvil.ps1` and the Desktop shortcut *Anvil* start the server hidden and open an Edge / Chrome app window; native dialogs and no server step are still open.)
+- [x] Interface profiles (local-2026-11-11d): a setting that lays the CommandManager, keys and mouse out like the software the user comes from; SolidWorks (default) and Mastercam. Leftovers in QUEUE.
 
 ## Phase 7 — gaps versus SolidWorks (queue for later sessions)
 Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in order of how often a SolidWorks user would miss them.
