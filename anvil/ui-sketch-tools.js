@@ -617,10 +617,28 @@
         return e;
       });
     }
+    // sketchflow2: the face's edges come in as construction lines / arcs On Edge and the offset is made from them, so
+    // it is one chain per loop held by an Offset relation and the offset dimension (as SolidWorks' Offset of a face:
+    // fully defined, the distance editable), not a loose polyline. tgt: the sketch (or a copy for the preview).
+    function faceOffsetOn(tgt, prev) {
+      var fi = sketchFaceIndex(f);
+      if (fi == null) return null;
+      var geo = convertGeometry(edgeList([{ kind: 'face', index: fi }], { inner: true })), idx = [];
+      if (!geo.length) return null;
+      geo.forEach(function (g) {
+        g.construction = true;
+        tgt.entities.push(g);
+        idx.push(tgt.entities.length - 1);
+        if (!prev) { var ar = S.addRelation(tgt, 'onEdge', [String(tgt.entities.length - 1)]); if (!ar.ok) throw new Error(ar.error); }
+      });
+      return S.offsetSelection(tgt, idx, opts(prev ? { preview: true } : null));
+    }
     function preview() {
       var ents = [];
       try {
-        if (faceMode()) ents = faceLoopsOffset();
+        var fp = faceMode() ? faceOffsetOn({ entities: JSON.parse(JSON.stringify(f.entities)), rels: [] }, true) : null;
+        if (fp && fp.ok) ents = fp.entities;
+        else if (faceMode()) ents = faceLoopsOffset();
         else if (v.entities.length) { var r = S.offsetSelection(f, v.entities, opts({ preview: true })); if (r.ok) ents = r.entities; else UI.setStatus(r.error); }
       } catch (e) { UI.setStatus(e.message); }
       App.tempEntities = ents; UI.updateTemp();
@@ -645,6 +663,19 @@
       okBlocked: function () { return v.entities.length || faceMode() ? '' : 'Select the sketch entities to offset.'; },
       onOK: function () {
         if (!(+v.d > 0)) { UI.toast('The offset distance must be a positive number.'); return false; }
+        if (faceMode() && sketchFaceIndex(f) != null) {
+          var snapF = JSON.stringify([f.entities, f.rels || null, f.dims || null]), dims1 = UI.dimsSnapshot ? UI.dimsSnapshot(f) : null;
+          var rf = step(function () {
+            var r0 = faceOffsetOn(f, false);
+            if (!r0 || !r0.ok) { var o = JSON.parse(snapF); f.entities = o[0]; if (o[1]) f.rels = o[1]; else delete f.rels; if (o[2]) f.dims = o[2]; else delete f.dims; }
+            return r0 || { ok: false, error: 'The face edges could not be found.' };
+          }, true);
+          if (!rf.ok) { UI.toast(rf.error); return false; }
+          clearPreview(); changed();
+          if (dims1 && v.dims && UI.clearDimPlacement) { try { UI.clearDimPlacement(f, UI.newDimsSince(f, dims1)); } catch (err) { console.error('dimension placement: ' + (err && err.message)); } }
+          UI.setStatus('Offset the face edges by ' + UI.fmtLen(+v.d) + (v.dims ? ', with the offset dimension.' : '.') + ' ' + (App.sketchState ? S.STATUS_TEXT[App.sketchState.status] + '.' : ''));
+          return;
+        }
         if (faceMode()) {
           var loops = faceLoopsOffset();
           step(function () { loops.forEach(function (e) { f.entities.push(e); }); return { ok: true }; }, true);
@@ -664,6 +695,25 @@
     if (!v.entities.length && !faceMode()) UI.setStatus('Select the sketch entities to offset in the graphics area.');
     preview();
   }
+
+  // sketchflow2: the model face sketch f lies on (its plane, the outline closest to f.faceLoops), or null
+  function sketchFaceIndex(f) {
+    var pl = UI.activePlane(), m = App.mesh, V = K.vec, loops = f.faceLoops;
+    if (!m || !m.faces || !pl || !loops || !loops.length || !App.edges) return null;
+    function box(pts) { var b = [Infinity, Infinity, -Infinity, -Infinity]; pts.forEach(function (p) { b[0] = Math.min(b[0], p[0]); b[1] = Math.min(b[1], p[1]); b[2] = Math.max(b[2], p[0]); b[3] = Math.max(b[3], p[1]); }); return b; }
+    var want = box(loops[0]), size = Math.max(1e-9, want[2] - want[0], want[3] - want[1]), best = null, bd = 0.05 * size;
+    m.faces.forEach(function (fc, i) {
+      if (!fc || !fc.normal || !fc.centroid || Math.abs(Math.abs(V.dot(fc.normal, pl.n)) - 1) > 1e-6) return;
+      if (Math.abs(V.dot(pl.n, V.sub(fc.centroid, pl.origin))) > 1e-6 * Math.max(1, size)) return;
+      var pts = [];
+      App.edges.forEach(function (e) { if (e.faces.indexOf(i) >= 0) { pts.push(K.to2D(pl, e.a)); pts.push(K.to2D(pl, e.b)); } });
+      if (!pts.length) return;
+      var b = box(pts), d = Math.max(Math.abs(b[0] - want[0]), Math.abs(b[1] - want[1]), Math.abs(b[2] - want[2]), Math.abs(b[3] - want[3]));
+      if (d < bd) { bd = d; best = i; }
+    });
+    return best;
+  }
+  UI.sketchFaceIndex = function () { var f = UI.activeSketchFeature(); return f ? sketchFaceIndex(f) : null; };   // test hook
 
   // ------------------------------------------------------------------ Trim Entities / Extend Entities
   // r13/trim13: Trim Entities as in SolidWorks, with its five options (the last one used stays for the next time) and

@@ -5789,8 +5789,8 @@ var SketchSolver = (function () {
   // sketchdims: what a relation or dimension carries besides its geometry, kept through scripts: arc conditions, the
   // Dimension PropertyManager's name / tolerance / precision / text before and after / radius-or-diameter display, and
   // Suppressed (Display/Delete Relations). A Smart Dimension's go through .dimProps([[i, { … }], …]).
-  var REL_EXTRA = ['ac', 'name', 'tol', 'prec', 'prefix', 'suffix', 'show', 'suppressed', 'implied', 'link'];   // lane CV: link (Link Values)   // rfY: implied (an arc slot's fourth join)
-  var DIM_EXTRA = ['name', 'tol', 'prec', 'prefix', 'suffix', 'show', 'link'];
+  var REL_EXTRA = ['ac', 'name', 'tol', 'prec', 'prefix', 'suffix', 'show', 'suppressed', 'implied', 'link', 'expr'];   // lane CV: link (Link Values)   // rfY: implied (an arc slot's fourth join)
+  var DIM_EXTRA = ['name', 'tol', 'prec', 'prefix', 'suffix', 'show', 'link', 'expr'];   // sketchflow2: expr (a value linked to a global variable)
   function extras(item, keys) {
     var o = null;
     keys.forEach(function (k) { var x = item[k]; if (x != null && x !== false && x !== '') (o = o || {})[k] = JSON.parse(JSON.stringify(x)); });

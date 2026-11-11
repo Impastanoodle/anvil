@@ -1124,7 +1124,25 @@ if (typeof UI !== 'undefined') (function (UI) {
   // rfF: selected sketch points (an end point, a centre) are part of their entities: Delete leaves them (and the
   // Point / Properties PM) alone, as SolidWorks does; with entities selected too, only the entities go.
   var baseDelete = UI.deleteSelection;
+  // sketchflow2: deleting sketch entities says what went with them (their dimensions and relations go too, as in
+  // SolidWorks); the status bar kept the last command's text
   UI.deleteSelection = function () {
+    var f = App.mode === 'sketch' ? UI.activeSketchFeature() : null, list = selection();
+    var ents = f && list.length && list.every(isSketchItem) ? list.filter(function (s) { return s.kind === 'entity'; }) : [];
+    if (!ents.length) return deleteSelection0.apply(this, arguments);
+    var n0 = [f.entities.length, (f.rels || []).length, (f.dims || []).length];
+    var names = ents.length === 1 && window.SketchSolver ? SketchSolver.refName(f, String(ents[0].index)) : ents.length + ' entities';
+    var out = deleteSelection0.apply(this, arguments);
+    var g = UI.activeSketchFeature() || f, gone = n0[0] - g.entities.length;
+    if (gone > 0) {
+      var dd = n0[2] - (g.dims || []).length, rr = n0[1] - (g.rels || []).length, extra = [];
+      if (dd > 0) extra.push(dd + ' dimension' + (dd > 1 ? 's' : ''));
+      if (rr > 0) extra.push(rr + ' relation' + (rr > 1 ? 's' : ''));
+      UI.setStatus('Deleted ' + names + (extra.length ? ' with ' + extra.join(' and ') + ' on ' + (gone > 1 ? 'them' : 'it') : '') + '. ' + (App.sketchState && window.SketchSolver ? SketchSolver.STATUS_TEXT[App.sketchState.status] + '.' : ''));
+    }
+    return out;
+  };
+  function deleteSelection0() {
     var list = selection();
     if (App.mode === 'sketch' && list.length && list.every(isSketchItem) && (list.length > 1 || list[0].kind === 'sketchPoint')) {
       var ents = list.filter(function (s) { return s.kind === 'entity'; }).map(function (s) { return s.index; });

@@ -16,7 +16,9 @@
     App.sketchDirty = false;
     woken = []; wokenLines = [];
     setTool('select');
-    if (!(opts && opts.keepView)) { UI.viewNormalTo(UI.activePlane()); UI.zoomToFit(); }   // rfAY: Rapid Sketch keeps the view
+    // rfAY: Rapid Sketch keeps the view. sketchflow2: so does a view already normal to the sketch (Normal To on the
+    // face first, or Edit Sketch again): SolidWorks only turns the view, it never zooms out of the area being worked on
+    if (!(opts && opts.keepView) && !viewIsNormalTo(UI.activePlane())) { UI.viewNormalTo(UI.activePlane()); UI.zoomToFit(); }
     App.gridStale = true;
     UI.updateSketches(); UI.updatePlanes(); UI.updateHighlights();
     UI.setRibbonTab('Sketch');
@@ -28,6 +30,14 @@
     (UI.sketchEnterHooks || []).forEach(function (h) { try { h(f); } catch (e) { /* entering the sketch goes on */ } });   // lane CV: Link Values notes the values
   }
   UI.sketchEnterHooks = UI.sketchEnterHooks || [];   // functions (f) run as sketch f is opened (enterSketch)
+  // sketchflow2: the camera looks straight at plane pl with its y axis up (and the model is on screen)
+  function viewIsNormalTo(pl) {
+    var c = UI.cam;
+    if (!c || !c.dir || !c.up || !pl || !pl.n || !pl.y || !App.mesh || !(App.mesh.triCount > 0)) return false;
+    var d = c.dir.clone().normalize(), u = c.up.clone().normalize();
+    return d.x * pl.n[0] + d.y * pl.n[1] + d.z * pl.n[2] > 1 - 1e-6 && u.x * pl.y[0] + u.y * pl.y[1] + u.z * pl.y[2] > 1 - 1e-6;
+  }
+  UI.sketchViewIsNormal = function () { return App.mode === 'sketch' && viewIsNormalTo(UI.activePlane()); };   // test hook
 
   // r5/sketch5: the confirmation corner, side by side in the top-right corner of the graphics area as SolidWorks has
   // it: Exit Sketch (rebuilds) and Discard Changes and Exit; while a PropertyManager is open in the sketch it holds that
@@ -3603,6 +3613,9 @@
     // rfIF: rounded to 4 places, or to the dimension's own / the document's precision when that is finer (up to 8)
     var mPl = Math.max(4, UI.dimPlaces ? UI.dimPlaces(it.rel != null ? f.rels[it.rel] : it.d, dimEditing.angle) : 4);
     dimInput.value = String(Math.round(dimEditing.value * Math.pow(10, mPl)) / Math.pow(10, mPl));
+    // sketchflow2: a dimension linked to a global variable shows its equation
+    var lnk = it.rel != null ? f.rels[it.rel] : !it.auto && f.dims ? f.dims[it.index] : null;
+    if (lnk && lnk.expr) dimInput.value = lnk.expr;
     // rfE: the text as shown (rounded to 4 places); ✓ / Enter / a click elsewhere with it untouched is no change (a √13
     // line keeps 3.6055513, not the 3.6056 shown), as the SolidWorks Modify box only shows the value rounded
     dimEditing.text = dimInput.value;
@@ -3701,6 +3714,14 @@
   }
   // commit: apply the typed value. keepOnError: an invalid entry leaves the box open with the message (Enter);
   // otherwise (blur) the box closes without applying and the message stays in the status bar.
+  // sketchflow2: the equation text to keep on a dimension for what was typed in the Modify box: "=…" naming at least
+  // one global variable (Tools ▸ Equations), else null (a plain number or an expression of numbers only)
+  UI.dimExprOf = function (text) {
+    var s = String(text || '').trim();
+    if (!/^=/.test(s)) return null;
+    var vars = UI.equationVars ? UI.equationVars() : {}, ids = s.slice(1).match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+    return ids.some(function (id) { return Object.prototype.hasOwnProperty.call(vars, id); }) ? s : null;
+  };
   function closeDimEdit(commit, keepOnError) {
     var ed = dimEditing;
     if (!ed) return;
@@ -3723,6 +3744,19 @@
     var f = UI.activeSketchFeature(), e = f && f.id === ed.sketchId && (ed.rel != null ? f.rels && f.rels[ed.rel] : f.entities[ed.d.e]);
     var v = r && r.value;
     var untouched = ed.text != null && String(dimInput.value).trim() === ed.text;   // rfE: the shown text kept: no change, no undo step
+    // sketchflow2: a value typed as an equation that names a global variable ("=W", "=W/2 + T") stays linked to it
+    // (SolidWorks' ="W"): the item keeps `expr` and follows the variable at every rebuild (UI.syncSketchDimExprs,
+    // ui-sketch-dims.js); a plain number typed later lets it go
+    var holder = commit && r && r.error == null && e && !ed.auto ? (ed.rel != null ? f.rels[ed.rel] : f.dims && f.dims[ed.index]) : null;
+    var newExpr = holder ? UI.dimExprOf(dimInput.value) : null;
+    if (holder && !untouched && Math.abs(v - ed.value) < 1e-9 && (holder.expr || null) !== newExpr) {
+      if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
+      if (newExpr) holder.expr = newExpr; else delete holder.expr;
+      if (previewed) App.gridStale = true;
+      UI.updateSketches();
+      UI.setStatus(newExpr ? 'Dimension linked to ' + newExpr + '.' : 'Dimension no longer linked to an equation.');
+      return;
+    }
     if (!commit || !r || r.error != null || !e || untouched || Math.abs(v - ed.value) < 1e-9) {
       if (previewed) { App.gridStale = true; UI.updateSketches(); }
       return;
@@ -3735,9 +3769,10 @@
         var res = ed.rel != null ? SketchSolver.setRelValue(f, ed.rel, v) : SketchSolver.setDim(f, ed.auto ? ed.d : ed.index, v / (ed.scale || 1));
         if (!res.ok) throw new Error(res.error);
       } else K.setDimValue(e, ed.d, v);
+      if (holder) { if (newExpr) holder.expr = newExpr; else delete holder.expr; }
       App.gridStale = true;
       UI.updateSketches(); UI.refreshTree();
-      UI.setStatus('Dimension set to ' + (ed.angle ? (Math.round(v * 1e4) / 1e4) + '°' : fmtDim(v) + ' ' + UI.unitLabel()) + '.');
+      UI.setStatus('Dimension set to ' + (ed.angle ? (Math.round(v * 1e4) / 1e4) + '°' : fmtDim(v) + ' ' + UI.unitLabel()) + (newExpr ? ' (' + newExpr + ')' : '') + '.');
       if (UI.refreshDimensionPM) UI.refreshDimensionPM();   // rfE: an open Dimension PM shows the new value
     } catch (err) { lastDimError = err.message; UI.toast(err.message); UI.setStatus('Dimension not changed: ' + err.message); App.dimsStale = true; if (previewed) UI.updateSketches(); }
   }

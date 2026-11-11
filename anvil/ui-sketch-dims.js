@@ -130,6 +130,7 @@
     if (pre && !/\s$/.test(pre)) pre += ' ';
     if (suf && !/^\s/.test(suf)) suf = ' ' + suf;
     if (d.link != null && d.link !== '') main = '∞' + main;   // lane CV: a linked (shared) value, as SolidWorks marks it
+    else if (d.expr) main = 'Σ' + main;   // sketchflow2: driven by an equation (a global variable), SolidWorks' Σ
     return pre + main + suf;
   }
   UI.dimLabelText = dimLabelText;
@@ -2220,4 +2221,45 @@
   UI.instant2DDrag = function () { return drag ? { value: drag.v, good: drag.good, step: drag.step, onRuler: drag.onRuler } : null; };
   UI.instant2DStepAt = function (off) { var h = drag ? drag.h : hover && hover.ball ? hover : null; return h ? stepFor(h, off) : null; };
   if (window.anvil) window.anvil.instant2D = function (v) { if (v != null) setOn(v); return on(); };
+})();
+// sketchflow2: sketch dimensions linked to global variables (a value typed as "=W" in the Modify box keeps
+// expr on the dimension / relation, ui-sketch.js closeDimEdit). Before every rebuild each sketch takes the values its
+// equations give now (SolidWorks re-solves the sketch when a global variable changes); a value the sketch cannot take
+// is left as it was and named in the status bar.
+(function () {
+  'use strict';
+  var UI = window.UI, App = UI.App, K = UI.K;
+  function syncSketchDimExprs(model) {
+    var S = window.SketchSolver;
+    if (!S || !model || !Array.isArray(model.features) || !K.evalExpression) return 0;
+    var any = model.features.some(function (f) { return f && f.type === 'sketch' && ((f.dims || []).some(function (d) { return d && d.expr; }) || (f.rels || []).some(function (r) { return r && r.expr; })); });
+    if (!any) return 0;
+    var vars = {};
+    try { vars = (K.resolveEquations(model) || {}).vars || {}; } catch (e) { return 0; }
+    var changed = 0, bad = [];
+    model.features.forEach(function (f) {
+      if (!f || f.type !== 'sketch') return;
+      (f.dims || []).forEach(function (d, i) {
+        if (!d || !d.expr || !f.entities[d.e]) return;
+        var v; try { v = K.evalExpression(String(d.expr), vars); } catch (e) { return; }
+        var sc = UI.dimShowScale ? UI.dimShowScale(d) : 1, cur = K.dimValue(f.entities[d.e], d) * sc;
+        if (!(isFinite(v) && v > 0) || Math.abs(v - cur) < 1e-9 * Math.max(1, Math.abs(v))) return;
+        var r = S.setDim(f, i, v / sc);
+        if (r && r.ok) changed++; else bad.push(f.name + ' ' + d.expr);
+      });
+      (f.rels || []).forEach(function (rel, i) {
+        if (!rel || !rel.expr || rel.v == null) return;
+        var v; try { v = K.evalExpression(String(rel.expr), vars); } catch (e) { return; }
+        if (!isFinite(v) || Math.abs(v - rel.v) < 1e-9 * Math.max(1, Math.abs(v))) return;
+        var r = S.setRelValue(f, i, v);
+        if (r && r.ok) changed++; else bad.push(f.name + ' ' + rel.expr);
+      });
+    });
+    if (bad.length && UI.setStatus) UI.setStatus('Linked sketch dimension' + (bad.length > 1 ? 's' : '') + ' not changed (the sketch cannot take the value): ' + bad.join(', ') + '.');
+    if (changed && App.mode === 'sketch') { App.gridStale = true; App.dimsStale = true; UI.updateSketches(); }
+    return changed;
+  }
+  UI.syncSketchDimExprs = function () { return syncSketchDimExprs(App.model); };
+  var baseRebuild = UI.rebuild;
+  UI.rebuild = function () { try { syncSketchDimExprs(App.model); } catch (e) { console.error('linked dimensions: ' + (e && e.message)); } return baseRebuild.apply(this, arguments); };
 })();

@@ -415,7 +415,7 @@
         // p9-sketchfix: the answer belongs to the placement (one undo step takes the whole dimension away, not first
         // back to the over-defining driving one): no undo point of its own
         { id: 'drv-driven', label: 'Make this dimension driven', primary: true, action: function () { UI.closeModal(); done(); var g = item(); if (g) { App.sketchDirty = true; setDriven(g, kind, index, true); } } },
-        { id: 'drv-driving', label: 'Leave this dimension driving', action: function () { UI.closeModal(); done(); UI.setStatus('The dimension is driving and over-defines the sketch (shown yellow). Delete it, or make it driven.'); App.dimsStale = true; } },
+        { id: 'drv-driving', label: 'Leave this dimension driving', action: function () { UI.closeModal(); done(); UI.setStatus('The dimension is driving and over-defines the sketch (shown red). Delete it, make it driven, or click Over Defined in the status bar for SketchXpert.'); App.dimsStale = true; } },
         // rfAR: or keep it driving and let SketchXpert find what to delete
         { id: 'drv-xpert', label: 'SketchXpert…', action: function () { UI.closeModal(); done(); App.dimsStale = true; cmdSketchXpert(); } },
         { id: 'drv-cancel', label: 'Cancel', action: function () { UI.closeModal(); cancel(); } }
@@ -446,7 +446,7 @@
     if (!r.ok) { UI.toast(r.error); return r; }
     refresh();
     App.dimsStale = true;
-    UI.setStatus(on ? 'Driven dimension: its value follows the geometry. ' + S.STATUS_TEXT[r.analysis.status] + '.' : 'The dimension drives the sketch again' + (r.state !== 'ok' ? ', and over-defines it (shown yellow).' : '.'));
+    UI.setStatus(on ? 'Driven dimension: its value follows the geometry. ' + S.STATUS_TEXT[r.analysis.status] + '.' : 'The dimension drives the sketch again' + (r.state !== 'ok' ? ', and over-defines it (shown red).' : '.'));
     return r;
   }
   // Clicking a driven dimension: it has no value to type, so offer to make it driving.
@@ -795,7 +795,7 @@
     if (App.mode !== 'sketch' || App.tool !== 'select' || App.command) return null;
     var f = UI.activeSketchFeature(), ref = own || pickSketchRef(p[0], p[1]);
     if (!f || !ref || ref === 'O') return null;
-    var pl = UI.activePlane(), start = null, uv0 = null, point = !!S.refPoint(f, ref), moved = false;
+    var pl = UI.activePlane(), start = null, uv0 = null, point = !!S.refPoint(f, ref), moved = false, pushedAt = -1, before = null;
     if (!point) ref = String(refEntity(ref));
     // grabbing a circle or an arc on its curve changes its radius (the centre point moves it), as in SolidWorks
     var ent = f.entities[refEntity(ref)], radius = !point && ent && (ent.t === 'circle' || ent.t === 'arc');
@@ -951,6 +951,8 @@
     function tick() { unschedule(); if (pending) { var q = pending; pending = null; solveTo(q); schedule(); } }
     return {
       start: function () {
+        // sketchflow2: a drag that moves nothing (a fully defined entity) leaves no undo step behind
+        pushedAt = App.sketchDirty ? -1 : App.undo.length; before = JSON.stringify([f.entities, f.rels || null, f.dims || null]);
         markDirty();
         noSolve = skOn('noSolveMove') || !skOn('autoSolve');
         // rfAR: Detach Segment on Drag: a line / arc dragged whole leaves the entities it shared its ends with
@@ -986,11 +988,15 @@
           merged = r.ok ? kname + ' with ' + S.refName(f, drop.ref) + ' added. ' : kname + ' with ' + S.refName(f, drop.ref) + ' not added: it would over-define the sketch. ';
         }
         drop = null;
+        if (JSON.stringify([f.entities, f.rels || null, f.dims || null]) === before) {
+          moved = false;
+          if (pushedAt >= 0 && App.undo.length === pushedAt + 1) { App.undo.pop(); App.sketchDirty = false; }
+        }
         UI.updateSketches();
         UI.refreshTree();
         var an = App.sketchState;
         if (merged) { UI.setStatus('Dragged ' + S.refName(f, ref) + '. ' + merged + (an ? S.STATUS_TEXT[an.status] + '.' : '')); return; }
-        UI.setStatus(moved ?'Dragged ' + S.refName(f, ref) + '. ' + (an ? S.STATUS_TEXT[an.status] + (an.dof ? ' (' + an.dof + ' degrees of freedom)' : '') : '') : S.refName(f, ref) + ' is fully defined: it cannot be dragged.');
+        UI.setStatus(moved ?'Dragged ' + S.refName(f, ref) + '. ' + (an ? S.STATUS_TEXT[an.status] + (an.dof ? ' (' + an.dof + ' degrees of freedom)' : '') : '') : S.refName(f, ref) + (an && an.status === 'full' ? ' is fully defined: it cannot be dragged.' : ' did not move: its relations and dimensions hold it.'));
       }
     };
   }
@@ -1156,6 +1162,12 @@
     return spec;
   }
   UI.cmdSketchXpert = cmdSketchXpert;
+  // sketchflow2: a click on "Over Defined" in the status bar opens SketchXpert (as SolidWorks' status bar does)
+  document.addEventListener('click', function (ev) {
+    var t = ev.target && ev.target.closest ? ev.target.closest('.sk-state') : null;
+    if (!t || App.mode !== 'sketch' || !/\bover\b/.test(t.className)) return;
+    cmdSketchXpert();
+  });
   UI.sketchXpertState = function () { return xp ? { mode: xp.mode, solution: xp.k, solutions: xp.d ? xp.d.solutions.length : 0, candidates: xp.d ? xp.d.candidates.length : 0, names: xp.d && xp.d.solutions[xp.k] ? xp.d.solutions[xp.k].names.slice() : [] } : null; };
 
   // ------------------------------------------------------------------ Scan Equal (rfAR)
