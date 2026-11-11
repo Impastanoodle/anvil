@@ -499,6 +499,7 @@
     body.innerHTML = '';
     body.appendChild(el('h3', { text: 'Document properties' }));
     body.appendChild(kv);
+    if (UI.Profiles && UI.Profiles.optionsSection) body.appendChild(UI.Profiles.optionsSection());   // lane profiles: Interface ▸ Lay out Anvil like
     // Image Quality (Tools ▸ Options ▸ Document Properties ▸ Image Quality): the chord tolerance curved faces are
     // meshed to; saved in the document (model.tessellation), an undo step, rebuilds
     if (UI.imageQuality) {
@@ -1751,6 +1752,133 @@
     fit: 'F', undo: 'Ctrl+Z', redo: 'Ctrl+Y', rebuild: 'Ctrl+B', save: 'Ctrl+S', new: 'Ctrl+N', open: 'Ctrl+O', normalTo: 'Ctrl+8', prevView: 'Shift+Ctrl+Z', orient: 'Space', delete: 'Del', rename: 'F2'
   };
   UI.shortcutFor = function (id) { return SHORTCUTS[id] || null; };
+  // lane profiles: the keys of the document keydown handler (below) as one table, combo -> action. An action is a
+  // name in KEY_ACTIONS or a ribbon command (UI.Commands). Combos are written Ctrl+Shift+Alt+Key ('Ctrl+1', 'Shift+Z',
+  // 'Del', 'Space', 'F9'); entries marked 1 are aliases the handler always took (Shift+Ctrl+S saved too) and are not
+  // shown. The active profile's `keys` ({ cmd: combo }) rebind on top: its combo runs its command, a default combo it
+  // takes no longer runs the old action, every other default stays. Enter, Esc and S are not rebindable (the
+  // two-Enter rule, one-Esc rule and the Shortcut Bar keep them).
+  var KEY_DEFAULTS = [
+    ['Ctrl+1', 'vFront'], ['Ctrl+2', 'vBack'], ['Ctrl+3', 'vLeft'], ['Ctrl+4', 'vRight'], ['Ctrl+5', 'vTop'], ['Ctrl+6', 'vBottom'], ['Ctrl+7', 'vIso'],
+    ['Ctrl+8', 'normalTo'], ['Ctrl+Shift+Z', 'prevView'], ['Ctrl+Z', 'undo'], ['Ctrl+Y', 'redo'], ['Ctrl+Shift+Y', 'redo', 1],
+    ['Ctrl+S', 'save'], ['Ctrl+Shift+S', 'save', 1], ['Ctrl+B', 'rebuild'], ['Ctrl+Shift+B', 'rebuild', 1], ['Ctrl+N', 'new'], ['Ctrl+Shift+N', 'new', 1],
+    ['Ctrl+O', 'open'], ['Ctrl+Shift+O', 'open', 1],
+    ['Del', 'delete'], ['Backspace', 'delete', 1], ['F9', 'toggleTree'], ['F2', 'rename'], ['F', 'fit'], ['Z', 'zoomIn'], ['Shift+Z', 'zoomOut'], ['Space', 'orient'],
+    ['S', 'shortcutBar'], ['L', 'line'], ['R', 'rect'], ['C', 'circle'], ['A', 'arc'], ['P', 'polygon'], ['T', 'slot'], ['D', 'dim'], ['E', 'extrude']
+  ];
+  var KEY_FIXED = { Enter: 1, Esc: 1, S: 1 };
+  // ribbon ids that are the same action as a key action (their tooltips show its key)
+  var KEY_ALIAS = { vZoomFit: 'fit', vNormalTo: 'normalTo' };
+  var VIEW_KEYS = { vFront: 'Front', vBack: 'Back', vLeft: 'Left', vRight: 'Right', vTop: 'Top', vBottom: 'Bottom', vIso: 'Isometric' };
+  function sketchKey(tool) {
+    return function () {
+      if (App.mode !== 'sketch') return;
+      var t = tool;
+      // r5/sketch5: A again with the Centerpoint Arc goes on to the 3 Point Arc, then puts the tool down
+      if (t === 'arc' && App.tool === 'arc') t = 'arc3';
+      else if (t === 'arc' && App.tool === 'arc3') t = 'select';
+      UI.setTool(App.tool === t ? 'select' : t);
+    };
+  }
+  var KEY_ACTIONS = {
+    normalTo: function (e) { e.preventDefault(); UI.normalToSelection(); },
+    prevView: function (e) { e.preventDefault(); UI.previousView(); },
+    undo: function (e) { e.preventDefault(); undoCommand(false, e.target); },
+    redo: function (e) { e.preventDefault(); undoCommand(true, e.target); },
+    save: function (e) { e.preventDefault(); fileSave(); },
+    rebuild: function (e) { e.preventDefault(); UI.rebuild().then(function () { UI.toast('Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms'); }); },
+    'new': function (e) { e.preventDefault(); fileNew(); },
+    open: function (e) { e.preventDefault(); fileOpen(); },
+    'delete': function () { UI.deleteSelection(); },
+    toggleTree: function (e) { if (UI.setFeatureManagerHidden) { e.preventDefault(); UI.setFeatureManagerHidden(); } },   // SolidWorks: F9 toggles the FeatureManager tree area
+    rename: function (e) { if (App.sel && App.sel.kind === 'feature') { e.preventDefault(); UI.startRename(K.findFeature(App.model, App.sel.id)); } },
+    fit: function () { UI.zoomToFit(); },
+    zoomIn: function () { UI.zoomView(1.25); },
+    zoomOut: function () { UI.zoomView(0.8); },
+    orient: function (e) { e.preventDefault(); if (UI.showOrientationMenu) { UI.showOrientationMenu(); return; } var hb = $('hud').children[5]; if (hb) hb.click(); },
+    shortcutBar: function () { if (UI.showShortcutBar) UI.showShortcutBar(); else { UI.cmdSketch(); UI.refreshRibbon(); } },   // r14/commands14: ui-panels.js takes S first
+    line: sketchKey('line'), rect: sketchKey('rect'), circle: sketchKey('circle'), arc: sketchKey('arc'), polygon: sketchKey('polygon'), slot: sketchKey('slot'), dim: sketchKey('dimension'),
+    extrude: function () { UI.cmdExtrude(false); }
+  };
+  Object.keys(VIEW_KEYS).forEach(function (id) { KEY_ACTIONS[id] = function (e) { if (e && e.preventDefault) e.preventDefault(); UI.setView(VIEW_KEYS[id]); }; });
+  var KEY_NAMES = { ' ': 'Space', Spacebar: 'Space', Delete: 'Del', Escape: 'Esc', Esc: 'Esc' };
+  // 'shift+ctrl+z' / 'Ctrl+Shift+Z' -> 'Ctrl+Shift+Z'; null for text that is not one key (a menu's 'S, S')
+  function keyCanon(text) {
+    if (!text || /,/.test(text)) return null;
+    var parts = String(text).split('+'), key = parts.pop(), mods = { ctrl: 0, shift: 0, alt: 0 };
+    if (key === '' && parts.length) { parts.pop(); key = '+'; }
+    for (var i = 0; i < parts.length; i++) { var m = parts[i].trim().toLowerCase(); if (m === 'cmd' || m === 'meta' || m === 'control') m = 'ctrl'; if (!(m in mods)) return null; mods[m] = 1; }
+    key = key.trim();
+    if (!key) return null;
+    key = KEY_NAMES[key] || (/^del(ete)?$/i.test(key) ? 'Del' : /^space$/i.test(key) ? 'Space' : /^esc(ape)?$/i.test(key) ? 'Esc' : key.length === 1 ? key.toUpperCase() : key.charAt(0).toUpperCase() + key.slice(1));
+    return (mods.ctrl ? 'Ctrl+' : '') + (mods.shift ? 'Shift+' : '') + (mods.alt ? 'Alt+' : '') + key;
+  }
+  function eventCombo(e, noAlt, noShift) {
+    var k = e.key;
+    if (k == null) return null;
+    var ctrl = e.ctrlKey || e.metaKey, shift = e.shiftKey;
+    // a plain letter's case is its Shift (Caps Lock z / Z as the handler always read them: z zooms in, Z out)
+    if (!ctrl && k.length === 1 && k.toLowerCase() !== k.toUpperCase()) shift = k !== k.toLowerCase();
+    k = KEY_NAMES[k] || (k.length === 1 ? k.toUpperCase() : k);
+    return (ctrl ? 'Ctrl+' : '') + (shift && !noShift ? 'Shift+' : '') + (e.altKey && !noAlt ? 'Alt+' : '') + k;
+  }
+  var DEFAULT_MAP = {};
+  KEY_DEFAULTS.forEach(function (d) { DEFAULT_MAP[d[0]] = d[1]; });
+  var keyMap = null, keyMapFor = null;
+  function profileKeys() { var P = UI.Profiles, p = P && P.def ? P.def(P.active()) : null; return p && p.keys ? p : null; }
+  // the active table: combo -> action (rebuilt when the profile changes)
+  function activeKeyMap() {
+    var p = profileKeys(), sig = p ? p.id + '|' + (p.rev || 0) : '';
+    if (keyMap && keyMapFor === sig) return keyMap;
+    keyMap = Object.assign({}, DEFAULT_MAP); keyMapFor = sig;
+    if (p) Object.keys(p.keys).forEach(function (cmd) {
+      [].concat(p.keys[cmd]).forEach(function (k) {   // one combo, or a list ('Alt+F2', 'PageDown')
+        var c = keyCanon(k);
+        if (c && !KEY_FIXED[c]) keyMap[c] = cmd;
+      });
+    });
+    return keyMap;
+  }
+  function profKey(p, id) { var k = p.keys[id]; return k == null ? null : [].concat(k)[0] || null; }
+  // the action a key event runs: the exact combo, then without Alt, then (no Ctrl) without Shift, as the handler
+  // always ignored those on plain keys (Shift+F fits, Alt+L is the Line tool)
+  function keyAction(e) {
+    var map = activeKeyMap(), ctrl = e.ctrlKey || e.metaKey, c;
+    c = eventCombo(e); if (map[c]) return map[c];
+    if (e.altKey) { c = eventCombo(e, true); if (map[c]) return map[c]; }
+    if (!ctrl) {
+      c = eventCombo(e, false, true); if (map[c]) return map[c];
+      c = eventCombo(e, true, true); if (map[c]) return map[c];
+    }
+    return null;
+  }
+  function runKeyAction(name, e) {
+    if (KEY_ACTIONS[name]) { KEY_ACTIONS[name](e); return true; }
+    if (UI.Commands && UI.Commands.run(name)) { if (e && e.preventDefault) e.preventDefault(); return true; }
+    return false;
+  }
+  // the key a tooltip / menu shows for a ribbon id or key action (its own `key` text as the default)
+  function activeKey(id, ownKey) {
+    var def = ownKey || SHORTCUTS[id] || null, p = profileKeys();
+    if (!p) return def;
+    var act = KEY_ALIAS[id] || id;
+    if (profKey(p, id)) return profKey(p, id);
+    if (profKey(p, act)) return profKey(p, act);
+    var c = keyCanon(def);
+    if (c && DEFAULT_MAP[c] && activeKeyMap()[c] !== DEFAULT_MAP[c]) return null;   // the profile gave this key to another command
+    return def;
+  }
+  function menuKeyText(text) {
+    var p = profileKeys();
+    if (!p) return text;
+    var c = keyCanon(text), act = c && DEFAULT_MAP[c];
+    if (!act) return text;
+    if (profKey(p, act)) return profKey(p, act);
+    return activeKeyMap()[c] === act ? text : '';
+  }
+  UI.activeKey = activeKey; UI.menuKeyText = menuKeyText;
+  UI.keys = { canon: keyCanon, defaults: function () { return KEY_DEFAULTS.filter(function (d) { return !d[2]; }).map(function (d) { return { key: d[0], action: d[1] }; }); },
+    map: function () { return Object.assign({}, activeKeyMap()); }, actionFor: keyAction, run: runKeyAction, fixed: Object.keys(KEY_FIXED), reset: function () { keyMap = null; } };
   // Typing goes to a text box, a list or an editable element that is still on screen; a check box, a button or a box
   // that went away with its PropertyManager (✓ leaves the focus on a PM control) does not keep the view keys (F, Z…).
   function typingIn(t) {
@@ -1879,34 +2007,10 @@
     if (typing && !((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && /^[zZyY]$/.test(e.key) && undoCancelsPM(e.target))) return;
     // a focused check box or option keeps Space, Enter and Delete for itself
     if (tag === 'input' && e.target.isConnected && (e.key === ' ' || e.key === 'Enter' || e.key === 'Delete' || e.key === 'Backspace')) return;
-    var k = e.key, ctrl = e.ctrlKey || e.metaKey;
-    if (ctrl && !e.shiftKey && k >= '1' && k <= '7') { e.preventDefault(); UI.setView(['Front', 'Back', 'Left', 'Right', 'Top', 'Bottom', 'Isometric'][+k - 1]); return; }
-    if (ctrl && k === '8') { e.preventDefault(); UI.normalToSelection(); return; }
-    if (ctrl && (k === 'z' || k === 'Z')) { e.preventDefault(); if (e.shiftKey) UI.previousView(); else undoCommand(false, e.target); return; }
-    if (ctrl && (k === 'y' || k === 'Y')) { e.preventDefault(); undoCommand(true, e.target); return; }
-    if (ctrl && (k === 's' || k === 'S')) { e.preventDefault(); fileSave(); return; }
-    if (ctrl && (k === 'b' || k === 'B')) { e.preventDefault(); UI.rebuild().then(function () { UI.toast('Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms'); }); return; }
-    if (ctrl && (k === 'n' || k === 'N')) { e.preventDefault(); fileNew(); return; }
-    if (ctrl && (k === 'o' || k === 'O')) { e.preventDefault(); fileOpen(); return; }
-    if (ctrl) return;
-    if (k === 'Enter' && UI.hasPM()) { e.preventDefault(); UI.pmEnter(e.target); return; }   // lane BP: nothing typed here, so ✓ (ui-commands.js pmEnter)
-    if (k === 'Delete' || k === 'Backspace') { UI.deleteSelection(); return; }
-    if (k === 'F9' && UI.setFeatureManagerHidden) { e.preventDefault(); UI.setFeatureManagerHidden(); return; }   // SolidWorks: F9 toggles the FeatureManager tree area
-    if (k === 'F2' && App.sel && App.sel.kind === 'feature') { e.preventDefault(); UI.startRename(K.findFeature(App.model, App.sel.id)); return; }
-    if (k === 'f' || k === 'F') { UI.zoomToFit(); return; }
-    if (k === 'z') { UI.zoomView(1.25); return; }
-    if (k === 'Z') { UI.zoomView(0.8); return; }
-    if (k === ' ') { e.preventDefault(); if (UI.showOrientationMenu) { UI.showOrientationMenu(); return; } var hb = $('hud').children[5]; if (hb) hb.click(); return; }
-    if (k === 's' || k === 'S') { if (UI.showShortcutBar) UI.showShortcutBar(); else { UI.cmdSketch(); UI.refreshRibbon(); } return; }   // r14/commands14: ui-panels.js takes S first
-    if (App.mode === 'sketch') {
-      var map = { l: 'line', r: 'rect', c: 'circle', a: 'arc', p: 'polygon', t: 'slot', d: 'dimension' };
-      var t = map[k.toLowerCase()];
-      // r5/sketch5: A again with the Centerpoint Arc goes on to the 3 Point Arc, then puts the tool down
-      if (t === 'arc' && App.tool === 'arc') t = 'arc3';
-      else if (t === 'arc' && App.tool === 'arc3') t = 'select';
-      if (t) { UI.setTool(App.tool === t ? 'select' : t); return; }
-    }
-    if (k === 'e' || k === 'E') { UI.cmdExtrude(false); return; }
+    // lane profiles: every other key goes through the key table (KEY_DEFAULTS + the active profile's keys)
+    if (!(e.ctrlKey || e.metaKey) && e.key === 'Enter' && UI.hasPM()) { e.preventDefault(); UI.pmEnter(e.target); return; }   // lane BP: nothing typed here, so ✓ (ui-commands.js pmEnter)
+    var act = keyAction(e);
+    if (act) runKeyAction(act, e);
   });
 
   // ------------------------------------------------------------------ theme (light | dark)
@@ -1927,6 +2031,9 @@
   // ------------------------------------------------------------------ automation API (for the browser console / Claude)
   window.anvil = {
     theme: function (name) { if (arguments.length) setTheme(name); return theme(); },
+    // lane profiles: profile() -> the active interface profile's id; profile(id) lays Anvil out like that program
+    // ('solidworks' (default), 'mastercam'; UI.Profiles.list()) and returns the id now active
+    profile: function (id) { if (!UI.Profiles) return 'solidworks'; if (arguments.length && id != null) UI.Profiles.set(id); return UI.Profiles.active(); },
     // run / append / load / rebuild resolve to the summary (or reject with the script error) once the build is applied
     run: function (code) { return runScript(code, true).then(function (r) { if (r.error) throw new Error(r.error); return window.anvil.summary(); }); },
     append: function (code) { return runScript(code, false).then(function (r) { if (r.error) throw new Error(r.error); return window.anvil.summary(); }); },
@@ -2126,8 +2233,13 @@
     names.slice().sort(function (a, b) { return (shown.indexOf(a) < 0) - (shown.indexOf(b) < 0); }).forEach(function (tab) {
       var here = shown.indexOf(tab) >= 0;
       (UI.ribbonLeaves ? UI.ribbonLeaves(set[tab]) : []).forEach(function (it) {
-        var name = flat(it.label), can = !!(it.run || it.tool);
-        add({ name: name, icon: it.icon || it.id, where: tab + (here ? '' : drawingTab(tab) ? ' (drawing)' : ''), enabled: can, here: here, sketchTool: !!it.tool, tab: tab,
+        var name = flat(it.label), can = !!(it.run || it.tool), alias = '', where = tab;
+        // lane profiles: under another program's layout the command goes by that program's name (and is still found by
+        // SolidWorks' name) and lives on that layout's tab
+        var pc = UI.Profiles && UI.Commands ? UI.Commands.cmdOf(it) : null, pl = pc ? UI.Profiles.labelFor(pc) : null;
+        if (pl) { alias = name + ' ' + (SEARCH_ALIASES[name] || ''); name = flat(pl); }
+        if (pc && here) where = UI.Profiles.tabOf(pc) || where;
+        add({ name: name, alias: alias, icon: it.icon || it.id, where: where + (here ? '' : drawingTab(tab) ? ' (drawing)' : ''), enabled: can, here: here, sketchTool: !!it.tool, tab: tab,
           run: function () {
             if (!here) { UI.toast(drawingTab(tab) && !drawing ? 'Open a drawing first: ' + name + ' is on its ' + tab + ' tab.' : name + ' is not on this document\'s CommandManager.'); return; }
             if (it.tool && !it.run) { if (App.mode !== 'sketch') { UI.toast('Open a sketch first: ' + name + ' is a sketch tool.'); return; } UI.setTool(it.tool); }
@@ -2150,7 +2262,8 @@
     // the Anvil words the box always knew
     [{ name: 'Export STL', alias: 'stl', run: exportSTL }, { name: 'Script', alias: 'script macro code', run: function () { openTaskPane('macro'); } },
       { name: 'New Assembly', alias: 'assembly', run: function () { newAssembly(); } }, { name: 'DXF / DWG Output', alias: 'dxf dwg export output', run: function () { UI.cmdDxfOutput(); } },
-      { name: 'DWG Output', alias: 'dwg', run: function () { UI.cmdDxfOutput({ format: 'dwg' }); } }].forEach(function (x) { add({ name: x.name, alias: x.alias, icon: null, where: 'Anvil', enabled: true, here: true, run: x.run }); });
+      { name: 'DWG Output', alias: 'dwg', run: function () { UI.cmdDxfOutput({ format: 'dwg' }); } },
+      { name: 'Interface profile', alias: 'interface profile layout mastercam solidworks ui keys keyboard mouse like', run: function () { if (UI.Profiles) UI.Profiles.openSetting(); } }].forEach(function (x) { add({ name: x.name, alias: x.alias, icon: null, where: 'Anvil', enabled: true, here: true, run: x.run }); });
     return out;
   }
   function drawingTab(t) { return t === 'View Layout' || t === 'Annotation' || t === 'Sheet Format'; }

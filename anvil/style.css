@@ -2038,3 +2038,20 @@ body.splitting-v #viewport { pointer-events: none; }
 .menu .mi-scroll.off { color: var(--c-disabled); }
 .menu .mi .mi-arrow { margin-left: auto; padding-left: var(--sp-4); font-size: 10px; color: var(--c-muted); }
 .menu .mi.mi-subhost.open { background: var(--c-hover); }
+/* lane profiles: interface profiles (ui-profiles.js). dock.tree 'right' puts the FeatureManager / PropertyManager column
+   right of the graphics area (#main.dock-right; the Task Pane stays last); its splitter and pull tab move to its left
+   edge. The status bar names a profile other than SolidWorks (.st-profile, a click opens Tools > Options). */
+#main.dock-right { grid-template-columns: minmax(0, 1fr) var(--fm-w, 296px) auto; }
+#main.dock-right > #viewport { grid-column: 1; grid-row: 1; }
+#main.dock-right > #left { grid-column: 2; grid-row: 1; border-right: 0; border-left: var(--hair) solid var(--c-line); }
+#main.dock-right > #taskpane { grid-column: 3; grid-row: 1; }
+#main.dock-right > #left > .split, #main.dock-right.fm-hidden > #left > .split { right: auto; left: -4px; }
+#main.dock-right.fm-hidden > #left { border-left-width: 0; }
+#main.dock-right #fm-tab { left: auto; right: 0; border-left: 1px solid var(--sw-chrome-line, var(--line)); border-right: 0; border-radius: 6px 0 0 6px; box-shadow: -1px 0 4px rgba(0, 0, 0, .14); }
+#main.dock-right #fm-tab svg { transform: scaleX(-1); }
+#main.dock-right #fm-tab.collapsed svg { transform: none; }
+#status-right .st-profile { cursor: pointer; font-weight: 600; }
+#status-right .st-profile:hover { text-decoration: underline; }
+.prof-opts { display: flex; flex-direction: column; gap: var(--sp-1); margin: var(--sp-1) 0 var(--sp-2); }
+.prof-opts label { display: grid; grid-template-columns: 18px 1fr; column-gap: var(--sp-1); align-items: start; cursor: pointer; }
+.prof-opts label small { grid-column: 2; color: var(--c-muted); }

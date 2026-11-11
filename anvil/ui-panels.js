@@ -35,7 +35,7 @@
     // written only when it changed (refreshStatus runs on every solve and rebuild); the last span has a fixed width so
     // a rebuild time growing from "9 ms" to "120 ms" does not shift the rest of the bar; levels (ui-levels.js): the main
     // level chip "Level: 3 ETCH" (a click opens the main-level picker)
-    var html = skTxt + (UI.occtStatusHtml ? UI.occtStatusHtml() : '') + (UI.rebuildStatusHtml ? UI.rebuildStatusHtml() : '<span>' + (errs ? errs + ' rebuild error' + (errs > 1 ? 's' : '') : 'Fully rebuilt') + '</span>') + (UI.levelStatusHtml && !asm ? UI.levelStatusHtml() : '') + '<span>' + mode + '</span><span>' + units + '</span><span class="st-ms">' + (App.lastRebuildMs != null ? UI.fmtNum(App.lastRebuildMs, 0) + ' ms' : '') + '</span>';
+    var html = (UI.profileStatusHtml ? UI.profileStatusHtml() : '') + skTxt + (UI.occtStatusHtml ? UI.occtStatusHtml() : '') + (UI.rebuildStatusHtml ? UI.rebuildStatusHtml() : '<span>' + (errs ? errs + ' rebuild error' + (errs > 1 ? 's' : '') : 'Fully rebuilt') + '</span>') + (UI.levelStatusHtml && !asm ? UI.levelStatusHtml() : '') + '<span>' + mode + '</span><span>' + units + '</span><span class="st-ms">' + (App.lastRebuildMs != null ? UI.fmtNum(App.lastRebuildMs, 0) + ' ms' : '') + '</span>';
     var sr = $('status-right');
     if (sr._html !== html) { sr.innerHTML = html; sr._html = html; }
     var title = App.model.name + (App.mode === 'sketch' ? '  —  sketch' : '');
@@ -54,7 +54,7 @@
       { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } },
       { id: 'holeWizard', label: 'Hole\nWizard', run: function () { (UI.cmdHoleWizard || UI.cmdHole)(); } },
       { id: 'revolveCut', label: 'Revolved\nCut', run: function () { UI.cmdRevolve(true); } },
-      { stack: [{ id: 'sweep', label: 'Swept Cut', run: function () { UI.cmdSweep(true); } }, { id: 'loft', label: 'Lofted Cut', run: function () { UI.cmdLoft(true); } }, 
+      { stack: [{ id: 'sweep', cmd: 'sweptCut', label: 'Swept Cut', run: function () { UI.cmdSweep(true); } }, { id: 'loft', cmd: 'loftedCut', label: 'Lofted Cut', run: function () { UI.cmdLoft(true); } }, 
       { id: 'boundaryCut', label: 'Boundary Cut', run: function () { UI.cmdBoundary(true); } }   // rfFB
     ] },
       { sep: true },
@@ -133,7 +133,7 @@
         { fly: 'ellipse', items: [{ id: 'ellipse', label: 'Ellipse', tool: 'ellipse' }, { id: 'pellipse', label: 'Partial Ellipse', tool: 'pellipse' },
           { id: 'parabola', label: 'Parabola', tool: 'parabola', help: 'A parabolic arc from its focus, apex and ends' }, { id: 'conic', label: 'Conic', tool: 'conic', help: 'A conic arc from its ends, the apex and a rho value' }] },
         // ui-sketch-tools.js: Sketch Fillet ▸ Sketch Chamfer
-        { fly: 'skFillet', items: [{ id: 'fillet', icon: 'skFillet', label: 'Sketch Fillet', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdSketchFillet(); } }, { id: 'skChamfer', label: 'Sketch Chamfer', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdSketchChamfer(); } }] },
+        { fly: 'skFillet', items: [{ id: 'fillet', cmd: 'skFillet', icon: 'skFillet', label: 'Sketch Fillet', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdSketchFillet(); } }, { id: 'skChamfer', label: 'Sketch Chamfer', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdSketchChamfer(); } }] },
         { id: 'plane', label: 'Plane', run: function () { UI.cmdPlane(); } },
         { id: 'text', label: 'Text', tool: 'text' },
         { id: 'point', label: 'Point', tool: 'point' }] },
@@ -181,7 +181,7 @@
       // sketch-layers / levels: the Levels Manager tab (ui-levels.js, Mastercam's part-wide levels: CUT, ETCH and BEND
       // with their own colours, shown or hidden, written to the DXF on their names); the sketch's Layers PM without it
       { extra: true, id: 'levels', label: 'Levels', help: 'Levels Manager: numbered part-wide levels (CUT, ETCH, BEND …) with their own colours, shown or hidden, written to the DXF on their names', run: function () { if (UI.showLevelsManager) UI.showLevelsManager(); else if (UI.cmdSketchLayers) UI.cmdSketchLayers(); } },
-      { extra: true, id: 'dxf', label: 'Sketch\nto DXF', run: function () { UI.exportSketchDXF(); } },
+      { extra: true, id: 'dxf', cmd: 'sketchDxf', label: 'Sketch\nto DXF', run: function () { UI.exportSketchDXF(); } },
       // dxf-import: Insert DXF / DWG, Check Sketch for Feature (ui-sketch-import.js)
       { extra: true, stack: [{ id: 'importDxf', label: 'Insert DXF / DWG', help: 'Import a DXF or DWG file into the sketch (a new sketch on the Top Plane when none is open; DWG through the local Anvil server)', run: function () { UI.cmdInsertDXF(); } },
         { id: 'checkSketch', label: 'Check Sketch for Feature', help: 'Find open endpoints, gaps, duplicates and crossings that keep the sketch from making a feature', run: function () { UI.cmdCheckSketch(); } }] }
@@ -192,7 +192,7 @@
       { id: 'sectionProps', label: 'Section\nProperties', run: function () { UI.cmdSectionProperties(); } },
       { id: 'section', label: 'Section\nView', run: function () { UI.cmdSection(); } },
       { sep: true },
-      { id: 'dxf', label: 'Face\nto DXF', run: function () { UI.exportFaceDXF(); } },
+      { id: 'dxf', cmd: 'faceDxf', label: 'Face\nto DXF', run: function () { UI.exportFaceDXF(); } },
       { id: 'check', label: 'Check', run: function () { UI.cmdCheck(); } }, { id: 'sensor', label: 'Sensor' },
       { id: 'zebra', label: 'Zebra\nStripes', run: function () { UI.cmdZebra(); }, active: function () { return !!(UI.evaluate && UI.evaluate.zebra.state().on); } },
       { id: 'draftAnalysis', label: 'Draft\nAnalysis', run: function () { UI.cmdDraftAnalysis(); } },
@@ -203,7 +203,7 @@
     ],
     'Sheet Metal': [
       { id: 'flange', label: 'Base\nFlange/Tab', run: function () { UI.cmdBaseFlange(); } },
-      { id: 'convertSM', label: 'Convert to\nSheet Metal', help: 'Turn a solid into sheet metal: a fixed face and the edges that become bends; the other faces are removed and the corners ripped', run: function () { UI.cmdConvertSheetMetal(); } }, { id: 'loft', label: 'Lofted-\nBend' },
+      { id: 'convertSM', label: 'Convert to\nSheet Metal', help: 'Turn a solid into sheet metal: a fixed face and the edges that become bends; the other faces are removed and the corners ripped', run: function () { UI.cmdConvertSheetMetal(); } }, { id: 'loft', cmd: 'loftedBend', label: 'Lofted-\nBend' },
       { id: 'sweptFlange', label: 'Swept\nFlange', help: 'Sweep an open profile along a path (a sketch, or edges of the part) into sheet metal; its bends unbend in the flat', run: function () { UI.cmdSweptFlange(); } },
       { sep: true },
       { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'hem', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'jog', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'sketchedBend', label: 'Sketched\nBend', run: function () { UI.cmdSketchedBend(); } },
@@ -214,7 +214,7 @@
       // lane DL (fidelity #12): SolidWorks 2024's order Unfold, Fold, Flatten, No Bends, Insert Bends, Rip; Flat to DXF (Anvil's) last
       { id: 'unfold', label: 'Unfold', help: 'Unfold bends about a fixed face to cut across them flat', run: function () { UI.cmdUnfold(); } }, { id: 'fold', label: 'Fold', help: 'Fold back the bends an Unfold unfolded, with the cuts made across them', run: function () { UI.cmdFold(); } }, { id: 'flatten', label: 'Flatten', run: function () { UI.cmdFlatten(); } },
       { id: 'noBends', label: 'No\nBends', help: 'Show the part as it was before its bends were inserted (a part converted from a solid)', run: function () { UI.toggleNoBends(); }, active: function () { return !!(App.model && App.model.noBends); } }, { id: 'insertBends', label: 'Insert\nBends', help: 'Turn a thin-walled solid with sharp corners into sheet metal by inserting bends', run: function () { UI.cmdInsertBends(); } },{ id: 'rip', icon: 'rip', label: 'Rip', help: 'Rip the edges of a hollow part so it can be unfolded', run: function () { UI.cmdRipFeature(); } },
-      { extra: true, id: 'dxf', label: 'Flat to\nDXF', run: function () { UI.exportFlatDXF(); } }
+      { extra: true, id: 'dxf', cmd: 'flatDxf', label: 'Flat to\nDXF', run: function () { UI.exportFlatDXF(); } }
     ],
     // lane BJ: Mastercam 2024's Transform tab, groups Position | Offset | Layout | Size with their captions under the
     // buttons (ui-transform.js lays them out from `group`). Each button runs UI['cmdT' + name] (ui-transform.js,
@@ -281,8 +281,159 @@
     View: viewTab(true)   // lane CC: the part's View tab without the Levels Manager (levels belong to parts)
   };
   function isAsm() { return UI.isAssembly ? UI.isAssembly() : !!(App.model && App.model.type === 'assembly'); }
-  function ribbonSet() { return isAsm() ? ASM_RIBBON : RIBBON; }
+  // lane profiles: an interface profile (ui-profiles.js) may lay the CommandManager out like another program; with the
+  // SolidWorks profile (the default) profileSet() is null and the tables above are used as they are
+  function ribbonSet() { return profileSet() || (isAsm() ? ASM_RIBBON : RIBBON); }
   function ribbonTabs() { return Object.keys(ribbonSet()); }
+
+  // ------------------------------------------------------------------ command registry (lane profiles)
+  // Every ribbon button, stack item and flyout item has one stable command id per document type: `cmd`, else the item's
+  // id (its icon key), else for a SolidWorks command not built yet (id 'generic') its icon. Ids that two different
+  // commands share carry their own `cmd` (Swept Cut, Sketch Fillet, the three "to DXF" buttons …). The same command on
+  // two tabs (Extruded Cut on Features and Sheet Metal, Section View on Evaluate and View) is one cmd.
+  // UI.Commands.get(cmd[, docType]) -> { cmd, id, label (SolidWorks' name, one line), run, tab, docType };
+  // UI.Commands.list(docType) -> the same for every command of 'part' | 'assembly' | 'drawing', in ribbon order.
+  var PROFILE_DRAW_TABS = ['View Layout', 'Annotation', 'Sketch', 'Sheet Format'];
+  function cmdOf(it) { return it.cmd || (it.id === 'generic' ? it.icon || it.id : it.id); }
+  function flatLabel(s) { return String(s || '').replace(/\s*\n\s*/g, ' ').trim(); }
+  function docTypeNow() { return UI.drawingActive && UI.drawingActive() ? 'drawing' : isAsm() ? 'assembly' : 'part'; }
+  // RIBBON.Sketch is a getter in drawings (drawing-ui-sketch.js: the drawing's sketch tools while a drawing is open):
+  // read a document type's tabs with the drawing flag as that type has it
+  function withDrawingFlag(on, fn) {
+    var D = UI.drawingInternal && UI.drawingInternal.D;
+    if (!D || !!D.active === on) return fn();
+    var was = D.active; D.active = on;
+    try { return fn(); } finally { D.active = was; }
+  }
+  // the SolidWorks tabs of a document type: [{ name, items }]
+  function swTabsOf(docType) {
+    return withDrawingFlag(docType === 'drawing', function () {
+      var set = docType === 'assembly' ? ASM_RIBBON : RIBBON, names;
+      if (docType === 'drawing') names = PROFILE_DRAW_TABS.filter(function (n) { return !!set[n]; });
+      else names = Object.keys(set).filter(function (n) { return PROFILE_DRAW_TABS.indexOf(n) < 0 || n === 'Sketch'; });
+      return names.map(function (n) { return { name: n, items: set[n] || [] }; });
+    });
+  }
+  function commandList(docType) {
+    var out = [], seen = {};
+    swTabsOf(docType || docTypeNow()).forEach(function (t) {
+      ribbonLeaves(t.items).forEach(function (it) {
+        var c = cmdOf(it);
+        if (seen[c]) { seen[c].items.push(it); return; }
+        var e = { cmd: c, id: it.id, label: flatLabel(it.label), tab: t.name, docType: docType || docTypeNow(), item: it, items: [it] };
+        e.run = function () { runItem(it); refreshRibbon(); };
+        seen[c] = e; out.push(e);
+      });
+    });
+    return out;
+  }
+  function publicCmd(e) { return e ? { cmd: e.cmd, id: e.id, label: e.label, run: e.run, tab: e.tab, docType: e.docType } : null; }
+  UI.Commands = {
+    list: function (docType) { return commandList(docType).map(publicCmd); },
+    get: function (cmd, docType) { var l = commandList(docType); for (var i = 0; i < l.length; i++) if (l[i].cmd === cmd) return publicCmd(l[i]); return null; },
+    // every (cmd, label) pair as it appears on the tabs, duplicates included (tests: one cmd, one name)
+    occurrences: function (docType) { var o = []; commandList(docType).forEach(function (e) { e.items.forEach(function (it) { o.push({ cmd: e.cmd, label: flatLabel(it.label) }); }); }); return o; },
+    cmdOf: cmdOf, docType: docTypeNow,
+    run: function (cmd, docType) { var c = UI.Commands.get(cmd, docType); if (!c) return false; c.run(); return true; }
+  };
+
+  // ------------------------------------------------------------------ the CommandManager of a profile (lane profiles)
+  // UI.Profiles.active() is JSON: tabs per document type made of groups of cmds, labels by cmd. profileSet() turns it
+  // into a ribbon set like RIBBON (tab name -> items) whose buttons are the SolidWorks items themselves, or a thin
+  // Object.create() over one when the profile renames it or puts it under a group caption (so run / tool / active /
+  // dyn are the SolidWorks item's). A command the profile does not place goes on the last tab, More, grouped by its
+  // SolidWorks tab. The set is cached per profile and document type, so refreshRibbon's identity checks hold.
+  var profCache = {};
+  function profileDef() { var P = UI.Profiles; var p = P && P.active ? P.def(P.active()) : null; return p && p.id !== 'solidworks' ? p : null; }
+  function profileSet(docType) {
+    var p = profileDef();
+    if (!p) return null;
+    docType = docType || docTypeNow();
+    var reg = commandList(docType), sig = p.id + '|' + (p.rev || 0) + '|' + docType + '|' + reg.length + '|' + reg.reduce(function (n, e) { return n + e.items.length; }, 0);
+    if (profCache[docType] && profCache[docType].sig === sig) return profCache[docType].set;
+    var set = buildProfileSet(p, docType, reg);
+    profCache[docType] = { sig: sig, set: set };
+    return set;
+  }
+  function buildProfileSet(p, docType, reg) {
+    var labels = p.labels || {}, tabsDef = p.tabs && p.tabs[docType], byCmd = {}, placed = {};
+    reg.forEach(function (e) { byCmd[e.cmd] = e; });
+    if (!tabsDef && !reg.some(function (e) { return labels[e.cmd]; })) return null;
+    function wrap(leaf, group) {
+      var c = cmdOf(leaf), lab = labels[c];
+      placed[c] = true;
+      if (!lab && !group) return leaf;
+      var w = Object.create(leaf);
+      if (lab) {
+        var sw = flatLabel(leaf.label), desc = leaf.help || RIBBON_HELP[sw] || DRAW_HELP[sw] || '';
+        w.label = lab; w.swLabel = sw;
+        w.help = (desc ? desc + ' ' : '') + '(SolidWorks: ' + sw + ')';
+      }
+      if (group) w.group = group;
+      return w;
+    }
+    // a SolidWorks item list with the profile's names (the layout, flyout memory and captions unchanged)
+    function mapItems(list) {
+      return list.map(function (it) {
+        if (!it || it.sep) return it;
+        if (it.stack) { var s = Object.create(it); s.stack = mapItems(it.stack); return s; }
+        if (it.fly) { var f = Object.create(it); f.items = mapItems(it.items); return f; }
+        return wrap(it, null);
+      });
+    }
+    function leafOf(c) { var e = byCmd[c]; return e ? e.item : null; }
+    function profItem(x, group) {
+      if (typeof x === 'string') { var l = leafOf(x); return l ? wrap(l, group) : null; }
+      if (!x) return null;
+      var list = (x.stack || x.grid || x.items || []).map(function (c) { var l = leafOf(c); return l ? wrap(l, null) : null; }).filter(Boolean);
+      if (!list.length) return null;
+      if (x.items) return { fly: 'p-' + p.id + '-' + x.fly, label: x.label, items: list, group: group };
+      return { stack: list, grid: !!x.grid, group: group };
+    }
+    var set = {};
+    if (!tabsDef) {
+      swTabsOf(docType).forEach(function (t) { set[t.name] = mapItems(t.items); });
+      return set;
+    }
+    var sw = {};
+    swTabsOf(docType).forEach(function (t) { sw[t.name] = t.items; });
+    tabsDef.forEach(function (tab) {
+      if (tab.sw) { if (sw[tab.sw]) set[tab.name] = mapItems(sw[tab.sw]); return; }   // a SolidWorks tab kept whole (Sheet Metal, Transform, View)
+      var out = [];
+      (tab.groups || []).forEach(function (g) {
+        var items = (g.items || []).map(function (x) { return profItem(x, g.name); }).filter(Boolean);
+        if (!items.length) return;
+        if (out.length) out.push({ sep: true });
+        out.push.apply(out, items);
+      });
+      set[tab.name] = out;
+    });
+    // nothing is ever unreachable: the commands the profile does not place, on More, by their SolidWorks tab
+    var rest = {}, order = [];
+    reg.forEach(function (e) { if (placed[e.cmd]) return; if (!rest[e.tab]) { rest[e.tab] = []; order.push(e.tab); } rest[e.tab].push(e.item); });
+    if (order.length) {
+      var more = [];
+      order.forEach(function (t) {
+        if (more.length) more.push({ sep: true });
+        more.push({ stack: rest[t].map(function (l) { return wrap(l, t); }), grid: true, group: t });
+      });
+      set[p.moreTab || 'More'] = more;
+    }
+    return set;
+  }
+  // a SolidWorks tab name (Sketch, Features …: ui-sketch.js, drawing-ui.js and others ask for these) as the active
+  // profile names it (profile.tabAlias); a name the set has is kept
+  function tabName(name) {
+    var p = profileDef();
+    if (!p) return name;
+    var set = ribbonSet();
+    if (set[name]) return name;
+    var a = p.tabAlias && p.tabAlias[docTypeNow()] && p.tabAlias[docTypeNow()][name];
+    return a && set[a] ? a : name;
+  }
+  UI.profileRibbon = function (docType) { return profileSet(docType); };
+  UI.profileTabName = tabName;
+  UI.profileRibbonReset = function () { profCache = {}; ribbonBuilt = null; };
 
   // One-line descriptions for the ribbon tooltips, keyed by the button label (ids such as 'bend' are shared by several buttons).
   var RIBBON_HELP = {
@@ -348,7 +499,7 @@
   // r14/commands14: tooltips in SolidWorks' two-line style: the name in bold (with its shortcut), a description under it,
   // and a third, muted line for why a button is greyed (setTip, below). An item's own `help` wins over the tables.
   function ribbonTip(id, label, enabled, needsSketch, help, ownKey) {
-    var key = ownKey || (UI.shortcutFor ? UI.shortcutFor(id) : null);   // lane CC: an item's own `key` (View tab: Ctrl+1 …)
+    var key = UI.activeKey ? UI.activeKey(id, ownKey) : ownKey || (UI.shortcutFor ? UI.shortcutFor(id) : null);   // lane CC: an item's own `key` (View tab: Ctrl+1 …); lane profiles: the active profile's key
     var desc = help || (UI.drawingActive && UI.drawingActive() && DRAW_HELP[label]) || RIBBON_HELP[label] || '';
     if (!enabled) return { name: label, key: '', desc: desc, note: 'Not available in Anvil yet' };   // rfC: SolidWorks' command, greyed
     return { name: label, key: key || '', desc: desc, note: needsSketch ? 'Open a sketch first' : '' };
@@ -465,6 +616,7 @@
     var tabNames = Object.keys(set), extraTabs = isAsm() ? ['Layout', 'Sketch', 'Markup', 'SOLIDWORKS Add-Ins'] : [];   // the part's greyed SolidWorks tabs (Surfaces, Weldments, Mold Tools, Direct Editing, MBD Dimensions) removed at the user's request (2026-10-13)
     // another document type (drawing.js) may swap the tab set: UI.ribbonTabsFor(names, extra) -> [names, extra]
     if (UI.ribbonTabsFor) { var tf = UI.ribbonTabsFor(tabNames, extraTabs); tabNames = tf[0]; extraTabs = tf[1]; }
+    if (set === profileSet()) tabNames = Object.keys(set);   // lane profiles: a profile's set is already this document's tabs
     var items = (set[App.ribbonTab] || []).slice();
     return { set: set, tab: App.ribbonTab, items: items, stacks: items.map(function (it) { return it.stack ? it.stack.slice() : it.fly ? it.items.slice() : null; }), tabs: tabNames.join('\u0001') + '\u0002' + extraTabs.join('\u0001'), tabNames: tabNames, extraTabs: extraTabs };
   }
@@ -480,7 +632,7 @@
   function refreshRibbon() {
     var bar = $('ribbon-buttons');
     var set = ribbonSet();
-    if (!set[App.ribbonTab]) App.ribbonTab = Object.keys(set)[0];
+    if (!set[App.ribbonTab]) App.ribbonTab = set[tabName(App.ribbonTab)] ? tabName(App.ribbonTab) : Object.keys(set)[0];
     var shape = ribbonShape();
     if (sameShape(ribbonBuilt, shape) && bar.children.length) {
       Array.prototype.forEach.call(bar.querySelectorAll('.rb'), function (b) { if (b._sync) b._sync(); });
@@ -514,7 +666,7 @@
     tabs.setAttribute('data-shape', shape.tabs);
     var tfrag = document.createDocumentFragment();
     shape.tabNames.forEach(function (name) {
-      tfrag.appendChild(el('button', { class: 'rtab' + (name === App.ribbonTab ? ' active' : ''), text: name, onclick: function () { if (App.mode !== 'sketch') tabBeforeSketch = null; else if (name !== 'Sketch') tabBeforeSketch = name; setRibbonTab(name); } }));
+      tfrag.appendChild(el('button', { class: 'rtab' + (name === App.ribbonTab ? ' active' : ''), text: name, onclick: function () { if (App.mode !== 'sketch') tabBeforeSketch = null; else if (name !== tabName('Sketch')) tabBeforeSketch = name; setRibbonTab(name); } }));
     });
     shape.extraTabs.forEach(function (name) {
       tfrag.appendChild(el('button', { class: 'rtab off', text: name, title: 'Not available in this build', style: 'opacity:.5' }));
@@ -531,9 +683,12 @@
   // the Sketch tab and finished by Sheet Metal > Extruded Cut (or any command on that tab) comes back to Sheet Metal.
   var tabBeforeSketch = null;
   function setRibbonTab(name) {
-    if (name === 'Sketch' && App.mode === 'sketch') { if (App.ribbonTab !== 'Sketch' && tabBeforeSketch == null) tabBeforeSketch = App.ribbonTab; }
-    else if (name === 'Features' && App.mode !== 'sketch' && tabBeforeSketch != null) {
-      var back = App.ribbonTab === 'Sketch' ? tabBeforeSketch : App.ribbonTab;
+    // lane profiles: Sketch / Features are the profile's sketch and solids tabs (Mastercam: Wireframe / Solids)
+    var skTab = tabName('Sketch'), ftTab = tabName('Features');
+    name = tabName(name);
+    if (name === skTab && App.mode === 'sketch') { if (App.ribbonTab !== skTab && tabBeforeSketch == null) tabBeforeSketch = App.ribbonTab; }
+    else if (name === ftTab && App.mode !== 'sketch' && tabBeforeSketch != null) {
+      var back = App.ribbonTab === skTab ? tabBeforeSketch : App.ribbonTab;
       tabBeforeSketch = null;
       if (ribbonSet()[back]) name = back;
     }
@@ -851,7 +1006,7 @@
     });
     s.addEventListener('pointermove', function (e) {
       if (!start) return;
-      if (p === PANES.fm) { dragFmTo(start.w + sign * (e.clientX - start.x)); return; }
+      if (p === PANES.fm) { dragFmTo(start.w + sign * dockSign() * (e.clientX - start.x)); return; }
       var w = paneWidths(), other = p === PANES.fm ? (w.tpOpen && !w.overlay ? w.tp : 0) : w.fm;
       var room = p === PANES.tp && w.overlay ? w.W - w.strip - 48 : w.W - w.strip - w.minVp - other;
       var nw = Math.round(Math.max(p.min, Math.min(p.max, room, start.w + sign * (e.clientX - start.x))));
@@ -889,7 +1044,7 @@
       if (!start) return;
       if (!start.moved && Math.abs(e.clientX - start.x) < 4) return;
       if (!start.moved) { start.moved = true; document.body.classList.add('splitting'); t.classList.add('dragging'); }
-      dragFmTo(start.w + e.clientX - start.x);
+      dragFmTo(start.w + dockSign() * (e.clientX - start.x));
     });
     function end() {
       if (!start) return;
@@ -906,6 +1061,16 @@
   }
   UI.setFeatureManagerHidden = setFeatureManagerHidden;
   UI.featureManagerHidden = function () { return fmHidden; };
+  // lane profiles: the FeatureManager / PropertyManager column left (SolidWorks) or right of the graphics area
+  // (#main.dock-right, style.css); a drag of its edge or pull tab then widens it to the left
+  function dockSign() { var m = $('main'); return m && m.classList.contains('dock-right') ? -1 : 1; }
+  UI.setTreeDock = function (side) {
+    var m = $('main'), right = side === 'right';
+    if (!m) return 'left';
+    if (m.classList.contains('dock-right') !== right) { m.classList.toggle('dock-right', right); fitPanels(true); if (UI.resize) UI.resize(); }
+    return right ? 'right' : 'left';
+  };
+  UI.treeDock = function () { var m = $('main'); return m && m.classList.contains('dock-right') ? 'right' : 'left'; };
   function fitWorkspace() { fitPanels(true); fitRibbon(); }
   (function initFit() {
     addSplitter($('left'), PANES.fm, 1);
@@ -1616,7 +1781,8 @@
       row.appendChild(el('span', { class: 'chk', text: it.checked ? '✓' : '' }));
       if (it.icon) row.appendChild(el('span', { class: 'mi-ico', html: Icons(it.icon, 16) }));   // r12/chrome12: ribbon overflow rows
       row.appendChild(el('span', { text: it.label }));
-      if (it.key) row.appendChild(el('span', { class: 'key', text: it.key }));
+      var shownKey = it.key && UI.menuKeyText ? UI.menuKeyText(it.key) : it.key;   // lane profiles: the active profile's key
+      if (shownKey) row.appendChild(el('span', { class: 'key', text: shownKey }));
       if (it.items && it.items.length) {
         // rfLF: a row with `items` opens them as a submenu beside it (on hover, or a click)
         row.classList.add('mi-subhost');
@@ -2076,11 +2242,11 @@
   function viewTab(asm) {
     function orient(name, key, help) { return { id: 'v' + (name === 'Isometric' ? 'Iso' : name), label: name, key: key, help: help, run: function () { UI.setView(name); } }; }
     function style(s, id, label, help) { return { id: id, label: label, help: help, run: function () { setStyle(s); }, active: function () { return App.view.style === s; } }; }
-    function bg(b, label) { return { id: 'vBackground', label: label, help: 'Graphics-area background: ' + label.toLowerCase() + ' (View ▸ Background)', run: function () { setBg(b); }, active: function () { return App.view.bg === b; } }; }
+    function bg(b, label) { return { id: 'vBackground', cmd: 'vBg' + b.charAt(0).toUpperCase() + b.slice(1), label: label, help: 'Graphics-area background: ' + label.toLowerCase() + ' (View ▸ Background)', run: function () { setBg(b); }, active: function () { return App.view.bg === b; } }; }
     function show(id, label, help, on, flip) { return { id: id, label: label, help: help, run: flip, active: on }; }
     var managers = [
       { id: 'vFeatureTree', label: 'FeatureManager', help: 'FeatureManager design tree: show the features of the document in the left pane', run: function () { var b = document.querySelector('#fm-tabs button[data-tab="tree"]'); if (b) b.click(); }, active: function () { return App.fmTab === 'tree'; } },
-      { id: 'levels', label: 'Levels Manager', help: 'Numbered part-wide levels (CUT, ETCH, BEND …) with their own colours, shown or hidden, in the left pane', run: function () { if (UI.showLevelsManager) UI.showLevelsManager(); else toast('The Levels Manager did not load.'); }, active: function () { return App.fmTab === 'levels'; } },
+      { id: 'levels', cmd: 'vLevels', label: 'Levels Manager', help: 'Numbered part-wide levels (CUT, ETCH, BEND …) with their own colours, shown or hidden, in the left pane', run: function () { if (UI.showLevelsManager) UI.showLevelsManager(); else toast('The Levels Manager did not load.'); }, active: function () { return App.fmTab === 'levels'; } },
       { id: 'filter', label: 'Selection Filter', key: 'F5', help: 'Show or hide the Selection Filter toolbar: pick only the kinds of geometry switched on', run: function () { if (UI.toggleSelectionFilterBar) UI.toggleSelectionFilterBar(); }, active: function () { return !!(UI.selectionFilterBarShown && UI.selectionFilterBarShown()); } }
     ];
     if (asm) managers.splice(1, 1);
