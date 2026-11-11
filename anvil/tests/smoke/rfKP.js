@@ -54,7 +54,9 @@
       assert(fl.loops.length === 1 && !(fl.warnings || []).length, 'outline only, no warning: ' + fl.loops.length + ' ' + (fl.warnings || []).join('; '));
       assert(fl.loops[0].length > f0.loops[0].length + 20, 'the notches: ' + f0.loops[0].length + ' → ' + fl.loops[0].length + ' points');
       var lost = (rfKPArea(f0) - rfKPArea(fl)) * T14;
-      assert(Math.abs(lost - cut) <= 0.01 * cut, 'notch area × T ' + lost.toFixed(5) + ' vs the metal cut ' + cut.toFixed(5));
+      // 5 %: the facets at a seam corner are up to ±6 % off T since lane smsolid (the seam walls no longer cross); the
+      // exact check (notch = the cut's developed mid-surface slice, 1e-9) is in kernel/rfKP.js
+      assert(Math.abs(lost - cut) <= 0.05 * cut, 'notch area × T ' + lost.toFixed(5) + ' vs the metal cut ' + cut.toFixed(5));
       var c = await rfKPFlatDxf('transition');
       rfKPOutlineOnly(c, 'transition');
       assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
