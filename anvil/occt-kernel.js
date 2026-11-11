@@ -44,6 +44,7 @@ var OcctKernel = (function () {
   SUPPORTED.rib = SUPPORTED.intersect = 1;   // rfDY
   SUPPORTED.boundary = 1;   // rfFB
   SUPPORTED.deleteBody = 1;   // rfHT: Delete/Keep Body
+  SUPPORTED.formingTool = SUPPORTED.loftedBend = 1;   // lane occtparity
   SUPPORTED.helix = SUPPORTED.projCurve = SUPPORTED.compositeCurve = SUPPORTED.xyzCurve = SUPPORTED.refPtCurve = 1;   // rfFA: reference curves (no body)
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
   // rfHL: faces whose normals turn by less than this across a shared edge are tangent (BRepLib::EncodeRegularity)
@@ -1434,6 +1435,61 @@ var OcctKernel = (function () {
       });
       return parts.length > 1 ? boolMany('fuse', parts[0], parts.slice(1), 'Swept Flange: OpenCascade could not join the pieces.') : parts[0];
     }
+    // lane occtparity: Forming Tool (as Kernel.buildFormingTool, from Kernel.formingToolLayout found on the body's
+    // tessellation): the footprint cut through the sheet, then the formed shell (each section revolved or extruded
+    // with its exact arcs) joined in. The record rides in planes as in Anvil's rebuild (the flat reads it).
+    function ftSketch(path) {   // kernel-sheetmetal.js ftEntities: a closed path of points and { c, r } arcs as sketch entities
+      var list = [], ents = [];
+      path.forEach(function (q) { if (Array.isArray(q)) list.push({ p: q, arc: null }); else if (list.length) list[list.length - 1].arc = q; });
+      for (var i = 0; i < list.length; i++) {
+        var a = list[i].p, b = list[(i + 1) % list.length].p, C = list[i].arc;
+        if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-12) continue;
+        if (!C) { ents.push({ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }); continue; }
+        var a0 = Math.atan2(a[1] - C.c[1], a[0] - C.c[0]) * 180 / Math.PI, a1 = Math.atan2(b[1] - C.c[1], b[0] - C.c[0]) * 180 / Math.PI, sw = a1 - a0;
+        while (sw > 180) sw -= 360;
+        while (sw <= -180) sw += 360;
+        ents.push(sw > 0 ? { t: 'arc', cx: C.c[0], cy: C.c[1], r: C.r, a0: a0, a1: a0 + sw } : { t: 'arc', cx: C.c[0], cy: C.c[1], r: C.r, a0: a0 + sw, a1: a0 });
+      }
+      return { type: 'sketch', entities: ents };
+    }
+    function ftPrism(sk, plane, depth) {
+      return fromLoops(loopFaces(sk, plane), function (face) { return N(N(new oc.BRepPrimAPI_MakePrism_1(face, Vec(V.scale(plane.n, depth)), false, true)).Shape()); });
+    }
+    function formingToolOp(f) {
+      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      var k = pickBody(f.face || [0, 0, 0]);
+      if (k < 0) throw new Error('Forming Tool: there is no sheet to form yet.');
+      var src = bodies[k] = unify(bodies[k]);
+      var lay = K.formingToolLayout(f, m, { body: shapeToCSG(src) });
+      var parts = lay.solids.map(function (s) {
+        var sk = ftSketch(s.path);
+        if (s.rev) return revolveSketch(sk, s.plane, K.revolveAxis({ axis: 'y' }, sk), s.rev);
+        return ftPrism(sk, s.plane, s.depth);
+      });
+      var form = parts.length > 1 ? boolMany('fuse', parts[0], parts.slice(1), 'Forming Tool: OpenCascade could not join the form.') : parts[0];
+      var body = cut(src, ftPrism({ type: 'sketch', entities: lay.cut.ents }, lay.cut.plane, lay.cut.depth));
+      bodies[k] = unify(fuse(body, form));
+      planes[f.id] = lay.rec;
+    }
+    // lane occtparity: Lofted-Bend (Kernel.buildLoftedBend): Anvil's solid is itself the part (flat facets between the
+    // two profiles, the developed sheet), so its planar polygons are sewn into one OpenCascade solid as they are
+    function loftedBendTool(f) {
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      var csg = K.buildLoftedBend(f, m, { planes: planes, sketches: sketches });
+      var sew = N(new oc.BRepBuilderAPI_Sewing(1e-7, true, true, true, false)), nf = 0;
+      csg.polygons.forEach(function (pg) {
+        var q = pg.vertices.map(function (v) { return [v.pos.x, v.pos.y, v.pos.z]; });
+        if (q.length < 3) return;
+        sew.Add(polyFace3(q)); nf++;
+      });
+      if (!nf) throw new Error('Lofted-Bend: nothing to build.');
+      sew.Perform(R());
+      var shells = explore(N(sew.SewedShape()), ENUM.TopAbs_SHELL);
+      if (shells.length !== 1) throw new Error('Lofted-Bend: OpenCascade could not close the sheet into a solid.');
+      var so = N(N(new oc.BRepBuilderAPI_MakeSolid_3(N(oc.TopoDS.Shell_1(shells[0])))).Solid());
+      return unify(volumeOf(so) < 0 ? N(so.Reversed()) : so);
+    }
     function insertBendsOp(f) {
       if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
       if (rm.sheetError) throw new Error(rm.sheetError);
@@ -1886,6 +1942,8 @@ var OcctKernel = (function () {
             case 'cornerRelief': tool = cornerReliefTool(f); break;   // lane smtrim
             case 'weldedCorner': tool = weldedCornerTool(f); break;   // lane smcorner
             case 'sweptFlange': tool = sweptFlangeTool(f); break;   // lane sweptflange
+            case 'formingTool': formingToolOp(f); break;   // lane occtparity
+            case 'loftedBend': tool = loftedBendTool(f); break;   // lane occtparity
             case 'vent': tool = ventTool(f); break;   // lane DT
             case 'wrap': tool = wrapOp(f); break;   // rfDZ
             case 'closedCorner': closedCornerOp(f); break;
