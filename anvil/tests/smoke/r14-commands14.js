@@ -41,7 +41,7 @@
     // Sketch tab: the face follows the tool that is on (A, A is the 3 Point Arc)
     UI.setRibbonTab('Sketch');
     ['rect', 'arc', 'trim', 'convert'].forEach(function (g) { assert(c14Fly(g), 'Sketch tab has no ' + g + ' flyout'); });
-    assert(c14Fly('rect').querySelector('.rb').disabled, 'rectangle flyout enabled outside a sketch');
+    assert(!c14Fly('rect').querySelector('.rb').disabled, 'rectangle flyout greyed outside a sketch');   // lane mcdirect: a drawing tool starts a sketch (Edit Sketch prompt), so it is no longer greyed
     await UI.newSketchOnPlane('Front'); await idle();
     UI.setTool('arc3'); UI.refreshRibbon();
     var arc = c14Fly('arc').querySelector('.rb');

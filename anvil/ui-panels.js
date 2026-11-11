@@ -515,7 +515,11 @@
     var rapid = !!item.tool && item.tool !== 'dimension' && App.mode !== 'sketch' && !!(UI.rapidSketchOn && UI.rapidSketchOn());
     // lane model-dims: Smart Dimension with no sketch open dimensions the part's solid (ui-model-dims.js)
     var modelDim = item.tool === 'dimension' && App.mode !== 'sketch' && !!UI.modelDimOn && !(UI.isAssembly && UI.isAssembly());
-    var enabled = !!(item.run || item.tool), needsSketch = !!item.tool && App.mode !== 'sketch' && !rapid && !modelDim, active = false;
+    // lane mcdirect (user 2026-11-11: "update all the greyed out settings to actually work"): with no sketch open a
+    // drawing tool starts one (ui-sketch.js UI.sketchToolStart: the SolidWorks Edit Sketch prompt, or under a profile
+    // with wireframe.direct the construction plane at once), so it is never greyed in a part
+    var starts = !!item.tool && item.tool !== 'dimension' && App.mode !== 'sketch' && !!UI.sketchToolStart && !isAsm() && !(UI.drawingActive && UI.drawingActive());
+    var enabled = !!(item.run || item.tool), needsSketch = !!item.tool && App.mode !== 'sketch' && !rapid && !modelDim && !starts, active = false;
     if (item.tool) active = (App.mode === 'sketch' && App.tool === item.tool && (!item.active || !!item.active())) || (rapid && UI.rapidSketchArmed() === item) || (modelDim && UI.modelDimOn());   // p9-sketchtab: Line / Centerline / Midpoint Line share the line tool
     else if (item.run) active = !!((item.id === 'sketch' && App.mode === 'sketch') || (item.active && item.active()));
     return { id: id, icon: (d && d.icon) || (d ? id : item.icon || id), label: label, flat: flat, disabled: !enabled || needsSketch, active: active, tip: ribbonTip(id, flat, enabled, needsSketch, item.help, item.key) };

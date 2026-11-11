@@ -3802,7 +3802,7 @@ var UI = (function () {
     // back to the logical camera with the fixed depth range (picking, worldToScreen and scripts use it)
     poseCamera(cam.target, cam.dir, cam.up, cam.scale);
     drawTriad(right, up, dir);
-    updateScaleBar();
+    updateScaleBarAndFurniture();
     if (vs.shown) drawViewSelector();   // r14/viewui14: the View Selector turns with the view
     if (UI.drawDims && App.dimsStale && !viewAnim) { App.dimsStale = false; UI.drawDims(); }
     needsRender = false;
@@ -3823,6 +3823,8 @@ var UI = (function () {
     el.hidden = hide;
     document.getElementById('scale-bar-label').textContent = txt;
   }
+  // lane mcdirect: the profile's graphics-window furniture follows every frame (view name, plane names, profile switch)
+  function updateScaleBarAndFurniture() { updateScaleBar(); if (UI.viewFurnitureTick) { try { UI.viewFurnitureTick(); } catch (e) { /* the frame goes on */ } } }
   function scaleBarInfo() { return { px: SCALE_BAR_PX, value: SCALE_BAR_PX * cam.scale, text: document.getElementById('scale-bar-label').textContent, hidden: !!document.getElementById('scale-bar').hidden }; }
   function holdCamSig() {
     var e = camera.projectionMatrix.elements;
@@ -4656,6 +4658,7 @@ var UI = (function () {
     if (UI.closePM) UI.closePM();
     App.model = model;
     App.fileName = null;   // the saved-document name, set by whoever opened it from the browser's saved files
+    if (UI.cplaneReset) UI.cplaneReset();   // lane mcdirect: the construction plane is the document's (Top for a new one)
     if (!model.features) model.features = [];
     var ids = model.features.map(function (f) { return f.id; });
     if (model.type === 'assembly') {
@@ -4836,3 +4839,121 @@ var UI = (function () {
     setNavMap: setNavMap, navMap: navMap, navActionFor: navActionFor, navWheelSign: navWheelSign, navKey: navKey
   };
 })();
+
+// ------------------------------------------------------------------ lane mcdirect (2026-11-11)
+// The construction plane (Mastercam's Cplane) and the graphics-window furniture an interface profile asks for.
+// Construction plane: UI.cplane() -> 'Top' | 'Front' | 'Right' | 'Back' | 'Bottom' | 'Left' | a plane feature's id;
+// UI.setCplane(name) (unknown names refused: returns the plane kept), UI.onCplane(fn(name, prev)) -> unsubscribe,
+// UI.cplaneLabel(name?) (a plane feature's name), UI.cplaneSketchPlane(name?) (the sketch `plane` spec: { ref } for Top /
+// Front / Right, a custom frame looking as the view of that name for Back / Bottom / Left, { featureId }), UI.cplaneReset()
+// (loadModel: a new document starts on the profile's wireframe.plane, else Top). Kept per document for the session.
+// Viewport section of the active profile (UI.Profiles.def(active).viewport, default = SolidWorks' graphics area):
+// { background: [top, bottom] (CSS colours of a vertical gradient), labels (lower-left Gview / WCS / C / T names next to
+// the triad), headsUp: false (the heads-up view toolbar hidden), quickMasks, selectionBar, contextMenu: 'mastercam' }.
+// UI.viewportProfile() -> that section or null; UI.viewportProfileHooks: functions (section | null) run on every
+// change (ui-select.js builds the quick masks and the selection bar there); UI.viewportLabels() -> the label texts.
+(function (UI) {
+  'use strict';
+  var App = UI.App, K = UI.K, viewport = UI.viewport;
+  // the six named construction planes: the sketch frame a sketch on it gets (x = y × n, as Anvil's standard planes)
+  var CP_FRAMES = {
+    Top: { ref: 'Top' }, Front: { ref: 'Front' }, Right: { ref: 'Right' },
+    Back: { x: [-1, 0, 0], y: [0, 1, 0], n: [0, 0, -1] }, Bottom: { x: [1, 0, 0], y: [0, 0, 1], n: [0, -1, 0] }, Left: { x: [0, 0, 1], y: [0, 1, 0], n: [-1, 0, 0] }
+  };
+  var cp = 'Top', cpListeners = [];
+  function planeFeature(id) { var f = App.model && K.findFeature(App.model, id); return f && f.type === 'plane' ? f : null; }
+  function norm(name) {
+    if (typeof name === 'string' && /^\d+$/.test(name)) name = +name;
+    if (typeof name === 'number') return planeFeature(name) ? name : null;
+    if (typeof name !== 'string') return null;
+    var k = Object.keys(CP_FRAMES).filter(function (n) { return n.toLowerCase() === name.toLowerCase(); })[0];
+    return k || null;
+  }
+  function cplane() { if (typeof cp === 'number' && !planeFeature(cp)) cp = 'Top'; return cp; }
+  function setCplane(name) {
+    var n = norm(name);
+    if (n == null) { if (UI.setStatus) UI.setStatus('No construction plane ' + name + '.'); return cplane(); }
+    var prev = cplane();
+    if (n === prev) return prev;
+    cp = n;
+    cpListeners.slice().forEach(function (fn) { try { fn(n, prev); } catch (e) { console.warn('onCplane', e); } });
+    if (UI.refreshStatus) { try { UI.refreshStatus(); } catch (e) { } }
+    tick(true);
+    return cp;
+  }
+  function onCplane(fn) {
+    if (typeof fn !== 'function') return function () { };
+    cpListeners.push(fn);
+    return function () { var i = cpListeners.indexOf(fn); if (i >= 0) cpListeners.splice(i, 1); };
+  }
+  function cplaneLabel(name) {
+    var n = name == null ? cplane() : norm(name);
+    if (typeof n === 'number') { var f = planeFeature(n); return f ? f.name : 'Top'; }
+    return n || 'Top';
+  }
+  function cplaneSketchPlane(name) {
+    var n = name == null ? cplane() : norm(name);
+    if (n == null) return null;
+    if (typeof n === 'number') return { featureId: n };
+    var fr = CP_FRAMES[n];
+    if (fr.ref) return { ref: fr.ref, offset: 0 };
+    return { custom: true, origin: [0, 0, 0], x: fr.x.slice(), y: fr.y.slice(), n: fr.n.slice() };
+  }
+  function profileDef() { try { return UI.Profiles && UI.Profiles.def ? UI.Profiles.def(UI.Profiles.active()) : null; } catch (e) { return null; } }
+  function cplaneReset() { var p = profileDef(); setCplane(p && p.wireframe && norm(p.wireframe.plane) != null ? p.wireframe.plane : 'Top'); }
+
+  // ---- the graphics window of the profile
+  function viewportProfile() { var p = profileDef(); return p && p.viewport && typeof p.viewport === 'object' ? p.viewport : null; }
+  var hooks = UI.viewportProfileHooks = UI.viewportProfileHooks || [];
+  var applied = null, labelsEl = null, labelsText = null, onChangeHooked = false;
+  function profKey() { var p = profileDef(); return p ? p.id + ':' + (p.rev || 0) : 'none'; }
+  function applyViewport() {
+    var s = viewportProfile();
+    applied = profKey();
+    // gradient: the profile's two colours replace the default ground (View ▸ Background Plain / Dark still apply)
+    var bg = s && Array.isArray(s.background) && s.background.length >= 2 ? s.background : null;
+    if (bg) viewport.style.setProperty('--viewport', 'linear-gradient(180deg, ' + bg[0] + ' 0%, ' + bg[1] + ' 100%)');
+    else viewport.style.removeProperty('--viewport');
+    viewport.classList.toggle('vp-profile-bg', !!bg);
+    viewport.classList.toggle('vp-nohud', !!(s && s.headsUp === false));
+    if (s && s.labels) {
+      if (!labelsEl) { labelsEl = document.createElement('div'); labelsEl.id = 'vp-labels'; labelsEl.setAttribute('aria-live', 'off'); viewport.appendChild(labelsEl); }
+      labelsEl.hidden = false; labelsText = null;
+    } else if (labelsEl) labelsEl.hidden = true;
+    hooks.forEach(function (h) { try { h(s); } catch (e) { console.warn('viewport profile hook', e); } });
+    tick(true);
+  }
+  // the name of the graphics view (a standard view the camera looks along, else Mastercam's "Not saved")
+  function viewName() {
+    var c = UI.cam;
+    if (!c || !c.dir || !c.up) return 'Top';
+    var names = Object.keys(UI.VIEWS);
+    for (var i = 0; i < names.length; i++) {
+      var v = UI.VIEWS[names[i]], d = new THREE.Vector3(v[0][0], v[0][1], v[0][2]).normalize();
+      if (d.dot(c.dir) < 1 - 1e-6) continue;
+      var u = new THREE.Vector3(v[1][0], v[1][1], v[1][2]);
+      u.addScaledVector(d, -u.dot(d)).normalize();
+      if (u.dot(c.up) > 1 - 1e-6) return names[i];
+    }
+    return 'Not saved';
+  }
+  function labels() { var c = cplaneLabel(); return { gview: viewName(), wcs: 'Top', cplane: c, tplane: c, scale: UI.scaleBar ? UI.scaleBar().text : '' }; }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function tick(force) {
+    if (!onChangeHooked && UI.Profiles && UI.Profiles.onChange) { onChangeHooked = true; UI.Profiles.onChange(function () { applyViewport(); }); }
+    if (applied !== profKey()) { applyViewport(); return; }
+    if (!labelsEl || labelsEl.hidden) return;
+    var L = labels(), t = L.gview + '|' + L.cplane + '|' + (UI.drawingActive && UI.drawingActive() ? 'd' : '');
+    if (t === labelsText && !force) return;
+    labelsText = t;
+    labelsEl.innerHTML = '<span class="vpl-view"><b data-label="gview">' + esc(L.gview) + '</b></span>' +
+      '<span>Gview: <span data-label="gview2">' + esc(L.gview) + '</span></span><span>WCS: <span data-label="wcs">' + esc(L.wcs) + '</span></span>' +
+      '<span>C: <span data-label="cplane">' + esc(L.cplane) + '</span></span><span>T: <span data-label="tplane">' + esc(L.tplane) + '</span></span>';
+  }
+  UI.viewFurnitureTick = function () { tick(false); };
+  UI.viewportProfile = viewportProfile;
+  UI.applyViewportProfile = applyViewport;
+  UI.viewportLabels = function () { tick(true); return labelsEl && !labelsEl.hidden ? labels() : null; };
+  UI.cplane = cplane; UI.setCplane = setCplane; UI.onCplane = onCplane; UI.cplaneLabel = cplaneLabel; UI.cplaneSketchPlane = cplaneSketchPlane; UI.cplaneReset = cplaneReset;
+  UI.CPLANES = Object.keys(CP_FRAMES);
+})(UI);

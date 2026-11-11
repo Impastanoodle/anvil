@@ -29,7 +29,7 @@
       var rs = rfAYRb('Rapid Sketch');
       assert(rs && !rs.disabled && !rs.classList.contains('active'), 'Rapid Sketch button enabled and off');
       var circ0 = rfAYRb('Circle');
-      assert(!circ0 || circ0.disabled, 'Circle greyed with no sketch while Rapid Sketch is off');
+      assert(!circ0 || !circ0.disabled, 'Circle enabled with no sketch while Rapid Sketch is off');   // lane mcdirect: it asks for a plane (Edit Sketch) instead of being greyed
       rs.click(); await idle();
       assert(UI.rapidSketchOn() && rfAYRb('Rapid Sketch').classList.contains('active'), 'on, the button pressed');
       assert(JSON.parse(W.localStorage.getItem('anvil.sketchSettings') || '{}').rapidSketch === true, 'kept');
@@ -80,7 +80,7 @@
       UI.toggleRapidSketch(false); await idle();
       UI.setRibbonTab('Sketch'); await idle();
       var circ2 = rfAYRb('Circle');
-      assert(!circ2 || circ2.disabled, 'off: Circle greyed again');
+      assert(!circ2 || !circ2.disabled, 'off: Circle still enabled (it asks for a plane)');   // lane mcdirect
       assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
       return 'face ' + A.index + ' then face ' + B.index;
     } finally { UI.sketchSettings.reset(); UI.setTool && UI.App.mode !== 'sketch' && UI.setTool('select'); }

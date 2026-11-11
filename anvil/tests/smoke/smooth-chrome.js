@@ -14,7 +14,7 @@
     UI.setRibbonTab('Sketch');
     var sk = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (x) { return x.getAttribute('aria-label') === 'Sketch'; })[0];
     var line = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (x) { return x.getAttribute('aria-label') === 'Line'; })[0];
-    assert(sk && line && line.disabled, 'Line should be disabled outside a sketch');
+    assert(sk && line && !line.disabled, 'Line greyed outside a sketch');   // lane mcdirect: Line starts a sketch (Edit Sketch prompt), so it is enabled
     assert(D.querySelector('#ribbon-tabs .rtab') === tab && tab.classList.contains('active') === false, 'tab strip rebuilt on a tab switch');
     await UI.newSketchOnPlane('Top'); await idle();
     assert(sk.isConnected && sk.getAttribute('aria-label') === 'Exit Sketch' && sk.classList.contains('active'), 'Sketch button did not turn into Exit Sketch in place: ' + sk.getAttribute('aria-label'));

@@ -28,6 +28,8 @@
     UI.refreshTree(); UI.refreshStatus();
     UI.setStatus('Editing ' + f.name + '. Pick a tool from the Sketch tab, or click an entity to edit its values.');
     (UI.sketchEnterHooks || []).forEach(function (h) { try { h(f); } catch (e) { /* entering the sketch goes on */ } });   // lane CV: Link Values notes the values
+    // lane mcdirect: a drawing tool clicked with no sketch open (SolidWorks' Edit Sketch prompt) is on once the new sketch opens
+    if (pendingStart && App.newSketchId === id) { var ps = pendingStart; pendingStart = null; rapidRunItem(ps); }
   }
   UI.sketchEnterHooks = UI.sketchEnterHooks || [];   // functions (f) run as sketch f is opened (enterSketch)
   // sketchflow2: the camera looks straight at plane pl with its y axis up (and the model is on screen)
@@ -155,9 +157,11 @@
     // rfE: Smart Dimension with one or two sketch entities selected starts from them (SolidWorks: the dimension is on
     // the cursor, the next click places it); read before an entity's PropertyManager closes and drops the selection
     // rfAY: Rapid Sketch on and no sketch open: a drawing tool is armed (a plane / face click opens the sketch)
-    if (App.mode !== 'sketch' && rapidOn() && name && name !== 'select' && name !== 'dimension') { rapidArm({ tool: name }); return; }
+    // lane mcdirect: any other drawing tool with no sketch open starts one (sketchToolStart: Mastercam's direct
+    // wireframe on the construction plane, Rapid Sketch's armed tool, or SolidWorks' Edit Sketch prompt)
+    if (App.mode !== 'sketch' && name && name !== 'select' && name !== 'dimension' && !(UI.drawingActive && UI.drawingActive())) { sketchToolStart({ tool: name }); return; }
     if (midHover) midReady(null);   // rfIG: a midpoint's hover clock starts again with the tool
-    if (App.mode !== 'sketch' && (!name || name === 'select')) rapidDisarm();
+    if (App.mode !== 'sketch' && (!name || name === 'select')) { rapidDisarm(); pendingStart = null; }
     var presel = name === 'dimension' && App.mode === 'sketch' ? dimPreselection() : null;
     var statusBefore = $('status-msg') ? $('status-msg').textContent : null;
     cancelTool(true);
@@ -1729,6 +1733,119 @@
     UI.setStatus('Rapid Sketch tool cancelled.');
     ev.preventDefault(); ev.stopPropagation();
   }, true);
+
+  // ---- lane mcdirect (user 2026-11-11: "update all the greyed out settings to actually work"): a drawing tool with no
+  // sketch open starts one, in the way of the active interface profile (data, not a fork: the profile's
+  // `wireframe: { direct, plane }` section, read through UI.Profiles.def):
+  //  * SolidWorks (no section): a plane / planar face already selected opens the sketch there with the tool on;
+  //    otherwise the Edit Sketch PropertyManager asks for one (the standard planes shown) and the pick opens the sketch
+  //    with the tool on (pendingStart, applied at the end of enterSketch); Esc / ✗ cancels it and nothing is left.
+  //  * wireframe.direct (Mastercam): the tool draws at once on the construction plane (UI.cplane(), ui-core.js): an
+  //    ordinary sketch named as sketches are, opened without turning the view and without the confirmation corner
+  //    (#viewport.mc-direct); the tool stays on for the next entity, a second tool goes on in the same sketch, Esc with
+  //    no tool on closes it (empty: discarded), a solids command closes it and takes it (withSketch, ui-commands.js),
+  //    a new construction plane closes it and starts the next on the new plane, a profile switch closes it.
+  //  * Rapid Sketch on (rfAY, SolidWorks' toggle): the tool is armed until a plane / face is clicked, as before.
+  var pendingStart = null, directId = null, profHooked = false;
+  function profDef() { try { return UI.Profiles && UI.Profiles.def ? UI.Profiles.def(UI.Profiles.active()) : null; } catch (e) { return null; } }
+  function directOn() { var p = profDef(); return !!(p && p.wireframe && p.wireframe.direct); }
+  function directOpen() { return directId != null && App.mode === 'sketch' && App.activeSketch === directId; }
+  function sketchToolStart(item) {
+    if (typeof item === 'string') item = { tool: item };
+    if (!item || !item.tool) return false;
+    if (UI.isAssembly && UI.isAssembly()) { UI.toast('Sketches are not available in an assembly document'); return false; }
+    hookProfiles();
+    if (directOn()) return directStart(item);
+    if (rapidOn()) return rapidArm(item);
+    return promptStart(item);
+  }
+  function promptStart(item) {
+    var label = rapidItemLabel(item);
+    rapidDisarm();
+    pendingStart = item;
+    if (App.sel && (App.sel.kind === 'face' || App.sel.kind === 'plane')) {   // preselected: the sketch opens there at once
+      if (UI.hasPM && UI.hasPM()) UI.closePM();
+      UI.cmdSketch();
+      return true;
+    }
+    var pickedRef = function (pk) { App.sel = pk; UI.cmdSketch(); return true; };
+    UI.openPM({
+      title: 'Edit Sketch', icon: 'sketch',
+      message: 'Select a plane on which to create a sketch for the entity (<b>' + label.replace(/</g, '&lt;') + '</b>): a <b>plane</b> or a <b>planar face</b>. The standard planes are shown in the graphics area.',
+      command: { pickPlane: true, onPick: pickedRef },
+      groups: [{ title: 'Standard planes', fields: [{ type: 'buttons', buttons: ['Front', 'Top', 'Right'].map(function (r) { return { label: r + ' Plane', onclick: function () { UI.newSketchOnPlane(r); } }; }) }] }],
+      onCancel: function () { pendingStart = null; UI.setStatus(label + ' cancelled.'); }
+    });
+    // the PM's message names the tool; a pick of the plane is waited for
+    UI.setStatus('Edit Sketch: select a plane or a planar face for the ' + label + ' (Esc cancels).');
+    return true;
+  }
+  // the construction plane's sketch frame ({ ref } | { featureId } | a custom frame for Back / Bottom / Left)
+  function cplaneSketchPlane() {
+    var spec = UI.cplaneSketchPlane ? UI.cplaneSketchPlane() : null;
+    return spec || { ref: 'Top', offset: 0 };
+  }
+  function directStart(item) {
+    if (App.mode === 'sketch') { rapidRunItem(item); return true; }
+    if (UI.hasPM && UI.hasPM()) UI.closePM();
+    rapidDisarm(); pendingStart = null;
+    UI.pushUndo();
+    var f = { id: App.model.nextId++, type: 'sketch', plane: cplaneSketchPlane(), entities: [] };
+    f.name = K.featureName(App.model, 'sketch');
+    App.model.features.push(f);
+    App.sketchSnapshot = JSON.stringify({ entities: [] });
+    App.newSketchId = f.id;
+    directId = f.id;
+    viewport.classList.add('mc-direct');
+    enterSketch(f.id, { keepView: true });
+    UI.rebuild();
+    rapidRunItem(item);
+    var cp = UI.cplaneLabel ? UI.cplaneLabel() : 'Top';
+    UI.setStatus(rapidItemLabel(item) + ' on the ' + cp + ' construction plane (' + f.name + '). Esc puts the tool down; Esc again closes the geometry.');
+    return true;
+  }
+  // close the open direct geometry (kept unless empty), staying on the CommandManager tab the user was on
+  function directClose() {
+    if (!directOpen()) return UI.whenIdle();
+    var tab = App.ribbonTab, p = exitSketch(true);
+    if (tab && UI.setRibbonTab) UI.setRibbonTab(tab);
+    return p;
+  }
+  UI.sketchExitHooks = UI.sketchExitHooks || [];
+  UI.sketchExitHooks.push(function () { directId = null; viewport.classList.remove('mc-direct'); });
+  function hookProfiles() {
+    if (profHooked || !UI.Profiles || !UI.Profiles.onChange) return;
+    profHooked = true;
+    UI.Profiles.onChange(function () {
+      if (directOpen()) directClose();   // (d) a profile switch closes the direct geometry cleanly
+      var p = profDef();
+      if (p && p.wireframe && p.wireframe.plane && UI.setCplane) UI.setCplane(p.wireframe.plane);
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(hookProfiles, 0); });
+  else setTimeout(hookProfiles, 0);
+  // a new construction plane while drawing: this geometry closes and the next goes on the new plane, with the same tool
+  if (UI.onCplane) UI.onCplane(function () {
+    if (!directOpen()) return;
+    var item = App.tool && App.tool !== 'select' && App.tool !== 'dimension' ? { tool: App.tool } : null;
+    if (item && item.tool === 'line' && UI.lineMode && UI.lineMode() !== 'line') item.lineMode = UI.lineMode();
+    directClose();
+    if (item) directStart(item);
+  });
+  // Esc with no tool on (and nothing selected, no PropertyManager, menu or box open) closes the direct geometry
+  window.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Escape' || !directOpen()) return;
+    var tag = ev.target && ev.target.tagName ? ev.target.tagName.toLowerCase() : '';
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    if (App.tool !== 'select' || (UI.hasPM && UI.hasPM()) || (UI.menuOpen && UI.menuOpen()) || ($('modal') && !$('modal').hidden)) return;
+    if (App.sel || (UI.selection && UI.selection().length) || (App.toolState && App.toolState.pts && App.toolState.pts.length)) return;
+    if (UI.sketchUnitBox && UI.sketchUnitBox.isOpen && UI.sketchUnitBox.isOpen()) return;
+    directClose();
+    UI.setStatus('Geometry closed.');
+  }, true);
+  UI.sketchToolStart = sketchToolStart;
+  UI.directWireframe = function () { return { on: directOn(), open: directOpen(), sketch: directOpen() ? directId : null }; };
+  UI.closeDirectWireframe = directClose;
 
   // ---- rfAR: Quick Snaps (SolidWorks: Sketch tab ▸ Quick Snaps, or right-click while sketching): the next point snaps
   // to that one kind of geometry only (within a wider reach), then the usual inference comes back

@@ -536,8 +536,10 @@ if (typeof UI !== 'undefined') (function (UI) {
       setSelection(BoxSelect.combine(selection().filter(function (s) { return s.kind === 'entity'; }), [hitC], 'toggle', selKey));
       return true;
     }
-    var item = sketchPickItem(mx, my);
+    var item = maskedItem(sketchPickItem(mx, my), mx, my);   // lane mcdirect: the quick masks
     if (mod && !item) return true;
+    // lane mcdirect: the selection bar's Chain mode takes the chain of the entity clicked
+    if (item && item.kind === 'entity' && !mod && selBarMode === 'chain') { selectSketchChain(item.index, 'replace'); return true; }
     // rfIG (user 2026-11-05: "when i shift click a line in sketch i want it to select the chain"): Shift+click on an
     // entity (Ctrl not held) adds its chain (SolidWorks' Select Chain); on a chain already all selected, takes it away
     if (item && item.kind === 'entity' && ev && ev.shiftKey && !(ev.ctrlKey || ev.metaKey)) { selectSketchChain(item.index, 'toggle'); return true; }
@@ -895,6 +897,7 @@ if (typeof UI !== 'undefined') (function (UI) {
       var plsOf = UI.screenPolylines || K.entityPolylines;
       sk.entities.forEach(function (e, i) {
         if (!e || (UI.entityLayerHidden && UI.entityLayerHidden(sk, e))) return;   // sketch-layers: a hidden layer is not drawn, so not boxed
+        if (!maskAllowsEntity(e)) return;   // lane mcdirect: the quick masks
         var pls = e.t === 'point' ? [{ pts: [[e.x, e.y]], closed: false }] : plsOf(e);
         if (!pls.length) return;
         var scr = pls.map(function (l) { return { pts: l.pts.map(function (q) { return S(K.to3D(pl, q[0], q[1])); }), closed: l.closed }; });
@@ -2090,10 +2093,216 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (rDown && Math.hypot(p[0] - rDown[0], p[1] - rDown[1]) > 4) return;   // a right-drag panned the view
     if (ev.target.closest && ev.target.closest('#hud, #i3d-edit, #i3d-layer .i3d')) return;
     if (App.mesh && UI.pickFacesAll && UI.pickFacesAll(p[0], p[1]).length) return;   // on the model: Select Other (above)
+    var vp = UI.viewportProfile && UI.viewportProfile();
+    if (vp && vp.contextMenu === 'mastercam') { UI.showMenu(ev.clientX, ev.clientY, mastercamMenuItems(p)); return; }   // lane mcdirect
     var items = selectionModeMenuItems();
     if (selection().length) items.push({ sep: true }, { label: 'Clear Selection', action: function () { setSelection([], { quiet: true }); } });
     UI.showMenu(ev.clientX, ev.clientY, items);
   });
+
+  // ================================================================== lane mcdirect: Mastercam's graphics window
+  // Built from the active profile's `viewport` section (ui-core.js UI.viewportProfile / viewportProfileHooks); nothing
+  // is made under SolidWorks. Quick Masks (#vp-qmask, a column of round buttons half off the right edge, below the
+  // confirmation corner and above the scale): each limits what a click or a box selects to its kinds, several may be
+  // on, none = everything (the same filter as F5's toolbar: faces / edges / bodies drive it, the sketch kinds narrow
+  // its sketch entities by type, Dimensions makes the labels take clicks). Selection bar (#vp-selbar, top left):
+  // AutoCursor (Enable Snapping) with its one-pick override list (the Quick Snaps), model snaps, automatic relations,
+  // the selection mode (Chain: a click takes the chain; Window: box; Polygon: lasso; Single), Select All, Clear.
+  // Right-click on empty graphics with contextMenu 'mastercam': Mastercam's list, each row the Anvil command doing it.
+  var QMASKS = [
+    ['points', 'Points', '<circle cx="12" cy="12" r="3.2" fill="currentColor"/>'],
+    ['lines', 'Lines', '<path d="M5 18L19 6" stroke="currentColor" stroke-width="2.2" fill="none"/>'],
+    ['arcs', 'Arcs', '<path d="M5 17a8 8 0 0 1 14 0" stroke="currentColor" stroke-width="2.2" fill="none"/>'],
+    ['splines', 'Splines', '<path d="M4 16c4-10 8 6 16-8" stroke="currentColor" stroke-width="2.2" fill="none"/>'],
+    ['dims', 'Dimensions', '<path d="M5 9v8M19 9v8M5 13h14M8 11l-3 2 3 2M16 11l3 2-3 2" stroke="currentColor" stroke-width="1.6" fill="none"/>'],
+    ['faces', 'Solid Faces', '<path d="M5 9l7-4 7 4-7 4z" fill="currentColor" opacity="0.85"/><path d="M5 9v7l7 4V13M19 9v7l-7 4" stroke="currentColor" fill="none"/>'],
+    ['edges', 'Solid Edges', '<path d="M5 9l7-4 7 4-7 4zM5 9v7l7 4V13M19 9v7l-7 4" stroke="currentColor" fill="none" opacity="0.55"/><path d="M12 13v7" stroke="currentColor" stroke-width="2.6"/>'],
+    ['bodies', 'Solid Bodies', '<path d="M5 9l7-4 7 4v7l-7 4-7-4z" fill="currentColor" opacity="0.85"/>']
+  ];
+  var ENTITY_MASK = { point: 'points', line: 'lines', rect: 'lines', crect: 'lines', rect3: 'lines', crect3: 'lines', parallelogram: 'lines', poly: 'lines', polyline: 'lines',
+    circle: 'arcs', arc: 'arcs', slot: 'arcs', aslot: 'arcs', spline: 'splines', ellipse: 'splines', pellipse: 'splines', parabola: 'splines', conic: 'splines', text: 'splines' };
+  var qmask = { points: false, lines: false, arcs: false, splines: false, dims: false };
+  function entityMaskOn() { return qmask.points || qmask.lines || qmask.arcs || qmask.splines; }
+  function anyMask() { return entityMaskOn() || qmask.dims || filter.faces || filter.edges || filter.bodies; }
+  function maskAllowsEntity(e) {
+    if (!e || !entityMaskOn() || filter.suspended) return true;
+    return !!qmask[ENTITY_MASK[e.t] || 'lines'];
+  }
+  // a sketch pick under the masks: an end point / centre counts as a point or as its entity; a pick the masks refuse
+  // falls back to the curve under the cursor, if that is allowed
+  function maskedItem(item, mx, my) {
+    if (!item || !entityMaskOn() || filter.suspended) return item;
+    var f = UI.activeSketchFeature(), ok = function (it) {
+      if (!it || !f) return false;
+      if (it.kind === 'entity') return maskAllowsEntity(f.entities[it.index]);
+      var i = parseInt(it.ref, 10);
+      return qmask.points || (isFinite(i) && maskAllowsEntity(f.entities[i]));
+    };
+    if (ok(item)) return item;
+    var hit = UI.pickEntity(mx, my);
+    return hit && ok(hit) ? hit : null;
+  }
+  function syncMaskFilter() {
+    var on = entityMaskOn() || qmask.dims;
+    setFilter({ sketch: on, vertices: false, components: false, suspended: false });
+    viewport.classList.toggle('qm-nodims', anyMask() && !qmask.dims);
+  }
+  function setQuickMask(key, on) {
+    if (key === 'clear') {
+      Object.keys(qmask).forEach(function (k) { qmask[k] = false; });
+      setFilter({ faces: false, edges: false, bodies: false, sketch: false, vertices: false, components: false });
+      viewport.classList.remove('qm-nodims');
+    } else if (key in qmask) { qmask[key] = on == null ? !qmask[key] : !!on; syncMaskFilter(); }
+    else if (key === 'faces' || key === 'edges' || key === 'bodies') { var o = {}; o[key] = on == null ? !filter[key] : !!on; setFilter(o); syncMaskFilter(); }
+    else throw new Error('Unknown quick mask ' + key);
+    renderMasks();
+    var onKeys = QMASKS.filter(function (q) { return quickMasks()[q[0]]; }).map(function (q) { return q[1]; });
+    if (UI.setStatus) UI.setStatus(onKeys.length ? 'Quick Masks: only ' + onKeys.join(', ') + ' can be selected.' : 'Quick Masks off: everything can be selected.');
+    return quickMasks();
+  }
+  function quickMasks() { var o = {}; Object.keys(qmask).forEach(function (k) { o[k] = qmask[k]; }); o.faces = !!filter.faces; o.edges = !!filter.edges; o.bodies = !!filter.bodies; return o; }
+  var qmEl = null;
+  function renderMasks() {
+    if (!qmEl) return;
+    var st = quickMasks();
+    Array.prototype.forEach.call(qmEl.querySelectorAll('button[data-qmask]'), function (b) {
+      var k = b.getAttribute('data-qmask'), on = k !== 'clear' && !!st[k];
+      b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+  function buildMasks(show) {
+    if (!show) { if (qmEl) qmEl.hidden = true; return; }
+    if (!qmEl) {
+      qmEl = el('div', { id: 'vp-qmask', role: 'toolbar', 'aria-label': 'Quick Masks', 'aria-orientation': 'vertical' });
+      QMASKS.concat([['clear', 'Clear Quick Masks', '<path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="2.2"/>']]).forEach(function (q) {
+        var b = el('button', { type: 'button', 'data-qmask': q[0], title: q[0] === 'clear' ? q[1] + ': everything can be selected' : 'Quick Mask: ' + q[1] + ' (only these can be selected; click again to release)', 'aria-label': q[1],
+          html: '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">' + q[2] + '</svg>' });
+        b.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+        b.addEventListener('click', function (e) { e.stopPropagation(); setQuickMask(q[0]); });
+        qmEl.appendChild(b);
+      });
+      viewport.appendChild(qmEl);
+    }
+    qmEl.hidden = false;
+    renderMasks();
+  }
+
+  // ---- the selection bar
+  var selBarMode = 'single', sbEl = null;
+  var SB_MODES = [['chain', 'Chain', 'A click on a sketch entity selects the chain it is in'], ['window', 'Window', 'Drag a window round what to select'],
+    ['polygon', 'Polygon', 'Drag a loop round what to select (Lasso)'], ['single', 'Single', 'A click selects one entity']];
+  function setSelectionBarMode(m) {
+    if (!SB_MODES.some(function (x) { return x[0] === m; })) throw new Error('Unknown selection mode ' + m);
+    selBarMode = m;
+    selectionMode(m === 'polygon' ? 'lasso' : 'box');
+    if (UI.setStatus) UI.setStatus('Selection: ' + SB_MODES.filter(function (x) { return x[0] === m; })[0][2] + '.');
+    renderSelBar();
+    return m;
+  }
+  function selectAllNow() {
+    var list = [];
+    if (App.mode === 'sketch') {
+      var f = UI.activeSketchFeature();
+      if (f && allows('entity')) f.entities.forEach(function (e, i) { if (e && !(UI.entityLayerHidden && UI.entityLayerHidden(f, e)) && maskAllowsEntity(e)) list.push({ kind: 'entity', index: i }); });
+    } else if (App.mesh && !drawingOn()) {
+      var n = UI.bodyCount ? UI.bodyCount() : 1;
+      for (var b = 0; b < n; b++) if (!(UI.isBodyHidden && UI.isBodyHidden(b))) list.push({ kind: 'body', index: b });
+    }
+    setSelection(list);
+    return list.length;
+  }
+  function sbSnapping() { return !!(UI.sketchSettings && UI.sketchSettings.get('snapping')); }
+  function renderSelBar() {
+    if (!sbEl || sbEl.hidden) return;
+    sbEl.innerHTML = '';
+    function b(key, label, title, on, fn, cls) {
+      var x = el('button', { type: 'button', class: 'sb-btn' + (cls ? ' ' + cls : '') + (on ? ' on' : ''), 'data-sb': key, title: title, 'aria-label': label, 'aria-pressed': on == null ? null : on ? 'true' : 'false', text: label });
+      if (on == null) x.removeAttribute('aria-pressed');
+      x.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+      x.addEventListener('click', function (e) { e.stopPropagation(); fn(x); });
+      sbEl.appendChild(x);
+      return x;
+    }
+    function sep() { sbEl.appendChild(el('span', { class: 'sb-sep' })); }
+    b('autocursor', 'AutoCursor', 'AutoCursor: snap to points, ends, centres and curves while drawing (Enable Snapping)', sbSnapping(), function () { UI.sketchSettings.set('snapping', !sbSnapping()); renderSelBar(); });
+    b('override', 'AutoCursor ▾', 'AutoCursor override: the next point snaps to one kind only (Quick Snaps)', null, function (x) {
+      var r = x.getBoundingClientRect();
+      UI.showMenu(r.left, r.bottom + 2, (UI.QUICK_SNAPS || []).map(function (q) { return { label: q[1], checked: App.quickSnap === q[0], disabled: App.mode !== 'sketch', action: function () { UI.quickSnap(App.quickSnap === q[0] ? null : q[0]); } }; }));
+    });
+    b('modelsnap', 'Solids', 'Snap to the solid\'s edges and vertices while drawing', !!App.view.snapModel, function () { App.view.snapModel = !App.view.snapModel; renderSelBar(); });
+    b('relations', 'Relations', 'Add the relations the cursor infers (Automatic Relations)', !!(UI.sketchSettings && UI.sketchSettings.get('autoRelations')), function () { UI.sketchSettings.set('autoRelations', !UI.sketchSettings.get('autoRelations')); renderSelBar(); });
+    sep();
+    SB_MODES.forEach(function (m) { b('mode-' + m[0], m[1], m[2], selBarMode === m[0], function () { setSelectionBarMode(m[0]); }, 'sb-mode'); });
+    sep();
+    b('all', 'Select All', 'Select every entity (sketch) or body (part) the masks allow', null, function () { var n = selectAllNow(); if (UI.setStatus) UI.setStatus(n + ' selected.'); });
+    b('clear', 'Clear', 'Clear the selection', null, function () { setSelection([], { quiet: true }); if (UI.setStatus) UI.setStatus('Selection cleared.'); });
+  }
+  function buildSelBar(show, s) {
+    if (!show) { if (sbEl) sbEl.hidden = true; return; }
+    if (!sbEl) { sbEl = el('div', { id: 'vp-selbar', role: 'toolbar', 'aria-label': 'General Selection' }); viewport.appendChild(sbEl); }
+    sbEl.hidden = false;
+    sbEl.classList.toggle('below-hud', !(s && s.headsUp === false));
+    renderSelBar();
+  }
+
+  // ---- Mastercam's right-click menu on empty graphics
+  var dynRot = null;
+  function dynMove(ev) {
+    if (!dynRot) return;
+    if (dynRot.last) UI.rotateView(ev.clientX - dynRot.last[0], ev.clientY - dynRot.last[1]);
+    dynRot.last = [ev.clientX, ev.clientY];
+  }
+  function dynEnd() {
+    if (!dynRot) return false;
+    dynRot = null;
+    window.removeEventListener('mousemove', dynMove, true);
+    viewport.classList.remove('dyn-rotate');
+    if (UI.setStatus) UI.setStatus('Dynamic Rotation ended.');
+    return true;
+  }
+  function dynamicRotation() {
+    if (dynRot) { dynEnd(); return; }
+    if (UI.pushViewHistory) UI.pushViewHistory();
+    dynRot = { last: null };
+    window.addEventListener('mousemove', dynMove, true);
+    viewport.classList.add('dyn-rotate');
+    if (UI.setStatus) UI.setStatus('Dynamic Rotation: move the mouse to turn the view; click or Esc ends it.');
+  }
+  viewport.addEventListener('mousedown', function (ev) { if (dynRot) { ev.preventDefault(); ev.stopPropagation(); dynEnd(); } }, true);
+  window.addEventListener('keydown', function (ev) { if (ev.key === 'Escape' && dynEnd()) { ev.preventDefault(); ev.stopPropagation(); } }, true);
+  function mastercamMenuItems(p) {
+    var has = selection().length > 0;
+    function view(n) { return function () { UI.setView(n); }; }
+    return [
+      { label: 'Zoom Window', icon: 'zoomArea', action: function () { App.zoomAreaMode = true; if (UI.refreshHud) UI.refreshHud(); if (UI.setStatus) UI.setStatus('Zoom Window: drag a box round the area to zoom to.'); } },
+      { label: 'Unzoom 80 %', action: function () { UI.zoomView(1.25); } },
+      { label: 'Dynamic Rotation', action: dynamicRotation },
+      { label: 'Fit', icon: 'fit', action: function () { UI.zoomToFit(); } },
+      { sep: true },
+      { label: 'Top (WCS)', action: view('Top') }, { label: 'Front (WCS)', action: view('Front') }, { label: 'Right (WCS)', action: view('Right') }, { label: 'Isometric (WCS)', action: view('Isometric') },
+      { label: 'GView', items: ['Top', 'Front', 'Back', 'Bottom', 'Right', 'Left', 'Isometric'].map(function (n) { return { label: n, action: view(n) }; }) },
+      { sep: true },
+      { label: 'Delete Entities', disabled: !has, action: function () { UI.deleteSelection(); } },
+      { label: 'Analyze Distance', icon: 'measure', action: function () { setSelection([], { quiet: true }); UI.cmdMeasure(); } },
+      { label: 'Analyze Entity Properties', icon: 'measure', disabled: !has, action: function () { UI.cmdMeasure(); } }
+    ];
+  }
+
+  UI.viewportProfileHooks = UI.viewportProfileHooks || [];
+  UI.viewportProfileHooks.push(function (s) {
+    buildMasks(!!(s && s.quickMasks));
+    buildSelBar(!!(s && s.selectionBar), s);
+    if (!(s && s.quickMasks) && (entityMaskOn() || qmask.dims)) setQuickMask('clear');   // a profile without masks leaves none on
+    if (!(s && s.selectionBar) && selBarMode !== 'single') { selBarMode = 'single'; selectionMode('box'); }
+    dynEnd();
+  });
+  UI.quickMasks = quickMasks;
+  UI.setQuickMask = setQuickMask;
+  UI.selectionBarMode = function (m) { return m ? setSelectionBarMode(m) : selBarMode; };
+  UI.selectAllEntities = selectAllNow;
+  UI.mastercamMenuItems = mastercamMenuItems;
+  UI.dynamicRotation = dynamicRotation;
+  UI.dynamicRotationOn = function () { return !!dynRot; };
 
   // ================================================================== exports
   function summarize(s) {

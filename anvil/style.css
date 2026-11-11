@@ -2077,3 +2077,25 @@ body.splitting-v #viewport { pointer-events: none; }
 .cmp-sec li ul { padding-left: 14px; color: var(--muted); }
 .ev-kv .sw, .cmp-sec .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; }
 #tree .ti.sensor-alert > .nm { color: #c0392b; font-weight: 600; }
+/* lane mcdirect: an interface profile's graphics window (ui-core.js applyViewport, ui-select.js quick masks and
+   selection bar) and the direct wireframe (ui-sketch.js); nothing here applies under SolidWorks */
+#viewport.mc-direct #exit-sketch { display: none !important; }   /* Mastercam draws without the confirmation corner */
+#viewport.vp-nohud #hud { display: none; }
+#viewport.qm-nodims #dim-layer text { pointer-events: none !important; }
+#viewport.dyn-rotate { cursor: move; }
+#vp-labels { position: absolute; left: 108px; bottom: 8px; z-index: 2; pointer-events: none; display: flex; align-items: baseline; gap: 10px; color: #e6e6e6; font: 400 11px/1.2 "Segoe UI", system-ui, sans-serif; text-shadow: 0 1px 1px rgba(0,0,0,0.7); white-space: nowrap; }
+#vp-labels[hidden] { display: none; }
+#vp-labels .vpl-view b { font-size: 13px; font-weight: 700; }
+#viewport.vp-profile-bg #vp-labels, #viewport.vp-profile-bg #scale-bar { color: #141414; text-shadow: 0 1px 0 rgba(255,255,255,0.35); }
+#vp-qmask { position: absolute; right: -18px; top: 100px; bottom: 52px; z-index: 3; display: flex; flex-direction: column; gap: 4px; overflow: hidden; pointer-events: none; }
+#vp-qmask[hidden] { display: none; }
+#vp-qmask button { pointer-events: auto; flex: none; width: 36px; height: 36px; padding: 0 18px 0 0; border-radius: 50%; border: 1px solid #5a5a5a; background: linear-gradient(180deg, #d9d9d9, #a9a9a9); color: #2a2a2a; display: grid; place-items: center; cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,0.45); }
+#vp-qmask button:hover { border-color: #f2f2f2; }
+#vp-qmask button.on { background: linear-gradient(180deg, #ffe27a, #e0b100); border-color: #8a6a00; }
+#vp-selbar { position: absolute; left: 8px; top: 4px; z-index: 4; display: flex; align-items: center; gap: 2px; padding: 2px 4px; background: rgba(244,244,244,0.94); border: 1px solid #b8b8b8; border-radius: 3px; box-shadow: 0 1px 3px rgba(0,0,0,0.35); font: 400 11px/1 "Segoe UI", system-ui, sans-serif; color: #222; max-width: calc(100% - 140px); overflow: hidden; }
+#vp-selbar[hidden] { display: none; }
+#vp-selbar.below-hud { top: 36px; }
+#vp-selbar .sb-btn { height: 22px; padding: 0 6px; border: 1px solid transparent; border-radius: 2px; background: transparent; color: inherit; font: inherit; white-space: nowrap; cursor: pointer; }
+#vp-selbar .sb-btn:hover { border-color: #7a7a7a; }
+#vp-selbar .sb-btn.on { background: #ffe57a; border-color: #c08f00; }
+#vp-selbar .sb-sep { width: 1px; height: 18px; background: #b8b8b8; margin: 0 3px; }

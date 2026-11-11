@@ -138,13 +138,14 @@
   var pendingLine = null;   // which Line flyout command started the tool: 'centerline' | 'midline'
   UI.lineMode = function () { return App.mode === 'sketch' && App.tool === 'line' ? (LM.midpoint ? 'midline' : LM.construction ? 'centerline' : 'line') : null; };
   UI.lineOptions = function () { return JSON.parse(JSON.stringify(LM)); };
+  // lane mcdirect: with no sketch open both start one as every drawing tool does (UI.sketchToolStart, ui-sketch.js)
   UI.cmdCenterline = function () {
-    if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; }
+    if (App.mode !== 'sketch') { if (UI.sketchToolStart) UI.sketchToolStart({ tool: 'line', lineMode: 'centerline', label: 'Centerline' }); else UI.toast('Open a sketch first.'); return; }
     if (UI.lineMode() === 'centerline') { UI.setTool('select'); return; }
     pendingLine = 'centerline'; UI.setTool('line');
   };
   UI.cmdMidpointLine = function () {
-    if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; }
+    if (App.mode !== 'sketch') { if (UI.sketchToolStart) UI.sketchToolStart({ tool: 'line', lineMode: 'midline', label: 'Midpoint Line' }); else UI.toast('Open a sketch first.'); return; }
     if (UI.lineMode() === 'midline') { UI.setTool('select'); return; }
     pendingLine = 'midline'; UI.setTool('line');
   };
