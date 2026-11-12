@@ -18,6 +18,10 @@
 //                         old start (localStorage anvil.occtPlainStart = 1) and the new one and prints both medians (rfIO)
 //   node check.js update-restart [--exe ...]  Restart to update end to end with a stand-in installer (.cmd), both a
 //                         good install and a failed one; update.log
+//   node check.js reports [--exe ...]  problem reports (rfMI): a 12 s busy loop gives a not-responding report whose stacks
+//                         name the looping function; a manual report and Include the model; a crashed window gives a
+//                         crash report and comes back; killed while frozen is told on the next start; 30 kept; the
+//                         main process's own exception / rejection and a crashed GPU process give quiet crash reports
 'use strict';
 const fs = require('fs');
 const os = require('os');
@@ -582,6 +586,121 @@ async function checkRecent() {
 // ---- rfIO: how long the WebAssembly OpenCascade engine takes to start, on a first launch (nothing cached) and on the
 // launches after it (same user-data folder), with the phases occt-worker.js reports; every launch must still build
 // the 4 x 2 x 0.5 plate (volume 4) and the fingerprint check must still refuse a changed engine ------------------
+// ---- problem reports (lane reports, rfMI): <userData>\reports\<stamp>_<kind>\ report.md / report.json /
+// screenshot.png / model.anvil.json. A 12 s busy loop in the window (a function with a recognisable name) gives a
+// not-responding report whose sampled stacks name it; the page completes it and offers it; a manual report and Include
+// the model; the window's process crashed (Page.crash) gives a crash report and Anvil comes back; a run killed while
+// frozen is told on the next start; the folder keeps 30; nothing is written outside the development data folder.
+function reportDirs(ud) { try { return fs.readdirSync(path.join(ud, 'reports')).filter((n) => /^\d{4}-\d\d-\d\d_/.test(n)).sort(); } catch (e) { return []; } }
+function reportOf(ud, kind) { const n = reportDirs(ud).filter((x) => x.endsWith('_' + kind) || x.indexOf('_' + kind + '-') > 0).pop(); return n ? { dir: path.join(ud, 'reports', n), json: JSON.parse(fs.readFileSync(path.join(ud, 'reports', n, 'report.json'), 'utf8')), md: fs.readFileSync(path.join(ud, 'reports', n, 'report.md'), 'utf8') } : null; }
+async function waitLog(log, pred, ms) { for (let t = 0; t < ms; t += 250) { const e = readLog(log).find(pred); if (e) return e; await sleep(250); } return null; }
+async function checkReports() {
+  const ud = path.join(WORK, 'userdata'), log = path.join(WORK, 'events.log');
+  fs.mkdirSync(ud, { recursive: true });
+  fs.writeFileSync(path.join(ud, 'settings.json'), JSON.stringify({ updateFolder: path.join(WORK, 'no-such-folder'), occtEngine: 'wasm' }));
+  // the real reports folder of the installed app (read only: listed before and after, never written)
+  const real = path.join(process.env.APPDATA || '', 'Anvil', 'reports');
+  const realList = () => { try { return fs.readdirSync(real).join('|'); } catch (e) { return '(none)'; } };
+  const real0 = realList();
+  const env = { ANVIL_USER_DATA: ud, ANVIL_TEST_LOG: log, ANVIL_UPDATE_DELAY_MS: '3600000', ANVIL_TEST_DIALOGS: 'log' };
+  let child = launch(env);
+  let page = await connect('app://anvil/');
+  try {
+    await page.waitFor('window.anvil && window.anvil.run && document.readyState === "complete" && window.UI && UI.reports', 60000);
+    ok(await page.ev('!!(window.anvilDesktop && window.anvilDesktop.reports && !UI.reports.watchdog().running)'), 'the bridge has reports; the browser watchdog stays off in the app (main.js watches)');
+    await page.ev('anvil.run(\'p.name("ZebraQuokkaBracket").units("in");\\np.sketch("Front").rect(0,0,4,2).extrude(0.5);\').then(function () { return true; })');
+    // 1. not responding: a 12 s busy loop in a function with a recognisable name
+    await page.ev('UI.reports.crumb("check: before the busy loop"); window.rfMIDesktopBusyLoop = function rfMIDesktopBusyLoop(ms) { var t = Date.now(), n = 0; while (Date.now() - t < ms) n++; return n; }; setTimeout(function () { rfMIDesktopBusyLoop(12000); }, 600); true');
+    const t0 = Date.now();
+    const end = await waitLog(log, (e) => e.event === 'freeze-end', 45000);
+    ok(!!end && end.durationMs > 10000 && end.durationMs < 15500, 'main.js saw the window stop responding and answer again', end);
+    const samples = readLog(log).filter((e) => e.event === 'report-sample');
+    await page.waitFor('UI.reports.made().some(function (m) { return m.kind === "not-responding" && m.dir; }) && document.getElementById("rp-bar")', 20000).catch(() => null);
+    await waitLog(log, (e) => e.event === 'report-completed', 10000);
+    const nr = reportOf(ud, 'not-responding');
+    const named = nr ? nr.json.where.samples.filter((s) => (s.frames || []).some((f) => f.fn === 'rfMIDesktopBusyLoop')).length : 0;
+    ok(nr && named >= 2 && nr.json.durationMs > 10000, 'not-responding report: the sampled stacks name rfMIDesktopBusyLoop at least twice', { samples: samples.map((s) => s.top || s.error), named, durationMs: nr && nr.json.durationMs, waited: Date.now() - t0 });
+    ok(nr && /stopped responding for 1\d s/.test(nr.md) && /## Where it was stuck/.test(nr.md) && /check: before the busy loop/.test(nr.md) && /interface profile/.test(nr.md) && fs.existsSync(path.join(nr.dir, 'screenshot.png')),
+      'report.md: how long, where, the breadcrumbs, the state (completed by the page), a screenshot', nr && nr.md.split('\n').slice(7, 9).join(' / '));
+    ok(nr && nr.md.indexOf('ZebraQuokkaBracket') < 0 && !fs.existsSync(path.join(nr.dir, 'model.anvil.json')), 'no document name and no model in it');
+    const bar = await page.ev('(function () { var b = document.getElementById("rp-bar"); return b ? { text: b.textContent, folder: !!b.querySelector("[data-rp=folder]") } : null; })()');
+    ok(bar && /stopped responding for 1\d s/.test(bar.text) && bar.folder, 'the page offers it: the bar with Open folder', bar);
+    await page.ev('document.querySelector("#rp-bar [data-rp=copy]").click(); true');
+    await page.waitFor('UI.reports.lastCopied', 5000).catch(() => null);
+    const copied = await page.ev('UI.reports.lastCopied');
+    ok(copied && copied.indexOf(nr.dir) >= 0 && /read report\.md in that folder/.test(copied) && readLog(log).some((e) => e.event === 'copied'), 'Copy for Claude: one sentence, the folder, read report.md', copied);
+    await page.ev('UI.reports.hide(); true');
+    // 2. a manual report: a screenshot; the model only when ticked
+    const man = await page.ev('UI.reports.make("manual", { userText: "check: the flange is on the wrong side" })');
+    ok(man && man.dir && fs.existsSync(path.join(man.dir, 'report.md')) && fs.existsSync(path.join(man.dir, 'screenshot.png')) && !fs.existsSync(path.join(man.dir, 'model.anvil.json')), 'a manual report: report.md, report.json, a screenshot, no model', man && man.dir);
+    await page.ev('UI.reports.addModel(UI.reports.made().filter(function (m) { return m.kind === "manual"; }).pop())');
+    ok(man && fs.existsSync(path.join(man.dir, 'model.anvil.json')) && JSON.parse(fs.readFileSync(path.join(man.dir, 'report.json'), 'utf8')).files.model === true, 'Include the model adds model.anvil.json');
+    // 3. the window's process crashes: a crash report, and Anvil comes back (reloaded)
+    const crashes0 = readLog(log).filter((e) => e.event === 'report-crash').length;
+    try { await Promise.race([page.send('Page.crash'), sleep(1500)]); } catch (e) { /* the page is gone */ }
+    page.close();
+    const crash = await waitLog(log, (e) => e.event === 'report-crash' && readLog(log).filter((x) => x.event === 'report-crash').length > crashes0, 20000);
+    const reload = await waitLog(log, (e) => e.event === 'crash-reload', 10000);
+    page = await connect('app://anvil/');
+    await page.waitFor('window.anvil && window.anvil.run && document.readyState === "complete" && UI.reports && UI.reports.made().some(function (m) { return m.kind === "crash"; })', 60000).catch(() => null);
+    const cr = reportOf(ud, 'crash');
+    const back = await page.ev('({ anvil: !!window.anvil, bar: (document.getElementById("rp-bar") || {}).textContent || null })');
+    ok(crash && reload && reload.reload && cr && /crashed/.test(cr.md) && cr.json.crash && cr.json.crash.reason && back.anvil && /crashed/.test(back.bar || ''), 'the window crashed: a crash report, the window reloads and says so', { reason: cr && cr.json.crash.reason, bar: back.bar });
+    // 4. at most 30 kept
+    for (let i = 0; i < 35; i++) { const d = path.join(ud, 'reports', '2000-01-01_00-00-' + String(i).padStart(2, '0') + '_manual'); fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'report.json'), '{}'); }
+    await page.ev('UI.reports.make("manual", { userText: "check: prune" }).then(function () { return true; })');
+    const dirs = reportDirs(ud), fakes = dirs.filter((d) => d.startsWith('2000-')), realOnes = dirs.length - fakes.length;
+    ok(dirs.length === 30 && fakes.length === 30 - realOnes && fakes[0] === '2000-01-01_00-00-' + String(35 - fakes.length).padStart(2, '0') + '_manual' && dirs.some((d) => d.endsWith('_not-responding')), 'the folder keeps the newest 30 (the oldest go)', { kept: dirs.length, oldestKept: dirs[0] });
+    // 5. killed while frozen: the next start says so
+    await page.ev('setTimeout(function () { var t = Date.now(); while (Date.now() - t < 120000); }, 300); true');
+    page.close();
+    const fs2 = await waitLog(log, (e) => e.event === 'report-sample' && readLog(log).filter((x) => x.event === 'freeze-start').length >= 2, 30000);
+    spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore' });
+    await Promise.race([child.exitPromise, sleep(15000)]);
+    child = launch(env);
+    page = await connect('app://anvil/');
+    await page.waitFor('window.anvil && UI.reports && UI.reports.made().some(function (m) { return m.previous; })', 60000).catch(() => null);
+    const prev = await page.ev('(function () { var m = UI.reports.made().filter(function (x) { return x.previous; })[0]; return m ? { kind: m.kind, dir: m.dir, bar: (document.getElementById("rp-bar") || {}).textContent || null } : null; })()');
+    ok(fs2 && prev && prev.kind === 'not-responding' && /did not respond last time and was closed/.test(prev.bar || ''), 'killed while frozen: the next start offers that report', prev || readLog(log).filter((e) => /freeze|report-(notice|previous|sample)|started|session/.test(e.event)).slice(-8));
+    // 6. nothing outside the development data folder
+    const paths = readLog(log).filter((e) => /^report-|^freeze-/.test(e.event) && e.id).map((e) => e.id);
+    ok(realList() === real0 && reportDirs(ud).length > 0, 'nothing written outside the development data folder (the installed app\'s reports folder unchanged)', { reports: path.join(ud, 'reports'), ids: paths.length });
+    const errs = page.errors.filter((m) => !/vendor\/occt\/opencascade/.test(m));
+    ok(errs.length === 0, 'no console errors after the restart', errs.slice(0, 5));
+  } finally { await quit(page, child); }
+}
+
+// the other crash paths: the main process's own uncaught exception and unhandled rejection (ANVIL_TEST_MAIN_ERRORS=1
+// makes one of each after the page loads) and a helper process that crashed (the GPU process, through the browser's
+// DevTools target: Browser.crashGpuProcess). Each writes a quiet crash report; Anvil keeps running.
+async function checkReportsCrashes() {
+  const ud = path.join(WORK, 'userdata-crashes'), log = path.join(WORK, 'events-crashes.log');
+  fs.mkdirSync(ud, { recursive: true });
+  fs.writeFileSync(path.join(ud, 'settings.json'), JSON.stringify({ updateFolder: path.join(WORK, 'no-such-folder'), occtEngine: 'wasm' }));
+  const child = launch({ ANVIL_USER_DATA: ud, ANVIL_TEST_LOG: log, ANVIL_UPDATE_DELAY_MS: '3600000', ANVIL_TEST_DIALOGS: 'log', ANVIL_TEST_MAIN_ERRORS: '1' });
+  const page = await connect('app://anvil/');
+  try {
+    await page.waitFor('window.anvil && window.anvil.run && document.readyState === "complete" && window.UI && UI.reports', 60000);
+    for (let i = 0; i < 60 && readLog(log).filter((e) => e.event === 'report-crash').length < 2; i++) await sleep(250);
+    const mains = reportDirs(ud).filter((n) => /_crash(-\d+)?$/.test(n)).map((n) => JSON.parse(fs.readFileSync(path.join(ud, 'reports', n, 'report.json'), 'utf8')));
+    const ex = mains.find((r) => /uncaught exception/.test(r.crash.reason)), rej = mains.find((r) => /unhandled promise rejection/.test(r.crash.reason));
+    ok(ex && rej && /deliberate uncaught exception/.test(ex.crash.message) && /deliberate unhandled rejection/.test(rej.crash.message) && /main\.js/.test(ex.crash.stack),
+      'main.js: an uncaught exception and an unhandled rejection each write a crash report with the error and its stack', mains.map((r) => r.crash.reason));
+    await page.waitFor('UI.reports.made().filter(function (m) { return m.kind === "crash"; }).length >= 2', 10000).catch(() => null);
+    const quiet = await page.ev('({ made: UI.reports.made().filter(function (m) { return m.kind === "crash"; }).length, item: !!document.getElementById("rp-status"), bar: !!document.getElementById("rp-bar"), anvil: !!window.anvil })');
+    ok(quiet.made >= 2 && quiet.item && !quiet.bar && quiet.anvil, 'the page is told quietly (Report saved in the status bar, no bar) and Anvil keeps running', quiet);
+    // a helper process crashes: the GPU process
+    const n0 = readLog(log).filter((e) => e.event === 'report-crash').length;
+    const ver = await (await fetch('http://127.0.0.1:' + PORT + '/json/version')).json();
+    await new Promise((res) => { const ws = new WebSocket(ver.webSocketDebuggerUrl); ws.onopen = () => ws.send(JSON.stringify({ id: 1, method: 'Browser.crashGpuProcess' })); ws.onmessage = () => { ws.close(); res(); }; ws.onerror = () => res(); setTimeout(res, 5000); });
+    for (let i = 0; i < 60 && readLog(log).filter((e) => e.event === 'report-crash').length <= n0; i++) await sleep(250);
+    const gpu = reportDirs(ud).map((n) => JSON.parse(fs.readFileSync(path.join(ud, 'reports', n, 'report.json'), 'utf8'))).find((r) => r.crash && /GPU/.test(r.crash.process || ''));
+    await sleep(1500);
+    const after = await page.ev('({ made: UI.reports.made().filter(function (m) { return m.kind === "crash"; }).length, anvil: !!window.anvil, volume: anvil.mass().volume > 0 })');
+    ok(gpu && gpu.crash.reason && after.made >= 3 && after.anvil, 'a helper process crashed (GPU): child-process-gone writes a crash report, the page is told, Anvil keeps running', { gpu: gpu && gpu.crash, after });
+  } finally { await quit(page, child); }
+}
+
 async function checkOcctStart() {
   const ud = path.join(WORK, 'userdata'), log = path.join(WORK, 'events.log');
   fs.mkdirSync(ud, { recursive: true });
@@ -707,6 +826,7 @@ async function checkUpdateRestart() {
     else if (cmd === 'occt-start') await checkOcctStart();
     else if (cmd === 'recent') await checkRecent();
     else if (cmd === 'update-restart') await checkUpdateRestart();
+    else if (cmd === 'reports') { await checkReports(); await checkReportsCrashes(); }
     else throw new Error('unknown check ' + cmd);
   } catch (e) { ok(false, 'check ran to the end', e.stack || e.message); }
   console.log(failures ? failures + ' FAILED' : 'all passed');

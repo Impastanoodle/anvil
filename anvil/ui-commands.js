@@ -88,6 +88,7 @@
     else if (!pm.spec) pm.again = null;
     if (editNext != null) { pm.editUpto = editNext; editNext = null; if (UI.rollbackTo) UI.rollbackTo(pm.editUpto); }
     else if (pm.editUpto != null) { pm.editUpto = null; if (UI.rollForward) UI.rollForward(); }   // another command replaced the edit
+    if (UI.reports) UI.reports.pm('open', spec);   // lane reports: breadcrumbs
     pm.spec = spec;
     pm.values = spec.values || {};
     pm.exprs = {}; pm.exprErrors = {};
@@ -190,6 +191,7 @@
       if (!(opts && opts.close) || pm.spec !== spec) return r.promise || UI.whenIdle();   // r3/assembly3: the Mate PM stays open for the next mate
       r = r.promise || null;   // lane BP: the second Enter closes the whole command, it does not start another round
     }
+    if (UI.reports) UI.reports.pm('OK', spec);   // lane reports
     var pending = r && typeof r.then === 'function';
     // smooth/responsive: the preview stays on screen until the committed build is applied (no frame of the old part)
     closePM(pending);
@@ -237,6 +239,7 @@
   function pmCancel() {
     if (!pm.spec) return;
     var spec = pm.spec;
+    if (UI.reports) UI.reports.pm('cancel', spec);   // lane reports
     if (spec.onCancel) spec.onCancel();
     closePM();
   }

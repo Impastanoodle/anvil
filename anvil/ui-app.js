@@ -545,6 +545,7 @@
       body.appendChild(el('p', { html: '<small>Decimal places of every dimension set to Document in its PropertyManager (defaults: inch .123, mm .12, angles .12).</small>' }));
     }
     if (UI.occtOptionsSection) body.appendChild(UI.occtOptionsSection(function () { tpProps(body); }));   // r12/occtui12: OpenCascade kernel, After an edit
+    if (UI.reports) body.appendChild(UI.reports.optionsSection());   // lane reports: where reports are kept, the not-responding watch
     // sheet metal: the part's parameters read-only here; Sheet metal parameters… opens the Sheet-Metal PropertyManager
     // (gauge, T, R, bend allowance method, bend table), which rebuilds and is undoable
     body.appendChild(el('h3', { text: 'Sheet metal' }));
@@ -2450,6 +2451,7 @@
 
   // ------------------------------------------------------------------ boot
   function boot() {
+    if (UI.reports) UI.reports.install();   // lane reports: breadcrumb hooks, the not-responding watch
     if (UI.wrapOkPlusCommands) UI.wrapOkPlusCommands();   // ✓+ on the commands that make something (ui-commands.js)
     installUndelete();   // lane mcpolish: after every file's own UI.deleteSelection wrapper
     // a model loaded by anything (New, Open, the Task Pane, a recovery) is no longer the file App.filePath names

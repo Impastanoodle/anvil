@@ -79,12 +79,62 @@ The Windows app uses Windows' own Open and Save boxes, as SolidWorks does:
   there and press Ctrl+S to give it a file. After Anvil is closed, the Recent Documents list is how a file is found
   again.
 
+## Problem reports
+
+When Anvil freezes, crashes, or hits an error, it saves a report you can hand to Claude to find and fix the cause.
+Nothing is sent anywhere: the report stays on this PC.
+
+- **Anvil stopped responding.** If the window does not answer for 5 seconds, Anvil (its main process, which keeps
+  running) looks at where the window is stuck every 5 seconds while the freeze lasts and writes the report at once. When
+  the window answers again a bar under the ribbon says *"Anvil stopped responding for 18 s while Rebuild was running. A
+  report was saved."* If you close or end Anvil while it is frozen, the next start says *"Anvil did not respond last time
+  and was closed: a report was saved."*
+- **Anvil crashed.** If the window's process crashes, Anvil saves a report and asks to reload; Anvil then offers the work
+  AutoRecover kept.
+- **An error Anvil carried on from**: no box, only **Report saved** in the status bar (click it for the same bar).
+- **Help ▸ Report a Problem…**: write what went wrong (something wrong that did not freeze or crash), tick Include the
+  model if you want, **Save report**.
+
+The bar's buttons: **Copy for Claude** copies a short message (what happened, the report's folder, "read report.md in
+that folder"): paste it into a Claude session. **Open folder** opens it in Explorer. **View report** shows it.
+**Include the model** (off by default) adds the open part or assembly to the report so Claude can open it; it stays on
+this PC. **Dismiss** closes the bar.
+
+Where: `%APPDATA%\Anvil\reports` (`C:\Users\<you>\AppData\Roaming\Anvil\reports`), one folder per report,
+named `<yyyy-mm-dd_hh-mm-ss>_<kind>` (`not-responding`, `crash`, `error`, `manual`); the newest 30 are kept. Tools ▸
+Options ▸ *Reports* shows the folder, opens it, and has the switch for the not-responding watch.
+
+In each folder:
+
+| File | What |
+|---|---|
+| `report.md` | for Claude and for you: what happened in one sentence, when, the Anvil version, how long the freeze lasted; *Where it was stuck* (the call stacks sampled during the freeze, and whether it stayed in one place); the operation in progress; the last 200 steps (commands, tools, PropertyManagers opened / OK / cancelled, files opened and saved by kind and size, rebuilds with their time, profile and theme switches); the last 100 console errors and warnings; the state (profile, theme, engine, document type, features by type, bodies, faces, triangles, sketch entities, drawing views, window, GPU, memory, Windows version) |
+| `report.json` | the same, structured (`format: "anvil-problem-report"`, `v: 1`) |
+| `screenshot.png` | the window (after a freeze: when it answered again) |
+| `model.anvil.json` | only when Include the model was ticked |
+
+Privacy: file names, paths, part and document names, custom properties, note text and geometry are never written
+into `report.md` / `report.json` (kinds, sizes and counts instead; the open document's names show as `<name>`). The
+model goes in only by your choice.
+
+For whoever fixes it (Claude): start from *Where it was stuck* and the last breadcrumbs. To reproduce, run Anvil from the
+repository (`npm start` here, or `anvil\serve.ps1`), open `model.anvil.json` if it is there (File ▸ Open, or
+`anvil.load(json)` from the console), and replay the breadcrumbs. How it works: `anvil/ui-reports.js` (the page: crumbs,
+the bar, the report format, which `main.js` also loads) and `main.js` *problem reports* (heartbeat, the stack samples
+through the DevTools protocol, crashes, the folder, `.session.json` for a run that ended frozen). The watch keeps a
+DevTools protocol session with the debugger enabled on the window (a stuck window cannot be attached to later); turning
+the not-responding switch off releases it. With DevTools open (F12) the stacks may be missing; the report says so.
+Check: `node check.js reports --dev --exe <electron.exe>` (a 12 s busy loop named in the stacks, a crash, a run killed
+while frozen, 30 kept; the main process's own uncaught exception and unhandled rejection, made on purpose with the test
+setting `ANVIL_TEST_MAIN_ERRORS=1`; a crashed GPU process).
+
 ## Where files go
 
 | What | Where |
 |---|---|
 | The program | `%LOCALAPPDATA%\Programs\Anvil` |
 | Settings, recovered work, theme, window size | `%APPDATA%\Anvil` (kept through updates and uninstall) |
+| Problem reports (newest 30) | `%APPDATA%\Anvil\reports` |
 | Parts, DXF, DWG, STEP, PDF you save | wherever you choose in the Save As box (it remembers the last folder) |
 | New installers | `Desktop\Output\Anvil Releases` (the newest 3 are kept) |
 
@@ -113,7 +163,7 @@ Other commands: `npm start` runs Anvil from the source files; `npm run pack` bui
 without an installer; `node check.js app`, `node check.js tests`, `node check.js update --folder <folder>` test a build
 by script (`node check.js files`: Open, Ctrl+S in place, Save As, exports, a read-only file, with the boxes stood in
 for; `node check.js occt-start --compare`: how long the WebAssembly OpenCascade engine takes to start, cold and
-warm, and the old start against the new one; `node check.js recent`: Recent Documents across a restart, a reopened file saved in place, a deleted one
+warm, and the old start against the new one; `node check.js reports`: problem reports (see *Problem reports*); `node check.js recent`: Recent Documents across a restart, a reopened file saved in place, a deleted one
 missing, a STEP's new part saved beside it; `node check.js drop`: a part file dropped on the window keeps its real path, the title names it, Ctrl+S writes
 back to it and nothing else in its folder becomes writable (a File backed by the file on disk through DevTools'
 `DOM.setFileInputFiles`, then a DragEvent; a drag from Explorer itself cannot be scripted); `node check.js update-restart`: Restart to update end to end with a stand-in installer, a .cmd in a temporary

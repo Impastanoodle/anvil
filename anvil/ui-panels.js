@@ -1360,6 +1360,7 @@
     return { id: id, icon: (d && d.icon) || (d ? id : item.icon || (setIcon(item.cmd) ? item.cmd : id)), label: label, flat: flat, disabled: !enabled || needsSketch, active: active, tip: ribbonTip(id, flat, enabled, needsSketch, item.help, item.key) };
   }
   function runItem(item) {
+    if (UI.reports) UI.reports.crumb('command: ' + (item.cmd || item.id || item.icon || '?') + (item.label ? ' (' + String(item.label).replace(/\s+/g, ' ') + ')' : ''));   // lane reports
     if (frame) frameNoteRun(item);   // lane mcframe: Recent Functions, the function panel's title
     if (item.tool && item.tool !== 'dimension' && App.mode !== 'sketch' && UI.rapidSketchOn && UI.rapidSketchOn()) { UI.rapidSketchArm(item); refreshRibbon(); return; }   // rfAY: Rapid Sketch
     if (item.tool && !item.run) UI.setTool(itemState(item).active ? 'select' : item.tool);
@@ -2765,7 +2766,7 @@
           // item also works) and the click that ends the same press is swallowed, so it never lands on the ribbon button
           // that was under the menu; click alone (keyboard, scripted) still runs it, once
           var ran = false;
-          var run = function () { if (ran) return; ran = true; closeMenus(); it.action(); syncViewTab(); };   // lane CC: View tab toggles follow the menus
+          var run = function () { if (ran) return; ran = true; closeMenus(); if (UI.reports) UI.reports.crumb('menu: ' + it.label); it.action(); syncViewTab(); };   // lane CC: View tab toggles follow the menus
           row.addEventListener('mouseup', function (e) { if (e.button !== 0) return; e.stopPropagation(); if (e.detail > 0) guardClick(e); run(); });
           row.addEventListener('click', run);
         }
@@ -3105,6 +3106,7 @@
       { label: 'Help', items: [
         { label: 'Scripting reference', action: function () { UI.openTaskPane('macro'); } },
         { label: 'Keyboard shortcuts', action: UI.showShortcuts },
+        { label: 'Report a Problem…', action: function () { if (UI.reports) UI.reports.dialog(); } },   // lane reports
         { label: 'About Anvil', action: UI.showAbout }
       ] }
     ];

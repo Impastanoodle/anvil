@@ -45,7 +45,46 @@ const occtHost = !info.occtNative ? null : {
   stop: stopHost
 };
 
+// ---- problem reports (lane reports; ui-reports.js, main.js "problem reports") ----------------------------------------
+// A heartbeat every second: main.js calls the window not responding when it stops for 5 s (this script runs on the
+// page's own thread, so a busy page stops it too). Breadcrumbs go to main.js as they happen (ui-reports.js batches them
+// every 250 ms), so a page that never comes back still has them in its report. Open / Save boxes and dropped files are
+// crumbed here (kind and size only) and sent at once, before a big file can freeze the page.
+// A hidden window (minimised, covered) has its timers slowed by Chromium, down to once a minute after 5 minutes: it says
+// so, and main.js does not count the gaps then.
+setInterval(() => ipcRenderer.send('anvil-desktop:hb'), 1000);
+ipcRenderer.send('anvil-desktop:hb');
+document.addEventListener('visibilitychange', () => ipcRenderer.send('anvil-desktop:hb', document.hidden ? 'hidden' : 'visible'));
+let reportListener = null;
+const reportQueue = [];
+ipcRenderer.on('anvil-desktop:report', (e, m) => { if (reportListener) reportListener(m); else reportQueue.push(m); });
+function extOf(name) { const m = /\.([A-Za-z0-9_]{1,8})(\.json)?$/.exec(String(name || '')); return m ? '.' + m[1].toLowerCase() + (m[2] || '') : '(no extension)'; }
+function sizeOf(n) { return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' bytes'; }
+function lenOf(d) { return d == null ? 0 : typeof d === 'string' ? d.length : d.byteLength != null ? d.byteLength : d.length || 0; }
+function deskCrumb(text) {
+  ipcRenderer.send('anvil-desktop:crumbs', [{ at: Date.now(), text }], null);
+  try { window.dispatchEvent(new CustomEvent('anvil-desktop-crumb', { detail: '\u0001' + text })); } catch (e) { /* no page yet */ }
+}
+const reports = {
+  // the page's breadcrumbs ([{ at, text }]) and, every few seconds, { state, operation, secrets, progressLoaded }
+  crumbs: (list, extra) => ipcRenderer.send('anvil-desktop:crumbs', list || [], extra || null),
+  // a report the page made: { id, json, screenshot, model } -> { dir }
+  save: (o) => ipcRenderer.invoke('anvil-desktop:report-save', o || {}),
+  // the page completes a report main.js wrote (not responding): { state, console, crumbs, secrets }
+  complete: (dir, o) => ipcRenderer.invoke('anvil-desktop:report-complete', dir, o || {}),
+  addModel: (dir, json) => ipcRenderer.invoke('anvil-desktop:report-model', dir, json),
+  list: () => ipcRenderer.invoke('anvil-desktop:report-list'),
+  read: (dir) => ipcRenderer.invoke('anvil-desktop:report-read', dir),
+  folder: () => ipcRenderer.invoke('anvil-desktop:report-folder'),
+  openFolder: (dir) => ipcRenderer.invoke('anvil-desktop:report-open', dir || null),
+  copy: (text) => ipcRenderer.invoke('anvil-desktop:copy', String(text)),
+  setWatch: (on) => ipcRenderer.send('anvil-desktop:report-watch', !!on),
+  // fn({ id, kind, dir, durationMs, operation, summary, previous, quiet }): a report main.js wrote
+  onReport: (fn) => { reportListener = fn; reportQueue.splice(0).forEach((m) => fn(m)); }
+};
+
 contextBridge.exposeInMainWorld('anvilDesktop', {
+  reports,
   isDesktop: true,
   version: info.version,
   checkForUpdates: () => ipcRenderer.invoke('anvil-desktop:check-updates'),
@@ -62,11 +101,12 @@ contextBridge.exposeInMainWorld('anvilDesktop', {
     dropped: (file) => {
       let p = '';
       try { p = webUtils.getPathForFile(file) || ''; } catch (e) { p = ''; }
+      if (p) deskCrumb('file dropped on the window: ' + extOf(p) + ', ' + sizeOf(file && file.size || 0));
       return p ? ipcRenderer.invoke('anvil-desktop:dropped-file', p) : Promise.resolve(null);
     },
-    open: (o) => ipcRenderer.invoke('anvil-desktop:open-dialog', o || {}),
+    open: (o) => ipcRenderer.invoke('anvil-desktop:open-dialog', o || {}).then((r) => { if (r && r.data) deskCrumb('file opened (Open box): ' + extOf(r.name) + ', ' + sizeOf(lenOf(r.data))); return r; }),
     saveDialog: (o) => ipcRenderer.invoke('anvil-desktop:save-dialog', o || {}),
-    write: (p, data, o) => ipcRenderer.invoke('anvil-desktop:write-file', p, data, o || {}),
+    write: (p, data, o) => { deskCrumb('file written: ' + extOf(o && o.sibling || p) + ', ' + sizeOf(lenOf(data))); return ipcRenderer.invoke('anvil-desktop:write-file', p, data, o || {}); },
     setDocument: (p, title) => ipcRenderer.invoke('anvil-desktop:set-document', p || null, typeof title === 'string' ? title : null),
     // File ▸ Recent Documents (main.js recent.json, paths only): list() -> [{ path, name, folder, at, missing }] newest
     // first; add(path) (a path the page may already write) / remove(path) / clear() -> the list; open(path) -> as open()
@@ -76,7 +116,7 @@ contextBridge.exposeInMainWorld('anvilDesktop', {
       add: (p) => ipcRenderer.invoke('anvil-desktop:recent-add', p),
       remove: (p) => ipcRenderer.invoke('anvil-desktop:recent-remove', p),
       clear: () => ipcRenderer.invoke('anvil-desktop:recent-clear'),
-      open: (p) => ipcRenderer.invoke('anvil-desktop:recent-open', p)
+      open: (p) => ipcRenderer.invoke('anvil-desktop:recent-open', p).then((r) => { if (r && r.data) deskCrumb('file opened (Recent Documents): ' + extOf(r.name) + ', ' + sizeOf(lenOf(r.data))); return r; })
     }
   }
 });

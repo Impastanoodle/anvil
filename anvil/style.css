@@ -2213,6 +2213,25 @@ button:disabled svg.ico[data-set="solidworks"], .mi.disabled svg.ico[data-set="s
 :root[data-profile] #app.mc-managers #viewport #vp-labels { bottom: 26px; }
 :root[data-profile] #app.mc-managers #viewport #scale-bar { bottom: 28px; }
 :root[data-profile] #app.mc-managers #viewport #vp-qmask { bottom: 72px; }
+/* lane reports (rfMI, 2026-11-12): problem reports (ui-reports.js). The bar under the ribbon and the status bar's
+   "Report saved" are fixed-position overlays placed by script: no bar or panel changes size. Below #modal (60). */
+.rp-bar { position: fixed; left: 50%; transform: translateX(-50%); z-index: 55; max-width: min(860px, calc(100vw - 32px)); box-sizing: border-box;
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); padding: var(--sp-2) var(--sp-3);
+  background: var(--c-popup, var(--panel)); color: var(--c-text, var(--text)); border: var(--hair) solid var(--c-line-strong, var(--line));
+  border-left: 4px solid var(--c-warn, #a06a00); border-radius: var(--radius); box-shadow: var(--shadow-pop); font-size: var(--fs-sm, 12px); }
+.rp-bar.rp-crash { border-left-color: var(--c-err, #a3211a); }
+.rp-bar.rp-manual { border-left-color: var(--c-accent); }
+.rp-bar .rp-text { flex: 1 1 260px; font-weight: 600; }
+.rp-bar .rp-btns { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.rp-bar .rp-sub { flex-basis: 100%; color: var(--c-muted, var(--muted)); font-size: var(--fs-xs, 11px); }
+.rp-model { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: pointer; }
+.rp-status { position: fixed; z-index: 50; padding: 0 var(--sp-2); border: 0; border-left: var(--hair) solid var(--c-line, var(--line)); background: var(--c-warn-bg, #fff4dc);
+  color: var(--c-warn, #744b00); font: inherit; font-size: var(--fs-sm, 12px); cursor: pointer; }
+.rp-status:hover { text-decoration: underline; }
+.rp-view { max-width: min(900px, 80vw); max-height: 60vh; overflow: auto; margin: 0; padding: var(--sp-2); white-space: pre-wrap; font: 12px/1.4 Consolas, 'Courier New', monospace;
+  background: var(--c-field, #fff); border: var(--hair) solid var(--c-line-soft, var(--line)); }
+.rp-dialog textarea { width: min(560px, 70vw); box-sizing: border-box; font: inherit; }
+.rp-options .rp-row { display: flex; gap: var(--sp-2); margin: var(--sp-1) 0; }
 /* lane swribbon (2026-11-12): the default (SolidWorks) profile at the sizes of the user's own SolidWorks 2024, which runs
    with large buttons; measured on their screenshots at 100 % (ui-core card "SolidWorks sizes"). Sizes only (colours are
    the token blocks'); every rule is scoped :root:not([data-profile]) so an interface profile with a frame (Mastercam)

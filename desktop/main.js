@@ -20,8 +20,11 @@
 //   (occt-host.js); the page talks to it through a MessagePort and falls back to the WebAssembly worker if it cannot
 //   start. ANVIL_OCCT_NATIVE names another addon folder; ANVIL_OCCT_ENGINE=wasm (or "occtEngine": "wasm" in
 //   settings.json) keeps the WebAssembly engine.
+// - problem reports ("problem reports" below): not responding, crashes, errors and Help ▸ Report a Problem… write a
+//   report folder under <userData>\reports for the user to hand to Claude (desktop/README.md *Problem reports*).
+//   ANVIL_TEST_DIALOGS=log also stands in for the "reload after a crash" box (reloads at once).
 'use strict';
-const { app, BrowserWindow, protocol, session, shell, Menu, dialog, ipcMain, screen, utilityProcess, MessageChannelMain } = require('electron');
+const { app, BrowserWindow, protocol, session, shell, Menu, dialog, ipcMain, screen, utilityProcess, MessageChannelMain, clipboard } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const converters = require('./converters');
@@ -144,6 +147,7 @@ function createWindow() {
   wc.on('console-message', (e) => { if (e.level === 'error') testLog('console-error', { message: e.message, source: e.sourceId, line: e.lineNumber }); });
   wc.on('did-navigate', () => { pageLoaded = false; docPaths.delete(wc.id); });
   wc.on('did-finish-load', () => { pageLoaded = true; if (updater.state.offered) sendOffer(updater.state.offered); });
+  watchWindow(win);   // problem reports: heartbeat, not responding, renderer crash
   win.loadURL(ORIGIN + '/index.html');
 }
 
@@ -470,9 +474,372 @@ ipcMain.on('anvil-desktop:update-restart', async (e) => {
 });
 app.on('will-quit', () => {
   testLog('quitting', {});
+  sessionEnd();   // problem reports: this run ended cleanly
   const job = updater.runPendingInstall();
   if (job) { appState.pendingUpdate = { from: job.from, to: job.to, at: new Date().toISOString() }; saveState(); testLog('update-installing', { to: job.to }); }
 });
+
+// ---- problem reports (lane reports; anvil/ui-reports.js is the page side and the report format) -----------------
+// <userData>\reports\<yyyy-mm-dd_hh-mm-ss>_<kind>\ holds report.md (for Claude and the user), report.json (the same,
+// structured), screenshot.png when one could be taken, and model.anvil.json only when the user ticked Include the
+// model. The newest REPORTS_KEEP folders are kept. Nothing is uploaded anywhere.
+// - Not responding: the page (preload.js) sends a heartbeat every second; when it stops for 5 s (or the window's
+//   'unresponsive' event fires) this process attaches the DevTools protocol to the window (webContents.debugger),
+//   pauses it, takes the call stack and resumes, every 5 s while the freeze lasts (up to 12 samples), and writes the
+//   report at once with the breadcrumbs the page sent as they happened. When the page answers again it gets the report
+//   ('anvil-desktop:report'), adds its state and console, and shows its bar. A run that ends while frozen (closed,
+//   killed) is told on the next start (.session.json).
+// - render-process-gone (the window crashed), child-process-gone (a helper process crashed), this process's own
+//   uncaughtException / unhandledRejection: a 'crash' report; after a window crash the window is reloaded (it asks,
+//   unless ANVIL_TEST_DIALOGS=log) and the page offers the work AutoRecover kept.
+const ReportFormat = (() => { try { return require(path.join(ROOT, 'ui-reports.js')); } catch (e) { return null; } })();
+const REPORTS_KEEP = 30, FREEZE_MS = 5000, SAMPLE_EVERY_MS = 5000, MAX_SAMPLES = 12;
+const rp = { crumbs: [], extra: null, extraAt: 0, watch: true, hb: new Map(), freeze: null, notices: [], lastStamp: '' };
+function reportsDir() { return path.join(app.getPath('userData'), 'reports'); }
+function insideReports(dir) {
+  if (typeof dir !== 'string' || !dir) return null;
+  const root = path.resolve(reportsDir()), d = path.resolve(dir);
+  return d.startsWith(root + path.sep) && path.dirname(d) === root && fs.existsSync(d) ? d : null;
+}
+function rpScrub(text, secrets) { return ReportFormat ? ReportFormat.scrub(text, secrets) : String(text); }
+function newReportDir(kind, at) {
+  const stamp = ReportFormat ? ReportFormat.stamp(at) : new Date(at).toISOString().replace(/[:.]/g, '-');
+  let id = stamp + '_' + kind, n = 2;
+  while (fs.existsSync(path.join(reportsDir(), id))) id = stamp + '_' + kind + '-' + (n++);
+  const dir = path.join(reportsDir(), id);
+  fs.mkdirSync(dir, { recursive: true });
+  return { id, dir };
+}
+function pruneReports() {
+  try {
+    const root = reportsDir();
+    const dirs = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory() && /^\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_/.test(d.name)).map((d) => d.name).sort();
+    dirs.slice(0, Math.max(0, dirs.length - REPORTS_KEEP)).forEach((n) => { try { fs.rmSync(path.join(root, n), { recursive: true, force: true }); testLog('report-pruned', { id: n }); } catch (e) { /* in use */ } });
+  } catch (e) { /* no folder yet */ }
+}
+// the memory of Anvil's processes (working set), e.g. "window 812 MB, GPU 310 MB, main 95 MB …, total 1.3 GB"
+function procMemory() {
+  try {
+    const by = {};
+    let total = 0;
+    app.getAppMetrics().forEach((m) => {
+      const mb = (m.memory && m.memory.workingSetSize || 0) / 1024;
+      const k = m.type === 'Tab' ? 'window' : m.type === 'Browser' ? 'main' : m.type === 'Utility' ? (m.serviceName || m.name || 'utility') : m.type;
+      by[k] = (by[k] || 0) + mb; total += mb;
+    });
+    return Object.keys(by).sort((a, b) => by[b] - by[a]).map((k) => k + ' ' + Math.round(by[k]) + ' MB').join(', ') + '; total ' + (total / 1024).toFixed(2) + ' GB';
+  } catch (e) { return 'unknown'; }
+}
+function writeReport(dir, r) {
+  if (ReportFormat) r.summary = ReportFormat.summary(r);
+  r.state = r.state || {};
+  if (!r.state['process memory']) r.state['process memory'] = procMemory();
+  fs.writeFileSync(path.join(dir, 'report.json'), JSON.stringify(r, null, 1));
+  fs.writeFileSync(path.join(dir, 'report.md'), ReportFormat ? ReportFormat.markdown(r) : '# Anvil problem report: ' + r.kind + '\n\n(see report.json)\n');
+}
+function readReportJson(dir) { return readJson(path.join(dir, 'report.json')); }
+// a report written here (not responding, crash), from what the page last sent
+function mainReport(kind, at, more) {
+  const x = rp.extra || {}, sec = x.secrets || [];
+  const scrubState = (s) => { const o = {}; Object.keys(s || {}).forEach((k) => { o[k] = typeof s[k] === 'string' ? rpScrub(s[k], sec) : s[k]; }); return o; };
+  return Object.assign({ format: 'anvil-problem-report', v: 1, kind, at, version: VERSION, app: 'Windows app', startedAgo: at - rpStarted,
+    operation: x.operation || [], progressLoaded: x.progressLoaded !== false,
+    crumbs: rp.crumbs.map((c) => ({ at: c.at, text: rpScrub(c.text, sec), n: c.n })), console: [],
+    state: scrubState(x.state), stateAt: rp.extraAt || null, stateNote: x.state ? null : 'the page had not described itself yet',
+    files: { screenshot: false, model: false } }, more || {});
+}
+const rpStarted = Date.now();
+function noticeToPage(m) {
+  testLog('report-notice', { kind: m.kind, id: m.id, previous: !!m.previous });
+  if (win && !win.isDestroyed() && pageLoaded) win.webContents.send('anvil-desktop:report', m);
+  else rp.notices.push(m);
+}
+async function screenshotInto(dir, wc) {
+  try {
+    const img = await Promise.race([wc.capturePage(), new Promise((res) => setTimeout(() => res(null), 4000))]);
+    if (!img || img.isEmpty()) return false;
+    fs.writeFileSync(path.join(dir, 'screenshot.png'), img.toPNG());
+    return true;
+  } catch (e) { return false; }
+}
+
+// ---- the session marker: a run that ends while frozen is told on the next start
+function sessionFile() { return path.join(reportsDir(), '.session.json'); }
+function sessionWrite(o) { writeJson(sessionFile(), Object.assign({ pid: process.pid, startedAt: new Date(rpStarted).toISOString(), clean: false, freeze: null }, o || {})); }
+function sessionStart() {
+  const prev = readJson(sessionFile());
+  if (prev && !prev.clean && prev.freeze && prev.freeze.dir) {
+    const dir = insideReports(prev.freeze.dir), r = dir && readReportJson(dir);
+    if (r) {
+      r.ongoing = true;
+      r.where = r.where || {};
+      r.where.note = (r.where.note ? r.where.note + ' ' : '') + 'Anvil did not answer again: it was closed (or ended) while frozen.';
+      try { writeReport(dir, r); } catch (e) { /* read-only? */ }
+      testLog('report-previous-freeze', { id: r.id || path.basename(dir) });
+      rp.notices.push({ id: path.basename(dir), kind: 'not-responding', dir, durationMs: r.durationMs, operation: r.operation || [], summary: r.summary, previous: true });
+    }
+  }
+  sessionWrite();
+}
+function sessionEnd() { if (rp.freeze) return; sessionWrite({ clean: true }); }
+
+// ---- not responding
+function hbOf(wc) { let s = rp.hb.get(wc.id); if (!s) { s = { last: Date.now(), alive: false }; rp.hb.set(wc.id, s); } return s; }
+ipcMain.on('anvil-desktop:hb', (e, vis) => {
+  const s = hbOf(e.sender);
+  s.last = Date.now();
+  if (vis === 'hidden') s.hidden = true; else if (vis === 'visible') s.hidden = false;   // a hidden page's timers are slowed: not a freeze
+  if (rp.freeze && rp.freeze.wc === e.sender) endFreeze();
+});
+ipcMain.on('anvil-desktop:crumbs', (e, list, extra) => {
+  (Array.isArray(list) ? list : []).slice(0, 400).forEach((c) => {
+    if (!c || typeof c.text !== 'string') return;
+    const last = rp.crumbs[rp.crumbs.length - 1], at = +c.at || Date.now(), text = c.text.slice(0, 300);
+    if (last && last.text === text && at - last.at < 1000) { last.n = (last.n || 1) + 1; last.at = at; return; }
+    rp.crumbs.push({ at, text });
+  });
+  if (rp.crumbs.length > 200) rp.crumbs.splice(0, rp.crumbs.length - 200);
+  if (extra && typeof extra === 'object') { rp.extra = extra; rp.extraAt = Date.now(); }
+});
+ipcMain.on('anvil-desktop:report-watch', (e, on) => {
+  rp.watch = !!on;
+  testLog('report-watch', { on: rp.watch });
+  if (rp.watch) attachDebugger(e.sender); else releaseDebugger(e.sender);
+});
+function withTimeout(p, ms, what) { return Promise.race([p, new Promise((res, rej) => setTimeout(() => rej(new Error(what + ' timed out after ' + ms + ' ms')), ms))]); }
+function shortUrl(u) { u = String(u || ''); return u.startsWith(ORIGIN + '/') ? u.slice(ORIGIN.length + 1) : rpScrub(u); }
+// The DevTools protocol session is attached, and its debugger enabled, when the page has loaded, and both are kept:
+// attaching and Debugger.enable need the window's own thread, so they cannot be done once it is stuck, while
+// Debugger.pause is one of the few commands Chromium hands a busy thread as an interrupt. Breakpoints are switched
+// off (setBreakpointsActive false), so a `debugger;` statement never stops Anvil; only Debugger.pause does. The cost
+// is small (V8 keeps script sources; one scriptParsed message per new script); the not-responding switch in Tools ▸
+// Options turns it off with the watch.
+function attachDebugger(wc) {
+  if (wc.isDestroyed()) return 'the window is gone';
+  const dbg = wc.debugger;
+  if (!dbg.isAttached()) {
+    try { dbg.attach('1.3'); } catch (e) { testLog('report-debugger', { attached: false, message: e.message }); return e.message; }
+  }
+  dbg.sendCommand('Debugger.enable').then(() => dbg.sendCommand('Debugger.setBreakpointsActive', { active: false }))
+    .then(() => testLog('report-debugger', { attached: true, enabled: true }), (e) => testLog('report-debugger', { attached: true, enabled: false, message: e.message }));
+  return null;
+}
+function releaseDebugger(wc) {
+  if (!wc || wc.isDestroyed() || !wc.debugger.isAttached()) return;
+  wc.debugger.sendCommand('Debugger.disable').catch(() => {}).then(() => { try { wc.debugger.detach(); } catch (e) { /* already */ } });
+}
+// one call stack of the window's main thread: pause, read the frames, resume
+async function stackSample(wc) {
+  const dbg = wc.debugger;
+  if (!dbg.isAttached()) {
+    const why = attachDebugger(wc);
+    if (why) return { error: 'the debugger could not attach (' + why + '; are DevTools open on the window?)' };
+  }
+  let onMsg = null;
+  try {
+    const paused = new Promise((res) => { onMsg = (ev, method, params) => { if (method === 'Debugger.paused') res(params); }; dbg.on('message', onMsg); });
+    await withTimeout(dbg.sendCommand('Debugger.pause'), 4000, 'Debugger.pause');
+    const p = await withTimeout(paused, 4000, 'the pause');
+    const frames = (p.callFrames || []).slice(0, 40).map((f) => ({ fn: f.functionName || '(anonymous)', file: shortUrl(f.url), line: f.location.lineNumber + 1, col: f.location.columnNumber + 1 }));
+    try { await withTimeout(dbg.sendCommand('Debugger.resume'), 2000, 'resume'); } catch (e) { /* resumed by the next command */ }
+    return { frames };
+  } catch (e) {
+    dbg.sendCommand('Debugger.resume').catch(() => {});
+    return { error: 'no JavaScript stack (' + e.message + '): the window may be busy outside JavaScript (layout, painting, the GPU, a synchronous call into the browser), or the debugger was not enabled before the freeze' };
+  } finally {
+    if (onMsg) dbg.removeListener('message', onMsg);
+  }
+}
+// "Stuck in the same place": the frames every sample shares, or the one seen most
+function stackSummary(samples) {
+  const withFrames = samples.filter((s) => s.frames && s.frames.length);
+  if (!withFrames.length) return samples.length ? 'No sample got a JavaScript stack.' : '';
+  const count = new Map();
+  withFrames.forEach((s) => { const seen = new Set(); s.frames.forEach((f) => { const k = f.fn + ' (' + f.file + ':' + f.line + ')'; if (!seen.has(k)) { seen.add(k); count.set(k, (count.get(k) || 0) + 1); } }); });
+  const top = [...count.entries()].sort((a, b) => b[1] - a[1] || 0).slice(0, 5);
+  const tops = withFrames.map((s) => s.frames[0].fn + ' (' + s.frames[0].file + ':' + s.frames[0].line + ')');
+  const same = tops.every((t) => t === tops[0]);
+  return (same ? 'Every sample with a stack (' + withFrames.length + ') was stopped in the same place: ' + tops[0] + '.' : 'The top of the stack moved between samples (' + [...new Set(tops)].join('; ') + '): busy, but not in one place.') +
+    ' Functions seen in most samples: ' + top.map((t) => t[0] + ' ×' + t[1]).join(', ') + '.';
+}
+function freezeReport() {
+  const f = rp.freeze;
+  const r = mainReport('not-responding', f.at, { id: f.id, durationMs: Date.now() - f.start, ongoing: !f.ended,
+    where: { note: 'Sampled from the main process with the DevTools protocol every ' + SAMPLE_EVERY_MS / 1000 + ' s while the window did not answer (it noticed after ' + (f.why === 'unresponsive' ? 'the window\'s unresponsive event' : FREEZE_MS / 1000 + ' s without a heartbeat') + ').', samples: f.samples, summary: stackSummary(f.samples) } });
+  if (f.ended) r.durationMs = f.durationMs;
+  if (f.screenshot) r.files.screenshot = true;
+  for (let i = r.crumbs.length - 1; i >= 0; i--) if (r.crumbs[i].at <= f.start + 50) { r.lastCrumb = r.crumbs[i].text; break; }
+  return r;
+}
+function writeFreeze() { try { writeReport(rp.freeze.dir, freezeReport()); } catch (e) { testLog('report-write-failed', { message: e.message }); } }
+async function sampleFreeze() {
+  const f = rp.freeze;
+  if (!f || f.ended || f.sampling || f.samples.length >= MAX_SAMPLES) return;
+  f.sampling = true;
+  const t = Date.now();
+  const smp = await stackSample(f.wc);
+  f.sampling = false;
+  if (rp.freeze !== f) return;
+  smp.afterMs = t - f.start;
+  f.samples.push(smp);
+  testLog('report-sample', { n: f.samples.length, frames: smp.frames ? smp.frames.length : 0, top: smp.frames && smp.frames[0] ? smp.frames[0].fn : null, error: smp.error || null });
+  if (!f.ended) writeFreeze();
+}
+function startFreeze(wc, why) {
+  if (rp.freeze || !rp.watch || wc.isDestroyed()) return;
+  const s = hbOf(wc), at = Date.now();
+  let made;
+  try { made = newReportDir('not-responding', at); } catch (e) { testLog('report-write-failed', { message: e.message }); return; }
+  rp.freeze = { wc, why, start: s.last, at, id: made.id, dir: made.dir, samples: [], ended: false };
+  testLog('freeze-start', { id: made.id, why, sinceMs: at - s.last });
+  writeFreeze();
+  sessionWrite({ freeze: { dir: made.dir, id: made.id, since: new Date(s.last).toISOString() } });
+  pruneReports();
+  sampleFreeze();
+  rp.freeze.timer = setInterval(() => { if (rp.freeze && rp.freeze.samples.length >= MAX_SAMPLES) clearInterval(rp.freeze.timer); else sampleFreeze(); }, SAMPLE_EVERY_MS);
+}
+async function endFreeze() {
+  const f = rp.freeze;
+  if (!f || f.ended) return;
+  f.ended = true;
+  f.durationMs = Date.now() - f.start;
+  clearInterval(f.timer);
+  testLog('freeze-end', { id: f.id, durationMs: f.durationMs, samples: f.samples.length });
+  if (!f.wc.isDestroyed()) f.screenshot = await screenshotInto(f.dir, f.wc);
+  writeFreeze();
+  rp.freeze = null;
+  sessionWrite();
+  const r = readReportJson(f.dir) || {};
+  noticeToPage({ id: f.id, kind: 'not-responding', dir: f.dir, durationMs: f.durationMs, operation: r.operation || [], summary: r.summary });
+}
+setInterval(() => {
+  if (!rp.watch || rp.freeze || !win || win.isDestroyed()) return;
+  const wc = win.webContents, s = rp.hb.get(wc.id);
+  if (s && s.alive && !s.hidden && !win.isMinimized() && pageLoaded && Date.now() - s.last > FREEZE_MS) startFreeze(wc, 'heartbeat');
+}, 1000).unref();
+
+// ---- crashes
+async function crashReport(kind, crash, wc, opts) {
+  const at = Date.now();
+  let made;
+  try { made = newReportDir('crash', at); } catch (e) { return null; }
+  const r = mainReport('crash', at, { id: made.id, crash, where: { note: 'No call stack: ' + (crash.where || 'the process that crashed cannot be asked any more') + '.', samples: [] } });
+  if (wc && !wc.isDestroyed() && opts && opts.screenshot) r.files.screenshot = await screenshotInto(made.dir, wc);
+  try { writeReport(made.dir, r); } catch (e) { return null; }
+  pruneReports();
+  testLog('report-crash', { id: made.id, reason: crash.reason || null });
+  return { id: made.id, dir: made.dir, summary: r.summary, kind: 'crash' };
+}
+function watchWindow(w) {
+  const wc = w.webContents;
+  wc.on('did-start-navigation', (e, url, inPlace, isMain) => {
+    const main = e && e.isMainFrame != null ? e.isMainFrame : isMain, same = e && e.isSameDocument != null ? e.isSameDocument : inPlace;
+    if (main !== false && !same) hbOf(wc).alive = false;
+  });
+  wc.on('did-finish-load', () => {
+    const s = hbOf(wc); s.alive = true; s.last = Date.now();
+    if (rp.watch) attachDebugger(wc);
+    rp.notices.splice(0).forEach((m) => noticeToPage(m));
+  });
+  w.on('unresponsive', () => { testLog('window-unresponsive', {}); startFreeze(wc, 'unresponsive'); });
+  w.on('responsive', () => { if (rp.freeze && rp.freeze.wc === wc) endFreeze(); });
+  wc.on('render-process-gone', async (e, d) => {
+    if (d && d.reason === 'clean-exit') return;
+    const frozen = rp.freeze && rp.freeze.wc === wc ? rp.freeze : null;
+    if (frozen) { frozen.ended = true; frozen.durationMs = Date.now() - frozen.start; clearInterval(frozen.timer); writeFreeze(); rp.freeze = null; sessionWrite(); }
+    hbOf(wc).alive = false;
+    const info = await crashReport('crash', { reason: d && d.reason, exitCode: d && d.exitCode, process: 'the window (renderer)', where: 'the window\'s process was gone before it could be asked', frozenBefore: frozen ? Math.round(frozen.durationMs / 1000) + ' s (' + frozen.id + ')' : 'no' }, null);
+    if (info) rp.notices.push(Object.assign({ durationMs: null, operation: (rp.extra && rp.extra.operation) || [], previous: false }, info));
+    if (w.isDestroyed()) return;
+    let reload = true;
+    if (process.env.ANVIL_TEST_DIALOGS !== 'log') {
+      const r = await dialog.showMessageBox(w, { type: 'error', title: 'Anvil', buttons: ['Reload Anvil', 'Close Anvil'], defaultId: 0, cancelId: 1,
+        message: 'Anvil\'s window stopped (' + (d && d.reason) + ').',
+        detail: 'A problem report was saved' + (info ? ' in ' + info.dir : '') + '. Reload opens Anvil again and offers the work AutoRecover kept.' });
+      reload = r.response === 0;
+    }
+    testLog('crash-reload', { reload });
+    if (reload) { if (!wc.isDestroyed()) wc.reload(); } else app.quit();
+  });
+}
+app.on('child-process-gone', async (e, d) => {
+  if (!d || d.reason === 'clean-exit' || d.reason === 'killed') return;   // the OpenCascade process is killed on purpose (Cancel, a new part)
+  const info = await crashReport('crash', { reason: d.reason, exitCode: d.exitCode, process: [...new Set([d.type, d.serviceName, d.name].filter(Boolean))].join(' / '), where: 'a helper process of Anvil stopped; the window kept running' }, null);
+  if (info) noticeToPage(Object.assign({ quiet: true }, info));
+});
+function mainError(kind, err) {
+  try { console.error(err); } catch (e) { /* no console */ }
+  crashReport('crash', { reason: 'the main process hit ' + kind, message: rpScrub(err && err.message || String(err)), stack: rpScrub(err && err.stack ? String(err.stack).split('\n').slice(0, 12).join('\n') : ''), process: 'the main process (desktop/main.js)', where: 'see the stack above' }, null)
+    .then((info) => { if (info) noticeToPage(Object.assign({ quiet: true }, info)); }, () => {});
+}
+process.on('uncaughtException', (err) => mainError('an uncaught exception', err));
+process.on('unhandledRejection', (err) => mainError('an unhandled promise rejection', err));
+// test hook (desktop/check.js reports): ANVIL_TEST_MAIN_ERRORS=1 throws once and rejects once in this process after the
+// page has loaded, so the two handlers above can be checked
+if (process.env.ANVIL_TEST_MAIN_ERRORS === '1') {
+  app.once('web-contents-created', (e, wc) => wc.once('did-finish-load', () => setTimeout(() => {
+    setTimeout(() => { throw new Error('check: a deliberate uncaught exception in main.js'); }, 0);
+    Promise.reject(new Error('check: a deliberate unhandled rejection in main.js'));
+  }, 1500)));
+}
+
+// ---- the page's own reports and the dialog's buttons
+ipcMain.handle('anvil-desktop:report-save', async (e, o) => {
+  o = o || {};
+  let r;
+  try { r = JSON.parse(String(o.json || '')); } catch (err) { return { error: 'not a report' }; }
+  if (!r || r.format !== 'anvil-problem-report' || !/^[\w-]+$/.test(String(r.kind || ''))) return { error: 'not a report' };
+  const made = newReportDir(r.kind, +r.at || Date.now());
+  r.id = made.id;
+  if (o.screenshot) r.files = Object.assign(r.files || {}, { screenshot: await screenshotInto(made.dir, e.sender) });
+  if (typeof o.model === 'string' && o.model) { fs.writeFileSync(path.join(made.dir, 'model.anvil.json'), o.model); r.files = Object.assign(r.files || {}, { model: true }); }
+  writeReport(made.dir, r);
+  pruneReports();
+  testLog('report-saved', { id: made.id, kind: r.kind, screenshot: !!(r.files && r.files.screenshot), model: !!(r.files && r.files.model) });
+  return { dir: made.dir, id: made.id };
+});
+ipcMain.handle('anvil-desktop:report-complete', (e, dir, o) => {
+  const d = insideReports(dir), r = d && readReportJson(d);
+  if (!r) return { ok: false };
+  o = o || {};
+  const sec = Array.isArray(o.secrets) ? o.secrets.filter((x) => typeof x === 'string') : [];
+  const clean = (t) => rpScrub(t, sec);
+  if (o.state && typeof o.state === 'object') { r.state = {}; Object.keys(o.state).forEach((k) => { r.state[k] = typeof o.state[k] === 'string' ? clean(o.state[k]) : o.state[k]; }); r.stateAt = Date.now(); r.stateNote = 'taken by the page when it answered again'; }
+  if (Array.isArray(o.console)) r.console = o.console.slice(-100).map((c) => ({ at: c.at, level: c.level, text: clean(c.text) }));
+  if (Array.isArray(o.crumbs) && o.crumbs.length >= (r.crumbs || []).length) r.crumbs = o.crumbs.slice(-200).map((c) => ({ at: c.at, text: clean(c.text), n: c.n }));
+  writeReport(d, r);
+  testLog('report-completed', { id: path.basename(d) });
+  return { ok: true };
+});
+ipcMain.handle('anvil-desktop:report-model', (e, dir, json) => {
+  const d = insideReports(dir), r = d && readReportJson(d);
+  if (!r || typeof json !== 'string' || !json) return { ok: false };
+  fs.writeFileSync(path.join(d, 'model.anvil.json'), json);
+  r.files = Object.assign(r.files || {}, { model: true });
+  writeReport(d, r);
+  testLog('report-model', { id: path.basename(d) });
+  return { ok: true };
+});
+ipcMain.handle('anvil-desktop:report-list', () => {
+  try {
+    const root = reportsDir();
+    return fs.readdirSync(root, { withFileTypes: true }).filter((x) => x.isDirectory() && /^\d{4}-/.test(x.name)).map((x) => x.name).sort().reverse().map((n) => {
+      const r = readReportJson(path.join(root, n)) || {};
+      return { id: n, kind: r.kind || null, at: r.at || null, summary: r.summary || null, dir: path.join(root, n), hasModel: !!(r.files && r.files.model) };
+    });
+  } catch (e) { return []; }
+});
+ipcMain.handle('anvil-desktop:report-read', (e, dir) => { const d = insideReports(dir); try { return d ? fs.readFileSync(path.join(d, 'report.md'), 'utf8') : ''; } catch (err) { return ''; } });
+ipcMain.handle('anvil-desktop:report-folder', () => { try { fs.mkdirSync(reportsDir(), { recursive: true }); } catch (e) { /* ignore */ } return reportsDir(); });
+ipcMain.handle('anvil-desktop:report-open', (e, dir) => {
+  const d = (dir && insideReports(dir)) || reportsDir();
+  try { fs.mkdirSync(d, { recursive: true }); } catch (err) { /* ignore */ }
+  testLog('report-open-folder', { dir: d });
+  if (process.env.ANVIL_TEST_DIALOGS === 'log') return d;
+  shell.openPath(d);
+  return d;
+});
+ipcMain.handle('anvil-desktop:copy', (e, text) => { clipboard.writeText(String(text || '').slice(0, 4000000)); testLog('copied', { chars: String(text || '').length }); return true; });
 
 // ---- start -------------------------------------------------------------------------------------------------------
 if (!app.requestSingleInstanceLock()) {
@@ -483,6 +850,7 @@ if (!app.requestSingleInstanceLock()) {
     protocol.handle('app', (req) => serve(req).catch((e) => new Response('500 ' + e.message, { status: 500 })));
     setupDownloads();
     setupMenu();
+    sessionStart();   // problem reports: did the last run end frozen?
     createWindow();
     win.once('ready-to-show', reportLastUpdate);
     testLog('started', { version: VERSION, root: ROOT, userData: app.getPath('userData'), pid: process.pid });

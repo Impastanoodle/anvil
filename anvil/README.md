@@ -42,6 +42,7 @@ Since 2026-10-02 the work has been refinement rather than new feature areas: eig
 | `icons-mastercam.js` | The icon set of the Mastercam interface profile (rfLX): its own drawings in Mastercam's visual language (steel-blue wireframe lines with grey point marks, blue simple solids, tan bodies with the operation in blue, red delete, teal new / OK) and a restyle of every other Anvil icon in the same palette. Registered with `Icons.sets`; a profile turns it on with `icons: { set: 'mastercam' }`. |
 | `style.css` | The whole UI stylesheet. |
 | `ui-core.js` | App state, three.js scene, camera (view animation, eased wheel zoom, rotation about the model centre), render-on-demand frame loop, picking, highlights, rebuild and worker-preview plumbing, undo. Creates the shared `UI` namespace. |
+| `ui-reports.js`, `reports-watchdog.js` | Problem reports (rfMI): breadcrumbs of what the user and the program did, console errors, a state summary; an `error` report for an uncaught exception, a `not-responding` report after a freeze (the browser watchdog worker; in the Windows app `desktop/main.js` samples the stuck call stack), Help ▸ Report a Problem…; the bar with Copy for Claude. The report format (`report.md` / `report.json`) is shared with `desktop/main.js`. |
 | `ui-sketch.js` | Viewport mouse handling (SolidWorks mouse mapping), sketch mode, the 2D sketch tools, inference while drawing (no grid), typed values while drawing, the sketch dimension overlay and its Modify box, the confirmation corner. |
 | `ui-commands.js` | PropertyManager rendering (on-model handles, selection lists, spin steps) and every feature command, incl. the sketch PMs (Offset, Fillet, Trim, Extend, Mirror, Pattern). |
 | `ui-panels.js` | Ribbon, menu bar, feature tree, heads-up toolbar, status bar, modals (patched in place, no flicker). |
@@ -1130,6 +1131,30 @@ Measured during the refinement rounds (2026-10-02 / 03) on the user's Windows ma
 | | Dragging a dimension, per move | 12.9 → 4.6 ms |
 | | Mug drawing, dashed pieces → paths | 964 → 75 |
 | | SVG of an aluminium section (hatch) | 104 → 35 KB |
+
+## Problem reports
+
+When Anvil crashes, stops responding, throws an error it carries on from, or the user picks **Help ▸ Report a Problem…**, it
+writes a report a Claude session can act on without asking what happened (`ui-reports.js`, lane reports, smoke `rfMI`):
+`report.md` (what happened in one sentence, where it was stuck, the operation in progress, the last 200 breadcrumbs with
+times, the last 100 console errors and warnings, a state summary: profile, theme, engine, document type, features by
+type, bodies, faces, triangles, sketch entities, drawing views, window, GPU, memory, OS) and `report.json` (the same,
+structured). Nothing is uploaded. No file names, paths, part names, custom properties, note text or geometry go in
+(kinds, sizes and counts instead; the open document's names are replaced by `<name>`); the model is added only when
+the user ticks **Include the model**.
+
+- In the Windows app a report is a folder under `%APPDATA%\Anvil\reports` (newest 30; see `desktop/README.md`
+  *Problem reports*); not-responding reports carry the stuck call stack, sampled every 5 s by the main process.
+- In a browser it is kept in IndexedDB (`anvil-reports`, newest 10) and offered as text to copy or a download; a freeze
+  over 3 s is seen by a watchdog worker (`reports-watchdog.js`), with its length but no stack.
+- What the user sees: a bar under the ribbon ("Anvil stopped responding for 18 s while Rebuild was running. A report
+  was saved.") with **Copy for Claude** (a sentence, the folder, "read report.md in that folder"), **Open folder**,
+  **View report**, **Include the model**, **Dismiss**; for an `error` only a quiet **Report saved** in the status bar (one
+  report a minute per error text). Tools ▸ Options ▸ *Reports*: where they are kept, Open folder, the not-responding
+  switch.
+- API: `UI.reports.crumb(text)`, `note(key, value)`, `snapshot()`, `make(kind, { userText, includeModel })` ->
+  Promise `{ id, kind, summary, md, dir? }`, `list()`, `dialog()`, `show(info)`. Lane progress's `UI.progress.begin`
+  crumbs its operations; `UI.progress.active()` is the report's *Operation in progress*.
 
 ## Automation from the browser console
 
