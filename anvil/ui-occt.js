@@ -49,7 +49,7 @@
     console.warn('OpenCascade for Windows did not run (' + why + '); the WebAssembly engine is used for the rest of this session.');
     if (st.worker !== w) return;
     stopWorker(); startWorker();   // the current model is built again once it is ready (onMessage 'ready' -> request)
-    if (st.worker) Object.keys(imports).forEach(function (k) { st.worker.postMessage({ type: 'import', seq: +k, format: imports[k].format, text: imports[k].text }); });
+    if (st.worker) Object.keys(imports).forEach(function (k) { st.worker.postMessage({ type: 'import', seq: +k, format: imports[k].format, text: imports[k].text, progress: !!imports[k].progress }); });
   }
   // (rfIO) localStorage anvil.occtPlainStart = '1' starts the engine the old, slow way (desktop/check.js occt-start
   // --compare measures both); occt-worker.js fastFunction is the default
@@ -876,7 +876,7 @@
       if (!st.worker) { rej(new Error(st.error || 'OpenCascade did not start.')); return; }
       var s = ++importSeq;
       imports[s] = { res: res, rej: rej, format: format, text: text, progress: typeof onProgress === 'function' ? onProgress : null };
-      st.worker.postMessage({ type: 'import', seq: s, format: format, text: text });
+      st.worker.postMessage({ type: 'import', seq: s, format: format, text: text, progress: typeof onProgress === 'function' });   // (rfMG) importProgress messages only when asked
     });
   }
 

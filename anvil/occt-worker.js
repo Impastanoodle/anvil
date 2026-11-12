@@ -187,8 +187,10 @@ self.onmessage = async (e) => {
   try { oc = await ready; } catch (err) { if (m.type === 'import') self.postMessage({ type: 'importError', seq: m.seq, message: 'OpenCascade is not installed (run vendor/get-occt.ps1).' }); return; }
   // { type: 'import', seq, format: 'step' | 'iges', text } -> { type: 'imported', seq, result: OcctKernel.importFile(...) }
   if (m.type === 'import') {
-    // (rfMG) { type: 'importProgress', seq, fraction (0..1 or null), text } while the file is read and meshed
-    const say = (fraction, text) => { try { self.postMessage({ type: 'importProgress', seq: m.seq, fraction, text }); } catch (e) { } };
+    // (rfMG) { type: 'importProgress', seq, fraction (0..1 or null), text } while the file is read and meshed, only
+    // when the post says progress: true: a consumer that takes the first message with its seq as the answer
+    // (tests/occt-tests.html) gets 'imported' first, as before
+    const say = m.progress ? (fraction, text) => { try { self.postMessage({ type: 'importProgress', seq: m.seq, fraction, text }); } catch (e) { } } : null;
     try { self.postMessage({ type: 'imported', seq: m.seq, result: OcctKernel.importFile(oc, m.format, m.text, say) }); }
     catch (err) { self.postMessage({ type: 'importError', seq: m.seq, message: (err && err.message) || String(err) }); }
     return;
