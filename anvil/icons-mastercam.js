@@ -176,6 +176,7 @@
   OWN.deleteEnt = L('M3.5 3.5 L12.5 12.5 M12.5 3.5 L3.5 12.5', RD, 3);
   OWN.undeleteEnt = L('M3 3 L10 10 M10 3 L3 10', RL, 2.4) + L('M7.5 12.5 H11.5 A2.5 2.5 0 0 0 11.5 7.5 H10', LB, 1.5) + head(6, 12.5, -1, 0, LB, 2.6);
   OWN.hideUnhide = R(2.5, 2.5, 4, 4, 'none', T2, 1.5) + R(9.5, 2.5, 4, 4, 'none', GN, 1.5) + R(2.5, 9.5, 4, 4, 'none', LB, 1.5) + R(9.5, 9.5, 4, 4, G1, G2, 1.5);
+  OWN.showArcCenters = C(8, 8, 5.5, 'none', LB, 1.5) + L('M8 5.5 V10.5 M5.5 8 H10.5', NG, 1.5);   // lane arccenters: an arc with the grey + at its centre
   OWN.showEndpoints = R(3.5, 3.5, 9, 9, 'none', SL, 1, 'stroke-dasharray="1.5 1.5"') + Fr(2, 2, 3, 3, B2) + Fr(11, 2, 3, 3, B2) + Fr(2, 11, 3, 3, B2) + Fr(11, 11, 3, 3, B2);
   OWN.blankEnt = R(2.5, 2.5, 11, 11, 'none', T2, 1, 'stroke-dasharray="1 1"') + R(5.5, 5.5, 5, 5, 'none', T2, 1, 'stroke-dasharray="1 1"');
   OWN.unblankEnt = R(2.5, 2.5, 11, 11, 'none', T2, 1, 'stroke-dasharray="1 1"') + Fr(5, 5, 6, 6, T1);

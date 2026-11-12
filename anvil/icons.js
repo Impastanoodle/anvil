@@ -431,6 +431,7 @@ var IconsLib = (function () {
   I.dimTolType = pxText(3, 0, '+.01', B) + pxText(1, 5, '1.50') + pxText(3, 10, '-.01', B);
   I.dimPrecision = pxText(2, 2, '.01') + ln('M1.5 8.5 h13', M, 1) + pxText(6, 10, '.01', B);
   I.showEndpoints = ln('M3.5 12.5 L12.5 3.5', S, 1.4) + circ(3.5, 12.5, 2, B, 'none') + circ(12.5, 3.5, 2, B, 'none');
+  I.showArcCenters = circ(8, 8, 6, 'none', S, 1.4) + ln('M8 4.5 V6 M8 10 V11.5 M4.5 8 H6 M10 8 H11.5', B, 1) + circ(8, 8, 1.75, B, 'none');   // lane arccenters: a circle with its centre mark
   // lane CD: the View ribbon tab (Mastercam-style, built by lane CC). Standard views: SolidWorks' wire cube with the
   // named face in yellow (a face at the back shows through paler, behind the dashed hidden edges); Isometric a true iso
   // cube with its three faces shaded. Display styles: one cube drawn in each style. Show toggles (planes, origins,

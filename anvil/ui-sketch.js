@@ -3133,6 +3133,7 @@
               if (/\.mid$/.test(pr.ref) || (e.t === 'rect' && /\.c$/.test(pr.ref))) return;
               if (inf && inf[pr.ref.split('.')[1]]) return;
               if (App.view.showEndpoints === false && !/\.c$/.test(pr.ref)) return;
+              if (App.view.showArcCenters === false && UI.isArcCenterRef && UI.isArcCenterRef(e, pr.ref)) return;   // lane arccenters
               pts.push(pr.pt[0], pr.pt[1]);
             });
           } catch (err) { /* no dots */ }

@@ -2906,6 +2906,7 @@
         { label: 'Sketch Grid', checked: v.showGrid, action: function () { v.showGrid = !v.showGrid; App.gridStale = true; } },
         { label: 'Sketch Regions', checked: v.sketchRegions !== false, action: toggleSketchRegions },   // sketch-layers
         { label: 'Snap to Model', checked: v.snapModel !== false, action: function () { v.snapModel = v.snapModel === false; UI.setStatus(v.snapModel ? 'Sketch points snap to model vertices, edges, centres and faces.' : 'Sketch points snap to sketch geometry only.'); } },   // p9-modelsnap
+        { label: 'Display ▸ Arc Center Points', icon: 'showArcCenters', checked: v.showArcCenters !== false, action: function () { toggleArcCenters(); } },   // lane arccenters
         { label: 'Display ▸ Show Endpoints', icon: 'showEndpoints', checked: v.showEndpoints !== false, action: function () { toggleShowEndpoints(); } },   // lane BS
         { label: 'Display ▸ Change Transparency', icon: 'translucency', checked: !!(UI.translucency && UI.translucency()), action: function () { UI.translucency(!UI.translucency()); } }   // lane mcpolish (Mastercam: Translucency)
       ].concat(UI.tangentEdgesMenuItems ? UI.tangentEdgesMenuItems('Display ▸ ') : [],   // rfHL: Tangent Edges Visible / As Phantom / Removed
@@ -3146,6 +3147,22 @@
     UI.setStatus(App.view.showEndpoints ? 'Sketch end points shown.' : 'Sketch end points hidden: they still select and snap.');
   }
   UI.toggleShowEndpoints = toggleShowEndpoints;
+  // lane arccenters (rfMB, user 2026-11-12 "how do i remove the green dots in the center of circles"; Mastercam's Home ▸
+  // Display ▸ Arc Center Points): the centre dots of circles, arcs, ellipses, slots and polygons shown or hidden in the
+  // sketch being edited (ui-core.js / ui-sketch.js skip them, UI.isArcCenterRef). A centre still snaps, selects,
+  // takes relations and dimensions; selected or pre-highlighted it shows (the selection dot and the hover ring are
+  // drawn on their own). Sketch points and the origin are not centres. App.view.showArcCenters, remembered per browser,
+  // on by default.
+  UI.showArcCentersPref = function () { try { return window.localStorage.getItem('anvil.showArcCenters') !== '0'; } catch (e) { return true; } };
+  App.view.showArcCenters = UI.showArcCentersPref();
+  function toggleArcCenters(on) {
+    App.view.showArcCenters = on == null ? App.view.showArcCenters === false : !!on;
+    try { window.localStorage.setItem('anvil.showArcCenters', App.view.showArcCenters ? '1' : '0'); } catch (e) { /* storage blocked */ }
+    UI.updateSketches(); App.dimsStale = true; refreshHud(); refreshRibbon();
+    UI.setStatus(App.view.showArcCenters ? 'Arc center points shown.' : 'Arc center points hidden: they still select and snap.');
+    return App.view.showArcCenters;
+  }
+  UI.toggleArcCenters = toggleArcCenters;
   function setStyle(s) { App.view.style = s; UI.applyDisplayStyle(); refreshHud(); if (frame) frameStatusSync(); }
   function setBg(b) { return UI.setBackground(b); }   // r14/viewui14: keeps the viewport's other classes (was className =), remembered
   function normalToSelection() {
@@ -3210,6 +3227,7 @@
         show('vRegions', 'Sketch Regions', 'Shade the closed regions of the sketch and mark its open ends', function () { return App.view.sketchRegions !== false; }, function () { toggleSketchRegions(); }),
         show('vSketchDims', 'Sketch Dimensions', 'Show the driven dimensions on every sketch entity, or only the placed ones', function () { return !!App.view.showDims; }, function () { var v = App.view; v.showDims = !v.showDims; App.dimsStale = true; UI.setStatus(v.showDims ? 'Driven dimensions shown on every sketch entity. Click a value to change it.' : 'Only placed dimensions are shown.'); })] },
       { group: 'Show / Hide', stack: [
+        show('showArcCenters', 'Arc Center Points', 'Show or hide the centre dots of circles, arcs, ellipses and slots (they still select and snap)', function () { return App.view.showArcCenters !== false; }, function () { toggleArcCenters(); }),
         show('showEndpoints', 'Show Endpoints', 'Show or hide the end-point dots of sketch entities (they still select and snap)', function () { return App.view.showEndpoints !== false; }, function () { toggleShowEndpoints(); }),
         show('vSnapModel', 'Snap to Model', 'Let sketch points snap to model vertices, edges, centres and faces', function () { return App.view.snapModel !== false; }, function () { var v = App.view; v.snapModel = v.snapModel === false; UI.setStatus(v.snapModel ? 'Sketch points snap to model vertices, edges, centres and faces.' : 'Sketch points snap to sketch geometry only.'); })] },
       { sep: true },
@@ -3272,6 +3290,7 @@
       { label: 'Coordinate Systems', checked: App.view.showCsys !== false, action: function () { App.view.showCsys = App.view.showCsys === false; UI.updatePlanes(); } },
       { label: 'Sketches', checked: App.view.showSketches, action: function () { App.view.showSketches = !App.view.showSketches; UI.updateSketches(); } },
       { label: 'Sketch grid', checked: App.view.showGrid, action: function () { App.view.showGrid = !App.view.showGrid; App.gridStale = true; } },
+      { label: 'Arc Center Points', icon: 'showArcCenters', checked: App.view.showArcCenters !== false, action: function () { toggleArcCenters(); } },   // lane arccenters
       { label: 'Snap to model', checked: App.view.snapModel !== false, action: function () { App.view.snapModel = App.view.snapModel === false; } }   // p9-modelsnap
     ]; });
     dd('appearance', 'Edit Appearance', function () { return [{ label: 'Edit Appearance…', action: function () { UI.openTaskPane('appearance'); } }]; });

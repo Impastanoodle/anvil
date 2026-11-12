@@ -281,7 +281,7 @@
           { name: 'Attributes', items: ['appearance', { stack: ['construction', { fn: 'action', arg: 'mode3d' }] }] },
           { name: 'Organize', items: [{ stack: [{ fn: 'action', arg: 'zDepth' }, { fn: 'action', arg: 'level' }, 'levels'] }] },   // lane mcpolish: Z depth, main level
           { name: 'Delete', items: [{ menu: 'Edit', row: 'Delete', label: 'Delete\nEntities', icon: 'deleteEnt', help: 'Delete the selection (Edit ▸ Delete, Del)' }, { stack: [{ fn: 'action', arg: 'undelete', label: 'Undelete Entity' }] }] },
-          { name: 'Display', items: [{ fn: 'action', arg: 'hideUnhide' }, { stack: ['showEndpoints', { fn: 'action', arg: 'blank' }, { fn: 'action', arg: 'unblank' }] }, { stack: ['vSketches', 'filter'] }] },
+          { name: 'Display', items: [{ fn: 'action', arg: 'hideUnhide' }, { stack: ['showArcCenters', 'showEndpoints', { fn: 'action', arg: 'blank' }] }, { stack: [{ fn: 'action', arg: 'unblank' }, 'vSketches', 'filter'] }] },   // lane arccenters: Arc Center Points above Endpoints, as Mastercam
           { name: 'Analyze', items: ['measure', { stack: ['check', 'sectionProps', 'mass'] }, { stack: ['clearance', 'draftAnalysis', 'zebra'] }] },
           { name: 'Add-Ins', items: [{ menu: 'Tools', row: 'Macro ▸ Run script…', label: 'Run\nAdd-In', icon: 'macro', help: 'Run a script on the model (Tools ▸ Macro ▸ Run script…)' }, { fn: 'search', label: 'Command\nFinder', icon: 'search', help: 'Find any command by its name (Mastercam or SolidWorks)' }] }
         ] },
@@ -359,7 +359,7 @@
       line: 'Line\nEndpoints', parallelLine: 'Line Parallel', perpLine: 'Line Perpendicular', bisectorLine: 'Line Bisect',
       point: 'Point\nPosition', rect: 'Rectangle', circle: 'Circle\nCenter Point', pcircle: 'Circle Edge Point', arc: 'Arc Polar', arc3: 'Arc 3 Points', tarc: 'Arc Tangent',
       spline: 'Spline\nManual', text: 'Create\nLetters', trim: 'Dynamic\nTrim', splitEnt: 'Break Two\nPieces', joinEnt: 'Join Entities', skFillet: 'Fillet Entities', skChamfer: 'Chamfer Entities',
-      offset: 'Offset\nEntity', convert: 'Project', closeArc: 'Close Arc',
+      offset: 'Offset\nEntity', convert: 'Project', closeArc: 'Close Arc', showArcCenters: 'Arc Center Points', showEndpoints: 'Endpoints',
       dim: 'Smart\nDimension', horizDim: 'Horizontal', vertDim: 'Vertical', ordinateDim: 'Ordinate', baselineDim: 'Baseline', holeTable: 'Hole\nTable', areaHatch: 'Cross Hatch', multiJogLeader: 'Leader',
       measure: 'Analyze\nDistance', mass: 'Analyze Solid Properties', check: 'Check Solid', sectionProps: '2D Area',
       vZoomFit: 'Fit', zoomArea: 'Window', vTop: 'Top', dsShadedEdges: 'Outline Shaded', vFeatureTree: 'Solids Manager', levels: 'Levels', vLevels: 'Levels Manager'

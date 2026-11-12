@@ -3079,6 +3079,9 @@ var UI = (function () {
     pm.color = mh === 0xffffff || (mh === LINE_PALETTE_LIGHT.sketch && m !== mats.sketchConstr) ? PT_GREEN : m.color;
     return pm;
   }
+  // lane arccenters: the centre of a circle, an arc, an ellipse, a slot or a polygon (Arc Center Points hides its dot)
+  var ARC_CENTER = { circle: 1, arc: 1, aslot: 1, ellipse: 1, pellipse: 1, slot: 1, poly: 1 };
+  function isArcCenterRef(e, ref) { return !!(e && ARC_CENTER[e.t] && /\.c$/.test(ref)); }
   function sketchEndPoints(f, i, e, mat, ptsBy) {
     var S = window.SketchSolver;
     if (!S || !S.pointRefs || e.t === 'point') return;
@@ -3087,6 +3090,7 @@ var UI = (function () {
       if (/\.mid$/.test(pr.ref) || (e.t === 'rect' && /\.c$/.test(pr.ref))) return;
       if (inf && inf[pr.ref.split('.')[1]]) return;
       if (App.view.showEndpoints === false && !/\.c$/.test(pr.ref)) return;   // View ▸ Display ▸ Show Endpoints off: centres only (ui-panels.js)
+      if (App.view.showArcCenters === false && isArcCenterRef(e, pr.ref)) return;   // lane arccenters: View ▸ Display ▸ Arc Center Points off
       var key = Math.round(pr.pt[0] / cam.scale / 2) + ',' + Math.round(pr.pt[1] / cam.scale / 2);
       var b = ptsBy[mat.uuid] || (ptsBy[mat.uuid] = { mat: mat, pts: [] });
       if (ptsBy._seen && ptsBy._seen[key]) return;
@@ -4842,6 +4846,7 @@ var UI = (function () {
     rebuild: rebuild, previewInWorker: previewInWorker, cancelPreviews: cancelPreviews, featurePreview: featurePreview, featurePreviewEnd: featurePreviewEnd, holdFrame: holdFrame, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
     applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
     rollbackTo: rollbackTo, rollForward: rollForward, rollbackCommit: rollbackCommit, rollbackSwap: rollbackSwap,   // r10/editpreview10: Edit Feature rollback
+    isArcCenterRef: isArcCenterRef,   // lane arccenters
     rollbarTo: rollbarTo, rollbarIndex: rollbarIndex, rollbarRolled: rollbarRolled, rollbarSync: rollbarSync, rollbarForward: rollbarForward, rollbarEnd: rollbarEnd, rollbarPrevious: rollbarPrevious, rollbarPrevIndex: rollbarPrevIndex,   // rfGQ: the rollback bar
     profileViewportColors: profileViewportColors, syncProfileViewportColors: syncProfileViewportColors,   // lane mctheme
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme, darkViewport: darkViewport, linePalette: function () { return darkViewport() ? LINE_PALETTE : LINE_PALETTE_LIGHT; },

@@ -7,7 +7,7 @@
       'dsShadedEdges', 'dsShaded', 'dsHLR', 'dsHLV', 'dsWireframe', 'vBackground', 'vTheme', 'vPlanes', 'vOrigins',
       'vSketches', 'vGrid', 'vRegions', 'vSketchDims', 'vSnapModel', 'vFeatureTree'];
     // existing icons the tab reuses (Edit Appearance is drawn with circles only: any drawn shape will do there)
-    var reused = ['zoomArea', 'prevView', 'appearance', 'scene', 'showEndpoints', 'section', 'levels', 'filter'];
+    var reused = ['zoomArea', 'prevView', 'appearance', 'scene', 'showArcCenters', 'showEndpoints', 'section', 'levels', 'filter'];
     var names = added.concat(reused);
     function rgb(c) {
       var m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(c);

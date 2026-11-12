@@ -28,7 +28,7 @@
   function rfCCOn(label) { return rfCCBtn(label).classList.contains('active'); }
   var RFCC_BUTTONS = ['Zoom to Fit', 'Zoom to Area', 'Previous View', 'Front', 'Back', 'Left', 'Right', 'Top', 'Bottom', 'Isometric', 'Normal To',
     'Shaded With Edges', 'Shaded', 'Hidden Lines Removed', 'Hidden Lines Visible', 'Wireframe', 'Edit Appearance', 'Apply Scene', 'Background', 'Dark Theme',
-    'Planes', 'Origins', 'All Sketches', 'Sketch Grid', 'Sketch Regions', 'Sketch Dimensions', 'Show Endpoints', 'Snap to Model', 'Section View',
+    'Planes', 'Origins', 'All Sketches', 'Sketch Grid', 'Sketch Regions', 'Sketch Dimensions', 'Arc Center Points', 'Show Endpoints', 'Snap to Model', 'Section View',
     'FeatureManager', 'Levels Manager', 'Selection Filter'];
 
   step('rfCC: the View tab after Transform — Zoom, Orientation, Appearance, Show / Hide, Section and Managers with their captions under them; at 1400 px everything fits with labels (only the Managers may go to »); tooltips with shortcuts; Search Commands finds Wireframe and Section View (View)', async function () {
