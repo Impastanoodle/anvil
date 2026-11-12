@@ -224,10 +224,10 @@
       var builtin = {};
       try { own.forEach(function (n) { if (Ic.names().indexOf(n) >= 0) builtin[n] = Ic(n, 32); }); } finally { Ic.sets.use('mastercam'); }
       Object.keys(builtin).forEach(function (n) { assert(Ic(n, 32).replace(/ data-(set|ic)="[^"]*"/g, '') !== builtin[n], n + ' is Anvil\'s drawing'); });
-      // a main line is whole device pixels wide at the sizes the chrome shows (16 small, 24 large under the frame)
+      // a main line is whole device pixels wide at the sizes the chrome shows (16 small, 32 large under the frame: lane mcribbon, measured; was 24)
       var dpr = W.devicePixelRatio || 1, soft = [];
       ['line', 'circle', 'rect', 'spline', 'offset', 'skFillet', 'parallelLine'].forEach(function (n) {
-        [16, 24].forEach(function (sz) {
+        [16, 32].forEach(function (sz) {
           var box = D.createElement('div'); box.innerHTML = Ic(n, sz);
           Array.prototype.forEach.call(box.querySelectorAll('[stroke="' + set.palette.line + '"], [stroke="' + set.palette.slate + '"]'), function (e) {
             var w = parseFloat(e.getAttribute('stroke-width')) * sz / 16 * dpr;

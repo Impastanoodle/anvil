@@ -2426,3 +2426,45 @@ table.mc-planes tr.picked td.mc-pl-name { font-weight: 600; }
 :root[data-profile] #vp-selbar .sb-btn.on { background: var(--mc-press); border-color: var(--mc-press-line); }
 :root[data-profile] #vp-selbar .sb-sep { background: var(--mc-line); }
 :root[data-profile] #viewport.vp-profile-bg #scale-bar { color: #000000; }
+/* lane mcribbon (2026-11-12): the Mastercam frame's ribbon geometry, measured on the user's screenshots (100 %, px):
+   tab row 30 + a 1 px line (tabs 25 high from y 5, 12 px text, about 16 px either side; File 60 wide, 26 high), the
+   buttons 96 high + a 1 px line; large icons 32 at 6 from the top, two 12 px label lines 13 apart under them, the group
+   caption 12 px in a 15 px line 77 from the top (--mc-cap-off: from the bar's bottom, read by ui-panels.js
+   frameCaptions); small buttons in rows of 22 from 3 down, 16 px icons, 12 px labels at their right, kept whenever the
+   tab fits (ui-panels.js frameFit collapses whole groups otherwise); separators from 2 to 92. Layout only, any profile
+   with a frame (#app.mc-tabs-top / .mc-ribbon-caps); SolidWorks has neither class. */
+#app.mc-tabs-top #ribbon #ribbon-tabs { height: 31px; padding: 5px 8px 0 0; align-items: flex-end; }
+#app.mc-tabs-top #ribbon #ribbon-tabs .rtab { height: 25px; padding: 0 16px; font-size: 12px; line-height: 23px; }
+#app.mc-tabs-top #ribbon #ribbon-tabs .rtab.active { height: 26px; margin-bottom: -1px; border-top: 1px solid var(--mc-line, var(--line)); line-height: 23px; }
+#app.mc-tabs-top #ribbon #mc-file { align-self: flex-end; width: 60px; height: 26px; margin: 0 6px -1px 0; padding: 0; font-size: 12px; font-weight: 400; letter-spacing: 0; }
+#app.mc-tabs-top #ribbon #mc-tabtools { align-self: center; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons, #app.mc-ribbon-caps #ribbon.rb-has-captions #ribbon-buttons { height: 96px; min-height: 96px; padding: 3px 2px 22px; gap: 0; align-items: stretch; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons > .rb, #app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-fly:not(.rb-fly-small) > .rb {
+  width: auto; min-width: 42px; max-width: 86px; padding: 2px 3px 0; gap: 3px; justify-content: flex-start; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons > .rb.rb-long, #app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-fly:not(.rb-fly-small) > .rb.rb-long { max-width: none; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons > .rb > .ico, #app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-fly:not(.rb-fly-small) > .rb > .ico { width: 32px; height: 32px; flex: none; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons > .rb > span, #app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-fly:not(.rb-fly-small) > .rb > span {
+  font-size: 12px; line-height: 13px; max-height: 26px; overflow: hidden; }
+/* small buttons: labelled rows of 22, three to a column (stacks and grids alike) */
+#app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-stack { flex: none; gap: 0; justify-content: flex-start; padding: 0; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-stack.rb-grid { grid-auto-columns: max-content; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-stack.rb-grid { grid-template-rows: repeat(3, 22px); gap: 0 2px; align-content: start; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-stack > .rb, #app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-stack > .rb-fly, #app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-stack .rb-fly-small > .rb { height: 22px; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-stack .rb { width: auto; min-width: 0; padding: 0 2px 0 3px; gap: 4px; justify-content: flex-start; align-items: center; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-stack .rb > span { display: inline; font-size: 12px; line-height: 16px; white-space: nowrap; }
+/* split buttons: Mastercam's small chevron, no caret zone of its own */
+#app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-caret { width: 9px; padding: 0 0 4px; align-items: flex-end; font-size: 0; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-stack .rb-caret { padding: 0; align-items: center; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-caret > span { display: none; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-caret::after, #app.mc-ribbon-caps #ribbon .mc-colbtn .mc-caret { content: ''; display: inline-block; width: 7px; height: 4px; background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='4' viewBox='0 0 7 4'%3E%3Cpath d='M.5.5 3.5 3.5 6.5.5' fill='none' stroke='%23000' stroke-width='1'/%3E%3C/svg%3E") center / 7px 4px no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='4' viewBox='0 0 7 4'%3E%3Cpath d='M.5.5 3.5 3.5 6.5.5' fill='none' stroke='%23000' stroke-width='1'/%3E%3C/svg%3E") center / 7px 4px no-repeat; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons .rb-caret, #app.mc-ribbon-caps #ribbon .mc-colbtn .mc-caret { color: var(--mc-text, var(--text)); }
+#app.mc-ribbon-caps #ribbon .mc-colbtn .mc-caret { margin-left: 3px; vertical-align: middle; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons > .rb.mc-colbtn > span { white-space: nowrap; max-width: none; }
+#app.mc-ribbon-caps #ribbon #ribbon-buttons > .rb.mc-colbtn { max-width: none; }
+#ribbon-buttons > .mc-col { display: none !important; }
+/* separators run from 2 px under the tab row to beside the captions */
+#app.mc-ribbon-caps #ribbon #ribbon-buttons > .rb-sep { margin: -1px 3px -18px; }
+#app.mc-ribbon-caps #ribbon > .mc-captions { --mc-cap-off: 19px; height: 15px; }
+#app.mc-ribbon-caps #ribbon > .mc-captions .mc-caption { height: 15px; line-height: 15px; font-size: 12px; }

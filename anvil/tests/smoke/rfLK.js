@@ -93,7 +93,7 @@
     var names = rfLKTabs().map(function (t) { return t.textContent; }).join();
     assert(names === 'Home,Wireframe,Solids,Sheet Metal,Drafting,Transform,View,More', 'tabs ' + names);
     var rh = $('ribbon').getBoundingClientRect().height;
-    assert(rh > 85 && rh < 125, 'ribbon height ' + rh);
+    assert(rh > 120 && rh < 135, 'ribbon height ' + rh);   // lane mcribbon: Mastercam's measured 31 px tab row + 96 px buttons + a 1 px line (was 85-125 with the old 24 px icons)
     // the title row: New, Open, Save, Print, Undo, Redo shown; the SolidWorks-only buttons hidden
     ['std-new', 'std-open', 'std-save', 'std-print', 'std-undo', 'std-redo'].forEach(function (id) { assert(rfLKShown($(id)), id + ' hidden'); });
     ['std-select', 'std-rebuild', 'std-options'].forEach(function (id) { assert(!rfLKShown($(id)), id + ' shown'); });

@@ -161,7 +161,9 @@
     var le = rfLHBtn('Line Endpoints');
     assert(le, 'no Line Endpoints on Wireframe');
     await wait(80);
-    var caps = Array.prototype.map.call(D.querySelectorAll('#ribbon .rb-captions > *'), function (c) { return c.textContent; });
+    // lane mcribbon: the captions shown under the frame are the frame's own layer (UI.frameCaptions); the hidden
+    // .rb-captions layer of ui-transform.js stops following once a narrow window collapses a group into one button
+    var caps = UI.frameCaptions ? UI.frameCaptions() : Array.prototype.map.call(D.querySelectorAll('#ribbon .rb-captions > *'), function (c) { return c.textContent; });
     assert(['Points', 'Lines', 'Arcs', 'Shapes', 'Modify'].every(function (g) { return caps.indexOf(g) >= 0; }), 'group captions ' + caps.join(', '));
     await UI.newSketchOnPlane('Front'); await idle(); await wait(30);
     assert(UI.App.ribbonTab === 'Wireframe', 'the sketch brought ' + UI.App.ribbonTab + ' forward');

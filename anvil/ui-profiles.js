@@ -286,14 +286,16 @@
           { name: 'Add-Ins', items: [{ menu: 'Tools', row: 'Macro ▸ Run script…', label: 'Run\nAdd-In', icon: 'macro', help: 'Run a script on the model (Tools ▸ Macro ▸ Run script…)' }, { fn: 'search', label: 'Command\nFinder', icon: 'search', help: 'Find any command by its name (Mastercam or SolidWorks)' }] }
         ] },
         { name: 'Wireframe', groups: [
+          // lane mcribbon: Mastercam's stacks of three labelled buttons, the third a split button holding the rest (Line Closest ˅,
+          // Circle Edge Point ˅ in the screenshots), so the tab fits 1900 px with every label shown (the old icon grids needed 2421 px)
           { name: 'Sketch', items: ['sketch', { fly: 'relations', items: ['relations', 'addRelation', 'fullyDefine'] }, { stack: ['repairSketch', 'checkSketch', 'construction'] }] },
           { name: 'Points', items: ['point'] },
-          { name: 'Lines', items: ['line', { grid: ['parallelLine', 'perpLine', 'tangentLine', 'bisectorLine', 'centerline', 'midline'] }] },
-          { name: 'Arcs', items: ['circle', { grid: ['arc3', 'tarc', 'pcircle', 'arc', 'tangentCircle'] }] },
+          { name: 'Lines', items: ['line', { stack: ['parallelLine', 'perpLine', { fly: 'lines', label: 'More Lines', items: ['tangentLine', 'bisectorLine', 'centerline', 'midline'] }] }] },
+          { name: 'Arcs', items: ['circle', { stack: ['arc3', 'tarc', { fly: 'arcs', label: 'More Arcs', items: ['pcircle', 'arc', 'tangentCircle'] }] }] },
           { name: 'Splines', items: ['spline', { stack: ['styleSpline', 'eqnCurve'] }] },
-          { name: 'Shapes', items: ['rect', { grid: ['crect', 'rect3', 'crect3', 'parallelogram', 'slot', 'cslot', 'aslot3', 'aslot', 'polygon'] }, { stack: ['ellipse', 'pellipse', 'parabola'] }, 'text'] },
+          { name: 'Shapes', items: [{ fly: 'rects', label: 'Rectangle', items: ['rect', 'crect', 'rect3', 'crect3', 'parallelogram'] }, 'text', { stack: [{ fly: 'slots', label: 'Slots', items: ['slot', 'cslot', 'aslot3', 'aslot'] }, 'polygon', { fly: 'ellipses', label: 'Ellipses', items: ['ellipse', 'pellipse', 'parabola'] }] }] },
           { name: 'Curves', items: [{ stack: ['intersectCurve', 'projCurve', 'helix'] }] },
-          { name: 'Modify', items: ['trim', { grid: ['extend', 'joinEnt', 'skFillet', 'skChamfer', 'closeArc', 'mirrorEnt'] }, 'splitEnt', 'offset', 'convert'] }
+          { name: 'Modify', items: ['trim', 'splitEnt', { stack: ['extend', 'joinEnt', 'closeArc'] }, 'skFillet', 'skChamfer', 'offset', 'convert', { stack: ['mirrorEnt'] }] }
         ] },
         { name: 'Solids', groups: [
           { name: 'Create', items: ['extrude', { stack: ['revolve', 'loft', 'sweep'] }, { stack: ['boundary', 'cut', 'revolveCut'] }, { stack: ['sweptCut', 'loftedCut', 'boundaryCut'] }, 'holeWizard', { stack: ['lpattern', 'cpattern', 'mirror'] }] },
@@ -302,7 +304,7 @@
         ] },
         { name: 'Sheet Metal', sw: 'Sheet Metal', captions: ['Create', 'Flanges', 'Cut', 'Flat Pattern'] },
         { name: 'Drafting', groups: [
-          { name: 'Dimension', items: ['dim', { grid: ['horizDim', 'vertDim', 'angRunDim', 'chamferDim', 'pathLengthDim', 'autodim'] }] },
+          { name: 'Dimension', items: ['dim', { stack: ['horizDim', 'vertDim', { fly: 'dims', label: 'More Dimensions', items: ['angRunDim', 'chamferDim', 'pathLengthDim', 'autodim'] }] }] },
           { name: 'Ordinate', items: [{ stack: ['ordinateDim', 'ordinateH', 'ordinateV'] }] }
         ] },
         { name: 'Transform', sw: 'Transform' },

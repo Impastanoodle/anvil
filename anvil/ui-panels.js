@@ -395,6 +395,7 @@
       if (x.menu || x.fn) return frameItem(x, group);   // lane mcframe: a menu row or a frame function as a button
       var list = (x.stack || x.grid || x.items || []).map(function (c) {
         if (c && typeof c === 'object' && (c.menu || c.fn)) return frameItem(c, null);
+        if (c && typeof c === 'object' && c.fly && c.items) return profItem(c, null);   // lane mcribbon: a split button in a stack (Mastercam's Line Closest ˅)
         var l = leafOf(c); return l ? wrap(l, null) : null;
       }).filter(Boolean);
       if (!list.length) return null;
@@ -909,14 +910,15 @@
     var rib = $('ribbon'), bar = $('ribbon-buttons'), layer = rib && rib.querySelector(':scope > .mc-captions');
     if (!frameRibbon('captions') || !ribbonBuilt) { if (layer) layer.remove(); return; }
     if (!layer) { layer = el('div', { class: 'mc-captions', 'aria-hidden': 'true' }); rib.insertBefore(layer, bar.nextSibling); }
-    var items = ribbonBuilt.items, kids = Array.prototype.filter.call(bar.children, function (c) { return !c.classList.contains('rb-more'); });
+    var items = ribbonBuilt.items, kids = Array.prototype.filter.call(bar.children, function (c) { return !c.classList.contains('rb-more') && !c.classList.contains('mc-colbtn'); });   // lane mcribbon: a collapsed group's button stands for its nodes
     // the bar is between two builds: look again on the next frames (a few times), so no tab is left without captions
     if (kids.length !== items.length || !bar.getBoundingClientRect().width) { if ((frameCaptions.retry = (frameCaptions.retry || 0) + 1) < 30) frameCaptionsSoon(); return; }
     frameCaptions.retry = 0;
     var rr = rib.getBoundingClientRect(), br = bar.getBoundingClientRect(), groups = [], cur = null;
     items.forEach(function (it, i) {
       if (it.sep || !it.group) { cur = null; return; }
-      var n = kids[i], r = n.getBoundingClientRect();
+      var n = kids[i]; if (n.classList.contains('mc-col') && n._mcCol) n = n._mcCol;   // lane mcribbon
+      var r = n.getBoundingClientRect();
       if (n.classList.contains('rb-over') || !r.width) return;
       if (!cur || cur.name !== it.group) { cur = { name: it.group, l: r.left, r: r.right }; groups.push(cur); }
       cur.l = Math.min(cur.l, r.left); cur.r = Math.max(cur.r, r.right);
@@ -930,7 +932,8 @@
       g.l = l; g.r = l + need; prevR = g.r;
     });
     var html = groups.map(function (g) { return '<span class="mc-caption" style="left:' + Math.round(g.l - rr.left) + 'px;width:' + Math.round(g.r - g.l) + 'px">' + escHtml(g.name) + '</span>'; }).join('');
-    layer.style.top = Math.round(br.bottom - rr.top - 15) + 'px';
+    var capOff = parseFloat(window.getComputedStyle(layer).getPropertyValue('--mc-cap-off')) || 15;   // lane mcribbon: style.css sets the caption's place
+    layer.style.top = Math.round(br.bottom - rr.top - capOff) + 'px';
     if (layer._html !== html) { layer.innerHTML = html; layer._html = html; }
   }
   UI.frameCaptions = function () { frameCaptions(); var l = document.querySelector('#ribbon > .mc-captions'); return l ? Array.prototype.map.call(l.children, function (c) { return c.textContent; }) : []; };
@@ -1555,6 +1558,8 @@
         onclick: function () { if (wasOpen) { wasOpen = false; return; } showRibbonOverflow(more); } });
     }
     if (bar.lastChild !== more) bar.appendChild(more);
+    frameUncollapse(bar);
+    if (frame && frameRibbon('captions')) return frameFit(rib, bar, more);   // lane mcribbon: Mastercam's way
     rib.classList.remove('fit-1', 'fit-2');
     var kids = Array.prototype.filter.call(bar.children, function (c) { return c !== more; });
     kids.forEach(function (c) { if (c.classList.contains('rb-over')) c.classList.remove('rb-over'); });
@@ -1601,10 +1606,75 @@
       if (s.scrollHeight > lh * 2.5) b.classList.add('rb-long');
     });
   }
+  // lane mcribbon: under a frame with captions (Mastercam) small buttons keep their labels whenever the tab fits; when it
+  // does not, whole groups collapse into one button (the group's name and first icon, ▾ lists its commands), the last
+  // group first, as Mastercam's ribbon does; only when every group is collapsed and it still does not fit does the »
+  // menu take the rest. Collapsed nodes keep their place in the bar (.mc-col, hidden), so ribbonBuilt.items still lines
+  // up with the bar's children once the .mc-colbtn buttons are left out.
+  function frameUncollapse(bar) {
+    Array.prototype.slice.call(bar.querySelectorAll(':scope > .mc-colbtn')).forEach(function (b) { b.remove(); });
+    Array.prototype.forEach.call(bar.querySelectorAll(':scope > .mc-col'), function (c) { c.classList.remove('mc-col'); c._mcCol = null; });
+  }
+  function frameCollapse(bar, g) {
+    var w0 = 0;
+    g.nodes.forEach(function (n) { w0 += n.getBoundingClientRect().width; });
+    var first = g.nodes[0], fb = first.matches('.rb') ? first : first.querySelector('.rb');
+    var b = el('button', { class: 'rb mc-colbtn', 'aria-label': g.name, 'aria-haspopup': 'menu', 'data-group': g.name });
+    b.innerHTML = (fb && fb.dataset.icon ? Icons(fb.dataset.icon, rbIcon()) : '') + '<span>' + escHtml(g.name) + '<i class="mc-caret" aria-hidden="true"></i></span>';
+    b._nodes = g.nodes;
+    b.addEventListener('click', function () {
+      var items = ribbonMenuItems(b._nodes), r = b.getBoundingClientRect();
+      if (items.length) showMenu(r.left, r.bottom + 1, items, b);
+    });
+    setTip(b, { name: g.name, desc: 'The ' + g.name + ' group: the window is too narrow to show its buttons' });
+    bar.insertBefore(b, first);
+    g.nodes.forEach(function (n) { n.classList.add('mc-col'); n._mcCol = b; });
+    if (b.getBoundingClientRect().width >= w0) { b.remove(); g.nodes.forEach(function (n) { n.classList.remove('mc-col'); }); return false; }
+    return true;
+  }
+  function frameFit(rib, bar, more) {
+    rib.classList.remove('fit-1', 'fit-2');
+    var kids = Array.prototype.filter.call(bar.children, function (c) { return c !== more; });
+    kids.forEach(function (c) { if (c.classList.contains('rb-over')) c.classList.remove('rb-over'); });
+    more.hidden = true;
+    function fits() { return bar.scrollWidth <= bar.clientWidth + 1; }
+    if (fits()) return 0;
+    var items = ribbonBuilt && ribbonBuilt.items;
+    if (items && items.length === kids.length) {
+      var groups = [], cur = null;
+      items.forEach(function (it, i) {
+        if (it.sep || !it.group) { cur = null; return; }
+        if (!cur || cur.name !== it.group) { cur = { name: it.group, nodes: [] }; groups.push(cur); }
+        cur.nodes.push(kids[i]);
+      });
+      for (var g = groups.length - 1; g >= 0; g--) { frameCollapse(bar, groups[g]); if (fits()) return 1; }
+    }
+    // still too wide: the » menu takes the rest from the right (collapsed groups as one entry each)
+    var all = Array.prototype.filter.call(bar.children, function (c) { return c !== more && !c.classList.contains('mc-col'); });
+    more.hidden = false;
+    for (var i = all.length - 1; i > 0 && !fits(); i--) all[i].classList.add('rb-over');
+    for (var j = all.length - 1; j >= 0; j--) { if (all[j].classList.contains('rb-over')) continue; if (all[j].classList.contains('rb-sep')) all[j].classList.add('rb-over'); else break; }
+    return 4;
+  }
+  UI.frameRibbonCollapsed = function () { return Array.prototype.map.call(document.querySelectorAll('#ribbon-buttons > .mc-colbtn:not(.rb-over)'), function (b) { return b.getAttribute('data-group'); }); };
+  // the menu entries of ribbon nodes (buttons, flyouts, stacks): the » menu and a collapsed group's ▾
+  function ribbonMenuItems(nodes) {
+    var items = [];
+    nodes.forEach(function (c) {
+      if (c.classList.contains('rb-sep')) { if (items.length && !items[items.length - 1].sep) items.push({ sep: true }); return; }
+      if (c._nodes) { items.push.apply(items, ribbonMenuItems(c._nodes)); return; }
+      if (c._fly) { items.push.apply(items, flyMenuItems(c._fly)); return; }
+      var btns = c.classList.contains('rb') ? [c] : Array.prototype.slice.call(c.querySelectorAll(':scope > .rb, :scope > .rb-fly'));
+      btns.forEach(function (b) { if (b._fly) { items.push.apply(items, flyMenuItems(b._fly)); return; } items.push({ label: b.getAttribute('aria-label') || b.textContent, icon: b.dataset.icon, checked: b.classList.contains('active'), disabled: b.disabled, action: function () { b.click(); } }); });
+    });
+    while (items.length && items[items.length - 1].sep) items.pop();
+    return items;
+  }
   function showRibbonOverflow(anchor) {
     var items = [];
     Array.prototype.forEach.call($('ribbon-buttons').children, function (c) {
       if (!c.classList.contains('rb-over')) return;
+      if (c._nodes) { items.push.apply(items, ribbonMenuItems(c._nodes)); return; }   // lane mcribbon: a collapsed group
       if (c.classList.contains('rb-sep')) { if (items.length && !items[items.length - 1].sep) items.push({ sep: true }); return; }
       if (c._fly) { items.push.apply(items, flyMenuItems(c._fly)); return; }   // r14/commands14: a flyout lists its whole group
       var btns = c.classList.contains('rb') ? [c] : Array.prototype.slice.call(c.querySelectorAll(':scope > .rb, :scope > .rb-fly'));
@@ -1629,7 +1699,7 @@
   function rbClamp(s) { s = +s; if (!(s > RB_MIN)) return RB_MIN; return Math.round(Math.min(RB_MAX, s) * 1000) / 1000; }
   try { rbScale = rbClamp(parseFloat(localStorage.getItem(RB_KEY))); } catch (e) { }
   // the icon sizes: large 32 px, small (stacks, grid) 16 px boxes (drawn at 18 at scale 1, as before)
-  function rbIcon(small) { return small ? (rbScale === 1 ? 18 : Math.round(16 * rbScale)) : Math.round((frameRibbon('captions') ? 24 : 32) * rbScale); }   // rfLX: a frame with captions shows its large icons at 24 px (style.css .mc-ribbon-caps): drawn for 24, not a 32 px drawing squeezed
+  function rbIcon(small) { return small ? (rbScale === 1 ? 18 : Math.round(16 * rbScale)) : Math.round(32 * rbScale); }   // lane mcribbon: Mastercam's large icons are 32 px too (measured; rfLX had 24 under a frame with captions)
   var RB_SEL = /#ribbon(?!-grip)|\.rtab(?![\w-])|\.rb(?![\w-])|\.rb-(?:stack|sep|fly|caret|more|grid|vgrid|wide|long|face|over|extra|caption|has-captions)/;
   function rbSplitSel(t) {
     var out = [], depth = 0, cur = '';
