@@ -61,10 +61,8 @@
     inp.value = 'TACK WELD 4 PLCS'; rfAOModalButton('OK').click(); await idle();
     key('Escape'); await idle(); await UI.drawing.ready();
     var c = rfAOList('circle')[0], a = rfAOList('arc')[0], sp = rfAOList('spline')[0];
-    // (within one screen pixel of the sheet: lane swribbon moved the graphics area to a whole-pixel top, and mouse events
-    // land on whole pixels, so a click is now up to a pixel off the paper point it was aimed at)
-    assert(c && Math.abs(c.r - 0.5) < 0.05, 'circle r .5 ' + (c && c.r));
-    assert(a && Math.abs(a.r - 0.5) < 0.05 && Math.abs(a.a0) < 1 && Math.abs(a.a1 - 90) < 1, 'arc 0..90 ' + JSON.stringify(a));
+    assert(c && Math.abs(c.r - 0.5) < 0.01, 'circle r .5 ' + (c && c.r));
+    assert(a && Math.abs(a.r - 0.5) < 0.01 && Math.abs(a.a0) < 1 && Math.abs(a.a1 - 90) < 1, 'arc 0..90 ' + JSON.stringify(a));
     assert(sp && sp.pts.length === 3 && rfAOList('point').length === 1 && rfAOList('text')[0].text === 'TACK WELD 4 PLCS', 'spline, point, text');
     var g = D.querySelector('#drawing-sheet svg g[data-layer="SKETCH"]');
     assert(g && g.querySelectorAll('line').length >= 6 && g.querySelector('circle') && /TACK WELD/.test(g.textContent), 'SKETCH layer on the sheet');
@@ -87,7 +85,7 @@
     W.dispatchEvent(new W.MouseEvent('mousemove', Object.assign({ bubbles: true }, paperToClient([corner[0] + 0.5, corner[1] + 0.5]))));
     W.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true })); await idle();
     var L = ids.map(function (id) { return anvil.drawing.sketch.get(id); });
-    assert(Math.abs(L[1].b[0] - (o[0] + 2.5)) < 0.05 && Math.abs(L[1].b[1] - (o[1] + 1.5)) < 0.05, 'corner moved ' + JSON.stringify(L[1].b));
+    assert(Math.abs(L[1].b[0] - (o[0] + 2.5)) < 0.01 && Math.abs(L[1].b[1] - (o[1] + 1.5)) < 0.01, 'corner moved ' + JSON.stringify(L[1].b));
     assert(Math.abs(L[2].a[1] - L[2].b[1]) < 1e-9 && Math.abs(L[1].a[0] - L[1].b[0]) < 1e-9 && Math.abs(L[2].a[0] - L[1].b[0]) < 1e-9 && Math.abs(L[0].a[0] - o[0]) < 1e-9, 'still a rectangle ' + JSON.stringify(L.map(function (l) { return [l.a, l.b]; })));
     // undo puts the corner back
     UI.undo(); await idle();

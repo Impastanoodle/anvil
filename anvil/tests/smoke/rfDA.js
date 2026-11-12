@@ -196,13 +196,20 @@
   step('rfDA: ribbon group captions are never cut short — the View tab\'s Managers (one narrow column of buttons) reads "Managers" in full, and no two captions overlap', async function () {
     var errs0 = errors.length;
     await anvil.newPart(); await idle();
+    // lane swribbon (2026-11-12): with SolidWorks' large buttons the View tab needs 1560 px before the Managers go to the »
+    // menu (the frame is 1528): look at it in a 1600 px window
+    var fr = document.getElementById('app'), old = [fr.style.width, fr.style.minWidth];
+    fr.style.minWidth = '0'; fr.style.width = '1600px'; void fr.offsetWidth; await wait(60); UI.fitWorkspace();
+    try {
     var tab = Array.prototype.filter.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (t) { return t.textContent === 'View'; })[0];
     assert(tab, 'a View tab'); tab.click(); await wait(80);
+    UI.refreshRibbon(); await wait(40);
     UI.transformCaptions(); await wait(20);
     var caps = Array.prototype.slice.call(D.querySelectorAll('#ribbon .rb-caption'));
     assert(caps.some(function (c) { return c.textContent === 'Managers'; }), 'a Managers caption: ' + caps.map(function (c) { return c.textContent; }).join(', '));
     caps.forEach(function (c) { assert(c.scrollWidth <= c.clientWidth + 1, 'caption "' + c.textContent + '" fits its box: ' + c.scrollWidth + ' > ' + c.clientWidth); });
     for (var i = 1; i < caps.length; i++) { var a = caps[i - 1].getBoundingClientRect(), b = caps[i].getBoundingClientRect(); assert(b.left >= a.right - 0.5, 'captions "' + caps[i - 1].textContent + '" and "' + caps[i].textContent + '" do not overlap'); }
+    } finally { fr.style.width = old[0]; fr.style.minWidth = old[1]; void fr.offsetWidth; await wait(60); UI.fitWorkspace(); UI.refreshRibbon(); }
     Array.prototype.filter.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (t) { return t.textContent === 'Features'; })[0].click(); await wait(40);
     assert(errors.length === errs0, 'no errors: ' + errors.slice(errs0).join(' | '));
   });

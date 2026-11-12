@@ -180,11 +180,14 @@
   }
 
   step('rfMC: the dark default look and the Mastercam profile (light and dark) are exactly what they were before SolidWorks\' colours (40 tokens, 20 elements each), and every token this lane added resolves in all four', async function () {
-    var prev = rfMCtheme(), bad = [];
+    var prev = rfMCtheme(), bad = [], bgWas = UI.App.view.bg;
     var NEW = ['--c-popup', '--c-field-quiet', '--c-line-bar', '--c-row-hover', '--c-row-hover-line', '--c-caret', '--c-twisty', '--c-rollback', '--c-status', '--c-tabstrip', '--c-tab', '--c-tab-line', '--c-tab-text', '--c-tab-mark', '--c-off-opacity', '--c-off-text', '--c-off-icon', '--c-greyed', '--c-search-line', '--c-group-sep'];
     function resolves(where) { var cs = W.getComputedStyle(D.documentElement); NEW.forEach(function (t) { if (!cs.getPropertyValue(t).trim()) bad.push(where + ' ' + t + ' empty'); }); }
     try {
       await rfMCreset('light'); await anvil.newPart(); await idle(); await anvil.run(RFMC_BOX); await idle(); await rfMCsettle();
+      // (lane swribbon: the snapshots were taken on the default Gradient; a background an earlier group chose is put
+      // back afterwards)
+      if (UI.App.view.bg !== 'gradient') { UI.setBackground('gradient', true); await rfMCsettle(); }
       resolves('light');
       UI.setTheme('dark'); await rfMCsettle();
       resolves('dark'); rfMCcompare('swDark', rfMCsnap(), bad);
@@ -193,7 +196,7 @@
       resolves('mastercam light'); rfMCcompare('mcLight', rfMCsnap(), bad);
       UI.setTheme('dark'); await rfMCsettle();
       resolves('mastercam dark'); rfMCcompare('mcDark', rfMCsnap(), bad);
-    } finally { await rfMCreset(prev); }
+    } finally { await rfMCreset(prev); if (UI.App.view.bg !== bgWas) UI.setBackground(bgWas, true); }
     assert(!bad.length, bad.slice(0, 12).join('; ') + (bad.length > 12 ? ' (+' + (bad.length - 12) + ')' : ''));
     return RFMC_KEYS.length + ' values x 3 unchanged';
   });

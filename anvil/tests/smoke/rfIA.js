@@ -47,6 +47,10 @@
   var rfIA0 = null;   // the default layout, taken in the first step
 
   step('rfIA: the CommandManager\'s grip: a 60 px drag down makes the ribbon ~60 px taller, icons redrawn at larger whole-pixel sizes with no transform / zoom, the graphics area shrinks by the same, the size is kept', async function () {
+    // lane swribbon: whole-pixel placement is the real app's, without the smoke frame's 0.28 px phase (ui-smoke.html
+    // SMOKE_PHASE: it shifts every box by a fraction, so a crisp icon would read as 51.98 here); off for the group's
+    // steps (their layouts are compared with this one), back on at the reset step
+    var phase = D.getElementById('smoke-phase'); if (phase) { phase.disabled = true; void D.body.offsetWidth; await wait(40); UI.fitWorkspace(); }
     UI.setRibbonScale(1); await idle();
     await anvil.newPart(); await idle();
     UI.App.ribbonTab = 'Sketch'; UI.refreshRibbon(); await wait(30);
@@ -196,6 +200,7 @@
   });
 
   step('rfIA: reset (CommandManager at its default size, setting cleared)', async function () {
+    var phase = D.getElementById('smoke-phase'); if (phase && phase.disabled) { phase.disabled = false; void D.body.offsetWidth; await wait(40); UI.fitWorkspace(); }
     UI.setRibbonScale(1);
     try { W.localStorage.removeItem(rfIAKey()); } catch (e) { }
     assert(UI.ribbonScale() === 1 && rfIABig().getAttribute('width') === '32', 'not reset');

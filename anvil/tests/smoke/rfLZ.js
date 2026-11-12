@@ -55,7 +55,7 @@
   // the outer boxes in the ui-smoke frame: colours only, so they do not move with a colour change. Measured at 92921d5;
   // re-measured for lane swribbon (2026-11-12), which gave the default profile SolidWorks' real sizes (title row 44,
   // CommandManager 117 + tab strip 23, FeatureManager tabs under a 24 px grip band): ribbon / tree / PM moved, status kept
-  var RFLZ_BOXES = { ribbon: [0, 44, 1528, 140], tree: [0, 184, 296, 411], pm: [-0.31, 246, 295, 349], status: [0, 595, 1528, 22] };
+  var RFLZ_BOXES = { ribbon: [0, 44.28, 1528, 140], tree: [0, 184.28, 296, 410.72], pm: [-0.31, 246.28, 295, 348.72], status: [0, 595, 1528, 22] };   // (the smoke frame starts the app 0.28 px down: ui-smoke.html SMOKE_PHASE)
   function rfLZboxes() {
     var o = {};
     [['ribbon', '#ribbon'], ['tree', '#left'], ['pm', '#pm'], ['status', '#statusbar']].forEach(function (p) {

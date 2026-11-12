@@ -2234,7 +2234,15 @@ button:disabled svg.ico[data-set="solidworks"], .mi.disabled svg.ico[data-set="s
 :root:not([data-profile])[data-theme="dark"] #menubar #std-undo:not(:disabled), :root:not([data-profile])[data-theme="dark"] #menubar #std-redo:not(:disabled) { width: 38px; height: 42px; margin: 0; }
 :root:not([data-profile]) #menubar .std-sep { height: 28px; margin: 0 2px; }
 :root:not([data-profile]) #menubar #doc-title { flex: 1; min-width: 0; padding: 0 var(--sp-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; text-align: center; }
-:root:not([data-profile]) #menubar #search { width: 202px; height: 23px; flex: none; margin-right: 6px; padding: 0 4px 0 6px; }
+:root:not([data-profile]) #menubar #search { width: 202px; height: 23px; flex: 0 1 202px; min-width: 0; overflow: hidden; margin-right: 6px; padding: 0 4px 0 6px; }
+/* a narrow window: as SolidWorks, Search Commands narrows first, then goes, while the Quick Access buttons stay; only
+   when they cannot fit either (under 860 px) they go (the older rule: Undo / Redo kept) and the search comes back */
+:root:not([data-profile]) #menubar #search input { min-width: 0; }
+@media (max-width: 960px) and (min-width: 861px) {
+  :root:not([data-profile]) #menubar #search { display: none; }
+  :root:not([data-profile]) #menubar #std-toolbar .std-btn { display: flex; }
+  :root:not([data-profile]) #menubar #std-toolbar .std-sep { display: block; }
+}
 :root:not([data-profile]) #menubar #search input { height: 21px; font-size: 12px; }
 /* ---- CommandManager: 117 px. Large buttons 114 px boxes 1 px from the top: a 32 px icon 6 px down, up to three 12 px
    label lines on a 13 px pitch right under it, a flyout's 7 x 4 caret centred 102 px down. Small buttons: three 38 px
@@ -2302,6 +2310,7 @@ button:disabled svg.ico[data-set="solidworks"], .mi.disabled svg.ico[data-set="s
 :root:not([data-profile]) #viewport #hud button { width: auto; min-width: 36px; height: 36px; padding: 0 1px; }
 :root:not([data-profile]) #viewport #hud button.hud-dd { padding: 0 1px 0 1px; }
 :root:not([data-profile]) #viewport #hud button svg { width: 32px; height: 32px; }
+#hud > .hud-over { display: none; }
 :root:not([data-profile]) #viewport #hud .caret { width: 12px; height: 32px; margin-left: 0; }
 :root:not([data-profile]) #viewport #hud .caret svg { width: 7px; height: 4px; }
 /* ---- Task Pane tabs: 34 x 36 boxes on the window edge, 32 px icons */

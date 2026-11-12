@@ -13,10 +13,12 @@
   td.st { width: 46px; font: 600 12px var(--mono); } tr.ok td.st { color: var(--ok); } tr.bad td.st { color: var(--bad); }
   td.detail { font: 12px var(--mono); color: var(--dim); white-space: pre-wrap; } tr.bad td.detail { color: var(--bad); }
   td.ms { width: 60px; text-align: right; font: 12px var(--mono); color: var(--dim); }
-  /* lane swribbon (2026-11-12): 617 px (was 560): the default profile took SolidWorks' real bar sizes (title row 44,
-     CommandManager 140, 57 px more than before), and the frame grew by as much so the graphics area keeps the 411 px
-     height the drag / pick steps were written for */
-  iframe { width: 100%; height: 616.72px; border: 1px solid var(--line); background: #fff; }
+  /* lane swribbon (2026-11-12): 617 px (was 560). The default profile took SolidWorks' real bar sizes (title row 44,
+     CommandManager 140: 56.72 px more than before), so the frame grew by 57 px and the app inside starts 0.28 px down
+     (SMOKE_PHASE below): the graphics area is then the old box moved down by exactly 57 px, 410.72 px tall with its top
+     on the same .28 px phase. Mouse events land on whole pixels, so the many steps that click by pixel (sketch, sheet,
+     drag) hit exactly the paper / model points they were written for. */
+  iframe { width: 100%; height: 617px; border: 1px solid var(--line); background: #fff; }
   /* r12/chrome12: the app no longer has a min-width of 880 px (it fits narrow windows); the frame keeps that layout
      width so drag / placement steps see the graphics area they were written for */
   iframe { min-width: 880px; }
@@ -677,6 +679,10 @@
   var frame = document.getElementById('app');
   frame.addEventListener('load', function () {
     W = frame.contentWindow; D = W.document;
+    // lane swribbon: SMOKE_PHASE (see the iframe rule): the app 0.28 px down, as tall as before less that
+    var ph = D.createElement('style'); ph.id = 'smoke-phase';
+    ph.textContent = '#app { margin-top: 0.28125px; height: calc(100vh - 0.28125px); }';
+    D.head.appendChild(ph);
     var tries = 0;
     (function poll() {
       if (W.anvil && W.UI && W.Kernel) {

@@ -170,8 +170,7 @@
     UI.setTool('select'); UI.setTool('line');
     var n2 = f.entities.length;
     var h0 = rskScr([10, 30]), h1 = rskScr([50, 30]);
-    // (2 px off level: lane swribbon's whole-pixel graphics area top made a 1 px offset round back onto y = 30)
-    selClick(h0, { ctrlKey: true }); selClick([h1[0], h1[1] - 2], { ctrlKey: true });
+    selClick(h0, { ctrlKey: true }); selClick([h1[0], h1[1] - 1], { ctrlKey: true });
     f = UI.activeSketchFeature();
     var l3 = f.entities[n2];
     assert(l3 && l3.t === 'line' && l3.y2 !== l3.y1, 'Ctrl: not squared to horizontal: ' + JSON.stringify(l3));

@@ -246,9 +246,6 @@
       assert(UI.cam.scale < s0 * 0.6, 'Fit zoomed back in on the part: ' + s0 + ' -> ' + UI.cam.scale);
       // on the model the same list (Mastercam has no Select Other there)
       var on = UI.worldToScreen([0, 0, 10]);
-      // lane swribbon: in the shorter graphics area of SolidWorks' real bar sizes the fitted part may sit off this point:
-      // take the nearest point of the part straight above or below it
-      for (var dy = 0; dy < UI.size.h && !UI.pickFacesAll(on[0], on[1]).length; dy += 4) { var p1 = [on[0], on[1] - dy]; if (p1[1] > 0 && UI.pickFacesAll(p1[0], p1[1]).length) { on = p1; break; } }
       assert(UI.pickFacesAll(on[0], on[1]).length, 'the part is under ' + on);
       rfLOEv('contextmenu', on, $('viewport'), { button: 2, buttons: 0 });
       await rfLOUntil(function () { return !!rfLOMenuRow('Top (WCS)'); }, 'the menu on the model: ' + rows().join(' | '));

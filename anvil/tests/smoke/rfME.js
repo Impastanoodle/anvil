@@ -195,7 +195,8 @@
       anvil.profile('mastercam'); await idle(); await wait(60);
       return await rfMEFrame(1900, 1000, async function () {
         await rfMETab('Wireframe');
-        var bad = [], box = rfMEBox($('ribbon'));
+        var bad = [], box = rfMEBox($('ribbon')), app = $('app').getBoundingClientRect();
+        box[1] = Math.round((box[1] - app.top) * 100) / 100;   // from the app's top (the smoke frame starts it 0.28 px down)
         if (RFME_MC_RIBBON && box.some(function (v, i) { return Math.abs(v - RFME_MC_RIBBON[i]) > 0.01; })) bad.push('Mastercam ribbon ' + JSON.stringify(box) + ' (was ' + JSON.stringify(RFME_MC_RIBBON) + ')');
         var sm = D.querySelector('#ribbon-buttons .rb-stack > .rb svg');
         if (sm && Math.abs(sm.getBoundingClientRect().width - 16) > 0.5) bad.push('Mastercam small icon ' + sm.getBoundingClientRect().width);

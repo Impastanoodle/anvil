@@ -3354,6 +3354,18 @@
       { label: 'Light Theme', checked: !!UI.theme && UI.theme() === 'light', action: function () { UI.setTheme('light'); } },
       { label: 'Dark Theme', checked: !!UI.theme && UI.theme() === 'dark', action: function () { UI.setTheme('dark'); } }
     ]); });
+    fitHud();
+    if (window.ResizeObserver && !hud._fit) { hud._fit = new ResizeObserver(function () { fitHud(); }); hud._fit.observe($('viewport')); }
+  }
+  // lane swribbon: in a graphics area narrower than the toolbar (32 px icons) the buttons that do not fit are left out
+  // from the right end, as SolidWorks' Heads-up View toolbar does; they come back when the area widens
+  function fitHud() {
+    var hud = $('hud'), vp = $('viewport');
+    if (!hud || !vp) return;
+    var kids = Array.prototype.slice.call(hud.children);
+    kids.forEach(function (b) { if (b.classList.contains('hud-over')) b.classList.remove('hud-over'); });
+    var room = vp.clientWidth - 12;
+    for (var i = kids.length - 1; i > 0 && hud.scrollWidth > room + 0.5; i--) kids[i].classList.add('hud-over');
   }
   UI.HUD_ORDER = ['Zoom to Fit', 'Zoom to Area', 'Previous View', 'Section View', 'Dynamic Annotation Views', 'View Orientation', 'Display Style', 'Hide/Show Items', 'Edit Appearance', 'Apply Scene', 'Show Endpoints', 'View Settings'];
   // the last pointer position (used below to place a popup at the pointer)

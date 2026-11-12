@@ -8,19 +8,21 @@
   }
   function rfIPRow(re) { return Array.prototype.filter.call(D.querySelectorAll('.menu .mi'), function (m) { return re.test(m.textContent); })[0]; }
   function rfIPButton(label) { return Array.prototype.filter.call(D.querySelectorAll('#modal button'), function (b) { return b.textContent === label; })[0]; }
-  step('rfIP: the Task Pane strip and title icons are drawn at 16 px, the size of their boxes', async function () {
-    var strip = D.querySelectorAll('#tp-strip button svg.ico');
+  // lane swribbon (2026-11-12): the strip's icons are 32 px, SolidWorks' size with large buttons (16 under a profile's
+  // frame; were 16); the title icon stays 16. Kept: every icon is drawn at the size of its box.
+  step('rfIP: the Task Pane strip icons are drawn at 32 px and the title icon at 16 px, the size of their boxes', async function () {
+    var SP = UI.chromeIconSize ? UI.chromeIconSize(16) : 16, strip = D.querySelectorAll('#tp-strip button svg.ico');
     assert(strip.length >= 4, 'Task Pane strip icons: ' + strip.length);
     Array.prototype.forEach.call(strip, function (s) {
       var r = s.getBoundingClientRect();
-      assert(s.getAttribute('width') === '16' && Math.abs(r.width - 16) < 0.01, 'strip icon drawn at ' + s.getAttribute('width') + ', shown at ' + r.width);
+      assert(s.getAttribute('width') === String(SP) && Math.abs(r.width - SP) < 0.01, 'strip icon drawn at ' + s.getAttribute('width') + ', shown at ' + r.width);
     });
     strip[0].parentNode.click(); await idle();
     try {
       var t = D.querySelector('#tp-title svg.ico');
       assert(t && t.getAttribute('width') === '16' && Math.abs(t.getBoundingClientRect().width - 16) < 0.01, 'Task Pane title icon ' + (t && t.getAttribute('width')));
     } finally { strip[0].parentNode.click(); await idle(); }
-    return strip.length + ' strip icons and the title at 16 px';
+    return strip.length + ' strip icons at ' + SP + ' px and the title at 16 px';
   });
   step('rfIP: File ▸ a recent document that is not found is a dimmed row that still runs: its click asks Remove / Keep; Keep leaves it, Remove takes it off', async function () {
     var RD = UI.recentDocuments, key = RD.key, before = null, name = 'rfIP gone.anvil.json';

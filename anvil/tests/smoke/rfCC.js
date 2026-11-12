@@ -31,7 +31,7 @@
     'Planes', 'Origins', 'All Sketches', 'Sketch Grid', 'Sketch Regions', 'Sketch Dimensions', 'Arc Center Points', 'Show Endpoints', 'Snap to Model', 'Section View',
     'FeatureManager', 'Levels Manager', 'Selection Filter'];
 
-  step('rfCC: the View tab after Transform — Zoom, Orientation, Appearance, Show / Hide, Section and Managers with their captions under them; at 1400 px everything fits with labels (only the Managers may go to »); tooltips with shortcuts; Search Commands finds Wireframe and Section View (View)', async function () {
+  step('rfCC: the View tab after Transform — Zoom, Orientation, Appearance, Show / Hide, Section and Managers with their captions under them; at 1460 px everything fits with labels (only the Managers may go to »); tooltips with shortcuts; Search Commands finds Wireframe and Section View (View)', async function () {
     var errs0 = errors.length;
     await anvil.newPart(); await idle();
     var names = Array.prototype.map.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (t) { return t.textContent; });
@@ -45,10 +45,12 @@
     // the HUD's icons for the same commands
     var icons = Array.prototype.map.call(D.querySelectorAll('#ribbon-buttons .rb'), function (b) { return b.dataset.icon; });
     ['vZoomFit', 'zoomArea', 'prevView', 'vFront', 'vTop', 'vIso', 'vNormalTo', 'dsShadedEdges', 'dsWireframe', 'appearance', 'scene', 'vBackground', 'vTheme', 'vPlanes', 'vGrid', 'showEndpoints', 'vSnapModel', 'section', 'vFeatureTree', 'levels', 'filter'].forEach(function (n) { assert(icons.indexOf(n) >= 0, 'icon ' + n + ' in ' + icons.join(',')); });
-    await rfCCWidth(1400, async function () {
+    // lane swribbon (2026-11-12): SolidWorks' large buttons (32 px small icons, 12 px labels) make the tab wider: its
+    // labels now hold down to 1460 px (they went at 1440; was 1400 with 16 px icons)
+    await rfCCWidth(1460, async function () {
       var over = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons > .rb-over'), function (c) { return !c.classList.contains('rb-sep'); });
-      assert(over.every(function (c) { return c.contains(rfCCBtn('FeatureManager')); }), 'at 1400 px only the Managers may overflow: ' + over.map(function (c) { return c.textContent; }).join(' | '));
-      assert(!$('ribbon').classList.contains('fit-1') && !$('ribbon').classList.contains('fit-2'), 'labels kept at 1400 px: ' + $('ribbon').className);
+      assert(over.every(function (c) { return c.contains(rfCCBtn('FeatureManager')); }), 'at 1460 px only the Managers may overflow: ' + over.map(function (c) { return c.textContent; }).join(' | '));
+      assert(!$('ribbon').classList.contains('fit-1') && !$('ribbon').classList.contains('fit-2'), 'labels kept at 1460 px: ' + $('ribbon').className);
       UI.transformCaptions(); await wait(30);
       var caps = Array.prototype.map.call(D.querySelectorAll('#ribbon .rb-caption'), function (c) { return { t: c.textContent, r: c.getBoundingClientRect() }; });
       var capNames = caps.map(function (c) { return c.t; }).join(',');
