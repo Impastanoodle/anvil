@@ -459,7 +459,8 @@
       await rfLOChooseProfile('mastercam');
       assert(UI.frameDef && UI.frameDef(), 'mcframe\'s window frame is on');
       var lab = D.getElementById('vp-labels'), qm = D.getElementById('vp-qmask'), sb = D.getElementById('vp-selbar');
-      assert(rfLOShown(lab) && rfLOShown(qm) && rfLOShown(sb), 'labels / quick masks / selection bar shown');
+      assert(rfLOShown(lab) && rfLOShown(qm), 'labels / quick masks shown');
+      assert(!rfLOShown(sb), 'no selection bar under the mastercam profile (user 2026-11-12: the bar is to go)');
       assert(W.getComputedStyle($('hud')).display === 'none', 'no heads-up toolbar');
       assert($('viewport').style.getPropertyValue('--viewport').indexOf(UI.Profiles.def('mastercam').viewport.background[0]) >= 0, 'Mastercam\'s gradient');   // lane mctheme: the top colour from the profile data (#141414, measured)
       UI.setView('Top'); await rfLOSettle();
@@ -467,7 +468,7 @@
       // nothing of this lane overlaps mcframe's status bar, manager panel or viewsheet strip, nor the gnomon / scale
       var vr = rfLORect($('viewport')), strip = { left: vr.left, right: vr.right, top: vr.bottom - 18, bottom: vr.bottom };
       var theirs = { status: rfLORect($('mc-status')), left: rfLORect($('left')), viewsheet: strip };
-      var mine = { labels: rfLORect(lab), masks: rfLORect(qm), selbar: rfLORect(sb), triad: rfLORect($('triad')), scale: rfLORect($('scale-bar')) };
+      var mine = { labels: rfLORect(lab), masks: rfLORect(qm), triad: rfLORect($('triad')), scale: rfLORect($('scale-bar')) };
       Object.keys(mine).forEach(function (m) {
         Object.keys(theirs).forEach(function (t) { assert(rfLOApart(mine[m], theirs[t]), m + ' overlaps ' + t + ': ' + JSON.stringify([mine[m], theirs[t]])); });
       });
@@ -483,11 +484,12 @@
       rfLOElClick(qm.querySelector('[data-qmask="edges"]'), 'Solid Edges mask', 0.25); rfLOElClick(qm.querySelector('[data-qmask="faces"]'), 'Solid Faces mask', 0.25); await idle();
       assert(await kindAt(mid) === 'face', 'Solid Faces: the face');
       rfLOElClick(qm.querySelector('[data-qmask="clear"]'), 'clear masks', 0.25); await idle();
-      // selection bar: Select All selects the body, mcframe's status bar counts it
-      rfLOElClick(sb.querySelector('[data-sb="all"]'), 'Select All'); await idle();
-      assert(UI.selection().length === 1 && UI.selection()[0].kind === 'body', 'Select All: ' + JSON.stringify(UI.selection().map(function (s) { return s.kind; })));
+      // mcframe's status bar counts the selection (a click on the part; the selection bar's Select All did this until
+      // the bar left the mastercam profile, 2026-11-12: step (c) still tests the bar through the test profile)
+      rfLOClick(mid); await idle();
+      assert(UI.selection().length === 1, 'a click selects one entity: ' + JSON.stringify(UI.selection().map(function (s) { return s.kind; })));
       await rfLOUntil(function () { return /1/.test(UI.frameStatus().selected || ''); }, function () { return 'SELECTED ENTITIES: ' + UI.frameStatus().selected; });
-      rfLOElClick(sb.querySelector('[data-sb="clear"]'), 'Clear'); await idle();
+      UI.setSelection([], { quiet: true }); await idle();
       // the right-click menu, on the part, then Fit
       UI.zoomToFit(); await rfLOSettle(); var fitS = UI.cam.scale; UI.zoomView(3);
       var s0 = UI.cam.scale;

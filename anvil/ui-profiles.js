@@ -406,7 +406,7 @@
     // lane mctheme: gradient #141414 -> #c0c0c0 (linear; measured top, middle, bottom), the Home tab's Attributes swatches
     // (wireframe lime, solid grey, surface orange) and the gnomon's X red / Y green (measured); Z blue is not in the
     // screenshots (from memory)
-    viewport: { background: ['#141414', '#c0c0c0'], labels: true, headsUp: false, quickMasks: true, selectionBar: true, contextMenu: 'mastercam',
+    viewport: { background: ['#141414', '#c0c0c0'], labels: true, headsUp: false, quickMasks: true, selectionBar: false, contextMenu: 'mastercam',   // user 2026-11-12: no selection bar over the graphics window; a profile that sets it true still gets it
       colors: { wireframe: '#9ef713', solid: '#808080', surface: '#f4844d', gnomon: ['#c90707', '#0b8a09', '#1f5fd0'] } },
     keys: {
       vTop: 'Alt+1', vFront: 'Alt+2', vBack: 'Alt+3', vBottom: 'Alt+4', vRight: 'Alt+5', vLeft: 'Alt+6', vIso: 'Alt+7', prevView: 'Alt+P',
