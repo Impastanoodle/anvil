@@ -8,11 +8,14 @@
   var RFLX_BOX = "p.sketch('Top').rect(0, 0, 4, 2).extrude(1)";
   function rfLXIcons(root) { return Array.prototype.slice.call((typeof root === 'string' ? D.querySelector(root) : root || D).querySelectorAll('svg.ico')); }
   function rfLXWhere(s) { var p = s.parentNode; return (p.id || p.className || p.tagName) + ' in ' + ((p.parentNode && (p.parentNode.id || p.parentNode.className)) || '?'); }
-  // the icons under `sel` that the set did not draw, and the ones that are empty or have no size while shown
-  function rfLXCheck(sel, what, min) {
+  // the icons under `sel` that the set did not draw, and the ones that are empty or have no size while shown. `open`:
+  // leave out what sits in a closed pane (an element with `hidden`): the manager panel also holds the panes of the
+  // other managers and the tree of a drawing that was closed (`#drawing-tree`, kept with its last rows by any earlier
+  // step that had a drawing open, rfLV (g) for one). A closed pane is drawn again when it opens (the drawing step).
+  function rfLXCheck(sel, what, min, open) {
     var root = D.querySelector(sel);
     assert(root, what + ': no ' + sel);
-    var all = rfLXIcons(root);
+    var all = rfLXIcons(root).filter(function (s) { return !open || !s.closest('[hidden]'); });
     assert(all.length >= (min == null ? 1 : min), what + ': ' + all.length + ' icons in ' + sel);
     var fallback = all.filter(function (s) { return s.getAttribute('data-set') !== 'mastercam' || !s.getAttribute('data-ic'); });
     assert(!fallback.length, what + ': ' + fallback.length + ' icon(s) not from the set: ' + fallback.slice(0, 4).map(rfLXWhere).join('; '));
@@ -85,7 +88,7 @@
       assert(tabs.join() === 'Home,Wireframe,Solids,Sheet Metal,Drafting,Transform,View,More', 'part tabs: ' + tabs.join());
       for (var i = 0; i < tabs.length; i++) { UI.setRibbonTab(tabs[i]); await wait(20); n += rfLXCheck('#ribbon-buttons', 'tab ' + tabs[i], 6); }
       n += rfLXCheck('#std-toolbar', 'Quick Access Toolbar', 4);
-      ['planes', 'levels', 'solids'].forEach(function (m) { assert(UI.frameManager(m) === m, 'the ' + m + ' manager did not open'); n += rfLXCheck('#left', 'the ' + m + ' manager', 2); });
+      ['planes', 'levels', 'solids'].forEach(function (m) { assert(UI.frameManager(m) === m, 'the ' + m + ' manager did not open'); n += rfLXCheck('#left', 'the ' + m + ' manager', 2, true); });
       assert(rfLXIcons('#levels-panel .lvl-tools').length === 3, 'the Levels tool row has ' + rfLXIcons('#levels-panel .lvl-tools').length + ' icons');
       assert(rfLXIcons('#mc-solids').length >= 3, 'the Solids history shows ' + rfLXIcons('#mc-solids').length + ' icons');
       n += rfLXCheck('#mc-status', 'status bar', 5);
@@ -109,10 +112,22 @@
         assert(tabs.length >= 4, docs[d] + ' tabs: ' + tabs.join());
         for (var i = 0; i < tabs.length; i++) { UI.setRibbonTab(tabs[i]); await wait(20); n += rfLXCheck('#ribbon-buttons', docs[d] + ' tab ' + tabs[i], 3); }
         n += rfLXCheck('#std-toolbar', docs[d] + ' Quick Access Toolbar', 4);
-        n += rfLXCheck('#left', docs[d] + ' manager panel', 2);
+        n += rfLXCheck('#left', docs[d] + ' manager panel', 2, true);
         n += rfLXCheck('#mc-status', docs[d] + ' status bar', 5);
+        if (docs[d] === 'drawing') n += rfLXCheck('#drawing-tree', 'the open drawing\'s tree', 4);
         anvil.profile('solidworks'); await anvil.newPart(); await idle();
       }
+      // a drawing made and closed under SolidWorks keeps its tree, hidden, in the manager panel; opened again under
+      // Mastercam the tree is the set's (its rows are drawn on opening, not carried over)
+      await rfLXStart('solidworks', 'drawing');
+      UI.closeDrawing(); await idle();
+      assert($('drawing-tree').hidden && rfLXIcons('#drawing-tree').length >= 4, 'the closed drawing kept no hidden tree (' + rfLXIcons('#drawing-tree').length + ' icons): this part of the step no longer tests anything');
+      anvil.profile('mastercam'); await wait(60);
+      rfLXCheck('#left', 'the manager panel with a closed drawing behind it', 2, true);
+      UI.openDrawing(); await wait(300); await idle();
+      assert(UI.drawingActive() && !$('drawing-tree').hidden, 'the drawing did not open again');
+      n += rfLXCheck('#drawing-tree', 'the reopened drawing\'s tree', 4);
+      UI.closeDrawing(); await idle();
       return n + ' icons';
     } finally { await rfLXReset(); }
   });
