@@ -2232,3 +2232,157 @@ table.mc-planes tr.picked td.mc-pl-name { font-weight: 600; }
 #mc-status .mc-mode { min-width: 30px; justify-content: center; }
 #mc-status #dw-status { display: inline-flex; align-items: center; gap: 10px; height: 100%; padding: 0 9px; color: inherit; }
 #mc-status #dw-status > span { color: inherit; }
+/* lane mctheme (2026-11-12): under an interface profile with a theme the whole window takes the profile's colours.
+   Every colour is the profile's data (ui-profiles.js frame.theme.vars, set on <html> as --mc-l-* / --mc-d-* by ui-panels.js
+   frameThemeVars); this block only routes them: (1) the profile keys to --mc-*, (2) Anvil's base tokens (--c-*, the
+   aliases, --sw-*, #pm, levels) to --mc-*, so the SolidWorks palette never shows through whatever lane swtheme sets as
+   defaults, (3) the few rules whose look is not a token (selected rows: the accent with white text, boxed tabs, the round
+   translucent Quick Masks). Nothing here applies without data-profile. */
+:root[data-profile] {
+  --mc-blue-hover: var(--mc-l-blue-hover); --mc-blue-press: var(--mc-l-blue-press); --mc-tab-line: var(--mc-l-tab-line); --mc-hover-line: var(--mc-l-hover-line);
+  --mc-raised: var(--mc-l-raised); --mc-grid: var(--mc-l-grid); --mc-ink: var(--mc-l-ink); --mc-muted: var(--mc-l-muted); --mc-disabled: var(--mc-l-disabled); --mc-launcher: var(--mc-l-launcher);
+  --mc-field: var(--mc-l-field); --mc-field-line: var(--mc-l-field-line); --mc-field-off: var(--mc-l-field-off); --mc-field-ro: var(--mc-l-field-ro);
+  --mc-accent: var(--mc-l-accent); --mc-accent-text: var(--mc-l-accent-text); --mc-accent-hover: var(--mc-l-accent-hover); --mc-focus: var(--mc-l-focus);
+  --mc-scroll: var(--mc-l-scroll); --mc-scroll-hover: var(--mc-l-scroll-hover); --mc-backdrop: var(--mc-l-backdrop); --mc-sheet-bg: var(--mc-l-sheet-bg);
+  --mc-qm: var(--mc-l-qm); --mc-qm-hover: var(--mc-l-qm-hover); --mc-qm-on: var(--mc-l-qm-on); --mc-qm-ink: var(--mc-l-qm-ink); --mc-qm-ink-on: var(--mc-l-qm-ink-on);
+  --mc-msg-bg: var(--mc-l-msg-bg); --mc-msg-line: var(--mc-l-msg-line); --mc-msg-text: var(--mc-l-msg-text);
+}
+:root[data-profile][data-theme="dark"] {
+  --mc-blue-hover: var(--mc-d-blue-hover); --mc-blue-press: var(--mc-d-blue-press); --mc-tab-line: var(--mc-d-tab-line); --mc-hover-line: var(--mc-d-hover-line);
+  --mc-raised: var(--mc-d-raised); --mc-grid: var(--mc-d-grid); --mc-ink: var(--mc-d-ink); --mc-muted: var(--mc-d-muted); --mc-disabled: var(--mc-d-disabled); --mc-launcher: var(--mc-d-launcher);
+  --mc-field: var(--mc-d-field); --mc-field-line: var(--mc-d-field-line); --mc-field-off: var(--mc-d-field-off); --mc-field-ro: var(--mc-d-field-ro);
+  --mc-accent: var(--mc-d-accent); --mc-accent-text: var(--mc-d-accent-text); --mc-accent-hover: var(--mc-d-accent-hover); --mc-focus: var(--mc-d-focus);
+  --mc-scroll: var(--mc-d-scroll); --mc-scroll-hover: var(--mc-d-scroll-hover); --mc-backdrop: var(--mc-d-backdrop); --mc-sheet-bg: var(--mc-d-sheet-bg);
+  --mc-qm: var(--mc-d-qm); --mc-qm-hover: var(--mc-d-qm-hover); --mc-qm-on: var(--mc-d-qm-on); --mc-qm-ink: var(--mc-d-qm-ink); --mc-qm-ink-on: var(--mc-d-qm-ink-on);
+  --mc-msg-bg: var(--mc-d-msg-bg); --mc-msg-line: var(--mc-d-msg-line); --mc-msg-text: var(--mc-d-msg-text);
+}
+/* (2) Anvil's tokens follow the profile (one rule for both themes: the --mc-* above already switch) */
+:root[data-profile], :root[data-profile][data-theme="dark"] {
+  --c-sunken: var(--mc-ribbon); --c-panel: var(--mc-ribbon); --c-raised: var(--mc-raised); --c-field: var(--mc-field); --c-field-line: var(--mc-field-line);
+  --c-line-soft: var(--mc-grid); --c-line: var(--mc-line); --c-line-strong: var(--mc-field-line);
+  --c-hover: var(--mc-hover); --c-hover-line: var(--mc-hover-line); --c-press: var(--mc-press); --c-press-line: var(--mc-press-line);
+  --c-sel: var(--mc-press); --c-sel-line: var(--mc-press-line);
+  --c-text: var(--mc-text); --c-muted: var(--mc-muted); --c-disabled: var(--mc-disabled);
+  --c-default: var(--mc-accent); --c-default-hover: var(--mc-accent-hover); --c-default-text: var(--mc-accent-text);
+  --c-focus: var(--mc-focus); --c-scroll: var(--mc-scroll); --c-scroll-hover: var(--mc-scroll-hover);
+  --bg: var(--mc-ribbon); --panel: var(--mc-panel); --panel-2: var(--mc-ribbon); --line: var(--mc-line); --line-2: var(--mc-grid);
+  --text: var(--mc-text); --muted: var(--mc-muted); --hover: var(--mc-hover); --sel: var(--mc-press);
+  --input-bg: var(--mc-field); --input-line: var(--mc-field-line); --btn-face: var(--mc-field);
+  --menu-bg: var(--mc-raised); --menu-line: var(--mc-line); --menu-disabled: var(--mc-disabled);
+  --cm-bg: var(--mc-ribbon); --cm-bar: var(--mc-ribbon); --cm-strip: var(--mc-strip); --cm-tab: var(--mc-tab-on);
+  --cm-line: var(--mc-line); --cm-line-2: var(--mc-grid); --cm-text: var(--mc-text); --cm-muted: var(--mc-muted);
+  --cm-hover: var(--mc-hover); --cm-hover-line: var(--mc-hover-line); --cm-press: var(--mc-press); --cm-press-line: var(--mc-press-line); --cm-down: var(--mc-press);
+  --sw-chrome: var(--mc-ribbon); --sw-chrome-line: var(--mc-line); --sw-panel: var(--mc-panel);
+  --sw-row-hover: var(--mc-hover); --sw-row-sel: var(--mc-press); --sw-row-sel-line: var(--mc-press-line); --sw-twisty: var(--mc-muted);
+  --sw-group-head: var(--mc-panel); --sw-group-line: var(--mc-line); --sw-group-text: var(--mc-ink); --sw-group-body: var(--mc-panel);
+  --sw-pick: var(--mc-field-off); --sw-pick-line: var(--mc-field-line); --sw-pick-active: var(--mc-hover); --sw-pick-active-line: var(--mc-accent);
+  --sw-msg-bg: var(--mc-msg-bg); --sw-msg-head: var(--mc-msg-bg); --sw-msg-line: var(--mc-msg-line);
+  --msg-bg: var(--mc-msg-bg); --msg-line: var(--mc-msg-line); --msg-text: var(--mc-msg-text); --msg-head: var(--mc-msg-bg);
+  --sw-help: var(--mc-accent); --sw-dlg-bg: var(--mc-ribbon); --sw-btn: var(--mc-field); --sw-btn-line: var(--mc-field-line); --sw-btn-hover: var(--mc-hover);
+  --sw-default: var(--mc-accent); --sw-default-hover: var(--mc-accent-hover); --sw-menu-gutter: var(--mc-raised);
+  --group: var(--mc-panel); --group-text: var(--mc-ink); --pick-bg: var(--mc-field-off); --pick-filled: var(--mc-field-off); --pick-active: var(--mc-hover);
+  --modal-backdrop: var(--mc-backdrop); --modal-line: var(--mc-line);
+  accent-color: var(--mc-accent);
+}
+:root[data-profile] ::selection { background: var(--mc-accent); color: var(--mc-accent-text); }
+:root[data-profile] :focus-visible { outline-color: var(--mc-focus); }
+/* the function panel (an open PropertyManager): white groups with a hairline and a plain title band, blue check boxes
+   and radios, the active selection box light blue with the accent frame */
+:root[data-profile] #pm, :root[data-profile][data-theme="dark"] #pm {
+  --pm-ctl-bg: var(--mc-field); --pm-ctl-line: var(--mc-field-line); --pm-ctl-hover: var(--mc-accent); --pm-box-line: var(--mc-field-line);
+  --pm-focus: var(--mc-focus); --pm-on: var(--mc-accent);
+  --pm-tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='8' viewBox='0 0 10 8'%3E%3Cpath d='M1 4.1 3.8 6.8 9 1.2' fill='none' stroke='%23ffffff' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background: var(--mc-panel); color: var(--mc-text);
+}
+:root[data-profile] #pm .pm-group { border-color: var(--mc-line); background: var(--mc-panel); }
+:root[data-profile] #pm .pm-group > h4 { background: var(--mc-panel); color: var(--mc-ink); border-bottom-color: var(--mc-grid); }
+:root[data-profile] #pm .pm-group > h4 .tw { background: var(--mc-panel); border-color: var(--mc-field-line); color: var(--mc-text); }
+:root[data-profile] #pm .pm-pick { background: var(--mc-field-off); border-color: var(--mc-field-line); color: var(--mc-text); }
+:root[data-profile] #pm .pm-pick.active { background: var(--mc-hover); border-color: var(--mc-accent); }
+:root[data-profile] #pm .pm-row.pm-field > label, :root[data-profile] #pm .pm-row.check > label { color: var(--mc-text); }
+:root[data-profile] #pm .pm-btns button.on, :root[data-profile] #pm .pm-btns button:active { background: var(--mc-press); border-color: var(--mc-press-line); }
+:root[data-profile] #pm .pm-actions button:hover { background: var(--mc-hover); border-color: var(--mc-hover-line); }
+:root[data-profile] #pm .pm-actions button:active { background: var(--mc-press); border-color: var(--mc-press-line); }
+/* selected rows of lists and tables: the accent with white text (Mastercam's Planes manager), the text inside follows */
+:root[data-profile] #tree .ti.selected, :root[data-profile] #tree .ti.selected:hover, :root[data-profile] #tree .ti.selected.hover-sync,
+:root[data-profile] .cfg-row.selected, :root[data-profile] #pm .pm-item.sel, :root[data-profile] .mat-tree .mat-item.selected,
+:root[data-profile] #tp-body .dl-row.sel, :root[data-profile] #modal-body .open-saved.sel,
+:root[data-profile] .mc-sol-row.selected, :root[data-profile] table.mc-planes tr.current td {
+  background: var(--mc-accent); color: var(--mc-accent-text); box-shadow: none; }
+:root[data-profile] #tree .ti.selected *, :root[data-profile] .cfg-row.selected *, :root[data-profile] #pm .pm-item.sel *, :root[data-profile] .mat-tree .mat-item.selected *,
+:root[data-profile] #tp-body .dl-row.sel *, :root[data-profile] #modal-body .open-saved.sel *, :root[data-profile] .mc-sol-row.selected *,
+:root[data-profile] table.mc-planes tr.current td * { color: inherit; }
+:root[data-profile] table.mc-planes tr.current td.mc-pl-cell, :root[data-profile] table.mc-planes tr.current td.mc-pl-chk { color: var(--mc-accent-text); }
+/* the ribbon: the tab row (black active tab joined to the white buttons by #d4d4d4 hairlines), captions, separators */
+:root[data-profile] #app.mc-tabs-top #ribbon-tabs .rtab { color: var(--mc-text); background: transparent; }
+:root[data-profile] #app.mc-tabs-top #ribbon-tabs .rtab:hover:not(.active) { background: var(--mc-hover); }
+:root[data-profile] #app.mc-tabs-top #ribbon-tabs .rtab.active { color: var(--mc-ink); border-color: var(--mc-line); background: var(--mc-tab-on); }
+:root[data-profile] #app #ribbon { border-bottom: 1px solid var(--mc-line); }
+:root[data-profile] #app #ribbon-buttons { background: var(--mc-ribbon); }
+:root[data-profile] #app #ribbon .rb { color: var(--mc-text); }
+:root[data-profile] #app #ribbon .rb:active:not(:disabled) { background: var(--mc-press); border-color: var(--mc-press-line); }
+:root[data-profile] #app #ribbon .rb:disabled { color: var(--mc-disabled); }
+:root[data-profile] #app #ribbon .rb-fly.open .rb-caret { background: var(--mc-press); }
+:root[data-profile] #ribbon > .mc-captions .mc-caption { color: var(--mc-text); opacity: 1; }
+:root[data-profile] #mc-file:hover { background: var(--mc-blue-hover); filter: none; }
+:root[data-profile] #mc-file.active { background: var(--mc-blue-press); filter: none; }
+:root[data-profile] #menubar { background: var(--mc-ribbon); color: var(--mc-text); border-bottom-color: var(--mc-line); }
+/* the Options gear and Help at the right end of the tab row */
+#mc-tabtools { display: flex; align-items: center; gap: 2px; margin-left: auto; padding: 0 2px 0 8px; flex: none; }
+#mc-tabtools .mc-tt { width: 24px; height: 22px; padding: 0; display: grid; place-items: center; border: 1px solid transparent; border-radius: 2px; background: none; color: var(--mc-text, var(--text)); cursor: pointer; }
+#mc-tabtools .mc-tt svg { display: block; }
+:root[data-profile] #mc-tabtools .mc-tt:hover { background: var(--mc-hover); border-color: var(--mc-hover-line); }
+:root[data-profile] #mc-tabtools .mc-tt:active { background: var(--mc-press); border-color: var(--mc-press-line); }
+:root[data-profile] #mc-tabtools .mc-tt:focus-visible { outline: 1px solid var(--mc-focus); outline-offset: -1px; }
+/* the managers: large blue title, tool row, white grid with light lines, boxed active tab at the bottom */
+:root[data-profile] #left, :root[data-profile] #app.mc-managers #left { background: var(--mc-panel); color: var(--mc-text); }
+:root[data-profile] #mc-mgr-head .mc-mgr-tools { border-bottom-color: var(--mc-line); }
+:root[data-profile] #mc-mgr-head .mc-tool:active { background: var(--mc-press); border-color: var(--mc-press-line); }
+:root[data-profile] #mc-mgr-tabs { background: var(--mc-mgr-tab); border-top-color: var(--mc-line); }
+:root[data-profile] #mc-mgr-tabs button { color: var(--mc-ink); }
+:root[data-profile] #mc-mgr-tabs button.active { background: var(--mc-tab-on); border-color: var(--mc-tab-line); font-weight: 400; }
+:root[data-profile] table.mc-planes { color: var(--mc-ink); }
+:root[data-profile] table.mc-planes th { color: var(--mc-text); font-weight: 400; border-bottom-color: var(--mc-line); border-right: 1px solid var(--mc-grid); }
+:root[data-profile] table.mc-planes td { border-right: 1px solid var(--mc-grid); border-bottom: 1px solid var(--mc-grid); }
+:root[data-profile] table.mc-planes td.mc-pl-cell { color: var(--mc-ink); font-weight: 400; }
+:root[data-profile] table.mc-planes td.mc-pl-chk { color: var(--mc-accent); }
+:root[data-profile] .mc-sol-row { color: var(--mc-ink); }
+:root[data-profile] .mc-pl-lower input, :root[data-profile] #mc-planes .mc-find { background: var(--mc-field); border-color: var(--mc-field-line); color: var(--mc-ink); }
+:root[data-profile] .mc-pl-lower input[readonly] { background: var(--mc-field-off); color: var(--mc-muted); }
+:root[data-profile] #levels-panel, :root[data-profile] .lvl-pop {
+  --lv-bg: var(--mc-panel); --lv-ink: var(--mc-ink); --lv-muted: var(--mc-muted); --lv-grid: var(--mc-grid); --lv-grid-2: var(--mc-line); --lv-hover: var(--mc-hover);
+  --lvl-main: var(--mc-press); --lvl-main-text: var(--mc-ink);
+  --input-bg: var(--mc-field); --input-line: var(--mc-field-line); --icon-ink: var(--mc-text); --blue-line: var(--mc-hover-line);
+  color-scheme: normal; }
+:root[data-profile][data-theme="dark"] #levels-panel, :root[data-profile][data-theme="dark"] .lvl-pop { color-scheme: dark; }
+/* the viewsheet strip: white, the active sheet boxed in #a2a2a2 with black text */
+:root[data-profile] #mc-viewsheets { background: var(--mc-panel); border-top-color: var(--mc-line); color: var(--mc-ink); }
+:root[data-profile] #mc-viewsheets button { border-right-color: transparent; }
+:root[data-profile] #mc-viewsheets .vs-tab.active { background: var(--mc-tab-on); box-shadow: inset 1px 0 0 var(--mc-tab-line), inset -1px 0 0 var(--mc-tab-line), inset 0 -1px 0 var(--mc-tab-line); font-weight: 600; }
+/* the status bar: one solid blue, white text, no separators (none in the screenshots) */
+:root[data-profile] #mc-status .mc-st, :root[data-profile] #mc-status .mc-styles, :root[data-profile] #app.mc-status #status-right > .st-profile { border-left-color: transparent; }
+:root[data-profile] #mc-status .mc-style.active { background: var(--mc-blue-press); border-color: transparent; border-radius: 2px; }
+:root[data-profile] #mc-status button.mc-st:hover, :root[data-profile] #mc-status .mc-style:hover { background: var(--mc-blue-hover); }
+/* the backstage: a blue navigation column and white pages (Office-style) */
+:root[data-profile] #mc-backstage { background: var(--mc-panel); color: var(--mc-text); }
+:root[data-profile] #mc-backstage .bs-nav-item:hover, :root[data-profile] #mc-backstage .bs-back:hover { background: var(--mc-blue-hover); }
+:root[data-profile] #mc-backstage .bs-nav-item.active { background: var(--mc-blue-press); }
+:root[data-profile] #mc-backstage .bs-nav :focus-visible { outline: 1px solid var(--mc-blue-text); outline-offset: -2px; }
+:root[data-profile] #levels-panel .lvl-hdr { font-weight: 400; }
+:root[data-profile] #mc-backstage .bs-page h2 { color: var(--mc-ink); }
+:root[data-profile] #mc-backstage .bs-row:hover:not(:disabled) { background: var(--mc-hover); border-color: var(--mc-hover-line); }
+:root[data-profile] #mc-backstage input:not([type=checkbox]):not([type=radio]), :root[data-profile] #mc-backstage select { background: var(--mc-field); border: 1px solid var(--mc-field-line); color: var(--mc-ink); }
+/* menus, tooltips, dialogs, the Task Pane: through the tokens; a menu row's hover is the light blue */
+:root[data-profile] .menu .mi:hover:not(.disabled) { background: var(--mc-hover); }
+:root[data-profile] #modal-box, :root[data-profile] #modal-body { background: var(--mc-panel); color: var(--mc-text); }
+:root[data-profile] .btn:hover:not(:disabled):not(.primary) { background: var(--mc-hover); border-color: var(--mc-hover-line); }
+:root[data-profile] input[type=range] { accent-color: var(--mc-accent); }
+/* the graphics window: round translucent Quick Masks with blue icons, the selection bar on a light strip */
+:root[data-profile] #vp-qmask button { background: var(--mc-qm); border: 0; box-shadow: none; color: var(--mc-qm-ink); }
+:root[data-profile] #vp-qmask button:hover { background: var(--mc-qm-hover); }
+:root[data-profile] #vp-qmask button.on { background: var(--mc-qm-on); color: var(--mc-qm-ink-on); }
+:root[data-profile] #vp-selbar { background: var(--mc-raised); border-color: var(--mc-line); color: var(--mc-ink); }
+:root[data-profile] #vp-selbar .sb-btn:hover { background: var(--mc-hover); border-color: var(--mc-hover-line); }
+:root[data-profile] #vp-selbar .sb-btn.on { background: var(--mc-press); border-color: var(--mc-press-line); }
+:root[data-profile] #vp-selbar .sb-sep { background: var(--mc-line); }
+:root[data-profile] #viewport.vp-profile-bg #scale-bar { color: #000000; }

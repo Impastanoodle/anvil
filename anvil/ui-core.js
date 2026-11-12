@@ -147,6 +147,39 @@ var UI = (function () {
   // colour only occludes (colorWrite off).
   var LINE_PALETTE_LIGHT = { edge: 0x1a1a1a, grid: 0xcacaca, gridMajor: 0xa8a8a8, sketchDim: 0x5a5a5a, planeLine: 0x8c8c8c, hlr: 0xffffff, sketchFull: 0x141414, sketch: 0x141414, temp: 0x141414, sketchSel: 0xc49000, sketchConstr: 0x8c8c8c };
   var LINE_PALETTE = { edge: 0xffffff, grid: 0x4a4a4a, gridMajor: 0x626262, sketchDim: 0xc8c8c8, planeLine: 0x8c8c8c, hlr: 0x1e1e1e, sketchFull: 0xffffff, sketch: 0xffffff, temp: 0xffffff, sketchSel: 0xffd400, sketchConstr: 0xa8a8a8 };
+  // lane mctheme: an interface profile's graphics colours over the palette above (ui-profiles.js viewport.colors, set by
+  // the tail IIFE's applyViewport): wireframe = every sketch line that is not construction, selected or in error; solid =
+  // the part colour while the model has none of its own (Materials.displayColor of nothing); gnomon = the triad's X Y Z.
+  // UI.profileViewportColors(colors | null) sets or clears them and returns what is in force; it re-asserts itself once
+  // per frame (UI.viewFurnitureTick), so applyLinePalette / applyDisplayStyle resetting the tables is undone within a frame;
+  // null puts Anvil's own colours back at once.
+  var profVp = null, profTriad = null;
+  function profileViewportColors(c) {
+    if (arguments.length) {
+      var was = profVp;
+      profVp = c && typeof c === 'object' ? c : null;
+      if (!profTriad) profTriad = TRIAD_AXES.map(function (a) { return a[1]; });
+      TRIAD_AXES.forEach(function (a, i) { a[1] = profVp && profVp.gnomon && profVp.gnomon[i] ? profVp.gnomon[i] : profTriad[i]; });
+      if (was && !profVp) { mats.part.color.set(partColor(App.model && App.model.color)); applyLinePalette(); }
+      syncProfileViewportColors();
+      if (UI && UI.drawTriad) drawTriad();
+    }
+    return profVp ? { wireframe: profVp.wireframe || null, solid: profVp.solid || null, gnomon: TRIAD_AXES.map(function (a) { return a[1]; }) } : null;
+  }
+  function syncProfileViewportColors() {
+    if (!profVp) return false;
+    var changed = false, c = new THREE.Color();
+    if (profVp.wireframe) {
+      c.set(profVp.wireframe);
+      ['sketch', 'sketchFull', 'sketchDim', 'temp'].forEach(function (k) { if (mats[k].color.getHex() !== c.getHex()) { mats[k].color.copy(c); mats[k].needsUpdate = true; changed = true; } });
+    }
+    if (profVp.solid && !mats.part.vertexColors && App.model && partColor(App.model.color) === partColor(null)) {
+      c.set(profVp.solid);
+      if (mats.part.color.getHex() !== c.getHex()) { mats.part.color.copy(c); changed = true; }
+    }
+    if (changed) needsRender = true;
+    return changed;
+  }
   var viewportTheme = 'light';
   // r14/viewui14: model edges on a shaded body stay dark as in SolidWorks (light edges on a light grey body read as a
   // washed-out outline) and are white only where the body is not painted (HLR / HLV / wireframe).
@@ -4810,6 +4843,7 @@ var UI = (function () {
     applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
     rollbackTo: rollbackTo, rollForward: rollForward, rollbackCommit: rollbackCommit, rollbackSwap: rollbackSwap,   // r10/editpreview10: Edit Feature rollback
     rollbarTo: rollbarTo, rollbarIndex: rollbarIndex, rollbarRolled: rollbarRolled, rollbarSync: rollbarSync, rollbarForward: rollbarForward, rollbarEnd: rollbarEnd, rollbarPrevious: rollbarPrevious, rollbarPrevIndex: rollbarPrevIndex,   // rfGQ: the rollback bar
+    profileViewportColors: profileViewportColors, syncProfileViewportColors: syncProfileViewportColors,   // lane mctheme
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme, darkViewport: darkViewport, linePalette: function () { return darkViewport() ? LINE_PALETTE : LINE_PALETTE_LIGHT; },
     // rfHC: RealView (physically based shading in a studio; the depthfx lane's toggles call setRealView)
     setRealView: setRealView, realView: realView, realViewInfo: realViewInfo, partFaceMaterial: partFaceMaterial,
@@ -4957,6 +4991,7 @@ var UI = (function () {
       if (!labelsEl) { labelsEl = document.createElement('div'); labelsEl.id = 'vp-labels'; labelsEl.setAttribute('aria-live', 'off'); viewport.appendChild(labelsEl); }
       labelsEl.hidden = false; labelsText = null;
     } else if (labelsEl) labelsEl.hidden = true;
+    if (UI.profileViewportColors) UI.profileViewportColors(s && s.colors && typeof s.colors === 'object' ? s.colors : null);   // lane mctheme
     hooks.forEach(function (h) { try { h(s); } catch (e) { console.warn('viewport profile hook', e); } });
     tick(true);
   }
@@ -4979,6 +5014,7 @@ var UI = (function () {
   function tick(force) {
     if (!onChangeHooked && UI.Profiles && UI.Profiles.onChange) { onChangeHooked = true; UI.Profiles.onChange(function () { applyViewport(); }); }
     if (applied !== profKey()) { applyViewport(); return; }
+    if (UI.syncProfileViewportColors) UI.syncProfileViewportColors();   // lane mctheme: after a theme / style reset of the line tables
     if (!labelsEl || labelsEl.hidden) return;
     var L = labels(), t = L.gview + '|' + L.cplane + '|' + (UI.drawingActive && UI.drawingActive() ? 'd' : '');
     if (t === labelsText && !force) return;

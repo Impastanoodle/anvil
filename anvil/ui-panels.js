@@ -937,9 +937,26 @@
   // the File tab at the head of the tab row (refreshRibbon puts it back when the tab strip is rebuilt)
   function frameFileTab() {
     var tabs = $('ribbon-tabs'), fb = $('mc-file');
-    if (!frameRibbon('fileTab')) { if (fb) fb.remove(); return; }
+    if (!frameRibbon('fileTab')) { if (fb) fb.remove(); if ($('mc-tabtools')) $('mc-tabtools').remove(); return; }
     if (!fb) { fb = el('button', { id: 'mc-file', class: 'mc-file', text: 'File', 'aria-haspopup': 'dialog', onclick: function () { if (bs) bsClose(); else bsOpen('info'); } }); setTip(fb, { name: 'File', desc: 'Info, New, Open, Save, Save As, Convert / Export, Print, Recent, Options (Configuration), Help' }); }
     if (tabs.firstChild !== fb) tabs.insertBefore(fb, tabs.firstChild);
+    frameTabTools(tabs);
+  }
+  // lane mctheme: Mastercam's small buttons at the right end of the tab row: Options (File ▸ Options) and Help. Like
+  // #mc-file it has no .rtab, so the tab lists do not see it; removed with the File tab on teardown.
+  function frameTabTools(tabs) {
+    var tt = $('mc-tabtools');
+    if (!tt) {
+      tt = el('div', { id: 'mc-tabtools', role: 'toolbar', 'aria-label': 'Options and Help' });
+      var ico = function (name, fb) { return window.Icons && (!Icons.has || Icons.has(name)) ? Icons(name, 16) : fb; };
+      var help = '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.1 6.2a1.9 1.9 0 1 1 2.6 1.8c-.5.2-.7.6-.7 1.1v.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="11.6" r=".85" fill="currentColor"/></svg>';
+      var ob = el('button', { class: 'mc-tt', 'data-tt': 'options', 'aria-label': 'Options', html: ico('options', ''), onclick: function () { if (bs && bs.page === 'options') bsClose(); else bsOpen('options'); } });
+      var hb = el('button', { class: 'mc-tt', 'data-tt': 'help', 'aria-label': 'Help', html: ico('help', help), onclick: function () { bsOpen('help'); } });
+      setTip(ob, { name: 'Options', desc: 'File ▸ Options: interface profile, units, image quality, dimensions, OpenCascade, sheet metal' });
+      setTip(hb, { name: 'Help', desc: 'File ▸ Help' });
+      tt.appendChild(ob); tt.appendChild(hb);
+    }
+    if (tabs.lastChild !== tt) tabs.appendChild(tt);
   }
 
   // ---- UI.setFrame(frame | null)
@@ -965,7 +982,8 @@
       if (UI.closeMenus) closeMenus();
       mgrTeardown(); frameStatusTeardown();
       var fb = $('mc-file'); if (fb) fb.remove();
-      var cl = document.querySelector('#ribbon > .mc-captions'); if (cl) cl.remove();
+      var tt = $('mc-tabtools'); if (tt) tt.remove();   // lane mctheme
+      var cl =document.querySelector('#ribbon > .mc-captions'); if (cl) cl.remove();
       if (frameCapObs) { frameCapObs.disconnect(); frameCapObs = null; }
       FRAME_CLASSES.forEach(function (c) { $('app').classList.remove(c); });
       frame = null;

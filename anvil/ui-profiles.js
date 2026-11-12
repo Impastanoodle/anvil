@@ -23,7 +23,9 @@
 //                            // sketch, on the construction plane named here (ui-sketch*.js; this file only holds the data)
 //     viewport: { background: ['#top', '#bottom'], labels, headsUp, quickMasks, selectionBar, contextMenu: 'mastercam' } }
 //                            // lane mcdirect reads it: graphics-window gradient (top, bottom), view-name labels, the
-//                            // heads-up toolbar shown or not, Quick Masks column, selection bar, right-click menu style
+//                            // heads-up toolbar shown or not, Quick Masks column, selection bar, right-click menu style;
+//                            // colors: { wireframe, solid, gnomon: [x, y, z] } (lane mctheme, ui-core.js UI.profileViewportColors):
+//                            // sketch / wireframe lines, the default solid colour and the gnomon under the profile
 //   A tab's group item may also be { menu: 'Edit', row: 'Delete', label, icon } (runs that menu row: Home ▸ Delete
 //   Entities) or { fn: 'manager' | 'search', arg, label, icon } (a frame function: a manager panel tab, Command Finder)
 //   or { fn: 'action', arg } (lane mcpolish: a frame action of ui-panels.js FRAME_ACTIONS, its label / icon / help from
@@ -300,14 +302,40 @@
       functionTitles: { extrude: 'Solid Extrude', revolve: 'Revolve', cut: 'Solid Extrude', fillet: 'Constant Fillet', chamfer: 'One Distance Chamfer', holeWizard: 'Hole', shell: 'Shell', draft: 'Draft Faces', lpattern: 'Rectangular Pattern', cpattern: 'Circular Pattern' },
       status: ['section', 'selected', 'xyz', 'mode', 'cplane', 'tplane', 'wcs', 'styles'],
       viewsheets: true,   // lane mcpolish: the viewsheet strip under the graphics window (ui-panels.js vsRender)
+      // lane mctheme: measured from the user's screenshots (light): File tab / status bar #2b579a, manager title #0d64c8,
+      // selected row #0078d4 + white, grounds white, hairlines #d4d4d4, table grid #f0f0f0, boxed tabs #a2a2a2, text #3b3b3b,
+      // greyed text #a0a0a0 and fields #f0f0f0. Not in the screenshots (Office-style family, chosen): hover / pressed blues,
+      // control borders darkened to 3:1, the whole dark set (Mastercam has no dark theme: its blue, dark grounds).
       theme: { name: 'mastercam', vars: {
-        light: { '--mc-blue': '#1f5aa6', '--mc-blue-text': '#ffffff', '--mc-title': '#1f5aa6', '--mc-ribbon': '#ffffff', '--mc-strip': '#ffffff', '--mc-line': '#d4d4d4', '--mc-tab-on': '#ffffff', '--mc-hover': '#dce8f6', '--mc-press': '#c3d9f1', '--mc-press-line': '#7da2ce', '--mc-panel': '#ffffff', '--mc-mgr-tab': '#f3f3f3', '--mc-text': '#1e1e1e' },
-        dark: { '--mc-blue': '#2c5f9e', '--mc-blue-text': '#ffffff', '--mc-title': '#7fb0e8', '--mc-ribbon': '#2b2b2b', '--mc-strip': '#2b2b2b', '--mc-line': '#454545', '--mc-tab-on': '#383838', '--mc-hover': '#34465c', '--mc-press': '#2f4d70', '--mc-press-line': '#4f78a8', '--mc-panel': '#262626', '--mc-mgr-tab': '#303030', '--mc-text': '#e4e4e4' }
+        light: { '--mc-blue': '#2b579a', '--mc-blue-text': '#ffffff', '--mc-blue-hover': '#3e6aae', '--mc-blue-press': '#1f4479', '--mc-title': '#0d64c8',
+          '--mc-ribbon': '#ffffff', '--mc-strip': '#ffffff', '--mc-line': '#d4d4d4', '--mc-tab-on': '#ffffff', '--mc-tab-line': '#a2a2a2',
+          '--mc-hover': '#dce8f6', '--mc-hover-line': '#a9c6e8', '--mc-press': '#c3d9f1', '--mc-press-line': '#7da2ce',
+          '--mc-panel': '#ffffff', '--mc-raised': '#ffffff', '--mc-mgr-tab': '#ffffff', '--mc-grid': '#f0f0f0',
+          '--mc-text': '#3b3b3b', '--mc-ink': '#000000', '--mc-muted': '#6b6b6b', '--mc-disabled': '#a0a0a0', '--mc-launcher': '#797979',
+          '--mc-field': '#ffffff', '--mc-field-line': '#8f8f8f', '--mc-field-off': '#f0f0f0', '--mc-field-ro': '#c0c0c0',
+          '--mc-accent': '#0078d4', '--mc-accent-text': '#ffffff', '--mc-accent-hover': '#106ebe', '--mc-focus': '#0078d4',
+          '--mc-scroll': '#c1c1c1', '--mc-scroll-hover': '#a6a6a6', '--mc-backdrop': 'rgba(0, 0, 0, 0.3)', '--mc-sheet-bg': '#c8c8c8',
+          '--mc-qm': 'rgba(221, 221, 221, 0.35)', '--mc-qm-hover': 'rgba(221, 221, 221, 0.6)', '--mc-qm-on': 'rgba(0, 120, 212, 0.55)', '--mc-qm-ink': '#1f4e8c', '--mc-qm-ink-on': '#ffffff',
+          '--mc-msg-bg': '#fff8dc', '--mc-msg-line': '#e6d28a', '--mc-msg-text': '#4a3c00' },
+        dark: { '--mc-blue': '#2b579a', '--mc-blue-text': '#ffffff', '--mc-blue-hover': '#3e6aae', '--mc-blue-press': '#1f4479', '--mc-title': '#6aaaf2',
+          '--mc-ribbon': '#2b2b2b', '--mc-strip': '#2b2b2b', '--mc-line': '#474747', '--mc-tab-on': '#2b2b2b', '--mc-tab-line': '#6a6a6a',
+          '--mc-hover': '#2e4560', '--mc-hover-line': '#4f78a8', '--mc-press': '#2a5384', '--mc-press-line': '#6a9bd4',
+          '--mc-panel': '#262626', '--mc-raised': '#2f2f2f', '--mc-mgr-tab': '#262626', '--mc-grid': '#353535',
+          '--mc-text': '#e4e4e4', '--mc-ink': '#ffffff', '--mc-muted': '#a8a8a8', '--mc-disabled': '#6e6e6e', '--mc-launcher': '#a0a0a0',
+          '--mc-field': '#1e1e1e', '--mc-field-line': '#7a7a7a', '--mc-field-off': '#2c2c2c', '--mc-field-ro': '#3a3a3a',
+          '--mc-accent': '#0a6fc2', '--mc-accent-text': '#ffffff', '--mc-accent-hover': '#1a80d6', '--mc-focus': '#4ea3ee',
+          '--mc-scroll': '#555555', '--mc-scroll-hover': '#777777', '--mc-backdrop': 'rgba(0, 0, 0, 0.55)', '--mc-sheet-bg': '#3a3a3a',
+          '--mc-qm': 'rgba(221, 221, 221, 0.35)', '--mc-qm-hover': 'rgba(221, 221, 221, 0.6)', '--mc-qm-on': 'rgba(0, 120, 212, 0.55)', '--mc-qm-ink': '#1f4e8c', '--mc-qm-ink-on': '#ffffff',
+          '--mc-msg-bg': '#3b3520', '--mc-msg-line': '#6b5a1e', '--mc-msg-text': '#f0d27a' }
       } }
     },
     // read by lane mcdirect (ui-sketch*.js, ui-core.js); written here only
     wireframe: { direct: true, plane: 'Top' },
-    viewport: { background: ['#1c1c1c', '#b8b8b8'], labels: true, headsUp: false, quickMasks: true, selectionBar: true, contextMenu: 'mastercam' },
+    // lane mctheme: gradient #141414 -> #c0c0c0 (linear; measured top, middle, bottom), the Home tab's Attributes swatches
+    // (wireframe lime, solid grey, surface orange) and the gnomon's X red / Y green (measured); Z blue is not in the
+    // screenshots (from memory)
+    viewport: { background: ['#141414', '#c0c0c0'], labels: true, headsUp: false, quickMasks: true, selectionBar: true, contextMenu: 'mastercam',
+      colors: { wireframe: '#9ef713', solid: '#808080', surface: '#f4844d', gnomon: ['#c90707', '#0b8a09', '#1f5fd0'] } },
     keys: {
       vTop: 'Alt+1', vFront: 'Alt+2', vBack: 'Alt+3', vBottom: 'Alt+4', vRight: 'Alt+5', vLeft: 'Alt+6', vIso: 'Alt+7', prevView: 'Alt+P',
       fit: 'Alt+F1', zoomArea: 'F1', vOrigins: 'F9', levels: 'Alt+Z', vFeatureTree: 'Alt+I', trim: 'Shift+T',

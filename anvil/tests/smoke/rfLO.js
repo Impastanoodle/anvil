@@ -461,7 +461,7 @@
       var lab = D.getElementById('vp-labels'), qm = D.getElementById('vp-qmask'), sb = D.getElementById('vp-selbar');
       assert(rfLOShown(lab) && rfLOShown(qm) && rfLOShown(sb), 'labels / quick masks / selection bar shown');
       assert(W.getComputedStyle($('hud')).display === 'none', 'no heads-up toolbar');
-      assert(/#1c1c1c/.test($('viewport').style.getPropertyValue('--viewport')), 'Mastercam\'s gradient');
+      assert($('viewport').style.getPropertyValue('--viewport').indexOf(UI.Profiles.def('mastercam').viewport.background[0]) >= 0, 'Mastercam\'s gradient');   // lane mctheme: the top colour from the profile data (#141414, measured)
       UI.setView('Top'); await rfLOSettle();
       assert(lab.querySelector('[data-label="gview"]').textContent === 'Top' && lab.querySelector('[data-label="cplane"]').textContent === 'Top', 'labels: ' + lab.textContent);
       // nothing of this lane overlaps mcframe's status bar, manager panel or viewsheet strip, nor the gnomon / scale

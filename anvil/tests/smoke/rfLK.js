@@ -106,7 +106,7 @@
     // the look: html data-profile, the File tab and the status bar in the profile's blue
     assert(D.documentElement.getAttribute('data-profile') === 'mastercam', 'data-profile');
     var sb = W.getComputedStyle($('statusbar')).backgroundColor, fb = W.getComputedStyle(file).backgroundColor;
-    assert(sb === fb && /rgb\(31, 90, 166\)/.test(sb), 'status bar ' + sb + ', File ' + fb);
+    assert(sb === fb && /rgb\(43, 87, 154\)/.test(sb), 'status bar ' + sb + ', File ' + fb);   // lane mctheme: #2b579a, measured in the user's screenshots (was #1f5aa6)
     var st = UI.frameStatus();
     ['section', 'selected', 'x', 'y', 'z', 'cplane', 'tplane', 'wcs', 'styles'].forEach(function (k) { assert(k in st, 'status bar has no ' + k + ': ' + JSON.stringify(st)); });
     assert(/SECTION VIEW: OFF/.test(st.section) && /SELECTED ENTITIES: \d/.test(st.selected) && /^CPLANE: Top/.test(st.cplane), JSON.stringify(st));

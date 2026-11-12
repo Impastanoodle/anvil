@@ -151,3 +151,12 @@ body:has(#app.drawing-mode) .toast { bottom: 60px; }
 .menu.cmd-search-list .mi > span:nth-child(3) { grid-column: 2; grid-row: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu.cmd-search-list .mi .key { grid-column: 2; grid-row: 2; margin: 0; padding: 0; font-size: 10.5px; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu.cmd-search-list .mi:first-child:not(.disabled) { background: var(--sw-row-hover, var(--sel)); }
+/* lane mctheme: the drawing sheet's chrome under an interface profile (colours from the profile's --mc-* data, style.css
+   block "lane mctheme"): the desk around the sheet, the sheet tabs boxed as Mastercam's viewsheet tabs, the selected tree row */
+:root[data-profile], :root[data-profile][data-theme="dark"] {
+  --dw-desk: var(--mc-sheet-bg); --dw-tabbar: var(--mc-panel); --dw-tab: var(--mc-panel); --dw-tab-hover: var(--mc-hover); --dw-tab-on: var(--mc-tab-on);
+  --dw-tab-line: var(--mc-tab-line); --dw-tab-text: var(--mc-ink); --dw-tab-muted: var(--mc-text); --dw-tab-mark: var(--mc-tab-line); }
+:root[data-profile] #drawing-tabs .dw-tab.active { box-shadow: none; font-weight: 600; }
+:root[data-profile] #drawing-tree .ti.selected { background: var(--mc-accent); color: var(--mc-accent-text); box-shadow: none; }
+:root[data-profile] #drawing-tree .ti.selected * { color: inherit; }
+:root[data-profile] #app.drawing-mode #dw-status span { border-left-color: transparent; }
