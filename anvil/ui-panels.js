@@ -495,6 +495,8 @@
     } else if (x.fn === 'search') {
       it.cmd = 'search';
       it.run = function () { var s = $('cmd-search'); if (s) { s.focus(); s.select(); } };
+    } else if (x.fn === 'action') {   // lane mcpolish
+      return frameActionItem(x.arg, x, group);
     } else if (x.fn === 'menu') {
       it.cmd = 'menu:' + x.arg;
       it.help = x.help || 'The ' + x.arg + ' menu (Mastercam has no menu bar: its rows are here)';
@@ -522,7 +524,7 @@
   function frameNoteRun(item) {
     if (!frame) return;
     var c = cmdOf(item);
-    if (!c || /^(manager:|menu:|search$)/.test(c)) return;
+    if (!c || /^(manager:|menu:|action:|search$)/.test(c)) return;
     var s = itemState(item), label = flatLabel(item.label || s.label);
     frameLastRun = { cmd: c, title: (frame.functionTitles && frame.functionTitles[c]) || label, t: Date.now() };
     frameRecent = frameRecent.filter(function (r) { return r.cmd !== c; });
@@ -643,9 +645,18 @@
 
   // ---- the manager panel
   var MGR_TOOLS = {
-    solids: [['rebuild', 'Regenerate all (Ctrl+B)', function () { var r = menuRow('Edit', 'Rebuild'); if (r) r.action(); }], ['undo', 'Undo (Ctrl+Z)', function () { (UI.undoCommand || UI.undo)(); }], ['redo', 'Redo (Ctrl+Y)', function () { (UI.redoCommand || UI.redo)(); }], ['deleteEnt', 'Delete the selected operation (Del)', function () { var r = menuRow('Edit', 'Delete'); if (r && !r.disabled) r.action(); else toast('Select an operation first.'); }]],
-    planes: [['plane', 'New plane', function () { if (UI.cmdPlane) UI.cmdPlane(); }], ['back', 'Reset: Top as the graphics view, WCS, construction and tool plane', function () { framePlaneSet('g', 'Top'); framePlaneSet('wcs', 'Top'); framePlaneSet('c', 'Top'); framePlaneSet('t', 'Top'); }]],
-    levels: [],
+    // lane mcpolish: Mastercam's Solids tool row (regenerate all / selected, undo, redo, move up / down, delete)
+    solids: [['rebuild', 'Regenerate all (Ctrl+B)', function () { var r = menuRow('Edit', 'Rebuild'); if (r) r.action(); }],
+      ['rebuild', 'Regenerate the selected operation', function () { if (!App.sel || App.sel.kind !== 'feature') { toast('Select an operation first.'); return; } var f = K.findFeature(App.model, App.sel.id); UI.rebuild().then(function () { var er = App.build && App.build.errors && App.build.errors[f.id]; setStatus(f.name + (er ? ': ' + er : ' regenerated.')); }); }],
+      ['undo', 'Undo (Ctrl+Z)', function () { (UI.undoCommand || UI.undo)(); }], ['redo', 'Redo (Ctrl+Y)', function () { (UI.redoCommand || UI.redo)(); }],
+      ['moveUp', 'Move the selected operation up', function () { frameMoveOp(-1); }], ['moveDown', 'Move the selected operation down', function () { frameMoveOp(1); }],
+      ['deleteEnt', 'Delete the selected operation (Del)', function () { var r = menuRow('Edit', 'Delete'); if (r && !r.disabled) r.action(); else toast('Select an operation first.'); }]],
+    // lane mcpolish: Planes tool row (new plane from geometry, from the graphics view, find, reset)
+    planes: [['plane', 'New plane from geometry (Plane PropertyManager)', function () { if (UI.cmdPlane) UI.cmdPlane(); }], ['planeView', 'New plane from the graphics view (looking along Top / Front / Right, at the Z depth)', function () { frameNewPlaneFromView(); }],
+      ['search', 'Find a plane by name', function () { var b = $('mc-planes'); if (b) frameFind(b); }],
+      ['back', 'Reset: Top as the graphics view, WCS, construction and tool plane', function () { framePlaneSet('g', 'Top'); framePlaneSet('wcs', 'Top'); framePlaneSet('c', 'Top'); framePlaneSet('t', 'Top'); }]],
+    levels: [],   // the Levels manager's own tool row (new, all on, all off, level sets) is in its pane (ui-levels.js)
+    config: [],   // the ConfigurationManager's buttons (Add, Rename, Delete, Show, Design Table) are in its pane
     recent: [['cancel', 'Clear the list', function () { frameRecent = []; frameRecentRender(); }]]
   };
   function mgrTitle(n) { return (frame && frame.managers && frame.managers.titles && frame.managers.titles[n]) || n; }
@@ -665,6 +676,11 @@
     });
     left.appendChild(tabs);
     $('mc-planes').addEventListener('click', framePlanesClick);
+    $('mc-planes').addEventListener('change', function (e) {   // lane mcpolish: the selected plane's comment
+      var t = e.target; if (!t.classList || !t.classList.contains('mc-pl-comment')) return;
+      var n = t.closest('.mc-pl-lower').getAttribute('data-plane'); planeInfo.comments[n] = t.value;
+    });
+    $('mc-planes').addEventListener('keydown', function (e) { if (e.target && e.target.classList && e.target.classList.contains('mc-pl-comment')) e.stopPropagation(); });
     framePmObs = new MutationObserver(framePmDecorate);
     framePmObs.observe(pmEl, { childList: true });
   }
@@ -676,9 +692,18 @@
     $('left').classList.remove('mc-fn');
   }
   // the manager shown (or the function panel while a PropertyManager is open); `user`: picked by a click
+  // lane mcpolish: the ConfigurationManager's tab shows while the document has configurations (a part with any, an
+  // assembly always: its Default and exploded views); the drawing has none
+  function frameHasConfigs() {
+    if (UI.drawingActive && UI.drawingActive()) return false;
+    if (isAsm()) return !!UI.asmConfigPanel;
+    return cfgList().length > 0;
+  }
   function frameShowManager(name, user) {
     if (!frameMgrOn()) return;
     if (name && (frame.managers.tabs || []).indexOf(name) >= 0) frameMgr = name;
+    var hasCfg = frameHasConfigs();
+    if (frameMgr === 'config' && !hasCfg) frameMgr = 'solids';
     var left = $('left'), pmOpen = !$('pm').hidden;
     frameDoc = docTypeNow();
     if (user && pmOpen) { toast('Finish or cancel the active function first (OK or Cancel).'); }
@@ -687,10 +712,12 @@
     var part = !isAsm() && !(UI.drawingActive && UI.drawingActive());
     var showTree = !pmOpen && (frameMgr === 'solids' && !part);
     $('fm-tree').hidden = !showTree;
-    var cp = $('config-panel'); if (cp) cp.hidden = true;
+    var cfgBtn = document.querySelector('#mc-mgr-tabs [data-mgr="config"]'); if (cfgBtn) cfgBtn.hidden = !hasCfg;
+    var cp = $('config-panel');
+    if (cp) { var showCfg = !pmOpen && frameMgr === 'config'; cp.hidden = !showCfg; if (showCfg) refreshConfigPanel(); }
     var lp = $('levels-panel'); if (lp) lp.hidden = pmOpen || frameMgr !== 'levels';
     ['solids', 'planes', 'recent'].forEach(function (n) { var d = $('mc-' + n); if (d) d.hidden = pmOpen || frameMgr !== n || (n === 'solids' && !part); });
-    App.fmTab = pmOpen ? 'pm' : frameMgr === 'levels' ? 'levels' : 'tree';
+    App.fmTab = pmOpen ? 'pm' : frameMgr === 'levels' ? 'levels' : frameMgr === 'config' ? 'config' : 'tree';
     levelsSticky = frameMgr === 'levels';
     Array.prototype.forEach.call(document.querySelectorAll('#mc-mgr-tabs [data-mgr]'), function (b) { var on = b.getAttribute('data-mgr') === frameMgr; b.classList.toggle('active', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });
     var t = document.querySelector('#mc-mgr-head .mc-mgr-title'); if (t && t.textContent !== mgrTitle(frameMgr)) t.textContent = mgrTitle(frameMgr);
@@ -764,22 +791,27 @@
     var box = $('mc-planes');
     if (!box || box.hidden) return;
     framePlanes.c = frameCplane();
-    var rows = framePlaneRows(), sig = JSON.stringify([rows, framePlanes]);
+    var q = planeInfo.find.trim().toLowerCase();
+    var rows = framePlaneRows().filter(function (n) { return !q || n.toLowerCase().indexOf(q) >= 0; }), sig = JSON.stringify([rows, framePlanes, planeInfo.sel, q]);
     if (!force && box._sig === sig) return;
     box._sig = sig;
+    var findEl = box.querySelector('.mc-find'), hadFocus = findEl && document.activeElement === findEl;
     var cols = [['g', 'G', 'Graphics view: click to look at the model along this plane'], ['wcs', 'WCS', 'Work coordinate system'], ['c', 'C', 'Construction plane: wireframe is drawn on it'], ['t', 'T', 'Tool plane']];
     box.innerHTML = '<table class="mc-planes" role="grid" aria-label="Planes"><thead><tr><th></th><th>Name</th>' + cols.map(function (c) { return '<th title="' + c[2] + '">' + c[1] + '</th>'; }).join('') + '</tr></thead><tbody>' +
       rows.map(function (n) {
         var cur = framePlanes.c === n;
-        return '<tr class="' + (cur ? 'current' : '') + '" data-plane="' + escHtml(n) + '"><td class="mc-pl-chk">' + (cur ? '✓' : '') + '</td><td class="mc-pl-name">' + escHtml(n) + '</td>' +
+        return '<tr class="' + (cur ? 'current' : '') + (planeInfo.sel === n ? ' picked' : '') + '" data-plane="' + escHtml(n) + '"><td class="mc-pl-chk">' + (cur ? '✓' : '') + '</td><td class="mc-pl-name">' + escHtml(n) + '</td>' +
           cols.map(function (c) { return '<td class="mc-pl-cell" data-col="' + c[0] + '" title="' + c[2] + '">' + (framePlanes[c[0]] === n ? c[1] : '') + '</td>'; }).join('') + '</tr>';
       }).join('') + '</tbody></table>' +
-      '<p class="mc-pl-note">' + (UI.setCplane ? 'C sets the construction plane the wireframe tools draw on.' : 'C and T mark the plane only: this build has no construction-plane drawing yet.') + ' G sets the graphics view.</p>';
+      '<p class="mc-pl-note">' + (UI.setCplane ? 'C sets the construction plane the wireframe tools draw on.' : 'C and T mark the plane only: this build has no construction-plane drawing yet.') + ' G sets the graphics view.</p>' +
+      planesLowerHtml();
+    if (findEl) { box.insertBefore(findEl, box.firstChild); if (hadFocus) findEl.focus(); }
   }
   function framePlanesClick(e) {
     var td = e.target.closest && e.target.closest('td'), tr = td && td.closest('tr[data-plane]');
     if (!tr) return;
     var name = tr.getAttribute('data-plane'), col = td.getAttribute('data-col') || 'g';
+    planeInfo.sel = name;   // lane mcpolish: the lower part shows the row clicked last
     framePlaneSet(col, name);
   }
   function frameRecentRender() {
@@ -809,7 +841,7 @@
   UI.frameFunctionTitle = function () { var s = document.querySelector('#pm:not([hidden]) .mc-fn-title'); return s ? s.textContent : null; };
 
   // ---- the status bar
-  var FRAME_STYLES = [['wireframe', 'dsWireframe', 'Wireframe'], ['hlr', 'dsHLR', 'Hidden lines removed'], ['shaded', 'dsShaded', 'Shaded'], ['shadedEdges', 'dsShadedEdges', 'Shaded with edges (Outline Shaded)']];
+  var FRAME_STYLES = [['wireframe', 'dsWireframe', 'Wireframe'], ['hlr', 'dsHLR', 'Hidden lines removed'], ['shaded', 'dsShaded', 'Shaded'], ['shadedEdges', 'dsShadedEdges', 'Shaded with edges (Outline Shaded)'], ['material', 'dsMaterial', 'Material (shaded with the material, RealView)']];   // lane mcpolish: Material
   var frameXYZ = [0, 0, 0];
   function frameStatusBuild() {
     var bar = $('statusbar');
@@ -818,12 +850,13 @@
     (frame.status || []).forEach(function (k) {
       if (k === 'section') box.appendChild(el('button', { class: 'mc-st', 'data-mc': 'section', title: 'Section View: click to turn it on or off', onclick: function () { UI.cmdSection(); setTimeout(frameStatusSync, 0); } }));
       else if (k === 'selected') box.appendChild(el('span', { class: 'mc-st', 'data-mc': 'selected' }));
+      else if (k === 'mode') box.appendChild(el('button', { class: 'mc-st mc-mode', 'data-mc': 'mode', title: '3D / 2D: click to switch. 2D draws wireframe flat on the construction plane at its Z depth (Home ▸ Organize ▸ Z)', onclick: function () { FRAME_ACTIONS.mode3d.run(); frameStatusSync(); } }));   // lane mcpolish
       else if (k === 'xyz') ['x', 'y', 'z'].forEach(function (a) { box.appendChild(el('span', { class: 'mc-st mc-xyz', 'data-mc': a })); });
       else if (k === 'cplane') box.appendChild(el('button', { class: 'mc-st', 'data-mc': 'cplane', title: 'Construction plane: click for the list', onclick: function (e) { var r = e.currentTarget.getBoundingClientRect(); showMenu(r.left, r.top - 4, framePlaneRows().map(function (n) { return { label: n, checked: frameCplane() === n, action: function () { framePlaneSet('c', n); } }; })); } }));
       else if (k === 'tplane' || k === 'wcs') box.appendChild(el('span', { class: 'mc-st', 'data-mc': k, title: k === 'wcs' ? 'Work coordinate system (Planes manager, WCS column)' : 'Tool plane (Planes manager, T column)' }));
       else if (k === 'styles') {
         var g = el('span', { class: 'mc-styles', 'data-mc': 'styles' });
-        FRAME_STYLES.forEach(function (s) { var b = el('button', { class: 'mc-style', 'data-style': s[0], 'aria-label': s[2], html: Icons(s[1], 16), onclick: function () { setStyle(s[0]); frameStatusSync(); } }); setTip(b, { name: s[2] }); g.appendChild(b); });
+        FRAME_STYLES.forEach(function (s) { var b = el('button', { class: 'mc-style', 'data-style': s[0], 'aria-label': s[2], html: Icons(s[1], 16), onclick: function () { if (s[0] === 'material') frameMaterial(); else { if (frameMaterialOn() && UI.setRealView) UI.setRealView(false); setStyle(s[0]); } frameStatusSync(); } }); setTip(b, { name: s[2] }); g.appendChild(b); });
         box.appendChild(g);
       }
     });
@@ -831,7 +864,12 @@
     $('viewport').addEventListener('mousemove', frameMouse, { passive: true });
     frameStatusSync();
   }
-  function frameStatusTeardown() { var b = $('mc-status'); if (b) b.remove(); var v = $('viewport'); if (v) v.removeEventListener('mousemove', frameMouse); }
+  function frameStatusTeardown() {
+    var dw = $('dw-status'), bar = $('statusbar');   // lane mcpolish: the drawing's items back where drawing-ui.js puts them
+    if (dw && bar && dw.parentNode && dw.parentNode.id === 'mc-status') { dw.classList.remove('mc-st'); bar.insertBefore(dw, $('status-right')); }
+    var b = $('mc-status'); if (b) b.remove(); var v = $('viewport'); if (v) v.removeEventListener('mousemove', frameMouse);
+    var vs = $('mc-viewsheets'); if (vs) vs.remove(); if (v) v.classList.remove('mc-vs-on');
+  }
   var frameMouseRaf = 0, frameMouseAt = null;
   function frameMouse(e) {
     frameMouseAt = e;
@@ -855,7 +893,13 @@
     frameSet('cplane', 'CPLANE: <b>' + escHtml(frameCplane()) + '</b>');
     frameSet('tplane', 'TPLANE: <b>' + escHtml(framePlanes.t) + '</b>');
     frameSet('wcs', 'WCS: <b>' + escHtml(framePlanes.wcs) + '</b>');
-    Array.prototype.forEach.call(document.querySelectorAll('#mc-status .mc-style'), function (b) { var on = App.view.style === b.getAttribute('data-style'); if (b.classList.contains('active') !== on) b.classList.toggle('active', on); });
+    frameSet('mode', '<b>' + (UI.cplaneMode ? UI.cplaneMode() : '3D') + '</b>');   // lane mcpolish
+    var mat = frameMaterialOn();
+    Array.prototype.forEach.call(document.querySelectorAll('#mc-status .mc-style'), function (b) { var s = b.getAttribute('data-style'), on = s === 'material' ? mat : !mat && App.view.style === s; if (b.classList.contains('active') !== on) b.classList.toggle('active', on); });
+    // lane mcpolish: a drawing's own status items (Editing Sheet1, scale, units: drawing-ui.js #dw-status) go into the bar
+    var dw = $('dw-status'), box = $('mc-status');
+    if (dw && box && dw.parentNode !== box) { dw.classList.add('mc-st'); box.insertBefore(dw, box.firstChild); }
+    vsRender();
   }
   UI.frameStatus = function () { var o = {}; Array.prototype.forEach.call(document.querySelectorAll('#mc-status [data-mc]'), function (e) { o[e.getAttribute('data-mc')] = e.textContent; }); return o; };
 
@@ -947,6 +991,7 @@
         frameShowManager(frameMgr);
       }
       if (frame.status) { app.classList.add('mc-status'); frameStatusBuild(); }
+      vsRender();   // lane mcpolish: viewsheets
       var dm = document.activeElement; if (dm && dm.closest && dm.closest('#menus')) dm.blur();
     }
     UI.profileRibbonReset();
@@ -954,15 +999,254 @@
     if (UI.resize) setTimeout(UI.resize, 0);
     return frame;
   };
-  UI.frame = function () { return frame; };
+  // lane mcpolish: the profile's window frame (was UI.frame, which is ui-core.js's render loop again)
+  UI.frameDef = function () { return frame; };
   var frameSoonRaf = 0;
-  function frameSoon() { if (!frameSoonRaf) frameSoonRaf = requestAnimationFrame(function () { frameSoonRaf = 0; if (!frame) return; if (frameMgrOn() && frameDoc !== docTypeNow()) frameShowManager(null); frameSolidsRender(); framePlanesRender(); frameStatusSync(); }); }
+  function frameSoon() { if (!frameSoonRaf) frameSoonRaf = requestAnimationFrame(function () { frameSoonRaf = 0; if (!frame) return; if (frameMgrOn() && frameDoc !== docTypeNow()) frameShowManager(null); else if (frameMgrOn()) { var cb = document.querySelector('#mc-mgr-tabs [data-mgr="config"]'); if (cb && cb.hidden !== !frameHasConfigs()) frameShowManager(null); } frameSolidsRender(); framePlanesRender(); frameStatusSync(); }); }
   ['mouseup', 'keyup'].forEach(function (t) { document.addEventListener(t, function () { if (frame) frameSoon(); }, true); });
   window.addEventListener('resize', function () { if (frame) frameCaptionsSoon(); });
   UI.frameManager = function (name) { if (name) frameShowManager(name, true); return frameMgrOn() ? frameMgr : null; };
   UI.framePlanes = function () { return { g: framePlanes.g, wcs: framePlanes.wcs, c: frameCplane(), t: framePlanes.t }; };
   UI.frameRecent = function () { return frameRecent.map(function (r) { return r.cmd; }); };
   if (UI.onCplane) { try { UI.onCplane(function () { framePlanesRender(true); frameStatusSync(); }); } catch (e) { } }   // lane mcdirect
+
+  // ---- lane mcpolish: frame actions. Mastercam commands Anvil gained that are not SolidWorks ribbon commands: a
+  // profile places one as { fn: 'action', arg: name } (label, icon and help come from here); the SolidWorks menus run the
+  // same functions where SolidWorks has a row for them (partMenus). Each either changes state (active()) or opens a
+  // dialog / menu, or says why it cannot run now.
+  function selEntities() { return (UI.selection ? UI.selection() : []).filter(function (s) { return s && s.kind === 'entity'; }); }
+  function sketchCut() {
+    if (App.mode !== 'sketch' || !UI.sketchCopy) { toast('Cut: open a sketch and select entities first.'); return; }
+    if (!selEntities().length) { toast('Cut: select sketch entities first.'); return; }
+    UI.sketchCopy(); UI.deleteSelection();
+    setStatus('Cut: the entities are on the clipboard (Paste puts them back).');
+  }
+  function numPrompt(title, msg, val, fn) {
+    promptDialog(title, msg, String(val), function (t) {
+      var v = UI.parseLength ? UI.parseLength(t) : parseFloat(t);
+      if (v == null || !isFinite(v)) { v = parseFloat(t); }
+      if (!isFinite(v)) { toast(title + ': "' + t + '" is not a number.'); return; }
+      fn(v);
+    });
+  }
+  function fmtZ(z) { return UI.fmtNum ? UI.fmtNum(z, 4) : String(z); }
+  var FRAME_ACTIONS = {
+    cut: { label: 'Cut', icon: 'cutEnt', help: 'Cut the selected sketch entities to the clipboard (in a sketch)', run: sketchCut },
+    copyImage: { label: 'Copy Image', icon: 'copyImage', help: 'Copy the graphics window to the clipboard as an image', run: function () { UI.copyImage(); } },
+    undelete: { label: 'Undelete\nEntity', icon: 'undeleteEnt', help: 'Bring back the sketch entities deleted last (again for the ones before)', run: function () { UI.undeleteEntities(); } },
+    zDepth: { label: function () { return 'Z: ' + fmtZ(UI.cplaneZ ? UI.cplaneZ() : 0); }, icon: 'zDepth', help: 'Z depth of the construction plane: 2D wireframe is drawn at this depth (click to type it)',
+      run: function () { numPrompt('Z Depth', 'Depth of the construction plane (' + (UI.cplaneLabel ? UI.cplaneLabel() : 'Top') + ') for 2D wireframe:', UI.cplaneZ(), function (v) { UI.setCplaneZ(v); setStatus('Z depth ' + fmtZ(v) + ': wireframe is drawn flat on ' + UI.cplaneLabel() + ' at that depth (2D).'); refreshRibbon(); }); } },
+    level: { label: function () { return 'Level: ' + (UI.levels && UI.levels.main ? UI.levels.main() || 1 : 1); }, icon: 'levels', help: 'The main level new wireframe goes on (click to type a number; a new number makes the level)',
+      run: function () { if (!UI.levels || isAsm()) { toast('Levels belong to part documents.'); return; } numPrompt('Main Level', 'Level number new entities go on:', UI.levels.main() || 1, function (v) { var r = UI.levels.op('makeMain', Math.round(v)); if (r && !r.ok && r.error) toast(r.error); refreshRibbon(); }); } },
+    mode3d: { label: function () { return UI.cplaneMode && UI.cplaneMode() === '2D' ? '2D' : '3D'; }, icon: 'mode3d', help: '3D / 2D: 2D draws wireframe flat on the construction plane at its Z depth; 3D does not use the Z depth',
+      run: function () { var m = UI.cplaneMode() === '2D' ? '3D' : '2D'; UI.setCplaneMode(m); setStatus(m === '2D' ? '2D: wireframe is drawn on ' + UI.cplaneLabel() + ' at Z ' + fmtZ(UI.cplaneZ()) + '.' : '3D: the Z depth is not used.'); refreshRibbon(); }, active: function () { return !!UI.cplaneMode && UI.cplaneMode() === '2D'; } },
+    blank: { label: 'Blank', icon: 'blankEnt', help: 'Hide the selected entities or bodies (Unblank shows them again)', run: function () { UI.blankSelection(); } },
+    unblank: { label: 'Unblank', icon: 'unblankEnt', help: 'Show every blanked entity and body again', run: function () { UI.unblank(); } },
+    hideUnhide: { label: 'Hide/\nUnhide', icon: 'hideUnhide', help: 'Show only the selection; click again to show everything', run: function () { UI.hideUnhide(); }, active: function () { return !!(UI.hideUnhideOn && UI.hideUnhideOn()); } },
+    unzoom50: { label: 'Unzoom 50%', icon: 'unzoom50', help: 'Zoom out: the model shows at half its size', run: function () { UI.unzoom(0.5); } },
+    unzoom80: { label: 'Unzoom 80%', icon: 'unzoom80', help: 'Zoom out: the model shows at 80 % of its size', run: function () { UI.unzoom(0.8); } },
+    translucency: { label: 'Translucency', icon: 'translucency', help: 'Make the whole model see-through (click again for solid)', run: function () { UI.translucency(!UI.translucency()); }, active: function () { return !!UI.translucency(); } },
+    material: { label: 'Material', icon: 'dsMaterial', help: 'Shade the model with its material (RealView); click again for plain shading', run: function () { frameMaterial(); }, active: function () { return frameMaterialOn(); } },
+    showAxes: { label: 'Show Axes', icon: 'worldAxes', help: 'Show the X, Y and Z axes through the origin', run: function () { UI.showWorldAxes(!UI.showWorldAxes()); }, active: function () { return !!UI.showWorldAxes(); } },
+    showGnomons: { label: 'Show Gnomons', icon: 'gnomon', help: 'Show the axis gnomon and the view names in the graphics window', run: function () { UI.showGnomons(!UI.showGnomons()); }, active: function () { return !!UI.showGnomons(); } },
+    showGrid: { label: 'Show\nGrid', icon: 'vGrid', help: 'Show the grid on the plane you draw on (snapping is Snap to Grid)', run: function () { UI.gridShown(!UI.gridShown()); }, active: function () { return !!UI.gridShown(); } },
+    snapGrid: { label: 'Snap to Grid', icon: 'snapGrid', help: 'Points you draw snap to the grid', run: function () { UI.gridSnap(!UI.gridSnap()); }, active: function () { return !!UI.gridSnap(); } },
+    vsOnOff: { label: 'On/Off', icon: 'viewsheetOn', help: 'Show or hide the viewsheet tabs under the graphics window', run: function () { vsShow(!vsState.on); }, active: function () { return !!vsState.on; } },
+    vsNew: { label: 'New', icon: 'viewsheetNew', help: 'A new viewsheet with the current view, construction plane and levels', run: function () { vsAdd(); } },
+    vsSave: { label: 'Save Bookmark', icon: 'bookmarkSave', help: 'Keep the current view, plane and levels as the active viewsheet’s bookmark', run: function () { vsBookmark(true); } },
+    vsRestore: { label: 'Restore Bookmark', icon: 'bookmarkRestore', help: 'Go back to the active viewsheet’s bookmark', run: function () { vsBookmark(false); } }
+  };
+  function frameActionItem(name, x, group) {
+    var a = FRAME_ACTIONS[name], it = { id: (x && x.icon) || (a && a.icon) || 'generic', icon: (x && x.icon) || (a && a.icon) || 'generic', cmd: 'action:' + name, help: (x && x.help) || (a && a.help) || '' };
+    if (group) it.group = group;
+    if (!a) { it.label = (x && x.label) || name; return it; }
+    if (x && x.label) it.label = x.label;
+    else if (typeof a.label === 'function') Object.defineProperty(it, 'label', { get: a.label, enumerable: true });
+    else it.label = a.label;
+    it.run = a.run;
+    if (a.active) it.active = a.active;
+    return it;
+  }
+  UI.frameActions = function () { return Object.keys(FRAME_ACTIONS); };
+  UI.frameAction = function (name) { var a = FRAME_ACTIONS[name]; if (!a) return false; a.run(); refreshRibbon(); return true; };
+  // Material: RealView over plain shading (Mastercam's Material display); the other styles leave RealView as it is
+  function frameMaterialOn() { return !!(UI.realView && UI.realView()) && App.view.style === 'shaded'; }
+  function frameMaterial() {
+    if (!UI.setRealView) { toast('Material shading is not available.'); return; }
+    if (frameMaterialOn()) { UI.setRealView(false); setStatus('Plain shading.'); }
+    else { UI.setRealView(true); setStyle('shaded'); setStatus('Material shading (RealView).'); }
+    frameStatusSync(); refreshRibbon();
+  }
+
+  // ---- lane mcpolish: viewsheets (the strip under the graphics window). Each sheet keeps a graphics view (camera and
+  // zoom), the construction plane, its Z and 3D / 2D, and which levels are hidden (UI.viewState, ui-core.js); "+" adds
+  // one, a click switches, right-click renames / deletes / saves or restores the bookmark. Kept per document for the
+  // session (not saved). View ▸ Viewsheets: On/Off, New, Save Bookmark, Restore Bookmark.
+  var vsState = { on: true, docs: {} };
+  function vsDocKey() { var m = App.model || {}; return docTypeNow() + '|' + (App.filePath || App.fileName || m.name || ''); }
+  function vsDoc() {
+    var k = vsDocKey(), d = vsState.docs[k];
+    if (!d) d = vsState.docs[k] = { sheets: [{ name: 'Viewsheet-1', state: null, bookmark: null }], active: 0, n: 1 };
+    return d;
+  }
+  function vsSaveActive() { var d = vsDoc(), s = d.sheets[d.active]; if (s && UI.viewState) s.state = UI.viewState(); }
+  function vsSwitch(i) {
+    var d = vsDoc();
+    if (i < 0 || i >= d.sheets.length) return false;
+    if (i !== d.active) {
+      vsSaveActive();
+      d.active = i;
+      var s = d.sheets[i];
+      if (s.state && UI.setViewState) UI.setViewState(s.state);
+    }
+    vsRender(); frameStatusSync(); refreshRibbon();
+    setStatus(d.sheets[i].name + '.');
+    return true;
+  }
+  function vsAdd() {
+    var d = vsDoc();
+    vsSaveActive();
+    d.n = Math.max(d.n, d.sheets.length) + 1;
+    d.sheets.push({ name: 'Viewsheet-' + d.n, state: UI.viewState ? UI.viewState() : null, bookmark: null });
+    d.active = d.sheets.length - 1;
+    if (!vsState.on) vsShow(true);
+    vsRender(); refreshRibbon();
+    setStatus(d.sheets[d.active].name + ' added: it keeps its own view, plane and levels.');
+    return d.active;
+  }
+  function vsRename(i) {
+    var d = vsDoc(), s = d.sheets[i];
+    if (!s) return;
+    promptDialog('Rename Viewsheet', 'Name:', s.name, function (t) { t = String(t || '').trim(); if (!t) return; s.name = t; vsRender(); });
+  }
+  function vsDelete(i) {
+    var d = vsDoc();
+    if (d.sheets.length < 2) { toast('The last viewsheet cannot be deleted.'); return false; }
+    d.sheets.splice(i, 1);
+    if (d.active >= d.sheets.length || i < d.active) d.active = Math.max(0, d.active - (i <= d.active ? 1 : 0));
+    if (d.active >= d.sheets.length) d.active = d.sheets.length - 1;
+    var s = d.sheets[d.active];
+    if (s.state && UI.setViewState) UI.setViewState(s.state);
+    vsRender(); refreshRibbon();
+    return true;
+  }
+  function vsBookmark(save) {
+    var d = vsDoc(), s = d.sheets[d.active];
+    if (save) { s.bookmark = UI.viewState(); setStatus('Bookmark saved for ' + s.name + '.'); return true; }
+    if (!s.bookmark) { toast(s.name + ' has no bookmark yet: Save Bookmark first.'); return false; }
+    UI.setViewState(s.bookmark); frameStatusSync();
+    setStatus(s.name + ': bookmark restored.');
+    return true;
+  }
+  function vsShow(on) { vsState.on = !!on; vsRender(); refreshRibbon(); }
+  function vsRender() {
+    var vp = $('viewport'), bar = $('mc-viewsheets');
+    var want = !!frame && !!frame.viewsheets && !(UI.drawingActive && UI.drawingActive());
+    if (!want) { if (bar) bar.remove(); if (vp) vp.classList.remove('mc-vs-on'); return; }
+    if (!bar) {
+      bar = el('div', { id: 'mc-viewsheets', role: 'tablist', 'aria-label': 'Viewsheets' });
+      bar.addEventListener('click', function (e) {
+        var t = e.target.closest && e.target.closest('[data-vs]'), add = e.target.closest && e.target.closest('.vs-add');
+        if (add) vsAdd(); else if (t) vsSwitch(+t.getAttribute('data-vs'));
+      });
+      bar.addEventListener('contextmenu', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        var t = e.target.closest && e.target.closest('[data-vs]');
+        if (!t) { showMenu(e.clientX, e.clientY, [{ label: 'New Viewsheet', action: vsAdd }]); return; }
+        var i = +t.getAttribute('data-vs'), d = vsDoc();
+        showMenu(e.clientX, e.clientY, [
+          { label: 'Rename…', action: function () { vsRename(i); } },
+          { label: 'Delete', disabled: d.sheets.length < 2, action: function () { vsDelete(i); } },
+          { sep: true },
+          { label: 'Save Bookmark', action: function () { if (i !== d.active) vsSwitch(i); vsBookmark(true); } },
+          { label: 'Restore Bookmark', disabled: !d.sheets[i].bookmark, action: function () { if (i !== d.active) vsSwitch(i); vsBookmark(false); } }
+        ]);
+      });
+      bar.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+      vp.appendChild(bar);
+    }
+    vp.classList.toggle('mc-vs-on', vsState.on);
+    bar.hidden = !vsState.on;
+    var d = vsDoc(), sig = JSON.stringify([d.sheets.map(function (s) { return s.name; }), d.active]);
+    if (bar._sig === sig) return;
+    bar._sig = sig;
+    bar.innerHTML = d.sheets.map(function (s, i) { return '<button role="tab" class="vs-tab' + (i === d.active ? ' active' : '') + '" data-vs="' + i + '" aria-selected="' + (i === d.active) + '" title="' + escHtml(s.name) + ': click to show it, right-click to rename, delete or bookmark">' + escHtml(s.name) + '</button>'; }).join('') +
+      '<button class="vs-add" title="New viewsheet" aria-label="New viewsheet">+</button>';
+  }
+  UI.viewsheets = {
+    list: function () { var d = vsDoc(); return d.sheets.map(function (s, i) { return { name: s.name, active: i === d.active, bookmark: !!s.bookmark }; }); },
+    active: function () { return vsDoc().active; }, add: vsAdd, switchTo: vsSwitch, rename: function (i, name) { var s = vsDoc().sheets[i]; if (!s) return false; s.name = String(name); vsRender(); return true; },
+    remove: vsDelete, bookmark: vsBookmark, shown: function () { return !!vsState.on && !!$('mc-viewsheets'); }, show: vsShow, reset: function () { vsState.docs = {}; vsState.on = true; vsRender(); }
+  };
+
+  // ---- lane mcpolish: the Solids manager moves an operation up or down past its neighbour (its sketches move with it);
+  // a move that breaks the part (a rebuild with more errors) is undone and refused
+  function opIndexOf(id) { var fs = App.model.features; for (var i = 0; i < fs.length; i++) if (fs[i].id === id) return i; return -1; }
+  function isOp(f) { return f && f.type !== 'sketch' && f.type !== 'plane'; }
+  function frameMoveOp(dir) {
+    var s = App.sel, m = App.model;
+    if (isAsm() || !s || s.kind !== 'feature') { toast('Select an operation in the Solids manager first.'); return false; }
+    var fs = m.features, i = opIndexOf(s.id), f = fs[i];
+    if (!isOp(f)) { toast('Select an operation (not a sketch) to move.'); return false; }
+    var j = i + dir;
+    while (j >= 0 && j < fs.length && !isOp(fs[j])) j += dir;
+    if (j < 0 || j >= fs.length) { toast('It is already ' + (dir < 0 ? 'first' : 'last') + '.'); return false; }
+    var errs0 = Object.keys((App.build && App.build.errors) || {}).length;
+    UI.pushUndo();
+    fs.splice(i, 1);
+    var k = opIndexOf(fs[dir < 0 ? j : j - 1].id);
+    fs.splice(dir < 0 ? k : k + 1, 0, f);
+    // its own sketches stay before it
+    var own = [f.sketch].concat(f.sketches || []).filter(function (x) { return x != null; });
+    own.forEach(function (sid) { var a = opIndexOf(sid), b = opIndexOf(f.id); if (a > b) { var sk = fs.splice(a, 1)[0]; fs.splice(b, 0, sk); } });
+    return Promise.resolve(UI.rebuild()).then(function () {
+      var errs1 = Object.keys((App.build && App.build.errors) || {}).length;
+      if (errs1 > errs0) { (UI.undo)(); toast(f.name + ' cannot move ' + (dir < 0 ? 'up' : 'down') + ': the part would not rebuild.'); return false; }
+      App.sel = { kind: 'feature', id: f.id }; refreshTree(); frameSolidsRender();
+      setStatus(f.name + ' moved ' + (dir < 0 ? 'up' : 'down') + '.');
+      return true;
+    });
+  }
+  UI.frameMoveOp = frameMoveOp;
+
+  // ---- lane mcpolish: the lower part of the Planes manager (the selected plane's origin, comment) and its find box
+  var planeInfo = { sel: null, find: '', comments: {} };
+  function planeOrigin(name) {
+    var pl = null;
+    try { pl = framePlaneOf(name); } catch (e) { pl = null; }
+    return pl && pl.origin ? pl.origin : [0, 0, 0];
+  }
+  function frameNewPlaneFromView() {
+    if (isAsm()) { toast('Planes belong to part documents.'); return false; }
+    var v = UI.viewportLabels ? null : null, name = null, dir = UI.cam.dir;
+    var STD = { Top: ['Top', 1], Bottom: ['Top', -1], Front: ['Front', 1], Back: ['Front', -1], Right: ['Right', 1], Left: ['Right', -1] };
+    Object.keys(STD).forEach(function (n) { var w = UI.VIEWS[n]; if (!w) return; var d = new THREE.Vector3(w[0][0], w[0][1], w[0][2]).normalize(); if (d.dot(dir) > 1 - 1e-6) name = n; });
+    if (!name) { toast('New plane from the graphics view: look along Top, Front, Right or their opposites first (Anvil’s planes are offsets of those).'); return false; }
+    var z = UI.cplaneZ ? UI.cplaneZ() : 0, ref = STD[name][0], off = z * STD[name][1];
+    UI.pushUndo();
+    var f = { id: App.model.nextId++, type: 'plane', ref: ref, offset: off };
+    f.name = K.featureName(App.model, 'plane');
+    App.model.features.push(f);
+    return Promise.resolve(UI.rebuild()).then(function () { refreshTree(); framePlanesRender(true); setStatus(f.name + ': ' + ref + ' at ' + fmtZ(off) + ' (from the ' + name + ' view).'); if (UI.autosave) UI.autosave(); return f.id; });
+  }
+  UI.frameNewPlaneFromView = frameNewPlaneFromView;
+  function planesLowerHtml() {
+    var n = planeInfo.sel || frameCplane(), o = planeOrigin(n), c = planeInfo.comments[n] || '';
+    function num(v) { return UI.fmtNum ? UI.fmtNum(Math.abs(v) < 5e-9 ? 0 : v, 4) : String(v); }
+    return '<div class="mc-pl-lower" data-plane="' + escHtml(n) + '"><div class="mc-pl-sel">' + escHtml(n) + '</div>' +
+      ['X', 'Y', 'Z'].map(function (a, i) { return '<label>' + a + ' Origin <input type="text" readonly data-origin="' + a + '" value="' + num(o[i]) + '" title="Where the plane’s origin is (Anvil’s planes are offsets of Top / Front / Right: change one in its Plane PropertyManager)"></label>'; }).join('') +
+      '<label>Comment <input type="text" class="mc-pl-comment" value="' + escHtml(c) + '" spellcheck="false" title="A note about this plane (kept for the session)"></label></div>';
+  }
+  function frameFind(box) {
+    var inp = box.querySelector('.mc-find');
+    if (!inp) {
+      inp = el('input', { type: 'search', class: 'mc-find', placeholder: 'Find…', 'aria-label': 'Find' });
+      inp.addEventListener('input', function () { planeInfo.find = inp.value; framePlanesRender(true); });
+      inp.addEventListener('keydown', function (e) { e.stopPropagation(); if (e.key === 'Escape') { inp.value = ''; planeInfo.find = ''; inp.remove(); framePlanesRender(true); } });
+      box.insertBefore(inp, box.firstChild);
+    }
+    inp.focus();
+  }
 
   // One-line descriptions for the ribbon tooltips, keyed by the button label (ids such as 'bend' are shared by several buttons).
   var RIBBON_HELP = {
@@ -1641,8 +1925,10 @@
   // closePM) shows and hides #pm and #fm-tree itself; here 'pm' only hides the ConfigurationManager.
   function setFmTab(name) {
     // lane mcframe: under a frame with managers the left column is the manager panel (or the function panel)
-    if (frameMgrOn() && name !== 'config') {
+    // lane mcpolish: the ConfigurationManager is a manager tab too (when the profile lists 'config')
+    if (frameMgrOn() && (name !== 'config' || (frame.managers.tabs || []).indexOf('config') >= 0)) {
       if (name === 'levels') frameMgr = 'levels';
+      if (name === 'config') frameMgr = 'config';
       frameShowManager(null);
       return;
     }
@@ -2491,6 +2777,7 @@
         { label: 'Redo', key: 'Ctrl+Y', action: function () { (UI.redoCommand || UI.redo)(); }, disabled: !App.redo.length && !(UI.undoCancelsPM && UI.undoCancelsPM()) },
         { sep: true }
       ].concat(App.mode === 'sketch' && UI.sketchCopy ? [   // sketch-layers: copy / paste sketch entities (ui-sketch-layers.js)
+        { label: 'Cut', key: 'Ctrl+X', action: sketchCut, disabled: !selEntities().length },   // lane mcpolish
         { label: 'Copy', key: 'Ctrl+C', action: function () { UI.sketchCopy(); } },
         { label: 'Paste', key: 'Ctrl+V', action: function () { UI.sketchPaste(); }, disabled: !UI.sketchClipboard() },
         { sep: true }
@@ -2505,6 +2792,7 @@
         { label: 'Zoom to Area', action: function () { App.zoomAreaMode = true; refreshHud(); } },
         { label: 'Selection Filter', key: 'F5', checked: !!(UI.selectionFilterBarShown && UI.selectionFilterBarShown()), action: function () { if (UI.toggleSelectionFilterBar) UI.toggleSelectionFilterBar(); } },
         { label: 'Previous View', key: 'Shift+Ctrl+Z', action: UI.previousView },
+        { label: 'Modify ▸ Zoom Out', icon: 'unzoom80', action: function () { UI.unzoom(0.8); } },   // lane mcpolish (Mastercam: Unzoom 80%)
         { sep: true },
         { label: 'Front', key: 'Ctrl+1', action: function () { UI.setView('Front'); } },
         { label: 'Back', key: 'Ctrl+2', action: function () { UI.setView('Back'); } },
@@ -2530,7 +2818,8 @@
         { label: 'Sketch Grid', checked: v.showGrid, action: function () { v.showGrid = !v.showGrid; App.gridStale = true; } },
         { label: 'Sketch Regions', checked: v.sketchRegions !== false, action: toggleSketchRegions },   // sketch-layers
         { label: 'Snap to Model', checked: v.snapModel !== false, action: function () { v.snapModel = v.snapModel === false; UI.setStatus(v.snapModel ? 'Sketch points snap to model vertices, edges, centres and faces.' : 'Sketch points snap to sketch geometry only.'); } },   // p9-modelsnap
-        { label: 'Display ▸ Show Endpoints', icon: 'showEndpoints', checked: v.showEndpoints !== false, action: function () { toggleShowEndpoints(); } }   // lane BS
+        { label: 'Display ▸ Show Endpoints', icon: 'showEndpoints', checked: v.showEndpoints !== false, action: function () { toggleShowEndpoints(); } },   // lane BS
+        { label: 'Display ▸ Change Transparency', icon: 'translucency', checked: !!(UI.translucency && UI.translucency()), action: function () { UI.translucency(!UI.translucency()); } }   // lane mcpolish (Mastercam: Translucency)
       ].concat(UI.tangentEdgesMenuItems ? UI.tangentEdgesMenuItems('Display ▸ ') : [],   // rfHL: Tangent Edges Visible / As Phantom / Removed
         UI.depthFxMenuItems ? UI.depthFxMenuItems('Display ▸ ') : [], [   // rfHD: RealView, Shadows In Shaded Mode, Ambient Occlusion
         { label: 'Sketch Dimensions', checked: v.showDims, action: function () { v.showDims = !v.showDims; App.dimsStale = true; UI.setStatus(v.showDims ? 'Driven dimensions shown on every sketch entity. Click a value to change it.' : 'Only placed dimensions are shown.'); } },
@@ -2797,7 +3086,7 @@
     function bg(b, label) { return { id: 'vBackground', cmd: 'vBg' + b.charAt(0).toUpperCase() + b.slice(1), label: label, help: 'Graphics-area background: ' + label.toLowerCase() + ' (View ▸ Background)', run: function () { setBg(b); }, active: function () { return App.view.bg === b; } }; }
     function show(id, label, help, on, flip) { return { id: id, label: label, help: help, run: flip, active: on }; }
     var managers = [
-      { id: 'vFeatureTree', label: 'FeatureManager', help: 'FeatureManager design tree: show the features of the document in the left pane', run: function () { var b = document.querySelector('#fm-tabs button[data-tab="tree"]'); if (b) b.click(); }, active: function () { return App.fmTab === 'tree'; } },
+      { id: 'vFeatureTree', label: 'FeatureManager', help: 'FeatureManager design tree: show the features of the document in the left pane', run: function () { if (frameMgrOn()) { frameShowManager('solids', true); return; } var b = document.querySelector('#fm-tabs button[data-tab="tree"]'); if (b) b.click(); }, active: function () { return frameMgrOn() ? frameMgr === 'solids' && $('pm').hidden : App.fmTab === 'tree'; } },   // lane mcpolish: under a frame, the Solids manager
       { id: 'levels', cmd: 'vLevels', label: 'Levels Manager', help: 'Numbered part-wide levels (CUT, ETCH, BEND …) with their own colours, shown or hidden, in the left pane', run: function () { if (UI.showLevelsManager) UI.showLevelsManager(); else toast('The Levels Manager did not load.'); }, active: function () { return App.fmTab === 'levels'; } },
       { id: 'filter', label: 'Selection Filter', key: 'F5', help: 'Show or hide the Selection Filter toolbar: pick only the kinds of geometry switched on', run: function () { if (UI.toggleSelectionFilterBar) UI.toggleSelectionFilterBar(); }, active: function () { return !!(UI.selectionFilterBarShown && UI.selectionFilterBarShown()); } }
     ];

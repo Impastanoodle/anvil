@@ -2356,9 +2356,86 @@
     grow();
   }
 
+  // ------------------------------------------------------------------ lane mcpolish: Undelete Entity, Copy Image
+  // Undelete Entity (Mastercam's Home ▸ Delete): every UI.deleteSelection (Del key, menus, ribbon) that removes sketch
+  // entities pushes them on a stack (per sketch id, up to 20 deletions); UI.undeleteEntities() puts the last ones back
+  // at the end of their sketch (one undo step), selected when that sketch is open. Relations and dimensions of the
+  // deleted entities are not restored (Mastercam's wireframe has none either). The wrapper is the outermost one
+  // (installed by boot, after every file's own wrapper).
+  var undel = [];
+  function sketchEnts() { var o = {}; ((App.model && App.model.features) || []).forEach(function (f) { if (f.type === 'sketch' && f.entities) o[f.id] = f.entities.map(function (e) { return JSON.stringify(e); }); }); return o; }
+  function undelNote(before) {
+    var after = sketchEnts(), gone = [];
+    Object.keys(before).forEach(function (id) {
+      var left = {};
+      (after[id] || []).forEach(function (s) { left[s] = (left[s] || 0) + 1; });
+      var ents = [];
+      before[id].forEach(function (s) { if (left[s]) left[s]--; else ents.push(JSON.parse(s)); });
+      if (ents.length) gone.push({ sketch: +id, entities: ents });
+    });
+    if (gone.length) { undel.push(gone); if (undel.length > 20) undel.shift(); }
+    return gone.length;
+  }
+  function installUndelete() {
+    var base = UI.deleteSelection;
+    if (!base || base._undel) return;
+    var w = function () {
+      var before = App.model && !(UI.isAssembly && UI.isAssembly()) ? sketchEnts() : null;
+      var out = base.apply(this, arguments);
+      if (before) { if (out && typeof out.then === 'function') out.then(function () { undelNote(before); }); else undelNote(before); }
+      return out;
+    };
+    w._undel = true;
+    UI.deleteSelection = w;
+  }
+  function undeleteEntities() {
+    var last = undel.pop();
+    if (!last) { UI.toast('Nothing to undelete: no sketch entities were deleted.'); return 0; }
+    var n = 0, open = null;
+    UI.pushUndo();
+    last.forEach(function (g) {
+      var f = K.findFeature(App.model, g.sketch);
+      if (!f || f.type !== 'sketch') return;
+      var first = f.entities.length;
+      g.entities.forEach(function (e) { f.entities.push(e); n++; });
+      if (App.activeSketch === f.id) open = { first: first, n: g.entities.length };
+    });
+    if (!n) { UI.toast('Undelete: the sketch of those entities is gone.'); return 0; }
+    if (open && UI.setSelection) { var sel = []; for (var i = open.first; i < open.first + open.n; i++) sel.push({ kind: 'entity', index: i }); UI.setSelection(sel); }
+    UI.updateSketches();
+    if (App.mode !== 'sketch') UI.rebuild();
+    if (UI.autosave) UI.autosave();
+    UI.setStatus('Undeleted ' + n + ' entit' + (n === 1 ? 'y' : 'ies') + (undel.length ? ' (Undelete again for the ones deleted before).' : '.'));
+    return n;
+  }
+  UI.undeleteEntities = undeleteEntities;
+  UI.undeleteCount = function () { return undel.length; };
+  // Copy Image: the graphics window (the 3D view, or the drawing sheet's canvas) to the clipboard as a PNG; where the
+  // browser has no image clipboard, the image is saved as a file instead. -> Promise of { ok, bytes, width, height, how }
+  function copyImage() {
+    var cv = null;
+    try {
+      if (UI.drawingActive && UI.drawingActive()) cv = document.querySelector('#dw-canvas, #drawing canvas, .dw-sheet canvas');
+      if (!cv) { UI.render(); cv = UI.renderer.domElement; }
+    } catch (e) { cv = UI.renderer && UI.renderer.domElement; }
+    return new Promise(function (resolve) {
+      if (!cv || !cv.toBlob) { UI.toast('Copy Image: no image to copy.'); resolve({ ok: false }); return; }
+      cv.toBlob(function (blob) {
+        var info = { ok: !!blob, bytes: blob ? blob.size : 0, width: cv.width, height: cv.height, how: null };
+        if (!blob) { UI.toast('Copy Image failed.'); resolve(info); return; }
+        var C = window.ClipboardItem, clip = navigator.clipboard;
+        function saveFile() { info.how = 'file'; var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = ((App.model && App.model.name) || 'Anvil') + '.png'; a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000); UI.toast('The browser has no image clipboard here: the image was saved as a PNG file.'); resolve(info); }
+        if (!C || !clip || !clip.write) { saveFile(); return; }
+        clip.write([new C({ 'image/png': blob })]).then(function () { info.how = 'clipboard'; UI.setStatus('Copy Image: the graphics window (' + cv.width + ' × ' + cv.height + ') is on the clipboard.'); resolve(info); }, function () { saveFile(); });
+      }, 'image/png');
+    });
+  }
+  UI.copyImage = copyImage;
+
   // ------------------------------------------------------------------ boot
   function boot() {
     if (UI.wrapOkPlusCommands) UI.wrapOkPlusCommands();   // ✓+ on the commands that make something (ui-commands.js)
+    installUndelete();   // lane mcpolish: after every file's own UI.deleteSelection wrapper
     // a model loaded by anything (New, Open, the Task Pane, a recovery) is no longer the file App.filePath names
     // (the Windows app; in a browser App.filePath is never set)
     var coreLoadModel = UI.loadModel;

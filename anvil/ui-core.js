@@ -3214,7 +3214,10 @@ var UI = (function () {
     if (!App.gridStale) return;
     App.gridStale = false;
     disposeGroup(groups.grid);
-    if (App.mode !== 'sketch' || !App.view.showGrid) return;
+    // lane mcpolish: showGrid is the grid that snaps (SolidWorks' Sketch Grid draws and snaps); gridVisible (Mastercam's
+    // Show Grid, apart from Snap to Grid) true draws it without snapping, false snaps without drawing it
+    var drawn = App.view.gridVisible === true || (App.view.showGrid && App.view.gridVisible !== false);
+    if (App.mode !== 'sketch' || !drawn) return;
     var pl = activePlane(), box = visiblePlaneBox(pl);
     if (!box) return;
     var step = gridStep(), minor = step / gridMinors(step);
@@ -4799,7 +4802,7 @@ var UI = (function () {
     sketchOverlayHooks: sketchOverlayHooks, tempEntityHooks: tempEntityHooks, sketchOverlayObjects: sketchOverlayObjects, tempEntitiesShown: tempEntitiesShown,   // sketch-hooks
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep, gridMinors: gridMinors,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickRefGeo: pickRefGeo, updateRefGeo: updateRefGeo, drawRefGeo: drawRefGeo, pickEntity: pickEntity, pickEntityDist: pickEntityDist, pickEdge: pickEdge,
-    lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, renderHooks: renderHooks, frame: frame, renderLoop: frame /* lane mcdirect2: boot starts the loop by this name; ui-panels.js reuses UI.frame for the profile's window frame */, tick: tick, thickLines: thickLines, LINE_W: LINE_W, requestRender: requestRender,
+    lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, renderHooks: renderHooks, frame: frame, renderLoop: frame /* lane mcdirect2: boot starts the loop by this name; the profile's window frame is UI.frameDef (ui-panels.js, lane mcpolish) */, tick: tick, thickLines: thickLines, LINE_W: LINE_W, requestRender: requestRender,
     // view transitions and smooth zoom (see "view animation")
     finishViewAnimation: finishViewAnimation, viewAnimating: viewAnimating, viewPose: viewPose, wheelZoom: wheelZoom, zoomToArea: zoomToArea,
     camVersion: function () { return camVer; },
@@ -4901,10 +4904,37 @@ var UI = (function () {
   function cplaneSketchPlane(name) {
     var n = name == null ? cplane() : norm(name);
     if (n == null) return null;
-    if (typeof n === 'number') return { featureId: n };
+    // lane mcpolish: in 2D the wireframe is drawn flat on the construction plane at its Z depth (Home ▸ Organize ▸ Z)
+    var z = cpMode === '2D' ? cpZ : 0;
+    if (typeof n === 'number') {
+      var bp = z && App.build && App.build.planes ? App.build.planes[n] : null;
+      if (!bp) return { featureId: n };
+      return { custom: true, origin: K.vec.add(bp.origin, K.vec.scale(bp.n, z)), x: bp.x.slice(), y: bp.y.slice(), n: bp.n.slice() };
+    }
     var fr = CP_FRAMES[n];
-    if (fr.ref) return { ref: fr.ref, offset: 0 };
-    return { custom: true, origin: [0, 0, 0], x: fr.x.slice(), y: fr.y.slice(), n: fr.n.slice() };
+    if (fr.ref) return { ref: fr.ref, offset: z };
+    return { custom: true, origin: [fr.n[0] * z, fr.n[1] * z, fr.n[2] * z], x: fr.x.slice(), y: fr.y.slice(), n: fr.n.slice() };
+  }
+  // ---- lane mcpolish: the construction plane's Z depth and Mastercam's 3D / 2D mode (status bar). 2D: the wireframe
+  // tools draw flat on the construction plane at Z; 3D: Z is not applied (the plane through the origin; a 3D Sketch
+  // places its points in space). A Z typed while in 3D switches to 2D, as only 2D uses it.
+  var cpZ = 0, cpMode = '3D';
+  function cplaneZ() { return cpZ; }
+  function setCplaneZ(z) {
+    z = +z;
+    if (!isFinite(z)) return cpZ;
+    cpZ = z;
+    if (z !== 0 && cpMode !== '2D') cpMode = '2D';
+    cpListeners.slice().forEach(function (fn) { try { fn(cplane(), cplane()); } catch (e) { console.warn('onCplane', e); } });
+    if (UI.refreshStatus) { try { UI.refreshStatus(); } catch (e) { } }
+    return cpZ;
+  }
+  function cplaneMode() { return cpMode; }
+  function setCplaneMode(m) {
+    cpMode = m === '2D' ? '2D' : '3D';
+    cpListeners.slice().forEach(function (fn) { try { fn(cplane(), cplane()); } catch (e) { console.warn('onCplane', e); } });
+    if (UI.refreshStatus) { try { UI.refreshStatus(); } catch (e) { } }
+    return cpMode;
   }
   function profileDef() { try { return UI.Profiles && UI.Profiles.def ? UI.Profiles.def(UI.Profiles.active()) : null; } catch (e) { return null; } }
   function cplaneReset() { var p = profileDef(); setCplane(p && p.wireframe && norm(p.wireframe.plane) != null ? p.wireframe.plane : 'Top'); }
@@ -4962,5 +4992,139 @@ var UI = (function () {
   UI.applyViewportProfile = applyViewport;
   UI.viewportLabels = function () { tick(true); return labelsEl && !labelsEl.hidden ? labels() : null; };
   UI.cplane = cplane; UI.setCplane = setCplane; UI.onCplane = onCplane; UI.cplaneLabel = cplaneLabel; UI.cplaneSketchPlane = cplaneSketchPlane; UI.cplaneReset = cplaneReset;
+  UI.cplaneZ = cplaneZ; UI.setCplaneZ = setCplaneZ; UI.cplaneMode = cplaneMode; UI.setCplaneMode = setCplaneMode;   // lane mcpolish
   UI.CPLANES = Object.keys(CP_FRAMES);
+})(UI);
+
+// ------------------------------------------------------------------ lane mcpolish (2026-11-11)
+// View and display commands Mastercam has and Anvil lacked (both profiles may run them; the Mastercam tabs and the
+// SolidWorks menus place them, ui-panels.js "frame actions"):
+//   UI.unzoom(f)                 zoom out about the centre so the model shows at f of its size (0.5, 0.8)
+//   UI.translucency(on?)         the whole model see-through (edges stay); -> on
+//   UI.showWorldAxes(on?)        X / Y / Z axes through the origin (Mastercam's Show Axes); -> on
+//   UI.showGnomons(on?)          the triad and the view-name labels (Mastercam's Show Gnomons); -> on
+//   UI.gridShown(on?) / UI.gridSnap(on?)   Mastercam's Show Grid and Snap to Grid, apart (updateGrid reads
+//                                App.view.gridVisible; ui-sketch.js snaps while App.view.showGrid)
+//   UI.viewState() / UI.setViewState(s)    { target, dir, up, scale, cplane, z, mode, hiddenLevels }: what a viewsheet keeps
+(function (UI) {
+  'use strict';
+  var App = UI.App, viewport = UI.viewport;
+  function refreshAll() { if (UI.requestRender) UI.requestRender(); if (UI.refreshRibbon) { try { UI.refreshRibbon(); } catch (e) { } } if (UI.refreshStatus) { try { UI.refreshStatus(); } catch (e) { } } }
+  function unzoom(f) {
+    f = +f || 0.5;
+    if (UI.pushViewHistory) { try { UI.pushViewHistory(); } catch (e) { } }
+    UI.zoomView(1 / f);
+    UI.requestRender();
+    return UI.cam.scale;
+  }
+  // ---- Translucency: every material of the shaded body (RealView's too) see-through; the crack filler is off meanwhile
+  var tl = { on: false, mats: [] };
+  function eachMat(o, fn) { if (!o) return; o.traverse(function (c) { if (!c.isMesh || !c.material) return; (Array.isArray(c.material) ? c.material : [c.material]).forEach(fn); }); }
+  function tlApply() {
+    var bm = UI.getBodyMesh ? UI.getBodyMesh() : null;
+    if (!tl.on) return;
+    eachMat(bm, function (m) {
+      if (m.userData._tl) return;
+      m.userData._tl = { transparent: m.transparent, opacity: m.opacity, depthWrite: m.depthWrite };
+      m.transparent = true; m.opacity = 0.35; m.depthWrite = false; m.needsUpdate = true;
+      tl.mats.push(m);
+    });
+    var cf = UI.getCrackFill ? UI.getCrackFill() : null;
+    if (cf && cf.visible) cf.visible = false;
+  }
+  function translucency(on) {
+    if (on == null) return tl.on;
+    on = !!on;
+    if (on === tl.on) return on;
+    tl.on = on;
+    App.view.translucent = on;
+    if (!on) {
+      tl.mats.forEach(function (m) { var o = m.userData._tl; if (!o) return; m.transparent = o.transparent; m.opacity = o.opacity; m.depthWrite = o.depthWrite; m.needsUpdate = true; delete m.userData._tl; });
+      tl.mats = [];
+      if (UI.applyDisplayStyle) UI.applyDisplayStyle();
+    } else tlApply();
+    refreshAll();
+    return on;
+  }
+  // ---- Show Axes: three lines through the origin, as long as the model is big (at least an inch / 25 mm)
+  var ax = { on: false, group: null, key: '' };
+  function axesSync() {
+    if (!ax.on) { if (ax.group) { UI.scene.remove(ax.group); UI.disposeGroup(ax.group); ax.group = null; ax.key = ''; } return; }
+    var b = UI.modelBounds ? UI.modelBounds() : { min: [-50, -50, -50], max: [50, 50, 50] };
+    var L = 0; for (var k = 0; k < 3; k++) L = Math.max(L, Math.abs(b.min[k]), Math.abs(b.max[k]));
+    L = Math.max(L * 1.25, App.model && App.model.units === 'in' ? 1 : 25);
+    var key = L.toPrecision(4);
+    if (ax.group && ax.key === key) return;
+    if (ax.group) { UI.scene.remove(ax.group); UI.disposeGroup(ax.group); }
+    var g = new THREE.Group(); g.name = 'mc-world-axes';
+    [[1, 0, 0, 0xd83b3b], [0, 1, 0, 0x2fa84f], [0, 0, 1, 0x3b6fd8]].forEach(function (a) {
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute([-a[0] * L, -a[1] * L, -a[2] * L, a[0] * L, a[1] * L, a[2] * L], 3));
+      var line = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: a[3] }));
+      line.userData.axis = a[0] ? 'X' : a[1] ? 'Y' : 'Z';
+      g.add(line);
+    });
+    UI.scene.add(g);
+    ax.group = g; ax.key = key;
+    UI.requestRender();
+  }
+  function showWorldAxes(on) { if (on == null) return ax.on; ax.on = !!on; App.view.showWorldAxes = ax.on; axesSync(); refreshAll(); return ax.on; }
+  // ---- Show Gnomons: the triad and the profile's view labels
+  function showGnomons(on) {
+    if (on == null) return !viewport.classList.contains('vp-nognomon');
+    viewport.classList.toggle('vp-nognomon', !on);
+    App.view.hideGnomons = !on;
+    refreshAll();
+    return !!on;
+  }
+  // ---- Show Grid / Snap to Grid
+  function gridDrawn() { var v = App.view; return v.gridVisible === true || (!!v.showGrid && v.gridVisible !== false); }
+  function gridShown(on) {
+    if (on == null) return gridDrawn();
+    App.view.gridVisible = !!on;
+    App.gridStale = true; refreshAll();
+    return gridDrawn();
+  }
+  function gridSnap(on) {
+    if (on == null) return !!App.view.showGrid;
+    var shown = gridDrawn();
+    App.view.showGrid = !!on;
+    App.view.gridVisible = shown;   // snapping on or off leaves the grid as it was on screen
+    App.gridStale = true; refreshAll();
+    return !!App.view.showGrid;
+  }
+  // ---- what a viewsheet keeps
+  function hiddenLevels() { try { return UI.levels ? UI.levels.list().filter(function (l) { return l.hidden; }).map(function (l) { return l.number; }) : []; } catch (e) { return []; } }
+  function viewState() {
+    var c = UI.cam;
+    return { target: c.target.toArray(), dir: c.dir.toArray(), up: c.up.toArray(), scale: c.scale, cplane: UI.cplane ? UI.cplane() : 'Top', z: UI.cplaneZ ? UI.cplaneZ() : 0, mode: UI.cplaneMode ? UI.cplaneMode() : '3D', hiddenLevels: hiddenLevels() };
+  }
+  function setViewState(s) {
+    if (!s) return false;
+    if (UI.finishViewAnimation) UI.finishViewAnimation();
+    var c = UI.cam;
+    c.target.fromArray(s.target); c.dir.fromArray(s.dir).normalize(); c.up.fromArray(s.up).normalize(); c.scale = s.scale;
+    c.right.crossVectors(c.up, c.dir).normalize();
+    UI.applyCamera();
+    if (UI.setCplane && s.cplane != null) UI.setCplane(s.cplane);
+    if (UI.setCplaneMode && s.mode) UI.setCplaneMode(s.mode);
+    if (UI.setCplaneZ && s.z != null && UI.cplaneZ() !== s.z) { var m = s.mode; UI.setCplaneZ(s.z); if (m && UI.setCplaneMode) UI.setCplaneMode(m); }
+    if (UI.levels && s.hiddenLevels) {
+      try {
+        var want = {}; s.hiddenLevels.forEach(function (n) { want[n] = true; });
+        UI.levels.list().forEach(function (l) { if (!!l.hidden !== !!want[l.number]) UI.levels.op('setVisible', l.number, !want[l.number]); });
+      } catch (e) { console.warn('viewsheet levels', e); }
+    }
+    UI.requestRender();
+    return true;
+  }
+  // every frame (after the furniture): translucency on a new body mesh, the axes as the model grows
+  var baseTick = UI.viewFurnitureTick;
+  UI.viewFurnitureTick = function () {
+    if (baseTick) baseTick();
+    if (tl.on) tlApply();
+    if (ax.on) axesSync();
+  };
+  UI.unzoom = unzoom; UI.translucency = translucency; UI.showWorldAxes = showWorldAxes; UI.showGnomons = showGnomons;
+  UI.gridShown = gridShown; UI.gridSnap = gridSnap; UI.viewState = viewState; UI.setViewState = setViewState;
 })(UI);

@@ -2213,5 +2213,22 @@ table.mc-planes tr.current td { background: var(--mc-press, var(--sel)); }
 :root[data-profile] #app.mc-status #statusbar { background: var(--mc-blue); color: var(--mc-blue-text); border-top-color: var(--mc-blue); }
 :root[data-profile] #app.mc-status #status-msg, :root[data-profile] #app.mc-status #status-right .st-profile { color: var(--mc-blue-text); }
 :root[data-profile] #app.mc-status #status-right > .st-profile { border-left-color: rgba(255, 255, 255, 0.28); }
-/* the viewsheet strip under the graphics window (one sheet: the view shown) */
-:root[data-profile] #app.mc-managers #viewport::after { content: 'Viewsheet-1'; position: absolute; left: 0; right: 0; bottom: 0; height: 18px; line-height: 18px; padding-left: 10px; font-size: 11px; color: var(--mc-text); background: var(--mc-panel); border-top: 1px solid var(--mc-line); pointer-events: none; z-index: 3; }
+/* lane mcpolish: the viewsheet strip under the graphics window (ui-panels.js vsRender: tabs, +, right-click) */
+#mc-viewsheets { position: absolute; left: 0; right: 0; bottom: 0; height: 18px; display: flex; align-items: stretch; gap: 0; padding-left: 4px; font-size: 11px; color: var(--mc-text, var(--text)); background: var(--mc-panel, var(--panel)); border-top: 1px solid var(--mc-line, var(--line)); z-index: 3; }
+#mc-viewsheets[hidden] { display: none; }
+#mc-viewsheets button { height: 17px; padding: 0 10px; border: 0; border-right: 1px solid var(--mc-line, var(--line)); background: none; color: inherit; font: inherit; cursor: pointer; white-space: nowrap; }
+#mc-viewsheets button:hover { background: var(--mc-hover, var(--hover)); }
+#mc-viewsheets .vs-tab.active { background: var(--mc-tab-on, var(--panel)); font-weight: 600; box-shadow: inset 0 -2px 0 var(--mc-title, var(--text)); }
+#mc-viewsheets .vs-add { padding: 0 8px; font-weight: 600; }
+/* lane mcpolish: Show Gnomons off, the Planes manager's lower part and find box, the 3D / 2D chip, a drawing's items in the bar */
+#viewport.vp-nognomon #triad, #viewport.vp-nognomon #vp-labels { display: none !important; }
+table.mc-planes tr.picked td.mc-pl-name { font-weight: 600; }
+.mc-pl-lower { margin: 4px 8px 8px; padding-top: 6px; border-top: 1px solid var(--mc-line, var(--line)); display: grid; gap: 4px; font-size: 12px; }
+.mc-pl-lower .mc-pl-sel { font-weight: 600; color: var(--mc-title, var(--text)); }
+.mc-pl-lower label { display: grid; grid-template-columns: 76px 1fr; align-items: center; gap: 6px; }
+.mc-pl-lower input { height: 22px; min-width: 0; padding: 0 5px; border: 1px solid var(--c-field-line, var(--line)); background: var(--c-field, var(--panel)); color: var(--text); font: inherit; }
+.mc-pl-lower input[readonly] { color: var(--muted); }
+#mc-planes .mc-find { display: block; width: calc(100% - 16px); margin: 4px 8px; height: 22px; padding: 0 6px; border: 1px solid var(--c-field-line, var(--line)); background: var(--c-field, var(--panel)); color: var(--text); font: inherit; }
+#mc-status .mc-mode { min-width: 30px; justify-content: center; }
+#mc-status #dw-status { display: inline-flex; align-items: center; gap: 10px; height: 100%; padding: 0 9px; color: inherit; }
+#mc-status #dw-status > span { color: inherit; }

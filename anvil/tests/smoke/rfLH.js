@@ -285,8 +285,9 @@
     assert(moreGroups.indexOf('Evaluate') >= 0 && moreGroups.indexOf('Sketch') >= 0, 'More groups ' + moreGroups.join(', '));
     assert(Object.keys(UI.profileRibbon('drawing')).join() === 'View Layout,Drafting,Sketch,Sheet Format,More', 'drawing tabs ' + Object.keys(UI.profileRibbon('drawing')).join());
     var asm = UI.profileRibbon('assembly');
-    assert(Object.keys(asm).join() === 'Assembly,Evaluate,View,More', 'assembly tabs ' + Object.keys(asm).join());
-    assert(UI.ribbonLeaves(asm.Evaluate).some(function (it) { return UI.ribbonItemState(it).flat === 'Analyze Distance'; }), 'assembly Measure not renamed');
+    // lane mcpolish (rfLV): an assembly gets Home and View in Mastercam's layout, the Assembly tab kept whole
+    assert(Object.keys(asm).join() === 'Home,Assembly,View,More', 'assembly tabs ' + Object.keys(asm).join());
+    assert(UI.ribbonLeaves(asm.Home).some(function (it) { return UI.ribbonItemState(it).flat === 'Analyze Distance'; }), 'assembly Measure not renamed');
     // the drawing document: Annotation (SolidWorks) lands on Drafting
     await anvil.newPart(); await idle(); await anvil.run(RFLH_BOX); await idle();
     UI.makeDrawing({ fresh: true }); await wait(300); await idle();

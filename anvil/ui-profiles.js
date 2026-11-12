@@ -25,7 +25,10 @@
 //                            // lane mcdirect reads it: graphics-window gradient (top, bottom), view-name labels, the
 //                            // heads-up toolbar shown or not, Quick Masks column, selection bar, right-click menu style
 //   A tab's group item may also be { menu: 'Edit', row: 'Delete', label, icon } (runs that menu row: Home ▸ Delete
-//   Entities) or { fn: 'manager' | 'search', arg, label, icon } (a frame function: a manager panel tab, Command Finder).
+//   Entities) or { fn: 'manager' | 'search', arg, label, icon } (a frame function: a manager panel tab, Command Finder)
+//   or { fn: 'action', arg } (lane mcpolish: a frame action of ui-panels.js FRAME_ACTIONS, its label / icon / help from
+//   there: cut, copyImage, undelete, zDepth, level, mode3d, blank, unblank, hideUnhide, unzoom50, unzoom80, translucency,
+//   material, showAxes, showGnomons, showGrid, snapGrid, vsOnOff, vsNew, vsSave, vsRestore).
 //   A tab kept whole ({ sw }) may name the captions of its runs between separators: captions: ['Base', 'Flanges' …].
 //   frame (left out = SolidWorks' window; every key optional):
 //     ribbon: { tabsOnTop, fileTab ('File': opens the backstage), qat (title-row Quick Access Toolbar), captions (a
@@ -35,7 +38,9 @@
 //               as a manager panel with its tabs at the bottom; a PropertyManager shows there as a function panel),
 //     functionTitles: { cmd: 'Solid Extrude' },   (the function panel's title for a command started from the ribbon;
 //               else the profile's label),
-//     status: ['section', 'selected', 'xyz', 'cplane', 'tplane', 'wcs', 'styles'],   (the status bar, left to right),
+//     status: ['section', 'selected', 'xyz', 'mode', 'cplane', 'tplane', 'wcs', 'styles'],   (the status bar, left to
+//               right; mode = 3D / 2D, styles = Wireframe … Outline Shaded, Material),
+//     viewsheets: true        (the viewsheet strip under the graphics window: tabs, +, right-click; lane mcpolish),
 //     theme: { name: 'mastercam' (html data-profile), vars: { light: { '--mc-x': … }, dark: { … } } }
 (function (UI) {
   'use strict';
@@ -118,13 +123,19 @@
     ['part', 'assembly', 'drawing'].forEach(function (dt) { UI.Commands.list(dt).forEach(function (c) { known[c.cmd] = true; }); });
     (UI.keys ? UI.keys.defaults() : []).forEach(function (d) { known[d.action] = true; });
     function see(c, where) { if (typeof c === 'string' && !known[c]) bad.push(where + ': ' + c); }
+    // lane mcpolish: { fn: 'action', arg } names a frame action (ui-panels.js FRAME_ACTIONS: label and icon there)
+    var acts = UI.frameActions ? UI.frameActions() : [];
+    function seeFn(x, where) {
+      if (x.fn === 'action') { if (acts.indexOf(x.arg) < 0) bad.push(where + ': no frame action ' + x.arg); }
+      else if (!x.label) bad.push(where + ': a menu / fn item without a label');
+    }
     Object.keys(p.tabs || {}).forEach(function (dt) {
       (p.tabs[dt] || []).forEach(function (t) {
         (t.groups || []).forEach(function (g) {
           (g.items || []).forEach(function (x) {
             if (typeof x === 'string') see(x, dt + ' ' + t.name);
-            else if (x.menu || x.fn) { if (!x.label) bad.push(dt + ' ' + t.name + ': a menu / fn item without a label'); }
-            else (x.stack || x.grid || x.items || []).forEach(function (c) { see(c, dt + ' ' + t.name); });
+            else if (x.menu || x.fn) seeFn(x, dt + ' ' + t.name);
+            else (x.stack || x.grid || x.items || []).forEach(function (c) { if (c && typeof c === 'object') seeFn(c, dt + ' ' + t.name); else see(c, dt + ' ' + t.name); });
           });
         });
       });
@@ -191,14 +202,16 @@
     // lane mcframe: the tabs, groups and names of the user's own Mastercam (screenshots of 2026-11-11, transcribed in the
     // lane's scratchpad mastercam-screens.txt): File (the backstage, not a tab of buttons), Home, Wireframe, Solids,
     // Sheet Metal (Anvil's own), Drafting, Transform, View, More. A Mastercam button with nothing behind it in Anvil is
-    // left out (Surfaces, Model Prep, Mesh, Machine; Cut, Copy Image, Undelete, Blank, Unzoom 50 % / 80 % …).
+    // left out (Surfaces, Model Prep, Mesh, Machine). Lane mcpolish built Cut, Copy Image, Undelete, Blank, Unzoom 50 % / 80 %,
+    // Translucency, Show Axes / Gnomons, Show Grid / Snap to Grid, Z depth, 3D / 2D and the viewsheets (frame actions).
     tabs: {
       part: [
         { name: 'Home', groups: [
-          { name: 'Clipboard', items: [{ menu: 'Edit', row: 'Paste', label: 'Paste', icon: 'pasteSketch', help: 'Paste the copied sketch entities (Edit ▸ Paste; in a sketch)' }, { stack: [{ menu: 'Edit', row: 'Copy', label: 'Copy', icon: 'copyEnt', help: 'Copy the selected sketch entities (Edit ▸ Copy; in a sketch)' }] }] },
-          { name: 'Attributes', items: ['appearance', { stack: ['construction', 'levels'] }] },
-          { name: 'Delete', items: [{ menu: 'Edit', row: 'Delete', label: 'Delete\nEntities', icon: 'deleteEnt', help: 'Delete the selection (Edit ▸ Delete, Del)' }] },
-          { name: 'Display', items: [{ stack: ['showEndpoints', 'vSketches', 'filter'] }] },
+          { name: 'Clipboard', items: [{ menu: 'Edit', row: 'Paste', label: 'Paste', icon: 'pasteSketch', help: 'Paste the copied sketch entities (Edit ▸ Paste; in a sketch)' }, { stack: [{ fn: 'action', arg: 'cut' }, { menu: 'Edit', row: 'Copy', label: 'Copy', icon: 'copyEnt', help: 'Copy the selected sketch entities (Edit ▸ Copy; in a sketch)' }, { fn: 'action', arg: 'copyImage' }] }] },
+          { name: 'Attributes', items: ['appearance', { stack: ['construction', { fn: 'action', arg: 'mode3d' }] }] },
+          { name: 'Organize', items: [{ stack: [{ fn: 'action', arg: 'zDepth' }, { fn: 'action', arg: 'level' }, 'levels'] }] },   // lane mcpolish: Z depth, main level
+          { name: 'Delete', items: [{ menu: 'Edit', row: 'Delete', label: 'Delete\nEntities', icon: 'deleteEnt', help: 'Delete the selection (Edit ▸ Delete, Del)' }, { stack: [{ fn: 'action', arg: 'undelete', label: 'Undelete Entity' }] }] },
+          { name: 'Display', items: [{ fn: 'action', arg: 'hideUnhide' }, { stack: ['showEndpoints', { fn: 'action', arg: 'blank' }, { fn: 'action', arg: 'unblank' }] }, { stack: ['vSketches', 'filter'] }] },
           { name: 'Analyze', items: ['measure', { stack: ['check', 'sectionProps', 'mass'] }, { stack: ['clearance', 'draftAnalysis', 'zebra'] }] },
           { name: 'Add-Ins', items: [{ menu: 'Tools', row: 'Macro ▸ Run script…', label: 'Run\nAdd-In', icon: 'macro', help: 'Run a script on the model (Tools ▸ Macro ▸ Run script…)' }, { fn: 'search', label: 'Command\nFinder', icon: 'search', help: 'Find any command by its name (Mastercam or SolidWorks)' }] }
         ] },
@@ -224,12 +237,33 @@
         ] },
         { name: 'Transform', sw: 'Transform' },
         { name: 'View', groups: [
-          { name: 'Zoom', items: ['vZoomFit', { stack: ['zoomArea', 'prevView'] }] },
+          // lane mcpolish: the groups of the user's screenshots, cut to fit a 1600 px window with every label shown:
+          // Zoom (Fit; Window, Unzoom 50 %, Unzoom 80 %; Previous View is Alt+P and on More), Appearance (Wireframe,
+          // Outline Shaded, Material; Translucency …), Display (Show Axes, Show Gnomons), Grid (Show Grid, Snap to Grid);
+          // scene, background, theme, origins and sketch dimensions are Anvil's own toggles and go to More
+          { name: 'Zoom', items: ['vZoomFit', { stack: ['zoomArea', { fn: 'action', arg: 'unzoom50' }, { fn: 'action', arg: 'unzoom80' }] }] },
           { name: 'Graphics View', items: ['vTop', { grid: ['vIso', 'vFront', 'vBack', 'vBottom', 'vRight', 'vLeft', 'vNormalTo'] }, 'section'] },
-          { name: 'Appearance', items: [{ stack: ['dsWireframe', 'dsShadedEdges', 'dsShaded'] }, { stack: ['dsHLR', 'dsHLV', 'scene'] }, { fly: 'vBackground', items: ['vBgGradient', 'vBgPlain', 'vBgDark'] }, 'vTheme'] },
-          { name: 'Display', items: [{ stack: ['vOrigins', 'vPlanes', 'vRegions'] }, { stack: ['vSketchDims', 'vSnapModel'] }] },
-          { name: 'Grid', items: ['vGrid'] },
-          { name: 'Managers', items: [{ stack: [{ fn: 'manager', arg: 'solids', label: 'Solids', icon: 'tree' }, { fn: 'manager', arg: 'planes', label: 'Planes', icon: 'plane' }, { fn: 'manager', arg: 'levels', label: 'Levels', icon: 'levels' }] }, { stack: [{ fn: 'manager', arg: 'recent', label: 'Recent Functions', icon: 'recentFns' }] }] }
+          { name: 'Appearance', items: [{ stack: ['dsWireframe', 'dsShadedEdges', 'dsShaded'] }, { fn: 'action', arg: 'material' }, { stack: [{ fn: 'action', arg: 'translucency' }, 'dsHLR', 'dsHLV'] }] },
+          { name: 'Display', items: [{ stack: [{ fn: 'action', arg: 'showAxes' }, { fn: 'action', arg: 'showGnomons' }, 'vPlanes'] }] },
+          { name: 'Grid', items: [{ stack: [{ fn: 'action', arg: 'showGrid' }, { fn: 'action', arg: 'snapGrid' }] }] },
+          { name: 'Managers', items: [{ stack: [{ fn: 'manager', arg: 'solids', label: 'Solids', icon: 'tree' }, { fn: 'manager', arg: 'planes', label: 'Planes', icon: 'plane' }, { fn: 'manager', arg: 'levels', label: 'Levels', icon: 'levels' }] }, { stack: [{ fn: 'manager', arg: 'recent', label: 'Recent Functions', icon: 'recentFns' }] }] },
+          { name: 'Viewsheets', items: [{ stack: [{ fn: 'action', arg: 'vsOnOff' }, { fn: 'action', arg: 'vsNew' }] }, { stack: [{ fn: 'action', arg: 'vsSave' }, { fn: 'action', arg: 'vsRestore' }] }] }   // lane mcpolish
+        ] }
+      ],
+      // lane mcpolish: an assembly keeps SolidWorks' Assembly tab whole (Mastercam has no assemblies), with Home and View
+      assembly: [
+        { name: 'Home', groups: [
+          { name: 'Clipboard', items: [{ fn: 'action', arg: 'copyImage' }] },
+          { name: 'Display', items: [{ fn: 'action', arg: 'hideUnhide' }, { stack: [{ fn: 'action', arg: 'blank' }, { fn: 'action', arg: 'unblank' }, 'hideshow'] }] },
+          { name: 'Analyze', items: ['measure', { stack: ['mass', 'sectionProps', 'check'] }, { stack: ['interference', 'clearance'] }] }
+        ] },
+        { name: 'Assembly', sw: 'Assembly', captions: ['Components', 'Position', 'Show', 'Pattern and Move'] },
+        { name: 'View', groups: [
+          { name: 'Zoom', items: ['vZoomFit', { stack: ['zoomArea', 'prevView'] }, { stack: [{ fn: 'action', arg: 'unzoom50' }, { fn: 'action', arg: 'unzoom80' }] }] },
+          { name: 'Graphics View', items: ['vTop', { grid: ['vIso', 'vFront', 'vBack', 'vBottom', 'vRight', 'vLeft', 'vNormalTo'] }, 'section'] },
+          { name: 'Appearance', items: [{ stack: ['dsWireframe', 'dsShadedEdges', { fn: 'action', arg: 'material' }] }, { stack: ['dsShaded', 'dsHLR', 'dsHLV'] }, { stack: [{ fn: 'action', arg: 'translucency' }, 'scene'] }] },
+          { name: 'Display', items: [{ stack: [{ fn: 'action', arg: 'showAxes' }, { fn: 'action', arg: 'showGnomons' }, 'vOrigins'] }, { stack: ['vPlanes'] }] },
+          { name: 'Viewsheets', items: [{ stack: [{ fn: 'action', arg: 'vsOnOff' }, { fn: 'action', arg: 'vsNew' }] }, { stack: [{ fn: 'action', arg: 'vsSave' }, { fn: 'action', arg: 'vsRestore' }] }] }
         ] }
       ],
       drawing: [
@@ -246,7 +280,7 @@
         { name: 'Sheet Format', sw: 'Sheet Format' }
       ]
     },
-    tabAlias: { part: { Sketch: 'Wireframe', Features: 'Solids', Evaluate: 'Home' }, drawing: { Annotation: 'Drafting' } },
+    tabAlias: { part: { Sketch: 'Wireframe', Features: 'Solids', Evaluate: 'Home' }, drawing: { Annotation: 'Drafting' }, assembly: { Evaluate: 'Home' } },
     labels: {
       extrude: 'Extrude', revolve: 'Revolve', sweep: 'Sweep', loft: 'Loft', holeWizard: 'Hole', fillet: 'Constant\nFillet', chamfer: 'One Distance\nChamfer',
       lpattern: 'Rectangular\nPattern', cpattern: 'Circular\nPattern', draft: 'Draft\nFaces',
@@ -256,15 +290,16 @@
       offset: 'Offset\nEntity', convert: 'Project', closeArc: 'Close Arc',
       dim: 'Smart\nDimension', horizDim: 'Horizontal', vertDim: 'Vertical', ordinateDim: 'Ordinate', baselineDim: 'Baseline', holeTable: 'Hole\nTable', areaHatch: 'Cross Hatch', multiJogLeader: 'Leader',
       measure: 'Analyze\nDistance', mass: 'Analyze Solid Properties', check: 'Check Solid', sectionProps: '2D Area',
-      vZoomFit: 'Fit', zoomArea: 'Window', vTop: 'Top', dsShadedEdges: 'Outline Shaded', vGrid: 'Show\nGrid', vFeatureTree: 'Solids Manager', levels: 'Levels', vLevels: 'Levels Manager'
+      vZoomFit: 'Fit', zoomArea: 'Window', vTop: 'Top', dsShadedEdges: 'Outline Shaded', vFeatureTree: 'Solids Manager', levels: 'Levels', vLevels: 'Levels Manager'
     },
     // lane mcframe: the window itself (ui-panels.js UI.setFrame)
     frame: {
       ribbon: { tabsOnTop: true, fileTab: true, qat: true, captions: true },
       menubar: false,
-      managers: { tabs: ['solids', 'planes', 'levels', 'recent'], titles: { solids: 'Solids', planes: 'Planes', levels: 'Levels', recent: 'Recent Functions' } },
+      managers: { tabs: ['solids', 'planes', 'levels', 'config', 'recent'], titles: { solids: 'Solids', planes: 'Planes', levels: 'Levels', config: 'Configurations', recent: 'Recent Functions' } },   // lane mcpolish: config (shown while the document has configurations)
       functionTitles: { extrude: 'Solid Extrude', revolve: 'Revolve', cut: 'Solid Extrude', fillet: 'Constant Fillet', chamfer: 'One Distance Chamfer', holeWizard: 'Hole', shell: 'Shell', draft: 'Draft Faces', lpattern: 'Rectangular Pattern', cpattern: 'Circular Pattern' },
-      status: ['section', 'selected', 'xyz', 'cplane', 'tplane', 'wcs', 'styles'],
+      status: ['section', 'selected', 'xyz', 'mode', 'cplane', 'tplane', 'wcs', 'styles'],
+      viewsheets: true,   // lane mcpolish: the viewsheet strip under the graphics window (ui-panels.js vsRender)
       theme: { name: 'mastercam', vars: {
         light: { '--mc-blue': '#1f5aa6', '--mc-blue-text': '#ffffff', '--mc-title': '#1f5aa6', '--mc-ribbon': '#ffffff', '--mc-strip': '#ffffff', '--mc-line': '#d4d4d4', '--mc-tab-on': '#ffffff', '--mc-hover': '#dce8f6', '--mc-press': '#c3d9f1', '--mc-press-line': '#7da2ce', '--mc-panel': '#ffffff', '--mc-mgr-tab': '#f3f3f3', '--mc-text': '#1e1e1e' },
         dark: { '--mc-blue': '#2c5f9e', '--mc-blue-text': '#ffffff', '--mc-title': '#7fb0e8', '--mc-ribbon': '#2b2b2b', '--mc-strip': '#2b2b2b', '--mc-line': '#454545', '--mc-tab-on': '#383838', '--mc-hover': '#34465c', '--mc-press': '#2f4d70', '--mc-press-line': '#4f78a8', '--mc-panel': '#262626', '--mc-mgr-tab': '#303030', '--mc-text': '#e4e4e4' }

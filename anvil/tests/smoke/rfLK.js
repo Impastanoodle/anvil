@@ -51,7 +51,7 @@
     return d;
   }
   function rfLKLeftovers() {
-    var ids = ['mc-file', 'mc-backstage', 'mc-mgr-head', 'mc-mgr-tabs', 'mc-solids', 'mc-planes', 'mc-recent', 'mc-status'].filter(function (id) { return D.getElementById(id); });
+    var ids = ['mc-file', 'mc-backstage', 'mc-mgr-head', 'mc-mgr-tabs', 'mc-solids', 'mc-planes', 'mc-recent', 'mc-status', 'mc-viewsheets'].filter(function (id) { return D.getElementById(id); });
     if (D.querySelector('#ribbon > .mc-captions, .mc-fn-title')) ids.push('captions / fn title');
     if (D.documentElement.hasAttribute('data-profile')) ids.push('html[data-profile]');
     if (/--mc-/.test(D.documentElement.getAttribute('style') || '')) ids.push('html style');
@@ -82,7 +82,7 @@
     rfLKSw = await rfLKState();
     assert(!rfLKLeftovers().length, 'frame pieces under SolidWorks: ' + rfLKLeftovers().join(', '));
     await rfLKPickInOptions('mastercam');
-    assert(UI.Profiles.active() === 'mastercam' && UI.frame(), 'profile ' + UI.Profiles.active());
+    assert(UI.Profiles.active() === 'mastercam' && UI.frameDef(), 'profile ' + UI.Profiles.active());
     if (!$('tp-panel').hidden) UI.closeTaskPane();
     await wait(60);
     assert(!rfLKShown($('menus')), 'the menu bar is still shown');
@@ -101,7 +101,7 @@
     var L = $('left').getBoundingClientRect(), mt = $('mc-mgr-tabs').getBoundingClientRect(), hd = $('mc-mgr-head').getBoundingClientRect();
     assert(hd.top - L.top < 4 && L.bottom - mt.bottom < 4 && mt.top > L.top + L.height / 2, 'manager tabs at ' + mt.top + ' in ' + L.top + '-' + L.bottom);
     assert(!rfLKShown($('fm-tabs')), 'SolidWorks FeatureManager tabs shown');
-    var tabTxt = Array.prototype.map.call($('mc-mgr-tabs').children, function (b) { return b.textContent; }).join();
+    var tabTxt = Array.prototype.filter.call($('mc-mgr-tabs').children, function (b) { return !b.hidden; }).map(function (b) { return b.textContent; }).join();   // lane mcpolish: Configurations only with configurations
     assert(tabTxt === 'Solids,Planes,Levels,Recent Functions', 'manager tabs ' + tabTxt);
     // the look: html data-profile, the File tab and the status bar in the profile's blue
     assert(D.documentElement.getAttribute('data-profile') === 'mastercam', 'data-profile');
@@ -235,7 +235,7 @@
       assert(UI.hasPM(), label + ': no PropertyManager');
       var title = UI.frameFunctionTitle ? UI.frameFunctionTitle() : null;
       var info = { title: title, fn: $('left').classList.contains('mc-fn'), head: rfLKShown($('mc-mgr-head')), tabs: rfLKShown($('mc-mgr-tabs')) };
-      if (UI.frame()) {
+      if (UI.frameDef()) {
         var ok = D.querySelector('#pm .pm-ok'), cs = W.getComputedStyle(ok);
         info.round = cs.borderTopLeftRadius === '50%' || parseFloat(cs.borderTopLeftRadius) >= ok.offsetHeight / 2 - 1;
         var oy = ok.getBoundingClientRect().top, fy = D.querySelector('#pm .pm-group') ? D.querySelector('#pm .pm-group').getBoundingClientRect().top : 1e9;
@@ -394,6 +394,6 @@
     if (UI.frameBackstage) UI.frameBackstage.close();
     anvil.profile('solidworks');
     try { W.localStorage.removeItem(UI.Profiles.storageKey); } catch (e) { }
-    assert(UI.Profiles.active() === 'solidworks' && !UI.frame() && !rfLKLeftovers().length, 'not reset');
+    assert(UI.Profiles.active() === 'solidworks' && !UI.frameDef() && !rfLKLeftovers().length, 'not reset');
   });
 })();

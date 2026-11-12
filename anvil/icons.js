@@ -509,6 +509,30 @@ var IconsLib = (function () {
   I.ftLouver = p('M1 13 l3 -5 h11 l-3 5 z', F2, S, 1) + p('M4.5 11 L6 7.5 h6.5 L11 11 z', FY, FYD, 1) + p('M6 7.5 h6.5 l-1 1.6 h-5 z', '#424242', 'none');
   I.ftLance = p('M1 13 l3 -5 h11 l-3 5 z', F2, S, 1) + p('M3.5 11 L5.5 7 h5 L12.5 11 h-1.6 L9.6 8.4 h-3.2 L5.1 11 z', FY, FYD, 1);
   I.ftRib = p('M1 13 l3 -5 h11 l-3 5 z', F2, S, 1) + p('M4.2 11.4 L9.6 7.4 a1 1 0 0 1 2.2 1.2 L6.4 12.6 a1 1 0 0 1 -2.2 -1.2 z', FY, FYD, 1);
+  // lane mcpolish: the Mastercam commands Anvil gained (Home ▸ Clipboard / Organize / Delete / Display, View ▸ Zoom /
+  // Appearance / Display / Grid / Viewsheets, the status bar's 3D / 2D)
+  I.unzoom50 = circ(7, 7, 5, 'none', S, 1.3) + ln('M10.6 10.6 l3.4 3.4', S, 2) + ln('M4.5 7 h5', S, 1.5);
+  I.unzoom80 = circ(7, 7, 5, 'none', S, 1.3) + ln('M10.6 10.6 l3.4 3.4', S, 2) + ln('M5.5 7 h3', S, 1.5);
+  I.translucency = rect(1.5, 1.5, 8.5, 8.5, F2, S, 1) + p('M6 6 h8.5 v8.5 h-8.5 z', 'rgba(232,232,232,0.55)', S, 1) + ln('M6 6 h4 v4 h-4 z', S, 0.8, DASH);
+  I.dsMaterial = circ(8, 8, 6, '#c9c9c9', S, 1.1) + ell(6, 5.6, 2.4, 1.6, W, 'none') + p('M3 10.5 C5.5 13.5 11.5 13 13.5 9', 'none', '#7d7d7d', 1);
+  I.copyImage = rect(1.5, 3.5, 10, 9, W, S, 1.1) + p('M2.5 11.5 l3 -3.5 l2 2 l1.5 -1.5 l2 3 z', F2, 'none') + circ(9, 6, 1, FY, 'none') + ln('M12 1.5 h2.5 v2.5 M14.5 1.5 l-3.5 3.5', G, 1.3);
+  I.cutEnt = circ(4, 12, 2, 'none', S, 1.3) + circ(12, 12, 2, 'none', S, 1.3) + ln('M5.4 10.6 L11 2 M10.6 10.6 L5 2', S, 1.3);
+  I.undeleteEnt = ln('M2.5 12.5 L10.5 4.5', S, 1.5) + ln('M9 13.5 a3.5 3.5 0 1 0 -1 -4.5', G, 1.4) + p('M7 7.2 l1.1 2.8 l2.4 -1.6 z', G, G, 0.6);
+  I.blankEnt = ln('M2 13 L13 2', S, 1.5, DASH) + rect(9.5, 9.5, 5, 5, '#3a3a3a', S, 1);
+  I.unblankEnt = ln('M2 13 L13 2', S, 1.5) + ln('M1.5 8 c3 -5 10 -5 13 0', B, 1.1) + circ(8, 8, 1.8, B, 'none');
+  I.hideUnhide = rect(1.5, 6.5, 6, 6, F2, S, 1) + rect(9, 3.5, 5.5, 5.5, 'none', M, 1, DASH) + ln('M4.5 2.5 V5 M2.5 3.5 h4', G, 1.2);
+  I.worldAxes = ln('M8 1.5 V14.5', G, 1.4) + ln('M1.5 8 H14.5', R, 1.4) + ln('M3 13 L13 3', '#5a5a5a', 1.1, DASH) + circ(8, 8, 1.3, S, 'none');
+  I.gnomon = ln('M3.5 12.5 H13', R, 1.5) + ln('M3.5 12.5 V3', G, 1.5) + p('M13 12.5 l-2.4 -1.3 v2.6 z M3.5 3 l-1.3 2.4 h2.6 z', S, S, 0.5) + rect(2, 11, 3, 3, W, S, 0.9);
+  I.snapGrid = ln('M5 2 V14 M8 2 V14 M11 2 V14 M2 5 H14 M2 8 H14 M2 11 H14', M, 0.8) + rect(2, 2, 12, 12, 'none', S, 1.2) + circ(8, 8, 1.8, Y, YD, 1);
+  I.zDepth = p('M1 11.5 l3.5 -4 h10.5 l-3.5 4 z', PL, P, 1) + ln('M8 9.5 V2', S, 1.4) + p('M8 1.5 l-1.6 2.6 h3.2 z', S, S, 0.5) + txt(12.5, 6, 6, 'Z');
+  I.mode3d = blk(2, 4, 8, 8, 3, F2, F1, F3, S, 1);
+  I.viewsheetNew = rect(1.5, 3.5, 13, 9, 'none', S, 1.1) + ln('M1.5 6 h13', S, 1) + ln('M8 7.5 v4 M6 9.5 h4', G, 1.4);
+  I.viewsheetOn = rect(1.5, 3.5, 13, 9, 'none', S, 1.1) + p('M1.5 10 h5 v2.5 h-5 z', F2, S, 1) + ln('M7.5 11.3 h3', M, 1);
+  I.moveUp = rect(2.5, 9.5, 11, 4, F2, S, 1) + ln('M8 8 V2', S, 1.5) + p('M8 1.5 l-2.6 3 h5.2 z', S, S, 0.5);
+  I.moveDown = rect(2.5, 2.5, 11, 4, F2, S, 1) + ln('M8 8 V14', S, 1.5) + p('M8 14.5 l-2.6 -3 h5.2 z', S, S, 0.5);
+  I.planeView = p('M1 12.5 l3.5 -5 h10.5 l-3.5 5 z', PL, P, 1) + ell(8, 4.5, 4, 2.4, 'none', S, 1.1) + circ(8, 4.5, 1.2, S, 'none') + ln('M8 7 V10', G, 1.3);
+  I.bookmarkSave =p('M4 1.5 h8 v13 l-4 -3 l-4 3 z', FYL, S, 1.1) + ln('M6 6 h4 M8 4 v4', G, 1.3);
+  I.bookmarkRestore = p('M4 1.5 h8 v13 l-4 -3 l-4 3 z', FYL, S, 1.1) + ln('M10 6.5 a2 2 0 1 0 -0.6 1.6', S, 1.1) + p('M10.4 4.4 v2.4 h-2.4 z', S, S, 0.4);
   // ---- rfGZ: one weight system for every size. The artwork above is drawn once on the 16 grid; `weigh` re-weights
   // each stroked element for the size it is shown at and the screen's devicePixelRatio, so a 32 px ribbon icon no
   // longer doubles every outline (2.5 px black borders) and a 16 px tree icon keeps 1 px lines. Classes, by the drawn

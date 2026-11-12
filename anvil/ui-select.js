@@ -2362,6 +2362,66 @@ if (typeof UI !== 'undefined') (function (UI) {
   UI.fmtModelValue = fmtV;   // r4/features4: the value format of on-model handles and callouts
   UI.instant3DStats = function () { return { pmMoveMs: i3d.lastPmMoveMs || 0, pauses: i3d.pauses || 0, pauseRebuildMs: i3d.lastPauseMs || 0 }; };
 
+  // ---- lane mcpolish: Blank / Unblank and Hide/Unhide (Mastercam's Home ▸ Display). Blank hides the selected sketch
+  // entities (of the open or any sketch) and bodies / components; Unblank brings every blanked one back. Hide/Unhide
+  // hides everything but the selection, and a second click shows it all again. Session state of the document's
+  // entities (sketch id : index), not saved; a blanked entity is not drawn, picked, snapped to or box-selected (the
+  // UI.entityLayerHidden / UI.sketchLayerStyle chain the levels and layers use).
+  var blank = { ents: {}, bodies: {}, hook: false, hideAll: null };
+  function blankKey(f, e) { var i = f && f.entities ? f.entities.indexOf(e) : -1; return i < 0 ? null : f.id + ':' + i; }
+  function blankHook() {
+    if (blank.hook) return;
+    blank.hook = true;
+    var baseHid = UI.entityLayerHidden, baseSty = UI.sketchLayerStyle;
+    UI.entityLayerHidden = function (f, e) { var k = blankKey(f, e); if (k && blank.ents[k]) return true; return baseHid ? baseHid.apply(this, arguments) : false; };
+    UI.sketchLayerStyle = function (f, e) { var k = blankKey(f, e); if (k && blank.ents[k]) return { hidden: true, mat: null, dashed: false }; return baseSty ? baseSty.apply(this, arguments) : null; };
+  }
+  function blankRedraw() { App.sel = null; App.sel2 = null; App.multi = []; UI.updateSketches(); UI.updateHighlights(); if (UI.refreshTree) UI.refreshTree(); if (UI.refreshRibbon) UI.refreshRibbon(); UI.requestRender(); }
+  function sketchOf(s) { return s.sketch != null ? K.findFeature(App.model, s.sketch) : App.activeSketch != null ? K.findFeature(App.model, App.activeSketch) : null; }
+  function blankSelection() {
+    var list = selection(), n = 0;
+    if (!list.length) { UI.setStatus('Blank: select the entities or bodies to blank first (Unblank brings them back).'); return 0; }
+    blankHook();
+    list.forEach(function (s) {
+      if (s.kind === 'entity') { var f = sketchOf(s); if (f && f.entities[s.index]) { blank.ents[f.id + ':' + s.index] = true; n++; } }
+      else if ((s.kind === 'body' || s.kind === 'face') && UI.setBodyHidden) { var bi = s.kind === 'face' ? faceBody(s.index) : s.index; if (!blank.bodies[bi]) { UI.setBodyHidden(bi, true); blank.bodies[bi] = true; n++; } }   // a face blanks its body
+    });
+    blankRedraw();
+    UI.setStatus(n ? 'Blanked ' + n + ' item' + (n === 1 ? '' : 's') + ' (Unblank shows them again).' : 'Blank works on sketch entities and bodies.');
+    return n;
+  }
+  function unblank() {
+    var n = Object.keys(blank.ents).length;
+    blank.ents = {};
+    Object.keys(blank.bodies).forEach(function (i) { if (UI.setBodyHidden) UI.setBodyHidden(+i, false); n++; });
+    blank.bodies = {};
+    blankRedraw();
+    UI.setStatus(n ? 'Unblanked ' + n + ' item' + (n === 1 ? '' : 's') + '.' : 'Nothing is blanked.');
+    return n;
+  }
+  function blanked() { return { entities: Object.keys(blank.ents), bodies: Object.keys(blank.bodies).map(Number) }; }
+  // Hide/Unhide: the selection stays, everything else is blanked; again: all back
+  function hideUnhide() {
+    if (blank.hideAll) { var h = blank.hideAll; blank.hideAll = null; h.ents.forEach(function (k) { delete blank.ents[k]; }); h.bodies.forEach(function (i) { delete blank.bodies[i]; if (UI.setBodyHidden) UI.setBodyHidden(i, false); }); blankRedraw(); UI.setStatus('Everything hidden by Hide/Unhide is shown again.'); return false; }
+    var list = selection();
+    if (!list.length) { UI.setStatus('Hide/Unhide: select what you want to keep on screen first.'); return false; }
+    blankHook();
+    var keepE = {}, keepB = {}, h = { ents: [], bodies: [] };
+    list.forEach(function (s) { if (s.kind === 'entity') { var f = sketchOf(s); if (f) keepE[f.id + ':' + s.index] = true; } else if (s.kind === 'body') keepB[s.index] = true; else if (s.kind === 'face') keepB[faceBody(s.index)] = true; });
+    (App.model.features || []).forEach(function (f) {
+      if (f.type !== 'sketch' || !f.entities) return;
+      f.entities.forEach(function (e, i) { var k = f.id + ':' + i; if (!keepE[k] && !blank.ents[k]) { blank.ents[k] = true; h.ents.push(k); } });
+    });
+    var nb = UI.bodyCount ? UI.bodyCount() : 0;
+    for (var i = 0; i < nb; i++) if (!keepB[i] && !(UI.isBodyHidden && UI.isBodyHidden(i))) { if (UI.setBodyHidden) UI.setBodyHidden(i, true); blank.bodies[i] = true; h.bodies.push(i); }
+    blank.hideAll = h;
+    blankRedraw();
+    UI.setStatus('Hide/Unhide: only the selection is shown. Click Hide/Unhide again to show everything.');
+    return true;
+  }
+  UI.blankSelection = blankSelection; UI.unblank = unblank; UI.blanked = blanked; UI.hideUnhide = hideUnhide;
+  UI.hideUnhideOn = function () { return !!blank.hideAll; };
+
   if (window.anvil) {
     // selection: [{ kind, index | id, … }] of the current selection
     window.anvil.selection = function () { return selection().map(summarize); };

@@ -457,7 +457,7 @@
       await anvil.newPart(); await idle();
       await anvil.run('p.box(200, 200, 20, { centered: true });'); await idle();
       await rfLOChooseProfile('mastercam');
-      assert(UI.frame && UI.frame(), 'mcframe\'s window frame is on');
+      assert(UI.frameDef && UI.frameDef(), 'mcframe\'s window frame is on');
       var lab = D.getElementById('vp-labels'), qm = D.getElementById('vp-qmask'), sb = D.getElementById('vp-selbar');
       assert(rfLOShown(lab) && rfLOShown(qm) && rfLOShown(sb), 'labels / quick masks / selection bar shown');
       assert(W.getComputedStyle($('hud')).display === 'none', 'no heads-up toolbar');
@@ -546,7 +546,7 @@
       await rfLOUntil(function () { var r = D.querySelector('#mc-planes tr[data-plane="Isometric"]'); return UI.cplane() === 'Isometric' && r && r.classList.contains('current'); }, function () { return 'Isometric: ' + UI.cplane(); });
       // back on SolidWorks through the setting: nothing of either lane is left
       await rfLOChooseProfile('solidworks');
-      var left = ['mc-file', 'mc-backstage', 'mc-mgr-head', 'mc-mgr-tabs', 'mc-solids', 'mc-planes', 'mc-recent', 'mc-status'].filter(function (id) { return D.getElementById(id); });
+      var left = ['mc-file', 'mc-backstage', 'mc-mgr-head', 'mc-mgr-tabs', 'mc-solids', 'mc-planes', 'mc-recent', 'mc-status', 'mc-viewsheets'].filter(function (id) { return D.getElementById(id); });
       assert(!left.length && !D.documentElement.hasAttribute('data-profile') && !/\bmc-/.test($('app').className), 'mcframe left: ' + left.join());
       ['vp-labels', 'vp-qmask', 'vp-selbar'].forEach(function (id) { assert(!rfLOShown(D.getElementById(id)), id + ' still shown'); });
       assert(W.getComputedStyle($('hud')).display !== 'none' && !$('viewport').style.getPropertyValue('--viewport') && !$('viewport').classList.contains('mc-direct'), 'graphics window back');
