@@ -37,7 +37,12 @@
   }
   async function rfMFpart(code) { await anvil.newPart(); await idle(); await anvil.run(code); await idle(); await rfMFview(); }
   function rfMFrv() { try { return localStorage.getItem('anvil.realview'); } catch (e) { return null; } }
-  async function rfMFend(keep, style, theme) {
+  // the look belongs to the Gradient / Plain graphics area: a group that leaves View > Background > Dark behind (rfLV (g)
+  // clicks every View button) makes the dark ground, where the grey part is right; rfMF works on the Gradient and puts
+  // the background back without saving it
+  function rfMFgradient() { var b = UI.App.view.bg; UI.setBackground('gradient', true); return b; }
+  async function rfMFend(keep, style, theme, bg0) {
+    if (bg0) UI.setBackground(bg0, true);
     if (anvil.profile() !== 'solidworks') anvil.profile('solidworks');
     UI.setTheme(theme); UI.setStyle(style);
     UI.setRealView(keep === '1' ? true : keep === '0' ? false : UI.realView(), true);
@@ -46,7 +51,7 @@
   }
 
   step('rfMF: a plate in the light default look is SolidWorks\' default part — top #ffffff, sides #a8aab6 and #95979a within 8 levels, RealView off and on', async function () {
-    var keep = rfMFrv(), style = UI.App.view.style, theme = UI.theme(), bad = [], got = [];
+    var keep = rfMFrv(), style = UI.App.view.style, theme = UI.theme(), bg0 = rfMFgradient(), bad = [], got = [];
     var want = { top: [255, 255, 255], left: [168, 170, 182], right: [149, 151, 154] };
     try {
       UI.setTheme('light');
@@ -60,13 +65,13 @@
           if (c.some(function (v, i) { return Math.abs(v - want[k][i]) > 8; })) bad.push(tag + ' ' + k + ' ' + c.join(',') + ' (SolidWorks ' + want[k].join(',') + ')');
         });
       }
-    } finally { await rfMFend(keep, style, theme); }
+    } finally { await rfMFend(keep, style, theme, bg0); }
     assert(!bad.length, bad.join('; '));
     return got.join('; ');
   });
 
   step('rfMF: the Mounting Bracket reads clearly in the new look — adjacent faces (plate top / front / right, boss side / plate top / boss top) at least as far apart as with the grey part, no face blown out but the tops, edges dark', async function () {
-    var keep = rfMFrv(), style = UI.App.view.style, theme = UI.theme(), bad = [], got = [];
+    var keep = rfMFrv(), style = UI.App.view.style, theme = UI.theme(), bg0 = rfMFgradient(), bad = [], got = [];
     // Two checks per pair of adjacent faces, both on absolute luminance differences: (1) at least the step the grey part had
     // at 057fc50 (RFMF_BEFORE: boss side / plate top was 80 Phong, 53 RealView; now ~108 / ~91); (2) a floor of 19 levels,
     // SolidWorks' own smallest step between two adjacent faces of its default part: the two side faces of the plate in sw-03,
@@ -88,13 +93,13 @@
         ['plateFront', 'plateRight', 'bossSide'].forEach(function (k) { var l = rfMFlum(s[k]); if (l > 235 || l < 70) bad.push(tag + ' ' + k + ' ' + Math.round(l)); });
         if (UI.mats.edge.color.getHex() !== UI.partLook.SW_PART.edge || rfMFlum([UI.mats.edge.color.r * 255, UI.mats.edge.color.g * 255, UI.mats.edge.color.b * 255]) > 70) bad.push('edge ' + UI.mats.edge.color.getHexString());
       }
-    } finally { await rfMFend(keep, style, theme); }
+    } finally { await rfMFend(keep, style, theme, bg0); }
     assert(!bad.length, bad.join('; '));
     return got.join('; ');
   });
 
   step('rfMF: a part with a material or a colour of its own keeps it and rfHA\'s rig; selection stays light blue, previews yellow / red', async function () {
-    var keep = rfMFrv(), style = UI.App.view.style, theme = UI.theme(), bad = [];
+    var keep = rfMFrv(), style = UI.App.view.style, theme = UI.theme(), bg0 = rfMFgradient(), bad = [];
     try {
       UI.setTheme('light'); UI.setRealView(false, true);
       await rfMFpart(anvil.examples[0].code + '\np.material("AISI 304");\n');
@@ -108,14 +113,21 @@
       var m = UI.getBodyMesh().material;
       if (m.userData.realView && m.color.getHexString() !== '2f6db5') bad.push('RealView own colour ' + m.color.getHexString());
       await rfMFpart(RFMF_BOX);
+      // the look follows every state it depends on, both ways (background, theme, profile, a material then a new part)
+      function look(want, what) { if (UI.partLook.on() !== want) bad.push(what + ': look ' + UI.partLook.on()); }
+      look(true, 'start');
+      UI.setBackground('dark', true); look(false, 'Dark background'); UI.setBackground('gradient', true); look(true, 'back to Gradient');
+      UI.setTheme('dark'); look(false, 'dark theme'); UI.setTheme('light'); look(true, 'back to light');
+      anvil.profile('mastercam'); await wait(200); look(false, 'Mastercam'); anvil.profile('solidworks'); await wait(200); look(true, 'back to SolidWorks');
+      await rfMFpart(RFMF_BOX + 'p.material("AISI 304");\n'); look(false, 'a material'); await rfMFpart(RFMF_BOX); look(true, 'a new part after it');
       if (UI.mats.sel.color.getHex() !== 0x7ec8ff || UI.mats.preview.color.getHex() !== 0xf2cf5b || UI.mats.previewCut.color.getHex() !== 0xe8746a) bad.push('overlay colours');
-    } finally { await rfMFend(keep, style, theme); }
+    } finally { await rfMFend(keep, style, theme, bg0); }
     assert(!bad.length, bad.join('; '));
     return 'ok';
   });
 
   step('rfMF: the dark theme and the Mastercam profile draw the grey part exactly as before (pixels of an isometric box equal to 057fc50), RealView off and on', async function () {
-    var keep = rfMFrv(), style = UI.App.view.style, theme = UI.theme(), bad = [];
+    var keep = rfMFrv(), style = UI.App.view.style, theme = UI.theme(), bg0 = rfMFgradient(), bad = [];
     try {
       for (var rv = 0; rv < 2; rv++) {
         UI.setRealView(!!rv, true); var tag = rv ? 'RV' : 'Ph';
@@ -129,7 +141,7 @@
           Object.keys(b).forEach(function (k) { if (p[1][k].some(function (v, i) { return Math.abs(v - b[k][i]) > 1; })) bad.push(p[0] + ' ' + tag + ' ' + k + ' ' + p[1][k].join(',') + ' (was ' + b[k].join(',') + ')'); });
         });
       }
-    } finally { await rfMFend(keep, style, theme); }
+    } finally { await rfMFend(keep, style, theme, bg0); }
     assert(!bad.length, bad.join('; '));
     return 'dark and Mastercam unchanged';
   });
