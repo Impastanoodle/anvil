@@ -2694,10 +2694,21 @@
   var FLANGE_MEMORY_KEYS = ['length', 'angle', 'position', 'lengthRef', 'useCustomRelief', 'relief', 'useDefaultReliefWidth', 'reliefWidthValue', 'useDefaultReliefDepth', 'reliefDepthValue', 'useReliefRatio', 'reliefRatioValue'];
   var HEM_MEMORY_KEYS = ['hemType', 'hemPosition', 'length', 'gap', 'hemRadius', 'hemAngle', 'miterGap'];
   // UI.sheetMetalMemory() -> copy of what is remembered; UI.sheetMetalMemory(null) forgets it (tests)
+  // (rfLR) `commands` is what the other commands keep for the session (Corner Relief's last type and size, Closed
+  // Corner's gap, Jog, Rip, Insert Bends …). null forgot only flange and hem, so a test that asked for a fresh start
+  // still got the Corner Relief of some earlier test (Circular .25 where it expected Rectangular 2 T): null now puts
+  // every one of them back to what it is when the app starts (smCommands, captured at the end of this file).
   UI.sheetMetalMemory = function (set) {
-    if (set === null) smMemory = { flange: null, hem: null };
-    return JSON.parse(JSON.stringify(smMemory));
+    if (set === null) { smMemory = { flange: null, hem: null }; if (smFresh) smCommands(JSON.parse(smFresh)); }
+    var o = JSON.parse(JSON.stringify(smMemory));
+    o.commands = JSON.parse(JSON.stringify(smCommands()));
+    return o;
   };
+  var smFresh = null;
+  function smCommands(v) {
+    if (v) { jogLast = v.jog; sfLast = v.sweptFlange; mfLast = v.miterFlange; bcLast = v.breakCorner; crLast = v.cornerRelief; wcLast = v.weldedCorner; xbLast = v.crossBreak; ftLast = v.formingTool; ripLast = v.rip; ventLast = v.vent; ibLast = v.insertBends; ccLast = v.closedCorner; wrapLast = v.wrap; }
+    return { jog: jogLast, sweptFlange: sfLast, miterFlange: mfLast, breakCorner: bcLast, cornerRelief: crLast, weldedCorner: wcLast, crossBreak: xbLast, formingTool: ftLast, rip: ripLast, vent: ventLast, insertBends: ibLast, closedCorner: ccLast, wrap: wrapLast };
+  }
   function cmdEdgeFlange(existing, kind) {
     if (existing && existing.miterFlange && existing.sketch != null) { cmdMiterFlange(existing); return; }   // lane DL: a Miter Flange from a profile sketch
     if (App.mode === 'sketch') UI.exitSketch(true);
@@ -7853,6 +7864,7 @@
     });
   }
   UI.cmdWrap = partOnly(cmdWrap, 'Wrap');
+  smFresh = JSON.stringify(smCommands());   // (rfLR) every command's session memory as the app starts: what UI.sheetMetalMemory(null) goes back to
 })(UI);
 
 // rfFC: Suppress / Unsuppress / Unsuppress with Dependents (SolidWorks Edit ▸ Suppress, the FeatureManager right-click).

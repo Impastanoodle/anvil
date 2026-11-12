@@ -14,7 +14,9 @@
 // by headless/smoke-timings.json; every Chrome loads every group file, so helpers are all there, and the driver checks
 // the blocks ran each declared step exactly once), --save-timings (seconds per group file into smoke-timings.json),
 // --json <file> (passed, total, seconds, failures), --part <i>/<n> (only block i of n, see above),
-// --rerun-alone <n> (failed steps, at most n, run again one by one; see below).
+// --rerun-alone <n> (failed steps, at most n, run again one by one; one that passes then is a MASKED FAILURE banner),
+// --leaks [text] (what each step left changed behind it, to find the step a later one trips over), --details (every
+// row with its detail, not only the FAIL rows).
 'use strict';
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -145,7 +147,7 @@ async function runChrome(chrome, pageUrl, dbgPort, tag) {
     if (!summary) { ws.close(); return { error: 'TIMEOUT after ' + timeoutS + ' s: ' + last, code: 1, seconds }; }
     if (!/\/\s*\d+\s*passed/.test(summary)) { ws.close(); return { error: 'the page stopped without a result: ' + summary, code: 1, seconds }; }
     // ui-smoke.html leaves its results in window.__anvilSmoke; another page (occt-tests.html): its PASS / FAIL rows
-    const got = JSON.parse(await page.eval("JSON.stringify(window.__anvilSmoke ? { declared: window.__anvilSmoke.declared, startState: window.__anvilSmoke.startState, endState: window.__anvilSmoke.endState, results: window.__anvilSmoke.results.map(function (r) { return { name: r.name, ok: r.ok, detail: r.detail || '', ms: r.ms, file: r.file, waited: r.waited || 0, setup: !!r.setup }; }) }"
+    const got = JSON.parse(await page.eval("JSON.stringify(window.__anvilSmoke ? { declared: window.__anvilSmoke.declared, startState: window.__anvilSmoke.startState, endState: window.__anvilSmoke.endState, results: window.__anvilSmoke.results.map(function (r) { return { name: r.name, ok: r.ok, detail: r.detail || '', ms: r.ms, file: r.file, waited: r.waited || 0, setup: !!r.setup, left: r.left || [] }; }) }"
       + " : { declared: null, results: Array.prototype.slice.call(document.querySelectorAll('tr')).filter(function (tr) { return tr.children.length > 1 && /^(PASS|FAIL)$/.test(tr.children[0].textContent); }).map(function (tr) { var c = tr.children; return { name: c[1].textContent, ok: c[0].textContent === 'PASS', detail: c[2] ? c[2].textContent : '', ms: parseFloat(c[c.length - 1].textContent) || 0, file: '' }; }) })"));
     const size = await page.eval('innerWidth + "x" + innerHeight + " visible=" + document.visibilityState');
     ws.close();
@@ -213,9 +215,36 @@ async function main() {
   const summary = cuts.length === 1 && runs[0].summary && !reran.length ? runs[0].summary
     : passed + ' / ' + results.length + ' passed' + (failed.length ? ' — ' + failed.length + ' FAILED' : '');
   console.log(summary + '  (' + ((runs.find((r) => r.size) || {}).size || '?') + ', ' + seconds + ' s' + (notes.length ? '; ' + notes.join('; ') : '') + ')');
-  reran.forEach((r) => console.log('  passed rerun alone (failed in the full run): ' + r));
+  // (rfLR) a step that only passed on the rerun is a masked failure, and must not read as a clean run: a banner in
+  // the log and, on GitHub Actions, one warning annotation per step on the run's summary page. Four such steps hid
+  // behind `--rerun-alone 4` for days (a dialog left open, a remembered Corner Relief): each was state an earlier
+  // step left, found with --leaks.
+  if (reran.length) {
+    const bar = '!'.repeat(110);
+    console.log(bar);
+    console.log('!! MASKED FAILURE: ' + reran.length + ' step' + (reran.length === 1 ? '' : 's') + ' FAILED in the full run and passed only when run again alone (--rerun-alone).');
+    console.log('!! The run counts as passed, but the step depends on what an earlier step left behind, or on timing.');
+    console.log('!! Find the step that left it: rerun with --leaks (anvil/docs/areas/tests.md, "State that leaks between groups").');
+    reran.forEach((r) => console.log('!!   passed rerun alone (failed in the full run): ' + r));
+    console.log(bar);
+    if (process.env.GITHUB_ACTIONS) reran.forEach((r) => console.log('::warning title=Smoke step failed in the run, passed only when rerun alone::' + r.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')));
+  }
   for (const f of failed) console.log('  FAIL | ' + f.name + ' | ' + f.detail + ' | ' + (f.ms || 0).toFixed(1));
   boundary.forEach((b) => console.log('  note: ' + b));
+  // --details: every step's row with the detail it returned (the default prints FAIL rows only), for a filtered run
+  if (args.includes('--details')) results.forEach((x) => console.log('  ' + (x.ok ? 'PASS' : 'FAIL') + ' | ' + x.name.slice(0, 100) + ' | ' + String(x.detail).split('\n')[0].slice(0, 400)));
+  // --leaks [text]: what each step left changed behind it (the page's `left` lists: settings, localStorage keys, an
+  // open PropertyManager, the session's remembered command values …), in run order, so the step that left the state a
+  // later step trips over is read off this list instead of bisected. Most steps change something (each starts from a
+  // new document): look for the key the failing step depends on; `--leaks <text>` lists only entries containing it.
+  if (args.includes('--leaks')) {
+    const want = opt('--leaks', ''), filter = want && !/^--|^https?:/.test(want) ? want.toLowerCase() : '';
+    console.log('\nLeft behind, step by step' + (filter ? ' (entries containing "' + filter + '")' : '') + ':');
+    results.forEach((x) => {
+      const l = (x.left || []).filter((e) => !filter || e.toLowerCase().indexOf(filter) >= 0);
+      if (l.length) console.log('  left | ' + String(x.file || '').replace(/^smoke\//, '') + ' | ' + x.name.slice(0, 90) + '\n' + l.map((e) => '         ' + e).join('\n'));
+    });
+  }
   if (slowest) {
     // every step's title and time; groups by the title's prefix before ':' ("rfHL: …", "smooth/responsive: …")
     const rows = results.map((x) => [x.name, x.ms || 0]);
@@ -244,7 +273,7 @@ async function main() {
     fs.writeFileSync(TIMINGS, JSON.stringify({ note: 'seconds per smoke group file, for cutting --shards into even blocks: node anvil/headless/ui-smoke.js <url> --save-timings', seconds: sorted }, null, 1) + '\n');
   }
   const jsonOut = opt('--json', null);
-  if (jsonOut) fs.writeFileSync(path.resolve(process.cwd(), jsonOut), JSON.stringify({ passed, total: results.length, seconds, errors: bad.map((r) => r.error), notes: boundary,
+  if (jsonOut) fs.writeFileSync(path.resolve(process.cwd(), jsonOut), JSON.stringify({ passed, total: results.length, seconds, errors: bad.map((r) => r.error), notes: boundary, passedOnlyOnRerun: reran,
     failures: failed.map((x) => ({ name: x.name, detail: x.detail, file: x.file || null })) }, null, 1) + '\n');
   if (bad.length) return Math.max.apply(null, bad.map((r) => r.code || 1));
   return failed.length || /FAILED/.test(summary) ? 1 : 0;

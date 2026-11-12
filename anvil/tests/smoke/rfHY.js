@@ -209,17 +209,19 @@
       return { t: t, base: true, vertPx: 0, sagPx: sag / UI.cam.scale };
     });
   }
-  step('rfHY: zoomed in until facets would show, a fillet round on a rim (torus), a spherical corner, a 16 ga bend and a hole are drawn within half a pixel of the true surface (every drawn vertex on it, every facet\'s middle within 0.5 px), both engines', async function () {
-    var sv = rfHYSave(), cases = [
-      ['tor', 'p.units("mm");\np.sketch("Top").circle(0, 0, 10).extrude(10);\np.fillet(3, [[10, 10, 0]]);\n', [6.45, 9.12, 6.45]],
-      ['sph', 'p.units("mm");\np.box(20, 20, 20);\np.fillet(4, [[20, 20, 10], [20, 10, 20], [10, 20, 20]]);\n', [18.8, 18.8, 18.8]],
-      ['cyl', 'p.units("in");\np.sheet(0.0598, 0.06, 0.71);\np.sketch("Top").rect(0, -2, 3, 2).end().baseFlange(0.0598);\np.flange(1, [[0, 0.0598, 1]]);\n', [-0.04, 0.03, 1], '16 ga bend'],
-      ['cyl', 'p.units("mm");\np.box(60, 40, 5);\np.hole("Top", 30, -20, 8, { offset: 5 });\n', [34, 5, 20], 'Ø8 hole']
-    ], out = [];
-    try {
-      for (var ci = 0; ci < cases.length; ci++) {
-        var cs = cases[ci];
-        out = out.concat(await rfHYEngines(cs[1], async function (eng) {
+  // (rfLR) one step per shape, where it was one step for the four: every shape starts OpenCascade afresh (about 3 s
+  // of a 50 MB engine each on a quiet PC), and four or five starts in one step ran into the runner's 30 s limit on a
+  // busy machine (23.6 s and a timeout in a part 4/4 run with other suites going). The checks are unchanged.
+  [
+    ['tor', 'p.units("mm");\np.sketch("Top").circle(0, 0, 10).extrude(10);\np.fillet(3, [[10, 10, 0]]);\n', [6.45, 9.12, 6.45], null, 'a fillet round on a rim (torus)'],
+    ['sph', 'p.units("mm");\np.box(20, 20, 20);\np.fillet(4, [[20, 20, 10], [20, 10, 20], [10, 20, 20]]);\n', [18.8, 18.8, 18.8], null, 'a spherical corner'],
+    ['cyl', 'p.units("in");\np.sheet(0.0598, 0.06, 0.71);\np.sketch("Top").rect(0, -2, 3, 2).end().baseFlange(0.0598);\np.flange(1, [[0, 0.0598, 1]]);\n', [-0.04, 0.03, 1], '16 ga bend', 'a 16 ga bend'],
+    ['cyl', 'p.units("mm");\np.box(60, 40, 5);\np.hole("Top", 30, -20, 8, { offset: 5 });\n', [34, 5, 20], 'Ø8 hole', 'a Ø8 hole']
+  ].forEach(function (cs) {
+    step('rfHY: zoomed in until facets would show, ' + cs[4] + ' is drawn within half a pixel of the true surface (every drawn vertex on it, every facet\'s middle within 0.5 px), both engines', async function () {
+      var sv = rfHYSave();
+      try {
+        return (await rfHYEngines(cs[1], async function (eng) {
           rfHYLook('shadedEdges');
           var dv = await rfHYRefine(cs[2], cs[0]), tag = (cs[3] || cs[0]) + ' ' + eng;
           assert(dv.length, tag + ': no ' + cs[0] + ' face refined while zooming in: ' + JSON.stringify(UI.zoomTess.info()));
@@ -228,10 +230,9 @@
             assert(d.sagPx <= 0.5, tag + ': facets ' + d.sagPx.toFixed(3) + ' px off the surface');
           });
           return tag + (dv[0].base ? ' (its own mesh is fine enough at the deepest zoom)' : ' k ' + UI.zoomTess.info().k) + ' sag ' + Math.max.apply(null, dv.map(function (d) { return d.sagPx; })).toFixed(2) + ' px';
-        }));
-      }
-      return out.join('; ');
-    } finally { await rfHYRestore(sv); }
+        })).join('; ');
+      } finally { await rfHYRestore(sv); }
+    });
   });
 
   // real mouse events on the viewport (press on #viewport, move / release on the window, as ui-sketch.js listens)
@@ -240,14 +241,16 @@
     (target || W).dispatchEvent(new W.MouseEvent(type, Object.assign({ bubbles: true, cancelable: true, button: 0, buttons: type === 'mouseup' ? 0 : 1, clientX: Math.round(r.left + p[0]), clientY: Math.round(r.top + p[1]) }, mods || {})));
   }
   function rfHYClick(p, mods) { rfHYEv('mousemove', p, null, mods); rfHYEv('mousedown', p, $('viewport'), mods); rfHYEv('mouseup', p, null, mods); }
-  step('rfHY: clicking anywhere on an extruded spline, an extruded ellipse, a revolved spline, a fillet round or a bend selects the whole surface (one entry, the same face whichever facet is under the cursor), hover lights the whole surface, Ctrl+click on another facet of it takes it off again; both engines', async function () {
-    var sv = rfHYSave(), out = [], cases = [
-      ['spline extrude', 'p.units("mm");\np.sketch("Top").spline([[0,0],[10,8],[20,0],[30,8]]).line(30,8,30,-10).line(30,-10,0,-10).line(0,-10,0,0).end().extrude(10);\n', [[5, 5, 0], [15, 5, 0], [25, 5, 0]], 'Back'],
-      ['ellipse extrude', 'p.units("mm");\np.sketch("Top").ellipse(0, 0, 20, 10, 0).extrude(5);\n', [[-12, 2.5, 7.9], [0, 2.5, 10], [12, 2.5, 7.9]], 'Front'],
-      ['revolved spline', 'p.units("mm");\np.sketch("Front").spline([[5,0],[8,5],[6,10],[9,15]]).line(9,15,0,15).line(0,15,0,0).line(0,0,5,0).end().revolve(360);\n', null, 'Front'],
-      ['fillet round', 'p.units("mm");\np.sketch("Top").circle(0, 0, 10).extrude(10);\np.fillet(3, [[10, 10, 0]]);\n', null, 'Front'],
-      ['bend', 'p.units("in");\np.sheet(0.0598, 0.06, 0.71);\np.sketch("Top").rect(0, -2, 3, 2).end().baseFlange(0.0598);\np.flange(1, [[0, 0.0598, 1]]);\n', null, 'Isometric', [-0.0847, 0.0351, 1]]
-    ];
+  // (rfLR) one step per surface, where it was one step for the five (five OpenCascade starts: 15 s on a quiet PC, the
+  // 30 s limit on a busy one); the checks are unchanged
+  [
+    ['spline extrude', 'p.units("mm");\np.sketch("Top").spline([[0,0],[10,8],[20,0],[30,8]]).line(30,8,30,-10).line(30,-10,0,-10).line(0,-10,0,0).end().extrude(10);\n', [[5, 5, 0], [15, 5, 0], [25, 5, 0]], 'Back', null, 'an extruded spline'],
+    ['ellipse extrude', 'p.units("mm");\np.sketch("Top").ellipse(0, 0, 20, 10, 0).extrude(5);\n', [[-12, 2.5, 7.9], [0, 2.5, 10], [12, 2.5, 7.9]], 'Front', null, 'an extruded ellipse'],
+    ['revolved spline', 'p.units("mm");\np.sketch("Front").spline([[5,0],[8,5],[6,10],[9,15]]).line(9,15,0,15).line(0,15,0,0).line(0,0,5,0).end().revolve(360);\n', null, 'Front', null, 'a revolved spline'],
+    ['fillet round', 'p.units("mm");\np.sketch("Top").circle(0, 0, 10).extrude(10);\np.fillet(3, [[10, 10, 0]]);\n', null, 'Front', null, 'a fillet round'],
+    ['bend', 'p.units("in");\np.sheet(0.0598, 0.06, 0.71);\np.sketch("Top").rect(0, -2, 3, 2).end().baseFlange(0.0598);\np.flange(1, [[0, 0.0598, 1]]);\n', null, 'Isometric', [-0.0847, 0.0351, 1], 'a bend']
+  ].forEach(function (cs) { step('rfHY: clicking anywhere on ' + cs[5] + ' selects the whole surface (one entry, the same face whichever facet is under the cursor), hover lights the whole surface, Ctrl+click on another facet of it takes it off again; both engines', async function () {
+    var sv = rfHYSave();
     // points on the face: given, or three facet centroids of its largest group spread across it
     function facePoints(cs) {
       if (cs[2]) return cs[2];
@@ -269,9 +272,7 @@
       return [vis[0], vis[vis.length >> 1], vis[vis.length - 1]].map(function (i) { return m.faces[i].centroid; });
     }
     try {
-      for (var ci = 0; ci < cases.length; ci++) {
-        var cs = cases[ci];
-        out = out.concat(await rfHYEngines(cs[1], async function (eng) {
+        return (await rfHYEngines(cs[1], async function (eng) {
           rfHYLook('shadedEdges');
           UI.setView(cs[3]); if (UI.finishViewAnimation) UI.finishViewAnimation();
           UI.zoomToFit(); if (UI.finishViewAnimation) UI.finishViewAnimation();
@@ -304,8 +305,6 @@
           var after = anvil.selection();
           assert(after.length === 0, tag + ': Ctrl+click on another facet of the selected face left ' + after.length + ' entries');
           return tag + ': ' + Object.keys(facets).length + ' facets -> face ' + keys[0] + ' (' + UI.faceGroup(keys[0]).length + ' mesh faces)';
-        }));
-      }
-      return out.join('; ');
+        })).join('; ');
     } finally { await rfHYRestore(sv); }
-  });
+  }); });

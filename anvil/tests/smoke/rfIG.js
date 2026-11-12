@@ -115,7 +115,13 @@
     // a quick click on the middle (no rest): the line too
     rskClick([3, 1]); rskClick([3, 0.4]); await idle();
     assert(f.dims.length === n0 + 2 && f.dims[n0 + 1].e === g.bottom, 'a quick click at the middle takes the line: ' + JSON.stringify(f.dims));
-    return 'mid–mid 5, mid–line 3, line lengths';
+    // (rfLR) the bottom's length repeats the top's (a rectangle), so Anvil asks, as SolidWorks does, whether to make it
+    // driven. The step used to end with that dialog open: it stayed up through the next groups, and two files later
+    // rfIK's Ctrl+O did nothing under it ("list order", in every full run). Answer it as a user would.
+    assert(modalOpen() && /Make Dimension Driven/.test($('modal-title').textContent), 'the second length over-defines the rectangle: asked whether to make it driven');
+    clickModalButton('Make this dimension driven'); await idle();
+    assert(!modalOpen() && f.dims.length === n0 + 2 && f.dims[n0 + 1].driven, 'answered: the dimension stays, driven: ' + JSON.stringify(f.dims[n0 + 1]));
+    return 'mid–mid 5, mid–line 3, line lengths (the repeated one made driven)';
   });
   rfIGStep('rfIG: right-click a line while Smart Dimension runs ▸ Select Midpoint picks its midpoint; the distance to the origin is placed and driving; it survives Exit Sketch (rebuild), save / reopen and the script round trip', async function () {
     var g = await rfIGNew(), f = g.f;

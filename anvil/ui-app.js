@@ -1021,7 +1021,11 @@
     var text = bytesText(data), base = String(name || 'Imported').replace(/^.*[\\\/]/, '').replace(/\.[^.]+$/, '');
     UI.setStatus('Reading ' + String(name || '').replace(/^.*[\\\/]/, '') + ' with OpenCascade…');
     return UI.occt.importFile(fmt, text).then(function (r) {
-      var res = Exchange.finishImport('step', { units: units === 'auto' ? 'mm' : units }, r.solids, 1, []);
+      // (rfLR) 'auto' (File ▸ Open) keeps an inch STEP file's inches, as Anvil's own reader does; OpenCascade hands every
+      // file over in millimetres, so the same customer file opened as an inch part with OpenCascade off and as a
+      // millimetre part (38.1 for 1.5) with it on, which is the default wherever the engine is installed
+      var auto = fmt === 'step' && /CONVERSION_BASED_UNIT\s*\(\s*'INCH'/i.test(text) ? 'in' : 'mm';
+      var res = Exchange.finishImport('step', { units: units === 'auto' ? auto : units }, r.solids, 1, []);
       res.format = fmt; res.name = base; res.file = String(name || '').replace(/^.*[\\\/]/, '');
       res.brep = { format: fmt, text: text };
       return res;

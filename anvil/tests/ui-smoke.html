@@ -96,6 +96,7 @@
     declared++;
     if (SHARD && smokeFile >= 0 && (smokeFile < SHARD.from || smokeFile >= SHARD.to)) return;
     steps.push({ name: name, fn: fn, file: smokeFile >= 0 ? GROUPS[smokeFile] : null });
+    if (setupStep.fn === fn && !setupStep.pushed) setupStep.pushed = steps[steps.length - 1];   // the setup step runs as itself
   }
 
   // ---- helpers that talk to the app
@@ -509,12 +510,16 @@
     'smoke/rfLK.js',
     'smoke/rfLV.js',
     'smoke/rfLU.js',
+    'smoke/rfLR.js',
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'ui-smoke.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'ui-smoke.groups.js', error: e }); }
   // a group file that did not load, parse or run to its end: one FAIL row
   groupSet.failed.forEach(function (f) { steps.push({ name: f.file + ' loads', fn: function () { throw f.error; } }); });
-  if (SHARD && setupStep && (setupStep.index < SHARD.from || setupStep.index >= SHARD.to)) steps.unshift(setupStep);
+  // (rfLR) … and so does a `?only=` run that filters it out: before, "alone" meant OpenCascade on wherever the engine is
+  // installed (the app's default) and off in the suite, so a step could fail alone on the PC and pass in every full run
+  // (rfKM job a did). The setup row is counted in the summary only when it fails.
+  if (setupStep && !setupStep.pushed) steps.unshift(setupStep);   // not among the steps as itself (another shard's, or filtered out)
   function loadGroups(files, name) {
     var base = (typeof location !== 'undefined' && location.href) ? String(location.href).replace(/[?#].*$/, '').replace(/[^\/]*$/, '') : '';
     var texts = [], failed = [];
@@ -575,23 +580,79 @@
     } catch (e) { o.error = String(e); }
     return o;
   }
+  // (rfLR) What a step leaves behind. leftState() is smokeState() plus what only matters between steps: an open dialog,
+  // an open PropertyManager, the interface profile, the selection filter, the desktop bridge stand-in, and what the
+  // sheet-metal commands remember for the session (UI.sheetMetalMemory). After every step the runner records what
+  // differs from before it in the row's `left` list (headless/ui-smoke.js --leaks prints the lists; in the page they
+  // are in window.__anvilSmoke.results), so "which earlier step left this?" is read off one run instead of bisected.
+  // One thing is enforced: a dialog still open when a step ends. No later step can use the app under it (the keyboard
+  // shortcuts and File ▸ New do nothing useful), so the step that left it FAILS with the dialog's text and the runner
+  // closes it; the steps after it then run as they do alone.
+  function leftState() {
+    var o = smokeState();
+    try {
+      o.dialog = modalOpen() ? String(($('modal-title') || {}).textContent || ($('modal-body') || $('modal')).textContent || 'dialog').replace(/\s+/g, ' ').slice(0, 80) : '';
+      o.pm = UI.hasPM && UI.hasPM() ? String(UI.pmTitle && UI.pmTitle()) : '';
+      o.profile = UI.Profiles && UI.Profiles.active ? String((UI.Profiles.active() || {}).id || UI.Profiles.active()) : '';
+      o.desktopBridge = !!W.anvilDesktop;
+      if (UI.selectionFilter) o.selectionFilter = JSON.stringify(UI.selectionFilter());
+      if (UI.sheetMetalMemory) o.sheetMetalMemory = JSON.stringify(UI.sheetMetalMemory());
+      if (UI.sketchNumericInput) o.sketchNumericInput = !!UI.sketchNumericInput();
+      o.quickSnap = UI.App.quickSnap == null ? '' : String(UI.App.quickSnap);
+    } catch (e) { o.leftError = String(e); }
+    return o;
+  }
+  // leftDiff(before, after) -> ['key: was → is', …]; a JSON value (the remembered command values, the selection
+  // filter) is compared field by field, so the entry names the field: 'sheetMetalMemory.commands.cornerRelief.size'
+  function leftDiff(a, b) {
+    var out = [];
+    function obj(v) {
+      if (typeof v === 'string' && v.charAt(0) === '{') { try { v = JSON.parse(v); } catch (e) { return null; } }
+      return v && typeof v === 'object' && !Array.isArray(v) ? v : null;
+    }
+    function show(v) { return v === undefined ? '(unset)' : String(typeof v === 'string' ? v : JSON.stringify(v)).slice(0, 90); }
+    function walk(field, x, y, depth) {
+      if (JSON.stringify(x) === JSON.stringify(y)) return;
+      var ox = obj(x), oy = obj(y);
+      if (depth < 4 && ox && oy) {
+        Object.keys(ox).concat(Object.keys(oy)).forEach(function (k, i, all) { if (all.indexOf(k) === i) walk(field + '.' + k, ox[k], oy[k], depth + 1); });
+        return;
+      }
+      out.push(field + ': ' + show(x) + ' → ' + show(y));
+    }
+    Object.keys(a).concat(Object.keys(b)).forEach(function (k, i, all) { if (all.indexOf(k) === i) walk(k, a[k], b[k], 0); });
+    return out;
+  }
   function runAll() {
-    var i = 0;
+    var i = 0, before = null;
     function next() {
       if (i >= steps.length) return finish();
       if (!startState && !steps[i].setup) startState = smokeState();
       var s = steps[i++], t0 = performance.now();
       waitedMs = 0;
+      if (!before) before = leftState();
       withTimeout(Promise.resolve().then(function () { return s.fn(); }), STEP_TIMEOUT_MS, s.name).then(function (detail) {
-        row(s.name, true, typeof detail === 'string' ? detail : '', performance.now() - t0, s.file, s.setup);
+        return { ok: true, detail: typeof detail === 'string' ? detail : '' };
       }, function (e) {
-        row(s.name, false, (e && e.message) || String(e), performance.now() - t0, s.file, s.setup);
+        return { ok: false, detail: (e && e.message) || String(e) };
+      }).then(function (r) {
+        var ms = performance.now() - t0, after = leftState(), left = leftDiff(before, after);
+        if (after.dialog) {
+          if (r.ok) { r.ok = false; r.detail = 'the step left a dialog open: "' + after.dialog + '" (answer or close every dialog a step opens; the runner closed this one)' + (r.detail ? ' | ' + r.detail : ''); }
+          try { UI.closeModal(); } catch (e) { }
+          after = leftState();
+        }
+        before = after;
+        row(s.name, r.ok, r.detail, ms, s.file, s.setup);
+        results[results.length - 1].left = left;
       }).then(function () { return wait(30); }).then(next);
     }
     next();
   }
   function finish() {
-    var passed = results.filter(function (r) { return r.ok; }).length, total = results.length;
+    // a setup row that passed is not one of the suite's steps: the count is the steps asked for
+    var counted = results.filter(function (r) { return !(r.setup && r.ok); });
+    var passed = counted.filter(function (r) { return r.ok; }).length, total = counted.length;
     var el = document.getElementById('summary');
     el.className = passed === total ? 'ok' : 'bad';
     el.textContent = passed + ' / ' + total + ' passed' + (passed === total ? '' : ' — ' + (total - passed) + ' FAILED');
