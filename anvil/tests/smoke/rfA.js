@@ -412,7 +412,7 @@
     f = UI.activeSketchFeature();
     var l = f.entities[0];
     assert(l && l.t === 'line' && l.x1 === -15 && l.y1 === 0 && l.x2 === -5 && l.y2 === 0, 'on the edge at round coordinates: ' + JSON.stringify(l));
-    // lane sketchref (local-2026-11-11b): a point drawn on a model edge is Coincident with a reference to that edge (rel.mref), as in SolidWorks; nothing else is added
+    // lane sketchref (local-2026-11-11b): a point drawn on a model edge is Coincident with a reference to that edge (rel.mref), as in SolidWorks; nothing else is added (sketchref2: the Coincident names the edge itself)
     var rfARs = f.rels || [];
     assert(rfARs.some(function (r) { return r.mref; }) && rfARs.some(function (r) { return r.type === 'coincident'; }), 'Coincident to a reference of the model edge: ' + rfARels().join(' '));
     assert(!rfARs.some(function (r) { return r.type !== 'horizontal' && r.type !== 'coincident' && !r.mref; }), 'no other relation: ' + rfARels().join(' '));

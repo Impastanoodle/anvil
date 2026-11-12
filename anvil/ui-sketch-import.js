@@ -1,5 +1,5 @@
-// ui-sketch-import.js — DXF into a sketch (Insert DXF, File ▸ Open of a .dxf), Check Sketch for Feature and Repair
-// Sketch: their SolidWorks PropertyManagers. The geometry is dxf-import.js's (DxfImport.parse / check / repair), so it
+// ui-sketch-import.js — DXF into a sketch (Insert DXF, File ▸ Open of a .dxf): its SolidWorks PropertyManager. The
+// geometry is dxf-import.js's (DxfImport.parse / check / repair), so it
 // runs and is tested without the UI. The file's TEXT / MTEXT come in as Etch Sketch Text on their layers; its
 // DIMENSIONs and HATCHes are left out and counted in the message ("2 dimensions and 1 hatch skipped").
 //   UI.cmdInsertDXF()                  Insert DXF / DWG: file picker, then the DXF/DWG Import PropertyManager into the active
@@ -13,13 +13,11 @@
 //                                      when "Import blocks as blocks" is on (the default, as SolidWorks keeps them)
 //   UI.openDXFFile(name, data)         File ▸ Open of a .dxf: a new part named after the file, the DXF in Sketch1 on the
 //                                      Top Plane ("Import to a new part as 2D sketch")
-//   UI.cmdCheckSketch()                Check Sketch for Feature (read-only; markers, Previous / Next zoom to each problem)
-//   UI.cmdRepairSketch()               Repair Sketch (one undo step; relations and dimensions on surviving entities kept)
+// Check Sketch for Feature and Repair Sketch live in ui-sketch-tools.js (lane sketchfix); the older copies here are gone.
 (function () {
   'use strict';
   if (typeof UI === 'undefined' || typeof DxfImport === 'undefined' || !UI.openPM) return;
   var App = UI.App, K = UI.K, $ = UI.$, S = window.SketchSolver;
-  var SVGNS = 'http://www.w3.org/2000/svg';
 
   function partUnits() { return App.model && App.model.units === 'in' ? 'in' : 'mm'; }
   function conv(from, to) { return !from || from === to ? 1 : from === 'in' ? 25.4 : 1 / 25.4; }
@@ -50,60 +48,6 @@
     UI.zoomToArea(s[0], s[1], w / (UI.size.w * UI.cam.scale));
   }
 
-  // ------------------------------------------------------------------ markers (Check / Repair Sketch)
-  // drawn over the sketch in the dimension layer, redrawn with it (so they follow zoom and pan): { list: [{ at, kind }],
-  // cur } — red for problems, green for repairs, the current one larger
-  var marks = null, markLayer = null;
-  function setMarks(m) { marks = m; App.dimsStale = true; if (UI.requestRender) UI.requestRender(); drawMarks(); }
-  function drawMarks() {
-    var host = $('dim-layer');
-    if (!host) return;
-    if (!markLayer) { markLayer = document.createElementNS(SVGNS, 'g'); markLayer.setAttribute('class', 'dxi-marks'); markLayer.setAttribute('pointer-events', 'none'); }
-    while (markLayer.firstChild) markLayer.removeChild(markLayer.firstChild);
-    if (!marks || App.mode !== 'sketch' || !marks.list.length) { if (markLayer.parentNode) markLayer.parentNode.removeChild(markLayer); return; }
-    host.appendChild(markLayer);
-    var pl = UI.activePlane();
-    marks.list.forEach(function (m, i) {
-      var s = UI.worldToScreen(K.to3D(pl, m.at[0], m.at[1])), cur = i === marks.cur, fix = m.kind === 'fix';
-      var c = document.createElementNS(SVGNS, 'circle');
-      c.setAttribute('cx', s[0]); c.setAttribute('cy', s[1]); c.setAttribute('r', cur ? 11 : 7);
-      c.setAttribute('class', 'dxi-mark' + (cur ? ' cur' : ''));
-      c.setAttribute('style', 'fill:' + (fix ? '#2f9e5b' : '#d9453b') + ';fill-opacity:' + (cur ? 0.25 : 0.12) + ';stroke:' + (fix ? '#2f9e5b' : '#d9453b') + ';stroke-width:' + (cur ? 2.5 : 1.6));
-      markLayer.appendChild(c);
-    });
-  }
-  if (UI.drawDims) {
-    var baseDrawDims = UI.drawDims;
-    UI.drawDims = function () { var r = baseDrawDims.apply(this, arguments); drawMarks(); return r; };
-  }
-  UI.sketchCheckMarks = function () { return marks ? { cur: marks.cur, list: marks.list.slice() } : null; };   // test hook
-
-  // ------------------------------------------------------------------ relations and dimensions after a repair
-  // map: old entity index -> new (-1 removed); changed: new indices whose shape changed (joined, merged, split): their
-  // relations and dimensions go, those of every other surviving entity are re-indexed
-  function remapSketch(f, map, changedList) {
-    var ch = {};
-    (changedList || []).forEach(function (i) { ch[i] = true; });
-    function mapRef(r) {
-      var m = /^(\d+)(.*)$/.exec(String(r));
-      if (!m) return r;
-      var n = map[+m[1]];
-      return n == null || n < 0 || ch[n] ? null : n + m[2];
-    }
-    if (f.rels) {
-      f.rels = f.rels.filter(function (rel) {
-        var refs = (rel.refs || []).map(mapRef);
-        if (refs.some(function (x) { return x == null; })) return false;
-        rel.refs = refs;
-        return true;
-      });
-      if (!f.rels.length) delete f.rels;
-    }
-    if (f.dims) {
-      f.dims = f.dims.filter(function (d) { var n = map[d.e]; if (n == null || n < 0 || ch[n]) return false; d.e = n; return true; });
-      if (!f.dims.length) delete f.dims;
-    }
-  }
   // Coincident relations for each list of end refs that meet (the first end with each of the others)
   function addJoints(f, joints, offset) {
     var have = {}, n = 0;
@@ -394,137 +338,6 @@
     });
   }
 
-  // ------------------------------------------------------------------ Check Sketch for Feature
-  // SolidWorks: Tools ▸ Sketch Tools ▸ Check Sketch for Feature. Read-only: the problems that keep a sketch from being
-  // a clean profile (open endpoints, gaps with their size, endpoints shared by three or more entities, zero-length and
-  // tiny entities, duplicates and overlaps, crossings), red markers in the graphics area, Previous / Next zoom to each.
-  var issueClick = null;
-  if ($('pm')) $('pm').addEventListener('click', function (ev) {
-    var t = ev.target && ev.target.closest ? ev.target.closest('[data-dxi]') : null;
-    if (t && issueClick) issueClick(+t.getAttribute('data-dxi'));
-  });
-  function cmdCheckSketch() {
-    var f = UI.activeSketchFeature();
-    if (!f || App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; }
-    if (UI.cancelTool) UI.cancelTool();
-    var v = { tol: gapTol(), cur: -1 }, issues = [], spec = null;
-    function run() {
-      var g = UI.activeSketchFeature();
-      if (g) f = g;
-      issues = DxfImport.check(f.entities, +v.tol > 0 ? +v.tol : gapTol(), { unit: UI.unitLabel() });
-      if (v.cur >= issues.length) v.cur = issues.length - 1;
-      setMarks({ list: issues.map(function (x) { return { at: x.at, kind: 'issue' }; }), cur: v.cur });
-      if (spec) {
-        var cc = issues.contours || { open: 0, closed: 0 };
-        spec.message = (issues.length ? esc(issues.summary) : 'No problems found: the sketch is good for a feature.') + '<br>' + plural(cc.closed, 'closed contour') + ', ' + plural(cc.open, 'open contour') + '.';
-        spec.messageOk = !issues.length;
-      }
-    }
-    function go(d) {
-      if (!issues.length) return;
-      v.cur = v.cur < 0 ? (d > 0 ? 0 : issues.length - 1) : (v.cur + d + issues.length) % issues.length;
-      show();
-    }
-    function show() {
-      var x = issues[v.cur];
-      setMarks({ list: issues.map(function (y) { return { at: y.at, kind: 'issue' }; }), cur: v.cur });
-      var b = DxfImport.bounds(f.entities), span = b ? Math.hypot(b[2] - b[0], b[3] - b[1]) : 1, w = Math.max((x.size || 0) * 60, span * 0.08);
-      frame([x.at[0] - w / 2, x.at[1] - w / 2, x.at[0] + w / 2, x.at[1] + w / 2], w);
-      UI.setStatus((v.cur + 1) + ' of ' + issues.length + ': ' + x.msg);
-      UI.renderPM();
-    }
-    issueClick = function (i) { if (issues[i]) { v.cur = i; show(); } };
-    function listHtml() {
-      if (!issues.length) return '<div class="pm-note">Nothing to show.</div>';
-      var rows = issues.slice(0, 200).map(function (x, i) {
-        return '<div class="pm-row dxi-issue' + (i === v.cur ? ' sel' : '') + '" data-dxi="' + i + '" style="cursor:pointer;' + (i === v.cur ? 'font-weight:600;' : '') + '">' +
-          '<span style="color:#d9453b">●</span>&nbsp;' + esc(x.msg) + '</div>';
-      });
-      if (issues.length > 200) rows.push('<div class="pm-note">… and ' + (issues.length - 200) + ' more</div>');
-      return rows.join('');
-    }
-    spec = {
-      title: 'Check Sketch for Feature', icon: 'checkSketch', values: v, noFocus: true, message: '',
-      groups: [
-        { title: 'Options', fields: [{ type: 'number', label: 'Gap tolerance', key: 'tol', unit: 'u', min: 0 }] },
-        { title: 'Results', fields: [
-          { type: 'buttons', buttons: [{ label: 'Previous', onclick: function () { go(-1); } }, { label: 'Next', onclick: function () { go(1); } }, { label: 'Repair Sketch…', onclick: function () { cmdRepairSketch(); } }] },
-          { type: 'html', html: listHtml }
-        ] }
-      ],
-      onChange: function () { run(); UI.renderPM(); },
-      onOK: function () { },
-      onClose: function () { issueClick = null; setMarks(null); }
-    };
-    UI.openPM(spec);   // its onChange runs the first check
-    UI.setStatus(issues.length ? 'Check Sketch: ' + issues.summary + '. Next / Previous zoom to each problem.' : 'Check Sketch: no problems found.');
-    return issues;
-  }
-
-  // ------------------------------------------------------------------ Repair Sketch
-  // SolidWorks: Tools ▸ Sketch Tools ▸ Repair Sketch, with each repair as an option and the tolerance below which a
-  // gap closes or an entity counts as tiny; the counts preview what ✓ will do (markers where), and ✓ applies them as
-  // one undo step. No point moves more than the tolerance; relations and dimensions of the entities that survive
-  // unchanged are kept (re-indexed), closed gaps get Coincident.
-  function cmdRepairSketch() {
-    var f = UI.activeSketchFeature();
-    if (!f || App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; }
-    if (UI.cancelTool) UI.cancelTool();
-    var v = { tol: gapTol(), gaps: true, merge: true, join: true, tiny: true, split: false }, res = null;
-    var F = {
-      gaps: { type: 'check', label: 'Close gaps', key: 'gaps' },
-      merge: { type: 'check', label: 'Merge overlapping / duplicate entities', key: 'merge' },
-      join: { type: 'check', label: 'Join collinear lines and co-radial arcs', key: 'join' },
-      tiny: { type: 'check', label: 'Remove zero-length / tiny entities (below tolerance)', key: 'tiny' },
-      split: { type: 'check', label: 'Split at crossings', key: 'split' }
-    };
-    var LABELS = { gaps: 'Close gaps', merge: 'Merge overlapping / duplicate entities', join: 'Join collinear lines and co-radial arcs', tiny: 'Remove zero-length / tiny entities (below tolerance)', split: 'Split at crossings' };
-    function opts() { return { tol: +v.tol > 0 ? +v.tol : gapTol(), closeGaps: !!v.gaps, merge: !!v.merge, join: !!v.join, removeTiny: !!v.tiny, split: !!v.split }; }
-    function total(r) { return r.removed + r.merged + r.gaps + r.joined + r.split; }
-    function run() {
-      var g = UI.activeSketchFeature();
-      if (g) f = g;
-      res = DxfImport.repair(f.entities, opts());
-      var r = res.report, cnt = { gaps: r.gaps, merge: r.merged, join: r.joined, tiny: r.removed, split: r.split };
-      Object.keys(F).forEach(function (k) { F[k].label = LABELS[k] + (v[k] ? ' (' + cnt[k] + ')' : ''); });
-      setMarks({ list: r.spots.map(function (s) { return { at: s.at, kind: 'fix' }; }), cur: -1 });
-      spec.message = total(r) ? 'Repairs to make: ' + [r.gaps ? plural(r.gaps, 'gap') + ' closed' : '', r.merged ? plural(r.merged, 'duplicate / overlap', 'duplicates / overlaps') + ' merged' : '',
-        r.joined ? plural(r.joined, 'join') : '', r.removed ? plural(r.removed, 'tiny entity', 'tiny entities') + ' removed' : '', r.split ? plural(r.split, 'split') : ''].filter(Boolean).join(', ') +
-        '. Largest point move ' + UI.fmtNum(r.maxMove, 6) + ' ' + UI.unitLabel() + '.' : 'Nothing to repair at this tolerance.';
-      spec.messageOk = !total(r);
-    }
-    var spec = {
-      title: 'Repair Sketch', icon: 'repairSketch', values: v, noFocus: true, message: '',
-      groups: [
-        { title: 'Tolerance', fields: [{ type: 'number', label: 'Gap tolerance', key: 'tol', unit: 'u', min: 0 }] },
-        { title: 'Options', fields: [F.gaps, F.merge, F.join, F.tiny, F.split] }
-      ],
-      onChange: function () { run(); UI.renderPM(); },
-      okBlocked: function () { return res && total(res.report) ? '' : 'Nothing to repair at this tolerance.'; },
-      onOK: function () {
-        var out = null;
-        var r = undoStep(function () {
-          var g = UI.activeSketchFeature() || f, rr = DxfImport.repair(g.entities, opts());
-          if (!total(rr.report)) return { ok: false, error: 'Nothing to repair at this tolerance.' };
-          g.entities = rr.entities;
-          remapSketch(g, rr.map, rr.changed);
-          rr.nRel = addJoints(g, rr.report.joints, 0);
-          if (S && S.clean) S.clean(g);
-          out = rr;
-          return { ok: true };
-        });
-        if (!r.ok) { UI.toast(r.error); return false; }
-        changed();
-        var rp = out.report;
-        UI.setStatus('Repaired: ' + [plural(rp.gaps, 'gap') + ' closed', plural(rp.merged, 'duplicate') + ' merged', plural(rp.joined, 'join'), plural(rp.removed, 'tiny entity', 'tiny entities') + ' removed'].concat(rp.split ? [plural(rp.split, 'split')] : []).join(', ') + '.');
-      },
-      onClose: function () { setMarks(null); }
-    };
-    UI.openPM(spec);   // its onChange runs the first preview
-    return res;
-  }
-
   UI.cmdInsertDXF = cmdInsertDXF; UI.importDXFText = importDXFText; UI.openDXFFile = openDXFFile;
   UI.dwgToDxf = dwgToDxf; UI.openDWGFile = openDWGFile; UI.importDWGData = importDWGData;   // DWG import
-  UI.cmdCheckSketch = cmdCheckSketch; UI.cmdRepairSketch = cmdRepairSketch;
 })();

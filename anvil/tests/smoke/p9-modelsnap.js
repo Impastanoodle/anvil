@@ -62,7 +62,7 @@
     selKey('Escape'); UI.exitSketch(true); await idle();
     return 'face centre (' + fcN.pt.map(function (x) { return x.toFixed(4); }) + '), ' + mc.pts.length + ' model points, ' + mc.segs.length + ' edges, ' + mc.arcs.length + ' arcs';
   });
-  step('p9-modelsnap: a Line clicked from the face centre to a model corner has exactly those ends; the corner end is Coincident with the corner brought in as reference geometry that follows the model (lane sketchref; the face centre adds none); a sketch on the Front plane 20 mm above the box snaps to the projected hole centre and corner too', async function () {
+  step('p9-modelsnap: a Line clicked from the face centre to a model corner has exactly those ends; the corner end is Coincident with the model corner itself, no reference entity added (lane sketchref2, as SolidWorks 2024; the face centre adds none); a sketch on the Front plane 20 mm above the box snaps to the projected hole centre and corner too', async function () {
     var f = await msBox('{ face: b, normal: [0, 0, 1] }, 0', 'OnFace');
     var fc = UI.sketchModelSnaps().pts.filter(function (c) { return c.kind === 'mface'; })[0];
     var r0 = (f.rels || []).length, n0 = f.entities.length;
@@ -70,10 +70,10 @@
     var a = rskScr(fc.pt), b = rskScr([0, 60]);
     selClick([a[0] + 3, a[1] + 2]); selClick([b[0] + 4, b[1] - 3]); selKey('Escape'); selKey('Escape'); await idle();
     var e = f.entities;
-    assert(e.length === n0 + 2 && e[n0].t === 'line' && e[n0 + 1].t === 'point' && e[n0 + 1].construction, 'one line and the corner as a reference point: ' + JSON.stringify(e));
+    assert(e.length === n0 + 1 && e[n0].t === 'line', 'one line, nothing else: ' + JSON.stringify(e));
     assert(e[n0].x1 === fc.pt[0] && e[n0].y1 === fc.pt[1] && msSame([e[n0].x2, e[n0].y2], [0, 60]), 'ends ' + JSON.stringify(e[n0]));
     var added = (f.rels || []).slice(r0);
-    assert(added.length === 2 && added.some(function (r) { return r.type === 'fix' && r.mref && r.mref.k === 'vertex'; }) && added.some(function (r) { return r.type === 'coincident' && r.refs.indexOf(n0 + '.p2') >= 0; }), 'relations added: ' + JSON.stringify(added));
+    assert(added.length === 1 && added[0].type === 'coincident' && added[0].refs.join() === n0 + '.p2,M' && added[0].mref && added[0].mref.k === 'vertex' && added[0].ext && added[0].ext.t === 'point', 'relations added: ' + JSON.stringify(added));
     UI.exitSketch(true); await idle();
     // a standard plane above the solid: points project straight onto it
     await msBox('"Front", 20', 'Above');

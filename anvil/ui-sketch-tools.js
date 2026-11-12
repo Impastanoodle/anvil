@@ -1778,7 +1778,20 @@
   }
   // sketch entities where the sketch plane cuts the faces of one picked face: circles / arcs, ellipses / partial
   // ellipses, else lines
+  // lane sketchref2: each piece names the face it came from (src k 'xsect', non-enumerable _src), so UI.attachModelRef
+  // makes its On Edge follow the model (kernel-sketch.js resolveXsect)
   function ixcGeometry(fi) {
+    var out = ixcGeometry0(fi), fc = App.mesh && App.mesh.faces[fi], p0 = fc && fc.polys && fc.polys[0], pl = UI.activePlane();
+    var fid = p0 && p0.shared != null ? p0.shared : App.triShared && fc ? App.triShared[fc.start] : null, curved = !!(p0 && p0.surf);
+    if (fid == null || fid < 0 || !fc) return out;
+    out.forEach(function (e) {
+      var form = e.t === 'line' ? 'line' : e.t === 'circle' || e.t === 'arc' ? 'circle' : 'ellipse';
+      var at = e.t === 'line' ? K.to3D(pl, (e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2) : K.to3D(pl, e.cx, e.cy);
+      try { Object.defineProperty(e, '_src', { value: { k: 'xsect', fid: fid, n: curved ? null : fc.normal.slice(), form: form, at: at, full: e.t !== 'arc' && e.t !== 'pellipse' }, enumerable: false, configurable: true, writable: true }); } catch (err) { /* frozen */ }
+    });
+    return out;
+  }
+  function ixcGeometry0(fi) {
     var pl = UI.activePlane(), group = ixcGroup(fi), chains = ixcChains(ixcSegments(group, pl)), circ = chains.length ? ixcCircle(group, pl) : null, out = [];
     var ell = chains.length && !circ ? ixcEllipse(group, pl) : null;
     chains.forEach(function (ch) {
@@ -1877,6 +1890,7 @@
             f.entities.push(g);
             var ar = S.addRelation(f, 'onEdge', [String(f.entities.length - 1)]);
             if (!ar.ok) throw new Error(ar.error);
+            if (g._src && UI.attachModelRef && ar.rels && ar.rels.length) UI.attachModelRef(f, ar.rels[0], g._src);   // lane sketchref2: follows its face
             n++;
           });
           return n ? { ok: true } : { ok: false, error: 'Those intersection curves are already in the sketch.' };
@@ -3558,11 +3572,7 @@
   UI.sketchCheckFor = function (usage, tol) { var f = UI.activeSketchFeature(); return f ? lfCheck(f, usage, tol || lfGapTol(), UI.unitLabel()) : null; };
   UI.sketchUsageOf = function () { return lfUsageOf(UI.activeSketchFeature()); };
   UI.sketchFeatureUsages = function () { return LF_USAGES.map(function (u) { return { id: u.id, label: u.label, contour: u.contour }; }); };
-  // installed after every script (ui-sketch-import.js, later in index.html, still assigns its older copies)
-  function lfInstall() {
-    UI.cmdCheckSketch = cmdCheckSketch; UI.cmdRepairSketch = cmdRepairSketch;
-    UI.sketchCheckMarks = function () { return lfMarks ? { cur: lfMarks.cur, list: lfMarks.list.slice() } : null; };
-  }
-  lfInstall();
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', lfInstall);
+  // the one copy of Check Sketch for Feature and Repair Sketch (lane sketchref2 removed the older ones from ui-sketch-import.js)
+  UI.cmdCheckSketch = cmdCheckSketch; UI.cmdRepairSketch = cmdRepairSketch;
+  UI.sketchCheckMarks = function () { return lfMarks ? { cur: lfMarks.cur, list: lfMarks.list.slice() } : null; };
 })();

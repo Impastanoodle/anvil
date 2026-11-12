@@ -740,7 +740,7 @@
         switch (v.filter) {
           case 'over': return x.state === 'redundant' || x.state === 'conflict';
           case 'dangling': return x.state === 'invalid';
-          case 'external': return !x.dim && x.rel.refs.some(function (r) { var e = refEntity(r); return e >= 0 && isExternal(f, e); });
+          case 'external': return !x.dim && (!!(S.isExtRel && S.isExtRel(x.rel)) || x.rel.refs.some(function (r) { var e = refEntity(r); return e >= 0 && isExternal(f, e); }));   // lane sketchref2: to model geometry itself
           case 'context': case 'locked': case 'broken': return false;
           case 'selected': return selEnt != null && (x.dim ? x.dim.e === selEnt : x.rel.refs.some(function (r) { return refEntity(r) === selEnt; }));
         }
@@ -772,7 +772,8 @@
       if (i == null) return '<div class="rel-empty">Select a relation to see its entities</div>';
       var an = analysis(f), ST = { under: 'Under Defined', full: 'Fully Defined', over: 'Over Defined', conflict: 'Not Solved' };
       return f.rels[i].refs.map(function (r) {
-        var e = refEntity(r), st = r === 'O' ? 'Fully Defined' : ST[an.entities[e]] || '';
+        var e = refEntity(r), st = r === 'O' || r === 'M' ? 'Fully Defined' : ST[an.entities[e]] || '';
+        if (r === 'M') return '<div class="rel-row ext-ref"><span>' + esc(S.refName(f, r, f.rels[i])) + ' <b class="ext-mark" title="External reference">-&gt;</b></span><em>' + (f.rels[i].dangling ? 'Dangling' : esc(st)) + '</em><em>Model</em></div>';   // lane sketchref2
         return '<div class="rel-row"><span>' + esc(S.refName(f, r)) + '</span><em>' + esc(st) + '</em><em>' + (r === 'O' ? 'Origin' : e >= 0 && isExternal(f, e) ? 'Model edge' : 'Current Sketch') + '</em></div>';
       }).join('');
     }
@@ -792,7 +793,7 @@
           { type: 'select', label: 'Filter', key: 'filter', options: FILTERS },
           { type: 'html', html: '<div class="rel-list" id="rel-display" role="listbox" aria-label="Relations">' + (list.length ? list.map(function (x) {
             var key = rowKey(x), icon = x.dim ? Icons('dim', 16) : Icons(iconName(x.rel.type), 16);
-            return '<div class="rel-row ' + x.state + (key === sk ? ' sel' : '') + '" role="option" data-key="' + key + '"' + (x.dim ? '' : ' data-rel="' + x.i + '"') + ' tabindex="0"><i class="rel-state">' + (STATE_ICON[x.state] || '') + '</i>' + icon + '<span>' + esc(x.dim ? dimText(x) : S.describe(f, x.rel)) + '</span><em>' + stateText(x.state) + '</em></div>';
+            return '<div class="rel-row ' + x.state + (key === sk ? ' sel' : '') + '" role="option" data-key="' + key + '"' + (x.dim ? '' : ' data-rel="' + x.i + '"') + ' tabindex="0"><i class="rel-state">' + (STATE_ICON[x.state] || '') + '</i>' + icon + '<span>' + esc(x.dim ? dimText(x) : S.describe(f, x.rel)) + (!x.dim && (x.rel.mref || (S.isExtRel && S.isExtRel(x.rel))) ? ' <b class="ext-mark" title="External reference to the model">-&gt;</b>' : '') + '</span><em>' + stateText(x.state) + '</em></div>';
           }).join('') : '<div class="rel-empty">' + empty + '</div>') + '</div>' },
           { type: 'check', key: 'suppressed', label: 'Suppressed', disabled: si == null },
           { type: 'buttons', buttons: [
@@ -800,7 +801,7 @@
             // lane sketchref: re-attach an On Edge / Fixed reference to other model geometry (SolidWorks' Replace)
             { label: v.replacing != null ? 'Click a model edge…' : 'Replace', onclick: function () {
               var i = selRel();
-              if (i == null || (f.rels[i].type !== 'fix' && f.rels[i].type !== 'onEdge')) { UI.toast('Select an On Edge or Fixed relation (a Dangling one) in the list first.'); return; }
+              if (i == null || ((f.rels[i].type !== 'fix' && f.rels[i].type !== 'onEdge') && !(S.isExtRel && S.isExtRel(f.rels[i])))) { UI.toast('Select an On Edge or Fixed relation (a Dangling one) in the list first.'); return; }
               v.replacing = v.replacing === i ? null : i;
               UI.setStatus(v.replacing != null ? 'Click the model edge or vertex that ' + S.refName(f, f.rels[i].refs[0]) + ' should follow.' : '');
               render();

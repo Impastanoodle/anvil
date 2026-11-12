@@ -443,11 +443,12 @@
       });
       if (!full) { add(p2(at(C.a0)), 'mvertex', { k: 'vertex', p: at(C.a0) }); add(p2(at(C.a1)), 'mvertex', { k: 'vertex', p: at(C.a1) }); }
       if (!square(C.normal)) return;
-      var cen = p2(C.center), s0 = p2(at(C.a0)), csrc = { k: 'circle', c: C.center.slice(), n: C.normal.slice(), r: C.radius, full: full };
-      var ar = arcOf[ci] = { c: cen, r: C.radius, full: full, a0: Math.atan2(s0[1] - cen[1], s0[0] - cen[0]), sw: sweep, sg: V.dot(C.normal, n) > 0 ? 1 : -1, src: full ? csrc : null };
+      // lane sketchref2: a partial arc's src carries its frame and ends (x, a0, a1) so a snap on it or its middle keeps a reference
+      var cen = p2(C.center), s0 = p2(at(C.a0)), csrc = { k: 'circle', c: C.center.slice(), n: C.normal.slice(), r: C.radius, full: full, x: C.xdir.slice(), a0: C.a0, a1: C.a1 };
+      var ar = arcOf[ci] = { c: cen, r: C.radius, full: full, a0: Math.atan2(s0[1] - cen[1], s0[0] - cen[0]), sw: sweep, sg: V.dot(C.normal, n) > 0 ? 1 : -1, src: csrc };
       res.arcs.push(ar);
       add(cen, 'mcenter', csrc);
-      if (!full) add(p2(at((C.a0 + C.a1) / 2)), 'mmid');
+      if (!full) add(p2(at((C.a0 + C.a1) / 2)), 'mmid', csrc);
       [0, 0.5, 1, 1.5].forEach(function (t) { var a = t * Math.PI; if (onModelArc(ar, a)) add([cen[0] + C.radius * Math.cos(a), cen[1] + C.radius * Math.sin(a)], 'mquad'); });
     });
     // straight edges: collinear pieces meeting at a point no other edge reaches (a face outline split them) are joined

@@ -397,7 +397,28 @@ var SketchSolver = (function () {
     return !!(A && B && !A.o && !B.o && A.s === null && B.s === null && A.e !== B.e && ents[A.e] && ents[B.e] && /^a?slot$/.test(ents[A.e].t) && ents[A.e].t === ents[B.e].t);   // p9-sketch-curves: arc slots too
   }
 
+  // lane sketchref2: a relation to model geometry with no sketch entity for it (SolidWorks: a point snapped to a model
+  // vertex / edge gets Coincident / Midpoint to that vertex / edge itself). rel.refs name it 'M'; rel.ext is the model
+  // geometry projected into the sketch as an entity record ({ t: 'point', x, y } | line | circle | arc | ellipse …) and
+  // rel.mref names it on the model (kernel-sketch.js resolveSketchRefs moves rel.ext with the model). The equation is
+  // the one with rel.ext standing in as one more entity past the sketch's own, fixed (it has no unknowns), so it is
+  // never one of the sketch's entities (analyze, writeBack and the drag see only the sketch's).
+  function isExtRel(rel) { return !!(rel && rel.ext && rel.refs && rel.refs.indexOf('M') >= 0); }
   function relEquation(ents, rel, rels) {
+    if (!isExtRel(rel)) return relEquation0(ents, rel, rels);
+    var k = ents.length, ext = clone(rel.ext), r2 = {};
+    Object.keys(rel).forEach(function (key) { r2[key] = rel[key]; });
+    r2.refs = rel.refs.map(function (x) { return x === 'M' ? String(k) : x; });
+    delete r2.ext;
+    var q = relEquation0(ents.concat([ext]), r2, rels);
+    if (!q) return null;
+    return { n: q.n, ents: q.ents.filter(function (e) { return e < k; }), f: function (E) {
+      var E2 = E.length === k ? E : E.slice(0, k);
+      E2.push(ext);
+      try { return q.f(E2); } finally { E2.pop(); }
+    } };
+  }
+  function relEquation0(ents, rel, rels) {
     var R = (rel.refs || []).map(parseRef);
     if (!TYPES[rel.type] || R.some(function (r) { return !r; })) return null;
     // sketch tools: a whole offset chain (Offset Entities) and a sketch pattern are one relation each (below)
@@ -1847,8 +1868,9 @@ var SketchSolver = (function () {
     if (type === 'merge') type = 'coincident';   // sketchdims: SolidWorks' Merge (two points) is a point-to-point Coincident
     refs = (Array.isArray(refs) ? refs : [refs]).map(String);
     if (!TYPES[type]) return { ok: false, error: 'Unknown relation ' + type };
-    var groups;
-    if ((type === 'horizontal' || type === 'vertical') && refs.length === 2) {
+    var groups, ext = opts.ext && refs.indexOf('M') >= 0 ? opts.ext : null;   // lane sketchref2: to model geometry (isExtRel)
+    if (ext) groups = [refs];
+    else if ((type === 'horizontal' || type === 'vertical') && refs.length === 2) {
       var kinds = refs.map(function (r) { return refKind(sketch.entities, parseRef(r)); });
       groups = kinds[0] === 'point' && kinds[1] === 'point' ? [refs] : refs.map(function (r) { return [r]; });
     } else if (type === 'symmetric') groups = [symOrder(sketch, refs)];
@@ -1859,6 +1881,7 @@ var SketchSolver = (function () {
     sketch.rels = sketch.rels || [];
     for (var g = 0; g < groups.length; g++) {
       var rel = { type: type, refs: groups[g] };
+      if (ext) { rel.ext = clone(ext); if (opts.mref) rel.mref = clone(opts.mref); }
       groups[g].forEach(function (r) { var hp = parseRef(r); if (hp && !hp.o && hp.s === 'h') handleDrive(sketch.entities[hp.e], hp.k); });   // lane DE
       if (TYPES[type].dim) {
         if (type === 'distance' && (opts.dir === 'h' || opts.dir === 'v') && groups[g].every(function (r) { return refKind(sketch.entities, parseRef(r)) !== 'line'; })) rel.dir = opts.dir;
@@ -2465,9 +2488,9 @@ var SketchSolver = (function () {
     if (!sketch.rels) return;
     var map = before.map(function (e) { return sketch.entities.indexOf(e); });
     sketch.rels = sketch.rels.filter(function (rel) {
-      return rel.refs.every(function (r) { var p = parseRef(r); return p && (p.o || map[p.e] >= 0); });
+      return rel.refs.every(function (r) { var p = parseRef(r); return (r === 'M' && isExtRel(rel)) || (p && (p.o || map[p.e] >= 0)); });
     }).map(function (rel) {
-      rel.refs = rel.refs.map(function (r) { var p = parseRef(r); return p.o ? r : String(map[p.e]) + String(r).slice(String(p.e).length); });
+      rel.refs = rel.refs.map(function (r) { var p = parseRef(r); return !p || p.o ? r : String(map[p.e]) + String(r).slice(String(p.e).length); });
       return rel;
     });
     clean(sketch);
@@ -2489,7 +2512,7 @@ var SketchSolver = (function () {
   // reference dimension may well repeat a driving one, and a repeated driving one is the user's to settle).
   function relKey(rel, dims) {
     var t = TYPES[rel.type];
-    if (!t || !rel.refs) return null;
+    if (!t || !rel.refs || isExtRel(rel)) return null;   // lane sketchref2: two model references on one point are two relations
     if (t.dim && !dims) return null;
     var refs = rel.refs.map(String);
     if (refs.length === 2 && refs[0] === refs[1]) return 'self';
@@ -5755,8 +5778,17 @@ var SketchSolver = (function () {
   var ENTITY_NAMES = { line: 'Line', rect: 'Rectangle', crect: 'Rectangle', circle: 'Circle', poly: 'Polygon', slot: 'Slot', arc: 'Arc', point: 'Point', polyline: 'Polyline', aslot: 'Arc Slot' };
   ENTITY_NAMES.spline = 'Spline'; ENTITY_NAMES.ellipse = 'Ellipse'; ENTITY_NAMES.pellipse = 'Partial Ellipse';   // ui-sketch-spline
   ENTITY_NAMES.text = 'Text';   // sketch-text
-  function refName(sketch, ref) {
+  // lane sketchref2: the model geometry an 'M' ref names (SolidWorks lists Edge<1> / Vertex<1>)
+  function modelRefName(rel) {
+    var m = rel && rel.mref, e = rel && rel.ext;
+    if (m && m.k === 'vertex') return 'Vertex<1>';
+    if (m && m.k === 'xsect') return 'Face<1>';
+    if (m || e) return e && e.t === 'point' && m && m.k === 'circle' ? 'Edge<1> center' : 'Edge<1>';
+    return 'Model geometry';
+  }
+  function refName(sketch, ref, rel) {
     var p = parseRef(ref);
+    if (ref === 'M') return modelRefName(rel);
     if (!p) return String(ref);
     if (p.o) return 'Origin';
     var e = sketch.entities[p.e], base = (e ? (e.sharp ? 'Sharp' : ENTITY_NAMES[e.t] || 'Entity') : 'Entity') + (p.e + 1);
@@ -5777,7 +5809,7 @@ var SketchSolver = (function () {
   }
   function describe(sketch, rel) {
     var t = TYPES[rel.type];
-    var s = (rel.dir === 'h' ? 'Horizontal ' : rel.dir === 'v' ? 'Vertical ' : rel.dir === 'r' ? 'Radial ' : '') + (t ? t.name : rel.type) + ': ' + rel.refs.map(function (r) { return refName(sketch, r); }).join(', ');
+    var s = (rel.dir === 'h' ? 'Horizontal ' : rel.dir === 'v' ? 'Vertical ' : rel.dir === 'r' ? 'Radial ' : '') + (t ? t.name : rel.type) + ': ' + rel.refs.map(function (r) { return refName(sketch, r, rel); }).join(', ');
     if (t && t.dim) s += (rel.driven ? ' (driven) = ' : ' = ') + (rel.type === 'angle' ? (Math.round(rel.v * 1e4) / 1e4) + '°' : fmtL(rel.v));   // sketch-units
     return s;
   }
@@ -5797,6 +5829,15 @@ var SketchSolver = (function () {
     return o;
   }
   function relArgs(rel) {
+    // lane sketchref2: a relation to model geometry itself ('M': ext, mref; dangling when it is gone)
+    if (isExtRel(rel)) {
+      var ox = { ext: rel.ext };
+      if (rel.mref) ox.mref = rel.mref;
+      if (rel.dangling) ox.dangling = true;
+      var exx = extras(rel, REL_EXTRA);
+      if (exx) Object.keys(exx).forEach(function (k) { ox[k] = exx[k]; });
+      return JSON.stringify(rel.type) + ', ' + JSON.stringify(rel.refs) + ', ' + JSON.stringify(ox);
+    }
     // lane sketchref: reference geometry held to a model edge / vertex (mref; dangling when it is gone)
     if ((rel.type === 'fix' || rel.type === 'onEdge') && rel.mref) {
       var om0 = {};
@@ -5856,8 +5897,23 @@ var SketchSolver = (function () {
       if (opt && typeof opt === 'object' && opt.suppressed) {
         var sr = { type: type === 'merge' ? 'coincident' : type, refs: refs.map(String), suppressed: true };
         if (Array.isArray(opt.at)) sr.at = opt.at.map(Number);
+        if (opt.ext && typeof opt.ext === 'object') sr.ext = clone(opt.ext);   // lane sketchref2
+        if (opt.mref && typeof opt.mref === 'object') sr.mref = clone(opt.mref);
+        if (opt.mref && opt.dangling) sr.dangling = true;
         if (TYPES[sr.type] && TYPES[sr.type].dim) sr.v = opt.value != null ? this._v(opt.value) : measure(this.f, sr.type, sr.refs, opt.dir, opt.sup, opt.ac);
         (this.f.rels = this.f.rels || []).push(sr);
+        return this;
+      }
+      // lane sketchref2: a relation to model geometry ('M'), stored as made (its ext is where the model was)
+      if (opt && typeof opt === 'object' && opt.ext && typeof opt.ext === 'object' && refs.indexOf('M') >= 0) {
+        var xr = { type: type === 'merge' ? 'coincident' : type, refs: refs.map(String), ext: clone(opt.ext) };
+        if (opt.mref && typeof opt.mref === 'object') xr.mref = clone(opt.mref);
+        if (opt.dangling) xr.dangling = true;
+        var exr = extras(opt, REL_EXTRA);
+        if (exr) Object.keys(exr).forEach(function (k) { xr[k] = exr[k]; });
+        if (!xr.suppressed && !relEquation(this.f.entities, xr)) throw new Error('rel(' + JSON.stringify(type) + '): does not apply to that model geometry');
+        (this.f.rels = this.f.rels || []).push(xr);
+        if (!xr.suppressed) solve(this.f);
         return this;
       }
       if ((type === 'fix' || type === 'onEdge') && opt && Array.isArray(opt.at)) {
@@ -6099,7 +6155,7 @@ var SketchSolver = (function () {
     pointRefs: pointRefs, curveRefs: curveRefs, refName: refName, describe: describe,
     buildSystem: buildSystem, analyze: analyze, solve: solve, drag: drag,
     setDim: setDim, setRelValue: setRelValue, linkedItems: linkedItems, linkValues: linkValues, unlinkValue: unlinkValue, linkItemValue: itemValue, driveEntity: driveEntity, measure: measure, updateDriven: updateDriven, overDefines: overDefines, setDriven: setDriven,
-    applicable: applicable, addRelation: addRelation, deleteRelation: deleteRelation, fullyDefine: fullyDefine, placeGaps: placeGaps, relArgs: relArgs,
+    applicable: applicable, addRelation: addRelation, isExtRel: isExtRel, deleteRelation: deleteRelation, fullyDefine: fullyDefine, placeGaps: placeGaps, relArgs: relArgs,
     removeEntity: removeEntity, replaceEntity: replaceEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, explodePoly: explodePoly, explodeSlot: explodeSlot, explodeArcSlot: explodeArcSlot, slotCap: slotCap, slotAxisOf: slotAxisOf, clean: clean,
     infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, onCurveRef: onCurveRef, freeEndDir: freeEndDir, sideMid: sideMid,
     diagnose: diagnose, diagnoseApply: diagnoseApply, scanEqual: scanEqual, applyEqual: applyEqual,   // rfAR: SketchXpert, Scan Equal

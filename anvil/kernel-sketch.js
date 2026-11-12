@@ -4268,6 +4268,17 @@
     }
     return odd;
   }
+  // lane sketchref2: one analytic surface (cylinder / cone / sphere) on two facets: same kind, radius, axis line
+  function sameSurf(a, b, tol) {
+    if (a === b) return true;
+    if (!a || !b || a.t !== b.t || Math.abs(a.r - b.r) > tol || Math.abs((a.k || 0) - (b.k || 0)) > 1e-9) return false;
+    if (a.t === 'sph') return len(sub(a.o, b.o)) <= tol;
+    var d = unit(a.d), e = unit(b.d);
+    if (Math.abs(Math.abs(dot(d, e)) - 1) > 1e-6) return false;
+    var w = sub(b.o, a.o);
+    if (a.t === 'cone') return len(w) <= tol && dot(d, e) > 0;
+    return len(sub(w, scale(d, dot(w, d)))) <= tol;
+  }
   function addSig(list, s) { if (!list.some(function (t) { return sigMatch(s, t); })) list.push(s); }
 
   // modelRefFor(bodies, geom, opts) -> an mref naming model geometry picked in a sketch, or null when it cannot be named
@@ -4278,6 +4289,13 @@
     var polys = polysOf(bodies);
     if (!g || !polys.length) return null;
     var tol = tolOf(polys), ok = function (s) { return s.fid != null && (!opts || !opts.fids || opts.fids.indexOf(s.fid) >= 0); }, out = null;
+    // lane sketchref2: an Intersection Curve piece, geom { k: 'xsect', fid, n (null: a curved face), form, at, full }
+    if (g.k === 'xsect') {
+      var xs = { fid: g.fid, n: g.n ? unit(g.n).map(r9) : null };
+      if (!ok(xs) || !g.at || !/^(line|circle|ellipse)$/.test(g.form)) return null;
+      if (!polys.some(function (P) { return polyMatch(P, xs); })) return null;
+      return { k: 'xsect', sig: xs, form: g.form, at: g.at.map(r9), full: g.full !== false };
+    }
     if (g.k === 'vertex') {
       var sigs = [];
       polys.forEach(function (P) { if (onPoly(g.p, P, tol)) addSig(sigs, sigOf(P)); });
@@ -4307,10 +4325,11 @@
 
   // resolveModelRef(bodies, mref) -> the geometry now: { k: 'vertex', p } | { k: 'edge', a, b } |
   // { k: 'circle', c, n, r, full, x, y, a0?, a1? } (an arc's ends as angles about n from x towards y), or null (gone)
-  function resolveModelRef(bodies, ref) {
+  function resolveModelRef(bodies, ref, pl) {
     var polys = polysOf(bodies);
     if (!ref || !polys.length) return null;
     var tol = tolOf(polys);
+    if (ref.k === 'xsect') return pl ? resolveXsect(polys, ref, pl, tol) : null;
     if (ref.k === 'vertex') {
       var s0 = ref.sigs && ref.sigs[0], others = (ref.sigs || []).slice(1).map(function (s) { return polys.filter(function (P) { return polyMatch(P, s); }); }), bestV = null, bdV = Infinity, seen = {};
       if (!s0 || others.some(function (l) { return !l.length; })) return null;
@@ -4364,10 +4383,9 @@
       polys.forEach(function (P) {
         var s = P.surf;
         if (!s || s.t !== 'cyl' || P.fid !== ref.sig[1].fid || Math.abs(Math.abs(dot(unit(s.d), n)) - 1) > 1e-6) return;
-        var key = s.o.concat(unit(s.d), [s.r]).map(function (x) { return Math.round(x / tol); }).join(',');
         var c = null;
-        for (var i = 0; i < cands.length; i++) if (cands[i].key === key) c = cands[i];
-        if (!c) cands.push(c = { key: key, s: s, pts: [] });
+        for (var i = 0; i < cands.length && !c; i++) if (sameSurf(cands[i].s, s, tol)) c = cands[i];   // lane sketchref2: not a rounded key (facets of one cylinder fell either side of a rounding step)
+        if (!c) cands.push(c = { s: s, pts: [] });
         P.pts.forEach(function (q) { c.pts.push(q); });
       });
       var planes = polys.filter(function (P) { return polyMatch(P, ref.sig[0]); }), bestC = null, bdC = Infinity;
@@ -4379,10 +4397,17 @@
           var on = c.pts.filter(function (q) { return Math.abs(dot(Q.n, q) - Q.w) <= tol && onPoly(q, Q, tol); });
           if (!on.length) return;
           var cen = add(c.s.o, scale(d, (Q.w - dot(Q.n, c.s.o)) / dn)), dd = len(sub(cen, ref.c)) + 0.01 * Math.abs(c.s.r - ref.r);
-          if (dd < bdC - 1e-12) { bdC = dd; bestC = { c: cen, r: c.s.r, on: on }; }
+          if (dd < bdC - 1e-12) { bdC = dd; bestC = { c: cen, r: c.s.r, on: on, cand: c, w: Q.w, qn: Q.n }; }
         });
       });
       if (!bestC) return null;
+      // lane sketchref2: the face is often several polygons (BSP pieces): the corners on every one of its polygons in
+      // that plane (one polygon's few corners made an arc of a few degrees)
+      if (ref.full === false) {
+        var allOn = [];
+        bestC.cand.pts.forEach(function (q) { if (Math.abs(dot(bestC.qn, q) - bestC.w) <= tol && planes.some(function (Q) { return Math.abs(Q.w - bestC.w) <= tol && onPoly(q, Q, tol); }) && !allOn.some(function (o) { return len(sub(o, q)) <= tol; })) allOn.push(q); });
+        if (allOn.length) bestC.on = allOn;
+      }
       var x = perp(n), y = crs(n, x), res = { k: 'circle', c: bestC.c, n: n.slice(), r: bestC.r, full: ref.full !== false, x: x, y: y };
       if (!res.full) {
         // the arc: the angles of the facet corners on the plane; the widest gap between them is where it is open
@@ -4396,10 +4421,139 @@
     return null;
   }
 
-  // the entity's parameters for resolved geometry g in sketch plane pl (null: g no longer fits the entity)
-  function entityParams(ent, g, pl) {
+  // lane sketchref2: an Intersection Curve's reference, mref { k: 'xsect', sig: face sig, form: 'line' | 'circle' |
+  // 'ellipse', at: [x, y, z] (a line's middle, a curve's centre), full }: where sketch plane pl cuts that face now ->
+  // { k: 'edge', a, b, at } (a line: the cut pieces joined collinear, the run nearest at) | { k: 'xcurve', ent, at }
+  // (the circle / arc / ellipse / partial ellipse in sketch coordinates) | null (the face is gone or not cut)
+  function planeCut(P, n, h0, tol) {
+    var pts = P.pts, nk = pts.length, d = pts.map(function (q) { return dot(n, q) - h0; }), out = [], k;
+    if (d.every(function (x) { return Math.abs(x) <= tol; })) return null;
+    function put(q) { if (!out.some(function (o) { return len(sub(o, q)) <= tol; })) out.push(q); }
+    for (k = 0; k < nk; k++) if (Math.abs(d[k]) <= tol) put(pts[k]);
+    for (k = 0; k < nk; k++) { var l = (k + 1) % nk; if ((d[k] > tol && d[l] < -tol) || (d[k] < -tol && d[l] > tol)) { var s = d[k] / (d[k] - d[l]); put(add(pts[k], scale(sub(pts[l], pts[k]), s))); } }
+    if (out.length < 2) return null;
+    if (out.length > 2) { var bi = 0, bj = 1, bd = -1; for (var i = 0; i < out.length; i++) for (var j = i + 1; j < out.length; j++) { var dd = len(sub(out[i], out[j])); if (dd > bd) { bd = dd; bi = i; bj = j; } } out = [out[bi], out[bj]]; }
+    return len(sub(out[1], out[0])) > tol ? out : null;
+  }
+  function wholeLine(segs, at, tol) {
+    if (!segs.length) return null;
+    var best = null, bd = Infinity;
+    segs.forEach(function (s) { var d = segDist(at, s[0], s[1]); if (d < bd - 1e-12) { bd = d; best = s; } });
+    var d0 = unit(sub(best[1], best[0])), o = best[0], lo = 0, hi = dot(sub(best[1], o), d0);
+    var onLine = function (q) { var w = sub(q, o); return len(sub(w, scale(d0, dot(w, d0)))) <= tol; };
+    var ivs = segs.filter(function (s) { return onLine(s[0]) && onLine(s[1]); }).map(function (s) { var t0 = dot(sub(s[0], o), d0), t1 = dot(sub(s[1], o), d0); return [Math.min(t0, t1), Math.max(t0, t1)]; });
+    for (var grew = true; grew;) {
+      grew = false;
+      for (var q = 0; q < ivs.length; q++) { var iv = ivs[q]; if (iv[0] <= hi + tol && iv[1] >= lo - tol && (iv[0] < lo - 1e-12 || iv[1] > hi + 1e-12)) { lo = Math.min(lo, iv[0]); hi = Math.max(hi, iv[1]); grew = true; } }
+    }
+    return [add(o, scale(d0, lo)), add(o, scale(d0, hi))];
+  }
+  // the widest gap between sorted angles (radians): [start, end] of the part that is there (end > start)
+  function arcSpan(angs) {
+    angs = angs.slice().sort(function (p, q) { return p - q; });
+    if (angs.length < 2) return null;
+    var gap = -1, gi = 0;
+    for (var j = 0; j < angs.length; j++) { var nx = j + 1 < angs.length ? angs[j + 1] : angs[0] + 2 * Math.PI; if (nx - angs[j] > gap) { gap = nx - angs[j]; gi = j; } }
+    var a0 = gi + 1 < angs.length ? angs[gi + 1] : angs[0], a1 = angs[gi];
+    while (a1 <= a0) a1 += 2 * Math.PI;
+    return [a0, a1];
+  }
+  function deg360(a) { a = a * 180 / Math.PI; while (a < 0) a += 360; while (a >= 360) a -= 360; return a; }
+  function resolveXsect(polys, ref, pl, tol) {
+    var s = ref.sig, n = pl.n, h0 = dot(n, pl.origin), to2D = K.to2D;
+    if (!s) return null;
+    var P = polys.filter(function (Q) { return polyMatch(Q, s); });
+    if (!P.length) return null;
+    if (ref.form === 'line') {
+      var segs = [];
+      P.forEach(function (Q) { var c = planeCut(Q, n, h0, tol); if (c) segs.push(c); });
+      var L = wholeLine(segs, ref.at, tol);
+      return L ? { k: 'edge', a: L[0], b: L[1], at: scale(add(L[0], L[1]), 0.5) } : null;
+    }
+    // curved: the polygons by surface (a feature can make several cylinders), each cut by the plane
+    var cands = [];
+    P.forEach(function (Q) {
+      var sf = Q.surf;
+      if (!sf || !sf.o || !sf.d) return;
+      var c = null;
+      for (var i = 0; i < cands.length && !c; i++) if (sameSurf(cands[i].s, sf, tol)) c = cands[i];
+      if (!c) cands.push(c = { s: sf, pts: [] });
+      var cut = planeCut(Q, n, h0, tol);
+      if (cut) { c.pts.push(cut[0]); c.pts.push(cut[1]); }
+    });
+    var best = null, bd = Infinity;
+    cands.forEach(function (c) {
+      if (!c.pts.length) return;
+      var sf = c.s, d = unit(sf.d), dn = dot(d, n), c3, R, out = null;
+      if (ref.form === 'circle') {
+        if ((sf.t === 'cyl' || sf.t === 'cone') && Math.abs(Math.abs(dn) - 1) <= 1e-6) { var z = dot(sub(pl.origin, sf.o), n) / dn; c3 = add(sf.o, scale(d, z)); R = sf.r + (sf.t === 'cone' ? (sf.k || 0) * z : 0); }
+        else if (sf.t === 'sph') { var hh = dot(sub(sf.o, pl.origin), n); if (!(sf.r > Math.abs(hh))) return; c3 = sub(sf.o, scale(n, hh)); R = Math.sqrt(sf.r * sf.r - hh * hh); }
+        else return;
+        if (!(R > 1e-12)) return;
+        var c2 = to2D(pl, c3);
+        out = { t: 'circle', cx: c2[0], cy: c2[1], r: R };
+        if (!ref.full) {
+          var sp = arcSpan(c.pts.map(function (q) { var w = to2D(pl, q); return Math.atan2(w[1] - c2[1], w[0] - c2[0]); }));
+          if (sp) { var a0 = deg360(sp[0]); out = { t: 'arc', cx: c2[0], cy: c2[1], r: R, a0: a0, a1: a0 + (sp[1] - sp[0]) * 180 / Math.PI }; }
+        }
+      } else if (ref.form === 'ellipse') {
+        if (sf.t !== 'cyl' || Math.abs(dn) < 1e-6 || Math.abs(Math.abs(dn) - 1) <= 1e-9) return;
+        var z2 = dot(sub(pl.origin, sf.o), n) / dn; c3 = add(sf.o, scale(d, z2));
+        var w3 = unit(sub(d, scale(n, dn))), ce = to2D(pl, c3), tip = to2D(pl, add(c3, w3)), rot = Math.atan2(tip[1] - ce[1], tip[0] - ce[0]) * 180 / Math.PI;
+        rot = ((rot % 180) + 180) % 180;
+        var rx = sf.r / Math.abs(dn), ry = sf.r, cr = Math.cos(rot * Math.PI / 180), sr = Math.sin(rot * Math.PI / 180);
+        out = { t: 'ellipse', cx: ce[0], cy: ce[1], rx: rx, ry: ry, rot: rot };
+        if (!ref.full) {
+          var spE = arcSpan(c.pts.map(function (q) { var w = to2D(pl, q), x = w[0] - ce[0], y = w[1] - ce[1]; return Math.atan2((-sr * x + cr * y) / ry, (cr * x + sr * y) / rx); }));
+          if (spE) { var u0 = deg360(spE[0]); out = { t: 'pellipse', cx: ce[0], cy: ce[1], rx: rx, ry: ry, rot: rot, a0: u0, a1: u0 + (spE[1] - spE[0]) * 180 / Math.PI }; }
+        }
+      } else return;
+      var dd = len(sub(c3, ref.at));
+      if (dd < bd - 1e-12) { bd = dd; best = { k: 'xcurve', ent: out, at: c3 }; }
+    });
+    return best;
+  }
+  // lane sketchref2: model circle g ({ c, n, r, x, y, full, a0?, a1? }, 3D) seen in sketch plane pl tilted to it: the
+  // ellipse (partial ellipse for an arc) it projects to, rot in [0, 180), angles in degrees (as ui-relations.js
+  // tiltedEllipse, the way it first comes into the sketch)
+  function circleEllipse(pl, g) {
+    var to2D = K.to2D, c = to2D(pl, g.c);
+    function pr(d) { var q = to2D(pl, add(g.c, scale(d, g.r))); return [q[0] - c[0], q[1] - c[1]]; }
+    var a = pr(g.x), b = pr(g.y), ab = a[0] * b[0] + a[1] * b[1], aa = a[0] * a[0] + a[1] * a[1], bb = b[0] * b[0] + b[1] * b[1];
+    var u0 = 0.5 * Math.atan2(2 * ab, aa - bb);
+    function ax(u) { return [[a[0] * Math.cos(u) + b[0] * Math.sin(u), a[1] * Math.cos(u) + b[1] * Math.sin(u)], [-a[0] * Math.sin(u) + b[0] * Math.cos(u), -a[1] * Math.sin(u) + b[1] * Math.cos(u)]]; }
+    var A = ax(u0);
+    if (Math.hypot(A[1][0], A[1][1]) > Math.hypot(A[0][0], A[0][1])) { u0 += Math.PI / 2; A = ax(u0); }
+    var rot = Math.atan2(A[0][1], A[0][0]);
+    if (rot < -1e-9 || rot > Math.PI - 1e-9) { u0 += Math.PI; A = ax(u0); rot = Math.atan2(A[0][1], A[0][0]); }   // the major axis' other end: rot in [0, 180)
+    if (Math.abs(rot) < 1e-9) rot = 0;
+    var v1 = A[0], v2 = A[1], s = v1[0] * v2[1] - v1[1] * v2[0] < 0 ? -1 : 1, D = 180 / Math.PI;
+    var e = { cx: c[0], cy: c[1], rx: Math.hypot(v1[0], v1[1]), ry: Math.hypot(v2[0], v2[1]), rot: rot * D };
+    if (!(e.ry > 1e-12)) return null;   // edge-on: a line
+    if (!g.full && g.a0 != null) {
+      var p0 = s * (g.a0 - u0), p1 = s * (g.a1 - u0), lo = Math.min(p0, p1) * D, hi = Math.max(p0, p1) * D;
+      while (lo < 0) { lo += 360; hi += 360; }
+      while (lo >= 360) { lo -= 360; hi -= 360; }
+      e.a0 = lo; e.a1 = hi;
+    }
+    return e;
+  }
+  // the entity's parameters for resolved geometry g in sketch plane pl (null: g no longer fits the entity); mref: the
+  // reference (a point on an arc's middle: mref.mid)
+  function entityParams(ent, g, pl, mref) {
     var to2D = K.to2D;
     function r(x) { return Math.round(x * 1e9) / 1e9; }
+    function rr(o) { var q = {}; Object.keys(o).forEach(function (k) { q[k] = r(o[k]); }); return q; }
+    if (g.k === 'xcurve') {
+      var ge = g.ent, keys = { circle: ['cx', 'cy', 'r'], arc: ['cx', 'cy', 'r', 'a0', 'a1'], ellipse: ['cx', 'cy', 'rx', 'ry', 'rot'], pellipse: ['cx', 'cy', 'rx', 'ry', 'rot', 'a0', 'a1'] };
+      var round = { circle: 'c', arc: 'c', ellipse: 'e', pellipse: 'e' };
+      if (!keys[ent.t] || round[ent.t] !== round[ge.t]) return null;
+      var o = {};
+      keys[ent.t].forEach(function (k) { if (ge[k] != null) o[k] = ge[k]; });
+      if (ent.t === 'arc' && o.a0 == null) return null;
+      if (ent.t === 'pellipse' && o.a0 == null) return null;
+      return rr(o);
+    }
     if (g.k === 'vertex') { if (ent.t !== 'point') return null; var q = to2D(pl, g.p); return { x: r(q[0]), y: r(q[1]) }; }
     if (g.k === 'edge') {
       var a = to2D(pl, g.a), b = to2D(pl, g.b);
@@ -4409,7 +4563,16 @@
       return { x1: r(a[0]), y1: r(a[1]), x2: r(b[0]), y2: r(b[1]) };
     }
     if (g.k === 'circle') {
-      if (Math.abs(Math.abs(dot(g.n, pl.n)) - 1) > 1e-6) return null;
+      // lane sketchref2: a point on an arc's middle (a Midpoint snap on a model arc)
+      if (ent.t === 'point' && mref && mref.mid && !g.full && g.a0 != null) { var um = (g.a0 + g.a1) / 2, qm = to2D(pl, add(g.c, add(scale(g.x, g.r * Math.cos(um)), scale(g.y, g.r * Math.sin(um))))); return { x: r(qm[0]), y: r(qm[1]) }; }
+      // lane sketchref2: a circle tilted to the sketch came in as an ellipse
+      if (ent.t === 'ellipse' || ent.t === 'pellipse') {
+        if (Math.abs(Math.abs(dot(g.n, pl.n)) - 1) <= 1e-6) return null;
+        var el = circleEllipse(pl, g);
+        if (!el || (ent.t === 'pellipse') !== (el.a0 != null)) return null;
+        return rr(el);
+      }
+      if (Math.abs(Math.abs(dot(g.n, pl.n)) - 1) > 1e-6 && ent.t !== 'point') return null;
       var c = to2D(pl, g.c);
       if (ent.t === 'point') return { x: r(c[0]), y: r(c[1]) };
       if (ent.t === 'circle') return { cx: r(c[0]), cy: r(c[1]), r: r(g.r) };
@@ -4446,28 +4609,31 @@
     var changed = false, moved = false, dangling = [], S = solver();
     rels.forEach(function (rel, i) {
       if (!rel || !rel.mref || rel.suppressed) return;
-      var ent = f.entities[+rel.refs[0]];
-      if (!ent || !/^\d+$/.test(String(rel.refs[0]))) return;
+      // lane sketchref2: a relation to the model geometry itself (refs 'M'): rel.ext is that geometry in the sketch
+      var ext = rel.ext && rel.refs && rel.refs.indexOf('M') >= 0 ? rel.ext : null;
+      var ent = ext || f.entities[+rel.refs[0]];
+      if (!ent || (!ext && !/^\d+$/.test(String(rel.refs[0])))) return;
       var g = null;
-      try { g = resolveModelRef(bodies, rel.mref); } catch (e) { g = null; }
-      var np = g ? entityParams(ent, g, pl) : null;
+      try { g = resolveModelRef(bodies, rel.mref, pl); } catch (e) { g = null; }
+      var np = g ? entityParams(ent, g, pl, rel.mref) : null;
       if (!np) { if (!rel.dangling) { rel.dangling = true; changed = true; } dangling.push(i); return; }
       if (rel.dangling) { delete rel.dangling; changed = true; }
       // found: its last position is where it is now
       if (g.k === 'vertex') rel.mref.at = g.p.map(r9);
-      else if (g.k === 'edge') rel.mref.at = scale(add(g.a, g.b), 0.5).map(r9);
+      else if (g.k === 'edge') rel.mref.at = (g.at || scale(add(g.a, g.b), 0.5)).map(r9);
+      else if (g.k === 'xcurve') rel.mref.at = g.at.map(r9);
       else { rel.mref.c = g.c.map(r9); rel.mref.r = r9(g.r); }
       var keys = Object.keys(np);
       if (keys.every(function (k) { return Math.abs((+ent[k] || 0) - np[k]) < 1e-9; })) return;
       keys.forEach(function (k) { ent[k] = np[k]; });
-      rel.at = ent.t === 'point' ? [ent.x, ent.y] : (S ? S.paramNames(ent) : keys).map(function (nm) { return ent[nm]; });
+      if (!ext) rel.at = ent.t === 'point' ? [ent.x, ent.y] : (S ? S.paramNames(ent) : keys).map(function (nm) { return ent[nm]; });
       changed = moved = true;
     });
     if (moved && S) { try { S.solve(f); } catch (e) { /* the references moved; the rest stays */ } }
     var out = { changed: changed, moved: moved, dangling: dangling };
     if (dangling.length) {
       var one = dangling.length === 1;
-      out.warning = 'Dangling: ' + dangling.length + ' sketch relation' + (one ? '' : 's') + ' to model geometry that is gone (' + dangling.map(function (i) { var r = rels[i]; return (r.type === 'onEdge' ? 'On Edge' : 'Fixed') + ' ' + entName(f, +r.refs[0]); }).join(', ') + '); ' + (one ? 'it stays' : 'they stay') + ' at the last position. Delete or replace ' + (one ? 'it' : 'them') + ' in Display/Delete Relations.';
+      out.warning = 'Dangling: ' + dangling.length + ' sketch relation' + (one ? '' : 's') + ' to model geometry that is gone (' + dangling.map(function (i) { var r = rels[i]; return r.ext ? (r.type === 'midpoint' ? 'Midpoint' : 'Coincident') + ' ' + entName(f, r.refs[0] === 'M' ? r.refs[1] : r.refs[0]) : (r.type === 'onEdge' ? 'On Edge' : 'Fixed') + ' ' + entName(f, +r.refs[0]); }).join(', ') + '); ' + (one ? 'it stays' : 'they stay') + ' at the last position. Delete or replace ' + (one ? 'it' : 'them') + ' in Display/Delete Relations.';
     }
     return out;
   }
