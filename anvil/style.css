@@ -2178,6 +2178,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #status-msg.busy::before { background: var(--c-info); }
 /* the default button in the PropertyManager and the Task Pane follow the dialog's */
 .btn.primary:focus-visible { outline: 2px solid var(--c-focus); outline-offset: 1px; }
+/* rfMD (lane swicons): a greyed command under the SolidWorks icon set. SOLIDWORKS greys a button to a flat light-grey
+   drawing (outlines about #b6b8bb on the #d7dade CommandManager, fills gone into the chrome), not to the coloured icon
+   at low opacity: the set's icon loses its colour and its contrast, and the button's own opacity does the rest. Only
+   icons the set drew (data-set); the Mastercam set and the built-in drawings grey as before. */
+button:disabled svg.ico[data-set="solidworks"], .mi.disabled svg.ico[data-set="solidworks"], .rb.disabled svg.ico[data-set="solidworks"] { filter: grayscale(1) contrast(0.6) brightness(1.125); }
 /* lane mcdirect: an interface profile's graphics window (ui-core.js applyViewport, ui-select.js quick masks and
    selection bar) and the direct wireframe (ui-sketch.js); nothing here applies under SolidWorks */
 #viewport.mc-direct #exit-sketch { display: none !important; }   /* Mastercam draws without the confirmation corner */

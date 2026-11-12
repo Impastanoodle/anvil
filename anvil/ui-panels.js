@@ -1341,6 +1341,8 @@
   }
   // the state a ribbon item shows now: { id, icon, label, flat, disabled, active, tip }; `icon` is the glyph drawn (an
   // item's own `icon` when its id is shared with another command, such as Sketch Fillet and the Fillet feature)
+  // rfMD: a name the icon set in use draws itself and the built-in icons do not have (Swept Cut, a History folder)
+  function setIcon(name) { var id = window.Icons && Icons.sets && Icons.sets.active(), set = id ? Icons.sets.get(id) : null; return !!(name && set && set.has && set.has(name)); }
   function itemState(item) {
     var d = item.dyn && item.dyn();
     var id = d ? d.id : item.id, label = d ? d.label : item.label, flat = label.replace(/\n/g, ' ');
@@ -1355,7 +1357,7 @@
     var enabled = !!(item.run || item.tool), needsSketch = !!item.tool && App.mode !== 'sketch' && !rapid && !modelDim && !starts, active = false;
     if (item.tool) active = (App.mode === 'sketch' && App.tool === item.tool && (!item.active || !!item.active())) || (rapid && UI.rapidSketchArmed() === item) || (modelDim && UI.modelDimOn());   // p9-sketchtab: Line / Centerline / Midpoint Line share the line tool
     else if (item.run) active = !!((item.id === 'sketch' && App.mode === 'sketch') || (item.active && item.active()));
-    return { id: id, icon: (d && d.icon) || (d ? id : item.icon || id), label: label, flat: flat, disabled: !enabled || needsSketch, active: active, tip: ribbonTip(id, flat, enabled, needsSketch, item.help, item.key) };
+    return { id: id, icon: (d && d.icon) || (d ? id : item.icon || (setIcon(item.cmd) ? item.cmd : id)), label: label, flat: flat, disabled: !enabled || needsSketch, active: active, tip: ribbonTip(id, flat, enabled, needsSketch, item.help, item.key) };
   }
   function runItem(item) {
     if (frame) frameNoteRun(item);   // lane mcframe: Recent Functions, the function panel's title
@@ -1370,7 +1372,7 @@
     var b = el('button', { class: 'rb' + (item.wide && !small ? ' rb-wide' : '') }), shown = null;   // wide: a long two-line label (Shaded Sketch Contours)
     function sync() {
       var s = itemState(item);
-      var face = s.id + '|' + s.label + '|' + rbIcon(small);   // rfIA: the CommandManager's size redraws the icon
+      var face = s.id + '|' + s.icon + '|' + s.label + '|' + rbIcon(small);   // rfIA: the CommandManager's size redraws the icon
       if (face !== shown) {
         shown = face;
         b.innerHTML = Icons(s.icon, rbIcon(small)) + '<span>' + (small ? item.label : s.label) + '</span>';
@@ -1419,11 +1421,12 @@
     var c = el('button', { class: 'rb-caret', html: '<span>▾</span>' });
     function sync() {
       var i = flyCurrent(item), s = itemState(item.items[i]);
-      var label = item.label || (small ? s.flat : s.label), face = s.id + '|' + label + '|' + rbIcon(small);
+      var fic = item.label && !small && setIcon(item.fly) ? item.fly : s.icon;   // rfMD: a captioned group (Reference Geometry, Curves) keeps its own icon when the set draws one
+      var label = item.label || (small ? s.flat : s.label), face = s.id + '|' + fic + '|' + label + '|' + rbIcon(small);
       if (face !== shown) {
         var refit = shown !== null && shown.split('|').pop() === String(rbIcon(small));   // not on a size change (rbApply fits once)
         shown = face;
-        b.innerHTML = Icons(s.icon, rbIcon(small)) + '<span>' + (small ? s.flat : label) + '</span>';
+        b.innerHTML = Icons(fic, rbIcon(small)) + '<span>' + (small ? s.flat : label) + '</span>';
         b.setAttribute('aria-label', item.label ? item.label.replace(/\n/g, ' ') : s.flat); b.dataset.icon = s.icon;
         c.setAttribute('aria-label', (item.label ? item.label.replace(/\n/g, ' ') : s.flat) + ' options');
         if (refit && wrap.isConnected) fitRibbon();   // a longer label may need the room of another button
@@ -2174,7 +2177,8 @@
     var tw = el('span', { class: 'tw' + (opts.children ? '' : ' leaf'), text: opts.open ? '▾' : '▸' });
     row.appendChild(tw);
     var ic = el('span');
-    ic.appendChild(Icons.node ? Icons.node(opts.icon, 16) : el('span', { html: Icons(opts.icon, 16) }));
+    var icn = opts.icon === 'folder' && setIcon('folder' + String(opts.name).replace(/[^A-Za-z].*$/, '')) ? 'folder' + String(opts.name).replace(/[^A-Za-z].*$/, '') : opts.icon;   // rfMD: History, Solid Bodies, Cut list, Flat-Pattern
+    ic.appendChild(Icons.node ? Icons.node(icn, 16) : el('span', { html: Icons(icn, 16) }));
     row.appendChild(ic);
     var nm = el('span', { class: 'nm', text: opts.name, title: opts.title || opts.name });
     // rfBG: a sketch's definition prefix ("(-) ", "(+) ", "(?) ") in its own span, coloured by the stylesheet; the

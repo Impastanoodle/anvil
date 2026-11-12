@@ -35,6 +35,12 @@
     });
     return out;
   }
+  // rfMD (2026-11-12, lane swicons): the default profile now draws its icons with the SolidWorks set
+  // (icons-solidworks.js), which is blue on purpose (the user asked for the look of his own SolidWorks). The rules
+  // below that are the built-in drawings' own (no blue, the stroke weights by class, the secondary ink at 70 %) are
+  // still pinned, on the built-in drawings: the fallback for a name the set does not draw, and what a profile without
+  // an icons section shows. They are read with no set in use.
+  function rfGZbuiltIn(fn) { var id = W.Icons.sets ? W.Icons.sets.active() : null; if (id) W.Icons.sets.use(null); try { return fn(); } finally { if (id) W.Icons.sets.use(id); } }
   step('rfGZ: every button on every CommandManager tab (part, assembly, drawing) shows its own icon, drawn, not the generic square', async function () {
     await anvil.newPart(); await idle();
     var generic = W.Icons('generic', 32), bad = [], n = 0, placeholders = {};
@@ -91,11 +97,11 @@
     assert(names.length > 300 && bad.length === 0, names.length + ' icons; ' + bad.slice(0, 12).join(', ') + (bad.length > 12 ? ' (+' + (bad.length - 12) + ')' : ''));
     return names.length + ' icons at ' + RFGZ_SIZES.join(', ') + ' px';
   });
-  step('rfGZ: no icon carries a blue fill, stroke or gradient stop (OK-and-new ✓+ is Mastercam\'s blue by the user\'s 2026-10-27 request)', async function () {
+  step('rfGZ: no built-in icon carries a blue fill, stroke or gradient stop (OK-and-new ✓+ is Mastercam\'s blue by the user\'s 2026-10-27 request); the SolidWorks set of the default profile is blue on purpose (rfMD)', async function () {
     var bad = [], n = 0;
     rfGZnames().forEach(function (name) {
       if (name === 'okPlus') return;
-      var s = W.Icons(name, 32).replace(/<text[\s\S]*?<\/text>/g, ''), re = /(?:fill|stroke|stop-color)="(#[0-9a-f]{3,6})"/gi, m;
+      var s = rfGZbuiltIn(function () { return W.Icons(name, 32); }).replace(/<text[\s\S]*?<\/text>/g, ''), re = /(?:fill|stroke|stop-color)="(#[0-9a-f]{3,6})"/gi, m;
       while ((m = re.exec(s))) { n++; if (rfGZblue(m[1])) bad.push(name + ' ' + m[1]); }
     });
     assert(rfGZblue('#2f7bd8') && !rfGZblue('#6d6d6d') && !rfGZblue('#8a5cc2'), 'the blue test itself');
@@ -109,7 +115,7 @@
       var raw = W.Icons.raw(name), drawn = null;
       if (raw) { var rb = D.createElement('div'); rb.innerHTML = '<svg>' + raw + '</svg>'; drawn = rfGZstrokes(rb.firstChild, 16).map(function (s) { return s.css; }); }
       [16, 32].forEach(function (sz) {
-        var box = D.createElement('div'); box.innerHTML = W.Icons(name, sz);
+        var box = D.createElement('div'); box.innerHTML = rfGZbuiltIn(function () { return W.Icons(name, sz); });   // the built-in drawings' rule (the set's own outlines: rfMD)
         var list = rfGZstrokes(box.firstChild, sz);
         list.forEach(function (s, i) {
           n++;
@@ -134,11 +140,11 @@
   step('rfGZ: the drawing documents\' own icons (DI, SI) are weighed like the rest, and the secondary ink follows the theme', async function () {
     ['drawing', 'sectionView', 'detailView', 'balloon', 'bom', 'relativeView', 'lineFormat'].forEach(function (n) {
       if (!W.Icons.has(n)) return;
-      var s = W.Icons(n, 32);
-      assert(s.indexOf('data-wt="1"') > 0, n + ' not weighed');
+      var s = rfGZbuiltIn(function () { return W.Icons(n, 32); });
+      assert(s.indexOf('data-wt="1"') > 0 && W.Icons(n, 32).indexOf('data-wt="1"') > 0, n + ' not weighed');
       assert(!/(fill|stroke)="#6d6d6d"/.test(s), n + ' keeps the fixed #6d6d6d');
     });
-    var line = W.Icons('line', 32);
+    var line = rfGZbuiltIn(function () { return W.Icons('line', 32); });   // the built-in Line; the set draws its points as white squares (rfMD)
     assert(/fill="currentColor" fill-opacity="0\.7"/.test(line), 'sketch points in the theme ink at 70 %: ' + line.slice(0, 300));
     // the head (2026-11-03): the drawing tree's sheet / view icons were white boxes on the dark panel. Paper takes the
     // panel colour and a view's grey is the ink at 35 %, so in the dark theme no drawn fill of those icons is near white.

@@ -39,7 +39,12 @@
         if (!svg.querySelector(added.indexOf(n) >= 0 ? 'path' : 'path, circle, rect, ellipse, line, polyline, polygon')) bad.push(n + '@' + size + ': nothing drawn (no <path>)');
         if (svg.getAttribute('viewBox') !== '0 0 16 16') bad.push(n + '@' + size + ': viewBox ' + svg.getAttribute('viewBox'));
       });
-      var markup = Icons(n, 32).replace(/<text[\s\S]*?<\/text>/g, '');
+      // rfMD (2026-11-12): the no-blue rule is the built-in drawings' (the SolidWorks set of the default profile is blue
+      // on purpose, by the user's request), so the colours are read with no set in use; the checks above run on what is shown
+      var setOn = Icons.sets ? Icons.sets.active() : null, builtIn;
+      if (setOn) Icons.sets.use(null);
+      try { builtIn = Icons(n, 32); } finally { if (setOn) Icons.sets.use(setOn); }
+      var markup = builtIn.replace(/<text[\s\S]*?<\/text>/g, '');
       var cols = markup.match(/#[0-9a-f]{6}(?![0-9a-z_-])|#[0-9a-f]{3}(?![0-9a-z_-])|rgba?\([^)]*\)/gi) || [];
       cols.forEach(function (c) { if (isBlue(c)) bad.push(n + ': blue colour ' + c); });
     });

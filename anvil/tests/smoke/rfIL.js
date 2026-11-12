@@ -167,7 +167,11 @@
             Array.prototype.forEach.call(s.querySelectorAll('path, rect, circle, ellipse, line, polyline, polygon, text'), function (e) {
               var cs = W.getComputedStyle(e);
               [[cs.fill, cs.fillOpacity], [cs.stroke, cs.strokeOpacity]].forEach(function (pc) {
-                var m = /rgba?\(([\d.]+), ([\d.]+), ([\d.]+)(?:, ([\d.]+))?\)/.exec(pc[0]); if (!m) return;
+                var m = /rgba?\(([\d.]+), ([\d.]+), ([\d.]+)(?:, ([\d.]+))?\)/.exec(pc[0]);
+                // rfMD: a color-mix() (the SolidWorks set's sketch blue follows the ink) computes to color(srgb r g b [/ a]), 0-1
+                var cm = m ? null : /color\(srgb ([\d.]+) ([\d.]+) ([\d.]+)(?: \/ ([\d.]+))?\)/.exec(pc[0]);
+                if (cm) m = [cm[0], cm[1] * 255, cm[2] * 255, cm[3] * 255, cm[4]];
+                if (!m) return;
                 var a = (m[4] != null ? +m[4] : 1) * (+pc[1] || 0); if (a < 0.3) return;
                 var c = [m[1] / 255, m[2] / 255, m[3] / 255].map(function (v, i) { return v * a + panel[i] * (1 - a); });
                 best = Math.max(best, contrast(c, panel));

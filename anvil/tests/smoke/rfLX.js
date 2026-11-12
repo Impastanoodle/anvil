@@ -56,21 +56,31 @@
   }
   function rfLXContrast(a, b) { var x = rfLXLum(a), y = rfLXLum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); }
 
-  step('rfLX: SolidWorks has no icon set: no icon carries a set mark, Icons() gives the same markup with the Mastercam set registered as without any; a profile with no icons section draws the built-in icons too', async function () {
+  // rfMD (2026-11-12, lane swicons): SolidWorks, the default profile, now names an icon set of its own ('solidworks',
+  // icons-solidworks.js; the user asked for the look of his own SolidWorks). What this group promised stays: nothing of
+  // the Mastercam set shows under SolidWorks, the built-in drawings are untouched by a set having been used, and a
+  // profile with no icons section draws them. "No set under SolidWorks" became "SolidWorks' own set, no Mastercam mark".
+  step('rfLX: SolidWorks does not use the Mastercam set (its own set is rfMD\'s): no icon carries a Mastercam mark, Icons() gives the built-in markup with no set in use, before and after the Mastercam set was used; a profile with no icons section draws the built-in icons', async function () {
     try {
       await rfLXStart('solidworks');
       var Ic = W.Icons;
       assert(Ic.sets && Ic.sets.list().indexOf('mastercam') >= 0, 'the mastercam set is not registered');
-      assert(Ic.sets.active() === null && UI.Profiles.icons.set() === null, 'a set is in use under SolidWorks: ' + Ic.sets.active());
-      assert(!D.querySelector('svg.ico[data-set], svg.ico[data-ic], [data-ic-slot]'), 'a set mark under SolidWorks');
-      // the built-in drawing of every name, with the set off, on, and off again
-      var names = Ic.names(), before = names.map(function (n) { return Ic(n, 16) + Ic(n, 32); });
-      Ic.sets.use('mastercam');
-      var changed = 0;
-      try { names.forEach(function (n, i) { if (Ic(n, 16) + Ic(n, 32) !== before[i]) changed++; }); } finally { Ic.sets.use(null); }
-      assert(changed === names.length, 'the set left ' + (names.length - changed) + ' of ' + names.length + ' names as the built-in drawing');
-      names.forEach(function (n, i) { assert(Ic(n, 16) + Ic(n, 32) === before[i], 'the built-in ' + n + ' changed after the set was used'); });
-      assert(Ic.has('extrude') && !Ic.has('rebuildSel'), 'has() answers for the set while it is off');
+      var home = Ic.sets.active();
+      assert(home === 'solidworks' && UI.Profiles.icons.set() === 'solidworks', 'the set in use under SolidWorks is ' + home + ' (rfMD: its own)');
+      assert(!D.querySelector('svg.ico[data-set="mastercam"], [data-ic-slot]'), 'a Mastercam mark under SolidWorks');
+      // the built-in drawing of every name, with no set in use, the Mastercam set on, and off again
+      var names = Ic.names(), before, changed = 0;
+      Ic.sets.use(null);
+      try {
+        before = names.map(function (n) { return Ic(n, 16) + Ic(n, 32); });
+        assert(before.every(function (s) { return s.indexOf('data-set') < 0 && s.indexOf('data-ic') < 0; }), 'a built-in drawing carries a set mark');
+        Ic.sets.use('mastercam');
+        names.forEach(function (n, i) { if (Ic(n, 16) + Ic(n, 32) !== before[i]) changed++; });
+        Ic.sets.use(null);
+        assert(changed === names.length, 'the set left ' + (names.length - changed) + ' of ' + names.length + ' names as the built-in drawing');
+        names.forEach(function (n, i) { assert(Ic(n, 16) + Ic(n, 32) === before[i], 'the built-in ' + n + ' changed after the set was used'); });
+        assert(Ic.has('extrude') && !Ic.has('rebuildSel'), 'has() answers for the set while it is off');
+      } finally { Ic.sets.use(home); }
       // a profile without an icons section
       UI.Profiles.register({ id: 'rflx-plain', name: 'rfLX plain', labels: { extrude: 'Extrude' } });
       anvil.profile('rflx-plain'); await wait(30);
@@ -146,8 +156,8 @@
       UI.setRibbonTab('Features'); UI.refreshTree(); await wait(30);
       var b = snap();
       Object.keys(a).forEach(function (k) { assert(a[k] === b[k], 'the ' + k + ' is not what it was before the switch (' + a[k].length + ' / ' + b[k].length + ' characters)'); });
-      assert(W.Icons.sets.active() === null, 'the set is still on');
-      var left = D.querySelectorAll('svg.ico[data-set], svg.ico[data-ic], [data-ic-slot]');
+      assert(W.Icons.sets.active() === 'solidworks', 'the set in use is ' + W.Icons.sets.active() + ', not SolidWorks\' own (rfMD)');
+      var left = D.querySelectorAll('svg.ico[data-set="mastercam"], [data-ic-slot]');
       assert(!left.length, left.length + ' set mark(s) left, first in ' + (left.length ? rfLXWhere(left[0]) : ''));
       Array.prototype.forEach.call(D.querySelectorAll('#vp-qmask button[data-qmask]'), function (q) { assert(q.querySelector('svg[viewBox="0 0 24 24"]'), 'Quick Mask ' + q.getAttribute('data-qmask') + ' did not get its own drawing back'); });
       return 'identical';
@@ -177,7 +187,7 @@
       anvil.profile('solidworks'); await wait(60);
       assert($('pm').innerHTML === pm0, 'the PropertyManager is not what it was');
       assert($('ribbon-buttons').innerHTML === rb0, 'the ribbon is not what it was');
-      assert(!D.querySelector('svg.ico[data-set], svg.ico[data-ic]'), 'set marks left');
+      assert(!D.querySelector('svg.ico[data-set="mastercam"]'), 'marks of the Mastercam set left');   // rfMD: SolidWorks' own set marks its icons too
       UI.pmCancel(); await idle();
       return n0 + ' PropertyManager icons there and back';
     } finally { await rfLXReset(); }

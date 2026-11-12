@@ -259,7 +259,8 @@
   // fit / delete / zoom / drawing command for a key this profile binds (lane profnav2)
 
   // ------------------------------------------------------------------ the profiles
-  register({ id: 'solidworks', name: 'SolidWorks', note: 'CommandManager tabs, names, keys and mouse as SOLIDWORKS 2024 has them.' });
+  // rfMD: the default profile's icons are the SolidWorks-style set (icons-solidworks.js); everything else left out = SolidWorks
+  register({ id: 'solidworks', name: 'SolidWorks', note: 'CommandManager tabs, names, keys and mouse as SOLIDWORKS 2024 has them.', icons: { set: 'solidworks' } });
 
   // Mastercam 2024 / 2025 (design side). Facts from lane profnav's reference (scratchpad mastercam-reference.json):
   // tab and group names, command names, keys and mouse. A Mastercam name is used only where the command is that
@@ -427,6 +428,9 @@
     var id = null;
     try { id = localStorage.getItem(KEY); } catch (e) { }
     if (id && defs[id] && UI.setNavMap) { try { UI.setNavMap(defs[id].mouse || null); } catch (e) { console.warn('setNavMap', e); } }
+    // rfMD: and its icon set, before ui-app.js's boot draws the first ribbon, tree and toolbars (the default profile
+    // names a set too, so nothing is drawn with the built-in icons and then drawn again)
+    try { applyIcons(defs[id && defs[id] ? id : 'solidworks']); } catch (e) { console.warn('icons', e); }
   })();
   // boot: the saved profile (after every file has loaded: the drawing tabs and the mouse map come later)
   function boot() {
@@ -435,7 +439,10 @@
     current = defs[id] ? id : 'solidworks';
     booted = true;
     if (current !== 'solidworks') apply(null);
-    else if (UI.setNavMap) { try { UI.setNavMap(null); } catch (e) { console.warn('setNavMap', e); } }   // SolidWorks' mouse
+    else {
+      if (UI.setNavMap) { try { UI.setNavMap(null); } catch (e) { console.warn('setNavMap', e); } }   // SolidWorks' mouse
+      if (applyIcons(defs[current])) { if (UI.refreshRibbon) UI.refreshRibbon(); refreshIcons(); }   // rfMD: only when the early switch above did not run
+    }
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 0); });
   else setTimeout(boot, 0);

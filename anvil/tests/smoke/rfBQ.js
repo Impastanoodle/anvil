@@ -102,8 +102,15 @@
     return 'default button ' + dl.s + ' (light), ' + dflt.dark.s + ' (dark)';
   });
 
-  step('rfBQ: the ribbon icons of the Part tabs carry no blue fill or stroke, and a rendered sketch icon computes to greys (light and dark theme)', async function () {
+  // rfMD (2026-11-12, lane swicons): the default profile now names the SolidWorks icon set, blue on purpose (the user
+  // asked for the look of his own SolidWorks). The no-blue rule is the built-in drawings', so this step looks at the
+  // ribbon of a profile without an icons section, which draws them.
+  step('rfBQ: the built-in ribbon icons of the Part tabs (a profile with no icon set) carry no blue fill or stroke, and a rendered sketch icon computes to greys (light and dark theme)', async function () {
     await anvil.newPart(); await idle();
+    UI.Profiles.register({ id: 'rfbq-builtin', name: 'rfBQ built-in icons', labels: {} });
+    anvil.profile('rfbq-builtin'); await idle();
+    try {
+    assert(!W.Icons.sets.active() && !D.querySelector('#ribbon-buttons svg.ico[data-set]'), 'a profile with no icons section still shows an icon set');
     var bad = [], n = 0, seen = {};
     ['Features', 'Sketch', 'Evaluate', 'Sheet Metal'].forEach(function (tab) {
       UI.setRibbonTab(tab);
@@ -128,4 +135,5 @@
     } finally { UI.setTheme(prev); UI.setRibbonTab('Features'); }
     assert(n > 40 && bad.length === 0, n + ' icons; blue left: ' + bad.join(', '));
     return n + ' icons, ' + btn.dataset.icon + ' rendered with ' + parts / 2 + ' parts';
+    } finally { anvil.profile('solidworks'); UI.Profiles.unregister('rfbq-builtin'); await idle(); }
   });
