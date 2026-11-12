@@ -496,6 +496,18 @@
       if (!PJ.jobs[j.key]) PJ.jobs[j.key] = { key: j.key, frame: j.frame, display: j.display, tangent: j.tangent, section: j.section || null, mesh: m, id: PJ.id, posted: false };
     });
     if (!PJ.flushT) PJ.flushT = setTimeout(flushProjections, 0);
+    pjProgress();
+  }
+  // lane progress: "Drawing views" in the status bar while views are worked out (making a drawing, adding views, the
+  // part changed under it): "View 3 of 7"; closed when the last one lands, on settle, or when the drawing is put away
+  function pjProgress() {
+    var keys = Object.keys(PJ.jobs);
+    if (!keys.length || !D.active) { if (PJ.pg) { clearInterval(PJ.pg.tick); PJ.pg.h.done(); PJ.pg = null; } return; }
+    if (!UI.progress) return;
+    if (!PJ.pg) PJ.pg = { h: UI.progress.begin('Drawing views'), seen: {}, tick: setInterval(pjProgress, 500) };
+    keys.forEach(function (k) { PJ.pg.seen[k] = 1; });
+    var total = Object.keys(PJ.pg.seen).length, done = total - keys.length;
+    PJ.pg.h.set(done / total, 'View ' + Math.min(total, done + 1) + ' of ' + total);
   }
   function flushProjections() {
     PJ.flushT = 0;
@@ -541,6 +553,7 @@
   // a view is done: the sheet is drawn again (once for views landing together)
   function landed(job) {
     delete PJ.jobs[job.key];
+    pjProgress();   // lane progress
     if (PJ.tick) return;
     PJ.tick = setTimeout(function () { PJ.tick = 0; if (D.active && D.prog && mesh() === job.mesh) render(true); }, 0);
   }
@@ -554,6 +567,7 @@
     if (!D.prog) return;
     dropBusyWorker();
     PJ.id++; PJ.mesh = null; PJ.jobs = {};
+    pjProgress();   // lane progress
     D.prog.sync = true;
     render();
   }

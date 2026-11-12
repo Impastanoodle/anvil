@@ -945,7 +945,13 @@
   // exportAs('dxf', { version }): the export dialog has a Version choice, R12 (AC1009) or R2000 (AC1015, true
   // ellipses and line weights; what AutoCAD 2000 and later, and the DWG converters, read natively); the choice is
   // remembered for the session (D.dxfVersion)
+  // lane progress: one card "Exporting the drawing as PDF" (main-thread work: on a big part the card is painted before
+  // the views are settled and the file is written; on a small one it runs at once as before)
   function exportAs(kind, opts) {
+    if (!UI.progress) return exportAsNow(kind, opts);
+    return UI.progress.run('Exporting the drawing as ' + String(kind || '').toUpperCase(), function () { return exportAsNow(kind, opts); }, { card: true });
+  }
+  function exportAsNow(kind, opts) {
     settle();
     if (D.tool === 'sk:hideann') { D.tool = null; D.pending = null; D.hover = null; D.sheetShowHidden = false; render(); }   // (lane drawing) hidden annotations stay off the export
     if (!D.sheet) render();

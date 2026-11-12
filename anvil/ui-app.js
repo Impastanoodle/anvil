@@ -761,7 +761,12 @@
       buttons: [{ label: 'OK', primary: true, action: UI.closeModal }] });
   }
   function deskWrite(path, data, opts) {
-    return deskData(data).then(function (d) { return desk().write(path, d, opts); });
+    // lane progress: a write to a slow (network) folder shows "Saving <file>" in the status bar after the usual delay
+    var h = UI.progress ? UI.progress.begin('Saving ' + String((opts && opts.sibling) || path).replace(/^.*[\\\/]/, '')) : null;
+    if (h) h.set(null, String(path));
+    var p = deskData(data).then(function (d) { return desk().write(path, d, opts); });
+    if (h) p.then(function () { h.done(); }, function () { h.done(); });
+    return p;
   }
   // an export: straight to the file Save As picked (DXF / DWG after the Output PropertyManager), beside its OBJ
   // (.mtl), or Windows' Save box
@@ -994,7 +999,25 @@
   }
   function bytesText(data) { return typeof data === 'string' ? data : Exchange.fromUtf8(new Uint8Array(data)); }
   // openFileData(name, data, opts?) -> Promise of the summary. data: text, ArrayBuffer or Uint8Array.
+  // lane progress: the whole open (read, import, first rebuild) is one card "Opening <file>"; the first rebuild and
+  // lane importperf's import steps nest under it and show as its detail line. A neutral CAD file (STEP, IGES, STL …),
+  // a DXF / DWG or any file over 1 MB is read on the main thread in one piece, so its card is shown and painted
+  // BEFORE the work starts (it then waits one frame); a small Anvil document starts at once as before.
   function openFileData(name, data, opts) {
+    if (!UI.progress) return openFileDataNow(name, data, opts);
+    var base = String(name || 'file').replace(/^.*[\\\/]/, '');
+    var size = !data ? 0 : typeof data === 'string' ? data.length : (data.byteLength || 0);
+    var big = size > 1048576 || /\.(step|stp|p21|igs|iges|stl|obj|3mf|dxf|dwg)$/i.test(base) || !!(opts && opts.format);
+    var h = UI.progress.begin('Opening ' + base, { card: true, delay: big ? 0 : undefined });
+    h.set(null, size ? 'Reading ' + fileSize(size) : '');
+    function fin(v) { h.done(); return v; }
+    function fail(e) { h.done(); throw e; }
+    if (big) return UI.progress.paint().then(function () { return openFileDataNow(name, data, opts); }).then(fin, fail);
+    var r;
+    try { r = openFileDataNow(name, data, opts); } catch (e) { h.done(); throw e; }
+    return Promise.resolve(r).then(fin, fail);
+  }
+  function openFileDataNow(name, data, opts) {
     opts = opts || {};
     if (/\.dxf$/i.test(String(name || '')) && UI.openDXFFile) return UI.openDXFFile(name, data);   // dxf-import: a new part, the DXF in Sketch1
     if (/\.dwg$/i.test(String(name || '')) && UI.openDWGFile) return UI.openDWGFile(name, data);   // dwg-import: the same after the local server's conversion
@@ -1546,13 +1569,18 @@
       var sketchOnly = (type === 'dxf' || type === 'dwg') && (App.model.features || []).some(function (f) { return f.type === 'sketch' && (f.entities || []).some(function (e) { return e.t !== 'point'; }); });
       if (!App.mesh || (!App.mesh.triCount && !sketchOnly)) { UI.toast(type === 'dxf' || type === 'dwg' ? 'Nothing to export yet: draw a sketch or build a solid first.' : 'Nothing to export yet.'); return null; }
       if (type === 'dxf' || type === 'dwg') { deskPending = { name: b + '.' + type, path: pick.path, at: Date.now() }; UI.cmdDxfOutput({ format: type, name: b }); return pick; }
-      var out;
-      try { out = exportData(type, b); } catch (e) { UI.toast('Export failed: ' + ((e && e.message) || e)); return null; }
-      return deskWrite(pick.path, out.data).then(function (r) {
-        if (!r || r.error) { deskFailed(fname, r); return null; }
-        var done = function (extra) { UI.setStatus('Saved ' + r.path + (extra ? ' and ' + out.extra.name : '') + ' (' + ((out.data.length || out.data.byteLength) / 1024).toFixed(1) + ' KB).'); return r; };
-        if (!out.extra) return done(false);
-        return deskWrite(pick.path, out.extra.data, { sibling: out.extra.name }).then(function (r2) { if (!r2 || r2.error) deskFailed(out.extra.name, r2); return done(r2 && !r2.error); });
+      // lane progress: the export is one card "Exporting <file>" (made on the main thread: on a big part the card is
+      // painted before the work starts), then the write
+      return exportRun(fname, function (h) {
+        var out;
+        try { out = exportData(type, b); } catch (e) { UI.toast('Export failed: ' + ((e && e.message) || e)); return null; }
+        if (h) h.set(null, 'Writing ' + fileSize(out.data.length || out.data.byteLength || 0));
+        return deskWrite(pick.path, out.data).then(function (r) {
+          if (!r || r.error) { deskFailed(fname, r); return null; }
+          var done = function (extra) { UI.setStatus('Saved ' + r.path + (extra ? ' and ' + out.extra.name : '') + ' (' + ((out.data.length || out.data.byteLength) / 1024).toFixed(1) + ' KB).'); return r; };
+          if (!out.extra) return done(false);
+          return deskWrite(pick.path, out.extra.data, { sibling: out.extra.name }).then(function (r2) { if (!r2 || r2.error) deskFailed(out.extra.name, r2); return done(r2 && !r2.error); });
+        });
       });
     });
   }
@@ -1591,6 +1619,12 @@
     }
     throw new Error('Unknown file type "' + type + '"');
   }
+  // lane progress: an export made on the main thread (exportData) is one card "Exporting <file>"; on a big part
+  // (UI.progress.heavy) the card is painted before the work starts and this returns a Promise, else fn runs at once
+  function exportRun(fname, fn) {
+    if (!UI.progress) return fn(null);
+    return UI.progress.run('Exporting ' + fname, fn, { card: true });
+  }
   function fileSaveAs(preset) {
     if (desk()) return deskSaveAs(preset);
     var name = el('input', { type: 'text', value: safeName(), 'aria-label': 'File name', spellcheck: 'false' });
@@ -1620,13 +1654,18 @@
         var base = (name.value || '').trim().replace(/\.(anvil\.json|anvil\.js|json|js|step|stp|3mf|obj|stl|igs|dxf|dwg)$/i, '').replace(/[^\w\-]+/g, '_') || safeName();
         // DXF / DWG: the DXF/DWG Output PropertyManager takes over, with the format and the typed name
         if (type.value === 'dxf' || type.value === 'dwg') { UI.closeModal(); UI.cmdDxfOutput({ format: type.value, name: base }); return; }
-        var out;
-        try { out = exportData(type.value, base); } catch (e) { UI.toast('Export failed: ' + ((e && e.message) || e)); return; }
-        download(out.name, out.data, out.mime);
-        if (out.extra) download(out.extra.name, out.extra.data, out.extra.mime);
-        if (type.value === 'json' || type.value === 'script') UI.markClean();   // the document itself was saved (STEP, STL… are exports)
-        UI.closeModal();
-        UI.setStatus('Saved ' + out.name + (out.extra ? ' and ' + out.extra.name : '') + ' (' + ((out.data.length || out.data.byteLength) / 1024).toFixed(1) + ' KB).');
+        var tv = type.value;
+        if (UI.progress && UI.progress.heavy()) UI.closeModal();   // (the card is painted first: the dialog goes now)
+        // lane progress: one card "Exporting <file>" (painted first on a big part; synchronous as before on a small one)
+        exportRun(base + '.' + (SAVE_EXT[tv] ? SAVE_EXT[tv][0] : tv), function () {
+          var out;
+          try { out = exportData(tv, base); } catch (e) { UI.toast('Export failed: ' + ((e && e.message) || e)); return; }
+          download(out.name, out.data, out.mime);
+          if (out.extra) download(out.extra.name, out.extra.data, out.extra.mime);
+          if (tv === 'json' || tv === 'script') UI.markClean();   // the document itself was saved (STEP, STL… are exports)
+          UI.closeModal();
+          UI.setStatus('Saved ' + out.name + (out.extra ? ' and ' + out.extra.name : '') + ' (' + ((out.data.length || out.data.byteLength) / 1024).toFixed(1) + ' KB).');
+        });
       } },
       { label: 'Cancel', action: UI.closeModal }
     ] });
@@ -1655,7 +1694,12 @@
     var body = el('table', { id: 'mass-table' }, rows.map(function (r, i) { return el('tr', { class: i >= rows.length - (mp.components || []).length ? 'mass-comp' : '' }, [el('th', { text: r[0] }), el('td', { text: r[1] })]); }));
     UI.showModal({ title: 'Mass Properties — ' + App.model.name, body: body, buttons: [{ label: 'Copy', action: function () { copyText(rows.map(function (r) { return r[0] + ': ' + r[1]; }).join('\n')); } }, { label: 'Close', primary: true, action: UI.closeModal }] });
   }
+  // lane progress: on a big part the card "Mass Properties" is painted before the sums start (main-thread work)
   function showMassProperties() {
+    if (!UI.progress) return showMassPropertiesNow();
+    return UI.progress.run('Mass Properties', function () { return showMassPropertiesNow(); }, { card: true });
+  }
+  function showMassPropertiesNow() {
     if (isAsm() && hasAssembly()) {
       if (!(App.model.components || []).length) { UI.toast('Insert a component first.'); return; }
       showAssemblyMassProperties(); return;
@@ -1800,7 +1844,7 @@
     undo: function (e) { e.preventDefault(); undoCommand(false, e.target); },
     redo: function (e) { e.preventDefault(); undoCommand(true, e.target); },
     save: function (e) { e.preventDefault(); fileSave(); },
-    rebuild: function (e) { e.preventDefault(); UI.rebuild().then(function () { UI.toast('Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms'); }); },
+    rebuild: function (e) { e.preventDefault(); UI.rebuild({ card: true }).then(function () { UI.toast('Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms'); }); },
     'new': function (e) { e.preventDefault(); fileNew(); },
     open: function (e) { e.preventDefault(); fileOpen(); },
     'delete': function () { UI.deleteSelection(); },
@@ -2079,6 +2123,8 @@
     // neutral formats (exchange.js): STEP AP214 text, 3MF bytes (Uint8Array), OBJ text (+ exportMtl), from the open
     // document (part or assembly) as last built
     exportStep: function (opts) { return Exchange.exportSTEP(App.model, App.build, opts); },
+    // lane progress: the operations running now, newest last: [{ title, fraction, text, startedAt, shown, card }]
+    progress: function () { return UI.progress ? UI.progress.active() : []; },
     // IGES of the part as built by OpenCascade (Tools ▸ OpenCascade kernel), null otherwise
     exportIges: function () { var oe = occtExports(); return oe && oe.iges || null; },
     export3mf: function (opts) { return Exchange.export3MF(App.model, App.build, opts); },
@@ -2449,9 +2495,26 @@
   }
   UI.copyImage = copyImage;
 
+  // lane progress: the Windows app's update (desktop/updates.js, through preload.js window.anvilDesktopProgress) on the
+  // progress bar: reading the installer in the update folder at a check, then copying and checking it at Restart
+  var UPDATE_STAGE = { check: 'Checking the update', copy: 'Copying the update', verify: 'Checking the update copy' };
+  function initUpdateProgress(src) {
+    src = src || window.anvilDesktopProgress;
+    if (!src || !src.onUpdate || !UI.progress) return null;
+    var cur = null;   // { stage, h }
+    return src.onUpdate(function (d) {
+      if (cur && cur.stage !== d.stage) { cur.h.done(); cur = null; }
+      if (d.end) { if (cur) { cur.h.done(); cur = null; } return; }
+      if (!cur) cur = { stage: d.stage, h: UI.progress.begin((UPDATE_STAGE[d.stage] || 'Updating') + (d.version ? ' (Anvil ' + d.version + ')' : '')) };
+      cur.h.set(d.total > 0 ? d.read / d.total : null, d.total > 0 ? fileSize(d.read) + ' of ' + fileSize(d.total) : '');
+    });
+  }
+  UI.initUpdateProgress = initUpdateProgress;   // (tests hand it a stand-in source)
+
   // ------------------------------------------------------------------ boot
   function boot() {
     if (UI.reports) UI.reports.install();   // lane reports: breadcrumb hooks, the not-responding watch
+    initUpdateProgress();   // lane progress
     if (UI.wrapOkPlusCommands) UI.wrapOkPlusCommands();   // ✓+ on the commands that make something (ui-commands.js)
     installUndelete();   // lane mcpolish: after every file's own UI.deleteSelection wrapper
     // a model loaded by anything (New, Open, the Task Pane, a recovery) is no longer the file App.filePath names

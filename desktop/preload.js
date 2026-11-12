@@ -156,3 +156,19 @@ ipcRenderer.on('anvil-desktop:update-failed', (e, msg) => {
   if (box) box.remove();
   alert('The update could not be started: ' + msg);
 });
+
+// lane progress: the update's reading / copying / checking (updates.js 'anvil-desktop:update-progress':
+// { stage: 'check' | 'copy' | 'verify', read, total, version, end }) handed to the page, which shows it on its progress
+// bar (ui-app.js). window.anvilDesktopProgress.onUpdate(fn) -> unsubscribe; fn gets a plain copy of each message.
+const progressListeners = [];
+ipcRenderer.on('anvil-desktop:update-progress', (e, d) => {
+  const copy = { stage: String(d && d.stage || ''), read: +(d && d.read) || 0, total: +(d && d.total) || 0, version: String(d && d.version || ''), end: !!(d && d.end) };
+  progressListeners.slice().forEach((fn) => { try { fn(copy); } catch (err) { /* the page's listener */ } });
+});
+contextBridge.exposeInMainWorld('anvilDesktopProgress', {
+  onUpdate: (fn) => {
+    if (typeof fn !== 'function') return () => {};
+    progressListeners.push(fn);
+    return () => { const i = progressListeners.indexOf(fn); if (i >= 0) progressListeners.splice(i, 1); };
+  }
+});

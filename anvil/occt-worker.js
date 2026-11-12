@@ -123,7 +123,11 @@ async function classic(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(url + ': HTTP ' + res.status);
   (0, eval)((await res.text()) + '\n//# sourceURL=' + new URL(url, self.location.href).href);
+  loadNote(Math.min(0.2, ++loadStep * 0.014), 'Loading ' + url);   // lane progress
 }
+// lane progress: { type: 'loading', fraction (0..1 or null), text } while the engine starts (ui-occt.js shows the bar)
+let loadStep = 0;
+function loadNote(fraction, text) { try { self.postMessage({ type: 'loading', fraction, text }); } catch (e) { } }
 
 // the rebuild cache (OcctKernel.build opts.cache): snapshots after each feature, reused while the prefix is unchanged
 let cache = {};
@@ -151,14 +155,17 @@ const ready = (async () => {
   // which returns OpenCascade built for Windows (desktop/native: the same `oc` API); a browser never has it
   let oc;
   const phases = {};
+  loadNote(0.22, 'Reading the engine');   // lane progress
   if (typeof self.anvilNativeEngine === 'function') oc = await self.anvilNativeEngine();
   else {
     const [opencascade, wasmBinary] = await Promise.all([engineFactory(), engineBinary()]);
     phases.bytesMs = performance.now() - t0;
+    loadNote(0.3, 'Compiling the engine');   // lane progress
     let t1 = performance.now();
     // the engine's own start-up (emscripten + embind), timed in phases: compile, instantiate, init (embind's wrappers)
     const mod = await WebAssembly.compile(wasmBinary);
     phases.compileMs = performance.now() - t1; t1 = performance.now();
+    loadNote(null, 'Starting the engine (once per session)');   // lane progress: embind's start-up, no count to give
     let failed;
     const failure = new Promise((res, rej) => { failed = rej; });
     oc = await withFastFunction(() => Promise.race([failure, new opencascade({ locateFile: (p) => OCCT_DIR + p, instantiateWasm: (imports, done) => {

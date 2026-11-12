@@ -127,6 +127,16 @@
     rerender();
     return r;
   }
+  // lane progress: the Nest button. Nest.run works on the main thread in one piece, so when this nest is expected to
+  // take a while (the last one took over 300 ms, or more than 40 parts are asked for) the card "Geometry Nesting" is
+  // painted before it starts; a quick one runs at once as before
+  function nestWithBar() {
+    if (!UI.progress) return doNest();
+    var qty = 0;
+    (ns && ns.parts || []).forEach(function (r) { qty += Math.max(0, Math.round(+r.qty || 0)); });
+    return UI.progress.run('Geometry Nesting', function (h) { if (h) h.set(null, qty + ' part' + (qty === 1 ? '' : 's')); return doNest(); },
+      { card: true, paint: (ns && ns.ms > 300) || qty > 40 });
+  }
   // a value changed: re-nest at once while nesting is quick, else ask for Nest
   function changed() {
     if (!ns) return;
@@ -253,7 +263,7 @@
           { type: 'number', label: 'Max sheets', key: 'maxSheets', min: 1, step: 1 },
           { type: 'select', label: 'Accuracy', key: 'accuracy', options: [[1000, 'Fast'], [2000, 'Normal'], [3000, 'Fine']] }] },
         { title: 'Results', fields: [
-          { type: 'buttons', buttons: [{ label: 'Nest', onclick: function () { doNest(); } }] },
+          { type: 'buttons', buttons: [{ label: 'Nest', onclick: function () { nestWithBar(); } }] },
           { type: 'static', label: 'Sheet', value: function () { var r = ns.result; return r && r.sheets.length ? (ns.sheet + 1) + ' of ' + r.sheets.length + ' · ' + r.sheets[ns.sheet].placements.length + ' parts · ' + r.sheets[ns.sheet].utilization.toFixed(1) + ' % used' : '—'; } },
           { type: 'buttons', show: function () { return !!(ns.result && ns.result.sheets.length > 1); }, buttons: [
             { label: '◀ Previous', onclick: function () { if (ns.sheet > 0) { ns.sheet--; rerender(); } } },

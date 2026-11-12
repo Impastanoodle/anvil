@@ -2232,6 +2232,33 @@ button:disabled svg.ico[data-set="solidworks"], .mi.disabled svg.ico[data-set="s
   background: var(--c-field, #fff); border: var(--hair) solid var(--c-line-soft, var(--line)); }
 .rp-dialog textarea { width: min(560px, 70vw); box-sizing: border-box; font: inherit; }
 .rp-options .rp-row { display: flex; gap: var(--sp-2); margin: var(--sp-1) 0; }
+/* lane progress (2026-11-12): the progress service (ui-progress.js). #pg-status is a chip in the status bar after
+   #status-msg (the bar keeps its 22 px); #pg-card is the card in the middle of the graphics area for an operation that
+   blocks the document. Colours are the chrome tokens, so both themes and every profile follow; the moving bar of an
+   unknown amount is a transform animation, which the compositor keeps running while the main thread is busy. */
+#pg-status { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 100%; width: clamp(180px, 20vw, 300px); padding: 0 10px; border-left: 1px solid var(--c-line); color: var(--c-text); font-size: var(--fs-xs); overflow: hidden; }
+#pg-status[hidden], #pg-card[hidden] { display: none !important; }
+#pg-status .pg-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#pg-status .pg-track { flex: 1 1 60px; min-width: 40px; }
+#pg-status .pg-pct { flex: none; min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+.pg-track { position: relative; display: block; height: 6px; border-radius: 3px; background: var(--c-line-soft); box-shadow: inset 0 0 0 1px var(--c-line); overflow: hidden; }
+.pg-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 3px; background: var(--c-accent); transition: width 120ms linear; }
+.pg-track.busy .pg-fill { width: 34%; transition: none; animation: pg-slide 1.25s ease-in-out infinite; will-change: transform; }
+@keyframes pg-slide { from { transform: translateX(-105%); } to { transform: translateX(300%); } }
+@media (prefers-reduced-motion: reduce) { .pg-track.busy .pg-fill { animation-duration: 3s; } }
+#pg-card { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 40; width: min(360px, calc(100% - 32px)); box-sizing: border-box; padding: 12px 14px 10px; border: 1px solid var(--c-line); border-radius: var(--radius-lg); background: var(--c-popup); color: var(--c-text); box-shadow: var(--shadow-dlg); font-size: var(--fs-sm); cursor: default; }
+#pg-card .pg-title { font-size: var(--fs-md); font-weight: 600; margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#pg-card .pg-track { height: 8px; border-radius: 4px; }
+#pg-card .pg-row { display: flex; gap: 8px; margin-top: 6px; color: var(--c-muted); }
+#pg-card .pg-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#pg-card .pg-pct { flex: none; font-variant-numeric: tabular-nums; }
+#pg-card .pg-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; min-height: var(--ctl); color: var(--c-muted); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+#pg-card .pg-cancel { height: var(--ctl); padding: 0 14px; border: 1px solid var(--c-field-line); border-radius: var(--radius); background: var(--c-field); color: var(--c-text); font: inherit; font-size: var(--fs-sm); cursor: pointer; }
+#pg-card .pg-cancel:hover { background: var(--c-hover); border-color: var(--c-hover-line); }
+#pg-card .pg-cancel[hidden] { display: none; }
+#viewport.pg-wait, #viewport.pg-wait canvas, #viewport.pg-wait svg { cursor: wait !important; }
+#viewport.pg-wait #pg-card, #viewport.pg-wait #pg-card * { cursor: default !important; }
+#viewport.pg-wait #pg-card .pg-cancel { cursor: pointer !important; }
 /* lane swribbon (2026-11-12): the default (SolidWorks) profile at the sizes of the user's own SolidWorks 2024, which runs
    with large buttons; measured on their screenshots at 100 % (ui-core card "SolidWorks sizes"). Sizes only (colours are
    the token blocks'); every rule is scoped :root:not([data-profile]) so an interface profile with a frame (Mastercam)
@@ -2657,3 +2684,8 @@ table.mc-planes tr.picked td.mc-pl-name { font-weight: 600; }
 #app.mc-ribbon-caps #ribbon #ribbon-buttons > .rb-sep { margin: -1px 3px -18px; }
 #app.mc-ribbon-caps #ribbon > .mc-captions { --mc-cap-off: 19px; height: 15px; }
 #app.mc-ribbon-caps #ribbon > .mc-captions .mc-caption { height: 15px; line-height: 15px; font-size: 12px; }
+/* lane progress, Mastercam: the bar sits in the profile's blue status bar (light text, a light track); the card takes
+   the profile's colours through the --c-* ramp lane mctheme maps */
+:root[data-profile] #app.mc-status #pg-status { color: var(--mc-blue-text); border-left-color: rgba(255, 255, 255, 0.28); }
+:root[data-profile] #app.mc-status #pg-status .pg-track { background: rgba(255, 255, 255, 0.22); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35); }
+:root[data-profile] #app.mc-status #pg-status .pg-fill { background: var(--mc-blue-text); }

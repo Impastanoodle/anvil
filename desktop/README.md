@@ -25,6 +25,11 @@ the small menu bar).
 
 Anvil only installs a file whose fingerprint matches `latest.json` in that folder, so a half-copied file is never used.
 
+While Anvil reads the installer in that folder (checking its fingerprint), and after **Restart to update** while it copies
+and checks it again, the progress bar in the status bar says so ("Copying the update (Anvil 0.1.23) — 12.4 MB of
+31.0 MB"). (`updates.js` sends `anvil-desktop:update-progress` to every window; `preload.js` hands it to the page as
+`window.anvilDesktopProgress.onUpdate(fn)`; `ui-app.js` puts it on `UI.progress`.)
+
 To look for updates in another folder (for example a shared folder for several PCs), use **Help ▸ Open Update Settings**
 and change `updateFolder` in `settings.json`, then restart Anvil:
 

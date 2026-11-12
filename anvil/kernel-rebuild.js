@@ -686,7 +686,9 @@
     var saved = { chordTol: TESS.chordTol, minSegs: TESS.minSegs, maxSegs: TESS.maxSegs, maxAngle: TESS.maxAngle, legacy: TESS.legacy };
     try { setTessellation(tess); return fn(); } finally { TESS.chordTol = saved.chordTol; TESS.minSegs = saved.minSegs; TESS.maxSegs = saved.maxSegs; TESS.maxAngle = saved.maxAngle; TESS.legacy = saved.legacy; }
   }
-  function rebuild(model, cache) { return withModelTess(model, function () { return rebuildModel(model, cache); }); }
+  // opts.onProgress(i, n, feature) (lane progress, optional): called before feature i of n is built (the cached prefix
+  // is skipped, so the first call may be i > 0); it only reports, the build is the same with or without it
+  function rebuild(model, cache, opts) { return withModelTess(model, function () { return rebuildModel(model, cache, opts); }); }
   // lane DC (finding #10): Cut-Extrude's "Link to thickness" in a sheet part: a feature with linkT: true is a blind cut
   // whose depth is the sheet's thickness, whatever depth it stores (the PM stores T too, for the other kernel). On the
   // RESOLVED model; the features it changes are copies.
@@ -703,7 +705,8 @@
     return model;
   }
   _.linkThickness = linkThickness;
-  function rebuildModel(model, cache) {
+  function rebuildModel(model, cache, opts) {
+    var onProgress = opts && typeof opts.onProgress === 'function' ? opts.onProgress : null;   // lane progress
     var t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     var errors = {}, warnings = {}, facePlanes = {}, cutDirs = {}, sketchRefs = {};
     var origFeatures = model.features, resolved = resolvedModel(model);
@@ -886,6 +889,7 @@
       steps.push(st);
     }
     model.features.slice(p).forEach(function (f, j) {
+      if (onProgress) { try { onProgress(p + j, model.features.length, f); } catch (eP) { } }   // lane progress
       // rfFN: the bodies before the feature; a feature that throws leaves them exactly as they were (a cut that fails
       // half way through its scope, a pattern that would make zero-thickness geometry), so the rest of the tree builds
       var saveBodies = ctx.bodies.slice(), saveBodyFeatures = ctx.bodyFeatures.slice();

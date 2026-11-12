@@ -5139,7 +5139,13 @@
     return s + '</svg>';
   }
 
+  // lane progress: the Flat Pattern dialog unfolds on the main thread; on a big part the card "Flat Pattern" is
+  // painted first (UI.progress.run, heavy), on a small one it runs at once as before
   function cmdFlatten() {
+    if (!UI.progress) return cmdFlattenNow();
+    return UI.progress.run('Flat Pattern', function () { return cmdFlattenNow(); }, { card: true });
+  }
+  function cmdFlattenNow() {
     if (App.mode === 'sketch') UI.exitSketch(true);
     var flat;
     try { flat = K.flatPattern(App.model, App.build, App.mesh); }
@@ -5196,6 +5202,15 @@
     return true;
   }
   UI.toggleFlatten = toggleFlatten;
+  // lane progress: the Flatten / Fold buttons and menu rows. Unfolding works on the main thread in one piece: on a big
+  // part the card "Flattening" / "Folding" is painted first and this returns a Promise of toggleFlatten's boolean; on a
+  // small one it runs at once and returns the boolean. UI.toggleFlatten itself stays synchronous for its callers.
+  function flattenWithBar(on) {
+    if (!UI.progress) return toggleFlatten(on);
+    var folding = on === false || (on == null && !!(App.model && App.model.flatState));
+    return UI.progress.run(folding ? 'Folding' : 'Flattening', function () { return toggleFlatten(on); }, { card: true });
+  }
+  UI.flattenWithBar = flattenWithBar;
   // Flat-Pattern1 ▸ Edit Feature: SolidWorks' Flat-Pattern PropertyManager (lane DK). Fixed face (a flat face of the
   // folded part: the flat is laid in its plane, the face staying where it is; empty = the Base Flange's face) and Grain
   // direction (a straight edge on a flat face: the flat turns so it runs along +X), saved on the model as
@@ -5301,7 +5316,7 @@
           { type: 'static', label: 'Bends', value: function (v) { var r = flatOf(v); return r.flat ? String(r.flat.bends.length) : ''; } },
           { type: 'static', label: 'State', value: wasFlat ? 'Flattened' : 'Folded (suppressed)' },
           { type: 'buttons', buttons: [
-            { label: wasFlat ? 'Fold' : 'Flatten', onclick: function () { UI.closePM(); restoreFlat(); toggleFlatten(); } },
+            { label: wasFlat ? 'Fold' : 'Flatten', onclick: function () { UI.closePM(); restoreFlat(); flattenWithBar(); } },
             { label: 'Flat Pattern…', onclick: function () { UI.closePM(); restoreFlat(); cmdFlatten(); } },
             { label: 'Export DXF…', onclick: function () { UI.closePM(); restoreFlat(); cmdDxfOutput({ export: 'sheet' }); } }
           ] }
@@ -5647,23 +5662,38 @@
         if (key === 'name') auto = null;
       },
       onOK: function (x) {
-        var text;
         if (isViews(x) && !optsOf(x).views.length && !x.vCurrent) { UI.toast('Pick at least one view.'); return false; }
-        try { text = dxfOutput(optsOf(x)); } catch (e) { UI.toast(e.message || String(e)); UI.setStatus('DXF/DWG Output: ' + (e.message || e)); return false; }
         var base = cleanName(x);
-        v.geometry = true;
-        if (x.format !== 'dwg') {
-          UI.download(base + '.dxf', text, 'application/dxf');
-          UI.setStatus('Saved ' + base + '.dxf (' + (text.length / 1024).toFixed(1) + ' KB).');
-          return;
+        // undefined: a DXF saved; false: refused (the PM stays); a Promise: the DWG being written
+        function work() {
+          var text;
+          try { text = dxfOutput(optsOf(x)); } catch (e) { UI.toast(e.message || String(e)); UI.setStatus('DXF/DWG Output: ' + (e.message || e)); return false; }
+          v.geometry = true;
+          if (x.format !== 'dwg') {
+            UI.download(base + '.dxf', text, 'application/dxf');
+            UI.setStatus('Saved ' + base + '.dxf (' + (text.length / 1024).toFixed(1) + ' KB).');
+            return;
+          }
+          UI.setStatus('Converting ' + base + '.dwg…');
+          return dxfToDwg(text).then(function (bytes) {
+            UI.download(base + '.dwg', bytes, 'application/acad');
+            UI.setStatus('Saved ' + base + '.dwg (' + (bytes.byteLength / 1024).toFixed(1) + ' KB).');
+            if (pm.spec === spec) closePM();
+          }, function (e) { UI.toast(e.message || String(e)); UI.setStatus('DWG: ' + (e.message || e)); });
         }
-        UI.setStatus('Converting ' + base + '.dwg…');
-        var p = dxfToDwg(text).then(function (bytes) {
-          UI.download(base + '.dwg', bytes, 'application/acad');
-          UI.setStatus('Saved ' + base + '.dwg (' + (bytes.byteLength / 1024).toFixed(1) + ' KB).');
-          if (pm.spec === spec) closePM();
-        }, function (e) { UI.toast(e.message || String(e)); UI.setStatus('DWG: ' + (e.message || e)); });
-        return { keepOpen: true, promise: p };
+        // lane progress: on a big part the card "Exporting <file>" is painted before the views / flat pattern are
+        // worked out (main thread); otherwise as before, with the DWG conversion on the card while it runs
+        if (UI.progress && UI.progress.heavy()) {
+          return { keepOpen: true, promise: UI.progress.run('Exporting ' + base + '.' + (x.format === 'dwg' ? 'dwg' : 'dxf'), function () {
+            var r = work();
+            if (r === undefined && pm.spec === spec) closePM();
+            return r;
+          }, { card: true }) };
+        }
+        var r = work();
+        if (!r || typeof r.then !== 'function') return r;
+        if (UI.progress) UI.progress.run('Saving ' + base + '.dwg', function () { return r; }, { card: true });
+        return { keepOpen: true, promise: r };
       }
     };
     v.geometry = true;

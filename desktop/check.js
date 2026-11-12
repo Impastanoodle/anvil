@@ -814,6 +814,35 @@ async function checkUpdateRestart() {
   ok(bad.log.some((e) => e.event === 'update-not-installed-shown' && e.wanted === '99.0.0'), 'fails: the old Anvil tells the user the update was not installed');
 }
 
+// ---- lane progress: updates.js reports reading / copying / checking the installer (no Electron needed: the messages
+// are collected through opts.progress; preload.js and the page's bar are covered by smoke rfMH) -------------------------
+//   node check.js update-progress
+async function checkUpdateProgress() {
+  const U = require('./updates.js');
+  const rel = path.join(WORK, 'releases-progress'), tmp = path.join(WORK, 'update-temp-progress');
+  fs.mkdirSync(rel, { recursive: true });
+  const inst = path.join(rel, 'Anvil Setup 99.0.0.exe'), bytes = Buffer.alloc(6 * 1048576 + 123);
+  for (let i = 0; i < bytes.length; i += 4096) bytes[i] = (i / 4096) & 255;
+  fs.writeFileSync(inst, bytes);
+  const sha = require('crypto').createHash('sha256').update(bytes).digest('hex');
+  fs.writeFileSync(path.join(rel, 'latest.json'), JSON.stringify({ version: '99.0.0', file: path.basename(inst), sha256: sha }));
+  const got = [];
+  process.env.ANVIL_UPDATE_TEMP = tmp;
+  const u = U.create({ currentVersion: '0.0.1', userData: WORK, settings: () => ({ updateFolder: rel }), log: () => {}, offer: () => {}, progress: (d) => got.push(d) });
+  const r = await u.check(true);
+  ok(r.state === 'ready', 'update-progress: the stand-in update is offered', r);
+  const chk = got.filter((d) => d.stage === 'check');
+  ok(chk.length >= 2 && chk[chk.length - 1].end && chk.slice(0, -1).every((d, i, a) => !d.end && d.total === bytes.length && (i === 0 || d.read >= a[i - 1].read)), 'update-progress: reading the installer reports its bytes in order and ends', chk.map((d) => d.read + '/' + d.total + (d.end ? ' end' : '')));
+  got.length = 0;
+  const armed = await u.prepareInstall();
+  const copy = path.join(tmp, path.basename(inst));
+  ok(armed && fs.existsSync(copy) && fs.readFileSync(copy).equals(bytes), 'update-progress: the streamed copy is the installer byte for byte', { armed, size: fs.existsSync(copy) ? fs.statSync(copy).size : null });
+  const stages = got.map((d) => d.stage + (d.end ? ' end' : ''));
+  ok(got.some((d) => d.stage === 'copy') && got.some((d) => d.stage === 'verify') && got[got.length - 1].end && stages.indexOf('verify') > stages.lastIndexOf('copy'), 'update-progress: copying, then checking the copy, then the end', stages.filter((s, i, a) => s !== a[i - 1]));
+  u.cancelInstall();
+  delete process.env.ANVIL_UPDATE_TEMP;
+}
+
 (async () => {
   console.log('check.js ' + cmd + ': ' + EXE + ' (work folder ' + WORK + ')');
   try {
@@ -827,6 +856,7 @@ async function checkUpdateRestart() {
     else if (cmd === 'recent') await checkRecent();
     else if (cmd === 'update-restart') await checkUpdateRestart();
     else if (cmd === 'reports') { await checkReports(); await checkReportsCrashes(); }
+    else if (cmd === 'update-progress') await checkUpdateProgress();   // lane progress
     else throw new Error('unknown check ' + cmd);
   } catch (e) { ok(false, 'check ran to the end', e.stack || e.message); }
   console.log(failures ? failures + ' FAILED' : 'all passed');

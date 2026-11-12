@@ -648,7 +648,7 @@
   var MGR_TOOLS = {
     // lane mcpolish: Mastercam's Solids tool row (regenerate all / selected, undo, redo, move up / down, delete)
     solids: [['rebuild', 'Regenerate all (Ctrl+B)', function () { var r = menuRow('Edit', 'Rebuild'); if (r) r.action(); }],
-      ['rebuild', 'Regenerate the selected operation', function () { if (!App.sel || App.sel.kind !== 'feature') { toast('Select an operation first.'); return; } var f = K.findFeature(App.model, App.sel.id); UI.rebuild().then(function () { var er = App.build && App.build.errors && App.build.errors[f.id]; setStatus(f.name + (er ? ': ' + er : ' regenerated.')); }); }, 'rebuildSel'],   // rfLX: the 4th entry is the icon an icon set may have for it
+      ['rebuild', 'Regenerate the selected operation', function () { if (!App.sel || App.sel.kind !== 'feature') { toast('Select an operation first.'); return; } var f = K.findFeature(App.model, App.sel.id); UI.rebuild({ card: true }).then(function () { var er = App.build && App.build.errors && App.build.errors[f.id]; setStatus(f.name + (er ? ': ' + er : ' regenerated.')); }); }, 'rebuildSel'],   // rfLX: the 4th entry is the icon an icon set may have for it
       ['undo', 'Undo (Ctrl+Z)', function () { (UI.undoCommand || UI.undo)(); }], ['redo', 'Redo (Ctrl+Y)', function () { (UI.redoCommand || UI.redo)(); }],
       ['moveUp', 'Move the selected operation up', function () { frameMoveOp(-1); }], ['moveDown', 'Move the selected operation down', function () { frameMoveOp(1); }],
       ['deleteEnt', 'Delete the selected operation (Del)', function () { var r = menuRow('Edit', 'Delete'); if (r && !r.disabled) r.action(); else toast('Select an operation first.'); }]],
@@ -2099,7 +2099,7 @@
   (function walk(list) { (list || []).forEach(function (it) { if (it && (it.stack || it.items)) walk(it.stack || it.items); else if (it) flattenItem(it); }); })(RIBBON['Sheet Metal']);
   function flattenItem(it) {
     if (it.id !== 'flatten') return;
-    it.run = function () { UI.toggleFlatten(); };
+    it.run = function () { (UI.flattenWithBar || UI.toggleFlatten)(); };   // lane progress
     it.active = function () { return !!(App.model && App.model.flatState); };
     it.help = 'Show the part flat with its bend lines; click again to fold it (Flat-Pattern1)';
   }
@@ -2120,7 +2120,7 @@
     var flat = !!App.model.flatState;
     return [
       { label: 'Edit Feature', action: function () { UI.cmdFlatPatternEdit(); } },
-      { label: flat ? 'Suppress' : 'Unsuppress', action: function () { UI.toggleFlatten(!flat); } },
+      { label: flat ? 'Suppress' : 'Unsuppress', action: function () { (UI.flattenWithBar || UI.toggleFlatten)(!flat); } },
       { sep: true },
       { label: 'Flat Pattern…', action: function () { UI.cmdFlatten(); } },
       { label: 'Export DXF…', action: function () { UI.exportFlatDXF(); } }
@@ -2921,7 +2921,7 @@
         { sep: true }
       ] : []).concat(UI.suppressEditItems ? UI.suppressEditItems() : []).concat([   // rfFC: Suppress / Unsuppress
         { label: 'Delete', key: 'Del', action: UI.deleteSelection, disabled: !App.sel },
-        { label: 'Rebuild', key: 'Ctrl+B', action: function () { UI.rebuild().then(function () { toast('Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms'); }); } },
+        { label: 'Rebuild', key: 'Ctrl+B', action: function () { UI.rebuild({ card: true }).then(function () { toast('Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms'); }); } },
         { label: 'Rebuild in background (Web Worker)', checked: App.workerOn, action: function () { UI.setWorkerOn(!App.workerOn); toast(App.workerOn ? 'Rebuilds run in a Web Worker' : 'Rebuilds run on the main thread'); } },
         { label: 'Clear selection', key: 'Esc', action: function () { App.sel = null; App.sel2 = null; UI.updateHighlights(); refreshTree(); } }
       ]) },
@@ -3012,7 +3012,7 @@
         { label: 'Sheet Metal ▸ Miter Flange', action: function () { UI.cmdMiterFlange(); } },
         { label: 'Sheet Metal ▸ Hem', action: function () { UI.cmdHem(); } },
         { label: 'Sheet Metal ▸ Jog', action: function () { UI.cmdJog(); } },
-        { label: 'Sheet Metal ▸ Flatten', checked: !!(App.model && App.model.flatState), action: function () { UI.toggleFlatten(); } },
+        { label: 'Sheet Metal ▸ Flatten', checked: !!(App.model && App.model.flatState), action: function () { (UI.flattenWithBar || UI.toggleFlatten)(); } },
         { label: 'Tables ▸ Design Table…', action: function () { showDesignTable(); } }   // rfFC
       ] },
       { label: 'Tools', items: [

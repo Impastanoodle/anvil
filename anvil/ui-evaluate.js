@@ -8,6 +8,9 @@
   if (typeof Evaluate === 'undefined') return;
   var E = Evaluate, App = UI.App, K = UI.K, el = UI.el;
 
+  // lane progress: an Evaluate calculation works on the main thread in one piece; on a big part the card is painted
+  // before it starts (UI.progress.run, heavy), on a small one it runs at once as before
+  function withBar(title, fn) { return UI.progress ? UI.progress.run(title, function () { return fn(); }, { card: true }) : fn(); }
   function fmt(n, d) { return UI.fmtNum(n, d == null ? 3 : d); }
   function fmtV(v, d) { return v.map(function (x) { return fmt(Math.abs(x) < 5e-13 ? 0 : x, d); }).join(', '); }
   function esc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
@@ -421,7 +424,7 @@
           { type: 'number', label: 'Limit', key: 'limit', unit: 'u', min: 0, show: function (x) { return x.mode === 'thick'; } },
           { type: 'check', label: 'Treat corners as zero thickness', key: 'corners' },
           { type: 'select', label: 'Resolution', key: 'resolution', options: [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']] },
-          { type: 'buttons', buttons: [{ label: 'Calculate', onclick: function () { calcThick(); } }] }
+          { type: 'buttons', buttons: [{ label: 'Calculate', onclick: function () { withBar('Thickness Analysis', calcThick); } }] }
         ] },
         { title: 'Results', fields: [{ type: 'html', html: thickHtml }] }
       ],
@@ -503,7 +506,7 @@
       groups: [
         { title: 'Check', fields: [
           { type: 'static', label: 'Scope', value: bodies().length > 1 ? 'All ' + bodies().length + (isAsm() ? ' components' : ' bodies') : 'Whole part' },
-          { type: 'buttons', buttons: [{ label: 'Check', onclick: function () { runCheck(); checkReport(); } }] }
+          { type: 'buttons', buttons: [{ label: 'Check', onclick: function () { withBar('Check', function () { runCheck(); checkReport(); }); } }] }
         ] },
         { title: 'Results', fields: [{ type: 'html', html: checkHtml }] }
       ],
@@ -851,7 +854,7 @@
         { title: 'Selected Components', fields: [
           { type: 'pick', icon: 'component', value: function () { return listText(intf.sel, names); }, placeholder: 'Entire assembly (' + n + ' component' + (n === 1 ? '' : 's') + ') — click components to limit' },
           { type: 'check', label: 'Selected items and the rest', key: 'rest' },
-          { type: 'buttons', buttons: [{ label: 'Calculate', onclick: function () { intfCalculate(); } }, { label: 'Entire assembly', onclick: function () { intf.sel = []; intfCalculate(); } }] }
+          { type: 'buttons', buttons: [{ label: 'Calculate', onclick: function () { withBar('Interference Detection', intfCalculate); } }, { label: 'Entire assembly', onclick: function () { intf.sel = []; withBar('Interference Detection', intfCalculate); } }] }
         ] },
         { title: 'Results', fields: [{ type: 'html', html: function () { return '<div class="intf-list">' + intfRows() + '</div>'; } }] },
         { title: 'Options', fields: OPT_KEYS.map(function (o) { return { type: 'check', label: o[1], key: o[0] }; }) }
@@ -1011,6 +1014,12 @@
     if (isAsm()) { UI.toast('Performance Evaluation works on a part.'); return; }
     if (!App.model || !App.model.features.length) { UI.toast('The part has no features yet.'); return; }
     UI.setStatus('Performance Evaluation: rebuilding the part feature by feature…');
+    // lane progress: it rebuilds every feature on the main thread: past 20 features (or on a big part) the card is
+    // painted first; a short tree runs at once as before
+    if (UI.progress && !perf.inBar) {
+      return UI.progress.run('Performance Evaluation', function () { perf.inBar = true; try { return cmdPerformance(); } finally { perf.inBar = false; } },
+        { card: true, paint: App.model.features.length > 20 || UI.progress.heavy() });
+    }
     perf.res = E.performance(App.model);
     UI.showModal({ title: 'Performance Evaluation — ' + App.model.name, body: perfBody(), buttons: [
       { label: 'Rebuild', action: function () { UI.closeModal(); cmdPerformance(); } },

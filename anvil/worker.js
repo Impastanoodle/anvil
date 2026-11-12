@@ -3,7 +3,7 @@
 // this file).
 //
 // Messages in (from ui-core.js):
-//   { type: 'rebuild', seq: <number>, model: <model JSON> }
+//   { type: 'rebuild', seq: <number>, model: <model JSON>, progress?: true }   (progress: lane progress, see below)
 //     `model` is a structured clone of App.model; Kernel.rebuild writes sketch profiles onto this copy, which is
 //     harmless here and is how the reply's `profiles` are produced.
 //   { type: 'preview', seq, model, upto: <feature count | null>, op: 'tool' | 'shell' | 'edge' | 'flange' | 'jog' | 'closedCorner' | 'unfold' | 'fold', feature, throughLimit, sketches? }
@@ -15,6 +15,8 @@
 //   { type: 'built', seq, build: <Kernel.packBuild result>, edges: <Kernel.bodyEdges of its mesh> | null,
 //     curves: <Kernel.meshCurveInfo of it> | null, normals: <Kernel.analyticNormals of it> | null }   (r3/engine3)
 //                                                              with the packed solids' ArrayBuffers transferred
+//   { type: 'progress', seq, i, n, name, stage? }               (lane progress) before feature i of n is built
+//                                                              (name = its tree name); stage 'mesh' after the last
 //   { type: 'volume', seq, volume }                            right after 'built': Kernel.massProps(mesh).volume
 //   { type: 'error', seq, message: <string> }                  when the rebuild itself threw (feature errors never do;
 //                                                              they are reported inside build.errors)
@@ -101,7 +103,13 @@ self.onmessage = function (e) {
   }
   if (m.type !== 'rebuild') return;
   try {
-    var b = Kernel.rebuild(m.model, cache);
+    // lane progress: when asked (m.progress, ui-core.js), one message before each feature (and one before the mesh work
+    // after the last), which ui-core.js turns into the progress bar: the main thread is free while this runs, so the
+    // bar can move. Without m.progress the replies are exactly as before ('built' first).
+    var b = Kernel.rebuild(m.model, cache, m.progress ? { onProgress: function (i, n, f) {
+      self.postMessage({ type: 'progress', seq: m.seq, i: i, n: n, name: (f && f.name) || '' });
+    } } : undefined);
+    if (m.progress) self.postMessage({ type: 'progress', seq: m.seq, i: m.model.features.length, n: m.model.features.length, name: '', stage: 'mesh' });
     cache = b.cache;
     // r10/editpreview10: the main cache now holds every step of the newest model, so the next truncated preview (an
     // Edit Feature right after a change or a new document) starts from it instead of an older model's preview cache

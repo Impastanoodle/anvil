@@ -60,6 +60,7 @@
     catch (e) { st.state = 'failed'; st.error = e.message; refresh(); return; }
     st.engine = st.worker.native ? 'native' : 'wasm';
     st.state = 'loading';
+    engineProgress(st.worker);   // lane progress
     // the worker uses a served engine when there is one; otherwise the file the user picked (kept in this browser), or none
     var w = st.worker;
     storedEngine().then(function (bytes) { if (st.worker === w) w.postMessage({ type: 'engine', bytes: bytes }, bytes ? [bytes] : []); });
@@ -134,8 +135,21 @@
   }
   function stopWorker() { if (st.worker) st.worker.terminate(); st.worker = null; st.ready = false; st.busy = false; heldResult = null; App.holdFrameUntil = 0; if (st.quietTimer) { clearTimeout(st.quietTimer); st.quietTimer = 0; } rb.want = 0; rb.result = null; if (st.cueOn) cue(false); }
 
+  // lane progress: "Starting OpenCascade" in the status bar while the engine loads (occt-worker.js 'loading' messages:
+  // Anvil's scripts, reading, compiling, then embind's start-up with no count); closed on 'ready', on a failed load,
+  // or when that worker is no longer the one in use (OpenCascade turned off meanwhile)
+  var engPg = null;
+  function engineProgress(w) {
+    if (engPg || !UI.progress) return;
+    var h = UI.progress.begin('Starting OpenCascade'), tick = setInterval(function () { if (st.worker !== w || st.state !== 'loading' || st.ready) engineDone(); }, 500);
+    h.set(0, st.engine === 'native' ? 'OpenCascade for Windows' : 'Loading');
+    engPg = { h: h, w: w, tick: tick };
+  }
+  function engineDone() { if (engPg) { clearInterval(engPg.tick); engPg.h.done(); engPg = null; } }
   function onMessage(e) {
     var m = e.data || {};
+    if (m.type === 'loading') { if (engPg) engPg.h.set(m.fraction, m.text); return; }   // lane progress
+    if (m.type === 'ready' || (m.type === 'error' && m.seq === -1)) engineDone();   // lane progress
     if (m.type === 'ready') { st.ready = true; st.loadMs = m.loadMs; st.loadPhases = m.phases || null; request(); return; }
     if (m.type === 'imported' || m.type === 'importError') {
       var w = imports[m.seq]; delete imports[m.seq];

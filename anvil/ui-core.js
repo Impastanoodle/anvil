@@ -3995,8 +3995,22 @@ var UI = (function () {
       kept.applied = true;
       return kept;
     }
+    var mainThread = !App.workerOn || opts.sync || !window.Worker || isAssembly();
+    if (opts.card && !mainThread) progressWantCard();   // lane progress: the user waits for this one (open, Ctrl+B)
+    // lane progress: a rebuild the user waits for (opts.card: open, Ctrl+B, Edit ▸ Rebuild) that runs on the main thread
+    // (worker off, an assembly) and is big (UI.progress.heavy, or an assembly of 20+ components) cannot move a bar, so
+    // the card "Rebuilding" (no amount) is shown and painted BEFORE the work, then the same synchronous rebuild runs; the
+    // Promise is then not `applied` (afterRebuild waits for it). opts.sync, small models and every other caller keep the
+    // synchronous path exactly as before.
+    if (mainThread && opts.card && !opts.sync && UI.progress && (UI.progress.heavy() || (isAssembly() && ((App.model.components || []).length >= 20)))) {
+      var later = {}; Object.keys(opts).forEach(function (k) { if (k !== 'card') later[k] = opts[k]; });
+      var hs = UI.progress.begin('Rebuilding', { card: true, delay: 0 });
+      hs.set(null, isAssembly() ? (App.model.components || []).length + ' components' : (App.model.features || []).length + ' features');
+      return UI.progress.paint().then(function () { return rebuild(later); })
+        .then(function (b) { hs.done(); return b; }, function (e) { hs.done(); throw e; });
+    }
     // assemblies always build on the main thread (worker.js only knows part models)
-    if (!App.workerOn || opts.sync || !window.Worker || isAssembly()) {
+    if (mainThread) {
       // A request already posted to the worker is answered by this newer build; its reply is then ignored.
       var stale = takeInflight();
       if (stale && !stale.opts.noSave) opts = { noSave: false, sync: opts.sync };
@@ -4226,7 +4240,7 @@ var UI = (function () {
     if (!w) { finishSync(req); return; }
     req.seq = ++wk.seq;
     wk.inflight = req;
-    try { w.postMessage({ type: 'rebuild', seq: req.seq, model: App.model }); }
+    try { w.postMessage({ type: 'rebuild', seq: req.seq, model: App.model, progress: true }); }   // progress: lane progress
     catch (e) { wk.inflight = null; disableWorker(e); finishSync(req); return; }   // e.g. an uncloneable value in the model
     setBusy(true);
   }
@@ -4299,6 +4313,7 @@ var UI = (function () {
     if (!w) { job.resolve(null); return; }
     job.seq = ++pv.seq;
     pv.inflight = job;
+    previewProgress(true);   // lane progress
     var r = job.req;
     // r10/editpreview10: a rollback still waiting for its part goes along with the first preview posted
     var base = roll.want != null && !roll.active && !roll.posted ? roll.want : null;
@@ -4308,6 +4323,14 @@ var UI = (function () {
   }
   function nextPreview() {
     if (pv.pending && !pv.inflight) { var j = pv.pending; pv.pending = null; postPreview(j); }
+    if (!pv.inflight) previewProgress(false);   // lane progress
+  }
+  // lane progress: a PropertyManager preview the worker takes long over (a big pattern or mirror) shows "Preview" in
+  // the status bar (after 600 ms: a spun value's quick previews never flash it), from the first post to the last reply
+  var pvProg = null;
+  function previewProgress(on) {
+    if (on) { if (!pvProg && UI.progress) { pvProg = UI.progress.begin('Preview', { delay: 600 }); pvProg.set(null, 'Working out the preview'); } }
+    else if (pvProg) { pvProg.done(); pvProg = null; }
   }
   function onPreviewMessage(d) {
     if (d.base) showRollback(d.base);   // r10/editpreview10: before the preview itself, so both reach the same frame
@@ -4539,10 +4562,12 @@ var UI = (function () {
   function dropPreviews() {
     [pv.inflight, pv.pending].forEach(function (j) { if (j) j.resolve(null); });
     pv.inflight = pv.pending = null;
+    previewProgress(false);   // lane progress
   }
 
   function onWorkerMessage(ev) {
     var d = ev.data || {};
+    if (d.type === 'progress') { onWorkerProgress(d); return; }   // lane progress
     if (d.type === 'previewed' || d.type === 'previewError') { onPreviewMessage(d); return; }
     // the volume of the mesh of a build already applied (ui-occt.js compares OpenCascade's with it)
     if (d.type === 'volume') { if (App.mesh && App.mesh.workerSeq === d.seq) App.mesh.workerVolume = d.volume; return; }
@@ -4551,6 +4576,7 @@ var UI = (function () {
     if (isAssembly()) { finishSync(req); return; }   // reply for a part model that has since been replaced
     if (d.type === 'built') {
       var build;
+      if (rbProg.h) rbProg.h.set(1, 'Showing the part');   // lane progress: the kernel's part is in
       try {
         build = K.unpackBuild(d.build);
         nextWorker = { edges: d.edges || null, curves: d.curves || null, normals: d.normals || null, seq: d.seq };   // found by the worker on the same mesh: the applyBuild below hands them on
@@ -4578,7 +4604,30 @@ var UI = (function () {
   // The status bar says "Rebuilding…" only once a background build has taken longer than BUSY_SHOW_MS, so quick
   // rebuilds (an Instant3D drag, a spun value) do not make the message flicker on every step (smooth/responsive).
   var busyPrevStatus = null, busyTimer = 0, BUSY_SHOW_MS = 250;
+  // lane progress: a background rebuild is one progress handle from the first post to idle (coalesced rebuilds share
+  // it); worker.js reports each feature ('progress' messages, onWorkerProgress). opts.card on UI.rebuild (the first
+  // rebuild of an opened document, Ctrl+B / Ctrl+Q) puts it on the card in the graphics area as well.
+  var rbProg = { h: null, card: false, hCard: false };
+  function progressBegin() {
+    if (rbProg.h || !UI.progress) return;
+    rbProg.hCard = rbProg.card;
+    rbProg.h = UI.progress.begin('Rebuilding', { card: rbProg.card });
+  }
+  function progressEnd() { if (rbProg.h) { rbProg.h.done(); rbProg.h = null; } rbProg.card = false; }
+  function progressWantCard() {
+    rbProg.card = true;
+    if (rbProg.h && !rbProg.hCard) { var f = rbProg.last; rbProg.h.done(); rbProg.h = null; progressBegin(); if (f && rbProg.h) rbProg.h.set(f[0], f[1]); }
+  }
+  function onWorkerProgress(d) {
+    if (!wk.inflight || d.seq !== wk.inflight.seq) return;
+    progressBegin();
+    if (!rbProg.h) return;
+    var n = Math.max(1, d.n | 0);
+    rbProg.last = d.stage === 'mesh' ? [0.96, 'Meshing and finding edges'] : [0.95 * (d.i / n), 'Feature ' + (d.i + 1) + ' of ' + n + (d.name ? ': ' + d.name : '')];
+    rbProg.h.set(rbProg.last[0], rbProg.last[1]);
+  }
   function setBusy(on) {
+    if (on) progressBegin(); else progressEnd();   // lane progress
     if (App.rebuilding === on) return;
     App.rebuilding = on;
     var s = $('status-msg');
@@ -4762,7 +4811,7 @@ var UI = (function () {
     // the opened document is clean once its first rebuild is applied (markClean below; a rejected build too)
     clean.loading = true;
     var p;
-    try { p = rebuild(); } catch (e) { markClean(); throw e; }
+    try { p = rebuild({ card: true }); } catch (e) { markClean(); throw e; }   // lane progress: the user waits for the first rebuild
     if (!p.applied) p.then(null, function () { if (clean.loading) markClean(); });
     $('doc-title').textContent = model.name;
     return afterRebuild(p, function (b) { markClean(); zoomToFit(); return b; });

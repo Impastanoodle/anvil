@@ -110,7 +110,8 @@
     title.appendChild(el('span', { 'data-role': 'cost-title', html: Icons('costing', 16) + ' Costing' }));
     title.appendChild(el('button', { text: '✕', title: 'Close', onclick: close }));
     st.open = true;
-    render();
+    // lane progress: the estimate unfolds a sheet part on the main thread; on a big part the card is painted first
+    if (UI.progress) UI.progress.run('Costing', function () { render(); }, { card: true }); else render();
     setTimeout(UI.resize, 0);
   }
   UI.escapeBoxes = UI.escapeBoxes || [];

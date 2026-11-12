@@ -22,13 +22,48 @@ function newer(a, b) {   // is version a newer than b ("1.2.3")
   for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
   return false;
 }
-function sha256File(file) {
+// onBytes(read, total) (lane progress, optional): how far the read has got, for the page's progress bar
+function sha256File(file, onBytes) {
   return new Promise((resolve, reject) => {
     const h = crypto.createHash('sha256'), s = fs.createReadStream(file);
+    let total = 0, n = 0;
+    if (onBytes) { try { total = fs.statSync(file).size; } catch (e) { total = 0; } }
     s.on('error', reject);
-    s.on('data', (d) => h.update(d));
+    s.on('data', (d) => { h.update(d); if (onBytes) { n += d.length; onBytes(n, total); } });
     s.on('end', () => resolve(h.digest('hex')));
   });
+}
+// lane progress: the installer copied in a stream (the same bytes fs.copyFileSync wrote), reporting as it goes
+function copyFileProgress(src, dst, onBytes) {
+  return new Promise((resolve, reject) => {
+    let total = 0, n = 0, done = false;
+    try { total = fs.statSync(src).size; } catch (e) { total = 0; }
+    const r = fs.createReadStream(src), w = fs.createWriteStream(dst);
+    function fail(e) { if (done) return; done = true; r.destroy(); w.destroy(); reject(e); }
+    r.on('error', fail);
+    w.on('error', fail);
+    r.on('data', (d) => { n += d.length; if (onBytes) onBytes(n, total); });
+    w.on('finish', () => { if (!done) { done = true; resolve(); } });
+    r.pipe(w);
+  });
+}
+// lane progress: { stage: 'check' | 'copy' | 'verify', read, total, version, end } to every window
+// ('anvil-desktop:update-progress'; preload.js hands it to the page, ui-app.js shows it on the progress bar), at most
+// every 100 ms and always the last one
+function progressSender(send) {
+  let last = 0;
+  return function (d) {
+    const t = Date.now();
+    if (!d.end && d.read < d.total && t - last < 100) return;
+    last = t;
+    try { send(d); } catch (e) { /* a progress message never stops an update */ }
+  };
+}
+function sendToWindows(d) {
+  let BW = null;
+  try { BW = require('electron').BrowserWindow; } catch (e) { BW = null; }
+  if (!BW || !BW.getAllWindows) return;
+  BW.getAllWindows().forEach((w) => { try { if (!w.isDestroyed()) w.webContents.send('anvil-desktop:update-progress', d); } catch (e) { /* closing */ } });
 }
 
 // electron-builder's NSIS installer (package.json build.nsis: oneClick, per user): /S silent, --updated as
@@ -89,6 +124,8 @@ Log 'helper-done' $null
 function create(opts) {
   // opts: { app, currentVersion, settings() -> object, log(event, data), offer(info), defaultFolder }
   const state = { offered: null, skipped: {}, timer: null, pendingInstaller: null, checking: false };
+  const progress = progressSender(opts.progress || sendToWindows);   // lane progress (opts.progress: tests)
+  function bytesReporter(stage, version) { return (read, total) => progress({ stage, read, total, version, end: false }); }
   // update.log in the user-data folder: one JSON line per step of an install (Anvil, then the helper), so the first
   // real update can be followed afterwards. Kept under ~256 KB (the older part goes to update.log.old).
   function logFile() { return path.join(opts.userData || os.tmpdir(), 'update.log'); }
@@ -123,7 +160,9 @@ function create(opts) {
       if (!manual && state.skipped[latest.version]) return { state: 'skipped', latest: latest.version };
       const installer = path.join(folder, path.basename(latest.file));
       if (!fs.existsSync(installer)) { opts.log('update-check', { result: 'installer missing', installer }); return { state: 'installer missing' }; }
-      const hash = await sha256File(installer);
+      let hash;
+      try { hash = await sha256File(installer, bytesReporter('check', latest.version)); }
+      finally { progress({ stage: 'check', read: 1, total: 1, version: latest.version, end: true }); }
       if (hash.toLowerCase() !== String(latest.sha256).toLowerCase()) { opts.log('update-check', { result: 'sha256 mismatch', installer }); return { state: 'sha256 mismatch' }; }
       state.offered = { version: latest.version, notes: latest.notes || '', installer, sha256: hash };
       opts.log('update-offered', { version: latest.version, installer });
@@ -151,8 +190,12 @@ function create(opts) {
     const dir = process.env.ANVIL_UPDATE_TEMP || path.join(os.tmpdir(), 'anvil-update');
     fs.mkdirSync(dir, { recursive: true });
     const copy = path.join(dir, path.basename(o.installer));
-    fs.copyFileSync(o.installer, copy);
-    if ((await sha256File(copy)) !== o.sha256) { ulog('update-copy-bad', { copy }); throw new Error('the installer copy did not match its sha256'); }
+    let sum;
+    try {
+      await copyFileProgress(o.installer, copy, bytesReporter('copy', o.version));
+      sum = await sha256File(copy, bytesReporter('verify', o.version));
+    } finally { progress({ stage: 'verify', read: 1, total: 1, version: o.version, end: true }); }
+    if (sum !== o.sha256) { ulog('update-copy-bad', { copy }); throw new Error('the installer copy did not match its sha256'); }
     state.pendingInstaller = copy;
     ulog('update-armed', { version: o.version, installer: copy, from: o.installer });
     return true;
@@ -205,4 +248,4 @@ function create(opts) {
   return { check, start, later, prepareInstall, cancelInstall, runPendingInstall, afterRestart, state, newer, log: ulog, logFile, readLog };
 }
 
-module.exports = { create, newer, sha256File, INSTALLER_ARGS, HELPER };
+module.exports = { create, newer, sha256File, copyFileProgress, INSTALLER_ARGS, HELPER };
