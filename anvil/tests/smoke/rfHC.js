@@ -53,6 +53,9 @@
 
   step('rfHC: RealView off renders exactly as before (rfHA: isometric box top ~196, left ~148, right ~112, Normal To ~162)', async function () {
     var keep = rfHCStored(), style = UI.App.view.style;
+    // swpart (2026-11-12): this pins rfHA's grey part, which the light default look replaced with SolidWorks' near-white
+    // one (rfMF); the grey rig is unchanged in the dark theme, so it is measured there
+    var swpTheme = UI.theme(); UI.setTheme('dark');
     try {
       UI.setRealView(false, true);
       await anvil.newPart(); await idle();
@@ -66,11 +69,14 @@
       var f = rfHCLum(rfHCAt(rfHCRender(), [1.5, 0.5, 2]));
       assert(Math.abs(f - 162.5) <= 2, 'Normal To ' + f.toFixed(0));
       return msg + ', Normal To ' + f.toFixed(0);
-    } finally { rfHCRestore(keep); UI.setStyle(style); }
+    } finally { rfHCRestore(keep); UI.setStyle(style); UI.setTheme(swpTheme); }
   });
 
   step('rfHC: RealView on: the no-material part keeps rfHA\'s distinct greys; steel and aluminium read apart; a round in steel carries a highlight streak; hot rolled is darker than cold rolled', async function () {
     var keep = rfHCStored(), style = UI.App.view.style, out = [];
+    // swpart (2026-11-12): this pins rfHA's grey part, which the light default look replaced with SolidWorks' near-white
+    // one (rfMF); the grey rig is unchanged in the dark theme, so it is measured there
+    var swpTheme = UI.theme(); UI.setTheme('dark');
     try {
       UI.setRealView(true, true);
       await anvil.newPart(); await idle();
@@ -102,7 +108,7 @@
       assert(hi >= 170 && hi - lo >= 70, 'highlight across the round: ' + lo.toFixed(0) + ' .. ' + hi.toFixed(0));
       out.push('round ' + lo.toFixed(0) + '..' + hi.toFixed(0));
       return out.join('; ');
-    } finally { rfHCRestore(keep); UI.setStyle(style); }
+    } finally { rfHCRestore(keep); UI.setStyle(style); UI.setTheme(swpTheme); }
   });
 
   step('rfHC: with RealView on the overlay colours are the rule colours: selection tint #7ec8ff @0.45 blended over the face exactly, pre-highlight #ff9a2e, sketch white, edges #161616 dark and whole-pixel', async function () {
@@ -114,7 +120,8 @@
       UI.setStyle('shadedEdges');
       var M = UI.mats;
       assert(M.sel.color.getHex() === 0x7ec8ff && Math.abs(M.sel.opacity - 0.45) < 1e-9 && M.hover.color.getHex() === 0xff9a2e, 'sel / hover materials');
-      assert(M.sketch.color.getHex() === UI.linePalette().sketch && M.sketchSel.color.getHex() === UI.linePalette().sketchSel && M.edge.color.getHex() === 0x161616, 'sketch / selection / edge colours');
+      // swpart: the body edge is UI.partLook.bodyEdge() (SolidWorks' on its default part)
+      assert(M.sketch.color.getHex() === UI.linePalette().sketch && M.sketchSel.color.getHex() === UI.linePalette().sketchSel && M.edge.color.getHex() === UI.partLook.bodyEdge(), 'sketch / selection / edge colours');
       assert(UI.renderer.toneMapping === W.THREE.NoToneMapping && UI.renderer.outputEncoding === W.THREE.LinearEncoding, 'the renderer stays linear: overlays are drawn as given');
       await rfHCView('Isometric');
       var p = [1.5, 1, 1], base = rfHCAt(rfHCRender(true), p);

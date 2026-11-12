@@ -28,7 +28,8 @@
     UI.setBackground('gradient');
     vp.classList.remove('r14-probe');
     assert(!/bg-/.test(vp.className) && W.localStorage.getItem('anvil.bg') === 'gradient', 'back to the gradient: ' + vp.className);
-    assert(UI.mats.edge.color.getHex() === 0x161616, 'edges dark on the shaded body over the gradient too (rfBR: grey-black)');
+    // swpart: the default part in the light default look has SolidWorks' edge colour (UI.partLook.bodyEdge())
+    assert(UI.mats.edge.color.getHex() === UI.partLook.bodyEdge(), 'edges dark on the shaded body over the gradient too (rfBR: grey-black)');
     var bgImg = W.getComputedStyle(vp).backgroundImage;
     assert(/gradient/.test(bgImg), 'the gradient background: ' + bgImg);
     return bgImg.slice(0, 80);

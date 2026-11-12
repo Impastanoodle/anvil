@@ -67,6 +67,9 @@
 
   step('rfHF: the no-material part in RealView is a satin grey with a faint studio reflection: still grey, the three faces apart, a sheen across a round', async function () {
     var keep = rfHFStored(), style = UI.App.view.style;
+    // swpart (2026-11-12): this pins rfHA's grey part, which the light default look replaced with SolidWorks' near-white
+    // one (rfMF); the grey rig is unchanged in the dark theme, so it is measured there
+    var swpTheme = UI.theme(); UI.setTheme('dark');
     try {
       UI.setRealView(true, true);
       await anvil.newPart(); await idle();
@@ -84,7 +87,7 @@
       assert(hi - lo >= 50, 'a sheen across the round: ' + lo.toFixed(0) + ' .. ' + hi.toFixed(0));
       assert(grey <= 24, 'still a neutral grey (largest channel spread ' + grey + ')');
       return 'round ' + lo.toFixed(0) + '..' + hi.toFixed(0) + ', spread ' + grey;
-    } finally { rfHFRestore(keep); UI.setStyle(style); }
+    } finally { rfHFRestore(keep); UI.setStyle(style); UI.setTheme(swpTheme); }
   });
 
   step('rfHF: Section View belongs to the document: a new part (and an opened one) is not cut; a rebuild of the same part keeps the section', async function () {

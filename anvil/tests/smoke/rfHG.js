@@ -106,6 +106,8 @@
     return { c: c, r: Math.hypot(s[0] - c[0], s[1] - c[1]) };
   }
   step('rfHG: a circular edge seen face-on and zoomed in is one continuous dark line on the true circle — no background between the face and the line at the chords\' middles, RealView off and on', async function () {
+    // swpart (2026-11-12): the line probes classify pixels as face / dark line / background for rfHA's grey part and #161616 edges; the light default look now draws SolidWorks' near-white part, so they run on the grey part, which the dark theme keeps
+    var swpTheme = UI.theme(); UI.setTheme('dark');
     var rv0 = UI.realView ? UI.realView() : false, style = UI.App.view.style, zl = UI.zoomTess ? UI.zoomTess.level() : null;
     // planes / origin left shown by an earlier group cross the rim at 0° in Top view (the Front plane edge-on, the X axis)
     var V = UI.App.view, shown = { showPlanes: V.showPlanes, showOrigin: V.showOrigin };
@@ -141,12 +143,14 @@
     } finally {
       if (UI.zoomTess && zl != null) UI.zoomTess.setLevel(zl);
       if (UI.setRealView) UI.setRealView(rv0, true);
-      UI.setStyle(style);
+      UI.setStyle(style); UI.setTheme(swpTheme);
       V.showPlanes = shown.showPlanes; V.showOrigin = shown.showOrigin; UI.updatePlanes(); UI.updateOrigin();
     }
   });
 
   step('rfHG: a Ø8 hole of a 1200 × 600 panel (32 chords; 24 showed its corners here and was dropped) zoomed in to 300 px across — the rim is one clean dark line, its width even round the hole (no scallops), RealView off and on', async function () {
+    // swpart (2026-11-12): the line probes classify pixels as face / dark line / background for rfHA's grey part and #161616 edges; the light default look now draws SolidWorks' near-white part, so they run on the grey part, which the dark theme keeps
+    var swpTheme = UI.theme(); UI.setTheme('dark');
     var rv0 = UI.realView ? UI.realView() : false, style = UI.App.view.style, zl = UI.zoomTess ? UI.zoomTess.level() : null;
     if (UI.zoomTess) UI.zoomTess.setLevel(0);   // the base mesh: this step measures the edge line's chord band
     try {
@@ -174,11 +178,13 @@
     } finally {
       if (UI.zoomTess && zl != null) UI.zoomTess.setLevel(zl);
       if (UI.setRealView) UI.setRealView(rv0, true);
-      UI.setStyle(style);
+      UI.setStyle(style); UI.setTheme(swpTheme);
     }
   });
 
   step('rfHG: the flat top of a big thin perforated panel (1200 × 600 × 1.5) at Zoom to Fit is one clean surface — no triangle lines from the crack filler reaching the bottom face through it, RealView off and on', async function () {
+    // swpart (2026-11-12): the line probes classify pixels as face / dark line / background for rfHA's grey part and #161616 edges; the light default look now draws SolidWorks' near-white part, so they run on the grey part, which the dark theme keeps
+    var swpTheme = UI.theme(); UI.setTheme('dark');
     var rv0 = UI.realView ? UI.realView() : false, style = UI.App.view.style, out = [];
     try {
       await anvil.newPart(); await idle();
@@ -205,7 +211,7 @@
       return out.join(', ');
     } finally {
       if (UI.setRealView) UI.setRealView(rv0, true);
-      UI.setStyle(style);
+      UI.setStyle(style); UI.setTheme(swpTheme);
     }
   });
 
@@ -237,6 +243,8 @@
     return { base: base, info: on.info, off: off, on: on, r: r, a: a, label: label };
   }
   step('rfHG: zoomed in on a Ø8 hole of a 1200 × 600 panel and on a Ø500 cylinder\'s rim, the zoom display mesh puts the drawn outline within a pixel of the true circle with no background through the rim; zooming out restores the base triangle count', async function () {
+    // swpart (2026-11-12): the line probes classify pixels as face / dark line / background for rfHA's grey part and #161616 edges; the light default look now draws SolidWorks' near-white part, so they run on the grey part, which the dark theme keeps
+    var swpTheme = UI.theme(); UI.setTheme('dark');
     var rv0 = UI.realView ? UI.realView() : false, style = UI.App.view.style, lvl = UI.zoomTess.level(), out = [];
     try {
       if (UI.setRealView) UI.setRealView(false, true);
@@ -260,7 +268,7 @@
     } finally {
       UI.zoomTess.setLevel(lvl);
       if (UI.setRealView) UI.setRealView(rv0, true);
-      UI.setStyle(style);
+      UI.setStyle(style); UI.setTheme(swpTheme);
     }
   });
 

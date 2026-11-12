@@ -78,16 +78,19 @@ var UI = (function () {
   // tones (isometric box: top ~196, left ~148, right ~112 of 255; a face square to the view ~162, never washed out):
   // a stronger key from the upper left front, a low soft fill from below the view (it no longer lights the right side as
   // much as the key lights the left, which made both sides one grey), the rim kept; more sky / darker ground ambient.
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x636363, 0.85));   // rfBU: neutral ground light (was bluish 0x8d96a1)
+  var hemiLight = new THREE.HemisphereLight(0xffffff, 0x636363, 0.85); scene.add(hemiLight);   // rfBU: neutral ground light (was bluish 0x8d96a1); swpart: named, applyPartLook sets the intensities
   var key = new THREE.DirectionalLight(0xffffff, 0.64); key.position.set(-0.8, 1, 1.05); camera.add(key);
   var fill = new THREE.DirectionalLight(0xffffff, 0.31); fill.position.set(0.05, -0.52, 0.3); camera.add(fill);
   var rim = new THREE.DirectionalLight(0xffffff, 0.25); rim.position.set(0.3, 0.6, -1); camera.add(rim);
+  // swpart: a light square to the top face of an isometric view (off but for SolidWorks' default part, applyPartLook): with
+  // it the top of a plate reads white while its sides stay mid grey, as in the user's SolidWorks
+  var topLight = new THREE.DirectionalLight(0xffffff, 0); topLight.position.set(0, 0.82, 0.58); camera.add(topLight);
   // rfBH: the lights' targets ride on the camera too. A DirectionalLight aims at its target, which defaults to the world
   // origin: with the light 10000 units out on the camera that made all three a headlight, so a face square to the view
   // took key + fill + rim at once and washed out to white (a sketch plane's face seen Normal To). Aimed at the camera's
   // own origin, the offsets above are the true directions in view space: a face square to the view reads light grey,
   // the top of an isometric view lighter than its sides, as SolidWorks shades.
-  [key, fill, rim].forEach(function (l) { camera.add(l.target); l.target.position.set(0, 0, 0); });
+  [key, fill, rim, topLight].forEach(function (l) { camera.add(l.target); l.target.position.set(0, 0, 0); });
 
   var groups = {
     body: new THREE.Group(), edges: new THREE.Group(), sketches: new THREE.Group(), temp: new THREE.Group(),
@@ -158,6 +161,7 @@ var UI = (function () {
     if (arguments.length) {
       var was = profVp;
       profVp = c && typeof c === 'object' ? c : null;
+      applyPartLook();   // swpart: a profile with graphics colours keeps rfHA's rig
       if (!profTriad) profTriad = TRIAD_AXES.map(function (a) { return a[1]; });
       TRIAD_AXES.forEach(function (a, i) { a[1] = profVp && profVp.gnomon && profVp.gnomon[i] ? profVp.gnomon[i] : profTriad[i]; });
       if (was && !profVp) { mats.part.color.set(partColor(App.model && App.model.color)); applyLinePalette(); }
@@ -190,8 +194,47 @@ var UI = (function () {
     if (viewport) viewport.classList.toggle('vp-light', !dark);
     Object.keys(c).forEach(function (k) { if (mats[k].color.getHex() !== c[k]) { mats[k].color.setHex(c[k]); mats[k].needsUpdate = true; } });
     var s = App.view.style, painted = s !== 'hlr' && s !== 'hlv' && s !== 'wireframe';
-    if (painted && mats.edge.color.getHex() !== EDGE_ON_BODY_DARK) { mats.edge.color.setHex(EDGE_ON_BODY_DARK); mats.edge.needsUpdate = true; }
+    applyPartLook();
+    var edgeOn = swLook.on ? SW_PART.edge : EDGE_ON_BODY_DARK;
+    if (painted && mats.edge.color.getHex() !== edgeOn) { mats.edge.color.setHex(edgeOn); mats.edge.needsUpdate = true; }
     needsRender = true;
+  }
+  // lane swpart (2026-11-12, user: the default profile "the exact same thing ... colors and all"): a part with no
+  // material and no colour of its own, in the light graphics area of the default profile, looks like SolidWorks' default
+  // part in the user's screenshots (sw-03 / sw-05): nearly white, the top of a plate #ffffff, its sides #a8aab6 and
+  // #95979a, thin dark edges (~#616268). Its own colour and its own light rig (the lights ride on the camera and light
+  // only the part; a part with a material or a colour, the dark theme / Dark background and an interface profile with
+  // graphics colours keep rfHA's grey and rig exactly). RealView: the same, through an appearance of its own (rvApply).
+  // Values fitted by descent on rendered pixels of an isometric box (top / left / right faces) against the screenshot's
+  // top #ffffff and sides #a8aab6 / #95979a: Phong top 255, sides (173,175,180) / (148,150,154); RealView top 255,
+  // sides (174,176,183) / (143,145,150). rig.top is topLight (square to an isometric top face); rvKnee 1 = no tone shoulder.
+  var SW_PART = {
+    color: '#f6f9ff', edge: 0x3a3b40,   // edge: 2 device px read as SolidWorks' 1 px anti-aliased #616268; under 70 so the rfHG / rfHY line probes see a line
+    rig: { hemi: 0.8, key: 0.24, fill: 0.07, rim: 0, top: 0.6 },
+    rv: { color: '#f3f6fe', metalness: 0.01, roughness: 0.5, pattern: 0, env: 0.22 }, rvDirect: 1.45, rvAmbient: 0.35, rvKnee: 1.0, rvExposure: 0.97
+  };
+  var RIG_HA = { hemi: 0.85, key: 0.64, fill: 0.31, rim: 0.25, top: 0 }, RV_HA = { direct: 1.9, ambient: 0.15, knee: 0.62, exposure: 1.0 };
+  var swLook = { on: false };
+  function swPartWanted() {
+    if (darkViewport() || profVp || !App.model || mats.part.vertexColors) return false;
+    if (!window.Materials || !Materials.appearanceOf || !Materials.FINISHES) return false;
+    var a = Materials.appearanceOf(App.model), none = Materials.FINISHES.none;
+    return a.name === none.name && String(a.color).toLowerCase() === String(none.color).toLowerCase();
+  }
+  function applyPartLook() {
+    var on = swPartWanted(), r = on ? SW_PART.rig : RIG_HA;
+    swLook.on = on;
+    if (hemiLight.intensity !== r.hemi || key.intensity !== r.key || fill.intensity !== r.fill || rim.intensity !== r.rim || topLight.intensity !== r.top) {
+      hemiLight.intensity = r.hemi; key.intensity = r.key; fill.intensity = r.fill; rim.intensity = r.rim; topLight.intensity = r.top; needsRender = true;
+    }
+    if (on && mats.part.color.getHexString() !== new THREE.Color(SW_PART.color).getHexString()) { mats.part.color.set(SW_PART.color); needsRender = true; }
+    if (!on && App.model && !mats.part.vertexColors && !profVp) {
+      var want = new THREE.Color(partColor(App.model.color));
+      if (!mats.part.color.equals(want)) { mats.part.color.copy(want); needsRender = true; }
+    }
+    if (mats.partFill && !mats.partFill.color.equals(mats.part.color)) mats.partFill.color.copy(mats.part.color);
+    if (typeof rvU !== 'undefined') { rvU.direct.value = on ? SW_PART.rvDirect : RV_HA.direct; rvU.ambient.value = on ? SW_PART.rvAmbient : RV_HA.ambient; rvU.knee.value = on ? SW_PART.rvKnee : RV_HA.knee; rvU.exposure.value = on ? SW_PART.rvExposure : RV_HA.exposure; }
+    return on;
   }
   // setViewportTheme('dark' | 'light'): idempotent; UI.setTheme (ui-app.js) calls it after switching the stylesheet.
   function setViewportTheme(name) {
@@ -992,7 +1035,7 @@ var UI = (function () {
   // tuning hook (look work, tests): rebuild the studio after changing RV_STUDIO
   function rvRebuildEnv() { if (rv.env) rv.env.dispose(); rv.env = null; rv.envFailed = false; rvBuildEnv(); applyDisplayStyle(); return rv.envMs; }
   var RV_GLSL = [
-    'uniform float rvDirect; uniform float rvAmbient; uniform float rvExposure; uniform float rvUnit; uniform float rvPattern; uniform vec3 rvBend;',
+    'uniform float rvDirect; uniform float rvAmbient; uniform float rvExposure; uniform float rvKnee; uniform float rvUnit; uniform float rvPattern; uniform vec3 rvBend;',
     'varying vec3 vRvPos; varying vec3 vRvObjN; varying vec2 vRvNdc;',
     '#ifdef RV_VERTEX', 'varying vec3 vRvColor; varying vec3 vRvAppear;', '#endif',
     // the studio is looked up as from an eye in front of the screen (a ~40° lens) though the view is orthographic, so a
@@ -1001,7 +1044,7 @@ var UI = (function () {
     'vec3 rvToLinear(vec3 c) { return mix(pow(c * 0.9478672986 + 0.0521327014, vec3(2.4)), c * 0.0773993808, vec3(lessThanEqual(c, vec3(0.04045)))); }',
     'vec3 rvToSRGB(vec3 c) { return mix(pow(max(c, vec3(0.0)), vec3(0.41666)) * 1.055 - 0.055, c * 12.92, vec3(lessThanEqual(c, vec3(0.0031308)))); }',
     // a soft shoulder above 0.62: mid tones stay as lit (the grey part reads as it does with RealView off), highlights roll to white
-    'vec3 rvTone(vec3 c) { c *= rvExposure; vec3 k = max(c - 0.62, 0.0); return min(c, vec3(0.62)) + k / (1.0 + k / 0.38); }',
+    'vec3 rvTone(vec3 c) { c *= rvExposure; vec3 k = max(c - rvKnee, 0.0); return min(c, vec3(rvKnee)) + k / (1.0 + k / max(1.0 - rvKnee, 1e-4)); }',
     // sine-free hashes (D. Hoskins): fract(sin(big)) loses precision on GPUs and drew the brushed grain as diagonal,
     // crosshatched blocks on large parts and close up (user 2026-11-04: "the stainless kinda looks like crap")
     'float rvHash(vec2 p) { p = mod(p, 8192.0); vec3 q = fract(vec3(p.xyx) * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }',
@@ -1042,7 +1085,7 @@ var UI = (function () {
     '}'
   ].join('\n');
   function rvPatchShader(sh, vertex) {
-    sh.uniforms.rvDirect = rvU.direct; sh.uniforms.rvAmbient = rvU.ambient; sh.uniforms.rvExposure = rvU.exposure; sh.uniforms.rvUnit = rvU.unit; sh.uniforms.rvBend = rvU.bend;
+    sh.uniforms.rvDirect = rvU.direct; sh.uniforms.rvAmbient = rvU.ambient; sh.uniforms.rvExposure = rvU.exposure; sh.uniforms.rvKnee = rvU.knee; sh.uniforms.rvUnit = rvU.unit; sh.uniforms.rvBend = rvU.bend;
     sh.uniforms.rvPattern = this.userData.rvPattern;
     var vs = sh.vertexShader, fs = sh.fragmentShader;
     vs = vs.replace('#include <common>', '#include <common>\nvarying vec3 vRvPos; varying vec3 vRvObjN; varying vec2 vRvNdc;\n#ifdef RV_VERTEX\nattribute vec3 rvColor; attribute vec3 rvAppear; varying vec3 vRvColor; varying vec3 vRvAppear;\n#endif')
@@ -1078,7 +1121,7 @@ var UI = (function () {
   }
   // shared uniforms (one set for every RV material): tuned so the satin grey part reads like the Phong part of rfHA
   // (isometric box top / left / right about 200 / 150 / 115) with the studio's reflections on top
-  var rvU = { direct: { value: 1.9 }, ambient: { value: 0.15 }, exposure: { value: 1.0 }, unit: { value: 1 }, bend: { value: new THREE.Vector3(1, 0, 0) } };
+  var rvU = { direct: { value: 1.9 }, ambient: { value: 0.15 }, exposure: { value: 1.0 }, knee: { value: 0.62 }, unit: { value: 1 }, bend: { value: new THREE.Vector3(1, 0, 0) } };
   function rvMaterial(vertex, wire) {
     var m = new THREE.MeshStandardMaterial({ color: 0x8c8c8c, metalness: 0.05, roughness: 0.42, side: THREE.DoubleSide,
       polygonOffset: !wire, polygonOffsetFactor: 0, polygonOffsetUnits: 1, wireframe: !!wire, depthWrite: !wire, envMapIntensity: 1 });
@@ -1104,6 +1147,7 @@ var UI = (function () {
   }
   function rvSetAppearance(m, a) {
     m.color.set(a.color); m.metalness = a.metalness; m.roughness = a.roughness; m.userData.rvPattern.value = a.pattern || 0;
+    m.envMapIntensity = a.env != null ? a.env : 1;   // swpart: SolidWorks' default part reflects its studio less
   }
   function rvSync(m) {
     var p = mats.part;
@@ -1142,6 +1186,7 @@ var UI = (function () {
         }
         if (list && App.mesh && App.mesh.triCount) { rvVertexData(bodyMesh.geometry, App.mesh, list); face = MS.partV; fillM = MS.fillV; }
         else { face = MS.part; fillM = MS.fill; list = null; }
+        if (!list && swLook.on) base = { name: base.name, color: SW_PART.rv.color, metalness: SW_PART.rv.metalness, roughness: SW_PART.rv.roughness, pattern: SW_PART.rv.pattern, env: SW_PART.rv.env };   // swpart: SolidWorks' default part
         rv.capBase = base; rv.capList = list;   // rfHF: the section caps' appearances (rvCapGroups)
         rvU.bend.value.copy(rvBendAxis());
         rvSetAppearance(MS.part, base); rvSetAppearance(MS.fill, base);
@@ -4853,6 +4898,7 @@ var UI = (function () {
     // rfHC: RealView (physically based shading in a studio; the depthfx lane's toggles call setRealView)
     setRealView: setRealView, realView: realView, realViewInfo: realViewInfo, partFaceMaterial: partFaceMaterial,
     // r14/viewui14: background, triad, View Selector
+    partLook: { SW_PART: SW_PART, on: function () { return swLook.on; }, bodyEdge: function () { return swLook.on ? SW_PART.edge : EDGE_ON_BODY_DARK; }, apply: function () { var o = applyPartLook(); applyLinePalette(); rvApply(); needsRender = true; return o; }, rig: function () { return { hemi: hemiLight.intensity, key: key.intensity, fill: fill.intensity, rim: rim.intensity, top: topLight.intensity }; } },   // swpart
     setBackground: setBackground, drawTriad: function () { drawTriad(); }, triadClick: triadClick, triadAxisAt: triadAxisAt, orientView: orientView,
     showViewSelector: showViewSelector, hideViewSelector: hideViewSelector, viewSelectorShown: viewSelectorShown, viewSelectorPick: viewSelectorPick, viewSelectorMenuClear: vsMenuClear, modelEdgeInBox: modelEdgeInBox,
     viewSelectorRegions: function () { return vs.cells.map(function (c) { return { id: c.id, center: [(c.q[0][0] + c.q[2][0]) / 2, (c.q[0][1] + c.q[2][1]) / 2] }; }); },

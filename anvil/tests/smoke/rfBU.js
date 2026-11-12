@@ -27,13 +27,16 @@
     await anvil.run('p.sketch("Front", 0, "S1").rect(0, 0, 40, 20).extrude(5);'); await idle();
     var mp = UI.mats.part, sp = mp.specular;
     assert(UI.App.model.color === '#8c8c8c' && W.Materials.DEFAULT_COLOR === '#8c8c8c', 'new part colour ' + UI.App.model.color);
-    assert(mp.color.getHexString() === '8c8c8c', 'part material ' + mp.color.getHexString());
+    // swpart (2026-11-12): in the light default look the default part shows as SolidWorks' near-white part (the stored
+    // colour stays #8c8c8c); dark theme / profiles / RealView off with a colour: the grey
+    function rfBUshown() { return UI.partLook.on() ? new W.THREE.Color(UI.partLook.SW_PART.color).getHexString() : '8c8c8c'; }
+    assert(mp.color.getHexString() === rfBUshown(), 'part material ' + mp.color.getHexString());
     assert(Math.abs(sp.r - sp.g) < 1e-6 && Math.abs(sp.g - sp.b) < 1e-6, 'specular neutral: ' + sp.getHexString());
     assert(anvil.script().indexOf('p.color(') < 0, 'the default colour writes no p.color line');
     // a part saved before rfBU carries '#a8adb6': it keeps the stored value but shows (and scripts) as the default
     var json = JSON.parse(JSON.stringify(UI.App.model)); json.color = '#A8ADB6';
     await anvil.load(json); await idle();
-    assert(UI.App.model.color === '#A8ADB6' && UI.mats.part.color.getHexString() === '8c8c8c', 'old default shows grey: ' + UI.mats.part.color.getHexString());
+    assert(UI.App.model.color === '#A8ADB6' && UI.mats.part.color.getHexString() === rfBUshown(), 'old default shows as the default: ' + UI.mats.part.color.getHexString());
     assert(W.Materials.displayColor('#a8adb6') === '#8c8c8c' && W.Materials.displayColor(null) === '#8c8c8c' && W.Materials.displayColor('#2f6db5') === '#2f6db5', 'displayColor');
     assert(anvil.script().indexOf('p.color(') < 0, 'the old default writes no p.color line either');
     UI.App.model.color = '#2f6db5'; UI.applyDisplayStyle();

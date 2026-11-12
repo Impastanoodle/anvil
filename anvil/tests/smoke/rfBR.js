@@ -84,7 +84,8 @@
       UI.setStyle('hlr');
       assert(UI.mats.edge.color.getHex() === P.edge, 'HLR edges in the line colour: #' + UI.mats.edge.color.getHexString());
       UI.setStyle('shadedEdges');
-      assert(UI.mats.edge.color.getHex() < 0x303030, 'edges dark on the shaded body: #' + UI.mats.edge.color.getHexString());
+      // swpart: up to SolidWorks' edge colour on its default part (#3a3b40)
+      assert(UI.mats.edge.color.getHex() <= 0x3a3b40, 'edges dark on the shaded body: #' + UI.mats.edge.color.getHexString());
       var e = UI.App.edges.filter(function (x) { return !x.smooth; })[0];
       UI.setSelection([{ kind: 'edge', edge: e, index: UI.App.edges.indexOf(e) }]);
       var hl = UI.groups.highlight.children.filter(function (o) { return o.isLineSegments; });

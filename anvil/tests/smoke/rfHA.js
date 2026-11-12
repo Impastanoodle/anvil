@@ -28,6 +28,9 @@
 
   step('rfHA: studio lighting: an isometric box shows three clearly different greys (top lightest, then the left (front) face, then the right), none washed out or black; a face seen Normal To reads mid-light grey', async function () {
     var style = UI.App.view.style;
+    // swpart (2026-11-12): this pins rfHA's grey part, which the light default look replaced with SolidWorks' near-white
+    // one (rfMF); the grey rig is unchanged in the dark theme, so it is measured there
+    var swpTheme = UI.theme(); UI.setTheme('dark');
     try {
       await anvil.newPart(); await idle();
       await anvil.run(RFHA_BOX); await idle();
@@ -44,16 +47,19 @@
       var face = at([1.5, 0.5, 2]);
       assert(face >= 130 && face <= 215, 'a face square to the view is mid-light grey: ' + face.toFixed(0));
       return msg + '; Normal To ' + face.toFixed(0);
-    } finally { UI.setStyle(style); }
+    } finally { UI.setStyle(style); UI.setTheme(swpTheme); }
   });
 
   step('rfHA: edges dark (#161616) on shaded faces, a whole number of device pixels wide; an edge square to the screen covers whole pixels (no grey smear beside it)', async function () {
     var style = UI.App.view.style;
+    // swpart (2026-11-12): the line probes classify pixels as face / dark line / background for rfHA's grey part and #161616 edges; the light default look now draws SolidWorks' near-white part, so they run on the grey part, which the dark theme keeps
+    var swpTheme = UI.theme(); UI.setTheme('dark');
     try {
       await anvil.newPart(); await idle();
       await anvil.run(RFHA_BOX); await idle();
       UI.setStyle('shadedEdges');
-      assert(UI.mats.edge.color.getHex() === 0x161616, 'edge colour on shaded faces: ' + UI.mats.edge.color.getHexString());
+      // swpart: the default part in the light default look has SolidWorks' edge colour (UI.partLook.bodyEdge())
+      assert(UI.mats.edge.color.getHex() === UI.partLook.bodyEdge(), 'edge colour on shaded faces: ' + UI.mats.edge.color.getHexString());
       await rfHAView('Isometric');
       var fm = UI.mats.edge.userData.fatMats && UI.mats.edge.userData.fatMats.line;
       if (fm) { var dw = fm.uniforms.linewidth.value * UI.renderer.getPixelRatio(); assert(Math.abs(dw - Math.round(dw)) < 1e-6 && dw >= 1, 'edge width in device px: ' + dw); }
@@ -68,7 +74,7 @@
       var dark = col.filter(function (v) { return v >= 0 && v < 40; }).length, smear = col.filter(function (v) { return v >= 40 && v < 90; }).length;
       assert(dark >= 1 && dark <= 3 && smear <= 1, 'crisp horizontal edge (dark ' + dark + ', half-tone ' + smear + '): ' + col.join(' '));
       return 'darkest ' + darkest.toFixed(0) + '; column ' + col.join(' ');
-    } finally { UI.setStyle(style); }
+    } finally { UI.setStyle(style); UI.setTheme(swpTheme); }
   });
 
   step('rfHA: no blue on the shaded part, in the light and the dark theme (only the axis colours may be blue, and they are not drawn here)', async function () {

@@ -73,14 +73,16 @@
   }
   function rfHYSave() {
     var V = UI.App.view;
-    return { rv: UI.realView ? UI.realView() : false, style: V.style, planes: V.showPlanes, origin: V.showOrigin, zl: UI.zoomTess.level() };
+    // swpart (2026-11-12): the line probes classify pixels as face / dark line / background for rfHA's grey part and #161616 edges; the light default look now draws SolidWorks' near-white part, so they run on the grey part, which the dark theme keeps
+    var th = UI.theme(); UI.setTheme('dark');
+    return { rv: UI.realView ? UI.realView() : false, style: V.style, planes: V.showPlanes, origin: V.showOrigin, zl: UI.zoomTess.level(), theme: th };
   }
   async function rfHYRestore(s) {
     var V = UI.App.view;
     anvil.occt(false, { remember: false }); await idle();
     UI.zoomTess.setLevel(s.zl);
     if (UI.setRealView) UI.setRealView(s.rv, true);
-    UI.setStyle(s.style);
+    UI.setStyle(s.style); if (s.theme) UI.setTheme(s.theme);
     V.showPlanes = s.planes; V.showOrigin = s.origin; UI.updatePlanes(); UI.updateOrigin();
     UI.App.sel = null; if (UI.setSelection) UI.setSelection([]); UI.updateHighlights();
   }
