@@ -81,9 +81,76 @@
     if (al) for (var k in al) if (al[k] === tab) return k;
     return tab;
   }
+  // ---- rfLX: the profile's icon set. `icons: { set: 'mastercam' }` names a set registered with icons.js (Icons.sets;
+  // icons-mastercam.js); no section = the built-in drawings. The set is switched before anything is rebuilt, then every
+  // icon still on screen from the other set is drawn again: what the set drew carries its name (data-ic), a built-in
+  // icon (which carries nothing, its markup is untouched) is found by rendering the built-in names at its size.
+  function iconSetOf(p) { var id = p && p.icons && p.icons.set; return id && window.Icons && Icons.sets && Icons.sets.get(id) ? id : null; }
+  function iconHtml(html) { var box = document.createElement('div'); box.innerHTML = html; return box.firstChild; }
+  function iconClass(svg) { return (svg.getAttribute('class') || '').replace(/(^|\s)ico(?=\s|$)/, ' ').trim(); }
+  function redrawIcons() {
+    var now = Icons.sets.active(), all = Array.prototype.slice.call(document.querySelectorAll('svg.ico[data-wt]')), tables = {};
+    var plain = all.filter(function (s) { return !s.getAttribute('data-set'); });
+    if (now && plain.length) {
+      // the built-in icons on screen: their names, read with no set on
+      Icons.sets.use(null);
+      try {
+        plain.forEach(function (s) {
+          var size = parseFloat(s.getAttribute('width')) || 16, cls = iconClass(s), key = size + '|' + cls, t = tables[key];
+          if (!t) { t = tables[key] = {}; Icons.names().forEach(function (n) { var m = iconHtml(Icons(n, size, cls)).innerHTML; if (!(m in t)) t[m] = n; }); }
+          var name = t[s.innerHTML];
+          if (name) s.setAttribute('data-ic', name);
+        });
+      } finally { Icons.sets.use(now); }
+    }
+    var done = 0;
+    all.forEach(function (s) {
+      var name = s.getAttribute('data-ic'), from = s.getAttribute('data-set') || null;
+      if (!name || from === now || !s.parentNode) return;
+      var fresh = iconHtml(Icons(name, parseFloat(s.getAttribute('width')) || 16, iconClass(s)));
+      if (!fresh) return;
+      if (s.getAttribute('style')) fresh.setAttribute('style', s.getAttribute('style'));
+      s.parentNode.replaceChild(fresh, s);
+      done++;
+    });
+    return done;
+  }
+  // buttons a file draws without Icons() (the Quick Masks): the set's `slots` name them; the first drawing is kept on
+  // the element and put back when the set goes
+  function slotIcons() {
+    var now = Icons.sets.active(), set = now ? Icons.sets.get(now) : null, slots = {}, n = 0;
+    Icons.sets.list().forEach(function (id) { ((Icons.sets.get(id) || {}).slots || []).forEach(function (sl) { slots[sl.sel] = sl; }); });
+    Object.keys(slots).forEach(function (sel) {
+      var mine = set && (set.slots || []).filter(function (sl) { return sl.sel === sel; })[0];
+      Array.prototype.forEach.call(document.querySelectorAll(sel), function (b) {
+        var v = mine ? b.getAttribute(mine.attr) : null, name = v ? mine.prefix + v.charAt(0).toUpperCase() + v.slice(1) : null;
+        if (name && set.has(name)) {
+          if (b.getAttribute('data-ic-slot') === now) return;
+          if (b._icon0 == null) b._icon0 = b.innerHTML;
+          b.innerHTML = Icons(name, mine.size || 16); b.setAttribute('data-ic-slot', now); n++;
+        } else if (b._icon0 != null) { b.innerHTML = b._icon0; b._icon0 = null; b.removeAttribute('data-ic-slot'); n++; }
+      });
+    });
+    return n;
+  }
+  function applyIcons(p) {
+    if (!window.Icons || !Icons.sets) return false;
+    var want = iconSetOf(p);
+    if (want === Icons.sets.active()) return false;
+    Icons.sets.use(want);
+    return true;
+  }
+  function refreshIcons() {
+    ['refreshTree', 'refreshHud', 'refreshLevelsPanel'].forEach(function (fn) { try { if (UI[fn]) UI[fn](); } catch (e) { console.warn(fn, e); } });
+    try { redrawIcons(); slotIcons(); } catch (e) { console.warn('icons', e); }
+    // furniture built a frame later (the Quick Masks are made by the viewport's own tick)
+    setTimeout(function () { try { slotIcons(); } catch (e) { } }, 0);
+    if (window.requestAnimationFrame) requestAnimationFrame(function () { requestAnimationFrame(function () { try { slotIcons(); } catch (e) { } }); });
+  }
   function apply(prev) {
     if (prev) App.ribbonTab = swTabOf(prev, App.ribbonTab);
     var p = defs[current] || {};
+    var icons = applyIcons(p);   // rfLX: before anything is rebuilt
     if (UI.profileRibbonReset) UI.profileRibbonReset();
     if (UI.keys) UI.keys.reset();
     if (UI.setNavMap) { try { UI.setNavMap(p.mouse || null); } catch (e) { console.warn('setNavMap', e); } }   // lane profnav (ui-core.js)
@@ -92,6 +159,7 @@
     if (UI.refreshRibbon) UI.refreshRibbon();
     if (UI.refreshStatus) UI.refreshStatus();
     if (UI.refreshTaskPane) UI.refreshTaskPane();
+    if (icons) refreshIcons();
   }
   function set(id) {
     if (!defs[id]) id = 'solidworks';
@@ -329,6 +397,8 @@
           '--mc-msg-bg': '#3b3520', '--mc-msg-line': '#6b5a1e', '--mc-msg-text': '#f0d27a' }
       } }
     },
+    // rfLX: the icons (icons-mastercam.js); applied by applyIcons above
+    icons: { set: 'mastercam' },
     // read by lane mcdirect (ui-sketch*.js, ui-core.js); written here only
     wireframe: { direct: true, plane: 'Top' },
     // lane mctheme: gradient #141414 -> #c0c0c0 (linear; measured top, middle, bottom), the Home tab's Attributes swatches
@@ -346,7 +416,8 @@
   });
 
   UI.Profiles = { register: register, unregister: unregister, list: list, get: get, def: def, active: active, set: set, onChange: onChange, labelFor: labelFor, tabOf: tabOf, check: check,
-    optionsSection: optionsSection, openSetting: openSetting, storageKey: KEY };
+    optionsSection: optionsSection, openSetting: openSetting, storageKey: KEY,
+    icons: { set: function () { return window.Icons && Icons.sets ? Icons.sets.active() : null; }, redraw: function () { return redrawIcons() + slotIcons(); } } };
 
   // lane profnav2: the saved profile's mouse at once (ui-core.js has loaded), so the graphics area navigates the
   // profile's way from the first frame; boot below lays out the rest once every file is in

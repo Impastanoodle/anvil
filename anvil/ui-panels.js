@@ -647,7 +647,7 @@
   var MGR_TOOLS = {
     // lane mcpolish: Mastercam's Solids tool row (regenerate all / selected, undo, redo, move up / down, delete)
     solids: [['rebuild', 'Regenerate all (Ctrl+B)', function () { var r = menuRow('Edit', 'Rebuild'); if (r) r.action(); }],
-      ['rebuild', 'Regenerate the selected operation', function () { if (!App.sel || App.sel.kind !== 'feature') { toast('Select an operation first.'); return; } var f = K.findFeature(App.model, App.sel.id); UI.rebuild().then(function () { var er = App.build && App.build.errors && App.build.errors[f.id]; setStatus(f.name + (er ? ': ' + er : ' regenerated.')); }); }],
+      ['rebuild', 'Regenerate the selected operation', function () { if (!App.sel || App.sel.kind !== 'feature') { toast('Select an operation first.'); return; } var f = K.findFeature(App.model, App.sel.id); UI.rebuild().then(function () { var er = App.build && App.build.errors && App.build.errors[f.id]; setStatus(f.name + (er ? ': ' + er : ' regenerated.')); }); }, 'rebuildSel'],   // rfLX: the 4th entry is the icon an icon set may have for it
       ['undo', 'Undo (Ctrl+Z)', function () { (UI.undoCommand || UI.undo)(); }], ['redo', 'Redo (Ctrl+Y)', function () { (UI.redoCommand || UI.redo)(); }],
       ['moveUp', 'Move the selected operation up', function () { frameMoveOp(-1); }], ['moveDown', 'Move the selected operation down', function () { frameMoveOp(1); }],
       ['deleteEnt', 'Delete the selected operation (Del)', function () { var r = menuRow('Edit', 'Delete'); if (r && !r.disabled) r.action(); else toast('Select an operation first.'); }]],
@@ -724,7 +724,7 @@
     var tools = document.querySelector('#mc-mgr-head .mc-mgr-tools');
     if (tools && tools.getAttribute('data-mgr') !== frameMgr) {
       tools.setAttribute('data-mgr', frameMgr); tools.innerHTML = '';
-      (MGR_TOOLS[frameMgr] || []).forEach(function (d) { var b = el('button', { class: 'mc-tool', 'aria-label': d[1], html: Icons(d[0], 16), onclick: d[2] }); setTip(b, { name: d[1] }); tools.appendChild(b); });
+      (MGR_TOOLS[frameMgr] || []).forEach(function (d) { var b = el('button', { class: 'mc-tool', 'aria-label': d[1], html: Icons(d[3] && Icons.has(d[3]) ? d[3] : d[0], 16), onclick: d[2] }); setTip(b, { name: d[1] }); tools.appendChild(b); });
     }
     if (frameMgr === 'levels' && !pmOpen && UI.refreshLevelsPanel) UI.refreshLevelsPanel();
     if (frameMgr === 'solids') frameSolidsRender();
@@ -1629,7 +1629,7 @@
   function rbClamp(s) { s = +s; if (!(s > RB_MIN)) return RB_MIN; return Math.round(Math.min(RB_MAX, s) * 1000) / 1000; }
   try { rbScale = rbClamp(parseFloat(localStorage.getItem(RB_KEY))); } catch (e) { }
   // the icon sizes: large 32 px, small (stacks, grid) 16 px boxes (drawn at 18 at scale 1, as before)
-  function rbIcon(small) { return small ? (rbScale === 1 ? 18 : Math.round(16 * rbScale)) : Math.round(32 * rbScale); }
+  function rbIcon(small) { return small ? (rbScale === 1 ? 18 : Math.round(16 * rbScale)) : Math.round((frameRibbon('captions') ? 24 : 32) * rbScale); }   // rfLX: a frame with captions shows its large icons at 24 px (style.css .mc-ribbon-caps): drawn for 24, not a 32 px drawing squeezed
   var RB_SEL = /#ribbon(?!-grip)|\.rtab(?![\w-])|\.rb(?![\w-])|\.rb-(?:stack|sep|fly|caret|more|grid|vgrid|wide|long|face|over|extra|caption|has-captions)/;
   function rbSplitSel(t) {
     var out = [], depth = 0, cur = '';

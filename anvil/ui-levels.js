@@ -567,8 +567,9 @@
     allOff: EYE + '<path d="M2.5 13.5 L13.5 2.5" stroke="#fff" stroke-width="3"/><path d="M2.5 13.5 L13.5 2.5" stroke="#d0342c" stroke-width="1.5"/>'
   };
   function toolButton(act, title) {
+    var set = 'lvl' + act.charAt(0).toUpperCase() + act.slice(1);   // rfLX: an icon set may draw these three (lvlNew, lvlAllOn, lvlAllOff); ui-profiles.js re-renders the pane when the set changes
     return '<button type="button" class="lvl-tb" data-act="' + act + '" title="' + title + '" aria-label="' + title.split(':')[0] + '">' +
-      '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">' + TOOL_ICONS[act] + '</svg></button>';
+      (window.Icons && Icons.sets && Icons.sets.active() && Icons.has(set) ? Icons(set, 16) : '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">' + TOOL_ICONS[act] + '</svg>') + '</button>';
   }
   UI.refreshLevelsPanel = function () { renderPane(true); };
 

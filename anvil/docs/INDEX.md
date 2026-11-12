@@ -1480,7 +1480,28 @@ HoleWizard.newFeature  L324  — newFeature(o, units?) -> a hole feature from sc
 HoleWizard.ANSI_CSK_ANGLE  L375
 more: fracName L62, scaled L198, numText L226, holeDepth L264, modelUnits L274
 
-## icons.js (752 lines)
+## icons-mastercam.js (395 lines)
+> the icon set of the Mastercam interface profile (rfLX, 2026-11-12). Loaded after icons.js.
+L  L38  — a line (not filled): the wireframe blue, 1.5 = the main entity (1 px at 16, 2 px at 32), …
+T  L40  — a thin dark line (dimension, axis, leader)
+F  L43  — a face: flat fill, stroked in its own colour exactly one device pixel wide (@FW), which …
+P  L46  — an outlined shape (paper with a slate outline, a framed square)
+mk  L51  — the mark of a defined point: a small grey plus
+ar  L53  — an arrow from (x1, y1) to its point at (x2, y2): what the command does
+up  L61  — a fat block arrow pointing up from (x, y1) to (x, y0) (Extrude, Thicken)
+Q  L64  — the Analyze question mark, about 3.5 wide and 7 high from (x, y)
+cube  L69  — a block seen from above its corner (2 : 1 slopes): the top rhombus is centred on (cx, …
+cyl  L82  — an upright cylinder: side, a darker band down its right, the top ellipse
+page  L89  — a sheet of paper with a slate outline; a magnifier (grey ring, dark handle); a gear …
+arc  L97  — a curved arrow (regenerate, undo): an arc with a head
+globe  L223  — the display styles: drawn in the slate ink (@SI follows the ink), so they are slate blue …
+pane  L238  — the manager toggles: a pane with its rows
+drawn  L371  — the size icons.js really draws at (an 18 px box holds a 16 px drawing), for the …
+more: r2 L35, st L36, Fr L44, R L47, C L48, E L49, head L59, down L62, wcube L75, txt L87, mag L90, gear L91,
+more: frame L195, unzoom L201, vcube L210, grid L234, bookmark L244, ext L254, sq L259, regen L284, rows L287,
+more: attr L344, setAttr L345, restyleShape L346, finish L375, restyle L381, body L382
+
+## icons.js (786 lines)
 > inline SVG icon set for Anvil's ribbon, tree and panels.
 st  L27  — one stroke attribute per element (color defaults to the ink, width to 1.25)
 blk  L36  — isometric block: front face w×h at (x, y+d), top and right faces receding by d
@@ -1488,12 +1509,11 @@ strokeClass  L564  — the class and target width (CSS px) of one stroke drawn w
 nudge  L577  — the offset (16-grid units) that puts a line of dw device px at coordinate c on whole …
 snapper  L588  — rfIL: pixel hinting. One translate per element (the nudge above) only works when every …
 hintD  L594  — the path's d rewritten in absolute coordinates with every vertex snapped (curve handles …
-svg  L675  — icon.svg(body, size, cls): the <svg> for any 16-grid body (the drawing documents' own …
-IconsLib.icon  L697
-nodeOf  L706  — node(name, size) -> a fresh <svg> element cloned from a parsed template (a long …
-IconsLib.frontFor  L724
+IconsLib.icon  L711
+nodeOf  L733  — node(name, size) -> a fresh <svg> element cloned from a parsed template (a long …
+IconsLib.frontFor  L751
 more: p L28, ln L29, circ L30, ell L31, rect L32, pt L33, txt L34, pxText L422, attr L557, setAttr L558,
-more: num L562, ratio L575, hint L630, weigh L638, body L693
+more: num L562, ratio L575, hint L630, weigh L638, setBody L682, named L683, svg L687, body L707
 
 ## kernel-curves.js (1959 lines)
 > Anvil kernel, true curves: the analytic surface records that curved facets carry (cyl, cone, sph,
@@ -3610,7 +3630,7 @@ UI.updateCosmeticThreads  L159
 UI.cosmeticThreadCount  L185
 more: fmt L14, units L15, holeOf L16
 
-## ui-levels.js (746 lines)
+## ui-levels.js (747 lines)
 > Levels Manager (Mastercam): part-wide numbered levels for the 2D entities of every sketch, built on
 table  L40  — the model's table, made valid in place: numbers ≥ 1, no repeats, level 1 present, …
 resolve  L67  — the level a sketch layer name stands for (create: make a new level when none does)
@@ -3631,21 +3651,21 @@ UI.rebuild  L472
 UI.loadModel  L474
 UI.updateSketches  L476
 UI.refreshStatus  L478
-UI.refreshLevelsPanel  L573
-startEdit  L606  — in-place edit of a Name / Level Set cell: Enter or leaving the box commits, Esc cancels
-UI.levelsEdit  L630  — test / script hook: the in-place editor of a cell
-rowMenu  L641  — the right-click menus (Mastercam's Levels Manager menu)
-UI.levelsMenu  L679  — test hook
-UI.showLevelsManager  L681  — the ribbon's Levels button (ui-panels.js) and scripts: show the Levels Manager tab
-UI.levelStatusHtml  L688
-UI.levelsPopup  L729  — test hook
-UI.levels  L732
-window.anvil.levels  L744
+UI.refreshLevelsPanel  L574
+startEdit  L607  — in-place edit of a Name / Level Set cell: Enter or leaving the box commits, Esc cancels
+UI.levelsEdit  L631  — test / script hook: the in-place editor of a cell
+rowMenu  L642  — the right-click menus (Mastercam's Levels Manager menu)
+UI.levelsMenu  L680  — test hook
+UI.showLevelsManager  L682  — the ribbon's Levels button (ui-panels.js) and scripts: show the Levels Manager tab
+UI.levelStatusHtml  L689
+UI.levelsPopup  L730  — test hook
+UI.levels  L733
+window.anvil.levels  L745
 more: isPart L29, sketches L30, normLevel L31, byNumber L56, keyOf L57, byKey L58, byName L59, lowestFree L64,
 more: isDigits L65, sig L79, writeRec L80, recIn L89, ensureRec L90, entityKey L97, sync L124, counts L205,
 more: mainLevel L221, label L222, selectedEntities L223, validName L229, need L241, activeSketch L242,
 more: moveCopy L380, fail L414, level1Hidden L458, esc L486, shown L490, levelSets L496, renderPane L507,
-more: head L559, toolButton L569, rowOf L576, presetItems L635, paneMenu L665, closePop L694, openPop L695
+more: head L559, toolButton L569, rowOf L577, presetItems L636, paneMenu L666, closePop L695, openPop L696
 
 ## ui-materials.js (323 lines)
 > materials and custom properties in the UI (the data and maths are in materials.js):
@@ -3907,17 +3927,20 @@ more: cfgPromptRename L3502, cfgConfirmDelete L3507, escHtml L3512, cfgMenu L351
 more: adoptTitle L3621, renderTip L3629, showTip L3638, hideTip L3652, scContext L3697, scFind L3702,
 more: shortcutBarItems L3717, scMark L3726, scPress L3731, dtColumnChoices L3836
 
-## ui-profiles.js (369 lines)
+## ui-profiles.js (440 lines)
 > interface profiles (lane profiles, user 2026-11-11: "a setting that rearranges the ui to be similar
 unregister  L66  — unregister(id): a profile registered for a test goes again (the built-in ones stay); the …
 swTabOf  L79  — the SolidWorks name of the tab under a profile ('Wireframe' -> 'Sketch'), so a switch …
-tabOf  L110  — the tab of the active profile's CommandManager a command is on now (null with …
-check  L121  — the cmds a profile names (tabs, labels, keys) that no document type has and no key …
-UI.profileStatusHtml  L179
-UI.Profiles  L348
-boot  L359  — boot: the saved profile (after every file has loaded: the drawing tabs and the mouse map …
-more: clone L52, flat L53, register L55, list L72, get L73, active L74, def L75, onChange L76, apply L84,
-more: set L96, labelFor L105, el L151, optionsSection L157, openSetting L172
+iconSetOf  L88  — rfLX: the profile's icon set. `icons: { set: 'mastercam' }` names a set registered with …
+slotIcons  L120  — buttons a file draws without Icons() (the Quick Masks): the set's `slots` name them; the …
+tabOf  L178  — the tab of the active profile's CommandManager a command is on now (null with …
+check  L189  — the cmds a profile names (tabs, labels, keys) that no document type has and no key …
+UI.profileStatusHtml  L247
+UI.Profiles  L418
+boot  L430  — boot: the saved profile (after every file has loaded: the drawing tabs and the mouse map …
+more: clone L52, flat L53, register L55, list L72, get L73, active L74, def L75, onChange L76, iconHtml L89,
+more: iconClass L90, redrawIcons L91, applyIcons L136, refreshIcons L143, apply L150, set L164, labelFor L173,
+more: el L219, optionsSection L225, openSetting L240
 
 ## ui-rebuild.js (298 lines)
 > r12/occtui12: rebuild feedback as in SolidWorks. The status bar's rebuild chip ("Fully rebuilt",

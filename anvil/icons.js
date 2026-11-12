@@ -672,8 +672,22 @@ var IconsLib = (function () {
   // icon.svg(body, size, cls): the <svg> for any 16-grid body (the drawing documents' own icons come through here)
   // A size just above a whole multiple of 16 device px (18 px small ribbon buttons at 1x: 1.125 px per unit, every line
   // blurred) is drawn at that multiple and centred on whole pixels instead (16 px inside the 18 px box).
-  function svg(body, size, cls) {
+  // rfLX icon sets (docs/areas/ui-core.md *Look: icon sets*): an interface profile may name a set that draws the icons its
+  // own way. A set is { body(name, size) -> a 16-grid body or null, restyle(body, size) -> body (any drawing it has no
+  // body of its own for), has(name) }. What a set drew or restyled carries data-set and data-ic, the name, so the
+  // icons on screen can be redrawn when the set changes; only a named icon is restyled (NAMING), never a bare
+  // Icons.svg(body) such as a Design Library tile, which nothing could redraw. With no set in use nothing here runs:
+  // the built-in output is what it was, character for character.
+  var SETS = {}, SET = null, SET_ID = null, NAMING = 0;
+  function setBody(name, size) { var b = SET && SET.body ? SET.body(name, size || 32) : null; return typeof b === 'string' ? b : null; }
+  function named(out, name) {
+    if (!SET || typeof out !== 'string' || out.indexOf(' data-set="') < 0 || out.indexOf(' data-ic="') >= 0 || !/^[\w-]+$/.test(name)) return out;
+    return out.replace(' data-wt="1"', ' data-wt="1" data-ic="' + name + '"');
+  }
+  function svg(body, size, cls, own) {
     size = size || 32;
+    var mark = '';
+    if (SET) { if (!own && NAMING && SET.restyle) { body = SET.restyle(body, size); own = true; } if (own) mark = ' data-set="' + SET_ID + '"'; }
     var dpr = ratio(), k = size / 16 * dpr, n = Math.floor(k + 1e-6), inner;
     if (n >= 1 && k - n > 0.01 && k / n - 1 <= 0.13) {
       var off = Math.floor((size * dpr - 16 * n) / 2) / k;
@@ -684,7 +698,7 @@ var IconsLib = (function () {
     inner = inner.replace(/(\s)(fill|stroke)="#6d6d6d"/g, '$1$2="currentColor" $2-opacity="' + INK2 + '"')
       .replace(/(\s)fill="(#fff|#ffffff|#f4f4f4)"/gi, '$1fill="$2" style="fill:var(--icon-paper, var(--panel, #fff))"')
       .replace(/(\s)fill="#c4c4c4"/gi, '$1fill="currentColor" fill-opacity="0.35"');
-    return '<svg class="ico ' + (cls || '') + '" width="' + size + '" height="' + size + '" viewBox="0 0 16 16" aria-hidden="true" data-wt="1">' + inner + '</svg>';
+    return '<svg class="ico ' + (cls || '') + '" width="' + size + '" height="' + size + '" viewBox="0 0 16 16" aria-hidden="true" data-wt="1"' + mark + '>' + inner + '</svg>';
   }
   // rfGZ: optical centring. Whole-unit shifts (so the pixel snapping above still holds) that put each drawing's box
   // within a unit of the grid's centre: blocks drawn sitting low, strips drawn at the bottom, glyphs drawn to one side.
@@ -694,8 +708,21 @@ var IconsLib = (function () {
     var b = I[name] || I.generic, c = CENTRE[name];
     return c ? '<g transform="translate(' + c[0] + ' ' + c[1] + ')">' + b + '</g>' : b;
   }
-  function icon(name, size, cls) { return svg(body(name), size, cls); }
-  icon.has = function (name) { return !!I[name]; };
+  function icon(name, size, cls) {
+    if (!SET) return svg(body(name), size, cls);
+    var sb = setBody(name, size);
+    if (sb != null) return named(svg(sb, size, cls, true), name);
+    NAMING++;
+    try { return named(svg(body(name), size, cls), name); } finally { NAMING--; }
+  }
+  icon.has = function (name) { return !!I[name] || !!(SET && SET.has && SET.has(name)); };
+  icon.sets = {
+    register: function (id, def) { SETS[id] = def; return def; },
+    use: function (id) { SET = id && SETS[id] ? SETS[id] : null; SET_ID = SET ? id : null; return SET_ID; },
+    active: function () { return SET_ID; },
+    list: function () { return Object.keys(SETS); },
+    get: function (id) { return SETS[id] || null; }
+  };
   icon.svg = svg;
   icon.weigh = weigh;
   icon.strokeClass = strokeClass;
@@ -706,7 +733,7 @@ var IconsLib = (function () {
   function nodeOf(fn) {
     var cache = {};
     return function (name, size, cls) {
-      var key = name + '|' + (size || 32) + '|' + (cls || '') + '|' + ratio();
+      var key = name + '|' + (size || 32) + '|' + (cls || '') + '|' + ratio() + (SET_ID ? '|' + SET_ID : '');
       var t = cache[key];
       if (!t) {
         var box = document.createElement('div');
@@ -723,7 +750,7 @@ var IconsLib = (function () {
   var fronts = [];
   function frontFor(fn) {
     for (var i = 0; i < fronts.length; i++) if (fronts[i][0] === fn) return fronts[i][1];
-    var f = fn === icon ? icon : function (name, size, cls) {
+    var weighed = function (name, size, cls) {
       var out = fn(name, size, cls);
       if (typeof out !== 'string' || out.indexOf('data-wt="1"') >= 0) return out;
       var m = /^(<svg\b[^>]*?)>([\s\S]*)<\/svg>$/.exec(out);
@@ -731,9 +758,16 @@ var IconsLib = (function () {
       var sz = parseFloat((/\swidth="([\d.]+)"/.exec(m[1]) || [])[1]) || 32;
       return svg(m[2], sz, ((/\sclass="ico ?([^"]*)"/.exec(m[1]) || [])[1] || '').trim());
     };
+    var f = fn === icon ? icon : function (name, size, cls) {
+      if (!SET) return weighed(name, size, cls);
+      var sb = setBody(name, size);   // rfLX: the set in use draws it before any wrapper does
+      if (sb != null) return named(svg(sb, size, cls, true), name);
+      NAMING++;
+      try { return named(weighed(name, size, cls), name); } finally { NAMING--; }
+    };
     if (f !== icon) {
       f.has = function (name) { return fn.has ? fn.has(name) : icon.has(name); };
-      f.svg = svg; f.weigh = weigh; f.strokeClass = strokeClass; f.names = icon.names; f.raw = icon.raw;
+      f.svg = svg; f.weigh = weigh; f.strokeClass = strokeClass; f.names = icon.names; f.raw = icon.raw; f.sets = icon.sets;
       f.node = nodeOf(f);
     }
     fronts.push([fn, f]);
