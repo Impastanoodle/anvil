@@ -115,12 +115,14 @@
     } finally { UI.setTheme(theme0); UI.setBackground('gradient', true); }
   });
 
-  step('rfHA: Heads-up toolbar — every glyph in one 16 px box (rfIL: pixel-sharp on the 16-grid) on one centre line, buttons one height, flyout arrows are 7 x 4 SVG chevrons beside their icons; the triad canvas matches the screen\'s pixels', async function () {
+  step('rfHA: Heads-up toolbar — every glyph in one 32 px box (rfIL: pixel-sharp on the 16-grid) on one centre line, buttons one height, flyout arrows are 7 x 4 SVG chevrons beside their icons; the triad canvas matches the screen\'s pixels', async function () {
     await anvil.newPart(); await idle();
     var hud = $('hud'), kids = Array.prototype.slice.call(hud.children), mids = [], heights = [];
     kids.forEach(function (b) {
       var ic = b.querySelector('svg').getBoundingClientRect(), br = b.getBoundingClientRect();
-      assert(Math.abs(ic.width - 16) < 0.01 && Math.abs(ic.height - 16) < 0.01, b.getAttribute('data-hud') + ': glyph ' + ic.width + ' x ' + ic.height);
+      // lane swribbon (2026-11-12): 32 px glyphs, SolidWorks' size with large buttons (16 under a profile's frame; was 16)
+      var hpx = UI.chromeIconSize ? UI.chromeIconSize(16) : 16;
+      assert(Math.abs(ic.width - hpx) < 0.01 && Math.abs(ic.height - hpx) < 0.01, b.getAttribute('data-hud') + ': glyph ' + ic.width + ' x ' + ic.height);
       mids.push(ic.top + ic.height / 2); heights.push(br.height);
       var ca = b.querySelector('.caret');
       if (ca) {

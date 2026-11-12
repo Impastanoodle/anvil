@@ -71,11 +71,20 @@
     ['views', 'palette', 'View Palette'], ['appearance', 'appearances', 'Appearances, Scenes'], ['props', 'props', 'Custom Properties'], ['macro', 'macro', 'Automation / Script']
   ];
   var tpCurrent = null;
+  // lane swribbon: the strip's icons are 32 px in SolidWorks' large-button look, 16 under a profile's frame
+  function tpIcon() { return UI.chromeIconSize ? UI.chromeIconSize(16) : 16; }
+  UI.syncTaskStripIcons = function () {
+    var strip = $('tp-strip'); if (!strip) return;
+    Array.prototype.forEach.call(strip.children, function (b) {
+      var t = TP.filter(function (x) { return x[0] === b.dataset.id; })[0];
+      if (t) b.innerHTML = Icons(t[1] === 'appearances' ? 'appearance' : t[1], tpIcon());
+    });
+  };
   function renderTaskStrip() {
     var strip = $('tp-strip');
     strip.innerHTML = '';
     TP.forEach(function (t) {
-      var b = el('button', { html: Icons(t[1] === 'appearances' ? 'appearance' : t[1], 16), title: t[2], onclick: function () { if (tpCurrent === t[0]) closeTaskPane(); else openTaskPane(t[0]); } });
+      var b = el('button', { html: Icons(t[1] === 'appearances' ? 'appearance' : t[1], tpIcon()), title: t[2], onclick: function () { if (tpCurrent === t[0]) closeTaskPane(); else openTaskPane(t[0]); } });
       b.dataset.id = t[0];
       strip.appendChild(b);
     });

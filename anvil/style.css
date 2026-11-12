@@ -2208,6 +2208,101 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 :root[data-profile] #app.mc-managers #viewport #vp-labels { bottom: 26px; }
 :root[data-profile] #app.mc-managers #viewport #scale-bar { bottom: 28px; }
 :root[data-profile] #app.mc-managers #viewport #vp-qmask { bottom: 72px; }
+/* lane swribbon (2026-11-12): the default (SolidWorks) profile at the sizes of the user's own SolidWorks 2024, which runs
+   with large buttons; measured on their screenshots at 100 % (ui-core card "SolidWorks sizes"). Sizes only (colours are
+   the token blocks'); every rule is scoped :root:not([data-profile]) so an interface profile with a frame (Mastercam)
+   keeps its own sizes untouched. Title row 43 + 1 px line; CommandManager 117 (buttons 114 tall from 1 px down); tab
+   strip 22 + 1 px line under it; FeatureManager tabs 52 x 37 with 32 px icons under a 24 px grip band; Heads-up View
+   toolbar 32 px icons on a 38 px pitch; Task Pane tabs 34 x 36. Icon sizes drawn in code: ui-panels.js rbIcon / swIcon. */
+:root:not([data-profile]) #app { grid-template-rows: 44px auto minmax(0, 1fr) 22px; }
+/* ---- title row: the mark, the menus (12 px, 8 px padding), the Quick Access toolbar (38 x 42 buttons, 32 px icons)
+   behind a 1 px divider, the document title centred in the space left, Search Commands 202 x 23 */
+:root:not([data-profile]) #menubar { height: 44px; padding: 0 var(--sp-1) 0 5px; }
+:root:not([data-profile]) #menubar #logo { width: 31px; height: 20px; margin: 0 6px 0 0; }
+:root:not([data-profile]) #menubar #logo svg { width: 31px; height: 20px; }
+:root:not([data-profile]) #menubar #brand { margin-right: 14px; font-size: 15px; line-height: 20px; }
+:root:not([data-profile]) #menubar #menus > li { height: 28px; padding: 0 8px; font-size: 12px; line-height: 28px; }
+:root:not([data-profile]) #menubar #std-toolbar { height: 43px; align-self: flex-start; gap: 4px; margin-left: 10px; padding: 0 0 0 18px; }
+:root:not([data-profile]) #menubar .std-btn { width: 38px; height: 42px; }
+:root:not([data-profile]) #menubar .std-btn .ico { width: 32px; height: 32px; }
+:root:not([data-profile]) #menubar #std-undo:not(:disabled), :root:not([data-profile]) #menubar #std-redo:not(:disabled) { width: 36px; height: 36px; margin: 0 1px; }
+:root:not([data-profile])[data-theme="dark"] #menubar #std-undo:not(:disabled), :root:not([data-profile])[data-theme="dark"] #menubar #std-redo:not(:disabled) { width: 38px; height: 42px; margin: 0; }
+:root:not([data-profile]) #menubar .std-sep { height: 28px; margin: 0 2px; }
+:root:not([data-profile]) #menubar #doc-title { flex: 1; min-width: 0; padding: 0 var(--sp-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; text-align: center; }
+:root:not([data-profile]) #menubar #search { width: 202px; height: 23px; flex: none; margin-right: 6px; padding: 0 4px 0 6px; }
+:root:not([data-profile]) #menubar #search input { height: 21px; font-size: 12px; }
+/* ---- CommandManager: 117 px. Large buttons 114 px boxes 1 px from the top: a 32 px icon 6 px down, up to three 12 px
+   label lines on a 13 px pitch right under it, a flyout's 7 x 4 caret centred 102 px down. Small buttons: three 38 px
+   rows (32 px icon, 5 px gap, 12 px label). Sketch tab icon grid: 38 px rows of 32 px icons + 14 px carets. Separators
+   run the full 114 px. */
+:root:not([data-profile]) #ribbon #ribbon-buttons { height: 117px; min-height: 117px; gap: 2px; padding: 1px var(--sp-1) 2px; align-items: stretch; }
+:root:not([data-profile]) #ribbon #ribbon-buttons > .rb, :root:not([data-profile]) #ribbon .rb-fly:not(.rb-fly-small) > .rb { width: auto; min-width: 40px; height: 100%; gap: 0; padding: 4px 4px 0; justify-content: flex-start; line-height: 13px; }
+:root:not([data-profile]) #ribbon #ribbon-buttons > .rb > span, :root:not([data-profile]) #ribbon .rb-fly:not(.rb-fly-small) > .rb > span { min-width: min-content; max-width: 66px; max-height: 39px; font-size: 12px; line-height: 13px; }
+:root:not([data-profile]) #ribbon .rb.rb-long { width: auto; min-width: 40px; padding-left: 4px; padding-right: 4px; }
+:root:not([data-profile]) #ribbon .rb.rb-long > span { max-width: none; }
+:root:not([data-profile]) #ribbon #ribbon-buttons > .rb > .ico, :root:not([data-profile]) #ribbon .rb-fly:not(.rb-fly-small) > .rb > .ico { flex: none; width: 32px; height: 32px; }
+/* a large flyout: the face over its caret, one box; the caret a 14 px zone across the bottom with the arrow centred */
+:root:not([data-profile]) #ribbon #ribbon-buttons > .rb-fly:not(.rb-fly-small) { flex-direction: column; }
+:root:not([data-profile]) #ribbon #ribbon-buttons > .rb-fly:not(.rb-fly-small) > .rb { flex: 1; height: auto; min-height: 0; border-radius: 2px 2px 0 0; padding-right: 4px; }
+:root:not([data-profile]) #ribbon #ribbon-buttons > .rb-fly:not(.rb-fly-small) > .rb-caret { width: auto; height: 14px; margin-bottom: 6px; padding: 0; align-items: center; justify-content: center; border-radius: 0 0 2px 2px; }
+:root:not([data-profile]) #ribbon #ribbon-buttons > .rb-fly:not(.rb-fly-small) > .rb-caret:hover:not(:disabled), :root:not([data-profile]) #ribbon #ribbon-buttons > .rb-fly.open:not(.rb-fly-small) > .rb-caret { box-shadow: inset 0 1px 0 var(--c-hover-line); }
+:root:not([data-profile]) #ribbon .rb-caret > span { display: none; }
+:root:not([data-profile]) #ribbon .rb-caret::after { content: ''; width: 0; height: 0; border-style: solid; border-width: 4px 3.5px 0; border-color: currentColor transparent transparent; }
+/* small buttons: 38 px rows */
+:root:not([data-profile]) #ribbon .rb-stack { gap: 0; justify-content: flex-start; }
+:root:not([data-profile]) #ribbon .rb-stack .rb .ico, :root:not([data-profile]) #ribbon .rb-grid .rb .ico { flex: none; width: 32px; height: 32px; }
+:root:not([data-profile]) #ribbon .rb-stack:not(.rb-grid) > .rb, :root:not([data-profile]) #ribbon .rb-stack:not(.rb-grid) > .rb-fly-small { height: 38px; }
+:root:not([data-profile]) #ribbon .rb-stack:not(.rb-grid) .rb { height: 38px; min-width: 0; padding: 0 6px 0 2px; gap: 5px; }
+:root:not([data-profile]) #ribbon .rb-stack:not(.rb-grid) > .rb-fly-small > .rb { height: 36px; padding-right: 2px; }
+:root:not([data-profile]) #ribbon .rb-stack .rb span { font-size: 12px; line-height: 16px; }
+:root:not([data-profile]) #ribbon .rb-stack .rb-fly-small > .rb-caret { width: 14px; }
+:root:not([data-profile]) #ribbon .rb-stack.rb-grid { grid-template-rows: repeat(3, 38px); gap: 0 6px; align-content: start; padding: 0 2px; }
+:root:not([data-profile]) #ribbon .rb-grid .rb, :root:not([data-profile]) #ribbon .rb-stack.rb-grid .rb-fly-small > .rb { width: 36px; height: 36px; padding: 0 2px; }
+:root:not([data-profile]) #ribbon .rb-grid > .rb-fly .rb-caret, :root:not([data-profile]) #ribbon .rb-stack.rb-grid .rb-fly-small .rb-caret { width: 14px; }
+:root:not([data-profile]) #ribbon .rb-grid > .rb:not(.rb-face) { width: 52px; height: 38px; }
+:root:not([data-profile]) #ribbon .rb-grid > .rb-fly { height: 38px; }
+:root:not([data-profile]) #ribbon .rb-sep { margin: 0 3px; }
+:root:not([data-profile]) #ribbon .rb-more { width: 20px; }
+/* a narrow window (fit-2: labels of the large buttons hidden): 40 px buttons, icons kept */
+:root:not([data-profile]) #ribbon.fit-2 #ribbon-buttons > .rb, :root:not([data-profile]) #ribbon.fit-2 .rb-fly:not(.rb-fly-small) > .rb { width: 40px; min-width: 40px; }
+:root:not([data-profile]) #ribbon.fit-1 .rb-stack:not(.rb-grid) .rb { padding-right: 2px; }
+/* the Transform / View tabs' group captions (ui-transform.js) in the same 117 px: small rows 32 px, captions under */
+:root:not([data-profile]) #ribbon.rb-has-captions #ribbon-buttons { padding-bottom: 16px; }
+:root:not([data-profile]) #ribbon.rb-has-captions #ribbon-buttons > .rb > span, :root:not([data-profile]) #ribbon.rb-has-captions .rb-fly:not(.rb-fly-small) > .rb > span { max-height: 26px; line-height: 13px; }
+:root:not([data-profile]) #ribbon.rb-has-captions #ribbon-buttons > .rb > .ico, :root:not([data-profile]) #ribbon.rb-has-captions .rb-fly:not(.rb-fly-small) > .rb > .ico { width: 32px; height: 32px; }
+:root:not([data-profile]) #ribbon.rb-has-captions .rb-stack:not(.rb-grid) > .rb, :root:not([data-profile]) #ribbon.rb-has-captions .rb-stack:not(.rb-grid) > .rb-fly-small, :root:not([data-profile]) #ribbon.rb-has-captions .rb-stack:not(.rb-grid) .rb, :root:not([data-profile]) #ribbon.rb-has-captions .rb-grid .rb { height: 32px; }
+:root:not([data-profile]) #ribbon.rb-has-captions .rb-stack:not(.rb-grid) > .rb-fly-small > .rb, :root:not([data-profile]) #ribbon.rb-has-captions .rb-stack .rb-fly-small > .rb-caret { height: 30px; }
+:root:not([data-profile]) #ribbon.rb-has-captions .rb-stack.rb-grid { grid-template-rows: repeat(3, 32px); }
+:root:not([data-profile]) #ribbon.rb-has-captions .rb-grid > .rb-fly, :root:not([data-profile]) #ribbon.rb-has-captions .rb-grid > .rb:not(.rb-face) { height: 32px; }
+/* ---- the tab strip under the CommandManager: 22 px tabs on its 1 px line, 12 px text, 8 px padding; the inactive
+   tabs boxed, the active one open at the top (joined to the buttons) */
+:root:not([data-profile]) #ribbon #ribbon-tabs { height: 22px; padding: 0; align-items: stretch; box-shadow: inset 0 1px 0 var(--c-line-strong); }
+:root:not([data-profile]) #ribbon .rtab, :root:not([data-profile]) #ribbon .rtab:first-child { height: 22px; padding: 0 8px; border: 1px solid var(--c-line-strong); border-width: 1px 1px 0 0; font-size: 12px; line-height: 21px; }
+:root:not([data-profile]) #ribbon .rtab.active { border-top-color: transparent; font-weight: 600; }
+/* ---- FeatureManager: a 24 px grip band, then five 52 x 37 tabs (32 px icons; the rest behind a chevron, ui-panels.js
+   fitFmTabs), a 26 px filter row with the funnel, 22 px tree rows */
+:root:not([data-profile]) #fm-tabs { position: relative; height: 62px; flex: none; align-items: stretch; gap: 0; padding: 24px 0 0 2px; overflow: hidden; }
+:root:not([data-profile]) #fm-tabs::before { content: ''; position: absolute; left: 50%; top: 8px; width: 8px; height: 8px; margin-left: -4px; border: 1px solid var(--c-line-strong); border-radius: 50%; box-sizing: border-box; pointer-events: none; }
+:root:not([data-profile]) #fm-tabs button, :root:not([data-profile]) #fm-tabs button.active, :root:not([data-profile]) #fm-tabs button:hover { flex: none; width: 52px; height: 37px; padding: 0; border: 1px solid var(--c-line-strong); border-width: 1px 1px 0 0; border-radius: 0; }
+:root:not([data-profile]) #fm-tabs button:first-child { border-left-width: 1px; width: 53px; }
+:root:not([data-profile]) #fm-tabs button.active { border-top-color: transparent; }
+:root:not([data-profile]) #fm-tabs button .ico { width: 32px; height: 32px; }
+:root:not([data-profile]) #fm-tabs button.fm-more { width: 18px; border: 0; background: transparent; color: var(--c-text); font-size: 0; }
+:root:not([data-profile]) #fm-tabs button.fm-more::after { content: ''; width: 5px; height: 5px; border: solid currentColor; border-width: 1.5px 1.5px 0 0; transform: rotate(45deg); margin-left: -3px; }
+:root:not([data-profile]) #fm-tabs button.fm-hide { display: none; }
+:root:not([data-profile]) #tree-filter { height: 26px; padding: 0 var(--sp-1) 0 3px; }
+:root:not([data-profile]) #tree-filter input { height: 22px; }
+/* ---- graphics area: the Heads-up View toolbar centred at the top, 32 px icons on a 38 px pitch, carets beside */
+:root:not([data-profile]) #viewport #hud { top: 3px; gap: 2px; padding: 0; }
+:root:not([data-profile]) #viewport #hud button { width: auto; min-width: 36px; height: 36px; padding: 0 1px; }
+:root:not([data-profile]) #viewport #hud button.hud-dd { padding: 0 1px 0 1px; }
+:root:not([data-profile]) #viewport #hud button svg { width: 32px; height: 32px; }
+:root:not([data-profile]) #viewport #hud .caret { width: 12px; height: 32px; margin-left: 0; }
+:root:not([data-profile]) #viewport #hud .caret svg { width: 7px; height: 4px; }
+/* ---- Task Pane tabs: 34 x 36 boxes on the window edge, 32 px icons */
+:root:not([data-profile]) #tp-strip { gap: 0; padding: 0; }
+:root:not([data-profile]) #tp-strip button { width: 34px; height: 36px; margin-left: 0; }
+:root:not([data-profile]) #tp-strip button .ico { width: 32px; height: 32px; }
 /* lane mcframe: the window frame of an interface profile (ui-panels.js UI.setFrame; data in ui-profiles.js frame).
    Layout by #app classes (one per frame piece), the look by :root[data-profile]; the colours are the profile's own
    (--mc-l-* light, --mc-d-* dark, set on <html> from the profile data), so this sheet names none of them. */

@@ -997,6 +997,7 @@
       else { $('fm-tree').hidden = true; setFmTab('pm'); }
     }
     frame = f || null;
+    try { chromeIconsSync(); } catch (e) { console.warn('chromeIconsSync', e); }   // lane swribbon: the chrome icons' size follows the frame
     if (frame) {
       var app = $('app'), r = frame.ribbon || {};
       app.classList.toggle('mc-tabs-top', !!r.tabsOnTop);
@@ -1603,7 +1604,7 @@
       if (b.classList.contains('rb-long')) b.classList.remove('rb-long');
       if (!s || !s.offsetHeight) return;
       var lh = parseFloat(window.getComputedStyle(s).lineHeight) || 13;
-      if (s.scrollHeight > lh * 2.5) b.classList.add('rb-long');
+      if (s.scrollHeight > lh * (frame ? 2.5 : 3.5)) b.classList.add('rb-long');   // lane swribbon: SolidWorks' 117 px CommandManager has room for three lines (Convert / to Sheet / Metal)
     });
   }
   // lane mcribbon: under a frame with captions (Mastercam) small buttons keep their labels whenever the tab fits; when it
@@ -1698,8 +1699,29 @@
   var RB_KEY = (function () { var t = false; try { t = !!(window.frameElement && /\/tests\//.test(window.parent.location.pathname)); } catch (e) { } return t ? 'anvil.test.ribbonScale' : 'anvil.ribbonScale'; })();
   function rbClamp(s) { s = +s; if (!(s > RB_MIN)) return RB_MIN; return Math.round(Math.min(RB_MAX, s) * 1000) / 1000; }
   try { rbScale = rbClamp(parseFloat(localStorage.getItem(RB_KEY))); } catch (e) { }
-  // the icon sizes: large 32 px, small (stacks, grid) 16 px boxes (drawn at 18 at scale 1, as before)
-  function rbIcon(small) { return small ? (rbScale === 1 ? 18 : Math.round(16 * rbScale)) : Math.round(32 * rbScale); }   // lane mcribbon: Mastercam's large icons are 32 px too (measured; rfLX had 24 under a frame with captions)
+  // the icon sizes: large 32 px, small (stacks, grid) 16 px boxes (drawn at 18 at scale 1, as before); lane swribbon:
+  // without a frame (SolidWorks, large buttons as the user runs it) small buttons are 32 px too
+  // lane swribbon: the chrome's own icons (Quick Access toolbar, FeatureManager tabs, Heads-up View toolbar, Task Pane
+  // tabs) are 32 px in SolidWorks' large-button look and keep their small size under a profile's frame (Mastercam)
+  function swIcon(small) { return frame ? small : 32; }
+  UI.chromeIconSize = swIcon;
+  function chromeIconsSync() {
+    var px = swIcon(16);
+    if (stdBuilt) {
+      var u = $('std-undo'), r = $('std-redo');
+      if (u) u.innerHTML = Icons('undo', px);
+      if (r) r.innerHTML = Icons('redo', px);
+      STD_BUTTONS.forEach(function (d) { var b = $(d[0]); if (b) b.innerHTML = Icons(d[1], px); });
+    }
+    Array.prototype.forEach.call(document.querySelectorAll('#fm-tabs button[data-tab]'), function (b) {
+      var t = FM_TABS.filter(function (x) { return x[0] === b.dataset.tab; })[0];
+      if (t) b.innerHTML = Icons(t[1], px);
+    });
+    fitFmTabs();
+    if (UI.syncTaskStripIcons) UI.syncTaskStripIcons();
+    refreshHud();
+  }
+  function rbIcon(small) { if (small && !frame) return Math.round(32 * rbScale); return small ?(rbScale === 1 ? 18 : Math.round(16 * rbScale)) : Math.round(32 * rbScale); }   // lane mcribbon: Mastercam's large icons are 32 px too (measured; rfLX had 24 under a frame with captions)
   var RB_SEL = /#ribbon(?!-grip)|\.rtab(?![\w-])|\.rb(?![\w-])|\.rb-(?:stack|sep|fly|caret|more|grid|vgrid|wide|long|face|over|extra|caption|has-captions)/;
   function rbSplitSel(t) {
     var out = [], depth = 0, cur = '';
@@ -2003,11 +2025,34 @@
     var bar = $('fm-tabs');
     bar.innerHTML = '';
     FM_TABS.forEach(function (t) {
-      var b = el('button', { html: Icons(t[1], 16), title: t[2], onclick: function () { if (t[0] === 'levels') { if (!$('levels-panel')) { toast('The Levels Manager did not load.'); return; } levelsSticky = true; setFmTab('levels'); return; } if (t[0] === 'pm' && !UI.hasPM()) { toast('The PropertyManager opens when a command is active.'); return; } if (t[0] === 'pm') { setFmTab('pm'); return; } if (t[0] === 'tree' || t[0] === 'config') { if (!UI.hasPM()) { levelsSticky = false; setFmTab(t[0]); } else toast('Finish or cancel the active command first (✓ or ✗).'); return; } if (t[0] !== 'pm') toast(t[2] + ' is not available in this build.'); } });
+      var b = el('button', { html: Icons(t[1], swIcon(16)), title: t[2], onclick: function () { if (t[0] === 'levels') { if (!$('levels-panel')) { toast('The Levels Manager did not load.'); return; } levelsSticky = true; setFmTab('levels'); return; } if (t[0] === 'pm' && !UI.hasPM()) { toast('The PropertyManager opens when a command is active.'); return; } if (t[0] === 'pm') { setFmTab('pm'); return; } if (t[0] === 'tree' || t[0] === 'config') { if (!UI.hasPM()) { levelsSticky = false; setFmTab(t[0]); } else toast('Finish or cancel the active command first (✓ or ✗).'); return; } if (t[0] !== 'pm') toast(t[2] + ' is not available in this build.'); } });
       b.dataset.tab = t[0];
       bar.appendChild(b);
     });
+    // lane swribbon: SolidWorks' chevron at the right of the tab row lists the tabs that do not fit
+    var more = el('button', { class: 'fm-more', title: 'More tabs', 'aria-label': 'More tabs', onclick: function () {
+      var r = more.getBoundingClientRect();
+      showMenu(r.left, r.bottom + 2, Array.prototype.filter.call(bar.querySelectorAll('button.fm-hide[data-tab]'), function () { return true; }).map(function (h) {
+        return { label: h.title, checked: h.classList.contains('active'), action: function () { h.click(); } };
+      }));
+    } });
+    more.hidden = true;
+    bar.appendChild(more);
+    if (window.ResizeObserver && !bar._fmFit) { bar._fmFit = new ResizeObserver(function () { fitFmTabs(); }); bar._fmFit.observe(bar); }
     setFmTab('tree');
+    fitFmTabs();
+  }
+  // lane swribbon: the FeatureManager's large tabs (52 px) keep their size; the ones past the pane's width hide behind
+  // the chevron (SolidWorks shows five of them in its default width). Under a frame nothing is hidden.
+  function fitFmTabs() {
+    var bar = $('fm-tabs'); if (!bar) return;
+    var more = bar.querySelector('.fm-more'), tabs = bar.querySelectorAll('button[data-tab]');
+    Array.prototype.forEach.call(tabs, function (b) { if (b.classList.contains('fm-hide')) b.classList.remove('fm-hide'); });
+    if (more) more.hidden = true;
+    if (frame || !more || !bar.clientWidth) return;
+    if (bar.scrollWidth <= bar.clientWidth + 1) return;
+    more.hidden = false;
+    for (var i = tabs.length - 1; i > 0 && bar.scrollWidth > bar.clientWidth + 1; i--) tabs[i].classList.add('fm-hide');
   }
   // setFmTab('tree' | 'config' | 'pm'): marks the tab and shows its pane. The PropertyManager (ui-commands openPM /
   // closePM) shows and hides #pm and #fm-tree itself; here 'pm' only hides the ConfigurationManager.
@@ -2125,7 +2170,7 @@
   }
   function treeItem(opts) {
     var row = el('div', { class: 'ti' + (opts.cls ? ' ' + opts.cls : '') });
-    row.style.paddingLeft = (6 + (opts.depth || 0) * 14) + 'px';
+    row.style.paddingLeft = (6 + (opts.depth || 0) * (frame ? 14 : 22)) + 'px';   // lane swribbon: SolidWorks indents a level by 22 px (a child's icon under its parent's, the arrow beside)
     var tw = el('span', { class: 'tw' + (opts.children ? '' : ' leaf'), text: opts.open ? '▾' : '▸' });
     row.appendChild(tw);
     var ic = el('span');
@@ -3091,13 +3136,13 @@
     var u = $('std-undo'), r = $('std-redo');
     if (!u || !r || stdBuilt) return;
     stdBuilt = true;
-    u.innerHTML = Icons('undo', 16); r.innerHTML = Icons('redo', 16);
+    u.innerHTML = Icons('undo', swIcon(16)); r.innerHTML = Icons('redo', swIcon(16));
     u.addEventListener('click', function () { (UI.undoCommand || UI.undo)(); });   // lane BY: cancels an open command first
     r.addEventListener('click', function () { (UI.redoCommand || UI.redo)(); });
     STD_BUTTONS.forEach(function (d) {
       var b = $(d[0]);
       if (!b) return;
-      b.innerHTML = Icons(d[1], 16); b.dataset.icon = d[1];
+      b.innerHTML = Icons(d[1], swIcon(16)); b.dataset.icon = d[1];
       setTip(b, { name: d[2], key: d[3], desc: d[4] });
       b.addEventListener('click', d[5]);
     });
@@ -3257,8 +3302,10 @@
   function refreshHud() {
     var hud = $('hud');
     syncViewTab();   // lane CC
-    if (hudActive && hud.children.length) { hudActive.forEach(function (a) { var on = !!a[1](); if (a[0].classList.contains('active') !== on) a[0].classList.toggle('active', on); }); return; }
+    var hudPx = swIcon(16);   // lane swribbon: 32 px under SolidWorks' large buttons, 16 under a frame
+    if (hudActive && hud.children.length && hud.dataset.px === String(hudPx)) { hudActive.forEach(function (a) { var on = !!a[1](); if (a[0].classList.contains('active') !== on) a[0].classList.toggle('active', on); }); return; }
     hud.innerHTML = '';
+    hud.dataset.px = String(hudPx);
     hudActive = [];
     // rfBH: SolidWorks 2024's Heads-up View toolbar: Zoom to Fit, Zoom to Area, Previous View, Section View, Dynamic
     // Annotation Views, then six drop-downs (View Orientation, Display Style, Hide/Show Items, Edit Appearance, Apply
@@ -3266,7 +3313,7 @@
     // children[5] stays View Orientation (showOrientationMenu clicks it); data-hud names each button (UI.HUD_ORDER).
     function btn(icon, title, action, active, caret) {
       // rfHA: the flyout arrow is a crisp 7 x 4 SVG chevron on whole pixels (the ▾ text glyph sat soft and off centre)
-      var b = el('button', { class: caret ? 'hud-dd' : '', html: Icons(icon, 16) + (caret ? '<span class="caret"><svg viewBox="0 0 7 4" width="7" height="4" aria-hidden="true"><path d="M0 0h7L3.5 4z" fill="currentColor"/></svg></span>' : ''), title: title, onclick: action });
+      var b = el('button', { class: caret ? 'hud-dd' : '', html: Icons(icon, hudPx) + (caret ? '<span class="caret"><svg viewBox="0 0 7 4" width="7" height="4" aria-hidden="true"><path d="M0 0h7L3.5 4z" fill="currentColor"/></svg></span>' : ''), title: title, onclick: action });
       b.setAttribute('data-hud', title.replace(/ \(.*$/, '').replace(/ — [\s\S]*$/, ''));
       if (active) { hudActive.push([b, active]); if (active()) b.classList.add('active'); }
       hud.appendChild(b);

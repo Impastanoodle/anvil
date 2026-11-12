@@ -153,12 +153,14 @@
     return n + ' texts, lowest ' + worst.toFixed(2);
   });
 
+  // (swDark: the tab strip and the FeatureManager tabs carry the values after lane swribbon, same round, which boxed the
+  // inactive tabs and opened the active one in both themes: their borders changed, the dark palette did not)
   // what the dark default look and the Mastercam profile computed at 726c95c (before this lane): a 6-hex djb2 of each
   // value in RFMC_KEYS order (tokens, then color | background | image | borders | shadow | opacity of each element)
   var RFMC_KEYS = ['--c-sunken', '--c-panel', '--c-raised', '--c-field', '--c-field-line', '--c-line-soft', '--c-line', '--c-line-strong', '--c-hover', '--c-hover-line', '--c-press', '--c-press-line', '--c-sel', '--c-sel-line', '--c-text', '--c-muted', '--c-disabled', '--c-default', '--c-default-hover', '--c-focus', '--c-accent', '--c-accent-hover', '--c-accent-text', '--c-ok', '--c-warn', '--c-err', '--c-info', '--msg-bg', '--msg-line', '--msg-text', '--msg-head', '--sw-msg-bg', '--sw-msg-head', '--sw-msg-line', '--sw-twisty', '--dw-tab-line', '--dw-tab-muted', '--menu-bg', '--sw-menu-gutter',
     '#menubar', '#ribbon', '#ribbon-tabs', '#ribbon-tabs .rtab:not(.active)', '#ribbon-tabs .rtab.active', '#ribbon-buttons .rb', '#ribbon-buttons .rb span', '#left', '#tree', '#tree .ti .nm', '#tree .ti .tw', '#fm-tabs', '#fm-tabs button.active', '#fm-tabs button:not(.active)', '#tree-filter input', '#statusbar', '#status-msg', '#viewport', '#tp-strip', '#menubar #search'];
   var RFMC_BEFORE = {
-    swDark: '5ec398982d5cc63c2b2adabb1b166e000370e86a73764c24edeaefc76cb3eafe13923d42a2b5b598641a8663e70c10f6f8e423ecad6191bb9db7cb7bb7cb7b7fb1d489dc2ecdfd0ebadfef67ca0489dc2ef744a7f8928c80662c71222bf744a771222bf8928c0c10f650eaaf2ac9e8c63c2bc63c2bf4643cf4643cc41dfce3fa2f39f14a1124515662b718313ecba4695662b7e3fa2f63ce35bb9b7caf44f39e4ca9cde5355662b71b28bc1265809e4ca9',
+    swDark: '5ec398982d5cc63c2b2adabb1b166e000370e86a73764c24edeaefc76cb3eafe13923d42a2b5b598641a8663e70c10f6f8e423ecad6191bb9db7cb7bb7cb7b7fb1d489dc2ecdfd0ebadfef67ca0489dc2ef744a7f8928c80662c71222bf744a771222bf8928c0c10f650eaaf2ac9e8c63c2bc63c2bf4643cf4643c47c97ffc36fde940581124515662b718313ecba4695662b7e3fa2f63ce3543c3d06a425f9e4ca9cde5355662b71b28bc1265809e4ca9',
     mcLight: '538d6c538d6c538d6c538d6ced0122817c4a1e8510ed012271a2687901f8b75972894b5eb75972894b5ef80467f923d0d4f29b71464fc6a1eb71464f3c81fa1fbe923c81fa51b8e873dde046b27b3c81fa52c97997d0b23b183352c97952c97952c97997d0b2f923d0f92c21f80467538d6c538d6c15155f15155f294bb6f0b0c6f2251af1fb6c646e0333179fee6eca646e0308ce1b15155f92a489cfc4a976422483d2aa7b22cb5d3133ee6eca764224',
     mcDark: 'a24f44a24f44eac25082f06a3cbc30c8f62042e4c93cbc30d8f26e9713aa91148fe8b63291148fe8b632743a3365d8b32f7a19e82e2a3d89fc9bee7fb7cb7b7fb1d489dc2ecdfd0ebadfef67ca0489dc2ef744a7f8928c80662cf744a7f744a7f744a7f8928c65d8b3e7070d743a33eac250eac2502ba3972ba3970515872816a4587eca7eec96852e4bd702c30765bf852e4ba150ef2ba397b41acdfe091d8ea4c883d2aa7b22cb43cd7b1b86b38ea4c8'
   };
@@ -174,7 +176,7 @@
   }
   function rfMCcompare(name, vals, bad) {
     var want = RFMC_BEFORE[name];
-    vals.forEach(function (v, i) { if (rfMChash(v) !== want.slice(i * 6, i * 6 + 6)) bad.push(name + ' ' + RFMC_KEYS[i] + ' = ' + v.slice(0, 90)); });
+    vals.forEach(function (v, i) { if (rfMChash(v) !== want.slice(i * 6, i * 6 + 6)) bad.push(name + ' ' + RFMC_KEYS[i] + ' [' + rfMChash(v) + '] = ' + v.slice(0, 90)); });
   }
 
   step('rfMC: the dark default look and the Mastercam profile (light and dark) are exactly what they were before SolidWorks\' colours (40 tokens, 20 elements each), and every token this lane added resolves in all four', async function () {
@@ -192,6 +194,6 @@
       UI.setTheme('dark'); await rfMCsettle();
       resolves('mastercam dark'); rfMCcompare('mcDark', rfMCsnap(), bad);
     } finally { await rfMCreset(prev); }
-    assert(!bad.length, bad.slice(0, 8).join('; ') + (bad.length > 8 ? ' (+' + (bad.length - 8) + ')' : ''));
+    assert(!bad.length, bad.slice(0, 12).join('; ') + (bad.length > 12 ? ' (+' + (bad.length - 12) + ')' : ''));
     return RFMC_KEYS.length + ' values x 3 unchanged';
   });

@@ -341,7 +341,7 @@
   // ------------------------------------------------------------------ drawing FeatureManager
   function row(opts) {
     var r = el('div', { class: 'ti' + (opts.sel ? ' selected' : '') + (opts.cls ? ' ' + opts.cls : '') });
-    r.style.paddingLeft = (6 + (opts.depth || 0) * 14) + 'px';
+    r.style.paddingLeft = (6 + (opts.depth || 0) * (UI.chromeIconSize && UI.chromeIconSize(16) === 32 ? 22 : 14)) + 'px';   // lane swribbon: 22 px a level, as the part's tree
     r.appendChild(el('span', { class: 'tw' + (opts.twisty ? '' : ' leaf'), text: '\u25be' }));
     r.appendChild(el('span', { html: Icons(opts.icon, 16) }));
     r.appendChild(el('span', { class: 'nm', text: opts.name, title: opts.title || opts.name }));

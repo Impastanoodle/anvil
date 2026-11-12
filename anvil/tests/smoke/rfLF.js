@@ -166,7 +166,7 @@
     await UI.exitSketch(true); await idle();
   });
 
-  step('rfLF: the CommandManager is 76.28 + 22 px on every tab of a part, a drawing and an assembly at 1366 and 1024 px (the Assembly tab grew 13 px on Linear Component Pattern, Transform and View 14 px for their captions)', async function () {
+  step('rfLF: the CommandManager is 117 + 22 + 1 px (the measured SolidWorks size, lane swribbon; was 76.28 + 22) on every tab of a part, a drawing and an assembly at 1366 and 1024 px (the Assembly tab grew 13 px on Linear Component Pattern, Transform and View 14 px for their captions)', async function () {
     var bad = [];
     async function tabs(doc) {
       var names = Array.prototype.filter.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (t) { return !t.classList.contains('off'); }).map(function (t) { return t.textContent; });
@@ -174,7 +174,7 @@
         UI.setRibbonTab(names[i]); await wait(40);
         if (UI.transformCaptions) UI.transformCaptions();
         var h = $('ribbon-buttons').getBoundingClientRect().height, rh = $('ribbon').getBoundingClientRect().height;
-        if (Math.abs(h - 76.28) > 0.02 || Math.abs(rh - 99.28) > 0.02) bad.push(doc + '/' + names[i] + ' ' + h.toFixed(2) + ' / ' + rh.toFixed(2));
+        if (Math.abs(h - 117) > 0.02 || Math.abs(rh - 140) > 0.02) bad.push(doc + '/' + names[i] + ' ' + h.toFixed(2) + ' / ' + rh.toFixed(2));
         Array.prototype.forEach.call(D.querySelectorAll('#ribbon .rb-caption'), function (c) { if (c.getBoundingClientRect().bottom > $('ribbon-buttons').getBoundingClientRect().bottom + 0.5) bad.push(doc + '/' + names[i] + ' caption ' + c.textContent + ' below the buttons'); });
       }
     }
@@ -187,7 +187,7 @@
       await anvil.newAssembly('rfLF'); await idle();
       UI.setRibbonTab('Assembly'); await wait(40);
       var lp = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (b) { return /Linear Component/.test(b.getAttribute('aria-label') || ''); })[0];
-      if (lp && lp.offsetHeight) { var sp = lp.querySelector('span'); if (sp.offsetHeight > 26.5) bad.push('Linear Component Pattern label ' + sp.offsetHeight + ' px'); }
+      if (lp && lp.offsetHeight) { var sp = lp.querySelector('span'); if (sp.offsetHeight > 39.5) bad.push('Linear Component Pattern label ' + sp.offsetHeight + ' px'); }
       await tabs('assembly');
       await anvil.newPart(); await idle();
     }

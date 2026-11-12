@@ -51,7 +51,7 @@
     });
     return [miss, tot];
   }
-  step('rfIL: no 20 px icons left in ui-panels.js / ui-commands.js; PropertyManager header and ✓ ✗ draw 24 px icons, the Heads-up toolbar, Shortcut Bar and FeatureManager tabs 16 px, at whole pixels, every button its old size', async function () {
+  step('rfIL: no 20 px icons left in ui-panels.js / ui-commands.js; PropertyManager header and ✓ ✗ draw 24 px icons, the Heads-up toolbar and FeatureManager tabs 32 px (SolidWorks large buttons), at whole pixels, every button its size', async function () {
     var bad = [];
     for (var fi = 0, files = ['ui-panels.js', 'ui-commands.js']; fi < files.length; fi++) {
       var src = await (await fetch('../' + files[fi], { cache: 'no-store' })).text(), re = /Icons(?:\.node)?\(([^;]*?),\s*(\d+)\)/g, m;
@@ -83,12 +83,14 @@
     Array.prototype.forEach.call(hud, function (b) {
       var s = b.querySelector('svg.ico'); if (!s) return; n++;
       var r = b.getBoundingClientRect(), q = s.getBoundingClientRect();
-      near(r.width, 28, 0.01, 'HUD button width'); near(r.height, 26, 0.01, 'HUD button height');
-      assert(s.getAttribute('width') === '16' && Math.abs(q.width - 16) < 0.01, 'HUD icon ' + s.getAttribute('width') + ' / ' + q.width);
-      near(q.left - r.left, Math.round(q.left - r.left), 0.01, 'HUD icon x in its button'); near(q.top - r.top, 5, 0.01, 'HUD icon y in its button');
+      // lane swribbon (2026-11-12): SolidWorks' measured Heads-up toolbar: 32 px icons in 36 px buttons (48 with the caret)
+      // on a 38 px pitch (was 16 px icons in 28 x 26 buttons)
+      near(r.width, b.classList.contains('hud-dd') ? 48 : 36, 0.01, 'HUD button width'); near(r.height, 36, 0.01, 'HUD button height');
+      assert(s.getAttribute('width') === '32' && Math.abs(q.width - 32) < 0.01, 'HUD icon ' + s.getAttribute('width') + ' / ' + q.width);
+      near(q.left - r.left, Math.round(q.left - r.left), 0.01, 'HUD icon x in its button'); near(q.top - r.top, 2, 0.01, 'HUD icon y in its button');
     });
-    Array.prototype.forEach.call(D.querySelectorAll('#fm-tabs button svg.ico'), function (s) { assert(s.getAttribute('width') === '16', 'FeatureManager tab icon drawn at ' + s.getAttribute('width')); });
-    return 'PM header / ✓ ✗ at 24 px, ' + n + ' HUD icons at 16 px in 28 × 26 buttons, all on whole pixels';
+    Array.prototype.forEach.call(D.querySelectorAll('#fm-tabs button svg.ico'), function (s) { assert(s.getAttribute('width') === '32', 'FeatureManager tab icon drawn at ' + s.getAttribute('width')); });
+    return 'PM header / ✓ ✗ at 24 px, ' + n + ' HUD icons at 32 px in 36 × 36 buttons, all on whole pixels';
   });
   step('rfIL: every ribbon item (part and assembly, stacks and flyouts included) has a drawn icon of its own: Smart Fasteners, Bill of Materials and Hole Alignment are no longer the generic square', async function () {
     var bad = [], n = 0, generic = W.Icons('generic', 32);

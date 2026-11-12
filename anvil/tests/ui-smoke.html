@@ -13,15 +13,18 @@
   td.st { width: 46px; font: 600 12px var(--mono); } tr.ok td.st { color: var(--ok); } tr.bad td.st { color: var(--bad); }
   td.detail { font: 12px var(--mono); color: var(--dim); white-space: pre-wrap; } tr.bad td.detail { color: var(--bad); }
   td.ms { width: 60px; text-align: right; font: 12px var(--mono); color: var(--dim); }
-  iframe { width: 100%; height: 560px; border: 1px solid var(--line); background: #fff; }
+  /* lane swribbon (2026-11-12): 617 px (was 560): the default profile took SolidWorks' real bar sizes (title row 44,
+     CommandManager 140, 57 px more than before), and the frame grew by as much so the graphics area keeps the 411 px
+     height the drag / pick steps were written for */
+  iframe { width: 100%; height: 616.72px; border: 1px solid var(--line); background: #fff; }
   /* r12/chrome12: the app no longer has a min-width of 880 px (it fits narrow windows); the frame keeps that layout
      width so drag / placement steps see the graphics area they were written for */
   iframe { min-width: 880px; }
   /* ?watch (screen recordings): the results list scrolls down the right of the window and the app frame keeps the
-     880 × 560 layout size of a normal run (several drag / placement steps depend on it), scaled up to fill the rest */
+     880 × 617 layout size of a normal run (several drag / placement steps depend on it), scaled up to fill the rest */
   body.watch { padding: 0; overflow: hidden; font-size: 13px; }
   body.watch .sub { display: none; }
-  body.watch iframe { position: fixed; left: 0; top: 0; width: 880px; height: 560px; border: 0; transform-origin: 0 0; }
+  body.watch iframe { position: fixed; left: 0; top: 0; width: 880px; height: 617px; border: 0; transform-origin: 0 0; }
   body.watch #side { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 34vw); overflow: auto; padding: 12px 14px; box-sizing: border-box;
     border-left: 1px solid var(--line); }
   body.watch td.detail, body.watch th:nth-child(3) { display: none; }
@@ -58,8 +61,8 @@
     document.body.appendChild(side);
     var fitFrame = function () {
       var f = document.getElementById('app'), room = window.innerWidth - side.offsetWidth;
-      var k = Math.min(room / 880, window.innerHeight / 560);
-      f.style.transform = 'translate(' + Math.max(0, (room - 880 * k) / 2) + 'px,' + Math.max(0, (window.innerHeight - 560 * k) / 2) + 'px) scale(' + k + ')';
+      var k = Math.min(room / 880, window.innerHeight / 617);
+      f.style.transform = 'translate(' + Math.max(0, (room - 880 * k) / 2) + 'px,' + Math.max(0, (window.innerHeight - 617 * k) / 2) + 'px) scale(' + k + ')';
     };
     fitFrame(); window.addEventListener('resize', fitFrame);
   }
@@ -518,6 +521,7 @@
     'smoke/rfLX.js',
     'smoke/rfMB.js',
     'smoke/rfMC.js',
+    'smoke/rfME.js',
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'ui-smoke.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'ui-smoke.groups.js', error: e }); }

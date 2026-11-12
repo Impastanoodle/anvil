@@ -60,32 +60,37 @@
     assert(!bad.length, bad.join('; '));
   });
 
-  step('rfGX: menu bar — the mark, menus, quick-access buttons and Search Commands are 24 px tall and centred on the 28 px row', async function () {
-    var bar = rfGXbox('#menubar'), mid = bar.top + bar.height / 2, bad = [];
-    assert(Math.round(bar.height) === 28, 'menu bar 28 px: ' + bar.height);
+  // lane swribbon (2026-11-12): the user asked for the sizes of their own SolidWorks (large buttons): the title row is
+  // 43 px + its 1 px line, menus 12 px in 28 px boxes, Quick Access buttons 42 px with 32 px icons, Search Commands 23 px
+  // (was: a 28 px row, every control 24 px). Kept: every control centred on the row, the mark an upright semibold anvil.
+  step('rfGX: menu bar — the mark, menus, quick-access buttons and Search Commands are centred on the 44 px title row (SolidWorks sizes)', async function () {
+    var bar = rfGXbox('#menubar'), mid = bar.top + (bar.height - 1) / 2, bad = [];
+    assert(Math.round(bar.height) === 44, 'title row 44 px: ' + bar.height);
+    var SIZE = { search: 23, std: 42, li: 28 };
     var items = [].slice.call(D.querySelectorAll('#menus > li')).concat([].slice.call(D.querySelectorAll('#std-toolbar .std-btn:not(:disabled)')).filter(function (b) { return b.id !== 'std-undo' && b.id !== 'std-redo'; })).concat([D.getElementById('search')]);
     items.forEach(function (e) {
       var r = e.getBoundingClientRect();
       if (!r.width) return;
-      if (Math.abs(r.height - 24) > 0.5) bad.push((e.id || e.textContent) + ' h ' + r.height);
-      if (Math.abs(r.top + r.height / 2 - mid) > 0.6) bad.push((e.id || e.textContent) + ' off centre ' + (r.top + r.height / 2 - mid).toFixed(1));
+      var want = e.id === 'search' ? SIZE.search : e.tagName === 'LI' ? SIZE.li : SIZE.std;
+      if (Math.abs(r.height - want) > 0.5) bad.push((e.id || e.textContent) + ' h ' + r.height);
+      if (Math.abs(r.top + r.height / 2 - mid) > 1.1) bad.push((e.id || e.textContent) + ' off centre ' + (r.top + r.height / 2 - mid).toFixed(1));
     });
     var logo = rfGXbox('#logo');
-    assert(logo && Math.round(logo.width) === 25 && Math.round(logo.height) === 16 && D.querySelector('#logo svg polygon'), 'the mark is a 16 px tall anvil');
-    assert(Math.abs(logo.top + 8 - mid) <= 0.6, 'the mark is centred');
+    assert(logo && Math.round(logo.width) === 31 && Math.round(logo.height) === 20 && D.querySelector('#logo svg polygon'), 'the mark is a 20 px tall anvil (as the SolidWorks mark)');
+    assert(Math.abs(logo.top + 10 - mid) <= 1.1, 'the mark is centred');
     var brand = W.getComputedStyle(D.getElementById('brand'));
     assert(brand.fontStyle === 'normal' && +brand.fontWeight >= 600, 'the name is upright semibold: ' + brand.fontStyle + ' ' + brand.fontWeight);
-    D.querySelectorAll('#std-toolbar .std-btn .ico').forEach(function (i) { var r = i.getBoundingClientRect(); if (r.width && Math.round(r.width) !== 16) bad.push('std icon ' + r.width); });
+    D.querySelectorAll('#std-toolbar .std-btn .ico').forEach(function (i) { var r = i.getBoundingClientRect(); if (r.width && Math.round(r.width) !== 32) bad.push('std icon ' + r.width); });
     assert(!bad.length, bad.join('; '));
   });
 
-  step('rfGX: CommandManager — height kept (76 + 22 px), 32 px large and 16 px small icons, labels of plain and flyout buttons on one line', async function () {
+  // lane swribbon (2026-11-12): SolidWorks' measured sizes (was 76 + 22 px, 16 px small icons in 22 px rows, 11 px labels)
+  step('rfGX: CommandManager — the SolidWorks height (117 + 22 + 1 px), 32 px large and small icons, 38 px small rows, labels of plain and flyout buttons on one line', async function () {
     UI.setRibbonTab('Features'); await idle();
     var rb = rfGXbox('#ribbon-buttons'), tabs = rfGXbox('#ribbon-tabs'), bad = [];
-    assert(Math.round(rb.height) === 76, 'ribbon buttons row 76 px: ' + rb.height);
+    assert(Math.round(rb.height) === 117, 'ribbon buttons row 117 px: ' + rb.height);
     assert(Math.round(tabs.height) === 22, 'tab strip 22 px: ' + tabs.height);
-    // the graphics area starts where it did before the refurbish (tests pick there by pixel): CommandManager 99.28 px
-    assert(Math.abs(rfGXbox('#ribbon').height - 99.28) < 0.05 && Math.round(rfGXbox('#statusbar').height) === 22, 'outer bar sizes kept: ribbon ' + rfGXbox('#ribbon').height);
+    assert(Math.abs(rfGXbox('#ribbon').height - 140) < 0.05 && Math.round(rfGXbox('#statusbar').height) === 22, 'outer bar sizes: ribbon ' + rfGXbox('#ribbon').height);
     var plain = D.querySelector('#ribbon-buttons > .rb:not(:disabled)'), fly = D.querySelector('#ribbon-buttons > .rb-fly:not(.rb-fly-small) > .rb');
     assert(plain && fly, 'a plain and a flyout button on the Features tab');
     [plain, fly].forEach(function (b) { var i = b.querySelector('.ico').getBoundingClientRect(); if (Math.round(i.width) !== 32 || Math.round(i.height) !== 32) bad.push('large icon ' + i.width); });
@@ -93,10 +98,10 @@
     var ps = plain.querySelector('span').getBoundingClientRect(), fs = fly.querySelector('span').getBoundingClientRect();
     if (Math.abs(pi.top - fi.top) > 0.5) bad.push('icon tops ' + pi.top + ' / ' + fi.top);
     if (Math.abs(ps.top - fs.top) > 0.5) bad.push('label tops ' + ps.top + ' / ' + fs.top);
-    D.querySelectorAll('#ribbon-buttons .rb-stack:not(.rb-grid) .rb .ico').forEach(function (i) { var r = i.getBoundingClientRect(); if (r.width && Math.round(r.width) !== 16) bad.push('small icon ' + r.width); });
-    D.querySelectorAll('#ribbon-buttons .rb-stack:not(.rb-grid) > .rb').forEach(function (b) { var r = b.getBoundingClientRect(); if (r.width && Math.round(r.height) !== 22) bad.push('small button ' + r.height); });
+    D.querySelectorAll('#ribbon-buttons .rb-stack:not(.rb-grid) .rb .ico').forEach(function (i) { var r = i.getBoundingClientRect(); if (r.width && Math.round(r.width) !== 32) bad.push('small icon ' + r.width); });
+    D.querySelectorAll('#ribbon-buttons .rb-stack:not(.rb-grid) > .rb').forEach(function (b) { var r = b.getBoundingClientRect(); if (r.width && Math.round(r.height) !== 38) bad.push('small button ' + r.height); });
     var lab = W.getComputedStyle(plain.querySelector('span'));
-    assert(lab.fontSize === '11px' && lab.textAlign !== 'left', 'labels 11 px centred: ' + lab.fontSize);
+    assert(lab.fontSize === '12px' && lab.textAlign !== 'left', 'labels 12 px centred: ' + lab.fontSize);
     var act = D.querySelector('#ribbon .rtab.active'), off = D.querySelector('#ribbon .rtab:not(.active)');
     assert(rfGXground(act).r !== rfGXground(off).r || W.getComputedStyle(act).fontWeight !== W.getComputedStyle(off).fontWeight, 'the active tab stands out');
     assert(Math.abs(rfGXlum(rfGXground(act)) - rfGXlum(rfGXground(plain))) < 0.005, 'the active tab is the CommandManager grey, joined to it');
@@ -143,13 +148,14 @@
     assert(!bad.length, bad.join('; '));
   });
 
-  step('rfGX: rows and bars — tree rows 22 px, filter box 22 px, status bar 22 px (outer bar sizes kept), Task Pane buttons 32 px', async function () {
+  // lane swribbon (2026-11-12): Task Pane tabs 36 px with 32 px icons, FeatureManager tab icons 32 px (SolidWorks' sizes; were 32 / 16)
+  step('rfGX: rows and bars — tree rows 22 px, filter box 22 px, status bar 22 px, Task Pane buttons 36 px, pane icons 32 px', async function () {
     var bad = [];
     var ti = D.querySelector('#tree .ti'); if (Math.round(ti.getBoundingClientRect().height) !== 22) bad.push('tree row ' + ti.getBoundingClientRect().height);
     var fi = rfGXbox('#tree-filter input'); if (Math.round(fi.height) !== 22) bad.push('filter ' + fi.height);
     var sb = rfGXbox('#statusbar'); if (Math.round(sb.height) !== 22) bad.push('status bar ' + sb.height);
-    var tp = D.querySelector('#tp-strip button'); if (tp && Math.round(tp.getBoundingClientRect().height) !== 32) bad.push('task pane button ' + tp.getBoundingClientRect().height);
-    D.querySelectorAll('#fm-tabs button .ico, #tp-strip button .ico').forEach(function (i) { var r = i.getBoundingClientRect(); if (r.width && Math.round(r.width) !== 16) bad.push('pane icon ' + r.width); });
+    var tp = D.querySelector('#tp-strip button'); if (tp && Math.round(tp.getBoundingClientRect().height) !== 36) bad.push('task pane button ' + tp.getBoundingClientRect().height);
+    D.querySelectorAll('#fm-tabs button .ico, #tp-strip button .ico').forEach(function (i) { var r = i.getBoundingClientRect(); if (r.width && Math.round(r.width) !== 32) bad.push('pane icon ' + r.width); });
     assert(!bad.length, bad.join('; '));
   });
 

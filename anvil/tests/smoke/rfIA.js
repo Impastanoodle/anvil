@@ -56,9 +56,10 @@
     near(grip.getBoundingClientRect().bottom, $('ribbon').getBoundingClientRect().bottom - 1, 0.5, 'grip on the bottom edge (inside the 1 px border)');
     assert(!$('ribbon-scale') || !$('ribbon-scale').textContent, 'a scale sheet at the default size');
     var big0 = rfIABig(), small0 = rfIASmall();
-    assert(big0.getAttribute('width') === '32' && small0.getAttribute('width') === '18', 'default icon sizes ' + big0.getAttribute('width') + ' / ' + small0.getAttribute('width'));
+    // lane swribbon (2026-11-12): small buttons are 32 px in SolidWorks' large-button look the user runs (were 18 / 16 px)
+    assert(big0.getAttribute('width') === '32' && small0.getAttribute('width') === '32', 'default icon sizes ' + big0.getAttribute('width') + ' / ' + small0.getAttribute('width'));
     near(big0.getBoundingClientRect().width, 32, 0.01, 'default large icon box');
-    near(small0.getBoundingClientRect().width, 16, 0.01, 'default small icon box');
+    near(small0.getBoundingClientRect().width, 32, 0.01, 'default small icon box');
     rfIA0 = { layout: rfIALayout(), h: rfIAH() };
     var big0Name = big0.parentNode.getAttribute('aria-label'), w0 = Math.max.apply(null, Array.prototype.map.call(big0.querySelectorAll('[stroke-width]'), function (e) { return parseFloat(e.getAttribute('stroke-width')) * 2; }));
     var vp0 = $('viewport').getBoundingClientRect().height, tab0 = $('ribbon-tabs').getBoundingClientRect().height;
@@ -69,7 +70,7 @@
     assert(s > 1.3 && s < 2.5, 'scale ' + s);
     var big = rfIABig(), small = rfIASmall(), bw = +big.getAttribute('width'), sw = +small.getAttribute('width');
     assert(bw > 32 && bw === Math.round(bw) && +big.getAttribute('height') === bw, 'large icon size ' + bw);
-    assert(sw > 16 && sw === Math.round(sw), 'small icon size ' + sw);
+    assert(sw > 32 && sw === Math.round(sw), 'small icon size ' + sw);
     var br = big.getBoundingClientRect(), sr = small.getBoundingClientRect();
     near(br.width, bw, 0.01, 'large icon box = its drawn size'); near(br.height, bw, 0.01, 'large icon box height');
     near(sr.width, sw, 0.01, 'small icon box = its drawn size');
@@ -89,7 +90,7 @@
     assert(D.documentElement.scrollHeight <= W.innerHeight + 1, 'the page scrolls: ' + D.documentElement.scrollHeight);
     var kept = null; try { kept = W.localStorage.getItem(rfIAKey()); } catch (e) { }
     assert(kept === String(s), 'scale kept: ' + kept + ' vs ' + s);
-    return 'ribbon ' + rfIA0.h.toFixed(1) + ' -> ' + h1.toFixed(1) + ' px, scale ' + s + ', icons 32 -> ' + bw + ' / 16 -> ' + sw + ', label ' + font0 + ' -> ' + font1 + ' px';
+    return 'ribbon ' + rfIA0.h.toFixed(1) + ' -> ' + h1.toFixed(1) + ' px, scale ' + s + ', icons 32 -> ' + bw + ' / 32 -> ' + sw + ', label ' + font0 + ' -> ' + font1 + ' px';
   });
 
   step('rfIA: the enlarged size survives a reload (a second app frame reads it)', async function () {
