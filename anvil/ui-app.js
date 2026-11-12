@@ -1766,7 +1766,7 @@
     ['Ctrl+1', 'vFront'], ['Ctrl+2', 'vBack'], ['Ctrl+3', 'vLeft'], ['Ctrl+4', 'vRight'], ['Ctrl+5', 'vTop'], ['Ctrl+6', 'vBottom'], ['Ctrl+7', 'vIso'],
     ['Ctrl+8', 'normalTo'], ['Ctrl+Shift+Z', 'prevView'], ['Ctrl+Z', 'undo'], ['Ctrl+Y', 'redo'], ['Ctrl+Shift+Y', 'redo', 1],
     ['Ctrl+S', 'save'], ['Ctrl+Shift+S', 'save', 1], ['Ctrl+B', 'rebuild'], ['Ctrl+Shift+B', 'rebuild', 1], ['Ctrl+N', 'new'], ['Ctrl+Shift+N', 'new', 1],
-    ['Ctrl+O', 'open'], ['Ctrl+Shift+O', 'open', 1],
+    ['Ctrl+O', 'open'], ['Ctrl+Shift+O', 'open', 1], ['Ctrl+A', 'selectAll'],
     ['Del', 'delete'], ['Backspace', 'delete', 1], ['F9', 'toggleTree'], ['F2', 'rename'], ['F', 'fit'], ['Z', 'zoomOut'], ['Shift+Z', 'zoomIn'], ['Space', 'orient'],
     ['S', 'shortcutBar'], ['L', 'line'], ['R', 'rect'], ['C', 'circle'], ['A', 'arc'], ['P', 'polygon'], ['T', 'slot'], ['D', 'dim'], ['E', 'extrude']
   ];
@@ -1794,6 +1794,9 @@
     'new': function (e) { e.preventDefault(); fileNew(); },
     open: function (e) { e.preventDefault(); fileOpen(); },
     'delete': function () { UI.deleteSelection(); },
+    // 2026-11-12: Ctrl+A selects every sketch entity (in a sketch) or body (in a part) the filters and masks allow, as
+    // SolidWorks and Mastercam do; the selection bar's Select All left the mastercam profile with the bar
+    selectAll: function (e) { if (!UI.selectAllEntities) return; e.preventDefault(); var n = UI.selectAllEntities(); if (UI.setStatus) UI.setStatus(n + ' selected.'); },
     toggleTree: function (e) { if (UI.setFeatureManagerHidden) { e.preventDefault(); UI.setFeatureManagerHidden(); } },   // SolidWorks: F9 toggles the FeatureManager tree area
     rename: function (e) { if (App.sel && App.sel.kind === 'feature') { e.preventDefault(); UI.startRename(K.findFeature(App.model, App.sel.id)); } },
     fit: function () { UI.zoomToFit(); },

@@ -490,6 +490,10 @@
       assert(UI.selection().length === 1, 'a click selects one entity: ' + JSON.stringify(UI.selection().map(function (s) { return s.kind; })));
       await rfLOUntil(function () { return /1/.test(UI.frameStatus().selected || ''); }, function () { return 'SELECTED ENTITIES: ' + UI.frameStatus().selected; });
       UI.setSelection([], { quiet: true }); await idle();
+      // Ctrl+A is Select All now that the bar is gone: the body, and the status bar counts it
+      D.body.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'a', code: 'KeyA', ctrlKey: true, bubbles: true, cancelable: true })); await idle();
+      assert(UI.selection().length === 1 && UI.selection()[0].kind === 'body', 'Ctrl+A selects the body: ' + JSON.stringify(UI.selection().map(function (s) { return s.kind; })));
+      UI.setSelection([], { quiet: true }); await idle();
       // the right-click menu, on the part, then Fit
       UI.zoomToFit(); await rfLOSettle(); var fitS = UI.cam.scale; UI.zoomView(3);
       var s0 = UI.cam.scale;
