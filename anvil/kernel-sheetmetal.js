@@ -1950,11 +1950,17 @@
       var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       sh.polys.forEach(function (pl) { pl.forEach(function (p) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); }); });
       sh.box = [x0, y0, x1, y1];
+      if (sh.polys.length > 8) sh.grid = flatPolyGrid(sh.polys, sh.box);   // lane flatperf: a perforated face's holes
     });
     function inShape(sh, q) {
       if (q[0] < sh.box[0] || q[0] > sh.box[2] || q[1] < sh.box[1] || q[1] > sh.box[3]) return false;
-      var c = false;
-      for (var k = 0; k < sh.polys.length; k++) if (pointInPoly(q, sh.polys[k])) c = !c;
+      var c = false, k;
+      if (sh.grid) {   // only the loops whose box holds q can hold it (the parity of the others is 0)
+        var ks = sh.grid.at(q);
+        for (k = 0; k < ks.length; k++) if (pointInPoly(q, sh.polys[ks[k]])) c = !c;
+        return c;
+      }
+      for (k = 0; k < sh.polys.length; k++) if (pointInPoly(q, sh.polys[k])) c = !c;
       return c;
     }
     function inBlank(q) {
@@ -2006,6 +2012,47 @@
     });
     return closedAll && loops.length ? loops : null;
   }
+  // lane flatperf: flatPolyGrid(polys, box) -> { at(q) -> the indices of the polys whose box (widened by 1e-9 of the
+  // size) holds q, in ascending order }. A uniform grid over box; a poly whose box spans more than 64 cells (an
+  // outline) is in every answer instead of in the cells. flatPolyGrid.ops counts the cells and polys visited, so a
+  // test can tell a quadratic step from a linear one without a clock.
+  function flatPolyGrid(polys, box) {
+    var n = polys.length, w = box[2] - box[0], h = box[3] - box[1], S = Math.max(w, h, 1e-12), e = 1e-9 * S;
+    var g = Math.max(1, Math.min(512, Math.ceil(Math.sqrt(n)))), cw = (w + 2 * e) / g || 1, ch = (h + 2 * e) / g || 1;
+    var cells = new Array(g * g), always = [], boxes = new Array(n);
+    function cx(x) { return Math.max(0, Math.min(g - 1, Math.floor((x - box[0] + e) / cw))); }
+    function cy(y) { return Math.max(0, Math.min(g - 1, Math.floor((y - box[1] + e) / ch))); }
+    for (var k = 0; k < n; k++) {
+      var pl = polys[k], x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (var i = 0; i < pl.length; i++) { var p = pl[i]; if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; }
+      boxes[k] = [x0 - e, y0 - e, x1 + e, y1 + e];
+      var i0 = cx(x0 - e), i1 = cx(x1 + e), j0 = cy(y0 - e), j1 = cy(y1 + e);
+      flatPolyGrid.ops += 1;
+      if ((i1 - i0 + 1) * (j1 - j0 + 1) > 64) { always.push(k); continue; }
+      for (var a = i0; a <= i1; a++) for (var b = j0; b <= j1; b++) (cells[a * g + b] = cells[a * g + b] || []).push(k);
+    }
+    return {
+      at: function (q) {
+        var c = cells[cx(q[0]) * g + cy(q[1])] || [], out = [], i, j;
+        flatPolyGrid.ops += c.length + always.length + 1;
+        for (i = 0, j = 0; i < c.length || j < always.length;) {   // merge the two ascending lists
+          var k = j >= always.length || (i < c.length && c[i] < always[j]) ? c[i++] : always[j++], bx = boxes[k];
+          if (q[0] >= bx[0] && q[0] <= bx[2] && q[1] >= bx[1] && q[1] <= bx[3]) out.push(k);
+        }
+        return out;
+      },
+      // the indices of the polys whose (widened) box meets the box r = [x0, y0, x1, y1], ascending
+      overlapping: function (r) {
+        var i0 = cx(r[0]), i1 = cx(r[2]), j0 = cy(r[1]), j1 = cy(r[3]), seen = {}, out = [];
+        function take(k) { var bx = boxes[k]; if (!seen[k] && bx[0] <= r[2] && bx[2] >= r[0] && bx[1] <= r[3] && bx[3] >= r[1]) { seen[k] = 1; out.push(k); } }
+        for (var a = i0; a <= i1; a++) for (var b = j0; b <= j1; b++) { var c = cells[a * g + b]; if (c) { flatPolyGrid.ops += c.length; c.forEach(take); } }
+        flatPolyGrid.ops += always.length + 1;
+        always.forEach(take);
+        return out.sort(function (a, b) { return a - b; });
+      }
+    };
+  }
+  flatPolyGrid.ops = 0;
   // cleanFlatLoop(pts, tol) -> the loop without consecutive duplicates (within tol), points within tol of the straight
   // line through their neighbours (collinear points on a straight run, and spikes: a point the outline goes out to
   // and straight back from), or null when fewer than 3 points are left. No point that stays is moved.
@@ -2468,6 +2515,17 @@
       if (comp.loops.length > 1) {
         var opp = -1, ow = T - face.w;
         mesh.faces.forEach(function (fc, i) { if (opp < 0 && dot(fc.normal, face.normal) < -0.999 && Math.abs(fc.w - ow) < 1e-3) opp = i; });
+        // lane flatperf: the far side's holes are laid into this face's plane once per far component, with their
+        // interior points and a box grid, and each hole here only looks at the ones whose box meets its own (was every
+        // far hole for every hole here: quadratic, most of a 1800-hole panel's Flat-Pattern after the merge)
+        var farHoles = {};
+        var farOf = function (oc) {
+          if (farHoles[oc]) return farHoles[oc];
+          var oc2 = faceComponents(opp)[oc], hs = oc2.loops.slice(1).map(function (hh) { return hh.map(function (p) { return to2D(o.plane, to3D(oc2.plane, p[0], p[1])); }); });
+          var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+          hs.forEach(function (l) { l.forEach(function (p) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); }); });
+          return (farHoles[oc] = { hs: hs, qq: [], grid: hs.length > 8 ? flatPolyGrid(hs, [x0, y0, x1, y1]) : null });
+        };
         if (opp >= 0) comp.loops.slice(1).forEach(function (h) {
           var q = loopInteriorPoint(h);
           if (!q) return;
@@ -2475,9 +2533,14 @@
           if (oc < 0) return;
           // the far side's holes under this one: a smaller one is the through hole (fill the rest), one as large or
           // larger (a plain through hole, a countersink from the far side) leaves this hole as it is
-          var oc2 = faceComponents(opp)[oc], fill = [h], ha = Math.abs(signedArea(h)), through = false;
-          oc2.loops.slice(1).forEach(function (hh) {
-            var hh2 = hh.map(function (p) { return to2D(o.plane, to3D(oc2.plane, p[0], p[1])); }), qq = loopInteriorPoint(hh2);
+          var far = farOf(oc), fill = [h], ha = Math.abs(signedArea(h)), through = false, ids;
+          if (far.grid) {   // a far hole that holds q, or whose interior point is in h, has a box that meets h's box
+            var hx0 = Infinity, hy0 = Infinity, hx1 = -Infinity, hy1 = -Infinity;
+            h.forEach(function (p) { hx0 = Math.min(hx0, p[0]); hx1 = Math.max(hx1, p[0]); hy0 = Math.min(hy0, p[1]); hy1 = Math.max(hy1, p[1]); });
+            ids = far.grid.overlapping([hx0, hy0, hx1, hy1]);
+          } else ids = far.hs.map(function (x, k) { return k; });
+          ids.forEach(function (k) {
+            var hh2 = far.hs[k], qq = far.qq[k] !== undefined ? far.qq[k] : (far.qq[k] = loopInteriorPoint(hh2));
             if (!pointInPoly(q, hh2) && !(qq && pointInPoly(qq, h))) return;
             if (Math.abs(signedArea(hh2)) >= ha * (1 - 1e-6)) through = true; else fill.push(hh2);
           });
@@ -6944,6 +7007,7 @@
   _.buildClosedCorner = buildClosedCorner; _.smBool = smBool; _.smScale = smScale;
   K.buildFlange = buildFlange; K.flangeLayout = flangeLayout; K.buildJog = buildJog; K.normalCutTool = normalCutTool;
   _.mergeFlatRegions = mergeFlatRegions;   // lane sweptflange-2 (Swept Flange / Lofted-Bend cuts)
+  _.flatPolyGrid = flatPolyGrid;           // lane flatperf (tests read flatPolyGrid.ops)
   K.flangeProfile = flangeProfile; K.flatPattern = flatPattern; K.flatOptions = flatOptions; K.flatOptionsOf = flatOptionsOf; K.FLAT_OPTION_DEFAULTS = FLAT_OPTION_DEFAULTS; K.sheetCutList = sheetCutList; K.CUT_LIST_NAMES = CUT_LIST_NAMES; K.cleanFlatLoop = cleanFlatLoop; K.snapFlatCircle = snapFlatCircle; K.flatCircleTol = flatCircleTol; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
   K.bendDeduction = bendDeduction; K.outsideSetback = outsideSetback; K.bendCalc = bendCalc; K.bendTableLookup = bendTableLookup;
   K.makeSheet = makeSheet; K.sheetKFactor = sheetKFactor; K.sheetNote = sheetNote; K.gaugeTables = GAUGE_TABLES; K.gaugeTable = gaugeTable; K.gaugeRow = gaugeRow;

@@ -162,8 +162,9 @@
       return pieceCurve;
     }
     function near(P) {
-      var c = ck(P), out = [];
-      for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) for (var dz = -1; dz <= 1; dz++) {
+      // lane flatperf: only the cells [P − tol, P + tol] reaches (1 of the 27 mostly: cell = 4 tol), same order
+      var c = ck(P), out = [], lo = ck([P[0] - tol, P[1] - tol, P[2] - tol]), hi = ck([P[0] + tol, P[1] + tol, P[2] + tol]);
+      for (var dx = Math.max(-1, lo[0] - c[0]); dx <= Math.min(1, hi[0] - c[0]); dx++) for (var dy = Math.max(-1, lo[1] - c[1]); dy <= Math.min(1, hi[1] - c[1]); dy++) for (var dz = Math.max(-1, lo[2] - c[2]); dz <= Math.min(1, hi[2] - c[2]); dz++) {
         var l = hash[(c[0] + dx) + ',' + (c[1] + dy) + ',' + (c[2] + dz)];
         if (l) l.forEach(function (h) { var ed = edges[h[0]], X = h[1] ? ed.b : ed.a; if (V.len(V.sub(X, P)) <= tol) out.push(h); });
       }

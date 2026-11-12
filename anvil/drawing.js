@@ -359,6 +359,50 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
   // piece stops up to a few chord tolerances beside the next (Mug handle, Handlebar bend, 0.03-0.14 mm). A free line
   // end within 3 tol of another visible line (and under a fifth of its own length) is carried to that line: to the
   // crossing if it lies within 3 gaps along the piece, else to the nearest point on it.
+  // lane flatperf: boxGrid(boxes) -> { query(r), update(k, box) }: a uniform grid over boxes [x0, y0, x1, y1]. query
+  // answers, ascending, the indices of the boxes that meet r (and maybe a few more: callers keep their own exact tests);
+  // update re-files box k. A box over more than 256 cells (an outline) is in every answer. boxGrid.ops counts the items
+  // visited, for the tests that would catch an all-pairs scan coming back.
+  function boxGrid(boxes) {
+    var n = boxes.length, x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, k;
+    for (k = 0; k < n; k++) { var b = boxes[k]; if (b[0] < x0) x0 = b[0]; if (b[1] < y0) y0 = b[1]; if (b[2] > x1) x1 = b[2]; if (b[3] > y1) y1 = b[3]; }
+    if (!(x1 >= x0)) { x0 = y0 = 0; x1 = y1 = 1; }
+    var g = Math.max(1, Math.min(1024, Math.ceil(Math.sqrt(n)))), cw = (x1 - x0) / g || 1, ch = (y1 - y0) / g || 1;
+    var cells = [], always = [], filed = new Array(n), mark = new Int32Array(n), stamp = 0;
+    function cx(x) { var i = Math.floor((x - x0) / cw); return i < 0 ? 0 : i >= g ? g - 1 : i; }
+    function cy(y) { var j = Math.floor((y - y0) / ch); return j < 0 ? 0 : j >= g ? g - 1 : j; }
+    function file(k, b) {
+      if (!(b[0] <= b[2] && b[1] <= b[3])) { always.push(k); filed[k] = -1; return; }   // NaN: always asked
+      var i0 = cx(b[0]), i1 = cx(b[2]), j0 = cy(b[1]), j1 = cy(b[3]);
+      if ((i1 - i0 + 1) * (j1 - j0 + 1) > 256) { always.push(k); filed[k] = -1; return; }
+      filed[k] = [i0, i1, j0, j1];
+      for (var i = i0; i <= i1; i++) for (var j = j0; j <= j1; j++) (cells[i * g + j] = cells[i * g + j] || []).push(k);
+    }
+    for (k = 0; k < n; k++) file(k, boxes[k]);
+    function drop(list, k) { var at = list.indexOf(k); if (at >= 0) list.splice(at, 1); }
+    return {
+      query: function (r) {
+        var out = [], i, j, c, m;
+        if (++stamp > 2e9) { mark.fill(0); stamp = 1; }
+        var i0 = cx(r[0]), i1 = cx(r[2]), j0 = cy(r[1]), j1 = cy(r[3]);
+        for (i = i0; i <= i1; i++) for (j = j0; j <= j1; j++) if ((c = cells[i * g + j])) {
+          boxGrid.ops += c.length;
+          for (m = 0; m < c.length; m++) if (mark[c[m]] !== stamp) { mark[c[m]] = stamp; out.push(c[m]); }
+        }
+        boxGrid.ops += always.length + 1;
+        for (m = 0; m < always.length; m++) if (mark[always[m]] !== stamp) { mark[always[m]] = stamp; out.push(always[m]); }
+        return out.sort(function (a, b) { return a - b; });
+      },
+      update: function (k, b) {
+        var f = filed[k];
+        if (f === -1) drop(always, k);
+        else if (f) for (var i = f[0]; i <= f[1]; i++) for (var j = f[2]; j <= f[3]; j++) drop(cells[i * g + j], k);
+        file(k, b);
+      }
+    };
+  }
+  boxGrid.ops = 0;
+
   function closeFreeEnds(lines, ells, arcs, tol) {
     if (!(tol > 0) || lines.length > 20000) return;
     function segD(p, l) { var dx = l[2] - l[0], dy = l[3] - l[1], L2 = dx * dx + dy * dy, t = L2 ? Math.max(0, Math.min(1, ((p[0] - l[0]) * dx + (p[1] - l[1]) * dy) / L2)) : 0; return { d: Math.hypot(p[0] - l[0] - t * dx, p[1] - l[1] - t * dy), q: [l[0] + t * dx, l[1] + t * dy] }; }
@@ -373,10 +417,22 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
       for (var i = 0; i <= n; i++) { var t = E.t0 + (E.t1 - E.t0) * i / n, q = cp(E, t); bd = Math.min(bd, Math.hypot(q[0] - p[0], q[1] - p[1])); }
       return bd;
     }
+    // lane flatperf: the lines and curves in box grids (a perforated panel's view: 1200 rims and their lines, every end
+    // tested against everything was 8 s of a 14 s drawing at 600 holes). A query answers a superset of what the old
+    // scans' own box tests let through, in index order, so every result (first hit, nearest, ties) is the same; a line
+    // whose end moves is re-filed. A curve's box is its whole ellipse widened by its own hit distance rm·2e-3.
+    var lg = boxGrid(lines.map(lineBox)), cg = boxGrid(cs.map(function (E) {
+      var rx = Math.hypot(E.ax[0], E.ay[0]), ry = Math.hypot(E.ax[1], E.ay[1]), w = E.rm * 2e-3;
+      return [E.c[0] - rx - w, E.c[1] - ry - w, E.c[0] + rx + w, E.c[1] + ry + w];
+    }));
+    function lineBox(l) { return [Math.min(l[0], l[2]), Math.min(l[1], l[3]), Math.max(l[0], l[2]), Math.max(l[1], l[3])]; }
+    function linesNear(p, r) { return lg.query([p[0] - r, p[1] - r, p[0] + r, p[1] + r]); }   // indices, ascending
+    function moved1(k) { lg.update(k, lineBox(lines[k])); }
     // free: within eps of nothing drawn but its own piece
     function free(p, self, eps, also) {
-      for (var i = 0; i < lines.length; i++) if (lines[i] !== self && lines[i] !== also && near(p, lines[i], eps) && segD(p, lines[i]).d <= eps) return false;
-      for (var j = 0; j < cs.length; j++) if (cs[j].o !== self && curveD(cs[j], p) <= Math.max(eps, cs[j].rm * 2e-3)) return false;
+      var ls = lg.query([p[0] - eps, p[1] - eps, p[0] + eps, p[1] + eps]), cc = cg.query([p[0] - eps, p[1] - eps, p[0] + eps, p[1] + eps]), i;
+      for (i = 0; i < ls.length; i++) { var l = lines[ls[i]]; if (l !== self && l !== also && near(p, l, eps) && segD(p, l).d <= eps) return false; }
+      for (i = 0; i < cc.length; i++) { var E = cs[cc[i]]; if (E.o !== self && curveD(E, p) <= Math.max(eps, E.rm * 2e-3)) return false; }
       return true;
     }
     function epsAt(p) { return 1e-6 * (1 + Math.abs(p[0]) + Math.abs(p[1])); }
@@ -387,7 +443,8 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
         var te = end ? E.t1 : E.t0, pe = cp(E, te);
         if (!free(pe, E.o, epsAt(pe))) return;
         var best = null, bd = E.rm * Math.PI / 12;
-        lines.forEach(function (l) {
+        linesNear(pe, bd).forEach(function (li) {
+          var l = lines[li];
           [0, 1].forEach(function (le) {
             var p = le ? [l[2], l[3]] : [l[0], l[1]], d = Math.hypot(p[0] - pe[0], p[1] - pe[1]);
             if (!(d < bd)) return;
@@ -414,7 +471,7 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
     // (b) faceted silhouette pieces onto the next line
     // (an end can be freed by a later piece moving off it: a second pass picks it up)
     var R = 3 * tol, moved = true;
-    for (var pass = 0; pass < 3 && moved; pass++) { moved = false; lines.forEach(function (l) {
+    for (var pass = 0; pass < 3 && moved; pass++) { moved = false; lines.forEach(function (l, li) {
       [0, 1].forEach(function (end) {
         var p = end ? [l[2], l[3]] : [l[0], l[1]], q0 = end ? [l[0], l[1]] : [l[2], l[3]], L = Math.hypot(p[0] - q0[0], p[1] - q0[1]);
         if (L < 1e-9 || !free(p, l, epsAt(p))) return;
@@ -422,7 +479,8 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
         // Tray's bend mitres in the Top view on OpenCascade, 0.005-0.03 mm apart): the next piece running on ahead,
         // its near end free too, within R: the end is carried onto that end (r9/drawings9)
         var ud = [(p[0] - q0[0]) / L, (p[1] - q0[1]) / L], join = null, jd = R;
-        lines.forEach(function (o) {
+        linesNear(p, R).forEach(function (oi) {
+          var o = lines[oi];
           if (o === l || !near(p, o, R)) return;
           [0, 1].forEach(function (oe) {
             var p2 = oe ? [o[2], o[3]] : [o[0], o[1]], q2 = oe ? [o[0], o[1]] : [o[2], o[3]], gx = p2[0] - p[0], gy = p2[1] - p[1], g = Math.hypot(gx, gy), Lo = Math.hypot(q2[0] - p2[0], q2[1] - p2[1]);
@@ -431,9 +489,9 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
             jd = g; join = p2;
           });
         });
-        if (join) { if (end) { l[2] = join[0]; l[3] = join[1]; } else { l[0] = join[0]; l[1] = join[1]; } moved = true; return; }
+        if (join) { if (end) { l[2] = join[0]; l[3] = join[1]; } else { l[0] = join[0]; l[1] = join[1]; } moved1(li); moved = true; return; }
         var best = null, bd = Math.min(R, L * 0.2);
-        lines.forEach(function (o) { if (o === l || !near(p, o, bd)) return; var s = segD(p, o); if (s.d < bd) { bd = s.d; best = { o: o, q: s.q }; } });
+        linesNear(p, bd).forEach(function (oi) { var o = lines[oi]; if (o === l || !near(p, o, bd)) return; var s = segD(p, o); if (s.d < bd) { bd = s.d; best = { o: o, oi: oi, q: s.q }; } });
         if (!best) return;
         var o = best.o, d = [(p[0] - q0[0]) / L, (p[1] - q0[1]) / L], ox = o[2] - o[0], oy = o[3] - o[1], den = d[0] * oy - d[1] * ox, to = best.q;
         // two pieces side by side (under 30°), each with a free end beside (or on) the other: both ends meet halfway
@@ -443,6 +501,7 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
           var mid = [(p[0] + p2[0]) / 2, (p[1] + p2[1]) / 2];
           if (end) { l[2] = mid[0]; l[3] = mid[1]; } else { l[0] = mid[0]; l[1] = mid[1]; }
           if (oe) { o[2] = mid[0]; o[3] = mid[1]; } else { o[0] = mid[0]; o[1] = mid[1]; }
+          moved1(li); moved1(best.oi);
           moved = true;
           return;
         }
@@ -451,6 +510,7 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
           if (Math.abs(s) <= 3 * bd && s > -L * 0.5 && segD(x, o).d <= epsAt(x)) to = x;
         }
         if (end) { l[2] = to[0]; l[3] = to[1]; } else { l[0] = to[0]; l[1] = to[1]; }
+        moved1(li);
         moved = true;
       });
     }); }
@@ -695,5 +755,5 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
   D.projectedFrame = projectedFrame; D.sectionFrame = sectionFrame;
   D.meshEdges = meshEdges; D.pairOpenEdges = pairOpenEdges; D.joinCollinear = joinCollinear;
   _.TWO_PI = TWO_PI; _.ORTHO = ORTHO; _.DIRS = DIRS; _.frameKey = frameKey; _.COS_SMOOTH = COS_SMOOTH; _.COS_CREASE = COS_CREASE;
-  _.meshDiag = meshDiag; _.closeEnds = closeEnds; _.closeFreeEnds = closeFreeEnds; _.closeSmallGaps = closeSmallGaps; _.weldEnds = weldEnds; _.chordsToArcs = chordsToArcs;
+  _.meshDiag = meshDiag; _.closeEnds = closeEnds; _.closeFreeEnds = closeFreeEnds; _.closeSmallGaps = closeSmallGaps; _.boxGrid = boxGrid; _.weldEnds = weldEnds; _.chordsToArcs = chordsToArcs;
 })(Drawing, Drawing._);

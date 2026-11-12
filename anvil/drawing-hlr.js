@@ -64,41 +64,51 @@
       }
     });
     // uniform grid over the occluders' 2D boxes
+    // (lane flatperf: G·G cells shared out by the view's aspect, GU across and GV up: a sheet seen edge-on is 400 times
+    // wider than tall, and square cells there held every hole wall of a column)
     var G = Math.max(4, Math.min(160, Math.round(Math.sqrt(tris.length) * 1.5)));
+    var bu = bounds.umax - bounds.umin + 2 * tol2, bv = bounds.vmax - bounds.vmin + 2 * tol2, asp = bu > 0 && bv > 0 ? Math.sqrt(bu / bv) : 1;
+    var GU = Math.max(1, Math.min(2048, Math.round(G * asp))), GV = Math.max(1, Math.min(2048, Math.round(G * G / GU)));
     var gu0 = bounds.umin - tol2, gv0 = bounds.vmin - tol2;
-    var cw = Math.max((bounds.umax - bounds.umin + 2 * tol2) / G, 1e-12), ch = Math.max((bounds.vmax - bounds.vmin + 2 * tol2) / G, 1e-12);
-    var grid = new Array(G * G);
-    function cellU(x) { return Math.max(0, Math.min(G - 1, Math.floor((x - gu0) / cw))); }
-    function cellV(y) { return Math.max(0, Math.min(G - 1, Math.floor((y - gv0) / ch))); }
-    tris.forEach(function (t, ti) {
-      for (var cx = cellU(t.umin - epsIn); cx <= cellU(t.umax + epsIn); cx++) for (var cy = cellV(t.vmin - epsIn); cy <= cellV(t.vmax + epsIn); cy++) {
-        var c = cy * G + cx; (grid[c] || (grid[c] = [])).push(ti);
+    var cw = Math.max(bu / GU, 1e-12), ch = Math.max(bv / GV, 1e-12);
+    var grid = new Array(GU * GV);
+    function cellU(x) { return Math.max(0, Math.min(GU - 1, Math.floor((x - gu0) / cw))); }
+    function cellV(y) { return Math.max(0, Math.min(GV - 1, Math.floor((y - gv0) / ch))); }
+    // lane flatperf: the occluders are filed largest first (by powers of two of their area), so a segment that one of
+    // them hides whole (a perforated panel's hole walls behind its edge face in a side view) stops at it
+    // (hiddenIntervals' early exit; the merged intervals do not depend on the order the occluders come in)
+    var lv = tris.map(function (t, ti) { var a = (t.umax - t.umin) * (t.vmax - t.vmin); return a > 0 ? Math.floor(Math.log2(a)) : -2000; });
+    var byLv = tris.map(function (t, ti) { return ti; }).sort(function (a, b) { return lv[b] - lv[a] || a - b; });
+    byLv.forEach(function (ti) {
+      var t = tris[ti], u0 = cellU(t.umin - epsIn), u1 = cellU(t.umax + epsIn), v0 = cellV(t.vmin - epsIn), v1 = cellV(t.vmax + epsIn);
+      for (var cx = u0; cx <= u1; cx++) for (var cy = v0; cy <= v1; cy++) {
+        var c = cy * GU + cx; (grid[c] || (grid[c] = [])).push(ti);
       }
     });
     var stamp = new Int32Array(tris.length), stampId = 0;
-    function candidates(a2, b2) {
+    // candidates(a2, b2, visit): visit(ti) for every occluder near the segment, once each, until it returns true
+    function candidates(a2, b2, visit) {
       stampId++;
-      var out = [];
+      var stop = false;
       function addCell(cx, cy) {
-        if (cx < 0 || cy < 0 || cx >= G || cy >= G) return;
-        var lst = grid[cy * G + cx];
+        if (stop || cx < 0 || cy < 0 || cx >= GU || cy >= GV) return;
+        var lst = grid[cy * GU + cx];
         if (!lst) return;
-        for (var i = 0; i < lst.length; i++) { var ti = lst[i]; if (stamp[ti] !== stampId) { stamp[ti] = stampId; out.push(ti); } }
+        for (var i = 0; i < lst.length; i++) { var ti = lst[i]; if (stamp[ti] !== stampId) { stamp[ti] = stampId; if (visit(ti)) { stop = true; return; } } }
       }
       var x0 = cellU(Math.min(a2[0], b2[0]) - epsIn), x1 = cellU(Math.max(a2[0], b2[0]) + epsIn);
       var y0 = cellV(Math.min(a2[1], b2[1]) - epsIn), y1 = cellV(Math.max(a2[1], b2[1]) + epsIn);
-      if ((x1 - x0 + 1) * (y1 - y0 + 1) <= 4 * G) {
-        for (var cx = x0; cx <= x1; cx++) for (var cy = y0; cy <= y1; cy++) addCell(cx, cy);
+      if ((x1 - x0 + 1) * (y1 - y0 + 1) <= 2 * (GU + GV)) {
+        for (var cx = x0; cx <= x1 && !stop; cx++) for (var cy = y0; cy <= y1 && !stop; cy++) addCell(cx, cy);
       } else {
         // a long diagonal: walk it at a quarter-cell step and take each cell's 3×3 neighbourhood
         var L = Math.hypot((b2[0] - a2[0]) / cw, (b2[1] - a2[1]) / ch), n = Math.ceil(L * 4) + 1, seen = {};
-        for (var s = 0; s <= n; s++) {
+        for (var s = 0; s <= n && !stop; s++) {
           var x = a2[0] + (b2[0] - a2[0]) * s / n, y = a2[1] + (b2[1] - a2[1]) * s / n, gx = cellU(x), gy = cellV(y), kk = gx + ',' + gy;
           if (seen[kk]) continue; seen[kk] = 1;
           for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) addCell(gx + dx, gy + dy);
         }
       }
-      return out;
     }
     // hidden intervals of one 3D segment (ez: a larger depth tolerance, for exact curves that lie off the facets;
     // skip: a surface key whose own facets cannot hide the segment, the exact silhouette of a cylinder or cone: its
@@ -110,23 +120,27 @@
     // surfaces): those faces cannot hide their own edge
     function hiddenIntervals(A, B, a2, b2, ez, skip, only) {
       var wa = V.dot(A, e), wb = V.dot(B, e), wmin = Math.min(wa, wb), AB = V.sub(B, A), eZ = ez > epsZ ? ez : epsZ;
-      var ivs = [];
-      var cand = candidates(a2, b2);
-      for (var ci = 0; ci < cand.length; ci++) {
-        var t = tris[cand[ci]];
-        if (t.wmax <= wmin + eZ) continue;               // the triangle is nowhere in front of the segment
-        if (skip != null && (skip.faces ? skip.faces.indexOf(t.f) >= 0 : CV.faceSurf[t.f] && CV.faceSurf[t.f].key === skip)) continue;
-        if (only && ((mesh.faces[t.f].body || 0) === only.body) !== only.same) continue;
+      var ivs = [], whole = null;
+      candidates(a2, b2, function (ti) {
+        var t = tris[ti];
+        if (t.wmax <= wmin + eZ) return false;               // the triangle is nowhere in front of the segment
+        if (skip != null && (skip.faces ? skip.faces.indexOf(t.f) >= 0 : CV.faceSurf[t.f] && CV.faceSurf[t.f].key === skip)) return false;
+        if (only && ((mesh.faces[t.f].body || 0) === only.body) !== only.same) return false;
         var lo = 0, hi = 1;
         // in front: s(t) = (c - n·X(t)) / (n·e) > epsZ
         var s0 = (t.c - V.dot(t.n, A)) / t.ne, s1 = (t.c - V.dot(t.n, B)) / t.ne;
-        var r = clipLinear(s0 - eZ, s1 - eZ, lo, hi, true); if (!r) continue; lo = r[0]; hi = r[1];
+        var r = clipLinear(s0 - eZ, s1 - eZ, lo, hi, true); if (!r) return false; lo = r[0]; hi = r[1];
         for (var j = 0; j < 3 && r; j++) {
           var h = t.hs[j], h0 = h[0] * a2[0] + h[1] * a2[1] + h[2] + epsIn, h1 = h[0] * b2[0] + h[1] * b2[1] + h[2] + epsIn;
           r = clipLinear(h0, h1, lo, hi, false); if (r) { lo = r[0]; hi = r[1]; }
         }
-        if (r && hi - lo > 1e-12) ivs.push([lo, hi]);
-      }
+        if (r && hi - lo > 1e-12) {
+          if (lo <= 0 && hi >= 1) { whole = [[lo, hi]]; return true; }   // hidden whole: no other piece can change that
+          ivs.push([lo, hi]);
+        }
+        return false;
+      });
+      if (whole) return whole;
       return mergeIntervals(ivs, 1e-9);
     }
     // keep the part of [lo, hi] where the linear function f(t) = f0 + (f1 - f0) t is > 0 (strict) or >= 0
@@ -560,9 +574,22 @@
         if (!runs[key]) { runs[key] = []; rorder.push(key); }
         runs[key].push(p);
       });
+      // lane flatperf: the circles filed by centre in cells of 2·tz·100 (a group passes endOk's test only with its centre
+      // within tz·100·√2 of the axis point at z): a perforated panel's 3600 rims were each tried against every chain end
+      var gA = tz * 100, gCell = 2 * gA, gHash = null;
+      var gKey = function (x, y, z) { return x + ',' + y + ',' + z; };
+      var groupsNear = function (Q) {
+        if (!gHash) {
+          gHash = {};
+          CV.groups.forEach(function (G, gi) { (gHash[gKey(Math.floor(G.c[0] / gCell), Math.floor(G.c[1] / gCell), Math.floor(G.c[2] / gCell))] || (gHash[gKey(Math.floor(G.c[0] / gCell), Math.floor(G.c[1] / gCell), Math.floor(G.c[2] / gCell))] = [])).push(gi); });
+        }
+        var r = 1.5 * gA, out = [], lo = Q.map(function (x) { return Math.floor((x - r) / gCell); }), hi = Q.map(function (x) { return Math.floor((x + r) / gCell); });
+        for (var x = lo[0]; x <= hi[0]; x++) for (var y = lo[1]; y <= hi[1]; y++) for (var zc = lo[2]; zc <= hi[2]; zc++) (gHash[gKey(x, y, zc)] || []).forEach(function (gi) { out.push(CV.groups[gi]); });
+        return out;
+      };
       var endOk = function (S, w, z) {
         var k = S.t === 'cone' ? S.k || 0 : 0, rz = S.r + k * z, P0 = V.add(V.add(S.o, V.scale(S.d, z)), V.scale(w, rz));
-        return CV.groups.some(function (G) {
+        return groupsNear(V.add(S.o, V.scale(S.d, z))).some(function (G) {
           if (Math.abs(Math.abs(V.dot(G.n, S.d)) - 1) > 1e-9) return false;
           var dc = V.sub(G.c, S.o), gz = V.dot(dc, S.d);
           if (Math.abs(gz - z) > tz * 100 || V.len(V.sub(dc, V.scale(S.d, gz))) > tz * 100 || Math.abs(G.r - rz) > tz * 100 + rz * 1e-9) return false;

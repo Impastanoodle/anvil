@@ -220,6 +220,7 @@ var Nest = (function () {
   // raster(polys, box, h, pad, reach, fill) -> { pw, ph, m (Uint8Array), ox, oy }: cell (i, j) covers [ox + i·h,
   // ox + (i+1)·h] × [oy + j·h, …] in the oriented part's coordinates (ox = box min − pad); marked when its centre is
   // inside the polygon or the cell (the whole square) comes within `reach` of its boundary
+  var stats = { rasters: 0, rowTests: 0 };
   function raster(polys, box, h, pad, reach, fillHoles) {
     var ox = box[0] - pad, oy = box[1] - pad;
     var pw = Math.max(1, Math.ceil((box[2] - box[0] + 2 * pad) / h)), ph = Math.max(1, Math.ceil((box[3] - box[1] + 2 * pad) / h));
@@ -229,11 +230,19 @@ var Nest = (function () {
       for (var q = 0; q < pl.length; q++) { var a = pl[q], b = pl[(q + 1) % pl.length]; E.push([a[0] - ox, a[1] - oy, b[0] - ox, b[1] - oy]); }
     });
     // inside: even-odd crossings of the row through the cell centres
-    var xs = [];
+    // (lane flatperf: each edge is filed under the rows its y range can cross, so a row only tests those: every edge
+    // against every row was rows × edges, a perforated part's 60 000 edges on 1000 rows; same crossings, same order)
+    var xs = [], byRow = new Array(ph);
+    for (k = 0; k < E.length; k++) {
+      var ey0 = Math.min(E[k][1], E[k][3]), ey1 = Math.max(E[k][1], E[k][3]);
+      var r0 = Math.max(0, Math.floor(ey0 / h - 0.5) - 1), r1 = Math.min(ph - 1, Math.ceil(ey1 / h - 0.5) + 1);
+      for (j = r0; j <= r1; j++) (byRow[j] || (byRow[j] = [])).push(k);
+    }
     for (j = 0; j < ph; j++) {
-      var yc = (j + 0.5) * h;
+      var yc = (j + 0.5) * h, rk = byRow[j] || [];
       xs.length = 0;
-      for (k = 0; k < E.length; k++) { var e = E[k]; if ((e[1] > yc) !== (e[3] > yc)) xs.push(e[0] + (yc - e[1]) * (e[2] - e[0]) / (e[3] - e[1])); }
+      stats.rowTests += rk.length;
+      for (var kk = 0; kk < rk.length; kk++) { var e = E[rk[kk]]; if ((e[1] > yc) !== (e[3] > yc)) xs.push(e[0] + (yc - e[1]) * (e[2] - e[0]) / (e[3] - e[1])); }
       xs.sort(function (a, b) { return a - b; });
       for (k = 0; k + 1 < xs.length; k += 2) {
         var i0 = Math.max(0, Math.ceil(xs[k] / h - 0.5)), i1 = Math.min(pw - 1, Math.floor(xs[k + 1] / h - 0.5));
@@ -361,13 +370,24 @@ var Nest = (function () {
     var P0 = (parts || []).map(function (p) { return p && p.loops && p.loops[0] && p.area != null && p.box ? p : part(p); });
     var angles = angleList(o.rotation), nO = 0;
     // the orientations of each part, rasterised once
+    // lane flatperf: a part whose area is more than the sheet inside its margin fits at no angle, and an orientation
+    // whose exact extents cannot keep the margin is dropped before it is rasterised (the same test as below, from the
+    // box alone): a detailed part larger than the sheet was rasterised at every angle first (86 s to say "does not fit")
+    var usable = Math.max(0, W - 2 * m) * Math.max(0, H - 2 * m);
     var prep = P0.map(function (pt, pi) {
       if (!pt) return null;
-      var polys = pt.loops.map(function (L) { return loopPoly(L, o.tol); }), list = [], seen = {};
+      var list = [], seen = {}, polys = null;
+      if (pt.area > usable * (1 + 1e-9)) return { part: pt, index: pi, orients: list };
       (o.mirror ? [false, true] : [false]).forEach(function (mir) {
         angles.forEach(function (ang) {
           var f = motion(ang, mir, 0, 0);
           var loops = pt.loops.map(function (L) { return moveLoop(L, f, mir); }), box = loopsBox(loops);
+          var pw0 = Math.max(1, Math.ceil((box[2] - box[0] + 2 * r) / h)), ph0 = Math.max(1, Math.ceil((box[3] - box[1] + 2 * r) / h));
+          var ox0 = Math.max(0, Math.ceil((m - X0 - r) / h - 1e-9)), ox1 = Math.min(NX - pw0, Math.floor((W - m - (box[2] - box[0]) - X0 - r) / h + 1e-9));
+          var oy0 = Math.max(0, Math.ceil((m - Y0 - r) / h - 1e-9)), oy1 = Math.min(NY - ph0, Math.floor((H - m - (box[3] - box[1]) - Y0 - r) / h + 1e-9));
+          if (ox1 < ox0 || oy1 < oy0) return;
+          stats.rasters++;
+          if (!polys) polys = pt.loops.map(function (L) { return loopPoly(L, o.tol); });
           var R = raster(polys.map(function (pl) { return pl.map(f); }), box, h, r, reach, !o.holes);
           var c = canonical(R, T);
           if (seen[c.sig]) return;
@@ -565,7 +585,8 @@ var Nest = (function () {
   return {
     part: part, partsFromLoops: partsFromLoops, normLoop: normLoop, loopArea: loopArea, loopsBox: loopsBox, loopPoly: loopPoly,
     run: run, options: options, placedLoops: placedLoops, check: check, sheetEntities: sheetEntities, sheetDXF: sheetDXF,
-    _: { raster: raster, canonical: canonical, segDist: segDist }
+    _: { raster: raster, canonical: canonical, segDist: segDist },
+    stats: stats   // lane flatperf: { rasters, rowTests } counts, for the tests that catch an all-pairs step coming back
   };
 })();
 if (typeof self !== 'undefined') self.Nest = Nest;
