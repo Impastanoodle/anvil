@@ -109,7 +109,10 @@
       var aa = 0.125 - BA / 2;
       near(v0 - rfJDVol(), T * (2 * aa * aa + BA * (2 * aa + R + T) + aa * (aa + R + T)), 1e-9, 'removed: T × the relief\'s area of the blank');
       var row = D.querySelector('#tree [data-fid="' + f.id + '"]');
-      assert(row && row.innerHTML.indexOf('M1.5 14.5 V6.5') >= 0, 'tree row with the Corner Relief icon');
+      // rfMD: the row's icon is whatever the icon set in use draws for cornerRelief (it was a fragment of the built-in
+      // drawing's path, which the SolidWorks set of the default profile does not share), and not the generic square
+      var rowIco = row && row.querySelector('svg.ico');
+      assert(rowIco && rowIco.outerHTML === W.Icons.node('cornerRelief', 16).outerHTML && rowIco.outerHTML !== W.Icons.node('generic', 16).outerHTML, 'tree row with the Corner Relief icon');
       UI.undo(); await idle();
       assert(UI.App.model.features.length === n0, 'one undo step');
       UI.redo(); await idle();

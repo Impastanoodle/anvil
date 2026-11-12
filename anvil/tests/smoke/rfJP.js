@@ -61,7 +61,10 @@
       var fa = 0.01 - N / 2 * 0.01 * Math.sin(Math.PI / 2 / N);
       near(rfJPVol() - v0, H * (R * T + fa), 1e-9, 'added: H·(R·T + the fillet)');
       var row = D.querySelector('#tree [data-fid="' + f.id + '"]');
-      assert(row && row.innerHTML.indexOf('H7.5 A3 3 0 0 0 4.5 7.5') >= 0, 'tree row with the Welded Corner icon');
+      // rfMD: the row's icon is whatever the icon set in use draws for weldedCorner (it was a fragment of the built-in
+      // drawing's path, which the SolidWorks set of the default profile does not share), and not the generic square
+      var rowIco = row && row.querySelector('svg.ico');
+      assert(rowIco && rowIco.outerHTML === W.Icons.node('weldedCorner', 16).outerHTML && rowIco.outerHTML !== W.Icons.node('generic', 16).outerHTML, 'tree row with the Welded Corner icon');
       var flat1 = rfJPFlat();
       assert(flat1.n === flat0.n && Math.abs(flat1.w - flat0.w) < 1e-12 && Math.abs(flat1.h - flat0.h) < 1e-12 && flat1.loops === flat0.loops, 'the flat is the tray\'s');
       UI.undo(); await idle();
