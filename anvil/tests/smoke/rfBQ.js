@@ -17,6 +17,12 @@
   }
   function rfBQblue(c) { var k = rfBQhue(c); return c.a > 0 && k.chroma >= 0.04 && k.h >= 190 && k.h <= 250; }
   // every colour in a computed style / variable string that reads as blue, as "label: value"
+  // swtheme (2026-11-12): the user lifted the no-blue rule for the chrome ("any colors that look clean and
+  // professional"). The chrome now has one accent; a STRAY blue is a clear blue (chroma >= 0.1: the neutrals' slight cool
+  // tint is less) that is not the accent's family (within 12 degrees of --c-accent's hue). Icons keep the old rule.
+  function rfBQaccentHue() { var p = D.createElement('i'); p.style.color = 'var(--c-accent)'; D.body.appendChild(p); var c = rfBQparse(W.getComputedStyle(p).color)[0]; p.remove(); return c ? rfBQhue(c).h : -99; }
+  function rfBQstrays(label, s) { var ah = rfBQaccentHue(); return rfBQparse(s).filter(function (c) { var k = rfBQhue(c); return rfBQblue(c) && k.chroma >= 0.1 && Math.abs(k.h - ah) >= 12; }).map(function (c) { return label + ': ' + c.s; }); }
+  function rfBQaccentish(c) { var k = c && rfBQhue(c); return !!(k && k.chroma >= 0.12 && Math.abs(k.h - rfBQaccentHue()) < 12); }
   function rfBQblues(label, s) { return rfBQparse(s).filter(rfBQblue).map(function (c) { return label + ': ' + c.s; }); }
   function rfBQstyle(el, props) {
     var cs = W.getComputedStyle(el);
@@ -31,21 +37,21 @@
     '--dw-desk', '--dw-tabbar', '--dw-tab', '--dw-tab-on', '--dw-tab-line'];
   function rfBQtheme() { return D.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'; }
 
-  step('rfBQ: the chrome colour variables (ribbon, FeatureManager, PropertyManager, buttons, menus, toasts, drawing tabs, HUD) hold no blue, in the light and the dark theme', async function () {
+  step('rfBQ: the chrome colour variables (ribbon, FeatureManager, PropertyManager, buttons, menus, toasts, drawing tabs, HUD) hold no blue but the accent\'s, in the light and the dark theme', async function () {
     var prev = rfBQtheme(), bad = [], n = 0;
     try {
       ['light', 'dark'].forEach(function (th) {
         UI.setTheme(th);
         var root = W.getComputedStyle(D.documentElement), vp = W.getComputedStyle($('viewport'));
-        RFBQ_VARS.forEach(function (v) { n++; bad = bad.concat(rfBQblues(th + ' ' + v, root.getPropertyValue(v))); });
-        ['--hud-hover', '--hud-hover-line', '--hud-on', '--hud-on-line'].forEach(function (v) { n++; bad = bad.concat(rfBQblues(th + ' ' + v, vp.getPropertyValue(v))); });
+        RFBQ_VARS.forEach(function (v) { n++; bad = bad.concat(rfBQstrays(th + ' ' + v, root.getPropertyValue(v))); });
+        ['--hud-hover', '--hud-hover-line', '--hud-on', '--hud-on-line'].forEach(function (v) { n++; bad = bad.concat(rfBQblues(th + ' ' + v, vp.getPropertyValue(v))); });   // the graphics area keeps the old rule (rfBR)
       });
     } finally { UI.setTheme(prev); }
     assert(bad.length === 0, 'blue left: ' + bad.join(', '));
     return n + ' variables checked';
   });
 
-  step('rfBQ: a selected FeatureManager row, the active ribbon tab, a PropertyManager pick box, the PM OK button and a dialog\'s default button are grey, not blue (light and dark theme); the active pick box stays magenta', async function () {
+  step('rfBQ: a selected FeatureManager row, the active ribbon tab, a PropertyManager pick box, the PM OK button and a dialog\'s default button carry no blue but the accent\'s (light and dark theme); the default button is the accent; the active pick box stays magenta', async function () {
     await anvil.newPart(); await idle();
     await anvil.run('p.sketch("Top").rect(-20, -10, 40, 20).extrude(10);'); await idle();
     UI.setRibbonTab('Sketch'); await idle();
@@ -60,22 +66,22 @@
       row.classList.add('selected');
       ['light', 'dark'].forEach(function (th) {
         UI.setTheme(th);
-        bad = bad.concat(rfBQblues(th + ' selected row', rfBQstyle(row, RFBQ_PROPS)));
+        bad = bad.concat(rfBQstrays(th + ' selected row', rfBQstyle(row, RFBQ_PROPS)));
         var tab = D.querySelector('#ribbon-tabs .rtab.active');
         assert(tab, 'an active ribbon tab');
-        bad = bad.concat(rfBQblues(th + ' active tab', rfBQstyle(tab, RFBQ_PROPS)));
+        bad = bad.concat(rfBQstrays(th + ' active tab', rfBQstyle(tab, RFBQ_PROPS)));
         pick.classList.add('active');
         magenta[th] = rfBQparse(W.getComputedStyle(pick).borderTopColor)[0];
         pick.classList.remove('active');
-        bad = bad.concat(rfBQblues(th + ' pick box', rfBQstyle(pick, RFBQ_PROPS)));
-        bad = bad.concat(rfBQblues(th + ' PM OK', rfBQstyle(D.querySelector('#pm .pm-ok'), RFBQ_PROPS)));
+        bad = bad.concat(rfBQstrays(th + ' pick box', rfBQstyle(pick, RFBQ_PROPS)));
+        bad = bad.concat(rfBQstrays(th + ' PM OK', rfBQstyle(D.querySelector('#pm .pm-ok'), RFBQ_PROPS)));
         // the browser's own blue: a checkbox's accent and the selected text in a value box
         var cb = D.querySelector('#pm input[type=checkbox]'), num = D.querySelector('#pm input[type=number], #pm input[type=text]');
-        if (cb) { var acc = W.getComputedStyle(cb).accentColor; if (acc === 'auto') bad.push(th + ' checkbox accent: the browser default'); bad = bad.concat(rfBQblues(th + ' checkbox accent', acc)); }
-        if (num) bad = bad.concat(rfBQblues(th + ' selected text', W.getComputedStyle(num, '::selection').backgroundColor));
+        if (cb) { var acc = W.getComputedStyle(cb).accentColor; if (acc === 'auto') bad.push(th + ' checkbox accent: the browser default'); bad = bad.concat(rfBQstrays(th + ' checkbox accent', acc)); }
+        if (num) bad = bad.concat(rfBQstrays(th + ' selected text', W.getComputedStyle(num, '::selection').backgroundColor));
         var btn = D.querySelector('#modal-buttons .btn.primary');
         assert(btn, 'the dialog has a default button');
-        bad = bad.concat(rfBQblues(th + ' default button', rfBQstyle(btn, RFBQ_PROPS)));
+        bad = bad.concat(rfBQstrays(th + ' default button', rfBQstyle(btn, RFBQ_PROPS)));
         dflt[th] = rfBQparse(W.getComputedStyle(btn).backgroundColor)[0];
       });
     } finally {
@@ -86,9 +92,9 @@
       if (UI.hasPM()) UI.pmCancel();
       UI.setRibbonTab('Features');
     }
-    assert(bad.length === 0, 'blue left: ' + bad.join(', '));
-    var dl = dflt.light, lum = 0.2126 * dl.r + 0.7152 * dl.g + 0.0722 * dl.b;
-    assert(lum < 70 && rfBQhue(dl).chroma < 0.02, 'light theme default button near-black: ' + dl.s);
+    assert(bad.length === 0, 'stray blue: ' + bad.join(', '));
+    var dl = dflt.light;
+    assert(rfBQaccentish(dl) && rfBQaccentish(dflt.dark), 'the default button is the accent: ' + dl.s + ' / ' + dflt.dark.s);
     ['light', 'dark'].forEach(function (th) {
       var m = magenta[th], k = rfBQhue(m);
       assert(m && k.chroma > 0.3 && k.h > 290 && k.h < 345, th + ' active pick box magenta: ' + (m && m.s));

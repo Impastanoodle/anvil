@@ -27,7 +27,11 @@
   var RFGX_TOKENS = ['--c-sunken', '--c-panel', '--c-raised', '--c-field', '--c-field-line', '--c-line-soft', '--c-line', '--c-line-strong', '--c-hover', '--c-hover-line',
     '--c-press', '--c-press-line', '--c-sel', '--c-sel-line', '--c-text', '--c-muted', '--c-disabled', '--c-default', '--c-default-hover', '--c-default-text', '--c-focus'];
 
-  step('rfGX: the chrome grey ramp is set in both themes, every token a neutral grey, and the old chrome variables follow it', async function () {
+  // swtheme (2026-11-12, user: "any colors that look clean and professional"): the neutrals carry a slight cool tint
+  // (chroma at most 25 levels, hue blue-grey) and the state tokens are the accent's family
+  var RFGX_STATE = ['--c-press', '--c-press-line', '--c-sel', '--c-sel-line', '--c-default', '--c-default-hover', '--c-focus'];
+  function rfGXhue(c) { var mx = Math.max(c.r, c.g, c.b), d = mx - Math.min(c.r, c.g, c.b), h = 0; if (d > 0) { h = mx === c.r ? ((c.g - c.b) / d) % 6 : mx === c.g ? (c.b - c.r) / d + 2 : (c.r - c.g) / d + 4; h *= 60; if (h < 0) h += 360; } return { h: h, d: d }; }
+  step('rfGX: the chrome ramp is set in both themes, every neutral token a grey with at most a slight cool tint, the state tokens in the accent\'s blue, and the old chrome variables follow it', async function () {
     var prev = rfGXtheme(), bad = [];
     try {
       ['light', 'dark'].forEach(function (th) {
@@ -36,7 +40,8 @@
         RFGX_TOKENS.forEach(function (v) {
           var c = rfGXrgb(root.getPropertyValue(v).trim());
           if (!c) bad.push(th + ' ' + v + ' unset');
-          else if (Math.max(c.r, c.g, c.b) - Math.min(c.r, c.g, c.b) > 2) bad.push(th + ' ' + v + ' not grey: ' + root.getPropertyValue(v));
+          else if (RFGX_STATE.indexOf(v) >= 0) { var a = rfGXhue(rfGXrgb(root.getPropertyValue('--c-accent').trim())), k = rfGXhue(c); if (!(k.d > 20 && Math.abs(k.h - a.h) < 12)) bad.push(th + ' ' + v + ' not in the accent family: ' + root.getPropertyValue(v)); }
+          else { var kn = rfGXhue(c); if (kn.d > 25 || (kn.d > 2 && !(kn.h >= 195 && kn.h <= 230))) bad.push(th + ' ' + v + ' not a (cool) grey: ' + root.getPropertyValue(v)); }
         });
         // the ramp is ordered: sunken < panel < raised in the light theme, the other way round where it matters in the dark
         var L = function (v) { return rfGXlum(rfGXrgb(root.getPropertyValue(v).trim())); };

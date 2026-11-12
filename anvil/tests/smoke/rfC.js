@@ -182,8 +182,9 @@
     await rskNew();
     UI.refreshStatus();
     var st = D.querySelector('#status-right .sk-state');
-    var stc = st ? /^rgb\((\d+), (\d+), (\d+)\)$/.exec(W.getComputedStyle(st).color) : null;   // rfBU: grey, no longer blue
-    assert(st && st.classList.contains('under') && stc && stc[1] === stc[2] && stc[2] === stc[3] && W.getComputedStyle(st, '::before').content !== 'none', 'Under Defined in grey: ' + (st && W.getComputedStyle(st).color));
+    var stc = st ? /^rgb\((\d+), (\d+), (\d+)\)$/.exec(W.getComputedStyle(st).color) : null;   // swtheme: the information colour (--c-info), SolidWorks' blue
+    var infoP = D.createElement('span'); infoP.style.color = 'var(--c-info)'; D.body.appendChild(infoP); var info = W.getComputedStyle(infoP).color; infoP.remove();
+    assert(st && st.classList.contains('under') && stc && W.getComputedStyle(st).color === info && +stc[3] > +stc[1] + 40 && W.getComputedStyle(st, '::before').content !== 'none', 'Under Defined in the information blue: ' + (st && W.getComputedStyle(st).color));
     var co = $('status-coords'), right = $('status-right');
     co.textContent = 'X: 1'; var w1 = co.offsetWidth, r1 = right.getBoundingClientRect().left;
     co.textContent = 'X:   12345.67   Y:   -9876.54  mm   L 1234.56   A 179.9°'; var w2 = co.offsetWidth, r2 = right.getBoundingClientRect().left;

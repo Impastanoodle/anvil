@@ -5,12 +5,12 @@
    selection a dark amber (rfBU: the 3D graphics area's selection yellow, deep enough to read on white paper; was
    blue), pre-selection (dynamic highlight) orange, a reference dimension added on the sheet grey. They are
    on the screen only: the SVG / PDF / DXF written from the sheet keep their own (black) colours. */
-:root { --dw-desk: #b9b9b9; --dw-hot: #cf9500; --dw-pre: #ff7f00; --dw-ref: #7a7a7a; --dw-ghost: #3fa34d;
-  --dw-tabbar: var(--sw-chrome, #e4e4e4); --dw-tab: var(--dw-tabbar); --dw-tab-hover: #f6f6f6; --dw-tab-on: #ffffff; --dw-tab-line: #b4b4b4;
-  --dw-tab-text: #1f1f1f; --dw-tab-muted: #555555; --dw-tab-mark: #3a3a3a; }
-:root[data-theme="dark"] { --dw-desk: #3a3a3a;
-  --dw-tabbar: var(--sw-chrome, #2b2b2b); --dw-tab: var(--dw-tabbar); --dw-tab-hover: #363636; --dw-tab-on: #424242; --dw-tab-line: #565656;
-  --dw-tab-text: #ececec; --dw-tab-muted: #b4b4b4; --dw-tab-mark: #d0d0d0; }
+:root { --dw-desk: #b5bbc3; --dw-hot: #cf9500; --dw-pre: #ff7f00; --dw-ref: #7a7a7a; --dw-ghost: #3fa34d;
+  --dw-tabbar: var(--sw-chrome, #e4e4e4); --dw-tab: var(--dw-tabbar); --dw-tab-hover: #f4f6f8; --dw-tab-on: #ffffff; --dw-tab-line: #b1b8c1;
+  --dw-tab-text: var(--c-text, #1f1f1f); --dw-tab-muted: #545c67; --dw-tab-mark: var(--c-accent, #3a3a3a); }   /* swtheme: cool neutrals, the active sheet marked in the accent */
+:root[data-theme="dark"] { --dw-desk: #363a40;
+  --dw-tabbar: var(--sw-chrome, #2b2b2b); --dw-tab: var(--dw-tabbar); --dw-tab-hover: #33373d; --dw-tab-on: #3c4148; --dw-tab-line: #535a63;
+  --dw-tab-text: var(--c-text, #ececec); --dw-tab-muted: #b0b8c1; --dw-tab-mark: var(--c-accent, #d0d0d0); }
 
 #drawing-doc { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; background: var(--dw-desk); }
 #drawing-doc[hidden] { display: none; }
@@ -115,7 +115,7 @@
 #dw-edit input { width: 86px; border: 0; outline: 0; font: 12px "Segoe UI", sans-serif; padding: 2px 4px; background: transparent; color: var(--text, #000); }
 #dw-edit.text input { width: 120px; }
 #dw-edit .dw-edit-btn { border: 0; background: transparent; color: var(--muted, #555); font-size: 12px; line-height: 1; padding: 2px 4px; cursor: pointer; border-radius: 2px; }
-#dw-edit .dw-edit-btn.ok { color: #1f9d3a; }
+#dw-edit .dw-edit-btn.ok { color: var(--c-ok, #1f9d3a); }
 #dw-edit .dw-edit-btn:hover { background: var(--btn-hover, rgba(0, 0, 0, 0.08)); }
 /* r5/drawings5: a title block field edited in place (double-click a cell) */
 #dw-edit.tb input { width: 180px; }

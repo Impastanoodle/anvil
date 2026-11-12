@@ -23,7 +23,12 @@
     if (!m || (m[4] != null && +m[4] === 0)) return false;
     var r = m[1] / 255, g = m[2] / 255, b = m[3] / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn, h = 0;
     if (d > 0) { if (mx === r) h = ((g - b) / d) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4; h *= 60; if (h < 0) h += 360; }
-    return d >= 0.04 && h >= 190 && h <= 250;
+    // swtheme (2026-11-12): the user lifted the no-blue rule for the chrome; a stray blue is a clear one (chroma >= 0.1,
+    // the neutrals' cool tint is less) that is not the accent's (within 12 degrees of --c-accent's hue: the active tab's mark)
+    var p = D.createElement('i'); p.style.color = 'var(--c-accent)'; D.body.appendChild(p);
+    var am = /rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/.exec(W.getComputedStyle(p).color), ah = -99; p.remove();
+    if (am) { var ar = am[1] / 255, ag = am[2] / 255, ab = am[3] / 255, amx = Math.max(ar, ag, ab), ad = amx - Math.min(ar, ag, ab); ah = ad > 0 ? (amx === ar ? ((ag - ab) / ad) % 6 : amx === ag ? (ab - ar) / ad + 2 : (ar - ag) / ad + 4) * 60 : 0; if (ah < 0) ah += 360; }
+    return d >= 0.1 && h >= 190 && h <= 250 && Math.abs(h - ah) >= 12;
   }
   step('rfHB: at fit, visible edges are heavier than dimension lines on screen, in whole device pixels; axis-aligned lines snap to the pixel grid', async function () {
     var errs0 = errors.length;

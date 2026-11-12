@@ -53,12 +53,12 @@
     UI.exitSketch(); await idle();
     return 'band ' + cs.backgroundImage.slice(0, 40) + '…';
   });
-  step('rfBG: selection boxes — Mirror Entities\' active box (where picks go) is pink with a magenta frame, the other pale grey (lane BQ: no blue); clicking the other box moves the highlight', async function () {
+  step('rfBG: selection boxes — Mirror Entities\' active box (where picks go) is pink with a magenta frame, the other a pale cool grey (swtheme: neutrals carry a slight cool tint); clicking the other box moves the highlight', async function () {
     await rfBGSketch();
     UI.cmdMirrorEntities(); await idle();
     function boxes() { return Array.prototype.slice.call(D.querySelectorAll('#pm .pm-pick')); }
     function pinkish(e) { var c = rfBGRgb(W.getComputedStyle(e).backgroundColor); return c && c[0] > c[2] && c[0] > c[1] + 20; }
-    function greyish(e) { var c = rfBGRgb(W.getComputedStyle(e).backgroundColor); return c && Math.abs(c[0] - c[2]) < 8 && Math.abs(c[1] - c[2]) < 8 && c[0] < 250; }
+    function greyish(e) { var c = rfBGRgb(W.getComputedStyle(e).backgroundColor); return c && Math.max(c[0], c[1], c[2]) - Math.min(c[0], c[1], c[2]) <= 25 && c[0] < 250; }   // swtheme: a cool neutral (chroma <= 0.1)
     var bs = boxes();
     assert(bs.length === 2, 'two selection boxes: ' + bs.length);
     var act = bs.filter(function (e) { return e.classList.contains('active'); });
@@ -75,7 +75,7 @@
     UI.exitSketch(); await idle();
     return 'active ' + W.getComputedStyle(act[0]).backgroundColor;
   });
-  step('rfBG: FeatureManager — the rollback bar sits under the last feature, the sketch\'s (-) prefix is its own span with the name text unchanged, the selected row has the grey fill and frame', async function () {
+  step('rfBG: FeatureManager — the rollback bar sits under the last feature, the sketch\'s (-) prefix is its own span with the name text unchanged, the selected row has the selection fill and frame (swtheme: the pale accent blue, --c-sel)', async function () {
     await anvil.newPart(); await idle();
     await anvil.run('p.sketch("Front").line(0, 0, 40, 0).line(40, 0, 40, 30);\np.sketch("Top").rect(0, 0, 40, 30).extrude(10);'); await idle();
     var tree = $('tree'), bar = tree.querySelector('.rollbar');
@@ -88,7 +88,9 @@
     assert(pf && pf.textContent === '(-) ' && pf.classList.contains('under') && sk.querySelector('.nm').textContent === '(-) Sketch1', 'prefix span: ' + (sk && sk.querySelector('.nm').textContent));
     sk.click(); await idle();
     var sel = tree.querySelector('.ti.selected'), c = sel && rfBGRgb(W.getComputedStyle(sel).backgroundColor);
-    assert(sel && c && Math.abs(c[0] - c[2]) < 8 && c[0] < 235 && /inset/.test(W.getComputedStyle(sel).boxShadow), 'selected row ' + (sel && W.getComputedStyle(sel).backgroundColor));
+    var probe = D.createElement('div'); probe.style.background = 'var(--c-sel)'; D.body.appendChild(probe);
+    var cs = rfBGRgb(W.getComputedStyle(probe).backgroundColor); probe.remove();
+    assert(sel && c && cs && c.join() === cs.join() && c[2] > c[0] && /inset/.test(W.getComputedStyle(sel).boxShadow), 'selected row ' + (sel && W.getComputedStyle(sel).backgroundColor));
     $('tree-filter-input').value = 'Sketch'; $('tree-filter-input').dispatchEvent(new Event('input', { bubbles: true })); await idle();
     var hidden = !tree.querySelector('.rollbar');
     $('tree-filter-input').value = ''; $('tree-filter-input').dispatchEvent(new Event('input', { bubbles: true })); await idle();

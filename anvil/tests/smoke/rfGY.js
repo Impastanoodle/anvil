@@ -1,9 +1,12 @@
   // ---- rfGY (2026-11-03, lane pm: the PropertyManager finish): one value column (every box starts at the same x and has
   // the same width and height), check boxes centred on their text, optional groups with the check box in the title band
-  // (Direction 2, Draft), Hole Wizard's Type / Positions tabs above the Message, no blue in either theme, and the PM
+  // (Direction 2, Draft), Hole Wizard's Type / Positions tabs above the Message, no blue but the accent's in either theme, and the PM
   // still accepts with Enter.
   function rfGYRgb(s) { var m = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?/.exec(s || ''); return m ? [+m[1], +m[2], +m[3], m[4] == null ? 1 : +m[4]] : null; }
-  function rfGYBlue(s) { var c = rfGYRgb(s); return !!(c && c[3] > 0.05 && c[2] - Math.max(c[0], c[1]) > 24); }
+  // swtheme (2026-11-12): the accent (--c-accent: checked boxes, focus, the selected-row tint) is the one blue allowed
+  function rfGYHue(c) { var r = c[0], g = c[1], b = c[2], mx = Math.max(r, g, b), d = mx - Math.min(r, g, b), h = 0; if (d > 0) { h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; h *= 60; if (h < 0) h += 360; } return h; }
+  function rfGYAccentHue() { var p = D.createElement('i'); p.style.color = 'var(--c-accent)'; D.body.appendChild(p); var c = rfGYRgb(W.getComputedStyle(p).color); p.remove(); return c ? rfGYHue(c) : -99; }
+  function rfGYBlue(s) { var c = rfGYRgb(s); return !!(c && c[3] > 0.05 && c[2] - Math.max(c[0], c[1]) > 24 && Math.abs(rfGYHue(c) - rfGYAccentHue()) >= 12); }
   function rfGYNoBlue() {
     var bad = [];
     Array.prototype.forEach.call(D.querySelectorAll('#pm, #pm *'), function (e) {

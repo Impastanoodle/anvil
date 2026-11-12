@@ -8,21 +8,21 @@
   --line-2: #e7e7e7;
   --text: #282828;
   --muted: #737373;
-  --blue: #3a3a3a;
-  --blue-hover: #1f1f1f;
-  --blue-soft: #e2e2e2;
-  --blue-line: #a8a8a8;
+  --blue: #1a64b4;
+  --blue-hover: #15559a;
+  --blue-soft: #dbe8f7;
+  --blue-line: #b3bbc5;
   --sel: #d4d4d4;
   --hover: #ececec;
-  --green: #3fa34d;
-  --red: #d9453b;
+  --green: #2f9447;
+  --red: #c9382f;
   --amber: #e8a23a;
-  --warn-text: #9a6a00;
-  --group: linear-gradient(#efefef, #e0e0e0);
+  --warn-text: #8a5d00;
+  --group: linear-gradient(#eef0f3, #e2e5e9);
   --input-bg: #fff;
   --input-line: #c0c0c0;
-  --btn-face: linear-gradient(#fff, #f1f1f1);
-  --icon-ink: #545454;
+  --btn-face: linear-gradient(#ffffff, #eff1f4);
+  --icon-ink: #4a4a4a;   /* icons stay neutral (their artwork keeps the no-blue rule, rfGZ) */
   --logo: #c8442e;
   --msg-bg: #fff8dc;
   --msg-line: #e6d28a;
@@ -33,22 +33,22 @@
   --ok-bg: #e8f6ea;
   --ok-line: #a9d8b1;
   --ok-text: #1f5f2a;
-  --pick-bg: #f3f3f3;
-  --pick-filled: #e8e8e8;
-  --code-bg: #f4f4f4;
-  --pre-bg: #f7f7f7;
+  --pick-bg: #f2f4f7;
+  --pick-filled: #e6eaef;
+  --code-bg: #f2f4f7;
+  --pre-bg: #f5f7f9;
   --menu-bg: #fff;
   --menu-line: #c0c0c0;
   --menu-disabled: #afafaf;
-  --menu-shadow: rgba(0,0,0,0.14);
-  --modal-backdrop: rgba(24,24,24,0.35);
-  --modal-line: #a2a2a2;
-  --modal-shadow: rgba(0,0,0,0.25);
-  --toast-bg: #282828;
+  --menu-shadow: rgba(16,24,40,0.14);
+  --modal-backdrop: rgba(18,24,32,0.35);
+  --modal-line: #a3abb5;
+  --modal-shadow: rgba(16,24,40,0.25);
+  --toast-bg: #262b31;
   --toast-text: #fff;
   --overlay: rgba(255,255,255,0.85);
   --overlay-2: rgba(255,255,255,0.9);
-  --shadow: rgba(0,0,0,0.18);
+  --shadow: rgba(16,24,40,0.18);
   /* viewport: the three.js canvas clears to transparent, so this is what shows behind the model */
   /* rfBU: neutral greys (was SolidWorks' light blue-grey gradient); #viewport sets the grey-black ground (rfBR) */
   --viewport: linear-gradient(#c4c4c4, #e0e0e0 38%, #f5f5f5 72%, #ffffff);
@@ -69,45 +69,55 @@
   --radius: 3px; --radius-lg: 6px; --hair: 1px;
   --fs-xs: 11px; --fs-sm: 12px; --fs-md: 13px; --fs-lg: 15px;
   --row: 22px; --ctl: 24px;                       /* a list / tree / menu row; a button or input in the chrome */
-  --c-sunken: #e5e5e5;    /* tab strips, the Task Pane strip, the status bar */
-  --c-panel: #f0f0f0;     /* the menu bar and the CommandManager */
-  --c-raised: #fafafa;    /* the FeatureManager, Task Pane, menus, dialogs, tooltips */
+  --c-sunken: #e2e5e9;    /* tab strips, the Task Pane strip, the status bar */
+  --c-panel: #eef0f3;     /* the menu bar and the CommandManager */
+  --c-raised: #f9fafb;    /* the FeatureManager, Task Pane, menus, dialogs, tooltips */
   --c-field: #ffffff;     /* inputs */
-  --c-field-line: #bdbdbd;
-  --c-line-soft: #e3e3e3; /* separators inside one panel */
-  --c-line: #cdcdcd;      /* hairlines between panels */
-  --c-line-strong: #9a9a9a;
-  --c-hover: #e6e6e6; --c-hover-line: #b8b8b8;
-  --c-press: #d3d3d3; --c-press-line: #8e8e8e;
-  --c-sel: #dadada; --c-sel-line: #8e8e8e;
-  --c-text: #1f1f1f; --c-muted: #666666; --c-disabled: #a5a5a5;
-  --c-default: #2b2b2b; --c-default-hover: #454545; --c-default-text: #ffffff;   /* the default button */
-  --c-focus: #3a3a3a;
-  --shadow-pop: 0 4px 12px rgba(0, 0, 0, 0.14), 0 0 1px rgba(0, 0, 0, 0.12);   /* menus, flyouts, tooltips, Shortcut Bar */
-  --shadow-dlg: 0 12px 32px rgba(0, 0, 0, 0.22);
+  --c-field-line: #7d8590;
+  --c-line-soft: #e0e3e7; /* separators inside one panel */
+  --c-line: #c9ced5;      /* hairlines between panels */
+  --c-line-strong: #8d95a0;
+  --c-hover: #e3e7ec; --c-hover-line: #b3bbc5;
+  --c-press: #d3e0ee; --c-press-line: #7d9cc2;
+  --c-sel: #d6e5f7; --c-sel-line: #5f93d0;
+  --c-text: #1c2026; --c-muted: #5c6470; --c-disabled: #a0a7b0;
+  --c-default: #1a64b4; --c-default-hover: #15559a; --c-default-text: #ffffff;   /* the default button */
+  --c-focus: #1a64b4;
+  --shadow-pop: 0 4px 12px rgba(16, 24, 40, 0.14), 0 0 1px rgba(16, 24, 40, 0.16);   /* menus, flyouts, tooltips, Shortcut Bar */
+  --shadow-dlg: 0 12px 32px rgba(16, 24, 40, 0.22);
+  /* swtheme (2026-11-12, user: "general improvement on looks, any colors that look clean and professional"): one accent,
+     used with discipline (selection, focus, the default button, the active tab's mark, checks / radios / sliders, links,
+     progress), one set of status colours, and neutrals with a slight cool tint (the ramp above). */
+  --c-accent: #1a64b4;        /* marks and accent text: focus rings, the active tab's bar, checked boxes, links, progress (4.5 : 1 on every panel) */
+  --c-accent-hover: #15559a;
+  --c-accent-text: #1a64b4;   /* links and accent text */
+  --c-accent-soft: #dbe8f7;   /* a quiet accent fill (focus halo, a selected chip) */
+  --c-chip: #3a3a3a; --c-chip-hover: #555555;   /* the dark chip under Undo / Redo with something to undo (user 2026-10-14) */
+  --c-ok: #23703a; --c-warn: #855600; --c-err: #b3261e; --c-info: #1a64b4;   /* status text and marks (4.5 : 1 on every panel) */
+  --c-ok-bg: #e5f4e8; --c-warn-bg: #fff4dc; --c-err-bg: #fbe6e4; --c-info-bg: #e3eefa;
 }
 :root[data-theme="dark"] {
   --bg: #212121;
-  --panel: #2f2f2f;
+  --panel: #2c3036;
   --panel-2: #272727;
   --line: #404040;
   --line-2: #3a3a3a;
   --text: #e9e9e9;
   --muted: #a3a3a3;
-  --blue: #8c8c8c;
-  --blue-hover: #a8a8a8;
-  --blue-soft: #3a3a3a;
-  --blue-line: #707070;
+  --blue: #5c9ee8;
+  --blue-hover: #79b0ee;
+  --blue-soft: #263a52;
+  --blue-line: #5d6570;
   --sel: #4a4a4a;
   --hover: #3c3c3c;
   --green: #5cc46a;
-  --red: #ea6d63;
+  --red: #f0766c;
   --amber: #f0b350;
   --warn-text: #e0b45a;
-  --group: linear-gradient(#434343, #363636);
+  --group: linear-gradient(#3b4047, #33373d);
   --input-bg: #212121;
   --input-line: #505050;
-  --btn-face: linear-gradient(#414141, #353535);
+  --btn-face: linear-gradient(#3d4249, #33373d);
   --icon-ink: #d0d0d0;
   --logo: #c8442e;
   --msg-bg: #3b3520;
@@ -119,21 +129,21 @@
   --ok-bg: #1f3a26;
   --ok-line: #2f6b3c;
   --ok-text: #9fe0ab;
-  --pick-bg: #333333;
-  --pick-filled: #3a3a3a;
-  --code-bg: #212121;
-  --pre-bg: #212121;
+  --pick-bg: #30343a;
+  --pick-filled: #383d44;
+  --code-bg: #1f2226;
+  --pre-bg: #1f2226;
   --menu-bg: #2f2f2f;
   --menu-line: #505050;
   --menu-disabled: #737373;
   --menu-shadow: rgba(0,0,0,0.5);
   --modal-backdrop: rgba(0,0,0,0.55);
-  --modal-line: #505050;
+  --modal-line: #4c535c;
   --modal-shadow: rgba(0,0,0,0.6);
-  --toast-bg: #e9e9e9;
-  --toast-text: #272727;
-  --overlay: rgba(47,47,47,0.85);
-  --overlay-2: rgba(47,47,47,0.9);
+  --toast-bg: #e6e9ed;
+  --toast-text: #1f2329;
+  --overlay: rgba(44,48,54,0.88);
+  --overlay-2: rgba(44,48,54,0.92);
   --shadow: rgba(0,0,0,0.5);
   --viewport: linear-gradient(#424242, #2d2d2d 45%, #202020);
   --viewport-white: #24282e;   /* r14/viewui14: "Plain" in the dark theme is the theme's plain colour */
@@ -145,22 +155,26 @@
   --dim-halo: rgba(30,30,30,0.9);
   color-scheme: dark;
   /* rfGX: the same ramp, dark */
-  --c-sunken: #1f1f1f;
-  --c-panel: #2b2b2b;
-  --c-raised: #303030;
-  --c-field: #242424;
-  --c-field-line: #565656;
-  --c-line-soft: #3a3a3a;
-  --c-line: #444444;
-  --c-line-strong: #707070;
-  --c-hover: #3b3b3b; --c-hover-line: #5f5f5f;
-  --c-press: #4a4a4a; --c-press-line: #7c7c7c;
-  --c-sel: #464646; --c-sel-line: #7c7c7c;
-  --c-text: #e6e6e6; --c-muted: #a3a3a3; --c-disabled: #6c6c6c;
-  --c-default: #cfcfcf; --c-default-hover: #e2e2e2; --c-default-text: #1b1b1b;
-  --c-focus: #bdbdbd;
+  --c-sunken: #1c1f23;
+  --c-panel: #272a2f;
+  --c-raised: #2d3136;
+  --c-field: #212428;
+  --c-field-line: #808994;
+  --c-line-soft: #383c43;
+  --c-line: #42474f;
+  --c-line-strong: #858e99;
+  --c-hover: #373c43; --c-hover-line: #5d6570;
+  --c-press: #2f4258; --c-press-line: #5a84b6;
+  --c-sel: #2b4867; --c-sel-line: #4f8fd6;
+  --c-text: #e5e8ec; --c-muted: #a3abb5; --c-disabled: #6b727c;
+  --c-default: #2f73c4; --c-default-hover: #2a68b2; --c-default-text: #ffffff;
+  --c-focus: #5c9ee8;
   --shadow-pop: 0 4px 14px rgba(0, 0, 0, 0.5), 0 0 1px rgba(0, 0, 0, 0.6);
   --shadow-dlg: 0 12px 36px rgba(0, 0, 0, 0.6);
+  /* swtheme: the dark accent and status colours (lighter, calmer tones that keep 3 : 1 / 4.5 : 1 on the dark panels) */
+  --c-accent: #5c9ee8; --c-accent-hover: #79b0ee; --c-accent-text: #7db3f0; --c-accent-soft: #263a52;
+  --c-ok: #5cc46a; --c-warn: #e8b04d; --c-err: #f0766c; --c-info: #7db3f0;
+  --c-ok-bg: #1f3a28; --c-warn-bg: #3d3320; --c-err-bg: #44262a; --c-info-bg: #22344a;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
@@ -176,12 +190,9 @@ body {
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; background: none; border: 0; padding: 0; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
-/* lane BQ: none of the browser's own blue — checkboxes, radios and sliders, and selected text, take the chrome's greys */
+/* lane BQ: never the browser's own blue — checkboxes, radios and sliders take the chrome's accent (swtheme) */
 :root { accent-color: var(--blue); }
-::selection { background: #c4c4c4; }
-input::selection, textarea::selection { background: #4a4a4a; color: #fff; }
-:root[data-theme="dark"] ::selection { background: #5c5c5c; }
-:root[data-theme="dark"] input::selection, :root[data-theme="dark"] textarea::selection { background: #7a7a7a; color: #fff; }
+/* selected text: block "swtheme" (--c-text-sel, --c-field-sel) */
 input[type=number], input[type=text], select, textarea {
   background: var(--input-bg); border: 1px solid var(--input-line); border-radius: 2px; padding: 2px 5px; height: 22px;
 }
@@ -268,8 +279,8 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
    light menu bar the button gets a dark chip so the white arrow reads */
 #menubar #std-undo:not(:disabled) .ico path, #menubar #std-redo:not(:disabled) .ico path { stroke: #ffffff; }
 #menubar #std-undo:not(:disabled) .ico path:not([fill="none"]), #menubar #std-redo:not(:disabled) .ico path:not([fill="none"]) { fill: #ffffff; }
-#menubar #std-undo:not(:disabled), #menubar #std-redo:not(:disabled) { background: #3a3a3a; border-color: #3a3a3a; }
-#menubar #std-undo:not(:disabled):hover, #menubar #std-redo:not(:disabled):hover { background: #555555; border-color: #555555; }
+#menubar #std-undo:not(:disabled), #menubar #std-redo:not(:disabled) { background: var(--c-chip); border-color: var(--c-chip); }
+#menubar #std-undo:not(:disabled):hover, #menubar #std-redo:not(:disabled):hover { background: var(--c-chip-hover); border-color: var(--c-chip-hover); }
 :root[data-theme="dark"] #menubar #std-undo:not(:disabled), :root[data-theme="dark"] #menubar #std-redo:not(:disabled) { background: transparent; border-color: transparent; }
 :root[data-theme="dark"] #menubar #std-undo:not(:disabled):hover, :root[data-theme="dark"] #menubar #std-redo:not(:disabled):hover { background: var(--cm-hover); border-color: var(--cm-hover-line); }
 #menubar .std-sep { width: 1px; height: 16px; margin: 0 3px; background: var(--cm-line); flex: none; }
@@ -512,7 +523,7 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 #dim-layer .dim.redundant .dbox, #dim-layer .dim.conflict .dbox { stroke: #d9302c; }
 .rel-row .rel-state { display: inline-flex; width: 12px; flex: none; }
 .rel-row .rel-del { flex: none; width: 18px; height: 18px; padding: 0; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 14px; }
-.rel-row .rel-del:hover { color: #d9302c; border-color: var(--line); background: var(--hover); }
+.rel-row .rel-del:hover { color: var(--c-err); border-color: var(--line); background: var(--hover); }
 .rel-existing .rel-row { cursor: pointer; } .rel-existing .rel-row:hover { background: var(--blue-soft); }
 .rel-row.suppressed span, .rel-row.suppressed em { color: var(--muted); text-decoration: line-through; } .rel-row.invalid em { color: #a88300; }
 #rel-entities .rel-row em + em { min-width: 82px; text-align: right; }
@@ -523,13 +534,13 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 .rel-row em { font-style: normal; color: var(--muted); font-size: 11px; }
 #rel-display .rel-row { cursor: pointer; }
 .rel-row.sel { background: var(--blue-soft); }
-.rel-row.redundant em { color: #d9302c; } .rel-row.conflict em { color: #d9302c; }
+.rel-row.redundant em { color: var(--c-err); } .rel-row.conflict em { color: var(--c-err); }
 /* r5/sketch5: Display/Delete Relations rows tinted by state, hover, focus; a relation icon whose entities are lit up */
 .rel-row.redundant { background: rgba(217,48,44,0.10); } .rel-row.conflict { background: rgba(217,48,44,0.12); } #rel-display .rel-row:hover { background: var(--blue-soft); } #rel-display .rel-row.sel { background: var(--blue-soft); box-shadow: inset 3px 0 0 var(--blue); } #rel-display .rel-row:focus { outline: 1px dotted var(--blue); outline-offset: -1px; }
 .rel-empty { padding: 4px 6px; color: var(--muted); font-size: 12px; }
 #status-right .sk-state.under { color: var(--blue); } #status-right .sk-state.full { font-weight: 600; } #status-right .sk-state.over { color: #d9302c; font-weight: 600; }
 #status-right .sk-state { min-width: 96px; transition: color 120ms ease-out; }   /* r5/sketch5: Under / Fully / Over Defined keep their place */
-#status-right .occt.ok { color: #2f9e5b; font-weight: 600; } #status-right .occt.bad { color: #d9302c; font-weight: 600; }
+#status-right .occt.ok { color: var(--c-ok); font-weight: 600; } #status-right .occt.bad { color: var(--c-err); font-weight: 600; }
 /* r14/sketchui14: the Modify box as in SolidWorks: "Modify" title, ✓ ✗ Rebuild buttons, then the value, its unit and the spin arrows */
 #dim-edit { position: absolute; z-index: 4; display: flex; flex-direction: column; width: 152px; background: var(--panel-2); border: 1px solid #959595; border-radius: 4px; box-shadow: 0 4px 14px var(--shadow); overflow: hidden; font: 12px var(--font); color: var(--text); }
 #dim-edit[hidden] { display: none; }
@@ -545,7 +556,7 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 #dim-edit .dm-spin button { display: flex; align-items: center; justify-content: center; flex: 1; width: 16px; min-height: 11px; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
 #dim-edit .dm-spin button svg { width: 12px; height: 12px; }
 #dim-edit .dm-spin button:hover { background: var(--hover); color: var(--blue); }
-#dim-edit[data-error]:not([data-error=""]) .dm-row { border-color: #d33; }
+#dim-edit[data-error]:not([data-error=""]) .dm-row { border-color: var(--c-err); }
 html[data-theme="dark"] #dim-edit .dm-btns button:active { background: #474747; } html[data-theme="dark"] #dim-edit .dm-btns button:hover { border-color: #6e6e6e; }
 #sketch-hint { position: absolute; left: 10px; top: 48px; background: var(--overlay-2); border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px; color: var(--muted); z-index: 2; max-width: 360px; }
 #sketch-hint b { color: var(--text); }
@@ -795,8 +806,8 @@ html[data-theme="dark"] #sketch-hint b, #viewport #sketch-hint b { color: #ecece
 /* ---- selection (ui-select.js): Selection Filter toolbar (F5), box selection, Instant3D handles */
 #sel-filter { position: absolute; left: 10px; top: 46px; z-index: 5; display: flex; align-items: center; gap: 2px; padding: 3px 5px; background: var(--input-bg); border: 1px solid var(--line, #cfcfcf); border-radius: 4px; box-shadow: 0 2px 8px var(--shadow); font: 11px "Segoe UI", sans-serif; }
 #sel-filter[hidden] { display: none; }
-#sel-filter .sf-title { color: #727272; margin: 0 6px 0 2px; white-space: nowrap; }
-#sel-filter .sf-sep { width: 1px; height: 20px; background: #cfcfcf; margin: 0 3px; }
+#sel-filter .sf-title { color: var(--c-muted); margin: 0 6px 0 2px; white-space: nowrap; }
+#sel-filter .sf-sep { width: 1px; height: 20px; background: var(--c-line); margin: 0 3px; }
 #sel-filter .sf-btn { width: 28px; height: 28px; padding: 3px; border: 1px solid transparent; border-radius: 3px; background: transparent; cursor: pointer; }
 #sel-filter .sf-btn:hover { border-color: var(--blue); }
 #sel-filter .sf-btn.on { background: rgba(58,58,58,0.16); border-color: var(--blue); }
@@ -809,7 +820,7 @@ html[data-theme="dark"] #sketch-hint b, #viewport #sketch-hint b { color: #ecece
 /* rfFD: the Lasso Selection loop (grey as the window box, no blue in the graphics area) */
 #sel-lasso { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; z-index: 3; overflow: visible; }
 #sel-lasso polyline { fill: rgba(255,255,255,0.08); stroke: #d0d0d0; stroke-width: 1; stroke-linejoin: round; }
-#tree .ti.sel-owner { background: rgba(58,58,58,0.07); box-shadow: inset 2px 0 0 #8a8a8a; }
+#tree .ti.sel-owner { background: var(--c-hover); box-shadow: inset 2px 0 0 var(--c-sel-line); }
 #i3d-layer { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; overflow: visible; }
 #i3d-layer .i3d-handle { pointer-events: all; cursor: grab; }
 #i3d-layer .i3d-grip { stroke: transparent; stroke-width: 14; fill: transparent; }
@@ -1082,11 +1093,9 @@ body.splitting #viewport { pointer-events: none; }
 #status-right > span { display: inline-flex; align-items: center; gap: 5px; height: 100%; padding: 0 10px; border-left: 1px solid var(--line); white-space: nowrap; }
 #status-right .sk-state { min-width: 112px; justify-content: flex-start; font-weight: 600; }
 #status-right .sk-state::before { content: ''; flex: none; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-#status-right .sk-state.under { color: #6a6a6a; }   /* rfBU: grey (was blue); Fully Defined is the black text colour */
+#status-right .sk-state.under { color: var(--c-info); }   /* swtheme: the information colour (rfBU had it grey); Fully Defined is the text colour */
 #status-right .sk-state.full { color: var(--text); }
-#status-right .sk-state.over, #status-right .sk-state.conflict { color: #d9302c; }
-:root[data-theme="dark"] #status-right .sk-state.under { color: #9a9a9a; }
-:root[data-theme="dark"] #status-right .sk-state.over, :root[data-theme="dark"] #status-right .sk-state.conflict { color: #ff7a72; }
+#status-right .sk-state.over, #status-right .sk-state.conflict { color: var(--c-err); }
 #status-right .st-ms { min-width: 58px; justify-content: flex-end; }
 #status-right .lvl-chip { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 1100px) { #status-coords { width: 260px; } }
@@ -1202,7 +1211,7 @@ body.splitting #viewport { pointer-events: none; }
 /* rfAW: Sketch Picture scale tool distance box (ui-sketch-picture.js) */
 .sk-pic-scale { position: fixed; z-index: 30; display: flex; align-items: center; gap: 4px; padding: 4px 6px; background: var(--panel-2); border: 1px solid #959595; border-radius: 4px; box-shadow: 0 4px 14px var(--shadow); font: 12px var(--font); color: var(--text); }
 .sk-pic-scale input { width: 80px; font: inherit; }
-.sk-pic-scale input.err { outline: 1px solid #d0302a; }
+.sk-pic-scale input.err { outline: 1px solid var(--c-err); }
 .sk-pic-scale button { font: inherit; padding: 1px 6px; }
 #pm .sk-pic-alpha input[type=range] { flex: 1; min-width: 0; }
 
@@ -1230,27 +1239,27 @@ body.splitting #viewport { pointer-events: none; }
   --sw-row-hover: #ececec;
   --sw-row-sel: #d6d6d6;
   --sw-row-sel-line: #8c8c8c;
-  --sw-twisty: #808080;
-  --sw-group-head: linear-gradient(#f8f8f8, #eaeaea);
-  --sw-group-line: #c9c9c9;
-  --sw-group-text: #232323;
+  --sw-twisty: #7b838e;
+  --sw-group-head: linear-gradient(#f7f8fa, #e9ecf0);
+  --sw-group-line: #c6ccd4;
+  --sw-group-text: #1f242a;
   --sw-group-body: #ffffff;
-  --sw-pick: #e6e6e6;
-  --sw-pick-line: #a6a6a6;
+  --sw-pick: #e4e8ed;
+  --sw-pick-line: #a3abb6;
   --sw-pick-active: #fcd6ea;
   --sw-pick-active-line: #d6489a;
   --sw-msg-bg: #fffbe0;
   --sw-msg-head: #f8eeb0;
   --sw-msg-line: #e0cd78;
-  --sw-help: #3a3a3a;
-  --sw-rollbar: linear-gradient(#7a7a7a, #4a4a4a);
+  --sw-help: #3b424b;
+  --sw-rollbar: linear-gradient(#77808b, #48505a);
   --sw-dlg-bg: #f3f3f3;
   --sw-btn: #fdfdfd;
   --sw-btn-line: #c8c8c8;
   --sw-btn-hover: #f2f2f2;
   --sw-default: #2b2b2b;
   --sw-default-hover: #454545;
-  --sw-toast: #333333;
+  --sw-toast: #262b31;
   --sw-toast-text: #ffffff;
   --sw-menu-gutter: #f4f4f4;
 }
@@ -1261,28 +1270,28 @@ body.splitting #viewport { pointer-events: none; }
   --sw-row-hover: #3c3c3c;
   --sw-row-sel: #4a4a4a;
   --sw-row-sel-line: #707070;
-  --sw-twisty: #a3a3a3;
-  --sw-group-head: linear-gradient(#3e3e3e, #353535);
-  --sw-group-line: #505050;
-  --sw-group-text: #e9e9e9;
-  --sw-group-body: #343434;
-  --sw-pick: #333333;
-  --sw-pick-line: #707070;
+  --sw-twisty: #a3abb5;
+  --sw-group-head: linear-gradient(#3a3f46, #33373d);
+  --sw-group-line: #4c535c;
+  --sw-group-text: #e5e8ec;
+  --sw-group-body: #31353b;
+  --sw-pick: #30343a;
+  --sw-pick-line: #6c747f;
   --sw-pick-active: #4a2a3d;
   --sw-pick-active-line: #e06aae;
   --sw-msg-bg: #3b3520;
   --sw-msg-head: #4d4322;
   --sw-msg-line: #6b5a1e;
-  --sw-help: #a8a8a8;
-  --sw-rollbar: linear-gradient(#a8a8a8, #6e6e6e);
+  --sw-help: #a8b0ba;
+  --sw-rollbar: linear-gradient(#a6aeb8, #6c747e);
   --sw-dlg-bg: #2a2a2a;
   --sw-btn: #3a3a3a;
   --sw-btn-line: #565656;
   --sw-btn-hover: #444444;
   --sw-default: #5e5e5e;
   --sw-default-hover: #6e6e6e;
-  --sw-toast: #e9e9e9;
-  --sw-toast-text: #272727;
+  --sw-toast: #e6e9ed;
+  --sw-toast-text: #1f2329;
   --sw-menu-gutter: #353535;
 }
 
@@ -1492,8 +1501,8 @@ body.rollbar-dragging, body.rollbar-dragging * { cursor: grabbing !important; us
   --sw-dlg-bg: var(--c-panel); --sw-btn: var(--c-field); --sw-btn-line: var(--c-field-line); --sw-btn-hover: var(--c-hover);
   --sw-default: var(--c-default); --sw-default-hover: var(--c-default-hover); --sw-menu-gutter: var(--c-raised);
 }
-:root { --c-scroll: #c2c2c2; --c-scroll-hover: #9a9a9a; }
-:root[data-theme="dark"] { --c-scroll: #555555; --c-scroll-hover: #747474; }
+:root { --c-scroll: #bfc5cd; --c-scroll-hover: #97a0ab; }
+:root[data-theme="dark"] { --c-scroll: #545b64; --c-scroll-hover: #737c87; }
 
 /* scrollbars: thin, a neutral thumb on no track, in every scrolling pane */
 html { scrollbar-color: var(--c-scroll) transparent; }
@@ -1520,8 +1529,8 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 #menubar .std-btn:disabled { opacity: 0.35; }
 #menubar .std-sep { height: 16px; margin: 0 var(--sp-1); background: var(--c-line); }
 /* user 2026-10-14: Undo / Redo with something to undo are a dark chip with a white arrow in the light theme */
-#menubar #std-undo:not(:disabled), #menubar #std-redo:not(:disabled) { width: 22px; height: 20px; margin: 0 1px; background: #3a3a3a; }
-#menubar #std-undo:not(:disabled):hover, #menubar #std-redo:not(:disabled):hover { background: #555555; }
+#menubar #std-undo:not(:disabled), #menubar #std-redo:not(:disabled) { width: 22px; height: 20px; margin: 0 1px; background: var(--c-chip); }
+#menubar #std-undo:not(:disabled):hover, #menubar #std-redo:not(:disabled):hover { background: var(--c-chip-hover); }
 :root[data-theme="dark"] #menubar #std-undo:not(:disabled), :root[data-theme="dark"] #menubar #std-redo:not(:disabled) { width: var(--ctl); height: var(--ctl); margin: 0; background: transparent; }
 :root[data-theme="dark"] #menubar #std-undo:not(:disabled):hover, :root[data-theme="dark"] #menubar #std-redo:not(:disabled):hover { background: var(--c-hover); }
 #menubar #doc-title { padding: 0 var(--sp-3); color: var(--c-text); font-size: var(--fs-sm); }
@@ -1704,23 +1713,23 @@ html { scrollbar-color: var(--c-scroll) transparent; }
   --pm-ctl-w: clamp(136px, 50%, 220px);   /* 136 px in the default panel, wider when the panel is widened */
   --pm-ctl-h: 24px;
   --pm-ctl-bg: var(--input-bg, #ffffff);
-  --pm-ctl-line: var(--sw-chrome-line, #c8c8c8);
-  --pm-ctl-hover: var(--sw-row-sel-line, #8c8c8c);
-  --pm-box-line: #8a8a8a;
-  --pm-focus: #3a3a3a;
-  --pm-on: #2f2f2f;
+  --pm-ctl-line: var(--c-field-line);   /* swtheme: a control's border keeps 3 : 1 */
+  --pm-ctl-hover: var(--c-line-strong);
+  --pm-box-line: var(--c-line-strong);
+  --pm-focus: var(--c-focus);
+  --pm-on: var(--c-accent);
   --pm-tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='8' viewBox='0 0 10 8'%3E%3Cpath d='M1 4.1 3.8 6.8 9 1.2' fill='none' stroke='%23ffffff' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  --pm-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M.6.6 4 4 7.4.6' fill='none' stroke='%23666666' stroke-width='1.3'/%3E%3C/svg%3E");
+  --pm-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M.6.6 4 4 7.4.6' fill='none' stroke='%235c6470' stroke-width='1.3'/%3E%3C/svg%3E");
   --pm-err-bg: #fdf0ef; --pm-err-head: #f8dcda; --pm-err-line: #e0a8a3; --pm-err-text: #8c2219;
   font-size: 12px;
   padding-bottom: 8px;
 }
 :root[data-theme="dark"] #pm {
-  --pm-box-line: #8a8a8a;
-  --pm-focus: #d0d0d0;
-  --pm-on: #d6d6d6;
-  --pm-tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='8' viewBox='0 0 10 8'%3E%3Cpath d='M1 4.1 3.8 6.8 9 1.2' fill='none' stroke='%23202020' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  --pm-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M.6.6 4 4 7.4.6' fill='none' stroke='%23b4b4b4' stroke-width='1.3'/%3E%3C/svg%3E");
+  --pm-box-line: var(--c-line-strong);
+  --pm-focus: var(--c-focus);
+  --pm-on: var(--c-accent);
+  --pm-tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='8' viewBox='0 0 10 8'%3E%3Cpath d='M1 4.1 3.8 6.8 9 1.2' fill='none' stroke='%231b1f24' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  --pm-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M.6.6 4 4 7.4.6' fill='none' stroke='%23aab2bc' stroke-width='1.3'/%3E%3C/svg%3E");
   --pm-err-bg: #3a2422; --pm-err-head: #4a2a27; --pm-err-line: #7a3d37; --pm-err-text: #f3b9b2;
 }
 /* title row: icon, name, round Help; ✓ ✗ under it, their icons on the title icon's left edge */
@@ -2076,7 +2085,38 @@ body.splitting-v #viewport { pointer-events: none; }
 .cmp-sec ul, .ha-list, .sf-list { margin: 2px 0 6px; padding-left: 18px; }
 .cmp-sec li ul { padding-left: 14px; color: var(--muted); }
 .ev-kv .sw, .cmp-sec .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; }
-#tree .ti.sensor-alert > .nm { color: #c0392b; font-weight: 600; }
+#tree .ti.sensor-alert > .nm { color: var(--c-err); font-weight: 600; }
+/* ==== swtheme (2026-11-12, lane swtheme): the colour scheme of the default (SolidWorks) look, light and dark.
+   Colours only: no size, spacing or position changes. The tokens are at the top of the file (--c-* ramp, --c-accent*,
+   --c-ok / -warn / -err / -info and their -bg fills); the older names (--blue*, --sw-*, --cm-*, --bg, --line ...) are
+   aliases. The rules a new rule should follow:
+   - neutrals carry a slight cool tint; sunken < panel < raised < field in even steps (the dark theme its own ramp);
+   - one accent, only for state: a selected row (--c-sel fill, --c-sel-line frame), pressed / checked buttons
+     (--c-press, --c-press-line: a quiet accent tint), keyboard focus (--c-focus), the default button (--c-default),
+     the active tab's 2 px bar, check boxes / radios / sliders (accent-color), links, progress, selected text;
+   - hover is always the neutral --c-hover (+ --c-hover-line on framed buttons), never the accent;
+   - status text and marks: --c-ok, --c-warn, --c-err, --c-info (4.5 : 1 on every panel); fills --c-*-bg.
+   The Mastercam profile's blocks further down override the tokens they need. */
+:root { --c-text-sel: #c6dcf5; --c-field-sel: #1a64b4; --c-field-sel-text: #ffffff; accent-color: var(--c-accent); }
+:root[data-theme="dark"] { --c-text-sel: #2d4d72; --c-field-sel: #3d7cc9; --c-field-sel-text: #ffffff; }
+::selection, :root[data-theme="dark"] ::selection { background: var(--c-text-sel); }
+input::selection, textarea::selection, :root[data-theme="dark"] input::selection, :root[data-theme="dark"] textarea::selection { background: var(--c-field-sel); color: var(--c-field-sel-text); }
+/* active tabs: a 2 px accent bar on the tab's free edge, drawn inset (no size change) */
+#ribbon .rtab.active { box-shadow: inset 1px 0 0 var(--c-line), inset -1px 0 0 var(--c-line), inset 0 -2px 0 var(--c-accent); }
+#fm-tabs button.active, #fm-tabs button.active:hover { box-shadow: inset 0 2px 0 var(--c-accent); }
+#fm-tabs button.active .ico { opacity: 1; }
+#tp-strip button.active, #tp-strip button.active:hover { box-shadow: inset -2px 0 0 var(--c-accent); }
+/* the rollback bar while dragged and a pane splitter while dragged: the accent (it is the thing being moved) */
+#tree .rollbar.dragging::before, .split.dragging::after { background: var(--c-accent); }
+/* links and accent text in panels and dialogs */
+#modal-body a, #tp-body a, #pm a, .tip a { color: var(--c-accent-text); }
+/* the Task Pane's "more" summaries keep the text colour; a keyboard focus ring is the accent everywhere in the chrome */
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline-color: var(--c-focus); }
+/* the busy message and the status bar's information chips */
+#status-msg.busy { color: var(--c-info); }
+#status-msg.busy::before { background: var(--c-info); }
+/* the default button in the PropertyManager and the Task Pane follow the dialog's */
+.btn.primary:focus-visible { outline: 2px solid var(--c-focus); outline-offset: 1px; }
 /* lane mcdirect: an interface profile's graphics window (ui-core.js applyViewport, ui-select.js quick masks and
    selection bar) and the direct wireframe (ui-sketch.js); nothing here applies under SolidWorks */
 #viewport.mc-direct #exit-sketch { display: none !important; }   /* Mastercam draws without the confirmation corner */

@@ -42,18 +42,23 @@
     return 'part ' + mp.color.getHexString();
   });
 
-  step('rfBU: Under Defined in the status bar is grey (no blue) in the light and the dark theme; Fully Defined stays the text colour', async function () {
+  // swtheme (2026-11-12): the user lifted the no-blue rule for the chrome; Under Defined in the status bar is the
+  // information colour (--c-info, SolidWorks' blue) and the chrome's colours live in tokens: a literal blue may stand
+  // only in a custom-property declaration (the token blocks), never in a rule's own properties.
+  step('rfBU: Under Defined in the status bar is the information colour (--c-info, a blue) in the light and the dark theme; Fully Defined stays the text colour', async function () {
     var theme0 = D.documentElement.getAttribute('data-theme') || 'light', seen = [];
     await anvil.newPart(); await idle();
     await UI.newSketchOnPlane('Front'); await idle();
     try {
-      ['light', 'dark'].forEach(function (th) {
-        UI.setTheme(th); UI.refreshStatus();
+      for (var ti = 0; ti < 2; ti++) {
+        var th = ['light', 'dark'][ti];
+        UI.setTheme(th); UI.refreshStatus(); await wait(250);   // the chip fades its colour in 120 ms
         var st = D.querySelector('#status-right .sk-state'), col = st && W.getComputedStyle(st).color, c = rfBUcolours(col)[0];
         assert(st && st.classList.contains('under') && c, th + ': Under Defined shown');
-        assert(rfBUhue(c).chroma < 0.04, th + ': Under Defined grey, chroma ' + rfBUhue(c).chroma.toFixed(3) + ' (' + col + ')');
+        var ip = D.createElement('span'); ip.style.color = 'var(--c-info)'; D.body.appendChild(ip); var info = W.getComputedStyle(ip).color; ip.remove();
+        assert(col === info && rfBUblue(c), th + ': Under Defined is --c-info ' + info + ', got ' + col);
         seen.push(th + ' ' + col);
-      });
+      }
     } finally { UI.setTheme(theme0); UI.exitSketch(); await idle(); }
     return seen.join(', ');
   });
@@ -76,7 +81,7 @@
     return v;
   });
 
-  step('rfBU: no blue in the Selection Filter toolbar icons, the sketch tool cursors or anywhere in style.css / drawing.css (both themes)', async function () {
+  step('rfBU: no blue in the Selection Filter toolbar icons or the sketch tool cursors, and none in a rule of style.css / drawing.css outside the token declarations (both themes)', async function () {
     var bar = $('sel-filter');
     assert(bar && bar.querySelectorAll('svg').length >= 6, 'filter toolbar icons');
     var bad = rfBUblues('#sel-filter', bar.innerHTML), rules = 0, cursors = 0;
@@ -88,7 +93,11 @@
           if (ru.style) {
             rules++;
             if (ru.style.cursor && /url\(/.test(ru.style.cursor)) cursors++;
-            bad = bad.concat(rfBUblues(name + ' ' + (ru.selectorText || '@').slice(0, 60), ru.style.cssText));
+            for (var pi = 0; pi < ru.style.length; pi++) {
+              var pn = ru.style[pi];
+              if (pn.indexOf('--') === 0) continue;   // a token: rfBQ / rfLZ check what the tokens hold
+              bad = bad.concat(rfBUblues(name + ' ' + (ru.selectorText || '@').slice(0, 60) + ' ' + pn, ru.style.getPropertyValue(pn)));
+            }
           }
           if (ru.cssRules && ru.cssRules.length) walk(ru.cssRules);   // @media blocks (and nested rules)
         });
