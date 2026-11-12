@@ -893,7 +893,7 @@
     var d = r.data;
     if (d && typeof d !== 'string' && ArrayBuffer.isView(d)) d = d.byteOffset === 0 && d.byteLength === d.buffer.byteLength ? d.buffer : d.slice().buffer;
     var model0 = App.model, dirty0 = !!(UI.isDirty && UI.isDirty());
-    return openFileData(r.name, d).then(function (s) {
+    return openFileData(r.name, d, { light: true }).then(function (s) {
       if (keep && r.path) deskSetPath(r.path);
       else if (r.path && isDrawing) {
         var dc = s && drawingDoc();
@@ -999,10 +999,19 @@
   }
   function bytesText(data) { return typeof data === 'string' ? data : Exchange.fromUtf8(new Uint8Array(data)); }
   // openFileData(name, data, opts?) -> Promise of the summary. data: text, ArrayBuffer or Uint8Array.
+  // (rfMG) opts.light: the menus and dialogs ask for it; they never read the summary, and anvil.summary() works out the
+  // mass properties of the whole mesh on the main thread (over a second on an imported part of 70 000 triangles, in
+  // the middle of opening it). The automation API (anvil.importFile) still gets the full summary.
+  function openSummary(opts) {
+    if (opts && opts.light) return { name: App.model.name, type: isAsm() ? 'assembly' : 'part', features: (App.model.features || []).length, light: true };
+    return window.anvil.summary();
+  }
   // lane progress: the whole open (read, import, first rebuild) is one card "Opening <file>"; the first rebuild and
   // lane importperf's import steps nest under it and show as its detail line. A neutral CAD file (STEP, IGES, STL …),
   // a DXF / DWG or any file over 1 MB is read on the main thread in one piece, so its card is shown and painted
   // BEFORE the work starts (it then waits one frame); a small Anvil document starts at once as before.
+  // (merge of the two lanes) one card: this handle goes to importData as opts.progress, which then begins none of its
+  // own and reports the engine's reading and meshing steps into it; a caller that hands in a handle keeps its own.
   function openFileData(name, data, opts) {
     if (!UI.progress) return openFileDataNow(name, data, opts);
     var base = String(name || 'file').replace(/^.*[\\\/]/, '');
@@ -1012,6 +1021,7 @@
     h.set(null, size ? 'Reading ' + fileSize(size) : '');
     function fin(v) { h.done(); return v; }
     function fail(e) { h.done(); throw e; }
+    if (!(opts && opts.progress)) { var o2 = {}; for (var ok in (opts || {})) o2[ok] = opts[ok]; o2.progress = h; opts = o2; }
     if (big) return UI.progress.paint().then(function () { return openFileDataNow(name, data, opts); }).then(fin, fail);
     var r;
     try { r = openFileDataNow(name, data, opts); } catch (e) { h.done(); throw e; }
@@ -1030,9 +1040,9 @@
       var jm = JSON.parse(txt);
       if (jm && jm.kind === 'anvil-drawing' && UI.openDrawingFile) return UI.openDrawingFile(name, jm, opts);
       rememberPart(); App.hiddenBodies = {};
-      return UI.loadModel(jm).then(function () { return window.anvil.summary(); });
+      return UI.loadModel(jm).then(function () { return openSummary(opts); });
     }
-    return runScript(txt, true).then(function (r) { if (r.error) throw new Error(r.error); UI.markClean(); return window.anvil.summary(); });
+    return runScript(txt, true).then(function (r) { if (r.error) throw new Error(r.error); UI.markClean(); return openSummary(opts); });
   }
   function importStatus(res, what) {
     var st = res.stats || {};
@@ -1042,18 +1052,56 @@
   // importData(name, data, units, opts) -> Promise of an exchange.js import result. STEP / IGES go through OpenCascade
   // (ui-occt.js, any surfaces, the file kept on the feature so OpenCascade rebuilds it exactly) for IGES, while
   // Tools ▸ OpenCascade kernel is on, or when Anvil's own STEP reader cannot take the file; everything else is Anvil's.
+  // (rfMG) a breadcrumb for the not-responding report (ui-reports.js, when it is loaded)
+  function crumb(text) { try { if (UI.reports && UI.reports.crumb) UI.reports.crumb(text); } catch (e) { /* never in the way */ } }
   function importData(name, data, units, opts) {
     opts = opts || {};
     var fmt = opts.format || Exchange.formatOf(name, typeof data === 'string' ? data : null);
     var occt = !!(UI.occt && UI.occt.canImport() && (fmt === 'step' || fmt === 'iges'));
-    var first = null;
-    if (!(occt && (fmt === 'iges' || UI.occt.on()))) {
-      try { return Promise.resolve(Exchange.importFile(name, data, { units: units, sourceUnits: opts.sourceUnits, format: opts.format })); }
-      catch (e) { if (!occt) return Promise.reject(e); first = e; }
+    var first = null, shortName = String(name || '').replace(/^.*[\\\/]/, '');
+    // (rfMG) the progress bar (ui-progress.js, when it is loaded): reading is one step of unknown length in the engine's
+    // worker, then the part is built (importIntoNew / insertImported finish the handle they find on the result)
+    var prog = null, ownProg = !opts.progress, closed = false;   // a caller that shows its own bar hands the handle in
+    try { prog = opts.progress || (UI.progress && UI.progress.begin ? UI.progress.begin('Opening ' + (shortName || 'file'), { cancel: true }) : null); } catch (e0) { prog = null; }
+    function say(frac, msg) { try { if (prog && !closed) prog.set(frac, msg); } catch (e) { /* the bar never stops an open */ } }
+    function close() { if (prog && ownProg && !closed) { closed = true; try { prog.done(); } catch (e) { } } }
+    function cancelled() { try { return !!(prog && prog.cancelled && prog.cancelled()); } catch (e) { return false; } }
+    function finish(res) {
+      if (cancelled()) throw new Error('Opening ' + (shortName || 'the file') + ' was cancelled.');
+      if (prog && ownProg && !closed) res.progress = { set: say, done: close };
+      return res;
     }
-    var text = bytesText(data), base = String(name || 'Imported').replace(/^.*[\\\/]/, '').replace(/\.[^.]+$/, '');
-    UI.setStatus('Reading ' + String(name || '').replace(/^.*[\\\/]/, '') + ' with OpenCascade…');
-    return UI.occt.importFile(fmt, text).then(function (r) {
+    function fail(e) { close(); throw e; }
+    var size = typeof data === 'string' ? data.length : (data && (data.byteLength || data.length)) || 0;
+    function viaOcct() {
+      var text = bytesText(data), base = String(name || 'Imported').replace(/^.*[\\\/]/, '').replace(/\.[^.]+$/, '');
+      UI.setStatus('Reading ' + shortName + ' with OpenCascade…');
+      say(null, 'Reading the file with OpenCascade');
+      crumb('open: reading ' + fmt + ' with OpenCascade (' + text.length + ' characters)');
+      return UI.occt.importFile(fmt, text, say).then(function (r) { return occtResult(r, text, base); }, function (e) { throw first ? new Error(first.message + ' (OpenCascade: ' + e.message + ')') : e; }).then(null, fail);
+    }
+    if (!(occt && (fmt === 'iges' || UI.occt.on()))) {
+      // Anvil's own reader runs on the main thread (1.8 s on a 136 000 triangle STEP file): the status line and the bar
+      // are painted first, so the window says what it is doing while it cannot answer. A small file is read at once.
+      var readOwn = function () {
+        crumb('open: reading ' + (fmt || 'file') + ' with Anvil\'s reader (' + size + ' bytes)');
+        var own = Exchange.importFile(name, data, { units: units, sourceUnits: opts.sourceUnits, format: opts.format });
+        crumb('open: read');
+        return finish(own);
+      };
+      if (size < 150000) {
+        try { return Promise.resolve(readOwn()); }
+        catch (e) { if (!occt) { close(); return Promise.reject(e); } first = e; return viaOcct(); }
+      }
+      UI.setStatus('Reading ' + shortName + '…');
+      say(null, 'Reading the file');
+      return new Promise(function (res) { var went = false, go = function () { if (!went) { went = true; res(); } }; requestAnimationFrame(function () { setTimeout(go, 0); }); setTimeout(go, 80); })
+        .then(readOwn).then(null, function (e) { if (!occt) return fail(e); first = e; return viaOcct(); });
+    }
+    return viaOcct();
+    function occtResult(r, text, base) {
+      crumb('open: read by OpenCascade, finishing the mesh');
+      say(0.6, 'Finishing the mesh');
       // (rfLR) 'auto' (File ▸ Open) keeps an inch STEP file's inches, as Anvil's own reader does; OpenCascade hands every
       // file over in millimetres, so the same customer file opened as an inch part with OpenCascade off and as a
       // millimetre part (38.1 for 1.5) with it on, which is the default wherever the engine is installed
@@ -1061,14 +1109,24 @@
       var res = Exchange.finishImport('step', { units: units === 'auto' ? auto : units }, r.solids, 1, []);
       res.format = fmt; res.name = base; res.file = String(name || '').replace(/^.*[\\\/]/, '');
       res.brep = { format: fmt, text: text };
-      return res;
-    }, function (e) { throw first ? new Error(first.message + ' (OpenCascade: ' + e.message + ')') : e; });
+      return finish(res);
+    }
   }
   function importIntoNew(name, data, opts) {
     if (!hasExchange()) return Promise.reject(new Error('exchange.js is not loaded'));
     return importData(name, data, (opts && opts.units) || 'auto', opts).then(function (res) {
       rememberPart(); App.hiddenBodies = {};
-      return UI.loadModel(Exchange.newPartFromImport(res, { merge: opts && opts.merge })).then(function () { importStatus(res, 'Opened'); return window.anvil.summary(); });
+      // (rfMG) crumbs name the phase a not-responding report was taken in; the progress handle is importData's
+      crumb('open: making the part (' + ((res.stats && res.stats.triangles) || 0) + ' triangles)');
+      var shown = res.progress || (opts && opts.progress);   // importData's own handle, else the caller's (it closes its own)
+      if (shown) { try { shown.set(0.8, 'Building the part'); } catch (e0) { } }
+      var model = Exchange.newPartFromImport(res, { merge: opts && opts.merge }), prog = res.progress;
+      delete res.progress;
+      return UI.loadModel(model).then(function () {
+        importStatus(res, 'Opened'); crumb('open: shown');
+        if (prog) prog.done();
+        return openSummary(opts);
+      }, function (e) { if (prog) prog.done(); throw e; });
     });
   }
   function importIntoCurrent(name, data, opts) {
@@ -1082,11 +1140,18 @@
     var f = Exchange.importFeature(App.model, res, { merge: opts && opts.merge });
     f.id = App.model.nextId++;
     App.model.features.push(f);
+    var prog = res.progress;
+    delete res.progress;
+    var shown = prog || (opts && opts.progress);
+    if (shown) { try { shown.set(0.8, 'Building the part'); } catch (e0) { } }
+    crumb('import: rebuilding with ' + f.name);
     return UI.afterRebuild(UI.rebuild(), function () {
       App.sel = { kind: 'feature', id: f.id };
       UI.updateHighlights(); UI.refreshTree();
       importStatus(res, f.name + ' from');
-      return window.anvil.summary();
+      crumb('import: shown');
+      if (prog) prog.done();
+      return openSummary(opts);
     });
   }
   // pick a file from disk: resolves to { name, data } (ArrayBuffer), or never when the picker is cancelled
@@ -1186,7 +1251,7 @@
       { label: 'Open', primary: true, action: function go() {
         if (reading) { reading.then(go); return; }
         var p;
-        if (chosen) p = openFileData(chosen.name, chosen.data);
+        if (chosen) p = openFileData(chosen.name, chosen.data, { light: true });
         else if (savedPick && files[savedPick]) { UI.closeModal(); openSaved(savedPick, files[savedPick]); return; }
         else {
           var txt = ta.value.trim();
@@ -1194,7 +1259,7 @@
           // pasted text: JSON, a STEP / ASCII STL / OBJ file, or else an Anvil script
           var fmt = txt.charAt(0) === '{' || !hasExchange() ? null : Exchange.formatOf('', txt);
           if (fmt === 'obj' && /(^|[^\w.$])(p|a)\s*\.\s*\w+\s*\(/.test(txt)) fmt = null;
-          p = fmt ? openFileData('Pasted.' + fmt, txt, { format: fmt }) : openFileData('Pasted.anvil.js', txt);
+          p = fmt ? openFileData('Pasted.' + fmt, txt, { format: fmt, light: true }) : openFileData('Pasted.anvil.js', txt, { light: true });
         }
         p.then(function () { UI.closeModal(); }, function (e) { UI.toast((e && e.message) || String(e)); });
       } },
@@ -1207,7 +1272,7 @@
   function cmdInsertImported() {
     if (isAsm()) { UI.toast('Imported bodies go into a part. Open a part, or use File ▸ Open for a new one.'); return; }
     pickFile('.step,.stp,.stl,.obj,.3mf', function (name, data) {
-      importIntoCurrent(name, data).catch(function (e) { UI.toast((e && e.message) || String(e)); });
+      importIntoCurrent(name, data, { light: true }).catch(function (e) { UI.toast((e && e.message) || String(e)); });
     });
   }
   // ---- a file dropped anywhere on the window (rfID) ----------------------------------------------------------------

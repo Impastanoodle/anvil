@@ -4,7 +4,8 @@
     await anvil.run(plateCode()); await idle();
     var ref = anvil.drawing.make({ fresh: true });   // the API path: settled before it returns
     UI.closeDrawing();
-    await anvil.run(plateCode()); await idle();      // a new mesh: no projection cached
+    await anvil.run(plateCode()); await idle();
+    await UI.rebuild({ fresh: true }); await idle();   // a new mesh: no projection cached (rfMG: the same script again keeps the mesh, and with it the projections)
     var t0 = W.performance.now();
     UI.makeDrawing({ fresh: true });
     var callMs = W.performance.now() - t0, st = UI.drawing.state;
@@ -22,6 +23,7 @@
   step('r12/drawui12: a script reading a drawing that is still being worked out gets the whole sheet (settle)', async function () {
     UI.closeDrawing();
     await anvil.run(plateCode()); await idle();
+    await UI.rebuild({ fresh: true }); await idle();   // (rfMG) a new mesh
     UI.makeDrawing({ fresh: true });
     assert(UI.drawing.state.prog, 'expected a drawing in progress');
     var s = anvil.drawing.summary();

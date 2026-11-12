@@ -151,6 +151,8 @@
     if (m.type === 'loading') { if (engPg) engPg.h.set(m.fraction, m.text); return; }   // lane progress
     if (m.type === 'ready' || (m.type === 'error' && m.seq === -1)) engineDone();   // lane progress
     if (m.type === 'ready') { st.ready = true; st.loadMs = m.loadMs; st.loadPhases = m.phases || null; request(); return; }
+    // (rfMG) how far the engine is with a file it is reading: the bar of File ▸ Open (ui-app.js importData)
+    if (m.type === 'importProgress') { var wp = imports[m.seq]; if (wp && wp.progress) { try { wp.progress(m.fraction, m.text); } catch (e0) { } } return; }
     if (m.type === 'imported' || m.type === 'importError') {
       var w = imports[m.seq]; delete imports[m.seq];
       if (w) { if (m.type === 'imported') w.res(m.result); else w.rej(new Error(m.message)); }
@@ -866,14 +868,14 @@
   // importFile(format, text) -> Promise of { solids: [{ name, positions, triangles }], faces, ms }: a STEP / IGES file
   // read by OpenCascade (any surfaces); the engine is started for it when the switch is off
   var imports = {}, importSeq = 0;
-  function importFile(format, text) {
+  function importFile(format, text, onProgress) {
     return new Promise(function (res, rej) {
       if (!window.Worker) { rej(new Error('This browser has no Web Workers.')); return; }
       if (st.state === 'failed') { rej(new Error(st.error || 'OpenCascade is not installed (run vendor/get-occt.ps1).')); return; }
       if (!st.worker) startWorker();
       if (!st.worker) { rej(new Error(st.error || 'OpenCascade did not start.')); return; }
       var s = ++importSeq;
-      imports[s] = { res: res, rej: rej, format: format, text: text };
+      imports[s] = { res: res, rej: rej, format: format, text: text, progress: typeof onProgress === 'function' ? onProgress : null };
       st.worker.postMessage({ type: 'import', seq: s, format: format, text: text });
     });
   }

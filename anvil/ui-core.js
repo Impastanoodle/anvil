@@ -770,6 +770,7 @@ var UI = (function () {
     bodyMesh = null; crackFill = null; edgeLines = null; silLines = null; edgeScr.edges = null; pickMemo.key = null; App.displayWarning = null;
     tanLines = null;   // rfHL (disposed with groups.edges)
     var m = App.mesh;
+    drawnMesh = m; drawnHide = hideKey();   // (rfMG) applyBuild keeps the drawn geometry while the mesh and the hidden bodies are the same
     if (!m || !m.triCount) { App.edges = m ? edgesFor(m) : []; App.triHidden = null; visTris = null; sceneVer++; return; }
     var g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
@@ -820,7 +821,8 @@ var UI = (function () {
     sceneVer++;
     applyDisplayStyle();
   }
-  var silLines = null;
+  var silLines = null, drawnMesh = null, drawnHide = '';
+  function hideKey() { return Object.keys(App.hiddenBodies || {}).filter(function (k) { return App.hiddenBodies[k]; }).sort().join(','); }
 
   // ------------------------------------------------------------------ lane FO: display safety
   // "The part never looks broken", whatever mesh the kernel hands over:
@@ -1818,6 +1820,7 @@ var UI = (function () {
   }
   function ekey3(p) { return Math.round(p[0] * 1000) + ',' + Math.round(p[1] * 1000) + ',' + Math.round(p[2] * 1000); }
   function pairKey(a, b) { return a < b ? a + '|' + b : b + '|' + a; }
+  var annotateStats = null, annotateAll = false;   // (rfMG) the last annotateCurveEdges: { edges (tried against curves), tries, curves }; annotateAll (tests): every curve is tried, as before the grid
   // Marks seams (e.seam, e.smooth) and chord edges (e.curve = index into the returned list) on bodyEdges' list;
   // -> [{ curve (the Kernel.curveEdges record), pts: [[x,y,z]…] fine polyline, edges: [chord edges] }]
   function annotateCurveEdges(m, edges) {
@@ -1870,14 +1873,52 @@ var UI = (function () {
       while (a > C.a0 + 2 * Math.PI) a -= 2 * Math.PI;
       return a <= C.a1 + 1e-9;
     }
+    // (rfMG) the curves by place. An edge that is no chord by its key was tried against every curve of the part (its
+    // middle in the circle's plane and within its radius, then the chords): edges × curves, 0.9 s of the second the
+    // window froze when OpenCascade's solid of an imported part of 72 000 triangles swapped in (20 000 such edges,
+    // thousands of circles). Each curve goes in a grid of its own size class: the box of its disc (flat along its axis:
+    // rings stacked on one axis, a turned part, must not share a cell) with cells of 4^n at least the box's size each
+    // way, so at most 8 cells; an edge asks the cell of its middle in each class: at least the curves whose box holds
+    // the middle, the only ones the plane and radius tests can pass, tried in index order as before: the same answer.
+    // annotateStats counts the tries (tests/smoke/rfMG.js: an edges × curves loop coming back fails on any machine).
+    var grids = [], gridOf = {}, always = [];
+    curves.forEach(function (c, i) {
+      var C = c.curve, tol = 1e-4 * Math.max(1, C.radius), r = C.radius + tol, o = C.center, n = C.normal, nl = n ? V.len(n) : 0, h = [r, r, r], lv = [0, 0, 0], a;
+      // the middle m of an edge that passes: |(m - o) · n| <= tol and |m - o| <= r, so along axis a it is within
+      // r √(1 - n̂a²) + (tol / |n|) |n̂a| of the centre (2 tol / |n| here: room for rounding)
+      if (nl > 0.5) for (a = 0; a < 3; a++) h[a] = Math.min(r, r * Math.sqrt(Math.max(0, 1 - (n[a] / nl) * (n[a] / nl))) + 2 * tol / nl);
+      for (a = 0; a < 3; a++) lv[a] = 2 * Math.ceil(Math.log(2 * h[a]) / Math.LN2 / 2);
+      if (!(r > 0) || !isFinite(lv[0] + lv[1] + lv[2]) || !isFinite(o[0]) || !isFinite(o[1]) || !isFinite(o[2])) { always.push(i); return; }
+      var gk = lv.join(','), g = gridOf[gk];
+      if (!g) grids.push(g = gridOf[gk] = { cx: Math.pow(2, lv[0]), cy: Math.pow(2, lv[1]), cz: Math.pow(2, lv[2]), map: new Map() });
+      var x0 = Math.floor((o[0] - h[0]) / g.cx), x1 = Math.floor((o[0] + h[0]) / g.cx), y0 = Math.floor((o[1] - h[1]) / g.cy), y1 = Math.floor((o[1] + h[1]) / g.cy), z0 = Math.floor((o[2] - h[2]) / g.cz), z1 = Math.floor((o[2] + h[2]) / g.cz);
+      for (var x = x0; x <= x1; x++) for (var y = y0; y <= y1; y++) for (var z = z0; z <= z1; z++) {
+        var k = x + ',' + y + ',' + z, l = g.map.get(k);
+        if (l) l.push(i); else g.map.set(k, [i]);
+      }
+    });
+    function curvesNear(p) {
+      if (annotateAll) return curves.map(function (c, i) { return i; });
+      var out = always.length ? always.slice() : null, lists = always.length ? 1 : 0;
+      for (var gi = 0; gi < grids.length; gi++) {
+        var g = grids[gi], l = g.map.get(Math.floor(p[0] / g.cx) + ',' + Math.floor(p[1] / g.cy) + ',' + Math.floor(p[2] / g.cz));
+        if (!l) continue;
+        out = out ? out.concat(l) : l; lists++;
+      }
+      if (!out) return [];
+      return lists > 1 ? out.sort(function (a, b) { return a - b; }) : out;   // (one list is in index order already)
+    }
+    annotateStats = { edges: 0, tries: 0, curves: curves.length };
     edges.forEach(function (e) {
       if (e.seam) return;
       var ci = chordMap[pairKey(e.ka, e.kb)];
       if (ci == null) {
         // only edges next to a curved face can lie on a curve
         if (!e.faces.some(function (fi) { return faceSurfs[fi]; })) return;
-        for (var i = 0; i < curves.length && ci == null; i++) {
-          var C = curves[i].curve, tol = 1e-4 * Math.max(1, C.radius);
+        var near = curvesNear(e.mid);
+        annotateStats.edges++; annotateStats.tries += near.length;
+        for (var ni = 0; ni < near.length && ci == null; ni++) {
+          var i = near[ni], C = curves[i].curve, tol = 1e-4 * Math.max(1, C.radius);
           if (Math.abs(V.dot(V.sub(e.mid, C.center), C.normal)) > tol || V.len(V.sub(e.mid, C.center)) > C.radius + tol) continue;
           for (var j = 0; j < C.chords.length; j++) {
             var ch = C.chords[j];
@@ -2060,7 +2101,17 @@ var UI = (function () {
   // (ztRangeGeometry), silhouettes of refined faces come from its sub-facets, and their rim lines drop the chord band.
   // rfHY: spheres and tori too (projected along the ray from the centre / tube centre, k from the facets' measured gap). UI.zoomTess: { now, info, setLevel (0 off .. 1; the adaptive governor's
   // hook), setBudget, enabled, deviation() (rfHY: per refined group, drawn vertices and facet middles off the surface, px) }.
-  var ZT = { on: true, level: 1, budget: 400000, tolPx: 0.35, needPx: 0.5, maxK: 16, stillMs: 150 };
+  // (rfMG) maxMs: what making the display mesh may cost. ztBuild walks every triangle of the part (string keys per
+  // corner), about 7 µs each as measured, so on an imported part of 72 000 triangles every zoom step, display style
+  // change and Section View froze the window for half a second when the view came to rest. A plan whose display mesh
+  // would take longer than maxMs at the rate this machine has shown (msPerTri, learned from each build) is not made:
+  // the part keeps the kernel's mesh (its own chord tolerance) and the edge lines stay true curves. A budget in time,
+  // not triangles: what a person feels, whatever the processor. UI.zoomTess.info().over says the plan was left out.
+  // The estimate cannot see the worst case (a side many cells long beside a refined face is sampled up to 4096 times:
+  // zoomed far into the same part one build ran 132 s), so ztBuild also stops itself after 1.5 × maxMs (ZT_OVER); the
+  // mesh it ran out of time on is not refined again (mesh._ztOver). UI.zoomTess.now() (tests) has no limit.
+  var ZT = { on: true, level: 1, budget: 400000, tolPx: 0.35, needPx: 0.5, maxK: 16, stillMs: 150, maxMs: 80, msPerTri: 0.004, builds: 0, stopped: 0 };
+  var ZT_OVER = { ztOver: true };
   function ztKey(x, y, z) { return Math.round(x * 1e4) + ',' + Math.round(y * 1e4) + ',' + Math.round(z * 1e4); }
   function ztSurfKey(S) { function q(x) { return Math.round(x * 1e6); } return S.t + ':' + S.o.map(q) + ':' + S.d.map(q) + ':' + q(S.r) + ':' + q(S.k || 0) + ':' + q(S.R || 0); }
   function ztRadiusAt(S, z) { return Math.abs(S.t === 'cone' ? S.r + (S.k || 0) * z : S.r); }
@@ -2156,8 +2207,9 @@ var UI = (function () {
       !(App.build && App.build.assembly) && !flatShown() && App.view.style !== 'wireframe';
   }
   // -> { k, groups, key } (groups empty: the base mesh is enough)
-  function ztPlan() {
+  function ztPlan(force) {
     if (!ztEligible()) return { k: 1, groups: [], key: '' };
+    if (!force && App.mesh._ztOver) return { k: 1, groups: [], key: '', over: App.mesh._ztOver };   // (rfMG) ran out of time before
     var m = App.mesh, A = m._zt || (m._zt = ztAnalyse(m)), s = cam.scale, tol = ZT.tolPx * s, need = ZT.needPx * s;
     var budget = ZT.budget * Math.max(0, Math.min(1, ZT.level)), cands = [], cx = size.w / 2, cy = size.h / 2;
     A.groups.forEach(function (g) {
@@ -2178,12 +2230,18 @@ var UI = (function () {
       sel.push(cands[i].g); kG = kN; n = nN;
     }
     sel.sort(function (a, b) { return a.id - b.id; });
-    return { k: kG, groups: sel, key: sel.length ? kG + '|' + sel.map(function (g) { return g.id; }).join(',') : '' };
+    // (rfMG) the time budget: the display mesh has every base triangle once and the refined ones k × k times
+    var outTris = m.triCount + n * (kG * kG - 1), planKey = sel.length ? kG + '|' + sel.map(function (g) { return g.id; }).join(',') : '';
+    if (sel.length && !force && !(planKey === zt.key && zt.base) && outTris * ZT.msPerTri > ZT.maxMs) return { k: 1, groups: [], key: '', over: { tris: outTris, ms: Math.round(outTris * ZT.msPerTri) } };
+    return { k: kG, groups: sel, key: planKey };
   }
   // the display geometry for a plan -> { geom, map, start (base triangle -> first display triangle, triCount + 1),
   // edges (split base edges), sil (LineSegments of the refined faces' sub-facet seams), faceSet }
-  function ztBuild(plan) {
+  function ztBuild(plan, limitMs) {
     var m = App.mesh, A = m._zt, P = m.positions64 || m.positions, SN = analyticNormals(m), FN = m.normals, k = plan.k, hid = App.triHidden;
+    var tStart = performance.now(), tick = 0;
+    // (rfMG) every 128 triangles: out of time -> ZT_OVER (nothing has been changed yet: the geometry is made at the end)
+    function inTime() { if (limitMs > 0 && (++tick & 127) === 0 && performance.now() - tStart > limitMs) throw ZT_OVER; }
     var on = {}, faceSet = {};
     plan.groups.forEach(function (g) { on[g.id] = g; Object.keys(g.faces).forEach(function (fi) { faceSet[fi] = 1; }); });
     function corner(t, c) { var o = t * 9 + c * 3; return [P[o], P[o + 1], P[o + 2]]; }
@@ -2206,6 +2264,7 @@ var UI = (function () {
     plan.groups.forEach(function (g) {
       g.tris.forEach(function (t) {
         if (hid && hid[t]) return;
+        inTime();
         for (var e = 0; e < 3; e++) {
           var p = corner(t, e), q = corner(t, (e + 1) % 3), kp = ck(p), kq = ck(q), key = kp < kq ? kp + '|' + kq : kq + '|' + kp;
           if (edges.has(key)) continue;
@@ -2297,6 +2356,7 @@ var UI = (function () {
     for (var t = 0; t < m.triCount; t++) {
       start[t] = map.length;
       if (hid && hid[t]) continue;
+      inTime();
       var gi = A.triG[t], G = gi >= 0 ? on[gi] : null, C0 = corner(t, 0), C1 = corner(t, 1), C2 = corner(t, 2);
       if (G) {
         // k × k: grid point (i, j) = C0 + (C1 − C0) i/k + (C2 − C0) j/k on the surface; normals from the surface, on the facet's side
@@ -2456,17 +2516,33 @@ var UI = (function () {
     zt.base = zt.disp = zt.map = zt.start = zt.faceSet = zt.curveRefined = zt.sil = null; zt.key = null; zt.doneKey = null; zt.info = null;
   }
   // re-plan for the view now: refine, change the refined set, or go back to the base mesh -> zt.info
-  function ztUpdate() {
-    var plan = ztPlan();
+  function ztUpdate(force) {
+    var plan = ztPlan(force);
     if (!plan.groups.length) {
       ztRestore();
       var n = App.mesh ? App.mesh.triCount : 0;
-      return (zt.info = { k: 1, faces: 0, baseTris: n, tris: n });
+      zt.info = { k: 1, faces: 0, baseTris: n, tris: n };
+      if (plan.over) zt.info.over = plan.over;   // (rfMG) left out: it would have frozen the window
+      return zt.info;
     }
     if (plan.key === zt.key && zt.base) return zt.info;
-    var t0 = performance.now(), built = ztBuild(plan);
+    var t0 = performance.now(), built;
+    try { built = ztBuild(plan, force ? 0 : ZT.maxMs * 1.5); }
+    catch (e) {
+      if (e !== ZT_OVER) throw e;
+      // (rfMG) out of time: the kernel's mesh stays, and this mesh is not tried again
+      ZT.stopped++;
+      App.mesh._ztOver = { stopped: true, ms: Math.round(performance.now() - t0) };
+      ztRestore();
+      var nb = App.mesh.triCount;
+      return (zt.info = { k: 1, faces: 0, baseTris: nb, tris: nb, over: App.mesh._ztOver });
+    }
     ztSwap(plan, built);
-    zt.info.ms = Math.round(performance.now() - t0);
+    var took = performance.now() - t0;
+    zt.info.ms = Math.round(took);
+    // (rfMG) this machine's rate, for the time budget (ztPlan): half the old value, half the new one
+    if (built.map.length > 2000) ZT.msPerTri = Math.max(0.0005, Math.min(0.05, 0.5 * ZT.msPerTri + 0.5 * took / built.map.length));
+    ZT.builds++;
     return zt.info;
   }
   // highlights cut from the display geometry: base triangle ranges -> their display triangles
@@ -2500,7 +2576,7 @@ var UI = (function () {
   // setLevel(0..1) scales the triangle budget (0 = off: the base mesh), for the adaptive quality governor;
   // setBudget(n) extra triangles at level 1; enabled(on?) switches the whole thing
   var zoomTessApi = {
-    now: function () { finishViewAnimation(); zt.doneKey = null; return ztEligible() || zt.base ? ztUpdate() : null; },
+    now: function (budgeted) { finishViewAnimation(); zt.doneKey = null; return ztEligible() || zt.base ? ztUpdate(!budgeted) : null; },   // (rfMG) now(true): under the time budget, as the still view does
     info: function () { return zt.info ? Object.assign({ level: ZT.level, budget: ZT.budget }, zt.info) : null; },
     setLevel: function (x) { ZT.level = Math.max(0, Math.min(1, +x || 0)); zt.doneKey = null; return ZT.level; },
     level: function () { return ZT.level; },
@@ -3980,6 +4056,48 @@ var UI = (function () {
     try { return JSON.stringify(model, function (k, v) { return k === 'drawings' && this === model ? undefined : v; }); } catch (e) { return null; }
   }
   function noteGeom() { App.geom = App.build && !isAssembly() ? { key: geomKey(App.model), build: App.build } : null; }
+  // (rfMG) Same solids: a rebuild that leaves every body as it was (Edit ▸ Rebuild with nothing changed, a new sketch
+  // or plane, a renamed feature, a drawing edit) keeps the mesh, the edges and the drawn geometry on screen, and with
+  // OpenCascade on its exact solid too: nothing is meshed again and OpenCascade is not asked again. On an imported
+  // part of 72 000 triangles such a rebuild froze the window for a second, then again a second 17 s later when
+  // OpenCascade's copy of the same solid swapped in. The kernel's rebuild cache hands back the very same body objects
+  // for an unchanged feature prefix, so "the same" is object identity: no geometry is compared.
+  // kern = { build (Anvil's kernel build whose solids the page holds), shown (the build on screen made from it:
+  // itself, or OpenCascade's solid of it, applyBuild), seq (the worker reply that carried the solids, else null) }
+  var kern = null, kernStats = { same: 0, full: 0 };
+  function kernValid() { return !!(kern && kern.shown === App.build && App.mesh && bodyMesh && !isAssembly() && App.rollback == null && !roll.active && !roll.committing); }
+  function sameSolids(a, b) {
+    var x = (a && a.bodies) || [], y = (b && b.bodies) || [], i;
+    if (!x.length || x.length !== y.length) return false;
+    for (i = 0; i < x.length; i++) if (x[i] !== y[i] || ((a.bodyFeatures || [])[i] == null ? null : a.bodyFeatures[i]) !== ((b.bodyFeatures || [])[i] == null ? null : b.bodyFeatures[i])) return false;
+    var ta = a.tools || {}, tb = b.tools || {}, ka = Object.keys(ta), kb = Object.keys(tb);
+    if (ka.length !== kb.length) return false;
+    for (i = 0; i < ka.length; i++) if (ta[ka[i]] !== tb[ka[i]]) return false;
+    return true;
+  }
+  // the fresh build's planes, profiles, errors and equations on the solids already held -> { kernel, shown }
+  function sameSolidsBuild(fresh, kb, shown) {
+    var kernel = {}, k;
+    for (k in fresh) kernel[k] = fresh[k];
+    kernel.body = kb.body; kernel.bodies = kb.bodies; kernel.bodyFeatures = kb.bodyFeatures; kernel.tools = kb.tools;
+    if (shown === kb) return { kernel: kernel, shown: kernel };
+    var out = {};
+    for (k in kernel) out[k] = kernel[k];
+    out.body = shown.body; out.bodies = shown.bodies; out.bodyFeatures = shown.bodyFeatures; out.occt = shown.occt;
+    // errors OpenCascade's solid had cleared (features it built that Anvil's kernel could not) stay cleared
+    var errs = {};
+    Object.keys(kernel.errors || {}).forEach(function (id) { if (!(kb.errors && kb.errors[id] != null && !(shown.errors && shown.errors[id] != null))) errs[id] = kernel.errors[id]; });
+    out.errors = errs;
+    return { kernel: kernel, shown: out };
+  }
+  function sameOpts(opts) { var o = {}; for (var k in (opts || {})) o[k] = opts[k]; o.kept = true; o.sameMesh = true; return o; }
+  // apply a build whose solids are the ones held (rebuildSync, onWorkerMessage); -> the kernel build to cache from
+  function applySameSolids(fresh, opts, ms) {
+    var g = sameSolidsBuild(fresh, kern.build, kern.shown), seq = kern.seq;
+    applyBuild(g.shown, sameOpts(opts), ms);
+    if (App.build === g.shown) { kern = { build: g.kernel, shown: g.shown, seq: seq }; kernStats.same++; }
+    return g.kernel;
+  }
   function keepSame() {
     var g = App.geom;
     if (!g || !g.key || g.build !== App.build || !App.mesh || isAssembly()) return false;
@@ -3990,7 +4108,7 @@ var UI = (function () {
     rollbarSync();   // rfGQ: a new feature goes in at the rollback bar
     opts = opts || {};
     if (opts.keepSame && keepSame()) {
-      applyBuild(App.build, { noSave: !!opts.noSave, keepMs: true, kept: true });
+      applyBuild(App.build, { noSave: !!opts.noSave, keepMs: true, kept: true, sameMesh: true });
       var kept = Promise.resolve(App.build);
       kept.applied = true;
       return kept;
@@ -4053,8 +4171,14 @@ var UI = (function () {
     }
     build = K.rebuild(App.model, App.buildCache);
     App.buildCache = build.cache;
+    // (rfMG) every body is the one already on screen: keep the mesh and OpenCascade's solid
+    if (!opts.fresh && kernValid() && sameSolids(build, kern.build)) {
+      applySameSolids(build, opts, performance.now() - t0);
+      noteGeom();
+      return;
+    }
     applyBuild(build, opts, performance.now() - t0);
-    if (App.build === build) noteGeom();   // (rfHO)
+    if (App.build === build) { noteGeom(); kern = { build: build, shown: build, seq: null }; kernStats.full++; }   // (rfHO)
   }
 
   // Everything that happens after the kernel has built the body: mesh, edges, highlights, planes,
@@ -4072,6 +4196,7 @@ var UI = (function () {
     var newMesh, prevBuild = App.build;
     // (rfHO) a kept build (undo of an edit that left the geometry alone) keeps its mesh: same edges, same projections
     if (opts.kept && build === App.build && App.mesh) newMesh = App.mesh;
+    else if (opts.sameMesh && App.mesh) newMesh = App.mesh;   // (rfMG) the same solids under a new build record
     else try { newMesh = K.meshFromBody(build.body); } catch (e) {
       console.warn('The rebuilt part could not be displayed:', e);
       if (UI.setStatus) UI.setStatus('The rebuilt part could not be displayed (' + ((e && e.message) || e) + '); the last good part is shown.');
@@ -4081,6 +4206,7 @@ var UI = (function () {
     App.mesh = newMesh;
     // (rfHO) OpenCascade's exact solid of the same model takes over the geometry key of the build it replaces
     if (opts.occt && App.geom && App.geom.build === prevBuild) App.geom = { key: App.geom.key, build: build };
+    if (opts.occt && kern && kern.shown === prevBuild) kern.shown = build;   // (rfMG) and stands for the kernel solids it was made from
     // worker.js found the edges of this same mesh (edgesFor); its volume follows in a 'volume' message (onWorkerMessage)
     if (nextWorker && App.mesh) { App.mesh.workerEdges = nextWorker.edges; App.mesh.workerCurves = nextWorker.curves || null; App.mesh.workerSeq = nextWorker.seq; useWorkerNormals(App.mesh, nextWorker.normals); }
     nextWorker = null;
@@ -4089,7 +4215,11 @@ var UI = (function () {
     App.triShared = buildTriShared(App.mesh);
     var tt = performance.now();
     pruneHiddenBodies();
-    updateBodyMesh();
+    // (rfMG) the mesh on screen stays: its geometry, edges and outlines are not made again (colours, section and
+    // style may have changed with the model: applyDisplayStyle)
+    // (a part drawn without its edges, App.displayWarning, is drawn again: the edges may be found this time)
+    if (opts.sameMesh && App.displayWarning && App.edgesMesh === newMesh) App.edgesMesh = null;
+    if (opts.sameMesh && newMesh === drawnMesh && bodyMesh && drawnHide === hideKey() && !App.displayWarning) applyDisplayStyle(); else updateBodyMesh();
     updateFlatState();   // lane DC: Flatten
     var tb = performance.now();
     var nb = bodyCount();
@@ -4240,7 +4370,9 @@ var UI = (function () {
     if (!w) { finishSync(req); return; }
     req.seq = ++wk.seq;
     wk.inflight = req;
-    try { w.postMessage({ type: 'rebuild', seq: req.seq, model: App.model, progress: true }); }   // progress: lane progress
+    // (rfMG) have: the reply whose solids the page still shows; the worker answers "the same" without them when they are
+    // progress: lane progress (per-feature messages; the bar closes at idle on every reply, "the same" included)
+    try { w.postMessage({ type: 'rebuild', seq: req.seq, model: App.model, progress: true, have: !req.full && !(req.opts && req.opts.fresh) && kernValid() && kern.seq != null ? kern.seq : null }); }
     catch (e) { wk.inflight = null; disableWorker(e); finishSync(req); return; }   // e.g. an uncloneable value in the model
     setBusy(true);
   }
@@ -4574,6 +4706,21 @@ var UI = (function () {
     if (!wk.inflight || d.seq !== wk.inflight.seq) return;   // stale reply (newer request already posted)
     var req = wk.inflight; wk.inflight = null;
     if (isAssembly()) { finishSync(req); return; }   // reply for a part model that has since been replaced
+    if (d.type === 'built' && d.same != null) {
+      // (rfMG) the solids are the ones the page holds: only planes, profiles, errors and equations came
+      if (!(kernValid() && kern.seq === d.same)) { req.full = true; postRebuild(req); return; }   // no longer shown: ask for them
+      if (rbProg.h) rbProg.h.set(1, 'Nothing to rebuild');   // lane progress: closed at idle (settle / drain below)
+      try {
+        var lite = K.unpackBuild(d.build);
+        K.applyProfiles(App.model, lite.profiles, lite.facePlanes);
+        var kernelBuild = applySameSolids(lite, req.opts, lite.time);
+        if (wk.pending) App.geom = null; else noteGeom();
+        App.buildCache = K.cacheFromBuild ? K.cacheFromBuild(App.model, kernelBuild) : null;
+      } catch (e) { disableWorker(e); finishSync(req); return; }
+      settle(req, null);
+      drain();
+      return;
+    }
     if (d.type === 'built') {
       var build;
       if (rbProg.h) rbProg.h.set(1, 'Showing the part');   // lane progress: the kernel's part is in
@@ -4582,7 +4729,7 @@ var UI = (function () {
         nextWorker = { edges: d.edges || null, curves: d.curves || null, normals: d.normals || null, seq: d.seq };   // found by the worker on the same mesh: the applyBuild below hands them on
         K.applyProfiles(App.model, build.profiles, build.facePlanes);   // the worker built its own copy; write the sketch profiles back onto ours
         applyBuild(build, req.opts, build.time);
-        if (App.build === build) { if (wk.pending) App.geom = null; else noteGeom(); }   // (rfHO) a newer model waiting: not this build's
+        if (App.build === build) { if (wk.pending) App.geom = null; else noteGeom(); kern = { build: build, shown: build, seq: d.seq }; kernStats.full++; }   // (rfHO) a newer model waiting: not this build's
         // Refresh the main-thread cache from the worker's result (guarded: older kernels have no cacheFromBuild).
         App.buildCache = K.cacheFromBuild ? K.cacheFromBuild(App.model, build) : null;
       } catch (e) { nextWorker = null; disableWorker(e); finishSync(req); return; }
@@ -4959,7 +5106,7 @@ var UI = (function () {
     rebuildPending: function () { return !!(wk.inflight || wk.pending); },
     getBodyMesh: function () { return bodyMesh; },
     // lane FO: display safety (crack filler, section caps, safe normals)
-    getCrackFill: function () { return crackFill; }, zoomTess: zoomTessApi, slopeOffset: SLOPE, sectionCaps: function () { return capGroup; }, safeNormals: safeNormals,
+    getCrackFill: function () { return crackFill; }, zoomTess: zoomTessApi, curveEdgeStats: function (all) { if (all != null) annotateAll = !!all; return annotateStats; }, sameSolidsStats: function () { return { same: kernStats.same, full: kernStats.full, seq: kern ? kern.seq : null, valid: kernValid() }; }, slopeOffset: SLOPE, sectionCaps: function () { return capGroup; }, safeNormals: safeNormals,
     // multi-body parts (viewport side): see the "bodies" section
     // assembly documents
     isAssembly: isAssembly, componentIndex: componentIndex, selectComponent: selectComponent,

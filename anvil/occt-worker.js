@@ -187,7 +187,9 @@ self.onmessage = async (e) => {
   try { oc = await ready; } catch (err) { if (m.type === 'import') self.postMessage({ type: 'importError', seq: m.seq, message: 'OpenCascade is not installed (run vendor/get-occt.ps1).' }); return; }
   // { type: 'import', seq, format: 'step' | 'iges', text } -> { type: 'imported', seq, result: OcctKernel.importFile(...) }
   if (m.type === 'import') {
-    try { self.postMessage({ type: 'imported', seq: m.seq, result: OcctKernel.importFile(oc, m.format, m.text) }); }
+    // (rfMG) { type: 'importProgress', seq, fraction (0..1 or null), text } while the file is read and meshed
+    const say = (fraction, text) => { try { self.postMessage({ type: 'importProgress', seq: m.seq, fraction, text }); } catch (e) { } };
+    try { self.postMessage({ type: 'imported', seq: m.seq, result: OcctKernel.importFile(oc, m.format, m.text, say) }); }
     catch (err) { self.postMessage({ type: 'importError', seq: m.seq, message: (err && err.message) || String(err) }); }
     return;
   }

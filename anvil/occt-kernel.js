@@ -3365,13 +3365,17 @@ var OcctKernel = (function () {
   }
   // importFile(oc, format, text) -> { solids: [{ name, positions, triangles }] (millimetres; exchange.js finishImport
   // welds and names them), faces, ms }: every solid tessellated finely enough for Anvil's booleans against it
-  function importFile(oc, format, text) {
+  // (rfMG) onProgress(fraction 0..0.55, text): reading is one step, then one per solid meshed (the caller finishes the bar)
+  function importFile(oc, format, text, onProgress) {
     var arena = [], t0 = now();
     function N(o) { arena.push(o); return o; }
+    function say(f, msg) { if (typeof onProgress === 'function') { try { onProgress(f, msg); } catch (e) { } } }
     try {
+      say(0.05, 'Reading the file');
       var shape = readShape(oc, format, text, N), list = solidsOf(oc, shape, N), E = oc.TopAbs_ShapeEnum, faces = 0;
       if (!list.length) throw new Error('The file has no solid bodies (surfaces only?).');
       var solids = list.map(function (sol, si) {
+        say(0.25 + 0.3 * si / list.length, 'Meshing solid ' + (si + 1) + ' of ' + list.length);
         var b = N(new oc.Bnd_Box_1()); oc.BRepBndLib.Add(sol, b, false);
         var lo = N(b.CornerMin()), hi = N(b.CornerMax()), diag = Math.hypot(hi.X() - lo.X(), hi.Y() - lo.Y(), hi.Z() - lo.Z());
         N(new oc.BRepMesh_IncrementalMesh_2(sol, Math.max(0.05, diag * 5e-4), false, 0.35, false));

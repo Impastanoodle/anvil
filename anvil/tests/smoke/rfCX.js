@@ -136,7 +136,7 @@
     // the cuts sent to the worker)
     var m0 = UI.App.mesh;
     UI.pushUndo(); UI.App.model.features.forEach(function (f) { if (f.type === 'hole' || f.hole) { if (f.d) f.d = 11; if (f.diameter) f.diameter = 11; } });
-    await UI.rebuild(); await idle();
+    await UI.rebuild({ fresh: true }); await idle();   // (rfMG) fresh: a rebuild that leaves the solids alone keeps the mesh, and this step wants the drawing to redraw from a new one
     assert(UI.App.mesh !== m0, 'a new mesh');
     var t0 = Date.now(), filed = [], basePut = W.Drawing.putSection;
     // (every path cut the drawing files through putSection: 'worker' when it came back from drawing-worker.js as a

@@ -15,6 +15,8 @@
 //   { type: 'built', seq, build: <Kernel.packBuild result>, edges: <Kernel.bodyEdges of its mesh> | null,
 //     curves: <Kernel.meshCurveInfo of it> | null, normals: <Kernel.analyticNormals of it> | null }   (r3/engine3)
 //                                                              with the packed solids' ArrayBuffers transferred
+//   { type: 'built', seq, same: <seq of an earlier reply>, build: <packBuild without bodies and tools> }   (rfMG) when
+//     the request said `have: <that seq>` and every body and tool is the object that reply carried: nothing is meshed
 //   { type: 'progress', seq, i, n, name, stage? }               (lane progress) before feature i of n is built
 //                                                              (name = its tree name); stage 'mesh' after the last
 //   { type: 'volume', seq, volume }                            right after 'built': Kernel.massProps(mesh).volume
@@ -31,6 +33,17 @@
 importScripts('csg.js', 'kernel.js', 'sketch-font.js', 'kernel-sketch.js', 'kernel-curves.js', 'kernel-equations.js', 'kernel-mesh.js', 'kernel-rebuild.js', 'kernel-features.js', 'kernel-sheetmetal.js', 'kernel-script.js', 'holewizard.js', 'exchange.js'); // holewizard.js and exchange.js register the Hole and Imported features
 
 var cache = null, previewCache = null;
+// (rfMG) what the last 'built' reply that carried solids was made of: { seq, bodies, bodyFeatures, tools } (the objects)
+var lastSent = null;
+function sameSolids(b, last) {
+  var x = b.bodies || [], y = last.bodies, i;
+  if (!x.length || x.length !== y.length) return false;
+  for (i = 0; i < x.length; i++) if (x[i] !== y[i] || ((b.bodyFeatures || [])[i] == null ? null : b.bodyFeatures[i]) !== (last.bodyFeatures[i] == null ? null : last.bodyFeatures[i])) return false;
+  var ta = b.tools || {}, ka = Object.keys(ta), kb = Object.keys(last.tools);
+  if (ka.length !== kb.length) return false;
+  for (i = 0; i < ka.length; i++) if (ta[ka[i]] !== last.tools[ka[i]]) return false;
+  return true;
+}
 
 // the extras ui-core.js applyBuild takes from a worker build: the edges, curved faces and normals of its mesh
 function meshExtras(packed) {
@@ -109,11 +122,23 @@ self.onmessage = function (e) {
     var b = Kernel.rebuild(m.model, cache, m.progress ? { onProgress: function (i, n, f) {
       self.postMessage({ type: 'progress', seq: m.seq, i: i, n: n, name: (f && f.name) || '' });
     } } : undefined);
-    if (m.progress) self.postMessage({ type: 'progress', seq: m.seq, i: m.model.features.length, n: m.model.features.length, name: '', stage: 'mesh' });
     cache = b.cache;
     // r10/editpreview10: the main cache now holds every step of the newest model, so the next truncated preview (an
     // Edit Feature right after a change or a new document) starts from it instead of an older model's preview cache
     previewCache = null;
+    // (rfMG) the same solids as the reply the page still shows (m.have): the rebuild cache handed back the very same
+    // body and tool objects (an unchanged model, a new sketch or plane), so only the build's planes, profiles, errors
+    // and equations travel; the page keeps its mesh, edges and OpenCascade's solid (ui-core.js "Same solids")
+    if (lastSent && m.have != null && m.have === lastSent.seq && sameSolids(b, lastSent)) {
+      var shell = {};
+      Object.keys(b).forEach(function (k) { shell[k] = b[k]; });
+      shell.bodies = []; shell.body = null; shell.tools = {};
+      self.postMessage({ type: 'built', seq: m.seq, same: lastSent.seq, build: Kernel.packBuild(shell, m.model) });
+      return;
+    }
+    lastSent = null;
+    // (lane progress; after the "same solids" answer above, which meshes nothing and so closes the bar at once)
+    if (m.progress) self.postMessage({ type: 'progress', seq: m.seq, i: m.model.features.length, n: m.model.features.length, name: '', stage: 'mesh' });
     var packed = Kernel.packBuild(b, m.model);
     // the body's edges (Kernel.bodyEdges, hundreds of ms on a large part) are found here too, on exactly the mesh the
     // main thread will make from the packed bodies, so applyBuild does not have to
@@ -128,10 +153,11 @@ self.onmessage = function (e) {
     var transfer = Kernel.packTransferables(packed);
     if (normals) transfer.push(normals.buffer);
     self.postMessage({ type: 'built', seq: m.seq, build: packed, edges: edges, curves: curves, normals: normals }, transfer);
+    lastSent = { seq: m.seq, bodies: (b.bodies || []).slice(), bodyFeatures: (b.bodyFeatures || []).slice(), tools: Object.assign({}, b.tools || {}) };
     // then the mesh's volume, which ui-occt.js compares OpenCascade's with (massProps of a large mesh: tens of ms)
     if (mesh) { try { self.postMessage({ type: 'volume', seq: m.seq, volume: mesh.triCount ? Kernel.massProps(mesh, 1).volume : 0 }); } catch (e3) { } }
   } catch (err) {
-    cache = null;
+    cache = null; lastSent = null;
     self.postMessage({ type: 'error', seq: m.seq, message: (err && err.message) || String(err) });
   }
 };

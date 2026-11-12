@@ -95,13 +95,26 @@
       var n = a.plane.normal, q = b.plane.normal;
       return n.x * q.x + n.y * q.y + n.z * q.z >= EXACT_COS && onPlane(a.plane, b) && onPlane(b.plane, a);
     }
-    function vkey(v) { return v.x + ',' + v.y + ',' + v.z; }
+    // (rfMG) a vertex is a number (its exact coordinates looked up in maps of numbers), an edge the pair of them in one
+    // number: the same pairing as the text keys 'x,y,z|x,y,z' this had, without building a string per corner (a third
+    // of meshing OpenCascade's solid of an imported part of 72 000 triangles, on the page and in the worker)
+    var vx = new Map(), nv = 0;
+    owner = new Map();
+    function vkey(v) {
+      var my = vx.get(v.x), mz, id;
+      if (!my) vx.set(v.x, my = new Map());
+      mz = my.get(v.y);
+      if (!mz) my.set(v.y, mz = new Map());
+      id = mz.get(v.z);
+      if (id == null) mz.set(v.z, id = nv++);
+      return id;
+    }
     polys.forEach(function (p, i) {
       var vs = p.vertices;
       for (var k = 0; k < vs.length; k++) {
-        var a = vkey(vs[k].pos), b = vkey(vs[(k + 1) % vs.length].pos), ek = a < b ? a + '|' + b : b + '|' + a;
-        var j = owner[ek];
-        if (j == null) { owner[ek] = i; continue; }
+        var a = vkey(vs[k].pos), b = vkey(vs[(k + 1) % vs.length].pos), ek = a < b ? a * 67108864 + b : b * 67108864 + a;
+        var j = owner.get(ek);
+        if (j == null) { owner.set(ek, i); continue; }
         if (coplanar(polys[j], p)) { var ra = find(i), rb = find(j); if (ra !== rb) parent[ra] = rb; }
       }
     });
