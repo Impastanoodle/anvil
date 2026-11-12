@@ -42,7 +42,8 @@
     var vp = $('viewport'), theme0 = UI.theme();
     UI.setTheme('light'); UI.setBackground('gradient');
     var bg = W.getComputedStyle(vp).backgroundImage;
-    assert(/linear-gradient/.test(bg) && /rgb\(214, 216, 219\)/.test(bg) && /rgb\(255, 255, 255\)/.test(bg), 'light theme gradient: ' + bg);
+    // swcolors (2026-11-12): the light theme's Gradient is SolidWorks' measured one (white to the pale blue-grey #d8dce8)
+    assert(/linear-gradient/.test(bg) && /rgb\(216, 220, 232\)/.test(bg) && /rgb\(254, 254, 254\)/.test(bg), 'light theme gradient: ' + bg);
     UI.setTheme('dark');
     bg = W.getComputedStyle(vp).backgroundImage;
     assert(/rgb\(60, 60, 60\)/.test(bg) && /rgb\(14, 14, 14\)/.test(bg), 'dark theme gradient: ' + bg);

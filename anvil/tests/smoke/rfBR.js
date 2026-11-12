@@ -20,8 +20,11 @@
           assert(cols.length >= 1, th + ' / ' + b + ': a background colour: ' + cs.backgroundImage + ' ' + cs.backgroundColor);
           var darkGround = th === 'dark' || b === 'dark';
           assert(vp.classList.contains('vp-light') === !darkGround && UI.darkViewport() === darkGround, th + ' / ' + b + ': vp-light ' + vp.classList.contains('vp-light'));
+          // swcolors (2026-11-12): the light theme's Gradient is SolidWorks' own, measured: white to a pale blue-grey
+          // (#d8dce8, 16 levels of blue over red); a pale tint up to 20 levels is allowed there, nothing bluer
+          var paleSw = th === 'light' && b === 'gradient';
           cols.forEach(function (c) {
-            assert(!rfBRbluish(c) && (darkGround ? Math.max(c[0], c[1], c[2]) <= 0x40 : Math.min(c[0], c[1], c[2]) >= 0xc8), th + ' / ' + b + ': ' + (darkGround ? 'grey-black' : 'light') + ', no blue: rgb(' + c + ')');
+            assert((paleSw ? Math.max(c[0], c[1], c[2]) - Math.min(c[0], c[1], c[2]) <= 20 : !rfBRbluish(c)) && (darkGround ? Math.max(c[0], c[1], c[2]) <= 0x40 : Math.min(c[0], c[1], c[2]) >= 0xc8), th + ' / ' + b + ': ' + (darkGround ? 'grey-black' : 'light') + ', no blue: rgb(' + c + ')');
           });
           var hud = W.getComputedStyle(vp);
           ['--hud-hover-line', '--hud-on-line', '--sk-infer', '--sk-sel'].forEach(function (k) {

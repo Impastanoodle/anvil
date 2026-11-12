@@ -40,15 +40,18 @@
         RFGX_TOKENS.forEach(function (v) {
           var c = rfGXrgb(root.getPropertyValue(v).trim());
           if (!c) bad.push(th + ' ' + v + ' unset');
-          else if (RFGX_STATE.indexOf(v) >= 0) { var a = rfGXhue(rfGXrgb(root.getPropertyValue('--c-accent').trim())), k = rfGXhue(c); if (!(k.d > 20 && Math.abs(k.h - a.h) < 12)) bad.push(th + ' ' + v + ' not in the accent family: ' + root.getPropertyValue(v)); }
+          // swcolors (2026-11-12): in the light theme pressed / checked is SolidWorks' grey (#a2a7ae + #6e6e6e, measured), a neutral
+          else if (RFGX_STATE.indexOf(v) >= 0 && !(th === 'light' && /^--c-press/.test(v))) { var a = rfGXhue(rfGXrgb(root.getPropertyValue('--c-accent').trim())), k = rfGXhue(c); if (!(k.d > 20 && Math.abs(k.h - a.h) < 12)) bad.push(th + ' ' + v + ' not in the accent family: ' + root.getPropertyValue(v)); }
           else { var kn = rfGXhue(c); if (kn.d > 25 || (kn.d > 2 && !(kn.h >= 195 && kn.h <= 230))) bad.push(th + ' ' + v + ' not a (cool) grey: ' + root.getPropertyValue(v)); }
         });
         // the ramp is ordered: sunken < panel < raised in the light theme, the other way round where it matters in the dark
         var L = function (v) { return rfGXlum(rfGXrgb(root.getPropertyValue(v).trim())); };
-        if (th === 'light' && !(L('--c-sunken') < L('--c-panel') && L('--c-panel') < L('--c-raised'))) bad.push('light ramp out of order');
+        // swcolors: SolidWorks' FeatureManager is the CommandManager's own ground (#d7dade), so panel = raised in the light theme
+        if (th === 'light' && !(L('--c-sunken') < L('--c-panel') && L('--c-panel') <= L('--c-raised'))) bad.push('light ramp out of order');
         if (th === 'dark' && !(L('--c-sunken') < L('--c-panel') && L('--c-panel') < L('--c-raised'))) bad.push('dark ramp out of order');
         if (!(L('--c-line-soft') !== L('--c-line') && Math.abs(L('--c-line-strong') - L('--c-raised')) > Math.abs(L('--c-line') - L('--c-raised')))) bad.push(th + ' line steps');
-        [['--cm-bg', '--c-panel'], ['--sw-panel', '--c-raised'], ['--line', '--c-line'], ['--text', '--c-text'], ['--muted', '--c-muted'], ['--menu-bg', '--c-raised']].forEach(function (p) {
+        [['--cm-bg', '--c-panel'], ['--sw-panel', '--c-raised'], ['--line', '--c-line'], ['--text', '--c-text'], ['--muted', '--c-muted'], ['--menu-bg', '--c-popup']]   // swcolors: menus have their own ground (--c-popup) now that the FeatureManager is SolidWorks' grey
+          .forEach(function (p) {
           if (root.getPropertyValue(p[0]).trim() !== root.getPropertyValue(p[1]).trim()) bad.push(th + ' ' + p[0] + ' does not follow ' + p[1]);
         });
         ['--sp-1', '--sp-2', '--sp-3', '--sp-4'].forEach(function (v, i) { if (root.getPropertyValue(v).trim() !== (4 * (i + 1)) + 'px') bad.push(v + ' = ' + root.getPropertyValue(v)); });

@@ -96,13 +96,15 @@
     } finally { UI.setTheme(theme0); UI.setStyle(style); }
   });
 
-  step('rfHA: the ground is an eased gradient of several grey stops with a grain layer under the canvas — grey-black (#3c3c3c to #0e0e0e) in the dark theme, light (#d6d8db to white) in the light theme (user 2026-11-04)', async function () {
+  step('rfHA: the ground is an eased gradient of several grey stops with a grain layer under the canvas — grey-black (#3c3c3c to #0e0e0e) in the dark theme, light in the light theme (user 2026-11-04; since swcolors the SolidWorks gradient, white to #d8dce8)', async function () {
     var theme0 = UI.theme(), vp = $('viewport');
     try {
       ['light', 'dark'].forEach(function (th) {
         UI.setTheme(th); UI.setBackground('gradient', true);
         var bg = W.getComputedStyle(vp).backgroundImage, stops = (bg.match(/rgb\(/g) || []).length;
-        assert((th === 'dark' ? /rgb\(60, 60, 60\)/.test(bg) && /rgb\(14, 14, 14\)/.test(bg) : /rgb\(214, 216, 219\)/.test(bg) && /rgb\(255, 255, 255\)/.test(bg)) && stops >= 5, th + ': gradient ' + bg);
+        // swcolors (2026-11-12): the light ground is SolidWorks' own (white #fefefe to the pale blue-grey #d8dce8, two layers,
+        // measured on the user's screenshot; rfMC checks its colours)
+        assert((th === 'dark' ? /rgb\(60, 60, 60\)/.test(bg) && /rgb\(14, 14, 14\)/.test(bg) : /rgb\(216, 220, 232\)/.test(bg) && /rgb\(254, 254, 254\)/.test(bg)) && stops >= 5, th + ': gradient ' + bg);
         assert(th === 'light' || !/rgb\((\d+), (?!\1)\d+, \d+\)/.test(bg), th + ': grey stops only ' + bg);   // the light ground's stops are a neutral grey within 5 levels (no blue: rfBR)
         var before = W.getComputedStyle(vp, '::before');
         assert(/^url\(/.test(before.backgroundImage) && before.pointerEvents === 'none' && before.position === 'absolute', th + ': grain layer ' + before.backgroundImage.slice(0, 40));

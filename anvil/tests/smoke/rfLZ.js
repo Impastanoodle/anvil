@@ -218,7 +218,9 @@
         var ac = rfLZrgb(W.getComputedStyle(cb).accentColor); cb.remove();
         if (!rfLZaccentish(ac)) bad.push(th + ' accent-color ' + (ac && JSON.stringify(ac)));
         var tab = D.querySelector('#ribbon .rtab.active');
-        if (!tab || !rfLZaccentish(rfLZrgb((W.getComputedStyle(tab).boxShadow.match(/rgba?\([^)]*\)[^,]*-2px/) || [''])[0]))) bad.push(th + ' active tab bar ' + (tab && W.getComputedStyle(tab).boxShadow));
+        // swcolors (2026-11-12): SolidWorks marks the active tab by its lighter ground only (sw-01..03): no bar in the light theme
+        if (th === 'light') { var itab = D.querySelector('#ribbon .rtab:not(.active):not(.off)'); if (!tab || !itab || !(rfLZlum(rfLZrgb(W.getComputedStyle(tab).backgroundColor)) > rfLZlum(rfLZrgb(W.getComputedStyle(itab).backgroundColor)) + 0.1)) bad.push(th + ' active tab not lighter than the others'); }
+        else if (!tab || !rfLZaccentish(rfLZrgb((W.getComputedStyle(tab).boxShadow.match(/rgba?\([^)]*\)[^,]*-2px/) || [''])[0]))) bad.push(th + ' active tab bar ' + (tab && W.getComputedStyle(tab).boxShadow));
         if (rfLZaccentish(rfLZtok('--c-hover')) || rfLZaccentish(rfLZtok('--c-hover-line'))) bad.push(th + ' hover is in the accent');
         seen.push(th + ' ' + W.getComputedStyle(D.documentElement).getPropertyValue('--c-accent').trim());
       }
@@ -231,7 +233,7 @@
     var want = [
       ['#ribbon .rb:hover:not(:disabled)', 'var(--c-hover)'], ['#ribbon .rb:active:not(:disabled)', 'var(--c-press)'],
       ['#menubar .std-btn:hover:not(:disabled)', 'var(--c-hover)'], ['#menubar .std-btn:active:not(:disabled)', 'var(--c-press)'],
-      ['#tree .ti:hover, #tree .ti.hover-sync', 'var(--c-hover)'],
+      ['#tree .ti:hover, #tree .ti.hover-sync', 'var(--c-row-hover)'],   // swcolors: sw-04's boxed row (an alias of --c-hover outside the light default look)
       ['.menu .mi:hover:not(.disabled)', 'var(--c-hover)'], ['#ribbon .rtab:not(.active):not(.off):hover', 'var(--c-hover)'],
       ['#status-right .sk-state.over, #status-right .sk-state.conflict', 'var(--c-err)', 'color'], ['#status-right .sk-state.under', 'var(--c-info)', 'color']
     ];
@@ -246,7 +248,7 @@
     await rfLZpart();
     var row = D.querySelector('#tree .ti:not(.selected)');
     row.classList.add('hover-sync');
-    if (!rfLZsame(rfLZrgb(W.getComputedStyle(row).backgroundColor), rfLZtok('--c-hover'))) bad.push('hovered tree row ' + W.getComputedStyle(row).backgroundColor);
+    if (!rfLZsame(rfLZrgb(W.getComputedStyle(row).backgroundColor), rfLZtok('--c-row-hover'))) bad.push('hovered tree row ' + W.getComputedStyle(row).backgroundColor);
     row.classList.remove('hover-sync');
     var rb = D.querySelector('#ribbon-buttons > .rb:not(:disabled)');
     rb.classList.add('active'); await wait(200);

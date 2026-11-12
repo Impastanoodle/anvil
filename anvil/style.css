@@ -69,20 +69,23 @@
   --radius: 3px; --radius-lg: 6px; --hair: 1px;
   --fs-xs: 11px; --fs-sm: 12px; --fs-md: 13px; --fs-lg: 15px;
   --row: 22px; --ctl: 24px;                       /* a list / tree / menu row; a button or input in the chrome */
-  --c-sunken: #e2e5e9;    /* tab strips, the Task Pane strip, the status bar */
-  --c-panel: #eef0f3;     /* the menu bar and the CommandManager */
-  --c-raised: #f9fafb;    /* the FeatureManager, Task Pane, menus, dialogs, tooltips */
-  --c-field: #ffffff;     /* inputs */
-  --c-field-line: #7d8590;
-  --c-line-soft: #e0e3e7; /* separators inside one panel */
-  --c-line: #c9ced5;      /* hairlines between panels */
-  --c-line-strong: #8d95a0;
-  --c-hover: #e3e7ec; --c-hover-line: #b3bbc5;
-  --c-press: #d3e0ee; --c-press-line: #7d9cc2;
-  --c-sel: #d6e5f7; --c-sel-line: #5f93d0;
-  --c-text: #1c2026; --c-muted: #5c6470; --c-disabled: #a0a7b0;
-  --c-default: #1a64b4; --c-default-hover: #15559a; --c-default-text: #ffffff;   /* the default button */
-  --c-focus: #1a64b4;
+  /* swcolors (2026-11-12, user: the default profile in the colours of their own SolidWorks 2024, "colors and all"):
+     the light values below are sampled with GetPixel from the user's five screenshots (flat areas); a value marked
+     "chosen" is not in them. Table: docs/areas/ui-core.md, "Look: SolidWorks colours". */
+  --c-sunken: #abadb0;    /* the inactive CommandManager tabs, the FeatureManager's tab row, the Task Pane strip */
+  --c-panel: #d7dade;     /* the one ground: menu row, CommandManager, active tabs, the status bar (chosen: not shown) */
+  --c-raised: #d7dade;    /* the FeatureManager, Task Pane and PropertyManager: the same ground in SolidWorks */
+  --c-field: #ffffff;     /* inputs (Search Commands) */
+  --c-field-line: #767a80;    /* chosen: SolidWorks' #c6c6c6 is 1.3 : 1, a control border keeps 3 : 1 */
+  --c-line-soft: #c6c6c6; /* separators inside one panel: the CommandManager's group separators, the Search box frame */
+  --c-line: #838383;      /* hairlines between panels: CommandManager bottom, tab edges, the splitter */
+  --c-line-strong: #6e6e6e;
+  --c-hover: #edeff2; --c-hover-line: #b1b1b1;   /* a hovered CommandManager button (sw-03 Base Flange/Tab) */
+  --c-press: #a2a7ae; --c-press-line: #6e6e6e;   /* pressed / checked (sw-02 the Select arrow) */
+  --c-sel: #b4d2e8; --c-sel-line: #85a4c7;   /* selected (sw-05 the breadcrumb's selected face) */
+  --c-text: #000000; --c-muted: #55585c; --c-disabled: #808080;   /* greyed labels and tree rows #808080 */
+  --c-default: #1458a0; --c-default-hover: #0f4a87; --c-default-text: #ffffff;   /* the default button (chosen) */
+  --c-focus: #1458a0;
   --shadow-pop: 0 4px 12px rgba(16, 24, 40, 0.14), 0 0 1px rgba(16, 24, 40, 0.16);   /* menus, flyouts, tooltips, Shortcut Bar */
   --shadow-dlg: 0 12px 32px rgba(16, 24, 40, 0.22);
   /* swtheme (2026-11-12, user: "general improvement on looks, any colors that look clean and professional"): one accent,
@@ -94,6 +97,7 @@
   --c-accent-soft: #dbe8f7;   /* a quiet accent fill (focus halo, a selected chip) */
   --c-chip: #3a3a3a; --c-chip-hover: #555555;   /* the dark chip under Undo / Redo with something to undo (user 2026-10-14) */
   --c-ok: #23703a; --c-warn: #855600; --c-err: #b3261e; --c-info: #1a64b4;   /* status text and marks (4.5 : 1 on every panel) */
+  /* (swcolors: the light default look overrides the accent and status colours in the block after the dark one) */
   --c-ok-bg: #e5f4e8; --c-warn-bg: #fff4dc; --c-err-bg: #fbe6e4; --c-info-bg: #e3eefa;
 }
 :root[data-theme="dark"] {
@@ -175,6 +179,45 @@
   --c-accent: #5c9ee8; --c-accent-hover: #79b0ee; --c-accent-text: #7db3f0; --c-accent-soft: #263a52;
   --c-ok: #5cc46a; --c-warn: #e8b04d; --c-err: #f0766c; --c-info: #7db3f0;
   --c-ok-bg: #1f3a28; --c-warn-bg: #3d3320; --c-err-bg: #44262a; --c-info-bg: #22344a;
+}
+/* swcolors: tokens the SolidWorks screenshots needed beyond swtheme's ramp. Everywhere else (the dark theme, an
+   interface profile, which maps the ramp to its own colours) each one is an alias that gives exactly the look it had,
+   so only the light default look below changes; never set these under :root[data-profile]. */
+:root {
+  --c-popup: var(--c-raised);              /* menus, tooltips, dialogs, the Shortcut Bar */
+  --c-field-quiet: var(--c-field);         /* the FeatureManager's filter box */
+  --c-line-bar: var(--c-line);             /* the line under the menu row */
+  --c-row-hover: var(--c-hover); --c-row-hover-line: transparent;   /* a hovered FeatureManager row */
+  --c-caret: var(--c-muted);               /* the CommandManager's drop-down carets */
+  --c-twisty: var(--c-muted);              /* the FeatureManager's expand arrows */
+  --c-rollback: var(--c-line-strong);      /* the rollback bar */
+  --c-status: var(--c-sunken);             /* the status bar */
+  --c-tabstrip: var(--c-sunken); --c-tab: transparent; --c-tab-line: transparent; --c-tab-text: var(--c-muted);   /* CommandManager tab strip */
+  --c-tab-mark: var(--c-accent);           /* the active tab's 2 px bar */
+  --c-off-opacity: 0.38; --c-off-text: var(--c-text); --c-off-icon: 1;  /* a greyed CommandManager button: whole, label, icon */
+  --c-greyed: var(--c-muted);              /* greyed FeatureManager rows (suppressed, rolled back, hidden) */
+  --c-search-line: var(--c-field-line);    /* the Search Commands box's frame */
+  --c-group-sep: var(--c-line);            /* the CommandManager's group separators */
+}
+:root:not([data-profile]):not([data-theme="dark"]) {
+  --c-popup: #f9fafb;     /* chosen: no menu, tooltip or dialog in the screenshots (swtheme's value) */
+  --c-field-quiet: #efefef;
+  --c-line-bar: #c0c0c0;
+  --c-row-hover: #fefefe; --c-row-hover-line: #838383;   /* sw-04: the boxed row */
+  --c-caret: #3c3f42;
+  --c-twisty: #636262;
+  --c-rollback: #368ec4;
+  --c-status: #d7dade;    /* chosen: the status bar is not in the screenshots; the ground */
+  --c-tabstrip: #d7dade; --c-tab: #abadb0; --c-tab-line: #838383; --c-tab-text: #000000;   /* sw-01..03: grey tabs, the active one the ground */
+  --c-tab-mark: transparent;   /* SolidWorks marks the active tab by its lighter ground only */
+  --c-off-opacity: 1; --c-off-text: #808080; --c-off-icon: 0.38;
+  --c-greyed: #808080; --c-search-line: #c6c6c6; --c-group-sep: #c6c6c6;
+  /* the accent and the status colours: darker, so they keep 4.5 : 1 on the #d7dade ground (not mapped by a profile, so here) */
+  --c-accent: #1458a0; --c-accent-hover: #0f4a87; --c-accent-text: #1458a0;
+  --c-ok: #1d6331; --c-warn: #744b00; --c-err: #a3211a; --c-info: #1458a0;
+  /* the PropertyManager's yellow message (sw-05 the DisplayManager note) */
+  --msg-bg: #ffff80; --msg-head: #ffff80; --msg-line: #acacac; --msg-text: #000000;
+  --sw-msg-bg: #ffff80; --sw-msg-head: #ffff80; --sw-msg-line: #acacac;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
@@ -1239,7 +1282,7 @@ body.splitting #viewport { pointer-events: none; }
   --sw-row-hover: #ececec;
   --sw-row-sel: #d6d6d6;
   --sw-row-sel-line: #8c8c8c;
-  --sw-twisty: #7b838e;
+  --sw-twisty: #636262;          /* swcolors: SolidWorks expand arrows */
   --sw-group-head: linear-gradient(#f7f8fa, #e9ecf0);
   --sw-group-line: #c6ccd4;
   --sw-group-text: #1f242a;
@@ -1492,14 +1535,14 @@ body.rollbar-dragging, body.rollbar-dragging * { cursor: grabbing !important; us
   --bg: var(--c-sunken); --panel-2: var(--c-panel); --line: var(--c-line); --line-2: var(--c-line-soft);
   --text: var(--c-text); --muted: var(--c-muted); --hover: var(--c-hover); --sel: var(--c-sel);
   --input-bg: var(--c-field); --input-line: var(--c-field-line);
-  --menu-bg: var(--c-raised); --menu-line: var(--c-line); --menu-disabled: var(--c-disabled);
+  --menu-bg: var(--c-popup); --menu-line: var(--c-line); --menu-disabled: var(--c-disabled);
   --cm-bg: var(--c-panel); --cm-bar: var(--c-panel); --cm-strip: var(--c-sunken); --cm-tab: var(--c-panel);
   --cm-line: var(--c-line); --cm-line-2: var(--c-line-soft); --cm-text: var(--c-text); --cm-muted: var(--c-muted);
   --cm-hover: var(--c-hover); --cm-hover-line: var(--c-hover-line); --cm-press: var(--c-press); --cm-press-line: var(--c-press-line); --cm-down: var(--c-press);
   --sw-chrome: var(--c-sunken); --sw-chrome-line: var(--c-line); --sw-panel: var(--c-raised);
   --sw-row-hover: var(--c-hover); --sw-row-sel: var(--c-sel); --sw-row-sel-line: var(--c-sel-line);
   --sw-dlg-bg: var(--c-panel); --sw-btn: var(--c-field); --sw-btn-line: var(--c-field-line); --sw-btn-hover: var(--c-hover);
-  --sw-default: var(--c-default); --sw-default-hover: var(--c-default-hover); --sw-menu-gutter: var(--c-raised);
+  --sw-default: var(--c-default); --sw-default-hover: var(--c-default-hover); --sw-menu-gutter: var(--c-popup);
 }
 :root { --c-scroll: #bfc5cd; --c-scroll-hover: #97a0ab; }
 :root[data-theme="dark"] { --c-scroll: #545b64; --c-scroll-hover: #737c87; }
@@ -1513,7 +1556,7 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 
 /* ---- menu bar: the mark, the menus, the quick-access toolbar, the title and Search Commands on one 28 px row,
    every control 24 px tall and centred on it */
-#menubar { gap: 0; padding: 0 var(--sp-1) 0 var(--sp-2); background: var(--c-panel); border-bottom: var(--hair) solid var(--c-line); color: var(--c-text); }
+#menubar { gap: 0; padding: 0 var(--sp-1) 0 var(--sp-2); background: var(--c-panel); border-bottom: var(--hair) solid var(--c-line-bar); color: var(--c-text); }
 #menubar #logo { width: 25px; height: 16px; margin: 0 6px 0 0; padding: 0; border-radius: 0; background: none; color: var(--logo); display: block; flex: none; }
 #menubar #logo svg { display: block; width: 25px; height: 16px; }
 #menubar #brand { margin-right: var(--sp-2); color: var(--c-text); font-size: var(--fs-md); font-style: normal; font-weight: 600; letter-spacing: 0; line-height: 16px; }
@@ -1534,7 +1577,7 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 :root[data-theme="dark"] #menubar #std-undo:not(:disabled), :root[data-theme="dark"] #menubar #std-redo:not(:disabled) { width: var(--ctl); height: var(--ctl); margin: 0; background: transparent; }
 :root[data-theme="dark"] #menubar #std-undo:not(:disabled):hover, :root[data-theme="dark"] #menubar #std-redo:not(:disabled):hover { background: var(--c-hover); }
 #menubar #doc-title { padding: 0 var(--sp-3); color: var(--c-text); font-size: var(--fs-sm); }
-#menubar #search { height: var(--ctl); gap: var(--sp-1); padding: 0 6px 0 var(--sp-2); background: var(--c-field); border: var(--hair) solid var(--c-field-line); border-radius: var(--radius); }
+#menubar #search { height: var(--ctl); gap: var(--sp-1); padding: 0 6px 0 var(--sp-2); background: var(--c-field); border: var(--hair) solid var(--c-search-line); border-radius: var(--radius); }
 #menubar #search:hover { border-color: var(--c-line-strong); }
 #menubar #search:focus-within { border-color: var(--c-focus); }
 #menubar #search input { height: 22px; padding: 0; outline: none; font-size: var(--fs-sm); }
@@ -1556,13 +1599,13 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 #ribbon .rb.active, #ribbon .rb.active:hover { background: var(--c-press); border-color: var(--c-press-line); box-shadow: none; }
 #ribbon .rb:disabled { opacity: 0.38; }
 #ribbon .rb:disabled:hover { background: none; border-color: transparent; }
-#ribbon .rb-sep { width: 1px; margin: 6px var(--sp-1); background: var(--c-line); }
+#ribbon .rb-sep { width: 1px; margin: 6px var(--sp-1); background: var(--c-group-sep); }
 /* flyouts: the face and the ▾ share one frame; the ▾ is its own pressed zone */
 #ribbon .rb-fly { border: var(--hair) solid transparent; border-radius: var(--radius); }
 #ribbon .rb-fly:hover, #ribbon .rb-fly.open { background: var(--c-hover); border-color: var(--c-hover-line); }
 #ribbon .rb-fly > .rb, #ribbon .rb-fly > .rb:hover:not(:disabled), #ribbon .rb-fly > .rb:active:not(:disabled) { border: 0; background: transparent; }#ribbon .rb-fly > .rb.active { box-shadow: none; }
 #ribbon .rb-fly:has(> .rb.active) { background: var(--c-press); border-color: var(--c-press-line); }
-#ribbon .rb-caret { width: 12px; color: var(--c-muted); font-size: 9px; border-radius: 0 2px 2px 0; }
+#ribbon .rb-caret { width: 12px; color: var(--c-caret); font-size: 9px; border-radius: 0 2px 2px 0; }
 #ribbon .rb-caret:hover:not(:disabled) { background: var(--c-press); color: var(--c-text); box-shadow: inset 1px 0 0 var(--c-hover-line); }
 #ribbon .rb-fly.open .rb-caret { background: var(--c-press); color: var(--c-text); box-shadow: inset 1px 0 0 var(--c-press-line); }
 /* small buttons in stacks and the sketch grid: one 22 px row grid, 16 px icons centred in 22 px */
@@ -1575,8 +1618,8 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 #ribbon .rb-more { width: 20px; color: var(--c-muted); font-size: 13px; border: var(--hair) solid transparent; border-radius: var(--radius); }
 #ribbon .rb-more:hover, #ribbon .rb-more.open { background: var(--c-hover); border-color: var(--c-hover-line); color: var(--c-text); }
 /* the tab strip: flat text tabs on a sunken strip; the active one is the CommandManager's own grey, joined to it */
-#ribbon #ribbon-tabs { padding: 0 var(--sp-1); background: var(--c-sunken); box-shadow: inset 0 1px 0 var(--c-line); border-top: 0; }
-#ribbon .rtab, #ribbon .rtab:first-child { height: 22px; padding: 0 var(--sp-3); border: 0; border-radius: 0; margin: 0; background: transparent; color: var(--c-muted); font-size: var(--fs-sm); font-weight: 400; line-height: 22px; box-shadow: none; }
+#ribbon #ribbon-tabs { padding: 0 var(--sp-1); background: var(--c-tabstrip); box-shadow: inset 0 1px 0 var(--c-line); border-top: 0; }
+#ribbon .rtab, #ribbon .rtab:first-child { height: 22px; padding: 0 var(--sp-3); border: 0; border-radius: 0; margin: 0; background: var(--c-tab); color: var(--c-tab-text); font-size: var(--fs-sm); font-weight: 400; line-height: 22px; box-shadow: none; }
 #ribbon .rtab:not(.active):not(.off):hover { background: var(--c-hover); color: var(--c-text); }
 #ribbon .rtab.active { background: var(--c-panel); color: var(--c-text); font-weight: 600; padding-top: 0; box-shadow: inset 1px 0 0 var(--c-line), inset -1px 0 0 var(--c-line); }
 #ribbon .rtab.off { color: var(--c-disabled); }
@@ -1584,7 +1627,7 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 /* ---- menus, flyouts, context menus: one popup style — raised ground, hairline frame, 3 px radius, one shadow;
    24 px rows; a 16 px check column, a 16 px icon column (kept empty in rows without an icon so labels align),
    shortcut keys right-aligned and muted */
-.menu { padding: var(--sp-1); background: var(--c-raised); border: var(--hair) solid var(--c-line); border-radius: var(--radius); box-shadow: var(--shadow-pop); }
+.menu { padding: var(--sp-1); background: var(--c-popup); border: var(--hair) solid var(--c-line); border-radius: var(--radius); box-shadow: var(--shadow-pop); }
 .menu .mi { gap: var(--sp-2); min-height: var(--ctl); padding: 0 var(--sp-3) 0 var(--sp-1); border-radius: 2px; color: var(--c-text); box-shadow: none; }
 .menu .mi:hover:not(.disabled) { background: var(--c-hover); box-shadow: none; }
 .menu .mi.disabled { color: var(--c-disabled); }
@@ -1596,14 +1639,14 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 .menu .mi.disabled .key { color: var(--c-disabled); }
 .menu .sep { height: 1px; margin: var(--sp-1) var(--sp-2); background: var(--c-line-soft); }
 /* the Shortcut Bar (S) */
-.scbar { gap: 2px; padding: var(--sp-1); background: var(--c-raised); border: var(--hair) solid var(--c-line); border-radius: var(--radius); box-shadow: var(--shadow-pop); }
+.scbar { gap: 2px; padding: var(--sp-1); background: var(--c-popup); border: var(--hair) solid var(--c-line); border-radius: var(--radius); box-shadow: var(--shadow-pop); }
 .scbar .sc-btn { width: 28px; height: 28px; border: var(--hair) solid transparent; border-radius: var(--radius); }
 .scbar .sc-btn .ico { width: 16px; height: 16px; }
 .scbar .sc-btn:hover:not(:disabled), .scbar .sc-btn.kbd:not(:disabled) { background: var(--c-hover); border-color: var(--c-hover-line); }
 .scbar .sc-btn.active { background: var(--c-press); border-color: var(--c-press-line); }
 .scbar .sc-btn:disabled { opacity: 0.38; }
 /* tooltips */
-.tip { max-width: 320px; padding: 6px var(--sp-2); background: var(--c-raised); color: var(--c-text); border: var(--hair) solid var(--c-line); border-radius: var(--radius); box-shadow: var(--shadow-pop); font-size: var(--fs-sm); line-height: 16px; }
+.tip { max-width: 320px; padding: 6px var(--sp-2); background: var(--c-popup); color: var(--c-text); border: var(--hair) solid var(--c-line); border-radius: var(--radius); box-shadow: var(--shadow-pop); font-size: var(--fs-sm); line-height: 16px; }
 .tip-head { gap: var(--sp-3); }
 .tip-key { color: var(--c-muted); font-size: var(--fs-xs); }
 .tip-desc { margin-top: 2px; color: var(--c-text); }
@@ -1619,20 +1662,21 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 #fm-tabs button:not(.active) .ico { opacity: 0.75; }
 #tree-filter { height: 30px; gap: 6px; padding: var(--sp-1) var(--sp-2); background: var(--c-raised); border-bottom: var(--hair) solid var(--c-line-soft); }
 #tree-filter #filter-ico { color: var(--c-muted); }
-#tree-filter input { height: 22px; padding: 0 6px; background: var(--c-field); border: var(--hair) solid var(--c-field-line); border-radius: var(--radius); }
+#tree-filter input { height: 22px; padding: 0 6px; background: var(--c-field-quiet); border: var(--hair) solid var(--c-field-line); border-radius: var(--radius); }
 #tree-filter input:hover { border-color: var(--c-line-strong); }
 #tree-filter input:focus { border-color: var(--c-focus); box-shadow: none; outline: none; }
 #tree-filter input::placeholder { color: var(--c-muted); opacity: 1; }
 #tree { background: var(--c-raised); padding: var(--sp-1) 0 var(--sp-6); }
 #tree .ti { height: var(--row); margin: 0 var(--sp-1) 0 2px; border-radius: 2px; contain-intrinsic-size: auto 22px; }
-#tree .ti:hover, #tree .ti.hover-sync { background: var(--c-hover); }
+#tree .ti:hover, #tree .ti.hover-sync { background: var(--c-row-hover); box-shadow: inset 0 0 0 1px var(--c-row-hover-line); }
 #tree .ti.selected, #tree .ti.selected.hover-sync, #tree .ti.selected:hover { background: var(--c-sel); box-shadow: inset 0 0 0 1px var(--c-sel-line); }
-#tree .ti .tw { width: 12px; color: var(--c-muted); font-size: 9px; }
+#tree .ti .tw { width: 12px; color: var(--c-twisty); font-size: 9px; }
 #tree .ti .tw:not(.leaf):hover { color: var(--c-text); }
 #tree .ti.dim .nm, #tree .ti.hidden .nm, #tree .ti.rolled .nm, #tree .ti.suppressed .nm { color: var(--c-muted); }
+#tree .ti.hidden .nm, #tree .ti.rolled .nm, #tree .ti.suppressed .nm { color: var(--c-greyed); }   /* swcolors: SolidWorks greys these #808080 (sw-04 Flat-Pattern); an empty folder (dim) keeps the muted text */
 #tree .ti .badge { color: var(--c-muted); font-size: var(--fs-xs); }
 /* the rollback bar: a quiet 3 px rule under the last feature, darker and thicker while hovered or dragged */
-#tree .rollbar::before { top: 3px; height: 3px; border-radius: 2px; background: var(--c-line-strong); box-shadow: none; }
+#tree .rollbar::before { top: 3px; height: 3px; border-radius: 2px; background: var(--c-rollback); box-shadow: none; }
 #tree .rollbar:hover::before, #tree .rollbar.dragging::before { top: 2px; height: 5px; background: var(--c-text); }
 /* the pane splitters: a hairline appears on hover, 2 px while dragged */
 .split::after { background: transparent; }
@@ -1666,7 +1710,7 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 #taskpane.tp-overlay #tp-panel { border-left: var(--hair) solid var(--c-line); box-shadow: var(--shadow-pop); }
 
 /* ---- status bar: 22 px (the outer sizes of every bar are kept: graphics-area picks in the tests depend on them), the message left, the chips right, each chip split by a 14 px hairline */
-#statusbar { gap: var(--sp-3); padding: 0 0 0 var(--sp-2); background: var(--c-sunken); border-top: var(--hair) solid var(--c-line); color: var(--c-text); font-size: var(--fs-sm); line-height: 22px; }
+#statusbar { gap: var(--sp-3); padding: 0 0 0 var(--sp-2); background: var(--c-status); border-top: var(--hair) solid var(--c-line); color: var(--c-text); font-size: var(--fs-sm); line-height: 22px; }
 #status-coords { color: var(--c-muted); font-size: var(--fs-xs); }
 #status-right { gap: 0; align-items: center; }
 #status-right > span { height: 14px; padding: 0 var(--sp-3); border-left: var(--hair) solid var(--c-line); line-height: 14px; display: inline-flex; align-items: center; }
@@ -1682,11 +1726,11 @@ html { scrollbar-color: var(--c-scroll) transparent; }
 .btn:disabled { opacity: 0.45; cursor: default; }
 
 /* ---- dialogs: title row, 16 px body, a button row with the default button */
-#modal-card { background: var(--c-raised); border: var(--hair) solid var(--c-line); border-radius: var(--radius-lg); box-shadow: var(--shadow-dlg); }
-#modal-title { min-height: 36px; padding: 0 var(--sp-1) 0 var(--sp-4); background: var(--c-raised); border-bottom: var(--hair) solid var(--c-line-soft); font-size: var(--fs-md); font-weight: 600; }
+#modal-card { background: var(--c-popup); border: var(--hair) solid var(--c-line); border-radius: var(--radius-lg); box-shadow: var(--shadow-dlg); }
+#modal-title { min-height: 36px; padding: 0 var(--sp-1) 0 var(--sp-4); background: var(--c-popup); border-bottom: var(--hair) solid var(--c-line-soft); font-size: var(--fs-md); font-weight: 600; }
 #modal-title button { width: 32px; height: 28px; border-radius: var(--radius); color: var(--c-muted); }
 #modal-title button:hover { background: #c42b1c; color: #fff; }
-#modal-body { padding: var(--sp-4); background: var(--c-raised); font-size: var(--fs-sm); line-height: 1.5; }
+#modal-body { padding: var(--sp-4); background: var(--c-popup); font-size: var(--fs-sm); line-height: 1.5; }
 #modal-body > p:first-child, #modal-body > div:first-child > p:first-child { margin-top: 0; }
 #modal-body > p:last-child, #modal-body > div:last-child > p:last-child { margin-bottom: 0; }
 #modal-body table, #tp-body table { font-size: inherit; }   /* the page runs in quirks mode, where tables reset to 16 px */
@@ -1916,6 +1960,15 @@ html { scrollbar-color: var(--c-scroll) transparent; }
   --hud-hover: rgba(0,0,0,0.07); --hud-hover-line: #b4b4b4; --hud-on: rgba(0,0,0,0.12); --hud-on-line: #8c8c8c;
   --sk-sel: #c49000; --sk-infer: #8c8c8c; --sk-infer-rel: #555555; }
 #viewport.vp-light::before { opacity: 0.5; }
+/* swcolors: the default look's Gradient is SolidWorks' own, fitted to a 12 x 12 grid sampled on the user's sw-01
+   (white over the upper left, a pale blue-grey #d8dce8 cloud right of centre, a pale band across the lower third,
+   white again at the bottom). Every sample lies on the line white -> #d8dce8, so it is one strength field: the larger of
+   an elliptical cloud and a horizontal band, drawn as two layers mixed with darken (rms error 2 to 4 levels). */
+:root:not([data-profile]) #viewport.vp-light {
+  --viewport: radial-gradient(ellipse 52.1% 61.5% at 79.4% 46.8%, #d8dce8 0%, #d8dce8 16.7%, #fefefe 100%),
+    linear-gradient(180deg, #fefefe 0%, #fefefe 41.4%, #dbdfea 74.4%, #fefefe 95.1%);
+}
+:root:not([data-profile]) #viewport.vp-light:not(.bg-white):not(.bg-plain):not(.bg-dark) { background-blend-mode: darken; }
 #viewport.vp-light #hud { --icon-ink: #3c3c3c; --overlay: rgba(250,250,250,0.92); --line: #c8c8c8; --sel: rgba(0,0,0,0.1); }
 #viewport.vp-light #hud button { color: #2a2a2a; }
 #viewport.vp-light #hud button svg { filter: drop-shadow(0 1px 0 rgba(255,255,255,0.75)); }
@@ -2040,7 +2093,7 @@ body.splitting-v #viewport { pointer-events: none; }
    top and bottom (ui-panels.js menuScroll; no scroll bar); a submenu row (`items`) shows ▸ and stays lit while open */
 .menu.menu-scroll { scrollbar-width: none; overscroll-behavior: contain; }
 .menu.menu-scroll::-webkit-scrollbar { display: none; }
-.menu .mi-scroll { position: sticky; z-index: 1; height: 16px; display: flex; align-items: center; justify-content: center; background: var(--c-raised); color: var(--c-text); font-size: 8px; line-height: 1; cursor: default; user-select: none; }
+.menu .mi-scroll { position: sticky; z-index: 1; height: 16px; display: flex; align-items: center; justify-content: center; background: var(--c-popup); color: var(--c-text); font-size: 8px; line-height: 1; cursor: default; user-select: none; }
 .menu .mi-scroll-up { top: calc(-1 * var(--sp-1)); border-bottom: var(--hair) solid var(--c-line-soft); }
 .menu .mi-scroll-down { bottom: calc(-1 * var(--sp-1)); border-top: var(--hair) solid var(--c-line-soft); }
 .menu .mi-scroll:hover:not(.off) { background: var(--c-hover); }
@@ -2101,11 +2154,19 @@ body.splitting-v #viewport { pointer-events: none; }
 :root[data-theme="dark"] { --c-text-sel: #2d4d72; --c-field-sel: #3d7cc9; --c-field-sel-text: #ffffff; }
 ::selection, :root[data-theme="dark"] ::selection { background: var(--c-text-sel); }
 input::selection, textarea::selection, :root[data-theme="dark"] input::selection, :root[data-theme="dark"] textarea::selection { background: var(--c-field-sel); color: var(--c-field-sel-text); }
-/* active tabs: a 2 px accent bar on the tab's free edge, drawn inset (no size change) */
-#ribbon .rtab.active { box-shadow: inset 1px 0 0 var(--c-line), inset -1px 0 0 var(--c-line), inset 0 -2px 0 var(--c-accent); }
-#fm-tabs button.active, #fm-tabs button.active:hover { box-shadow: inset 0 2px 0 var(--c-accent); }
+/* active tabs: a 2 px accent bar on the tab's free edge, drawn inset (no size change). swcolors: --c-tab-mark is
+   transparent in the light default look (SolidWorks marks the active tab by its lighter ground) */
+#ribbon .rtab.active { box-shadow: inset 1px 0 0 var(--c-line), inset -1px 0 0 var(--c-line), inset 0 -2px 0 var(--c-tab-mark); }
+#fm-tabs button.active, #fm-tabs button.active:hover { box-shadow: inset 0 2px 0 var(--c-tab-mark); }
 #fm-tabs button.active .ico { opacity: 1; }
-#tp-strip button.active, #tp-strip button.active:hover { box-shadow: inset -2px 0 0 var(--c-accent); }
+#tp-strip button.active, #tp-strip button.active:hover { box-shadow: inset -2px 0 0 var(--c-tab-mark); }
+/* swcolors: the edges between tabs (CommandManager tabs, FeatureManager tabs; transparent outside the light default
+   look) and a greyed CommandManager button: SolidWorks greys the label to #808080 and fades the icon */
+:root:not([data-profile]):not([data-theme="dark"]) #ribbon .rtab:not(.active) { box-shadow: inset -1px 0 0 var(--c-tab-line); }
+:root:not([data-profile]):not([data-theme="dark"]) #fm-tabs button:not(.active) { border-right-color: var(--c-tab-line); }
+:root:not([data-profile]) #ribbon .rb:disabled { opacity: var(--c-off-opacity); }
+:root:not([data-profile]) #ribbon .rb:disabled span { color: var(--c-off-text); }
+:root:not([data-profile]) #ribbon .rb:disabled .ico { opacity: var(--c-off-icon); }
 /* the rollback bar while dragged and a pane splitter while dragged: the accent (it is the thing being moved) */
 #tree .rollbar.dragging::before, .split.dragging::after { background: var(--c-accent); }
 /* links and accent text in panels and dialogs */

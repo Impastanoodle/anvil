@@ -6,8 +6,8 @@
    blue), pre-selection (dynamic highlight) orange, a reference dimension added on the sheet grey. They are
    on the screen only: the SVG / PDF / DXF written from the sheet keep their own (black) colours. */
 :root { --dw-desk: #b5bbc3; --dw-hot: #cf9500; --dw-pre: #ff7f00; --dw-ref: #7a7a7a; --dw-ghost: #3fa34d;
-  --dw-tabbar: var(--sw-chrome, #e4e4e4); --dw-tab: var(--dw-tabbar); --dw-tab-hover: #f4f6f8; --dw-tab-on: #ffffff; --dw-tab-line: #b1b8c1;
-  --dw-tab-text: var(--c-text, #1f1f1f); --dw-tab-muted: #545c67; --dw-tab-mark: var(--c-accent, #3a3a3a); }   /* swtheme: cool neutrals, the active sheet marked in the accent */
+  --dw-tabbar: var(--sw-chrome, #e4e4e4); --dw-tab: var(--dw-tabbar); --dw-tab-hover: #f4f6f8; --dw-tab-on: #ffffff; --dw-tab-line: #838383;
+  --dw-tab-text: var(--c-text, #1f1f1f); --dw-tab-muted: #3a3d42; --dw-tab-mark: var(--c-accent, #3a3a3a); }   /* swtheme: cool neutrals, the active sheet marked in the accent; swcolors: SolidWorks tab edges #838383, inactive text darker for the #abadb0 strip */
 :root[data-theme="dark"] { --dw-desk: #363a40;
   --dw-tabbar: var(--sw-chrome, #2b2b2b); --dw-tab: var(--dw-tabbar); --dw-tab-hover: #33373d; --dw-tab-on: #3c4148; --dw-tab-line: #535a63;
   --dw-tab-text: var(--c-text, #ececec); --dw-tab-muted: #b0b8c1; --dw-tab-mark: var(--c-accent, #d0d0d0); }

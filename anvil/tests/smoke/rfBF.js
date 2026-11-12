@@ -27,9 +27,14 @@
     var act = $('ribbon-tabs').querySelector('.rtab.active'), off = Array.prototype.filter.call($('ribbon-tabs').querySelectorAll('.rtab'), function (t) { return t !== act && !t.classList.contains('off'); })[0];
     assert(act && act.textContent === 'Sketch' && off, 'an active Sketch tab and an inactive one');
     var as = W.getComputedStyle(act), a = rfBFrgb(as.backgroundColor), o = rfBFrgb(W.getComputedStyle(off).backgroundColor);
-    assert(strip && strip.a === 1 && strip.lum < 235, 'grey strip: ' + JSON.stringify(strip));
-    assert(a && a.a === 1 && a.lum > strip.lum + 8, 'active tab lighter than the strip: ' + JSON.stringify(a) + ' vs ' + JSON.stringify(strip));
-    assert(!o || o.a === 0, 'inactive tab is flat on the strip: ' + JSON.stringify(o));
+    // swcolors (2026-11-12): in the light default look the inactive tabs are SolidWorks' grey tabs (#abadb0) on the
+    // CommandManager's ground (the strip past them); elsewhere they are flat on a grey strip. Either way the grey behind
+    // an inactive tab's text is darker than the active tab
+    var grey = o && o.a === 1 ? o : strip;
+    assert(grey && grey.a === 1 && grey.lum < 235, 'grey strip / inactive tabs: ' + JSON.stringify(grey));
+    assert(a && a.a === 1 && a.lum > grey.lum + 8, 'active tab lighter than the strip: ' + JSON.stringify(a) + ' vs ' + JSON.stringify(grey));
+    assert(!o || o.a === 0 || (o.a === 1 && o.lum < a.lum), 'inactive tab is flat on the strip or a grey tab: ' + JSON.stringify(o));
+    strip = grey;
     assert(as.fontWeight >= 600, 'active tab text is bold: ' + as.fontWeight);
     // the CommandManager is a light grey, the active tab the same grey (joined to it)
     var cm = rfBFrgb(W.getComputedStyle($('ribbon')).backgroundColor);

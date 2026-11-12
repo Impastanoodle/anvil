@@ -2792,7 +2792,7 @@ more: tidyPts L6716, r4 L6760, isPt L6841, ptOf L6842, dist L6923, normRad L6925
 more: tanAt L6942, segLen L6947, offSeg L6948, lineParam L6960, distTo L6961, lineCircle L6974,
 more: carrierHits L6982, subPiece L7003, toEntity L7007
 
-## ui-app.js (2595 lines)
+## ui-app.js (2598 lines)
 > task pane (resources, library, files, views, appearance, properties, script console), files & exports,
 UI.EXAMPLES  L8
 UI.openTaskPane  L83
@@ -2861,38 +2861,38 @@ UI.massInFrame  L1720  — massInFrame(csysId) -> { centroid, bboxMin, bboxMax, 
 UI.showShortcuts  L1733
 UI.showAbout  L1747
 UI.shortcutFor  L1758
-keyCanon  L1810  — 'shift+ctrl+z' / 'Ctrl+Shift+Z' -> 'Ctrl+Shift+Z'; null for text that is not one key (a …
-activeKeyMap  L1834  — the active table: combo -> action (rebuilt when the profile changes)
-keyHit  L1849  — the action a key event runs: the exact combo, then without Alt, then (no Ctrl) without …
-profileKeyAction  L1862  — lane profnav2: the action only when the active profile bound that combo (not SolidWorks' …
-UI.activeKey  L1872  — the key a tooltip / menu shows for a ribbon id or key action (its own `key` text as the …
-UI.menuKeyText  L1882
-UI.keys  L1891
-typingIn  L1895  — Typing goes to a text box, a list or an editable element that is still on screen; a …
-pmIsCommand  L1912  — lane BY (user, 2026-10-13): Ctrl+Z / Ctrl+Y, Edit ▸ Undo / Redo and the Undo / Redo …
-UI.undoCancelsPM  L1917
-UI.undoMark  L1939  — rfCM: `target` is the key's target for Ctrl+Z / Ctrl+Y, null for Edit ▸ Undo / Redo and …
-UI.undoCommand  L1990
-UI.redoCommand  L1991
-UI.theme  L2030
-UI.setTheme  L2031
-window.anvil  L2043
-searchCommands  L2283  — the matches for q, best first: { name, icon, where, enabled, run }
-UI.searchCommands  L2333
-UI.placeGfxCentre  L2338  — lane DA: toasts sit over the middle of the graphics area (between the FeatureManager and …
-holdStatusRight  L2349  — lane DA: the status-bar coordinates must not jump when a chip to their right changes …
-UI.undeleteEntities  L2395
-UI.undeleteCount  L2416
-UI.copyImage  L2419  — Copy Image: the graphics window (the 3D view, or the drawing sheet's canvas) to the …
-UI.loadModel  L2446
-UI.offerRecovery  L2497  — A recovery copy (ui-core.js, localStorage 'anvil.recover') left by a session that closed …
-UI.recoverDocument  L2520
-UI.refreshTaskPane  L2542  — the Properties panel shows the material and density: redraw it after a material change …
-UI.taskPaneContent  L2544  — lane mcframe: a Task Pane page drawn into another host (the Mastercam frame's File ▸ …
-UI.taskPaneCurrent  L2545
-UI.recentDocuments  L2550  — (rfIK) Recent Documents and the window title
-UI.newAssembly  L2555  — File ▸ New ▸ Part / Assembly (menus): "Save changes to Part1?" first when the document …
-UI.newPart  L2556
+keyCanon  L1813  — 'shift+ctrl+z' / 'Ctrl+Shift+Z' -> 'Ctrl+Shift+Z'; null for text that is not one key (a …
+activeKeyMap  L1837  — the active table: combo -> action (rebuilt when the profile changes)
+keyHit  L1852  — the action a key event runs: the exact combo, then without Alt, then (no Ctrl) without …
+profileKeyAction  L1865  — lane profnav2: the action only when the active profile bound that combo (not SolidWorks' …
+UI.activeKey  L1875  — the key a tooltip / menu shows for a ribbon id or key action (its own `key` text as the …
+UI.menuKeyText  L1885
+UI.keys  L1894
+typingIn  L1898  — Typing goes to a text box, a list or an editable element that is still on screen; a …
+pmIsCommand  L1915  — lane BY (user, 2026-10-13): Ctrl+Z / Ctrl+Y, Edit ▸ Undo / Redo and the Undo / Redo …
+UI.undoCancelsPM  L1920
+UI.undoMark  L1942  — rfCM: `target` is the key's target for Ctrl+Z / Ctrl+Y, null for Edit ▸ Undo / Redo and …
+UI.undoCommand  L1993
+UI.redoCommand  L1994
+UI.theme  L2033
+UI.setTheme  L2034
+window.anvil  L2046
+searchCommands  L2286  — the matches for q, best first: { name, icon, where, enabled, run }
+UI.searchCommands  L2336
+UI.placeGfxCentre  L2341  — lane DA: toasts sit over the middle of the graphics area (between the FeatureManager and …
+holdStatusRight  L2352  — lane DA: the status-bar coordinates must not jump when a chip to their right changes …
+UI.undeleteEntities  L2398
+UI.undeleteCount  L2419
+UI.copyImage  L2422  — Copy Image: the graphics window (the 3D view, or the drawing sheet's canvas) to the …
+UI.loadModel  L2449
+UI.offerRecovery  L2500  — A recovery copy (ui-core.js, localStorage 'anvil.recover') left by a session that closed …
+UI.recoverDocument  L2523
+UI.refreshTaskPane  L2545  — the Properties panel shows the material and density: redraw it after a material change …
+UI.taskPaneContent  L2547  — lane mcframe: a Task Pane page drawn into another host (the Mastercam frame's File ▸ …
+UI.taskPaneCurrent  L2548
+UI.recentDocuments  L2553  — (rfIK) Recent Documents and the window title
+UI.newAssembly  L2558  — File ▸ New ▸ Part / Assembly (menus): "Save changes to Part1?" first when the document …
+UI.newPart  L2559
 more: renderTaskStrip L74, tpHome L103, dlSvg L127, dlIcon L128, dlName L140, dlParent L147, dlSubs L148,
 more: formingTools L153, tpLibrary L169, dlOpen L220, savedFiles L419, tpFiles L420, tpViews L438,
 more: tpAppearance L449, tpProps L464, tpMacro L560, isAsm L621, hasAssembly L622, docCount L624,
@@ -2907,11 +2907,11 @@ more: onFileDrop L1243, openDroppedFile L1274, initFileDrop L1281, deskRecent L1
 more: browserRecentWrite L1312, setRecent L1313, recentNoteBrowser L1321, recentRemove L1336, recentClear L1342,
 more: recentLabel L1348, shortFolder L1349, baseName L1449, visiblePath L1450, syncDocument L1465,
 more: initTitle L1469, saveInBrowser L1503, saveTypeOf L1517, deskSaveAs L1522, sketchKey L1777,
-more: eventCombo L1820, profileKeys L1832, profKey L1846, keyAction L1859, runKeyAction L1866,
-more: pmIsSketchTool L1916, insideSteps L1940, insideCan L1947, undoInside L1948, undoCommand L1960,
-more: rebuilding L2195, built L2196, needAsm L2197, asmSummary L2198, cmdSearchIndex L2229, drawingTab L2281,
-more: initCommandSearch L2305, sketchEnts L2370, undelNote L2371, installUndelete L2383, boot L2440, names L2576,
-more: sum L2577
+more: eventCombo L1823, profileKeys L1835, profKey L1849, keyAction L1862, runKeyAction L1869,
+more: pmIsSketchTool L1919, insideSteps L1943, insideCan L1950, undoInside L1951, undoCommand L1963,
+more: rebuilding L2198, built L2199, needAsm L2200, asmSummary L2201, cmdSearchIndex L2232, drawingTab L2284,
+more: initCommandSearch L2308, sketchEnts L2373, undelNote L2374, installUndelete L2386, boot L2443, names L2579,
+more: sum L2580
 
 ## ui-assembly.js (3009 lines)
 > assembly commands added in run cloud-2026-09-25l: Linear / Circular Component Pattern and Mirror
