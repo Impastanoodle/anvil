@@ -6135,7 +6135,17 @@
   function ibFlatPlane(base, mesh, model) {
     if (!isInsertBends(base) || !mesh) return null;
     if (model.noBends) throw new Error('No Bends is on: the part is shown without its bends (click No Bends again to insert them).');
-    var P = base.fixedFace, i = ibFaceAt(mesh, P, model.units === 'in' ? 0.01 : 0.25);
+    var P = base.fixedFace, tolP = model.units === 'in' ? 0.01 : 0.25, i = ibFaceAt(mesh, P, tolP);
+    // lane stepreal2: the fixed point was picked on the part before its bends went in. A sharp corner's bend takes the
+    // plate back to its tangent line, (R + T) tan(A / 2) from the outer corner, so a point picked nearer the corner than
+    // that is off the fixed plate afterwards: on nothing ("the fixed face is not there any more"), or within the pick
+    // tolerance of the bend's first facet (the flat was then laid from that facet: one strip, 99 % of the metal lost).
+    // SolidWorks keeps the face, not the point: the fixed face is then the flat face in the point's plane nearest it.
+    if (i < 0 || ibCurvedFace(mesh.faces[i])) {
+      var shF = resolvedModel(model).model.sheet || {}, RTf = (base.radius != null ? +base.radius : +shF.bendRadius || 0) + (+shF.thickness || 0);
+      var near = ibFaceBeside(mesh, P, tolP, 4 * RTf + tolP);
+      if (near >= 0) i = near;
+    }
     if (i < 0) throw new Error('Flat pattern: the fixed face of ' + (base.name || 'Insert Bends') + ' is not there any more (at ' + bcPt(P) + ').');
     // rfIH: ties within 1e-9 keep x, y, z order (an OpenCascade face normal's 1e-17 noise turned the flat by 90°)
     var n = mesh.faces[i].normal.slice(), ax = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].sort(function (a, b) { var q = Math.abs(dot(a, n)) - Math.abs(dot(b, n)); return Math.abs(q) < 1e-9 ? 0 : q; })[0];
@@ -6172,6 +6182,28 @@
       o.loops.forEach(function (l) { if (signedArea(l) > 0 && pointInPoly(q, l)) hit = true; });
       o.loops.forEach(function (l) { if (signedArea(l) < 0 && pointInPoly(q, l)) hit = false; });
       if (hit) { best = i; bd = dd; }
+    });
+    return best;
+  }
+  // lane stepreal2: a mesh face made of a curved face's facets (they carry its surface record: a bend's chords)
+  function ibCurvedFace(g) { return !!(g && g.polys && g.polys[0] && g.polys[0].surf); }
+  // the flat face whose plane holds P (within tol) and whose outline comes nearest P, no farther than reach; else -1
+  function ibFaceBeside(mesh, P, tol, reach) {
+    var best = -1, bd = Infinity;
+    mesh.faces.forEach(function (g, i) {
+      if (ibCurvedFace(g) || Math.abs(dot(g.normal, P) - g.w) > tol) return;
+      var o;
+      try { o = faceOutline(mesh, i); } catch (e) { o = null; }
+      if (!o) return;
+      var q = to2D(o.plane, P), d = Infinity;
+      o.loops.forEach(function (l) {
+        for (var k = 0; k < l.length; k++) {
+          var a = l[k], b = l[(k + 1) % l.length], ex = b[0] - a[0], ey = b[1] - a[1], L2 = ex * ex + ey * ey;
+          var t = L2 > 0 ? Math.max(0, Math.min(1, ((q[0] - a[0]) * ex + (q[1] - a[1]) * ey) / L2)) : 0;
+          d = Math.min(d, Math.hypot(q[0] - a[0] - ex * t, q[1] - a[1] - ey * t));
+        }
+      });
+      if (d <= reach && d < bd) { bd = d; best = i; }
     });
     return best;
   }
@@ -6221,7 +6253,31 @@
     var g = mesh.faces[i], n = g.normal, Q = sub(P, scale(n, dot(n, P) - g.w)), ts = [];
     mesh.faces.forEach(function (h) { if (dot(h.normal, n) < -0.999) { var t = g.w + h.w; if (t > pr) ts.push(t); } });
     ts.sort(function (a, b) { return a - b; });
-    for (var k = 0; k < ts.length; k++) if (inside(sub(Q, scale(n, ts[k] - pr))) && !inside(sub(Q, scale(n, ts[k] + pr)))) return ts[k];
+    // -> [thickness under X (null: none), true when the metal ran on through a nearer back face's plane: X stands
+    // under another wall]
+    function under(X) {
+      var through = false;
+      for (var k = 0; k < ts.length; k++) {
+        if (!inside(sub(X, scale(n, ts[k] - pr)))) return [null, through];
+        if (!inside(sub(X, scale(n, ts[k] + pr)))) return [ts[k], through];
+        through = true;
+      }
+      return [null, through];
+    }
+    var m0 = under(Q);
+    // lane stepreal2: a point picked within T of an outside corner stands under the wall that rises there: the metal
+    // under it is that wall's whole height, not the sheet ("no sharp corner between two walls 2 thick"). The sheet's
+    // thickness is then the least found under the other facets of the same face.
+    if (m0[1] && g.polys && g.polys.length) {
+      var stepS = Math.max(1, Math.floor(g.polys.length / 64));
+      for (var s = 0; s < g.polys.length; s += stepS) {
+        var vs = g.polys[s].vertices, c = [0, 0, 0];
+        vs.forEach(function (v) { c[0] += v.pos.x / vs.length; c[1] += v.pos.y / vs.length; c[2] += v.pos.z / vs.length; });
+        var ms = under(c);
+        if (ms[0] != null && (m0[0] == null || ms[0] < m0[0])) m0 = ms;
+      }
+    }
+    if (m0[0] != null) return m0[0];
     throw new Error('Insert Bends: cannot find the wall thickness at ' + bcPt(P) + '.');
   }
   // lane rfIM: the cylinder faces of a body grouped by surface (axis + radius), each with its frame and arc:

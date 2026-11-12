@@ -828,7 +828,33 @@
       out[4] = R * Math.sqrt(1 + kk * kk) * Math.abs(nr) / rx;
       return out;
     }
-    if (!F.P || !F.Q) return null;   // a sphere / torus facet not made by a revolve (OpenCascade's triangles): no profile chord, no correction
+    if (!F.P || !F.Q) {
+      // a sphere / torus facet not made by a revolve (OpenCascade's triangles): no profile chord, no correction, unless
+      // it says its corners lie on the surface (lane stepreal2, `g: 1`: the STEP reader's patches of any outline). Then
+      // the column from x runs along the ray from the sphere's centre, or from the tube's centre circle in x's own
+      // meridian half-plane, out to the surface: ∫ρ'² dρ' dΩ with dΩ = (n·e)/ρ'² dA on a sphere, ∫ρ'(R + ρ' cos ψ) dρ'
+      // dψ dφ with dψ dφ = (n·e) / (ρ'(R + ρ' cos ψ)) dA on a torus (ρ' the distance from the centre / the centre
+      // circle, e the ray's direction). Columns of facets that share an edge share its wall, so a whole patch adds up.
+      if (!F.g) return null;
+      var Cg = S.t === 'tor' ? S.R : 0, ag = rx - Cg, rg = Math.hypot(ag, z), rs = S.r;
+      if (rg < 1e-12) return out;
+      var cg = ag / rg, sg2 = z / rg, eg = add(scale(er, cg), scale(S.d, sg2)), neg = dot(n, eg);
+      var G1 = (rs * rs - rg * rg) / 2, G2 = (rs * rs * rs - rg * rg * rg) / 3, G3 = (rs * rs * rs * rs - rg * rg * rg * rg) / 4, kg;
+      if (S.t === 'sph') {
+        var Jc = neg / (rg * rg);
+        out[0] = Jc * G2;
+        for (kg = 0; kg < 3; kg++) out[1 + kg] = Jc * (S.o[kg] * G2 + eg[kg] * G3);
+        out[4] = rs * rs * Math.abs(Jc);
+        return out;
+      }
+      var wg = Cg + rg * cg;
+      if (!(wg > 1e-12)) return out;
+      var Jt = neg / (rg * wg), gg = Cg * G1 + cg * G2, zg = sg2 * (Cg * G2 + cg * G3), rmg = Cg * Cg * G1 + 2 * Cg * cg * G2 + cg * cg * G3;
+      out[0] = Jt * gg;
+      for (kg = 0; kg < 3; kg++) out[1 + kg] = Jt * (S.o[kg] * gg + S.d[kg] * zg + er[kg] * rmg);
+      out[4] = rs * Math.abs(Cg + rs * cg) * Math.abs(Jt);
+      return out;
+    }
     var P = F.P, Q = F.Q, Cr = S.t === 'tor' ? S.R : 0, r = S.r;
     var dz = Q[1] - P[1], dr = Q[0] - P[0], L = Math.hypot(dr, dz), y, js;
     if (Math.abs(dz) > 1e-12 * Math.max(1, L)) {
