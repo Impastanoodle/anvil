@@ -43,7 +43,7 @@
       return 'in 0.25, 1/16 zoomed in; mm 5, 2';
     });
   });
-  step('rfJH: Autodimension of a straight slot drawn by mouse 1.75 → 4.25 at y 1, width .5 (inch): its centre-to-centre length 2.500 and its centre 3.000 / 1.000 from the origin (SolidWorks), not the two end centres; Fully Defined', async function () {
+  step('rfJH: Autodimension of a straight slot drawn by mouse 1.75 → 4.25 at y 1, width .5 (inch): its centre 3.000 / 1.000 and its first end centre 1.750 from the origin (SolidWorks), no centre-to-centre length; Fully Defined', async function () {
     return rfJHGrid(false, async function () {
       var errs0 = errors.length, f = await rfJHNew('in', 0.01);
       UI.setTool('slot'); rfJHClick([1.75, 1]); rfJHClick([4.25, 1]); rfJHClick([4.25, 1.25]); await idle();
@@ -55,16 +55,18 @@
       clickPmButton('Apply'); await idle();
       await UI.pmOK(); await idle();
       f = UI.activeSketchFeature();
+      // rfMM (2026-11-13): SolidWorks' measured rule (ref3_auto.py, 2026-11-02 row 10): centre point + first end centre,
+      // no centre-to-centre length
       var len = (f.dims || []).filter(function (d) { return d.e === cl && d.k === 'len'; });
-      assert(len.length === 1, 'centre-to-centre length ' + JSON.stringify(f.dims));
+      assert(len.length === 0, 'no centre-to-centre length ' + JSON.stringify(f.dims));
       var ds = (f.rels || []).filter(function (r) { return r.type === 'distance' && r.dir; });
       var desc = ds.map(function (r) { return r.refs.join('-') + ' ' + r.dir + ' ' + r.v; }).join(', ');
       assert(ds.some(function (r) { return r.refs[1] === cl + '.mid' && r.dir === 'h' && Math.abs(r.v - 3) < 1e-9; }) && ds.some(function (r) { return r.refs[1] === cl + '.mid' && r.dir === 'v' && Math.abs(r.v - 1) < 1e-9; }), 'centre 3.0 / 1.0: ' + desc);
-      assert(!ds.some(function (r) { return r.dir === 'h' && (Math.abs(r.v - 1.75) < 1e-9 || Math.abs(r.v - 4.25) < 1e-9); }), 'no end-centre dimensions: ' + desc);
+      assert(ds.some(function (r) { return r.refs[1] === cl + '.p1' && r.dir === 'h' && Math.abs(r.v - 1.75) < 1e-9; }) && !ds.some(function (r) { return r.dir === 'h' && Math.abs(r.v - 4.25) < 1e-9; }), 'first end centre 1.75, not the far one: ' + desc);
       assert(UI.sketchStatus().status === 'full', 'Fully Defined: ' + JSON.stringify(UI.sketchStatus()));
       UI.App.dimsStale = false; UI.drawDims();
       var labels = Array.prototype.map.call(D.querySelectorAll('#dim-layer text'), function (t) { return t.textContent.trim(); });
-      assert(labels.indexOf('2.500') >= 0 && labels.indexOf('3.000') >= 0, 'labels ' + labels.join(' | '));
+      assert(labels.indexOf('1.750') >= 0 && labels.indexOf('3.000') >= 0, 'labels ' + labels.join(' | '));
       assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
       return desc;
     });

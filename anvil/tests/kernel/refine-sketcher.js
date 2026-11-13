@@ -28,11 +28,13 @@
       assert(added.some(function (r) { return r.type === 'coincident' && r.refs.join() === '3.p1,0'; }) && SS.analyze(s2).status !== 'over', 'infer adds it: ' + relList(s2));
       return relList(s2).join(' ');
     });
-    test('inference: a vertical line between the midpoints of a rectangle\'s bottom and top keeps Midpoint at one end and falls back to Coincident (on the line) at the other, never over-defining', function () {
+    // rfMM (2026-11-13): SolidWorks keeps Midpoint at both ends and leaves out the Vertical that makes one redundant
+    // (it was Midpoint + Coincident on the line + Vertical)
+    test('inference: a vertical line between the midpoints of a rectangle\'s bottom and top gets Midpoint at both ends and no Vertical, never over-defining', function () {
       var s = lineRect(40, 30);
       s.entities.push({ t: 'line', x1: 20, y1: 0, x2: 20, y2: 30 });
       var added = SS.infer(s, 4), an = SS.analyze(s), t = added.map(function (r) { return r.type + ':' + r.refs.join(','); });
-      assert(t.indexOf('midpoint:4.p1,0') >= 0 && t.indexOf('coincident:4.p2,2') >= 0, t.join(' '));
+      assert(t.indexOf('midpoint:4.p1,0') >= 0 && t.indexOf('midpoint:4.p2,2') >= 0 && t.indexOf('vertical:4') < 0, t.join(' '));
       assert(an.status === 'under' && !an.redundant && !an.conflicts, JSON.stringify(an));
       return t.join(' ');
     });

@@ -1455,8 +1455,8 @@ var SketchSolver = (function () {
     var tolDeg = opts.tolDeg != null ? +opts.tolDeg : 1, newRels = [], newDims = [];
     function chainOn(ax) { var sc = ax === 0 ? opts.hScheme : opts.vScheme; return (sc || opts.scheme) === 'chain'; }
     // lane sketchgaps: straight slots are dimensioned as SolidWorks' Autodimension does, by their centre-to-centre length
-    // and the position of their centre point (a 1.75 → 4.25 slot: 2.5 long, centre 3.0 from the origin), not by the two
-    // end centres. A drawn slot is exploded (explodeSlot): its construction centerline, the two arcs centred on its ends
+    // by the position of their centre point and of their first end centre (rfMM: a 2.5 → 3.5 slot: 3.0 and 2.5 from the
+    // origin), not by both end centres. A drawn slot is exploded (explodeSlot): its construction centerline, the two arcs centred on its ends
     // and the two sides tangent to both are one slot; a `slot` entity is one too.
     var slotSets = slotGroups(sketch, only), inSlot = {};
     slotSets.forEach(function (sg) { sg.members.forEach(function (m) { inSlot[m] = sg; }); });
@@ -1479,22 +1479,22 @@ var SketchSolver = (function () {
         var d = { e: i, k: k }, q = dimEquation(sys.ents, d);
         if (useful(q)) newDims.push(d);
       });
-      // slots: the centre-to-centre length (after the width / end radius above)
-      slotSets.forEach(function (sg) {
-        var d = { e: sg.cl, k: 'len' }, q = dimEquation(sys.ents, d);
-        if (useful(q)) newDims.push(d);
-      });
+      // slots: no centre-to-centre length (rfMM: SolidWorks places the centre point and the first end centre instead,
+      // below); slotSets stays for the positions
       // positions
       var hD = opts.hDatum != null ? String(opts.hDatum) : 'O', vD = opts.vDatum != null ? String(opts.vDatum) : 'O';
       var pts = [];
       only.forEach(function (i) {
         var e = ents[i], sg = inSlot[i];
-        if (sg) {   // a slot's points: its centre only, in the place of its first entity (the rest follow from it)
+        if (sg) {   // a slot's points, in the place of its first entity: its centre point, then its first end centre
           if (sg.first !== i) return;
-          var cp = refPoint(ents, parseRef(sg.centre));
+          // rfMM (head-tools/sw-reference/ref3_auto.py, test-reports/2026-11-02-unchecked-items.md row 10): SolidWorks
+          // dimensions a 2.5 → 3.5 slot at y 1 by its centre point x 3.0 and its first end centre x 2.5, both from the
+          // datum; no centre-to-centre length (the first end centre pins it, and an angled slot's turn too)
+          var cp = refPoint(ents, parseRef(sg.centre)), e0 = refPoint(ents, parseRef(sg.ends[0])), e1 = refPoint(ents, parseRef(sg.ends[1]));
           if (cp) pts.push({ ref: sg.centre, pt: cp });
-          // the end centres after it: kept only when they still pin something (a slot at an angle: its turn)
-          sg.ends.forEach(function (r) { var ep = refPoint(ents, parseRef(r)); if (ep) pts.push({ ref: r, pt: ep, late: true }); });
+          if (e0) pts.push({ ref: sg.ends[0], pt: e0 });
+          if (e1) pts.push({ ref: sg.ends[1], pt: e1, late: true });   // kept only when it still pins something
           return;
         }
         pointRefs(sketch, i).forEach(function (pr) {
@@ -2817,6 +2817,14 @@ var SketchSolver = (function () {
       var rel = { type: c.type, refs: c.refs };
       if (tryAdd(rel)) { if ((c.type === 'horizontal' || c.type === 'vertical') && c.refs.length === 1) hv = rel; return; }
       // a Midpoint that half repeats what is there (a vertical line between two midpoints) still puts the end on the line
+      // rfMM (a): unless the Horizontal / Vertical this call inferred is what makes it redundant (a centerline from one
+      // rectangle side's midpoint to the other's): SolidWorks keeps the two Midpoints and leaves the Horizontal out
+      if (c.type === 'midpoint' && hv && sketch.rels && sketch.rels.indexOf(hv) >= 0) {
+        var at0 = sketch.rels.indexOf(hv);
+        sketch.rels.splice(at0, 1); added.splice(added.indexOf(hv), 1);
+        if (tryAdd(rel)) { var was0 = hv; hv = null; tryAdd(was0); return; }
+        sketch.rels.splice(at0, 0, hv); added.push(hv);
+      }
       if (c.type === 'midpoint') { tryAdd({ type: 'coincident', refs: c.refs.slice() }); return; }
       // rfA: a line that closes a loop on a point: its end's Coincident counts more than the Horizontal / Vertical that
       // already fixes one of that end's coordinates (the loop was left open, a degree of freedom short of Fully
@@ -2880,6 +2888,7 @@ var SketchSolver = (function () {
     var part = connected(sys, R.e);
     if (part.count < sys.ents.length) sys = buildSystem(sketch, { dimTargets: targets, extra: extra, entities: part.set });
     var eR0 = base.entities[R.e], dm = eR0 && (eR0.t === 'ellipse' || eR0.t === 'pellipse') ? dragMob(sys, R) : blockMob(sys);   // ui-sketch-spline; rfAU: blocks
+    dm = symDragMob(sketch, sys, R.e, dm);
     lm(sys, { leastSquares: true, maxIt: 60, mob: dm });
     var r = lm(sys, { only: function (c) { return !c.soft; }, mob: dm });
     if (!r.ok) return { ok: false };
@@ -2887,6 +2896,30 @@ var SketchSolver = (function () {
     return { ok: true };
   }
 
+  // rfMM (b): a drag moves as little as it can. Two entities held Symmetric about a centerline that moves cannot both
+  // stay; least squares moved each half the way, so the original (the first of the pair: Mirror Entities and the
+  // inferred Symmetric list it first) moved though nothing tied it to the dragged point. The original is made heavy
+  // (mobility SYM_HOLD_MOB) and its copy follows the centerline, unless the drag is on one of the pair. Each pair is
+  // judged by whole entities (the refs' entity indices: 'i', 'i.c', 'i.p1' …); a pair inside one entity is skipped.
+  var SYM_HOLD_MOB = 0.001;
+  function symDragMob(sketch, sys, dragged, dm) {
+    var heavy = {}, any = false;
+    (sketch.rels || []).forEach(function (rel) {
+      if (rel.type !== 'symmetric' || rel.suppressed || !rel.refs || rel.refs.length !== 3) return;
+      var a = parseRef(rel.refs[0]), b = parseRef(rel.refs[1]);
+      if (!a || !b || a.o || b.o || a.e === b.e || a.e === dragged || b.e === dragged) return;
+      heavy[a.e] = true; any = true;
+    });
+    if (!any) return dm;
+    // an entity that is the copy in another pair (or the dragged one's chain) is not held
+    (sketch.rels || []).forEach(function (rel) {
+      if (rel.type !== 'symmetric' || rel.suppressed || !rel.refs || rel.refs.length !== 3) return;
+      var b = parseRef(rel.refs[1]);
+      if (b && !b.o && heavy[b.e]) heavy[b.e] = false;
+    });
+    var out = sys.vars.map(function (v, j) { var m = dm ? dm[j] : 1; return heavy[v.e] ? m * SYM_HOLD_MOB : m; });
+    return out;
+  }
   // rfY (sketch fidelity 3, finding 2): is arc i a slot's end cap? Its centre sits on an end of a construction line or
   // arc (a straight slot's centerline, an arc slot's centre-line arc) and it is Tangent to something (the slot's
   // sides). Dragging a cap stretches the slot (drag opts.cap) instead of changing its radius as a free arc's drag does.

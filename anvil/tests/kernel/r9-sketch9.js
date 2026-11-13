@@ -73,7 +73,8 @@
       c.entities.push({ t: 'line', x1: 0, y1: 25, x2: 0, y2: -25, construction: true });
       SS.infer(c, 1);
       var ks = c.rels.map(function (x) { return x.type + ':' + x.refs.join(); }).join(' ');
-      assert(ks.indexOf('midpoint:1.p1,0.e2') >= 0 && ks.indexOf('vertical:1') >= 0, ks);
+      // rfMM (2026-11-13): both ends at edge midpoints keep Midpoint (SolidWorks); the Vertical they make redundant goes
+      assert(ks.indexOf('midpoint:1.p1,0.e2') >= 0 && ks.indexOf('midpoint:1.p2,0.e0') >= 0 && ks.indexOf('vertical:1') < 0, ks);
       assert(SS.analyze(c).redundant === 0, 'nothing redundant: ' + ks);
     });
   })();

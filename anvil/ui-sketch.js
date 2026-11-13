@@ -163,7 +163,7 @@
     if (midHover) midReady(null);   // rfIG: a midpoint's hover clock starts again with the tool
     if (App.mode !== 'sketch' && (!name || name === 'select')) { rapidDisarm(); pendingStart = null; }
     var presel = name === 'dimension' && App.mode === 'sketch' ? dimPreselection() : null;
-    var statusBefore = $('status-msg') ? $('status-msg').textContent : null;
+    var statusBefore = $('status-msg') ? $('status-msg').textContent : null, stepHint0 = App.tool !== 'select' ? hintText() : null;
     cancelTool(true);
     App.tool = name || 'select';
     App.toolState = { pts: [] };
@@ -185,8 +185,12 @@
     // rfE: the status bar describes the new tool too (it kept the previous command's prompt), unless the tool's own
     // PropertyManager put a message there already; the Select tool leaves the last message (Exited, Chain ended …)
     if (App.mode === 'sketch' && App.tool !== 'select' && $('status-msg') && $('status-msg').textContent === statusBefore) UI.setStatus(hintText());
+    else if (App.mode === 'sketch' && App.tool === 'select' && statusBefore && (toolPrompts.indexOf(statusBefore) >= 0 || statusBefore === stepHint0) && $('status-msg').textContent === statusBefore) UI.setStatus(hintText());
+    // rfMM (f): the prompts the tool put in the status bar; putting the tool down replaces one still showing there
+    toolPrompts = App.mode === 'sketch' && App.tool !== 'select' ? [$('status-msg') ? $('status-msg').textContent : '', hintText()] : [];
     UI.refreshRibbon();
   }
+  var toolPrompts = [];
   function hintText() { var h = $('sketch-hint'); return h ? String(h.textContent || '').replace(/\s+/g, ' ').trim() : ''; }
   function cancelTool(keep) {
     var hkF = UI.sketchFreeHooks[App.tool];   // ui-sketch-spline: Esc / another tool ends a spline with what it has
@@ -202,7 +206,15 @@
     if (App.tempDim) { App.tempDim = null; App.dimsStale = true; }
     if (App.tempRelDim) { App.tempRelDim = null; App.dimsStale = true; }
     UI.updateTemp();
+    // rfMM (f): Esc / the tool's button again leaves the status bar on the Select tool's prompt when it still showed
+    // the drawing tool's (the step hint in #sketch-hint included); a result message (Chain ended, Exited …) stays
+    var stepHint = !keep && App.mode === 'sketch' ? hintText() : '';
     if (!keep) { App.tool = 'select'; viewport.classList.remove('tool-cross'); if (toolPMOpen()) UI.closePM(); UI.refreshRibbon(); if (App.mode === 'sketch') { $('sketch-hint').innerHTML = TOOL_HINTS.select; } }
+    if (!keep && App.mode === 'sketch' && $('status-msg')) {
+      var sm = $('status-msg').textContent;
+      if (sm && (toolPrompts.indexOf(sm) >= 0 || sm === stepHint)) UI.setStatus(hintText());
+    }
+    if (!keep) toolPrompts = [];
   }
   // p9-sketchtab: a sketch tool's own PropertyManager (spec.sketchTool, Insert Line / Rectangle / Point …) closes when
   // the tool is put down (Esc, the tool's button again, the chain ended with nothing in progress), as in SolidWorks
