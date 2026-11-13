@@ -103,4 +103,39 @@
       assert(rfMKcount(a.dxf, 'CIRCLE') >= 600, rfMKcount(a.dxf, 'CIRCLE') + ' circles');
       assert(ms < 30000, (ms / 1000).toFixed(1) + ' s');
     });
+
+    // --- MK2 (lane drawperf, kernel-curves.js mass path): curveCorrection's Gauss points and the cylinder densities on
+    // scalars into one scratch array, boundCorrection's edge grid a hashed table of linked lists (no array per cell, a
+    // cache-sized bit filter for empty cells), a neighbour cell opened once per candidate edge, massPropsOf's triangle
+    // loop on scalars. The floating-point operations keep their order: the results are bit for bit the same.
+    test('rfMK: exact mass properties of three examples equal the numbers recorded before the mass path was reworked (bit for bit)', function () {
+      var want = {
+        'Plate with bolt holes': [46391.504561361995, 14962.123859659385, [50.00000000000003, 4.000000000000003, 30.000000000000018]],
+        'Flange': [112852.29130225233, 27957.033024295204, [6.186543249118648e-15, 6.534491398029117, 4.61122512936077e-16]],
+        'Mug': [85025.34950683248, 55472.0295450447, [4.674498763774714, 38.39891375941163, 3.3074339897261755e-13]]
+      };
+      Object.keys(want).forEach(function (name) {
+        var ex = AnvilExamples.filter(function (e) { return e.name === name; })[0];
+        assert(ex, name + ' example');
+        var m = K.newModel(name); K.runScript(m, ex.code);
+        var b = K.rebuild(m), mp = K.massProps(K.meshFromBody(b.body), 7850), w = want[name];
+        assert(mp.volume === w[0], name + ' volume ' + mp.volume + ' vs ' + w[0]);
+        assert(mp.area === w[1], name + ' area ' + mp.area + ' vs ' + w[1]);
+        [0, 1, 2].forEach(function (k) { assert(mp.centroid[k] === w[2][k], name + ' centroid ' + k + ': ' + mp.centroid[k] + ' vs ' + w[2][k]); });
+      });
+    });
+
+    test('rfMK: the exact mass\'s edge grid grows linearly with the holes and opens each neighbour cell once per edge (150 → 600 holes under 6x)', function () {
+      function ops(c, rows) {
+        var r = build(rfMKcode(c, rows)), C = K._.cellOps, f0 = C.fill, q0 = C.query, s0 = C.samples;
+        noErrors(r);
+        K.massProps(K.meshFromBody(r.build.body), 7850);   // a fresh mesh: not the cached result
+        return { fill: C.fill - f0, query: C.query - q0, samples: C.samples - s0 };
+      }
+      var a = ops(15, 10), b = ops(30, 20);
+      assert(a.fill > 0 && a.query > 0 && a.samples > 0, 'counted: ' + JSON.stringify(a));
+      assert(b.fill / a.fill < 6 && b.query / a.query < 6, JSON.stringify(a) + ' → ' + JSON.stringify(b));
+      // 27 neighbours per sampled cell less the ones a cell sampled before already opened
+      assert(b.query < 0.9 * 27 * b.samples, b.query + ' cells opened for ' + b.samples + ' sampled cells');
+    });
   })();

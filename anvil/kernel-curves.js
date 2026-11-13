@@ -814,6 +814,7 @@
 
   // densities at a point x of a facet with unit outward normal n: [volume, mx, my, mz, true area] per unit facet area
   function curveDensity(F, x, n, phiC) {
+    if (F.s.t === 'cyl' || F.s.t === 'cone') return revDensity(F.s, x[0], x[1], x[2], n, [0, 0, 0, 0, 0]);
     var S = F.s, rel = sub(x, S.o), z = dot(rel, S.d), v = sub(rel, scale(S.d, z)), rx = len(v);
     if (rx < 1e-12) return null;
     var er = scale(v, 1 / rx), nr = dot(n, er), base = add(S.o, scale(S.d, z)), out = [0, 0, 0, 0, 0];
@@ -886,6 +887,22 @@
     return out;
   }
 
+  // (lane drawperf) curveDensity's cylinder / cone case written out on scalars: the same operations in the same order
+  // (rel, z, v, rx, er, nr, base, level1(R), out[4]), written into out (curveCorrection passes one scratch array for
+  // all its points and reads it at once) instead of eight new arrays per point
+  function revDensity(S, x0, x1, x2, n, out) {
+    var o = S.o, dd = S.d, r0 = x0 - o[0], r1 = x1 - o[1], r2 = x2 - o[2], z = r0 * dd[0] + r1 * dd[1] + r2 * dd[2];
+    var v0 = r0 - dd[0] * z, v1 = r1 - dd[1] * z, v2 = r2 - dd[2] * z, rx = Math.sqrt(v0 * v0 + v1 * v1 + v2 * v2);
+    if (rx < 1e-12) return null;
+    var ir = 1 / rx, e0 = v0 * ir, e1 = v1 * ir, e2 = v2 * ir, nr = n[0] * e0 + n[1] * e1 + n[2] * e2;
+    var b0 = o[0] + dd[0] * z, b1 = o[1] + dd[1] * z, b2 = o[2] + dd[2] * z;
+    var kk = S.k || 0, R = S.r + kk * z, f = nr / rx, i1 = (R * R - rx * rx) / 2, i2 = (R * R * R - rx * rx * rx) / 3;
+    out[0] = 0 + f * i1;
+    out[1] = 0 + f * (b0 * i1 + e0 * i2); out[2] = 0 + f * (b1 * i1 + e1 * i2); out[3] = 0 + f * (b2 * i1 + e2 * i2);
+    out[4] = R * Math.sqrt(1 + kk * kk) * Math.abs(nr) / rx;
+    return out;
+  }
+
   function angleOf(F, x) {
     var S = F.s, rel = sub(x, S.o), v = sub(rel, scale(S.d, dot(rel, S.d)));
     var phi = Math.atan2(dot(v, cross(S.d, F.e0)), dot(v, F.e0));
@@ -932,12 +949,12 @@
 
   function curveCorrection(polys) {
     var res = { volume: 0, moment: [0, 0, 0], area: 0, facets: 0 };
-    var planar = null;
+    var planar = null, dens = [0, 0, 0, 0, 0];   // (lane drawperf) revDensity's scratch result
     for (var pi = 0; pi < polys.length; pi++) {
       var p = polys[pi], F = p.surf;
       if (!F) continue;
       res.facets++;
-      var vs = p.vertices, n = arr(p.plane.normal), phiC = 0, polyArea = 0;
+      var vs = p.vertices, n = arr(p.plane.normal), phiC = 0, polyArea = 0, rev = F.s.t === 'cyl' || F.s.t === 'cone';
       if (F.P && F.e0) {
         var cen = [0, 0, 0];
         vs.forEach(function (v) { cen = add(cen, arr(v.pos)); });
@@ -960,8 +977,9 @@
           var u = GL6.x[iu];
           for (var iv = 0; iv < 6; iv++) {
             var v = GL6.x[iv], wgt = GL6.w[iu] * GL6.w[iv] * ar2 * u;
-            var x = add(A, add(scale(ab, u), scale(bc, u * v)));
-            var d = curveDensity(F, x, n, phiC);
+            // (lane drawperf: add / scale written out, same order)
+            var uv = u * v, x0 = A[0] + (ab[0] * u + bc[0] * uv), x1 = A[1] + (ab[1] * u + bc[1] * uv), x2 = A[2] + (ab[2] * u + bc[2] * uv);
+            var d = rev ? revDensity(F.s, x0, x1, x2, n, dens) : curveDensity(F, [x0, x1, x2], n, phiC);
             if (!d) continue;
             res.volume += wgt * d[0];
             res.moment[0] += wgt * d[1]; res.moment[1] += wgt * d[2]; res.moment[2] += wgt * d[3];
@@ -985,6 +1003,49 @@
   // volume between that radial wall and the bounding plane inside the sliver (exact for planes parallel to the axis, a
   // Gauss-Legendre line integral of the closed-form ρ integral otherwise) and its first moment. The bounding plane is the
   // planar polygon sharing the edge, or the bisector plane of two cylinder records of one radius meeting there.
+  // (lane drawperf) boundCorrection's grid work for the tests: cells filed (fill) and neighbour cells opened (query)
+  var cellOps = _.cellOps = { fill: 0, query: 0, samples: 0 };
+  // (lane drawperf) boundCorrection's cell → edges table: open addressing on the integer cell keys (they pass 2^31, where
+  // a Map hashes them as heap numbers), each cell's edges a linked list in typed arrays (no array per cell), newest
+  // first. add(k, e) files edge e in cell k unless it is the last one filed there; first(k) -> an entry or -1, then
+  // ent[x] (the edge) and nxt[x] (the next entry or -1). The query sorts what it finds, so the order does not matter.
+  function cellTable() {
+    var cap = 4096, keys = new Float64Array(cap), used = new Uint8Array(cap), head = new Int32Array(cap), n = 0;
+    var ecap = 4096, ent = new Int32Array(ecap), nxt = new Int32Array(ecap), m = 0;
+    // a bit per hashed key (512 KB, stays in cache): a cell never filed is answered without probing the table
+    var bits = new Int32Array(131072);
+    function bit(k) { var lo = k % 16777216, hi = (k - lo) / 16777216, h = Math.imul(lo ^ Math.imul(hi, 0x2f0b3c6d), 0x85ebca6b); return (h ^ (h >>> 15)) & 4194303; }
+    function slot(k, ks, us, msk) {
+      var lo = k % 16777216, hi = (k - lo) / 16777216, h = Math.imul(lo ^ Math.imul(hi, 0x27d4eb2d), 0x9e3779b1);
+      h ^= h >>> 15; h = Math.imul(h, 0x85ebca6b); h = (h ^ (h >>> 13)) & msk;
+      while (us[h] && ks[h] !== k) h = (h + 1) & msk;
+      return h;
+    }
+    function grow() {
+      var ok = keys, ou = used, oh = head, oc = cap;
+      cap *= 2; keys = new Float64Array(cap); used = new Uint8Array(cap); head = new Int32Array(cap);
+      for (var i = 0; i < oc; i++) if (ou[i]) { var j = slot(ok[i], keys, used, cap - 1); used[j] = 1; keys[j] = ok[i]; head[j] = oh[i]; }
+    }
+    var T = {
+      add: function (k, e) {
+        var h = slot(k, keys, used, cap - 1);
+        if (!used[h]) {
+          used[h] = 1; keys[h] = k; head[h] = -1; n++;
+          var bk = bit(k); bits[bk >> 5] |= 1 << (bk & 31);
+          if (n * 2 > cap) { grow(); h = slot(k, keys, used, cap - 1); }
+        } else if (ent[head[h]] === e) return;
+        if (m === ecap) { ecap *= 2; var ne = new Int32Array(ecap), nn = new Int32Array(ecap); ne.set(ent); nn.set(nxt); ent = ne; nxt = nn; }
+        ent[m] = e; nxt[m] = head[h]; head[h] = m++;
+      },
+      first: function (k) {
+        var bk = bit(k);
+        if (!(bits[bk >> 5] & (1 << (bk & 31)))) return -1;
+        var h = slot(k, keys, used, cap - 1); return used[h] ? head[h] : -1;
+      },
+      lists: function () { T.ent = ent; T.nxt = nxt; return T; }
+    };
+    return T;
+  }
   function boundCorrection(polys, res) {
     var cands = [], scl = 1;
     function A3(v) { return [v.pos.x, v.pos.y, v.pos.z]; }
@@ -1012,11 +1073,14 @@
     // has hundreds of thousands of edges; by direction alone every hole's rim landed in one list: quadratic)
     var edges = [], lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
     polys.forEach(function (q) {
-      var vs = q.vertices;
+      // (lane drawperf) one point array per vertex, shared by the two edges that meet there (read only), and the unit
+      // direction from scalars: sub / len / scale written out in the same order
+      var vs = q.vertices, pts = vs.map(A3);
       for (var i = 0; i < vs.length; i++) {
-        var P = A3(vs[i]), Q = A3(vs[(i + 1) % vs.length]), PQ = sub(Q, P), l = len(PQ);
+        var P = pts[i], Q = pts[(i + 1) % vs.length], q0 = Q[0] - P[0], q1 = Q[1] - P[1], q2 = Q[2] - P[2], l = Math.sqrt(q0 * q0 + q1 * q1 + q2 * q2);
         if (!(l > 1e-12)) continue;
-        edges.push({ q: q, P: P, Q: Q, u: scale(PQ, 1 / l) });
+        var il = 1 / l;
+        edges.push({ q: q, P: P, Q: Q, u: [q0 * il, q1 * il, q2 * il] });
         for (var a = 0; a < 3; a++) { lo[a] = Math.min(lo[a], P[a]); hi[a] = Math.max(hi[a], P[a]); }
       }
     });
@@ -1041,7 +1105,7 @@
     var span = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], 1e-9), sumL = 0, nIn = 0, cl = cands.map(function (c) { return c.L; }).sort(function (x, y) { return x - y; });
     edges.forEach(function (e, i) { if (inGrid[i]) { sumL += len(sub(e.Q, e.P)); nIn++; } });
     var G = Math.min(1024, Math.max(8, Math.ceil(Math.sqrt(edges.length)))), cell = Math.min(span / G, Math.max(cl[cl.length >> 1], 2 * sumL / (8 * Math.max(1, nIn)), span / 4000));
-    var grid = new Map(), stamp = new Int32Array(edges.length);
+    var grid = cellTable(), stamp = new Int32Array(edges.length);
     var lo0 = lo[0], lo1 = lo[1], lo2 = lo[2];
     // the cells of a segment, sampled at half a cell (a query takes the 26 neighbours too, so nothing falls between)
     function eachCell(P, Q, fn) {
@@ -1052,10 +1116,31 @@
         if (key !== last) { last = key; fn(key); }
       }
     }
-    edges.forEach(function (e, i) {
-      if (!inGrid[i]) return;
-      eachCell(e.P, e.Q, function (key) { var list = grid.get(key); if (list) { if (list[list.length - 1] !== i) list.push(i); } else grid.set(key, [i]); });
-    });
+    // (lane drawperf) the edges filed without a closure per edge (the same cells, the same order)
+    for (var ei0 = 0; ei0 < edges.length; ei0++) {
+      if (!inGrid[ei0]) continue;
+      var eP = edges[ei0].P, eQ = edges[ei0].Q, ed0 = eQ[0] - eP[0], ed1 = eQ[1] - eP[1], ed2 = eQ[2] - eP[2];
+      var en = Math.max(1, Math.ceil(Math.sqrt(ed0 * ed0 + ed1 * ed1 + ed2 * ed2) / (cell / 2))), elast = -1;
+      for (var es = 0; es <= en; es++) {
+        var ef = es / en, ekey = (Math.floor((eP[0] + ed0 * ef - lo0) / cell) + 2) * 16777216 + (Math.floor((eP[1] + ed1 * ef - lo1) / cell) + 2) * 4096 + (Math.floor((eP[2] + ed2 * ef - lo2) / cell) + 2);
+        if (ekey === elast) continue;
+        elast = ekey; cellOps.fill++;
+        grid.add(ekey, ei0);
+      }
+    }
+    grid.lists();
+    var gEnt = grid.ent, gNxt = grid.nxt;
+    // a neighbour key nk was looked up already for this candidate when it is within one cell of a cell sampled before:
+    // nk - k = a·16777216 + b·4096 + g with a, b, g in -1..1 (that sum is unique), so that cell is not opened again (its
+    // edges are stamped already: the same near list)
+    function nbOf(diff) {
+      var g = diff % 4096; if (g > 2048) g -= 4096; else if (g < -2048) g += 4096;
+      if (g < -1 || g > 1) return false;
+      var r = (diff - g) / 4096, b = r % 4096; if (b > 2048) b -= 4096; else if (b < -2048) b += 4096;
+      if (b < -1 || b > 1) return false;
+      var a = (r - b) / 4096;
+      return a >= -1 && a <= 1;
+    }
     var tol = 1e-7 * scl, jobs = [], stopped = {};
     cands.forEach(function (c, ci) {
       // the stretches of the edge each neighbour borders (a fragment edge may run on past a sibling fragment of its own
@@ -1067,13 +1152,15 @@
         if (!k) planes.push(k = { n: pl.n, w: pl.w, iv: [] });
         k.iv.push([t0, t1]);
       }
-      var near = [];
+      var near = [], sampled = [];
       eachCell(c.A, c.B, function (key) {
         for (var a = -1; a <= 1; a++) for (var b = -1; b <= 1; b++) for (var g = -1; g <= 1; g++) {
-          var list = grid.get(key + a * 16777216 + b * 4096 + g);
-          if (!list) continue;
-          for (var k = 0; k < list.length; k++) {
-            var lk = list[k];
+          var nk = key + a * 16777216 + b * 4096 + g, again = false;
+          for (var si = 0; si < sampled.length && !again; si++) again = nbOf(nk - sampled[si]);
+          if (again) continue;
+          cellOps.query++;
+          for (var x = grid.first(nk); x >= 0; x = gNxt[x]) {
+            var lk = gEnt[x];
             if (stamp[lk] === ci + 1) continue;
             stamp[lk] = ci + 1;
             var eu = edges[lk].u;
@@ -1081,6 +1168,7 @@
             near.push(lk);
           }
         }
+        sampled.push(key); cellOps.samples++;
       });
       near.sort(function (x, y) { return x - y; });
       near.forEach(function (ei) {
@@ -1837,12 +1925,17 @@
     var p = mesh.positions64 || mesh.positions, vol = 0, area = 0, cx = 0, cy = 0, cz = 0;
     var min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
     for (var i = 0; i < p.length; i += 9) {
-      var a = [p[i], p[i + 1], p[i + 2]], b = [p[i + 3], p[i + 4], p[i + 5]], c = [p[i + 6], p[i + 7], p[i + 8]];
-      var v = dot(a, cross(b, c)) / 6;
+      // (lane drawperf) dot / cross / sub / len written out on scalars, in the same order (no arrays per triangle)
+      var a0 = p[i], a1 = p[i + 1], a2 = p[i + 2], b0 = p[i + 3], b1 = p[i + 4], b2 = p[i + 5], c0 = p[i + 6], c1 = p[i + 7], c2 = p[i + 8];
+      var v = (a0 * (b1 * c2 - b2 * c1) + a1 * (b2 * c0 - b0 * c2) + a2 * (b0 * c1 - b1 * c0)) / 6;
       vol += v;
-      cx += v * (a[0] + b[0] + c[0]) / 4; cy += v * (a[1] + b[1] + c[1]) / 4; cz += v * (a[2] + b[2] + c[2]) / 4;
-      area += len(cross(sub(b, a), sub(c, a))) / 2;
-      [a, b, c].forEach(function (q) { for (var k = 0; k < 3; k++) { if (q[k] < min[k]) min[k] = q[k]; if (q[k] > max[k]) max[k] = q[k]; } });
+      cx += v * (a0 + b0 + c0) / 4; cy += v * (a1 + b1 + c1) / 4; cz += v * (a2 + b2 + c2) / 4;
+      var u0 = b0 - a0, u1 = b1 - a1, u2 = b2 - a2, w0 = c0 - a0, w1 = c1 - a1, w2 = c2 - a2;
+      var n0 = u1 * w2 - u2 * w1, n1 = u2 * w0 - u0 * w2, n2 = u0 * w1 - u1 * w0;
+      area += Math.sqrt(n0 * n0 + n1 * n1 + n2 * n2) / 2;
+      if (a0 < min[0]) min[0] = a0; if (a0 > max[0]) max[0] = a0; if (b0 < min[0]) min[0] = b0; if (b0 > max[0]) max[0] = b0; if (c0 < min[0]) min[0] = c0; if (c0 > max[0]) max[0] = c0;
+      if (a1 < min[1]) min[1] = a1; if (a1 > max[1]) max[1] = a1; if (b1 < min[1]) min[1] = b1; if (b1 > max[1]) max[1] = b1; if (c1 < min[1]) min[1] = c1; if (c1 > max[1]) max[1] = c1;
+      if (a2 < min[2]) min[2] = a2; if (a2 > max[2]) max[2] = a2; if (b2 < min[2]) min[2] = b2; if (b2 > max[2]) max[2] = b2; if (c2 < min[2]) min[2] = c2; if (c2 > max[2]) max[2] = c2;
     }
     if (!(p.length > 0)) { min = [0, 0, 0]; max = [0, 0, 0]; }
     var polygonal = null, curved = 0;

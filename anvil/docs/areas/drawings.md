@@ -162,3 +162,4 @@ UI (only when `UI` exists; share state through `UI.drawingInternal`, alias `DW`;
   Title block mass memo lives on `build.body` (an unchanged rebuild reuses it); `_.massAsks` counts integrations; the context is lazy, so a sheet with no mass field never asks.
   Counters: `_.hlrOps` { views, seamRuns, hidden, visits }, `_.edgeOps.n`. Output byte-identical. Node wall time, 4 standard views incl. Isometric: 600 holes ~2.9 → ~2.2 s, 1800 ~7.5 → ~6.2 s.
   The floor: the kernel's exact mass (`curveCorrection` / `boundCorrection` in kernel-curves.js, 0.6 s / 1.9 s, asked once) and `faceOutline` (kernel-mesh.js).
+  MK2 (kernel-curves.js mass path, bit-identical): `revDensity` (cyl / cone density on scalars into a scratch array), `boundCorrection`'s grid is `cellTable()` (open addressing + linked lists + bit filter; `_.cellOps` { fill, query, samples }), a neighbour cell opened once per candidate (`nbOf`), `massPropsOf` on scalars: the mass ~30% less.
