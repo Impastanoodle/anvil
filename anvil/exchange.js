@@ -2922,7 +2922,7 @@ var Exchange = (function () {
       var tolC = 1e-10 * Math.max(1, S.r), ths = [];
       for (var i = 0; i <= n; i++) {
         var ax = axial(S, raw[i]);
-        if (Math.abs(ax.rho - S.r) > tolC) return raw;
+        if (Math.abs(ax.rho - S.r) > tolC) return (info.cylSub = turnSubsample(raw));
         ths.push(ax.v);
       }
       var stepA = 2 * Math.PI / K.segsForRadius(S.r * (toMM || 1)), out = [raw[0]];
@@ -2933,6 +2933,27 @@ var Exchange = (function () {
         for (i = s0 + kk; i <= s0 + SPLINE_SEGS; i += kk) out.push(raw[i]);
       }
       return (info.cylSub = out);
+    }
+    // lane MO: a B-spline edge near but not on the cylinder (Anvil's own saddle curve where a hole crosses a tube or a
+    // bend: a cubic through points on both cylinders, a hair off between them) keeps, per span, every k-th sample (k a
+    // divisor of 24) with the chord turning no more than the canonical step for the curve's own radius of curvature
+    // there. 24 samples a span made a cross-drilled tube's walls 68 k triangles and its read up to a minute.
+    function turnSubsample(raw) {
+      var n = raw.length - 1, out = [raw[0]];
+      for (var s0 = 0; s0 < n; s0 += SPLINE_SEGS) {
+        var dmax = 0, ok = 24;
+        for (var i = s0 + 1; i < s0 + SPLINE_SEGS; i++) {
+          var d1 = sub(raw[i], raw[i - 1]), d2 = sub(raw[i + 1], raw[i]), l1 = len(d1), l2 = len(d2);
+          if (!(l1 > 0) || !(l2 > 0)) continue;
+          var th = Math.acos(Math.max(-1, Math.min(1, dot(d1, d2) / (l1 * l2))));
+          if (!(th > 1e-12)) continue;
+          var al = 2 * Math.PI / K.segsForRadius((l1 + l2) / 2 / th * (toMM || 1));
+          dmax = Math.max(dmax, th / al);
+        }
+        var kk = [24, 12, 8, 6, 4, 3, 2, 1].filter(function (k) { return k * dmax <= 1; })[0] || 1;
+        for (i = s0 + kk; i <= s0 + SPLINE_SEGS; i += kk) out.push(raw[i]);
+      }
+      return out;
     }
     // lane importbend: a ruled B-spline face (degree 1 one way: a twisted bend end, a relief wall) bounded by two
     // straight edges and two rails: the rails' points zipped by arc length, triangles turning with the face's loop
@@ -3597,11 +3618,14 @@ var Exchange = (function () {
         return true;
       }
       var seamMid = seams.length && seams[0].kind === 'circle' ? seams[0].mid : null, general = false;
+      // lane MO: a band between two whole circles is zipped only when nothing else bounds it (a hole's loop through the
+      // band, B-spline or ellipse edges, went unseen: the hole closed over, 240 open edges on a cross-drilled rod)
+      var bandOnly = !vloops.length && loops.every(function (L) { return L.every(function (x) { return uses[x.info.id] > 1 || lats.some(function (q) { return q.x === x; }); }); });
       if (odd) general = true;
       else if (octTris) tris = octTris;   // rfFF2
       else if (S.t === 'cyl' && levels.length === 1 && loops.length === 1 && !vloops.length && !rulings.length && !ells.length && !seams.length && lats.length === loops[0].length && noHeight()) return true;
       else if (S.t === 'cyl' || S.t === 'cone') {
-        if (levels.length === 2 && full.length === 2 && !rulings.length) zip(ring(levels[0]), ring(levels[1]), true, rec());
+        if (levels.length === 2 && full.length === 2 && !rulings.length && bandOnly) zip(ring(levels[0]), ring(levels[1]), true, rec());
         else if (S.t === 'cone' && levels.length === 1 && full.length === 1 && !rulings.length && Math.abs(S.k) > 1e-12) zip(ring(levels[0]), pointRow(add(S.o, scale(S.d, -S.r / S.k))), true, rec());
         else if ((levels.length === 2 || (ells.length && !full.length)) && loops.length === 1 && rulingRuns(loops[0]) === 2 && (function () {
           // a patch between two arcs and two rulings: the loop is arcs at one level, a ruling, arcs at the other, a ruling
@@ -3643,7 +3667,7 @@ var Exchange = (function () {
             for (var j2 = 0; j2 < nv2; j2++) trows.push(betaRow(2 * Math.PI * j2 / nv2));
             zipRows(trows, true);
           }
-        } else if (levels.length === 2 && full.length === 2 && seamMid) {
+        } else if (levels.length === 2 && full.length === 2 && seamMid && bandOnly) {
           var b1 = betaOf(circles[0].row[0].p), b2 = betaOf(circles[1].row[0].p), bm = betaOf(seamMid);
           var dir = mod2pi(bm - b1) < mod2pi(b2 - b1) ? 1 : -1;
           zipRows(betaRows(b1, b2, dir, circles[0], circles[1]));
