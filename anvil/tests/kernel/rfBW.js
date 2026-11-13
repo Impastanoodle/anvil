@@ -55,7 +55,9 @@
     test('rfBW: the flat is drawn from the base sketch\'s side: a hole that makes the bottom face a little larger than the top no longer flips the blank over (mirrored, every UP read DOWN); a bottom face a tenth larger still wins', function () {
       var h = flatOf(HEAD + 'p.flange(1.5, [[3, ' + T + ', 0]], { position: "inside", lengthRef: "outer" });\np.sketch("Front").circle(2, 0.06, 0.15).cut(0.3, { normalCut: true });');
       var top = h.mesh.faces.filter(function (f) { return Math.abs(f.normal[1] - 1) < 1e-6 && Math.abs(f.w - T) < 1e-6; })[0], bot = h.mesh.faces.filter(function (f) { return Math.abs(f.normal[1] + 1) < 1e-6 && Math.abs(f.w) < 1e-6; })[0];
-      assert(top && bot && bot.area > top.area, 'the hole made the bottom face larger: ' + fmt(bot.area) + ' vs ' + fmt(top.area));
+      // (lane MJ, rfMJ: a Normal Cut across the bend is radial now and ends on the bend line on both faces, so the two
+      // faces are equal; the per-facet prisms bit 0.006 into the top face and left the bottom one larger. Not smaller.)
+      assert(top && bot && bot.area > top.area - 1e-9, 'the hole made the bottom face smaller: ' + fmt(bot.area) + ' vs ' + fmt(top.area));
       assert(h.flat.bends[0].up && h.flat.bends[0].label.indexOf('UP') === 0, 'UP: ' + h.flat.bends[0].label);
       // the same part with the base's top pocketed: the top face is far smaller, the flat follows the bottom
       var g = flatOf(HEAD + 'p.sketch("Top", ' + T + ').rect(0.5, -3.5, 5, 3).cut(' + (T / 2) + ', { reverse: true });\np.flange(1.5, [[3, ' + T + ', 0]], { position: "inside", lengthRef: "outer" });');

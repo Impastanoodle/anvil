@@ -751,7 +751,8 @@
       for (var s = 0; s < scope.length; s++) {
         var i = scope[s], b = ctx.bodies[i], volBefore = b.volume();
         // rfLD: a pattern / mirror of through holes (tool._parts: copies apart) takes the plate path too
-        var nb = plateCutOf(b, f) || (tool._parts && _.plateCutParts(b, tool._parts)) || b.subtract(tool), vol = nb.polygons.length ? nb.volume() : 0;
+        // lane MJ: a Normal Cut across a bend (tool._nc: the bend's band out, its metal less the footprint back)
+        var nb = plateCutOf(b, f) || (tool._parts && _.plateCutParts(b, tool._parts)) || (tool._nc && tool._nc.of === b && _.normalCutApply(tool._nc)) || b.subtract(tool), vol = nb.polygons.length ? nb.volume() : 0;
         if (Math.abs(vol - volBefore) >= 1e-6) changed = true;
         res.push({ i: i, nb: nb, vol: vol });
       }
@@ -778,7 +779,10 @@
         var ncs = ctx.sketches[f.sketch] || findFeature(model, f.sketch);
         var ncp = resolvePlane(ncs.plane, model, ctx.planes);
         var ncDir = (f.dir2 || f.end === 'mid') ? null : (f.reverse ? scale(ncp.n, -1) : ncp.n.slice());
-        var nct = _.normalCutTool(tool, ctx.body, model, ncDir);
+        // (lane MJ: one body: the bends it crosses are rebuilt from their developed metal, kernel-sheetmetal.js normalCutBends)
+        var ncOne = ctx.bodies.length === 1 && cutScope(f, 1).length === 1;
+        var nct = _.normalCutTool(tool, ncOne ? ctx.bodies[0] : ctx.body, model, ncDir, ncOne ? ctx.flanges : null);
+        if (nct._nc) nct._nc.of = ctx.bodies[0];
         if (nct === tool) warning = 'Normal cut: the cut does not cross a sheet face; a plain cut was made.';
         tool = nct;
       }

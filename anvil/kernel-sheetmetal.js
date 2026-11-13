@@ -1635,7 +1635,7 @@
   // tool enters through are used, so a blind cut is not doubled from the far side; without it (mid-plane or
   // two-direction cuts), or when the tool enters through a thickness edge, every sheet-surface face counts. A cut of
   // any depth becomes a through-thickness cut. Returns `tool` itself when it crosses no sheet surface.
-  function normalCutTool(tool, body, model, dir) {
+  function normalCutTool(tool, body, model, dir, flanges) {
     var R = body.intersect(tool);
     if (!(R.volume() > 1e-9)) return tool;
     var T = +sheetParams(model).thickness, eps = 1e-3 * T;
@@ -1670,9 +1670,10 @@
     // SolidWorks' Normal Cut, the hole's footprint follows the sheet surface it enters through across the bend: the
     // tool's start cap is swept backward (against `dir`), and the sheet-surface faces it meets there that face the cut
     // and continue an entry face (sharing a vertex with one, bend facet after bend facet) join the entry faces.
-    var others = [{ mesh: meshR, caps: sf.caps }];   // sheet faces of the pieces, for the joint wedges below
+    var others = [{ mesh: meshR, caps: sf.caps }], backTool = null;   // sheet faces of the pieces, for the joint wedges below
     if (dir && sf.entry.length) {
       var back = backwardShadow(tool, body, dir, tag);
+      backTool = back || null;
       var R2 = back ? body.intersect(back) : null;
       if (R2 && R2.volume() > 1e-12) {
         var meshR2 = meshFromBody(R2), tol = 1e-6 * Math.max(1, 100 * T), sf2 = sheetFaces(meshR2);
@@ -1692,8 +1693,11 @@
         }
       }
     }
+    // lane MJ: the footprint on an edge flange's bend goes by the bend's developed metal (normalCutBends), not by prisms
+    var nb = flanges ? normalCutBends(chosen, body, model, flanges, tag, backTool ? [tool, backTool] : [tool]) : null;
     var prisms = [], outl = [];
     chosen.forEach(function (c) {
+      if (nb && nb.on(c.mesh, c.i)) return;
       var o = faceOutline(c.mesh, c.i);
       if (!o) return;
       var cl = faceLoopsClassified(o);
@@ -1712,6 +1716,7 @@
     others.forEach(function (oc) {
       oc.caps.forEach(function (i) {
         if (chosen.some(function (c) { return c.mesh === oc.mesh && c.i === i; })) return;
+        if (nb && nb.on(oc.mesh, i)) return;
         var nf = oc.mesh.faces[i], nb = { n: nf.normal, w: nf.w, pts: faceVerts(oc.mesh, i) };
         outl.forEach(function (fa) { var w = jointWedge(fa, nb, T + eps, tag, true); if (w) { prisms.push(w); fa.concave = true; } });
       });
@@ -1730,8 +1735,23 @@
       if (fo.cl.holes.length) solid = solid.subtract(unionAll(fo.cl.holes.map(function (l) { return prism(l, pl, -(T + 2 * eps), front + eps, tag, cvOf(l)); })));
       prisms.push(solid);
     });
+    if (nb) {
+      // the tool as what the cut takes (for the cache, patterns, the preview): the prisms and each band's sector less
+      // its new metal; `_nc`: how the rebuild makes the cut itself (cutTrial): rest − prisms, then the metals back
+      var pt = prisms.length ? unionTree(prisms) : null, gone = nb.sectors.slice();
+      nb.metals.forEach(function (m) { gone = gone.map(function (s) { return smBool(s, 'subtract', m, T); }); });
+      var tl = unionTree((pt ? [pt] : []).concat(gone.filter(function (g) { return g.polygons.length; })));
+      tl._nc = { rest: nb.rest, prisms: pt, metals: nb.metals, T: T };
+      return tl;
+    }
     if (!prisms.length) return tool;
     return unionTree(prisms);
+  }
+  // lane MJ: a Normal Cut whose tool carries `_nc` (normalCutBends), applied to the body it was made for
+  function normalCutApply(nc) {
+    var o = nc.prisms ? nc.rest.subtract(nc.prisms) : nc.rest;
+    nc.metals.forEach(function (m) { o = smBool(o, 'union', m, nc.T); });
+    return o;
   }
   // rfJW: toolCylChords(tool) -> [{ S, chords: [[A, B]] }]: the tool's cylinder records and, for each facet carrying
   // one, the facet's chord (its corners seen along the axis: two points on the circle, in the plane through S.o)
@@ -2449,6 +2469,10 @@
       }
       var corner = [cornerAt(0), cornerAt(1)];
       function keep(l) {
+        // lane MJ: a clockwise loop is a hole of the gaps, an island of surface inside one, never a notch (a facet of the
+        // other bend at a closed corner that reads as this surface, standing in the gap past this bend's slanted end: with
+        // a Corner Relief the gap round it went as the corner's and the island was cut from the blank, a 5e-6 in² sliver)
+        if (signedArea(l) < 0) return false;
         var q = loopInteriorPoint(l);
         if (!q || cutouts.some(function (cl) { return pointInPoly(q, cl); })) return false;
         if (l.some(function (p) { return (p[1] < 1e-6 && corner[0]) || (p[1] > len - 1e-6 && corner[1]); })) return false;
@@ -4170,7 +4194,21 @@
     if (!picks.length) throw new Error('Corner Relief: select the corners (or Collect all corners).');
     var all = bendCorners2(model, ctx.flanges || {}, f.id);
     if (!all.length) throw new Error('Corner Relief: the part has no corner where two bends meet (2 Bend corner: flanges on two neighbouring edges of one face).');
-    var tools = [], recs = [], used = [], eps = 0.05 * T, centered = f.centeredOnBend !== false;
+    var tools = [], recs = [], used = [], pairs = [], eps = 0.05 * T, centered = f.centeredOnBend !== false;
+    // lane MJ: what a Closed Corner before this relief did to a bend's end at the corner (its records in ctx.flanges):
+    // `by` the bend and its wall run on past the record's end (ccExtend: bend region closed), `cut` the wall's end
+    // moved again (ccEnd.ext, negative = trimmed back); `any`: a Closed Corner touched that end
+    function endShift(bd, end) {
+      var out = { by: 0, cut: 0, any: false }, fl = ctx.flanges || {};
+      Object.keys(fl).forEach(function (k) {
+        (fl[k] || []).forEach(function (x) {
+          if (!x || (x.kind !== 'ccExtend' && x.kind !== 'ccEnd') || String(x.feature) !== String(bd.id) || x.index !== bd.index || x.end !== end) return;
+          out.any = true;
+          if (x.kind === 'ccExtend') out.by += +x.by || 0; else out.cut += +x.ext || 0;
+        });
+      });
+      return out;
+    }
     picks.forEach(function (q) {
       q = Array.isArray(q) ? q : q.at;   // (an array has its own .at method)
       var best = null;
@@ -4180,6 +4218,8 @@
       if (used.indexOf(best.c) >= 0) return;
       used.push(best.c);
       var c = best.c, P = c.at, A = c.A, B = c.B, Q = cornerReliefShape(type, size, A.BA, B.BA, centered);
+      var pr = { at: P.slice(), closed: false, tools: [], bends: [] };
+      pairs.push(pr);
       // the sheet face: x ≤ 0, y ≤ 0, a prism through T below the inside face
       var fp = clipBox(Q, null, 0, null, 0);
       if (fp) {
@@ -4192,14 +4232,25 @@
         // corner frame (x, y) -> this bend's (s, t)
         var tP = dot(sub(P, r.origin), bd.n), sgn = dot(along, bd.n) > 0 ? 1 : -1;
         function st(p) { var s = ax ? p[1] : p[0], w = ax ? p[0] : p[1]; return [s, tP + sgn * w]; }
-        function strip(lo, hi) { return ax ? clipBox(Q, ext[0], ext[1], lo, hi) : clipBox(Q, lo, hi, ext[0], ext[1]); }
+        function strip(lo, hi, e1) { return ax ? clipBox(Q, ext[0], e1, lo, hi) : clipBox(Q, lo, hi, ext[0], e1); }
+        // lane MJ: a Closed Corner moved this bend's end at the corner (the record still ends where the flange put it):
+        // the strip's piece runs on over the closed bend region (`by`), the wall's to where the wall now ends
+        var near = dot(sub(r.b, P), along) > dot(sub(r.a, P), along) ? 1 : 0, sh = endShift(bd, near);
+        if (sh.any) pr.closed = true;
         // lane occtparity-2: the strip and wall through crBendCut (as the 3 Bend corner): a strip piece that is not a
         // rectangle carries `direct` (its band cut out by radial planes, its metal less the piece put back: cornerReliefApply)
-        crBendCut(bd, strip(0, BA), st, false, tools, recs, eps, T);
-        crBendCut(bd, strip(BA, null), st, true, tools, recs, eps, T);
+        var n0 = tools.length;
+        crBendCut(bd, strip(0, BA, ext[1] + sh.by), st, false, tools, recs, eps, T, sh.by ? { end: near, by: sh.by } : null);
+        for (var ti = n0; ti < tools.length; ti++) pr.tools.push(ti);
+        crBendCut(bd, strip(BA, null, ext[1] + sh.by + sh.cut), st, true, tools, recs, eps, T);
+        // (cornerReliefApply's corner path: the whole piece across this bend's strip, in the bend's (s, t), whatever
+        // the end at the corner looks like; tP: the corner on the bend's line, dir: toward the corner's far side)
+        var whole = strip(0, BA, null);
+        pr.bends.push({ id: bd.id, index: bd.index, loop: whole ? whole.map(st) : null, tP: tP, dir: sgn, sec: { A: Ang, R: R, T: T }, BA: BA,
+          plane: { origin: r.origin.slice(), x: r.o.slice(), y: r.u.slice(), n: bd.n.slice() } });
       });
     });
-    return { tools: tools, recs: recs, corners: used.map(function (c) { return c.at; }) };
+    return { tools: tools, recs: recs, corners: used.map(function (c) { return c.at; }), pairs: pairs };
   }
   // lane smcorner-2: SolidWorks' Corner Relief ▸ 3 Bend corner, where a bend A of the base (a U channel's) meets the
   // bends B1 (on the base's end edge) and B2 (on A's wall's end edge): bend3Corners. The relief (cornerReliefShape on
@@ -4214,7 +4265,7 @@
   var CORNER3_TYPES = ['rect', 'tear', 'circular', 'obround'];   // lane smflat: circular / obround rebuild the bends' metal (cornerReliefApply)
   // one bend's part of a relief: poly in the corner frame (clipped to the bend's strip or wall), st: corner (x, y) ->
   // the bend's (s from its start line, t along its line from its origin)
-  function crBendCut(bd, poly, st, wall, tools, recs, eps, T) {
+  function crBendCut(bd, poly, st, wall, tools, recs, eps, T, endAdj) {
     var r = bd.rec, BA = bd.BA, R = +r.R, Ang = +r.angle;
     if (!poly) return;
     if (!wall) {
@@ -4234,6 +4285,8 @@
         // and its metal less the piece put back (wrapRegion, cornerReliefApply), as Fold does. `grow`: where the piece
         // ends on the bend's own end, the wrapped tool (OpenCascade, the PM preview) runs on past that end face.
         var te0 = dot(sub(r.a, r.origin), bd.n), te1 = dot(sub(r.b, r.origin), bd.n), tlo = Math.min(te0, te1), thi = Math.max(te0, te1);
+        // (lane MJ: the bend runs `by` past that end of its record: a Closed Corner with the bend region closed)
+        if (endAdj && endAdj.by) { if ((endAdj.end ? te1 : te0) >= (endAdj.end ? te0 : te1)) thi += endAdj.by; else tlo -= endAdj.by; }
         tools.push({ wrap: { loops: [lp], sec: { A: Ang, R: R, T: T }, BA: BA, plane: plane, grow: { t0: tlo, t1: thi },
           direct: { t0: Math.max(tlo, tMin - T), t1: Math.min(thi, tMax + T) } } });
       }
@@ -4312,32 +4365,228 @@
   // earlier cut there) takes the wrapped tool. The face / wall prisms and rectangle sectors are cut as before.
   function cornerReliefApply(f, model, ctx, body) {
     if (!body) return null;   // lane occtparity-2: 2 Bend corners too
-    var lay = cornerReliefLayout(f, model, ctx);
-    if (!lay.tools.some(function (t) { return t.wrap && t.wrap.direct; })) return null;
+    var lay = cornerReliefLayout(f, model, ctx), prs = lay.pairs || [];
+    if (!lay.tools.some(function (t) { return t.wrap && t.wrap.direct; }) && !prs.some(function (p) { return p.closed; })) return null;
     if (ctx.flanges) ctx.flanges[f.id] = lay.recs;
-    var T = +sheetParams(model).thickness, cuts = [], sectors = [], metals = [];
-    lay.tools.forEach(function (t) {
+    var T = +sheetParams(model).thickness, cuts = [], sectors = [], metals = [], plainOf = [], pairOf = {}, want2 = {}, skip = {}, gone2 = [];
+    prs.forEach(function (p, i) { p.tools.forEach(function (ti) { pairOf[ti] = i; }); if (p.closed) want2[i] = true; });
+    lay.tools.forEach(function (t, ti) {
+      var w = t.wrap, d = w && w.direct;
+      if (!d || !(d.t1 - d.t0 > 1e-9 * Math.max(1, T)) || want2[pairOf[ti]]) return;
+      var sector = bendSector(w.sec, w.plane, d.t0, d.t1), plain = wrapRegion([], w.sec, w.BA, w.plane, d.t0, d.t1, { shared: f.id });
+      var want = plain ? plain.volume() : 0, have = want > 0 ? smBool(body, 'intersect', sector, T).volume() : -1;
+      if (want > 0 && Math.abs(have - want) <= 1e-7 * want) plainOf[ti] = sector;
+      else if (pairOf[ti] != null) want2[pairOf[ti]] = true;   // lane MJ: not plain bend metal: the corner path
+    });
+    // lane MJ: the corners whose bends do not end square on plain metal (a Closed Corner's helicoid ends, an earlier
+    // relief or cut there), one at a time: crCornerApply
+    var out = body;
+    Object.keys(want2).forEach(function (i) {
+      var r = crCornerApply(out, prs[i], T, f.id);
+      if (!r) return;
+      out = r.body;
+      prs[i].tools.forEach(function (ti) { skip[ti] = true; });
+      if (r.gone) gone2.push(r.gone);
+    });
+    lay.tools.forEach(function (t, ti) {
+      if (skip[ti]) return;
       if (t.prism || t.sector) { var q = t.prism || t.sector; cuts.push(prism(q.loop, q.plane, q.a, q.b, f.id)); return; }
       var w = t.wrap, d = w.direct;
-      if (d && d.t1 - d.t0 > 1e-9 * Math.max(1, T)) {
-        var sector = bendSector(w.sec, w.plane, d.t0, d.t1), plain = wrapRegion([], w.sec, w.BA, w.plane, d.t0, d.t1, { shared: f.id });
-        var want = plain ? plain.volume() : 0, have = want > 0 ? smBool(body, 'intersect', sector, T).volume() : -1;
-        if (want > 0 && Math.abs(have - want) <= 1e-7 * want) {
-          var metal = wrapRegion(w.loops, w.sec, w.BA, w.plane, d.t0, d.t1, { shared: f.id });
-          sectors.push(sector);
-          if (metal) metals.push(metal);
-          return;
-        }
+      if (plainOf[ti]) {
+        var metal = wrapRegion(w.loops, w.sec, w.BA, w.plane, d.t0, d.t1, { shared: f.id });
+        sectors.push(plainOf[ti]);
+        if (metal) metals.push(metal);
+        return;
       }
       var wc = wrapCut(w.loops, w.sec, w.BA, w.plane, { shared: f.id, grow: w.grow });
       if (wc) cuts.push(wc);
     });
-    var all = cuts.concat(sectors), out = all.length ? smBool(body, 'subtract', all, T) : body;
+    var all = cuts.concat(sectors);
+    if (all.length) out = smBool(out, 'subtract', all, T);
     if (metals.length) out = smBool(out, 'union', metals, T);
     var gone = !sectors.length ? null : metals.length ? smBool(unionAll(sectors), 'subtract', metals, T) : unionAll(sectors);
     var tool = cuts.length ? unionAll(cuts) : null;
     if (gone) tool = tool ? tool.union(gone) : gone;
+    gone2.forEach(function (g) { tool = tool ? tool.union(g) : g; });
     return { body: out, tool: tool };
+  }
+  // lane MJ: a bend's metal inside a band, read back from the solid as it is: the faces of M (the part inside the
+  // band's sector) that lie on the chords of the bend's outer cylinder, each as a polygon in the bend's (s, t)
+  // (s = BA·θ/A at the true angle, as wrapRegion places its points; t along the axis). A bend made by flangeProfile /
+  // wrapRegion is radial through the thickness, so these polygons are its developed shape whatever its ends look like.
+  function bendCapPolys(M, sec, BA, plane, t0, t1, z) {
+    var R = sec.R, T = sec.T, A = sec.A, segs = Math.max(4, Math.round(8 * A / (Math.PI / 2))), out = [];
+    var tol = 1e-6 * (R + T), tolS = 1e-9 * Math.max(T, BA), tolT = 1e-9 * Math.max(1, t1 - t0), fac = [];
+    if (z == null) z = T;   // (z = 0: the inner cylinder's chords, the same (s, t))
+    for (var k = 0; k < segs; k++) { var ta = A * k / segs, tb = A * (k + 1) / segs, tm = (ta + tb) / 2; fac.push({ c: Math.sin(tm), d: -Math.cos(tm), w: (R + z) * Math.cos((tb - ta) / 2) }); }
+    M.polygons.forEach(function (pg) {
+      var pts = pg.vertices.map(function (v) { var q = sub([v.pos.x, v.pos.y, v.pos.z], plane.origin); return [dot(q, plane.x), dot(q, plane.y) - R, dot(q, plane.n)]; });
+      for (var k = 0; k < segs; k++) {
+        var fc = fac[k];
+        if (!pts.every(function (p) { return Math.abs(p[0] * fc.c + p[1] * fc.d - fc.w) < tol; })) continue;
+        var lp = pts.map(function (p) {
+          var s = BA * Math.atan2(p[0], -p[1]) / A, t = p[2];
+          for (var j = 0; j <= segs; j++) { var z = j === segs ? BA : BA * j / segs; if (Math.abs(s - z) < tolS) s = z; }
+          if (Math.abs(t - t0) < tolT) t = t0; else if (Math.abs(t - t1) < tolT) t = t1;
+          return [s, t];
+        });
+        if (signedArea(lp) < 0) lp.reverse();
+        out.push(lp);
+        return;
+      }
+    });
+    return out;
+  }
+  // lane MJ: the voids of a band s ∈ [0, BA] × t ∈ [t0, t1] whose metal is `caps` (bendCapPolys), with the outline
+  // `extra` (clipped to the band) cut out as well: loops for wrapRegion (which counts them even-odd), or null. The 2D
+  // booleans are mergeFlatRegions' arrangement at a scale where its weld is 1e-7 of the bend allowance.
+  function bandVoids(caps, BA, t0, t1, extra) {
+    var k = 1000 / BA, W = 1e-4;
+    function sc(l) { return l.map(function (p) { return [p[0] * k, p[1] * k]; }); }
+    var band = [[0, t0], [BA, t0], [BA, t1], [0, t1]], full = BA * (t1 - t0), have = 0;
+    caps.forEach(function (l) { have += Math.abs(signedArea(l)); });
+    // (the caps fill the band: plain bend metal, no void; the arrangement has no boundary to return then)
+    var v = Math.abs(have - full) <= 1e-9 * full ? [] : caps.length ? mergeFlatRegions([[sc(band)]], caps.map(sc), W) : [sc(band)];
+    if (!v) return null;
+    v = v.filter(function (l) { return Math.abs(signedArea(l)) > 1e-3; });   // (1e-9 of the allowance squared)
+    // extra: one convex outline, or { loops } (convex pieces: a Normal Cut's footprint, facet by facet)
+    var ex = !extra ? [] : (extra.loops || [extra]).map(function (l) { return clipBox(l, 0, BA, t0, t1); }).filter(Boolean).map(function (l) { return [sc(l)]; });
+    if (ex.length) { v = mergeFlatRegions((v.length ? [v] : []).concat(ex), [], W); if (!v) return null; }
+    return v.map(function (l) { return l.map(function (p) { return [p[0] / k, p[1] / k]; }); });
+  }
+  // lane MJ: one 2 Bend corner of a Corner Relief whose bends do not end square on plain metal there (a Closed
+  // Corner's helicoid ends, bend region closed or open; an earlier relief): crCornerApply(body, pair, T, id) ->
+  // { body, gone } or null. Near such a corner each bend's sector also holds the END of the other bend, so a sector
+  // cut for one bend took metal of the other, and a wrapped tool through the slanted ends cracked the BSP (14 ga box,
+  // Butt corners, Circular 0.12: 12 open / 4 non-manifold edges). Here both bends' bands at the corner (from T before
+  // the corner and the piece to R + 2T past it) are cut out by their sectors (radial planes) and each bend's metal is
+  // put back from its developed shape, read from the solid (bendCapPolys), less the relief outline (bandVoids,
+  // wrapRegion): no boolean runs through a bend. Checked before anything is changed: what the two sectors take is
+  // exactly the two bends' metal as read (1e-7); if not (something else stands in a sector, an end that is not
+  // radial: a mitre plane), null and the caller cuts with its tools as before.
+  function crCornerApply(body, pair, T, id) {
+    var bands = [];
+    pair.bends.forEach(function (b) {
+      var lo = -T, hi = b.sec.R + 2 * T;
+      (b.loop || []).forEach(function (p) { var w = (p[1] - b.tP) * b.dir; lo = Math.min(lo, w - T); hi = Math.max(hi, w + T); });
+      var ta = b.tP + b.dir * lo, tb = b.tP + b.dir * hi;
+      bands.push({ sec: b.sec, BA: b.BA, plane: b.plane, t0: Math.min(ta, tb), t1: Math.max(ta, tb), cut: b.loop });
+    });
+    var rb = bendBandsRebuild(body, bands, T, id);
+    if (!rb) return null;
+    var b1 = rb.rest, gone = unionAll(rb.sectors);
+    rb.metals.forEach(function (m) { b1 = smBool(b1, 'union', m, T); gone = smBool(gone, 'subtract', m, T); });
+    return { body: b1, gone: gone };
+  }
+  // lane MJ: bendBandsRebuild(body, bands, T, id) -> { rest, sectors, metals } or null. bands: [{ sec, BA, plane, t0,
+  // t1, cut }] (a bend's section frame, a stretch of its axis, and what to cut from it in its (s, t): a convex
+  // outline, { loops } of convex pieces, or nothing). rest = the body less every band's sector; metals: each band's
+  // metal as the solid has it (bendCapPolys) less its cut (bandVoids, wrapRegion), to be unioned onto rest one at a
+  // time. null unless the sectors hold exactly the bands' metal as read (1e-7): nothing else may stand in a sector,
+  // and every bend end in a band must be radial through the thickness.
+  function bendBandsRebuild(body, bands, T, id) {
+    var rest = body, oldVol = 0, metals = [], sectors = [], ok = true;
+    bands.forEach(function (bn) { bn.sector = bendSector(bn.sec, bn.plane, bn.t0, bn.t1); sectors.push(bn.sector); rest = smBool(rest, 'subtract', bn.sector, T); });
+    var removed = body.volume() - rest.volume();
+    bands.forEach(function (bn) {
+      if (!ok) return;
+      var M = smBool(body, 'intersect', bn.sector, T), caps = bendCapPolys(M, bn.sec, bn.BA, bn.plane, bn.t0, bn.t1);
+      if (!caps.length) return;
+      var v0 = bandVoids(caps, bn.BA, bn.t0, bn.t1, null), v1 = bn.cut ? bandVoids(caps, bn.BA, bn.t0, bn.t1, bn.cut) : v0;
+      if (!v0 || !v1) { ok = false; return; }
+      var m0 = wrapRegion(v0, bn.sec, bn.BA, bn.plane, bn.t0, bn.t1, { shared: id });
+      oldVol += m0 ? m0.volume() : 0;
+      var m1 = v1 === v0 ? m0 : wrapRegion(v1, bn.sec, bn.BA, bn.plane, bn.t0, bn.t1, { shared: id });
+      if (m1) metals.push(m1);
+    });
+    if (!ok || !(oldVol > 0) || Math.abs(removed - oldVol) > 1e-7 * oldVol) return null;
+    return { rest: rest, sectors: sectors, metals: metals };
+  }
+  // lane MJ: a Normal Cut across the bend of an edge flange. normalCutTool pushed every bend facet of the footprint
+  // through the thickness along the facet's own normal, with wedges between, and the boolean of those prisms with the
+  // faceted bend cracked wherever the hole met a bend's end (a hole at the corner of a Butt Closed Corner, 20 ga: 23
+  // open / 11 non-manifold edges; near a plain corner: 20 open). Normal to the sheet in a bend is radial, so the cut
+  // is the footprint on the surface it enters through, in the bend's (s, t), taken out of the bend's developed metal:
+  // normalCutBends(chosen, body, model, flanges, id) -> { on(mesh, i), rest, sectors, metals } or null (no footprint
+  // on such a bend, or the bands do not hold plain radial bend metal: the prisms then, as before). chosen: the
+  // footprint's faces [{ mesh, i }]; on(): a face lying on a bend that is rebuilt (no prism, no wedge for it). A band
+  // that comes within R + 2T of its bend's end also takes the ends of the bends that meet it there (their metal
+  // stands in its sector), as crCornerApply does.
+  function normalCutBends(chosen, body, model, flanges, id, tools) {
+    var sheet = sheetParams(model), T = +sheet.thickness, recs = [];
+    (model.features || []).forEach(function (g) {
+      (flanges[g.id] || []).forEach(function (r) {
+        if (!r || r.kind !== 'edge' || !r.a || !r.b || !r.o || !r.u || !r.origin || !(r.angle > 1e-6 && r.angle < Math.PI - 1e-6) || !(+r.R > 0)) return;
+        var n = norm(cross(r.o, r.u)), ta = dot(sub(r.a, r.origin), n), tb = dot(sub(r.b, r.origin), n);
+        recs.push({ r: r, sec: { A: +r.angle, R: +r.R, T: T }, BA: cornerRecordBA(sheet, r), plane: { origin: r.origin.slice(), x: r.o.slice(), y: r.u.slice(), n: n },
+          lo: Math.min(ta, tb), hi: Math.max(ta, tb), foot: [], zs: {}, t0: Infinity, t1: -Infinity, ends: [ta <= tb ? r.a : r.b, ta <= tb ? r.b : r.a] });
+      });
+    });
+    if (!recs.length) return null;
+    var memo = [];
+    // the bend a face lies on (every polygon of it on a chord of the bend's inner or outer cylinder), with the face
+    // developed: { rc, loops }, or null
+    function faceOn(mesh, i) {
+      for (var k = 0; k < memo.length; k++) if (memo[k].mesh === mesh && memo[k].i === i) return memo[k].v;
+      var polys = (mesh.faces[i] && mesh.faces[i].polys) || [], best = null;
+      if (polys.length) recs.forEach(function (rc) {
+        [0, T].forEach(function (z) {
+          var loops = bendCapPolys({ polygons: polys }, rc.sec, rc.BA, rc.plane, rc.lo, rc.hi, z);
+          if (loops.length !== polys.length) return;
+          var tm = 0, cnt = 0;
+          loops.forEach(function (l) { l.forEach(function (p) { tm += p[1]; cnt++; }); });
+          tm /= cnt;
+          var d = tm < rc.lo ? rc.lo - tm : tm > rc.hi ? tm - rc.hi : 0;
+          if (!best || d < best.d) best = { d: d, rc: rc, loops: loops, z: z };
+        });
+      });
+      if (best && best.d > 2 * (best.rc.sec.R + T)) best = null;
+      memo.push({ mesh: mesh, i: i, v: best });
+      return best;
+    }
+    chosen.forEach(function (c) {
+      var fo = faceOn(c.mesh, c.i);
+      if (!fo) return;
+      fo.rc.zs[fo.z] = true;
+      fo.loops.forEach(function (l) { fo.rc.foot.push(l); l.forEach(function (p) { fo.rc.t0 = Math.min(fo.rc.t0, p[1]); fo.rc.t1 = Math.max(fo.rc.t1, p[1]); }); });
+    });
+    var touched = recs.filter(function (rc) { return rc.foot.length; });
+    if (!touched.length) return null;
+    touched.forEach(function (rc) { rc.b0 = rc.t0 - T; rc.b1 = rc.t1 + T; });
+    // the footprint itself is read off a plain bend over the band (the tools' own trace on the chords): the faces of
+    // body ∩ tool end on the bend's own edges (a slanted end, an earlier hole), a hair off where the developed metal
+    // has them, and the two outlines running side by side left slits in the void (a spike wrapRegion cannot wall)
+    touched.forEach(function (rc) {
+      var plain = wrapRegion([], rc.sec, rc.BA, rc.plane, rc.b0, rc.b1, {}), foot = [];
+      if (plain) tools.forEach(function (tl) {
+        var X = smBool(plain, 'intersect', tl, T);
+        Object.keys(rc.zs).forEach(function (z) { foot = foot.concat(bendCapPolys(X, rc.sec, rc.BA, rc.plane, rc.b0, rc.b1, +z)); });
+      });
+      rc.foot = foot;
+      if (!foot.length) rc.b0 = rc.b1 = null;   // (nothing of the tools on a plain bend there: that face keeps its prism)
+    });
+    touched = touched.filter(function (rc) { return rc.foot.length; });
+    if (!touched.length) return null;
+    touched.forEach(function (rc) {
+      var reach = rc.sec.R + 2 * T;
+      [rc.lo, rc.hi].forEach(function (E, e) {
+        if (rc.b1 < E - reach || rc.b0 > E + reach) return;
+        rc.b0 = Math.min(rc.b0, E - reach); rc.b1 = Math.max(rc.b1, E + reach);
+        recs.forEach(function (g) {
+          if (g === rc) return;
+          [g.lo, g.hi].forEach(function (Eg, eg) {
+            if (len(sub(g.ends[eg], rc.ends[e])) > 4 * (rc.sec.R + T)) return;
+            var rg = g.sec.R + 2 * T;
+            g.b0 = Math.min(g.b0 == null ? Infinity : g.b0, Eg - rg); g.b1 = Math.max(g.b1 == null ? -Infinity : g.b1, Eg + rg);
+          });
+        });
+      });
+    });
+    var inBands = recs.filter(function (rc) { return rc.b0 != null; });
+    var rb = bendBandsRebuild(body, inBands.map(function (rc) { return { sec: rc.sec, BA: rc.BA, plane: rc.plane, t0: rc.b0, t1: rc.b1, cut: rc.foot.length ? { loops: rc.foot } : null }; }), T, id);
+    if (!rb) return null;
+    rb.on = function (mesh, i) { var fo = faceOn(mesh, i); return !!fo && inBands.indexOf(fo.rc) >= 0; };
+    return rb;
   }
   // Corner-Relief1, Corner-Relief2, …
   function cornerReliefName(model) {
@@ -7071,7 +7320,7 @@
   K.bendNoteText = bendNoteText; K.hemSection = hemSection; K.FLANGE_LENGTH_REFS = LENGTH_REFS.slice(); K.HEM_TYPES = HEM_TYPES.slice();
   K.CLOSED_HEM_RADIUS = CLOSED_HEM_R; K.DEFAULT_HEM_ANGLE = DEFAULT_HEM_ANGLE;
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
-  _.buildFlange = buildFlange; _.buildJog = buildJog; _.normalCutTool = normalCutTool;
+  _.buildFlange = buildFlange; _.buildJog = buildJog; _.normalCutTool = normalCutTool; _.normalCutApply = normalCutApply;
   K.buildSketchedBend = buildSketchedBend; K.sketchedBendLayout = sketchedBendLayout; K.SKETCHED_BEND_POSITIONS = SB_POSITIONS.slice();
   // cuts across a bend zone (occt-kernel.js reads the voids again from its exact solid and cuts them from its sweep)
   K.bendVoids = bendVoids; K.bandSlabSpec = bandSlabSpec; K.wrapCut = wrapCut; K.wrapRegion = wrapRegion; K.bendSector = bendSector; K.bendZoneMap = bendZoneMap;
