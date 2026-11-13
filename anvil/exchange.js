@@ -902,7 +902,94 @@ var Exchange = (function () {
   function stepList(items) { return '(' + items.join(',') + ')'; }
   function stepVec(v) { return stepList(v.map(stepReal)); }
 
+  // lane stepwrite (rfMN): the mesh faces of one flat face of the solid, as one face. fanPolygons keys planes by their
+  // rounded normal and offset, so a flat face of an imported part (its points carry the file's rounding, 6 decimals:
+  // up to ~1e-6 off) fell into several keys and was written as dozens of PLANE faces. Mesh faces that share an edge,
+  // carry no curved surface's record, and whose points all lie within planeTol of the plane fitted to both (area-
+  // weighted normal and offset) become one face on that fitted plane. A face alone keeps its own normal and offset
+  // (Anvil's own exact parts write the same text as before).
+  function planeTolOf(pos) {
+    var ext = 1;
+    for (var q = 0; q < pos.length; q++) ext = Math.max(ext, Math.abs(pos[q]));
+    return Math.max(4e-6, 1e-6 * ext);   // the reader's weld is 1e-6; a 6-decimal file's points are up to 1e-6 off each way
+  }
+  function mergePlanes(mesh) {
+    var faces = mesh.faces, nF = faces.length, tri = mesh.triangles, pos = mesh.positions;
+    if (nF < 2) return mesh;
+    var dtol = planeTolOf(pos), nT = tri.length / 3, triFace = new Int32Array(nT).fill(-1), curved = new Uint8Array(nF);
+    faces.forEach(function (f, fi) { f.tris.forEach(function (t) { triFace[t] = fi; if (mesh.triSurf && mesh.triSurf[t]) curved[fi] = 1; }); });
+    var par = [], N = [], verts = [];
+    faces.forEach(function (f, fi) {
+      par.push(fi);
+      var n = [0, 0, 0], seen = {}, vs = [];
+      f.tris.forEach(function (t) {
+        var i0 = tri[t * 3], i1 = tri[t * 3 + 1], i2 = tri[t * 3 + 2];
+        var p0 = [pos[i0 * 3], pos[i0 * 3 + 1], pos[i0 * 3 + 2]], p1 = [pos[i1 * 3], pos[i1 * 3 + 1], pos[i1 * 3 + 2]], p2 = [pos[i2 * 3], pos[i2 * 3 + 1], pos[i2 * 3 + 2]];
+        n = add(n, cross(sub(p1, p0), sub(p2, p0)));
+        [i0, i1, i2].forEach(function (v) { if (!seen[v]) { seen[v] = 1; vs.push(v); } });
+      });
+      N.push(n); verts.push(vs);
+    });
+    function root(x) { while (par[x] !== x) { par[x] = par[par[x]]; x = par[x]; } return x; }
+    // the least-squares plane through the points vs (every point weighs the same: a fan's thin triangles have noisy
+    // normals, so the area-weighted normal tilted up to 2e-5 on a bent part's narrow faces), oriented along n0: the
+    // covariance's smallest eigenvector by inverse iteration from n0
+    function fit(n0, vs) {
+      var m = vs.length, c = [0, 0, 0], M = [0, 0, 0, 0, 0, 0], k, u = norm(n0);
+      for (k = 0; k < m; k++) { c[0] += pos[vs[k] * 3]; c[1] += pos[vs[k] * 3 + 1]; c[2] += pos[vs[k] * 3 + 2]; }
+      c = scale(c, 1 / m);
+      for (k = 0; k < m; k++) {
+        var x = pos[vs[k] * 3] - c[0], y = pos[vs[k] * 3 + 1] - c[1], z = pos[vs[k] * 3 + 2] - c[2];
+        M[0] += x * x; M[1] += x * y; M[2] += x * z; M[3] += y * y; M[4] += y * z; M[5] += z * z;
+      }
+      var d = 1e-14 * (M[0] + M[3] + M[5]) + 1e-300;
+      var a = M[0] + d, b = M[1], cc = M[2], e = M[3] + d, f = M[4], g = M[5] + d;
+      var i00 = e * g - f * f, i01 = cc * f - b * g, i02 = b * f - cc * e, i11 = a * g - cc * cc, i12 = b * cc - a * f, i22 = a * e - b * b;
+      for (var it = 0; it < 3; it++) {
+        var v = [i00 * u[0] + i01 * u[1] + i02 * u[2], i01 * u[0] + i11 * u[1] + i12 * u[2], i02 * u[0] + i12 * u[1] + i22 * u[2]];
+        if (!(len(v) > 0) || !isFinite(len(v))) break;
+        u = norm(v);
+      }
+      if (dot(u, n0) < 0) u = scale(u, -1);
+      return { n: u, w: dot(u, c) };
+    }
+    var edgeT = new PairMap(), merged = false;
+    for (var t = 0; t < nT; t++) {
+      var fa = triFace[t];
+      if (fa < 0 || curved[fa]) continue;
+      for (var e = 0; e < 3; e++) {
+        var a = tri[t * 3 + e], b = tri[t * 3 + (e + 1) % 3], lo = a < b ? a : b, hi = a < b ? b : a, o = edgeT.get(lo, hi);
+        if (o == null) { edgeT.set(lo, hi, t); continue; }
+        var fb = triFace[o];
+        if (fb < 0 || curved[fb]) continue;
+        var ra = root(fa), rb = root(fb);
+        if (ra === rb) continue;
+        var na = norm(N[ra]), nb = norm(N[rb]);
+        if (!(dot(na, nb) > 1 - 1e-3) || verts[ra].length + verts[rb].length > 50000) continue;
+        var vs = verts[ra].concat(verts[rb]), pl = fit(add(N[ra], N[rb]), vs), ok = true;
+        for (var k = 0; k < vs.length && ok; k++) if (Math.abs(pos[vs[k] * 3] * pl.n[0] + pos[vs[k] * 3 + 1] * pl.n[1] + pos[vs[k] * 3 + 2] * pl.n[2] - pl.w) > dtol) ok = false;
+        if (!ok) continue;
+        par[ra] = rb; N[rb] = add(N[ra], N[rb]); verts[rb] = vs; merged = true;
+      }
+    }
+    if (!merged) return mesh;
+    var out = [], at = {}, size = {};
+    faces.forEach(function (f, fi) { var r = root(fi); size[r] = (size[r] || 0) + 1; });
+    faces.forEach(function (f, fi) {
+      var r = root(fi);
+      if (size[r] === 1) { out.push(f); return; }
+      if (at[r] == null) { var pl = fit(N[r], verts[r]); at[r] = out.length; out.push({ normal: pl.n, w: pl.w, tris: [] }); }
+      var g = out[at[r]];
+      g.tris = g.tris.concat(f.tris);
+    });
+    var m2 = {};
+    Object.keys(mesh).forEach(function (k) { m2[k] = mesh[k]; });
+    m2.faces = out;
+    return m2;
+  }
+
   function writeBrep(W, mesh, name, T) {
+    if (!T) mesh = mergePlanes(mesh);
     if (!T && mesh.triSurf) return writeBrepAnalytic(W, mesh, name);
     T = T || null;
     var P = function (i) { var q = [mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]]; return T ? tfPoint(T, q) : q; };
@@ -1074,6 +1161,24 @@ var Exchange = (function () {
     var ext = 1;
     for (var q = 0; q < pos.length; q++) ext = Math.max(ext, Math.abs(pos[q]));
     var tol = 1e-7 * ext;
+    // lane stepwrite (rfMN): the points of an imported part carry its file's rounding (a 6-decimal file: ~1e-6), so an edge
+    // that is not a circle's chord or a ruling to tol is tried again to ntol, and circles that close (centre, radius,
+    // axis) are one circle: the first one met (an exact part's circles all pass at tol, their keys equal: as before)
+    var ntol = Math.max(tol, planeTolOf(pos)), circles = [];
+    function canonCircle(c) {
+      for (var i = 0; i < circles.length; i++) if (circles[i].key === c.key) return circles[i];
+      for (i = 0; i < circles.length; i++) {
+        var o = circles[i];
+        if (Math.abs(o.radius - c.radius) <= ntol && len(sub(o.center, c.center)) <= ntol && Math.abs(dot(o.normal, c.normal)) > 1 - 1e-9) return o;
+      }
+      circles.push(c);
+      return c;
+    }
+    function classify(S, A, B) {
+      var cl = classifyEdge(S, A, B, tol) || (ntol > tol ? classifyEdge(S, A, B, ntol) : null);
+      if (cl && cl.t === 'c') cl.c = canonCircle(cl.c);
+      return cl;
+    }
     var triPlane = new Int32Array(nT);
     mesh.faces.forEach(function (f, fi) { f.tris.forEach(function (t) { triPlane[t] = fi; }); });
     // distinct surfaces (one per analytic surface key), and each triangle's
@@ -1113,7 +1218,48 @@ var Exchange = (function () {
     });
     var snaps = [];
     snapToCylinders();
-    // lane stepout3: walls of holes folded through a bend (Unfold, cut, Fold: wrapCut lays the hole's points on the bend's
+    snapCylCyl();
+    // lane stepwrite (rfMN): a vertex where two cylinders of different axes meet (a hole through a bend, a cross hole in a
+    // tube) is where the boolean met the two faceted surfaces: on one's chord, inside the other by up to its sagitta. It
+    // moves, in the file only, to the true intersection curve: onto the thinner cylinder at its own angle and height
+    // there, then along that cylinder's ruling onto the other one. Only vertices whose triangles are on those two
+    // cylinders alone (a third face fixes the point: snapToCylinders' business). A patch that fails anyway undoes it
+    // (the snaps' round below).
+    function snapCylCyl() {
+      var vS = {}, moved = {};
+      snaps.forEach(function (sn) { moved[sn.v] = true; });
+      comps.forEach(function (c) {
+        if (!c.ok || c.surf.t !== 'cyl') return;
+        c.tris.forEach(function (t3) { for (var e3 = 0; e3 < 3; e3++) vS[tri[t3 * 3 + e3]] = true; });
+      });
+      var vTris = {};
+      for (var t2 = 0; t2 < nT; t2++) for (var e2 = 0; e2 < 3; e2++) { var v0 = tri[t2 * 3 + e2]; if (vS[v0]) (vTris[v0] = vTris[v0] || []).push(t2); }
+      Object.keys(vTris).forEach(function (vk) {
+        var v = +vk, ss = [], cs = [], ok = true;
+        if (moved[v]) return;
+        vTris[v].forEach(function (t4) {
+          var ci = compOf[t4];
+          if (ci < 0 || !comps[ci].ok || comps[ci].surf.t !== 'cyl') { ok = false; return; }
+          if (cs.indexOf(ci) < 0) cs.push(ci);
+          if (ss.indexOf(comps[ci].surf) < 0) ss.push(comps[ci].surf);
+        });
+        if (!ok || ss.length !== 2 || !crossable(ss[0], ss[1])) return;
+        var X = P(v), SA = ss[0].r <= ss[1].r ? ss[0] : ss[1], SB = SA === ss[0] ? ss[1] : ss[0];
+        var a = axial(SA, X), b = axial(SB, X);
+        if (Math.abs(a.rho - SA.r) <= tol && Math.abs(b.rho - SB.r) <= tol) return;
+        if (Math.abs(a.rho - SA.r) > 0.05 * SA.r || Math.abs(b.rho - SB.r) > 0.05 * SB.r || a.rho < tol) return;
+        var Y0 = add(add(SA.o, scale(SA.d, a.z)), scale(a.v, SA.r / a.rho));
+        var w0 = sub(Y0, SB.o), wp = sub(w0, scale(SB.d, dot(w0, SB.d))), Lp = sub(SA.d, scale(SB.d, dot(SA.d, SB.d)));
+        var qa = dot(Lp, Lp), qb = 2 * dot(wp, Lp), qc = dot(wp, wp) - SB.r * SB.r, disc = qb * qb - 4 * qa * qc;
+        if (!(qa > 1e-12) || !(disc >= 0)) return;
+        var r1 = (-qb + Math.sqrt(disc)) / (2 * qa), r2 = (-qb - Math.sqrt(disc)) / (2 * qa), lam = Math.abs(r1) < Math.abs(r2) ? r1 : r2;
+        if (Math.abs(lam) > 0.05 * SB.r) return;
+        var Y = add(Y0, scale(SA.d, lam));
+        if (pos === mesh.positions) pos = Float64Array.from(pos);
+        pos[v * 3] = Y[0]; pos[v * 3 + 1] = Y[1]; pos[v * 3 + 2] = Y[2];
+        snaps.push({ v: v, X: X, comps: cs.slice(), all: cs.slice(), cc: true });
+      });
+    }    // lane stepout3: walls of holes folded through a bend (Unfold, cut, Fold: wrapCut lays the hole's points on the bend's
     // facets' chords, each wall a strip of triangles along two radial lines, from a point on the inner bend to the same
     // angle and height on the outer one, Fold's mid-thickness point between). Each strip becomes a face of its own: the
     // ruled surface of radial lines between two rails, each rail a rational cubic on its cylinder (railOf: exact on the
@@ -1245,7 +1391,7 @@ var Exchange = (function () {
       comps.forEach(function (c) {
         var S = c.surf;
         if (!c.ok || S.t !== 'cyl') return;
-        c.tris.forEach(function (t3) { for (var e3 = 0; e3 < 3; e3++) { var v1 = tri[t3 * 3 + e3], off = Math.abs(axial(S, P(v1)).rho - S.r); if (off > tol && off <= 0.05 * S.r) cand[v1] = true; } });
+        c.tris.forEach(function (t3) { for (var e3 = 0; e3 < 3; e3++) { var v1 = tri[t3 * 3 + e3], off = Math.abs(axial(S, P(v1)).rho - S.r); if (off > ntol && off <= 0.05 * S.r) cand[v1] = true; } });
       });
       var moved = null;
       Object.keys(cand).forEach(function (vk) {
@@ -1299,6 +1445,9 @@ var Exchange = (function () {
     var PEDGE = { t: 'p' };   // lane stepreal2: a chord between two points of a cylinder, written as it is
     // (within 2e-5 of the radius: another CAD system's intersection curves are approximations, 2e-6 r off on a shop
     // file; a split point on a facet's chord is 1e-4 r off or more unless it sits at the chord's very end)
+    // lane stepwrite: two cylinders whose meeting curve is written as a curve of its own (snapCylCyl, saddleCurve): axes not
+    // parallel, one clearly thinner (equal holes crossing meet in two ellipses that touch: they keep their facets)
+    function crossable(S1, S2) { return S1.t === 'cyl' && S2.t === 'cyl' && len(cross(S1.d, S2.d)) > 1e-6 && Math.min(S1.r, S2.r) < 0.98 * Math.max(S1.r, S2.r); }
     function onCylS(S, X) { return Math.abs(axial(S, X).rho - S.r) <= Math.max(tol, 2e-5 * S.r); }
     // stepout-2: a mesh face that is a true plane (no triangle of it carries a curved surface's record)
     function truePlane(fi) { var ts = groups[fi]; for (var k = 0; k < ts.length; k++) if (triRec[ts[k]] >= 0) return false; return ts.length > 0; }
@@ -1337,13 +1486,21 @@ var Exchange = (function () {
         var g = nF + ci, S = c.surf, bad = false;
         loopsOf[g].forEach(function (l) {
           for (var i = 0; i < l.length && !bad; i++) {
-            var a = l[i], b = l[(i + 1) % l.length], A = P(a), B = P(b), cl = classifyEdge(S, A, B, tol), nb = owner.get(b, a);
+            var a = l[i], b = l[(i + 1) % l.length], A = P(a), B = P(b), cl = classify(S, A, B), nb = owner.get(b, a);
             // lane stepreal2: two points of a hole's rim at one height on the bend make a chord of a latitude circle,
             // but the face beside it is the hole's wall, not that circle's plane: the edge is the wall's cut (an
             // ellipse, or the chord, below), not the circle's arc (it sent the bend back to facets)
             if (cl && cl.t === 'c' && nb != null && nb < nF) {
               var pf0 = mesh.faces[nb], pn0 = norm(pf0.normal);
               if (Math.abs(Math.abs(dot(pn0, cl.c.normal)) - 1) > 1e-9 || Math.abs(dot(pn0, cl.c.center) - pf0.w) > 100 * tol) cl = null;
+            }
+            // lane stepwrite (rfMN): two cylinders that meet on a curve that is neither one's circle nor ruling (a hole through a
+            // bend, a cross-drilled tube) can each see a chord of it as their own circle / ruling (points symmetric about the
+            // saddle's top are at one height on the hole and on one ruling of the tube): with both ends on both cylinders the
+            // chord is the intersection curve's (PEDGE below), not either one's circle (was: bad, both walls to facets)
+            if (cl && nb != null && nb >= nF && nb < nW && crossable(S, comps[nb - nF].surf)) {
+              var oS0 = comps[nb - nF].surf, cm = classify(oS0, A, B);
+              if ((!cm || cm.t !== cl.t || (cl.t === 'c' && cm.c.key !== cl.c.key)) && onCylS(S, A) && onCylS(S, B) && onCylS(oS0, A) && onCylS(oS0, B)) cl = null;
             }
             // stepout-2: an oblique plane's cut is an ELLIPSE, where a true plane is beside (not the facets of a
             // curved face that fell back to facets: their planes are not the cut)
@@ -1359,11 +1516,12 @@ var Exchange = (function () {
             // of the volume off). Anvil's reader takes such a face back (cylPatch) with the same points.
             if (!cl && nb != null && S.t === 'cyl' && onCylS(S, A) && onCylS(S, B)) {
               var oS = nb >= nF ? comps[nb - nF].surf : null;
-              if (!oS || (oS.t === 'cyl' && onCylS(oS, A) && onCylS(oS, B) && !classifyEdge(oS, A, B, tol))) { cl = PEDGE; c.poly = true; ecls.set(a < b ? a : b, a < b ? b : a, cl); continue; }
+              if (!oS || (oS.t === 'cyl' && onCylS(oS, A) && onCylS(oS, B) && (crossable(S, oS) || !classify(oS, A, B)))) {   // (lane stepwrite: between crossable cylinders a name only one side gives is no name, see above)
+                cl = oS && crossable(S, oS) ? { t: 'p', s: [S, oS] } : PEDGE; c.poly = true; ecls.set(a < b ? a : b, a < b ? b : a, cl); continue; }
             }
             if (!cl || nb == null) { bad = true; break; }
             if (nb >= nF) {
-              var c2 = classifyEdge(comps[nb - nF].surf, A, B, tol);
+              var c2 = classify(comps[nb - nF].surf, A, B);
               if (!c2 || c2.t !== cl.t || (cl.t === 'c' && c2.c.key !== cl.c.key)) bad = true;
             } else if (cl.t === 'c') {
               var pf = mesh.faces[nb], pn = norm(pf.normal);
@@ -1426,6 +1584,33 @@ var Exchange = (function () {
       });
       var onAxis = null;
       c.tris.forEach(function (t2) { for (var e2 = 0; e2 < 3; e2++) { var v = tri[t2 * 3 + e2]; if (!onAxis && axial(S, P(v)).rho < tol) onAxis = P(v); } });
+      // lane stepwrite (rfMN): a cylinder all the way round between two loops that are not both whole circles (a hole's
+      // wall through a bend or a tube: a circle and a saddle, or two saddles), or a band with holes in it (the tube where
+      // a cross hole leaves it): one face, every loop a FACE_BOUND, no seam (OpenCascade adds its own and reads the
+      // cross-drilled tube to 4e-7 of the closed form; Anvil's reader unrolls two loops winding one period as a band; a
+      // seam ruling written as OpenCascade writes it sent Anvil's reader 3 % off). Every other loop must stay on one side
+      // of the axis. Was: facets
+      if (S.t === 'cyl' && !(closed.length === 2 && !other.length)) {
+        var okW = true, nWind = 0;
+        loops.forEach(function (l) {
+          var sumW = 0, prevW = null, firstW = null;
+          for (var iw = 0; iw < l.length && okW; iw++) {
+            var axw = axial(S, P(l[iw]));
+            if (axw.rho < 0.5 * S.r) okW = false;
+            var angW = Math.atan2(dot(axw.v, yd), dot(axw.v, xd));
+            if (prevW == null) firstW = angW; else sumW += wrapAngle(angW - prevW);
+            prevW = angW;
+          }
+          sumW += wrapAngle(firstW - prevW);
+          // a winding loop is circles and two-cylinder curves only (chords of facets or of an unnamed curve: not this shape)
+          if (Math.abs(Math.abs(sumW) - 2 * Math.PI) < 1e-6) { nWind++; for (var ie = 0; ie < l.length; ie++) { var ce = eget(l[ie], l[(ie + 1) % l.length]); if (!ce || !(ce.t === 'c' || (ce.t === 'p' && ce.s))) okW = false; } }
+          else if (Math.abs(sumW) > 1e-6) okW = false;
+        });
+        if (nWind && (!okW || nWind !== 2)) return null;
+        // (a whole circle bounding such a face is written as two half arcs, as SolidWorks writes them: Anvil's reader zips a
+        // face with two whole circles as a plain band and would drop its other loops)
+        if (okW && nWind === 2) { closed.forEach(function (q) { q.circle.split = true; }); return { kind: 'plain' }; }
+      }
       if (!closed.length && !other.length) return S.t === 'sph' || S.t === 'tor' ? { kind: 'closed' } : null;
       if (!closed.length) {
         if (S.t !== 'cyl' && S.t !== 'cone' && S.t !== 'tor' && S.t !== 'sph') return null;
@@ -1472,7 +1657,7 @@ var Exchange = (function () {
     var ok0 = comps.map(function (c) { return c.ok; }), live = snaps.slice();
     for (var round = 0; ; round++) {
       comps.forEach(function (c, ci) { c.ok = ok0[ci]; c.oblique = false; c.snapped = false; c.poly = false; });
-      live.forEach(function (sn) { sn.all.forEach(function (ci) { comps[ci].snapped = true; }); });
+      live.forEach(function (sn) { if (!sn.cc) sn.all.forEach(function (ci) { comps[ci].snapped = true; }); });
       for (var iter = 0; iter < comps.length + 2 && !build(); iter++) { /* a patch fell back to facets: rebuild the topology */ }
       var undo = live.filter(function (sn) { return sn.comps.some(function (ci) { return !comps[ci].ok; }); });
       // lane stepout3: a radial wall whose bend fell back to facets goes back to its triangles, its points where they were
@@ -1518,6 +1703,7 @@ var Exchange = (function () {
       // lane stepreal2: a closed run of chords (a hole's rim on a bend, one wall all round): two edges, split at the loop's
       // lowest and highest vertex numbers so the face on the other side, which walks it the other way, splits it alike
       if (!breaks.length && cls[0].t === 'p') { var lo = 0, hi = 0; for (i = 1; i < n; i++) { if (l[i] < l[lo]) lo = i; if (l[i] > l[hi]) hi = i; } breaks = lo < hi ? [lo, hi] : [hi, lo]; }
+      if (!breaks.length && cls[0].c.split) return halfCircleEdges(cls[0].c, P(l[0]), P(l[1]));
       if (!breaks.length) return [closedCircleEdge(cls[0].c, P(l[0]), P(l[1]))];
       var out = [];
       for (var k = 0; k < breaks.length; k++) {
@@ -1535,6 +1721,7 @@ var Exchange = (function () {
       if (cl.t === 'c') { geom = circleE(cl.c); sense = ccw(cl.c, A, B) ? '.T.' : '.F.'; }
       else if (cl.t === 'e') { geom = ellipseE(cl.e); sense = wrapAngle(ellipseParam(cl.e, B) - ellipseParam(cl.e, A)) > 0 ? '.T.' : '.F.'; }
       else if (cl.t === 'w') { var rl = railOf(cl.S, A, B); geom = rationalCurve(rl.poles, rl.w); }   // lane stepout3
+      else if (cl.t === 'p' && cl.s) geom = saddleCurve(vs.map(P), cl.s[0], cl.s[1]);   // lane stepwrite
       else if (cl.t === 'p' && vs.length > 2) geom = polylineCurve(vs.map(P));   // lane stepreal2
       else geom = lineE(A, P(vs[vs.length - 1]));
       ch = chains[key] = { id: W.add('EDGE_CURVE(\'\',' + vertex(vs[0]) + ',' + vertex(vs[vs.length - 1]) + ',' + geom + ',' + sense + ')'), fk: fk };
@@ -1546,6 +1733,16 @@ var Exchange = (function () {
       var V = circleVertex(c);
       ch = chains[key] = { id: W.add('EDGE_CURVE(\'\',' + V + ',' + V + ',' + circleE(c) + ',' + (dirCCW ? '.T.' : '.F.') + ')'), ccw: dirCCW };
       return oe(ch.id, true);
+    }
+    // lane stepwrite: a whole circle as two half arcs (from its xdir point to the opposite one and back), shared by both
+    // faces that use it
+    function halfCircleEdges(c, A, B) {
+      var dirCCW = ccw(c, A, B), key = 'H' + c.key, ch = chains[key];
+      if (!ch) {
+        var V0 = circleVertex(c), V1 = vertexAt('h' + c.key, sub(c.center, scale(c.xdir, c.radius)));
+        ch = chains[key] = { a: W.add('EDGE_CURVE(\'\',' + V0 + ',' + V1 + ',' + circleE(c) + ',.T.)'), b: W.add('EDGE_CURVE(\'\',' + V1 + ',' + V0 + ',' + circleE(c) + ',.T.)') };
+      }
+      return dirCCW ? [oe(ch.a, true), oe(ch.b, true)] : [oe(ch.b, false), oe(ch.a, false)];
     }
     function edgeLoop(oes) { return W.add('EDGE_LOOP(\'\',' + stepList(oes) + ')'); }
     // lane stepout3: a radial wall's rail from A to B on cylinder S (both on it): the circle's arc between their angles as
@@ -1564,7 +1761,62 @@ var Exchange = (function () {
       var q1 = scale(add(scale(ua, a.rho), scale(m1, 2 * w)), 1 / (1 + 2 * w)), q2 = scale(add(scale(ub, b.rho), scale(m1, 2 * w)), 1 / (1 + 2 * w));
       return { poles: [A, pole(q1, zm - c), pole(q2, zm + c), B], w: Math.abs(w1 - 1) < 1e-15 ? 1 : w1 };
     }
-    // lane stepreal2: the chords through pts as one curve: a degree 1 B-spline, a knot at every point
+    // lane stepwrite (rfMN): a run of points on the curve where two cylinders of different axes meet (a hole through a
+    // bend, a cross hole in a tube): the C2 cubic B-spline through every point (chord-length parameters, the true curve's
+    // tangent at both ends: the two normals' cross product), so the curve between the points stays on both cylinders to
+    // O(h^4) (~2e-6 of a 0.15 hole at 32 sides; the chords were 7e-4 inside, which Anvil's reader refuses as a boundary
+    // off its surface). A piecewise cubic with multiplicity-3 knots (G1 only) and the chords both read 1e-3 of the
+    // volume off in OpenCascade: its projection onto the cylinder wants a smooth curve. No tangent (the cylinders
+    // touch there): the chords (polylineCurve).
+    function saddleCurve(pts, S1, S2) {
+      // interior points closer than a fifth of the thinner radius apart are left out (a read-back part's edge carries
+      // its file's samples, 24 a span: the curve through all of them is that many times longer and wiggles on their
+      // rounding); the ends stay
+      var hT = 0.2 * Math.min(S1.r, S2.r), keep = [pts[0]], acc = 0;
+      for (var q = 1; q < pts.length - 1; q++) { acc += len(sub(pts[q], pts[q - 1])); if (acc >= 0.7 * hT) { keep.push(pts[q]); acc = 0; } }
+      if (keep.length > 1 && acc + len(sub(pts[pts.length - 1], pts[pts.length - 2])) < 0.35 * hT) keep.pop();
+      keep.push(pts[pts.length - 1]);
+      pts = keep;
+      var m = pts.length - 1, i, k;
+      function tang(p, d) {
+        var a1 = axial(S1, p), a2 = axial(S2, p);
+        if (!(a1.rho > 0) || !(a2.rho > 0)) return null;
+        var t = cross(scale(a1.v, 1 / a1.rho), scale(a2.v, 1 / a2.rho)), lt = len(t);
+        if (lt < 1e-3) return null;
+        t = scale(t, 1 / lt);
+        return dot(t, d) < 0 ? scale(t, -1) : t;
+      }
+      var u = [0], tot = 0;
+      for (i = 1; i <= m; i++) { tot += len(sub(pts[i], pts[i - 1])); u.push(tot); }
+      var t0 = tang(pts[0], sub(pts[1], pts[0])), t1 = tang(pts[m], sub(pts[m], pts[m - 1]));
+      if (!(tot > 0) || !t0 || !t1) return polylineCurve(pts);
+      u = u.map(function (x) { return x / tot; }); u[m] = 1;
+      var U = [0, 0, 0, 0].concat(u.slice(1, m), [1, 1, 1, 1]);
+      function N(j, p, x) {
+        if (p === 0) return U[j] <= x && x < U[j + 1] ? 1 : 0;
+        var a = U[j + p] > U[j] ? (x - U[j]) / (U[j + p] - U[j]) * N(j, p - 1, x) : 0;
+        var b = U[j + p + 1] > U[j + 1] ? (U[j + p + 1] - x) / (U[j + p + 1] - U[j + 1]) * N(j + 1, p - 1, x) : 0;
+        return a + b;
+      }
+      var Pp = [];
+      Pp[0] = pts[0]; Pp[1] = add(pts[0], scale(t0, u[1] * tot / 3));
+      Pp[m + 2] = pts[m]; Pp[m + 1] = sub(pts[m], scale(t1, (1 - u[m - 1]) * tot / 3));
+      // rows k = 1 .. m-1: N_k P_k + N_k+1 P_k+1 + N_k+2 P_k+2 = Q_k, unknowns P_2 .. P_m (Thomas)
+      var A = [], B = [], C = [], R = [];
+      for (k = 1; k <= m - 1; k++) {
+        var a = N(k, 3, u[k]), b = N(k + 1, 3, u[k]), cc = N(k + 2, 3, u[k]), r = pts[k];
+        if (k === 1) { r = sub(r, scale(Pp[1], a)); a = 0; }
+        if (k === m - 1) { r = sub(r, scale(Pp[m + 1], cc)); cc = 0; }
+        A.push(a); B.push(b); C.push(cc); R.push(r);
+      }
+      for (k = 1; k < R.length; k++) { var w = A[k] / B[k - 1]; B[k] -= w * C[k - 1]; R[k] = sub(R[k], scale(R[k - 1], w)); }
+      for (k = R.length - 1; k >= 0; k--) Pp[k + 2] = scale(k + 1 < R.length ? sub(R[k], scale(Pp[k + 3], C[k])) : R[k], 1 / B[k]);
+      if (Pp.some(function (q) { return !q || !isFinite(q[0] + q[1] + q[2]); })) return polylineCurve(pts);
+      var mults = [4], knots = [stepReal(0)];
+      for (i = 1; i < m; i++) { mults.push(1); knots.push(stepReal(u[i])); }
+      mults.push(4); knots.push(stepReal(1));
+      return W.add('B_SPLINE_CURVE_WITH_KNOTS(\'\',3,' + stepList(Pp.map(pt)) + ',.UNSPECIFIED.,.F.,.F.,(' + mults.join(',') + '),(' + knots.join(',') + '),.UNSPECIFIED.)');
+    }    // lane stepreal2: the chords through pts as one curve: a degree 1 B-spline, a knot at every point
     function polylineCurve(pts) {
       var n = pts.length, mults = [], knots = [];
       for (var i = 0; i < n; i++) { mults.push(i === 0 || i === n - 1 ? 2 : 1); knots.push(stepReal(i)); }
