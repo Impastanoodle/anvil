@@ -702,13 +702,18 @@
       ctx = { build: b, mesh: ctx.mesh, props: Materials.context(model, { build: b, mesh: asm ? null : ctx.mesh }) };
       // the Mass field's mass properties are worked out once per build and material (r3/drawings3: every redraw of the
       // sheet used to rebuild the body mesh and integrate it again, 3-4 ms of each drag frame)
-      var src = b || ctx.mesh;
+      // (lane drawperf) kept on the built solid itself (build.body) when there is one: a rebuild that hands back the same
+      // solid in a new build (UI.rebuild keeps unchanged solids) does not integrate it again, and one that changes it
+      // makes a new body, so the memo goes with the old one. The mass is only asked for when a field on the sheet shows
+      // it (Materials.context is lazy): massAsks counts the integrations, for the tests
+      var src = (!asm && b && b.body && typeof b.body === 'object' ? b.body : null) || b || ctx.mesh;
       if (src && typeof src === 'object') {
         var mk = JSON.stringify([model.units, model.density, model.material, model.materialName, model.bodyMaterials, model.type]);
         var memo = src._drawingMass, base = ctx.props.mass;
         ctx.props.mass = function () {
           if (memo && memo.key === mk) return memo.mp;
           var mp = base();
+          _.massAsks = (_.massAsks || 0) + 1;
           try { Object.defineProperty(src, '_drawingMass', { value: { key: mk, mp: mp }, configurable: true, writable: true, enumerable: false }); } catch (e) { }
           memo = src._drawingMass;
           return mp;

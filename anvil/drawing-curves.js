@@ -110,10 +110,18 @@
     // whose two ends are on the true curve are kept (one cut short by a trimming face, a hex nut's flat, is not)
     function onCurve(g, p) { var w = V.sub(p, g.c), h = V.dot(w, g.n); return Math.abs(h) <= tol && Math.abs(V.len(V.sub(w, V.scale(g.n, h))) - g.r) <= tol; }
     groups.forEach(function (g) {
-      var raw = [], changed = true, seenCh = {};
+      var raw = [], changed = true, seenCh = new Map();
       (g.raw || []).forEach(function (ch) {   // a chord reported from both faces it bounds once (r4/drawings4)
-        var ka = ch[0].map(q).join(','), kb = ch[1].map(q).join(','), kk = ka < kb ? ka + '|' + kb : kb + '|' + ka;
-        if (!seenCh[kk]) { seenCh[kk] = 1; raw.push(ch); }
+        // (lane drawperf) the two ends' rounded coordinates compared as integers (either order), filed by a numeric hash
+        var P = ch[0], Q = ch[1], a0 = q(P[0]), a1 = q(P[1]), a2 = q(P[2]), b0 = q(Q[0]), b1 = q(Q[1]), b2 = q(Q[2]);
+        var ha = (Math.imul(a0 | 0, 73856093) ^ Math.imul(a1 | 0, 19349663) ^ Math.imul(a2 | 0, 83492791)), hb = (Math.imul(b0 | 0, 73856093) ^ Math.imul(b1 | 0, 19349663) ^ Math.imul(b2 | 0, 83492791));
+        var hk = (ha + hb) | 0, bl = seenCh.get(hk);
+        if (bl) for (var i = 0; i < bl.length; i++) {
+          var k = bl[i];
+          if ((k[0] === a0 && k[1] === a1 && k[2] === a2 && k[3] === b0 && k[4] === b1 && k[5] === b2) || (k[0] === b0 && k[1] === b1 && k[2] === b2 && k[3] === a0 && k[4] === a1 && k[5] === a2)) return;
+        }
+        if (bl) bl.push([a0, a1, a2, b0, b1, b2]); else seenCh.set(hk, [[a0, a1, a2, b0, b1, b2]]);
+        raw.push(ch);
       });
       delete g.raw;
       for (var pass = 0; changed && pass < 100000; pass++) {
@@ -150,23 +158,40 @@
     // sharp pieces (pieceCurve) and, apart, smooth ones (tanCurve: a tangent edge on a true circle is drawn as that
     // circle with Tangent Edges Visible, r3/drawings3)
     var edges = meshEdges(mesh), cell = tol * 4, hash, pieceCurve;
-    function ck(p) { return [Math.floor(p[0] / cell), Math.floor(p[1] / cell), Math.floor(p[2] / cell)]; }
+    // (lane drawperf) the cells are kept in nested Maps by their integer coordinates (no key strings), each holding
+    // [edge index, end] pairs in the order they were filed
+    function cellOf(cx, cy, cz, make) {
+      var my = hash.get(cx);
+      if (!my) { if (!make) return null; hash.set(cx, my = new Map()); }
+      var mz = my.get(cy);
+      if (!mz) { if (!make) return null; my.set(cy, mz = new Map()); }
+      var l = mz.get(cz);
+      if (!l && make) mz.set(cz, l = []);
+      return l || null;
+    }
     function mapPieces(smooth) {
-      hash = {}; pieceCurve = new Int32Array(edges.length);
+      hash = new Map(); pieceCurve = new Int32Array(edges.length);
       for (var i = 0; i < pieceCurve.length; i++) pieceCurve[i] = -1;
-      edges.forEach(function (ed, ei) {
-        if (!ed.smooth !== !smooth) return;
-        [ed.a, ed.b].forEach(function (p, end) { var c = ck(p), k = c.join(','); (hash[k] || (hash[k] = [])).push([ei, end]); });
-      });
+      for (var ei = 0; ei < edges.length; ei++) {
+        var ed = edges[ei];
+        if (!ed.smooth !== !smooth) continue;
+        for (var end = 0; end < 2; end++) { var p = end ? ed.b : ed.a; cellOf(Math.floor(p[0] / cell), Math.floor(p[1] / cell), Math.floor(p[2] / cell), true).push([ei, end]); }
+      }
       walk();
       return pieceCurve;
     }
     function near(P) {
       // lane flatperf: only the cells [P − tol, P + tol] reaches (1 of the 27 mostly: cell = 4 tol), same order
-      var c = ck(P), out = [], lo = ck([P[0] - tol, P[1] - tol, P[2] - tol]), hi = ck([P[0] + tol, P[1] + tol, P[2] + tol]);
-      for (var dx = Math.max(-1, lo[0] - c[0]); dx <= Math.min(1, hi[0] - c[0]); dx++) for (var dy = Math.max(-1, lo[1] - c[1]); dy <= Math.min(1, hi[1] - c[1]); dy++) for (var dz = Math.max(-1, lo[2] - c[2]); dz <= Math.min(1, hi[2] - c[2]); dz++) {
-        var l = hash[(c[0] + dx) + ',' + (c[1] + dy) + ',' + (c[2] + dz)];
-        if (l) l.forEach(function (h) { var ed = edges[h[0]], X = h[1] ? ed.b : ed.a; if (V.len(V.sub(X, P)) <= tol) out.push(h); });
+      var c0 = Math.floor(P[0] / cell), c1 = Math.floor(P[1] / cell), c2 = Math.floor(P[2] / cell), out = [];
+      var x0 = Math.max(-1, Math.floor((P[0] - tol) / cell) - c0), x1 = Math.min(1, Math.floor((P[0] + tol) / cell) - c0);
+      var y0 = Math.max(-1, Math.floor((P[1] - tol) / cell) - c1), y1 = Math.min(1, Math.floor((P[1] + tol) / cell) - c1);
+      var z0 = Math.max(-1, Math.floor((P[2] - tol) / cell) - c2), z1 = Math.min(1, Math.floor((P[2] + tol) / cell) - c2);
+      for (var dx = x0; dx <= x1; dx++) for (var dy = y0; dy <= y1; dy++) for (var dz = z0; dz <= z1; dz++) {
+        var l = cellOf(c0 + dx, c1 + dy, c2 + dz, false);
+        if (l) for (var i = 0; i < l.length; i++) {
+          var h = l[i], ed = edges[h[0]], X = h[1] ? ed.b : ed.a, ex = X[0] - P[0], ey = X[1] - P[1], ez = X[2] - P[2];
+          if (Math.sqrt(ex * ex + ey * ey + ez * ez) <= tol) out.push(h);
+        }
       }
       return out;
     }

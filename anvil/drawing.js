@@ -102,10 +102,13 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
   // Every face-outline segment, split at every endpoint of a collinear segment (T-junctions between faces whose
   // polygons were split differently), then paired by position: [{ a, b, faces: [i…], normals: [n…] }].
   // Cached on the mesh object (meshes are immutable once built).
+  // (lane drawperf) edgeOps.n counts the split points looked at (the binary search's steps and the cuts taken), for the
+  // tests: it grows with the pieces, not with the pieces times the points on their line
+  var edgeOps = { n: 0 };
   function meshEdges(mesh) {
     if (mesh._drawingEdges) return mesh._drawingEdges;
     var diag = meshDiag(mesh), q = diag * 1e-7 + 1e-12;
-    var lines = {}, order = [];
+    var lines = new Map(), order = [], q100 = q * 100;
     for (var fi = 0; fi < mesh.faces.length; fi++) {
       var o;
       try { o = K.faceOutline(mesh, fi); } catch (err) { o = null; }
@@ -113,17 +116,22 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
       o.loops.forEach(function (loop) {
         var pts = loop.map(function (p2) { return K.to3D(o.plane, p2[0], p2[1]); });
         for (var k = 0; k < pts.length; k++) {
-          var a = pts[k], b = pts[(k + 1) % pts.length], d = V.sub(b, a), L = V.len(d);
+          // (lane drawperf) the same arithmetic as V.sub / V.len / V.scale / V.dot, on scalars (no arrays per segment)
+          var a = pts[k], b = pts[(k + 1) % pts.length], dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], L = Math.sqrt(dx * dx + dy * dy + dz * dz);
           if (L < q * 10) continue;
-          d = V.scale(d, 1 / L);
+          var il = 1 / L; dx *= il; dy *= il; dz *= il;
           // canonical direction: first clearly non-zero component positive
-          var c = Math.abs(d[0]) > 1e-9 ? d[0] : Math.abs(d[1]) > 1e-9 ? d[1] : d[2];
-          if (c < 0) d = V.scale(d, -1);
-          var p0 = V.sub(a, V.scale(d, V.dot(a, d)));
-          var key = Math.round(d[0] * 1e6) + ',' + Math.round(d[1] * 1e6) + ',' + Math.round(d[2] * 1e6) + '|' +
-            Math.round(p0[0] / (q * 100)) + ',' + Math.round(p0[1] / (q * 100)) + ',' + Math.round(p0[2] / (q * 100));
-          var ln = lines[key];
-          if (!ln) { ln = lines[key] = { d: d, segs: [], ts: [] }; order.push(key); }
+          var c = Math.abs(dx) > 1e-9 ? dx : Math.abs(dy) > 1e-9 ? dy : dz;
+          if (c < 0) { dx *= -1; dy *= -1; dz *= -1; }
+          var ad = a[0] * dx + a[1] * dy + a[2] * dz;
+          // the line's key: its rounded direction and foot point (six integers; equal keys = equal integers, so the
+          // lines are found through a numeric hash of them instead of a key string)
+          var k0 = Math.round(dx * 1e6), k1 = Math.round(dy * 1e6), k2 = Math.round(dz * 1e6);
+          var k3 = Math.round((a[0] - dx * ad) / q100), k4 = Math.round((a[1] - dy * ad) / q100), k5 = Math.round((a[2] - dz * ad) / q100);
+          var hk = (Math.imul(k0 | 0, 73856093) ^ Math.imul(k1 | 0, 19349663) ^ Math.imul(k2 | 0, 83492791) ^ Math.imul(k3 | 0, 2654435761) ^ Math.imul(k4 | 0, 40503) ^ Math.imul(k5 | 0, 2246822519)) | 0;
+          var bl = lines.get(hk), ln = null;
+          if (bl) for (var bi = 0; bi < bl.length; bi++) { var kk = bl[bi].k; if (kk[0] === k0 && kk[1] === k1 && kk[2] === k2 && kk[3] === k3 && kk[4] === k4 && kk[5] === k5) { ln = bl[bi]; break; } }
+          if (!ln) { ln = { d: [dx, dy, dz], segs: [], ts: [], k: [k0, k1, k2, k3, k4, k5] }; if (bl) bl.push(ln); else lines.set(hk, [ln]); order.push(ln); }
           var ta = V.dot(a, ln.d), tb = V.dot(b, ln.d);
           ln.segs.push({ a: a, t0: Math.min(ta, tb), t1: Math.max(ta, tb), face: fi });
           ln.ts.push(ta, tb);
@@ -132,30 +140,34 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
     }
     var tolT = q * 100;
     var out = [];
-    order.forEach(function (key) {
-      var ln = lines[key];
+    order.forEach(function (ln) {
       var ts = ln.ts.slice().sort(function (x, y) { return x - y; }), uniq = [];
       ts.forEach(function (t) { if (!uniq.length || t - uniq[uniq.length - 1] > tolT) uniq.push(t); });
-      var pieces = {}, porder = [];
+      // (lane drawperf) a line's pieces are looked up by (body, k0, k1) in a short list; a key map only for long lines
+      var pieces = null, porder = [], pK0 = [], pK1 = [], pB = [];
       ln.segs.forEach(function (s) {
-        var cuts = [s.t0];
-        uniq.forEach(function (t) { if (t > s.t0 + tolT && t < s.t1 - tolT) cuts.push(t); });
+        var cuts = [s.t0], lo0 = s.t0 + tolT, hi0 = s.t1 - tolT, ia = 0, ib = uniq.length;
+        // (lane drawperf) uniq is sorted: start at the first t past t0 + tolT (a binary search), not at every t of the line
+        while (ia < ib) { var im = (ia + ib) >> 1; edgeOps.n++; if (uniq[im] > lo0) ib = im; else ia = im + 1; }
+        for (; ia < uniq.length && uniq[ia] < hi0; ia++) { edgeOps.n++; cuts.push(uniq[ia]); }
         cuts.push(s.t1);
         var ta = V.dot(s.a, ln.d);
         for (var i = 0; i + 1 < cuts.length; i++) {
           // pieces are kept per body: where two bodies (assembly components) share an edge position, each body's
           // edge is judged sharp or smooth on its own faces (a pin in a hole must not turn its facet lines sharp)
-          var k0 = Math.round(cuts[i] / tolT), k1 = Math.round(cuts[i + 1] / tolT), pk = (mesh.faces[s.face].body || 0) + ':' + k0 + ':' + k1;
-          var pc = pieces[pk];
+          var k0 = Math.round(cuts[i] / tolT), k1 = Math.round(cuts[i + 1] / tolT), pb = mesh.faces[s.face].body || 0, pc = null;
+          if (pieces) pc = pieces[pb + ':' + k0 + ':' + k1] || null;
+          else for (var pi = 0; pi < porder.length; pi++) if (pK0[pi] === k0 && pK1[pi] === k1 && pB[pi] === pb) { pc = porder[pi]; break; }
           if (!pc) {
-            pc = pieces[pk] = { a: V.add(s.a, V.scale(ln.d, cuts[i] - ta)), b: V.add(s.a, V.scale(ln.d, cuts[i + 1] - ta)), faces: [], normals: [] };
-            porder.push(pk);
+            pc = { a: V.add(s.a, V.scale(ln.d, cuts[i] - ta)), b: V.add(s.a, V.scale(ln.d, cuts[i + 1] - ta)), faces: [], normals: [] };
+            porder.push(pc); pK0.push(k0); pK1.push(k1); pB.push(pb);
+            if (pieces) pieces[pb + ':' + k0 + ':' + k1] = pc;
+            else if (porder.length > 12) { pieces = {}; for (var pj = 0; pj < porder.length; pj++) pieces[pB[pj] + ':' + pK0[pj] + ':' + pK1[pj]] = porder[pj]; }
           }
           if (pc.faces.indexOf(s.face) < 0) { pc.faces.push(s.face); pc.normals.push(mesh.faces[s.face].normal); }
         }
       });
-      porder.forEach(function (pk) {
-        var pc = pieces[pk];
+      porder.forEach(function (pc) {
         pc.smooth = false;
         if (pc.normals.length === 2) pc.smooth = V.dot(pc.normals[0], pc.normals[1]) > COS_SMOOTH && !wrapScribe(mesh, pc.faces);   // rfDZ: a Wrap scribe edge is a visible edge
         out.push(pc);
@@ -755,5 +767,5 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
   D.projectedFrame = projectedFrame; D.sectionFrame = sectionFrame;
   D.meshEdges = meshEdges; D.pairOpenEdges = pairOpenEdges; D.joinCollinear = joinCollinear;
   _.TWO_PI = TWO_PI; _.ORTHO = ORTHO; _.DIRS = DIRS; _.frameKey = frameKey; _.COS_SMOOTH = COS_SMOOTH; _.COS_CREASE = COS_CREASE;
-  _.meshDiag = meshDiag; _.closeEnds = closeEnds; _.closeFreeEnds = closeFreeEnds; _.closeSmallGaps = closeSmallGaps; _.boxGrid = boxGrid; _.weldEnds = weldEnds; _.chordsToArcs = chordsToArcs;
+  _.meshDiag = meshDiag; _.closeEnds = closeEnds; _.closeFreeEnds = closeFreeEnds; _.closeSmallGaps = closeSmallGaps; _.boxGrid = boxGrid; _.edgeOps = edgeOps; _.weldEnds = weldEnds; _.chordsToArcs = chordsToArcs;
 })(Drawing, Drawing._);

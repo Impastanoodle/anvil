@@ -24,6 +24,9 @@
   // ellipses: { visible, hidden } ({ c, ax, ay, t0, t1, full, body }: the point at t is c + cos t ax + sin t ay),
   // arcsAll, and exact: true; its circles carry exact: true.
   // opts._noCrease (tests only, r9/drawings9): smooth edges are never turned into creases or seams, to compare.
+  // (lane drawperf) work counters for the tests: views projected, seam runs worked out (once per mesh), hidden-line
+  // tests (hiddenIntervals calls) and occluders tested in them (visits: the ones in front of the segment)
+  var hlrOps = { views: 0, seamRuns: 0, hidden: 0, visits: 0 };
   function projectView(mesh, orientName, opts) {
     opts = opts || {};
     var O = frameOf(orientName), e = O.e, U = O.u, Vv = O.v;
@@ -86,15 +89,22 @@
       }
     });
     var stamp = new Int32Array(tris.length), stampId = 0;
-    // candidates(a2, b2, visit): visit(ti) for every occluder near the segment, once each, until it returns true
-    function candidates(a2, b2, visit) {
+    // (lane drawperf) each occluder's nearest depth and each cell's: an occluder nowhere in front of the segment
+    // (wmax <= wcut, the first thing hiddenIntervals' visit tests) is passed over here, and a cell holding none in front
+    // is not opened (a perforated panel's top view: every rim lies on the top face, which no occluder is in front of)
+    var triW = new Float64Array(tris.length), cellW = new Float64Array(GU * GV);
+    for (var tw = 0; tw < tris.length; tw++) triW[tw] = tris[tw].wmax;
+    for (var cw2 = 0; cw2 < cellW.length; cw2++) { var cl = grid[cw2], mw = -Infinity; if (cl) for (var ci2 = 0; ci2 < cl.length; ci2++) if (triW[cl[ci2]] > mw) mw = triW[cl[ci2]]; cellW[cw2] = mw; }
+    // candidates(a2, b2, visit, wcut): visit(ti) for every occluder near the segment with wmax > wcut, once each, until
+    // it returns true
+    function candidates(a2, b2, visit, wcut) {
       stampId++;
       var stop = false;
       function addCell(cx, cy) {
         if (stop || cx < 0 || cy < 0 || cx >= GU || cy >= GV) return;
-        var lst = grid[cy * GU + cx];
-        if (!lst) return;
-        for (var i = 0; i < lst.length; i++) { var ti = lst[i]; if (stamp[ti] !== stampId) { stamp[ti] = stampId; if (visit(ti)) { stop = true; return; } } }
+        var c = cy * GU + cx, lst = grid[c];
+        if (!lst || cellW[c] <= wcut) return;
+        for (var i = 0; i < lst.length; i++) { var ti = lst[i]; if (stamp[ti] !== stampId) { stamp[ti] = stampId; if (triW[ti] <= wcut) continue; if (visit(ti)) { stop = true; return; } } }
       }
       var x0 = cellU(Math.min(a2[0], b2[0]) - epsIn), x1 = cellU(Math.max(a2[0], b2[0]) + epsIn);
       var y0 = cellV(Math.min(a2[1], b2[1]) - epsIn), y1 = cellV(Math.max(a2[1], b2[1]) + epsIn);
@@ -119,37 +129,37 @@
     // surfaces, up to a sagitta behind its own two faces' facets (a sheet-metal mitre seam on two concave bend
     // surfaces): those faces cannot hide their own edge
     function hiddenIntervals(A, B, a2, b2, ez, skip, only) {
-      var wa = V.dot(A, e), wb = V.dot(B, e), wmin = Math.min(wa, wb), AB = V.sub(B, A), eZ = ez > epsZ ? ez : epsZ;
-      var ivs = [], whole = null;
+      var wa = V.dot(A, e), wb = V.dot(B, e), wmin = Math.min(wa, wb), eZ = ez > epsZ ? ez : epsZ;
+      var ivs = [], whole = null, wcut = wmin + eZ, A0 = A[0], A1 = A[1], A2 = A[2], B0 = B[0], B1 = B[1], B2 = B[2];
+      var au = a2[0], av = a2[1], bu = b2[0], bv = b2[1];
+      hlrOps.hidden++;
       candidates(a2, b2, function (ti) {
         var t = tris[ti];
-        if (t.wmax <= wmin + eZ) return false;               // the triangle is nowhere in front of the segment
+        hlrOps.visits++;   // (its wmax > wcut: candidates passed over the ones nowhere in front of the segment)
         if (skip != null && (skip.faces ? skip.faces.indexOf(t.f) >= 0 : CV.faceSurf[t.f] && CV.faceSurf[t.f].key === skip)) return false;
         if (only && ((mesh.faces[t.f].body || 0) === only.body) !== only.same) return false;
-        var lo = 0, hi = 1;
+        // (lane drawperf) clipLinear written out on scalars: the same comparisons, no arrays per occluder
+        var lo = 0, hi = 1, n = t.n, f0, f1, df, tz;
         // in front: s(t) = (c - n·X(t)) / (n·e) > epsZ
-        var s0 = (t.c - V.dot(t.n, A)) / t.ne, s1 = (t.c - V.dot(t.n, B)) / t.ne;
-        var r = clipLinear(s0 - eZ, s1 - eZ, lo, hi, true); if (!r) return false; lo = r[0]; hi = r[1];
-        for (var j = 0; j < 3 && r; j++) {
-          var h = t.hs[j], h0 = h[0] * a2[0] + h[1] * a2[1] + h[2] + epsIn, h1 = h[0] * b2[0] + h[1] * b2[1] + h[2] + epsIn;
-          r = clipLinear(h0, h1, lo, hi, false); if (r) { lo = r[0]; hi = r[1]; }
+        f0 = (t.c - (n[0] * A0 + n[1] * A1 + n[2] * A2)) / t.ne - eZ; f1 = (t.c - (n[0] * B0 + n[1] * B1 + n[2] * B2)) / t.ne - eZ; df = f1 - f0;
+        if (Math.abs(df) < 1e-300) { if (!(f0 > 0)) return false; }
+        else { tz = -f0 / df; if (df > 0) lo = Math.max(lo, tz); else hi = Math.min(hi, tz); if (!(hi > lo)) return false; }
+        var hs = t.hs;
+        for (var j = 0; j < 3; j++) {
+          var h = hs[j];
+          f0 = h[0] * au + h[1] * av + h[2] + epsIn; f1 = h[0] * bu + h[1] * bv + h[2] + epsIn; df = f1 - f0;
+          if (Math.abs(df) < 1e-300) { if (!(f0 >= 0)) return false; continue; }
+          tz = -f0 / df; if (df > 0) lo = Math.max(lo, tz); else hi = Math.min(hi, tz);
+          if (!(hi > lo)) return false;
         }
-        if (r && hi - lo > 1e-12) {
+        if (hi - lo > 1e-12) {
           if (lo <= 0 && hi >= 1) { whole = [[lo, hi]]; return true; }   // hidden whole: no other piece can change that
           ivs.push([lo, hi]);
         }
         return false;
-      });
+      }, wcut);
       if (whole) return whole;
       return mergeIntervals(ivs, 1e-9);
-    }
-    // keep the part of [lo, hi] where the linear function f(t) = f0 + (f1 - f0) t is > 0 (strict) or >= 0
-    function clipLinear(f0, f1, lo, hi, strict) {
-      var df = f1 - f0;
-      if (Math.abs(df) < 1e-300) return (strict ? f0 > 0 : f0 >= 0) ? [lo, hi] : null;
-      var tz = -f0 / df;
-      if (df > 0) lo = Math.max(lo, tz); else hi = Math.min(hi, tz);
-      return hi > lo ? [lo, hi] : null;
     }
 
     // xsil (rfFI): visible pieces of exact silhouettes of curved faces, { l: [u0, v0, u1, v1], dev } with dev how far
@@ -327,9 +337,12 @@
           ezf = Math.max(ed.eps || 0, 2 * dev);
           // the circle's point at angle th, at the chord's depth there (a sharp edge drawn on a cylinder's circle keeps
           // its own depth)
+          // (lane drawperf: the vector arithmetic written out on scalars, in the same order)
           var at = function (th) {
-            var X = V.add(A, V.scale(V.sub(B, A), tOf(th)));
-            return V.add(V.add(Gf.c, V.scale(Gf.n, V.dot(V.sub(X, Gf.c), Gf.n))), V.add(V.scale(Gf.x, Gf.r * Math.cos(th)), V.scale(Gf.y, Gf.r * Math.sin(th))));
+            var tt = tOf(th), gc = Gf.c, gn = Gf.n, gx = Gf.x, gy = Gf.y;
+            var X0 = A[0] + (B[0] - A[0]) * tt, X1 = A[1] + (B[1] - A[1]) * tt, X2 = A[2] + (B[2] - A[2]) * tt;
+            var dn = (X0 - gc[0]) * gn[0] + (X1 - gc[1]) * gn[1] + (X2 - gc[2]) * gn[2], rc = Gf.r * Math.cos(th), rs = Gf.r * Math.sin(th);
+            return [(gc[0] + gn[0] * dn) + (gx[0] * rc + gy[0] * rs), (gc[1] + gn[1] * dn) + (gx[1] * rc + gy[1] * rs), (gc[2] + gn[2] * dn) + (gx[2] * rc + gy[2] * rs)];
           };
           // chord parameter of the point at angle th (where the ray from the centre crosses the chord)
           var pa = [V.dot(V.sub(A, Gf.c), Gf.x), V.dot(V.sub(A, Gf.c), Gf.y)], pb = [V.dot(V.sub(B, Gf.c), Gf.x), V.dot(V.sub(B, Gf.c), Gf.y)];
@@ -382,10 +395,12 @@
     function featureOf(fi) { var f = mesh.faces[fi], p = f && f.polys && f.polys[0]; return p && p.shared != null ? p.shared : null; }
     // faces with no surface record that meet a face of their own feature under 23° (the facets of an Anvil fillet,
     // a loft): their normals are not the true surface's, so a smooth edge on them may be a tangent edge
-    var facetty = null;
+    // (lane drawperf) what does not depend on the view (facet faces, sharp-edge corners, seam runs) is worked out once
+    // per mesh and kept on it (mesh._drawingHLR), not again for each of a drawing's views
+    var MC = mesh._drawingHLR || (mesh._drawingHLR = {}), facetty = MC.facetty || null;
     function isFacet(fi) {
       if (!facetty) {
-        facetty = new Uint8Array(mesh.faces.length);
+        facetty = MC.facetty = new Uint8Array(mesh.faces.length);
         meshEdges(mesh).forEach(function (pc) {
           if (!pc.smooth || pc.faces.length !== 2 || featureOf(pc.faces[0]) !== featureOf(pc.faces[1])) return;
           pc.faces.forEach(function (fi2) { if (!(CV && CV.faceSurf[fi2])) facetty[fi2] = 1; });
@@ -397,13 +412,13 @@
     function chordTol() { var t = K.setTessellation ? K.setTessellation({}) : null; return Math.max(0.05, t && t.chordTol || 0.05); }
     // a corner: a vertex where sharp edges between other surfaces than the edge's own two meet (or where a chain of
     // edges does not just run on) (r5/drawings5)
-    var vSharp = null, qv = diag * 1e-7 + 1e-12;
+    var vSharp = MC.vSharp || null, qv = diag * 1e-7 + 1e-12;
     function surfKey(fi) { var fs = CV && CV.faceSurf[fi]; return fs ? 's' + fs.key : isFacet(fi) ? 'f' + featureOf(fi) : 'p' + fi; }
     function pairKey(fs) { var a = surfKey(fs[0]), b = fs.length > 1 ? surfKey(fs[1]) : ''; return a < b ? a + '|' + b : b + '|' + a; }
     function vKey(p) { return Math.round(p[0] / qv) + ',' + Math.round(p[1] / qv) + ',' + Math.round(p[2] / qv); }
     function isCorner(p, faces) {
       if (!vSharp) {
-        vSharp = {};
+        vSharp = MC.vSharp = {};
         meshEdges(mesh).forEach(function (pc) {
           if (pc.smooth) return;
           var k = pairKey(pc.faces);
@@ -559,7 +574,8 @@
       fsCache[fi] = r;
       return r;
     }
-    seam = opts._noCrease ? null : seamRuns();
+    hlrOps.views++;
+    seam = opts._noCrease ? null : MC.seam !== undefined ? MC.seam : (hlrOps.seamRuns++, MC.seam = seamRuns());
     meshEdges(mesh).forEach(edgePiece);
     // exact silhouettes:the facet silhouette pieces of one generator (same surface, same side) are chained along the
     // axis; a chain whose two ends lie on true circles or arcs of that surface's axis that pass through the generator
@@ -577,14 +593,20 @@
       // lane flatperf: the circles filed by centre in cells of 2·tz·100 (a group passes endOk's test only with its centre
       // within tz·100·√2 of the axis point at z): a perforated panel's 3600 rims were each tried against every chain end
       var gA = tz * 100, gCell = 2 * gA, gHash = null;
-      var gKey = function (x, y, z) { return x + ',' + y + ',' + z; };
+      // (lane drawperf) cells in nested Maps by their integer coordinates, no key strings
+      var gCellAt = function (x, y, z, make) {
+        var my = gHash.get(x); if (!my) { if (!make) return null; gHash.set(x, my = new Map()); }
+        var mz = my.get(y); if (!mz) { if (!make) return null; my.set(y, mz = new Map()); }
+        var l = mz.get(z); if (!l && make) mz.set(z, l = []);
+        return l || null;
+      };
       var groupsNear = function (Q) {
         if (!gHash) {
-          gHash = {};
-          CV.groups.forEach(function (G, gi) { (gHash[gKey(Math.floor(G.c[0] / gCell), Math.floor(G.c[1] / gCell), Math.floor(G.c[2] / gCell))] || (gHash[gKey(Math.floor(G.c[0] / gCell), Math.floor(G.c[1] / gCell), Math.floor(G.c[2] / gCell))] = [])).push(gi); });
+          gHash = new Map();
+          CV.groups.forEach(function (G, gi) { gCellAt(Math.floor(G.c[0] / gCell), Math.floor(G.c[1] / gCell), Math.floor(G.c[2] / gCell), true).push(gi); });
         }
         var r = 1.5 * gA, out = [], lo = Q.map(function (x) { return Math.floor((x - r) / gCell); }), hi = Q.map(function (x) { return Math.floor((x + r) / gCell); });
-        for (var x = lo[0]; x <= hi[0]; x++) for (var y = lo[1]; y <= hi[1]; y++) for (var zc = lo[2]; zc <= hi[2]; zc++) (gHash[gKey(x, y, zc)] || []).forEach(function (gi) { out.push(CV.groups[gi]); });
+        for (var x = lo[0]; x <= hi[0]; x++) for (var y = lo[1]; y <= hi[1]; y++) for (var zc = lo[2]; zc <= hi[2]; zc++) { var l = gCellAt(x, y, zc, false); if (l) for (var li = 0; li < l.length; li++) out.push(CV.groups[l[li]]); }
         return out;
       };
       var endOk = function (S, w, z) {
@@ -1394,6 +1416,6 @@
     return { c: [cx, cy], r: r };
   }
 
-  D.projectView = projectView; D.fitArcs = fitArcs;
+  D.projectView = projectView; D.fitArcs = fitArcs; _.hlrOps = hlrOps;
   _.mergeIntervals = mergeIntervals; _.mergeCollinear = mergeCollinear; _.chainLines = chainLines; _.extractCircles = extractCircles;
 })(Drawing, Drawing._);
