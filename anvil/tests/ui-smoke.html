@@ -84,8 +84,22 @@
   function idle() { return UI.whenIdle ? UI.whenIdle() : Promise.resolve(); }
 
   var steps = [];
-  // ?only=<text> runs just the steps whose name contains it (a quick re-run of one area; the full suite has no query)
-  var ONLY = (function () { try { return new URLSearchParams(location.search).get('only'); } catch (e) { return null; } })();
+  // ?only=<text> runs just the steps whose name contains it (a quick re-run of one area; the full suite has no query);
+  // a comma list of names without spaces (?only=rfAA,rfBB or rfAA, r14/sketchui14) runs the steps that contain any of
+  // them (lane ML); text with spaces between its commas is one substring (a whole step name, as verify.js's retry sends).
+  // ?step=<name> runs the step with exactly that name (the driver's --rerun-alone).
+  var ONLY = (function () {
+    try {
+      var s = new URLSearchParams(location.search).get('only'); if (!s) return null;
+      var parts = s.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+      return parts.length > 1 && parts.every(function (x) { return !/\s/.test(x); }) ? parts : [s];
+    } catch (e) { return null; }
+  })();
+  var ONLY_STEP = (function () { try { return new URLSearchParams(location.search).get('step'); } catch (e) { return null; } })();
+  function onlyMatch(name) {
+    if (ONLY_STEP != null && name !== ONLY_STEP) return false;
+    return !ONLY || !ONLY.length || ONLY.some(function (x) { return name.indexOf(x) >= 0; });
+  }
   // ?files=a-b runs only the steps of GROUPS[a] … GROUPS[b - 1] (one shard of headless/ui-smoke.js --shards: every
   // group file still loads, so helpers are all there). `declared` counts every step before that cut, so the driver can
   // check its shards ran each step of the suite exactly once. loadGroups starts each file with __smokeFile(its index).
@@ -97,7 +111,7 @@
   function __smokeFile(i) { smokeFile = i; }
   function step(name, fn) {
     if (!setupStep) setupStep = { name: name + ' (shard setup)', fn: fn, file: null, setup: true, index: smokeFile };
-    if (ONLY && name.indexOf(ONLY) < 0) return;
+    if (!onlyMatch(name)) return;
     declared++;
     if (SHARD && smokeFile >= 0 && (smokeFile < SHARD.from || smokeFile >= SHARD.to)) return;
     steps.push({ name: name, fn: fn, file: smokeFile >= 0 ? GROUPS[smokeFile] : null });

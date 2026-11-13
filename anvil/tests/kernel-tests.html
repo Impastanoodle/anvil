@@ -83,7 +83,14 @@
     if (currentFile) fileMs[currentFile] = (fileMs[currentFile] || 0) + t - fileT0;
     currentFile = file; fileT0 = t;
   }
-  function skipped() { return only && currentFile && !only[currentFile]; }
+  // In the browser, ?only=rfAA,rfBB runs the tests of the group files whose name contains any of the parts (lane ML;
+  // as the runner's --only, every file's top level still runs).
+  var urlOnly = (function () { try { var s = new URLSearchParams(location.search).get('only'); return s ? s.split(',').map(function (x) { return x.trim(); }).filter(Boolean) : null; } catch (e) { return null; } })();
+  if (only || !(urlOnly && urlOnly.length)) urlOnly = null;
+  function skipped() {
+    if (urlOnly) return !!currentFile && !urlOnly.some(function (x) { return currentFile.indexOf(x) >= 0; });
+    return only && currentFile && !only[currentFile];
+  }
   function group(name) {
     currentGroup = name;
     if (skipped()) return;
@@ -592,6 +599,7 @@
     'kernel/rfMM.js',
     'kernel/rfMG.js',
     'kernel/rfMK.js',
+    'kernel/rfML.js',
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'kernel-tests.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'kernel-tests.groups.js', error: e }); }

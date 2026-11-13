@@ -3280,12 +3280,9 @@
     preview();
   }
   UI.cmdLoftedBend = cmdLoftedBend;
-  // the Sheet Metal ribbon's Lofted-Bend button (ui-panels.js lists it without a command; it loads after this file)
-  setTimeout(function wireLoftedBend() {
-    var list = UI.RIBBON && UI.RIBBON['Sheet Metal'];
-    if (!list) return;
-    list.forEach(function (it) { if (it && it.id === 'loft' && !it.run) { it.run = function () { cmdLoftedBend(); }; it.help = 'Sheet metal lofted between two open profiles (square to round, transitions): Bent facets with bend lines, or Formed'; } });
-  }, 0);
+  // the Sheet Metal ribbon's Lofted-Bend button runs UI.cmdLoftedBend (ui-panels.js). (lane ML) It was wired here by a
+  // setTimeout(0) looking for UI.RIBBON, which ui-panels.js defines later: when the browser ran the timer between the
+  // two script files, the button stayed without a command (greyed, a click did nothing: rfJJ's "PM false" now and then).
   // lane sweptflange: SolidWorks' Swept Flange PropertyManager (Kernel.buildSweptFlange / sweptFlangeFlat): Profile and
   // Path (a path sketch, or edges of the part picked in the viewport), Sheet Metal Parameters (thickness: the sheet's,
   // set here when the part has none; Reverse direction; Use default radius / Bend radius), Custom Bend Allowance,

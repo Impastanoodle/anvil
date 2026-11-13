@@ -38,6 +38,7 @@ anything or use git / GitHub credentials. Use headless Chrome for checks (the br
   page; several: `--only a,b`) and the smoke page with `?only=<rfXX>`
   (`node anvil/headless/ui-smoke.js "http://localhost:<89xx>/tests/ui-smoke.html?only=<rfXX>" --port <94xx>`), plus
   `--only` on any existing group your change obviously touches.
+- Both pages take a comma list: `?only=rfAA,rfBB` (smoke: names without spaces; kernel page in the browser: file names).
 - Once, before reporting: the whole `node anvil/headless/anvil.js test` (baseline <n>, about 4 min, half the machine's
   threads; never raise `--jobs` on the user's PC) and `node anvil/headless/anvil.js example --all` (29 / 29).
 - **Do not run the full ui-smoke page** (user, 2026-11-03: about half of an agent's time went to suites, mostly

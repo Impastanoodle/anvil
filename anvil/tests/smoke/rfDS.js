@@ -105,7 +105,7 @@
   step('rfDS: the curvature-control dimension — drag its label (it moves, the value stays), double-click it (Modify box), and Instant2D shows a ball on its arrow; dragging the ball away from the centre of curvature makes the radius larger, one undo step', async function () {
     var errs0 = errors.length;
     await rskNew();
-    UI.App.view.showGrid = false;
+    var rfDSGrid = UI.App.view.showGrid; UI.App.view.showGrid = false;   // (lane ML2) put back what was found, not true
     try {
       var f = fxSk([{ t: 'spline', pts: [[0, 0], [10, 10], [20, 0], [30, -10], [40, 0]] }]);
       assert(UI.splineCurvatureControl(0, 1, 'on').ok, 'curvature control on point 2');
@@ -162,7 +162,7 @@
       assert(UI.App.undo.length === u0 + 1, 'one undo step: ' + (UI.App.undo.length - u0));
       assert(errors.length === errs0, 'no page errors: ' + errors.slice(errs0).join(' | '));
       return 'R5 → R' + R.toFixed(3);
-    } finally { UI.App.view.showGrid = true; }
+    } finally { UI.App.view.showGrid = rfDSGrid; UI.App.gridStale = true; }
   });
   step('rfDS: Fully Define Sketch — Horizontal scheme Ordinate, Vertical scheme Chain (PM selects), Calculate, ✓: fully defined with one horizontal ordinate set from the origin and no vertical one', async function () {
     var errs0 = errors.length, S = W.SketchSolver;

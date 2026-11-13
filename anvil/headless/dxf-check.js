@@ -115,6 +115,9 @@
         paths: e.h ? e.h.paths : [], seeds: e.h ? e.h.seeds : [], nSeeds: e.h ? e.h.nSeeds : null };
       case 'ELLIPSE': return { type: 'ELLIPSE', layer: e.layer, c: [g[10] || 0, g[20] || 0], major: [g[11] || 0, g[21] || 0], ratio: g[40] || 0,
         t0: g[41] || 0, t1: g[42] != null ? g[42] : 2 * Math.PI, nz: g[230] != null && g[230] < 0 ? -1 : 1 };
+      // (lane ML) a filled SOLID / TRACE / 3DFACE: its four corners, so two of them are duplicates only when these match
+      case 'SOLID': case 'TRACE': case '3DFACE': return { type: e.type, layer: e.layer,
+        corners: [[g[10] || 0, g[20] || 0], [g[11] || 0, g[21] || 0], [g[12] || 0, g[22] || 0], [g[13] != null ? g[13] : g[12] || 0, g[23] != null ? g[23] : g[22] || 0]] };
     }
     return { type: e.type, layer: e.layer };
   }
@@ -165,6 +168,7 @@
       case 'TEXT': o.p = P(e.p); o.h = e.h * Math.abs(sy); break;
       case 'LWPOLYLINE': case 'POLYLINE': o.pts = e.pts.map(P); if (mir) o.bulges = e.bulges.map(function (b) { return -b; }); break;
       case 'SPLINE': o.cps = e.cps.map(P); break;
+      case 'SOLID': case 'TRACE': case '3DFACE': o.corners = e.corners.map(P); break;
       case 'ELLIPSE': { var M = [e.major[0] * sx, e.major[1] * sy]; o.c = P(e.c); o.major = [c * M[0] - s * M[1], s * M[0] + c * M[1]]; if (mir) o.nz = -e.nz; break; }
       case 'INSERT': o.p = P(e.p); o.sx = e.sx * sx; o.sy = e.sy * sy; o.rot = ang(e.rot) - (mir ? 180 : 0); break;
     }
@@ -260,7 +264,7 @@
         return;
       }
       if (layers.indexOf(e.layer) < 0) return;
-      var sig = JSON.stringify([e.type, e.a, e.b, e.c, e.r, e.a0, e.a1, e.pts, e.p, e.text]);
+      var sig = JSON.stringify([e.type, e.a, e.b, e.c, e.r, e.a0, e.a1, e.pts, e.p, e.text, e.corners]);
       if (seen[sig]) errors.push('duplicate ' + e.type + ' on ' + e.layer); seen[sig] = true;
       if (e.type === 'LINE') {
         if (Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1]) < 1e-9) errors.push('zero-length LINE on ' + e.layer + ' at ' + e.a);
@@ -425,7 +429,7 @@
     var cutLayers = opts.layers || ['OUTLINE', 'HOLES'], cutEnds = [], bendEnds = [], cutLines = [];
     all.forEach(function (e) {
       if (e.type === 'INSERT') return;
-      var sig = JSON.stringify([e.type, e.layer, e.a, e.b, e.c, e.r, e.a0, e.a1, e.pts, e.p, e.text, e.cps, e.major, e.t0]);
+      var sig = JSON.stringify([e.type, e.layer, e.a, e.b, e.c, e.r, e.a0, e.a1, e.pts, e.p, e.text, e.cps, e.major, e.t0, e.corners]);
       if (sigs[sig]) errors.push('duplicate ' + e.type + ' on ' + e.layer);
       sigs[sig] = true;
       if (e.type === 'LINE') {

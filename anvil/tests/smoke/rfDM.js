@@ -7,7 +7,7 @@
   step('rfDM: two lines drawn to a shared vertex, an angle dimension between them, then the vertex dragged: the dimension stays solved at its value and follows (its arc and label move with the vertex), as SolidWorks', async function () {
     var errs0 = errors.length, S = W.SketchSolver;
     await rskNew();
-    UI.App.view.showGrid = false;
+    var rfDMGrid = UI.App.view.showGrid; UI.App.view.showGrid = false;   // (lane ML2) put back what was found, not true
     try {
       UI.setTool('line'); await wait(20);
       rskClick([-15, -9]); rskClick([5, 3]); rskClick([30, -5]); rskDbl([30, -5]); await idle();
@@ -45,7 +45,7 @@
       assert(Math.hypot(lab1[0] - lab0[0] - (vs[0] - d0[0]), lab1[1] - lab0[1] - (vs[1] - d0[1])) < 25, 'the label moved with the vertex: ' + JSON.stringify([lab0, lab1, vs, d0]));
       assert(errors.length === errs0, 'no page errors: ' + errors.slice(errs0).join(' | '));
       return lab1[2] + ' at the moved vertex';
-    } finally { UI.App.view.showGrid = true; }
+    } finally { UI.App.view.showGrid = rfDMGrid; UI.App.gridStale = true; }
   });
   step('rfDM: Smart Dimension on a spline\'s curvature control — click the point, click to place: an R dimension (the radius of curvature); typing 1.5 sets the control to R1.5 on both sides; the Spline PM and a save / load agree', async function () {
     var errs0 = errors.length;

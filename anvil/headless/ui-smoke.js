@@ -204,7 +204,7 @@ async function main() {
     for (const x of firstFails) {
       const i = files.indexOf(x.file);
       if (i < 0) continue;
-      const r = await runChrome(chrome, url.split('?')[0] + '?files=' + i + '-' + (i + 1) + '&only=' + encodeURIComponent(x.name), port, 'alone, ');
+      const r = await runChrome(chrome, url.split('?')[0] + '?files=' + i + '-' + (i + 1) + '&step=' + encodeURIComponent(x.name), port, 'alone, ');
       const mine = (r.results || []).filter((y) => !y.setup);
       const ok = !r.error && mine.length >= 1 && mine.every((y) => y.ok);
       console.log('rerun alone: ' + (ok ? 'PASS' : 'FAIL') + '  ' + x.name.slice(0, 110));

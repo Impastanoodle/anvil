@@ -559,7 +559,10 @@
   window.addEventListener('blur', release);
   window.addEventListener('pointermove', function (e) { if (held && !(e.buttons & 1)) release(); }, true);
   function pendingWork() { return !!(st.busy || st.quietTimer || heldResult); }
-  function settle() { if (pendingWork()) return; var w = st.waiters; st.waiters = []; w.forEach(function (fn) { fn(status()); }); }
+  // (lane ML2) the engine is still starting: a worker that has not said 'ready' or failed. anvil.occtIdle() waiters wait
+  // through it (before, any settle() released them mid-load, so a caller read 'loading' as not failed)
+  function engineLoading() { return !!(st.on && st.worker && !st.ready && st.state === 'loading'); }
+  function settle() { if (pendingWork() || engineLoading()) return; var w = st.waiters; st.waiters = []; w.forEach(function (fn) { fn(status()); }); }
 
   // post the current model (newest wins: one build in flight, the latest request replaces older ones)
   function request() {
@@ -893,7 +896,7 @@
     // has answered (or at once when nothing is pending)
     window.anvil.occt = function (on, opts) { if (arguments.length) set(on, opts); return status(); };
     window.anvil.occtIdle = function () {
-      return new Promise(function (res) { if (!st.on || (!pendingWork() && st.state !== 'loading')) res(status()); else st.waiters.push(res); });
+      return new Promise(function (res) { if (!st.on || (!pendingWork() && !engineLoading() && st.state !== 'loading')) res(status()); else st.waiters.push(res); });
     };
   }
   if (st.on) request();

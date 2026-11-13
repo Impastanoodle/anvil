@@ -70,6 +70,7 @@
         'p.sketch("Top", 3).arc(0, 0, 1, 270.03, 360).arc(0, 0, 1, 0, 90).arc(0, 0, 1, 90, 180).arc(0, 0, 1, 180, 270).end();\n'); await idle();
       var lb = rfJJRibbon(function (b) { return /Lofted/.test(b.getAttribute('aria-label') || b.textContent); });
       assert(lb, 'Lofted-Bend button');
+      assert(!lb.disabled, 'the Lofted-Bend button is greyed (no command wired to it)');   // (lane ML) what "PM false" was
       lb.click(); await idle(); await wait(30);
       assert(UI.hasPM() && UI.pmTitle() === 'Lofted-Bend', 'PM ' + (UI.hasPM() && UI.pmTitle()));
       var heads = Array.prototype.map.call(D.querySelectorAll('#pm .pm-group > h4'), function (h) { return h.textContent.replace(/^[▸▾]/, '').trim(); });

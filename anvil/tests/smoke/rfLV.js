@@ -65,6 +65,9 @@
 
   step('rfLV: (a) View tab by mouse: Unzoom 50 % and 80 %, Translucency, Material, Show Axes, Show Gnomons, Show Grid apart from Snap to Grid', async function () {
     await rfLVMastercam();
+    // (lane ML2) the grid is a session setting (newPart keeps it): start from hidden and not snapping, as the toggles
+    // below expect (rfDM / rfDS used to leave Snap on, and a run with them before this step failed "shown false snap true")
+    UI.App.view.gridVisible = undefined; UI.App.view.showGrid = false; UI.App.gridStale = true;
     try {
       var s0 = UI.cam.scale;
       await rfLVRun('View', 'Unzoom 50%'); near(UI.cam.scale / s0, 2, 1e-9, 'Unzoom 50% scale');
@@ -334,6 +337,7 @@
       D.activeElement && (D.activeElement.id || D.activeElement.className), UI.theme && UI.theme(), btns, D.body.children.length, $('viewport').children.length, UI.realView && UI.realView(),
       UI.cplaneMode && UI.cplaneMode(), UI.viewsheets && JSON.stringify(UI.viewsheets.list()), UI.App.drawing && UI.drawingActive && UI.drawingActive() ? JSON.stringify(UI.drawingInternal && UI.drawingInternal.D.tool) : '']);
   }
+  function rfLVls(k) { try { return W.localStorage.getItem(k); } catch (e) { return null; } }
   var RFLV_SKIP = /^(More commands)$/;
   async function rfLVCleanup(model, docType) {
     for (var k = 0; k < 3; k++) {
@@ -355,6 +359,29 @@
   }
   async function rfLVNoDead(docType, only) {
     var model = JSON.stringify(UI.App.model), dead = [], thrown = [], n = 0, theme = UI.theme();
+    // (lane ML) the toggles among the buttons (View > Background, All Sketches, Planes, Origins, Show Endpoints, Arc
+    // Center Points, Selection Filter …) change App.view, the Selection Filter bar and anvil.* localStorage keys: each
+    // click puts back what the step found, so no later step inherits a dark background or hidden sketches
+    var view0 = JSON.parse(JSON.stringify(UI.App.view)), bar0 = UI.selectionFilterBarShown ? UI.selectionFilterBarShown() : null, ls0 = rfLVlsAll();
+    function rfLVlsAll() { var o = {}; try { for (var q = 0; q < W.localStorage.length; q++) { var k = W.localStorage.key(q); if (/^anvil\./.test(k)) o[k] = W.localStorage.getItem(k); } } catch (e) { } return o; }
+    function rfLVbgBack() {
+      var v = UI.App.view, moved = false;
+      Object.keys(v).concat(Object.keys(view0)).forEach(function (k) {
+        if (JSON.stringify(v[k]) === JSON.stringify(view0[k])) return;
+        moved = true;
+        if (k === 'bg' && UI.setBackground) UI.setBackground(view0.bg, true);
+        else if (k === 'style' && UI.setStyle && view0.style) UI.setStyle(view0.style);
+        else if (k === 'realView' && UI.setRealView) UI.setRealView(!!view0.realView, true);
+        else if (!(k in view0)) delete v[k]; else v[k] = JSON.parse(JSON.stringify(view0[k]));
+      });
+      if (moved) { ['updatePlanes', 'updateOrigin', 'updateSketches', 'refreshRibbon'].forEach(function (f) { if (UI[f]) { try { UI[f](); } catch (e) { } } }); UI.App.dimsStale = true; if (UI.requestRender) UI.requestRender(); }
+      if (bar0 != null && UI.selectionFilterBarShown() !== bar0 && UI.toggleSelectionFilterBar) UI.toggleSelectionFilterBar();
+      var now = rfLVlsAll();
+      try {
+        Object.keys(now).forEach(function (k) { if (!(k in ls0)) W.localStorage.removeItem(k); });
+        Object.keys(ls0).forEach(function (k) { if (now[k] !== ls0[k]) W.localStorage.setItem(k, ls0[k]); });
+      } catch (e) { }
+    }
     var errs = [], onErr = function (e) { errs.push(e.message || String(e.reason || e)); };
     W.addEventListener('error', onErr); W.addEventListener('unhandledrejection', onErr);
     var oPrint = W.print; W.print = function () { };
@@ -390,9 +417,10 @@
           n++;
           await rfLVCleanup(model, docType);
           if (UI.theme() !== theme) UI.setTheme(theme);
+          rfLVbgBack();
         }
       }
-    } finally { W.removeEventListener('error', onErr); W.removeEventListener('unhandledrejection', onErr); W.print = oPrint; }
+    } finally { W.removeEventListener('error', onErr); W.removeEventListener('unhandledrejection', onErr); W.print = oPrint; rfLVbgBack(); }
     return { n: n, dead: dead, thrown: thrown };
   }
 

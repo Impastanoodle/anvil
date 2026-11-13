@@ -147,12 +147,23 @@
       UI.zoomToFit(); await idle(); r4Dims();
       var gs = D.querySelectorAll('#dim-layer g.dim');
       assert(gs.length > 80 && Array.prototype.every.call(gs, function (g) { return g.children.length === 3; }), gs.length + ' dimensions, each a line path, an arrow path and its text');
-      var t = [];
-      for (var n = 0; n < 40; n++) { UI.zoomView(n % 2 ? 1 / 1.01 : 1.01); var t0 = performance.now(); r4Dims(); t.push(performance.now() - t0); }
+      // (lane ML) the work counted, not the wall clock (a median under 8 ms failed on a busy machine): a redraw while
+      // the view moves reuses every node (no element made or removed), and writes each attribute about once (one
+      // layout pass, not the settled layout's three: the full layout follows once the view rests)
+      var nodes = D.querySelectorAll('#dim-layer *').length, layer = $('dim-layer'), added = 0, removed = 0, attrs = 0, t = [];
+      var mo = new W.MutationObserver(function (list) { list.forEach(function (m) { if (m.type === 'childList') { added += m.addedNodes.length; removed += m.removedNodes.length; } else if (m.type === 'attributes') attrs++; }); });
+      r4Dims();   // the first redraw of the burst, then 40 more while the view zooms
+      mo.observe(layer, { childList: true, subtree: true, attributes: true });
+      try {
+        for (var n = 0; n < 40; n++) { UI.zoomView(n % 2 ? 1 / 1.01 : 1.01); var t0 = performance.now(); r4Dims(); t.push(performance.now() - t0); }
+        mo.takeRecords().forEach(function (m) { if (m.type === 'childList') { added += m.addedNodes.length; removed += m.removedNodes.length; } else if (m.type === 'attributes') attrs++; });
+      } finally { mo.disconnect(); }
       t.sort(function (a, b) { return a - b; });
-      var med = t[20], nodes = D.querySelectorAll('#dim-layer *').length;
-      assert(med < 8, 'redraw median ' + med.toFixed(2) + ' ms');
-      return gs.length + ' dimensions, ' + nodes + ' nodes, redraw median ' + med.toFixed(2) + ' ms (min ' + t[0].toFixed(2) + ')';
+      var perRedraw = attrs / 40;
+      assert(added === 0 && removed === 0, 'a redraw made ' + added + ' and removed ' + removed + ' nodes (they should be reused)');
+      assert(D.querySelectorAll('#dim-layer *').length === nodes, 'node count changed: ' + nodes + ' → ' + D.querySelectorAll('#dim-layer *').length);
+      assert(perRedraw <= 1.5 * nodes, perRedraw + ' attribute writes per redraw for ' + nodes + ' nodes (more than one layout pass?)');
+      return gs.length + ' dimensions, ' + nodes + ' nodes, per redraw 0 nodes made, ' + perRedraw.toFixed(0) + ' attribute writes; median ' + t[20].toFixed(2) + ' ms (not asserted)';
     } finally { UI.App.view.showDims = showDims; UI.App.dimsStale = true; }
   });
   // --- end r14/sketchui14 ---

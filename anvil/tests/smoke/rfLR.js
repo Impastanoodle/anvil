@@ -150,7 +150,11 @@
           anvil.occt(on, { remember: false }); await idle();
           if (on) {   // the engine started first: a plain plate
             await anvil.run('p.units("in");\np.box(2, 0.0598, 2);\n'); await idle();
-            var st = await Promise.race([anvil.occtIdle(), wait(25000).then(function () { return anvil.occt(); })]);
+            // (lane ML) anvil.occtIdle() can resolve while the engine is still loading (ui-occt.js settle() releases its
+            // waiters on "no build pending" alone), so "not failed" was read before the load answered: without vendor/occt
+            // the step then imported on Anvil's reader and failed "brep false" (1 run in 4). Wait for the load itself.
+            var st = anvil.occt(), t0 = Date.now();
+            while (st.state === 'loading' && Date.now() - t0 < 25000) { await Promise.race([anvil.occtIdle(), wait(200)]); await wait(20); st = anvil.occt(); }
             if (!st || st.state === 'failed' || !UI.occt.canImport()) { out.push('OpenCascade: skipped, not installed'); break; }
           }
           var f = await rfLROpen('customer-inch.step', inch);

@@ -206,7 +206,7 @@
     ],
     'Sheet Metal': [
       { id: 'flange', label: 'Base\nFlange/Tab', run: function () { UI.cmdBaseFlange(); } },
-      { id: 'convertSM', label: 'Convert to\nSheet Metal', help: 'Turn a solid into sheet metal: a fixed face and the edges that become bends; the other faces are removed and the corners ripped', run: function () { UI.cmdConvertSheetMetal(); } }, { id: 'loft', cmd: 'loftedBend', label: 'Lofted-\nBend' },
+      { id: 'convertSM', label: 'Convert to\nSheet Metal', help: 'Turn a solid into sheet metal: a fixed face and the edges that become bends; the other faces are removed and the corners ripped', run: function () { UI.cmdConvertSheetMetal(); } }, { id: 'loft', cmd: 'loftedBend', label: 'Lofted-\nBend', help: 'Sheet metal lofted between two open profiles (square to round, transitions): Bent facets with bend lines, or Formed', run: function () { UI.cmdLoftedBend(); } },
       { id: 'sweptFlange', label: 'Swept\nFlange', help: 'Sweep an open profile along a path (a sketch, or edges of the part) into sheet metal; its bends unbend in the flat', run: function () { UI.cmdSweptFlange(); } },
       { sep: true },
       { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'hem', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'jog', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'sketchedBend', label: 'Sketched\nBend', run: function () { UI.cmdSketchedBend(); } },
