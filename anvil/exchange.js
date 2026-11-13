@@ -1733,15 +1733,15 @@ var Exchange = (function () {
   // triples into the 2D points P) whose far vertex lies inside the other triangle's circumcircle (Lawson), so a fan the
   // ear clipping left becomes well shaped; edges with one triangle (the loops) never move
   function delaunayFlips(T, P, flatOnly) {   // flatOnly (lane stepreal2): only the flips that remove triangles of no area
-    var em = {}, stack = [], guard = 0, sc = 0;
+    var em = new Map(), stack = [], guard = 0, sc = 0, M = P.length + 1;   // lane MO: number keys (a·M + b): string keys were most of an import's time
     function onEdge(a, b, c) {   // c on the segment a-b, strictly between its ends
       var ex = b[0] - a[0], ey = b[1] - a[1], L2 = ex * ex + ey * ey, t = (c[0] - a[0]) * ex + (c[1] - a[1]) * ey;
       return L2 > 0 && Math.abs(ex * (c[1] - a[1]) - ey * (c[0] - a[0])) <= 1e-12 * L2 && t > 1e-9 * L2 && t < (1 - 1e-9) * L2;
     }
     P.forEach(function (p) { sc = Math.max(sc, Math.abs(p[0]), Math.abs(p[1])); });
     var eps = 1e-12 * Math.pow(sc || 1, 4);
-    function ek(a, b) { return a < b ? a + ',' + b : b + ',' + a; }
-    function link(ti, on) { var t = T[ti]; for (var e = 0; e < 3; e++) { var k = ek(t[e], t[(e + 1) % 3]), l = em[k] || (em[k] = []); if (on) l.push(ti); else l.splice(l.indexOf(ti), 1); if (on) stack.push(k); } }
+    function ek(a, b) { return a < b ? a * M + b : b * M + a; }
+    function link(ti, on) { var t = T[ti]; for (var e = 0; e < 3; e++) { var k = ek(t[e], t[(e + 1) % 3]), l = em.get(k); if (!l) em.set(k, l = []); if (on) l.push(ti); else l.splice(l.indexOf(ti), 1); if (on) stack.push(k); } }
     function inCircle(a, b, c, d) {
       var ax = a[0] - d[0], ay = a[1] - d[1], bx = b[0] - d[0], by = b[1] - d[1], cx = c[0] - d[0], cy = c[1] - d[1];
       return (ax * ax + ay * ay) * (bx * cy - cx * by) - (bx * bx + by * by) * (ax * cy - cx * ay) + (cx * cx + cy * cy) * (ax * by - bx * ay) > eps;
@@ -1750,9 +1750,9 @@ var Exchange = (function () {
     function rot(t, a) { var i = t.indexOf(a); return [t[i], t[(i + 1) % 3], t[(i + 2) % 3]]; }
     for (var ti = 0; ti < T.length; ti++) link(ti, true);
     while (stack.length && guard++ < 2000000) {
-      var key = stack.pop(), l = em[key];
+      var key = stack.pop(), l = em.get(key);
       if (!l || l.length !== 2) continue;
-      var ab = key.split(',').map(Number), t1 = rot(T[l[0]], ab[0]), i1 = l[0], i2 = l[1];
+      var ab = [Math.floor(key / M), key % M], t1 = rot(T[l[0]], ab[0]), i1 = l[0], i2 = l[1];
       if (t1[1] !== ab[1]) { t1 = rot(T[l[1]], ab[0]); i1 = l[1]; i2 = l[0]; }
       if (t1[1] !== ab[1]) continue;
       var a = t1[0], b = t1[1], c = t1[2], t2 = rot(T[i2], b);
@@ -1767,6 +1767,68 @@ var Exchange = (function () {
       link(i1, false); link(i2, false);
       T[i1] = [a, d, c]; T[i2] = [d, b, c];
       link(i1, true); link(i2, true);
+    }
+  }
+  // lane MO: gridInsert(V, T, rings, A) adds to the triangulation T (index triples into V, { p, u, v }) the points
+  // (i·hs, j·ht) of the parameter grid that lie strictly inside one of its triangles and at least half a step (in step
+  // units) from every boundary segment of rings, each splitting the triangle that holds it in three (orientation kept);
+  // the caller's flips then make it Delaunay. New points lie on the surface (A.at).
+  function gridInsert(V, T, rings, A) {
+    var hs = A.hs, ht = A.ht, n0 = T.length, cells = {}, CL = 0.5;
+    function Q(i) { return [V[i].u / hs, V[i].v / ht]; }
+    function orient(a, b, c) { return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]); }
+    var nCells = 0;
+    for (var r = 0; r < rings.length; r++) {
+      var ix = rings[r];
+      for (var i = 0; i < ix.length; i++) {
+        var a = Q(ix[i]), b = Q(ix[(i + 1) % ix.length]);
+        var x0 = Math.floor(Math.min(a[0], b[0]) - CL), x1 = Math.floor(Math.max(a[0], b[0]) + CL), y0 = Math.floor(Math.min(a[1], b[1]) - CL), y1 = Math.floor(Math.max(a[1], b[1]) + CL);
+        nCells += (x1 - x0 + 1) * (y1 - y0 + 1);
+        if (nCells > 400000) return;
+        for (var cx = x0; cx <= x1; cx++) for (var cy = y0; cy <= y1; cy++) (cells[cx + ',' + cy] || (cells[cx + ',' + cy] = [])).push([a, b]);
+      }
+    }
+    function clear(p) {
+      var l = cells[Math.floor(p[0]) + ',' + Math.floor(p[1])];
+      if (!l) return true;
+      for (var k = 0; k < l.length; k++) {
+        var a = l[k][0], b = l[k][1], ex = b[0] - a[0], ey = b[1] - a[1], L2 = ex * ex + ey * ey, t = L2 > 0 ? ((p[0] - a[0]) * ex + (p[1] - a[1]) * ey) / L2 : 0;
+        t = Math.max(0, Math.min(1, t));
+        var dx = p[0] - a[0] - t * ex, dy = p[1] - a[1] - t * ey;
+        if (dx * dx + dy * dy < CL * CL) return false;
+      }
+      return true;
+    }
+    function inside(t3, P, p) {   // strictly inside, a hair (1e-7 step) clear of every side
+      var a = P[t3[0]], b = P[t3[1]], c = P[t3[2]], ar = orient(a, b, c);
+      if (!(Math.abs(ar) > 1e-14)) return false;
+      var sg = ar > 0 ? 1 : -1, s = [[a, b], [b, c], [c, a]];
+      for (var k = 0; k < 3; k++) {
+        var e = s[k], d = orient(e[0], e[1], p) * sg, L = Math.hypot(e[1][0] - e[0][0], e[1][1] - e[0][1]);
+        if (!(d > 1e-7 * L)) return false;
+      }
+      return true;
+    }
+    var P = V.map(function (x) { return [x.u / hs, x.v / ht]; }), added = 0;
+    for (var ti = 0; ti < n0; ti++) {
+      var t0 = T[ti], A0 = P[t0[0]], B0 = P[t0[1]], C0 = P[t0[2]];
+      var gx0 = Math.ceil(Math.min(A0[0], B0[0], C0[0])), gx1 = Math.floor(Math.max(A0[0], B0[0], C0[0])), gy0 = Math.ceil(Math.min(A0[1], B0[1], C0[1])), gy1 = Math.floor(Math.max(A0[1], B0[1], C0[1]));
+      if ((gx1 - gx0 + 1) * (gy1 - gy0 + 1) > 200000) return;
+      var sub = [ti];
+      for (var gx = gx0; gx <= gx1; gx++) for (var gy = gy0; gy <= gy1; gy++) {
+        var p = [gx, gy];
+        if (!inside(t0, P, p) || !clear(p)) continue;
+        var at = -1;
+        for (var k = sub.length - 1; k >= 0 && at < 0; k--) if (inside(T[sub[k]], P, p)) at = sub[k];
+        if (at < 0) continue;   // on a side of a triangle already split: left to the refinement
+        if (++added > 200000) return;
+        var m = V.length, u = gx * hs, v = gy * ht;
+        V.push({ p: A.at(u, v), u: u, v: v }); P.push(p);
+        var t3 = T[at];
+        T[at] = [t3[0], t3[1], m];
+        T.push([t3[1], t3[2], m]); sub.push(T.length - 1);
+        T.push([t3[2], t3[0], m]); sub.push(T.length - 1);
+      }
     }
   }
   function paramPatch(loops, outerI, A) {
@@ -1873,6 +1935,11 @@ var Exchange = (function () {
     // fans of the ear clipping made well shaped first, in the refinement's own measure (one step = 1 each way; a straight
     // direction scaled as lengths), so the refinement then adds few points
     var hsF = isFinite(A.hs) ? A.hs : A.ht * A.sv / A.su, htF = isFinite(A.ht) ? A.ht : A.hs * A.su / A.sv;
+    // lane MO: curved both ways (sphere, torus, B-spline): the points of the canonical grid (one step each way, as the
+    // kernel's own rows) that lie inside the patch and half a step clear of its boundary go in first, each into the ear
+    // clipping's triangle that holds it, and the flips below make the whole Delaunay in step units; the refinement then
+    // only fills what the grid left (it alone made 2.5 to 13 triangles a step², the grid makes 2)
+    if (isFinite(A.hs) && isFinite(A.ht)) gridInsert(V, T3, rings, A);
     delaunayFlips(T3, isFinite(hsF) && isFinite(htF) ? V.map(function (x) { return [x.u / hsF, x.v / htF]; }) : P2);
     var em = {};
     function ek(a, b) { return a < b ? a + ',' + b : b + ',' + a; }
@@ -2703,7 +2770,23 @@ var Exchange = (function () {
           if (fits(along(x, fwd, 'raw'), want[k])) got.push(along(x, fwd, 'pts')); else ok = false;
         }
         if (!ok) continue;
-        gridTris(areaTrueGrid(G, got[0], got[1], got[2].slice().reverse(), got[3].slice().reverse()), function (A, B, C) {
+        // lane MO: the grid's inner points moved out by what the facets miss of the surface (freeVolumeFix: 1e-4 → 1e-7 on
+        // a loft) instead of the area-true moves along the rows
+        var d0 = bsSurfOf(surf), tsU = bsParams(d0.U, d0.du), tsV = bsParams(d0.V, d0.dv), Qg;
+        if (tsU.length === nu + 1 && tsV.length === nv + 1) {
+          var bnd = [got[0], got[1], got[2].slice().reverse(), got[3].slice().reverse()], RV = [], RT = [];
+          G.forEach(function (col, i) {
+            col.forEach(function (p, j) {
+              var q = j === 0 ? bnd[0][i] : j === nv ? bnd[2][i] : i === 0 ? bnd[3][j] : i === nu ? bnd[1][j] : p;
+              RV.push({ p: q, u: tsU[i], v: tsV[j] });
+            });
+          });
+          var at = function (i, j) { return i * (nv + 1) + j; };
+          gridTris(G.map(function (col, i) { return col.map(function (p, j) { return at(i, j); }); }), function (a, b, c) { RT.push([a, b, c]); });
+          freeVolumeFix({ V: RV, T: RT }, { at: function (u, v) { return bsSurfPoint(d0, u, v); } }, !sameSense);
+          Qg = G.map(function (col, i) { return col.map(function (p, j) { return RV[at(i, j)].p; }); });
+        } else Qg = areaTrueGrid(G, got[0], got[1], got[2].slice().reverse(), got[3].slice().reverse());
+        gridTris(Qg, function (A, B, C) {
           var base = out.pos.length / 3, P = sameSense ? B : C, Q = sameSense ? C : B;
           out.pos.push(A[0], A[1], A[2], P[0], P[1], P[2], Q[0], Q[1], Q[2]);
           out.tris.push(base, base + 1, base + 2);
@@ -2745,6 +2828,7 @@ var Exchange = (function () {
         if (ln > 0) vote += dot(n3, ns) / ln;
       });
       var flipAll = (vote > 0) !== sameSense;
+      freeVolumeFix(res, A, flipAll);
       res.T.forEach(function (t3) {
         var a = res.V[t3[0]], b = res.V[t3[1]], c = res.V[t3[2]];
         if (flipAll) { var tmp = b; b = c; c = tmp; }
@@ -2754,6 +2838,59 @@ var Exchange = (function () {
         out.recs.push(null);
       });
       return true;
+    }
+    // lane MO: freeVolumeFix(res, A, flip): the facets of a free-form face carry no surface record, so their volume is
+    // the polygon's (0.01 – 0.03 % over or under on real parts). Each triangle misses the bump between it and the
+    // surface: with the heights h of the surface over its three edge midpoints (the surface at the edge's middle
+    // parameters, measured along the outward facet normal) that is area · (h1 + h2 + h3) / 3 (exact for a quadratic
+    // bump). The face's interior points (none is shared with another face, so the body stays closed) move out along
+    // their normal by what the triangles round them miss, shared among the triangles' interior corners:
+    // δ = Σ V / Σ (area · n_v·n_t / 3). Boundary points stay on the surface; a triangle with no interior corner keeps
+    // its bump. The mesh then lies within a sagitta of the surface, its volume to the fourth order of the step.
+    function freeVolumeFix(res, A, flip) {
+      var V = res.V, T = res.T, use = {}, nT = [], aT = [], vol = [], i, k;
+      function ek(a, b) { return a < b ? a + ',' + b : b + ',' + a; }
+      T.forEach(function (t3) { for (k = 0; k < 3; k++) { var key = ek(t3[k], t3[(k + 1) % 3]); use[key] = (use[key] || 0) + 1; } });
+      var fixed = new Array(V.length);
+      Object.keys(use).forEach(function (key) { if (use[key] === 1) { var ab = key.split(','); fixed[+ab[0]] = fixed[+ab[1]] = true; } });
+      var num = new Array(V.length), den = new Array(V.length), nv = new Array(V.length), mid = {};
+      // the height of the surface over the chord's midpoint m along n: the surface point on the line m + t n (Newton in
+      // (u, v) from the middle parameters; the middle parameters alone sit off that line by a first-order amount
+      // across the edge, where the bump rises: 1e-5 too much on a loft)
+      function hOf(a, b, n) { return hAt(scale(add(V[a].p, V[b].p), 0.5), (V[a].u + V[b].u) / 2, (V[a].v + V[b].v) / 2, Math.max(Math.abs(V[a].u - V[b].u), Math.abs(V[a].v - V[b].v)), n); }
+      function hAt(m, u, v, span, n) {
+        var eu = span * 1e-4 || 1e-9, P = A.at(u, v);
+        for (var it = 0; it < 4; it++) {
+          var r = sub(P, m), rt = sub(r, scale(n, dot(r, n)));
+          if (!(len(rt) > 1e-12 * (1 + len(m)))) break;
+          var Su = scale(sub(A.at(u + eu, v), A.at(u - eu, v)), 1 / (2 * eu)), Sv = scale(sub(A.at(u, v + eu), A.at(u, v - eu)), 1 / (2 * eu));
+          Su = sub(Su, scale(n, dot(Su, n))); Sv = sub(Sv, scale(n, dot(Sv, n)));
+          var a11 = dot(Su, Su), a12 = dot(Su, Sv), a22 = dot(Sv, Sv), b1 = -dot(Su, rt), b2 = -dot(Sv, rt), det = a11 * a22 - a12 * a12;
+          if (!(det > 1e-30 * (a11 * a22 + 1e-300))) break;
+          u += (a22 * b1 - a12 * b2) / det; v += (a11 * b2 - a12 * b1) / det;
+          P = A.at(u, v);
+        }
+        return dot(sub(P, m), n);
+      }
+      T.forEach(function (t3, ti) {
+        var a = V[t3[0]].p, b = V[t3[1]].p, c = V[t3[2]].p, n = cross(sub(b, a), sub(c, a)), l = len(n);
+        if (flip) n = scale(n, -1);
+        if (!(l > 0)) { nT.push(null); aT.push(0); vol.push(0); return; }
+        n = scale(n, 1 / l);
+        var ar = l / 2, h = hOf(t3[0], t3[1], n) + hOf(t3[1], t3[2], n) + hOf(t3[2], t3[0], n);
+        nT.push(n); aT.push(ar); vol.push(ar * h / 3);
+        for (k = 0; k < 3; k++) { var q = t3[k]; nv[q] = nv[q] ? add(nv[q], scale(n, ar)) : scale(n, ar); }
+      });
+      T.forEach(function (t3, ti) {
+        if (!nT[ti]) return;
+        var free = t3.filter(function (q) { return !fixed[q]; });
+        free.forEach(function (q) { num[q] = (num[q] || 0) + vol[ti] / free.length; });
+        t3.forEach(function (q) { if (!fixed[q] && nv[q]) den[q] = (den[q] || 0) + aT[ti] * dot(norm(nv[q]), nT[ti]) / 3; });
+      });
+      for (i = 0; i < V.length; i++) {
+        if (fixed[i] || !nv[i] || !(den[i] > 0) || !num[i]) continue;
+        V[i] = { p: add(V[i].p, scale(norm(nv[i]), num[i] / den[i])), u: V[i].u, v: V[i].v };
+      }
     }
     // (u, v) of p on at(u, v) from a start: Gauss-Newton with central differences; lo / hi bound u and v (null: free)
     function projectUV(at, p, u, v, lo, hi, hu, hv) {
@@ -2883,6 +3020,19 @@ var Exchange = (function () {
         lflip.push(!!(ba[2] && ba[2].e === "F"));   // lane realfiles (surfPatch: which side of a lone circle a cap lies)
       });
       if (!ok || !(S.r > 0) || len(S.d) < 0.5) return false;
+      // lane MO: a sphere face bounded by one whole circle at any tilt (a ball on a shaft that does not run along the
+      // sphere's own axis; OpenCascade adds a VERTEX_LOOP at the pole inside the face): re-framed about the circle's
+      // own axis, the circle is a latitude and the face the cap beyond it (the records' columns run from the centre,
+      // so the frame changes nothing in massProps)
+      if (S.t === 'sph' && loops.length === 1 && loops[0].length === 1 && loops[0][0].info.kind === 'circle' && loops[0][0].info.full) {
+        var c0 = loops[0][0].info.circle, n0 = norm(c0.n), off0 = sub(c0.c, S.o), tl0 = 1e-6 * Math.max(1, S.r, len(S.o));
+        if (len(sub(off0, scale(n0, dot(off0, n0)))) < tl0 && Math.abs(Math.hypot(c0.r, dot(off0, n0)) - S.r) < tl0 &&
+            vloops.every(function (p) { return Math.abs(len(sub(p, S.o)) - S.r) < tl0; }) && Math.abs(dot(n0, norm(S.d))) < 1 - 1e-12) {
+          var S2 = {};
+          for (var sk in S) if (Object.prototype.hasOwnProperty.call(S, sk)) S2[sk] = S[sk];
+          S2.d = n0; S = S2; vloops = [];
+        }
+      }
       var Cr = S.t === 'tor' ? S.R : 0, ext = Math.max(1, S.r, Math.abs(Cr), len(S.o)), tol = 1e-6 * ext;
       if (S.t === 'tor' && !(Cr > S.r)) return false;
       var nc = canonDir(S.d), xc = xdirOf(nc), yc = cross(nc, xc);
@@ -3060,7 +3210,10 @@ var Exchange = (function () {
         T3.forEach(function (t3) { ea += (P2[t3[1]][0] - P2[t3[0]][0]) * (P2[t3[2]][1] - P2[t3[0]][1]) - (P2[t3[2]][0] - P2[t3[0]][0]) * (P2[t3[1]][1] - P2[t3[0]][1]); });
         var want = rings.reduce(function (s, ix) { return s + area(ix); }, 0);
         if (!(Math.abs(ea / 2 - want) <= 1e-6 * Math.max(Math.abs(want), 1e-12))) return false;   // the ear clipping failed
-        delaunayFlips(T3, P2, true);   // lane stepreal2: no triangle of no area goes into the refinement
+        // lane stepreal2: no triangle of no area goes into the refinement; lane MO: and the fans of the ear clipping made
+        // Delaunay in true lengths first (a side between two circles became a zipper; the fans' long diagonals made the
+        // refinement fill a pin's side with 2448 triangles for the 64 of two rings zipped)
+        delaunayFlips(T3, P2);
         var stepU = 2 * Math.PI / K.segsForRadius(r * toMM) * r * (1 + 1e-6);
         // longest-edge (in u) bisection along the longest-edge propagation path: the edge split is the longest of both
         // its triangles, so the third vertices lie within its u range and every new edge spans at most half of it
