@@ -132,8 +132,13 @@ async function checkApp() {
   ok(typeof dxf === 'string' && /ENTITIES/.test(dxf), 'a DXF of the front face', (dxf || '').length + ' chars');
   await page.ev('UI.download("bracket.dxf", ' + JSON.stringify(dxf) + ', "application/dxf"); true');
   await page.waitFor('true', 1000);
-  for (let i = 0; i < 40 && !readLog(log).some((e) => e.event === 'download-done'); i++) await sleep(250);
-  const offered = readLog(log).find((e) => e.event === 'download-offered'), done = readLog(log).find((e) => e.event === 'download-done');
+  const saved = path.join(saveDir, 'bracket.dxf');
+  for (let i = 0; i < 40 && !readLog(log).some((e) => e.event === 'download-done') && !fs.existsSync(saved); i++) await sleep(250);
+  // the app saves through its own Save box (anvilDesktop.files, logged as 'dialog-save'); a plain download ('download-offered')
+  // only happens without the bridge
+  const boxed = readLog(log).find((e) => e.event === 'dialog-save' && /bracket.dxf$/.test(e.defaultPath));
+  const offered = readLog(log).find((e) => e.event === 'download-offered') || (boxed && { name: path.basename(boxed.defaultPath), defaultPath: boxed.defaultPath, filters: boxed.filters });
+  const done = readLog(log).find((e) => e.event === 'download-done') || (fs.existsSync(saved) ? { state: 'completed', path: saved } : null);
   ok(offered && offered.name === 'bracket.dxf' && /bracket\.dxf$/.test(offered.defaultPath) && offered.filters[0] === 'dxf', 'Save As offered with the suggested name and a DXF filter', offered);
   ok(done && done.state === 'completed' && fs.existsSync(path.join(saveDir, 'bracket.dxf')) && fs.readFileSync(path.join(saveDir, 'bracket.dxf'), 'utf8') === dxf, 'the DXF saved byte for byte', done && done.path);
   // errors so far, before (test log) and after (DevTools) the debugger attached; the probes below answer 4xx on purpose

@@ -37,6 +37,14 @@ node anvil/headless/anvil.js example --all --occt --native
 node anvil/headless/occt-tests.js --native
 ```
 
+On a PC whose Desktop is kept in OneDrive (the home PC, 2026-11-13): build OpenCascade outside OneDrive
+(`build-occt.ps1 -Root "$env:LOCALAPPDATA\AnvilBuild\occt-7.6.3"`) and set `OCCT_DIR` to its `install` folder for
+`npm run build` and `npm run collect`; `Desktop\Output` itself is found by `desktop/output-dir.js`. If node-gyp says
+"Could not find any Visual Studio installation", run it from Visual Studio's environment:
+`cmd /c "call <BuildTools>\VC\Auxiliary\Build\vcvars64.bat && node ..\node_modules\node-gyp\bin\node-gyp.js rebuild --jobs 8"`.
+After a build, `node anvil/headless/occt-tests.js --native` must give the same count as without `--native`: a lower
+count means `api-surface.json` is behind occt-kernel.js (record again, below).
+
 `OCCT_DIR` points the build and `collect.js` at another OpenCascade install; `--native <dir>` (or
 `ANVIL_OCCT_NATIVE`) at another addon folder.
 

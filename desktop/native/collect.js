@@ -7,8 +7,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const out = path.resolve(process.argv[2] || path.join(os.homedir(), 'Desktop', 'Output', 'Anvil Native', 'addon'));
-const occt = process.env.OCCT_DIR || path.join(os.homedir(), 'Desktop', 'Output', 'Anvil Native', 'occt-7.6.3', 'install');
+const out = path.resolve(process.argv[2] || path.join(require('../output-dir.js')(), 'Anvil Native', 'addon'));
+const occt = process.env.OCCT_DIR || path.join(require('../output-dir.js')(), 'Anvil Native', 'occt-7.6.3', 'install');
 const bin = path.join(occt, 'win64', 'vc14', 'bin');
 const node = path.join(__dirname, 'build', 'Release', 'occt_native.node');
 // the toolkits binding.gyp links (and what they link): every OpenCascade DLL the addon loads

@@ -47,7 +47,9 @@ function testLog(event, data) {
 }
 
 // ---- settings (user-editable) and state (the app's own) in the user-data folder ----------------------------------
-const DEFAULT_RELEASES = path.join(app.getPath('home'), 'Desktop', 'Output', 'Anvil Releases');
+// the Desktop that holds Output: %USERPROFILE%\Desktop (the shop PC), else the Desktop Windows reports (kept in OneDrive on the home PC)
+const DESKTOP = (() => { const d = path.join(app.getPath('home'), 'Desktop'); if (fs.existsSync(path.join(d, 'Output'))) return d; try { return app.getPath('desktop'); } catch (e) { return d; } })();
+const DEFAULT_RELEASES = path.join(DESKTOP, 'Output', 'Anvil Releases');
 function readJson(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')); } catch (e) { return null; } }
 function writeJson(file, obj) { try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(obj, null, 2)); } catch (e) { /* ignore */ } }
 function settingsFile() { return path.join(app.getPath('userData'), 'settings.json'); }
@@ -399,7 +401,7 @@ function setupMenu() {
 // One utility process per engine start (the page's startWorker); the page stops it (terminate: Cancel, a model switch)
 // by killing it, so a long build never blocks the next one. The page and the process talk directly on a MessagePort.
 const OCCT_ADDON = path.resolve(process.env.ANVIL_OCCT_NATIVE ||
-  (app.isPackaged ? path.join(process.resourcesPath, 'occt-native') : path.join(app.getPath('home'), 'Desktop', 'Output', 'Anvil Native', 'addon')));
+  (app.isPackaged ? path.join(process.resourcesPath, 'occt-native') : path.join(DESKTOP, 'Output', 'Anvil Native', 'addon')));
 // shipped unpacked (asarUnpack), next to app.asar
 const OCCT_HOST = path.join(__dirname, 'occt-host.js').replace(/([\\/])app\.asar([\\/])/, '$1app.asar.unpacked$2');
 const occtHosts = new Map();   // id -> { child, wc, stopped }

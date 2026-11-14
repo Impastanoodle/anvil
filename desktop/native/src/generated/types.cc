@@ -205,6 +205,17 @@ static void* up_BRepBuilderAPI_ModifyShape(void* p, int to) {
   }
   return nullptr;
 }
+static void* up_BRepBuilderAPI_NurbsConvert(void* p, int to) {
+  BRepBuilderAPI_NurbsConvert* x = static_cast<BRepBuilderAPI_NurbsConvert*>(p);
+  switch (to) {
+    case ID_BRepBuilderAPI_NurbsConvert: return x;
+    case ID_BRepBuilderAPI_ModifyShape: return static_cast<BRepBuilderAPI_ModifyShape*>(x);
+    case ID_BRepBuilderAPI_MakeShape: return static_cast<BRepBuilderAPI_MakeShape*>(x);
+    case ID_BRepBuilderAPI_Command: return static_cast<BRepBuilderAPI_Command*>(x);
+  }
+  return nullptr;
+}
+static void del_BRepBuilderAPI_NurbsConvert(void* p) { delete static_cast<BRepBuilderAPI_NurbsConvert*>(p); }
 static void* up_BRepBuilderAPI_Sewing(void* p, int to) {
   BRepBuilderAPI_Sewing* x = static_cast<BRepBuilderAPI_Sewing*>(p);
   switch (to) {
@@ -802,6 +813,16 @@ static void* up_NCollection_BaseMap(void* p, int to) {
   }
   return nullptr;
 }
+static void* up_Poly_PolygonOnTriangulation(void* p, int to) {
+  Poly_PolygonOnTriangulation* x = static_cast<Poly_PolygonOnTriangulation*>(p);
+  switch (to) {
+    case ID_Poly_PolygonOnTriangulation: return x;
+    case ID_Standard_Transient: return static_cast<Standard_Transient*>(x);
+  }
+  return nullptr;
+}
+static void* fromT_Poly_PolygonOnTriangulation(Standard_Transient* t) { return dynamic_cast<Poly_PolygonOnTriangulation*>(t); }
+static Standard_Transient* toT_Poly_PolygonOnTriangulation(void* p) { return static_cast<Standard_Transient*>(static_cast<Poly_PolygonOnTriangulation*>(p)); }
 static void* up_Poly_Triangle(void* p, int to) {
   Poly_Triangle* x = static_cast<Poly_Triangle*>(p);
   switch (to) {
@@ -1188,6 +1209,8 @@ static void* up_Handle_Geom_Surface(void* p, int to) { return to == ID_Handle_Ge
 static void del_Handle_Geom_Surface(void* p) { delete static_cast<opencascade::handle<Geom_Surface>*>(p); }
 static void* up_Handle_Geom_TrimmedCurve(void* p, int to) { return to == ID_Handle_Geom_TrimmedCurve ? p : nullptr; }
 static void del_Handle_Geom_TrimmedCurve(void* p) { delete static_cast<opencascade::handle<Geom_TrimmedCurve>*>(p); }
+static void* up_Handle_Poly_PolygonOnTriangulation(void* p, int to) { return to == ID_Handle_Poly_PolygonOnTriangulation ? p : nullptr; }
+static void del_Handle_Poly_PolygonOnTriangulation(void* p) { delete static_cast<opencascade::handle<Poly_PolygonOnTriangulation>*>(p); }
 static void* up_Handle_Poly_Triangulation(void* p, int to) { return to == ID_Handle_Poly_Triangulation ? p : nullptr; }
 static void del_Handle_Poly_Triangulation(void* p) { delete static_cast<opencascade::handle<Poly_Triangulation>*>(p); }
 void RegisterTypes() {
@@ -1212,6 +1235,7 @@ void RegisterTypes() {
   g_types[ID_BRepBuilderAPI_MakeVertex] = new TypeInfo{ "BRepBuilderAPI_MakeVertex", ID_BRepBuilderAPI_MakeVertex, ID_BRepBuilderAPI_MakeShape, false, false, up_BRepBuilderAPI_MakeVertex, del_BRepBuilderAPI_MakeVertex, nullptr, nullptr, -1 };
   g_types[ID_BRepBuilderAPI_MakeWire] = new TypeInfo{ "BRepBuilderAPI_MakeWire", ID_BRepBuilderAPI_MakeWire, ID_BRepBuilderAPI_MakeShape, false, false, up_BRepBuilderAPI_MakeWire, del_BRepBuilderAPI_MakeWire, nullptr, nullptr, -1 };
   g_types[ID_BRepBuilderAPI_ModifyShape] = new TypeInfo{ "BRepBuilderAPI_ModifyShape", ID_BRepBuilderAPI_ModifyShape, ID_BRepBuilderAPI_MakeShape, false, false, up_BRepBuilderAPI_ModifyShape, nullptr, nullptr, nullptr, -1 };
+  g_types[ID_BRepBuilderAPI_NurbsConvert] = new TypeInfo{ "BRepBuilderAPI_NurbsConvert", ID_BRepBuilderAPI_NurbsConvert, ID_BRepBuilderAPI_ModifyShape, false, false, up_BRepBuilderAPI_NurbsConvert, del_BRepBuilderAPI_NurbsConvert, nullptr, nullptr, -1 };
   g_types[ID_BRepBuilderAPI_Sewing] = new TypeInfo{ "BRepBuilderAPI_Sewing", ID_BRepBuilderAPI_Sewing, ID_Standard_Transient, true, false, up_BRepBuilderAPI_Sewing, nullptr, fromT_BRepBuilderAPI_Sewing, toT_BRepBuilderAPI_Sewing, -1 };
   g_types[ID_BRepBuilderAPI_Transform] = new TypeInfo{ "BRepBuilderAPI_Transform", ID_BRepBuilderAPI_Transform, ID_BRepBuilderAPI_ModifyShape, false, false, up_BRepBuilderAPI_Transform, del_BRepBuilderAPI_Transform, nullptr, nullptr, -1 };
   g_types[ID_BRepCheck_Analyzer] = new TypeInfo{ "BRepCheck_Analyzer", ID_BRepCheck_Analyzer, -1, false, false, up_BRepCheck_Analyzer, del_BRepCheck_Analyzer, nullptr, nullptr, -1 };
@@ -1272,6 +1296,7 @@ void RegisterTypes() {
   g_types[ID_MoniTool_TypedValue] = new TypeInfo{ "MoniTool_TypedValue", ID_MoniTool_TypedValue, ID_Standard_Transient, true, false, up_MoniTool_TypedValue, nullptr, fromT_MoniTool_TypedValue, toT_MoniTool_TypedValue, -1 };
   g_types[ID_NCollection_BaseList] = new TypeInfo{ "NCollection_BaseList", ID_NCollection_BaseList, -1, false, false, up_NCollection_BaseList, nullptr, nullptr, nullptr, -1 };
   g_types[ID_NCollection_BaseMap] = new TypeInfo{ "NCollection_BaseMap", ID_NCollection_BaseMap, -1, false, false, up_NCollection_BaseMap, nullptr, nullptr, nullptr, -1 };
+  g_types[ID_Poly_PolygonOnTriangulation] = new TypeInfo{ "Poly_PolygonOnTriangulation", ID_Poly_PolygonOnTriangulation, ID_Standard_Transient, true, false, up_Poly_PolygonOnTriangulation, nullptr, fromT_Poly_PolygonOnTriangulation, toT_Poly_PolygonOnTriangulation, -1 };
   g_types[ID_Poly_Triangle] = new TypeInfo{ "Poly_Triangle", ID_Poly_Triangle, -1, false, false, up_Poly_Triangle, del_Poly_Triangle, nullptr, nullptr, -1 };
   g_types[ID_Poly_Triangulation] = new TypeInfo{ "Poly_Triangulation", ID_Poly_Triangulation, ID_Standard_Transient, true, false, up_Poly_Triangulation, nullptr, fromT_Poly_Triangulation, toT_Poly_Triangulation, -1 };
   g_types[ID_STEPControl_Reader] = new TypeInfo{ "STEPControl_Reader", ID_STEPControl_Reader, ID_XSControl_Reader, false, false, up_STEPControl_Reader, del_STEPControl_Reader, nullptr, nullptr, -1 };
@@ -1324,6 +1349,7 @@ void RegisterTypes() {
   g_types[ID_Handle_Geom_Curve] = new TypeInfo{ "Handle_Geom_Curve", ID_Handle_Geom_Curve, -1, false, true, up_Handle_Geom_Curve, del_Handle_Geom_Curve, nullptr, nullptr, ID_Geom_Curve };
   g_types[ID_Handle_Geom_Surface] = new TypeInfo{ "Handle_Geom_Surface", ID_Handle_Geom_Surface, -1, false, true, up_Handle_Geom_Surface, del_Handle_Geom_Surface, nullptr, nullptr, ID_Geom_Surface };
   g_types[ID_Handle_Geom_TrimmedCurve] = new TypeInfo{ "Handle_Geom_TrimmedCurve", ID_Handle_Geom_TrimmedCurve, -1, false, true, up_Handle_Geom_TrimmedCurve, del_Handle_Geom_TrimmedCurve, nullptr, nullptr, ID_Geom_TrimmedCurve };
+  g_types[ID_Handle_Poly_PolygonOnTriangulation] = new TypeInfo{ "Handle_Poly_PolygonOnTriangulation", ID_Handle_Poly_PolygonOnTriangulation, -1, false, true, up_Handle_Poly_PolygonOnTriangulation, del_Handle_Poly_PolygonOnTriangulation, nullptr, nullptr, ID_Poly_PolygonOnTriangulation };
   g_types[ID_Handle_Poly_Triangulation] = new TypeInfo{ "Handle_Poly_Triangulation", ID_Handle_Poly_Triangulation, -1, false, true, up_Handle_Poly_Triangulation, del_Handle_Poly_Triangulation, nullptr, nullptr, ID_Poly_Triangulation };
   g_enums.resize(15);
   g_enums[0] = new EnumInfo{ "BRepBuilderAPI_TransitionMode", { { "BRepBuilderAPI_Transformed", (int)BRepBuilderAPI_Transformed }, { "BRepBuilderAPI_RightCorner", (int)BRepBuilderAPI_RightCorner }, { "BRepBuilderAPI_RoundCorner", (int)BRepBuilderAPI_RoundCorner } } };

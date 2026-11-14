@@ -76,7 +76,7 @@ console.log('stage.js: ' + files + ' files, ' + (bytes / 1048576).toFixed(1) + '
 // OpenCascade for Windows (desktop/native: index.js, occt_native.node, the OpenCascade DLLs and their licences):
 // required; electron-builder ships stage/occt-native as resources\occt-native, outside the asar (the app falls back to
 // the WebAssembly engine above if it cannot load). From ANVIL_OCCT_NATIVE, else Desktop\Output\Anvil Native\addon.
-const NATIVE = path.resolve(process.env.ANVIL_OCCT_NATIVE || path.join(os.homedir(), 'Desktop', 'Output', 'Anvil Native', 'addon'));
+const NATIVE = path.resolve(process.env.ANVIL_OCCT_NATIVE || path.join(require('./output-dir.js')(), 'Anvil Native', 'addon'));
 const NOUT = path.join(__dirname, 'stage', 'occt-native');
 const need = ['index.js', 'occt_native.node', 'TKernel.dll', 'TKBO.dll', 'TKSTEP.dll', 'TKIGES.dll', 'TKMesh.dll'];
 const lacking = need.filter((f) => !fs.existsSync(path.join(NATIVE, f)));

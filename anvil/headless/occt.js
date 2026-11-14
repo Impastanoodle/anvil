@@ -19,7 +19,7 @@ const FETCH_HINT = 'run  powershell -ExecutionPolicy Bypass -File anvil\\vendor\
 // the native engine (desktop/native: OpenCascade 7.6.3 built for Windows behind a Node-API addon with the same `oc`
 // API): a folder holding index.js, occt_native.node and the OpenCascade DLLs (desktop/native/collect.js puts them in
 // Output\Anvil Native\addon); --native with no folder takes ANVIL_OCCT_NATIVE, else that folder
-const NATIVE_DEFAULT = process.env.ANVIL_OCCT_NATIVE || path.join(require('os').homedir(), 'Desktop', 'Output', 'Anvil Native', 'addon');
+const NATIVE_DEFAULT = process.env.ANVIL_OCCT_NATIVE || path.join(require(path.resolve(__dirname, '..', '..', 'desktop', 'output-dir.js'))(), 'Anvil Native', 'addon');
 
 let loading = null, loadingNative = null;
 

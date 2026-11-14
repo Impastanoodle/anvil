@@ -4,7 +4,7 @@
 'use strict';
 const path = require('path');
 (async () => {
-  const dir = process.argv[2] || path.join(require('os').homedir(), 'Desktop', 'Output', 'Anvil Native', 'addon');
+  const dir = process.argv[2] || path.join(require('../output-dir.js')(), 'Anvil Native', 'addon');
   const { load } = require(path.join(__dirname, '..', '..', 'anvil', 'headless', 'load.js'));
   const { Kernel, OcctKernel } = load({ occt: true });
   const t0 = performance.now();

@@ -19,7 +19,7 @@ const { spawnSync } = require('child_process');
 const args = process.argv.slice(2);
 function opt(name, def) { const i = args.indexOf('--' + name); return i >= 0 && args[i + 1] != null ? args[i + 1] : def; }
 function fail(msg) { console.error('\nrelease.js: ' + msg + '\n'); process.exit(1); }
-const OUT = path.resolve(opt('out', path.join(os.homedir(), 'Desktop', 'Output', 'Anvil Releases')));
+const OUT = path.resolve(opt('out', path.join(require('./output-dir.js')(), 'Anvil Releases')));
 const KEEP = Math.max(1, +opt('keep', 3) || 3);
 const PKG = path.join(__dirname, 'package.json'), LOCK = path.join(__dirname, 'package-lock.json');
 

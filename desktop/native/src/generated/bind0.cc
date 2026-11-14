@@ -172,6 +172,16 @@ Napi::Value ctor_BRepBuilderAPI_MakeFace_15(const Napi::CallbackInfo& info) {
     return info.Env().Undefined();
   OCC_CATCH
 }
+Napi::Value ctor_BRepBuilderAPI_MakeFace_2(const Napi::CallbackInfo& info) {
+  if (!info.IsConstructCall()) throw Napi::TypeError::New(info.Env(), "BRepBuilderAPI_MakeFace_2 must be called with new");
+  CheckCount(info, 1, "BRepBuilderAPI_MakeFace_2");
+  OCC_TRY
+    TopoDS_Face& a0 = ArgObj<TopoDS_Face>(info[0], ID_TopoDS_Face);
+    BRepBuilderAPI_MakeFace* p = new BRepBuilderAPI_MakeFace(a0);
+    Adopt(info.Env(), info.This().As<Napi::Object>(), ID_BRepBuilderAPI_MakeFace, p, nullptr);
+    return info.Env().Undefined();
+  OCC_CATCH
+}
 Napi::Value ctor_BRepBuilderAPI_MakeFace_21(const Napi::CallbackInfo& info) {
   if (!info.IsConstructCall()) throw Napi::TypeError::New(info.Env(), "BRepBuilderAPI_MakeFace_21 must be called with new");
   CheckCount(info, 3, "BRepBuilderAPI_MakeFace_21");
@@ -221,6 +231,17 @@ Napi::Value ctor_BRepBuilderAPI_MakeWire_1(const Napi::CallbackInfo& info) {
   OCC_TRY
     BRepBuilderAPI_MakeWire* p = new BRepBuilderAPI_MakeWire();
     Adopt(info.Env(), info.This().As<Napi::Object>(), ID_BRepBuilderAPI_MakeWire, p, nullptr);
+    return info.Env().Undefined();
+  OCC_CATCH
+}
+Napi::Value ctor_BRepBuilderAPI_NurbsConvert_2(const Napi::CallbackInfo& info) {
+  if (!info.IsConstructCall()) throw Napi::TypeError::New(info.Env(), "BRepBuilderAPI_NurbsConvert_2 must be called with new");
+  CheckCount(info, 2, "BRepBuilderAPI_NurbsConvert_2");
+  OCC_TRY
+    TopoDS_Shape& a0 = ArgObj<TopoDS_Shape>(info[0], ID_TopoDS_Shape);
+    Standard_Boolean a1 = ArgBool(info[1]);
+    BRepBuilderAPI_NurbsConvert* p = new BRepBuilderAPI_NurbsConvert(a0, a1);
+    Adopt(info.Env(), info.This().As<Napi::Object>(), ID_BRepBuilderAPI_NurbsConvert, p, nullptr);
     return info.Env().Undefined();
   OCC_CATCH
 }
@@ -582,6 +603,37 @@ Napi::Value ctor_Geom_BSplineSurface_1(const Napi::CallbackInfo& info) {
     Standard_Boolean a8 = ArgBool(info[8]);
     Geom_BSplineSurface* p = new Geom_BSplineSurface(a0, a1, a2, a3, a4, a5, a6, a7, a8);
     Adopt(info.Env(), info.This().As<Napi::Object>(), ID_Geom_BSplineSurface, p, p);
+    return info.Env().Undefined();
+  OCC_CATCH
+}
+Napi::Value ctor_Geom_BSplineSurface_2(const Napi::CallbackInfo& info) {
+  if (!info.IsConstructCall()) throw Napi::TypeError::New(info.Env(), "Geom_BSplineSurface_2 must be called with new");
+  CheckCount(info, 10, "Geom_BSplineSurface_2");
+  OCC_TRY
+    TColgp_Array2OfPnt& a0 = ArgObj<TColgp_Array2OfPnt>(info[0], ID_TColgp_Array2OfPnt);
+    TColStd_Array2OfReal& a1 = ArgObj<TColStd_Array2OfReal>(info[1], ID_TColStd_Array2OfReal);
+    TColStd_Array1OfReal& a2 = ArgObj<TColStd_Array1OfReal>(info[2], ID_TColStd_Array1OfReal);
+    TColStd_Array1OfReal& a3 = ArgObj<TColStd_Array1OfReal>(info[3], ID_TColStd_Array1OfReal);
+    TColStd_Array1OfInteger& a4 = ArgObj<TColStd_Array1OfInteger>(info[4], ID_TColStd_Array1OfInteger);
+    TColStd_Array1OfInteger& a5 = ArgObj<TColStd_Array1OfInteger>(info[5], ID_TColStd_Array1OfInteger);
+    Standard_Integer a6 = ArgInt(info[6]);
+    Standard_Integer a7 = ArgInt(info[7]);
+    Standard_Boolean a8 = ArgBool(info[8]);
+    Standard_Boolean a9 = ArgBool(info[9]);
+    Geom_BSplineSurface* p = new Geom_BSplineSurface(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9);
+    Adopt(info.Env(), info.This().As<Napi::Object>(), ID_Geom_BSplineSurface, p, p);
+    return info.Env().Undefined();
+  OCC_CATCH
+}
+Napi::Value ctor_Geom_ConicalSurface_1(const Napi::CallbackInfo& info) {
+  if (!info.IsConstructCall()) throw Napi::TypeError::New(info.Env(), "Geom_ConicalSurface_1 must be called with new");
+  CheckCount(info, 3, "Geom_ConicalSurface_1");
+  OCC_TRY
+    gp_Ax3& a0 = ArgObj<gp_Ax3>(info[0], ID_gp_Ax3);
+    Standard_Real a1 = ArgReal(info[1]);
+    Standard_Real a2 = ArgReal(info[2]);
+    Geom_ConicalSurface* p = new Geom_ConicalSurface(a0, a1, a2);
+    Adopt(info.Env(), info.This().As<Napi::Object>(), ID_Geom_ConicalSurface, p, p);
     return info.Env().Undefined();
   OCC_CATCH
 }
