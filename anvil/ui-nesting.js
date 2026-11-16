@@ -41,7 +41,8 @@
     if (!m || m.type === 'assembly' || !m.sheet) return { error: 'The current part has no flat pattern: make a Base Flange first (Sheet Metal tab), or add a sketch\'s profiles or a DXF.' };
     var flat;
     try { flat = K.flatPattern(m, App.build, App.mesh); } catch (e) { return { error: 'Flat pattern: ' + ((e && e.message) || e) }; }
-    var p = Nest.part({ name: m.name || 'Part1', loops: flat.loops });
+    // lane NB: Nest.flatPart keeps the flat's bend lines (BEND), etch (ETCH) and forming marks (FORM) with the blank
+    var p = Nest.flatPart ? Nest.flatPart(flat, m.name || 'Part1', 1) : Nest.part({ name: m.name || 'Part1', loops: flat.loops });
     if (!p) return { error: 'The flat pattern has no closed outline.' };
     if (flat.sheet && +flat.sheet.thickness > 0 && ns.vals && !(+ns.vals.thick > 0)) ns.vals.thick = +flat.sheet.thickness;
     addPart(p, 1, 'flat');
@@ -97,7 +98,7 @@
     if (!(+v.width > 0 && +v.height > 0)) return { error: 'Give the sheet a size.' };
     var t0 = Date.now();
     // the prepared parts (Nest.part) with this list's quantities, in list order (its order is the priority on ties)
-    var parts = ns.parts.map(function (r) { var p = r.part; return { name: p.name, loops: p.loops, area: p.area, box: p.box, size: p.size, qty: Math.max(0, Math.round(+r.qty || 0)), priority: 0 }; });
+    var parts = ns.parts.map(function (r) { var p = r.part; return { name: p.name, loops: p.loops, area: p.area, box: p.box, size: p.size, marks: p.marks, qty: Math.max(0, Math.round(+r.qty || 0)), priority: 0 }; });
     var res;
     try { res = Nest.run(parts, nestOptions(v)); } catch (e) { ns.result = null; return { error: 'Nesting failed: ' + ((e && e.message) || e) }; }
     ns.ms = Date.now() - t0;
@@ -110,7 +111,12 @@
     var r = ns && ns.result;
     if (!r) return ns && ns.parts.length ? (ns.stale ? 'Values changed: press Nest.' : 'Press Nest to place the parts.') : 'Add parts, set the sheet, then Nest.';
     var s = r.placed + ' of ' + r.total + ' parts on ' + r.sheets.length + ' sheet' + (r.sheets.length === 1 ? '' : 's') + ', ' + r.utilization.toFixed(1) + ' % used';
-    if (r.unplaced.length) s += '; ' + r.unplaced.length + ' did not fit';
+    // lane NB: the parts left out, by name, with the reason (does not fit / no room on Max sheets)
+    if (r.unplaced.length) {
+      var un = {}, keys = [];
+      r.unplaced.forEach(function (u) { var k = u.name + ': ' + (u.reason || 'did not fit'); if (!un[k]) { un[k] = 0; keys.push(k); } un[k]++; });
+      s += '; not placed: ' + keys.map(function (k) { return un[k] + ' × ' + k; }).join(', ');
+    }
     return s + (ns.stale ? ' (values changed: press Nest)' : '');
   }
   function setMessage() {
@@ -156,7 +162,12 @@
       var d = Nest.placedLoops(r, pl).map(function (L) {
         return 'M' + Nest.loopPoly(L, tol).map(function (p) { return r6(p[0]) + ' ' + r6(H - p[1]); }).join('L') + 'Z';
       }).join('');
-      body += '<path d="' + d + '" fill="#b4b4b4" fill-rule="evenodd" stroke="#2a2a2a" stroke-width="1" vector-effect="non-scaling-stroke"><title>' + esc(pl.name + ' #' + (pl.copy + 1) + (pl.angle ? ', ' + r6(pl.angle) + '°' : '') + (pl.mirror ? ', mirrored' : '')) + '</title></path>';
+      // lane NB: bend lines dashed, etch / form marks thin, as they travel with the blank
+      var mk = Nest.placedMarks ? Nest.placedMarks(r, pl).map(function (q) {
+        var pts = q.t === 'circle' ? Nest.loopPoly({ circle: { c: q.c, r: q.r } }, tol).concat([[q.c[0] + q.r, q.c[1]]]) : q.t === 'line' ? [q.a, q.b] : Nest.loopPoly({ segs: [q] }, tol).concat([q.b]);
+        return '<polyline class="nest-mark" data-layer="' + esc(q.layer) + '" points="' + pts.map(function (p) { return r6(p[0]) + ',' + r6(H - p[1]); }).join(' ') + '" fill="none" stroke="' + (q.layer === 'BEND' ? '#2f7d32' : '#8a6d00') + '" stroke-width="1"' + (q.layer === 'BEND' ? ' stroke-dasharray="6 3"' : '') + ' vector-effect="non-scaling-stroke"/>';
+      }).join('') : '';
+      body += '<path d="' + d + '" fill="#b4b4b4" fill-rule="evenodd" stroke="#2a2a2a" stroke-width="1" vector-effect="non-scaling-stroke"><title>' + esc(pl.name + ' #' + (pl.copy + 1) + (pl.angle ? ', ' + r6(pl.angle) + '°' : '') + (pl.mirror ? ', mirrored' : '')) + '</title></path>' + mk;
     });
     var m = r ? r.opts.margin : +v.margin || 0, marg = m > 0 ? '<rect x="' + m + '" y="' + m + '" width="' + r6(W - 2 * m) + '" height="' + r6(H - 2 * m) + '" fill="none" stroke="#a0a0a0" stroke-dasharray="4 3" stroke-width="1" vector-effect="non-scaling-stroke"/>' : '';
     return '<svg class="nest-preview" data-role="' + role + '" viewBox="' + r6(-pad) + ' ' + r6(-pad) + ' ' + r6(W + 2 * pad) + ' ' + r6(H + 2 * pad) + '" width="100%"' + (fill ? ' height="100%"' : '') + ' style="display:block;' + (fill ? '' : 'max-height:300px;') + 'background:#fff;border:1px solid #c8c8c8" preserveAspectRatio="xMidYMid meet">' +
@@ -197,7 +208,7 @@
     var gap = Math.max(res.opts.width, res.opts.height) * 0.1;
     res.sheets.forEach(function (S, k) {
       m.features.push({ id: m.nextId++, type: 'sketch', name: 'Sheet' + (k + 1), plane: { ref: 'Top', offset: 0 },
-        entities: Nest.sheetEntities(res, k, { offset: [k * (S.width + gap), 0] }), layers: [{ name: 'CUT', color: null }] });
+        entities: Nest.sheetEntities(res, k, { offset: [k * (S.width + gap), 0] }), layers: sketchLayers(res) });
     });
     m.nest = { sheet: [res.opts.width, res.opts.height], spacing: res.opts.spacing, margin: res.opts.margin, rotation: res.opts.rotation,
       mirror: res.opts.mirror, holes: res.opts.holes, material: v.material || '', thickness: +v.thick || 0, placed: res.placed, total: res.total,
@@ -205,18 +216,51 @@
       sheets: res.sheets.map(function (S) { return { parts: S.placements.length, utilization: r6(S.utilization) }; }) };
     return m;
   }
+  // lane NB: the Nest document's sketch layers: CUT and the marks' layers (BEND, ETCH, FORM) the parts carry
+  function sketchLayers(res) {
+    var have = { CUT: 1 }, out = [{ name: 'CUT', color: null }];
+    res.parts.forEach(function (p) { (p && p.marks || []).forEach(function (q) { if (!have[q.layer]) { have[q.layer] = 1; out.push({ name: q.layer, color: null }); } }); });
+    return out;
+  }
+  // DXF options from the PropertyManager: layers 'cut' (one CUT layer) | 'flat' (OUTLINE / HOLES as the flat's DXF)
+  function dxfOpts(version) {
+    var v = (ns && ns.vals) || {};
+    return { version: version || v.dxfVersion || 'R12', layers: v.dxfLayers === 'flat' ? 'flat' : undefined, outline: !!v.dxfSheet, marks: !!v.dxfMarks };
+  }
+  function resultUnits(res) { return ns && ns.result === res ? units() : last ? last.units : units(); }
   function sheetDXF(k, version, res, u) {
     res = res || (ns && ns.result) || (last && last.result);
     if (!res || !res.sheets[k]) return null;
-    return Nest.sheetDXF(res, k, u || (ns && ns.result === res ? units() : last ? last.units : units()), { version: version || 'R12' });
+    return Nest.sheetDXF(res, k, u || resultUnits(res), dxfOpts(version));
   }
+  function baseName() { return String((ns && ns.parts[0] && ns.parts[0].name) || (last && last.name) || 'Nest').replace(/[^\w.-]+/g, '_') + '-nest'; }
+  // Save DXF: one file per sheet, or (DXF files: one file) every sheet side by side in one file with the sheet outlines
   function saveDXF(version) {
     var res = (ns && ns.result) || (last && last.result);
     if (!res || !res.sheets.length) { UI.toast('Nest first.'); return 0; }
-    var base = String((ns && ns.parts[0] && ns.parts[0].name) || (last && last.name) || 'Nest').replace(/[^\w.-]+/g, '_') + '-nest';
+    var base = baseName(), o = dxfOpts(version), lay = o.layers === 'flat' ? 'OUTLINE / HOLES' : 'CUT';
+    if (ns && ns.vals && ns.vals.dxfFiles === 'one') {
+      UI.download(base + '.dxf', Nest.nestDXF(res, resultUnits(res), o), 'application/dxf');
+      UI.setStatus('Saved ' + base + '.dxf: ' + res.sheets.length + ' sheet' + (res.sheets.length === 1 ? '' : 's') + ' side by side (' + o.version + ', ' + lay + ', sheet outlines on SHEET).');
+      return 1;
+    }
     res.sheets.forEach(function (S, k) { UI.download(base + '-sheet' + (k + 1) + '.dxf', sheetDXF(k, version, res), 'application/dxf'); });
-    UI.setStatus('Saved ' + res.sheets.length + ' DXF file' + (res.sheets.length === 1 ? '' : 's') + ' (' + (version || 'R12') + ', layer CUT).');
+    UI.setStatus('Saved ' + res.sheets.length + ' DXF file' + (res.sheets.length === 1 ? '' : 's') + ' (' + o.version + ', layer ' + lay + ').');
     return res.sheets.length;
+  }
+  // lane NB: the nest report (parts and counts per sheet, utilisation, remnant, parts not placed) as a text file
+  function reportText(res) {
+    res = res || (ns && ns.result) || (last && last.result);
+    if (!res) return null;
+    var v = (ns && ns.vals) || {};
+    return Nest.report(res, resultUnits(res), { title: baseName(), material: v.material, thickness: +v.thick || 0 });
+  }
+  function saveReport() {
+    var t = reportText();
+    if (!t) { UI.toast('Nest first.'); return 0; }
+    UI.download(baseName() + '-report.txt', t, 'text/plain');
+    UI.setStatus('Saved ' + baseName() + '-report.txt.');
+    return 1;
   }
 
   // ------------------------------------------------------------------ the PropertyManager
@@ -232,7 +276,7 @@
     var keep = ns && ns.vals ? ns.vals : null;
     var vals = keep || { preset: '48x96', width: r6(96 * k), height: r6(48 * k), material: '', thick: App.model && App.model.sheet ? +App.model.sheet.thickness || 0 : 0,
       spacing: r6(0.25 * k), margin: r6(0.5 * k), rotation: '90', rotStep: 15, mirror: false, holes: true, corner: 'bl', direction: 'x',
-      maxSheets: 10, accuracy: 2000, dxfVersion: 'R12', overlay: true };
+      maxSheets: 10, accuracy: 2000, dxfVersion: 'R12', dxfLayers: 'cut', dxfFiles: 'each', dxfSheet: false, dxfMarks: false, overlay: true };
     ns = { parts: ns && ns.parts ? ns.parts : [], result: null, sheet: 0, stale: false, ms: null, vals: vals, session: tag };
     var spec = {
       title: 'Geometry Nesting', icon: icon(), values: vals, noFocus: true,
@@ -254,7 +298,7 @@
         { title: 'Parameters', fields: [
           { type: 'number', label: 'Part spacing', key: 'spacing', unit: 'u', min: 0 },
           { type: 'number', label: 'Sheet margin', key: 'margin', unit: 'u', min: 0 },
-          { type: 'select', label: 'Rotation', key: 'rotation', rerender: true, options: [['0', 'None'], ['90', '90° steps'], ['45', '45° steps'], ['custom', 'Every n°']] },
+          { type: 'select', label: 'Rotation', key: 'rotation', rerender: true, options: [['0', 'None'], ['180', '180° only (grain)'], ['90', '90° steps'], ['45', '45° steps'], ['custom', 'Every n°']] },
           { type: 'number', label: 'Rotation step', key: 'rotStep', unit: '°', min: 0, show: function (w) { return w.rotation === 'custom'; } },
           { type: 'check', label: 'Allow mirror', key: 'mirror' },
           { type: 'check', label: 'Nest in holes', key: 'holes' },
@@ -270,8 +314,14 @@
             { label: 'Next ▶', onclick: function () { if (ns.result && ns.sheet < ns.result.sheets.length - 1) { ns.sheet++; rerender(); } } }] },
           { type: 'html', html: function () { return sheetSVG(ns.sheet, false, 'nest-preview'); } },
           { type: 'check', label: 'Preview in graphics area', key: 'overlay' },
+          { type: 'static', label: 'Remnant', value: function () { var r = ns.result, q = r && r.sheets[ns.sheet] && r.sheets[ns.sheet].remnant; return q && q.area > 0 ? fmt(q.w) + ' × ' + fmt(q.h) + ' ' + units() + ' (' + q.side + ')' : '—'; } },
           { type: 'select', label: 'DXF version', key: 'dxfVersion', options: [['R12', 'R12 (AC1009)'], ['R2000', 'R2000 (AC1015)']] },
-          { type: 'buttons', buttons: [{ label: 'Save DXF', onclick: function (w) { if (ns.stale || !ns.result) doNest(); saveDXF(w.dxfVersion); } }] }] }],
+          { type: 'select', label: 'DXF layers', key: 'dxfLayers', options: [['cut', 'CUT (one cut layer)'], ['flat', 'OUTLINE / HOLES']] },
+          { type: 'select', label: 'DXF files', key: 'dxfFiles', options: [['each', 'One per sheet'], ['one', 'One file, sheets side by side']] },
+          { type: 'check', label: 'Sheet outline in DXF', key: 'dxfSheet' },
+          { type: 'check', label: 'Bend / etch lines in DXF', key: 'dxfMarks' },
+          { type: 'buttons', buttons: [{ label: 'Save DXF', onclick: function (w) { if (ns.stale || !ns.result) doNest(); saveDXF(w.dxfVersion); } },
+            { label: 'Save report', onclick: function () { if (ns.stale || !ns.result) doNest(); saveReport(); } }] }] }],
       onChange: function (v, key) {
         if (!key) return;
         if (key === 'preset') {
@@ -282,7 +332,7 @@
           v.preset = match ? match[0] : 'custom';
         }
         if (key === 'overlay') { updateOverlay(); return; }
-        if (/^(material|thick|dxfVersion)$/.test(key)) return;
+        if (/^(material|thick|dxfVersion|dxfLayers|dxfFiles|dxfSheet|dxfMarks)$/.test(key)) return;
         changed();
       },
       okBlocked: function () { return ns && ns.parts.length ? '' : 'Add parts to nest first'; },
@@ -389,4 +439,6 @@
   UI.nestRun = function () { return ns ? doNest() : { error: 'Open Geometry Nesting first.' }; };
   UI.nestSheetDXF = function (k, version) { return sheetDXF(k || 0, version); };
   UI.nestSaveDXF = saveDXF;
+  UI.nestReport = function () { return reportText(); };
+  UI.nestSaveReport = saveReport;
 })();

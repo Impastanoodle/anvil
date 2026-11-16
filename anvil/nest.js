@@ -22,6 +22,8 @@
 //      (else a new sheet, up to maxSheets), at the bottom-left-most free position over its orientations: rows from the
 //      start corner, then columns, in the fill direction (rows along X or along Y). The free-run table (for every cell,
 //      the length of the free or occupied run to its right) lets the search jump over occupied stretches.
+//   4b. (lane NB) Part in part first: with Nest in holes on, a copy goes into a hole of a part already placed when one
+//      takes it (sheets in order, holes in placing order), before the open sheet is searched.
 //   5. Several deterministic strategies run (bottom-left, lowest top edge, each orientation preferred in ties) and the
 //      best result is kept: most parts placed, then fewest sheets, then the shortest used length of the last sheet.
 //   Results never overlap; Nest.check verifies a result with exact polygon tests (segment distances and containment).
@@ -41,7 +43,20 @@
 //   Nest.sheetEntities(result, k, opts?) -> sketch entities of sheet k: the parts' lines / arcs / circles (layer
 //     opts.layer, default 'CUT') and the sheet outline as construction lines; opts.offset [dx, dy]
 //   Nest.sheetDXF(result, k, units, opts?) -> DXF text of sheet k (Kernel.exportDXFSketch: LINE / ARC / CIRCLE on
-//     layer CUT; opts.version 'R12' (default) | 'R2000'; opts.outline: the sheet outline on layer SHEET)
+//     layer CUT; opts.version 'R12' (default) | 'R2000'; opts.outline: the sheet outline on layer SHEET; opts.layers
+//     'flat': OUTLINE / HOLES instead of CUT; the parts' marks on BEND / ETCH / FORM unless opts.marks is false)
+// Lane NB (2026-11-15):
+//   part input `marks` [{ layer, t: 'line' | 'arc' | 'circle', … }]: open geometry that rides with the part (bend lines,
+//     etch, forming marks), never cut, takes no room; a part with ETCH / FORM marks (or noMirror) is never mirrored
+//   Nest.flatPart(flat, name, qty) -> part from a Kernel.flatPattern result with its bends (BEND), etch (ETCH), forms
+//   Nest.placedMarks(result, placement) -> the part's marks on the sheet (exact)
+//   result.unplaced[i].reason ('does not fit on the sheet inside the margin' | 'no room on n sheets (Max sheets)');
+//   result.sheets[k].used (exact extents of its parts) and .remnant { x, y, w, h, area, side } (the largest
+//   full-width or full-height strip clear of the parts by the spacing); result.remnant = the last sheet's;
+//   result.timing { prep, pack: [ms per strategy], total, orientations, copies }
+//   Nest.nestDXF(result, units, opts?) -> every sheet side by side in one DXF (opts.gap; outlines on SHEET)
+//   Nest.report(result, units, opts?) -> the nest report as text (per sheet: part, count; utilisation, remnant; the
+//     parts not placed with the reason); opts { title, material, thickness }
 var Nest = (function () {
   'use strict';
   var TAU = 2 * Math.PI, D2R = Math.PI / 180, R2D = 180 / Math.PI;
@@ -163,7 +178,56 @@ var Nest = (function () {
     var area = areas[oi] - areas.reduce(function (s, a, i) { return i === oi ? s : s + a; }, 0);
     var box = loopsBox(loops);
     return { name: input.name || 'Part', loops: [outer].concat(holes), area: area, box: box, size: [box[2] - box[0], box[3] - box[1]],
-      qty: Math.max(0, Math.round(num(input.qty, 1))), priority: num(input.priority, 0) };
+      qty: Math.max(0, Math.round(num(input.qty, 1))), priority: num(input.priority, 0), marks: normMarks(input.marks) };
+  }
+  // lane NB: marks — open geometry that travels with its part but is not cut and takes no room: bend lines (layer
+  // BEND), etch (ETCH), forming-tool marks (FORM). [{ layer, t: 'line', a, b } | { layer, t: 'arc', a, b, c, r, ccw,
+  // sweep } | { layer, t: 'circle', c, r }]
+  function normMarks(list) {
+    var out = [];
+    (list || []).forEach(function (q) {
+      if (!q) return;
+      var layer = String(q.layer || 'ETCH');
+      if (q.t === 'circle' && q.r > 0) { out.push({ layer: layer, t: 'circle', c: P(q.c), r: +q.r }); return; }
+      if (q.t === 'arc' || q.t === 'line') { var s = normSeg(q); if (s) { s.layer = layer; out.push(s); } }
+    });
+    return out;
+  }
+  // lane NB: a part from a Kernel.flatPattern result: the blank's loops (outer, holes) plus its bend lines on BEND
+  // (a Cross-Break's too), etch on ETCH and forming-tool marks on FORM, so they ride with the blank on the sheet
+  function flatPart(flat, name, qty) {
+    if (!flat || !flat.loops) return null;
+    var marks = [];
+    function etchItem(it, layer) {
+      if (it.t === 'line') marks.push({ layer: layer, t: 'line', a: it.a, b: it.b });
+      else if (it.t === 'circle') marks.push({ layer: layer, t: 'circle', c: it.c, r: it.r });
+      else if (it.t === 'arc') {
+        var a0 = it.a0 * D2R, a1 = it.a1 * D2R, sw = a1 - a0;
+        while (sw <= 0) sw += TAU;
+        marks.push({ layer: layer, t: 'arc', c: it.c, r: it.r, a: [it.c[0] + it.r * Math.cos(a0), it.c[1] + it.r * Math.sin(a0)],
+          b: [it.c[0] + it.r * Math.cos(a0 + sw), it.c[1] + it.r * Math.sin(a0 + sw)], ccw: true, sweep: sw });
+      } else if (it.t === 'poly' && it.pts && it.pts.length > 1) {
+        for (var i = 0; i + 1 < it.pts.length; i++) marks.push({ layer: layer, t: 'line', a: it.pts[i], b: it.pts[i + 1] });
+        if (it.closed && it.pts.length > 2) marks.push({ layer: layer, t: 'line', a: it.pts[it.pts.length - 1], b: it.pts[0] });
+      }
+    }
+    (flat.bends || []).forEach(function (b) { if (b && b.a && b.b) marks.push({ layer: 'BEND', t: 'line', a: b.a, b: b.b }); });
+    (flat.etch || []).forEach(function (it) {
+      if (!it) return;
+      if (it.crossBreak) { if (it.a && it.b) marks.push({ layer: 'BEND', t: 'line', a: it.a, b: it.b }); return; }
+      // a forming tool's cut lines (exportDXFFlat writes them on HOLES) are cuts: HOLES marks go on the cut layer
+      if (it.form != null) { if (it.kind === 'mark') etchItem(it, 'FORM'); else if (it.kind === 'cut' && it.t === 'line') etchItem(it, 'HOLES'); return; }
+      etchItem(it, 'ETCH');
+    });
+    return part({ name: name || 'Flat', loops: flat.loops, qty: qty == null ? 1 : qty, marks: marks });
+  }
+  // a part whose marks are etched or formed on one face must not be mirrored: flipped over, its etch would face down
+  // and its forms point the wrong way (the bends just reverse with the blank, so bend lines alone allow it)
+  function noMirror(pt) { return !!(pt && (pt.noMirror || (pt.marks || []).some(function (q) { return q.layer === 'ETCH' || q.layer === 'FORM'; }))); }
+  function moveMark(q, f, mir) {
+    if (q.t === 'circle') return { layer: q.layer, t: 'circle', c: f(q.c), r: q.r };
+    if (q.t === 'line') return { layer: q.layer, t: 'line', a: f(q.a), b: f(q.b) };
+    return { layer: q.layer, t: 'arc', a: f(q.a), b: f(q.b), c: f(q.c), r: q.r, ccw: mir ? !q.ccw : q.ccw, sweep: mir ? -q.sweep : q.sweep };
   }
   function pointIn(pt, pts) {
     var inside = false;
@@ -292,7 +356,7 @@ var Nest = (function () {
   function newSheet(NU, NV) {
     var occ = new Uint8Array(NU * NV), run = new Int16Array(NU * NV);
     for (var v = 0; v < NV; v++) for (var u = 0; u < NU; u++) run[v * NU + u] = NU - u;
-    return { occ: occ, run: run, NU: NU, NV: NV, list: [], full: {}, hint: {}, top: 0 };
+    return { occ: occ, run: run, NU: NU, NV: NV, list: [], full: {}, hint: {}, top: 0, holes: [] };
   }
   function fixRow(S, v) {
     var NU = S.NU, base = v * NU, occ = S.occ, run = S.run, nx = 0;
@@ -322,6 +386,25 @@ var Nest = (function () {
       }
     }
     S.hint[O.id] = { U: O.uMin, V: Math.max(V, vMax + 1) };
+    return null;
+  }
+  // lane NB: the bottom-left-most (U, V) where O fits with U in [u0, u1] and V in [v0, v1] (a hole's window; no hint)
+  function findIn(S, O, u0, u1, v0, v1) {
+    var NU = S.NU, run = S.run, rowIdx = O.c.rowIdx, spans = O.c.spans, chh = O.c.chh;
+    for (var V = v0; V <= v1; V++) {
+      for (var U = u0; U <= u1;) {
+        var jump = 0;
+        for (var k = 0; k < chh && !jump; k++) {
+          var base = (V + k) * NU + U;
+          for (var p = rowIdx[k], pe = rowIdx[k + 1]; p < pe; p += 2) {
+            var val = run[base + spans[p]];
+            if (val < spans[p + 1] - spans[p] + 1) { jump = val > 0 ? val : -val; break; }
+          }
+        }
+        if (!jump) return { U: U, V: V };
+        U += jump;
+      }
+    }
     return null;
   }
   function occupy(S, O, U, V) {
@@ -358,7 +441,9 @@ var Nest = (function () {
     for (var k = 0; k * step < 360 - 1e-9 && out.length < 360; k++) out.push(Math.round(k * step * 1e9) / 1e9);
     return out;
   }
+  function now() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
   function run(parts, opts) {
+    var tStart = now(), timing = { prep: 0, pack: [] };
     var o = options(opts), h = o.cell, W = o.width, H = o.height, m = o.margin;
     // reach: a cell within spacing / 2 + tol of a part's chord polygon may hold its true shape's clearance zone;
     // r: the raster's margin around a part's extents (the farthest a marked cell reaches, plus a cell)
@@ -378,7 +463,7 @@ var Nest = (function () {
       if (!pt) return null;
       var list = [], seen = {}, polys = null;
       if (pt.area > usable * (1 + 1e-9)) return { part: pt, index: pi, orients: list };
-      (o.mirror ? [false, true] : [false]).forEach(function (mir) {
+      (o.mirror && !noMirror(pt) ? [false, true] : [false]).forEach(function (mir) {
         angles.forEach(function (ang) {
           var f = motion(ang, mir, 0, 0);
           var loops = pt.loops.map(function (L) { return moveLoop(L, f, mir); }), box = loopsBox(loops);
@@ -412,14 +497,18 @@ var Nest = (function () {
       return (A.priority - B.priority) || (B.area - A.area) || (a.p - b.p) || (a.copy - b.copy);
     });
     var maxO = prep.reduce(function (s, q) { return Math.max(s, q ? q.orients.length : 0); }, 1);
+    // the smallest part's short side: a hole narrower than it plus the spacing on both sides takes no part
+    var minDim = prep.reduce(function (s, q) { return q && q.orients.length ? Math.min(s, q.part.size[0], q.part.size[1]) : s; }, Infinity);
     var strategies = [{ crit: 'bl', pref: 0 }, { crit: 'top', pref: 0 }];
     for (var k = 1; k < Math.min(maxO, 4); k++) strategies.push({ crit: 'bl', pref: k });
     // a big job runs fewer strategies (the count depends on the job only, so the result stays deterministic)
     var work = items.length * maxO;
     var nStrat = Math.min(o.strategies, strategies.length, work > 4000 ? 1 : work > 1500 ? 2 : strategies.length);
     var best = null;
+    timing.prep = now() - tStart;
     for (var si = 0; si < nStrat; si++) {
-      var res = pack(strategies[si]);
+      var tp = now(), res = pack(strategies[si]);
+      timing.pack.push(Math.round(now() - tp));
       res.strategy = strategies[si].crit + (strategies[si].pref ? '+' + strategies[si].pref : '');
       if (!best || better(res, best)) best = res;
     }
@@ -443,9 +532,43 @@ var Nest = (function () {
         }
         return pick;
       }
+      // lane NB: part-in-part first. With Nest in holes on, a copy goes into a hole of a part already placed when one
+      // takes it (sheets in order, holes in placing order, then the lowest row, then column, over the orientations),
+      // before the bottom-left search of the open sheet: a bottom-left fill reached a big part's windows only once the
+      // rows below them were full, so washers lay beside a tray blank while its windows were cut out as scrap
+      function holeRegions(S, pl, pt) {
+        if (!o.holes || pt.loops.length < 2) return;
+        var f = motion(pl.angle, pl.mirror, pl.x, pl.y);
+        for (var li = 1; li < pt.loops.length; li++) {
+          var b = loopsBox([moveLoop(pt.loops[li], f, pl.mirror)]);
+          if (Math.min(b[2] - b[0], b[3] - b[1]) < minDim + o.spacing * 2 - 1e-9) continue;
+          S.holes.push([Math.floor((b[0] - X0) / h) - 1, Math.floor((b[1] - Y0) / h) - 1, Math.ceil((b[2] - X0) / h) + 1, Math.ceil((b[3] - Y0) / h) + 1]);
+        }
+      }
+      function inHole(S, q) {
+        var n = q.orients.length;
+        for (var hi = 0; hi < S.holes.length; hi++) {
+          var g = S.holes[hi], pick = null;
+          for (var i = 0; i < n; i++) {
+            var O = q.orients[(i + st.pref) % n], pw = O.R.pw, ph = O.R.ph;
+            if (g[2] - g[0] + 1 < pw || g[3] - g[1] + 1 < ph) continue;
+            var x0 = g[0], x1 = g[2] - pw + 1, y0 = g[1], y1 = g[3] - ph + 1;
+            if (T.fx) { var tx = x0; x0 = NX - pw - x1; x1 = NX - pw - tx; }
+            if (T.fy) { var ty = y0; y0 = NY - ph - y1; y1 = NY - ph - ty; }
+            var u0 = Math.max(O.uMin, T.sw ? y0 : x0), u1 = Math.min(O.uMax, T.sw ? y1 : x1);
+            var v0 = Math.max(O.vMin, T.sw ? x0 : y0), v1 = Math.min(O.vMax, T.sw ? x1 : y1);
+            if (pick) v1 = Math.min(v1, pick.V);
+            var pos = findIn(S, O, u0, u1, v0, v1);
+            if (pos && (!pick || pos.V < pick.V || (pos.V === pick.V && pos.U < pick.U))) pick = { O: O, U: pos.U, V: pos.V };
+          }
+          if (pick) return pick;
+        }
+        return null;
+      }
       items.forEach(function (it) {
         var q = prep[it.p], pick = null, s;
-        for (s = 0; s < sheets.length && !pick; s++) {
+        if (o.holes) for (s = 0; s < sheets.length && !pick; s++) if (!sheets[s].full[it.p] && sheets[s].holes.length) pick = inHole(sheets[s], q);
+        if (!pick) for (s = 0; s < sheets.length && !pick; s++) {
           if (sheets[s].full[it.p]) continue;
           pick = bestOn(sheets[s], q);
           if (!pick) sheets[s].full[it.p] = 1;
@@ -456,24 +579,57 @@ var Nest = (function () {
           pick = bestOn(S, q);
           if (pick) { sheets.push(S); s = sheets.length - 1; } else noFit[it.p] = 1;
         }
-        if (!pick) { unplaced.push({ part: it.p, name: q.part.name, copy: it.copy }); return; }
+        if (!pick) {
+          // lane NB: why it was left out
+          var why = !q.orients.length || noFit[it.p] ? 'does not fit on the sheet inside the margin' + (o.rotation > 0 ? '' : ' (rotation is off)') :
+            'no room on ' + o.maxSheets + ' sheet' + (o.maxSheets === 1 ? '' : 's') + ' (Max sheets)';
+          unplaced.push({ part: it.p, name: q.part.name, copy: it.copy, reason: why });
+          return;
+        }
         occupy(sheets[s], pick.O, pick.U, pick.V);
         var O = pick.O, Xc = T.sw ? pick.V : pick.U, Yc = T.sw ? pick.U : pick.V;
         var OX = T.fx ? NX - O.R.pw - Xc : Xc, OY = T.fy ? NY - O.R.ph - Yc : Yc;
         var pl = { part: it.p, name: q.part.name, copy: it.copy, sheet: s, x: X0 + OX * h - O.R.ox, y: Y0 + OY * h - O.R.oy, angle: O.ang, mirror: O.mir };
         placements.push(pl); sheets[s].list.push(pl);
+        holeRegions(sheets[s], pl, q.part);
       });
       return { placements: placements, unplaced: unplaced, sheets: sheets, lastTop: sheets.length ? sheets[sheets.length - 1].top : 0 };
     }
     var sheetArea = W * H, total = items.length;
     var sheets = best.sheets.map(function (S, i) {
       var a = S.list.reduce(function (s, pl) { return s + P0[pl.part].area; }, 0);
-      return { index: i, width: W, height: H, placements: S.list, partArea: a, utilization: sheetArea > 0 ? 100 * a / sheetArea : 0 };
+      var sh = { index: i, width: W, height: H, placements: S.list, partArea: a, utilization: sheetArea > 0 ? 100 * a / sheetArea : 0 };
+      sh.used = usedBox(sh);
+      sh.remnant = remnantOf(sh.used);
+      return sh;
     });
+    // lane NB: the parts' exact extents on a sheet, and the remnant: the largest full-width or full-height strip of the
+    // sheet clear of them (the spacing kept from the parts; the sheet's own edges stay as they are)
+    function usedBox(sh) {
+      var b = [Infinity, Infinity, -Infinity, -Infinity];
+      sh.placements.forEach(function (pl) {
+        var f = motion(pl.angle, pl.mirror, pl.x, pl.y), q = loopsBox([moveLoop(P0[pl.part].loops[0], f, pl.mirror)]);
+        b = [Math.min(b[0], q[0]), Math.min(b[1], q[1]), Math.max(b[2], q[2]), Math.max(b[3], q[3])];
+      });
+      return b;
+    }
+    function remnantOf(b) {
+      if (!isFinite(b[0])) return { x: 0, y: 0, w: W, h: H, area: W * H, side: 'whole' };
+      var sp = o.spacing, c = [
+        { side: 'top', x: 0, y: Math.min(H, b[3] + sp), w: W, h: Math.max(0, H - b[3] - sp) },
+        { side: 'right', x: Math.min(W, b[2] + sp), y: 0, w: Math.max(0, W - b[2] - sp), h: H },
+        { side: 'bottom', x: 0, y: 0, w: W, h: Math.max(0, b[1] - sp) },
+        { side: 'left', x: 0, y: 0, w: Math.max(0, b[0] - sp), h: H }];
+      c.forEach(function (r) { r.area = r.w * r.h; });
+      c.sort(function (p, q) { return q.area - p.area; });
+      return c[0];
+    }
     var used = sheets.reduce(function (s, q) { return s + q.partArea; }, 0);
     return {
+      remnant: sheets.length ? sheets[sheets.length - 1].remnant : null,
       placements: best.placements, sheets: sheets, unplaced: best.unplaced, placed: best.placements.length, total: total,
-      utilization: sheets.length ? 100 * used / (sheetArea * sheets.length) : 0, parts: P0, opts: o, cell: h, strategy: best.strategy
+      utilization: sheets.length ? 100 * used / (sheetArea * sheets.length) : 0, parts: P0, opts: o, cell: h, strategy: best.strategy,
+      timing: { prep: Math.round(timing.prep), pack: timing.pack, total: Math.round(now() - tStart), orientations: nO, copies: items.length }
     };
   }
 
@@ -541,49 +697,123 @@ var Nest = (function () {
     return { ok: !problems.length, minGap: minGap, problems: problems };
   }
   function normDeg(a) { a = a % 360; if (a < 0) a += 360; return a >= 360 - 1e-12 ? 0 : a; }
-  // sketch entities of one sheet
+  // lane NB: a placed part's marks (bend / etch / form lines that travel with it), exact, on the sheet
+  function placedMarks(result, pl) {
+    var pt = result.parts[pl.part], f = motion(pl.angle, pl.mirror, pl.x, pl.y);
+    return (pt.marks || []).map(function (q) { return moveMark(q, f, pl.mirror); });
+  }
+  // the layers of a nest's DXF / sketch: [name, ACI] (the flat-pattern DXF's colours: OUTLINE 7, HOLES 1, BEND 3)
+  var LAYER_ACI = { CUT: 7, OUTLINE: 7, HOLES: 1, BEND: 3, ETCH: 3, FORM: 6, SHEET: 8 };
+  // sketch entities of one sheet. opts: offset [dx, dy]; outline (default true: the sheet's rectangle as construction);
+  // layer (every cut on this one layer, default 'CUT'; null: none) or layers: 'flat' (lane NB: outer loops on OUTLINE
+  // and holes on HOLES, as the flat-pattern DXF); marks (default true: each part's bend lines on BEND, etch on ETCH,
+  // forming marks on FORM, rotated and moved with their part)
   function sheetEntities(result, k, opts) {
     opts = opts || {};
-    var S = result.sheets[k], off = opts.offset || [0, 0], layer = opts.layer === undefined ? 'CUT' : opts.layer, out = [];
+    var S = result.sheets[k], off = opts.offset || [0, 0], flatL = opts.layers === 'flat', out = [];
+    var layer = opts.layer === undefined ? 'CUT' : opts.layer;
     if (!S) return out;
     function sh(p) { return [p[0] + off[0], p[1] + off[1]]; }
-    function tag(e) { if (layer) e.layer = layer; out.push(e); }
+    function tag(e, ly) { if (ly) e.layer = ly; out.push(e); }
+    function seg(s, ly) {
+      var a = sh(s.a), b = sh(s.b);
+      if (s.t === 'line') { tag({ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }, ly); return; }
+      var cc2 = sh(s.c), from = s.sweep > 0 ? s.a : s.b;
+      var a0 = normDeg(Math.atan2(from[1] - s.c[1], from[0] - s.c[0]) * R2D);
+      tag({ t: 'arc', cx: cc2[0], cy: cc2[1], r: s.r, a0: a0, a1: a0 + Math.abs(s.sweep) * R2D }, ly);
+    }
     if (opts.outline !== false) {
       var c = [[0, 0], [S.width, 0], [S.width, S.height], [0, S.height]].map(sh);
       for (var i = 0; i < 4; i++) out.push({ t: 'line', x1: c[i][0], y1: c[i][1], x2: c[(i + 1) % 4][0], y2: c[(i + 1) % 4][1], construction: true });
     }
     S.placements.forEach(function (pl) {
-      placedLoops(result, pl).forEach(function (L) {
-        if (L.circle) { var cc = sh(L.circle.c); tag({ t: 'circle', cx: cc[0], cy: cc[1], r: L.circle.r }); return; }
-        L.segs.forEach(function (s) {
-          var a = sh(s.a), b = sh(s.b);
-          if (s.t === 'line') { tag({ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }); return; }
-          var cc2 = sh(s.c), from = s.sweep > 0 ? s.a : s.b;
-          var a0 = normDeg(Math.atan2(from[1] - s.c[1], from[0] - s.c[0]) * R2D);
-          tag({ t: 'arc', cx: cc2[0], cy: cc2[1], r: s.r, a0: a0, a1: a0 + Math.abs(s.sweep) * R2D });
-        });
+      placedLoops(result, pl).forEach(function (L, li) {
+        var ly = flatL ? (li ? 'HOLES' : 'OUTLINE') : layer;
+        if (L.circle) { var cc = sh(L.circle.c); tag({ t: 'circle', cx: cc[0], cy: cc[1], r: L.circle.r }, ly); return; }
+        L.segs.forEach(function (s) { seg(s, ly); });
+      });
+      if (opts.marks === false) return;
+      placedMarks(result, pl).forEach(function (q) {
+        var ly = q.layer === 'HOLES' && !flatL ? layer : q.layer;
+        if (q.t === 'circle') { var cc = sh(q.c); tag({ t: 'circle', cx: cc[0], cy: cc[1], r: q.r }, ly); return; }
+        seg(q, ly);
       });
     });
     return out;
   }
-  // DXF of one sheet through the kernel's sketch writer: LINE / ARC / CIRCLE on CUT (sheet coordinates, 0,0 at the
-  // sheet's lower-left corner); opts.outline puts the sheet's rectangle on layer SHEET
-  function sheetDXF(result, k, units, opts) {
-    opts = opts || {};
-    var K = Kern();
-    if (!K || !K.exportDXFSketch) throw new Error('The DXF writer (kernel-script.js) is not loaded.');
-    var ents = sheetEntities(result, k, { outline: !!opts.outline }).map(function (e) {
+  // the layer table for a list of entities (the layers they use, in a fixed order)
+  function layersOf(ents) {
+    var have = {}, order = ['CUT', 'OUTLINE', 'HOLES', 'BEND', 'ETCH', 'FORM', 'SHEET'];
+    ents.forEach(function (e) { if (e.layer) have[e.layer] = 1; });
+    Object.keys(have).forEach(function (n) { if (order.indexOf(n) < 0) order.push(n); });
+    return order.filter(function (n) { return have[n]; }).map(function (n) { return { name: n, color: null, aci: LAYER_ACI[n] || 7 }; });
+  }
+  function dxfEnts(ents) {
+    return ents.map(function (e) {
       if (e.construction) { delete e.construction; e.layer = 'SHEET'; }
       if (e.t === 'arc') { var sw = e.a1 - e.a0; e.a0 = normDeg(e.a0); e.a1 = normDeg(e.a0 + sw); if (e.a1 === 0 && sw > 0) e.a1 = 360; }
       return e;
     });
-    var layers = [{ name: 'CUT', color: null, aci: 7 }];
-    if (opts.outline) layers.push({ name: 'SHEET', color: null, aci: 8 });
+  }
+  // DXF of one sheet through the kernel's sketch writer: LINE / ARC / CIRCLE on CUT (sheet coordinates, 0,0 at the
+  // sheet's lower-left corner); opts.outline puts the sheet's rectangle on layer SHEET; opts.layers 'flat' writes
+  // OUTLINE / HOLES instead of CUT; the parts' marks go on BEND / ETCH / FORM (opts.marks false leaves them out)
+  function sheetDXF(result, k, units, opts) {
+    opts = opts || {};
+    var K = Kern();
+    if (!K || !K.exportDXFSketch) throw new Error('The DXF writer (kernel-script.js) is not loaded.');
+    var ents = dxfEnts(sheetEntities(result, k, { outline: !!opts.outline, layers: opts.layers, marks: opts.marks }));
+    var layers = layersOf(ents);
+    if (!layers.length) layers = [{ name: 'CUT', color: null, aci: 7 }];
     return K.exportDXFSketch({ entities: ents, layers: layers }, units === 'mm' ? 'mm' : 'in', { version: opts.version || 'R12' });
+  }
+  // lane NB: every sheet of a nest in one DXF, side by side along X (sheet k's lower-left corner at k · (width +
+  // gap), 0; gap default a tenth of the sheet's longer side), each sheet's outline on SHEET; options as sheetDXF
+  function nestDXF(result, units, opts) {
+    opts = opts || {};
+    var K = Kern();
+    if (!K || !K.exportDXFSketch) throw new Error('The DXF writer (kernel-script.js) is not loaded.');
+    var o = result.opts, gap = opts.gap != null ? +opts.gap : Math.max(o.width, o.height) * 0.1, ents = [];
+    result.sheets.forEach(function (S, k) {
+      ents = ents.concat(sheetEntities(result, k, { offset: [k * (S.width + gap), 0], outline: true, layers: opts.layers, marks: opts.marks }));
+    });
+    ents = dxfEnts(ents);
+    return K.exportDXFSketch({ entities: ents, layers: layersOf(ents) }, units === 'mm' ? 'mm' : 'in', { version: opts.version || 'R12' });
+  }
+  // lane NB: the nest report (what Mastercam's nesting report and SolidWorks' cut list say): per sheet the parts and
+  // their counts, the utilisation and the remnant; the parts not placed with the reason. Plain text, one table.
+  function report(result, units, opts) {
+    opts = opts || {};
+    var u = units === 'mm' ? 'mm' : 'in', d = u === 'mm' ? 1 : 3, o = result.opts, L = [];
+    function f(x) { return (+x).toFixed(d); }
+    L.push('Nest report' + (opts.title ? ': ' + opts.title : ''));
+    L.push('Sheet ' + f(o.width) + ' x ' + f(o.height) + ' ' + u + (opts.material ? ', ' + opts.material : '') + (opts.thickness > 0 ? ', ' + f(opts.thickness) + ' ' + u + ' thick' : '') +
+      '; part spacing ' + f(o.spacing) + ', sheet margin ' + f(o.margin) + '; rotation ' + (o.rotation > 0 ? (o.rotation >= 180 ? '180 (grain)' : o.rotation + ' deg steps') : 'none') +
+      (o.mirror ? ', mirror' : '') + (o.holes ? ', parts in holes' : ''));
+    L.push(result.placed + ' of ' + result.total + ' parts on ' + result.sheets.length + ' sheet' + (result.sheets.length === 1 ? '' : 's') + ', ' + result.utilization.toFixed(1) + ' % used');
+    L.push('');
+    L.push('Sheet\tPart\tQty');
+    result.sheets.forEach(function (S) {
+      var cnt = {}, names = [];
+      S.placements.forEach(function (pl) { if (!cnt[pl.name]) { cnt[pl.name] = 0; names.push(pl.name); } cnt[pl.name]++; });
+      names.forEach(function (n) { L.push((S.index + 1) + '\t' + n + '\t' + cnt[n]); });
+      var r = S.remnant;
+      L.push((S.index + 1) + '\t(sheet total: ' + S.placements.length + ' parts, ' + S.utilization.toFixed(1) + ' % used' +
+        (r && r.area > 0 ? '; remnant ' + f(r.w) + ' x ' + f(r.h) + ' at ' + r.side + ')' : '; no remnant)'));
+    });
+    if (result.unplaced.length) {
+      L.push('');
+      L.push('Not placed\tPart\tQty\tReason');
+      var un = {}, keys = [];
+      result.unplaced.forEach(function (x) { var k = x.name + '\t' + (x.reason || ''); if (!un[k]) { un[k] = 0; keys.push(k); } un[k]++; });
+      keys.forEach(function (k) { var p = k.split('\t'); L.push('\t' + p[0] + '\t' + un[k] + '\t' + p[1]); });
+    }
+    return L.join('\r\n') + '\r\n';
   }
 
   return {
     part: part, partsFromLoops: partsFromLoops, normLoop: normLoop, loopArea: loopArea, loopsBox: loopsBox, loopPoly: loopPoly,
+    flatPart: flatPart, placedMarks: placedMarks, nestDXF: nestDXF, report: report,
     run: run, options: options, placedLoops: placedLoops, check: check, sheetEntities: sheetEntities, sheetDXF: sheetDXF,
     _: { raster: raster, canonical: canonical, segDist: segDist },
     stats: stats   // lane flatperf: { rasters, rowTests } counts, for the tests that catch an all-pairs step coming back
