@@ -1537,7 +1537,14 @@
     return out.filter(function (i) { return i >= 0 && !!f.entities[i]; });
   }
   function removePatternMade(f, ri) {
-    patternMadeIdx(f, ri).sort(function (a, b) { return b - a; }).forEach(function (i) { if (f.entities[i]) { S.removeEntity(f, i); f.entities.splice(i, 1); } });
+    // rfMW: the placed dimensions on what goes (the Dimension radius on the first construction line) go with it, and the
+    // rest follow the renumbering: before, the old radius dimension was left pointing at whatever entity took its
+    // index (a copied slot's side, drawn "1.000" and holding it), so the edited pattern refused its new spacing
+    patternMadeIdx(f, ri).sort(function (a, b) { return b - a; }).forEach(function (i) {
+      if (!f.entities[i]) return;
+      S.removeEntity(f, i); f.entities.splice(i, 1);
+      if (f.dims) { f.dims = f.dims.filter(function (d) { return d.e !== i; }); f.dims.forEach(function (d) { if (d.e > i) d.e--; }); if (!f.dims.length) delete f.dims; }
+    });
   }
   // lane DS: the old instances are hidden while the edit PM is open: by entity object (indices do not move until ✓),
   // through the layer hooks every draw / pick / snap path already asks (UI.sketchLayerStyle, UI.entityLayerHidden:

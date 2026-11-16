@@ -530,6 +530,21 @@
           // no spin increments on an equation
           if ((e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'PageUp' || e.key === 'PageDown') && pm.exprs[key] != null) e.preventDefault();
         });
+        // rfMW: a pasted fraction, mixed number or equation ("1 1/2", "1-1/2", "=W/2") never reaches a number box (the
+        // browser drops text that is not a plain number): the box turns into a text box holding the pasted text, read
+        // as if typed (hint "= 1.5", Enter commits). A plain number is left to the browser.
+        inp.addEventListener('paste', function (e) {
+          if (inp.type !== 'number') return;
+          var cd = e.clipboardData || window.clipboardData, s = cd ? cd.getData('text') : null;
+          if (s == null || /^\s*[-+]?(\d+\.?\d*|\.\d+)\s*$/.test(s)) return;
+          e.preventDefault();
+          var t = String(s).replace(/[\r\n\t]+/g, ' ').trim();
+          if (!t) return;
+          inp.type = 'text'; inp.value = t;
+          inp._codeText = t;   // rfCM
+          try { inp.setSelectionRange(t.length, t.length); } catch (er) { }
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+        });
         inp.addEventListener('wheel', function (e) {
           if (pm.exprs[key] != null) { e.preventDefault(); return; }
           // r4/features4: the wheel spins a focused value box (as in SolidWorks); an unfocused one leaves the wheel to the panel

@@ -17,8 +17,12 @@
   function rfKUKey(k, mods) { var ev = new W.KeyboardEvent('keydown', Object.assign({ key: k, bubbles: true, cancelable: true }, mods || {})); D.dispatchEvent(ev); }
   // a new inch part, sketch on Front, x -0.8..9, y -2..4.5 in view
   async function rfKUNew(ents, rels) {
-    await anvil.newPart(); await idle();
-    if (UI.setUnits) UI.setUnits('in');
+    // rfMW: an inch part the way a user gets one (Tools ▸ Default units for new documents ▸ Inches, then a new part); the
+    // smoke page starts parts in mm, and the old UI.setUnits call named no function, so this "inch" part was a mm part
+    var du = UI.defaultUnits();
+    UI.setDefaultUnits('in');
+    try { await anvil.newPart(); await idle(); } finally { UI.setDefaultUnits(du); }
+    assert(UI.unitLabel() === 'in', 'an inch part');
     await UI.newSketchOnPlane('Front'); await idle();
     assert(UI.App.mode === 'sketch', 'not in a sketch');
     var a = UI.worldToScreen(K.to3D(UI.activePlane(), 0, 0)), b = UI.worldToScreen(K.to3D(UI.activePlane(), 1, 0));

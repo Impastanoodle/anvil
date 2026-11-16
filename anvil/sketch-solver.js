@@ -1270,22 +1270,37 @@ var SketchSolver = (function () {
       if (st === 'conflict' || st === 'redundant') flagged.push(it);
       else if (c.ents.some(function (e) { return overEnts[e]; })) tied.push(it);
     });
-    var cands = flagged.concat(tied).slice(0, opts.maxCandidates || 40);
+    // rfMW: the solutions a user meets first delete a dimension (or a distance / angle relation), then a relation such
+    // as Equal, then orientation relations, and only last what joins the geometry (Coincident, Midpoint, Fix,
+    // patterns, offsets): before, the first solution of a plate over defined by a third dimension deleted a corner
+    // Coincident. Same cost: flagged (redundant / conflicting) first, then the newest.
+    var DIAG_COST = { distance: 0, angle: 0, arclength: 0, pathlength: 0, chamfer: 0, equal: 1, horizontal: 2, vertical: 2, parallel: 2, perpendicular: 2, collinear: 2, tangent: 2, concentric: 2, coradial: 2, symmetric: 2,
+      coincident: 3, midpoint: 3, onEdge: 3, fix: 3, pattern: 3, offset: 3, pierce: 3 };
+    function diagCost(it) { if (it.src === 'dim') return 0; var r = sketch.rels[it.index], c = r && DIAG_COST[r.type]; return c == null ? 1 : c; }
+    var pool = flagged.map(function (it) { return { it: it, f: 0 }; }).concat(tied.map(function (it) { return { it: it, f: 1 }; }));
+    pool.sort(function (a, b) { return diagCost(a.it) - diagCost(b.it) || a.f - b.f || (a.it.src === b.it.src ? b.it.index - a.it.index : a.it.src === 'dim' ? -1 : 1); });
+    var cands = pool.map(function (x) { return x.it; }).slice(0, opts.maxCandidates || 40);
     cands.forEach(function (it) { it.name = diagItemName(sketch, it); });
     out.candidates = cands;
     function add(list, tr) {
-      out.solutions.push({ remove: list.map(function (it) { return { src: it.src, index: it.index }; }), names: list.map(function (it) { return it.name; }), status: tr.analysis.status, dof: tr.analysis.dof });
+      out.solutions.push({ remove: list.map(function (it) { return { src: it.src, index: it.index }; }), names: list.map(function (it) { return it.name; }), status: tr.analysis.status, dof: tr.analysis.dof,
+        cost: list.reduce(function (s, it) { return s + diagCost(it); }, 0) });
     }
     cands.forEach(function (it) { if (out.solutions.length < max) { var tr = diagTrial(sketch, [it]); if (tr) add([it], tr); } });
-    if (!out.solutions.length && opts.pairs !== false) {
-      var tries = 0;
-      for (var i = 0; i < cands.length && out.solutions.length < max && tries < 400; i++) {
-        for (var j = i + 1; j < cands.length && out.solutions.length < max && tries < 400; j++) {
+    // rfMW: pairs also when every single fix would delete an orientation or joining relation and two cheaper items
+    // (the dimension just added and a redundant Equal) repair it together
+    var best = out.solutions.reduce(function (b, s) { return Math.min(b, s.cost); }, Infinity);
+    if ((!out.solutions.length || best >= 2) && opts.pairs !== false) {
+      var tries = 0, cap = out.solutions.length ? best : Infinity, pairs = 0;
+      for (var i = 0; i < cands.length && pairs < max && tries < 400; i++) {
+        for (var j = i + 1; j < cands.length && pairs < max && tries < 400; j++) {
+          if (diagCost(cands[i]) + diagCost(cands[j]) >= cap) continue;
           tries++;
           var tr = diagTrial(sketch, [cands[i], cands[j]]);
-          if (tr) add([cands[i], cands[j]], tr);
+          if (tr) { add([cands[i], cands[j]], tr); pairs++; }
         }
       }
+      out.solutions = out.solutions.map(function (s, k) { return { s: s, k: k }; }).sort(function (a, b) { return a.s.cost - b.s.cost || a.k - b.k; }).map(function (x) { return x.s; }).slice(0, Math.max(max, 1));
     }
     return out;
   }
@@ -1616,6 +1631,12 @@ var SketchSolver = (function () {
     else opts.extra = [dimEquation(sketch.entities, dim, v)];
     var lk = index >= 0 ? linkTargets(sketch, dim.link, v, 'dim', index, opts) : null;   // lane CV: Link Values
     var r = solve(sketch, opts);
+    if (!r.ok) {   // rfMW: a pattern's copies swung far: once more from a placed start
+      var g0 = clone(saved);
+      if (g0[dim.e]) K.setDimValue(g0[dim.e], dim, v);
+      var pr = patternRetry(sketch, g0, opts);
+      if (pr) r = pr;
+    }
     if (!r.ok) { var names = conflictNames(sketch, opts, index >= 0 ? { src: 'dim', index: index } : null); sketch.entities = saved; return { ok: false, error: conflictMessage(names), conflicts: names }; }
     if (lk) lk.rels.forEach(function (j) { sketch.rels[j].v = v; });
     return { ok: true };
@@ -1737,6 +1758,7 @@ var SketchSolver = (function () {
     if (rel.type === 'angle') handleTurn(sketch, rel, R, v);   // lane DE: a spline handle turns to the value first
     var an = anchorFirst(sketch, rel, R), r = an ? solve(sketch, { relTargets: t, part: pe ? pe.e : null, mob: an.mob, extra: an.extra }) : null;
     if (!r || !r.ok) r = solve(sketch, { relTargets: t, part: pe ? pe.e : null });
+    if (!r.ok) { var pr = patternRetry(sketch, saved, { relTargets: t, part: pe ? pe.e : null }); if (pr) r = pr; }   // rfMW
     if (!r.ok) { var names = conflictNames(sketch, { relTargets: t }, { src: 'rel', index: index }); sketch.entities = saved; return { ok: false, error: conflictMessage(names), conflicts: names }; }
     rel.v = v;
     return { ok: true };
@@ -2023,6 +2045,20 @@ var SketchSolver = (function () {
   // Entity `index` was deleted: relations on it go, refs to later entities shift down.
   function removeEntity(sketch, index) {
     if (!sketch.rels) return;
+    // rfMW: a deleted pattern copy takes its whole instance out of the Pattern relation (the instance becomes one to
+    // skip, as SolidWorks lists a deleted instance under Instances to Skip); the pattern itself stays editable. A
+    // deleted seed or anchor line, or the last instance, still ends the pattern (the filter below).
+    sketch.rels.forEach(function (rel) {
+      var pt = rel.type === 'pattern' && rel.pat;
+      if (!pt || !Array.isArray(pt.inst) || pt.inst.length < 2) return;
+      var na = pt.circ ? 2 : (pt.nd | 0) + 1, m = pt.m | 0, q = -1;
+      if (!(m >= 1) || rel.refs.length !== na + m * (pt.inst.length + 1)) return;
+      if (rel.refs.slice(0, na + m).some(function (r) { var p = parseRef(r); return p && !p.o && p.e === index; })) return;
+      rel.refs.slice(na + m).forEach(function (r, k) { var p = parseRef(r); if (p && !p.o && p.e === index) q = Math.floor(k / m); });
+      if (q < 0) return;
+      rel.refs.splice(na + m + q * m, m);
+      pt.inst = pt.inst.slice(); pt.inst.splice(q, 1);
+    });
     sketch.rels = sketch.rels.filter(function (rel) {
       return !rel.refs.some(function (r) { var p = parseRef(r); return p && !p.o && p.e === index; });
     }).map(function (rel) {
@@ -5686,7 +5722,31 @@ var SketchSolver = (function () {
     };
     var used = [];
     R.forEach(function (r) { if (!r.o && used.indexOf(r.e) < 0) used.push(r.e); });
-    return { n: n, f: f, ents: used };
+    // rfMW: puts every copy exactly where its seed and the anchors say (patternRetry's starting point)
+    var place = function (E) {
+      var cache = {};
+      layout.forEach(function (L) {
+        var xf = cache[L.q] || (cache[L.q] = xfFor(E, L.q)), x = xfEntity(E[L.s], xf), c = E[L.c];
+        if (x && c) L.names.forEach(function (nm) { pset(c, nm, pget(x, nm)); });
+      });
+    };
+    return { n: n, f: f, ents: used, place: place };
+  }
+  // rfMW: a value change that makes a pattern's copies swing far (a circular pattern's angular spacing 60 -> 40, then
+  // its radius) could stop the solver short (a copied arc's end angle on the wrong turn): the same solve is tried again
+  // with the Pattern relations let go, then every copy put where its seed now says, then the whole sketch solved.
+  // Returns the solve result, or null (no pattern / still no solution); sketch.entities starts again from saved.
+  function patternRetry(sketch, saved, opts) {
+    var pats = (sketch.rels || []).filter(function (r) { return r.type === 'pattern' && !r.suppressed; });
+    if (!pats.length) return null;
+    sketch.entities = clone(saved);
+    var r1;
+    pats.forEach(function (r) { r.suppressed = true; });
+    try { r1 = solve(sketch, opts); } catch (err) { r1 = null; } finally { pats.forEach(function (r) { delete r.suppressed; }); }
+    if (!r1 || !r1.ok) return null;
+    pats.forEach(function (r) { var q = relEquation(sketch.entities, r, sketch.rels); if (q && q.place) q.place(sketch.entities); });
+    var r2 = solve(sketch, opts);
+    return r2 && r2.ok ? r2 : null;
   }
   function patternSeeds(sketch, idx) {
     var E = sketch.entities;
