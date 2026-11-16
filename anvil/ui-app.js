@@ -1738,13 +1738,18 @@
 
   // ------------------------------------------------------------------ mass properties
   // Assembly: totals from Assembly.massProps (each component with its part's own density), then one line per component.
+  // rfNG uisense (head, from lane pmsense): an inch (IPS) document shows pounds and lb/in³, as SolidWorks does; a
+  // millimetre one keeps grams and kg/m³
+  function massText(kg, u) { return u === 'in' ? UI.fmtNum(kg * 2.20462262185, 4) + ' lb' : UI.fmtNum(kg * 1000, 2) + ' g'; }
+  function densText(kgm3, u) { return u === 'in' ? UI.fmtNum(kgm3 * 3.6127292e-5, 4) + ' lb/in³' : UI.fmtNum(kgm3, 2) + ' kg/m³'; }
+  UI.massText = massText; UI.densText = densText;
   function showAssemblyMassProperties() {
     var u = UI.unitLabel(), mp;
     try { mp = Assembly.massProps(App.model, App.build); } catch (e) { UI.toast('Mass properties failed: ' + e.message); return; }
     var toKg = u === 'in' ? Math.pow(0.0254, 3) : 1e-9;
     var rows = [
       ['Components', String((App.model.components || []).length)],
-      ['Mass', UI.fmtNum(mp.mass * toKg * 1000, 2) + ' g  (' + UI.fmtNum(mp.mass * toKg, 4) + ' kg)'],
+      ['Mass', u === 'in' ? massText(mp.mass * toKg, u) : UI.fmtNum(mp.mass * toKg * 1000, 2) + ' g  (' + UI.fmtNum(mp.mass * toKg, 4) + ' kg)'],
       ['Volume', UI.fmtNum(mp.volume, 2) + ' ' + u + '³'],
       ['Surface area', UI.fmtNum(mp.area, 2) + ' ' + u + '²'],
       ['Center of mass', (mp.centroid || [0, 0, 0]).map(function (x) { return UI.fmtNum(x, 3); }).join(', ') + ' ' + u]
@@ -1754,7 +1759,7 @@
       rows.push(['Extents', [0, 1, 2].map(function (k) { return UI.fmtNum(mp.bbox.max[k] - mp.bbox.min[k], 2); }).join(' × ') + ' ' + u]);
     }
     (mp.components || []).forEach(function (c) {
-      rows.push([c.name, 'volume ' + UI.fmtNum(c.volume, 2) + ' ' + u + '³, mass ' + UI.fmtNum(c.mass * toKg * 1000, 2) + ' g (' + (c.material ? c.material + ', ' : '') + UI.fmtNum(c.density, 2) + ' kg/m³)']);
+      rows.push([c.name, 'volume ' + UI.fmtNum(c.volume, 2) + ' ' + u + '³, mass ' + massText(c.mass * toKg, u) + ' (' + (c.material ? c.material + ', ' : '') + densText(c.density, u) + ')']);
     });
     var body = el('table', { id: 'mass-table' }, rows.map(function (r, i) { return el('tr', { class: i >= rows.length - (mp.components || []).length ? 'mass-comp' : '' }, [el('th', { text: r[0] }), el('td', { text: r[1] })]); }));
     UI.showModal({ title: 'Mass Properties — ' + App.model.name, body: body, buttons: [{ label: 'Copy', action: function () { copyText(rows.map(function (r) { return r[0] + ': ' + r[1]; }).join('\n')); } }, { label: 'Close', primary: true, action: UI.closeModal }] });
@@ -1778,8 +1783,8 @@
     var multiMat = MT && MT.hasBodyMaterials(App.model);
     var rows = [
       ['Material', (matName || 'Material <not specified>') + (multiMat ? ' (some bodies have their own material)' : '')],
-      ['Density', (multiMat ? UI.fmtNum(mp.density, 2) + ' kg/m³ (average)' : App.model.density + ' kg/m³')],
-      ['Mass', UI.fmtNum(mass * 1000, 2) + ' g  (' + UI.fmtNum(mass, 4) + ' kg)'],
+      ['Density', u === 'in' ? densText(multiMat ? mp.density : App.model.density, u) + (multiMat ? ' (average)' : '') : (multiMat ? UI.fmtNum(mp.density, 2) + ' kg/m³ (average)' : App.model.density + ' kg/m³')],
+      ['Mass', u === 'in' ? massText(mass, u) : UI.fmtNum(mass * 1000, 2) + ' g  (' + UI.fmtNum(mass, 4) + ' kg)'],
       ['Volume', UI.fmtNum(mp.volume, 2) + ' ' + u + '³'],
       ['Surface area', UI.fmtNum(mp.area, 2) + ' ' + u + '²'],
       ['Center of mass', mp.centroid.map(function (x) { return UI.fmtNum(x, 3); }).join(', ') + ' ' + u],
@@ -1793,10 +1798,10 @@
       rows.push(['Solid bodies', String(bodies.length)]);
       bodies.forEach(function (b, i) {
         var info = infos[i] || { name: 'Body' + (i + 1) }, bm = null, pb = MT && mp.bodies ? mp.bodies[i] : null;
-        if (pb) { rows.push([info.name, 'volume ' + UI.fmtNum(pb.volume, 2) + ' ' + u + '³, mass ' + UI.fmtNum(pb.massKg * 1000, 2) + ' g (' + (pb.material || 'Material <not specified>') + ', ' + pb.density + ' kg/m³)']); return; }
+        if (pb) { rows.push([info.name, 'volume ' + UI.fmtNum(pb.volume, 2) + ' ' + u + '³, mass ' + massText(pb.massKg, u) + ' (' + (pb.material || 'Material <not specified>') + ', ' + (u === 'in' ? densText(pb.density, u) : pb.density + ' kg/m³') + ')']); return; }
         try { bm = K.massProps(K.meshFromBody(b), App.model.density); } catch (e) { bm = null; }
         var bVolM3 = bm ? (u === 'in' ? bm.volume * Math.pow(0.0254, 3) : bm.volume * 1e-9) : 0;
-        rows.push([info.name, bm ? 'volume ' + UI.fmtNum(bm.volume, 2) + ' ' + u + '³, mass ' + UI.fmtNum(bVolM3 * App.model.density * 1000, 2) + ' g' : '(not computed)']);
+        rows.push([info.name, bm ? 'volume ' + UI.fmtNum(bm.volume, 2) + ' ' + u + '³, mass ' + massText(bVolM3 * App.model.density, u) : '(not computed)']);
       });
     }
     var cells = {}, body = el('table', {}, rows.map(function (r) { var td = el('td', { text: r[1] }); cells[r[0]] = td; return el('tr', {}, [el('th', { text: r[0] }), td]); }));
@@ -1895,7 +1900,15 @@
   var VIEW_KEYS = { vFront: 'Front', vBack: 'Back', vLeft: 'Left', vRight: 'Right', vTop: 'Top', vBottom: 'Bottom', vIso: 'Isometric' };
   function sketchKey(tool) {
     return function () {
-      if (App.mode !== 'sketch') return;
+      if (App.mode !== 'sketch') {
+        // rfNG uisense: the ribbon's tooltips show L, R, C, A, P, T, D on buttons that work with no sketch open (a drawing
+        // tool starts a sketch, Smart Dimension dimensions the model); the key did nothing there. It does what the
+        // button does now, in a part (an assembly or a drawing has no such buttons)
+        if ((UI.isAssembly && UI.isAssembly()) || (UI.drawingActive && UI.drawingActive()) || UI.hasPM()) return;
+        if (tool === 'dimension' || !UI.sketchToolStart) return;   // D in a part: ui-model-dims.js takes it (the model Smart Dimension)
+        UI.setTool(App.tool === tool ? 'select' : tool); UI.refreshRibbon();
+        return;
+      }
       var t = tool;
       // r5/sketch5: A again with the Centerpoint Arc goes on to the 3 Point Arc, then puts the tool down
       if (t === 'arc' && App.tool === 'arc') t = 'arc3';

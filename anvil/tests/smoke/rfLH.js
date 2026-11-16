@@ -143,7 +143,7 @@
     row.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
     await wait(60);
     var sec = D.querySelector('[data-role="interface-profiles"]');
-    assert(sec && !$('tp-panel').hidden, 'Options has no Interface group');
+    assert(sec && (!$('tp-panel').hidden || modalOpen()), 'Options has no Interface group');   // rfNG: Tools > Options… is a dialog now (System Options); the profile radios are in it
     assert(/Lay out Anvil like/.test(sec.textContent), 'Interface wording: ' + sec.textContent.slice(0, 80));
     var rows = Array.prototype.map.call(sec.querySelectorAll('label[data-profile]'), function (l) { return l.getAttribute('data-profile'); });
     assert(rows[0] === 'solidworks' && /SolidWorks \(default\)/.test(sec.querySelector('label[data-profile="solidworks"]').textContent) && rows.indexOf('mastercam') > 0, 'rows ' + rows);
@@ -151,6 +151,7 @@
     var mc = sec.querySelector('input[data-profile="mastercam"]');
     mc.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
     mc.click(); await wait(60);
+    if (modalOpen()) UI.closeModal();   // rfNG: Tools > Options… is a dialog now (System Options); the profile radios are in it
     assert(UI.Profiles.active() === 'mastercam', 'profile ' + UI.Profiles.active());
     assert(rfLHTabNames().join() === 'Home,Wireframe,Solids,Sheet Metal,Drafting,Transform,View,More', 'Mastercam tabs ' + rfLHTabNames().join());
     var chip = D.querySelector('#status-right .st-profile');

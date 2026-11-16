@@ -146,7 +146,7 @@
         { id: 'joinEnt', label: 'Join\nEntities', help: 'Join collinear lines, or arcs on one circle, into one', run: function () { if (UI.cmdJoinEntities) UI.cmdJoinEntities(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('joinEnt')); } }] },
       { fly: 'convert', items: [{ id: 'convert', label: 'Convert\nEntities', run: function () { UI.cmdConvertEntities(); } }, { id: 'intersectCurve', label: 'Intersection\nCurve', run: function () { if (UI.cmdIntersectionCurve) UI.cmdIntersectionCurve(); }, active: function () { return !!(UI.intersectionCurveOpen && UI.intersectionCurveOpen()); } }] },
       { id: 'offset', label: 'Offset\nEntities', run: function () { UI.cmdOffsetEntities(); } },
-      { id: 'offsetSurface', icon: 'offset', label: 'Offset\nOn Surface', help: 'Offset the edges of a face or surface along it (3D)', run: function () { if (UI.cmdOffsetOnSurface) UI.cmdOffsetOnSurface(); } },   // rfLQ: ui-sketch-3d.js
+      { id: 'offsetSurface', icon: 'offset', swIcon: 'offsetSurface', label: 'Offset\nOn Surface', help: 'Offset the edges of a face or surface along it (3D)', run: function () { if (UI.cmdOffsetOnSurface) UI.cmdOffsetOnSurface(); } },   // rfLQ: ui-sketch-3d.js
       { stack: [{ fly: 'mirrorEnt', items: [{ id: 'mirrorEnt', label: 'Mirror Entities', run: function () { UI.cmdMirrorEntities(); } }, { id: 'dynMirror', label: 'Dynamic Mirror', run: function () { if (UI.cmdDynamicMirror) UI.cmdDynamicMirror(); }, active: function () { return !!(UI.dynamicMirrorOn && UI.dynamicMirrorOn()); } }] },
         { fly: 'skPattern', items: [{ id: 'sketchPattern', label: 'Linear Sketch Pattern', run: function () { UI.cmdSketchPattern(); } }, { id: 'cSketchPattern', label: 'Circular Sketch Pattern', run: function () { UI.cmdCircularSketchPattern(); } }] },
         { fly: 'moveEnt', items: [{ id: 'moveEnt', label: 'Move Entities', run: function () { UI.cmdMoveEntities(); } }, { id: 'copyEnt', label: 'Copy Entities', run: function () { UI.cmdCopyEntities(); } }, { id: 'rotateEnt', label: 'Rotate Entities', run: function () { UI.cmdRotateEntities(); } }, { id: 'scaleEnt', label: 'Scale Entities', run: function () { UI.cmdScaleEntities(); } }, { id: 'stretchEnt', label: 'Stretch Entities', run: function () { UI.cmdStretchEntities(); } }] }] },
@@ -163,7 +163,7 @@
       { sep: true },
       // rfAR: Quick Snaps (ui-sketch.js UI.quickSnap): the next point snaps to that one kind of geometry only
       { fly: 'quickSnaps', label: 'Quick\nSnaps', items: (UI.QUICK_SNAPS || []).map(function (q) {
-          return { id: 'qs-' + q[0], icon: 'quickSnaps', label: q[1] + ' Snap', help: 'Quick Snaps: snap the next point to ' + q[1].toLowerCase() + ' only, then snap as usual',
+          return { id: 'qs-' + q[0], icon: 'quickSnaps', swIcon: 'qs' + q[0].charAt(0).toUpperCase() + q[0].slice(1), label: q[1] + ' Snap', help: 'Quick Snaps: snap the next point to ' + q[1].toLowerCase() + ' only, then snap as usual',
             run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.quickSnap(App.quickSnap === q[0] ? null : q[0]); },
             active: function () { return App.quickSnap === q[0]; } };
         }) },
@@ -206,7 +206,7 @@
     ],
     'Sheet Metal': [
       { id: 'flange', label: 'Base\nFlange/Tab', run: function () { UI.cmdBaseFlange(); } },
-      { id: 'convertSM', label: 'Convert to\nSheet Metal', help: 'Turn a solid into sheet metal: a fixed face and the edges that become bends; the other faces are removed and the corners ripped', run: function () { UI.cmdConvertSheetMetal(); } }, { id: 'loft', cmd: 'loftedBend', label: 'Lofted-\nBend', help: 'Sheet metal lofted between two open profiles (square to round, transitions): Bent facets with bend lines, or Formed', run: function () { UI.cmdLoftedBend(); } },
+      { id: 'convertSM', label: 'Convert to\nSheet Metal', help: 'Turn a solid into sheet metal: a fixed face and the edges that become bends; the other faces are removed and the corners ripped', run: function () { UI.cmdConvertSheetMetal(); } }, { id: 'loft', cmd: 'loftedBend', label: 'Lofted-Bend', help: 'Sheet metal lofted between two open profiles (square to round, transitions): Bent facets with bend lines, or Formed', run: function () { UI.cmdLoftedBend(); } },
       { id: 'sweptFlange', label: 'Swept\nFlange', help: 'Sweep an open profile along a path (a sketch, or edges of the part) into sheet metal; its bends unbend in the flat', run: function () { UI.cmdSweptFlange(); } },
       { sep: true },
       { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'hem', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'jog', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'sketchedBend', label: 'Sketched\nBend', run: function () { UI.cmdSketchedBend(); } },
@@ -479,11 +479,22 @@
     return null;
   }
   // a profile item that is not a SolidWorks command: { menu, row } runs a menu row, { fn } a frame function
+  // rfNG uisense: a frame item's id is only its icon's name, so its tooltip showed the key of another command with that
+  // icon (the Edit menu button "Ctrl+Z", Insert "E", Level: "Alt+Z"); it shows the key of what it runs, or none
+  var FRAME_ROW_KEYS = { 'Edit/Delete': 'Del', 'Edit/Copy': 'Ctrl+C', 'Edit/Paste': 'Ctrl+V' };
+  var FRAME_MGR = {
+    solids: { key: 'vFeatureTree', help: 'Show the Solids Manager: the solid and its operations in build order' },
+    planes: { help: 'Show the Planes Manager: the views and planes, which one is the construction plane (C) and the tool plane (T)' },
+    levels: { key: 'levels', help: 'Show the Levels Manager: the levels, their colours, which are shown, and the main level' },
+    recent: { help: 'Show Recent Functions: the last ten commands; a click runs one again' }
+  };
   function frameItem(x, group) {
-    var it = { id: x.icon || 'generic', icon: x.icon || 'generic', label: x.label, help: x.help || '' };
+    var it = { id: x.icon || 'generic', icon: x.icon || 'generic', label: x.label, help: x.help || '', noKey: true };
     if (group) it.group = group;
     if (x.menu) {
       it.cmd = 'menu:' + x.menu + '/' + x.row;
+      // the row's key while the row can run (Del with something selected, Ctrl+V with entities copied …)
+      if (FRAME_ROW_KEYS[x.menu + '/' + x.row]) Object.defineProperty(it, 'key', { enumerable: true, get: function () { var r = menuRow(x.menu, x.row); return r && !r.disabled ? FRAME_ROW_KEYS[x.menu + '/' + x.row] : ''; } });
       it.run = function () {
         var r = menuRow(x.menu, x.row);
         if (r && !r.disabled && r.action) r.action();
@@ -491,6 +502,8 @@
       };
     } else if (x.fn === 'manager') {
       it.cmd = 'manager:' + x.arg;
+      var mg = FRAME_MGR[x.arg];
+      if (mg) { if (!it.help) it.help = mg.help; if (mg.key) it.keyCmd = mg.key; }
       it.run = function () { frameShowManager(x.arg, true); };
       it.active = function () { return !!frame && frameMgr === x.arg && $('pm').hidden; };
     } else if (x.fn === 'search') {
@@ -1058,13 +1071,13 @@
     undelete: { label: 'Undelete\nEntity', icon: 'undeleteEnt', help: 'Bring back the sketch entities deleted last (again for the ones before)', run: function () { UI.undeleteEntities(); } },
     zDepth: { label: function () { return 'Z: ' + fmtZ(UI.cplaneZ ? UI.cplaneZ() : 0); }, icon: 'zDepth', help: 'Z depth of the construction plane: 2D wireframe is drawn at this depth (click to type it)',
       run: function () { numPrompt('Z Depth', 'Depth of the construction plane (' + (UI.cplaneLabel ? UI.cplaneLabel() : 'Top') + ') for 2D wireframe:', UI.cplaneZ(), function (v) { UI.setCplaneZ(v); setStatus('Z depth ' + fmtZ(v) + ': wireframe is drawn flat on ' + UI.cplaneLabel() + ' at that depth (2D).'); refreshRibbon(); }); } },
-    level: { label: function () { return 'Level: ' + (UI.levels && UI.levels.main ? UI.levels.main() || 1 : 1); }, icon: 'levels', help: 'The main level new wireframe goes on (click to type a number; a new number makes the level)',
+    level: { label: function () { return 'Level: ' + (UI.levels && UI.levels.main ? UI.levels.main() || 1 : 1); }, icon: 'levels', swIcon: 'levelMain', help: 'The main level new wireframe goes on (click to type a number; a new number makes the level)',
       run: function () { if (!UI.levels || isAsm()) { toast('Levels belong to part documents.'); return; } numPrompt('Main Level', 'Level number new entities go on:', UI.levels.main() || 1, function (v) { var r = UI.levels.op('makeMain', Math.round(v)); if (r && !r.ok && r.error) toast(r.error); refreshRibbon(); }); } },
     mode3d: { label: function () { return UI.cplaneMode && UI.cplaneMode() === '2D' ? '2D' : '3D'; }, icon: 'mode3d', help: '3D / 2D: 2D draws wireframe flat on the construction plane at its Z depth; 3D does not use the Z depth',
       run: function () { var m = UI.cplaneMode() === '2D' ? '3D' : '2D'; UI.setCplaneMode(m); setStatus(m === '2D' ? '2D: wireframe is drawn on ' + UI.cplaneLabel() + ' at Z ' + fmtZ(UI.cplaneZ()) + '.' : '3D: the Z depth is not used.'); refreshRibbon(); }, active: function () { return !!UI.cplaneMode && UI.cplaneMode() === '2D'; } },
     blank: { label: 'Blank', icon: 'blankEnt', help: 'Hide the selected entities or bodies (Unblank shows them again)', run: function () { UI.blankSelection(); } },
     unblank: { label: 'Unblank', icon: 'unblankEnt', help: 'Show every blanked entity and body again', run: function () { UI.unblank(); } },
-    hideUnhide: { label: 'Hide/\nUnhide', icon: 'hideUnhide', help: 'Show only the selection; click again to show everything', run: function () { UI.hideUnhide(); }, active: function () { return !!(UI.hideUnhideOn && UI.hideUnhideOn()); } },
+    hideUnhide: { label: 'Hide/Unhide', icon: 'hideUnhide', help: 'Show only the selection; click again to show everything', run: function () { UI.hideUnhide(); }, active: function () { return !!(UI.hideUnhideOn && UI.hideUnhideOn()); } },
     unzoom50: { label: 'Unzoom 50%', icon: 'unzoom50', help: 'Zoom out: the model shows at half its size', run: function () { UI.unzoom(0.5); } },
     unzoom80: { label: 'Unzoom 80%', icon: 'unzoom80', help: 'Zoom out: the model shows at 80 % of its size', run: function () { UI.unzoom(0.8); } },
     translucency: { label: 'Translucency', icon: 'translucency', help: 'Make the whole model see-through (click again for solid)', run: function () { UI.translucency(!UI.translucency()); }, active: function () { return !!UI.translucency(); } },
@@ -1079,7 +1092,7 @@
     vsRestore: { label: 'Restore Bookmark', icon: 'bookmarkRestore', help: 'Go back to the active viewsheet’s bookmark', run: function () { vsBookmark(false); } }
   };
   function frameActionItem(name, x, group) {
-    var a = FRAME_ACTIONS[name], it = { id: (x && x.icon) || (a && a.icon) || 'generic', icon: (x && x.icon) || (a && a.icon) || 'generic', cmd: 'action:' + name, help: (x && x.help) || (a && a.help) || '' };
+    var a = FRAME_ACTIONS[name], it = { id: (x && x.icon) || (a && a.icon) || 'generic', icon: (x && x.icon) || (a && a.icon) || 'generic', cmd: 'action:' + name, help: (x && x.help) || (a && a.help) || '', noKey: true, swIcon: a && a.swIcon };   // rfNG: swIcon = its own picture when the set draws it (Level: levelMain)
     if (group) it.group = group;
     if (!a) { it.label = (x && x.label) || name; return it; }
     if (x && x.label) it.label = x.label;
@@ -1310,7 +1323,7 @@
     'Sensor': 'Watch a value such as mass or a dimension', 'Undercut Analysis': 'Find trapped areas that block a mold from opening',
     'Thickness Analysis': 'Show thin and thick regions of the part', 'Compare Documents': 'Compare two versions of a document',
     'Performance Evaluation': 'Rebuild time of each feature', 'Costing': 'Estimate the manufacturing cost',
-    'Convert to Sheet Metal': 'Turn a solid into sheet metal', 'Lofted- Bend': 'Sheet metal lofted between two open profiles', 'Sketched Bend': 'Bend the sheet along a sketch line',
+    'Convert to Sheet Metal': 'Turn a solid into sheet metal', 'Lofted-Bend': 'Sheet metal lofted between two open profiles', 'Sketched Bend': 'Bend the sheet along a sketch line',
     'Cross-Break': 'Stiffening cross-break on a face', 'Corners': 'Close, break or relieve sheet-metal corners', 'Forming Tool': 'Press a formed shape into the sheet',
     'Vent': 'Vent openings from a sketch', 'Unfold': 'Flatten selected bends', 'Fold': 'Fold unfolded bends back', 'Rip': 'Rip the edges of a hollow part so it can be unfolded',
     'Linear Component Pattern': 'Repeat components along one or two directions', 'Circular Component Pattern': 'Repeat components about an axis',
@@ -1329,8 +1342,113 @@
     'Close Drawing': 'Return to the model', 'Ordinate Dimension': 'Dimensions measured from one zero line', 'Baseline Dimension': 'Dimensions measured from one baseline',
     'Chamfer Dimension': 'Length and angle of a chamfer', 'Balloon': 'Item number of a component', 'Stacked Balloon': 'Several item numbers in one stack',
     'Hole Callout': 'Size and depth note of a hole', 'Center Mark': 'Cross at the centre of a circle or arc', 'Centerline': 'Centerline between two edges',
-    'Document Properties': 'Drafting standard, fonts and arrows'
+    'Document Properties': 'Drafting standard, fonts and arrows',
+    // rfNG uisense: every drawing command has its line (they showed the name alone)
+    'Auxiliary View': 'Project a view square to a slanted edge of an existing view', 'Removed Section': 'A section cut across a view between two edges, placed beside the view',
+    'Broken-out Section': 'Cut away part of a view inside a closed outline, to a depth, to show what is inside', 'Break': 'Shorten a long view between two break lines',
+    'Crop View': 'Keep only the part of a view inside a closed outline', 'Horizontal Dimension': 'The horizontal distance between two points or edges in a view',
+    'Vertical Dimension': 'The vertical distance between two points or edges in a view', 'Horizontal Ordinate Dimension': 'Horizontal ordinate dimensions from one zero line, the values on one line',
+    'Vertical Ordinate Dimension': 'Vertical ordinate dimensions from one zero line, the values on one line', 'Chain Dimension': 'Dimensions end to end along a row of points or edges',
+    'Angular Running Dimension': 'Angles from one 0° edge round a vertex to other edges', 'Path Length Dimension': 'The total length of a chain of edges',
+    'Magnetic Line': 'A line the balloons snap to, spaced evenly along it', 'Note': 'Text on the sheet, with or without a leader',
+    'Multi-jog Leader': 'A leader with several bends, from a note or symbol to an edge', 'Flag Note': 'A numbered flag symbol that points to a note of the Flag Note Bank',
+    'Surface Finish': 'Surface texture symbol on an edge or face', 'Datum Feature': 'Datum letter in a box, attached to an edge or face',
+    'Geometric Tolerance': 'Feature control frame: tolerance symbol, value and datums', 'Weld Symbol': 'Weld symbol with its arrow, side and size',
+    'Revision Symbol': 'Revision letter in a triangle, from the revision table', 'Revision Cloud': 'A cloud round a changed area of the sheet',
+    'Datum Target': 'Datum target symbol and the point or area it names', 'Cosmetic Thread': 'Show a thread on a hole or shaft as thin lines with its callout',
+    'Dowel Pin Symbol': 'Dowel pin symbol on a hole, at its size', 'Revision Table': 'Table of the revisions: zone, description, date and approval',
+    'General Table': 'A blank table to fill in', 'Hole Table': 'Table of the holes: position from a datum and size',
+    'Bend Table': 'Table of the bends of a flat pattern view: direction, angle and radius', 'Punch Table': 'Table of the forming tools in a flat pattern view and their positions',
+    'Area Hatch/Fill': 'Hatch or fill a closed region or a face of a view', 'Edit Sheet Format': 'Edit the border and title block: their lines and notes',
+    'Save Sheet Format': 'Save the border and title block as a sheet format file', 'Save as Template': 'Save this drawing as a template for new drawings',
+    'Drawing Templates': 'Choose the template (sheet size and format) new drawings start from', 'Reset Format': 'Put back the built-in border and title block of this sheet size'
   };
+  // rfNG uisense: the drawing's Sketch tab draws sketch geometry on the sheet; its Centerline is a sketch line, not the
+  // Annotation tab's centerline between two edges
+  // rfNG uisense: the status-bar help line of the menu rows that are not ribbon commands (menuRowHelp, below), by the
+  // whole row ('New ▸ Part') or its last name ('Part'); a menu group name ('Sketch Settings') prefixes its rows' names
+  // ('=Name': the line of the ribbon command Name)
+  var MENU_HELP = {
+    // File
+    'New': 'Make a new document: a part, an assembly or a drawing', 'New ▸ Part': 'A new, empty part', 'New ▸ Assembly': 'A new, empty assembly',
+    'Open': 'Open a saved document: a part, assembly or drawing, or a STEP, DXF / DWG or STL file', 'Browse Recent Documents': 'The documents you opened last',
+    'Import DXF / DWG into Sketch': 'Bring a DXF or DWG file into a sketch (a new sketch on the Top Plane when none is open)', 'Save': 'Save the document', 'Save As': 'Save the document under another name or as another file type',
+    'Save As DXF / DWG': 'Write the flat pattern, a face or a sketch as DXF or DWG (DXF/DWG Output)', 'Pack and Go': 'Save the document with every file it uses, in one folder',
+    'Make Drawing from Part': 'Open a new drawing of this part', 'Make Drawing from Assembly': 'Open a new drawing of this assembly', 'New Drawing': 'A new drawing: choose its template and the model',
+    'Export STEP AP214': 'Write the solid as a STEP AP214 file for other CAD programs', 'Export 3MF': 'Write the solid as a 3MF file for 3D printing', 'Export OBJ': 'Write the shaded mesh as an OBJ file',
+    'Export STL': 'Write the shaded mesh as an STL file for 3D printing', 'Export selected face as DXF': '=Face to DXF', 'Export sketch as DXF': '=Sketch to DXF',
+    'Export model as script': 'Save the model as an Anvil script that rebuilds it', 'Export model as JSON': 'Save the model (features, sketches, dimensions) as a JSON file',
+    'Screenshot (PNG)': 'Save the graphics area as a PNG picture', 'Properties': 'Custom properties of the document: part number, description, material …',
+    // Edit
+    'Undo': 'Undo the last change', 'Redo': 'Redo the change you undid', 'Cut': 'Cut the selected sketch entities to the clipboard', 'Copy': 'Copy the selected sketch entities to the clipboard',
+    'Paste': 'Paste the copied sketch entities into the open sketch', 'Suppress': 'Turn the selected features off: the part rebuilds without them', 'Unsuppress': 'Turn the selected suppressed features back on',
+    'Delete': 'Delete the selection', 'Rebuild': 'Rebuild the model', 'Rebuild in background (Web Worker)': 'Rebuild in a background thread so the window keeps answering while a big part rebuilds',
+    'Clear selection': 'Select nothing', 'Appearance': 'Colour and finish of the part or the selected faces',
+    // View
+    'Modify ▸ Zoom Out': 'Zoom out about the middle of the graphics area', 'Modify ▸ Zoom In': 'Zoom in about the middle of the graphics area',
+    'Axes': 'Show or hide the reference axes', 'Points': 'Show or hide the reference points', 'Coordinate Systems': 'Show or hide the coordinate systems',
+    'Change Transparency': 'Make the selected body see-through, or solid again', 'Tangent Edges Visible': 'Draw the edges between tangent faces as solid lines',
+    'Tangent Edges As Phantom': 'Draw the edges between tangent faces as thin dashed lines', 'Tangent Edges Removed': 'Do not draw the edges between tangent faces',
+    'RealView Graphics': 'Realistic shading: the material’s reflections (drawn while the view is still)', 'Shadows In Shaded Mode': 'Cast the model’s shadow on the floor under it',
+    'Ambient Occlusion': 'Darken corners and creases so the shapes read better', 'Model Dimensions': 'Show the dimensions of the features in the graphics area',
+    'Theme': 'Colours of the window', 'Theme ▸ Light': 'Light window colours', 'Theme ▸ Dark': 'Dark window colours',
+    'Background ▸ Gradient': 'Graphics-area background: a grey gradient', 'Background ▸ Plain': 'Graphics-area background: plain white', 'Background ▸ Dark': 'Graphics-area background: dark grey',
+    // Insert
+    'Boss/Base ▸ Extrude': '=Extruded Boss/Base', 'Boss/Base ▸ Revolve': '=Revolved Boss/Base', 'Boss/Base ▸ Sweep': '=Swept Boss/Base', 'Boss/Base ▸ Loft': '=Lofted Boss/Base', 'Boss/Base ▸ Boundary': '=Boundary Boss/Base',
+    'Cut ▸ Extrude': '=Extruded Cut', 'Cut ▸ Revolve': '=Revolved Cut', 'Cut ▸ Sweep': '=Swept Cut', 'Cut ▸ Loft': '=Lofted Cut', 'Cut ▸ Boundary': '=Boundary Cut',
+    'Delete/Keep Body': 'Delete bodies from a multibody part, or keep only the ones you pick', 'Imported': 'Insert a STEP or other CAD file as a body of this part',
+    'Derived Sketch': 'A copy of the selected sketch that follows its changes, on another plane or face',
+    'Curve ▸ Split Line': '=Split Line', 'Curve ▸ Projected': '=Projected Curve', 'Curve ▸ Composite': '=Composite Curve', 'Curve ▸ Curve Through XYZ Points': '=Curve Through XYZ Points',
+    'Curve ▸ Curve Through Reference Points': '=Curve Through Reference Points', 'Curve ▸ Helix/Spiral': '=Helix and Spiral',
+    'Sheet Metal ▸ Base Flange': '=Base Flange/Tab', 'Design Table': 'Configurations in a table: one row per configuration, one column per dimension or suppression',
+    // Tools
+    'Macro ▸ Run script': 'Run an Anvil script on the model (the Automation / Script pane)', 'Sensor': '=Sensor', 'Segment': 'Points that divide a sketch entity into equal segments',
+    'Jog Line': 'Put a rectangular jog in a sketch line', 'SketchXpert': 'Find and fix over-defined relations and dimensions in the sketch',
+    'Modify': 'Move, rotate or scale the whole sketch', 'Grid/Origin': 'Line the sketch up with its origin or the grid', 'Replace Entity': 'Replace a sketch entity with another and keep what refers to it',
+    'Close Sketch to Model': 'Close an open profile against the model’s edges', 'Create Sketch from Selections': 'A new sketch made of the selected entities',
+    'Make Path': 'Join a chain of sketch entities into a path that moves as one', 'Repair Sketch': '=Repair Sketch',
+    'Insert Spline Point': 'Add a point to a spline where you click', 'Simplify Spline': 'Make a spline smoother with fewer points', 'Fit Spline': 'Replace a chain of entities with one spline through them',
+    'Show Spline Handles': 'Show the tangency handles at the spline’s points', 'Show Curvature': 'Show the curvature comb of a spline or arc', 'Relax Spline': 'Smooth a spline you dragged out of shape',
+    'Add Tangency Control': 'Add a tangency handle to the spline where you click', 'Add Curvature Control': 'Add a curvature handle to the spline where you click',
+    'Show Inflection Points': 'Mark where the spline’s curvature changes side', 'Show Minimum Radius': 'Mark the tightest radius of the spline',
+    'Blocks ▸ Make': 'Make a block of the selected sketch entities: they move and copy as one', 'Blocks ▸ Edit Block': 'Edit the entities of the selected block',
+    'Blocks ▸ Insert': 'Insert a saved block into the sketch', 'Blocks ▸ Add/Remove': 'Add sketch entities to the block, or take them out',
+    'Blocks ▸ Rebuild': 'Rebuild the blocks of the sketch', 'Blocks ▸ Explode': 'Turn the selected block back into plain sketch entities', 'Blocks ▸ Save': 'Save the selected block to a file',
+    'Relations ▸ Add': '=Add Relation', 'Relations ▸ Display/Delete': '=Display/Delete Relations', 'Constrain All': 'Add every relation the sketch’s geometry already follows',
+    'Scan Equal': 'Find lines and arcs of equal size and make them equal', 'Fully Define Sketch': '=Fully Define Sketch',
+    'Sketch Settings': 'Sketch setting', 'Equations': 'Global variables and equations that drive the dimensions',
+    'Units: millimeters (MMGS)': 'This document in millimeters, grams, seconds', 'Units: inches (IPS)': 'This document in inches, pounds, seconds',
+    'Default units for new documents ▸ Inches (IPS)': 'New parts and assemblies start in inches', 'Default units for new documents ▸ Millimeters (MMGS)': 'New parts and assemblies start in millimeters',
+    'Options': 'System options and document properties (Tools ▸ Options)', 'Image Quality': 'How finely curved faces are drawn and exported',
+    'Display/Selection ▸ Select hidden entities': 'A box or lasso also selects edges and faces hidden behind the part',
+    'OpenCascade kernel ▸ Use OpenCascade (exact solids)': 'Rebuild with the OpenCascade engine: exact curved faces for STEP and drawings',
+    'OpenCascade kernel ▸ Show the quick result first': 'Show Anvil’s own quick result while OpenCascade works on the exact solid',
+    'OpenCascade kernel ▸ Wait for the exact solid': 'Show nothing new until OpenCascade’s exact solid is ready', 'OpenCascade kernel ▸ Engine file': 'Where the OpenCascade engine file is loaded from',
+    // assembly, drawing
+    'Component ▸ Existing Part': '=Insert Components', 'Save Drawing As': 'Save the drawing under another name', 'Save Drawing as SVG': '=Save as SVG',
+    'Save Drawing as DXF': '=Save as DXF', 'Save Drawing as DWG': 'Export the sheet as DWG', 'Save Drawing as PDF': '=Save as PDF',
+    'Tangent Edges With Font': 'Draw the edges between tangent faces in the tangent-edge line font', 'Hide/Show Annotations': 'Click annotations to hide them, or hidden ones to show them',
+    'Hide/Show ▸ All Annotations': 'Show or hide every annotation on the sheet', 'Hide/Show ▸ Sketches': 'Show or hide the sketches of the views',
+    'Sheet': 'Add a sheet to the drawing', 'Drawing View ▸ Model': '=Model View', 'Drawing View ▸ Relative To Model': '=Relative View', 'Drawing View ▸ Empty': 'An empty view to sketch in',
+    'Drawing View ▸ Projected': '=Projected View', 'Drawing View ▸ Auxiliary': '=Auxiliary View', 'Drawing View ▸ Section': '=Section View', 'Drawing View ▸ Detail': '=Detail View',
+    'Drawing View ▸ Crop': '=Crop View', 'Drawing View ▸ Flat Pattern': 'A view of the sheet-metal part flat, with its bend lines',
+    'Surface Finish Symbol': '=Surface Finish', 'Dimensions ▸ Ordinate': '=Ordinate Dimension', 'Dimensions ▸ Baseline': '=Baseline Dimension',
+    'Tables ▸ Add Revision': 'Add a row to the revision table', 'Dimensions ▸ Autodimension': 'Dimension the selected view from a datum: baseline, chain or ordinate',
+    // Window, Help
+    'Task Pane': 'Show or hide the Task Pane at the right', 'Scripting reference': 'The Anvil script API: every command a script can call',
+    'Keyboard shortcuts': 'Every keyboard shortcut', 'Report a Problem': 'Save a report of what went wrong for Claude to read', 'About Anvil': 'Anvil’s version and where it runs'
+  };
+  var DRAW_SKETCH_HELP = { 'Centerline': 'Draw a construction centerline on the sheet' };
+  // the sheet's sketch tools have no keys (the drawing takes the keyboard: L, R, C, A did nothing there although the
+  // tooltips showed them); Smart Dimension's D works in a drawing
+  var DRAW_SKETCH_KEYLESS = { line: 1, rect: 1, circle: 1, arc: 1, arc3: 1, polygon: 1, slot: 1 };
+  var drawSketchCache = { list: null, leaves: [] };
+  function inDrawingSketch(item) {
+    if (!(UI.drawingActive && UI.drawingActive())) return false;
+    var list = RIBBON.Sketch;
+    if (drawSketchCache.list !== list) drawSketchCache = { list: list, leaves: ribbonLeaves(list || []) };
+    return drawSketchCache.leaves.some(function (x) { return x === item || (x && typeof x === 'object' && x.isPrototypeOf(item)); });
+  }
   // r14/commands14: tooltips in SolidWorks' two-line style: the name in bold (with its shortcut), a description under it,
   // and a third, muted line for why a button is greyed (setTip, below). An item's own `help` wins over the tables.
   function ribbonTip(id, label, enabled, needsSketch, help, ownKey) {
@@ -1343,6 +1461,8 @@
   // item's own `icon` when its id is shared with another command, such as Sketch Fillet and the Fillet feature)
   // rfMD: a name the icon set in use draws itself and the built-in icons do not have (Swept Cut, a History folder)
   function setIcon(name) { var id = window.Icons && Icons.sets && Icons.sets.active(), set = id ? Icons.sets.get(id) : null; return !!(name && set && set.has && set.has(name)); }
+  // rfNG (for lane swsketchicons): a menu row's own picture when the icon set in use draws it, else the shared one
+  function own(name, fallback) { return setIcon(name) ? name : fallback; }
   function itemState(item) {
     var d = item.dyn && item.dyn();
     var id = d ? d.id : item.id, label = d ? d.label : item.label, flat = label.replace(/\n/g, ' ');
@@ -1357,7 +1477,7 @@
     var enabled = !!(item.run || item.tool), needsSketch = !!item.tool && App.mode !== 'sketch' && !rapid && !modelDim && !starts, active = false;
     if (item.tool) active = (App.mode === 'sketch' && App.tool === item.tool && (!item.active || !!item.active())) || (rapid && UI.rapidSketchArmed() === item) || (modelDim && UI.modelDimOn());   // p9-sketchtab: Line / Centerline / Midpoint Line share the line tool
     else if (item.run) active = !!((item.id === 'sketch' && App.mode === 'sketch') || (item.active && item.active()));
-    return { id: id, icon: (d && d.icon) || (d ? id : item.icon || (setIcon(item.cmd) ? item.cmd : id)), label: label, flat: flat, disabled: !enabled || needsSketch, active: active, tip: ribbonTip(id, flat, enabled, needsSketch, item.help, item.key) };
+    return { id: id, icon: (d && d.icon) || (d ? id : (item.swIcon && setIcon(item.swIcon) ? item.swIcon : item.icon || (setIcon(item.cmd) ? item.cmd : id))), label: label, flat: flat, disabled: !enabled || needsSketch, active: active, tip: ribbonTip(item.noKey || (id !== 'dim' && DRAW_SKETCH_KEYLESS[id] && inDrawingSketch(item)) ? '' : id, flat, enabled, needsSketch, item.help || (DRAW_SKETCH_HELP[flat] && inDrawingSketch(item) ? DRAW_SKETCH_HELP[flat] : ''), item.keyCmd ? (UI.activeKey ? UI.activeKey(item.keyCmd) : '') || '' : item.key) };
   }
   function runItem(item) {
     if (UI.reports) UI.reports.crumb('command: ' + (item.cmd || item.id || item.icon || '?') + (item.label ? ' (' + String(item.label).replace(/\s+/g, ' ') + ')' : ''));   // lane reports
@@ -1414,7 +1534,7 @@
   function flyMenuItems(item) {
     return item.items.map(function (it, i) {
       var s = itemState(it);
-      return { label: s.flat, icon: s.icon, key: s.tip.key, checked: s.active, disabled: s.disabled, action: function () { setFlyFace(item, i); runItem(it); refreshRibbon(); } };
+      return { label: s.flat, icon: s.icon, key: s.tip.key, checked: s.active, disabled: s.disabled, help: s.tip.desc, why: s.tip.note, action: function () { setFlyFace(item, i); runItem(it); refreshRibbon(); } };   // rfNG: help / why for the status-bar help line
     });
   }
   function ribbonFlyout(item, small) {
@@ -2160,6 +2280,7 @@
   FEATURE_ICON.deleteBody = 'deleteBody';   // rfHT: Body-Delete/Keep
   FEATURE_ICON.boundary = 'boundary';   // rfFB (a Boundary Cut: featureIcon)
   function featureIcon(f) {
+    if (f.type === 'loftedBend' && setIcon('loftedBend')) return 'loftedBend';   // rfNG (lane swparticons): its own picture when the set draws it, else Loft's
     if (f.type === 'extrude') return f.cut ? 'cut' : (f.sheetBase ? 'flange' : 'extrude');
     if (f.type === 'revolve') return f.cut ? 'revolveCut' : 'revolve';
     if (f.type === 'boundary') return f.cut ? 'boundaryCut' : 'boundary';   // rfFB
@@ -2590,9 +2711,9 @@
     items.push({ sep: true });
     Array.prototype.push.apply(items, rollbarMenu(f));   // rfGQ
     items.push({ sep: true });
-    items.push({ label: 'Rename (F2)', action: function () { startRename(f); } });
+    items.push({ label: 'Rename tree item', key: 'F2', help: 'Type a new name for the feature in the tree', action: function () { startRename(f); } });   // rfNG: SolidWorks' name, the key in the key column (it was in the label)
     items.push({ sep: true });
-    items.push({ label: 'Delete', action: function () { UI.deleteFeature(f.id); } });
+    items.push({ label: 'Delete', key: 'Del', action: function () { UI.deleteFeature(f.id); } });
     return items;
   }
   var slowTimer = null;
@@ -2648,6 +2769,7 @@
   var openMenu = null;
   function closeMenus() {
     if (openMenu) { openMenu.remove(); openMenu = null; }
+    menuHelpRestore();
     Array.prototype.forEach.call(document.querySelectorAll('#menus > li.open, .rb-more.open, .rb-fly.open'), function (li) { li.classList.remove('open'); });
   }
   // rfC: the sketch's shortcut menu as SolidWorks 2024 has it (right-click with the Select tool). On sketch entities:
@@ -2696,7 +2818,7 @@
       items.push({ label: 'Display/Delete Relations…', icon: 'relations', action: function () { UI.cmdDisplayRelations(); } });
       items.push({ label: 'Fully Define Sketch…', icon: 'fullyDefine', action: inSketch(function () { UI.cmdFullyDefineSketch(); }) });
       if (UI.cmdConstrainAll) items.push({ label: 'Constrain All', icon: 'fullyDefine', action: inSketch(function () { UI.cmdConstrainAll(); }) });   // rfAP
-      if (UI.cmdModifySketch) items.push({ label: 'Modify Sketch…', icon: 'moveEnt', action: inSketch(function () { UI.cmdModifySketch(); }) });   // rfAP
+      if (UI.cmdModifySketch) items.push({ label: 'Modify Sketch…', icon: own('modifySketch', 'moveEnt'), action: inSketch(function () { UI.cmdModifySketch(); }) });   // rfAP
       items.push({ sep: true });
       items.push({ label: 'Zoom to Fit', key: 'F', icon: 'fit', action: function () { UI.zoomToFit(); } });
       if (UI.selectionModeMenuItems) items = items.concat([{ sep: true }], UI.selectionModeMenuItems());   // rfFD: Box / Lasso Selection
@@ -2711,9 +2833,91 @@
     function has(l) { return items.some(function (it) { return it && it.label === l; }); }
     return !items.sketchMenu && App.mode === 'sketch' && has('Exit Sketch') && has('Discard Changes and Exit');
   }
+  // rfNG uisense: SolidWorks writes a line of help in the status bar for the menu row under the pointer (and, for a
+  // greyed row, why it is greyed); the status line comes back when the menu closes. `help` / `why` on a row win;
+  // else the row's last name (after ▸, without …) is looked up in MENU_HELP, the ribbon's lines and the ribbon items.
+  var menuHelpSaved = null;
+  function menuRowName(label) { return String(label || '').split('▸').pop().replace(/…\s*$/, '').trim(); }
+  var cmdHelpCache = { n: -1, map: null };
+  function commandHelp(name) {
+    var tabs = [RIBBON, ASM_RIBBON], n = 0;
+    tabs.forEach(function (t) { Object.keys(t).forEach(function (k) { n += (t[k] || []).length + 1; }); });
+    if (cmdHelpCache.n !== n || !cmdHelpCache.map) {
+      var map = {};
+      tabs.forEach(function (t) { Object.keys(t).forEach(function (k) { ribbonLeaves(t[k]).forEach(function (it) { var f = flatLabel(it.label); if (it.help && !map[f]) map[f] = it.help; }); }); });
+      cmdHelpCache = { n: n, map: map };
+    }
+    return cmdHelpCache.map[name] || '';
+  }
+  function menuRowHelp(it) {
+    if (!it || it.sep) return '';
+    if (it.help) return it.help;
+    var full = String(it.label || '').replace(/…\s*$/, '').trim(), name = menuRowName(it.label);
+    function ref(h) { return h && h.charAt(0) === '=' ? RIBBON_HELP[h.slice(1)] || DRAW_HELP[h.slice(1)] || commandHelp(h.slice(1)) || '' : h; }
+    var group = / ▸ /.test(full) ? full.split(' ▸ ')[0] : '';
+    return ref(MENU_HELP[full]) || ref(MENU_HELP[name]) || (UI.drawingActive && UI.drawingActive() && DRAW_HELP[name]) || RIBBON_HELP[name] || TIP_HELP[name] || commandHelp(name) ||
+      (group && MENU_HELP[group] ? MENU_HELP[group] + ': ' + name.charAt(0).toLowerCase() + name.slice(1) : '') ||
+      (/\((part|assembly|drawing|nest)\)$/i.test(full) || / - Sheet\d+$/.test(full) ? 'Switch to this open document' : '') ||
+      (/^\d+\s/.test(full) ? (/\(not found\)$/.test(full) ? 'A recent document that is not there any more: click to remove it from the list or keep it' : 'Open this recent document') : '');
+  }
+  function menuRowWhy(it) {
+    if (!it || !it.disabled) return '';
+    if (it.why) return it.why;
+    var l = String(it.label || '');
+    if (/^(Sketch Entities|Sketch Tools|Spline Tools|Blocks|Relations|Dimensions) ▸/.test(l) && App.mode !== 'sketch') return 'Open a sketch first';
+    if (/^Undo$/.test(l)) return 'Nothing to undo';
+    if (/^Redo$/.test(l)) return 'Nothing to redo';
+    if (/^(Suppress|Unsuppress)/.test(l)) return 'Select a feature in the FeatureManager first';
+    if (/^Delete/.test(l)) return 'Select something to delete first';
+    if (/^(Cut|Copy)$/.test(l)) return 'Select sketch entities first';
+    if (/^Paste$/.test(l)) return 'Copy sketch entities first';
+    if (isAsm()) return 'Not used in an assembly';
+    return 'Not available now';
+  }
+  function menuHelpShow(it) {
+    var s = $('status-msg');
+    if (!s) return;
+    if (menuHelpSaved === null) menuHelpSaved = s.textContent;
+    var h = menuRowHelp(it), why = menuRowWhy(it);
+    setStatus(why ? (h ? h + ' (' + why + ')' : why) : h);
+  }
+  function menuHelpRestore() {
+    if (menuHelpSaved === null) return;
+    var t = menuHelpSaved; menuHelpSaved = null;
+    setStatus(t);
+  }
+  // rfNG uisense: a right-click on a face of the part gave only Select Other (and Clear Selection); SolidWorks selects
+  // the face and offers what is done with it: Edit Feature / Edit Sketch of the feature that made it, Sketch on it,
+  // Normal To, Measure, Appearance, Zoom to Fit. ui-select.js builds the short menu; showMenu adds these rows to it.
+  function isFaceMenu(items) {
+    return !items.faceMenu && App.mode === 'part' && !isAsm() && !(UI.drawingActive && UI.drawingActive()) && items.length && items[0] && items[0].label === 'Select Other' &&
+      items.every(function (it) { return it && (it.label === 'Select Other' || it.label === 'Clear Selection'); });
+  }
+  function faceMenuItems(items, x, y) {
+    var vp = (UI.viewport || $('viewport')).getBoundingClientRect(), faces = UI.pickFacesAll ? UI.pickFacesAll(x - vp.left, y - vp.top) : [];
+    var fc = faces[0], i = fc ? fc.index : null, mf = i != null && App.mesh ? App.mesh.faces[i] : null;
+    var ft = mf && App.triShared ? K.findFeature(App.model, App.triShared[mf.start]) : null;
+    if (i == null) return items;
+    function pick() { if (UI.setSelection) UI.setSelection([{ kind: 'face', index: i }]); else App.sel = { kind: 'face', index: i }; UI.updateHighlights(); }
+    var out = items.slice();
+    out.push({ sep: true });
+    if (ft && ft.type !== 'sketch') out.push({ label: 'Edit Feature', icon: 'editFeature', help: 'Edit ' + ft.name + ', the feature that made this face', action: function () { UI.editFeature(ft); } });
+    if (ft && ft.sketch != null && K.findFeature(App.model, ft.sketch)) out.push({ label: 'Edit Sketch', icon: 'sketch', help: 'Edit the sketch of ' + ft.name, action: function () { UI.editSketch(ft.sketch); } });
+    out.push({ label: 'Sketch', icon: 'sketch', help: 'Start a sketch on this face', action: function () { pick(); UI.cmdSketch(); refreshRibbon(); } });
+    out.push({ sep: true });
+    out.push({ label: 'Normal To', key: 'Ctrl+8', icon: 'vNormalTo', help: 'Look straight at this face', action: function () { pick(); UI.normalToSelection(); } });
+    out.push({ label: 'Measure', icon: 'measure', action: function () { pick(); UI.cmdMeasure(); } });
+    out.push({ label: 'Appearance', icon: 'appearance', help: 'Colour and finish of the part (Task Pane ▸ Appearances, Scenes)', action: function () { pick(); UI.openTaskPane('appearance'); } });
+    out.push({ sep: true });
+    out.push({ label: 'Zoom to Fit', key: 'F', icon: 'fit', action: function () { UI.zoomToFit(); } });
+    out.faceMenu = true;
+    pick();
+    return out;
+  }
   function showMenu(x, y, items, anchorLi) {
     closeMenus();
     if (!anchorLi && isSketchMenu(items)) items = sketchMenuItems(items);
+    if (!anchorLi && isFaceMenu(items)) items = faceMenuItems(items, x, y);
     var m = menuBox(items);
     document.body.appendChild(m);
     var mw = m.offsetWidth, mh = m.offsetHeight, W = window.innerWidth, H = window.innerHeight;
@@ -2751,6 +2955,8 @@
       row.appendChild(el('span', { text: it.label }));
       var shownKey = it.key && UI.menuKeyText ? UI.menuKeyText(it.key) : it.key;   // lane profiles: the active profile's key
       if (shownKey) row.appendChild(el('span', { class: 'key', text: shownKey }));
+      row.addEventListener('mouseenter', function () { menuHelpShow(it); });   // rfNG uisense: the help line
+      row._menuItem = it;
       if (it.items && it.items.length) {
         // rfLF: a row with `items` opens them as a submenu beside it (on hover, or a click)
         row.classList.add('mi-subhost');
@@ -2923,7 +3129,7 @@
         { label: 'Delete', key: 'Del', action: UI.deleteSelection, disabled: !App.sel },
         { label: 'Rebuild', key: 'Ctrl+B', action: function () { UI.rebuild({ card: true }).then(function () { toast('Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms'); }); } },
         { label: 'Rebuild in background (Web Worker)', checked: App.workerOn, action: function () { UI.setWorkerOn(!App.workerOn); toast(App.workerOn ? 'Rebuilds run in a Web Worker' : 'Rebuilds run on the main thread'); } },
-        { label: 'Clear selection', key: 'Esc', action: function () { App.sel = null; App.sel2 = null; UI.updateHighlights(); refreshTree(); } }
+        { label: 'Clear selection', key: 'Esc', disabled: !App.sel && !(UI.selection && UI.selection().length), why: 'Nothing is selected', action: function () { App.sel = null; App.sel2 = null; UI.updateHighlights(); refreshTree(); } }
       ]) },
       { label: 'View', items: [
         { label: 'Zoom to Fit', key: 'F', action: UI.zoomToFit },
@@ -3038,46 +3244,46 @@
         // Move, Rotate, Scale, Copy, Linear / Circular Pattern, Repair Sketch, SketchXpert, Modify (Replace Entity), Check
         // Sketch for Feature, Sketch Picture (Insert DXF / DWG: Anvil's). Fillet / Chamfer are under Sketch Entities.
         sketchMenuRows('Sketch Tools', ['convert', 'intersectCurve']), [
-        { label: 'Sketch Tools ▸ Segment…', icon: 'point', action: function () { UI.cmdSegment(); }, disabled: App.mode !== 'sketch' || !UI.cmdSegment }
+        { label: 'Sketch Tools ▸ Segment…', icon: own('segment', 'point'), action: function () { UI.cmdSegment(); }, disabled: App.mode !== 'sketch' || !UI.cmdSegment }
       ], sketchMenuRows('Sketch Tools', ['offset', 'trim', 'extend', 'splitEnt', 'joinEnt', 'closeArc']), [
         { label: 'Sketch Tools ▸ Jog Line', icon: 'jogLine', action: function () { UI.cmdJogLine(); }, disabled: App.mode !== 'sketch' || !UI.cmdJogLine }
       ], sketchMenuRows('Sketch Tools', ['construction', 'mirrorEnt', 'dynMirror', 'stretchEnt', 'moveEnt', 'rotateEnt', 'scaleEnt', 'copyEnt', 'sketchPattern', 'cSketchPattern']), [
         { label: 'Sketch Tools ▸ Repair Sketch…', action: function () { UI.cmdRepairSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdRepairSketch },
-        { label: 'Sketch Tools ▸ SketchXpert…', icon: 'relations', action: function () { UI.cmdSketchXpert(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchXpert },
-        { label: 'Sketch Tools ▸ Modify…', icon: 'moveEnt', action: function () { UI.cmdModifySketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdModifySketch },
-        { label: 'Sketch Tools ▸ Align ▸ Grid/Origin…', icon: 'moveEnt', action: function () { UI.cmdAlignGrid(); }, disabled: App.mode !== 'sketch' || !UI.cmdAlignGrid },   // lane rfIX
-        { label: 'Sketch Tools ▸ Replace Entity…', icon: 'moveEnt', action: function () { UI.cmdReplaceEntity(); }, disabled: App.mode !== 'sketch' || !UI.cmdReplaceEntity },   // rfCR: ui-sketch-tools.js
-        { label: 'Sketch Tools ▸ Close Sketch to Model…', icon: 'closeArc', action: function () { UI.cmdCloseSketchToModel(); }, disabled: App.mode !== 'sketch' || !UI.cmdCloseSketchToModel },   // lane sketch-path: ui-sketch-tools.js
+        { label: 'Sketch Tools ▸ SketchXpert…', icon: own('sketchXpert', 'relations'), action: function () { UI.cmdSketchXpert(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchXpert },
+        { label: 'Sketch Tools ▸ Modify…', icon: own('modifySketch', 'moveEnt'), action: function () { UI.cmdModifySketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdModifySketch },
+        { label: 'Sketch Tools ▸ Align ▸ Grid/Origin…', icon: own('alignGrid', 'moveEnt'), action: function () { UI.cmdAlignGrid(); }, disabled: App.mode !== 'sketch' || !UI.cmdAlignGrid },   // lane rfIX
+        { label: 'Sketch Tools ▸ Replace Entity…', icon: own('replaceEnt', 'moveEnt'), action: function () { UI.cmdReplaceEntity(); }, disabled: App.mode !== 'sketch' || !UI.cmdReplaceEntity },   // rfCR: ui-sketch-tools.js
+        { label: 'Sketch Tools ▸ Close Sketch to Model…', icon: own('closeToModel', 'closeArc'), action: function () { UI.cmdCloseSketchToModel(); }, disabled: App.mode !== 'sketch' || !UI.cmdCloseSketchToModel },   // lane sketch-path: ui-sketch-tools.js
         { label: 'Sketch Tools ▸ Create Sketch from Selections', action: function () { UI.cmdSketchFromSelections(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchFromSelections },   // rfGS
-        { label: 'Sketch Tools ▸ Make Path…', icon: 'pathLengthDim', action: function () { UI.cmdMakePath(); }, disabled: App.mode !== 'sketch' || !UI.cmdMakePath },   // lane sketch-path: ui-sketch-tools.js
+        { label: 'Sketch Tools ▸ Make Path…', icon: own('makePath', 'pathLengthDim'), action: function () { UI.cmdMakePath(); }, disabled: App.mode !== 'sketch' || !UI.cmdMakePath },   // lane sketch-path: ui-sketch-tools.js
         { label: 'Sketch Tools ▸ Check Sketch for Feature…', action: function () { UI.cmdCheckSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdCheckSketch },   // dxf-import (ui-sketch-import.js)
         { label: 'Sketch Tools ▸ Sketch Picture…', icon: 'sketchPicture', action: function () { UI.cmdSketchPicture(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchPicture },   // rfAW: ui-sketch-picture.js
         { label: 'Sketch Tools ▸ Insert DXF / DWG…', action: function () { UI.cmdInsertDXF(); }, disabled: isAsm() || !UI.cmdInsertDXF },
         // rfAS: Tools ▸ Spline Tools (ui-sketch-spline.js)
-        { label: 'Spline Tools ▸ Insert Spline Point', icon: 'spline', action: function () { UI.cmdInsertSplinePoint(); }, disabled: App.mode !== 'sketch' || !UI.cmdInsertSplinePoint },
-        { label: 'Spline Tools ▸ Simplify Spline…', icon: 'spline', action: function () { UI.cmdSimplifySpline(); }, disabled: App.mode !== 'sketch' || !UI.cmdSimplifySpline },
-        { label: 'Spline Tools ▸ Fit Spline…', icon: 'spline', action: function () { UI.cmdFitSpline(); }, disabled: App.mode !== 'sketch' || !UI.cmdFitSpline },
-        { label: 'Spline Tools ▸ Show Spline Handles', icon: 'spline', checked: !!(UI.splineView && UI.splineView.handles), action: function () { UI.cmdShowSplineHandles(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowSplineHandles },
-        { label: 'Spline Tools ▸ Show Curvature', icon: 'spline', action: function () { UI.cmdShowCurvature(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowCurvature },
-        { label: 'Spline Tools ▸ Relax Spline', icon: 'spline', action: function () { UI.cmdRelaxSpline(); }, disabled: App.mode !== 'sketch' || !UI.cmdRelaxSpline },
+        { label: 'Spline Tools ▸ Insert Spline Point', icon: own('splInsertPt', 'spline'), action: function () { UI.cmdInsertSplinePoint(); }, disabled: App.mode !== 'sketch' || !UI.cmdInsertSplinePoint },
+        { label: 'Spline Tools ▸ Simplify Spline…', icon: own('splSimplify', 'spline'), action: function () { UI.cmdSimplifySpline(); }, disabled: App.mode !== 'sketch' || !UI.cmdSimplifySpline },
+        { label: 'Spline Tools ▸ Fit Spline…', icon: own('splFit', 'spline'), action: function () { UI.cmdFitSpline(); }, disabled: App.mode !== 'sketch' || !UI.cmdFitSpline },
+        { label: 'Spline Tools ▸ Show Spline Handles', icon: own('splHandles', 'spline'), checked: !!(UI.splineView && UI.splineView.handles), action: function () { UI.cmdShowSplineHandles(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowSplineHandles },
+        { label: 'Spline Tools ▸ Show Curvature', icon: own('splCurvature', 'spline'), action: function () { UI.cmdShowCurvature(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowCurvature },
+        { label: 'Spline Tools ▸ Relax Spline', icon: own('splRelax', 'spline'), action: function () { UI.cmdRelaxSpline(); }, disabled: App.mode !== 'sketch' || !UI.cmdRelaxSpline },
         // rfAW: Add Tangency / Curvature Control, Show Inflection Points (ui-sketch-spline.js)
-        { label: 'Spline Tools ▸ Add Tangency Control', icon: 'spline', action: function () { UI.cmdAddTangencyControl(); }, disabled: App.mode !== 'sketch' || !UI.cmdAddTangencyControl },
-        { label: 'Spline Tools ▸ Add Curvature Control', icon: 'spline', action: function () { UI.cmdAddCurvatureControl(); }, disabled: App.mode !== 'sketch' || !UI.cmdAddCurvatureControl },
-        { label: 'Spline Tools ▸ Show Inflection Points', icon: 'spline', action: function () { UI.cmdShowInflectionPoints(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowInflectionPoints },
-        { label: 'Spline Tools ▸ Show Minimum Radius', icon: 'spline', action: function () { UI.cmdShowMinimumRadius(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowMinimumRadius },   // lane CV
+        { label: 'Spline Tools ▸ Add Tangency Control', icon: own('splTangency', 'spline'), action: function () { UI.cmdAddTangencyControl(); }, disabled: App.mode !== 'sketch' || !UI.cmdAddTangencyControl },
+        { label: 'Spline Tools ▸ Add Curvature Control', icon: own('splCurvCtrl', 'spline'), action: function () { UI.cmdAddCurvatureControl(); }, disabled: App.mode !== 'sketch' || !UI.cmdAddCurvatureControl },
+        { label: 'Spline Tools ▸ Show Inflection Points', icon: own('splInflection', 'spline'), action: function () { UI.cmdShowInflectionPoints(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowInflectionPoints },
+        { label: 'Spline Tools ▸ Show Minimum Radius', icon: own('splMinRadius', 'spline'), action: function () { UI.cmdShowMinimumRadius(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowMinimumRadius },   // lane CV
         // rfAT: Tools ▸ Blocks (ui-sketch-blocks.js)
-        { label: 'Blocks ▸ Make…', icon: 'block', action: function () { UI.cmdMakeBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdMakeBlock },
-        { label: 'Blocks ▸ Edit Block', icon: 'block', checked: !!(UI.blockEditing && UI.blockEditing()), action: function () { UI.cmdEditBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdEditBlock },
-        { label: 'Blocks ▸ Insert…', icon: 'block', action: function () { UI.cmdInsertBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdInsertBlock },
-        { label: 'Blocks ▸ Add/Remove', icon: 'block', action: function () { UI.cmdBlockAddRemove(); }, disabled: App.mode !== 'sketch' || !UI.cmdBlockAddRemove },   // lane sketchgaps
-        { label: 'Blocks ▸ Rebuild', icon: 'block', action: function () { UI.cmdRebuildBlocks(); }, disabled: App.mode !== 'sketch' || !UI.cmdRebuildBlocks },
-        { label: 'Blocks ▸ Explode', icon: 'block', action: function () { UI.cmdExplodeBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdExplodeBlock },
-        { label: 'Blocks ▸ Save…', icon: 'block', action: function () { UI.cmdSaveBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdSaveBlock },
+        { label: 'Blocks ▸ Make…', icon: own('blockMake', 'block'), action: function () { UI.cmdMakeBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdMakeBlock },
+        { label: 'Blocks ▸ Edit Block', icon: own('blockEdit', 'block'), checked: !!(UI.blockEditing && UI.blockEditing()), action: function () { UI.cmdEditBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdEditBlock },
+        { label: 'Blocks ▸ Insert…', icon: own('blockInsert', 'block'), action: function () { UI.cmdInsertBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdInsertBlock },
+        { label: 'Blocks ▸ Add/Remove', icon: own('blockAddRemove', 'block'), action: function () { UI.cmdBlockAddRemove(); }, disabled: App.mode !== 'sketch' || !UI.cmdBlockAddRemove },   // lane sketchgaps
+        { label: 'Blocks ▸ Rebuild', icon: own('blockRebuild', 'block'), action: function () { UI.cmdRebuildBlocks(); }, disabled: App.mode !== 'sketch' || !UI.cmdRebuildBlocks },
+        { label: 'Blocks ▸ Explode', icon: own('blockExplode', 'block'), action: function () { UI.cmdExplodeBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdExplodeBlock },
+        { label: 'Blocks ▸ Save…', icon: own('blockSave', 'block'), action: function () { UI.cmdSaveBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdSaveBlock },
         { label: 'Relations ▸ Add…', icon: 'addRelation', action: function () { if (App.mode !== 'sketch') toast('Open a sketch first.'); else UI.cmdAddRelations(); }, disabled: App.mode !== 'sketch' },
         { label: 'Relations ▸ Display/Delete…', icon: 'relations', action: function () { UI.cmdDisplayRelations(); }, disabled: App.mode !== 'sketch' },
         { label: 'Relations ▸ Constrain All', icon: 'fullyDefine', action: function () { UI.cmdConstrainAll(); }, disabled: App.mode !== 'sketch' || !UI.cmdConstrainAll },
         // rfAR: Scan Equal (ui-relations.js; SketchXpert is with the Sketch Tools above)
-        { label: 'Relations ▸ Scan Equal…', icon: 'relations', action: function () { UI.cmdScanEqual(); }, disabled: App.mode !== 'sketch' || !UI.cmdScanEqual }
+        { label: 'Relations ▸ Scan Equal…', icon: own('relEqual', 'relations'), action: function () { UI.cmdScanEqual(); }, disabled: App.mode !== 'sketch' || !UI.cmdScanEqual }
       ], sketchMenuRows('Dimensions', ['dim', 'horizDim', 'vertDim', 'ordinateDim', 'ordinateH', 'ordinateV', 'chamferDim', 'pathLengthDim', 'angRunDim', 'autodim']), [   // rfAQ
         { label: 'Dimensions ▸ Fully Define Sketch…', icon: 'fullyDefine', action: function () { if (UI.cmdFullyDefineSketch) UI.cmdFullyDefineSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdFullyDefineSketch },   // sketchdims
         { sep: true },
@@ -3094,8 +3300,8 @@
         { label: 'Units: inches (IPS)', checked: App.model.units === 'in', action: function () { App.model.units = 'in'; UI.rebuild(); } },
         { label: 'Default units for new documents ▸ Inches (IPS)', checked: UI.defaultUnits() === 'in', action: function () { UI.setDefaultUnits('in'); toast('New parts and assemblies start in inches (IPS).'); } },
         { label: 'Default units for new documents ▸ Millimeters (MMGS)', checked: UI.defaultUnits() === 'mm', action: function () { UI.setDefaultUnits('mm'); toast('New parts and assemblies start in millimeters (MMGS).'); } },
-        { label: 'Options…', action: function () { UI.openTaskPane('props'); } },
-        { label: 'Options ▸ Image Quality…', action: function () { UI.openTaskPane('props'); var q = document.querySelector('[data-role="image-quality"]'); if (q) q.focus(); } },
+        { label: 'Options…', action: function () { showOptionsDialog(); } },   // rfNG: SolidWorks' System Options dialog (it opened the Task Pane)
+        { label: 'Options ▸ Image Quality…', action: function () { showOptionsDialog('image-quality'); } },
         // rfFD: System Options ▸ Display/Selection ▸ Select hidden entities (off: a box / lasso in a shaded view takes only visible edges)
         { label: 'Options ▸ Display/Selection ▸ Select hidden entities', checked: !!(UI.selectHidden && UI.selectHidden()), disabled: !UI.selectHidden, action: function () { var on = UI.selectHidden(!UI.selectHidden()); toast('Select hidden entities ' + (on ? 'on: a box or lasso selects through the part.' : 'off: a box or lasso in a shaded view selects only what can be seen.')); } },
         { sep: true }
@@ -3351,7 +3557,7 @@
     btn('showEndpoints', 'Show Endpoints — Show or hide the end-point dots of sketch entities', function () { toggleShowEndpoints(); }, function () { return App.view.showEndpoints !== false; });   // lane BS
     // rfHD: SolidWorks' View Settings flyout starts with RealView Graphics, Shadows In Shaded Mode, Ambient Occlusion
     dd('settings', 'View Settings', function () { return (UI.depthFxMenuItems ? UI.depthFxMenuItems().concat([{ sep: true }]) : []).concat(UI.tangentEdgesMenuItems ? UI.tangentEdgesMenuItems().concat([{ sep: true }]) : [], [   // rfHL: tangent edge display
-      { label: 'Options…', action: function () { UI.openTaskPane('props'); } },
+      { label: 'Options…', action: function () { showOptionsDialog(); } },
       { sep: true },
       { label: 'Light Theme', checked: !!UI.theme && UI.theme() === 'light', action: function () { UI.setTheme('light'); } },
       { label: 'Dark Theme', checked: !!UI.theme && UI.theme() === 'dark', action: function () { UI.setTheme('dark'); } }
@@ -3383,7 +3589,23 @@
   }
 
   // ------------------------------------------------------------------ modal
+  // rfNG uisense (head, from lane pmsense): Tools ▸ Options… opens a dialog as SolidWorks' System Options does (it
+  // opened the Task Pane's Options page); the dialog holds that same page (ui-app.js tpProps: document properties,
+  // interface profile, image quality …), changes apply at once, OK closes it. One Options at a time: the Task Pane's
+  // page is closed while the dialog is up. `role` focuses a section ([data-role="image-quality"]).
+  function showOptionsDialog(role) {
+    if (!UI.taskPaneContent) { UI.openTaskPane('props'); return; }
+    if (!$('tp-panel').hidden && UI.taskPaneCurrent && UI.taskPaneCurrent() === 'props') UI.closeTaskPane();
+    var host = el('div', { class: 'opt-dialog', id: 'options-dialog' });
+    UI.taskPaneContent('props', host);
+    showModal({ title: 'System Options', body: host, buttons: [{ label: 'OK', primary: true, action: closeModal }] });
+    $('modal').classList.add('modal-options');
+    var s = role ? host.querySelector('[data-role="' + role + '"]') : null;
+    if (s) { if (s.scrollIntoView) s.scrollIntoView({ block: 'nearest' }); if (s.focus) s.focus(); }
+  }
+  UI.showOptionsDialog = showOptionsDialog;
   function showModal(opts) {
+    $('modal').classList.remove('modal-options');
     $('modal-title').innerHTML = '';
     $('modal-title').appendChild(el('span', { text: opts.title }));
     $('modal-title').appendChild(el('button', { text: '✕', title: 'Close', onclick: closeModal }));
@@ -3856,14 +4078,14 @@
   function scFind(ctx, name) {
     var set = ribbonSet(), tabs = SC_TABS[ctx];
     function flat(s) { return String(s || '').replace(/\s*\n\s*/g, ' '); }
+    // rfNG uisense: under a profile the tabs have other names and the items other labels (Mastercam: Solids ▸ Extrude),
+    // so the bar found almost nothing; the profile's tabs are searched too, by each item's SolidWorks name
+    if (profileSet()) tabs = tabs.map(tabName).concat(Object.keys(set));
     for (var t = 0; t < tabs.length; t++) {
-      var list = set[tabs[t]] || [];
-      for (var i = 0; i < list.length; i++) {
-        var it = list[i], cands = it && (it.stack ? [].concat.apply([], it.stack.map(function (x) { return x.items || [x]; })) : it.items || [it]);
-        for (var j = 0; cands && j < cands.length; j++) {
-          var c = cands[j], d = c && c.dyn && c.dyn();
-          if (c && c.label && (flat(c.label) === name || (d && flat(d.label) === name))) return c;
-        }
+      var list = ribbonLeaves(set[tabs[t]] || []);
+      for (var j = 0; j < list.length; j++) {
+        var c = list[j], d = c && c.dyn && c.dyn();
+        if (c && c.label && (flat(c.swLabel || c.label) === name || (d && flat(d.label) === name))) return c;
       }
     }
     return null;
@@ -3972,6 +4194,7 @@
   UI.fitWorkspace = fitWorkspace;   // r12/chrome12: panel widths and the CommandManager fitted to the window now
   UI.refreshRibbon = refreshRibbon; UI.setRibbonTab = setRibbonTab; UI.renderFmTabs = renderFmTabs; UI.setFmTab = setFmTab;
   UI.menuModel = MENUS; UI.ribbonLeaves = ribbonLeaves; UI.ribbonItemState = itemState;   // rfAP: Search Commands (ui-app.js)
+  UI.menuRowHelp = menuRowHelp; UI.menuRowWhy = menuRowWhy;   // rfNG uisense: the status-bar help line of a menu row
   UI.refreshTree = refreshTree; UI.startRename = startRename; UI.renderMenuBar = renderMenuBar; UI.syncStdToolbar = syncStdToolbar; UI.closeMenus = closeMenus; UI.showMenu = showMenu; UI.menuOpen = menuOpen;
   UI.refreshHud = refreshHud; UI.showOrientationMenu = showOrientationMenu; UI.showModal = showModal; UI.closeModal = closeModal; UI.modalDefault = modalDefault; UI.confirmDialog = confirmDialog; UI.promptDialog = promptDialog; UI.setStyle = setStyle; UI.setBg = setBg; UI.normalToSelection = normalToSelection;
   UI.showEquations = showEquations; UI.setEquations = setEquations; UI.normalizeEquations = normalizeEquations;

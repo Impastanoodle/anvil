@@ -71,6 +71,7 @@
     await wait(60);
     var radio = D.querySelector('[data-role="interface-profiles"] input[data-profile="' + id + '"]');
     await rfLKClick(radio, id + ' radio');
+    if (modalOpen()) UI.closeModal();   // rfNG: Tools > Options… is a dialog now (System Options); the profile radios are in it
     await wait(60);
   }
   var rfLKSw = null;

@@ -2696,3 +2696,6 @@ table.mc-planes tr.picked td.mc-pl-name { font-weight: 600; }
 #pm .pm-row.pm-row-icons.pm-row-words > label { display: block; margin-bottom: 4px; }
 #pm .pm-btns.pm-wordopts { display: flex; flex-wrap: wrap; gap: 4px; }
 #pm .pm-btns.pm-wordopts button { padding: 0 8px; }
+/* rfNG uisense: Tools > Options as a dialog (System Options): the Task Pane page at a readable width, scrolling */
+#modal.modal-options > div { width: min(560px, 94vw); max-width: 94vw; }
+#modal.modal-options #modal-body { max-height: min(72vh, 640px); overflow: auto; }

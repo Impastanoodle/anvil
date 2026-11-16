@@ -240,7 +240,8 @@
   function openSetting() {
     // lane mcframe: a frame with a File backstage keeps the setting there (File ▸ Options), as Mastercam's Configuration
     if (UI.frameBackstage && UI.frameBackstage.has()) { UI.frameBackstage.open('options'); return; }
-    if (UI.openTaskPane) UI.openTaskPane('props');
+    if (UI.showOptionsDialog) UI.showOptionsDialog('interface-profiles');   // rfNG: Tools ▸ Options is a dialog (System Options)
+    else if (UI.openTaskPane) UI.openTaskPane('props');
     var s = document.querySelector('[data-role="interface-profiles"]');
     if (s) { if (s.scrollIntoView) s.scrollIntoView({ block: 'nearest' }); var r = s.querySelector('input:checked'); if (r) r.focus(); }
   }
@@ -363,7 +364,11 @@
       offset: 'Offset\nEntity', convert: 'Project', closeArc: 'Close Arc', showArcCenters: 'Arc Center Points', showEndpoints: 'Endpoints',
       dim: 'Smart\nDimension', horizDim: 'Horizontal', vertDim: 'Vertical', ordinateDim: 'Ordinate', baselineDim: 'Baseline', holeTable: 'Hole\nTable', areaHatch: 'Cross Hatch', multiJogLeader: 'Leader',
       measure: 'Analyze\nDistance', mass: 'Analyze Solid Properties', check: 'Check Solid', sectionProps: '2D Area',
-      vZoomFit: 'Fit', zoomArea: 'Window', vTop: 'Top', dsShadedEdges: 'Outline Shaded', vFeatureTree: 'Solids Manager', levels: 'Levels', vLevels: 'Levels Manager'
+      vZoomFit: 'Fit', zoomArea: 'Window', vTop: 'Top', dsShadedEdges: 'Outline Shaded', vFeatureTree: 'Solids Manager', levels: 'Levels', vLevels: 'Levels Manager',
+      // rfNG uisense: two buttons had one name with different commands: Wireframe ▸ Project (Convert Entities) and
+      // Transform ▸ Project; View ▸ Planes (show the planes) and View ▸ Managers ▸ Planes (the Planes Manager).
+      // Mastercam makes the edge curves of a solid with Curve All Edges; Display shows its toggles as Show …
+      convert: 'Curve All\nEdges', vPlanes: 'Show Planes'
     },
     // lane mcframe: the window itself (ui-panels.js UI.setFrame)
     frame: {

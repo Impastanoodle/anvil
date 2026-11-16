@@ -75,6 +75,7 @@
       assert(r, 'no ' + id + ' radio');
       r.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
       r.click(); await wait(60);
+      if (modalOpen()) UI.closeModal();   // rfNG: Tools > Options… is a dialog now (System Options); the profile radios are in it
     }
     try {
       await pick('mastercam');

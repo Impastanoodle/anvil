@@ -444,6 +444,7 @@
     await rfLOUntil(function () { return UI.Profiles.active() === id; }, 'profile ' + id);
     if (UI.frameBackstage && UI.frameBackstage.isOpen && UI.frameBackstage.isOpen()) UI.frameBackstage.close();
     if (UI.closeTaskPane) UI.closeTaskPane();
+    if (modalOpen()) UI.closeModal();   // rfNG: Tools > Options… is a dialog now (System Options); the profile radios are in it
     await idle();
   }
   function rfLORect(el) { var r = el.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; }
