@@ -308,12 +308,15 @@
     var newOk = opts.fit && opts.newSheet !== false;
     var onSheet = opts.x == null && opts.y == null && mesh ? (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, null, newOk ? { noShrink: true } : null) : true;
     delete v.offSheet;
+    var layout0 = doc.layout;
     doc.layout = 'manual';
     // (rfIW) fit: a flat with no room on this sheet goes to a new sheet, as a SolidWorks shop puts the blank on Sheet2:
     // the active sheet's format, scale and projection, its own title block (SHEET 2 OF 2), the flat at the sheet scale
     // (or the largest that fits). The new sheet becomes the active one. opts.newSheet false: stay beside the sheet.
     if (newOk && !onSheet && opts.x == null && opts.y == null) {
       doc.views.splice(doc.views.indexOf(v), 1);
+      // (rfMV) this sheet keeps its own layout (Make Drawing from Part's auto layout follows a model change)
+      if (layout0 == null) delete doc.layout; else doc.layout = layout0;
       addSheet(doc, {});
       doc.views.push(v);
       v.scale = sc; v.x = S[0] / 2; v.y = S[1] / 2;
@@ -375,9 +378,15 @@
   // side (r3/drawings3: section views added through the API used to land on the Right view).
   // Returns true when the spot is on the sheet (false: nothing on the sheet was clear, it went beside it).
   // (rfIJ) tight: keep 4 mm round the view instead of 0.6 × GAP (13 mm), fitOnSheet's last tries on a crowded sheet
-  function clearSpot(doc, mesh, v, free, tight) {
+  function clearSpot(doc, mesh, v, free, tight, noDimRoom) {
     var k = paperK(doc.units), S = sheetSize(doc, doc.units), g = GAP * k, sep = tight ? 4 * k : g * 0.6, b1 = BORDER * k;
     var obs = doc.views.filter(function (o) { return o !== v; }).map(function (o) { return viewPaperBox(doc, mesh, o); });
+    // (rfMV) a flat-pattern view keeps out of the room the other views' model dimensions take (render's first row 10 mm
+    // out plus half a horizontal value on a vertical dimension): a perforated panel's flat sat on its Top view's 30.000
+    if (v.kind === 'flat' && doc.autoDims && !noDimRoom) {
+      var dr = Math.max(0, (10 + 10 + 1.5) * k - sep);
+      obs = obs.map(function (o, i) { var ov = doc.views.filter(function (q) { return q !== v; })[i]; return ov && ov.kind !== 'flat' && isOrthoFrame(viewFrame(doc, ov)) ? { x0: o.x0 - dr, y0: o.y0 - dr, x1: o.x1 + dr, y1: o.y1 + dr } : o; });
+    }
     tbRects(S, doc.units).forEach(function (r) { obs.push(r); });   // (rfIJ: and the blocks left of it when they fit)
     var rvb = revBox(doc, doc.units); if (rvb) obs.push(rvb);
     if (doc.bom && doc.bom.show !== false && doc.bomRows) { var bb = bomBox(doc, doc.units, doc.bomRows); obs.push({ x0: bb.x0, y0: bb.y0, x1: bb.x1, y1: bb.y1 }); }
@@ -482,7 +491,10 @@
       var par = v.align && v.parent != null ? findView(doc, v.parent) : null;
       var keep = [v.x, v.y];
       // (no clear spot on the sheet: it stays where the border took it rather than going beside the sheet)
-      if (!clearSpot(doc, mesh, v, par ? (v.align === 'x' ? 'y' : 'x') : null)) { v.x = keep[0]; v.y = keep[1]; }
+      // ((rfMV) a flat that finds no spot clear of the model dimensions' room on a smaller sheet takes one clear of the
+      // views alone, as before)
+      var fr = par ? (v.align === 'x' ? 'y' : 'x') : null;
+      if (!clearSpot(doc, mesh, v, fr)) { v.x = keep[0]; v.y = keep[1]; if (v.kind !== 'flat' || !clearSpot(doc, mesh, v, fr, false, true)) { v.x = keep[0]; v.y = keep[1]; } }
     });
     return out;
   }

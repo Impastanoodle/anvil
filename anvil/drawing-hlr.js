@@ -165,6 +165,15 @@
     // xsil (rfFI): visible pieces of exact silhouettes of curved faces, { l: [u0, v0, u1, v1], dev } with dev how far
     // the face's facet outline (what hides other linework) may lie from it in this view, for rimsToSilhouettes
     var vis = [], hid = [], tan = [], fsil = [], xsil = [], ipts = [], tanOn =opts.tangent === 'visible' || opts.tangent === 'font';
+    // (rfMV) end-on circles: { c, r, pieces: [[u0, v0, u1, v1]] } of the intersection chains lying on a cylinder whose
+    // axis is the view direction
+    var eoCircles = [];
+    function eoNote(S, i0, i1) {
+      var c = [V.dot(S.o, U), V.dot(S.o, Vv)], q = null, tq = 1e-7 * (1 + S.r);
+      for (var i = 0; i < eoCircles.length && !q; i++) if (Math.abs(eoCircles[i].r - S.r) <= tq && Math.hypot(eoCircles[i].c[0] - c[0], eoCircles[i].c[1] - c[1]) <= tq) q = eoCircles[i];
+      if (!q) eoCircles.push(q = { c: c, r: S.r, pieces: [] });
+      for (var j = i0; j < i1; j++) q.pieces.push(ipts[j]);
+    }
     // true curves: edges on a circle or arc of the kernel's analytic records are collected per curve (as angle
     // intervals) and drawn as exact circles, arcs, ellipses or, edge-on, exact lines; silhouettes of cylinders and
     // cones are their exact tangent generators; facets of one analytic surface never show the edge between them
@@ -282,6 +291,9 @@
               var offC = function (x) { return K.pointSegmentDistance ? K.pointSegmentDistance(x, ed.a, ed.b) : chn.dev; };
               // (rfMS) the chain's pieces in the view: drawn lines lying on them run on as one smooth curve
               for (var cj = 0; cj + 1 < chn.pts.length; cj++) ipts.push([V.dot(chn.pts[cj], U), V.dot(chn.pts[cj], Vv), V.dot(chn.pts[cj + 1], U), V.dot(chn.pts[cj + 1], Vv)]);
+              // (rfMV) a chain on a cylinder seen along its axis (a hole through a bend or a cross bore, seen end-on) lies
+              // on that cylinder's circle in this view: noted, so its pieces are drawn as that circle's exact arcs
+              [X1, X2].forEach(function (S) { if (S && S.t === 'cyl' && Math.abs(V.dot(S.d, e)) > 1 - 1e-9) eoNote(S, ipts.length - chn.pts.length + 1, ipts.length); });
               for (var ci = 0; ci + 1 < chn.pts.length; ci++) edgePiece({ a: chn.pts[ci], b: chn.pts[ci + 1], faces: ed.faces, normals: ed.normals, exactDone: true, eps: brepMesh ? ceps : 2 * Math.max(offC(chn.pts[ci]), offC(chn.pts[ci + 1])) + diag * 1e-6, isect: true, skip: brepMesh ? null : { faces: ed.faces } }, null);
               return;
             }
@@ -1124,6 +1136,9 @@
     if (CV && !opts._keepOnCurves) res.lines.visible = dropOnCurves(res.lines.visible, res.arcs.visible, res.circles.visible, res.ellipses.visible);
     if (!opts._keepGaps) res.lines.visible = closeSmallGaps(res.lines.visible, res.ellipses.visible, res.arcs.visible, res.circles.visible, 0.6 * chordTol());
     if (!opts._keepGaps) { res.lines.visible = joinCollinear(res.lines.visible, 0.6 * chordTol(), diag); res.lines.hidden = joinCollinear(res.lines.hidden, 0.6 * chordTol(), diag); }
+    // (rfMV) a hidden piece lying on another line (two edges behind each other: a Lofted-Bend's inner and outer rims
+    // seen edge-on) is drawn once
+    if (!opts._keepGaps && res.lines.hidden.length) res.lines.hidden = dropCoveredHidden(res.lines.hidden, res.lines.visible, diag * 2e-5 + 1e-12);
     // equal chords of a curve with no analytic record (Anvil's sheet-metal bends) as exact arcs (r13/drawings13)
     var fitted = 0;
     if (!opts._noFit) ['visible', 'hidden'].forEach(function (st) {
@@ -1133,6 +1148,8 @@
     });
     // (rfIN) facet chords on the circle of an exact arc, filling its gaps, are that arc
     if (CV && !opts._keepGaps) ['visible', 'hidden'].forEach(function (st) { res.lines[st] = _.chordsToArcs(res.lines[st], res.arcs[st], res.circles[st]); });
+    // (rfMV) a hole crossing a bend or another bore, seen along its axis: its intersection curves are its circle
+    if (eoCircles.length && !opts._keepGaps) endOnArcs(res, eoCircles, 3 * chordTol(), diag);
     // tangent edges (opts.tangent 'visible' | 'font'): visible pieces only, joined, closed chains as circles; pieces
     // of true circles as exact circles, arcs and ellipses
     var tex = { circles: [], arcs: [], ellipses: [] };
@@ -1176,6 +1193,120 @@
     if (CV || fitted) { res.stats.visibleArcs = res.arcs.visible.length; res.stats.hiddenArcs = res.arcs.hidden.length; res.stats.visibleEllipses = res.ellipses.visible.length; res.stats.hiddenEllipses = res.ellipses.hidden.length; }
     if (tanOn) res.stats.tangentLines = res.lines.tangent.length + res.circles.tangent.length + res.arcs.tangent.length + res.ellipses.tangent.length;
     return res;
+  }
+
+  // dropCoveredHidden(hidden, visible, tol) (rfMV) -> hidden less the pieces whose two ends lie within tol of one other
+  // line (a visible one, or a longer hidden one; of two equal hidden ones the first stays)
+  function dropCoveredHidden(hidden, visible, tol) {
+    var all = visible.concat(hidden), nv = visible.length, n = all.length;
+    if (n > 200000) return hidden;
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, i;
+    for (i = 0; i < n; i++) { var l = all[i]; x0 = Math.min(x0, l[0], l[2]); y0 = Math.min(y0, l[1], l[3]); x1 = Math.max(x1, l[0], l[2]); y1 = Math.max(y1, l[1], l[3]); }
+    var g = Math.max(1, Math.min(512, Math.ceil(Math.sqrt(n)))), cw = (x1 - x0) / g || 1, ch = (y1 - y0) / g || 1, cells = {};
+    function ci(x) { return Math.max(0, Math.min(g - 1, Math.floor((x - x0) / cw))); }
+    function cj(y) { return Math.max(0, Math.min(g - 1, Math.floor((y - y0) / ch))); }
+    // (a line's middle cell is enough: a covering line passes through the covered one's middle)
+    for (i = 0; i < n; i++) {
+      var L = all[i], a0 = ci(Math.min(L[0], L[2]) - tol), a1 = ci(Math.max(L[0], L[2]) + tol), b0 = cj(Math.min(L[1], L[3]) - tol), b1 = cj(Math.max(L[1], L[3]) + tol);
+      if ((a1 - a0 + 1) * (b1 - b0 + 1) > 4096) { (cells.big || (cells.big = [])).push(i); continue; }
+      for (var p = a0; p <= a1; p++) for (var q = b0; q <= b1; q++) (cells[p * g + q] || (cells[p * g + q] = [])).push(i);
+    }
+    function near(x, y, s) {
+      var dx = s[2] - s[0], dy = s[3] - s[1], L2 = dx * dx + dy * dy, t = L2 > 0 ? Math.max(0, Math.min(1, ((x - s[0]) * dx + (y - s[1]) * dy) / L2)) : 0;
+      return Math.hypot(x - s[0] - dx * t, y - s[1] - dy * t) <= tol;
+    }
+    function len(s) { return Math.hypot(s[2] - s[0], s[3] - s[1]); }
+    var drop = {}, any = false;
+    hidden.forEach(function (h, hi) {
+      var k = nv + hi, Lh = len(h), mx = (h[0] + h[2]) / 2, my = (h[1] + h[3]) / 2, list = (cells[ci(mx) * g + cj(my)] || []).concat(cells.big || []);
+      for (var m = 0; m < list.length; m++) {
+        var o = list[m];
+        if (o === k || drop[o]) continue;
+        if (o >= nv) { var Lo = len(all[o]); if (Lo < Lh - tol || (Math.abs(Lo - Lh) <= tol && o > k)) continue; }
+        if (near(h[0], h[1], all[o]) && near(h[2], h[3], all[o]) && near(mx, my, all[o])) { drop[k] = true; any = true; return; }
+      }
+    });
+    return any ? hidden.filter(function (h, hi) { return !drop[nv + hi]; }) : hidden;
+  }
+
+  // endOnArcs(res, circles, facTol, diag) (rfMV): the drawn pieces of intersection chains that lie on a cylinder seen
+  // along its axis (both ends on its circle, on one of the chain's pieces, under 30° each) are taken off the lines and
+  // drawn as that circle's exact arcs, joined with the arcs / circle already drawn on it (the hole's rim in a flat
+  // face); a full turn is one circle. Hidden pieces of the circle where it is drawn visible are dropped (the far side
+  // of a cross bore lies under the near side). So a hole through a bend or a cross-drilled hole seen end-on is a true
+  // circle (DXF CIRCLE / ARC) that a centre mark, a hole callout and the laser take as a hole.
+  function endOnArcs(res, circles, facTol, diag) {
+    var D2R = Math.PI / 180;
+    function ang(p, c) { var t = Math.atan2(p[1] - c[1], p[0] - c[0]) / D2R; return t < 0 ? t + 360 : t; }
+    function segD(u, v, s) {
+      var dx = s[2] - s[0], dy = s[3] - s[1], L2 = dx * dx + dy * dy, t = L2 > 0 ? Math.max(0, Math.min(1, ((u - s[0]) * dx + (v - s[1]) * dy) / L2)) : 0;
+      return Math.hypot(u - s[0] - dx * t, v - s[1] - dy * t);
+    }
+    // angle intervals [lo, hi] (lo in [0, 360)) -> merged runs, wrapping round 360
+    function union(ivs, gap) {
+      if (!ivs.length) return [];
+      ivs = ivs.map(function (x) { var lo = ((x[0] % 360) + 360) % 360; return [lo, lo + (x[1] - x[0])]; }).sort(function (a, b) { return a[0] - b[0]; });
+      var out = [ivs[0].slice()];
+      for (var i = 1; i < ivs.length; i++) { var l = out[out.length - 1]; if (ivs[i][0] <= l[1] + gap) l[1] = Math.max(l[1], ivs[i][1]); else out.push(ivs[i].slice()); }
+      if (out.length > 1) { var f = out[0], z = out[out.length - 1]; if (z[1] - 360 >= f[0] - gap) { f[0] = z[0] - 360; f[1] = Math.max(f[1], z[1] - 360); out.pop(); } }
+      return out.map(function (x) { return x[1] - x[0] >= 360 - gap ? [0, 360] : x; });
+    }
+    // runs less the covered runs
+    function minus(runs, cover, gap) {
+      var out = runs;
+      cover.forEach(function (cv) {
+        var next = [];
+        out.forEach(function (r) {
+          // compare in the turn that overlaps
+          var pieces = [[r[0], r[1]]];
+          [-360, 0, 360].forEach(function (sh) {
+            var c0 = cv[0] + sh, c1 = cv[1] + sh, np = [];
+            pieces.forEach(function (p) {
+              if (c1 <= p[0] || c0 >= p[1]) { np.push(p); return; }
+              if (c0 > p[0]) np.push([p[0], c0]);
+              if (c1 < p[1]) np.push([c1, p[1]]);
+            });
+            pieces = np;
+          });
+          pieces.forEach(function (p) { if (p[1] - p[0] > gap) next.push(p); });
+        });
+        out = next;
+      });
+      return out;
+    }
+    circles.forEach(function (C) {
+      var tol = Math.min(facTol, 0.01 * C.r) + diag * 1e-6, tq = 1e-6 * (1 + C.r), gap = Math.max(1e-4, 2 * tol / C.r / D2R);
+      var ivs = { visible: [], hidden: [] }, body = { visible: null, hidden: null }, touched = false;
+      var onC = function (p) { return Math.abs(Math.hypot(p[0] - C.c[0], p[1] - C.c[1]) - C.r) <= tol; };
+      var onPiece = function (u, v) { for (var i = 0; i < C.pieces.length; i++) if (segD(u, v, C.pieces[i]) <= tol) return true; return false; };
+      var same = function (x) { return Math.abs(x.r - C.r) <= tq && Math.hypot(x.c[0] - C.c[0], x.c[1] - C.c[1]) <= tq; };
+      ['visible', 'hidden'].forEach(function (st) {
+        res.lines[st] = res.lines[st].filter(function (l) {
+          var A = [l[0], l[1]], B = [l[2], l[3]];
+          if (!onC(A) || !onC(B)) return true;
+          var t0 = ang(A, C.c), t1 = ang(B, C.c), d = t1 - t0;
+          if (d > 180) d -= 360; else if (d < -180) d += 360;
+          if (Math.abs(d) > 30 || !onPiece((l[0] + l[2]) / 2, (l[1] + l[3]) / 2) && !(onPiece(l[0], l[1]) && onPiece(l[2], l[3]))) return true;
+          if (Math.abs(d) > 1e-9) ivs[st].push(d > 0 ? [t0, t0 + d] : [t1, t1 - d]);
+          if (body[st] == null) body[st] = l[4];
+          touched = true;
+          return false;
+        });
+      });
+      if (!touched) return;
+      // the arcs and circles already drawn on this circle join the runs
+      ['visible', 'hidden'].forEach(function (st) {
+        res.arcs[st] = res.arcs[st].filter(function (a) { if (!same(a)) return true; ivs[st].push([a.a0, a.a1]); if (body[st] == null) body[st] = a.body; return false; });
+        res.circles[st] = res.circles[st].filter(function (c) { if (!same(c)) return true; ivs[st].push([0, 360]); if (body[st] == null) body[st] = c.body; return false; });
+      });
+      var vis = union(ivs.visible, gap), hid = minus(union(ivs.hidden, gap), vis, gap);
+      [['visible', vis], ['hidden', hid]].forEach(function (sr) {
+        sr[1].forEach(function (r) {
+          if (r[1] - r[0] >= 360) res.circles[sr[0]].push({ c: C.c.slice(), r: C.r, body: body[sr[0]], exact: true });
+          else res.arcs[sr[0]].push({ c: C.c.slice(), r: C.r, a0: r[0], a1: r[1], body: body[sr[0]], exact: true, endOn: true });
+        });
+      });
+    });
   }
 
   function mergeIntervals(ivs, gap) {

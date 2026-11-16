@@ -696,7 +696,24 @@
     // flat-pattern views: bend notes (or Bend Table tags and the table) and the FLAT SIZE note, worked out before the
     // dimensions so those keep clear of them; a Bend Table goes on free paper (flatCtx: what it must keep clear of)
     var flatPre = [], warnings = [], flatCtx = { views: views, tb: tbRect, bom: bom, sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 }, taken: [], warnings: warnings };
+    // (rfMV) a Hole Table longer than the sheet (a perforated panel's 600 holes) says so instead of quietly running off it
+    htPre.forEach(function (it) {
+      var b = it.box;
+      if (b && (b.y0 < b1 - 1e-9 || b.x0 < b1 - 1e-9 || b.x1 > S[0] - b1 + 1e-9 || b.y1 > S[1] - b1 + 1e-9)) warnings.push('Hole Table of ' + ((views.filter(function (x) { return x.view.id === it.view; })[0] || { view: {} }).view.name || 'a view') + ': ' + (it.rows || []).length + ' rows do not fit on the sheet. Use a hole callout on the pattern (' + (it.rows || []).length + 'X), Combine same sizes, or a larger sheet.');
+    });
     Object.keys(annPre).forEach(function (key) { annPre[key].prims.forEach(function (x) { if (x.k === 'text') flatCtx.taken.push(textRect(x)); }); });
+    // (rfMV) centre marks on a flat view: bend notes and Bend Table tags slide along their line off them
+    views.forEach(function (w) {
+      if (!w.flat) return;
+      (w.view.annotations || []).forEach(function (an, i) {
+        var a = annPre[w.view.id + ':' + i];
+        if (!a || an.type !== 'centerMark') return;
+        var bx = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+        a.prims.forEach(function (x) { if (x.k === 'line') [x.a, x.b].forEach(function (q) { bx.x0 = Math.min(bx.x0, q[0]); bx.y0 = Math.min(bx.y0, q[1]); bx.x1 = Math.max(bx.x1, q[0]); bx.y1 = Math.max(bx.y1, q[1]); }); });
+        bx.view = w.view.id;
+        if (bx.x1 > bx.x0) (flatCtx.cmBoxes || (flatCtx.cmBoxes = [])).push(bx);
+      });
+    });
     notePre.forEach(function (it) { flatCtx.taken.push(it.box); });
     keepOut.forEach(function (b) { flatCtx.taken.push(b); });
     dimTaken.forEach(function (b) { flatCtx.taken.push(b); });   // (rfJR) where the dimensions go
@@ -1012,7 +1029,21 @@
       var txt = mode === 'table' ? D.bendTag(fd.bends.length - 1 - i) : D.bendNoteText(b, units, { prec: v.bendPrec });
       var bk = bkeys[i] || 'b' + i;
       if (!own[bk] && own['b' + i]) own = Object.assign({}, own, (function () { var o2 = {}; o2[bk] = own['b' + i]; return o2; })());
-      item(bk, mode === 'table' ? 'bendTag' : 'bendNote', txt, bendNotePrims(txt, M, t, n, L, g, noteH() * k, rot, BEND_EXT * k),
+      // (rfMV) a note or tag that would sit on a centre mark (a slot across the bend) or on an earlier bend's note (the
+      // facets of a Lofted-Bend meet at the corners) slides along its bend line to the nearest clear place
+      var bp = bendNotePrims(txt, M, t, n, L, g, noteH() * k, rot, BEND_EXT * k);
+      var avoid = (ctx.cmBoxes || []).filter(function (b2) { return b2.view === v.id; }).concat(out.filter(function (x) { return !x.hidden && (x.type === 'bendTag' || x.type === 'bendNote'); }).map(function (x) { return x.box; }));
+      var hitsAvoid = function (ps) { return ps.some(function (x) { var tr = rectOfText(x.p, x.h, x.text, x.rot, x.anchor); return avoid.some(function (q) { return q.x0 < tr.x1 && tr.x0 < q.x1 && q.y0 < tr.y1 && tr.y0 < q.y1; }); }); };
+      if (avoid.length && !(own[bk] && own[bk].off) && bp.length && bp[0].anchor === 'middle' && hitsAvoid(bp)) {
+        var tw = Math.max.apply(null, bp.map(function (x) { return textWidth(x.text, x.h); })), reach = (L - tw) / 2 - g, stp = Math.max(noteH() * k / 2, 1e-6), slid = null;
+        for (var sd = stp; sd <= reach + 1e-9 && !slid; sd += stp) [sd, -sd].forEach(function (d) {
+          if (slid) return;
+          var tryP = bendNotePrims(txt, [M[0] + t[0] * d, M[1] + t[1] * d], t, n, L, g, noteH() * k, rot, BEND_EXT * k);
+          if (!hitsAvoid(tryP)) slid = tryP;
+        });
+        if (slid) bp = slid;
+      }
+      item(bk, mode === 'table' ? 'bendTag' : 'bendNote', txt, bp,
         { bend: i, bendKey: bk, up: b.up, angle: b.angle, R: b.R, a: A, b: B });
     });
     // (lane drawing) a Cross-Break's note ('UP 1° R .060', the bend notes' shop format) at the crossing of its lines, as
@@ -1068,11 +1099,19 @@
         if (ffTaken.some(function (o) { return o.x0 < r.x1 && r.x0 < o.x1 && o.y0 < r.y1 && r.y0 < o.y1; })) return false;
         if (ffCirc.some(function (q) { var dx = Math.max(r.x0 - q.c[0], 0, q.c[0] - r.x1), dy = Math.max(r.y0 - q.c[1], 0, q.c[1] - r.y1); var far = Math.max(Math.hypot(r.x0 - q.c[0], r.y0 - q.c[1]), Math.hypot(r.x1 - q.c[0], r.y0 - q.c[1]), Math.hypot(r.x0 - q.c[0], r.y1 - q.c[1]), Math.hypot(r.x1 - q.c[0], r.y1 - q.c[1]));
           return Math.hypot(dx, dy) < q.r && (far > q.r || q.r < 3 * ffh); })) return false;   // (on its outline, or inside a small hole)
-        return !ffSegs.some(function (sg) { return _.segHitsRect ? _.segHitsRect(sg[0], sg[1], r) : false; });
+        return ffAny || !ffSegs.some(function (sg) { return _.segHitsRect ? _.segHitsRect(sg[0], sg[1], r) : false; });
       };
+      var ffAny = false;
       for (var ffi = 0; ffi <= 40 && !ffAt; ffi++) {
         var dy0 = Math.ceil(ffi / 2) * ffh * 0.75 * (ffi % 2 ? 1 : -1), p1 = [ffc[0], ffc[1] - ffh / 2 + dy0];
         if (ffClear(p1)) ffAt = p1;
+      }
+      // (rfMV) a face narrower than the note (a hat channel's floor between its bend lines): on the lines, but never on a
+      // bend tag or a hole
+      ffAny = true;
+      for (ffi = 0; ffi <= 40 && !ffAt; ffi++) {
+        var dy1 = Math.ceil(ffi / 2) * ffh * 0.75 * (ffi % 2 ? 1 : -1), p2 = [ffc[0], ffc[1] - ffh / 2 + dy1];
+        if (ffClear(p2)) ffAt = p2;
       }
       item('fixedFace', 'fixedFace', fft, [{ k: 'text', p: ffAt || [ffc[0], ffc[1] - ffh / 2], h: ffh, text: fft, anchor: 'middle', layer: 'BEND_NOTES', rot: 0 }], {});
     }
@@ -2280,8 +2319,19 @@
     pr(9, '$INSUNITS'); pr(70, inch ? 1 : 4);
     pr(9, '$MEASUREMENT'); pr(70, inch ? 0 : 1);
     pr(9, '$DIMALTF'); pr(40, inch ? '25.4' : '0.0393700787');   // rfDU: SolidWorks reads the file's unit from $DIMALTF
-    pr(9, '$EXTMIN'); pr(10, 0); pr(20, 0); pr(30, 0);
-    pr(9, '$EXTMAX'); pr(10, num(sheet.size[0])); pr(20, num(sheet.size[1])); pr(30, 0);
+    // (rfMV) the sheet, grown by anything drawn past it (a 600-row Hole Table runs off the bottom): a CAD program zooms
+    // to the extents and an audit refuses extents that do not hold the geometry
+    var ex = [0, 0, sheet.size[0], sheet.size[1]];
+    function grow(x, y, r) { r = r || 0; if (!isFinite(x) || !isFinite(y)) return; if (x - r < ex[0]) ex[0] = x - r; if (y - r < ex[1]) ex[1] = y - r; if (x + r > ex[2]) ex[2] = x + r; if (y + r > ex[3]) ex[3] = y + r; }
+    sheet.prims.forEach(function (p) {
+      if (p.k === 'line') { grow(p.a[0], p.a[1]); grow(p.b[0], p.b[1]); }
+      else if ((p.k === 'circle' || p.k === 'arc') && p.c) grow(p.c[0], p.c[1], p.r);
+      else if (p.k === 'ellipse' && p.c && p.major) grow(p.c[0], p.c[1], Math.hypot(p.major[0], p.major[1]));
+      else if (p.k === 'text' && p.p) { var tr = textRect(p); if (tr) { grow(tr.x0, tr.y0); grow(tr.x1, tr.y1); } }
+      else if (p.pts) p.pts.forEach(function (q) { grow(q[0], q[1]); });
+    });
+    pr(9, '$EXTMIN'); pr(10, ex[0] ? num(Math.floor(ex[0] * 1e4) / 1e4) : 0); pr(20, ex[1] ? num(Math.floor(ex[1] * 1e4) / 1e4) : 0); pr(30, 0);
+    pr(9, '$EXTMAX'); pr(10, num(Math.ceil(ex[2] * 1e4) / 1e4)); pr(20, num(Math.ceil(ex[3] * 1e4) / 1e4)); pr(30, 0);
     pr(9, '$LTSCALE'); pr(40, inch ? 0.04 : 1);
     if (r2000) { pr(9, '$LWDISPLAY'); pr(290, 1); }
     pr(0, 'ENDSEC');

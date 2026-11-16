@@ -106,22 +106,42 @@
   function holeInfo0(mesh, F, c, r) {
     var diag = meshDiag(mesh), tol = diag * 1e-6 + 1e-9;
     var stack = circlesAlong(mesh, F).filter(function (q) { return Math.hypot(q.c[0] - c[0], q.c[1] - c[1]) <= tol * 10; });
-    if (!stack.some(function (q) { return Math.abs(q.r - r) <= tol * 10 + r * 1e-6; })) return null;
+    if (!stack.some(function (q) { return Math.abs(q.r - r) <= tol * 10 + r * 1e-6; })) {
+      // (rfMV) a hole with no flat circular rim (drilled across a tube, through a bend): its cylinder seen end-on
+      var CV = meshCurves(mesh), cyl = CV && CV.faceSurf.some(function (fs) {
+        var S = fs && fs.s;
+        return S && S.t === 'cyl' && Math.abs(Math.abs(V.dot(S.d, F.e)) - 1) <= 1e-9 && Math.abs(S.r - r) <= tol * 10 + r * 1e-6 &&
+          Math.hypot(V.dot(S.o, F.u) - c[0], V.dot(S.o, F.v) - c[1]) <= tol * 10 + r * 1e-6;
+      });
+      if (!cyl) return null;
+      stack = stack.concat([{ c: c.slice(), r: r, w: null }]);
+    }
     var cc = stack[0].c, rmin = Math.min.apply(null, stack.map(function (q) { return q.r; }));
     // a line along e at radius rho (a hair off the u direction, so it misses facet edges)
-    var memo = {};
+    var memo = {}, aw = 1.2345e-4;
     function lineAt(rho) {
-      var kk = rho.toFixed(9);
+      var kk = rho.toFixed(9) + '|' + aw;
       if (memo[kk]) return memo[kk];
-      var a = 1.2345e-4, p0 = V.add(V.add(V.scale(F.u, cc[0] + rho * Math.cos(a)), V.scale(F.v, cc[1] + rho * Math.sin(a) + tol * 0.37)), V.scale(F.e, 0));
+      var a = aw, p0 = V.add(V.add(V.scale(F.u, cc[0] + rho * Math.cos(a)), V.scale(F.v, cc[1] + rho * Math.sin(a) + tol * 0.37)), V.scale(F.e, 0));
       return (memo[kk] = lineIntervals(mesh, p0, F.e));
     }
     function inAny(iv, w) { return iv.some(function (x) { return w >= x[0] && w <= x[1]; }); }
     var eps = Math.max(tol * 100, rmin * 1e-3), ax = lineAt(0), rw = lineAt(rmin * 1.001 + tol * 10);
+    // (rfMV) a hole with no flat rim may break out of the part on one side (through a bend, by a flange): the wall
+    // is looked for all round, the side with the most material
+    if (stack.some(function (q) { return q.w == null; })) {
+      var best = rw, bl = rw.reduce(function (s, x) { return s + x[1] - x[0]; }, 0), a0 = aw, ab = aw;
+      for (var ai = 1; ai < 12; ai++) {
+        aw = a0 + ai * Math.PI / 6;
+        var iv = lineAt(rmin * 1.001 + tol * 10), L = iv.reduce(function (s, x) { return s + x[1] - x[0]; }, 0);
+        if (L > bl + eps) { best = iv; bl = L; ab = aw; }
+      }
+      aw = ab; rw = best;
+    }
     // a point inside the drill: next to one of the drill circles, the axis empty and the wall just outside it solid
     var wI = null;
     stack.filter(function (q) { return Math.abs(q.r - rmin) <= tol * 10 + rmin * 1e-6; }).some(function (q) {
-      return [q.w - eps, q.w + eps].some(function (w) { if (!inAny(ax, w) && inAny(rw, w)) { wI = w; return true; } return false; });
+      return (q.w == null ? rw.map(function (x) { return (x[0] + x[1]) / 2; }) : [q.w - eps, q.w + eps]).some(function (w) { if (!inAny(ax, w) && inAny(rw, w)) { wI = w; return true; } return false; });
     });
     if (wI == null) return null;
     var g0 = -Infinity, g1 = Infinity;
