@@ -1439,8 +1439,8 @@
     else groups = [
       { title: 'Direction 1', fields: [dirBox(1), { type: 'check', label: 'Reverse direction', key: 'rev1' },
         { type: 'number', label: 'Spacing', key: 'spacing', unit: 'u' }, { type: 'check', label: 'Dimension X spacing', key: 'dims' },
-        { type: 'number', label: 'Number of instances', key: 'count', step: 1, min: 1 }, { type: 'number', label: 'Angle', key: 'angle', unit: '°' },
-        { type: 'check', label: 'Display instance count', key: 'showCount' }] },   // lane DE2
+        { type: 'number', label: 'Number of instances', key: 'count', step: 1, min: 1 }, { type: 'check', label: 'Display instance count', key: 'showCount' },   // lane DE2
+        { type: 'number', label: 'Angle', key: 'angle', unit: '°' }] },   // rfNH: Angle last, as Direction 2 and SolidWorks
       { title: 'Direction 2', fields: [dirBox(2), { type: 'check', label: 'Reverse direction', key: 'rev2' },
         { type: 'number', label: 'Spacing', key: 'spacing2', unit: 'u' }, { type: 'check', label: 'Dimension Y spacing', key: 'dimY' },
         { type: 'number', label: 'Number of instances', key: 'count2', step: 1, min: 1 }, { type: 'check', label: 'Display instance count', key: 'showCount2' }, { type: 'number', label: 'Angle', key: 'angle2', unit: '°' },

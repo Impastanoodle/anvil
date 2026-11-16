@@ -1182,7 +1182,7 @@
     var unit = UI.unitLabel ? UI.unitLabel() : 'mm', v = { tol: unit === 'in' ? 0.001 : 0.025, closed: true, del: true, mode: 'constrained' };
     function clear() { if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); }
     UI.openPM({
-      title: 'Fit Spline', icon: 'spline', values: v, noFocus: true, keepSelection: true,
+      title: 'Fit Spline', icon: splIcon('splFit'), values: v, noFocus: true, keepSelection: true,
       message: 'Select the lines, arcs or polyline to fit (one chain, end to end): click them in the graphics area. The spline stays within the tolerance of them.',
       command: { ownHover: false, onSketchPoint: function (uv, mx, my) {
         var hit = UI.pickEntity(mx, my), g = UI.activeSketchFeature(), e = hit && g && g.entities[hit.index];
@@ -1311,7 +1311,7 @@
     if (App.tool !== 'select') UI.setTool('select');
     var count = 0;
     UI.openPM({
-      title: 'Insert Spline Point', icon: 'spline', values: {}, noFocus: true,
+      title: 'Insert Spline Point', icon: splIcon('splInsertPt'), values: {}, noFocus: true,
       message: 'Click on a spline where the new spline point goes (open or closed). The curve keeps its shape.',
       command: { onSketchPoint: function (uv, mx, my) {
         var hit = UI.pickEntity(mx, my), g = UI.activeSketchFeature(), e = hit && g && g.entities[hit.index];
@@ -1339,7 +1339,7 @@
     if (App.tool !== 'select') UI.setTool('select');
     var title = kind === 'curv' ? 'Add Curvature Control' : 'Add Tangency Control';
     UI.openPM({
-      title: title, icon: 'spline', values: {}, noFocus: true,
+      title: title, icon: splIcon(kind === 'curv' ? 'splCurvCtrl' : 'splTangency'), values: {}, noFocus: true,
       message: 'Click on a spline where the ' + (kind === 'curv' ? 'curvature' : 'tangency') + ' control goes.',
       command: { onSketchPoint: function (uv, mx, my) {
         var hit = UI.pickEntity(mx, my), g = UI.activeSketchFeature(), e = hit && g && g.entities[hit.index];
@@ -1482,7 +1482,7 @@
     }
     v.pts = orig.pts.length; v.dev = 0;
     UI.openPM({
-      title: 'Simplify Spline', icon: 'spline', values: v, noFocus: true,
+      title: 'Simplify Spline', icon: splIcon('splSimplify'), values: v, noFocus: true,
       message: 'Fewer spline points, the curve within the tolerance of the original.',
       groups: [{ title: 'Parameters', fields: [
         { type: 'static', label: 'Number of points', value: function () { return orig.pts.length + ' → ' + v.pts; } },
@@ -1519,31 +1519,34 @@
     var v = { scale: splineView.combScale, density: splineView.combDensity };
     if (!on) return;
     UI.openPM({
-      title: 'Curvature Comb', icon: 'spline', values: v, noFocus: true, keepSelection: true,
+      title: 'Curvature Comb', icon: splIcon('splCurvature'), values: v, noFocus: true, keepSelection: true,
       message: 'The curvature comb of the selected splines: Scale sets the length of its teeth, Density how many there are.',
       groups: [{ title: 'Curvature Comb', fields: [{ type: 'number', label: 'Scale', key: 'scale', min: 0.05 }, { type: 'number', label: 'Density', key: 'density', step: 1, min: 4 }] }],
       onChange: function (vals) { if (+vals.scale > 0) splineView.combScale = +vals.scale; if (+vals.density >= 4) splineView.combDensity = Math.min(200, Math.round(+vals.density)); combSig = null; },
       onOK: function () {}
     });
   };
+  // rfNH: each Spline Tools command's own drawing (lane swsketchicons draws them in the SolidWorks set), else the
+  // Spline icon when the active set has none
+  function splIcon(name) { return window.Icons && Icons.has && Icons.has(name) ? name : 'spline'; }
   // the spline's right-click rows (ui-panels.js sketchMenuItems)
   UI.splineMenuItems = function (f, i) {
     var e = f && f.entities[i];
     if (!e || e.t !== 'spline') return [];
     var out = [{ sep: true }];
     if (isToolSpline(e)) {
-      out.push({ label: 'Insert Spline Point', icon: 'spline', action: function () { UI.cmdInsertSplinePoint(); } });
-      out.push({ label: 'Simplify Spline…', icon: 'spline', action: function () { UI.cmdSimplifySpline(i); } });
-      out.push({ label: 'Relax Spline', icon: 'spline', action: function () { UI.cmdRelaxSpline(i); } });
+      out.push({ label: 'Insert Spline Point', icon: splIcon('splInsertPt'), action: function () { UI.cmdInsertSplinePoint(); } });
+      out.push({ label: 'Simplify Spline…', icon: splIcon('splSimplify'), action: function () { UI.cmdSimplifySpline(i); } });
+      out.push({ label: 'Relax Spline', icon: splIcon('splRelax'), action: function () { UI.cmdRelaxSpline(i); } });
     }
     if (isPlainSpline(e)) {   // rfAW
-      out.push({ label: 'Add Tangency Control', icon: 'spline', action: function () { UI.cmdAddTangencyControl(); } });
-      out.push({ label: 'Add Curvature Control', icon: 'spline', action: function () { UI.cmdAddCurvatureControl(); } });
+      out.push({ label: 'Add Tangency Control', icon: splIcon('splTangency'), action: function () { UI.cmdAddTangencyControl(); } });
+      out.push({ label: 'Add Curvature Control', icon: splIcon('splCurvCtrl'), action: function () { UI.cmdAddCurvatureControl(); } });
     }
-    out.push({ label: 'Show Inflection Points', icon: 'spline', checked: !!e.showInflection, action: function () { UI.cmdShowInflectionPoints(i); } });
-    out.push({ label: 'Show Spline Handles', icon: 'spline', checked: splineView.handles, action: function () { UI.cmdShowSplineHandles(); } });
-    out.push({ label: 'Show Curvature', icon: 'spline', checked: !!e.showCurvature, action: function () { UI.cmdShowCurvature(i); } });
-    out.push({ label: 'Show Minimum Radius', icon: 'spline', checked: !!e.showMinRadius, action: function () { UI.cmdShowMinimumRadius(i); } });   // lane CV
+    out.push({ label: 'Show Inflection Points', icon: splIcon('splInflection'), checked: !!e.showInflection, action: function () { UI.cmdShowInflectionPoints(i); } });
+    out.push({ label: 'Show Spline Handles', icon: splIcon('splHandles'), checked: splineView.handles, action: function () { UI.cmdShowSplineHandles(); } });
+    out.push({ label: 'Show Curvature', icon: splIcon('splCurvature'), checked: !!e.showCurvature, action: function () { UI.cmdShowCurvature(i); } });
+    out.push({ label: 'Show Minimum Radius', icon: splIcon('splMinRadius'), checked: !!e.showMinRadius, action: function () { UI.cmdShowMinimumRadius(i); } });   // lane CV
     return out;
   };
 

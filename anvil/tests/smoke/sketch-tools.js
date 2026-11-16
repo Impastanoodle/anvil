@@ -184,7 +184,7 @@
     UI.setSelection([{ kind: 'entity', index: 0 }]);
     UI.cmdSketchPattern(); await wait(20);
     var labels = stLabels().join('|');
-    assert(labels.indexOf('Reverse direction|Spacing|Dimension X spacing|Number of instances|Angle') >= 0 && labels.indexOf('Dimension Y spacing') >= 0 && labels.indexOf('Dimension angle between axes') >= 0, 'fields ' + labels);
+    assert(labels.indexOf('Reverse direction|Spacing|Dimension X spacing|Number of instances|Display instance count|Angle') >= 0 /* rfNH: Display instance count before Angle in Direction 1, as SolidWorks */ && labels.indexOf('Dimension Y spacing') >= 0 && labels.indexOf('Dimension angle between axes') >= 0, 'fields ' + labels);
     UI.pmSetField('spacing', '10'); UI.pmSetField('count', '3'); UI.pmSetField('spacing2', '8'); UI.pmSetField('count2', '2'); await wait(20);
     assert(UI.App.tempEntities.length === 5, 'preview 5 copies: ' + UI.App.tempEntities.length);
     D.querySelectorAll('#pm .pm-pick')[3].click(); await wait(20);   // Instances to Skip

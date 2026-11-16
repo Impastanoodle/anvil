@@ -106,6 +106,10 @@
     pm.collapsed = {};
     if (fresh) pm.root.scrollTop = 0;
     renderPM();
+    // rfNH: a pick that fills a box without re-rendering the panel (Hole Wizard points, a face) still lights ✓: while a
+    // PropertyManager with okBlocked is open its ✓ state is checked a few times a second (pmOK reads it live anyway)
+    clearInterval(pm.okTimer); pm.okTimer = null;
+    if (spec.okBlocked) pm.okTimer = setInterval(function () { if (pm.spec === spec) updateOkState(); else { clearInterval(pm.okTimer); pm.okTimer = null; } }, 250);
     $('fm-tree').hidden = true;
     pm.root.hidden = false;
     UI.setFmTab('pm');
@@ -410,6 +414,19 @@
     }
   }
 
+  // rfNH: an icon row is only drawn as icons when every option has its own drawing (in the active set or the built-in
+  // one) and no two options of the row look the same; otherwise it is a column of worded option buttons
+  function pmIconRowOk(options) {
+    var seen = {};
+    return options.every(function (o) {
+      if (!o[2] || !Icons.has(o[2])) return false;
+      var m = String(Icons(o[2], 16)).replace(/^<svg[^>]*>/, '');
+      if (seen[m]) return false;
+      seen[m] = true;
+      return true;
+    });
+  }
+  UI.pmIconRowOk = pmIconRowOk;
   function renderField(f) {
     var v = pm.values;
     function changed(val) {
@@ -638,15 +655,25 @@
       }
       case 'iconRadio': {   // p9-pm: a row of icon buttons, one pressed, as SolidWorks' Flange Length reference and Hem Type
         // f.options: [[value, name, icon]]; the name is the tooltip and is shown under the label for the pressed one
-        var ibox = el('div', { class: 'pm-btns pm-icons', role: 'radiogroup', 'aria-label': f.label }), curName = '';
+        // rfNH: f.disabledOption(value, v) -> a reason greys that button (SolidWorks' types Anvil cannot build yet:
+        // Chamfer's Vertex, Fillet's Full Round); its tooltip says why. An option whose icon is not drawn in any set
+        // (Icons.has false) or that shares its drawing with another option of the row would show a blank or a copy:
+        // the row is drawn as option buttons with words instead (pmIconRowOk), until the icon lanes draw the names; the
+        // buttons keep the same data-key, role, aria-checked and .on as the icon buttons.
+        var words = !pmIconRowOk(f.options);
+        var ibox = el('div', { class: 'pm-btns ' + (words ? 'pm-wordopts' : 'pm-icons'), role: 'radiogroup', 'aria-label': f.label }), curName = '';
         f.options.forEach(function (o) {
           var on = String(v[f.key]) === String(o[0]);
           if (on) curName = o[1];
-          var ib = el('button', { type: 'button', title: o[1], 'aria-label': o[1], role: 'radio', 'aria-checked': on ? 'true' : 'false', 'data-key': f.key + ':' + o[0], html: Icons(o[2] || 'generic', 16) });
+          var why = f.disabledOption ? f.disabledOption(o[0], v) : null;
+          var ib = el('button', { type: 'button', title: o[1] + (why ? ': ' + why : ''), 'aria-label': o[1], role: 'radio', 'aria-checked': on ? 'true' : 'false', 'data-key': f.key + ':' + o[0], html: words ? '' : Icons(o[2] || 'generic', 16) });
+          if (words) ib.textContent = o[1];
           if (on) ib.classList.add('on');
-          ib.addEventListener('click', function () { if (String(v[f.key]) === String(o[0])) return; changed(o[0]); if (!f.rerender && pm.spec) renderPM(); });
+          if (why) { ib.disabled = true; ib.setAttribute('aria-disabled', 'true'); }
+          ib.addEventListener('click', function () { if (why || String(v[f.key]) === String(o[0])) return; changed(o[0]); if (!f.rerender && pm.spec) renderPM(); });
           ibox.appendChild(ib);
         });
+        if (words) return el('div', { class: 'pm-row pm-field pm-row-icons pm-row-words' }, [el('label', { text: f.label }), ibox]);
         return el('div', { class: 'pm-row pm-field pm-row-icons' }, [el('label', {}, [document.createTextNode(f.label), el('div', { class: 'static', text: curName })]), ibox]);
       }
       case 'text': {
@@ -1143,6 +1170,7 @@
       title: 'Sketch', icon: 'sketch',
       message: 'Select a <b>plane</b> or a <b>planar face</b> to sketch on. The standard planes are shown in the graphics area.',
       command: { pickPlane: true, onPick: function (pk) { if (pk.kind === 'plane') newSketchOnPlane(pk.ref); else newSketchOnFace(pk); return true; } },
+      okBlocked: function () { return 'Select a plane or a planar face first.'; },   // rfNH: a pick starts the sketch, so ✓ has nothing to accept (it closed the PropertyManager and did nothing)
       groups: [{ title: 'Standard planes', fields: [{ type: 'buttons', buttons: ['Front', 'Top', 'Right'].map(function (r) { return { label: r + ' Plane', onclick: function () { newSketchOnPlane(r); } }; }) }] }]
     });
   }
@@ -1719,9 +1747,11 @@
     openPM({
       title: existing ? existing.name : 'Linear Pattern', icon: 'lpattern', values: f, handles: lpatternHandles,
       groups: [
+        // rfNH: SolidWorks' order (Direction 1, Direction 2, then the features), its Reverse Direction button beside the
+        // direction, "Number of instances" as the sketch patterns
+        { title: 'Direction 1', fields: [{ type: 'select', label: 'Direction', key: 'd1', options: [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']] }, { type: 'check', label: 'Reverse direction', key: 'rev1' }, { type: 'number', label: 'Spacing', key: 's1', unit: 'u' }, { type: 'number', label: 'Number of instances', key: 'n1', step: 1, min: 1 }, mergeField(featureIsBoss)] },
+        { title: 'Direction 2', fields: [{ type: 'select', label: 'Direction', key: 'd2', options: [['', 'None'], ['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']], rerender: true }, { type: 'check', label: 'Reverse direction', key: 'rev2', show: function (v) { return !!v.d2; } }, { type: 'number', label: 'Spacing', key: 's2', unit: 'u', show: function (v) { return !!v.d2; } }, { type: 'number', label: 'Number of instances', key: 'n2', step: 1, min: 1, show: function (v) { return !!v.d2; } }] },
         { title: 'Features to Pattern', fields: [Object.assign(sourceField(f), { rerender: true })] },
-        { title: 'Direction 1', fields: [{ type: 'select', label: 'Direction', key: 'd1', options: [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']] }, { type: 'check', label: 'Reverse', key: 'rev1' }, { type: 'number', label: 'Spacing', key: 's1', unit: 'u' }, { type: 'number', label: 'Instances', key: 'n1', step: 1, min: 1 }, mergeField(featureIsBoss)] },
-        { title: 'Direction 2', fields: [{ type: 'select', label: 'Direction', key: 'd2', options: [['', 'None'], ['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']], rerender: true }, { type: 'check', label: 'Reverse', key: 'rev2', show: function (v) { return !!v.d2; } }, { type: 'number', label: 'Spacing', key: 's2', unit: 'u', show: function (v) { return !!v.d2; } }, { type: 'number', label: 'Instances', key: 'n2', step: 1, min: 1, show: function (v) { return !!v.d2; } }] },
         scopeGroup(featureIsCut),   // a pattern of a cut is itself a cut
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
@@ -1742,9 +1772,10 @@
     openPM({
       title: existing ? existing.name : 'Circular Pattern', icon: 'cpattern', values: f, handles: cpatternHandles, command: refAxisCommand(f),
       groups: [
-        { title: 'Features to Pattern', fields: [Object.assign(sourceField(f), { rerender: true })] },
-        { title: 'Direction 1', fields: [{ type: 'select', label: 'Axis', key: 'axis', options: function (v) { return [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']].concat(refAxisOptions(v.id)); }, rerender: true }, { type: 'number', label: 'Angle', key: 'angle', unit: '°' }, { type: 'number', label: 'Instances', key: 'n', step: 1, min: 2 }, { type: 'check', label: 'Equal spacing', key: 'equal' }, mergeField(featureIsBoss)] },
+        // rfNH: SolidWorks' order (Direction 1, then the features), "Number of instances"
+        { title: 'Direction 1', fields: [{ type: 'select', label: 'Axis', key: 'axis', options: function (v) { return [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']].concat(refAxisOptions(v.id)); }, rerender: true }, { type: 'number', label: 'Angle', key: 'angle', unit: '°' }, { type: 'number', label: 'Number of instances', key: 'n', step: 1, min: 2 }, { type: 'check', label: 'Equal spacing', key: 'equal' }, mergeField(featureIsBoss)] },
         { title: 'Axis point', show: function (v) { return !/^ref:/.test(String(v.axis)); }, fields: [{ type: 'number', label: 'X', key: 'cx', unit: 'u' }, { type: 'number', label: 'Y', key: 'cy', unit: 'u' }, { type: 'number', label: 'Z', key: 'cz', unit: 'u' }] },
+        { title: 'Features to Pattern', fields: [Object.assign(sourceField(f), { rerender: true })] },
         scopeGroup(featureIsCut),   // a pattern of a cut is itself a cut
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
@@ -1763,7 +1794,7 @@
       title: existing ? existing.name : 'Mirror', icon: 'mirror', values: f, handles: function (v) { return offsetHandles(v.plane || 'Right', v.offset, 'Plane offset'); },
       groups: [
         { title: 'Mirror Face/Plane', fields: [{ type: 'select', label: 'Plane', key: 'plane', options: ['Front', 'Top', 'Right'] }, { type: 'number', label: 'Plane offset', key: 'offset', unit: 'u' }, mergeField(featureIsBoss)] },
-        { title: 'Features to Mirror', fields: [{ type: 'check', label: 'Mirror whole body', key: 'body', rerender: true }, Object.assign(sourceField(f), { show: function (v) { return !v.body; }, rerender: true })] },
+        { title: 'Features to Mirror', fields: [{ type: 'check', label: 'Mirror whole body', key: 'body', rerender: true }, Object.assign(sourceField(f), { label: 'Feature to mirror', show: function (v) { return !v.body; }, rerender: true })] },   // rfNH: was "Feature to pattern"
         scopeGroup(featureIsCut),   // a mirror of a cut is itself a cut
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
@@ -1773,6 +1804,9 @@
   }
 
   // ------------------------------------------------------------------ chamfer / fillet (edge features)
+  // rfNH: SolidWorks 2024's type rows; the icon names are for the icon sets (until drawn, the row shows the words)
+  var CHAMFER_TYPES = [['ad', 'Angle Distance', 'chamferAngleDistance'], ['dd', 'Distance Distance', 'chamferDistanceDistance'], ['vertex', 'Vertex', 'chamferVertex'], ['offsetFace', 'Offset Face', 'chamferOffsetFace'], ['faceFace', 'Face Face', 'chamferFaceFace']];
+  var FILLET_TYPES = [['constant', 'Constant Size Fillet', 'filletConstant'], ['variable', 'Variable Size Fillet', 'filletVariable'], ['face', 'Face Fillet', 'filletFace'], ['fullRound', 'Full Round Fillet', 'filletFullRound']];
   function cmdEdgeFeature(kind, existing) {
     if (App.mode === 'sketch') UI.exitSketch(true);
     if (!App.edges || !App.edges.length) { UI.toast('Create a solid first.'); return; }
@@ -1780,6 +1814,7 @@
     var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: kind, edges: [], chain: true };
     if (isChamfer) f.d = f.d != null ? f.d : UI.lenDefault(2); else f.r = f.r != null ? f.r : UI.lenDefault(2);   // r15/inches15: 0.0625 in in an inch document
     if (existing) f.chain = !(existing.edges || []).some(function (e) { return e.chain === false; });
+    f._type = isChamfer ? 'dd' : 'constant'; if (isChamfer) f._equal = true;   // rfNH: the type row (deleted at ✓)
     // seed with a pre-selected edge
     // r9/polish9: every pre-selected edge (a box or Ctrl selection, not only the first), and a pre-selected face gives
     // the edges around it, as in SolidWorks; the items move into the PropertyManager. A selected feature (the one just
@@ -1868,7 +1903,14 @@
           return true;
         }
       },
+      // rfNH: ✓ greys until an edge is picked (it refused with a toast before), as SolidWorks
+      okBlocked: function (v) { return v.edges.length ? '' : 'Select at least one edge.'; },
       groups: [
+        // rfNH: SolidWorks' type row at the top (Chamfer Type / Fillet Type). Anvil builds the equal-distance chamfer and
+        // the constant-size fillet; the other types are shown greyed, so the PropertyManager reads as SolidWorks' does
+        { title: isChamfer ? 'Chamfer Type' : 'Fillet Type', fields: [
+          { type: 'iconRadio', label: 'Type', key: '_type', options: isChamfer ? CHAMFER_TYPES : FILLET_TYPES, disabledOption: function (t) { return t === (isChamfer ? 'dd' : 'constant') ? null : 'not available in Anvil yet'; } }
+        ] },
         { title: isChamfer ? 'Items To Chamfer' : 'Items To Fillet', fields: [
           { type: 'pick', icon: kind, value: function (v) { return v.edges.length ? v.edges.length + ' edge pick' + (v.edges.length > 1 ? 's' : '') + (edgeList.length ? ' → ' + edgeList.length + ' edges' : '') : ''; }, placeholder: 'Select edges…',
             items: function (v) { return v.edges.map(function (spec, i) { var n = perPick[i] ? perPick[i].length : 0; return { label: 'Edge<' + (i + 1) + '>' + (n > 1 ? '  (' + n + ' edges)' : ''), get edges() { return perPick[i] || []; }, at: spec.at }; }); },
@@ -1878,14 +1920,14 @@
         ] },
         { title: isChamfer ? 'Chamfer Parameters' : 'Fillet Parameters', fields: [
           isChamfer ? { type: 'number', label: 'Distance  D', key: 'd', unit: 'u', min: 0 } : { type: 'number', label: 'Radius  R', key: 'r', unit: 'u', min: 0 }
-        ] },
+        ].concat(isChamfer ? [{ type: 'check', label: 'Equal distance', key: '_equal', disabled: true }] : []) },   // rfNH: SolidWorks' Distance-Distance chamfer with Equal distance, the only one Anvil builds
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function (v) { v.edges.forEach(function (e) { e.chain = v.chain; }); resolveList(); preview(); },
       onOK: function (v) {
         if (!v.edges.length) { UI.toast('Select at least one edge.'); return false; }
         v.edges.forEach(function (e) { e.chain = v.chain; });
-        delete v.chain;
+        delete v.chain; delete v._type; delete v._equal;   // rfNH: PropertyManager-only values
         if (!v.name) delete v.name;
         return commitFeature(v, existing);
       }
@@ -2255,7 +2297,7 @@
     if (App.mode === 'sketch') UI.exitSketch(true);
     var v = { dia: UI.lenDefault(6.6), end: 'through', depth: UI.lenDefault(10), face: null, u: 0, vv: 0 };
     openPM({
-      title: 'Hole Wizard', icon: 'hole', values: v,
+      title: 'Hole', icon: 'hole', values: v,   // rfNH: Simple Hole's PropertyManager is "Hole" in SolidWorks (it said Hole Wizard, the other command)
       message: 'Click a <b>planar face</b> to place the hole, then set the size.',
       command: {
         onPick: function (pk) {
@@ -2276,6 +2318,7 @@
         { title: 'Position', fields: [{ type: 'number', label: 'X on face', key: 'u', unit: 'u' }, { type: 'number', label: 'Y on face', key: 'vv', unit: 'u' }] }
       ],
       onChange: function () { preview(); },
+      okBlocked: function (x) { return x.face ? '' : 'Click a face to place the hole first.'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (x) {
         if (!x.face) { UI.toast('Click a face to place the hole first.'); return false; }
         UI.pushUndo();
@@ -2553,6 +2596,7 @@
           title: 'Base Flange/Tab', icon: 'flange',
           message: 'Select a <b>plane</b> or a <b>planar face</b> to sketch the flange profile on, then <b>Exit Sketch</b> to size the flange.',
           command: { pickPlane: true, onPick: function (pk) { if (pk.kind === 'plane') newSketchOnPlane(pk.ref); else newSketchOnFace(pk); App.pendingAfterSketch = function () { cmdBaseFlange(); }; return true; } },
+          okBlocked: function () { return 'Select a plane or a planar face first.'; },   // rfNH: a pick starts the sketch, so ✓ has nothing to accept (it closed the PropertyManager and did nothing)
           groups: [{ title: 'Standard planes', fields: [{ type: 'buttons', buttons: ['Front', 'Top', 'Right'].map(function (r) { return { label: r + ' Plane', onclick: function () { newSketchOnPlane(r); App.pendingAfterSketch = function () { cmdBaseFlange(); }; } }; }) }] }]
         });
         return;
@@ -3002,7 +3046,7 @@
       title: existing ? existing.name : titles[kind], icon: isMiter ? 'miter' : 'flange', values: f,
       exprMap: { radiusValue: 'radius', reliefWidthValue: 'reliefWidth', reliefDepthValue: 'reliefDepth' },   // (cbaK / cbaBA / cbaBD, reliefRatioValue: toFeature(v, true))
       message: isJog ? 'Click <b>straight edges</b>: the sheet steps up by the jog height and continues flat. Reverse steps it down.' : isHem ? 'Click <b>straight edges</b> to fold the sheet back over itself. <i>Material Inside</i> keeps the hem inside the edge; <i>Bend Outside</i> adds the bend beyond it. An Open hem\'s gap is the opening between the two flats.' :
-        (isMiter ? 'Click <b>two or more adjacent straight edges</b> of the flat sheet; the flanges are joined at each shared corner.' : 'Click <b>straight edges</b> of the flat sheet. Placement is <i>Bend Outside</i>; use Reverse to flip the flange to the other side.') +
+        (isMiter ? 'Click <b>two or more adjacent straight edges</b> of the flat sheet; the flanges are joined at each shared corner.' : 'Click <b>straight edges</b> of the flat sheet. The ⇄ button beside <i>End condition</i> flips the flange to the other side; <i>Flange Position</i> sets where the bend sits against the edge.') +   // rfNH: named a Reverse box the PM does not have
         ' <i>Miter</i> joins flanges on adjacent edges at their corner, and <i>Relief</i> cuts a slot where a flange ends inside the plate.',
       command: {
         pickEdges: true, edgeList: edgeList,
@@ -3036,6 +3080,7 @@
         if (isFlange && key === 'lengthEnd') { v.vxActive = v.lengthEnd === 'upToVertex' && !v.lengthVertex; renderPM(); if (v.vxActive) UI.setStatus('Up To Vertex: click the vertex the flange runs to.'); }
         resolveList(); preview();
       },
+      okBlocked: function (v) { return v.edges.length ? '' : 'Select at least one edge.'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.edges.length) { UI.toast('Select at least one edge.'); return false; }
         if (isFlange && v.lengthEnd === 'upToVertex' && !v.lengthVertex) { UI.toast('Up To Vertex: select the vertex the flange runs to.'); return false; }
@@ -3419,7 +3464,9 @@
   // Relief Type. With an edge selected and no sketch, it opens a sketch on the plane normal to the edge at its nearer end
   // (origin on the corner, x outward, y up from the face) and comes back on exit. An edge-only miter flange of an older
   // part (miter: true, no sketch) still edits in the Edge-Flange PM.
-  var MITER_POSITIONS = [['inside', 'Material Inside', 'hemInside'], ['outside', 'Material Outside', 'hemOutside'], ['bendOutside', 'Bend Outside', 'bend']];
+  // rfNH: the hem's drawings (a hem curl) said nothing about a miter flange, and Material Outside showed the hem's Bend
+  // Outside; SolidWorks' flange-position drawings by name (worded buttons until the icon sets draw them)
+  var MITER_POSITIONS = [['inside', 'Material Inside', 'flangePosMaterialInside'], ['outside', 'Material Outside', 'flangePosMaterialOutside'], ['bendOutside', 'Bend Outside', 'flangePosBendOutside']];
   var mfLast = null;   // the position / gap last accepted this session
   function cmdMiterFlange(existing, preEdges) {
     if (existing && !existing.miterFlange) { cmdEdgeFlange(existing, 'miter'); return; }
@@ -3810,6 +3857,7 @@
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function () { preview(); },
+      okBlocked: function (v) { return v.corners.length || v.faces.length ? '' : 'Select at least one corner edge or face.'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.corners.length && !v.faces.length) { UI.toast('Select at least one corner edge or face.'); return false; }
         if (!(+v.size > 0)) { UI.toast('The ' + (v.kind === 'fillet' ? 'radius' : 'distance') + ' must be more than 0.'); return false; }
@@ -3930,6 +3978,7 @@
         }
         preview();
       },
+      okBlocked: function (v) { return v.corners.length ? '' : 'Select at least one corner (or Collect all corners).'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.corners.length) { UI.toast('Select at least one corner (or Collect all corners).'); return false; }
         if (v.reliefType !== 'tear' && !(+v.size > 0)) { UI.toast('The relief size must be more than 0.'); return false; }
@@ -4039,6 +4088,7 @@
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function () { preview(); },
+      okBlocked: function (v) { return v.faces.length ? '' : 'Select a side face of at least one corner to weld.'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.faces.length) { UI.toast('Select a side face of at least one corner to weld.'); return false; }
         if (v.addFillet && !K.isExpression(v.fillet) && !(+v.fillet > 0)) { UI.toast('The fillet radius must be more than 0.'); return false; }
@@ -4200,6 +4250,7 @@
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function () { preview(); },
+      okBlocked: function (v) { return v.face ? '' : 'Select a planar face of the sheet.'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.face) { UI.toast('Select a planar face of the sheet.'); return false; }
         var feat = featOf(v);
@@ -4299,7 +4350,7 @@
           { type: 'number', label: 'Position X', key: 'atU', unit: 'u' },
           { type: 'number', label: 'Position Y', key: 'atV', unit: 'u' },
           { type: 'number', label: 'Rotation angle', key: 'angle', unit: '°' },
-          { type: 'check', label: 'Reverse direction', key: 'flip' }
+          { type: 'check', label: 'Flip tool', key: 'flip' }   // rfNH: SolidWorks' Flip Tool; as "Reverse direction" it became a ⇄ button on Position X
         ] },
         { title: 'Dimensions', fields: dimFields },
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
@@ -4312,6 +4363,7 @@
         }
         preview();
       },
+      okBlocked: function (v) { return v.face ? '' : 'Click a flat face of the sheet where the tool goes.'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.face) { UI.toast('Click a flat face of the sheet where the tool goes.'); return false; }
         var feat = featOf(v);
@@ -4418,6 +4470,7 @@
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function () { preview(); },
+      okBlocked: function (v) { return v.edges.length ? '' : 'Select at least one edge to rip.'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.edges.length) { UI.toast('Select at least one edge to rip.'); return false; }
         if (!(+v.gap > 0)) { UI.toast('The rip gap must be more than 0.'); return false; }
@@ -4531,6 +4584,7 @@
           if (key === 'sketch') { autoFill(v); if (App.command) { App.command.sketchId = v.sketch; UI.updateSketches(); } renderPM(); }
           preview();
         },
+        okBlocked: function (v) { return v.sketch == null || v.sketch < 0 ? 'Select the vent\'s sketch.' : !v.boundary.length ? 'Select the vent\'s boundary (a closed contour).' : ''; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
         onOK: function (v) {
           if (v.sketch == null || v.sketch < 0) { UI.toast('Select the vent\'s sketch.'); return false; }
           if (!v.boundary.length) { UI.toast('Select the vent\'s boundary (a closed contour).'); return false; }
@@ -4745,6 +4799,7 @@
         if (isConv && gaugeChanged(v, key)) renderPM();
         preview();
       },
+      okBlocked: function (v) { return !v.fixedFace ? 'Pick the fixed face.' : isConv && !v.bendEdges.length ? 'Pick the edges that become bends.' : ''; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.fixedFace) { UI.toast('Pick the fixed face.'); return false; }
         if (isConv && !v.bendEdges.length) { UI.toast('Pick the edges that become bends.'); return false; }
@@ -4804,6 +4859,7 @@
           title: 'Base Flange/Tab', icon: 'flange',
           message: 'Select a <b>flat face</b> of the sheet to sketch the tab on, then <b>Exit Sketch</b> to make the tab.',
           command: { pickPlane: true, onPick: function (pk) { if (pk.kind === 'plane') newSketchOnPlane(pk.ref); else newSketchOnFace(pk); App.pendingAfterSketch = function () { cmdBaseFlange(); }; return true; } },
+          okBlocked: function () { return 'Select a flat face of the sheet first.'; },   // rfNH: a pick starts the sketch, so ✓ has nothing to accept (it closed the PropertyManager and did nothing)
           groups: []
         });
         return;
@@ -4959,6 +5015,7 @@
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function () { preview(); },
+      okBlocked: function (v) { return v.faces.length ? '' : 'Select at least one face to extend.'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.faces.length) { UI.toast('Select at least one face to extend.'); return false; }
         var min = K.closedCornerMinGap(App.model);
@@ -5112,6 +5169,7 @@
       command: { faceList: [], onPick: pick },
       groups: groups,
       onChange: function () { preview(); },
+      okBlocked: function () { return isFold && !bends().rec ? 'The part is not unfolded: add an Unfold first.' : !isFold && !bends().length && !bends().error ? 'The part has no bends to unfold.' : ''; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (isFold && !bends().rec) { UI.toast('The part is not unfolded: add an Unfold first.'); return false; }
         var feat = featOf(v);
@@ -7125,7 +7183,8 @@
         groups: [
           { title: 'Parameters', fields: [
             sketchPickerField(f),
-            { type: 'iconRadio', label: 'Thickness', key: 'side', options: [['one', 'First Side', 'rib'], ['both', 'Both Sides', 'rib'], ['other', 'Second Side', 'rib']] },
+            // rfNH: one Rib icon on all three buttons; SolidWorks' own drawings by name (worded buttons until drawn)
+            { type: 'iconRadio', label: 'Thickness', key: 'side', options: [['one', 'First Side', 'ribFirstSide'], ['both', 'Both Sides', 'ribBothSides'], ['other', 'Second Side', 'ribSecondSide']] },
             { type: 'number', label: 'Rib thickness', key: 'thickness', unit: 'u', min: 0 },
             { type: 'radio', label: 'Extrusion direction', key: 'direction', options: [['parallel', 'Parallel to Sketch'], ['normal', 'Normal to Sketch']] },
             { type: 'check', label: 'Flip material side', key: 'flip' },
@@ -7313,6 +7372,7 @@
         { title: 'Feature', collapsed: !existing, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function (vals, key) { if (key === 'type') show(); },
+      okBlocked: function () { return v.bodies.length ? '' : 'Select at least one body to ' + (v.type === 'keep' ? 'keep' : 'delete') + '.'; },   // rfNH: ✓ greys until a body is picked
       onOK: function () {
         if (!v.bodies.length) { UI.setStatus('Select at least one body to ' + (v.type === 'keep' ? 'keep' : 'delete') + '.'); return false; }
         UI.disposeGroup(UI.groups.preview);

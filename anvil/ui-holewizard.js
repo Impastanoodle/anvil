@@ -93,6 +93,7 @@
         preview();
       },
       onCancel: function () { UI.disposeGroup(UI.groups.preview); },
+      okBlocked: function () { return v.face && v.points.length ? '' : 'Click a face to place the holes first.'; },   // rfNH: ✓ greys until a hole is placed
       onOK: function () {
         if (!v.face || !v.points.length) { UI.toast('Click a face to place the holes first.'); return false; }
         if (v.end === 'blind' && !(+v.depth > 0)) { UI.toast('Depth must be greater than 0.'); return false; }

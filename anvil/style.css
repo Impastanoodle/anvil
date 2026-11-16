@@ -2689,3 +2689,10 @@ table.mc-planes tr.picked td.mc-pl-name { font-weight: 600; }
 :root[data-profile] #app.mc-status #pg-status { color: var(--mc-blue-text); border-left-color: rgba(255, 255, 255, 0.28); }
 :root[data-profile] #app.mc-status #pg-status .pg-track { background: rgba(255, 255, 255, 0.22); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35); }
 :root[data-profile] #app.mc-status #pg-status .pg-fill { background: var(--mc-blue-text); }
+
+/* lane pmsense (rfNH): an icon row whose options have no drawing of their own yet (Chamfer Type, Fillet Type, Rib
+   Thickness, Miter Flange position) shows its options as worded buttons on a line of their own under the label */
+#pm .pm-row.pm-row-icons.pm-row-words { display: block; }
+#pm .pm-row.pm-row-icons.pm-row-words > label { display: block; margin-bottom: 4px; }
+#pm .pm-btns.pm-wordopts { display: flex; flex-wrap: wrap; gap: 4px; }
+#pm .pm-btns.pm-wordopts button { padding: 0 8px; }
