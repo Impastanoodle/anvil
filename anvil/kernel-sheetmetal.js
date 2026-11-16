@@ -351,7 +351,7 @@
     if (relief === 'tear') { rw = f.reliefWidth != null ? +f.reliefWidth : ripDefaultGap(model); rd = f.reliefDepth != null ? +f.reliefDepth : rw; }
     if (relief !== 'none' && !(rw > 0)) throw new Error('Relief width must be greater than zero.');
     if (relief !== 'none' && !(rd >= 0)) throw new Error('Relief depth must be zero or more.');
-    var mesh = meshFromBody(coplanarBody(ctx.body));   // r12/inchflange12: see coplanarBody
+    var mesh = smMesh(ctx.body).mesh;   // r12/inchflange12: see coplanarBody (lane MY: meshed once per body, smMesh)
     var edges = bodyEdges(mesh).filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex; });
     var selected = resolveEdges((f.edges || []).map(function (e) { return { at: e.at, chain: false }; }), edges, EDGE_PICK_TOL * T);
     if (!selected.length) throw new Error('No edge selected for the flange.');
@@ -7890,6 +7890,400 @@
   });
   K.FORMING_TOOLS = FORMING_TOOLS; K.formingToolDefaults = formingToolDefaults; K.formingToolName = ftName; K.formingToolLayout = formingToolLayout;
   K.formingToolGeometry = formingToolGeometry; K.buildFormingTool = buildFormingTool; _.buildFormingTool = buildFormingTool; _.formingFlat = formingFlat;
+  // ------------------------------------------------------------------ lane MY (smrefs): picks that follow an edit
+  // A sheet-metal feature's edge / face / point picks are points in space (edges[i].at, fixed, faces[i] …). Next to
+  // them f.pickRefs holds one reference per pick, keyed by its path ('edges.0', 'fixed', 'faces.1'):
+  //   { k: 'edge' | 'face' | 'point', on: feature id (the face's polygon.shared), name, fids: [ids],
+  //     frame: 'wall', ri, w: [s, h/T, along], end: bool, n: [[cw, cm, cz] per face normal]   (on an earlier flange's wall)
+  //       (s and along: { e: 'start' | 'end' | 'lo' | 'hi', d } within 10 % of an end, else { f: fraction })
+  //     frame: 'world', at, n: [[x, y, z] per face normal]                                    (anywhere else)
+  //     frame: 'base', ri, b: [x, y, along]                                                    (a point beside a bend) }
+  // `wall`: the flange record ri of `on` (ctx.flanges): w the wall's direction, m across it (inner face 0, outer -T),
+  // z along the bend; s measured from the wall's end when near it, so the outer edge stays the outer edge when the
+  // length changes (end: true marks an anchor at the end).
+  // smFollowPicks (rebuild, before the feature) maps every ref to the current geometry and snaps it to the edge / face
+  // with the same normals on the same feature; the stored point is kept whenever it still lands on that same edge /
+  // face (so an unchanged part builds bit for bit). A ref whose feature is gone or suppressed is a dangling error.
+  // smMakePicks (after a successful build without refs, or one whose points moved) writes the refs.
+  var SM_PICKS = {
+    flange: [['edges', 'edge'], ['lengthVertex', 'point', true]],
+    jog: [['edges', 'edge'], ['fixed', 'face', true]],
+    sketchedBend: [['fixed', 'face', true]],
+    breakCorner: [['corners', 'edge'], ['faces', 'face']],
+    cornerRelief: [['corners', 'point']],
+    closedCorner: [['faces', 'face']],
+    weldedCorner: [['faces', 'face']],
+    rip: [['edges', 'edge']],
+    unfold: [['fixedFace', 'face', true], ['bends', 'bend']],
+    fold: [['bends', 'bend']]   // lane MY3: points on bends of the folded part, by the flange record that made the bend
+  };
+  var smMeshCache = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+  function smMesh(body) {
+    var c = smMeshCache && smMeshCache.get(body);
+    if (!c) {
+      var mesh = meshFromBody(coplanarBody(body));
+      c = { mesh: mesh, edges: null };
+      if (smMeshCache) smMeshCache.set(body, c);
+    }
+    return c;
+  }
+  function smEdges(body) { var c = smMesh(body); if (!c.edges) c.edges = bodyEdges(c.mesh); return c; }
+  // every pick of f: [{ path, kind, get: () -> point | null, set(point) }]
+  function smPicks(f) {
+    var spec = SM_PICKS[f.type], out = [];
+    if (!spec) return out;
+    spec.forEach(function (s) {
+      var key = s[0], kind = s[1], v = f[key];
+      function isPt(p) { return Array.isArray(p) && p.length === 3 && p.every(function (x) { return typeof x === 'number' && isFinite(x); }); }
+      if (s[2]) {
+        if (isPt(v)) out.push({ path: key, kind: kind, get: function () { return f[key]; }, set: function (p) { f[key] = p; } });
+        return;
+      }
+      if (!Array.isArray(v)) return;
+      v.forEach(function (it, i) {
+        var obj = it && !Array.isArray(it) && typeof it === 'object';
+        var p = obj ? it.at : it;
+        if (!isPt(p)) return;
+        out.push({ path: key + '.' + i, kind: kind, get: function () { var q = f[key][i]; return obj ? q.at : q; },
+          set: function (pt) { if (obj) f[key][i] = Object.assign({}, f[key][i], { at: pt }); else f[key][i] = pt; } });
+      });
+    });
+    return out;
+  }
+  function smCopy(f) {
+    var c = {};
+    Object.keys(f).forEach(function (k) { c[k] = Array.isArray(f[k]) ? f[k].slice() : f[k]; });
+    return c;
+  }
+  // the polygon contains p (on its plane within tol, inside or on its boundary)
+  function polyHas(poly, p, tol) {
+    var n = poly.plane.normal, d = n.x * p[0] + n.y * p[1] + n.z * p[2] - poly.plane.w;
+    if (Math.abs(d) > tol) return false;
+    var vs = poly.vertices;
+    for (var i = 0; i < vs.length; i++) {
+      var a = vs[i].pos, b = vs[(i + 1) % vs.length].pos;
+      var ex = b.x - a.x, ey = b.y - a.y, ez = b.z - a.z, px = p[0] - a.x, py = p[1] - a.y, pz = p[2] - a.z;
+      var cx = ey * pz - ez * py, cy = ez * px - ex * pz, cz = ex * py - ey * px, l = Math.sqrt(ex * ex + ey * ey + ez * ez) || 1;
+      if ((cx * n.x + cy * n.y + cz * n.z) / l < -tol) return false;
+    }
+    return true;
+  }
+  function fidsAt(polys, p, tol) {
+    var out = [];
+    polys.forEach(function (pg) { if (pg.shared != null && typeof pg.shared === 'number' && out.indexOf(pg.shared) < 0 && polyHas(pg, p, tol)) out.push(pg.shared); });
+    return out;
+  }
+  function v3(q) { return [q.x, q.y, q.z]; }
+  // a flange record's wall frame: { I (wall start, inner face), w, m, z, L, T, zlo, zhi }
+  function recFrame(r) {
+    if (!r || !Array.isArray(r.origin) || !Array.isArray(r.o) || !Array.isArray(r.u) || !isFinite(r.angle) || !isFinite(r.L) || !isFinite(r.R) || !isFinite(r.T)) return null;
+    var A = +r.angle, R = +r.R, sA = Math.sin(A), cA = Math.cos(A), z = norm(cross(r.o, r.u));
+    var I = add(r.origin, add(scale(r.o, R * sA), scale(r.u, R - R * cA)));
+    var za = Array.isArray(r.a) ? dot(sub(r.a, r.origin), z) : 0, zb = Array.isArray(r.b) ? dot(sub(r.b, r.origin), z) : 0;
+    return { I: I, w: add(scale(r.o, cA), scale(r.u, sA)), m: add(scale(r.o, -sA), scale(r.u, cA)), z: z, L: +r.L, T: +r.T, zlo: Math.min(za, zb), zhi: Math.max(za, zb), origin: r.origin, o: r.o, u: r.u };
+  }
+  function alongOut(F, zz) {
+    var span = F.zhi - F.zlo;
+    if (span > 1e-9 && zz - F.zlo > 0.1 * span && F.zhi - zz > 0.1 * span) return { f: (zz - F.zlo) / span };
+    return Math.abs(zz - F.zlo) <= Math.abs(zz - F.zhi) ? { e: 'lo', d: zz - F.zlo } : { e: 'hi', d: zz - F.zhi };
+  }
+  function alongIn(F, a) { return a.f != null ? F.zlo + a.f * (F.zhi - F.zlo) : (a.e === 'lo' ? F.zlo : F.zhi) + a.d; }
+  // the flange records (earlier features only) whose wall holds p: { on, ri, F, s, h }
+  function wallOwner(fids, p, ctx, selfId) {
+    var best = null;
+    fids.forEach(function (id) {
+      if (id === selfId) return;
+      (ctx.flanges && ctx.flanges[id] || []).forEach(function (r, ri) {
+        var F = recFrame(r);
+        if (!F) return;
+        var d = sub(p, F.I), s = dot(d, F.w), h = dot(d, F.m), zz = dot(sub(p, F.origin), F.z);
+        var tol = 1e-6 * Math.max(1, F.L), reach = F.L + 2 * F.T + Math.abs(+r.R || 0);
+        if (s < -tol || s > F.L + tol || h > tol + 1e-3 * F.T || h < -F.T * 1.001 - tol) return;
+        if (zz < F.zlo - reach || zz > F.zhi + reach) return;
+        var bad = Math.max(0, -s, s - F.L);
+        if (!best || bad < best.bad) best = { on: id, ri: ri, F: F, s: s, h: h, zz: zz, bad: bad };
+      });
+    });
+    return best;
+  }
+  // the bend of record r holds p (radius R .. R + T about its axis, angle 0 .. A, along the bend within reach)
+  function bendHolds(r, F, p) {
+    var q = sub(p, F.origin), x = dot(q, F.o), y = dot(q, F.u) - (+r.R), rho = Math.hypot(x, y), tol = 1e-6 * Math.max(1, F.T);
+    var phi = Math.atan2(x, -y), zz = dot(q, F.z), A = +r.angle, reach = +r.R + 2 * F.T;
+    if (rho < +r.R - tol || rho > +r.R + F.T + tol || phi < -1e-6 || phi > A + 1e-6) return null;
+    if (zz < F.zlo - reach || zz > F.zhi + reach) return null;
+    return { zz: zz };
+  }
+  function bendOwner(p, ctx, selfId) {
+    var out = null;
+    Object.keys(ctx.flanges || {}).forEach(function (id) {
+      if (out || +id === selfId) return;
+      (ctx.flanges[id] || []).forEach(function (r, ri) {
+        var F = out ? null : recFrame(r), h = F && bendHolds(r, F, p);
+        if (h) out = { on: +id, ri: ri, F: F, zz: h.zz };
+      });
+    });
+    return out;
+  }
+  function nearestEdge(edges, p, tol) {
+    var best = null, bd = tol;
+    edges.forEach(function (e) {
+      if (e.smooth || e.faces.length !== 2) return;
+      var d = _.pointSegmentDistance(p, e.a, e.b);
+      if (d < bd) { bd = d; best = e; }
+    });
+    return best;
+  }
+  function projOnEdge(e, p, inner) {
+    var d = sub(e.b, e.a), t = dot(sub(p, e.a), d) / Math.max(dot(d, d), 1e-24);
+    if (inner) t = Math.max(0.05, Math.min(0.95, t)); else t = Math.max(0, Math.min(1, t));
+    return add(e.a, scale(d, t));
+  }
+  // one pick's reference, or null (nothing found under the point)
+  function smRefFor(kind, at, body, model, ctx, selfId) {
+    var T = +sheetParams(model).thickness, polys = body.polygons, Q = at, normals = [], fids;
+    var ptol = 1e-6 * Math.max(1, T);
+    if (kind === 'edge') {
+      var e = nearestEdge(smEdges(body).edges, at, EDGE_PICK_TOL * T);
+      if (!e) return null;
+      Q = projOnEdge(e, at, false);
+      normals = e.normals.map(function (n) { return n.slice(); });
+      fids = fidsAt(polys, Q, ptol * 10);
+    } else if (kind === 'face') {
+      var hit = null, hd = Infinity;
+      polys.forEach(function (pg) {
+        var n = pg.plane.normal, d = Math.abs(n.x * at[0] + n.y * at[1] + n.z * at[2] - pg.plane.w);
+        if (d < hd && d < 1e-3 * Math.max(1, T) && polyHas(pg, at, 1e-3 * Math.max(1, T))) { hd = d; hit = pg; }
+      });
+      if (!hit) return null;
+      var hn = hit.plane.normal;
+      normals = [[hn.x, hn.y, hn.z]];
+      Q = sub(at, scale(normals[0], hn.x * at[0] + hn.y * at[1] + hn.z * at[2] - hit.plane.w));
+      fids = fidsAt(polys, Q, ptol * 10);
+      if (hit.shared != null && typeof hit.shared === 'number' && fids.indexOf(hit.shared) < 0) fids.unshift(hit.shared);
+    } else if (kind === 'bend') {
+      var bo = bendOwner(at, ctx, selfId);
+      if (!bo) return null;
+      var bref = { k: 'bend', frame: 'bend', on: bo.on, ri: bo.ri, along: alongOut(bo.F, bo.zz) };
+      var bof = findFeature(model, bo.on); if (bof && bof.name) bref.name = bof.name;
+      return bref;
+    } else fids = fidsAt(polys, at, 1e-4 * Math.max(1, T));
+    var ref = { k: kind, fids: fids };
+    var own = wallOwner(fids, Q, ctx, selfId);
+    if (own) {
+      var F = own.F, end = own.s > F.L / 2, sOut = own.s > 0.1 * F.L && own.s < 0.9 * F.L ? { f: own.s / F.L } : end ? { e: 'end', d: own.s - F.L } : { e: 'start', d: own.s };
+      ref.frame = 'wall'; ref.on = own.on; ref.ri = own.ri; ref.end = end && sOut.f == null;
+      ref.w = [sOut, own.h / F.T, alongOut(F, own.zz)];
+      ref.n = normals.map(function (n) { return [dot(n, F.w), dot(n, F.m), dot(n, F.z)]; });
+    } else if (kind === 'point') {
+      // beside a bend (a corner relief's corner): the nearest earlier flange record's base frame
+      var bb = null;
+      Object.keys(ctx.flanges || {}).forEach(function (id) {
+        if (+id === selfId) return;
+        (ctx.flanges[id] || []).forEach(function (r, ri) {
+          var F2 = recFrame(r);
+          if (!F2 || !Array.isArray(r.a) || !Array.isArray(r.b)) return;
+          var d2 = _.pointSegmentDistance(at, r.a, r.b);
+          if (d2 < 2 * (+r.R + F2.T) + F2.T && (!bb || d2 < bb.d)) bb = { d: d2, id: +id, ri: ri, F: F2 };
+        });
+      });
+      if (bb) {
+        var dd = sub(at, bb.F.origin);
+        ref.frame = 'base'; ref.on = bb.id; ref.ri = bb.ri;
+        ref.b = [dot(dd, bb.F.o), dot(dd, bb.F.u), alongOut(bb.F, dot(dd, bb.F.z))];
+      } else { ref.frame = 'world'; ref.at = at.slice(); }
+    } else {
+      ref.frame = 'world'; ref.at = Q.slice(); ref.n = normals;
+      var fid0 = fids.filter(function (id) { return id !== selfId; })[0];
+      if (fid0 != null) ref.on = fid0;
+    }
+    if (ref.on != null) { var of = findFeature(model, ref.on); if (of && of.name) ref.name = of.name; }
+    return ref;
+  }
+  function sameDir(a, b) { return dot(a, b) > 1 - 1e-6; }
+  function edgeMatches(e, N) {
+    if (e.smooth || e.faces.length !== 2 || N.length !== 2) return false;
+    return (sameDir(e.normals[0], N[0]) && sameDir(e.normals[1], N[1])) || (sameDir(e.normals[0], N[1]) && sameDir(e.normals[1], N[0]));
+  }
+  function faceFids(mesh, fi) {
+    var fc = mesh.faces[fi], out = {};
+    (fc && fc.polys || []).forEach(function (pg) { if (pg.shared != null) out[pg.shared] = true; });
+    return out;
+  }
+  function danglingError(f, ref, why) {
+    var what = ref.name || ('feature ' + ref.on), kind = ref.k === 'face' ? 'face' : ref.k === 'edge' ? 'edge' : ref.k === 'bend' ? 'bend' : 'point';
+    return new Error('Dangling ' + kind + ': ' + (f.name || 'this feature') + ' was placed on ' + (ref.frame === 'wall' && ref.end && kind === 'edge' ? 'the outer edge of ' : 'a ' + kind + ' of ') + what + ', which ' + why + '. Edit the feature and pick the ' + kind + ' again.');
+  }
+  // where a ref is now: { P, N } (world) or null (its record is gone)
+  function refNow(ref, ctx) {
+    if (ref.frame === 'world') return { P: ref.at, N: ref.n || [] };
+    var recs = ctx.flanges && ctx.flanges[ref.on], r = recs && recs[ref.ri], F = recFrame(r);
+    if (!F) return null;
+    if (ref.frame === 'bend') {
+      var rm = +r.R + F.T / 2, hA = +r.angle / 2;
+      return { P: add(F.origin, add(scale(F.o, rm * Math.sin(hA)), add(scale(F.u, +r.R - rm * Math.cos(hA)), scale(F.z, alongIn(F, ref.along))))), N: [], rec: r, F: F };
+    }
+    if (ref.frame === 'base') {
+      var b = ref.b;
+      return { P: add(F.origin, add(scale(F.o, b[0]), add(scale(F.u, b[1]), scale(F.z, alongIn(F, b[2]))))), N: [] };
+    }
+    var w = ref.w, s = typeof w[0] === 'number' ? (ref.end ? F.L + w[0] : w[0]) : w[0].f != null ? w[0].f * F.L : (w[0].e === 'end' ? F.L : 0) + w[0].d;
+    s = Math.max(0, Math.min(F.L, s));
+    var P0 = add(F.I, add(scale(F.w, s), scale(F.m, w[1] * F.T)));
+    var P = add(P0, scale(F.z, alongIn(F, w[2]) - dot(sub(P0, F.origin), F.z)));
+    return { P: P, N: (ref.n || []).map(function (c) { return norm(add(scale(F.w, c[0]), add(scale(F.m, c[1]), scale(F.z, c[2])))); }) };
+  }
+  // smFollowPicks(f, model, ctx) -> f itself (nothing to follow) or a copy with its picks moved onto the geometry its
+  // references name now; copy._smMoved = { path: point } for the picks that moved. Throws the dangling error.
+  function smFollowPicks(f, model, ctx) {
+    var refs = f.pickRefs;
+    if (!refs || typeof refs !== 'object' || !ctx.body || !SM_PICKS[f.type]) return f;
+    var fc = null, moved = {}, T = +sheetParams(model).thickness, body = ctx.body;
+    smPicks(f).forEach(function (pk) {
+      var ref = refs[pk.path];
+      if (!ref || typeof ref !== 'object' || !smRefFits(ref, pk.get())) return;   // none, or the pick was changed since
+      var at = pk.get();
+      // the stored point's own find (the edge / a face under it): a reference never wins over a stored point that still
+      // finds geometry when the reference cannot be trusted (its feature gone, or a feature of another model: a
+      // feature copied between models keeps ids that name something else there; rfJY's open-base twin)
+      var origE, origOK = function () {
+        if (pk.kind === 'edge') { if (origE === undefined) origE = nearestEdge(smEdges(body).edges, at, EDGE_PICK_TOL * T); return !!origE; }
+        return body.polygons.some(function (pg) { return polyHas(pg, at, 1e-6 * Math.max(1, T)); });
+      };
+      if (ref.on != null) {
+        var of = null;
+        for (var i = 0; i < model.features.length; i++) { if (model.features[i].id === ref.on) of = model.features[i]; if (model.features[i].id === f.id) break; }
+        if (of && ref.name && of.name && of.name !== ref.name) return;   // not the feature the reference was made on
+        var why = !of ? (findFeature(model, ref.on) ? 'now comes after it in the tree' : 'was deleted') : of.suppressed ? 'is suppressed' : ctx.errors && ctx.errors[ref.on] ? 'failed to rebuild' : null;
+        if (why) {
+          if (origOK()) return;
+          throw danglingError(f, Object.assign({}, ref, { name: (of && of.name) || ref.name }), why);
+        }
+      }
+      var now = refNow(ref, ctx), target = null;
+      if (now) {
+        if (pk.kind === 'edge') {
+          var M = smEdges(body), best = null, bd = Infinity;
+          M.edges.forEach(function (e) {
+            if (!edgeMatches(e, now.N)) return;
+            var d = _.pointSegmentDistance(now.P, e.a, e.b);
+            if (d >= bd) return;
+            if (ref.on != null) { var ff = faceFids(M.mesh, e.faces[0]), fg = faceFids(M.mesh, e.faces[1]); if (!ff[ref.on] && !fg[ref.on]) return; }
+            bd = d; best = e;
+          });
+          if (best) {
+            origOK();
+            // the stored point still on an edge of the same role (the same two normals): it stays
+            if (origE && (origE === best || edgeMatches(origE, now.N))) return;
+            target = projOnEdge(best, now.P, true);
+          }
+        } else if (pk.kind === 'face') {
+          var N = now.N[0], bp = null, bpd = Infinity, keep = false;
+          body.polygons.forEach(function (pg) {
+            var n = pg.plane.normal;
+            if (!N || !sameDir([n.x, n.y, n.z], N)) return;
+            if (ref.on != null && pg.shared !== ref.on && (ref.fids || []).indexOf(pg.shared) < 0) return;
+            if (polyHas(pg, at, 1e-6 * Math.max(1, T))) keep = true;
+            var dpl = n.x * now.P[0] + n.y * now.P[1] + n.z * now.P[2] - pg.plane.w, Pp = sub(now.P, scale([n.x, n.y, n.z], dpl));
+            var inside = polyHas(pg, Pp, 1e-9), d = Math.abs(dpl) + (inside ? 0 : 1e3 * Math.max(1, T));
+            if (!inside) { var c = [0, 0, 0]; pg.vertices.forEach(function (v) { c = add(c, v3(v.pos)); }); c = scale(c, 1 / pg.vertices.length); d += len(sub(c, Pp)); Pp = c; }
+            if (d < bpd) { bpd = d; bp = Pp; }
+          });
+          if (keep) return;
+          target = bp;
+        } else if (pk.kind === 'bend') {
+          if (now.rec && bendHolds(now.rec, now.F, at)) return;   // still on that bend: the stored point stays
+          target = now.P;
+        } else {
+          if (len(sub(now.P, at)) < 1e-9 * Math.max(1, T)) return;
+          target = now.P;
+        }
+      }
+      if (!target) {
+        // nothing carries the reference's normals on its feature: the stored point, if it still finds something
+        var still = pk.kind === 'edge' ? !!nearestEdge(smEdges(body).edges, at, EDGE_PICK_TOL * T) : true;
+        if (!still) throw danglingError(f, ref, 'no longer has that ' + (pk.kind === 'face' ? 'face' : 'edge'));
+        return;
+      }
+      if (!fc) fc = smCopy(f);
+      var pt = target.map(function (x) { return Math.abs(x) < 1e-12 ? 0 : x; });
+      smPicksOf(fc, pk.path).set(pt);
+      moved[pk.path] = pt;
+    });
+    if (!fc) return f;
+    Object.defineProperty(fc, '_smMoved', { value: moved, enumerable: false, configurable: true });
+    return fc;
+  }
+  // a reference belongs to the pick it was made for (ref.pick; 2e-4: a script's points are rounded to 1e-4)
+  function smRefFits(ref, at) {
+    if (!ref || !Array.isArray(ref.pick) || !Array.isArray(at)) return true;
+    for (var i = 0; i < 3; i++) if (!(Math.abs(ref.pick[i] - at[i]) <= 2e-4)) return false;
+    return true;
+  }
+  // the reference was made in this model (its feature, when there, has the name it recorded)
+  function smRefOwnerOK(ref, model) {
+    if (!ref || ref.on == null || !ref.name) return true;
+    var of = findFeature(model, ref.on);
+    return !of || !of.name || of.name === ref.name;
+  }
+  function smPicksOf(f, path) { return smPicks(f).filter(function (q) { return q.path === path; })[0]; }
+  // smMakePicks(f, model, ctx, body) -> the refs for every pick of f (on `body`, the part before f), or null
+  function smMakePicks(f, model, ctx, body) {
+    if (!SM_PICKS[f.type] || !body || !body.polygons || !body.polygons.length) return null;
+    var out = {}, any = false;
+    smPicks(f).forEach(function (pk) {
+      var r = null;
+      try { r = smRefFor(pk.kind, pk.get(), body, model, ctx, f.id); } catch (e) { r = null;  }
+      if (r) { out[pk.path] = r; any = true; }
+    });
+    return any ? out : null;
+  }
+  // lane MY2: a sketch on a flange's wall face (plane.face.feature = the flange) follows the wall. plane.face.wall =
+  // { ri, o: [s, h/T, dz], x, y, n } (origin: s from the wall's start, dz along the bend from its lo end; axes as
+  // (w, m, z) coefficients), written on the first build that finds the wall; later builds put the plane back on the
+  // record's wall (a hole stays where it was ON the flange through angle / length / position edits). The stored plane is
+  // kept when within 1e-9 (bit-identical). -> { plane } or null (not on a wall: resolveFacePlane decides)
+  function smSketchPlane(sk, model, ctx) {
+    var pl = sk && sk.plane, fr = pl && pl.custom ? pl.face : null;
+    if (!fr || fr.feature == null || fr.inst != null) return null;
+    var recs = ctx.flanges && ctx.flanges[fr.feature];
+    if (!recs || !recs.length || !Array.isArray(pl.origin) || !Array.isArray(pl.n)) return null;
+    var before = false;
+    for (var i = 0; i < model.features.length && model.features[i].id !== sk.id; i++) if (model.features[i].id === fr.feature) before = true;
+    if (!before) return null;
+    function loc(F, v) { return [dot(v, F.w), dot(v, F.m), dot(v, F.z)]; }
+    function glob(F, c) { return norm(add(scale(F.w, c[0]), add(scale(F.m, c[1]), scale(F.z, c[2])))); }
+    var wr = fr.wall;
+    if (wr && Array.isArray(wr.o)) {
+      var F = recFrame(recs[wr.ri]);
+      if (!F) return null;
+      var o = add(F.I, add(scale(F.w, wr.o[0]), add(scale(F.m, wr.o[1] * F.T), scale(F.z, F.zlo + wr.o[2] - dot(sub(F.I, F.origin), F.z)))));
+      var x = glob(F, wr.x), y = glob(F, wr.y), n = glob(F, wr.n);
+      var same = [[o, pl.origin], [x, pl.x], [y, pl.y], [n, pl.n]].every(function (q) { return len(sub(q[0], q[1])) < 1e-9; });
+      if (same) return { plane: pl };
+      var np = {};
+      Object.keys(pl).forEach(function (k) { np[k] = pl[k]; });
+      np.origin = o; np.x = x; np.y = y; np.n = n; np.offset = dot(n, o);
+      return { plane: _.tidyPlane ? Object.assign(_.tidyPlane(np), { face: pl.face }) : np };
+    }
+    for (var ri = 0; ri < recs.length; ri++) {
+      var G = recFrame(recs[ri]);
+      if (!G || Math.abs(dot(pl.n, G.m)) < 1 - 1e-9) continue;
+      var d = sub(pl.origin, G.I), h = dot(d, G.m);
+      if (Math.abs(h) > 1e-6 * Math.max(1, G.T) && Math.abs(h + G.T) > 1e-6 * Math.max(1, G.T)) continue;
+      var face = {};
+      Object.keys(fr).forEach(function (k) { face[k] = fr[k]; });
+      face.wall = { ri: ri, o: [dot(d, G.w), Math.round(h / G.T), dot(sub(pl.origin, G.origin), G.z) - G.zlo], x: loc(G, pl.x), y: loc(G, pl.y), n: loc(G, pl.n) };
+      var np2 = {};
+      Object.keys(pl).forEach(function (k) { np2[k] = pl[k]; });
+      np2.face = face;
+      return { plane: np2 };
+    }
+    return null;
+  }
+  _.smSketchPlane = smSketchPlane;
+  K.SM_PICKS = SM_PICKS; _.smPickList = smPicks; _.smRefFits = smRefFits; _.smRefOwnerOK = smRefOwnerOK; _.smFollowPicks = smFollowPicks; _.smMakePicks = smMakePicks; _.smMesh = smMesh;
+  K.smPickRefs = function (f, model, ctx, body) { return smMakePicks(f, model, ctx, body); };
 })(Kernel, Kernel._);
 
 // ------------------------------------------------------------------ Lofted-Bend (lane dxfout-2)
@@ -8861,5 +9255,6 @@
     }
   });
   K.SWEPT_FLANGE_FLATTEN = SF_FLATTEN.slice(); _.sfPointMap = sfPointMap; _.sfBodyLoops = sfBodyLoops;
+
   K.sweptFlangeLayout = sweptFlangeLayout; K.sweptFlangeOpenBase = sweptFlangeOpenBase; _.sweptFlangeOpenBase = sweptFlangeOpenBase; K.buildSweptFlange = buildSweptFlange; K.sweptFlangeFlat = sweptFlangeFlat; _.sweptFlangeFlat = sweptFlangeFlat;
 })(Kernel, Kernel._);

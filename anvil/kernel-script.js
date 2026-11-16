@@ -1152,8 +1152,11 @@
     opts = opts || {};
     var f = this._add({
       type: 'extrude', sketch: this._sketchId(opts), depth: depth == null ? 0 : num(depth), end: opts.throughAll ? 'through' : (opts.midplane ? 'mid' : 'blind'),
-      reverse: !!opts.reverse || opts.dir === -1, cut: !!opts.cut, dir2: !!opts.depth2 || !!opts.both,
-      depth2: opts.depth2 != null ? num(opts.depth2) : (opts.both ? num(depth) : 0), end2: opts.throughAll2 ? 'through' : 'blind', name: opts.name
+      reverse: !!opts.reverse || opts.dir === -1, cut: !!opts.cut, dir2: !!opts.depth2 || !!opts.both || !!opts.throughAll2,
+      // lane MY: `both` mirrors Direction 1 into Direction 2, its end condition too: cut('through', { both: true }) is
+      // Through All - Both (Direction 2 was a blind 0, so a tube was drilled through one wall only)
+      depth2: opts.depth2 != null ? num(opts.depth2) : (opts.both ? num(depth) : 0),
+      end2: opts.throughAll2 || (opts.both && opts.throughAll && opts.throughAll2 == null && opts.depth2 == null) ? 'through' : 'blind', name: opts.name
     });
     // rfFS: a cut given no direction (no `reverse`, no `dir`, one direction) leaves `reverse` out; the rebuild then
     // cuts into the material as SolidWorks does (+n, or −n when +n removes nothing) and writes the direction it took
@@ -1770,6 +1773,13 @@
     return this;
   };
   Builder.prototype.last = function () { return this.lastId; };
+  // lane MY: p.pickRefs(refs) — the references of the last feature's edge / face picks (f.pickRefs, kernel-sheetmetal.js
+  // smFollowPicks), as generateScript writes them after a sheet-metal feature; `on` is a feature id (a script variable)
+  Builder.prototype.pickRefs = function (refs) {
+    var f = this.model.features[this.model.features.length - 1];
+    if (f && refs && typeof refs === 'object') f.pickRefs = JSON.parse(JSON.stringify(refs));
+    return this;
+  };
 
   function SketchBuilder(part, feature) { this.part = part; this.f = feature; }
   SketchBuilder.prototype._e = function (e) { this.f.entities.push(e); return this; };
@@ -2280,6 +2290,23 @@
           out.push('var ' + v + ' = p.shell(' + nv(f.thickness) + ', ' + fspecs2 + ', ' + optsStr({ name: f.name }) + ').last();');
           break;
         }
+      }
+      // lane MY: the picks' references, feature ids as their variables (a reference to a feature not written is dropped)
+      if (f.pickRefs && typeof f.pickRefs === 'object' && K.SM_PICKS && K.SM_PICKS[f.type]) {
+        var prs = [];
+        Object.keys(f.pickRefs).forEach(function (k) {
+          var r = f.pickRefs[k];
+          if (!r || typeof r !== 'object' || (r.on != null && !idVar[r.on])) return;
+          var body = JSON.stringify(r, function (kk, x) { return kk === 'on' || kk === 'fids' ? undefined : x; });
+          var extra = [];
+          if (r.on != null) extra.push('"on": ' + idVar[r.on]);
+          if (Array.isArray(r.fids)) extra.push('"fids": [' + r.fids.filter(function (id) { return idVar[id]; }).map(function (id) { return idVar[id]; }).join(', ') + ']');
+          prs.push(JSON.stringify(k) + ': ' + (extra.length ? body.replace(/^\{/, '{' + extra.join(', ') + (body === '{}' ? '' : ', ')) : body));
+        });
+        // chained before .last() so each feature stays one line (p.pickRefs applies to the last feature added)
+        var prl = out.length ? out[out.length - 1] : '', prc = 'pickRefs({ ' + prs.join(', ') + ' })';
+        if (prs.length && /\)\.last\(\);$/.test(prl)) out[out.length - 1] = prl.replace(/\.last\(\);$/, '.' + prc + '.last();');
+        else if (prs.length) out.push('p.' + prc + ';');
       }
     });
     // lane DK2: Flat-Pattern1's options, after the features

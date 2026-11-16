@@ -508,7 +508,7 @@
     // flange's or jog's bend is wrapped round it by BA, so the solid changes with K / BA too)
     if (sh && /^(sketchedBend|flange|jog|hem|unfold|fold)$/.test(f.type)) sh = model.sheet;   // (Unfold / Fold: BA sets the strip)
     if (model.noBends && (f.type === 'insertBends' || f.type === 'convertSM')) sh = [sh, 'noBends'];   // lane DQ: No Bends skips the bends
-    return JSON.stringify(f, function (k, v) { return k === 'profile' || k === 'name' ? undefined : v; }) + '|' + JSON.stringify(sh) + '|' + tessKey();
+    return JSON.stringify(f, function (k, v) { return k === 'profile' || k === 'name' || k === 'pickRefs' ? undefined : v; }) + '|' + JSON.stringify(sh) + '|' + tessKey();
   }
 
   // ------------------------------------------------------------------ bodies (multi-body parts)
@@ -732,7 +732,7 @@
   function rebuildModel(model, cache, opts) {
     var onProgress = opts && typeof opts.onProgress === 'function' ? opts.onProgress : null;   // lane progress
     var t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-    var errors = {}, warnings = {}, facePlanes = {}, cutDirs = {}, sketchRefs = {};
+    var errors = {}, warnings = {}, facePlanes = {}, cutDirs = {}, sketchRefs = {}, smRefs = {};
     var origFeatures = model.features, resolved = resolvedModel(model);
     model = linkThickness(resolved.model);
     var resolveErrors = resolved.featureErrors, sheetError = resolved.sheetError;
@@ -934,10 +934,16 @@
       // rfFN: the bodies before the feature; a feature that throws leaves them exactly as they were (a cut that fails
       // half way through its scope, a pattern that would make zero-thickness geometry), so the rest of the tree builds
       var saveBodies = ctx.bodies.slice(), saveBodyFeatures = ctx.bodyFeatures.slice();
+      var smPre = ctx.body, smOn = false;   // lane MY: the part before a sheet-metal feature whose picks follow edits
       try {
         if (resolveErrors[f.id] && !f.suppressed) throw new Error(resolveErrors[f.id]);
         if (sheetError && needsSheet(f) && !f.suppressed) throw new Error(sheetError);
         if (!f.suppressed && f.type !== 'sketch') parentFailed(f);
+        if (!f.suppressed && _.smFollowPicks && K.SM_PICKS && K.SM_PICKS[f.type]) {   // lane MY: picks by reference first
+          var smg = _.smFollowPicks(f, model, ctx);
+          if (smg !== f) { f = smg; model.features[p + j] = smg; }
+          smOn = true;
+        }
         if (!f.suppressed) switch (f.type) {   // rfFC: a suppressed feature (and its children) builds nothing
           case 'flange': {
             var fk = pickBody(f);
@@ -1033,7 +1039,8 @@
           case 'sketch': {
             // r10/facesketch10: a sketch on a face follows the face; the resolved frame is written onto the model's
             // own feature (as the profile is) and reported in build.facePlanes for a build made on a copy
-            var fp = resolveFacePlane(f, model, ctx.planes, function () { return bodyPlanes(ctx.body); });
+            // lane MY2: a sketch on a flange's wall follows the wall (kernel-sheetmetal.js smSketchPlane) before anything else
+            var fp = (_.smSketchPlane && _.smSketchPlane(f, model, ctx)) || resolveFacePlane(f, model, ctx.planes, function () { return bodyPlanes(ctx.body); });
             if (fp) {
               if (fp.plane !== f.plane) { f.plane = fp.plane; origFeatures[p + j].plane = fp.plane; keys[p + j] = featureKey(f, model); }
               facePlanes[f.id] = f.plane;
@@ -1161,6 +1168,7 @@
             zeroThickness(saveBodies, f, tool, saveBodyFeatures);
           }
         }
+        if (smOn) smWriteBack(p + j, f, smPre);
       } catch (e) {
         errors[f.id] = e.message || String(e);
         ctx.bodies = saveBodies; ctx.bodyFeatures = saveBodyFeatures;
@@ -1168,12 +1176,36 @@
       }
       steps.push({ key: keys[p + j], body: ctx.body, bodies: ctx.bodies.slice(), bodyFeatures: ctx.bodyFeatures.slice(), tool: ctx.tools[f.id] || null, plane: ctx.planes[f.id] || null, flange: ctx.flanges[f.id] || null, profile: f.profile || null, error: errors[f.id] || null, warning: warnings[f.id] || null, unfold: ctx.unfold });
     });
+    // lane MY: after a sheet-metal feature built, its picks' references (new ones for picks without) and the picks that
+    // moved go onto the model's feature, and into build.smRefs for a worker build (applyProfiles)
+    function smWriteBack(idx, fb, pre) {
+      var orig = origFeatures[idx], moved = fb._smMoved || null, refs = {}, have = orig.pickRefs && typeof orig.pickRefs === 'object' ? orig.pickRefs : {};
+      Object.keys(have).forEach(function (k) { refs[k] = have[k]; });
+      var made = null, tried = false;
+      function mk() { if (!tried) { tried = true; try { made = _.smMakePicks(fb, model, ctx, pre); } catch (eM) { made = null; } } return made; }
+      var pts = {};
+      _.smPickList(fb).forEach(function (pk) {
+        var at = pk.get();
+        pts[pk.path] = at;
+        var r = refs[pk.path];
+        if (r && (!_.smRefFits(r, at) || !_.smRefOwnerOK(r, model)) && !(moved && moved[pk.path])) r = null;   // re-picked: a new reference
+        if (r && moved && moved[pk.path]) r = Object.assign({}, r, { pick: at.slice() });
+        if (!r && mk() && made[pk.path]) r = Object.assign({}, made[pk.path], { pick: at.slice() });
+        if (r) refs[pk.path] = r; else delete refs[pk.path];
+      });
+      Object.keys(refs).forEach(function (k) { if (!(k in pts)) delete refs[k]; });
+      if (!moved && JSON.stringify(refs) === JSON.stringify(have)) return;
+      if (moved) Object.keys(moved).forEach(function (path) { var q = _.smPickList(orig).filter(function (x) { return x.path === path; })[0]; if (q) q.set(moved[path].slice()); });
+      orig.pickRefs = refs;
+      smRefs[fb.id] = { pickRefs: refs, moved: moved || {} };
+      if (moved) keys[idx] = featureKey(fb, model);
+    }
     var t1 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     // profiles: the computed profile of every sketch, by feature id, so a build made on a copy of the model (a worker)
     // can hand them back to the original with applyProfiles
     var profiles = {};
     Object.keys(ctx.sketches).forEach(function (id) { profiles[id] = ctx.sketches[id].profile || null; });
-    return { body: ctx.body, bodies: ctx.bodies, bodyFeatures: ctx.bodyFeatures, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles, facePlanes: withCutDirs(facePlanes, cutDirs, sketchRefs), cutDirs: cutDirs, sketchRefs: sketchRefs,
+    return { body: ctx.body, bodies: ctx.bodies, bodyFeatures: ctx.bodyFeatures, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles, facePlanes: withCutDirs(facePlanes, cutDirs, sketchRefs, smRefs), cutDirs: cutDirs, sketchRefs: sketchRefs, smRefs: smRefs,
       equations: resolved.vars, equationErrors: resolved.errors, configuration: resolved.configuration, suppressed: resolved.suppressed || {} };
   }
 
@@ -1199,7 +1231,7 @@
       bodyFeatures: bodies.map(function (b, i) { return build.bodyFeatures && build.bodyFeatures[i] != null ? build.bodyFeatures[i] : null; }),
       body: !bodies.length && build.body ? build.body.pack() : null, tools: tools,
       planes: build.planes || {}, flanges: build.flanges || {}, errors: build.errors || {}, warnings: build.warnings || {},
-      time: build.time || 0, reused: build.reused || 0, profiles: profiles, facePlanes: build.facePlanes || {}, cutDirs: build.cutDirs || {}, sketchRefs: build.sketchRefs || {},
+      time: build.time || 0, reused: build.reused || 0, profiles: profiles, facePlanes: build.facePlanes || {}, cutDirs: build.cutDirs || {}, sketchRefs: build.sketchRefs || {}, smRefs: build.smRefs || {},
       equations: build.equations || {}, equationErrors: build.equationErrors || {}, configuration: build.configuration || null, suppressed: build.suppressed || {}
     };
   }
@@ -1225,7 +1257,7 @@
     return {
       body: combineBodies(bodies), bodies: bodies, bodyFeatures: bodyFeatures, tools: tools,
       planes: obj.planes || {}, flanges: obj.flanges || {}, errors: obj.errors || {}, warnings: obj.warnings || {},
-      time: obj.time || 0, reused: obj.reused || 0, profiles: obj.profiles || {}, facePlanes: withCutDirs(obj.facePlanes || {}, obj.cutDirs || {}, obj.sketchRefs || {}), cutDirs: obj.cutDirs || {}, sketchRefs: obj.sketchRefs || {}, cache: null,
+      time: obj.time || 0, reused: obj.reused || 0, profiles: obj.profiles || {}, facePlanes: withCutDirs(obj.facePlanes || {}, obj.cutDirs || {}, obj.sketchRefs || {}, obj.smRefs || {}), cutDirs: obj.cutDirs || {}, sketchRefs: obj.sketchRefs || {}, smRefs: obj.smRefs || {}, cache: null,
       equations: obj.equations || {}, equationErrors: obj.equationErrors || {}, configuration: obj.configuration || null, suppressed: obj.suppressed || {}
     };
   }
@@ -1239,7 +1271,13 @@
   function applyProfiles(model, profiles, facePlanes) {
     if (!profiles && !facePlanes) return model;
     var dirs = facePlanes && facePlanes.cutDirs, refs = facePlanes && facePlanes.sketchRefs;   // lane sketchref: sketches moved by their model references
+    var smr = facePlanes && facePlanes.smRefs;   // lane MY: sheet-metal picks' references and the picks they moved
     model.features.forEach(function (f) {
+      if (smr && smr[f.id] && _.smPickList) {
+        var mv = smr[f.id].moved || {};
+        Object.keys(mv).forEach(function (path) { var q = _.smPickList(f).filter(function (x) { return x.path === path; })[0]; if (q) q.set(mv[path].slice()); });
+        f.pickRefs = smr[f.id].pickRefs;
+      }
       if (f.type === 'sketch' && refs && refs[f.id] && refs[f.id].entities) { f.entities = refs[f.id].entities; f.rels = refs[f.id].rels; }
       if (f.type === 'sketch' && profiles && profiles[f.id]) f.profile = profiles[f.id];
       if (f.type === 'sketch' && facePlanes && facePlanes[f.id] && f.plane && f.plane.face) f.plane = facePlanes[f.id];
@@ -1247,7 +1285,10 @@
     });
     return model;
   }
-  function withCutDirs(facePlanes, cutDirs, sketchRefs) {
+  function withCutDirs(facePlanes, cutDirs, sketchRefs, smRefs) {
+    if (facePlanes && smRefs && Object.keys(smRefs).length) {
+      try { Object.defineProperty(facePlanes, 'smRefs', { value: smRefs, enumerable: false, writable: true, configurable: true }); } catch (e) { /* frozen */ }
+    }
     if (facePlanes && cutDirs && Object.keys(cutDirs).length) {
       try { Object.defineProperty(facePlanes, 'cutDirs', { value: cutDirs, enumerable: false, writable: true, configurable: true }); } catch (e) { /* frozen */ }
     }
