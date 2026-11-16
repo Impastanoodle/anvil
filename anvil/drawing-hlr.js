@@ -164,7 +164,7 @@
 
     // xsil (rfFI): visible pieces of exact silhouettes of curved faces, { l: [u0, v0, u1, v1], dev } with dev how far
     // the face's facet outline (what hides other linework) may lie from it in this view, for rimsToSilhouettes
-    var vis = [], hid = [], tan = [], fsil = [], xsil = [], tanOn =opts.tangent === 'visible' || opts.tangent === 'font';
+    var vis = [], hid = [], tan = [], fsil = [], xsil = [], ipts = [], tanOn =opts.tangent === 'visible' || opts.tangent === 'font';
     // true curves: edges on a circle or arc of the kernel's analytic records are collected per curve (as angle
     // intervals) and drawn as exact circles, arcs, ellipses or, edge-on, exact lines; silhouettes of cylinders and
     // cones are their exact tangent generators; facets of one analytic surface never show the edge between them
@@ -280,6 +280,8 @@
               // (on Anvil's solid each piece gets its own depth tolerance, from how far it lies off the facet chord, so
               // a piece pulled back onto a corner does not show through the faces around it)
               var offC = function (x) { return K.pointSegmentDistance ? K.pointSegmentDistance(x, ed.a, ed.b) : chn.dev; };
+              // (rfMS) the chain's pieces in the view: drawn lines lying on them run on as one smooth curve
+              for (var cj = 0; cj + 1 < chn.pts.length; cj++) ipts.push([V.dot(chn.pts[cj], U), V.dot(chn.pts[cj], Vv), V.dot(chn.pts[cj + 1], U), V.dot(chn.pts[cj + 1], Vv)]);
               for (var ci = 0; ci + 1 < chn.pts.length; ci++) edgePiece({ a: chn.pts[ci], b: chn.pts[ci + 1], faces: ed.faces, normals: ed.normals, exactDone: true, eps: brepMesh ? ceps : 2 * Math.max(offC(chn.pts[ci]), offC(chn.pts[ci + 1])) + diag * 1e-6, isect: true, skip: brepMesh ? null : { faces: ed.faces } }, null);
               return;
             }
@@ -1169,6 +1171,7 @@
     res.arcs.tangent = tex.arcs; res.ellipses.tangent = tex.ellipses;
     // (rfIJ) ends that meet to within rounding are one point (exact joins in the DXF)
     if (!opts._keepGaps) ['visible', 'hidden', 'tangent'].forEach(function (st) { _.weldEnds(res.lines[st], res.ellipses[st], res.arcs[st]); });
+    if (ipts.length) res.isect = ipts;   // (rfMS) the pieces of true intersection curves [u0, v0, u1, v1] (render: smooth chains)
     res.stats = { visibleLines: res.lines.visible.length, hiddenLines: res.lines.hidden.length, visibleCircles: res.circles.visible.length, hiddenCircles: res.circles.hidden.length, occluders: tris.length };
     if (CV || fitted) { res.stats.visibleArcs = res.arcs.visible.length; res.stats.hiddenArcs = res.arcs.hidden.length; res.stats.visibleEllipses = res.ellipses.visible.length; res.stats.hiddenEllipses = res.ellipses.hidden.length; }
     if (tanOn) res.stats.tangentLines = res.lines.tangent.length + res.circles.tangent.length + res.arcs.tangent.length + res.ellipses.tangent.length;

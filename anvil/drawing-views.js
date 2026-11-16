@@ -80,6 +80,62 @@
     if (list.length) v.section.excluded = list; else delete v.section.excluded;
     return v;
   }
+  // (rfMS) Exploded state per view (SolidWorks: a drawing view's Properties ▸ "Show in exploded or model break state"):
+  // view.exploded = the id of one of the assembly's Exploded Views (true: the one the assembly shows, else its first).
+  // Model and projected views of an assembly only. The view is drawn from the assembly rebuilt with that explode
+  // (Assembly.rebuild of a copy with model.exploded set, its part builds from the drawn build's cache), one mesh per
+  // explode cached on the drawn mesh (meshes are per build), worked out on the main thread (the worker holds the
+  // collapsed mesh only). A view that is not exploded, or an explode that is gone, draws the collapsed mesh.
+  function explodedViewsOf(model) { return (model && model.components && model.explodedViews) || []; }
+  function explodeIdOf(model, ex) {
+    var list = explodedViewsOf(model);
+    if (!ex || !list.length) return null;
+    if (ex === true) return model.exploded != null && list.some(function (x) { return x.id === model.exploded; }) ? model.exploded : list[0].id;
+    var hit = list.filter(function (x) { return x.id === ex || x.name === ex || String(x.id) === String(ex); })[0];
+    return hit ? hit.id : null;
+  }
+  // setViewExploded(doc, viewId, ex, model?): ex true / an Exploded View's id or name / false | null (collapsed)
+  function setViewExploded(doc, viewId, ex, model) {
+    var v = D.findView(doc, viewId);
+    if (!v) throw new Error('No drawing view ' + viewId);
+    if (!ex) { v.exploded = false; return v; }   // (rfMS2: cleared is stored: a view without the key follows the assembly)
+    if (v.kind && v.kind !== 'projected') throw new Error('Only a model view or a projected view can show the exploded state');
+    if (model) {
+      if (!model.components) throw new Error('Show in exploded state: the drawing is not of an assembly');
+      if (!explodedViewsOf(model).length) throw new Error('The assembly has no exploded view (Insert ▸ Exploded View first)');
+      var id = explodeIdOf(model, ex);
+      if (id == null) throw new Error('No exploded view ' + ex);
+      v.exploded = id;
+    } else v.exploded = ex === true ? true : ex;
+    return v;
+  }
+  // (rfMS2) v.exploded true / id: exploded; false: collapsed even while the assembly is shown exploded (SolidWorks);
+  // no key (a view saved before rfMS, or any other view kind): the assembly's shown state, the drawn mesh as it is.
+  // explodedShown(v, model) -> the effective value (an Exploded View id, or false): summary() and the PM
+  function explodedShown(v, model) {
+    if (!v || !explodedViewsOf(model).length || (v.kind && v.kind !== 'projected')) return false;
+    var id = explodeIdOf(model, v.exploded === undefined ? (model.exploded != null ? model.exploded : null) : v.exploded);
+    return id == null ? false : id;
+  }
+  function viewMesh(doc, v, mesh) {
+    var model = (_.CTX && _.CTX.model) || _.lastModel;
+    if (!v || v.exploded === undefined || !mesh || !model || !explodedViewsOf(model).length || typeof Assembly === 'undefined') return mesh;
+    var own = !v.kind || v.kind === 'projected', id = own && v.exploded ? explodeIdOf(model, v.exploded) : null;
+    var shown = model.exploded != null ? explodeIdOf(model, model.exploded) : null;
+    if (id === shown) return mesh;
+    var key = id == null ? 'collapsed' : 'x' + id, memo = mesh._drawingExpl;
+    if (!memo) { memo = {}; try { Object.defineProperty(mesh, '_drawingExpl', { value: memo, enumerable: false, configurable: true }); } catch (e) { return mesh; } }
+    if (memo[key] !== undefined) return memo[key] || mesh;
+    var out = null;
+    try {
+      var m2 = JSON.parse(JSON.stringify(model)), bd = _.CTX && _.CTX.build;
+      if (id == null) delete m2.exploded; else m2.exploded = id;
+      var b2 = Assembly.rebuild(m2, bd && bd.cache || null);
+      if (b2 && b2.body) out = K.meshFromBody(b2.body);
+    } catch (err) { out = null; }
+    memo[key] = out;
+    return out || mesh;
+  }
   // a box as CSG: ax = three orthonormal axes, lo / hi = coordinate ranges along them
   function boxSolid(ax, lo, hi) {
     function pt(c) { return new CSG.Vector(ax[0][0] * c[0] + ax[1][0] * c[1] + ax[2][0] * c[2], ax[0][1] * c[0] + ax[1][1] * c[1] + ax[2][1] * c[2], ax[0][2] * c[0] + ax[1][2] * c[1] + ax[2][2] * c[2]); }
@@ -1431,7 +1487,7 @@
         if (q.box) { var b0 = M([q.box.x0, q.box.y0]), b1 = M([q.box.x1, q.box.y1]); q.box = { x0: b0[0], y0: b0[1], x1: b1[0], y1: b1[1] }; }
         out.push(q); return;
       }
-      delete q.chain;
+      delete q.chain; delete q.bz;
       if (p.k === 'line') {
         var dx = p.b[0] - p.a[0], dy = p.b[1] - p.a[1], tt = [0, 1];
         xs.forEach(function (X) { if (Math.abs(dx) > 1e-15) { var t = (X - p.a[0]) / dx; if (t > 0 && t < 1) tt.push(t); } });
@@ -2447,7 +2503,7 @@
     }
     return pts;
   }
-  function withAB(p, a, b) { var q = {}; Object.keys(p).forEach(function (kk) { q[kk] = p[kk]; }); q.a = a; q.b = b; return q; }
+  function withAB(p, a, b) { var q = {}; Object.keys(p).forEach(function (kk) { q[kk] = p[kk]; }); q.a = a; q.b = b; if (q.bz && (a[0] !== p.a[0] || a[1] !== p.a[1] || b[0] !== p.b[0] || b[1] !== p.b[1])) delete q.bz; return q; }   // (rfMS) a cut piece of a curve chord is straight
   // the pieces of a sheet primitive inside polygon P: lines split where they cross it, arcs / circles into arcs; []
   // when outside; other kinds kept when their centre is inside
   function primInPoly(p, P) {
@@ -2784,6 +2840,7 @@
   _.profilePts = profilePts; _.rayOut = rayOut; _.clipLayerToPoly = clipLayerToPoly;   // (rfCQ)
 
   D.flatCurves = flatCurves; D.bendKey = bendKey; D.bendKeyMatch = bendKeyMatch; D.flatData = flatData; D.flatProjection = flatProjection; D.bendNoteText = bendNoteText; D.bendTag = bendTag;
+  D.setViewExploded = setViewExploded; D.explodedShown = explodedShown; _.viewMesh = viewMesh; _.explodeIdOf = explodeIdOf;   // (rfMS)
   D.setSectionExcluded = setSectionExcluded; D.sectionOf = sectionOf; D.hatchLines = hatchLines; D.hatchStyle = hatchStyle; D.hatchAssign = hatchAssign; D.HATCH_PATTERNS = Object.keys(HATCH_PATTERNS);
   D.hatchPattern = hatchPattern; D.patternLines = patternLines; D.snapHatch = snapHatch; D.clipProjection = clipProjection; D.reattachDim = reattachDim;
   _.excludedBodies = excludedBodies; _.sectionKey = sectionKey; _.capLoops = capLoops; _.HATCH_PATTERNS = HATCH_PATTERNS; _.clipSeg = clipSeg; _.primHitsRect = primHitsRect; _.segOutsideRect = segOutsideRect;

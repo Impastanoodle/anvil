@@ -13,6 +13,8 @@
   var DW = UI.drawingInternal, D = DW.D, doc = DW.doc, cctx = DW.cctx, syncBom = DW.syncBom, relayout = DW.relayout, units = DW.units, mesh = DW.mesh, paperK = DW.paperK, edit = DW.edit, editView = DW.editView;
   var isAsm = DW.isAsm, render = DW.render, settle = DW.settle, queueRender = DW.queueRender, svgEl = DW.svgEl, fitSheet = DW.fitSheet, pxToPaper = DW.pxToPaper, drawOverlay = DW.drawOverlay;
   var dimMatches = DW.dimMatches, viewAt = DW.viewAt, entityAt = DW.entityAt, segDist = DW.segDist;
+  // (rfMS2) a model view made while the assembly is shown exploded starts with Show in exploded state ticked
+  Drawing.explodedNow = function () { return !!(isAsm() && App.model.exploded != null && (App.model.explodedViews || []).length); };
 
   // ------------------------------------------------------------------ commands
   function cmdStandard3View() {
@@ -453,7 +455,7 @@
       title: v.name, icon: 'drawingView', command: 'viewProps',
       values: { orient: v.orient, display: v.display, tangent: v.tangent || 'removed', scale: v.section && v.section.parentScale ? 'parent' : v.scale ? Drawing.scaleText(v.scale) : 'sheet', dimType: v.dimType === 'true' ? 'true' : 'projected',
         swm: !!(v.section && v.section.scaleWithModel), partial: !!(v.section && v.section.partial), dstyle: (v.detail && v.detail.style) || 'standard', outline: (v.detail && v.detail.outline) || 'none',
-        showLabel: Drawing.viewLabelShown(v), excluded: v.kind === 'section' && v.section && (!v.section.type || v.section.type === 'full') ? (v.section.excluded || []).slice() : undefined },
+        showLabel: Drawing.viewLabelShown(v), exploded: !!Drawing.explodedShown(v, App.model), excluded: v.kind === 'section' && v.section && (!v.section.type || v.section.type === 'full') ? (v.section.excluded || []).slice() : undefined },
       // projected, section and detail views take their direction from the parent
       groups: (v.kind ? [] : [{ title: 'Orientation', fields: [{ type: 'select', key: 'orient', label: 'View', rerender: true, options: Drawing.ORIENTS }] }]).concat([
         { title: 'Display Style', fields: [{ type: 'select', key: 'display', label: 'Style', options: [['hlv', 'Hidden Lines Visible'], ['hlr', 'Hidden Lines Removed']] }].concat(v.kind === 'detail' ? [] : [
@@ -467,6 +469,9 @@
           disabledOption: function (o, val) { return o === 'true' && ORTHO_NAMES.indexOf(v.kind ? v.orient : val.orient) >= 0 ? 'An orthographic view shows true lengths.' : null; } }] }] : [],
         v.kind === 'section' ? [{ title: 'Section Line', fields: (v.section && v.section.partial && !v.section.removed ? [{ type: 'check', key: 'partial', label: 'Partial section' }] : []).concat([{ type: 'check', key: 'swm', label: 'Scale with model changes' }]) }] : [],
         v.kind === 'section' && v.section && (!v.section.type || v.section.type === 'full') && isAsm() ? [excludedGroup()] : [],   // (rfDN)
+        // (rfMS) SolidWorks' Reference Configuration box: Show in exploded or model break state, per view (an assembly
+        // with an Exploded View; model and projected views)
+        (!v.kind || v.kind === 'projected') && isAsm() && (App.model.explodedViews || []).length ? [{ title: 'Reference Configuration', fields: [{ type: 'check', key: 'exploded', label: 'Show in exploded or model break state' }] }] : [],
         v.kind === 'detail' ? [{ title: 'Detail Circle', fields: [{ type: 'select', key: 'dstyle', label: 'Circle style', options: DETAIL_STYLE_OPTIONS }, { type: 'select', key: 'outline', label: 'Outline', options: [['none', 'None'], ['full', 'Full outline'], ['jagged', 'Jagged outline']] }] }] : [],
         // (rfCQ) the view label: off by default on model and projected views, on for section, detail and auxiliary views
         [{ title: 'Label', fields: [{ type: 'check', key: 'showLabel', label: 'Display label' }] }]),
@@ -491,6 +496,7 @@
           if (w.kind === 'section' && w.section) Drawing.setSectionOptions(dc, mesh(), w.id, { partial: w.section.partial && !val.partial ? null : undefined, scaleWithModel: !!val.swm });
           if (w.kind === 'section' && w.section && Array.isArray(val.excluded)) Drawing.setSectionExcluded(dc, w.id, val.excluded);   // (rfDN)
           if (w.kind === 'detail' && w.detail) Drawing.setDetailOptions(dc, w.id, { style: val.dstyle, outline: val.outline });
+          if (val.exploded !== undefined && !val.exploded !== !Drawing.explodedShown(w, App.model)) Drawing.setViewExploded(dc, w.id, val.exploded ? true : false, App.model);   // (rfMS)
           Drawing.setViewLabel(dc, w.id, !!val.showLabel);   // (rfCQ)
           dc.layout = 'manual';
         });
@@ -2707,8 +2713,11 @@
         if (o.dimType !== undefined) Drawing.setDimType(dc, viewId, o.dimType);
         if (o.partial !== undefined || o.scaleWithModel !== undefined) Drawing.setSectionOptions(dc, mesh(), viewId, { partial: o.partial, scaleWithModel: o.scaleWithModel });
         if (o.style !== undefined || o.outline !== undefined) Drawing.setDetailOptions(dc, viewId, { style: o.style, outline: o.outline });
+        if (o.exploded !== undefined) Drawing.setViewExploded(dc, viewId, o.exploded || null, App.model);   // (rfMS)
       }) ? api.summary() : null;
     };
+    // (rfMS) exploded(viewId, on | Exploded View id / name): Show in exploded or model break state, one undo step
+    api.exploded = function (viewId, on) { return api.viewOptions(viewId, { exploded: on === undefined ? true : on }); };
     // (rfS) smartDim(viewId, pick1, pick2 | null, at, { minmax }) -> the dimension added (Drawing.smartDim picks, view
     // model units), one undo step; dwg() -> a promise of { name, bytes } or null (no converter: the message is shown)
     api.smartDim = function (viewId, p1, p2, at, opts) {

@@ -272,8 +272,9 @@
         var key = '_chains_' + style;
         if (!list[key]) Object.defineProperty(list, key, { value: chainLines(list, pr.bounds), enumerable: false });
         list[key].forEach(function (ch) {
-          var cid = ch.length > 1 ? ++chainSeq : null;
-          ch.forEach(function (l) { var q = { k: 'line', a: toSheet([l[0], l[1]]), b: toSheet([l[2], l[3]]), layer: layer, style: style }; if (cid) q.chain = cid; prims.push(q); });
+          var cid = ch.length > 1 ? ++chainSeq : null, qs = [];
+          ch.forEach(function (l) { var q = { k: 'line', a: toSheet([l[0], l[1]]), b: toSheet([l[2], l[3]]), layer: layer, style: style }; if (cid) q.chain = cid; prims.push(q); qs.push(q); });
+          if (cid && pr.isect) smoothChain(ch, qs, pr);
         });
       }
       chained(pr.lines.visible, 'visible');
@@ -1705,6 +1706,95 @@
   var CAP_EM = 0.72, SHOULDER = 4, TEXT_GAP = 1;   // leader shoulder and the gap round dimension text, paper mm
   function textWidth(t, h) { return String(t).length * h * 0.78; }
 
+  // ------------------------------------------------------------------ smooth intersection curves (rfMS)
+  // Where a hole crosses a bend, two bores cross or a cut crosses a cylinder, projectView draws the true intersection
+  // curve as pieces between points on it (pr.isect: those pieces [u0, v0, u1, v1] in the view frame). A drawn line lying
+  // on such a piece (the whole piece, or the part of it that is visible / hidden) is a piece of the curve, and a run of
+  // a chain's curve pieces is one smooth curve: each piece gets cubic Bézier controls (q.bz = [c1, c2], sheet units)
+  // from tangents through its neighbours (Bessel: the parabola through three points; at a run's end the reflection of
+  // the next tangent; a closed run wraps round). The piece stays a line for hit testing, dimensions and clipping (a
+  // clipped piece drops bz); the writers draw the run as Béziers (SVG C, PDF c) and DXF R2000 as one SPLINE (R12: a
+  // POLYLINE through the curve). Lines that only touch the curve (a silhouette, an edge it meets) stay straight.
+  function isectGrid(pr) {
+    if (pr._isectGrid) return pr._isectGrid;
+    var bd = pr.bounds, span = bd ? Math.max(bd.umax - bd.umin, bd.vmax - bd.vmin, 1e-9) : 1, h = span / 256, cells = {};
+    pr.isect.forEach(function (c) {
+      for (var i = Math.floor(Math.min(c[0], c[2]) / h); i <= Math.floor(Math.max(c[0], c[2]) / h); i++)
+        for (var j = Math.floor(Math.min(c[1], c[3]) / h); j <= Math.floor(Math.max(c[1], c[3]) / h); j++) (cells[i + ',' + j] || (cells[i + ',' + j] = [])).push(c);
+    });
+    function segD(u, v, c) {
+      var dx = c[2] - c[0], dy = c[3] - c[1], L2 = dx * dx + dy * dy, t = L2 > 0 ? ((u - c[0]) * dx + (v - c[1]) * dy) / L2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      return Math.hypot(u - c[0] - dx * t, v - c[1] - dy * t);
+    }
+    var g = { h: span * 1e-5, span: span, on: function (l) {
+      // both ends and the middle on one recorded piece (one end may have been carried a little on to meet an outline:
+      // closeEnds / closeFreeEnds reach up to the chord tolerance)
+      var tz = span * 1e-6 + 4e-6 * (1 + Math.abs(l[0]) + Math.abs(l[1])), tl = span * 3e-4, um = (l[0] + l[2]) / 2, vm = (l[1] + l[3]) / 2;
+      var c = cells[Math.floor(um / h) + ',' + Math.floor(vm / h)] || [];
+      for (var n = 0; n < c.length; n++) {
+        var ea = segD(l[0], l[1], c[n]), eb = segD(l[2], l[3], c[n]);
+        if ((ea <= tz || eb <= tz) && ea <= tl && eb <= tl && segD(um, vm, c[n]) <= tl) return true;
+      }
+      return false;
+    } };
+    Object.defineProperty(pr, '_isectGrid', { value: g, enumerable: false, configurable: true });
+    return g;
+  }
+  function smoothChain(ch, qs, pr) {
+    var G = isectGrid(pr), n = ch.length, i;
+    var closed = n > 2 && Math.hypot(ch[0][0] - ch[n - 1][2], ch[0][1] - ch[n - 1][3]) <= G.h + 1e-9;
+    var curve = ch.map(function (l) { return G.on(l); });
+    var all = curve.every(Boolean);
+    // runs of curve pieces: [first, last] piece indices
+    var runs = [], s = -1;
+    for (i = 0; i <= n; i++) {
+      if (i < n && curve[i]) { if (s < 0) s = i; }
+      else if (s >= 0) { runs.push([s, i - 1]); s = -1; }
+    }
+    function unit(d) { var L = Math.hypot(d[0], d[1]); return L > 1e-15 ? [d[0] / L, d[1] / L] : null; }
+    function bessel(P0, P1, P2) {
+      var d0 = Math.hypot(P1[0] - P0[0], P1[1] - P0[1]), d1 = Math.hypot(P2[0] - P1[0], P2[1] - P1[1]);
+      if (!(d0 > 1e-15) || !(d1 > 1e-15)) return null;
+      return unit([((P2[0] - P1[0]) * d0 / d1 + (P1[0] - P0[0]) * d1 / d0), ((P2[1] - P1[1]) * d0 / d1 + (P1[1] - P0[1]) * d1 / d0)]);
+    }
+    runs.forEach(function (r) {
+      var m = r[1] - r[0] + 1, cyc = closed && all;
+      if (m < 2 && !cyc) return;
+      var P = [], l0 = ch[r[0]], lv = Math.hypot(l0[2] - l0[0], l0[3] - l0[1]);
+      var sc = lv > 1e-15 ? Math.hypot(qs[r[0]].b[0] - qs[r[0]].a[0], qs[r[0]].b[1] - qs[r[0]].a[1]) / lv : 1;   // sheet / view
+      for (var k = r[0]; k <= r[1]; k++) P.push(qs[k].a);
+      P.push(qs[r[1]].b);
+      var T = [];
+      for (k = 0; k <= m; k++) {
+        if (k > 0 && k < m) T[k] = bessel(P[k - 1], P[k], P[k + 1]);
+        else if (cyc) T[k] = bessel(P[m - 1], P[0], P[1]);
+      }
+      if (!cyc) {
+        var u0 = unit([P[1][0] - P[0][0], P[1][1] - P[0][1]]), um = unit([P[m][0] - P[m - 1][0], P[m][1] - P[m - 1][1]]);
+        T[0] = m > 1 && T[1] && u0 ? unit([2 * u0[0] - T[1][0], 2 * u0[1] - T[1][1]]) : u0;
+        T[m] = m > 1 && T[m - 1] && um ? unit([2 * um[0] - T[m - 1][0], 2 * um[1] - T[m - 1][1]]) : um;
+      }
+      for (k = 0; k < m; k++) {
+        var A = P[k], B = P[k + 1], L = Math.hypot(B[0] - A[0], B[1] - A[1]) / 3, ta = T[k], tb = T[k + 1];
+        if (!ta || !tb || !(L > 0)) continue;
+        // (a tangent turned more than 60° off the chord is no smooth curve: the piece stays straight)
+        var cd = [(B[0] - A[0]) / (3 * L), (B[1] - A[1]) / (3 * L)];
+        if (ta[0] * cd[0] + ta[1] * cd[1] < 0.5 || tb[0] * cd[0] + tb[1] * cd[1] < 0.5) continue;
+        // (the true curve lies within the chain's tolerance of every piece (projectView: diag x 1e-5): handles that
+        // would carry the cubic further off its chord than a few times that are shortened, the tangents kept)
+        var da = Math.abs(ta[0] * cd[1] - ta[1] * cd[0]) * L, db = Math.abs(tb[0] * cd[1] - tb[1] * cd[0]) * L, lim = G.span * sc * 3e-5;
+        var dv = 0.75 * Math.max(da, db), f = dv > lim ? lim / dv : 1;
+        qs[r[0] + k].bz = [[A[0] + ta[0] * L * f, A[1] + ta[1] * L * f], [B[0] - tb[0] * L * f, B[1] - tb[1] * L * f]];
+      }
+    });
+  }
+  // a point of piece p (a line with bz: its cubic) at t
+  function bzAt(p, t) {
+    var s = 1 - t, a = s * s * s, b = 3 * s * s * t, c = 3 * s * t * t, d = t * t * t, c1 = p.bz[0], c2 = p.bz[1];
+    return [a * p.a[0] + b * c1[0] + c * c2[0] + d * p.b[0], a * p.a[1] + b * c1[1] + c * c2[1] + d * p.b[1]];
+  }
+
   // ------------------------------------------------------------------ writers
   function num(x) { return String(Math.round(x * 1e4) / 1e4); }
   // (rfIJ) DXF geometry (lines, arcs, circles, ellipses, R12 polylines) to 1e-9: edges that meet on the sheet meet in the
@@ -1803,8 +1893,10 @@
         // a chain of lines (chainLines) is one path: its dashes run on along it
         if (p.k === 'line' && p.chain && lst[pi - 1] && lst[pi - 1].chain === p.chain) return;
         if (p.k === 'line' && p.chain && lst[pi + 1] && lst[pi + 1].chain === p.chain) {
-          var pts = [X(p.a) + ' ' + Y(p.a), X(p.b) + ' ' + Y(p.b)];
-          for (var pj = pi + 1; lst[pj] && lst[pj].chain === p.chain; pj++) pts.push(X(lst[pj].b) + ' ' + Y(lst[pj].b));
+          // (rfMS) a piece of a smooth curve is a cubic Bézier
+          var seg = function (q) { return q.bz ? 'C' + X(q.bz[0]) + ' ' + Y(q.bz[0]) + ' ' + X(q.bz[1]) + ' ' + Y(q.bz[1]) + ' ' + X(q.b) + ' ' + Y(q.b) : 'L' + X(q.b) + ' ' + Y(q.b); };
+          var pts = ['M' + X(p.a) + ' ' + Y(p.a), seg(p)];
+          for (var pj = pi + 1; lst[pj] && lst[pj].chain === p.chain; pj++) pts.push(seg(lst[pj]));
           var dshc = p.style === 'hidden' ? ' stroke-dasharray="' + dash + '"' : p.style === 'tanfont' ? ' stroke-dasharray="' + chain + '"' : '';
           if (p.style === 'hidden') {
             var clen = Math.hypot(p.b[0] - p.a[0], p.b[1] - p.a[1]);
@@ -1812,7 +1904,7 @@
             var sdc = shortDash(clen, 3 * k, 1.5 * k);
             if (sdc) dshc = ' stroke-dasharray="' + num(sdc[0]) + ' ' + num(sdc[1]) + '" stroke-dashoffset="' + num(sdc[2]) + '" stroke-linecap="butt"';
           }
-          out.push('<path class="' + p.style + '" d="M' + pts.join(' L') + '" stroke-width="' + num((STROKE[p.style] || 0.25) * k) + '" stroke-linejoin="round"' + dshc + '/>');
+          out.push('<path class="' + p.style + '" d="' + pts.join(' ') + '" stroke-width="' + num((STROKE[p.style] || 0.25) * k) + '" stroke-linejoin="round"' + dshc + '/>');
           return;
         }
         // hatch lines (r6/drawings6): a run of them is one path, each line a move and a relative line-to, so a hatched
@@ -2012,6 +2104,19 @@
       });
       sheet.prims.forEach(function (p) { var g = p._hg; if (g && g._w === hwrite && g._n === g.lines.length && g.lines.length) g._ok = true; });
     }
+    // (rfMS) runs of smooth-curve pieces (consecutive lines of one chain with Bézier controls): one entity each
+    function bzMark(p, run) {
+      Object.defineProperty(p, '_bzw', { value: hwrite, configurable: true, writable: true });
+      Object.defineProperty(p, '_bzRun', { value: run, configurable: true, writable: true });
+    }
+    sheet.prims.forEach(function (p, i) {
+      if (p.k !== 'line' || !p.bz || !p.chain) return;
+      var prv = sheet.prims[i - 1];
+      if (prv && prv.k === 'line' && prv.bz && prv.chain === p.chain && prv._bzw === hwrite) { bzMark(p, null); return; }
+      var run = [p];
+      for (var j = i + 1; sheet.prims[j] && sheet.prims[j].k === 'line' && sheet.prims[j].bz && sheet.prims[j].chain === p.chain; j++) run.push(sheet.prims[j]);
+      if (run.length >= 2) bzMark(p, run);
+    });
     sheet.prims.forEach(function (p) { if (!(p.dimIx != null && dimOf[p.dimIx])) entity(p, msBR); });
     dimGroups.forEach(function (g) {
       var d = g.d, X = g.d.dxf, type = { linear: 0, aligned: 1, dia: 3, rad: 4, angular: 5 }[X.type];
@@ -2073,6 +2178,36 @@
         });
         var hseed = (D.interiorPoint ? D.interiorPoint(hg.loops) : null) || hg.loops[0][0];
         pr(98, 1); pr(10, num(hseed[0])); pr(20, num(hseed[1]));
+        return;
+      }
+      // (rfMS) a smooth curve's run of pieces: R2000 one planar cubic SPLINE (its Bézier spans, knots at the chord
+      // lengths, interior knots × 3); R12 one 2D POLYLINE through points on it (chord error under 0.01 mm)
+      if (p.k === 'line' && p.bz && p._bzw === hwrite) {
+        var run = p._bzRun;
+        if (!run) return;
+        if (r2000) {
+          var kn = [0, 0, 0, 0], cps = [run[0].a], tk = 0;
+          run.forEach(function (q) { cps.push(q.bz[0], q.bz[1], q.b); tk += Math.hypot(q.b[0] - q.a[0], q.b[1] - q.a[1]); kn.push(tk, tk, tk); });
+          kn.push(tk);
+          head('SPLINE', 'AcDbSpline', true);
+          pr(210, 0); pr(220, 0); pr(230, 1); pr(70, 8); pr(71, 3); pr(72, kn.length); pr(73, cps.length); pr(74, 0);
+          pr(42, '0.0000000001'); pr(43, '0.0000000001');
+          kn.forEach(function (t) { pr(40, gnum(t)); });
+          cps.forEach(function (q) { pr(10, gnum(q[0])); pr(20, gnum(q[1])); pr(30, 0); });
+        } else {
+          var tolB = 0.01 * (inch ? 1 / MM : 1);
+          head('POLYLINE'); pr(66, 1); pr(10, 0); pr(20, 0); pr(30, 0); pr(70, 0);
+          var vtx = function (q) { pr(0, 'VERTEX'); pr(8, p.layer); pr(10, gnum(q[0])); pr(20, gnum(q[1])); pr(30, 0); };
+          vtx(run[0].a);
+          run.forEach(function (q) {
+            var dl = Math.hypot(q.b[0] - q.a[0], q.b[1] - q.a[1]) || 1e-15, dev = 0;
+            q.bz.forEach(function (c) { dev = Math.max(dev, Math.abs((c[0] - q.a[0]) * (q.b[1] - q.a[1]) - (c[1] - q.a[1]) * (q.b[0] - q.a[0])) / dl); });
+            var ns = Math.max(1, Math.min(64, Math.ceil(Math.sqrt(0.75 * dev / tolB))));
+            for (var si = 1; si < ns; si++) vtx(bzAt(q, si / ns));
+            vtx(q.b);
+          });
+          pr(0, 'SEQEND'); pr(8, p.layer);
+        }
         return;
       }
       if (p.k === 'line' && p.style === 'hatch') { head('LINE', 'AcDbLine', true); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(11, num(p.b[0])); pr(21, num(p.b[1])); }
@@ -2235,7 +2370,7 @@
       if (p.k === 'line' && p.chain && (prv && prv.chain === p.chain || nxt && nxt.chain === p.chain)) {
         style(p.style, p.lw);
         var first = !(prv && prv.chain === p.chain), last = !(nxt && nxt.chain === p.chain);
-        c.push((first ? P(p.a[0]) + ' ' + P(p.a[1]) + ' m ' : '') + P(p.b[0]) + ' ' + P(p.b[1]) + ' l' + (last ? ' S' : ''));
+        c.push((first ? P(p.a[0]) + ' ' + P(p.a[1]) + ' m ' : '') + (p.bz ? P(p.bz[0][0]) + ' ' + P(p.bz[0][1]) + ' ' + P(p.bz[1][0]) + ' ' + P(p.bz[1][1]) + ' ' + P(p.b[0]) + ' ' + P(p.b[1]) + ' c' : P(p.b[0]) + ' ' + P(p.b[1]) + ' l') + (last ? ' S' : ''));
         return;
       }
       if (p.k === 'arc') { style(p.style, p.lw); c.push(arcPath(p)); }
@@ -2272,5 +2407,6 @@
   D.compute = compute; D.toSVG = toSVG; D.svgParts = svgParts; D.toDXF = toDXF; D.toPDF = toPDF; D.textRect = textRect; D.STROKE = STROKE; D.plainText = plainText;
   _.dimPrims = dimPrims;   // (rfDD: the Smart Dimension preview draws the dimension as it will be placed)
   _.segHitsRect = segHitsRect;   // (rfJB: Hole Table tags keep off the view's edges and bend lines)
+  _.bzAt = bzAt;   // (rfMS: a smooth curve piece's point at t)
   _.ARROW_W = ARROW_W; _.SHOULDER = SHOULDER; _.TEXT_GAP = TEXT_GAP; _.CAP_EM = CAP_EM; _.DW_FONT = DW_FONT; _.textWidth = textWidth; _.arcEnds = arcEnds; _.ellipseAt = ellipseAt;
 })(Drawing, Drawing._);

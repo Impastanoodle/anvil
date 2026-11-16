@@ -21,7 +21,7 @@
 
 <h1>Anvil kernel tests</h1>
 <div class="sub">Exercises <code>csg.js</code>, <code>kernel.js</code>, <code>sketch-solver.js</code> and <code>assembly.js</code> headlessly: geometry volumes, profiles, features, exports, errors, script round-trips, and the bundled examples.</div>
-<div id="summary">running…</div>
+<div id="summary">runningâ€¦</div>
 <table>
   <thead><tr><th>Status</th><th>Test</th><th>Detail</th><th>ms</th></tr></thead>
   <tbody id="rows"></tbody>
@@ -72,7 +72,7 @@
   // sees in the full page; test() and group() of the other files just add no row. Each file opens with a call to
   // __groupFile (loadGroups adds it), which also times the file. The rows of a file that failed to load have no file:
   // they always run.
-  // A slow file can be split across jobs by its rows: only[file] = { rows: { 3: true, … }, from: n } runs the tests whose
+  // A slow file can be split across jobs by its rows: only[file] = { rows: { 3: true, â€¦ }, from: n } runs the tests whose
   // index in the file (the order of their test() calls, counted whether they run or not) is listed or is n or above;
   // { mod: k, rem: j } runs every k-th from j (a file with no recorded row times).
   // fileRows (every file's test() count) goes back with the results, so the runner can check the jobs of a split file
@@ -161,24 +161,24 @@
     var summary = document.getElementById('summary');
     if (!allDeclared || pending > 0) {
       summary.className = '';
-      summary.textContent = 'running… ' + results.length + ' tests declared, ' + pending + ' waiting on async work';
+      summary.textContent = 'runningâ€¦ ' + results.length + ' tests declared, ' + pending + ' waiting on async work';
       return;
     }
     var passed = results.filter(function (r) { return r.ok; }).length, total = results.length;
     var totalMs = results.reduce(function (s, r) { return s + r.ms; }, 0);
     summary.className = passed === total ? 'ok' : 'bad';
     // r11/perf11: the run's wall-clock time (from page load). The old figure, the sum of every test's own time, counted
-    // each async test from its declaration until it settled — the whole synchronous run after it — so four worker
+    // each async test from its declaration until it settled â€” the whole synchronous run after it â€” so four worker
     // tests added ~45 s that never happened; the synchronous tests' own sum is shown beside it.
     var wallMs = performance.now(), syncMs = results.reduce(function (s, r) { return s + (r.async ? 0 : r.ms); }, 0);
-    summary.textContent = passed + ' / ' + total + ' passed' + (passed === total ? '' : ' — ' + (total - passed) + ' FAILED') + '  ·  ' + (wallMs / 1000).toFixed(1) + ' s (synchronous tests ' + (syncMs / 1000).toFixed(1) + ' s)';
+    summary.textContent = passed + ' / ' + total + ' passed' + (passed === total ? '' : ' â€” ' + (total - passed) + ' FAILED') + '  Â·  ' + (wallMs / 1000).toFixed(1) + ' s (synchronous tests ' + (syncMs / 1000).toFixed(1) + ' s)';
     window.__anvilTests = { passed: passed, total: total, results: results, wallMs: wallMs, syncMs: syncMs, sumMs: totalMs, fileMs: fileMs, fileRows: fileRows };
   }
   function fail(msg) { throw new Error(msg); }
   function assert(cond, msg) { if (!cond) fail(msg || 'assertion failed'); }
   function near(actual, expected, tol, label) {
     var t = tol == null ? 1e-6 : tol;
-    if (!(Math.abs(actual - expected) <= t)) fail((label || 'value') + ' = ' + actual + ', expected ' + expected + ' ±' + t);
+    if (!(Math.abs(actual - expected) <= t)) fail((label || 'value') + ' = ' + actual + ', expected ' + expected + ' Â±' + t);
   }
   function nearRel(actual, expected, rel, label) {
     near(actual, expected, Math.abs(expected) * rel + 1e-9, label);
@@ -236,7 +236,7 @@
       ex.interference.forEach(function (e) {
         var p = found.filter(function (q) { return (q.aName === e.a && q.bName === e.b) || (q.aName === e.b && q.bName === e.a); })[0];
         assert(p, 'no interference between ' + e.a + ' and ' + e.b);
-        nearRel(p.volume, e.volume, 1e-6, e.a + ' ∩ ' + e.b);
+        nearRel(p.volume, e.volume, 1e-6, e.a + ' âˆ© ' + e.b);
       });
     }
   }
@@ -264,9 +264,9 @@
   }
 
   // Polygonal approximations: a circle of radius r sampled with n segments has area n/2 r^2 sin(2pi/n). The mesh of a
-  // circle follows the kernel's chord tolerance (Kernel.segsForRadius; clamp(round(8√r), 16, 72) before true curves,
+  // circle follows the kernel's chord tolerance (Kernel.segsForRadius; clamp(round(8âˆšr), 16, 72) before true curves,
   // still what legacySegs gives). Volumes and areas from massProps are exact since true curves (cloud-2026-09-25p):
-  // they are pinned to circleArea = πr², to 1e-9.
+  // they are pinned to circleArea = Ï€rÂ², to 1e-9.
   function segsForRadius(r) { return K.segsForRadius(r); }
   function legacySegs(r) { return Math.max(16, Math.min(72, Math.round(8 * Math.sqrt(Math.max(r, 0.01))))); }
   function polyCircleArea(r) { var n = segsForRadius(r); return n / 2 * r * r * Math.sin(2 * Math.PI / n); }
@@ -603,6 +603,7 @@
     'kernel/rfMJ.js',
     'kernel/rfMO.js',
     'kernel/rfMN.js',
+    'kernel/rfMS.js',
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'kernel-tests.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'kernel-tests.groups.js', error: e }); }
@@ -636,7 +637,7 @@
     // the __groupFile call shares the file's first line, so groupLines() still counts lines right
     return { source: texts.map(function (t) { return '__groupFile(\'' + t.file + '\');' + t.text; }).join('') + '//# sourceURL=' + base + name, failed: failed };
   }
-  // "…/kernel-tests.groups.js:LINE" in a stack or message -> "tests/kernel/<file>:<line>"
+  // "â€¦/kernel-tests.groups.js:LINE" in a stack or message -> "tests/kernel/<file>:<line>"
   function groupLines(text) {
     return String(text).replace(/[^\s()@]*kernel-tests\.groups\.js:(\d+)/g, function (m, n) {
       for (var i = groupFiles.length - 1; i >= 0; i--) if (+n >= groupFiles[i].first) return 'tests/' + groupFiles[i].file + ':' + (+n - groupFiles[i].first + 1);

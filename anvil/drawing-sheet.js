@@ -74,6 +74,13 @@
     if (!ORTHO[orient] && !(props && props.kind)) v.dimType = 'true';
     Object.keys(props || {}).forEach(function (k) { v[k] = props[k]; });
     if (v.dimType !== 'true') delete v.dimType;
+    // (rfMS2) Show in exploded state: a model view made while the assembly is shown exploded (D.explodedNow, set by the
+    // app) is ticked; a projected view takes its parent's box
+    if (v.exploded === undefined && (!v.kind || v.kind === 'projected')) {
+      var pv = v.kind === 'projected' && v.parent != null ? findView(doc, v.parent) : null;
+      if (pv && pv.exploded !== undefined) v.exploded = pv.exploded;
+      else if (D.explodedNow && D.explodedNow()) v.exploded = true;
+    }
     doc.views.push(v);
     return v;
   }
@@ -739,6 +746,7 @@
   // (_.pathContent), an auxiliary view stays square to its parent's edge (_.auxCenter), a crop keeps what lies inside
   // it (_.cropContent); plainContent is everything else
   function viewContent(doc, v, mesh, parentContent) {
+    mesh = _.viewMesh(doc, v, mesh);   // (rfMS) Show in exploded state: the assembly exploded / collapsed for this view
     var ct = _.hasBrokenOut(v) ? _.brokenOutContent(doc, v, mesh) : _.typedSection(doc, v, parentContent) ? _.pathContent(doc, v, mesh, parentContent) : plainContent(doc, v, mesh, parentContent);
     if (!ct || !ct.proj) return ct;
     _.auxCenter(doc, v, ct, parentContent);
