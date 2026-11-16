@@ -1067,7 +1067,12 @@ var Exchange = (function () {
       });
       // whole triangles count with their area too
       for (t = 0; t < nT; t++) if (freeOf[t] >= 0 && gArea[freeOf[t]]) { var A2 = P3(mesh.positions, mesh.triangles[t * 3]); if (keyOf.has(tkey(mesh.positions, mesh.triangles[t * 3], mesh.triangles[t * 3 + 1], mesh.triangles[t * 3 + 2]))) gArea[freeOf[t]] += len(cross(sub(P3(mesh.positions, mesh.triangles[t * 3 + 1]), A2), sub(P3(mesh.positions, mesh.triangles[t * 3 + 2]), A2))) / 2; }
-      gArea.forEach(function (ga, i) { if (ga && Math.abs(ga - fArea[i]) <= 1e-7 * fArea[i]) got[i] = want[i]; });
+      // lane MX: pieces short of the face's area (a hole cut through it) still make the face, marked cut: the writer
+      // (freeLabels) keeps it only when each loop the face's own edges do not account for runs round a cylinder's wall
+      gArea.forEach(function (ga, i) {
+        if (ga && Math.abs(ga - fArea[i]) <= 1e-7 * fArea[i]) got[i] = want[i];
+        else if (ga && ga < fArea[i] && ga > 0.3 * fArea[i]) { got[i] = want[i]; faces[i] = { rec: faces[i].rec, sk: faces[i].sk, cut: true }; }
+      });
     }
     var renum = faces.map(function (fr, i) { return got[i] && got[i] === want[i] ? 0 : -1; }), list = [];
     renum.forEach(function (r, i) { if (r === 0) { renum[i] = list.length; list.push(faces[i]); } });
@@ -1370,7 +1375,11 @@ var Exchange = (function () {
     // whose boundary is not all found keeps its facets.
     function freeLabels() {
       var vtol = 1e-6 * ext, byKey = {}, labs = new PairMap();
+      // (lane MX: run again when a hole's wall fell back to facets: from the import's own tags, that face without holes)
+      freeLab = []; freeV = {};
+      if (mesh.freeOf) freeOf.set(mesh.freeOf);
       FF.forEach(function (F, k) {
+        F.dead = false; F.holeBounds = null;
         var ts = [];
         for (var t3 = 0; t3 < nT; t3++) if (freeOf[t3] === k) ts.push(t3);
         var loops = trisLoops(tri, ts), rec = F.rec, uses = {}, ok = true, mine = [], seams = F.seams = {};
@@ -1413,6 +1422,7 @@ var Exchange = (function () {
           F.labs = F.labs || {};
           F.labs[E.id] = cl;
         });
+        if (ok && F.cut) ok = !F.noHoles && holeLoops(F, k, loops, mine);
         // every boundary segment must belong to one of the face's edges
         var segs = new PairMap();
         if (ok) mine.forEach(function (cl) { for (var i = 0; i + 1 < cl.vs.length; i++) { var a = cl.vs[i], b = cl.vs[i + 1]; segs.set(a < b ? a : b, a < b ? b : a, cl); } });
@@ -1438,6 +1448,90 @@ var Exchange = (function () {
           cl.vs.forEach(function (v) { freeV[v] = true; });
         });
       });
+    }
+    // lane MX: holeLoops(F, k, loops, mine) -> ok, for a free-form face a later feature cut (F.cut, freeFacesOf): each
+    // loop of its triangles with no segment on the face's own edges must run round one cylinder's wall (a hole drilled
+    // through it). Its vertices move, in the file only, onto the true curve where the cylinder meets the B-spline
+    // surface (alternate projections onto the two: the boolean left them on facets of both, up to a sagitta off), and it
+    // becomes two edges (F.holeBounds), { t: 'x' } runs whose curve (g.t 'h') is the C2 cubic through the points with the
+    // true end tangents (saddleCurve), shared by the face's FACE_BOUND and the hole's wall (eget in build). Any other
+    // loop (a cut that took one of the face's edges away): false, the face keeps its facets as before.
+    function holeLoops(F, k, loops, mine) {
+      var own = new PairMap(), ok = true;
+      mine.forEach(function (cl) { for (var i = 0; i + 1 < cl.vs.length; i++) { var a = cl.vs[i], b = cl.vs[i + 1]; own.set(a < b ? a : b, a < b ? b : a, true); } });
+      var sp = bsProjector(F.rec.s);
+      F.holeBounds = [];
+      loops.forEach(function (l, li) {
+        if (!ok) return;
+        var n = l.length, S = null, i;
+        for (i = 0; i < n; i++) { var a = l[i], b = l[(i + 1) % n]; if (own.get(a < b ? a : b, a < b ? b : a)) return; }
+        for (i = 0; i < n && ok; i++) {
+          var a2 = l[i], b2 = l[(i + 1) % n], t2 = edgeTris.get(a2 < b2 ? a2 : b2, a2 < b2 ? b2 : a2), c = t2 == null || compOf[t2] < 0 ? null : comps[compOf[t2]];
+          if (!c || !c.ok || c.surf.t !== 'cyl' || (S && c.surf !== S)) ok = false; else S = c.surf;
+        }
+        if (!ok || n < 4) { ok = false; return; }
+        var to = [];
+        for (i = 0; i < n && ok; i++) {
+          // at its own angle on the cylinder (so the wall's rulings stay rulings), along the ruling onto the surface
+          var X = P(l[i]), ax = axial(S, X), uv = null, z = ax.z, Y = X;
+          if (!(ax.rho > 0)) { ok = false; break; }
+          var foot = add(S.o, scale(ax.v, S.r / ax.rho));
+          for (var it = 0; it < 60; it++) {
+            Y = add(foot, scale(S.d, z));
+            var pr = sp(Y, uv), nn = sp.normalAt(pr.uv), dn = nn ? dot(nn, S.d) : 0;
+            uv = pr.uv;
+            if (!(Math.abs(dn) > 1e-6)) { ok = false; break; }
+            var dz = dot(nn, sub(pr.p, Y)) / dn;
+            z += dz;
+            if (Math.abs(dz) <= 1e-14 * ext) break;
+          }
+          Y = add(foot, scale(S.d, z));
+          if (!ok || !(Math.abs(axial(S, Y).rho - S.r) <= tol) || len(sub(Y, X)) > 0.05 * S.r) ok = false;
+          F.holeHome = F.holeHome || {}; F.holeHome[l[i]] = X;
+          to.push(Y);
+        }
+        if (!ok) return;
+        if (pos === mesh.positions) pos = Float64Array.from(pos);
+        l.forEach(function (v, j) { pos[v * 3] = to[j][0]; pos[v * 3 + 1] = to[j][1]; pos[v * 3 + 2] = to[j][2]; });
+        var h = n >> 1, g = { t: 'h', S: S, sp: sp }, cls = [];
+        cls.ci = compOf[edgeTris.get(l[0] < l[1] ? l[0] : l[1], l[0] < l[1] ? l[1] : l[0])];
+        [l.slice(0, h + 1), l.slice(h).concat([l[0]])].forEach(function (vs, j) {
+          var cl = { t: 'x', E: { g: g, ss: true }, vs: vs, key: F.sk + ':hole' + k + '_' + li + '_' + j };
+          mine.push(cl); cls.push(cl);
+        });
+        F.holeBounds.push(cls);
+      });
+      return ok;
+    }
+    // lane MX: bsProjector(s) -> fn(p, uvStart?) -> { p, uv }: the nearest point of B-spline surface s (Gauss-Newton from
+    // the nearest of its sample grid, or from uvStart), clamped to its domain; fn.normal(p) its unit normal there
+    function bsProjector(s) {
+      var u0 = s.U[s.du], u1 = s.U[s.U.length - 1 - s.du], v0 = s.V[s.dv], v1 = s.V[s.V.length - 1 - s.dv], seeds = [];
+      bsParams(s.U, s.du).forEach(function (u) { bsParams(s.V, s.dv).forEach(function (v) { seeds.push([u, v, bsSurfPoint(s, u, v)]); }); });
+      var hu = 1e-7 * (u1 - u0), hv = 1e-7 * (v1 - v0);
+      function at(u, v) { return bsSurfPoint(s, Math.max(u0, Math.min(u1, u)), Math.max(v0, Math.min(v1, v))); }
+      function derivs(u, v) {
+        var ua = Math.max(u0, u - hu), ub = Math.min(u1, u + hu), va = Math.max(v0, v - hv), vb = Math.min(v1, v + hv);
+        return [scale(sub(at(ub, v), at(ua, v)), 1 / (ub - ua)), scale(sub(at(u, vb), at(u, va)), 1 / (vb - va))];
+      }
+      function proj(p, st) {
+        var u, v;
+        if (st) { u = st[0]; v = st[1]; } else {
+          var bd = Infinity;
+          seeds.forEach(function (q) { var d = len(sub(q[2], p)); if (d < bd) { bd = d; u = q[0]; v = q[1]; } });
+        }
+        for (var it = 0; it < 30; it++) {
+          var D = derivs(u, v), r = sub(p, at(u, v)), a = dot(D[0], D[0]), b = dot(D[0], D[1]), c = dot(D[1], D[1]), e = dot(D[0], r), f = dot(D[1], r), det = a * c - b * b;
+          if (!(det > 1e-30 * (a * c + 1e-300))) break;
+          var du = (c * e - b * f) / det, dv = (a * f - b * e) / det;
+          u = Math.max(u0, Math.min(u1, u + du)); v = Math.max(v0, Math.min(v1, v + dv));
+          if (Math.abs(du) <= hu * 1e-3 && Math.abs(dv) <= hv * 1e-3) break;
+        }
+        return { p: at(u, v), uv: [u, v] };
+      }
+      proj.normalAt = function (uv) { var D = derivs(uv[0], uv[1]), n = cross(D[0], D[1]), l = len(n); return l > 0 ? scale(n, 1 / l) : null; };
+      proj.normal = function (p) { return proj.normalAt(proj(p).uv); };
+      return proj;
     }
     function radialWalls() {
       var dirTri = new PairMap(), vTris = [], t, e;
@@ -1776,7 +1870,7 @@ var Exchange = (function () {
           }
           sumW += wrapAngle(firstW - prevW);
           // a winding loop is circles and two-cylinder curves only (chords of facets or of an unnamed curve: not this shape)
-          if (Math.abs(Math.abs(sumW) - 2 * Math.PI) < 1e-6) { nWind++; for (var ie = 0; ie < l.length; ie++) { var ce = eget(l[ie], l[(ie + 1) % l.length]); if (!ce || !(ce.t === 'c' || (ce.t === 'p' && ce.s))) okW = false; } }
+          if (Math.abs(Math.abs(sumW) - 2 * Math.PI) < 1e-6) { nWind++; for (var ie = 0; ie < l.length; ie++) { var ce = eget(l[ie], l[(ie + 1) % l.length]); if (!ce || !(ce.t === 'c' || (ce.t === 'p' && ce.s) || ce.t === 'x')) okW = false; } }   // (lane MX: or an edge of a B-spline face: a hole drilled through it)
           else if (Math.abs(sumW) > 1e-6) okW = false;
         });
         if (nWind && (!okW || nWind !== 2)) return null;
@@ -1833,6 +1927,14 @@ var Exchange = (function () {
       comps.forEach(function (c, ci) { c.ok = ok0[ci]; c.oblique = false; c.snapped = false; c.poly = false; });
       live.forEach(function (sn) { if (!sn.cc) sn.all.forEach(function (ci) { comps[ci].snapped = true; }); });
       for (var iter = 0; iter < comps.length + 2 && !build(); iter++) { /* a patch fell back to facets: rebuild the topology */ }
+      // lane MX: a hole through a free-form face whose wall fell back to facets: that face keeps its facets too (facets
+      // cannot share its B-spline edge), its points where they were; labels again, everything built again
+      var hUndo = FF.filter(function (F) { return !F.dead && F.holeBounds && F.holeBounds.some(function (cls) { return !(cls.ci >= 0 && comps[cls.ci].ok); }); });
+      if (hUndo.length && round < 6) {
+        hUndo.forEach(function (F) { F.noHoles = true; Object.keys(F.holeHome || {}).forEach(function (v) { var X = F.holeHome[v]; pos[v * 3] = X[0]; pos[v * 3 + 1] = X[1]; pos[v * 3 + 2] = X[2]; }); });
+        freeLabels();
+        continue;
+      }
       var undo = live.filter(function (sn) { return sn.comps.some(function (ci) { return !comps[ci].ok; }); });
       // lane stepout3: a radial wall whose bend fell back to facets goes back to its triangles, its points where they were
       var wUndo = walls.filter(function (w) { return w.live && (!comps[w.ci].ok || !comps[w.co].ok); });
@@ -1934,19 +2036,20 @@ var Exchange = (function () {
     // off its surface). A piecewise cubic with multiplicity-3 knots (G1 only) and the chords both read 1e-3 of the
     // volume off in OpenCascade: its projection onto the cylinder wants a smooth curve. No tangent (the cylinders
     // touch there): the chords (polylineCurve).
-    function saddleCurve(pts, S1, S2) {
+    // (lane MX: S2 null and n2 a function: the second surface's unit normal at a point, a B-spline face's)
+    function saddleCurve(pts, S1, S2, n2) {
       // interior points closer than a fifth of the thinner radius apart are left out (a read-back part's edge carries
       // its file's samples, 24 a span: the curve through all of them is that many times longer and wiggles on their
       // rounding); the ends stay
-      var hT = 0.2 * Math.min(S1.r, S2.r), keep = [pts[0]], acc = 0;
+      var hT = 0.2 * (S2 ? Math.min(S1.r, S2.r) : S1.r), keep = [pts[0]], acc = 0;
       for (var q = 1; q < pts.length - 1; q++) { acc += len(sub(pts[q], pts[q - 1])); if (acc >= 0.7 * hT) { keep.push(pts[q]); acc = 0; } }
       if (keep.length > 1 && acc + len(sub(pts[pts.length - 1], pts[pts.length - 2])) < 0.35 * hT) keep.pop();
       keep.push(pts[pts.length - 1]);
       pts = keep;
       var m = pts.length - 1, i, k;
       function tang(p, d) {
-        var a1 = axial(S1, p), a2 = axial(S2, p);
-        if (!(a1.rho > 0) || !(a2.rho > 0)) return null;
+        var a1 = axial(S1, p), a2 = S2 ? axial(S2, p) : { rho: 1, v: n2(p) };
+        if (!(a1.rho > 0) || !(a2.rho > 0) || !a2.v) return null;
         var t = cross(scale(a1.v, 1 / a1.rho), scale(a2.v, 1 / a2.rho)), lt = len(t);
         if (lt < 1e-3) return null;
         t = scale(t, 1 / lt);
@@ -2004,6 +2107,7 @@ var Exchange = (function () {
       if (g.t === 'c') return W.add('CIRCLE(\'\',' + axisE(g.c, g.n, xdirOf(g.n)) + ',' + stepReal(g.r) + ')');
       if (g.t === 'e') return W.add('ELLIPSE(\'\',' + axisE(g.center, g.normal, g.xdir) + ',' + stepReal(g.a) + ',' + stepReal(g.b) + ')');
       if (g.t === 'l') return lineE(P(vs[0]), P(vs[vs.length - 1]));
+      if (g.t === 'h') return saddleCurve(vs.map(P), g.S, null, g.sp.normal);   // lane MX: a hole's edge on the face
       var ps = stepList(g.poles.map(pt)), ku = knotsOf(g.U), kn = ku.m + ',' + ku.k;
       if (!g.W) return W.add('B_SPLINE_CURVE_WITH_KNOTS(\'\',' + g.deg + ',' + ps + ',.UNSPECIFIED.,.F.,.F.,' + kn + ',.UNSPECIFIED.)');
       return W.add('(BOUNDED_CURVE()B_SPLINE_CURVE(' + g.deg + ',' + ps + ',.UNSPECIFIED.,.F.,.F.)B_SPLINE_CURVE_WITH_KNOTS(' + kn + ',.UNSPECIFIED.)CURVE()GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE(' + stepList(g.W.map(stepReal)) + ')REPRESENTATION_ITEM(\'\'))');
@@ -2041,6 +2145,9 @@ var Exchange = (function () {
         });
         return W.add('FACE_BOUND(\'\',' + edgeLoop(oes) + ',' + ori + ')');
       });
+      // lane MX: the holes cut through it (holeLoops), each run in its loop's own direction (the triangles' boundary: the
+      // face on its left seen from outside)
+      (F.holeBounds || []).forEach(function (cls) { bounds.push(W.add('FACE_BOUND(\'\',' + edgeLoop(cls.map(function (cl) { return freeEdgeOe(cl, true); })) + ',.T.)')); });
       return W.add('ADVANCED_FACE(\'\',' + stepList(bounds) + ',' + freeSurfaceE(s) + ',' + (!!rec.ss !== flip ? '.T.' : '.F.') + ')');
     }
     // the wall face of radial strip wq: degree 3 along the rails (inner a → b, outer its partners), 1 across, the
@@ -3375,7 +3482,7 @@ var Exchange = (function () {
         es.forEach(function (e) { cnt[e] = (cnt[e] || 0) + 1; });
         return es.length > 0 && es.every(function (e) { return e != null && cnt[e] === 2; });
       });
-      if (whole && !(res = wholePatch(d, A))) return false;
+      if (whole && !(res = wholePatch(A.d || d, A))) return false;
       if (!res) (fa[1] || []).forEach(function (bRef) {
         var b = ent(bRef), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
         if (!l || l.t !== 'EDGE_LOOP') { ok = false; return; }
@@ -3386,6 +3493,14 @@ var Exchange = (function () {
         lp.push(pts);
       });
       if (!res && (!ok || !lp.length)) return false;
+      // lane MX: a hole in a face straight one way (a loft's side drilled through): the straight way gets the other
+      // way's step too (as a length), or the triangles ran from the hole's rim to the far side, slivers whose bump the
+      // volume fix cannot place (a drilled loft read 1.6e-4 light; 4e-5 with the tilted ones left out)
+      if (!res && lp.length > 1 && (isFinite(A.hs) !== isFinite(A.ht))) {
+        var A2 = {}; Object.keys(A).forEach(function (key) { A2[key] = A[key]; });
+        if (isFinite(A.hs)) A2.ht = A.hs * A.su / A.sv; else A2.hs = A.ht * A.sv / A.su;
+        A = A2;
+      }
       if (!res) res = paramPatch(lp, outerI, A);
       if (!res) return false;
       if (!whole && d) centreInsert(res, A);   // (B-spline faces: an extrusion's side is straight along w, its caps polygons)
@@ -3506,7 +3621,7 @@ var Exchange = (function () {
       T.forEach(function (t3) { for (k = 0; k < 3; k++) { var key = ek(t3[k], t3[(k + 1) % 3]); use[key] = (use[key] || 0) + 1; } });
       var fixed = new Array(V.length);
       Object.keys(use).forEach(function (key) { if (use[key] === 1) { var ab = key.split(','); fixed[+ab[0]] = fixed[+ab[1]] = true; } });
-      var num = new Array(V.length), den = new Array(V.length), nv = new Array(V.length), mid = {};
+      var num = new Array(V.length), den = new Array(V.length), nv = new Array(V.length), mid = {}, hMax = new Array(V.length);
       // the height of the surface over the chord's midpoint m along n: the surface point on the line m + t n (Newton in
       // (u, v) from the middle parameters; the middle parameters alone sit off that line by a first-order amount
       // across the edge, where the bump rises: 1e-5 too much on a loft)
@@ -3532,9 +3647,16 @@ var Exchange = (function () {
         if (flip) n = scale(n, -1);
         if (!(l > 0)) { nT.push(null); aT.push(0); vol.push(0); return; }
         n = scale(n, 1 / l);
+        // lane MX: a triangle tilted far from the surface (a sliver from a hole's rim to the far side, its centre point's
+        // three slivers) measures its bump along a normal that is not the surface's: left out (its own bump kept), as were
+        // a drilled loft side's 4.5 % of area in folds
+        if (A.normal) {
+          var A0 = V[t3[0]], ns = A.normal(A0.u + (wrapD(V[t3[1]].u - A0.u, A.pu) + wrapD(V[t3[2]].u - A0.u, A.pu)) / 3, A0.v + (wrapD(V[t3[1]].v - A0.v, A.pv) + wrapD(V[t3[2]].v - A0.v, A.pv)) / 3), lns = ns ? len(ns) : 0;
+          if (lns > 0 && Math.abs(dot(ns, n)) < 0.7 * lns) { nT.push(null); aT.push(0); vol.push(0); return; }
+        }
         var ar = l / 2, h = hOf(t3[0], t3[1], n) + hOf(t3[1], t3[2], n) + hOf(t3[2], t3[0], n);
         nT.push(n); aT.push(ar); vol.push(ar * h / 3);
-        for (k = 0; k < 3; k++) { var q = t3[k]; nv[q] = nv[q] ? add(nv[q], scale(n, ar)) : scale(n, ar); }
+        for (k = 0; k < 3; k++) { var q = t3[k]; nv[q] = nv[q] ? add(nv[q], scale(n, ar)) : scale(n, ar); hMax[q] = Math.max(hMax[q] || 0, Math.abs(h)); }
       });
       T.forEach(function (t3, ti) {
         if (!nT[ti]) return;
@@ -3544,7 +3666,13 @@ var Exchange = (function () {
       });
       for (i = 0; i < V.length; i++) {
         if (fixed[i] || !nv[i] || !(den[i] > 0) || !num[i]) continue;
-        V[i] = { p: add(V[i].p, scale(norm(nv[i]), num[i] / den[i])), u: V[i].u, v: V[i].v };
+        // lane MX: no further than the triangles round it miss (|h1 + h2 + h3| of each: what a corner alone would take).
+        // A point among long thin triangles (a thin strip's few inner points fanned to a finely sampled boundary) has
+        // triangles tilted against its normal: den nearly cancels and the quotient threw points 2e-2 off a 0.5 mm
+        // fillet (others 4e-4 inside it), through the plane beside it (Check: self-intersections)
+        var dl = num[i] / den[i], cap = hMax[i] || 0;
+        if (dl > cap) dl = cap; else if (dl < -cap) dl = -cap;
+        V[i] = { p: add(V[i].p, scale(norm(nv[i]), dl)), u: V[i].u, v: V[i].v };
       }
     }
     // (u, v) of p on at(u, v) from a start: Gauss-Newton with central differences; lo / hi bound u and v (null: free)
@@ -3575,7 +3703,26 @@ var Exchange = (function () {
       }
       return best;
     }
+    // lane MX: a side of the domain that is one point (a pole: OpenCascade's NURBS sphere octant at a filleted block's
+    // corner, three edges and its pole) is a v side for paramPatch (uv() flags it: [u, v of the pole, true], and the
+    // pole's segment gets a point every step), so a surface with its pole on a u side is read transposed (A.d is the
+    // surface the adaptor uses; A.normal keeps the file's dS/du x dS/dv). Before, the pole was one (u, v) point: the
+    // ring cut the corner of the domain, and the rows' steps were taken from the pole's own row (rounding: 1e-16
+    // apart, any turning), the floor of an eighth of a sample: 2672 triangles an octant, area 20 % over, folded.
+    function bsPoleSides(d) {
+      var nu = d.poles.length, nv = d.poles[0].length, ext = 0;
+      d.poles.forEach(function (row) { row.forEach(function (p) { ext = Math.max(ext, len(p)); }); });
+      function one(ps) { for (var k = 1; k < ps.length; k++) if (len(sub(ps[k], ps[0])) > 1e-9 * (1 + ext)) return false; return ps.length > 1; }
+      return { u0: one(d.poles[0]), u1: one(d.poles[nu - 1]), v0: one(columnOf(d.poles, 0)), v1: one(columnOf(d.poles, nv - 1)) };
+    }
+    function bsTranspose(d) {
+      function tr(M) { return M ? M[0].map(function (x, j) { return M.map(function (row) { return row[j]; }); }) : null; }
+      return { du: d.dv, dv: d.du, poles: tr(d.poles), U: d.V, V: d.U, W: tr(d.W) };
+    }
     function bsAdaptor(d) {
+      var ps0 = bsPoleSides(d), trans = (ps0.u0 || ps0.u1) && !(ps0.v0 || ps0.v1);
+      if (trans) d = bsTranspose(d);
+      var poleS = trans ? { v0: ps0.u0, v1: ps0.u1 } : ps0;
       var nu = d.poles.length, nv = d.poles[0].length, u0 = d.U[d.du], u1 = d.U[nu], v0 = d.V[d.dv], v1 = d.V[nv];
       if (!(u1 > u0) || !(v1 > v0)) return null;
       function sameRow(a, b) { for (var k = 0; k < a.length; k++) if (len(sub(a[k], b[k])) > 1e-9 * (1 + len(a[k]))) return false; return true; }
@@ -3590,24 +3737,30 @@ var Exchange = (function () {
       var hs = Infinity, ht = Infinity, size = 0, lo = G[0][0].slice(), hi = G[0][0].slice();
       G.forEach(function (col) { col.forEach(function (p) { for (var k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[k]); hi[k] = Math.max(hi[k], p[k]); } }); });
       size = len(sub(hi, lo)) || 1;
-      for (var j = 0; j < tsV.length; j++) hs = Math.min(hs, rowStep(tsU, columnOf(G, j)));
-      for (var i = 0; i < tsU.length; i++) ht = Math.min(ht, rowStep(tsV, G[i]));
+      // (a row that is one point, a pole, has no turning: skipped)
+      function flat(row) { for (var k = 1; k < row.length; k++) if (len(sub(row[k], row[0])) > 1e-9 * size) return false; return true; }
+      for (var j = 0; j < tsV.length; j++) { var rowJ = columnOf(G, j); if (!flat(rowJ)) hs = Math.min(hs, rowStep(tsU, rowJ)); }
+      for (var i = 0; i < tsU.length; i++) if (!flat(G[i])) ht = Math.min(ht, rowStep(tsV, G[i]));
       // a step no finer than an eighth of the grid's (24 samples a knot span)
       hs = Math.max(hs, (u1 - u0) / Math.max(1, tsU.length - 1) / 8); ht = Math.max(ht, (v1 - v0) / Math.max(1, tsV.length - 1) / 8);
       // seeds: every third grid sample
       var seeds = [];
       for (i = 0; i < tsU.length; i += 3) for (j = 0; j < tsV.length; j += 3) seeds.push([tsU[i], tsV[j], G[i][j]]);
-      var hu = 1e-7 * (u1 - u0), hv = 1e-7 * (v1 - v0), far = 1e-3 * size;
+      var hu = 1e-7 * (u1 - u0), hv = 1e-7 * (v1 - v0), far = 1e-3 * size, poleTol = 1e-7 * size;
+      var poles = [];
+      if (poleS.v0) poles.push({ p: at(u0, v0), v: v0 });
+      if (poleS.v1) poles.push({ p: at(u0, v1), v: v1 });
       return {
-        at: at, pu: cu ? u1 - u0 : 0, pv: cv ? v1 - v0 : 0, hs: hs, ht: ht,
+        at: at, pu: cu ? u1 - u0 : 0, pv: cv ? v1 - v0 : 0, hs: hs, ht: ht, d: d,
         su: size / (u1 - u0), sv: size / (v1 - v0),
         uv: function (p) {
+          for (var k = 0; k < poles.length; k++) if (len(sub(poles[k].p, p)) <= poleTol) return [u0, poles[k].v, true];
           var bs = null, bd = Infinity;
           seeds.forEach(function (s) { var dd = len(sub(s[2], p)); if (dd < bd) { bd = dd; bs = s; } });
           var q = projectUV(at, p, bs[0], bs[1], [cu ? null : u0, cv ? null : v0], [u1, v1], hu, hv);
           return len(sub(at(q[0], q[1]), p)) <= far ? [q[0], q[1]] : null;
         },
-        normal: function (u, v) { return cross(sub(at(u + hu * 10, v), at(u - hu * 10, v)), sub(at(u, v + hv * 10), at(u, v - hv * 10))); }
+        normal: function (u, v) { var n = cross(sub(at(u + hu * 10, v), at(u - hu * 10, v)), sub(at(u, v + hv * 10), at(u, v - hv * 10))); return trans ? scale(n, -1) : n; }
       };
     }
     // lane stepreal2: a SURFACE_OF_LINEAR_EXTRUSION of an ELLIPSE or a CIRCLE (OpenCascade writes an elliptic cylinder

@@ -1853,18 +1853,19 @@
       assert(/RATIONAL_B_SPLINE_SURFACE/.test(t.s1), 'written rational');
       return JSON.stringify(t.faces) + ', volume ' + ((t.r0.volume - 11718.0269508056) / 11718.0269508056).toExponential(1) + ' off';
     });
-    test('rfMR: the blend with a hole cut through the block away from it keeps its B-spline face (the boolean split its triangles: the pieces cover it); a hole through the blend itself sends that face back to facets, the part still writes and reads back watertight', function () {
+    test('rfMR: the blend with a hole cut through the block away from it keeps its B-spline face (the boolean split its triangles: the pieces cover it); a hole through the blend itself keeps it too since lane MX (the hole an inner bound, rfMX), the part writes and reads back watertight', function () {
       if (!X) fail('exchange.js is not loaded');
       var out = [];
-      [['away', 'p.sketch("Top").circle(20, -4, 1.5).end().extrude(30, { cut: true, both: true });', 1], ['through', 'p.sketch("Top").circle(20, -13, 1.5).end().extrude(30, { cut: true, both: true });', 0]].forEach(function (c) {
+      [['away', 'p.sketch("Top").circle(20, -4, 1.5).end().extrude(30, { cut: true, both: true });', 1], ['through', 'p.sketch("Top").circle(20, -13, 1.5).end().extrude(30, { cut: true, both: true });', 1]].forEach(function (c) {
         var res = X.importFile('rfMR.step', rfMRblend, { units: 'mm' }), m = X.newPartFromImport(res);
         K.runScript(m, c[1]);
         var b = K.rebuild(m), v = K.massProps(K.meshFromBody(b.body), 1).volume, s = X.exportSTEP(m, b), f = rfMRfaces(s), r = rfMRread(s);
         assert((f.BSPLINE || 0) === c[2], c[0] + ': ' + JSON.stringify(f));
         // (open edges only: the cut through the faceted blend leaves a face of no area in Anvil's own body already)
         assert(!r.res.stats.openEdges, c[0] + ': re-read with no open edge (' + r.res.stats.openEdges + ')');
-        // (through the blend the hole's wall meets facets and is written as facets too: its polygon, 7e-5 over the true wall)
-        nearRel(r.volume, v, c[2] ? 1e-7 : 1e-4, c[0] + ': re-read volume');
+        // (lane MX: through the blend the hole's wall is a CYLINDRICAL_SURFACE whose edge on the blend is a B-spline on the
+        // true curve; Anvil's own body has that edge on facets of both: 4.9e-7 apart. Was facets, 7e-5 over the true wall)
+        nearRel(r.volume, v, c[0] === 'through' ? 1e-6 : 1e-7, c[0] + ': re-read volume');
         out.push(c[0] + ' ' + (f.BSPLINE || 0) + ' B-spline / ' + (f.PLANE || 0) + ' planes');
       });
       return out.join(', ');
