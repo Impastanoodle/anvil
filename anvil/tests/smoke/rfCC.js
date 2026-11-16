@@ -43,7 +43,8 @@
     assert(rfCCBtn('Front').closest('.rb-grid') && rfCCBtn('Front').closest('.rb-grid') === rfCCBtn('Normal To').closest('.rb-grid'), 'the eight orientations in one icon grid');
     assert(D.querySelector('#ribbon-buttons .rb-fly-small .rb-caret'), 'Background is a flyout with its ▾');
     // the HUD's icons for the same commands
-    var icons = Array.prototype.map.call(D.querySelectorAll('#ribbon-buttons .rb'), function (b) { return b.dataset.icon; });
+    // (rfNE, lane swparticons: under the SolidWorks set each background has its own drawing, vBgGradient / vBgPlain / vBgDark: read as vBackground)
+    var icons = Array.prototype.map.call(D.querySelectorAll('#ribbon-buttons .rb'), function (b) { return /^vBg[A-Z]/.test(b.dataset.icon || '') ? 'vBackground' : b.dataset.icon; });
     ['vZoomFit', 'zoomArea', 'prevView', 'vFront', 'vTop', 'vIso', 'vNormalTo', 'dsShadedEdges', 'dsWireframe', 'appearance', 'scene', 'vBackground', 'vTheme', 'vPlanes', 'vGrid', 'showEndpoints', 'vSnapModel', 'section', 'vFeatureTree', 'levels', 'filter'].forEach(function (n) { assert(icons.indexOf(n) >= 0, 'icon ' + n + ' in ' + icons.join(',')); });
     // lane swribbon (2026-11-12): SolidWorks' large buttons (32 px small icons, 12 px labels) make the tab wider: its
     // labels now hold down to 1460 px (they went at 1440; was 1400 with 16 px icons)

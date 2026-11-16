@@ -133,7 +133,7 @@
   OWN.loft = U('M5.5 3.5 V7.5 L2.5 11.5 L8 14.5 L13.5 11.5 L10.5 7.5 V3.5 z', B2) + F('M8 4.6 H10.4 V7.6 L13.2 11.4 L8 14.2 z', B3) + P('M8 4.6 V14.5', 'none', NV, 0.7) + E(8, 3.5, 2.5, 1.1, W1, NV, 1);
   var BND_TOP = 'M1.5 8.5 Q4 5.5 7 8 Q8.5 9.2 10.5 8.5 L14.5 4.5 Q12.5 5.2 11 4 Q8.5 2 5.5 4.5 z', BND_FRONT = 'M1.5 8.5 Q4 5.5 7 8 Q8.5 9.2 10.5 8.5 V13.5 H1.5 z', BND_SIDE = 'M10.5 8.5 L14.5 4.5 V9.5 L10.5 13.5 z';
   var BND_GRID = P('M6 6 L10.5 2.9 M3.5 6.5 Q6 3.6 8.8 6.2 Q10.3 7.4 12.5 6.5', 'none', GD, 0.7);
-  OWN.boundary = W(BND_FRONT, W2) + W(BND_SIDE, W3) + W(BND_TOP, W1) + BND_GRID;
+  OWN.boundary = U(BND_FRONT, B2) + U(BND_SIDE, B3) + U(BND_TOP, B1) + P('M6 6 L10.5 2.9 M3.5 6.5 Q6 3.6 8.8 6.2 Q10.3 7.4 12.5 6.5', 'none', NV, 0.7);   // swparticons: the body it makes is blue (it read as a plain white body)
   OWN.boundaryCut = W(BND_FRONT, W2) + W(BND_SIDE, W3) + U(BND_TOP, B1) + P('M6 6 L10.5 2.9 M3.5 6.5 Q6 3.6 8.8 6.2 Q10.3 7.4 12.5 6.5', 'none', NV, 0.7);
   function wand(x1, y1, x2, y2) {
     return L('M' + x1 + ' ' + y1 + ' L' + x2 + ' ' + y2, '#1c1c1c', 2.2, BUTT) + L('M' + r2(x2 - (x2 - x1) * 0.25) + ' ' + r2(y2 - (y2 - y1) * 0.25) + ' L' + x2 + ' ' + y2, '#f6f6f6', 1.2, BUTT) +
@@ -143,9 +143,26 @@
   OWN.hole = wbox(1.5, 2.5, 10, 10, 2) + C(6.5, 9.5, 3, B2, NV, 1) + F('M4.3 8.6 A2.8 2.8 0 0 1 8.7 7.7 A3.7 3.7 0 0 0 4.3 8.6 z', B4);
   OWN.sweptCut = wbox(1.5, 1.5, 10, 10, 3) + U('M4.5 14.5 Q4.5 7.5 11.5 7.5 V10.5 Q7.5 10.5 7.5 14.5 z', B2) + F('M11.5 7.5 L13 6 V9 L11.5 10.5 z', B4);
   OWN.loftedCut = wbox(1.5, 1.5, 10, 10, 3) + U('M4.5 4.5 H9.5 L7.5 9.5 L8.5 14.5 H4.5 L5.5 9.5 z', B2) + F('M4.5 4.5 L6 3 H11 L9.5 4.5 z', B4);
-  OWN.fillet = W('M1.5 8.5 H10.5 V14.5 H1.5 z', W2) + W('M10.5 8.5 C10.5 7 11.5 6.5 12.5 6.5 L14.5 4.5 V10.5 L10.5 14.5 z', W3) + W('M3.5 6.5 L5.5 4.5 H14.5 L12.5 6.5 z', W1) +
-    U('M1.5 8.5 C1.5 7 2.5 6.5 3.5 6.5 H12.5 C11.5 6.5 10.5 7 10.5 8.5 z', B2) + F('M3 7 H11.4 L11 7.6 H2.4 z', B1);
-  OWN.chamfer = W('M1.5 8.5 H10.5 V14.5 H1.5 z', W2) + W('M10.5 8.5 L12.5 6.5 L14.5 4.5 V10.5 L10.5 14.5 z', W3) + W('M3.5 6.5 L5.5 4.5 H14.5 L12.5 6.5 z', W1) + U('M1.5 8.5 L3.5 6.5 H12.5 L10.5 8.5 z', B2);
+  // swparticons (rfNE): Fillet and Chamfer take the block's whole near top edge (4 high, 3 deep), so the edge is the
+  // first thing seen at 16 px: Fillet a quarter round shaded like a cylinder (lit band at the top, shade at the
+  // bottom) with the round profile on the side face; Chamfer one flat lit bevel with straight edges
+  var SWP_BLK_FRONT = 'M1.5 10 V14.5 H10 V10 z', SWP_BLK_TOP = 'M4.5 3 L6 1.5 H14.5 L13 3 z', SWP_ROUND = 'M1.5 10 C1.5 7.8 2.85 4.65 4.5 3 H13 C11.35 4.65 10 7.8 10 10 z';
+  OWN.fillet = W(SWP_BLK_FRONT, W2) + W('M10 14.5 V10 C10 7.8 11.35 4.65 13 3 L14.5 1.5 V10 z', W3) + W(SWP_BLK_TOP, W1) +
+    U(SWP_ROUND, B2) + F('M1.5 10 Q1.5 8.3 2.08 7.06 H10.58 Q10 8.3 10 10 z', B3) + F('M3.12 4.82 Q3.7 3.8 4.5 3 H13 Q12.2 3.8 11.62 4.82 z', B1) + P(SWP_ROUND, 'none', NV, 1);
+  OWN.chamfer = W(SWP_BLK_FRONT, W2) + W('M10 14.5 V10 L13 3 L14.5 1.5 V10 z', W3) + W(SWP_BLK_TOP, W1) + U('M1.5 10 L4.5 3 H13 L10 10 z', B1);
+  // swparticons (rfNE): the Fillet / Chamfer PropertyManagers' type buttons (16 px, lane pmsense asks for these names):
+  // an end view of the block's corner, the new face a heavy blue line, what the type takes in ink or blue
+  var SWP_CH = W('M1.5 14.5 V4.5 H8.5 L12.5 8.5 V14.5 z', W2), SWP_CHB = P('M8.5 4.5 L12.5 8.5', 'none', B3, 2, BUTT);
+  OWN.chamferAngleDistance = SWP_CH + F('M12.5 8.5 L10.03 6.03 A3.5 3.5 0 0 0 12.5 12 z', B1) + SWP_CHB + T('M8.5 1.5 V3.5 M12.5 1.5 V3.5 M8.5 2.5 H12.5');
+  OWN.chamferDistanceDistance = SWP_CH + SWP_CHB + T('M8.5 4.5 H12.5 V8.5', DASH) + T('M8.5 1.5 V3.5 M12.5 1.5 V3.5 M8.5 2.5 H12.5 M13.5 4.5 H15.5 M13.5 8.5 H15.5 M14.5 4.5 V8.5');
+  OWN.chamferVertex = box(1.5, 3.5, 9, 9, 3, W2, W1, W3, OL) + U('M7 6.5 L12.5 4.5 L10.5 10.5 z', B1);
+  OWN.chamferOffsetFace = SWP_CH + SWP_CHB + P('M1.5 8.5 H12.5 M8.5 4.5 V14.5', 'none', GD, 1.1, DASH);
+  OWN.chamferFaceFace = SWP_CH + P('M8.5 4.5 L12.5 8.5', 'none', OL, 1) + P('M1.5 4.5 H8.5 M12.5 8.5 V14.5', 'none', B3, 2.2, BUTT);
+  var SWP_FR = W('M1.5 14.5 V4.5 H7.5 A5 5 0 0 1 12.5 9.5 V14.5 z', W2);
+  OWN.filletConstant = SWP_FR + P('M7.5 4.5 A5 5 0 0 1 12.5 9.5', 'none', B3, 2, BUTT) + ar(7.5, 9.5, 10.6, 6.4, INK, 1.1, 2.2);
+  OWN.filletVariable = box(1.5, 3.5, 10, 9, 3, W2, W1, W3, OL) + U('M1.5 6.5 H11.5 V11 Q6 7.5 1.5 7.5 z', B2) + U('M1.5 6.5 L4.5 3.5 H14.5 L11.5 6.5 z', B1);
+  OWN.filletFace = SWP_FR + P('M7.5 4.5 A5 5 0 0 1 12.5 9.5', 'none', OL, 1) + P('M1.5 4.5 H7.5 M12.5 9.5 V14.5', 'none', B3, 2.2, BUTT);
+  OWN.filletFullRound = W('M3.5 14.5 V8 A4.5 4.5 0 0 1 12.5 8 V14.5 z', W2) + P('M3.5 8 A4.5 4.5 0 0 1 12.5 8', 'none', B3, 2, BUTT) + T('M1.5 14.5 H14.5');
   function tab(x, y, fill, ol) { return P('M' + x + ' ' + y + ' h3 v1.5 h1.5 v2 h-1.5 v1.5 h-3 z', fill, ol, 1); }
   function tabL(x, y, fill, ol) { return P('M' + x + ' ' + y + ' h-3 v1.5 h-1.5 v2 h1.5 v1.5 h3 z', fill, ol, 1); }
   OWN.lpattern = tab(2.5, 1.5, B2, NV) + tab(9.5, 1.5, W1, OL) + tab(2.5, 9.5, W1, OL) + tab(9.5, 9.5, W1, OL);
@@ -154,6 +171,10 @@
   OWN.shell = wbox(1.5, 1.5, 10, 10, 3) + U('M3.5 6.5 H9.5 V12.5 H3.5 z', B2) + F('M3.5 6.5 H5.5 V10.5 L3.5 12.5 z', B3) + F('M3.5 12.5 L5.5 10.5 H9.5 V12.5 z', B1) + P('M5.5 6.5 V10.5 H9.5 M5.5 10.5 L3.5 12.5', 'none', NV, 0.7) + R(3.5, 6.5, 6, 6, 'none', NV, 1);
   OWN.draft = U('M1.5 4.5 L6.5 1.5 L14.5 6.5 L9.5 9.5 z', B1) + U('M1.5 4.5 L9.5 9.5 V14.5 H1.5 z', B2) + W('M9.5 9.5 L14.5 6.5 V11.5 L9.5 14.5 z', W1);
   OWN.rib = W('M9.5 3.5 L11.5 1.5 H14.5 V11.5 L12.5 13.5 V3.5 z', W3) + W('M9.5 3.5 H12.5 V13.5 H9.5 z', W1) + W('M1.5 11.5 H9.5 V14.5 H1.5 z', W2) + W('M1.5 11.5 L3.5 9.5 H9.5 V11.5 z', W1) + U('M9.5 4.5 L3.5 11.5 H9.5 z', B2) + F('M9 6 L4.8 11 H6 L9 7.5 z', B1);
+  // swparticons (rfNE): Rib thickness side (PM buttons): the sketch line and the thickness on one side, both, the other
+  OWN.ribFirstSide = R(3.5, 2.5, 4.5, 11, B2, NV, 1) + L('M8 1 V15');
+  OWN.ribBothSides = R(5.5, 2.5, 5, 11, B2, NV, 1) + L('M8 1 V15');
+  OWN.ribSecondSide = R(8, 2.5, 4.5, 11, B2, NV, 1) + L('M8 1 V15');
   OWN.wrap = cyl(8, 4, 12, 6.5, 2.2, W2, W1, OL) + U('M1.5 7 A6.5 2.2 0 0 0 14.5 7 V10 A6.5 2.2 0 0 1 1.5 10 z', B2) + P('M5 8.6 V11.5 M11 8.6 V11.5', 'none', NV, 0.7) + F('M2 7.9 A6.5 2.2 0 0 0 7.5 9.2 V10 A6.5 2.2 0 0 1 2 8.8 z', B1);
   OWN.intersect = U('M1.5 8.5 Q5 5.5 8.5 7.5 L11.5 13 Q7 11.5 2.5 14.5 z', B2) + wbox(6.5, 1.5, 5.5, 5.5, 2.5);
   // reference geometry: a blue plane; in the tree a plane is white with its centre line
@@ -161,7 +182,7 @@
   OWN.plane = U(PLANE, B1) + F('M4 9 L12 7 V11.1 L4 13 z', B2) + P(PLANE, 'none', NV, 1);
   OWN.planeSmall = W(PLANE, '#eceef0') + T('M8 1.5 V14.5', DASHDOT);
   OWN.refgeo = U('M5.5 5.5 L13.5 3.5 V11.5 L5.5 13.5 z', B1) + T('M9.5 1.5 V15', DASHDOT) + C(3, 3, 1.8, B2, NV, 1);
-  OWN.refAxis = U(PLANE, B1) + P('M8 0.5 V15.5', 'none', INK, 1.5, DASHDOT);
+  OWN.refAxis = cyl(8, 4.5, 11.5, 4.5, 1.6, B2, B1, NV) + F('M10 5.8 H12.5 V11.5 A4.5 1.6 0 0 1 10 12.9 z', B3) + P('M8 0.5 V15.5', 'none', INK, 1.5, DASHDOT);   // swparticons: an axis through a cylinder (it was the Plane with a line)
   OWN.refPoint = U(PLANE, B1) + C(8, 8, 2, W1, OL, 1) + C(8, 8, 0.7, OL, 'none');
   OWN.csys = ar(4.5, 11.5, 4.5, 1.5, INK, 1.5, 2.8) + ar(4.5, 11.5, 14.5, 11.5, INK, 1.5, 2.8) + ar(4.5, 11.5, 1, 15, INK, 1.5, 2.6);
   OWN.origin = ar(3.5, 12.5, 3.5, 1.5, INK, 1.5, 3) + ar(3.5, 12.5, 14.5, 12.5, INK, 1.5, 3);
@@ -339,30 +360,50 @@
   // Base Flange/Tab: a U-shaped white strip with its blue base tab
   OWN.flange = W('M1.5 2.5 L3.5 1.5 V8 L8 11.5 L12.5 8 V1.5 L14.5 2.5 V9.5 L8 14.5 L1.5 9.5 z', W2) + W('M1.5 2.5 L3.5 1.5 V8 L1.5 9.5 z', W3) + W('M12.5 1.5 L14.5 2.5 V9.5 L12.5 8 z', W1) + U('M5.5 9.5 L8 7.5 L10.5 9.5 L8 11.5 z', B2);
   // Edge Flange: a white base with the blue flange standing on its edge
-  OWN.bend = plateBase('w') + plateWall('u') + F('M6 3 H13 V4.4 H6 z', B1);
+  // swparticons (rfNE): Edge Flange = the blue flange standing on the base plate's left edge (as SolidWorks draws it),
+  // so it is not the Fold (blue wall at the back, an arrow) nor Sketched Bend / Insert Bends
+  OWN.bend = W('M3 12.5 L7 8.5 H14.5 L10.5 12.5 z', W1) + W('M1.5 12.5 H10.5 V14.5 H1.5 z', W2) + W('M10.5 12.5 L14.5 8.5 V10.5 L10.5 14.5 z', W3) +
+    U('M3 12.5 V4.5 L7 0.5 V8.5 z', B3) + U('M1.5 14.5 V4.5 H3 V12.5 L1.5 14.5 z', B2) + U('M1.5 4.5 L5.5 0.5 H7 L3 4.5 z', B1);
+  // swparticons (rfNE): flange position (Edge / Miter Flange PM buttons): an end view of the base plate and the new
+  // flange (blue) against the dashed line of the edge it was made on: material inside, material outside, bend outside
+  function swpFlangePos(x0) { return W('M1.5 12 H' + x0 + ' V14 H1.5 z', W2) + U('M' + x0 + ' 14 V5.5 H' + (x0 + 2) + ' V14 z', B2); }
+  OWN.flangePosMaterialInside = swpFlangePos(9) + P('M11 0.5 V15.5', 'none', INK, 1.5, DASH);
+  OWN.flangePosMaterialOutside = swpFlangePos(11) + P('M11 0.5 V15.5', 'none', INK, 1.5, DASH);
+  OWN.flangePosBendOutside = W('M1.5 12 H11 V14 H1.5 z', W2) + U('M11 12 Q13 12 13 10 V5.5 H15 V10 Q15 14 11 14 z', B2) + P('M11 0.5 V15.5', 'none', INK, 1.5, DASH);
   OWN.miter = U('M1.5 1.5 H14.5 V14.5 H1.5 z', B1) + W('M5.5 5.5 H14.5 V14.5 H5.5 z', W1) + P('M1.5 1.5 L5.5 5.5', 'none', NV, 1) + F('M1.9 1.9 L5.5 5.5 V14.1 H1.9 z', B2);
   OWN.hem = W('M2.5 9.5 H10.5 L12.5 11.5 V12.5 L10.5 14.5 H2.5 L4.5 12.5 z', W2) + U('M2.5 3.5 L4.5 1.5 H11.5 Q14.5 4.5 14.5 7 Q14.5 10 11.5 11.5 L10.5 9.5 Q12 8.5 12 7 Q12 5.5 10.5 3.5 z', B2) + F('M3.6 3 L4.8 2 H11.2 L11.8 3 z', B1);
   OWN.jog = W('M1.5 12.5 L4.5 9.5 H11.5 L8.5 12.5 z', W1) + W('M1.5 12.5 H8.5 V14 H1.5 z', W2) + W('M8.5 12.5 L11.5 9.5 V11 L8.5 14 z', W3) + U('M4.5 5.5 H11.5 V9.5 H4.5 z', B2) + F('M5 6 H11 V7.2 H5 z', B1) + W('M4.5 5.5 L7.5 2.5 H14.5 L11.5 5.5 z', W1) + W('M11.5 5.5 L14.5 2.5 V4 L11.5 7 z', W3);
-  OWN.sketchedBend = plateBase('w') + plateWall('w') + U('M4.5 9.5 L5.5 8.5 H13.5 L12.5 9.5 z', B2) + P('M2.5 9.5 H15', 'none', SKF, 1);
+  OWN.sketchedBend = plateBase('w') + plateWall('w') + L('M0.5 10.5 L15.5 10.5', SK, 1.5, BUTT) + pt(3.5, 10.5) + pt(12.5, 10.5);   // swparticons: the sketch line across the plate is what the command takes
   OWN.crossBreak = W('M1.5 8 L8 4.5 L14.5 8 L8 11.5 z', W1) + W('M1.5 8 L8 11.5 V13.5 L1.5 10 z', W3) + W('M8 11.5 L14.5 8 V10 L8 13.5 z', W2) + P('M1.5 8 H14.5 M8 4.5 V11.5', 'none', SKF, 1);
   OWN.convertSM = wbox(1.5, 2.5, 9, 9, 3) + U('M8.5 5.5 H10.5 L12 4 V13 L10.5 14.5 H8.5 z', B2) + F('M10.5 5.5 L12 4 V13 L10.5 14.5 z', B3) + U('M1.5 5.5 L4.5 2.5 H13.5 L12 4 L10.5 5.5 z', B1) + P('M3.5 5.5 L6.5 2.5', 'none', NV, 0.7);
   OWN.sweptFlange = W('M3.5 9.5 H11.5 L13.5 11.5 V13 H5.5 L3.5 11 z', W2) + U('M2.5 3.5 L5.5 1.5 H12.5 Q14.5 2 14.5 4.5 V8.5 L12.5 9.5 V5.5 Q12.5 4 11.5 4 H6 L4.5 5 V9 L2.5 8 z', B2) + F('M3 3.8 L5.6 2 H12 L10.6 3.5 H5.5 z', B1);
   OWN.loftedBend = U('M5.5 3.5 V7.5 L2.5 11.5 L8 14.5 L13.5 11.5 L10.5 7.5 V3.5 z', B2) + F('M8 4.6 H10.4 V7.6 L13.2 11.4 L8 14.2 z', B3) + P('M8 4.6 V14.5', 'none', NV, 1) + E(8, 3.5, 2.5, 1.1, W1, OL, 1);
   // the Corners flyout: an L bracket with its corner in blue
-  var CORNER = W('M3.5 4.5 Q3.5 2.5 5.5 2.5 H8.5 V9 L13.5 11.5 V13.5 L9.5 14.5 L3.5 11.5 z', W2) + P('M8.5 9 L3.5 11.5 M8.5 9 V2.5', 'none', GD, 0.7);
-  OWN.breakCorner = CORNER + U('M3.5 4.5 Q3.5 2.5 5.5 2.5 H6.5 L3.5 5.5 z', B1);
-  OWN.closedCorner = CORNER + U('M8.5 2.5 H10.5 V10 L8.5 9 z', B2);
-  OWN.weldedCorner = CORNER + P('M8.5 3 V9', 'none', SKF, 2);
-  OWN.cornerRelief = CORNER + C(8.5, 9, 1.8, B1, NV, 1);
+  // swparticons (rfNE): the Corners flyout on one open box corner (a base, the back wall and the left wall meeting at
+  // the back left), each command's change in blue and big enough to tell apart at 16 px
+  var SWP_CBASE = W('M1.5 11.5 L5.5 7.5 H14.5 L10.5 11.5 z', W1) + W('M1.5 11.5 H10.5 V13.5 H1.5 z', W2) + W('M10.5 11.5 L14.5 7.5 V9.5 L10.5 13.5 z', W3);
+  function swpCorner(back, left) { return SWP_CBASE + (back || W('M5.5 7.5 V1.5 H14.5 V7.5 z', W2)) + (left || W('M1.5 11.5 V5.5 L5.5 1.5 V7.5 z', W3)); }
+  var CORNER = swpCorner();
+  OWN.breakCorner = swpCorner(W('M5.5 7.5 V1.5 H9.5 A5 5 0 0 1 14.5 6.5 V7.5 z', W2) + U('M9.5 1.5 L10.5 0.5 A5 5 0 0 1 15.5 5.5 L14.5 6.5 A5 5 0 0 0 9.5 1.5 z', B2));
+  OWN.closedCorner = swpCorner(null, U('M1.5 11.5 V5.5 L5.5 1.5 V7.5 z', B2) + U('M5.5 1.5 H7.5 V7.5 H5.5 z', B3));
+  OWN.weldedCorner = CORNER + C(5.5, 2.6, 1.3, B2, NV, 1) + C(5.5, 5, 1.3, B2, NV, 1) + C(5.5, 7.4, 1.3, B2, NV, 1);
+  OWN.cornerRelief = CORNER + C(5.5, 7.5, 2.4, B3, NV, 1) + F('M4 7.1 A1.7 1.7 0 0 1 7 6.4 A2.5 2.5 0 0 0 4 7.1 z', B1);
   OWN.formingTool = W('M6.5 8.5 H9.5 V13 Q8 14.5 6.5 13 z', W2) + W('M1.5 5.5 H5 Q5.5 3.5 8 3.5 Q10.5 3.5 11 5.5 H14.5 V7.5 H10.5 Q10 8.5 8 8.5 Q6 8.5 5.5 7.5 H1.5 z', W1) + U('M4.5 5.5 Q5 2 8 2 Q11 2 11.5 5.5 Q10.5 3.6 8 3.6 Q5.5 3.6 4.5 5.5 z', B1);
   OWN.forming = OWN.formingTool;
   OWN.vent = R(2.5, 2.5, 11, 11, W1, OL, 1) + C(8, 8, 4, 'none', OL, 0.9) + C(8, 8, 1.8, 'none', OL, 0.9) + P('M8 3 V13 M3 8 H13 M4.5 4.5 L11.5 11.5 M11.5 4.5 L4.5 11.5', 'none', OL, 0.7);
-  OWN.unfold = plateWall('w') + plateBase('u') + P('M5 2.5 Q1.5 3.5 2.5 8', 'none', INK, 1.5) + head(2.9, 9.6, 0.25, 1, INK, 2.8);
-  OWN.fold = plateBase('w') + plateWall('u') + P('M2.5 9 Q1 5 4 2.8', 'none', INK, 1.5) + head(5.2, 2, 1, -0.7, INK, 2.8);
+  // swparticons (rfNE): the Forming Tool flyout on a plate that fills the icon (they were specks on a small plate at 16 px)
+  var SWP_FPLATE = W('M0.5 13.5 L4.5 8.5 H15.5 L11.5 13.5 z', W1) + W('M0.5 13.5 H11.5 V15 H0.5 z', W2) + W('M11.5 13.5 L15.5 8.5 V10 L11.5 15 z', W3);
+  OWN.ftDimple = SWP_FPLATE + U('M3.5 12 C3.5 5 12.5 5 12.5 12 z', B2) + F('M5.2 9.6 C5.6 7.4 7.4 6.6 9 6.8 C7.2 7.4 6.2 8.4 5.2 9.6 z', B1);
+  OWN.ftExtrudedHole = SWP_FPLATE + U('M4.5 11.5 V4.5 H11.5 V11.5 A3.5 1.2 0 0 1 4.5 11.5 z', B2) + F('M9.5 5 H11.5 V11.4 A3.5 1.2 0 0 1 9.5 12.4 z', B3) + E(8, 4.5, 3.5, 1.4, B1, NV, 1) + E(8, 4.6, 2, 0.75, B4, NV, 0.8);
+  OWN.ftLouver = SWP_FPLATE + U('M3 12.5 L5.5 4.5 H14 L11.5 12.5 z', B1) + U('M5.5 4.5 H14 L13.2 7 H4.7 z', '#1f3a4a');
+  OWN.ftLance = SWP_FPLATE + U('M2 12.5 L4.5 5.5 H11.5 L14 12.5 H11.6 L10 8.5 H6 L4.4 12.5 z', B2) + F('M4.8 6 H11.2 L11.5 6.9 H4.5 z', B1);
+  OWN.ftRib = SWP_FPLATE + U('M2.6 11.2 L10.6 4.4 A1.9 1.9 0 0 1 13.4 6.9 L5.4 13.7 A1.9 1.9 0 0 1 2.6 11.2 z', B2) + F('M3.4 10.8 L10.8 4.9 A1.2 1.2 0 0 1 12.2 5.3 L4.6 11.5 z', B1);
+  OWN.unfold = plateWall('w') + plateBase('u') + P('M4.5 2.5 Q0.5 3.5 1.8 8.2', 'none', INK, 1.9) + head(2.2, 10.2, 0.2, 1, INK, 3.2);
+  OWN.fold = plateBase('w') + plateWall('u') + P('M2 10 Q0.6 5.5 3.6 3', 'none', INK, 1.9) + head(5.4, 1.8, 1, -0.65, INK, 3.2);
   OWN.flatten = W('M1.5 8 L7.5 4.5 L14.5 8.5 L8.5 12 z', W1) + W('M1.5 8 L8.5 12 V13.5 L1.5 9.5 z', W3) + W('M8.5 12 L14.5 8.5 V10 L8.5 13.5 z', W2) + P('M3.5 6.8 L10.5 10.8 M5.5 5.7 L12.5 9.7', 'none', GD, 0.7);
   OWN.noBends = plateBase('w') + plateWall('w') + C(11.5, 11.5, 3, W1, R2, 1.5) + P('M9.4 13.6 L13.6 9.4', 'none', R2, 1.5);
-  OWN.insertBends = plateBase('w') + plateWall('w') + P('M5.5 8.5 H13.5', 'none', SKF, 2, BUTT);
-  OWN.rip = W('M1.5 4.5 L5.5 2.5 L8 6 L11.5 2.5 L14.5 5 V11 L8 14.5 L1.5 10.5 z', W2) + W('M1.5 4.5 L5.5 2.5 L8 6 V14.5 L1.5 10.5 z', W1) + U('M8 6 L11.5 2.5 L14.5 5 V11 Q10.5 9.5 8 14.5 z', B2) + F('M8.6 6.4 L11.6 3.3 L12.8 4.3 L8.6 9 z', B1);
+  OWN.insertBends = plateBase('w') + plateWall('w') + U('M5.5 6 H13.5 V8 Q13.5 9.8 11.8 10.5 H3.8 Q5.5 9.8 5.5 8 z', B2) + F('M6 6.5 H13 V7.4 H6 z', B1);   // swparticons: a blue rounded bend where the plates meet
+  OWN.rip = SWP_CBASE + W('M7 7.5 V1.5 H14.5 V7.5 z', W2) + W('M1.5 11.5 V5.5 L4.5 2.5 V8.5 z', W3) + U('M4.5 2.5 L5.5 1.5 V7.5 L4.5 8.5 z', B2) + U('M7 1.5 H8 V7.5 H7 z', B3);   // swparticons: the box corner ripped open, the cut faces blue
 
   // ================================================================== Evaluate
   // Measure: a yellow tape rule
@@ -384,13 +425,18 @@
   OWN.dsShadedEdges = OWN.display;
   OWN.dsShaded = F(DCUBE, B2) + F(DCUBE2, B3) + F(DTOP, B1);
   OWN.dsHLR = P(DCUBE, W1, OL, 1) + P(DCUBE2, W1, OL, 1) + P(DTOP, W1, OL, 1);
-  OWN.dsHLV = OWN.dsHLR + P('M2.5 12 L8 10 L13.5 12 M8 10 V6.5', 'none', GD, 0.7, 'stroke-dasharray="1.2 1"');
-  OWN.dsWireframe = P(DCUBE, 'none', INK, 1) + P(DCUBE2, 'none', INK, 1) + P(DTOP, 'none', INK, 1) + P('M2.5 12 L8 10 L13.5 12 M8 10 V2.5', 'none', INK, 0.8);
+  OWN.dsHLV = OWN.dsHLR + P('M2.5 12 L8 10 L13.5 12 M8 10 V2.5', 'none', GD, 1.5, 'stroke-dasharray="2 1.2"');   // swparticons: hidden edges dashed and as heavy as the outline
+  OWN.dsWireframe = P(DCUBE, 'none', INK, 1) + P(DCUBE2, 'none', INK, 1) + P(DTOP, 'none', INK, 1) + P('M2.5 12 L8 10 L13.5 12 M8 10 V2.5', 'none', INK, 1);
   OWN.hideshow = P('M1.5 8 Q8 1.5 14.5 8 Q8 14.5 1.5 8 z', W1, OL, 1) + C(8, 8, 2.8, GR, OL, 1) + F('M8 5.2 A2.8 2.8 0 0 1 8 10.8 z', '#1c1c1c');
   function pencil(x, y) { return P('M' + x + ' ' + y + ' l4 -4 l2 2 l-4 4 z', Y3, YO, 1) + P('M' + x + ' ' + y + ' l-0.8 2.8 l2.8 -0.8 z', '#e9c3a4', YO, 1); }
   OWN.appearance = ball(7, 7, 5.5) + pencil(9.5, 12.5);
   OWN.scene = ball(8, 6, 4.5) + R(1.5, 10.5, 13, 4, W1, OL, 1) + F('M1.5 10.5 h3.25 v2 h-3.25 z M8 10.5 h3.25 v2 h-3.25 z M4.75 12.5 h3.25 v2 h-3.25 z M11.25 12.5 h3.25 v2 h-3.25 z', '#2a2a2a');
   OWN.settings = P('M5.5 14 H10.5 L9.5 11.5 H6.5 z', GR, OL, 1) + R(1.5, 2.5, 13, 9, GD, OL, 1) + F('M2.6 3.6 h10.8 v6.8 h-10.8 z', '#eef0f2') + F('M2.6 3.6 h10.8 l-10.8 5 z', '#fefefe');
+  // swparticons (rfNE): the three backgrounds (one drawing before): gradient bands, plain white, dark
+  function swpBg(fill) { return fill + R(1.5, 2.5, 13, 11, 'none', INK, 1); }
+  OWN.vBgGradient = swpBg(F('M1.5 2.5 H14.5 V6.5 H1.5 z', '#fefefe') + F('M1.5 6.5 H14.5 V10 H1.5 z', '#d3dce6') + F('M1.5 10 H14.5 V13.5 H1.5 z', '#9fb2c6'));
+  OWN.vBgPlain = swpBg(F('M1.5 2.5 H14.5 V13.5 H1.5 z', '#fefefe'));
+  OWN.vBgDark = swpBg(F('M1.5 2.5 H14.5 V13.5 H1.5 z', '#3a3d42') + F('M3 4 H8 V5 H3 z', '#6b7078'));
 
   // ================================================================== the chrome: Quick Access toolbar, managers, tree, Task Pane
   OWN.home = P('M3.5 8 V14.5 H12.5 V8', W1, OL, 1) + P('M1.5 8.5 L8 2.5 L14.5 8.5', 'none', B3, 1.9) + R(7, 10.5, 2.5, 4, W3, OL, 1);
@@ -440,6 +486,13 @@
   // assemblies: the assembly document, a component
   OWN.assembly = box(1.5, 5.5, 7, 6, 3, Y2, Y1, Y3, YO) + box(8.5, 1.5, 4, 5, 2, W2, W1, W3, OL);
   OWN.component = partBlock(W1, W2, W3, OL);
+  // swparticons (rfNE): drawing tables and sheet rows that looked alike at 16 px: one table with the thing it lists
+  function swpTable() { return R(1.5, 1.5, 11, 9, PAPER, INK, 1) + T('M1.5 4.5 H12.5 M1.5 7.5 H12.5 M5.5 1.5 V10.5'); }
+  OWN.holeTable = swpTable() + C(11.5, 11.5, 3.6, W1, OL, 1) + C(11.5, 11.5, 2, B3, NV, 1);
+  OWN.punchTable = swpTable() + U('M7.5 15 C7.5 8 15.5 8 15.5 15 z', B2) + F('M9.2 12.6 C9.6 10.6 11.2 9.9 12.6 10 C11 10.6 10 11.4 9.2 12.6 z', B1);
+  OWN.bendNote = swpTable() + U('M8.5 15 V9.5 Q8.5 8 10 8 H15.5 V10 H11 Q10.5 10 10.5 10.5 V15 z', B2);
+  OWN.sheet = R(1.5, 2.5, 13, 11, PAPER, INK, 1) + R(3.5, 4.5, 6, 5, '#8fc3dc', NV, 1) + T('M10.5 10.5 H14.5 M10.5 10.5 V13.5');   // a view in VIEWB (defined below): fills stay under 200 on the dark tree (rfGZ)
+  OWN.sheetFormat = R(1.5, 2.5, 13, 11, PAPER, INK, 1) + R(3, 4, 10, 8, 'none', INK, 0.8) + R(7.5, 9, 5.5, 3, B2, NV, 1) + P('M10 9 V12 M7.5 10.5 H13', 'none', NV, 0.7);
 
   // @@MORE
 
