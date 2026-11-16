@@ -144,15 +144,20 @@
   OWN.lpattern = T('M4 4 H12 V12 H4 z') + Fr(2, 2, 4, 4, T2) + Fr(10, 2, 4, 4, B2) + Fr(2, 10, 4, 4, B2) + Fr(10, 10, 4, 4, B2);
   OWN.cpattern = C(8, 8, 4.5, 'none', INK, 0.9, 'stroke-opacity="0.6"') + C(8, 3.5, 2, T2, T2, '@FW') + C(12.5, 8, 2, B2, B2, '@FW') + C(8, 12.5, 2, B2, B2, '@FW') + C(3.5, 8, 2, B2, B2, '@FW');
   OWN.mirror = F('M2.5 5.5 l4 -2 v8 l-4 2 z', T2) + F('M13.5 5.5 l-4 -2 v8 l4 2 z', B2) + T('M8 1.5 V14.5', 'stroke-dasharray="3 1.2 1 1.2"');
-  OWN.fillet = F('M2.5 13.5 V8 A5.5 5.5 0 0 1 8 2.5 H13.5 V13.5 z', T2) + L('M2.5 8 A5.5 5.5 0 0 1 8 2.5', B2, 2.4);
-  OWN.chamfer = F('M2.5 13.5 V8 L8 2.5 H13.5 V13.5 z', T2) + L('M2.5 8 L8 2.5', B2, 2.4);
+  // lane mcicons2: Constant Fillet / One Distance Chamfer as Mastercam draws them: a tan block whose front edge is
+  // rounded (a blue band lit along its middle, curved ends) or cut flat (one wider blue facet, straight ends; the
+  // distance badge at 32 px). The old flat profiles differed by a few corner pixels (0.057, the closest solid pair)
+  OWN.fillet = F('M3.68 3.66 L8 1.5 L15 5 L10.68 7.16 z', T1) + F('M1 8 L8 11.5 V15 L1 11.5 z', T2) + F('M10.68 7.16 L15 5 V11.5 L8 15 V11.5 Q8 8.5 10.68 7.16 z', T3) +
+    F('M3.68 3.66 L10.68 7.16 Q8 8.5 8 11.5 L1 8 Q1 5 3.68 3.66 z', B2) + L('M1.7 5.4 L8.7 8.9', B0, 1.2);
+  function chamferBlock() { return F('M4.13 3.44 L8 1.5 L15 5 L11.13 6.94 z', T1) + F('M1 8.5 L8 12 V15 L1 11.5 z', T2) + F('M11.13 6.94 L15 5 V11.5 L8 15 V12 z', T3) + F('M4.13 3.44 L11.13 6.94 L8 12 L1 8.5 z', B1) + L('M4.13 3.44 L11.13 6.94 M1 8.5 L8 12', B4, 1); }
+  OWN.chamfer = [chamferBlock() + P('M10.5 15.5 L15.5 10.5 V15.5 z', W, INK, 0.9), chamferBlock() + P('M10 15.5 L15.5 10 V15.5 z', W, INK, 0.7) + txt(13.6, 15.1, 4.2, '1')];
   OWN.shell = cube(8, 5.5, 6, 6, T1, T2, T3) + F('M8 4 l4 2 -4 2 -4 -2 z', B3) + F('M8 5.5 l2.5 1.2 -2.5 1.3 -2.5 -1.3 z', B2);
   OWN.draft = F('M4.5 3.5 h4 l3 10 h-9 z', T2) + F('M8.5 3.5 l3 10 h2.5 z', B2) + T('M8.5 2 V14.5', DASH);
   OWN.rib = F('M2.5 12.5 h11 v2 h-11 z', T3) + F('M2.5 3.5 h2 v9 h-2 z', T2) + F('M4.5 5.5 L11.5 12.5 H4.5 z', B2);
   OWN.intersect = cube(6.5, 5, 4.5, 5, T1, T2, T3) + cube(10, 8, 4, 4, B1, B2, B3);
   OWN.wrap = cyl(8, 3.5, 12, 5, 1.6, T1, T2, T1) + L('M4.5 8 Q8 10.5 11.5 8', B2, 2.6);
   OWN.boundary = F('M2.5 11.5 Q8 6 13.5 11.5 L11.5 13.5 Q8 9.5 4.5 13.5 z', T2) + F('M2.5 5 Q8 0.5 13.5 5 L13.5 11.5 Q8 6 2.5 11.5 z', B1);
-  OWN.boundaryCut = cube(8, 5.5, 6, 6, T1, T2, T3) + F('M4.5 5.5 Q8 3 11.5 5.5 Q8 9 4.5 5.5 z', B3);
+  OWN.boundaryCut = cube(8, 5, 7, 6.5, T1, T2, T3) + F('M1 7.5 Q8 13.5 15 7.5 V5 Q8 11 1 5 z', B2);   // lane mcicons2: a curved channel across the block (was a lens on top, like Hole and Shell)
   OWN.plane = F('M1.5 9.5 L6.5 4.5 H14.5 L9.5 9.5 z', B0) + P('M1.5 9.5 L6.5 4.5 H14.5 L9.5 9.5 z', 'none', SL, 1) + ar(8, 9, 8, 2, INK, 1.1, 2.2) + T('M8 9.5 V13.5', DASH);
   OWN.planeSmall = OWN.plane;
   OWN.refAxis = T('M1.5 14.5 L14.5 1.5', 'stroke-dasharray="3.4 1.2 1 1.2"') + cyl(8, 6, 10.5, 3, 1.1, T1, T2, T1);
@@ -178,8 +183,9 @@
   OWN.hideUnhide = R(2.5, 2.5, 4, 4, 'none', T2, 1.5) + R(9.5, 2.5, 4, 4, 'none', GN, 1.5) + R(2.5, 9.5, 4, 4, 'none', LB, 1.5) + R(9.5, 9.5, 4, 4, G1, G2, 1.5);
   OWN.showArcCenters = C(8, 8, 5.5, 'none', LB, 1.5) + L('M8 5.5 V10.5 M5.5 8 H10.5', NG, 1.5);   // lane arccenters: an arc with the grey + at its centre
   OWN.showEndpoints = R(3.5, 3.5, 9, 9, 'none', SL, 1, 'stroke-dasharray="1.5 1.5"') + Fr(2, 2, 3, 3, B2) + Fr(11, 2, 3, 3, B2) + Fr(2, 11, 3, 3, B2) + Fr(11, 11, 3, 3, B2);
-  OWN.blankEnt = R(2.5, 2.5, 11, 11, 'none', T2, 1, 'stroke-dasharray="1 1"') + R(5.5, 5.5, 5, 5, 'none', T2, 1, 'stroke-dasharray="1 1"');
-  OWN.unblankEnt = R(2.5, 2.5, 11, 11, 'none', T2, 1, 'stroke-dasharray="1 1"') + Fr(5, 5, 6, 6, T1);
+  // lane mcicons2: Blank = the entity gone (a grey dashed circle in Mastercam's dotted frame); Unblank = it back, solid blue
+  OWN.blankEnt = R(1.5, 1.5, 13, 13, 'none', T2, 1, 'stroke-dasharray="1.5 1"') + C(8, 8, 4, 'none', NG, 1.1, DASH);
+  OWN.unblankEnt = R(1.5, 1.5, 13, 13, 'none', T2, 1, 'stroke-dasharray="1.5 1"') + C(8, 8, 4) + mk(8, 8, 2);
   OWN.measure = [
     F('M1.5 5.5 l3 -3 9 9 -3 3 z', T2) + T('M5 5 l1 -1 M7 7 l1.5 -1.5 M9 9 l1 -1') + Q(10.5, 0.5),
     F('M1.5 5.5 l3 -3 9.5 9.5 -3 3 z', T2) + T('M4.5 5.5 l1.5 -1.5 M6.5 7.5 l1 -1 M8.5 9.5 l1.5 -1.5 M10.5 11.5 l1 -1') + Q(10.5, 0.5)];
@@ -199,9 +205,10 @@
     R(1.5, 1.5, 13, 13, 'none', SL, 1) + ar(6.5, 6.5, 2.6, 2.6, INK, 1.5, 3) + ar(9.5, 6.5, 13.4, 2.6, INK, 1.5, 3) + ar(6.5, 9.5, 2.6, 13.4, INK, 1.5, 3) + ar(9.5, 9.5, 13.4, 13.4, INK, 1.5, 3)];
   OWN.fit = OWN.vZoomFit;
   OWN.zoomArea = R(2.5, 1.5, 10, 10, 'none', SL, 1) + mag(8, 6.5, 3.6);
-  function unzoom(extra) { return mag(6.5, 6.5, 4.2) + L('M4.5 6.5 H8.5', RD, 1.5) + extra; }
-  OWN.unzoom50 = unzoom(F('M10.5 1.5 h4 v2 h-2 v2 h-2 z', GN));
-  OWN.unzoom80 = unzoom('');
+  // lane mcicons2: 50 % shrinks the model to a small block, 80 % to a large one (the corner mark alone read as one icon)
+  function uzFrame() { return R(7.5, 0.5, 8, 8, 'none', SL, 1, 'stroke-dasharray="1.2 1"'); }
+  OWN.unzoom50 = mag(5.5, 9.5, 3.6) + L('M3.7 9.5 H7.3', RD, 1.5) + uzFrame() + Fr(10, 3, 3.5, 3.5, GN);
+  OWN.unzoom80 = mag(5.5, 9.5, 3.6) + L('M3.7 9.5 H7.3', RD, 1.5) + uzFrame() + Fr(8, 1, 7, 7, GN);
   OWN.prevView = mag(9.5, 6, 3.8) + ar(7, 13, 1.5, 13, LB, 1.5, 3);
   // the view cube: grey wire block, the face the view looks at in teal
   // (Top, Front, Right: the block seen from above; Bottom, Back, Left: the same block seen from below)
@@ -210,7 +217,7 @@
   var HEX = 'M8 2.5 L14 5.5 V11.5 L8 14.5 L2 11.5 V5.5 z';
   function vcube(face) {
     var under = face === 'bottom' || face === 'uleft' || face === 'uright';
-    return '<path d="' + HEX + '" fill="' + G1 + '" stroke="none"/><path d="' + VC[face] + '" fill="' + GN + '" stroke="none"/>' +
+    return '<path d="' + HEX + '" fill="' + W + '" stroke="none"/><path d="' + VC[face] + '" fill="' + GN + '" stroke="none"/>' +   // lane mcicons2: paper faces (were grey), the lit face reads at once
       P(HEX, 'none', G4, 1) + L(under ? 'M2 11.5 L8 8.5 L14 11.5 M8 8.5 V2.5' : 'M2 5.5 L8 8.5 L14 5.5 M8 8.5 V14.5', G4, 1);
   }
   OWN.vTop = vcube('top'); OWN.vFront = vcube('left'); OWN.vRight = vcube('right');
@@ -223,8 +230,11 @@
   // the blue status bar, where the same five sit
   function globe(extra) { return C(8, 8, 5.5, 'none', SI, 1) + extra; }
   OWN.dsWireframe = globe('<ellipse cx="8" cy="8" rx="2.5" ry="5.5" fill="none" ' + st(SI, 1) + '/>' + L('M2.5 8 H13.5', SI, 1));
-  OWN.dsHLV = globe(L('M2.5 8 A5.5 2 0 0 0 13.5 8', SI, 1) + L('M2.5 8 A5.5 2 0 0 1 13.5 8', SI, 1, 'stroke-dasharray="1.4 1.3"') + L('M8 2.5 A2.5 5.5 0 0 0 8 13.5', SI, 1));
-  OWN.dsHLR = globe(L('M2.5 8 A5.5 2 0 0 0 13.5 8', SI, 1) + L('M8 2.5 A2.5 5.5 0 0 0 8 13.5', SI, 1));
+  // lane mcicons2: the hidden-line styles are a box (two globes with one dashed arc were one icon at 16 px): HLR shows the
+  // edges in front only, HLV adds the hidden ones dashed in the line blue
+  function hbox() { return P('M2 6 L6 2 H14 V10 L10 14 H2 z', 'none', SI, 1) + L('M2 6 H10 V14 M10 6 L14 2', SI, 1); }
+  OWN.dsHLR = F('M2 6 L6 2 H14 V10 L10 14 H2 z', B0) + hbox();
+  OWN.dsHLV = hbox() + L('M6 2.5 V10 H13.5 M6 10 L2.5 13.5', LB, 2, 'stroke-dasharray="1.6 1.2"');
   OWN.dsShadedEdges = '<circle cx="8" cy="8" r="5.5" fill="' + B0 + '" stroke="none"/>' + C(8, 8, 5.5, 'none', SI, 1);
   OWN.dsShaded = C(8, 8, 5.5, B1, B1, '@FW') + '<circle cx="6.2" cy="6.2" r="2.8" fill="#C9DEF5" stroke="none"/>';
   OWN.dsMaterial = C(8, 8, 5.5, G4, G4, '@FW') + '<circle cx="6.6" cy="6.4" r="3.4" fill="' + G3 + '" stroke="none"/><circle cx="5.8" cy="5.6" r="1.7" fill="' + G1 + '" stroke="none"/>';
@@ -243,8 +253,9 @@
   OWN.viewsheetOn = Fr(2, 2, 12, 8, B1) + Fr(2, 10, 6, 3, T1) + Fr(8, 10, 6, 3, G2);
   OWN.viewsheetNew = Fr(1, 2, 10, 6, B1) + Fr(1, 8, 5, 3, T1) + Fr(6, 8, 5, 3, G2) + L('M11.5 9 V14 M9 11.5 H14', GN, 2.2);
   function bookmark() { return F('M2.5 1.5 h6 v10 l-3 -2.5 -3 2.5 z', B3); }
-  OWN.bookmarkSave = bookmark() + Fr(9, 9, 6, 6, B2) + Fr(10, 9, 4, 2, W) + Fr(10, 12, 4, 3, B0);
-  OWN.bookmarkRestore = bookmark() + L('M14 7.5 A4 4 0 0 0 9.5 12', GN, 1.5) + head(9.2, 14.2, -0.2, 1, GN, 2.8);
+  // lane mcicons2: the action is the large part (a disk to save, a teal arrow coming round to restore), the bookmark small
+  OWN.bookmarkSave = F('M1.5 3.5 h9 l3 3 v8 h-12 z', B2) + Fr(4, 3, 5, 4, W) + Fr(3.5, 10, 8, 4.5, B0) + F('M11 0.5 h4 v7 l-2 -1.8 -2 1.8 z', B3);
+  OWN.bookmarkRestore = L('M12.5 9 A5 5 0 1 1 8 3', GN, 2) + head(11.5, 3, 1, 0, GN, 3.2) + F('M6 5.5 h4 v6 l-2 -1.6 -2 1.6 z', B3);
   OWN.vPlanes = F('M1.5 10.5 L5.5 6.5 H14.5 L10.5 10.5 z', B0) + P('M1.5 10.5 L5.5 6.5 H14.5 L10.5 10.5 z', 'none', SL, 1) + F('M6.5 2.5 h3 l0 9 h-3 z', GL) + P('M6.5 2.5 h3 v9 h-3 z', 'none', GND, 1);
   OWN.vOrigins = ar(4.5, 11.5, 4.5, 2, B3, 1.1, 2.2) + ar(4.5, 11.5, 14, 11.5, RD, 1.1, 2.2) + ar(4.5, 11.5, 1.2, 14.8, GN, 1.1, 2) + C(4.5, 11.5, 1.5, W, SL, 1);
 
@@ -259,7 +270,7 @@
   // ================================================================== Transform (the arrow says what moves; grey = before, tan = after)
   function sq(x, y, s, fill, line) { return R(x, y, s, s, fill, line, 1); }
   OWN.tTranslate = sq(1.5, 9.5, 5, G1, G3) + sq(9.5, 1.5, 5, T1, T3) + ar(5, 11, 10, 6, INK, 1.5, 2.8);
-  OWN.tDynamic = sq(1.5, 9.5, 5, G1, G3) + sq(9.5, 1.5, 5, T1, T3) + ar(6, 10, 10, 6, INK, 1.5, 2.8) + F('M4.5 1 L1.5 5.5 H3.5 L2.5 8.5 L6.5 4 H4.5 L6 1 z', YL);
+  OWN.tDynamic = sq(1.5, 7.5, 7, G1, G3) + ar(5, 11, 14.5, 11, RD, 1.5, 2.6) + ar(5, 11, 5, 2, GN, 1.5, 2.6) + C(5, 11, 1.4, W, SL, 1) + F('M12.5 1 L9.5 5 H11.5 L10.5 8 L14.5 3.5 H12.5 L14 1 z', YL);   // lane mcicons2: the dynamic gnomon on the entity (was Translate's two squares and arrow plus a bolt)
   OWN.tTranslatePlane = F('M1.5 5.5 l5 -3 v8 l-5 3 z', G1) + P('M1.5 5.5 l5 -3 v8 l-5 3 z', 'none', G3, 1) + F('M9.5 5.5 l5 -3 v8 l-5 3 z', T1) + P('M9.5 5.5 l5 -3 v8 l-5 3 z', 'none', T3, 1) + ar(4, 8, 11.5, 8, INK, 1.5, 2.8);
   OWN.tRotate = sq(2.5, 7.5, 6, 'none', NG) + P('M5.5 6.5 L10 2.5 L14 7 L9.5 11 z', 'none', LB, 1.5) + L('M10.5 13.5 A6 6 0 0 0 14 9.5', INK, 1.1) + head(14.3, 8, 0.2, -1, INK, 2.4);
   OWN.tProject = OWN.convert;
@@ -274,6 +285,113 @@
   OWN.tStretch = sq(1.5, 4.5, 5, G1, G3) + R(6.5, 4.5, 8, 5, T1, T3, 1) + ar(8, 7, 13, 7, INK, 1.5, 2.8);
   OWN.tScale = R(1.5, 1.5, 13, 13, T1, B2, 1) + sq(1.5, 8.5, 6, G1, G3) + ar(8, 8, 13, 3, INK, 1.5, 2.8);
 
+  // ================================================================== lane mcicons2 (rfNF, 2026-11-16): every icon tells its neighbours apart
+  // The survey (a contact sheet of every Mastercam tab, and every pair inside one ribbon group / drop-down rasterized
+  // at 16 and 32 px and compared, smoke rfNF) found neighbours that read as one icon: Straight vs Centerpoint Slot,
+  // the hidden-line styles, Closed vs Welded Corner, the relations, Constant Fillet vs One Distance Chamfer, Blank vs
+  // Unblank, the forming tools, Base vs Edge Flange; and the Wireframe / Drafting / Home commands that were still
+  // Anvil's own drawing restyled. Each family below differs by its own element, not by a small badge: the slot by
+  // where its points are, the corner treatment by its colour and shape, the forming tool by its raised form.
+  function eye(cx, cy, w) {
+    return P('M' + r2(cx - w) + ' ' + cy + ' Q' + cx + ' ' + r2(cy - w) + ' ' + r2(cx + w) + ' ' + cy + ' Q' + cx + ' ' + r2(cy + w) + ' ' + r2(cx - w) + ' ' + cy + ' z', W, INK, 1) +
+      '<circle cx="' + cx + '" cy="' + cy + '" r="' + r2(w * 0.38) + '" fill="' + INK + '" stroke="none"/>';
+  }
+  // --- Wireframe: Sketch
+  OWN.sketch = F('M1.5 13.5 L5.5 9.5 H14.5 L10.5 13.5 z', B0) + P('M1.5 13.5 L5.5 9.5 H14.5 L10.5 13.5 z', 'none', SL, 1) +
+    F('M5.5 9 L12 2.5 L14 4.5 L7.5 11 L5 11.5 z', YL) + F('M5 11.5 L5.5 9 L7.5 11 z', T2) + L('M3.5 12 H6', LB, 1.5);
+  OWN.repairSketch = L('M2.5 13.5 V7') + L('M7 2.5 H13.5') + L('M2.5 7 Q2.5 2.5 7 2.5', GN, 1.5, 'stroke-dasharray="1.6 1.2"') + mk(2.5, 7) + mk(7, 2.5) + L('M8 9.5 L10 11.5 L14 6.5', GN, 2);
+  OWN.checkSketch = L('M9.5 2.5 H2.5 V13.5 H9.5') + mk(9.5, 2.5) + mk(9.5, 13.5) + Q(10.5, 3.5);
+  OWN.relations = R(1.5, 1.5, 9, 12, W, SL, 1) + Fr(3, 3.5, 2, 2, GN) + T('M6 4.5 H9') + Fr(3, 7, 2, 2, GN) + T('M6 8 H9') + Fr(3, 10.5, 2, 2, GN) + T('M6 11.5 H9') +
+    L('M10.5 9.5 L14.5 13.5 M14.5 9.5 L10.5 13.5', RD, 1.5);
+  OWN.addRelation = L('M2.5 13.5 H11.5') + L('M2.5 13.5 V5.5', NG, 1.5) + Fr(5, 7, 5, 5, GL) + T('M6 10.5 H9 M7.5 8 V10.5') + L('M12.5 1.5 V7.5 M9.5 4.5 H15.5', GN, 2.2);
+  OWN.fullyDefine = L('M2.5 3.5 H13.5 V12.5 H2.5 z') + L('M4.5 8 L7 10.5 L11.5 5', GN, 2.2);
+  // --- Wireframe: Lines, Arcs, Splines
+  OWN.midline = L('M2.5 13.5 L13.5 2.5') + C(8, 8, 2, W, INK, 1) + T('M1 12 L4 15 M12 1 L15 4');
+  OWN.tangentLine = C(6.5, 9.5, 4, 'none', NG, 1.5) + L('M1.5 5.5 H14.5') + mk(6.5, 5.5, 2);
+  OWN.bisectorLine = L('M2.5 13.5 H14.5', NG, 1.5) + L('M2.5 13.5 L8.5 2', NG, 1.5) + L('M2.5 13.5 L14 5.5') + T('M7 13.5 A4.5 4.5 0 0 0 4.6 9.5') + mk(2.5, 13.5, 2);
+  OWN.tangentCircle = L('M1.5 13 H14.5', NG, 1.5) + L('M3 1.5 V14.5', NG, 1.5) + C(8.5, 7.5, 4.5) + mk(8.5, 7.5);
+  OWN.styleSpline = T('M2.5 13.5 L5 3 L11 13 L13.5 2.5', DASH) + Fr(4, 2, 2, 2, G4) + Fr(10, 12, 2, 2, G4) + L('M2.5 13.5 C5 3 11 13 13.5 2.5') + mk(2.5, 13.5) + mk(13.5, 2.5);
+  OWN.eqnCurve = T('M1.5 8 H14.5 M2 2.5 V13.5') + L('M2 8 C4 1.5 6 1.5 8 8 S12 14.5 14.5 8');
+  // --- Wireframe: Shapes (rectangles: where the points are; slots: the same)
+  OWN.crect = R(3, 4, 10, 8, 'none', SL, 2) + T('M0.5 8 H15.5 M8 1.5 V14.5', DASH) + mk(8, 8, 2.2) + ar(8, 8, 12, 4.8, INK, 1, 2.2);
+  OWN.rect3 = P('M2 10 L8 4 L11.5 7.5 L5.5 13.5 z', 'none', SL, 2) + mk(2, 10, 2) + mk(8, 4, 2) + mk(11.5, 7.5, 2);
+  OWN.crect3 = P('M2 10 L8 4 L11.5 7.5 L5.5 13.5 z', 'none', SL, 2) + T('M0.5 15.5 L14.5 1.5', DASH) + mk(6.75, 8.75, 2.2);
+  OWN.parallelogram = P('M1.5 12.5 L5 3.5 H14.5 L11 12.5 z', 'none', SL, 2) + mk(1.5, 12.5, 2) + mk(5, 3.5, 2) + mk(14.5, 3.5, 2);
+  var SLOT = 'M5 5 H11 A3 3 0 0 1 11 11 H5 A3 3 0 0 1 5 5 z';
+  OWN.slot = L(SLOT, LB, 1.5) + T('M5 8 H11', DASH) + mk(5, 8, 2) + mk(11, 8, 2);
+  OWN.cslot = L(SLOT, LB, 1.5) + T('M0.5 8 H15.5 M8 2 V14', DASH) + mk(8, 8, 2.2);
+  var ASLOT = 'M1.7 11.5 A6.3 6.3 0 0 1 14.3 11.5 A1.8 1.8 0 0 1 10.7 11.5 A2.7 2.7 0 0 0 5.3 11.5 A1.8 1.8 0 0 1 1.7 11.5 z';
+  OWN.aslot3 = L(ASLOT, LB, 1.5) + mk(3.5, 11.5, 2) + mk(8, 7, 2) + mk(12.5, 11.5, 2);
+  OWN.aslot = L(ASLOT, LB, 1.5) + T('M8 14.5 L3.5 11.5 M8 14.5 L12.5 11.5', DASH) + mk(8, 14.5, 2.2);
+  OWN.pellipse = L('M2 8 A6 3.8 0 0 1 14 8') + L('M14 8 A6 3.8 0 0 1 2 8', NG, 1, DASH) + mk(8, 8) + T('M8 8 L14 8');
+  OWN.parabola = T('M8 1.5 V14.5', DASH) + L('M2.5 2.5 Q8 21 13.5 2.5') + mk(8, 7.5, 2);
+  // --- Wireframe: Curves
+  OWN.intersectCurve = F('M1 12 L5 8 H15 L11 12 z', T1) + F('M5 10.5 L10 5.5 V1 L5 6 z', B1) + L('M3.2 10.5 L10.6 7.2', INK, 1.8);
+  OWN.projCurve = L('M2.5 4 Q8 0 13.5 4') + T('M2.5 4.5 V10 M13.5 4.5 V10', DASH) + head(8, 10.5, 0, 1, INK, 2.4) + T('M8 3 V9') + F('M1 14 L4 10.5 H15 L12 14 z', T1) + L('M2.5 12.5 Q8 10.5 13.5 12.5', LB, 1.5);
+  OWN.helix = T('M8 1 V15', DASH) + L('M3.5 14 C12.5 14 12.5 10.5 8 10.5 C3.5 10.5 3.5 7 8 7 C12.5 7 12.5 3.5 8 3.5 C5.5 3.5 4.5 2.5 4.5 1.5', LB, 1.5);
+  // --- Home: Display and Analyze
+  OWN.vSketches = L('M2 11.5 V2.5 H11') + mk(2, 11.5) + mk(11, 2.5) + eye(10, 11, 4.5);
+  OWN.clearance = Fr(1, 6, 4, 9, T2) + Fr(9, 6, 4, 9, B2) + T('M5.5 10.5 H8.5') + head(5.2, 10.5, -1, 0, INK, 1.8) + head(8.8, 10.5, 1, 0, INK, 1.8) + Q(11, -0.5);
+  OWN.draftAnalysis = F('M4 7.5 H8 V14.5 H2.5 z', GN) + F('M8 7.5 H12 L13.5 14.5 H8 z', YL) + T('M8 5 V15.5', DASH) + Q(10.5, -0.5);
+  OWN.zebra = C(8, 8, 6, B2, B2, '@FW') + L('M2.8 5.5 Q8 8 13.4 4.8 M2 8.8 Q8 11.5 14 8.3 M3.3 12 Q8 14.5 12.8 11.8', '#fefefe', 1.4);
+  // --- Solids: Create (the cut-outs) and the extras Swept Cut / Lofted Cut / the main level (drawn now; the ribbon
+  //     items still share Sweep's / Loft's / Levels' icon name, see the area card)
+  OWN.sweptCut = cube(8, 5, 7, 6.5, T1, T2, T3) + L('M2.5 5.5 C5 8.5 10 2 13.5 5', B3, 2.6) + C(2.5, 5.5, 1.6, B3, B3, '@FW');
+  OWN.loftedCut = cube(8, 5, 7, 6.5, T1, T2, T3) + F('M4 5 L8 3 L12 5 L8 7 z', B3) + F('M6 5 L8 4 L10 5 L8 6 z', T4);
+  OWN.levelMain = F('M8 8 l6 3 -6 3 -6 -3 z', B3) + F('M8 5 l6 3 -6 3 -6 -3 z', G2) + ar(8, 0.5, 8, 7.5, INK, 1.5, 3);
+  // --- Drafting: More Dimensions, Ordinate (dark dimension lines on the blue part)
+  OWN.angRunDim = T('M2.5 13.5 H14.5 M2.5 13.5 L9.5 3') + L('M8.5 13.5 A6 6 0 0 0 5.9 8.6', INK, 1.1) + head(5.9, 8.6, -0.82, -0.57, INK, 2.2) +
+    L('M13 13.5 A10.5 10.5 0 0 0 8.4 4.9', INK, 1.1) + head(8.4, 4.9, -0.82, -0.57, INK, 2.2) + mk(2.5, 13.5, 2);
+  OWN.chamferDim = L('M2.5 14.5 V9 L8 3.5 H14.5') + T('M2.5 9 L0.8 7.3 M8 3.5 L6.3 1.8') + ar(3.5, 4.5, 1.1, 6.9, INK, 1, 2) + ar(3.5, 4.5, 5.9, 2.1, INK, 1, 2);
+  OWN.pathLengthDim = L('M2 13.5 H7 A3 3 0 0 0 10 10.5 V3') + T('M2.5 10.5 H6 A1 1 0 0 0 7 9.5 V3.5') + head(2, 10.5, -1, 0, INK, 2) + head(7, 3, 0, -1, INK, 2);
+  OWN.autodim = L('M5.5 5.5 H14 V14 H5.5 z', LB, 1.5) + T('M5.5 4.5 V1.5 M14 4.5 V1.5 M4.5 5.5 H1.5 M4.5 14 H1.5') + ar(9.75, 2.5, 5.9, 2.5, INK, 1, 2) + ar(9.75, 2.5, 13.6, 2.5, INK, 1, 2) +
+    ar(2.5, 9.75, 2.5, 5.9, INK, 1, 2) + ar(2.5, 9.75, 2.5, 13.6, INK, 1, 2) + F('M11 7 L8.5 10.5 H10 L9 13 L12.5 9 H11 L12 7 z', YL);
+  OWN.ordinateDim = L('M4.5 11.5 V2.5 M4.5 11.5 H13.5') + T('M8.5 11.5 V15 M12.5 11.5 V15 M4.5 7.5 H1 M4.5 3.5 H1') + mk(4.5, 11.5, 2.2);
+  OWN.ordinateH = L('M1.5 13.5 H14.5') + T('M3 13 V2.5 M7.5 13 V5 M12 13 V7.5 M1.5 2.5 H4.5 M6 5 H9 M10.5 7.5 H13.5') + mk(3, 13.5, 2);
+  OWN.ordinateV = L('M2.5 1.5 V14.5') + T('M3 13 H13.5 M3 8.5 H11 M3 4 H8.5 M13.5 11.5 V14.5 M11 7 V10 M8.5 2.5 V5.5') + mk(2.5, 13, 2);
+  // --- Sheet metal (Anvil's own tab, kept whole under Mastercam): a tan sheet, the new metal blue
+  function plate() { return F('M1 12 L5 8 H15 L11 12 z', T1) + F('M1 12 H11 V13.5 H1 z', T2) + F('M11 12 L15 8 V9.5 L11 13.5 z', T3); }
+  OWN.flange = plate() + P('M1 12 L5 8 H15 L11 12 z', 'none', LB, 1.5) + up(8, 1, 8.5);
+  OWN.bend = F('M1.5 11.5 H9 A2.5 2.5 0 0 0 11.5 9 V2 H13.5 V9 A4.5 4.5 0 0 1 9 13.5 H1.5 z', T2) + F('M11.5 9 V2 H13.5 V9 A4.5 4.5 0 0 1 9 13.5 V11.5 A2.5 2.5 0 0 0 11.5 9 z', B2) + ar(5, 6.5, 9.5, 6.5, INK, 1.1, 2.2);
+  OWN.breakCorner = F('M5 1 H15 V5 H5 V15 H1 V5 A4 4 0 0 1 5 1 z', T2) + L('M1.2 5 A3.8 3.8 0 0 1 5 1.2', B2, 2.4);
+  OWN.closedCorner = Fr(6, 1, 9, 4, T2) + Fr(1, 6, 4, 9, T2) + Fr(1, 1, 5, 5, B2) + Fr(1, 1, 4, 4, B1);
+  OWN.weldedCorner = Fr(1, 1, 14, 4, T2) + Fr(1, 5, 4, 10, T2) + L('M1.8 1.8 L5 5', RD, 3) + L('M6.5 5.5 L8 7 M5.5 6.5 L7 8', RD, 1.2);
+  OWN.cornerRelief = Fr(1, 1, 14, 4, T2) + Fr(1, 5, 4, 10, T2) + C(6, 6, 3.2, W, T4, 1);
+  OWN.ftDimple = plate() + F('M4.5 10 A3.5 3.5 0 0 1 11.5 10 z', B2) + '<ellipse cx="6.8" cy="8.2" rx="1.3" ry="0.9" fill="' + B1 + '" stroke="none"/>';
+  OWN.ftExtrudedHole = plate() + cyl(8, 4.5, 10, 3, 1.3, B1, B2, T4);
+  OWN.ftLouver = plate() + F('M2.5 10.5 C2.5 6.5 7 6.5 7 10.5 z', B2) + F('M3.3 10.5 C3.3 8.6 6.2 8.6 6.2 10.5 z', T4) + F('M8 10.5 C8 6.5 12.5 6.5 12.5 10.5 z', B2) + F('M8.8 10.5 C8.8 8.6 11.7 8.6 11.7 10.5 z', T4);
+  OWN.ftLance = plate() + F('M3 10.5 L5 5.5 H11 L13 10.5 H11 L9.8 7.5 H6.2 L5 10.5 z', B2);
+  OWN.ftRib = plate() + L('M3 10 L12.5 10', B3, 3) + L('M3 9.4 L12.5 9.4', B1, 1);
+  OWN.insertBends = F('M1.5 11.5 H9 V13.5 H1.5 z', T2) + F('M11.5 9 V5 H13.5 V9 z', T2) + F('M9 11.5 A2.5 2.5 0 0 0 11.5 9 H13.5 A4.5 4.5 0 0 1 9 13.5 z', B2) + L('M4.5 1.5 V8.5 M1 5 H8', GN, 2.2);
+  OWN.noBends = F('M1.5 11.5 H11.5 V5 H13.5 V13.5 H1.5 z', T2) + C(5, 5, 3.5, 'none', RD, 1.5) + L('M2.5 7.5 L7.5 2.5', RD, 1.5);
+  // --- Drawing: views and the sheet format
+  function vframe() { return R(1.5, 1.5, 13, 13, 'none', SL, 1, 'stroke-dasharray="2 1.2"'); }
+  OWN.modelView = vframe() + cube(8, 6.5, 4.5, 4.5, T1, T2, T3);
+  OWN.relativeView = vframe() + cube(8, 6.5, 4.5, 4.5, G1, B2, GN) + ar(12, 13, 14.5, 10.5, INK, 1, 2);
+  function fmt() { return R(1.5, 1.5, 10, 13, W, SL, 1) + T('M1.5 10.5 H11.5 M6.5 10.5 V14.5'); }
+  function floppy(x, y) { return F('M' + x + ' ' + y + ' h4.5 l1.5 1.5 v4.5 h-6 z', B2) + Fr(x + 1.5, y, 2.5, 2, W) + Fr(x + 1, y + 3.5, 4, 2.5, B0); }
+  OWN.editSheetFormat = fmt() + F('M8 12 L13.5 6.5 L15.5 8.5 L10 14 L7.5 14.5 z', YL) + F('M7.5 14.5 L8 12 L10 14 z', T2);
+  OWN.saveSheetFormat = fmt() + floppy(9, 9);
+  OWN.saveTemplate = R(4.5, 0.5, 9, 11, W, SL, 1) + R(1.5, 3.5, 9, 11, W, SL, 1) + T('M3.5 6.5 H8.5 M3.5 9 H8.5') + floppy(9, 9.5);
+  OWN.docProps = fmt() + gear(11.5, 11.5, 2.4, T2);
+  OWN.resetFormat = fmt() + L('M14.5 11 A3.5 3.5 0 1 1 11 7.5', GN, 1.8) + head(13, 7.5, 1, 0, GN, 2.6);
+
+  // --- Drafting of a drawing: Mastercam's own groups (Dimension, Ordinate, Annotate) are drawn for the set too
+  OWN.note = page(2.5, 1.5, 11, 13) + L('M4.5 11 L7.5 3.5 L10.5 11 M5.7 8.3 H9.3', DS, 1.5);
+  OWN.holeTable = R(1.5, 1.5, 10, 9, W, SL, 1) + T('M1.5 4.5 H11.5 M1.5 7.5 H11.5 M5 1.5 V10.5') + C(11.5, 11.5, 3.2, W, LB, 1.5) + mk(11.5, 11.5);
+  OWN.areaHatch = T('M2.5 7 L7 2.5 M2.5 11.5 L11.5 2.5 M5.5 13.5 L13.5 5.5 M10 13.5 L13.5 10') + P('M2.5 2.5 H13.5 V13.5 H2.5 z', 'none', LB, 1.5);
+  OWN.multiJogLeader = L('M10.5 3.5 H8.5 L6 8.5 L3.8 11.7', INK, 1.1) + head(2.5, 13.5, -0.6, 0.8, INK, 2.6) + Fr(11, 2, 4, 1.5, G4) + Fr(11, 5, 3, 1.5, G3);
+  OWN.baselineDim = T('M2.5 2 V14.5 M8 8.5 V14.5 M13.5 3 V14.5') + ar(5.25, 11, 2.9, 11, INK, 1, 1.9) + ar(5.25, 11, 7.6, 11, INK, 1, 1.9) + ar(8, 5, 2.9, 5, INK, 1, 1.9) + ar(8, 5, 13.1, 5, INK, 1, 1.9) + L('M1 14.5 H15');
+  OWN.modelItems = cube(6, 4.5, 5, 5, T1, T2, T3) + ar(9.5, 9, 12, 11.5, INK, 1, 2) + T('M9.5 12.5 V15.5 M15 12.5 V15.5') + ar(12.25, 14, 9.9, 14, INK, 0.9, 1.6) + ar(12.25, 14, 14.6, 14, INK, 0.9, 1.6);
+  OWN.magLine = L('M1.5 12.5 H14.5', INK, 1) + T('M4.5 8.5 V12.5 M11 8.5 V12.5') + C(4.5, 6, 2.5, W, INK, 1) + C(11, 6, 2.5, W, INK, 1) + L('M14.5 10 V15', RD, 2);
+  OWN.flagNote = P('M8 2 L14.5 13.5 H1.5 z', W, INK, 1) + txt(8, 12.5, 7, '1', DS);
+  OWN.centerMark = T('M0.5 8 H15.5 M8 0.5 V15.5', 'stroke-dasharray="3 1 1 1"') + C(8, 8, 4.5, 'none', LB, 1.5) + mk(8, 8, 1.2);
+  OWN.holeCallout = C(5, 11, 3, W, LB, 1.5) + mk(5, 11) + L('M7.5 8.5 L10 6 H15', INK, 1) + head(7.2, 8.8, -0.7, 0.7, INK, 2.2) + C(12.5, 3, 1.8, 'none', INK, 0.9) + T('M10.5 5 L14.5 1');
+  // --- an assembly's Home and View (Hide/Show Components, Interference Detection, Apply Scene)
+  OWN.hideshow = cube(5, 4, 4, 4, T1, T2, T3) + wcube(11.5, 4, 3.5, 4, G3, 1) + eye(8, 12.5, 5);
+  OWN.interference = Fr(1, 7, 7, 7, T2) + Fr(5, 4, 7, 7, B2) + Fr(5, 7, 3, 4, RD) + Q(12, -0.5);
+  OWN.scene = F('M1 14 L4 10 H15 L12 14 z', G2) + C(7, 7.5, 3.5, B1, B1, '@FW') + '<circle cx="6" cy="6.5" r="1.4" fill="' + B0 + '" stroke="none"/>' + C(13, 3, 2, YL, YD, 1);
+
   // ================================================================== the chrome: Quick Access Toolbar, backstage, managers, function panel
   OWN.newDoc = P('M3.5 1.5 h6 l3 3 v10 h-9 z', W, SL, 1) + L('M9.5 1.5 v3 h3', SL, 1) + L('M11.5 9 V15 M8.5 12 H14.5', GN, 2.2);
   OWN.openDoc = F('M1.5 3.5 h4.5 l1.5 2 h6 v8 h-12 z', T3) + F('M1.5 13.5 l2.5 -6 h11 l-2.5 6 z', T1);
@@ -286,8 +404,9 @@
   OWN.rebuild = regen();
   OWN.rebuildSel = L('M13 9.5 A4 4 0 0 0 6 9.5', GN, 2) + head(5, 11.6, -0.35, 0.94, GN, 3) + L('M6 12.5 A4 4 0 0 0 13 12.5', GL, 2) + head(14, 10.4, 0.35, -0.94, GL, 3) + L('M4 1.5 V6.5 M1.8 2.8 L6.2 5.2 M6.2 2.8 L1.8 5.2', DS, 1.1);
   function rows() { return L('M2.5 3.5 H4 M2.5 6.5 H4 M2.5 9.5 H4 M2.5 12.5 H4', GN, 1.5) + T('M6 3.5 H8 M6 6.5 H8 M6 9.5 H8 M6 12.5 H8'); }
-  OWN.moveUp = rows() + ar(12, 14, 12, 2, LB, 1.5, 3.2);
-  OWN.moveDown = rows() + ar(12, 2, 12, 14, LB, 1.5, 3.2);
+  // lane mcicons2: the operation that moves is lit (at the top it lands on, or the bottom); the mirrored arrows alone were 0.141
+  OWN.moveUp = rows() + Fr(1.5, 2, 8, 3, GL) + T('M6 3.5 H8') + ar(12, 14, 12, 2, LB, 1.5, 3.2);
+  OWN.moveDown = rows() + Fr(1.5, 11, 8, 3, GL) + T('M6 12.5 H8') + ar(12, 2, 12, 14, LB, 1.5, 3.2);
   OWN.options = gear(8, 8, 3.4, T2);
   OWN.settings = OWN.options;
   OWN.help = C(8, 8, 6, B2, B3, 1) + '<path d="M6.3 6.4 a1.7 1.7 0 1 1 2.6 1.5 q-0.9 0.5 -0.9 1.5" fill="none" ' + st(W, 1.5) + ' style="stroke:#fff"/><circle cx="8" cy="11.6" r="0.8" fill="#fefefe" stroke="none"/>';

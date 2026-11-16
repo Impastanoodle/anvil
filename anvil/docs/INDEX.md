@@ -1516,7 +1516,7 @@ HoleWizard.newFeature  L324  — newFeature(o, units?) -> a hole feature from sc
 HoleWizard.ANSI_CSK_ANGLE  L375
 more: fracName L62, scaled L198, numText L226, holeDepth L264, modelUnits L274
 
-## icons-mastercam.js (396 lines)
+## icons-mastercam.js (515 lines)
 > the icon set of the Mastercam interface profile (rfLX, 2026-11-12). Loaded after icons.js.
 L  L38  — a line (not filled): the wireframe blue, 1.5 = the main entity (1 px at 16, 2 px at 32), …
 T  L40  — a thin dark line (dimension, axis, leader)
@@ -1530,12 +1530,18 @@ cube  L69  — a block seen from above its corner (2 : 1 slopes): the top rhombu
 cyl  L82  — an upright cylinder: side, a darker band down its right, the top ellipse
 page  L89  — a sheet of paper with a slate outline; a magnifier (grey ring, dark handle); a gear …
 arc  L97  — a curved arrow (regenerate, undo): an arc with a head
-globe  L224  — the display styles: drawn in the slate ink (@SI follows the ink), so they are slate blue …
-pane  L239  — the manager toggles: a pane with its rows
-drawn  L372  — the size icons.js really draws at (an 18 px box holds a 16 px drawing), for the …
+uzFrame  L209  — lane mcicons2: 50 % shrinks the model to a small block, 80 % to a large one (the corner …
+globe  L231  — the display styles: drawn in the slate ink (@SI follows the ink), so they are slate blue …
+hbox  L235  — lane mcicons2: the hidden-line styles are a box (two globes with one dashed arc were one …
+pane  L249  — the manager toggles: a pane with its rows
+eye  L295  — The survey (a contact sheet of every Mastercam tab, and every pair inside one ribbon …
+plate  L353  — Sheet metal (Anvil's own tab, kept whole under Mastercam): a tan sheet, the new metal blue
+vframe  L368  — Drawing: views and the sheet format
+drawn  L491  — the size icons.js really draws at (an 18 px box holds a 16 px drawing), for the …
 more: r2 L35, st L36, Fr L44, R L47, C L48, E L49, head L59, down L62, wcube L75, txt L87, mag L90, gear L91,
-more: frame L196, unzoom L202, vcube L211, grid L235, bookmark L245, ext L255, sq L260, regen L285, rows L288,
-more: attr L345, setAttr L346, restyleShape L347, finish L376, restyle L382, body L383
+more: chamferBlock L152, frame L202, vcube L218, grid L245, bookmark L255, ext L266, sq L271, fmt L371,
+more: floppy L372, regen L403, rows L406, attr L464, setAttr L465, restyleShape L466, finish L495, restyle L501,
+more: body L502
 
 ## icons-solidworks.js (516 lines)
 > the icon set of the SolidWorks interface profile, the default (rfMD, 2026-11-12). Loaded after
