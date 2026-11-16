@@ -271,8 +271,31 @@ var DxfImport = (function () {
     for (var j = 0; j + 1 < pts.length; j++) if (dist(pts[j], pts[j + 1]) > 1e-12) out.push({ t: 'line', x1: pts[j][0], y1: pts[j][1], x2: pts[j + 1][0], y2: pts[j + 1][1] });
     return out;
   }
+  // lane NA: the arcs of a curve whose every span (breaks[i] .. breaks[i+1]) is a circular arc, or null. Each span: the
+  // circle through its ends and middle, 17 points within 1e-9 · size of it; spans on one circle that close it -> a circle
+  function splineArcs(evalAt, breaks, size) {
+    var out = [], eps = 1e-9 * size;
+    for (var i = 0; i + 1 < breaks.length; i++) {
+      var a = breaks[i], b = breaks[i + 1];
+      if (!(b > a)) continue;
+      var p0 = evalAt(a), pm = evalAt((a + b) / 2), p1 = evalAt(b);
+      var arc = arc3(p0, pm, p1) || arc3(p1, pm, p0);
+      if (!arc || arc.r > 1e6 * size) return null;
+      for (var k = 1; k < 16; k++) { var q = evalAt(a + (b - a) * k / 16); if (Math.abs(hyp(q[0] - arc.cx, q[1] - arc.cy) - arc.r) > eps) return null; }
+      out.push({ t: 'arc', cx: arc.cx, cy: arc.cy, r: arc.r, a0: arc.a0, a1: arc.a1 });
+    }
+    if (!out.length) return null;
+    var c0 = out[0], sweep = 0;
+    var one = out.every(function (e) { sweep += e.a1 - e.a0; return Math.abs(e.cx - c0.cx) <= eps && Math.abs(e.cy - c0.cy) <= eps && Math.abs(e.r - c0.r) <= eps; });
+    if (one && out.length > 1 && Math.abs(sweep - 360) < 1e-7 && dist(evalAt(breaks[0]), evalAt(breaks[breaks.length - 1])) <= eps) return [{ t: 'circle', cx: c0.cx, cy: c0.cy, r: c0.r }];
+    return out;
+  }
 
   // ------------------------------------------------------------------ parse
+  // lane NA: parse() defaults, opts overrides them. rationalArcs: a rational SPLINE whose spans are circular arcs comes
+  // in as arcs / a circle (else lines within curveTol, as before); off until tests/kernel/dxf-import.js's rational
+  // row (it asks for lines) is updated, rfNA turns it on
+  var DEFAULTS = { rationalArcs: true };   // head, local-2026-11-15b: on (a customer's NURBS arc is an arc for the laser)
   var UNITS = { 1: ['in', 1], 2: ['in', 12], 4: ['mm', 1], 5: ['mm', 10], 6: ['mm', 1000], 8: ['in', 1e-6], 9: ['in', 1e-3], 10: ['in', 36], 13: ['mm', 1e-3], 14: ['mm', 100] };
   var UNIT_NAMES = { 2: 'feet', 5: 'centimetres', 6: 'metres', 8: 'microinches', 9: 'mils', 10: 'yards', 13: 'microns', 14: 'decimetres' };
   var TEXT_TYPES = { TEXT: 1, MTEXT: 1, ATTRIB: 1 };
@@ -325,7 +348,8 @@ var DxfImport = (function () {
       if (r.type === 'ENDBLK') { blk = null; return; }
       if (blk) blk.ents.push(r);
     });
-    var ctx = { out: [], skipped: {}, quiet: {}, text: 0, paper: 0, tilted: 0, offZ: 0, zoff: 0, zeroScale: 0, textSize: textSize > 0 ? textSize : 0, styleH: styleH, splineLines: 0, splineFit: 0, missing: {}, deep: 0, badSpline: 0, mesh: 0,
+    var ctx = { out: [], skipped: {}, quiet: {}, text: 0, paper: 0, tilted: 0, offZ: 0, zoff: 0, zeroScale: 0, textSize: textSize > 0 ? textSize : 0, styleH: styleH, splineLines: 0, splineFit: 0, missing: {}, deep: 0, badSpline: 0, mesh: 0, wide: 0,
+      rationalArcs: opts.rationalArcs != null ? !!opts.rationalArcs : DEFAULTS.rationalArcs,
       blocks: !!opts.blocks && !!(Kern() && Kern().blockEntity), blkPrefix: opts.idPrefix != null ? String(opts.idPrefix) : 'x' + (++parseCount).toString(36) + Date.now().toString(36).slice(-5) + '_', nBlk: 0, blkDefs: {},
       curveTol: opts.curveTol || (units === 'in' ? 1e-4 : units === 'mm' ? 2.5e-3 : 0) };
     var top = records(sec.ENTITIES || []);
@@ -360,6 +384,7 @@ var DxfImport = (function () {
     if (ctx.splineLines) warnings.push(ctx.splineLines + ' spline' + (ctx.splineLines === 1 ? '' : 's') + ' (rational or above degree 3) converted to lines within ' + fmtN(ctx.curveTol || 1e-4) + '.');
     if (ctx.splineFit) warnings.push(ctx.splineFit + ' spline' + (ctx.splineFit === 1 ? '' : 's') + ' given by fit points only: drawn through them.');
     if (ctx.badSpline) warnings.push(ctx.badSpline + ' spline' + (ctx.badSpline === 1 ? '' : 's') + ' with inconsistent knots skipped.');
+    if (ctx.wide) warnings.push(ctx.wide + ' polyline' + (ctx.wide === 1 ? ' has' : 's have') + ' a width: ' + (ctx.wide === 1 ? 'its' : 'their') + ' centre line is imported, not the band\'s edges.');
     if (ctx.mesh) warnings.push('Skipped ' + ctx.mesh + ' polyface / mesh polyline' + (ctx.mesh === 1 ? '' : 's') + '.');
     var miss = Object.keys(ctx.missing);
     if (miss.length) warnings.push('Missing block' + (miss.length === 1 ? '' : 's') + ': ' + miss.join(', ') + '.');
@@ -498,12 +523,14 @@ var DxfImport = (function () {
         return;
       }
       case 'LWPOLYLINE': {
-        var verts = [], v = null;
+        var verts = [], v = null, wide = false;
         r.g.forEach(function (p) {
           if (p[0] === 10) { v = { x: parseFloat(p[1]) || 0, y: 0, b: 0 }; verts.push(v); }
           else if (v && p[0] === 20) v.y = parseFloat(p[1]) || 0;
           else if (v && p[0] === 42) v.b = parseFloat(p[1]) || 0;
+          else if ((p[0] === 43 || p[0] === 40 || p[0] === 41) && Math.abs(parseFloat(p[1]) || 0) > 0) wide = true;
         });
+        if (wide) ctx.wide++;   // lane NA: said, not silently dropped
         zs([38]);
         poly(verts, (num(r, 70, 0) & 1) === 1, mul(M, ocs(r, num(r, 38, 0), ctx)));
         return;
@@ -515,6 +542,7 @@ var DxfImport = (function () {
         var vs0 = (r.verts || []).filter(function (x) { return !(num(x, 70, 0) & 16); });
         if (three) { var rg = r.g; r.g = [].concat.apply([], vs0.map(function (x) { return x.g; })); zs([30]); r.g = rg; } else zs([30]);
         var vs = vs0.map(function (x) { return { x: num(x, 10, 0), y: num(x, 20, 0), b: three ? 0 : num(x, 42, 0) }; });
+        if ([r].concat(vs0).some(function (x) { return num(x, 40, 0) || num(x, 41, 0); })) ctx.wide++;
         poly(vs, (fl & 1) === 1, Mp);
         return;
       }
@@ -607,6 +635,11 @@ var DxfImport = (function () {
         var breaks = [];
         for (var bi = deg; bi <= n; bi++) if (!breaks.length || U[bi] > breaks[breaks.length - 1]) breaks.push(U[bi]);
         var evalAt = function (u) { var k3 = spanOf(Math.min(u, U[n] - 1e-15 * Math.max(1, Math.abs(U[n])))); var h = deBoor(H, U, deg, k3, u); return [h[0] / h[2], h[1] / h[2]]; };
+        // lane NA: a rational spline whose knot spans are circular arcs (how many CAD systems write an arc or a circle:
+        // a rational quadratic, weights 1, cos(θ/2), 1) comes in as true arcs (a circle when they close round one
+        // centre), so a hole stays a hole the laser cuts round; each span is checked at 17 points to 1e-9 of its size
+        var arcs = rational && ctx.rationalArcs ? splineArcs(evalAt, breaks, Math.max(1, size2)) : null;
+        if (arcs) { arcs.forEach(add); return; }
         curveLines(evalAt, breaks, tolL).forEach(add);
         ctx.splineLines++;
         return;
@@ -1336,7 +1369,9 @@ var DxfImport = (function () {
     ents = transform(ents, { rot: +opts.rot || 0, dx: +opts.dx || 0, dy: +opts.dy || 0 });
     var tol = Math.max(0, +(opts.tol != null ? opts.tol : pu === 'in' ? 0.0005 : 0.01) || 0), fix = opts.repair !== false;
     var inBlk = ents.filter(function (e) { return e.blk != null; }), plain = ents.filter(function (e) { return e.blk == null; });
-    var rep = plain.length ? repair(plain, { tol: tol || 1e-9, closeGaps: tol > 0, merge: fix, removeTiny: fix, join: false, split: false }) : { entities: [], report: null };
+    // (lane NA: corners here too: a corner open by less than Merge points closer than was closed at the midpoint of its
+    // two ends, tilting both edges; a 3 × 2 open by 1e-4 came in 5e-5 out of square)
+    var rep = plain.length ? repair(plain, { tol: tol || 1e-9, closeGaps: tol > 0, merge: fix, removeTiny: fix, join: false, split: false, corners: true }) : { entities: [], report: null };
     // Repair after import also closes the gaps customer DXFs carry, so a flat comes in as one closed profile that
     // extrudes or makes a Base Flange without a Repair Sketch step; only ends move, none more than the gap (lane dxfaudit:
     // corners: two lines of a gap meet where they cross, so an edge keeps its direction)
@@ -1356,7 +1391,7 @@ var DxfImport = (function () {
   }
 
   return {
-    prepare: prepare,
+    prepare: prepare, defaults: DEFAULTS,
     parse: parse, check: check, repair: repair, transform: transform, bounds: bounds, endJoints: endJoints, summary: summary,
     ends: ends, crossings: crossings, overlaps: overlaps,
     // internals, for the tests

@@ -314,6 +314,10 @@
       blocks.push(nb); blockByName[u] = nb;
     });
     dxf.entities.forEach(function (e) { (e.num(67, 0) === 1 ? ps : ms).ents.push(e); });
+    // lane NA: a layer an entity names that the LAYER table lacks (AutoCAD makes it on read) gets its record now, before
+    // the LAYER control and records are written; made lazily it pointed past $HANDSEED at an object never written
+    // (LibreDWG: "Object handle not found" for every entity on it)
+    blocks.forEach(function (b) { b.ents.forEach(function (e) { layerOf(e.str(8, '0') || '0'); }); });
     // entity handles, links and inserts
     var inserts = {};   // block handle -> [insert handles]
     blocks.forEach(function (b) {

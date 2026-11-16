@@ -119,9 +119,9 @@
       var F = r.entities.filter(function (e) { return e.layer === 'F'; });
       assert(F.length === 1 && F[0].t === 'spline' && JSON.stringify(F[0].pts) === '[[0,20],[5,25],[10,20]]', 'fit spline ' + JSON.stringify(F));
       var R = r.entities.filter(function (e) { return e.layer === 'R'; });
-      assert(R.length > 8 && R.every(function (e) { return e.t === 'line'; }), 'rational: ' + R.length + ' lines');
-      R.forEach(function (e) { [[e.x1, e.y1], [e.x2, e.y2], [(e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2]].forEach(function (p) { near(Math.hypot(p[0] - 0, p[1] - 0), 10, 2.5e-3 + 1e-9, 'quarter circle (rational) point'); }); });
-      dxiPt([R[0].x1, R[0].y1], [10, 0], 1e-12, 'rational start'); dxiPt([R[R.length - 1].x2, R[R.length - 1].y2], [0, 10], 1e-12, 'rational end');
+      // local-2026-11-15b (lane NA, rationalArcs on by default): a rational SPLINE that is a circular arc comes in as that arc
+      assert(R.length === 1 && R[0].t === 'arc', 'rational: one arc ' + JSON.stringify(R));
+      near(R[0].r, 10, 1e-9, 'quarter circle (rational) radius'); near(Math.hypot(R[0].cx, R[0].cy), 0, 1e-9, 'its centre'); near(Math.abs(R[0].a1 - R[0].a0), 90, 1e-7, 'its sweep');
       var E = r.entities.filter(function (e) { return e.layer === 'E'; });
       assert(E[0].t === 'ellipse' && E[1].t === 'pellipse', JSON.stringify(E));
       near(E[0].rx, 4, 1e-12, 'rx'); near(E[0].ry, 2, 1e-12, 'ry'); near(Math.abs(E[0].rot), 90, 1e-9, 'rot');
@@ -130,7 +130,8 @@
       var e1 = E[1], ends = [K.ellipsePoint(e1, e1.a0 * Math.PI / 180), K.ellipsePoint(e1, e1.a1 * Math.PI / 180)];
       near(e1.cx, 40, 1e-12, 'ellipse cx'); near(e1.a1 - e1.a0, 90, 1e-9, 'quarter');
       assert((Math.hypot(ends[0][0] - 40, ends[0][1] + 1.5) < 1e-9 && Math.hypot(ends[1][0] - 43, ends[1][1]) < 1e-9), 'ends ' + JSON.stringify(ends));
-      assert(r.warnings.some(function (w) { return /rational/.test(w); }) && r.warnings.some(function (w) { return /fit points/.test(w); }), r.warnings.join(' | '));
+      // the rational SPLINE is a true arc now (no conversion to lines, so no warning about it); the fit-point one still says so
+      assert(r.warnings.some(function (w) { return /fit points/.test(w); }), r.warnings.join(' | '));
       return S.length + ' spline(s), ' + R.length + ' lines for the rational arc';
     });
     test('dxf-import: round trip — Anvil\'s own sketch DXF (R2000 and R12) of lines, an arc, a circle, open / closed / tangent-driven splines and full / partial / turned ellipses parses back to the same geometry (R2000 within 1e-6; R12\'s arcs for splines and ellipses within DXF_TOL.freeArc)', function () {
