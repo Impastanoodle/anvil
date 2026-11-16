@@ -417,12 +417,21 @@
   // an edge { kind: 'h' | 'v' | 'aligned', a, b }; refFrom({ c, r } | { a, b }) builds one
   function refFrom(x) {
     if (x.c) return { kind: 'dia', c: [+x.c[0], +x.c[1]], r: +x.r || 0, value: 2 * (+x.r || 0) };
+    if (x.p && !x.a) { var po = { kind: 'pt', p: [+x.p[0], +x.p[1]] }; if (x.ext) { po.ext = x.ext; po.ax = +x.ax || 0; } return po; }   // (rfMZ) a vertex (Autodimension's overall size of a blank with no square edge)
     var a = [+x.a[0], +x.a[1]], b = [+x.b[0], +x.b[1]], dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
     var out = { kind: Math.abs(dy) <= L * 1e-9 ? 'h' : Math.abs(dx) <= L * 1e-9 ? 'v' : 'aligned', a: a, b: b, value: L };
     if (x.bend != null) out.bend = x.bend;   // (rfJM) a bend line of a flat pattern view
     return out;
   }
-  function refPos(ref, axis) { return ref.kind === 'dia' ? ref.c[axis] : (ref.a[axis] + ref.b[axis]) / 2; }
+  // (rfMZ) an Autodimension vertex station (ref.ext 'min' | 'max' along ref.ax): the outline's extreme vertex again
+  function extremeVertex(r, pr) {
+    var best = null, ax = r.ax || 0;
+    (pr.lines.visible || []).forEach(function (l) { [[l[0], l[1]], [l[2], l[3]]].forEach(function (p) { if (!best || (r.ext === 'max' ? p[ax] > best[ax] : p[ax] < best[ax])) best = p; }); });
+    if (!best) return false;
+    r.p = best.slice();
+    return true;
+  }
+  function refPos(ref, axis) { return ref.kind === 'dia' ? ref.c[axis] : ref.kind === 'pt' ? ref.p[axis] : (ref.a[axis] + ref.b[axis]) / 2; }
   // addOrdinate / addBaseline(doc, viewId, { dir: 'h' | 'v', base, refs: [...], side, at }): ordinate dimensions
   // (the base reads 0, every reference its distance from it along dir, texts on one line) or baseline dimensions (a
   // stack of linear dimensions from the base to each reference). dir 'h' measures along the view's u (sheet x).
@@ -467,6 +476,13 @@
     (pr.circles.visible || []).forEach(function (c) {
       if (!at(c.c[ax])) out.push({ pos: c.c[ax], L: 0, ref: { c: c.c.slice(), r: c.r }, pick: { circle: { c: c.c.slice(), r: c.r } } });
     });
+    // (rfMZ) opts.vertices: the outline's extreme vertices along the direction too (a Lofted-Bend blank has no edge
+    // square to either axis: its overall size is measured between the vertices that bound it)
+    if (opts.vertices) {
+      var lo = null, hi = null;
+      (pr.lines.visible || []).forEach(function (l) { [[l[0], l[1]], [l[2], l[3]]].forEach(function (p) { if (!lo || p[ax] < lo[ax]) lo = p; if (!hi || p[ax] > hi[ax]) hi = p; }); });
+      [lo, hi].forEach(function (p, i) { if (p && !at(p[ax])) out.push({ pos: p[ax], L: 0, ref: { p: p.slice(), ext: i ? 'max' : 'min', ax: ax }, pick: { point: p.slice() } }); });
+    }
     return out.sort(function (x, y) { return x.pos - y.pos; });
   }
   // does station q match a selected entity (an edge { a, b }, a circle { c, r }, or a bend line { a, b })?
@@ -510,6 +526,7 @@
       if (!o || !o.scheme || o.scheme === 'none') return;
       var st = gtStations(pr, dir, opts), ax = dir === 'h' ? 1 : 0, far = o.origin === 'right' || o.origin === 'top';
       var side = o.place === 'below' || o.place === 'left' ? -1 : 1;
+      if (st.length < 2) st = gtStations(pr, dir, Object.assign({}, opts, { vertices: true }));   // (rfMZ) the overall size between vertices
       if (st.length < 2) return;
       if (far) st.reverse();
       // (rfJM) Entities to dimension: Selected — the origin edge and the selected entities only
@@ -625,7 +642,7 @@
   function reattachUserDim(d, pr) {
     if (d.kind === 'angrun' || d.kind === 'pathlen') return reattachCT(d, pr);   // (lane CT)
     if (d.kind === 'ordinate' || d.kind === 'baseline') {
-      var ok = [d.base].concat(d.refs).map(function (r) { return r.bend != null ? reattachBendRef(r, pr) : reattachDim(r, pr); }).every(Boolean);   // (rfJM: bend lines)
+      var ok = [d.base].concat(d.refs).map(function (r) { return r.bend != null ? reattachBendRef(r, pr) : r.kind === 'pt' && r.ext ? extremeVertex(r, pr) : r.kind === 'pt' ? reattachRef(r, pr) : reattachDim(r, pr); }).every(Boolean);   // (rfMZ: a vertex)   // (rfJM: bend lines)
       if (ok) delete d.dangling; else d.dangling = true;
       var ax = d.dir === 'v' ? 1 : 0, b0 = refPos(d.base, ax);
       if (d.rot) {   // (rfLG) a set turned with its view (Rotate View at an angle): the values along its turned axis
@@ -643,11 +660,32 @@
       chamferValue(d);
       return ok2;
     }
+    if (d.arcLen && d.arc) {   // (rfMZ) an arc length: its arc found again (centre, radius, ends), then measured
+      var ra = { kind: 'rad', c: d.arc.c, r: d.arc.r, a0: d.arc.a0, a1: d.arc.a1 }, okL = reattachDim(ra, pr);
+      if (!okL) {
+        // a bend whose radius changed: its centre moves, so take the arc of the same sweep whose ends lie nearest the
+        // old ends (the outside of a bend keeps its ends on the outside faces; the inside one is a thickness away)
+        var ends = function (q) { var t0 = q.a0 * Math.PI / 180, t1 = q.a1 * Math.PI / 180; return [[q.c[0] + q.r * Math.cos(t0), q.c[1] + q.r * Math.sin(t0)], [q.c[0] + q.r * Math.cos(t1), q.c[1] + q.r * Math.sin(t1)]]; };
+        var sweep = function (q) { var s = q.a1 - q.a0; while (s <= 0) s += 360; return s; };
+        var oe = ends(d.arc), os = sweep(d.arc), bnd = pr.bounds, reachL = 0.25 * Math.hypot(bnd.umax - bnd.umin, bnd.vmax - bnd.vmin), bestL = null, bsL = reachL;
+        (pr.arcsAll || []).forEach(function (q) {
+          if (Math.abs(sweep(q) - os) > 1e-6) return;
+          var ne = ends(q), s = Math.hypot(ne[0][0] - oe[0][0], ne[0][1] - oe[0][1]) + Math.hypot(ne[1][0] - oe[1][0], ne[1][1] - oe[1][1]);
+          if (s < bsL) { bsL = s; bestL = q; }
+        });
+        if (bestL) { ra = { c: bestL.c.slice(), r: bestL.r, a0: bestL.a0, a1: bestL.a1 }; okL = true; }
+      }
+      if (okL) { d.arc = { c: ra.c.slice(), r: ra.r, a0: ra.a0, a1: ra.a1 }; delete d.dangling; arcLenMeasure(d); } else d.dangling = true;
+      return okL;
+    }
     if (d.refs && d.refs.length === 2) {
       // (rfS) a Smart Dimension between two picks: reattach each, then measure again (lane CT2: an angle's two lines
       // follow their edges when the angle between them changes)
       var okR = d.kind === 'angle' ? ctReattachLines(d.refs, pr) : d.refs.map(function (r) { return reattachRef(r, pr); }).every(Boolean);
       if (okR) { delete d.dangling; measurePair(d); } else d.dangling = true;
+      // (rfMZ) both picks found on one item (a deleted hole's reference went to its same-size neighbour, the other
+      // pick's hole): the dimension would read 0, pointing at nothing it was made for: dangling, not silently wrong
+      if (okR && d.kind !== 'angle' && !(Math.abs(d.value) > 1e-9)) { d.dangling = true; okR = false; }
       return okR;
     }
     if (d.slotCallout) {   // (rfDD) a slot callout: its end arc, then the slot's size again
@@ -658,6 +696,50 @@
     }
     return reattachDim(d, pr);
   }
+  // (rfMZ) reattachDimTo(doc, viewId, index, proj, pick) -> { ok, dangling }: a dangling dimension of the view (its
+  // geometry gone after a model change: SolidWorks' olive brown) put on the picked item (a Smart Dimension pick:
+  // { edge | point | center | circle | arc | mid }). The first reference that is no longer found takes the pick; a
+  // diameter / radius takes the picked circle / arc. ok: the pick fitted; dangling: still dangling (another reference
+  // is missing too: pick again).
+  function reattachDimTo(doc, viewId, index, pr, pick) {
+    var v = findView(doc, viewId), d = v && v.dims && v.dims[index];
+    if (!d || !pr || !pick) return { ok: false, dangling: !!(d && d.dangling) };
+    var nr = pickRef(pick);
+    if (!nr) return { ok: false, dangling: !!d.dangling };
+    var trial = JSON.parse(JSON.stringify(d)), ok = false;
+    if ((trial.kind === 'dia' || trial.kind === 'rad') && !trial.refs && !trial.arcLen && !trial.lock) {
+      if (trial.kind === 'dia' && nr.kind === 'dia') { trial.c = nr.c.slice(); trial.r = nr.r; ok = true; }
+      else if (trial.kind === 'rad' && (nr.kind === 'arc' || nr.kind === 'dia')) { trial.c = nr.c.slice(); trial.r = nr.r; if (nr.a0 != null) { trial.a0 = nr.a0; trial.a1 = nr.a1; } ok = true; }
+    } else if (trial.arcLen) {
+      if (nr.kind === 'arc' && nr.a0 != null) { trial.arc = { c: nr.c.slice(), r: nr.r, a0: nr.a0, a1: nr.a1 }; ok = true; }
+    } else if (trial.refs && trial.refs.length) {
+      // an ordinate / baseline set reads edges and holes (refFrom): a picked hole centre or arc is its circle
+      if (trial.kind === 'ordinate' || trial.kind === 'baseline') {
+        if (pick.center) nr = refFrom({ c: pick.center.c, r: pick.center.r });
+        else if (nr.kind === 'arc' || nr.kind === 'pt') nr = nr.c ? refFrom({ c: nr.c, r: nr.r }) : null;
+        if (!nr) return { ok: false, dangling: !!d.dangling };
+      }
+      var lists = trial.base ? [trial.base].concat(trial.refs) : trial.refs, probes = [], miss = -1;
+      lists.forEach(function (x, i) {
+        var probe = JSON.parse(JSON.stringify(x)), found = trial.base ? reattachDim(probe, pr) : reattachRef(probe, pr);
+        probes.push(JSON.stringify([probe.c, probe.p, probe.a, probe.b]));
+        if (!found && miss < 0) miss = i;
+      });
+      // none lost but the dimension dangles: two references landed on one item (a deleted hole's went to its
+      // same-size neighbour): the later of them is the one that is gone
+      if (miss < 0 && d.dangling) for (var j = 1; j < probes.length && miss < 0; j++) if (probes.slice(0, j).indexOf(probes[j]) >= 0) miss = j;
+      if (miss >= 0) {
+        if (trial.base && miss === 0) trial.base = nr; else trial.refs[trial.base ? miss - 1 : miss] = nr;
+        ok = true;
+      }
+    }
+    if (!ok) return { ok: false, dangling: !!d.dangling };
+    reattachUserDim(trial, pr);
+    if (trial.kind !== 'ordinate' && trial.kind !== 'baseline' && !(trial.value > 1e-12) && !trial.arcLen) return { ok: false, dangling: !!d.dangling };
+    v.dims[index] = trial;
+    return { ok: true, dangling: !!trial.dangling };
+  }
+  D.reattachDimTo = reattachDimTo;
   // (rfS) one reference of a two-pick dimension: a circle / arc (by centre and radius), an edge, or a point (a vertex:
   // the nearest end of a visible edge or circle centre within a thousandth of the view size, else it is gone)
   function reattachRef(r, pr) {
@@ -844,6 +926,32 @@
     if (!(d.value > 1e-12)) return null;
     return placeLinear(d, at, sc);
   }
+  // (rfMZ) arcLengthDim(arc { c, r, a0, a1 (deg, CCW) }, at) -> an arc length dimension (SolidWorks: Smart Dimension,
+  // the arc, then its two ends): an angle record (the dimension arc concentric with the arc, extension lines out from
+  // its ends, arrows) with arcLen set: its refs are the two radial lines centre -> end, d.arc the arc (reattached as an
+  // arc each compute), d.value the length r x sweep; the text has the ANSI arc symbol drawn over it
+  function arcLengthDim(arc, at) {
+    if (!arc || !(arc.r > 0) || arc.a0 == null || arc.a1 == null) return null;
+    var e0 = arc.a0 * Math.PI / 180, e1 = arc.a1 * Math.PI / 180, c = arc.c;
+    var d = { kind: 'angle', arcLen: true, arc: { c: c.slice(), r: arc.r, a0: arc.a0, a1: arc.a1 },
+      refs: [{ kind: 'edge', a: c.slice(), b: [c[0] + arc.r * Math.cos(e0), c[1] + arc.r * Math.sin(e0)] }, { kind: 'edge', a: c.slice(), b: [c[0] + arc.r * Math.cos(e1), c[1] + arc.r * Math.sin(e1)] }] };
+    var rd = at ? Math.hypot(at[0] - c[0], at[1] - c[1]) : 0;
+    d.rad = rd > arc.r ? rd : arc.r * 1.5;
+    return arcLenMeasure(d);
+  }
+  function arcLenMeasure(d) {
+    var a = d.arc, e0 = a.a0 * Math.PI / 180, e1 = a.a1 * Math.PI / 180, sw = e1 - e0;
+    while (sw <= 0) sw += 2 * Math.PI;
+    d.refs[0].a = a.c.slice(); d.refs[0].b = [a.c[0] + a.r * Math.cos(e0), a.c[1] + a.r * Math.sin(e0)];
+    d.refs[1].a = a.c.slice(); d.refs[1].b = [a.c[0] + a.r * Math.cos(e1), a.c[1] + a.r * Math.sin(e1)];
+    d.c = a.c.slice();
+    d.u = [[Math.cos(e0), Math.sin(e0)], [Math.cos(e1), Math.sin(e1)]];
+    d.a = d.c.slice(); d.b = [d.c[0] + d.u[0][0], d.c[1] + d.u[0][1]];
+    d.sweep = sw * 180 / Math.PI;
+    d.value = a.r * sw;
+    return d;
+  }
+  D.arcLengthDim = arcLengthDim;
   // where a linear dimension's line goes: through the pointer (h: d.at is its v, v: its u; aligned: d.off, paper)
   // (lane CA) and which side of the extension lines the click was on, along the dimension: d.tside 0 between them (the
   // text stays between them when it fits there, the arrows going outside when they do not: SolidWorks), -1 / 1 before
@@ -1187,17 +1295,21 @@
     var am = a0 + sw / 2, um = [Math.cos(am), Math.sin(am)], text = String(d.text), tw = text.length * th * 0.78;
     var reach = R + 1.5 * k + Math.abs(um[0]) * tw / 2 + Math.abs(um[1]) * th / 2, C = [V0[0] + um[0] * reach, V0[1] + um[1] * reach];
     out.push({ k: 'text', p: [C[0], C[1] - th / 2], h: th, text: text, anchor: 'middle', layer: L, rot: 0 });
+    // (rfMZ) an arc length: the ANSI arc symbol over its text (a 60° arc as wide as the text, .3 h above it)
+    var symTop = 0;
+    if (d.arcLen) { var sR = Math.max(tw / 2, th) / Math.cos(Math.PI / 3), sy = C[1] + th / 2 + 0.3 * th - sR * Math.sin(Math.PI / 3); out.push({ k: 'arc', c: [C[0], sy], r: sR, a0: 60, a1: 120, layer: L, style: 'thin' }); symTop = sy + sR - (C[1] + th / 2); }
     var bx = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
     function grow(p) { bx.x0 = Math.min(bx.x0, p[0]); bx.x1 = Math.max(bx.x1, p[0]); bx.y0 = Math.min(bx.y0, p[1]); bx.y1 = Math.max(bx.y1, p[1]); }
     grow(tA); grow(tB);
     for (var i = 1; i < 8; i++) { var ai = a0 + sw * i / 8; grow([V0[0] + R * Math.cos(ai), V0[1] + R * Math.sin(ai)]); }
     d.tbox = { x0: C[0] - tw / 2, y0: C[1] - th / 2, x1: C[0] + tw / 2, y1: C[1] + th / 2 };
+    if (symTop > 0) d.tbox.y1 += symTop;
     grow([d.tbox.x0, d.tbox.y0]); grow([d.tbox.x1, d.tbox.y1]);
     d.box = bx; d.arrows = [tA, tB]; d.radNow = R / w.scale;
     d.dxf = { type: 'angular', p13: tA.slice(), p14: tB.slice(), p15: V0.slice(), p10: [V0[0] + R * Math.cos(am), V0[1] + R * Math.sin(am)], p11: C.slice() };
     return out;
   }
-  function angleText(d, units) { return d.tol || d.label != null || d.prec != null ? dimLabel(d, units).text : fmtAngle(d.value) + '°'; }
+  function angleText(d, units) { return d.tol || d.label != null || d.prec != null ? dimLabel(d, units).text : d.arcLen ? numText(d.value, units) : fmtAngle(d.value) + '°'; }
   // the sheet's angle dimensions get their primitives after the renderer has placed the others (drawing-render.js
   // compute calls it last, rfV); each primitive carries its dimension's index (dimIx) for the DXF DIMENSION block
   function finishAngles(sheet) {
@@ -1219,7 +1331,8 @@
   // unset: the document's (Document Properties > Dimensions > Tolerance precision, _.DIMSTYLE.tolPrec), whose default
   // is Same as nominal. So +.010 / -.005 under a 2-place nominal reads +.010 / -.005 at .123 (trailing zeros as the
   // value: kept on inch drawings and with a set precision).
-  var TOL_TYPES = [['none', 'None'], ['bilateral', 'Bilateral'], ['limit', 'Limit'], ['symmetric', 'Symmetric']];
+  // (rfMZ) SolidWorks 2024's list: Basic (boxed), MIN and MAX after the value too
+  var TOL_TYPES = [['none', 'None'], ['basic', 'Basic'], ['bilateral', 'Bilateral'], ['limit', 'Limit'], ['symmetric', 'Symmetric'], ['min', 'MIN'], ['max', 'MAX']];
   // (an explicit precision on an inch drawing still drops the leading zero, ANSI: .03, not 0.03)
   function numText(x, units, prec) {
     if (!(prec != null && prec !== '' && +prec >= 0)) return fmtDim(x, units);
@@ -1236,6 +1349,7 @@
     var prec = d.prec != null && d.prec !== '' ? +d.prec : null, tol = d.tol && d.tol.type && d.tol.type !== 'none' ? d.tol : null;
     function base(x) {
       if (d.kind === 'chamfer') return numText(x, units, prec) + ' X ' + fmtAngle(d.angle) + '°';
+      if (d.kind === 'angle' && d.arcLen) return numText(x, units, prec);   // (rfMZ) an arc length
       if (d.kind === 'angle') return (prec != null ? (+x).toFixed(prec) : fmtAngle(x)) + '°';   // (rfS)
       if (d.kind === 'dia') return (d.count > 1 ? d.count + 'X ' : '') + 'Ø' + numText(x, units, prec);
       if (d.kind === 'rad' && d.slot) return D.slotText(d, units, prec);   // a slot callout: W X L SLOT
@@ -1244,7 +1358,7 @@
     }
     var out = { main: base(d.value), upper: null, lower: null };
     if (tol) {
-      var isAng = d.kind === 'angle', plus = Math.abs(+tol.plus || 0), minus = Math.abs(+tol.minus || 0);
+      var isAng = d.kind === 'angle' && !d.arcLen, plus = Math.abs(+tol.plus || 0), minus = Math.abs(+tol.minus || 0);
       var docTp = !isAng && _.DIMSTYLE && _.DIMSTYLE.tolPrec != null ? _.DIMSTYLE.tolPrec : null;
       var tp = tol.prec === 'nominal' ? prec : tol.prec != null && tol.prec !== '' && +tol.prec >= 0 ? +tol.prec : docTp != null ? docTp : prec;
       // rfBC: an angle's tolerance is an angle (ASME Y14.5: degrees keep the leading zero, ±0.5°, in inch drawings too);
@@ -1696,7 +1810,7 @@
       var dia = null;
       if (typeof HoleWizard !== 'undefined' && HoleWizard.spec) { try { dia = +HoleWizard.spec(f).dia; } catch (e) { dia = null; } }
       if (!(dia > 0)) dia = +(f.dia || f.diameter || f.drill || 0);
-      if (dia > 0) out.push({ dia: dia, name: name, type: f.holeType || null });
+      if (dia > 0) out.push({ dia: dia, name: name, type: f.holeType || null, feature: f.id });
     });
     return out;
   }
@@ -1819,12 +1933,32 @@
     hit.forEach(function (x) { if (uniq.indexOf(x.name) < 0) uniq.push(x.name); });
     return uniq.length === 1 ? uniq[0] : null;
   }
+  // (rfMZ) nearestHole(pr, c) -> the distance (view units) from c to the nearest other visible circle centre of the
+  // projection (Infinity: none); a grid over the centres is built once per projection (600 holes: no n² per mark)
+  function nearestHole(pr, c) {
+    var G = pr._cmGrid;
+    if (!G) {
+      var b = pr.bounds, list = [], seen = {};
+      (pr.circles.visible || []).forEach(function (q) { var key = Math.round(q.c[0] * 1e5) + ',' + Math.round(q.c[1] * 1e5); if (!seen[key]) { seen[key] = 1; list.push(q.c); } });
+      var area = Math.max(1e-12, (b.umax - b.umin) * (b.vmax - b.vmin)), cell = Math.max(1e-6, Math.sqrt(area / Math.max(1, list.length)) * 2), cells = {};
+      list.forEach(function (q) { var key = Math.floor(q[0] / cell) + ',' + Math.floor(q[1] / cell); (cells[key] = cells[key] || []).push(q); });
+      G = { cell: cell, cells: cells };
+      try { Object.defineProperty(pr, '_cmGrid', { value: G, enumerable: false, configurable: true }); } catch (e) { }
+    }
+    var ix = Math.floor(c[0] / G.cell), iy = Math.floor(c[1] / G.cell), best = Infinity, tol = 1e-9 * (1 + Math.abs(c[0]) + Math.abs(c[1]));
+    for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) (G.cells[(ix + dx) + ',' + (iy + dy)] || []).forEach(function (q) { var d = Math.hypot(q[0] - c[0], q[1] - c[1]); if (d > tol && d < best) best = d; });
+    return best <= G.cell ? best : Infinity;
+  }
   function annotationPrims(an, w, k, mesh, doc, units, threads, holeNames, ends) {
     var L = 'ANNOTATIONS', out = [], pr = w.proj, o = docOptions(doc), dangling = false, text = '', info = null;
     function line(a, b, style) { out.push({ k: 'line', a: a, b: b, layer: L, style: style || 'thin' }); }
     function mark(cs, rr, size, ext, only) {
       // the small cross, then (extended lines) a gap and a centre line past the circle on each side
       var s = size * k, g = MARK_GAP * k, e = MARK_EXT * k;
+      // (rfMZ) a hole whose nearest neighbour is closer on paper than two marks (a perforated panel's flat at 1:8): the
+      // cross shrinks to 0.4 of that distance and keeps no extended lines, so the marks never run into each other
+      var nn = mark.near;
+      if (nn != null && isFinite(nn) && s > 0.4 * nn) { s = 0.4 * nn; ext = false; }
       // (rfLG) an.rot: the mark turned with its view (Rotate View at an angle; SolidWorks' Rotate center marks with view)
       var mr = (+an.rot || 0) * Math.PI / 180, mc = Math.cos(mr), ms = Math.sin(mr), X = [mc, ms], Y = [-ms, mc];
       line([cs[0] - X[0] * s, cs[1] - X[1] * s], [cs[0] + X[0] * s, cs[1] + X[1] * s]); line([cs[0] - Y[0] * s, cs[1] - Y[1] * s], [cs[0] + Y[0] * s, cs[1] + Y[1] * s]);
@@ -1836,6 +1970,7 @@
       });
     }
     if (an.type === 'centerMark') {
+      mark.near = null;
       an.holes.forEach(function (h) {
         var ref = { kind: 'dia', c: h.c, r: h.r };
         if (h.r > 0 && reattachDim(ref, pr)) { h.c = ref.c; h.r = ref.r; return; }
@@ -1846,6 +1981,7 @@
         if (h.r > 0) dangling = true;
       });
       var size = markPaper(doc, an.size || (doc.options || {}).markSize), ext = an.ext != null ? an.ext : o.extLines, cs = an.holes.map(function (h) { return w.toSheet(h.c); });
+      if (an.style !== 'linear' && an.style !== 'circular' && an.holes[0]) mark.near = nearestHole(pr, an.holes[0].c) * w.scale;
       if (an.style === 'linear') {
         // marks on every hole, connection lines between consecutive centres (sorted along the row)
         var t = [cs[cs.length - 1][0] - cs[0][0], cs[cs.length - 1][1] - cs[0][1]];
@@ -1908,8 +2044,10 @@
         info = { hole: h, count: Math.max(1, nf) };
       } else if (h) {
         // 4X: the visible holes of the view that read the same (one per centre: a counterbore shows two circles)
+        // (rfMZ) a Hole Wizard hole of the same drill is another feature's hole (it reads its own callout): not counted
         var one = holeText(h, units, 1, an.prec).join('|'), count = 0, seen = [];
         pr.circles.visible.forEach(function (c) {
+          if (w.ortho && ends && ends.wizard && wizardAt(ends.wizard, w.frame, c.c, c.r)) return;
           if (seen.some(function (q) { return Math.hypot(q[0] - c.c[0], q[1] - c.c[1]) <= 1e-6 * (1 + Math.abs(q[0]) + Math.abs(q[1])); })) return;
           var q = allOf(holeInfo(mesh, w.frame, c.c, c.r));
           if (q && holeText(q, units, 1, an.prec).join('|') === one) { count++; seen.push(c.c); }
@@ -1921,7 +2059,10 @@
         if (tap) { lines.push(tap.label + (tap.depth == null || h.thru ? (h.thruAll ? ' THRU ALL' : ' THRU') : ' ↧ ' + numText(tap.depth, units, an.prec))); info.thread = tap.label; }
       } else lines = ['Ø' + numText(2 * an.r, units, an.prec)];
       // the standard size the hole feature names (1/4-20 UNC, M6), when it is not in the callout already
-      var sz = hw ? null : holeNameFor(holeNames, h ? h.dia : 2 * an.r);
+      // (rfMZ) only from hole features the wizard list cannot place: a plain Ø.201 cut beside a tapped 1/4-20 hole
+      // is not threaded
+      var wizIds = ((ends && ends.wizard) || []).map(function (x) { return x.feature.id; });
+      var sz = hw ? null : holeNameFor((holeNames || []).filter(function (x) { return wizIds.indexOf(x.feature) < 0; }), h ? h.dia : 2 * an.r);
       if (sz && lines.join(' ').indexOf(sz) < 0) { lines.push(sz); info = info || {}; info.size = sz; }
       if (an.text) lines = String(an.text).split('\n').map(function (s) { return s.split('<HOLE>').join(lines.join(' ')); });
       // (lane BX) the callout text and arrow are the dimension style's (.125 in on an inch drawing, as the dimensions)

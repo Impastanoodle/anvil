@@ -44,7 +44,8 @@
     // (rfV) then the view kinds' marks (drawing-views.js: typed sections' cutting lines, breaks, auxiliary arrows) and
     // the angle dimensions (drawing-annotations.js), which need the views where they finally are
     _.viewKindMarks(doc, r);
-    if (r && r.dims && r.prims) _.finishAngles(r);
+    // (rfMZ) in the drawing's dimension style (an arc length's number: the document's precision / fractions)
+    if (r && r.dims && r.prims) { var ps2 = _.DIMSTYLE; _.DIMSTYLE = D.dimStyle(doc); try { _.finishAngles(r); } finally { _.DIMSTYLE = ps2; } }
     if (r && r.prims) applyDisplay(doc, r);
     return r;
   }
@@ -1650,7 +1651,7 @@
     }
     if (d.kind === 'ordinate' || d.kind === 'baseline') {
       var hz2 = d.dir !== 'v', ax = hz2 ? 0 : 1, items = [{ ref: d.base, val: 0 }].concat(d.refs.map(function (r2, i) { return { ref: r2, val: (d.values || [])[i] || 0, vp: d.valueProps && d.valueProps[i] || null }; }));
-      var side = d.side || 1, sp = function (ref) { return ref.kind === 'dia' ? vw.toSheet(ref.c) : null; };
+      var side = d.side || 1, sp = function (ref) { return ref.kind === 'dia' ? vw.toSheet(ref.c) : ref.kind === 'pt' ? vw.toSheet(ref.p) : null; };
       // the feature point of a reference: a circle centre, or the end of an edge nearest the dimension side
       items.forEach(function (it) {
         var q = sp(it.ref);

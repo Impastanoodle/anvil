@@ -706,6 +706,7 @@
   function smartSpec(P, p) {
     if (!P || !P.first) return null;
     var w = P.first.w;
+    if (P.arcLen) return Drawing.arcLengthDim(P.first.pick.arc, p ? w.fromSheet(p) : null);   // (rfMZ)
     var d = Drawing.smartDim(P.first.pick, P.second ? P.second.pick : null, p ? w.fromSheet(p) : null, { scale: w.scale, minmax: minmaxOf(P), aligned: !!w.trueDims, lock: D.dimLock || null });
     if (d && p) sdFollow(d, w, p);
     return d;
@@ -758,6 +759,11 @@
           return;
         }
       }
+    }
+    // (rfMZ) an arc, one of its ends, then its other end: the arc's length (SolidWorks); the next click places it
+    if (P.second && !P.arcLen && P.first.pick.arc && P.second.pick.point && arcEndOf(P.first.pick.arc, P.second.pick.point) >= 0) {
+      var h3 = pickAt(p, P.view), e3 = h3 && h3.pick.point ? arcEndOf(P.first.pick.arc, h3.pick.point) : -1;
+      if (e3 >= 0 && e3 !== arcEndOf(P.first.pick.arc, P.second.pick.point)) { P.arcLen = true; P.third = h3; P.at = p; drawOverlay(); UI.setStatus(sdName() + ': arc length: click where the dimension goes. Esc cancels.'); return; }
     }
     var w = P.first.w, spec = smartSpec(P, p);
     if (!spec) { UI.setStatus(sdName() + (D.dimLock && P.first && !P.first.pick.point && !P.first.pick.center && !P.first.pick.mid ? ': that item has no ' + (D.dimLock === 'h' ? 'horizontal' : 'vertical') + ' size; pick a second item. Esc cancels.' : ': a point needs a second item to measure to. Esc cancels.')); return; }
@@ -833,7 +839,7 @@
       lt.textContent = D.sdLabel.text;
     }
     if (!P || !P.first) return;
-    [P.first, P.second].forEach(function (x) {
+    [P.first, P.second, P.third].forEach(function (x) {
       if (!x) return;
       var h = x.hl;
       if (h.pt) dot(h.pt);
@@ -846,7 +852,7 @@
     var d = smartSpec(P, P.at);
     if (!d) return;
     var w = P.first.w, k = paperK(), th = Drawing.dimGeometry(doc()).text * k, u = units(), text;   // (rfKX) the dimension style's text height (was 3.5 mm on inch sheets too)
-    if (d.kind === 'angle') text = Math.round(d.value * 100) / 100 + '°'; else text = Drawing.dimText(d, u);
+    if (d.kind === 'angle' && !d.arcLen) text = Math.round(d.value * 100) / 100 + '°'; else if (d.arcLen) text = Drawing.numText(d.value, u); else text = Drawing.dimText(d, u);
     function ln(a, b) { svgNode('line', { x1: a[0], y1: H - a[1], x2: b[0], y2: H - b[1], stroke: col.stroke, 'stroke-width': sw, class: 'dw-sdprev' }, g); }
     function tx(q) { var t = svgNode('text', { x: q[0], y: H - q[1], 'font-size': th / 0.72, 'text-anchor': 'middle', fill: col.stroke, class: 'dw-sdprev' }, g); t.textContent = text; }
     var A, B;
@@ -1550,6 +1556,59 @@
     var sd = D.sheet.dims.filter(function (x) { return x.view === P.dim.view && x.index === P.dim.index; })[0];
     UI.setStatus(name + ' dimensions: ' + (sd ? sd.text : '') + ' — click more, ✓ ends.');
   }
+  // (rfMZ) arcEndOf(arc { c, r, a0, a1 (deg) }, point) -> 0 / 1: the arc end the point is on (view units), -1: neither
+  function arcEndOf(a, q) {
+    var tol = 1e-4 * (1 + a.r);
+    for (var i = 0; i < 2; i++) { var t = (i ? a.a1 : a.a0) * Math.PI / 180; if (Math.hypot(a.c[0] + a.r * Math.cos(t) - q[0], a.c[1] + a.r * Math.sin(t) - q[1]) <= tol) return i; }
+    return -1;
+  }
+  // (rfMZ) Chain Dimension (SolidWorks 2024: Tools ▸ Dimensions ▸ Chain): pick the direction, click the first
+  // feature (an edge, a vertex, a hole centre), then each next one: every pick adds a Horizontal (Vertical) dimension
+  // from the one before, all on one line clear of the view (above / right of it; drag the line like any dimension).
+  // ✓ or Esc ends. Each dimension is an ordinary locked Smart Dimension of the view (it follows the model).
+  function cmdChainLinear() {
+    if (D.tool === 'chaindim') { endToolPM(); return; }
+    toolPM({
+      title: 'Chain Dimension', icon: 'chainDim', command: 'chaindim',
+      message: 'Click the first feature (an edge, a vertex or a hole) in an orthographic view, then each next one; every pick is dimensioned from the one before. ✓ ends.',
+      values: { dir: 'h' },
+      groups: [{ title: 'Direction', fields: [{ type: 'select', key: 'dir', label: 'Measure', options: [['h', 'Horizontal'], ['v', 'Vertical']] }] }],
+      onChange: function (v) { if (D.pending && !D.pending.n) D.pending.dir = v.dir === 'v' ? 'v' : 'h'; }
+    }, 'chaindim', { dir: 'h', view: null, prev: null, n: 0, line: null });
+    UI.setStatus('Chain Dimension: click the first feature. Esc ends.');
+  }
+  function chainLinearClick(p) {
+    var P = D.pending, hit = pickAt(p, P.view);
+    if (!hit) { UI.setStatus('Chain Dimension: click an edge, vertex or hole of an orthographic view.'); return; }
+    if (!P.prev) { P.prev = hit; P.view = hit.view; D.sel = null; drawOverlay(); UI.setStatus('Chain Dimension: now click the next feature.'); return; }
+    if (samePick(hit, P.prev)) return;
+    var w = sheetView(P.view);
+    if (!w) return;
+    var k = paperK(), gap = 10 * k;   // the first line 10 mm (.39 in) off the view, as the model items' first row
+    if (P.line == null) P.line = P.dir === 'h' ? w.fromSheet([0, w.box.y1 + gap])[1] : w.fromSheet([w.box.x1 + gap, 0])[0];
+    var mid = w.fromSheet([(w.toSheet(refPick(P.prev))[0] + w.toSheet(refPick(hit))[0]) / 2, (w.toSheet(refPick(P.prev))[1] + w.toSheet(refPick(hit))[1]) / 2]);
+    var at = P.dir === 'h' ? [mid[0], P.line] : [P.line, mid[1]];
+    var spec = Drawing.smartDim(P.prev.pick, hit.pick, at, { lock: P.dir, scale: w.scale });
+    if (!spec) { UI.setStatus('Chain Dimension: that feature is in line with the last one; click another.'); return; }
+    var prevPick = P.prev;
+    edit(function (dc) { var v = Drawing.findView(dc, P.view); if (v) v.dims = (v.dims || []).concat([spec]); });
+    P.prev = hit; P.n++;
+    var sd = D.sheet.dims.filter(function (x) { return x.view === P.view && !x.auto; }).slice(-1)[0];
+    UI.setStatus('Chain Dimension ' + (sd ? sd.text : '') + ' added (' + P.n + '). Click the next feature, ✓ ends.');
+    return prevPick;
+  }
+  // the view point a pick stands for (an edge: its middle)
+  function refPick(h) {
+    var pk = h.pick;
+    if (pk.point) return pk.point;
+    if (pk.center) return pk.center.c;
+    if (pk.mid) return [(pk.mid[0][0] + pk.mid[1][0]) / 2, (pk.mid[0][1] + pk.mid[1][1]) / 2];
+    if (pk.edge) return [(pk.edge[0][0] + pk.edge[1][0]) / 2, (pk.edge[0][1] + pk.edge[1][1]) / 2];
+    if (pk.circle) return pk.circle.c;
+    if (pk.arc) return pk.arc.c;
+    return h.w.fromSheet(h.hl.pt || [0, 0]);
+  }
+  DW.cmdChainLinear = cmdChainLinear;
   // Chamfer Dimension: click the chamfer edge, then the lead-in edge it makes the angle with ("1 X 45°")
   function cmdChamferDim() {
     if (D.tool === 'chamferdim') { endTool(); return; }
@@ -1673,7 +1732,7 @@
     var values = { value: d.value != null ? +d.value.toFixed(8) : 0, tolType: tol.type || 'none', plus: tol.plus != null ? tol.plus : 0, minus: tol.minus != null ? tol.minus : 0, prec: d.prec != null ? String(d.prec) : 'auto', tolPrec: tol.prec != null && tol.prec !== '' ? String(tol.prec) : 'auto', label: d.label != null ? d.label : '<DIM>', flip: !!d.flip };
     var single = d.kind !== 'ordinate' && d.kind !== 'baseline' && d.kind !== 'angrun';
     var primary = src ? [{ type: 'number', key: 'value', label: 'Value', unit: 'u' }, { type: 'static', label: 'Drives', value: src.featureName + ' (' + src.what + ')' + (src.expr ? ' — equation ' + src.expr : '') }]
-      : [{ type: 'static', label: 'Value', value: single ? (d.kind === 'angle' ? (Math.round(d.value * 1e4) / 1e4) + '°' : Drawing.numText(d.value, u) + ' ' + u) + (d.auto ? ' (no model parameter found)' : ' (reference: driven by the model)') : d.text }];
+      : [{ type: 'static', label: 'Value', value: single ? (d.kind === 'angle' && !d.arcLen ? (Math.round(d.value * 1e4) / 1e4) + '°' : Drawing.numText(d.value, u) + ' ' + u) + (d.auto ? ' (no model parameter found)' : ' (reference: driven by the model)') : d.text }];
     // (lane BX) the two-Enter rule: text, tolerance, precision and arrows show on the sheet as they are typed or picked,
     // so the first Enter in a box commits what it holds and the dimension follows; the second Enter (✓) closes. The
     // whole PM is one undo step; ✗ puts the dimension back. (A model item's Value drives the part on ✓ only.)
@@ -1692,7 +1751,7 @@
         { title: 'Primary Value', fields: primary },
         { title: 'Tolerance/Precision', fields: [
           { type: 'select', key: 'tolType', label: 'Tolerance', icon: 'dimTolType', options: Drawing.TOL_TYPES, rerender: true, show: function () { return d.kind !== 'angrun'; } },   // (lane CT: an angular running set takes a precision only)
-          { type: 'number', key: 'plus', label: 'Maximum variation (+)', unit: 'u', show: function (v) { return v.tolType !== 'none'; } },
+          { type: 'number', key: 'plus', label: 'Maximum variation (+)', unit: 'u', show: function (v) { return v.tolType !== 'none' && v.tolType !== 'basic' && v.tolType !== 'min' && v.tolType !== 'max'; } },
           { type: 'number', key: 'minus', label: 'Minimum variation (−)', unit: 'u', show: function (v) { return v.tolType === 'bilateral' || v.tolType === 'limit'; } },
           { type: 'select', key: 'prec', label: 'Unit precision', icon: 'dimPrecision', options: PREC_OPTIONS },
           { type: 'select', key: 'tolPrec', label: 'Tolerance precision', icon: 'dimPrecision', options: TOL_PREC_OPTIONS, show: function (v) { return v.tolType === 'bilateral' || v.tolType === 'symmetric'; } }   // (rfKX)
@@ -1879,6 +1938,57 @@
     var nd = sheetDim(dimRef(d));
     UI.setStatus('Dimension ' + (nd ? nd.text : d.text) + ': arrows ' + (d.flip ? 'inside' : 'flipped outside') + ' (click an arrowhead again to flip them back).');
   }
+  // (rfMZ) a dimension's right-click menu (SolidWorks: the dimension's own menu, not the view's): Properties…, Display
+  // Options (Flip Arrows, Display with Parentheses: a reference dimension), Add To Ordinate / Add To Baseline (click
+  // more features, ✓ ends), Delete
+  var PAREN_RE = /^\((.*)\)$/;
+  function dimMenu(d) {
+    var ref = dimRef(d), lab = d.label != null ? String(d.label) : '<DIM>', paren = PAREN_RE.test(lab), rows = [];
+    rows.push({ label: 'Properties…', action: function () { var x = sheetDim(ref); if (x) cmdDimensionPM(dimRef(x)); } });
+    if (d.kind !== 'ordinate' && d.kind !== 'baseline' && d.kind !== 'angrun') rows.push({ label: paren ? 'Remove Parentheses' : 'Display with Parentheses', action: function () {
+      var x = sheetDim(ref); if (!x) return;
+      var l2 = paren ? lab.replace(PAREN_RE, '$1') : '(' + lab + ')';
+      setDimProps(x, { label: l2 === '<DIM>' ? null : l2 });
+      var nd = sheetDim(ref); UI.setStatus('Dimension ' + (nd ? nd.text : '') + (paren ? ': parentheses removed.' : ': a reference dimension, in parentheses.'));
+    } });
+    if (FLIP_KINDS[d.kind]) rows.push({ label: 'Flip Arrows', action: function () { var x = sheetDim(ref); if (x) flipArrows(x); } });
+    if ((d.kind === 'ordinate' || d.kind === 'baseline') && !d.auto) rows.push({ label: d.kind === 'ordinate' ? 'Add To Ordinate' : 'Add To Baseline', action: function () { addToChain(ref); } });
+    if (d.dangling && !d.auto) rows.push({ label: 'Reattach', action: function () { startReattach(ref); } });
+    rows.push({ sep: true });
+    rows.push({ label: 'Delete', key: 'Del', action: function () { D.sel = ref; DW.deleteSelection(); } });
+    return rows;
+  }
+  // (rfMZ) Reattach a dangling dimension (SolidWorks: drag its dangling end onto new geometry): click the edge, vertex,
+  // hole or arc that replaces the reference that is gone; one undo step per click; Esc ends
+  function startReattach(ref) {
+    startTool('reattach', { ref: { view: ref.view, index: ref.index } });
+    D.sel = ref; drawOverlay();
+    UI.setStatus('Reattach: click the edge, vertex, hole or arc the dimension goes to. Esc ends.');
+  }
+  function reattachClick(p) {
+    var P = D.pending, w = sheetView(P.ref.view), hit = pickAt(p, P.ref.view);
+    if (!w || !hit) { UI.setStatus('Reattach: click an edge, vertex, hole or arc of ' + (w ? w.view.name : 'the view') + '.'); return; }
+    var trial = JSON.parse(JSON.stringify(doc())), r0 = Drawing.reattachDimTo(trial, P.ref.view, P.ref.index, w.proj, hit.pick);
+    if (!r0.ok) { UI.setStatus('Reattach: that item does not fit this dimension; click another. Esc ends.'); return; }
+    var res = null;
+    edit(function (dc) { res = Drawing.reattachDimTo(dc, P.ref.view, P.ref.index, w.proj, hit.pick); });
+    var sd = sheetDim({ kind: 'dim', view: P.ref.view, key: null, index: P.ref.index });
+    if (res && res.dangling && sd && sd.dangling) { UI.setStatus('Reattach: ' + (sd.text || '') + ' still has a missing reference; click its next item. Esc ends.'); return; }
+    D.tool = null; D.pending = null; D.hover = null; UI.refreshRibbon(); drawOverlay();
+    UI.setStatus('Dimension ' + (sd ? sd.text : '') + ' reattached.');
+  }
+  // Add To Ordinate / Add To Baseline: the Ordinate (Baseline) tool resumes on that set; each click adds a feature
+  function addToChain(ref) {
+    var v = Drawing.findView(doc(), ref.view), dd = v && v.dims && v.dims[ref.index];
+    if (!dd || (dd.kind !== 'ordinate' && dd.kind !== 'baseline')) return;
+    cmdChainDim(dd.kind, dd.kind === 'ordinate' ? dd.dir : null);
+    var P = D.pending;
+    if (!P) return;
+    P.dir = dd.dir; P.base = JSON.parse(JSON.stringify(dd.base)); P.view = ref.view; P.dim = { view: ref.view, index: ref.index };
+    D.sel = ref; drawOverlay();
+    UI.setStatus((dd.kind === 'ordinate' ? 'Add To Ordinate' : 'Add To Baseline') + ': click the features to add, ✓ ends.');
+  }
+  DW.dimMenu = dimMenu; DW.addToChain = addToChain;
   // In-place editing (double-click a dimension, as SolidWorks' Modify box): a box over the dimension text. A model
   // item that drives the part edits its value (Enter rebuilds the part); any other dimension edits its text, <DIM>
   // standing for the value. Esc or a click elsewhere cancels; the box follows the sheet's pan and zoom.
@@ -2582,6 +2692,8 @@
   document.addEventListener('contextmenu', function (e) { ctxAt = D.active && D.sheet && D.host && D.host.contains(e.target) ? DW.toPaper(e) : null; }, true);
   var RF_TOOLS = { aux: auxClick, crop: cropClick, brk: breakClick, bko: boClick, ahatch: hatchPickClick };   // (rfAG) routed by tool name
   RF_TOOLS.rmsec = rmsecClick;   // (rfCX) Removed Section
+  RF_TOOLS.chaindim = chainLinearClick;   // (rfMZ) Chain Dimension
+  RF_TOOLS.reattach = reattachClick;   // (rfMZ) Reattach a dangling dimension
   document.addEventListener('mousedown', function (e) {
     if (e.button !== 0 || !D.active || !D.sheet || !RF_TOOLS[D.tool] || !D.pending || !D.host || !D.host.contains(e.target)) return;
     if (D.inline && D.inline.box.contains(e.target)) return;

@@ -40,6 +40,7 @@
     stackBalloon: '<path d="M2 14 L5 11" stroke="currentColor" stroke-width="0.9"/><circle cx="6.5" cy="9.5" r="2.6" fill="#fff" stroke="#6d6d6d" stroke-width="1"/><circle cx="11.7" cy="9.5" r="2.6" fill="#fff" stroke="#6d6d6d" stroke-width="1"/><circle cx="9.1" cy="4.4" r="2.6" fill="#fff" stroke="#6d6d6d" stroke-width="1"/>',
     ordinateDim: '<path d="M3 13.5 V3 M7 13.5 V6 M12 13.5 V8" stroke="#6d6d6d" stroke-width="0.9"/><path d="M1.5 13.5 h13" stroke="currentColor" stroke-width="1.1"/><text x="3" y="2.6" font-size="3.4" font-family="Arial" text-anchor="middle" fill="currentColor">0</text>',
     baselineDim: '<path d="M2.5 14 V2" stroke="currentColor" stroke-width="1.1"/><path d="M2.5 5 h7 M2.5 9 h11" stroke="#6d6d6d" stroke-width="0.9"/><path d="M9.5 3.5 v3 M13.5 7.5 v3" stroke="currentColor" stroke-width="0.9"/>',
+    chainDim: '<path d="M2 4 V12 M7.5 4 V12 M14 4 V12" stroke="currentColor" stroke-width="1"/><path d="M2 8 H14" stroke="#6d6d6d" stroke-width="0.9"/><path d="M2 8 l2 -1 v2 z M7.5 8 l-2 -1 v2 z M7.5 8 l2 -1 v2 z M14 8 l-2 -1 v2 z" fill="currentColor"/>',
     chamferDim: '<path d="M2 14 V7 L7 2 h7" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M4.5 4.5 L8.5 8.5 h6" fill="none" stroke="#6d6d6d" stroke-width="0.9"/>',
     note: '<path d="M2.5 2.5 h11 v8 l-3 3 h-8 z" fill="#fff" stroke="currentColor" stroke-width="1"/><path d="M10.5 13.5 v-3 h3" fill="none" stroke="currentColor" stroke-width="0.9"/><text x="7.5" y="9" font-size="6" font-weight="700" font-family="Arial" text-anchor="middle" fill="#6d6d6d">A</text>',
     flatView: '<path d="M1.5 4.5 h13 v7 h-13 z" fill="#c4c4c4" stroke="currentColor" stroke-width="1"/><path d="M4.5 3.5 v9 M11.5 3.5 v9" stroke="#6d6d6d" stroke-width="0.9"/><path d="M11.5 3.5 v9" stroke="#e0553c" stroke-width="0.9" stroke-dasharray="1.4 0.9"/><circle cx="8" cy="8" r="1.3" fill="#fff" stroke="currentColor" stroke-width="0.8"/>',
@@ -341,6 +342,9 @@
       // face and edge views; else Front / Top / Right, the isometric when it fits, a sheet-metal part's flat)
       if (opts.layout === 'part' && !isAsm()) Drawing.partViews(dc, App.mesh, units(), { model: App.model, build: App.build, autoInsert: false });
       else Drawing.standard3View(dc, App.mesh, units(), Object.assign({}, opts, { autoInsert: false }));
+      // (rfMZ) Model Items' default set includes Hole callouts: a Hole Wizard hole reads its callout ('Ø .201 THRU ALL' /
+      // '⌵ Ø .385 X 82°'), not the faces' diameters (a countersink through a 14 ga sheet showed Ø.385 and Ø.255)
+      if (dc.autoDims && !isAsm() && Drawing.insertWizardCallouts) { try { Drawing.insertWizardCallouts(dc, App.model, null, { on: true, dedupe: true }); } catch (e) { } }
       list.push(dc);
       UI.autosave();
       D.index = list.length - 1;
@@ -902,9 +906,12 @@
     return hit;
   }
   function dimAt(p) {
-    var t = pxToPaper(4), hit = null;
-    D.sheet.dims.forEach(function (d) { var b = d.box; if (b && p[0] >= b.x0 - t && p[0] <= b.x1 + t && p[1] >= b.y0 - t && p[1] <= b.y1 + t) hit = d; });
-    return hit;
+    // (rfMZ) a click on a dimension's text is that dimension, even inside another's box (a 3.000 whose extension lines
+    // span the view took the click on the 6.000 above it); else the last whose box holds the point
+    var t = pxToPaper(4), hit = null, tHit = null;
+    function inB(b) { return b && p[0] >= b.x0 - t && p[0] <= b.x1 + t && p[1] >= b.y0 - t && p[1] <= b.y1 + t; }
+    D.sheet.dims.forEach(function (d) { if (inB(d.box)) hit = d; if (d.tbox && p[0] >= d.tbox.x0 && p[0] <= d.tbox.x1 && p[1] >= d.tbox.y0 && p[1] <= d.tbox.y1) tHit = d; });
+    return tHit || hit;
   }
   // nearest visible line or circle of an orthographic view within 6 px: { view, a, b (paper), la, lb (model 2D) } or { view, circle, c, r }
   // ell (rfAL): an ellipse (a true circle seen obliquely) can be picked too, in an orthographic or a True view; its
@@ -1302,6 +1309,10 @@
     if (DW.skContext && DW.skContext(p, e)) return;   // (rfAO) a sketch entity's menu (also notes the point for a view edge's Hide Edge)
     if (DW.aeContext && DW.aeContext(p, e)) return;   // (rfAE) Edit Sheet Format's menu, a General Table's menu
     if (revTableAt(p)) { D.sel = { kind: 'revtable' }; drawOverlay(); DW.renderTree(); UI.showMenu(e.clientX, e.clientY, DW.revTableMenu(Drawing.revRowAt(doc(), units(), p))); return; }
+    // (rfMZ) a dimension's own menu (Properties, parentheses, Flip Arrows, Add To Ordinate, Delete), as SolidWorks
+    var dmh = DW.dimMenu && !D.tool ? dimAt(p) : null, tq = pxToPaper(3);
+    if (dmh && !(dmh.tbox && p[0] >= dmh.tbox.x0 - tq && p[0] <= dmh.tbox.x1 + tq && p[1] >= dmh.tbox.y0 - tq && p[1] <= dmh.tbox.y1 + tq)) dmh = null;   // on its text (a view right-clicked under a dimension's extension lines keeps the view menu)
+    if (dmh) { D.sel = { kind: 'dim', view: dmh.view, key: dmh.key || null, index: dmh.index, style: dmh.style || null }; drawOverlay(); DW.renderTree(); UI.showMenu(e.clientX, e.clientY, DW.dimMenu(dmh)); return; }
     var nm = DW.noteAt(p);
     if (nm) { D.sel = { kind: 'note', id: nm.id }; drawOverlay(); DW.renderTree(); UI.showMenu(e.clientX, e.clientY, noteMenu(nm.id)); return; }
     var sm = symbolAt(p);

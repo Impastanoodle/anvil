@@ -454,6 +454,7 @@
     { id: 'ordinateDim', label: 'Ordinate\nDimension', run: function () { cmdChainDim('ordinate'); }, active: function () { return D.tool === 'ordinate' && !(D.pending && D.pending.fixed); } },
     { id: 'ordinateH', label: 'Horizontal Ordinate\nDimension', run: function () { cmdChainDim('ordinate', 'h'); }, active: ordFixed('h') },
     { id: 'ordinateV', label: 'Vertical Ordinate\nDimension', run: function () { cmdChainDim('ordinate', 'v'); }, active: ordFixed('v') },
+    { id: 'chainDim', label: 'Chain\nDimension', run: function () { DW.cmdChainLinear(); }, active: function () { return D.tool === 'chaindim'; } },   // (rfMZ)
     { id: 'angRunDim', label: 'Angular Running\nDimension', run: function () { DW.cmdAngularRunning(); }, active: function () { return D.tool === 'angrun'; } },
     { id: 'chamferDim', label: 'Chamfer\nDimension', run: cmdChamferDim, active: function () { return D.tool === 'chamferdim'; } },
     { id: 'pathLengthDim', label: 'Path Length\nDimension', run: function () { DW.cmdPathLength(); }, active: function () { return D.tool === 'pathlen'; } }
