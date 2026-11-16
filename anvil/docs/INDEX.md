@@ -1537,7 +1537,7 @@ more: r2 L35, st L36, Fr L44, R L47, C L48, E L49, head L59, down L62, wcube L75
 more: frame L196, unzoom L202, vcube L211, grid L235, bookmark L245, ext L255, sq L260, regen L285, rows L288,
 more: attr L345, setAttr L346, restyleShape L347, finish L376, restyle L382, body L383
 
-## icons-solidworks.js (408 lines)
+## icons-solidworks.js (516 lines)
 > the icon set of the SolidWorks interface profile, the default (rfMD, 2026-11-12). Loaded after
 L  L49  — a sketch entity (1.5 = 1 px at 16, 2 px at 24 / 32); c / w for the other entity (GD, …
 T  L51  — a thin ink line (dimension, axis, leader)
@@ -1555,13 +1555,16 @@ ball  L110  — the four-colour ball of appearances (the DisplayManager, Edit Ap
 partBlock  L117  — the block of a part: an L-shaped step seen from above its corner (the tall end at the …
 folder  L122  — a folder (the tree's History / Sensors / Annotations rows are a folder with a mark on it)
 ruler  L170  — Instant3D: the yellow ruler and the blue arrow dragging down from it
-plateBase  L223  — an L bracket seen from the front left: the base plate lying flat and the wall standing …
-grey  L356  — a neutral grey's level (0-255), or null for a colour
-drawn  L388  — the size icons.js really draws at (an 18 px box holds a 16 px drawing)
-finish  L393  — the sketch blue follows the theme a little: darker on the light chrome, lighter on the …
+swskSnap  L281  — Quick Snaps: one picture per snap, the yellow dot is where the point lands (names qs + …
+swskBlock  L310  — Blocks (Tools menu): a dashed block frame round entities, its insertion point, and the …
+plateBase  L331  — an L bracket seen from the front left: the base plate lying flat and the wall standing …
+grey  L464  — a neutral grey's level (0-255), or null for a colour
+drawn  L496  — the size icons.js really draws at (an 18 px box holds a 16 px drawing)
+finish  L501  — the sketch blue follows the theme a little: darker on the light chrome, lighter on the …
 more: r2 L39, st L42, P L47, U L54, R L57, C L58, E L59, wbox L71, ubox L72, ar L75, txt L96, mag L99, gear L100,
-more: wand L138, tab L149, tabL L150, bolt L178, tabO L206, tabOL L207, eye L213, plateWall L227, arrows4 L268,
-more: pencil L282, turn L293, attr L353, setAttr L354, lighten L362, restyleShape L363, restyle L396, body L397
+more: wand L138, tab L149, tabL L150, bolt L178, tabO L222, tabOL L223, eye L230, swskPlus L298, plateWall L335,
+more: arrows4 L376, pencil L390, turn L401, attr L461, setAttr L462, lighten L470, restyleShape L471,
+more: restyle L504, body L505
 
 ## icons.js (787 lines)
 > inline SVG icon set for Anvil's ribbon, tree and panels.

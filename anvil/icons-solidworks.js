@@ -179,20 +179,36 @@
   OWN.rapidSketch = SKGRID + L(SKFRAME) + bolt(8.5, 0.5);
   OWN.dim = L('M9.5 2.5 L13.5 6.5 M9.5 2.5 L8.5 3.5 M3.5 8.5 L8.5 13.5 M3.5 8.5 L4.5 7.5') + ar(6.6, 5.6, 4.3, 7.9, INK, 1.5, 2.8) + ar(6.4, 5.8, 8.7, 3.5, INK, 1.5, 2.8);
   OWN.line = L('M2.5 13.5 L13.5 2.5') + pt(2.5, 13.5) + pt(13.5, 2.5);
-  OWN.centerline = L('M2.5 13.5 L13.5 2.5', SK, 1.5, DASHDOT) + pt(2.5, 13.5) + pt(13.5, 2.5);
-  OWN.midline = L('M2.5 13.5 L13.5 2.5') + pt(2.5, 13.5) + pt(13.5, 2.5) + pt(8, 8);
-  OWN.circle = C(8, 8, 5.5) + cx(8, 8) + pt(12.5, 4.5) + pt(2.5, 8.5) + pt(10.5, 13);
-  OWN.pcircle = C(8, 8, 5.5) + pt(12.5, 4.5) + pt(2.5, 8.5) + pt(10.5, 13);
+  // swsketchicons (rfND): a centerline's dash-dot has square ends and long gaps, so it reads as dashed at 16 px
+  OWN.centerline = L('M2.5 13.5 L13.5 2.5', SK, 1.5, BUTT + ' stroke-dasharray="3 2.4 1 2.4"') + pt(2.5, 13.5) + pt(13.5, 2.5);
+  OWN.midline = L('M2.5 13.5 L13.5 2.5') + T('M3.7 9.7 L6.3 12.3 M9.7 3.7 L12.3 6.3') + pt(2.5, 13.5) + pt(13.5, 2.5) + pt(8, 8);   // swsketchicons: equal halves marked
+  // swsketchicons (rfND): Circle = its centre point and a radius out to the rim; Perimeter Circle = three points on the
+  // rim and no centre; Tangent Circle = a circle touching two lines (the old Circle and Perimeter Circle differed by a
+  // centre mark too small to see at 16 px)
+  OWN.circle = C(7.5, 8.5, 5.66) + L('M7.5 8.5 L11.5 4.5', GD, 1.1) + pt(7.5, 8.5) + pt(11.5, 4.5);
+  OWN.pcircle = C(8, 8, 5.6) + pt(2.5, 8.5) + pt(12, 4) + pt(11.5, 12.5);
+  OWN.tangentCircle = L('M1.5 0.5 V15 M1 14.5 H15.5', GD, 1.1) + C(7.5, 8.5, 6) + pt(1.5, 8.5) + pt(7.5, 14.5);
   OWN.spline = L('M2.5 13.5 C4.5 -3 8 19 13.5 2.5');
-  OWN.rect = R(2.5, 4.5, 11, 8, 'none', SK, 1.5) + pt(8, 8.5) + pt(13.5, 4.5);
-  OWN.crect = R(2.5, 4.5, 11, 8, 'none', SK, 1.5) + T('M2.5 4.5 L13.5 12.5 M13.5 4.5 L2.5 12.5', DASH) + pt(8, 8.5) + pt(13.5, 4.5);
-  OWN.arc = L('M2.5 11.5 A5.6 5.6 0 0 1 13.5 11.5') + cx(8, 11.5) + pt(2.5, 11.5) + pt(13.5, 11.5) + pt(8, 6);
+  // swsketchicons (rfND): Corner Rectangle = two opposite corners; Center Rectangle = the centre and its construction
+  // diagonals; the 3 Point ones are tilted (three corners / centre, side and corner); Parallelogram leans
+  OWN.rect = R(2.5, 3.5, 11, 9, 'none', SK, 1.5) + pt(2.5, 12.5) + pt(13.5, 3.5);
+  OWN.crect = L('M2.5 3.5 L13.5 12.5 M13.5 3.5 L2.5 12.5', GD, 1, DASH) + R(2.5, 3.5, 11, 9, 'none', SK, 1.5) + pt(8, 8) + pt(13.5, 3.5);
+  OWN.rect3 = L('M1.5 9.5 L9.5 2.5 L14.5 8.5 L6.5 15 z') + pt(1.5, 9.5) + pt(9.5, 2.5) + pt(14.5, 8.5);
+  OWN.crect3 = L('M1.5 9.5 L14.5 8.5 M9.5 2.5 L6.5 15', GD, 1, DASH) + L('M1.5 9.5 L9.5 2.5 L14.5 8.5 L6.5 15 z') + pt(8, 8.5) + pt(12, 5.5) + pt(14.5, 8.5);
+  OWN.parallelogram = L('M1.5 12.5 L5.5 3.5 H14.5 L10.5 12.5 z') + pt(1.5, 12.5) + pt(5.5, 3.5) + pt(14.5, 3.5);
+  // Centerpoint Arc = its centre point and two radii; 3 Point Arc = three points on it and no centre
+  OWN.arc = L('M2.5 11.5 H13.5', GD, 1, DASH) + L('M2.5 11.5 A5.5 5.5 0 0 1 13.5 11.5') + pt(8, 11.5) + pt(2.5, 11.5) + pt(13.5, 11.5);
   OWN.arc3 = L('M2.5 12.5 A7 7 0 0 1 13.5 12.5') + pt(2.5, 12.5) + pt(13.5, 12.5) + pt(8, 5.5);
   OWN.tarc = L('M1.5 12.5 H6.5', GD, 1.1) + L('M6.5 12.5 A6 6 0 0 0 12.5 6.5 V3.5') + pt(6.5, 12.5) + pt(12.5, 3.5);
   OWN.ellipse = '<ellipse cx="8" cy="8" rx="6.3" ry="4" fill="none" transform="rotate(-28 8 8)" ' + st(SK, 1.5) + '/>' + pt(8, 8);
   OWN.pellipse = '<path d="M13.6 5 A6.3 4 -28 1 0 11 12.6" fill="none" ' + st(SK, 1.5) + '/>' + pt(8, 8) + pt(13.5, 5) + pt(11, 12.5);
-  OWN.slot = P('M5 4.5 H11 A3.5 3.5 0 0 1 11 11.5 H5 A3.5 3.5 0 0 1 5 4.5 z', 'none', SK, 1.5) + pt(5, 8) + pt(11, 8);
-  OWN.cslot = P('M5 4.5 H11 A3.5 3.5 0 0 1 11 11.5 H5 A3.5 3.5 0 0 1 5 4.5 z', 'none', SK, 1.5) + pt(8, 8) + pt(11.5, 8);
+  // swsketchicons (rfND): Straight Slot = its two end centres joined; Centerpoint Straight Slot = its centre and one end;
+  // the arc slots bend (3 points on the centre arc / the arc's centre and the two ends)
+  var SWSK_SLOT = 'M5 4.5 H11 A3.5 3.5 0 0 1 11 11.5 H5 A3.5 3.5 0 0 1 5 4.5 z', SWSK_ASLOT = 'M1.69 9.08 A7.7 7.7 0 0 1 14.31 9.08 A1.7 1.7 0 0 1 11.52 11.03 A4.3 4.3 0 0 0 4.48 11.03 A1.7 1.7 0 0 1 1.69 9.08 z';
+  OWN.slot = L('M5 8 H11', GD, 1.1) + P(SWSK_SLOT, 'none', SK, 1.5) + pt(5, 8) + pt(11, 8);
+  OWN.cslot = L('M8 8 H14.5', GD, 1.1) + P(SWSK_SLOT, 'none', SK, 1.5) + pt(8, 8) + pt(14.5, 8);
+  OWN.aslot3 = L('M3.09 10.06 A6 6 0 0 1 12.91 10.06', GD, 1, DASH) + P(SWSK_ASLOT, 'none', SK, 1.5) + pt(3, 10) + pt(8, 7.5) + pt(13, 10);
+  OWN.aslot = L('M3.09 10.06 L8 13.5 L12.91 10.06', GD, 1, DASH) + P(SWSK_ASLOT, 'none', SK, 1.5) + pt(8, 13.5) + pt(3, 10) + pt(13, 10);
   OWN.polygon = P('M4.5 2.5 H11.5 L14.5 8 L11.5 13.5 H4.5 L1.5 8 z', 'none', SK, 1.5) + pt(8, 8);
   OWN.skFillet = L('M2.5 2.5 H8', GD, 1.1) + L('M13.5 8 V13.5', GD, 1.1) + L('M8 2.5 A5.5 5.5 0 0 1 13.5 8') + cx(8, 8);
   OWN.skChamfer = L('M2.5 2.5 H8', GD, 1.1) + L('M13.5 8 V13.5', GD, 1.1) + L('M8 2.5 L13.5 8');
@@ -208,14 +224,106 @@
   OWN.mirrorEnt = tabO(1.5, 5.5, GD, 1.1) + tabOL(14.5, 5.5, SK, 1.5) + T('M8 1.5 V14.5', DASHDOT);
   OWN.sketchPattern = tabO(2.5, 1.5, SK, 1.5) + tabO(9.5, 1.5, GD, 1.1) + tabO(2.5, 9.5, GD, 1.1) + tabO(9.5, 9.5, GD, 1.1);
   OWN.cSketchPattern = C(8, 8, 5, 'none', GD, 0.9, DASH) + R(6.5, 1, 3, 3, 'none', SK, 1.5) + R(12, 6.5, 3, 3, 'none', GD, 1.1) + R(6.5, 12, 3, 3, 'none', GD, 1.1) + R(1, 6.5, 3, 3, 'none', GD, 1.1);
-  OWN.moveEnt = R(1.5, 9.5, 5, 5, 'none', GD, 1.1, 'stroke-dasharray="1 1"') + R(9.5, 1.5, 5, 5, 'none', SK, 1.5) + ar(4.5, 11.5, 9, 7, INK, 1.1, 2.4);
-  OWN.copyEnt = R(1.5, 9.5, 5, 5, 'none', GD, 1.1) + R(9.5, 1.5, 5, 5, 'none', SK, 1.5) + ar(4.5, 11.5, 9, 7, INK, 1.1, 2.4);
+  // swsketchicons (rfND): Move leaves a dashed ghost behind; Copy keeps the original (two solid squares, a green plus)
+  OWN.moveEnt = R(1.5, 9.5, 5, 5, 'none', GD, 1, DASH) + R(9.5, 1.5, 5, 5, 'none', SK, 1.5) + ar(5, 11, 10, 6, INK, 1.1, 2.6);
+  OWN.copyEnt = R(1.5, 6.5, 6, 6, 'none', SK, 1.5) + R(7.5, 1.5, 6, 6, W1, SK, 1.5) + P('M12 10 V15 M9.5 12.5 H14.5', 'none', G2, 1.9);
   function eye(ex, ey) { return P('M' + r2(ex - 3.5) + ' ' + ey + ' Q' + ex + ' ' + r2(ey - 3.4) + ' ' + r2(ex + 3.5) + ' ' + ey + ' Q' + ex + ' ' + r2(ey + 3.4) + ' ' + r2(ex - 3.5) + ' ' + ey + ' z', W1, OL, 1) + C(ex, ey, 1.3, OL, 'none'); }
   OWN.relations = P('M1.5 10.5 H9.5 M5.5 10.5 V1.5', 'none', INK, 1.5) + eye(11, 11.5);
   OWN.quickSnaps = L('M12.5 1.5 H2.5 V13.5', GD, 1.1) + C(9, 9, 4.5, 'none', SK, 1.5) + C(9, 9, 1.3, W1, OL, 1);
   OWN.construction = L('M2.5 13.5 L13.5 2.5', GD, 1.1, DASHDOT) + L('M2.5 8.5 L8.5 2.5');
   OWN.shadedContours = P('M9.5 2.5 L14.5 12.5 H4.5 z', B1, SKF, 1) + C(5.5, 10, 3.5, B1, SKF, 1);
   OWN.repairSketch = L(SKFRAME) + P('M6.5 11 L11 6.5', 'none', GD, 2.4) + '<path d="M13.9 4.3 A2.4 2.4 0 1 1 11.7 2.1 L11.2 4 L12 4.8 z" fill="' + GL + '" ' + st(GD, 1) + '/>';
+  // ---------------------------------------------------------------- swsketchicons (rfND, 2026-11-16): every sketch tool
+  // its own picture. Line family: the reference entity grey, the new line blue with its points
+  OWN.parallelLine = L('M1.5 9.5 L9.5 1.5', GD, 1.1) + L('M5.5 14.5 L14.5 5.5') + pt(5.5, 14.5) + pt(14.5, 5.5);
+  OWN.tangentLine = C(4.5, 10.5, 3, 'none', GD, 1.1) + C(12, 10.5, 2.5, 'none', GD, 1.1) + L('M1 7.5 H15') + pt(4.5, 7.5) + pt(12, 8);
+  OWN.perpLine = L('M1 13.5 H15', GD, 1.1) + L('M7.5 13.5 V2') + T('M7.5 10.5 H10.5 V13.5') + pt(7.5, 2.5);
+  OWN.bisectorLine = L('M2.5 13.5 H15 M2.5 13.5 L9 2', GD, 1.1) + L('M2.5 13.5 L14 6.5') + T('M7.5 13.5 A5 5 0 0 0 5 9.2') + pt(2.5, 13.5) + pt(14, 6.5);
+  // Style Spline: its control polygon; Equation Driven Curve: a sine on axes
+  OWN.styleSpline = L('M2.5 13.5 L5 3 L11 13 L13.5 2.5', GD, 1, DASH) + L('M2.5 13.5 C4.8 4 10.8 12 13.5 2.5') + pt(2.5, 13.5) + pt(5, 3) + pt(11, 13) + pt(13.5, 2.5);
+  OWN.eqnCurve = T('M1.5 8.5 H15 M2.5 2 V15') + L('M2.5 8.5 C4.5 1 6.5 1 8.5 8.5 C10.5 16 12.5 16 14.5 8.5');
+  // Parabola: its apex and focus; Conic: the ends, the apex and its tangent lines
+  OWN.parabola = L('M2 2.5 Q8 21 14 2.5') + cx(8, 6.5) + pt(8, 11.7);
+  OWN.conic = L('M2.5 13.5 L8 2.5 L13.5 13.5', GD, 1, DASH) + L('M2.5 13.5 Q8 1 13.5 13.5') + pt(2.5, 13.5) + pt(13.5, 13.5) + pt(8, 7.5);
+  // Trim family: Split = one line cut at a point; Join = two lines and arrows meeting
+  OWN.splitEnt = L('M1.5 14.5 L6.5 9.5 M9.5 6.5 L14.5 1.5') + pt(8, 8) + T('M3.5 3.5 L6.5 6.5 M9.5 9.5 L12.5 12.5', DASH);
+  OWN.joinEnt = L('M1.5 11.5 H14.5') + pt(1.5, 11.5) + pt(14.5, 11.5) + ar(2.5, 3.5, 6.5, 8.5, INK, 1.1, 2.4) + ar(13.5, 3.5, 9.5, 8.5, INK, 1.1, 2.4);
+  // Intersection Curve: a plane cutting a body, the cut line blue
+  OWN.intersectCurve = wbox(1.5, 4.5, 9, 7, 3) + F('M0.5 9.5 L4 6 H15.5 L12 9.5 z', 'rgba(149,218,244,0.55)') + P('M0.5 9.5 L4 6 H15.5 L12 9.5 z', 'none', NV, 0.8) + L('M1.5 9.5 H10.5 L13.5 6.5', SKF, 1.5);
+  // Offset On Surface: a curved face with its edge offset across it
+  OWN.offsetSurface = U('M1.5 12.5 C4 9 6 9 8.5 11.5 L14.5 5.5 C12 3 10 3 7.5 5.5 z', B1) + L('M4.5 10.5 C6 8.5 7.5 8.5 9 9.5 L12.5 6', SK, 1.5);
+  // Mirror: Dynamic Mirror = a centerline with its equal marks and the mirrored side still being drawn (dashed)
+  OWN.dynMirror = T('M8 0.5 V15.5', DASHDOT) + L('M6 3.5 L2.5 12.5') + L('M10 3.5 L13.5 12.5', SK, 1.5, BUTT + ' ' + DASH) + P('M6.5 7 H9.5 M6.5 9 H9.5', 'none', G2, 1.2) + pt(2.5, 12.5);
+  // Rotate / Scale / Stretch Entities
+  OWN.rotateEnt = L('M3.5 12.5 H14', GD, 1, DASH) + L('M3.5 12.5 L12 4') + P('M10 12.5 A6.5 6.5 0 0 0 8.1 7.9', 'none', INK, 1.1) + head(8.2, 7.6, -0.6, -0.8, INK, 2.4) + pt(3.5, 12.5);
+  OWN.scaleEnt = R(1.5, 9.5, 5, 5, 'none', GD, 1, DASH) + R(1.5, 1.5, 13, 13, 'none', SK, 1.5) + ar(5.5, 10.5, 12, 4, INK, 1.1, 2.6) + pt(1.5, 14.5);
+  OWN.stretchEnt = L('M1.5 13.5 H6.5 L9.5 4.5', GD, 1, DASH) + L('M1.5 13.5 H10.5 L13.5 4.5') + ar(7, 8.5, 12, 8.5, INK, 1.1, 2.4) + pt(13.5, 4.5);
+  // Close Arc: three quarters drawn, the rest closing dashed
+  OWN.closeArc = L('M8 2.5 A5.5 5.5 0 1 1 2.5 8') + L('M2.5 8 A5.5 5.5 0 0 1 8 2.5', SK, 1.5, BUTT + ' ' + DASH) + pt(8, 2.5) + pt(2.5, 8) + cx(8, 8);
+  // Relations: Display/Delete = the corner and an eye (OWN.relations); Add = the corner and a green plus; Fully Define =
+  // a sketch with its dimension and a green check
+  OWN.addRelation = P('M1.5 13.5 H9.5 M1.5 13.5 V4.5', 'none', INK, 1.5) + P('M12 3 V12 M7.5 7.5 H16', 'none', G2, 2.2);
+  OWN.fullyDefine = R(1.5, 5.5, 9, 8, 'none', SK, 1.5) + T('M1.5 3 H10.5 M1.5 2 V4 M10.5 2 V4') + P('M8 11 L10.5 13.5 L15 7', 'none', G2, 2);
+  // 3D Sketch: a polyline in space over its three axes; 3D Sketch On Plane: the same on a blue plane
+  OWN.sketch3d = T('M5.5 10.5 V1.5 M5.5 10.5 H15 M5.5 10.5 L1 15') + L('M2.5 13.5 L8.5 12.5 L12.5 6.5 L9 2.5') + pt(2.5, 13.5) + pt(12.5, 6.5) + pt(9, 2.5);
+  OWN.sketch3dPlane = U('M1.5 11.5 L5.5 6.5 H14.5 L10.5 11.5 z', B1) + L('M3.5 10 L8 8 L12 9.5 L9 3') + pt(3.5, 10) + pt(12, 9.5) + pt(9, 3);
+  // Ordinate Dimension: values from one zero both ways (Horizontal / Vertical Ordinate keep one direction each)
+  OWN.ordinateDim = L('M4.5 11.5 H13.5 V3.5', SK, 1.5) + T('M4.5 14.5 V12.5 M9 14.5 V12.5 M13.5 14.5 V12.5 M1.5 11.5 H3.5 M1.5 7.5 H3.5 M1.5 3.5 H3.5') + pt(4.5, 11.5);
+  // Relations whose old glyphs looked alike: Coincident = two lines meeting at one point; Coradial = one circle over
+  // another with its radius; Collinear = two pieces on one slanted line
+  OWN.relHorizontal = P('M2.5 8.5 H13.5', 'none', '#2e9e48', 2);
+  OWN.relVertical = P('M8.5 2.5 V13.5', 'none', '#2e9e48', 2);
+  OWN.relEqual = P('M2.5 5.5 H13.5 M2.5 10.5 H13.5', 'none', '#2e9e48', 1.8);   // also Tools > Relations > Scan Equal
+  OWN.relCoincident = P('M1.5 13.5 L8 8 M8 8 L14.5 11', 'none', '#2e9e48', 1.6) + C(8, 8, 2.2, '#2e9e48', 'none');
+  OWN.relCoradial = C(8, 8, 5.5, 'none', '#2e9e48', 1.3) + C(8, 8, 4.3, 'none', '#2e9e48', 0.9, DASH) + P('M8 8 L12 4.2', 'none', '#2e9e48', 1.1) + C(8, 8, 1.2, '#2e9e48', 'none');
+  OWN.relCollinear = P('M1.5 14.5 L6 10 M10 6 L14.5 1.5', 'none', '#2e9e48', 1.8) + P('M6.8 9.2 L9.2 6.8', 'none', '#2e9e48', 1, 'stroke-dasharray="0.8 1"');
+  // Quick Snaps: one picture per snap, the yellow dot is where the point lands (names qs + the snap's id, capitalised)
+  function swskSnap(x, y) { return C(x, y, 1.7, Y3, YO, 0.8); }
+  OWN.qsPoint = L('M2.5 13.5 L8 8', GD, 1.1) + swskSnap(8, 8) + T('M8 2 V4.5 M8 11.5 V14 M2 8 H4.5 M11.5 8 H14');
+  OWN.qsCenter = C(8, 8, 5.5) + swskSnap(8, 8);
+  OWN.qsMidpoint = L('M1.5 12.5 L14.5 3.5') + pt(1.5, 12.5) + pt(14.5, 3.5) + swskSnap(8, 8);
+  OWN.qsQuadrant = C(8, 9, 5.5) + T('M8 1 V15 M1 9 H15', DASH) + swskSnap(8, 3.5);
+  OWN.qsIntersection = L('M1.5 13.5 L14.5 2.5 M1.5 2.5 L14.5 13.5') + swskSnap(8, 8);
+  OWN.qsNearest = L('M1.5 11.5 H14.5') + swskSnap(9.5, 11.5) + ar(4.5, 3, 8.5, 9, INK, 1.1, 2.4);
+  OWN.qsTangent = C(6, 9.5, 4.5) + L('M1 5 H15', GD, 1.1) + swskSnap(6, 5);
+  OWN.qsPerpendicular = L('M1 13.5 H15') + L('M8 13.5 V2.5', GD, 1.1, DASH) + T('M8 11 H10.5 V13.5') + swskSnap(8, 13.5);
+  OWN.qsParallel = L('M1.5 9.5 L9.5 1.5') + L('M5.5 14.5 L14.5 5.5', GD, 1.1, DASH) + swskSnap(5.5, 14.5);
+  OWN.qsHvLines = L('M8 1 V15', GD, 1.1, DASH) + L('M1 8 H15', GD, 1.1, DASH) + pt(8, 13.5) + swskSnap(8, 8);
+  OWN.qsHvPoints = pt(2.5, 4.5) + pt(13.5, 12.5) + L('M2.5 4.5 V12.5 H13.5', GD, 1.1, DASH) + swskSnap(2.5, 12.5);
+  OWN.qsLength = L('M1.5 9.5 H11.5') + T('M1.5 6.5 V3.5 M11.5 6.5 V3.5 M1.5 5 H11.5') + swskSnap(11.5, 9.5);
+  OWN.qsGrid = P('M2.5 2.5 V13.5 M6.5 2.5 V13.5 M10.5 2.5 V13.5 M2.5 2.5 H13.5 M2.5 6.5 H13.5 M2.5 10.5 H13.5', 'none', GD, 0.7) + swskSnap(10.5, 6.5);
+  OWN.qsAngle = L('M2.5 13.5 H14.5', GD, 1.1) + L('M2.5 13.5 L11.5 4.5') + T('M8 13.5 A5.5 5.5 0 0 0 6.4 9.6') + swskSnap(11.5, 4.5);
+  // Spline Tools (Tools menu): the spline and what each command does to it
+  var SWSK_SPL = 'M1.5 12.5 C4 1 9 17 14.5 3.5';
+  function swskPlus(x, y) { return P('M' + x + ' ' + r2(y - 2.5) + ' v5 M' + r2(x - 2.5) + ' ' + y + ' h5', 'none', G2, 1.6); }
+  OWN.splInsertPt = L(SWSK_SPL) + pt(8, 8) + swskPlus(12.5, 12.5);
+  OWN.splSimplify = L(SWSK_SPL) + pt(1.5, 12.5) + pt(14.5, 3.5) + P('M10 12.5 h5', 'none', R2, 1.6);
+  OWN.splFit = L('M1.5 12.5 L4.5 5 L8 9.5 L11.5 9 L14.5 3.5', GD, 1, DASH) + L(SWSK_SPL);
+  OWN.splHandles = L(SWSK_SPL) + T('M4 13 L10 3') + C(4, 13, 1.1, INK, 'none') + C(10, 3, 1.1, INK, 'none') + pt(7, 8);
+  OWN.splCurvature = T('M3 8.5 L1.5 6 M4.5 6.5 L4 3.5 M6.5 6.5 L7.5 3 M9 8.5 L10.5 6.5 M11.5 9 L14.5 9 M13.5 6 L15.5 7') + L(SWSK_SPL);
+  OWN.splRelax = L('M1.5 12.5 C3 4 4.5 14 6 7 C7.5 1 9 13 10.5 7', GD, 1, DASH) + L('M1.5 12.5 C5 3 10 3 14.5 9.5');
+  OWN.splTangency = L(SWSK_SPL) + ar(7.5, 8.5, 12.5, 12.5, INK, 1.1, 2.4) + ar(7.5, 8.5, 2.5, 4.5, INK, 1.1, 2.4) + pt(7.5, 8.5);
+  OWN.splCurvCtrl = L(SWSK_SPL) + C(7, 4.5, 3.5, 'none', INK, 0.9, DASH) + pt(7, 8);
+  OWN.splInflection = L('M1.5 13.5 C4 13.5 6 8 8 8 C10 8 12 2.5 14.5 2.5') + P('M6 6 L10 10 M10 6 L6 10', 'none', R2, 1.3);
+  OWN.splMinRadius = L(SWSK_SPL) + C(11.5, 9.5, 2.6, 'none', INK, 0.9, DASH) + T('M11.5 9.5 L13.3 11.3') + C(11.5, 9.5, 0.7, INK, 'none');
+  // Blocks (Tools menu): a dashed block frame round entities, its insertion point, and the command's mark
+  function swskBlock(x, y, w, h) { return R(x, y, w, h, 'none', GD, 1, DASH) + L('M' + (x + 2) + ' ' + (y + h - 2) + ' L' + (x + w - 2) + ' ' + (y + 2)) + C(x + w - 3, y + h - 3, 1.2, 'none', SK, 1) + pt(x + 2, y + h - 2); }
+  OWN.blockMake = swskBlock(1.5, 1.5, 10, 10) + swskPlus(12.5, 12.5);
+  OWN.blockEdit = swskBlock(1.5, 1.5, 10, 10) + P('M9 15 L15 9 L13.5 7.5 L7.5 13.5 z', Y2, YO, 0.8);
+  OWN.blockInsert = swskBlock(5.5, 1.5, 10, 10) + ar(0.5, 14.5, 6.5, 10, INK, 1.2, 2.6);
+  OWN.blockAddRemove = swskBlock(1.5, 1.5, 9, 9) + swskPlus(12.5, 9.5) + P('M10 14.5 h5', 'none', R2, 1.6);
+  OWN.blockRebuild = swskBlock(1.5, 1.5, 10, 10) + P('M15 11.5 A3 3 0 1 1 13.8 9.1', 'none', G2, 1.4) + head(14.4, 9.6, 0.5, 0.8, G2, 2.2);
+  OWN.blockExplode = R(5, 5, 6, 6, 'none', GD, 1, DASH) + L('M1.5 14.5 L4.5 11.5 M11.5 4.5 L14.5 1.5') + C(12.5, 12.5, 1.8, 'none', SK, 1.2) + pt(3.5, 3.5) + T('M8 2 V3.5 M8 12.5 V14 M2 8 H3.5 M12.5 8 H14');
+  OWN.blockSave = swskBlock(1.5, 1.5, 9, 9) + R(9.5, 9.5, 6, 6, B2, NV, 1) + F('M11 9.5 H14 V12 H11 z', W1);
+  // Sketch Tools rows that had a borrowed picture: SketchXpert, Modify, Align, Replace Entity, Close Sketch to Model,
+  // Make Path, Segment
+  OWN.sketchXpert = P('M1.5 13.5 H9.5 M1.5 13.5 V4.5', 'none', INK, 1.5) + gear(11, 5, 2.7, GL, OL);
+  OWN.modifySketch = L('M3.5 12.5 H12.5 L8 4.5 z') + T('M8 0.5 V3 M8 14 V15.5 M0.5 8.5 H2.5 M13.5 8.5 H15.5') + P('M12.5 1.5 A5 5 0 0 1 15 6', 'none', INK, 1.1) + head(15.1, 6.3, 0.2, 1, INK, 2.2);
+  OWN.alignGrid = P('M2.5 1.5 V14.5 M7.5 1.5 V14.5 M12.5 1.5 V14.5 M1.5 2.5 H14.5 M1.5 7.5 H14.5 M1.5 12.5 H14.5', 'none', GD, 0.6) + L('M2.5 12.5 L12.5 2.5') + pt(2.5, 12.5);
+  OWN.replaceEnt = L('M1.5 5.5 H9.5', GD, 1.1, DASH) + L('M6.5 12.5 A4 4 0 0 1 14.5 12.5') + ar(11.5, 4, 13.5, 8, INK, 1.1, 2.2) + ar(4.5, 12, 3, 8, INK, 1.1, 2.2);
+  OWN.closeToModel = wbox(1.5, 4.5, 10, 7, 3) + L('M1.5 7.5 V2.5 H11.5 V7.5', SK, 1.5) + pt(1.5, 7.5) + pt(11.5, 7.5);
+  OWN.makePath = L('M1.5 13.5 V7.5 A4 4 0 0 1 9.5 7.5 H14.5') + ar(4, 4.5, 7, 2.5, INK, 1, 2.2) + ar(10.5, 10.5, 13.5, 10.5, INK, 1, 2.2) + pt(1.5, 13.5) + pt(14.5, 7.5);
+  OWN.segment = L('M1.5 12.5 L14.5 3.5') + pt(1.5, 12.5) + pt(5.8, 9.5) + pt(10.2, 6.5) + pt(14.5, 3.5);
 
   // ================================================================== Sheet Metal (white plates, the new flange in blue)
   // an L bracket seen from the front left: the base plate lying flat and the wall standing on its far edge, each with
