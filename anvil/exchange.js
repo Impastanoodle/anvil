@@ -1003,10 +1003,11 @@ var Exchange = (function () {
     feats.forEach(function (f) {
       if (f.type !== 'import' || f.suppressed) return;
       (f.solids || []).forEach(function (s) {
-        if (!s.free || !s.free.faces || !s.free.faces.length) return;
-        var m = solidMesh(s), tags = decodeU32(s.free.tri || []), f0 = faces.length;
+        var sf = freeFacesOfSolid(s);
+        if (!sf.length) return;
+        var m = solidMesh(s), tags = freeTags(s.free), f0 = faces.length;
         sk++;   // edge ids are the source file's entity numbers: unique within one solid only
-        s.free.faces.forEach(function (fr) { faces.push({ rec: fr, sk: sk }); want.push(0); });
+        sf.forEach(function (fr) { faces.push({ rec: fr, sk: sk }); want.push(0); });
         for (var t = 0; t * 3 + 2 < m.triangles.length; t++) {
           if (!(tags[t] > 0)) continue;
           var k = tkey(m.positions, m.triangles[t * 3], m.triangles[t * 3 + 1], m.triangles[t * 3 + 2]);
@@ -1028,9 +1029,10 @@ var Exchange = (function () {
       feats.forEach(function (f) {
         if (f.type !== 'import' || f.suppressed) return;
         (f.solids || []).forEach(function (s) {
-          if (!s.free || !s.free.faces || !s.free.faces.length) return;
-          var m = solidMesh(s), tags = decodeU32(s.free.tri || []), f0 = -1;
-          for (var q = 0; q < faces.length; q++) if (faces[q].rec === s.free.faces[0]) { f0 = q; break; }
+          var sf = freeFacesOfSolid(s);
+          if (!sf.length) return;
+          var m = solidMesh(s), tags = freeTags(s.free), f0 = -1;
+          for (var q = 0; q < faces.length; q++) if (faces[q].rec === sf[0]) { f0 = q; break; }
           for (var t2 = 0; t2 * 3 + 2 < m.triangles.length; t2++) {
             if (!(tags[t2] > 0)) continue;
             var A = P3(m.positions, m.triangles[t2 * 3]), B = P3(m.positions, m.triangles[t2 * 3 + 1]), C = P3(m.positions, m.triangles[t2 * 3 + 2]), n = cross(sub(B, A), sub(C, A)), ar = len(n) / 2;
@@ -2498,7 +2500,18 @@ var Exchange = (function () {
       // edges in (u, v)), so the triangles either side of it meet point for point
       if (bands.length !== 2 || bands[0].dir !== bands[1].dir) return null;
       var dI = bands[0].dir, Pd = dI ? A.pv : A.pu, key = dI ? 'v' : 'u', oth = dI ? 'u' : 'v';
-      var L1 = bands[0].line, L2 = bands[1].line, s0 = L1[0][key], sh2 = Pd * Math.round((s0 - L2[0][key]) / Pd);
+      var L1 = bands[0].line, L2 = bands[1].line, s0 = L1[0][key];
+      // lane MX: the second loop starts at its point nearest the first one's start round the period, so the cut runs
+      // straight along the band (it ran from wherever each file's loop began: half a turn across a hole's wall, every
+      // triangle spanning that much, the refinement filled the wall with 7182 triangles for the 98 of the kernel's)
+      var kB = 0, dB = Infinity, nL2 = L2.length - 1;
+      for (var q2 = 0; q2 < nL2; q2++) { var dq = Math.abs(L2[q2][key] - s0 - Pd * Math.round((L2[q2][key] - s0) / Pd)); if (dq < dB) { dB = dq; kB = q2; } }
+      if (kB) {
+        var rot = L2.slice(kB, nL2);
+        for (q2 = 0; q2 <= kB; q2++) { var y2 = { p: L2[q2].p, u: L2[q2].u, v: L2[q2].v }; y2[key] += Pd; rot.push(y2); }
+        L2 = bands[1].line = rot;
+      }
+      var sh2 = Pd * Math.round((s0 - L2[0][key]) / Pd);
       L2.forEach(function (x) { x[key] += sh2; });
       if (rings.length) {   // holes beside the band: into its period window
         var mo = 0; L1.forEach(function (x) { mo += x[oth]; });
@@ -2531,7 +2544,11 @@ var Exchange = (function () {
     if (!(Math.abs(ea / 2 - want) <= 1e-6 * Math.max(Math.abs(want), 1e-12))) return null;   // the ear clipping failed
     // fans of the ear clipping made well shaped first, in the refinement's own measure (one step = 1 each way; a straight
     // direction scaled as lengths), so the refinement then adds few points
-    var hsF = isFinite(A.hs) ? A.hs : A.ht * A.sv / A.su, htF = isFinite(A.ht) ? A.ht : A.hs * A.su / A.sv;
+    // (lane MX: a straight direction (a cylinder's or a cone's height) counts a thousand times its length in the flips:
+    // the Delaunay triangles then join each point to the nearest ones round the axis, the zipper of the loops' own points.
+    // In true lengths a hole's wall between two wavy loops fanned across up to 23 steps round, and the refinement filled
+    // it: 2508 triangles for the kernel's 98)
+    var hsF = isFinite(A.hs) ? A.hs : A.ht * A.sv / A.su * 1e3, htF = isFinite(A.ht) ? A.ht : A.hs * A.su / A.sv * 1e3;
     // lane MO: curved both ways (sphere, torus, B-spline): the points of the canonical grid (one step each way, as the
     // kernel's own rows) that lie inside the patch and half a step clear of its boundary go in first, each into the ear
     // clipping's triangle that holds it, and the flips below make the whole Delaunay in step units; the refinement then
@@ -3301,6 +3318,44 @@ var Exchange = (function () {
         if (l && l.t === 'EDGE_LOOP') loopEdgeList(l).forEach(function (x) { if (x.info.kind === 'bspline') x.info.pts = cylSubsample(x.info, sf.t === 'CYLINDRICAL_SURFACE' ? surfRecord(sf) : k && k.cyl); });
       });
     });
+    // lane MX: an edge of a plane face whose curve leaves the plane (OpenCascade's variable fillet: its edge curve 3e-5
+    // off the top face, while the file states 1e-7) is healed as SolidWorks heals it on import: the edge's inner points
+    // move onto the plane when the miss is within the file's uncertainty or 1e-4 of the face's size, the one point
+    // list both faces use (its ends are vertices of other edges too: left). Before, the plane's triangles were not flat
+    // and the fillet's beside it crossed them (Check: self-intersections).
+    var uncM = /UNCERTAINTY_MEASURE_WITH_UNIT\s*\(\s*LENGTH_MEASURE\s*\(\s*([-+0-9.Ee]+)/.exec(text), unc = uncM ? Math.abs(+uncM[1]) || 0 : 0, healed = 0, healMax = 0;
+    Object.keys(E).forEach(function (id) {
+      var fa = args(E[id], 'ADVANCED_FACE'), sf = fa && fa[2] && ent(fa[2]);
+      if (!sf || sf.t !== 'PLANE') return;
+      var T = placement(sf.a[1]);
+      if (!T) return;
+      var o = T.position, n = [T.rotation[2], T.rotation[5], T.rotation[8]], infos = [], lo = null, hi = null;
+      if (!(len(n) > 0)) return;
+      n = norm(n);
+      (fa[1] || []).forEach(function (bRef) {
+        var b = ent(bRef), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
+        if (l && l.t === 'EDGE_LOOP') loopEdgeList(l).forEach(function (x) {
+          infos.push(x.info);
+          (x.info.pts || []).forEach(function (p) { if (!lo) { lo = p.slice(); hi = p.slice(); } for (var c = 0; c < 3; c++) { lo[c] = Math.min(lo[c], p[c]); hi[c] = Math.max(hi[c], p[c]); } });
+        });
+      });
+      if (!lo) return;
+      // (a miss within the stated uncertainty is on the face as the file sees it: left, no warning; Anvil's own 6-decimal
+      // re-exports sit 5e-6 mm off inside their 2.5e-5)
+      var size = len(sub(hi, lo)), lim = Math.max(unc, 1e-4 * size), tiny = Math.max(unc, 1e-9 * Math.max(size, 1e-9));
+      infos.forEach(function (info) {
+        var ps = info.pts;
+        if (!ps || ps.length < 3) return;
+        for (var i = 1; i < ps.length - 1; i++) {
+          var dd = dot(sub(ps[i], o), n);
+          if (Math.abs(dd) > tiny && Math.abs(dd) <= lim) {
+            if (ps === info.pts) ps = info.pts = ps.slice();
+            ps[i] = sub(ps[i], scale(n, dd)); healed++; healMax = Math.max(healMax, Math.abs(dd));
+          }
+        }
+      });
+    });
+    if (healed) warnings.push(healed + ' edge point' + (healed === 1 ? '' : 's') + ' up to ' + (healMax * (toMM || 1)).toExponential(1) + ' mm off the plane face they bound (the file states ' + (unc ? (unc * (toMM || 1)).toExponential(1) + ' mm' : 'no accuracy') + ') moved onto it, as SolidWorks heals such a file.');
     // lane stepout3: a B-spline edge lying exactly on a cylinder (Anvil's rails round a hole through a bend: 24 samples
     // a span made every short edge 25 points and the hole 20 k triangles) keeps, per span, every k-th sample (k a divisor
     // of 24, the most whose step stays inside the cylinder's own angular step); a span's samples are symmetric, so
@@ -3538,7 +3593,9 @@ var Exchange = (function () {
         var a = V[t3[0]], b = V[t3[1]], c = V[t3[2]];
         if (!(onB[t3[0]] && onB[t3[1]] && onB[t3[2]])) { out.push(t3); return; }
         var ar = len(cross(sub(b.p, a.p), sub(c.p, a.p))), pe = len(sub(b.p, a.p)) + len(sub(c.p, b.p)) + len(sub(a.p, c.p));
-        if (!(ar > 1e-6 * pe * pe)) { out.push(t3); return; }
+        // (lane MX: nor a sliver a thousandth as wide as long: a thin fillet's end point fanned along its tangent edge,
+        // whose centre points, on the surface, turned the slivers through each other: Check's self-intersections)
+        if (!(ar > 1e-3 * pe * pe)) { out.push(t3); return; }
         var u = (a.u + b.u + c.u) / 3, v = (a.v + b.v + c.v) / 3, m = V.length;
         V.push({ p: A.at(u, v), u: u, v: v });
         out.push([t3[0], t3[1], m], [t3[1], t3[2], m], [t3[2], t3[0], m]);
@@ -4021,7 +4078,7 @@ var Exchange = (function () {
         // lane stepreal2: no triangle of no area goes into the refinement; lane MO: and the fans of the ear clipping made
         // Delaunay in true lengths first (a side between two circles became a zipper; the fans' long diagonals made the
         // refinement fill a pin's side with 2448 triangles for the 64 of two rings zipped)
-        delaunayFlips(T3, P2);
+        delaunayFlips(T3, P2.map(function (q) { return [q[0], q[1] * 1e-3]; }));   // (lane MX: the height a thousandth: zipped round the axis, as surfPatch)
         var stepU = 2 * Math.PI / K.segsForRadius(r * toMM) * r * (1 + 1e-6);
         // longest-edge (in u) bisection along the longest-edge propagation path: the edge split is the longest of both
         // its triangles, so the third vertices lie within its u range and every new edge spans at most half of it
@@ -4758,6 +4815,77 @@ var Exchange = (function () {
     memo.push([F, F2]);
     return F2;
   }
+  // lane MX: the free-form faces as kept on an Imported feature's solid. Version 2 ({ v: 2, edges, faces, tri }) keeps
+  // each edge once (two faces sharing an edge stored it twice), its numbers at 15 significant digits, a straight edge
+  // (degree 1, its two poles its ends) without its poles, and faces whose loops name their edges by id. Version 1
+  // ({ faces, tri }, lane MR: each face carrying its own edges) is read as it is. Two lofts' B-spline data was 47 % and
+  // 41 % of the Imported feature.
+  function packFree(faces) {
+    function r15(x) { return typeof x === 'number' ? +x.toPrecision(15) : x; }
+    function P(p) { return p.map(r15); }
+    var edges = [], seen = {};
+    faces.forEach(function (fr) {
+      fr.edges.forEach(function (e) {
+        if (seen[e.id]) return;
+        seen[e.id] = true;
+        var g = e.g, g2;
+        if (g.t === 'b') {
+          var straight = g.deg === 1 && g.poles.length === 2 && !g.W && len(sub(g.poles[0], e.a)) === 0 && len(sub(g.poles[1], e.b)) === 0;
+          g2 = straight ? { t: 'b', deg: 1, U: g.U.map(r15), ends: 1 } : { t: 'b', deg: g.deg, poles: g.poles.map(P), U: g.U.map(r15) };
+          if (g.W) g2.W = g.W.map(r15);
+        } else if (g.t === 'c') g2 = { t: 'c', c: P(g.c), n: P(g.n), r: r15(g.r) };
+        else if (g.t === 'e') g2 = { t: 'e', center: P(g.center), normal: P(g.normal), xdir: P(g.xdir), a: r15(g.a), b: r15(g.b) };
+        else g2 = { t: g.t };
+        var e2 = { id: e.id, a: P(e.a), b: P(e.b), g: g2 };
+        if (!e.ss) e2.ss = false;
+        if (!(g2.ends && len(sub(e.m, scale(add(e.a, e.b), 0.5))) <= 1e-12 * (1 + len(e.m)))) e2.m = P(e.m);
+        if (len(sub(e.q, e.m)) > 0) e2.q = P(e.q);
+        edges.push(e2);
+      });
+    });
+    return {
+      v: 2, edges: edges,
+      faces: faces.map(function (fr) {
+        var s = fr.s, s2 = { du: s.du, dv: s.dv, poles: s.poles.map(function (row) { return row.map(P); }), U: s.U.map(r15), V: s.V.map(r15) };
+        if (s.W) s2.W = s.W.map(function (row) { return row.map(r15); });
+        return { s: s2, ss: fr.ss, loops: fr.loops.map(function (l) { return l.vtx ? { ori: l.ori, vtx: P(l.vtx) } : { ori: l.ori, edges: l.edges }; }) };
+      })
+    };
+  }
+  // the free-form face tag of every triangle (0 none, else face + 1) as runs [tag, count, tag, count, ...] (version 2;
+  // a face's triangles mostly follow one another: 4 bytes a triangle in base64 were a quarter of a loft's feature)
+  function tagRuns(tags) {
+    var out = [];
+    for (var i = 0; i < tags.length; i++) { if (out.length && out[out.length - 2] === tags[i]) out[out.length - 1]++; else out.push(tags[i], 1); }
+    return out;
+  }
+  function freeTags(fr) {
+    if (!fr) return [];
+    if (fr.runs) { var out = []; for (var i = 0; i + 1 < fr.runs.length; i += 2) for (var k = 0; k < fr.runs[i + 1]; k++) out.push(fr.runs[i]); return out; }
+    return decodeU32(fr.tri || []);
+  }
+  // freeFacesOfSolid(solid) -> its face records in the form the writer reads ({ s, ss, loops, edges }), either version;
+  // version 2's are built once and kept on the record (not enumerable: never saved)
+  function freeFacesOfSolid(s) {
+    var fr = s && s.free;
+    if (!fr || !fr.faces || !fr.faces.length) return [];
+    if (!fr.v) return fr.faces;
+    if (fr._faces) return fr._faces;
+    var byId = {};
+    (fr.edges || []).forEach(function (e) {
+      var g = e.g;
+      if (g.t === 'b' && g.ends) g = { t: 'b', deg: 1, poles: [e.a, e.b], U: g.U };
+      var m = e.m || scale(add(e.a, e.b), 0.5);
+      byId[e.id] = { id: e.id, a: e.a, b: e.b, ss: e.ss !== false, g: g, m: m, q: e.q || m };
+    });
+    var out = fr.faces.map(function (f) {
+      var used = {}, es = [];
+      f.loops.forEach(function (l) { (l.edges || []).forEach(function (x) { if (!used[x.id] && byId[x.id]) { used[x.id] = true; es.push(byId[x.id]); } }); });
+      return { s: f.s, ss: f.ss, loops: f.loops, edges: es };
+    });
+    Object.defineProperty(fr, '_faces', { value: out, enumerable: false, configurable: true, writable: true });
+    return out;
+  }
   // lane MR: mapFree(rec, point, dir, lengthScale) -> a copy of a free-form face record (freeRecord in importSTEP) with
   // its poles, edge ends, curve points and radii mapped (knots and weights unchanged). Plain arrays and numbers only: it
   // is kept on the Imported feature's solid as it is (solid.free.faces) and written back by writeFreeFace.
@@ -4862,7 +4990,7 @@ var Exchange = (function () {
       open += m.openEdges;
       var solid = { name: nm, positions: compact.positions.map(function (x) { return Math.round(x * 1e9) / 1e9; }), triangles: compact.triangles };
       if (m.triSurf) solid.curves = curvesOf(m.triSurf);
-      if (freeFaces && freeFaces.length) solid.free = { faces: freeFaces, tri: freeTri };
+      if (freeFaces && freeFaces.length) { solid.free = packFree(freeFaces); solid.free.runs = tagRuns(freeTri); }
       out.push(solid);
     });
     if (open) warnings.push(open + ' open edge' + (open === 1 ? '' : 's') + ': the mesh is not closed, so cuts and bosses against it may fail.');
@@ -4959,7 +5087,10 @@ var Exchange = (function () {
       // the triangles' analytic surface records (curved faces of a STEP file): { surfs, recs, tri (base64 U32) }
       if (s.curves && s.curves.surfs) out.curves = { surfs: s.curves.surfs, recs: s.curves.recs || [], tri: typeof s.curves.tri === 'string' ? s.curves.tri : encodeU32(s.curves.tri || []) };
       // lane MR: the free-form faces' true surfaces and edges (written back by the STEP writer; nothing else reads them)
-      if (s.free && s.free.faces) out.free = { faces: s.free.faces, tri: typeof s.free.tri === 'string' ? s.free.tri : encodeU32(s.free.tri || []) };
+      if (s.free && s.free.faces) {
+        if (s.free.v) out.free = { v: s.free.v, edges: s.free.edges, faces: s.free.faces, runs: s.free.runs || tagRuns(freeTags(s.free)) };   // (lane MX: version 2, packFree)
+        else out.free = { faces: s.free.faces, tri: typeof s.free.tri === 'string' ? s.free.tri : encodeU32(s.free.tri || []) };
+      }
       return out;
     });
   }

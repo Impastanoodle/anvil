@@ -1996,6 +1996,9 @@
     test('rfMX: a 0.5 -> 0.6 mm variable fillet (a thin rational B-spline strip between two planes) reads to 1e-6 of OpenCascade\'s volume and no point of it lies more than 6e-5 outside the block (was 1.4e-4 above the top plane: the volume fix threw points among thin triangles up to 2e-2)', function () {
       var r = rfMXread(rfMXstrip), occ = 2998.6971979249297, p = r.mesh.positions, over = 0;
       assert(!r.res.stats.openEdges, 'open edges ' + r.res.stats.openEdges);
+      // (MX2: its edge curves lie on the planes to 1e-14; Check failed on slivers from the strip's end fanned along its
+      // tangent edge whose centre points turned them through each other: centreInsert leaves slivers alone)
+      assert(r.check.ok, 'Evaluate.checkBody: ' + JSON.stringify(r.check).slice(0, 300));
       nearRel(r.volume, occ, 1e-6, 'volume');
       for (var i = 0; i < p.length; i += 3) over = Math.max(over, -p[i], p[i] - 20, -p[i + 1], p[i + 1] - 15, -p[i + 2], p[i + 2] - 10);
       assert(over < 6e-5, 'a point ' + over.toExponential(2) + ' outside the block');
@@ -2013,5 +2016,72 @@
       var s2 = X.exportSTEP(r1.model, r1.build), f2 = rfMXfaces(s2);
       assert(JSON.stringify(f1) === JSON.stringify(f2), 'second round trip: ' + JSON.stringify(f2));
       return JSON.stringify(f1) + ', re-read ' + ((r1.volume - occ) / occ).toExponential(1) + ' off, ' + r1.res.stats.triangles + ' triangles';
+    });
+    // (MX2) a cylinder wall between loops that are not circles (a hole's wall, a tube with a cross hole, a bend with a
+    // hole) is zipped round the axis from its loops' own points: the flips count the height a thousandth (cylPatch and
+    // paramPatch), and a band's second loop starts beside the first one's start. Was: rows at the arc step along the
+    // height (the cross-drilled tube read 7260 triangles for the kernel's 1668, the blend's hole wall 7182 for 98)
+    function rfMXcylTris(step, units) {
+      var tr = [], n = 0;
+      X.importSTEP(step, { units: units, trace: tr });
+      tr.forEach(function (t) { if (t.surf === 'CYLINDRICAL_SURFACE') n += (t.to - t.from) / 3; });
+      return n;
+    }
+    test('rfMX: hole walls read back zipped: a cross-drilled tube, a hole through a bend and the drilled loft read back with no more than twice the kernel\'s own triangles, closed, the volume to 1e-8 of the body written (the loft: 1e-5 of OpenCascade\'s)', function () {
+      if (!X) fail('exchange.js is not loaded');
+      var bracket = 'p.sheet(0.06, 0.25, 0.44);\np.sketch("Top").rect(0, -4, 2, 4).end().baseFlange();\np.flange(2, [[0, 0.06, 2], [2, 0.06, 2]], { position: "inside" });\n', out = [];
+      [['tube', 'p.units("in");\np.sketch("Top").circle(0, 0, 0.5).circle(0, 0, 0.4).end().extrude(2);\np.sketch("Front").circle(0, 1, 0.15).end().extrude(1, { cut: true, through: true, both: true });\n'],
+       ['bend', 'p.units("in");\n' + bracket + 'p.sketch("Top").circle(0.155, -2, 0.08).end().extrude(1, { cut: true, through: true, both: true });\n']].forEach(function (c) {
+        var m = K.newModel('rfMX'); K.runScript(m, c[1]);
+        var b = K.rebuild(m), mesh = K.meshFromBody(b.body), v = K.massProps(mesh, 1).volume, s = X.exportSTEP(m, b);
+        var res = X.importFile('rfMX.step', s, { units: 'in' }), b2 = K.rebuild(X.newPartFromImport(res));
+        assert(!res.stats.openEdges, c[0] + ': open edges ' + res.stats.openEdges);
+        assert(res.stats.triangles <= 2 * mesh.triCount, c[0] + ': ' + res.stats.triangles + ' triangles read, the kernel ' + mesh.triCount);
+        nearRel(K.massProps(K.meshFromBody(b2.body), 1).volume, v, 1e-8, c[0] + ': volume');
+        out.push(c[0] + ' ' + res.stats.triangles + ' / ' + mesh.triCount + ' (walls ' + rfMXcylTris(s, 'in') + ')');
+      });
+      var r = rfMXread(rfMXloft);
+      K.runScript(r.model, 'p.sketch("Right").circle(-5, 1, 1).end().extrude(30, { cut: true, both: true });');
+      var bl = K.rebuild(r.model), ml = K.meshFromBody(bl.body), sl = X.exportSTEP(r.model, bl), rl = rfMXread(sl);
+      assert(rl.res.stats.triangles <= 2 * ml.triCount, 'loft: ' + rl.res.stats.triangles + ' triangles read, the kernel ' + ml.triCount);
+      assert(rfMXcylTris(sl, 'mm') <= 150, 'loft hole wall: ' + rfMXcylTris(sl, 'mm') + ' triangles');
+      nearRel(rl.volume, 729.47109365089693, 1e-5, 'loft volume');
+      out.push('loft ' + rl.res.stats.triangles + ' / ' + ml.triCount + ' (wall ' + rfMXcylTris(sl, 'mm') + ')');
+      return out.join(', ');
+    });
+    // (MX2) solid.free version 2 (packFree): each edge once, a straight edge without its poles, the triangles' face tags
+    // as runs. Version 1 documents (lane MR: { faces with their own edges, tri }) still write the same file.
+    test('rfMX: the free-form faces kept on the Imported feature (version 2) are under a third of it on a loft (was 41 %), and a version 1 record (each face with its own edges, the tags base64) writes the same STEP text', function () {
+      var r = rfMXread(rfMXloft), f = r.model.features.filter(function (x) { return x.type === 'import'; })[0], s = f.solids[0];
+      var all = JSON.stringify(f).length, fr = JSON.stringify(s.free).length;
+      assert(s.free.v === 2 && s.free.edges && s.free.runs, 'version 2: ' + Object.keys(s.free).join(','));
+      assert(fr < all / 3, 'free ' + fr + ' of ' + all + ' bytes');
+      var s1 = X.exportSTEP(r.model, r.build);
+      // the same faces as version 1
+      var byId = {};
+      s.free.edges.forEach(function (e) { var g = e.g.ends ? { t: 'b', deg: 1, poles: [e.a, e.b], U: e.g.U } : e.g, m = e.m || [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2, (e.a[2] + e.b[2]) / 2]; byId[e.id] = { id: e.id, a: e.a, b: e.b, ss: e.ss !== false, g: g, m: m, q: e.q || m }; });
+      var tags = [];
+      for (var i = 0; i < s.free.runs.length; i += 2) for (var k = 0; k < s.free.runs[i + 1]; k++) tags.push(s.free.runs[i]);
+      var u8 = new Uint8Array(new Uint32Array(tags).buffer), bin = '';
+      for (i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+      s.free = { faces: s.free.faces.map(function (fc) { var es = [], seen = {}; fc.loops.forEach(function (l) { (l.edges || []).forEach(function (x) { if (!seen[x.id]) { seen[x.id] = 1; es.push(byId[x.id]); } }); }); return { s: fc.s, ss: fc.ss, loops: fc.loops, edges: es }; }), tri: btoa(bin) };
+      var b2 = K.rebuild(r.model), s2 = X.exportSTEP(r.model, b2);
+      assert(s1.replace(/FILE_NAME\(.*\n/, '') === s2.replace(/FILE_NAME\(.*\n/, ''), 'the same STEP text from version 1 and 2');
+      return fr + ' of ' + all + ' bytes (' + (100 * fr / all).toFixed(0) + ' %)';
+    });
+    // (MX2) a file whose plane's edges sit off it (here the strip's top plane moved up 2e-5, its edges not): the inner
+    // points of those edges go onto the plane within the file's uncertainty or 1e-4 of the face, with a warning
+    test('rfMX: edge points 2e-5 off the plane face they bound are healed onto it (within 1e-4 of the face), with a warning; the part reads closed and passes Check', function () {
+      var ent = {}, pt = null;
+      rfMXstrip.replace(/#(\d+)\s*=\s*([^;]*);/g, function (m, id, b) { ent[id] = b.replace(/\s+/g, ' '); return m; });
+      Object.keys(ent).forEach(function (id) { var m = /^PLANE\('',#(\d+)\)/.exec(ent[id]), a = m && /AXIS2_PLACEMENT_3D\('',#(\d+)/.exec(ent[m[1]]); if (a && /\(\s*0\.\s*,\s*0\.\s*,\s*10\.\s*\)/.test(ent[a[1]])) pt = a[1]; });
+      assert(pt, 'the top plane\'s point');
+      var step = rfMXstrip.replace(new RegExp('#' + pt + ' = CARTESIAN_POINT\\([^;]*;'), '#' + pt + ' = CARTESIAN_POINT(\'\',(0.,0.,10.00002));');
+      var r = rfMXread(step), w = r.res.warnings.filter(function (x) { return /off the plane face/.test(x); });
+      assert(w.length === 1, 'warnings: ' + JSON.stringify(r.res.warnings));
+      assert(!r.res.stats.openEdges, 'open edges ' + r.res.stats.openEdges);
+      assert(r.check.ok, 'Evaluate.checkBody: ' + JSON.stringify(r.check).slice(0, 300));
+      nearRel(r.volume, 2998.6971979249297, 3e-6, 'volume (the plane 2e-5 higher: 1.2e-6 more)');
+      return w[0];
     });
   })();
