@@ -63,8 +63,8 @@
         var nSheets = st.result.sheets.length;
         assert(st.result.placed === 200 && !st.result.unplaced.length && nSheets >= 2, 'all 200 on ' + nSheets);
         // Save DXF: one file, sheets side by side, bend lines on
-        setInput(pmField('DXF files'), 'one');
-        pmField('Bend / etch lines in DXF').checked = true; pmField('Bend / etch lines in DXF').dispatchEvent(new W.Event('change', { bubbles: true })); await wait(20);
+        setInput(pmField('DXF files'), 'one'); await wait(20);
+        assert(pmField('Bend / etch lines in DXF').checked, 'bend / etch lines are on by default');
         UI.download = function (name, text) { saved.push({ name: name, text: text }); };
         clickPmButton('Save DXF'); await wait(20);
         assert(saved.length === 1 && /NBBracket-nest\.dxf$/.test(saved[0].name), 'saved ' + saved.map(function (s) { return s.name; }));

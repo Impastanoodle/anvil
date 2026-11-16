@@ -33,14 +33,16 @@
     var flat = K.flatPattern(UI.App.model, UI.App.build, UI.App.mesh), per = W.DxfImport.parse(K.exportDXFFlat(flat, 'mm', { style: 'entities', bendLines: false, notes: false })).entities.length;
     ['R12', 'R2000'].forEach(function (v) {
       var text = UI.nestSheetDXF(0, v), back = W.DxfImport.parse(text);
-      assert(back.entities.length === 12 * per && back.entities.every(function (e) { return e.layer === 'CUT'; }), v + ': ' + back.entities.length + ' entities, want 12 × ' + per);
+      // lane NB2: the CUT layer holds only cut geometry; bend / etch lines travel on their own layers (12 × the flat's bends on BEND)
+      var cut = back.entities.filter(function (e) { return e.layer === 'CUT'; }), rest = back.entities.filter(function (e) { return e.layer !== 'CUT'; });
+      assert(cut.length === 12 * per && rest.every(function (e) { return /^(BEND|ETCH|FORM)$/.test(e.layer); }) && rest.filter(function (e) { return e.layer === 'BEND'; }).length === 12 * flat.bends.length, v + ': ' + cut.length + ' cut entities, want 12 × ' + per + '; others ' + rest.map(function (e) { return e.layer; }).join(','));
       assert(back.units === 'mm' && text.indexOf(v === 'R12' ? 'AC1009' : 'AC1015') > 0, v + ' header');
     });
     // Save DXF downloads one file per sheet
     var saved = [], dl = UI.download;
     UI.download = function (name, text) { saved.push({ name: name, text: text }); };
     try { clickPmButton('Save DXF'); } finally { UI.download = dl; }
-    assert(saved.length === 1 && /U-Bracket-nest-sheet1\.dxf$/.test(saved[0].name) && W.DxfImport.parse(saved[0].text).entities.length === 12 * per, 'saved ' + saved.map(function (s) { return s.name; }));
+    assert(saved.length === 1 && /U-Bracket-nest-sheet1\.dxf$/.test(saved[0].name) && W.DxfImport.parse(saved[0].text).entities.filter(function (e) { return e.layer === 'CUT'; }).length === 12 * per, 'saved ' + saved.map(function (s) { return s.name; }));
     // ✓: the Nest document
     await pmAccept(); await idle();
     var m = UI.App.model, sk = m.features.filter(function (f) { return f.type === 'sketch'; });

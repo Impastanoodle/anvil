@@ -26,6 +26,11 @@
 //      takes it (sheets in order, holes in placing order), before the open sheet is searched.
 //   5. Several deterministic strategies run (bottom-left, lowest top edge, each orientation preferred in ties) and the
 //      best result is kept: most parts placed, then fewest sheets, then the shortest used length of the last sheet.
+//   6. (lane NB2) Compaction: each part slides toward the start corner by exact line / arc distances until a gap is
+//      the spacing (opts.compact false skips it); the grids are rebuilt round the moved parts and the parts not placed,
+//      then the last sheet's, are offered again (result.compaction { moved, refilled, droppedSheet }). Orientations
+//      that are the same shape by symmetry are dropped before rasterising; a strategy that can no longer beat the best
+//      stops early; the search tries first the part row that blocked last.
 //   Results never overlap; Nest.check verifies a result with exact polygon tests (segment distances and containment).
 //
 // API
@@ -356,7 +361,7 @@ var Nest = (function () {
   function newSheet(NU, NV) {
     var occ = new Uint8Array(NU * NV), run = new Int16Array(NU * NV);
     for (var v = 0; v < NV; v++) for (var u = 0; u < NU; u++) run[v * NU + u] = NU - u;
-    return { occ: occ, run: run, NU: NU, NV: NV, list: [], full: {}, hint: {}, top: 0, holes: [] };
+    return { occ: occ, run: run, NU: NU, NV: NV, list: [], ol: [], full: {}, hint: {}, top: 0, holes: [] };
   }
   function fixRow(S, v) {
     var NU = S.NU, base = v * NU, occ = S.occ, run = S.run, nx = 0;
@@ -371,14 +376,18 @@ var Nest = (function () {
   function findPos(S, O, vEnd) {
     var NU = S.NU, run = S.run, rowIdx = O.c.rowIdx, spans = O.c.spans, chh = O.c.chh;
     var vMax = Math.min(O.vMax, vEnd), h = S.hint[O.id], V = h ? h.V : O.vMin, U = h ? h.U : O.uMin;
+    // lane NB2: the row that blocked the last candidate is tried first (the same row of the part keeps meeting the
+    // same neighbour as it slides along); any blocked row gives a valid jump, so the order does not change the answer
+    var k0 = O.lastK || 0;
     for (; V <= vMax; V++, U = O.uMin) {
       while (U <= O.uMax) {
         var jump = 0;
-        for (var k = 0; k < chh && !jump; k++) {
+        for (var kk = 0; kk < chh && !jump; kk++) {
+          var k = kk + k0 < chh ? kk + k0 : kk + k0 - chh;
           var base = (V + k) * NU + U;
           for (var p = rowIdx[k], pe = rowIdx[k + 1]; p < pe; p += 2) {
             var val = run[base + spans[p]];
-            if (val < spans[p + 1] - spans[p] + 1) { jump = val > 0 ? val : -val; break; }
+            if (val < spans[p + 1] - spans[p] + 1) { jump = val > 0 ? val : -val; k0 = O.lastK = k; break; }
           }
         }
         if (!jump) { S.hint[O.id] = { U: U, V: V }; return { U: U, V: V }; }
@@ -426,7 +435,7 @@ var Nest = (function () {
       rotation: Math.max(0, num(o.rotation, 90)), mirror: !!o.mirror, holes: o.holes !== false,
       maxSheets: Math.max(1, Math.round(num(o.maxSheets, 10))),
       corner: /^(bl|br|tl|tr)$/.test(o.corner) ? o.corner : 'bl', direction: o.direction === 'y' ? 'y' : 'x',
-      strategies: Math.max(1, Math.round(num(o.strategies, 5)))
+      strategies: Math.max(1, Math.round(num(o.strategies, 5))), compact: o.compact !== false
     };
     var big = Math.max(W, H);
     out.tol = num(o.tol, 0) > 0 ? +o.tol : big * 1e-5;
@@ -440,6 +449,18 @@ var Nest = (function () {
     var out = [];
     for (var k = 0; k * step < 360 - 1e-9 && out.length < 360; k++) out.push(Math.round(k * step * 1e9) / 1e9);
     return out;
+  }
+  // lane NB2: the exact shape of loops as text, independent of where they start and which way they run: every piece
+  // (line ends, arc centre / radius / ends / sweep, circle) relative to the box corner, rounded, sorted per loop
+  function arcMid(s) { var t = Math.atan2(s.a[1] - s.c[1], s.a[0] - s.c[0]) + s.sweep / 2; return [s.c[0] + s.r * Math.cos(t), s.c[1] + s.r * Math.sin(t)]; }
+  function geoSig(loops, box) {
+    function q(v) { var s = (Math.round(v * 1e5) / 1e5).toFixed(5); return s === '-0.00000' ? '0.00000' : s; }
+    function pt(p) { return q(p[0] - box[0]) + ',' + q(p[1] - box[1]); }
+    function ends(a, b) { var A = pt(a), B = pt(b); return A < B ? A + ';' + B : B + ';' + A; }
+    return loops.map(function (L) {
+      if (L.circle) return 'c' + pt(L.circle.c) + 'r' + q(L.circle.r);
+      return L.segs.map(function (s) { return s.t === 'line' ? 'l' + ends(s.a, s.b) : 'a' + pt(s.c) + 'r' + q(s.r) + 'm' + pt(arcMid(s)) + ':' + ends(s.a, s.b); }).sort().join('|');
+    }).sort().join('#');
   }
   function now() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
   function run(parts, opts) {
@@ -461,7 +482,7 @@ var Nest = (function () {
     var usable = Math.max(0, W - 2 * m) * Math.max(0, H - 2 * m);
     var prep = P0.map(function (pt, pi) {
       if (!pt) return null;
-      var list = [], seen = {}, polys = null;
+      var list = [], seen = {}, seenG = {}, polys = null;
       if (pt.area > usable * (1 + 1e-9)) return { part: pt, index: pi, orients: list };
       (o.mirror && !noMirror(pt) ? [false, true] : [false]).forEach(function (mir) {
         angles.forEach(function (ang) {
@@ -471,6 +492,11 @@ var Nest = (function () {
           var ox0 = Math.max(0, Math.ceil((m - X0 - r) / h - 1e-9)), ox1 = Math.min(NX - pw0, Math.floor((W - m - (box[2] - box[0]) - X0 - r) / h + 1e-9));
           var oy0 = Math.max(0, Math.ceil((m - Y0 - r) / h - 1e-9)), oy1 = Math.min(NY - ph0, Math.floor((H - m - (box[3] - box[1]) - Y0 - r) / h + 1e-9));
           if (ox1 < ox0 || oy1 < oy0) return;
+          // lane NB2: an orientation whose exact shape (moved to its box corner) is one already kept is a duplicate by
+          // symmetry (a disc at any angle, a rectangle at 180°): not rasterised, not searched
+          var gs = geoSig(loops, box);
+          if (seenG[gs]) return;
+          seenG[gs] = 1;
           stats.rasters++;
           if (!polys) polys = pt.loops.map(function (L) { return loopPoly(L, o.tol); });
           var R = raster(polys.map(function (pl) { return pl.map(f); }), box, h, r, reach, !o.holes);
@@ -507,8 +533,10 @@ var Nest = (function () {
     var best = null;
     timing.prep = now() - tStart;
     for (var si = 0; si < nStrat; si++) {
-      var tp = now(), res = pack(strategies[si]);
+      var tp = now(), res = pack(strategies[si], best);
       timing.pack.push(Math.round(now() - tp));
+      if (!res) { timing.stopped = (timing.stopped || 0) + 1; continue; }
+      res.st = strategies[si];
       res.strategy = strategies[si].crit + (strategies[si].pref ? '+' + strategies[si].pref : '');
       if (!best || better(res, best)) best = res;
     }
@@ -517,8 +545,27 @@ var Nest = (function () {
       if (a.sheets.length !== b.sheets.length) return a.sheets.length < b.sheets.length;
       return a.lastTop < b.lastTop;
     }
-    function pack(st) {
-      var sheets = [], placements = [], unplaced = [], noFit = {};
+    // lane NB2: bound = the best result so far; when it placed every copy, a strategy that already needs more sheets,
+    // or as many with its last sheet filled as high, cannot beat it (better() below) and stops (null)
+    function lost(sheets, bound) {
+      return !!(bound && !bound.unplaced.length && sheets.length &&
+        (sheets.length > bound.sheets.length || (sheets.length === bound.sheets.length && sheets[sheets.length - 1].top >= bound.lastTop)));
+    }
+    function holeRegions(S, pl, pt) {
+      if (!o.holes || pt.loops.length < 2) return;
+      var f = motion(pl.angle, pl.mirror, pl.x, pl.y);
+      for (var li = 1; li < pt.loops.length; li++) {
+        var b = loopsBox([moveLoop(pt.loops[li], f, pl.mirror)]);
+        if (Math.min(b[2] - b[0], b[3] - b[1]) < minDim + o.spacing * 2 - 1e-9) continue;
+        S.holes.push([Math.floor((b[0] - X0) / h) - 1, Math.floor((b[1] - Y0) / h) - 1, Math.ceil((b[2] - X0) / h) + 1, Math.ceil((b[3] - Y0) / h) + 1]);
+      }
+    }
+    // pack(st, bound, list?, state?): list (default every copy) placed in order; state { sheets, placements, unplaced,
+    // noFit, noNew } continues an earlier pack (lane NB2: the refill after compaction, noNew: no new sheet)
+    function pack(st, bound, list, state) {
+      var stopped = false;
+      state = state || {};
+      var sheets = state.sheets || [], placements = state.placements || [], unplaced = state.unplaced || [], noFit = state.noFit || {};
       function bestOn(S, q) {
         var n = q.orients.length, pick = null;
         for (var i = 0; i < n; i++) {
@@ -536,15 +583,6 @@ var Nest = (function () {
       // takes it (sheets in order, holes in placing order, then the lowest row, then column, over the orientations),
       // before the bottom-left search of the open sheet: a bottom-left fill reached a big part's windows only once the
       // rows below them were full, so washers lay beside a tray blank while its windows were cut out as scrap
-      function holeRegions(S, pl, pt) {
-        if (!o.holes || pt.loops.length < 2) return;
-        var f = motion(pl.angle, pl.mirror, pl.x, pl.y);
-        for (var li = 1; li < pt.loops.length; li++) {
-          var b = loopsBox([moveLoop(pt.loops[li], f, pl.mirror)]);
-          if (Math.min(b[2] - b[0], b[3] - b[1]) < minDim + o.spacing * 2 - 1e-9) continue;
-          S.holes.push([Math.floor((b[0] - X0) / h) - 1, Math.floor((b[1] - Y0) / h) - 1, Math.ceil((b[2] - X0) / h) + 1, Math.ceil((b[3] - Y0) / h) + 1]);
-        }
-      }
       function inHole(S, q) {
         var n = q.orients.length;
         for (var hi = 0; hi < S.holes.length; hi++) {
@@ -565,7 +603,8 @@ var Nest = (function () {
         }
         return null;
       }
-      items.forEach(function (it) {
+      (list || items).forEach(function (it) {
+        if (stopped || (stopped = lost(sheets, bound))) return;
         var q = prep[it.p], pick = null, s;
         if (o.holes) for (s = 0; s < sheets.length && !pick; s++) if (!sheets[s].full[it.p] && sheets[s].holes.length) pick = inHole(sheets[s], q);
         if (!pick) for (s = 0; s < sheets.length && !pick; s++) {
@@ -574,7 +613,7 @@ var Nest = (function () {
           if (!pick) sheets[s].full[it.p] = 1;
         }
         if (pick) s--;
-        else if (!noFit[it.p] && sheets.length < o.maxSheets) {
+        else if (!noFit[it.p] && sheets.length < o.maxSheets && !state.noNew) {
           var S = newSheet(NU, NV);
           pick = bestOn(S, q);
           if (pick) { sheets.push(S); s = sheets.length - 1; } else noFit[it.p] = 1;
@@ -590,10 +629,164 @@ var Nest = (function () {
         var O = pick.O, Xc = T.sw ? pick.V : pick.U, Yc = T.sw ? pick.U : pick.V;
         var OX = T.fx ? NX - O.R.pw - Xc : Xc, OY = T.fy ? NY - O.R.ph - Yc : Yc;
         var pl = { part: it.p, name: q.part.name, copy: it.copy, sheet: s, x: X0 + OX * h - O.R.ox, y: Y0 + OY * h - O.R.oy, angle: O.ang, mirror: O.mir };
-        placements.push(pl); sheets[s].list.push(pl);
+        placements.push(pl); sheets[s].list.push(pl); sheets[s].ol.push({ pl: pl, O: O });
         holeRegions(sheets[s], pl, q.part);
+        if (state.placed) state.placed.push(pl);
       });
-      return { placements: placements, unplaced: unplaced, sheets: sheets, lastTop: sheets.length ? sheets[sheets.length - 1].top : 0 };
+      if (stopped || lost(sheets, bound)) return null;
+      return { placements: placements, unplaced: unplaced, sheets: sheets, noFit: noFit, lastTop: sheets.length ? sheets[sheets.length - 1].top : 0 };
+    }
+
+    // ---------------------------------------------------------------- lane NB2: compaction and refill
+    // The grid search leaves each gap up to a few cells over the spacing. Each part, in placing order, slides toward
+    // the start corner along the row axis, then the column axis, then the row axis again, until its true distance
+    // (lines and arcs, primDist) to a neighbour, or its exact extents to the margin, stop it: conservative advancement
+    // (a translation by t changes every distance by at most t, so a move up to the clearance surplus is always
+    // allowed), and where a neighbour alongside holds the surplus at 0, trial steps of at most a cell, halved to 1e-6,
+    // each checked exactly. The sheets' grids are then rebuilt from the moved parts (each grid at the 2 × 2 cell
+    // offsets round its true position, so it stays conservative) and the parts not placed, then the last sheet's
+    // parts, are offered to the sheets again; the last sheet is dropped when all of its parts find room elsewhere.
+    var vDir = T.sw ? [T.fx ? 1 : -1, 0] : [0, T.fy ? 1 : -1], uDir = T.sw ? [0, T.fy ? 1 : -1] : [T.fx ? 1 : -1, 0];
+    function slideItem(it, others, dir) {
+      // a spacing of 0 still keeps parts apart by 1e-6: a true distance of 0 cannot tell touching from overlapping
+      var sp = Math.max(o.spacing, 1e-6), reachD = sp + 4 * h, trial = h, moved = 0;
+      function surplus(dx, dy) {
+        var g = Infinity;
+        for (var i = 0; i < others.length; i++) {
+          var B = others[i], bb = B.box, ab = [it.box[0] + dx, it.box[1] + dy, it.box[2] + dx, it.box[3] + dy];
+          if (ab[0] > bb[2] + reachD || bb[0] > ab[2] + reachD || ab[1] > bb[3] + reachD || bb[1] > ab[3] + reachD) continue;
+          if (dx || dy) shiftPrims(it.pr, dx, dy);
+          var d = primsDist(it.pr, B.pr, reachD);
+          if (dx || dy) shiftPrims(it.pr, -dx, -dy);
+          g = Math.min(g, d - sp);
+          if (g < -1e-12) return g;
+        }
+        return g;
+      }
+      var g = null;
+      for (var n = 0; n < 400; n++) {
+        var lim = dir[0] < 0 ? it.box[0] - m : dir[0] > 0 ? W - m - it.box[2] : dir[1] < 0 ? it.box[1] - m : H - m - it.box[3];
+        if (lim < 1e-9) break;
+        // a trial step (checked) when it is longer than the surplus, which is always safe; a failed trial halves, down
+        // to 1e-5. A part already in contact is tested with the smallest step first, so a blocked part costs one test
+        if (g === null) g = Math.min(surplus(0, 0), 4 * h);
+        if (n === 0 && g <= 1e-7) { var e0 = Math.min(1e-5, lim); if (surplus(dir[0] * e0, dir[1] * e0) < -1e-12) break; }
+        var t = Math.min(trial, lim);
+        if (t > g) {
+          if (surplus(dir[0] * t, dir[1] * t) < -1e-12) {
+            trial /= 2;
+            if (g > 1e-7) t = Math.min(g, lim);
+            else if (trial < 1e-5) break;
+            else continue;
+          }
+        }
+        g = null;
+        if (t < 1e-9) break;
+        shiftPrims(it.pr, dir[0] * t, dir[1] * t);
+        it.box[0] += dir[0] * t; it.box[2] += dir[0] * t; it.box[1] += dir[1] * t; it.box[3] += dir[1] * t;
+        it.pl.x += dir[0] * t; it.pl.y += dir[1] * t;
+        moved += t;
+      }
+      return moved;
+    }
+    function compactItems(S, which) {
+      var all = S.ol.map(function (e) {
+        var pt = P0[e.pl.part], f = motion(e.pl.angle, e.pl.mirror, e.pl.x, e.pl.y), loops = pt.loops.map(function (L) { return moveLoop(L, f, e.pl.mirror); });
+        return { pl: e.pl, pr: prims(loops), box: loopsBox(loops) };
+      });
+      // passes until nothing moves (at most 80): every part along the row axis, nearest the start corner first, then
+      // every part along the column axis the same way (a part ahead has moved before the one behind it is slid, so a
+      // gap it leaves is closed in the same pass); ties keep the placing order
+      var moved = 0;
+      all.forEach(function (it, i) { it.i = i; it.others = all.filter(function (x) { return x !== it; }); });
+      var mine = all.filter(function (it) { return !which || which.indexOf(it.pl) >= 0; });
+      function lead(it, d) { return d[0] < 0 ? it.box[0] : d[0] > 0 ? -it.box[2] : d[1] < 0 ? it.box[1] : -it.box[3]; }
+      // a part is slid again along a direction only when it, or a part near it, has moved since it last stopped there
+      var near = 2 * o.spacing + 8 * h + 1;
+      all.forEach(function (it) { it.dirty = { v: true, u: true }; });
+      function touched(it) {
+        all.forEach(function (x) {
+          if (x.box[0] > it.box[2] + near || it.box[0] > x.box[2] + near || x.box[1] > it.box[3] + near || it.box[1] > x.box[3] + near) return;
+          x.dirty.v = x.dirty.u = true;
+        });
+      }
+      function sweep(d) {
+        var mv = 0, key = d === vDir ? 'v' : 'u';
+        mine.slice().sort(function (a, b) { return (lead(a, d) - lead(b, d)) || (a.i - b.i); }).forEach(function (it) {
+          if (!it.dirty[key]) return;
+          it.dirty[key] = false;
+          var b0 = it.box.slice(), t = slideItem(it, it.others, d);
+          if (t > 0) { var b1 = it.box; it.box = [Math.min(b0[0], b1[0]), Math.min(b0[1], b1[1]), Math.max(b0[2], b1[2]), Math.max(b0[3], b1[3])]; touched(it); it.box = b1; }
+          mv += t;
+        });
+        return mv;
+      }
+      for (var pass = 0; pass < 80; pass++) {
+        var mv = sweep(vDir) + sweep(uDir);
+        moved += mv;
+        if (mv < 1e-6) break;
+      }
+      stats.compactPasses = Math.max(stats.compactPasses || 0, pass + 1);
+      return moved;
+    }
+    function rebuildSheet(old) {
+      var S = newSheet(NU, NV);
+      old.ol.forEach(function (e) {
+        var O = e.O, OXf = (e.pl.x + O.R.ox - X0) / h, OYf = (e.pl.y + O.R.oy - Y0) / h;
+        var Xc = T.fx ? NX - O.R.pw - OXf : OXf, Yc = T.fy ? NY - O.R.ph - OYf : OYf, Uf = T.sw ? Yc : Xc, Vf = T.sw ? Xc : Yc;
+        var us = [Math.floor(Uf + 1e-9)], vs = [Math.floor(Vf + 1e-9)];
+        if (Uf - us[0] > 1e-9) us.push(us[0] + 1);
+        if (Vf - vs[0] > 1e-9) vs.push(vs[0] + 1);
+        us.forEach(function (u) { vs.forEach(function (v) { occupy(S, O, Math.max(0, Math.min(NU - O.c.cw, u)), Math.max(0, Math.min(NV - O.c.chh, v))); }); });
+        S.list.push(e.pl); S.ol.push(e);
+        holeRegions(S, e.pl, P0[e.pl.part]);
+      });
+      return S;
+    }
+    // lane NB2: compaction, then the refill (opts.compact false: the grid nest as it is)
+    var tc = now(), compactInfo = null;
+    if (o.compact && best.sheets.length) compactInfo = compactAndRefill(best);
+    timing.compact = now() - tc;
+    function compactAndRefill(res) {
+      var info = { moved: 0, refilled: 0, droppedSheet: false };
+      res.sheets.forEach(function (S) { info.moved += compactItems(S); });
+      var sheets = res.sheets.map(rebuildSheet), placedNew = [];
+      var unplacedKeys = {};
+      res.unplaced.forEach(function (u) { unplacedKeys[u.part + ':' + u.copy] = u; });
+      // 1. the copies not placed (Max sheets reached) onto the sheets there are
+      if (res.unplaced.length) {
+        var list = res.unplaced.filter(function (u) { return prep[u.part] && prep[u.part].orients.length; }).map(function (u) { return { p: u.part, copy: u.copy }; });
+        var st1 = { sheets: sheets, placements: res.placements, unplaced: [], noFit: {}, noNew: true, placed: placedNew };
+        pack(res.st, null, list, st1);
+        var left = {};
+        st1.unplaced.forEach(function (u) { left[u.part + ':' + u.copy] = 1; });
+        res.unplaced = res.unplaced.filter(function (u) { return left[u.part + ':' + u.copy] || !(prep[u.part] && prep[u.part].orients.length); });
+        info.refilled += placedNew.length;
+      }
+      // 2. the last sheet's parts onto the sheets before it: the sheet goes when every one of them finds room
+      while (sheets.length > 1) {
+        var lastS = sheets[sheets.length - 1], front = sheets.slice(0, -1).map(function (S) { return rebuildSheet(S); });
+        var moveList = lastS.ol.map(function (e) { return { p: e.pl.part, copy: e.pl.copy }; });
+        var tryPl = [], st2 = { sheets: front, placements: [], unplaced: [], noFit: {}, noNew: true, placed: tryPl };
+        pack(res.st, null, moveList, st2);
+        if (!st2.unplaced.length) {
+          var gone = {};
+          lastS.list.forEach(function (pl) { gone[pl.part + ':' + pl.copy] = 1; });
+          res.placements = res.placements.filter(function (pl) { return !gone[pl.part + ':' + pl.copy]; }).concat(tryPl);
+          sheets = front;
+          placedNew = placedNew.concat(tryPl);
+          info.droppedSheet = true;
+          info.refilled += tryPl.length;
+        } else break;
+      }
+      // the parts placed now slide too
+      if (placedNew.length) sheets.forEach(function (S) { info.moved += compactItems(S, placedNew); });
+      sheets.forEach(function (S, k) { S.list.forEach(function (pl) { pl.sheet = k; }); });
+      // placements in sheet order, each sheet's in placing order
+      res.placements = [];
+      sheets.forEach(function (S) { res.placements = res.placements.concat(S.list); });
+      res.sheets = sheets;
+      return info;
     }
     var sheetArea = W * H, total = items.length;
     var sheets = best.sheets.map(function (S, i) {
@@ -629,7 +822,8 @@ var Nest = (function () {
       remnant: sheets.length ? sheets[sheets.length - 1].remnant : null,
       placements: best.placements, sheets: sheets, unplaced: best.unplaced, placed: best.placements.length, total: total,
       utilization: sheets.length ? 100 * used / (sheetArea * sheets.length) : 0, parts: P0, opts: o, cell: h, strategy: best.strategy,
-      timing: { prep: Math.round(timing.prep), pack: timing.pack, total: Math.round(now() - tStart), orientations: nO, copies: items.length }
+      timing: { prep: Math.round(timing.prep), pack: timing.pack, stopped: timing.stopped || 0, compact: Math.round(timing.compact), total: Math.round(now() - tStart), orientations: nO, copies: items.length },
+      compaction: compactInfo
     };
   }
 
@@ -649,6 +843,93 @@ var Nest = (function () {
     var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy, t = L2 > 0 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2 : 0;
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     return Math.hypot(a[0] + dx * t - p[0], a[1] + dy * t - p[1]);
+  }
+  // ------------------------------------------------------------------ exact distances (lane NB2)
+  // the pieces of loops as exact primitives with boxes: lines { t: 'line', a, b } and arcs { t: 'arc', c, r, a0, sw }
+  // (counterclockwise from angle a0 through sw; a circle is sw = 2π)
+  function prims(loops) {
+    var out = [];
+    loops.forEach(function (L) {
+      if (L.circle) { out.push({ t: 'arc', c: L.circle.c.slice(), r: L.circle.r, a0: 0, sw: TAU }); return; }
+      L.segs.forEach(function (s) {
+        if (s.t === 'line') { out.push({ t: 'line', a: s.a.slice(), b: s.b.slice() }); return; }
+        var a0 = Math.atan2(s.a[1] - s.c[1], s.a[0] - s.c[0]);
+        out.push({ t: 'arc', c: s.c.slice(), r: s.r, a0: s.sweep > 0 ? a0 : a0 + s.sweep, sw: Math.abs(s.sweep) });
+      });
+    });
+    out.forEach(primBox);
+    return out;
+  }
+  function primBox(p) {
+    p.box = p.t === 'line' ? [Math.min(p.a[0], p.b[0]), Math.min(p.a[1], p.b[1]), Math.max(p.a[0], p.b[0]), Math.max(p.a[1], p.b[1])] : [p.c[0] - p.r, p.c[1] - p.r, p.c[0] + p.r, p.c[1] + p.r];
+  }
+  function shiftPrims(list, dx, dy) {
+    list.forEach(function (p) {
+      if (p.t === 'line') { p.a[0] += dx; p.a[1] += dy; p.b[0] += dx; p.b[1] += dy; } else { p.c[0] += dx; p.c[1] += dy; }
+      p.box[0] += dx; p.box[2] += dx; p.box[1] += dy; p.box[3] += dy;
+    });
+  }
+  function onArc(A, ang) { var d = ang - A.a0; d = ((d % TAU) + TAU) % TAU; return A.sw >= TAU - 1e-12 || d <= A.sw + 1e-12; }
+  function arcEnds(A) { return [[A.c[0] + A.r * Math.cos(A.a0), A.c[1] + A.r * Math.sin(A.a0)], [A.c[0] + A.r * Math.cos(A.a0 + A.sw), A.c[1] + A.r * Math.sin(A.a0 + A.sw)]]; }
+  function ptArc(p, A) {
+    if (onArc(A, Math.atan2(p[1] - A.c[1], p[0] - A.c[0]))) return Math.abs(Math.hypot(p[0] - A.c[0], p[1] - A.c[1]) - A.r);
+    var e = arcEnds(A);
+    return Math.min(Math.hypot(p[0] - e[0][0], p[1] - e[0][1]), Math.hypot(p[0] - e[1][0], p[1] - e[1][1]));
+  }
+  // the true distance between two primitives (0 when they cross)
+  function primDist(P, Q) {
+    if (P.t === 'line' && Q.t === 'line') return segDist(P.a, P.b, Q.a, Q.b);
+    if (P.t !== 'line' && Q.t === 'line') { var tq = P; P = Q; Q = tq; }
+    var best, e, i;
+    if (P.t === 'line') {
+      best = Math.min(ptArc(P.a, Q), ptArc(P.b, Q));
+      e = arcEnds(Q);
+      for (i = 0; i < 2; i++) best = Math.min(best, ptSeg(e[i], P.a, P.b));
+      var dx = P.b[0] - P.a[0], dy = P.b[1] - P.a[1], fx = P.a[0] - Q.c[0], fy = P.a[1] - Q.c[1], a = dx * dx + dy * dy;
+      var bq = 2 * (fx * dx + fy * dy), cq = fx * fx + fy * fy - Q.r * Q.r, disc = bq * bq - 4 * a * cq;
+      if (disc >= 0 && a > 0) {
+        var sq = Math.sqrt(disc), r1 = (-bq - sq) / (2 * a), r2 = (-bq + sq) / (2 * a);
+        if ((r1 >= 0 && r1 <= 1 && onArc(Q, Math.atan2(fy + r1 * dy, fx + r1 * dx))) || (r2 >= 0 && r2 <= 1 && onArc(Q, Math.atan2(fy + r2 * dy, fx + r2 * dx)))) return 0;
+      }
+      if (a > 0) { var u = Math.max(0, Math.min(1, -(fx * dx + fy * dy) / a)); best = Math.min(best, ptArc([P.a[0] + u * dx, P.a[1] + u * dy], Q)); }
+      return best;
+    }
+    best = Infinity;
+    e = arcEnds(P); for (i = 0; i < 2; i++) best = Math.min(best, ptArc(e[i], Q));
+    e = arcEnds(Q); for (i = 0; i < 2; i++) best = Math.min(best, ptArc(e[i], P));
+    var ddx = Q.c[0] - P.c[0], ddy = Q.c[1] - P.c[1], d = Math.hypot(ddx, ddy);
+    if (d > 1e-12) {
+      var ux = ddx / d, uy = ddy / d;
+      for (var s = 1; s >= -1; s -= 2) {
+        if (onArc(P, Math.atan2(s * uy, s * ux))) best = Math.min(best, ptArc([P.c[0] + P.r * s * ux, P.c[1] + P.r * s * uy], Q));
+        if (onArc(Q, Math.atan2(-s * uy, -s * ux))) best = Math.min(best, ptArc([Q.c[0] - Q.r * s * ux, Q.c[1] - Q.r * s * uy], P));
+      }
+      if (d <= P.r + Q.r && d >= Math.abs(P.r - Q.r)) {
+        var x = (d * d + P.r * P.r - Q.r * Q.r) / (2 * d), hh = Math.sqrt(Math.max(0, P.r * P.r - x * x));
+        for (var k = -1; k <= 1; k += 2) {
+          var p = [P.c[0] + ux * x - uy * hh * k, P.c[1] + uy * x + ux * hh * k];
+          if (onArc(P, Math.atan2(p[1] - P.c[1], p[0] - P.c[0])) && onArc(Q, Math.atan2(p[1] - Q.c[1], p[0] - Q.c[0]))) return 0;
+        }
+      }
+    } else if (Math.abs(P.r - Q.r) < 1e-15) {
+      // concentric equal circles: overlapping arcs or the distance between their ends
+      return 0;
+    }
+    return best;
+  }
+  // the true distance between two primitive lists, pieces farther than `cap` apart skipped (cap when none is nearer)
+  function primsDist(A, B, cap) {
+    var g = cap;
+    for (var i = 0; i < A.length; i++) {
+      var P = A[i];
+      for (var j = 0; j < B.length; j++) {
+        var Q = B[j];
+        if (P.box[0] > Q.box[2] + g || Q.box[0] > P.box[2] + g || P.box[1] > Q.box[3] + g || Q.box[1] > P.box[3] + g) continue;
+        var d = primDist(P, Q);
+        if (d < g) { g = d; if (g <= 0) return 0; }
+      }
+    }
+    return g;
   }
   function inMaterial(p, polys) {
     if (!pointIn(p, polys[0])) return false;
@@ -815,7 +1096,7 @@ var Nest = (function () {
     part: part, partsFromLoops: partsFromLoops, normLoop: normLoop, loopArea: loopArea, loopsBox: loopsBox, loopPoly: loopPoly,
     flatPart: flatPart, placedMarks: placedMarks, nestDXF: nestDXF, report: report,
     run: run, options: options, placedLoops: placedLoops, check: check, sheetEntities: sheetEntities, sheetDXF: sheetDXF,
-    _: { raster: raster, canonical: canonical, segDist: segDist },
+    _: { raster: raster, canonical: canonical, segDist: segDist, prims: prims, primDist: primDist, primsDist: primsDist },
     stats: stats   // lane flatperf: { rasters, rowTests } counts, for the tests that catch an all-pairs step coming back
   };
 })();

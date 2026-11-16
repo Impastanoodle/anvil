@@ -276,7 +276,7 @@
     var keep = ns && ns.vals ? ns.vals : null;
     var vals = keep || { preset: '48x96', width: r6(96 * k), height: r6(48 * k), material: '', thick: App.model && App.model.sheet ? +App.model.sheet.thickness || 0 : 0,
       spacing: r6(0.25 * k), margin: r6(0.5 * k), rotation: '90', rotStep: 15, mirror: false, holes: true, corner: 'bl', direction: 'x',
-      maxSheets: 10, accuracy: 2000, dxfVersion: 'R12', dxfLayers: 'cut', dxfFiles: 'each', dxfSheet: false, dxfMarks: false, overlay: true };
+      maxSheets: 10, accuracy: 2000, dxfVersion: 'R12', dxfLayers: 'cut', dxfFiles: 'each', dxfSheet: false, dxfMarks: true, overlay: true };
     ns = { parts: ns && ns.parts ? ns.parts : [], result: null, sheet: 0, stale: false, ms: null, vals: vals, session: tag };
     var spec = {
       title: 'Geometry Nesting', icon: icon(), values: vals, noFocus: true,

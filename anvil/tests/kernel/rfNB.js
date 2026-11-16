@@ -226,6 +226,73 @@
       return 'remnant ' + rem.w + ' × ' + rem.h.toFixed(3) + '; ' + two.sheets.length + ' sheets in one DXF';
     });
 
+    // the farthest any part can still slide down or left (true distances, the margin) before a gap reaches the spacing
+    function rfNBSlack(res) {
+      var o = res.opts, worst = 0;
+      res.sheets.forEach(function (S) {
+        var its = S.placements.map(function (pl) { var L = Nest.placedLoops(res, pl); return { L: L, box: Nest.loopsBox(L) }; });
+        its.forEach(function (A, i) {
+          [[0, -1], [-1, 0]].forEach(function (d) {
+            function ok(t) {
+              var b = A.box;
+              if (b[0] + d[0] * t < o.margin - 1e-12 || b[1] + d[1] * t < o.margin - 1e-12) return false;
+              var pa = Nest._.prims(A.L);
+              pa.forEach(function (p) { if (p.t === 'line') { p.a[0] += d[0] * t; p.a[1] += d[1] * t; p.b[0] += d[0] * t; p.b[1] += d[1] * t; } else { p.c[0] += d[0] * t; p.c[1] += d[1] * t; } p.box[0] += d[0] * t; p.box[2] += d[0] * t; p.box[1] += d[1] * t; p.box[3] += d[1] * t; });
+              for (var j = 0; j < its.length; j++) {
+                if (j === i) continue;
+                var B = its[j];
+                if (B.box[0] > b[2] + 1 || b[0] > B.box[2] + 1 || B.box[1] > b[3] + 1 || b[1] > B.box[3] + 1) continue;
+                if (Nest._.primsDist(pa, Nest._.prims(B.L), o.spacing + 1) < o.spacing - 1e-9) return false;
+              }
+              return true;
+            }
+            if (!ok(0.001)) return;
+            var lo = 0.001, hi = 0.002;
+            while (hi < 1 && ok(hi)) { lo = hi; hi *= 2; }
+            worst = Math.max(worst, lo);
+          });
+        });
+      });
+      return worst;
+    }
+
+    test('rfNB: compaction (lane NB2) — the 60-part mix at 90° steps on 48 × 96, spacing .25: after the grid search each part slides down and left by the true distances until a gap is the spacing; no part can then slide .001 further (the grid nest left up to a tenth); same sheets or fewer, exact check clean, deterministic', function () {
+      var o = { width: 96, height: 48, spacing: 0.25, margin: 0.5, rotation: 90, maxSheets: 10 };
+      var g = Nest.run(rfNBMix(), Object.assign({ compact: false }, o)), c = Nest.run(rfNBMix(), o), c2 = Nest.run(rfNBMix(), o);
+      var ex = rfNBExact(c);
+      assert(ex.ok && c.placed === 60, ex.problems.slice(0, 3).join('; '));
+      assert(c.sheets.length <= g.sheets.length, c.sheets.length + ' sheets after, ' + g.sheets.length + ' before');
+      near(ex.minGap, 0.25, 1e-6, 'the closest gap is the spacing');
+      var s0 = rfNBSlack(g), s1 = rfNBSlack(c);
+      assert(s0 > 0.01 && s1 < 0.001, 'slack ' + s0 + ' -> ' + s1);
+      assert(JSON.stringify(c.placements) === JSON.stringify(c2.placements), 'not deterministic');
+      return 'slide left ' + s0.toFixed(4) + ' -> ' + s1.toFixed(4) + ' in; ' + JSON.stringify(c.compaction) + ', ' + c.timing.compact + ' ms';
+    });
+
+    test('rfNB: the freed strip is used (lane NB2) — seven 4 × 4 squares on a 26 × 4.5 strip, spacing .25, margin .25, grid cell .05: the grid nest places 5, compaction frees room for a 6th (exact fit needs 25.75); six squares with Max sheets 3 come back on 1 sheet instead of 2', function () {
+      var R = rfNBRect(4, 4), o = { width: 26, height: 4.5, spacing: 0.25, margin: 0.25, rotation: 0, maxSheets: 1, cell: 0.05 };
+      var a = Nest.run([{ name: 'Sq', loops: [R], qty: 7 }], Object.assign({ compact: false }, o)), b = Nest.run([{ name: 'Sq', loops: [R], qty: 7 }], o);
+      assert(a.placed === 5 && b.placed === 6 && b.unplaced.length === 1 && b.compaction.refilled === 1, a.placed + ' -> ' + b.placed + ' ' + JSON.stringify(b.compaction));
+      assert(rfNBExact(b).ok, rfNBExact(b).problems.join('; '));
+      o.maxSheets = 3;
+      var c = Nest.run([{ name: 'Sq', loops: [R], qty: 6 }], Object.assign({ compact: false }, o)), d = Nest.run([{ name: 'Sq', loops: [R], qty: 6 }], o);
+      assert(c.sheets.length === 2 && d.sheets.length === 1 && d.compaction.droppedSheet && d.placements.every(function (p) { return p.sheet === 0; }), c.sheets.length + ' -> ' + d.sheets.length);
+      assert(rfNBExact(d).ok && d.placed === 6, 'check');
+      return '5 -> 6 placed; 2 -> 1 sheets';
+    });
+
+    test('rfNB: orientations that are the same shape by symmetry are dropped (lane NB2) — a disc keeps 1 of 24 angles at 15° steps, a rectangle 12 of 24 (0 = 180), an L all 24; the search order of rows does not change the placements', function () {
+      var s0 = Nest.stats.rasters;
+      Nest.run([{ name: 'D', loops: [rfNBCirc(0, 0, 2)], qty: 1 }], { width: 20, height: 20, rotation: 15 });
+      var nd = Nest.stats.rasters - s0; s0 = Nest.stats.rasters;
+      Nest.run([{ name: 'R', loops: [rfNBRect(4, 2)], qty: 1 }], { width: 20, height: 20, rotation: 15 });
+      var nr = Nest.stats.rasters - s0; s0 = Nest.stats.rasters;
+      Nest.run([{ name: 'L', loops: [[[0, 0], [6, 0], [6, 2], [2, 2], [2, 6], [0, 6]]], qty: 1 }], { width: 20, height: 20, rotation: 15 });
+      var nl = Nest.stats.rasters - s0;
+      assert(nd === 1 && nr === 12 && nl === 24, 'rasters disc ' + nd + ', rectangle ' + nr + ', L ' + nl);
+      return nd + ' / ' + nr + ' / ' + nl;
+    });
+
     test('rfNB: time — the 60-part mix at 15° steps nests in a bounded amount of work (orientations rasterised once each, timing reported); 90° steps well under it', function () {
       var s0 = Nest.stats.rasters, r = Nest.run(rfNBMix(), { width: 96, height: 48, spacing: 0.25, margin: 0.5, rotation: 15, maxSheets: 10 });
       var nr = Nest.stats.rasters - s0;
