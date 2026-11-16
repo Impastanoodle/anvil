@@ -917,7 +917,7 @@ var Exchange = (function () {
     var faces = mesh.faces, nF = faces.length, tri = mesh.triangles, pos = mesh.positions;
     if (nF < 2) return mesh;
     var dtol = planeTolOf(pos), nT = tri.length / 3, triFace = new Int32Array(nT).fill(-1), curved = new Uint8Array(nF);
-    faces.forEach(function (f, fi) { f.tris.forEach(function (t) { triFace[t] = fi; if (mesh.triSurf && mesh.triSurf[t]) curved[fi] = 1; }); });
+    faces.forEach(function (f, fi) { f.tris.forEach(function (t) { triFace[t] = fi; if ((mesh.triSurf && mesh.triSurf[t]) || (mesh.freeOf && mesh.freeOf[t] >= 0)) curved[fi] = 1; }); });
     var par = [], N = [], verts = [];
     faces.forEach(function (f, fi) {
       par.push(fi);
@@ -988,9 +988,99 @@ var Exchange = (function () {
     return m2;
   }
 
+  // lane MR: freeFacesOf(src, mesh) -> mesh, or a copy carrying freeOf (Int32Array: per triangle the index into
+  // freeFaces, -1 elsewhere) and freeFaces (the free-form face records of an Imported feature, mapFree's form) for the
+  // faces of the part's imported solids that are still whole in this body: every triangle of the face is a triangle of
+  // the mesh (matched by its three welded vertex positions). A face a later feature cut, or a body moved, matches
+  // partly or not at all and keeps its facets.
+  function freeFacesOf(src, mesh) {
+    var model = src && src.model, feats = model && model.features || [], keyOf = new Map(), faces = [], want = [], sk = 0;
+    function tkey(pos, a, b, c) {
+      var k = [wkey(pos[a * 3], pos[a * 3 + 1], pos[a * 3 + 2]), wkey(pos[b * 3], pos[b * 3 + 1], pos[b * 3 + 2]), wkey(pos[c * 3], pos[c * 3 + 1], pos[c * 3 + 2])];
+      k.sort();
+      return k.join('|');
+    }
+    feats.forEach(function (f) {
+      if (f.type !== 'import' || f.suppressed) return;
+      (f.solids || []).forEach(function (s) {
+        if (!s.free || !s.free.faces || !s.free.faces.length) return;
+        var m = solidMesh(s), tags = decodeU32(s.free.tri || []), f0 = faces.length;
+        sk++;   // edge ids are the source file's entity numbers: unique within one solid only
+        s.free.faces.forEach(function (fr) { faces.push({ rec: fr, sk: sk }); want.push(0); });
+        for (var t = 0; t * 3 + 2 < m.triangles.length; t++) {
+          if (!(tags[t] > 0)) continue;
+          var k = tkey(m.positions, m.triangles[t * 3], m.triangles[t * 3 + 1], m.triangles[t * 3 + 2]);
+          if (!keyOf.has(k)) { keyOf.set(k, f0 + tags[t] - 1); want[f0 + tags[t] - 1]++; }
+        }
+      });
+    });
+    if (!faces.length) return mesh;
+    var nT = mesh.triangles.length / 3, freeOf = new Int32Array(nT).fill(-1), got = want.map(function () { return 0; }), any = false, left = [];
+    for (var t = 0; t < nT; t++) {
+      var fi = keyOf.get(tkey(mesh.positions, mesh.triangles[t * 3], mesh.triangles[t * 3 + 1], mesh.triangles[t * 3 + 2]));
+      if (fi != null && !(mesh.triSurf && mesh.triSurf[t])) { freeOf[t] = fi; got[fi]++; } else if (!(mesh.triSurf && mesh.triSurf[t])) left.push(t);
+    }
+    // a later feature's boolean splits triangles by its BSP planes even far from its cut (a hole elsewhere): the pieces of a
+    // face's triangle lie in it. Such a face counts as whole when the pieces found (centre inside one of its triangles,
+    // in that triangle's plane) and its whole triangles make up its area to 1e-7
+    if (left.length && got.some(function (g, i) { return g < want[i]; })) {
+      var P3 = function (pos, i) { return [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]; }, orig = [], cell = 0, ext = 0, fArea = want.map(function () { return 0; }), gArea = want.map(function () { return 0; });
+      feats.forEach(function (f) {
+        if (f.type !== 'import' || f.suppressed) return;
+        (f.solids || []).forEach(function (s) {
+          if (!s.free || !s.free.faces || !s.free.faces.length) return;
+          var m = solidMesh(s), tags = decodeU32(s.free.tri || []), f0 = -1;
+          for (var q = 0; q < faces.length; q++) if (faces[q].rec === s.free.faces[0]) { f0 = q; break; }
+          for (var t2 = 0; t2 * 3 + 2 < m.triangles.length; t2++) {
+            if (!(tags[t2] > 0)) continue;
+            var A = P3(m.positions, m.triangles[t2 * 3]), B = P3(m.positions, m.triangles[t2 * 3 + 1]), C = P3(m.positions, m.triangles[t2 * 3 + 2]), n = cross(sub(B, A), sub(C, A)), ar = len(n) / 2;
+            if (!(ar > 0)) continue;
+            fArea[f0 + tags[t2] - 1] += ar;
+            orig.push({ A: A, B: B, C: C, n: scale(n, 0.5 / ar), f: f0 + tags[t2] - 1, lo: [Math.min(A[0], B[0], C[0]), Math.min(A[1], B[1], C[1]), Math.min(A[2], B[2], C[2])], hi: [Math.max(A[0], B[0], C[0]), Math.max(A[1], B[1], C[1]), Math.max(A[2], B[2], C[2])] });
+            cell += Math.sqrt(ar); ext = Math.max(ext, Math.abs(A[0]), Math.abs(A[1]), Math.abs(A[2]));
+          }
+        });
+      });
+      cell = Math.max(cell / Math.max(1, orig.length) * 2, 1e-9);
+      var grid = new Map(), tolP = 1e-7 * Math.max(1, ext);
+      function ck(i, j, k) { return i + ',' + j + ',' + k; }
+      orig.forEach(function (o, oi) {
+        for (var i = Math.floor(o.lo[0] / cell); i <= Math.floor(o.hi[0] / cell); i++) for (var j = Math.floor(o.lo[1] / cell); j <= Math.floor(o.hi[1] / cell); j++) for (var k = Math.floor(o.lo[2] / cell); k <= Math.floor(o.hi[2] / cell); k++) {
+          var key = ck(i, j, k), l = grid.get(key);
+          if (l) l.push(oi); else grid.set(key, [oi]);
+        }
+      });
+      left.forEach(function (t2) {
+        var A = P3(mesh.positions, mesh.triangles[t2 * 3]), B = P3(mesh.positions, mesh.triangles[t2 * 3 + 1]), C = P3(mesh.positions, mesh.triangles[t2 * 3 + 2]);
+        var X = scale(add(add(A, B), C), 1 / 3), n = cross(sub(B, A), sub(C, A)), ar = len(n) / 2, l = grid.get(ck(Math.floor(X[0] / cell), Math.floor(X[1] / cell), Math.floor(X[2] / cell)));
+        if (!l || !(ar > 0)) return;
+        for (var q = 0; q < l.length; q++) {
+          var o = orig[l[q]];
+          if (got[o.f] === want[o.f] && !gArea[o.f]) continue;   // a face already whole needs no pieces
+          if (dot(n, o.n) / (2 * ar) < 1 - 1e-9) continue;
+          if (![A, B, C].every(function (p) { return Math.abs(dot(sub(p, o.A), o.n)) <= tolP; })) continue;
+          var e0 = dot(cross(sub(o.B, o.A), sub(X, o.A)), o.n), e1 = dot(cross(sub(o.C, o.B), sub(X, o.B)), o.n), e2 = dot(cross(sub(o.A, o.C), sub(X, o.C)), o.n);
+          if (e0 < 0 || e1 < 0 || e2 < 0) continue;
+          freeOf[t2] = o.f; gArea[o.f] += ar;
+          return;
+        }
+      });
+      // whole triangles count with their area too
+      for (t = 0; t < nT; t++) if (freeOf[t] >= 0 && gArea[freeOf[t]]) { var A2 = P3(mesh.positions, mesh.triangles[t * 3]); if (keyOf.has(tkey(mesh.positions, mesh.triangles[t * 3], mesh.triangles[t * 3 + 1], mesh.triangles[t * 3 + 2]))) gArea[freeOf[t]] += len(cross(sub(P3(mesh.positions, mesh.triangles[t * 3 + 1]), A2), sub(P3(mesh.positions, mesh.triangles[t * 3 + 2]), A2))) / 2; }
+      gArea.forEach(function (ga, i) { if (ga && Math.abs(ga - fArea[i]) <= 1e-7 * fArea[i]) got[i] = want[i]; });
+    }
+    var renum = faces.map(function (fr, i) { return got[i] && got[i] === want[i] ? 0 : -1; }), list = [];
+    renum.forEach(function (r, i) { if (r === 0) { renum[i] = list.length; list.push(faces[i]); } });
+    for (t = 0; t < nT; t++) if (freeOf[t] >= 0) { freeOf[t] = renum[freeOf[t]]; if (freeOf[t] >= 0) any = true; }
+    if (!any) return mesh;
+    var m2 = {};
+    Object.keys(mesh).forEach(function (k) { m2[k] = mesh[k]; });
+    m2.freeOf = freeOf; m2.freeFaces = list;
+    return m2;
+  }
   function writeBrep(W, mesh, name, T) {
     if (!T) mesh = mergePlanes(mesh);
-    if (!T && mesh.triSurf) return writeBrepAnalytic(W, mesh, name);
+    if (!T && (mesh.triSurf || mesh.freeFaces)) return writeBrepAnalytic(W, mesh, name);
     T = T || null;
     var P = function (i) { var q = [mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]]; return T ? tfPoint(T, q) : q; };
     var vp = {}, edges = {};
@@ -1184,7 +1274,7 @@ var Exchange = (function () {
     // distinct surfaces (one per analytic surface key), and each triangle's
     var recs = [], recIndex = new Map(), triRec = new Int32Array(nT), lastF = null, lastI = -1;
     for (var t = 0; t < nT; t++) {
-      var F = mesh.triSurf[t];
+      var F = mesh.triSurf ? mesh.triSurf[t] : null;
       if (!F) { triRec[t] = -1; continue; }
       if (F !== lastF) { lastF = F; lastI = recIndex.get(F); if (lastI == null) { lastI = recs.length; recs.push(F); recIndex.set(F, lastI); } }
       triRec[t] = lastI;
@@ -1268,6 +1358,87 @@ var Exchange = (function () {
     // are the polygon's: the solid the Fold meant (Anvil's reader and OpenCascade read it to 1e-12).
     var nW = nF + comps.length, walls = [], wallOf = new Int32Array(nT).fill(-1), wallHome = {};
     radialWalls();
+    // lane MR: free-form faces of an imported part (freeFacesOf) are groups nX0 + k, written by writeFreeFace on their
+    // B-spline surface with their own edges
+    var nX0 = nW + walls.length, FF = mesh.freeFaces || [], freeOf = mesh.freeOf ? Int32Array.from(mesh.freeOf) : null, freeLab = [], freeV = {};
+    if (FF.length) freeLabels();
+    // each free-form face's edges, found in the mesh: the run of the face's boundary vertices from the vertex at the
+    // edge's start to the one at its end (of the two ways round, the one through the edge's middle point; a closed edge
+    // the way its quarter point lies). Every segment of the run is labelled { t: 'x', E, vs, key } (one object per edge,
+    // shared by both faces that use it: a plane, a cylinder or another free-form face writes the same EDGE_CURVE). An
+    // edge used twice by its face (a seam) is not on the mesh's boundary: written from its ends (E.va, E.vb). A face
+    // whose boundary is not all found keeps its facets.
+    function freeLabels() {
+      var vtol = 1e-6 * ext, byKey = {}, labs = new PairMap();
+      FF.forEach(function (F, k) {
+        var ts = [];
+        for (var t3 = 0; t3 < nT; t3++) if (freeOf[t3] === k) ts.push(t3);
+        var loops = trisLoops(tri, ts), rec = F.rec, uses = {}, ok = true, mine = [], seams = F.seams = {};
+        rec.loops.forEach(function (l) { (l.edges || []).forEach(function (x) { uses[x.id] = (uses[x.id] || 0) + 1; }); });
+        var bv = [];
+        loops.forEach(function (l) { l.forEach(function (v) { bv.push(v); }); });
+        function near(p, list) { var best = -1, bd = vtol; list.forEach(function (v) { var d = len(sub(P(v), p)); if (d <= bd) { bd = d; best = v; } }); return best; }
+        function nearIn(p, vs) { var bd = Infinity, bi = -1; for (var i = 0; i < vs.length; i++) { var d = len(sub(P(vs[i]), p)); if (d < bd) { bd = d; bi = i; } } return { d: bd, i: bi }; }
+        rec.edges.forEach(function (E) {
+          if (!ok) return;
+          var key = F.sk + ':' + E.id;
+          if (uses[E.id] > 1) {   // a seam
+            var allV = [];
+            ts.forEach(function (t3) { for (var e3 = 0; e3 < 3; e3++) allV.push(tri[t3 * 3 + e3]); });
+            var sm = seams[E.id] = { E: E, va: near(E.a, allV), vb: near(E.b, allV), key: key };
+            if (sm.va < 0 || sm.vb < 0) ok = false;
+            return;
+          }
+          var va = near(E.a, bv), vb = near(E.b, bv), closed = va === vb, best = null;
+          if (va < 0 || vb < 0) { ok = false; return; }
+          loops.forEach(function (l) {
+            var n = l.length, i0 = l.indexOf(va);
+            if (i0 < 0) return;
+            [1, -1].forEach(function (dir) {
+              var vs = [va], i = i0;
+              for (var s = 0; s < n; s++) { i = (i + dir + n) % n; vs.push(l[i]); if (l[i] === vb && (!closed || s === n - 1)) break; }
+              if (vs[vs.length - 1] !== vb || (closed && vs.length !== n + 1)) return;
+              var score;
+              if (closed) { var nq = nearIn(E.q, vs); score = nq.i / vs.length; }
+              else if (vs.length > 2) score = nearIn(E.m, vs.slice(1, -1)).d;
+              else score = len(sub(scale(add(P(vs[0]), P(vs[1])), 0.5), E.m));
+              if (!best || score < best.score) best = { vs: vs, score: score };
+            });
+          });
+          if (!best) { ok = false; return; }
+          var cl = byKey[key];
+          if (cl && cl.vs.join(',') !== best.vs.join(',')) { ok = false; return; }
+          if (!cl) cl = byKey[key] = { t: 'x', E: E, vs: best.vs, key: key };
+          mine.push(cl);
+          F.labs = F.labs || {};
+          F.labs[E.id] = cl;
+        });
+        // every boundary segment must belong to one of the face's edges
+        var segs = new PairMap();
+        if (ok) mine.forEach(function (cl) { for (var i = 0; i + 1 < cl.vs.length; i++) { var a = cl.vs[i], b = cl.vs[i + 1]; segs.set(a < b ? a : b, a < b ? b : a, cl); } });
+        if (ok) loops.forEach(function (l) { for (var i = 0; i < l.length; i++) { var a = l[i], b = l[(i + 1) % l.length]; if (!segs.get(a < b ? a : b, a < b ? b : a)) ok = false; } });
+        F.ok = ok; F.mine = mine; F.ts = ts;
+        F.keys = rec.edges.map(function (E) { return F.sk + ':' + E.id; });
+      });
+      // a face that keeps its facets takes the free-form faces sharing an edge with it along (facets cannot share a
+      // B-spline edge)
+      var deadKeys = {}, changed = true;
+      FF.forEach(function (F) { if (!F.ok) F.keys.forEach(function (k) { deadKeys[k] = true; }); });
+      while (changed) {
+        changed = false;
+        FF.forEach(function (F) { if (F.ok && F.keys.some(function (k) { return deadKeys[k]; })) { F.ok = false; changed = true; F.keys.forEach(function (k) { deadKeys[k] = true; }); } });
+      }
+      FF.forEach(function (F) {
+        if (!F.ok) { F.dead = true; F.ts.forEach(function (t3) { freeOf[t3] = -1; }); return; }
+        F.mine.forEach(function (cl) {
+          for (var i = 0; i + 1 < cl.vs.length; i++) {
+            var a = cl.vs[i], b = cl.vs[i + 1], lo = a < b ? a : b, hi = a < b ? b : a;
+            if (!labs.get(lo, hi)) { labs.set(lo, hi, cl); freeLab.push([lo, hi, cl]); }
+          }
+          cl.vs.forEach(function (v) { freeV[v] = true; });
+        });
+      });
+    }
     function radialWalls() {
       var dirTri = new PairMap(), vTris = [], t, e;
       for (t = 0; t < nT; t++) for (e = 0; e < 3; e++) { var v0 = tri[t * 3 + e]; dirTri.set(v0, tri[t * 3 + (e + 1) % 3], t); (vTris[v0] = vTris[v0] || []).push(t); }
@@ -1454,8 +1625,8 @@ var Exchange = (function () {
     function build() {
       // faces: analytic patches (group nF + comp) and planes (group = the mesh face index)
       groups = [];
-      for (var g = 0; g < nW + walls.length; g++) groups.push([]);
-      for (var t2 = 0; t2 < nT; t2++) groups[wallOf[t2] >= 0 && walls[wallOf[t2]].live ? nW + wallOf[t2] : compOf[t2] >= 0 && comps[compOf[t2]].ok ? nF + compOf[t2] : triPlane[t2]].push(t2);
+      for (var g = 0; g < nX0 + FF.length; g++) groups.push([]);
+      for (var t2 = 0; t2 < nT; t2++) groups[freeOf && freeOf[t2] >= 0 ? nX0 + freeOf[t2] : wallOf[t2] >= 0 && walls[wallOf[t2]].live ? nW + wallOf[t2] : compOf[t2] >= 0 && comps[compOf[t2]].ok ? nF + compOf[t2] : triPlane[t2]].push(t2);
       loopsOf = groups.map(function (ts) { return ts.length ? trisLoops(tri, ts) : []; });
       // drop split points: a vertex used by exactly two loop occurrences in the whole body, collinear in both
       var uses = {};
@@ -1467,7 +1638,7 @@ var Exchange = (function () {
             changed = false;
             for (var i = 0; i < l.length && l.length > 3; i++) {
               var v = l[i];
-              if (uses[v] !== 2) continue;
+              if (uses[v] !== 2 || freeV[v]) continue;   // (lane MR: a free-form face's edge keeps every vertex of its run)
               var A = P(l[(i + l.length - 1) % l.length]), B = P(v), C = P(l[(i + 1) % l.length]);
               var d1 = sub(B, A), d2 = sub(C, B);
               if (len(cross(d1, d2)) <= len(d1) * len(d2) * 1e-9 && dot(d1, d2) > 0) { l.splice(i, 1); changed = true; i--; }
@@ -1479,6 +1650,7 @@ var Exchange = (function () {
       owner = new PairMap();
       loopsOf.forEach(function (ls, g) { ls.forEach(function (l) { for (var i = 0; i < l.length; i++) owner.set(l[i], l[(i + 1) % l.length], g); }); });
       ecls = new PairMap();
+      freeLab.forEach(function (x) { ecls.set(x[0], x[1], x[2]); });
       shape = {};
       var failed = false;
       comps.forEach(function (c, ci) {
@@ -1487,6 +1659,7 @@ var Exchange = (function () {
         loopsOf[g].forEach(function (l) {
           for (var i = 0; i < l.length && !bad; i++) {
             var a = l[i], b = l[(i + 1) % l.length], A = P(a), B = P(b), cl = classify(S, A, B), nb = owner.get(b, a);
+            if (nb != null && nb >= nX0) { if (eget(a, b)) continue; bad = true; break; }   // lane MR: a free-form face's own edge
             // lane stepreal2: two points of a hole's rim at one height on the bend make a chord of a latitude circle,
             // but the face beside it is the hole's wall, not that circle's plane: the edge is the wall's cut (an
             // ellipse, or the chord, below), not the circle's arc (it sent the bend back to facets)
@@ -1607,9 +1780,10 @@ var Exchange = (function () {
           else if (Math.abs(sumW) > 1e-6) okW = false;
         });
         if (nWind && (!okW || nWind !== 2)) return null;
-        // (a whole circle bounding such a face is written as two half arcs, as SolidWorks writes them: Anvil's reader zips a
-        // face with two whole circles as a plain band and would drop its other loops)
-        if (okW && nWind === 2) { closed.forEach(function (q) { q.circle.split = true; }); return { kind: 'plain' }; }
+        // (lane MR: its whole circles are written whole. They were two half arcs while Anvil's reader zipped any face with
+        // two whole circles as a plain band; since lane MO2's bandOnly both readers take the whole circles: the cross-
+        // drilled tube reads closed in Anvil (-2.3e-9) and valid in OpenCascade (4e-8), as with the halves)
+        if (okW && nWind === 2) return { kind: 'plain' };
       }
       if (!closed.length && !other.length) return S.t === 'sph' || S.t === 'tor' ? { kind: 'closed' } : null;
       if (!closed.length) {
@@ -1694,6 +1868,7 @@ var Exchange = (function () {
       for (i = 0; i < n; i++) { cls.push(eget(l[i], l[(i + 1) % n]) || { t: 'l' }); nbs.push(owner.get(l[(i + 1) % n], l[i])); }
       function same(i1, i2) {
         if (nbs[i1] !== nbs[i2]) return false;
+        if (cls[i1].t === 'x' || cls[i2].t === 'x') return cls[i1] === cls[i2];   // lane MR: one edge of a free-form face
         if (cls[i1].t === 'e' && cls[i2].t === 'e') return cls[i1].e.key === cls[i2].e.key;   // stepout-2
         if (cls[i1].t === 'p' && cls[i2].t === 'p') return true;   // lane stepreal2: a run of chords between the same two faces
         return cls[i1].t === 'c' && cls[i2].t === 'c' && cls[i1].c.key === cls[i2].c.key;
@@ -1703,7 +1878,7 @@ var Exchange = (function () {
       // lane stepreal2: a closed run of chords (a hole's rim on a bend, one wall all round): two edges, split at the loop's
       // lowest and highest vertex numbers so the face on the other side, which walks it the other way, splits it alike
       if (!breaks.length && cls[0].t === 'p') { var lo = 0, hi = 0; for (i = 1; i < n; i++) { if (l[i] < l[lo]) lo = i; if (l[i] > l[hi]) hi = i; } breaks = lo < hi ? [lo, hi] : [hi, lo]; }
-      if (!breaks.length && cls[0].c.split) return halfCircleEdges(cls[0].c, P(l[0]), P(l[1]));
+      if (!breaks.length && cls[0].t === 'x') { var i0 = l.indexOf(cls[0].vs[0]); return [freeEdgeOe(cls[0], l[(i0 + 1) % n] === cls[0].vs[1])]; }
       if (!breaks.length) return [closedCircleEdge(cls[0].c, P(l[0]), P(l[1]))];
       var out = [];
       for (var k = 0; k < breaks.length; k++) {
@@ -1715,6 +1890,7 @@ var Exchange = (function () {
       return out;
     }
     function openEdge(vs, cl) {
+      if (cl.t === 'x') return freeEdgeOe(cl, vs[0] === cl.vs[0] && vs[1] === cl.vs[1]);   // lane MR
       var fk = vs.join(','), rk = vs.slice().reverse().join(','), key = fk < rk ? fk : rk, ch = chains[key];
       if (ch) return oe(ch.id, ch.fk === fk);
       var A = P(vs[0]), B = P(vs[1]), geom, sense = '.T.';
@@ -1733,16 +1909,6 @@ var Exchange = (function () {
       var V = circleVertex(c);
       ch = chains[key] = { id: W.add('EDGE_CURVE(\'\',' + V + ',' + V + ',' + circleE(c) + ',' + (dirCCW ? '.T.' : '.F.') + ')'), ccw: dirCCW };
       return oe(ch.id, true);
-    }
-    // lane stepwrite: a whole circle as two half arcs (from its xdir point to the opposite one and back), shared by both
-    // faces that use it
-    function halfCircleEdges(c, A, B) {
-      var dirCCW = ccw(c, A, B), key = 'H' + c.key, ch = chains[key];
-      if (!ch) {
-        var V0 = circleVertex(c), V1 = vertexAt('h' + c.key, sub(c.center, scale(c.xdir, c.radius)));
-        ch = chains[key] = { a: W.add('EDGE_CURVE(\'\',' + V0 + ',' + V1 + ',' + circleE(c) + ',.T.)'), b: W.add('EDGE_CURVE(\'\',' + V1 + ',' + V0 + ',' + circleE(c) + ',.T.)') };
-      }
-      return dirCCW ? [oe(ch.a, true), oe(ch.b, true)] : [oe(ch.b, false), oe(ch.a, false)];
     }
     function edgeLoop(oes) { return W.add('EDGE_LOOP(\'\',' + stepList(oes) + ')'); }
     // lane stepout3: a radial wall's rail from A to B on cylinder S (both on it): the circle's arc between their angles as
@@ -1827,6 +1993,56 @@ var Exchange = (function () {
       if (w === 1) return W.add('B_SPLINE_CURVE_WITH_KNOTS(\'\',3,' + ps + ',.UNSPECIFIED.,.F.,.F.,(4,4),(0.,1.),.UNSPECIFIED.)');
       return W.add('(BOUNDED_CURVE()B_SPLINE_CURVE(3,' + ps + ',.UNSPECIFIED.,.F.,.F.)B_SPLINE_CURVE_WITH_KNOTS((4,4),(0.,1.),.UNSPECIFIED.)CURVE()GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE((1.,' + stepReal(w) + ',' + stepReal(w) + ',1.))REPRESENTATION_ITEM(\'\'))');
     }
+    // ---- lane MR: free-form faces of an imported part, written back on their own B-spline surface with their edges
+    function knotsOf(U) {   // a flat knot vector -> STEP's (multiplicities, distinct knots)
+      var ks = [], ms = [];
+      U.forEach(function (u) { if (ks.length && u === ks[ks.length - 1]) ms[ms.length - 1]++; else { ks.push(u); ms.push(1); } });
+      return { m: '(' + ms.join(',') + ')', k: stepList(ks.map(stepReal)) };
+    }
+    function freeCurveE(E, vs) {
+      var g = E.g;
+      if (g.t === 'c') return W.add('CIRCLE(\'\',' + axisE(g.c, g.n, xdirOf(g.n)) + ',' + stepReal(g.r) + ')');
+      if (g.t === 'e') return W.add('ELLIPSE(\'\',' + axisE(g.center, g.normal, g.xdir) + ',' + stepReal(g.a) + ',' + stepReal(g.b) + ')');
+      if (g.t === 'l') return lineE(P(vs[0]), P(vs[vs.length - 1]));
+      var ps = stepList(g.poles.map(pt)), ku = knotsOf(g.U), kn = ku.m + ',' + ku.k;
+      if (!g.W) return W.add('B_SPLINE_CURVE_WITH_KNOTS(\'\',' + g.deg + ',' + ps + ',.UNSPECIFIED.,.F.,.F.,' + kn + ',.UNSPECIFIED.)');
+      return W.add('(BOUNDED_CURVE()B_SPLINE_CURVE(' + g.deg + ',' + ps + ',.UNSPECIFIED.,.F.,.F.)B_SPLINE_CURVE_WITH_KNOTS(' + kn + ',.UNSPECIFIED.)CURVE()GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE(' + stepList(g.W.map(stepReal)) + ')REPRESENTATION_ITEM(\'\'))');
+    }
+    // the EDGE_CURVE of labelled run cl (one per edge, from its start vertex to its end, the curve's own sense), oriented
+    function freeEdgeOe(cl, fwd) {
+      var ch = chains['X' + cl.key];
+      if (!ch) ch = chains['X' + cl.key] = { id: W.add('EDGE_CURVE(\'\',' + vertex(cl.vs[0]) + ',' + vertex(cl.vs[cl.vs.length - 1]) + ',' + freeCurveE(cl.E, cl.vs) + ',' + (cl.E.ss ? '.T.' : '.F.') + ')') };
+      return oe(ch.id, fwd);
+    }
+    function freeSurfaceE(s) {
+      var rows = stepList(s.poles.map(function (row) { return stepList(row.map(pt)); })), ku = knotsOf(s.U), kv = knotsOf(s.V);
+      var kn = ku.m + ',' + kv.m + ',' + ku.k + ',' + kv.k;   // (u multiplicities, v multiplicities, u knots, v knots)
+      if (!s.W) return W.add('B_SPLINE_SURFACE_WITH_KNOTS(\'\',' + s.du + ',' + s.dv + ',' + rows + ',.UNSPECIFIED.,.F.,.F.,.F.,' + kn + ',.UNSPECIFIED.)');
+      return W.add('(BOUNDED_SURFACE()B_SPLINE_SURFACE(' + s.du + ',' + s.dv + ',' + rows + ',.UNSPECIFIED.,.F.,.F.,.F.)B_SPLINE_SURFACE_WITH_KNOTS(' + kn + ',.UNSPECIFIED.)GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_SURFACE(' + stepList(s.W.map(function (row) { return stepList(row.map(stepReal)); })) + ')REPRESENTATION_ITEM(\'\')SURFACE())');
+    }
+    function writeFreeFace(k) {
+      var F = FF[k], rec = F.rec, s = rec.s, ts = groups[nX0 + k];
+      // which way the facets face against the surface's normal (a vote of up to 64 of the largest triangles): the file's
+      // same_sense, unless the import turned the solid inside out
+      var big = ts.map(function (t2) { var A = P(tri[t2 * 3]); return { t: [A, P(tri[t2 * 3 + 1]), P(tri[t2 * 3 + 2])], a: len(cross(sub(P(tri[t2 * 3 + 1]), A), sub(P(tri[t2 * 3 + 2]), A))) }; });
+      big.sort(function (x, y) { return y.a - x.a; });
+      var flip = (bsFacing(s, big.slice(0, 64).map(function (x) { return x.t; })) > 0) !== !!rec.ss;
+      var bounds = rec.loops.map(function (l, li) {
+        var ori = l.ori !== flip ? '.T.' : '.F.';
+        if (l.vtx) return W.add('FACE_BOUND(\'\',' + W.add('VERTEX_LOOP(\'\',' + vertexAt('fv' + k + '_' + li, l.vtx) + ')') + ',' + ori + ')');
+        var oes = l.edges.map(function (x) {
+          var sm = F.seams[x.id];
+          if (sm) {
+            var ch = chains['S' + sm.key];
+            if (!ch) ch = chains['S' + sm.key] = { id: W.add('EDGE_CURVE(\'\',' + vertex(sm.va) + ',' + vertex(sm.vb) + ',' + freeCurveE(sm.E, [sm.va, sm.vb]) + ',' + (sm.E.ss ? '.T.' : '.F.') + ')') };
+            return oe(ch.id, x.fwd);
+          }
+          return freeEdgeOe(F.labs[x.id], x.fwd);
+        });
+        return W.add('FACE_BOUND(\'\',' + edgeLoop(oes) + ',' + ori + ')');
+      });
+      return W.add('ADVANCED_FACE(\'\',' + stepList(bounds) + ',' + freeSurfaceE(s) + ',' + (!!rec.ss !== flip ? '.T.' : '.F.') + ')');
+    }
     // the wall face of radial strip wq: degree 3 along the rails (inner a → b, outer its partners), 1 across, the
     // rails' weights: every line across is radial
     function wallFace(wq, loop, g) {
@@ -1883,6 +2099,7 @@ var Exchange = (function () {
     var faceIds = [];
     groups.forEach(function (ts, g) {
       if (!ts.length || (g < nF && !loopsOf[g].length)) return;
+      if (g >= nX0) { faceIds.push(writeFreeFace(g - nX0)); return; }   // lane MR
       if (g >= nW) { if (loopsOf[g].length === 1) faceIds.push(wallFace(walls[g - nW], loopsOf[g][0], g)); return; }   // lane stepout3
       if (g < nF) {
         // a planar face: every counter-clockwise loop (seen along the normal) is an outer bound, every clockwise loop a
@@ -1967,6 +2184,27 @@ var Exchange = (function () {
       p[0] += w * q[0]; p[1] += w * q[1]; p[2] += w * q[2]; ws += w;
     }
     return d.W ? scale(p, 1 / ws) : p;
+  }
+  // lane MR: bsFacing(d, tris) -> > 0 when the triangles ([[A, B, C]], outward) face along B-spline surface d's own
+  // normal dS/du × dS/dv: an area-weighted vote over the triangles, each against the unit normal at the grid sample
+  // nearest its centre (samples where the normal vanishes, a pole, are skipped)
+  function bsFacing(d, tris) {
+    var tsU = bsParams(d.U, d.du), tsV = bsParams(d.V, d.dv), S = [];
+    var u0 = d.U[d.du], u1 = d.U[d.U.length - 1 - d.du], v0 = d.V[d.dv], v1 = d.V[d.V.length - 1 - d.dv], hu = 1e-5 * (u1 - u0), hv = 1e-5 * (v1 - v0);
+    tsU.forEach(function (u) {
+      tsV.forEach(function (v) {
+        var ua = Math.max(u0, u - hu), ub = Math.min(u1, u + hu), va = Math.max(v0, v - hv), vb = Math.min(v1, v + hv);
+        var n = cross(sub(bsSurfPoint(d, ub, v), bsSurfPoint(d, ua, v)), sub(bsSurfPoint(d, u, vb), bsSurfPoint(d, u, va))), l = len(n);
+        if (l > 1e-300) S.push({ p: bsSurfPoint(d, u, v), n: scale(n, 1 / l) });
+      });
+    });
+    var vote = 0;
+    tris.forEach(function (t) {
+      var nt = cross(sub(t[1], t[0]), sub(t[2], t[0])), X = scale(add(add(t[0], t[1]), t[2]), 1 / 3), best = null, bd = Infinity;
+      S.forEach(function (s) { var q = len(sub(s.p, X)); if (q < bd) { bd = q; best = s; } });
+      if (best) vote += dot(best.n, nt);
+    });
+    return vote;
   }
   function bsCurvePoint(deg, poles, U, W, t) {
     var b = bsBasis(deg, U, t), p = [0, 0, 0], ws = 0;
@@ -2521,7 +2759,7 @@ var Exchange = (function () {
       var pr = product(part.name, 'part');
       var origin = axis(null);
       var solids = part.bodies.map(function (b) {
-        var lp = splineLoftOf(b.src, b.mesh), s = lp ? writeLoftBrep(W, lp, b.name) : writeBrep(W, b.mesh, b.name);
+        var lp = splineLoftOf(b.src, b.mesh), s = lp ? writeLoftBrep(W, lp, b.name) : writeBrep(W, freeFacesOf(b.src, b.mesh), b.name);
         styleSolid(s, (b.material && b.material.color) || part.color);
         return s;
       });
@@ -2786,6 +3024,51 @@ var Exchange = (function () {
       if (!kn && !(cp.length && cp[0].length)) return null;
       return { du: +c[0], dv: +c[1], poles: cp, U: kn ? bsFlat(kn[2], kn[0]) : bsKnotsOf(iks, cp.length, +c[0]), V: kn ? bsFlat(kn[3], kn[1]) : bsKnotsOf(iks, cp[0].length, +c[1]), W: rw && rw[0] ? rw[0].map(function (r) { return r.map(Number); }) : null };
     }
+    // lane MR: freeRecord(fa, surf, sameSense) -> { s, ss, loops } or null: a free-form face as the STEP writer needs it
+    // back (writeFreeFace): its B-spline surface ({ du, dv, poles, U, V, W } in the file's units), same_sense, and its
+    // bounds in file order ({ ori, edges: [{ id, fwd }] } or { ori, vtx } for a VERTEX_LOOP). Each edge, once per file
+    // (freeEdgeRec): its ends a, b, its curve g ({ t: 'b', deg, poles, U, W } | { t: 'c', c, n, r } | { t: 'e', ellipse }
+    // | { t: 'l' }), same_sense ss, and two points along it in its own direction (m half way, q a quarter of its
+    // samples), which tell its run of mesh vertices from another edge between the same two vertices
+    var freeEdges = {};
+    function freeEdgeRec(ref) {
+      var id = ref && ref.r;
+      if (id == null) return null;
+      if (freeEdges[id] !== undefined) return freeEdges[id];
+      var ec = ent(ref), ea = ec && args(ec, 'EDGE_CURVE'), info = edgeInfo(ref);
+      if (!ea || !info || !info.start || !info.end) return (freeEdges[id] = null);
+      var geom = ent(ea[3]);
+      while (geom && (geom.t === 'SURFACE_CURVE' || geom.t === 'SEAM_CURVE' || geom.t === 'INTERSECTION_CURVE' || geom.t === 'BOUNDED_SURFACE_CURVE')) geom = ent(geom.a[1]);
+      var bc = bsCurveOf(geom), g = null;
+      if (bc && bc.deg >= 1 && bc.poles.length > bc.deg && bc.poles.every(Boolean) && bc.U.length === bc.poles.length + bc.deg + 1) g = { t: 'b', deg: bc.deg, poles: bc.poles, U: bc.U, W: bc.W };
+      else if (info.kind === 'circle' && !info.fromSpline) g = { t: 'c', c: info.circle.c, n: info.circle.n, r: info.circle.r };
+      else if (info.kind === 'ellipse') g = { t: 'e', center: info.ellipse.center, normal: info.ellipse.normal, xdir: info.ellipse.xdir, a: info.ellipse.a, b: info.ellipse.b };
+      else if (info.kind === 'line' && geom && geom.t === 'LINE') g = { t: 'l' };
+      if (!g) return (freeEdges[id] = null);
+      var pts = info.raw || info.pts, n = pts.length - 1;
+      var m = n >= 2 ? pts[Math.round(n / 2)] : scale(add(info.start, info.end), 0.5), q = n >= 4 ? pts[Math.round(n / 4)] : m;
+      return (freeEdges[id] = { id: id, a: info.start, b: info.end, ss: !(ea[4] && ea[4].e === 'F'), g: g, m: m, q: q });
+    }
+    function freeRecord(fa, surf, sameSense) {
+      var d = bsSurfOf(surf);
+      if (!d || !d.poles.length || !d.poles.every(function (row) { return row.length === d.poles[0].length && row.every(Boolean); })) return null;
+      if (d.U.length !== d.poles.length + d.du + 1 || d.V.length !== d.poles[0].length + d.dv + 1) return null;
+      var loops = [], edges = {}, ok = true;
+      (fa[1] || []).forEach(function (bRef) {
+        var b = ent(bRef), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]), ori = !(ba && ba[2] && ba[2].e === 'F');
+        if (l && l.t === 'VERTEX_LOOP') { var vp = vertexPoint(l.a[1]); if (vp) loops.push({ ori: ori, vtx: vp }); else ok = false; return; }
+        if (!l || l.t !== 'EDGE_LOOP') { ok = false; return; }
+        var es = [];
+        (l.a[1] || []).forEach(function (oeRef) {
+          var oa = args(ent(oeRef), 'ORIENTED_EDGE'), er = oa && freeEdgeRec(oa[3]);
+          if (!er) { ok = false; return; }
+          edges[er.id] = er;
+          es.push({ id: er.id, fwd: !(oa[4] && oa[4].e === 'F') });
+        });
+        loops.push({ ori: ori, edges: es });
+      });
+      return ok && loops.length ? { s: d, ss: sameSense, loops: loops, edges: Object.keys(edges).map(function (k) { return edges[k]; }) } : null;
+    }
     // the oriented edges of an EDGE_LOOP: [{ info, fwd }]
     function loopEdgeList(l) {
       var list = [];
@@ -3017,6 +3300,7 @@ var Exchange = (function () {
         if (j >= B.length - 1 || (i < A.length - 1 && fa1[i + 1] <= fb[j + 1])) { tri(A[i], A[i + 1], B[j]); i++; }
         else { tri(A[i], B[j + 1], B[j]); j++; }
       }
+      out.lastFree = freeRecord(fa, surf, !(fa[3] && fa[3].e === 'F'));   // lane MR
       return true;
     }
     // rfGO: a B-spline face bounded by four B-spline edges along the surface's own sides, in rows through the edges' points
@@ -3065,6 +3349,7 @@ var Exchange = (function () {
           out.tris.push(base, base + 1, base + 2);
           out.recs.push(null);
         });
+        out.lastFree = freeRecord(fa, surf, sameSense);   // lane MR
         return true;
       }
       return false;
@@ -3079,8 +3364,19 @@ var Exchange = (function () {
       if (d && d.poles.length && d.poles.every(function (row) { return row.length && row.every(Boolean); }) && d.U.length === d.poles.length + d.du + 1 && d.V.length === d.poles[0].length + d.dv + 1) A = bsAdaptor(d);
       else if (surf.t === 'SURFACE_OF_LINEAR_EXTRUSION') A = extrusionAdaptor(surf);
       if (!A) return false;
-      var lp = [], outerI = -1, ok = true;
-      (fa[1] || []).forEach(function (bRef) {
+      var lp = [], outerI = -1, ok = true, res = null;
+      // lane MR: a whole closed B-spline face (OpenCascade's NURBS sphere: a VERTEX_LOOP at a pole and nothing else; or
+      // loops of seam edges alone, each used twice) is the surface's whole domain
+      var whole = !!d && (fa[1] || []).every(function (bRef) {
+        var b = ent(bRef), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
+        if (l && l.t === 'VERTEX_LOOP') return true;
+        if (!l || l.t !== 'EDGE_LOOP') return false;
+        var cnt = {}, es = (l.a[1] || []).map(function (oeRef) { var oa = args(ent(oeRef), 'ORIENTED_EDGE'); return oa && oa[3] ? oa[3].r : null; });
+        es.forEach(function (e) { cnt[e] = (cnt[e] || 0) + 1; });
+        return es.length > 0 && es.every(function (e) { return e != null && cnt[e] === 2; });
+      });
+      if (whole && !(res = wholePatch(d, A))) return false;
+      if (!res) (fa[1] || []).forEach(function (bRef) {
         var b = ent(bRef), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
         if (!l || l.t !== 'EDGE_LOOP') { ok = false; return; }
         var pts = [];
@@ -3089,9 +3385,10 @@ var Exchange = (function () {
         if (has(b, 'FACE_OUTER_BOUND')) outerI = lp.length;
         lp.push(pts);
       });
-      if (!ok || !lp.length) return false;
-      var res = paramPatch(lp, outerI, A);
+      if (!res && (!ok || !lp.length)) return false;
+      if (!res) res = paramPatch(lp, outerI, A);
       if (!res) return false;
+      if (!whole && d) centreInsert(res, A);   // (B-spline faces: an extrusion's side is straight along w, its caps polygons)
       // lane stepreal2: the triangles all turn one way in (u, v), so one answer serves them all: the area-weighted vote
       // of the surface normal (asked triangle by triangle, slivers along a boundary answered the other way: edges with
       // both uses in one direction, an open body)
@@ -3110,7 +3407,90 @@ var Exchange = (function () {
         out.tris.push(base, base + 1, base + 2);
         out.recs.push(null);
       });
+      if (d) out.lastFree = freeRecord(fa, surf, sameSense);   // lane MR (B-spline surfaces only)
       return true;
+    }
+    // lane MR: centreInsert(res, A): a triangle whose three corners are all on the face's boundary (a narrow strip is
+    // nothing else) has no point freeVolumeFix may move, so its bump was lost (the polygon's volume): it gets a point of
+    // its own, the surface at its centre in (u, v), and becomes three. Slivers (no area to speak of) are left alone.
+    function centreInsert(res, A) {
+      var V = res.V, T = res.T, use = {}, onB = [];
+      function ek(a, b) { return a < b ? a + ',' + b : b + ',' + a; }
+      T.forEach(function (t3) { for (var k = 0; k < 3; k++) { var key = ek(t3[k], t3[(k + 1) % 3]); use[key] = (use[key] || 0) + 1; } });
+      Object.keys(use).forEach(function (key) { if (use[key] === 1) { var ab = key.split(','); onB[+ab[0]] = onB[+ab[1]] = true; } });
+      var out = [];
+      T.forEach(function (t3) {
+        var a = V[t3[0]], b = V[t3[1]], c = V[t3[2]];
+        if (!(onB[t3[0]] && onB[t3[1]] && onB[t3[2]])) { out.push(t3); return; }
+        var ar = len(cross(sub(b.p, a.p), sub(c.p, a.p))), pe = len(sub(b.p, a.p)) + len(sub(c.p, b.p)) + len(sub(a.p, c.p));
+        if (!(ar > 1e-6 * pe * pe)) { out.push(t3); return; }
+        var u = (a.u + b.u + c.u) / 3, v = (a.v + b.v + c.v) / 3, m = V.length;
+        V.push({ p: A.at(u, v), u: u, v: v });
+        out.push([t3[0], t3[1], m], [t3[1], t3[2], m], [t3[2], t3[0], m]);
+      });
+      res.T = out;
+    }
+    // lane MR: wholePatch(d, A) -> { V, T } or null: the whole (u, v) domain of B-spline surface d as a grid of A's steps,
+    // when every side of the domain is closed (A.pu / A.pv: its seam column is written twice, same points) or a pole
+    // (the whole side one point: each quad there keeps its one real triangle plus one of no area, so the ring next to
+    // the pole stays free for freeVolumeFix). Any other side would be an edge of the face: refused (null).
+    // (twice the canonical density each way: freeVolumeFix leaves a whole NURBS sphere 5.6e-5 over at the canonical
+    // grid, 3.5e-6 at twice it; a second pass of the fix overshoots)
+    var DENS = 2;
+    function wholePatch(d, A) {
+      var u0 = d.U[d.du], u1 = d.U[d.poles.length], v0 = d.V[d.dv], v1 = d.V[d.poles[0].length];
+      if (!(u1 > u0) || !(v1 > v0)) return null;
+      var ext = 0;
+      d.poles.forEach(function (row) { row.forEach(function (p) { ext = Math.max(ext, len(p)); }); });
+      var tolP = 1e-9 * Math.max(1, ext);
+      function poleSide(fixU, at) {   // the side u = at (fixU) or v = at is one point
+        var p0 = fixU ? A.at(at, v0) : A.at(u0, at);
+        for (var k = 1; k <= 8; k++) { var q = fixU ? A.at(at, v0 + (v1 - v0) * k / 8) : A.at(u0 + (u1 - u0) * k / 8, at); if (len(sub(q, p0)) > tolP) return false; }
+        return true;
+      }
+      var poleV0 = poleSide(false, v0), poleV1 = poleSide(false, v1), poleU0 = poleSide(true, u0), poleU1 = poleSide(true, u1);
+      if (!A.pu && !poleU0) return null; if (!A.pu && !poleU1) return null;
+      if (!A.pv && !poleV0) return null; if (!A.pv && !poleV1) return null;
+      // the grid lines: equal shares of the turning (in canonical steps for the local radius, as rowStep) along the
+      // rows a quarter, half and three quarters across, the most of the three (a rational sphere's u is not its angle,
+      // so equal parameter steps put 4x the triangles in)
+      function lines(alongU, t0, t1, ts) {
+        var bestC = null;
+        [0.25, 0.5, 0.75].forEach(function (f) {
+          var o = alongU ? v0 + (v1 - v0) * f : u0 + (u1 - u0) * f, ps = ts.map(function (t) { return alongU ? A.at(t, o) : A.at(o, t); }), c = [0];
+          for (var k = 1; k < ts.length; k++) {
+            var w = 0;
+            if (k + 1 < ts.length) {
+              var d1 = sub(ps[k], ps[k - 1]), d2 = sub(ps[k + 1], ps[k]), l1 = len(d1), l2 = len(d2);
+              if (l1 > 0 && l2 > 0) { var th = Math.acos(Math.max(-1, Math.min(1, dot(d1, d2) / (l1 * l2)))); if (th > 1e-12) w = th / (2 * Math.PI / K.segsForRadius((l1 + l2) / 2 / th * (toMM || 1))); }
+            }
+            c.push(c[k - 1] + w);
+          }
+          if (!bestC || c[c.length - 1] > bestC[bestC.length - 1]) bestC = c;
+        });
+        var total = bestC[bestC.length - 1], n = Math.max(4, Math.min(256, Math.ceil(total * DENS - 1e-6))), out = [t0], k2 = 0;
+        for (var q = 1; q < n; q++) {
+          var want = total * q / n;
+          while (k2 + 1 < bestC.length - 1 && bestC[k2 + 1] < want) k2++;
+          var span = bestC[k2 + 1] - bestC[k2], f2 = span > 0 ? (want - bestC[k2]) / span : 0;
+          out.push(ts[k2] + (ts[k2 + 1] - ts[k2]) * Math.max(0, Math.min(1, f2)));
+        }
+        if (total <= 1e-9) { out = []; for (q = 0; q < n; q++) out.push(t0 + (t1 - t0) * q / n); }
+        out.push(t1);
+        return out;
+      }
+      var us = lines(true, u0, u1, bsParams(d.U, d.du)), vs = lines(false, v0, v1, bsParams(d.V, d.dv)), nU = us.length - 1, nV = vs.length - 1;
+      var V = [], T = [], i, j;
+      for (i = 0; i <= nU; i++) for (j = 0; j <= nV; j++) V.push({ p: A.at(us[i], vs[j]), u: us[i], v: vs[j] });
+      // a closed direction's last grid line is its first (shared vertices: the seam is no boundary for freeVolumeFix)
+      function at(i2, j2) { if (A.pu && i2 === nU) i2 = 0; if (A.pv && j2 === nV) j2 = 0; return i2 * (nV + 1) + j2; }
+      for (i = 0; i < nU; i++) for (j = 0; j < nV; j++) {
+        var a = at(i, j), b = at(i + 1, j), c = at(i + 1, j + 1), e = at(i, j + 1);
+        // a pole row or column: the quad's real triangle has one corner on it, the other its sliver of no area
+        if ((j === 0 && poleV0) || (i === nU - 1 && poleU1)) { T.push([a, b, c]); T.push([a, c, e]); continue; }
+        T.push([a, b, e]); T.push([b, c, e]);
+      }
+      return { V: V, T: T };
     }
     // lane MO: freeVolumeFix(res, A, flip): the facets of a free-form face carry no surface record, so their volume is
     // the polygon's (0.01 – 0.03 % over or under on real parts). Each triangle misses the bump between it and the
@@ -3130,7 +3510,9 @@ var Exchange = (function () {
       // the height of the surface over the chord's midpoint m along n: the surface point on the line m + t n (Newton in
       // (u, v) from the middle parameters; the middle parameters alone sit off that line by a first-order amount
       // across the edge, where the bump rises: 1e-5 too much on a loft)
-      function hOf(a, b, n) { return hAt(scale(add(V[a].p, V[b].p), 0.5), (V[a].u + V[b].u) / 2, (V[a].v + V[b].v) / 2, Math.max(Math.abs(V[a].u - V[b].u), Math.abs(V[a].v - V[b].v)), n); }
+      // (lane MR: across a period's seam, a vertex shared by both ends of the domain, the short way round)
+      function wrapD(x, Pd) { return Pd ? x - Pd * Math.round(x / Pd) : x; }
+      function hOf(a, b, n) { var du = wrapD(V[b].u - V[a].u, A.pu), dv = wrapD(V[b].v - V[a].v, A.pv); return hAt(scale(add(V[a].p, V[b].p), 0.5), V[a].u + du / 2, V[a].v + dv / 2, Math.max(Math.abs(du), Math.abs(dv)), n); }
       function hAt(m, u, v, span, n) {
         var eu = span * 1e-4 || 1e-9, P = A.at(u, v);
         for (var it = 0; it < 4; it++) {
@@ -3840,10 +4222,15 @@ var Exchange = (function () {
       // opts.trace (an array): one { face, surf, out, from, to } per face read, its triangles out.tris[from .. to) (for
       // finding which face leaves an edge open; nothing reads it here)
       var shellTris = shells.map(function (sh) {
-        var out = { pos: [], tris: [], recs: [] };
+        var out = { pos: [], tris: [], recs: [], free: [], fid: [] };
         shellFaces(sh).forEach(function (fr) {
-          var t0 = out.tris.length;
+          var t0 = out.tris.length, r0 = out.recs.length;
+          out.lastFree = null;
           faceTriangles(fr, out);
+          // lane MR: the triangles of a free-form face carry its index in out.free (fid, -1 elsewhere)
+          var fk = -1;
+          if (out.lastFree && out.recs.length > r0) { fk = out.free.length; out.free.push(out.lastFree); }
+          for (var rk = r0; rk < out.recs.length; rk++) out.fid.push(fk);
           if (opts.trace) { var tf0 = ent(fr), ta = tf0 && (args(tf0, 'ADVANCED_FACE') || args(tf0, 'FACE_SURFACE')), ts = ta && ta[2] && ent(ta[2]); opts.trace.push({ face: fr && fr.r, surf: ts ? ts.t || 'complex' : '', out: out, from: t0, to: out.tris.length }); }
         });
         return out;
@@ -3858,9 +4245,12 @@ var Exchange = (function () {
         var Ts = cls != null ? placements(cls, 0, {}) : [tf(null)];
         var label = name && !/^(NONE|SOLID)?$/i.test(name) ? name : (cls != null && repName[cls]) || ('Solid' + (solids.length + 1));
         Ts.forEach(function (T, k) {
-          var sol = { name: Ts.length > 1 ? label + '<' + (k + 1) + '>' : label, positions: [], triangles: [], recs: [] }, memo = [];
+          var sol = { name: Ts.length > 1 ? label + '<' + (k + 1) + '>' : label, positions: [], triangles: [], recs: [], free: [], fid: [] }, memo = [];
           shellTris.forEach(function (sh, si) {
             sh.recs.forEach(function (F) { sol.recs.push(F ? mapRecord(F, memo, function (p) { return tfPoint(T, p); }, function (d) { return tfDir(T, d); }, 1) : null); });
+            var f0 = sol.free.length;
+            sh.free.forEach(function (fr) { sol.free.push(mapFree(fr, function (p) { return tfPoint(T, p); }, function (d) { return tfDir(T, d); }, 1)); });
+            sh.fid.forEach(function (x) { sol.fid.push(x < 0 ? -1 : x + f0); });
             var base = sol.positions.length / 3, t0 = sol.triangles.length;
             for (var q = 0; q < sh.pos.length; q += 3) { var p = tfPoint(T, [sh.pos[q], sh.pos[q + 1], sh.pos[q + 2]]); sol.positions.push(p[0], p[1], p[2]); }
             for (var t = 0; t < sh.tris.length; t++) sol.triangles.push(sh.tris[t] + base);
@@ -3869,6 +4259,7 @@ var Exchange = (function () {
             if ((si === 0 && v < 0) || (si > 0 && v > 0)) flipRange(sol.triangles, t0);
           });
           if (!sol.recs.some(Boolean)) delete sol.recs;
+          if (!sol.free.length) { delete sol.free; delete sol.fid; }
           if (sol.triangles.length) solids.push(sol);
         });
       });
@@ -4104,17 +4495,18 @@ var Exchange = (function () {
     return finishImport('stl', opts, out, 1, warnings);
   }
   // recs (optional): one record per soup triangle, kept for the triangles that survive (result.recs)
-  function weldSoup(soup, recs) {
-    var pos = [], tris = [], map = {}, keep = recs ? [] : null;
+  function weldSoup(soup, recs, fid) {   // fid (lane MR): one free-form face index per soup triangle, kept likewise (result.fid)
+    var pos = [], tris = [], map = {}, keep = recs ? [] : null, keepF = fid ? [] : null;
     for (var i = 0; i < soup.length; i += 3) {
       var k = wkey(soup[i], soup[i + 1], soup[i + 2]), v = map[k];
       if (v == null) { v = map[k] = pos.length / 3; pos.push(soup[i], soup[i + 1], soup[i + 2]); }
       tris.push(v);
     }
     var clean = [];
-    for (var t = 0; t < tris.length; t += 3) if (tris[t] !== tris[t + 1] && tris[t + 1] !== tris[t + 2] && tris[t] !== tris[t + 2]) { clean.push(tris[t], tris[t + 1], tris[t + 2]); if (keep) keep.push(recs[t / 3]); }
+    for (var t = 0; t < tris.length; t += 3) if (tris[t] !== tris[t + 1] && tris[t + 1] !== tris[t + 2] && tris[t] !== tris[t + 2]) { clean.push(tris[t], tris[t + 1], tris[t + 2]); if (keep) keep.push(recs[t / 3]); if (keepF) keepF.push(fid[t / 3]); }
     var res = { positions: pos, triangles: clean };
     if (keep) res.recs = keep;
+    if (keepF) res.fid = keepF;
     return res;
   }
   // connected components of a triangle mesh (by shared vertices); a component with negative volume whose box sits
@@ -4213,6 +4605,23 @@ var Exchange = (function () {
     memo.push([F, F2]);
     return F2;
   }
+  // lane MR: mapFree(rec, point, dir, lengthScale) -> a copy of a free-form face record (freeRecord in importSTEP) with
+  // its poles, edge ends, curve points and radii mapped (knots and weights unchanged). Plain arrays and numbers only: it
+  // is kept on the Imported feature's solid as it is (solid.free.faces) and written back by writeFreeFace.
+  function mapFree(rec, pointFn, dirFn, ls) {
+    var s = rec.s, s2 = { du: s.du, dv: s.dv, poles: s.poles.map(function (row) { return row.map(pointFn); }), U: s.U.slice(), V: s.V.slice() };
+    if (s.W) s2.W = s.W.map(function (row) { return row.slice(); });
+    var edges = rec.edges.map(function (e) {
+      var g = e.g, g2;
+      if (g.t === 'b') { g2 = { t: 'b', deg: g.deg, poles: g.poles.map(pointFn), U: g.U.slice() }; if (g.W) g2.W = g.W.slice(); }
+      else if (g.t === 'c') g2 = { t: 'c', c: pointFn(g.c), n: norm(dirFn(g.n)), r: g.r * ls };
+      else if (g.t === 'e') g2 = { t: 'e', center: pointFn(g.center), normal: norm(dirFn(g.normal)), xdir: norm(dirFn(g.xdir)), a: g.a * ls, b: g.b * ls };
+      else g2 = { t: g.t };
+      return { id: e.id, a: pointFn(e.a), b: pointFn(e.b), ss: e.ss, g: g2, m: pointFn(e.m), q: pointFn(e.q) };
+    });
+    var loops = rec.loops.map(function (l) { return l.vtx ? { ori: l.ori, vtx: pointFn(l.vtx) } : { ori: l.ori, edges: l.edges.map(function (x) { return { id: x.id, fwd: x.fwd }; }) }; });
+    return { s: s2, ss: rec.ss, loops: loops, edges: edges };
+  }
   // curvesOf(triSurf) -> { surfs: [S], recs: [{ s: surface index, P?, Q? }], tri: [0 | record index + 1 per triangle] }:
   // the compact form an imported solid (and the Imported feature) keeps its triangles' surface records in
   function curvesOf(triSurf) {
@@ -4259,7 +4668,7 @@ var Exchange = (function () {
       var tol = format === 'step' ? 1e-6 : Math.max(1e-6, ext * 1e-6);
       var polys = [], memo = [];
       var recs = sol.recs ? sol.recs.map(function (F) { return F ? mapRecord(F, memo, function (p) { return scale(p, s); }, function (d) { return d; }, s) : null; }) : null;
-      var w = weldSoup(expand(pos, sol.triangles), recs);
+      var w = weldSoup(expand(pos, sol.triangles), recs, sol.fid);
       // lane stepreal2: two triangles on the same three vertices, wound opposite ways, are a fold of no volume (two
       // faces meeting in a cusp each cut the same sliver off their shared boundary): both go, their edges cancel
       var twin = {}, dead = null;
@@ -4277,10 +4686,20 @@ var Exchange = (function () {
         nn = scale(nn, 1 / l);
         var poly = { idx: [a, b, c], n: nn, w: dot(nn, pa) };
         if (w.recs && w.recs[t / 3]) poly.srf = w.recs[t / 3];
+        if (w.fid) { poly.fid = w.fid[t / 3]; poly.src = polys.length; }
         polys.push(poly);
       }
       splitTJunctions(w.positions, polys, tol);
       var m = fanPolygons(w.positions, polys);
+      // lane MR: the free-form faces this solid still has, their triangles tagged (0 = none, else face index + 1)
+      var freeTri = null, freeFaces = null;
+      if (w.fid) {
+        var used = {}, fmap = {};
+        freeTri = m.triPoly.map(function (pi) { var k = pi >= 0 ? polys[pi].fid : -1; if (k >= 0) used[k] = true; return k; });
+        freeFaces = [];
+        Object.keys(used).sort(function (x, y) { return x - y; }).forEach(function (k) { fmap[k] = freeFaces.length; freeFaces.push(mapFree(sol.free[k], function (p) { return scale(p, s); }, function (d) { return d; }, s)); });
+        freeTri = freeTri.map(function (k) { return k >= 0 ? fmap[k] + 1 : 0; });
+      }
       var compact = compactMesh(m.positions, m.triangles);
       if (signedVolume(compact.positions, compact.triangles) < 0) flipRange(compact.triangles, 0);
       var nm = String(sol.name || (format.toUpperCase() + (i + 1)));
@@ -4290,6 +4709,7 @@ var Exchange = (function () {
       open += m.openEdges;
       var solid = { name: nm, positions: compact.positions.map(function (x) { return Math.round(x * 1e9) / 1e9; }), triangles: compact.triangles };
       if (m.triSurf) solid.curves = curvesOf(m.triSurf);
+      if (freeFaces && freeFaces.length) solid.free = { faces: freeFaces, tri: freeTri };
       out.push(solid);
     });
     if (open) warnings.push(open + ' open edge' + (open === 1 ? '' : 's') + ': the mesh is not closed, so cuts and bosses against it may fail.');
@@ -4385,6 +4805,8 @@ var Exchange = (function () {
       var out = { name: String(s.name || 'Body' + (i + 1)), vertices: typeof v === 'string' ? v : encodeF64(v || []), triangles: typeof t === 'string' ? t : encodeU32(t || []) };
       // the triangles' analytic surface records (curved faces of a STEP file): { surfs, recs, tri (base64 U32) }
       if (s.curves && s.curves.surfs) out.curves = { surfs: s.curves.surfs, recs: s.curves.recs || [], tri: typeof s.curves.tri === 'string' ? s.curves.tri : encodeU32(s.curves.tri || []) };
+      // lane MR: the free-form faces' true surfaces and edges (written back by the STEP writer; nothing else reads them)
+      if (s.free && s.free.faces) out.free = { faces: s.free.faces, tri: typeof s.free.tri === 'string' ? s.free.tri : encodeU32(s.free.tri || []) };
       return out;
     });
   }
