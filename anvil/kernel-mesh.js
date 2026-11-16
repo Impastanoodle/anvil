@@ -1834,6 +1834,33 @@
       });
     }
     var rfGGoff = {};   // the stations of a chain whose setback was excused as running off the plate
+    // lane NC: a setback point that is off planar face fi's faceted outline only by a chord's sagitta: it lies between a
+    // chord of a circular outer rim of the face (the edge to a coaxial cylinder / cone wall, arcEdgeInfo) and that rim's
+    // true circle. The face is the true disc, its chords are the tessellation: a round that uses up the whole face (a
+    // tube's 0.25 wide top rounded R.25 from its bore, rfMU) has its setback 1e-4 × size inside the true rim, which is
+    // air between the chords everywhere but at their ends. Counting those stations as "off the plate" refused the round
+    // whenever none of the four stations happened to face a vertex of the far rim: rfMU's tube built only because the
+    // BSP had left a stray point 2.3e-5 from a vertex of the bore's rim, which shifted the stations by one (csg.js'
+    // bandSnap removes that point: 48 rim vertices instead of 49, stations every 90° from −7.5° against a 56-chord
+    // outer rim, none at a vertex).
+    var rfNCrims = {};
+    function rfNCunderArc(fi, P) {
+      if (fi == null || K.fitProbe.rim === false) return false;   // (K.fitProbe.rim = false: the rule before lane NC, to measure)
+      if (!(fi in rfNCrims)) {
+        rfNCrims[fi] = allEdges.filter(function (x) { return x.faces.length === 2 && x.faces.indexOf(fi) >= 0 && x.convex != null; }).map(function (x) {
+          var ii = info(x);
+          return ii && ii.fp === fi && ii.uP[0] < 0 ? { e: x, I: ii } : null;   // (uP[0] < 0: the face lies on the axis's side of the rim)
+        }).filter(function (x) { return x; });
+      }
+      return rfNCrims[fi].some(function (x) {
+        var J = x.I, rv = rfFFradial(P, J.A, J.d), ra = rfFFradial(x.e.a, J.A, J.d), rb = rfFFradial(x.e.b, J.A, J.d);
+        if (len(rv) > J.Rc * (1 + 1e-12) || dot(rv, add(ra, rb)) <= 0) return false;
+        var c0 = dot(cross(ra, rb), J.d), c1 = dot(cross(ra, rv), J.d), c2 = dot(cross(rv, rb), J.d);
+        if (c1 * c0 < 0 || c2 * c0 < 0) return false;   // P's direction is not between the chord's ends
+        var m = scale(add(ra, rb), 0.5);
+        return dot(sub(rv, m), m) >= 0;   // past the chord, so within its sagitta of the true circle
+      });
+    }
     function probe(pts3) {
       if (!pts3.length) return 0;
       if (!tester) tester = ctx.body.pointTester();
@@ -1913,8 +1940,11 @@
           // all the way round has nothing left to stand on: refused (the check after this loop).
           if (!soft && q.why === 'under') {
             if (q.where == null) rfFRharmless(q, P, I.conv, [I.fp, null]);
-            if (I.conv) { soft = q.side === 1 || (q.side === 0 && /off/.test(q.where || '')); offAt = soft && q.side === 0 ? k : null; }
-            else soft = q.side === 0 && !walls.length;
+            if (I.conv) {
+              soft = q.side === 1 || (q.side === 0 && /off/.test(q.where || '')); offAt = soft && q.side === 0 ? k : null;
+              // lane NC: off the face's chords but inside its true rim: the round reaches the rim, it does not run off it
+              if (offAt != null && rfNCunderArc(I.fp, P)) offAt = null;
+            } else soft = q.side === 0 && !walls.length;
           }
           // the corner region running off the face beside the setback (rfFT 303): air, the cut is exact there. Air in the
           // corner with faces all round it (R9 through a shelled box's wall, where 'face+face') stays a misfit.
@@ -2198,6 +2228,10 @@
     try { Object.defineProperty(body, '_fpOpen', { value: n, enumerable: false, writable: true, configurable: true }); } catch (e) { /* frozen */ }
     return n;
   }
+  // lane MP: csg.js' bandSnap (a band vertex and its split points made one point) keeps its moves only when the welded
+  // mesh round the moved points has no more open / non-manifold edges than the result without them; csg.js has no
+  // mesh of its own, so the count comes from here (the main thread, the worker and the Node runner all load exchange.js)
+  if (typeof CSG !== 'undefined' && CSG.options && !CSG.options.cracks) CSG.options.cracks = function (polys) { return rfFPopenCount({ polygons: polys }); };
   // rfFP: obj[method](arg) returns `out` once (the boolean already done by buildEdgeFeature), then the method is the
   // prototype's again; any other argument goes to the prototype's method
   function rfFPmemo(obj, method, arg, out) {

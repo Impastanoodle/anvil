@@ -3606,7 +3606,8 @@
   function smBool(a, op, b, T) {
     var S = smScale(T), list = Array.isArray(b);
     if (S === 1) return a[op](list ? unionAll(b) : b);
-    function sc(body, k) { return body.transform(function (p) { return new CSG.Vector(p.x * k, p.y * k, p.z * k); }, false); }
+    // (lane NC: scaled up, a polygon the heal left a few 1e-6 off flat is past the splitter's band: csg.js planar() fans it)
+    function sc(body, k) { var t = body.transform(function (p) { return new CSG.Vector(p.x * k, p.y * k, p.z * k); }, false); return k > 1 && t.planar ? t.planar() : t; }
     return sc(sc(a, S)[op](list ? unionAll(b.map(function (x) { return sc(x, S); })) : sc(b, S)), 1 / S);
   }
   // a loop without its repeated points (flangeProfile with no wall or no overlap strip)

@@ -422,7 +422,8 @@
     // pins closed since (hard rows now): 2 (lane FU, Fold rebuilds the bend from the flat); 1, 3, 4, 7, 8, 9, 10, 11 (lane FQ:
     // shared split points and the exact retry in csg.js). Still TODO: 5 (refused in a plain sentence: the jog is too small
     // for the bend, so no body to check), 6 (9 non-manifold edges where the 120° flange hole meets the bend)
-    var HARD = { 1: true, 2: true, 3: true, 4: true, 7: true, 8: true, 9: true, 10: true, 11: true, 12: true };   // 12: lane FW2 (Fold reads the voids at 1024× scale)
+    // 13: lane NC (csg.js planar(): at smBool's 16× a cut-out wall the heal had left 4.2e-6 off flat read as bent)
+    var HARD = { 1: true, 2: true, 3: true, 4: true, 7: true, 8: true, 9: true, 10: true, 11: true, 12: true, 13: true };   // 12: lane FW2 (Fold reads the voids at 1024× scale)
     PINS.forEach(function (pin, i) {
       test((HARD[i + 1] ? 'rfFT: pin ' : 'rfFT TODO: pin ') + (i + 1) + ' closed: ' + pin[0], function () {
         var r = build(pin[1]), open = 0, nm = 0;

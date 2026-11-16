@@ -5,6 +5,12 @@ var CSG = (function () {
   var EPSILON = 1e-5;
   // splitPolygon counts vertices it classifies as on a plane while they lie more than FUZZ off it (healCracks, rfFL)
   var FUZZ = 1e-9, FUZZY = 0, XS_T = [], EXACT = false, HEAL_LEFT = 0;
+  // lane MP (bandSnap): while one operand's polygons are clipped by the other's tree (BSIDE = 1 or 2, the operand being
+  // clipped), splitPolygon notes every vertex it takes as on a plane while it is off it (BW: the position, BP: the plane)
+  // and every split point it makes (BS)
+  // lane NC: BWS / BPS: the same for a vertex of a polygon within 20 degrees of the plane (bandCos), kept apart: those
+  // only ever go to an original vertex that is the exact meet of the planes (bandSnap's wide rule)
+  var BSIDE = 0, BW = [null, [], []], BP = [null, [], []], BS = [null, [], []], BWS = [null, [], []], BPS = [null, [], []];
 
   function Vector(x, y, z) { this.x = x; this.y = y; this.z = z; }
   Vector.prototype = {
@@ -103,6 +109,10 @@ var CSG = (function () {
           polygonType |= types[i];
         }
       }
+      if (band && BSIDE && polygonType !== COPLANAR) {
+        var steep = Math.abs(this.normal.dot(polygon.plane.normal)) < OPTIONS.bandCos, bw = steep ? BW[BSIDE] : BWS[BSIDE], bp = steep ? BP[BSIDE] : BPS[BSIDE];
+        for (i = 0; i < n; i++) if (types[i] === COPLANAR && (ts[i] > FUZZ || ts[i] < -FUZZ)) { bw.push(polygon.vertices[i].pos); bp.push(this); }
+      }
       switch (polygonType) {
         case COPLANAR:
           (this.normal.dot(polygon.plane.normal) > 0 ? coplanarFront : coplanarBack).push(polygon);
@@ -122,6 +132,7 @@ var CSG = (function () {
               // interpolated from either end can differ in the last bit (twins 5e-17 apart round to different cells of
               // the meshes' 1e-6 weld grid: open and non-manifold edges, the 14 ga L bracket): splitPoint is symmetric
               var v = splitPoint(this, vi, vj);
+              if (BSIDE) BS[BSIDE].push(v.pos, this, polygon.plane);
               f.push(v);
               b.push(v.clone());
             }
@@ -353,7 +364,7 @@ var CSG = (function () {
   // CSG.options.sphereTest = false turns off splitPolygon's bounding-sphere shortcut (same results, slower).
   // CSG.options.heal = false turns off healCracks (rfFL) on boolean results; healWide, healFill, healDrop: see healCracks.
   // CSG.options.retryExact = false turns off the exact retry of a cracked boolean (rfFQ); retryMin / retryMax: see retryExact.
-  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5, sphereTest: true, heal: true, healWide: 2 * EPSILON, healDrop: false, healFill: false, retryExact: true, retryMin: 3, retryMax: 300, fatten: true, restoreFar: true, snapTwins: true, recap: true };
+  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5, sphereTest: true, heal: true, healWide: 2 * EPSILON, healDrop: false, healFill: false, retryExact: true, retryMin: 3, retryMax: 300, fatten: true, restoreFar: true, snapTwins: true, recap: true, band: true, bandReach: 10 * EPSILON, bandCos: 0.94, bandWide: 100 * EPSILON };
   // FRAG: the bounding box of the fragments the last restoreWhole kept (null: everything may be cut), the region where
   // healCracks looks for cracks
   var FRAG = null;
@@ -987,9 +998,10 @@ var CSG = (function () {
   // false turns it off; CSG.retryStats counts the retries and the wins.
   var RETRY = { runs: 0, won: 0 };
   function retryExact(A, B, raw) {
-    HEAL_LEFT = 0; EXACT = false; FUZZY = 0; FRAG = null;
+    HEAL_LEFT = 0; EXACT = false; FUZZY = 0; FRAG = null; BALT = null;
     var r = raw.call(A, B);
-    var left = HEAL_LEFT, fuzzy = FUZZY, frag = FRAG;
+    var left = HEAL_LEFT, fuzzy = FUZZY, frag = FRAG, alt = BALT, won = false;
+    BALT = null;
     // lane lofts: the cracks of a boolean grow with the outline it cuts, so a fine body (a spline loft's 16000 facets) may
     // pass retryMax without being cracked itself; and a retry that takes the open edges down at least tenfold wins over
     // a few more slivers (a planar cut of G18: 66 open edges to 1, 165 to 4, with fattenSlivers still to run)
@@ -998,8 +1010,14 @@ var CSG = (function () {
       RETRY.runs++;
       EXACT = true; HEAL_LEFT = 0;
       try { r2 = raw.call(A, B); } finally { EXACT = false; }
-      if (HEAL_LEFT < left && (!HEAL_LEFT || HEAL_LEFT * 10 <= left || thinCount(r2.polygons, FRAG) <= thinCount(r.polygons, frag))) { r = r2; left = HEAL_LEFT; frag = FRAG; RETRY.won++; }
+      if (OPTIONS.retryLog) OPTIONS.retryLog({ left: left, left2: HEAL_LEFT, thin: thinCount(r.polygons, frag), thin2: thinCount(r2.polygons, FRAG), r: r, r2: r2 });
+      if (HEAL_LEFT < left && (!HEAL_LEFT || HEAL_LEFT * 10 <= left || thinCount(r2.polygons, FRAG) <= thinCount(r.polygons, frag))) { r = r2; left = HEAL_LEFT; frag = FRAG; RETRY.won++; won = true; }
     }
+    // lane MP: the first run with its band vertices and their split points made one point (bandSnap; never worse by the
+    // mesh round the moved points) takes the first run's place; an exact retry that won stays, unless the snapped
+    // list has no open edge left at all
+    if (alt && (!won || !alt.left)) { r = CSG.fromPolygons(alt.polys); left = alt.left; frag = alt.frag; BAND.kept++; }
+    else if (alt) BAND.lost++;
     HEAL_LEFT = left;
     // rfFV: slivers under the meshes' 1e-6 weld merged into a coplanar neighbour (fattenSlivers)
     if (fuzzy && OPTIONS.fatten) {
@@ -1326,6 +1344,350 @@ var CSG = (function () {
     FAT.ms += NOW() - t0;
     return merged ? out.filter(function (x) { return x; }) : polys;
   }
+  // ---------------------------------------------------------------- a band vertex and its split points: one point (lane MP)
+  // splitPolygon takes a vertex within EPSILON of a plane as on it and leaves it where it is: the solid it belongs to is
+  // cut through that vertex. The other solid's face on that plane is cut where the planes really cross, EPSILON / sin
+  // away (7e-6 where a BSP cut line across a plate's top passed 5e-6 from a facet of a groove's wall, stack fuzz 773;
+  // 2.7e-5 at the corner of two hole facets 11 degrees apart, stack fuzz 829). The two sides of one edge then hold
+  // different points: a needle hole (which the meshes' fillSliverLoops hides while it is a clean loop) or, once
+  // healCracks has put one of the points into the other side's edge, a needle flap on an edge used three times.
+  // No weld can tell such a pair from two real vertices afterwards (shell slabs hold true features of 4e-5), but the
+  // split knows which points it took for one. While one operand is clipped by the other's tree (clipAs; never in a
+  // tree build or an exact retry), splitPolygon notes
+  //   BW / BP  every vertex it takes as on a plane while it is off it, with that plane (only in a polygon that crosses
+  //            the plane at more than 20 degrees, bandCos: near-parallel faces are the exact retry's business);
+  //   BS       every split point it makes, with the plane that made it and the plane of the polygon it was made in.
+  // bandSnap then groups the points that stand for one point (points within SNAP count as one, as for every mesh):
+  //   - a split point of one solid with a band vertex of the other, when the split point lies within EPSILON of the
+  //     plane the vertex was taken as on, the vertex within EPSILON of the plane that made the split point and of the
+  //     plane of the polygon it was made in, and the two are within bandReach (10 EPSILON) but more than SNAP apart
+  //     (closer pairs are snapTwins', as before);
+  //   - a band vertex that is itself a split point with an original vertex of the other solid on the same terms (a
+  //     cut line that crosses one facet a hair from the facet's corner).
+  // Each group goes to its fixed point: an original vertex, or a vertex the solid's own tree build made (other
+  // polygons hold those, they cannot move); with several fixed points each free one goes to the nearest; with none,
+  // to a split point that is not a band vertex (it lies ON the plane the band vertex was only taken as on). A point
+  // inside an edge of a polygon that does not hold it (a T-junction on a face left whole) stays unless it moves along
+  // that edge. The moves are applied to the BSP's list by position, in every polygon of both solids; a polygon left
+  // with fewer than three points goes (the needle itself).
+  // Never worse: the snapped list is healed and offered beside the result as it was (banded / BALT); it is dropped
+  // when the welded mesh round the moved points has more open / non-manifold edges than before (CSG.options.cracks,
+  // set by kernel-mesh.js), and retryExact decides between the first run and the exact retry exactly as it did, then
+  // takes the snapped list in place of the first run. A boolean with no such group returns bitwise what it returned
+  // (every example's polygons and mass properties are bit-identical with the snap on and off).
+  // Not used inside a shell's slab assembly (kernel-features.js buildShell turns CSG.options.band off: slabs touch by
+  // design, nearly every boolean there has such vertices, and the assembly cracked more often with the snap than
+  // without). CSG.options.band = false turns it off; CSG.bandStats counts (events, pairs, moved, blocked at a
+  // T-junction, polygons changed / dropped, kept, undone by the mesh count, lost to a retry that won).
+  var BAND = { calls: 0, events: 0, pairs: 0, wide: 0, moved: 0, blocked: 0, polys: 0, dropped: 0, kept: 0, undone: 0, lost: 0, ms: 0 };
+  function bandReset() { BW[1].length = 0; BW[2].length = 0; BP[1].length = 0; BP[2].length = 0; BS[1].length = 0; BS[2].length = 0; BWS[1].length = 0; BWS[2].length = 0; BPS[1].length = 0; BPS[2].length = 0; }
+  function cellKey(ix, iy, iz) { return ((ix * 73856093) ^ (iy * 19349663) ^ (iz * 83492791)) | 0; }
+  function clipAs(side, tree, x) {
+    BSIDE = OPTIONS.band && !EXACT ? side : 0;
+    try { if (x instanceof Node) { x.clipTo(tree); return x; } return tree.clipPolygons(x); } finally { BSIDE = 0; }
+  }
+  // The result of a boolean from the list the BSP made: healed as before (what retryExact judges, so its decision is
+  // the one it made before). When bandSnap moved points, the snapped list is healed too and offered as BALT, unless
+  // it leaves more open / non-manifold edges round the moved points than the list as it was (CSG.options.cracks(
+  // polygons), the count on the welded mesh, set by kernel-mesh.js; without it, healCracks' own count of open edges):
+  // never worse. retryExact takes BALT in place of the first run when the exact retry did not win.
+  var BPTS = [], BALT = null;
+  function nearMoved(polys) {
+    var out = [], i, k;
+    for (i = 0; i < polys.length; i++) {
+      var bs = polys[i]._bs || (polys[i]._bs = boundingSphere(polys[i].vertices)), m2 = bs.m * bs.m;
+      for (k = 0; k < BPTS.length; k++) {
+        var q = BPTS[k], dx = q.x - bs.x, dy = q.y - bs.y, dz = q.z - bs.z;
+        if (dx * dx + dy * dy + dz * dz <= m2) { out.push(polys[i]); break; }
+      }
+    }
+    return out;
+  }
+  function banded(polys, A, B) {
+    var a = healCracks(polys);
+    if (!OPTIONS.band || EXACT || (!BW[1].length && !BW[2].length && !(OPTIONS.bandWide && (BWS[1].length || BWS[2].length)))) { bandReset(); return a; }
+    var left = HEAL_LEFT, snapped;
+    BPTS.length = 0;
+    try { snapped = bandSnap(polys, A, B); } finally { bandReset(); }
+    if (snapped === polys) return a;
+    // (lane NC, cost: tried healing the snapped list first and skipping this one and the retry when nothing was left
+    // open; in 600 fuzz parts the snapped list's own count was never 0, so there was nothing to skip. A boolean that
+    // moves points pays the second heal, bandSnap and two small meshes, +20 to 30 %; 28 booleans in 150 stack parts.)
+    var b = healCracks(snapped), keep;
+    if (OPTIONS.cracks) keep = OPTIONS.cracks(nearMoved(b)) <= OPTIONS.cracks(nearMoved(a));
+    else keep = HEAL_LEFT <= left;
+    // (CSG.options.bandLog / retryLog: hooks for a probe: the moved points as from / to pairs; the two runs' counts)
+    if (OPTIONS.bandLog) OPTIONS.bandLog({ pts: BPTS.slice(), keep: keep, A: A, B: B, a: a, b: b });
+    BPTS.length = 0;
+    if (keep) BALT = { polys: b, left: HEAL_LEFT, frag: FRAG }; else BAND.undone++;
+    HEAL_LEFT = left;
+    return a;
+  }
+  function bandSnap(polys, A, B) {
+    var n1 = BW[1].length, n2 = BW[2].length, RW = OPTIONS.bandWide || 0, wide = RW > 0, nw = wide ? BWS[1].length + BWS[2].length : 0;
+    if (!n1 && !n2 && !nw) return polys;
+    var t0 = NOW(), R = OPTIONS.bandReach, R2 = R * R, H = 2 * R, S2 = SNAP * SNAP, s, i, j, k, q, cell, nd;
+    var fl = Math.floor, exact = new Map(), near = new Map(), bands = [], pairs = 0;
+    var x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+    BAND.calls++; BAND.events += n1 + n2 + nw;
+    // one record per position: band (which operand's vertex was taken as on a plane: bit 1 / 2) with those planes,
+    // split (made by this boolean), orig (a vertex of an operand as it came in), to (where it goes), d (how far)
+    // (points within SNAP of each other are one point here, as they are to snapTwins and to every mesh)
+    function node(p, make) {
+      var ix = fl(p.x / H), iy = fl(p.y / H), iz = fl(p.z / H), c, m, q, d;
+      var ax = fl((p.x - SNAP) / H), bx = fl((p.x + SNAP) / H), ay = fl((p.y - SNAP) / H), by = fl((p.y + SNAP) / H), az = fl((p.z - SNAP) / H), bz = fl((p.z + SNAP) / H);
+      for (var cx = ax; cx <= bx; cx++) for (var cy = ay; cy <= by; cy++) for (var cz = az; cz <= bz; cz++) {
+        c = exact.get(cellKey(cx, cy, cz));
+        if (c) for (m = 0; m < c.length; m++) {
+          q = c[m].p;
+          d = q.x - p.x; if (d > SNAP || d < -SNAP) continue;
+          d = q.y - p.y; if (d > SNAP || d < -SNAP) continue;
+          d = q.z - p.z; if (d > SNAP || d < -SNAP) continue;
+          return c[m];
+        }
+      }
+      if (!make) return null;
+      var r = { p: p, band: 0, planes: null, split: false, orig: false, to: null, d: Infinity, wb: 0, wp: null };
+      c = exact.get(cellKey(ix, iy, iz));
+      if (c) c.push(r); else exact.set(cellKey(ix, iy, iz), [r]);
+      return r;
+    }
+    for (s = 1; s <= 2; s++) for (i = 0; i < BW[s].length; i++) {
+      q = BW[s][i]; nd = node(q, true);
+      if (!nd.band) {
+        nd.planes = []; bands.push(nd);
+        if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; if (q.z < z0) z0 = q.z; if (q.z > z1) z1 = q.z;
+      }
+      nd.band |= s;
+      // planes of the operand this vertex does NOT belong to: [the other operand's number, plane]
+      if (nd.planes.length < 16 && nd.planes.indexOf(BP[s][i]) < 0) nd.planes.push(s, BP[s][i]);
+    }
+    // lane NC: the vertices taken as on a plane their polygon is within 20 degrees of (BWS): no part in the rule above
+    // (band stays 0), only in the wide rule below (wb / wp)
+    if (nw) for (s = 1; s <= 2; s++) for (i = 0; i < BWS[s].length; i++) {
+      q = BWS[s][i]; nd = node(q, true);
+      if (!nd.planes) {
+        nd.planes = []; bands.push(nd);
+        if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; if (q.z < z0) z0 = q.z; if (q.z > z1) z1 = q.z;
+      }
+      nd.wb |= s;
+      if (!nd.wp) nd.wp = [];
+      if (nd.wp.length < 16 && nd.wp.indexOf(BPS[s][i]) < 0) nd.wp.push(s, BPS[s][i]);
+    }
+    var RB = wide && RW > R ? RW : R;
+    x0 -= RB; y0 -= RB; z0 -= RB; x1 += RB; y1 += RB; z1 += RB;
+    // every band vertex in the (up to 8) cells its reach touches, so a candidate looks in its own cell only
+    for (i = 0; i < bands.length; i++) {
+      q = bands[i].p;
+      var ax = fl((q.x - R) / H), bx = fl((q.x + R) / H), ay = fl((q.y - R) / H), by = fl((q.y + R) / H), az = fl((q.z - R) / H), bz = fl((q.z + R) / H);
+      for (var cx = ax; cx <= bx; cx++) for (var cy = ay; cy <= by; cy++) for (var cz = az; cz <= bz; cz++) {
+        var nk = cellKey(cx, cy, cz); cell = near.get(nk);
+        if (cell) cell.push(bands[i]); else near.set(nk, [bands[i]]);
+      }
+    }
+    function off(pl, q) { var t = pl.normal.x * q.x + pl.normal.y * q.y + pl.normal.z * q.z - pl.w; return t > EPSILON || t < -EPSILON; }
+    // c: a vertex of operand s, either a split point (made by the plane `by` of the other operand in a polygon on the
+    // plane `host`) or an original vertex (no `by`); pair it with the band vertices of the other operand it stands for
+    function visit(c, s, by, host) {
+      if (c.x < x0 || c.x > x1 || c.y < y0 || c.y > y1 || c.z < z0 || c.z > z1) return;
+      var orig = !by, me = null, list, m, w, dx, dy, dz, d2, e, on;
+      if (orig) { me = node(c, false); if (me) me.orig = true; }
+      list = near.get(cellKey(fl(c.x / H), fl(c.y / H), fl(c.z / H)));
+      if (!list) return;
+      for (m = 0; m < list.length; m++) {
+        w = list[m]; dx = w.p.x - c.x; dy = w.p.y - c.y; dz = w.p.z - c.z; d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > R2) continue;
+        if (d2 <= S2) { if (orig) w.orig = true; else { w.split = true; (w.by || (w.by = [])).push(by, host); } continue; }
+        if (!(w.band & (3 - s))) continue;
+        // on a plane (of operand s) that this vertex of the other operand was taken as on
+        on = false;
+        for (e = 0; e < w.planes.length && !on; e += 2) if (w.planes[e] === 3 - s && !off(w.planes[e + 1], c)) on = true;
+        if (!on) continue;
+        if (!me) { me = node(c, true); if (orig) me.orig = true; }
+        if (!orig) me.split = true;
+        pairs++;
+        // a split point stands for the band vertex only when that vertex lies on the plane that made the split point
+        // (a plane of the vertex's own solid) and in the plane of the polygon that was split
+        (me.ws || (me.ws = [])).push(w, Math.sqrt(d2), orig || (!off(by, w.p) && !off(host, w.p)));
+      }
+    }
+    for (s = 1; s <= 2; s++) for (i = 0; i < BS[s].length; i += 3) visit(BS[s][i], s, BS[s][i + 1], BS[s][i + 2]);
+    // lane NC, the wide rule. A band vertex that is itself a split point of this boolean lies within EPSILON of three
+    // planes: the one it was taken as on, the one that made it and the plane of the polygon it was made in. Where those
+    // meet at shallow angles it can be far from their meet (EPSILON / the product of the sines: 2.2e-4 where the rim
+    // of a mirrored disc, a round 11.5 degrees off the bottom and chords 5 degrees apart, crosses the other disc's
+    // coplanar bottom, stack fuzz 908), past bandReach, and the polygon is within bandCos of the plane. An original
+    // vertex of the other solid lying EXACTLY (FUZZ) on all three planes is that meet, whatever the distance up to
+    // bandWide (1e-3): the split point goes to it. Nothing else is paired past bandReach or across a shallow plane.
+    var farG = null, HW = 2 * RW, RW2 = RW * RW;
+    if (wide) {
+      for (i = 0; i < bands.length; i++) {
+        nd = bands[i];
+        if (!nd.split || !nd.by) continue;
+        q = nd.p;
+        if (!farG) farG = new Map();
+        var fax = fl((q.x - RW) / HW), fbx = fl((q.x + RW) / HW), fay = fl((q.y - RW) / HW), fby = fl((q.y + RW) / HW), faz = fl((q.z - RW) / HW), fbz = fl((q.z + RW) / HW);
+        for (var fx = fax; fx <= fbx; fx++) for (var fy = fay; fy <= fby; fy++) for (var fz = faz; fz <= fbz; fz++) {
+          var fk = cellKey(fx, fy, fz); cell = farG.get(fk);
+          if (cell) cell.push(nd); else farG.set(fk, [nd]);
+        }
+      }
+    }
+    function exactOn(pl, q) { var t = pl.normal.x * q.x + pl.normal.y * q.y + pl.normal.z * q.z - pl.w; return t <= FUZZ && t >= -FUZZ; }
+    function wideVisit(c, s) {
+      if (c.x < x0 || c.x > x1 || c.y < y0 || c.y > y1 || c.z < z0 || c.z > z1) return;
+      var list = farG.get(cellKey(fl(c.x / HW), fl(c.y / HW), fl(c.z / HW))), m, w, dx, dy, dz, d2, e, on, me;
+      if (!list) return;
+      for (m = 0; m < list.length; m++) {
+        w = list[m]; dx = w.p.x - c.x; dy = w.p.y - c.y; dz = w.p.z - c.z; d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > RW2 || d2 <= S2 || w.orig || !((w.band | w.wb) & (3 - s))) continue;
+        on = false;
+        for (e = 0; e < w.planes.length && !on; e += 2) if (w.planes[e] === 3 - s && exactOn(w.planes[e + 1], c)) on = true;
+        if (w.wp) for (e = 0; e < w.wp.length && !on; e += 2) if (w.wp[e] === 3 - s && exactOn(w.wp[e + 1], c)) on = true;
+        if (!on) continue;
+        for (e = 0; e < w.by.length && on; e++) if (!exactOn(w.by[e], c)) on = false;
+        if (!on) continue;
+        me = node(c, true); me.orig = true;
+        pairs++; BAND.wide++;
+        (wideJoin || (wideJoin = [])).push(w, me);
+      }
+    }
+    var ops = [A, B], wideJoin = null;
+    for (s = 1; s <= 2; s++) {
+      var op = ops[s - 1].polygons;
+      for (i = 0; i < op.length; i++) { var ov = op[i].vertices; for (j = 0; j < ov.length; j++) { visit(ov[j].pos, s, null, null); if (farG) wideVisit(ov[j].pos, s); } }
+    }
+    BAND.pairs += pairs;
+    if (!pairs) { BAND.ms += NOW() - t0; return polys; }
+    // The points that stand for one point form a group: a split point with each band vertex it stands for; a band vertex
+    // that is itself a split point with an original vertex of the other solid lying on the plane that made it and in
+    // the planes of the polygons it was made in. A group goes to its fixed point (an original vertex, or a vertex the
+    // solid's own tree build made: neither can move, other polygons hold them); with several, each free point to the
+    // nearest; with none, to a split point that is not a band vertex (it lies on the plane the band vertex was only
+    // taken as on), the lexicographically smallest.
+    var all = [];
+    function find(r) { while (r.u !== r) { r.u = r.u.u; r = r.u; } return r; }
+    function join(a, b) {
+      if (!a.u) { a.u = a; all.push(a); }
+      if (!b.u) { b.u = b; all.push(b); }
+      a = find(a); b = find(b);
+      if (a !== b) b.u = a;
+    }
+    exact.forEach(function (c) {
+      for (var m = 0; m < c.length; m++) {
+        var me = c[m], e, f, w, no = null;
+        if (!me.ws) continue;
+        var free = me.split && !me.orig;
+        if (free) for (e = 0; e < me.ws.length; e += 3) if (!me.ws[e + 2]) (no || (no = [])).push(me.ws[e]);
+        for (e = 0; e < me.ws.length; e += 3) {
+          w = me.ws[e];
+          if (free) { if (!no || no.indexOf(w) < 0) join(me, w); continue; }
+          if (!w.split || w.orig || !w.by) continue;
+          var fits = true;
+          for (f = 0; f < w.by.length && fits; f++) if (off(w.by[f], me.p)) fits = false;
+          if (fits) join(w, me);
+        }
+      }
+    });
+    if (wideJoin) for (i = 0; i < wideJoin.length; i += 2) if (!wideJoin[i].orig) join(wideJoin[i + 1], wideJoin[i]);
+    var movers = [], groups = new Map(), far2 = 4 * (wide && RW2 > R2 ? RW2 : R2);
+    for (i = 0; i < all.length; i++) { var root = find(all[i]), gl = groups.get(root); if (gl) gl.push(all[i]); else groups.set(root, [all[i]]); }
+    function before(a, b) { return a.p.x < b.p.x || (a.p.x === b.p.x && (a.p.y < b.p.y || (a.p.y === b.p.y && a.p.z < b.p.z))); }
+    groups.forEach(function (g) {
+      var fixed = [], m, n, rep = null;
+      for (m = 0; m < g.length; m++) if (!g[m].split || g[m].orig) fixed.push(g[m]);
+      if (!fixed.length) {
+        for (m = 0; m < g.length; m++) if (!g[m].band && (!rep || before(g[m], rep))) rep = g[m];
+        if (!rep) for (m = 0; m < g.length; m++) if (!rep || before(g[m], rep)) rep = g[m];
+        fixed.push(rep);
+      }
+      for (m = 0; m < g.length; m++) {
+        var a = g[m], best = null, bd = far2;
+        if (fixed.indexOf(a) >= 0) continue;
+        for (n = 0; n < fixed.length; n++) {
+          var b = fixed[n].p, ex = b.x - a.p.x, ey = b.y - a.p.y, ez = b.z - a.p.z, dd = ex * ex + ey * ey + ez * ez;
+          if (dd < bd) { bd = dd; best = fixed[n]; }
+        }
+        if (best) { a.to = best; a.d = Math.sqrt(bd); movers.push(a); }
+      }
+    });
+    if (!movers.length) { BAND.ms += NOW() - t0; return polys; }
+    function goal(r) { return r.to || r; }
+    // A point that lies inside an edge of a polygon which does not hold it (a T-junction: the far side of an edge of a
+    // face the boolean left whole) stays, unless it moves along that edge: off the line it would open the junction.
+    for (i = 0; i < polys.length && movers.length; i++) {
+      var tp = polys[i], tv = tp.vertices, bs = tp._bs || (tp._bs = boundingSphere(tv));
+      for (k = 0; k < movers.length; k++) {
+        var mv = movers[k], mp = mv.p, ux = mp.x - bs.x, uy = mp.y - bs.y, uz = mp.z - bs.z;
+        if (!mv.to || ux * ux + uy * uy + uz * uz > bs.m * bs.m) continue;
+        var holds = false, tj = false, g = mv.to.p;
+        for (j = 0; j < tv.length && !holds; j++) {
+          q = tv[j].pos;
+          if (Math.abs(q.x - mp.x) <= SNAP && Math.abs(q.y - mp.y) <= SNAP && Math.abs(q.z - mp.z) <= SNAP) holds = true;
+        }
+        if (holds) continue;
+        for (j = 0; j < tv.length && !tj; j++) {
+          var ea = tv[j].pos, eb = tv[(j + 1) % tv.length].pos, lx = eb.x - ea.x, ly = eb.y - ea.y, lz = eb.z - ea.z, l2 = lx * lx + ly * ly + lz * lz;
+          if (l2 < S2) continue;
+          var ts = ((mp.x - ea.x) * lx + (mp.y - ea.y) * ly + (mp.z - ea.z) * lz) / l2;
+          if (ts <= 0 || ts >= 1) continue;
+          var px = ea.x + lx * ts - mp.x, py = ea.y + ly * ts - mp.y, pz = ea.z + lz * ts - mp.z;
+          if (px * px + py * py + pz * pz > S2) continue;
+          // the point is inside this edge: where it goes must be on the edge too
+          var tg = ((g.x - ea.x) * lx + (g.y - ea.y) * ly + (g.z - ea.z) * lz) / l2;
+          px = ea.x + lx * tg - g.x; py = ea.y + ly * tg - g.y; pz = ea.z + lz * tg - g.z;
+          if (tg < 0 || tg > 1 || px * px + py * py + pz * pz > S2) tj = true;
+        }
+        if (tj) { mv.to = null; BAND.blocked++; }
+      }
+    }
+    x0 = y0 = z0 = Infinity; x1 = y1 = z1 = -Infinity;
+    var live = 0;
+    for (i = 0; i < movers.length; i++) {
+      if (!movers[i].to) continue;
+      q = movers[i].p; live++;
+      if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; if (q.z < z0) z0 = q.z; if (q.z > z1) z1 = q.z;
+    }
+    if (!live) { BAND.ms += NOW() - t0; return polys; }
+    x0 -= SNAP; y0 -= SNAP; z0 -= SNAP; x1 += SNAP; y1 += SNAP; z1 += SNAP;
+    BAND.moved += live;
+    for (i = 0; i < movers.length; i++) if (movers[i].to) BPTS.push(movers[i].p, movers[i].to.p);
+    var out = [], changed = 0;
+    for (i = 0; i < polys.length; i++) {
+      var p = polys[i], v = p.vertices, nv = null;
+      for (j = 0; j < v.length; j++) {
+        q = v[j].pos;
+        if (q.x < x0 || q.x > x1 || q.y < y0 || q.y > y1 || q.z < z0 || q.z > z1) continue;
+        nd = node(q, false);
+        if (!nd || !nd.to) continue;
+        if (!nv) nv = v.slice();
+        nv[j] = new Vertex(goal(nd).p.clone());
+      }
+      if (!nv) { out.push(p); continue; }
+      changed++;
+      var cv = [], flat = true;
+      for (j = 0; j < nv.length; j++) {
+        q = nv[j].pos; var last = cv.length ? cv[cv.length - 1].pos : null;
+        if (last && last.x === q.x && last.y === q.y && last.z === q.z) continue;
+        cv.push(nv[j]);
+        if (nv[j] !== v[j]) { var tp = p.plane.normal.x * q.x + p.plane.normal.y * q.y + p.plane.normal.z * q.z - p.plane.w; if (tp > EPSILON || tp < -EPSILON) flat = false; }
+      }
+      while (cv.length > 1) { var f0 = cv[0].pos, fz = cv[cv.length - 1].pos; if (f0.x === fz.x && f0.y === fz.y && f0.z === fz.z) cv.pop(); else break; }
+      if (cv.length < 3) { BAND.dropped++; continue; }
+      var pl2 = Plane.fromVertices(cv);
+      if (!pl2) { BAND.dropped++; continue; }
+      // the polygon keeps its plane while the moved points lie on it (within EPSILON); a point off it tilts the face
+      if (flat || pl2.normal.dot(p.plane.normal) <= 0) pl2 = p.plane.clone();
+      var pp = new Polygon(cv, p.shared, pl2);
+      pp.surf = p.surf;
+      if (p.face != null) pp.face = p.face;
+      if (p.part != null) pp.part = p.part;
+      out.push(pp);
+    }
+    BAND.polys += changed;
+    BAND.ms += NOW() - t0;
+    return out;
+  }
   // The booleans below are the classic BSP algorithm with a bounding-box early-out: a polygon whose own bounding box
   // lies clear of the other solid's bounding box is never clipped and is put back (or dropped) unchanged, since no
   // part of it can be inside the other solid. Two solids whose boxes do not meet skip the trees altogether. When few
@@ -1352,38 +1714,38 @@ var CSG = (function () {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
       if (!ba || !bb) return CSG.fromPolygons(clonePolys(this.polygons).concat(clonePolys(csg.polygons))); // an operand is empty
       if (!boundsOverlap(ba, bb, eps)) return CSG.fromPolygons(clonePolys(this.polygons).concat(clonePolys(csg.polygons)));
-      FUZZY = 0;
+      FUZZY = 0; bandReset();
       var n = nearOperands(this, csg, ba, bb, eps);
       if (n) {
         // A outside B, plus B outside A with B's faces coplanar with A's dropped (the classic sequence as lists)
-        var bk = flipAll(n.t.a.clipPolygons(flipAll(n.t.a.clipPolygons(n.b))));
-        return CSG.fromPolygons(healCracks(restoreWhole(n.t.b.clipPolygons(n.a).concat(bk)).concat(clonePolys(n.farA), clonePolys(n.farB))));
+        var bk = flipAll(clipAs(2, n.t.a, flipAll(clipAs(2, n.t.a, n.b))));
+        return CSG.fromPolygons(banded(restoreWhole(clipAs(1, n.t.b, n.a).concat(bk)).concat(clonePolys(n.farA), clonePolys(n.farB)), this, csg));
       }
       STATS.classic++;
       var a = new Node(taggedClones(this.polygons));
       var b = new Node(taggedClones(csg.polygons));
       var far = [];
       a.extractFar(bb, eps, far, OPTIONS.restoreFar); b.extractFar(ba, eps, far, OPTIONS.restoreFar);
-      a.clipTo(b);
-      b.clipTo(a);
+      clipAs(1, b, a);
+      clipAs(2, a, b);
       b.invert();
-      b.clipTo(a);
+      clipAs(2, a, b);
       b.invert();
       a.build(b.allPolygons());
-      return CSG.fromPolygons(healCracks(OPTIONS.restoreFar ? restoreWhole(a.allPolygons().concat(far)) : restoreWhole(a.allPolygons()).concat(untag(far))));
+      return CSG.fromPolygons(banded(OPTIONS.restoreFar ? restoreWhole(a.allPolygons().concat(far)) : restoreWhole(a.allPolygons()).concat(untag(far)), this, csg));
     },
     _subtract: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
       // nothing minus anything is nothing (the trees would hand back the tool's faces inverted)
       if (!ba || !bb || !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons(ba ? clonePolys(this.polygons) : []);
-      FUZZY = 0;
+      FUZZY = 0; bandReset();
       var n = nearOperands(this, csg, ba, bb, eps);
       if (n) {
         // A outside B, plus B inside A flipped: the classic sequence with ~A = the inverted tree of A
         n.t.a.invert();
-        var ak = flipAll(n.t.b.clipPolygons(flipAll(n.a)));
-        var bk = n.t.a.clipPolygons(flipAll(n.t.a.clipPolygons(n.b)));
-        return CSG.fromPolygons(healCracks(restoreWhole(ak.concat(bk)).concat(clonePolys(n.farA))));
+        var ak = flipAll(clipAs(1, n.t.b, flipAll(n.a)));
+        var bk = clipAs(2, n.t.a, flipAll(clipAs(2, n.t.a, n.b)));
+        return CSG.fromPolygons(banded(restoreWhole(ak.concat(bk)).concat(clonePolys(n.farA)), this, csg));
       }
       STATS.classic++;
       var a = new Node(taggedClones(this.polygons));
@@ -1392,26 +1754,26 @@ var CSG = (function () {
       // A's far polygons survive untouched; B's far polygons lie outside A and take nothing away
       a.extractFar(bb, eps, far, OPTIONS.restoreFar); b.extractFar(ba, eps, []);
       a.invert();
-      a.clipTo(b);
-      b.clipTo(a);
+      clipAs(1, b, a);
+      clipAs(2, a, b);
       b.invert();
-      b.clipTo(a);
+      clipAs(2, a, b);
       b.invert();
       a.build(b.allPolygons());
       a.invert();
-      return CSG.fromPolygons(healCracks(OPTIONS.restoreFar ? restoreWhole(a.allPolygons().concat(far)) : restoreWhole(a.allPolygons()).concat(untag(far))));
+      return CSG.fromPolygons(banded(OPTIONS.restoreFar ? restoreWhole(a.allPolygons().concat(far)) : restoreWhole(a.allPolygons()).concat(untag(far)), this, csg));
     },
     _intersect: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
       if (!ba || !bb || !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons([]);
-      FUZZY = 0;
+      FUZZY = 0; bandReset();
       var n = nearOperands(this, csg, ba, bb, eps);
       if (n) {
         n.t.a.invert();
-        var b1 = flipAll(n.t.a.clipPolygons(n.b));
+        var b1 = flipAll(clipAs(2, n.t.a, n.b));
         n.t.b.invert();
-        var ak = flipAll(n.t.b.clipPolygons(flipAll(n.a)));
-        return CSG.fromPolygons(healCracks(restoreWhole(ak.concat(flipAll(n.t.a.clipPolygons(b1))))));
+        var ak = flipAll(clipAs(1, n.t.b, flipAll(n.a)));
+        return CSG.fromPolygons(banded(restoreWhole(ak.concat(flipAll(clipAs(2, n.t.a, b1)))), this, csg));
       }
       STATS.classic++;
       var a = new Node(taggedClones(this.polygons));
@@ -1419,13 +1781,13 @@ var CSG = (function () {
       // far polygons of either solid lie outside the other and cannot be part of the intersection
       a.extractFar(bb, eps, []); b.extractFar(ba, eps, []);
       a.invert();
-      b.clipTo(a);
+      clipAs(2, a, b);
       b.invert();
-      a.clipTo(b);
-      b.clipTo(a);
+      clipAs(1, b, a);
+      clipAs(2, a, b);
       a.build(b.allPolygons());
       a.invert();
-      return CSG.fromPolygons(healCracks(restoreWhole(a.allPolygons())));
+      return CSG.fromPolygons(banded(restoreWhole(a.allPolygons()), this, csg));
     },
     inverse: function () {
       var csg = this.clone();
@@ -1444,6 +1806,42 @@ var CSG = (function () {
       }
       for (var m = 0; m < memo.length; m++) delete memo[m]._m;
       return CSG.fromPolygons(out);
+    },
+    // lane NC: this solid with every polygon flat. healCracks may put a near-miss endpoint into an edge it is up to
+    // HEAL off, so a polygon can hold a vertex a few 1e-6 off its own plane: inside the splitter's EPSILON band and
+    // harmless, until the solid is scaled up (kernel-sheetmetal.js smBool works at 16× on 14 ga: 4.2e-6 became 6.8e-5,
+    // the wall of a hole's cut-out read as bent and the Fold's subtract left 9 open edges, sheet fuzz 929). A polygon
+    // with a vertex more than `tol` (EPSILON / 2) off its plane is fanned into triangles from its worst vertex: the
+    // same points, every piece exactly flat. A polygon whose fan would fold over (a triangle facing the other way) is
+    // left as it is. Returns this when nothing was fanned.
+    planar: function (tol) {
+      var t = tol == null ? EPSILON / 2 : tol, P = this.polygons, out = null, i, j;
+      for (i = 0; i < P.length; i++) {
+        var p = P[i], v = p.vertices, n = p.plane.normal, w = p.plane.w, worst = t, at = -1;
+        if (v.length > 3) for (j = 0; j < v.length; j++) {
+          var q = v[j].pos, d = n.x * q.x + n.y * q.y + n.z * q.z - w;
+          if (d < 0) d = -d;
+          if (d > worst) { worst = d; at = j; }
+        }
+        if (at < 0) { if (out) out.push(p); continue; }
+        var tris = [], ok = true;
+        for (j = 1; j + 1 < v.length && ok; j++) {
+          var tri = Polygon.tryCreate([v[at].clone(), v[(at + j) % v.length].clone(), v[(at + j + 1) % v.length].clone()], p.shared);
+          if (!tri) continue;   // three points in line: no area
+          if (tri.plane.normal.dot(n) <= 0) { ok = false; break; }
+          tri.surf = p.surf;
+          if (p.face != null) tri.face = p.face;
+          if (p.part != null) tri.part = p.part;
+          tris.push(tri);
+        }
+        if (!ok || !tris.length) { if (out) out.push(p); continue; }
+        if (!out) out = P.slice(0, i);
+        for (j = 0; j < tris.length; j++) out.push(tris[j]);
+      }
+      if (!out) return this;
+      var r = CSG.fromPolygons(out);
+      r.bounds = this.bounds;
+      return r;
     },
     // Keep the part of the solid on the front side of a plane (normal · p >= w), closed by a planar cap. Built as the
     // intersection with a box whose one face is the plane and which encloses the solid otherwise, so the result is
@@ -1632,6 +2030,7 @@ var CSG = (function () {
   CSG.healStats = healStats;
   CSG.retryStats = RETRY;
   CSG.fatStats = FAT;
+  CSG.bandStats = BAND;
   CSG.recapStats = RECAP;
   CSG.healCracks = function (csg) { FUZZY = 1; FRAG = null; return CSG.fromPolygons(healCracks(csg.polygons.slice())); };
   return CSG;

@@ -1164,7 +1164,22 @@
   // faces' offset planes meet, so slabs join at sharp offset corners (concave edges) and do not over-cut at
   // tangent facets. Removed faces get an extension out through the face instead. Shell = body − inner.
   // -> { body, inner, removed }
+  // lane MP: the shell's slabs are assembled as csg.js made them before bandSnap (CSG.options.band off). Slabs touch
+  // along edges and facets by design, so nearly every boolean of the assembly has band vertices; snapping them was
+  // never worse per boolean by the mesh's count, yet the assembly as a whole cracked more often on the first attempt
+  // (stack fuzz 761: 0 cracks without, 8 with; 862: 28 / 53), and the guard below already retries a cracked shell.
+  // lane NC, measured on 761: no moved point is shared with another slab (none within 1e-4 of any), and the snap
+  // closes one union outright (6 cracks -> 0). The cracks appear later, in unions of two big halves it does not touch:
+  // each of those is a toss between a first run and an exact retry that are both imperfect (heal count 99 / 103,
+  // mesh cracks 4 / 10; with the unrepaired operand 97 / 89 and 3 / 0), and a repaired operand re-rolls it. With the
+  // snap on here, stack fuzz 1000 has 2 open parts (761, 870) and none better. K.shellGuard.band = true tries it;
+  // K.shellGuard.hollowRim = false builds a hollow round beside the opening as before lane NC (slabs, see mixedSurf).
   function buildShell(f, ctx) {
+    var bandWas = CSG.options.band;
+    if (!K.shellGuard.band) CSG.options.band = false;
+    try { return buildShellSlabs(f, ctx); } finally { CSG.options.band = bandWas; }
+  }
+  function buildShellSlabs(f, ctx) {
     if (!ctx.body) throw new Error('Nothing to shell yet.');
     var T = +f.thickness;
     if (!(T > 0)) throw new Error('Shell thickness must be greater than zero.');
@@ -1199,7 +1214,7 @@
     // record) moves by T·|N(v)·n| (N the surface normal at its corners, n the facet's), so its corners land exactly on
     // the surface offset by T (the record the inner cap carries: r − T); moved by T they sat T/cos(α/2) deep and the
     // shell of a rounded part came out up to 8e-4 heavy (G13). Planar faces: T.
-    var depthOf = {}, radiusOf = {};
+    var depthOf = {}, radiusOf = {}, hollowOf = {};
     function surfOf(face) {
       var S = null, F = null, ps = face.polys || [];
       for (var j = 0; j < ps.length; j++) {
@@ -1265,6 +1280,14 @@
         if (sb && unevenSurf(sb.S)) sb = null;
         if (!!sa === !!sb) return;
         var k = sa ? 0 : 1, rec = sa || sb;
+        // lane NC: a removed planar face the surface runs into TANGENTLY (a boss's root fillet on the opened top: the
+        // surface's true normal at the edge is the plane's) is not such a faceted face: the edge is concave only by
+        // the first chord's tilt. Counting it kept the round at depth T and out of ringSolids. (A KEPT tangent plane
+        // still counts, as before: every shell with a hollow round beside a wall would move.)
+        if (K.shellGuard.hollowRim !== false && K.surfNormalAt && e.a && e.b && removed.indexOf(e.faces[1 - k]) >= 0) {
+          var Nt = K.surfNormalAt(rec.S, e.a, mesh.faces[e.faces[k]].centroid), nP = mesh.faces[e.faces[1 - k]].normal;
+          if (Nt && Math.abs(dot(norm(Nt), nP)) > 1 - 1e-9 && surfError(rec.S, e.a) < 1e-6 * Math.max(1, Math.abs(rec.S.r || 0), Math.abs(rec.S.R || 0))) return;
+        }
         if (dot(e.ins[k], mesh.faces[e.faces[1 - k]].normal) > 1e-9) mixed.add(rec.S);
       });
       return mixed;
@@ -1284,6 +1307,8 @@
         // sphere, a torus's tube (convex when the facet faces away from the tube centre)
         var Nc = K.surfNormalAt(S, cen, best);
         if (Nc && dot(Nc, face.normal) > 0 && (S.t === 'cyl' || S.t === 'sph' || S.t === 'tor')) radiusOf[i] = S.r;
+        // lane NC: a hollow (concave) round: a boss's root fillet, the round in an inside corner
+        if (Nc && dot(Nc, face.normal) < 0 && (S.t === 'cyl' || S.t === 'sph' || S.t === 'tor')) hollowOf[i] = true;
       }
       return (depthOf[i] = d);
     }
@@ -1307,6 +1332,13 @@
             if (un > 1e-9) g = Math.min(4 * T, Math.max(-(d1 * dot(n1, n2) - faceDepth(j)) / un, 0));
             // rfGH: across a thin round (no slab of its own) to where the two faces beside it would meet, and on past it
             if (bridge[j] && !bridge[fi] && phi < Math.PI / 6) g = Math.max(g, (bridge[j].r + 0.75 * T) * Math.tan(bridge[j].phi / 2));
+          } else if (j >= 0 && hollowOf[fi] && rimOf[fi] === j) {
+            // lane NC: a hollow round tangent to the removed face j (a boss's root fillet on the opened top). Its slab
+            // leans AWAY from the opening as it goes down, so its inner cap reaches the wall end (straight down from
+            // the tangent edge, openingOf) only when grown d1·tan(φ) past the edge; T·tan(φ/2), half of that, left
+            // the wall's end leaning in under the opening (4 × 3 plate, Ø.5 boss, R.03, T .0625: −2.2e-4 in³). Twice
+            // that, so the opening's prism cuts the cap instead of touching its edge.
+            g = Math.min(4 * T, Math.max(g, 2 * d1 * Math.tan(phi)));
           }
           return g;
         });
@@ -1427,7 +1459,7 @@
         if (e.faces.length !== 2) return;
         [0, 1].forEach(function (s) {
           var r = e.faces[s], j = e.faces[1 - s];
-          if (removed.indexOf(r) >= 0 && removed.indexOf(j) < 0 && turn[key] < Math.PI / 6 && round(j) && !thin(j) && !(j in rimOf)) { rimSurf[r] = surfOf(mesh.faces[j]).S; flood(j).forEach(function (g) { rimOf[g] = r; }); }
+          if (removed.indexOf(r) >= 0 && removed.indexOf(j) < 0 && turn[key] < Math.PI / 6 && ((round(j) && !thin(j)) || (K.shellGuard.hollowRim !== false && hollowOf[j])) && !(j in rimOf)) { rimSurf[r] = surfOf(mesh.faces[j]).S; flood(j).forEach(function (g) { rimOf[g] = r; }); }
         });
       });
     })();
@@ -1491,6 +1523,10 @@
     }
     function ringSolid(G) {
       var Sg = surfOf(mesh.faces[G[0]]).S, scl = Math.max(1, Math.abs(Sg.r || 0), Math.abs(Sg.R || 0)), h = T / 2, polys = [], open = {};
+      // lane NC: out of a hollow round the normals run together at its centre, r away: T / 2 past a tube of R.03 with
+      // T .0625 turned the outer side inside out (167 open edges, refused); half the radius at most
+      faceDepth(G[0]);
+      if (hollowOf[G[0]] && Sg.r > 0) h = Math.min(h, 0.5 * Sg.r);
       function key(x) { return Math.round(x[0] * 1e7) + ',' + Math.round(x[1] * 1e7) + ',' + Math.round(x[2] * 1e7); }
       for (var g = 0; g < G.length; g++) {
         var face = mesh.faces[G[g]], n = face.normal, oo = null, rec = offsetRecord(face);
@@ -1536,7 +1572,7 @@
       return ok && polys.length ? CSG.fromPolygons(polys) : null;
     }
     // the rounds ringSolid replaces: [{ G, solid }], facets in `inRing`
-    var ringMemo = null, inRing = {};
+    var ringMemo = null, inRing = {}, rimRing = {};
     function ringSolids() {
       if (ringMemo) return ringMemo;
       ringMemo = [];
@@ -1557,7 +1593,11 @@
           if (!seen[j] && removed.indexOf(j) < 0 && !bridge[j] && sj && sj.S === sf.S) { seen[j] = true; G.push(j); }
         });
         var solid = ringSolid(G);
-        if (solid) { ringMemo.push(solid); G.forEach(function (g) { inRing[g] = true; }); }
+        if (solid) {
+          var rim = G.some(function (g) { return hollowOf[g] && rimOf[g] != null; });
+          ringMemo.push({ solid: solid, G: G, rim: rim });
+          G.forEach(function (g) { inRing[g] = true; if (rim) rimRing[g] = true; });
+        }
       }
       return ringMemo;
     }
@@ -1570,10 +1610,13 @@
     var tries = K.shellGuard.on ? (noFar ? [1, 1, 1 + 1e-6, 1 + 1e-4, 0] : [1, 1, 1 + 1e-6, 1 + 1e-4]) : [1];
     for (var tr = 0; tr < tries.length; tr++) {
       var gs = tries[tr] || 1, slabs = [], ringOn = tr === 1;   // rfGN: try 1 = the rounds as one solid each
+      // lane NC: a hollow round tangent to a removed face (rimRing) is one solid on every try: its wall under the
+      // opening is then the surface normal at the tangent edge, straight down, with nothing to trim
+      var rimOn = K.shellGuard.hollowRim !== false && ringSolids().length > 0, ringNow = ringOn ? inRing : rimOn ? rimRing : {};
       if (ringOn) {
-        if (!ringSolids().length) continue;
-        slabs = ringSolids().slice();
-      }
+        if (!ringSolids().length || (rimOn && !ringSolids().some(function (x) { return !x.rim; }))) continue;
+        slabs = ringSolids().map(function (x) { return x.solid; });
+      } else if (rimOn) slabs = ringSolids().filter(function (x) { return x.rim; }).map(function (x) { return x.solid; });
       extensions = [];
       for (var i = 0; i < mesh.faces.length; i++) {
         var o;
@@ -1586,7 +1629,7 @@
           // outward through the face, starting a little inside so no cap is coplanar with the face
           var ext = slabSolid({ loops: parts.open.loops.filter(function (l) { return signedArea(l) > 0; }), plane: o.plane }, uniform, -T / 2, T + 1, f.id);
           if (ext) extensions.push(ext);
-        } else if (!bridge[i] && !(ringOn && inRing[i])) {
+        } else if (!bridge[i] && !ringNow[i]) {
           var slab = slabSolid(o, scaledGrow(growFor(o.plane, i), gs), -faceDepth(i), T, f.id);   // rfGB: −faceDepth (was −T)
           var rec = slab && offsetRecord(mesh.faces[i]), fn = mesh.faces[i].normal;
           if (rec) slab.polygons.forEach(function (p) { var n = p.plane.normal; if (n.x * fn[0] + n.y * fn[1] + n.z * fn[2] < -0.999999) p.surf = rec; });
