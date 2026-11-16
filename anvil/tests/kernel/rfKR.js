@@ -130,8 +130,12 @@
         var C = [];
         for (var i = 0; i < 20000; i++) { var an = 2 * Math.PI * i / 20000; C.push([c[0] + r * Math.cos(an), -2 + r * Math.sin(an)]); }
         var Acb = Math.abs(K.signedArea(rfKRclip(rfKRclip(C, MID - BA / 2, false), MID + BA / 2, true))), Aout = Math.PI * r * r - Acb;
-        var want = plain.mp.volume - (Ab / (R + KF * T) * ((R + T) * (R + T) - R * R) / 2 + Aout * T);
+        // lane MQ: Mass Properties take the true circle in the bend too (Acb, developed: rfFT M26 = OpenCascade), no longer
+        // the 32-gon the solid holds there (Ab, kept below: the part has a little less metal than that solid)
+        var want = plain.mp.volume - (Acb / (R + KF * T) * ((R + T) * (R + T) - R * R) / 2 + Aout * T);
+        var poly = plain.mp.volume - (Ab / (R + KF * T) * ((R + T) * (R + T) - R * R) / 2 + Aout * T);
         nearRel(t.mp.volume, want, 1e-6, c[2]);
+        assert(t.mp.volume < poly, c[2] + ': less than the 32-gon solid ' + poly);
         out.push(c[2] + ' ' + ((t.mp.volume - want) / want).toExponential(1));
       });
       return out.join('; ');

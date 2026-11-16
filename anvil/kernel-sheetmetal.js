@@ -1139,8 +1139,10 @@
       }
       return out;
     }
+    var arcCircles = [];
     loops.forEach(function (l0) {
       var l = signedArea(l0) < 0 ? l0.slice().reverse() : l0;
+      if (opts.exactArcs) arcCircles = arcCircles.concat(loopCircles(l));
       l = clipLoop(clipLoop(clipLoop(clipLoop(l, 0, 0, true), 0, sEnd, false), 1, t0, true), 1, t1, false);
       if (l.length < 3) return;
       l = l.map(function (p) {
@@ -1285,13 +1287,118 @@
     var vol = 0;
     faces.forEach(function (f) { for (var j = 1; j + 1 < f.length; j++) vol += dot(f[0], cross(f[j], f[j + 1])); });
     if (vol < 0) faces.forEach(function (f) { f.reverse(); });
+    // lane MQ (rfFT M26): a void edge that is a chord of a round hole's circle in (s, t) (a hole cut while unfolded)
+    // is walled radially over the straight 3D chords between wrapRegion's points, which the caps' cylinder records
+    // correct exactly, so the solid holds the polygon's void, not the circle's (0.4 % of the hole in Mass Properties).
+    // What the true circle takes beyond that (arcAdjust: Green's ∮ s dt along the arc less along the walled path, × the
+    // metal per unit (s, t) area) is hung on the outer cylinder record (`adj`: { v, m }), which kernel-curves.js
+    // curveCorrection adds once per record. Only with round voids, and only for Fold (opts.exactArcs).
+    var arcs = opts.exactArcs && arcCircles.length && sec.R > 0 ? arcAdjust(edges, arcCircles, sec, BA, segs, Z, E, sEnd, t0, t1, tolT, plane) : null;
     var polys = [];
     faces.forEach(function (f) {
       var pg = CSG.Polygon.tryCreate(f.map(function (p) { return new CSG.Vertex(new CSG.Vector(p[0], p[1], p[2])); }), opts.shared);
       if (pg && f.surf) pg.surf = f.surf;
       if (pg) polys.push(pg);
     });
+    if (arcs && arcs.dA) {
+      var dv = -arcs.f * arcs.dA, m3 = [0, 0, 0];
+      arcs.parts.forEach(function (q) { for (var k = 0; k < 3; k++) m3[k] += -arcs.f * q.w * q.P[k]; });
+      cylOut.adj = { v: dv, m: m3 };
+    }
     return polys.length ? CSG.fromPolygons(polys) : null;
+  }
+  // lane MQ: the circles a CCW outline runs along (3 consecutive points on one circle, at least twice: 4 points or more on it): [{ c, r }]
+  function loopCircles(l) {
+    var out = [], n = l.length;
+    for (var i = 0; i < n; i++) {
+      var p = l[(i + n - 1) % n], q = l[i], w = l[(i + 1) % n];
+      var bx = q[0] - p[0], by = q[1] - p[1], cx = w[0] - p[0], cy = w[1] - p[1], d = 2 * (bx * cy - by * cx);
+      if (!(Math.abs(d) > 1e-14)) continue;
+      var b2 = bx * bx + by * by, c2 = cx * cx + cy * cy, ux = (cy * b2 - by * c2) / d, uy = (bx * c2 - cx * b2) / d;
+      var C = [p[0] + ux, p[1] + uy], r = Math.hypot(ux, uy), tol = 1e-7 * Math.max(1, r), hit = null;
+      // (a sampled arc turns little at each point: both chords under 60° of it, so a rectangle's corners are no circle)
+      if (Math.hypot(bx, by) > r || Math.hypot(w[0] - q[0], w[1] - q[1]) > r) continue;
+      for (var k = 0; k < out.length && !hit; k++) if (Math.abs(out[k].r - r) <= tol && Math.hypot(out[k].c[0] - C[0], out[k].c[1] - C[1]) <= tol) hit = out[k];
+      if (hit) hit.n++; else out.push({ c: C, r: r, n: 1 });
+    }
+    return out.filter(function (c) { return c.n >= 2; });
+  }
+  // lane MQ: arcAdjust(edges, circles, sec, BA, segs, Z, E, sEnd, t0, t1, tolT, plane) -> { f, dA, parts }: what the
+  // true circles add to the walled voids in (s, t) (dA: ∮ s dt along each arc, and along the band edge to where the
+  // circle crosses it, less along the walled path), per chord with its place in 3D (parts, for the moment), and f, the
+  // metal per unit (s, t) area
+  var MQ_GL = { x: [0.033765242898423986, 0.16939530676686776, 0.38069040695840156, 0.6193095930415985, 0.8306046932331322, 0.966234757101576],
+    w: [0.08566224618958517, 0.18038078652406933, 0.23395696728634552, 0.23395696728634552, 0.18038078652406933, 0.08566224618958517] };
+  function arcAdjust(edges, circles, sec, BA, segs, Z, E, sEnd, t0, t1, tolT, plane) {
+    var A = sec.A, R = sec.R, T = sec.T, f = ((R + T) * (R + T) - R * R) / 2 * A / BA;
+    var rc = (2 / 3) * (Math.pow(R + T, 3) - R * R * R) / ((R + T) * (R + T) - R * R), axC = add(plane.origin, scale(plane.y, R));
+    var tolB = 1e-9 * Math.max(1, BA, t1 - t0);
+    var out = { f: f, dA: 0, parts: [] };
+    function onC(p, C) { return Math.abs(Math.hypot(p[0] - C.c[0], p[1] - C.c[1]) - C.r) <= 1e-8 * Math.max(1, C.r); }
+    // the band edge a point lies on: { k: 0 (s = v) | 1 (t = v), v } or null
+    function bnd(p) {
+      if (Math.abs(p[0]) <= tolB) return { k: 0, v: 0 };
+      if (Math.abs(p[0] - sEnd) <= tolB) return { k: 0, v: sEnd };
+      if (Math.abs(p[1] - t0) <= tolB) return { k: 1, v: t0 };
+      if (Math.abs(p[1] - t1) <= tolB) return { k: 1, v: t1 };
+      return null;
+    }
+    // the circle's crossing of that band edge nearest p
+    function cross1(C, b, p) {
+      var k = b.k, d = b.v - C.c[k], h2 = C.r * C.r - d * d;
+      if (!(h2 >= 0)) return null;
+      var h = Math.sqrt(h2), x1 = [0, 0], x2 = [0, 0];
+      x1[k] = x2[k] = b.v; x1[1 - k] = C.c[1 - k] + h; x2[1 - k] = C.c[1 - k] - h;
+      return Math.abs(x1[1 - k] - p[1 - k]) < Math.abs(x2[1 - k] - p[1 - k]) ? x1 : x2;
+    }
+    function arcInt(C, P, Q) {
+      var p1 = Math.atan2(P[1] - C.c[1], P[0] - C.c[0]), p2 = Math.atan2(Q[1] - C.c[1], Q[0] - C.c[0]), dp = p2 - p1;
+      while (dp > Math.PI) dp -= 2 * Math.PI;
+      while (dp <= -Math.PI) dp += 2 * Math.PI;
+      p2 = p1 + dp;
+      return C.c[0] * C.r * (Math.sin(p2) - Math.sin(p1)) + C.r * C.r / 2 * (dp + Math.sin(p2) * Math.cos(p2) - Math.sin(p1) * Math.cos(p1));
+    }
+    function zoneOf(s) { for (var j = 0; j < segs; j++) if (s <= Z[j + 1] + 1e-12) return j; return segs - 1; }
+    function zoneOf(s) { for (var j = 0; j < segs; j++) if (s <= Z[j + 1] + 1e-12) return j; return segs - 1; }
+    // ∮ s dt along the walled path a → b: the straight 3D chords between the points wrapRegion places on the edge (at
+    // every event), each seen radially: θ = θm + atan((1 − λ)·tan(θp − θm) + λ·tan(θq − θm)) along the chord
+    function repInt(a, b) {
+      if (Math.abs(b[1] - a[1]) <= tolT) return 0;
+      var lo = Math.min(a[1], b[1]), hi = Math.max(a[1], b[1]), mid = [];
+      E.forEach(function (t) { if (t > lo + tolT && t < hi - tolT) mid.push(t); });
+      if (b[1] < a[1]) mid.reverse();
+      var ts = [a[1]].concat(mid, [b[1]]), sum = 0;
+      function sOf(t) { return a[0] + (b[0] - a[0]) * (t - a[1]) / (b[1] - a[1]); }
+      for (var i = 0; i + 1 < ts.length; i++) {
+        var pt = ts[i], qt = ts[i + 1], ps = i === 0 ? a[0] : sOf(pt), qs = i + 2 === ts.length ? b[0] : sOf(qt);
+        var zk = zoneOf((ps + qs) / 2), fm = A * (zk + 0.5) / segs, up = Math.tan(A * ps / BA - fm), uq = Math.tan(A * qs / BA - fm), I = 0;
+        for (var g = 0; g < 6; g++) { var lam = MQ_GL.x[g]; I += MQ_GL.w[g] * (BA / A) * (fm + Math.atan((1 - lam) * up + lam * uq)); }
+        sum += I * (qt - pt);
+      }
+      return sum;
+    }
+    edges.forEach(function (e) {
+      var a = e.a, b = e.b, ba = bnd(a), bb = bnd(b);
+      circles.forEach(function (C) {
+        var ca = onC(a, C), cb = onC(b, C);
+        if (!(ca || cb) || !(ca || ba) || !(cb || bb)) return;
+        if (Math.hypot(b[0] - a[0], b[1] - a[1]) > C.r) return;   // (a chord of a sampled arc is short)
+        // an end cut off at the band edge lies on a chord, inside the circle (a slot's straight side runs on outside it)
+        function inside(p) { return Math.hypot(p[0] - C.c[0], p[1] - C.c[1]) < C.r * (1 - 1e-9); }
+        if ((!ca && !inside(a)) || (!cb && !inside(b))) return;
+        var aT = ca ? a : cross1(C, ba, a), bT = cb ? b : cross1(C, bb, b);
+        if (!aT || !bT) return;
+        var tr = arcInt(C, aT, bT);
+        if (!ca && ba.k === 0) tr += ba.v * (aT[1] - a[1]);   // a → aT along s = v
+        if (!cb && bb.k === 0) tr += bb.v * (b[1] - bT[1]);   // bT → b
+        var dA = tr - repInt(a, b);
+        if (!dA) return;
+        var sm = (a[0] + b[0]) / 2, th = A * sm / BA;
+        out.parts.push({ w: dA, P: add(add(add(axC, scale(plane.x, rc * Math.sin(th))), scale(plane.y, -rc * Math.cos(th))), scale(plane.n, (a[1] + b[1]) / 2)) });
+        out.dA += dA;
+      });
+    });
+    return out;
   }
   // lane FU: the bend of a section frame as a solid to cut out of the folded part: the sector between the radial
   // planes at the bend's start and end (exactly), from the axis out past the outer face, t0 … t1 along the edge
@@ -1639,7 +1746,8 @@
     var R = body.intersect(tool);
     if (!(R.volume() > 1e-9)) return tool;
     var T = +sheetParams(model).thickness, eps = 1e-3 * T;
-    var inside = body.pointTester();
+    var inside = body.pointTester(), capW = null;
+    if (dir) meshFromBody(tool).faces.forEach(function (f) { if (dot(f.normal, dir) < -1 + 1e-9 && (capW == null || f.w < capW)) capW = f.w; });
     // sheetFaces(mesh) -> { caps, entry }: the faces of `mesh` (a piece of the body) that lie on a sheet surface, and
     // of those the ones a cut along `dir` enters through
     function sheetFaces(mesh) {
@@ -1655,7 +1763,13 @@
           var onSheet = !inside(add(c, scale(n, eps))) && inside(sub(c, scale(n, T / 2))) && !inside(sub(c, scale(n, T + eps)));
           if (onSheet) yes += w; else no += w;
         }
-        if (!(yes > no)) return;
+        // lane MQ: the face of body ∩ tool on the tool's start plane (the sketch face) is one planar face where the
+        // hole straddles a bend: the flat part is the sheet's top face, the rest a cut through the bend metal rising
+        // above it. When the bend part is the larger, the vote lost the whole face, so no entry face, no backward
+        // shadow, and the hole followed the bend's OUTSIDE surface (a Ø.2 hole swallowing a 20 ga bend: 4.6e-4 of
+        // the part's volume left in, the flat hole 40 % small). On the start plane a real share of sheet face counts.
+        var onStart = capW != null && dot(n, dir) < -1 + 1e-9 && Math.abs(face.w - capW) < 1e-9 * Math.max(1, Math.abs(capW));
+        if (!(yes > no) && !(onStart && yes > 1e-3 * (yes + no))) return;
         caps.push(i);
         if (dir && dot(n, dir) < -1e-6) entry.push(i);
       });
@@ -1749,8 +1863,17 @@
   }
   // lane MJ: a Normal Cut whose tool carries `_nc` (normalCutBends), applied to the body it was made for
   function normalCutApply(nc) {
-    var o = nc.prisms ? nc.rest.subtract(nc.prisms) : nc.rest;
+    var base = nc.prisms ? nc.rest.subtract(nc.prisms) : nc.rest, o = base;
     nc.metals.forEach(function (m) { o = smBool(o, 'union', m, nc.T); });
+    // lane MQ: with two bends' metal meeting on a bend line inside the hole (a 14 ga tray, a Ø.4 Normal Cut hole that
+    // swallows the bend at the part's edge, next to the corner) the union at the sheet's power-of-two scale left a
+    // 6e-6 crack (2 open edges, the metals' two corners 1e-7 apart); unscaled it closes. The scaled union stays first
+    // (lane MJ's corners need it); the unscaled one is taken only when it closes what the scaled one left open.
+    if (nc.metals.length > 1 && K.meshQuality && K.meshFromBody && K.meshQuality(K.meshFromBody(o)).openEdges) {
+      var u = base;
+      nc.metals.forEach(function (m) { u = u.union(m); });
+      if (!K.meshQuality(K.meshFromBody(u)).openEdges) o = u;
+    }
     return o;
   }
   // rfJW: toolCylChords(tool) -> [{ S, chords: [[A, B]] }]: the tool's cylinder records and, for each facet carrying
@@ -2468,6 +2591,19 @@
         });
       }
       var corner = [cornerAt(0), cornerAt(1)];
+      // lane MQ: only a relief can bite this bend's end (its own, a Closed Corner's cut end, or the meeting flange's
+      // relief slot). With none, a gap at a corner end that is air at mid-thickness is a cut made after the bends across
+      // the corner (a Normal Cut hole swallowing the bend next to it): it was dropped as the corner's, and the 14 ga
+      // tray's blank lost the hole's lobe in this bend (flat × T 9.3e-5 over)
+      function reliefAt(kk) {
+        if ((fi.reliefs && fi.reliefs[kk]) || (fi.ccEnds && fi.ccEnds[kk])) return true;
+        var E = kk === 0 ? fi.a : fi.b, reach = 3 * (fi.R + fi.T) + 1e-3;
+        return flanges.some(function (g) {
+          if (g === fi || !g.a || !g.b || !g.origin) return false;
+          return [g.a, g.b].some(function (P, near) { var d = sub(P, E); return Math.hypot(d[0], d[1], d[2]) < reach && ((g.reliefs && g.reliefs[near]) || (g.ccEnds && g.ccEnds[near]) || g.ibRound); });
+        });
+      }
+      corner = corner.map(function (c, kk) { return c && reliefAt(kk); });
       function keep(l) {
         // lane MJ: a clockwise loop is a hole of the gaps, an island of surface inside one, never a notch (a facet of the
         // other bend at a closed corner that reads as this surface, standing in the gap past this bend's slanted end: with
@@ -6262,7 +6398,7 @@
           var bandPrism = prism([[0, 0], [s.BA, 0], [s.BA, L], [0, L]], th, upw ? -T - m : -m, upw ? m : T + m);
           var want = (s.BA * L - all.reduce(function (a, l) { return a + Math.abs(signedArea(l)); }, 0)) * T;
           if (Math.abs(flatNow.intersect(bandPrism).volume() - want) <= 1e-7 * Math.max(want, 1e-9)) {
-            var metal = wrapRegion(all, sf.sec, s.BA, sf.bend, 0, L, { shared: f.id });
+            var metal = wrapRegion(all, sf.sec, s.BA, sf.bend, 0, L, { shared: f.id, exactArcs: true });
             if (metal) { direct.push({ sector: bendSector(sf.sec, sf.bend, 0, L), metal: metal }); return; }
           }
         }

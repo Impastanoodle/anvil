@@ -954,6 +954,14 @@
       var p = polys[pi], F = p.surf;
       if (!F) continue;
       res.facets++;
+      // lane MQ: a record carrying `adj` (kernel-sheetmetal.js wrapRegion, exactArcs: the round holes of a folded bend
+      // past their polygons) adds it once, however many fragments share the record
+      // (by record: a mirrored / patterned copy is a record of its own and adds its own)
+      if (F.adj && (!res._adj || res._adj.indexOf(F) < 0)) {
+        (res._adj || (res._adj = [])).push(F);
+        res.volume += F.adj.v;
+        res.moment[0] += F.adj.m[0]; res.moment[1] += F.adj.m[1]; res.moment[2] += F.adj.m[2];
+      }
       var vs = p.vertices, n = arr(p.plane.normal), phiC = 0, polyArea = 0, rev = F.s.t === 'cyl' || F.s.t === 'cone';
       if (F.P && F.e0) {
         var cen = [0, 0, 0];
@@ -992,6 +1000,7 @@
       res.area += curveWalls(F, p, planar);
     }
     if (res.facets) boundCorrection(polys, res);
+    if (res._adj) delete res._adj;
     return res;
   }
 

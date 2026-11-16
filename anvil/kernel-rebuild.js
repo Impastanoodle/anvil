@@ -301,6 +301,30 @@
     return res;
   }
   function nonManifoldCount(body) { return bodyTouch(body).nm; }
+  // lane MQ: the same count for a plain Cut-Extrude on sheet metal, where the contact line (a bend's knife edge on
+  // another bend's end face) comes split into many short pieces by the bend facets: the edges used four times or more
+  // count when their summed length reaches 2e-4 of the diagonal (a corner hole that just reaches the line: 3.7e-3 of
+  // contact on a 5 in tray; a few 1e-5 of crack stay noise)
+  function sheetTouchCount(body) {
+    if (!body || !body.polygons || !body.polygons.length || typeof Exchange === 'undefined' || !Exchange.bodyMesh) return 0;
+    if (body._mqTouch != null) return body._mqTouch;
+    var m = Exchange.bodyMesh(body), t = m.triangles, P = m.positions, V = P.length / 3, use = new Map(), n = 0, sum = 0;
+    for (var i = 0; i < t.length; i += 3) {
+      for (var k = 0; k < 3; k++) {
+        var a = t[i + k], b = t[i + (k + 1) % 3], key = a < b ? a * V + b : b * V + a;
+        use.set(key, (use.get(key) || 0) + 1);
+      }
+    }
+    use.forEach(function (c, key) {
+      if (c < 4) return;
+      var p = Math.floor(key / V) * 3, q = (key % V) * 3;
+      n++; sum += Math.hypot(P[p] - P[q], P[p + 1] - P[q + 1], P[p + 2] - P[q + 2]);
+    });
+    var bb = body.getBounds ? body.getBounds() : null, diag = bb ? Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]) : 1;
+    var res = sum >= 2e-4 * diag ? n : 0;
+    try { Object.defineProperty(body, '_mqTouch', { value: res, enumerable: false, writable: true, configurable: true }); } catch (e) { /* frozen */ }
+    return res;
+  }
   // rfGH: touchParts(body, apart) -> the closed solid pieces of a body whose pieces touch only along edges or at
   // vertices (apart: or do not touch at all: a boss off the part inside the part's box, rfGA 183), or null: no such
   // pieces, a piece that is not a solid of its own (a cavity's wall, negative volume), or one still open or still
@@ -829,7 +853,20 @@
       warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + 'Some instances are disjoint from the part and were not created.';
     }
     function zeroThickness(before, f, tool, beforeFeatures) {
-      if (!NM.on || model.sheet) return;   // never on sheet metal (bends, reliefs and Normal Cuts are FL's / sheet metal's)
+      // never on sheet metal (bends, reliefs and Normal Cuts are FL's / sheet metal's). Lane MQ: a plain Cut-Extrude on
+      // sheet metal builds as before but warns when it makes the part touch itself along a line: through a tray corner
+      // with no gap between the two bends, the earlier bend's knife edge (its inside face is tangent to the sketch face
+      // on its bend line) lies on the later bend's end face (OpenCascade builds the same solid)
+      var sheetPlain = model.sheet && f.type === 'extrude' && isCut(f, model) && !f.normalCut;
+      if (sheetPlain && NM.on) {
+        var nA = 0, nB = 0;
+        ctx.bodies.forEach(function (b) { if (before.indexOf(b) < 0) nA += sheetTouchCount(b); });
+        if (!nA) return;
+        before.forEach(function (b) { if (ctx.bodies.indexOf(b) < 0) nB += sheetTouchCount(b); });
+        if (nA > nB) warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + 'The cut leaves two walls of the part touching along a line (zero-thickness geometry at a bend). Check Normal cut, or make the cut slightly larger, to avoid it.';
+        return;
+      }
+      if (!NM.on || model.sheet) return;
       var changed = ctx.bodies.filter(function (b) { return before.indexOf(b) < 0; });
       if (!changed.length) return;
       var clean = null, split = false;   // (the tool's own mesh only when there are pieces to judge: a 1000-hole tool takes seconds)

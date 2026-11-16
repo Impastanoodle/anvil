@@ -58,7 +58,10 @@
       assert(rfKQcount(r.step, /RATIONAL_B_SPLINE_SURFACE/g) >= 32 && rfKQcount(r.step, /RATIONAL_B_SPLINE_CURVE/g) >= 64, 'the walls and rails: ' + rfKQcount(r.step, /RATIONAL_B_SPLINE_SURFACE/g) + ' / ' + rfKQcount(r.step, /RATIONAL_B_SPLINE_CURVE/g));
       var ex = rfKQexact(r.own);
       nearRel(r.back, ex, 1e-9, 'read-back volume = the exact U less the wrapped hole');
-      nearRel(r.src.mp.volume, ex, 1e-9, 'the part\'s own volume (curve-corrected facets) agrees');
+      // lane MQ: the part's own Mass Properties count the true round hole developed in the bend (rfFT M26: = OpenCascade),
+      // not the 32-gon its solid and its STEP hold (the line above), so they differ by the 32-gon's shortfall
+      var exTrue = rfKQexact({ loops: [null] }) - Math.PI * 0.125 * 0.125 / (R + KF * T) * ((R + T) * (R + T) - R * R) / 2;
+      nearRel(r.src.mp.volume, exTrue, 1e-9, 'the part\'s own volume (curve-corrected facets, the true circle in the bend)');
       assert(r.tris < 4000, 'read in ' + r.tris + ' triangles (the rails kept at the cylinder\'s own step)');
       var fl = r.flat;
       assert(fl.bends.length === 2 && fl.bends.every(function (b) { return Math.abs(b.R - R) < 1e-9; }), 'two bends R .25: ' + fl.bends.map(function (b) { return b.label; }).join('; '));

@@ -323,7 +323,8 @@
     // lane FX (local-2026-10-30b): every bend face carries a cylinder record, so the 23 bent parts are exact in Mass
     // Properties (21 promoted to hard rows: = OpenCascade to 2.4e-8). Two stay TODO for what is still polygonal:
     VOLTODO.M18 = [1e-4, 'the Normal Cut holes carry no cylinder record (2.5e-5 light; normalCutTool, kernel-sheetmetal.js)'];
-    VOLTODO.M26 = [1e-4, 'the round hole\'s wall inside the bend is a polygon (1.2e-5; buildFold / wrapRegion)'];
+    // M26 (the round hole's wall inside the bend a polygon, 1.1e-5 heavy) is a hard row since lane MQ: wrapRegion's
+    // exactArcs hangs the true circle's shortfall on the bend's cylinder record (9.7e-7 of OpenCascade; rfMQ)
     // flat area × T = OpenCascade's exact folded volume (K 0.5: the neutral surface is the mid-surface; straight
     // bends, no round holes in the flat loops, no mitres)
     var FLATVOL = 'M01 M02 M04 M05 M06 M07 M08 M09 M10 M11 M13 M16 M19 M20 M23 M27'.split(' ');
