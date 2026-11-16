@@ -1856,6 +1856,68 @@
     row(ew.length ? 'bad' : 'ok', 'rfKV OcctKernel.earcut: a 24 x 48 face with 1800 staggered Ø.25 holes (32 points each): V + 2H - 2 triangles, area exact', ew.join('\n') || (etr.length / 3 + ' triangles in ' + ems.toFixed(0) + ' ms'), ems);
     counts[ew.length ? 'fail' : 'pass']++;
   } catch (e) { row('bad', 'rfKV OcctKernel.earcut', e.message); counts.fail++; }
+  // lane MU (2026-11-15): the shop's daily panel at full size, 24 x 48 16 ga with 1800 staggered Ø.25 holes, in the
+  // four ways it gets modelled: (a) a Base Flange sketched with its holes, (b) a Base Flange plate + one Cut-Extrude of
+  // every circle, (c) two staggered seed holes + LPattern 30 x 30, (d) = (a) + four Edge Flanges. Work counts, not times
+  // (test-reports/2026-11-15-occt-panels.md has those): no Boolean for the holes (c: its 2-hole seed only), BRepMesh
+  // for none of the perforated faces or walls, faces = the plate's 6 (30 with the flanges) + one wall per hole, every
+  // wall in 2 x 32 triangles, a closed mesh, the analytic volume (a-c)
+  function muPanel(form) {
+    var T = 0.0598, r = 0.125, cols = 30, rows = 60, sx = 22 / cols, sy = 46 / rows, H = [];
+    for (var j = 0; j < rows; j++) for (var i = 0; i < cols; i++) H.push([1 + sx / 4 + i * sx + (j % 2 ? sx / 2 : 0), 1 + sy / 2 + j * sy]);
+    var circ = ';\nvar H = ' + JSON.stringify(H) + ';\nfor (var i = 0; i < H.length; i++) s.circle(H[i][0], H[i][1], ' + r + ');\ns';
+    var fl = 'p.flange(1, [[12, ' + T + ', 0], [24, ' + T + ', -24], [12, ' + T + ', -48], [0, ' + T + ', -24]]);\n';
+    var c = 'p.units("in");\np.sheet(' + T + ', ' + T + ', 0.5);\n';
+    if (form === 'a' || form === 'd') return c + 'var s = p.sketch("Top").rect(0, 0, 24, 48)' + circ + '.end().baseFlange(' + T + ');\n' + (form === 'd' ? fl : '');
+    c += 'p.sketch("Top").rect(0, 0, 24, 48).end().baseFlange(' + T + ');\n';
+    if (form === 'b') return c + 'var s = p.sketch("Top", ' + T + ')' + circ + '.end().cut("through", { reverse: true });\n';
+    return c + 'p.sketch("Top", ' + T + ').circle(' + H[0][0] + ', ' + H[0][1] + ', ' + r + ').circle(' + H[cols][0] + ', ' + H[cols][1] + ', ' + r + ').end().cut("through", { reverse: true });\n' +
+      'p.linearPattern({ dir: "x", spacing: ' + sx + ', count: ' + cols + ', dir2: "z", spacing2: ' + 2 * sy + ', count2: ' + rows / 2 + ', reverse2: true });\n';
+  }
+  for (var muf of [['a', 'Base Flange sketched with its 1800 holes'], ['b', 'Base Flange + one Cut-Extrude of 1800 circles'], ['c', 'two staggered seed holes + LPattern 30 x 30'], ['d', 'Base Flange sketched with its 1800 holes + four Edge Flanges']]) {
+    var muName = 'rfMU 24 x 48 16 ga panel, 1800 staggered Ø.25 holes, ' + muf[1] + ': no Boolean for the holes, no BRepMesh for the perforated faces, 6 (30) + 1800 faces, walls in 32 facets, closed mesh';
+    try {
+      var mub = await kvBuild(muPanel(muf[0])), mr = mub.r, mw = [], mp = mr.plate || {}, muWant = (24 * 48 - 1800 * Math.PI * 0.125 * 0.125) * 0.0598;
+      if (!mr.ok || !mr.valid) mw.push('OpenCascade: ok ' + mr.ok + ', valid ' + mr.valid + ' ' + JSON.stringify(mr.status).slice(0, 300));
+      if ((mp.plate || 0) + (mp.slab || 0) < 1798 || (mp.boolean || 0) > 0) mw.push('plate path: ' + JSON.stringify(mp));
+      if (!(mp.meshFaces >= 1802)) mw.push('faces triangulated by the plate path: ' + mp.meshFaces + ' (want the two perforated faces + 1800 walls)');
+      if (muf[0] !== 'd' && !(Math.abs(mr.volume - muWant) <= 1e-9 * muWant)) mw.push('volume ' + mr.volume + ', exact ' + muWant);
+      if (mr.faces.length !== (muf[0] === 'd' ? 1830 : 1806)) mw.push(mr.faces.length + ' faces, want ' + (muf[0] === 'd' ? 1830 : 1806));
+      if (!mr.mesh) mw.push('no mesh');
+      else {
+        if (kvClosed(mr.mesh)) mw.push('mesh not closed');
+        var muW = {}, mfo = mr.mesh.faceOf;
+        for (var mt = 0; mt < mfo.length; mt++) { var mff = mr.faces[mfo[mt]]; if (mff.type === 'cylinder' && mff.surf && Math.abs(mff.surf.r - 0.125) < 1e-9) muW[mfo[mt]] = (muW[mfo[mt]] || 0) + 1; }
+        var muWc = Object.keys(muW).map(function (k) { return muW[k]; });
+        if (muWc.length !== 1800 || muWc.some(function (x) { return x !== 64; })) mw.push('hole walls: ' + muWc.length + ' with ' + JSON.stringify(muWc.slice(0, 4)) + ' triangles (want 1800 x 64)');
+      }
+      if (mub.ms > 90000) mw.push('OpenCascade took ' + (mub.ms / 1000).toFixed(1) + ' s');
+      row(mw.length ? 'bad' : 'ok', muName, mw.join('\n') || ('volume ' + mr.volume.toFixed(9) + ', ' + mr.faces.length + ' faces, ' + mr.mesh.faceOf.length + ' triangles; ' + (mub.ms / 1000).toFixed(2) + ' s'), mub.ms);
+      counts[mw.length ? 'fail' : 'pass']++;
+    } catch (e) { row('bad', muName, e.message); counts.fail++; }
+  }
+  // lane MU: a fillet / chamfer along a CIRCULAR edge whose size uses up the face beside it (widenedEdgeOp's circle
+  // case): a tube's top annulus 0.25 wide rounded R.25 at its outer or inner rim, a disc 0.25 thick chamfered / rounded
+  // .25 at its top rim. OpenCascade refused all four ("radius too large?"); now valid, the analytic volume (Pappus) to
+  // 1e-9 and the faces SolidWorks gives (the used-up face gone)
+  for (var muc of (function () {
+    var tube = 'p.units("in");\np.sketch("Top").circle(0, 0, 1).circle(0, 0, 0.75).end().extrude(1);\n', disc = 'p.units("in");\np.sketch("Top").circle(0, 0, 1).end().extrude(0.25);\n';
+    var r = 0.25, A = r * r * (1 - Math.PI / 4), xb = r * (5 / 6 - Math.PI / 4) / (1 - Math.PI / 4), tubeV = Math.PI * (1 - 0.5625);
+    return [['tube R.25 at the outer top rim', tube + 'p.fillet(0.25, [[1, 1, 0]]);\n', tubeV - 2 * Math.PI * (1 - xb) * A, 4],
+      ['tube R.25 at the inner top rim', tube + 'p.fillet(0.25, [[0.75, 1, 0]]);\n', tubeV - 2 * Math.PI * (0.75 + xb) * A, 4],
+      ['disc .25 thick, chamfer .25 at the top rim', disc + 'p.chamfer(0.25, [[1, 0.25, 0]]);\n', Math.PI * 0.25 - 2 * Math.PI * (1 - r / 3) * (r * r / 2), 3],
+      ['disc .25 thick, R.25 at the top rim', disc + 'p.fillet(0.25, [[1, 0.25, 0]]);\n', Math.PI * 0.25 - 2 * Math.PI * (1 - xb) * A, 3]];
+  })()) {
+    var mucName = 'rfMU round / chamfer using up the face beside a circular edge: ' + muc[0] + ': valid, exact volume, ' + muc[3] + ' faces';
+    try {
+      var mcb = await kvBuild(muc[1]), mcr = mcb.r, mcw = [];
+      if (!mcr.ok || !mcr.valid) mcw.push('OpenCascade: ok ' + mcr.ok + ', valid ' + mcr.valid + ' ' + JSON.stringify(mcr.status));
+      if (!(Math.abs(mcr.volume - muc[2]) <= 1e-9 * muc[2])) mcw.push('volume ' + mcr.volume + ', exact ' + muc[2]);
+      if (mcr.faces.length !== muc[3]) mcw.push(mcr.faces.length + ' faces (' + mcr.faces.map(function (f) { return f.type; }).join('/') + '), want ' + muc[3]);
+      row(mcw.length ? 'bad' : 'ok', mucName, mcw.join('\n') || ('volume ' + mcr.volume.toFixed(9) + ', ' + mcr.faces.map(function (f) { return f.type; }).join('/')), mcb.ms);
+      counts[mcw.length ? 'fail' : 'pass']++;
+    } catch (e) { row('bad', mucName, e.message); counts.fail++; }
+  }
   // --- end rfKV ---
   var s = document.getElementById('summary');
   s.textContent = counts.pass + ' / ' + (counts.pass + counts.fail) + ' passed' + (counts.fail ? ' — ' + counts.fail + ' FAILED' : '') + ' · ' + counts.todo + ' parts need features not built by OpenCascade yet · engine loaded in ' + loadMs.toFixed(0) + ' ms · Anvil ' + totals.anvil.toFixed(0) + ' ms, OpenCascade ' + totals.occt.toFixed(0) + ' ms';

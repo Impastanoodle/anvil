@@ -807,8 +807,72 @@ var OcctKernel = (function () {
         return L > 1e-9 ? { a: v[0], t: V.scale(d, 1 / L) } : null;
       }
       function has(fc, e) { return explore(fc, ENUM.TopAbs_EDGE).some(function (x) { return x.IsSame(e); }); }
+      // lane MU: a CIRCULAR picked edge where a plane square to its axis meets a cylinder about it (a tube's or disc's
+      // rim). The reach is the size on both faces (they meet at 90°). Across the planar face (an annulus) the far edge is
+      // a concentric circle, and the face beyond it a cylinder: widened by a ring δ thick, radially outward from the
+      // picked edge, over that cylinder's length. Along the cylinder the far edge is a coaxial circle of the same radius,
+      // and the face beyond it a plane square to the axis: pushed out along the axis by a prism, as for straight edges.
+      function circOf(e) {
+        var ac = N(new oc.BRepAdaptor_Curve_2(e)), t = ac.GetType();
+        if ((t && t.value != null ? t.value : t) !== 1) return null;
+        var ci = N(ac.Circle()), o = N(ci.Location()), xd = N(N(ci.XAxis()).Direction()), yd = N(N(ci.YAxis()).Direction());
+        var x = [xd.X(), xd.Y(), xd.Z()], y = [yd.X(), yd.Y(), yd.Z()];
+        return { c: [o.X(), o.Y(), o.Z()], a: V.norm(V.cross(x, y)), x: x, r: ci.Radius() };
+      }
+      function coaxial(p, q) {
+        if (Math.abs(Math.abs(V.dot(p.a, q.a)) - 1) > 1e-9) return false;
+        var d = V.sub(q.c, p.c);
+        return V.len(V.sub(d, V.scale(p.a, V.dot(d, p.a)))) <= tol;
+      }
+      function diskPrism(c, a, x, r, h) {   // the solid cylinder of radius r from c along a by h
+        var mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+        mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_8(N(new oc.gp_Circ_2(N(new oc.gp_Ax2_2(P(c), Dir(a), Dir(x))), r)))).Edge()));
+        var fc = N(N(new oc.BRepBuilderAPI_MakeFace_15(N(mw.Wire()), true)).Face());
+        return N(N(new oc.BRepPrimAPI_MakePrism_1(fc, Vec(V.scale(a, h)), false, true)).Shape());
+      }
+      function surfType(fc) { var t = N(new oc.BRepAdaptor_Surface_2(fc, true)).GetType(); return t && t.value != null ? t.value : t; }
+      function addTool(sh) { var out = cut(sh, body); if (volumeOf(out) > 1e-9 * Math.pow(Math.max(size, 1e-3), 3)) tools.push(out); }
+      function circleTools(e, ce, beside) {
+        beside.forEach(function (F) {
+          var st = surfType(F);
+          if (st === 0) {
+            var pl = draftPlaneOf(F);
+            if (!pl || Math.abs(Math.abs(V.dot(pl.n, ce.a)) - 1) > 1e-9) return;
+            edgesOf(F).forEach(function (w) {
+              if (w.IsSame(e)) return;
+              var cw = circOf(w);
+              if (!cw || !coaxial(ce, cw) || Math.abs(V.dot(V.sub(cw.c, ce.c), ce.a)) > tol || Math.abs(Math.abs(cw.r - ce.r) - size) > tol) return;
+              var s = cw.r > ce.r ? 1 : -1, r0 = Math.min(cw.r, cw.r + s * delta), r1 = Math.max(cw.r, cw.r + s * delta);
+              if (!(r0 > 1e-9)) return;
+              faces.forEach(function (W) {
+                if (W.IsSame(F) || !has(W, w) || surfType(W) !== 1) return;
+                // W's length along the axis: from its circular edges
+                var lo = Infinity, hi = -Infinity;
+                edgesOf(W).forEach(function (x) { var cx = circOf(x); if (cx && coaxial(ce, cx)) { var h = V.dot(V.sub(cx.c, ce.c), ce.a); lo = Math.min(lo, h); hi = Math.max(hi, h); } });
+                if (!(hi - lo > tol)) return;
+                var base = V.add(ce.c, V.scale(ce.a, lo));
+                addTool(cut(diskPrism(base, ce.a, ce.x, r1, hi - lo), diskPrism(base, ce.a, ce.x, r0, hi - lo)));
+              });
+            });
+          } else if (st === 1) {
+            edgesOf(F).forEach(function (w) {
+              if (w.IsSame(e)) return;
+              var cw = circOf(w), d = cw ? V.dot(V.sub(cw.c, ce.c), ce.a) : 0;
+              if (!cw || !coaxial(ce, cw) || Math.abs(cw.r - ce.r) > tol || Math.abs(Math.abs(d) - size) > tol) return;
+              var u = V.scale(ce.a, d > 0 ? 1 : -1);
+              faces.forEach(function (W) {
+                if (W.IsSame(F) || !has(W, w) || surfType(W) !== 0) return;
+                var pw = draftPlaneOf(W);
+                if (!pw || Math.abs(Math.abs(V.dot(pw.n, ce.a)) - 1) > 1e-9) return;
+                addTool(N(N(new oc.BRepPrimAPI_MakePrism_1(W, Vec(V.scale(u, delta)), false, true)).Shape()));
+              });
+            });
+          }
+        });
+      }
       es.forEach(function (e) {
         var ln = lineOf(e), beside = faces.filter(function (fc) { return has(fc, e); });
+        if (!ln && beside.length === 2) { var ce = circOf(e); if (ce) circleTools(e, ce, beside); return; }
         if (!ln || beside.length !== 2) return;
         var pl = beside.map(draftPlaneOf);
         if (!pl[0] || !pl[1]) return;
@@ -2692,7 +2756,8 @@ var OcctKernel = (function () {
           l.r2.forEach(function (p, j) { data.push(p[0], p[1]); P3.push(l.ring[j]); });
           if (l.circ != null) outerCircle[l.circ] = k === 0;
         });
-        var tris = kvEarcut(data, holes), out = [];
+        var tE = now(), tris = kvEarcut(data, holes), out = [];
+        kvStats.earcutMs = (kvStats.earcutMs || 0) + now() - tE;
         // every vertex of the face is on its boundary: Σ triangles = vertices + 2·holes - 2 when nothing was dropped
         if (tris.length / 3 !== P3.length + 2 * (order.length - 1) - 2) return null;
         for (var ti = 0; ti < tris.length; ti += 3) {
@@ -3101,15 +3166,22 @@ var OcctKernel = (function () {
     var ax = a.x, bx = b.x, cx = c.x, ay = a.y, by = b.y, cy = c.y;
     var x0 = Math.min(ax, bx, cx), y0 = Math.min(ay, by, cy), x1 = Math.max(ax, bx, cx), y1 = Math.max(ay, by, cy);
     var minZ = ecZ(x0, y0, minX, minY, invSize), maxZ = ecZ(x1, y1, minX, minY, invSize), p = ear.prevZ, n = ear.nextZ;
-    function blocks(q) { return q.x >= x0 && q.x <= x1 && q.y >= y0 && q.y <= y1 && q !== a && q !== c && ecInTri(ax, ay, bx, by, cx, cy, q.x, q.y) && ecArea(q.prev, q, q.next) >= 0; }
+    // lane MU: the test written out in each loop (a closure made per ear was a third of the mesh time at 3200 holes,
+    // most of it garbage collection); the same tests in the same order
     while (p && p.z >= minZ && n && n.z <= maxZ) {
-      if (blocks(p)) return false;
+      if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1 && p !== a && p !== c && ecInTri(ax, ay, bx, by, cx, cy, p.x, p.y) && ecArea(p.prev, p, p.next) >= 0) return false;
       p = p.prevZ;
-      if (blocks(n)) return false;
+      if (n.x >= x0 && n.x <= x1 && n.y >= y0 && n.y <= y1 && n !== a && n !== c && ecInTri(ax, ay, bx, by, cx, cy, n.x, n.y) && ecArea(n.prev, n, n.next) >= 0) return false;
       n = n.nextZ;
     }
-    while (p && p.z >= minZ) { if (blocks(p)) return false; p = p.prevZ; }
-    while (n && n.z <= maxZ) { if (blocks(n)) return false; n = n.nextZ; }
+    while (p && p.z >= minZ) {
+      if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1 && p !== a && p !== c && ecInTri(ax, ay, bx, by, cx, cy, p.x, p.y) && ecArea(p.prev, p, p.next) >= 0) return false;
+      p = p.prevZ;
+    }
+    while (n && n.z <= maxZ) {
+      if (n.x >= x0 && n.x <= x1 && n.y >= y0 && n.y <= y1 && n !== a && n !== c && ecInTri(ax, ay, bx, by, cx, cy, n.x, n.y) && ecArea(n.prev, n, n.next) >= 0) return false;
+      n = n.nextZ;
+    }
     return true;
   }
   function ecCure(start, tris) {
