@@ -239,15 +239,25 @@
   // and offset equal within noise) sharing one plane, for meshing only (geometry, tags and the body are unchanged).
   // EDGE_PICK_TOL: a pick is accepted within this fraction of T of an edge, so it can never reach the opposite edge.
   var EDGE_PICK_TOL = 0.75;
+  // lane MU2: the representatives are binned by offset (bins 1e-8 wide; a match is within 1e-8, so it lies in the
+  // plane's own bin or a neighbour) and the EARLIEST matching one is taken, as the old scan of every representative
+  // did (that scan was quadratic: 7 of 16 s on a 1800-hole panel with four Edge Flanges). coplanarStats.compares
+  // counts the representatives tested
+  var coplanarStats = K.coplanarStats = { compares: 0 };
   function coplanarBody(body) {
-    var reps = [];
+    var bins = new Map(), count = 0;
     return { polygons: body.polygons.map(function (p) {
-      var n = p.plane.normal, w = p.plane.w, rep = null;
-      for (var i = 0; i < reps.length && !rep; i++) {
-        var r = reps[i];
-        if (Math.abs(r.w - w) < 1e-8 && n.x * r.normal.x + n.y * r.normal.y + n.z * r.normal.z > 1 - 1e-10) rep = r;
+      var n = p.plane.normal, w = p.plane.w, rep = null, best = Infinity, k = Math.floor(w * 1e8);
+      for (var d = -1; d <= 1; d++) {
+        var list = bins.get(k + d);
+        if (!list) continue;
+        for (var i = 0; i < list.length && list[i].i < best; i++) {
+          var r = list[i].r;
+          coplanarStats.compares++;
+          if (Math.abs(r.w - w) < 1e-8 && n.x * r.normal.x + n.y * r.normal.y + n.z * r.normal.z > 1 - 1e-10) { rep = r; best = list[i].i; }
+        }
       }
-      if (!rep) { reps.push(p.plane); return p; }
+      if (!rep) { var l0 = bins.get(k); if (!l0) bins.set(k, l0 = []); l0.push({ r: p.plane, i: count++ }); return p; }
       if (rep === p.plane) return p;
       var q = Object.create(p);
       q.plane = rep;

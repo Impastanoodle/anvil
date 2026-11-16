@@ -17,4 +17,18 @@
         nearRel(b.mp.volume, c[2], 1e-6, 'volume');
       });
     });
+    // lane MU2: coplanarBody (every Edge Flange meshes the sheet through it) binned its planes by offset; it compared
+    // each polygon with every distinct plane before (7 of 16 s on a 1800-hole panel with four flanges). Work count: a
+    // 400-hole 8 x 8 panel with four Edge Flanges makes a few comparisons per polygon, not one per wall facet plane
+    test('rfMU: Edge Flanges on a 400-hole sheet: coplanarBody compares each polygon with a few planes, not all 12 800 wall facet planes', function () {
+      var T = 0.0598, c = 'p.units("in");\np.sheet(' + T + ', ' + T + ', 0.5);\nvar s = p.sketch("Top").rect(0, 0, 8, 8);\n' +
+        'for (var i = 0; i < 20; i++) for (var j = 0; j < 20; j++) s.circle(0.5 + i * 0.36, 0.5 + j * 0.36, 0.0625);\n' +
+        's.end().baseFlange(' + T + ');\np.flange(1, [[4, ' + T + ', 0], [8, ' + T + ', -4], [4, ' + T + ', -8], [0, ' + T + ', -4]]);\n';
+      var st = K.coplanarStats, c0 = st.compares, t0 = Date.now(), b = build(c), ms = Date.now() - t0;
+      noErrors(b);
+      var n = b.build.body.polygons.length, made = st.compares - c0;
+      assert(made > 0, 'coplanarBody not called');
+      assert(made < 8 * n, made + ' plane comparisons for a body of ' + n + ' polygons');
+      assert(ms < 60000, 'rebuild took ' + ms + ' ms');
+    });
   })();

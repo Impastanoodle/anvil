@@ -79,6 +79,29 @@ So the 1800-hole panel, end to end in the app: Anvil rebuild + OpenCascade + pag
   annulus rounded at either rim (R = its width), a disc chamfered / rounded by its thickness. Before: "radius too large?"
   and Anvil's faceted solid drove. Now valid, analytic volume to 1e-9, SolidWorks' faces (4 / 3).
 
+## Follow-up MU2: Anvil's own rebuild of the flanged panel
+
+`coplanarBody` (kernel-sheetmetal.js) bins its representative planes by offset (1e-8 bins, own + both neighbours,
+earliest match kept): the same grouping as the old scan of every representative. `K.coplanarStats.compares` counts.
+
+| Anvil rebuild, form d | before | after |
+|---|---|---|
+| 1800 holes, quiet machine (profiler on) | 16.0 | 10.8 |
+| 1800 holes, same busy machine, back to back | 29.1 | 14.7 |
+| 3200 holes, quiet | 55-88 | 27.1 |
+| 3200 holes, same busy machine | 130.4 | 44.4 |
+
+Identical results, before (HEAD) vs after, 36 parts (every non-assembly example, panels 600 / 1800 / 3200 in all four
+forms, an 8 x 8 flanged panel with 100 holes): same polygons (planes, vertices, tags), `positions64`, `massProps`,
+`bodyEdges`, and flat DXF where the part is sheet metal (3 examples + the small panel; the big panels' flat pattern is
+the known quadratic `mergeFlatRegions`).
+
+What is left at 1800 (d), quiet, 10.8 s: `solidFromProfile` subtracting every hole of the Base Flange sketch 3.4 s
+(3200: 12.4 s, `healCracks` 6.7 of it), `bodyEdges` inside `flangeLayout` 2.1 s (3200: 3.2 s; linear in the mesh,
+not a quadratic lookup, so left as is), the flange `union` 1.4 s (2.8), `bendVoids`' band-slab subtract 0.9 s (1.7:
+`nearOperands` scans the whole perforated sheet for a slab at one edge), `meshFromBody` 0.5 s (1.0). The 3 s / 8 s
+targets need the first, third and fourth: csg.js and kernel-curves.js, not this lane's files.
+
 ## Not fixed (other lanes' files)
 
 1. **Anvil's Edge Flanges on a perforated sheet**: 14-18 s at 1800 holes, 55-88 s at 3200, and the app waits for it
