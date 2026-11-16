@@ -1794,6 +1794,23 @@ var SketchSolver = (function () {
       var side = connected(buildSystem(sketch), tg, z).set;
       mob = {};
       E.forEach(function (e, j) { mob[j] = side[j] ? 1 : 0.05; });
+      // rfMT flow 4: a Linear Sketch Pattern's spacing (a distance from the pattern's first anchor to a direction
+      // anchor) moves the copies only. The seeds are joined to the copies through the Pattern relation, so they were on
+      // the moving side: the seed slot was pulled apart (an end arc of negative radius) to make the spacing
+      (sketch.rels || []).forEach(function (pr) {
+        if (pr.type !== 'pattern' || pr.suppressed || !pr.pat || pr.pat.circ || !pr.refs || pr.refs[0] !== rel.refs[0]) return;
+        var nd = pr.pat.nd || 1, m = pr.pat.m || 0;
+        if (pr.refs.slice(1, 1 + nd).indexOf(rel.refs[1]) < 0) return;
+        pr.refs.slice(1 + nd, 1 + nd + m).forEach(function (s) { var q = parseRef(s); if (q && !q.o && E[q.e]) mob[q.e] = 1e-9; });
+      });
+      // rfMT flow 6: Offset Entities' dimension on a chain (refs: the first base, the first copy) moves the offset only;
+      // the base outline is joined to the copies through the Offset relation, so its loose lines moved half the change
+      (sketch.rels || []).forEach(function (pr) {
+        if (pr.type !== 'offset' || pr.suppressed || !pr.refs || pr.refs.length < 2 || pr.refs.length % 2) return;
+        var h = pr.refs.length / 2, bases = pr.refs.slice(0, h);
+        if (bases.indexOf(rel.refs[0]) < 0 || pr.refs.slice(h).indexOf(rel.refs[1]) < 0) return;
+        bases.forEach(function (s) { var q = parseRef(s); if (q && !q.o && E[q.e]) mob[q.e] = 1e-9; });
+      });
     }
     return { extra: extra, mob: mob };
   }
@@ -2906,8 +2923,11 @@ var SketchSolver = (function () {
     var heavy = {}, any = false;
     (sketch.rels || []).forEach(function (rel) {
       if (rel.type !== 'symmetric' || rel.suppressed || !rel.refs || rel.refs.length !== 3) return;
-      var a = parseRef(rel.refs[0]), b = parseRef(rel.refs[1]);
-      if (!a || !b || a.o || b.o || a.e === b.e || a.e === dragged || b.e === dragged) return;
+      var a = parseRef(rel.refs[0]), b = parseRef(rel.refs[1]), c = parseRef(rel.refs[2]);
+      if (!a || !b || a.o || b.o || a.e === b.e) return;
+      // rfMT flow 2: a drag on one of the pair moves its mirror image, not the centerline (with the outline the
+      // centerline is tied to): least squares slid the centerline and the rectangle .02 for a .25 drag of a hole
+      if (a.e === dragged || b.e === dragged) { if (c && !c.o && c.e !== dragged && c.e !== a.e && c.e !== b.e) { heavy[c.e] = 'axis'; any = true; } return; }
       heavy[a.e] = true; any = true;
     });
     if (!any) return dm;
@@ -2917,7 +2937,7 @@ var SketchSolver = (function () {
       var b = parseRef(rel.refs[1]);
       if (b && !b.o && heavy[b.e]) heavy[b.e] = false;
     });
-    var out = sys.vars.map(function (v, j) { var m = dm ? dm[j] : 1; return heavy[v.e] ? m * SYM_HOLD_MOB : m; });
+    var out = sys.vars.map(function (v, j) { var m = dm ? dm[j] : 1; return heavy[v.e] === 'axis' ? m * 1e-9 : heavy[v.e] ? m * SYM_HOLD_MOB : m; });
     return out;
   }
   // rfY (sketch fidelity 3, finding 2): is arc i a slot's end cap? Its centre sits on an end of a construction line or

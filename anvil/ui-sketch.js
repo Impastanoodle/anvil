@@ -2471,12 +2471,22 @@
   };
   UI.sketchNumBox = function () { return numBox ? numBox.inputs.map(function (x) { return x.input; }) : null; };
 
+  // rfMT: the Select tool in a sketch pre-highlights the model edge / face a click would select (UI.sketchModelPick)
+  function modelHover(pk) {
+    var key = pk ? pk.kind + ':' + (pk.kind === 'edge' ? pk.index : pk.kind === 'face' ? pk.index : (pk.point || []).join(',')) : null;
+    var cur = App.hover ? App.hover.kind + ':' + (App.hover.kind === 'edge' || App.hover.kind === 'face' ? App.hover.index : (App.hover.point || []).join(',')) : null;
+    if (key === cur) return;
+    if (!pk && App.hover && !/^(face|edge|vertex)$/.test(App.hover.kind)) return;
+    App.hover = pk;
+    UI.updateHighlights();
+  }
   function sketchMove(mx, my) {
     var pl = UI.activePlane(), raw = UI.screenToPlane(mx, my, pl);
     if (!raw) return;
     var drawing = App.tool !== 'select' && App.tool !== 'dimension' && !(App.command && App.command.onSketchPoint);
     lastMove = [mx, my];
     if (rapidHoverKey || rapidOn()) rapidHover(mx, my);   // rfAY
+    else if ((App.tool !== 'select' || App.command) && App.hover && /^(face|edge|vertex)$/.test(App.hover.kind)) modelHover(null);   // rfMT: a tool / command took over
     // Line tool: back over the chain's end point and out again switches between line and tangent arc (SolidWorks)
     if (drawing && App.tool === 'line' && App.toolState.pts.length && !numBox) {
       var st = App.toolState, e0 = st.pts[st.pts.length - 1], s0 = UI.worldToScreen(K.to3D(pl, e0[0], e0[1])), d0 = Math.hypot(s0[0] - mx, s0[1] - my);
@@ -2514,6 +2524,7 @@
       var ref = UI.pickSketchRef && !App.zoomAreaMode && !own ? dimPickRef(mx, my) : null;
       if (own) clearFeedback();
       else hoverFeedback(pl, ref, mx, my);
+      if (App.tool === 'select' && !App.command && !rapidHoverKey) modelHover(ref || (UI.pickEntity && UI.pickEntity(mx, my)) ? null : (UI.sketchModelPick ? UI.sketchModelPick(mx, my) : null));   // rfMT
       // a sketch command's own hover preview (Extend Entities shows where the end would go)
       if (App.command && App.command.onSketchMove) App.command.onSketchMove(raw, mx, my);
     }

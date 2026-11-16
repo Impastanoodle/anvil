@@ -519,10 +519,34 @@ if (typeof UI !== 'undefined') (function (UI) {
   // point, else the entity) and shows its PropertyManager; Ctrl / Shift toggle it in the selection, and two or more
   // selected items show the Properties PM (Selected Entities, Existing Relations, Add Relations), as in SolidWorks.
   function isSketchItem(s) { return s.kind === 'entity' || s.kind === 'sketchPoint' || s.kind === 'sketchRef'; }
+  // rfMT (sketch-flow report row 8): in an open sketch the Select tool still picks the model where no sketch item is
+  // under the pointer, as SolidWorks does (a face or edge preselected for Convert Entities / Offset Entities): an edge
+  // first, else a face; under the Selection Filter only the kinds it allows (vertices only when filtered for). The
+  // sketch's own plane is no model item. Hover uses the same pick (ui-sketch.js sketchMove), so the pre-highlight tells.
+  function isModelItem(s) { return s.kind === 'face' || s.kind === 'edge' || s.kind === 'vertex'; }
+  function sketchModelPick(mx, my) {
+    if (App.mode !== 'sketch' || (UI.isAssembly && UI.isAssembly())) return null;
+    var f = filterSet(), hit = null;
+    if (f && f.vertices) hit = pickVertex(mx, my);
+    if (hit && hit.kind !== 'vertex') hit = null;
+    if (!hit && (!f || f.edges) && UI.pickEdge) hit = UI.pickEdge(mx, my);
+    if (!hit && (!f || f.faces) && UI.pickFace) { var fc = UI.pickFace(mx, my); if (fc && fc.index != null) hit = { kind: 'face', index: fc.index, point: fc.point }; }
+    return hit;
+  }
+  UI.sketchModelPick = sketchModelPick;
+  function sketchModelClick(mx, my, mod) {
+    var hit = sketchModelPick(mx, my);
+    if (!hit) return false;
+    var cur = selection().filter(function (s) { return isSketchItem(s) || isModelItem(s); });
+    var list = mod ? BoxSelect.combine(cur, [hit], 'toggle', selKey) : [hit];
+    setSelection(list);
+    sketchSelectionPM(list, true);   // no sketch item left: the entity PM closes
+    return true;
+  }
   function sketchSelectClick(mx, my, ev) {
     var collecting = !!(UI.pmCollectsSelection && UI.pmCollectsSelection());
-    if (!allows('entity')) { if (collecting) return true; App.sel = null; App.sel2 = null; App.multi = []; UI.updateSketches(); UI.closePM(); return true; }
     var mod = !!(ev && (ev.ctrlKey || ev.metaKey || ev.shiftKey));
+    if (!allows('entity')) { if (collecting) return true; if (sketchModelClick(mx, my, mod)) return true; App.sel = null; App.sel2 = null; App.multi = []; UI.updateSketches(); UI.updateHighlights(); UI.closePM(); return true; }
     if (collecting) {
       var hitC = UI.pickEntity(mx, my);
       if (!hitC) return true;
@@ -537,6 +561,7 @@ if (typeof UI !== 'undefined') (function (UI) {
       return true;
     }
     var item = maskedItem(sketchPickItem(mx, my), mx, my);   // lane mcdirect: the quick masks
+    if (!item && !(entityMaskOn() && !filter.suspended) && sketchModelClick(mx, my, mod)) return true;   // rfMT
     if (mod && !item) return true;
     // lane mcdirect: the selection bar's Chain mode takes the chain of the entity clicked
     if (item && item.kind === 'entity' && !mod && selBarMode === 'chain') { selectSketchChain(item.index, 'replace'); return true; }
@@ -556,7 +581,7 @@ if (typeof UI !== 'undefined') (function (UI) {
       UI.setStatus('Path' + f0PathId(item.index) + ' selected: ' + pathItems.length + ' entit' + (pathItems.length === 1 ? 'y' : 'ies') + '.');
       return true;
     }
-    var list = mod ? BoxSelect.combine(selection().filter(isSketchItem), [item], 'toggle', selKey) : item ? [item] : [];
+    var list = mod ? BoxSelect.combine(selection().filter(function (s) { return isSketchItem(s) || isModelItem(s); }), [item], 'toggle', selKey) : item ? [item] : [];
     setSelection(list, { quiet: !mod });
     sketchSelectionPM(list, true);
     return true;

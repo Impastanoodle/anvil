@@ -35,6 +35,16 @@
     if (App.sel && App.sel.kind === 'entity' && out.indexOf(App.sel.index) < 0) out.push(App.sel.index);
     return out.filter(function (i) { return f.entities[i]; }).sort(function (a, b) { return a - b; });
   }
+  // rfMT: the model faces / edges selected in the open sketch (Select tool, ui-select.js sketchModelPick), as Convert /
+  // Offset Entities items { kind: 'face', index } / { kind: 'edge', edge }
+  function selModel() {
+    var out = [];
+    if (UI.selection) UI.selection().forEach(function (s) {
+      if (s.kind === 'face' && s.index != null && App.mesh && App.mesh.faces[s.index]) out.push({ kind: 'face', index: s.index });
+      else if (s.kind === 'edge' && s.edge) out.push({ kind: 'edge', edge: s.edge });
+    });
+    return out;
+  }
   var NAMES = { line: 'Line', circle: 'Circle', arc: 'Arc', rect: 'Rectangle', crect: 'Rectangle', poly: 'Polygon', slot: 'Slot', point: 'Point', polyline: 'Polyline' };
   function entityLabel(e, i) { return (e && e.sharp ? 'Sharp' : NAMES[e && e.t] || 'Entity') + (i + 1); }
   // One sketch action, one undo step: fn() returns { ok, error }; a failure takes the undo step back (the solver has
@@ -607,7 +617,9 @@
     var f = sketch();
     if (!f) return;
     var v = { entities: selIdx(f), d: UI.lenDefault(10), dims: true, reverse: false, chain: true, bi: false, cap: false, capType: 'arc', baseCons: false, offCons: false };
-    function faceMode() { return !v.entities.length && f.faceLoops && f.faceLoops.length; }
+    var model = v.entities.length ? [] : selModel();   // rfMT: a model face / edges selected in the sketch are offset (their edges On Edge)
+    function faceMode() { return !v.entities.length && (model.length || (f.faceLoops && f.faceLoops.length)); }
+    function modelItems() { if (model.length) return model; var fi = sketchFaceIndex(f); return fi == null ? null : [{ kind: 'face', index: fi }]; }
     function opts(extra) { var o = { d: +v.d, reverse: !!v.reverse, chain: !!v.chain, bi: !!v.bi, cap: v.bi && v.cap ? v.capType : '', dims: !!v.dims, base: !!v.baseCons, offset: !!v.offCons }; if (extra) Object.keys(extra).forEach(function (k) { o[k] = extra[k]; }); return o; }
     function faceLoopsOffset() {
       return f.faceLoops.map(function (loop) {
@@ -621,9 +633,9 @@
     // it is one chain per loop held by an Offset relation and the offset dimension (as SolidWorks' Offset of a face:
     // fully defined, the distance editable), not a loose polyline. tgt: the sketch (or a copy for the preview).
     function faceOffsetOn(tgt, prev) {
-      var fi = sketchFaceIndex(f);
-      if (fi == null) return null;
-      var geo = convertGeometry(edgeList([{ kind: 'face', index: fi }], { inner: true })), idx = [];
+      var its = modelItems();
+      if (!its) return null;
+      var geo = convertGeometry(edgeList(its, { inner: true, chain: false })), idx = [];
       if (!geo.length) return null;
       geo.forEach(function (g) {
         g.construction = true;
@@ -638,7 +650,7 @@
       try {
         var fp = faceMode() ? faceOffsetOn({ entities: JSON.parse(JSON.stringify(f.entities)), rels: [] }, true) : null;
         if (fp && fp.ok) ents = fp.entities;
-        else if (faceMode()) ents = faceLoopsOffset();
+        else if (faceMode() && !model.length) ents = faceLoopsOffset();
         else if (v.entities.length) { var r = S.offsetSelection(f, v.entities, opts({ preview: true })); if (r.ok) ents = r.entities; else UI.setStatus(r.error); }
       } catch (e) { UI.setStatus(e.message); }
       App.tempEntities = ents; UI.updateTemp();
@@ -663,7 +675,7 @@
       okBlocked: function () { return v.entities.length || faceMode() ? '' : 'Select the sketch entities to offset.'; },
       onOK: function () {
         if (!(+v.d > 0)) { UI.toast('The offset distance must be a positive number.'); return false; }
-        if (faceMode() && sketchFaceIndex(f) != null) {
+        if (faceMode() && modelItems()) {
           var snapF = JSON.stringify([f.entities, f.rels || null, f.dims || null]), dims1 = UI.dimsSnapshot ? UI.dimsSnapshot(f) : null;
           var rf = step(function () {
             var r0 = faceOffsetOn(f, false);
@@ -676,7 +688,7 @@
           UI.setStatus('Offset the face edges by ' + UI.fmtLen(+v.d) + (v.dims ? ', with the offset dimension.' : '.') + ' ' + (App.sketchState ? S.STATUS_TEXT[App.sketchState.status] + '.' : ''));
           return;
         }
-        if (faceMode()) {
+        if (faceMode() && !model.length) {
           var loops = faceLoopsOffset();
           step(function () { loops.forEach(function (e) { f.entities.push(e); }); return { ok: true }; }, true);
           clearPreview(); changed();
@@ -1123,7 +1135,7 @@
   function cmdConvertEntities() {
     var f = sketch();
     if (!f) return;
-    var v = { items: [], chain: false, inner: true };
+    var v = { items: selModel(), chain: false, inner: true };
     function itemLabel(it, k) { return it.kind === 'ref' ? it.name : it.kind === 'face' ? 'Face<' + (k + 1) + '>' : 'Edge<' + (k + 1) + '>'; }
     function same(a, b) { return a.kind === b.kind && (a.kind === 'face' ? a.index === b.index : a.kind === 'ref' ? a.id === b.id : a.edge === b.edge); }
     function modelItems(list) { return list.filter(function (it) { return it.kind !== 'ref'; }); }
@@ -1186,6 +1198,7 @@
       onCancel: clearPreview
     });
     if (!App.edges || !App.edges.length) UI.setStatus('There is no model to convert yet: Convert Entities projects model edges into the sketch.');
+    else if (v.items.length) preview();   // rfMT: the faces / edges selected before the command
   }
 
   // ------------------------------------------------------------------ Move / Copy / Rotate / Scale / Stretch Entities
