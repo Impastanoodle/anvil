@@ -1073,6 +1073,9 @@
     }
     function fail(e) { close(); throw e; }
     var size = typeof data === 'string' ? data.length : (data && (data.byteLength || data.length)) || 0;
+    // lane NV: File ▸ Open of a STEP assembly reads its product structure with Anvil's reader (OpenCascade hands its
+    // solids over already placed, one part); OpenCascade stays the fallback when Anvil's reader refuses the file
+    var asmFile = !!(opts.assembly && fmt === 'step' && /NEXT_ASSEMBLY_USAGE_OCCURRENCE/i.test(bytesText(data)));
     function viaOcct() {
       var text = bytesText(data), base = String(name || 'Imported').replace(/^.*[\\\/]/, '').replace(/\.[^.]+$/, '');
       UI.setStatus('Reading ' + shortName + ' with OpenCascade…');
@@ -1080,12 +1083,12 @@
       crumb('open: reading ' + fmt + ' with OpenCascade (' + text.length + ' characters)');
       return UI.occt.importFile(fmt, text, say).then(function (r) { return occtResult(r, text, base); }, function (e) { throw first ? new Error(first.message + ' (OpenCascade: ' + e.message + ')') : e; }).then(null, fail);
     }
-    if (!(occt && (fmt === 'iges' || UI.occt.on()))) {
+    if (!(occt && (fmt === 'iges' || UI.occt.on())) || asmFile) {
       // Anvil's own reader runs on the main thread (1.8 s on a 136 000 triangle STEP file): the status line and the bar
       // are painted first, so the window says what it is doing while it cannot answer. A small file is read at once.
       var readOwn = function () {
         crumb('open: reading ' + (fmt || 'file') + ' with Anvil\'s reader (' + size + ' bytes)');
-        var own = Exchange.importFile(name, data, { units: units, sourceUnits: opts.sourceUnits, format: opts.format });
+        var own = Exchange.importFile(name, data, { units: units, sourceUnits: opts.sourceUnits, format: opts.format, assembly: asmFile });
         crumb('open: read');
         return finish(own);
       };
@@ -1106,7 +1109,7 @@
       // file over in millimetres, so the same customer file opened as an inch part with OpenCascade off and as a
       // millimetre part (38.1 for 1.5) with it on, which is the default wherever the engine is installed
       var auto = fmt === 'step' && /CONVERSION_BASED_UNIT\s*\(\s*'INCH'/i.test(text) ? 'in' : 'mm';
-      var res = Exchange.finishImport('step', { units: units === 'auto' ? auto : units }, r.solids, 1, []);
+      var res = Exchange.finishImport('step', { units: units === 'auto' ? auto : units }, r.solids, 1, asmFile ? ['Anvil\'s reader could not read this assembly (' + (first && first.message) + '): OpenCascade read it as one part with every solid placed.'] : []);
       res.format = fmt; res.name = base; res.file = String(name || '').replace(/^.*[\\\/]/, '');
       res.brep = { format: fmt, text: text };
       return finish(res);
@@ -1114,7 +1117,10 @@
   }
   function importIntoNew(name, data, opts) {
     if (!hasExchange()) return Promise.reject(new Error('exchange.js is not loaded'));
-    return importData(name, data, (opts && opts.units) || 'auto', opts).then(function (res) {
+    var o2 = {}; for (var ok in (opts || {})) o2[ok] = opts[ok];
+    if (o2.assembly == null && typeof Assembly !== 'undefined' && Exchange.newAssemblyFromImport) o2.assembly = true;   // lane NV
+    return importData(name, data, (o2.units) || 'auto', o2).then(function (res) {
+      if (res.assembly) return openImportedAssembly(res, o2);
       rememberPart(); App.hiddenBodies = {};
       // (rfMG) crumbs name the phase a not-responding report was taken in; the progress handle is importData's
       crumb('open: making the part (' + ((res.stats && res.stats.triangles) || 0) + ' triangles)');
@@ -1128,6 +1134,27 @@
         return openSummary(opts);
       }, function (e) { if (prog) prog.done(); throw e; });
     });
+  }
+  // lane NV: a STEP assembly opens as an assembly document: one component per occurrence of the file, named and placed
+  // as there; each product is one part document saved in this browser (shared by its instances), as SolidWorks makes a
+  // part file per product. The status line counts the components against the file's occurrences.
+  function openImportedAssembly(res, opts) {
+    var prog = res.progress, shown = prog || (opts && opts.progress);
+    delete res.progress;
+    if (shown) { try { shown.set(0.8, 'Building the assembly'); } catch (e0) { } }
+    var made;
+    try { made = Exchange.newAssemblyFromImport(res); } catch (e) { if (prog) prog.done(); throw e; }
+    rememberPart(); App.hiddenBodies = {};
+    crumb('open: assembly of ' + made.components + ' components');
+    var warn = (res.warnings || []).concat(made.warnings || []);
+    return UI.loadModel(made.model).then(function () {
+      var parts = made.documents.length;
+      UI.setStatus('Opened ' + (res.file || res.name) + ': assembly of ' + made.components + ' component' + (made.components === 1 ? '' : 's') + ' (' + res.assembly.occurrences + ' in the file)' +
+        (parts ? ', ' + parts + ' document' + (parts === 1 ? '' : 's') + ' saved in this browser (' + made.documents.join(', ') + ')' : '') + (warn.length ? '. ' + warn.join(' ') : '.'));
+      if (warn.length) UI.toast(warn[0]);
+      if (prog) prog.done();
+      return openSummary(opts);
+    }, function (e) { if (prog) prog.done(); throw e; });
   }
   function importIntoCurrent(name, data, opts) {
     if (!hasExchange()) return Promise.reject(new Error('exchange.js is not loaded'));

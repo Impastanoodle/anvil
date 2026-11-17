@@ -3007,3 +3007,30 @@
   UI.cmdSmartFasteners = cmdSmartFasteners;
   UI.smartFastenersPlan = function () { return sf.rows; };
 })(UI);
+
+// ------------------------------------------------------------------ lane NV: imported colours in the viewport
+// A part opened from a STEP file whose solids carry different colours (Exchange.importedBodyColors) shows each body in
+// its file colour, as SolidWorks does; a body given its own material keeps the material's colour. In an assembly each
+// component shows its part's colour (Exchange.newPartFromImport sets the part colour when its solids share one).
+// UI.bodyColors is defined by ui-materials.js, loaded after this file, so the wrapper takes whatever is assigned.
+(function (UI) {
+  'use strict';
+  var inner = UI.bodyColors || null;
+  function wrapped() {
+    var cols = inner ? inner.apply(this, arguments) : null;
+    var App = UI.App;
+    if (!App || !App.build || !App.model || App.model.type === 'assembly' || typeof Exchange === 'undefined' || !Exchange.importedBodyColors) return cols;
+    var ic = null;
+    try { ic = Exchange.importedBodyColors(App.model, App.build); } catch (e) { ic = null; }
+    if (!ic) return cols;
+    var MT = window.Materials || null, base = MT && MT.displayColor ? MT.displayColor(App.model.color) : (App.model.color || '#8c8c8c');
+    return ic.map(function (c, i) {
+      var own = false;
+      try { own = !!(MT && MT.bodyMaterial && MT.bodyMaterial(App.model, App.build, i).own); } catch (e) { own = false; }
+      return own && cols ? cols[i] : c || (cols ? cols[i] : base);
+    });
+  }
+  try {
+    Object.defineProperty(UI, 'bodyColors', { configurable: true, enumerable: true, get: function () { return wrapped; }, set: function (fn) { inner = fn; } });
+  } catch (e) { /* a frozen UI keeps its own bodyColors */ }
+})(UI);

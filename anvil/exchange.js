@@ -124,6 +124,15 @@ var Exchange = (function () {
     var s = f.solids[k];
     return s && s.color && parseColor(s.color) ? s.color : null;
   }
+  // lane NV: importedBodyColors(model, build) -> ['#rrggbb' | null per body] when an imported body carries a file colour
+  // other than the part's, else null (the viewer's per-body colours; a body with its own material keeps that)
+  function importedBodyColors(model, build) {
+    if (!model || model.type === 'assembly' || !build) return null;
+    var bf = build.bodyFeatures || [], n = build.bodies && build.bodies.length ? build.bodies.length : build.body ? 1 : 0, out = [], any = false;
+    var pc = String(model.color || '').toLowerCase();
+    for (var i = 0; i < n; i++) { var c = importedColor(model, bf, i); out.push(c); if (c && c.toLowerCase() !== pc) any = true; }
+    return any ? out : null;
+  }
   function bodyMat(model, build, i) {
     if (hasMaterials()) {
       var bm = Materials.bodyMaterial(model, build, i);
@@ -498,6 +507,12 @@ var Exchange = (function () {
     // AXIS2_PLACEMENT_3D is always right-handed): it gets its own left-hand part, the source mesh reflected in its local
     // YZ plane (F = diag(-1, 1, 1)), placed by the proper rotation R·F — world = R·F·(F·p) + P = R·p + P.
     function det3(R) { return R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]); }
+    // lane NV: an imported body's file colour goes back out in an assembly too (as for a part document, above)
+    function asmBodyMat(pm, pbuild, i) {
+      var mat = bodyMat(pm, pbuild, i), ic = importedColor(pm, pbuild.bodyFeatures || [], i);
+      if (ic && !(pm.bodyMaterials && pm.bodyMaterials[String((pbuild.bodyFeatures || [])[i])])) mat = { name: mat.name, color: ic };
+      return mat;
+    }
     function reflectX(b) { return b.transform(function (v) { return new CSG.Vector(-v.x, v.y, v.z); }, true); }
     function composeTf(A, B) { var R = A.rotation, Q = B.rotation, C = [], i, j; for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) C.push(R[i * 3] * Q[j] + R[i * 3 + 1] * Q[3 + j] + R[i * 3 + 2] * Q[6 + j]); return { rotation: C, position: tfPoint(A, B.position) }; }
     // walk(assembly model, its build) -> { top: [{ part | sub, name, transform }] (this level), flat: [{ part, name,
@@ -535,7 +550,7 @@ var Exchange = (function () {
           var pbodies = pb.bodies && pb.bodies.length ? pb.bodies : [pb.body];
           byKey[key] = parts.length;
           var pbuild = { bodies: pbodies, bodyFeatures: pb.bodyFeatures || [] };
-          parts.push({ name: nm, color: partColor(pm), bodies: pbodies.map(function (bb, i) { return { name: pbodies.length === 1 ? nm : nm + '-Body' + (i + 1), mesh: bodyMesh(mirrored ? reflectX(bb) : bb), material: pm ? bodyMat(pm, pbuild, i) : { name: null, color: null }, src: pm && !mirrored ? { body: bb, model: pm, build: pb } : null }; }) });
+          parts.push({ name: nm, color: partColor(pm), bodies: pbodies.map(function (bb, i) { return { name: pbodies.length === 1 ? nm : nm + '-Body' + (i + 1), mesh: bodyMesh(mirrored ? reflectX(bb) : bb), material: pm ? asmBodyMat(pm, pbuild, i) : { name: null, color: null }, src: pm && !mirrored ? { body: bb, model: pm, build: pb } : null }; }) });
         }
         if (mirrored) { var R = T.rotation; T = { rotation: [-R[0], R[1], R[2], -R[3], R[4], R[5], -R[6], R[7], R[8]], position: T.position }; }
         var inst = { part: byKey[key], name: c.name, transform: T };
@@ -3634,8 +3649,7 @@ var Exchange = (function () {
         if (isFinite(A.hs)) A2.ht = A.hs * A.su / A.sv; else A2.hs = A.ht * A.sv / A.su;
         A = A2;
       }
-      if (!res) res = paramPatch(lp, outerI, A);
-      if (!res) return false;
+      if (!res) res = paramPatch(lp, outerI, A);      if (!res) return false;
       if (!whole && d) centreInsert(res, A);   // (B-spline faces: an extrusion's side is straight along w, its caps polygons)
       // lane stepreal2: the triangles all turn one way in (u, v), so one answer serves them all: the area-weighted vote
       // of the surface normal (asked triangle by triangle, slivers along a boundary answered the other way: edges with
@@ -4431,7 +4445,7 @@ var Exchange = (function () {
     // the component first, SolidWorks the assembly first); the CONTEXT_DEPENDENT_SHAPE_REPRESENTATION names the
     // NEXT_ASSEMBLY_USAGE_OCCURRENCE (relating = the assembly), and SHAPE_DEFINITION_REPRESENTATIONs give each product
     // definition's representation. Without that link the component is taken to be first, as before.
-    var pdRep = {}, parentFirst = {};
+    var pdRep = {}, parentFirst = {}, relT = {}, nMapped = 0;
     Object.keys(E).forEach(function (id) {
       var e = E[id];
       if (e.t !== 'SHAPE_DEFINITION_REPRESENTATION' || !e.a[0] || !e.a[1]) return;
@@ -4459,6 +4473,7 @@ var Exchange = (function () {
         // transform_item_1 lies in rep_1, transform_item_2 in rep_2: the component's item maps onto the assembly's
         var T = ia ? (pf ? tfCompose(placement(ia[2]), tfInverse(placement(ia[3]))) : tfCompose(placement(ia[3]), tfInverse(placement(ia[2])))) : tf(null);
         ups.push(pf ? { child: r2, parent: r1, T: T } : { child: r1, parent: r2, T: T });
+        relT[id] = T;   // lane NV: the placement of an occurrence (component frame -> assembly frame)
       } else union(r1, r2);
     });
     // MAPPED_ITEM (REPRESENTATION_MAP) instancing
@@ -4467,6 +4482,7 @@ var Exchange = (function () {
       if (e.t !== 'MAPPED_ITEM') return;
       var map = ent(e.a[1]), ma = map && args(map, 'REPRESENTATION_MAP');
       if (!ma) return;
+      nMapped++;
       Object.keys(reps).forEach(function (rid) {
         if (reps[rid].indexOf(+id) >= 0 && reps[ma[1].r] != null) ups.push({ child: ma[1].r, parent: +rid, T: tfCompose(placement(e.a[2]), tfInverse(placement(ma[0]))) });
       });
@@ -4519,7 +4535,44 @@ var Exchange = (function () {
       })(e.a[1], 0);
       if (rgb && rgb.every(function (c) { return c >= 0 && c <= 1; })) solidColor[item] = '#' + rgb.map(function (c) { var h = Math.round(c * 255).toString(16); return h.length < 2 ? '0' + h : h; }).join('');
     });
-    var solids = [];
+    // lane NV: productStructure() -> null (no NEXT_ASSEMBLY_USAGE_OCCURRENCE, or instancing by MAPPED_ITEM) or
+    // { name: { pd: product name }, cls: { pd: representation class }, kids: { pd: [{ child, name, T }] }, roots, nOcc }.
+    // An occurrence's name is the NAUO's name (Anvil writes the component's name there); blank, a bare id or an
+    // OpenCascade label path gives '<product><n>' as SolidWorks names instances.
+    function productStructure() {
+      if (nMapped) return null;
+      var name = {}, cls = {}, kids = {}, isChild = {}, cdsrOf = {}, nOcc = 0;
+      function blank(s) { return s == null || !String(s).trim() || /^\$$/.test(String(s)); }
+      Object.keys(E).forEach(function (id) {
+        var pa = args(E[id], 'PRODUCT_DEFINITION');
+        if (!pa) return;
+        var pdf = ent(pa[2]), pfa = pdf && (args(pdf, 'PRODUCT_DEFINITION_FORMATION') || args(pdf, 'PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE'));
+        var prod = pfa && ent(pfa[2]), pr = prod && args(prod, 'PRODUCT');
+        name[id] = String((pr && (!blank(pr[1]) ? pr[1] : !blank(pr[0]) ? pr[0] : '')) || 'Part' + id).trim();
+        if (pdRep[id] != null && reps[pdRep[id]] != null) cls[id] = find(pdRep[id]);
+      });
+      Object.keys(E).forEach(function (id) {
+        var e = E[id];
+        if (e.t !== 'CONTEXT_DEPENDENT_SHAPE_REPRESENTATION' || !e.a[0] || !e.a[1]) return;
+        var pds = ent(e.a[1]);
+        if (pds && pds.a && pds.a[2] && pds.a[2].r != null) cdsrOf[pds.a[2].r] = e.a[0].r;
+      });
+      Object.keys(E).forEach(function (id) {
+        var na = args(E[id], 'NEXT_ASSEMBLY_USAGE_OCCURRENCE');
+        if (!na || !na[3] || !na[4] || name[na[3].r] == null || name[na[4].r] == null) return;
+        nOcc++;
+        var nm = !blank(na[1]) && !/^=>\[|^NAUO\d*$/i.test(String(na[1]).trim()) ? String(na[1]).trim() : '';
+        var T = cdsrOf[id] != null && relT[cdsrOf[id]] ? relT[cdsrOf[id]] : null;
+        (kids[na[3].r] = kids[na[3].r] || []).push({ child: na[4].r, name: nm, T: T });
+        isChild[na[4].r] = true;
+      });
+      if (!nOcc) return null;
+      // roots: the assemblies nobody uses, and any product with solids outside the structure
+      var roots = Object.keys(name).filter(function (pd) { return !isChild[pd] && (kids[pd] || (cls[pd] != null && solidInfo.some(function (s) { return s.holders.indexOf(cls[pd]) >= 0; }))); });
+      if (!roots.length) return null;
+      return { name: name, cls: cls, kids: kids, roots: roots, nOcc: nOcc };
+    }
+    var solids = [], solidInfo = [], structure = null;
     solidIds.forEach(function (sid) {
       var e = E[sid], shells = [];
       var a = args(e, 'MANIFOLD_SOLID_BREP') || args(e, 'FACETED_BREP');
@@ -4548,40 +4601,146 @@ var Exchange = (function () {
       var holders = Object.keys(reps).filter(function (rid) { return reps[rid].indexOf(sid) >= 0; }).map(function (rid) { return find(+rid); });
       if (!holders.length) holders = [null];
       var seenCls = {};
-      holders.forEach(function (cls) {
-        if (cls != null && seenCls[cls]) return;
-        if (cls != null) seenCls[cls] = true;
+      holders = holders.filter(function (cls) { if (cls == null) return true; if (seenCls[cls]) return false; seenCls[cls] = true; return true; });
+      solidInfo.push({ sid: sid, name: name, shellTris: shellTris, holders: holders });
+    });
+    structure = opts.assembly ? productStructure() : null;
+    // placedSolid(info, T, label) -> the solid's triangles placed by T (null when it has none)
+    function placedSolid(info, T, label) {
+      var sid = info.sid, sol = { name: label, positions: [], triangles: [], recs: [], free: [], fid: [] }, memo = [];
+      info.shellTris.forEach(function (sh, si) {
+        sh.recs.forEach(function (F) { sol.recs.push(F ? mapRecord(F, memo, function (p) { return tfPoint(T, p); }, function (d) { return tfDir(T, d); }, 1) : null); });
+        var f0 = sol.free.length;
+        sh.free.forEach(function (fr) { sol.free.push(mapFree(fr, function (p) { return tfPoint(T, p); }, function (d) { return tfDir(T, d); }, 1)); });
+        sh.fid.forEach(function (x) { sol.fid.push(x < 0 ? -1 : x + f0); });
+        var base = sol.positions.length / 3, t0 = sol.triangles.length;
+        for (var q = 0; q < sh.pos.length; q += 3) { var p = tfPoint(T, [sh.pos[q], sh.pos[q + 1], sh.pos[q + 2]]); sol.positions.push(p[0], p[1], p[2]); }
+        for (var t = 0; t < sh.tris.length; t++) sol.triangles.push(sh.tris[t] + base);
+        // the outer shell points out, void shells in
+        var v = signedVolume(sol.positions, sol.triangles.slice(t0));
+        if ((si === 0 && v < 0) || (si > 0 && v > 0)) flipRange(sol.triangles, t0);
+      });
+      if (!sol.recs.some(Boolean)) delete sol.recs;
+      if (!sol.free.length) { delete sol.free; delete sol.fid; }
+      if (solidColor[sid]) sol.color = solidColor[sid];
+      return sol.triangles.length ? sol : null;
+    }
+    function solidLabel(info, cls, fallback) { return info.name && !/^(NONE|SOLID)?$/i.test(info.name) ? info.name : (cls != null && repName[cls]) || fallback; }
+    var flatCount = 0;
+    solidInfo.forEach(function (info) {
+      info.holders.forEach(function (cls) {
         var Ts = cls != null ? placements(cls, 0, {}) : [tf(null)];
-        var label = name && !/^(NONE|SOLID)?$/i.test(name) ? name : (cls != null && repName[cls]) || ('Solid' + (solids.length + 1));
+        flatCount += Ts.length;
+        if (structure) return;
+        var label = solidLabel(info, cls, 'Solid' + (solids.length + 1));
         Ts.forEach(function (T, k) {
-          var sol = { name: Ts.length > 1 ? label + '<' + (k + 1) + '>' : label, positions: [], triangles: [], recs: [], free: [], fid: [] }, memo = [];
-          shellTris.forEach(function (sh, si) {
-            sh.recs.forEach(function (F) { sol.recs.push(F ? mapRecord(F, memo, function (p) { return tfPoint(T, p); }, function (d) { return tfDir(T, d); }, 1) : null); });
-            var f0 = sol.free.length;
-            sh.free.forEach(function (fr) { sol.free.push(mapFree(fr, function (p) { return tfPoint(T, p); }, function (d) { return tfDir(T, d); }, 1)); });
-            sh.fid.forEach(function (x) { sol.fid.push(x < 0 ? -1 : x + f0); });
-            var base = sol.positions.length / 3, t0 = sol.triangles.length;
-            for (var q = 0; q < sh.pos.length; q += 3) { var p = tfPoint(T, [sh.pos[q], sh.pos[q + 1], sh.pos[q + 2]]); sol.positions.push(p[0], p[1], p[2]); }
-            for (var t = 0; t < sh.tris.length; t++) sol.triangles.push(sh.tris[t] + base);
-            // the outer shell points out, void shells in
-            var v = signedVolume(sol.positions, sol.triangles.slice(t0));
-            if ((si === 0 && v < 0) || (si > 0 && v > 0)) flipRange(sol.triangles, t0);
-          });
-          if (!sol.recs.some(Boolean)) delete sol.recs;
-          if (!sol.free.length) { delete sol.free; delete sol.fid; }
-          if (solidColor[sid]) sol.color = solidColor[sid];
-          if (sol.triangles.length) solids.push(sol);
+          var sol = placedSolid(info, T, Ts.length > 1 ? label + '<' + (k + 1) + '>' : label);
+          if (sol) solids.push(sol);
         });
       });
     });
+    // lane NV: an assembly file read as its product structure (opts.assembly): each product's own solids in the
+    // product's own frame, once, however many times it is used; the occurrences place them. Checked against the flat
+    // reading: the instances it would give must be the solids the structure places, else the file is read flat (as
+    // before) with a warning, so no component is ever lost silently.
+    var asm = structure ? assemblyOf(structure) : null;
+    if (structure && !asm) solidInfo.forEach(function (info) {
+      info.holders.forEach(function (cls) {
+        var Ts = cls != null ? placements(cls, 0, {}) : [tf(null)], label = solidLabel(info, cls, 'Solid' + (solids.length + 1));
+        Ts.forEach(function (T, k) { var sol = placedSolid(info, T, Ts.length > 1 ? label + '<' + (k + 1) + '>' : label); if (sol) solids.push(sol); });
+      });
+    });
+    function assemblyOf(S) {
+      // own solids of a product: those in its representation class and in no class below it
+      var below = {};
+      function classesBelow(pd, seen) {
+        if (below[pd]) return below[pd];
+        var out = {};
+        (S.kids[pd] || []).forEach(function (o) {
+          if (seen[o.child]) return;
+          seen[o.child] = true;
+          if (S.cls[o.child] != null) out[S.cls[o.child]] = true;
+          var b = classesBelow(o.child, seen);
+          Object.keys(b).forEach(function (k) { out[k] = true; });
+          delete seen[o.child];
+        });
+        return (below[pd] = out);
+      }
+      var own = {};
+      Object.keys(S.name).forEach(function (pd) {
+        var c = S.cls[pd], b = classesBelow(pd, {}), list = [];
+        if (c == null || (b[c] && (S.kids[pd] || []).length)) { own[pd] = list; return; }
+        solidInfo.forEach(function (info, k) { if (info.holders.indexOf(c) >= 0) list.push(k); });
+        own[pd] = list;
+      });
+      // the instances the structure places, against the flat reading
+      var placed = 0, depthBad = false;
+      function count(pd, d) { if (d > 32) { depthBad = true; return; } placed += own[pd].length; (S.kids[pd] || []).forEach(function (o) { count(o.child, d + 1); }); }
+      S.roots.forEach(function (pd) { count(pd, 0); });
+      if (depthBad || placed !== flatCount) {
+        warnings.push('The assembly structure of this file places ' + placed + ' solid instance' + (placed === 1 ? '' : 's') + ' where its placements give ' + flatCount + ': it was read as one part with every solid placed, not as an assembly.');
+        return null;
+      }
+      // documents: one per product used (a part: its own solids; an assembly: its occurrences, plus its own solids as
+      // a part of their own at its origin)
+      var docs = [], docOf = {}, partSolids = [];
+      function docFor(pd) {
+        if (docOf[pd] != null) return docOf[pd];
+        var kids = S.kids[pd] || [], d = { name: S.name[pd], kind: kids.length ? 'assembly' : 'part', solids: [], components: [] };
+        docOf[pd] = docs.length; docs.push(d);
+        function addSolids(target) {
+          own[pd].forEach(function (k) {
+            var info = solidInfo[k], sol = placedSolid(info, tf(null), solidLabel(info, S.cls[pd], S.name[pd]));
+            if (sol) { target.solids.push(partSolids.length); partSolids.push(sol); }
+          });
+        }
+        if (!kids.length) { addSolids(d); return docOf[pd]; }
+        if (own[pd].length) {
+          var p = { name: S.name[pd] + ' (own bodies)', kind: 'part', solids: [], components: [] }, pi = docs.length;
+          docs.push(p); addSolids(p);
+          d.components.push({ name: p.name + '<1>', doc: pi, transform: tf(null) });
+        }
+        var nth = {};
+        kids.forEach(function (o) {
+          var ci = docFor(o.child);
+          nth[o.child] = (nth[o.child] || 0) + 1;
+          var nm = o.name || (S.name[o.child] + '<' + nth[o.child] + '>');
+          d.components.push({ name: nm, doc: ci, transform: o.T || tf(null), noPlacement: !o.T, occ: true });
+        });
+        return docOf[pd];
+      }
+      var root;
+      if (S.roots.length === 1) root = docFor(S.roots[0]);
+      else {
+        root = docs.length;
+        docs.push({ name: opts.baseName || 'Assem1', kind: 'assembly', solids: [], components: [] });
+        S.roots.forEach(function (pd) { var ci = docFor(pd); docs[root].components.push({ name: S.name[pd] + '<1>', doc: ci, transform: tf(null) }); });
+      }
+      var noT = 0;
+      docs.forEach(function (d) { d.components.forEach(function (c) { if (c.noPlacement) noT++; }); });
+      if (noT) warnings.push(noT + ' component' + (noT === 1 ? ' has' : 's have') + ' no placement in the file and ' + (noT === 1 ? 'was' : 'were') + ' put at the assembly origin.');
+      return { docs: docs, root: root, occurrences: S.nOcc, placed: placed, solids: partSolids };
+    }
     var surfs = Object.keys(nonPlanar).filter(function (k) { return k.indexOf('curve ') !== 0; });
     var curves = Object.keys(nonPlanar).filter(function (k) { return k.indexOf('curve ') === 0; });
     function listOf(keys) { return keys.map(function (k) { return nonPlanar[k] + ' ' + k.replace(/^curve /, ''); }).join(', '); }
     if (surfs.length) throw new Error('This STEP file has curved faces (' + listOf(surfs) + (curves.length ? '; curved edges: ' + listOf(curves) : '') + '). Anvil imports planar-face and faceted B-reps, and cylinders, cones, spheres and tori bounded by circles and straight rulings; export it from the source CAD as a faceted / tessellated STEP, or as STL or 3MF.');
     if (curves.length) warnings.push('Curved edges (' + listOf(curves) + ') on planar faces were taken as straight lines.');
     if (noHeightFaces) warnings.push(noHeightFaces + ' cylinder face' + (noHeightFaces === 1 ? '' : 's') + ' with no height (bounded by one circle alone) ' + (noHeightFaces === 1 ? 'was' : 'were') + ' read as the flat disc inside the circle.');
-    if (!solids.length) throw new Error('No faces could be read from the STEP solids.');
-    var res = finishImport('step', opts, solids, toMM, warnings);
+    if (!(asm ? asm.solids : solids).length) throw new Error('No faces could be read from the STEP solids.');
+    var res = finishImport('step', opts, asm ? asm.solids : solids, toMM, warnings);
+    if (asm) {
+      // placements in the document's units (the solids were scaled by finishImport the same way)
+      var sc = (toMM || 1) / (res.units === 'in' ? 25.4 : 1), empty = 0;
+      asm.docs.forEach(function (d) {
+        d.components.forEach(function (c) { c.transform = { rotation: c.transform.rotation.slice(), position: c.transform.position.map(function (x) { return x * sc; }) }; delete c.noPlacement; });
+        if (d.kind === 'part' && !d.solids.length) d.empty = true;
+      });
+      asm.docs.forEach(function (d) { d.components.forEach(function (c) { if (asm.docs[c.doc].empty) empty++; }); });
+      if (empty) warnings.push(empty + ' component' + (empty === 1 ? '' : 's') + ' of the file hold' + (empty === 1 ? 's' : '') + ' no solid (an empty product) and ' + (empty === 1 ? 'was' : 'were') + ' left out.');
+      res.assembly = { docs: asm.docs, root: asm.root, occurrences: asm.occurrences, instances: asm.placed };
+      res.stats.occurrences = asm.occurrences;
+    }
     res.stats.faces = faceCount;
     res.header = st.header;
     return res;
@@ -5187,7 +5346,7 @@ var Exchange = (function () {
     opts = opts || {};
     var fmt = opts.format || formatOf(fileName, data);
     var base = String(fileName || 'Imported').replace(/^.*[\\\/]/, '').replace(/\.[^.]+$/, '');
-    var o = { units: opts.units, sourceUnits: opts.sourceUnits, baseName: base };
+    var o = { units: opts.units, sourceUnits: opts.sourceUnits, baseName: base, assembly: !!opts.assembly };   // lane NV: opts.assembly reads a STEP assembly's structure (res.assembly)
     var res;
     if (fmt === 'step') res = importSTEP(typeof data === 'string' ? data : fromUtf8(toBytes(data)), o);
     else if (fmt === 'stl') res = importSTL(data, o);
@@ -5303,6 +5462,57 @@ var Exchange = (function () {
     return m;
   }
 
+  // lane NV: newAssemblyFromImport(result, opts?) -> { model, documents, warnings }: File ▸ Open of a STEP assembly
+  // (importFile(..., { assembly: true }) gave result.assembly) as SolidWorks opens one: an assembly document whose
+  // components are the file's occurrences, each named and placed as in the file; every product becomes ONE document in
+  // the document store (Assembly.Documents: saved, as SolidWorks writes a part file per product), linked by
+  // { file: name }, so a part used twice is one definition. A nested sub-assembly becomes a sub-assembly document
+  // (rigid). A name already saved with other content gets '-2', '-3' ...; the same content is reused. The first
+  // component is fixed (Anvil's insert rule), the others float where the file put them, so mates can be added.
+  // opts.store: false embeds each definition ({ model }) instead of saving documents (also the fallback when the store
+  // refuses one, e.g. the browser's storage is full).
+  function newAssemblyFromImport(result, opts) {
+    opts = opts || {};
+    if (!result || !result.assembly) throw new Error('This file holds no assembly structure');
+    if (typeof Assembly === 'undefined') throw new Error('Assemblies need assembly.js');
+    var A = result.assembly, D = Assembly.Documents, units = result.units === 'in' ? 'in' : 'mm';
+    var sources = [], saved = [], warnings = [], taken = {}, made = 0, skipped = 0;
+    function sourceOf(i) {
+      if (sources[i] !== undefined) return sources[i];
+      sources[i] = null;   // a cycle reads as an empty document
+      var d = A.docs[i], m;
+      if (d.empty) return null;
+      if (d.kind === 'part') {
+        m = newPartFromImport({ name: d.name, file: result.file, format: result.format || 'step', units: units, solids: d.solids.map(function (k) { return result.solids[k]; }) });
+        m.name = d.name;
+      } else {
+        m = Assembly.newAssembly(d.name);
+        m.units = units;
+        d.components.forEach(function (c) {
+          var src = sourceOf(c.doc);
+          if (!src) { if (c.occ) skipped++; return; }
+          if (c.occ) made++;
+          Assembly.insert(m, src, { name: c.name, position: c.transform.position, rotation: c.transform.rotation });
+        });
+      }
+      if (i === A.root) return (sources[i] = { model: m });
+      if (opts.store === false) return (sources[i] = { model: m });
+      var base = String(d.name || (d.kind === 'part' ? 'Part' : 'SubAssem')), nm = base, k = 2, text = JSON.stringify(m);
+      while (taken[nm] || (D.has(nm) && JSON.stringify(D.get(nm)) !== text)) nm = base + '-' + k++;
+      try { D.put(nm, m); } catch (e) { warnings.push('"' + nm + '" could not be saved (' + e.message + '): it is embedded in the assembly.'); return (sources[i] = { model: m }); }
+      taken[nm] = true; saved.push(nm);
+      return (sources[i] = { file: nm });
+    }
+    var top = sourceOf(A.root);
+    if (!top) throw new Error('The assembly in this file holds no solid.');
+    var model = top.model;
+    if (!model.name || model.name === 'Assem1') model.name = result.name || model.name;
+    // every NEXT_ASSEMBLY_USAGE_OCCURRENCE of the file is a component of its assembly document, or was left out with a
+    // warning (an empty product, said by the reader)
+    if (made + skipped !== A.occurrences) warnings.push('The file has ' + A.occurrences + ' component occurrence' + (A.occurrences === 1 ? '' : 's') + '; ' + made + ' were made' + (skipped ? ' and ' + skipped + ' left out (empty)' : '') + '.');
+    return { model: model, documents: saved, warnings: warnings, components: made, skipped: skipped };
+  }
+
   // ------------------------------------------------------------------ kernel hook
   // An `import` feature is registered with Kernel.registerFeature as an `apply` feature: rebuild hands it the body list
   // at its place in the tree and it adds the imported solids (as new bodies, or unioned into the bodies they touch when
@@ -5364,7 +5574,7 @@ var Exchange = (function () {
     exportOBJ: exportOBJ, exportMTL: exportMTL, export3MF: export3MF, exportSTEP: exportSTEP,
     parseStep: parseStep, importSTEP: importSTEP, importSTL: importSTL, importOBJ: importOBJ, import3MF: import3MF,
     importFile: importFile, finishImport: finishImport, formatOf: formatOf, zip: zip, unzip: unzip, crc32: crc32,
-    importFeature: importFeature, newPartFromImport: newPartFromImport, importedName: importedName, featureInfo: featureInfo,
+    importFeature: importFeature, newPartFromImport: newPartFromImport, newAssemblyFromImport: newAssemblyFromImport, importedBodyColors: importedBodyColors, importedName: importedName, featureInfo: featureInfo,
     encodeSolids: encodeSolids, solidMesh: solidMesh, solidCSG: solidCSG, signedVolume: signedVolume, earcut: earcut,
     b64encode: b64encode, b64decode: b64decode, utf8: utf8, fromUtf8: fromUtf8,
     surfaceGridKind: bsSurfClassify,   // lane stepin2: occt-kernel.js importCylRecord (B-spline faces that are cylinders)
