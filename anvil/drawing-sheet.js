@@ -758,9 +758,17 @@
   // (_.pathContent), an auxiliary view stays square to its parent's edge (_.auxCenter), a crop keeps what lies inside
   // it (_.cropContent); plainContent is everything else
   function viewContent(doc, v, mesh, parentContent) {
+    var mesh0 = mesh;
     mesh = _.viewMesh(doc, v, mesh);   // (rfMS) Show in exploded state: the assembly exploded / collapsed for this view
     var ct = _.hasBrokenOut(v) ? _.brokenOutContent(doc, v, mesh) : _.typedSection(doc, v, parentContent) ? _.pathContent(doc, v, mesh, parentContent) : plainContent(doc, v, mesh, parentContent);
     if (!ct || !ct.proj) return ct;
+    // (rfNL) an exploded model / projected view draws the explode lines (phantom), in view coordinates
+    var xl = (!v.kind || v.kind === 'projected') && v.showExplodeLines !== false ? _.explodeLines(doc, v, mesh0) : null;
+    if (xl && xl.length && ct.frame) {
+      var Fx = ct.frame, d2 = function (p) { return [p[0] * Fx.u[0] + p[1] * Fx.u[1] + p[2] * Fx.u[2], p[0] * Fx.v[0] + p[1] * Fx.v[1] + p[2] * Fx.v[2]]; };
+      ct.explLines = [];
+      xl.forEach(function (l) { var a = d2(l.from), b = d2(l.to); if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-9) ct.explLines.push([a[0], a[1], b[0], b[1]]); });
+    }
     _.auxCenter(doc, v, ct, parentContent);
     _.contentExtras(doc, v, ct, parentContent);   // (rfAD) jagged detail linework, Area Hatch regions
     if (v.crop && v.kind !== 'detail' && v.kind !== 'flat') ct = _.cropContent(ct, v.crop);
@@ -1031,7 +1039,24 @@
     shiftAligned(doc, v.id, dx, dy, 0);
     doc.layout = 'manual';
   }
-  // aligned children (projected and section views) follow their parent, and their own aligned children follow them;
+  // (rfNL) setViewAlignment(doc, id, on): SolidWorks' right-click ▸ Alignment ▸ Break Alignment (on false: the view
+  // moves freely and no longer follows its parent; the old alignment is kept in v.alignWas) / Default Alignment (on
+  // true: lined up with its parent again, along the alignment it had, else the axis it is nearer to, and snapped to
+  // it). Model views with a parent only (projected, section, the Standard 3 View's Top / Right); not aux / detail.
+  function canAlign(doc, v) { return !!v && v.parent != null && !!findView(doc, v.parent) && v.kind !== 'detail' && v.kind !== 'aux' && v.kind !== 'flat'; }
+  function setViewAlignment(doc, id, on) {
+    var v = findView(doc, id);
+    if (!canAlign(doc, v)) throw new Error('Only a view projected or cut from another view has an alignment');
+    if (!on) { if (v.align) v.alignWas = v.align; v.align = null; doc.layout = 'manual'; return v; }
+    var par = findView(doc, v.parent), ax = v.align || v.alignWas || (Math.abs(v.x - par.x) <= Math.abs(v.y - par.y) ? 'x' : 'y');
+    var x0 = v.x, y0 = v.y;
+    v.align = ax; delete v.alignWas;
+    if (ax === 'x') v.x = par.x; else v.y = par.y;
+    shiftAligned(doc, v.id, v.x - x0, v.y - y0, 0);
+    doc.layout = 'manual';
+    return v;
+  }
+  D.setViewAlignment = setViewAlignment; D.canAlignView = function (doc, id) { return canAlign(doc, findView(doc, id)); };  // aligned children (projected and section views) follow their parent, and their own aligned children follow them;
   // detail views stay where they are
   function shiftAligned(doc, id, dx, dy, depth) {
     if (depth > 20) return;

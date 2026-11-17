@@ -314,7 +314,7 @@
           for (var j = -6; j <= 6; j++) {
             var th = ps + j * Math.PI;
             if (th <= lo + 1e-9 || th >= hi - 1e-9) continue;
-            var X = V.add(Gc.c, V.add(V.scale(Gc.x, Gc.r * Math.cos(th)), V.scale(Gc.y, Gc.r * Math.sin(th))));
+            var X = V.add(Gc.c, V.add(V.scale(Gc.x, Gc.r * Math.cos(th)), V.scale(Gc.y, (Gc.ry || Gc.r) * Math.sin(th))));
             var sag = Gc.r * (1 - Math.cos((hi - lo) / 2)), xe = Math.max(ed.eps || 0, 2 * sag + diag * 1e-7);
             edgePiece({ a: A, b: X, faces: ed.faces, normals: ed.normals, group: g, exactDone: true, split: true, eps: xe }, null);
             edgePiece({ a: X, b: B, faces: ed.faces, normals: ed.normals, group: g, exactDone: true, split: true, eps: xe }, null);
@@ -878,7 +878,7 @@
       cst.forEach(function (st, gi) {
         if (!st) return;
         var G = GR[gi], ne = V.dot(G.n, e), c2 = [V.dot(G.c, U), V.dot(G.c, Vv)];
-        var x2 = [G.r * V.dot(G.x, U), G.r * V.dot(G.x, Vv)], y2 = [G.r * V.dot(G.y, U), G.r * V.dot(G.y, Vv)];
+        var x2 = [G.r * V.dot(G.x, U), G.r * V.dot(G.x, Vv)], y2 = [(G.ry || G.r) * V.dot(G.y, U), (G.ry || G.r) * V.dot(G.y, Vv)];
         // gaps shorter than a drawable piece are closed too: a visible run broken only by a sliver of hidden curve (at
         // a tangent point) is one run, and a run that then covers the whole curve is a full circle / ellipse
         var minA = tol2 * 10 / Math.max(G.r, 1e-12), gapC = Math.max(GAPA, Math.min(minA, 1e-3));
@@ -891,11 +891,15 @@
         }
         var sh = subtractIntervals(modMerge(hidIv, GAPA), sv, GAPA);
         sv = sv.filter(function (iv) { return iv[1] - iv[0] > minA; }); sh = sh.filter(function (iv) { return iv[1] - iv[0] > minA; });
-        if (Math.abs(ne) > 1 - 1e-9) {
-          var s = ne > 0 ? 1 : -1, f0 = Math.atan2(x2[1], x2[0]);
+        // (rfNL) an ellipse group (a slanted cylinder's rim) is a circle where it is seen along the cylinder's axis:
+        // its projected half-axes are equal and square to each other
+        var x2l = Math.hypot(x2[0], x2[1]), y2l = Math.hypot(y2[0], y2[1]), crs = x2[0] * y2[1] - x2[1] * y2[0];
+        var roundP = G.ry ? Math.abs(x2l - y2l) <= tol2 * 10 && Math.abs(x2[0] * y2[0] + x2[1] * y2[1]) <= tol2 * 10 * Math.max(x2l, 1e-12) : Math.abs(ne) > 1 - 1e-9;
+        if (roundP) {
+          var s = (G.ry ? crs : ne) > 0 ? 1 : -1, f0 = Math.atan2(x2[1], x2[0]), Rp = G.ry ? x2l : G.r;
           var toPhi = function (iv) { return s > 0 ? [f0 + iv[0], f0 + iv[1]] : [f0 - iv[1], f0 - iv[0]]; };
-          var key = Math.round(c2[0] / qc) + ',' + Math.round(c2[1] / qc) + ',' + Math.round(G.r / qc), cg = cgroups[key];
-          if (!cg) { cg = cgroups[key] = { c: c2, r: G.r, bodies: {}, border: [], arc: false, real: false }; corder.push(key); }
+          var key = Math.round(c2[0] / qc) + ',' + Math.round(c2[1] / qc) + ',' + Math.round(Rp / qc), cg = cgroups[key];
+          if (!cg) { cg = cgroups[key] = { c: c2, r: Rp, bodies: {}, border: [], arc: false, real: false }; corder.push(key); }
           if (G.arc) cg.arc = true;
           if (!G.sil) cg.real = true;   // a model edge, not only an outline (model items dimension edges)
           var cb = cg.bodies[G.body] || (cg.bodies[G.body] = { vis: [], hid: [], arc: false });
@@ -1156,11 +1160,11 @@
     if (tanOn) tcs.forEach(function (ivs, gi) {
       if (!ivs || !ivs.length) return;
       var G = GR[gi], ne = V.dot(G.n, e), c2 = [V.dot(G.c, U), V.dot(G.c, Vv)];
-      var x2 = [G.r * V.dot(G.x, U), G.r * V.dot(G.x, Vv)], y2 = [G.r * V.dot(G.y, U), G.r * V.dot(G.y, Vv)];
+      var x2 = [G.r * V.dot(G.x, U), G.r * V.dot(G.x, Vv)], y2 = [(G.ry || G.r) * V.dot(G.y, U), (G.ry || G.r) * V.dot(G.y, Vv)];
       var minA = tol2 * 10 / Math.max(G.r, 1e-12), gapC = Math.max(1e-7, Math.min(minA, 1e-3));
       var sv = closeFull(modMerge(ivs, gapC), gapC).filter(function (iv) { return iv[1] - iv[0] > minA; });
       if (!sv.length) return;
-      if (Math.abs(ne) > 1 - 1e-9) {
+      if (Math.abs(ne) > 1 - 1e-9 && !G.ry) {   // (rfNL: an ellipse group seen square on stays an ellipse)
         var s = ne > 0 ? 1 : -1, f0 = Math.atan2(x2[1], x2[0]);
         if (isFull(sv)) { tex.circles.push({ c: c2, r: G.r, body: G.body, exact: true }); return; }
         joinRuns(sv, gapC).forEach(function (iv) {

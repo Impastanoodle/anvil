@@ -1029,6 +1029,9 @@
       { label: 'Display \u25b8 Hidden Lines Visible', checked: v.display === 'hlv', action: function () { setViewDisplay(v.id, 'hlv'); } },
       { label: 'Display \u25b8 Hidden Lines Removed', checked: v.display === 'hlr', action: function () { setViewDisplay(v.id, 'hlr'); } },
       { label: 'Zoom/Pan/Rotate \u25b8 Rotate View\u2026', disabled: v.kind === 'detail' || v.kind === 'section', action: function () { cmdRotateView(v.id); } },   // (rfLA)
+      // (rfNL) SolidWorks' Alignment ▸ Break Alignment / Default Alignment
+      { label: 'Alignment ▸ Break Alignment', disabled: !Drawing.canAlignView(doc(), v.id) || !v.align, action: function () { if (tryEdit(function (dc) { Drawing.setViewAlignment(dc, v.id, false); })) UI.setStatus(v.name + ': alignment broken (it moves freely; Alignment ▸ Default Alignment lines it up again).'); } },
+      { label: 'Alignment ▸ Default Alignment', disabled: !Drawing.canAlignView(doc(), v.id) || !!v.align, action: function () { if (tryEdit(function (dc) { Drawing.setViewAlignment(dc, v.id, true); })) UI.setStatus(v.name + ' lined up with its parent view again.'); } },
       { sep: true },
       { label: 'Tangent Edge \u25b8 Tangent Edges Visible', disabled: v.kind === 'detail', checked: v.tangent === 'visible', action: function () { setViewTangent(v.id, 'visible'); } },
       { label: 'Tangent Edge \u25b8 Tangent Edges With Font', disabled: v.kind === 'detail', checked: v.tangent === 'font', action: function () { setViewTangent(v.id, 'font'); } },
@@ -1373,11 +1376,12 @@
     }, 'centermark', { style: 'single', ext: o.extLines, size: o.markSize, view: null, holes: [] });
     UI.setStatus('Center Mark: click a hole in a view. Esc ends.');
   }
-  function centerMarkFrom(viewId, style, holes, v) {
+  function centerMarkFrom(viewId, style, holes, v, hideIds) {
     var an;
     var probe = JSON.parse(JSON.stringify(doc()));
     Drawing.addCenterMark(probe, viewId, { style: style, holes: holes });   // refuses bad input before the undo step
     edit(function (dc) {
+      if (hideIds && hideIds.length) { var vw = Drawing.findView(dc, viewId); (vw && vw.annotations || []).forEach(function (a) { if (hideIds.indexOf(a.id) >= 0) a.hidden = true; }); }
       var spec = { style: style, holes: holes };
       if (v && v.ext !== Drawing.docOptions(dc).extLines) spec.ext = !!v.ext;
       if (v && +v.size > 0 && +v.size !== Drawing.docOptions(dc).markSize) spec.size = +v.size;
@@ -1390,7 +1394,24 @@
     var ent = entityAt(p), P = D.pending;
     if (!ent || !ent.circle) { UI.setStatus('Center Mark: click a circle (hole) of an orthographic view.'); return; }
     var h = { c: ent.mc.c.slice(), r: ent.mc.r };
-    if (P.style === 'single') { centerMarkFrom(ent.view, 'single', [h], P); return; }
+    if (P.style === 'single') {
+      // (rfNL) one mark per hole: a hole the user already marked (or a linear / circular mark runs through) is
+      // selected, not marked twice; a hole with only an Auto insert mark gets the user's mark in its place (the auto
+      // record stays, hidden, so the next rebuild does not insert it again)
+      var tol = Math.max(1e-9, h.r * 1e-4);
+      var onHole = function (a) { return a.type === 'centerMark' && !a.hidden && (a.holes || []).some(function (q) { return Math.hypot(q.c[0] - h.c[0], q.c[1] - h.c[1]) <= tol; }); };
+      var vw = Drawing.findView(doc(), ent.view), have = (vw && vw.annotations || []).filter(onHole);
+      var mine = have.filter(function (a) { return !a.auto; })[0];
+      if (mine) {
+        D.sel = { kind: 'annot', id: mine.id, view: ent.view }; drawOverlay(); DW.renderTree();
+        UI.setStatus('Center Mark: that hole already has a center mark (selected). Click another hole, or Esc.');
+        return;
+      }
+      var autoIds = have.map(function (a) { return a.id; });
+      var made = centerMarkFrom(ent.view, 'single', [h], P, autoIds);
+      if (made && autoIds.length) UI.setStatus('Center mark added in place of the hole’s Auto insert mark.');
+      return;
+    }
     if (P.view != null && P.view !== ent.view) { UI.setStatus('Center Mark: the holes of one mark must be in the same view.'); return; }
     P.view = ent.view;
     if (!P.holes.some(function (q) { return Math.hypot(q.c[0] - h.c[0], q.c[1] - h.c[1]) < 1e-9; })) P.holes.push(h);

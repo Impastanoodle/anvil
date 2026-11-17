@@ -287,6 +287,8 @@
       (pr.circles.tangent || []).forEach(function (c) { prims.push({ k: 'circle', c: toSheet(c.c), r: c.r * s, layer: layer, style: tst }); });
       (pr.arcs && pr.arcs.tangent || []).forEach(function (a) { prims.push({ k: 'arc', c: toSheet(a.c), r: a.r * s, a0: a.a0, a1: a.a1, layer: layer, style: tst }); });
       (pr.ellipses && pr.ellipses.tangent || []).forEach(function (el) { prims.push(ellipsePrim(el, toSheet, s, layer, tst)); });
+      // (rfNL) explode lines of an exploded assembly view: phantom (SolidWorks' Explode Line Sketch)
+      (ct.explLines || []).forEach(function (l) { prims.push({ k: 'line', a: toSheet([l[0], l[1]]), b: toSheet([l[2], l[3]]), layer: layer, style: 'chain', view: v.id, explodeLine: true }); });
       chained(pr.lines.hidden, 'hidden');
       pr.circles.hidden.forEach(function (c) { prims.push({ k: 'circle', c: toSheet(c.c), r: c.r * s, layer: layer, style: 'hidden' }); });
       (pr.arcs ? pr.arcs.hidden : []).forEach(function (a) { prims.push({ k: 'arc', c: toSheet(a.c), r: a.r * s, a0: a.a0, a1: a.a1, layer: layer, style: 'hidden' }); });

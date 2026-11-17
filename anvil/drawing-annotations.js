@@ -51,7 +51,7 @@
     var diag = meshDiag(mesh), q = diag * 1e-6 + 1e-12, groups = {}, order = [], out = [], CV = meshCurves(mesh);
     // true circles of the analytic records: exact centre, radius and depth; the rest from closed chains of equal chords
     if (CV) CV.groups.forEach(function (G) {
-      if (!G.full || Math.abs(Math.abs(V.dot(G.n, F.e)) - 1) > 1e-9) return;
+      if (!G.full || G.ry || Math.abs(Math.abs(V.dot(G.n, F.e)) - 1) > 1e-9) return;   // (rfNL: not a slanted rim)
       out.push({ c: [V.dot(G.c, F.u), V.dot(G.c, F.v)], r: G.r, w: V.dot(G.c, F.e), body: G.body, exact: true });
     });
     meshEdges(mesh).forEach(function (ed, ei) {

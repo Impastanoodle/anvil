@@ -136,6 +136,28 @@
     memo[key] = out;
     return out || mesh;
   }
+  // (rfNL) explodeLines(doc, v, mesh) -> the explode lines of view v (SolidWorks' Explode Line Sketch, drawn in the
+  // view as phantom lines): [{ component, step, from, to }] world points, one per step a component moves in (its
+  // centre before -> after the step), or null when the view is not exploded. Worked out by a pose-only rebuild of the
+  // assembly with that explode (no bodies), cached on the drawn mesh as the exploded meshes are.
+  function explodeLines(doc, v, mesh) {
+    var model = (_.CTX && _.CTX.model) || _.lastModel;
+    if (!v || !mesh || !model || typeof Assembly === 'undefined' || !explodedViewsOf(model).length) return null;
+    var id = explodedShown(v, model);
+    if (id === false || id == null) return null;
+    var memo = mesh._drawingExpl, key = 'L' + id;
+    if (!memo) { memo = {}; try { Object.defineProperty(mesh, '_drawingExpl', { value: memo, enumerable: false, configurable: true }); } catch (e) { return null; } }
+    if (memo[key] !== undefined) return memo[key];
+    var out = null;
+    try {
+      var m2 = JSON.parse(JSON.stringify(model)), bd = _.CTX && _.CTX.build;
+      m2.exploded = id;
+      var b2 = Assembly.rebuild(m2, bd && bd.cache || null, { poseOnly: true });
+      out = b2 && b2.explode && b2.explode.lines ? b2.explode.lines : null;
+    } catch (err) { out = null; }
+    memo[key] = out;
+    return out;
+  }
   // a box as CSG: ax = three orthonormal axes, lo / hi = coordinate ranges along them
   function boxSolid(ax, lo, hi) {
     function pt(c) { return new CSG.Vector(ax[0][0] * c[0] + ax[1][0] * c[1] + ax[2][0] * c[2], ax[0][1] * c[0] + ax[1][1] * c[1] + ax[2][1] * c[2], ax[0][2] * c[0] + ax[1][2] * c[1] + ax[2][2] * c[2]); }
@@ -563,24 +585,27 @@
       delete d.dangling;
       return true;
     }
-    if (d.kind === 'dia') {
-      (pr.circlesAll || []).forEach(function (c) {
+    // (rfNL) `d.nr`: how many circles (arcs) of its size the view held when it last attached. A hole of that size
+    // "moved" to a neighbour only while that count holds: a deleted hole leaves one fewer, and its diameter must
+    // dangle, not jump to the next hole of a pattern (it did)
+    function sameSize(list, r) { var n = 0; list.forEach(function (c) { if (Math.abs(c.r - r) <= tol) n++; }); return n; }
+    if (d.kind === 'dia' || d.kind === 'rad') {
+      // `d.peers` (up to 24): where the other holes of its size were, so a moved hole is found at a new place before
+      // the place of a neighbour that stayed
+      var list = (d.kind === 'dia' ? pr.circlesAll : pr.arcsAll) || [], nNow = d.nr != null ? sameSize(list, d.r) : 0;
+      var peer = function (c) { return (d.peers || []).some(function (q) { return Math.hypot(q[0] - c.c[0], q[1] - c.c[1]) <= tol; }); };
+      list.forEach(function (c) {
         var dc = Math.hypot(c.c[0] - d.c[0], c.c[1] - d.c[1]), dr = Math.abs(c.r - d.r);
-        var s = dc <= tol ? (dr <= tol ? 0 : 1 + Math.min(dr / size, 0.9)) : (dr <= tol && dc <= reach ? 2 + dc / reach : Infinity);
+        var s = dc <= tol ? (dr <= tol ? 0 : 1 + Math.min(dr / size, 0.9)) : (dr <= tol && dc <= reach && !(d.nr != null && nNow < d.nr) ? 2 + dc / reach + (peer(c) ? 1 : 0) : Infinity);
         if (s < bs) { bs = s; best = c; }
       });
       if (!best) { d.dangling = true; return false; }
-      d.c = best.c.slice(); d.r = best.r; d.value = 2 * best.r; delete d.dangling;
-      return true;
-    }
-    if (d.kind === 'rad') {
-      (pr.arcsAll || []).forEach(function (c) {
-        var dc = Math.hypot(c.c[0] - d.c[0], c.c[1] - d.c[1]), dr = Math.abs(c.r - d.r);
-        var s = dc <= tol ? (dr <= tol ? 0 : 1 + Math.min(dr / size, 0.9)) : (dr <= tol && dc <= reach ? 2 + dc / reach : Infinity);
-        if (s < bs) { bs = s; best = c; }
-      });
-      if (!best) { d.dangling = true; return false; }
-      d.c = best.c.slice(); d.r = best.r; d.a0 = best.a0; d.a1 = best.a1; d.value = best.r; delete d.dangling;
+      d.c = best.c.slice(); d.r = best.r; d.value = (d.kind === 'dia' ? 2 : 1) * best.r; delete d.dangling;
+      if (d.kind === 'rad') { d.a0 = best.a0; d.a1 = best.a1; }
+      d.nr = sameSize(list, best.r);
+      var peers = [];
+      if (d.nr <= 25) list.forEach(function (c) { if (Math.abs(c.r - best.r) <= tol && Math.hypot(c.c[0] - best.c[0], c.c[1] - best.c[1]) > tol && !peers.some(function (q) { return Math.hypot(q[0] - c.c[0], q[1] - c.c[1]) <= tol; })) peers.push(c.c.slice()); });
+      if (peers.length) d.peers = peers; else delete d.peers;
       return true;
     }
     var a = d.a, bb = d.b, L = Math.hypot(bb[0] - a[0], bb[1] - a[1]);
@@ -2840,7 +2865,7 @@
   _.profilePts = profilePts; _.rayOut = rayOut; _.clipLayerToPoly = clipLayerToPoly;   // (rfCQ)
 
   D.flatCurves = flatCurves; D.bendKey = bendKey; D.bendKeyMatch = bendKeyMatch; D.flatData = flatData; D.flatProjection = flatProjection; D.bendNoteText = bendNoteText; D.bendTag = bendTag;
-  D.setViewExploded = setViewExploded; D.explodedShown = explodedShown; _.viewMesh = viewMesh; _.explodeIdOf = explodeIdOf;   // (rfMS)
+  D.setViewExploded = setViewExploded; D.explodedShown = explodedShown; _.viewMesh = viewMesh; _.explodeIdOf = explodeIdOf; _.explodeLines = explodeLines;   // (rfMS)
   D.setSectionExcluded = setSectionExcluded; D.sectionOf = sectionOf; D.hatchLines = hatchLines; D.hatchStyle = hatchStyle; D.hatchAssign = hatchAssign; D.HATCH_PATTERNS = Object.keys(HATCH_PATTERNS);
   D.hatchPattern = hatchPattern; D.patternLines = patternLines; D.snapHatch = snapHatch; D.clipProjection = clipProjection; D.reattachDim = reattachDim;
   _.excludedBodies = excludedBodies; _.sectionKey = sectionKey; _.capLoops = capLoops; _.HATCH_PATTERNS = HATCH_PATTERNS; _.clipSeg = clipSeg; _.primHitsRect = primHitsRect; _.segOutsideRect = segOutsideRect;

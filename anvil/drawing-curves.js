@@ -71,6 +71,33 @@
         (g.raw || (g.raw = [])).push(rm.ch);
       });
     });
+    // (rfNL) a cylinder ended by a plane at a slant (a hole through a flange bent at 30°, a tube cut at an angle): its
+    // rim is an ellipse, not a circle, so Kernel.curveEdges does not report it and it was drawn as facet chords. The
+    // mesh edges between a cylinder face and a planar one that is neither square to its axis nor along it are filed
+    // under one ellipse group per cylinder and plane: centre where the axis meets the plane, x along the major axis
+    // (r / |d·n|), y along the minor (r, square to the axis), ry its minor half-length
+    var slant = {};
+    meshEdges(mesh).forEach(function (ed) {
+      if (ed.smooth || !ed.faces || ed.faces.length !== 2) return;
+      var f0 = faceSurf[ed.faces[0]], f1 = faceSurf[ed.faces[1]];
+      var ci = f0 && f0.s.t === 'cyl' && !f1 ? 0 : f1 && f1.s.t === 'cyl' && !f0 ? 1 : -1;
+      if (ci < 0) return;
+      var pf = mesh.faces[ed.faces[1 - ci]];
+      if (!pf || (pf.polys && pf.polys.some(function (p) { return p.surf; }))) return;
+      var S = (ci ? f1 : f0).s, n = V.norm(ed.normals[1 - ci]), dn = V.dot(S.d, n);
+      if (!(Math.abs(dn) > 0.02 && Math.abs(dn) < 1 - 1e-7)) return;
+      var b = mesh.faces[ed.faces[0]].body || 0, hgt = V.dot(ed.a, n);
+      var C = V.add(S.o, V.scale(S.d, (hgt - V.dot(S.o, n)) / dn));
+      var sg = (n[0] < -1e-9 || (Math.abs(n[0]) <= 1e-9 && (n[1] < -1e-9 || (Math.abs(n[1]) <= 1e-9 && n[2] < 0)))) ? -1 : 1, nn = V.scale(n, sg);
+      var key = 'E' + b + '|' + C.map(q).join(',') + '|' + nn.map(function (x) { return Math.round(x * 1e6); }).join(',') + '|' + q(S.r);
+      var g = gmap[key];
+      if (!g) {
+        var y = V.norm(V.cross(S.d, nn)), x = V.cross(y, nn);
+        g = gmap[key] = { body: b, c: C, n: nn, x: x, y: V.cross(nn, x), r: S.r / Math.abs(dn), ry: S.r, arc: false, chords: [] };
+        groups.push(g); slant[key] = 1;
+      }
+      (g.raw || (g.raw = [])).push([ed.a, ed.b]);
+    });
     // The rims of torus and sphere faces whose facets carry no profile ends (an Anvil fillet round a cylinder's rim or a
     // boss's root: Kernel.curveEdges finds only a revolve's rims): the facet edges at one axial level, on the true
     // surface and used by one such facet only (the face's boundary, where it meets the cap, the cylinder or the plate)
@@ -108,7 +135,11 @@
     }
     // chords split by the kernel (a facet cut in two) are joined back end to end when collinear; then only chords
     // whose two ends are on the true curve are kept (one cut short by a trimming face, a hex nut's flat, is not)
-    function onCurve(g, p) { var w = V.sub(p, g.c), h = V.dot(w, g.n); return Math.abs(h) <= tol && Math.abs(V.len(V.sub(w, V.scale(g.n, h))) - g.r) <= tol; }
+    function onCurve(g, p) {
+      var w = V.sub(p, g.c), h = V.dot(w, g.n);
+      if (g.ry) { var t = curveAngle(g, p); return Math.abs(h) <= tol && V.len(V.sub(w, V.add(V.scale(g.x, g.r * Math.cos(t)), V.scale(g.y, g.ry * Math.sin(t))))) <= tol * 4; }   // (rfNL) an ellipse
+      return Math.abs(h) <= tol && Math.abs(V.len(V.sub(w, V.scale(g.n, h))) - g.r) <= tol;
+    }
     groups.forEach(function (g) {
       var raw = [], changed = true, seenCh = new Map();
       (g.raw || []).forEach(function (ch) {   // a chord reported from both faces it bounds once (r4/drawings4)
@@ -221,7 +252,7 @@
   }
   // angle of a 3D point about a curve group's axis, from its x toward its y, in [0, 2π)
   function curveAngle(g, p) {
-    var w = V.sub(p, g.c), a = Math.atan2(V.dot(w, g.y), V.dot(w, g.x));
+    var w = V.sub(p, g.c), a = g.ry ? Math.atan2(V.dot(w, g.y) / g.ry, V.dot(w, g.x) / g.r) : Math.atan2(V.dot(w, g.y), V.dot(w, g.x));   // (rfNL: an ellipse's parameter)
     return a < 0 ? a + TWO_PI : a;
   }
   function unwrapNear(a, ref) { return a + TWO_PI * Math.round((ref - a) / TWO_PI); }
