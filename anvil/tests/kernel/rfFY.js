@@ -77,7 +77,7 @@
       nearRel(got, ex, 1e-9, 'removed');
       return 'removed ' + got.toFixed(9) + ', exact ' + ex.toFixed(9) + ' (' + rel.toExponential(2) + ')';
     });
-    test('rfFY TODO: R2 on an extruded spline\'s END-face edge at chordTol .0005 (220 chords): refused by the open-edge guard (csg.js: the swept tool\'s facets meet at 0.3° on the face and the BSP leaves 4 open + 3 non-manifold edges along the setback); the sketch-plane face builds, 39.531889', function () {
+    test('rfFY: R2 on an extruded spline\'s END-face edge at chordTol .0005 (220 chords) builds, closed, and removes what the sketch-plane face removes to 3e-8 (39.531986; it was refused by the open-edge guard: 4 open + 3 non-manifold edges along the setback; a TODO row until lane NI found it built on main)', function () {
       var SPL = 'p.units("mm"); p.sketch("Front").line(0,0,40,0).line(40,0,40,20).spline([[40,20],[25,30],[10,22],[0,20]]).line(0,20,0,0).extrude(15);\n';
       var prev = K.setTessellation(), out;
       try {
@@ -85,7 +85,7 @@
         var base = build(SPL), front = build(SPL + 'p.fillet(2, [[25, 30, 0]]);'), back = build(SPL + 'p.fillet(2, [[25, 30, 15]]);');
         rfFYclosed(front, 'sketch-plane face');
         var e = rfFYerr(back);
-        if (e) { assert(/^Failed to create fillet\. /.test(e), 'plain refusal: ' + e); out = 'TODO end face refused: ' + e; }
+        if (e) fail('end face refused: ' + e);
         else { rfFYclosed(back, 'end face'); nearRel(base.mp.volume - back.mp.volume, base.mp.volume - front.mp.volume, 3e-8, 'same as the sketch-plane face'); out = 'end face builds, removed ' + (base.mp.volume - back.mp.volume).toFixed(6); }
       } finally { K.setTessellation(prev); }
       return out;

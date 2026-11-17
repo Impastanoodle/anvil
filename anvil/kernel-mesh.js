@@ -451,13 +451,40 @@
       if (l) l.push(s); else count[a] = [s];
       return s;
     }
-    split.forEach(function (e) { slot(e[0].vi, e[1].vi, true).n++; });
+    split.forEach(function (e) { var s0 = slot(e[0].vi, e[1].vi, true); s0.n++; if (s0.n === 1) s0.first = e; else (s0.list || (s0.list = [s0.first])).push(e); });
+    // lane NI: which copy of a welded edge is the boundary. Two edges between the same two welded vertices need not be
+    // the same segment: the weld joins points up to 1e-4 apart (a cut line of a cap ending 5.6e-5 from a point on a
+    // hole's rim chord). When a>b outnumbers b>a, the boundary copy is one that has no reversed twin with exactly its
+    // own two points, not simply the first: the first was the interior piece, and the outline took the cap's interior
+    // split point (2.8e-4 off the rim, collinear with the next chord) for the rim's corner, which the collinear pass
+    // then dropped. The rim's chord no longer ended on the circle, so a round of that rim left one sector out (an inch
+    // tube Ø1.5 / Ø.5, R.25 from the bore: volume 4.5e-4 heavy; rfNC's "Mass Properties" finding).
+    function exactTwin(e, tw) {
+      var l = tw.list || [tw.first];
+      for (var i = 0; i < l.length; i++) {
+        var t = l[i];
+        if (t.tw) continue;
+        if (t[0][0] === e[1][0] && t[0][1] === e[1][1] && t[0][2] === e[1][2] && t[1][0] === e[0][0] && t[1][1] === e[0][1] && t[1][2] === e[0][2]) return t;
+      }
+      return null;
+    }
+    if (outlineOptions.exactTwin !== false) split.forEach(function (e) {
+      var s = slot(e[0].vi, e[1].vi, false);
+      if (!s.list || s.paired) return;
+      s.paired = true;
+      var tw = slot(e[1].vi, e[0].vi, false);
+      if (!tw) return;
+      s.list.forEach(function (c) { var t = exactTwin(c, tw); if (t) { t.tw = true; c.inner = true; } });
+      var free = s.list.filter(function (c) { return !c.inner; }).length, net = s.n - tw.n;
+      // keep the old choice unless enough twin-less copies exist to be the whole boundary of this pair
+      if (!(net > 0) || free < net) s.list.forEach(function (c) { c.inner = false; });
+    });
     // rfFG: by count, not presence: a boolean can leave a sliver copy of part of a polygon (the same corners in the
     // same order twice, one of them welded shut), whose reversed edge cancelled the face's real boundary edge and
     // the loop through it was lost. a>b is on the boundary as many times as it outnumbers b>a.
     var boundary = split.filter(function (e) {
       var s = slot(e[0].vi, e[1].vi, false), tw = slot(e[1].vi, e[0].vi, false), net = s.n - (tw ? tw.n : 0);
-      if (!(net > 0) || s.em >= net) return false;
+      if (!(net > 0) || s.em >= net || e.inner) return false;
       s.em++;
       return true;
     });
@@ -677,6 +704,7 @@
       e.len = len(d);
       if (e.len < 1e-6) return;
       e.dir = scale(d, 1 / e.len);
+      if (rfNIedgeMesh) rfNIedgeMesh.set(e, mesh);
       e.smooth = false;
       if (e.normals.length >= 2) {
         e.smooth = true;
@@ -702,9 +730,41 @@
   }
 
   // Resolve edge specs ({at:[x,y,z], chain:bool}) against the current edges, with tangent-chain propagation.
-  function resolveEdges(specs, edges, tol) {
+  // lane NI: the true tangent of a body edge at its end vk, pointing away from it: -> { t, key } or null (not known:
+  // a chord of a spline, an edge between two curved faces). A chord of a circle (an edge square to the axis of a
+  // cylinder / cone / torus / sphere record of one of its faces) has the circle's tangent at that vertex and the
+  // circle as its key; a straight edge between planes, or along a cylinder's ruling, has its own direction.
+  var rfNIedgeMesh = typeof WeakMap !== 'undefined' ? new WeakMap() : null;   // bodyEdges: edge -> its mesh
+  function rfNItangent(e, vk, meshIn) {
+    var mesh = (rfNIedgeMesh && rfNIedgeMesh.get(e)) || meshIn;
+    if (!mesh || !e.dir || e.faces.length !== 2) return null;
+    var out = e.ka === vk ? e.dir : scale(e.dir, -1), V = e.ka === vk ? e.a : e.b, res = null, curved = 0;
+    for (var i = 0; i < 2; i++) {
+      var fc = mesh.faces[e.faces[i]];
+      if (!fc) return null;
+      if (rfFFplanar(fc)) continue;
+      curved++;
+      var S = rfFFsurf(fc);
+      if (!S || !S.d || !S.o) return null;
+      var d = norm(S.d), c = dot(e.dir, d);
+      if (S.t === 'cyl' && Math.abs(c) > 1 - 1e-9) continue;   // a ruling: straight
+      if (Math.abs(c) > 1e-6) return null;
+      var rv = rfFFradial(V, S.o, d), rho = len(rv);
+      if (!(rho > 1e-9)) return null;
+      var t = cross(d, scale(rv, 1 / rho));
+      if (dot(t, out) < 0) t = scale(t, -1);
+      var h = dot(sub(V, S.o), d), ax = sub(S.o, scale(d, dot(S.o, d))), sg = d[0] + d[1] + d[2] < 0 ? -1 : 1;
+      var rr = Math.max(len(rfFFradial(e.a, S.o, d)), len(rfFFradial(e.b, S.o, d)));
+      res = { t: t, key: [sg * d[0], sg * d[1], sg * d[2], ax[0], ax[1], ax[2], sg * (h + dot(S.o, d)), rr].map(function (x) { return Math.round(x * 1e5); }).join(',') };
+    }
+    return res || { t: out, key: null };
+  }
+  // (mesh: optional, the mesh the edges were made from, for edges that did not come straight from bodyEdges in this
+  // thread: copies posted by the worker have lost their link to it and chain by their chords alone)
+  function resolveEdges(specs, edges, tol, mesh) {
     var picked = [], seen = {};
-    var COS_CHAIN = Math.cos(28 * Math.PI / 180);
+    var COS_CHAIN = Math.cos(28 * Math.PI / 180), COS_TRUE = Math.cos(8 * Math.PI / 180);
+    function tangentOf(e, vk) { return rfNItangent(e, vk, mesh); }
     function addEdge(e) { var k = e.ka + '|' + e.kb; if (seen[k]) return false; seen[k] = true; picked.push(e); return true; }
     (specs || []).forEach(function (spec) {
       var best = null, bestD = tol;
@@ -724,6 +784,15 @@
           var touches = e.ka === cur.ka || e.ka === cur.kb || e.kb === cur.ka || e.kb === cur.kb;
           if (!touches) return;
           if (Math.abs(dot(e.dir, cur.dir)) < COS_CHAIN) return;
+          // lane NI: where both edges are true curves (a chord of a recorded circle, a straight edge between planes, a
+          // ruling) their TRUE tangents at the shared vertex decide, not the chords: two different circles crossing at 24°
+          // (a boss's rim and the rim of a hole biting .011 into it) turn no more than a 16-chord circle's own chords do,
+          // and the chamfer of the boss's rim took the hole's three chords inside the bite as well (round fuzz 259)
+          if (tangentOf && K.openGuard.trueTangent !== false) {
+            var vS = e.ka === cur.ka || e.ka === cur.kb ? e.ka : e.kb, tc = tangentOf(cur, vS), te = tangentOf(e, vS);
+            // (two straight edges keep the chord rule: they may be chords of a spline, which has no record)
+            if (tc && te && (tc.key || te.key) && tc.key !== te.key && dot(tc.t, te.t) > -COS_TRUE) return;
+          }
           if (addEdge(e)) queue.push(e);
         });
       }
@@ -2162,6 +2231,9 @@
     var cutU = cuts.length ? unionAll(cuts) : null, bp = cutU ? rfFRbossPrisms() : [];
     if (bp.length) cutU = cutU.subtract(unionAll(bp));   // rfFR: the bosses the round runs under stay whole
     var addU = adds.length ? unionAll(adds) : null, hp = addU ? rfGGholePrisms() : [];
+    // (K.openGuard.toolLog: a probe's hook, lane NI: the pieces before they are joined, to tell a tool that is no
+    // solid from a boolean that cracks: each piece closed? the selection? the prisms taken off?)
+    if (K.openGuard.toolLog) K.openGuard.toolLog({ f: f, cuts: cuts, adds: adds, bossPrisms: bp, holePrisms: hp, selected: selected, straight: straight, chains: chainList, mesh: mesh });
     if (hp.length) addU = addU.subtract(unionAll(hp));
     // the plain tool would hang off the plate where its foot leaves it: keep it inside the plate's outline
     if (addU && rfGGplain && rfGGoutline != null) { var LO = rfFRouter[rfGGoutline]; addU = addU.intersect(_.prism(LO.loops[LO.outer], LO.plane, -4 * rfFMband, 2 * size + 2 * rfFMband, f.id)); }
@@ -2191,6 +2263,8 @@
           mid = cutT ? (preT ? before.union(preT) : before).subtract(cutT) : before; res = addT ? mid.union(addT) : mid;
           if (preT && rfFPopenCount(res) > open0) { mid = before.subtract(cutT); res = addT ? mid.union(addT) : mid; }
         } finally { CO.healWide = keepW; CO.healFill = keepF; }
+        // (K.openGuard.log: a probe's hook, lane NI: every attempt with its count, the step that follows, the tools)
+        if (K.openGuard.log) K.openGuard.log({ f: f, next: bf, open: rfFPopenCount(res), open0: open0, before: before, cut: cutT, add: addT, pre: preT, res: res });
         if (rfFPopenCount(res) <= open0) {
           done = true;
           if (cutT) rfFPmemo(before, 'subtract', cutT, mid);

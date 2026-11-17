@@ -286,8 +286,25 @@ Object.defineProperty(Kernel, '_', { value: {}, enumerable: false });   // the i
   // ------------------------------------------------------------------ triangulation (ear clipping, CCW input)
   function triangulate(pts) {
     var n = pts.length, idx = [], tris = [], i;
-    for (i = 0; i < n; i++) idx.push(i);
     function area2(a, b, c) { return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]); }
+    // lane NI: a CLOCKWISE loop (a face's inner loop: the footprint of a boss, a hole's rim) found no ear and fell to the
+    // fan below. A fan of a convex loop is right (its triangles wind as the loop does; callers orient the solid), and is
+    // kept as it was. A fan of a loop that is not convex has triangles facing both ways: a prism over it is closed but
+    // no solid, and a boolean with it gave a larger volume after a subtract and open edges (the boss prism taken off a
+    // round's tool, stack fuzz 226: the outline of two grooves and a block). Such a loop is ear-clipped the other way
+    // round and its triangles handed back winding as the loop does.
+    if (n > 3 && triangulate.cw !== false) {
+      var sa = 0, reflex = false;
+      for (i = 0; i < n; i++) { var pa = pts[i], pb = pts[(i + 1) % n]; sa += pa[0] * pb[1] - pb[0] * pa[1]; }
+      if (sa < 0) {
+        for (i = 0; i < n && !reflex; i++) if (area2(pts[i], pts[(i + 1) % n], pts[(i + 2) % n]) > 1e-9) reflex = true;
+        if (reflex) {
+          var rev = pts.slice().reverse();
+          return triangulate(rev).map(function (t) { return [n - 1 - t[2], n - 1 - t[1], n - 1 - t[0]]; });
+        }
+      }
+    }
+    for (i = 0; i < n; i++) idx.push(i);
     function inTri(p, a, b, c) {
       return area2(a, b, p) >= -1e-9 && area2(b, c, p) >= -1e-9 && area2(c, a, p) >= -1e-9;
     }

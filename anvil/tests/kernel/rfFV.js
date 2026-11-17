@@ -79,10 +79,10 @@
       return ats.length + ' edges, ' + r.body.polygons.length + ' polygons';
     });
 
-    test('rfFV TODO: R2 on an extruded spline' + "'" + 's END-face edge at chordTol .0005 (open-edge guard off): no open edge (was 4: the same tool corner computed twice, 2e-8 apart, split by the meshes' + "'" + ' 1e-6 grid; snapTwins makes it one point); 3 non-manifold edges left', function () {
-      // lane FY's case (rfFY TODO row). The 3 left: two tool chord lines cross the end face 2.8e-6 apart near
-      // (1.7105, 18.1491, 15) and the mesh's 1e-6 T-junction splitting folds the triangles between them; sliding either
-      // vertex onto the other opens a T-junction at a tool vertex (1.9351, 18.1718 / 1.4300, 18.1228) by ~1e-6.
+    test('rfFV: R2 on an extruded spline' + "'" + 's END-face edge at chordTol .0005 (open-edge guard off): closed, no open and no non-manifold edge (was 4 open: the same tool corner computed twice, 2e-8 apart, split by the meshes' + "'" + ' 1e-6 grid; snapTwins makes it one point; then 3 non-manifold, a TODO row until lane NI found it closed on main)', function () {
+      // lane FY's case. The 3 non-manifold edges that were left: two tool chord lines cross the end face 2.8e-6 apart near
+      // (1.7105, 18.1491, 15) and the mesh's 1e-6 T-junction splitting folded the triangles between them. Lane NI
+      // (2026-11-16) measured main: 0 open, 0 non-manifold on the guard's first attempt, guard on or off; a hard row.
       var SPL = 'p.units("mm"); p.sketch("Front").line(0,0,40,0).line(40,0,40,20).spline([[40,20],[25,30],[10,22],[0,20]]).line(0,20,0,0).extrude(15);\n';
       var prev = K.setTessellation(), keep = K.openGuard.on, base, front, back, off;
       try {
@@ -95,7 +95,7 @@
       rfFVclosed(front, 'sketch-plane face');
       var c = rfFVcount([back.body]), c0 = rfFVcount([off.body]);
       assert(c.open === 0, 'end face: open ' + c.open);
-      assert(c.nm <= 3, 'end face: non-manifold ' + c.nm);
+      assert(c.nm === 0, 'end face: non-manifold ' + c.nm);
       // (c0.open > 0 was asserted here: since rfGH bodyMesh closes that sliver itself, so snapTwins off shows nothing)
       nearRel(base.mp.volume - back.mp.volume, base.mp.volume - front.mp.volume, 1e-7, 'the end face takes what the sketch-plane face takes');   // head: 1e-7, not 1e-8: 1.3e-8 apart in the final pass of local-2026-10-30b (3 non-manifold edges left, a TODO row)
       return 'end face: open ' + c.open + ', non-manifold ' + c.nm + ' (snapTwins off: ' + c0.open + ' open)';
