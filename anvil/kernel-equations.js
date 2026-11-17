@@ -385,7 +385,7 @@
   // driven through a global variable: Apply links the field to one ('=D1_Boss_Extrude1', made with `dim` naming the
   // column) unless the field already reads '=<variable>'. Values are expressions without the leading '=' (they may use
   // the variables to their left in the equations' order).
-  var DIM_FIELDS = { extrude: ['depth', 'depth2', 'draft'], revolve: ['angle'], fillet: ['r'], chamfer: ['d'], shell: ['thickness'],
+  var DIM_FIELDS = { extrude: ['depth', 'depth2', 'draft'], revolve: ['angle'], fillet: ['r'], chamfer: ['d', 'd2', 'angle'], shell: ['thickness'],
     lpattern: ['s1', 'n1', 's2', 'n2'], cpattern: ['n', 'angle'], plane: ['offset'], hole: ['depth'], flange: ['length', 'angle'],
     jog: ['height', 'length', 'angle'], sketchedBend: ['angle'], mirror: ['offset'] };
   function featureByName(model, name) { var fs = model.features || []; for (var i = 0; i < fs.length; i++) if (String(fs[i].name) === String(name)) return fs[i]; return null; }

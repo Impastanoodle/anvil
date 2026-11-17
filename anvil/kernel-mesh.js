@@ -800,8 +800,55 @@
     return picked;
   }
 
+  // ------------------------------------------------------------------ rfNT: chamfers with two distances / angle + distance
+  // A chamfer's section is the line between a point on each face, `legs` = [s0, s1] from the edge along e.ins[0] and
+  // e.ins[1]. Equal distance: both are f.d and no legs are passed (every function below then builds what it built).
+  //   Distance Distance  f.d on one face, f.d2 on the other
+  //   Angle Distance     f.d on one face, the chamfer face at f.angle (degrees) to THAT face: the other leg is
+  //                      d sin a / sin(theta + a), theta the corner's angle in section (90 deg: d tan a)
+  // Which face takes d (buildEdgeFeature's rfNTassign), at the picked edge:
+  //   1. one face planar, the other curved: the planar one (a hole's or boss's rim: d lies on the flat face);
+  //   2. otherwise the face whose outward normal at the edge is greater in Y, then X, then Z (the face looking more
+  //      upward; the same all along a straight edge);
+  //   f.flip (SolidWorks' Flip direction) swaps the two for the whole feature.
+  // From the picked edge the choice runs along the selection: a selected edge joined to an assigned one (same
+  // convexity, turning under 30 deg) keeps d on the face they share, or off it; with no shared face, on the face whose
+  // normal is nearer. So a rim or a tangent chain has d on one side all the way round, whichever chord was picked.
+  function rfNTspec(f, d) {
+    if (f.type !== 'chamfer') return null;
+    var has = function (v) { return v != null && v !== ''; };
+    if (has(f.angle)) {
+      var a = +f.angle;
+      if (!(a > 0 && a < 180)) throw new Error('Angle must be between 0 and 180 degrees.');
+      return { angle: a * Math.PI / 180, flip: !!f.flip };
+    }
+    if (has(f.d2)) {
+      var d2 = +f.d2;
+      if (!(d2 > 0)) throw new Error('Distance 2 must be greater than zero.');
+      return d2 === d ? null : { d2: d2, flip: !!f.flip };
+    }
+    return null;
+  }
+  // which of an edge's two faces takes d: 0 or 1. n0 / n1 their outward normals at the picked edge, planar0 / planar1
+  // whether each is a plane (K.chamferFace: the OpenCascade engine uses the same rule for Add(d, d2, E, F))
+  function rfNTface(n0, n1, planar0, planar1, flip) {
+    var s = 0, ax = [1, 0, 2];
+    if (!!planar0 !== !!planar1) s = planar0 ? 0 : 1;
+    else for (var k = 0; k < 3; k++) if (Math.abs(n0[ax[k]] - n1[ax[k]]) > 1e-6) { s = n0[ax[k]] > n1[ax[k]] ? 0 : 1; break; }
+    return flip ? 1 - s : s;
+  }
+  // the leg on the other face of an Angle Distance chamfer: d on one face, the chamfer at angle a to it, corner theta
+  function rfNTangleLeg(d, a, theta) {
+    if (!(theta + a < Math.PI - 0.02)) throw new Error('Failed to create chamfer. The angle ' + +(a * 180 / Math.PI).toFixed(4) + '° is too large for the ' + +(theta * 180 / Math.PI).toFixed(2) + '° corner between these faces: the chamfer would never reach the other face.');
+    return d * Math.sin(a) / Math.sin(theta + a);
+  }
+  function rfNTnotBuilt(what) {
+    return new Error('Failed to create chamfer. Anvil\'s kernel cannot build a Distance Distance / Angle Distance chamfer ' + what + ' yet; use Equal distance there, or chamfer these edges in separate features.');
+  }
+
   // Cross-section solid for one edge: chamfer (flat) or fillet (arc). Returns CSG; caller unions per op.
-  function edgeTool(e, mesh, kind, size, extA, extB, tag) {
+  // (rfNT: legs = [s0, s1], a chamfer's setbacks along e.ins[0] / e.ins[1]; none = size on both)
+  function edgeTool(e, mesh, kind, size, extA, extB, tag, legs) {
     var fa = mesh.faces[e.faces[0]], fb = mesh.faces[e.faces[1]];
     var nA = fa.normal, nB = fb.normal, m = e.mid, dir = e.dir;
     var dA = e.ins[0], dB = e.ins[1];
@@ -813,7 +860,8 @@
     var pts = [], arcPt = [], S = null;
     var ext = size * 1.5;
     if (kind === 'chamfer') {
-      pts.push(add(m, scale(dA, size)), add(m, scale(dB, size)));
+      if (legs) pts.push(add(m, scale(dA, legs[0])), add(m, scale(dB, legs[1])));
+      else pts.push(add(m, scale(dA, size)), add(m, scale(dB, size)));
     } else {
       var t = size / Math.tan(theta / 2);
       var pA = add(m, scale(dA, t)), pB = add(m, scale(dB, t));
@@ -848,7 +896,7 @@
     // Section is swept from end A to end B. Ends are either perpendicular caps (with a small overshoot) or
     // mitre planes shared with a selected neighbour, so chained facets join without notches.
     var tA = dot(sub(e.a, m), dir) - (extA.ext || 0), tB = dot(sub(e.b, m), dir) + (extB.ext || 0);
-    var lim = size * 6;
+    var lim = (legs ? Math.max(legs[0], legs[1]) : size) * 6;
     function shift(P, cap, def) {
       if (!cap || !cap.n) return def;
       var den = dot(dir, cap.n);
@@ -876,12 +924,13 @@
 
   // rfFR: the round's / chamfer's section of a straight edge between two planar faces (edgeTool's construction) as
   // offsets from a point of the edge line, face iA taken as A, oriented positively about dir. -> { off, arc, c, loop }
-  function rfFRsection(e, mesh, kind, size, iA, dir) {
+  function rfFRsection(e, mesh, kind, size, iA, dir, legs) {
     var fa = mesh.faces[e.faces[iA]], fb = mesh.faces[e.faces[1 - iA]], nA = fa.normal, nB = fb.normal, dA = e.ins[iA], dB = e.ins[1 - iA];
     var theta = Math.acos(Math.max(-1, Math.min(1, dot(dA, dB))));
     if (theta < 0.05 || theta > Math.PI - 0.05) return null;
     var pts = [], arcPt = [], c = null;
-    if (kind === 'chamfer') pts.push(scale(dA, size), scale(dB, size));
+    if (kind === 'chamfer' && legs) pts.push(scale(dA, legs[iA]), scale(dB, legs[1 - iA]));   // rfNT
+    else if (kind === 'chamfer') pts.push(scale(dA, size), scale(dB, size));
     else {
       var t = size / Math.tan(theta / 2), pA = scale(dA, t), pB = scale(dB, t);
       c = scale(norm(add(dA, dB)), size / Math.sin(theta / 2));
@@ -904,7 +953,7 @@
   // coincident mitre caps between separate prisms for the BSP to crack on (R2 on an extruded spline at maxAngle 3:
   // 5 open edges, refused by the guard). A corner (a sharper turn) keeps edgeTool + mitreCap.
   // -> { edges: Map of the edges taken, tools: [{ tool, convex }] }
-  function rfFRruns(mesh, kind, size, tag, straight, byKey, info, capFor) {
+  function rfFRruns(mesh, kind, size, tag, straight, byKey, info, capFor, legOf) {
     var out = { edges: new Map(), tools: [] }, COS30 = Math.cos(Math.PI / 6), joint = {};
     Object.keys(byKey).forEach(function (vk) {
       var es = byKey[vk];
@@ -948,7 +997,7 @@
       var V = keys.map(function (k, i) { return pos(es[Math.min(i, es.length - 1)], k); });
       if (isClosed) V[V.length - 1] = V[0];
       var dirs = es.map(function (x, i) { return norm(sub(V[i + 1], V[i])); });
-      var secs = es.map(function (x, i) { return rfFRsection(x, mesh, kind, size, x.faces.indexOf(F), dirs[i]); });
+      var secs = es.map(function (x, i) { return rfFRsection(x, mesh, kind, size, x.faces.indexOf(F), dirs[i], legOf ? legOf.get(x) : null); });
       if (secs.some(function (s) { return !s || s.off.length !== secs[0].off.length; })) return;
       var n2 = secs[0].off.length, tolJ = 1e-7 * Math.max(1, size), ok = true;
       function onPlane(k, Vp, j, nm) { var P = add(Vp, secs[k].off[j]), den = dot(dirs[k], nm); return add(P, scale(dirs[k], -dot(secs[k].off[j], nm) / den)); }
@@ -963,8 +1012,8 @@
       }
       function endRing(k, atStart) {
         var x = es[k], vkey = keys[atStart ? 0 : keys.length - 1], Vp = V[atStart ? 0 : V.length - 1];
-        var cap = capFor(x, x.ka === vkey, byKey[vkey].filter(function (y) { return y !== x; })), d = dirs[k];
-        var def = atStart ? -(cap.ext || 0) : (cap.ext || 0), lim = size * 6;
+        var cap = capFor(x, x.ka === vkey, byKey[vkey].filter(function (y) { return y !== x; })), d = dirs[k], lg = legOf ? legOf.get(x) : null;
+        var def = atStart ? -(cap.ext || 0) : (cap.ext || 0), lim = (lg ? Math.max(lg[0], lg[1]) : size) * 6;
         return secs[k].off.map(function (o) {
           var P = add(Vp, o), t = def;
           if (cap && cap.n) { var den = dot(d, cap.n); if (Math.abs(den) >= 0.25) t = Math.max(def - lim, Math.min(def + lim, dot(sub(cap.v, P), cap.n) / den)); }
@@ -1068,7 +1117,7 @@
     var dd = d, sg = (d[0] < -1e-9 || (Math.abs(d[0]) <= 1e-9 && (d[1] < -1e-9 || (Math.abs(d[1]) <= 1e-9 && d[2] < 0)))) ? -1 : 1;
     function q(v) { return Math.round(v * 1e5); }
     var key = A.map(q).join(',') + '|' + scale(dd, sg).map(q).join(',') + '|' + q(Rc) + '|' + (e.convex ? 1 : 0) + '|' + sp + '|' + sc;
-    return { key: key, A: A, d: d, Rc: Rc, uP: [sp, 0], uC: [k * sc / kn, sc / kn], conv: e.convex, fp: e.faces[ip], fw: e.faces[ic] };
+    return { key: key, A: A, d: d, Rc: Rc, uP: [sp, 0], uC: [k * sc / kn, sc / kn], conv: e.convex, fp: e.faces[ip], fw: e.faces[ic], ip: ip };   // (rfNT: ip = which of e.faces is uP's)
   }
   // rfFK: the circle where a plane square to the axis meets a revolved torus / sphere face (a dish wall cut by a
   // revolve with an arc, a ball dimple). In the meridian half-plane (ρ, z from A) the face is the tube circle C, r and
@@ -1113,18 +1162,20 @@
     function q(x) { return Math.round(x * 1e5); }
     var key = A.map(q).join(',') + '|' + scale(d, sg).map(q).join(',') + '|' + q(Rc) + '|' + (e.convex ? 1 : 0) + '|' + sp + '|' + S.t + q(r);
     // out: the corner's wedge lies outside the tube (a cut dish wall, material outside the circle)
-    return { key: key, A: A, d: d, Rc: Rc, Rv: Rv, uP: uP, uC: t, conv: e.convex, circ: { C: C, r: r, out: uP[0] * v[0] + uP[1] * v[1] > 0, sag: rfFRsag(fc, S) } };
+    return { key: key, A: A, d: d, Rc: Rc, Rv: Rv, uP: uP, uC: t, conv: e.convex, ip: ip, circ: { C: C, r: r, out: uP[0] * v[0] + uP[1] * v[1] > 0, sag: rfFRsag(fc, S) } };
   }
 
   // The corner section in 2D (edgeTool's construction): uA, uB unit directions from the corner E into the two faces.
   // -> { pts, arc (curved-segment flags), c (arc centre) }
-  function rfFFsection(kind, size, E, uA, uB, conv, minRho, circ) {
+  // (rfNT: legs = [sA, sB], a chamfer's setbacks along uA / uB; none = size on both)
+  function rfFFsection(kind, size, E, uA, uB, conv, minRho, circ, legs) {
     function a2(p, u, t) { return [p[0] + u[0] * t, p[1] + u[1] * t]; }
     var cosT = Math.max(-1, Math.min(1, uA[0] * uB[0] + uA[1] * uB[1])), theta = Math.acos(cosT);
     if (theta < 0.05 || theta > Math.PI - 0.05) throw new Error('Edge faces are nearly parallel; cannot ' + kind + ' it.');
     var pts = [], arc = [], c = null;
-    if (circ) return kind === 'chamfer' ? rfFRchamferSection(size, E, uA, uB, minRho, circ, a2) : rfFKsection(size, E, uA, uB, minRho, circ, a2);
-    if (kind === 'chamfer') { pts.push(a2(E, uA, size), a2(E, uB, size)); arc.push(true, true); }
+    if (circ) return kind === 'chamfer' ? rfFRchamferSection(size, E, uA, uB, minRho, circ, a2, legs) : rfFKsection(size, E, uA, uB, minRho, circ, a2);
+    if (kind === 'chamfer' && legs) { pts.push(a2(E, uA, legs[0]), a2(E, uB, legs[1])); arc.push(true, true); }
+    else if (kind === 'chamfer') { pts.push(a2(E, uA, size), a2(E, uB, size)); arc.push(true, true); }
     else {
       var t = size / Math.tan(theta / 2), pA = a2(E, uA, t), pB = a2(E, uB, t);
       var bis = [uA[0] + uB[0], uA[1] + uB[1]], bl = Math.hypot(bis[0], bis[1]);
@@ -1196,7 +1247,7 @@
   // just under it, air just over it; testA / testB: only for a face whose surface is known there), and the corner
   // region the tool removes (convex) is all material / the region it fills (concave) is all air, up to and just past
   // the round. -> [{ p: [x, y], want: inside? }]
-  function rfFMprobes(kind, size, E, uA, uB, conv, eta, testA, testB) {
+  function rfFMprobes(kind, size, E, uA, uB, conv, eta, testA, testB, legs) {
     function a2(p, u, t) { return [p[0] + u[0] * t, p[1] + u[1] * t]; }
     function perpAway(u, other) { var p = [-u[1], u[0]]; return p[0] * other[0] + p[1] * other[1] > 0 ? [-p[0], -p[1]] : p; }
     var cosT = Math.max(-1, Math.min(1, uA[0] * uB[0] + uA[1] * uB[1])), theta = Math.acos(cosT);
@@ -1206,12 +1257,13 @@
     bis = [bis[0] / bl, bis[1] / bl];
     [[uA, uB, testA], [uB, uA, testB]].forEach(function (s, side) {
       if (!s[2]) return;
-      var n = perpAway(s[0], s[1]), p = a2(E, s[0], t);
+      var ts = legs ? legs[side] * (1 - 1e-4) : t;   // rfNT: each face's own setback
+      var n = perpAway(s[0], s[1]), p = a2(E, s[0], ts);
       if (!conv) n = [-n[0], -n[1]];   // the face's outward normal
-      out.push({ p: a2(p, n, -eta), want: true, why: 'under', side: side, t: t }, { p: a2(p, n, eta), want: false, why: 'over', side: side, t: t });
+      out.push({ p: a2(p, n, -eta), want: true, why: 'under', side: side, t: ts }, { p: a2(p, n, eta), want: false, why: 'over', side: side, t: ts });
     });
     if (testA && testB) {
-      var mid = kind === 'chamfer' ? a2(E, bis, size * Math.cos(theta / 2)) : a2(E, bis, size / Math.sin(theta / 2) - size);
+      var mid = legs ? [E[0] + (uA[0] * legs[0] + uB[0] * legs[1]) / 2, E[1] + (uA[1] * legs[0] + uB[1] * legs[1]) / 2] : kind === 'chamfer' ? a2(E, bis, size * Math.cos(theta / 2)) : a2(E, bis, size / Math.sin(theta / 2) - size);
       out.push({ p: [(E[0] + mid[0]) / 2, (E[1] + mid[1]) / 2], want: !!conv, why: 'corner' }, { p: a2(mid, bis, eta), want: !!conv, why: 'corner' });
     }
     return out;
@@ -1280,10 +1332,10 @@
   // missing (dome R.3: 3.6 % of the removed volume). This section, revolved like the tool, is the triangle B, X' (past
   // the chord along the ray), V (along the tangent at B towards E, inside the cut tool): unioned with the body before
   // the cut, its side B–X' becomes the step (a cone record, as rfFK's out-side step) and the rest is cut away again.
-  function rfFRpocketSec(I, kind, size) {
+  function rfFRpocketSec(I, kind, size, legs) {
     var c = I.circ;
     if (!c || c.out || !I.conv || !(c.sag > 0)) return null;
-    var sec = rfFFsection(kind, size, [I.Rc, 0], I.uP, I.uC, I.conv, 0.2 * I.Rc, c), pB = sec.b;
+    var sec = rfFFsection(kind, size, [I.Rc, 0], I.uP, I.uC, I.conv, 0.2 * I.Rc, c, legs), pB = sec.b;
     if (!pB) return null;
     var nIn = [(c.C[0] - pB[0]) / c.r, (c.C[1] - pB[1]) / c.r], t = [-nIn[1], nIn[0]], E = [I.Rc, 0];
     if (t[0] * (E[0] - pB[0]) + t[1] * (E[1] - pB[1]) < 0) t = [-t[0], -t[1]];
@@ -1292,12 +1344,14 @@
     if (!(X[0] > 0.2 * I.Rc) || !(V[0] > 0.2 * I.Rc)) return null;
     return { pts: [pB, X, V], arc: [true, false, false], c: sec.c, b: pB };
   }
-  function rfFRchamferSection(size, E, uA, uB, minRho, circ, a2) {
-    var C = circ.C, r = circ.r;
+  // (rfNT: legs = [along the plane / generator, the chord on the tube circle])
+  function rfFRchamferSection(size, E, uA, uB, minRho, circ, a2, legs) {
+    var C = circ.C, r = circ.r, sA = legs ? legs[0] : size;
+    if (legs) size = legs[1];
     if (!(size < 2 * r * (1 - 1e-9))) throw new Error('Distance ' + +size.toFixed(6) + ' is too large for the curved face of radius ' + +r.toFixed(6) + ' it meets; use less than ' + +(2 * r).toFixed(6) + '.');
     var m = [-uA[1], uA[0]];
     if (m[0] * uB[0] + m[1] * uB[1] < 0) m = [-m[0], -m[1]];
-    var pA = a2(E, uA, size), ph = 2 * Math.asin(size / (2 * r)), ex = E[0] - C[0], ey = E[1] - C[1], best = null;
+    var pA = a2(E, uA, sA), ph = 2 * Math.asin(size / (2 * r)), ex = E[0] - C[0], ey = E[1] - C[1], best = null;
     [ph, -ph].forEach(function (a) {
       var q = [C[0] + ex * Math.cos(a) - ey * Math.sin(a), C[1] + ex * Math.sin(a) + ey * Math.cos(a)];
       var s = (q[0] - E[0]) * uB[0] + (q[1] - E[1]) * uB[1];
@@ -1544,15 +1598,15 @@
   }
   // Revolve the section about the circle's axis through the chain's vertices. chain: { info, vs (3D points in order,
   // turning positively about d), closed, rail (rfGG: for each vertex null or { P }, see rfGGring) }
-  function arcChainTool(chain, kind, size, tag, secIn) {
+  function arcChainTool(chain, kind, size, tag, secIn, legs) {
     var I = chain.info, A = I.A, d = I.d, Rc = I.Rc;
-    var sec = secIn || rfFFsection(kind, size, [Rc, 0], I.uP, I.uC, I.conv, 0.2 * Rc, I.circ);   // rfFR: secIn = the air-pocket fill (rfFRpocketSec)
+    var sec = secIn || rfFFsection(kind, size, [Rc, 0], I.uP, I.uC, I.conv, 0.2 * Rc, I.circ, legs);   // rfFR: secIn = the air-pocket fill (rfFRpocketSec); rfNT: legs = [on uP's face, on uC's]
     var pts = sec.pts, arc = sec.arc;
     // the round would cross the axis (a radius larger than the round edge it runs round). A chain between two straight
     // edges never reaches here (rfGG: the straight rounds run on past it); a whole circle or a lone arc does: no number
     // from SolidWorks yet. rfFY: one exactly as large ends on the axis (rfFFsection snaps it there): a sphere / cone corner, built
     if (pts.some(function (p, i) { return arc[i] && p[0] !== 0 && !(p[0] > 1e-6 * Math.max(1, Rc)); }))
-      throw new Error((kind === 'chamfer' ? 'Distance ' : 'Radius ') + +size.toFixed(6) + ' is too large for the round edge of radius ' + +Rc.toFixed(6) + ' it runs round; use less than ' + +Rc.toFixed(6) + ' (or ' + kind + ' this edge before the smaller rounds).');
+      throw new Error((kind === 'chamfer' ? 'Distance ' : 'Radius ') + +(legs ? Math.max(legs[0], legs[1]) : size).toFixed(6) + ' is too large for the round edge of radius ' + +Rc.toFixed(6) + ' it runs round; use less than ' + +Rc.toFixed(6) + ' (or ' + kind + ' this edge before the smaller rounds).');
     if (signedArea(pts) < 0) { pts = pts.slice().reverse(); arc = arc.slice().reverse(); }
     var n = pts.length, vs = chain.vs, m = vs.length, Rv = I.Rv || Rc;
     // rfFK: on a torus / sphere wall the ring is the faceted one (a profile chord's radius at the plane): the largest
@@ -1759,13 +1813,73 @@
     // rfGG: a chamfer larger than the round edge its tangent chain runs into does not go round it: SolidWorks stops the
     // propagation there and the straight edge's chamfer plane runs on past the tangent line until it leaves the body
     // (R11b 3.7426384, rfFT 198, rfGA 82, all to 1e-6: body − one prism). The arc itself picked stays refused below.
-    if (f.type === 'chamfer' && selected.some(function (e) { return rfGGcrosses(info(e), f.type, size); })) {
+    // rfNT: two distances / angle + distance: which face of each selected edge takes f.d (the rule above edgeTool), and
+    // from that each edge's two setbacks. legOf: edge -> [along e.ins[0], along e.ins[1]]; null = equal distance
+    var asym = rfNTspec(f, size), legOf = null, COS30 = Math.cos(Math.PI / 6);
+    function rfNTassign() {
+      var side = new Map(), byV = {};
+      selected.forEach(function (e) { (byV[e.ka] = byV[e.ka] || []).push(e); (byV[e.kb] = byV[e.kb] || []).push(e); });
+      function seedSide(e) { return rfNTface(e.normals[0], e.normals[1], rfFFplanar(mesh.faces[e.faces[0]]), rfFFplanar(mesh.faces[e.faces[1]]), asym.flip); }
+      function spread(e0) {
+        var queue = [e0];
+        while (queue.length) {
+          var cur = queue.shift(), sc = side.get(cur);
+          [cur.ka, cur.kb].forEach(function (vk) {
+            (byV[vk] || []).forEach(function (e) {
+              if (side.has(e) || e.convex !== cur.convex || Math.abs(dot(e.dir, cur.dir)) < COS30) return;
+              var com = e.faces.filter(function (fi) { return cur.faces.indexOf(fi) >= 0; }), s;
+              if (com.length === 2) s = e.faces.indexOf(cur.faces[sc]);
+              else if (com.length === 1) s = cur.faces[sc] === com[0] ? e.faces.indexOf(com[0]) : 1 - e.faces.indexOf(com[0]);
+              else s = dot(e.normals[0], cur.normals[sc]) >= dot(e.normals[1], cur.normals[sc]) ? 0 : 1;
+              side.set(e, s); queue.push(e);
+            });
+          });
+        }
+      }
+      (f.edges || []).forEach(function (spec) {
+        var hit = resolveEdges([{ at: spec.at, chain: false }], selected, tol)[0];
+        if (!hit || side.has(hit)) return;
+        side.set(hit, seedSide(hit)); spread(hit);
+      });
+      selected.forEach(function (e) { if (!side.has(e)) { side.set(e, seedSide(e)); spread(e); } });
+      legOf = new Map();
+      selected.forEach(function (e) {
+        var s = side.get(e), ii = info(e), other = asym.d2;
+        if (other == null) {
+          // (a chord of a circle: the corner's angle in the meridian plane, not between the facets)
+          var cs = ii ? ii.uP[0] * ii.uC[0] + ii.uP[1] * ii.uC[1] : dot(e.ins[0], e.ins[1]);
+          other = rfNTangleLeg(size, asym.angle, Math.acos(Math.max(-1, Math.min(1, cs))));
+        }
+        legOf.set(e, s === 0 ? [size, other] : [other, size]);
+        big = Math.max(big, other);
+      });
+    }
+    var big = size;   // the largest setback (the prisms that keep bosses and holes clear of the tool reach past it)
+    if (asym) rfNTassign();
+    function legMax(e) { var l = legOf && legOf.get(e); return l ? Math.max(l[0], l[1]) : size; }
+    // the setback on uP's face (the planar one) of a chord of a circle; the chain's two setbacks [on uP's face, on uC's]
+    function pleg(e) { var l = legOf && legOf.get(e), ii = l && info(e); return ii ? l[ii.ip] : size; }
+    function chLegs(ch) {
+      if (!legOf) return null;
+      for (var i = 0; i < arcs.length; i++) if (arcs[i].info.key === ch.info.key && legOf.get(arcs[i].e)) { var l = legOf.get(arcs[i].e), ip = arcs[i].info.ip; return [l[ip], l[1 - ip]]; }
+      return null;
+    }
+    // do two selected edges meeting at a vertex have the same setbacks on the face they share and off it (so the plane
+    // between them, mitreCap's, is where their chamfers really meet)?
+    function rfNTmirror(e1, e2) {
+      var l1 = legOf.get(e1), l2 = legOf.get(e2), com = e1.faces.filter(function (fi) { return e2.faces.indexOf(fi) >= 0; });
+      if (!l1 || !l2 || !com.length) return true;
+      var i1 = e1.faces.indexOf(com[0]), i2 = e2.faces.indexOf(com[0]), tl = 1e-9 * Math.max(l1[0], l1[1]);
+      return Math.abs(l1[i1] - l2[i2]) <= tl && Math.abs(l1[1 - i1] - l2[1 - i2]) <= tl;
+    }
+    if (f.type === 'chamfer' && selected.some(function (e) { return rfGGcrosses(info(e), f.type, pleg(e)); })) {
       var picks = (f.edges || []).map(function (spec) { return resolveEdges([{ at: spec.at, chain: false }], edges, tol)[0]; });
-      if (!picks.some(function (e) { return e && rfGGcrosses(info(e), f.type, size); })) {
-        var rest = edges.filter(function (e) { return !rfGGcrosses(info(e), f.type, size); });
+      if (!picks.some(function (e) { return e && rfGGcrosses(info(e), f.type, pleg(e)); })) {
+        var rest = edges.filter(function (e) { return !rfGGcrosses(info(e), f.type, pleg(e)); });
         selected = resolveEdges(f.edges, rest, tol);
         seen = {};
         selected.forEach(function (e) { seen[e.ka + '|' + e.kb] = true; });
+        if (asym) rfNTassign();
       }
     }
     var byKey = {};
@@ -1786,6 +1900,7 @@
       if (coax(S0, S1)) return;   // lane FX: coaxial cylinders / cones meet in a circle (the Funnel's cone loft, now a cone record, into its spout): builds as before
       saddle.push(e);
     });
+    if (legOf && saddle.length) throw rfNTnotBuilt('on an edge where two curved faces meet');   // (its chamfer is the chord of one ball's contacts)
     var saddleChains = saddle.length ? rfGGsaddleChains(saddle, edges, mesh, f.type) : [];
     if (saddle.length) {
       straight = straight.filter(function (e) { return saddle.indexOf(e) < 0; });
@@ -1801,7 +1916,9 @@
     // out, and each straight neighbour runs on past the virtual corner (rfGGrun, read by capFor)
     var rfGGrun = {};
     chainList = chainList.filter(function (ch) {
-      if (ch.closed || !rfGGcrosses(ch.info, f.type, size)) return true;
+      var cl = chLegs(ch);
+      if (cl && ch.info.circ && asym.angle != null) throw rfNTnotBuilt('by angle on an edge of a torus or sphere face (Distance Distance is built there)');
+      if (ch.closed || !rfGGcrosses(ch.info, f.type, cl ? cl[0] : size)) return true;
       var I = ch.info, n = ch.vs.length, ends = [[ch.keys[0], ch.vs[0]], [ch.keys[n - 1], ch.vs[n - 1]]];
       var nbs = ends.map(function (q) {
         var rv = norm(rfFFradial(q[1], I.A, I.d));
@@ -1890,7 +2007,7 @@
     function rfFRbossPrisms() {
       return Object.keys(rfFRbosses).map(function (k) {
         var b = rfFRbosses[k], L = rfFRouter[b.fi];
-        return _.prism(L.loops[b.li], L.plane, -3 * size, 2 * size + 2 * rfFMband, f.id);
+        return _.prism(L.loops[b.li], L.plane, -3 * big, 2 * big + 2 * rfFMband, f.id);
       });
     }
     // rfGG: the prisms up a hole a concave round rests on, taken off the tool: on the hole's flanks the ball dips into the
@@ -1899,7 +2016,7 @@
     function rfGGholePrisms() {
       return Object.keys(rfGGholes).map(function (k) {
         var b = rfGGholes[k], L = rfFRouter[b.fi];
-        return _.prism(L.loops[b.li], L.plane, -4 * rfFMband, 2 * size + 2 * rfFMband, f.id);
+        return _.prism(L.loops[b.li], L.plane, -4 * rfFMband, 2 * big + 2 * rfFMband, f.id);
       });
     }
     var rfGGoff = {};   // the stations of a chain whose setback was excused as running off the plate
@@ -1947,9 +2064,9 @@
       var tA = rfFFplanar(mesh.faces[e.faces[0]]), tB = rfFFplanar(mesh.faces[e.faces[1]]);
       if (!tA && !tB) return;
       var x = e.ins[0], y = cross(e.dir, x), uB = [dot(e.ins[1], x), dot(e.ins[1], y)];
-      var pr = rfFMprobes(f.type, size, [0, 0], [1, 0], uB, e.convex, eta, tA, tB);
+      var pr = rfFMprobes(f.type, size, [0, 0], [1, 0], uB, e.convex, eta, tA, tB, legOf ? legOf.get(e) : null);
       // every half setback along the edge (3 to 64 stations, clear of the ends): a boss beside the edge is found
-      var th = Math.acos(Math.max(-1, Math.min(1, uB[0]))), tset = f.type === 'chamfer' ? size : size / Math.tan(th / 2);
+      var th = Math.acos(Math.max(-1, Math.min(1, uB[0]))), tset = f.type === 'chamfer' ? legMax(e) : size / Math.tan(th / 2);
       var ns = Math.max(3, Math.min(64, Math.ceil(e.len / (0.5 * tset)))), fell = 0;
       for (var si = 0; si < ns; si++) {
         var m = add(e.a, scale(sub(e.b, e.a), (si + 0.5) / ns)), sa = e.len * (si + 0.5) / ns, sb = e.len - sa;
@@ -1977,7 +2094,7 @@
     chainList.forEach(function (ch) {
       var I = ch.info;
       if (I.circ) return;
-      var pr = rfFMprobes(f.type, size, [I.Rc, 0], I.uP, I.uC, I.conv, eta, true, true), vs = ch.vs, k0 = ch.closed ? 0 : 1, k1 = ch.closed ? vs.length : vs.length - 1;
+      var pr = rfFMprobes(f.type, size, [I.Rc, 0], I.uP, I.uC, I.conv, eta, true, true, chLegs(ch)), vs = ch.vs, k0 = ch.closed ? 0 : 1, k1 = ch.closed ? vs.length : vs.length - 1;
       var step = Math.max(1, Math.floor((k1 - k0) / 4));
       // rfFP: an open concave chain ending on a wall (a rib across a hole's floor: one planar face at the end vertex
       // that is neither face of the round, meeting both in concave edges) ends on that wall's plane, as arcChainTool
@@ -2060,7 +2177,7 @@
       rfFRinHole(I.fp, ch.vs[0]);
       var L = rfFRouter[I.fp], sec = secShort;
       if (!L) return null;
-      if (!sec) { try { sec = rfFFsection(f.type, size, [I.Rc, 0], I.uP, I.uC, I.conv, 0.2 * I.Rc, null); } catch (err) { return null; } }
+      if (!sec) { try { sec = rfFFsection(f.type, size, [I.Rc, 0], I.uP, I.uC, I.conv, 0.2 * I.Rc, null, chLegs(ch)); } catch (err) { return null; } }
       if (!tester) tester = ctx.body.pointTester();
       var rhoF = sec.pts[0][0], nF = mesh.faces[I.fp].normal, inset = Math.min(2 * rfFMband, Math.max(5e-4 * size, 1e-4));
       if (!(rhoF > 0)) return null;
@@ -2108,6 +2225,8 @@
         var st = (byKey[q[0]] || []).filter(function (x) { return !info(x); });        if (st.length !== 1) return null;
         var s = st[0], u1 = norm(sub(q[2], q[1])), u2 = s.ka === q[0] ? s.dir : scale(s.dir, -1);
         if (dot(u1, u2) < -0.97) return null;   // runs on tangentially: capFor's meridian cap
+        // rfNT: the mitre plane is where the two chamfers meet only when their setbacks mirror each other
+        if (legOf && arcs.some(function (x) { return x.info.key === ch.info.key && (x.e.ka === q[0] || x.e.kb === q[0]) && !rfNTmirror(x.e, s); })) throw rfNTnotBuilt('where a round edge and a straight edge with different distances on the face they share meet at a corner');
         var nm = sub(u1, u2);
         return len(nm) < 1e-6 ? null : { v: q[1], n: norm(nm) };
       });
@@ -2121,10 +2240,10 @@
       (ch.convex ? cuts : adds).push(tool);
     });
     chainList.forEach(function (ch) {
-      var ss = rfGGshortWall(ch), rs = rfGGstations(ch, ss);
-      (ch.info.conv ? cuts : adds).push(arcChainTool(rs ? { info: ch.info, vs: rs.vs, rail: rs.rail, closed: ch.closed, caps: ch.caps } : ch, f.type, size, f.id, ss));
-      var ps = rfFRpocketSec(ch.info, f.type, size);   // rfFR: the air pocket at B of a round inside the tube
-      if (ps) pres.push(arcChainTool(ch, f.type, size, f.id, ps));
+      var ss = rfGGshortWall(ch), rs = rfGGstations(ch, ss), cl = chLegs(ch);
+      (ch.info.conv ? cuts : adds).push(arcChainTool(rs ? { info: ch.info, vs: rs.vs, rail: rs.rail, closed: ch.closed, caps: ch.caps } : ch, f.type, size, f.id, ss, cl));
+      var ps = rfFRpocketSec(ch.info, f.type, size, cl);   // rfFR: the air pocket at B of a round inside the tube
+      if (ps) pres.push(arcChainTool(ch, f.type, size, f.id, ps, cl));
     });
     // spherical corners: three mutually perpendicular convex straight edges between planar faces at one vertex
     var corners = {}, chamferCorners = [];
@@ -2135,6 +2254,20 @@
       var us = es.map(function (e) { return e.ka === vk ? e.dir : scale(e.dir, -1); });
       if (Math.abs(dot(us[0], us[1])) > 1e-6 || Math.abs(dot(us[0], us[2])) > 1e-6 || Math.abs(dot(us[1], us[2])) > 1e-6) return;
       if (!es.every(function (e) { return e.len > size * (1 + 1e-9); })) return;
+      if (legOf) {
+        // rfNT: unequal chamfers: the corner's face goes through the three faces' setback corners all the same; on the
+        // face holding edges i and j that corner is V + ui (edge j's setback on it) + uj (edge i's)
+        var Q = [], fit = true;
+        for (var c3 = 0; c3 < 3 && fit; c3++) {
+          var ei = es[(c3 + 1) % 3], ej = es[(c3 + 2) % 3], cf = ei.faces.filter(function (fi) { return ej.faces.indexOf(fi) >= 0; });
+          if (cf.length !== 1) { fit = false; break; }
+          var si = legOf.get(ei)[ei.faces.indexOf(cf[0])], sj = legOf.get(ej)[ej.faces.indexOf(cf[0])];
+          if (!(ei.len > sj * (1 + 1e-9)) || !(ej.len > si * (1 + 1e-9))) fit = false;
+          Q.push(add(V, add(scale(us[(c3 + 1) % 3], sj), scale(us[(c3 + 2) % 3], si))));
+        }
+        if (fit) chamferCorners.push({ V: V, u: us, Q: Q });
+        return;
+      }
       if (f.type === 'chamfer') chamferCorners.push({ V: V, u: us });
       else corners[vk] = { V: V, C: add(V, scale(add(us[0], add(us[1], us[2])), size)), u: us };
     });
@@ -2145,12 +2278,34 @@
     chamferCorners.forEach(function (cc) {
       var V = cc.V, u = cc.u, k = 0.5 * size, far = 2 * size + 2 * k;
       function P(a, b, c) { return add(V, add(scale(u[0], a), add(scale(u[1], b), scale(u[2], c)))); }
+      if (cc.Q) {
+        // rfNT: the plane through the three setback corners, cut off as a tetrahedron from a point k outside the corner
+        var nq = cross(sub(cc.Q[1], cc.Q[0]), sub(cc.Q[2], cc.Q[0]));
+        if (dot(nq, add(u[0], add(u[1], u[2]))) < 0) nq = scale(nq, -1);
+        nq = norm(nq);
+        var o0 = P(-k, -k, -k), wq = dot(nq, cc.Q[0]) - dot(nq, o0), tq = u.map(function (ui) { return dot(nq, ui); });
+        // (a plane leaning back over an edge: one chamfer far larger than the other two; no corner face to build)
+        if (!(wq > 0) || !tq.every(function (t) { return t > 1e-6; })) throw rfNTnotBuilt('where three chamfers this unequal meet at a corner');
+        var pq = [];
+        [[o0, add(o0, scale(u[1], wq / tq[1])), add(o0, scale(u[0], wq / tq[0]))], [o0, add(o0, scale(u[0], wq / tq[0])), add(o0, scale(u[2], wq / tq[2]))], [o0, add(o0, scale(u[2], wq / tq[2])), add(o0, scale(u[1], wq / tq[1]))], [add(o0, scale(u[0], wq / tq[0])), add(o0, scale(u[1], wq / tq[1])), add(o0, scale(u[2], wq / tq[2]))]].forEach(function (t) { pushPoly(pq, t, f.id); });
+        cuts.push(ensureOutward(pq));
+        return;
+      }
       var o = P(-k, -k, -k), p1 = P(far, -k, -k), p2 = P(-k, far, -k), p3 = P(-k, -k, far), polys = [];   // x + y + z = 2d
       [[o, p2, p1], [o, p1, p3], [o, p3, p2], [p1, p2, p3]].forEach(function (t) { pushPoly(polys, t, f.id); });
       cuts.push(ensureOutward(polys));
     });
     function capFor(e, atA, nbs) {
       var vk = atA ? e.ka : e.kb, v = atA ? e.a : e.b;
+      // rfNT: two chamfers whose setbacks do not mirror each other do not meet on the plane between their edges: each
+      // runs out past the corner as a lone edge does (into air at an outside corner: the cut is both wedges, exact).
+      // Where a lone edge would stop on a wall instead (an inside corner of the shared face) the piece where the two
+      // chamfers cross behind that wall is not built: refused
+      if (legOf && nbs.length === 1 && !info(e) && !info(nbs[0]) && !rfNTmirror(e, nbs[0])) {
+        var lone = capFor(e, atA, []);
+        if (lone.n) throw rfNTnotBuilt('where two edges with different distances on the face they share meet at an inside corner');
+        return lone;
+      }
       if (rfGGrun[vk]) return { v: v, n: null, ext: rfGGrun[vk] };   // rfGG: on past the corner round it is too large for
       if (corners[vk]) return { v: corners[vk].C, n: e.dir, ext: 0 };
       // a straight edge running on tangentially into a filleted circle stops at the circle's meridian plane there
@@ -2172,7 +2327,8 @@
           // rfFM: a plane face of the edge blending into another face's round, not a seam between two facets of the edge's
           // own curved face (a lone chord of the Funnel's bore ran on 21 mm along its tangent and cut a slab out)
           if (!s.faces.some(function (fi) { return e.faces.indexOf(fi) >= 0 && rfFFplanar(mesh.faces[fi]); })) return;
-          s.faces.forEach(function (fi) { if (e.faces.indexOf(fi) >= 0) return; var S = rfFFsurf(mesh.faces[fi]); if (S) { atRound = true; if (f.type === 'fillet' || (S.t === 'cyl' && size > S.r * (1 + 1e-6))) run = Math.max(run, size + (S.t === 'tor' ? S.R + S.r : S.r)); } });
+          var lgm = legMax(e);   // (rfNT: the larger setback of an unequal chamfer; = size otherwise)
+          s.faces.forEach(function (fi) { if (e.faces.indexOf(fi) >= 0) return; var S = rfFFsurf(mesh.faces[fi]); if (S) { atRound = true; if (f.type === 'fillet' || (S.t === 'cyl' && lgm > S.r * (1 + 1e-6))) run = Math.max(run, lgm + (S.t === 'tor' ? S.R + S.r : S.r)); } });
         });
         if (run > 0) return { v: v, n: null, ext: run };
         // rfFM: a chamfer keeps its end there, exactly on the plane square to the edge at the tangent line: its 0.01
@@ -2213,19 +2369,19 @@
             s.faces.forEach(function (fi) { if (e.faces.indexOf(fi) < 0) { any = true; minC = Math.min(minC, dot(mesh.faces[fi].normal, out)); } });
           });
           if (any && minC > 0.5 && minC < 1 - 1e-9) {   // not a round continuing the face (its first chord leans 12°)
-            var th = Math.acos(Math.max(-1, Math.min(1, dot(e.ins[0], e.ins[1])))), tset = f.type === 'chamfer' ? size : size / Math.tan(th / 2);
+            var th = Math.acos(Math.max(-1, Math.min(1, dot(e.ins[0], e.ins[1])))), tset = f.type === 'chamfer' ? legMax(e) : size / Math.tan(th / 2);
             return { v: v, n: null, ext: 0.01 + 1.5 * tset * Math.sqrt(1 - minC * minC) / minC };
           }
         }
       }
       return mitreCap(e, atA, nbs);
     }
-    var swept = rfFRruns(mesh, f.type, size, f.id, straight, byKey, info, capFor);
+    var swept = rfFRruns(mesh, f.type, size, f.id, straight, byKey, info, capFor, legOf);
     swept.tools.forEach(function (t) { (t.convex ? cuts : adds).push(t.tool); });
     straight.forEach(function (e) {
       if (swept.edges.has(e)) return;
       var nbA = byKey[e.ka].filter(function (x) { return x !== e; }), nbB = byKey[e.kb].filter(function (x) { return x !== e; });
-      var tool = edgeTool(e, mesh, f.type, size, capFor(e, true, nbA), capFor(e, false, nbB), f.id);
+      var tool = edgeTool(e, mesh, f.type, size, capFor(e, true, nbA), capFor(e, false, nbB), f.id, legOf ? legOf.get(e) : null);
       (e.convex ? cuts : adds).push(tool);
     });
     var cutU = cuts.length ? unionAll(cuts) : null, bp = cutU ? rfFRbossPrisms() : [];
@@ -2236,7 +2392,7 @@
     if (K.openGuard.toolLog) K.openGuard.toolLog({ f: f, cuts: cuts, adds: adds, bossPrisms: bp, holePrisms: hp, selected: selected, straight: straight, chains: chainList, mesh: mesh });
     if (hp.length) addU = addU.subtract(unionAll(hp));
     // the plain tool would hang off the plate where its foot leaves it: keep it inside the plate's outline
-    if (addU && rfGGplain && rfGGoutline != null) { var LO = rfFRouter[rfGGoutline]; addU = addU.intersect(_.prism(LO.loops[LO.outer], LO.plane, -4 * rfFMband, 2 * size + 2 * rfFMband, f.id)); }
+    if (addU && rfGGplain && rfGGoutline != null) { var LO = rfFRouter[rfGGoutline]; addU = addU.intersect(_.prism(LO.loops[LO.outer], LO.plane, -4 * rfFMband, 2 * big + 2 * rfFMband, f.id)); }
     return [cutU, addU, pres.length && cutU ? unionAll(pres) : null];
     }
     // rfFP: a fillet / chamfer whose result has open edges is never returned: the boolean is done here, checked (open
@@ -2328,6 +2484,7 @@
   K.openGuard = { on: true };
   K.buildEdgeFeature = buildEdgeFeature; K.meshFromBody = meshFromBody; K.meshQuality = meshQuality; K.faceOutline = faceOutline;
   K.outlineOptions = outlineOptions; K.bodyEdges = bodyEdges; K.resolveEdges = resolveEdges; K.pointSegmentDistance = pointSegmentDistance; K.pickTol = pickTol;
+  K.chamferSpec = rfNTspec; K.chamferFace = rfNTface; K.chamferAngleLeg = rfNTangleLeg;   // rfNT (the script, the PropertyManager's preview arrows and the OpenCascade engine read these)
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.bodyEdges = bodyEdges; _.buildEdgeFeature = buildEdgeFeature; _.ekey = ekey; _.faceOutline = faceOutline; _.meshFromBody = meshFromBody;
   _.pointSegmentDistance = pointSegmentDistance; _.resolveEdges = resolveEdges; _.pickTol = pickTol;

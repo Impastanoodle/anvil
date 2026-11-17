@@ -160,9 +160,16 @@
     });
     if (!outers.length) throw new Error('Sketch has no closed profile.');
     var body = CSG.fromPolygons([].concat.apply([], outers.map(function (o) { return o.polygons; })));
-    if (holes.length) body = body.subtract(unionAll(holes));
+    // rfNT: a plate sketched WITH its holes (a perforated Base Flange: 1800 holes 12 s, 4 to 9 of them csg.js healing
+    // a result with nothing to heal) is the plate with every hole taken out the way a Cut-Extrude of those circles
+    // takes them out (plateCutParts, rfGM / rfLD: each cap cut by the few holes over it, the holes' own walls with
+    // their cylinder records, no boolean). It answers null, and the boolean runs as before, for fewer than
+    // plateOptions.minLoops holes, holes that are no straight prisms (draft, a revolve), holes within 1e-5 of each
+    // other or of a wall. The same solid (volume to 1e-12, closed); the caps' triangles are the plate path's.
+    if (holes.length) body = (solidOptions.plate && plateCutParts(body, holes)) || body.subtract(unionAll(holes));
     return body;
   }
+  var solidOptions = { plate: true };   // K.solidOptions.plate = false: the boolean always (the tests compare)
 
   // ------------------------------------------------------------------ perforated plates (lane perforated, rfGM)
   // plateCut(body, f, profile, plane, range) -> the body with the profile's loops cut through it, without a boolean, or
@@ -724,9 +731,10 @@
   // test lets a point be up to d = 1e-12·max(1, L²)/L outside an edge of length L and 1e-6·max(1, |w|) off the plane;
   // on a convex polygon that stays within max(d) / sin(α/2) of it (α its sharpest corner), padded twice over here. A
   // polygon with a very short edge or a needle corner gets an infinite box (always tested, as before).
-  // Kernel.massOptions: planarBoxes (the box filter) and cache (massProps kept per mesh); the tests switch them off to
-  // compare
-  var massOptions = { planarBoxes: true, cache: true };
+  // Kernel.massOptions: planarBoxes (the box filter), planarRaster (rfNT: the outline grid of a plane of many polygons;
+  // off = planarGrid's box grid), dirTable and sampleWindow (rfNT, boundCorrection: off / Infinity = every cluster and
+  // every sampled cell compared, as before) and cache (massProps kept per mesh); the tests switch them off to compare
+  var massOptions = { planarBoxes: true, planarRaster: true, dirTable: true, sampleWindow: 8, cache: true };
   function planarBox(p) {
     var vs = p.vertices, n = vs.length, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], dmax = 0, smin = 1;
     for (var j = 0; j < n; j++) {
@@ -787,15 +795,98 @@
       var c = g.cells[y * g.nx + x];
       return c ? (g.wide.length ? c.concat(g.wide) : c) : g.wide;
     }
+    // rfNT (Mass Properties of a 600-hole panel read from STEP: 56 s, 72 of every 75 s in the query below; its Insert
+    // Bends flat 340 s). A face read from a file is triangles of one bridged ring: on that panel 3,747 of a face's 17,610
+    // are needles (corner under 0.11 deg: an infinite box, always tested) and the boxes of the rest cover each point 67
+    // times over, so planarGrid gave up (more than 256 wide) and every query ran the whole list. planarRaster files each
+    // polygon in the cells its own outline covers, row by row (the outline widened by the pad planarBox uses, with the
+    // true corner angle for a needle; the box test itself is unchanged), so a query meets the few polygons that really
+    // lie over its cell. The same answers: a polygon is left out of a cell only where that pad says it cannot accept the
+    // point. Polygons with an edge under 1e-6 or a pad over a quarter cell are in every cell (`wide`) as before; the
+    // grid is one cell wider than the vertices all round, and halves until its entries fit 4 M / 64 per polygon.
+    var rasters = {};
+    function planarRaster(list) {
+      var n = list.length, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], i, j, big = 1;
+      var pads = new Float64Array(n);
+      for (i = 0; i < n; i++) {
+        var vs = list[i].vertices, m = vs.length, dmax = 0, smin = 1, bad = m < 3;
+        for (j = 0; j < m; j++) {
+          var a = vs[j].pos, b = vs[(j + 1) % m].pos, c = vs[(j + 2) % m].pos;
+          if (a.x < lo[0]) lo[0] = a.x; if (a.y < lo[1]) lo[1] = a.y; if (a.z < lo[2]) lo[2] = a.z;
+          if (a.x > hi[0]) hi[0] = a.x; if (a.y > hi[1]) hi[1] = a.y; if (a.z > hi[2]) hi[2] = a.z;
+          var ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z, vx = c.x - b.x, vy = c.y - b.y, vz = c.z - b.z;
+          var L = Math.sqrt(ux * ux + uy * uy + uz * uz), M = Math.sqrt(vx * vx + vy * vy + vz * vz);
+          if (!(L > 1e-6) || !(M > 1e-6)) { bad = true; continue; }
+          dmax = Math.max(dmax, 1e-12 * Math.max(1, L * L) / L);
+          smin = Math.min(smin, Math.sqrt(Math.max(0, (1 - -(ux * vx + uy * vy + uz * vz) / (L * M)) / 2)));
+        }
+        pads[i] = bad || !(smin > 0) ? Infinity : 2 * (dmax / smin + 1e-6 * Math.max(1, Math.abs(list[i].plane.w))) + 1e-9;
+      }
+      for (j = 0; j < 3; j++) big = Math.max(big, Math.abs(lo[j]), Math.abs(hi[j]));
+      var sp = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], small = sp.indexOf(Math.min(sp[0], sp[1], sp[2])), A = small === 0 ? 1 : 0, B = small === 2 ? 1 : 2;
+      if (!(sp[A] > 0) || !(sp[B] > 0)) return null;
+      var ka = 'xyz'.charAt(A), kb = 'xyz'.charAt(B), eps = 1e-9 * big, budget = Math.max(4194304, 64 * n);
+      for (var nc = Math.min(1024, Math.ceil(Math.sqrt(n))), tries = 0; tries < 6 && nc >= 4; tries++, nc = Math.ceil(nc / 2)) {
+        var cw = sp[A] / nc, ch = sp[B] / nc, NX = nc + 2, NY = nc + 2, ox = lo[A] - cw, oy = lo[B] - ch, fx = 1 / cw, fy = 1 / ch;
+        var padMax = 0.25 * Math.min(cw, ch), start = new Int32Array(NX * NY + 1), ent = null, wide = [], total = 0, pass;
+        for (pass = 0; pass < 2; pass++) {
+          for (i = 0; i < n; i++) {
+            var pad = pads[i];
+            if (!(pad < padMax)) { if (!pass) wide.push(i); continue; }
+            var ws = list[i].vertices, wm = ws.length, ymin = Infinity, ymax = -Infinity;
+            for (j = 0; j < wm; j++) { var yv = ws[j].pos[kb]; if (yv < ymin) ymin = yv; if (yv > ymax) ymax = yv; }
+            var r0 = Math.max(0, Math.floor((ymin - pad - eps - oy) * fy)), r1 = Math.min(NY - 1, Math.floor((ymax + pad + eps - oy) * fy));
+            for (var r = r0; r <= r1; r++) {
+              // the outline's reach in x inside this row's band (its edges clipped to the band)
+              var B0 = oy + r * ch - pad - eps, B1 = oy + (r + 1) * ch + pad + eps, xmin = Infinity, xmax = -Infinity;
+              for (j = 0; j < wm; j++) {
+                var P = ws[j].pos, Q = ws[(j + 1) % wm].pos, y0 = P[kb], y1 = Q[kb], x0 = P[ka], x1 = Q[ka];
+                if ((y0 < B0 && y1 < B0) || (y0 > B1 && y1 > B1)) continue;
+                var xa = y0 < B0 ? x0 + (x1 - x0) * (B0 - y0) / (y1 - y0) : y0 > B1 ? x0 + (x1 - x0) * (B1 - y0) / (y1 - y0) : x0;
+                var xb = y1 < B0 ? x0 + (x1 - x0) * (B0 - y0) / (y1 - y0) : y1 > B1 ? x0 + (x1 - x0) * (B1 - y0) / (y1 - y0) : x1;
+                if (xa < xmin) xmin = xa; if (xb < xmin) xmin = xb; if (xa > xmax) xmax = xa; if (xb > xmax) xmax = xb;
+              }
+              if (xmin > xmax) continue;
+              var c0 = Math.max(0, Math.floor((xmin - pad - eps - ox) * fx)), c1 = Math.min(NX - 1, Math.floor((xmax + pad + eps - ox) * fx));
+              if (!pass) { for (var cc = c0; cc <= c1; cc++) start[r * NX + cc + 1]++; total += c1 - c0 + 1; }
+              else for (var cd = c0; cd <= c1; cd++) ent[start[r * NX + cd]++] = i;
+            }
+          }
+          if (pass) break;
+          if (wide.length > 256) return null;
+          if (total > budget) break;
+          for (j = 0; j < NX * NY; j++) start[j + 1] += start[j];
+          ent = new Int32Array(total);
+        }
+        if (!ent) continue;
+        // the fill moved each cell's start to its end: shift back
+        for (j = NX * NY; j > 0; j--) start[j] = start[j - 1];
+        start[0] = 0;
+        return { a: A, b: B, ox: ox, oy: oy, fx: fx, fy: fy, NX: NX, NY: NY, start: start, ent: ent, wide: wide };
+      }
+      return null;
+    }
     return function (N, q) {
       var s = (N[0] < -1e-9 || (Math.abs(N[0]) <= 1e-9 && (N[1] < -1e-9 || (Math.abs(N[1]) <= 1e-9 && N[2] < 0)))) ? -1 : 1;
       var w = dot(N, q) * s, base = Math.round(N[0] * s * 1000) + ',' + Math.round(N[1] * s * 1000) + ',' + Math.round(N[2] * s * 1000) + ',', wk = Math.round(w * 1e4);
       for (var dk = -1; dk <= 1; dk++) {
         var list = idx[base + (wk + dk)], boxes = boxIdx[base + (wk + dk)];
         if (!list) continue;
-        var sel = planarCell(base + (wk + dk), list, boxes, q), cnt = sel ? sel.length : list.length;
-        for (var c0 = 0; c0 < cnt; c0++) {
+        var sel = null, cnt = list.length, from = 0, more = null;
+        if (massOptions.planarBoxes && massOptions.planarRaster && list.length > 64) {
+          var gk = base + (wk + dk), G = rasters[gk];
+          if (G === undefined) G = rasters[gk] = planarRaster(list);
+          if (G) {
+            var gx = Math.floor((q[G.a] - G.ox) * G.fx), gy = Math.floor((q[G.b] - G.oy) * G.fy);
+            if (gx < 0 || gy < 0 || gx >= G.NX || gy >= G.NY) { sel = G.wide; cnt = sel.length; }
+            else { sel = G.ent; from = G.start[gy * G.NX + gx]; cnt = G.start[gy * G.NX + gx + 1]; more = G.wide.length ? G.wide : null; }
+          }
+        }
+        if (!sel) { sel = planarCell(base + (wk + dk), list, boxes, q); cnt = sel ? sel.length : list.length; }
+        for (var c0 = from; c0 < cnt || more; c0++) {
+          if (c0 >= cnt) { sel = more; more = null; c0 = 0; cnt = sel.length; if (!cnt) break; }
           var i = sel ? sel[c0] : c0, bx = boxes[i];
+          cellOps.planar++;
           if (massOptions.planarBoxes && (q[0] < bx[0] || q[0] > bx[3] || q[1] < bx[1] || q[1] > bx[4] || q[2] < bx[2] || q[2] > bx[5])) continue;
           var p = list[i], pn = p.plane.normal, vs = p.vertices, inside = true;
           if (Math.abs(pn.x * q[0] + pn.y * q[1] + pn.z * q[2] - p.plane.w) > 1e-6 * Math.max(1, Math.abs(p.plane.w))) continue;
@@ -1013,7 +1104,7 @@
   // Gauss-Legendre line integral of the closed-form ρ integral otherwise) and its first moment. The bounding plane is the
   // planar polygon sharing the edge, or the bisector plane of two cylinder records of one radius meeting there.
   // (lane drawperf) boundCorrection's grid work for the tests: cells filed (fill) and neighbour cells opened (query)
-  var cellOps = _.cellOps = { fill: 0, query: 0, samples: 0 };
+  var cellOps = _.cellOps = { fill: 0, query: 0, samples: 0, planar: 0 };   // planar (rfNT): polygons a planar-face query looked at
   // (lane drawperf) boundCorrection's cell → edges table: open addressing on the integer cell keys (they pass 2^31, where
   // a Map hashes them as heap numbers), each cell's edges a linked list in typed arrays (no array per cell), newest
   // first. add(k, e) files edge e in cell k unless it is the last one filed there; first(k) -> an entry or -1, then
@@ -1100,15 +1191,37 @@
     // candidate edge long (was the part's size / √edges, 0.17 in on a 48 x 96 in panel), but never so fine that the
     // edges in the grid are sampled more than 8 times each on average, nor finer than the part / 4000. Every edge that
     // runs along a candidate still lands in a neighbouring cell and they are visited in index order: the same result.
-    var reps = [];
-    for (var ci0 = 0; ci0 < cands.length && reps; ci0++) {
-      var c0 = cands[ci0], u0 = scale(sub(c0.B, c0.A), 1 / c0.L), hit = false;
-      for (var r0 = 0; r0 < reps.length && !hit; r0++) { var R0 = reps[r0]; hit = Math.abs(R0[0] - u0[0]) <= 1e-6 && Math.abs(R0[1] - u0[1]) <= 1e-6 && Math.abs(R0[2] - u0[2]) <= 1e-6; }
-      if (!hit) { if (reps.length >= 256) reps = null; else reps.push(u0); }
+    // rfNT: both loops asked every cluster (a panel read from STEP has 100 to 250 of them: the chords and diagonals of
+    // its hole walls; 240,000 edges x 250 dot products). dirTable files a unit direction in its own cell and the 26
+    // round it, so a direction finds every one within a cell's width of it by looking in its own cell alone: cells of
+    // 1e-3 for the clusters (they match within 1e-6), of .02 for the grid test (|e.u . u| >= 1 - 1.04e-4 puts e.u within
+    // .0145 of u or of -u, and -u is filed too). The same tests on what is found: the same clusters, the same edges.
+    function dirTable(h) {
+      var m = new Map(), inv = 1 / h, n = Math.ceil(2 / h) + 4;
+      return {
+        put: function (u0, u1, u2, i) {
+          var x = Math.floor((u0 + 1) * inv) + 1, y = Math.floor((u1 + 1) * inv) + 1, z = Math.floor((u2 + 1) * inv) + 1;
+          for (var a = -1; a <= 1; a++) for (var b = -1; b <= 1; b++) for (var g = -1; g <= 1; g++) {
+            var k = ((x + a) * n + y + b) * n + z + g, l = m.get(k);
+            if (!l) m.set(k, l = []);
+            l.push(i);
+          }
+        },
+        at: function (u0, u1, u2) { return m.get(((Math.floor((u0 + 1) * inv) + 1) * n + Math.floor((u1 + 1) * inv) + 1) * n + Math.floor((u2 + 1) * inv) + 1); }
+      };
     }
+    var reps = [], useT = massOptions.dirTable !== false, repT = useT ? dirTable(1e-3) : null, allR = [];
+    for (var ci0 = 0; ci0 < cands.length && reps; ci0++) {
+      var c0 = cands[ci0], u0 = scale(sub(c0.B, c0.A), 1 / c0.L), hit = false, rl = useT ? repT.at(u0[0], u0[1], u0[2]) : allR;
+      for (var r0 = 0; rl && r0 < rl.length && !hit; r0++) { var R0 = reps[rl[r0]]; hit = Math.abs(R0[0] - u0[0]) <= 1e-6 && Math.abs(R0[1] - u0[1]) <= 1e-6 && Math.abs(R0[2] - u0[2]) <= 1e-6; }
+      if (!hit) { if (reps.length >= 256) reps = null; else { if (useT) repT.put(u0[0], u0[1], u0[2], reps.length); else allR.push(reps.length); reps.push(u0); } }
+    }
+    var alongT = reps && useT && dirTable(0.02);
+    if (alongT) reps.forEach(function (r, i) { alongT.put(r[0], r[1], r[2], i); alongT.put(-r[0], -r[1], -r[2], i); });
     var inGrid = edges.map(function (e) {
       if (!reps) return true;
-      for (var r = 0; r < reps.length; r++) if (Math.abs(dot(e.u, reps[r])) >= 1 - 1e-4 - 4e-6) return true;
+      var l = alongT ? alongT.at(e.u[0], e.u[1], e.u[2]) : allR;
+      if (l) for (var r = 0; r < l.length; r++) if (Math.abs(dot(e.u, reps[l[r]])) >= 1 - 1e-4 - 4e-6) return true;
       return false;
     });
     var span = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], 1e-9), sumL = 0, nIn = 0, cl = cands.map(function (c) { return c.L; }).sort(function (x, y) { return x - y; });
@@ -1161,11 +1274,17 @@
         if (!k) planes.push(k = { n: pl.n, w: pl.w, iv: [] });
         k.iv.push([t0, t1]);
       }
+      // rfNT (Mass Properties of an imported 600-hole panel 121 s, its Insert Bends flat 319 s): only the last 8 cells
+      // sampled are compared, not all of them (quadratic in the edge's length over the cell: an imported bend's triangles
+      // have diagonals 48 in long over cells of .01). The same cells are opened: the samples run along a straight
+      // segment, so each of the three cell indices only rises or only falls; a cell within one of both this sample and an
+      // older one puts that older one within two cells on every axis, and at most six different cells lie between.
       var near = [], sampled = [];
       eachCell(c.A, c.B, function (key) {
+        var si0 = sampled.length > massOptions.sampleWindow ? sampled.length - massOptions.sampleWindow : 0;
         for (var a = -1; a <= 1; a++) for (var b = -1; b <= 1; b++) for (var g = -1; g <= 1; g++) {
           var nk = key + a * 16777216 + b * 4096 + g, again = false;
-          for (var si = 0; si < sampled.length && !again; si++) again = nbOf(nk - sampled[si]);
+          for (var si = si0; si < sampled.length && !again; si++) again = nbOf(nk - sampled[si]);
           if (again) continue;
           cellOps.query++;
           for (var x = grid.first(nk); x >= 0; x = gNxt[x]) {
@@ -2055,6 +2174,7 @@
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   K.plateOptions = plateOptions; _.plateCut = plateCut; _.plateApart = plateApart;   // rfGM
   _.plateCutParts = plateCutParts;   // rfLD
+  K.solidOptions = solidOptions;   // rfNT
   _.THROUGH = THROUGH; _.buildExtrude = buildExtrude; _.buildRevolve = buildRevolve; _.extrudeRange = extrudeRange; _.mirrorBody = mirrorBody;
   _.prism = prism; _.rotateBody = rotateBody; _.rotatePoint = rotatePoint; _.translateBody = translateBody; _.unionAll = unionAll;
   _.unionTree = unionTree;
