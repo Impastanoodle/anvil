@@ -1,7 +1,7 @@
 {
   "name": "anvil-desktop",
   "productName": "Anvil",
-  "version": "0.1.31",
+  "version": "0.1.32",
   "description": "Anvil CAD as a Windows program",
   "author": "Anvil",
   "private": true,
