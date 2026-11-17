@@ -114,8 +114,13 @@
   // Smart Dimension by clicks: the pieces (sketch uv), then the label place; the Modify box takes value (typed text)
   async function rfMTDim(picks, place, value) {
     UI.setTool('dimension'); await wait(20);
-    for (var k = 0; k < picks.length; k++) await rfMTClick(picks[k]);
-    await rfMTClick(place); await wait(50);
+    // lane NU: these are quick clicks on lines (often at their middles); the midpoint pick needs a 150 ms rest, which a
+    // loaded machine stretches the test's 30 ms into: hold the rest off while picking
+    var dwell = UI.dimMidDwell(); UI.dimMidDwell(1e9);
+    try {
+      for (var k = 0; k < picks.length; k++) await rfMTClick(picks[k]);
+      await rfMTClick(place); await wait(50);
+    } finally { UI.dimMidDwell(dwell); }
     var inp = D.querySelector('#dim-edit input');
     assert(inp && !$('dim-edit').hidden, 'Modify box open after dimensioning ' + JSON.stringify(picks));
     var shown = inp.value;
@@ -130,9 +135,12 @@
     var t = Array.prototype.filter.call(D.querySelectorAll('#dim-layer text'), function (x) { return re.test(x.textContent); })[0];
     assert(t, 'no label ' + re + ' in ' + Array.prototype.map.call(D.querySelectorAll('#dim-layer text'), function (x) { return x.textContent; }).join('|'));
     var b = t.getBoundingClientRect(), c = [Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)];
+    // lane NU: the two presses are made (time-stamped) together, as a hand double-clicks; the page may handle the second
+    // only after the slow redraw the first one causes (a loaded machine), and the double-click is judged by the stamps
+    var evs = [0, 1].map(function () { return [new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: c[0], clientY: c[1] }), new W.MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, clientX: c[0], clientY: c[1] })]; });
     for (var k = 0; k < 2; k++) {
-      t.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: c[0], clientY: c[1] }));
-      W.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, clientX: c[0], clientY: c[1] }));
+      if (k) t = Array.prototype.filter.call(D.querySelectorAll('#dim-layer text'), function (x) { return x._d && x._d === t._d; })[0] || t;
+      t.dispatchEvent(evs[k][0]); W.dispatchEvent(evs[k][1]);
       await wait(40);
     }
     var inp = D.querySelector('#dim-edit input');

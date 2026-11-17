@@ -3580,13 +3580,16 @@ var UI = (function () {
     var u = hits[0].object.userData;
     return { kind: 'plane', ref: u.ref, plane: u.plane, name: u.name, point: [hits[0].point.x, hits[0].point.y, hits[0].point.z] };
   }
-  // The sketch entity whose drawn curve passes within 7 px of (mx, my): { kind: 'entity', index }, or null.
+  // The sketch entity whose drawn curve passes within ENTITY_PICK_PX of (mx, my): { kind: 'entity', index }, or null.
+  // lane NU: 6 px (was 7; SolidWorks picks a curve only a few px away; points keep 7, ui-relations.js pickSketchRef), so
+  // a box started beside a hole of a dense pattern is a box, not a drag of the hole.
+  var ENTITY_PICK_PX = 6;
   // rfF: pickEntityDist(mx, my) -> { hit, d } also gives the pixel distance (the Select tool weighs it against a point's).
   function pickEntity(mx, my) { return pickEntityDist(mx, my).hit; }
   function pickEntityDist(mx, my) {
     var f = activeSketchFeature();
     if (!f) return { hit: null, d: Infinity };
-    var pl = activePlane(), best = null, bestD = 7;
+    var pl = activePlane(), best = null, bestD = ENTITY_PICK_PX;
     f.entities.forEach(function (e, i) {
       if (UI.entityLayerHidden && UI.entityLayerHidden(f, e)) return;   // sketch-layers: a hidden layer is not picked
       var pls = screenPolylines(e);   // r15/snapaudit15: the curve as drawn, not the model's chord polygon (a click between its facets picked nothing when zoomed in)

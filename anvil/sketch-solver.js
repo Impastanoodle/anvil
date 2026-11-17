@@ -1092,16 +1092,25 @@ var SketchSolver = (function () {
     return { c: C, v: V };
   }
   function rankInfoSp(sys, J) {
-    var n = sys.vars.length, basis = [], dep = {}, tolR = 1e-7, pivotOf = new Int32Array(n), colB = new Array(n);
-    var w = new Float64Array(n), mark = new Uint8Array(n), j, t;
-    for (j = 0; j < n; j++) pivotOf[j] = -1;
+    var n = sys.vars.length, B = spBasis(n), dep = {};
     sys.cons.forEach(function (c, ci) {
       if (c.soft) return;
-      for (var k = 0; k < c.n; k++) {
-        var cs = J.c[c.row + k], vs = J.v[c.row + k], s = 0;
+      for (var k = 0; k < c.n; k++) if (!B.add(J.c[c.row + k], J.v[c.row + k], true)) dep[ci] = true;
+    });
+    return { rank: B.basis.length, dep: dep, fixed: B.fixed() };
+  }
+  // lane NU: the sparse reduced-echelon basis of rankInfoSp on its own, so Fully Define can ask "is this row new?" of it
+  // (add(cs, vs, false)) and keep the rows it takes (add(..., true)) as basisAdd does with dense rows. add returns false
+  // for a row (columns cs, values vs) that lies in the span (to 1e-7 after normalising, as rankInfo / basisAdd).
+  function spBasis(n) {
+    var basis = [], tolR = 1e-7, pivotOf = new Int32Array(n), colB = new Array(n);
+    var w = new Float64Array(n), mark = new Uint8Array(n), j, t;
+    for (j = 0; j < n; j++) pivotOf[j] = -1;
+    function add(cs, vs, commit) {
+        var s = 0;
         for (t = 0; t < cs.length; t++) s += vs[t] * vs[t];
         var nv = Math.sqrt(s);
-        if (nv < 1e-14) { dep[ci] = true; continue; }
+        if (nv < 1e-14) return false;
         var touched = [];
         for (t = 0; t < cs.length; t++) { j = cs[t]; if (!mark[j]) { mark[j] = 1; touched.push(j); } w[j] = vs[t] / nv; }
         // the reduced rows whose pivot this row holds (subtracting one changes no other pivot column: the basis is
@@ -1128,8 +1137,8 @@ var SketchSolver = (function () {
             if (Math.abs(w[j]) >= 0.5 * best && (cj < cnt || (cj === cnt && j < p))) { p = j; cnt = cj; }
           }
         }
-        if (best < tolR) dep[ci] = true;
-        else {
+        var isNew = best >= tolR;
+        if (isNew && commit) {
           var pv = w[p], row = new Map(), bi = basis.length;
           for (t = 0; t < touched.length; t++) { j = touched[t]; if (w[j] !== 0) row.set(j, w[j] / pv); }
           var lst = colB[p];
@@ -1148,16 +1157,19 @@ var SketchSolver = (function () {
           basis.push({ p: p, row: row });
         }
         for (t = 0; t < touched.length; t++) { w[touched[t]] = 0; mark[touched[t]] = 0; }
-      }
-    });
-    var fixed = new Array(n);
-    for (j = 0; j < n; j++) fixed[j] = false;
-    basis.forEach(function (b) {
-      var free = false;
-      b.row.forEach(function (val, jj) { if (!free && pivotOf[jj] < 0 && Math.abs(val) > 1e-6) free = true; });
-      fixed[b.p] = !free;
-    });
-    return { rank: basis.length, dep: dep, fixed: fixed };
+        return isNew;
+    }
+    function fixed() {
+      var out = new Array(n);
+      for (var jf = 0; jf < n; jf++) out[jf] = false;
+      basis.forEach(function (b) {
+        var free = false;
+        b.row.forEach(function (val, jj) { if (!free && pivotOf[jj] < 0 && Math.abs(val) > 1e-6) free = true; });
+        out[b.p] = !free;
+      });
+      return out;
+    }
+    return { basis: basis, add: add, fixed: fixed };
   }
   // Symmetric positive definite A (rows: Maps col -> value, both triangles, the diagonal in D) solved by LDL^T with a
   // minimum-degree order (a sketch's constraint graph is a set of short chains: little fill). A is consumed. Returns x or
@@ -1313,7 +1325,7 @@ var SketchSolver = (function () {
   function analyze(sketch, sysIn) {
     if (sysIn || FORCE_DENSE || !sketch || !sketch.entities || sketch.entities.length < CACHE_MIN) return analyze0(sketch, sysIn);
     var key;
-    try { key = JSON.stringify([sketch.entities, sketch.rels || null, sketch.dims || null, sketch.blocks || null, sketch._blkEdit == null ? null : sketch._blkEdit]); } catch (e) { return analyze0(sketch); }
+    try { key = JSON.stringify([sketch.entities, sketch.rels && sketch.rels.length ? sketch.rels : null, sketch.dims && sketch.dims.length ? sketch.dims : null, sketch.blocks || null, sketch._blkEdit == null ? null : sketch._blkEdit]); } catch (e) { return analyze0(sketch); }
     for (var i = 0; i < anCache.length; i++) if (anCache[i].key === key) { STATS.analysisHits++; return JSON.parse(anCache[i].out); }
     var out = analyze0(sketch);
     anCache.unshift({ key: key, out: JSON.stringify(out) });
@@ -1465,7 +1477,27 @@ var SketchSolver = (function () {
     if (!rels.some(function (r) { return r && r.type === 'pattern' && !r.suppressed && r.pat; })) return null;
     var named = {};   // entity -> how many items other than its own Pattern relation name it
     function mark(e) { named[e] = (named[e] || 0) + 1; }
-    (sketch.dims || []).forEach(function (d) { if (d && d.e != null) mark(d.e); });
+    // lane NU: a copy's own size dimension (a diameter, radius or length: what a rigid copy shares with its seed) does
+    // not keep the copy: while condensed it is put on the seed's entity (the pattern makes them equal), and a driven
+    // dimension holds nothing at all. seedOf: whole-entity copy -> the seed entity it copies.
+    var seedOf = {}, dimSwaps = [];
+    rels.forEach(function (rel) {
+      if (!rel || rel.type !== 'pattern' || rel.suppressed || !rel.pat || !rel.refs) return;
+      var pt = rel.pat, na = pt.circ ? 2 : (pt.nd | 0) + 1, m = pt.m | 0, inst = pt.inst || [];
+      if (!(m >= 1) || rel.refs.length !== na + m * (inst.length + 1)) return;
+      for (var k = 0; k < m; k++) {
+        var sq = parseRef(rel.refs[na + k]);
+        if (!sq || sq.o || sq.s !== null) continue;
+        for (var q = 0; q < inst.length; q++) { var cq = parseRef(rel.refs[na + m + q * m + k]); if (cq && !cq.o && cq.s === null && seedOf[cq.e] == null) seedOf[cq.e] = sq.e; }
+      }
+    });
+    var SIZE_KINDS = { dia: 1, r: 1, len: 1 };
+    (sketch.dims || []).forEach(function (d, i) {
+      if (!d || d.e == null || d.driven) return;
+      var s = seedOf[d.e];
+      if (SIZE_KINDS[d.k] && s != null && ents[s] && ents[d.e] && ents[s].t === ents[d.e].t && !d.link) dimSwaps.push({ i: i, e: d.e, seed: s });
+      else mark(d.e);
+    });
     (sketch.blocks || []).forEach(function () { });
     ents.forEach(function (e) { if (e && e.t === 'text' && e.path && e.path.e != null) mark(e.path.e); });
     var out = { swaps: [], drop: {} }, any = false;
@@ -1497,8 +1529,10 @@ var SketchSolver = (function () {
     if (!any) return null;
     out.only = {};
     ents.forEach(function (e, i) { if (!out.drop[i]) out.only[i] = true; });
-    out.on = function () { out.swaps.forEach(function (s) { rels[s.ri] = s.reduced; }); };
-    out.off = function () { out.swaps.forEach(function (s) { rels[s.ri] = s.rel; }); };
+    out.dimSwaps = dimSwaps.filter(function (s) { return out.drop[s.e]; });
+    out.seedOf = seedOf;
+    out.on = function () { out.swaps.forEach(function (s) { rels[s.ri] = s.reduced; }); out.dimSwaps.forEach(function (s) { sketch.dims[s.i].e = s.seed; }); };
+    out.off = function () { out.swaps.forEach(function (s) { rels[s.ri] = s.rel; }); out.dimSwaps.forEach(function (s) { sketch.dims[s.i].e = s.e; }); };
     out.place = function () {
       out.swaps.forEach(function (s) {
         var q = relEquation(sketch.entities, s.rel, sketch.rels);
@@ -1512,8 +1546,11 @@ var SketchSolver = (function () {
     if (opts.entities || opts.noCondense || FORCE_DENSE) return solve0(sketch, opts);
     var cz = condensePatterns(sketch, null), r;
     if (!cz) return solve0(sketch, opts);
+    // lane NU: an edit of a condensed copy's own dimension (setDim's part) is solved where it now acts: on the seed
+    var o2 = Object.assign({}, opts, { entities: cz.only });
+    if (opts.part != null && cz.drop[opts.part] && cz.seedOf[opts.part] != null) o2.part = cz.seedOf[opts.part];
     cz.on();
-    try { r = solve0(sketch, Object.assign({}, opts, { entities: cz.only })); }
+    try { r = solve0(sketch, o2); }
     finally { cz.off(); }
     if (r && r.ok) { cz.place(); updateDriven(sketch); }
     return r;
@@ -1569,9 +1606,13 @@ var SketchSolver = (function () {
     var list = kind === 'rel' ? sketch.rels : sketch.dims, item = list && list[index];
     if (!item) return false;
     if (kind !== 'rel' && item.k === 'curv') return false;   // lane DM: a curvature control's radius is its own value (no unknown it could over-define)
-    var was = item.driven;
-    item.driven = true;
-    var a0 = analyze(sketch);
+    var was = item.driven, a0;
+    // lane NU: the item just added (the last of its list) is "not there" for the before state: the sketch as it was
+    // before the add, which the last redraw analysed (kept, analyze's cache) - a driven item holds no equation, so the
+    // DOF and conflicts are the same. The after state is the one the redraw asks for next (kept again): adding a
+    // dimension to a big sketch costs one analysis, not three.
+    if (index === list.length - 1) { list.pop(); try { a0 = analyze(sketch); } finally { list.push(item); } }
+    else { item.driven = true; a0 = analyze(sketch); }
     delete item.driven;
     var a1 = analyze(sketch);
     if (was) item.driven = true;
@@ -1792,21 +1833,36 @@ var SketchSolver = (function () {
     opts = opts || {};
     var ents = sketch.entities || [];
     if (!ents.length) return { ok: false, error: 'The sketch has no geometry to define.' };
-    var sys = buildSystem(sketch), n = sys.vars.length, J = jacobian(sys), basis = [];
-    sys.cons.forEach(function (c) { if (!c.soft) for (var k = 0; k < c.n; k++) basisAdd(basis, J[c.row + k], n, true); });
+    // lane NU: above SPARSE_MIN unknowns or equations the basis of the sketch's rows is the sparse one (spBasis on
+    // jacobianSp), as analyze does: a 1,600-hole pattern took 18 s, the 2,600-entity DXF 13 s with dense rows
+    var sys = buildSystem(sketch), n = sys.vars.length, sparse = !FORCE_DENSE && (n > SPARSE_MIN || sys.m > SPARSE_MIN), basis = [], SB = null;
+    if (sparse) {
+      var JS = jacobianSp(sys);
+      SB = spBasis(n);
+      sys.cons.forEach(function (c) { if (!c.soft) for (var k = 0; k < c.n; k++) SB.add(JS.c[c.row + k], JS.v[c.row + k], true); });
+    } else {
+      var J = jacobian(sys);
+      sys.cons.forEach(function (c) { if (!c.soft) for (var k = 0; k < c.n; k++) basisAdd(basis, J[c.row + k], n, true); });
+    }
     var varsOf = sys.ents.map(function () { return []; });
     sys.vars.forEach(function (v, j) { varsOf[v.e].push(j); });
-    // the Jacobian row(s) of one candidate equation, on the current geometry
+    // the Jacobian row(s) of one candidate equation, on the current geometry (sparse: [{ c: columns, v: values }])
     function rowsOf(q) {
-      var rows = [];
-      for (var k = 0; k < q.n; k++) rows.push(new Float64Array(n));
+      var rows = [], seen = {};
+      for (var k = 0; k < q.n; k++) rows.push(sparse ? { c: [], v: [] } : new Float64Array(n));
       q.ents.forEach(function (ei) {
         (varsOf[ei] || []).forEach(function (j) {
+          if (sparse && seen[j]) return;
+          seen[j] = true;
           var v = sys.vars[j], e = sys.ents[v.e], x = pget(e, v.n), h = 1e-6 * Math.max(1, Math.abs(x));
           pset(e, v.n, x + h); var a = q.f(sys.ents);
           pset(e, v.n, x - h); var b = q.f(sys.ents);
           pset(e, v.n, x);
-          for (var k2 = 0; k2 < q.n; k2++) rows[k2][j] = (a[k2] - b[k2]) / (2 * h);
+          for (var k2 = 0; k2 < q.n; k2++) {
+            var d = (a[k2] - b[k2]) / (2 * h);
+            if (!sparse) rows[k2][j] = d;
+            else if (d !== 0) { rows[k2].c.push(j); rows[k2].v.push(d); }
+          }
         });
       });
       return rows;
@@ -1814,6 +1870,7 @@ var SketchSolver = (function () {
     function useful(q) {
       if (!q || q.n !== 1) return false;
       var rows = rowsOf(q);
+      if (sparse) return SB.add(rows[0].c, rows[0].v, true);   // (keeps the row only when it is new)
       if (!basisAdd(basis, rows[0], n, false)) return false;
       basisAdd(basis, rows[0], n, true);
       return true;

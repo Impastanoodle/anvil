@@ -3453,7 +3453,9 @@
     var through = geometryUnderLabel(ev);
     if (through) { passToGeometry(ev, through); return; }
     ev.stopPropagation(); ev.preventDefault();
-    var key = dimKey(it), now = performance.now();
+    // lane NU: when the presses happened (event time), not when they were handled: a slow redraw after the first press
+    // must not turn a quick double-click into two single ones
+    var key = dimKey(it), now = mouseStamp != null ? mouseStamp : performance.now();
     if (lastDimDown && lastDimDown.key === key && now - lastDimDown.t < 450) { lastDimDown = null; editDimItem(it); return; }
     lastDimDown = { key: key, t: now };
     if (dimEditing) closeDimEdit(true);
@@ -4126,10 +4128,22 @@
   // other tool (Add Relations picks the line itself, Angular Running Dimension wants the corners: its lineEnds skip
   // '.mid' because a line's own pointRefs include it).
   var MID_PX = 6, MID_DWELL = 150, forcedDimRef = null, midKey = null, midHover = { key: null, since: 0, timer: 0 };
+  // the time stamp of the mouse event being handled (null between events; see midReady)
+  var mouseStamp = null;
+  ['mousemove', 'mousedown', 'mouseup'].forEach(function (t) {
+    window.addEventListener(t, function (ev) {
+      var ts = ev.timeStamp, now = performance.now();
+      mouseStamp = ts > 0 && ts <= now + 1 && now - ts < 10000 ? ts : now;
+      Promise.resolve().then(function () { mouseStamp = null; });
+    }, true);
+  });
   // the cursor is by midpoint `key` (null: by none): true once it has stayed there MID_DWELL ms; arriving at a new one
   // starts its clock and a timer that draws the marker when it is up (the cursor may not move again)
+  // lane NU: the clock is the time the mouse event happened (ev.timeStamp), not the time it was handled. On a busy PC
+  // the move onto the middle and the click 50 ms later can be handled 0.5 s apart (a slow frame between them): a quick
+  // click must still pick the line. A call outside an event (the marker's timer) reads the clock.
   function midReady(key) {
-    var now = performance.now();
+    var now = mouseStamp != null ? mouseStamp : performance.now();
     if (key !== midHover.key) {
       if (midHover.timer) clearTimeout(midHover.timer);
       midHover = { key: key, since: now, timer: 0 };
