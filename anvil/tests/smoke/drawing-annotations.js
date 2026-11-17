@@ -1,5 +1,19 @@
   // ---- drawing annotations (run cloud-2026-09-25m): Annotation tab, centre marks, centrelines, hole callouts,
   // ordinate dimensions, the Dimension PropertyManager (tolerance, driving the part), balloons
+  // (rfNL) Ordinate / Baseline / Chamfer Dimension are in the Smart Dimension flyout (SolidWorks 2024): its ▾, then
+  // the row; the face goes back to Smart Dimension after
+  function annFlyMenu() {
+    var w = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb-fly'), function (x) { return x._fly && x._fly.fly === 'dwDim'; })[0];
+    assert(w, 'the Smart Dimension flyout');
+    var c = w.querySelector('.rb-caret'); c.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); c.click();
+    return Array.prototype.slice.call(D.querySelectorAll('.menu .mi'));
+  }
+  function annFlyPick(label) {
+    var row = annFlyMenu().filter(function (r) { return r.textContent.replace(/\s+/g, ' ').trim().indexOf(label) === 0; })[0];
+    assert(row, label + ' in the Smart Dimension flyout');
+    row.click(); if (UI.closeMenus) UI.closeMenus();
+    UI.ribbonFlyFace('dwDim', 0);
+  }
   function annots(type, viewId) { return anvil.drawing.summary().annotations.filter(function (a) { return (!type || a.type === type) && (viewId == null || a.view === viewId); }); }
   function boxMid(b) { return [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]; }
   function sheetDrag(from, to) {
@@ -26,7 +40,9 @@
     assert(mrow && mrow.querySelector('.badge').textContent === '4' && D.querySelectorAll('#drawing-tree .dw-centerline').length === 2, 'tree rows');
     assert(ribbonTabs().slice(0, 2).join() === 'View Layout,Annotation', 'tabs ' + ribbonTabs());
     Array.prototype.filter.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (b) { return b.textContent === 'Annotation'; })[0].click();
-    ['Smart Dimension', 'Ordinate Dimension', 'Baseline Dimension', 'Chamfer Dimension', 'Model Items', 'Balloon', 'Auto Balloon', 'Stacked Balloon', 'Hole Callout', 'Center Mark', 'Centerline', 'Document Properties'].forEach(ribbonButton);
+    ['Smart Dimension', 'Model Items', 'Balloon', 'Auto Balloon', 'Stacked Balloon', 'Hole Callout', 'Center Mark', 'Centerline', 'Document Properties'].forEach(ribbonButton);
+    var flyRows = annFlyMenu().map(function (r) { return r.textContent.replace(/\s+/g, ' ').trim(); }); if (UI.closeMenus) UI.closeMenus();
+    ['Ordinate Dimension', 'Baseline Dimension', 'Chamfer Dimension'].forEach(function (n) { assert(flyRows.some(function (r) { return r.indexOf(n) === 0; }), n + ' in the flyout: ' + flyRows.join(' | ')); assert(!Array.prototype.some.call(D.querySelectorAll('#ribbon-buttons button'), function (b) { return b.getAttribute('aria-label') === n; }), n + ' listed once (not beside the flyout)'); });
     ribbonButton('Document Properties').click();
     assert(modalOpen() && $('dw-opt-cm').checked && $('dw-opt-cl').checked, 'Document Properties with auto insert on');
     $('dw-opt-cm').checked = false;
@@ -80,7 +96,7 @@
   });
   step('annotations: Ordinate Dimension (vertical, Top view): base = top edge, then two holes, reads 0 / 10 / 50; Chamfer Dimension tool on a chamfered box reads 2 X 45°', async function () {
     var T = dwView('Top'), x0 = T.box[0], y1 = T.box[3];
-    ribbonButton('Ordinate Dimension').click();
+    annFlyPick('Ordinate Dimension');
     setInput(pmField('Measure'), 'v');
     sheetMouse('mousedown', [x0 + 100, y1]);
     sheetMouse('mousedown', [x0 + 20 + 8, y1 - 20]);
@@ -95,7 +111,7 @@
     var R = dwView('Right'), s = +anvil.drawing.summary().sheet.scale.split(':')[0] / +anvil.drawing.summary().sheet.scale.split(':')[1];
     // Right view: u = -z ∈ [-20, 0], v = y ∈ [0, 10]; the chamfer runs (-20, 8) - (-18, 10), the lead-in edge along v = 10
     Array.prototype.filter.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (b) { return b.textContent === 'Annotation'; })[0].click();
-    ribbonButton('Chamfer Dimension').click();
+    annFlyPick('Chamfer Dimension');
     sheetMouse('mousedown', [R.box[0] + 1 * s, R.box[3] - 1 * s]);
     sheetMouse('mousedown', [R.box[0] + 10 * s, R.box[3]]);
     key('Escape');

@@ -459,14 +459,11 @@
     { id: 'chamferDim', label: 'Chamfer\nDimension', run: cmdChamferDim, active: function () { return D.tool === 'chamferdim'; } },
     { id: 'pathLengthDim', label: 'Path Length\nDimension', run: function () { DW.cmdPathLength(); }, active: function () { return D.tool === 'pathlen'; } }
   ];
-  var RFNL_STACK = { ordinateDim: 1, baselineDim: 1, chamferDim: 1 };
   UI.RIBBON.Annotation = [
     // (lane CT) the Smart Dimension flyout, SolidWorks 2024's drawing order (CT_DIMS)
-    // (rfNL) each dimension tool once: Ordinate / Baseline / Chamfer Dimension were in the flyout AND in the stack
-    // beside it; they stay in the stack (the buttons users and scripts find by name), the flyout holds the rest.
-    // (SolidWorks 2024 has all of them in the flyout; Tools ▸ Dimensions lists all, in its order.)
-    { fly: 'dwDim', items: CT_DIMS.filter(function (x) { return !RFNL_STACK[x.id]; }).map(function (x) { return { id: x.id, label: x.label, run: x.run, active: x.active }; }) },
-    { stack: ['ordinateDim', 'baselineDim', 'chamferDim'].map(function (id) { var x = CT_DIMS.filter(function (y) { return y.id === id; })[0]; return { id: x.id, label: x.label.replace(/\n/g, ' '), run: x.run, active: x.active }; }) },
+    // (rfNL) every dimension tool once, in the flyout as SolidWorks 2024 has them (Ordinate / Baseline / Chamfer were
+    // listed a second time in a stack beside it)
+    { fly: 'dwDim', items: CT_DIMS.map(function (x) { return { id: x.id, label: x.label, run: x.run, active: x.active }; }) },
     { id: 'modelItems', label: 'Model\nItems', run: cmdModelItemsPM, active: function () { return !!(doc() && doc().autoDims); } },
     { sep: true },
     { id: 'balloon', label: 'Balloon', run: function () { cmdBalloon(false); }, active: function () { return D.tool === 'balloon'; } },

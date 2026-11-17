@@ -23,22 +23,27 @@
     function rfNLKey(key, shift) { D.dispatchEvent(new W.KeyboardEvent('keydown', { key: key, shiftKey: !!shift, bubbles: true, cancelable: true })); }
     function rfNLEnd() { for (var i = 0; i < 4 && ((UI.hasPM && UI.hasPM()) || UI.drawing.state.tool); i++) UI.escapeCommand(); }
 
-    step('rfNL: the drawing Annotation tab lists Ordinate / Baseline / Chamfer Dimension once (in the Smart Dimension flyout); each still starts its tool', async function () {
+    step('rfNL: the drawing Annotation tab lists Ordinate / Baseline / Chamfer Dimension once, in the Smart Dimension flyout (SolidWorks 2024); picked there it starts its tool', async function () {
       var errs0 = errors.length;
       await rfNLPart(RFNL.channel);
       anvil.drawing.make({ fresh: true }); await rfNLDone();
       rfNLTab('Annotation'); await wait(20);
       var ids = Array.prototype.map.call(D.querySelectorAll('#ribbon-buttons [data-cmd], #ribbon-buttons [data-id]'), function (b) { return b.getAttribute('data-cmd') || b.getAttribute('data-id'); });
+      var w = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb-fly'), function (x) { return x._fly && x._fly.fly === 'dwDim'; })[0];
+      assert(w, 'Smart Dimension flyout');
+      var c = w.querySelector('.rb-caret'); c.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); c.click();
+      var rows = Array.prototype.slice.call(D.querySelectorAll('.menu .mi')), names = rows.map(function (r) { return r.textContent.replace(/\s+/g, ' ').trim(); });
       ['Ordinate Dimension', 'Baseline Dimension', 'Chamfer Dimension'].forEach(function (n) {
-        var bs = rfNLBtn(n);
-        assert(bs.length === 1, n + ': ' + bs.length + ' buttons');
+        assert(names.filter(function (r) { return r.indexOf(n) === 0; }).length === 1, n + ' once in the flyout: ' + names.join(' | '));
+        assert(rfNLBtn(n).length === 0, n + ' not also beside it');
       });
-      rfNLBtn('Ordinate Dimension')[0].click(); await wait(20);
-      assert(UI.drawing.state.tool === 'ordinate', 'Ordinate tool: ' + UI.drawing.state.tool);
-      rfNLEnd();
+      rows.filter(function (r) { return r.textContent.replace(/\s+/g, ' ').trim().indexOf('Ordinate Dimension') === 0; })[0].click();
+      if (UI.closeMenus) UI.closeMenus();
+      await wait(20);      assert(UI.drawing.state.tool === 'ordinate', 'Ordinate tool: ' + UI.drawing.state.tool);
+      rfNLEnd(); UI.ribbonFlyFace('dwDim', 0);
       assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
       UI.markClean(); anvil.drawing.close(); await idle();
-      return 'one button each';
+      return 'each once, in the flyout';
     });
 
     step('rfNL: from a fitted sheet Shift+Z / Z, the wheel, Zoom to Fit and Mastercam\u2019s Unzoom zoom the sheet (they moved the hidden 3D camera)', async function () {

@@ -69,4 +69,34 @@
       assert(dxf.indexOf('\nELLIPSE\n') > 0, 'DXF R2000 ELLIPSE');
       return 'Right: ellipses .150 x .087';
     });
+    test('a detail view\u2019s circle and letter go on its parent view\u2019s layer (DXF), not SHEET; the SHEET letters are the zone and size letters', function () {
+      var r = rfNLDrawing('p.units("in"); p.box(4, 3, 0.25); p.hole("Top", 1, -1.5, 0.201, { offset: 0.25 });');
+      var F = r.view('Front'), Dv = DW.addDetailView(r.doc, r.mesh, F.view.id, { c: [1, 0.1], r: 0.4, x: 14, y: 2 });
+      r.sheet = DW.compute(r.doc, r.mesh, r.model);
+      var lab = r.sheet.prims.filter(function (p) { return p.k === 'text' && p.text === Dv.label && p.layer !== 'SHEET'; });
+      var mark = r.sheet.prims.filter(function (p) { return p.detailMark === Dv.id; });
+      assert(lab.length === 1 && lab[0].layer === F.layer, 'letter on ' + lab.map(function (p) { return p.layer; }));
+      assert(mark.length && mark.every(function (p) { return p.layer === F.layer; }), 'circle on the parent layer');
+      return Dv.label + ' on ' + lab[0].layer;
+    });
+    var RFNL_ANG = 'p.units("in");\np.sheet(0.0598, 0.06, 0.44);\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();\np.flange(2, [[4, 0.0598, 1.5]], { angle: 30 });\np.sketch("Top").circle(4.8, -1.5, 0.15).cut("through", { both: true });';
+    function rfNLAux() {
+      var r = rfNLDrawing(RFNL_ANG), F = r.view('Front');
+      var sl = F.proj.lines.visible.filter(function (l) { var a = Math.atan2(l[3] - l[1], l[2] - l[0]) * 180 / Math.PI; return Math.abs(Math.abs(a) - 30) < 0.5 || Math.abs(Math.abs(a) - 150) < 0.5; })
+        .sort(function (p, q) { return Math.hypot(q[2] - q[0], q[3] - q[1]) - Math.hypot(p[2] - p[0], p[3] - p[1]); })[0];
+      var A = DW.addAuxiliaryView(r.doc, r.mesh, F.view.id, { a: [sl[0], sl[1]], b: [sl[2], sl[3]], sign: 1 });
+      r.sheet = DW.compute(r.doc, r.mesh, r.model);
+      return { r: r, w: r.sheet.views.filter(function (w) { return w.view.id === A.id; })[0] };
+    }
+    test('the auxiliary view square to a 30\u00b0 flange: the hole\u2019s near rim one full ellipse, its far rim one visible and one hidden piece split where it goes behind the wall (it was 15 + 15 facet-sized pieces)', function () {
+      var o = rfNLAux(), pr = o.w.proj, vis = pr.ellipses.visible, hid = pr.ellipses.hidden;
+      assert(vis.length === 2 && hid.length === 1, 'pieces: ' + vis.length + ' visible, ' + hid.length + ' hidden');
+      vis.concat(hid).forEach(function (e) { near(Math.max(Math.hypot(e.ax[0], e.ax[1]), Math.hypot(e.ay[0], e.ay[1])), 0.15 / Math.cos(Math.PI / 6), 1e-6, 'major'); });
+      var full = vis.filter(function (e) { return e.full; }), far = vis.filter(function (e) { return !e.full; })[0];
+      assert(full.length === 1 && far, 'near rim full, far rim a piece');
+      near(far.t1 - far.t0 + hid[0].t1 - hid[0].t0, 2 * Math.PI, 2e-3, 'the far rim\u2019s two pieces make the whole ellipse');
+      var prims = o.r.sheet.prims.filter(function (p) { return p.layer === o.w.layer && p.k === 'ellipse'; });
+      assert(prims.length === 3, 'three ELLIPSE prims: ' + prims.length);
+      return 'far rim ' + (far.t1 - far.t0).toFixed(3) + ' rad visible';
+    });
   })();

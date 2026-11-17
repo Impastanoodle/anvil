@@ -110,7 +110,13 @@
     var H = anvil.drawing.summary().sheet.size[1], T = dwView('Top');
     var circ = Array.prototype.map.call(D.querySelectorAll('#drawing-sheet g[data-layer="TOP"] circle'), function (c) { return [+c.getAttribute('cx'), H - c.getAttribute('cy'), +c.getAttribute('r')]; });
     assert(circ.length === 5, 'five holes on Top ' + circ.length);
-    ribbonButton('Ordinate Dimension').click();
+    (function () {   // (rfNL) from the Smart Dimension flyout (SolidWorks 2024)
+      var w = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb-fly'), function (x) { return x._fly && x._fly.fly === 'dwDim'; })[0];
+      if (!w) { Array.prototype.filter.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (b) { return b.textContent === 'Annotation'; })[0].click(); w = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb-fly'), function (x) { return x._fly && x._fly.fly === 'dwDim'; })[0]; }
+      var c = w.querySelector('.rb-caret'); c.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); c.click();
+      Array.prototype.filter.call(D.querySelectorAll('.menu .mi'), function (r) { return r.textContent.replace(/\s+/g, ' ').trim().indexOf('Ordinate Dimension') === 0; })[0].click();
+      if (UI.closeMenus) UI.closeMenus(); UI.ribbonFlyFace('dwDim', 0);
+    })();
     assert(UI.drawing.state.tool === 'ordinate', 'ordinate tool');
     rfBXclick([T.box[0], (T.box[1] + T.box[3]) / 2]);
     assert(/base picked/.test(statusText()), 'base: ' + statusText());

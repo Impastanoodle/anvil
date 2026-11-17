@@ -925,6 +925,16 @@
           joinRuns(sv, GAPA).forEach(function (iv) { edgeOn(iv, vis); });
           joinRuns(sh, GAPA).forEach(function (iv) { edgeOn(iv, hid); });
         } else {
+          // (rfNL) a rim seen past a cylinder wall at a grazing angle (the far rim of a hole through a slanted flange, in
+          // the view square to the flange) comes out of the facet test as a visible and a hidden piece per facet; four
+          // or more visible runs under 0.1 rad between hidden ones are that artefact: they are hidden, so the rim is
+          // one visible and one hidden piece split where its visibility really changes
+          var shortV = joinRuns(sv, gapC).filter(function (iv) { return iv[1] - iv[0] < 0.1; });
+          if (shortV.length >= 4 && !isFull(sv)) {
+            sh = modMerge(sh.concat(shortV), GAPA);
+            sv = subtractIntervals(sv, modMerge(shortV, 0), GAPA).filter(function (iv) { return iv[1] - iv[0] > minA; });
+            sh = subtractIntervals(sh, sv, GAPA).filter(function (iv) { return iv[1] - iv[0] > minA; });
+          }
           [[sv, 'visible'], [sh, 'hidden']].forEach(function (pair) {
             joinRuns(pair[0], pair[0] === sv ? gapC : GAPA).forEach(function (iv) {
               var full = isFull(pair[0]);
