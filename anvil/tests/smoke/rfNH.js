@@ -52,11 +52,14 @@
         var row = rfNHRow('_type');
         assert(row.map(function (b) { return b.getAttribute('aria-label'); }).join('|') === 'Angle Distance|Distance Distance|Vertex|Offset Face|Face Face', 'types: ' + row.map(function (b) { return b.getAttribute('aria-label'); }).join('|'));
         assert(row[1].getAttribute('aria-checked') === 'true' && !row[1].disabled, 'Distance Distance pressed');
-        assert([0, 2, 3, 4].every(function (i) { return row[i].disabled && /not available/.test(row[i].title); }), 'the others greyed with a reason');
-        row[0].click(); await wait(20);
+        // rfOB (2026-11-17): Angle Distance is built now and Equal distance can be cleared, so three types stay greyed
+        // (Vertex, Offset Face, Face Face) and the box is live; the two live types are driven by clicks in smoke rfOB
+        assert(!row[0].disabled && !/not available/.test(row[0].title), 'Angle Distance is live');
+        assert([2, 3, 4].every(function (i) { return row[i].disabled && /not available/.test(row[i].title); }), 'the others greyed with a reason');
+        row[2].click(); await wait(20);
         assert(UI.pmSpec().values._type === 'dd', 'a greyed type does not press');
         var eq = pmField('Equal distance');
-        assert(eq && eq.checked && eq.disabled, 'Equal distance ticked (the chamfer Anvil builds)');
+        assert(eq && eq.checked && !eq.disabled, 'Equal distance ticked (a new chamfer is equal-distance) and live');
         var ok = rfNHOk();
         assert(ok.grey && /Select at least one edge/.test(ok.title), '✓ greyed with nothing picked: ' + ok.title);
         await rfNHClickEdge([4, 2, 0.5]);
@@ -71,7 +74,7 @@
         row = rfNHRow('_type');
         assert(row.map(function (b) { return b.getAttribute('aria-label'); }).join('|') === 'Constant Size Fillet|Variable Size Fillet|Face Fillet|Full Round Fillet' && row[0].getAttribute('aria-checked') === 'true' && row.slice(1).every(function (b) { return b.disabled; }), 'fillet types');
         assert(rfNHOk().grey, 'Fillet ✓ greyed with nothing picked');
-        return 'Chamfer Type 5 (1 live), ✓ greyed → lit by a click; Fillet Type 4 (1 live)';
+        return 'Chamfer Type 5 (2 live), ✓ greyed → lit by a click; Fillet Type 4 (1 live)';
       } finally { rfNHRestore(); }
     });
 

@@ -802,9 +802,90 @@ var OcctKernel = (function () {
       });
       return nearest(f.edges, edgesOf(body).filter(function (e) { return !seams.Contains(e); }), K.pickTol(m.units, size));   // r16/picktol
     }
+    // rfOB: a chamfer with two distances (f.d2) or by angle + distance (f.angle; Kernel.chamferSpec) is built with
+    // BRepFilletAPI_MakeChamfer.Add_3(d, d2, E, F) / AddDA(d, angle, E, F): d lies on F, the angle (radians) is between
+    // the chamfer and F. F is the face Anvil's own engine puts d on (kernel-mesh.js rfNTassign): every picked edge is a
+    // seed (Kernel.chamferFace: the planar face of a rim, else the face looking more to +Y, +X, +Z; f.flip swaps), and
+    // a picked edge joined to an assigned one (turning under 30 deg) keeps d on the face they share, or off it.
+    // OpenCascade carries the two setbacks along each picked edge's tangent contour itself. Mk.Add_2(d, E) was all this
+    // did before: a two-distance chamfer came out equal, with no message. An engine without the two calls (the native
+    // addon binds only the calls in desktop/native/api-surface.json) leaves the part to Anvil's engine ('unsupported').
     function edgeMaker(f, body, es, size) {
       var mk = f.type === 'chamfer' ? N(new oc.BRepFilletAPI_MakeChamfer(body)) : N(new oc.BRepFilletAPI_MakeFillet(body, oc.ChFi3d_FilletShape.ChFi3d_Rational));
-      es.forEach(function (e) { mk.Add_2(size, e); });
+      var spec = f.type === 'chamfer' && K.chamferSpec ? K.chamferSpec(f, size) : null;
+      if (!spec) { es.forEach(function (e) { mk.Add_2(size, e); }); return mk; }   // equal distance: as before, call for call
+      var byAngle = spec.angle != null, call = byAngle ? 'AddDA' : 'Add_3';
+      if (typeof mk[call] !== 'function') { var miss = unsupportedErr(byAngle ? 'Chamfer by angle and distance' : 'Chamfer with two distances'); miss.missing = 'BRepFilletAPI_MakeChamfer.' + call; throw miss; }
+      var picked = N(new oc.TopTools_IndexedMapOfShape_1()), COS30 = Math.cos(Math.PI / 6);
+      es.forEach(function (e) { picked.Add(e); });
+      var recs = es.map(function (e) {
+        var ac = N(new oc.BRepAdaptor_Curve_2(e)), u0 = ac.FirstParameter(), u1 = ac.LastParameter(), h = (u1 - u0) * 1e-3;
+        var pt = function (u) { var p = N(ac.Value(u)); return [p.X(), p.Y(), p.Z()]; }, a = pt(u0), b = pt(u1);
+        return { e: e, mid: pt((u0 + u1) / 2), ends: [a, b], tan: [V.norm(V.sub(pt(u0 + h), a)), V.norm(V.sub(b, pt(u1 - h)))], faces: [], n: [], side: -1 };
+      });
+      facesOf(body).forEach(function (fc) {
+        explore(fc, ENUM.TopAbs_EDGE).forEach(function (x) {
+          if (!picked.Contains(x)) return;
+          recs.forEach(function (r) { if (r.e.IsSame(x) && !r.faces.some(function (g) { return g.IsSame(fc); })) r.faces.push(fc); });
+        });
+      });
+      // the outward normal of a face at a point on it, and whether the face is a plane. A curved face: the nearest
+      // point of the surface by a search over its (u, v) box (BRepGProp_Face.Normal gives point and oriented normal)
+      function outward(fc, p) {
+        var pl = draftPlaneOf(fc);
+        if (pl) return { n: pl.n, planar: true };
+        try {
+          var ad = N(new oc.BRepAdaptor_Surface_2(fc, true)), gf = N(new oc.BRepGProp_Face_2(fc, false)), Ps = N(new oc.gp_Pnt_1()), Vn = N(new oc.gp_Vec_1());
+          var lo = [ad.FirstUParameter(), ad.FirstVParameter()], hi = [ad.LastUParameter(), ad.LastVParameter()];
+          if (!lo.concat(hi).every(function (x) { return isFinite(x) && Math.abs(x) < 1e9; })) return { n: null, planar: false };
+          var d2 = function (u, v) { gf.Normal(u, v, Ps, Vn); var x = Ps.X() - p[0], y = Ps.Y() - p[1], z = Ps.Z() - p[2]; return x * x + y * y + z * z; };
+          var G = 24, best = [lo[0], lo[1]], bd = Infinity, st = [(hi[0] - lo[0]) / G, (hi[1] - lo[1]) / G];
+          for (var i = 0; i <= G; i++) for (var j = 0; j <= G; j++) { var d = d2(lo[0] + st[0] * i, lo[1] + st[1] * j); if (d < bd) { bd = d; best = [lo[0] + st[0] * i, lo[1] + st[1] * j]; } }
+          for (var it = 0; it < 48 && bd > 1e-24; it++) {
+            var moved = false;
+            for (var du = -1; du <= 1; du++) for (var dv = -1; dv <= 1; dv++) {
+              if (!du && !dv) continue;
+              var u = Math.min(hi[0], Math.max(lo[0], best[0] + du * st[0])), v = Math.min(hi[1], Math.max(lo[1], best[1] + dv * st[1])), dd = d2(u, v);
+              if (dd < bd) { bd = dd; best = [u, v]; moved = true; }
+            }
+            if (!moved) { st[0] /= 2; st[1] /= 2; }
+          }
+          d2(best[0], best[1]);
+          var nl = Math.hypot(Vn.X(), Vn.Y(), Vn.Z());
+          return { n: nl > 1e-12 ? [Vn.X() / nl, Vn.Y() / nl, Vn.Z() / nl] : null, planar: false };
+        } catch (err) { return { n: null, planar: false }; }
+      }
+      var same = function (a, b) { return V.len(V.sub(a, b)) <= 1e-6; };
+      function seed(r) {
+        var a = outward(r.faces[0], r.mid), b = outward(r.faces[1], r.mid);
+        r.n = [a.n || [0, 0, 0], b.n || [0, 0, 0]];
+        r.side = K.chamferFace(r.n[0], r.n[1], a.planar, b.planar, spec.flip);
+      }
+      function spread(r0) {
+        var queue = [r0];
+        while (queue.length) {
+          var cur = queue.shift(), Fd = cur.faces[cur.side];
+          recs.forEach(function (r) {
+            if (r.side >= 0) return;
+            var joined = false;
+            for (var i = 0; i < 2; i++) for (var j = 0; j < 2; j++) if (same(cur.ends[i], r.ends[j]) && Math.abs(V.dot(cur.tan[i], r.tan[j])) >= COS30) joined = true;
+            if (!joined) return;
+            var com = [0, 1].filter(function (k) { return cur.faces[0].IsSame(r.faces[k]) || cur.faces[1].IsSame(r.faces[k]); });
+            if (com.length === 2) r.side = r.faces[0].IsSame(Fd) ? 0 : 1;
+            else if (com.length === 1) r.side = r.faces[com[0]].IsSame(Fd) ? com[0] : 1 - com[0];
+            else {
+              if (!cur.n.length) { var ca = outward(cur.faces[0], cur.mid), cb = outward(cur.faces[1], cur.mid); cur.n = [ca.n || [0, 0, 0], cb.n || [0, 0, 0]]; }
+              var na = outward(r.faces[0], r.mid).n || [0, 0, 0], nb = outward(r.faces[1], r.mid).n || [0, 0, 0];
+              r.n = [na, nb];
+              r.side = V.dot(na, cur.n[cur.side]) >= V.dot(nb, cur.n[cur.side]) ? 0 : 1;
+            }
+            queue.push(r);
+          });
+        }
+      }
+      if (recs.some(function (r) { return r.faces.length !== 2; })) throw new Error('Failed to create chamfer. An edge picked for it does not lie between two faces of the body.');
+      recs.forEach(function (r) { if (r.side < 0) { seed(r); spread(r); } });
+      recs.forEach(function (r) { if (byAngle) mk.AddDA(size, spec.angle, r.e, r.faces[r.side]); else mk.Add_3(size, spec.d2, r.e, r.faces[r.side]); });
       return mk;
     }
     // lane HU: a fillet (or chamfer) whose size uses up a whole face next to its edge: Fillet2 R50 on the top edge of a

@@ -1890,9 +1890,64 @@
   var CHAMFER_TYPES = [['ad', 'Angle Distance', 'chamferAngleDistance', 'a chamfer set by a distance along one face and an angle'], ['dd', 'Distance Distance', 'chamferDistanceDistance', 'a chamfer set by a distance along each face (Equal distance: one distance)'], ['vertex', 'Vertex', 'chamferVertex', 'cuts a corner off at a vertex by three distances'], ['offsetFace', 'Offset Face', 'chamferOffsetFace', 'a chamfer found by offsetting the faces next to the edge'], ['faceFace', 'Face Face', 'chamferFaceFace', 'a chamfer between two faces that need not share an edge']];
   var FILLET_TYPES = [['constant', 'Constant Size Fillet', 'filletConstant', 'one radius all along the edges'], ['variable', 'Variable Size Fillet', 'filletVariable', 'a radius that changes along the edge, set at its vertices'], ['face', 'Face Fillet', 'filletFace', 'blends two faces that need not share an edge'], ['fullRound', 'Full Round Fillet', 'filletFullRound', 'a round tangent to three faces side by side']];
   // rfNJ: why a type is greyed, the SolidWorks way: what is not built and what to use instead
+  // rfOB: Angle Distance is built too (the feature's `angle`), and Distance Distance with two distances (`d2`)
   function edgeTypeWhy(isChamfer, t) {
-    if (t === (isChamfer ? 'dd' : 'constant')) return null;
-    return 'This type is not available in Anvil yet (not built): use ' + (isChamfer ? 'Distance Distance with Equal distance.' : 'Constant Size Fillet.');
+    if (isChamfer ? t === 'dd' || t === 'ad' : t === 'constant') return null;
+    return 'This type is not available in Anvil yet (not built): use ' + (isChamfer ? 'Angle Distance or Distance Distance.' : 'Constant Size Fillet.');
+  }
+  // rfOB: the chamfer the PropertyManager's values make. The value boxes keep what was typed while another type is
+  // shown (v.d2 under Angle Distance, v.angle under Distance Distance); the feature carries only its own type's:
+  // Angle Distance { d, angle }, Distance Distance { d, d2 } or, with Equal distance, { d } as before. `flip` (Flip
+  // direction: which face takes d) stays only where it changes the part.
+  function chamferOut(v, into) {
+    var c = into || JSON.parse(JSON.stringify(v));
+    if (c.type !== 'chamfer') return c;
+    if (v._type === 'ad') delete c.d2; else { delete c.angle; if (v._equal) delete c.d2; }
+    if (!c.flip || (c.d2 == null && c.angle == null)) delete c.flip;
+    return c;
+  }
+  // rfOB: where a chamfer's two setbacks run at a pick: O on the sharp edge, dirD along the face that takes d (the
+  // kernel's rule, Kernel.chamferFace: the flat face of a rim, else the face looking more to +Y, +X, +Z; flip swaps),
+  // dirO along the other face. edgeList: the edges as built (while the PropertyManager is open); none: the two flat
+  // faces whose planes pass through the pick (Instant3D on a chamfer already made). null when it cannot be told.
+  function chamferDirs(at, edgeList, flip) {
+    if (!at || !K.chamferFace || !App.mesh) return null;
+    var faces = App.mesh.faces || [], best = null, bd = Infinity;
+    (edgeList || []).forEach(function (e) {
+      if (!e.ins || !e.ins[0] || !e.ins[1] || !e.normals || e.normals.length < 2) return;
+      var d = K.pointSegmentDistance ? K.pointSegmentDistance(at, e.a, e.b) : V.len(V.sub(e.mid, at));
+      if (d < bd) { bd = d; best = e; }
+    });
+    var flat = function (i) { return !UI.faceGroup || UI.faceGroup(i).length < 2; };
+    if (best && bd < 1e-3 * Math.max(1, V.len(at))) {
+      var s = K.chamferFace(best.normals[0], best.normals[1], flat(best.faces[0]), flat(best.faces[1]), !!flip);
+      return { O: at, dirD: V.norm(best.ins[s]), dirO: V.norm(best.ins[1 - s]) };
+    }
+    var ns = [];
+    faces.forEach(function (fc, i) {
+      if (!fc.normal || !fc.centroid || !flat(i) || Math.abs(V.dot(V.sub(at, fc.centroid), fc.normal)) > 1e-4 * Math.max(1, V.len(at))) return;
+      if (!ns.some(function (n) { return V.dot(n, fc.normal) > 0.9999; })) ns.push(fc.normal);
+    });
+    var n1 = null, n2 = null, bs = 0.05;
+    for (var i = 0; i < ns.length; i++) for (var j = i + 1; j < ns.length; j++) { var sn = V.len(V.cross(ns[i], ns[j])); if (sn > bs) { bs = sn; n1 = ns[i]; n2 = ns[j]; } }
+    if (!n1) return null;
+    var t = V.norm(V.cross(n1, n2)), d1 = V.norm(V.cross(t, n1)), d2 = V.norm(V.cross(t, n2));
+    if (V.dot(d1, n2) > 0) d1 = V.scale(d1, -1);
+    if (V.dot(d2, n1) > 0) d2 = V.scale(d2, -1);
+    return K.chamferFace(n1, n2, true, true, !!flip) === 0 ? { O: at, dirD: d1, dirO: d2 } : { O: at, dirD: d2, dirO: d1 };
+  }
+  // rfOB: the on-model handles of a chamfer with two distances or an angle at one pick: an arrow for D (D1) along the
+  // face it lies on, an arrow for D2 along the other face, or a ring for the angle A about the point where D ends
+  // (0 deg = back along the face D lies on, toward the edge). c: the chamfer as chamferOut gives it. [] = no frame.
+  function chamferHandles(c, at, edgeList) {
+    var fr = chamferDirs(at, edgeList, c.flip), d = +c.d;
+    if (!fr) return [];
+    var out = [{ key: 'd', label: c.angle != null ? 'Distance D' : 'Distance D1', O: fr.O, dir: fr.dirD, k: 1, value: d, min: 0, tag: c.angle != null ? 'D ' : 'D1 ' }];
+    if (c.angle != null) {
+      var P0 = V.add(fr.O, V.scale(fr.dirD, d)), ax = V.cross(V.scale(fr.dirD, -1), fr.dirO);
+      if (d > 0 && V.len(ax) > 1e-9) out.push({ type: 'angle', key: 'angle', label: 'Angle A', A: P0, D: V.norm(ax), c: fr.O, sign: 1, value: +c.angle, max: 179 });
+    } else out.push({ key: 'd2', label: 'Distance D2', O: fr.O, dir: fr.dirO, k: 1, value: +c.d2, min: 0, tag: 'D2 ' });
+    return out;
   }
   function cmdEdgeFeature(kind, existing) {
     if (App.mode === 'sketch') UI.exitSketch(true);
@@ -1902,6 +1957,19 @@
     if (isChamfer) f.d = f.d != null ? f.d : UI.lenDefault(2); else f.r = f.r != null ? f.r : UI.lenDefault(2);   // r15/inches15: 0.0625 in in an inch document
     if (existing) f.chain = !(existing.edges || []).some(function (e) { return e.chain === false; });
     f._type = isChamfer ? 'dd' : 'constant'; if (isChamfer) f._equal = true;   // rfNH: the type row (deleted at ✓)
+    if (isChamfer) {
+      // rfOB: Edit Feature opens with the feature's own type and values; a new chamfer is Distance Distance with Equal
+      // distance, as before. The boxes not shown hold their defaults: D2 = D, A = 45 deg (SolidWorks' default angle)
+      var hasV = function (x) { return x != null && x !== ''; };
+      if (hasV(f.angle)) { f._type = 'ad'; f._equal = true; }
+      else f._equal = !hasV(f.d2) || f.d2 === f.d;
+      if (!hasV(f.d2)) f.d2 = f.d;
+      if (!hasV(f.angle)) f.angle = 45;
+      f.flip = !!f.flip;
+    }
+    // rfOB: the feature the kernel is asked for (previews and ✓): a chamfer without the other type's values
+    function shown() { return isChamfer ? chamferOut(f) : f; }
+    function asym() { return isChamfer && (f._type === 'ad' || !f._equal); }
     // seed with a pre-selected edge
     // r9/polish9: every pre-selected edge (a box or Ctrl selection, not only the first), and a pre-selected face gives
     // the edges around it, as in SolidWorks; the items move into the PropertyManager. A selected feature (the one just
@@ -1939,6 +2007,17 @@
     // value callout next to every other pick
     function edgeHandles(v) {
       var out = [];
+      // rfOB: two distances / an angle: arrows for D1 and D2 (or D and a ring for A) on the first pick, each along the
+      // face its distance lies on; the other picks say both values
+      if (asym()) {
+        var c = chamferOut(v), fmtL = function (x) { return UI.fmtModelValue ? UI.fmtModelValue(+x) : UI.fmtNum(+x, 2) + ' ' + UI.unitLabel(); };
+        var both = c.angle != null ? 'D ' + fmtL(c.d) + '  A ' + UI.fmtNum(+c.angle, 2) + '°' : 'D1 ' + fmtL(c.d) + '  D2 ' + fmtL(c.d2);
+        v.edges.forEach(function (spec, i) {
+          var hs = i === 0 ? chamferHandles(c, spec.at, perPick[0] && perPick[0].length ? perPick[0] : edgeList) : [];
+          if (hs.length) out = out.concat(hs); else out.push({ type: 'callout', at: spec.at, text: both, key: 'd' });
+        });
+        return out;
+      }
       v.edges.forEach(function (spec, i) {
         if (i === 0) {
           var fr = edgeFrame(spec.at, perPick[0] && perPick[0].length ? perPick[0] : edgeList);
@@ -1954,12 +2033,12 @@
       // editing: built on the part as it was before this feature, like the rebuild does
       var upto = null;
       if (existing) App.model.features.forEach(function (g, i) { if (g.id === existing.id) upto = i; });
-      livePreview({ op: 'edge', feature: f, upto: upto, mats: [UI.mats.previewCut, UI.mats.preview], sync: previewSync, done: function (r) { edgeStatus(r.info); } });
+      livePreview({ op: 'edge', feature: shown(), upto: upto, mats: [UI.mats.previewCut, UI.mats.preview], sync: previewSync, done: function (r) { edgeStatus(r.info); } });
     }
     function previewSync() {
       UI.disposeGroup(UI.groups.preview);
       try {
-        var r = K.buildEdgeFeature(f, { body: App.build.body });
+        var r = K.buildEdgeFeature(shown(), { body: App.build.body });
         [r.cut, r.add].forEach(function (tool, i) {
           if (!tool) return;
           var mesh = K.meshFromBody(tool), g = new THREE.BufferGeometry();
@@ -1991,10 +2070,17 @@
         }
       },
       // rfNH: ✓ greys until an edge is picked (it refused with a toast before), as SolidWorks
-      okBlocked: function (v) { return v.edges.length ? '' : 'Select at least one edge.'; },
+      okBlocked: function (v) {
+        if (!v.edges.length) return 'Select at least one edge.';
+        // rfOB: values the kernel would refuse are said here, before ✓
+        if (isChamfer && v._type === 'ad' && !pmExpr('angle') && !(+v.angle > 0 && +v.angle < 180)) return 'The angle must be between 0 and 180 degrees.';
+        if (isChamfer && v._type !== 'ad' && !v._equal && !pmExpr('d2') && !(+v.d2 > 0)) return 'Distance 2 must be greater than zero.';
+        return '';
+      },
       groups: [
-        // rfNH: SolidWorks' type row at the top (Chamfer Type / Fillet Type). Anvil builds the equal-distance chamfer and
-        // the constant-size fillet; the other types are shown greyed, so the PropertyManager reads as SolidWorks' does
+        // rfNH: SolidWorks' type row at the top (Chamfer Type / Fillet Type). Anvil builds the constant-size fillet and
+        // (rfOB) the Angle Distance and Distance Distance chamfers; the other types are shown greyed, so the
+        // PropertyManager reads as SolidWorks' does
         { title: isChamfer ? 'Chamfer Type' : 'Fillet Type', fields: [
           { type: 'iconRadio', label: 'Type', key: '_type', options: isChamfer ? CHAMFER_TYPES : FILLET_TYPES, disabledOption: function (t) { return edgeTypeWhy(isChamfer, t); } }
         ] },
@@ -2005,15 +2091,29 @@
           { type: 'check', label: 'Tangent propagation', key: 'chain' },
           { type: 'buttons', buttons: [{ label: 'Clear selection', onclick: function (v) { v.edges.length = 0; renderPM(); resolveList(); preview(); } }] }
         ] },
-        { title: isChamfer ? 'Chamfer Parameters' : 'Fillet Parameters', fields: [
-          isChamfer ? { type: 'number', label: 'Distance  D', key: 'd', unit: 'u', min: 0 } : { type: 'number', label: 'Radius  R', key: 'r', unit: 'u', min: 0 }
-        ].concat(isChamfer ? [{ type: 'check', label: 'Equal distance', key: '_equal', disabled: true, title: 'Equal distance: one distance along both faces.\nTwo different distances are not available in Anvil yet (not built): the chamfer is equal-distance.' }] : []) },   // rfNJ: says why it cannot be cleared   // rfNH: SolidWorks' Distance-Distance chamfer with Equal distance, the only one Anvil builds
+        // rfOB: Chamfer Parameters by type. Angle Distance: Flip direction, D, A (degrees). Distance Distance: Equal
+        // distance ticked (as a new chamfer opens) shows the one distance D; cleared, Flip direction, D1 and D2.
+        // Flip direction puts D (D1) on the other face; the preview and the arrows on the model follow every box.
+        { title: isChamfer ? 'Chamfer Parameters' : 'Fillet Parameters', fields: !isChamfer ? [{ type: 'number', label: 'Radius  R', key: 'r', unit: 'u', min: 0 }] : [
+          { type: 'check', label: 'Flip direction', key: 'flip', rerender: true, show: function (v) { return v._type === 'ad' || !v._equal; }, title: 'Flip direction: the distance D lies along the other face.' },
+          { type: 'number', label: 'Distance  D', key: 'd', unit: 'u', min: 0, show: function (v) { return v._type === 'ad' || v._equal; } },
+          { type: 'number', label: 'Distance 1  D1', key: 'd', unit: 'u', min: 0, show: function (v) { return v._type !== 'ad' && !v._equal; } },
+          { type: 'number', label: 'Distance 2  D2', key: 'd2', unit: 'u', min: 0, show: function (v) { return v._type !== 'ad' && !v._equal; } },
+          { type: 'number', label: 'Angle  A', key: 'angle', unit: '°', min: 0, show: function (v) { return v._type === 'ad'; } },
+          { type: 'check', label: 'Equal distance', key: '_equal', rerender: true, show: function (v) { return v._type !== 'ad'; }, title: 'Equal distance: one distance along both faces.\nClear it to give each face its own distance (D1 and D2).' }
+        ] },
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
-      onChange: function (v) { v.edges.forEach(function (e) { e.chain = v.chain; }); resolveList(); preview(); },
+      onChange: function (v, key) {
+        v.edges.forEach(function (e) { e.chain = v.chain; });
+        // rfOB: while Equal distance is ticked D2 follows D, so clearing it starts from the chamfer on screen
+        if (isChamfer && v._equal && v._type !== 'ad' && (key === 'd' || key === '_equal') && pm.exprs.d == null && pm.exprs.d2 == null) v.d2 = v.d;
+        resolveList(); preview();
+      },
       onOK: function (v) {
         if (!v.edges.length) { UI.toast('Select at least one edge.'); return false; }
         v.edges.forEach(function (e) { e.chain = v.chain; });
+        if (isChamfer) chamferOut(v, v);   // rfOB: only its own type's values go into the feature
         delete v.chain; delete v._type; delete v._equal;   // rfNH: PropertyManager-only values
         if (!v.name) delete v.name;
         return commitFeature(v, existing);
@@ -7692,6 +7792,12 @@
       // the edge pick nearest the selected face (a fillet of several edges: the arrow sits on the one clicked)
       var spec = edges[0];
       if (fc && fc.centroid) { var bd = Infinity; edges.forEach(function (e) { var d = e.at ? V.len(V.sub(e.at, fc.centroid)) : Infinity; if (d < bd) { bd = d; spec = e; } }); }
+      // rfOB: a chamfer with two distances or an angle: D1 and D2 (or D and the angle), each on its own face
+      var hasV = function (x) { return x != null && x !== ''; };
+      if (isCh && spec.at && (hasV(f.angle) || (hasV(f.d2) && f.d2 !== f.d))) {
+        var ch = chamferHandles({ d: f.d, d2: hasV(f.angle) ? undefined : f.d2, angle: hasV(f.angle) ? f.angle : undefined, flip: f.flip }, spec.at, []);
+        if (ch.length) return ch.map(function (h) { h.label = h.key === 'd2' ? 'Distance 2' : h.key === 'angle' ? 'Angle' : hasV(f.angle) ? 'Distance' : 'Distance 1'; return h; });
+      }
       var fr = spec.at ? edgeFrame(spec.at, []) : null;   // the two planar faces through the old sharp edge
       return fr && fr.dir ? [{ key: key, label: isCh ? 'Distance' : 'Radius', O: fr.O, dir: fr.dir, k: 1, value: +f[key], min: 0 }] : [];
     }

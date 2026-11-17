@@ -7,7 +7,7 @@
       "class:TopoDS_Edge"
      ]
     ],
-    "count": 6418
+    "count": 6464
    },
    "BRepAdaptor_Surface_2": {
     "args": [
@@ -18,7 +18,7 @@
       "bool"
      ]
     ],
-    "count": 35088
+    "count": 35418
    },
    "BRepAlgoAPI_Common_3": {
     "args": [
@@ -52,7 +52,7 @@
       "class:Message_ProgressRange"
      ]
     ],
-    "count": 744
+    "count": 747
    },
    "BRepAlgoAPI_Fuse_1": {
     "args": [],
@@ -107,7 +107,7 @@
       "class:Handle_Geom_Curve"
      ]
     ],
-    "count": 1361
+    "count": 1365
    },
    "BRepBuilderAPI_MakeEdge_25": {
     "args": [
@@ -132,7 +132,7 @@
       "class:gp_Pnt"
      ]
     ],
-    "count": 24962
+    "count": 25022
    },
    "BRepBuilderAPI_MakeEdge_30": {
     "args": [
@@ -151,7 +151,7 @@
       "class:gp_Circ"
      ]
     ],
-    "count": 2672
+    "count": 2678
    },
    "BRepBuilderAPI_MakeFace_15": {
     "args": [
@@ -162,7 +162,7 @@
       "bool"
      ]
     ],
-    "count": 8042
+    "count": 8063
    },
    "BRepBuilderAPI_MakeFace_2": {
     "args": [
@@ -211,11 +211,11 @@
       "class:gp_Pnt"
      ]
     ],
-    "count": 4764
+    "count": 5058
    },
    "BRepBuilderAPI_MakeWire_1": {
     "args": [],
-    "count": 9668
+    "count": 9689
    },
    "BRepBuilderAPI_NurbsConvert_2": {
     "args": [
@@ -263,7 +263,7 @@
       "bool"
      ]
     ],
-    "count": 6020
+    "count": 6041
    },
    "BRepCheck_Analyzer": {
     "args": [
@@ -278,7 +278,7 @@
       "bool"
      ]
     ],
-    "count": 715
+    "count": 733
    },
    "BRepClass3d_SolidClassifier_2": {
     "args": [
@@ -309,7 +309,7 @@
       "class:Message_ProgressRange"
      ]
     ],
-    "count": 4764
+    "count": 5058
    },
    "BRepFilletAPI_MakeChamfer": {
     "args": [
@@ -317,7 +317,7 @@
       "class:TopoDS_Shape"
      ]
     ],
-    "count": 21
+    "count": 39
    },
    "BRepFilletAPI_MakeFillet": {
     "args": [
@@ -339,7 +339,7 @@
       "bool"
      ]
     ],
-    "count": 84
+    "count": 90
    },
    "BRepMesh_IncrementalMesh_2": {
     "args": [
@@ -361,7 +361,7 @@
       "bool"
      ]
     ],
-    "count": 1132
+    "count": 1150
    },
    "BRepOffsetAPI_DraftAngle_2": {
     "args": [
@@ -443,7 +443,7 @@
       "bool"
      ]
     ],
-    "count": 4922
+    "count": 4943
    },
    "BRepPrimAPI_MakeRevol_1": {
     "args": [
@@ -468,7 +468,7 @@
    },
    "Bnd_Box_1": {
     "args": [],
-    "count": 2447
+    "count": 2501
    },
    "GCE2d_MakeArcOfEllipse_1": {
     "args": [
@@ -510,11 +510,11 @@
       "class:gp_Pnt"
      ]
     ],
-    "count": 1203
+    "count": 1207
    },
    "GProp_GProps_1": {
     "args": [],
-    "count": 4509
+    "count": 4569
    },
    "Geom2d_BSplineCurve_1": {
     "args": [
@@ -747,7 +747,7 @@
       "class:Geom_BSplineCurve"
      ]
     ],
-    "count": 1363
+    "count": 1367
    },
    "Handle_Geom_Surface_2": {
     "args": [
@@ -777,7 +777,7 @@
    },
    "Message_ProgressRange_1": {
     "args": [],
-    "count": 7452
+    "count": 7749
    },
    "STEPControl_Reader_1": {
     "args": [],
@@ -803,7 +803,7 @@
       "bool"
      ]
     ],
-    "count": 1343
+    "count": 1379
    },
    "TColStd_Array1OfInteger_2": {
     "args": [
@@ -899,15 +899,15 @@
       "enum:TopAbs_ShapeEnum"
      ]
     ],
-    "count": 44034
+    "count": 44749
    },
    "TopLoc_Location_1": {
     "args": [],
-    "count": 22935
+    "count": 23093
    },
    "TopTools_IndexedMapOfShape_1": {
     "args": [],
-    "count": 1256
+    "count": 1344
    },
    "TopTools_ListOfShape_1": {
     "args": [],
@@ -948,7 +948,7 @@
       "class:gp_Dir"
      ]
     ],
-    "count": 2682
+    "count": 2688
    },
    "gp_Ax2_3": {
     "args": [
@@ -996,7 +996,7 @@
       "real"
      ]
     ],
-    "count": 2672
+    "count": 2678
    },
    "gp_Dir2d_4": {
     "args": [
@@ -1024,7 +1024,7 @@
       "real"
      ]
     ],
-    "count": 6140
+    "count": 6152
    },
    "gp_Elips2d_2": {
     "args": [
@@ -1083,7 +1083,7 @@
    },
    "gp_Pnt_1": {
     "args": [],
-    "count": 664
+    "count": 670
    },
    "gp_Pnt_3": {
     "args": [
@@ -1100,15 +1100,15 @@
       "real"
      ]
     ],
-    "count": 64749
+    "count": 65181
    },
    "gp_Trsf_1": {
     "args": [],
-    "count": 6010
+    "count": 6031
    },
    "gp_Vec_1": {
     "args": [],
-    "count": 664
+    "count": 670
    },
    "gp_Vec_4": {
     "args": [
@@ -1125,7 +1125,7 @@
       "real"
      ]
     ],
-    "count": 10114
+    "count": 10156
    }
   },
   "enums": {
@@ -1203,7 +1203,7 @@
     },
     "FirstParameter": {
      "args": [],
-     "count": 6182,
+     "count": 6204,
      "recv": [
       "BRepAdaptor_Curve"
      ],
@@ -1213,7 +1213,7 @@
     },
     "GetType": {
      "args": [],
-     "count": 3364,
+     "count": 3388,
      "recv": [
       "BRepAdaptor_Curve"
      ],
@@ -1223,7 +1223,7 @@
     },
     "LastParameter": {
      "args": [],
-     "count": 3128,
+     "count": 3150,
      "recv": [
       "BRepAdaptor_Curve"
      ],
@@ -1239,7 +1239,7 @@
        "real"
       ]
      ],
-     "count": 274,
+     "count": 384,
      "dyn": [
       "gp_Pnt"
      ],
@@ -1254,7 +1254,7 @@
    "BRepAdaptor_Surface": {
     "Cone": {
      "args": [],
-     "count": 186,
+     "count": 196,
      "dyn": [
       "gp_Cone"
      ],
@@ -1267,7 +1267,7 @@
     },
     "Cylinder": {
      "args": [],
-     "count": 5283,
+     "count": 5293,
      "dyn": [
       "gp_Cylinder"
      ],
@@ -1280,7 +1280,7 @@
     },
     "FirstUParameter": {
      "args": [],
-     "count": 92,
+     "count": 98,
      "recv": [
       "BRepAdaptor_Surface"
      ],
@@ -1291,7 +1291,7 @@
     },
     "FirstVParameter": {
      "args": [],
-     "count": 92,
+     "count": 98,
      "recv": [
       "BRepAdaptor_Surface"
      ],
@@ -1302,7 +1302,7 @@
     },
     "GetType": {
      "args": [],
-     "count": 35088,
+     "count": 35412,
      "recv": [
       "BRepAdaptor_Surface"
      ],
@@ -1312,7 +1312,7 @@
     },
     "LastUParameter": {
      "args": [],
-     "count": 92,
+     "count": 98,
      "recv": [
       "BRepAdaptor_Surface"
      ],
@@ -1323,7 +1323,7 @@
     },
     "LastVParameter": {
      "args": [],
-     "count": 92,
+     "count": 98,
      "recv": [
       "BRepAdaptor_Surface"
      ],
@@ -1334,7 +1334,7 @@
     },
     "Plane": {
      "args": [],
-     "count": 282,
+     "count": 320,
      "dyn": [
       "gp_Pln"
      ],
@@ -1397,7 +1397,7 @@
    "BRepAlgoAPI_Algo": {
     "Shape": {
      "args": [],
-     "count": 2407,
+     "count": 2410,
      "dyn": [
       "TopoDS_Shape"
      ],
@@ -1480,7 +1480,7 @@
    "BRepBuilderAPI_Command": {
     "IsDone": {
      "args": [],
-     "count": 2867,
+     "count": 2870,
      "recv": [
       "BRepAlgoAPI_Cut",
       "BRepAlgoAPI_Fuse",
@@ -1501,7 +1501,7 @@
    "BRepBuilderAPI_MakeEdge": {
     "Edge": {
      "args": [],
-     "count": 30435,
+     "count": 30505,
      "dyn": [
       "TopoDS_Edge"
      ],
@@ -1527,7 +1527,7 @@
     },
     "Face": {
      "args": [],
-     "count": 8446,
+     "count": 8467,
      "dyn": [
       "TopoDS_Face"
      ],
@@ -1540,7 +1540,7 @@
     },
     "IsDone": {
      "args": [],
-     "count": 2110,
+     "count": 2131,
      "recv": [
       "BRepBuilderAPI_MakeFace"
      ],
@@ -1552,7 +1552,7 @@
    "BRepBuilderAPI_MakeShape": {
     "Shape": {
      "args": [],
-     "count": 11587,
+     "count": 11647,
      "dyn": [
       "TopoDS_Shape"
      ],
@@ -1593,7 +1593,7 @@
    "BRepBuilderAPI_MakeVertex": {
     "Vertex": {
      "args": [],
-     "count": 4764,
+     "count": 5058,
      "dyn": [
       "TopoDS_Vertex"
      ],
@@ -1612,14 +1612,14 @@
        "class:TopoDS_Edge"
       ]
      ],
-     "count": 30435,
+     "count": 30505,
      "recv": [
       "BRepBuilderAPI_MakeWire"
      ]
     },
     "IsDone": {
      "args": [],
-     "count": 1631,
+     "count": 1646,
      "recv": [
       "BRepBuilderAPI_MakeWire"
      ],
@@ -1629,7 +1629,7 @@
     },
     "Wire": {
      "args": [],
-     "count": 9668,
+     "count": 9689,
      "dyn": [
       "TopoDS_Wire"
      ],
@@ -1681,7 +1681,7 @@
    "BRepCheck_Analyzer": {
     "IsValid_2": {
      "args": [],
-     "count": 715,
+     "count": 733,
      "recv": [
       "BRepCheck_Analyzer"
      ],
@@ -1721,7 +1721,7 @@
    "BRepExtrema_DistShapeShape": {
     "IsDone": {
      "args": [],
-     "count": 4764,
+     "count": 5058,
      "recv": [
       "BRepExtrema_DistShapeShape"
      ],
@@ -1731,7 +1731,7 @@
     },
     "Value": {
      "args": [],
-     "count": 4764,
+     "count": 5058,
      "recv": [
       "BRepExtrema_DistShapeShape"
      ],
@@ -1742,16 +1742,57 @@
     }
    },
    "BRepFilletAPI_MakeChamfer": {
+    "AddDA": {
+     "args": [
+      [
+       "real"
+      ],
+      [
+       "real"
+      ],
+      [
+       "class:TopoDS_Edge"
+      ],
+      [
+       "class:TopoDS_Face"
+      ]
+     ],
+     "count": 8,
+     "recv": [
+      "BRepFilletAPI_MakeChamfer"
+     ]
+    },
     "Add_2": {
      "args": [
       [
-       "int"
+       "int",
+       "real"
       ],
       [
        "class:TopoDS_Edge"
       ]
      ],
-     "count": 63,
+     "count": 65,
+     "recv": [
+      "BRepFilletAPI_MakeChamfer"
+     ]
+    },
+    "Add_3": {
+     "args": [
+      [
+       "real"
+      ],
+      [
+       "real"
+      ],
+      [
+       "class:TopoDS_Edge"
+      ],
+      [
+       "class:TopoDS_Face"
+      ]
+     ],
+     "count": 14,
      "recv": [
       "BRepFilletAPI_MakeChamfer"
      ]
@@ -1792,7 +1833,7 @@
        "class:gp_Vec"
       ]
      ],
-     "count": 664,
+     "count": 4420,
      "recv": [
       "BRepGProp_Face"
      ]
@@ -2111,7 +2152,7 @@
    "Bnd_Box": {
     "CornerMax": {
      "args": [],
-     "count": 2447,
+     "count": 2501,
      "dyn": [
       "gp_Pnt"
      ],
@@ -2124,7 +2165,7 @@
     },
     "CornerMin": {
      "args": [],
-     "count": 2447,
+     "count": 2501,
      "dyn": [
       "gp_Pnt"
      ],
@@ -2137,7 +2178,7 @@
     },
     "IsVoid": {
      "args": [],
-     "count": 2426,
+     "count": 2480,
      "recv": [
       "Bnd_Box"
      ],
@@ -2179,7 +2220,7 @@
    "GC_MakeArcOfCircle": {
     "Value": {
      "args": [],
-     "count": 1203,
+     "count": 1207,
      "dyn": [
       "Handle_Geom_TrimmedCurve"
      ],
@@ -2194,7 +2235,7 @@
    "GC_Root": {
     "IsDone": {
      "args": [],
-     "count": 144,
+     "count": 148,
      "recv": [
       "GC_MakeArcOfCircle"
      ],
@@ -2206,7 +2247,7 @@
    "GProp_GProps": {
     "CentreOfMass": {
      "args": [],
-     "count": 736,
+     "count": 754,
      "dyn": [
       "gp_Pnt"
      ],
@@ -2219,7 +2260,7 @@
     },
     "Mass": {
      "args": [],
-     "count": 3853,
+     "count": 3895,
      "recv": [
       "GProp_GProps"
      ],
@@ -2317,7 +2358,7 @@
    "Handle_Geom_TrimmedCurve": {
     "get": {
      "args": [],
-     "count": 1203,
+     "count": 1207,
      "dyn": [
       "Geom_TrimmedCurve"
      ],
@@ -2357,7 +2398,7 @@
    "Handle_Poly_Triangulation": {
     "IsNull": {
      "args": [],
-     "count": 22323,
+     "count": 22463,
      "recv": [
       "Handle_Poly_Triangulation"
      ],
@@ -2367,7 +2408,7 @@
     },
     "get": {
      "args": [],
-     "count": 22323,
+     "count": 22463,
      "dyn": [
       "Poly_Triangulation"
      ],
@@ -2455,7 +2496,7 @@
        "int"
       ]
      ],
-     "count": 3190344,
+     "count": 3202398,
      "recv": [
       "Poly_Triangle"
      ],
@@ -2477,7 +2518,7 @@
     },
     "NbNodes": {
      "args": [],
-     "count": 957512,
+     "count": 961411,
      "recv": [
       "Poly_Triangulation"
      ],
@@ -2487,7 +2528,7 @@
     },
     "NbTriangles": {
      "args": [],
-     "count": 1085724,
+     "count": 1089882,
      "recv": [
       "Poly_Triangulation"
      ],
@@ -2501,7 +2542,7 @@
        "int"
       ]
      ],
-     "count": 935462,
+     "count": 939221,
      "dyn": [
       "gp_Pnt"
      ],
@@ -2518,7 +2559,7 @@
        "int"
       ]
      ],
-     "count": 1063448,
+     "count": 1067466,
      "dyn": [
       "Poly_Triangle"
      ],
@@ -2589,14 +2630,14 @@
    "ShapeUpgrade_UnifySameDomain": {
     "Build": {
      "args": [],
-     "count": 1343,
+     "count": 1379,
      "recv": [
       "ShapeUpgrade_UnifySameDomain"
      ]
     },
     "Shape": {
      "args": [],
-     "count": 1343,
+     "count": 1379,
      "dyn": [
       "TopoDS_Shape"
      ],
@@ -2715,7 +2756,7 @@
    "TopExp_Explorer": {
     "Current": {
      "args": [],
-     "count": 223130,
+     "count": 226262,
      "dyn": [
       "TopoDS_Shape"
      ],
@@ -2728,7 +2769,7 @@
     },
     "More": {
      "args": [],
-     "count": 267164,
+     "count": 271011,
      "recv": [
       "TopExp_Explorer"
      ],
@@ -2738,7 +2779,7 @@
     },
     "Next": {
      "args": [],
-     "count": 223130,
+     "count": 226262,
      "recv": [
       "TopExp_Explorer"
      ]
@@ -2747,7 +2788,7 @@
    "TopLoc_Location": {
     "Transformation": {
      "args": [],
-     "count": 22323,
+     "count": 22463,
      "dyn": [
       "gp_Trsf"
      ],
@@ -2767,7 +2808,7 @@
        "class:TopoDS_Edge"
       ]
      ],
-     "count": 71997,
+     "count": 72819,
      "recv": [
       "TopTools_IndexedMapOfShape"
      ],
@@ -2782,7 +2823,7 @@
        "class:TopoDS_Edge"
       ]
      ],
-     "count": 7116,
+     "count": 8118,
      "recv": [
       "TopTools_IndexedMapOfShape"
      ],
@@ -2796,7 +2837,7 @@
        "class:TopoDS_Shape"
       ]
      ],
-     "count": 141904,
+     "count": 143060,
      "recv": [
       "TopTools_IndexedMapOfShape"
      ],
@@ -2810,7 +2851,7 @@
        "int"
       ]
      ],
-     "count": 43992,
+     "count": 44269,
      "dyn": [
       "TopoDS_Shape"
      ],
@@ -2912,10 +2953,11 @@
      "args": [
       [
        "class:TopoDS_Face",
-       "class:TopoDS_Edge"
+       "class:TopoDS_Edge",
+       "class:TopoDS_Shape"
       ]
      ],
-     "count": 351,
+     "count": 453,
      "recv": [
       "TopoDS_Face",
       "TopoDS_Shape",
@@ -2949,7 +2991,7 @@
     },
     "Orientation_1": {
      "args": [],
-     "count": 22542,
+     "count": 22720,
      "recv": [
       "TopoDS_Face"
      ],
@@ -2973,7 +3015,7 @@
     },
     "ShapeType": {
      "args": [],
-     "count": 1265,
+     "count": 1286,
      "recv": [
       "TopoDS_Shape",
       "TopoDS_Compound",
@@ -3034,7 +3076,7 @@
    "gp_Ax1": {
     "Direction": {
      "args": [],
-     "count": 6390,
+     "count": 6428,
      "dyn": [
       "gp_Dir"
      ],
@@ -3047,7 +3089,7 @@
     },
     "Location": {
      "args": [],
-     "count": 186,
+     "count": 224,
      "dyn": [
       "gp_Pnt"
      ],
@@ -3062,7 +3104,7 @@
    "gp_Ax3": {
     "Direction": {
      "args": [],
-     "count": 5548,
+     "count": 5568,
      "dyn": [
       "gp_Dir"
      ],
@@ -3075,7 +3117,7 @@
     },
     "Location": {
      "args": [],
-     "count": 5548,
+     "count": 5568,
      "dyn": [
       "gp_Pnt"
      ],
@@ -3154,7 +3196,7 @@
    "gp_Cone": {
     "Position": {
      "args": [],
-     "count": 186,
+     "count": 196,
      "dyn": [
       "gp_Ax3"
      ],
@@ -3167,7 +3209,7 @@
     },
     "RefRadius": {
      "args": [],
-     "count": 186,
+     "count": 196,
      "recv": [
       "gp_Cone"
      ],
@@ -3178,7 +3220,7 @@
     },
     "SemiAngle": {
      "args": [],
-     "count": 186,
+     "count": 196,
      "recv": [
       "gp_Cone"
      ],
@@ -3190,7 +3232,7 @@
    "gp_Cylinder": {
     "Position": {
      "args": [],
-     "count": 5283,
+     "count": 5293,
      "dyn": [
       "gp_Ax3"
      ],
@@ -3203,7 +3245,7 @@
     },
     "Radius": {
      "args": [],
-     "count": 5283,
+     "count": 5293,
      "recv": [
       "gp_Cylinder"
      ],
@@ -3216,7 +3258,7 @@
    "gp_Dir": {
     "X": {
      "args": [],
-     "count": 201286,
+     "count": 201344,
      "recv": [
       "gp_Dir"
      ],
@@ -3227,7 +3269,7 @@
     },
     "Y": {
      "args": [],
-     "count": 201286,
+     "count": 201344,
      "recv": [
       "gp_Dir"
      ],
@@ -3238,7 +3280,7 @@
     },
     "Z": {
      "args": [],
-     "count": 201286,
+     "count": 201344,
      "recv": [
       "gp_Dir"
      ],
@@ -3251,7 +3293,7 @@
    "gp_Pln": {
     "Axis": {
      "args": [],
-     "count": 282,
+     "count": 320,
      "dyn": [
       "gp_Ax1"
      ],
@@ -3283,7 +3325,7 @@
        "class:gp_Trsf"
       ]
      ],
-     "count": 935462,
+     "count": 939221,
      "dyn": [
       "gp_Pnt"
      ],
@@ -3296,7 +3338,7 @@
     },
     "X": {
      "args": [],
-     "count": 1056964,
+     "count": 1064791,
      "recv": [
       "gp_Pnt"
      ],
@@ -3307,7 +3349,7 @@
     },
     "Y": {
      "args": [],
-     "count": 1056964,
+     "count": 1064791,
      "recv": [
       "gp_Pnt"
      ],
@@ -3318,7 +3360,7 @@
     },
     "Z": {
      "args": [],
-     "count": 1056964,
+     "count": 1064791,
      "recv": [
       "gp_Pnt"
      ],
@@ -3460,7 +3502,7 @@
        "class:gp_Vec"
       ]
      ],
-     "count": 5192,
+     "count": 5213,
      "recv": [
       "gp_Trsf"
      ]
@@ -3525,7 +3567,7 @@
    "gp_Vec": {
     "X": {
      "args": [],
-     "count": 1328,
+     "count": 1340,
      "recv": [
       "gp_Vec"
      ],
@@ -3536,7 +3578,7 @@
     },
     "Y": {
      "args": [],
-     "count": 1328,
+     "count": 1340,
      "recv": [
       "gp_Vec"
      ],
@@ -3547,7 +3589,7 @@
     },
     "Z": {
      "args": [],
-     "count": 1328,
+     "count": 1340,
      "recv": [
       "gp_Vec"
      ],
@@ -3576,7 +3618,7 @@
        "bool"
       ]
      ],
-     "count": 1811
+     "count": 1847
     },
     "AddOptimal": {
      "args": [
@@ -3594,7 +3636,7 @@
        "bool"
       ]
      ],
-     "count": 636
+     "count": 654
     }
    },
    "BRepGProp": {
@@ -3648,7 +3690,7 @@
        "bool"
       ]
      ],
-     "count": 654,
+     "count": 672,
      "ret": [
       "real",
       "int"
@@ -3681,7 +3723,7 @@
        "bool"
       ]
      ],
-     "count": 654,
+     "count": 672,
      "ret": [
       "real"
      ]
@@ -3705,7 +3747,7 @@
        "bool"
       ]
      ],
-     "count": 3030
+     "count": 3054
     }
    },
    "BRepLib": {
@@ -3754,7 +3796,7 @@
        "real"
       ]
      ],
-     "count": 653
+     "count": 671
     }
    },
    "BRep_Tool": {
@@ -3770,7 +3812,7 @@
        "class:TopoDS_Face"
       ]
      ],
-     "count": 37808,
+     "count": 38085,
      "ret": [
       "enum:GeomAbs_Shape"
      ]
@@ -3781,7 +3823,7 @@
        "class:TopoDS_Edge"
       ]
      ],
-     "count": 4516,
+     "count": 4924,
      "ret": [
       "bool"
      ]
@@ -3795,7 +3837,7 @@
        "class:TopoDS_Face"
       ]
      ],
-     "count": 4668,
+     "count": 5088,
      "ret": [
       "bool"
      ]
@@ -3806,7 +3848,7 @@
        "class:TopoDS_Vertex"
       ]
      ],
-     "count": 950,
+     "count": 968,
      "dyn": [
       "gp_Pnt"
      ],
@@ -3846,7 +3888,7 @@
        "int"
       ]
      ],
-     "count": 22323,
+     "count": 22463,
      "dyn": [
       "Handle_Poly_Triangulation"
      ],
@@ -3878,7 +3920,7 @@
        "class:TopoDS_Shape"
       ]
      ],
-     "count": 51110,
+     "count": 52017,
      "dyn": [
       "TopoDS_Edge"
      ],
@@ -3892,7 +3934,7 @@
        "class:TopoDS_Shape"
       ]
      ],
-     "count": 54930,
+     "count": 55550,
      "dyn": [
       "TopoDS_Face"
      ],
@@ -3934,7 +3976,7 @@
        "class:TopoDS_Shape"
       ]
      ],
-     "count": 950,
+     "count": 968,
      "dyn": [
       "TopoDS_Vertex"
      ],

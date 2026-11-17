@@ -1738,7 +1738,12 @@
   Builder.prototype.chamfer = function (d, edges, opts) {
     opts = opts || {};
     var specs = (edges || []).map(function (e) { return Array.isArray(e) ? { at: e, chain: opts.chain !== false } : e; });
-    this._add({ type: 'chamfer', d: num(d), edges: specs, name: opts.name });
+    // rfOB: { d2 } = Distance Distance (d on one face, d2 on the other), { angle } = Angle Distance (degrees from the
+    // face d lies on; it wins over d2), { flip } = SolidWorks' Flip direction (which face takes d: Kernel.chamferFace)
+    var cf = { type: 'chamfer', d: num(d), edges: specs, name: opts.name };
+    if (opts.angle != null && opts.angle !== '') cf.angle = num(opts.angle); else if (opts.d2 != null && opts.d2 !== '') cf.d2 = num(opts.d2);
+    if (opts.flip) cf.flip = true;
+    this._add(cf);
     return this;
   };
   Builder.prototype.fillet = function (r, edges, opts) {
@@ -2286,7 +2291,7 @@
         case 'chamfer':
         case 'fillet': {
           var specs = JSON.stringify((f.edges || []).map(function (e) { return { at: e.at.map(function (x) { return Math.round(x * 1e4) / 1e4; }), chain: e.chain !== false }; }));
-          out.push('var ' + v + ' = p.' + f.type + '(' + nv(f.type === 'chamfer' ? f.d : f.r) + ', ' + specs + ', ' + optsStr({ name: f.name }) + ').last();');
+          out.push('var ' + v + ' = p.' + f.type + '(' + nv(f.type === 'chamfer' ? f.d : f.r) + ', ' + specs + ', ' + optsStr(f.type === 'chamfer' ? { name: f.name, d2: f.angle == null || f.angle === '' ? (f.d2 === '' ? undefined : f.d2) : undefined, angle: f.angle === '' ? undefined : f.angle, flip: f.flip ? true : undefined } : { name: f.name }) + ').last();');   // rfOB: a chamfer's d2 / angle / flip (an "=expr" stays a string)
           break;
         }
         case 'draft': out.push('var ' + v + ' = p.draft(' + nv(f.angle) + ', ' + refOut(f.neutral, idVar) + ', ' + JSON.stringify((f.faces || []).map(function (e) { return e.at.map(function (x) { return Math.round(x * 1e4) / 1e4; }); })) + ', ' + optsStr({ reverse: !!f.reverse, propagate: f.propagate === 'tangent' ? 'tangent' : undefined, name: f.name }) + ').last();'); break;   // rfDX

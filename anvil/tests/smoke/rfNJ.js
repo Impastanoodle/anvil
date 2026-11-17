@@ -122,11 +122,14 @@
         await rfNJOpen(function () { UI.cmdChamfer(); });
         var row = Array.prototype.slice.call(D.querySelectorAll('#pm [data-key^="_type:"]'));
         assert(row.length === 5, 'five chamfer types');
-        var ad = row[0];
-        assert(ad.disabled && /^Angle Distance: a chamfer set by a distance along one face and an angle\n.*not available in Anvil yet \(not built\): use Distance Distance with Equal distance\.$/.test(ad.title), 'Angle Distance tooltip: ' + JSON.stringify(ad.title));
+        // rfOB (2026-11-17): Angle Distance is built now (its tooltip is its description alone); the greyed-type
+        // tooltip is pinned on Vertex instead, and names the two types to use
+        assert(!row[0].disabled && row[0].title === 'Angle Distance: a chamfer set by a distance along one face and an angle', 'Angle Distance tooltip: ' + JSON.stringify(row[0].title));
+        var ad = row[2];
+        assert(ad.disabled && /^Vertex: cuts a corner off at a vertex by three distances\n.*not available in Anvil yet \(not built\): use Angle Distance or Distance Distance\.$/.test(ad.title), 'Vertex tooltip: ' + JSON.stringify(ad.title));
         assert(!row[1].disabled && !/not available/.test(row[1].title) && /^Distance Distance: /.test(row[1].title), 'Distance Distance tooltip: ' + row[1].title);
         ad.dispatchEvent(new W.MouseEvent('mouseenter', { bubbles: false }));
-        assert(/Angle Distance: .*not built/.test(statusText()), 'status bar on hover: ' + statusText());
+        assert(/Vertex: .*not built/.test(statusText()), 'status bar on hover: ' + statusText());
         await rfNJOpen(function () { UI.cmdFillet(); });
         row = Array.prototype.slice.call(D.querySelectorAll('#pm [data-key^="_type:"]'));
         assert(row.slice(1).every(function (b) { return b.disabled && /not built\): use Constant Size Fillet\.$/.test(b.title); }) && /^Constant Size Fillet: one radius/.test(row[0].title), 'fillet tooltips: ' + row.map(function (b) { return b.title; }).join(' / '));
@@ -205,7 +208,7 @@
       } finally { UI.Profiles.set(typeof prof === 'string' && prof ? prof : 'solidworks'); }
     });
 
-    step('rfNJ: the Mastercam Quick Mask icons are drawn at the whole 12 px they show at (were drawn for 18 px and shown at about 11 px, blurred); Chamfer\'s greyed Equal distance says why in its tooltip', async function () {
+    step('rfNJ: the Mastercam Quick Mask icons are drawn at the whole 12 px they show at (were drawn for 18 px and shown at about 11 px, blurred); Chamfer\'s Equal distance says what it does in its tooltip', async function () {
       try {
         await rfNJPart(BOX);
         UI.Profiles.set('mastercam'); await wait(80);
@@ -216,7 +219,8 @@
         UI.Profiles.set('solidworks'); await wait(30);
         await rfNJOpen(function () { UI.cmdChamfer(); });
         var eq = pmField('Equal distance'), row = eq && eq.closest('.pm-row');
-        assert(eq && eq.disabled && eq.checked && /not available in Anvil yet \(not built\)/.test(row.title), 'Equal distance tooltip: ' + (row && row.title));
+        // rfOB (2026-11-17): Equal distance is live (two distances are built); its tooltip says what clearing it gives
+        assert(eq && !eq.disabled && eq.checked && /^Equal distance: one distance along both faces\.\nClear it to give each face its own distance \(D1 and D2\)\.$/.test(row.title), 'Equal distance tooltip: ' + (row && row.title));
         return svgs.length + ' masks at 12 px; ' + row.title.replace(/\n/, ' / ');
       } finally { rfNJRestore(); }
     });
