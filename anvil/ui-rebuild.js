@@ -228,6 +228,15 @@
           ed.addEventListener('click', function (e) { e.stopPropagation(); UI.closeModal(); if (o && o.type === 'sketch' && UI.editSketch) UI.editSketch(o.id); else edit(it); });
           act.appendChild(ed);
         }
+        // lane NW: a feature made from a sketch also offers Edit Sketch (SolidWorks' right-click on the row): a cut whose
+        // profile no longer meets the part is fixed in its sketch, which Edit (the feature's PropertyManager) cannot reach
+        var osk = o && o.type !== 'sketch' && o.sketch != null ? K.findFeature(App.model, o.sketch) : null;
+        if (osk && osk.type === 'sketch' && UI.editSketch) {
+          var es = document.createElement('button');
+          es.className = 'btn ww-edit-sketch'; es.textContent = 'Edit Sketch'; es.title = 'Edit ' + osk.name + ', the sketch ' + o.name + ' is made from';
+          es.addEventListener('click', function (e) { e.stopPropagation(); UI.closeModal(); UI.editSketch(osk.id); });
+          act.appendChild(es);
+        }
         tr.addEventListener('click', function () { Array.prototype.forEach.call(tb.children, function (r) { r.classList.toggle('sel', r === tr); }); });
         tr.addEventListener('dblclick', function () { if (ae) { UI.closeModal(); ae.run(); return; } if (o || it.what === 'equation') { UI.closeModal(); if (o && o.type === 'sketch' && UI.editSketch) UI.editSketch(o.id); else edit(it); } });
         if (focusId != null && it.id === focusId) tr.classList.add('sel');

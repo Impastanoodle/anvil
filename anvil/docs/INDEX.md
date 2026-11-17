@@ -3177,7 +3177,7 @@ more: gvRefText L2485, gvCommit L2498, gvMate L2504, gvOpenBase L2767, cdOn L278
 more: cdSnap L2849, cdNew L2850, cdSelectedComponent L2875, cdGroups L2880, cdWrap L2918, esc L2942,
 more: lineMat L2945, opts L2946, plan L2947, listHtml L2966, wrapped L3019
 
-## ui-commands.js (8182 lines)
+## ui-commands.js (8207 lines)
 > PropertyManager rendering and the feature commands (sketch, extrude, revolve, patterns, mirror, ...).
 previewModel  L17  — The model with its equations evaluated (plane offsets, sheet parameters), for previews …
 UI.evalFieldExpr  L22  — evalFieldExpr('=T*2') -> { value } or { error }
@@ -3304,96 +3304,97 @@ UI.dwgConverter  L5893  — tests: the probe's result
 UI.cmdSection  L5896
 UI.cmdMeasure  L5927
 measGeom  L5939  — a selection item as { t: 'pt' | 'line' | 'plane', p, d?, n?, name, ref? } or null
-UI.measureRows (measureRefRows)  L5959  — the rows for a selection that holds reference geometry or a vertex, else null (the face …
-UI.onSelectionChanged  L6009
-UI.pmCollectsSelection  L6012  — the open PropertyManager collects graphics-area selections (its onSelection hook): a …
-UI.pmEntityPick  L6014  — a PM's own use of a clicked entity before the selection box gets it (Mirror Entities ▸ …
-UI.openEntityPM  L6028
-UI.deleteSketchEntity (deleteEntity)  L6051
-UI.openToolPM  L6065
-isAsm  L6079  — App.model is an assembly ({ type: 'assembly', components, mates }, see assembly.js) when …
-refusePart  L6086  — Part-only commands refuse politely in an assembly (ribbon, menus, shortcuts and command …
-UI.compStatus  L6103  — the build's per-component status { id, name, index, fixed, dof, underDefined, error } …
-UI.compLabel  L6109  — FeatureManager text: "(f) Plate<1>" when fixed, "(-) Pin<1>" when it can still move, …
-UI.selectedComponent  L6117  — The component under the current selection: a component body, or the component owning a …
-UI.mateLabel  L6130  — "Coincident1 (Plate<1>, Pin<1>)"
-UI.mateStatus  L6131
-asmInsert  L6148  — insert(source, { position, rotation, fixed, name }) -> Promise of the new component
-asmAddMate  L6157  — addMate(type, a, b, { alignment, name, suppressed }) -> Promise of the new mate
-asmSetHidden  L6201  — Hide / Show is display state (like SolidWorks' Hide Components), kept per body index by …
-UI.confirmRemoveComponent  L6209
-UI.confirmRemoveMate  L6215
-UI.cmdFixComponent  L6219  — Ribbon Fix / Float / Hide/Show Components act on the selected component.
-UI.cmdHideShowComponents  L6225
-UI.cmdInsertComponent  L6270
-defaultMateType  L6349  — two axes: Concentric; a cylindrical face and a flat face (or plane): Tangent, as …
-UI.cmdMate  L6376
-UI.editMate  L6665
-UI.mateSelect  L6667  — UI.mateSelect(ref): add a ref to the open Mate PM as if it were picked (scripts / …
-asmMove  L6672  — Move Component / Rotate Component A move only changes the component's stored transform; …
-asmRotate  L6681  — rotate(idOrName, axis 'x' | 'y' | 'z' | [x, y, z], degrees, pivot? (default: the …
-UI.componentDragHook  L6695  — force 'rotate': the right-mouse drag (r5/asm5)
-cmdImported  L6857  — Editing an Imported feature: which file it came from and its size; Merge result joins …
-UI.editFeature  L6877
-pickUses  L6944  — r11/faceref11: features that hang on the faces of the features being deleted: sketches …
-UI.faceChildren  L6948
-UI.deleteFeature  L6965
-UI.deleteSelection  L6997
-UI.hasPM  L7026
-UI.renderPM  L7029  — for commands in other files (ui-assembly.js, ui-evaluate.js) that update their open …
-UI.pmSpec  L7029  — for commands in other files (ui-assembly.js, ui-evaluate.js) that update their open …
-UI.pmTitle  L7029  — for commands in other files (ui-assembly.js, ui-evaluate.js) that update their open …
-UI.pmExpressions  L7031  — equations in PropertyManager number fields: the open PM's equation texts and errors …
-UI.pmSetField  L7032
-UI.onRollback  L7056  — r10/editpreview10: the part was rolled back (on) or forward; the open PropertyManager …
-UI.cmdSketchedBend  L7066
-UI.cmdCornerRelief  L7067  — Sheet Metal ▸ Corners ▸ Corner Relief (lane smtrim)
-UI.cmdWeldedCorner  L7068  — Sheet Metal ▸ Corners ▸ Welded Corner (lane smcorner)
-UI.cmdBreakCorner  L7069  — Sheet Metal ▸ Break-Corner/Corner-Trim PropertyManager (lane CP)
-UI.cmdClosedCorner  L7070  — Sheet Metal ▸ Closed Corner PropertyManager (lane CS)
-UI.cmdUnfold  L7071  — Sheet Metal ▸ Unfold / Fold (lane DB)
-UI.cmdFold  L7071  — Sheet Metal ▸ Unfold / Fold (lane DB)
-UI.cmdRipFeature  L7072  — Sheet Metal ▸ Rip, Tab (lane DI)
-UI.cmdTab  L7072  — Sheet Metal ▸ Rip, Tab (lane DI)
-UI.cmdVent  L7073  — Sheet Metal ▸ Vent (lane DT)
-UI.cmdCrossBreak  L7074  — Sheet Metal ▸ Cross-Break (lane cross-break)
-UI.cmdFormingTool  L7075  — Sheet Metal ▸ Forming Tool, UI.cmdFormingTool(id) presets the tool (lane forming)
-UI.cmdInsertBends  L7076  — lane DQ
-UI.cmdConvertSheetMetal  L7076  — lane DQ
-UI.cmdMoveComponent  L7079
-UI.cmdRotateComponent  L7079
-UI.asm  L7084
-UI.commands  L7086
-UI.overDefinedWarnings  L7104
-cmdDraft  L7136  — Draft Angle, Neutral Plane (a planar face or a plane; Reverse direction flips the pull, …
-UI.cmdDraft  L7275
-UI.cmdRib  L7281  — Rib (Features ▸ Rib, SolidWorks' PropertyManager): Parameters — Thickness (First Side / …
-rfDYbuildBefore  L7325  — Intersect (Features ▸ Intersect): Selections (solid bodies and planes, checked in the …
-UI.cmdIntersect  L7333
-UI.cmdDeleteBody  L7419  — SolidWorks' Delete/Keep Body PropertyManager: Type (Delete Bodies / Keep Bodies) and one …
-UI.cmdBoundary  L7521
-UI.instant3DFeatureHandles  L7661  — rfFD: Instant3D on a selected face of a fillet / chamfer, shell or pattern (ui-select.js …
-faDefaultPath  L7709  — the newest curve no sweep follows yet
-faOpen  L7737  — the PropertyManager shared by the five: groups, live preview, ✓ refused while the …
-UI.cmdHelix  L7768  — Helix and Spiral: Defined By, Parameters (constant pitch), Taper Helix
-UI.cmdProjectedCurve  L7798  — Projected Curve: Sketch on faces / Sketch on sketch
-faEdgeRef  L7832  — Composite Curve: edges, sketch entities and curves joined end to end
-UI.cmdCompositeCurve  L7861
-faXyzHtml  L7872  — Curve Through XYZ Points: the point table, Browse… / Save… a .sldcrv text
-UI.cmdCurveXYZ  L7913
-UI.cmdCurveRefPoints  L7924  — Curve Through Reference Points: picked sketch points, vertices and reference points
-UI.curveXYZLoadText  L7938
-slPlaneOptions  L7945  — SolidWorks' PropertyManager: Type of Split (Silhouette / Projection / Intersection), …
-UI.cmdSplitLine  L7952
-UI.cmdWrap  L8100
-UI.isSuppressed  L8116
-UI.setSuppression  L8126  — setSuppression(ids, on, scope?, dependents?) -> the rebuild Promise
-specifyConfigs  L8141  — Specify Configurations: a modal with one check box per configuration
-UI.suppressMenuItems  L8156  — the menu rows for feature(s): Suppress … or Unsuppress … (with the configuration choices …
-UI.suppressEditItems  L8171  — Edit menu rows (ui-panels.js partMenus): Suppress / Unsuppress / Unsuppress with …
-UI.suppressFeature  L8178
-UI.unsuppressFeature  L8179
-UI.suppressionChildren  L8181
+measCyl  L5965  — the exact cylinder record of a mesh face ({ o, d (unit), r }) or null
+UI.measureRows (measureRefRows)  L5973  — the rows for a selection that holds reference geometry or a vertex, else null (the face …
+UI.onSelectionChanged  L6024
+UI.pmCollectsSelection  L6027  — the open PropertyManager collects graphics-area selections (its onSelection hook): a …
+UI.pmEntityPick  L6029  — a PM's own use of a clicked entity before the selection box gets it (Mirror Entities ▸ …
+UI.openEntityPM  L6043
+UI.deleteSketchEntity (deleteEntity)  L6066
+UI.openToolPM  L6080
+isAsm  L6094  — App.model is an assembly ({ type: 'assembly', components, mates }, see assembly.js) when …
+refusePart  L6101  — Part-only commands refuse politely in an assembly (ribbon, menus, shortcuts and command …
+UI.compStatus  L6118  — the build's per-component status { id, name, index, fixed, dof, underDefined, error } …
+UI.compLabel  L6124  — FeatureManager text: "(f) Plate<1>" when fixed, "(-) Pin<1>" when it can still move, …
+UI.selectedComponent  L6132  — The component under the current selection: a component body, or the component owning a …
+UI.mateLabel  L6145  — "Coincident1 (Plate<1>, Pin<1>)"
+UI.mateStatus  L6146
+asmInsert  L6163  — insert(source, { position, rotation, fixed, name }) -> Promise of the new component
+asmAddMate  L6172  — addMate(type, a, b, { alignment, name, suppressed }) -> Promise of the new mate
+asmSetHidden  L6216  — Hide / Show is display state (like SolidWorks' Hide Components), kept per body index by …
+UI.confirmRemoveComponent  L6224
+UI.confirmRemoveMate  L6230
+UI.cmdFixComponent  L6234  — Ribbon Fix / Float / Hide/Show Components act on the selected component.
+UI.cmdHideShowComponents  L6240
+UI.cmdInsertComponent  L6295
+defaultMateType  L6374  — two axes: Concentric; a cylindrical face and a flat face (or plane): Tangent, as …
+UI.cmdMate  L6401
+UI.editMate  L6690
+UI.mateSelect  L6692  — UI.mateSelect(ref): add a ref to the open Mate PM as if it were picked (scripts / …
+asmMove  L6697  — Move Component / Rotate Component A move only changes the component's stored transform; …
+asmRotate  L6706  — rotate(idOrName, axis 'x' | 'y' | 'z' | [x, y, z], degrees, pivot? (default: the …
+UI.componentDragHook  L6720  — force 'rotate': the right-mouse drag (r5/asm5)
+cmdImported  L6882  — Editing an Imported feature: which file it came from and its size; Merge result joins …
+UI.editFeature  L6902
+pickUses  L6969  — r11/faceref11: features that hang on the faces of the features being deleted: sketches …
+UI.faceChildren  L6973
+UI.deleteFeature  L6990
+UI.deleteSelection  L7022
+UI.hasPM  L7051
+UI.renderPM  L7054  — for commands in other files (ui-assembly.js, ui-evaluate.js) that update their open …
+UI.pmSpec  L7054  — for commands in other files (ui-assembly.js, ui-evaluate.js) that update their open …
+UI.pmTitle  L7054  — for commands in other files (ui-assembly.js, ui-evaluate.js) that update their open …
+UI.pmExpressions  L7056  — equations in PropertyManager number fields: the open PM's equation texts and errors …
+UI.pmSetField  L7057
+UI.onRollback  L7081  — r10/editpreview10: the part was rolled back (on) or forward; the open PropertyManager …
+UI.cmdSketchedBend  L7091
+UI.cmdCornerRelief  L7092  — Sheet Metal ▸ Corners ▸ Corner Relief (lane smtrim)
+UI.cmdWeldedCorner  L7093  — Sheet Metal ▸ Corners ▸ Welded Corner (lane smcorner)
+UI.cmdBreakCorner  L7094  — Sheet Metal ▸ Break-Corner/Corner-Trim PropertyManager (lane CP)
+UI.cmdClosedCorner  L7095  — Sheet Metal ▸ Closed Corner PropertyManager (lane CS)
+UI.cmdUnfold  L7096  — Sheet Metal ▸ Unfold / Fold (lane DB)
+UI.cmdFold  L7096  — Sheet Metal ▸ Unfold / Fold (lane DB)
+UI.cmdRipFeature  L7097  — Sheet Metal ▸ Rip, Tab (lane DI)
+UI.cmdTab  L7097  — Sheet Metal ▸ Rip, Tab (lane DI)
+UI.cmdVent  L7098  — Sheet Metal ▸ Vent (lane DT)
+UI.cmdCrossBreak  L7099  — Sheet Metal ▸ Cross-Break (lane cross-break)
+UI.cmdFormingTool  L7100  — Sheet Metal ▸ Forming Tool, UI.cmdFormingTool(id) presets the tool (lane forming)
+UI.cmdInsertBends  L7101  — lane DQ
+UI.cmdConvertSheetMetal  L7101  — lane DQ
+UI.cmdMoveComponent  L7104
+UI.cmdRotateComponent  L7104
+UI.asm  L7109
+UI.commands  L7111
+UI.overDefinedWarnings  L7129
+cmdDraft  L7161  — Draft Angle, Neutral Plane (a planar face or a plane; Reverse direction flips the pull, …
+UI.cmdDraft  L7300
+UI.cmdRib  L7306  — Rib (Features ▸ Rib, SolidWorks' PropertyManager): Parameters — Thickness (First Side / …
+rfDYbuildBefore  L7350  — Intersect (Features ▸ Intersect): Selections (solid bodies and planes, checked in the …
+UI.cmdIntersect  L7358
+UI.cmdDeleteBody  L7444  — SolidWorks' Delete/Keep Body PropertyManager: Type (Delete Bodies / Keep Bodies) and one …
+UI.cmdBoundary  L7546
+UI.instant3DFeatureHandles  L7686  — rfFD: Instant3D on a selected face of a fillet / chamfer, shell or pattern (ui-select.js …
+faDefaultPath  L7734  — the newest curve no sweep follows yet
+faOpen  L7762  — the PropertyManager shared by the five: groups, live preview, ✓ refused while the …
+UI.cmdHelix  L7793  — Helix and Spiral: Defined By, Parameters (constant pitch), Taper Helix
+UI.cmdProjectedCurve  L7823  — Projected Curve: Sketch on faces / Sketch on sketch
+faEdgeRef  L7857  — Composite Curve: edges, sketch entities and curves joined end to end
+UI.cmdCompositeCurve  L7886
+faXyzHtml  L7897  — Curve Through XYZ Points: the point table, Browse… / Save… a .sldcrv text
+UI.cmdCurveXYZ  L7938
+UI.cmdCurveRefPoints  L7949  — Curve Through Reference Points: picked sketch points, vertices and reference points
+UI.curveXYZLoadText  L7963
+slPlaneOptions  L7970  — SolidWorks' PropertyManager: Type of Split (Silhouette / Projection / Intersection), …
+UI.cmdSplitLine  L7977
+UI.cmdWrap  L8125
+UI.isSuppressed  L8141
+UI.setSuppression  L8151  — setSuppression(ids, on, scope?, dependents?) -> the rebuild Promise
+specifyConfigs  L8166  — Specify Configurations: a modal with one check box per configuration
+UI.suppressMenuItems  L8181  — the menu rows for feature(s): Suppress … or Unsuppress … (with the configuration choices …
+UI.suppressEditItems  L8196  — Edit menu rows (ui-panels.js partMenus): Suppress / Unsuppress / Unsuppress with …
+UI.suppressFeature  L8203
+UI.unsuppressFeature  L8204
+UI.suppressionChildren  L8206
 more: isExpr L12, equationVars L13, normExpr L26, numberFieldKeys L27, markPmTool L55, pmUndoTake L66,
 more: pmUndoHook L67, notePreview L322, okBlockedWhy L323, updateOkState L324, renderPM L333, renderField L442,
 more: addPreviewMesh L737, livePreview L743, showPreview L796, showPreviewSync L803, spinField L828,
@@ -3412,17 +3413,17 @@ more: cmdFormingTool L4379, cmdRipFeature L4494, cmdVent L4599, ibRnd L4713, cmd
 more: cmdInsertBends L4938, cmdConvertSheetMetal L4939, cmdTab L4967, tabPM L4984, cmdClosedCorner L5030,
 more: ufSheetT L5156, ufLit L5169, cmdUnfoldFold L5175, cmdUnfold L5297, cmdFold L5298, flatSvg L5300,
 more: cmdFlattenNow L5333, dxfSafeName L5550, dxfUnits L5551, dxfViewsDoc L5628, hasSolid L5715, dxfSuffix L5721,
-more: probeDwg L5730, measVec L5935, measKv L5936, measFeatName L5937, measLineDist L5956, measDeg L5957,
-more: measureFaceEdgeHtml L5989, measureHtml L6007, asmReady L6080, partOnly L6090, asmFail L6093,
-more: findComp L6094, findMateObj L6095, compIndex L6096, refName L6124, asmCommit L6138, asmSetFixed L6164,
-more: asmRemoveComponent L6172, asmRemoveMate L6187, asmSuppressMate L6193, asmIsHidden L6208,
-more: insertSources L6239, browsePart L6250, mateGroup L6333, mateTypeLabel L6335, mateBaseName L6336,
-more: refKind L6337, refText L6338, defaultAlignment L6355, mateKindError L6359, nextMateName L6370,
-more: cmdMoveComponent L6801, editDispatch L6891, sketchOverInfo L7094, faCurves L7698, faCurveOptions L7707,
-more: faResolve L7715, faPreview L7719, faClean L7729, faSketchOptions L7759, faOneCircle L7765,
-more: faRefLabel L7837, faRefList L7845, faListPick L7850, faBrowse L7898, faLoadText L7908, faEdit L7932,
-more: slPlaneRef L7950, slPlaneKey L7951, cmdWrap L8020, isPart L8114, suppressedNow L8115, uniq L8117,
-more: selectedFeatureIds L8118, scopeText L8124, run L8154
+more: probeDwg L5730, measVec L5935, measKv L5936, measFeatName L5937, measAxisPoint L5969, measLineDist L5970,
+more: measDeg L5971, measureFaceEdgeHtml L6004, measureHtml L6022, asmReady L6095, partOnly L6105, asmFail L6108,
+more: findComp L6109, findMateObj L6110, compIndex L6111, refName L6139, asmCommit L6153, asmSetFixed L6179,
+more: asmRemoveComponent L6187, asmRemoveMate L6202, asmSuppressMate L6208, asmIsHidden L6223,
+more: lastPartSource L6254, insertSources L6262, browsePart L6275, mateGroup L6358, mateTypeLabel L6360,
+more: mateBaseName L6361, refKind L6362, refText L6363, defaultAlignment L6380, mateKindError L6384,
+more: nextMateName L6395, cmdMoveComponent L6826, editDispatch L6916, sketchOverInfo L7119, faCurves L7723,
+more: faCurveOptions L7732, faResolve L7740, faPreview L7744, faClean L7754, faSketchOptions L7784,
+more: faOneCircle L7790, faRefLabel L7862, faRefList L7870, faListPick L7875, faBrowse L7923, faLoadText L7933,
+more: faEdit L7957, slPlaneRef L7975, slPlaneKey L7976, cmdWrap L8045, isPart L8139, suppressedNow L8140,
+more: uniq L8142, selectedFeatureIds L8143, scopeText L8149, run L8179
 
 ## ui-core.js (5453 lines)
 > application state, Three.js scene, camera controls, rendering, picking, highlights.
@@ -4182,7 +4183,7 @@ more: nowMs L33, $ L34, crumb L35, crumbOnce L37, emit L43, begin L48, show L79,
 more: active L97, el L102, ensureEls L108, pct L140, setBar L141, setAria L147, setText L151, clock L152,
 more: render L163, cancel L216, paint L246, heavy L254, run L258, listen L273
 
-## ui-rebuild.js (298 lines)
+## ui-rebuild.js (307 lines)
 > r12/occtui12: rebuild feedback as in SolidWorks. The status bar's rebuild chip ("Fully rebuilt",
 UI.rebuildIssues (issues)  L43  — issues() -> [{ kind: 'error' | 'warning', id, what: 'feature' | 'component' | 'mate' | …
 UI.rebuildStatusHtml  L66  — the status bar chip (ui-panels.js refreshStatus)

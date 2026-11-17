@@ -5946,13 +5946,27 @@
       if (r.refgeo === 'axis') return { t: 'line', p: r.o, d: MV.norm(r.d), name: nm, ref: true };
     }
     if (s.kind === 'vertex' && s.point) return { t: 'pt', p: s.point, name: 'Vertex', ref: true };
+    // lane NW: a hole's edge or wall reads as the circle / cylinder it is (its axis), as SolidWorks measures a hole's
+    // centre: a circle and a straight edge give the centre distance (it read one 0.049 in chord of the rim before)
+    if (s.kind === 'edge' && s.edge && s.edge.faces) {
+      var ce = null;
+      s.edge.faces.forEach(function (fi) { if (!ce) ce = measCyl(fi); });
+      if (ce) { var c0 = measAxisPoint(ce, s.edge.a); return { t: 'line', p: c0, d: ce.d, name: 'Circle Ø' + UI.fmtNum(2 * ce.r, 4), ref: true, circle: { c: c0, r: ce.r } }; }
+    }
     if (s.kind === 'edge' && s.edge && s.edge.a && s.edge.b && MV.len(MV.sub(s.edge.b, s.edge.a)) > 1e-12) return { t: 'line', p: s.edge.a, d: MV.norm(MV.sub(s.edge.b, s.edge.a)), name: 'Edge' };
     if (s.kind === 'face' && App.mesh && App.mesh.faces[s.index]) {
-      var fc = App.mesh.faces[s.index];
+      var fc = App.mesh.faces[s.index], cf = measCyl(s.index);
+      if (cf) return { t: 'line', p: cf.o, d: cf.d, name: 'Cylinder Ø' + UI.fmtNum(2 * cf.r, 4) + ' (axis)', ref: true };
       if (!(fc.polys && fc.polys[0] && fc.polys[0].surf)) return { t: 'plane', p: fc.centroid, n: MV.norm(fc.normal), name: 'Face' };
     }
     return null;
   }
+  // the exact cylinder record of a mesh face ({ o, d (unit), r }) or null
+  function measCyl(fi) {
+    var fc = App.mesh && App.mesh.faces[fi], S = fc && fc.polys && fc.polys[0] && fc.polys[0].surf && fc.polys[0].surf.s;
+    return S && S.t === 'cyl' && S.o && S.d && +S.r > 0 ? { o: S.o.slice(), d: MV.norm(S.d), r: +S.r } : null;
+  }
+  function measAxisPoint(c, p) { return MV.add(c.o, MV.scale(c.d, MV.dot(MV.sub(p, c.o), c.d))); }
   function measLineDist(p, L) { var v = MV.sub(p, L.p); return MV.len(MV.sub(v, MV.scale(L.d, MV.dot(v, L.d)))); }
   function measDeg(x) { return UI.fmtNum(Math.acos(Math.max(-1, Math.min(1, x))) * 180 / Math.PI, 2) + '°'; }
   // the rows for a selection that holds reference geometry or a vertex, else null (the face / edge rows)
@@ -5962,6 +5976,7 @@
     var u = UI.unitLabel(), rows = [], A = list[0], B = list[1];
     list.forEach(function (g) {
       if (g.t === 'pt') rows.push([g.name, measVec(g.p) + ' ' + u]);
+      else if (g.circle) rows.push([g.name, 'centre ' + measVec(g.circle.c) + ' ' + u + ', axis ' + measVec(g.d, 4)]);
       else if (g.t === 'line') rows.push([g.name, 'through ' + measVec(g.p) + ', direction ' + measVec(g.d, 4)]);
       else rows.push([g.name, 'normal ' + measVec(g.n, 4)]);
     });
@@ -5978,7 +5993,7 @@
       var X = MV.cross(A.d, B.d);
       rows.push(['Angle', measDeg(Math.abs(MV.dot(A.d, B.d)))]);
       if (MV.len(X) < 1e-9) rows.push(['Distance', dv(measLineDist(B.p, A))]);
-      else rows.push(['Minimum distance', dv(Math.abs(MV.dot(MV.sub(B.p, A.p), X)) / MV.len(X))]);
+      else rows.push([A.circle || B.circle ? 'Center distance' : 'Minimum distance', dv(Math.abs(MV.dot(MV.sub(B.p, A.p), X)) / MV.len(X))]);
     } else if (A.t === 'line' && B.t === 'plane') {
       var s = Math.abs(MV.dot(A.d, B.n));
       rows.push(['Angle to face', UI.fmtNum(Math.asin(Math.min(1, s)) * 180 / Math.PI, 2) + '°']);
@@ -6236,9 +6251,19 @@
   // Part list: the Design Library parts (AnvilExamples without kind 'assembly'), the last open part, and parts opened
   // with Browse… (a part JSON file). PM keys: part (the list key), x, y, z (where the part origin goes).
   var browsedParts = [];
+  function lastPartSource() {
+    var lp = App.lastPart, name = lp.name || 'Part1', key = null;
+    try {
+      var D = typeof Assembly !== 'undefined' && Assembly.Documents, s = JSON.stringify(lp);
+      if (D) D.list().forEach(function (n) { var m = !key && D.get(n); if (m && JSON.stringify(m) === s) key = n; });
+    } catch (e) { key = null; }
+    return key ? { key: 'last', label: key + ' (last part, linked, saved in this browser)', source: { file: key } } : { key: 'last', label: name + ' (last part)', source: { model: lp } };
+  }
   function insertSources() {
     var out = [];
-    if (App.lastPart && Array.isArray(App.lastPart.features)) out.push({ key: 'last', label: (App.lastPart.name || 'Part1') + ' (last part)', source: { model: App.lastPart } });
+    // lane NW: the last part as saved (File ▸ Save, unchanged since) goes in as a link to that document, as SolidWorks
+    // inserts the part file: a copy would not follow a later edit of the part (Insert Component took a copy before)
+    if (App.lastPart && Array.isArray(App.lastPart.features)) out.push(lastPartSource());
     browsedParts.forEach(function (b) { out.push(b); });
     (window.AnvilExamples || []).forEach(function (ex) {
       if (ex && ex.name && ex.code && ex.kind !== 'assembly') out.push({ key: 'ex:' + ex.name, label: ex.name, source: { example: ex.name } });
