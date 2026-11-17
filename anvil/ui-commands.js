@@ -649,7 +649,9 @@
         var cbOff = typeof f.disabled === 'function' ? f.disabled(v) : !!f.disabled;
         if (cbOff) cb.disabled = true;
         cb.addEventListener('change', function () { changed(cb.checked); });
-        return el('div', { class: 'pm-row check pm-field' + (cbOff ? ' disabled' : '') }, [cb, el('label', { text: f.label, onclick: function () { if (!cbOff) cb.click(); } })]);
+        var crow = el('div', { class: 'pm-row check pm-field' + (cbOff ? ' disabled' : '') }, [cb, el('label', { text: f.label, onclick: function () { if (!cbOff) cb.click(); } })]);
+        if (f.title) { crow.title = f.title; crow.addEventListener('mouseenter', function () { UI.setStatus(f.title.replace(/\n/g, ' ')); }); }   // rfNJ: a greyed box says why
+        return crow;
       }
       case 'radio': {   // r13/trim13: a column of option buttons, as in SolidWorks' PropertyManagers (Trim Entities' Options)
         // f.disabledOption(value, v) -> a reason string greys that option and shows the reason under it (DXF/DWG Output)
@@ -1981,7 +1983,7 @@
         ] },
         { title: isChamfer ? 'Chamfer Parameters' : 'Fillet Parameters', fields: [
           isChamfer ? { type: 'number', label: 'Distance  D', key: 'd', unit: 'u', min: 0 } : { type: 'number', label: 'Radius  R', key: 'r', unit: 'u', min: 0 }
-        ].concat(isChamfer ? [{ type: 'check', label: 'Equal distance', key: '_equal', disabled: true }] : []) },   // rfNH: SolidWorks' Distance-Distance chamfer with Equal distance, the only one Anvil builds
+        ].concat(isChamfer ? [{ type: 'check', label: 'Equal distance', key: '_equal', disabled: true, title: 'Equal distance: one distance along both faces.\nTwo different distances are not available in Anvil yet (not built): the chamfer is equal-distance.' }] : []) },   // rfNJ: says why it cannot be cleared   // rfNH: SolidWorks' Distance-Distance chamfer with Equal distance, the only one Anvil builds
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function (v) { v.edges.forEach(function (e) { e.chain = v.chain; }); resolveList(); preview(); },

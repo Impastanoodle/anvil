@@ -512,7 +512,9 @@
     return finish(d, size);
   }
   // places whose buttons are not drawn through Icons(): { sel, attr, prefix, size } -> Icons(prefix + Attr value, size)
-  var SLOTS = [{ sel: '#vp-qmask button[data-qmask]', attr: 'data-qmask', prefix: 'qm', size: 18 }];
+  // rfNJ: drawn at the 12 px they show at (they were drawn for 18 and scaled to 42 % of the button, about 11 to 15 px:
+  // never pixel-sharp)
+  var SLOTS = [{ sel: '#vp-qmask button[data-qmask]', attr: 'data-qmask', prefix: 'qm', size: 12 }];
 
   Icons.sets.register('mastercam', {
     body: body, restyle: restyle, has: function (name) { return OWN[name] != null; }, own: function () { return Object.keys(OWN); }, slots: SLOTS,

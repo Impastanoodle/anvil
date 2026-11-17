@@ -176,4 +176,48 @@
         return items.length + ' rows, ' + items.length + ' drawings';
       } finally { rfNJRestore(); }
     });
+
+    // --- rfNJ follow-up (lane NJ2)
+    step('rfNJ: no ribbon item or menu row falls back to the generic drawing in either profile (Edit Feature of the face menu did); the face menu\'s Edit Feature has its own icon', async function () {
+      var bad = [], prof = UI.Profiles && UI.Profiles.active ? (UI.Profiles.active() || {}).id || UI.Profiles.active() : 'solidworks';
+      function inner(n) { return String(W.Icons(n, 16)).replace(/^<svg[^>]*>/, ''); }
+      try {
+        ['solidworks', 'mastercam'].forEach(function (pr) {
+          UI.Profiles.set(pr);
+          var gen = inner('generic');
+          function walk(items, path) {
+            (items || []).forEach(function (it) {
+              if (!it || it.sep) return;
+              if (it.icon && (!W.Icons.has(it.icon) || inner(it.icon) === gen)) bad.push(pr + ' ' + path + it.label + '=' + it.icon);
+              if (it.items && typeof it.items !== 'function') walk(it.items, path + it.label + ' > ');
+            });
+          }
+          [UI.RIBBON, UI.ASM_RIBBON].forEach(function (t) {
+            Object.keys(t || {}).forEach(function (k) {
+              UI.ribbonLeaves(t[k]).forEach(function (it) { var n = UI.ribbonItemState(it).icon; if (!W.Icons.has(n) || inner(n) === gen) bad.push(pr + ' ribbon ' + k + ' ' + String(it.label || '').replace(/\n/g, ' ') + '=' + n); });
+            });
+          });
+          ((typeof UI.menuModel === 'function' ? UI.menuModel() : UI.menuModel) || []).forEach(function (m) { walk(typeof m.items === 'function' ? m.items() : m.items, m.label + ' > '); });
+          if (!W.Icons.has('editFeature') || inner('editFeature') === gen || inner('editFeature') === inner('editSketch')) bad.push(pr + ' editFeature');
+        });
+        assert(!bad.length, 'generic or missing drawings: ' + bad.join(' ; '));
+        return 'ribbons and menus of both profiles: no generic fallback';
+      } finally { UI.Profiles.set(typeof prof === 'string' && prof ? prof : 'solidworks'); }
+    });
+
+    step('rfNJ: the Mastercam Quick Mask icons are drawn at the whole 12 px they show at (were drawn for 18 px and shown at about 11 px, blurred); Chamfer\'s greyed Equal distance says why in its tooltip', async function () {
+      try {
+        await rfNJPart(BOX);
+        UI.Profiles.set('mastercam'); await wait(80);
+        var svgs = Array.prototype.slice.call(D.querySelectorAll('#vp-qmask button[data-qmask] svg'));
+        assert(svgs.length >= 8, 'the quick masks: ' + svgs.length);
+        var off = svgs.filter(function (s) { var r = s.getBoundingClientRect(); return !(r.width === 12 && r.height === 12 && s.getAttribute('width') === '12'); });
+        assert(!off.length, 'not whole 12 px: ' + off.map(function (s) { var r = s.getBoundingClientRect(); return s.getAttribute('width') + '/' + r.width + 'x' + r.height; }).join(', '));
+        UI.Profiles.set('solidworks'); await wait(30);
+        await rfNJOpen(function () { UI.cmdChamfer(); });
+        var eq = pmField('Equal distance'), row = eq && eq.closest('.pm-row');
+        assert(eq && eq.disabled && eq.checked && /not available in Anvil yet \(not built\)/.test(row.title), 'Equal distance tooltip: ' + (row && row.title));
+        return svgs.length + ' masks at 12 px; ' + row.title.replace(/\n/, ' / ');
+      } finally { rfNJRestore(); }
+    });
   })();
