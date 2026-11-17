@@ -361,3 +361,208 @@
     assert(/next to each other/.test(statusText()), 'refused: ' + statusText());
     return 'ok';
   });
+  // --- rfNR3 (2026-11-17, follow-up 3): the FeatureManager audit against SolidWorks 2024: selection by mouse and keys,
+  // the right-click menus, the flyout FeatureManager over the graphics area while a PropertyManager covers the tree,
+  // Flat-Pattern1's children
+  function rfNRKey(el, key, opts) { el.dispatchEvent(new W.KeyboardEvent('keydown', Object.assign({ key: key, bubbles: true, cancelable: true }, opts || {}))); }
+  function rfNRClick(el, opts) {
+    var r = el.getBoundingClientRect(), o = Object.assign({ bubbles: true, cancelable: true, view: W, clientX: r.left + 40, clientY: r.top + r.height / 2, button: 0, detail: 1 }, opts || {});
+    var t = el.querySelector('.nm') || el;
+    t.dispatchEvent(new W.MouseEvent('mousedown', o)); t.dispatchEvent(new W.MouseEvent('mouseup', o)); t.dispatchEvent(new W.MouseEvent('click', o));
+  }
+  function rfNRSelIds() { return (UI.selection ? UI.selection() : []).filter(function (s) { return s.kind === 'feature'; }).map(function (s) { return s.id; }); }
+  function rfNRMenuRows(el) {
+    var r = el.getBoundingClientRect();
+    el.dispatchEvent(new W.MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: W, clientX: r.left + 30, clientY: r.top + 4, button: 2 }));
+    var rows = Array.prototype.slice.call(D.querySelectorAll('.menu .mi')).map(function (m) { return m._menuItem; }).filter(Boolean);
+    if (UI.closeMenus) UI.closeMenus();
+    return rows;
+  }
+
+  step('rfNR: tree selection by mouse and keys: click, Ctrl+click, Shift+click a range (into a folder), empty space clears; the tree takes the focus, Down / Up move, Right / Left open and close, Enter edits, Esc clears', async function () {
+    await rfNROpen(rfNRPart4);
+    var fs = UI.App.model.features, boss = rfNRKind('extrude', 0), fil = rfNRKind('fillet'), cuts = rfNRCuts(), tree = D.getElementById('tree');
+    UI.addToNewFolder([cuts[0].id, cuts[1].id]); await idle();
+    rfNRClick(rfNRRow(boss)); await idle();
+    assert(rfNRSelIds().join() === String(boss.id), 'click selects: ' + rfNRSelIds());
+    assert(D.activeElement === tree, 'the tree has the keyboard focus');
+    rfNRClick(rfNRRow(cuts[1]), { shiftKey: true }); await idle();
+    var shownIds = Array.prototype.filter.call(tree.querySelectorAll('.ti[data-fid]'), function (r) { return r.getClientRects().length; }).map(function (r) { return +r.getAttribute('data-fid'); });
+    var want = shownIds.slice(shownIds.indexOf(boss.id), shownIds.indexOf(cuts[1].id) + 1);
+    assert(rfNRSelIds().slice().sort().join() === want.slice().sort().join() && [boss.id, fil.id, cuts[0].id, cuts[1].id].every(function (id) { return rfNRSelIds().indexOf(id) >= 0; }), 'Shift+click selected the shown rows from the boss to the second cut, into the folder: ' + rfNRSelIds() + ' / ' + want);
+    var n0 = rfNRSelIds().length;
+    rfNRClick(rfNRRow(fil), { ctrlKey: true }); await idle();
+    assert(rfNRSelIds().indexOf(fil.id) < 0 && rfNRSelIds().length === n0 - 1, 'Ctrl+click toggles one: ' + rfNRSelIds());
+    // empty tree space below the rows
+    var last = tree.lastElementChild.getBoundingClientRect(), y = Math.min(tree.getBoundingClientRect().bottom - 3, last.bottom + 20);
+    tree.dispatchEvent(new W.MouseEvent('click', { bubbles: true, cancelable: true, view: W, clientX: last.left + 40, clientY: y, button: 0, detail: 1 })); await idle();
+    assert(!UI.App.sel, 'a click on empty tree space clears the selection');
+    rfNRClick(rfNRRow(boss)); await idle();
+    rfNRKey(tree, 'ArrowDown'); await idle();
+    assert(UI.App.sel && UI.App.sel.id === fil.id, 'Down selects the next row: ' + JSON.stringify(UI.App.sel));
+    rfNRKey(tree, 'ArrowUp'); await idle();
+    assert(UI.App.sel && UI.App.sel.id === boss.id, 'Up selects the row above');
+    var tw = rfNRRow(boss).querySelector('.tw');
+    if (tw.textContent === '▾') { tw.dispatchEvent(new W.MouseEvent('click', { bubbles: true, cancelable: true, view: W })); await idle(); tree.focus(); }   // folders stay open per feature id across documents
+    assert(rfNRRow(boss).querySelector('.tw').textContent === '▸', 'the boss row is closed');
+    rfNRKey(tree, 'ArrowRight'); await idle();
+    assert(rfNRRow(boss).querySelector('.tw').textContent === '▾', 'Right opened it');
+    rfNRKey(tree, 'ArrowDown'); await idle();
+    var sk = K.findFeature(UI.App.model, boss.sketch);
+    assert(UI.App.sel && UI.App.sel.id === sk.id, 'Down goes into the open folder: ' + JSON.stringify(UI.App.sel));
+    rfNRKey(tree, 'ArrowLeft'); await idle();
+    assert(UI.App.sel && UI.App.sel.id === boss.id, 'Left on a child goes to its parent');
+    rfNRKey(tree, 'ArrowLeft'); await idle();
+    assert(rfNRRow(boss).querySelector('.tw').textContent === '▸', 'Left closed it');
+    rfNRKey(tree, 'Enter'); await idle();
+    assert(UI.hasPM(), 'Enter edits the feature');
+    UI.pmCancel(); await idle(); await wait(30); await idle();
+    UI.setFmTab('tree'); UI.refreshTree();
+    rfNRClick(rfNRRow(boss)); await idle();
+    tree.focus();
+    rfNRKey(tree, 'Escape'); await idle();
+    if (UI.App.sel) { rfNRKey(tree, 'Escape'); await idle(); }   // a first Esc ends a command a group before left on (the global rule)
+    assert(!UI.App.sel, 'Esc clears: ' + JSON.stringify(UI.App.sel) + ' / ' + statusText());
+    return 'ok';
+  });
+
+  step('rfNR: a face picked in the graphics area marks its feature in a 60-feature tree and scrolls it into view', async function () {
+    var code = 'p.units("mm");\n';
+    for (var i = 0; i < 58; i++) code += 'p.plane("Front", ' + (100 + i) + ');\n';
+    code += 'p.sketch("Front").rect(0, 0, 100, 60).end().extrude(20);';
+    await rfNROpen(code);
+    var boss = rfNRKind('extrude', 0), tree = D.getElementById('tree');
+    tree.scrollTop = 0;
+    var r0 = rfNRRow(boss).getBoundingClientRect(), tb = tree.getBoundingClientRect();
+    assert(r0.top > tb.bottom, 'the boss row starts out of view (' + r0.top + ' > ' + tb.bottom + ')');
+    var fi = -1;
+    UI.App.mesh.faces.some(function (fc, k) { if (UI.App.triShared[fc.start] === boss.id) { fi = k; return true; } return false; });
+    assert(fi >= 0, 'a face of the boss');
+    UI.setSelection([{ kind: 'face', index: fi, point: UI.App.mesh.faces[fi].centroid }]); await idle(); await wait(30); await idle();
+    var row = rfNRRow(boss), r1 = row.getBoundingClientRect(); tb = tree.getBoundingClientRect();
+    assert(row.classList.contains('sel-owner'), 'the boss row is marked as the face\'s feature');
+    assert(r1.top >= tb.top - 1 && r1.bottom <= tb.bottom + 1, 'and scrolled into view: ' + r1.top + '..' + r1.bottom + ' in ' + tb.top + '..' + tb.bottom);
+    return 'scrollTop ' + tree.scrollTop;
+  });
+
+  step('rfNR: the flyout FeatureManager: with a PropertyManager over the tree it sits at the top left of the graphics area; a click on a row feeds Linear Pattern, Mirror and the new sketch\'s plane pick', async function () {
+    await rfNROpen(rfNRPart4 + '\np.plane("Front", 40);');
+    var cuts = rfNRCuts(), pl = rfNRKind('plane');
+    UI.cmdLinearPattern(); await idle(); await wait(300);
+    var fly = D.getElementById('fm-flyout');
+    assert(UI.hasPM() && fly && fly.getClientRects().length, 'the flyout shows with the PropertyManager');
+    var vp = D.getElementById('viewport').getBoundingClientRect(), fr = fly.getBoundingClientRect();
+    assert(fr.left - vp.left < 20 && fr.top - vp.top < 20, 'at the top left of the graphics area');
+    assert(!fly.querySelector('.fly-row'), 'collapsed to its title row');
+    rfNRClick(fly.querySelector('.fly-head')); await idle();
+    var row = fly.querySelector('.fly-row[data-fid="' + cuts[1].id + '"]');
+    assert(row, 'the rows show after a click on the title');
+    rfNRClick(row); await idle(); await wait(50);
+    assert(UI.pmSpec().values.feature === cuts[1].id, 'Linear Pattern\'s Features to Pattern took ' + cuts[1].name + ': ' + JSON.stringify(UI.pmSpec().values.feature));
+    UI.pmCancel(); await idle(); await wait(300);
+    assert(!D.getElementById('fm-flyout'), 'the flyout goes with the PropertyManager');
+    UI.cmdMirror(); await idle(); await wait(300);
+    fly = D.getElementById('fm-flyout');
+    if (!fly.querySelector('.fly-row')) { rfNRClick(fly.querySelector('.fly-head')); await idle(); }
+    rfNRClick(fly.querySelector('.fly-row[data-plane="Top"]')); await idle(); await wait(50);
+    assert(UI.pmSpec().values.plane === 'Top', 'Mirror plane from the flyout: ' + UI.pmSpec().values.plane);
+    rfNRClick(fly.querySelector('.fly-row[data-fid="' + cuts[0].id + '"]')); await idle(); await wait(50);
+    assert(UI.pmSpec().values.feature === cuts[0].id, 'Mirror feature from the flyout');
+    UI.pmCancel(); await idle(); await wait(300);
+    UI.setSelection([]);
+    UI.cmdSketch(); await idle(); await wait(300);
+    fly = D.getElementById('fm-flyout');
+    assert(fly, 'the flyout shows while the sketch asks for a plane');
+    if (!fly.querySelector('.fly-row')) { rfNRClick(fly.querySelector('.fly-head')); await idle(); }
+    rfNRClick(fly.querySelector('.fly-row[data-fid="' + pl.id + '"]')); await idle(); await wait(100); await idle();
+    assert(UI.App.mode === 'sketch', 'the sketch opened on ' + pl.name + ' from the flyout');
+    var sk = UI.activeSketchFeature ? UI.activeSketchFeature() : null;
+    var ok = sk && sk.plane && (sk.plane.featureId === pl.id || (sk.plane.ref === 'Front' && +sk.plane.offset === 40));
+    UI.exitSketch(true); await idle();
+    assert(ok, 'on that plane: ' + JSON.stringify(sk && sk.plane));
+    return 'ok';
+  });
+
+  step('rfNR: right-click menus of the part tree (feature, sketch, plane, origin, Sheet-Metal, Flat-Pattern, folder, rollback bar): every enabled row runs something, every greyed row says why', async function () {
+    await rfNROpen(rfNRSheet);
+    UI.addToNewFolder([UI.App.model.features.filter(function (f) { return f.type === 'flange'; })[1].id]); await idle();
+    var tree = D.getElementById('tree'), bad = [], seen = [];
+    // the Material row's menu is ui-materials.js's (reported to its lane: Remove Material greyed without a reason)
+    var targets = Array.prototype.filter.call(tree.querySelectorAll('.ti, .rollbar'), function (r) { return r.getClientRects().length && !r.classList.contains('material-row'); });
+    targets.forEach(function (t) {
+      var rows = rfNRMenuRows(t), name = (t.querySelector('.nm') || t).textContent || t.className;
+      if (rows.length) seen.push(name + ' (' + rows.length + ')');
+      rows.forEach(function (it) {
+        if (it.sep || (it.items && it.items.length)) return;
+        if (!it.disabled && typeof it.action !== 'function') bad.push(name + ' ▸ ' + it.label + ': no action');
+        if (it.disabled && !it.why) bad.push(name + ' ▸ ' + it.label + ': greyed without a reason');
+      });
+    });
+    assert(!bad.length, bad.join('; '));
+    assert(seen.some(function (s) { return /^Origin/.test(s); }) && seen.some(function (s) { return /Flat-Pattern/.test(s); }) && seen.some(function (s) { return /Folder1/.test(s); }), 'menus seen: ' + seen.join(', '));
+    return seen.length + ' menus';
+  });
+
+  step('rfNR: Flat-Pattern1 lists Bend-Lines1, Bounding-Box1 and a row per bend; Hide / Show the bend lines and the bounding box in the flat; folded it is greyed; a failed flange has the error mark with its message', async function () {
+    await rfNROpen(rfNRSheet);
+    var r = UI.toggleFlatten(true); if (r && r.then) await r; await idle(); await wait(50); await idle();
+    assert(UI.App.model.flatState && UI.App.flat, 'flat');
+    UI.refreshTree();
+    var fp = D.querySelector('#tree .fp-row');
+    assert(fp && !fp.classList.contains('suppressed'), 'Flat-Pattern1 is on while flat');
+    fp.querySelector('.tw').dispatchEvent(new W.MouseEvent('click', { bubbles: true, cancelable: true, view: W })); await idle();
+    var kids = Array.prototype.map.call(D.querySelectorAll('#tree .fp-kid'), function (k) { return k.querySelector('.nm').textContent; });
+    assert(kids.join() === 'Bend-Lines1,Bounding-Box1,EdgeBend1,EdgeBend2', 'children: ' + kids.join());
+    rfNRClick(D.querySelector('#tree .fp-kid:nth-child(3)')); await idle();
+    assert(/EdgeBend1 \(Edge-Flange1\): UP 90/.test(statusText()) && /BA /.test(statusText()), 'a bend row says its bend: ' + statusText());
+    function obj(k) { return UI.flatGroup.children.filter(function (c) { return c.userData[k]; })[0]; }
+    assert(obj('flatBends') && obj('flatBends').visible && !obj('flatBBox'), 'bend lines shown, bounding box hidden by default');
+    await rfNRMenuOn(D.querySelector('#tree .fp-kid[data-fp="bendLines"]'), 'Hide');
+    assert(!obj('flatBends').visible, 'Hide hid the bend lines');
+    await rfNRMenuOn(D.querySelector('#tree .fp-kid[data-fp="bbox"]'), 'Show');
+    assert(obj('flatBBox'), 'Show drew the bounding box');
+    await rfNRMenuOn(D.querySelector('#tree .fp-kid[data-fp="bendLines"]'), 'Show');
+    await rfNRMenuOn(D.querySelector('#tree .fp-kid[data-fp="bbox"]'), 'Hide');
+    assert(obj('flatBends').visible && !obj('flatBBox'), 'back as they were');
+    r = UI.toggleFlatten(false); if (r && r.then) await r; await idle(); UI.refreshTree();
+    assert(D.querySelector('#tree .fp-row').classList.contains('suppressed'), 'folded: Flat-Pattern1 greyed');
+    assert(D.querySelector('#tree .sm-folder'), 'the Sheet-Metal row');
+    await anvil.append('p.flange(20, [[50, 90, 999]]);').catch(function () { }); await idle(); UI.refreshTree();
+    var bad = UI.App.model.features[UI.App.model.features.length - 1], row = rfNRRow(bad), err = (UI.App.build.errors || {})[bad.id];
+    assert(err && row.classList.contains('err'), 'the failed flange is marked: ' + err);
+    var tip = (row.getAttribute('title') || '') + (row.querySelector('.nm').getAttribute('title') || '');
+    assert(tip.indexOf(err) >= 0, 'its tooltip has the message: ' + tip);
+    return kids.join();
+  });
+  step('rfNR: assembly tree (four components and a mate): Down / Up move the selection between component rows; the component and mate menus are listed (rows greyed without a reason belong to ui-assembly.js)', async function () {
+    if (UI.clearTreeFilter) UI.clearTreeFilter();
+    await anvil.newAssembly('TreeAudit');
+    for (var i = 0; i < 4; i++) await anvil.insert({ script: 'p.units("mm"); p.box(40, 20, 30);' }, { position: [i * 60, 0, 0] });
+    await idle();
+    UI.cmdMate();
+    setInput(pmSelect('type'), 'parallel');
+    UI.mateSelect({ component: 2, face: [20, 30, 10] }); UI.mateSelect({ component: 1, face: [20, 30, 10] });
+    await pmAccept(); await idle();
+    UI.setFmTab('tree'); UI.refreshTree();
+    var tree = D.getElementById('tree'), comps = Array.prototype.filter.call(tree.querySelectorAll('.ti.component-row'), function (r) { return r.getClientRects().length; });
+    assert(comps.length === 4, 'four component rows: ' + comps.length);
+    rfNRClick(comps[0]); await idle();
+    assert(D.activeElement === tree, 'the tree has the focus');
+    var sel0 = JSON.stringify(UI.App.sel);
+    rfNRKey(tree, 'ArrowDown'); await idle();
+    var sel1 = JSON.stringify(UI.App.sel);
+    assert(sel1 !== sel0 && tree.querySelector('.ti.selected, .ti.component-row.selected'), 'Down moved the selection: ' + sel0 + ' -> ' + sel1);
+    rfNRKey(tree, 'ArrowUp'); await idle();
+    assert(JSON.stringify(UI.App.sel) === sel0, 'Up moved it back');
+    var notes = [];
+    var mate = Array.prototype.filter.call(tree.querySelectorAll('.ti'), function (r) { return /^Parallel1/.test(r.textContent.trim()) && r.getClientRects().length; })[0];
+    [comps[1], mate].filter(Boolean).forEach(function (t) {
+      rfNRMenuRows(t).forEach(function (it) {
+        if (it.sep || (it.items && it.items.length)) return;
+        if (!it.disabled && typeof it.action !== 'function') notes.push(t.textContent.trim().slice(0, 14) + ' ▸ ' + it.label + ': no action');
+        if (it.disabled && !it.why) notes.push(t.textContent.trim().slice(0, 14) + ' ▸ ' + it.label + ': greyed, no reason');
+      });
+    });
+    await anvil.newPart(); await idle();
+    return notes.length ? 'menu notes: ' + notes.join('; ') : 'menus clean';
+  });

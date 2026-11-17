@@ -2712,3 +2712,11 @@ body.tree-reorder-no, body.tree-reorder-no * { cursor: not-allowed !important; }
 .tree-filter-clear:hover { background: var(--c-hover, rgba(0,0,0,0.08)); color: var(--c-text, #222); }
 .tree-filter-clear[hidden] { display: none; }
 #tree .ti.fold-row.drop-into { outline: 1px solid var(--c-accent, #1f6fd1); outline-offset: -1px; background: var(--c-hover, rgba(31,111,209,0.08)); }
+/* rfNR3: the tree takes the keyboard focus (arrows, Enter); the selected row shows it, not a box round the pane */
+#tree:focus { outline: none; }
+#tree:focus-visible .ti.selected { box-shadow: inset 0 0 0 1px var(--c-accent, #3a3a3a); }
+/* rfNR3: the flyout FeatureManager over the graphics area's top left while a PropertyManager covers the tree */
+.fm-flyout { position: absolute; left: 8px; top: 8px; z-index: 6; min-width: 180px; max-width: 260px; max-height: 60%; overflow: auto; background: color-mix(in srgb, var(--c-raised, #fff) 92%, transparent); border: 1px solid var(--c-line-soft, #ccc); border-radius: var(--radius, 3px); box-shadow: 0 1px 4px rgba(0,0,0,0.12); font-size: var(--fs-sm, 12px); }
+.fm-flyout .ti { cursor: pointer; }
+.fm-flyout .fly-head .nm { font-weight: 600; }
+#tree .ti.hidden-item .nm { opacity: 0.6; font-style: italic; }

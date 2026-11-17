@@ -2259,8 +2259,71 @@
     row.addEventListener('dblclick', function (e) { e.stopPropagation(); UI.cmdFlatPatternEdit(); });
     row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, flatPatternMenu()); });
     box.appendChild(row);
+    // rfNR3: Flat-Pattern1's children as SolidWorks lists them: the Bend-Lines and Bounding-Box sketches (Show / Hide
+    // in the flat view; the bounding box hidden by default) and one row per bend of the flat
+    var kids = flatPatternKids(flat), fpOpen = expanded.flatPattern1 === true;
+    var tw = row.querySelector('.tw');
+    if (tw) { tw.classList.remove('leaf'); tw.textContent = fpOpen ? '▾' : '▸'; tw.addEventListener('click', function (e) { e.stopPropagation(); expanded.flatPattern1 = !fpOpen; refreshTree(); }); }
+    var kb = el('div', { class: 'tc' + (fpOpen ? ' open' : '') });
+    kids.forEach(function (k) {
+      var r = treeItem({ icon: k.icon, name: k.name, depth: 3, cls: 'fp-kid' + (flat ? '' : ' suppressed dim') + (k.hidden ? ' hidden-item' : ''), title: k.title });
+      if (k.kind) r.setAttribute('data-fp', k.kind);
+      r.addEventListener('click', function () { setStatus(k.title); });
+      r.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, k.menu ? k.menu() : [{ label: 'Flat Pattern…', action: function () { UI.cmdFlatten(); } }]); });
+      kb.appendChild(r);
+    });
+    box.appendChild(kb);
     tree.appendChild(box);
+    applyFlatShow();
   }
+  // what the flat view shows of Flat-Pattern1's sketches (per session, as SolidWorks keeps it per document)
+  App.flatHide = App.flatHide || { bendLines: false, bbox: true };
+  var BEND_KIND = { flange: 'EdgeBend', sketchedBend: 'SketchBend', jog: 'JogBend', loftedBend: 'LoftedBend', sweptFlange: 'SweptBend', insertBends: 'Bend', convertSM: 'Bend' };
+  function flatPatternKids(flat) {
+    var F = App.flat, units = UI.unitLabel ? UI.unitLabel() : '', out = [];
+    function fmt(v) { return UI.fmtNum ? UI.fmtNum(v, 4) : String(+(+v).toFixed(4)); }
+    function showMenu1(key, label) {
+      return function () {
+        var hidden = !!App.flatHide[key];
+        return [{ label: hidden ? 'Show' : 'Hide', help: (hidden ? 'Show ' : 'Hide ') + label + ' in the flat pattern', disabled: !flat, why: 'Flatten the part to see it', action: function () { App.flatHide[key] = !hidden; applyFlatShow(); refreshTree(); } }, { label: 'Flat Pattern…', action: function () { UI.cmdFlatten(); } }];
+      };
+    }
+    var nb = F ? F.bends.length : 0;
+    out.push({ kind: 'bendLines', icon: 'sketch', name: 'Bend-Lines1', hidden: App.flatHide.bendLines, title: flat ? 'Bend-Lines1: ' + nb + ' bend line' + (nb === 1 ? '' : 's') + (App.flatHide.bendLines ? ' (hidden)' : '') : 'Bend-Lines1: the bend lines of the flat (Flatten shows them)', menu: showMenu1('bendLines', 'the bend lines') });
+    out.push({ kind: 'bbox', icon: 'sketch', name: 'Bounding-Box1', hidden: App.flatHide.bbox, title: flat && F ? 'Bounding-Box1: ' + fmt(F.size[0]) + ' × ' + fmt(F.size[1]) + ' ' + units + (App.flatHide.bbox ? ' (hidden; right-click ▸ Show)' : '') : 'Bounding-Box1: the smallest rectangle round the flat (Flatten shows it)', menu: showMenu1('bbox', 'the bounding box') });
+    var count = {};
+    (F ? F.bends : []).forEach(function (bd) {
+      var fid = bd.id != null ? +String(bd.id).split(':')[0] : null, g = fid != null ? K.findFeature(App.model, fid) : null;
+      var kind = g ? (g.hem ? 'HemBend' : g.miter ? 'MiterBend' : BEND_KIND[g.type] || (g.sheetBase ? 'Bend' : 'Bend')) : 'Bend';
+      count[kind] = (count[kind] || 0) + 1;
+      out.push({ kind: 'bend', icon: 'bend', name: kind + count[kind], title: kind + count[kind] + (g ? ' (' + g.name + ')' : '') + ': ' + (bd.label || (bd.angle + '°')) + (bd.ba != null ? ', BA ' + fmt(bd.ba) : '') + (bd.bd != null ? ', BD ' + fmt(bd.bd) : '') + ' ' + units });
+    });
+    return out;
+  }
+  // the flat view follows App.flatHide: the bend lines' visibility, the bounding box drawn on the flat's top face
+  function applyFlatShow() {
+    var grp = UI.flatGroup;
+    if (!grp || typeof THREE === 'undefined') return;
+    var kids = grp.children, bb = null, bl = null;
+    kids.forEach(function (c) { if (c.userData.flatBends) bl = c; if (c.userData.flatBBox) bb = c; });
+    if (bl && bl.visible === !!App.flatHide.bendLines) { bl.visible = !App.flatHide.bendLines; if (UI.requestRender) UI.requestRender(); }
+    var want = !App.flatHide.bbox && !!App.flatBounds && !!App.flat;
+    if (!want && bb) { grp.remove(bb); bb.geometry.dispose(); if (UI.requestRender) UI.requestRender(); }
+    if (want && !bb) {
+      var lo = App.flatBounds.min, hi = App.flatBounds.max, ext = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+      var t = ext.indexOf(Math.min.apply(null, ext)), a = (t + 1) % 3, b = (t + 2) % 3, h = hi[t] + 1e-3 * (ext[t] || 1);
+      function P(u, v) { var p = [0, 0, 0]; p[t] = h; p[a] = u; p[b] = v; return p; }
+      var c = [P(lo[a], lo[b]), P(hi[a], lo[b]), P(hi[a], hi[b]), P(lo[a], hi[b])], seg = [];
+      for (var i = 0; i < 4; i++) Array.prototype.push.apply(seg, c[i].concat(c[(i + 1) % 4]));
+      var g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(seg), 3));
+      bb = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x3a7bd5 }));
+      bb.userData.flatBBox = true;
+      grp.add(bb);
+      if (UI.requestRender) UI.requestRender();
+    }
+  }
+  UI.applyFlatShow = applyFlatShow;
   var FEATURE_ICON = { sketch: 'sketch', plane: 'planeSmall', extrude: 'extrude', revolve: 'revolve', lpattern: 'lpattern', cpattern: 'cpattern', mirror: 'mirror', chamfer: 'chamfer', fillet: 'fillet', flange: 'bend', jog: 'bend', sweep: 'sweep', loft: 'loft', shell: 'shell', import: 'imported', hole: 'holeWizard' };
   FEATURE_ICON.refaxis = 'refAxis'; FEATURE_ICON.refpoint = 'refPoint'; FEATURE_ICON.csys = 'csys';   // lane CZ: reference geometry
   FEATURE_ICON.rip = 'rip';   // lane DI
@@ -2344,7 +2407,17 @@
       row.addEventListener('contextmenu', function (e) { e.preventDefault(); showMenu(e.clientX, e.clientY, [{ label: 'Sketch on ' + r + ' Plane', action: function () { UI.newSketchOnPlane(r); } }, { label: 'Normal To', action: function () { UI.viewNormalTo(K.makePlane(r, 0)); } }, { label: (App.view.showPlanes ? 'Hide' : 'Show') + ' planes', action: function () { App.view.showPlanes = !App.view.showPlanes; UI.updatePlanes(); } }]); });
       tree.appendChild(row);
     });
-    if (fixedHit('Origin')) tree.appendChild(treeItem({ icon: 'origin', name: 'Origin', depth: 1, cls: 'dim' }));
+    if (fixedHit('Origin')) {
+      // rfNR3: SolidWorks' Origin row: a click says what it is, right-click Show / Hide (View ▸ Origins)
+      var orow = treeItem({ icon: 'origin', name: 'Origin', depth: 1, cls: 'dim origin-row', title: 'Origin: the part\'s 0, 0, 0' });
+      orow.addEventListener('click', function () { setStatus('Origin: 0, 0, 0 of the part (View ▸ Origins shows or hides it).'); });
+      orow.addEventListener('contextmenu', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        var on = !!App.view.showOrigin;
+        showMenu(e.clientX, e.clientY, [{ label: on ? 'Hide' : 'Show', help: (on ? 'Hide' : 'Show') + ' the origin in the graphics area (View ▸ Origins)', action: function () { App.view.showOrigin = !on; UI.updateOrigin(); } }]);
+      });
+      tree.appendChild(orow);
+    }
 
     function childSketchIds(f) {
       var ids = [];
@@ -2414,6 +2487,7 @@
       var selRow = tree.querySelector('.ti.selected');
       if (selRow) revealRow(tree, selRow);
     }
+    revealOwnerSoon();   // rfNR3
     refreshConfigPanel();   // every rebuild, undo and load refreshes the tree; keep the ConfigurationManager in step
   }
   // rfGQ: the bar moves between the top-level feature rows and the part rolls when the mouse is released; Esc cancels.
@@ -2451,10 +2525,11 @@
   // was before its last move), Roll to End
   function rollbarMenu(f) {
     var at = UI.rollbarIndex(), len = App.model.features.length, items = [];
-    if (f) items.push({ label: 'Rollback', disabled: App.model.features.indexOf(f) === at, action: function () { UI.rollbarTo(App.model.features.indexOf(f)); } });
-    items.push({ label: 'Roll Forward', disabled: at >= len, action: function () { UI.rollbarForward(); } });
-    items.push({ label: 'Roll to Previous', disabled: UI.rollbarPrevIndex() < 0, action: function () { UI.rollbarPrevious(); } });
-    items.push({ label: 'Roll to End', disabled: at >= len, action: function () { UI.rollbarEnd(); } });
+    // rfNR3: a greyed row says why (rfNG)
+    if (f) items.push({ label: 'Rollback', help: 'Move the rollback bar to just above this feature', disabled: App.model.features.indexOf(f) === at, why: 'The rollback bar is already above ' + f.name, action: function () { UI.rollbarTo(App.model.features.indexOf(f)); } });
+    items.push({ label: 'Roll Forward', help: 'Move the rollback bar down one feature', disabled: at >= len, why: 'The rollback bar is at the end', action: function () { UI.rollbarForward(); } });
+    items.push({ label: 'Roll to Previous', help: 'Move the rollback bar back to where it was before its last move', disabled: UI.rollbarPrevIndex() < 0, why: 'The rollback bar has not been moved yet', action: function () { UI.rollbarPrevious(); } });
+    items.push({ label: 'Roll to End', help: 'Move the rollback bar below the last feature', disabled: at >= len, why: 'The rollback bar is at the end', action: function () { UI.rollbarEnd(); } });
     return items;
   }
   // ---- rfNR: reorder features by dragging their rows, as SolidWorks. Press on a feature row and move past 5 px: a drop
@@ -2845,6 +2920,166 @@
     var r = row.getBoundingClientRect(), b = box.getBoundingClientRect();
     if (r.top < b.top) box.scrollTop += r.top - b.top;
     else if (r.bottom > b.top + box.clientHeight) box.scrollTop += r.bottom - b.top - box.clientHeight;
+  }
+  // ---- rfNR3: the tree as SolidWorks drives it from the mouse and the keyboard. The tree takes the keyboard focus when
+  // pressed; with it focused Up / Down select the row above / below (as a click on it), Right / Left open / close a
+  // row's folder (Left on a closed child row goes to its parent), Enter edits (as a double-click). F2, Del and Esc are
+  // the global keys (rename, Confirm Delete, clear). Shift+click selects the range of shown rows from the last row
+  // clicked (inside and across folders); a click on empty tree space clears the selection. A face picked in the
+  // graphics area scrolls its feature's row (marked .sel-owner by ui-select.js) into view.
+  var TREE_ROWS = '.ti[data-fid], .ti.component-row[data-comp], .ti[data-body], .ti.fold-row';
+  var treeAnchor = null;
+  (function () {
+    var tree = $('tree'), host = tree.parentNode;
+    tree.tabIndex = 0;
+    function shownRows() { return Array.prototype.filter.call(tree.querySelectorAll(TREE_ROWS), function (r) { return r.getClientRects().length; }); }
+    function rowKey(r) { return r.getAttribute('data-fid') ? 'f' + r.getAttribute('data-fid') : r.getAttribute('data-comp') ? 'c' + r.getAttribute('data-comp') : r.getAttribute('data-body') ? 'b' + r.getAttribute('data-body') : 'o' + r.getAttribute('data-folder'); }
+    function rowByKey(k) { return shownRows().filter(function (r) { return rowKey(r) === k; })[0] || null; }
+    function clickRow(r) {
+      var nm = r.querySelector('.nm') || r, b = nm.getBoundingClientRect();
+      // a keyboard move is not a slow second click: the row's own click handler with a plain (untrusted) event
+      nm.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, clientX: b.left + 2, clientY: b.top + 2, detail: 1 }));
+    }
+    host.addEventListener('mousedown', function (e) {
+      if (!tree.contains(e.target) || (e.target.closest && e.target.closest('input, .rollbar'))) return;
+      if (document.activeElement !== tree) tree.focus({ preventScroll: true });
+    });
+    host.addEventListener('click', function (e) {
+      if (!tree.contains(e.target)) return;
+      var row = e.target.closest && e.target.closest(TREE_ROWS);
+      if (!row) {
+        // empty tree space (not a header row such as Origin or a folder's box)
+        if (e.target === tree && !UI.hasPM() && App.mode !== 'sketch' && (App.sel || App.sel2) && UI.setSelection) UI.setSelection([]);
+        return;
+      }
+      if (e.shiftKey && !e.ctrlKey && !e.metaKey && treeAnchor && !isAsm() && row.hasAttribute('data-fid')) {
+        var rows = shownRows().filter(function (r) { return r.hasAttribute('data-fid'); }), a = rows.indexOf(rowByKey(treeAnchor)), b = rows.indexOf(row);
+        if (a >= 0 && b >= 0 && UI.setSelection) {
+          e.stopPropagation(); e.preventDefault();
+          var lo = Math.min(a, b), hi = Math.max(a, b), list = [];
+          rows.slice(lo, hi + 1).forEach(function (r) { list.push({ kind: 'feature', id: +r.getAttribute('data-fid') }); });
+          // the anchor first, so it stays the main selection as in SolidWorks
+          if (b < a) list.reverse();
+          UI.setSelection(list);
+          return;
+        }
+      }
+      if (!e.shiftKey) treeAnchor = rowKey(row);
+    }, true);
+    tree.addEventListener('keydown', function (e) {
+      if (e.target !== tree || e.ctrlKey || e.metaKey || e.altKey) return;
+      var k = e.key;
+      if (k !== 'ArrowUp' && k !== 'ArrowDown' && k !== 'ArrowLeft' && k !== 'ArrowRight' && k !== 'Enter' && k !== 'Home' && k !== 'End') return;
+      var rows = shownRows(), cur = tree.querySelector('.ti.selected') || tree.querySelector('.ti.sel-owner'), i = cur ? rows.indexOf(cur) : -1;
+      e.preventDefault(); e.stopPropagation();
+      if (!rows.length) return;
+      if (k === 'ArrowDown' || k === 'ArrowUp' || k === 'Home' || k === 'End') {
+        var n = k === 'Home' ? 0 : k === 'End' ? rows.length - 1 : i < 0 ? (k === 'ArrowDown' ? 0 : rows.length - 1) : Math.max(0, Math.min(rows.length - 1, i + (k === 'ArrowDown' ? 1 : -1)));
+        var key = rowKey(rows[n]);
+        clickRow(rows[n]); treeAnchor = key;
+        var now = rowByKey(key); if (now) revealRow(tree, now);
+        return;
+      }
+      if (!cur) return;
+      var tw = cur.querySelector('.tw'), hasKids = tw && !tw.classList.contains('leaf'), open = hasKids && tw.textContent === '▾';
+      if (k === 'ArrowRight' && hasKids && !open) tw.click();
+      else if (k === 'ArrowLeft' && hasKids && open) tw.click();
+      else if (k === 'ArrowLeft') {
+        var box = cur.parentNode, parent = box && box !== tree && box.classList.contains('tc') ? box.previousElementSibling : null;
+        if (parent && parent.matches(TREE_ROWS)) { var pk = rowKey(parent); clickRow(parent); treeAnchor = pk; }
+      } else if (k === 'Enter') cur.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }));
+    });
+  })();
+  // ---- rfNR3: the flyout FeatureManager. While a PropertyManager covers the tree, SolidWorks shows the part's tree at
+  // the top left of the graphics area: a title row (click to open / close) and below it the planes and features. A
+  // click on a row feeds the PropertyManager's active box exactly as a graphics pick would: a plane row the plane, a
+  // feature row the feature (a box that takes faces gets one of the feature's faces); a box that takes neither
+  // gets it as a tree selection (the PM's onSelection), and a plane row also sets a Front / Top / Right plane list.
+  var flyOpen = false, flySig = '';
+  function flyoutPicks(item) {
+    var m = App.model, out = [];
+    if (item.std) { out.push({ kind: 'plane', ref: item.std, plane: K.makePlane(item.std, 0), name: item.std + ' Plane', point: [0, 0, 0] }); return out; }
+    var f = K.findFeature(m, item.id);
+    if (!f) return out;
+    var bp = App.build && App.build.planes ? App.build.planes[f.id] : null;
+    if (f.type === 'plane' && bp) out.push({ kind: 'plane', ref: f.id, plane: bp, name: f.name, point: (bp.origin || [0, 0, 0]).slice() });
+    out.push({ kind: 'feature', id: f.id });
+    if (App.mesh && App.mesh.faces && App.triShared) {
+      for (var i = 0; i < App.mesh.faces.length; i++) {
+        var fc = App.mesh.faces[i];
+        if (App.triShared[fc.start] === f.id) { out.push({ kind: 'face', index: i, point: (fc.centroid || [0, 0, 0]).slice(), normal: fc.normal }); break; }
+      }
+    }
+    return out;
+  }
+  function flyoutFeed(item) {
+    var cmd = App.command, picks = flyoutPicks(item), name = item.name;
+    if (cmd && cmd.onPick) for (var i = 0; i < picks.length; i++) { if (cmd.onPick(picks[i]) !== false) { setStatus(name + ' picked from the flyout FeatureManager.'); refreshFlyout(true); return true; } }
+    // a Front / Top / Right list in the PropertyManager (Mirror's plane)
+    var sp = UI.pmSpec && UI.pmSpec(), std = item.std;
+    if (sp && std) {
+      var fld = null;
+      (sp.groups || []).forEach(function (g) { (g.fields || []).forEach(function (fd) { if (!fld && fd.type === 'select' && Array.isArray(fd.options) && fd.options.indexOf(std) >= 0 && fd.options.indexOf(std === 'Front' ? 'Top' : 'Front') >= 0) fld = fd; }); });
+      if (fld) { sp.values[fld.key] = std; UI.renderPM(); if (sp.onChange) sp.onChange(sp.values, fld.key); setStatus(fld.label + ': ' + name + '.'); return true; }
+    }
+    if (sp && sp.onSelection && UI.setSelection) {
+      var s = picks[0];
+      UI.setSelection([s.kind === 'plane' && item.std ? s : { kind: 'feature', id: item.id }]);
+      return true;
+    }
+    setStatus('The open command does not take ' + name + '.');
+    return false;
+  }
+  function flyoutItems() {
+    var m = App.model, items = ['Front', 'Top', 'Right'].map(function (r) { return { std: r, name: r + ' Plane', icon: 'planeSmall', depth: 1 }; });
+    m.features.forEach(function (f) {
+      if (UI.rollbarRolled(f) || (App.rollback != null && m.features.indexOf(f) >= App.rollback)) return;
+      items.push({ id: f.id, name: f.name, icon: featureIcon(f), depth: 1 });
+    });
+    return items;
+  }
+  function refreshFlyout(force) {
+    var vp = $('viewport');
+    if (!vp) return;
+    var want = !isAsm() && UI.hasPM && UI.hasPM() && App.fmTab === 'pm' && App.mode !== 'sketch' && !!(App.model && App.model.features);
+    var box = $('fm-flyout');
+    if (!want) { if (box) box.remove(); flyOpen = false; flySig = ''; return; }
+    var sig = JSON.stringify([flyOpen, App.model.name, App.model.features.map(function (f) { return f.id + f.name; }), App.rollback]);
+    if (box && sig === flySig && !force) return;
+    flySig = sig;
+    if (!box) {
+      box = el('div', { id: 'fm-flyout', class: 'fm-flyout' });
+      ['mousedown', 'mouseup', 'click', 'dblclick', 'wheel', 'contextmenu'].forEach(function (t) { box.addEventListener(t, function (e) { e.stopPropagation(); if (t === 'contextmenu') e.preventDefault(); }); });
+      vp.appendChild(box);
+    }
+    box.innerHTML = '';
+    var head = treeItem({ icon: 'part', name: App.model.name || 'Part', children: true, open: flyOpen, cls: 'fly-head', title: 'Flyout FeatureManager: click to ' + (flyOpen ? 'close' : 'open') + '; a click on a row picks it for the open command', toggle: function () { flyOpen = !flyOpen; refreshFlyout(true); } });
+    head.addEventListener('click', function () { flyOpen = !flyOpen; refreshFlyout(true); });
+    box.appendChild(head);
+    if (!flyOpen) return;
+    var list = el('div', { class: 'fly-list' });
+    flyoutItems().forEach(function (it) {
+      var r = treeItem({ icon: it.icon, name: it.name, depth: it.depth, cls: 'fly-row' });
+      if (it.id != null) r.setAttribute('data-fid', String(it.id)); else r.setAttribute('data-plane', it.std);
+      r.addEventListener('click', function (e) { e.stopPropagation(); flyoutFeed(it); });
+      list.appendChild(r);
+    });
+    box.appendChild(list);
+  }
+  UI.refreshFlyout = refreshFlyout;
+  UI.flyoutFeed = function (idOrPlane) { return flyoutFeed(typeof idOrPlane === 'string' ? { std: idOrPlane, name: idOrPlane + ' Plane' } : { id: idOrPlane, name: (K.findFeature(App.model, idOrPlane) || {}).name }); };
+  setInterval(function () { if (!document.hidden) { refreshFlyout(false); if (App.flat) applyFlatShow(); } }, 250);
+  // a face or edge picked in the graphics area: its feature's row comes into view (once per new selection)
+  var ownerShown = '';
+  function revealOwnerSoon() {
+    setTimeout(function () {
+      var tree = $('tree'), s = App.sel, key = s ? JSON.stringify([s.kind, s.index, s.id, s.point]) : '';
+      if (!s || s.kind === 'feature' || key === ownerShown) { ownerShown = key; return; }
+      var row = tree.querySelector('.ti.sel-owner');
+      if (!row) return;
+      ownerShown = key;
+      revealRow(tree, row);
+    }, 0);
   }
   // ---- assembly FeatureManager: "Assem1", origin planes, one row per component ("(f) Plate<1>" fixed, "(-) Pin<1>"
   // still free to move, red on a build error) and the Mates folder ("Coincident1 (Plate<1>, Pin<1>)", red with the
