@@ -283,6 +283,8 @@
   // rather than 25.3971), so nothing moves visibly. The grid is an option (View > Sketch Grid, off by default): while it
   // is shown, the free coordinates snap to it instead, as SolidWorks' Grid/Snap does.
   var INFER_PX = { point: 9, curve: 7, align: 6 };
+  // lane NP (big sketches): what the inference tested (points projected, curves measured), read by smoke rfNP
+  var sketchPerf = UI.sketchPerf = { inferTested: 0, inferAll: 0 };   // (inferAll: what the old loops projected)
   var woken = [];   // sketch points the cursor passed over (inference lines align with them); reset per sketch
   // rfII: sketch lines the cursor passed over ("woken", as SolidWorks): a Line drawn from another point may then lock
   // parallel or square to one of them and the click adds Parallel / Perpendicular. { e, a, b } (the line as it was
@@ -703,8 +705,13 @@
     // rfA: … nor on any point sitting where one of them is (an ellipse centred on the origin: its minor axis click near
     // the centre snapped onto the origin, the centre again, and was refused)
     else cands = cands.filter(function (c) { return !st.pts.some(function (q) { return Math.abs(q[0] - c.pt[0]) < 1e-9 && Math.abs(q[1] - c.pt[1]) < 1e-9; }); });
-    var best = null, bestD = INFER_PX.point;
+    var best = null, bestD = INFER_PX.point, limP = 3 * INFER_PX.point * px;
+    sketchPerf.inferAll += cands.length;
+    // lane NP: a point farther than a few snap radii (in sketch units) is not projected to the screen at all (a
+    // customer DXF has 10,000 points; each projection is two matrix products); UI.sketchPerf counts what was tested
     cands.forEach(function (c) {
+      if (Math.abs(c.pt[0] - raw[0]) > limP || Math.abs(c.pt[1] - raw[1]) > limP) return;
+      sketchPerf.inferTested++;
       var s = scr(c.pt), d = Math.hypot(s[0] - mx, s[1] - my);
       if (d < bestD - 1e-9) { bestD = d; best = c; }
     });
@@ -932,19 +939,28 @@
   function curveSnap(f, pl, scr, tolPx, skip) {
     var best = null, bestD = tolPx;
     function S(uv) { return UI.worldToScreen(K.to3D(pl, uv[0], uv[1])); }
+    // lane NP: a line or circle whose box (grown by a few snap radii) misses the cursor is not projected (a 2,600-entity
+    // DXF: 5,000 projections per mouse move)
+    var c0 = UI.screenToPlane(scr[0], scr[1], pl), lim = c0 ? 3 * tolPx * pxSize(pl, scr[0], scr[1]) : Infinity;
+    sketchPerf.inferAll += f.entities.length;
+    function far(x0, y0, x1, y1) { return c0 && (c0[0] < Math.min(x0, x1) - lim || c0[0] > Math.max(x0, x1) + lim || c0[1] < Math.min(y0, y1) - lim || c0[1] > Math.max(y0, y1) + lim); }
     f.entities.forEach(function (e, i) {
       if (i === skip || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;
       if (e.t === 'line') {
+        // sketch-refine: an infinite line (or ray) runs on past the end(s) it has no end at
+        var inf = window.SketchSolver && window.SketchSolver.infSides ? window.SketchSolver.infSides(e) : null;
+        if (!inf && far(e.x1, e.y1, e.x2, e.y2)) return;
+        sketchPerf.inferTested++;
         var a = S([e.x1, e.y1]), b = S([e.x2, e.y2]), dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
         if (L2 < 1) return;
         var t = ((scr[0] - a[0]) * dx + (scr[1] - a[1]) * dy) / L2;
-        // sketch-refine: an infinite line (or ray) runs on past the end(s) it has no end at
-        var inf = window.SketchSolver && window.SketchSolver.infSides ? window.SketchSolver.infSides(e) : null;
         if ((t <= 0 && !(inf && inf.p1)) || (t >= 1 && !(inf && inf.p2))) return;
         var d = Math.hypot(scr[0] - (a[0] + t * dx), scr[1] - (a[1] + t * dy));
         if (d < bestD) { bestD = d; best = [e.x1 + t * (e.x2 - e.x1), e.y1 + t * (e.y2 - e.y1)]; best.e = i; }
       } else if (e.t === 'circle' || e.t === 'arc') {
-        var c = UI.screenToPlane(scr[0], scr[1], pl);
+        if (far(e.cx - e.r, e.cy - e.r, e.cx + e.r, e.cy + e.r)) return;
+        sketchPerf.inferTested++;
+        var c = c0;
         if (!c) return;
         var vx = c[0] - e.cx, vy = c[1] - e.cy, r = Math.hypot(vx, vy);
         if (r < 1e-12) return;
@@ -3387,11 +3403,15 @@
   var lastDimDown = null;   // { key, t } of the last press on a dimension value (double-click detection)
   function dimKey(it) { return it.rel != null ? 'r' + it.rel : it.auto ? 'a' + it.d.e + it.d.k + (it.d.i | 0) : 'd' + it.index; }
   function selectDim(it) {
+    // lane NP: the geometry is redrawn only when the selection held sketch geometry (its highlight goes); a dimension
+    // replacing a dimension redraws the labels alone (a 1,600-hole sketch: a whole redraw outlasted the 450 ms between
+    // the two presses of a double-click)
+    var prev = UI.selection ? UI.selection() : [], geo = prev.some(function (s) { return s.kind !== 'dim' && s.kind !== 'rel'; });
     if (it.rel != null) App.sel = { kind: 'rel', index: it.rel };
     else if (!it.auto) App.sel = { kind: 'dim', index: it.index };
     else return;
-    if (UI.openDimensionPM && UI.openDimensionPM(App.sel)) { UI.updateSketches(); return; }   // sketchdims: its Dimension PropertyManager
-    UI.closePM(); UI.updateSketches();
+    if (!(UI.openDimensionPM && UI.openDimensionPM(App.sel))) UI.closePM();   // sketchdims: its Dimension PropertyManager
+    if (geo) UI.updateSketches(); else { App.dimsStale = true; if (UI.drawDims) UI.drawDims(); }
   }
   function editDimItem(it) {
     if (it.d.driven && UI.drivenDimClick) { UI.drivenDimClick(it); return; }

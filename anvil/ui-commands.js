@@ -1903,9 +1903,9 @@
     var edgeList = [];
     function resolveList() {
       var sharp = App.edges.filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex !== null; });
-      edgeList = K.resolveEdges(f.edges.map(function (e) { return { at: e.at, chain: f.chain }; }), sharp, K.pickTol(App.model.units, isChamfer ? +f.d : +f.r));
+      edgeList = K.resolveEdges(f.edges.map(function (e) { return { at: e.at, chain: f.chain }; }), sharp, K.pickTol(App.model.units, isChamfer ? +f.d : +f.r), App.edgesMesh || App.mesh);
       // r4/features4: each pick's own edges, for its row in the selection list
-      perPick = f.edges.map(function (e) { try { return K.resolveEdges([{ at: e.at, chain: f.chain }], sharp, K.pickTol(App.model.units, isChamfer ? +f.d : +f.r)); } catch (er) { return []; } });
+      perPick = f.edges.map(function (e) { try { return K.resolveEdges([{ at: e.at, chain: f.chain }], sharp, K.pickTol(App.model.units, isChamfer ? +f.d : +f.r), App.edgesMesh || App.mesh); } catch (er) { return []; } });
       if (App.command) App.command.edgeList = edgeList;
       UI.updateHighlights();
     }
@@ -1958,7 +1958,7 @@
           // toggle: remove a spec whose resolved chain contains this edge, else add
           var hitIdx = -1;
           f.edges.forEach(function (spec, i) {
-            var chain = K.resolveEdges([{ at: spec.at, chain: f.chain }], App.edges.filter(function (x) { return !x.smooth && x.faces.length === 2; }), K.pickTol(App.model.units));
+            var chain = K.resolveEdges([{ at: spec.at, chain: f.chain }], App.edges.filter(function (x) { return !x.smooth && x.faces.length === 2; }), K.pickTol(App.model.units), App.edgesMesh || App.mesh);
             if (chain.indexOf(e) >= 0) hitIdx = i;
           });
           if (hitIdx >= 0) f.edges.splice(hitIdx, 1); else f.edges.push({ at: e.mid.slice(), chain: f.chain });

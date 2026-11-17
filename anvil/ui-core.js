@@ -3139,8 +3139,9 @@ var UI = (function () {
     });
   }
 
-  function lineGeometryFromPolylines(pl, polylines) {
-    var arr = [];
+  // lane NP: a sketch of BATCH_MIN entities or more draws one LineSegments per material (updateSketches)
+  var BATCH_MIN = 400;
+  function lineSegmentsInto(pl, polylines, arr) {
     polylines.forEach(function (l) {
       var n = l.pts.length, cnt = l.closed ? n : n - 1;
       for (var i = 0; i < cnt; i++) {
@@ -3148,6 +3149,10 @@ var UI = (function () {
         arr.push(a[0], a[1], a[2], b[0], b[1], b[2]);
       }
     });
+    return arr;
+  }
+  function lineGeometryFromPolylines(pl, polylines) {
+    var arr = lineSegmentsInto(pl, polylines, []);
     var g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
     return g;
@@ -3274,6 +3279,7 @@ var UI = (function () {
       if (active && App.sketchDragging && App.sketchState) state = App.sketchState;   // mid-drag: same relations, same state
       else if (active && window.SketchSolver) { try { SketchSolver.clean(f); state = App.sketchState = cachedAnalysis(f); } catch (err) { state = App.sketchState = null; } }
       var stateMat = { full: mats.sketchFull, over: mats.sketchOver, conflict: mats.sketchConflict }, ptsBy = {};
+      var batch = f.entities.length >= BATCH_MIN ? {} : null;   // lane NP
       var layerStyle = UI.sketchLayerStyle;   // sketch-layers (ui-sketch-layers.js): hidden layers, layer colours, dashed layers
       f.entities.forEach(function (e, i) {
         var ly = layerStyle ? layerStyle(f, e, active) : null;
@@ -3296,12 +3302,33 @@ var UI = (function () {
         if (!pls.length) return;
         var baseMat = mat, dashed = e.construction || !!(ly && ly.dashed);
         if (dashed && !mat.isLineDashedMaterial) mat = dashedMat(mat);   // construction geometry / centerlines (and BEND-type layers): dashed
-        var ls = new THREE.LineSegments(lineGeometryFromPolylines(pl, pls), mat);
-        if (mat.isLineDashedMaterial) ls.computeLineDistances();   // rfBR: a selected entity is dashed too
-        ls.userData = { sketch: f.id, index: i };
+        // lane NP (big sketches): the segments of every entity drawn in one material go into one LineSegments (a
+        // 1,600-hole sketch was 1,600 objects and 1,600 draw calls per frame); a dashed material's batch keeps each
+        // entity's dash phase (its own line distances). Sketches under BATCH_MIN entities keep one object per entity
+        // (userData.index: tests and tools read single entities' objects)
+        if (!batch) {
+          var ls = new THREE.LineSegments(lineGeometryFromPolylines(pl, pls), mat);
+          if (mat.isLineDashedMaterial) ls.computeLineDistances();   // rfBR: a selected entity is dashed too
+          ls.userData = { sketch: f.id, index: i };
+          if (active) ls.renderOrder = 10;
+          groups.sketches.add(ls);
+          if (active) sketchEndPoints(f, i, e, baseMat, ptsBy);
+          return;
+        }
+        var bt = batch[mat.uuid] || (batch[mat.uuid] = { mat: mat, arr: [], dist: mat.isLineDashedMaterial ? [] : null });
+        var n0 = bt.arr.length;
+        lineSegmentsInto(pl, pls, bt.arr);
+        if (bt.dist) { var run = 0, A = bt.arr; for (var q = n0; q < A.length; q += 6) { bt.dist.push(run); run += Math.hypot(A[q + 3] - A[q], A[q + 4] - A[q + 1], A[q + 5] - A[q + 2]); bt.dist.push(run); } }
+        if (active) sketchEndPoints(f, i, e, baseMat, ptsBy);
+      });
+      if (batch) Object.keys(batch).forEach(function (k) {
+        var bt = batch[k], g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(bt.arr, 3));
+        if (bt.dist) g.setAttribute('lineDistance', new THREE.Float32BufferAttribute(bt.dist, 1));
+        var ls = new THREE.LineSegments(g, bt.mat);
+        ls.userData = { sketch: f.id };
         if (active) ls.renderOrder = 10;
         groups.sketches.add(ls);
-        if (active) sketchEndPoints(f, i, e, baseMat, ptsBy);
       });
       if (active) addSketchPoints(pl, ptsBy);
       // sketch-layers: closed regions shaded and open ends marked in the sketch being edited (View ▸ Sketch Regions)
