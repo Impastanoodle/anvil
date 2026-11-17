@@ -24,7 +24,13 @@
       var T = 0.0598, c = 'p.units("in");\np.sheet(' + T + ', ' + T + ', 0.5);\nvar s = p.sketch("Top").rect(0, 0, 8, 8);\n' +
         'for (var i = 0; i < 20; i++) for (var j = 0; j < 20; j++) s.circle(0.5 + i * 0.36, 0.5 + j * 0.36, 0.0625);\n' +
         's.end().baseFlange(' + T + ');\np.flange(1, [[4, ' + T + ', 0], [8, ' + T + ', -4], [4, ' + T + ', -8], [0, ' + T + ', -4]]);\n';
-      var st = K.coplanarStats, c0 = st.compares, t0 = Date.now(), b = build(c), ms = Date.now() - t0;
+      // lane panelperf (rfOE): built with K.smLocal off. With it on, a body this size (over 20 000 polygons) finds the
+      // picked edges beside the picks and coplanarBody is not called at all (rfOE pins that); this row keeps counting
+      // coplanarBody's own comparisons on the whole-body path, which smaller bodies and unanswered picks still take
+      var st = K.coplanarStats, c0 = st.compares, t0 = Date.now(), wasOn = K.smLocal.on, b;
+      K.smLocal.on = false;
+      try { b = build(c); } finally { K.smLocal.on = wasOn; }
+      var ms = Date.now() - t0;
       noErrors(b);
       var n = b.build.body.polygons.length, made = st.compares - c0;
       assert(made > 0, 'coplanarBody not called');
