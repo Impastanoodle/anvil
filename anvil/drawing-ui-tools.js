@@ -953,7 +953,24 @@
       { label: 'Cancel', action: UI.closeModal }
     ] });
   }
-  function safeName() { return (doc().name + '_' + (App.model.name || 'part')).replace(/[^\w\-]+/g, '_'); }
+  // (rfOC, shop-flow 4 B3) the default file name of every export of the drawing (PDF, DXF, DWG, SVG) and of its own
+  // Save: SolidWorks names them after the document's file. The drawing's own file once it is saved (App.drawingPath,
+  // the Windows app), else the model's saved name (App.filePath in the Windows app, App.fileName in the browser's
+  // saved documents: TRAY-ASM, not the assembly's internal title Assem1); only a model never saved keeps the old
+  // Draw1_Part1. Characters Windows does not allow in a file name become '_'.
+  function fileBase(p) { return String(p || '').replace(/^.*[\\\/]/, '').replace(/\.(anvil\.json|anvil\.js|json|js|drawing|sldprt|sldasm|slddrw)$/i, ''); }
+  function savedDocName() {
+    var dc = doc(), dp = App.drawingPath;
+    if (dp && dp.path && dc && dp.name === dc.name && fileBase(dp.path)) return fileBase(dp.path);
+    if (App.filePath && fileBase(App.filePath)) return fileBase(App.filePath);
+    if (App.fileName && fileBase(App.fileName)) return fileBase(App.fileName);
+    return null;
+  }
+  function safeName() {
+    var nm = savedDocName();
+    if (nm) return nm.replace(/[\\\/:*?"<>|\x00-\x1f]+/g, '_').trim() || 'Drawing';
+    return (doc().name + '_' + (App.model.name || 'part')).replace(/[^\w\-]+/g, '_');
+  }
   // exportAs('dxf', { version }): the export dialog has a Version choice, R12 (AC1009) or R2000 (AC1015, true
   // ellipses and line weights; what AutoCAD 2000 and later, and the DWG converters, read natively); the choice is
   // remembered for the session (D.dxfVersion)
@@ -1750,7 +1767,8 @@
     if (!d) return;
     var w = sheetView(d.view), src = d.auto && d.kind !== 'ordinate' && d.kind !== 'baseline' ? Drawing.dimSource(App.model, App.build, w, d) : null;
     var tol = d.tol || { type: 'none' }, u = units();
-    var values = { value: d.value != null ? +d.value.toFixed(8) : 0, tolType: tol.type || 'none', plus: tol.plus != null ? tol.plus : 0, minus: tol.minus != null ? tol.minus : 0, prec: d.prec != null ? String(d.prec) : 'auto', tolPrec: tol.prec != null && tol.prec !== '' ? String(tol.prec) : 'auto', label: d.label != null ? d.label : '<DIM>', flip: !!d.flip };
+    var dualDoc = Drawing.dualStyle(doc()).on, dualKind = d.kind !== 'angrun' && !(d.kind === 'angle' && !d.arcLen) && !(d.kind === 'rad' && d.slot);   // (rfOC)
+    var values = { dual: d.dual != null ? !!d.dual : dualDoc, value: d.value != null ? +d.value.toFixed(8) : 0, tolType: tol.type || 'none', plus: tol.plus != null ? tol.plus : 0, minus: tol.minus != null ? tol.minus : 0, prec: d.prec != null ? String(d.prec) : 'auto', tolPrec: tol.prec != null && tol.prec !== '' ? String(tol.prec) : 'auto', label: d.label != null ? d.label : '<DIM>', flip: !!d.flip };
     var single = d.kind !== 'ordinate' && d.kind !== 'baseline' && d.kind !== 'angrun';
     var primary = src ? [{ type: 'number', key: 'value', label: 'Value', unit: 'u' }, { type: 'static', label: 'Drives', value: src.featureName + ' (' + src.what + ')' + (src.expr ? ' — equation ' + src.expr : '') }]
       : [{ type: 'static', label: 'Value', value: single ? (d.kind === 'angle' && !d.arcLen ? (Math.round(d.value * 1e4) / 1e4) + '°' : Drawing.numText(d.value, u) + ' ' + u) + (d.auto ? ' (no model parameter found)' : ' (reference: driven by the model)') : d.text }];
@@ -1777,7 +1795,9 @@
           { type: 'select', key: 'prec', label: 'Unit precision', icon: 'dimPrecision', options: PREC_OPTIONS },
           { type: 'select', key: 'tolPrec', label: 'Tolerance precision', icon: 'dimPrecision', options: TOL_PREC_OPTIONS, show: function (v) { return v.tolType === 'bilateral' || v.tolType === 'symmetric'; } }   // (rfKX)
         ] },
-        { title: 'Dimension Text', show: function () { return d.kind !== 'angrun'; }, fields: [{ type: 'text', key: 'label', label: 'Text (<DIM> is the value)' }] },
+        { title: 'Dimension Text', show: function () { return d.kind !== 'angrun'; }, fields: [{ type: 'text', key: 'label', label: 'Text (<DIM> is the value)' },
+          // (rfOC) SolidWorks 2024's Value tab: Dual Dimension under the dimension text, for this dimension over the document's setting
+          { type: 'check', key: 'dual', label: 'Dual Dimension', show: function () { return dualKind; } }] },
         { title: 'Leaders', show: function () { return d.kind !== 'angrun' && d.kind !== 'pathlen'; }, fields: [{ type: 'check', key: 'flip', label: 'Flip arrows (outside)' }] }
       ],
       onChange: function (v, key) {
@@ -1823,8 +1843,10 @@
     var label = String(v.label == null ? '' : v.label);
     var tol = v.tolType && v.tolType !== 'none' ? { type: v.tolType, plus: Math.abs(+v.plus || 0), minus: v.tolType === 'symmetric' ? Math.abs(+v.plus || 0) : Math.abs(+v.minus || 0) } : null;
     if (tol && (tol.type === 'bilateral' || tol.type === 'symmetric') && v.tolPrec != null && v.tolPrec !== 'auto' && v.tolPrec !== '') tol.prec = v.tolPrec === 'nominal' ? 'nominal' : +v.tolPrec;   // (rfKX)
+    var dualDoc = doc() ? Drawing.dualStyle(doc()).on : false;
     return { tol: tol,
-      prec: v.prec === 'auto' || v.prec == null ? null : +v.prec, label: label.trim() === '' || label === '<DIM>' ? null : label, flip: !!v.flip };
+      prec: v.prec === 'auto' || v.prec == null ? null : +v.prec, label: label.trim() === '' || label === '<DIM>' ? null : label, flip: !!v.flip,
+      dual: v.dual == null || !!v.dual === dualDoc ? null : !!v.dual };   // (rfOC: stored only where it differs from the document)
   }
   // (rfLG) the model sources of a diameter model item that counts several holes (d.count > 1): src, then the sketch
   // circle of every other visible / hidden circle of the view with the same size (each once)
@@ -1871,8 +1893,9 @@
     openDrawingPM({
       title: 'Hole Callout', icon: 'holeCallout', command: 'holeCallout',
       message: 'Reads ' + a.text + '. Text: <HOLE> is the callout from the hole; a new line starts with \\n.',
-      values: { text: f.annotation.text || '<HOLE>', prec: f.annotation.prec != null ? String(f.annotation.prec) : 'auto' },
-      groups: [{ title: 'Dimension Text', fields: [{ type: 'text', key: 'text', label: 'Text' }, { type: 'select', key: 'prec', label: 'Unit precision', icon: 'dimPrecision', options: PREC_OPTIONS }] }],
+      values: { text: f.annotation.text || '<HOLE>', prec: f.annotation.prec != null ? String(f.annotation.prec) : 'auto', dual: f.annotation.dual != null ? !!f.annotation.dual : Drawing.dualStyle(doc()).on },
+      groups: [{ title: 'Dimension Text', fields: [{ type: 'text', key: 'text', label: 'Text' }, { type: 'select', key: 'prec', label: 'Unit precision', icon: 'dimPrecision', options: PREC_OPTIONS },
+        { type: 'check', key: 'dual', label: 'Dual Dimension' }] }],   // (rfOC)
       onOK: function (v) {
         edit(function (dc) {
           var g = Drawing.findAnnotation(dc, a.id);
@@ -1880,12 +1903,14 @@
           var t = String(v.text || '').replace(/\\n/g, '\n');
           if (!t.trim() || t === '<HOLE>') delete g.annotation.text; else g.annotation.text = t;
           if (v.prec === 'auto') delete g.annotation.prec; else g.annotation.prec = +v.prec;
+          if (v.dual == null || !!v.dual === Drawing.dualStyle(dc).on) delete g.annotation.dual; else g.annotation.dual = !!v.dual;   // (rfOC)
         });
       }
     });
   }
   // Tools ▸ Options ▸ Document Properties: Detailing (auto insert on view creation), centre marks, balloons
   function cmdDocProps() {
+    DW.docPropsExtra = null;   // (a page another file adds sets it again after this)
     var dc = doc(), o = Drawing.docOptions(dc);
     var cm = el('input', { type: 'checkbox' }), cl = el('input', { type: 'checkbox' }), ex = el('input', { type: 'checkbox' }), bq = el('input', { type: 'checkbox' });
     var sz = el('input', { type: 'number', step: units() === 'in' ? '0.01' : '0.5', min: '0.01', value: String(o.markSize) });
@@ -1907,6 +1932,22 @@
     [['', 'Same as nominal']].concat([0, 1, 2, 3, 4, 5, 6, 7, 8].map(function (n) { return [String(n), precText(n)]; })).forEach(function (x) {
       var op = el('option', { value: x[0], text: x[1] }); if (String(o.tolPrec == null ? '' : o.tolPrec) === x[0]) op.selected = true; tpr.appendChild(op);
     });
+    // (rfOC, lane drawdual) Dimensions > Dual dimensions display (off by default; Show units for dual display; Top /
+    // Bottom / Left / Right, SolidWorks' default Bottom) and Units > Dual Dimension Length (unit, decimals; default the
+    // other system: millimetres .12 on an inch drawing, inches .123 on a millimetre one)
+    var du = Drawing.dualStyle(dc), duOn = el('input', { type: 'checkbox', id: 'dw-opt-dual' }), duSU = el('input', { type: 'checkbox', id: 'dw-opt-dualunits' });
+    duOn.checked = du.on; duSU.checked = du.showUnits;
+    var duPos = el('div', { class: 'dw-opt-radios', id: 'dw-opt-dualpos' });
+    [['top', 'Top'], ['bottom', 'Bottom'], ['left', 'Left'], ['right', 'Right']].forEach(function (x) {
+      var r = el('input', { type: 'radio', name: 'dw-opt-dualpos', value: x[0] });
+      if (du.pos === x[0]) r.checked = true;
+      duPos.appendChild(el('label', { class: 'dw-opt' }, [r, el('span', { text: x[1] })]));
+    });
+    var duU = el('select', { id: 'dw-opt-dualunit' }), duP = el('select', { id: 'dw-opt-dualprec' });
+    [['in', 'Inches'], ['mm', 'Millimeters']].forEach(function (x) { var op = el('option', { value: x[0], text: x[1] }); if (du.units === x[0]) op.selected = true; duU.appendChild(op); });
+    [0, 1, 2, 3, 4, 5, 6, 7, 8].forEach(function (n) { var op = el('option', { value: String(n), text: precText(n) }); if (du.prec === n) op.selected = true; duP.appendChild(op); });
+    function dualSync() { duSU.disabled = !duOn.checked; duPos.querySelectorAll('input').forEach(function (r) { r.disabled = !duOn.checked; }); }
+    duOn.addEventListener('change', dualSync); dualSync();
     var body = el('div', { class: 'dw-props dw-docprops' }, [
       el('div', { class: 'dw-tb-head', text: 'Detailing ▸ Auto insert on view creation' }),
       chk(cm, 'Center marks-holes'), chk(cl, 'Centerlines'),
@@ -1918,16 +1959,24 @@
       el('label', { text: 'Decimal places' }), pr,
       el('label', { text: 'Tolerance precision' }), tpr
     ].concat(inch ? [chk(fr, 'Fractions'), el('label', { text: 'Finest fraction' }), dn] : []).concat([
+      el('div', { class: 'dw-tb-head', text: 'Units ▸ Dual Dimension Length' }),
+      el('label', { text: 'Unit' }), duU, el('label', { text: 'Decimals' }), duP,
+      el('div', { class: 'dw-tb-head', text: 'Dimensions ▸ Dual dimensions display' }),
+      chk(duOn, 'Dual dimensions display'), chk(duSU, 'Show units for dual display'), duPos
+    ]).concat([
       el('div', { class: 'dw-tb-head', text: 'Sheet Metal ▸ Flat-pattern views' }),
       chk(fd, 'Overall dimensions (blank width and height)'), chk(fs, 'FLAT SIZE note'),
       el('label', { text: 'Bend notes' }), bn
     ]));
     UI.showModal({ title: 'Document Properties - Detailing', body: body, buttons: [
-      { label: 'OK', primary: true, id: 'dw-opt-ok', action: function () { UI.closeModal(); setDocOptions({ autoCenterMarks: cm.checked, autoCenterlines: cl.checked, extLines: ex.checked, markSize: +sz.value, balloonQty: bq.checked,
-        flatDims: fd.checked, flatSizeNote: fs.checked, bendNotes: bn.value, dimPrec: pr.value === '' ? '' : +pr.value, tolPrec: tpr.value === '' ? '' : +tpr.value, fractions: inch ? fr.checked : o.fractions, fracDenom: +dn.value || 64 }); } },
+      { label: 'OK', primary: true, id: 'dw-opt-ok', action: function () { UI.closeModal(); var extra = DW.docPropsExtra ? DW.docPropsExtra() : {}; DW.docPropsExtra = null; setDocOptions(Object.assign(extra, { autoCenterMarks: cm.checked, autoCenterlines: cl.checked, extLines: ex.checked, markSize: +sz.value, balloonQty: bq.checked,
+        flatDims: fd.checked, flatSizeNote: fs.checked, bendNotes: bn.value, dimPrec: pr.value === '' ? '' : +pr.value, tolPrec: tpr.value === '' ? '' : +tpr.value, fractions: inch ? fr.checked : o.fractions, fracDenom: +dn.value || 64,
+        dual: duOn.checked ? true : '', dualShowUnits: duSU.checked ? true : '', dualPos: dualPosOf(duPos) === 'bottom' ? '' : dualPosOf(duPos),   // (rfOC: defaults are not stored)
+        dualUnits: duU.value === (inch ? 'mm' : 'in') ? '' : duU.value, dualPrec: +duP.value === (duU.value === 'mm' ? 2 : 3) ? '' : +duP.value })); } },
       { label: 'Cancel', action: UI.closeModal }
     ] });
   }
+  function dualPosOf(box) { var r = box.querySelector('input:checked'); return r ? r.value : 'bottom'; }
   function setDocOptions(props) {
     edit(function (dc) {
       var o = dc.options || (dc.options = {});
@@ -3902,7 +3951,7 @@
   DW.cmdHoleTable = cmdHoleTable; DW.cmdHoleTableProps = cmdHoleTableProps; DW.holeTableAt = holeTableAt; DW.cmdSymbolAN = cmdSymbolAN; DW.cmdCloud = cmdCloud;   // (rfAN)
   DW.cmdBrokenOut = cmdBrokenOut; DW.cmdAreaHatch = cmdAreaHatch; DW.cmdAreaHatchTool = cmdAreaHatchTool; DW.cmdAreaFill = cmdAreaFill; DW.fillAt = fillAt;   // (lane DW)   // (rfAD)
   DW.cmdMagLine = cmdMagLine; DW.magLineClick = magLineClick; DW.magOverlay = magOverlay; DW.magSnap = magSnap; DW.magAt = magAt; DW.deleteMagLine = deleteMagLine;   // (rfAG)
-  DW.smartDimClick = smartDimClick; DW.smartDimMove = smartDimMove; DW.smartDimOverlay = smartDimOverlay; DW.pickAt = pickAt; DW.saveDWG = saveDWG;
+  DW.smartDimClick = smartDimClick; DW.smartDimMove = smartDimMove; DW.smartDimOverlay = smartDimOverlay; DW.pickAt = pickAt; DW.saveDWG = saveDWG; DW.safeName = safeName; DW.savedDocName = savedDocName;
   DW.cmdNote = cmdNote; DW.noteClick = noteClick; DW.noteLeaderOverlay = noteLeaderOverlay; DW.noteAt = noteAt; DW.openNoteEdit = openNoteEdit; DW.cmdFlatView = cmdFlatView; DW.setFlatViewProps = setFlatViewProps; DW.flatReady = flatReady; DW.sheetMetal = sheetMetal;
   DW.cmdStandard3View = cmdStandard3View; DW.cmdModelView = cmdModelView; DW.startPlacing = startPlacing; DW.placePending = placePending; DW.sheetView = sheetView;
   DW.cmdProjectedView = cmdProjectedView; DW.projectPlacement = projectPlacement; DW.projectClick = projectClick; DW.cmdSectionView = cmdSectionView; DW.sectionLineAt = sectionLineAt;

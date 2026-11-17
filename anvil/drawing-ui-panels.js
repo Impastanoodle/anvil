@@ -110,11 +110,12 @@
     });
     var sec = el('div', { class: 'dw-docprops-dims' }, kids);
     body.appendChild(sec);
-    if (ok) ok.addEventListener('click', function () {
+    // (rfOC) handed to the dialog's own OK, so the whole dialog is one edit (one undo step; it was two)
+    DW.docPropsExtra = function () {
       var props = {}, df = Drawing.DIM_SIZES[z.units];
       rows.forEach(function (r) { var x = +inputs[r[0]].value; props[r[0]] = x > 0 && Math.abs(x - df[r[0]]) > 1e-12 ? x : ''; });
-      setDocOptions(props);
-    }, true);
+      return props;
+    };
   };
 
   // ------------------------------------------------------------------ rfQ: several sheets in the exports
@@ -140,7 +141,7 @@
     var n = Drawing.sheetCount(dc);
     if (kind === 'pdf' && n > 1) {
       settle();
-      var nm = (dc.name + '_' + (App.model.name || 'part')).replace(/[^\w\-]+/g, '_');
+      var nm = DW.safeName();   // (rfOC: after the saved document, as every export)
       UI.exportDialog('Save Drawing as PDF (' + n + ' sheets, one page each)', nm + '.pdf', Drawing.toPDF(everySheet()), 'application/pdf');
       return;
     }
@@ -347,6 +348,7 @@
     r.appendChild(el('span', { class: 'nm', text: opts.name, title: opts.title || opts.name }));
     if (opts.badge) r.appendChild(el('span', { class: 'badge', text: opts.badge }));
     Object.keys(opts.data || {}).forEach(function (k) { r.dataset[k] = opts.data[k]; });
+    r.dataset.depth = String(opts.depth || 0);   // (rfOC: the filter keeps a match's parents)
     if (opts.click) r.addEventListener('click', opts.click);
     if (opts.dbl) r.addEventListener('dblclick', opts.dbl);
     if (opts.menu) r.addEventListener('contextmenu', function (e) { e.preventDefault(); UI.showMenu(e.clientX, e.clientY, opts.menu()); });
@@ -428,6 +430,30 @@
         menu: function () { return [{ label: 'Delete Balloons', action: function () { edit(function (dc2) { Drawing.deleteBalloons(dc2, v.id); }); } }]; } }));
     });
     allSheets.slice(act + 1).forEach(otherSheet);
+    filterTree(t);
+  }
+  // (rfOC, lane drawdual; the part tree's rfNR2) the filter box: a row shows when its name holds the typed text (any
+  // case), with the rows it sits under (its sheet, its view) so it is found where it is; the drawing's own row always
+  // shows. Typing filters at once; x or Esc in the box clears it (ui-panels.js clearTreeFilter).
+  function treeFilterText() { var inp = $('tree-filter-input'); return inp && D.active ? String(inp.value || '').trim().toLowerCase() : ''; }
+  function filterTree(t) {
+    var f = treeFilterText(), rows = [].slice.call(t.children), keep = [], stack = [];
+    t.classList.toggle('dw-filtered', !!f);
+    if (!f) return;
+    rows.forEach(function (r, i) {
+      var dp = +r.dataset.depth || 0, nm = r.querySelector('.nm');
+      while (stack.length && stack[stack.length - 1].d >= dp) stack.pop();
+      if (dp === 0 || (nm && nm.textContent.toLowerCase().indexOf(f) >= 0)) { keep[i] = true; stack.forEach(function (q) { keep[q.i] = true; }); }
+      stack.push({ d: dp, i: i });
+    });
+    rows.forEach(function (r, i) { if (!keep[i]) r.style.display = 'none'; });
+  }
+  var filterInp = $('tree-filter-input');
+  if (filterInp) {
+    filterInp.addEventListener('input', function () { if (D.active) renderTree(); });
+    // (x and Esc clear the box in ui-panels.js without an input event: the tree follows them too)
+    filterInp.addEventListener('keydown', function (e) { if (e.key === 'Escape' && D.active) renderTree(); });
+    if (filterInp.parentNode) filterInp.parentNode.addEventListener('click', function () { setTimeout(function () { if (D.active) renderTree(); }, 0); }, true);   // (the x stops its click: caught on the way down, drawn after it cleared)
   }
 
   // ------------------------------------------------------------------ ribbon, menus, keys
@@ -1438,7 +1464,9 @@
     if (!doc()) return null;
     settle();
     var f = Drawing.drawingFile(doc(), App.model, App.fileName || null);
-    if (UI.download) UI.download(String(doc().name || 'Draw1').replace(/[^\w\-]+/g, '_') + '.drawing', JSON.stringify(f, null, 1), 'application/json');
+    // (rfOC) named after the drawing's own file, else the model's saved name (SolidWorks: TRAY-ASM.SLDDRW), else Draw1
+    var own = DW.savedDocName && DW.savedDocName();
+    if (UI.download) UI.download(own ? DW.safeName() + '.drawing' : String(doc().name || 'Draw1').replace(/[^\w\-]+/g, '_') + '.drawing', JSON.stringify(f, null, 1), 'application/json');
     DW.markDrawingClean();
     UI.setStatus('Saved ' + doc().name + '.drawing (it refers to ' + (App.model.name || 'the part') + (App.fileName ? ', file "' + App.fileName + '"' : '') + ').');
     return f;

@@ -1146,6 +1146,18 @@
     return { prec: o.dimPrec != null && o.dimPrec !== '' && +o.dimPrec >= 0 ? Math.min(8, Math.round(+o.dimPrec)) : null, fractions: !!o.fractions, denom: +o.fracDenom > 0 ? +o.fracDenom : 64,
       tolPrec: o.tolPrec != null && o.tolPrec !== '' && +o.tolPrec >= 0 ? Math.min(8, Math.round(+o.tolPrec)) : null };
   }
+  // (rfOC, lane drawdual) dualStyle(doc) -> { on, units, prec, pos, showUnits }: SolidWorks 2024's Document Properties >
+  // Dimensions > Dual dimensions display (doc.options.dual, off by default; dualShowUnits: Show units for dual display;
+  // dualPos: 'top' | 'bottom' (default) | 'left' | 'right') and Units > Dual Dimension Length (dualUnits, dualPrec:
+  // default the other system, millimetres .12 on an inch drawing, inches .123 on a millimetre one). A dimension's own
+  // d.dual (true / false, its PM's Dual Dimension box) overrides `on`; render's compute holds it in _.DUAL.
+  var DUAL_POS = ['top', 'bottom', 'left', 'right'];
+  function dualStyle(doc) {
+    var o = (doc && doc.options) || {}, inch = !!doc && doc.units === 'in';
+    var u = o.dualUnits === 'in' || o.dualUnits === 'mm' ? o.dualUnits : inch ? 'mm' : 'in';
+    var p = o.dualPrec != null && o.dualPrec !== '' && +o.dualPrec >= 0 ? Math.min(8, Math.round(+o.dualPrec)) : u === 'mm' ? 2 : 3;
+    return { on: !!o.dual, units: u, prec: p, pos: DUAL_POS.indexOf(o.dualPos) >= 0 ? o.dualPos : 'bottom', showUnits: !!o.dualShowUnits };
+  }
   // (rfT) the dimension style's sizes (Document Properties > Dimensions), in the drawing's units: ANSI inch (ASME
   // Y14.2 / SolidWorks' ANSI template) .125 text, .125 x .042 arrows (3:1), a .0625 gap from the part and .125 beyond
   // the dimension line; ISO millimetre drawings keep 3.5 text, 3 x 1 arrows, 1.5 gap, 2 beyond. doc.options.dimText,
@@ -1792,15 +1804,21 @@
     if (d.slot) return d.view + ':slot:' + d.slot.w.toFixed(4) + 'x' + d.slot.len.toFixed(4);
     return d.view + ':' + d.kind + ':' + (d.kind === 'dia' || d.kind === 'rad' ? d.value.toFixed(4) : d.a.concat(d.b).map(function (x) { return x.toFixed(4); }).join(','));
   }
+  // (rfOC) the text with its dual value in brackets when Dual dimensions display is on for it (drawing-annotations.js
+  // dualOf: angles, angular running sets and slot callouts are not doubled); dimText0 is the primary text alone
   function dimText(d, units) {
+    var t = dimText0(d, units);
+    return _.dualText ? _.dualText(d, units, t) : t;
+  }
+  function dimText0(d, units) {
     // (lane CT) an angular running set: its values from 0° on; a path length: its total
     if (d.kind === 'angrun') return ['0°'].concat((d.values || []).map(function (x) { return D.ctAngleText(x, d.prec); })).join(', ');
     if (d.kind === 'pathlen' && !(d.prec != null || d.tol || d.label != null)) return fmtDim(d.value, units);
     if (d.kind === 'ordinate' || d.kind === 'baseline') {
       var p = d.prec != null && d.prec !== '' ? +d.prec : null;
-      return (d.kind === 'ordinate' ? ['0'] : []).concat((d.values || []).map(function (x, i) {
+      return (d.kind === 'ordinate' ? ['0' + (_.dualSuffix ? _.dualSuffix(d, 0, units) : '')] : []).concat((d.values || []).map(function (x, i) {
         var vp = d.valueProps && d.valueProps[i];
-        return vp && D.ordinateValueText ? D.ordinateValueText(Math.abs(x), vp, units, p) : D.numText(Math.abs(x), units, p);
+        return (vp && D.ordinateValueText ? D.ordinateValueText(Math.abs(x), vp, units, p) : D.numText(Math.abs(x), units, p)) + (_.dualSuffix ? _.dualSuffix(d, Math.abs(x), units) : '');
       })).join(', ');
     }
     if (d.prec != null || d.tol || d.label != null || d.kind === 'chamfer') return D.dimLabel(d, units).text;
@@ -2823,7 +2841,7 @@
   D.addSheet = addSheet; D.deleteSheet = deleteSheet; D.renameSheet = renameSheet; D.moveViewToSheet = moveViewToSheet;
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
   D.standard3View = standard3View; D.partViews = partViews; D.plateOf = plateOf; D.extentsOf = extentsOf; D.layout = layoutViews; D.moveView = moveView; D.deleteView = deleteView; D.viewDependents = viewDependents; D.findView = findView;
-  D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.autoDims = autoDims; D.modelItems = modelItems; D.dimSizes = dimSizes; D.dimGeometry = dimGeometry; D.DIM_SIZES = DIM_SIZES; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
+  D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.dualStyle = dualStyle; D.DUAL_POS = DUAL_POS; _.dimText0 = dimText0; D.autoDims = autoDims; D.modelItems = modelItems; D.dimSizes = dimSizes; D.dimGeometry = dimGeometry; D.DIM_SIZES = DIM_SIZES; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
   D.arcSlotsIn = arcSlotsIn; D.sketchOrdinates = sketchOrdinates; D.sketchDistances = sketchDistances;
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;
   D.bomRows = bomRows; D.BOM_ANCHORS = BOM_ANCHORS; D.bomPropertyNames = bomPropertyNames; D.bomBox = bomBox; D.autoBalloon = autoBalloon; D.deleteBalloons = deleteBalloons; D.balloonSpots = balloonSpots;

@@ -365,7 +365,7 @@
     D.prog = { doc: doc(), insert: !!(o && o.insert), t0: t0 };
     markDrawingClean();
     $('app').classList.add('drawing-mode');
-    D.root.hidden = false; D.tree.hidden = false;
+    D.root.hidden = false; D.tree.hidden = false; treeFilterHome(true);
     App.ribbonTab = 'View Layout';   // (SolidWorks' first drawing CommandManager tab, r12/drawui12)
     UI.refreshRibbon();
     UI.renderMenuBar();
@@ -374,6 +374,17 @@
     D.firstPaintMs = performance.now() - t0;
     UI.setStatus('Drawing ' + doc().name + (isAsm() ? ' of assembly ' + App.model.name + ': Auto Balloon numbers the components after the Bill of Materials' : '') + ': drag a view to move it, Smart Dimension (D) to dimension an edge or circle, wheel to zoom.');
   }
+  // (rfOC, lane drawdual) the FeatureManager's filter box serves the drawing tree too (SolidWorks has it on top of the
+  // drawing's FeatureManager): while a drawing is open the box (#tree-filter, with its x) sits over #drawing-tree and
+  // goes back over the part tree after; the text is cleared on the way in and out (each document filters its own tree)
+  function treeFilterHome(drawing) {
+    var f = $('tree-filter'), home = drawing ? D.tree : $('tree');
+    if (!f || !home || !home.parentNode) return;
+    var inp = $('tree-filter-input');
+    if (inp && inp.value) { if (UI.clearTreeFilter) UI.clearTreeFilter(); else inp.value = ''; }
+    if (f.nextSibling !== home) home.parentNode.insertBefore(f, home);
+  }
+  DW.treeFilterHome = treeFilterHome;
   // ownPM(): the open PropertyManager is one of the drawing's own (openDrawingPM marks #app with dw-pm). Closing the
   // drawing cancels only that one, never a part / assembly PM opened since (r14/fixes14).
   function ownPM() { return !!(UI.hasPM && UI.hasPM() && $('app').classList.contains('dw-pm')); }
@@ -384,7 +395,7 @@
     DW.closeInlineEdit(false);
     D.active = false; D.tool = null; D.pending = null;
     $('app').classList.remove('drawing-mode', 'dw-pm');
-    D.root.hidden = true; D.tree.hidden = true;
+    D.root.hidden = true; D.tree.hidden = true; treeFilterHome(false);
     App.ribbonTab = 'Features';
     UI.setFmTab('tree');
     UI.refreshRibbon();
@@ -405,7 +416,7 @@
     DW.closeInlineEdit(false);
     D.active = false; D.tool = null; D.pending = null; D.sel = null; D.hover = null;
     $('app').classList.remove('drawing-mode', 'dw-pm');
-    D.root.hidden = true; D.tree.hidden = true;
+    D.root.hidden = true; D.tree.hidden = true; treeFilterHome(false);
     var m = next || App.model;
     App.ribbonTab = m && m.type === 'assembly' ? 'Assembly' : 'Features';
     UI.setFmTab('tree');

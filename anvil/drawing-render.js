@@ -32,6 +32,7 @@
     _.DIMSTYLE = D.dimStyle(doc); _.CTX = { model: model, build: ctx && ctx.build || null, mesh: mesh };
     if (model) _.lastModel = model;   // (rfDN: excludedBodies outside compute)
     var prevGeo = _.DIMGEO; _.DIMGEO = D.dimGeometry(doc);
+    var prevDual = _.DUAL; _.DUAL = D.dualStyle(doc);   // (rfOC) Dual dimensions display
     var r;
     try {
       if (!ctx || !ctx.lazy) r = computeSheet(doc, mesh, model, ctx);
@@ -40,12 +41,12 @@
         _.LAZY = { mesh: mesh, missing: [], keys: {} };
         try { r = computeSheet(doc, mesh, model, ctx); r.pending = _.LAZY.missing; } finally { _.LAZY = prev; }
       }
-    } finally { _.DIMSTYLE = prevStyle; _.CTX = prevCtx; _.DIMGEO = prevGeo; }
+    } finally { _.DIMSTYLE = prevStyle; _.CTX = prevCtx; _.DIMGEO = prevGeo; _.DUAL = prevDual; }
     // (rfV) then the view kinds' marks (drawing-views.js: typed sections' cutting lines, breaks, auxiliary arrows) and
     // the angle dimensions (drawing-annotations.js), which need the views where they finally are
     _.viewKindMarks(doc, r);
     // (rfMZ) in the drawing's dimension style (an arc length's number: the document's precision / fractions)
-    if (r && r.dims && r.prims) { var ps2 = _.DIMSTYLE; _.DIMSTYLE = D.dimStyle(doc); try { _.finishAngles(r); } finally { _.DIMSTYLE = ps2; } }
+    if (r && r.dims && r.prims) { var ps2 = _.DIMSTYLE, pd2 = _.DUAL; _.DIMSTYLE = D.dimStyle(doc); _.DUAL = D.dualStyle(doc); try { _.finishAngles(r); } finally { _.DIMSTYLE = ps2; _.DUAL = pd2; } }
     if (r && r.prims) applyDisplay(doc, r);
     return r;
   }
@@ -758,6 +759,7 @@
     prims.forEach(function (p) { if (p.bend != null) geo.segs.push([p.a, p.b]); });
     // (rfNS) placed in placeOrder (a chain's long links before its short ones), listed in their own order
     var placedPrims = [];
+    dims.forEach(function (d) { var S = _.dualFor(d); if (S && /\]/.test(d.text || '')) d.dualPos = S.pos; });   // (rfOC: for the DXF text override)
     placeOrder(dims).forEach(function (di) {
       var d = dims[di], vw = views.filter(function (w) { return w.view.id === d.view; })[0];
       if (!vw) return;
@@ -1560,7 +1562,21 @@
       label1(p, anchor, rot, lab);
       if (LG) for (var li = n0; li < out.length; li++) if (out[li].k === 'text') out[li]._lg = n0;
     }
+    // (rfOC) a label with its dual value (lab.dual, _.dualLab): the bracketed value beside it (Right / Left) or under /
+    // over it (Bottom / Top), each block drawn as a label of its own
     function label1(p, anchor, rot, lab) {
+      if (lab.dual) {
+        var dA = rot * Math.PI / 180, dT = [Math.cos(dA), Math.sin(dA)], dN = [-dT[1], dT[0]], prim = Object.assign({}, lab, { dual: null }), br = _.dualBracket(lab.dual);
+        var dAt = function (al, up) { return [p[0] + dT[0] * al + dN[0] * up, p[1] + dT[1] * al + dN[1] * up]; };
+        if (dualStacked(lab)) {
+          var sg = lab.dual.pos === 'top' ? -1 : 1, o1 = blockHalf(prim) + DUAL_GAP * th / 2, o2 = blockHalf(br) + DUAL_GAP * th / 2;
+          label1(dAt(0, sg * o1), anchor, rot, prim); label1(dAt(0, -sg * o2), anchor, rot, br);
+          return;
+        }
+        var wp = blockW(prim), wd = blockW(br), W = wp + DUAL_GAP * th + wd, s0 = anchor === 'middle' ? -W / 2 : anchor === 'end' ? -W : 0, left = lab.dual.pos === 'left';
+        label1(dAt(s0, 0), 'start', rot, left ? br : prim); label1(dAt(s0 + (left ? wd : wp) + DUAL_GAP * th, 0), 'start', rot, left ? prim : br);
+        return;
+      }
       if (lab.upper == null) {
         out.push({ k: 'text', p: p, h: th, text: lab.main, anchor: anchor, layer: L, rot: rot });
         // sketch-ordinate: a Basic dimension (from the sketch's Dimension PM) in a box
@@ -1573,15 +1589,17 @@
         return;
       }
       var a = rot * Math.PI / 180, t = [Math.cos(a), Math.sin(a)], n = [-t[1], t[0]], th2 = lab.main == null ? th * 0.8 : th * 0.7;
-      var wm = lab.main == null ? 0 : textWidth(lab.main, th), gp = lab.main == null ? 0 : th * 0.4, wt = Math.max(textWidth(lab.upper, th2), textWidth(lab.lower, th2));
-      var W = wm + gp + wt, s0 = anchor === 'middle' ? -W / 2 : anchor === 'end' ? -W : 0;
+      var wm = lab.main == null ? 0 : textWidth(lab.main, th), gp = lab.main == null ? 0 : th * (lab.tight ? 0.1 : 0.4), wt = Math.max(textWidth(lab.upper, th2), textWidth(lab.lower, th2));
+      var W = wm + gp + wt + (lab.post ? th * 0.1 + textWidth(lab.post, th) : 0), s0 = anchor === 'middle' ? -W / 2 : anchor === 'end' ? -W : 0;
       function at(al, up) { return [p[0] + t[0] * al + n[0] * up, p[1] + t[1] * al + n[1] * up]; }
       if (lab.main != null) out.push({ k: 'text', p: at(s0, 0), h: th, text: lab.main, anchor: 'start', layer: L, rot: rot });
       var up = lab.main == null ? th * 0.55 : th * 0.55, dn = lab.main == null ? -th * 0.45 : -th * 0.2;
       out.push({ k: 'text', p: at(s0 + wm + gp, up), h: th2, text: lab.upper, anchor: 'start', layer: L, rot: rot, tol: 'upper' });
       out.push({ k: 'text', p: at(s0 + wm + gp, dn), h: th2, text: lab.lower, anchor: 'start', layer: L, rot: rot, tol: 'lower' });
+      if (lab.post) out.push({ k: 'text', p: at(s0 + wm + gp + wt + th * 0.1, 0), h: th, text: lab.post, anchor: 'start', layer: L, rot: rot });   // (rfOC: the closing bracket of a dual tolerance)
     }
-    var box = vw.box, labMain = d.tol || d.prec != null || d.label != null || d.kind === 'chamfer' ? dimLabel(d, units) : { main: d.text, upper: null, lower: null };
+    var box = vw.box, dualMain = _.dualLab(d, units), labMain = d.tol || d.prec != null || d.label != null || d.kind === 'chamfer' ? dimLabel(d, units) : { main: dualMain ? _.dimText0(d, units) : d.text, upper: null, lower: null };
+    if (dualMain) labMain.dual = dualMain;   // (rfOC)
     // a straight leader from `tip` (arrow) to `elbow`, then (ANSI, r13/drawings13) a short horizontal shoulder with the
     // text after it, centred on it (the text used to sit on a shelf as long as itself, the ISO way)
     function leader(tip, elbow, lab, arrowDir) {
@@ -1590,10 +1608,25 @@
       label([elbow[0] + sgn * (SHOULDER + TEXT_GAP) * k, elbow[1] - th / 2], sgn > 0 ? 'start' : 'end', 0, lab);
     }
     // the length of a label along its text line
-    function labWidth(lab) {
+    function blockW(lab) {
       if (lab.upper == null) return textWidth(lab.main || '', th);
       var th2 = lab.main == null ? th * 0.8 : th * 0.7;
-      return (lab.main == null ? 0 : textWidth(lab.main, th) + th * 0.4) + Math.max(textWidth(lab.upper, th2), textWidth(lab.lower, th2));
+      return (lab.main == null ? 0 : textWidth(lab.main, th) + th * (lab.tight ? 0.1 : 0.4)) + Math.max(textWidth(lab.upper, th2), textWidth(lab.lower, th2)) + (lab.post ? th * 0.1 + textWidth(lab.post, th) : 0);
+    }
+    // (rfOC) with a dual value: both blocks side by side (Right / Left), or the wider of the two stacked (Top / Bottom)
+    var DUAL_GAP = 0.5;
+    function dualStacked(lab) { return !!lab.dual && (lab.dual.pos === 'top' || lab.dual.pos === 'bottom'); }
+    function labWidth(lab) {
+      if (!lab.dual) return blockW(lab);
+      var wp = blockW(Object.assign({}, lab, { dual: null })), wd = blockW(_.dualBracket(lab.dual));
+      return dualStacked(lab) ? Math.max(wp, wd) : wp + DUAL_GAP * th + wd;
+    }
+    // half a label's height across its text line (a value with a stacked tolerance is taller; a stacked dual value twice)
+    function blockHalf(lab) { return (lab.upper != null ? 0.75 : 0.5) * th; }
+    function labHalf(lab) {
+      if (!lab.dual) return blockHalf(lab);
+      var hp = blockHalf(Object.assign({}, lab, { dual: null })), hd = blockHalf(lab.dual);
+      return dualStacked(lab) ? hp + hd + DUAL_GAP * th / 2 : Math.max(hp, hd);
     }
     // (rfAL) a diameter / radius of an ellipse (a circle seen obliquely, d.ell: its conjugate radii in view units):
     // the arrow lands on the ellipse, reach(u) from the centre along u; the value is the circle's true size
@@ -1697,9 +1730,9 @@
       function P(along, across) { var q = [0, 0]; q[i0] = along; q[i1] = across; return q; }
       line(P(a[i0], a[i1] + sg * gapE), P(a[i0], pos + sg * ext)); line(P(b[i0], b[i1] + sg * gapE), P(b[i0], pos + sg * ext));
       var lo = Math.min(a[i0], b[i0]), hi = Math.max(a[i0], b[i0]), xo = ar + 4 * k, g = TEXT_GAP * k;
-      var half = (hz ? labWidth(lab) / 2 : (lab.upper != null ? 0.75 : 0.5) * th) + g, mid = (lo + hi) / 2;
+      var half = (hz ? labWidth(lab) / 2 : labHalf(lab)) + g, mid = (lo + hi) / 2;
       if (d._rho) {   // (rfLG) turned on the sheet: the horizontal text's reach along the turned line
-        var lc = Math.abs(Math.cos(d._rho)), ls = Math.abs(Math.sin(d._rho)), hW = labWidth(lab) / 2, hH = (lab.upper != null ? 0.75 : 0.5) * th;
+        var lc = Math.abs(Math.cos(d._rho)), ls = Math.abs(Math.sin(d._rho)), hW = labWidth(lab) / 2, hH = labHalf(lab);
         half = (hz ? lc * hW + ls * hH : ls * hW + lc * hH) + g;
       }
       var fits = hi - lo >= 2 * half + 2 * ar + g, out = !!d.flip || !fits;
@@ -1739,7 +1772,7 @@
       var prec = d.prec != null && d.prec !== '' ? +d.prec : null;
       if (d.kind === 'ordinate') {
         // texts on one line across the dimension direction; crowded ones jog sideways
-        var sorted = items.slice().sort(function (p, q) { return p.p[ax] - q.p[ax]; }), minGap = th * 1.4;
+        var oDual = _.dualFor(d), sorted = items.slice().sort(function (p, q) { return p.p[ax] - q.p[ax]; }), minGap = th * (oDual && (oDual.pos === 'top' || oDual.pos === 'bottom') ? 2.9 : 1.4);
         sorted.forEach(function (it, i) { it.t = it.p[ax]; if (i && it.t < sorted[i - 1].t + minGap) it.t = sorted[i - 1].t + minGap; });
         var shift = (sorted[0].p[ax] + sorted[sorted.length - 1].p[ax] - sorted[0].t - sorted[sorted.length - 1].t) / 2;
         if (shift < 0) sorted.forEach(function (it) { it.t += shift; });
@@ -1750,7 +1783,12 @@
           else { line(Q(it.p[ax], from), Q(it.p[ax], lvl - sgl * 4 * k)); line(Q(it.p[ax], lvl - sgl * 4 * k), Q(it.t, lvl - sgl * 2 * k)); line(Q(it.t, lvl - sgl * 2 * k), Q(it.t, lvl)); }
           // (a member with its sketch dimension's tolerance / precision / text: d.valueProps, Drawing.sketchOrdinateProps)
           var tt = it.vp ? D.ordinateValueText(Math.abs(it.val), it.vp, units, prec) : numText(Math.abs(it.val), units, prec);
-          if (hz2) out.push({ k: 'text', p: [it.t + th / 2, lvl + sgl * 1 * k], h: th, text: tt, anchor: sgl > 0 ? 'start' : 'end', layer: L, rot: 90 });
+          if (oDual) {   // (rfOC) each value with its dual value
+            var olab = { main: tt, upper: null, lower: null, dual: { main: _.dualNum(Math.abs(it.val), units, oDual), upper: null, lower: null, pos: oDual.pos } };
+            if (hz2) label([it.t + th / 2, lvl + sgl * 1 * k], sgl > 0 ? 'start' : 'end', 90, olab);
+            else label([lvl + sgl * 1 * k, it.t - th / 2], sgl > 0 ? 'start' : 'end', 0, olab);
+          }
+          else if (hz2) out.push({ k: 'text', p: [it.t + th / 2, lvl + sgl * 1 * k], h: th, text: tt, anchor: sgl > 0 ? 'start' : 'end', layer: L, rot: 90 });
           else out.push({ k: 'text', p: [lvl + sgl * 1 * k, it.t - th / 2], h: th, text: tt, anchor: sgl > 0 ? 'start' : 'end', layer: L, rot: 0 });
         });
       } else {
@@ -1760,6 +1798,8 @@
         var bp = items[0].p, rest = items.slice(1).sort(function (p, q) { return Math.abs(p.val) - Math.abs(q.val); }), bPos = lvl, bTexts = [];
         rest.forEach(function (it, i) {
           var lab = d.tol || d.label != null ? dimLabel(Object.assign({}, d, { kind: 'h', value: Math.abs(it.val) }), units) : { main: numText(Math.abs(it.val), units, prec), upper: null, lower: null };
+          var bDual = _.dualLab(Object.assign({}, d, { kind: 'h', value: Math.abs(it.val) }), units);   // (rfOC)
+          if (bDual) lab.dual = bDual;
           if (i) bPos += side * 8 * k;
           for (var tries = 0; tries < 16; tries++) {
             var n0 = out.length;
@@ -2100,6 +2140,15 @@
   // strokes). Both write true LINE / CIRCLE / ARC, SOLID arrowheads and TEXT (dimensions exploded, as on the sheet).
   // a text as DXF writes it: %%c for Ø, %%p for ±, %%d for °, plain ASCII
   function dxfText(t) { return plainText(t).replace(/\n/g, ' ').replace(/Ø/g, '%%c').replace(/±/g, '%%p').replace(/°/g, '%%d').replace(/×/g, 'x').replace(/[^\x20-\x7e]/g, '?'); }
+  // (rfOC) a DIMENSION's text override (group 1): its text; with a dual value stacked under / over it AutoCAD's \\X
+  // (what is before it sits over the dimension line, the rest under it), so AutoCAD shows what the sheet shows
+  function dxfDimText(d) {
+    var t = d.text || '', pos = d.dualPos;
+    if (pos !== 'top' && pos !== 'bottom') return t;
+    var m = /^(.*) \[(.*)\]$/.exec(t);
+    if (!m) return t;
+    return pos === 'bottom' ? m[1] + '\\X[' + m[2] + ']' : '[' + m[2] + ']\\X' + m[1];
+  }
   function dxfVersionOf(v) { return /^(r?2000|ac1015|1015)$/i.test(String(v || '').trim()) ? 'R2000' : 'R12'; }
   function toDXF(sheet, opts) {
     var r2000 = dxfVersionOf(opts && opts.version) === 'R2000';
@@ -2247,7 +2296,7 @@
       if (d.dangling && DXF_COLORS.dangling) pr(62, DXF_COLORS.dangling);
       pr(100, 'AcDbDimension'); pr(2, g.name); pt(10, X.p10); pt(11, X.p11); pr(70, type | 32 | 128); pr(71, 5);
       if (isFinite(d.value) && X.type !== 'angular') pr(42, num(d.value));   // (an angle's measurement would be radians: left to the reader)
-      pr(1, dxfText(d.text || '')); pr(3, 'Standard');
+      pr(1, dxfText(dxfDimText(d))); pr(3, 'Standard');
       if (X.type === 'linear' || X.type === 'aligned') { pr(100, 'AcDbAlignedDimension'); pt(13, X.p13); pt(14, X.p14); }
       if (X.type === 'linear') { pr(50, num(X.ang)); pr(100, 'AcDbRotatedDimension'); }
       if (X.type === 'dia') { pr(100, 'AcDbDiametricDimension'); pt(15, X.p15); pr(40, num(X.lead || 0)); }

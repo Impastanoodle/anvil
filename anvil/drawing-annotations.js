@@ -33,12 +33,13 @@
     return inch && +size < 1 ? +size * 25.4 : +size;
   }
   function docOptions(doc) {
-    var o = doc.options || {}, st = D.dimStyle(doc), inch = doc.units === 'in';
+    var o = doc.options || {}, st = D.dimStyle(doc), inch = doc.units === 'in', du = D.dualStyle(doc);
     var ms = +o.markSize > 0 ? +o.markSize : inch ? MARK_SIZE_IN : MARK_SIZE;
     if (inch && ms >= 1) ms = Math.round(ms / 25.4 * 1e4) / 1e4;   // (a pre-rfV paper-mm value, shown in inches)
     return { autoCenterMarks: !!o.autoCenterMarks, autoCenterlines: !!o.autoCenterlines, markSize: ms,
       extLines: o.extLines !== false, balloonQty: !!o.balloonQty, flatDims: o.flatDims === true, flatSizeNote: !!o.flatSizeNote,
-      bendNotes: o.bendNotes === 'table' || o.bendNotes === 'none' ? o.bendNotes : 'notes', dimPrec: st.prec != null && +o.dimPrec > st.prec ? Math.min(8, Math.round(+o.dimPrec)) : st.prec, fractions: st.fractions, fracDenom: st.denom, tolPrec: st.tolPrec };   // (rfIF: up to 8 places; rfKX: tolPrec, null = Same as nominal)
+      bendNotes: o.bendNotes === 'table' || o.bendNotes === 'none' ? o.bendNotes : 'notes', dimPrec: st.prec != null && +o.dimPrec > st.prec ? Math.min(8, Math.round(+o.dimPrec)) : st.prec, fractions: st.fractions, fracDenom: st.denom, tolPrec: st.tolPrec,   // (rfIF: up to 8 places; rfKX: tolPrec, null = Same as nominal)
+      dual: du.on, dualShowUnits: du.showUnits, dualPos: du.pos, dualUnits: du.units, dualPrec: du.prec };   // (rfOC: Dual dimensions display, Dual Dimension Length)
   }
   function nextAnnotId(doc) { doc.nextAnnot = (doc.nextAnnot || 0) + 1; return doc.nextAnnot; }
 
@@ -178,8 +179,8 @@
     return out;
   }
   // holeText(info, units, count, prec) -> callout lines: '4X Ø6.6 THRU' (info.thruAll: 'THRU ALL', rfV), '⌴ Ø11 ↧ 6.8' / '⌵ Ø12 X 90°'
-  function holeText(h, units, count, prec) {
-    function n(x) { return numText(x, units, prec); }
+  function holeText(h, units, count, prec, dual) {
+    function n(x) { return numText(x, units, prec) + (dual ? dualSuffix(dual, x, units) : ''); }   // (rfOC dual: the callout, doubled)
     var lines = [(count > 1 ? count + 'X ' : '') + 'Ø' + n(h.dia) + (h.thru ? (h.thruAll ? ' THRU ALL' : ' THRU') : ' ↧ ' + n(h.depth))];
     if (h.cbore) lines.push('⌴ Ø' + n(h.cbore.dia) + ' ↧ ' + n(h.cbore.depth));
     if (h.csk) lines.push('⌵ Ø' + n(h.csk.dia) + ' X ' + fmtAngle(h.csk.angle) + '°');
@@ -1237,7 +1238,7 @@
       var m = vw.toSheet(pathRefMid(d.refs[0])), box = vw.box, cc = [(box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2];
       var lead = d.lead || [(m[0] >= cc[0] ? 1 : -1) * 10 * k, (m[1] >= cc[1] ? 1 : -1) * 10 * k], el = [m[0] + lead[0], m[1] + lead[1]], lu = Math.hypot(lead[0], lead[1]) || 1, sg = lead[0] >= 0 ? 1 : -1;
       line(m, el); line(el, [el[0] + sg * _.SHOULDER * k, el[1]]); arrow(m, [-lead[0] / lu, -lead[1] / lu]);
-      var txt = d.tol || d.label != null ? dimLabel(d, units).text : numText(d.value, units, prec);
+      var txt = (d.tol || d.label != null ? dimLabel(d, units).text : numText(d.value, units, prec)) + dualSuffix(d, d.value, units);   // (rfOC)
       out.push({ k: 'text', p: [el[0] + sg * (_.SHOULDER + _.TEXT_GAP) * k, el[1] - th / 2], h: th, text: txt, anchor: sg > 0 ? 'start' : 'end', layer: L, rot: 0 });
       d.leadNow = lead.slice();
       return out;
@@ -1328,7 +1329,10 @@
     d.dxf = { type: 'angular', p13: tA.slice(), p14: tB.slice(), p15: V0.slice(), p10: [V0[0] + R * Math.cos(am), V0[1] + R * Math.sin(am)], p11: C.slice() };
     return out;
   }
-  function angleText(d, units) { return d.tol || d.label != null || d.prec != null ? dimLabel(d, units).text : d.arcLen ? numText(d.value, units) : fmtAngle(d.value) + '°'; }
+  function angleText(d, units) {
+    var t = d.tol || d.label != null || d.prec != null ? dimLabel(d, units).text : d.arcLen ? numText(d.value, units) : fmtAngle(d.value) + '°';
+    return d.arcLen ? dualText(d, units, t) : t;   // (rfOC: an arc length is a length)
+  }
   // the sheet's angle dimensions get their primitives after the renderer has placed the others (drawing-render.js
   // compute calls it last, rfV); each primitive carries its dimension's index (dimIx) for the DXF DIMENSION block
   function finishAngles(sheet) {
@@ -1408,9 +1412,66 @@
     out.text = out.main == null ? out.upper + '/' + out.lower : out.main + (out.upper != null ? ' ' + out.upper + '/' + out.lower : '');
     return out;
   }
+  // ------------------------------------------------------------------ (rfOC, lane drawdual) dual dimensions
+  // With Document Properties > Dimensions > Dual dimensions display on (Drawing.dualStyle, held in _.DUAL while
+  // compute works a sheet out) or a dimension's own d.dual true, every length on the sheet shows its value in the other
+  // unit system in square brackets, as SolidWorks 2024: 1.000 [25.40]. Angles, notes, bend notes, tables and the title
+  // block are not doubled; a tolerance's limits are converted with the value; a count or text (29X <DIM>, Ø, R) stays
+  // with the primary value only. dualFor(d) -> the style or null; dualNum(x, units) the converted number (Units > Dual
+  // Dimension Length decimals, + 'mm' / 'in' with Show units for dual display); dualLab(d, units) -> the dual value as a
+  // dimLabel-shaped { main, upper, lower, text } (null when off or not a length); dualText(d, units, t) the one-line
+  // text 't [dual]' ('[dual] t' with the position Left) that d.text, summary() and the DXF carry.
+  function dualFor(d) {
+    var S = _.DUAL;
+    if (!S) return null;
+    var on = d && d.dual != null ? !!d.dual : S.on;
+    return on ? S : null;
+  }
+  function dualConv(units, to) { return units === to ? 1 : units === 'in' ? 25.4 : 1 / 25.4; }
+  function dualNum(x, units, S) {
+    S = S || _.DUAL;
+    return numText(x * dualConv(units, S.units), S.units, S.prec) + (S.showUnits ? S.units : '');
+  }
+  // a length's ' [dual]' to add after its number in a text (ordinate values, path lengths, hole callouts), or ''
+  function dualSuffix(d, x, units) {
+    var S = dualFor(d);
+    return S ? ' [' + dualNum(x, units, S) + ']' : '';
+  }
+  var DUAL_KINDS = { h: 1, v: 1, aligned: 1, dia: 1, rad: 1, chamfer: 1, pathlen: 1 };
+  function dualLab(d, units) {
+    var S = dualFor(d);
+    if (!S || d.value == null || !isFinite(d.value)) return null;
+    if (!(DUAL_KINDS[d.kind] || (d.kind === 'angle' && d.arcLen)) || (d.kind === 'rad' && d.slot)) return null;
+    var f = dualConv(units, S.units), d2 = { kind: 'h', value: Math.abs(d.value) * f, prec: S.prec }, tol = d.tol && d.tol.type;
+    if (tol === 'bilateral' || tol === 'symmetric' || tol === 'limit') d2.tol = { type: tol, plus: Math.abs(+d.tol.plus || 0) * f, minus: Math.abs(+d.tol.minus || 0) * f };
+    var st = _.DIMSTYLE, lab;
+    _.DIMSTYLE = { prec: S.prec, fractions: false, tolPrec: null };
+    try { lab = dimLabel(d2, S.units); } finally { _.DIMSTYLE = st; }
+    if (S.showUnits) {
+      if (lab.main != null) lab.main += S.units; else { lab.upper += S.units; lab.lower += S.units; }
+      lab.text = lab.main == null ? lab.upper + '/' + lab.lower : lab.main + (lab.upper != null ? ' ' + lab.upper + '/' + lab.lower : '');
+    }
+    lab.pos = S.pos;
+    return lab;
+  }
+  function dualText(d, units, t) {
+    if (d.kind === 'ordinate' || d.kind === 'baseline') return t;   // (each value carries its own, dimText0)
+    if (d.kind === 'pathlen' && /\[/.test(t)) return t;
+    var lab = dualLab(d, units);
+    if (!lab) return t;
+    return lab.pos === 'left' ? '[' + lab.text + '] ' + t : t + ' [' + lab.text + ']';
+  }
+  // the dual label drawn in brackets (render's label): '[25.40]', or a stacked tolerance between '[25.40' and ']'
+  function dualBracket(lab) {
+    if (lab.upper == null) return { main: '[' + lab.main + ']', upper: null, lower: null };
+    if (lab.main != null) return { main: '[' + lab.main, upper: lab.upper, lower: lab.lower, post: ']' };
+    return { main: '[', upper: lab.upper, lower: lab.lower, post: ']', tight: true };
+  }
+  _.dualFor = dualFor; _.dualNum = dualNum; _.dualSuffix = dualSuffix; _.dualLab = dualLab; _.dualText = dualText; _.dualBracket = dualBracket;
+  D.dualLabel = dualLab;
   // the dimension properties the Dimension PropertyManager edits; a model item keeps them in doc.dimProps under
   // styleKey (view:kind:n, stable when the part changes size), a Smart Dimension on itself
-  var DIM_PROPS = ['at', 'tx', 'tside', 'lead', 'off', 'flip', 'tol', 'prec', 'label', 'rad'];   // (rad: an angle's arc radius, rfS; tside: placeLinear)
+  var DIM_PROPS = ['at', 'tx', 'tside', 'lead', 'off', 'flip', 'tol', 'prec', 'label', 'rad', 'dual'];   // (rfOC dual: true / false overrides the document's Dual dimensions display)   // (rad: an angle's arc radius, rfS; tside: placeLinear)
   function styleKey(d, n) { return d.view + ':' + d.kind + ':' + n; }
   function setDimProps(target, props) {
     DIM_PROPS.forEach(function (k) {
@@ -1899,10 +1960,10 @@
   // '1/4-20 UNC ↧ .50'; 'Ø .27 THRU ALL' over the counterbore '⌴ Ø .44 ↧ .25' or the countersink '⌵ Ø .51 X 82°'. A
   // Through All end reads THRU ALL, several positions 'nX' on the first line. HoleWizard.callout (the PM's spec text)
   // keeps its own words.
-  function wizardLines(h, units, count, prec) {
+  function wizardLines(h, units, count, prec, dual) {
     var u = units === 'in' || units === 'mm' ? units : h.units, f = h.feature, s = HoleWizard.spec(f, u), thru = f.end === 'through';
     var k = u === h.units ? 1 : u === 'in' ? 1 / 25.4 : 25.4;   // the feature's depths are in the part's units
-    function n(x) { return numText(x, u, prec); }
+    function n(x) { return numText(x, u, prec) + (dual ? dualSuffix(dual, x, u) : ''); }   // (rfOC: lengths doubled, thread sizes not)
     var lines = ['Ø ' + n(s.dia) + (thru ? ' THRU ALL' : ' ↧ ' + n(+f.depth * k))];
     if (s.thread) lines.push(s.thread.label.replace(/ - 2B$/, '') + (thru ? ' THRU ALL' : ' ↧ ' + n(+(f.threadDepth || f.depth) * k)));
     if (s.cbore) lines.push('⌴ Ø ' + n(s.cbore.dia) + ' ↧ ' + n(s.cbore.depth));
@@ -2057,12 +2118,12 @@
       allOf(h);
       if (hw) {
         var hwn = hw.hole.pts.length;
-        lines = wizardLines(hw.hole, units, hwn, an.prec);
+        lines = wizardLines(hw.hole, units, hwn, an.prec, an);
         info = { hole: { c: an.c.slice(), dia: +HoleWizard.spec(hw.hole.feature, hw.hole.units).dia, thru: hw.hole.feature.end === 'through' }, count: hwn, feature: hw.hole.feature.id };
       } else if (h && w.flat) {
         var nf = 0;
         pr.circles.visible.forEach(function (c) { if (Math.abs(2 * c.r - h.dia) <= Math.max(1e-6, h.dia * 1e-6)) nf++; });
-        lines = holeText(h, units, Math.max(1, nf), an.prec);
+        lines = holeText(h, units, Math.max(1, nf), an.prec, an);
         info = { hole: h, count: Math.max(1, nf) };
       } else if (h) {
         // 4X: the visible holes of the view that read the same (one per centre: a counterbore shows two circles)
@@ -2074,12 +2135,12 @@
           var q = allOf(holeInfo(mesh, w.frame, c.c, c.r));
           if (q && holeText(q, units, 1, an.prec).join('|') === one) { count++; seen.push(c.c); }
         });
-        lines = holeText(h, units, Math.max(1, count), an.prec);
+        lines = holeText(h, units, Math.max(1, count), an.prec, an);
         info = { hole: h, count: Math.max(1, count) };
         // a Straight Tap hole of the Hole Wizard: the tap drill line, then the thread 'M8x1.25 ↧ 12' / 'M8x1.25 THRU'
         var tap = w.ortho ? threadsAlong(threads, w.frame).filter(function (t) { return Math.hypot(t.c[0] - h.c[0], t.c[1] - h.c[1]) <= 1e-6 * (1 + t.r) && Math.abs(t.drill - h.dia) <= 1e-6 * (1 + t.drill); })[0] : null;
-        if (tap) { lines.push(tap.label + (tap.depth == null || h.thru ? (h.thruAll ? ' THRU ALL' : ' THRU') : ' ↧ ' + numText(tap.depth, units, an.prec))); info.thread = tap.label; }
-      } else lines = ['Ø' + numText(2 * an.r, units, an.prec)];
+        if (tap) { lines.push(tap.label + (tap.depth == null || h.thru ? (h.thruAll ? ' THRU ALL' : ' THRU') : ' ↧ ' + numText(tap.depth, units, an.prec) + dualSuffix(an, tap.depth, units))); info.thread = tap.label; }
+      } else lines = ['Ø' + numText(2 * an.r, units, an.prec) + dualSuffix(an, 2 * an.r, units)];
       // the standard size the hole feature names (1/4-20 UNC, M6), when it is not in the callout already
       // (rfMZ) only from hole features the wizard list cannot place: a plain Ø.201 cut beside a tapped 1/4-20 hole
       // is not threaded
@@ -2124,14 +2185,14 @@
   // Hole Callout tool's preview that follows the pointer before the second click places it
   function holeCalloutLines(doc, w, mesh, model, spec) {
     var units = model && model.units === 'in' ? 'in' : 'mm', k = units === 'in' ? 1 / 25.4 : 1;
-    var ps = _.DIMSTYLE, pg = _.DIMGEO;
-    _.DIMSTYLE = D.dimStyle(doc); _.DIMGEO = D.dimGeometry(doc);
+    var ps = _.DIMSTYLE, pg = _.DIMGEO, pd = _.DUAL;
+    _.DIMSTYLE = D.dimStyle(doc); _.DIMGEO = D.dimGeometry(doc); _.DUAL = D.dualStyle(doc);   // (rfOC: the preview shows the dual values too)
     try {
       var an = { type: 'holeCallout', c: [+spec.c[0], +spec.c[1]], r: +spec.r, lead: [1, 1] };
       var r = annotationPrims(an, w, k, mesh, doc, units, partThreads(model), holeSizeNames(model), holeEnds(model));
       var t = r.prims.filter(function (x) { return x.k === 'text'; })[0];
       return { lines: r.info && r.info.lines ? r.info.lines.slice() : [r.text], th: t ? t.h : 3.5 * k, shoulder: _.SHOULDER * k, gap: _.TEXT_GAP * k };
-    } finally { _.DIMSTYLE = ps; _.DIMGEO = pg; }
+    } finally { _.DIMSTYLE = ps; _.DIMGEO = pg; _.DUAL = pd; }
   }
   D.holeCalloutLines = holeCalloutLines;
   D.circlesAlong = circlesAlong; D.holeInfo = holeInfo; D.holeText = holeText; D.cylAxes = cylAxes; D.fitCircle = fitCircle; D.lineIntervals = lineIntervals;

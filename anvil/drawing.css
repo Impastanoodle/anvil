@@ -76,6 +76,7 @@
 #drawing-tree[hidden] { display: none; }
 #app.drawing-mode #fm-tree, #app.drawing-mode #config-panel { display: none !important; }
 #app.drawing-mode.dw-pm #drawing-tree { display: none; }
+#app.drawing-mode.dw-pm #tree-filter { display: none; }   /* (rfOC) the filter box moves over the drawing tree; hidden with it under a PM */
 #drawing-tree .ti { gap: 4px; border-radius: 2px; margin: 0 4px 0 2px; padding-right: 8px; }
 #drawing-tree .ti:hover { background: var(--sw-row-hover, var(--hover)); }
 #drawing-tree .ti.selected { background: var(--sw-row-sel, var(--sel)); box-shadow: inset 0 0 0 1px var(--sw-row-sel-line, var(--line)); }
@@ -97,6 +98,9 @@
 /* Document Properties: checkbox rows span both columns */
 .dw-props .dw-opt { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; color: var(--text); cursor: pointer; }
 .dw-docprops input[type=number] { width: 80px; }
+/* (rfOC) Dual dimensions display: Top / Bottom / Left / Right on one row */
+.dw-props .dw-opt-radios { grid-column: 1 / -1; display: flex; gap: 14px; padding-left: 22px; }
+.dw-props .dw-opt-radios .dw-opt { grid-column: auto; }
 /* r3/drawings3: pre-highlight under the cursor with no tool running (SolidWorks orange), a dragged item's cursor */
 #dw-overlay .dw-hot.pre { stroke: var(--dw-pre); }
 #drawing-sheet.dw-dragging { cursor: move; }
