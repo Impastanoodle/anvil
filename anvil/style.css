@@ -2699,3 +2699,10 @@ table.mc-planes tr.picked td.mc-pl-name { font-weight: 600; }
 /* rfNG uisense: Tools > Options as a dialog (System Options): the Task Pane page at a readable width, scrolling */
 #modal.modal-options > div { width: min(560px, 94vw); max-width: 94vw; }
 #modal.modal-options #modal-body { max-height: min(72vh, 640px); overflow: auto; }
+
+/* rfNR: dragging a feature row to reorder the FeatureManager tree */
+.tree-drop-line { position: fixed; height: 2px; background: var(--c-accent, #1f6fd1); pointer-events: none; z-index: 50; display: none; }
+.tree-drop-line::before { content: ''; position: absolute; left: -3px; top: -2px; width: 6px; height: 6px; border-radius: 50%; background: inherit; }
+body.tree-reordering, body.tree-reordering * { cursor: default !important; user-select: none; }
+body.tree-reorder-no, body.tree-reorder-no * { cursor: not-allowed !important; }
+#tree .ti.drag-src { opacity: 0.55; }

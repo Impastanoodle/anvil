@@ -2429,6 +2429,208 @@
     items.push({ label: 'Roll to End', disabled: at >= len, action: function () { UI.rollbarEnd(); } });
     return items;
   }
+  // ---- rfNR: reorder features by dragging their rows, as SolidWorks. Press on a feature row and move past 5 px: a drop
+  // line shows between the top-level rows; the pointer is "not allowed" where the move would put a feature above
+  // something it is built on or below something built on it (status bar names it), above the origin / planes, below
+  // the rollback bar, or a solid / sheet-metal feature above a sheet part's base flange (Sheet-Metal stays first; the
+  // Flat-Pattern folder is not a feature and stays last). A feature moves with the sketches absorbed under it; an
+  // absorbed sketch dragged alone moves alone. The drop is one undo step and one rebuild; the selection is kept.
+  // A move that only makes a later feature fail is allowed (its row shows the error mark, as in SolidWorks).
+  // Parents: Kernel.featureParents (sketch, plane / face, pattern seeds, reference geometry), pickRefs (on / fids),
+  // the faces under a feature's edge / face picks in the body before it (as Kernel.suppressionChildren), an Unfold for
+  // the Fold after it.
+  var REORDER_REF = { sketch: 1, plane: 1, refaxis: 1, refpoint: 1, csys: 1, sketch3d: 1 };
+  function reorderPickPoints(g) {
+    var pts = [];
+    function pt(a) { if (Array.isArray(a) && a.length === 3 && a.every(function (n) { return typeof n === 'number' && isFinite(n); })) pts.push(a); }
+    ['edges', 'faces', 'ripEdges', 'bendEdges', 'bends'].forEach(function (k) { if (Array.isArray(g[k])) g[k].forEach(function (e) { if (Array.isArray(e)) pt(e); else if (e && e.at) pt(e.at); }); });
+    pt(g.fixedFace);
+    return pts;
+  }
+  // the feature ids (polygon.shared) of the body's faces through point p
+  function reorderFacesAt(body, p, tol, out) {
+    (body && body.polygons || []).forEach(function (poly) {
+      var n = poly.plane.normal, dd = n.x * p[0] + n.y * p[1] + n.z * p[2] - poly.plane.w;
+      if (Math.abs(dd) > tol || poly.shared == null) return;
+      var vs = poly.vertices, inside = true;
+      for (var i = 0; i < vs.length && inside; i++) {
+        var a = vs[i].pos, b = vs[(i + 1) % vs.length].pos;
+        var ex = b.x - a.x, ey = b.y - a.y, ez = b.z - a.z, px = p[0] - a.x, py = p[1] - a.y, pz = p[2] - a.z;
+        var cx = ey * pz - ez * py, cy = ez * px - ex * pz, cz = ex * py - ey * px;
+        var l = Math.sqrt(ex * ex + ey * ey + ez * ez) || 1;
+        if ((cx * n.x + cy * n.y + cz * n.z) / l < -tol) inside = false;
+      }
+      if (inside) out[+poly.shared] = true;
+    });
+  }
+  // reorderParents(model) -> { id: [parent id] } (direct parents only; the check walks every pair)
+  function reorderParents(m) {
+    var map = {}, ids = {}, lastUnfold = null;
+    m.features.forEach(function (f) { ids[f.id] = true; });
+    m.features.forEach(function (f) {
+      var ps = K.featureParents ? K.featureParents(f).slice() : [];
+      var pr = f.pickRefs;
+      if (pr && typeof pr === 'object') Object.keys(pr).forEach(function (k) { var r = pr[k]; if (r && r.on != null) ps.push(r.on); if (r && Array.isArray(r.fids)) Array.prototype.push.apply(ps, r.fids); });
+      if (f.type === 'fold' && lastUnfold != null) ps.push(lastUnfold);
+      if (f.type === 'unfold') lastUnfold = f.id;
+      var seen = {};
+      map[f.id] = ps.filter(function (p) { if (!ids[p] || p === f.id || seen[p]) return false; seen[p] = true; return true; });
+    });
+    if (!m.features.some(function (f) { return reorderPickPoints(f).length; })) return map;
+    try {
+      var copy = JSON.parse(JSON.stringify(m)), b = K.rebuild(copy);
+      var steps = (b && b.cache && b.cache.steps) || [], tol = K.pickTol ? K.pickTol(copy.units || 'mm') * 0.02 : 1e-3;
+      copy.features.forEach(function (g, gi) {
+        var pts = reorderPickPoints(g), before = gi > 0 && steps[gi - 1] ? steps[gi - 1].body : null;
+        if (!pts.length || !before) return;
+        var hit = {};
+        pts.forEach(function (p) { reorderFacesAt(before, p, tol, hit); });
+        Object.keys(hit).forEach(function (k) { k = +k; if (ids[k] && k !== g.id && map[g.id].indexOf(k) < 0) map[g.id].push(k); });
+      });
+    } catch (e) { }
+    return map;
+  }
+  // the sketches shown under a top-level row (its .tc folder)
+  function absorbedIds(row) {
+    var box = row && row.parentNode === $('tree') ? row.nextElementSibling : null;
+    if (!box || !box.classList.contains('tc')) return [];
+    return Array.prototype.map.call(box.querySelectorAll('.ti[data-fid]'), function (r) { return +r.getAttribute('data-fid'); });
+  }
+  // reorderPlan(d, targetId) -> { ok, msg, noop, order, before }: the block d.ids goes right above feature targetId
+  // (and the sketches absorbed under it that sit just before it), or to the end of the unrolled features (null)
+  function reorderPlan(d, targetId) {
+    var m = App.model, feats = m.features, inB = {};
+    d.ids.forEach(function (id) { inB[id] = true; });
+    var block = feats.filter(function (f) { return inB[f.id]; }), rest = feats.filter(function (f) { return !inB[f.id]; });
+    var idx, before = null;
+    if (targetId == null) {
+      idx = rest.length;
+      for (var i = 0; i < rest.length; i++) if (UI.rollbarRolled(rest[i])) { idx = i; break; }
+    } else {
+      before = K.findFeature(m, targetId);
+      idx = rest.indexOf(before);
+      if (idx < 0) return { ok: false, msg: '' };
+      var under = absorbedIds($('tree').querySelector(':scope > .ti[data-fid="' + targetId + '"]'));
+      while (idx > 0 && under.indexOf(rest[idx - 1].id) >= 0) idx--;
+    }
+    var order = rest.slice(0, idx).concat(block, rest.slice(idx));
+    if (order.every(function (f, k) { return feats[k] === f; })) return { ok: true, noop: true, order: order };
+    var pos = {}, name = d.f.name;
+    order.forEach(function (f, k) { pos[f.id] = k; });
+    for (var k = 0; k < order.length; k++) {
+      var g = order[k], ps = d.parents[g.id] || [];
+      for (var j = 0; j < ps.length; j++) {
+        var p = K.findFeature(m, ps[j]);
+        if (!p || pos[p.id] < k) continue;
+        if (inB[g.id] && !inB[p.id]) return { ok: false, msg: 'Cannot move ' + name + ' above ' + p.name + ', which it is built on.' };
+        if (inB[p.id] && !inB[g.id]) return { ok: false, msg: 'Cannot move ' + name + ' below ' + g.name + ', which is built on it.' };
+      }
+    }
+    var smBase = m.sheet ? feats.filter(function (f) { return f.sheetBase; })[0] : null;
+    if (smBase) {
+      var solidsAbove = function (list) { var n = 0; for (var q = 0; q < list.length && list[q] !== smBase; q++) if (!REORDER_REF[list[q].type]) n++; return n; };
+      if (solidsAbove(order) > solidsAbove(feats)) return { ok: false, msg: inB[smBase.id] ? 'Cannot move ' + name + ' below other features: Sheet-Metal and its base flange stay first.' : 'Cannot move ' + name + ' above Sheet-Metal: sheet-metal features come after ' + smBase.name + '.' };
+    }
+    return { ok: true, order: order, before: before };
+  }
+  function reorderBegin(f, row) {
+    if (App.mode === 'sketch' || UI.hasPM()) { setStatus('Close the open command or sketch before moving a feature.'); return null; }
+    if (UI.rollbarRolled(f)) { setStatus('Roll forward before moving ' + f.name + ': it is below the rollback bar.'); return null; }
+    var tree = $('tree'), top = row.parentNode === tree;
+    var ids = [f.id].concat(top ? absorbedIds(row) : []);
+    var d = { f: f, ids: ids, row: row, parents: reorderParents(App.model), res: null, line: el('div', { class: 'tree-drop-line' }) };
+    document.body.appendChild(d.line);
+    document.body.classList.add('tree-reordering');
+    row.classList.add('drag-src');
+    return d;
+  }
+  function reorderOver(d, y) {
+    var tree = $('tree'), b = tree.getBoundingClientRect();
+    if (y < b.top + 14) tree.scrollTop -= 12; else if (y > b.bottom - 14) tree.scrollTop += 12;
+    var rows = Array.prototype.slice.call(tree.querySelectorAll(':scope > .ti[data-fid]')).filter(function (r) { return !r.classList.contains('rolled'); });
+    var bar = tree.querySelector(':scope > .rollbar'), rolled = tree.querySelector(':scope > .ti.rolled');
+    var res, lineY = null, target = null;
+    if (!rows.length) res = { ok: false, msg: '' };
+    else if (y < rows[0].getBoundingClientRect().top - 3) res = { ok: false, msg: 'Cannot move ' + d.f.name + ' above the origin and the planes.' };
+    else if (rolled && bar && y > bar.getBoundingClientRect().bottom + 2) res = { ok: false, msg: 'Cannot move ' + d.f.name + ' below the rollback bar.' };
+    else {
+      for (var i = 0; i < rows.length; i++) { var r = rows[i].getBoundingClientRect(); if (y < r.top + r.height / 2) { target = rows[i]; lineY = r.top; break; } }
+      if (!target) { var last = rows[rows.length - 1], nx = last.nextElementSibling, e = nx && nx.classList.contains('tc') ? nx : last; lineY = e.getBoundingClientRect().bottom; }
+      res = reorderPlan(d, target ? +target.getAttribute('data-fid') : null);
+    }
+    d.res = res;
+    var bad = !res.ok;
+    document.body.classList.toggle('tree-reorder-no', bad);
+    d.line.style.display = bad || lineY == null ? 'none' : 'block';
+    if (!bad && lineY != null) { d.line.style.left = (b.left + 22) + 'px'; d.line.style.width = Math.max(20, b.width - 30) + 'px'; d.line.style.top = (lineY - 1) + 'px'; }
+    if (bad && res.msg) setStatus(res.msg);
+    else if (!bad) setStatus(res.noop ? d.f.name : 'Move ' + d.f.name + (res.before ? ' above ' + res.before.name : ' to the end') + '.');
+  }
+  function reorderEnd(d) {
+    if (d.line.parentNode) d.line.parentNode.removeChild(d.line);
+    document.body.classList.remove('tree-reordering', 'tree-reorder-no');
+    d.row.classList.remove('drag-src');
+  }
+  // reorderFeature(id, beforeId | null) -> the rebuild Promise, or false (refused: the status bar says why). The
+  // drag's drop, also for scripts and tests; beforeId null: to the end (above the rollback bar).
+  function reorderFeature(id, beforeId) {
+    var f = K.findFeature(App.model, id);
+    if (!f || isAsm()) return false;
+    var row = $('tree').querySelector('.ti[data-fid="' + id + '"]') || el('div');
+    var d = reorderBegin(f, row);
+    if (!d) return false;
+    reorderEnd(d);
+    return reorderApply(d, reorderPlan(d, beforeId));
+  }
+  function reorderApply(d, res) {
+    if (!res || !res.ok) { if (res && res.msg) setStatus(res.msg); refreshTree(); return false; }
+    if (res.noop) { refreshTree(); return false; }
+    UI.pushUndo();
+    var m = App.model;
+    m.features.length = 0; Array.prototype.push.apply(m.features, res.order);
+    var name = d.f.name, before = res.before;
+    return UI.afterRebuild(UI.rebuild(), function (bd) {
+      setStatus('Moved ' + name + (before ? ' above ' + before.name : ' to the end') + '.');
+      return bd;
+    });
+  }
+  UI.reorderFeature = reorderFeature;
+  function treeRowPress(e, f, row) {
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || isAsm()) return;
+    if (e.target.closest && (e.target.closest('.tw') || e.target.closest('input'))) return;
+    var x0 = e.clientX, y0 = e.clientY, d = null, done = false;
+    function off() {
+      done = true;
+      document.removeEventListener('mousemove', move, true); document.removeEventListener('mouseup', up, true); document.removeEventListener('keydown', key, true);
+    }
+    function move(ev) {
+      if (done) return;
+      if (!d) {
+        if (Math.max(Math.abs(ev.clientX - x0), Math.abs(ev.clientY - y0)) < 5) return;
+        cancelSlowRename();
+        d = reorderBegin(f, row);
+        if (!d) { off(); return; }
+      }
+      ev.preventDefault();
+      reorderOver(d, ev.clientY);
+    }
+    function up() {
+      off();
+      if (!d) return;
+      reorderEnd(d);
+      // the click that follows this release is the drop's, not a click on a row
+      var eat = function (ev) { ev.stopPropagation(); ev.preventDefault(); };
+      document.addEventListener('click', eat, true);
+      setTimeout(function () { document.removeEventListener('click', eat, true); }, 0);
+      reorderApply(d, d.res);
+    }
+    function key(ev) {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault(); ev.stopPropagation(); off();
+      if (d) { reorderEnd(d); setStatus('Move cancelled.'); }
+    }
+    document.addEventListener('mousemove', move, true); document.addEventListener('mouseup', up, true); document.addEventListener('keydown', key, true);
+  }
   function revealRow(box, row) {
     if (!row.getClientRects().length) return;   // inside a collapsed folder
     var r = row.getBoundingClientRect(), b = box.getBoundingClientRect();
@@ -2667,6 +2869,7 @@
     });
     row.addEventListener('dblclick', function (e) { e.stopPropagation(); cancelSlowRename(); UI.editFeature(f); });
     row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); App.sel = { kind: 'feature', id: f.id }; UI.updateHighlights(); refreshTree(); showMenu(e.clientX, e.clientY, featureMenu(f)); });
+    row.addEventListener('mousedown', function (e) { treeRowPress(e, f, row); });   // rfNR: drag to reorder
     return row;
   }
   function featureTitle(f) {
