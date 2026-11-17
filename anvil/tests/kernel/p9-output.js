@@ -196,12 +196,13 @@
       return HW.ANSI_SCREWS.length + ' screw sizes, ' + HW.ANSI_THREADS.length + ' threads, ' + HW.DRILLS.length + ' drills';
     });
 
-    test('p9-output: ANSI Inch callouts — "Ø.266 THRU", "Ø.266 THRU" + "⌴ Ø.438 ↧ .250", "Ø.201 ↧ .750" + "1/4-20 UNC - 2B ↧ .500", "Ø.201 THRU" + "⌵ Ø.385 X 82°"', function () {
+    test('p9-output: ANSI Inch callouts — "Ø.266 THRU ALL", "Ø.266 THRU ALL" + "⌴ Ø.438 ↧ .250", "Ø.201 ↧ .750" + "1/4-20 UNC - 2B ↧ .500", "Ø.201 THRU ALL" + "⌵ Ø.385 X 82°"', function () {
+      // rfOD: a Through All hole reads THRU ALL as SolidWorks and the drawing callout write it (was THRU)
       function co(o) { return HW.callout(HW.newFeature(o, 'in'), 'in').join(' | '); }
       var a = co({ type: 'hole', size: '1/4', fit: 'normal', end: 'through' }), b = co({ type: 'cbore', size: '1/4', end: 'through' });
       var c = co({ type: 'tap', size: '1/4-20 UNC', depth: 0.75, threadDepth: 0.5 }), d = co({ type: 'csk', size: '#10', end: 'through' });
-      assert(a === 'Ø.266 THRU', a); assert(b === 'Ø.266 THRU | ⌴ Ø.438 ↧ .250', b);
-      assert(c === 'Ø.201 ↧ .750 | 1/4-20 UNC - 2B ↧ .500', c); assert(d === 'Ø.201 THRU | ⌵ Ø.385 X 82°', d);
+      assert(a === 'Ø.266 THRU ALL', a); assert(b === 'Ø.266 THRU ALL | ⌴ Ø.438 ↧ .250', b);
+      assert(c === 'Ø.201 ↧ .750 | 1/4-20 UNC - 2B ↧ .500', c); assert(d === 'Ø.201 THRU ALL | ⌵ Ø.385 X 82°', d);
       var iso = HW.callout(HW.newFeature({ type: 'tap', size: 'M8', depth: 16, threadDepth: 12 }, 'mm'), 'mm').join(' | ');
       assert(iso === 'Ø6.8 ↧ 16 | M8x1.25 ↧ 12', iso);
       return [a, b, c, d].join(' / ');
@@ -302,7 +303,7 @@
       assert(taps.indexOf('#12-28 UNF') === taps.indexOf('#12-24 UNC') + 1 && taps.length === 36, 'tap list ' + taps.length);
       assert(HW.validSize(A, 'csk', 'clearance', '#2') && HW.validSize(A, 'csk', 'clearance', '1') && !HW.validSize(A, 'cbore', 'clearance', '#12'), 'validSize');
       var co = HW.callout(HW.newFeature({ type: 'csk', size: '1', end: 'through' }, 'in'), 'in').join(' | ');
-      assert(co === 'Ø1.031 THRU | ⌵ Ø1.875 X 82°', co);
+      assert(co === 'Ø1.031 THRU ALL | ⌵ Ø1.875 X 82°', co);
       var co12 = HW.callout(HW.newFeature({ type: 'tap', size: '#12-28 UNF', depth: 0.5, threadDepth: 0.4 }, 'in'), 'in').join(' | ');
       assert(co12 === 'Ø.182 ↧ .500 | #12-28 UNF - 2B ↧ .400', co12);
       return HW.ANSI_SCREWS.length + ' screw sizes, ' + taps.length + ' threads; ' + co;

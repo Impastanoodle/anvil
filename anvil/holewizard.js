@@ -17,7 +17,7 @@
 // Script: p.holeWizard({ sketch: f3, type: 'cbore', size: 'M8', fit: 'normal', depth: 20 })            (a points sketch)
 //         p.holeWizard({ face: 'Top', offset: 20, points: [[0, 0], [20, 0]], type: 'tap', size: 'M6', depth: 12 })
 //         p.holeWizard({ face: 'Top', offset: 0.25, points: [[1, -1]], standard: 'ANSI Inch', type: 'tap', size: '1/4-20 UNC', depth: 0.75, threadDepth: 0.5 })
-// callout(f, units) gives the drawing callout lines: 'Ø.281 THRU', '⌴ Ø.438 ↧ .250', '1/4-20 UNC - 2B ↧ .500'.
+// callout(f, units) gives the drawing callout lines: 'Ø.281 THRU ALL', '⌴ Ø.438 ↧ .250', '1/4-20 UNC - 2B ↧ .500'.
 var HoleWizard = (function () {
   'use strict';
   var K = Kernel, V = K.vec;
@@ -224,15 +224,19 @@ var HoleWizard = (function () {
   // ---- callout text, ANSI style: inch values with three decimals and no leading zero (.281), mm values trimmed (6.8)
   function inchText(x, dec) { var s = (Math.round(x * Math.pow(10, dec || 3)) / Math.pow(10, dec || 3)).toFixed(dec || 3); return s.replace(/^0\./, '.').replace(/^-0\./, '-.'); }
   function numText(x, units) { return units === 'in' ? inchText(x, 3) : String(Math.round(x * 100) / 100); }
-  // callout(f, units?) -> the callout lines of a Hole Wizard feature: 'Ø.281 THRU' | 'Ø.201 ↧ .750', then
+  // callout(f, units?) -> the callout lines of a Hole Wizard feature: 'Ø.281 THRU ALL' | 'Ø.201 ↧ .750', then
+  // (rfOD) the Hole Wizard's ends are Blind (the depth symbol) and Through All, which SolidWorks 2024 writes THRU ALL on
+  // the drill line and on the thread line of a tap ('1/4-20 UNC - 2B THRU ALL'); plain THRU belongs to a hole of a
+  // stated end (Up To Next, Up To Surface ...), which the Hole Wizard does not offer. The drawing callout and the
+  // Hole Table (drawing-annotations.js) write the same.
   // '⌴ Ø.438 ↧ .250' (counterbore), '⌵ Ø.507 X 82°' (countersink) or '1/4-20 UNC - 2B ↧ .500' (thread)
   function callout(f, units) {
     units = units || (standardOf(f) === ANSI ? 'in' : 'mm');
     var s = spec(f, units), thru = f.end === 'through', lines = [];
-    lines.push('Ø' + numText(s.dia, units) + (thru ? ' THRU' : ' ↧ ' + numText(+f.depth, units)));
+    lines.push('Ø' + numText(s.dia, units) + (thru ? ' THRU ALL' : ' ↧ ' + numText(+f.depth, units)));
     if (s.cbore) lines.push('⌴ Ø' + numText(s.cbore.dia, units) + ' ↧ ' + numText(s.cbore.depth, units));
     if (s.csk) lines.push('⌵ Ø' + numText(s.csk.dia, units) + ' X ' + s.csk.angle + '°');
-    if (s.thread) lines.push(s.thread.label + (thru ? ' THRU' : ' ↧ ' + numText(+(f.threadDepth || f.depth), units)));
+    if (s.thread) lines.push(s.thread.label + (thru ? ' THRU ALL' : ' ↧ ' + numText(+(f.threadDepth || f.depth), units)));
     return lines;
   }
 

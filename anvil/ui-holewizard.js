@@ -4,7 +4,10 @@
 // UI.cmdHoleWizard(existing?) opens the PM. Type tab: Hole Type, Hole Specifications (Standard: ANSI Inch, the default
 // in an inch part, or ISO; for an ANSI Inch Hole, screw clearances or drill sizes; size, fit), End Condition.
 // Positions tab: the first click on a planar face places the first hole there; further clicks on the same face add
-// holes; a click on another face starts over on that face. OK stores a points sketch on the face plus one 'hole'
+// holes; a click on another face starts over on that face. rfOD: each point's X and Y from the face's sketch origin are
+// listed in document units and can be typed (plain coordinates of the sketch points, no relations); the focused row's
+// point is ringed on the model; Smart Dimension commits the holes and opens the positions sketch with Smart Dimension
+// active (SolidWorks dimensions the points in the positions sketch). OK stores a points sketch on the face plus one 'hole'
 // feature in one undo step (an edit rewrites both). UI.updateCosmeticThreads() draws a dashed circle at the major
 // diameter of every Straight Tap hole (called from applyBuild).
 (function () {
@@ -33,7 +36,32 @@
     v.tab = existing ? 'type' : 'positions';
     v.face = sk ? sk.plane : null;
     v.points = sk ? sk.entities.filter(function (e) { return e.t === 'point'; }).map(function (e) { return [e.x, e.y]; }) : [];
-    function tab(name) { v.tab = name; UI.renderPM(); }
+    // rfOD: the Point Positions rows (X / Y of every point) are rebuilt from v.points before each render
+    var posGroup = { title: 'Point Positions', show: function (x) { return isPos(x) && x.points.length > 0; }, fields: [] };
+    function syncPos() {
+      var fields = [];
+      v.points.forEach(function (q, i) {
+        v['px' + i] = q[0]; v['py' + i] = q[1];
+        fields.push({ type: 'number', label: 'Point' + (i + 1) + '  X', key: 'px' + i, unit: 'u' });
+        fields.push({ type: 'number', label: 'Point' + (i + 1) + '  Y', key: 'py' + i, unit: 'u' });
+      });
+      posGroup.fields = fields;
+    }
+    function rerender() { syncPos(); UI.renderPM(); }
+    function tab(name) { v.tab = name; rerender(); }
+    var lastHole = null;
+    // rfOD: Smart Dimension: the holes are committed (OK) and their positions sketch opened with Smart Dimension
+    function smartDimension() {
+      if (!v.face || !v.points.length) { UI.toast('Click a face to place a hole first.'); return Promise.resolve(null); }
+      return Promise.resolve(UI.pmOK()).then(function () {
+        var f = lastHole && K.findFeature(App.model, lastHole.id);
+        if (!f || UI.hasPM()) return null;
+        UI.editSketch(f.sketch);
+        if (App.mode === 'sketch' && UI.setTool) UI.setTool('dimension');
+        UI.setStatus('Smart Dimension: dimension the hole points from the face edges or the sketch origin; exit the sketch to rebuild the holes.');
+        return f;
+      });
+    }
     function isType(x) { return x.tab === 'type'; }
     function isPos(x) { return x.tab === 'positions'; }
     function feature(sketchId) {
@@ -56,9 +84,9 @@
           var uv = K.to2D(plane, pk.point);
           v.points.push([Math.round(uv[0] * 1e4) / 1e4, Math.round(uv[1] * 1e4) / 1e4]);
           v.tab = 'positions';
-          UI.pmSpec().message = v.points.length + ' hole position' + (v.points.length === 1 ? '' : 's') + ' on the face. Click to add more, or accept.';
+          UI.pmSpec().message = v.points.length + ' hole position' + (v.points.length === 1 ? '' : 's') + ' on the face. Click to add more, type X and Y below, or accept.';
           UI.pmSpec().messageOk = true;
-          UI.renderPM(); preview();
+          rerender(); preview();
           return true;
         }
       },
@@ -81,15 +109,20 @@
           // other PropertyManagers' selection lists
           { type: 'pick', icon: 'plane', value: function (x) { return x.face ? x.points.length + ' point' + (x.points.length === 1 ? '' : 's') + ' on a face' : ''; }, placeholder: 'Click a planar face',
             items: function (x) { return x.face ? x.points.map(function (q, i) { return { label: 'Point' + (i + 1) + '  (' + fmt(q[0]) + ', ' + fmt(q[1]) + ')', at: K.to3D(x.face, q[0], q[1]) }; }) : []; },
-            onRemove: function (x, i) { x.points.splice(i, 1); UI.renderPM(); preview(); },
-            onClear: function (x) { x.points = []; UI.renderPM(); preview(); } },
-          { type: 'buttons', buttons: [{ label: 'Remove last', onclick: function () { v.points.pop(); UI.renderPM(); preview(); } }, { label: 'Clear', onclick: function () { v.points = []; UI.renderPM(); preview(); } }] }] }
+            onRemove: function (x, i) { x.points.splice(i, 1); rerender(); preview(); },
+            onClear: function (x) { x.points = []; rerender(); preview(); } },
+          { type: 'buttons', buttons: [{ label: 'Remove last', onclick: function () { v.points.pop(); rerender(); preview(); } }, { label: 'Clear', onclick: function () { v.points = []; rerender(); preview(); } }] },
+          { type: 'static', label: '', value: 'Use Smart Dimension to place the points exactly.', show: function (x) { return x.points.length > 0; } },
+          { type: 'buttons', show: function (x) { return x.points.length > 0; }, buttons: [{ label: 'Smart Dimension', title: 'Accept the holes and open their positions sketch with Smart Dimension', onclick: function () { smartDimension(); } }] }] },
+        posGroup
       ],
       onChange: function (x, key) {
         if (key === 'standard' || key === 'holeType' || key === 'sizeType') {
           fixSize(v);
-          UI.renderPM();
+          rerender();
         }
+        var pk = /^p([xy])(\d+)$/.exec(key || '');   // rfOD: a typed X / Y moves that point (a plain coordinate)
+        if (pk && v.points[+pk[2]] && isFinite(+v[key])) { v.points[+pk[2]][pk[1] === 'x' ? 0 : 1] = +v[key]; ringPoint(+pk[2]); }
         preview();
       },
       onCancel: function () { UI.disposeGroup(UI.groups.preview); },
@@ -101,7 +134,11 @@
         UI.pushUndo();
         var ents = v.points.map(function (q) { return { t: 'point', x: q[0], y: q[1] }; }), f;
         if (existing) {
-          sk.plane = v.face; sk.entities = ents; delete sk.dims; delete sk.rels; delete sk.profile;
+          // rfOD: the points as they were (only the Type tab changed): the positions sketch keeps its dimensions
+          var same = sk.plane === v.face && sk.entities.length === ents.length && sk.entities.every(function (e, i) { return e.t === 'point' && e.x === ents[i].x && e.y === ents[i].y; });
+          if (same) ents = sk.entities;
+          else { delete sk.dims; delete sk.rels; }
+          sk.plane = v.face; sk.entities = ents; delete sk.profile;
           var nf = feature(existing.sketch);
           ['holeType', 'size', 'fit', 'end', 'depth', 'threadDepth', 'standard', 'sizeType'].forEach(function (k) { if (nf[k] === undefined) delete existing[k]; else existing[k] = nf[k]; });
           f = existing;
@@ -114,6 +151,7 @@
           f.name = HW.holeName(App.model, f);
           App.model.features.push(f);
         }
+        lastHole = f;
         return UI.afterRebuild(UI.rebuild(), function () {
           App.sel = { kind: 'feature', id: f.id }; UI.updateHighlights(); UI.refreshTree();
           var err = App.build.errors[f.id];
@@ -122,7 +160,17 @@
         });
       }
     });
+    syncPos(); UI.renderPM();
     preview();
+    // rfOD: the point of the focused X / Y row is ringed on the model (as a hovered list row is)
+    function ringPoint(i) { if (UI.pmHoverItem && v.face && v.points[i]) UI.pmHoverItem({ label: 'Point' + (i + 1), at: K.to3D(v.face, v.points[i][0], v.points[i][1]) }); }
+    var pmBox = document.getElementById('pm-body') || document.getElementById('pm') || document;
+    var onFocus = function (e) {
+      if (!UI.pmSpec || !UI.pmSpec() || UI.pmSpec().values !== v) { pmBox.removeEventListener('focusin', onFocus); return; }
+      var m = e.target && e.target.getAttribute && /^p[xy](\d+)$/.exec(e.target.getAttribute('data-key') || '');
+      if (m) { v.selPoint = +m[1]; ringPoint(+m[1]); }
+    };
+    pmBox.addEventListener('focusin', onFocus);
     // the preview is built in the rebuild worker like the other PropertyManagers' (r3/engine3): the newest request wins,
     // the shown preview is replaced only when the next is ready, and an answer for a closed PropertyManager is dropped;
     // without the worker it is built here as before

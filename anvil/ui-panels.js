@@ -3374,7 +3374,7 @@
       case 'loft': return (f.cut ? 'Cut' : 'Boss') + ' loft through ' + (f.sketches || []).length + ' sections';
       case 'boundary': return 'Boundary ' + (f.cut ? 'cut' : 'boss') + ': ' + (f.dir1 || []).length + ' profiles' + ((f.dir2 || []).length ? ', ' + f.dir2.length + ' Direction 2 curve' + (f.dir2.length === 1 ? '' : 's') : '') + (f.thin ? ', thin ' + f.thin.t : '');   // rfFB
       case 'import': return 'Imported ' + String(f.format || 'mesh').toUpperCase() + (f.file ? ' from ' + f.file : '') + ', ' + (f.solids || []).length + ' solid' + ((f.solids || []).length === 1 ? '' : 's') + (f.merge ? ', merged' : '');
-      case 'hole': return 'Hole Wizard: ' + ({ cbore: 'Counterbore', csk: 'Countersink', hole: 'Hole', tap: 'Straight Tap' }[f.holeType] || f.holeType) + ' ' + (typeof HoleWizard !== 'undefined' && HoleWizard.standardOf ? HoleWizard.standardOf(f) : 'ISO') + ' ' + f.size + (f.holeType !== 'tap' ? ' ' + (f.fit || 'normal') + ' fit' : '') + ', ' + (f.end === 'through' ? 'through all' : 'blind ' + f.depth);
+      case 'hole': return 'Hole Wizard: ' + ({ cbore: 'Counterbore', csk: 'Countersink', hole: 'Hole', tap: 'Straight Tap' }[f.holeType] || f.holeType) + ' ' + (typeof HoleWizard !== 'undefined' && HoleWizard.standardOf ? HoleWizard.standardOf(f) : 'ISO') + ' ' + f.size + (f.holeType !== 'tap' ? ' ' + (f.fit || 'normal') + ' fit' : '') + ', ' + (f.end === 'through' ? 'Through All' : 'Blind ' + f.depth) + (function () { try { return ': ' + HoleWizard.callout(f, App.model && App.model.units === 'in' ? 'in' : 'mm').join(' · '); } catch (e) { return ''; } })();   // rfOD: the callout's wording (THRU ALL) as the PM and the drawing
       case 'sketch': return 'Sketch on ' + (f.plane.custom ? 'face' + (f.plane.face && K.findFeature(App.model, f.plane.face.feature) ? ' of ' + K.findFeature(App.model, f.plane.face.feature).name : '') : f.plane.featureId != null ? 'Plane' + f.plane.featureId : f.plane.ref + (f.plane.offset ? ' + ' + f.plane.offset : ''));
     }
     return f.type;
@@ -4909,15 +4909,13 @@
   // as one undo step and the part rebuilt. DOM: #dt-dialog, table #dt-grid, td[data-r][data-c] > input, .dt-err cells,
   // #dt-msg, #dt-add-row, #dt-add-col (select) , #dt-copy, #dt-paste, modal buttons #dt-apply, #dt-ok, #dt-cancel.
   var dtGrid = null;
+  // rfOD: Kernel.designTableColumns: the variables, then per feature its dimensions and state, a sketch's dimensions
+  // (D1@Sketch1) under the feature built from it; rows it cannot drive (a Base Flange's D1, Thickness@Sheet-Metal)
+  // are listed greyed with the reason
   function dtColumnChoices() {
-    var m = App.model, out = [], used = {};
+    var used = {};
     (dtGrid ? dtGrid[0] : []).forEach(function (h) { used[h] = true; });
-    (Array.isArray(m.equations) ? m.equations : []).forEach(function (q) { var l = q.dim || String(q.name); if (!used[l]) out.push(l); });
-    (m.features || []).forEach(function (f) {
-      (K.DIM_FIELDS[f.type] || []).forEach(function (fld, i) { var l = 'D' + (i + 1) + '@' + f.name; if (f[fld] != null && !used[l]) out.push(l); });
-      if (!used['$STATE@' + f.name]) out.push('$STATE@' + f.name);
-    });
-    return out;
+    return K.designTableColumns(App.model, used);
   }
   function showDesignTable() {
     if (!App.model || isAsm()) { toast('Design tables are for parts.'); return; }
@@ -4925,11 +4923,17 @@
     var wrap = el('div', { id: 'dt-dialog' });
     var msg = el('div', { id: 'dt-msg', class: 'eq-msg' });
     var table = el('table', { id: 'dt-grid', class: 'eq-table dt-grid' });
-    var colSel = el('select', { id: 'dt-add-col', title: 'Add Column: a global variable, a feature dimension or a suppression state' });
+    var colSel = el('select', { id: 'dt-add-col', title: 'Add Column: a global variable, a feature or sketch dimension, or a suppression state' });
     function fillColSel() {
       colSel.innerHTML = '';
       colSel.appendChild(el('option', { value: '', text: 'Add column…' }));
-      dtColumnChoices().forEach(function (l) { colSel.appendChild(el('option', { value: l, text: l })); });
+      var grp = null, gname = null;
+      dtColumnChoices().forEach(function (c) {
+        if (c.group !== gname) { gname = c.group; grp = el('optgroup', { label: gname || 'Global variables' }); colSel.appendChild(grp); }
+        var o = el('option', { value: c.label, text: c.label + (c.disabled ? ' (' + c.reason + ')' : '') });
+        if (c.disabled) { o.disabled = true; o.title = c.reason; }
+        grp.appendChild(o);
+      });
       colSel.appendChild(el('option', { value: '*', text: 'Blank column (type a header)' }));
     }
     colSel.addEventListener('change', function () {
@@ -5033,7 +5037,7 @@
     ]);
     wrap.appendChild(table);
     wrap.appendChild(bar);
-    wrap.appendChild(el('p', { class: 'eq-help', html: 'Rows are configurations. A column is a global variable (<kbd>W</kbd>), a feature dimension (<kbd>D1@Boss-Extrude1</kbd>, driven through a global variable Apply makes) or a suppression state (<kbd>$STATE@Cut-Extrude1</kbd>: <kbd>S</kbd> suppressed, <kbd>U</kbd> unsuppressed). Values may be equations of the variables above them.' }));
+    wrap.appendChild(el('p', { class: 'eq-help', html: 'Rows are configurations. A column is a global variable (<kbd>W</kbd>), a feature dimension (<kbd>D1@Boss-Extrude1</kbd>) or a sketch dimension (<kbd>D1@Sketch1</kbd>: the sketch is solved again in each configuration), driven through a global variable Apply makes, or a suppression state (<kbd>$STATE@Cut-Extrude1</kbd>: <kbd>S</kbd> suppressed, <kbd>U</kbd> unsuppressed). Values may be equations of the variables above them.' }));
     var spec = { title: 'Design Table', body: wrap, buttons: [
       { id: 'dt-ok', label: 'OK', primary: true, action: function () { apply(true); } },
       { id: 'dt-apply', label: 'Apply', action: function () { apply(false); } },

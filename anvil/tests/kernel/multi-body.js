@@ -201,7 +201,8 @@
   // rfFS: an empty cut is a rebuild error now (was the "removed no material" warning); the bodies are kept
   test('a cut that misses every body is an error; one that hits only body 1 with the default scope neither fails nor warns', function () {
     var miss = build(TWO + 'p.box(5, 5, 5, { at: [50, 0, 0], cut: true });');
-    assert(/does not intersect the model/.test(JSON.stringify(miss.errors)), 'expected the empty-cut error, got: ' + JSON.stringify(miss.errors));
+    // rfOD (F2): the box beside both bodies: its sketch lies outside the part (Kernel.cutMissMessage)
+    assert(/does not intersect the model|lies outside the part/.test(JSON.stringify(miss.errors)), 'expected the empty-cut error, got: ' + JSON.stringify(miss.errors));
     near(miss.body.volume(), 2000, 1e-9, 'nothing removed');
     assert(miss.build.bodies.length === 2, 'both bodies kept');
     var one = build(TWO + 'p.box(5, 5, 5, { at: [22, 5, 2], cut: true });'); // inside body 1 only

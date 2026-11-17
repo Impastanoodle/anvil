@@ -61,7 +61,8 @@
     test('rfFS: a cut with no direction that misses on both sides is the same error and stays without a direction', function () {
       var r = build(BLOCK + 'p.sketch("Top", 20).circle(100, -10, 3).end().cut(5);');
       var f = rfFSlast(r);
-      assert(/does not intersect the model/.test(r.errors[f.id] || ''), 'errors: ' + JSON.stringify(r.errors));
+      // rfOD (F2): the circle beside the block: its sketch lies outside the part (Kernel.cutMissMessage)
+      assert(/does not intersect the model|lies outside the part/.test(r.errors[f.id] || ''), 'errors: ' + JSON.stringify(r.errors));
       assert(f.reverse == null, 'no direction written: ' + f.reverse);
       near(r.mp.volume, 24000, 1e-9, 'block kept');
     });

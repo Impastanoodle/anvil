@@ -1507,7 +1507,7 @@ more: dist2 L4957, cross2 L4968, same L4969, inTri L4970, isReflex L4984, boxOf 
 more: newellOf L5107, freeTags L5180, expand L5318, compactMesh L5319, encodeF64 L5389, encodeU32 L5390,
 more: decodeF64 L5398, decodeU32 L5399, boxesMeet L5538, installKernelHook L5551
 
-## holewizard.js (380 lines)
+## holewizard.js (384 lines)
 > Hole Wizard: standard holes as one 'hole' feature (Counterbore, Countersink, Hole, Straight Tap) in
 HoleWizard.ISO  L37  — ISO metric coarse series. clr: ISO 273 clearance holes [close, normal, loose]; pitch: …
 HoleWizard.DRILLS  L67
@@ -1531,16 +1531,16 @@ HoleWizard.sizeOptions  L208  — sizeOptions(standard, holeType, sizeType) -> [
 HoleWizard.defaultSize  L214
 HoleWizard.validSize  L220
 inchText  L225  — callout text, ANSI style: inch values with three decimals and no leading zero (.281), mm …
-HoleWizard.callout  L229  — callout(f, units?) -> the callout lines of a Hole Wizard feature: 'Ø.281 THRU' | 'Ø.201 …
-HoleWizard.section  L240  — half section (r, z) of one hole, z up out of the face, down to z = -L
-HoleWizard.positions  L255
-HoleWizard.build  L276
-HoleWizard.threads  L291  — threads(model) -> cosmetic threads of every Straight Tap hole: [{ featureId, p, n (into …
-baseName  L306  — the feature's name, SolidWorks style: 'CBORE for M8 Socket Head Cap Screw1', 'M8x1.25 …
-HoleWizard.holeName  L316
-HoleWizard.newFeature  L324  — newFeature(o, units?) -> a hole feature from script / PropertyManager options. The …
-HoleWizard.ANSI_CSK_ANGLE  L375
-more: fracName L62, scaled L198, numText L226, holeDepth L264, modelUnits L274
+HoleWizard.callout  L233  — callout(f, units?) -> the callout lines of a Hole Wizard feature: 'Ø.281 THRU ALL' | …
+HoleWizard.section  L244  — half section (r, z) of one hole, z up out of the face, down to z = -L
+HoleWizard.positions  L259
+HoleWizard.build  L280
+HoleWizard.threads  L295  — threads(model) -> cosmetic threads of every Straight Tap hole: [{ featureId, p, n (into …
+baseName  L310  — the feature's name, SolidWorks style: 'CBORE for M8 Socket Head Cap Screw1', 'M8x1.25 …
+HoleWizard.holeName  L320
+HoleWizard.newFeature  L328  — newFeature(o, units?) -> a hole feature from script / PropertyManager options. The …
+HoleWizard.ANSI_CSK_ANGLE  L379
+more: fracName L62, scaled L198, numText L226, holeDepth L268, modelUnits L278
 
 ## icons-mastercam.js (523 lines)
 > the icon set of the Mastercam interface profile (rfLX, 2026-11-12). Loaded after icons.js.
@@ -1669,7 +1669,7 @@ more: plateArea L278, plateParts L416, ids0 L472, convexLoop L527, taperedPrism 
 more: angleOf L997, boundCorrection L1149, boundRevolved L1462, polysOf L1551, surfKey L1558, massKey L2030,
 more: sameMassKey L2036, massCopy L2037, massPropsOf L2052
 
-## kernel-equations.js (584 lines)
+## kernel-equations.js (718 lines)
 > Anvil kernel, equations (global variables, the expression grammar and EXPR_FN) and
 Kernel.isExpression, Kernel._.isExpression  L55  — isExpression(v) -> true for a string that starts with "=" (after trimming)
 Kernel.evalExpression, Kernel._.evalExpression  L80  — evalExpression(expr, vars) -> number. Grammar: numbers, + - * / and ^ …
@@ -1683,29 +1683,35 @@ Kernel.captureConfiguration  L200  — captureConfiguration(model) -> { name: ex
 Kernel.applyEquations  L210  — applyEquations(model, list) -> model: write an edited equation list ([{ name, expr }], …
 Kernel.resolveFeature  L258  — resolveFeature(f, vars) -> a deep copy of f with every "=" string replaced by its value; …
 Kernel.hasExpressions  L260  — hasExpressions(f) -> true when the feature holds any "=" string outside the skipped keys
-Kernel.resolvedModel, Kernel._.resolvedModel  L273  — resolvedModel(model) -> { model: rm, vars, errors, featureErrors: { id: message }, …
-hasOwn  L295  — A feature is suppressed by `f.suppressed: true` (every configuration that does not say …
-Kernel.featureParents  L303  — featureParents(f) -> [feature id]: the features f references by id
-ownSuppressed  L316  — ownSuppressed(model, f, cfg?) -> the feature's own state in configuration cfg (default: …
-Kernel.suppressedIds  L323  — suppressedIds(model, cfgName?) -> { id: true } for every feature suppressed in that …
-Kernel.featureChildren  L332  — featureChildren(model, id) -> [id]: every later feature that references id by id, …
-Kernel.featureAncestors  L341  — featureAncestors(model, id) -> [id]: the features id needs (its parents, theirs …)
-Kernel.setSuppressed  L354  — setSuppressed(model, ids, on, scope?) -> model. scope: 'all' (default without …
-Kernel.DIM_FIELDS  L388  — A grid of strings: grid[0] = header ['', col1, col2 …], grid[r] = [configuration name, …
-parseColumn  L395  — parseColumn(model, label) -> { kind: 'var' | 'dim' | 'state', label, name?, feature?, …
-dimVar  L416  — the variable that drives a dimension column now ('=W' in the field), or null
-Kernel.designTable  L429  — designTable(model) -> grid: the configurations as rows (none: one row named for the …
-tableCell  L448  — tableCell(model, label, cfg) -> the cell text of column `label` as configuration cfg …
-Kernel.designTableCell  L458
-Kernel.applyDesignTable  L467  — applyDesignTable(model, grid) -> { ok, errors: [{ row, col, message }] (grid indices), …
-Kernel.gridToTSV  L560  — grid <-> tab-separated text (what Excel copies and pastes)
-Kernel.tsvToGrid  L561
-Kernel.designTableColumn  L569
-Kernel.EXPR_FUNCTIONS  L576
-Kernel.isSuppressed  L581  — rfFC: feature suppression
-Kernel.ownSuppressed  L583
-more: fixedArity L15, variadic L21, tokenizeExpr L57, cloneValue L236, resolveValue L241, suppressedCopy L296,
-more: findFeatureById L350, featureByName L391, eqList L392, eqByName L393, cellOfVar L421, stateCell L459
+sketchDimItems  L275  — A sketch dimension (sketch.dims[i], or a distance / angle relation) may carry expr: '=W' …
+sketchDimScale  L283  — the value a dimension shows (a diameter shown as a radius reads half)
+sketchWithExprs  L291  — sketchWithExprs(orig, r, vars) -> null (nothing to change), { sketch } (a solved copy of …
+Kernel.sketchDimItems  L338
+Kernel.resolvedModel, Kernel._.resolvedModel  L344  — resolvedModel(model) -> { model: rm, vars, errors, featureErrors: { id: message }, …
+hasOwn  L370  — A feature is suppressed by `f.suppressed: true` (every configuration that does not say …
+Kernel.featureParents  L378  — featureParents(f) -> [feature id]: the features f references by id
+ownSuppressed  L391  — ownSuppressed(model, f, cfg?) -> the feature's own state in configuration cfg (default: …
+Kernel.suppressedIds  L398  — suppressedIds(model, cfgName?) -> { id: true } for every feature suppressed in that …
+Kernel.featureChildren  L407  — featureChildren(model, id) -> [id]: every later feature that references id by id, …
+Kernel.featureAncestors  L416  — featureAncestors(model, id) -> [id]: the features id needs (its parents, theirs …)
+Kernel.setSuppressed  L429  — setSuppressed(model, ids, on, scope?) -> model. scope: 'all' (default without …
+Kernel.DIM_FIELDS  L463  — A grid of strings: grid[0] = header ['', col1, col2 …], grid[r] = [configuration name, …
+parseColumn  L470  — parseColumn(model, label) -> { kind: 'var' | 'dim' | 'state', label, name?, feature?, …
+dimVar  L505  — the variable that drives a dimension column now ('=W' in the field), or null
+Kernel.designTable  L522  — designTable(model) -> grid: the configurations as rows (none: one row named for the …
+tableCell  L541  — tableCell(model, label, cfg) -> the cell text of column `label` as configuration cfg …
+Kernel.designTableCell  L557
+Kernel.applyDesignTable  L566  — applyDesignTable(model, grid) -> { ok, errors: [{ row, col, message }] (grid indices), …
+Kernel.gridToTSV  L664  — grid <-> tab-separated text (what Excel copies and pastes)
+Kernel.tsvToGrid  L665
+Kernel.designTableColumns  L677  — rfOD: designTableColumns(model, used?) -> what the Design Table's Add Column list …
+Kernel.designTableColumn  L703
+Kernel.EXPR_FUNCTIONS  L710
+Kernel.isSuppressed  L715  — rfFC: feature suppression
+Kernel.ownSuppressed  L717
+more: fixedArity L15, variadic L21, tokenizeExpr L57, cloneValue L236, resolveValue L241, sketchDimValue L284,
+more: suppressedCopy L371, findFeatureById L425, featureByName L466, eqList L467, eqByName L468, sdimItem L500,
+more: cellOfVar L514, stateCell L558
 
 ## kernel-features.js (4042 lines)
 > Anvil kernel, the sweep, loft and shell features (`sketchPath`, `buildSweep`, `buildLoft`,
@@ -2477,7 +2483,7 @@ more: unit L4222, segDist L4223, r9 L4224, perp L4225, polysOf L4230, sigOf L424
 more: polyMatch L4253, tolOf L4254, addSig L4282, wholeLine L4438, deg360 L4461, resolveXsect L4462,
 more: entName L4640
 
-## kernel.js (365 lines)
+## kernel.js (467 lines)
 > Anvil's modeling kernel, root file: the `Kernel` object, the small vector helpers, planes, face references
 Kernel._.add  L21
 Kernel._.sub  L22
@@ -2514,8 +2520,14 @@ Kernel._.triangulate  L287
 Kernel._.poly  L338
 Kernel._.pushPoly  L343
 Kernel._.ensureOutward  L348
-Kernel.vec  L358
-more: tidyVec L60, xfDir L117, xfPoint L119, isCopyFeature L128, ownTransforms L138
+cutRegions  L361  — rfOD (F2): a cut that removes nothing because its sketch is beside the part, not over …
+inPoly2  L386  — strictly inside (more than eps from every edge)
+segsCross  L398  — proper crossing, not touching
+Kernel.cutOutside  L420  — cutOutside(f, model, ctx) -> true when the cut's regions miss the bodies' projection, …
+Kernel.cutMissMessage  L447
+Kernel.vec  L460
+more: tidyVec L60, xfDir L117, xfPoint L119, isCopyFeature L128, ownTransforms L138, findFeatureLocal L381,
+more: bbox2 L404, centroid2 L409, polysOverlap L410
 
 ## library.js (407 lines)
 > the Design Library's own content, no DOM (loaded after examples/examples.js by index.html and the kernel
@@ -3832,13 +3844,13 @@ more: cmpDraw L1067, valText L1075, cmpHtml L1076, dimOptions L1121, sensorCtx L
 more: sensorText L1145, evaluateSensors L1146, sensorsRow L1160, decorateSensorTree L1165, sensorCommit L1198,
 more: removeSensor L1203, cmdSensor L1206, haCalc L1277, haHtml L1292
 
-## ui-holewizard.js (187 lines)
+## ui-holewizard.js (235 lines)
 > the Hole Wizard PropertyManager (Type / Positions tabs) and the viewport's cosmetic threads.
-specText  L18  — the hole as its drawing callout ('Ø.281 THRU · ⌴ Ø.438 ↧ .250'), with the drill named …
-UI.cmdHoleWizard  L24
-UI.updateCosmeticThreads  L160
-UI.cosmeticThreadCount  L186
-more: fmt L14, units L15, holeOf L16
+specText  L21  — the hole as its drawing callout ('Ø.281 THRU · ⌴ Ø.438 ↧ .250'), with the drill named …
+UI.cmdHoleWizard  L27
+UI.updateCosmeticThreads  L208
+UI.cosmeticThreadCount  L234
+more: fmt L17, units L18, holeOf L19
 
 ## ui-levels.js (747 lines)
 > Levels Manager (Mastercam): part-wide numbered levels for the 2D entities of every sketch, built on
@@ -3991,7 +4003,7 @@ more: swapIn L506, swapIn0 L510, release L548, pendingWork L561, settle L565, fe
 more: learn L604, releaseHold L638, cue L643, endRollHold L705, rollbackBuilt L710, swapRollback L719,
 more: status L824, importFile L874
 
-## ui-panels.js (5048 lines)
+## ui-panels.js (5052 lines)
 > ribbon (CommandManager), menu bar, FeatureManager tree, heads-up toolbar, status bar, modal dialogs.
 UI.setStatus  L7
 UI.toast  L10  — one toast at a time: a new message replaces the text of the one showing (no blink); it …
@@ -4149,7 +4161,8 @@ UI.shortcutBar  L4877
 UI.ribbonFlyFace  L4884  — UI.ribbonFlyFace(group[, index]): the flyout's face (index into its items); with an …
 UI.ribbonShownItems  L4892  — lane CC: the items the CommandManager shows now, one per child of #ribbon-buttons (the …
 UI.configurations  L4901
-UI.showDesignTable  L4922
+dtColumnChoices  L4915  — rfOD: Kernel.designTableColumns: the variables, then per feature its dimensions and …
+UI.showDesignTable  L4920
 more: isAsm L286, ribbonTabs L320, cmdOf L330, flatLabel L331, docTypeNow L332, commandList L350, publicCmd L363,
 more: profileDef L380, profileSet L381, buildProfileSet L391, frameRibbon L499, frameMgrOn L500, frameItem L521,
 more: frameOpenMenu L560, fileRows L583, bsRowButton L604, bsRun L611, bsOpen L612, bsKey L631, bsClose L632,
@@ -4181,7 +4194,7 @@ more: evaluateEquations L4358, cfgList L4468, cfgActiveName L4469, cfgValuesText
 more: cfgFail L4478, cfgCheckName L4479, cfgAdd L4491, cfgRename L4507, cfgRemove L4521, cfgActivate L4534,
 more: cfgNeedSelection L4569, cfgPromptAdd L4574, cfgPromptRename L4577, cfgConfirmDelete L4582, escHtml L4587,
 more: cfgMenu L4588, setTip L4680, adoptTitle L4696, renderTip L4704, showTip L4713, hideTip L4727,
-more: scContext L4772, scFind L4777, shortcutBarItems L4792, scMark L4801, scPress L4806, dtColumnChoices L4912
+more: scContext L4772, scFind L4777, shortcutBarItems L4792, scMark L4801, scPress L4806
 
 ## ui-profiles.js (454 lines)
 > interface profiles (lane profiles, user 2026-11-11: "a setting that rearranges the ui to be similar

@@ -352,6 +352,108 @@ Object.defineProperty(Kernel, '_', { value: {}, enumerable: false });   // the i
   }
 
 
+  // rfOD (F2): a cut that removes nothing because its sketch is beside the part, not over it. cutMissMessage(f, model,
+  // ctx, fallback) -> "<feature>'s sketch (<sketch>) lies outside the part: Edit Sketch to move it." when no region of
+  // the cut's sketch (a Cut-Extrude's profile loops; a Hole Wizard's points as discs of the hole's largest diameter)
+  // overlaps the projection of the bodies in its scope on the sketch plane; else `fallback` (Kernel.CUT_MISS: the cut
+  // is over the part but points away). Only Cut-Extrude and Hole Wizard holes are judged (a revolve or sweep cut has no
+  // such projection); anything it cannot judge gets the fallback. Touching along an edge is not an overlap.
+  function cutRegions(f, model, ctx) {
+    var sk = (ctx && ctx.sketches && ctx.sketches[f.sketch]) || findFeatureLocal(model, f.sketch);
+    if (!sk || sk.type !== 'sketch' && !sk.entities) return null;
+    var plane = resolvePlane(sk.plane, model, ctx && ctx.planes), loops = [];
+    if (f.type === 'extrude' && f.cut) {
+      var prof = sk.profile || (K.sketchProfile ? K.sketchProfile(sk) : null);
+      (prof && prof.loops || []).forEach(function (l) { if (!l.hole && l.pts && l.pts.length > 2) loops.push(l.pts); });
+    } else if (f.type === 'hole' && typeof HoleWizard !== 'undefined' && f.holeType) {
+      var s = HoleWizard.spec(f, model && model.units === 'in' ? 'in' : 'mm');
+      var r = Math.max(s.dia || 0, s.cbore ? s.cbore.dia : 0, s.csk ? s.csk.dia : 0) / 2;
+      if (!(r > 0)) return null;
+      (sk.entities || []).forEach(function (e) {
+        if (e.t !== 'point' || e.construction) return;
+        var c = [];
+        for (var i = 0; i < 24; i++) c.push([e.x + r * Math.cos(i * Math.PI / 12), e.y + r * Math.sin(i * Math.PI / 12)]);
+        loops.push(c);
+      });
+    } else return null;
+    return loops.length ? { sketch: sk, plane: plane, loops: loops } : null;
+  }
+  function findFeatureLocal(model, id) {
+    var fs = model && model.features || [];
+    for (var i = 0; i < fs.length; i++) if (fs[i].id === id) return fs[i];
+    return null;
+  }
+  function inPoly2(p, poly, eps) {   // strictly inside (more than eps from every edge)
+    var inside = false, n = poly.length;
+    for (var i = 0, j = n - 1; i < n; j = i++) {
+      var a = poly[i], b = poly[j];
+      var ex = b[0] - a[0], ey = b[1] - a[1], L2 = ex * ex + ey * ey;
+      var t = L2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * ex + (p[1] - a[1]) * ey) / L2)) : 0;
+      var dx = p[0] - a[0] - t * ex, dy = p[1] - a[1] - t * ey;
+      if (dx * dx + dy * dy <= eps * eps) return false;
+      if ((a[1] > p[1]) !== (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]) inside = !inside;
+    }
+    return inside;
+  }
+  function segsCross(a, b, c, d, eps) {   // proper crossing, not touching
+    function o(p, q, r) { return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]); }
+    var d1 = o(c, d, a), d2 = o(c, d, b), d3 = o(a, b, c), d4 = o(a, b, d);
+    var s1 = eps * Math.hypot(d[0] - c[0], d[1] - c[1]), s2 = eps * Math.hypot(b[0] - a[0], b[1] - a[1]);
+    return ((d1 > s1 && d2 < -s1) || (d1 < -s1 && d2 > s1)) && ((d3 > s2 && d4 < -s2) || (d3 < -s2 && d4 > s2));
+  }
+  function bbox2(pts) {
+    var b = [Infinity, Infinity, -Infinity, -Infinity];
+    pts.forEach(function (p) { if (p[0] < b[0]) b[0] = p[0]; if (p[1] < b[1]) b[1] = p[1]; if (p[0] > b[2]) b[2] = p[0]; if (p[1] > b[3]) b[3] = p[1]; });
+    return b;
+  }
+  function centroid2(pts) { var x = 0, y = 0; pts.forEach(function (p) { x += p[0]; y += p[1]; }); return [x / pts.length, y / pts.length]; }
+  function polysOverlap(P, L, eps) {
+    var i, j;
+    if (inPoly2(centroid2(P), L, eps) || inPoly2(centroid2(L), P, eps)) return true;
+    for (i = 0; i < P.length; i++) if (inPoly2(P[i], L, eps)) return true;
+    for (i = 0; i < L.length; i++) if (inPoly2(L[i], P, eps)) return true;
+    for (i = 0; i < P.length; i++) for (j = 0; j < L.length; j++) if (segsCross(P[i], P[(i + 1) % P.length], L[j], L[(j + 1) % L.length], eps)) return true;
+    return false;
+  }
+  // cutOutside(f, model, ctx) -> true when the cut's regions miss the bodies' projection, false when they overlap it,
+  // null when this cut cannot be judged
+  function cutOutside(f, model, ctx) {
+    var reg = cutRegions(f, model, ctx), bodies = ctx && ctx.bodies || [];
+    if (!reg || !bodies.length) return null;
+    // every body, not only the cut's scope: a sketch over a body the scope leaves out is not "outside the part"
+    var scope = bodies;
+    var pl = reg.plane, lbs = reg.loops.map(bbox2), span = 0;
+    lbs.forEach(function (b) { span = Math.max(span, b[2] - b[0], b[3] - b[1]); });
+    var eps = 1e-7 * Math.max(1, span);
+    for (var bi = 0; bi < scope.length; bi++) {
+      var polys = scope[bi].polygons || [];
+      for (var k = 0; k < polys.length; k++) {
+        var vs = polys[k].vertices, P = [];
+        for (var m = 0; m < vs.length; m++) P.push(to2D(pl, [vs[m].pos.x, vs[m].pos.y, vs[m].pos.z]));
+        var a2 = 0;
+        for (m = 0; m < P.length; m++) { var p = P[m], q = P[(m + 1) % P.length]; a2 += p[0] * q[1] - q[0] * p[1]; }
+        if (Math.abs(a2) < 1e-12 * Math.max(1, span * span)) continue;   // a face edge-on to the sketch plane
+        if (a2 < 0) P.reverse();
+        var pb = bbox2(P);
+        for (var li = 0; li < reg.loops.length; li++) {
+          var lb = lbs[li];
+          if (pb[2] <= lb[0] + eps || pb[0] >= lb[2] - eps || pb[3] <= lb[1] + eps || pb[1] >= lb[3] - eps) continue;
+          if (polysOverlap(P, reg.loops[li], eps)) return false;
+        }
+      }
+    }
+    return true;
+  }
+  function cutMissMessage(f, model, ctx, fallback) {
+    fallback = fallback || K.CUT_MISS || 'The cut does not intersect the model: it would remove no material. Reverse its direction or change its end condition.';
+    try {
+      if (cutOutside(f, model, ctx) !== true) return fallback;
+      var sk = (ctx && ctx.sketches && ctx.sketches[f.sketch]) || findFeatureLocal(model, f.sketch);
+      return (f.name || 'The cut') + '\'s sketch (' + ((sk && sk.name) || 'its sketch') + ') lies outside the part: Edit Sketch to move it.';
+    } catch (e) { return fallback; }
+  }
+  K.cutMissMessage = cutMissMessage; K.cutOutside = cutOutside;
+
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.STD_PLANES = STD_PLANES; K.AXES = AXES; K.makePlane = makePlane; K.planeFromFace = planeFromFace; K.resolvePlane = resolvePlane;
   K.faceRef = faceRef; K.resolveFacePlane = resolveFacePlane; K.capPlane = capPlane; K.patternCopies = patternCopies; K.tidyPlane = tidyPlane;

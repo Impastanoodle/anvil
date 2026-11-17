@@ -124,7 +124,8 @@
   test('normal cut whose tool crosses no sheet face and misses the part is an error and leaves the body alone', function () {
     var r = build(NSHEET + '\np.sketch("Top", 2).rect(200, 200, 10, 10);\np.cut("through", { reverse: true, normalCut: true });');
     var id = lastFeature(r).id;
-    assert(/does not intersect the model/.test(r.errors[id] || ''), 'expected the empty-cut error on feature ' + id + ': ' + JSON.stringify(r.errors));
+    // rfOD (F2): the rectangle beside the sheet: its sketch lies outside the part (Kernel.cutMissMessage)
+    assert(/does not intersect the model|lies outside the part/.test(r.errors[id] || ''), 'expected the empty-cut error on feature ' + id + ': ' + JSON.stringify(r.errors));
     near(r.mp.volume, 12000, 1e-6, 'volume unchanged');
     return r.errors[id];
   });

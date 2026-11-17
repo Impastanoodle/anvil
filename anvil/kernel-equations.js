@@ -266,6 +266,77 @@
     }
     return false;
   }
+  // ------------------------------------------------------------------ rfOD: sketch dimensions driven by variables
+  // A sketch dimension (sketch.dims[i], or a distance / angle relation) may carry expr: '=W' (sketchflow2: typed as
+  // "=W" in the Modify box; the Design Table links its D1@Sketch1 columns the same way). The UI re-solves the model's
+  // sketch before each rebuild (UI.syncSketchDimExprs); resolvedModel does it too, on a copy, so the kernel alone (the
+  // headless runner, a configuration's flat pattern) builds each configuration with its own values. Dimension names
+  // follow ui-sketch-dims.js: D<n> in the order Smart Dimensions, then the dimension relations, unless d.name is set.
+  function sketchDimItems(sk) {
+    var out = [], T = typeof SketchSolver !== 'undefined' && SketchSolver.TYPES;
+    (sk.dims || []).forEach(function (d, i) { if (d) out.push({ src: 'dim', index: i, d: d }); });
+    (sk.rels || []).forEach(function (r, i) { if (r && T && T[r.type] && T[r.type].dim) out.push({ src: 'rel', index: i, d: r }); });
+    out.forEach(function (it, k) { it.name = it.d.name ? String(it.d.name) : 'D' + (k + 1); });
+    return out;
+  }
+  // the value a dimension shows (a diameter shown as a radius reads half)
+  function sketchDimScale(d) { return d.k === 'dia' && d.show === 'r' ? 0.5 : d.k === 'r' && d.show === 'dia' ? 2 : 1; }
+  function sketchDimValue(sk, it) {
+    if (it.src === 'rel') return +it.d.v;
+    var e = sk.entities && sk.entities[it.d.e];
+    return e && K.dimValue ? K.dimValue(e, it.d) * sketchDimScale(it.d) : NaN;
+  }
+  var sketchSolveCache = [];
+  // sketchWithExprs(orig, r, vars) -> null (nothing to change), { sketch } (a solved copy of r) or { error }
+  function sketchWithExprs(orig, r, vars) {
+    var items = sketchDimItems(orig).filter(function (it) { return it.d.expr && isExpression(String(it.d.expr)) && !it.d.driven; });
+    if (!items.length) return null;
+    var todo = [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i], v;
+      try { v = evalExpression(String(items[i].d.expr), vars); } catch (e) { return { error: it.name + '@' + orig.name + ': ' + (e.message || String(e)) }; }
+      if (!isFinite(v)) return { error: it.name + '@' + orig.name + ' is not a number' };
+      var cur = sketchDimValue(orig, it);
+      if (!(Math.abs(v - cur) <= 1e-9 * Math.max(1, Math.abs(v)))) todo.push({ it: it, v: v });
+    }
+    if (!todo.length) return null;
+    var S = typeof SketchSolver !== 'undefined' ? SketchSolver : null;
+    var what = todo.map(function (t) { return t.it.name + '@' + orig.name + ' = ' + (Math.round(t.v * 1e6) / 1e6); }).join(', ');
+    if (!S || !S.setDim) return { error: orig.name + ' cannot take ' + what + ': the sketch\'s relations or dimensions do not allow it.' };
+    var key = orig.id + '|' + what + '|' + JSON.stringify(orig.entities) + JSON.stringify(orig.dims || []) + JSON.stringify(orig.rels || []);
+    for (var c = 0; c < sketchSolveCache.length; c++) if (sketchSolveCache[c].key === key) return sketchSolveCache[c].out;
+    var copy = {};
+    Object.keys(r).forEach(function (k) { if (k !== 'profile') copy[k] = k === 'entities' || k === 'dims' || k === 'rels' ? cloneValue(orig[k]) : r[k]; });
+    var out = null;
+    if (todo.length > 1 && S.solve) {
+      // several values at once (a configuration changes width and depth): one solve with every target, so a value
+      // that is only reachable together with another (a line's length and its horizontal distance) is not refused
+      var dimT = {}, relT = {}, saved = cloneValue(copy.entities);
+      todo.forEach(function (t) {
+        if (t.it.src === 'rel') { relT[t.it.index] = t.v; return; }
+        var e = copy.entities[t.it.d.e], v1 = t.v / sketchDimScale(t.it.d);
+        dimT[t.it.index] = v1;
+        try { if (e) K.setDimValue(e, t.it.d, v1); } catch (x) { }
+      });
+      var all;
+      try { all = S.solve(copy, { dimTargets: dimT, relTargets: relT }); } catch (x) { all = null; }
+      if (all && all.ok) {
+        todo.forEach(function (t) { if (t.it.src === 'rel') copy.rels[t.it.index].v = t.v; });
+        todo = [];
+      } else copy.entities = saved;
+    }
+    for (var j = 0; j < todo.length && !out; j++) {
+      var t = todo[j], res;
+      try { res = t.it.src === 'rel' ? S.setRelValue(copy, t.it.index, t.v) : S.setDim(copy, t.it.index, t.v / sketchDimScale(t.it.d)); } catch (e) { res = { ok: false, error: e.message || String(e) }; }
+      if (!res || !res.ok) out = { error: t.it.name + '@' + orig.name + ' = ' + (Math.round(t.v * 1e6) / 1e6) + ': ' + ((res && res.error) || 'the sketch cannot take this value.') };
+    }
+    if (!out) out = { sketch: copy };
+    sketchSolveCache.push({ key: key, out: out });
+    if (sketchSolveCache.length > 16) sketchSolveCache.shift();
+    return out;
+  }
+  K.sketchDimItems = function (sk) { return sketchDimItems(sk).map(function (it) { return { src: it.src, index: it.index, name: it.name, driven: !!it.d.driven, expr: it.d.expr || null, value: sketchDimValue(sk, it) }; }); };
+
   // resolvedModel(model) -> { model: rm, vars, errors, featureErrors: { id: message }, sheetError }: a shallow copy of
   // the model whose features and sheet parameters have their expressions evaluated. A feature without expressions
   // is the original object (so rebuild's sketch profiles land on the model as before); one that fails to resolve
@@ -278,6 +349,10 @@
       if (sup[f.id]) return f.suppressed ? f : suppressedCopy(f, true);
       var r = f;
       if (hasExpressions(f)) try { r = resolveFeature(f, vars); } catch (e) { featureErrors[f.id] = e.message || String(e); }
+      if (f.type === 'sketch' && !featureErrors[f.id]) {   // rfOD: sketch dimensions linked to variables (Design Table)
+        var sx = sketchWithExprs(f, r, vars);
+        if (sx && sx.error) featureErrors[f.id] = sx.error; else if (sx) r = sx.sketch;
+      }
       return f.suppressed ? suppressedCopy(r, false) : r;   // rfFC: unsuppressed in the active configuration
     });
     if (model.sheet && hasExpressions(model.sheet)) {
@@ -402,9 +477,17 @@
       return { kind: 'var', label: s, name: s, linked: !!linked };
     }
     var head = s.slice(0, at), fname = s.slice(at + 1), f = featureByName(model, fname);
+    if (/^sheet-?metal$/i.test(fname) && !f) return { error: SHEET_T_REASON };   // rfOD: Thickness@Sheet-Metal
     if (!f) return { error: 'No feature named "' + fname + '"' };
     if (/^\$state$/i.test(head)) return { kind: 'state', label: '$STATE@' + f.name, feature: f.id };
-    if (f.type === 'sketch') return { error: 'Sketch dimensions of ' + f.name + ' cannot be configured yet: drive the sketch with a global variable' };
+    if (f.type === 'sketch') {   // rfOD: D1@Sketch1, a sketch dimension (by its name), driven through a variable
+      var items = sketchDimItems(f), it = null;
+      for (var q = 0; q < items.length; q++) if (items[q].name.toLowerCase() === head.toLowerCase()) it = items[q];
+      if (!it) return { error: f.name + ' has no dimension ' + head };
+      if (it.d.driven) return { error: head + '@' + f.name + ' is a driven dimension: make it driving to configure it' };
+      return { kind: 'sdim', label: it.name + '@' + f.name, feature: f.id, src: it.src, index: it.index };
+    }
+    if (f.sheetBase && (/^D1$/i.test(head) || head === 'depth')) return { error: head + '@' + f.name + ' is the sheet thickness. ' + SHEET_T_REASON };
     var field = null, dm = /^D(\d+)$/i.exec(head);
     if (dm) { field = (DIM_FIELDS[f.type] || [])[+dm[1] - 1]; if (!field) return { error: f.name + ' has no dimension D' + dm[1] }; }
     else field = head;
@@ -412,8 +495,18 @@
     if (v == null || !(typeof v === 'number' || isExpression(v))) return { error: f.name + ' has no numeric value "' + head + '"' };
     return { kind: 'dim', label: s, feature: f.id, field: field };
   }
+  // rfOD: why the sheet thickness is not a Design Table column (SolidWorks' Thickness@Sheet-Metal1)
+  var SHEET_T_REASON = 'The thickness belongs to the Sheet-Metal parameters (gauge, bend radius and allowance go with it): a Design Table does not drive it yet; make one part per gauge';
+  function sdimItem(model, col) {
+    var f = findFeatureById(model, col.feature);
+    return f ? (col.src === 'rel' ? (f.rels || [])[col.index] : (f.dims || [])[col.index]) : null;
+  }
   // the variable that drives a dimension column now ('=W' in the field), or null
   function dimVar(model, col) {
+    if (col.kind === 'sdim') {
+      var di = sdimItem(model, col), mm = di && isExpression(di.expr) && /^\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*$/.exec(di.expr);
+      return mm && eqByName(model, mm[1]) ? mm[1] : null;
+    }
     var f = findFeatureById(model, col.feature), v = f && f[col.field];
     var m = isExpression(v) && /^\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*$/.exec(v);
     return m && eqByName(model, m[1]) ? m[1] : null;
@@ -448,6 +541,12 @@
   function tableCell(model, label, c) {
     var col = parseColumn(model, label);
     if (col.kind === 'state') return ownSuppressed(model, findFeatureById(model, col.feature), c) ? 'S' : 'U';
+    if (col.kind === 'sdim') {   // rfOD: its variable, else the value the sketch shows now
+      var sv = dimVar(model, col) || (eqList(model).filter(function (q) { return q.dim === col.label; })[0] || {}).name;
+      if (sv) return cellOfVar(model, c, sv);
+      var sk = findFeatureById(model, col.feature), its = sketchDimItems(sk).filter(function (x) { return x.src === col.src && x.index === col.index; })[0];
+      return its ? String(Math.round(sketchDimValue(sk, its) * 1e9) / 1e9) : '';
+    }
     if (col.kind === 'dim') {
       var dv = dimVar(model, col) || (eqList(model).filter(function (q) { return q.dim === col.label; })[0] || {}).name;
       var raw = findFeatureById(model, col.feature)[col.field];
@@ -500,12 +599,13 @@
       if (!have) {
         var base = (head0(col.label) + '_' + String(f.name)).replace(/[^A-Za-z0-9_]/g, '_').replace(/^([^A-Za-z_])/, '_$1'), nm = base;
         for (var k = 2; eqByName(t, nm); k++) nm = base + '_' + k;
-        var cur = f[col.field];
+        var cur = col.kind === 'sdim' ? tableCell(t, col.label, null) : f[col.field];
         t.equations.push({ name: nm, expr: isExpression(cur) ? configExpr(cur) : String(cur), dim: col.label });
         created.push(nm);
         have = nm;
       }
-      f[col.field] = '=' + have;
+      if (col.kind === 'sdim') sdimItem(t, col).expr = '=' + have;   // rfOD: the sketch dimension follows the variable
+      else f[col.field] = '=' + have;
       return have;
     });
     function head0(label) { return String(label).split('@')[0]; }
@@ -542,14 +642,18 @@
         if (!col || col.kind === 'state' || errors.some(function (e) { return e.row === i + 1 && e.col === ci + 1; })) return;
         var err = res.errors[colVar[ci]];
         if (err) bad(i + 1, ci + 1, err);
-        else if (col.kind === 'dim' && !(isFinite(res.vars[colVar[ci]]))) bad(i + 1, ci + 1, 'Not a number');
+        else if ((col.kind === 'dim' || col.kind === 'sdim') && !(isFinite(res.vars[colVar[ci]]))) bad(i + 1, ci + 1, 'Not a number');
+        else if (col.kind === 'sdim' && !(res.vars[colVar[ci]] > 0) && sdimItem(t, col) && sdimItem(t, col).k !== 'angle') bad(i + 1, ci + 1, 'A sketch dimension must be greater than 0');
       });
     });
     if (errors.length) return { ok: false, errors: errors, created: [] };
     // write it back: equations, the linked feature fields, the configurations and the active one
     model.equations = t.equations;
     if (!model.equations.length) delete model.equations;
-    cols.forEach(function (col) { if (col && col.kind === 'dim') findFeatureById(model, col.feature)[col.field] = findFeatureById(t, col.feature)[col.field]; });
+    cols.forEach(function (col) {
+      if (col && col.kind === 'dim') findFeatureById(model, col.feature)[col.field] = findFeatureById(t, col.feature)[col.field];
+      if (col && col.kind === 'sdim') sdimItem(model, col).expr = sdimItem(t, col).expr;   // rfOD
+    });
     if (t.configurations.length) {
       model.configurations = t.configurations;
       if (model.activeConfiguration == null || !findConfiguration(model, model.activeConfiguration)) model.activeConfiguration = t.configurations[0].name;
@@ -566,6 +670,36 @@
     g.forEach(function (r) { while (r.length < w) r.push(''); });
     return g;
   }
+  // rfOD: designTableColumns(model, used?) -> what the Design Table's Add Column list offers, in tree order:
+  // [{ label, group, disabled?, reason? }]. group: '' for the global variables, else the feature's name; a sketch's
+  // dimensions are grouped under the feature built from it ('Base-Flange1 (Sketch1)'). A sheet-metal Base Flange's
+  // D1 (the sheet thickness) is a disabled row with the reason. `used` (labels already in the table) are left out.
+  function designTableColumns(model, used) {
+    used = used || {};
+    var out = [];
+    function add(label, group, reason) { if (used[label]) return; var o = { label: label, group: group }; if (reason) { o.disabled = true; o.reason = reason; } out.push(o); }
+    eqList(model).forEach(function (q) { if (q && q.name != null) add(q.dim || String(q.name), ''); });
+    var fs = model.features || [], consumer = {};
+    fs.forEach(function (f) {
+      if (f.type === 'sketch') return;
+      [f.sketch].concat(Array.isArray(f.sketches) ? f.sketches : []).forEach(function (id) { if (id != null && consumer[id] == null) consumer[id] = f; });
+    });
+    fs.forEach(function (f) {
+      if (f.type === 'sketch') {
+        var g = consumer[f.id] ? consumer[f.id].name + ' (' + f.name + ')' : f.name;
+        sketchDimItems(f).forEach(function (it) { add(it.name + '@' + f.name, g, it.d.driven ? 'A driven dimension: its value follows the geometry' : null); });
+        return;
+      }
+      (DIM_FIELDS[f.type] || []).forEach(function (fld, i) {
+        if (f[fld] == null) return;
+        add('D' + (i + 1) + '@' + f.name, f.name, f.sheetBase && fld === 'depth' ? 'The sheet thickness. ' + SHEET_T_REASON : null);
+      });
+      add('$STATE@' + f.name, f.name);
+    });
+    if (model.sheet) add('Thickness@Sheet-Metal', 'Sheet-Metal', SHEET_T_REASON);
+    return out;
+  }
+  K.designTableColumns = designTableColumns;
   K.DIM_FIELDS = DIM_FIELDS; K.designTable = designTable; K.applyDesignTable = applyDesignTable; K.designTableColumn = function (model, label) { return parseColumn(model, label); };
   K.gridToTSV = gridToTSV; K.tsvToGrid = tsvToGrid;
 
