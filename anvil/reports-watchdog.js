@@ -54,7 +54,17 @@ self.onmessage = function (e) {
       save();
     }
   } else if (m.type === 'crumbs') {
-    (m.list || []).forEach(function (c) { S.crumbs.push(c); });
+    // a gesture crumb (c.g: what the hand did, ui-reports.js "gestures") comes again as the gesture goes on: the same
+    // g rewrites the line; only the newest 30 gesture lines are kept
+    (m.list || []).forEach(function (c) {
+      if (c && c.g != null) {
+        for (var i = S.crumbs.length - 1; i >= 0 && i >= S.crumbs.length - 60; i--) if (S.crumbs[i].g === c.g) { S.crumbs[i] = c; return; }
+        S.crumbs.push(c);
+        for (var j = S.crumbs.length - 1, n = 0; j >= 0; j--) if (S.crumbs[j].g != null && ++n > 30) S.crumbs.splice(j, 1);
+        return;
+      }
+      S.crumbs.push(c);
+    });
     if (S.crumbs.length > 200) S.crumbs.splice(0, S.crumbs.length - 200);
     if (m.extra && m.extra.operation) S.operation = m.extra.operation;
   } else if (m.type === 'reported') {

@@ -19,7 +19,9 @@
 //   node check.js update-restart [--exe ...]  Restart to update end to end with a stand-in installer (.cmd), both a
 //                         good install and a failed one; update.log
 //   node check.js reports [--exe ...]  problem reports (rfMI): a 12 s busy loop gives a not-responding report whose stacks
-//                         name the looping function; a manual report and Include the model; a crashed window gives a
+//                         name the looping function and its file; a block outside JavaScript (a synchronous request, a
+//                         9 s rendering step) reads as one, with per-process processor use and the long-frame record;
+//                         gesture and slow-frame breadcrumbs (rfNZ); a manual report and Include the model; a crashed window gives a
 //                         crash report and comes back; killed while frozen is told on the next start; 30 kept; the
 //                         main process's own exception / rejection and a crashed GPU process give quiet crash reports
 'use strict';
@@ -608,14 +610,17 @@ async function checkReports() {
   const realList = () => { try { return fs.readdirSync(real).join('|'); } catch (e) { return '(none)'; } };
   const real0 = realList();
   const env = { ANVIL_USER_DATA: ud, ANVIL_TEST_LOG: log, ANVIL_UPDATE_DELAY_MS: '3600000', ANVIL_TEST_DIALOGS: 'log' };
-  let child = launch(env);
+  // a window another window covers counts as hidden (its heartbeat says so and main.js stops counting): on a PC where
+  // other windows come and go the check keeps its window awake
+  const awake = ['--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling'];
+  let child = launch(env, awake);
   let page = await connect('app://anvil/');
   try {
     await page.waitFor('window.anvil && window.anvil.run && document.readyState === "complete" && window.UI && UI.reports', 60000);
     ok(await page.ev('!!(window.anvilDesktop && window.anvilDesktop.reports && !UI.reports.watchdog().running)'), 'the bridge has reports; the browser watchdog stays off in the app (main.js watches)');
     await page.ev('anvil.run(\'p.name("ZebraQuokkaBracket").units("in");\\np.sketch("Front").rect(0,0,4,2).extrude(0.5);\').then(function () { return true; })');
     // 1. not responding: a 12 s busy loop in a function with a recognisable name
-    await page.ev('UI.reports.crumb("check: before the busy loop"); window.rfMIDesktopBusyLoop = function rfMIDesktopBusyLoop(ms) { var t = Date.now(), n = 0; while (Date.now() - t < ms) n++; return n; }; setTimeout(function () { rfMIDesktopBusyLoop(12000); }, 600); true');
+    await page.ev('UI.reports.crumb("check: before the busy loop"); window.rfMIDesktopBusyLoop = function rfMIDesktopBusyLoop(ms) { return UI.reports._block(ms); }; setTimeout(function () { rfMIDesktopBusyLoop(12000); }, 600); true');
     const t0 = Date.now();
     const end = await waitLog(log, (e) => e.event === 'freeze-end', 45000);
     ok(!!end && end.durationMs > 10000 && end.durationMs < 15500, 'main.js saw the window stop responding and answer again', end);
@@ -628,6 +633,20 @@ async function checkReports() {
     ok(nr && /stopped responding for 1\d s/.test(nr.md) && /## Where it was stuck/.test(nr.md) && /check: before the busy loop/.test(nr.md) && /interface profile/.test(nr.md) && fs.existsSync(path.join(nr.dir, 'screenshot.png')),
       'report.md: how long, where, the breadcrumbs, the state (completed by the page), a screenshot', nr && nr.md.split('\n').slice(7, 9).join(' / '));
     ok(nr && nr.md.indexOf('ZebraQuokkaBracket') < 0 && !fs.existsSync(path.join(nr.dir, 'model.anvil.json')), 'no document name and no model in it');
+    // rfNZ (lane freezerec): every frame names its file (the 2026-11-16 report read "(anonymous)  ?:7765:17"), and a
+    // loop reads as a loop: the pauses were answered at once
+    const allFrames = nr ? [].concat.apply([], nr.json.where.samples.map((s) => s.frames || [])) : [];
+    const own = allFrames.filter((f) => f.fn === 'rpTestBlock' && f.file === 'ui-reports.js' && f.line > 1), inj = allFrames.filter((f) => f.fn === 'rfMIDesktopBusyLoop' && f.file === '(injected)');
+    ok(allFrames.length > 0 && allFrames.every((f) => f.file && f.file !== '?') && own.length >= 2 && inj.length >= 2 && !/ {2}\?:\d/.test(nr.md) && /rpTestBlock {2}ui-reports\.js:\d+:\d+/.test(nr.md),
+      'every frame names its file: the loop is rpTestBlock in ui-reports.js, its caller a script that was (injected)', { top: allFrames[0], files: [...new Set(allFrames.map((f) => f.file))] });
+    const src = nr && nr.json.where.samples.map((s) => s.frames && s.frames[0] && s.frames[0].src).filter(Boolean)[0];
+    ok(nr && nr.json.where.kind === 'javascript' && /JavaScript was running/.test(nr.md) && /stopped in the same place: rpTestBlock \(ui-reports\.js:\d+\)/.test(nr.md) && nr.json.where.samples.every((s) => !s.frames || s.lateMs < 1000) && /while \(now\(\) - t < ms\)/.test(src || ''),
+      'a JavaScript loop reads as one: every pause answered at once, the same place, the source line of the top frame', { kind: nr && nr.json.where.kind, late: nr && nr.json.where.samples.map((s) => s.lateMs), src });
+    const cpu1 = nr && nr.json.where.cpu, win1 = cpu1 && cpu1.procs.find((x) => x.name === 'window');
+    ok(win1 && win1.cpu > 50 && cpu1.procs.some((x) => x.name === 'main') && /\| window \| \d+ % \| \d+ MB \|/.test(nr.md) && nr.json.where.samples.some((s) => s.procs && s.cpuMs > 0),
+      'which process was working: the window\'s own, most of one processor thread (per sample and over the freeze)', cpu1 && cpu1.procs.map((x) => x.name + ' ' + x.cpu + ' %'));
+    const lt1 = nr && nr.json.page && nr.json.page.longTasks || [];
+    ok(lt1.some((f) => f.ms > 10000) && /## What the page itself recorded/.test(nr.md) && /- long task from \d\.\d s to 1\d\.\d s \(1\d s\)/.test(nr.md), 'the page\'s own record is in the report: one long task over 10 s (the browser keeps no frame record of a frame a sample paused in)', nr && nr.json.page);
     const bar = await page.ev('(function () { var b = document.getElementById("rp-bar"); return b ? { text: b.textContent, folder: !!b.querySelector("[data-rp=folder]") } : null; })()');
     ok(bar && /stopped responding for 1\d s/.test(bar.text) && bar.folder, 'the page offers it: the bar with Open folder', bar);
     await page.ev('document.querySelector("#rp-bar [data-rp=copy]").click(); true');
@@ -635,6 +654,85 @@ async function checkReports() {
     const copied = await page.ev('UI.reports.lastCopied');
     ok(copied && copied.indexOf(nr.dir) >= 0 && /read report\.md in that folder/.test(copied) && readLog(log).some((e) => e.event === 'copied'), 'Copy for Claude: one sentence, the folder, read report.md', copied);
     await page.ev('UI.reports.hide(); true');
+    // 1b. what the hand does in the graphics area leaves breadcrumbs (real input through the DevTools protocol): a
+    // hover, a click, a middle-button drag (orbit), the wheel, a key
+    const vp = await page.ev('(function () { var r = document.getElementById("viewport").getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()');
+    const mouse = (type, more) => page.send('Input.dispatchMouseEvent', Object.assign({ type, x: vp.x, y: vp.y, button: 'none', buttons: 0 }, more || {}));
+    const tG = Date.now();
+    for (let i = 0; i < 8; i++) { await mouse('mouseMoved', { x: vp.x + 40 + i * 4, y: vp.y + 40 }); await sleep(60); }
+    await mouse('mousePressed', { x: vp.x + 72, y: vp.y + 40, button: 'left', buttons: 1, clickCount: 1 }); await mouse('mouseReleased', { x: vp.x + 72, y: vp.y + 40, button: 'left', buttons: 0, clickCount: 1 });
+    await mouse('mousePressed', { button: 'middle', buttons: 4, clickCount: 1 });
+    for (let i = 1; i <= 6; i++) { await mouse('mouseMoved', { x: vp.x + i * 10, y: vp.y + i * 5, button: 'middle', buttons: 4 }); await sleep(50); }
+    await mouse('mouseReleased', { x: vp.x + 60, y: vp.y + 30, button: 'middle', buttons: 0, clickCount: 1 });
+    for (let i = 0; i < 3; i++) { await mouse('mouseWheel', { deltaX: 0, deltaY: -120 }); await sleep(40); }
+    await page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); await page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'q', code: 'KeyQ', windowsVirtualKeyCode: 81 }); await page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'q', code: 'KeyQ', windowsVirtualKeyCode: 81 });
+    await sleep(900);
+    const hand = await page.ev('UI.reports.crumbs().filter(function (c) { return c.at >= ' + (tG - 2000) + ' && /^(graphics area|key): /.test(c.text); }).map(function (c) { return c.text; })');
+    ok(hand.some((t) => /^graphics area: hover \d/.test(t)) && hand.some((t) => /^graphics area: (click|drag with the left button)/.test(t)) && hand.some((t) => /^graphics area: drag with the middle button \(orbit\) \d(\.\d)? s$/.test(t)) && hand.some((t) => /^graphics area: wheel ×\d+ \(zoom\)/.test(t)) && hand.indexOf('key: Escape') >= 0 && hand.indexOf('key: a key') >= 0 && hand.length <= 12 && !/\d{2,}[, ]+\d{2,}/.test(hand.join(' ')),
+      'the hand leaves breadcrumbs: hover, click, orbit drag, wheel, keys; one line per gesture, no positions (a pointer of the user\'s crossing the window may add a line)', hand);
+    // 1c. a 2 s hitch: a slow-frame breadcrumb, no report
+    const nDirs = reportDirs(ud).length, nFreeze = readLog(log).filter((e) => e.event === 'freeze-start').length, tH = Date.now();
+    await page.ev('setTimeout(function rfNZHitch() { UI.reports._block(2000); }, 100); true');
+    const slow = await page.waitFor('(UI.reports.crumbs().filter(function (c) { return c.at >= ' + tH + ' && /^slow frame /.test(c.text); })[0] || {}).text', 15000).catch(() => null);
+    await sleep(1500);
+    ok(/^slow frame 2(\.\d)? s \(script (1\.9|2(\.\d)?) s, render 0(\.\d)? s/.test(slow || '') && reportDirs(ud).length === nDirs && readLog(log).filter((e) => e.event === 'freeze-start').length === nFreeze, 'a 2 s hitch leaves a slow-frame breadcrumb (script and render time) and no report', slow);
+    // 1d. a block outside JavaScript, inside a call: a synchronous request that waits 9 s. The pause cannot be delivered
+    // until the request returns; the stack is the JavaScript that made the call
+    const outside = async (what, start, wantMs) => {
+      const n0 = readLog(log).filter((e) => e.event === 'report-completed').length, e0 = readLog(log).filter((e) => e.event === 'freeze-end').length;
+      await page.ev(start);
+      const endEv = await waitLog(log, (e) => e.event === 'freeze-end' && readLog(log).filter((x) => x.event === 'freeze-end').length > e0, 90000);
+      await waitLog(log, (e) => e.event === 'report-completed' && readLog(log).filter((x) => x.event === 'report-completed').length > n0, 15000);
+      await page.ev('UI.reports.hide(); true');
+      const last = readLog(log).filter((e) => e.event === 'freeze-end').pop(), dir = last && path.join(ud, 'reports', last.id);
+      const r = endEv && dir && fs.existsSync(path.join(dir, 'report.json')) ? { json: JSON.parse(fs.readFileSync(path.join(dir, 'report.json'), 'utf8')), md: fs.readFileSync(path.join(dir, 'report.md'), 'utf8') } : null;
+      ok(r && r.json.durationMs > wantMs, what + ': main.js saw the window stop and answer again', endEv ? last : 'no freeze');
+      return r;
+    };
+    const sy = await outside('a synchronous request that waits 9 s', 'setTimeout(function rfNZSyncWait() { var x = new XMLHttpRequest(); x.open("GET", "app://anvil/api/test-wait?ms=9000", false); x.send(); window.rfNZsync = rfNZAfterWait(x); }, 300); function rfNZAfterWait(x) { var s = 0; for (var i = 0; i < 10; i++) s += x.status; return s; } true', 7000);
+    const sLate = sy ? sy.json.where.samples.filter((s) => s.frames && s.lateMs >= 1500) : [];
+    ok(sy && sy.json.where.kind === 'outside' && sLate.length === 1 && !sLate[0].entry && sLate[0].frames.some((f) => /^rfNZ(SyncWait|AfterWait)$/.test(f.fn)) && /\*\*Outside JavaScript\.\*\* The window's main thread was busy outside JavaScript for at least \d/.test(sy.md) && /had just come back from a call that left JavaScript/.test(sy.md) && !/was stopped in the same place/.test(sy.md) && /busy outside JavaScript/.test(sy.json.summary),
+      'the report says outside JavaScript: the pause arrived seconds late, on the JavaScript that made the call; no "stopped in the same place"', sy && { kind: sy.json.where.kind, samples: sy.json.where.samples.map((s) => ({ lateMs: s.lateMs, entry: s.entry, top: s.frames && s.frames[0] && s.frames[0].fn, error: s.error })) });
+    const syCpu = sy && sy.json.where.cpu, syWin = syCpu && syCpu.procs.find((x) => x.name === 'window');
+    ok(syWin && syWin.cpu < 50 && sLate[0] && sLate[0].procs && /Which process was working/.test(sy.md) && /waiting, not working|busiest process/.test(sy.md), 'per-process processor use shows nothing was working: the window was waiting', syCpu && syCpu.procs.map((x) => x.name + ' ' + x.cpu + ' %'));
+    const syLf = sy && sy.json.page && sy.json.page.longTasks || [];
+    ok(syLf.some((f) => f.ms > 7000) && /- long task from /.test(sy.md) && /## What the page itself recorded/.test(sy.md), 'the page\'s own record has the long task (9 s)', sy && sy.json.page);
+    ok(sy && sy.json.crumbs.some((c) => /^graphics area: drag with the middle button \(orbit\)/.test(c.text)) && sy.json.crumbs.some((c) => /^slow frame 2/.test(c.text)) && /\| graphics area: wheel ×\d+ \(zoom\)/.test(sy.md) && !/^slow frame/.test(sy.json.lastCrumb || ''), 'the gesture and slow-frame breadcrumbs are in the report');
+    // NOT RUN BY DEFAULT (lane freezerec, 2026-11-17): the stand-in below (a style recalculation sized from two trials)
+    // held the main thread for over 2.5 minutes on the round's PC instead of about 9 s (the sizing is wrong), so the row
+    // timed out and the rows after it ran against a frozen window.
+    // `--render-block` runs it. How report.md reads for this case is pinned by smoke rfNZ (the 2026-11-16 fixture).
+    if (args.includes('--render-block')) {
+    // 1e. a block outside JavaScript, between tasks (what the 2026-11-16 freeze was): the browser's own style and layout
+    // of a heavy page, sized from a short trial to take about 9 s. The pause lands on the first callback that runs
+    // afterwards, which is not where Anvil was stuck, and the report says so
+    const rb = await outside('a rendering step of about 9 s', '(' + function () {
+      var host = document.createElement('div'), st = document.createElement('style'), html = [], i;
+      host.id = 'rfnz-host'; host.style.cssText = 'position:absolute;left:0;top:0;width:900px;visibility:hidden;pointer-events:none';
+      for (i = 0; i < 30000; i++) html.push('<span data-q="w">w</span> ');
+      host.innerHTML = html.join('');
+      // every rule is tried on every span and matches none: the cost is rules x spans, with nothing to remember
+      function rules(n) { var a = []; for (var k = 0; k < n; k++) a.push('#rfnz-host span[data-q$="' + k + 'z"]{padding-left:1px}'); return a.join(''); }
+      function trial(n) { st.textContent = rules(n); var t = performance.now(); getComputedStyle(host.lastElementChild).paddingLeft; return performance.now() - t; }
+      document.head.appendChild(st); document.body.appendChild(host);
+      host.offsetHeight;
+      var t1 = trial(300), t2 = trial(2300), per = Math.max(0.0005, (t2 - t1) / 2000), n = Math.max(2000, Math.min(400000, Math.round(9000 / per)));
+      window.rfNZrender = { t1: Math.round(t1), t2: Math.round(t2), rules: n };
+      // the real one is not forced: the browser does it in its own rendering step, after the frame's callbacks
+      setTimeout(function rfNZRenderStart() {
+        st.textContent = rules(n);
+        requestAnimationFrame(function () { requestAnimationFrame(function () { host.remove(); st.remove(); window.rfNZrender.done = true; }); });
+      }, 300);
+      return true;
+    } + ')()', 5500);
+    const rLate = rb ? rb.json.where.samples.filter((s) => s.frames && s.lateMs >= 1000) : [];
+    const rbLf = rb && rb.json.page && rb.json.page.longFrames || [], rbWin = rb && rb.json.where.cpu && rb.json.where.cpu.procs.find((x) => x.name === 'window');
+    ok(rb && rb.json.where.kind === 'outside' && rLate.length >= 1 && rLate[0].entry && rLate[0].frames.length === 1 && rLate[0].frames[0].file && /is the first JavaScript that ran afterwards/.test(rb.md) && /It is not where Anvil was stuck/.test(rb.md) && !/was stopped in the same place/.test(rb.md),
+      'a block between tasks: outside JavaScript, and the one-frame stack is called the first JavaScript that ran afterwards', rb && { kind: rb.json.where.kind, trial: await page.ev('window.rfNZrender'), samples: rb.json.where.samples.map((s) => ({ lateMs: s.lateMs, entry: s.entry, depth: s.depth, top: s.frames && s.frames[0], error: s.error })) });
+    ok(rbLf.some((f) => f.renderMs > 3000 && f.renderMs > f.scriptMs && f.layoutMs > 3000) && rbWin && rbWin.cpu > 50 && /without running JavaScript: layout, painting/.test(rb.md) && /Most of it was rendering, not script/.test(rb.md),
+      'the evidence says which kind: the window\'s own process busy, the frame nearly all rendering (style and layout)', { cpu: rb && rb.json.where.cpu && rb.json.where.cpu.procs.map((x) => x.name + ' ' + x.cpu + ' %'), frames: rbLf.map((f) => ({ ms: f.ms, scriptMs: f.scriptMs, renderMs: f.renderMs, layoutMs: f.layoutMs })) });
+    }
     // 2. a manual report: a screenshot; the model only when ticked
     const man = await page.ev('UI.reports.make("manual", { userText: "check: the flange is on the wrong side" })');
     ok(man && man.dir && fs.existsSync(path.join(man.dir, 'report.md')) && fs.existsSync(path.join(man.dir, 'screenshot.png')) && !fs.existsSync(path.join(man.dir, 'model.anvil.json')), 'a manual report: report.md, report.json, a screenshot, no model', man && man.dir);
@@ -662,7 +760,7 @@ async function checkReports() {
     const fs2 = await waitLog(log, (e) => e.event === 'report-sample' && readLog(log).filter((x) => x.event === 'freeze-start').length >= 2, 30000);
     spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore' });
     await Promise.race([child.exitPromise, sleep(15000)]);
-    child = launch(env);
+    child = launch(env, awake);
     page = await connect('app://anvil/');
     await page.waitFor('window.anvil && UI.reports && UI.reports.made().some(function (m) { return m.previous; })', 60000).catch(() => null);
     const prev = await page.ev('(function () { var m = UI.reports.made().filter(function (x) { return x.previous; })[0]; return m ? { kind: m.kind, dir: m.dir, bar: (document.getElementById("rp-bar") || {}).textContent || null } : null; })()');
@@ -865,6 +963,6 @@ async function checkUpdateProgress() {
     else throw new Error('unknown check ' + cmd);
   } catch (e) { ok(false, 'check ran to the end', e.stack || e.message); }
   console.log(failures ? failures + ' FAILED' : 'all passed');
-  try { fs.rmSync(WORK, { recursive: true, force: true }); } catch (e) { /* in use */ }
+  if (!args.includes('--keep')) try { fs.rmSync(WORK, { recursive: true, force: true }); } catch (e) { /* in use */ }   // --keep: the reports stay for a look
   process.exit(failures ? 1 : 0);
 })();

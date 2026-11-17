@@ -77,6 +77,9 @@ async function serve(req) {
   if (u.host !== 'anvil') return notFound(p, head);
   if (p === '/api/dxf2dwg') return converters.dxf2dwg(req, ROOT, (m) => testLog('converter', { msg: m }));
   if (p === '/api/dwg2dxf') return converters.dwg2dxf(req, ROOT, (m) => testLog('converter', { msg: m }));
+  // test hook (desktop/check.js reports, only with ANVIL_TEST_LOG): answers after ?ms, so a synchronous request to it
+  // keeps the page's main thread waiting outside JavaScript
+  if (p === '/api/test-wait' && process.env.ANVIL_TEST_LOG) { await new Promise((res) => setTimeout(res, Math.min(60000, +u.searchParams.get('ms') || 0))); return new Response('waited', { status: 200, headers: { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' } }); }
   if (req.method !== 'GET' && !head) return new Response(null, { status: 405 });
   if (p === '/') p = '/index.html';
   let file = path.join(ROOT, p);
@@ -488,15 +491,17 @@ app.on('will-quit', () => {
 // - Not responding: the page (preload.js) sends a heartbeat every second; when it stops for 5 s (or the window's
 //   'unresponsive' event fires) this process attaches the DevTools protocol to the window (webContents.debugger),
 //   pauses it, takes the call stack and resumes, every 5 s while the freeze lasts (up to 12 samples), and writes the
-//   report at once with the breadcrumbs the page sent as they happened. When the page answers again it gets the report
+//   report at once with the breadcrumbs the page sent as they happened. Each sample keeps how long its pause took to
+//   arrive (at once = a JavaScript loop; late = the main thread was outside JavaScript) and which process used the
+//   processor meanwhile (lane freezerec: "one sample" and "which process was working" below). When the page answers again it gets the report
 //   ('anvil-desktop:report'), adds its state and console, and shows its bar. A run that ends while frozen (closed,
 //   killed) is told on the next start (.session.json).
 // - render-process-gone (the window crashed), child-process-gone (a helper process crashed), this process's own
 //   uncaughtException / unhandledRejection: a 'crash' report; after a window crash the window is reloaded (it asks,
 //   unless ANVIL_TEST_DIALOGS=log) and the page offers the work AutoRecover kept.
 const ReportFormat = (() => { try { return require(path.join(ROOT, 'ui-reports.js')); } catch (e) { return null; } })();
-const REPORTS_KEEP = 30, FREEZE_MS = 5000, SAMPLE_EVERY_MS = 5000, MAX_SAMPLES = 12;
-const rp = { crumbs: [], extra: null, extraAt: 0, watch: true, hb: new Map(), freeze: null, notices: [], lastStamp: '' };
+const REPORTS_KEEP = 30, FREEZE_MS = 5000, SAMPLE_EVERY_MS = 5000, MAX_SAMPLES = 12, CRUMB_RING = 200, GESTURE_KEEP = 30;
+const rp = { crumbs: [], extra: null, extraAt: 0, watch: true, hb: new Map(), freeze: null, notices: [], lastStamp: '', scripts: new Map(), listening: new WeakSet(), cpu: [] };
 function reportsDir() { return path.join(app.getPath('userData'), 'reports'); }
 function insideReports(dir) {
   if (typeof dir !== 'string' || !dir) return null;
@@ -593,14 +598,24 @@ ipcMain.on('anvil-desktop:hb', (e, vis) => {
   if (vis === 'hidden') s.hidden = true; else if (vis === 'visible') s.hidden = false;   // a hidden page's timers are slowed: not a freeze
   if (rp.freeze && rp.freeze.wc === e.sender) endFreeze();
 });
+// A gesture crumb (c.g: what the hand did in the graphics area, ui-reports.js "gestures") is sent when the gesture
+// starts and again as it goes on and ends: the same g rewrites the line in place. Only the newest GESTURE_KEEP of them
+// are kept, so a morning of orbiting does not push the commands out of the ring.
 ipcMain.on('anvil-desktop:crumbs', (e, list, extra) => {
   (Array.isArray(list) ? list : []).slice(0, 400).forEach((c) => {
     if (!c || typeof c.text !== 'string') return;
     const last = rp.crumbs[rp.crumbs.length - 1], at = +c.at || Date.now(), text = c.text.slice(0, 300);
-    if (last && last.text === text && at - last.at < 1000) { last.n = (last.n || 1) + 1; last.at = at; return; }
+    if (c.g != null) {
+      const g = String(c.g).slice(0, 24), n = c.n > 1 ? +c.n : undefined;
+      for (let i = rp.crumbs.length - 1; i >= 0 && i >= rp.crumbs.length - 60; i--) if (rp.crumbs[i].g === g) { Object.assign(rp.crumbs[i], { at, text, n }); return; }
+      rp.crumbs.push({ at, text, g, n });
+      for (let i = rp.crumbs.length - 1, k = 0; i >= 0; i--) if (rp.crumbs[i].g != null && ++k > GESTURE_KEEP) rp.crumbs.splice(i, 1);
+      return;
+    }
+    if (last && last.g == null && last.text === text && at - last.at < 1000) { last.n = (last.n || 1) + 1; last.at = at; return; }
     rp.crumbs.push({ at, text });
   });
-  if (rp.crumbs.length > 200) rp.crumbs.splice(0, rp.crumbs.length - 200);
+  if (rp.crumbs.length > CRUMB_RING) rp.crumbs.splice(0, rp.crumbs.length - CRUMB_RING);
   if (extra && typeof extra === 'object') { rp.extra = extra; rp.extraAt = Date.now(); }
 });
 ipcMain.on('anvil-desktop:report-watch', (e, on) => {
@@ -616,89 +631,183 @@ function shortUrl(u) { u = String(u || ''); return u.startsWith(ORIGIN + '/') ? 
 // off (setBreakpointsActive false), so a `debugger;` statement never stops Anvil; only Debugger.pause does. The cost
 // is small (V8 keeps script sources; one scriptParsed message per new script); the not-responding switch in Tools ▸
 // Options turns it off with the watch.
+// Two things are listened to for as long as the session lives (lane freezerec, rfNZ):
+// - Debugger.scriptParsed: the file of every script by its id. A paused call frame's own `url` is deprecated in the
+//   protocol and comes back empty in this Electron (the 2026-11-16 report read "(anonymous)  ?:7765:17"), so a frame is
+//   named through its location.scriptId. A script with no URL is told apart by who made it: no JavaScript stack, or
+//   Electron's own bundle = injected (executeJavaScript, the DevTools console); a stack in the page = eval or new
+//   Function (which of the two is read from its source when the window answers again).
+// - Debugger.paused: every pause is answered with a resume at once (any pause here is ours: breakpoints are off), and
+//   handed to the sample that asked for it, however late it arrives.
+function scriptsOf(wc) { let m = rp.scripts.get(wc.id); if (!m) { m = new Map(); rp.scripts.set(wc.id, m); } return m; }
+function listenDebugger(wc) {
+  if (rp.listening.has(wc)) return;
+  rp.listening.add(wc);
+  const dbg = wc.debugger;
+  dbg.on('message', (ev, method, p) => {
+    if (method === 'Debugger.scriptParsed') {
+      const m = scriptsOf(wc), top = p.stackTrace && p.stackTrace.callFrames && p.stackTrace.callFrames[0];
+      const maker = top ? (top.url || (m.get(top.scriptId) || {}).url || '') : null;
+      m.set(p.scriptId, { url: p.url || '', by: p.url ? null : maker == null || /^node:electron\//.test(maker) ? 'injected' : 'made' });
+      if (m.size > 6000) { let n = 0; for (const [k, v] of m) if (!v.url) { m.delete(k); if (++n >= 2000) break; } }
+    } else if (method === 'Debugger.paused') onPaused(wc, p);
+  });
+  dbg.on('detach', () => { rp.scripts.delete(wc.id); });
+}
 function attachDebugger(wc) {
   if (wc.isDestroyed()) return 'the window is gone';
   const dbg = wc.debugger;
+  listenDebugger(wc);
   if (!dbg.isAttached()) {
     try { dbg.attach('1.3'); } catch (e) { testLog('report-debugger', { attached: false, message: e.message }); return e.message; }
   }
   dbg.sendCommand('Debugger.enable').then(() => dbg.sendCommand('Debugger.setBreakpointsActive', { active: false }))
-    .then(() => testLog('report-debugger', { attached: true, enabled: true }), (e) => testLog('report-debugger', { attached: true, enabled: false, message: e.message }));
+    .then(() => testLog('report-debugger', { attached: true, enabled: true, scripts: scriptsOf(wc).size }), (e) => testLog('report-debugger', { attached: true, enabled: false, message: e.message }));
   return null;
 }
 function releaseDebugger(wc) {
   if (!wc || wc.isDestroyed() || !wc.debugger.isAttached()) return;
   wc.debugger.sendCommand('Debugger.disable').catch(() => {}).then(() => { try { wc.debugger.detach(); } catch (e) { /* already */ } });
 }
-// one call stack of the window's main thread: pause, read the frames, resume
-async function stackSample(wc) {
-  const dbg = wc.debugger;
-  if (!dbg.isAttached()) {
-    const why = attachDebugger(wc);
-    if (why) return { error: 'the debugger could not attach (' + why + '; are DevTools open on the window?)' };
-  }
-  let onMsg = null;
-  try {
-    const paused = new Promise((res) => { onMsg = (ev, method, params) => { if (method === 'Debugger.paused') res(params); }; dbg.on('message', onMsg); });
-    await withTimeout(dbg.sendCommand('Debugger.pause'), 4000, 'Debugger.pause');
-    const p = await withTimeout(paused, 4000, 'the pause');
-    const frames = (p.callFrames || []).slice(0, 40).map((f) => ({ fn: f.functionName || '(anonymous)', file: shortUrl(f.url), line: f.location.lineNumber + 1, col: f.location.columnNumber + 1 }));
-    try { await withTimeout(dbg.sendCommand('Debugger.resume'), 2000, 'resume'); } catch (e) { /* resumed by the next command */ }
-    return { frames };
-  } catch (e) {
-    dbg.sendCommand('Debugger.resume').catch(() => {});
-    return { error: 'no JavaScript stack (' + e.message + '): the window may be busy outside JavaScript (layout, painting, the GPU, a synchronous call into the browser), or the debugger was not enabled before the freeze' };
-  } finally {
-    if (onMsg) dbg.removeListener('message', onMsg);
-  }
+// the file of a call frame: Anvil's own path ("ui-core.js"), or what a script with no URL is
+function frameFile(wc, cf) {
+  const sc = scriptsOf(wc).get(cf.location.scriptId), url = cf.url || (sc && sc.url) || '';
+  if (url) return shortUrl(url);
+  if (!sc) return '(no file: a script the debugger was not told about)';
+  return sc.kind === 'function' ? '(new Function)' : sc.kind === 'eval' ? '(eval)' : sc.by === 'injected' ? '(injected)' : '(eval or new Function)';
 }
-// "Stuck in the same place": the frames every sample shares, or the one seen most
-function stackSummary(samples) {
-  const withFrames = samples.filter((s) => s.frames && s.frames.length);
-  if (!withFrames.length) return samples.length ? 'No sample got a JavaScript stack.' : '';
-  const count = new Map();
-  withFrames.forEach((s) => { const seen = new Set(); s.frames.forEach((f) => { const k = f.fn + ' (' + f.file + ':' + f.line + ')'; if (!seen.has(k)) { seen.add(k); count.set(k, (count.get(k) || 0) + 1); } }); });
-  const top = [...count.entries()].sort((a, b) => b[1] - a[1] || 0).slice(0, 5);
-  const tops = withFrames.map((s) => s.frames[0].fn + ' (' + s.frames[0].file + ':' + s.frames[0].line + ')');
-  const same = tops.every((t) => t === tops[0]);
-  return (same ? 'Every sample with a stack (' + withFrames.length + ') was stopped in the same place: ' + tops[0] + '.' : 'The top of the stack moved between samples (' + [...new Set(tops)].join('; ') + '): busy, but not in one place.') +
-    ' Functions seen in most samples: ' + top.map((t) => t[0] + ' ×' + t[1]).join(', ') + '.';
+
+// ---- which process was working: processor seconds of every process of Anvil, once a second
+// app.getAppMetrics() costs about 0.1 ms. cumulativeCPUUsage is processor seconds since the process started, so the
+// use between two snapshots is exact, as a percentage of one processor thread (a busy main thread reads 100 %).
+function procName(m) {
+  if (m.type === 'Tab') return 'window';
+  if (m.type === 'Browser') return 'main';
+  if (m.type !== 'Utility') return m.type;
+  const n = m.serviceName || m.name || 'utility';
+  return /NodeService/.test(n) ? 'OpenCascade' : /NetworkService/.test(n) ? 'network' : n.replace(/\.mojom\./, ' ').replace(/Service$/, '');
+}
+function cpuSnap() {
+  try {
+    const procs = new Map();
+    app.getAppMetrics().forEach((m) => { procs.set(m.pid, { name: procName(m), sec: m.cpu && m.cpu.cumulativeCPUUsage, mb: Math.round((m.memory && m.memory.workingSetSize || 0) / 1024) }); });
+    return { at: Date.now(), procs };
+  } catch (e) { return null; }
+}
+// [{ name, cpu (% of one thread between the two snapshots), mb (now) }], the busiest first
+function cpuBetween(a, b) {
+  if (!a || !b || b.at - a.at < 200) return null;
+  const by = new Map();
+  for (const [pid, p] of b.procs) {
+    const was = a.procs.get(pid), o = by.get(p.name) || { name: p.name, cpu: null, mb: 0 };
+    if (was && typeof p.sec === 'number' && typeof was.sec === 'number') o.cpu = (o.cpu || 0) + Math.max(0, p.sec - was.sec) / ((b.at - a.at) / 1000) * 100;
+    o.mb += p.mb;
+    by.set(p.name, o);
+  }
+  return [...by.values()].map((o) => ({ name: o.name, cpu: o.cpu == null ? null : Math.round(o.cpu * 10) / 10, mb: o.mb })).sort((x, y) => (y.cpu || 0) - (x.cpu || 0));
+}
+
+// ---- one sample: the window is asked to pause; the answer (Debugger.paused, onPaused) may come at once or late
+// A pause is an interrupt for running JavaScript: a loop takes it within milliseconds. A main thread that is not
+// running JavaScript (painting, waiting for the graphics card, layout, garbage collection, a synchronous call) takes it
+// only when it next runs some. So the time the pause took to arrive is kept (lateMs), and no pause is given up on: one
+// that has not arrived is written into the report as waiting, and the next is asked only after it has.
+function askSample(f) {
+  const wc = f.wc;
+  if (wc.isDestroyed() || f.pending) return;
+  const pend = { sentAt: Date.now() };
+  if (!wc.debugger.isAttached()) {
+    const why = attachDebugger(wc);
+    if (why) { f.samples.push({ afterMs: pend.sentAt - f.start, error: 'the debugger could not attach (' + why + '; are DevTools open on the window?)' }); return; }
+    pend.cold = true;   // enabled only now: the wait for the pause includes the wait for Debugger.enable
+  }
+  f.pending = pend;
+  wc.debugger.sendCommand('Debugger.pause').catch((e) => { pend.error = e.message; });
+}
+function onPaused(wc, p) {
+  const at = Date.now();
+  wc.debugger.sendCommand('Debugger.resume').catch(() => {});   // never leave Anvil stopped
+  const f = rp.freeze, pend = f && f.wc === wc ? f.pending : null;
+  if (!pend) { testLog('report-pause-stray', {}); return; }
+  f.pending = null;
+  const all = p.callFrames || [], top = all[0], fl = top && top.functionLocation;
+  const frames = all.slice(0, 40).map((cf) => {
+    const o = { fn: cf.functionName || '(anonymous)', file: frameFile(wc, cf), line: cf.location.lineNumber + 1, col: cf.location.columnNumber + 1 };
+    Object.defineProperty(o, 'sid', { value: cf.location.scriptId, enumerable: false });
+    return o;
+  });
+  // entry: one frame deep and still at the top of its function = a callback that had only just been called
+  const smp = { afterMs: pend.sentAt - f.start, lateMs: at - pend.sentAt, depth: all.length,
+    entry: !!(top && fl && all.length === 1 && top.location.scriptId === fl.scriptId && top.location.lineNumber - fl.lineNumber <= 2), frames };
+  if (pend.cold) smp.cold = true;
+  const snap = cpuSnap(), procs = cpuBetween(f.markSnap, snap);
+  if (procs) { smp.procs = procs; smp.cpuMs = snap.at - f.markSnap.at; }
+  if (snap) { f.markSnap = snap; f.lastSnap = snap; }
+  f.samples.push(smp);
+  testLog('report-sample', { n: f.samples.length, frames: frames.length, top: frames[0] ? frames[0].fn : null, file: frames[0] ? frames[0].file : null, lateMs: smp.lateMs, entry: smp.entry, error: null });
+  if (!f.ended) writeFreeze();
+  if (f.onSample) f.onSample();
+}
+// when the window answers again: which no-URL scripts were eval and which new Function, and the source line of each
+// sample's top frame in Anvil's own files (so the reader need not find that version of the file)
+async function nameFrames(f) {
+  const wc = f.wc, table = scriptsOf(wc), src = new Map();
+  const source = async (sid) => {
+    if (!src.has(sid)) src.set(sid, src.size >= 8 ? null : await withTimeout(wc.debugger.sendCommand('Debugger.getScriptSource', { scriptId: sid }), 1500, 'the source').then((r) => r.scriptSource || '', () => null));
+    return src.get(sid);
+  };
+  for (const smp of f.samples) {
+    for (let i = 0; i < (smp.frames || []).length; i++) {
+      const fr = smp.frames[i], sc = table.get(fr.sid);
+      if (!sc) continue;
+      if (!sc.url && sc.by === 'made' && !sc.kind) { const s = await source(fr.sid); if (s != null) sc.kind = /^\(function anonymous\(/.test(s) ? 'function' : 'eval'; fr.file = frameFile(wc, { location: { scriptId: fr.sid } }); }
+      else if (!sc.url) fr.file = frameFile(wc, { location: { scriptId: fr.sid } });
+      else if (i === 0 && (sc.url.startsWith(ORIGIN + '/') || /[\\/]preload\.js$/.test(sc.url))) { const s = await source(fr.sid); const line = s && s.split('\n')[fr.line - 1]; if (line) fr.src = line.trim().slice(0, 160); }
+    }
+  }
 }
 function freezeReport() {
-  const f = rp.freeze;
-  const r = mainReport('not-responding', f.at, { id: f.id, durationMs: Date.now() - f.start, ongoing: !f.ended,
-    where: { note: 'Sampled from the main process with the DevTools protocol every ' + SAMPLE_EVERY_MS / 1000 + ' s while the window did not answer (it noticed after ' + (f.why === 'unresponsive' ? 'the window\'s unresponsive event' : FREEZE_MS / 1000 + ' s without a heartbeat') + ').', samples: f.samples, summary: stackSummary(f.samples) } });
+  const f = rp.freeze, now = Date.now();
+  const samples = f.samples.slice();
+  if (f.pending) {
+    const w = { afterMs: f.pending.sentAt - f.start, waitingMs: now - f.pending.sentAt, pending: true };
+    const procs = cpuBetween(f.markSnap, f.lastSnap);
+    if (procs) { w.procs = procs; w.cpuMs = f.lastSnap.at - f.markSnap.at; }
+    samples.push(w);
+  }
+  const r = mainReport('not-responding', f.at, { id: f.id, durationMs: now - f.start, ongoing: !f.ended, freezeStart: f.start,
+    where: { note: 'Sampled from the main process with the DevTools protocol: every ' + SAMPLE_EVERY_MS / 1000 + ' s while the window did not answer (it noticed after ' + (f.why === 'unresponsive' ? 'the window\'s unresponsive event' : FREEZE_MS / 1000 + ' s without a heartbeat') +
+      ') the window was asked to pause, and how long each pause took to arrive was kept.', samples } });
   if (f.ended) r.durationMs = f.durationMs;
+  const procs = cpuBetween(f.cpu0, f.lastSnap);
+  if (procs) r.where.cpu = { ms: f.lastSnap.at - f.cpu0.at, procs };
   if (f.screenshot) r.files.screenshot = true;
-  for (let i = r.crumbs.length - 1; i >= 0; i--) if (r.crumbs[i].at <= f.start + 50) { r.lastCrumb = r.crumbs[i].text; break; }
+  for (let i = r.crumbs.length - 1; i >= 0; i--) if (r.crumbs[i].at <= f.start + 50 && !/^slow frame /.test(r.crumbs[i].text)) { r.lastCrumb = r.crumbs[i].text; break; }
+  r.where.summary = ReportFormat && ReportFormat.whereSummary ? ReportFormat.whereSummary(r) : '';
   return r;
 }
 function writeFreeze() { try { writeReport(rp.freeze.dir, freezeReport()); } catch (e) { testLog('report-write-failed', { message: e.message }); } }
-async function sampleFreeze() {
+function sampleFreeze() {
   const f = rp.freeze;
-  if (!f || f.ended || f.sampling || f.samples.length >= MAX_SAMPLES) return;
-  f.sampling = true;
-  const t = Date.now();
-  const smp = await stackSample(f.wc);
-  f.sampling = false;
-  if (rp.freeze !== f) return;
-  smp.afterMs = t - f.start;
-  f.samples.push(smp);
-  testLog('report-sample', { n: f.samples.length, frames: smp.frames ? smp.frames.length : 0, top: smp.frames && smp.frames[0] ? smp.frames[0].fn : null, error: smp.error || null });
-  if (!f.ended) writeFreeze();
+  if (!f || f.ended) return;
+  if (f.pending) { writeFreeze(); return; }   // still waiting for the last pause: the report says for how long
+  if (f.samples.length < MAX_SAMPLES) askSample(f);
 }
 function startFreeze(wc, why) {
   if (rp.freeze || !rp.watch || wc.isDestroyed()) return;
   const s = hbOf(wc), at = Date.now();
   let made;
   try { made = newReportDir('not-responding', at); } catch (e) { testLog('report-write-failed', { message: e.message }); return; }
-  rp.freeze = { wc, why, start: s.last, at, id: made.id, dir: made.dir, samples: [], ended: false };
+  // processor use is counted from the snapshot nearest the last heartbeat (the 1 s timer below keeps the last few)
+  const snap = cpuSnap();
+  let cpu0 = rp.cpu.find((c) => c.at >= s.last - 1200) || rp.cpu[0] || snap;
+  rp.freeze = { wc, why, start: s.last, at, id: made.id, dir: made.dir, samples: [], ended: false, pending: null, cpu0, markSnap: cpu0, lastSnap: snap || cpu0 };
   testLog('freeze-start', { id: made.id, why, sinceMs: at - s.last });
   writeFreeze();
   sessionWrite({ freeze: { dir: made.dir, id: made.id, since: new Date(s.last).toISOString() } });
   pruneReports();
   sampleFreeze();
-  rp.freeze.timer = setInterval(() => { if (rp.freeze && rp.freeze.samples.length >= MAX_SAMPLES) clearInterval(rp.freeze.timer); else sampleFreeze(); }, SAMPLE_EVERY_MS);
+  rp.freeze.timer = setInterval(sampleFreeze, SAMPLE_EVERY_MS);
 }
 async function endFreeze() {
   const f = rp.freeze;
@@ -706,16 +815,26 @@ async function endFreeze() {
   f.ended = true;
   f.durationMs = Date.now() - f.start;
   clearInterval(f.timer);
+  f.lastSnap = cpuSnap() || f.lastSnap;
+  // a pause still on its way lands on the first JavaScript the window runs: normally before this heartbeat
+  if (f.pending) await Promise.race([new Promise((res) => { f.onSample = res; }), new Promise((res) => setTimeout(res, 1500))]);
+  if (f.pending) { f.samples.push({ afterMs: f.pending.sentAt - f.start, error: 'the pause was asked for and had not arrived ' + Math.round((Date.now() - f.pending.sentAt) / 100) / 10 + ' s later, though the window answered again' + (f.pending.error ? ' (' + f.pending.error + ')' : '') }); f.pending = null; }
   testLog('freeze-end', { id: f.id, durationMs: f.durationMs, samples: f.samples.length });
-  if (!f.wc.isDestroyed()) f.screenshot = await screenshotInto(f.dir, f.wc);
+  if (!f.wc.isDestroyed()) {
+    try { await nameFrames(f); } catch (e) { /* the frames keep what they had */ }
+    f.screenshot = await screenshotInto(f.dir, f.wc);
+  }
   writeFreeze();
   rp.freeze = null;
   sessionWrite();
   const r = readReportJson(f.dir) || {};
-  noticeToPage({ id: f.id, kind: 'not-responding', dir: f.dir, durationMs: f.durationMs, operation: r.operation || [], summary: r.summary });
+  noticeToPage({ id: f.id, kind: 'not-responding', dir: f.dir, durationMs: f.durationMs, startedAt: f.start, operation: r.operation || [], summary: r.summary });
 }
 setInterval(() => {
-  if (!rp.watch || rp.freeze || !win || win.isDestroyed()) return;
+  if (!rp.watch || !win || win.isDestroyed()) return;
+  const snap = cpuSnap();
+  if (snap) { rp.cpu.push(snap); if (rp.cpu.length > 8) rp.cpu.shift(); if (rp.freeze && !rp.freeze.ended) rp.freeze.lastSnap = snap; }
+  if (rp.freeze) return;
   const wc = win.webContents, s = rp.hb.get(wc.id);
   if (s && s.alive && !s.hidden && !win.isMinimized() && pageLoaded && Date.now() - s.last > FREEZE_MS) startFreeze(wc, 'heartbeat');
 }, 1000).unref();
@@ -808,7 +927,16 @@ ipcMain.handle('anvil-desktop:report-complete', (e, dir, o) => {
   const clean = (t) => rpScrub(t, sec);
   if (o.state && typeof o.state === 'object') { r.state = {}; Object.keys(o.state).forEach((k) => { r.state[k] = typeof o.state[k] === 'string' ? clean(o.state[k]) : o.state[k]; }); r.stateAt = Date.now(); r.stateNote = 'taken by the page when it answered again'; }
   if (Array.isArray(o.console)) r.console = o.console.slice(-100).map((c) => ({ at: c.at, level: c.level, text: clean(c.text) }));
-  if (Array.isArray(o.crumbs) && o.crumbs.length >= (r.crumbs || []).length) r.crumbs = o.crumbs.slice(-200).map((c) => ({ at: c.at, text: clean(c.text), n: c.n }));
+  // the page's ring is the fuller one (what it did after it came back; its gesture lines are final); main's copy is
+  // kept only when the page's is older (a reload in between)
+  const newest = (l) => (l && l.length ? Math.max.apply(null, l.slice(-5).map((c) => +c.at || 0)) : 0);
+  if (Array.isArray(o.crumbs) && o.crumbs.length && newest(o.crumbs) >= newest(r.crumbs)) r.crumbs = o.crumbs.slice(-CRUMB_RING).map((c) => ({ at: c.at, text: clean(c.text), n: c.n }));
+  // what the page itself recorded about the frozen frame (ui-reports.js "long frames"): long animation frames, long
+  // tasks, WebGL context events, the count of WebGL programs before and after; every string is scrubbed again here
+  if (o.page && typeof o.page === 'object') {
+    try { r.page = JSON.parse(JSON.stringify(o.page, (k, v) => (typeof v === 'string' ? clean(v).slice(0, 300) : v))); } catch (err) { /* not serialisable: left out */ }
+    if (r.where && ReportFormat && ReportFormat.whereSummary) r.where.summary = ReportFormat.whereSummary(r);
+  }
   writeReport(d, r);
   testLog('report-completed', { id: path.basename(d) });
   return { ok: true };

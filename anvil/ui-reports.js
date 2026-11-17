@@ -67,10 +67,122 @@
       else if (r.kind === 'not-responding' && r.lastCrumb) s += ' after: ' + r.lastCrumb;
       if (r.kind === 'crash' && r.crash && r.crash.reason) s += ' (' + r.crash.reason + (r.crash.exitCode != null ? ', exit code ' + r.crash.exitCode : '') + ')';
       if (r.kind === 'error' && r.error && r.error.message) s += ': ' + String(r.error.message).split('\n')[0].slice(0, 160);
+      if (r.kind === 'not-responding' && r.where && r.where.kind === 'outside') s += ' (busy outside JavaScript: see Where it was stuck)';
       return s + '.';
     }
     function cell(t) { return String(t == null ? '' : t).replace(/\|/g, '\\|').replace(/\r?\n/g, ' '); }
     function frameLine(f) { return (f.fn || '(anonymous)') + '  ' + (f.file || '?') + (f.line != null ? ':' + f.line + (f.col != null ? ':' + f.col : '') : ''); }
+
+    // ---- where it was stuck: a JavaScript loop, or a block outside JavaScript (lane freezerec, rfNZ) ----
+    // A sample is the answer to one "pause" asked of the window (desktop/main.js): afterMs = when it was asked, lateMs =
+    // how long the pause took to arrive. JavaScript that is running takes a pause within milliseconds. A pause that
+    // arrives a second or more late had to wait: the main thread was not running JavaScript (painting, the graphics
+    // card, layout, garbage collection, a synchronous call) and the stack is the first JavaScript that ran afterwards.
+    var LATE_MS = 1000;
+    function fkey(f) { return (f.fn || '(anonymous)') + ' (' + (f.file || '?') + ':' + f.line + ')'; }
+    function pct(n) { return (n >= 10 ? Math.round(n) : Math.round(n * 10) / 10) + ' %'; }
+    function cpuLine(procs) { return (procs || []).filter(function (p) { return p.cpu != null; }).map(function (p) { return p.name + ' ' + pct(p.cpu); }).join(', '); }
+    // which process was working: one sentence for the reader
+    function cpuReading(procs, outside) {
+      var by = {}, top = null;
+      (procs || []).forEach(function (p) { if (p.cpu == null) return; by[p.name] = (by[p.name] || 0) + p.cpu; if (!top || p.cpu > top.cpu) top = p; });
+      if (!top) return '';
+      var g = by.GPU || 0, w = by.window || 0;
+      if (g >= 50 && w < 35) return 'The GPU process was the busy one (' + pct(g) + ' of one processor thread) while the window\'s own process was nearly idle (' + pct(w) + '): the graphics card or its driver was working (compiling a shader, or drawing something heavy) and the window was waiting for it.';
+      if (w >= 50) return outside ? 'The window\'s own process was busy (' + pct(w) + ' of one processor thread) without running JavaScript: layout, painting, garbage collection, or work inside a browser call made by the JavaScript below (JSON, a structured clone, a regular expression, a sort).' : 'The window\'s own process was the busy one (' + pct(w) + ' of one processor thread).';
+      if (top.cpu < 20) return 'No process of Anvil was busy (' + cpuLine(procs) + '): the window was waiting, not working: a synchronous request, a file, another process or a lock.';
+      return 'The busiest process was ' + top.name + ' (' + pct(top.cpu) + ' of one processor thread); the window\'s own was at ' + pct(w) + (by.GPU != null ? ', the GPU process at ' + pct(g) : '') + '.';
+    }
+    // the frames of the page's own record (PerformanceObserver) that matter: the longest long frame, the longest task
+    function longest(list) { var b = null; (list || []).forEach(function (x) { if (!b || x.ms > b.ms) b = x; }); return b; }
+    function scriptLine(s) { return (s.invoker || '?') + (s.fn ? '  ' + s.fn : '') + (s.file ? '  (' + s.file + (s.pos != null && s.pos >= 0 ? ', character ' + s.pos : '') + ')' : '  (no file)') + '  ' + secs(s.ms) + (s.forcedLayoutMs >= 50 ? ' (of it forced layout ' + secs(s.forcedLayoutMs) + ')' : ''); }
+    function pageReading(r) {
+      var p = r.page, f = p && longest(p.longFrames);
+      if (!p) return '';
+      if (!f) {
+        var t = longest(p.longTasks);
+        if (t) return 'The page\'s own record has a long task of ' + secs(t.ms) + ' and no long frame' + (((r.where || {}).samples || []).length ? ' (the browser drops its frame record when a stack sample pauses inside the frame): the samples say where.' : ': the browser did not say which script.');
+        return p.support === 'none' ? '' : 'The page\'s own record has no long frame and no long task over the freeze: the time did not go to its scripts or its rendering steps (it was in the browser\'s compositor, the graphics card, or a wait).';
+      }
+      var s0 = (f.scripts || [])[0], other = Math.max(0, f.ms - f.scriptMs - f.renderMs);
+      var s = 'The page\'s own record: a frame of ' + secs(f.ms) + ' with script ' + secs(f.scriptMs) + ', rendering ' + secs(f.renderMs) + (f.layoutMs >= 50 ? ' (style and layout ' + secs(f.layoutMs) + ' of it)' : '') + (other >= 0.1 * f.ms ? ', neither ' + secs(other) : '') + '.';
+      if (!s0 && ((r.where || {}).samples || []).length && other >= 0.5 * f.ms) s += ' (A stack sample paused inside this frame, and the browser then keeps no script times for it: the samples say where.)';
+      if (s0 && f.scriptMs >= 0.5 * f.ms) s += ' The longest script: ' + scriptLine(s0) + '.';
+      else if (f.renderMs >= 0.5 * f.ms) s += ' Most of it was rendering, not script.';
+      return s;
+    }
+    // { kind: 'javascript' | 'outside' | 'mixed' | 'unknown', outsideMs, text }
+    function verdict(r) {
+      var w = r.where || {}, S = w.samples || [];
+      var stacks = S.filter(function (s) { return s.frames && s.frames.length; });
+      var timed = stacks.filter(function (s) { return s.lateMs != null && !s.cold; });
+      var late = timed.filter(function (s) { return s.lateMs >= LATE_MS; }), prompt = timed.filter(function (s) { return s.lateMs < LATE_MS; });
+      var waiting = S.filter(function (s) { return s.pending && s.waitingMs >= LATE_MS; });
+      var out = { kind: 'unknown', outsideMs: 0, text: '' }, parts = [];
+      var cpu = w.cpu && w.cpu.procs, pageSays = pageReading(r);
+      function same(list) {
+        var count = {}, order = [];
+        list.forEach(function (s) { var seen = {}; s.frames.forEach(function (f) { var k = fkey(f); if (seen[k]) return; seen[k] = 1; if (!count[k]) { count[k] = 0; order.push(k); } count[k]++; }); });
+        order.sort(function (a, b) { return count[b] - count[a]; });
+        var tops = list.map(function (s) { return fkey(s.frames[0]); }), uniq = tops.filter(function (t, i) { return tops.indexOf(t) === i; });
+        return (uniq.length === 1 ? 'Every sample with a stack (' + list.length + ') was stopped in the same place: ' + tops[0] + '.' : 'The top of the stack moved between samples (' + uniq.join('; ') + '): busy, but not in one place.') +
+          ' Functions seen in most samples: ' + order.slice(0, 5).map(function (k) { return k + ' ×' + count[k]; }).join(', ') + '.';
+      }
+      if (late.length || waiting.length) {
+        out.kind = prompt.length ? 'mixed' : 'outside';
+        late.forEach(function (s) { out.outsideMs += s.lateMs; });
+        waiting.forEach(function (s) { out.outsideMs += s.waitingMs; });
+        parts.push('**Outside JavaScript.** The window\'s main thread was busy outside JavaScript for at least ' + secs(out.outsideMs) + (r.durationMs != null ? ' of the ' + secs(r.durationMs) : '') +
+          ': painting, the graphics card, layout, garbage collection or a synchronous call.');
+        late.forEach(function (s) {
+          var top = fkey(s.frames[0]), i = S.indexOf(s) + 1;
+          parts.push('The pause asked ' + secs(s.afterMs) + ' into the freeze could not be delivered for ' + secs(s.lateMs) + ': no JavaScript ran in that time.' + (s.entry
+            ? ' The stack of sample ' + i + ' is the first JavaScript that ran afterwards (' + top + ', a callback that had only just been called: an event handler, a timer or an animation-frame callback). It is not where Anvil was stuck.'
+            : ' The stack of sample ' + i + ' is the JavaScript that was waiting: ' + top + ' had just come back from a call that left JavaScript (a synchronous request, a WebGL call that waits for the graphics card, JSON, a structured clone, a regular expression, a sort); look at the statement just before that position.'));
+        });
+        waiting.forEach(function (s) { parts.push('The pause asked ' + secs(s.afterMs) + ' into the freeze had not been answered ' + secs(s.waitingMs) + ' later, when this was written: the main thread had run no JavaScript since.'); });
+        if (prompt.length) parts.push('Other samples were answered at once, so JavaScript was running at those moments. ' + same(prompt));
+        var cr = cpuReading(cpu, true);
+        if (cr) parts.push(cr);
+      } else if (stacks.length) {
+        out.kind = timed.length ? 'javascript' : 'unknown';
+        parts.push((timed.length ? '**JavaScript was running.** Every pause was answered at once (within ' + Math.max.apply(null, timed.map(function (s) { return s.lateMs; })) + ' ms), so the main thread was inside the JavaScript below. ' : '') + same(stacks));
+        if (cpu && cpuLine(cpu)) parts.push(cpuReading(cpu, false));
+      } else if (S.length) parts.push('No sample got a JavaScript stack.');
+      if (pageSays) parts.push(pageSays);
+      out.text = parts.join(' ');
+      return out;
+    }
+    function whereSummary(r) { var v = verdict(r); if (r.where) r.where.kind = v.kind; return v.text; }
+    function sampleHead(smp, i) {
+      var s = 'Sample ' + (i + 1);
+      if (smp.pending) s += ', asked ' + secs(smp.afterMs) + ' into the freeze: not answered after ' + secs(smp.waitingMs) + ' (the main thread has run no JavaScript since)';
+      else if (smp.lateMs != null) s += ', asked ' + secs(smp.afterMs) + ' into the freeze, answered ' + (smp.lateMs < LATE_MS ? 'at once (' + smp.lateMs + ' ms)' : secs(smp.lateMs) + ' later (' + secs(smp.afterMs + smp.lateMs) + ' into the freeze, when the main thread ran JavaScript again)') + (smp.cold ? '; the debugger was switched on only then, so the wait says nothing' : '');
+      else if (smp.afterMs != null) s += ', ' + secs(smp.afterMs) + ' into the freeze';
+      return s + (smp.error ? ': ' + smp.error : '') + ':';
+    }
+    // "## What the page itself recorded": the browser's long-animation-frame / long-task entries over the freeze, WebGL
+    // context events, the count of WebGL programs before and after
+    function pageLines(r, L) {
+      var p = r.page, t0 = r.freezeStart != null ? r.freezeStart : (r.durationMs != null ? r.at - r.durationMs : r.at);
+      function rel(at) { return ((at - t0) / 1000).toFixed(1) + ' s'; }
+      L.push('## What the page itself recorded');
+      L.push('');
+      L.push('(the browser\'s own long-animation-frame and long-task entries that overlap the freeze, read when the page answered again; times are seconds from the start of the freeze. A frame = the scripts it ran, then rendering: style, layout, paint.)');
+      L.push('');
+      if (!(p.longFrames || []).length && (p.longTasks || []).length) L.push('- no long frame' + (((r.where || {}).samples || []).length ? ' (the browser drops its frame record when a stack sample pauses inside the frame; the long task below is the same stretch)' : ' (the browser gave no frame record; the long task below is the same stretch)'));
+      if (!(p.longFrames || []).length && !(p.longTasks || []).length) L.push('- no long frame and no long task' + (p.support === 'none' ? ' (this browser does not record them)' : ': the time did not go to the page\'s scripts or rendering steps'));
+      (p.longFrames || []).forEach(function (f) {
+        var other = Math.max(0, f.ms - f.scriptMs - f.renderMs);
+        L.push('- frame from ' + rel(f.at) + ' to ' + rel(f.at + f.ms) + ' (' + secs(f.ms) + '): script ' + secs(f.scriptMs) + ', rendering ' + secs(f.renderMs) + (f.layoutMs >= 50 ? ' (style and layout ' + secs(f.layoutMs) + ' of it)' : '') + ', neither ' + secs(other) + (f.blockingMs ? '; blocking ' + secs(f.blockingMs) : ''));
+        (f.scripts || []).forEach(function (s) { L.push('  - script: ' + scriptLine(s)); });
+      });
+      (p.longTasks || []).forEach(function (t) { L.push('- long task from ' + rel(t.at) + ' to ' + rel(t.at + t.ms) + ' (' + secs(t.ms) + ')'); });
+      if (p.programs) L.push('- WebGL programs (compiled shaders): ' + p.programs.before + ' before, ' + p.programs.after + ' after' + (p.programs.after > p.programs.before ? ' (' + (p.programs.after - p.programs.before) + ' made during the freeze: a shader compile)' : ''));
+      (p.graphics || []).forEach(function (g) { L.push('- ' + g.what + ' at ' + rel(g.at)); });
+      if (p.gl) L.push('- WebGL now: ' + p.gl);
+      L.push('');
+    }
     function markdown(r) {
       var L = [];
       L.push('# Anvil problem report: ' + r.kind);
@@ -78,6 +190,10 @@
       L.push('> For the reader (Claude): this is an Anvil problem report, written on the user\'s computer by Anvil itself.');
       L.push('> The source is the repository whose `CLAUDE.md` names the files (github.com/Impastanoodle/anvil: `anvil/` is the app, `desktop/` the Windows shell; `anvil/docs/INDEX.md` finds any function).');
       L.push('> Start from "Where it was stuck" and the last breadcrumbs. `report.json` in this folder holds the same, structured.');
+      if (r.kind === 'not-responding') {
+        L.push('> How to read a not-responding report: (1) each sample is one pause asked of the window, with how long the pause took to arrive. Answered at once = JavaScript was running, and the stack is where. Answered seconds late = the main thread was **outside JavaScript** (painting, the graphics card, layout, garbage collection, a synchronous call) and the stack is only the first JavaScript that ran afterwards.');
+        L.push('> (2) The process table says who was working: a busy GPU process = a shader compile or a heavy draw; a busy window process with no JavaScript = layout, paint or garbage collection; nothing busy = waiting on a synchronous call or a lock. (3) "What the page itself recorded" splits the frozen frame into script and rendering time and names the scripts. (4) Breadcrumbs starting "graphics area:" / "key:" are what the hand did (no positions, no names); "slow frame" lines are hitches of 1 s or more that were not long enough for a report.');
+      }
       L.push('');
       L.push('**What happened:** ' + (r.summary || summary(r)));
       L.push('');
@@ -93,13 +209,24 @@
       L.push('');
       var w = r.where || {};
       if (w.note) { L.push(w.note); L.push(''); }
+      // the verdict first (a JavaScript loop, or a block outside JavaScript), then the evidence
+      if (w.summary) { L.push(w.summary); L.push(''); }
       (w.samples || []).forEach(function (smp, i) {
-        L.push('Sample ' + (i + 1) + (smp.afterMs != null ? ', ' + secs(smp.afterMs) + ' into the freeze' : '') + (smp.error ? ': ' + smp.error : '') + ':');
+        L.push(sampleHead(smp, i));
         L.push('');
-        if ((smp.frames || []).length) { L.push('```'); smp.frames.forEach(function (f, j) { L.push((j + 1) + '. ' + frameLine(f)); }); L.push('```'); }
+        if ((smp.frames || []).length) { L.push('```'); smp.frames.forEach(function (f, j) { L.push((j + 1) + '. ' + frameLine(f)); if (f.src) L.push('       ' + f.src); }); L.push('```'); }
+        if (smp.procs && cpuLine(smp.procs)) L.push('Processor use in the ' + secs(smp.cpuMs) + ' up to this sample (percent of one processor thread): ' + cpuLine(smp.procs) + '.');
         L.push('');
       });
-      if (w.summary) { L.push(w.summary); L.push(''); }
+      if (w.cpu && (w.cpu.procs || []).length) {
+        L.push('Which process was working (processor use as a percentage of one processor thread, over the ' + secs(w.cpu.ms) + ' from the last heartbeat to the end of the freeze; memory at the end):');
+        L.push('');
+        L.push('| process | processor | memory |');
+        L.push('|---|---|---|');
+        w.cpu.procs.forEach(function (p) { L.push('| ' + cell(p.name) + ' | ' + (p.cpu != null ? pct(p.cpu) : '?') + ' | ' + (p.mb != null ? p.mb + ' MB' : '?') + ' |'); });
+        L.push('');
+      }
+      if (r.page) pageLines(r, L);
       if (r.error) {
         L.push('## The error');
         L.push('');
@@ -156,7 +283,7 @@
       L.push('');
       return L.join('\n');
     }
-    return { scrub: scrub, markdown: markdown, summary: summary, stamp: stamp, secs: secs, KIND_TEXT: KIND_TEXT };
+    return { scrub: scrub, markdown: markdown, summary: summary, stamp: stamp, secs: secs, KIND_TEXT: KIND_TEXT, verdict: verdict, whereSummary: whereSummary, cpuReading: cpuReading, LATE_MS: LATE_MS };
   })();
 
   if (typeof module !== 'undefined' && module.exports) { module.exports = Format; return; }   // desktop/main.js
@@ -171,23 +298,39 @@
   var DB_NAME = TEST_FRAME ? 'anvil-reports-test' : 'anvil-reports';
   var LS_WATCH = TEST_FRAME ? 'anvil.test.reports.watch' : 'anvil.reports.watch';
   var LS_BYE = TEST_FRAME ? 'anvil.test.reports.bye' : 'anvil.reports.bye';
-  var RING = 200, CONSOLE_MAX = 100, BROWSER_KEEP = 10, FREEZE_MS = 3000;
+  var RING = 200, CONSOLE_MAX = 100, BROWSER_KEEP = 10, FREEZE_MS = 3000, G_KEEP = 30, SLOW_MS = 1000;
   var crumbs = [], consoleRing = [], notes = {}, outbox = [], lastFlush = 0, flushTimer = null, lastSnapAt = 0;
+  var G = { seq: 0, press: null, wheel: null, hover: null };   // gestures in progress (below)
   function desk() { var d = window.anvilDesktop; return d && d.reports ? d.reports : null; }
   function now() { return Date.now(); }
 
   // ---------------------------------------------------------------- breadcrumbs
   // one line of what the user or the program just did; the same line again within a second counts up instead
-  function crumb(text, sent) {
+  // hand: a line about what the hand did (a key press): it counts as a gesture crumb (see "gestures" below)
+  function crumb(text, sent, hand) {
     try {
       text = Format.scrub(String(text).replace(/\s+/g, ' ').trim().slice(0, 300));
       var t = now(), last = crumbs[crumbs.length - 1];
-      if (last && last.text === text && t - last.at < 1000) { last.n = (last.n || 1) + 1; last.at = t; return; }
+      if (!hand) gHoverEnd(t);   // a hover line ends where something else happens, so the lines stay in order
+      if (last && last.text === text && t - last.at < 1000) { last.n = (last.n || 1) + 1; last.at = t; if (last.g != null) send(last); return; }
       var c = { at: t, text: text };
-      crumbs.push(c);
-      if (crumbs.length > RING) crumbs.splice(0, crumbs.length - RING);
-      if (!sent) { outbox.push(c); flushSoon(); }
+      if (hand) c.g = 'g' + (++G.seq);
+      pushCrumb(c);
+      if (!sent) send(c, hand === 'now');
     } catch (e) { /* a crumb never breaks the app */ }
+  }
+  // the ring: 200 lines, of which at most the newest G_KEEP are gesture lines (c.g), so a morning of orbiting and
+  // hovering never pushes the commands out
+  function pushCrumb(c) {
+    crumbs.push(c);
+    if (c.g != null) { var n = 0; for (var i = crumbs.length - 1; i >= 0; i--) if (crumbs[i].g != null && ++n > G_KEEP) crumbs.splice(i, 1); }
+    if (crumbs.length > RING) crumbs.splice(0, crumbs.length - RING);
+  }
+  // queues a crumb for the main process / the watchdog worker; a gesture crumb is queued again when its text changes
+  // (the same g rewrites the line there). urgent: at once, for the press or key that may be what freezes Anvil
+  function send(c, urgent) {
+    if (outbox.indexOf(c) < 0) outbox.push(c);
+    if (urgent) { if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; } flush(); } else flushSoon();
   }
   function note(key, value) { if (value === undefined) delete notes[key]; else notes[key] = value; }
   // crumbs go to the desktop main process (desktop) or the watchdog worker (browser), at most every 250 ms, so they
@@ -200,7 +343,7 @@
   }
   function flush() {
     lastFlush = now();
-    var batch = outbox.splice(0);
+    var batch = outbox.splice(0).map(function (c) { return c.g != null ? { at: c.at, text: c.text, g: c.g, n: c.n } : { at: c.at, text: c.text }; });
     var d = desk(), extra = null;
     // with them, every 5 s or when an operation starts / ends: the state and the operation (the desktop main process
     // writes a not-responding report from these), only the operation for the browser's watchdog
@@ -214,6 +357,227 @@
     } catch (e) { /* gone */ }
   }
   function safe(fn, dflt) { try { return fn(); } catch (e) { return dflt; } }
+
+  // ---------------------------------------------------------------- gestures: what the hand did (lane freezerec, rfNZ)
+  // The freeze of 2026-11-16 came 29 s after the last breadcrumb: orbiting, zooming, hovering and clicking in the
+  // graphics area left none. Now each gesture leaves one line, written when it starts (so it is there if that gesture
+  // is what freezes Anvil) and rewritten as it goes on and ends: "graphics area: drag with the middle button (orbit)
+  // 3.2 s", "wheel ×14 (zoom) 1.2 s", "click", "hover 14 s (pointer moving 2 s, idle 12 s)", "key: Ctrl+Z". Private by
+  // construction: no positions, no names, a letter key is "a key", typing in a box is "typing in a box".
+  // The listeners are on window in the capture phase, so they run before any handler of Anvil's.
+  function evAt(e) {
+    // when the hand made it, not when the page got to it (a click made during a freeze waits in the queue)
+    var t = now();
+    if (!e || !e.isTrusted || !(e.timeStamp > 0)) return t;
+    var at = Math.round(t - (performance.now() - e.timeStamp));
+    return at > t || t - at > 120000 ? t : at;
+  }
+  function lateNote(at) { var d = now() - at; return d >= 1000 ? ' (made ' + Format.secs(d) + ' before Anvil got to it)' : ''; }
+  function area(t) {
+    if (!t || !t.closest) return null;
+    if (t.closest('button, input, select, textarea, a, [role=menuitem], #hud, .menu, #pm')) return null;
+    if (t.closest('#drawing-sheet')) return 'drawing sheet';
+    return t.closest('#viewport') ? 'graphics area' : null;
+  }
+  function gNew(text, at) { var c = { at: at, text: text, g: 'g' + (++G.seq) }; pushCrumb(c); return c; }
+  function gSet(c, text, urgent) { if (c.text === text) return; c.text = text; send(c, urgent); }
+  function dragText(p) { return p.area + ': drag with the ' + p.mods + p.b + ' button' + (p.nav ? ' (' + (p.nav === 'rotate' ? 'orbit' : p.nav) + ')' : ''); }
+  function pressEnd(t, lost) {
+    var p = G.press;
+    if (!p) return;
+    G.press = null;
+    gSet(p.c, (p.moved ? dragText(p) + ' ' + Format.secs(Math.max(0, t - p.t0)) : p.area + ': ' + p.mods + (p.b === 'left' ? 'click' : p.b + ' click')) + (lost ? ' (the release was not seen)' : '') + p.late);
+  }
+  function onDown(e) {
+    var a = area(e.target);
+    if (!a) return;
+    var t = evAt(e);
+    if (G.press) pressEnd(t, true);
+    gHoverEnd(t); wheelEnd();
+    var b = e.button === 1 ? 'middle' : e.button === 2 ? 'right' : 'left';
+    var nav = e.button === 1 || e.button === 2 || (e.button === 0 && e.altKey) ? safe(function () { return UI.navActionFor ? UI.navActionFor(e) : null; }, null) : null;
+    var mods = (e.ctrlKey ? 'Ctrl + ' : '') + (e.shiftKey ? 'Shift + ' : '') + (e.altKey ? 'Alt + ' : '');
+    var p = G.press = { area: a, b: b, mods: mods, nav: nav, t0: t, x: e.clientX, y: e.clientY, moved: false, late: lateNote(t) };
+    p.c = gNew(a + ': ' + mods + b + ' button pressed' + p.late, t);
+    send(p.c, true);
+  }
+  function onMove(e) {
+    var p = G.press;
+    if (p) {
+      if (!p.moved && Math.abs(e.clientX - p.x) + Math.abs(e.clientY - p.y) > 4) { p.moved = true; gSet(p.c, dragText(p) + ', in progress' + p.late); }
+      return;
+    }
+    if (e.buttons) return;
+    var a = area(e.target), t = evAt(e), h = G.hover;
+    if (!a || (h && h.area !== a)) { gHoverEnd(t); h = null; if (!a) return; }
+    if (!h) { G.hover = { c: null, area: a, t0: t, last: t, moveMs: 0, setAt: 0 }; return; }
+    var dt = t - h.last;
+    h.last = t;
+    if (dt < 400) h.moveMs += Math.max(0, dt);
+    if (!h.c) { if (h.moveMs >= 200) { h.c = gNew(a + ': hover (pointer moving)', h.t0); h.setAt = now(); send(h.c); } }
+    else if (now() - h.setAt > 2000) { h.setAt = now(); gSet(h.c, hoverText(h, t)); }
+  }
+  function hoverText(h, t) {
+    var total = Math.max(0, t - h.t0), idle = Math.max(0, total - h.moveMs);
+    return h.area + ': hover ' + Format.secs(total) + ' (pointer moving ' + Format.secs(h.moveMs) + (idle >= 1000 ? ', idle ' + Format.secs(idle) : '') + ')';
+  }
+  function gHoverEnd(t) { var h = G.hover; if (!h) return; G.hover = null; if (h.c) gSet(h.c, hoverText(h, Math.max(t, h.last))); }
+  function wheelText(w) { return w.area + ': wheel ×' + w.n + (w.area === 'graphics area' ? ' (zoom)' : '') + (w.last - w.t0 >= 100 ? ' ' + Format.secs(w.last - w.t0) : '') + w.late; }
+  function wheelEnd() { var w = G.wheel; if (!w) return; G.wheel = null; clearTimeout(w.timer); gSet(w.c, wheelText(w)); }
+  function onWheel(e) {
+    var a = area(e.target);
+    if (!a) return;
+    var t = evAt(e), w = G.wheel;
+    if (w && (t - w.last > 600 || w.area !== a)) { wheelEnd(); w = null; }
+    if (!w) {
+      gHoverEnd(t);
+      w = G.wheel = { area: a, n: 1, t0: t, last: t, setAt: now(), late: lateNote(t) };
+      w.c = gNew(wheelText(w), t);
+      send(w.c, true);
+    } else {
+      w.n++; w.last = t;
+      if (now() - w.setAt > 500) { w.setAt = now(); gSet(w.c, wheelText(w)); }
+    }
+    clearTimeout(w.timer);
+    w.timer = setTimeout(wheelEnd, 650);
+  }
+  var KEY_NAMES = { ' ': 'Space', ArrowLeft: 'Left arrow', ArrowRight: 'Right arrow', ArrowUp: 'Up arrow', ArrowDown: 'Down arrow', Esc: 'Escape', Del: 'Delete' };
+  function keyName(e) {
+    var k = e.key || '';
+    if (!k || k === 'Control' || k === 'Shift' || k === 'Alt' || k === 'Meta' || k === 'Unidentified' || k === 'Process' || k === 'Dead') return null;
+    var t = e.target, box = !!(t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || '') || t.isContentEditable));
+    var mods = (e.ctrlKey ? 'Ctrl+' : '') + (e.altKey ? 'Alt+' : '') + (e.metaKey ? 'Meta+' : '');
+    if (k.length === 1) {
+      // a character: a shortcut is named (Ctrl+Z), anything else is only its kind
+      if (mods && /^[a-z0-9]$/i.test(k)) return mods + (e.shiftKey ? 'Shift+' : '') + k.toUpperCase();
+      if (box) return 'typing in a box';
+      return mods + (k === ' ' ? 'Space' : /^[a-z]$/i.test(k) ? 'a key' : /^\d$/.test(k) ? 'a digit key' : 'a symbol key');
+    }
+    if (box && /^(Backspace|Delete|Del|Arrow\w+|Home|End)$/.test(k) && !mods) return 'typing in a box';
+    return mods + (e.shiftKey ? 'Shift+' : '') + (KEY_NAMES[k] || k) + (box ? ' in a box' : '');
+  }
+  function onKey(e) {
+    var k = keyName(e);
+    if (!k) return;
+    var t = evAt(e);
+    gHoverEnd(t);
+    // typing is one line for as long as it goes on (5 s between keys), so a note typed slowly is not thirty lines
+    var last = crumbs[crumbs.length - 1];
+    if (k === 'typing in a box' && last && last.text === 'key: typing in a box' && now() - last.at < 5000) { last.n = (last.n || 1) + 1; last.at = now(); send(last); return; }
+    crumb('key: ' + k + lateNote(t), false, k === 'typing in a box' ? true : 'now');
+  }
+  function onTouch(e) { var a = area(e.target); if (a) crumb(a + ': touch (' + (e.touches ? e.touches.length : 1) + ' finger' + (e.touches && e.touches.length > 1 ? 's' : '') + ')', false, 'now'); }
+  // the open gestures as they stand now (a report is about to read the crumbs)
+  function gSync() { var t = now(), h = G.hover; if (h && h.c) gSet(h.c, hoverText(h, t)); if (G.wheel) gSet(G.wheel.c, wheelText(G.wheel)); }
+  (function () {
+    var o = { capture: true, passive: true };
+    // only what the hand did: an event Anvil dispatches itself (a key passed on by ui-sketch.js) is not a gesture; in the
+    // smoke suite's frame every event is a script's, and they count
+    function on(type, fn) { window.addEventListener(type, function (e) { try { if (e.isTrusted || TEST_FRAME) fn(e); } catch (er) { /* a crumb never breaks the app */ } }, o); }
+    on('mousedown', onDown); on('mousemove', onMove); on('mouseup', function (e) { pressEnd(evAt(e)); });
+    on('wheel', onWheel); on('keydown', onKey); on('touchstart', onTouch);
+    on('blur', function () { if (G.press) pressEnd(now(), true); gHoverEnd(now()); });
+  })();
+
+  // ---------------------------------------------------------------- long frames: what the page saw of its own slowness
+  // PerformanceObserver gives, after the fact, every frame over 50 ms ("long-animation-frame": how long, how much of it
+  // was script and which scripts, when rendering and style / layout started) and every long task. They are kept (the
+  // last 40 over 200 ms) and (a) the ones that overlap a freeze go into its report, which is what tells a block in the
+  // page's own rendering from one in the graphics card; (b) a hitch of 1 s or more that is not a freeze yet leaves a
+  // "slow frame 2.4 s (script 0.1 s, render 2.3 s)" crumb, so a pattern of hitches before a freeze shows.
+  var LF = { frames: [], tasks: [], gl: [], obs: [], progs: [], loaf: false, task: false, lastTick: now(), hidden: false, slow: [] };
+  function entryAt(e) { return Math.round(now() - (performance.now() - e.startTime)); }
+  function srcFile(u) {
+    u = String(u || '').replace(/[?#].*$/, '');
+    if (!u) return '';
+    var o = location.origin + '/';
+    return Format.scrub(u.indexOf(o) === 0 ? u.slice(o.length) : u).slice(0, 120);
+  }
+  function onLongFrame(e) {
+    if (e.duration < 200) return;
+    var st = e.startTime, scripts = [], scriptMs = 0;
+    (e.scripts || []).forEach(function (s) {
+      scriptMs += s.duration;
+      if (s.duration >= 20) scripts.push({ invoker: Format.scrub(String(s.invoker || '')).slice(0, 80), type: s.invokerType || '', file: srcFile(s.sourceURL), fn: String(s.sourceFunctionName || '').slice(0, 80), pos: s.sourceCharPosition,
+        ms: Math.round(s.duration), forcedLayoutMs: Math.round(s.forcedStyleAndLayoutDuration || 0), pauseMs: Math.round(s.pauseDuration || 0) });
+    });
+    scripts.sort(function (a, b) { return b.ms - a.ms; });
+    var renderMs = e.renderStart ? Math.max(0, st + e.duration - e.renderStart) : 0;
+    LF.frames.push({ at: entryAt(e), ms: Math.round(e.duration), blockingMs: Math.round(e.blockingDuration || 0), scriptMs: Math.round(Math.min(scriptMs, e.duration - renderMs)), renderMs: Math.round(renderMs),
+      layoutMs: e.styleAndLayoutStart ? Math.round(Math.max(0, st + e.duration - e.styleAndLayoutStart)) : 0, scripts: scripts.slice(0, 6) });
+    if (LF.frames.length > 40) LF.frames.shift();
+  }
+  function onLongTask(e) { if (e.duration < 200) return; LF.tasks.push({ at: entryAt(e), ms: Math.round(e.duration) }); if (LF.tasks.length > 40) LF.tasks.shift(); }
+  function observe(type, fn) {
+    try {
+      if (!window.PerformanceObserver || (PerformanceObserver.supportedEntryTypes || []).indexOf(type) < 0) return false;
+      var o = new PerformanceObserver(function (l) { l.getEntries().forEach(function (e) { try { fn(e); } catch (er) { } }); });
+      o.observe({ type: type });
+      LF.obs.push({ o: o, fn: fn });
+      return true;
+    } catch (e) { return false; }
+  }
+  LF.loaf = observe('long-animation-frame', onLongFrame);
+  LF.task = observe('longtask', onLongTask);
+  function glInfo() { return safe(function () { return UI.renderer && UI.renderer.info ? UI.renderer.info : null; }, null); }
+  function glPrograms() { var i = glInfo(); return i && i.programs ? i.programs.length : null; }
+  function glFacts() {
+    var i = glInfo();
+    if (!i) return null;
+    var m = i.memory || {}, r = i.render || {};
+    return 'programs ' + (i.programs ? i.programs.length : '?') + ', geometries ' + m.geometries + ', textures ' + m.textures + '; the last draw: ' + r.calls + ' calls, ' + r.triangles + ' triangles, ' + r.lines + ' line segments, ' + r.points + ' points';
+  }
+  ['webglcontextlost', 'webglcontextrestored'].forEach(function (type) {
+    document.addEventListener(type, function () {
+      var what = type === 'webglcontextlost' ? 'WebGL context lost' : 'WebGL context restored';
+      LF.gl.push({ at: now(), what: what });
+      if (LF.gl.length > 20) LF.gl.shift();
+      crumb('graphics: ' + what);
+    }, true);
+  });
+  // what the page recorded between two times (epoch ms): for a not-responding report, and for a slow-frame crumb
+  function pageRecord(from, to) {
+    LF.obs.forEach(function (x) { try { x.o.takeRecords().forEach(x.fn); } catch (e) { } });
+    function hit(x) { return x.at <= to + 250 && x.at + x.ms >= from - 250 && x.ms >= 200; }
+    var o = { longFrames: LF.frames.filter(hit), longTasks: LF.tasks.filter(hit), graphics: LF.gl.filter(function (g) { return g.at >= from - 2000 && g.at <= to + 2000; }),
+      support: LF.loaf ? 'long-animation-frame' + (LF.task ? ', longtask' : '') : LF.task ? 'longtask' : 'none' };
+    var before = null, after = glPrograms();
+    LF.progs.forEach(function (p) { if (p.at <= from + 250) before = p.n; });
+    if (before != null && after != null) o.programs = { before: before, after: after };
+    var gl = glFacts();
+    if (gl) o.gl = gl;
+    return o;
+  }
+  function slowText(ms, rec) {
+    function longest(l) { var b = null; l.forEach(function (x) { if (!b || x.ms > b.ms) b = x; }); return b; }
+    var f = longest(rec.longFrames), t = longest(rec.longTasks), s;
+    if (f && f.ms >= 0.5 * ms) {
+      var other = Math.max(0, f.ms - f.scriptMs - f.renderMs), s0 = f.scripts[0];
+      s = 'slow frame ' + Format.secs(f.ms) + ' (script ' + Format.secs(f.scriptMs) + ', render ' + Format.secs(f.renderMs) + (other >= 0.15 * f.ms ? ', neither ' + Format.secs(other) : '') +
+        (s0 && s0.ms >= 0.5 * f.ms ? '; longest script ' + (s0.fn || s0.invoker || '?') + (s0.file ? ' in ' + s0.file : '') : '') + ')';
+    } else if (t && t.ms >= 0.5 * ms) s = 'slow frame ' + Format.secs(ms) + ' (one task of ' + Format.secs(t.ms) + ', no script named)';
+    else s = 'slow frame ' + Format.secs(ms) + ' (not in the page\'s scripts or rendering: the graphics card, the browser, or a wait)';
+    if (rec.programs && rec.programs.after > rec.programs.before) s += '; WebGL programs ' + rec.programs.before + ' to ' + rec.programs.after;
+    return s;
+  }
+  // every 250 ms: the gap since the last tick is how long the main thread was away (as the watchdog's heartbeat). A
+  // hidden window's timers are slowed, so its gaps are not counted.
+  function tick() {
+    var t = now(), gap = t - LF.lastTick, hidden = !!document.hidden, was = LF.hidden;
+    LF.lastTick = t; LF.hidden = hidden;
+    var n = glPrograms(), lastP = LF.progs[LF.progs.length - 1];
+    if (n != null && (!lastP || lastP.n !== n)) { LF.progs.push({ at: t, n: n }); if (LF.progs.length > 20) LF.progs.shift(); }
+    if (hidden || was || gap - 125 < SLOW_MS || gap > 600000) return;
+    var ms = gap - 125, from = t - gap + 60;
+    // the browser's entries for the frame arrive just after it: read them a moment later
+    setTimeout(function () {
+      var rec = pageRecord(from, from + ms), text = slowText(ms, rec);
+      LF.slow.push({ at: from, ms: ms, text: text });
+      if (LF.slow.length > 20) LF.slow.shift();
+      crumb(text);
+    }, 300);
+  }
+  setInterval(tick, 250);
 
   // ---------------------------------------------------------------- console and errors
   function argText(a) {
@@ -319,6 +683,8 @@
     if (App.importPath || App.importKind) s['imported from'] = 'a ' + (String(App.importPath || App.importKind).match(/\.(\w+)$/) || [, 'file'])[1].toLowerCase() + ' file';
     s.window = window.innerWidth + ' × ' + window.innerHeight + ' px, device pixel ratio ' + (window.devicePixelRatio || 1);
     s.GPU = gpuInfo();
+    var glf = glFacts();
+    if (glf) s.WebGL = glf;
     var pm = performance && performance.memory;
     if (pm) s['JS memory'] = Math.round(pm.usedJSHeapSize / 1048576) + ' MB used of ' + Math.round(pm.jsHeapSizeLimit / 1048576) + ' MB';
     if (navigator.deviceMemory) s['device memory'] = navigator.deviceMemory + ' GB';
@@ -366,11 +732,12 @@
   function newId(kind, t) { return Format.stamp(t) + '_' + kind; }
   function build(kind, extra) {
     extra = extra || {};
+    gSync();
     var t = now(), sec = secrets();
     function clean(s) { return s == null ? s : Format.scrub(s, sec); }
     var r = { format: 'anvil-problem-report', v: 1, kind: kind, at: t, version: version(), app: desk() ? 'Windows app' : 'browser',
       startedAgo: t - T0, durationMs: extra.durationMs != null ? extra.durationMs : null,
-      where: extra.where || { note: kind === 'not-responding' ? 'No call stack: in a browser the page cannot see where its own main thread was stuck (the Windows app takes one from its main process).' : 'No call stack needed: Anvil was running normally when this report was made' + (kind === 'error' ? '; the error\'s own stack is below.' : '.'), samples: [] },
+      where: extra.where || { note: kind === 'not-responding' ? 'No call stack: in a browser the page cannot see where its own main thread was stuck (the Windows app takes one from its main process). What the browser recorded about the frozen frame is below: how much of it was script, which script, how much rendering.' : 'No call stack needed: Anvil was running normally when this report was made' + (kind === 'error' ? '; the error\'s own stack is below.' : '.'), samples: [] },
       operation: extra.operation || operation(), progressLoaded: !!UI.progress,
       crumbs: crumbs.map(function (c) { return { at: c.at, text: clean(c.text), n: c.n || undefined }; }),
       console: consoleRing.map(function (c) { return { at: c.at, level: c.level, text: clean(c.text) }; }),
@@ -380,11 +747,19 @@
     if (extra.userText) r.userText = String(extra.userText).slice(0, 8000);
     if (extra.ongoing) r.ongoing = true;
     if (extra.lastCrumb) r.lastCrumb = clean(extra.lastCrumb);
+    // a freeze: what the page itself recorded over it (long frames, long tasks, WebGL), and the reading of it
+    if (kind === 'not-responding' && extra.startedAt != null) {
+      r.freezeStart = extra.startedAt;
+      r.page = cleanPage(pageRecord(extra.startedAt, extra.startedAt + (extra.durationMs || 0)), sec);
+      r.where.summary = Format.whereSummary(r);
+    }
     Object.keys(r.state).forEach(function (k) { if (typeof r.state[k] === 'string') r.state[k] = clean(r.state[k]); });
     r.summary = Format.summary(r);
     r.id = newId(kind, t);
     return r;
   }
+  // every string of a page record scrubbed (script names, invokers)
+  function cleanPage(rec, sec) { try { return JSON.parse(JSON.stringify(rec, function (k, v) { return typeof v === 'string' ? Format.scrub(v, sec) : v; })); } catch (e) { return null; } }
   function modelJson() { try { return JSON.stringify(App.model, null, 1); } catch (e) { return null; } }
   var made = [];   // this session's reports, newest last: { id, kind, at, summary, dir?, md }
   // builds and saves a report; resolves to { id, kind, summary, dir (desktop folder) | where: 'browser' }
@@ -507,13 +882,17 @@
     var ms = Math.max(0, m.ms);
     wd.freezes.push({ at: m.startedAt, ms: ms });
     var last = null;
-    for (var i = crumbs.length - 1; i >= 0; i--) if (crumbs[i].at <= m.startedAt + 50) { last = crumbs[i].text; break; }
+    for (var i = crumbs.length - 1; i >= 0; i--) if (crumbs[i].at <= m.startedAt + 50 && !/^slow frame /.test(crumbs[i].text)) { last = crumbs[i].text; break; }
     crumb('not responding for ' + Format.secs(ms));
-    make('not-responding', { durationMs: ms, lastCrumb: last, operation: m.operation || operation(), screenshot: false }).then(function (info) {
-      wd.freezes[wd.freezes.length - 1].report = info;
-      if (m.session && wd.worker) wd.worker.postMessage({ type: 'reported', at: m.startedAt });
-      offer(info);
-    }, function () { });
+    var fz = wd.freezes[wd.freezes.length - 1];
+    // the browser's long-frame entries for the frozen frame arrive just after it: the report is made a moment later
+    setTimeout(function () {
+      make('not-responding', { durationMs: ms, startedAt: m.startedAt, lastCrumb: last, operation: m.operation || operation(), screenshot: false }).then(function (info) {
+        fz.report = info;
+        if (m.session && wd.worker) wd.worker.postMessage({ type: 'reported', at: m.startedAt });
+        offer(info);
+      }, function () { });
+    }, 350);
   }
   function checkLastSession() {
     var bye = [];
@@ -715,7 +1094,9 @@
       if (!m) return;
       var info = { id: m.id, kind: m.kind, dir: m.dir, durationMs: m.durationMs, operation: m.operation || [], summary: m.summary, previous: !!m.previous, where: 'folder' };
       made.push(info);
-      var fill = !m.previous && d.complete ? Promise.resolve(d.complete(m.dir, { state: safe(snapshot, {}), console: consoleRing.slice(), crumbs: crumbs.slice(), secrets: secrets() })) : Promise.resolve();
+      gSync();
+      var page = m.kind === 'not-responding' && m.startedAt != null ? safe(function () { return pageRecord(m.startedAt, m.startedAt + (m.durationMs || 0)); }, null) : null;
+      var fill = !m.previous && d.complete ? Promise.resolve(d.complete(m.dir, { state: safe(snapshot, {}), console: consoleRing.slice(), crumbs: crumbs.map(function (c) { return { at: c.at, text: c.text, n: c.n }; }), secrets: secrets(), page: page })) : Promise.resolve();
       fill.then(function () { }, function () { }).then(function () { crumb('report saved: ' + m.kind); if (m.quiet) offerQuiet(info); else offer(info); });
     });
     flush();
@@ -800,6 +1181,10 @@
     crumbs: function () { return crumbs.slice(); }, consoleLog: function () { return consoleRing.slice(); }, made: function () { return made.slice(); },
     freezes: function () { return wd.freezes.slice(); }, watchdog: function () { return { running: !!wd.worker, session: wd.session, db: DB_NAME }; },
     secrets: secrets, format: Format, forClaude: forClaude, testBars: false, lastCopied: null, current: null,
+    pageRecord: pageRecord, longFrames: function () { return { frames: LF.frames.slice(), tasks: LF.tasks.slice(), slow: LF.slow.slice(), support: { loaf: LF.loaf, longtask: LF.task } }; },
+    // a deliberate busy loop of Anvil's own (tests: desktop/check.js reports, smoke rfNZ): a stack sample taken meanwhile
+    // names this function and this file
+    _block: function rpTestBlock(ms) { var t = now(), n = 0; while (now() - t < ms) n++; return n; },
     _onError: onError, _resetErrors: function () { errorSeen = {}; }, _checkLastSession: checkLastSession, _stopWatchdog: stopWatchdog, _startWatchdog: startWatchdog
   };
   UI.reports = api;

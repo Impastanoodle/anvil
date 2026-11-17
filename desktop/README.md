@@ -122,6 +122,22 @@ Privacy: file names, paths, part and document names, custom properties, note tex
 into `report.md` / `report.json` (kinds, sizes and counts instead; the open document's names show as `<name>`). The
 model goes in only by your choice.
 
+How to read a not-responding report (0.1.30 on):
+
+- *Where it was stuck* opens with the verdict. **JavaScript was running**: every pause Anvil asked of the window was
+  answered at once, and the stack (function, file, line, column; the source line of the top frame) is where it was
+  looping. **Outside JavaScript**: a pause was answered seconds late, so the main thread was painting, waiting for the
+  graphics card, doing layout, collecting garbage or inside a synchronous call. Then the stack is either the JavaScript
+  that made the call (it "had just come back from a call that left JavaScript") or only "the first JavaScript that ran
+  afterwards", which is not where Anvil was stuck.
+- The process table says who was working (percent of one processor thread): a busy GPU process = a shader compile or a
+  heavy draw; a busy window process with no JavaScript = layout, painting, garbage collection; nothing busy = waiting.
+- *What the page itself recorded*: the browser's own long-frame record of the freeze (script time and which script,
+  rendering, style and layout), WebGL context lost / restored, and the number of compiled WebGL programs before and after.
+- Breadcrumbs starting `graphics area:` and `key:` are what the hand did: one line per drag, wheel turn, click, hover or
+  key press, with no positions and no letters typed (the newest 30 are kept). `slow frame 2.4 s (script 0.1 s, render
+  2.3 s)` marks a hitch of a second or more that was too short for a report.
+
 For whoever fixes it (Claude): start from *Where it was stuck* and the last breadcrumbs. To reproduce, run Anvil from the
 repository (`npm start` here, or `anvil\serve.ps1`), open `model.anvil.json` if it is there (File ▸ Open, or
 `anvil.load(json)` from the console), and replay the breadcrumbs. How it works: `anvil/ui-reports.js` (the page: crumbs,
