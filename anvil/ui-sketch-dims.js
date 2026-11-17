@@ -1062,7 +1062,13 @@
     if (!it) return null;
     var lines = it.lines.slice();
     if (L.zero && set.members[0] === i) lines = lines.concat(L.zero.lines);
-    return { lines: lines, arrows: [], label: it.label, text: it.text, laid: true };
+    var out = { lines: lines, arrows: [], label: it.label, text: it.text, laid: true };
+    // rfOH: a value with no room where it stands (on another dimension's line or text, zoomed out) may step on out
+    // along its own leader (ui-sketch.js placeLabel, al.ord); display only, the set's text line stays where it is
+    var lst = it.lines[it.lines.length - 1], P = lst[0], dx = it.F[0] - P[0], dy = it.F[1] - P[1], dl = Math.hypot(dx, dy);
+    var cy = it.text.y - (UI.DIM_CAP || 9.4) / 2;
+    if (dl > 1e-6 && (it.text.x - it.F[0]) * dx + (cy - it.F[1]) * dy > 0) out.along = { u: [dx / dl, dy / dl], half: Infinity, ord: true, F: it.F };
+    return out;
   }
   // a value dragged: the whole set's text line goes where it is dropped (nothing else of the dimension moves)
   function ordPlacement(f, rel, uv) {

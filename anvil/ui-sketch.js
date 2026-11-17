@@ -2752,7 +2752,7 @@
     if (!snapName && info.dir && info.dir.glyph) snapName = DIR_LABEL[info.dir.glyph] || null;
     if (snapName) cursorLabel(layer, mx, my, snapName, !!(info.snap && info.snap.model));
     if (readout) {
-      var t = svg('text', { x: mx + 14, y: my - 10, style: 'fill:#e8e8e8;font-size:11px;pointer-events:none' }, layer);   // rfBR: light grey on the dark ground
+      var t = svg('text', { x: mx + 14, y: my - 10, 'class': 'sk-readout', style: 'fill:var(--dim-text, #e8e8e8);font-size:11px;pointer-events:none' }, layer);   // rfBR: light grey on the dark ground; rfOH: the dimension text colour of the ground in use (light grey on the SolidWorks light ground was white on white)
       t.textContent = readout;
     }
   }
@@ -2913,6 +2913,10 @@
     });
     // r14/sketchui14: the dimension line, its arrows and where the label goes are settled by dimLayout once the
     // label's width is known (ANSI: horizontal text in a break of the line; arrows and text outside when short)
+    // rfOH: a dimension line within half a pixel of square to the screen (two sketch lines a hair off parallel, solver
+    // rounding) is drawn square, so it and its arrows sit on one pixel column / row (crisp) instead of a 2 px smear
+    if (Math.abs(sB[0] - sA[0]) < 0.5 && Math.abs(sB[1] - sA[1]) > 1) sA = [sA[0], sA[1]], sB = [sA[0], sB[1]];
+    else if (Math.abs(sB[1] - sA[1]) < 0.5 && Math.abs(sB[0] - sA[0]) > 1) sA = [sA[0], sA[1]], sB = [sB[0], sA[1]];
     var u = unit(sA, sB), L = Math.hypot(sB[0] - sA[0], sB[1] - sA[1]);
     out.lin = { a: sA, b: sB, u: u, L: L };
     out.text = { x: (sA[0] + sB[0]) / 2, y: (sA[1] + sB[1]) / 2, anchor: 'middle' };
@@ -2986,12 +2990,15 @@
     var dpr = window.devicePixelRatio || 1, dw = Math.max(1, Math.round(dpr)), o = (dw % 2) * 0.5;
     return (Math.floor(v * dpr - o + 0.5) + o) / dpr;
   }
+  var SQUARE_SLOPE = 2e-4;
   function linesPath(lines) {
     var d = '';
     for (var i = 0; i < lines.length; i++) {
       var l = lines[i], x0 = l[0][0], y0 = l[0][1], x1 = l[1][0], y1 = l[1][1];
-      if (Math.abs(y1 - y0) < 0.01 && Math.abs(x1 - x0) > 0.5) { y0 = y1 = pxSnap(y0); }
-      else if (Math.abs(x1 - x0) < 0.01 && Math.abs(y1 - y0) > 0.5) { x0 = x1 = pxSnap(x0); }
+      // rfOH: square by its slope (SQUARE_SLOPE, as the arrows on it), so every piece of a line broken by its label
+      // decides alike (a 0.01 px rule snapped the short piece of a slightly slanted line and not its arrow)
+      if (Math.abs(y1 - y0) <= SQUARE_SLOPE * Math.abs(x1 - x0) && Math.abs(x1 - x0) > 0.5) { y0 = y1 = pxSnap(y0); }
+      else if (Math.abs(x1 - x0) <= SQUARE_SLOPE * Math.abs(y1 - y0) && Math.abs(y1 - y0) > 0.5) { x0 = x1 = pxSnap(x0); }
       d += 'M' + r2(x0) + ' ' + r2(y0) + 'L' + r2(x1) + ' ' + r2(y1);
     }
     return d || 'M0 0';
@@ -3000,6 +3007,9 @@
     var d = '';
     for (var i = 0; i < arrows.length; i++) {
       var a = arrows[i], ax = a.dir[0] * ARROW_L, ay = a.dir[1] * ARROW_L, px = -a.dir[1] * ARROW_HW, py = a.dir[0] * ARROW_HW;
+      // rfOH: an arrow along a square-to-screen line sits on the same device-pixel centre as its line (linesPath)
+      if (Math.abs(a.dir[1]) <= SQUARE_SLOPE) a = { tip: [a.tip[0], pxSnap(a.tip[1])], dir: a.dir };
+      else if (Math.abs(a.dir[0]) <= SQUARE_SLOPE) a = { tip: [pxSnap(a.tip[0]), a.tip[1]], dir: a.dir };
       d += 'M' + r2(a.tip[0]) + ' ' + r2(a.tip[1]) + 'L' + r2(a.tip[0] - ax + px) + ' ' + r2(a.tip[1] - ay + py) + 'L' + r2(a.tip[0] - ax - px) + ' ' + r2(a.tip[1] - ay - py) + 'Z';
     }
     return d || 'M0 0';
@@ -3029,6 +3039,7 @@
   };
   UI.dimTextWidth = dimTextWidth;
   UI.DIM_CAP = DIM_CAP;
+  UI.DIM_ARROW_L = ARROW_L;   // rfOH: angle dimensions (ui-relations.js) flip their arrows outside by the same rule
   UI.linearDimScreen = linearDimScreen;
 
   // Screen-space drawing data for one dimension: lines, arrow heads, and the label with its anchor point.
@@ -3074,7 +3085,7 @@
   // p9-sketch: and clear of the other dimensions' lines (a label sitting on a neighbour's extension or dimension line,
   // QUEUE Round-14). drawDims collects every dimension's lines as it draws (dimSegsNow, with the owner's key) and,
   // when a label landed on another dimension's line, draws once more with those lines as obstacles (dimSegs).
-  var dimSegs = null, dimSegsNow = [], drawnLabels = [], prevLabels = null;   // prevLabels: the labels of the previous layout pass
+  var dimSegs = null, dimSegsNow = [], drawnLabels = [], prevLabels = null, drawnOwners = {};   // prevLabels: the labels of the previous layout pass
   function segHitsBox(p, q, b) {
     var dx = q[0] - p[0], dy = q[1] - p[1], t0 = 0, t1 = 1;
     var P4 = [-dx, dx, -dy, dy], Q4 = [p[0] - b[0], b[2] - p[0], p[1] - b[1], b[3] - p[1]];
@@ -3103,7 +3114,9 @@
   function boxFree(b, owner, geo) {
     for (var i = 0; i < labelBoxes.length; i++) { var o = labelBoxes[i]; if (b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]) return false; }
     if (owner != null && dimSegs && onOtherLines(b, owner, dimSegs)) return false;
-    if (geo && geoSegs && onGeometry(b)) return false;
+    // rfOH: and off the labels of the previous pass that are drawn after this one (their boxes are not taken yet)
+    if (owner != null && prevLabels) for (var j = 0; j < prevLabels.length; j++) { var p = prevLabels[j]; if (p.owner !== owner && !(p.owner in drawnOwners) && boxesMeet(b, p.box)) return false; }
+    if (geo && geoSegs && onGeometry(b, geo === 'dots')) return false;
     return true;
   }
   // the active sketch's curves on screen as segments (with their boxes, for a quick reject), made once per drawDims
@@ -3125,11 +3138,24 @@
         }
       });
     });
+    // rfOH: and the point dots as drawn (their square: a label stepping clear of the geometry steps off them too; a
+    // value printed over the centerline's end dot)
+    if (UI.groups && UI.groups.sketches) UI.groups.sketches.children.forEach(function (o) {
+      if (!o.userData || !o.userData.sketchPoints || !o.visible || !o.material) return;
+      var at = o.geometry.getAttribute('position'), h = o.material.size / 2;
+      for (var k = 0; k < at.count; k++) {
+        var c = UI.worldToScreen([at.getX(k), at.getY(k), at.getZ(k)]);
+        if (!c || c[0] < -50 || c[1] < -50 || c[0] > W + 50 || c[1] > H + 50) continue;
+        var q = [[c[0] - h, c[1] - h], [c[0] + h, c[1] - h], [c[0] + h, c[1] + h], [c[0] - h, c[1] + h]];
+        for (var j = 0; j < 4; j++) { var p0 = q[j], p1 = q[(j + 1) % 4]; out.push({ a: p0, b: p1, dot: true, box: [Math.min(p0[0], p1[0]), Math.min(p0[1], p1[1]), Math.max(p0[0], p1[0]), Math.max(p0[1], p1[1])] }); }
+      }
+    });
     return out;
   }
-  function onGeometry(b) {
+  function onGeometry(b, dotsOnly) {
     for (var i = 0; i < geoSegs.length; i++) {
       var g = geoSegs[i], q = g.box;
+      if (dotsOnly && !g.dot) continue;
       if (q[2] < b[0] || q[0] > b[2] || q[3] < b[1] || q[1] > b[3]) continue;
       if (segHitsBox(g.a, g.b, b)) return true;
     }
@@ -3367,14 +3393,17 @@
     var own = it.temp ? null : dimKey(it);
     var al = sc.along, s0 = al && al.shift || 0, b = labelBox(sc, al ? al.u[0] * s0 : 0, al ? al.u[1] * s0 : 0), best = s0;
     if (al && !it.temp && !boxFree(b, own, true)) {
-      var w = b[2] - b[0], step = al.radial ? 14 : Math.abs(al.u[0]) * w + Math.abs(al.u[1]) * (b[3] - b[1]) + 4, tries = al.radial ? [1, 2, 3, 4, 5] : [1, -1, 2, -2, 3, -3, 4, -4];
+      var w = b[2] - b[0], step = al.radial ? 14 : Math.abs(al.u[0]) * w + Math.abs(al.u[1]) * (b[3] - b[1]) + 4, tries = al.radial ? [1, 2, 3, 4, 5] : al.ord ? [1, 2, 3, 4] : [1, -1, 2, -2, 3, -3, 4, -4];   // rfOH: an ordinate value only steps out along its leader
       // p9-sketchfix: first a place clear of the sketch's curves too; failing that, clear of the labels and lines only
       // (where it is, if it is), as before
-      for (var pass = 0; pass < 2; pass++) {
-        var geo = pass === 0, found = false;
-        if (!geo && boxFree(b, own, false)) break;
-        for (var k = 0; k < tries.length; k++) {
-          var t = s0 + tries[k] * step, bb = labelBox(sc, al.u[0] * t, al.u[1] * t);
+      // rfOH: between the two, a place clear of the labels and the point dots (a value printed on an end point where the
+      // dimension line runs close beside its line, zoomed out)
+      for (var pass = 0; pass < 3; pass++) {
+        var geo = pass === 0 ? true : pass === 1 ? 'dots' : false, found = false;
+        if (geo === 'dots' ? boxFree(b, own, 'dots') : !geo && boxFree(b, own, false)) break;
+        var tr = geo === 'dots' ? tries.concat(tries.map(function (x) { return x + (x < 0 ? -4 : 4); })) : tries;   // rfOH: further off a dot
+        for (var k = 0; k < tr.length; k++) {
+          var t = s0 + tr[k] * step, bb = labelBox(sc, al.u[0] * t, al.u[1] * t);
           if (boxFree(bb, own, geo)) { best = t; b = bb; found = true; break; }
         }
         if (found) break;
@@ -3384,6 +3413,7 @@
       sc.text = { x: sc.text.x + al.u[0] * best, y: sc.text.y + al.u[1] * best, anchor: sc.text.anchor };
       // the dimension line runs on to a label moved past its end (into the label's break: drawOne cuts it there)
       var reach = Math.abs(best);
+      if (al.ord) sc.lines.push([al.F, [al.F[0] + al.u[0] * best, al.F[1] + al.u[1] * best]]);   // rfOH: its leader runs on to it
       if (!al.radial && reach > al.half) {
         var line = sc.lines[sc.lines.length - 1], c = [(line[0][0] + line[1][0]) / 2, (line[0][1] + line[1][1]) / 2], sg = best < 0 ? -1 : 1;
         sc.lines.push([[c[0] + al.u[0] * sg * al.half, c[1] + al.u[1] * sg * al.half], [c[0] + al.u[0] * sg * reach, c[1] + al.u[1] * sg * reach]]);
@@ -3398,6 +3428,7 @@
     if (!it.temp) {
       labelBoxes.push(b);
       drawnLabels.push({ box: b, owner: own, label: sc.label });
+      drawnOwners[own] = true;
       sc.lines.forEach(function (l) { dimSegsNow.push({ a: l[0], b: l[1], owner: own }); });
     }
   }
@@ -3561,10 +3592,11 @@
     function layout(turn) {
       radialTurnOn = turn; radialTurned = false; dimSegs = null; prevLabels = null;
       for (var pass = 0; pass < (busy ? 1 : 3); pass++) {
-        labelBoxes = []; drawnLabels = []; dimSegsNow = [];
+        labelBoxes = []; drawnLabels = []; dimSegsNow = []; drawnOwners = {};
         rcBegin(dimLayer, dimLayer.firstChild);
         try { out = drawDimsIn(f); } finally { rcEnd(); }
-        if (pass === 2 || !drawnLabels.some(function (x) { return onOtherLines(x.box, x.owner, dimSegsNow); })) break;
+        // rfOH: or a label landed on a label drawn after it (an ordinate value on a linear dimension's text)
+        if (pass === 2 || !drawnLabels.some(function (x, i) { return onOtherLines(x.box, x.owner, dimSegsNow) || drawnLabels.some(function (y, j) { return j > i && boxesMeet(x.box, y.box); }); })) break;
         dimSegs = dimSegs ? dimSegs.concat(dimSegsNow) : dimSegsNow;
         prevLabels = drawnLabels.slice();
       }

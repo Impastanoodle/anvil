@@ -3188,7 +3188,7 @@ var UI = (function () {
   // shown (SolidWorks has none there). User 2026-10-14: prominent against the white wireframe, so a 10 px bead with a
   // near-black ring (the ring stays dark: the material colour multiplies only the light centre)
   var ptTexture = null, ptMats = {}, PT_GREEN = new THREE.Color(0x2ee66b);
-  function sketchPointMat(m) {
+  function sketchPointMat(m, size) {
     if (!ptTexture) {
       var cv = document.createElement('canvas'); cv.width = cv.height = 32;
       var cx = cv.getContext('2d');
@@ -3196,9 +3196,9 @@ var UI = (function () {
       cx.fillStyle = '#fff'; cx.beginPath(); cx.arc(16, 16, 9.5, 0, Math.PI * 2); cx.fill();
       ptTexture = new THREE.CanvasTexture(cv);
     }
-    var pm = ptMats[m.uuid];
+    var pk = size == null ? m.uuid : m.uuid + '/r' + size, pm = ptMats[pk];   // rfOH: size = the capping radius key (own material: its size follows the zoom)
     // (rfIB: in the transparent pass, after the shaded regions (renderOrder 9) and the lines (10.5), as the lines)
-    if (!pm) pm = ptMats[m.uuid] = new THREE.PointsMaterial({ size: 10, sizeAttenuation: false, map: ptTexture, alphaTest: 0.5, transparent: true, depthTest: false });
+    if (!pm) pm = ptMats[pk] = new THREE.PointsMaterial({ size: PT_SIZE, sizeAttenuation: false, map: ptTexture, alphaTest: 0.5, transparent: true, depthTest: false });
     // the same Color as the line (a state colour — over-defined red, selected yellow — shows on its dots too), except
     // plain white geometry, whose dots are green so they stand out on the white wireframe
     var mh = m.color.getHex();
@@ -3218,23 +3218,55 @@ var UI = (function () {
       if (App.view.showEndpoints === false && !/\.c$/.test(pr.ref)) return;   // View ▸ Display ▸ Show Endpoints off: centres only (ui-panels.js)
       if (App.view.showArcCenters === false && isArcCenterRef(e, pr.ref)) return;   // lane arccenters: View ▸ Display ▸ Arc Center Points off
       var key = Math.round(pr.pt[0] / cam.scale / 2) + ',' + Math.round(pr.pt[1] / cam.scale / 2);
-      var b = ptsBy[mat.uuid] || (ptsBy[mat.uuid] = { mat: mat, pts: [] });
-      if (ptsBy._seen && ptsBy._seen[key]) return;
-      (ptsBy._seen = ptsBy._seen || {})[key] = true;
-      b.pts.push(pr.pt);
+      var b = ptsBy[mat.uuid] || (ptsBy[mat.uuid] = { mat: mat, pts: [], cr: [] });
+      var cr = dotCapRadius(e), seen = ptsBy._seen && ptsBy._seen[key];
+      if (seen) { var c0 = seen.b.cr[seen.i]; if (cr != null && (c0 == null || cr < c0)) seen.b.cr[seen.i] = cr; return; }   // rfOH: the smallest curve at a shared point sets its dot
+      (ptsBy._seen = ptsBy._seen || {})[key] = { b: b, i: b.pts.length };
+      b.pts.push(pr.pt); b.cr.push(cr);
     });
+  }
+  // rfOH: a dot never covers more than a third of the screen diameter of the circle, arc, slot end or ellipse it belongs
+  // to (a Ø.281 hole zoomed out was a green disc: the 10 px bead swallowed its 8 px circle); under PT_MIN px it is not
+  // drawn at all. Lines and points keep the full PT_SIZE. The size follows the zoom every frame (syncDotSizes): the dots
+  // of one curve radius share a Points object that keeps that radius (userData.capR).
+  var PT_SIZE = 10, PT_MIN = 3;
+  function dotCapRadius(e) {
+    var r = e.t === 'circle' || e.t === 'arc' ? e.r : e.t === 'slot' || e.t === 'aslot' ? e.w / 2 : e.t === 'ellipse' || e.t === 'pellipse' ? Math.min(e.rx, e.ry) : null;
+    return r > 0 ? r : null;
+  }
+  function dotSizeFor(cr) { return cr == null ? PT_SIZE : Math.min(PT_SIZE, Math.floor(2 * cr / cam.scale / 3)); }
+  function pointDotCap(e) { return dotSizeFor(dotCapRadius(e)); }
+  function syncDotSizes() {
+    var ch = groups.sketches.children;
+    for (var i = 0; i < ch.length; i++) {
+      var o = ch[i], u = o.userData;
+      if (!u || !u.sketchPoints || u.capR == null) continue;
+      var sz = dotSizeFor(u.capR);
+      if (o.material.size !== sz) o.material.size = sz;
+      var on = sz >= PT_MIN;
+      if (o.visible !== on) o.visible = on;
+    }
   }
   function addSketchPoints(pl, ptsBy) {
     Object.keys(ptsBy).forEach(function (k) {
       if (k === '_seen') return;
-      var b = ptsBy[k], pos = [];
-      b.pts.forEach(function (p) { var q = K.to3D(pl, p[0], p[1]); pos.push(q[0], q[1], q[2]); });
-      var g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-      var pts = new THREE.Points(g, sketchPointMat(b.mat));
-      pts.renderOrder = 11;
-      pts.userData = { sketchPoints: true };
-      groups.sketches.add(pts);
+      var b = ptsBy[k], byR = {};
+      // rfOH: one Points object per capping curve radius ('-': none, the full PT_SIZE), sized by syncDotSizes
+      b.pts.forEach(function (p, i) {
+        var cr = b.cr ? b.cr[i] : null, key = cr == null ? '-' : String(cr);
+        var q = K.to3D(pl, p[0], p[1]);
+        (byR[key] || (byR[key] = [])).push(q[0], q[1], q[2]);
+      });
+      Object.keys(byR).forEach(function (key) {
+        var g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(byR[key], 3));
+        var cr = key === '-' ? null : +key;
+        var pts = new THREE.Points(g, sketchPointMat(b.mat, cr == null ? null : key));
+        pts.renderOrder = 11;
+        pts.userData = { sketchPoints: true, capR: cr };
+        groups.sketches.add(pts);
+      });
+      syncDotSizes();
     });
   }
   // r15/truecircles: sketch circles, arcs and slots are tessellated for the screen — a chord sagitta of about
@@ -3246,7 +3278,9 @@ var UI = (function () {
   var SCREEN_SAG_PX = 0.15, sketchSegsScale = 0;
   function screenPolylines(e) {
     if (e.t === 'line' && e.infinite && UI.infiniteLinePts) return [{ pts: UI.infiniteLinePts(e), closed: false }];   // sketch-refine: across the view at any zoom
-    if (e.t !== 'circle' && e.t !== 'arc' && e.t !== 'slot' && e.t !== 'aslot') return K.entityPolylines(e);
+    // rfOH: splines and ellipses too (their spans were cut by the model's chord tolerance: 0.002 in, chords several pixels
+    // deep zoomed in on a spline)
+    if (e.t !== 'circle' && e.t !== 'arc' && e.t !== 'slot' && e.t !== 'aslot' && e.t !== 'spline' && e.t !== 'ellipse' && e.t !== 'pellipse') return K.entityPolylines(e);
     var saved = K.setTessellation({});
     try { K.setTessellation({ chordTol: Math.max(1e-9, SCREEN_SAG_PX * cam.scale), minSegs: 32, maxSegs: 2048 }); return K.entityPolylines(e); }
     finally { K.setTessellation(saved); }
@@ -3409,6 +3443,7 @@ var UI = (function () {
   function updateGrid() {
     if (App.gridStale) refineCurves();   // rfFE: true curve edges at screen resolution
     if (App.gridStale && sketchSegsScale > 0 && groups.sketches.children.length && Math.abs(Math.log(cam.scale / sketchSegsScale)) > Math.log(1.3) && !App.sketchDragging) updateSketches();
+    syncDotSizes();   // rfOH: dots capped by their curve follow the zoom
     if (!App.gridStale) return;
     App.gridStale = false;
     disposeGroup(groups.grid);
@@ -5120,7 +5155,7 @@ var UI = (function () {
     applyCamera: applyCamera, resize: resize, rotateView: rotateView, panView: panView, zoomView: zoomView, zoomToFit: zoomToFit,
     setView: setView, viewNormalTo: viewNormalTo, previousView: previousView, pushViewHistory: pushViewHistory, VIEWS: VIEWS, modelBounds: modelBounds,
     updateBodyMesh: updateBodyMesh, applyDisplayStyle: applyDisplayStyle, partColor: partColor, updateHighlights: updateHighlights, updatePlanes: updatePlanes,
-    updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: screenPolylines, sketchSceneVersion: function () { return sceneVer; }, scaleBar: scaleBarInfo, updateTemp: updateTemp, disposeGroup: disposeGroup,
+    updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: screenPolylines, sketchDotCap: pointDotCap, sketchSceneVersion: function () { return sceneVer; }, scaleBar: scaleBarInfo, updateTemp: updateTemp, disposeGroup: disposeGroup,
     sketchOverlayHooks: sketchOverlayHooks, tempEntityHooks: tempEntityHooks, sketchOverlayObjects: sketchOverlayObjects, tempEntitiesShown: tempEntitiesShown,   // sketch-hooks
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep, gridMinors: gridMinors,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickRefGeo: pickRefGeo, updateRefGeo: updateRefGeo, drawRefGeo: drawRefGeo, pickEntity: pickEntity, pickEntityDist: pickEntityDist, pickEdge: pickEdge,

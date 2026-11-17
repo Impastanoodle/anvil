@@ -624,8 +624,22 @@
       return p;
     }
     var pts = arcLines(ar.a1, ar.sweep), N = pts.length - 1;
-    out.arrows.push({ tip: pts[0], dir: unit(pts[1], pts[0]) }, { tip: pts[N], dir: unit(pts[N - 1], pts[N]) });
-    var da = (rel.ta || 0) * Math.PI / 180, half = Math.abs(ar.sweep) / 2, aL = ar.mid + da;
+    // rfOH: arrowheads tangent to the arc at its ends (not along the end chord); when the arc is too short for the two
+    // arrows (and the text, unless it was dragged off the arc) they flip outside on short runs of the arc, and the
+    // text goes past the far arrow, as linear dimensions do (dimLayout): the arrows no longer cover the digits
+    var sgS = ar.sweep < 0 ? -1 : 1, aE = ar.a1 + ar.sweep, tiny = 1e-3 * sgS;
+    var tan0 = unit(at(ar.a1 + tiny, R), pts[0]), tanN = unit(at(aE - tiny, R), pts[N]);
+    var da = (rel.ta || 0) * Math.PI / 180, half = Math.abs(ar.sweep) / 2;
+    var AL = UI.DIM_ARROW_L || 10, arcPx = Math.abs(ar.sweep) * R / s, tw = UI.dimTextWidth ? UI.dimTextWidth(label) : 7 * label.length;
+    var textOn = Math.abs(da) <= half, cramped = arcPx < (textOn ? tw + 6 : 0) + 2 * AL + 4;
+    if (cramped) {
+      var xo = (AL + 6) * s / Math.max(R, 1e-9);
+      arcLines(ar.a1, -sgS * xo);
+      arcLines(aE, sgS * xo);
+      out.arrows.push({ tip: pts[0], dir: [-tan0[0], -tan0[1]] }, { tip: pts[N], dir: [-tanN[0], -tanN[1]] });
+      if (rel.ta == null) da = sgS * Math.min(half + Math.PI / 2, half + (AL + 6 + tw / 2 + 5) * s / Math.max(R, 1e-9));
+    } else out.arrows.push({ tip: pts[0], dir: tan0 }, { tip: pts[N], dir: tanN });
+    var aL = ar.mid + da;
     if (Math.abs(da) > half) {
       var sg = da < 0 ? -1 : 1, past = Math.min(0.5, 6 * s / Math.max(R, 1e-9));
       arcLines(ar.mid + sg * half, sg * (Math.abs(da) - half + past));
