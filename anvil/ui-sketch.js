@@ -3438,6 +3438,15 @@
     clipBegin(f, UI.activePlane());
     try { return clearOfGeometry(lines); } finally { clipState = keep; }
   };
+  // (head, local-2026-11-17b) a label stepping along its line must not stop on one of its own arrowheads (GitHub runner,
+  // Mastercam profile: the driven (2.571) stepped off a dot onto its own arrow): the arrowhead's box, 1.5 px round
+  function onOwnArrows(sc, b) {
+    for (var i = 0; i < (sc.arrows || []).length; i++) {
+      var t = sc.arrows[i].tip, d = sc.arrows[i].dir, bx = t[0] - d[0] * ARROW_L, by = t[1] - d[1] * ARROW_L, hx = Math.abs(d[1]) * ARROW_HW + 1.5, hy = Math.abs(d[0]) * ARROW_HW + 1.5;
+      if (boxesMeet(b, [Math.min(t[0], bx) - hx, Math.min(t[1], by) - hy, Math.max(t[0], bx) + hx, Math.max(t[1], by) + hy])) return true;
+    }
+    return false;
+  }
   function placeLabel(sc, it) {
     if (!sc.text) return;
     var own = it.temp ? null : dimKey(it);
@@ -3454,7 +3463,7 @@
         var tr = geo === 'dots' ? tries.concat(tries.map(function (x) { return x + (x < 0 ? -4 : 4); })) : tries;   // rfOH: further off a dot
         for (var k = 0; k < tr.length; k++) {
           var t = s0 + tr[k] * step, bb = labelBox(sc, al.u[0] * t, al.u[1] * t);
-          if (boxFree(bb, own, geo)) { best = t; b = bb; found = true; break; }
+          if (!onOwnArrows(sc, bb) && boxFree(bb, own, geo)) { best = t; b = bb; found = true; break; }
         }
         if (found) break;
       }
