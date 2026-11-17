@@ -2328,20 +2328,23 @@
     if (UI.rebuildMarkRoot) UI.rebuildMarkRoot(root);   // r12/occtui12: badge, right-click ▸ What's Wrong?
     root.addEventListener('dblclick', function () { renameInline(root, m.name, function (n) { m.name = n; UI.rebuild(); }); });
     tree.appendChild(root);
-    [['folder', 'History'], ['sensor', 'Sensors'], ['annotations', 'Annotations']].forEach(function (s) { tree.appendChild(treeItem({ icon: s[0], name: s[1], depth: 1, cls: 'dim' })); });
+    // rfNR2: with a filter, the fixed rows show only when their name matches (SolidWorks)
+    function fixedHit(name) { return !filter || String(name).toLowerCase().indexOf(filter) >= 0; }
+    [['folder', 'History'], ['sensor', 'Sensors'], ['annotations', 'Annotations']].forEach(function (s) { if (fixedHit(s[1])) tree.appendChild(treeItem({ icon: s[0], name: s[1], depth: 1, cls: 'dim' })); });
     appendEquationsFolder(tree, filter);
     if (m.sheet && !filter) appendCutListFolder(tree);   // lane flatopts-2
     appendBodiesFolder(tree, filter);
     // Material row (ui-materials.js: name, Edit Material on double-click, favourites on right-click)
-    tree.appendChild(UI.materialTreeRow ? UI.materialTreeRow(treeItem) : treeItem({ icon: 'material', name: (m.materialName || 'Material <not specified>') + '  ·  ' + m.density + ' kg/m³', depth: 1, cls: 'dim' }));
-    ['Front', 'Top', 'Right'].forEach(function (r) {
+    var matRow = UI.materialTreeRow ? UI.materialTreeRow(treeItem) : treeItem({ icon: 'material', name: (m.materialName || 'Material <not specified>') + '  ·  ' + m.density + ' kg/m³', depth: 1, cls: 'dim' });
+    if (fixedHit(matRow.textContent)) tree.appendChild(matRow);
+    ['Front', 'Top', 'Right'].filter(function (r) { return fixedHit(r + ' Plane'); }).forEach(function (r) {
       var row = treeItem({ icon: 'planeSmall', name: r + ' Plane', depth: 1, cls: App.sel && App.sel.kind === 'plane' && App.sel.ref === r ? 'selected' : '' });
       row.addEventListener('click', function () { App.sel = { kind: 'plane', ref: r, plane: K.makePlane(r, 0), name: r + ' Plane' }; App.sel2 = null; UI.updatePlanes(); UI.updateHighlights(); refreshTree(); });
       row.addEventListener('dblclick', function () { UI.newSketchOnPlane(r); });
       row.addEventListener('contextmenu', function (e) { e.preventDefault(); showMenu(e.clientX, e.clientY, [{ label: 'Sketch on ' + r + ' Plane', action: function () { UI.newSketchOnPlane(r); } }, { label: 'Normal To', action: function () { UI.viewNormalTo(K.makePlane(r, 0)); } }, { label: (App.view.showPlanes ? 'Hide' : 'Show') + ' planes', action: function () { App.view.showPlanes = !App.view.showPlanes; UI.updatePlanes(); } }]); });
       tree.appendChild(row);
     });
-    tree.appendChild(treeItem({ icon: 'origin', name: 'Origin', depth: 1, cls: 'dim' }));
+    if (fixedHit('Origin')) tree.appendChild(treeItem({ icon: 'origin', name: 'Origin', depth: 1, cls: 'dim' }));
 
     function childSketchIds(f) {
       var ids = [];
@@ -2357,18 +2360,42 @@
     m.features.forEach(function (f) { var low = UI.rollbarRolled(f); childSketchIds(f).forEach(function (id) { if (consumedBy[id] == null && !(low && !UI.rollbarRolled(K.findFeature(m, id)))) consumedBy[id] = f.id; }); });
     var smBase = m.sheet ? m.features.filter(function (f) { return f.sheetBase; })[0] || null : null;   // lane DC: Sheet-Metal row above it
     if (m.sheet && !smBase && !filter) tree.appendChild(sheetMetalRow());
+    // rfNR2: the filter keeps a feature whose name or an absorbed sketch's name matches (the sketch shown under it);
+    // folders (model.treeFolders) hold a run of top-level features, drawn at the first one's place
+    function hit(s) { return String(s).toLowerCase().indexOf(filter) >= 0; }
+    var folders = normalizeFolders(m, consumedBy), folderOf = {}, curFo = null, curBox = null;
+    folders.forEach(function (fo) { fo.ids.forEach(function (id) { folderOf[id] = fo; }); });
     m.features.forEach(function (f) {
       if (f.type === 'sketch' && consumedBy[f.id] != null) return; // shown under its feature
       if (f === smBase && !filter) tree.appendChild(sheetMetalRow());
-      if (filter && f.name.toLowerCase().indexOf(filter) < 0) return;
+      var fo = folderOf[f.id] || null;
+      if (fo !== curFo) {
+        curFo = fo; curBox = null;
+        if (fo) {
+          var foHit = filter && hit(fo.name);
+          var anyHit = !filter || foHit || fo.ids.some(function (id) { var g = K.findFeature(m, id); return g && (hit(g.name) || childSketchIds(g).some(function (k) { var s = consumedBy[k] === g.id && K.findFeature(m, k); return s && hit(s.name); })); });
+          if (anyHit) {
+            var fOpen = filter ? true : fo.open !== false;
+            tree.appendChild(folderRow(fo, fOpen, errors));
+            curBox = el('div', { class: 'tc fold-box' + (fOpen ? ' open' : '') });
+            curBox.setAttribute('data-folder', String(fo.id));
+            curBox._foHit = foHit;
+            tree.appendChild(curBox);
+          }
+        }
+      }
+      if (fo && !curBox) return;   // a folder with no match
+      var host = curBox || tree, depth = curBox ? 2 : 1;
       var kids = childSketchIds(f).filter(function (id) { return consumedBy[id] === f.id; }).map(function (id) { return K.findFeature(m, id); }).filter(Boolean);
-      var isOpen = !!expanded[f.id];
-      var row = featureRow(f, 1, kids.length ? { open: isOpen, toggle: function () { expanded[f.id] = !expanded[f.id]; refreshTree(); } } : null, errors, warnings);
-      tree.appendChild(row);
+      var selfHit = !filter || hit(f.name) || (curBox && curBox._foHit);
+      if (filter && !selfHit) { kids = kids.filter(function (k) { return hit(k.name); }); if (!kids.length) return; }
+      var isOpen = filter && !selfHit ? true : !!expanded[f.id];
+      var row = featureRow(f, depth, kids.length ? { open: isOpen, toggle: function () { expanded[f.id] = !expanded[f.id]; refreshTree(); } } : null, errors, warnings);
+      host.appendChild(row);
       if (kids.length) {
         var box = el('div', { class: 'tc' + (isOpen ? ' open' : '') });
-        kids.forEach(function (k) { box.appendChild(featureRow(k, 2, null, errors, warnings)); });
-        tree.appendChild(box);
+        kids.forEach(function (k) { box.appendChild(featureRow(k, depth + 1, null, errors, warnings)); });
+        host.appendChild(box);
       }
     });
     if (m.sheet && !filter) appendFlatPatternFolder(tree);   // lane DC
@@ -2378,8 +2405,9 @@
     bar.addEventListener('mousedown', function (e) { rollbarDrag(e, bar); });
     bar.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, rollbarMenu(null)); });
     var firstRolled = tree.querySelector('.ti.rolled');
-    if (firstRolled && firstRolled.parentNode !== tree) firstRolled = firstRolled.parentNode.previousElementSibling;   // a sketch in its feature's folder
-    if (!filter) tree.insertBefore(bar, firstRolled && firstRolled.parentNode === tree ? firstRolled : null);
+    if (firstRolled && !isUnitRow(firstRolled)) firstRolled = firstRolled.parentNode.previousElementSibling;   // a sketch in its feature's folder
+    if (firstRolled && firstRolled.parentNode !== tree && firstRolled.parentNode.firstElementChild === firstRolled) firstRolled = firstRolled.parentNode.previousElementSibling;   // rfNR2: a whole folder rolled: the bar above its row
+    if (!filter) (firstRolled ? firstRolled.parentNode : tree).insertBefore(bar, firstRolled || null);
     if (App.sel && (App.sel.kind === 'feature' || App.sel.kind === 'body')) {
       // a row selected elsewhere (the viewport) scrolls into view by the least amount, as in SolidWorks; a visible
       // row leaves the list where it is
@@ -2490,31 +2518,68 @@
     } catch (e) { }
     return map;
   }
+  // a row that stands for a top-level feature: in the tree itself or in a folder's box (not a sketch absorbed under
+  // a feature)
+  function isUnitRow(row) {
+    var p = row && row.parentNode;
+    return !!p && (p === $('tree') || (p.classList && p.classList.contains('fold-box')));
+  }
   // the sketches shown under a top-level row (its .tc folder)
   function absorbedIds(row) {
-    var box = row && row.parentNode === $('tree') ? row.nextElementSibling : null;
-    if (!box || !box.classList.contains('tc')) return [];
+    var box = isUnitRow(row) ? row.nextElementSibling : null;
+    if (!box || !box.classList.contains('tc') || box.classList.contains('fold-box')) return [];
     return Array.prototype.map.call(box.querySelectorAll('.ti[data-fid]'), function (r) { return +r.getAttribute('data-fid'); });
   }
-  // reorderPlan(d, targetId) -> { ok, msg, noop, order, before }: the block d.ids goes right above feature targetId
-  // (and the sketches absorbed under it that sit just before it), or to the end of the unrolled features (null)
-  function reorderPlan(d, targetId) {
+  function unitRowOf(id) {
+    return Array.prototype.filter.call($('tree').querySelectorAll('.ti[data-fid="' + id + '"]'), isUnitRow)[0] || null;
+  }
+  function folderOfId(m, id) {
+    var list = Array.isArray(m.treeFolders) ? m.treeFolders : [];
+    for (var i = 0; i < list.length; i++) if (list[i] && Array.isArray(list[i].ids) && list[i].ids.indexOf(id) >= 0) return list[i];
+    return null;
+  }
+  // a folder's features in model order
+  function folderMembers(m, fo) {
+    return fo.ids.map(function (id) { return K.findFeature(m, id); }).filter(Boolean).sort(function (a, c) { return m.features.indexOf(a) - m.features.indexOf(c); });
+  }
+  // the first feature after the dragged block (null: the end)
+  function nextAfter(d) {
+    var fs = App.model.features, i = fs.indexOf(d.f);
+    for (i = i + 1; i < fs.length; i++) if (d.ids.indexOf(fs[i].id) < 0 && !UI.rollbarRolled(fs[i])) return fs[i].id;
+    return null;
+  }
+  function findFolder(m, fid) { return (Array.isArray(m.treeFolders) ? m.treeFolders : []).filter(function (fo) { return fo && fo.id === fid; })[0] || null; }
+  // reorderPlan(d, spot) -> { ok, msg, noop, order, before, folder }: the block d.ids goes right above feature
+  // spot.before (and the sketches absorbed under it that sit just before it), right after spot.after, or to the end of
+  // the unrolled features (both null). spot.folder: the folder id it joins (null: none; undefined: membership as is).
+  // A number for spot is spot.before (the first form).
+  function reorderPlan(d, spot) {
+    if (spot == null || typeof spot !== 'object') spot = { before: spot == null ? null : spot };
     var m = App.model, feats = m.features, inB = {};
     d.ids.forEach(function (id) { inB[id] = true; });
     var block = feats.filter(function (f) { return inB[f.id]; }), rest = feats.filter(function (f) { return !inB[f.id]; });
-    var idx, before = null;
-    if (targetId == null) {
+    var idx, before = null, i;
+    if (spot.after != null) {
+      var af = K.findFeature(m, spot.after);
+      idx = rest.indexOf(af) + 1;
+      if (idx <= 0) return { ok: false, msg: '' };
+      before = rest[idx] || null;
+    } else if (spot.before == null) {
       idx = rest.length;
-      for (var i = 0; i < rest.length; i++) if (UI.rollbarRolled(rest[i])) { idx = i; break; }
+      for (i = 0; i < rest.length; i++) if (UI.rollbarRolled(rest[i])) { idx = i; break; }
     } else {
-      before = K.findFeature(m, targetId);
+      before = K.findFeature(m, spot.before);
       idx = rest.indexOf(before);
       if (idx < 0) return { ok: false, msg: '' };
-      var under = absorbedIds($('tree').querySelector(':scope > .ti[data-fid="' + targetId + '"]'));
+      var under = absorbedIds(unitRowOf(spot.before));
       while (idx > 0 && under.indexOf(rest[idx - 1].id) >= 0) idx--;
     }
+    if (rest[idx - 1] && UI.rollbarRolled(rest[idx - 1])) return { ok: false, msg: 'Cannot move ' + d.f.name + ' below the rollback bar.' };
     var order = rest.slice(0, idx).concat(block, rest.slice(idx));
-    if (order.every(function (f, k) { return feats[k] === f; })) return { ok: true, noop: true, order: order };
+    var fo0 = folderOfId(m, d.f.id), folder = spot.folder === undefined || d.sketchAlone ? undefined : spot.folder;
+    var sameFolder = folder === undefined || (fo0 ? fo0.id : null) === folder;
+    var into = folder != null ? findFolder(m, folder) : null;
+    if (order.every(function (f, k) { return feats[k] === f; }) && sameFolder) return { ok: true, noop: true, order: order };
     var pos = {}, name = d.f.name;
     order.forEach(function (f, k) { pos[f.id] = k; });
     for (var k = 0; k < order.length; k++) {
@@ -2531,14 +2596,15 @@
       var solidsAbove = function (list) { var n = 0; for (var q = 0; q < list.length && list[q] !== smBase; q++) if (!REORDER_REF[list[q].type]) n++; return n; };
       if (solidsAbove(order) > solidsAbove(feats)) return { ok: false, msg: inB[smBase.id] ? 'Cannot move ' + name + ' below other features: Sheet-Metal and its base flange stay first.' : 'Cannot move ' + name + ' above Sheet-Metal: sheet-metal features come after ' + smBase.name + '.' };
     }
-    return { ok: true, order: order, before: before };
+    return { ok: true, order: order, before: before, folder: folder, into: into, out: !sameFolder && !into ? fo0 : null };
   }
   function reorderBegin(f, row) {
     if (App.mode === 'sketch' || UI.hasPM()) { setStatus('Close the open command or sketch before moving a feature.'); return null; }
     if (UI.rollbarRolled(f)) { setStatus('Roll forward before moving ' + f.name + ': it is below the rollback bar.'); return null; }
-    var tree = $('tree'), top = row.parentNode === tree;
+    if ($('tree-filter-input').value) { setStatus('Clear the filter before moving a feature.'); return null; }
+    var top = isUnitRow(row);
     var ids = [f.id].concat(top ? absorbedIds(row) : []);
-    var d = { f: f, ids: ids, row: row, parents: reorderParents(App.model), res: null, line: el('div', { class: 'tree-drop-line' }) };
+    var d = { f: f, ids: ids, row: row, sketchAlone: !top && row.parentNode != null && !!row.parentNode.classList, parents: reorderParents(App.model), res: null, line: el('div', { class: 'tree-drop-line' }) };
     document.body.appendChild(d.line);
     document.body.classList.add('tree-reordering');
     row.classList.add('drag-src');
@@ -2547,40 +2613,74 @@
   function reorderOver(d, y) {
     var tree = $('tree'), b = tree.getBoundingClientRect();
     if (y < b.top + 14) tree.scrollTop -= 12; else if (y > b.bottom - 14) tree.scrollTop += 12;
-    var rows = Array.prototype.slice.call(tree.querySelectorAll(':scope > .ti[data-fid]')).filter(function (r) { return !r.classList.contains('rolled'); });
-    var bar = tree.querySelector(':scope > .rollbar'), rolled = tree.querySelector(':scope > .ti.rolled');
-    var res, lineY = null, target = null;
-    if (!rows.length) res = { ok: false, msg: '' };
-    else if (y < rows[0].getBoundingClientRect().top - 3) res = { ok: false, msg: 'Cannot move ' + d.f.name + ' above the origin and the planes.' };
+    // the places a drop can go: before a feature row (top level or in a folder), before a folder row, onto a folder
+    // row (the end of that folder), the end
+    var units = Array.prototype.filter.call(tree.querySelectorAll('.ti[data-fid], .ti.fold-row'), function (r) {
+      return (isUnitRow(r) || r.classList.contains('fold-row')) && r.getClientRects().length && !r.classList.contains('rolled');
+    });
+    var bar = tree.querySelector('.rollbar'), rolled = tree.querySelector('.ti.rolled');
+    var res, lineY = null, spot = null, onto = null;
+    Array.prototype.forEach.call(tree.querySelectorAll('.ti.drop-into'), function (r) { r.classList.remove('drop-into'); });
+    if (!units.length) res = { ok: false, msg: '' };
+    else if (y < units[0].getBoundingClientRect().top - 3) res = { ok: false, msg: 'Cannot move ' + d.f.name + ' above the origin and the planes.' };
     else if (rolled && bar && y > bar.getBoundingClientRect().bottom + 2) res = { ok: false, msg: 'Cannot move ' + d.f.name + ' below the rollback bar.' };
     else {
-      for (var i = 0; i < rows.length; i++) { var r = rows[i].getBoundingClientRect(); if (y < r.top + r.height / 2) { target = rows[i]; lineY = r.top; break; } }
-      if (!target) { var last = rows[rows.length - 1], nx = last.nextElementSibling, e = nx && nx.classList.contains('tc') ? nx : last; lineY = e.getBoundingClientRect().bottom; }
-      res = reorderPlan(d, target ? +target.getAttribute('data-fid') : null);
+      for (var i = 0; i < units.length && !spot; i++) {
+        var u = units[i], r = u.getBoundingClientRect(), fo = u.classList.contains('fold-row') ? findFolder(App.model, +u.getAttribute('data-folder')) : null;
+        if (fo && !d.sketchAlone && y >= r.top + r.height * 0.3 && y <= r.bottom - r.height * 0.3) {
+          var mem = folderMembers(App.model, fo).filter(function (g) { return g !== d.f; });
+          spot = mem.length ? { after: mem[mem.length - 1].id, folder: fo.id } : { before: fo.ids[0], folder: fo.id };
+          onto = u;
+        } else if (y < r.top + r.height / 2) {
+          lineY = r.top;
+          if (fo) {
+            // above a folder row: out of the folder, before its first member (its own member: where it is)
+            var others = folderMembers(App.model, fo).filter(function (g) { return d.ids.indexOf(g.id) < 0; });
+            spot = { before: others.length ? others[0].id : nextAfter(d), folder: null };
+          } else { var box = u.parentNode; spot = { before: +u.getAttribute('data-fid'), folder: box !== tree ? +box.getAttribute('data-folder') : null }; }
+        }
+      }
+      if (!spot) {
+        var last = units[units.length - 1], nx = last.nextElementSibling;
+        while (last.parentNode !== tree) { last = last.parentNode; nx = null; }
+        var e = nx && nx.classList.contains('tc') ? nx : last;
+        lineY = e.getBoundingClientRect().bottom;
+        spot = { before: null, folder: null };
+      }
+      if (d.sketchAlone) spot.folder = undefined;
+      res = reorderPlan(d, spot);
     }
     d.res = res;
     var bad = !res.ok;
     document.body.classList.toggle('tree-reorder-no', bad);
-    d.line.style.display = bad || lineY == null ? 'none' : 'block';
+    if (onto && !bad) onto.classList.add('drop-into');
+    d.line.style.display = bad || lineY == null || onto ? 'none' : 'block';
     if (!bad && lineY != null) { d.line.style.left = (b.left + 22) + 'px'; d.line.style.width = Math.max(20, b.width - 30) + 'px'; d.line.style.top = (lineY - 1) + 'px'; }
     if (bad && res.msg) setStatus(res.msg);
-    else if (!bad) setStatus(res.noop ? d.f.name : 'Move ' + d.f.name + (res.before ? ' above ' + res.before.name : ' to the end') + '.');
+    else if (!bad) setStatus(res.noop ? d.f.name : reorderSays(d, res, 'Move'));
+  }
+  function reorderSays(d, res, verb) {
+    return verb + ' ' + d.f.name + (res.into ? ' into ' + res.into.name : res.before ? ' above ' + res.before.name : ' to the end') + (res.out ? ' (out of ' + res.out.name + ')' : '') + '.';
   }
   function reorderEnd(d) {
     if (d.line.parentNode) d.line.parentNode.removeChild(d.line);
     document.body.classList.remove('tree-reordering', 'tree-reorder-no');
     d.row.classList.remove('drag-src');
+    Array.prototype.forEach.call($('tree').querySelectorAll('.ti.drop-into'), function (r) { r.classList.remove('drop-into'); });
   }
-  // reorderFeature(id, beforeId | null) -> the rebuild Promise, or false (refused: the status bar says why). The
-  // drag's drop, also for scripts and tests; beforeId null: to the end (above the rollback bar).
-  function reorderFeature(id, beforeId) {
+  // reorderFeature(id, beforeId | null | spot, folderId?) -> the rebuild Promise, or false (refused: the status bar
+  // says why). The drag's drop, also for scripts and tests; beforeId null: to the end (above the rollback bar).
+  // folderId: the folder it joins (null: out of any folder; omitted: its folder as is).
+  function reorderFeature(id, beforeId, folderId) {
     var f = K.findFeature(App.model, id);
     if (!f || isAsm()) return false;
-    var row = $('tree').querySelector('.ti[data-fid="' + id + '"]') || el('div');
+    var row = unitRowOf(id) || $('tree').querySelector('.ti[data-fid="' + id + '"]') || el('div');
     var d = reorderBegin(f, row);
     if (!d) return false;
     reorderEnd(d);
-    return reorderApply(d, reorderPlan(d, beforeId));
+    var spot = beforeId != null && typeof beforeId === 'object' ? beforeId : { before: beforeId == null ? null : beforeId };
+    if (arguments.length > 2) spot.folder = folderId;
+    return reorderApply(d, reorderPlan(d, spot));
   }
   function reorderApply(d, res) {
     if (!res || !res.ok) { if (res && res.msg) setStatus(res.msg); refreshTree(); return false; }
@@ -2588,13 +2688,122 @@
     UI.pushUndo();
     var m = App.model;
     m.features.length = 0; Array.prototype.push.apply(m.features, res.order);
-    var name = d.f.name, before = res.before;
-    return UI.afterRebuild(UI.rebuild(), function (bd) {
-      setStatus('Moved ' + name + (before ? ' above ' + before.name : ' to the end') + '.');
-      return bd;
-    });
+    if (res.folder !== undefined) {
+      (m.treeFolders || []).forEach(function (fo) { fo.ids = fo.ids.filter(function (id) { return id !== d.f.id; }); });
+      if (res.into) res.into.ids.push(d.f.id);
+    }
+    var said = reorderSays(d, res, 'Moved');
+    return UI.afterRebuild(UI.rebuild(), function (bd) { setStatus(said); return bd; });
   }
   UI.reorderFeature = reorderFeature;
+  // ---- rfNR2: FeatureManager folders (SolidWorks Add to New Folder). Stored as model.treeFolders = [{ id, name, ids:
+  // [top-level feature ids], open }]: plain JSON beside model.features, so Save / Open, undo and AutoRecover keep it;
+  // nothing in the kernel, the worker, OpenCascade or generateScript reads it, and an old file simply has none. A
+  // folder holds a run of neighbouring top-level features (sketches absorbed under a feature go with it); the tree
+  // draws it at its first feature's place. normalizeFolders drops ids of deleted features and members cut off from
+  // the run (a feature moved away), and empty folders.
+  function normalizeFolders(m, consumedBy) {
+    if (!Array.isArray(m.treeFolders)) return [];
+    var top = m.features.filter(function (f) { return !(f.type === 'sketch' && consumedBy[f.id] != null); });
+    var at = {}, taken = {};
+    top.forEach(function (f, i) { at[f.id] = i; });
+    m.treeFolders = m.treeFolders.filter(function (fo) {
+      if (!fo || !Array.isArray(fo.ids)) return false;
+      var idx = fo.ids.filter(function (id) { return at[id] != null && !taken[id]; }).map(function (id) { return at[id]; }).sort(function (a, b) { return a - b; });
+      var run = idx.length ? [idx[0]] : [];
+      for (var k = 1; k < idx.length && idx[k] === run[run.length - 1] + 1; k++) run.push(idx[k]);
+      fo.ids = run.map(function (i) { return top[i].id; });
+      fo.ids.forEach(function (id) { taken[id] = true; });
+      return fo.ids.length > 0;
+    });
+    if (!m.treeFolders.length) delete m.treeFolders;
+    return m.treeFolders || [];
+  }
+  function folderRow(fo, open, errors) {
+    var m = App.model, mem = folderMembers(m, fo);
+    var allSup = mem.length && mem.every(function (g) { return UI.isSuppressed && UI.isSuppressed(g.id); });
+    var bad = mem.some(function (g) { return errors && errors[g.id]; });
+    var allRolled = mem.length && mem.every(function (g) { return UI.rollbarRolled(g); });
+    var row = treeItem({ icon: 'folder', name: fo.name, depth: 1, children: true, open: open, cls: 'fold-row' + (allSup ? ' suppressed' : '') + (bad ? ' warn' : '') + (allRolled ? ' rolled' : ''),
+      title: fo.name + ': ' + mem.map(function (g) { return g.name; }).join(', '), toggle: function () { fo.open = !open; refreshTree(); } });
+    row.setAttribute('data-folder', String(fo.id));
+    row.addEventListener('click', function () { setStatus(fo.name + ': ' + mem.length + ' feature' + (mem.length === 1 ? '' : 's') + '.'); });
+    row.addEventListener('dblclick', function (e) { e.stopPropagation(); renameFolder(fo); });
+    row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, folderMenu(fo)); });
+    return row;
+  }
+  function folderMenu(fo) {
+    var ids = fo.ids.slice(), sup = ids.length && ids.every(function (id) { return UI.isSuppressed && UI.isSuppressed(id); });
+    var items = [{ label: 'Rename tree item', help: 'Type a new name for the folder', action: function () { renameFolder(fo); } }];
+    if (UI.setSuppression) items.push({ label: sup ? 'Unsuppress' : 'Suppress', help: (sup ? 'Unsuppress' : 'Suppress') + ' every feature in the folder', action: function () { UI.setSuppression(ids, !sup); } });
+    items.push({ sep: true }, { label: 'Delete', key: 'Del', help: 'Delete the folder (its features stay unless you tick the box)', action: function () { deleteFolder(fo); } });
+    return items;
+  }
+  function renameFolder(fo) {
+    var row = $('tree').querySelector('.ti.fold-row[data-folder="' + fo.id + '"]');
+    if (!row) return;
+    revealRow($('tree'), row);
+    renameInline(row, fo.name, function (n) { UI.pushUndo(); fo.name = n; refreshTree(); });
+  }
+  UI.renameTreeFolder = function (id) { var fo = findFolder(App.model, id); if (fo) renameFolder(fo); };
+  // Add to New Folder: the right-clicked feature, or the selected top-level features when they are neighbours in the
+  // tree (Ctrl / Shift selection), go in a new folder at their place; the name is edited at once (SolidWorks)
+  function addToNewFolder(f) {
+    var m = App.model, sel = (UI.selection ? UI.selection() : []).filter(function (s) { return s && s.kind === 'feature'; }).map(function (s) { return s.id; });
+    if (sel.indexOf(f.id) < 0) sel = [f.id];
+    var units = Array.prototype.filter.call($('tree').querySelectorAll('.ti[data-fid]'), isUnitRow).map(function (r) { return +r.getAttribute('data-fid'); });
+    var pos = sel.map(function (id) { return units.indexOf(id); });
+    if (pos.some(function (p) { return p < 0; })) { setStatus('Add to New Folder takes features from the top of the tree, not sketches inside a feature.'); return null; }
+    pos.sort(function (a, b) { return a - b; });
+    for (var i = 1; i < pos.length; i++) if (pos[i] !== pos[i - 1] + 1) { setStatus('Select features that are next to each other in the tree to put them in one folder.'); return null; }
+    if (sel.some(function (id) { return UI.rollbarRolled(K.findFeature(m, id)); })) { setStatus('Roll forward before putting rolled-back features in a folder.'); return null; }
+    UI.pushUndo();
+    var list = m.treeFolders = Array.isArray(m.treeFolders) ? m.treeFolders : [];
+    list.forEach(function (fo) { fo.ids = fo.ids.filter(function (id) { return sel.indexOf(id) < 0; }); });
+    var n = 1, names = {}, maxId = 0;
+    list.forEach(function (fo) { names[fo.name] = true; maxId = Math.max(maxId, fo.id | 0); });
+    while (names['Folder' + n]) n++;
+    var fo = { id: maxId + 1, name: 'Folder' + n, ids: pos.map(function (p) { return units[p]; }), open: true };
+    list.push(fo);
+    refreshTree();
+    setStatus('Added ' + fo.ids.length + ' feature' + (fo.ids.length === 1 ? '' : 's') + ' to ' + fo.name + '.');
+    renameFolder(fo);
+    return fo;
+  }
+  UI.addToNewFolder = function (ids) {
+    ids = Array.isArray(ids) ? ids : [ids];
+    if (UI.setSelection) UI.setSelection(ids.map(function (id) { return { kind: 'feature', id: id }; }), { quiet: true });
+    var fo = addToNewFolder(K.findFeature(App.model, ids[0]));
+    var inp = $('tree').querySelector('input.ti-rename');
+    if (inp) inp.blur();
+    return fo;
+  };
+  // Delete on a folder: SolidWorks asks, and keeps the features (they move out to its place) unless told otherwise
+  function deleteFolder(fo) {
+    var m = App.model, mem = folderMembers(m, fo);
+    var msg = 'Delete the folder <b>' + fo.name + '</b>?' + (mem.length ? '<br><label class="del-kids"><input type="checkbox" id="del-folder-features"> Also delete its ' + mem.length + ' feature' + (mem.length === 1 ? '' : 's') + ' (' + mem.map(function (g) { return g.name; }).join(', ') + ') and what is built on them</label>' : '');
+    UI.confirmDialog('Confirm Delete', msg, function () {
+      var box = document.getElementById('del-folder-features'), all = !!(box && box.checked);
+      UI.pushUndo();
+      m.treeFolders = (m.treeFolders || []).filter(function (x) { return x !== fo; });
+      if (!all) { refreshTree(); setStatus('Deleted ' + fo.name + '; its features stay in the tree.'); return; }
+      var doomed = mem.map(function (g) { return g.id; });
+      // their own sketches (used by nothing else) and every feature built on them
+      mem.forEach(function (g) {
+        [g.sketch, g.profile, g.path].concat(g.sketches || []).forEach(function (s) {
+          if (typeof s !== 'number' || doomed.indexOf(s) >= 0) return;
+          var users = m.features.filter(function (h) { return h.sketch === s || h.profile === s || h.path === s || (h.sketches || []).indexOf(s) >= 0; });
+          if (users.every(function (h) { return doomed.indexOf(h.id) >= 0; })) doomed.push(s);
+        });
+      });
+      doomed.slice().forEach(function (id) { (K.featureChildren ? K.featureChildren(m, id) : []).forEach(function (k) { if (doomed.indexOf(k) < 0) doomed.push(k); }); });
+      (UI.faceChildren ? UI.faceChildren(doomed) : []).forEach(function (k) { if (doomed.indexOf(k) < 0) doomed.push(k); });
+      m.features = m.features.filter(function (g) { return doomed.indexOf(g.id) < 0; });
+      App.sel = null; App.sel2 = null;
+      UI.afterRebuild(UI.rebuild(), function () { setStatus('Deleted ' + fo.name + ' and ' + doomed.length + ' feature' + (doomed.length === 1 ? '' : 's') + '.'); });
+    }, 'Delete');
+  }
+  UI.deleteTreeFolder = function (id) { var fo = findFolder(App.model, id); if (fo) deleteFolder(fo); };
   function treeRowPress(e, f, row) {
     if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || isAsm()) return;
     if (e.target.closest && (e.target.closest('.tw') || e.target.closest('input'))) return;
@@ -2868,7 +3077,13 @@
       App.sel = { kind: 'feature', id: f.id }; App.sel2 = null; UI.updateHighlights(); UI.updateSketches(); refreshTree(); if (UI.onSelectionChanged) UI.onSelectionChanged(); setStatus(f.name + (err ? ': ' + err : ''));
     });
     row.addEventListener('dblclick', function (e) { e.stopPropagation(); cancelSlowRename(); UI.editFeature(f); });
-    row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); App.sel = { kind: 'feature', id: f.id }; UI.updateHighlights(); refreshTree(); showMenu(e.clientX, e.clientY, featureMenu(f)); });
+    row.addEventListener('contextmenu', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      // rfNR2: a right-click on one of several selected features keeps them selected (Add to New Folder takes them all)
+      var cur = UI.selection ? UI.selection() : [];
+      if (!(cur.length > 1 && cur.some(function (s) { return s && s.kind === 'feature' && s.id === f.id; }))) App.sel = { kind: 'feature', id: f.id };
+      UI.updateHighlights(); refreshTree(); showMenu(e.clientX, e.clientY, featureMenu(f));
+    });
     row.addEventListener('mousedown', function (e) { treeRowPress(e, f, row); });   // rfNR: drag to reorder
     return row;
   }
@@ -2915,6 +3130,7 @@
     Array.prototype.push.apply(items, rollbarMenu(f));   // rfGQ
     items.push({ sep: true });
     items.push({ label: 'Rename tree item', key: 'F2', help: 'Type a new name for the feature in the tree', action: function () { startRename(f); } });   // rfNG: SolidWorks' name, the key in the key column (it was in the label)
+    items.push({ label: 'Add to New Folder', help: 'Put this feature (or the selected neighbouring features) in a new folder in the tree', action: function () { addToNewFolder(f); } });   // rfNR2
     items.push({ sep: true });
     items.push({ label: 'Delete', key: 'Del', action: function () { UI.deleteFeature(f.id); } });
     return items;
@@ -2966,7 +3182,22 @@
     inp.addEventListener('blur', function () { finish(true); });
     ['mousedown', 'click', 'dblclick'].forEach(function (t) { inp.addEventListener(t, function (e) { e.stopPropagation(); }); });
   }
-  $('tree-filter-input').addEventListener('input', refreshTree);
+  $('tree-filter-input').addEventListener('input', function () { syncFilterClear(); refreshTree(); });
+  // rfNR2: SolidWorks' filter box: Esc or the x clears it (the x shows only while there is text)
+  var filterClear = el('button', { class: 'tree-filter-clear', type: 'button', title: 'Clear the filter (Esc)', 'aria-label': 'Clear filter', text: '×' });
+  filterClear.hidden = true;
+  $('tree-filter-input').parentNode.appendChild(filterClear);
+  function syncFilterClear() { filterClear.hidden = !$('tree-filter-input').value; }
+  function clearTreeFilter() {
+    var inp = $('tree-filter-input');
+    if (!inp.value) return false;
+    inp.value = ''; syncFilterClear(); refreshTree();
+    return true;
+  }
+  filterClear.addEventListener('mousedown', function (e) { e.preventDefault(); });
+  filterClear.addEventListener('click', function (e) { e.stopPropagation(); clearTreeFilter(); $('tree-filter-input').focus(); });
+  $('tree-filter-input').addEventListener('keydown', function (e) { if (e.key === 'Escape' && clearTreeFilter()) { e.preventDefault(); e.stopPropagation(); } });
+  UI.clearTreeFilter = clearTreeFilter;
 
   // ------------------------------------------------------------------ menus (popup + menu bar)
   var openMenu = null;

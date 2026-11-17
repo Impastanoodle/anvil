@@ -262,7 +262,7 @@ async function main() {
       asked.slice().sort((a, b) => Math.min(b.waited, b.ms) - Math.min(a.waited, a.ms)).slice(0, slowest).forEach((x) => console.log(sec(Math.min(x.waited, x.ms)) + ' of ' + sec(x.ms).trim() + '  ' + x.name.slice(0, 120)));
     }
   }
-  if (args.includes('--save-timings') && !bad.length) {
+  if ((args.includes('--save-timings') && !bad.length) || args.includes('--save-timings-anyway')) {   // -anyway: also after failed steps (a loaded machine), so --shards can be re-balanced
     let old = {};
     try { old = JSON.parse(fs.readFileSync(TIMINGS, 'utf8')).seconds || {}; } catch (e) { }
     const s = {};

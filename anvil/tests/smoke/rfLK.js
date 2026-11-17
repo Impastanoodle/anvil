@@ -69,7 +69,10 @@
     var rr = row.getBoundingClientRect();
     rfLKEv(row, 'mouseup', rr.left + 10, rr.top + 5);
     await wait(60);
-    var radio = D.querySelector('[data-role="interface-profiles"] input[data-profile="' + id + '"]');
+    // rfNR: the one in the Options dialog. A Task Pane closed after showing its Options page (r12/occtui12) keeps a
+    // hidden copy of the section, and the first match was that one ("mastercam radio is not shown" after that group)
+    var radio = ($('modal') && !$('modal').hidden && $('modal-body').querySelector('[data-role="interface-profiles"] input[data-profile="' + id + '"]')) ||
+      Array.prototype.filter.call(D.querySelectorAll('[data-role="interface-profiles"] input[data-profile="' + id + '"]'), function (r) { return r.getClientRects().length; })[0] || null;
     await rfLKClick(radio, id + ' radio');
     if (modalOpen()) UI.closeModal();   // rfNG: Tools > Options… is a dialog now (System Options); the profile radios are in it
     await wait(60);

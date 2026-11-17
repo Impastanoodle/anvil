@@ -2706,3 +2706,9 @@ table.mc-planes tr.picked td.mc-pl-name { font-weight: 600; }
 body.tree-reordering, body.tree-reordering * { cursor: default !important; user-select: none; }
 body.tree-reorder-no, body.tree-reorder-no * { cursor: not-allowed !important; }
 #tree .ti.drag-src { opacity: 0.55; }
+/* rfNR2: the filter box's clear button; a folder row a dragged feature drops into */
+#tree-filter { position: relative; }
+.tree-filter-clear { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--c-muted, #777); font-size: 14px; line-height: 16px; cursor: pointer; }
+.tree-filter-clear:hover { background: var(--c-hover, rgba(0,0,0,0.08)); color: var(--c-text, #222); }
+.tree-filter-clear[hidden] { display: none; }
+#tree .ti.fold-row.drop-into { outline: 1px solid var(--c-accent, #1f6fd1); outline-offset: -1px; background: var(--c-hover, rgba(31,111,209,0.08)); }

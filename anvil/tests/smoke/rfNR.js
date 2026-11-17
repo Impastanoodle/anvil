@@ -36,6 +36,7 @@
   function rfNRAbove(f) { var r = rfNRRow(f); assert(r, 'tree row of ' + f.name); return r.getBoundingClientRect().top + 2; }
   function rfNRBottom() { var y = 0; D.querySelectorAll('#tree > .ti, #tree > .tc').forEach(function (r) { y = Math.max(y, r.getBoundingClientRect().bottom); }); return y + 4; }
   async function rfNROpen(code) {
+    if (UI.clearTreeFilter) UI.clearTreeFilter();
     await anvil.newPart(); await idle();
     await anvil.run(code || rfNRPart); await idle();
     UI.setFmTab('tree'); UI.refreshTree();
@@ -222,5 +223,141 @@
     await UI.reorderFeature(cut.id, fil.id); await idle();
     assert(rfNRIdx(cut) < rfNRIdx(fil) && UI.App.undo.length === undo0 + 1, 'moved: ' + rfNRNames());
     rfNRNear(rfNRVol(), v0, 'scripted move');
+    return 'ok';
+  });
+
+  // --- rfNR2 (2026-11-16, follow-up): reordering while rolled back, the filter box, folders
+  var rfNRPart4 = 'p.units("mm");\np.sketch("Front").rect(0, 0, 100, 60).end().extrude(20);\n' +
+    'p.fillet(5, [[0, 0, 10]]);\n' +
+    'p.sketch("Front", 20).rect(40, 20, 20, 20).end().cut(5);\n' +
+    'p.sketch("Front", 20).rect(70, 20, 10, 10).end().cut(5);';
+  function rfNRCuts() { return UI.App.model.features.filter(function (f) { return f.type === 'extrude' && f.cut; }); }
+  function rfNRFolderRow(name) { return Array.prototype.filter.call(D.querySelectorAll('#tree .ti.fold-row'), function (r) { return r.querySelector('.nm') && r.querySelector('.nm').textContent === name; })[0] || null; }
+  async function rfNRMenuOn(el, label) {
+    assert(el, 'row to right-click for ' + label);
+    var r = el.getBoundingClientRect();
+    el.dispatchEvent(new W.MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: W, clientX: r.left + 30, clientY: r.top + 4, button: 2 }));
+    var rows = Array.prototype.slice.call(D.querySelectorAll('.menu .mi')), mi = rows.filter(function (m) { var s = m.querySelector('span:not(.chk):not(.key)'); return s && s.textContent === label; })[0];
+    assert(mi, 'menu row "' + label + '" (have: ' + rows.map(function (m) { return m.textContent; }).join(' | ') + ')');
+    var o = { bubbles: true, cancelable: true, view: W, clientX: r.left + 40, clientY: r.top + 10, button: 0, detail: 1 };
+    mi.dispatchEvent(new W.MouseEvent('mousedown', o)); mi.dispatchEvent(new W.MouseEvent('mouseup', o)); mi.dispatchEvent(new W.MouseEvent('click', o));
+    await idle(); await wait(20); await idle();
+  }
+  function rfNRFilter(text) { var i = $('tree-filter-input'); i.value = text; i.dispatchEvent(new W.Event('input', { bubbles: true })); }
+  function rfNRShownNames() { return Array.prototype.filter.call(D.querySelectorAll('#tree .ti'), function (r) { return r.getClientRects().length; }).map(function (r) { var n = r.querySelector('.nm'); return n ? n.textContent : ''; }); }
+  async function rfNRModalButton(label, tick) {
+    if (tick) { var box = D.getElementById(tick); assert(box, 'checkbox ' + tick); box.checked = true; }
+    var b = Array.prototype.filter.call(D.querySelectorAll('#modal button'), function (x) { return x.textContent === label && x.getClientRects().length; })[0];
+    assert(b, 'dialog button ' + label);
+    b.click(); await idle(); await wait(20); await idle();
+  }
+
+  step('rfNR: rolled back: a feature above the bar drags to a new place like any other, the rolled-back ones stay below the bar and come back on Roll to End', async function () {
+    await rfNROpen(rfNRPart4);
+    var full = rfNRVol(), cuts = rfNRCuts(), fil = rfNRKind('fillet');
+    await UI.rollbarTo(UI.App.model.features.indexOf(cuts[1])); await idle();
+    assert(UI.rollbarRolled(cuts[1]) && !UI.rollbarRolled(cuts[0]), 'the second cut is rolled back');
+    var v1 = rfNRVol(), undo0 = UI.App.undo.length;
+    await rfNRDrag(cuts[0], function () { return rfNRAbove(fil); });
+    assert(rfNRIdx(cuts[0]) < rfNRIdx(fil), 'the first cut moved above the fillet: ' + rfNRNames() + ' / ' + statusText());
+    assert(UI.rollbarRolled(cuts[1]) && UI.App.undo.length === undo0 + 1, 'the second cut is still rolled back, one undo step');
+    rfNRNear(rfNRVol(), v1, 'rolled-back part after the move');
+    await rfNRDrag(rfNRKind('fillet'), function () { return rfNRAbove(K.findFeature(UI.App.model, cuts[0].id)); });
+    assert(rfNRIdx(rfNRKind('fillet')) < rfNRIdx(cuts[0]), 'and back: ' + rfNRNames());
+    await UI.rollbarEnd(); await idle();
+    rfNRNear(rfNRVol(), full, 'rolled to the end');
+    return 'ok';
+  });
+
+  step('rfNR: the filter box shows the matching features with their parents, hides the rest (planes, origin, material); the x and Esc clear it; no drag while filtered', async function () {
+    await rfNROpen(rfNRPart4);
+    var cut = rfNRCuts()[0], sk = K.findFeature(UI.App.model, cut.sketch);
+    rfNRFilter(sk.name); await idle();
+    var names = rfNRShownNames();
+    assert(names.some(function (n) { return n.replace(/^\(.\) /, '') === sk.name; }) && names.indexOf(cut.name) >= 0, 'the sketch shows under its cut: ' + names.join(' | '));
+    assert(names.indexOf('Boss-Extrude1') < 0 && names.indexOf('Front Plane') < 0 && names.indexOf('Origin') < 0 && names.indexOf('Fillet1') < 0, 'the rest is hidden: ' + names.join(' | '));
+    var x = D.querySelector('.tree-filter-clear');
+    assert(x && !x.hidden && x.getClientRects().length, 'the x shows');
+    await rfNRDrag(cut, function () { return rfNRRow(cut).getBoundingClientRect().top - 30; });
+    assert(/Clear the filter/.test(statusText()), 'no drag while filtered: ' + statusText());
+    $('tree-filter-input').dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await idle();
+    assert(!$('tree-filter-input').value && x.hidden && rfNRShownNames().indexOf('Origin') >= 0 && rfNRShownNames().indexOf('Boss-Extrude1') >= 0, 'Esc cleared it');
+    rfNRFilter('plane'); await idle();
+    names = rfNRShownNames();
+    assert(['Front Plane', 'Top Plane', 'Right Plane'].every(function (n) { return names.indexOf(n) >= 0; }) && names.indexOf('Boss-Extrude1') < 0, 'planes match: ' + names.join(' | '));
+    x.click(); await idle();
+    assert(!$('tree-filter-input').value && rfNRShownNames().indexOf('Fillet1') >= 0, 'the x cleared it');
+    return 'ok';
+  });
+
+  step('rfNR: Add to New Folder on two selected neighbours, rename, collapse; drag a feature onto the folder (in), above it (out), a member to the end (out); Save / Open keeps it', async function () {
+    await rfNROpen(rfNRPart4);
+    var v0 = rfNRVol(), cuts = rfNRCuts(), fil = rfNRKind('fillet');
+    UI.setSelection([{ kind: 'feature', id: fil.id }, { kind: 'feature', id: cuts[0].id }]);
+    await rfNRMenuOn(rfNRRow(fil), 'Add to New Folder');
+    var inp = D.querySelector('#tree input.ti-rename');
+    assert(inp && inp.value === 'Folder1', 'the new folder\'s name is being edited');
+    inp.value = 'Pockets';
+    inp.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); await idle();
+    var fo = (UI.App.model.treeFolders || [])[0];
+    assert(fo && fo.name === 'Pockets' && fo.ids.length === 2, 'a folder with two features: ' + JSON.stringify(UI.App.model.treeFolders));
+    var row = rfNRFolderRow('Pockets'), box = row && row.nextElementSibling;
+    assert(row && box && box.classList.contains('fold-box') && box.querySelector('.ti[data-fid="' + fil.id + '"]') && box.querySelector('.ti[data-fid="' + cuts[0].id + '"]'), 'both rows are in the folder');
+    row.querySelector('.tw').dispatchEvent(new W.MouseEvent('click', { bubbles: true, cancelable: true, view: W })); await idle();
+    assert(!rfNRRow(fil).getClientRects().length, 'collapsed');
+    rfNRFolderRow('Pockets').querySelector('.tw').dispatchEvent(new W.MouseEvent('click', { bubbles: true, cancelable: true, view: W })); await idle();
+    assert(rfNRRow(fil).getClientRects().length, 'expanded');
+    // the second cut dropped onto the folder row goes in at its end
+    await rfNRDrag(cuts[1], function () { var r = rfNRFolderRow('Pockets').getBoundingClientRect(); return r.top + r.height / 2; });
+    assert(UI.App.model.treeFolders[0].ids.indexOf(cuts[1].id) >= 0, 'dropped into the folder: ' + statusText());
+    assert(rfNRIdx(cuts[1]) > rfNRIdx(cuts[0]), 'at its end');
+    // above the folder row: out, before the folder
+    await rfNRDrag(cuts[1], function () { return rfNRFolderRow('Pockets').getBoundingClientRect().top + 2; });
+    assert(UI.App.model.treeFolders[0].ids.indexOf(cuts[1].id) < 0 && rfNRIdx(cuts[1]) < rfNRIdx(fil), 'out, above the folder: ' + rfNRNames() + ' / ' + statusText());
+    assert(!rfNRFolderRow('Pockets').nextElementSibling.querySelector('.ti[data-fid="' + cuts[1].id + '"]'), 'its row is outside the folder');
+    // a member dragged to the end leaves the folder
+    await rfNRDrag(K.findFeature(UI.App.model, cuts[0].id), function () { return rfNRBottom(); });
+    assert(UI.App.model.treeFolders[0].ids.join() === String(fil.id), 'the cut left the folder: ' + JSON.stringify(UI.App.model.treeFolders));
+    rfNRNear(rfNRVol(), v0, 'after the moves');
+    // a refused move is refused in a folder too
+    await rfNRDrag(rfNRKind('extrude', 0), function () { var r = rfNRFolderRow('Pockets').getBoundingClientRect(); return r.top + r.height / 2; });
+    assert(/Cannot move Boss-Extrude1 below/.test(statusText()), 'refused: ' + statusText());
+    var saved = JSON.stringify(anvil.model());
+    await anvil.newPart(); await idle();
+    await anvil.load(saved); await idle(); UI.refreshTree();
+    assert(rfNRFolderRow('Pockets') && rfNRFolderRow('Pockets').nextElementSibling.querySelector('.ti[data-fid="' + fil.id + '"]'), 'the folder came back after Save / Open');
+    rfNRNear(rfNRVol(), v0, 'reopened');
+    return 'ok';
+  });
+
+  step('rfNR: a folder suppresses and unsuppresses as a unit; Delete keeps its features unless ticked; undo brings it back; features not next to each other are refused', async function () {
+    await rfNROpen(rfNRPart4);
+    var v0 = rfNRVol(), cuts = rfNRCuts(), fil = rfNRKind('fillet'), boss = rfNRKind('extrude', 0);
+    UI.addToNewFolder([cuts[0].id, cuts[1].id]); await idle();
+    var fo = UI.App.model.treeFolders[0];
+    assert(fo.ids.length === 2, 'folder of the two cuts');
+    await rfNRMenuOn(rfNRFolderRow(fo.name), 'Suppress');
+    assert(UI.isSuppressed(cuts[0].id) && UI.isSuppressed(cuts[1].id), 'both cuts suppressed');
+    assert(rfNRVol() > v0 + 1000, 'the pockets are filled: ' + rfNRVol());
+    assert(rfNRFolderRow(fo.name).classList.contains('suppressed'), 'the folder row shows suppressed');
+    await rfNRMenuOn(rfNRFolderRow(fo.name), 'Unsuppress');
+    rfNRNear(rfNRVol(), v0, 'unsuppressed');
+    await rfNRMenuOn(rfNRFolderRow(fo.name), 'Delete');
+    await rfNRModalButton('Delete');
+    assert(!UI.App.model.treeFolders && rfNRCuts().length === 2 && rfNRRow(cuts[0]).parentNode === D.getElementById('tree'), 'the folder is gone, the cuts stay at the top level');
+    rfNRNear(rfNRVol(), v0, 'features kept');
+    await UI.undoCommand(); await idle();
+    assert(rfNRFolderRow(fo.name), 'undo brought the folder back');
+    await rfNRMenuOn(rfNRFolderRow(fo.name), 'Delete');
+    await rfNRModalButton('Delete', 'del-folder-features');
+    assert(rfNRCuts().length === 0 && !UI.App.model.treeFolders, 'the cuts went with it: ' + rfNRNames());
+    assert(UI.App.model.features.filter(function (f) { return f.type === 'sketch'; }).length === 1, 'their sketches too: ' + rfNRNames());
+    await UI.undoCommand(); await idle();
+    rfNRNear(rfNRVol(), v0, 'undo of the delete');
+    // boss and the second cut are not neighbours
+    UI.setSelection([{ kind: 'feature', id: boss.id }, { kind: 'feature', id: rfNRCuts()[1].id }]);
+    await rfNRMenuOn(rfNRRow(boss), 'Add to New Folder');
+    assert(/next to each other/.test(statusText()), 'refused: ' + statusText());
     return 'ok';
   });
