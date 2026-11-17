@@ -42,7 +42,11 @@
     var flat;
     try { flat = K.flatPattern(m, App.build, App.mesh); } catch (e) { return { error: 'Flat pattern: ' + ((e && e.message) || e) }; }
     // lane NB: Nest.flatPart keeps the flat's bend lines (BEND), etch (ETCH) and forming marks (FORM) with the blank
-    var p = Nest.flatPart ? Nest.flatPart(flat, m.name || 'Part1', 1) : Nest.part({ name: m.name || 'Part1', loops: flat.loops });
+    // rfNN: a part with configurations is named "<part> <configuration>" (both of a family's flats were "FAM-1": the
+    // list, the report and the DXF's part names could not tell them apart)
+    var nm = m.name || 'Part1', cf = (m.configurations || []).length > 1 && K.activeConfiguration ? K.activeConfiguration(m) : null;
+    if (cf && cf.name != null) nm += ' ' + cf.name;
+    var p = Nest.flatPart ? Nest.flatPart(flat, nm, 1) : Nest.part({ name: nm, loops: flat.loops });
     if (!p) return { error: 'The flat pattern has no closed outline.' };
     if (flat.sheet && +flat.sheet.thickness > 0 && ns.vals && !(+ns.vals.thick > 0)) ns.vals.thick = +flat.sheet.thickness;
     addPart(p, 1, 'flat');

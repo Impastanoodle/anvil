@@ -127,7 +127,8 @@
     step('rfNH: Linear Pattern reads as SolidWorks: Direction 1, Direction 2, then Features to Pattern; ⇄ Reverse direction beside the Direction list; Number of instances. Circular Pattern: Direction 1 first, Number of instances', async function () {
       try {
         await rfNHPart(BOX);
-        await rfNHOpen(function () { UI.cmdLinearPattern(); });
+        // rfNN: the feature picked in the FeatureManager first (with nothing selected Features to Pattern is empty)
+        await rfNHOpen(function () { var fs = UI.App.model.features.filter(function (f) { return f.type !== 'sketch'; }); D.querySelector('#tree .ti[data-fid="' + fs[fs.length - 1].id + '"]').click(); UI.cmdLinearPattern(); });
         var g = rfNHGroups();
         assert(g.indexOf('Direction 1') === 0 && g.indexOf('Features to Pattern') > g.indexOf('Direction 2'), 'groups: ' + g.join('|'));
         var rev = D.querySelector('#pm .pm-has-rev select[data-key="d1"]');

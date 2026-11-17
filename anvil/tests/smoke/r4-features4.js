@@ -176,6 +176,8 @@
     near(sh.pos(2)[1], 8, 1e-9, 'the arrow points into the part from the removed face');
     UI.pmCancel();
     await anvil.run('p.sketch("Top").centerRect(0, 0, 80, 40).extrude(5);\np.sketch("Top", 5).circle(-30, 0, 4).extrude(10);'); await idle();
+    // rfNN: the boss picked in the FeatureManager first (SolidWorks: with nothing selected Features to Pattern is empty)
+    D.querySelector('#tree .ti[data-fid="' + UI.App.model.features[UI.App.model.features.length - 1].id + '"]').click();
     UI.cmdLinearPattern(); await UI.previewIdle();
     var lh = UI.instant3DHandles().filter(function (x) { return x.kind === 'pm' && x.key === 's1'; })[0];
     assert(lh, 'spacing handle');

@@ -430,6 +430,14 @@
       fb.click(); await idle();
       var fl = anvil.flat();
       notes.push('flat ' + fl.size.map(function (x) { return x.toFixed(4); }).join(' x ') + ' holes ' + (fl.loops.length - 1));
+      rfNNjob.dNotes = notes;
+      assert(fl.loops.length === 601, '600 holes in the flat: ' + notes.join('; '));
+      assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+      return notes.join('; ');
+    });
+    step('rfNN: job d drawing (split from the model so each stays under the step time on a busy machine): Make Drawing (the flat on Sheet2), a Hole Table on the flat, Flat to DXF with the 600 holes', async function () {
+      var errs0 = errors.length, notes = [], t0;
+      assert(rfNNjob.dNotes && UI.App.model.features.length > 3, 'job d panel first');
       t0 = performance.now();
       rfNNMenu('File', 'Make Drawing from Part'); await wait(30);
       if (modalOpen()) clickModalButton('OK');
@@ -594,5 +602,98 @@
       assert(/add WIDE \{"ok":true/.test(notes.join(';')) && /"placed":18,"unplaced":0/.test(notes.join(';')) && /nest dxf true/.test(notes.join(';')), 'both configurations nested, 18 placed, the DXF reads back: ' + notes.join('; '));
       assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
       return notes.join('; ');
+    });
+    // ---- follow-up (lane NN2): ✓ with nothing picked, Features to Pattern with nothing selected, a family's names in the nest
+    function rfNNOk() { var b = D.querySelector('#pm .pm-ok'); return { grey: !!(b && b.classList.contains('disabled')), title: b ? b.title : '' }; }
+    async function rfNNSettle() { if (UI.previewIdle) await UI.previewIdle(); await wait(320); await idle(); }
+    step('rfNN: sheet-metal PropertyManagers opened with nothing picked (Closed Corner, Corner Relief, Break-Corner, Welded Corner, Rip, Fold, Hem, Jog): ✓ is greyed with the reason and a click on it adds nothing (Closed Corner closed and added nothing)', async function () {
+      var errs0 = errors.length, out = [];
+      await rfNNNewInch();
+      await anvil.run(RFNN_F); await idle();
+      var cmds = [['Closed Corner', 'cmdClosedCorner'], ['Corner Relief', 'cmdCornerRelief'], ['Break-Corner', 'cmdBreakCorner'], ['Welded Corner', 'cmdWeldedCorner'], ['Rip', 'cmdRipFeature'], ['Fold', 'cmdFold'], ['Hem', 'cmdHem'], ['Jog', 'cmdJog'], ['Unfold', 'cmdUnfold']];
+      for (var i = 0; i < cmds.length; i++) {
+        if (UI.hasPM()) UI.pmCancel();
+        UI.App.sel = null; if (UI.setSelection) UI.setSelection([]);
+        var n0 = UI.App.model.features.length;
+        UI[cmds[i][1]](); await wait(30); await rfNNSettle();
+        if (!UI.hasPM()) { out.push(cmds[i][0] + ': no PM (' + statusText().slice(0, 80) + ')'); continue; }
+        var ok = rfNNOk();
+        D.querySelector('#pm .pm-ok').click(); await wait(30); await idle();
+        out.push(cmds[i][0] + ': ' + (ok.grey ? 'grey "' + ok.title + '"' : 'NOT GREY') + (UI.hasPM() ? ', stays' : ', closed') + ', features +' + (UI.App.model.features.length - n0));
+        // Unfold with nothing picked is defined (placeholders: the base face fixed, every bend): it adds the Unfold
+        if (cmds[i][0] !== 'Unfold') assert(ok.grey && ok.title && UI.App.model.features.length === n0, cmds[i][0] + ' with nothing picked: ' + out[out.length - 1]);
+        if (UI.hasPM()) UI.pmCancel();
+      }
+      rfNNjob.gOut = out;
+      assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+      return out.join('; ');
+    });
+
+    step('rfNN: Linear Pattern / Circular Pattern / Mirror right after another feature\'s ✓ (nothing selected by the user): Features to Pattern is empty, ✓ greyed with "Select the feature…", a click on a face of Hole 1 fills it; a feature picked in the FeatureManager before the command is still taken', async function () {
+      var errs0 = errors.length, out = [];
+      await rfNNNewInch();
+      await anvil.run(RFNN_F); await idle();
+      // a Linear Pattern made with the PM: then its own ✓ auto-selects it, as Corner Relief was in job a
+      var h1 = rfNNByName('Hole 1');
+      D.querySelector('#tree .ti[data-fid="' + h1.id + '"]').click(); await wait(20);
+      UI.cmdLinearPattern(); await wait(30);
+      assert(UI.pmSpec().values.feature === h1.id, 'a feature picked in the FeatureManager is taken: ' + UI.pmSpec().values.feature);
+      rfNNSet('s1', 0.5); rfNNSet('n1', 2); await wait(10);
+      await pmAccept(); await wait(30);
+      var lp1 = rfNNLast();
+      assert(lp1.type === 'lpattern' && lp1.feature === h1.id, 'LPattern1 of Hole 1');
+      var names3 = [['Linear Pattern', 'cmdLinearPattern', 'pattern'], ['Circular Pattern', 'cmdCircularPattern', 'pattern'], ['Mirror', 'cmdMirror', 'mirror']];
+      for (var i = 0; i < names3.length; i++) {
+        UI.App.sel = { kind: 'feature', id: lp1.id, auto: true };   // what ✓ leaves behind
+        UI[names3[i][1]](); await wait(30); await rfNNSettle();
+        rfNNPmOpen(names3[i][0]);
+        var v = UI.pmSpec().values, ok = rfNNOk();
+        out.push(names3[i][0] + ': feature ' + JSON.stringify(v.feature) + ', ' + (ok.grey ? 'grey "' + ok.title + '"' : 'NOT GREY'));
+        assert((v.feature == null || v.feature === '') && ok.grey && /Select the feature to/.test(ok.title), names3[i][0] + ' starts empty and waits: ' + out[out.length - 1]);
+        if (i === 0) {
+          // a click on Hole 1's wall in the graphics area fills it
+          await rfNNView('Top');
+          var hf = -1;
+          UI.App.mesh.faces.forEach(function (f, k) { if (hf < 0 && UI.App.triShared[f.start] === h1.id) hf = k; });
+          assert(hf >= 0, 'a face of Hole 1');
+          // Hole 1's wall: look into the hole at a slant
+          UI.cam.dir.set(0.5, 1, 0.3).normalize(); UI.cam.target.set(2, T16 / 2, 2); UI.cam.scale = 0.0012; UI.applyCamera(); await idle(); await wait(30);
+          var at = null;
+          for (var a = 0; a < 16 && !at; a++) { var q = [2 + 0.1405 * Math.cos(a * Math.PI / 8), T16 / 2, 2 + 0.1405 * Math.sin(a * Math.PI / 8)], sq = UI.worldToScreen(q), pq = UI.pickFace(sq[0], sq[1]); if (pq && UI.App.triShared[UI.App.mesh.faces[pq.index].start] === h1.id) at = sq; }
+          assert(at, 'Hole 1\'s wall under the cursor');
+          rfNNClick(at); await idle(); await rfNNSettle();
+          ok = rfNNOk();
+          out.push('clicked Hole 1: feature ' + UI.pmSpec().values.feature + ', ' + (ok.grey ? 'grey' : 'OK live'));
+          assert(UI.pmSpec().values.feature === h1.id && !ok.grey, 'the click on Hole 1 fills Features to Pattern: ' + out[out.length - 1]);
+        }
+        UI.pmCancel(); await idle();
+      }
+      rfNNjob.hOut = out;
+      assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+      return out.join('; ');
+    });
+
+    step('rfNN: job e follow-up: a family\'s flats join the nest as "FAM-1 Default" and "FAM-1 WIDE", and the nest report names both', async function () {
+      var errs0 = errors.length, prof = anvil.profile();
+      await rfNNNewInch();
+      await anvil.run('p.name("FAM-1").units("in");\np.equations({ W: 2 });\np.configurations([{ name: "Default", values: { W: 2 } }, { name: "WIDE", values: { W: 3.5 } }], "Default");\n' +
+        'p.sheet(' + T16 + ', ' + R16 + ', ' + KF + ');\np.sketch("Top").rect(0, -3, 6, 3).end().baseFlange();\np.flange("=W", [[1, ' + T16 + ', 0]], { position: "inside", lengthRef: "outer" });\n'); await idle();
+      var names = [], rep = '';
+      try {
+        anvil.profile('mastercam'); await wait(40);
+        rfNNRibbon('Transform', /Geometry Nesting/).click(); await wait(40);
+        UI.nestAddFlat();
+        await UI.configurations.activate('WIDE'); await idle(); await wait(40);
+        UI.nestAddFlat();
+        names = UI.nestState().parts.map(function (q) { return q.name; });
+        var r = UI.nestRun(); if (r && r.then) await r; await wait(40);
+        rep = UI.nestReport ? String(UI.nestReport()) : '';
+        if (UI.hasPM()) UI.pmCancel();
+        await idle();
+      } finally { anvil.profile(prof); await wait(30); }
+      assert(names.join('|') === 'FAM-1 Default|FAM-1 WIDE', 'names: ' + names.join('|'));
+      assert(rep.indexOf('FAM-1 Default') >= 0 && rep.indexOf('FAM-1 WIDE') >= 0, 'the report names both: ' + rep.slice(0, 400));
+      assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+      return names.join(', ');
     });
   })();

@@ -1058,7 +1058,7 @@
     return null;
   }
   function selectedSolidId() {
-    if (App.sel && App.sel.kind === 'feature') {
+    if (App.sel && App.sel.kind === 'feature' && !App.sel.auto) {
       var f = K.findFeature(App.model, App.sel.id);
       if (f && f.type !== 'sketch' && f.type !== 'plane' && f.type !== 'refaxis' && f.type !== 'refpoint' && f.type !== 'csys') return f.id;
     }
@@ -1084,7 +1084,7 @@
     }
     // resolves to the feature once the build is applied (immediately in sync mode)
     return UI.afterRebuild(UI.rebuild(), function () {
-      App.sel = { kind: 'feature', id: f.id };
+      App.sel = { kind: 'feature', id: f.id, auto: true };   // rfNN: shown selected, but not the user's pick (patterns ignore it)
       UI.updateHighlights(); UI.updateSketches(); UI.refreshTree();
       var err = App.build.errors[f.id], ow = App.build.warnings && App.build.warnings[f.id];
       ow = ow && /over defined/.test(ow) ? ' Warning: ' + ow + ' Edit the sketch: make the extra dimension driven or delete it.' : '';   // rfAC
@@ -1783,17 +1783,38 @@
   }
 
   // ------------------------------------------------------------------ patterns & mirror
+  // rfNN: SolidWorks' Features to Pattern / Mirror holds what the user selected before the command (a feature in the
+  // FeatureManager, a face of it); with nothing selected it is empty and waits for a pick (a face of the feature in the
+  // graphics area, or the list). It took the last feature, or the one ✓ had just auto-selected (a Corner Relief got
+  // patterned into slivers).
   function sourceField(v) {
     var list = solidFeatures().filter(function (s) { return !v.id || s.id !== v.id; });
-    return { type: 'select', label: 'Feature to pattern', key: 'feature', options: list.length ? list.map(function (s) { return [s.id, s.name]; }) : [[-1, '(no features yet)']] };
+    var opts = list.length ? list.map(function (s) { return [s.id, s.name]; }) : [[-1, '(no features yet)']];
+    return { type: 'select', label: 'Feature to pattern', key: 'feature', options: function (x) { return noSource(x) ? [['', '(select a feature)']].concat(opts) : opts; } };
   }
-  function defaultSource() {
-    var id = selectedSolidId();
-    if (id != null) return id;
-    var list = solidFeatures();
-    return list.length ? list[list.length - 1].id : null;
+  function defaultSource() { return selectedSolidId(); }
+  function needSource(f) { if (f.feature == null && !solidFeatures().length) { UI.toast('Create a boss or cut first, then pattern it.'); return false; } return true; }
+  function noSource(v) { return v.feature == null || v.feature === '' || v.feature === -1; }
+  function sourceWhy(v, what) { return noSource(v) ? 'Select the feature to ' + what + ': click a face of it, or pick it in the list.' : ''; }
+  function sourceNum(v) { v.feature = noSource(v) ? null : +v.feature; return v; }
+  // a click on a face of the part names its feature as the one to pattern (base: the PM's other command, kept)
+  function sourceCommand(base) {
+    var c = Object.assign({}, base || {}), inner = c.onPick;
+    c.onPick = function (pk) {
+      var sp = UI.pmSpec && UI.pmSpec(), v = sp && sp.values;
+      if (v && !v.body && pk && pk.kind === 'face' && pk.index != null && App.mesh && App.triShared) {
+        var fc = App.mesh.faces[pk.index], id = fc ? App.triShared[fc.start] : null, g = id != null && id >= 0 ? K.findFeature(App.model, id) : null;
+        if (g && solidFeatures().indexOf(g) >= 0 && g.id !== v.id) {
+          v.feature = g.id; renderPM();
+          if (sp.onChange) sp.onChange(v, 'feature');
+          UI.setStatus('Feature to pattern: ' + g.name + '.');
+          return true;
+        }
+      }
+      return inner ? inner(pk) : false;
+    };
+    return c;
   }
-  function needSource(f) { if (f.feature == null || f.feature === -1) { UI.toast('Create a boss or cut first, then pattern it.'); return false; } return true; }
 
   function cmdLinearPattern(existing) {
     if (App.mode === 'sketch') UI.exitSketch(true);
@@ -1802,7 +1823,7 @@
     initBodyFields(f, existing);
     function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, featureIsCut(v)); }
     openPM({
-      title: existing ? existing.name : 'Linear Pattern', icon: 'lpattern', values: f, handles: lpatternHandles,
+      title: existing ? existing.name : 'Linear Pattern', icon: 'lpattern', values: f, handles: lpatternHandles, command: sourceCommand(),
       groups: [
         // rfNH: SolidWorks' order (Direction 1, Direction 2, then the features), its Reverse Direction button beside the
         // direction, "Number of instances" as the sketch patterns
@@ -1812,8 +1833,9 @@
         scopeGroup(featureIsCut),   // a pattern of a cut is itself a cut
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
-      onChange: function (v) { if (v.d2 === '') v.d2 = null; var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing linear pattern.'); },
-      onOK: function (v) { if (!v.name) delete v.name; if (v.d2 === '') v.d2 = null; return commitFeature(applyBodyFields(v, v, featureIsCut(v)), existing); }
+      okBlocked: function (v) { return sourceWhy(v, 'pattern'); },   // rfNN
+      onChange: function (v) { if (v.d2 === '') v.d2 = null; sourceNum(v); if (noSource(v)) { UI.disposeGroup(UI.groups.preview); UI.setStatus(sourceWhy(v, 'pattern')); return; } var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing linear pattern.'); },
+      onOK: function (v) { if (!v.name) delete v.name; if (v.d2 === '') v.d2 = null; sourceNum(v); return commitFeature(applyBodyFields(v, v, featureIsCut(v)), existing); }
     });
   }
 
@@ -1827,7 +1849,7 @@
     function norm(v) { v.center = [+v.cx || 0, +v.cy || 0, +v.cz || 0]; return v; }
     function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(norm(v))), v, featureIsCut(v)); }
     openPM({
-      title: existing ? existing.name : 'Circular Pattern', icon: 'cpattern', values: f, handles: cpatternHandles, command: refAxisCommand(f),
+      title: existing ? existing.name : 'Circular Pattern', icon: 'cpattern', values: f, handles: cpatternHandles, command: sourceCommand(refAxisCommand(f)),
       groups: [
         // rfNH: SolidWorks' order (Direction 1, then the features), "Number of instances"
         { title: 'Direction 1', fields: [{ type: 'select', label: 'Axis', key: 'axis', options: function (v) { return [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']].concat(refAxisOptions(v.id)); }, rerender: true }, { type: 'number', label: 'Angle', key: 'angle', unit: '°' }, { type: 'number', label: 'Number of instances', key: 'n', step: 1, min: 2 }, { type: 'check', label: 'Equal spacing', key: 'equal' }, mergeField(featureIsBoss)] },
@@ -1836,8 +1858,9 @@
         scopeGroup(featureIsCut),   // a pattern of a cut is itself a cut
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
-      onChange: function (v) { var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing circular pattern.'); },
-      onOK: function (v) { norm(v); delete v.cx; delete v.cy; delete v.cz; if (!v.name) delete v.name; axisRefOut(v, 'z'); return commitFeature(applyBodyFields(v, v, featureIsCut(v)), existing); }
+      okBlocked: function (v) { return sourceWhy(v, 'pattern'); },   // rfNN
+      onChange: function (v) { sourceNum(v); if (noSource(v)) { UI.disposeGroup(UI.groups.preview); UI.setStatus(sourceWhy(v, 'pattern')); return; } var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing circular pattern.'); },
+      onOK: function (v) { sourceNum(v); norm(v); delete v.cx; delete v.cy; delete v.cz; if (!v.name) delete v.name; axisRefOut(v, 'z'); return commitFeature(applyBodyFields(v, v, featureIsCut(v)), existing); }
     });
   }
 
@@ -1848,15 +1871,16 @@
     initBodyFields(f, existing);
     function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, featureIsCut(v)); }
     openPM({
-      title: existing ? existing.name : 'Mirror', icon: 'mirror', values: f, handles: function (v) { return offsetHandles(v.plane || 'Right', v.offset, 'Plane offset'); },
+      title: existing ? existing.name : 'Mirror', icon: 'mirror', values: f, handles: function (v) { return offsetHandles(v.plane || 'Right', v.offset, 'Plane offset'); }, command: sourceCommand(),
       groups: [
         { title: 'Mirror Face/Plane', fields: [{ type: 'select', label: 'Plane', key: 'plane', options: ['Front', 'Top', 'Right'] }, { type: 'number', label: 'Plane offset', key: 'offset', unit: 'u' }, mergeField(featureIsBoss)] },
         { title: 'Features to Mirror', fields: [{ type: 'check', label: 'Mirror whole body', key: 'body', rerender: true }, Object.assign(sourceField(f), { label: 'Feature to mirror', show: function (v) { return !v.body; }, rerender: true })] },   // rfNH: was "Feature to pattern"
         scopeGroup(featureIsCut),   // a mirror of a cut is itself a cut
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
-      onChange: function (v) { var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing mirror.'); },
-      onOK: function (v) { if (!v.name) delete v.name; if (v.body) delete v.feature; return commitFeature(applyBodyFields(v, v, featureIsCut(v)), existing); }
+      okBlocked: function (v) { return v.body ? '' : sourceWhy(v, 'mirror'); },   // rfNN
+      onChange: function (v) { if (!v.body) sourceNum(v); if (!v.body && noSource(v)) { UI.disposeGroup(UI.groups.preview); UI.setStatus(sourceWhy(v, 'mirror')); return; } var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing mirror.'); },
+      onOK: function (v) { if (!v.name) delete v.name; if (v.body) delete v.feature; else sourceNum(v); return commitFeature(applyBodyFields(v, v, featureIsCut(v)), existing); }
     });
   }
 
