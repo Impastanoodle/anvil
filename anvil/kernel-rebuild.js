@@ -351,7 +351,7 @@
   // rfFS: an empty cut (both directions tried for a cut that had none) is SolidWorks' rebuild error, a refusal too
   var CUT_MISS = 'The cut does not intersect the model: it would remove no material. Reverse its direction or change its end condition.';
   K.CUT_MISS = CUT_MISS;
-  var REFUSAL = /zero-thickness geometry|would remove all of the material|does not intersect the model|turns back on itself|sweep would intersect itself|loft would intersect itself|Revolve angle must be greater than zero|rib is not bounded properly/;
+  var REFUSAL = /zero-thickness geometry|would remove all of the material|does not intersect the model|lies outside the part: Edit Sketch|turns back on itself|sweep would intersect itself|loft would intersect itself|Revolve angle must be greater than zero|rib is not bounded properly/;
   K.isRefusal = function (msg) { return REFUSAL.test(String(msg || '')); };
 
   // rfFN: solidFromProfile (kernel-curves.js) stacks every outline's solid and subtracts every hole from all of them,
@@ -783,7 +783,7 @@
       return { res: res, changed: changed };
     }
     function commitCut(trial, f) {
-      if (!trial.changed) throw new Error(CUT_MISS);
+      if (!trial.changed) throw new Error(K.cutMissMessage ? K.cutMissMessage(f, model, ctx, CUT_MISS) : CUT_MISS);   // rfOD (F2): a sketch beside the part says so
       for (var s = trial.res.length - 1; s >= 0; s--) {
         var r = trial.res[s];
         if (!r.nb.polygons.length || r.vol < 1e-9) { ctx.bodies.splice(r.i, 1); ctx.bodyFeatures.splice(r.i, 1); }
