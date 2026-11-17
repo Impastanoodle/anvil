@@ -1303,7 +1303,8 @@
     // What the true circle takes beyond that (arcAdjust: Green's ∮ s dt along the arc less along the walled path, × the
     // metal per unit (s, t) area) is hung on the outer cylinder record (`adj`: { v, m }), which kernel-curves.js
     // curveCorrection adds once per record. Only with round voids, and only for Fold (opts.exactArcs).
-    var arcs = opts.exactArcs && arcCircles.length && sec.R > 0 ? arcAdjust(edges, arcCircles, sec, BA, segs, Z, E, sEnd, t0, t1, tolT, plane) : null;
+    var feet = opts.exactFoot && sec.R > 0 ? footCurves(opts.exactFoot, sec, BA, plane, segs) : null;
+    var arcs = (opts.exactArcs && arcCircles.length || feet && feet.length) && sec.R > 0 ? arcAdjust(edges, opts.exactArcs ? arcCircles : [], sec, BA, segs, Z, E, sEnd, t0, t1, tolT, plane, feet) : null;
     var polys = [];
     faces.forEach(function (f) {
       var pg = CSG.Polygon.tryCreate(f.map(function (p) { return new CSG.Vertex(new CSG.Vector(p[0], p[1], p[2])); }), opts.shared);
@@ -1316,6 +1317,137 @@
       cylOut.adj = { v: dv, m: m3 };
     }
     return polys.length ? CSG.fromPolygons(polys) : null;
+  }
+  // lane NM: footCurves({ cyls: [{ S: { o, d, r }, chords }], z }, sec, BA, plane, segs) -> [{ g, tol, maxLen }]: the
+  // trace of each tool cylinder on the bend surface at radius R + z, in (s, t): g(p) = the distance of the surface
+  // point at the TRUE angle A·s/BA from the cylinder's axis, less its radius. tol: how far a point read off the faceted
+  // bend and the tool's polygon can be from it (the chord's sagitta plus the polygon's)
+  function footCurves(ef, sec, BA, plane, segs) {
+    var A = sec.A, Re = sec.R + (+ef.z || 0), axC = add(plane.origin, scale(plane.y, sec.R)), sag = Re * (1 - Math.cos(A / segs / 2));
+    function surf(p) { var th = A * p[0] / BA; return add(add(add(axC, scale(plane.x, Re * Math.sin(th))), scale(plane.y, -Re * Math.cos(th))), scale(plane.n, p[1])); }
+    return (ef.cyls || []).map(function (cy) {
+      if (cy.Pl) return { g: function (p) { return dot(surf(p), cy.Pl.n) - cy.Pl.w; }, tol: 1.5 * sag + 1e-7 * (1 + Re), maxLen: Infinity };   // (a flat side wall)
+      var S = cy.S, d = norm(S.d), pd = 0;
+      (cy.chords || []).forEach(function (ch) { var m = scale(add(ch[0], ch[1]), 0.5), q = sub(m, S.o); q = sub(q, scale(d, dot(q, d))); pd = Math.max(pd, S.r - len(q)); });
+      if (!(cy.chords || []).length) pd = S.r * (1 - Math.cos(Math.PI / 32));
+      return {
+        g: function (p) {
+          var th = A * p[0] / BA, P = add(add(add(axC, scale(plane.x, Re * Math.sin(th))), scale(plane.y, -Re * Math.cos(th))), scale(plane.n, p[1]));
+          var q = sub(P, S.o);
+          q = sub(q, scale(d, dot(q, d)));
+          return len(q) - S.r;
+        },
+        tol: 1.5 * (sag + pd) + 1e-7 * (1 + S.r), maxLen: S.r
+      };
+    });
+  }
+  // lane NM: flatFootMap(fi, foot, P0, o2, dOut, BA) -> { g(Q), tol, r, inBend(Q) } in the flat's 2D: Q goes to the
+  // record's developed (d, τ) (Q = P0 + o2·d − dOut·τ), then onto the surface the Normal Cut entered through (radius
+  // R + z): d < 0 the base face, 0..BA the bend at the true angle A·d/BA, past BA the wall face, all tangent; g is that
+  // point's distance from the tool cylinder's axis less its radius (zero on the hole's true trace)
+  function flatFootMap(fi, ft, P0, o2, dOut, BA) {
+    var det = o2[0] * dOut[1] - o2[1] * dOut[0];
+    if (!(Math.abs(det) > 1e-12) || !fi.origin || !fi.o || !fi.u || !(BA > 0) || !(fi.angle > 0)) return null;
+    var n = norm(cross(fi.o, fi.u)), ta = dot(sub(fi.a, fi.origin), n), sg = dot(sub(fi.b, fi.origin), n) >= ta ? 1 : -1;
+    var A = fi.angle, R = +fi.R, Re = R + (+ft.z || 0), axC = add(fi.origin, scale(fi.u, R)), S = ft.cyl || {}, d = ft.cyl ? norm(S.d) : null;
+    var wd = add(scale(fi.o, Math.cos(A)), scale(fi.u, Math.sin(A))), W0 = add(add(axC, scale(fi.o, Re * Math.sin(A))), scale(fi.u, -Re * Math.cos(A)));
+    function dt(Q) { var x = Q[0] - P0[0], y = Q[1] - P0[1]; return [(x * dOut[1] - y * dOut[0]) / det, -(o2[0] * y - o2[1] * x) / det]; }
+    function at(dd, tau) {
+      var t = ta + sg * tau, P;
+      if (dd < 0) P = add(add(fi.origin, scale(fi.o, dd)), scale(fi.u, R - Re));
+      else if (dd > BA) P = add(W0, scale(wd, dd - BA));
+      else { var th = A * dd / BA; P = add(add(axC, scale(fi.o, Re * Math.sin(th))), scale(fi.u, -Re * Math.cos(th))); }
+      return add(P, scale(n, t - dot(sub(P, fi.origin), n)));
+    }
+    if (ft.plane) return { r: Infinity, rho: fi.R + fi.T, tol: ft.tol, BA: BA, dOf: function (Q) { return dt(Q)[0]; },
+      g: function (Q) { var p = dt(Q); return dot(at(p[0], p[1]), ft.plane.n) - ft.plane.w; } };
+    return {
+      r: S.r, rho: S.r, tol: ft.tol, BA: BA,
+      dOf: function (Q) { return dt(Q)[0]; },
+      g: function (Q) { var p = dt(Q), q = sub(at(p[0], p[1]), S.o); q = sub(q, scale(d, dot(q, d))); return len(q) - S.r; }
+    };
+  }
+  // lane NM: flatFootLoop(l, maps) -> a flat loop of a hole that crosses a bend with every edge on a Normal Cut's trace
+  // (a round hole's or a flat side wall's: both ends within its tol, shorter than its radius; one trace per edge, the
+  // one its ends lie nearest) replaced by points on the true trace (projected along g's gradient), spaced for a
+  // sagitta of 5e-7 of the radius: the flat shows the developed hole (base circle, bend lobe) instead of the facets'
+  // and the tool polygon's chords. A point between two such edges moves onto the trace (onto both traces where two
+  // meet); one ending a straight edge (the bend's end where the wall is not cut) slides along that edge onto it. Loops
+  // that do not reach into a bend are left alone (a hole in a flat region stays the tool's circle, a CIRCLE after this).
+  function flatFootLoop(l, maps) {
+    var m = l.length;
+    function hOf(F) { return 1e-7 * Math.max(1e-3, F.BA); }
+    function proj(F, p) {
+      var q = p.slice(), h = hOf(F);
+      for (var it = 0; it < 8; it++) {
+        var g0 = F.g(q), gx = (F.g([q[0] + h, q[1]]) - F.g([q[0] - h, q[1]])) / (2 * h), gy = (F.g([q[0], q[1] + h]) - F.g([q[0], q[1] - h])) / (2 * h), n2 = gx * gx + gy * gy;
+        if (!(n2 > 0)) return null;
+        q = [q[0] - g0 * gx / n2, q[1] - g0 * gy / n2];
+        if (Math.abs(g0) < 1e-13) break;
+      }
+      return Math.abs(F.g(q)) < 1e-10 ? q : null;
+    }
+    function slide(F, p, q) {
+      var u = [q[0] - p[0], q[1] - p[1]], L = Math.hypot(u[0], u[1]), lam = 0, h = hOf(F);
+      if (!(L > 0)) return p;
+      u = [u[0] / L, u[1] / L];
+      for (var it = 0; it < 30; it++) {
+        var x = [p[0] + u[0] * lam, p[1] + u[1] * lam], g0 = F.g(x), d = (F.g([x[0] + u[0] * h, x[1] + u[1] * h]) - F.g([x[0] - u[0] * h, x[1] - u[1] * h])) / (2 * h);
+        if (!(Math.abs(d) > 1e-6)) return p;
+        lam -= g0 / d;
+        if (Math.abs(g0) < 1e-13) break;
+      }
+      var y = [p[0] + u[0] * lam, p[1] + u[1] * lam];
+      return Math.abs(F.g(y)) < 1e-10 && Math.abs(lam) <= 2 * F.tol && lam < L ? y : p;
+    }
+    var eF = [], reach = false;
+    for (var i = 0; i < m; i++) {
+      var a = l[i], b = l[(i + 1) % m], best = null, be = Infinity;
+      maps.forEach(function (F) {
+        var ga = Math.abs(F.g(a)), gb = Math.abs(F.g(b));
+        if (ga > F.tol || gb > F.tol || !(Math.hypot(b[0] - a[0], b[1] - a[1]) < F.r)) return;
+        if (Math.abs(F.g([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2])) > F.tol) return;   // (a straight edge between two points of it: the bend's end)
+        // (in the bend's strip only: in the base and the wall the hole is the tool's own polygon, its corners on the
+        // true circle with equal chords, which the DXF writes as one ARC)
+        if (![a, b].every(function (p) { var dd = F.dOf(p); return dd > -1e-6 * (1 + F.BA) && dd < F.BA * (1 + 1e-6) + 1e-6; })) return;
+        var e = Math.max(ga, gb) / F.tol;
+        if (e < be) { be = e; best = F; }
+      });
+      eF.push(best);
+      if (best && [a, b].some(function (p) { var dd = best.dOf(p); return dd > 1e-9 && dd < best.BA - 1e-9; })) reach = true;
+    }
+    if (!reach) return l;
+    var mv = l.map(function (a, i) {
+      var ip = (i + m - 1) % m, Fa = eF[ip], Fb = eF[i], F0 = Fa || Fb, d0 = F0 ? F0.dOf(a) : 0;
+      var edge = F0 && !(d0 > 1e-9 * (1 + F0.BA) && d0 < F0.BA * (1 - 1e-9));   // (on the strip's edge: where the base's polygon crosses in)
+      if (Fa && Fb) {
+        if (edge) return a;
+        if (Fa === Fb) { var pa = proj(Fa, a), da = pa ? Fa.dOf(pa) : -1; return pa && da >= 0 && da <= Fa.BA ? pa : a; }
+        var q = a;   // two traces meet here (a slot's side and its end): onto both
+        for (var it = 0; it < 6 && q; it++) q = proj(Fa, q) && proj(Fb, proj(Fa, q));
+        return q && Math.hypot(q[0] - a[0], q[1] - a[1]) <= 2 * Math.max(Fa.tol, Fb.tol) ? q : a;
+      }
+      if (Fa) return slide(Fa, a, l[(i + 1) % m]);
+      if (Fb) return slide(Fb, a, l[ip]);
+      return a;
+    });
+    var res = [];
+    // evenly, for a sagitta of 1e-6·(1 + ρ) (ρ the hole's radius, a side wall's bend radius) and no closer than 1.2e-3:
+    // the DXF writer welds points under 1e-3 apart (kernel-script.js DXF_TOL) and merges what lies within 1e-4 of a line
+    function fill(F, P, Q) {
+      var L = Math.hypot(Q[0] - P[0], Q[1] - P[1]), sp = Math.max(1.2e-3, Math.sqrt(8e-6 * (1 + F.rho) * F.rho)), n = Math.floor(L / sp);
+      if (!(n > 1)) return;
+      // (straight already: nothing to add)
+      var mid = proj(F, [(P[0] + Q[0]) / 2, (P[1] + Q[1]) / 2]);
+      if (mid && Math.abs((mid[0] - P[0]) * (Q[1] - P[1]) - (mid[1] - P[1]) * (Q[0] - P[0])) / L <= 1e-9 * (1 + F.rho)) return;
+      // (a point the projection carries out of the strip is left out: near the bend's end the trace runs almost along it)
+      for (var s = 1; s < n; s++) { var x = proj(F, [P[0] + (Q[0] - P[0]) * s / n, P[1] + (Q[1] - P[1]) * s / n]), dx = x ? F.dOf(x) : -1; if (x && dx >= 0 && dx <= F.BA) res.push(x); }
+    }
+    for (var k = 0; k < m; k++) {
+      res.push(mv[k]);
+      if (eF[k]) fill(eF[k], mv[k], mv[(k + 1) % m]);
+    }
+    return res;
   }
   // lane MQ: the circles a CCW outline runs along (3 consecutive points on one circle, at least twice: 4 points or more on it): [{ c, r }]
   function loopCircles(l) {
@@ -1339,7 +1471,7 @@
   // metal per unit (s, t) area
   var MQ_GL = { x: [0.033765242898423986, 0.16939530676686776, 0.38069040695840156, 0.6193095930415985, 0.8306046932331322, 0.966234757101576],
     w: [0.08566224618958517, 0.18038078652406933, 0.23395696728634552, 0.23395696728634552, 0.18038078652406933, 0.08566224618958517] };
-  function arcAdjust(edges, circles, sec, BA, segs, Z, E, sEnd, t0, t1, tolT, plane) {
+  function arcAdjust(edges, circles, sec, BA, segs, Z, E, sEnd, t0, t1, tolT, plane, feet) {
     var A = sec.A, R = sec.R, T = sec.T, f = ((R + T) * (R + T) - R * R) / 2 * A / BA;
     var rc = (2 / 3) * (Math.pow(R + T, 3) - R * R * R) / ((R + T) * (R + T) - R * R), axC = add(plane.origin, scale(plane.y, R));
     var tolB = 1e-9 * Math.max(1, BA, t1 - t0);
@@ -1387,8 +1519,78 @@
       }
       return sum;
     }
+    function partAt(dA, a, b) {
+      var sm = (a[0] + b[0]) / 2, th = A * sm / BA;
+      out.parts.push({ w: dA, P: add(add(add(axC, scale(plane.x, rc * Math.sin(th))), scale(plane.y, -rc * Math.cos(th))), scale(plane.n, (a[1] + b[1]) / 2)) });
+      out.dA += dA;
+    }
+    // lane NM: a Normal Cut's footprint (foot curves: { g(p), tol }, g = 0 on the true trace of the tool's cylinder on
+    // the surface it enters through, in (s, t)). An edge whose ends lie on it (within tol: the chords' sagitta and the
+    // tool's polygon) runs a → a* (a projected onto the curve) → along the curve → b* → b; the straight links cancel
+    // between neighbouring edges, so the void's boundary integral is the true curve's. An end on the band edge goes to
+    // the curve's crossing of that edge instead (along the edge), as a circle's does.
+    function footProj(F, p) {
+      var q = p.slice(), h = 1e-7 * Math.max(1, BA);
+      for (var it = 0; it < 8; it++) {
+        var g0 = F.g(q), gs = (F.g([q[0] + h, q[1]]) - F.g([q[0] - h, q[1]])) / (2 * h), gt = (F.g([q[0], q[1] + h]) - F.g([q[0], q[1] - h])) / (2 * h), n2 = gs * gs + gt * gt;
+        if (!(n2 > 0)) return null;
+        q = [q[0] - g0 * gs / n2, q[1] - g0 * gt / n2];
+        if (Math.abs(g0) < 1e-14) break;
+      }
+      return Math.abs(F.g(q)) < 1e-11 ? q : null;
+    }
+    function footCross(F, b, p) {   // the curve's crossing of band edge b nearest p (1D Newton along the edge)
+      var k = b.k, q = p.slice(), h = 1e-7 * Math.max(1, BA);
+      q[k] = b.v;
+      for (var it = 0; it < 30; it++) {
+        var g0 = F.g(q), qa = q.slice(), qb = q.slice();
+        qa[1 - k] += h; qb[1 - k] -= h;
+        var d = (F.g(qa) - F.g(qb)) / (2 * h);
+        if (!(Math.abs(d) > 0)) return null;
+        var step = g0 / d;
+        q[1 - k] -= step;
+        if (Math.abs(step) < 1e-15 * Math.max(1, BA)) break;
+      }
+      return Math.abs(F.g(q)) < 1e-11 && Math.abs(q[1 - k] - p[1 - k]) < 0.5 * Math.max(BA, t1 - t0) ? q : null;
+    }
+    function footInt(F, P, Q) {   // ∮ s dt along the curve P → Q (both on it): polylines of 16 and 32, Richardson
+      function poly(n) {
+        var sum = 0, prev = P;
+        for (var i = 1; i <= n; i++) {
+          var x = i === n ? Q : footProj(F, [P[0] + (Q[0] - P[0]) * i / n, P[1] + (Q[1] - P[1]) * i / n]);
+          if (!x) return null;
+          sum += (prev[0] + x[0]) / 2 * (x[1] - prev[1]);
+          prev = x;
+        }
+        return sum;
+      }
+      var a1 = poly(16), a2 = poly(32);
+      return a1 == null || a2 == null ? null : a2 + (a2 - a1) / 3;
+    }
+    function seg(p, q) { return (p[0] + q[0]) / 2 * (q[1] - p[1]); }
     edges.forEach(function (e) {
       var a = e.a, b = e.b, ba = bnd(a), bb = bnd(b);
+      // (one curve per edge: the one its ends lie nearest, so an edge at a slot's tangent point counts once)
+      var bestF = null, bestE = Infinity;
+      (feet || []).forEach(function (F) {
+        var ga = Math.abs(F.g(a)), gb = Math.abs(F.g(b)), ca = ga <= F.tol, cb = gb <= F.tol;
+        if (!(ca || cb) || !(ca || ba) || !(cb || bb)) return;
+        if (ca && cb && ba && bb && ba.k === bb.k && ba.v === bb.v) return;   // (along the band edge itself)
+        if (Math.hypot(b[0] - a[0], b[1] - a[1]) > F.maxLen) return;
+        if (ca && cb && Math.abs(F.g([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2])) > F.tol) return;   // (a straight edge between two of its points)
+        var e = Math.max(ca ? ga : 0, cb ? gb : 0) / F.tol;
+        if (e < bestE) { bestE = e; bestF = F; }
+      });
+      [bestF].forEach(function (F) {
+        if (!F) return;
+        var ca = Math.abs(F.g(a)) <= F.tol, cb = Math.abs(F.g(b)) <= F.tol;
+        var aT = ca && !ba ? footProj(F, a) : ba ? footCross(F, ba, a) : footProj(F, a), bT = cb && !bb ? footProj(F, b) : bb ? footCross(F, bb, b) : footProj(F, b);
+        if (!aT || !bT) return;
+        var I = footInt(F, aT, bT);
+        if (I == null) return;
+        var dA = seg(a, aT) + I + seg(bT, b) - repInt(a, b);
+        if (dA) partAt(dA, a, b);
+      });
       circles.forEach(function (C) {
         var ca = onC(a, C), cb = onC(b, C);
         if (!(ca || cb) || !(ca || ba) || !(cb || bb)) return;
@@ -1818,7 +2020,7 @@
       }
     }
     // lane MJ: the footprint on an edge flange's bend goes by the bend's developed metal (normalCutBends), not by prisms
-    var nb = flanges ? normalCutBends(chosen, body, model, flanges, tag, backTool ? [tool, backTool] : [tool]) : null;
+    var nb = flanges ? normalCutBends(chosen, body, model, flanges, tag, backTool ? [tool, backTool] : [tool], dir) : null;
     var prisms = [], outl = [];
     chosen.forEach(function (c) {
       if (nb && nb.on(c.mesh, c.i)) return;
@@ -1865,7 +2067,7 @@
       var pt = prisms.length ? unionTree(prisms) : null, gone = nb.sectors.slice();
       nb.metals.forEach(function (m) { gone = gone.map(function (s) { return smBool(s, 'subtract', m, T); }); });
       var tl = unionTree((pt ? [pt] : []).concat(gone.filter(function (g) { return g.polygons.length; })));
-      tl._nc = { rest: nb.rest, prisms: pt, metals: nb.metals, T: T };
+      tl._nc = { rest: nb.rest, prisms: pt, metals: nb.metals, T: T, foot: nb.foot };
       return tl;
     }
     if (!prisms.length) return tool;
@@ -2425,6 +2627,7 @@
       if ((f.type === 'fold' || f.type === 'unfold') && !build.errors[f.id]) { foldCutouts(flanges, flangeIds, build.flanges[f.id]); return; }
       if (f.type === 'closedCorner' && !build.errors[f.id]) { ccExtendRecords(flanges, flangeIds, build.flanges[f.id]); return; }   // lane DK
       if (f.type === 'cornerRelief' && !build.errors[f.id]) { foldCutouts(flanges, flangeIds, build.flanges[f.id]); return; }   // lane smtrim: the relief across the bends
+      if (f.type === 'extrude' && f.normalCut && !build.errors[f.id] && build.flanges[f.id]) { foldCutouts(flanges, flangeIds, build.flanges[f.id]); return; }   // lane NM: its round holes' traces
       if ((f.type === 'insertBends' || f.type === 'convertSM') && !build.errors[f.id]) { (build.flanges[f.id] || []).forEach(function (fi, j) { flanges.push(fi); flangeIds[flanges.length - 1] = { feature: f.id, index: j }; }); return; }   // lane DQ
       if ((f.type !== 'flange' && f.type !== 'jog' && f.type !== 'sketchedBend') || build.errors[f.id]) return;
       if (f.type === 'sketchedBend' || isSketchJog(f)) {
@@ -2451,7 +2654,7 @@
       if (ab) best = ab;
       return !!ab;
     });
-    var regions = [], bends = [], usedFaces = {}, usedFlanges = {}, notches = [];
+    var regions = [], bends = [], usedFaces = {}, usedFlanges = {}, notches = [], footMaps = [];   // (lane NM: footMaps, Normal Cut traces across bends)
     // length of the overlap of segment A–B with segment a–b when the two are collinear (both A and B within 1e-3 of
     // the line a–b), else 0
     function overlapOnSegment(A, B, a, b) {
@@ -2834,6 +3037,8 @@
           var nt = cl.map(function (p) { return corner(eA, p[0], -p[1]); });
           notches.push(signedArea(nt) < 0 ? nt.reverse() : nt);
         });
+        // lane NM: a Normal Cut's round hole across this bend (fi.feet): its true trace, for the last pass below
+        (fi.feet || []).forEach(function (ft) { var fm = flatFootMap(fi, ft, eA.P, o2, eA.dOut, BA); if (fm) footMaps.push(fm); });
         // lane DJ: material added across the flat strip while unfolded (a Boss-Extrude / Tab past the bend's end), folded
         // round the bend by Fold (fi.adds, [d, τ] from end a): it joins the blank, and the bend line runs on across it
         var addT = [0, Math.hypot(B2[0] - A2[0], B2[1] - A2[1])];
@@ -2986,6 +3191,7 @@
     loops[0].forEach(function (p) { for (var k = 0; k < 2; k++) { lo0[k] = Math.min(lo0[k], p[k]); hi0[k] = Math.max(hi0[k], p[k]); } });
     var hyg = 1e-9 * Math.hypot(hi0[0] - lo0[0], hi0[1] - lo0[1]);
     loops = loops.map(function (l) { return cleanFlatLoop(l, hyg); }).filter(Boolean);
+    if (footMaps.length) loops = loops.map(function (l) { return flatFootLoop(l, footMaps); });   // lane NM
     // r16/flatcircle: a round hole is a circle in the flat, whichever kernel's points it was joined from
     loops = loops.map(function (l) { var C = enclosingCircle(l); return C ? snapFlatCircle(l, flatCircleTol(model.units, C.r)) : l; });
     var min =[Infinity, Infinity], max = [-Infinity, -Infinity];
@@ -4643,7 +4849,7 @@
       if (!v0 || !v1) { ok = false; return; }
       var m0 = wrapRegion(v0, bn.sec, bn.BA, bn.plane, bn.t0, bn.t1, { shared: id });
       oldVol += m0 ? m0.volume() : 0;
-      var m1 = v1 === v0 ? m0 : wrapRegion(v1, bn.sec, bn.BA, bn.plane, bn.t0, bn.t1, { shared: id });
+      var m1 = v1 === v0 ? m0 : wrapRegion(v1, bn.sec, bn.BA, bn.plane, bn.t0, bn.t1, { shared: id, exactFoot: bn.exact });
       if (m1) metals.push(m1);
     });
     if (!ok || !(oldVol > 0) || Math.abs(removed - oldVol) > 1e-7 * oldVol) return null;
@@ -4659,13 +4865,13 @@
   // footprint's faces [{ mesh, i }]; on(): a face lying on a bend that is rebuilt (no prism, no wedge for it). A band
   // that comes within R + 2T of its bend's end also takes the ends of the bends that meet it there (their metal
   // stands in its sector), as crCornerApply does.
-  function normalCutBends(chosen, body, model, flanges, id, tools) {
+  function normalCutBends(chosen, body, model, flanges, id, tools, dir) {
     var sheet = sheetParams(model), T = +sheet.thickness, recs = [];
     (model.features || []).forEach(function (g) {
-      (flanges[g.id] || []).forEach(function (r) {
+      (flanges[g.id] || []).forEach(function (r, ri) {
         if (!r || r.kind !== 'edge' || !r.a || !r.b || !r.o || !r.u || !r.origin || !(r.angle > 1e-6 && r.angle < Math.PI - 1e-6) || !(+r.R > 0)) return;
         var n = norm(cross(r.o, r.u)), ta = dot(sub(r.a, r.origin), n), tb = dot(sub(r.b, r.origin), n);
-        recs.push({ r: r, sec: { A: +r.angle, R: +r.R, T: T }, BA: cornerRecordBA(sheet, r), plane: { origin: r.origin.slice(), x: r.o.slice(), y: r.u.slice(), n: n },
+        recs.push({ feature: g.id, index: ri, r: r, sec: { A: +r.angle, R: +r.R, T: T }, BA: cornerRecordBA(sheet, r), plane: { origin: r.origin.slice(), x: r.o.slice(), y: r.u.slice(), n: n },
           lo: Math.min(ta, tb), hi: Math.max(ta, tb), foot: [], zs: {}, t0: Infinity, t1: -Infinity, ends: [ta <= tb ? r.a : r.b, ta <= tb ? r.b : r.a] });
       });
     });
@@ -4730,9 +4936,42 @@
       });
     });
     var inBands = recs.filter(function (rc) { return rc.b0 != null; });
-    var rb = bendBandsRebuild(body, inBands.map(function (rc) { return { sec: rc.sec, BA: rc.BA, plane: rc.plane, t0: rc.b0, t1: rc.b1, cut: rc.foot.length ? { loops: rc.foot } : null }; }), T, id);
+    // lane NM: the tools' cylinders, for the true trace of a round hole in the bend (Mass Properties, the flat)
+    var cyls = [];
+    function sameAxis(P, Q) {   // (one cylinder: the tool's and its backward shadow's)
+      var dp = norm(P.d), dq = norm(Q.d), w = sub(Q.o, P.o);
+      return Math.abs(P.r - Q.r) < 1e-9 * (1 + P.r) && len(cross(dp, dq)) < 1e-9 && len(sub(w, scale(dp, dot(w, dp)))) < 1e-9 * (1 + P.r);
+    }
+    tools.forEach(function (tl) { toolCylChords(tl).forEach(function (c) { if (!cyls.some(function (q) { return q.S && (q.S === c.S || sameAxis(q.S, c.S)); })) cyls.push(c); }); });
+    // and the tool's flat side walls (parallel to the cut: a slot's sides, a rectangle's): their traces on the bend are
+    // read off the chords too, a sagitta off. Not a facet of a cylinder's polygon that lost its record (inside the circle).
+    var nCyl = cyls.length;
+    if (dir) tools.forEach(function (tl) {
+      tl.polygons.forEach(function (pg) {
+        if (pg.surf || !pg.plane) return;
+        var n = [pg.plane.normal.x, pg.plane.normal.y, pg.plane.normal.z], w = pg.plane.w;
+        if (Math.abs(dot(n, dir)) > 1e-9) return;
+        for (var k = 0; k < nCyl; k++) { var S = cyls[k].S, dd = Math.abs(dot(n, S.o) - w); if (dd < S.r * (1 - 1e-7) && dd > S.r * 0.9) return; }
+        if (cyls.some(function (q) { return q.Pl && Math.abs(Math.abs(dot(q.Pl.n, n)) - 1) < 1e-12 && Math.abs(q.Pl.w - dot(q.Pl.n, n) * w) < 1e-9 * (1 + Math.abs(w)); })) return;
+        cyls.push({ Pl: { n: n, w: w } });
+      });
+    });
+    var rb = bendBandsRebuild(body, inBands.map(function (rc) {
+      var zk = Object.keys(rc.zs);
+      return { sec: rc.sec, BA: rc.BA, plane: rc.plane, t0: rc.b0, t1: rc.b1, cut: rc.foot.length ? { loops: rc.foot } : null,
+        exact: rc.foot.length && cyls.length && zk.length === 1 ? { cyls: cyls, z: +zk[0] } : null };
+    }), T, id);
     if (!rb) return null;
     rb.on = function (mesh, i) { var fo = faceOn(mesh, i); return !!fo && inBands.indexOf(fo.rc) >= 0; };
+    // lane NM: the bends whose footprint is a round hole's trace, for the flat (flatPattern: foldCutouts 'feet')
+    rb.foot = [];
+    inBands.forEach(function (rc) {
+      var zk = Object.keys(rc.zs);
+      if (!rc.foot.length || !cyls.length || zk.length !== 1) return;
+      var segs = Math.max(4, Math.round(8 * rc.sec.A / (Math.PI / 2))), fc = footCurves({ cyls: cyls, z: +zk[0] }, rc.sec, rc.BA, rc.plane, segs);
+      rb.foot.push({ kind: 'normalCutFoot', feature: rc.feature, index: rc.index,
+        feet: cyls.map(function (c, k) { return c.Pl ? { plane: { n: c.Pl.n.slice(), w: c.Pl.w }, z: +zk[0], tol: fc[k].tol } : { cyl: { o: c.S.o.slice(), d: c.S.d.slice(), r: c.S.r }, z: +zk[0], tol: fc[k].tol }; }) });
+    });
     return rb;
   }
   // Corner-Relief1, Corner-Relief2, …
@@ -5956,8 +6195,12 @@
   // (lane DJ: kind 'foldAdds': material added across the flat strip, `adds` loops in the same [s, τ], joins the blank)
   function foldCutouts(flanges, ids, recs) {
     (recs || []).forEach(function (r) {
-      var key = r && r.kind === 'foldCutouts' ? 'cutouts' : r && r.kind === 'foldAdds' ? 'adds' : r && r.kind === 'foldFills' ? 'fills' : null;
+      var key = r && r.kind === 'foldCutouts' ? 'cutouts' : r && r.kind === 'foldAdds' ? 'adds' : r && r.kind === 'foldFills' ? 'fills' : r && r.kind === 'normalCutFoot' ? 'feet' : null;
       if (!key || !r[key] || !r[key].length) return;
+      if (key === 'feet') {   // lane NM: 3D data (the tool's cylinders), no τ to move
+        for (var q = 0; q < flanges.length; q++) if (ids[q] && ids[q].feature === r.feature && ids[q].index === r.index) { flanges[q] = Object.assign({}, flanges[q], { feet: (flanges[q].feet || []).concat(r.feet) }); return; }
+        return;
+      }
       for (var k = 0; k < flanges.length; k++) {
         var id = ids[k];
         if (id && id.feature === r.feature && id.index === r.index) {

@@ -116,15 +116,28 @@
       });
       return out.join('; ');
     });
-    test('rfMQ TODO: the swallowing Normal Cut holes exact to 1e-6 (folded and flat area × T)', function () {
+    // (promoted by lane NM, 2026-11-16: wrapRegion's exactFoot counts the tool cylinder's true trace in Mass Properties,
+    // the flat draws it (flatFootLoop); was folded 3.8e-6 / 1.1e-5, flat × T 6.4e-6 / 2.2e-5)
+    test('rfMQ: the swallowing Normal Cut holes exact to 1e-6 (folded and flat area × T)', function () {
       var out = [];
       SWALLOW.forEach(function (s) {
         var T = s[0], R = s[1], v0 = build(rfMQtray(T, R)).mp.volume;
         var r = build(rfMQtray(T, R) + 'p.sketch("Top", ' + T + ').circle(' + s[2] + ', ' + (-s[3]) + ', ' + s[4] + ').cut("through", { reverse: true, normalCut: true });\n');
-        var ex = v0 - rfMQremoved(T, R, s[2], s[3], s[4]), fa = rfMQarea(K.flatPattern(r.model, r.build, r.mesh)) * T;
+        // (the flat with its true arcs: the base's 32-gon is the hole's ARC in the DXF)
+        var tl = { weld: 1e-3, onLine: 1e-9, merge: 1e-12, maxStep: 25 * Math.PI / 180, minChords: 3 };
+        var ca = function (l) {
+          var cv = K.dxfLoopCurves(l, tl), a = 0;
+          if (!cv) return Math.abs(K.signedArea(l));
+          if (cv.circle) return Math.PI * cv.circle.r * cv.circle.r;
+          cv.segs.forEach(function (q) { a += (q.a[0] * q.b[1] - q.b[0] * q.a[1]) / 2; if (q.t === 'arc') { var th = Math.abs(q.sweep); a += (q.ccw ? 1 : -1) * q.r * q.r / 2 * (th - Math.sin(th)); } });
+          return Math.abs(a);
+        };
+        var ex = v0 - rfMQremoved(T, R, s[2], s[3], s[4]), fl = K.flatPattern(r.model, r.build, r.mesh), fa = fl.loops.reduce(function (sum, l, i) { return sum + (i ? -1 : 1) * ca(l); }, 0) * T;
+        nearRel(r.mp.volume, ex, 1e-6, s[5] + ': folded vs closed form');
+        nearRel(fa, ex, 1e-6, s[5] + ': flat × T vs closed form');
         out.push(s[5] + ': folded ' + ((r.mp.volume - ex) / ex).toExponential(2) + ', flat × T ' + ((fa - ex) / ex).toExponential(2));
       });
-      return 'TODO ' + out.join('; ');
+      return out.join('; ');
     });
   })();
   // --- end rfMQ ---

@@ -170,12 +170,18 @@
       th.sort(function (x, y) { return x[0] - y[0]; });
       var strip = 0;
       for (k = 0; k + 1 < th.length; k++) strip += (th[k][1] + th[k + 1][1]) * (th[k + 1][0] - th[k][0]) * BA / (Math.PI / 2);
-      var want = 16 * r0 * r0 * Math.sin(Math.PI / 16) / 2 + strip;   // half the 32-gon on the face + the strip's part
+      // lane NM (2026-11-16): the flat draws the TRUE trace across the strip now (the tool cylinder on the inside surface,
+      // flatFootLoop), the half 32-gon on the face stays (the DXF's ARC): the strip = BA/A·∫ 2√(r0² − R² sin²θ) dθ,
+      // sampled for a sagitta of 1e-6 (the faceted strip above, 2.6e-4 of the hole short, stays as the record of before)
+      var trueStrip = 0, NS = 20000;
+      for (k = 0; k < NS; k++) { var tk = (k + 0.5) * (Math.PI / 2) / NS; trueStrip += 2 * Math.sqrt(r0 * r0 - R * R * Math.sin(tk) * Math.sin(tk)) * BA / NS; }
+      var want = 16 * r0 * r0 * Math.sin(Math.PI / 16) / 2 + trueStrip;   // half the 32-gon on the face + the strip's part
+      out.push('faceted strip was ' + strip.toFixed(7) + ', true ' + trueStrip.toFixed(7));
       [[2, R + T], [2, 0.1], [0.1, R + T], [3.95, 0.12]].forEach(function (h, i) {
         var r = build(L + 'p.sketch("Top", ' + T + ').circle(' + h[0] + ', ' + (-h[1]) + ', ' + r0 + ').cut("through", { reverse: true, normalCut: true });\n');
         rfMJclosed(r, 'hole at ' + h.join(', '));
         var fl = K.flatPattern(r.model, r.build, r.mesh), hole = fa - rfMJarea(fl), dv = (a.mp.volume - r.mp.volume) / T;
-        if (i === 0) near(hole, want, 1e-9, 'flat hole area');
+        if (i === 0) nearRel(hole, want, 1e-6, 'flat hole area');
         // (the hole's wall inside the bend is flat between the chords while the bend's faces count as true cylinders:
         // Mass Properties is up to 0.4 % of the hole off the developed area, rfFT VOLTODO M26)
         assert(Math.abs(dv - hole) < 4e-3 * hole, 'hole at ' + h.join(', ') + ': removed volume / T ' + dv.toFixed(6) + ', flat hole ' + hole.toFixed(6));

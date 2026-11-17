@@ -1165,6 +1165,8 @@
             // SolidWorks' warning (rfGD R05e, rfGA 7, 244); only a cut from a sketch that misses is an error
             if (cut && !trial.changed && isFamilyFeature(f)) { warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + 'Some instances are disjoint from the part and were not created.'; break; }
             if (cut) commitCut(trial, f); else addBoss(tool, f);
+            // lane NM: a Normal Cut's round holes across bends: their traces for the flat (kind 'normalCutFoot')
+            if (cut && tool._nc && tool._nc.foot && tool._nc.foot.length) ctx.flanges[f.id] = tool._nc.foot;
             zeroThickness(saveBodies, f, tool, saveBodyFeatures);
           }
         }

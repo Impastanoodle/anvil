@@ -88,7 +88,12 @@
         assert(rfMNcount(s0, 'CYLINDRICAL_SURFACE') === c[2], 'cylinders: ' + rfMNfaces(s0));
         if (!c[4]) assert(rfMNcount(s0, 'B_SPLINE_CURVE_WITH_KNOTS') >= 4, 'saddle edges as curves: ' + rfMNcount(s0, 'B_SPLINE_CURVE_WITH_KNOTS'));
         var a = rfMNread(s0);
-        nearRel(a.volume, src.volume, 1e-8, 'read-back volume');
+        // (lane NM, 2026-11-16: a Normal Cut's Mass Properties count the hole's true trace across the bend (the `adj` its
+        // bend's cylinder record carries, kernel-sheetmetal.js footCurves), while the solid and so its STEP hold the walls
+        // through the tool polygon's chords: the read-back is the exported solid, i.e. the volume less those adj, 1e-8)
+        var adjV = 0, seenS = [];
+        src.build.body.polygons.forEach(function (pg) { var S = pg.surf; if (S && S.adj && seenS.indexOf(S) < 0) { seenS.push(S); adjV += S.adj.v; } });
+        nearRel(a.volume, src.volume - adjV, 1e-8, 'read-back volume');
         if (c[4]) { assert(rfMNcount(a.step, 'CYLINDRICAL_SURFACE') === c[2], 'after an import: faces ' + rfMNfaces(a.step)); return 'faces ' + rfMNfaces(s0) + ', back ' + ((a.volume - src.volume) / src.volume).toExponential(1) + ', after an import ' + rfMNfaces(a.step); }
         assert(rfMNfaces(a.step) === rfMNfaces(s0), 'after an import: faces ' + rfMNfaces(a.step) + ', source ' + rfMNfaces(s0));
         var b = rfMNread(a.step);

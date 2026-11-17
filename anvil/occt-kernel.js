@@ -55,10 +55,28 @@ var OcctKernel = (function () {
   // last: what the last build did
   var PLATE = { on: true, minHoles: 16, defer: true, mesh: true, meshMinWires: 16, last: null };
 
+  // lane NM: sheet-metal picks follow an edit (f.pickRefs, lane MY) the way Anvil's kernel resolves them. Anvil's
+  // rebuild moves each such pick onto the wall it refers to (kernel-rebuild.js smFollowPicks) and writes the moved
+  // point back; built before that (an edited model sent here first), OpenCascade read the old points and the later
+  // features failed ("No edge selected for the flange", 18 of rfMY's 20 edits). followPicks(K, model) -> the model to
+  // build: when a feature carries pickRefs (or a sketch sits on a flange's wall), Anvil's rebuild runs on copies of
+  // those features and OpenCascade builds from the moved points. Plain JS: no OpenCascade class is called.
+  function followPicks(K, model) {
+    var feats = (model && model.features) || [];
+    var need = K.SM_PICKS && feats.some(function (f) { return (f.pickRefs && K.SM_PICKS[f.type]) || (f.type === 'sketch' && f.plane && f.plane.face && f.plane.face.wall); });
+    if (!need || typeof K.rebuild !== 'function') return model;
+    var copy = Object.assign({}, model, {
+      sheet: model.sheet ? Object.assign({}, model.sheet) : model.sheet,
+      features: feats.map(function (f) { return (f.pickRefs && K.SM_PICKS[f.type]) || f.type === 'sketch' ? JSON.parse(JSON.stringify(f)) : f; })
+    });
+    try { K.rebuild(copy); } catch (e) { return model; }
+    return copy;
+  }
   function build(oc, K, model, opts) {
     opts = opts || {};
     // rfKV: a plate whose deferred holes could not be laid in after a flange is built again in plain feature order
     if (!opts.kvInner) {
+      model = followPicks(K, model);
       try { return build(oc, K, model, Object.assign({}, opts, { kvInner: true })); } catch (eKV) {
         if (!eKV || !eKV.kvRedo) throw eKV;
         // the rebuild cache's snapshots hold the deferred holes: dropped, and the cache refilled by the plain build

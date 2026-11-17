@@ -136,6 +136,11 @@
           if (Math.abs(dist2(s.c, Q) - s.r) > snap * (1 + s.r)) continue;
           var phi = wrapPi(Math.atan2(Q[1] - s.c[1], Q[0] - s.c[0]) - Math.atan2(E[1] - s.c[1], E[0] - s.c[0]));
           if (phi * (s.ccw ? 1 : -1) * dir <= 0 || Math.abs(phi) > 1.5 * Math.abs(s.sweep) / s.n) continue;
+          // (lane NM: and is about as long as the run's chords: a spoiled end chord is, while the first of the short
+          // chords a curve runs on in with (a Normal Cut hole's trace across a bend, leaving the base's circle
+          // tangentially) lies on the circle for a while and was taken in one after another, the arc then refitted
+          // 1.4e-4 off the hole's radius)
+          if (Math.abs(phi) < 0.5 * Math.abs(s.sweep) / s.n) continue;
           var A = dir > 0 ? s.a : Q, B = dir > 0 ? Q : s.b, M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], LL = dist2(A, B), c = s.c;
           if (LL > 1e-12) {
             var nx = -(B[1] - A[1]) / LL, ny = (B[0] - A[0]) / LL, t = (c[0] - M[0]) * nx + (c[1] - M[1]) * ny;
