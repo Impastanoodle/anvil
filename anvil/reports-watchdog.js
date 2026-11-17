@@ -26,7 +26,7 @@ function save() {
 }
 function check() {
   var t = Date.now();
-  if (!S.freeze && !S.hidden && t - S.lastHb > S.freezeMs) { S.freeze = { since: S.lastHb, reported: false }; save(); return; }
+  if (!S.freeze && !S.hidden && !S.waiting && t - S.lastHb > S.freezeMs) { S.freeze = { since: S.lastHb, reported: false }; save(); return; }
   if (t - S.lastSave > 2000) save();
 }
 self.onmessage = function (e) {
@@ -41,6 +41,7 @@ self.onmessage = function (e) {
   } else if (m.type === 'hb') {
     var t = Date.now(), gap = m.gap || 0;
     S.lastHb = t;
+    S.waiting = false;   // the page runs again
     // a hidden tab: its timers are slowed, so its gaps are not freezes (an open one is dropped)
     S.hidden = !!m.hidden;
     if (S.hidden) { if (S.freeze) { S.freeze = null; save(); } return; }
@@ -67,6 +68,11 @@ self.onmessage = function (e) {
     });
     if (S.crumbs.length > 200) S.crumbs.splice(0, S.crumbs.length - 200);
     if (m.extra && m.extra.operation) S.operation = m.extra.operation;
+  } else if (m.type === 'wait') {
+    // rfOF: the page is about to wait for a system box that holds its thread (Print: window.print() returns when the
+    // box is closed). Not a freeze: the watch stands by until the page says the wait is over or beats again.
+    S.waiting = !!m.on;
+    S.lastHb = Date.now();
   } else if (m.type === 'reported') {
     save();
   } else if (m.type === 'stop') {

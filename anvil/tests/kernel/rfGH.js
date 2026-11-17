@@ -155,7 +155,7 @@
       var b = build(U + 'p.sketch("Top").centerRect(0, 0, 4.25, 4).end().extrude(0.5);\np.sketch("Front").rect(0.8756, 0.4, 0.2926, 0.35).end().revolveCut(360);\np.mirror("Right");\n');
       assert(!rfGHerrs(b).length, rfGHerrs(b).join(' | '));
       assert(Object.keys(b.warnings).length === 1, 'warning: ' + JSON.stringify(b.warnings));
-      rfGHrefused(build(B + 'p.sketch("Top", 2).circle(10, -1, 0.25).end().cut("through", { reverse: true });\n'), /does not intersect the model/);
+      rfGHrefused(build(B + 'p.sketch("Top", 2).circle(10, -1, 0.25).end().cut("through", { reverse: true });\n'), /lies outside the part: Edit Sketch to move it/);   // rfOD (F2): the circle is beside the part, so the message says to move the sketch (was "does not intersect the model")
       return 'ok';
     });
     test('rfGH: CirPattern of a whole block about its edge: the copy would touch on the edge alone: not created, a warning, 24, 1 body (R17)', function () {

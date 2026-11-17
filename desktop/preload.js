@@ -79,6 +79,9 @@ const reports = {
   openFolder: (dir) => ipcRenderer.invoke('anvil-desktop:report-open', dir || null),
   copy: (text) => ipcRenderer.invoke('anvil-desktop:copy', String(text)),
   setWatch: (on) => ipcRenderer.send('anvil-desktop:report-watch', !!on),
+  // the page is about to wait for a system box that holds its thread (Print: ui-reports.js printDoc): main.js does not
+  // count the silence as a freeze until the page runs again (any later heartbeat)
+  waiting: (on) => ipcRenderer.send('anvil-desktop:hb', on ? 'waiting' : 'running'),
   // fn({ id, kind, dir, durationMs, operation, summary, previous, quiet }): a report main.js wrote
   onReport: (fn) => { reportListener = fn; reportQueue.splice(0).forEach((m) => fn(m)); }
 };

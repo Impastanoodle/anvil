@@ -2692,7 +2692,7 @@ fastFunction  L77  — (rfIO) Why OpenCascade took ~3.5 s to start, measured in 
 freeCache  L137  — an evicted cache frees its snapshot handles (OpenCascade objects are not garbage …
 more: named L82, F L83, loadNote L130, cacheFor L141
 
-## reports-watchdog.js (79 lines)
+## reports-watchdog.js (85 lines)
 > the browser's not-responding watch (lane reports, rfMI). A dedicated worker runs on its own
 more: db L10, save L21, check L27
 
@@ -4333,7 +4333,7 @@ more: stored L39, shader L54, pass L59, rt L60, frameStamp L327, measure L328, w
 more: ensureTargets L350, shadowTargets L373, viewKey L403, bodyKey L408, solidBox L414, computeAO L433,
 more: computeShadow L462, blitAcc L546, draw L598, idle L642, setFx L655
 
-## ui-reports.js (1191 lines)
+## ui-reports.js (1226 lines)
 > problem reports (lane reports, rfMI, 2026-11-12). User: "a crash report or not responding report to
 crumb  L310  — one line of what the user or the program just did; the same line again within a second …
 pushCrumb  L324  — the ring: 200 lines, of which at most the newest G_KEEP are gesture lines (c.g), so a …
@@ -4346,14 +4346,14 @@ tick  L565  — every 250 ms: the gap since the last tick is how long the main t
 cleanPage  L762  — every string of a page record scrubbed (script names, invokers)
 make  L766  — builds and saves a report; resolves to { id, kind, summary, dir (desktop folder) | …
 beat  L867  — a hidden tab's timers are slowed (to once a minute after 5 minutes): the worker does not …
-onBrowserFreeze  L881  — the worker saw a gap: { ms (the gap between heartbeats less one interval), startedAt, …
-shows  L924  — in a test frame (the smoke suite) a report is still made, but nothing shows unless a …
-dialog  L1036  — Help ▸ Report a Problem…: what went wrong in the user's words, Include the model, then a …
-optionsSection  L1060  — Tools ▸ Options (Task Pane props): where reports are kept, Open folder, how many, the …
-UI.rebuild  L1128
-UI.download  L1149
-pm  L1173  — PropertyManagers (ui-commands.js: one line in openPM, pmOK, pmCancel)
-UI.reports (api)  L1178
+onBrowserFreeze  L916  — the worker saw a gap: { ms (the gap between heartbeats less one interval), startedAt, …
+shows  L959  — in a test frame (the smoke suite) a report is still made, but nothing shows unless a …
+dialog  L1071  — Help ▸ Report a Problem…: what went wrong in the user's words, Include the model, then a …
+optionsSection  L1095  — Tools ▸ Options (Task Pane props): where reports are kept, Open folder, how many, the …
+UI.rebuild  L1163
+UI.download  L1184
+pm  L1208  — PropertyManagers (ui-commands.js: one line in openPM, pmOK, pmCancel)
+UI.reports (api)  L1213
 more: desk L304, now L305, note L335, flush L344, safe L359, lateNote L375, area L376, gNew L382, gSet L383,
 more: dragText L384, pressEnd L385, onDown L391, onMove L404, hoverText L420, gHoverEnd L424, wheelText L425,
 more: wheelEnd L426, onWheel L427, keyName L445, onKey L459, onTouch L469, entryAt L489, srcFile L490,
@@ -4361,10 +4361,10 @@ more: onLongFrame L496, onLongTask L510, observe L511, glInfo L522, glPrograms L
 more: argText L583, logConsole L597, errorInfo L610, onError L614, gpuInfo L644, osName L652, version L659,
 more: snapshot L660, operation L697, secrets L704, newId L732, build L733, modelJson L763, list L782,
 more: readReport L789, addModel L795, db L809, tx L821, idbPut L831, idbGet L832, idbAll L833, idbDel L834,
-more: idbPrune L835, watchOn L846, startWatchdog L847, stopWatchdog L875, checkLastSession L897, offer L925,
-more: offerQuiet L926, el L927, headline L929, copyText L939, forClaude L949, show L954, hide L991,
-more: quietItem L994, placeQuiet L1007, viewReport L1015, download L1024, setWatch L1078, startDesktop L1087,
-more: wrap L1106, ext L1119, size L1120, install L1140
+more: idbPrune L835, watchOn L846, startWatchdog L847, stopWatchdog L875, waitTell L888, waitBegin L891,
+more: waitEnd L899, printDoc L907, checkLastSession L932, offer L960, offerQuiet L961, el L962, headline L964,
+more: copyText L974, forClaude L984, show L989, hide L1026, quietItem L1029, placeQuiet L1042, viewReport L1050,
+more: download L1059, setWatch L1113, startDesktop L1122, wrap L1141, ext L1154, size L1155, install L1175
 
 ## ui-select.js (2474 lines)
 > selection: the Selection Filter toolbar (F5), box selection (window / crossing) in parts, sketches and

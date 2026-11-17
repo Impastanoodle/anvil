@@ -877,6 +877,41 @@
     if (wd.worker) { try { wd.worker.postMessage({ type: 'stop' }); wd.worker.terminate(); } catch (e) { } }
     wd.worker = null; wd.timer = null;
   }
+  // ---------------------------------------------------------------- Print: a wait, not a freeze (rfOF)
+  // window.print() does not return until the system's Print box is closed: the page's main thread waits outside
+  // JavaScript for as long as the user looks at the box. That was the "stopped responding for 9.6 s" report of
+  // 2026-11-16 (the Print button of the Standard toolbar; no breadcrumb, a one-frame stack). The wait is announced
+  // with a breadcrumb that is sent at once, the not-responding watch (main.js in the app, the worker in a browser)
+  // stands by until the page runs again, and the page's own slow-frame clock starts afresh, so the wait leaves no
+  // "slow frame" line and no report. beforeprint / afterprint cover a print started any other way (the browser's menu).
+  var WAIT = { on: false, own: false, at: 0, what: '' };
+  function waitTell(on) {
+    try { var d = desk(); if (d) { if (d.waiting) d.waiting(on); } else if (wd.worker) wd.worker.postMessage({ type: 'wait', on: on }); } catch (e) { /* gone */ }
+  }
+  function waitBegin(what) {
+    if (WAIT.on) return;
+    WAIT.on = true; WAIT.at = now(); WAIT.what = what;
+    crumb(what + ': the ' + what + ' box is open (Anvil waits until it is closed)');
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    flush();
+    waitTell(true);
+  }
+  function waitEnd() {
+    if (!WAIT.on) return;
+    WAIT.on = false;
+    var t = now();
+    LF.lastTick = t; wd.lastBeat = t;
+    waitTell(false);
+    crumb(WAIT.what + ': the ' + WAIT.what + ' box closed after ' + Format.secs(t - WAIT.at));
+  }
+  function printDoc() {
+    WAIT.own = true;
+    waitBegin('Print');
+    try { window.print(); } finally { WAIT.own = false; waitEnd(); }
+  }
+  window.addEventListener('beforeprint', function () { waitBegin('Print'); });
+  window.addEventListener('afterprint', function () { if (!WAIT.own) waitEnd(); });
+
   // the worker saw a gap: { ms (the gap between heartbeats less one interval), startedAt, crumbs (its copy) }
   function onBrowserFreeze(m) {
     var ms = Math.max(0, m.ms);
@@ -1176,7 +1211,7 @@
   }
 
   var api = {
-    crumb: function (t) { crumb(t); }, note: note, snapshot: snapshot, make: make, list: list, read: readReport, addModel: addModel,
+    crumb: function (t) { crumb(t); }, print: printDoc, waiting: function () { return WAIT.on; }, note: note, snapshot: snapshot, make: make, list: list, read: readReport, addModel: addModel,
     dialog: dialog, show: show, hide: hide, quietItem: quietItem, optionsSection: optionsSection, install: install, pm: pm, setWatch: setWatch, watchOn: watchOn,
     crumbs: function () { return crumbs.slice(); }, consoleLog: function () { return consoleRing.slice(); }, made: function () { return made.slice(); },
     freezes: function () { return wd.freezes.slice(); }, watchdog: function () { return { running: !!wd.worker, session: wd.session, db: DB_NAME }; },

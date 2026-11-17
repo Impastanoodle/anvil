@@ -733,6 +733,43 @@ async function checkReports() {
     ok(rbLf.some((f) => f.renderMs > 3000 && f.renderMs > f.scriptMs && f.layoutMs > 3000) && rbWin && rbWin.cpu > 50 && /without running JavaScript: layout, painting/.test(rb.md) && /Most of it was rendering, not script/.test(rb.md),
       'the evidence says which kind: the window\'s own process busy, the frame nearly all rendering (style and layout)', { cpu: rb && rb.json.where.cpu && rb.json.where.cpu.procs.map((x) => x.name + ' ' + x.cpu + ' %'), frames: rbLf.map((f) => ({ ms: f.ms, scriptMs: f.scriptMs, renderMs: f.renderMs, layoutMs: f.layoutMs })) });
     }
+    // 1f. Print (rfOF; what the 2026-11-16 report was): window.print() holds the page until Windows' Print box is closed.
+    // The box is a stand-in (a synchronous request that waits 9 s, the hold of row 1d; no box is put on the screen):
+    // the page says it will wait, main.js stands by, and there is no freeze, no report and no slow-frame line.
+    {
+      const fz0 = readLog(log).filter((e) => e.event === 'freeze-start').length, nD = reportDirs(ud).length, tP = Date.now();
+      await page.ev('window.rfOFprint = window.print; window.print = function rfOFPrintBox() { var x = new XMLHttpRequest(); x.open("GET", "app://anvil/api/test-wait?ms=9000", false); x.send(); }; setTimeout(function () { try { document.getElementById("std-print").click(); } finally { window.print = window.rfOFprint; window.rfOFdone = Date.now(); } }, 300); true');
+      const done = await page.waitFor('window.rfOFdone', 40000).catch(() => null);
+      await sleep(2500);
+      const pw = readLog(log).filter((e) => e.event === 'page-waiting'), pc = await page.ev('UI.reports.crumbs().filter(function (c) { return c.at >= ' + tP + '; }).map(function (c) { return c.text; })') || [];
+      ok(done && done - tP > 8500 && pw.length >= 2 && pw[pw.length - 2].on === true && pw[pw.length - 1].on === false && readLog(log).filter((e) => e.event === 'freeze-start').length === fz0 && reportDirs(ud).length === nD &&
+        pc.some((t) => /^Print: the Print box is open/.test(t)) && pc.some((t) => /^Print: the Print box closed after (9|1d)(.d)? s$/.test(t)) && !pc.some((t) => /^slow frame |^not responding/.test(t)),
+        'Print holds the window for 9 s (the Print box): the page said it would wait, main.js stood by, no freeze and no report', { heldMs: done && done - tP, waiting: pw.map((e) => e.on), crumbs: pc });
+    }
+    // 1g. the real Print box, only with `--real-print`: it puts Windows' Print box on the screen for about 9 s and then
+    // closes it like its X button (nothing is printed); if the box is not found among the new windows, close it by
+    // hand (the row waits a minute). window.print() returns when the box is closed. Windows 11 shows the box from
+    // PrintDialog.exe, which stays behind without a window afterwards.
+    if (args.includes('--real-print')) {
+      const cpx = require('child_process');
+      const WIN = 'Add-Type -Namespace Rf -Name W -MemberDefinition \'public delegate bool P(System.IntPtr h, System.IntPtr l); [DllImport("user32.dll")] public static extern bool EnumWindows(P p, System.IntPtr l); [DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr h); [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(System.IntPtr h, System.Text.StringBuilder s, int n); [DllImport("user32.dll")] public static extern bool PostMessage(System.IntPtr h, uint m, System.IntPtr w, System.IntPtr l);\'; ';
+      const ps = (cmd) => { try { return cpx.execFileSync('powershell', ['-NoProfile', '-EncodedCommand', Buffer.from(WIN + cmd, 'utf16le').toString('base64')], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch (e) { return ''; } };
+      // every visible top-level window with a title: "handle|title"
+      const wins = () => ps('$o = New-Object System.Collections.ArrayList; [void][Rf.W]::EnumWindows({ param($h, $l) if ([Rf.W]::IsWindowVisible($h)) { $s = New-Object System.Text.StringBuilder 300; [void][Rf.W]::GetWindowText($h, $s, 300); if ($s.Length) { [void]$o.Add("" + [int64]$h + "|" + $s.ToString()) } }; $true }, [IntPtr]::Zero); $o').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const w0 = wins(), fz0 = readLog(log).filter((e) => e.event === 'freeze-start').length, nD = reportDirs(ud).length, pw0 = readLog(log).filter((e) => e.event === 'page-waiting').length, tR = Date.now();
+      await page.ev('window.rfOFreal = 0; setTimeout(function () { document.getElementById("std-print").click(); window.rfOFreal = Date.now(); }, 300); true');
+      await sleep(9000);
+      const fresh = wins().filter((w) => w0.indexOf(w) < 0), mine = fresh.filter((w) => /Print$/.test(w));
+      mine.forEach((w) => ps('[void][Rf.W]::PostMessage([IntPtr]' + parseInt(w, 10) + ', 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)'));
+      if (!mine.length) console.log('     (the Print box was not found among the new windows: close it by hand)  ' + JSON.stringify(fresh));
+      const back = await page.waitFor('window.rfOFreal', 60000).catch(() => null);
+      await sleep(2500);
+      const pw = readLog(log).filter((e) => e.event === 'page-waiting').slice(pw0), pc = await page.ev('UI.reports.crumbs().filter(function (c) { return c.at >= ' + tR + '; }).map(function (c) { return c.text; })') || [];
+      const fz1 = readLog(log).filter((e) => e.event === 'freeze-start').length;
+      ok(back && back - tR > 8000 && pw.length >= 2 && pw[0].on === true && pw[pw.length - 1].on === false && fz1 === fz0 && reportDirs(ud).length === nD &&
+        pc.some((t) => /^Print: the Print box is open/.test(t)) && pc.some((t) => /^Print: the Print box closed after \d/.test(t)) && !pc.some((t) => /^slow frame |^not responding/.test(t)),
+        'the real Print box, open about 9 s: the page said it would wait, no freeze and no report', { box: mine, heldMs: back && back - tR, waiting: pw.map((e) => e.on), freezes: fz1 - fz0, reports: reportDirs(ud).length - nD, crumbs: pc });
+    }
     // 2. a manual report: a screenshot; the model only when ticked
     const man = await page.ev('UI.reports.make("manual", { userText: "check: the flange is on the wrong side" })');
     ok(man && man.dir && fs.existsSync(path.join(man.dir, 'report.md')) && fs.existsSync(path.join(man.dir, 'screenshot.png')) && !fs.existsSync(path.join(man.dir, 'model.anvil.json')), 'a manual report: report.md, report.json, a screenshot, no model', man && man.dir);
@@ -755,9 +792,12 @@ async function checkReports() {
     const dirs = reportDirs(ud), fakes = dirs.filter((d) => d.startsWith('2000-')), realOnes = dirs.length - fakes.length;
     ok(dirs.length === 30 && fakes.length === 30 - realOnes && fakes[0] === '2000-01-01_00-00-' + String(35 - fakes.length).padStart(2, '0') + '_manual' && dirs.some((d) => d.endsWith('_not-responding')), 'the folder keeps the newest 30 (the oldest go)', { kept: dirs.length, oldestKept: dirs[0] });
     // 5. killed while frozen: the next start says so
+    // (the freeze this row waits for is a new one: the rows above have left freeze-start and report-sample lines of
+    // their own, and a kill before main.js had noticed this freeze left nothing to tell on the next start)
+    const fz5 = readLog(log).filter((x) => x.event === 'freeze-start').length;
     await page.ev('setTimeout(function () { var t = Date.now(); while (Date.now() - t < 120000); }, 300); true');
     page.close();
-    const fs2 = await waitLog(log, (e) => e.event === 'report-sample' && readLog(log).filter((x) => x.event === 'freeze-start').length >= 2, 30000);
+    const fs2 = await waitLog(log, () => { const L = readLog(log), k = L.map((x) => x.event).lastIndexOf('freeze-start'); return L.filter((x) => x.event === 'freeze-start').length > fz5 && L.slice(k).some((x) => x.event === 'report-sample'); }, 30000);
     spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore' });
     await Promise.race([child.exitPromise, sleep(15000)]);
     child = launch(env, awake);

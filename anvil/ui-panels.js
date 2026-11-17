@@ -662,7 +662,7 @@
     else if (page === 'export') list(part.export);
     else if (page === 'print') {
       list(part.print, true);
-      if (!part.print.length) list([{ label: 'Print', icon: 'printDoc', action: function () { window.print(); } }], true);
+      if (!part.print.length) list([{ label: 'Print', icon: 'printDoc', action: function () { if (UI.reports && UI.reports.print) UI.reports.print(); else window.print(); } }], true);
     } else if (page === 'recent') {
       var w = list(part.recent);
       if (!part.recent.length) w.appendChild(el('p', { class: 'bs-note', text: 'No recent documents yet: the files you open and save are listed here.' }));
@@ -4037,7 +4037,7 @@
     ['std-new', 'newDoc', 'New', 'Ctrl+N', 'Create a new part or assembly', function () { runMenuCommand('New…'); }],
     ['std-open', 'openDoc', 'Open', 'Ctrl+O', 'Open an existing document', function () { runMenuCommand('Open…'); }],
     ['std-save', 'saveDoc', 'Save', 'Ctrl+S', 'Save the active document', function () { runMenuCommand('Save'); }],
-    ['std-print', 'printDoc', 'Print', '', 'Print the active document', function () { window.print(); }],
+    ['std-print', 'printDoc', 'Print', '', 'Print the active document', function () { if (UI.reports && UI.reports.print) UI.reports.print(); else window.print(); }],
     ['std-select', 'select', 'Select', '', 'Select sketch entities, edges, faces and features', function () { if (App.mode === 'sketch' && UI.setTool) UI.setTool('select'); }],
     ['std-rebuild', 'rebuild', 'Rebuild', 'Ctrl+B', 'Rebuild the part', function () { runMenuCommand('Rebuild'); }],
     ['std-fileprops', 'fileProps', 'File Properties', '', 'Summary information and custom properties of the document', function () { runMenuCommand('Properties…'); }],

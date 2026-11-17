@@ -596,6 +596,10 @@ ipcMain.on('anvil-desktop:hb', (e, vis) => {
   const s = hbOf(e.sender);
   s.last = Date.now();
   if (vis === 'hidden') s.hidden = true; else if (vis === 'visible') s.hidden = false;   // a hidden page's timers are slowed: not a freeze
+  // rfOF: 'waiting' = the page is about to sit in window.print() until the user closes Windows' Print box (the
+  // "stopped responding for 9.6 s" report of 2026-11-16 was that box). Its silence is not a freeze; any later
+  // heartbeat means the page runs again.
+  if ((vis === 'waiting') !== !!s.waiting) { s.waiting = vis === 'waiting'; testLog('page-waiting', { on: s.waiting }); }
   if (rp.freeze && rp.freeze.wc === e.sender) endFreeze();
 });
 // A gesture crumb (c.g: what the hand did in the graphics area, ui-reports.js "gestures") is sent when the gesture
@@ -836,7 +840,7 @@ setInterval(() => {
   if (snap) { rp.cpu.push(snap); if (rp.cpu.length > 8) rp.cpu.shift(); if (rp.freeze && !rp.freeze.ended) rp.freeze.lastSnap = snap; }
   if (rp.freeze) return;
   const wc = win.webContents, s = rp.hb.get(wc.id);
-  if (s && s.alive && !s.hidden && !win.isMinimized() && pageLoaded && Date.now() - s.last > FREEZE_MS) startFreeze(wc, 'heartbeat');
+  if (s && s.alive && !s.hidden && !s.waiting && !win.isMinimized() && pageLoaded && Date.now() - s.last > FREEZE_MS) startFreeze(wc, 'heartbeat');
 }, 1000).unref();
 
 // ---- crashes
@@ -862,7 +866,7 @@ function watchWindow(w) {
     if (rp.watch) attachDebugger(wc);
     rp.notices.splice(0).forEach((m) => noticeToPage(m));
   });
-  w.on('unresponsive', () => { testLog('window-unresponsive', {}); startFreeze(wc, 'unresponsive'); });
+  w.on('unresponsive', () => { const waiting = !!hbOf(wc).waiting; testLog('window-unresponsive', { waiting }); if (!waiting) startFreeze(wc, 'unresponsive'); });
   w.on('responsive', () => { if (rp.freeze && rp.freeze.wc === wc) endFreeze(); });
   wc.on('render-process-gone', async (e, d) => {
     if (d && d.reason === 'clean-exit') return;
