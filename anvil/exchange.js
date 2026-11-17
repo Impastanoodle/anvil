@@ -113,6 +113,17 @@ var Exchange = (function () {
   }
   // bodyMat(model, build, i) -> { name, color } of body i: its own material (model.bodyMaterials, by the feature that
   // made the body), else the part's material (model.material), else just the part colour; name null without a material
+  // lane NO2: body i's colour from the file it was imported from (its Imported feature's solid, in order; not after a
+  // merge), or null
+  function importedColor(model, bf, i) {
+    var fid = bf[i], f = null;
+    (model.features || []).forEach(function (x) { if (x.id === fid) f = x; });
+    if (!f || f.type !== 'import' || f.merge || !f.solids) return null;
+    var k = 0;
+    for (var j = 0; j < i; j++) if (bf[j] === fid) k++;
+    var s = f.solids[k];
+    return s && s.color && parseColor(s.color) ? s.color : null;
+  }
   function bodyMat(model, build, i) {
     if (hasMaterials()) {
       var bm = Materials.bodyMaterial(model, build, i);
@@ -472,7 +483,9 @@ var Exchange = (function () {
         var nm = bodies.length === 1 ? (model.name || 'Part1') : (infos[i] && infos[i].name) || ('Body' + (i + 1));
         if (used[nm]) { var n = 2; while (used[nm + '-' + n]) n++; nm = nm + '-' + n; }
         used[nm] = true;
-        return { name: nm, mesh: bodyMesh(b), material: bodyMat(model, { bodies: bodies, bodyFeatures: build.bodyFeatures || [] }, i), src: { body: b, model: model, build: build } };
+        var mat = bodyMat(model, { bodies: bodies, bodyFeatures: build.bodyFeatures || [] }, i), ic = importedColor(model, build.bodyFeatures || [], i);
+        if (ic && !(model.bodyMaterials && model.bodyMaterials[String((build.bodyFeatures || [])[i])])) mat = { name: mat.name, color: ic };
+        return { name: nm, mesh: bodyMesh(b), material: mat, src: { body: b, model: model, build: build } };
       });
       return { name: model.name || 'Part1', units: model.units === 'in' ? 'in' : 'mm', assembly: false,
         parts: [{ name: model.name || 'Part1', color: partColor(model), bodies: list }],
@@ -1424,7 +1437,7 @@ var Exchange = (function () {
           F.labs = F.labs || {};
           F.labs[E.id] = cl;
         });
-        if (ok && F.cut) ok = !F.noHoles && holeLoops(F, k, loops, mine);
+        if (ok && F.cut) ok = holeLoops(F, k, loops, mine);
         // every boundary segment must belong to one of the face's edges
         var segs = new PairMap();
         if (ok) mine.forEach(function (cl) { for (var i = 0; i + 1 < cl.vs.length; i++) { var a = cl.vs[i], b = cl.vs[i + 1]; segs.set(a < b ? a : b, a < b ? b : a, cl); } });
@@ -1463,15 +1476,28 @@ var Exchange = (function () {
       mine.forEach(function (cl) { for (var i = 0; i + 1 < cl.vs.length; i++) { var a = cl.vs[i], b = cl.vs[i + 1]; own.set(a < b ? a : b, a < b ? b : a, true); } });
       var sp = bsProjector(F.rec.s);
       F.holeBounds = [];
+      // lane NO2: a loop that does not run round one cylinder (a slot, a cut whose wall keeps its facets), or every loop
+      // once a hole's wall fell back to facets (F.noHoles: its points went back where the boolean left them), is a
+      // polygon on the face: one LINE edge per segment, shared with the facet beside it. The face keeps its B-spline
+      // surface (was: the face, and every free-form face beside it, went to facets: a drilled loft read 4.4e-4 off)
+      function polyLoop(l, li) {
+        var cls = [];
+        cls.ci = -1; cls.poly = true;
+        for (var j = 0; j < l.length; j++) {
+          var cl = { t: 'x', E: { g: { t: 'l' }, ss: true }, vs: [l[j], l[(j + 1) % l.length]], key: F.sk + ':hp' + k + '_' + li + '_' + j };
+          mine.push(cl); cls.push(cl);
+        }
+        F.holeBounds.push(cls);
+      }
       loops.forEach(function (l, li) {
         if (!ok) return;
-        var n = l.length, S = null, i;
+        var n = l.length, S = null, i, round = !F.noHoles;
         for (i = 0; i < n; i++) { var a = l[i], b = l[(i + 1) % n]; if (own.get(a < b ? a : b, a < b ? b : a)) return; }
-        for (i = 0; i < n && ok; i++) {
+        for (i = 0; i < n && round; i++) {
           var a2 = l[i], b2 = l[(i + 1) % n], t2 = edgeTris.get(a2 < b2 ? a2 : b2, a2 < b2 ? b2 : a2), c = t2 == null || compOf[t2] < 0 ? null : comps[compOf[t2]];
-          if (!c || !c.ok || c.surf.t !== 'cyl' || (S && c.surf !== S)) ok = false; else S = c.surf;
+          if (!c || !c.ok || c.surf.t !== 'cyl' || (S && c.surf !== S)) round = false; else S = c.surf;
         }
-        if (!ok || n < 4) { ok = false; return; }
+        if (!round || n < 4) { if (n >= 3) polyLoop(l, li); else ok = false; return; }
         var to = [];
         for (i = 0; i < n && ok; i++) {
           // at its own angle on the cylinder (so the wall's rulings stay rulings), along the ruling onto the surface
@@ -1492,7 +1518,7 @@ var Exchange = (function () {
           F.holeHome = F.holeHome || {}; F.holeHome[l[i]] = X;
           to.push(Y);
         }
-        if (!ok) return;
+        if (!ok) { ok = true; polyLoop(l, li); return; }   // (lane NO2: was the face to facets)
         if (pos === mesh.positions) pos = Float64Array.from(pos);
         l.forEach(function (v, j) { pos[v * 3] = to[j][0]; pos[v * 3 + 1] = to[j][1]; pos[v * 3 + 2] = to[j][2]; });
         var h = n >> 1, g = { t: 'h', S: S, sp: sp }, cls = [];
@@ -1548,6 +1574,57 @@ var Exchange = (function () {
       }
       // the outer comp across the edge u→v (a triangle of a coaxial cylinder of another radius), or -1
       function compAcross(u, v) { var t1 = dirTri.get(v, u); return t1 == null ? -1 : compOf[t1]; }
+      // lane NO: a strip whose triangles also use a point on neither radial line (a fan round a split point inside the
+      // thickness: a circular Corner Relief's wall where it leaves the bend, (rho .068, between R and the mid layer) on a
+      // 16 ga part) is the region of plain triangles reached from a→b without crossing an edge along one radial line;
+      // it is a wall when every point on its boundary lies on a's line or b's, it ends on ONE edge of a coaxial cylinder,
+      // and the points off the lines are its own (inside the face, not written). Was: the walk stopped, the bend kept
+      // its facets (the file 1.4e-4 under the part, Insert Bends found one bend of two).
+      function floodWall(a, b, t1, ci, S) {
+        var R = [t1], inR = {}, outer = [], qi;
+        inR[t1] = true;
+        for (qi = 0; qi < R.length; qi++) {
+          var t3 = R[qi];
+          for (var k3 = 0; k3 < 3; k3++) {
+            var u = tri[t3 * 3 + k3], v = tri[t3 * 3 + (k3 + 1) % 3], tn = dirTri.get(v, u);
+            if (tn == null) return null;
+            if (inR[tn]) continue;
+            if (triRec[tn] >= 0) { outer.push([u, v, tn]); continue; }
+            if (aligned(S, u, v)) continue;
+            if (taken[tn] || R.length >= 16) return null;
+            inR[tn] = true; R.push(tn);
+          }
+        }
+        var la = [], lb = [], bnd = {}, co = -1, S2 = null, pa = -1, pb = -1, back = 0;
+        for (qi = 0; qi < outer.length; qi++) {
+          var o = outer[qi], u2 = o[0], v2 = o[1];
+          if ((u2 === b && v2 === a) || (u2 === a && v2 === b)) { back++; continue; }
+          var c2 = compOf[o[2]], s2 = cylComp(c2);
+          if (!s2 || c2 === ci || !coaxial(S, s2) || (S2 && s2 !== S2) || pa >= 0) return null;
+          S2 = s2; co = c2;
+          pa = aligned(S, a, u2) ? u2 : aligned(S, a, v2) ? v2 : -1;
+          pb = pa === u2 ? v2 : pa === v2 ? u2 : -1;
+          if (pa < 0 || !aligned(S, b, pb) || !onCyl(S2, pa) || !onCyl(S2, pb)) return null;
+        }
+        if (back !== 1 || !S2) return null;
+        // every point on the region's boundary lies on a's line or b's; the others are used by the region alone
+        var use = {};
+        R.forEach(function (t4) { for (var k4 = 0; k4 < 3; k4++) { var u3 = tri[t4 * 3 + k4], v3 = tri[t4 * 3 + (k4 + 1) % 3]; if (!inR[dirTri.get(v3, u3)]) { bnd[u3] = true; bnd[v3] = true; } use[u3] = true; } });
+        var bad = false;
+        Object.keys(use).forEach(function (vk) {
+          var v4 = +vk;
+          if (bnd[v4]) {
+            if (v4 === a || aligned(S, a, v4)) la.push(v4);
+            else if (v4 === b || aligned(S, b, v4)) lb.push(v4);
+            else bad = true;
+          } else if (vTris[v4].some(function (t5) { return !inR[t5]; })) bad = true;
+        });
+        if (bad) return null;
+        function byDepth(x, y) { return Math.abs(axial(S, P(x)).rho - S.r) - Math.abs(axial(S, P(y)).rho - S.r); }
+        la.sort(byDepth); lb.sort(byDepth);
+        if (la[0] !== a || lb[0] !== b || la[la.length - 1] !== pa || lb[lb.length - 1] !== pb) return null;
+        return { tris: R, la: la, lb: lb, pa: pa, pb: pb, co: co, S2: S2 };
+      }
       var cand = [], taken = {};
       comps.forEach(function (c, ci) {
         var S = cylComp(ci);
@@ -1584,6 +1661,7 @@ var Exchange = (function () {
               for (var k2 = 0; k2 < 3; k2++) if (tri[t2 * 3 + k2] === from[0] && tri[t2 * 3 + (k2 + 1) % 3] === from[1]) inT = true;
               from = inT ? [from[1], from[0]] : from;
             }
+            if (!ok2) { var fw = floodWall(a, b, t1, ci, S); if (fw) { tris = fw.tris; la = fw.la; lb = fw.lb; p = fw.pa; q = fw.pb; co = fw.co; S2 = fw.S2; ok2 = true; } }
             if (!ok2 || !S2 || tris.length < 2) continue;
             tris.forEach(function (t3) { taken[t3] = true; });
             cand.push({ tris: tris, a: a, b: b, pa: p, pb: q, la: la, lb: lb, ci: ci, co: co, S: S, S2: S2, live: true });
@@ -1931,7 +2009,7 @@ var Exchange = (function () {
       for (var iter = 0; iter < comps.length + 2 && !build(); iter++) { /* a patch fell back to facets: rebuild the topology */ }
       // lane MX: a hole through a free-form face whose wall fell back to facets: that face keeps its facets too (facets
       // cannot share its B-spline edge), its points where they were; labels again, everything built again
-      var hUndo = FF.filter(function (F) { return !F.dead && F.holeBounds && F.holeBounds.some(function (cls) { return !(cls.ci >= 0 && comps[cls.ci].ok); }); });
+      var hUndo = FF.filter(function (F) { return !F.dead && F.holeBounds && F.holeBounds.some(function (cls) { return !cls.poly && !(cls.ci >= 0 && comps[cls.ci].ok); }); });
       if (hUndo.length && round < 6) {
         hUndo.forEach(function (F) { F.noHoles = true; Object.keys(F.holeHome || {}).forEach(function (v) { var X = F.holeHome[v]; pos[v * 3] = X[0]; pos[v * 3 + 1] = X[1]; pos[v * 3 + 2] = X[2]; }); });
         freeLabels();
@@ -4420,6 +4498,27 @@ var Exchange = (function () {
       return out.length ? out : [tf(null)];
     }
 
+    // lane NO2: each solid's colour (STYLED_ITEM on the solid: its style's COLOUR_RGB, found through the style's
+    // references; Anvil, SolidWorks and OpenCascade write it so), as '#rrggbb'
+    var solidColor = {};
+    Object.keys(E).forEach(function (id) {
+      var e = E[id];
+      if (e.t !== 'STYLED_ITEM' && e.t !== 'OVER_RIDING_STYLED_ITEM') return;
+      var item = e.a[2] && e.a[2].r;
+      if (item == null || solidColor[item]) return;
+      var seen = {}, rgb = null;
+      (function walk(v, d) {
+        if (rgb || d > 9 || v == null) return;
+        if (Array.isArray(v)) { v.forEach(function (x) { walk(x, d); }); return; }
+        if (v.r == null || seen[v.r]) return;
+        seen[v.r] = true;
+        var x = E[v.r];
+        if (!x) return;
+        if (x.t === 'COLOUR_RGB') { rgb = x.a.slice(1, 4).map(Number); return; }
+        if (x.a) walk(x.a, d + 1);
+      })(e.a[1], 0);
+      if (rgb && rgb.every(function (c) { return c >= 0 && c <= 1; })) solidColor[item] = '#' + rgb.map(function (c) { var h = Math.round(c * 255).toString(16); return h.length < 2 ? '0' + h : h; }).join('');
+    });
     var solids = [];
     solidIds.forEach(function (sid) {
       var e = E[sid], shells = [];
@@ -4470,6 +4569,7 @@ var Exchange = (function () {
           });
           if (!sol.recs.some(Boolean)) delete sol.recs;
           if (!sol.free.length) { delete sol.free; delete sol.fid; }
+          if (solidColor[sid]) sol.color = solidColor[sid];
           if (sol.triangles.length) solids.push(sol);
         });
       });
@@ -4576,10 +4676,28 @@ var Exchange = (function () {
       h.forEach(function (i) { if (P[i][0] > P[m][0] || (P[i][0] === P[m][0] && P[i][1] < P[m][1])) m = i; });
       // bridge to the nearest ring vertex that sees M: locally inside at that vertex, and crossing no ring edge and no
       // edge of a hole still waiting
-      var M = P[m], order = ring.map(function (r, k) { return k; }).sort(function (a, b) { return dist2(P[ring[a]], M) - dist2(P[ring[b]], M); });
-      var bi = order[0];
-      for (var oi = 0; oi < order.length; oi++) {
-        var k = order[oi], V = P[ring[k]];
+      // lane NO: the ring's vertices by distance to M, the nearest first (ties in ring order, as the stable sort had them);
+      // the first few by selection, the full sort only when they all fail (a 600-hole panel sorted 15 000 points for each
+      // hole: 1.2 s of dist2)
+      var M = P[m], dd = ring.map(function (r) { return dist2(P[r], M); }), order = null, picked = [], used = new Uint8Array(ring.length);
+      var nextNear = function (oi) {
+        if (oi < 8) {
+          if (oi >= picked.length) {
+            var bk = -1;
+            for (var k1 = 0; k1 < dd.length; k1++) if (!used[k1] && (bk < 0 || dd[k1] < dd[bk])) bk = k1;
+            if (bk < 0) return -1;
+            used[bk] = 1; picked.push(bk);
+          }
+          return picked[oi];
+        }
+        if (!order) order = ring.map(function (r, k2) { return k2; }).sort(function (a, b) { return dd[a] - dd[b]; });
+        return oi < order.length ? order[oi] : -1;
+      };
+      var bi = nextNear(0);
+      for (var oi = 0; oi < ring.length; oi++) {
+        var k = nextNear(oi);
+        if (k < 0) break;
+        var V = P[ring[k]];
         if (!locallyInside(P[ring[(k + ring.length - 1) % ring.length]], V, P[ring[(k + 1) % ring.length]], M)) continue;
         if (crossesRing(ring, V, M) || pending.some(function (ph) { return crossesRing(ph, V, M); }) || crossesRing(h, V, M)) continue;
         bi = k; break;
@@ -4597,6 +4715,9 @@ var Exchange = (function () {
     // an ear cut across it left the run as a ring of no area (its points then dropped, or zero-area triangles the
     // refinement split onto one another). Only when no such ear is left does the plain rule (inside or on) apply.
     var tris = [], guard = 0, strict = true;
+    // lane NO: a big ring (a plate with hundreds of holes bridged in) files its points in a grid, so an ear tests only the
+    // points near it (the same answer: a point that can stop an ear lies within the ear's box widened by the band)
+    var EG = ring.length > 96 ? earGrid(ring) : null;
     while (ring.length > 3 && guard++ < 200000) {
       var n = ring.length, clipped = false;
       for (var i = 0; i < n; i++) {
@@ -4605,7 +4726,8 @@ var Exchange = (function () {
         if (cross2(A, B, Cc) <= 1e-14 * (1 + Math.abs(A[0]) + Math.abs(A[1]))) continue;
         var ok = true, lAB = 0, lBC = 0, lCA = 0;
         if (strict) { lAB = Math.sqrt(dist2(A, B)); lBC = Math.sqrt(dist2(B, Cc)); lCA = Math.sqrt(dist2(Cc, A)); var band = 1e-9 * Math.max(lAB, lBC, lCA); lAB *= band; lBC *= band; lCA *= band; }
-        for (var j = 0; j < n && ok; j++) {
+        if (EG) ok = !EG.stops(ia, ib, ic, A, B, Cc, strict, lAB, lBC, lCA);
+        else for (var j = 0; j < n && ok; j++) {
           var r = ring[j];
           if (r === ia || r === ib || r === ic) continue;
           var Q = P[r];
@@ -4614,6 +4736,7 @@ var Exchange = (function () {
         }
         if (!ok) continue;
         tris.push(ia, ib, ic);
+        if (EG) EG.drop(ib);
         ring.splice(i, 1);
         clipped = true;
         break;
@@ -4629,12 +4752,48 @@ var Exchange = (function () {
         // straight in a plane) left the face with one long chord where the face beside it has every sample: open edges
         var wn = ring.length, wa = ring[(worst + wn - 1) % wn], wb = ring[worst], wc = ring[(worst + 1) % wn];
         if (wa !== wb && wb !== wc && wa !== wc) tris.push(wa, wb, wc);
+        if (EG) EG.drop(wb);
         ring.splice(worst, 1);
       }
     }
     if (ring.length === 3 && (cross2(P[ring[0]], P[ring[1]], P[ring[2]]) > 0 || (ring[0] !== ring[1] && ring[1] !== ring[2] && ring[0] !== ring[2]))) tris.push(ring[0], ring[1], ring[2]);
     return tris;
     function maxX(h) { var x = -Infinity; h.forEach(function (i) { if (P[i][0] > x) x = P[i][0]; }); return x; }
+    // the ring's points in cells; cnt: how often each point is still on the ring (a bridge puts two points on it twice)
+    function earGrid(rg) {
+      var lo0 = Infinity, lo1 = Infinity, hi0 = -Infinity, hi1 = -Infinity, cnt = {}, cells = new Map();
+      rg.forEach(function (ix) { var p = P[ix]; lo0 = Math.min(lo0, p[0]); hi0 = Math.max(hi0, p[0]); lo1 = Math.min(lo1, p[1]); hi1 = Math.max(hi1, p[1]); });
+      var nc = Math.max(1, Math.ceil(Math.sqrt(rg.length / 2))), cs = Math.max(hi0 - lo0, hi1 - lo1, 1e-12) / nc;
+      function cx(x) { return Math.max(0, Math.min(nc, Math.floor((x - lo0) / cs))); }
+      function cy(y) { return Math.max(0, Math.min(nc, Math.floor((y - lo1) / cs))); }
+      rg.forEach(function (ix) {
+        if (cnt[ix]) { cnt[ix]++; return; }
+        cnt[ix] = 1;
+        var key = cx(P[ix][0]) * (nc + 1) + cy(P[ix][1]), l = cells.get(key);
+        if (!l) cells.set(key, l = []);
+        l.push(ix);
+      });
+      return {
+        drop: function (ix) { cnt[ix]--; },
+        stops: function (ia, ib, ic, A, B, C, strict, eAB, eBC, eCA) {
+          var mx = Math.max(Math.abs(A[0]), Math.abs(A[1]), Math.abs(B[0]), Math.abs(B[1]), Math.abs(C[0]), Math.abs(C[1]), 1);
+          var w = 1e-6 * Math.max(Math.abs(B[0] - A[0]) + Math.abs(B[1] - A[1]), Math.abs(C[0] - B[0]) + Math.abs(C[1] - B[1]), Math.abs(A[0] - C[0]) + Math.abs(A[1] - C[1])) + 1e-12 * mx;
+          var x0 = cx(Math.min(A[0], B[0], C[0]) - w), x1 = cx(Math.max(A[0], B[0], C[0]) + w), y0 = cy(Math.min(A[1], B[1], C[1]) - w), y1 = cy(Math.max(A[1], B[1], C[1]) + w);
+          for (var gx = x0; gx <= x1; gx++) for (var gy = y0; gy <= y1; gy++) {
+            var l = cells.get(gx * (nc + 1) + gy);
+            if (!l) continue;
+            for (var q = 0; q < l.length; q++) {
+              var r = l[q];
+              if (!cnt[r] || r === ia || r === ib || r === ic) continue;
+              var Q = P[r];
+              if (same(Q, A) || same(Q, B) || same(Q, C)) continue;
+              if (strict ? nearTri(Q, A, B, C, eAB, eBC, eCA) : inTri(Q, A, B, C)) return true;
+            }
+          }
+          return false;
+        }
+      };
+    }
   }
   function dist2(a, b) { return (a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]); }
   // the direction a -> m leaves vertex a (ring neighbours p, n, counter-clockwise ring) into the polygon's interior
@@ -4989,6 +5148,7 @@ var Exchange = (function () {
       tris += compact.triangles.length / 3;
       open += m.openEdges;
       var solid = { name: nm, positions: compact.positions.map(function (x) { return Math.round(x * 1e9) / 1e9; }), triangles: compact.triangles };
+      if (sol.color) solid.color = sol.color;
       if (m.triSurf) solid.curves = curvesOf(m.triSurf);
       if (freeFaces && freeFaces.length) { solid.free = packFree(freeFaces); solid.free.runs = tagRuns(freeTri); }
       out.push(solid);
@@ -5084,6 +5244,7 @@ var Exchange = (function () {
     return (list || []).map(function (s, i) {
       var v = s.vertices != null ? s.vertices : s.positions, t = s.triangles;
       var out = { name: String(s.name || 'Body' + (i + 1)), vertices: typeof v === 'string' ? v : encodeF64(v || []), triangles: typeof t === 'string' ? t : encodeU32(t || []) };
+      if (s.color && parseColor(s.color)) out.color = String(s.color);   // lane NO2: the file's colour of this solid
       // the triangles' analytic surface records (curved faces of a STEP file): { surfs, recs, tri (base64 U32) }
       if (s.curves && s.curves.surfs) out.curves = { surfs: s.curves.surfs, recs: s.curves.recs || [], tri: typeof s.curves.tri === 'string' ? s.curves.tri : encodeU32(s.curves.tri || []) };
       // lane MR: the free-form faces' true surfaces and edges (written back by the STEP writer; nothing else reads them)
@@ -5133,6 +5294,9 @@ var Exchange = (function () {
   function newPartFromImport(result, opts) {
     var m = K.newModel(result.name || 'Imported');
     m.units = result.units === 'in' ? 'in' : 'mm';
+    // lane NO2: one colour on every solid of the file is the part's colour
+    var cols = (result.solids || []).map(function (s) { return s.color || ''; });
+    if (cols.length && cols[0] && cols.every(function (c) { return c === cols[0]; })) m.color = cols[0];
     var f = importFeature(m, result, opts);
     f.id = m.nextId++;
     m.features.push(f);

@@ -89,7 +89,7 @@ Sizes: 9.6 KB (rolled hem) to 159 KB (Closed Corner butt, its fan facets); the p
    1e-15). Repro: `hemClosed` = 14 ga 4 × 3 base + `p.hem(0.5, [[2, T, 0]], { hemType: "closed" })`, export, import,
    `insertBends([1, T, 1.3])`. Proposed: Insert Bends' rounded-bend search to accept a concentric R / R + T pair whose
    walls are antiparallel (angle 180°), and a closed hem's 0.1 mm (R ≈ 0) fold as a sharp 180° bend.
-4. **Circular Corner Relief** (kernel-sheetmetal.js, `cornerRelief` / its fold): the outer bend of the right flange is
+4. **Circular Corner Relief** (fixed in the writer by lane NO2, see *Follow-up*; first read as a kernel cause): the outer bend of the right flange is
    written as facets (87 planes), so the file is 1.4e-4 under the part (OpenCascade and Anvil's reader agree), and Insert
    Bends then finds one bend of two (blank 16.7 % short, warned). Cause, measured in the writer: the relief's wall
    through the bend is a strip of facets (radial walls, written as 12 ruled B-spline faces) except at the bend's start,
@@ -114,11 +114,74 @@ Sizes: 9.6 KB (rolled hem) to 159 KB (Closed Corner butt, its fan facets); the p
    off; the file is not. Repro: 16 ga 4 × 3 base, `flange(1.5, [[3,T,0]], inside, outer)`, `unfold([1,T,2], null)`,
    Ø.2 hole at (2, 0.03) through, `fold()`.
 
-## Not done this lane
+## Follow-up (lane NO2)
 
-- Task 3 (an assembly of three parts through STEP; a hole wall falling back to facets taking its B-spline face): not
-  reached.
+**Circular Corner Relief: fixed in the writer** (note 4). The strip of facets at the bend's start is a fan round the
+point inside the thickness; `radialWalls` now takes such a strip as a region (`floodWall`: the plain triangles reached
+from the bend edge without crossing an edge along one radial line; every boundary point on one of the two radial lines,
+one edge on the coaxial cylinder, points off the lines used by the region only). The kernel's point needs no change.
+
+| Corner Relief (16 ga, two inside flanges, R .25) | Faces out | OpenCascade vs part | Back in | Insert Bends |
+|---|---|---|---|---|
+| circular, was | 87 planes / 2 cyl / 12 B-spline | -1.4e-4 | -1.4e-4 | 1 of 2 bends, 16.7 % short |
+| circular, now | 36 / **4 cyl** / 24 B-spline walls | -5.7e-9 (the part itself is -5.4e-9 off blank × T) | -5.4e-9 | **2 of 2**, blank +0.0041 in² |
+| rect / tear | 16 / 4, 14 / 4 | 3e-15 | 1e-11 | 2 of 2, same blank |
+| obround / constant width | 57 / 4 / 12, 63 / 4 | 7e-9, 9e-15 | 3e-9, 1e-12 | 2 of 2, blank +0.018 / +0.020 in² |
+
+The Insert Bends blank of the circular, obround and constant-width parts is 0.004–0.020 in² bigger than the part's
+own flat (whose area × T is the part's volume): Insert Bends' flat of the relief, kernel-sheetmetal.js (handed on).
+
+**600-hole panel, where the 330 s went** (Node, timed twice; the second run had six other agents loading the machine):
+
+| Step | Run 1 | Run 2 | Whose |
+|---|---|---|---|
+| build, mesh, Mass Properties, flat of the part | 1.1 s | 6.1 s | |
+| `exportSTEP` | 1.2 s | 3.4 s | |
+| OpenCascade read + volume | 7.2 s | 10.5 s | OpenCascade |
+| `importFile` | 12.8 s → **1.9 s** | 14.2 s → 1.9 s | exchange.js, fixed |
+| Mass Properties of the imported part | **121 s** | **155 s** | kernel-curves.js |
+| `checkBody` | 1.6 s | 3.5 s | |
+| Insert Bends rebuild | 2.8 s | 12.2 s | |
+| flat of the Insert Bends part | **319 s** | (stopped) | kernel-curves.js via `ibMetalCheck` |
+
+- Import: the plate's two faces are one ring of ~15 000 points after the 600 holes are bridged; each ear tested every
+  ring point and each bridge sorted the whole ring by distance. Now `earGrid` (the ring's points in cells, an ear tests
+  the points within its box widened by the band) and a bridge takes the nearest few by selection, sorting only if they
+  all fail. The triangles are the same: the reader's output on 14 files (the panels and every embedded test input of
+  rfMR, rfMX, rfMO) hashed equal before and after. 9.6 s → 1.9 s.
+- **Handed on (kernel-curves.js, lane NI): `boundCorrection`.** Both the 121 s and the 319 s (`flatPattern` →
+  `ibMetalCheck` → `massProps`) are one loop: for each sample cell of a candidate edge, the 27 neighbours are checked
+  against every cell already sampled for that edge (`for (si < sampled.length) again = nbOf(...)`): quadratic in the
+  edge's length over the cell. The imported bends are triangles, so their diagonals run the whole 48 in, and the cell
+  shrinks with the number of edges (60 holes: 1.3 s, 600 holes: 121 s). The part's own bends are quads whose long edges
+  are rulings, which are skipped. Proposed: keep the opened neighbour keys in a `Set` per candidate (or compare against
+  the last two sampled keys only: consecutive samples are neighbouring cells). The result is the same.
+
+**Assembly through STEP** (16 ga box with four flanges, lid with an open hem, the same bracket twice, one turned 90°):
+one PRODUCT per part plus the assembly (4), one MANIFOLD_SOLID_BREP per part (3: the bracket's two instances share
+it), 4 NEXT_ASSEMBLY_USAGE_OCCURRENCEs, inch, 64.6 KB. OpenCascade: 4 solids, valid, volume to 3e-15, each box where
+Anvil built it. Anvil's reader: 4 solids named Box, Lid, Bracket<1>, Bracket<2>, placed to 1e-3 (mesh boxes), no open
+edges, volume to 1e-15. **Colours were dropped by the reader; now kept**: each solid's STYLED_ITEM → COLOUR_RGB
+(`solidColor`, any depth of style references), stored on the Imported feature's solids, the part's colour when every
+solid has the same one, and written back per body (`importedColor`). The viewer still shows one colour per Imported
+feature (Materials' body colours are per feature); the assembly is read as one part with four bodies, not rebuilt as an
+assembly.
+
+**A free-form face whose hole wall keeps its facets** now keeps its B-spline surface: a loop that does not run round
+one exact cylinder (a slot, equal crossing holes, a wall that fell back) is a polygon on the face, one LINE edge per
+segment shared with the facet beside it (`holeLoops` `polyLoop`; `hUndo` re-labels with every hole a polygon instead
+of dropping the face). OpenCascade reads every case as one valid solid.
+
+| Loft drilled | Faces, was | Faces, now | OpenCascade vs Anvil re-read |
+|---|---|---|---|
+| OpenCascade loft (rfMX), equal crossing holes | 229 planes | 125 planes + 4 B-spline (2 holed) | 6e-6 |
+| same, perpendicular equal holes | 238 planes | 126 + 4 B-spline (4 holed) | 1.3e-5 |
+| same, a slot | 112 planes + 2 cyl | 4 + 2 cyl + 4 B-spline | 2e-5 |
+| Anvil's own loft re-read, equal crossing holes | 8549 planes | 188 + 4 B-spline | |
+
+Left: Anvil's own loft, re-read and drilled, reads back with 6–9 open edges (12 before this change); not traced.
+
+## Not done
+
 - The SolidWorks-written part on the user's desktop was not read.
 - Edge Flange with a custom (edited) profile: no script option found for it; not built.
-- The 600-hole panel took 330 s in the harness (build, flat, export, import, Insert Bends, flat): the STEP part of it is
-  small; where the rest goes was not measured.
