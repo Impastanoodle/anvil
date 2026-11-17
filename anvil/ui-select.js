@@ -1176,10 +1176,16 @@ if (typeof UI !== 'undefined') (function (UI) {
       var ents = list.filter(function (s) { return s.kind === 'entity'; }).map(function (s) { return s.index; });
       if (!ents.length) { UI.setStatus('A sketch point belongs to its entity: select the line, arc or circle to delete it.'); return; }
       if (UI.pmSpec && showsSelection(UI.pmSpec())) UI.closePM();
-      ents.sort(function (a, b) { return b - a; }).forEach(function (i) {
-        App.sel = { kind: 'entity', index: i }; App.sel2 = null; App.multi = [];
-        baseDelete();
-      });
+      // rfND: one redraw for the whole delete, not one per entity: each redraw analysed the sketch again (50 holes of a
+      // 400-hole pattern deleted: 50 analyses, over 30 s)
+      var upd = UI.updateSketches;
+      UI.updateSketches = function () { };
+      try {
+        ents.sort(function (a, b) { return b - a; }).forEach(function (i) {
+          App.sel = { kind: 'entity', index: i }; App.sel2 = null; App.multi = [];
+          baseDelete();
+        });
+      } finally { UI.updateSketches = upd; }
       App.sel = null; App.sel2 = null; App.multi = []; UI.updateSketches();
       return;
     }

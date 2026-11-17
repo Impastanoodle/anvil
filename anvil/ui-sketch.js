@@ -1380,7 +1380,7 @@
       if (UI.sketchSelectClick) UI.sketchSelectClick(mx, my, ev);
       return;
     }
-    if (App.tool === 'dimension') { dimToolClick(raw, mx, my); return; }
+    if (App.tool === 'dimension') { dimClickShift = !!(ev && ev.shiftKey); try { dimToolClick(raw, mx, my); } finally { dimClickShift = false; } return; }
     var info0 = inferPoint(raw, mx, my), p = info0.p, typed = null;
     if (info0.snap && info0.snap.model && info0.snap.src) { var msl = App.toolState.modelSnaps = App.toolState.modelSnaps || []; msl.push({ pt: info0.p.slice(), snap: info0.snap }); if (msl.length > 8) msl.shift(); }   // lane sketchref
     App.toolState.lastSnap = info0.snap || null;   // r15/tanslide15: what the point landed on (a curve's index for the tangent slide)
@@ -3846,6 +3846,9 @@
   function dimEditError(msg) {
     dimEdit.setAttribute('data-error', msg || '');
     dimInput.style.outline = msg ? '2px solid #d33' : '';
+    // rfND: the refused text itself turns red too (SolidWorks' Modify box shows a wrong equation in red); the
+    // dimension keeps its old value until a good one is typed or Esc closes the box
+    dimInput.style.color = msg ? '#d33' : '';
     dimInput.title = msg || '';
     dimInput.setAttribute('aria-invalid', msg ? 'true' : 'false');
     if (msg) UI.setStatus('Dimension not changed: ' + msg);
@@ -3955,6 +3958,28 @@
   }
 
   // ---- the Smart Dimension tool: click an entity, then click where the dimension should sit
+  // rfND: SolidWorks' Shift+click on an arc or circle while dimensioning: the distance runs to the arc's near (Min) or
+  // far (Max) side instead of its centre. dimClickShift is the click's Shift key (set by sketchClick); st.shiftAt
+  // keeps, per picked ref, the point the Shift+click hit, and shiftArcConds turns them into the relation's arc
+  // conditions once the second pick is known: the side clicked facing the other entity is Min, the other side Max.
+  var dimClickShift = false;
+  function shiftArcConds(f, two, shiftAt) {
+    if (!two || two.type !== 'distance' || two.dir === 'r' || !shiftAt || !window.SketchSolver) return two;
+    var S = SketchSolver, ac = [null, null], any = false;
+    two.refs.forEach(function (r, i) {
+      var at = shiftAt[r];
+      if (!at || S.refKind(f, r) !== 'circle') return;
+      var C = S.refCurve(f, r).c, o = two.refs[1 - i], ko = S.refKind(f, o), O;
+      if (ko === 'point') O = S.refPoint(f, o);
+      else if (ko === 'circle') O = S.refCurve(f, o).c;
+      else if (ko === 'line') { var L = S.refCurve(f, o), dx = L.b[0] - L.a[0], dy = L.b[1] - L.a[1], t = ((C[0] - L.a[0]) * dx + (C[1] - L.a[1]) * dy) / ((dx * dx + dy * dy) || 1); O = [L.a[0] + dx * t, L.a[1] + dy * t]; }
+      if (!O) return;
+      ac[i] = (at[0] - C[0]) * (O[0] - C[0]) + (at[1] - C[1]) * (O[1] - C[1]) > 0 ? 'min' : 'max';
+      any = true;
+    });
+    if (!any) return two;
+    return Object.assign({}, two, { ac: ac.map(function (c) { return c || 'c'; }) });
+  }
   function dimToolClick(raw, mx, my) {
     var f = UI.activeSketchFeature(), st = App.toolState;
     if (!f) return;
@@ -3973,6 +3998,9 @@
       var ref2 = dimPickRef(mx, my) || modelRef(mx, my, st);
       if (ref2 && /\.mid$/.test(ref2) && (ref2 === st.dim.e + '.mid' || ref2 === st.ref1 + '.mid')) ref2 = null;   // rfIG: placing a line's dimension at its own middle (rfII: a polygon side's)
       var two = ref2 && st.ref1 && UI.relDimFor ? UI.relDimFor(f, st.ref1, ref2) : null;
+      if (two && dimClickShift) (st.shiftAt = st.shiftAt || {})[ref2] = raw.slice();
+      two = shiftArcConds(f, two, st.shiftAt);
+      st.shiftAt = null;
       if (two) {
         st.relDim = two; st.dim = null; App.tempDim = null;
         App.tempRelDim = Object.assign({}, two, UI.relDimPlacement(f, two, raw));
@@ -4005,7 +4033,9 @@
       // p9-sketch: a point clicked first (a circle's or a slot's centre, a sketch point): the second click names the
       // other point or entity of a distance dimension, as SolidWorks' Smart Dimension does
       var refB = dimPickRef(mx, my) || modelRef(mx, my, st), twoB = refB && UI.relDimFor ? UI.relDimFor(f, st.pt1, refB) : null;
-      st.pt1 = null;
+      if (twoB && dimClickShift) (st.shiftAt = st.shiftAt || {})[refB] = raw.slice();
+      twoB = shiftArcConds(f, twoB, st.shiftAt);
+      st.pt1 = null; st.shiftAt = null;
       if (!twoB) { $('sketch-hint').innerHTML = TOOL_HINTS.dimension; UI.setStatus('No distance between those two: click a point, then another point or a line.'); return; }
       st.relDim = twoB;
       App.tempRelDim = Object.assign({}, twoB, UI.relDimPlacement(f, twoB, raw));
@@ -4044,6 +4074,8 @@
     t.e = hit.index;
     st.dim = t;
     st.ref1 = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null;
+    st.shiftAt = null;
+    if (dimClickShift && st.ref1) (st.shiftAt = {})[st.ref1] = raw.slice();
     var pv = dimPlacement(f.entities[hit.index], t, raw);
     App.tempDim = Object.assign({}, t, pv);
     App.dimsStale = true;

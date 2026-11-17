@@ -3246,6 +3246,19 @@ var UI = (function () {
     try { K.setTessellation({ chordTol: Math.max(1e-9, SCREEN_SAG_PX * cam.scale), minSegs: 32, maxSegs: 2048 }); return K.entityPolylines(e); }
     finally { K.setTessellation(saved); }
   }
+  // rfND (sketch flow 5, a 400-hole plate): the analysis (Under / Fully / Over Defined per entity) is a rank test over
+  // every unknown of the sketch, seconds on a big patterned sketch, and every redraw asked for it again: a box select,
+  // a zoom step or a click on empty space waited as long as an edit. It is kept against the sketch's own content
+  // (entities, relations, dimensions, after clean) and only recomputed when that changed.
+  var analysisCache = { id: null, key: null, state: null };
+  function cachedAnalysis(f) {
+    var key = null;
+    try { key = JSON.stringify([f.entities, f.rels || null, f.dims || null, f.blocks || null]); } catch (e) { key = null; }
+    if (key != null && analysisCache.id === f.id && analysisCache.key === key && analysisCache.state) return analysisCache.state;
+    var st = SketchSolver.analyze(f);
+    analysisCache = { id: f.id, key: key, state: st };
+    return st;
+  }
   function updateSketches() {
     App.dimsStale = true;
     sketchSegsScale = cam.scale;
@@ -3259,7 +3272,7 @@ var UI = (function () {
       // the active sketch is analysed on every redraw: entity colours and the status bar's Under / Fully / Over Defined
       var state = null;
       if (active && App.sketchDragging && App.sketchState) state = App.sketchState;   // mid-drag: same relations, same state
-      else if (active && window.SketchSolver) { try { SketchSolver.clean(f); state = App.sketchState = SketchSolver.analyze(f); } catch (err) { state = App.sketchState = null; } }
+      else if (active && window.SketchSolver) { try { SketchSolver.clean(f); state = App.sketchState = cachedAnalysis(f); } catch (err) { state = App.sketchState = null; } }
       var stateMat = { full: mats.sketchFull, over: mats.sketchOver, conflict: mats.sketchConflict }, ptsBy = {};
       var layerStyle = UI.sketchLayerStyle;   // sketch-layers (ui-sketch-layers.js): hidden layers, layer colours, dashed layers
       f.entities.forEach(function (e, i) {

@@ -474,7 +474,15 @@
     if (!refs || refs.length !== 2) return null;
     for (var li = 0; li < 2; li++) {
       var pl = S.parseRef(refs[li]), e = pl && !pl.o && pl.s === null && f.entities[pl.e], ko = S.refKind(f, refs[1 - li]);
-      if (!e || e.t !== 'line' || !e.construction || (ko !== 'point' && ko !== 'circle')) continue;
+      if (!e || e.t !== 'line' || !e.construction || (ko !== 'point' && ko !== 'circle' && ko !== 'line')) continue;
+      if (ko === 'line') {
+        // rfND: a line parallel to the centerline (a revolve profile's outer edge, a part mirrored about it) is
+        // dimensioned across too, as SolidWorks does; its midpoint says which side it is on
+        var Lo = S.refCurve(f, refs[1 - li]), Lc0 = S.refCurve(f, refs[li]);
+        var u0 = [Lc0.b[0] - Lc0.a[0], Lc0.b[1] - Lc0.a[1]], u1 = [Lo.b[0] - Lo.a[0], Lo.b[1] - Lo.a[1]];
+        if (Math.abs(u0[0] * u1[1] - u0[1] * u1[0]) > 1e-6 * Math.hypot(u0[0], u0[1]) * Math.hypot(u1[0], u1[1])) continue;
+        return { li: li, P: [(Lo.a[0] + Lo.b[0]) / 2, (Lo.a[1] + Lo.b[1]) / 2] };
+      }
       return { li: li, P: ko === 'point' ? S.refPoint(f, refs[1 - li]) : S.refCurve(f, refs[1 - li]).c };
     }
     return null;
@@ -507,7 +515,15 @@
       P = [M[0] + nn[0] * sl0.w / 2, M[1] + nn[1] * sl0.w / 2]; Q = [M[0] + nn[0] * sl1.w / 2, M[1] + nn[1] * sl1.w / 2];
       return { type: 'distance', P: P, Q: Q, dir: sl1.w >= sl0.w ? nn : [-nn[0], -nn[1]] };
     }
-    if (k0 !== 'line' && k1 !== 'line') { P = ctr(R[0], k0); Q = ctr(R[1], k1); }
+    var dbli = k0 === 'line' && k1 === 'line' && Array.isArray(rel.ac) ? rel.ac.indexOf('dbl') : -1;
+    if (dbli >= 0) {
+      // rfND: centerline to a parallel line, doubled: from the line's midpoint to its mirror image across the centerline
+      var Lo2 = S.refCurve(f, R[1 - dbli]), Lc2 = S.refCurve(f, R[dbli]);
+      P = [(Lo2.a[0] + Lo2.b[0]) / 2, (Lo2.a[1] + Lo2.b[1]) / 2];
+      var cx = Lc2.b[0] - Lc2.a[0], cy = Lc2.b[1] - Lc2.a[1], c2 = cx * cx + cy * cy || 1, cu = ((P[0] - Lc2.a[0]) * cx + (P[1] - Lc2.a[1]) * cy) / c2;
+      Q = [2 * (Lc2.a[0] + cx * cu) - P[0], 2 * (Lc2.a[1] + cy * cu) - P[1]];
+    }
+    else if (k0 !== 'line' && k1 !== 'line') { P = ctr(R[0], k0); Q = ctr(R[1], k1); }
     else {
       var li = k1 === 'line' ? 1 : 0, L = S.refCurve(f, R[li]);
       P = ctr(R[1 - li], li ? k0 : k1);

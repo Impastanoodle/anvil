@@ -1173,7 +1173,73 @@ var SketchSolver = (function () {
     updateDriven(sketch);
     return { ok: true, it: r.it, res: r.res, moved: moved };
   }
+  // rfND (sketch flow 5, a 24 x 48 plate with 400 holes from Linear Sketch Pattern x 2): every solve and drag carried
+  // all 1200 unknowns of the copies through dense matrices, seconds per dimension edit or mouse move. A copy that
+  // nothing but its Pattern relation names (no other relation, no dimension, not an anchor of the pattern, not the
+  // entity being dragged) adds nothing to solve: its place follows from its seed and the anchors. condensePatterns
+  // swaps each Pattern relation for one holding only the instances that are named elsewhere, leaves the other copies
+  // out of the unknowns, and after the solve puts them where the full relation says (its place()). The result is the
+  // same geometry; analyze still counts the whole sketch. Patterns with fewer than CONDENSE_MIN such copies are left.
+  var CONDENSE_MIN = 8;
+  function condensePatterns(sketch, keep) {
+    var rels = sketch.rels || [], ents = sketch.entities || [];
+    if (!rels.some(function (r) { return r && r.type === 'pattern' && !r.suppressed && r.pat; })) return null;
+    var named = {};   // entity -> how many items other than its own Pattern relation name it
+    function mark(e) { named[e] = (named[e] || 0) + 1; }
+    (sketch.dims || []).forEach(function (d) { if (d && d.e != null) mark(d.e); });
+    (sketch.blocks || []).forEach(function () { });
+    ents.forEach(function (e) { if (e && e.t === 'text' && e.path && e.path.e != null) mark(e.path.e); });
+    var out = { swaps: [], drop: {} }, any = false;
+    rels.forEach(function (rel, ri) {
+      if (!rel || rel.type === 'pattern') return;
+      (rel.refs || []).forEach(function (r) { var q = parseRef(r); if (q && !q.o && q.e != null) mark(q.e); });
+    });
+    rels.forEach(function (rel, ri) {
+      if (!rel || rel.type !== 'pattern' || rel.suppressed || !rel.pat || !rel.refs) return;
+      var pt = rel.pat, na = pt.circ ? 2 : (pt.nd | 0) + 1, m = pt.m | 0, inst = pt.inst || [];
+      if (!(m >= 1) || rel.refs.length !== na + m * (inst.length + 1)) return;
+      var anchorE = {};
+      rel.refs.slice(0, na).forEach(function (r) { var q = parseRef(r); if (q && !q.o) anchorE[q.e] = true; });
+      // other Pattern relations naming this one's entities (a pattern of copies) keep them
+      rels.forEach(function (o, oi) { if (oi !== ri && o && o.type === 'pattern' && o.refs) o.refs.forEach(function (r) { var q = parseRef(r); if (q && !q.o) mark(q.e); }); });
+      var copies = rel.refs.slice(na + m), keptRefs = [], keptInst = [], dropped = [];
+      inst.forEach(function (co, q) {
+        var grp = copies.slice(q * m, q * m + m), ids = grp.map(function (r) { var x = parseRef(r); return x && !x.o && x.s === null ? x.e : -1; });
+        var free = ids.every(function (e) { return e >= 0 && ents[e] && !named[e] && !anchorE[e] && e !== keep; });
+        if (free) dropped = dropped.concat(ids);
+        else { keptRefs = keptRefs.concat(grp); keptInst.push(co); }
+      });
+      if (dropped.length < CONDENSE_MIN) return;
+      var reduced = keptInst.length ? { type: 'pattern', refs: rel.refs.slice(0, na + m).concat(keptRefs), pat: Object.assign({}, pt, { inst: keptInst }) } : { type: 'pattern', refs: rel.refs.slice(0, na + m), suppressed: true, pat: pt };
+      out.swaps.push({ ri: ri, rel: rel, reduced: reduced });
+      dropped.forEach(function (e) { out.drop[e] = true; });
+      any = true;
+    });
+    if (!any) return null;
+    out.only = {};
+    ents.forEach(function (e, i) { if (!out.drop[i]) out.only[i] = true; });
+    out.on = function () { out.swaps.forEach(function (s) { rels[s.ri] = s.reduced; }); };
+    out.off = function () { out.swaps.forEach(function (s) { rels[s.ri] = s.rel; }); };
+    out.place = function () {
+      out.swaps.forEach(function (s) {
+        var q = relEquation(sketch.entities, s.rel, sketch.rels);
+        if (q && q.place) q.place(sketch.entities);
+      });
+    };
+    return out;
+  }
   function solve(sketch, opts) {
+    opts = opts || {};
+    if (opts.entities || opts.noCondense) return solve0(sketch, opts);
+    var cz = condensePatterns(sketch, null), r;
+    if (!cz) return solve0(sketch, opts);
+    cz.on();
+    try { r = solve0(sketch, Object.assign({}, opts, { entities: cz.only })); }
+    finally { cz.off(); }
+    if (r && r.ok) { cz.place(); updateDriven(sketch); }
+    return r;
+  }
+  function solve0(sketch, opts) {
     opts = opts || {};
     blockPresync(sketch);   // rfAU
     var sys = buildSystem(sketch, opts);
@@ -2935,7 +3001,11 @@ var SketchSolver = (function () {
       var hn = paramNames(eH), hi = opts.hold;
       extra.push({ n: hn.length, ents: [hi], soft: true, f: function (E) { return hn.map(function (nm) { return w * (pget(E[hi], nm) - pget(eH, nm)); }); } });
     }
-    var sys = buildSystem(sketch, { dimTargets: targets, extra: extra });
+    // rfND: a big pattern's copies named by nothing else follow their seeds after the solve (condensePatterns)
+    var cz = condensePatterns(sketch, R.e);
+    if (cz) cz.on();
+    try {
+    var sys = buildSystem(sketch, { dimTargets: targets, extra: extra, entities: cz ? cz.only : null });
     // only the geometry tied to the dragged entity (through relations and dimensions) can move: solve that part alone
     // (much smaller matrices in a sketch of several separate pieces; a conflict elsewhere does not block the drag)
     var part = connected(sys, R.e);
@@ -2944,8 +3014,10 @@ var SketchSolver = (function () {
     dm = symDragMob(sketch, sys, R.e, dm);
     lm(sys, { leastSquares: true, maxIt: 60, mob: dm });
     var r = lm(sys, { only: function (c) { return !c.soft; }, mob: dm });
+    } finally { if (cz) cz.off(); }
     if (!r.ok) return { ok: false };
     writeBack(sketch, sys);
+    if (cz) cz.place();
     return { ok: true };
   }
 
