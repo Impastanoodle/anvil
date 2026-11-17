@@ -540,10 +540,29 @@
       (pr.lines.visible || []).forEach(function (l) { cross.push(l[ax], l[ax + 2]); });
       (pr.circles.visible || []).forEach(function (c) { cross.push(c.c[ax] - c.r, c.c[ax] + c.r); });
       var edge = side > 0 ? Math.max.apply(null, cross) + gap : Math.min.apply(null, cross) - gap;
+      // (rfNS) a run of three or more equal links too short on paper for their values (a hole pattern at 1:8) is one
+      // dimension on its first link reading "29X .733", the shop's way for equal spacing: thirty values cannot sit on
+      // one chain line without covering each other
+      var kk = opts.units === 'in' ? 1 / 25.4 : 1, th = (_.DIMGEO && +_.DIMGEO.text > 0 ? +_.DIMGEO.text : 3.5) * kk;
+      function tooShort(len) {
+        var t = numText(Math.abs(len), opts.units === 'in' ? 'in' : 'mm', null), tw = D.textRect ? D.textRect({ k: 'text', p: [0, 0], h: th, text: t, anchor: 'start', rot: 0 }) : null;
+        return Math.abs(len) * sc < (tw ? tw.x1 - tw.x0 : th * 3) + 2 * 3 * kk;
+      }
+      var skip = {}, runOf = {};
+      for (var li = 0; li < st.length - 1; li++) {
+        var len0 = st[li + 1].pos - st[li].pos, lj = li + 1;
+        while (lj < st.length - 1 && Math.abs((st[lj + 1].pos - st[lj].pos) - len0) <= 1e-6 * (1 + Math.abs(len0))) lj++;
+        if (lj - li >= 3 && tooShort(len0)) { runOf[li] = lj - li; for (var lk = li + 1; lk < lj; lk++) skip[lk] = true; li = lj - 1; }
+      }
       st.slice(1).forEach(function (q, i) {
+        if (skip[i]) return;
         var mid = (q.pos + st[i].pos) / 2, dm = addSmartDim(doc, viewId, st[i].pick, q.pick, dir === 'h' ? [mid, edge] : [edge, mid], { lock: dir, scale: sc });
         if (!dm) return;
         n++;
+        if (runOf[i]) dm.label = runOf[i] + 'X <DIM>';
+        // (rfNS) no click placed it: a value too wide for its span goes outside where it is clear of its neighbours'
+        // texts and lines (render placeLinearOut), not always past the far arrow onto the next link's value
+        delete dm.tside;
         // (rfJM) a bend line picked: its reference follows the bend, not a model edge
         [st[i], q].forEach(function (s0, j) { var rf = dm.refs && dm.refs[j]; if (s0.bend && rf && rf.a) rf.bend = s0.ref.bend; });
       });
@@ -1959,6 +1978,9 @@
       // cross shrinks to 0.4 of that distance and keeps no extended lines, so the marks never run into each other
       var nn = mark.near;
       if (nn != null && isFinite(nn) && s > 0.4 * nn) { s = 0.4 * nn; ext = false; }
+      // (rfNS) an Auto insert mark shrunk under 0.5 mm a side (holes under 1.25 mm apart on paper) would read as a dot
+      // on the hole: left off, and the sheet says so once (sheet.warnings); a mark the user placed is always drawn
+      if (an.auto && s < 0.5 * k && nn != null && isFinite(nn)) { mark.leftOff = true; return; }
       // (rfLG) an.rot: the mark turned with its view (Rotate View at an angle; SolidWorks' Rotate center marks with view)
       var mr = (+an.rot || 0) * Math.PI / 180, mc = Math.cos(mr), ms = Math.sin(mr), X = [mc, ms], Y = [-ms, mc];
       line([cs[0] - X[0] * s, cs[1] - X[1] * s], [cs[0] + X[0] * s, cs[1] + X[1] * s]); line([cs[0] - Y[0] * s, cs[1] - Y[1] * s], [cs[0] + Y[0] * s, cs[1] + Y[1] * s]);
@@ -1970,7 +1992,7 @@
       });
     }
     if (an.type === 'centerMark') {
-      mark.near = null;
+      mark.near = null; mark.leftOff = false;
       an.holes.forEach(function (h) {
         var ref = { kind: 'dia', c: h.c, r: h.r };
         if (h.r > 0 && reattachDim(ref, pr)) { h.c = ref.c; h.r = ref.r; return; }
@@ -2094,7 +2116,7 @@
       dangling = cu.dangling; text = cu.text; info = cu.info;
     }
     if (dangling) out.forEach(function (x) { x.color = 'dangling'; });
-    return { prims: out, dangling: dangling, text: text, info: info };
+    return { prims: out, dangling: dangling, text: text, info: info, leftOff: an.type === 'centerMark' && !!mark.leftOff };
   }
 
   // (rfKX) holeCalloutLines(doc, w, mesh, model, { c, r }) -> { lines, th (text height, paper units), shoulder, gap }:

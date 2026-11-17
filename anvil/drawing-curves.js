@@ -7,6 +7,7 @@
   'use strict';
   var K = Kernel, V = K.vec;
   var TWO_PI = _.TWO_PI, meshDiag = _.meshDiag, meshEdges = D.meshEdges;
+  _.curveOps = { polyScans: 0 };   // (rfNS) work counter: planar faces scanned for analytic polygons by meshCurves
 
   // ------------------------------------------------------------------ true curves (the kernel's analytic records)
   // A mesh from Kernel.meshFromBody keeps the CSG polygons of every face, and each polygon of a curved face carries its
@@ -76,16 +77,21 @@
     // mesh edges between a cylinder face and a planar one that is neither square to its axis nor along it are filed
     // under one ellipse group per cylinder and plane: centre where the axis meets the plane, x along the major axis
     // (r / |d·n|), y along the minor (r, square to the axis), ry its minor half-length
-    var slant = {};
+    // (rfNS) the slant test first, then whether the planar face carries analytic polygons, once per face: scanning the
+    // face's polygons for every edge first made a 600-hole panel's drawing scan its plate once per hole-rim chord
+    // (Make Drawing 6.4 -> 14..22 s in the app); _.curveOps.polyScans counts the faces scanned
+    var slant = {}, analytic = {};
     meshEdges(mesh).forEach(function (ed) {
       if (ed.smooth || !ed.faces || ed.faces.length !== 2) return;
       var f0 = faceSurf[ed.faces[0]], f1 = faceSurf[ed.faces[1]];
       var ci = f0 && f0.s.t === 'cyl' && !f1 ? 0 : f1 && f1.s.t === 'cyl' && !f0 ? 1 : -1;
       if (ci < 0) return;
-      var pf = mesh.faces[ed.faces[1 - ci]];
-      if (!pf || (pf.polys && pf.polys.some(function (p) { return p.surf; }))) return;
+      var fi = ed.faces[1 - ci], pf = mesh.faces[fi];
+      if (!pf) return;
       var S = (ci ? f1 : f0).s, n = V.norm(ed.normals[1 - ci]), dn = V.dot(S.d, n);
       if (!(Math.abs(dn) > 0.02 && Math.abs(dn) < 1 - 1e-7)) return;
+      if (!(fi in analytic)) { analytic[fi] = !!(pf.polys && pf.polys.some(function (p) { return p.surf; })); _.curveOps.polyScans++; }
+      if (analytic[fi]) return;
       var b = mesh.faces[ed.faces[0]].body || 0, hgt = V.dot(ed.a, n);
       var C = V.add(S.o, V.scale(S.d, (hgt - V.dot(S.o, n)) / dn));
       var sg = (n[0] < -1e-9 || (Math.abs(n[0]) <= 1e-9 && (n[1] < -1e-9 || (Math.abs(n[1]) <= 1e-9 && n[2] < 0)))) ? -1 : 1, nn = V.scale(n, sg);

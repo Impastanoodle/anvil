@@ -586,7 +586,13 @@
     });
     // annotations (centre marks, centrelines, hole callouts) are worked out first, so leader texts keep clear of them
     var threads = partThreads(model), holeNames = D.holeSizeNames(model), holeEnds = _.holeEnds(model), annPre = {};
-    views.forEach(function (w) { if (w.pending) return; (w.view.annotations || []).forEach(function (an, i) { annPre[w.view.id + ':' + i] = annotationPrims(an, w, k, mesh, doc, units, threads, holeNames, holeEnds); }); });
+    var marksOff = [];   // (rfNS) Auto insert centre marks too small to draw at the view's scale: one warning per view
+    views.forEach(function (w) {
+      if (w.pending) return;
+      var off = 0;
+      (w.view.annotations || []).forEach(function (an, i) { var r0 = annPre[w.view.id + ':' + i] = annotationPrims(an, w, k, mesh, doc, units, threads, holeNames, holeEnds); if (r0.leftOff) off++; });
+      if (off) marksOff.push((w.view.name || 'A view') + ': ' + off + ' centre mark' + (off > 1 ? 's' : '') + ' left off, the holes are too close together at ' + D.scaleText(w.view.scale || doc.sheet.scale) + '. Use a larger scale or a Linear Center Mark.');
+    });
     // notes (Annotation ▸ Note): multi-line text on the sheet
     // (rfM) a note's $PRP:"name" / $PRPSHEET:"name" links read the drawing's / the part's custom properties, as a title
     // block field does; a leader ends in an arrow at nt.leader. Shop symbols (Surface Finish, Datum Feature, Geometric
@@ -659,7 +665,8 @@
       notePre.forEach(function (it) { if (!it.hidden) ob.texts.push(it.box); });
       prims.forEach(function (p) { if (p.bend != null) g2.segs.push([p.a, p.b]); });
       var pl = [], out = [];
-      dims.forEach(function (d) {
+      placeOrder(dims).forEach(function (di) {
+        var d = dims[di];
         var hid = (d.index == null && d.key != null && hidKeys.indexOf(d.key) >= 0) || (d.index != null && !!d.hidden);
         var vw = !hid && views.filter(function (w) { return w.view.id === d.view; })[0];
         if (!vw || vw.pending) return;
@@ -698,7 +705,7 @@
     htPre.forEach(function (it) { if (it.box) keepOut.push(it.box); (it.tagBoxes || []).forEach(function (b) { keepOut.push(b); }); });
     // flat-pattern views: bend notes (or Bend Table tags and the table) and the FLAT SIZE note, worked out before the
     // dimensions so those keep clear of them; a Bend Table goes on free paper (flatCtx: what it must keep clear of)
-    var flatPre = [], warnings = [], flatCtx = { views: views, tb: tbRect, bom: bom, sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 }, taken: [], warnings: warnings };
+    var flatPre = [], warnings = marksOff.slice(), flatCtx = { views: views, tb: tbRect, bom: bom, sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 }, taken: [], warnings: warnings };
     // (rfMV) a Hole Table longer than the sheet (a perforated panel's 600 holes) says so instead of quietly running off it
     htPre.forEach(function (it) {
       var b = it.box;
@@ -749,11 +756,18 @@
     dims = dims.filter(function (d) { return !d.hidden; }).concat(SH ? dims.filter(function (d) { return d.hidden; }) : []);
     keepOut.forEach(function (b) { obs.boxes.push({ box: b }); });
     prims.forEach(function (p) { if (p.bend != null) geo.segs.push([p.a, p.b]); });
-    dims.forEach(function (d) {
-      var vw = views.filter(function (w) { return w.view.id === d.view; })[0];
+    // (rfNS) placed in placeOrder (a chain's long links before its short ones), listed in their own order
+    var placedPrims = [];
+    placeOrder(dims).forEach(function (di) {
+      var d = dims[di], vw = views.filter(function (w) { return w.view.id === d.view; })[0];
       if (!vw) return;
       var p = placeDim(d, vw, k, placed, obs), pg = primGeo(p);
       obs.texts = obs.texts.concat(pg.texts); obs.segs = obs.segs.concat(pg.segs);
+      placedPrims[di] = p; placed.push(d);
+    });
+    dims.forEach(function (d, di) {
+      var p = placedPrims[di];
+      if (!p) return;
       if (d.dangling) p.forEach(function (x) { x.color = 'dangling'; });
       if (d.hidden) greyOut(p);
       var bx = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
@@ -770,7 +784,7 @@
         if (x.k === 'text') { var w = textWidth(x.text, x.h), vert = Math.abs(x.rot) > 45; grow(x.p); grow(vert ? [x.p[0] - x.h, x.p[1] + w / 2] : [x.p[0] + w, x.p[1] + x.h]); if (vert) grow([x.p[0], x.p[1] - w / 2]); else if (x.anchor === 'middle') grow([x.p[0] - w / 2, x.p[1]]); }
       });
       d.box = bx;
-      placed.push(d); shown.push(d);
+      shown.push(d);
     });
     dims = shown;
     ktCalloutsClear(views, annPre, dims, prims, notePre, k, mesh, doc, units, threads, holeNames, holeEnds);
@@ -1005,6 +1019,23 @@
     var c = best ? best.c : { p: [C[0] + g, C[1] + g], anchor: 'start' };
     return [{ k: 'text', p: c.p, h: h, text: txt, anchor: c.anchor, layer: 'BEND_NOTES', rot: 0, crossBreak: true }];
   }
+  // (rfNS) do two texts' outlines (turned rectangles) overlap? Separating axes of both
+  function textCorners(x) {
+    var w = textWidth(x.text, x.h), a = (x.rot || 0) * Math.PI / 180, t = [Math.cos(a), Math.sin(a)], n = [-t[1], t[0]];
+    var s = x.anchor === 'middle' ? -w / 2 : x.anchor === 'end' ? -w : 0;
+    return [[s, 0], [s + w, 0], [s + w, x.h], [s, x.h]].map(function (q) { return [x.p[0] + t[0] * q[0] + n[0] * q[1], x.p[1] + t[1] * q[0] + n[1] * q[1]]; });
+  }
+  function textsCross(x, y) {
+    var A = textCorners(x), B = textCorners(y);
+    return ![A, B].some(function (P) {
+      for (var i = 0; i < 2; i++) {
+        var e = [P[i + 1][0] - P[i][0], P[i + 1][1] - P[i][1]], ax = [-e[1], e[0]];
+        var pa = A.map(function (q) { return q[0] * ax[0] + q[1] * ax[1]; }), pb = B.map(function (q) { return q[0] * ax[0] + q[1] * ax[1]; });
+        if (Math.max.apply(null, pa) <= Math.min.apply(null, pb) + 1e-12 || Math.max.apply(null, pb) <= Math.min.apply(null, pa) + 1e-12) return true;
+      }
+      return false;
+    });
+  }
   function flatItems(w, doc, units, k, ctx) {
     var v = w.view, fd = w.flat, o = D.docOptions(doc), mode = v.bendNotes || o.bendNotes, own = v.flatAnn || {}, out = [], box = w.box;
     ctx = ctx || { views: [w], tb: { x0: Infinity, y0: Infinity, x1: Infinity, y1: Infinity }, bom: null, sheet: { x0: -Infinity, y0: -Infinity, x1: Infinity, y1: Infinity }, taken: [] };
@@ -1023,6 +1054,7 @@
     // is moved again. view._bendKeys (not saved) lets Drawing.flatAnnotation take a 'b<n>' for that bend's key.
     var bkeys = fd.bends && D.bendKeyMatch ? D.bendKeyMatch(fd.bends, own, fd.bbox ? Math.hypot(fd.bbox.umax - fd.bbox.umin, fd.bbox.vmax - fd.bbox.vmin) : 1) : [];
     try { Object.defineProperty(v, '_bendKeys', { value: bkeys.slice(), configurable: true, writable: true, enumerable: false }); } catch (e) { }
+    var crowded = false, nCrowded = 0;
     if (mode !== 'none') fd.bends.forEach(function (b, i) {
       var A = w.toSheet(b.a), B = w.toSheet(b.b), dx = B[0] - A[0], dy = B[1] - A[1], L = Math.hypot(dx, dy) || 1, t = [dx / L, dy / L];
       if (t[0] < -1e-9 || (Math.abs(t[0]) <= 1e-9 && t[1] < 0)) t = [-t[0], -t[1]];
@@ -1045,10 +1077,19 @@
           if (!hitsAvoid(tryP)) slid = tryP;
         });
         if (slid) bp = slid;
+        else crowded = bp.some(function (x) {   // truly on an earlier note (turned texts: their outlines, not their boxes)
+          return out.some(function (it) { return !it.hidden && (it.type === 'bendNote') && it.prims.some(function (y) { return y.k === 'text' && textsCross(x, y); }); });
+        });
       }
       item(bk, mode === 'table' ? 'bendTag' : 'bendNote', txt, bp,
         { bend: i, bendKey: bk, up: b.up, angle: b.angle, R: b.R, a: A, b: B });
+      // (rfNS) a note with no clear place anywhere along its line (a Lofted-Bend's fan: a dozen bend lines meeting at
+      // the corners) still prints (every bend keeps its note, rfMV), and the sheet says how many cover another one
+      // (sheet.warnings: use a Bend Table, or drag them)
+      if (crowded && mode !== 'table' && !out[out.length - 1].hidden) { out[out.length - 1].crowded = true; nCrowded++; }
+      crowded = false;
     });
+    if (nCrowded && ctx.warnings) ctx.warnings.push((v.name || 'The flat pattern') + ': ' + nCrowded + ' bend note' + (nCrowded > 1 ? 's' : '') + ' cover' + (nCrowded > 1 ? '' : 's') + ' another, the bend lines are too close together. Use a Bend Table or drag the notes.');
     // (lane drawing) a Cross-Break's note ('UP 1° R .060', the bend notes' shop format) at the crossing of its lines, as
     // SolidWorks' flat-pattern view shows it; key 'cb:<feature id>' (dragged / hidden like a bend note). Shown with its
     // lines (the view's etch marks) unless the view's bend notes are off.
@@ -1205,9 +1246,11 @@
   // hole (±25°, ±50°, ±75°, then the other side) and run out further until its text is clear of every dimension, note
   // and other annotation text; the first clear one is kept (nothing changes when the default is clear or none is).
   function ktCalloutsClear(views, annPre, dims, prims, notePre, k, mesh, doc, units, threads, holeNames, holeEnds) {
-    var dTexts = [], dSegs = [];
+    var dTexts = [], dSegs = [], gSegs = [];
     prims.forEach(function (p) { if (p.dimIx == null) return; if (p.k === 'text') dTexts.push(textRect(p)); else if (p.k === 'line') dSegs.push([p.a, p.b]); });
     if (!dTexts.length && !dSegs.length) return;
+    // (rfNS) and clear of the views' own lines (a 96X callout on a panel's corner hole ran its text across the flange)
+    prims.forEach(function (p) { if (p.k === 'line' && p.dimIx == null && !/^(DIMENSIONS|ANNOTATIONS|NOTES|BEND_NOTES|SHEET|TABLES|BOM|BALLOONS|BEND_UP|BEND_DOWN)$/.test(p.layer || '')) gSegs.push([p.a, p.b]); });
     var m = 0.6 * k;
     views.forEach(function (w) {
       if (w.pending) return;
@@ -1225,6 +1268,8 @@
             var t = textRect(x), tt = { x0: t.x0 - m, y0: t.y0 - m, x1: t.x1 + m, y1: t.y1 + m };
             dTexts.forEach(function (b) { if (rectsMeet(tt, b, 0)) n += 2; });
             dSegs.forEach(function (s) { if (segHitsRect(s[0], s[1], tt)) n++; });
+            var t0r = { x0: t.x0 + 1e-4, y0: t.y0 + 1e-4, x1: t.x1 - 1e-4, y1: t.y1 - 1e-4 };
+            gSegs.forEach(function (s) { if (segHitsRect(s[0], s[1], t0r)) n++; });
             others.forEach(function (b) { if (rectsMeet(tt, b, 0)) n += 2; });
             if (!strict) return;
             views.forEach(function (w2) { if (w2 !== w && rectsMeet(tt, w2.box, 0)) n += 2; });
@@ -1317,7 +1362,8 @@
     if (hadT) d.tside = t0; else delete d.tside;
     var step = 3 * k, best = null, bestCost = c0;
     var cands = [{ tx: offL }];
-    for (var j = 1; j <= 3; j++) cands.push({ tx: off0 + (off0 > 0 ? 1 : -1) * j * step, j: j }, { tx: offL + (offL > 0 ? 1 : -1) * j * step, j: j });
+    // (rfNS) a chain of short links: further out, up to 8 steps (24 mm), before giving up on a clear spot
+    for (var j = 1; j <= (d.at != null ? 8 : 3); j++) cands.push({ tx: off0 + (off0 > 0 ? 1 : -1) * j * step, j: j }, { tx: offL + (offL > 0 ? 1 : -1) * j * step, j: j });
     for (var i = 0; i < cands.length; i++) {
       d.tx = cands[i].tx;
       var c = clashCost(primGeo(dimPrims(d, vw, k, placed)), obs, k, d.view, false) + 0.5 * (cands[i].j || 0);
@@ -1335,6 +1381,23 @@
   // format's blocks, a table or the BOM (paper boxes with no view), or off the sheet, goes to the view's other side
   // when that side is clear of them (the shop audit's bracket: the Front view's width dimension inside UNLESS
   // OTHERWISE SPECIFIED). Placed dimensions (dragged, flipped, a text position) keep their side.
+  // (rfNS) the order dimensions are placed in: their list's, except that a run of linear dimensions of one view on one
+  // dimension line (a chain: same kind, same `at`) goes longest first, so a link too short for its value is placed after
+  // its neighbours and its text (outside, placeLinearOut) keeps clear of theirs. Returns indices into dims.
+  function placeOrder(dims) {
+    var ix = dims.map(function (d, i) { return i; }), i = 0;
+    function key(d) { return d && (d.kind === 'h' || d.kind === 'v') && d.at != null && d.tx == null && d.tside == null ? d.view + '|' + d.kind + '|' + d.at : null; }
+    while (i < ix.length) {
+      var k0 = key(dims[i]), j = i + 1;
+      if (k0 != null) while (j < dims.length && Math.abs((dims[j].at || 0) - dims[i].at) <= 1e-9 * (1 + Math.abs(dims[i].at)) && key(dims[j]) != null && dims[j].view === dims[i].view && dims[j].kind === dims[i].kind) j++;
+      if (j - i > 1) {
+        var run = ix.slice(i, j).sort(function (a, b) { return Math.abs(dims[b].value || 0) - Math.abs(dims[a].value || 0) || a - b; });
+        for (var q = i; q < j; q++) ix[q] = run[q - i];
+      }
+      i = j;
+    }
+    return ix;
+  }
   function placeDim(d, vw, k, placed, obs) {
     var p = placeDim0(d, vw, k, placed, obs);
     // (rfKT) an ordinate set's values on a paper block (a Hole Table's datum X / Y, a table, the title block): the set's
@@ -1347,6 +1410,13 @@
       if (!onPaperBlock(pf, obs, k) && !acrossView(pf, vw.box, k)) return pf;
       if (hs) d.side = sd0; else delete d.side;
       for (var oi = 4; oi <= 16; oi += 4) { d.outer = oi; var po = placeDim0(d, vw, k, placed, obs); if (!onPaperBlock(po, obs, k, true)) { delete d.outer; d.outerNow = oi; return po; } }
+      delete d.outer;
+    }
+    // (rfNS) an ordinate set whose values land on texts placed before it (the other direction's set of the same view:
+    // a perforated panel's 30 jogged values across run past the view's corner into the column of values up the side)
+    // steps its line out 4 mm at a time (up to 40) until its values are clear; nothing moves when none is clear
+    if (obs && d.kind === 'ordinate' && d.at == null && d.outer == null && textsMeet(p, obs.texts, 0.5 * k)) {
+      for (var oj = 4; oj <= 40; oj += 4) { d.outer = oj; var pj = placeDim0(d, vw, k, placed, obs); if (!textsMeet(pj, obs.texts, 0.5 * k) && !onPaperBlock(pj, obs, k)) { delete d.outer; d.outerNow = oj; return pj; } }
       delete d.outer;
     }
     if (!obs || !d.auto || !/^(h|v)$/.test(d.kind) || !(d.side === 1 || d.side === -1) || d.tx != null || d.flip || d.tside != null || d.off != null || d.at != null) return p;
@@ -1370,6 +1440,9 @@
       if (lo[0] > B.x1 + e || hi[0] < B.x0 - e || lo[1] > B.y1 + e || hi[1] < B.y0 - e) return false;
       return Math.min(hi[0], B.x1) - Math.max(lo[0], B.x0) > m || Math.min(hi[1], B.y1) - Math.max(lo[1], B.y0) > m;
     });
+  }
+  function textsMeet(p, texts, m) {
+    return p.some(function (x) { if (x.k !== 'text') return false; var t = textRect(x); return texts.some(function (o) { return rectsMeet(t, o, m); }); });
   }
   function onPaperBlock(p, obs, k, textsOnly) {
     var g = primGeo(p), S = obs.sheet, blocks = obs.boxes.filter(function (b) { return b.view == null; }).map(function (b) { return b.box; });
@@ -1682,12 +1755,19 @@
         });
       } else {
         // baseline: one linear dimension per reference from the base, nearest first, 8 mm apart
-        var bp = items[0].p, rest = items.slice(1).sort(function (p, q) { return Math.abs(p.val) - Math.abs(q.val); });
+        // (rfNS) a dimension whose text would land on an earlier one's (a vertical stack: horizontal texts wider than the
+        // 8 mm step; values a few thou apart) steps out 4 mm more at a time until it is clear, as SolidWorks spaces them
+        var bp = items[0].p, rest = items.slice(1).sort(function (p, q) { return Math.abs(p.val) - Math.abs(q.val); }), bPos = lvl, bTexts = [];
         rest.forEach(function (it, i) {
-          var pos = lvl + side * 8 * k * i;
           var lab = d.tol || d.label != null ? dimLabel(Object.assign({}, d, { kind: 'h', value: Math.abs(it.val) }), units) : { main: numText(Math.abs(it.val), units, prec), upper: null, lower: null };
-          var a2 = bp.slice(), b2 = it.p.slice();
-          linear(a2, b2, hz2, pos, lab, null);
+          if (i) bPos += side * 8 * k;
+          for (var tries = 0; tries < 16; tries++) {
+            var n0 = out.length;
+            linear(bp.slice(), it.p.slice(), hz2, bPos, lab, null);
+            var mine = out.slice(n0).filter(function (x) { return x.k === 'text'; }).map(textRect);
+            if (tries === 15 || !mine.some(function (t) { return bTexts.some(function (o) { return rectsMeet(t, o, 1 * k); }); })) { bTexts = bTexts.concat(mine); break; }
+            out.length = n0; bPos += side * 4 * k;
+          }
         });
       }
       return out;
