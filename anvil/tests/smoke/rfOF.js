@@ -48,3 +48,19 @@
     UI.reports.hide();
     return 'the wait: no report; the block after it: ' + fr.ms + ' ms reported';
   });
+
+  // (head, 2026-11-17) Zoom to Area left on took the next tool's first press (ui-sketch.js setTool, ui-core.js
+  // loadModel): what made rfNK flow a fail after rfNG in every full run since 2026-11-16
+  step('rfOF: Zoom to Area ends when a sketch tool is picked and when a document is opened', async function () {
+    await anvil.newPart(); await idle();
+    UI.App.zoomAreaMode = true; UI.refreshHud();
+    await anvil.newPart(); await idle();
+    assert(!UI.App.zoomAreaMode, 'a new document does not start in Zoom to Area');
+    await UI.newSketchOnPlane('Front'); await idle();
+    try {
+      UI.App.zoomAreaMode = true; UI.refreshHud();
+      UI.setTool('line'); await wait(30);
+      assert(!UI.App.zoomAreaMode, 'picking Line ends Zoom to Area');
+    } finally { UI.App.zoomAreaMode = false; UI.setTool('select'); UI.exitSketch(true); await anvil.newPart(); await idle(); }
+    return 'ended by a tool pick and by a new document';
+  });

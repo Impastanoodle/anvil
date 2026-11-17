@@ -474,6 +474,9 @@
         pemOK = rfNWLast().type !== 'hole';
         notes.push('after PEM ' + rfNWLast().name + ' ' + (rfNWErrs()[rfNWLast().id] || 'ok'));
       }
+      // (head, 2026-11-17) the Design Library pane opened above is closed again: left open it narrowed the graphics area for
+      // every later group (rfNU's pick distances moved by a pixel and failed in each full run)
+      if (UI.closeTaskPane) UI.closeTaskPane();
       rfNWjob.cPem = pemOK;
       // Flat to DXF
       var xb = rfNWRibbon('Sheet Metal', /Flat to/);

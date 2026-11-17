@@ -154,6 +154,10 @@
     dimension: 'Click a line, circle, arc, rectangle, slot or polygon (or two points), then click where the dimension should sit: above / below or beside two points for a horizontal or vertical distance. Double-click a value to change it, drag it to move it; <b>Delete</b> removes a selected dimension.'
   };
   function setTool(name) {
+    // (head, 2026-11-17) Zoom to Area ends when a sketch tool is picked, as any command ends it in SolidWorks: left on,
+    // the tool's first press drew a zoom box instead (a Straight Slot got two of its three clicks: smoke rfNK flow a
+    // after rfNG had pressed Zoom to Area)
+    if (App.zoomAreaMode && name !== 'select') { App.zoomAreaMode = false; if (UI.refreshHud) UI.refreshHud(); }
     // rfE: Smart Dimension with one or two sketch entities selected starts from them (SolidWorks: the dimension is on
     // the cursor, the next click places it); read before an entity's PropertyManager closes and drops the selection
     // rfAY: Rapid Sketch on and no sketch open: a drawing tool is armed (a plane / face click opens the sketch)

@@ -81,6 +81,21 @@
         }
       }
     }
+    // (head, 2026-11-17) What these steps change in the view goes back when they end: a display style a button chose
+    // is not a toggle (the group left Hidden Lines Visible behind) and a shortcut hides the origin. Every later group ran
+    // in that style: rfNV's "hues on screen", rfNU's pick distances and rfNK's slots failed in each full run since
+    // 2026-11-16 and passed alone. rfNGViewKeep() -> a function that puts UI.App.view back as it was.
+    function rfNGViewKeep() {
+      var v = UI.App.view, was = JSON.stringify(v);
+      return function () {
+        var o = JSON.parse(was);
+        Object.keys(v).forEach(function (k) { if (!(k in o)) delete v[k]; });
+        Object.keys(o).forEach(function (k) { if (JSON.stringify(v[k]) !== JSON.stringify(o[k])) v[k] = o[k]; });
+        if (UI.applyDisplayStyle) UI.applyDisplayStyle();
+        if (UI.updateOrigin) UI.updateOrigin();
+        if (UI.refreshHud) UI.refreshHud();
+      };
+    }
     async function rfNGReset(prof) { await rfNGLeave(); UI.Profiles.set(prof || 'solidworks'); await anvil.newPart(); await idle(); if (UI.featureManagerHidden && UI.featureManagerHidden()) UI.setFeatureManagerHidden(false); var tt = D.querySelector('#fm-tabs button[data-tab="tree"]'); if (tt) tt.click(); else if (UI.setFmTab) UI.setFmTab('tree'); if (UI.closeTaskPane && !$('tp-panel').hidden) UI.closeTaskPane(); }
 
     step('rfNG: every ribbon button and flyout item has a tooltip line that is not its name again, and no flyout lists a command twice (SolidWorks and Mastercam; part, sheet metal, sketch, assembly, drawing)', async function () {
@@ -173,7 +188,7 @@
     ['solidworks', 'mastercam'].forEach(function (prof) {
       RFNG_STATES.forEach(function (st) {
         step('rfNG: every enabled ribbon button and flyout item does something you can see (a PropertyManager, a dialog, a menu, a mode, a view, a pane, the status line or a message): ' + prof + ', ' + st, async function () {
-          var prof0 = UI.Profiles.active(), bad = [], n = 0, unstub = rfNGStubs(), theme = UI.theme ? UI.theme() : 'light', bg = UI.App.view.bg;
+          var prof0 = UI.Profiles.active(), bad = [], n = 0, unstub = rfNGStubs(), theme = UI.theme ? UI.theme() : 'light', bg = UI.App.view.bg, viewBack = rfNGViewKeep();
           var done = rfNGDone[prof] = rfNGDone[prof] || {};
           try {
             UI.Profiles.set(prof); await idle();
@@ -207,7 +222,7 @@
               }
             }
             assert(!bad.length, bad.length + ' of ' + n + ' did nothing: ' + bad.join(' | '));
-          } finally { unstub(); if (UI.theme && UI.theme() !== theme) UI.setTheme(theme); await rfNGReset(prof0); }
+          } finally { unstub(); if (UI.theme && UI.theme() !== theme) UI.setTheme(theme); await rfNGReset(prof0); viewBack(); }
           return n + ' commands';
         });
       });
@@ -227,7 +242,7 @@
     ['solidworks', 'mastercam'].forEach(function (prof) {
       ['part', 'sketch', 'assembly', 'drawing'].forEach(function (doc) {
         step('rfNG: every keyboard shortcut a ribbon tooltip or a menu row shows runs that command: ' + prof + ', ' + doc, async function () {
-          var prof0 = UI.Profiles.active(), bad = [], n = 0, unstub = rfNGStubs();
+          var prof0 = UI.Profiles.active(), bad = [], n = 0, unstub = rfNGStubs(), viewBack = rfNGViewKeep();
           try {
             UI.Profiles.set(prof); await idle();
             await rfNGState(doc);
@@ -262,7 +277,7 @@
             }
             assert(n >= 3, 'only ' + n + ' keys found');
             assert(!bad.length, bad.length + ' of ' + n + ' keys did nothing: ' + bad.join(' | '));
-          } finally { unstub(); await rfNGReset(prof0); }
+          } finally { unstub(); await rfNGReset(prof0); viewBack(); }
           return n + ' keys';
         });
       });

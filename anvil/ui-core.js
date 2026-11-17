@@ -4980,6 +4980,7 @@ var UI = (function () {
   }
 
   function loadModel(model) {
+    if (App.zoomAreaMode) { App.zoomAreaMode = false; if (UI.refreshHud) UI.refreshHud(); }   // (head, 2026-11-17) a new or opened document does not start in Zoom to Area
     if (UI.exitSketch && App.mode === 'sketch') UI.exitSketch(true);
     if (UI.closePM) UI.closePM();
     App.model = model;

@@ -660,6 +660,8 @@
       if (UI.sheetMetalMemory) o.sheetMetalMemory = JSON.stringify(UI.sheetMetalMemory());
       if (UI.sketchNumericInput) o.sketchNumericInput = !!UI.sketchNumericInput();
       o.quickSnap = UI.App.quickSnap == null ? '' : String(UI.App.quickSnap);
+      o.taskPane = $('tp-panel') && !$('tp-panel').hidden ? String(UI.taskPaneCurrent ? UI.taskPaneCurrent() : 'open') : '';   // (head, 2026-11-17) an open Task Pane narrows the graphics area for the steps after it
+      o.zoomArea = !!UI.App.zoomAreaMode;   // (head, 2026-11-17) Zoom to Area left on takes the next step's first press
     } catch (e) { o.leftError = String(e); }
     return o;
   }
