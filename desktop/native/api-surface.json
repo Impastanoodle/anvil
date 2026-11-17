@@ -4007,7 +4007,7 @@
   "handles": 9,
   "enums": 15,
   "constructors": 93,
-  "methods": 157,
+  "methods": 159,
   "statics": 23,
   "constructorList": [
    "BRepAdaptor_Curve_2(E: TopoDS_Edge)",
@@ -4146,7 +4146,9 @@
    "BRepClass3d_SolidClassifier.Perform(P: gp_Pnt, Tol: Standard_Real): void",
    "BRepExtrema_DistShapeShape.IsDone(): Standard_Boolean",
    "BRepExtrema_DistShapeShape.Value(): Standard_Real",
+   "BRepFilletAPI_MakeChamfer.AddDA(Dis: Standard_Real, Angle: Standard_Real, E: TopoDS_Edge, F: TopoDS_Face): void",
    "BRepFilletAPI_MakeChamfer.Add_2(Dis: Standard_Real, E: TopoDS_Edge): void   [C++ Add]",
+   "BRepFilletAPI_MakeChamfer.Add_3(Dis1: Standard_Real, Dis2: Standard_Real, E: TopoDS_Edge, F: TopoDS_Face): void   [C++ Add]",
    "BRepFilletAPI_MakeFillet.Add_2(Radius: Standard_Real, E: TopoDS_Edge): void   [C++ Add]",
    "BRepGProp_Face.Normal(U: Standard_Real, V: Standard_Real, P: gp_Pnt, VNor: gp_Vec): void",
    "BRepOffsetAPI_DraftAngle.Add(F: TopoDS_Face, Direction: gp_Dir, Angle: Standard_Real, NeutralPlane: gp_Pln, Flag: Standard_Boolean): void",

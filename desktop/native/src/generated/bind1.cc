@@ -632,4 +632,13 @@ Napi::Value m_BRepBuilderAPI_MakeVertex_Vertex(const Napi::CallbackInfo& info) {
     return Ret(info.Env(), self.Vertex());
   OCC_CATCH
 }
+Napi::Value m_BRepBuilderAPI_MakeWire_Add_1(const Napi::CallbackInfo& info) {
+  BRepBuilderAPI_MakeWire& self = ArgObj<BRepBuilderAPI_MakeWire>(info.This(), ID_BRepBuilderAPI_MakeWire);
+  OCC_TRY
+    CheckCount(info, 1, "BRepBuilderAPI_MakeWire.Add_1");
+    TopoDS_Edge& a0 = ArgObj<TopoDS_Edge>(info[0], ID_TopoDS_Edge);
+    self.Add(a0);
+    return info.Env().Undefined();
+  OCC_CATCH
+}
 }
