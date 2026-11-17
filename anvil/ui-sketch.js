@@ -3121,14 +3121,32 @@
   }
   // the active sketch's curves on screen as segments (with their boxes, for a quick reject), made once per drawDims
   var geoSegs = null;
+  // rfOG (lane dragsnap): made on every redraw of the dimension layer, so on every frame of a drag or a view move. The
+  // polylines of an entity are kept by the entity's own text (only what moved is tessellated again; the lists are
+  // read, never changed), and with the usual parallel view a point goes to the screen by the plane's own map (three
+  // points projected once) instead of a camera projection per point.
+  var geoPls = new Map(), geoPlsFor = '';
+  function geoPolylines(e) {
+    if (e.t === 'text') return K.entityPolylines(e);   // (may follow another entity)
+    var k = JSON.stringify(e), hit = geoPls.get(k);
+    if (!hit) { hit = K.entityPolylines(e); geoPls.set(k, hit); }
+    return hit;
+  }
   function screenGeometry(f, pl) {
     var out = [], W = UI.size ? UI.size.w : 1e9, H = UI.size ? UI.size.h : 1e9;
+    var tk = K._ && K._.tessKey ? K._.tessKey() : '';
+    if (tk !== geoPlsFor || geoPls.size > 30000) { geoPls.clear(); geoPlsFor = tk; }
+    var o = null, ux = null, uy = null;
+    if (UI.camera && UI.camera.isOrthographicCamera && UI.sketchGeoFast !== false) {   // (UI.sketchGeoFast = false: the plain way, for comparisons)
+      o = UI.worldToScreen(K.to3D(pl, 0, 0)); ux = UI.worldToScreen(K.to3D(pl, 1, 0)); uy = UI.worldToScreen(K.to3D(pl, 0, 1));
+      if (o && ux && uy) { ux = [ux[0] - o[0], ux[1] - o[1]]; uy = [uy[0] - o[0], uy[1] - o[1]]; } else o = null;
+    }
     (f.entities || []).forEach(function (e) {
       if (!e || e.t === 'point') return;
       var pls;
-      try { pls = K.entityPolylines(e); } catch (err) { return; }
+      try { pls = geoPolylines(e); } catch (err) { return; }
       pls.forEach(function (l) {
-        var s = l.pts.map(function (q) { return UI.worldToScreen(K.to3D(pl, q[0], q[1])); }), n = s.length, cnt = l.closed ? n : n - 1;
+        var s = l.pts.map(o ? function (q) { return [o[0] + q[0] * ux[0] + q[1] * uy[0], o[1] + q[0] * ux[1] + q[1] * uy[1]]; } : function (q) { return UI.worldToScreen(K.to3D(pl, q[0], q[1])); }), n = s.length, cnt = l.closed ? n : n - 1;
         for (var k = 0; k < cnt; k++) {
           var a = s[k], c = s[(k + 1) % n];
           if (!a || !c) continue;
@@ -3152,7 +3170,39 @@
     });
     return out;
   }
-  function onGeometry(b, dotsOnly) {
+  // rfOG: with many curves on screen (a plate full of holes) the boxes tried for labels and icons asked every segment
+  // each time, 58 ms a redraw at 1,600 holes: the segments are put in a grid of GEO_CELL px cells once per redraw and a
+  // box asks only the cells it covers (the same answer: any segment that hits the box)
+  var GEO_CELL = 48, GEO_GRID_MIN = 400, geoGrid = null;
+  function geoGridOf(segs) {
+    if (geoGrid && geoGrid.segs === segs) return geoGrid;
+    var cells = new Map(), wide = [];
+    for (var i = 0; i < segs.length; i++) {
+      var q = segs[i].box, x0 = Math.floor(q[0] / GEO_CELL), x1 = Math.floor(q[2] / GEO_CELL), y0 = Math.floor(q[1] / GEO_CELL), y1 = Math.floor(q[3] / GEO_CELL);
+      if ((x1 - x0 + 1) * (y1 - y0 + 1) > 64) { wide.push(segs[i]); continue; }
+      for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) { var k = x * 100003 + y, c = cells.get(k); if (c) c.push(segs[i]); else cells.set(k, [segs[i]]); }
+    }
+    return (geoGrid = { segs: segs, cells: cells, wide: wide });
+  }
+  function onGeometryIn(list, b, dotsOnly) {
+    for (var i = 0; i < list.length; i++) {
+      var g = list[i], q = g.box;
+      if (dotsOnly && !g.dot) continue;
+      if (q[2] < b[0] || q[0] > b[2] || q[3] < b[1] || q[1] > b[3]) continue;
+      if (segHitsBox(g.a, g.b, b)) return true;
+    }
+    return false;
+  }
+  function onGeometry(b, dotsOnly) {   // rfOH: dotsOnly = only the point dots
+    if (geoSegs.length >= GEO_GRID_MIN && UI.sketchGeoFast !== false && b[2] - b[0] < 40 * GEO_CELL && b[3] - b[1] < 40 * GEO_CELL) {
+      var G = geoGridOf(geoSegs);
+      if (onGeometryIn(G.wide, b, dotsOnly)) return true;
+      for (var y = Math.floor(b[1] / GEO_CELL), y1 = Math.floor(b[3] / GEO_CELL); y <= y1; y++) for (var x = Math.floor(b[0] / GEO_CELL), x1 = Math.floor(b[2] / GEO_CELL); x <= x1; x++) {
+        var c = G.cells.get(x * 100003 + y);
+        if (c && onGeometryIn(c, b, dotsOnly)) return true;
+      }
+      return false;
+    }
     for (var i = 0; i < geoSegs.length; i++) {
       var g = geoSegs[i], q = g.box;
       if (dotsOnly && !g.dot) continue;
@@ -3483,6 +3533,9 @@
     passToGeometry(ev, p);
     return true;
   };
+  // rfOG: work for the next frame, done before that frame is drawn (ui-core's UI.beforeFrame), not after it
+  function nextFrame(fn) { return UI.beforeFrame ? UI.beforeFrame(fn) : requestAnimationFrame(fn); }
+  function dropFrame(id) { if (UI.beforeFrame) UI.cancelBeforeFrame(id); else cancelAnimationFrame(id); }
   function dimPress(ev, it) {
     if (ev.button !== 0) return;
     var through = geometryUnderLabel(ev);
@@ -3501,7 +3554,7 @@
       frame = 0;
       var f2 = UI.activeSketchFeature();
       if (!last || f2 !== f || !d) return;
-      var r = viewport.getBoundingClientRect(), uv = UI.screenToPlane(last[0] - r.left, last[1] - r.top, UI.activePlane());
+      var r = UI.viewportRect ? UI.viewportRect() : viewport.getBoundingClientRect(), uv = UI.screenToPlane(last[0] - r.left, last[1] - r.top, UI.activePlane());
       if (!uv) return;
       var pl = it.rel != null ? (UI.relDimPlacement ? UI.relDimPlacement(f, d, uv) : {}) : dimPlacement(f.entities[d.e], d, uv);
       ['off', 'ang'].forEach(function (k) { if (pl[k] != null) d[k] = pl[k]; });
@@ -3514,12 +3567,12 @@
       if (!d) return;
       if (!moved) { moved = true; lastDimDown = null; if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; } viewport.classList.add('tool-grab'); }
       last = [e2.clientX, e2.clientY];
-      if (!frame) frame = requestAnimationFrame(apply);
+      if (!frame) frame = nextFrame(apply);
     }
     function up() {
       window.removeEventListener('mousemove', move, true);
       window.removeEventListener('mouseup', up, true);
-      if (frame) { cancelAnimationFrame(frame); apply(); }
+      if (frame) { dropFrame(frame); apply(); }
       viewport.classList.remove('tool-grab');
       if (moved) UI.setStatus('Dimension moved.');
       else UI.setStatus((it.auto ? 'Driven value' : 'Dimension') + ' ' + (it.label || '') + ' selected. Double-click to change it; drag it to move it' + (it.auto ? '' : '; Delete removes it') + '.');
@@ -3875,7 +3928,7 @@
     var ed = dimEditing;
     if (!ed) return;
     ed.preview = v;
-    if (!previewFrame) previewFrame = requestAnimationFrame(runPreview);
+    if (!previewFrame) previewFrame = nextFrame(runPreview);
   }
   function runPreview() {
     previewFrame = 0;
@@ -3892,7 +3945,7 @@
   }
   function restoreDimPreview(keep) {
     var ed = dimEditing, f = UI.activeSketchFeature();
-    if (previewFrame && !keep) { cancelAnimationFrame(previewFrame); previewFrame = 0; }
+    if (previewFrame && !keep) { dropFrame(previewFrame); previewFrame = 0; }
     if (!ed || !ed.snap || !f || f.id !== ed.sketchId) return false;
     f.entities = JSON.parse(JSON.stringify(ed.snap.entities));
     if (ed.rel != null && f.rels && f.rels[ed.rel]) f.rels[ed.rel].v = ed.snap.relV;
@@ -3941,7 +3994,7 @@
       if (r.error != null && keepOnError) { dimEditError(r.error); dimInput.focus(); dimInput.select(); return; }
     }
     // a live preview is undone first: the undo step and the solve start from the sketch as it was
-    if (previewFrame) { cancelAnimationFrame(previewFrame); previewFrame = 0; }
+    if (previewFrame) { dropFrame(previewFrame); previewFrame = 0; }
     var previewed = restoreDimPreview(true);
     dimEditing = null;
     dimEdit.hidden = true;
@@ -4003,7 +4056,7 @@
   // script / test hooks: the value shown, a wheel step (sign +1 / -1, modifiers { ctrlKey, altKey }), and the sketch's
   // state during a preview
   UI.dimEditValue = function () { return dimEditing ? dimInput.value : null; };
-  UI.spinDimEdit = function (sgn, mods) { spinDim(sgn, mods || {}); if (previewFrame) { cancelAnimationFrame(previewFrame); runPreview(); } return dimEditing ? +dimInput.value : null; };
+  UI.spinDimEdit = function (sgn, mods) { spinDim(sgn, mods || {}); if (previewFrame) { dropFrame(previewFrame); runPreview(); } return dimEditing ? +dimInput.value : null; };
 
   function deleteDim(index) {
     var f = UI.activeSketchFeature();
@@ -4397,7 +4450,7 @@
 
   // ------------------------------------------------------------------ mouse handling
   var drag = null, downPos = null, zoomBox = null;
-  function pos(ev) { var r = viewport.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
+  function pos(ev) { var r = (UI.viewportRect ? UI.viewportRect() : viewport.getBoundingClientRect()); return [ev.clientX - r.left, ev.clientY - r.top]; }   // rfOG: no layout per move
 
   viewport.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
 
@@ -4515,6 +4568,18 @@
     else $('status-coords').textContent = '';
   });
 
+  // rfOG: is something being dragged in the graphics area (the view, a sketch point, a box, a component)? Hover work is skipped then
+  UI.viewportDragging = function () { return !!drag && drag.kind !== 'maybe-rotate' && drag.kind !== 'maybe-hook'; };
+  // rfOG: Esc while a sketch point or entity is being dragged ends the drag and puts everything back, in one step (the
+  // drag's hook.cancel, ui-relations.js); the release that follows finds no drag. Other drags (a drawing tool's
+  // click-drag, a box selection, a view drag) keep what Esc did before.
+  window.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Escape' || !drag || drag.kind !== 'hook' || !drag.hook.cancel) return;
+    ev.preventDefault(); ev.stopImmediatePropagation();
+    var d = drag; drag = null;
+    viewport.classList.remove('tool-grab');
+    try { d.hook.cancel(); } finally { if (skGhost) { skGhost = null; UI.updateSketches(); } }
+  }, true);
   window.addEventListener('mouseup', function (ev) {
     var p = pos(ev);
     if (zoomBox) {

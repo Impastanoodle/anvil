@@ -273,9 +273,11 @@
   // content, so a redraw that changes nothing (selection, zoom) costs a string compare.
   var rgCache = { key: null, regions: null, ends: null }, hoverRegion = -1, rgMats = null, rgDrawn = [];
   function regionData(f) {
-    var key = f.id + ':' + JSON.stringify(f.entities) + JSON.stringify(f.layers || null) + (K._ && K._.tessKey ? K._.tessKey() : '');
-    if (rgCache.key === key) return rgCache;
-    var regions = [], ends = [], prof = null;
+    // (rfOG: one string per entity, kept, so a drag can tell which entities moved since the regions were worked out)
+    var ej = f.entities.map(function (e) { return JSON.stringify(e); }), tail = JSON.stringify(f.layers || null) + (K._ && K._.tessKey ? K._.tessKey() : '');
+    var key = f.id + ':[' + ej.join(',') + ']' + tail;
+    if (rgCache.key === key) { rgCache.ver = UI.sketchSceneVersion ? UI.sketchSceneVersion() : null; return rgCache; }
+    var regions = [], ends = [], prof = null, t0 = performance.now();
     try { prof = K.sketchProfile(f); } catch (e) { prof = null; }
     var loops = prof ? prof.loops.filter(function (l) { return !l.cross && l.pts.length >= 3; }) : [];
     function probe(l) { return [(l.pts[0][0] + l.pts[1][0]) / 2, (l.pts[0][1] + l.pts[1][1]) / 2]; }
@@ -297,9 +299,228 @@
       });
     });
     Object.keys(deg).forEach(function (k) { if (deg[k] === 1) ends.push([at[k][0], at[k][1]]); });
-    rgCache = { key: key, regions: regions, ends: ends };
+    var kept = rgAdopt(regions);   // (what the kept triangles cost to make still counts as this sketch's cost)
+    rgRelease(rgCache);
+    rgCache = { key: key, regions: regions, ends: ends, fid: f.id, ej: ej, tail: tail, cost: performance.now() - t0 + kept, ver: UI.sketchSceneVersion ? UI.sketchSceneVersion() : null };
+    rgFast = null;
     return rgCache;
   }
+  // ---- rfOG (lane dragsnap): the regions while the sketch is dragged
+  // Every redraw of the sketch triangulated every region again, also when the regions had not changed (a selection, a
+  // hover, a zoom step), and a drag worked the whole profile out again on every frame: 18 ms a frame on a 200-entity
+  // sketch, 650 ms on a plate with 1,600 holes (ear clipping one outline with 1,600 holes), so a dragged point followed
+  // the mouse at one or two frames a second. Now (1) a region's triangles are kept with the region data (r.g: positions,
+  // indices, one BufferGeometry marked userData.keep, which ui-core's disposeGroup leaves alone) and made again only
+  // when the regions change; (2) while a drag is on (App.sketchDragging) and the last full build cost more than
+  // rgBudget ms, the profile is not worked out again: the entities that changed since the build are found by their
+  // strings, the vertices their old points gave are moved to their new points in place (same triangles), and the
+  // region is checked (no triangle turned over). A region that cannot be followed that way (the entity's points
+  // changed in number, a shared point came apart, a triangle turned over) is not drawn for the rest of the drag; the
+  // release redraws from the full profile as before. Sketches whose full build is under the budget are built in full on
+  // every frame as before.
+  var rgFast = null, rgBudget = 3, rgStats = { full: 0, fast: 0, tri: 0, broken: 0, adopted: 0, cavity: 0 };
+  // A new region whose points are those of a kept one, in the same order (an edit elsewhere in the sketch, or the release
+  // of a drag that followed the region in place), takes over its triangles: the plate with 1,600 holes cost 1.1 s to
+  // triangulate again at every release and every edit. Points may differ by the profile's own merge distance where two
+  // ends meet (key2: 1e-4); the positions are then set from the new points and the triangles checked (rgGeometry).
+  function rgAdopt(regions) {
+    var by = {}, F = rgFast && rgFast.key === rgCache.key ? rgFast : null, ms = 0;
+    (rgCache.regions || []).forEach(function (r, ri) { if (r.g && !(F && F.broken[ri])) (by[r.g.uv.length] = by[r.g.uv.length] || []).push(r); });
+    regions.forEach(function (r) {
+      var loops = [r.outer].concat(r.holes), n = 0, c, cands;
+      loops.forEach(function (l) { n += 2 * l.length; });
+      cands = by[n];
+      for (c = 0; cands && c < cands.length; c++) {
+        var uv = cands[c].g.uv, k = 0, ok = true, exact = true;
+        for (var a = 0; ok && a < loops.length; a++) for (var q = 0, l = loops[a]; q < l.length; q++, k += 2) {
+          var dx = Math.abs(uv[k] - l[q][0]), dy = Math.abs(uv[k + 1] - l[q][1]);
+          if (dx > 1.5e-4 || dy > 1.5e-4) { ok = false; break; }
+          if (dx || dy) exact = false;
+        }
+        if (!ok) continue;
+        r.g = cands[c].g; cands[c].g = null; cands.splice(c, 1);
+        r.g.cav = null; ms += r.g.ms || 0;
+        if (!exact || F) { k = 0; loops.forEach(function (l) { l.forEach(function (p) { r.g.uv[k++] = p[0]; r.g.uv[k++] = p[1]; }); }); r.g.stale = true; }
+        rgStats.adopted++;
+        break;
+      }
+    });
+    return ms;
+  }
+  function rgRelease(c) { ((c && c.regions) || []).forEach(function (r) { if (r.g) { r.g.geo.dispose(); r.g = null; } }); }
+  function rgPlaneKey(pl) { return [pl.origin, pl.x, pl.y].join(';'); }
+  function rgProfilePolys(f, e) {
+    if (!e || e.construction || e.t === 'point' || (e.t === 'line' && e.infinite) || (e.t === 'text' && e.mode !== 'outline') || K.noProfileEntity(f, e)) return null;
+    try { return K.entityPolylines(e, true); } catch (err) { return null; }
+  }
+  // the kept triangles of region r on plane pl (made when missing or for another plane)
+  function rgGeometry(d, r, pl, plKey) {
+    if (r.g && r.g.plKey === plKey && r.g.stale) {
+      // adopted triangles on new points: positions from the points, and no triangle may have turned over
+      var G = r.g, bad = false, sumA = 0;
+      for (var v = 0, nv = G.uv.length / 2; v < nv; v++) { var w = K.to3D(pl, G.uv[2 * v], G.uv[2 * v + 1]); G.pos[3 * v] = w[0]; G.pos[3 * v + 1] = w[1]; G.pos[3 * v + 2] = w[2]; }
+      for (var t = 0; !bad && t < G.idx.length; t += 3) { var ar = rgArea(G.uv, G.idx[t], G.idx[t + 1], G.idx[t + 2]) * G.sign; bad = ar < -1e-12; sumA += ar / 2; }
+      if (!bad && r.area != null) bad = Math.abs(sumA - r.area) > 1e-7 * Math.max(1, r.area);   // (and they cover exactly the region)
+      G.stale = false; G.cav = null;
+      if (!bad) G.geo.index.needsUpdate = true;
+      if (!bad) { G.geo.attributes.position.needsUpdate = true; G.geo.boundingSphere = null; G.geo.boundingBox = null; return G; }
+      G.plKey = null;
+    }
+    if (r.g && r.g.plKey === plKey) return r.g;
+    if (r.g) { r.g.geo.dispose(); r.g = null; }
+    var t0 = performance.now();
+    var contour = r.outer.map(function (p) { return new THREE.Vector2(p[0], p[1]); });
+    var holes = r.holes.map(function (h) { return h.map(function (p) { return new THREE.Vector2(p[0], p[1]); }); });
+    var tris;
+    try { tris = THREE.ShapeUtils.triangulateShape(contour, holes); } catch (e) { return null; }
+    var all = contour.concat.apply(contour, holes), n = all.length, uv = new Float64Array(n * 2), pos = new Float32Array(n * 3);   // the faces index the contour then each hole, as triangulateShape left them
+    all.forEach(function (p, i) { var q = K.to3D(pl, p.x, p.y); uv[2 * i] = p.x; uv[2 * i + 1] = p.y; pos[3 * i] = q[0]; pos[3 * i + 1] = q[1]; pos[3 * i + 2] = q[2]; });
+    var idx = n > 65535 ? new Uint32Array(tris.length * 3) : new Uint16Array(tris.length * 3), sign = 0;
+    tris.forEach(function (t, k) {
+      idx[3 * k] = t[0]; idx[3 * k + 1] = t[1]; idx[3 * k + 2] = t[2];
+      if (!sign) { var a = rgArea(uv, t[0], t[1], t[2]); if (Math.abs(a) > 1e-14) sign = a > 0 ? 1 : -1; }
+    });
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
+    g.userData.keep = true;
+    rgStats.tri++;
+    var dt = performance.now() - t0;
+    d.cost = (d.cost || 0) + dt;
+    return (r.g = { plKey: plKey, uv: uv, pos: pos, idx: idx, geo: g, sign: sign || 1, ms: dt });
+  }
+  // The triangles of kept region g that touch the moved vertices mv, with the vertices where they are now (g.uv). While
+  // none of them has turned over they stand as they are. Otherwise they are made again inside the gap they leave (the
+  // cavity: its outline is the edges only one of them has; the moved loops lie in it as holes or run along it), a few
+  // dozen points instead of the whole region, and written into the same places of the index list. False when that
+  // cannot be done (the cavity pinches, the moved shape has left it or crosses it): the caller stops drawing the region.
+  // Every triangle the same way round and the outline simple means the triangles cover the region exactly once.
+  function rgCavity(g, mv) {
+    var C = g.cav, n = g.uv.length / 2, uv = g.uv, sg = g.sign, mark = new Uint8Array(n), cnt = 0, i, k, t;
+    for (i = 0; i < mv.length; i++) if (!mark[mv[i]]) { mark[mv[i]] = 1; cnt++; }
+    if (!C || C.cnt !== cnt || !mv.every(function (v) { return C.mark[v]; })) {
+      var idx0 = C ? C.idx0 : g.idx.slice(), slots = [], edges = new Map(), next = new Map(), loops = [], bad = false;
+      g.idx.set(idx0);
+      for (t = 0; t < idx0.length; t += 3) if (mark[idx0[t]] || mark[idx0[t + 1]] || mark[idx0[t + 2]]) slots.push(t);
+      slots.forEach(function (t) { for (var e = 0; e < 3; e++) edges.set(idx0[t + e] * n + idx0[t + (e + 1) % 3], 1); });
+      edges.forEach(function (one, ek) { var a = Math.floor(ek / n), b = ek % n; if (a === b || edges.has(b * n + a)) return; if (next.has(a)) bad = true; next.set(a, b); });
+      while (!bad && next.size) {
+        var s = next.keys().next().value, L = [], v = s;
+        do { L.push(v); var w = next.get(v); if (w === undefined) { bad = true; break; } next.delete(v); v = w; } while (v !== s);
+        loops.push(L);
+      }
+      C = g.cav = { mark: mark, cnt: cnt, idx0: idx0, slots: slots, loops: bad ? null : loops, own: false };
+      g.geo.index.needsUpdate = true;
+    }
+    if (!C.loops) return false;
+    var same = true;
+    for (k = 0; same && k < C.slots.length; k++) { t = C.slots[k]; same = rgArea(uv, C.idx0[t], C.idx0[t + 1], C.idx0[t + 2]) * sg >= -1e-12; }
+    if (same) {
+      if (C.own) { C.slots.forEach(function (t) { g.idx[t] = C.idx0[t]; g.idx[t + 1] = C.idx0[t + 1]; g.idx[t + 2] = C.idx0[t + 2]; }); C.own = false; g.geo.index.needsUpdate = true; }
+      return true;
+    }
+    var outers = [], holes = [], tris = [];
+    function vec(v) { return new THREE.Vector2(uv[2 * v], uv[2 * v + 1]); }
+    for (k = 0; k < C.loops.length; k++) {
+      var Lk = C.loops[k], a2 = 0;
+      for (i = 0; i < Lk.length; i++) { var p = Lk[i], q = Lk[(i + 1) % Lk.length]; a2 += uv[2 * p] * uv[2 * q + 1] - uv[2 * q] * uv[2 * p + 1]; }
+      if (Math.abs(a2) < 1e-14) return false;
+      (a2 * sg > 0 ? outers : holes).push({ L: Lk, a: Math.abs(a2) / 2, used: false });
+    }
+    if (!outers.length) return false;
+    for (k = 0; k < outers.length; k++) {
+      var O = outers[k], poly = O.L.map(function (v) { return [uv[2 * v], uv[2 * v + 1]]; }), ids = O.L.slice(), area = O.a, sum = 0, tr;
+      var mine = holes.filter(function (h) { return !h.used && (outers.length === 1 || K._.pointInPoly([uv[2 * h.L[0]], uv[2 * h.L[0] + 1]], poly)); });
+      mine.forEach(function (h) { h.used = true; ids = ids.concat(h.L); area -= h.a; });
+      try { tr = THREE.ShapeUtils.triangulateShape(O.L.map(vec), mine.map(function (h) { return h.L.map(vec); })); } catch (err) { return false; }
+      for (i = 0; i < tr.length; i++) {
+        var A = ids[tr[i][0]], B = ids[tr[i][1]], D = ids[tr[i][2]], ar = rgArea(uv, A, B, D) * sg;
+        if (ar < -1e-12) return false;
+        sum += ar / 2; tris.push(A, B, D);
+      }
+      if (Math.abs(sum - area) > 1e-9 * Math.max(1, area)) return false;
+    }
+    if (holes.some(function (h) { return !h.used; }) || tris.length > 3 * C.slots.length) return false;
+    for (k = 0; k < C.slots.length; k++) {
+      t = C.slots[k]; i = 3 * k;
+      if (i < tris.length) { g.idx[t] = tris[i]; g.idx[t + 1] = tris[i + 1]; g.idx[t + 2] = tris[i + 2]; }
+      else g.idx[t] = g.idx[t + 1] = g.idx[t + 2] = C.idx0[t];
+    }
+    C.own = true; g.geo.index.needsUpdate = true;
+    rgStats.cavity++;
+    return true;
+  }
+  function rgArea(uv, a, b, c) { return (uv[2 * b] - uv[2 * a]) * (uv[2 * c + 1] - uv[2 * a + 1]) - (uv[2 * c] - uv[2 * a]) * (uv[2 * b + 1] - uv[2 * a + 1]); }
+  function rgFastWanted(f) {
+    var c = rgCache;
+    return !!(App.sketchDragging && c.regions && c.fid === f.id && c.ej && c.ej.length === f.entities.length && c.cost > rgBudget &&
+      c.tail === JSON.stringify(f.layers || null) + (K._ && K._.tessKey ? K._.tessKey() : ''));
+  }
+  // the first fast frame after a full build: which vertices and open ends each point gave, and which entities have a point there
+  function rgFastInit(f) {
+    var key2 = K._.key2, vmap = new Map(), use = new Map(), endAt = new Map();
+    rgCache.regions.forEach(function (r, ri) {
+      var vi = 0;
+      [r.outer].concat(r.holes).forEach(function (loop) { loop.forEach(function (p) { var k = key2(p), l = vmap.get(k); if (!l) vmap.set(k, l = []); l.push(ri, vi++); }); });
+    });
+    f.entities.forEach(function (e, i) {
+      var pls = rgProfilePolys(f, JSON.stringify(e) === rgCache.ej[i] ? e : JSON.parse(rgCache.ej[i]));
+      (pls || []).forEach(function (pl) { pl.pts.forEach(function (p) { var k = key2(p), l = use.get(k); if (!l) use.set(k, l = []); if (l[l.length - 1] !== i) l.push(i); }); });
+    });
+    rgCache.ends.forEach(function (p, k) { endAt.set(key2(p), k); });
+    rgFast = { key: rgCache.key, vmap: vmap, use: use, endAt: endAt, old: {}, patched: {}, broken: {}, touched: {}, ends: rgCache.ends.map(function (p) { return p.slice(); }) };
+  }
+  // move what the changed entities gave to where they are now; marks the regions that cannot be followed
+  function rgFastPatch(f, pl, plKey) {
+    if (!rgFast || rgFast.key !== rgCache.key) rgFastInit(f);
+    var F = rgFast, key2 = K._.key2, todo = {}, list = [], moves = new Map(), mvBy = {}, i;
+    for (i = 0; i < f.entities.length; i++) if (F.patched[i] || JSON.stringify(f.entities[i]) !== rgCache.ej[i]) { todo[i] = true; list.push(i); }
+    function breakKey(k, why) { var l = F.vmap.get(k); if (l) for (var q = 0; q < l.length; q += 2) if (!F.broken[l[q]]) { F.broken[l[q]] = true; rgStats.broken++; rgStats.why = why; } }
+    function breakAll(pls) { (pls || []).forEach(function (p) { p.pts.forEach(function (q) { breakKey(key2(q), 'points'); }); }); }
+    list.forEach(function (i) {
+      var o = F.old[i];
+      if (o === undefined) { try { o = F.old[i] = rgProfilePolys(f, JSON.parse(rgCache.ej[i])); } catch (err) { o = F.old[i] = null; } }
+      var n = rgProfilePolys(f, f.entities[i]);
+      F.patched[i] = true;
+      if (!o && !n) return;
+      var same = !!(o && n && o.length === n.length);
+      for (var a = 0; same && a < o.length; a++) same = o[a].pts.length === n[a].pts.length && !!o[a].closed === !!n[a].closed;
+      if (!same) { breakAll(o); return; }
+      for (a = 0; a < o.length; a++) for (var b = 0; b < o[a].pts.length; b++) {
+        var k = key2(o[a].pts[b]), p = n[a].pts[b], mv = moves.get(k);
+        if (mv && key2(mv) !== key2(p)) breakKey(k, 'apart');
+        else if (!mv) moves.set(k, p);
+      }
+    });
+    moves.forEach(function (p, k) {
+      // a point an entity that stayed still has too: the contour comes apart there (or another shape merely touched it)
+      var u = F.use.get(k), l = F.vmap.get(k), q;
+      if (u && key2(p) !== k) for (q = 0; q < u.length; q++) if (!todo[u[q]]) { breakKey(k, 'held'); break; }
+      if (l) for (q = 0; q < l.length; q += 2) {
+        var ri = l[q], vi = l[q + 1], r = rgCache.regions[ri], g = !F.broken[ri] && rgGeometry(rgCache, r, pl, plKey);
+        if (!g) continue;
+        var w = K.to3D(pl, p[0], p[1]);
+        g.uv[2 * vi] = p[0]; g.uv[2 * vi + 1] = p[1]; g.pos[3 * vi] = w[0]; g.pos[3 * vi + 1] = w[1]; g.pos[3 * vi + 2] = w[2];
+        F.touched[ri] = 2;
+        (mvBy[ri] = mvBy[ri] || []).push(vi);
+      }
+      var ei = F.endAt.get(k);
+      if (ei != null) F.ends[ei] = [p[0], p[1]];
+    });
+    Object.keys(F.touched).forEach(function (ri) {
+      if (F.touched[ri] !== 2) return;
+      F.touched[ri] = 1;
+      var g = rgCache.regions[ri].g;
+      if (!g || F.broken[ri]) return;
+      if (!rgCavity(g, mvBy[ri] || [])) { F.broken[ri] = true; rgStats.broken++; rgStats.why = 'cavity'; return; }
+      g.geo.attributes.position.needsUpdate = true;
+      g.geo.boundingSphere = null; g.geo.boundingBox = null;
+    });
+    rgStats.fast++;
+  }
+  // test hooks: the budget (ms; 0 = always follow a drag the fast way, Infinity = never) and what was done
+  UI.sketchRegionBudget = function (ms) { if (ms != null) rgBudget = ms; return rgBudget; };
+  UI.sketchRegionStats = function () { return { full: rgStats.full, fast: rgStats.fast, tri: rgStats.tri, broken: rgStats.broken, adopted: rgStats.adopted, cavity: rgStats.cavity, why: rgStats.why || '', cost: rgCache.cost || 0, dragging: !!rgFast, hidden: rgFast ? Object.keys(rgFast.broken).length : 0 }; };
   function darkView() { return true; }   // rfBR: the graphics area is grey-black in every theme and background
   function regionMats() {
     var dark = darkView();
@@ -316,29 +537,32 @@
   UI.sketchRegionObjects = function (f, pl) {
     rgDrawn = [];
     if (App.view.sketchRegions === false || !window.THREE || !THREE.ShapeUtils) return [];
-    var d = regionData(f), M = regionMats(), out = [];
+    // rfOG: mid-drag on a sketch whose regions are dear, follow the changed entities in place; else the full profile
+    var fast = rgFastWanted(f), plKey = rgPlaneKey(pl), d, M = regionMats(), out = [];
+    if (fast) { d = rgCache; rgFastPatch(f, pl, plKey); }
+    else {
+      var was = rgFast && rgFast.key === rgCache.key ? rgFast : null;
+      d = regionData(f);
+      // the same sketch as before the drag (it was put back): the regions the drag moved or dropped are made again
+      if (was && d.key === was.key) Object.keys(was.touched).concat(Object.keys(was.broken)).forEach(function (ri) { var r = d.regions[ri]; if (r && r.g) { r.g.geo.dispose(); r.g = null; } });
+      rgFast = null;
+      rgStats.full++;
+    }
     d.regions.forEach(function (r, ri) {
-      var contour = r.outer.map(function (p) { return new THREE.Vector2(p[0], p[1]); });
-      var holes = r.holes.map(function (h) { return h.map(function (p) { return new THREE.Vector2(p[0], p[1]); }); });
-      var tris;
-      try { tris = THREE.ShapeUtils.triangulateShape(contour, holes); } catch (e) { return; }
-      var pos = [];   // the faces index the contour then each hole, as triangulateShape left them
-      contour.concat.apply(contour, holes).forEach(function (p) { var q = K.to3D(pl, p.x, p.y); pos.push(q[0], q[1], q[2]); });
-      var idx = [];
-      tris.forEach(function (t) { idx.push(t[0], t[1], t[2]); });
-      var g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-      g.setIndex(idx);
-      var m = new THREE.Mesh(g, ri === hoverRegion ? M.hover : M.base);
+      if (fast && rgFast.broken[ri]) return;
+      var rg = rgGeometry(d, r, pl, plKey);
+      if (!rg) return;
+      var m = new THREE.Mesh(rg.geo, ri === hoverRegion ? M.hover : M.base);
       m.renderOrder = 9;
       m.raycast = noRaycast;
       m.userData = { sketchRegion: ri };
       rgDrawn.push(m);
       out.push(m);
     });
-    if (d.ends.length) {
+    var ends = fast ? rgFast.ends : d.ends;
+    if (ends.length) {
       var pos2 = [];
-      d.ends.forEach(function (p) { var q = K.to3D(pl, p[0], p[1]); pos2.push(q[0], q[1], q[2]); });
+      ends.forEach(function (p) { var q = K.to3D(pl, p[0], p[1]); pos2.push(q[0], q[1], q[2]); });
       var g2 = new THREE.BufferGeometry();
       g2.setAttribute('position', new THREE.Float32BufferAttribute(pos2, 3));
       var pts = new THREE.Points(g2, M.ends);
@@ -357,7 +581,8 @@
   UI.sketchOpenEnds = function () { var f = UI.activeSketchFeature(); return f ? regionData(f).ends.map(function (p) { return p.slice(); }) : []; };
   UI.sketchRegionHover = function () { return hoverRegion; };
   function regionAt(f, uv) {
-    var d = regionData(f);
+    // (rfOG: the hover asks on every mouse move; the regions of the sketch as last drawn need no new key)
+    var d = rgCache.regions && rgCache.fid === f.id && rgCache.ver != null && rgCache.ver === UI.sketchSceneVersion() && !rgFast ? rgCache : regionData(f);
     for (var i = d.regions.length - 1; i >= 0; i--) {
       var r = d.regions[i];
       if (K._.pointInPoly(uv, r.outer) && !r.holes.some(function (h) { return K._.pointInPoly(uv, h); })) return i;
@@ -376,7 +601,7 @@
     if (App.mode !== 'sketch' || ev.buttons || App.view.sketchRegions === false || !rgDrawn.length) { if (hoverRegion >= 0 && App.mode !== 'sketch') hoverRegion = -1; return; }
     var f = UI.activeSketchFeature();
     if (!f) return;
-    var r = UI.viewport.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
+    var r = UI.viewportRect ? UI.viewportRect() : UI.viewport.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;   // rfOG: no layout per move
     if (mx < 0 || my < 0 || mx > r.width || my > r.height) { setHover(-1); return; }
     var uv = UI.screenToPlane(mx, my, UI.activePlane());
     setHover(uv ? regionAt(f, uv) : -1);

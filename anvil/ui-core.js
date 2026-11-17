@@ -686,7 +686,7 @@ var UI = (function () {
   function disposeGroup(g) {
     while (g.children.length) {
       var c = g.children.pop();
-      if (c.geometry) c.geometry.dispose();
+      if (c.geometry && !c.geometry.userData.keep) c.geometry.dispose();   // rfOG: a cached geometry (userData.keep) is its owner's to dispose
     }
   }
 
@@ -3298,9 +3298,25 @@ var UI = (function () {
     analysisCache = { id: f.id, key: key, state: st };
     return st;
   }
+  // rfOG (lane dragsnap): a drag redraws the whole sketch on every frame, and every circle, arc and slot was tessellated
+  // again each time (half of the redraw on a plate full of holes). The polylines of those entities are kept by the
+  // entity's own text for the tessellation in force (zoom, model settings): only what moved is worked out again.
+  // The lists are shared: read, never changed (lineSegmentsInto, lineGeometryFromPolylines).
+  var plsCache = new Map(), plsFor = '', plsScale = 0;
+  function cachedScreenPolylines(e) {
+    if (e.t !== 'circle' && e.t !== 'arc' && e.t !== 'slot' && e.t !== 'aslot' && e.t !== 'spline' && e.t !== 'ellipse' && e.t !== 'pellipse') return screenPolylines(e);   // (the kinds screenPolylines cuts for the screen: rfOH added splines and ellipses)
+    if (cam.scale !== plsScale) { plsCache.clear(); plsScale = cam.scale; }
+    var k = JSON.stringify(e), hit = plsCache.get(k);
+    if (hit) return hit;
+    hit = screenPolylines(e);
+    plsCache.set(k, hit);
+    return hit;
+  }
   function updateSketches() {
     App.dimsStale = true;
     sketchSegsScale = cam.scale;
+    var plsNow = K._ && K._.tessKey ? K._.tessKey() : '';
+    if (plsNow !== plsFor || plsCache.size > 30000) { plsCache.clear(); plsFor = plsNow; }
     sceneVer++;
     disposeGroup(groups.sketches);
     mats.sketchSel.dashSize = cam.scale * 6; mats.sketchSel.gapSize = cam.scale * 4;   // rfBR: the 1-pixel fallback's dashes at this zoom
@@ -3318,7 +3334,7 @@ var UI = (function () {
       f.entities.forEach(function (e, i) {
         var ly = layerStyle ? layerStyle(f, e, active) : null;
         if (ly && ly.hidden) return;
-        var pls = screenPolylines(e);
+        var pls = cachedScreenPolylines(e);
         var selected = active && (UI.entitySelected ? UI.entitySelected(i) : App.sel && App.sel.kind === 'entity' && App.sel.index === i);
         var mat = selected ? mats.sketchSel : (active ? (state && stateMat[state.entities[i]]) || mats.sketch : mats.sketchDim);
         if (ly && ly.mat && !selected && !e.construction && mat !== mats.sketchOver && mat !== mats.sketchConflict) mat = ly.mat;   // over defined stays red
@@ -3586,24 +3602,56 @@ var UI = (function () {
     var best = null, bestD = 7;
     var hit = pickFace(mx, my);
     var hitDepth = hit ? V.dot(hit.point, [cam.dir.x, cam.dir.y, cam.dir.z]) : -Infinity;
-    var xy = edgeScreen(), P = [mx, my], A = [0, 0], B = [0, 0];
-    for (var i = 0; i < App.edges.length; i++) {
-      var e = App.edges[i];
+    var xy = edgeScreen(), P = [mx, my], A = [0, 0], B = [0, 0], G = edgeGridFor(mx, my), list = null, bestI = -1;
+    if (G) {
+      // rfOG: the edges whose box (grown by the pick radius) covers the cursor's cell, in edge order with the long ones
+      var cell = G.cells.get(Math.floor(mx / EDGE_CELL) * 4096 + Math.floor(my / EDGE_CELL));
+      list = cell ? (G.wide.length ? G.wide.concat(cell) : cell) : G.wide;
+    }
+    for (var q = 0, n = list ? list.length : App.edges.length; q < n; q++) {
+      var i = list ? list[q] : q, e = App.edges[i];
       if (e.smooth || e.faces.length !== 2) continue;
       A[0] = xy[i * 4]; A[1] = xy[i * 4 + 1]; B[0] = xy[i * 4 + 2]; B[1] = xy[i * 4 + 3];
       // cheap reject: the cursor is outside the segment's box grown by the pick radius
       if (mx < Math.min(A[0], B[0]) - bestD || mx > Math.max(A[0], B[0]) + bestD || my < Math.min(A[1], B[1]) - bestD || my > Math.max(A[1], B[1]) + bestD) continue;
       if (!edgeVisible(e)) continue;
       var d = distToSegment(P, A, B);
-      if (d >= bestD) continue;
+      if (d > bestD || (d === bestD && (bestI < 0 || i > bestI))) continue;   // (equally near: the earlier edge, as the scan in edge order gives)
       // lane CZ: the depth of the edge point under the cursor, not of the edge's middle (a long edge seen at an angle
       // was "behind" the face it bounds when picked away from its middle)
       var ex = B[0] - A[0], ey = B[1] - A[1], eL = ex * ex + ey * ey, et = eL > 0 ? Math.max(0, Math.min(1, ((mx - A[0]) * ex + (my - A[1]) * ey) / eL)) : 0.5;
       var depth = V.dot(V.add(e.a, V.scale(V.sub(e.b, e.a), et)), [cam.dir.x, cam.dir.y, cam.dir.z]);
       if (hit && depth < hitDepth - Math.max(0.5, cam.scale * 3)) continue;
-      bestD = d; best = e;
+      bestD = d; best = e; bestI = i;
     }
     return best ? { kind: 'edge', edge: best, index: edgeIndex(best) } : null;
+  }
+  // rfOG (lane dragsnap): hover picking that does not grow with the model. pickEdge asked every edge of the part on
+  // every mouse move (178,000 on a panel with 1,800 holes: 6 to 13 ms a move). The pickable edges are put in a grid of
+  // EDGE_CELL px cells, each in every cell its screen box grown by the pick radius covers (the long ones in `wide`),
+  // kept until the view, the part or the window changes; a pick reads the cursor's cell. It is made at the second pick
+  // of a view (a view that is moving is picked once per view at most: the scan is cheaper than a grid nobody reuses).
+  // UI.modelPickGrid = false: always the scan (comparisons).
+  var EDGE_CELL = 32, edgeGrid = null, edgeGridStats = { built: 0 };
+  function edgeGridFor(mx, my) {
+    var E = App.edges, W = size.w, H = size.h;
+    if (UI.modelPickGrid === false || E.length < 2000 || !(mx >= 0 && my >= 0 && mx <= W && my <= H)) return null;
+    if (!edgeGrid || edgeGrid.edges !== E || edgeGrid.ver !== camVer || edgeGrid.w !== W || edgeGrid.h !== H) { edgeGrid = { edges: E, ver: camVer, w: W, h: H, cells: null, wide: null }; return null; }
+    if (edgeGrid.cells) return edgeGrid;
+    var xy = edgeScreen(), cells = new Map(), wide = [], R = 7, nx = Math.floor(W / EDGE_CELL), ny = Math.floor(H / EDGE_CELL);
+    for (var i = 0; i < E.length; i++) {
+      var e = E[i];
+      if (e.smooth || e.faces.length !== 2) continue;
+      var ax = xy[i * 4], ay = xy[i * 4 + 1], bx = xy[i * 4 + 2], by = xy[i * 4 + 3];
+      var x0 = Math.min(ax, bx) - R, x1 = Math.max(ax, bx) + R, y0 = Math.min(ay, by) - R, y1 = Math.max(ay, by) + R;
+      if (!(x1 >= 0 && y1 >= 0 && x0 <= W && y0 <= H)) continue;   // never under a cursor in the graphics area
+      var cx0 = Math.max(0, Math.floor(x0 / EDGE_CELL)), cx1 = Math.min(nx, Math.floor(x1 / EDGE_CELL)), cy0 = Math.max(0, Math.floor(y0 / EDGE_CELL)), cy1 = Math.min(ny, Math.floor(y1 / EDGE_CELL));
+      if ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) > 256) { wide.push(i); continue; }
+      for (var cy = cy0; cy <= cy1; cy++) for (var cx = cx0; cx <= cx1; cx++) { var k = cx * 4096 + cy, c = cells.get(k); if (c) c.push(i); else cells.set(k, [i]); }
+    }
+    edgeGrid.cells = cells; edgeGrid.wide = wide;
+    edgeGridStats.built++;
+    return edgeGrid;
   }
 
   function pickPlane(mx, my) {
@@ -3621,10 +3669,51 @@ var UI = (function () {
   var ENTITY_PICK_PX = 6;
   // rfF: pickEntityDist(mx, my) -> { hit, d } also gives the pixel distance (the Select tool weighs it against a point's).
   function pickEntity(mx, my) { return pickEntityDist(mx, my).hit; }
+  // rfOG (lane dragsnap): hover picking that does not grow with the sketch. Every mouse move over a sketch asked this
+  // three times (the Select tool's pre-highlight, Instant2D, the region hover), and each time every entity was
+  // tessellated and every point of it projected: 13 ms a move at 1,600 entities. The sketch's segments on screen are
+  // now kept in a grid of PICK_CELL px cells until the sketch is redrawn (sceneVer) or the view moves; each segment sits
+  // in every cell within ENTITY_PICK_PX of it, so a pick reads the cursor's own cell. The answer is the linear scan's:
+  // the nearest segment under ENTITY_PICK_PX, the earlier one in sketch order when two are equally near. Not while a
+  // sketch drag is on (the entities move before the redraw).
+  var PICK_CELL = 32, pickCache = null, pickStats = { built: 0, hits: 0 };
+  function pickGrid(f, pl) {
+    var key = f.id + '|' + f.entities.length + '|' + sceneVer + '|' + holdCamSig();
+    if (pickCache && pickCache.key === key) { pickStats.hits++; return pickCache; }
+    var seg = [], cells = new Map(), wide = [], R = ENTITY_PICK_PX;
+    f.entities.forEach(function (e, i) {
+      if (UI.entityLayerHidden && UI.entityLayerHidden(f, e)) return;
+      var pls = cachedScreenPolylines(e);
+      if (e.t === 'point') pls = [{ pts: [[e.x, e.y], [e.x, e.y]], closed: false }];
+      pls.forEach(function (l) {
+        var n = l.pts.length, cnt = l.closed ? n : n - 1;
+        var scr = l.pts.map(function (q) { return worldToScreen(K.to3D(pl, q[0], q[1])); });
+        for (var k = 0; k < Math.max(cnt, 1); k++) {
+          var a = scr[k], b = scr[(k + 1) % n] || a, s = seg.length;
+          seg.push(a[0], a[1], b[0], b[1], i);
+          var x0 = Math.floor((Math.min(a[0], b[0]) - R) / PICK_CELL), x1 = Math.floor((Math.max(a[0], b[0]) + R) / PICK_CELL), y0 = Math.floor((Math.min(a[1], b[1]) - R) / PICK_CELL), y1 = Math.floor((Math.max(a[1], b[1]) + R) / PICK_CELL);
+          if (!((x1 - x0 + 1) * (y1 - y0 + 1) <= 96)) { wide.push(s); continue; }   // (also NaN: scanned every time, as before)
+          for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) { var ck = x * 100003 + y, c = cells.get(ck); if (c) c.push(s); else cells.set(ck, [s]); }
+        }
+      });
+    });
+    pickStats.built++;
+    return (pickCache = { key: key, seg: seg, cells: cells, wide: wide });
+  }
   function pickEntityDist(mx, my) {
     var f = activeSketchFeature();
     if (!f) return { hit: null, d: Infinity };
     var pl = activePlane(), best = null, bestD = ENTITY_PICK_PX;
+    if (!App.sketchDragging && UI.sketchPickGrid !== false) {
+      var G = pickGrid(f, pl), S = G.seg, bs = -1, p = [mx, my];
+      [G.wide, G.cells.get(Math.floor(mx / PICK_CELL) * 100003 + Math.floor(my / PICK_CELL)) || []].forEach(function (list) {
+        for (var q = 0; q < list.length; q++) {
+          var s = list[q], d = distToSegment(p, [S[s], S[s + 1]], [S[s + 2], S[s + 3]]);
+          if (d < bestD || (d === bestD && bs >= 0 && s < bs)) { bestD = d; bs = s; }
+        }
+      });
+      return bs >= 0 ? { hit: { kind: 'entity', index: S[bs + 4] }, d: bestD } : { hit: null, d: Infinity };
+    }
     f.entities.forEach(function (e, i) {
       if (UI.entityLayerHidden && UI.entityLayerHidden(f, e)) return;   // sketch-layers: a hidden layer is not picked
       var pls = screenPolylines(e);   // r15/snapaudit15: the curve as drawn, not the model's chord polygon (a click between its facets picked nothing when zoomed in)
@@ -4081,6 +4170,9 @@ var UI = (function () {
     var dpr = window.devicePixelRatio || 1;
     if (dpr !== renderer.getPixelRatio()) { renderer.setPixelRatio(dpr); size.w = 0; resize(); }
     stepZoomMomentum(now);
+    frameNo++;
+    if (beforeList.length) { var bl = beforeList; beforeList = []; for (var bi = 0; bi < bl.length; bi++) { try { bl[bi].fn(now); } catch (e) { /* the frame goes on */ } } }
+    for (var fh = 0; fh < frameHooks.length; fh++) { try { frameHooks[fh](now); } catch (e) { /* the frame goes on */ } }
     // ui-occt.js: the 3D view keeps OpenCascade's last frame while its next solid builds; overlays still follow, and a
     // camera that moves (a view change, a zoom, entering a sketch) ends the hold at once (smooth/responsive)
     if (App.holdFrameUntil > now) {
@@ -4102,6 +4194,37 @@ var UI = (function () {
     try { tick(now); } finally { requestAnimationFrame(frame); }
   }
   function requestRender() { needsRender = true; }
+  // rfOG (lane dragsnap): what follows the mouse is worked out before the frame that shows it. A mouse move reaches the
+  // page just before the animation frame callbacks run; work a handler puts off to its own requestAnimationFrame ran
+  // after this loop's callback, so its result was drawn a frame late (a dragged sketch point trailed the cursor by one
+  // frame, 17 ms). UI.frameHooks: functions (now) run at the start of every frame of the loop, before the render;
+  // UI.frameNo(): the number of the frame being (or last) drawn, so a handler can tell the first move of a frame.
+  var frameHooks = [], frameNo = 0;
+  // UI.beforeFrame(fn) -> id: fn runs once at the start of the next frame of the loop, before its render (what
+  // requestAnimationFrame was used for by the dimension drag, Instant2D and the Modify box preview, a frame late);
+  // UI.cancelBeforeFrame(id) takes it back.
+  var beforeList = [], beforeSeq = 0;
+  function beforeFrame(fn) { var id = ++beforeSeq; beforeList.push({ id: id, fn: fn }); return id; }
+  function cancelBeforeFrame(id) { for (var i = 0; i < beforeList.length; i++) if (beforeList[i].id === id) { beforeList.splice(i, 1); return; } }
+  // The graphics area's place in the window, read once and kept until it can have changed (its size, the window's size,
+  // a press): the mouse handlers asked getBoundingClientRect on every move, four times per move in a sketch, each one
+  // a forced layout when the dimension layer had just been redrawn.
+  var vpRect = null;
+  function viewportRect() { return vpRect || (vpRect = viewport.getBoundingClientRect()); }
+  function viewportRectStale() { vpRect = null; }
+  window.addEventListener('resize', viewportRectStale, true);
+  window.addEventListener('scroll', viewportRectStale, true);
+  document.addEventListener('mousedown', viewportRectStale, true);
+  document.addEventListener('transitionend', function () { vpRect = viewport.getBoundingClientRect(); }, true);   // (read here, not in the next mouse move)
+  // (what can move it without resizing it changes size itself: the panes and bars before it and round it)
+  if (window.ResizeObserver) {
+    try {
+      // (read at once: right after the layout that changed it, so no mouse handler pays for a layout)
+      var vpRO = new ResizeObserver(function () { vpRect = viewport.getBoundingClientRect(); });
+      for (var vn = viewport; vn && vn !== document.documentElement; vn = vn.parentElement) { vpRO.observe(vn); for (var vs2 = vn.previousElementSibling; vs2; vs2 = vs2.previousElementSibling) vpRO.observe(vs2); }
+    } catch (e) { viewportRect = function () { return viewport.getBoundingClientRect(); }; }
+  }
+  else viewportRect = function () { return viewport.getBoundingClientRect(); };
 
   // ------------------------------------------------------------------ rebuild pipeline
   // Two paths end in applyBuild(): the sync path runs Kernel.rebuild on the main thread (App.buildCache
@@ -5155,7 +5278,7 @@ var UI = (function () {
     applyCamera: applyCamera, resize: resize, rotateView: rotateView, panView: panView, zoomView: zoomView, zoomToFit: zoomToFit,
     setView: setView, viewNormalTo: viewNormalTo, previousView: previousView, pushViewHistory: pushViewHistory, VIEWS: VIEWS, modelBounds: modelBounds,
     updateBodyMesh: updateBodyMesh, applyDisplayStyle: applyDisplayStyle, partColor: partColor, updateHighlights: updateHighlights, updatePlanes: updatePlanes,
-    updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: screenPolylines, sketchDotCap: pointDotCap, sketchSceneVersion: function () { return sceneVer; }, scaleBar: scaleBarInfo, updateTemp: updateTemp, disposeGroup: disposeGroup,
+    updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: cachedScreenPolylines, sketchDotCap: pointDotCap, sketchSceneVersion: function () { return sceneVer; }, scaleBar: scaleBarInfo, updateTemp: updateTemp, pickStats: pickStats, edgeGridStats: edgeGridStats, beforeFrame: beforeFrame, cancelBeforeFrame: cancelBeforeFrame, frameHooks: frameHooks, frameNo: function () { return frameNo; }, viewportRect: function () { return viewportRect(); }, viewportRectStale: viewportRectStale, disposeGroup: disposeGroup,
     sketchOverlayHooks: sketchOverlayHooks, tempEntityHooks: tempEntityHooks, sketchOverlayObjects: sketchOverlayObjects, tempEntitiesShown: tempEntitiesShown,   // sketch-hooks
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep, gridMinors: gridMinors,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickRefGeo: pickRefGeo, updateRefGeo: updateRefGeo, drawRefGeo: drawRefGeo, pickEntity: pickEntity, pickEntityDist: pickEntityDist, pickEdge: pickEdge,

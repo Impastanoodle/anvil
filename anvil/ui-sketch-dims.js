@@ -2128,7 +2128,7 @@
   }
 
   // ---- the drag: one undo step, the sketch re-solved from its start state on every new value
-  function pos(ev) { var r = viewport.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
+  function pos(ev) { var r = (UI.viewportRect ? UI.viewportRect() : viewport.getBoundingClientRect()); return [ev.clientX - r.left, ev.clientY - r.top]; }   // rfOG: no layout per move
   function startDrag(h, ev) {
     ev.stopPropagation(); ev.preventDefault();
     var f = UI.activeSketchFeature();
@@ -2175,7 +2175,7 @@
     if (Math.abs(v - d.v) > 1e-12) {
       d.v = v;
       UI.setStatus('Instant2D: ' + fmt(d.h, v) + (d.h.angle ? '' : ' ' + UI.unitLabel()) + ' (step ' + fmt(d.h, step) + '; release to set it)');
-      if (!d.frame) d.frame = requestAnimationFrame(apply);
+      if (!d.frame) d.frame = UI.beforeFrame ? UI.beforeFrame(apply) : requestAnimationFrame(apply);   // rfOG: before the frame that draws it, not after
     } else if (redraw) draw();
   }
   function finish(cancel) {
@@ -2185,7 +2185,7 @@
     window.removeEventListener('mouseup', up, true);
     window.removeEventListener('keydown', key, true);
     viewport.classList.remove('tool-grab');
-    if (d.frame) { cancelAnimationFrame(d.frame); if (!cancel) apply(); d.frame = 0; }
+    if (d.frame) { if (UI.beforeFrame) UI.cancelBeforeFrame(d.frame); else cancelAnimationFrame(d.frame); if (!cancel) apply(); d.frame = 0; }
     drag = null;
     var changed = Math.abs(d.good - d.v0) > 1e-12;
     if (cancel || !changed) {
@@ -2208,6 +2208,7 @@
 
   viewport.addEventListener('mousemove', function (ev) {
     if (drag) return;
+    if (UI.viewportDragging && UI.viewportDragging()) return;   // rfOG: a drag of something else (the view, a sketch point, a box): no Instant2D hover to work out per move
     if (!idle()) { if (hover) { hover = null; draw(); } return; }
     var it = itemAt(pos(ev)), k = it ? keyOf(it) : null;
     if ((hover ? hover.key : null) === k) return;

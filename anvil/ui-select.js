@@ -798,7 +798,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   }
   window.addEventListener('mousemove', function (ev) {
     if (!ctxEl || !ctxAt) return;
-    var r = viewport.getBoundingClientRect(), d = Math.hypot(ev.clientX - r.left - ctxAt[0], ev.clientY - r.top - ctxAt[1]);
+    var r = (UI.viewportRect ? UI.viewportRect() : viewport.getBoundingClientRect()), d = Math.hypot(ev.clientX - r.left - ctxAt[0], ev.clientY - r.top - ctxAt[1]);   // rfOG: no layout per move
     ctxEl.style.opacity = d > 60 ? String(Math.max(0, 1 - (d - 60) / 80)) : '1';
     if (d > 140) ctxBarHide();
   });
@@ -1633,7 +1633,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   function hKey(h) { return h.kind + ':' + (h.fid != null ? h.fid : h.sketch) + ':' + (h.dimIndex != null ? h.dimIndex : h.dim ? h.dim.e + h.dim.k + (h.dim.i || '') : ''); }
 
   // ---- dragging
-  function pos(ev) { var r = viewport.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
+  function pos(ev) { var r = (UI.viewportRect ? UI.viewportRect() : viewport.getBoundingClientRect()); return [ev.clientX - r.left, ev.clientY - r.top]; }
   function pushUndoOnce(d) {
     if (d.pushed) return;
     d.pushed = true;

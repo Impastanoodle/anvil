@@ -2232,7 +2232,7 @@
   // ---- Tab hides the component under the pointer, Shift + Tab shows the hidden one under it (SolidWorks shortcuts)
   var overVp = null;   // the pointer in the graphics area (viewport coordinates), null when outside
   if (UI.viewport) {
-    UI.viewport.addEventListener('mousemove', function (e) { var r = UI.viewport.getBoundingClientRect(); overVp = [e.clientX - r.left, e.clientY - r.top]; });
+    UI.viewport.addEventListener('mousemove', function (e) { var r = UI.viewportRect ? UI.viewportRect() : UI.viewport.getBoundingClientRect(); overVp = [e.clientX - r.left, e.clientY - r.top]; });   // rfOG: no layout per move
     UI.viewport.addEventListener('mouseleave', function () { overVp = null; });
   }
   var hidRay = null, hidGeo = null;

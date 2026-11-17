@@ -16,17 +16,33 @@
 
   // ------------------------------------------------------------------ picking a ref under the mouse
   // A point (end, centre, corner) within 7 px wins, then the origin, then the entity / rectangle edge under the mouse.
+  // rfOG (lane dragsnap): the sketch's pickable points on screen ([ref, x, y, …] in sketch order), kept until the sketch
+  // is redrawn or the view moves: every mouse move asked the solver for every entity's points and projected them
+  // (1,600 pointRefs calls a move on a plate full of holes). Not while a sketch drag is on (the points move first).
+  var refPts = null;
+  function sketchRefPoints(f, pl) {
+    var c = UI.cam, key = null;
+    if (!App.sketchDragging && c && UI.sketchSceneVersion && UI.size) key = f.id + '|' + f.entities.length + '|' + UI.sketchSceneVersion() + '|' + [c.target.x, c.target.y, c.target.z, c.scale, c.dir.x, c.dir.y, c.dir.z, c.up.x, c.up.y, c.up.z, UI.size.w, UI.size.h].join(',');
+    if (key && refPts && refPts.key === key) return refPts.list;
+    var list = [];
+    f.entities.forEach(function (e, i) {
+      S.pointRefs(f, i).forEach(function (pr) {
+        if (/\.(c|mid)$/.test(pr.ref) && (CENTERLESS.test(e.t) || /\.mid$/.test(pr.ref))) return;
+        var s = scr(pl, pr.pt);
+        list.push(pr.ref, s[0], s[1]);
+      });
+    });
+    refPts = key ? { key: key, list: list } : null;
+    return list;
+  }
   function pickSketchRef(mx, my) {
     var f = UI.activeSketchFeature();
     if (!f) return null;
     var pl = UI.activePlane(), best = null, bd = 7;
-    f.entities.forEach(function (e, i) {
-      S.pointRefs(f, i).forEach(function (pr) {
-        if (/\.(c|mid)$/.test(pr.ref) && (CENTERLESS.test(e.t) || /\.mid$/.test(pr.ref))) return;
-        var s = scr(pl, pr.pt), d = Math.hypot(s[0] - mx, s[1] - my);
-        if (d < bd) { bd = d; best = pr.ref; }
-      });
-    });
+    for (var L = sketchRefPoints(f, pl), li = 0; li < L.length; li += 3) {
+      var d = Math.hypot(L[li + 1] - mx, L[li + 2] - my);
+      if (d < bd) { bd = d; best = L[li]; }
+    }
     var o = scr(pl, [0, 0]);
     if (Math.hypot(o[0] - mx, o[1] - my) < Math.min(bd, 7)) best = 'O';
     if (best) return best;
@@ -280,7 +296,7 @@
     var baseDrawDimsDangle = UI.drawDims;
     UI.drawDims = function () { var r = baseDrawDimsDangle.apply(this, arguments); try { drawDangleHandles(); } catch (e) { /* an overlay: never break the dimensions */ } return r; };
   }
-  function vpXY(ev) { var r = UI.viewport.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
+  function vpXY(ev) { var r = UI.viewportRect ? UI.viewportRect() : UI.viewport.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
   if (UI.viewport) UI.viewport.addEventListener('mousedown', function (ev) {
     if (App.mode !== 'sketch' || ev.button !== 0 || ev.ctrlKey || ev.shiftKey || (App.tool && App.tool !== 'select')) return;
     var f = UI.activeSketchFeature(), list = f ? danglingHandles(f) : [];
@@ -1240,11 +1256,17 @@
         if (UI.sketchPreview) { var s0 = scr(pl, drop.pt), ring = []; for (var k = 0; k <= 20; k++) { var w = UI.screenToPlane(s0[0] + 6 * Math.cos(k * Math.PI / 10), s0[1] + 6 * Math.sin(k * Math.PI / 10), pl); if (w) ring.push(w); } UI.sketchPreview([ring], 'stroke:#c2409f;stroke-width:1.5;fill:none', 'sk-model-snap'); }
       } else if (UI.sketchSnapMark) UI.sketchSnapMark(drop ? drop.pt : null, q, drop && drop.curve, dropKind(drop));   // r15/snapaudit15: the glyph names the relation the release adds
     }
-    // the next frame, or 50 ms when animation frames are throttled (a background tab), whichever comes first
-    var timer = 0;
-    function schedule() { frame = requestAnimationFrame(tick); timer = setTimeout(tick, 50); }
-    function unschedule() { if (frame) cancelAnimationFrame(frame); if (timer) clearTimeout(timer); frame = timer = 0; }
-    function tick() { unschedule(); if (pending) { var q = pending; pending = null; solveTo(q); schedule(); } }
+    // rfOG (lane dragsnap): the solve that waits is run at the start of the frame that draws it (UI.frameHooks, ui-core's
+    // loop), or after 50 ms when animation frames are throttled (a background tab). It used to wait in its own
+    // requestAnimationFrame, which runs after the loop's: once a drag was under way every move was solved after the
+    // frame had been drawn, so the sketch trailed the cursor by a whole frame. The first move since the last frame is
+    // still solved at once, in its handler (the frame that follows draws it; the browser hands a real mouse one move
+    // per frame); a further move before that frame waits and is the one the frame shows.
+    var timer = 0, solvedIn = -1, hooks = UI.frameHooks || null;
+    function frameNow() { return UI.frameNo ? UI.frameNo() : -2; }
+    function unschedule() { if (timer) clearTimeout(timer); timer = 0; frame = 0; }
+    function tick() { unschedule(); if (pending) { var q = pending; pending = null; solveTo(q); } }
+    function unhook() { var k = hooks ? hooks.indexOf(tick) : -1; if (k >= 0) hooks.splice(k, 1); }
     return {
       start: function () {
         // sketchflow2: a drag that moves nothing (a fully defined entity) leaves no undo step behind
@@ -1261,12 +1283,32 @@
         if (P0) textGrab = [P0[0] - uv0[0], P0[1] - uv0[1]];
       },
       move: function (q) {
-        if (frame) { pending = q; return; }
-        solveTo(q);
-        schedule();
+        var fn = frameNow();
+        if (!hooks || fn !== solvedIn) { unschedule(); pending = null; solvedIn = fn; solveTo(q); return; }
+        pending = q; frame = 1;
+        if (hooks.indexOf(tick) < 0) hooks.push(tick);
+        if (!timer) timer = setTimeout(tick, 50);
+      },
+      // rfOG: Esc while dragging (ui-sketch.js): everything as it was at the press (geometry, the relations Detach
+      // Segment took, the dimensions Override Dims released), and no undo step left behind
+      cancel: function () {
+        unschedule(); unhook(); pending = null;
+        App.sketchDragging = false;
+        if (UI.sketchSnapMark) UI.sketchSnapMark(null);
+        if (before) {
+          var b = JSON.parse(before);
+          f.entities.length = 0; Array.prototype.push.apply(f.entities, b[0]);
+          if (b[1]) f.rels = b[1]; else delete f.rels;
+          if (b[2]) f.dims = b[2]; else delete f.dims;
+        }
+        overridden = null; drop = null; moved = false;
+        if (pushedAt >= 0 && App.undo.length === pushedAt + 1) { App.undo.pop(); App.sketchDirty = false; }
+        UI.updateSketches();
+        UI.refreshTree();
+        UI.setStatus('Drag cancelled: ' + S.refName(f, ref) + ' is back where it was.');
       },
       end: function () {
-        unschedule();
+        unschedule(); unhook();
         if (pending) { var q = pending; pending = null; solveTo(q); }
         App.sketchDragging = false;
         if (UI.sketchSnapMark) UI.sketchSnapMark(null);
