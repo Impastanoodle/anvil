@@ -30,12 +30,25 @@
   // planeClusters(tol) -> { find(plane, tag), add(plane, tag, value) }: find returns the cluster ({ plane, value })
   // with the same tag whose normal is within PLANE_COS and offset within tol of the plane, or null. Offsets are
   // bucketed by tol, so a lookup scans three buckets.
+  // Lane panelperf (rfOE): the buckets of a tag are a Map from the bucket number to its list. They were one object
+  // keyed tag + '#' + number, three strings built per polygon (a third of meshing a 174 000-polygon panel, far more
+  // on a busy machine); the lists, their order and so the clusters are the same.
   function planeClusters(tol) {
-    var buckets = {};
+    var byTag = new Map(), lastTag = null, lastMap = null;
+    function bucketsOf(tag, make) {
+      if (typeof tag !== 'string') tag = String(tag);
+      if (tag === lastTag) return lastMap;
+      var m = byTag.get(tag);
+      if (!m) { if (!make) return null; byTag.set(tag, m = new Map()); }
+      lastTag = tag; lastMap = m;
+      return m;
+    }
     function find(pl, tag) {
+      var buckets = bucketsOf(tag, false);
+      if (!buckets) return null;
       var b = Math.floor(pl.w / tol), n = pl.normal;
       for (var d = -1; d <= 1; d++) {
-        var list = buckets[tag + '#' + (b + d)];
+        var list = buckets.get(b + d);
         if (!list) continue;
         for (var i = 0; i < list.length; i++) {
           var c = list[i], cn = c.plane.normal;
@@ -45,8 +58,8 @@
       return null;
     }
     function add(pl, tag, value) {
-      var k = tag + '#' + Math.floor(pl.w / tol), c = { plane: pl, value: value };
-      (buckets[k] || (buckets[k] = [])).push(c);
+      var buckets = bucketsOf(tag, true), k = Math.floor(pl.w / tol), c = { plane: pl, value: value }, list = buckets.get(k);
+      if (list) list.push(c); else buckets.set(k, [c]);
       return c;
     }
     return { find: find, add: add };
@@ -128,12 +141,16 @@
     g.polys.forEach(function (p) { p.vertices.forEach(function (v) { d = Math.max(d, Math.abs(n.x * v.pos.x + n.y * v.pos.y + n.z * v.pos.z - w)); }); });
     return d;
   }
+  // OpenCascade faces / assembly parts stay apart; rfLQ: so does the face a Split Line cut off (its polygons' shared is
+  // the Split Line's id as a string: kernel-features.js splitMark)
+  function tagOf(p) { return (p.body || 0) + (p.face != null ? '|f' + p.face : '') + (p.part != null ? '|p' + p.part : '') + (p.surf && p.surf.s && p.surf.s.w != null ? '|w' + p.surf.s.w : '') + (typeof p.shared === 'string' ? '|s' + p.shared : ''); }
+  // lane panelperf (rfOE): work counters. meshFromBody / bodyEdges: calls; meshPolys / edgeFaces / edgePolys: the
+  // polygons meshed and the faces and polygons bodyEdges outlined (a whole 1800-hole panel is 174 000 polygons a call)
+  var meshStats = K.meshStats = { meshFromBody: 0, meshPolys: 0, bodyEdges: 0, edgeFaces: 0, edgePolys: 0 };
   function meshFromBody(body) {
     if (!body) return { positions: new Float32Array(0), normals: new Float32Array(0), faces: [], triCount: 0 };
+    meshStats.meshFromBody++; meshStats.meshPolys += body.polygons.length;
     var diag = bodyDiag(body.polygons), ptol = planeTol(diag), clusters = planeClusters(ptol), order = [];
-    // OpenCascade faces / assembly parts stay apart; rfLQ: so does the face a Split Line cut off (its polygons' shared is
-    // the Split Line's id as a string: kernel-features.js splitMark)
-    function tagOf(p) { return (p.body || 0) + (p.face != null ? '|f' + p.face : '') + (p.part != null ? '|p' + p.part : '') + (p.surf && p.surf.s && p.surf.s.w != null ? '|w' + p.surf.s.w : '') + (typeof p.shared === 'string' ? '|s' + p.shared : ''); }
     // rfHL: groups that are not flat are split into edge-connected, coplanar pieces. Flat faces (every example part's
     // planar faces: within 3e-10 of their plane, 2e-12 of the size) stay as they were; what the loose test wrongly joined
     // (the facets of a nearly flat stretch of a loft: 1e-6 .. 8e-4 off) does not, nor does any group of a curved B-rep face
@@ -157,20 +174,28 @@
       edgeComponents(g.polys, flatTol * (g.curved ? 1 : 10)).forEach(function (ps) { split.push({ polys: ps, plane: ps[0].plane, body: g.body, part: g.part }); });
     });
     order = split;
-    var tris = [];
+    // lane panelperf (rfOE): the triangles go straight into the Float64Array (they were pushed onto a plain array of
+    // 9 numbers a triangle and copied twice) and the areas are summed without a Vector per edge: the same numbers
+    // (b.minus(a).cross(c.minus(a)).length() / 2 written out, in the same order)
+    var nTri = 0, oi, pi, ps, nv;
+    for (oi = 0; oi < order.length; oi++) { ps = order[oi].polys; for (pi = 0; pi < ps.length; pi++) { nv = ps[pi].vertices.length; if (nv > 2) nTri += nv - 2; } }
+    var tris = new Float64Array(nTri * 9), tp = 0;
     var faces = [];
     order.forEach(function (g) {
-      var start = tris.length / 9, cx = 0, cy = 0, cz = 0, cnt = 0, area = 0;
-      g.polys.forEach(function (p) {
-        var vs = p.vertices;
-        for (var j = 1; j + 1 < vs.length; j++) {
+      var start = tp / 9, cx = 0, cy = 0, cz = 0, cnt = 0, area = 0, gp = g.polys;
+      for (var q = 0; q < gp.length; q++) {
+        var vs = gp[q].vertices, n = vs.length;
+        for (var j = 1; j + 1 < n; j++) {
           var a = vs[0].pos, b = vs[j].pos, c = vs[j + 1].pos;
-          tris.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
-          area += b.minus(a).cross(c.minus(a)).length() / 2;
+          tris[tp] = a.x; tris[tp + 1] = a.y; tris[tp + 2] = a.z; tris[tp + 3] = b.x; tris[tp + 4] = b.y; tris[tp + 5] = b.z; tris[tp + 6] = c.x; tris[tp + 7] = c.y; tris[tp + 8] = c.z;
+          tp += 9;
+          var ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z, vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
+          var wx = uy * vz - uz * vy, wy = uz * vx - ux * vz, wz = ux * vy - uy * vx;
+          area += Math.sqrt(wx * wx + wy * wy + wz * wz) / 2;
         }
-        vs.forEach(function (v) { cx += v.pos.x; cy += v.pos.y; cz += v.pos.z; cnt++; });
-      });
-      var count = tris.length / 9 - start;
+        for (var k = 0; k < n; k++) { var vp = vs[k].pos; cx += vp.x; cy += vp.y; cz += vp.z; cnt++; }
+      }
+      var count = tp / 9 - start;
       var face = {
         normal: [g.plane.normal.x, g.plane.normal.y, g.plane.normal.z], w: g.plane.w,
         start: start, count: count, centroid: [cx / cnt, cy / cnt, cz / cnt], area: area, polys: g.polys, body: g.body
@@ -186,7 +211,7 @@
       }
     });
     // positions64 keeps full precision for mass properties; positions (Float32) is what the renderer uploads
-    var mesh = { positions: positions, positions64: new Float64Array(tris), normals: normals, faces: faces, triCount: tris.length / 9 };
+    var mesh = { positions: positions, positions64: tris, normals: normals, faces: faces, triCount: tris.length / 9 };
     if (body.exact) mesh.exact = body.exact;   // a solid from OpenCascade knows its exact mass properties (occt-kernel.js toBuild)
     return mesh;
   }
@@ -650,8 +675,15 @@
   }
 
   // -> [{a, b, mid, dir, len, faces:[i,j], normals:[nA,nB], smooth, convex, ka, kb}]
-  function bodyEdges(mesh) {
+  // lane panelperf (rfOE): outlineEdges(mesh, owner) is bodyEdges without pairCracks, for a mesh that holds only the
+  // faces (and of a big face only the polygons) beside a pick: kernel-sheetmetal.js smNear; `owner` is the mesh the
+  // edges are filed under for rfNItangent
+  function bodyEdges(mesh) { meshStats.bodyEdges++; return edgesOf(mesh, true, mesh); }
+  function outlineEdges(mesh, owner) { return edgesOf(mesh, false, owner || mesh); }
+  function edgesOf(mesh, pair, owner) {
     var map = {}, order = [];
+    meshStats.edgeFaces += mesh.faces.length;
+    for (var fc = 0; fc < mesh.faces.length; fc++) meshStats.edgePolys += mesh.faces[fc].polys ? mesh.faces[fc].polys.length : 0;
     // rfHV: each corner's ekey is numbered once (ids) and an edge is found from its two numbers (adj[lo] = [hi, edge,
     // …]); the "ka|kb" key string is built only for a new edge. Same keys, same order, same edges as the string lookup.
     var ids = new Map(), adj = [];
@@ -695,7 +727,7 @@
         }
       });
     }
-    order = pairCracks(mesh, map, order);
+    if (pair) order = pairCracks(mesh, map, order);
     var list = [];
     order.forEach(function (key) {
       var e = map[key];
@@ -704,7 +736,7 @@
       e.len = len(d);
       if (e.len < 1e-6) return;
       e.dir = scale(d, 1 / e.len);
-      if (rfNIedgeMesh) rfNIedgeMesh.set(e, mesh);
+      if (rfNIedgeMesh) rfNIedgeMesh.set(e, owner);
       e.smooth = false;
       if (e.normals.length >= 2) {
         e.smooth = true;
@@ -2489,6 +2521,7 @@
   _.bodyEdges = bodyEdges; _.buildEdgeFeature = buildEdgeFeature; _.ekey = ekey; _.faceOutline = faceOutline; _.meshFromBody = meshFromBody;
   _.pointSegmentDistance = pointSegmentDistance; _.resolveEdges = resolveEdges; _.pickTol = pickTol;
   _.planeClusters = planeClusters; _.planeTol = planeTol; _.bodyDiag = bodyDiag;
+  _.outlineEdges = outlineEdges; _.meshTagOf = tagOf; _.PLANE_COS = PLANE_COS;   // lane panelperf (rfOE)
 
   // ------------------------------------------------------------------ rfDZ: Wrap scribe edges
   // wrapSplit(mesh, i, j) -> true when mesh faces i and j lie on one surface but are kept apart by a Wrap scribe: Anvil's

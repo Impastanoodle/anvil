@@ -351,8 +351,11 @@
     if (relief === 'tear') { rw = f.reliefWidth != null ? +f.reliefWidth : ripDefaultGap(model); rd = f.reliefDepth != null ? +f.reliefDepth : rw; }
     if (relief !== 'none' && !(rw > 0)) throw new Error('Relief width must be greater than zero.');
     if (relief !== 'none' && !(rd >= 0)) throw new Error('Relief depth must be zero or more.');
-    var mesh = smMesh(ctx.body).mesh;   // r12/inchflange12: see coplanarBody (lane MY: meshed once per body, smMesh)
-    var edges = bodyEdges(mesh).filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex; });
+    // r12/inchflange12: see coplanarBody (lane MY: meshed once per body, smMesh). Lane panelperf (rfOE): on a big body
+    // only the edges beside the picks (smPickEdges; the whole body's, once per body, when that cannot answer)
+    var sharpConvex = function (e) { return !e.smooth && e.faces.length === 2 && e.convex; };
+    var picked = smPickEdges(ctx.body, (f.edges || []).map(function (e) { return e.at; }), EDGE_PICK_TOL * T, sharpConvex);
+    var mesh = picked.mesh, edges = picked.edges, cornerNear = picked.near ? false : null;   // cornerNear: see endEdges
     var selected = resolveEdges((f.edges || []).map(function (e) { return { at: e.at, chain: false }; }), edges, EDGE_PICK_TOL * T);
     if (!selected.length) throw new Error('No edge selected for the flange.');
     // lane sweptflange-2: a chord of a curved edge (the round side of a Swept Flange along an arc, a rolled part) is no
@@ -632,15 +635,34 @@
       // past the flange's end, cut from the flange's tool (both kernels)
       ed.ends.forEach(function (en) {
         if (en.shared || !(ov > 0)) return;
-        var d2 = null, tolP = 1e-6 * (1 + ed.e.len);
-        edges.forEach(function (g) {
-          if (d2 || g === ed.e) return;
-          var far = len(sub(g.a, en.P)) < tolP ? g.b : len(sub(g.b, en.P)) < tolP ? g.a : null;
-          if (!far) return;
-          var dd = norm(sub(far, en.P));
-          if (Math.abs(dot(dd, ed.nF)) > 1e-6 || len(cross(dd, en.dIn)) < 1e-6) return;
-          d2 = dd;
-        });
+        var tolP = 1e-6 * (1 + ed.e.len);
+        // lane panelperf (rfOE): the first edge that leaves this end in the sheet's plane. With the edges beside the
+        // picks, those beside the ends (found once for the feature); the whole body's first is that list's only when
+        // no second edge passes, so with two the whole body's edges are taken
+        var endDirs = function (list) {
+          var out = [];
+          list.forEach(function (g) {
+            if (g === ed.e) return;
+            var far = len(sub(g.a, en.P)) < tolP ? g.b : len(sub(g.b, en.P)) < tolP ? g.a : null;
+            if (!far) return;
+            var dd = norm(sub(far, en.P));
+            if (Math.abs(dot(dd, ed.nF)) > 1e-6 || len(cross(dd, en.dIn)) < 1e-6) return;
+            out.push(dd);
+          });
+          return out;
+        };
+        if (cornerNear === false) {
+          var endPts = [], endTol = 0;
+          eds.forEach(function (d) { d.ends.forEach(function (x) { endPts.push(x.P); }); endTol = Math.max(endTol, 1e-6 * (1 + d.e.len)); });
+          var endNear = smNear(ctx.body, endPts, endTol);
+          cornerNear = endNear ? endNear.edges.filter(sharpConvex) : null;
+        }
+        var dirs = cornerNear ? endDirs(cornerNear) : null;
+        if (!dirs || dirs.length > 1) {
+          if (picked.near) { picked.near = false; cornerNear = null; smLocal.stats.whole++; if (dirs) smNo('corner'); edges = smEdges(ctx.body).edges.filter(sharpConvex); }
+          dirs = endDirs(edges);
+        }
+        var d2 = dirs.length ? dirs[0] : null;
         if (!d2) return;
         var ca = dot(d2, en.dIn), cs = -dot(d2, ed.o);
         if (!(ca > 1e-6 && cs > 1e-6)) return;   // a square or obtuse corner: the strip stays on the sheet
@@ -2261,17 +2283,22 @@
   // weld distance faceOutline uses for the same near-coincident corners
   var flatOptions = { merge: '2d' }, FLAT_WELD = 1e-4;
   function mergeFlatRegions(regions, notches, W) {
-    var P = [], grid = {}, S = 1;
+    // lane panelperf (rfOE): the grid is a Map keyed by one number per cell (ix, iy within ±2^25: any blank under
+    // 3 000 units; the text key 'ix,iy' it had beyond that): nine strings were built per point, a quarter of the flat
+    // pattern of a 1800-hole panel. The cells, their lists and the points found are the same.
+    var P = [], grid = new Map(), S = 1, GL = 33554432;
+    function cellKey(ix, iy) { return ix > -GL && ix < GL && iy > -GL && iy < GL ? (ix + GL) * 67108864 + (iy + GL) : ix + ',' + iy; }
     function vid(p) {
       var ix = Math.floor(p[0] / W), iy = Math.floor(p[1] / W), best = -1, bd = W;
       for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) {
-        var c = grid[(ix + dx) + ',' + (iy + dy)];
+        var c = grid.get(cellKey(ix + dx, iy + dy));
         if (c) for (var j = 0; j < c.length; j++) { var q = P[c[j]], d = Math.hypot(q[0] - p[0], q[1] - p[1]); if (d <= bd) { bd = d; best = c[j]; } }
       }
       if (best >= 0) return best;
       P.push([+p[0], +p[1]]);
       S = Math.max(S, Math.abs(p[0]), Math.abs(p[1]));
-      (grid[ix + ',' + iy] = grid[ix + ',' + iy] || []).push(P.length - 1);
+      var ck = cellKey(ix, iy), cl = grid.get(ck);
+      if (cl) cl.push(P.length - 1); else grid.set(ck, [P.length - 1]);
       return P.length - 1;
     }
     var shapes = [], edges = [];
@@ -8561,6 +8588,266 @@
     return c;
   }
   function smEdges(body) { var c = smMesh(body); if (!c.edges) c.edges = bodyEdges(c.mesh); return c; }
+
+  // ---- lane panelperf (rfOE): the edges beside a pick, without meshing the whole body ---------------------------------
+  // An Edge Flange on a 1800-hole panel (174 000 polygons) spent 5 of its 6 s on smMesh + bodyEdges of the whole sheet,
+  // twice (flangeLayout, then the pick's reference), to find the one edge under the pick. smNear(body, pts, tol) ->
+  // { mesh, edges } | null: every edge of the body that passes within tol of one of pts, as bodyEdges(smMesh(body).mesh)
+  // gives it (the same a, b, ka, kb, normals, ins; `faces` index `mesh.faces`, which holds only the faces beside the
+  // picks: normal, w, polys (all of the face's polygons), area, body, part), found from the polygons beside the picks:
+  //   1. seeds: the polygons within tol of a pick; their planes are the classes;
+  //   2. one pass over the body: a face is every polygon of a seed's plane and tag (coplanarBody's test against the
+  //      plane's first polygon; a polygon near a class but not on it means the mesh's clustering could group otherwise:
+  //      no answer);
+  //   3. a seed's edges within tol of a pick give the lines an edge there can lie on; of a face only the polygons that
+  //      reach within SM_NEAR_D of such a line are outlined (faceOutline + outlineEdges: the same code, fewer polygons).
+  //      Along the line the boundary pieces, their welds, T-splits and twins are all there, so a segment of that outline
+  //      whose two ends lie on the line (within SM_NEAR_D / 2) is the whole face's segment; one that leaves it is not
+  //      known (no answer), nor is a segment only one face has (pairCracks works on the whole body).
+  // null = no answer: the caller takes smEdges(body), as before. Bodies under smLocal.minPolys polygons always do
+  // (every example and corpus part: nothing changes there). smLocal.check: build both and count the differences.
+  var smLocal = K.smLocal = { on: true, minPolys: 20000, check: false, stats: { near: 0, whole: 0, differ: 0, why: {} } };
+  var SM_NEAR_D = 1e-3, SM_NEAR_COS = Math.cos(3e-3);
+  var smInfoCache = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+  function smBodyInfo(body) {
+    var c = smInfoCache && smInfoCache.get(body);
+    if (!c) {
+      var diag = _.bodyDiag(body.polygons);
+      c = { diag: diag, ptol: _.planeTol(diag), near: [] };
+      if (smInfoCache) smInfoCache.set(body, c);
+    }
+    return c;
+  }
+  function smNo(why) { smLocal.stats.why[why] = (smLocal.stats.why[why] || 0) + 1; return null; }
+  // a polygon reaches within r of P (P is within r of its plane)
+  function polyNear(pg, P, r) {
+    var vs = pg.vertices, nv = vs.length, r2 = r * r, i, j, a, b;
+    for (i = 0; i < nv; i++) {
+      a = vs[i].pos; b = vs[i + 1 < nv ? i + 1 : 0].pos;
+      var ex = b.x - a.x, ey = b.y - a.y, ez = b.z - a.z, px = P[0] - a.x, py = P[1] - a.y, pz = P[2] - a.z;
+      var ee = ex * ex + ey * ey + ez * ez, t = ee > 0 ? (px * ex + py * ey + pz * ez) / ee : 0;
+      if (t < 0) t = 0; else if (t > 1) t = 1;
+      var qx = px - ex * t, qy = py - ey * t, qz = pz - ez * t;
+      if (qx * qx + qy * qy + qz * qz <= r2) return true;
+    }
+    // inside (crossing number in the projection along the normal's largest axis; the polygon need not be convex)
+    var n = pg.plane.normal, ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z), inside = false, pu, pv, au, av, bu, bv;
+    var m = ax >= ay && ax >= az ? 0 : ay >= az ? 1 : 2;
+    pu = m === 0 ? P[1] : m === 1 ? P[2] : P[0]; pv = m === 0 ? P[2] : m === 1 ? P[0] : P[1];
+    for (i = 0, j = nv - 1; i < nv; j = i++) {
+      a = vs[i].pos; b = vs[j].pos;
+      au = m === 0 ? a.y : m === 1 ? a.z : a.x; av = m === 0 ? a.z : m === 1 ? a.x : a.y;
+      bu = m === 0 ? b.y : m === 1 ? b.z : b.x; bv = m === 0 ? b.z : m === 1 ? b.x : b.y;
+      if ((av > pv) !== (bv > pv) && pu < (bu - au) * (pv - av) / (bv - av) + au) inside = !inside;
+    }
+    return inside;
+  }
+  function smNear(body, pts, tol) {
+    var polys = body && body.polygons;
+    if (!smLocal.on || !polys || polys.length < smLocal.minPolys || !pts || !pts.length) return null;
+    for (var pi = 0; pi < pts.length; pi++) if (!Array.isArray(pts[pi]) || !(isFinite(pts[pi][0]) && isFinite(pts[pi][1]) && isFinite(pts[pi][2]))) return null;
+    var whole = smMeshCache && smMeshCache.get(body);
+    if (whole && whole.edges && !smLocal.check) return null;   // the whole body's edges are there already
+    var info = smBodyInfo(body), key = tol + ':' + pts.map(function (p) { return p[0] + ',' + p[1] + ',' + p[2]; }).join(';');
+    for (var mi = 0; mi < info.near.length; mi++) if (info.near[mi].key === key) return info.near[mi].res;
+    var res = smNearBuild(polys, pts, tol, info);
+    if (res) smLocal.stats.near++;
+    info.near.push({ key: key, res: res });
+    if (info.near.length > 8) info.near.shift();
+    return res;
+  }
+  // The planes ("classes") and faces found for a body are kept with it (smBodyInfo): the flange's second question (the
+  // edges at the ends of the picked edge) lies in the same faces, and only its seeds and outline are new work.
+  function smNearBuild(polys, pts, tol, info) {
+    var reach = tol + 1e-5, np = pts.length, N = polys.length, i, k, p, n, w, d, P;
+    var classes = info.classes || (info.classes = []), tagOf = _.meshTagOf;
+    // 1. seeds (the polygons within reach of a pick) and their planes
+    var seeds = [], fresh = [];
+    for (i = 0; i < N; i++) {
+      p = polys[i]; n = p.plane.normal; w = p.plane.w;
+      var hit = null;
+      for (k = 0; k < np; k++) {
+        P = pts[k]; d = n.x * P[0] + n.y * P[1] + n.z * P[2] - w;
+        if (d > reach || d < -reach || !polyNear(p, P, reach)) continue;
+        (hit || (hit = [])).push(k);
+      }
+      if (!hit) continue;
+      var cl = null;
+      for (k = 0; k < classes.length && !cl; k++) { var c0 = classes[k]; if (Math.abs(c0.w - w) < 1e-8 && n.x * c0.n.x + n.y * c0.n.y + n.z * c0.n.z > 1 - 1e-10) cl = c0; }
+      if (!cl) { if (classes.length >= 48) return smNo('planes'); classes.push(cl = { n: n, w: w, first: null, idx: [], bad: null, byTag: null }); fresh.push(cl); }
+      seeds.push({ i: i, pts: hit, cl: cl });
+    }
+    if (!seeds.length) return smNo('nothing');
+    // 2. every polygon of the new planes; one near a plane but not on it (or near two of them): no answer, ever, for
+    //    that plane
+    if (fresh.length) {
+      var nc = classes.length, tw = 3 * info.ptol;
+      for (i = 0; i < N; i++) {
+        p = polys[i]; n = p.plane.normal; w = p.plane.w;
+        var mine = null, two = false;
+        for (k = 0; k < nc; k++) {
+          var c = classes[k];
+          if (n.x * c.n.x + n.y * c.n.y + n.z * c.n.z < SM_NEAR_COS) continue;
+          d = w - c.w;
+          if (d > tw || d < -tw) continue;
+          if (mine) { two = true; if (!mine.bad) mine.bad = 'twoPlanes'; if (!c.bad) c.bad = 'twoPlanes'; }
+          mine = c;
+        }
+        if (!mine || two || mine.byTag) continue;   // (a plane of an earlier question has its polygons already)
+        if (!mine.first) mine.first = p.plane;
+        else { var f0 = mine.first; if (!(Math.abs(f0.w - w) < 1e-8 && n.x * f0.normal.x + n.y * f0.normal.y + n.z * f0.normal.z > 1 - 1e-10)) { if (!mine.bad) mine.bad = 'noisyPlane'; } }
+        if (p.face != null && !mine.bad) mine.bad = 'brep';
+        mine.idx.push(i);
+      }
+      // the faces of each new plane (a face: one plane, one tag), their polygons in the body's order
+      fresh.forEach(function (c) {
+        c.byTag = {};
+        if (c.bad || !c.first) return;
+        var pl = c.first, nn = pl.normal, idx = c.idx;
+        for (var a = 0; a < idx.length; a++) {
+          var q = polys[idx[a]], t = !q.body && q.part == null && typeof q.shared !== 'string' && !(q.surf && q.surf.s && q.surf.s.w != null) ? '0' : tagOf(q);
+          var fc = c.byTag[t];
+          if (!fc) { fc = c.byTag[t] = { normal: [nn.x, nn.y, nn.z], w: pl.w, polys: [], body: q.body || 0, part: q.part, first: idx[a], flat: null, whole: null }; }
+          fc.polys.push(q);
+        }
+        c.idx = null;
+      });
+    }
+    // 3. the faces the seeds lie in, and in each the lines: a seed's edges within reach of a pick
+    var r2 = reach * reach, why = null, faces = [], devTol = 1e-8 * info.diag + 1e-12;
+    seeds.forEach(function (s) {
+      if (why) return;
+      if (s.cl.bad) { why = s.cl.bad; return; }
+      var q = polys[s.i], fc = s.cl.byTag[tagOf(q)], vs = q.vertices, nv = vs.length;
+      if (!fc) { why = 'noFace'; return; }
+      if (fc.flat == null) {   // meshFromBody splits a group that is not flat (edgeComponents)
+        var dn = fc.normal, dev = 0;
+        if (fc.polys.length > 1) for (var g = 0; g < fc.polys.length; g++) { var dv = fc.polys[g].vertices; for (var j = 0; j < dv.length; j++) { var vp = dv[j].pos, dd = Math.abs(dn[0] * vp.x + dn[1] * vp.y + dn[2] * vp.z - fc.w); if (dd > dev) dev = dd; } }
+        fc.flat = dev <= devTol;
+      }
+      if (!fc.flat) { why = 'bent'; return; }
+      if (fc.query !== seeds) { fc.query = seeds; fc.lines = []; faces.push(fc); }
+      var fn = fc.normal;
+      for (var e = 0; e < nv; e++) {
+        var a = vs[e].pos, b = vs[e + 1 < nv ? e + 1 : 0].pos, ex = b.x - a.x, ey = b.y - a.y, ez = b.z - a.z, ee = ex * ex + ey * ey + ez * ez;
+        if (!(ee > 1e-18)) continue;
+        var nearPick = false;
+        for (var h = 0; h < s.pts.length && !nearPick; h++) {
+          var Q = pts[s.pts[h]], px = Q[0] - a.x, py = Q[1] - a.y, pz = Q[2] - a.z, t = (px * ex + py * ey + pz * ez) / ee;
+          if (t < 0) t = 0; else if (t > 1) t = 1;
+          var qx = px - ex * t, qy = py - ey * t, qz = pz - ez * t;
+          if (qx * qx + qy * qy + qz * qz <= r2) nearPick = true;
+        }
+        if (!nearPick) continue;
+        var il = 1 / Math.sqrt(ee), ux = ex * il, uy = ey * il, uz = ez * il;
+        // in the face: m = n × u, the line is { x : x·m = m0 }
+        var mx = fn[1] * uz - fn[2] * uy, my = fn[2] * ux - fn[0] * uz, mz = fn[0] * uy - fn[1] * ux, m0 = a.x * mx + a.y * my + a.z * mz, dup = false;
+        for (var li = 0; li < fc.lines.length && !dup; li++) { var L0 = fc.lines[li], dm = L0.mx * mx + L0.my * my + L0.mz * mz; if (Math.abs(Math.abs(dm) - 1) < 1e-12 && Math.abs((dm > 0 ? m0 : -m0) - L0.m0) < 1e-7) dup = true; }
+        if (dup) continue;
+        if (fc.lines.length >= 32) { why = 'lines'; return; }
+        fc.lines.push({ mx: mx, my: my, mz: mz, m0: m0 });
+      }
+    });
+    if (why) return smNo(why);
+    faces = faces.filter(function (fc) { return fc.lines.length; });
+    if (!faces.length) return smNo('nothing');
+    faces.sort(function (a, b) { return a.first - b.first; });   // the order of the mesh's faces: of their first polygons
+    // 4. of each face the polygons that reach a line, outlined
+    var D = SM_NEAR_D, full = { faces: [], local: true }, part = { faces: [] };
+    faces.forEach(function (fc) {
+      var L = fc.lines, nl = L.length, R = [], fp = fc.polys;
+      for (var a = 0; a < fp.length; a++) {
+        var q = fp[a], vs = q.vertices, nv = vs.length, take = false;
+        for (var l = 0; l < nl && !take; l++) {
+          var ln = L[l], lo = Infinity, hi = -Infinity;
+          for (var v = 0; v < nv; v++) { var ps = vs[v].pos, s = ps.x * ln.mx + ps.y * ln.my + ps.z * ln.mz - ln.m0; if (s < lo) lo = s; if (s > hi) hi = s; }
+          if (lo <= D && hi >= -D) take = true;
+        }
+        if (take) R.push(q);
+      }
+      if (!fc.whole) {
+        var whole = fc.whole = { normal: fc.normal, w: fc.w, polys: fp, body: fc.body }, area = null;
+        if (fc.part != null) whole.part = fc.part;
+        // the face's area as meshFromBody sums it, when asked for
+        Object.defineProperty(whole, 'area', { enumerable: true, get: function () {
+          if (area == null) {
+            area = 0;
+            for (var g = 0; g < fp.length; g++) {
+              var gv = fp[g].vertices, A = gv[0].pos;
+              for (var j = 1; j + 1 < gv.length; j++) {
+                var B = gv[j].pos, C = gv[j + 1].pos, ux = B.x - A.x, uy = B.y - A.y, uz = B.z - A.z, vx = C.x - A.x, vy = C.y - A.y, vz = C.z - A.z;
+                var wx = uy * vz - uz * vy, wy = uz * vx - ux * vz, wz = ux * vy - uy * vx;
+                area += Math.sqrt(wx * wx + wy * wy + wz * wz) / 2;
+              }
+            }
+          }
+          return area;
+        } });
+      }
+      var cut = { normal: fc.normal, w: fc.w, polys: R, body: fc.body };
+      if (fc.part != null) cut.part = fc.part;
+      full.faces.push(fc.whole); part.faces.push(cut);
+    });
+    var all = _.outlineEdges(part, full), out = [];
+    // 5. the segments within reach of a pick: each must be known (both ends on a line of each of its faces)
+    function onLine(fc, a, b) {
+      for (var l = 0; l < fc.lines.length; l++) {
+        var ln = fc.lines[l];
+        if (Math.abs(a[0] * ln.mx + a[1] * ln.my + a[2] * ln.mz - ln.m0) <= D / 2 && Math.abs(b[0] * ln.mx + b[1] * ln.my + b[2] * ln.mz - ln.m0) <= D / 2) return true;
+      }
+      return false;
+    }
+    for (i = 0; i < all.length; i++) {
+      var e = all[i], near = false;
+      for (k = 0; k < np && !near; k++) if (_.pointSegmentDistance(pts[k], e.a, e.b) <= reach) near = true;
+      if (!near) continue;
+      if (e.faces.length < 2) return smNo('lone');
+      for (k = 0; k < e.faces.length; k++) if (!onLine(faces[e.faces[k]], e.a, e.b)) return smNo('offLine');
+      out.push(e);
+    }
+    return { mesh: full, edges: out };
+  }
+  // two of `edges` (already filtered) are the nearest to a pick within 1e-9: the whole body's order would decide
+  function smTie(edges, pts, tol) {
+    for (var k = 0; k < pts.length; k++) {
+      var d0 = Infinity, d1 = Infinity;
+      for (var i = 0; i < edges.length; i++) {
+        var d = _.pointSegmentDistance(pts[k], edges[i].a, edges[i].b);
+        if (d < d0) { d1 = d0; d0 = d; } else if (d < d1) d1 = d;
+      }
+      if (d0 < tol && d1 - d0 < 1e-9) return true;
+    }
+    return false;
+  }
+  function smSameEdge(a, b) {
+    if (!a || !b) return a === b;
+    function v(x, y) { return x[0] === y[0] && x[1] === y[1] && x[2] === y[2]; }
+    return a.ka === b.ka && a.kb === b.kb && v(a.a, b.a) && v(a.b, b.b) && a.faces.length === b.faces.length && a.smooth === b.smooth && a.convex === b.convex &&
+      a.normals.every(function (n, i) { return v(n, b.normals[i]); }) && a.ins.every(function (n, i) { return v(n, b.ins[i]); });
+  }
+  // smPickEdges(body, pts, tol, keep) -> { mesh, edges, near }: the edges `keep` passes among which the nearest to each
+  // pick is found, and their mesh: beside the picks (near: true) when smNear answers and no two are equally near,
+  // otherwise the whole body's (smEdges)
+  function smPickEdges(body, pts, tol, keep) {
+    var nr = smNear(body, pts, tol), es = nr ? nr.edges.filter(keep) : null;
+    if (nr && smTie(es, pts, tol)) { smNo('tie'); nr = null; }
+    if (nr && smLocal.check) {
+      var W = smEdges(body), we = W.edges.filter(keep);
+      pts.forEach(function (P) {
+        var a = _.resolveEdges([{ at: P, chain: false }], es, tol)[0], b = _.resolveEdges([{ at: P, chain: false }], we, tol)[0];
+        var same = smSameEdge(a, b) && (!a || a.faces.every(function (fi, i) { var x = nr.mesh.faces[fi], y = W.mesh.faces[b.faces[i]]; return x.normal[0] === y.normal[0] && x.normal[1] === y.normal[1] && x.normal[2] === y.normal[2] && x.w === y.w && x.area === y.area && x.polys.length === y.polys.length && x.polys[0] === y.polys[0]; }));
+        if (!same) { smLocal.stats.differ++; (smLocal.stats.cases || (smLocal.stats.cases = [])).push({ at: P, near: a ? [a.a, a.b] : null, whole: b ? [b.a, b.b] : null }); }
+      });
+      nr = null;
+    }
+    if (nr) return { mesh: nr.mesh, edges: es, near: true };
+    smLocal.stats.whole++;
+    var M = smEdges(body);
+    return { mesh: M.mesh, edges: M.edges.filter(keep), near: false };
+  }
+  function smSharp2(e) { return !e.smooth && e.faces.length === 2; }
+  // ---- end lane panelperf: smNear
+
   // every pick of f: [{ path, kind, get: () -> point | null, set(point) }]
   function smPicks(f) {
     var spec = SM_PICKS[f.type], out = [];
@@ -8677,7 +8964,7 @@
     var T = +sheetParams(model).thickness, polys = body.polygons, Q = at, normals = [], fids;
     var ptol = 1e-6 * Math.max(1, T);
     if (kind === 'edge') {
-      var e = nearestEdge(smEdges(body).edges, at, EDGE_PICK_TOL * T);
+      var e = nearestEdge(smPickEdges(body, [at], EDGE_PICK_TOL * T, smSharp2).edges, at, EDGE_PICK_TOL * T);   // lane panelperf: beside the pick
       if (!e) return null;
       Q = projOnEdge(e, at, false);
       normals = e.normals.map(function (n) { return n.slice(); });
@@ -8780,7 +9067,7 @@
       // finds geometry when the reference cannot be trusted (its feature gone, or a feature of another model: a
       // feature copied between models keeps ids that name something else there; rfJY's open-base twin)
       var origE, origOK = function () {
-        if (pk.kind === 'edge') { if (origE === undefined) origE = nearestEdge(smEdges(body).edges, at, EDGE_PICK_TOL * T); return !!origE; }
+        if (pk.kind === 'edge') { if (origE === undefined) origE = nearestEdge(smPickEdges(body, [at], EDGE_PICK_TOL * T, smSharp2).edges, at, EDGE_PICK_TOL * T); return !!origE; }
         return body.polygons.some(function (pg) { return polyHas(pg, at, 1e-6 * Math.max(1, T)); });
       };
       if (ref.on != null) {
@@ -8796,18 +9083,27 @@
       var now = refNow(ref, ctx), target = null;
       if (now) {
         if (pk.kind === 'edge') {
-          var M = smEdges(body), best = null, bd = Infinity;
-          M.edges.forEach(function (e) {
-            if (!edgeMatches(e, now.N)) return;
+          // lane panelperf (rfOE): the nearest edge of that role, among the edges beside the point when one is there
+          // (the whole body's nearest is then one of them), otherwise among all of the body's
+          var best = null, bd = Infinity;
+          var role = function (M) {
+            return function (e) {
+              if (!edgeMatches(e, now.N)) return false;
+              if (ref.on != null) { var ff = faceFids(M.mesh, e.faces[0]), fg = faceFids(M.mesh, e.faces[1]); if (!ff[ref.on] && !fg[ref.on]) return false; }
+              return true;
+            };
+          };
+          var nrM = smLocal.check ? null : smNear(body, [now.P], EDGE_PICK_TOL * T), roleList = nrM ? nrM.edges.filter(role(nrM)) : null;
+          if (!roleList || !roleList.length || smTie(roleList, [now.P], Infinity)) { var M = smEdges(body); roleList = M.edges.filter(role(M)); smLocal.stats.whole++; }
+          roleList.forEach(function (e) {
             var d = _.pointSegmentDistance(now.P, e.a, e.b);
             if (d >= bd) return;
-            if (ref.on != null) { var ff = faceFids(M.mesh, e.faces[0]), fg = faceFids(M.mesh, e.faces[1]); if (!ff[ref.on] && !fg[ref.on]) return; }
             bd = d; best = e;
           });
           if (best) {
             origOK();
             // the stored point still on an edge of the same role (the same two normals): it stays
-            if (origE && (origE === best || edgeMatches(origE, now.N))) return;
+            if (origE && (origE === best || (origE.ka === best.ka && origE.kb === best.kb) || edgeMatches(origE, now.N))) return;
             target = projOnEdge(best, now.P, true);
           }
         } else if (pk.kind === 'face') {
@@ -8834,7 +9130,7 @@
       }
       if (!target) {
         // nothing carries the reference's normals on its feature: the stored point, if it still finds something
-        var still = pk.kind === 'edge' ? !!nearestEdge(smEdges(body).edges, at, EDGE_PICK_TOL * T) : true;
+        var still = pk.kind === 'edge' ? !!nearestEdge(smPickEdges(body, [at], EDGE_PICK_TOL * T, smSharp2).edges, at, EDGE_PICK_TOL * T) : true;
         if (!still) throw danglingError(f, ref, 'no longer has that ' + (pk.kind === 'face' ? 'face' : 'edge'));
         return;
       }
