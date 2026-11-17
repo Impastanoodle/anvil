@@ -244,6 +244,10 @@ var IconsLib = (function () {
     redo: ln('M11.5 5.5 H6 a3.5 3.5 0 0 0 0 7 h4', B, 1.6) + p('M11 5.5 l-3 -2.8 v5.6 z', B, B, 1),
     zoomArea: circ(7, 7, 4, 'none', S) + ln('M10 10 l3.5 3.5', S, 2) + rect(5, 5, 4, 4, 'none', B, 1, 'stroke-dasharray="1.2 1.2"'),
     prevView: ln('M10 3 L5 8 l5 5', S, 1.8),
+    // rfNJ: the Mastercam right-click menu's Dynamic Rotation, GView and Analyze Entity Properties (built-in fallbacks)
+    dynRotate: blk(4, 4, 6, 5, 2.5) + p('M1.5 9.5 a6.5 6.5 0 0 0 10.5 4.5', 'none', R, 1.3) + ln('M12.8 11.6 l-0.6 2.6 -2.6 -0.4', R, 1.2),
+    gview: blk(5, 5, 6, 5, 2.5) + ln('M1 2 h4 M1 4 h4', B, 1),
+    analyzeEntity: ln('M1.5 14 L7 8.5', B, 1.8) + p('M7 8.5 a4 4 0 0 1 2.5 -5', 'none', B, 1.8) + circ(12, 4, 2.5, W, S, 1.1) + ln('M12 3 v1.6 M12 5.6 v0.2', S, 1.1),
     orient: blk(2, 3.5, 6, 5, 2.5) + circ(11.5, 11.5, 3, W, B, 1.1) + ln('M11.5 9.8 v1.7 l1.2 0.7', B, 1.1),
     display: blk(1.5, 4.5, 9, 7, 3.5, '#bdbdbd', '#e1e1e1', '#979797'),
     hideshow: ln('M1.5 8 c3 -5 10 -5 13 0 c-3 5 -10 5 -13 0 z', S, 1.25) + circ(8, 8, 2.2, B, 'none'),

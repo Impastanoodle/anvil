@@ -225,6 +225,12 @@
   OWN.vIso = '<path d="' + VC.top + '" fill="' + GL + '" stroke="none"/><path d="' + VC.left + '" fill="' + GN + '" stroke="none"/><path d="' + VC.right + '" fill="' + GND + '" stroke="none"/>' + wcube(8, 5.5, 6, 6, G4, 1);
   OWN.vNormalTo = F('M2.5 9.5 L6.5 5.5 H14.5 L10.5 9.5 z', GL) + P('M2.5 9.5 L6.5 5.5 H14.5 L10.5 9.5 z', 'none', GND, 1) + ar(8.5, 1.5, 8.5, 7.5, INK, 1.1, 2.4) + T('M8.5 9.5 V14', DASH);
   OWN.orient = OWN.vIso;
+  // rfNJ: the right-click menu's rows (Dynamic Rotation, GView, Analyze Entity Properties had none or Measure's ruler):
+  // Dynamic Rotation = the view cube with a turning arrow round it; GView = the cube in the view frame with a list of
+  // views beside it; Analyze Entity Properties = a picked blue entity (a line and an arc) with the analyze badge
+  OWN.dynRotate = vcube('top') + L('M1.5 9.5 A6.5 6.5 0 0 0 12 14', RD, 1.3) + head(12.6, 13.4, 0.8, -0.6, RD, 2.6);
+  OWN.gview = vcube('right') + T('M0.5 1.5 H4 M0.5 3.5 H4');
+  OWN.analyzeEntity = L('M1.5 14 L7 8.5', LB, 1.8) + L('M7 8.5 A4 4 0 0 1 9.5 3.5', LB, 1.8) + mk(7, 8.5, 1.4) + Q(10.5, 0.5);
   OWN.section = F('M8.5 4 l5 2.5 v6 l-5 2.5 z', T3) + F('M8.5 4 l5 2.5 -2.5 1.2 -5 -2.5 z', T1) + F('M3.5 1.5 l5 2.5 v11 l-5 -2.5 z', G2) + P('M3.5 1.5 l5 2.5 v11 l-5 -2.5 z', 'none', G4, 1);
   // the display styles: drawn in the slate ink (@SI follows the ink), so they are slate blue on the ribbon and light on
   // the blue status bar, where the same five sit

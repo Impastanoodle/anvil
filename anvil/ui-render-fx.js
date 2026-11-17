@@ -688,7 +688,11 @@
   UI.depthFxMenuItems = function (prefix) {
     prefix = prefix || '';
     var rows = [];
-    function note(row, name) { var h = G.hint(name); if (h) row.key = h; return row; }
+    // rfNJ: the governor's note goes after the name in brackets and in the status-bar help line (row.help), not in
+    // the key column, which holds keyboard shortcuts only ("When still" there read as a key); row.note keeps the bare
+    // note for tests
+    var HELP = { 'When still': 'drawn when the view is still, held back while it moves (this computer draws it too slowly for this model)', 'Held back': 'held back: this computer draws it too slowly for this model', 'Half resolution': 'drawn at half resolution: this computer draws it too slowly for this model at full' };
+    function note(row, name) { var h = G.hint(name); if (h) { row.note = h; row.label += ' (' + h.toLowerCase() + ')'; row.help = row.label.replace(/ \(.*$/, '').replace(/^.*▸ /, '') + ': ' + (HELP[h] || h); } return row; }
     if (typeof UI.setRealView === 'function') rows.push(note({ label: prefix + 'RealView Graphics', checked: !!(UI.realView && UI.realView()), action: function () { UI.setRealView(!(UI.realView && UI.realView())); } }, 'realView'));
     rows.push({ label: prefix + 'Shadows In Shaded Mode', checked: !!App.view.shadows, action: function () { UI.setShadows(!App.view.shadows); } });
     rows.push(note({ label: prefix + 'Ambient Occlusion', checked: !!App.view.ao, action: function () { UI.setAmbientOcclusion(!App.view.ao); } }, 'ao'));

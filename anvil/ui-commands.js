@@ -109,7 +109,8 @@
     // rfNH: a pick that fills a box without re-rendering the panel (Hole Wizard points, a face) still lights ✓: while a
     // PropertyManager with okBlocked is open its ✓ state is checked a few times a second (pmOK reads it live anyway)
     clearInterval(pm.okTimer); pm.okTimer = null;
-    if (spec.okBlocked) pm.okTimer = setInterval(function () { if (pm.spec === spec) updateOkState(); else { clearInterval(pm.okTimer); pm.okTimer = null; } }, 250);
+    pm.fail = null;   // rfNJ: the newest preview's failure (previewFailWhy)
+    if (spec.okBlocked || spec.failBlocks !== false) pm.okTimer = setInterval(function () { if (pm.spec === spec) updateOkState(); else { clearInterval(pm.okTimer); pm.okTimer = null; } }, 250);
     $('fm-tree').hidden = true;
     pm.root.hidden = false;
     UI.setFmTab('pm');
@@ -308,7 +309,18 @@
   // The ✓ button looks disabled (and pmOK refuses) while a number field holds an equation that does not evaluate, or
   // while the command's spec.okBlocked(values) names something still missing (SolidWorks greys ✓ until the required
   // boxes are filled: Mirror Entities with no Mirror about). The PM calls updateOkState() when its values change.
-  function okBlockedWhy() { var s = pm.spec; return s && s.okBlocked ? s.okBlocked(pm.values) || '' : ''; }
+  // rfNJ: SolidWorks does not accept a feature that cannot be built (an extrude of an open sketch, a rib that misses the
+  // body, a miter flange off its edge): its ✓ is unavailable and the PM says why. Here ✓ greys while the NEWEST live
+  // preview of the PM failed (pm.fail = { seq, spec, msg }, set by livePreview / showPreview; a newer preview still on
+  // its way does not count, so a quick ✓ after a change is never refused on a stale result). spec.failBlocks: false
+  // opts a PM out; spec.okBlocked is asked first (it names a missing selection before the build error it causes).
+  function previewFailWhy() {
+    var s = pm.spec, f = pm.fail;
+    if (!s || s.failBlocks === false || !f || f.spec !== s || f.seq !== lp.seq) return '';
+    return 'The feature cannot be built: ' + String(f.msg).replace(/^Preview:\s*/, '');
+  }
+  function notePreview(seq, msg) { pm.fail = msg ? { seq: seq, spec: pm.spec, msg: msg } : null; }
+  function okBlockedWhy() { var s = pm.spec; return (s && s.okBlocked ? s.okBlocked(pm.values) || '' : '') || previewFailWhy(); }
   function updateOkState() {
     var ok = pm.root.querySelector('.pm-ok');
     if (!ok) return;
@@ -666,10 +678,14 @@
           var on = String(v[f.key]) === String(o[0]);
           if (on) curName = o[1];
           var why = f.disabledOption ? f.disabledOption(o[0], v) : null;
-          var ib = el('button', { type: 'button', title: o[1] + (why ? ': ' + why : ''), 'aria-label': o[1], role: 'radio', 'aria-checked': on ? 'true' : 'false', 'data-key': f.key + ':' + o[0], html: words ? '' : Icons(o[2] || 'generic', 16) });
+          // rfNJ: the tooltip as SolidWorks': the name, what the option does (o[3]) and, greyed, why on its own line; a
+          // hover writes it in the status bar too (Chrome sends mouse events to a disabled button)
+          var tip = o[1] + (o[3] ? ': ' + o[3] : '') + (why ? (o[3] ? '\n' : ': ') + why : '');
+          var ib = el('button', { type: 'button', title: tip, 'aria-label': o[1], role: 'radio', 'aria-checked': on ? 'true' : 'false', 'data-key': f.key + ':' + o[0], html: words ? '' : Icons(o[2] || 'generic', 16) });
           if (words) ib.textContent = o[1];
           if (on) ib.classList.add('on');
           if (why) { ib.disabled = true; ib.setAttribute('aria-disabled', 'true'); }
+          ib.addEventListener('mouseenter', function () { UI.setStatus(tip.replace(/\n/g, ' ')); });
           ib.addEventListener('click', function () { if (why || String(v[f.key]) === String(o[0])) return; changed(o[0]); if (!f.rerender && pm.spec) renderPM(); });
           ibox.appendChild(ib);
         });
@@ -732,6 +748,7 @@
       if (pm.spec !== spec || my < lp.shown) return;
       if (!r) { lp.shown = my; o.sync(); return; }   // the worker went away: preview on the main thread
       lp.shown = my; lp.last = { ms: r.ms, at: performance.now() };
+      notePreview(my, null);   // rfNJ
       UI.disposeGroup(UI.groups.preview);
       r.tools.forEach(function (t, i) { if (t && t.polygons.length) addPreviewMesh(t, o.mats[i] || o.mats[0]); });
       if (o.done) o.done(r);
@@ -740,6 +757,8 @@
       lp.shown = my;
       UI.disposeGroup(UI.groups.preview);
       var msg = (e && e.message) || String(e);
+      notePreview(my, msg);   // rfNJ: ✓ greys with this reason
+      updateOkState();
       if (o.fail) o.fail(msg); else UI.setStatus('Preview: ' + msg);
     });
   }
@@ -776,7 +795,7 @@
     if (!feature || !App.build) { UI.disposeGroup(UI.groups.preview); return null; }
     var mat = UI.mats.preview, err = null;
     try { if (K.isCut(feature, App.model) || feature.cut) mat = UI.mats.previewCut; } catch (e) { }
-    livePreview({ op: 'tool', feature: feature, upto: null, throughLimit: previewThroughLimit(feature), mats: [mat], sync: function () { err = showPreviewSync(feature); } });
+    livePreview({ op: 'tool', feature: feature, upto: null, throughLimit: previewThroughLimit(feature), mats: [mat], sync: function () { err = showPreviewSync(feature); notePreview(lp.seq, err); } });
     return err;
   }
   function showPreviewSync(feature) {
@@ -1437,6 +1456,31 @@
     }
     return { type: 'select', label: 'Sketch', key: 'sketch', options: list.length ? list.map(function (s) { return [s.id, s.name]; }) : [[-1, '(no unconsumed sketches)']] };
   }
+  // rfNJ: why a sketch cannot give a closed-profile feature (Extrude, Revolve, Tab): '' when it can or when the
+  // kernel cannot tell (the preview then decides, previewFailWhy); cached per sketch object and entity count
+  var closedMemo = { sk: null, n: -1, why: '' };
+  function noClosedProfileWhy(sketchId) {
+    var sk = K.findFeature(App.model, typeof sketchId === 'string' ? +sketchId : sketchId);
+    if (!sk || sk.type !== 'sketch') return sketchId == null || sketchId === -1 ? 'Select a sketch with a closed profile.' : '';
+    var n = (sk.entities || []).length;
+    if (closedMemo.sk === sk && closedMemo.n === n) return closedMemo.why;
+    var why = '';
+    if (!n) why = sk.name + ' is empty: draw a closed profile in it.';
+    else { try { if (!K.sketchProfile(sk).loops.length) why = sk.name + ' has no closed profile: close the contour (or pick another sketch).'; } catch (e) { why = ''; } }
+    closedMemo = { sk: sk, n: n, why: why };
+    return why;
+  }
+  // rfNJ: a kernel check run for okBlocked (polled), only again when the feature JSON or the build changed:
+  // memoWhy(tag, feat, fn) -> '' when fn(feat) returns, else 'The feature cannot be built: ' + its message
+  var whyMemo = {};
+  function memoWhy(tag, feat, fn) {
+    var key = JSON.stringify(feat), m = whyMemo[tag];
+    if (m && m.key === key && m.build === App.build && m.spec === pm.spec) return m.why;
+    var why = '';
+    try { fn(feat); } catch (e) { why = 'The feature cannot be built: ' + ((e && e.message) || e); }
+    whyMemo[tag] = { key: key, build: App.build, spec: pm.spec, why: why };
+    return why;
+  }
   function pickDefaultSketch(sid) {
     if (sid != null) return sid;
     var list = unconsumedSketches();
@@ -1561,6 +1605,7 @@
       openPM({
         title: existing ? existing.name : title, icon: f.cut ? 'cut' : 'extrude', values: f,
         command: Object.assign({ sketchId: f.sketch }, contours.command), handles: extrudeHandles,
+        okBlocked: function (v) { return noClosedProfileWhy(v.sketch); },   // rfNJ: an open or empty sketch built a failed extrude
         groups: [
           { title: 'From', fields: [{ type: 'static', label: 'Start', value: 'Sketch Plane' }, sketchPickerField(f)] },
           {
@@ -1625,6 +1670,7 @@
       contours.init();
       openPM({
         title: existing ? existing.name : title, icon: f.cut ? 'revolveCut' : 'revolve', values: f, command: refAxisCommand(f, Object.assign({ sketchId: f.sketch }, contours.command)), handles: revolveHandles,
+        okBlocked: function (v) { return noClosedProfileWhy(v.sketch); },   // rfNJ: an open or empty sketch built a failed revolve
         groups: [
           { title: 'Axis of Revolution', fields: [sketchPickerField(f), { type: 'select', label: 'Axis', key: 'axis', options: revolveAxisOptions }] },
           { title: 'Direction 1', fields: [{ type: 'number', label: 'Angle', key: 'angle', unit: '°', min: 0 }, { type: 'check', label: 'Reverse direction', key: 'reverse' }, mergeField(function (v) { return !v.cut; })] },
@@ -1665,6 +1711,8 @@
       function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, !!v.cut); }
       openPM({
         title: existing ? existing.name : title, icon: 'sweep', values: f, command: { sketchId: f.profile },
+        // rfNJ: the profile must be closed and the path another sketch (or a curve)
+        okBlocked: function (v) { return v.profile != null && v.profile === v.path ? 'The profile and the path must be different sketches.' : noClosedProfileWhy(typeof v.profile === 'string' ? +v.profile : v.profile); },
         message: 'The <b>profile</b> is a closed sketch; the <b>path</b> is a sketch of connected lines/arcs starting at the profile. The profile is turned perpendicular to the first path segment automatically.',
         groups: [
           { title: 'Profile and Path', fields: [
@@ -1708,6 +1756,13 @@
       function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, !!v.cut); }
       openPM({
         title: existing ? existing.name : title, icon: 'loft', values: f, command: { loftIds: f.sketches.slice() },
+        // rfNJ: ✓ greys until two different sections each hold a closed profile (it took ✓ and built a failed loft)
+        okBlocked: function (v) {
+          sync(v);
+          if (v.sketches.length < 2 || v.sketches.length !== v.sketches.filter(function (x, i) { return v.sketches.indexOf(x) === i; }).length) return 'Pick at least two different sketches as sections.';
+          for (var i = 0; i < v.sketches.length; i++) { var w = noClosedProfileWhy(v.sketches[i]); if (w) return w; }
+          return '';
+        },
         message: 'Pick two or three sketches, each with <b>one closed profile</b>, on different planes. Profiles are matched point by point around their outlines.',
         groups: [
           { title: 'Profiles', fields: [
@@ -1805,8 +1860,14 @@
 
   // ------------------------------------------------------------------ chamfer / fillet (edge features)
   // rfNH: SolidWorks 2024's type rows; the icon names are for the icon sets (until drawn, the row shows the words)
-  var CHAMFER_TYPES = [['ad', 'Angle Distance', 'chamferAngleDistance'], ['dd', 'Distance Distance', 'chamferDistanceDistance'], ['vertex', 'Vertex', 'chamferVertex'], ['offsetFace', 'Offset Face', 'chamferOffsetFace'], ['faceFace', 'Face Face', 'chamferFaceFace']];
-  var FILLET_TYPES = [['constant', 'Constant Size Fillet', 'filletConstant'], ['variable', 'Variable Size Fillet', 'filletVariable'], ['face', 'Face Fillet', 'filletFace'], ['fullRound', 'Full Round Fillet', 'filletFullRound']];
+  // rfNJ: the 4th element is the tooltip's description (SolidWorks' wording)
+  var CHAMFER_TYPES = [['ad', 'Angle Distance', 'chamferAngleDistance', 'a chamfer set by a distance along one face and an angle'], ['dd', 'Distance Distance', 'chamferDistanceDistance', 'a chamfer set by a distance along each face (Equal distance: one distance)'], ['vertex', 'Vertex', 'chamferVertex', 'cuts a corner off at a vertex by three distances'], ['offsetFace', 'Offset Face', 'chamferOffsetFace', 'a chamfer found by offsetting the faces next to the edge'], ['faceFace', 'Face Face', 'chamferFaceFace', 'a chamfer between two faces that need not share an edge']];
+  var FILLET_TYPES = [['constant', 'Constant Size Fillet', 'filletConstant', 'one radius all along the edges'], ['variable', 'Variable Size Fillet', 'filletVariable', 'a radius that changes along the edge, set at its vertices'], ['face', 'Face Fillet', 'filletFace', 'blends two faces that need not share an edge'], ['fullRound', 'Full Round Fillet', 'filletFullRound', 'a round tangent to three faces side by side']];
+  // rfNJ: why a type is greyed, the SolidWorks way: what is not built and what to use instead
+  function edgeTypeWhy(isChamfer, t) {
+    if (t === (isChamfer ? 'dd' : 'constant')) return null;
+    return 'This type is not available in Anvil yet (not built): use ' + (isChamfer ? 'Distance Distance with Equal distance.' : 'Constant Size Fillet.');
+  }
   function cmdEdgeFeature(kind, existing) {
     if (App.mode === 'sketch') UI.exitSketch(true);
     if (!App.edges || !App.edges.length) { UI.toast('Create a solid first.'); return; }
@@ -1909,7 +1970,7 @@
         // rfNH: SolidWorks' type row at the top (Chamfer Type / Fillet Type). Anvil builds the equal-distance chamfer and
         // the constant-size fillet; the other types are shown greyed, so the PropertyManager reads as SolidWorks' does
         { title: isChamfer ? 'Chamfer Type' : 'Fillet Type', fields: [
-          { type: 'iconRadio', label: 'Type', key: '_type', options: isChamfer ? CHAMFER_TYPES : FILLET_TYPES, disabledOption: function (t) { return t === (isChamfer ? 'dd' : 'constant') ? null : 'not available in Anvil yet'; } }
+          { type: 'iconRadio', label: 'Type', key: '_type', options: isChamfer ? CHAMFER_TYPES : FILLET_TYPES, disabledOption: function (t) { return edgeTypeWhy(isChamfer, t); } }
         ] },
         { title: isChamfer ? 'Items To Chamfer' : 'Items To Fillet', fields: [
           { type: 'pick', icon: kind, value: function (v) { return v.edges.length ? v.edges.length + ' edge pick' + (v.edges.length > 1 ? 's' : '') + (edgeList.length ? ' → ' + edgeList.length + ' edges' : '') : ''; }, placeholder: 'Select edges…',
@@ -2025,6 +2086,7 @@
         ] },
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
+      okBlocked: function (v) { return +v.thickness > 0 || isExpr(v.thickness) ? '' : 'The thickness must be greater than zero.'; },   // rfNJ
       onChange: function () { resolveList(); preview(); },
       onOK: function (v) { if (!(v.thickness > 0)) { UI.toast('Thickness must be greater than zero.'); return false; } if (!v.name) delete v.name; return commitFeature(v, existing); }
     });
@@ -2224,7 +2286,7 @@
       message: isCsys ? 'Pick the <b>origin</b>, then any two of the <b>X / Y / Z</b> directions (edges, axes, faces or planes); the third follows. With none, the system is the part origin and axes.'
         : 'Pick the references in the graphics area: the highlighted box takes the next pick.',
       onChange: function (v, key) { if (key === 'kind') { v.refs = []; st.slot = 0; } preview(v); },
-      okBlocked: function (v) { return isCsys ? null : slots(v).every(function (s) { return getRef(v, s.key); }) ? null : 'Select ' + slots(v).map(function (s) { return s.label.toLowerCase(); }).join(' and ') + '.'; },
+      okBlocked: function (v) { return isCsys ? st.err || null : slots(v).every(function (s) { return getRef(v, s.key); }) ? st.err || null : 'Select ' + slots(v).map(function (s) { return s.label.toLowerCase(); }).join(' and ') + '.'; },
       onOK: function (v) {
         if (st.err) { UI.toast(st.err); return false; }
         return commitFeature(toFeature(v), existing);
@@ -2606,6 +2668,7 @@
       openPM({
         title: 'Base Flange/Tab', icon: 'flange', values: f, command: { sketchId: f.sketch },
         groups: [{ title: 'Sketch', fields: [sketchPickerField(f)] }].concat(sheetGroups([{ type: 'check', label: 'Reverse direction', key: 'reverse' }])),
+        okBlocked: function (v) { return sheetWhy(v); },   // rfNJ: a sheet value the kernel refuses (it toasted on ✓)
         onChange: function (v, key) {
           if (gaugeChanged(v, key)) renderPM();
           v.depth = v.thickness; App.command.sketchId = v.sketch; UI.updateSketches();
@@ -2627,8 +2690,11 @@
   // lane open-base: Base Flange from an open profile: Direction 1 (Blind / Mid Plane, depth, Reverse Direction), the
   // sheet's groups with a Reverse direction for the side T goes to (SolidWorks). The feature is an `insertBends` with
   // `openBase`, so the preview is built here, not through the worker's tool op.
+  // rfNJ: why the sheet values of a PM cannot make a sheet ('' when they can)
+  function sheetWhy(v) { try { sheetFromValues(v, false); return ''; } catch (e) { return e.message || String(e); } }
   function cmdOpenBase(sid, existing) {
     if (App.mode === 'sketch') UI.exitSketch(true);
+    var pvErr = '';   // rfNJ: the preview's error greys ✓
     var v0 = sheetToValues(App.model.sheet || defaultSheet(), {});
     v0.sketch = existing ? existing.sketch : sid;
     v0.depth = existing ? existing.depth : (App.model.units === 'in' ? 1 : 25);
@@ -2644,6 +2710,7 @@
     function preview() {
       var v = pm.values || v0;
       UI.disposeGroup(UI.groups.preview);
+      pvErr = '';
       try {
         var pmod = previewModel(), m = {};
         Object.keys(pmod).forEach(function (k) { m[k] = pmod[k]; });
@@ -2651,7 +2718,7 @@
         var r = K.buildOpenBase(featOf(v), m, { planes: (App.build && App.build.planes) || {} });
         addPreviewMesh(r.tool, UI.mats.preview);
         UI.setStatus('Base Flange: ' + r.bends + ' bend' + (r.bends === 1 ? '' : 's') + ', T ' + UI.fmtNum(m.sheet.thickness, 4) + ', R ' + UI.fmtNum(m.sheet.bendRadius, 4) + '. Press Enter or ✓ to accept.');
-      } catch (e) { UI.setStatus('Preview: ' + e.message); }
+      } catch (e) { pvErr = e.message; UI.setStatus('Preview: ' + e.message); }
     }
     openPM({
       title: existing ? existing.name : 'Base Flange/Tab', icon: 'flange', values: v0, command: { sketchId: v0.sketch },
@@ -2660,6 +2727,7 @@
         { type: 'number', label: 'Depth', key: 'depth', step: 0.1, min: 0 },
         { type: 'check', label: 'Reverse Direction', key: 'reverse' }
       ] }].concat(sheetGroups([{ type: 'check', label: 'Reverse direction', key: 'flip' }])),
+      okBlocked: function (v) { return !(+v.depth > 0) && !isExpr(v.depth) ? 'The depth must be more than 0.' : sheetWhy(v) || (pvErr ? 'The feature cannot be built: ' + pvErr : ''); },   // rfNJ
       onChange: function (v, key) {
         if (gaugeChanged(v, key)) renderPM();
         preview();
@@ -2708,6 +2776,7 @@
         { type: 'static', label: 'Flat size', value: flatText },
         { type: 'html', html: function () { return cache.warnings && cache.warnings.length ? '<div class="pm-note" style="margin:2px 0 4px">' + cache.warnings.map(function (w) { return smEsc(w); }).join('<br>') + '</div>' : ''; } }
       ] }]),
+      okBlocked: function (v) { return sheetWhy(v); },   // rfNJ
       onChange: function (v, key) {
         if (gaugeChanged(v, key)) renderPM();
         else if (key !== 'useGauge' && key !== 'baType' && key !== 'gaugeTable' && key !== 'gauge') renderPM();   // the flat size follows the typed value
@@ -3080,7 +3149,7 @@
         if (isFlange && key === 'lengthEnd') { v.vxActive = v.lengthEnd === 'upToVertex' && !v.lengthVertex; renderPM(); if (v.vxActive) UI.setStatus('Up To Vertex: click the vertex the flange runs to.'); }
         resolveList(); preview();
       },
-      okBlocked: function (v) { return v.edges.length ? '' : 'Select at least one edge.'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
+      okBlocked: function (v) { return !v.edges.length ? 'Select at least one edge.' : isFlange && v.lengthEnd === 'upToVertex' && !v.lengthVertex ? 'Up To Vertex: select the vertex the flange runs to.' : ''; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast); rfNJ: the Up To Vertex vertex too
       onOK: function (v) {
         if (!v.edges.length) { UI.toast('Select at least one edge.'); return false; }
         if (isFlange && v.lengthEnd === 'upToVertex' && !v.lengthVertex) { UI.toast('Up To Vertex: select the vertex the flange runs to.'); return false; }
@@ -3260,6 +3329,8 @@
           }
           preview();
         },
+        // rfNJ: ✓ greys with the reason (it took ✓ and refused with a toast)
+        okBlocked: function (v) { return v.sketch == null || v.sketch < 0 ? 'Select the sketch with the jog line.' : v.offsetEnd !== 'blind' && v.offsetTarget == null ? (v.offsetEnd === 'upToVertex' ? 'Up To Vertex: select the vertex.' : 'Select the face or plane the jog goes to.') : v.offsetEnd === 'blind' && !(+v.offset > 0) && !isExpr(v.offset) ? 'The jog offset must be greater than zero.' : ''; },
         onOK: function (v) {
           if (v.sketch == null || v.sketch < 0) { UI.toast('Select the sketch with the jog line.'); return false; }
           if (v.offsetEnd !== 'blind' && v.offsetTarget == null) { UI.toast(v.offsetEnd === 'upToVertex' ? 'Up To Vertex: select the vertex.' : 'Select the face or plane the jog goes to.'); return false; }
@@ -3296,18 +3367,21 @@
       if (!m.sheet) m = Object.assign({}, m, { sheet: K.makeSheet({ thickness: +v.thickness, bendRadius: +v.thickness, kFactor: 0.5 }) });
       return m;
     }
+    var pvErr = '';   // rfNJ: the preview's error greys ✓ (it built a failed Lofted-Bend)
     function preview() {
       UI.disposeGroup(UI.groups.preview);
+      pvErr = '';
       try {
         var tool = K.buildLoftedBend(toFeature(f), pmModel(f), { planes: (App.build && App.build.planes) || {}, sketches: {} });
         if (tool && tool.polygons.length) addPreviewMesh(tool, UI.mats.preview);
         UI.setStatus('Lofted-Bend preview: ' + (f.method === 'bent' ? 'bent facets' : 'formed') + '.');
-      } catch (e) { UI.setStatus('Preview: ' + e.message); }
+      } catch (e) { pvErr = e.message; UI.setStatus('Preview: ' + e.message); }
     }
     function sketchOpts() { return dxfSketches().map(function (s) { return [String(s.id), s.name]; }); }
     function isBent(v) { return v.method === 'bent'; }
     openPM({
       title: existing ? existing.name : 'Lofted-Bend', icon: 'loft', values: f,
+      okBlocked: function (v) { return v.p1 === v.p2 ? 'Pick two different profiles.' : !(+v.facetValue > 0) ? 'The faceting value must be greater than zero.' : !App.model.sheet && !(+v.thickness > 0) ? 'The thickness must be greater than zero.' : pvErr ? 'The feature cannot be built: ' + pvErr : ''; },
       message: 'Pick the two <b>open profiles</b> (lines and arcs, one sketch each, with a small gap where the seam goes). They are the sheet\'s mid-surface. <b>Bent</b> makes flat facets with bend lines in the flat pattern; <b>Formed</b> a rolled transition without bend lines.',
       groups: [
         { title: 'Manufacturing Method', fields: [{ type: 'radio', key: 'method', rerender: true, options: [['formed', 'Formed'], ['bent', 'Bent']] }] },
@@ -3386,15 +3460,17 @@
       if (App.command) App.command.edgeList = list;
       if (UI.updateHighlights) UI.updateHighlights();
     }
+    var pvErr = '';   // rfNJ: the preview's error greys ✓ (it built a failed Swept Flange)
     function preview() {
       lit();
       UI.disposeGroup(UI.groups.preview);
+      pvErr = '';
       if (f.pathKind === 'edges' && !f.edges.length) { UI.setStatus('Swept Flange: click the edges of the part the flange runs along.'); return; }
       try {
         var tool = K.buildSweptFlange(toFeature(f), pmModel(f), { planes: (App.build && App.build.planes) || {}, sketches: {}, body: f.pathKind === 'edges' ? baseBody() : null });
         if (tool && tool.polygons.length) addPreviewMesh(tool, UI.mats.preview);
         UI.setStatus('Swept Flange preview. Press Enter or ✓ to accept.');
-      } catch (e) { UI.setStatus('Preview: ' + e.message); }
+      } catch (e) { pvErr = e.message; UI.setStatus('Preview: ' + e.message); }
     }
     function pick(pk) {
       if (f.pathKind !== 'edges' || pk.kind !== 'edge' || !pk.edge) return false;
@@ -3408,6 +3484,7 @@
     function isEdges(v) { return v.pathKind === 'edges'; }
     openPM({
       title: existing ? existing.name : 'Swept Flange', icon: 'sweptFlange', values: f,
+      okBlocked: function (v) { return v.pathKind === 'edges' && !v.edges.length ? 'Select the edges of the part the flange runs along.' : v.pathKind !== 'edges' && v.prof === v.pathSk ? 'The profile and the path must be different sketches.' : !v.useDefaultRadius && !(+v.radiusValue >= 0) ? 'The bend radius must be zero or more.' : !App.model.sheet && !(+v.thickness > 0) ? 'The thickness must be greater than zero.' : pvErr ? 'The feature cannot be built: ' + pvErr : ''; },
       message: 'Pick the open <b>profile</b> (lines, arcs between them; sketched on a plane normal to the path at its start) and the <b>path</b> (a sketch of tangent lines and arcs, or edges of the part). The sketch line is one face of the sheet; each sharp corner gets the bend radius.',
       command: { pickEdges: true, edgeList: [], onPick: pick },
       groups: [
@@ -3618,6 +3695,7 @@
           if (key === 'sketch' && App.command) { App.command.sketchId = v.sketch; UI.updateSketches(); }
           resolveList(); preview();
         },
+        okBlocked: function (v) { return v.sketch == null || v.sketch < 0 ? 'Select the profile sketch.' : ''; },   // rfNJ (the preview's error greys it too: previewFailWhy)
         onOK: function (v) {
           if (v.sketch == null || v.sketch < 0) { UI.toast('Select the profile sketch.'); return false; }
           var feat = toFeature(v, true);
@@ -3727,6 +3805,7 @@
           if (key === 'sketch' && App.command) { App.command.sketchId = v.sketch; UI.updateSketches(); }
           preview();
         },
+        okBlocked: function (v) { return v.sketch == null || v.sketch < 0 ? 'Select the sketch with the bend line(s).' : ''; },   // rfNJ
         onOK: function (v) {
           if (v.sketch == null || v.sketch < 0) { UI.toast('Select the sketch with the bend line(s).'); return false; }
           var feat = toFeature(v, true);
@@ -3857,7 +3936,7 @@
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function () { preview(); },
-      okBlocked: function (v) { return v.corners.length || v.faces.length ? '' : 'Select at least one corner edge or face.'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
+      okBlocked: function (v) { return !v.corners.length && !v.faces.length ? 'Select at least one corner edge or face.' : !(+v.size > 0) ? 'The ' + (v.kind === 'fillet' ? 'radius' : 'distance') + ' must be more than 0.' : ''; },   // rfNJ: the size too;   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.corners.length && !v.faces.length) { UI.toast('Select at least one corner edge or face.'); return false; }
         if (!(+v.size > 0)) { UI.toast('The ' + (v.kind === 'fillet' ? 'radius' : 'distance') + ' must be more than 0.'); return false; }
@@ -3978,7 +4057,7 @@
         }
         preview();
       },
-      okBlocked: function (v) { return v.corners.length ? '' : 'Select at least one corner (or Collect all corners).'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
+      okBlocked: function (v) { return !v.corners.length ? 'Select at least one corner (or Collect all corners).' : v.reliefType !== 'tear' && !(+v.size > 0) ? 'The relief size must be more than 0.' : ''; },   // rfNJ: the size too;   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.corners.length) { UI.toast('Select at least one corner (or Collect all corners).'); return false; }
         if (v.reliefType !== 'tear' && !(+v.size > 0)) { UI.toast('The relief size must be more than 0.'); return false; }
@@ -4088,7 +4167,7 @@
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function () { preview(); },
-      okBlocked: function (v) { return v.faces.length ? '' : 'Select a side face of at least one corner to weld.'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
+      okBlocked: function (v) { return !v.faces.length ? 'Select a side face of at least one corner to weld.' : v.addFillet && !K.isExpression(v.fillet) && !(+v.fillet > 0) ? 'The fillet radius must be more than 0.' : ''; },   // rfNJ: the fillet radius too;   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.faces.length) { UI.toast('Select a side face of at least one corner to weld.'); return false; }
         if (v.addFillet && !K.isExpression(v.fillet) && !(+v.fillet > 0)) { UI.toast('The fillet radius must be more than 0.'); return false; }
@@ -4363,7 +4442,7 @@
         }
         preview();
       },
-      okBlocked: function (v) { return v.face ? '' : 'Click a flat face of the sheet where the tool goes.'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
+      okBlocked: function (v) { return !v.face ? 'Click a flat face of the sheet where the tool goes.' : memoWhy('ft', featOf(v), function (feat) { K.formingToolLayout(feat, previewModel(), { body: baseBody() }); }); },   // rfNJ: a tool that does not fit greys it too;   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.face) { UI.toast('Click a flat face of the sheet where the tool goes.'); return false; }
         var feat = featOf(v);
@@ -4470,7 +4549,7 @@
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function () { preview(); },
-      okBlocked: function (v) { return v.edges.length ? '' : 'Select at least one edge to rip.'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
+      okBlocked: function (v) { return !v.edges.length ? 'Select at least one edge to rip.' : !(+v.gap > 0) ? 'The rip gap must be more than 0.' : ''; },   // rfNJ: the gap too;   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.edges.length) { UI.toast('Select at least one edge to rip.'); return false; }
         if (!(+v.gap > 0)) { UI.toast('The rip gap must be more than 0.'); return false; }
@@ -4584,7 +4663,7 @@
           if (key === 'sketch') { autoFill(v); if (App.command) { App.command.sketchId = v.sketch; UI.updateSketches(); } renderPM(); }
           preview();
         },
-        okBlocked: function (v) { return v.sketch == null || v.sketch < 0 ? 'Select the vent\'s sketch.' : !v.boundary.length ? 'Select the vent\'s boundary (a closed contour).' : ''; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
+        okBlocked: function (v) { return v.sketch == null || v.sketch < 0 ? 'Select the vent\'s sketch.' : !v.boundary.length ? 'Select the vent\'s boundary (a closed contour).' : memoWhy('vent', featOf(v), function (feat) { K.buildVent(feat, previewModel(), { body: baseBody(), sketches: {}, planes: (App.build && App.build.planes) || {} }); }); },   // rfNJ: a vent that does not build greys it too;   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
         onOK: function (v) {
           if (v.sketch == null || v.sketch < 0) { UI.toast('Select the vent\'s sketch.'); return false; }
           if (!v.boundary.length) { UI.toast('Select the vent\'s boundary (a closed contour).'); return false; }
@@ -4799,7 +4878,7 @@
         if (isConv && gaugeChanged(v, key)) renderPM();
         preview();
       },
-      okBlocked: function (v) { return !v.fixedFace ? 'Pick the fixed face.' : isConv && !v.bendEdges.length ? 'Pick the edges that become bends.' : ''; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
+      okBlocked: function (v) { return !v.fixedFace ? 'Pick the fixed face.' : isConv && !v.bendEdges.length ? 'Pick the edges that become bends.' : (isConv || v.ripEdges.length) && !(+v.gap > 0) ? 'The rip gap must be more than 0.' : !isConv && thickness(v) == null ? (measured.err || 'Cannot read the part\'s thickness at the fixed face.') : ''; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast); rfNJ: the gap and the measured thickness too
       onOK: function (v) {
         if (!v.fixedFace) { UI.toast('Pick the fixed face.'); return false; }
         if (isConv && !v.bendEdges.length) { UI.toast('Pick the edges that become bends.'); return false; }
@@ -4874,6 +4953,7 @@
     openPM({
       title: existing ? existing.name : 'Base Flange/Tab', icon: 'flange', values: f, command: { sketchId: f.sketch },
       message: 'Tab: the sketch is extruded the sheet thickness (' + UI.fmtNum(T, 4) + ' ' + UI.unitLabel() + ', linked to the sheet) into the face it is sketched on and merged with the part.',
+      okBlocked: function (v) { return noClosedProfileWhy(v.sketch); },   // rfNJ: a tab of an open sketch was built failed
       groups: [{ title: 'Sketch', fields: [sketchPickerField(f)] },
         { title: 'Direction 1', fields: [{ type: 'check', label: 'Reverse direction (away from the face)', key: 'reverse' }, { type: 'check', label: 'Link to thickness', key: 'linkT', disabled: true }] },
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }],
@@ -5015,7 +5095,7 @@
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function () { preview(); },
-      okBlocked: function (v) { return v.faces.length ? '' : 'Select at least one face to extend.'; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
+      okBlocked: function (v) { return !v.faces.length ? 'Select at least one face to extend.' : !(+v.gap >= K.closedCornerMinGap(App.model) - 1e-12) ? 'The gap must be at least ' + UI.fmtNum(K.closedCornerMinGap(App.model), 4) + ' (the flanges would join).' : v.cornerType !== 'butt' && !(+v.ratio >= 0 && +v.ratio <= 1) ? 'The overlap/underlap ratio must be between 0 and 1.' : ''; },   // rfNJ: gap and ratio too;   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (!v.faces.length) { UI.toast('Select at least one face to extend.'); return false; }
         var min = K.closedCornerMinGap(App.model);
@@ -7140,7 +7220,7 @@
         { title: 'Feature', collapsed: !existing, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function () { lit(); preview(); },
-      okBlocked: function (v) { return !v.neutral ? 'Select the neutral plane.' : !v.faces.length ? 'Select the faces to draft.' : null; },
+      okBlocked: function (v) { return !v.neutral ? 'Select the neutral plane.' : !v.faces.length ? 'Select the faces to draft.' : !(+v.angle > 0) || !(+v.angle < 89) ? 'The draft angle must be greater than 0 and less than 89 degrees.' : st.err || null; },   // rfNJ: the angle and the preview's error too
       onOK: function (v) {
         if (!(+v.angle > 0) || !(+v.angle < 89)) { UI.toast('Draft angle must be greater than 0 and less than 89 degrees.'); return false; }
         if (st.err) { UI.toast(st.err); return false; }
@@ -7516,6 +7596,8 @@
           scopeGroup(function (v) { return !!v.cut; }),
           { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut', rerender: true }, { type: 'text', label: 'Name', key: 'name' }] }
         ],
+        // rfNJ: ✓ greys with the reason (it took ✓ and refused with a toast)
+        okBlocked: function (v) { return v.dir1.length < 2 ? 'Select at least two profiles for Direction 1.' : v.thinOn && !(+v.thinT > 0) && !(typeof v.thinT === 'string' && /^=/.test(v.thinT)) ? 'Give the thin feature a thickness.' : ''; },
         onChange: function () { preview(); },
         onOK: function (v) {
           if (v.dir1.length < 2) { UI.toast('Select at least two profiles for Direction 1.'); return false; }
@@ -7619,13 +7701,16 @@
       title: existing ? existing.name : title, icon: type, values: f, command: command || null,
       groups: groups.concat([{ title: 'Feature', collapsed: !existing, fields: [{ type: 'text', label: 'Name', key: 'name' }] }]),
       onChange: function () { faSt.preview(); },
+      okBlocked: function () { return faSt.err || ''; },   // rfNJ: ✓ greys while the preview fails (extra.okBlocked adds the selection)
       onOK: function (v) {
         if (faSt.err) { UI.toast(faSt.err); return false; }
         return commitFeature(faClean(v), existing);
       },
       onClose: function () { UI.disposeGroup(UI.groups.preview); faSt.preview = null; }
     };
+    var base = spec.okBlocked;
     Object.keys(extra || {}).forEach(function (k) { spec[k] = extra[k]; });
+    if (spec.okBlocked !== base) { var own = spec.okBlocked; spec.okBlocked = function (v) { return own(v) || base(v); }; }
     openPM(spec);
     faSt.preview();
   }
@@ -7877,7 +7962,7 @@
         } },
         message: 'Projection: a sketch projected onto the faces splits them along its lines. Intersection: a plane splits the faces where it crosses them. Silhouette: cylindrical faces split along their outline seen along the direction of pull. Click the faces to split.',
         onChange: function () { preview(); },
-        okBlocked: function (v) { return !v.faces.length ? 'Select the faces to split.' : v.mode === 'projection' && !(v.sketch >= 0) ? 'Select the sketch to project.' : null; },
+        okBlocked: function (v) { return !v.faces.length ? 'Select the faces to split.' : v.mode === 'projection' && !(v.sketch >= 0) ? 'Select the sketch to project.' : st.err || null; },   // rfNJ: the preview's error too
         onOK: function (v) { preview(); if (st.err) { UI.toast(st.err); return false; } return commitFeature(clean(v), existing); }
       });
       preview();
@@ -7955,6 +8040,8 @@
           if (key === 'mode') renderPM();
           preview();
         },
+        // rfNJ: ✓ greys with the reason (it took ✓ and refused with a toast)
+        okBlocked: function (v) { return v.sketch == null || v.sketch < 0 ? 'Select the sketch to wrap.' : !v.face ? 'Click the face to wrap the sketch onto.' : v.mode !== 'scribe' && !(+v.thickness > 0) ? 'The thickness must be more than 0.' : memoWhy('wrap', featOf(v), function (feat) { K.buildWrap(feat, previewModel(), wctx()); }); },
         onOK: function (v) {
           if (v.sketch == null || v.sketch < 0) { UI.toast('Select the sketch to wrap.'); return false; }
           if (!v.face) { UI.toast('Click the face to wrap the sketch onto.'); return false; }

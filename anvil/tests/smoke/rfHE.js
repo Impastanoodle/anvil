@@ -71,7 +71,7 @@
       s = rfHEFeed(G, 'move', 90, 3, { rv: true });
       assert(s.moveRv === false && s.stillRv === true, '90 ms RealView frames while moving: held back while moving, kept when still: ' + JSON.stringify(s));
       var row = UI.depthFxMenuItems().filter(function (r) { return /RealView/.test(r.label); })[0];
-      assert(row && row.checked && row.key === 'When still', 'RealView Graphics row stays checked with the note "When still": ' + JSON.stringify(row && { c: row.checked, k: row.key }));
+      assert(row && row.checked && row.note === 'When still' && !row.key, 'RealView Graphics row stays checked with the note "When still" (rfNJ: beside the name, not in the key column): ' + JSON.stringify(row && { c: row.checked, n: row.note, k: row.key }));
       s = rfHEFeed(G, 'move', 20, 3, { rv: false });
       assert(s.moveRv === false, 'measured 90 ms on this model: stays held back: ' + JSON.stringify(s.ms.move));
       assert(s.ratio >= 2, 'RealView / plain ratio learned from the two: ' + s.ratio);
@@ -85,7 +85,7 @@
       s = G.state();
       assert(s.ao === 'off' || s.ao === 'half', 'slow AO lowered: ' + s.ao);
       var aoRow = UI.depthFxMenuItems().filter(function (r) { return /Ambient Occlusion/.test(r.label); })[0];
-      assert(UI.ambientOcclusion() === true && aoRow.checked && /Held back|Half resolution/.test(aoRow.key || ''), 'AO stays on, its row notes the governor: ' + (aoRow.key || ''));
+      assert(UI.ambientOcclusion() === true && aoRow.checked && /Held back|Half resolution/.test(aoRow.note || '') && !aoRow.key, 'AO stays on, its row notes the governor: ' + (aoRow.note || ''));
       // a feature the user turned off stays off however fast the machine is
       UI.setRealView(false, true);
       rfHEFx(false, false, false);

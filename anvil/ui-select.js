@@ -2319,16 +2319,18 @@ if (typeof UI !== 'undefined') (function (UI) {
     function view(n) { return function () { UI.setView(n); }; }
     return [
       { label: 'Zoom Window', icon: 'zoomArea', action: function () { App.zoomAreaMode = true; if (UI.refreshHud) UI.refreshHud(); if (UI.setStatus) UI.setStatus('Zoom Window: drag a box round the area to zoom to.'); } },
-      { label: 'Unzoom 80 %', action: function () { UI.zoomView(1.25); } },
-      { label: 'Dynamic Rotation', action: dynamicRotation },
+      // rfNJ: every row its own icon, as Mastercam's menu (Unzoom 80 %, Dynamic Rotation, the views, GView and Delete
+      // had none; Analyze Entity Properties showed Analyze Distance's ruler)
+      { label: 'Unzoom 80 %', icon: 'unzoom80', action: function () { UI.zoomView(1.25); } },
+      { label: 'Dynamic Rotation', icon: 'dynRotate', action: dynamicRotation },
       { label: 'Fit', icon: 'fit', action: function () { UI.zoomToFit(); } },
       { sep: true },
-      { label: 'Top (WCS)', action: view('Top') }, { label: 'Front (WCS)', action: view('Front') }, { label: 'Right (WCS)', action: view('Right') }, { label: 'Isometric (WCS)', action: view('Isometric') },
-      { label: 'GView', items: ['Top', 'Front', 'Back', 'Bottom', 'Right', 'Left', 'Isometric'].map(function (n) { return { label: n, action: view(n) }; }) },
+      { label: 'Top (WCS)', icon: 'vTop', action: view('Top') }, { label: 'Front (WCS)', icon: 'vFront', action: view('Front') }, { label: 'Right (WCS)', icon: 'vRight', action: view('Right') }, { label: 'Isometric (WCS)', icon: 'vIso', action: view('Isometric') },
+      { label: 'GView', icon: 'gview', items: ['Top', 'Front', 'Back', 'Bottom', 'Right', 'Left', 'Isometric'].map(function (n) { return { label: n, icon: n === 'Isometric' ? 'vIso' : 'v' + n, action: view(n) }; }) },
       { sep: true },
-      { label: 'Delete Entities', disabled: !has, action: function () { UI.deleteSelection(); } },
+      { label: 'Delete Entities', icon: 'deleteEnt', disabled: !has, action: function () { UI.deleteSelection(); } },
       { label: 'Analyze Distance', icon: 'measure', action: function () { setSelection([], { quiet: true }); UI.cmdMeasure(); } },
-      { label: 'Analyze Entity Properties', icon: 'measure', disabled: !has, action: function () { UI.cmdMeasure(); } }
+      { label: 'Analyze Entity Properties', icon: 'analyzeEntity', disabled: !has, action: function () { UI.cmdMeasure(); } }
     ];
   }
 
