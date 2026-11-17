@@ -78,7 +78,7 @@ Read this first; find line numbers with `grep -n <name> anvil/docs/INDEX.md`. Up
 - Group captions are laid out by a MutationObserver in ui-transform.js, not by the ribbon renderer (a known hack): a tab with `group` items needs ui-transform.js loaded.
 - `ui-app.js` loads before ui-sketch-*.js, ui-transform*.js and drawings: those extend `UI` later, so ui-app code must call them through `UI.x` at run time, never alias at load.
 - Ribbon items are found by tests by `id` and `label`: renaming breaks tests; keep both.
-- Default units are inches (`UI.defaultUnits`); PM defaults in mm go through `UI.lenDefault(mm)` (shop fraction in an inch document).
+- Default units are inches (`UI.defaultUnits`); PM defaults in mm go through `UI.lenDefault(mm)` (shop fraction in an inch document). Tools > Units converts the part (``UI.setDocumentUnits``, ui-panels.js; rfNY), it does not relabel.
 - Keys go to the PM only when not typing; Esc order: modal, typing box, menu, zoom-area, sketch tool, PM, selection.
 - `pickEdge` occlusion uses the depth of the edge point under the cursor (lane CZ fix); it used the edge's middle, so a long edge seen at an angle was "behind" its own face when clicked away from its middle (every edge-pick command was affected).
 - Picks in the ui-smoke page run in a short viewport (about 1200 × 410): in Isometric a point and the point (10, 10, 10) further along the view overlap on screen; choose pick points that no other geometry projects onto.

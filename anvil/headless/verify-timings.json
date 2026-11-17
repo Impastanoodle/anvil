@@ -3,16 +3,16 @@
  "seconds": {
   "examples": 3,
   "ex-occt": 18,
-  "smoke": 529,
-  "occt": 447,
-  "kernel": 440,
-  "wall": 547
+  "smoke": 484,
+  "occt": 355,
+  "kernel": 311,
+  "wall": 503
  },
  "counts": {
   "examples": 29,
   "ex-occt": 29,
-  "smoke": 1538,
+  "smoke": 1540,
   "occt": 269,
-  "kernel": 3137
+  "kernel": 3147
  }
 }

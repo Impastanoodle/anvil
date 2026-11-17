@@ -284,6 +284,36 @@
     View: viewTab(true)   // lane CC: the part's View tab without the Levels Manager (levels belong to parts)
   };
   function isAsm() { return UI.isAssembly ? UI.isAssembly() : !!(App.model && App.model.type === 'assembly'); }
+  // D1 (shop-flow 4): Tools ▸ Units (and Document Properties ▸ Units) changes the units the part shows and takes, as
+  // SolidWorks does: every stored length is converted (Assembly.convertUnits), so a 100 mm bracket reads 3.937 in and
+  // stays the same size. One undo step. The converted part is rebuilt and its volume checked against the old one; a
+  // part Anvil cannot convert, or whose size would change, keeps its units with a message. An empty part or assembly
+  // just takes the new units; an assembly with components is refused (its parts keep their own units).
+  function setDocumentUnits(to) {
+    var m = App.model, from = m && m.units === 'in' ? 'in' : 'mm', name = to === 'in' ? 'inches (IPS)' : 'millimeters (MMGS)';
+    if (!m || from === to) return Promise.resolve(true);
+    function refuse(msg) { toast(msg); setStatus(msg); if (UI.refreshTaskPane) UI.refreshTaskPane(); return Promise.resolve(false); }
+    if (isAsm() ? (m.components || []).length : false) return refuse('Units of an assembly with components cannot be changed here yet: each part keeps its own units. Open a part to change its units.');
+    if (isAsm() || !(m.features || []).length) { m.units = to; return Promise.resolve(UI.rebuild()).then(function () { return true; }); }
+    var r = typeof Assembly !== 'undefined' && Assembly.convertUnits ? Assembly.convertUnits(m, to) : { ok: false, msg: 'Unit conversion is not loaded.' };
+    if (!r.ok) return refuse(r.msg);
+    function volOf(b) { try { return b && b.body ? K.massProps(K.meshFromBody(b.body), 1).volume : 0; } catch (e) { return 0; } }
+    var v0 = volOf(App.build), errs0 = Object.keys((App.build && App.build.errors) || {}).length;
+    UI.pushUndo();
+    Object.keys(m).forEach(function (k) { delete m[k]; });
+    Object.keys(r.model).forEach(function (k) { m[k] = r.model[k]; });
+    return Promise.resolve(UI.rebuild()).then(function () {
+      var v1 = volOf(App.build), errs1 = Object.keys((App.build && App.build.errors) || {}).length, f3 = Math.pow(r.factor, 3);
+      if (errs1 > errs0 || (v0 > 0 && !(Math.abs(v1 / f3 - v0) <= 1e-4 * v0))) {
+        UI.undo();
+        return refuse('The part keeps its units: converted to ' + name + ' it would not rebuild to the same size.');
+      }
+      var msg = 'Units: ' + name + '. The part keeps its size; every dimension now reads in ' + (to === 'in' ? 'inches' : 'millimeters') + '.';
+      toast(msg); setStatus(msg);
+      return true;
+    });
+  }
+  UI.setDocumentUnits = setDocumentUnits;
   // lane profiles: an interface profile (ui-profiles.js) may lay the CommandManager out like another program; with the
   // SolidWorks profile (the default) profileSet() is null and the tables above are used as they are
   function ribbonSet() { return profileSet() || (isAsm() ? ASM_RIBBON : RIBBON); }
@@ -3965,8 +3995,8 @@
       }), [
         { label: 'Equations…', action: function () { if (isAsm()) toast('Equations belong to parts: open the part to edit them.'); else showEquations(); }, disabled: isAsm() },
         { sep: true },
-        { label: 'Units: millimeters (MMGS)', checked: App.model.units !== 'in', action: function () { App.model.units = 'mm'; UI.rebuild(); } },
-        { label: 'Units: inches (IPS)', checked: App.model.units === 'in', action: function () { App.model.units = 'in'; UI.rebuild(); } },
+        { label: 'Units: millimeters (MMGS)', checked: App.model.units !== 'in', action: function () { setDocumentUnits('mm'); } },
+        { label: 'Units: inches (IPS)', checked: App.model.units === 'in', action: function () { setDocumentUnits('in'); } },
         { label: 'Default units for new documents ▸ Inches (IPS)', checked: UI.defaultUnits() === 'in', action: function () { UI.setDefaultUnits('in'); toast('New parts and assemblies start in inches (IPS).'); } },
         { label: 'Default units for new documents ▸ Millimeters (MMGS)', checked: UI.defaultUnits() === 'mm', action: function () { UI.setDefaultUnits('mm'); toast('New parts and assemblies start in millimeters (MMGS).'); } },
         { label: 'Options…', action: function () { showOptionsDialog(); } },   // rfNG: SolidWorks' System Options dialog (it opened the Task Pane)

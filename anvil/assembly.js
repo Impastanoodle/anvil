@@ -620,16 +620,65 @@ var Assembly = (function () {
           inRegion[qi] = true; region.push(q); queue.push(q);
         });
       }
-      // at least three distinct facet directions
-      var dirs = [];
-      region.forEach(function (q) { if (!dirs.some(function (d) { return dot(d, q.normal) > MIN_TURN; })) dirs.push(q.normal); });
-      if (dirs.length >= 3) result = fitCylinder(region, axis);
+      // B1 (shop-flow 4): a mesh with true-curve records marks its curved facets (polygon.surf); a patch without one in
+      // such a region is a flat face (a sheet-metal flange beside a bend, which turns by a facet's angle into the bend),
+      // never a cylinder.
+      var hasSurf = function (q) { return q.polys.some(function (p) { return !!p.surf; }); };
+      if (!hasSurf(seed) && region.some(hasSurf)) region = [];
+      // A facet fit is a cylinder only when every vertex of every patch in it lies on the fitted cylinder: a flange
+      // tangent to a bend grows into the region (it turns by one facet's angle into the bend), but its far edge is a
+      // flange length off the cylinder. When the whole region does not fit, fit the seed's own neighbourhood, keep the
+      // patches connected to the seed that lie on that cylinder and refit them; the seed must stay in (a flat seed fails).
+      var nDirs = function (list) {
+        var dirs = [];
+        list.forEach(function (q) { if (!dirs.some(function (d) { return dot(d, q.normal) > MIN_TURN; })) dirs.push(q.normal); });
+        return dirs.length;
+      };
+      var allOn = function (list, c) { return list.every(function (q) { return patchOnCylinder(q, c); }); };
+      if (nDirs(region) >= 3) {
+        var fit = fitCylinder(region, axis);
+        if (fit && allOn(region, fit)) result = fit;
+        else {
+          var inR = {};
+          region.forEach(function (q) { inR[q.index] = true; });
+          var near = [seed], seen = {};
+          seen[seed.index] = true;
+          for (var depth = 0; depth < 3 && nDirs(near) < 3; depth++) {
+            near.slice().forEach(function (q) { q.neighbors.forEach(function (qi) { if (inR[qi] && !seen[qi]) { seen[qi] = true; near.push(P[qi]); } }); });
+          }
+          var cand = nDirs(near) >= 3 ? fitCylinder(near, axis) : null;
+          for (var pass = 0; cand && pass < 2 && !result; pass++) {
+            if (!patchOnCylinder(seed, cand)) break;
+            var keep = [seed], kin = {};
+            kin[seed.index] = true;
+            for (var qk = 0; qk < keep.length; qk++) keep[qk].neighbors.forEach(function (qi) {
+              if (inR[qi] && !kin[qi] && patchOnCylinder(P[qi], cand)) { kin[qi] = true; keep.push(P[qi]); }
+            });
+            if (nDirs(keep) < 3) break;
+            var refit = fitCylinder(keep, axis);
+            if (refit && allOn(keep, refit)) result = refit;
+            cand = refit;
+          }
+        }
+      }
     }
     region = null;
     // every patch of the region maps to the same cylinder
     if (result) result.patches.forEach(function (q) { geom.cyl[q.index] = result; });
     else geom.cyl[seed.index] = null;
     return result;
+  }
+
+  // every vertex of the patch lies on the cylinder: a facet's corners are on the true surface, the fitted radius is the
+  // facets' distance from the axis, r·cos(θ/2) for facets turning θ ≤ 40° (so up to 6.5 % under the corners')
+  function patchOnCylinder(q, c) {
+    var R = c.radius, tol = 0.065 * R + 1e-9;
+    return q.polys.every(function (p) {
+      return p.vertices.every(function (v) {
+        var x = sub(arr(v.pos), c.point), rho = len(sub(x, scale(c.dir, dot(x, c.dir))));
+        return Math.abs(rho - R) <= tol;
+      });
+    });
   }
 
   // Least-squares cylinder through facet planes: axis = direction least represented in the facet normals (smallest
@@ -3759,7 +3808,139 @@ var Assembly = (function () {
   };
   Builder.prototype.componentConfig = function (comp, cfg) { setComponentState(this.model, compId(this.model, comp), { config: cfg }); return this; };
 
+  // ------------------------------------------------------------------ document units (D1, shop-flow 4)
+  // convertUnits(partModel, to) -> { ok: true, model (a converted copy), factor } | { ok: false, msg }. Tools ▸ Units in
+  // SolidWorks changes the units a document shows and takes; the part keeps its size. Every stored length is multiplied
+  // by the factor (mm -> in: 1 / 25.4): sketch entities, Smart Dimension placements and distance relations, feature
+  // depths, offsets, radii, spacings, picked points, the sheet's thickness / radius / allowance / deduction. Angles,
+  // counts, K-factors and the density (kg/m³) stay. A length field holding an equation "=expr" becomes "=(expr)/25.4"
+  // (or "*25.4"; a wrapper the other way is taken off again), so equations, their variables and configurations keep
+  // their text. Each feature type lists its fields; a field or type not listed refuses the conversion with its name
+  // (the caller then leaves the part as it was) rather than scale a part by 25.4.
+  var UNIT_MM = { mm: 1, in: 25.4 };
+  var CU_KEEP = ['id', 'type', 'name', 'suppressed', 'hidden', 'sketch', 'sketch2', 'feature', 'profile', 'sketches', 'bodies', 'merge', 'cut', 'reverse', 'flip', 'body', 'axisRef', 'folder', 'color', 'appearance', 'configSuppressed', 'note', 'comment', 'description'];
+  var CU_TYPES = {
+    plane: { len: ['offset', 'distance'], keep: ['ref', 'refs', 'kind', 'angle', 'flipNormal', 'percent', 'mode'], pts: ['at', 'point'] },
+    extrude: { len: ['depth', 'depth2', 'endOffset', 'startOffset', 'offsetDistance'], keep: ['end', 'end2', 'draft', 'draftOut', 'draft2', 'normalCut', 'sheetBase', 'linkT', 'tab', 'offsetFlip', 'offsetEnd', 'dir', 'single'], pts: ['contours', 'upTo', 'offsetTarget'], obj: ['dir2', 'thin', 'offsetRef'] },
+    revolve: { keep: ['angle', 'angle2', 'axis', 'end', 'end2', 'mid', 'single'], pts: ['contours'], obj: ['dir2', 'thin'] },
+    lpattern: { len: ['s1', 's2'], keep: ['d1', 'd2', 'n1', 'n2', 'rev1', 'rev2', 'single', 'skip'] },
+    cpattern: { keep: ['axis', 'n', 'angle', 'equal', 'skip'], pts: ['center'] },
+    mirror: { len: ['offset'], keep: ['plane'] },
+    fillet: { len: ['r'], keep: ['kind', 'propagate'], pts: ['edges', 'faces'] },
+    chamfer: { len: ['d', 'd2'], keep: ['angle', 'kind', 'flip', 'propagate'], pts: ['edges', 'faces'] },
+    shell: { len: ['thickness'], keep: ['outward'], pts: ['faces'] },
+    flange: { len: ['length', 'radius', 'miterGap', 'reliefWidth', 'reliefDepth', 'gap', 'hemRadius'], keep: ['angle', 'position', 'miter', 'miterFlange', 'relief', 'reliefRatio', 'lengthRef', 'lengthEnd', 'lengthVertexMode', 'hem', 'hemType', 'hemPosition', 'hemAngle', 'trimSideBends', 'autoRelief', 'closeBend', 'pickRefs'], pts: ['edges', 'toward', 'lengthVertex'], obj: ['offset', 'bendAllowance'] },
+    jog: { len: ['height', 'length', 'radius'], keep: ['angle', 'position', 'fixLength', 'pickRefs'], pts: ['edges', 'fixed'], obj: ['bendAllowance'] },
+    sketchedBend: { len: ['radius'], keep: ['angle', 'position', 'pickRefs'], pts: ['fixed'], obj: ['bendAllowance'] },
+    sweep: { keep: [], pts: ['path'] },
+    loft: { keep: ['close', 'mergeTangent'] },
+    closedCorner: { len: ['gap'], keep: ['cornerType', 'ratio', 'coplanar', 'pickRefs'], pts: ['faces'] },
+    cornerRelief: { len: ['size'], keep: ['reliefType', 'centeredOnBend', 'cornerType', 'pickRefs'], pts: ['corners'] },
+    unfold: { keep: ['pickRefs'], pts: ['fixedFace', 'bends'] },
+    fold: { keep: ['pickRefs'], pts: ['bends'] },
+    draft: { keep: ['angle', 'reverse', 'propagate'], pts: ['faces'], obj: ['neutral'] },
+    deleteBody: { keep: ['keep'], pts: ['bodies'] }
+  };
+  function convertUnits(model, to) {
+    if (!model || !UNIT_MM[to]) return { ok: false, msg: 'Units must be "mm" or "in".' };
+    var from = model.units === 'in' ? 'in' : 'mm', f = UNIT_MM[from] / UNIT_MM[to], m = JSON.parse(JSON.stringify(model)), bad = null;
+    if (from === to) return { ok: true, model: m, factor: 1 };
+    var wrapOut = f > 1 ? '*25.4' : '/25.4', wrapIn = f > 1 ? '/25.4' : '*25.4';
+    function L(v, what) {
+      if (typeof v === 'number') return v * f;
+      if (v == null || v === '') return v;
+      if (typeof v === 'string' && /^\s*=/.test(v)) {
+        var body = v.replace(/^\s*=\s*/, ''), mm = /^\((.*)\)\s*([*/])\s*25\.4$/.exec(body);
+        if (mm && mm[2] + '25.4' === wrapIn) return '=' + mm[1];   // undo an earlier conversion's wrapper
+        return '=(' + body + ')' + wrapOut;
+      }
+      if (typeof v === 'string' && isFinite(+v)) return String(+v * f);
+      bad = bad || what + ' (' + JSON.stringify(v) + ')';
+      return v;
+    }
+    // points: a number array, an array of them, { at } picks; ints in a deleteBody list are body indices
+    function P(v, what) {
+      if (Array.isArray(v)) return v.map(function (x) { return typeof x === 'number' && what === 'bodies' ? x : (typeof x === 'number' ? x * f : P(x, what)); });
+      if (v && typeof v === 'object') {
+        var o = {};
+        Object.keys(v).forEach(function (k) { o[k] = (k === 'at' || k === 'point' || k === 'p' || k === 'pts') ? P(v[k], what) : (k === 'gap' || k === 'distance' || k === 'offset' ? L(v[k], what + '.' + k) : v[k]); });
+        return o;
+      }
+      return v;
+    }
+    function O(f0, key, v) {   // the nested option objects
+      if (v == null || typeof v !== 'object') return key === 'offset' ? L(v, f0.name + '.offset') : v;
+      var o = {};
+      Object.keys(v).forEach(function (k) {
+        var x = v[k];
+        if (key === 'bendAllowance' && k === 'value') o[k] = v.type === 'allowance' || v.type === 'deduction' ? L(x, f0.name + '.bendAllowance') : x;
+        else if (k === 'depth' || k === 'distance' || k === 'offset' || k === 't' || k === 'thickness') o[k] = L(x, f0.name + '.' + key + '.' + k);
+        else if (k === 'face' || k === 'at') o[k] = P(x, k);
+        else if (typeof x === 'number' && !/^(angle|draft|type|ratio)$/.test(k)) { bad = bad || f0.name + '.' + key + '.' + k; o[k] = x; }
+        else o[k] = x;
+      });
+      return o;
+    }
+    function plane(pl, nm) {
+      if (!pl || typeof pl !== 'object') return pl;
+      var o = JSON.parse(JSON.stringify(pl));
+      if (o.offset != null) o.offset = L(o.offset, nm + ' plane offset');
+      if (o.origin) o.origin = P(o.origin);
+      if (o.at) o.at = P(o.at);
+      if (o.face && typeof o.face === 'object') { if (Array.isArray(o.face.lx)) o.face.lx = P(o.face.lx); if (o.face.offset != null) o.face.offset = L(o.face.offset, nm + ' face offset'); }
+      return o;
+    }
+    function sketch(sk) {
+      var S = typeof SketchSolver !== 'undefined' ? SketchSolver : null;
+      Object.keys(sk).forEach(function (k) {
+        if (CU_KEEP.indexOf(k) >= 0 || k === 'layers' || k === 'blocks' && !(sk.blocks && sk.blocks.length)) return;
+        if (k === 'plane') sk.plane = plane(sk.plane, sk.name);
+        else if (k === 'entities') sk.entities = sk.entities.map(function (e) {
+          var o = S && S.xfEntity ? S.xfEntity(e, { s: f, cx: 0, cy: 0 }) : null;
+          if (!o) bad = bad || sk.name + ' entity ' + e.t;
+          return o || e;
+        });
+        else if (k === 'dims') sk.dims = sk.dims.map(function (d) { var o = JSON.parse(JSON.stringify(d)); if (o.off != null) o.off = P(o.off); return o; });
+        else if (k === 'rels') sk.rels = sk.rels.map(function (r) {
+          var o = JSON.parse(JSON.stringify(r));
+          if (o.type === 'fix' || o.type === 'onEdge') delete o.at;   // held where the (converted) entity is
+          if (o.v != null) {
+            if (o.type === 'distance' || o.type === 'pathlength' || o.type === 'offset') o.v = L(o.v, sk.name + ' ' + o.type + ' dimension');
+            else if (o.type !== 'angle' && o.type !== 'runangle') bad = bad || sk.name + ' ' + o.type + ' relation';
+          }
+          return o;
+        });
+        else bad = bad || sk.name + '.' + k;
+      });
+    }
+    (m.features || []).forEach(function (fe) {
+      if (bad) return;
+      if (fe.type === 'sketch') { sketch(fe); return; }
+      var spec = CU_TYPES[fe.type];
+      if (!spec) { bad = fe.name + ' (' + fe.type + ' features)'; return; }
+      Object.keys(fe).forEach(function (k) {
+        if (CU_KEEP.indexOf(k) >= 0 || (spec.keep || []).indexOf(k) >= 0) { if (k === 'pickRefs') delete fe.pickRefs; else if (k === 'plane' && fe.plane && typeof fe.plane === 'object') fe.plane = plane(fe.plane, fe.name); else if (k === 'refs' && fe.refs) fe.refs = P(fe.refs, 'refs'); return; }
+        if ((spec.len || []).indexOf(k) >= 0) fe[k] = L(fe[k], fe.name + '.' + k);
+        else if ((spec.pts || []).indexOf(k) >= 0) fe[k] = (fe.type === 'sweep' && typeof fe[k] !== 'object') ? fe[k] : P(fe[k], k);
+        else if ((spec.obj || []).indexOf(k) >= 0) fe[k] = O(fe, k, fe[k]);
+        else bad = bad || fe.name + '.' + k;
+      });
+    });
+    if (m.sheet && !bad) {
+      Object.keys(m.sheet).forEach(function (k) {
+        if (k === 'thickness' || k === 'bendRadius' || k === 'bendAllowance' || k === 'bendDeduction') m.sheet[k] = L(m.sheet[k], 'sheet ' + k);
+        else if (k === 'kFactor' || k === 'bendAllowanceType' || k === 'method' || k === 'name' || k === 'gauge' || k === 'gaugeTable') return;   // the gauge is a label
+        else if (m.sheet[k] != null) bad = bad || (k === 'bendTable' ? 'the sheet\'s bend table' : 'the sheet\'s ' + k);
+      });
+    }
+    if (m.tessellation && m.tessellation.chordTol != null && !bad) m.tessellation.chordTol = L(m.tessellation.chordTol, 'image quality');
+    if (bad) return { ok: false, msg: 'Anvil cannot convert ' + bad + ' to ' + (to === 'in' ? 'inches' : 'millimeters') + ' yet, so the part keeps its units.' };
+    m.units = to;
+    return { ok: true, model: m, factor: f };
+  }
+
   return {
+    convertUnits: convertUnits,
     IDENTITY: IDENTITY,
     isAssembly: isAssembly, newAssembly: newAssembly, partModel: partModel,
     insert: insert, addMate: addMate, removeComponent: removeComponent, removeMate: removeMate,

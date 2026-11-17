@@ -479,7 +479,10 @@
     var name = el('input', { type: 'text', value: m.name }); name.addEventListener('change', function () { m.name = name.value || (asm ? 'Assem1' : 'Part1'); UI.rebuild(); });
     field(asm ? 'Assembly name' : 'Part name', name);
     var units = el('select'); [['mm', 'Millimeters (MMGS)'], ['in', 'Inches (IPS)']].forEach(function (u) { var o = el('option', { value: u[0], text: u[1] }); if (m.units === u[0]) o.selected = true; units.appendChild(o); });
-    units.addEventListener('change', function () { m.units = units.value; UI.rebuild(); });
+    units.addEventListener('change', function () {   // D1: converts the part's lengths (ui-panels.js setDocumentUnits)
+      if (!UI.setDocumentUnits) { m.units = units.value; UI.rebuild(); return; }
+      UI.setDocumentUnits(units.value).then(function () { if (body.isConnected !== false) { body.innerHTML = ''; tpProps(body); } });
+    });
     field('Units', units);
     // Material: the materials.js library by class (Edit Material… for the full dialog); a typed density that is not
     // the material's unlinks it (custom density)
