@@ -4746,7 +4746,7 @@
         UI.updateHighlights();
       }
     }
-    var info = { bends: null, rips: null, err: null, rounded: 0 };
+    var info = { bends: null, rips: null, err: null, rounded: 0 }, radiusTyped = false;
     function preview() {
       lit();
       var v = pm.values || v0;
@@ -4760,6 +4760,14 @@
         if (isConv) { var cpl = K.convertSMPlan(f, m, { body: baseBody() }); info.rips = cpl.rips ? cpl.rips.length : null; }   // rfIM: a Reverse plan rips after thickening
         var r = K.insertBendsPreview(f, m, baseBody());
         info.bends = r.bends; info.rounded = r.rounded || 0;
+        // rfNN: every bend of the customer's part already rounded at one radius: the Bend radius (the default of
+        // every flange added later) takes it, as the thickness is the part's, until the user types one; it stayed at
+        // the generic default, so an Edge-Flange added to a part bent at R .06 bent at R .0625 and the blank was .001 off
+        if (!isConv && !existing && !radiusTyped && info.rounded && info.rounded === info.bends && K.insertBendsLayout) {
+          var rr = null;
+          try { K.insertBendsLayout(f, m, { body: baseBody() }).info.forEach(function (b) { rr = rr === null || (rr !== false && Math.abs(b.R - rr) < 1e-6) ? b.R : false; }); } catch (e) { rr = false; }
+          if (rr && Math.abs(rr - (+v.bendRadius)) > 1e-9) { v.bendRadius = Math.round(rr * 1e9) / 1e9; v.useGauge = false; renderPM(); return preview(); }
+        }
         if (r.body && r.body.polygons.length) addPreviewMesh(r.body, UI.mats.preview);
         UI.setStatus(title + ': ' + r.bends + ' bend' + (r.bends === 1 ? '' : 's') + (info.rounded ? ' (' + info.rounded + ' rounded, at their own radius)' : '') + (isConv ? ', ' + info.rips + ' rip' + (info.rips === 1 ? '' : 's') : '') + ', T ' + UI.fmtNum(m.sheet.thickness, 4) + ', R ' + UI.fmtNum(m.sheet.bendRadius, 4) + '. Press Enter or ✓ to accept.');
       } catch (e) { info.err = e.message; UI.setStatus('Preview: ' + e.message); }
@@ -4876,6 +4884,7 @@
       groups: gs, pmUndo: isConv ? pmUndo : null,
       onChange: function (v, key) {
         if (isConv && gaugeChanged(v, key)) renderPM();
+        if (key === 'bendRadius' || key === 'useGauge' || key === 'overrideRadius') radiusTyped = true;   // rfNN
         preview();
       },
       okBlocked: function (v) { return !v.fixedFace ? 'Pick the fixed face.' : isConv && !v.bendEdges.length ? 'Pick the edges that become bends.' : (isConv || v.ripEdges.length) && !(+v.gap > 0) ? 'The rip gap must be more than 0.' : !isConv && thickness(v) == null ? (measured.err || 'Cannot read the part\'s thickness at the fixed face.') : ''; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast); rfNJ: the gap and the measured thickness too
@@ -6903,6 +6912,13 @@
   // (plane.face) and everything built from them, transitively (their extrudes, Hole Wizard holes, patterns, sketches
   // on their faces). SolidWorks asks the same with "Also delete child features"; left alone they stay where they
   // are, marked Dangling, and Edit Sketch Plane reattaches them.
+  // rfNN: a feature whose picks (f.pickRefs: a flange on an earlier flange's edge, a hem on its lip) were taken from a
+  // doomed feature's faces or edges is its child too (SolidWorks lists it under Confirm Delete); it was left out, so
+  // Delete Flange A said nothing of Flange B built on its edge, and B turned up dangling afterwards
+  function pickUses(g, ids) {
+    var pr = g.pickRefs;
+    return !!pr && Object.keys(pr).some(function (k) { var r = pr[k]; return r && (ids.indexOf(r.on) >= 0 || (r.fids || []).some(function (q) { return ids.indexOf(q) >= 0; })); });
+  }
   function faceChildren(doomed) {
     var kids = [], grew = true;
     function uses(g, ids) {
@@ -6914,7 +6930,7 @@
       App.model.features.forEach(function (g) {
         if (doomed.indexOf(g.id) >= 0 || kids.indexOf(g.id) >= 0) return;
         var all = doomed.concat(kids);
-        if ((g.type === 'sketch' && g.plane && g.plane.face && all.indexOf(g.plane.face.feature) >= 0) || (kids.length && uses(g, kids))) { kids.push(g.id); grew = true; }
+        if ((g.type === 'sketch' && g.plane && g.plane.face && all.indexOf(g.plane.face.feature) >= 0) || pickUses(g, all) || (kids.length && uses(g, kids))) { kids.push(g.id); grew = true; }
       });
     }
     return kids;
@@ -6931,8 +6947,8 @@
     function names(ids) { return ids.map(function (k) { var g = K.findFeature(App.model, k); return g ? g.name : ''; }).join(', '); }
     var msg = 'Delete <b>' + f.name + '</b>?' + (dependents.length ? '<br>This also deletes: ' + dependents.map(function (d) { return d.name; }).join(', ') : '');
     if (kids.length) {
-      var onFaces = kids.filter(function (k) { var g = K.findFeature(App.model, k); return g.type === 'sketch' && g.plane && g.plane.face && base.indexOf(g.plane.face.feature) >= 0; });
-      msg += '<br><br>Drawn on its faces: <b>' + names(onFaces) + '</b>' + (kids.length > onFaces.length ? ' (with ' + names(kids.filter(function (k) { return onFaces.indexOf(k) < 0; })) + ')' : '') + '.' +
+      var onFaces = kids.filter(function (k) { var g = K.findFeature(App.model, k); return (g.type === 'sketch' && g.plane && g.plane.face && base.indexOf(g.plane.face.feature) >= 0) || pickUses(g, base); });
+      msg += '<br><br>Built on its faces or edges: <b>' + names(onFaces) + '</b>' + (kids.length > onFaces.length ? ' (with ' + names(kids.filter(function (k) { return onFaces.indexOf(k) < 0; })) + ')' : '') + '.' +
         '<br><label class="del-kids"><input type="checkbox" id="del-face-children"> Also delete these child features</label>' +
         '<br><small>Left unchecked, they stay where they are, marked Dangling; right-click a sketch ▸ Edit Sketch Plane to put it on another face.</small>';
     }
