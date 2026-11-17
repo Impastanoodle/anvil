@@ -627,6 +627,7 @@
     'kernel/rfNS.js',
     'kernel/rfNV.js',
     'kernel/rfNT.js',
+    'kernel/rfNX.js',
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'kernel-tests.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'kernel-tests.groups.js', error: e }); }

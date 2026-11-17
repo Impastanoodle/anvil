@@ -709,6 +709,16 @@
     // lane smtrim: the side bends this flange cut back ride on its first record; flatPattern shortens those strips
     if (sideTrims.length && info.length) info[0].sideTrims = sideTrims;
     if (f.hem) hemCrossing(f, model, ctx, eds, cuts, flangeProfile(A, R, T, L, ov), ov, T, hemType === 'rolled' ? 2 * (R + T) : 0);
+    // lane smaudit (rfNX): a plain Edge Flange past 90° (its wall leans back over the sheet) is tested against the metal
+    // already there, as a hem is (edges of the one feature mitre, so only the earlier metal), and so is any flange once an
+    // earlier bend leans back (its wall can reach over this edge); not a Miter Flange's stages
+    else if (f.type === 'flange' && !f.miterJoin && !f.swJoin && !f.miterStage && !f.miterSquare && f.startAt == null &&
+      (A > Math.PI / 2 + 1e-6 || Object.keys(ctx.flanges || {}).some(function (id) { return String(id) !== String(f.id) && (ctx.flanges[id] || []).some(function (rc) { return rc && rc.kind === 'edge' && +rc.angle > Math.PI / 2 + 1e-6; }); }))) {
+      // the wall alone (the bend's start sits on the sheet: on a faceted curved sheet its chords read as 1e-4 in common)
+      var sA = Math.sin(A), cA = Math.cos(A), wl = [[R * sA, R - R * cA], [R * sA + cA * L, R - R * cA + sA * L], [(R + T) * sA + cA * L, R - (R + T) * cA + sA * L], [(R + T) * sA, R - (R + T) * cA]];
+      if (signedArea(wl) < 0) wl.reverse();
+      hemCrossing(f, model, ctx, eds, cuts, wl, 0, T, 0);
+    }
     return { parts: tools, cuts: cuts, info: info, section: { A: A, R: R, T: T, L: L, ov: ov } };
   }
   // lane smtrim: Trim side bends. sideBendTrim(f, ctx, P, dIn, o, nF, d, T) -> { cut, rec } | null: P is an end of a
@@ -841,12 +851,27 @@
     }
     function refuse(k, other, otherIsHem) {
       var mine = pt(picked(f, k, eds.length) || eds[k].e.mid);
+      if (!f.hem) {
+        // lane smaudit (rfNX): an Edge Flange past 90° leans back over the sheet; beside an earlier flange its wall went
+        // through that wall and the union hid it (two 120° walls at a tray corner: folded 0.7 % over its blank, and the
+        // blank notched along the crossing). SolidWorks mitres such corners when both edges are in one feature.
+        // A feature warning, not a refusal: the part builds as before (older parts keep opening), but nobody cuts that
+        // blank without being told.
+        if (warned) return;
+        warned = true;
+        var msg = other ? 'The flange on edge ' + mine + ' runs into the ' + (otherIsHem ? 'hem' : 'flange') + ' on edge ' + pt(other) + ': the two cross at the corner (metal in common), so the flat pattern is not this part. Put both edges in one Edge Flange (the corner is mitred), shorten it or lower its angle.' :
+          'The flange on edge ' + mine + ' runs into metal already there (metal in common), so the flat pattern is not this part: shorten it, lower its angle or add a relief.';
+        if (ctx.warnings) ctx.warnings[f.id] = (ctx.warnings[f.id] ? ctx.warnings[f.id] + ' ' : '') + msg;
+        return;
+      }
       if (!other) throw new Error('The hem on edge ' + mine + ' would run into metal already there: shorten it or add a relief.');
       throw new Error(otherIsHem ? 'The hems on edges ' + mine + ' and ' + pt(other) + ' would cross: shorten one or add a relief.' :
         'The hem on edge ' + mine + ' would run into the flange on edge ' + pt(other) + ': shorten the hem or add a relief.');
     }
+    var warned = false;
     solids.forEach(function (s, k) {
-      for (var j = k + 1; j < solids.length; j++) if (s.intersect(solids[j]).volume() > lim) refuse(k, picked(f, j, eds.length) || eds[j].e.mid, true);
+      if (warned) return;
+      if (f.hem) for (var j = k + 1; j < solids.length; j++) if (s.intersect(solids[j]).volume() > lim) refuse(k, picked(f, j, eds.length) || eds[j].e.mid, true);
       var near = own ? rest.subtract(prism([[0, 0.01], [-own, 0.01], [-own, -T - 0.01], [0, -T - 0.01]].reverse(), eds[k].plane, Math.min(eds[k].ends[0].t, eds[k].ends[1].t), Math.max(eds[k].ends[0].t, eds[k].ends[1].t))) : rest;
       var x = near.intersect(s);
       if (!(x.volume() > lim)) return;
@@ -3955,6 +3980,15 @@
     if (SB_POSITIONS.indexOf(position) < 0) throw new Error('Unknown bend position "' + position + '" (centerline, inside, outside or bendOutside).');
     var bc = bendCalc(sheet, A, R, T, customBA(f)), BA = bc.BA;
     var shift = position === 'centerline' ? BA / 2 : position === 'inside' ? R + T : position === 'outside' ? R : 0;
+    // lane smaudit (rfNX): off 90° the wall's outer (Material Inside) / inner (Material Outside) face, run on to the
+    // sketch face, lands on the line, as Edge Flange places its wall (flangeLayout, SolidWorks-measured there): the bend
+    // starts ((R + T) − R·cos A) / sin A or R·tan(A/2) back (measured on the bend's inside face, as Edge Flange does
+    // with a reversed flange). R + T / R held only at 90°, which stays bit for bit (at 45°, 11 ga, Material Inside put
+    // the wall's outer face .0205 short of the line). Not measured on a Sketched Bend / Jog in SolidWorks.
+    if (Math.abs(A - Math.PI / 2) > 1e-9 && A < Math.PI - 0.01) {
+      if (position === 'inside') shift = ((R + T) - R * Math.cos(A)) / Math.sin(A);
+      else if (position === 'outside') shift = R * Math.tan(A / 2);
+    }
     var sk = sketchedBendLines(f, model, ctx), lines = sk.lines, n = norm(sk.plane.n);
     var up = f.reverse ? scale(n, -1) : n;
     var inside = ctx.body.pointTester();
@@ -4502,6 +4536,32 @@
     }
     return out;
   }
+  // lane smaudit (rfNX): skewBendCorners(model, flanges, skipId) -> [{ at, deg, reach }]: corners where two edge-flange
+  // bends of one face meet at an angle other than 90° (their start lines cross at `at`, within reach of both records'
+  // ends; deg = the sheet's corner angle between the two edges). Corner Relief refuses them by name.
+  function skewBendCorners(model, flanges, skipId) {
+    var sheet = sheetParams(model), T = +sheet.thickness, recs = [], out = [];
+    (model.features || []).forEach(function (g) {
+      if (skipId != null && String(g.id) === String(skipId)) return;
+      (flanges[g.id] || []).forEach(function (r) {
+        if (!r || r.kind !== 'edge' || !r.a || !r.b || !r.o || !r.u || !r.origin || !(r.angle > 1e-6 && r.angle < Math.PI - 1e-6)) return;
+        recs.push({ rec: r, BA: cornerRecordBA(sheet, r), n: norm(cross(r.o, r.u)) });
+      });
+    });
+    function segDist(p, a, b) { var ab = sub(b, a), l2 = dot(ab, ab), t = l2 > 0 ? Math.max(0, Math.min(1, dot(sub(p, a), ab) / l2)) : 0; return len(sub(p, add(a, scale(ab, t)))); }
+    for (var i = 0; i < recs.length; i++) for (var j = i + 1; j < recs.length; j++) {
+      var A = recs[i], B = recs[j], ra = A.rec, rb = B.rec, c = dot(ra.o, rb.o);
+      if (Math.abs(c) <= 1e-6 || Math.abs(c) > 1 - 1e-6 || dot(ra.u, rb.u) < 0.999 || Math.abs(dot(sub(rb.origin, ra.origin), ra.u)) > 1e-4 * Math.max(1, 10 * T)) continue;
+      // ra.origin + s·A.n = rb.origin + t·B.n (in the face's plane): solve along B.o (B.n ⟂ B.o)
+      var den = dot(A.n, rb.o);
+      if (Math.abs(den) < 1e-9) continue;
+      var P = add(ra.origin, scale(A.n, dot(sub(rb.origin, ra.origin), rb.o) / den));
+      var reach = 3 * (+ra.R + T) + Math.max(A.BA, B.BA);
+      if (segDist(P, ra.a, ra.b) > reach || segDist(P, rb.a, rb.b) > reach) continue;
+      out.push({ at: P, deg: 180 - Math.acos(Math.max(-1, Math.min(1, c))) * 180 / Math.PI, reach: reach });
+    }
+    return out;
+  }
   // lane smcorner-2: bend3Corners(model, flanges, skipId) -> [{ at, A, B1, B2, e1, e2, yA, x1, d2, yB2 }]: every corner
   // where three bends meet: bend A (a bend of the base, e.g. one of a U channel's), B1 on the edge of A's face that
   // meets A's start line square (its line across e1 = A.o, its o along A's line: the end of the part) and B2 on the
@@ -4603,7 +4663,17 @@
     if (type !== 'tear' && !(size > 0)) throw new Error('Corner Relief: the relief size must be greater than zero.');
     var picks = f.corners || [];
     if (!picks.length) throw new Error('Corner Relief: select the corners (or Collect all corners).');
-    var all = bendCorners2(model, ctx.flanges || {}, f.id);
+    var all = bendCorners2(model, ctx.flanges || {}, f.id), skew = skewBendCorners(model, ctx.flanges || {}, f.id);
+    // lane smaudit (rfNX): a pick nearer a corner where two bends meet off square than any square corner is refused by
+    // name (it used to read "no corner", or took a square corner further away); the relief shapes are drawn square
+    picks.forEach(function (q) {
+      q = Array.isArray(q) ? q : q.at;
+      var dq = all.reduce(function (m, c) { return Math.min(m, len(sub(c.at, q))); }, Infinity);
+      skew.forEach(function (c) {
+        if (len(sub(c.at, q)) < dq && len(sub(c.at, q)) <= c.reach + (size || 0))
+          throw new Error('Corner Relief: the bends at ' + c.at.map(function (x) { return fmtN(Math.round(x * 1e4) / 1e4); }).join(', ') + ' meet at ' + fmtN(Math.round(c.deg * 10) / 10) + '°; Corner Relief is built only where two bends meet square (90°). Use the flanges\' own relief, a Closed Corner or a cut.');
+      });
+    });
     if (!all.length) throw new Error('Corner Relief: the part has no corner where two bends meet (2 Bend corner: flanges on two neighbouring edges of one face).');
     var tools = [], recs = [], used = [], pairs = [], eps = 0.05 * T, centered = f.centeredOnBend !== false;
     // lane MJ: what a Closed Corner before this relief did to a bend's end at the corner (its records in ctx.flanges):
