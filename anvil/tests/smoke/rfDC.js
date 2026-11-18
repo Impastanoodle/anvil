@@ -79,7 +79,7 @@
       // lane DC2: a feature made while flat goes in above Flat-Pattern1 and cuts the folded part; the flat shows the hole
       UI.cmdExtrude(true); await idle(); await wait(20);
       assert(UI.hasPM() && UI.pmTitle() === 'Cut-Extrude', 'Cut-Extrude PM');
-      var ce = D.querySelector('#pm [title^="OK"]') || Array.prototype.filter.call(D.querySelectorAll('#pm button'), function (b) { return /^OK/.test(b.title || b.getAttribute('aria-label') || ''); })[0];
+      var ce = D.querySelector('#pm .pm-ok') || Array.prototype.filter.call(D.querySelectorAll('#pm button'), function (b) { return /^OK/.test(b.title || b.getAttribute('aria-label') || ''); })[0];
       if (ce) ce.click(); else await UI.pmOK();
       await idle(); await wait(30);
       assert(!UI.hasPM() && UI.App.model.features.length === n0 + 1 && UI.App.model.flatState && UI.flatShown(), 'added while flat, still flat: ' + statusText());

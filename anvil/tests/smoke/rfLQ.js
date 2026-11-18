@@ -22,7 +22,7 @@
     assert(b, label + ' button');
     return b;
   }
-  function rfLQOK() { var b = D.querySelector('#pm [title^="OK"], #pm .pm-ok, .pm-ok'); assert(b, 'the ✓ button'); b.click(); }
+  function rfLQOK() { var b = (D.querySelector('#pm .pm-ok') || D.querySelector('.pm-ok')); assert(b, 'the ✓ button'); b.click(); }
   function rfLQEsc() { var ev = new W.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }); D.body.dispatchEvent(ev); }
   function rfLQKey(k, mods) { D.body.dispatchEvent(new W.KeyboardEvent('keydown', Object.assign({ key: k, bubbles: true, cancelable: true }, mods || {}))); }
   function rfLQLast(type) { return UI.App.model.features.filter(function (f) { return f.type === type; }).pop(); }

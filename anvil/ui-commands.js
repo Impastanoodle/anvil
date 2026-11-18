@@ -215,10 +215,12 @@
     if (pm.spec === spec) return r;
     return Promise.resolve(r).then(function () { if (!pm.spec) runAgainable(again); });
   }
+  // ✓+ repeats the command with the arguments it was started with: Cut-Extrude is cmdExtrude(true), and ✓+ on it used
+  // to start a Boss-Extrude (cmdExtrude()), which since rfPG opens the "pick a plane" PM instead of a silent toast
   function runAgainable(fn, self, args) {
-    var was = pm.invoker;
-    pm.invoker = fn;
-    try { return fn.apply(self || UI, args || []); } finally { pm.invoker = was; }
+    var was = pm.invoker, a = args ? Array.prototype.slice.call(args) : [];
+    pm.invoker = a.length ? function () { return fn.apply(self || UI, a); } : fn;
+    try { return fn.apply(self || UI, a); } finally { pm.invoker = was; }
   }
   // the commands that make something, where "OK and start another" applies (sheet metal, features, reference
   // geometry, sketch modify / pattern commands, component patterns); the Transform tab has its own ✓+ (extraActions)

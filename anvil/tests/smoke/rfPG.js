@@ -900,4 +900,22 @@
       assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
       return rfPGDone(notes);
     });
+    // head, local-2026-11-17c: ✓+ (OK and start another) on a Cut-Extrude started a Boss-Extrude (the command was run
+    // again without its arguments); since rfPG's sketchThen that opened the "pick a plane" PM titled Boss-Extrude
+    step('rfPG: ✓+ on a Cut-Extrude starts another Cut-Extrude, not a Boss-Extrude', async function () {
+      await rfPGNewInch();
+      anvil.run('p.box(4, 3, 1);\np.sketch("Top", 1).circle(1, -1, 0.25);');
+      await idle(); await wait(30);
+      UI.cmdExtrude(true); await idle(); await wait(20);
+      rfPGPmOpen('Cut-Extrude');
+      var plus = D.querySelector('#pm .pm-okplus'), n0 = UI.App.model.features.length;
+      assert(plus, 'the ✓+ button');
+      plus.click(); await idle(); await wait(40);
+      var title = UI.hasPM() && UI.pmTitle(), last = rfPGLast(), n1 = UI.App.model.features.length;
+      if (UI.hasPM()) UI.pmCancel();
+      await idle();
+      assert(n1 === n0 + 1 && last.type === 'extrude' && last.cut, 'the first cut was made: ' + (n1 - n0) + ' ' + last.type + ' ' + statusText());
+      assert(title === 'Cut-Extrude', 'after ✓+: ' + title);
+      return 'after ✓+: ' + title;
+    });
   })();
