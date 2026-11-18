@@ -2082,10 +2082,12 @@
   // keeps its own words.
   function wizardLines(h, units, count, prec, dual) {
     var u = units === 'in' || units === 'mm' ? units : h.units, f = h.feature, s = HoleWizard.spec(f, u), thru = f.end === 'through';
+    // (rfPS) Up To Next goes through the wall it enters: SolidWorks writes plain THRU (it has no depth to show)
+    var end = thru ? ' THRU ALL' : f.end === 'next' ? ' THRU' : null;
     var k = u === h.units ? 1 : u === 'in' ? 1 / 25.4 : 25.4;   // the feature's depths are in the part's units
     function n(x) { return numText(x, u, prec) + (dual ? dualSuffix(dual, x, u) : ''); }   // (rfOC: lengths doubled, thread sizes not)
-    var lines = ['Ø ' + n(s.dia) + (thru ? ' THRU ALL' : ' ↧ ' + n(+f.depth * k))];
-    if (s.thread) lines.push(s.thread.label.replace(/ - 2B$/, '') + (thru ? ' THRU ALL' : ' ↧ ' + n(+(f.threadDepth || f.depth) * k)));
+    var lines = ['Ø ' + n(s.dia) + (end || ' ↧ ' + n(+f.depth * k))];
+    if (s.thread) lines.push(s.thread.label.replace(/ - 2B$/, '') + (end || ' ↧ ' + n(+(f.threadDepth || f.depth) * k)));
     if (s.cbore) lines.push('⌴ Ø ' + n(s.cbore.dia) + ' ↧ ' + n(s.cbore.depth));
     if (s.csk) lines.push('⌵ Ø ' + n(s.csk.dia) + ' X ' + s.csk.angle + '°');
     if (count > 1) lines[0] = count + 'X ' + lines[0];
@@ -2239,7 +2241,7 @@
       if (hw) {
         var hwn = hw.hole.pts.length;
         lines = wizardLines(hw.hole, units, hwn, an.prec, an);
-        info = { hole: { c: an.c.slice(), dia: +HoleWizard.spec(hw.hole.feature, hw.hole.units).dia, thru: hw.hole.feature.end === 'through' }, count: hwn, feature: hw.hole.feature.id };
+        info = { hole: { c: an.c.slice(), dia: +HoleWizard.spec(hw.hole.feature, hw.hole.units).dia, thru: hw.hole.feature.end === 'through' || hw.hole.feature.end === 'next' }, count: hwn, feature: hw.hole.feature.id };
       } else if (h && w.flat) {
         var nf = 0;
         pr.circles.visible.forEach(function (c) { if (Math.abs(2 * c.r - h.dia) <= Math.max(1e-6, h.dia * 1e-6)) nf++; });

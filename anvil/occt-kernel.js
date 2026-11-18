@@ -851,15 +851,21 @@ var OcctKernel = (function () {
       var s = HW.spec(f, m.units), sk = sketchById(f.sketch, 'Hole Wizard: select the positions sketch.'), plane = K.resolvePlane(sk.plane, m, planes);
       var pts = (sk.entities || []).filter(function (e) { return e.t === 'point' && !e.construction && !K.noProfileEntity(sk, e); });
       if (!pts.length) throw new Error('Hole Wizard: place at least one point on the face.');
-      var L;
+      var L, nextCtx = null;
       if (f.end === 'through') {
         var bb = bodies.length ? bboxOf(compound(bodies)) : null;
         var diag = bb ? Math.hypot(bb[1][0] - bb[0][0], bb[1][1] - bb[0][1], bb[1][2] - bb[0][2]) : 0;
         L = Math.max(diag * 2 + 10, 100);
+      } else if (f.end === 'next') {
+        // (rfPS) Up To Next: HoleWizard.nextDepth's rays (axis and drill rim) against the bodies' triangles, as Anvil
+        // does on its own mesh; planar walls give the same depth to rounding, so the hole equals Anvil's
+        if (!HW.nextDepth) throw unsupportedErr('Hole Wizard Up To Next');
+        nextCtx = { bodies: bodies.map(function (b) { return shapeToCSG(b); }) };
       } else { L = +f.depth; if (!(L > 0)) throw new Error('Hole depth must be greater than 0.'); }
-      var section = HW.section(s, L), x = plane.x, y = plane.n, nn = V.cross(x, y);
+      var section = nextCtx ? null : HW.section(s, L), x = plane.x, y = plane.n, nn = V.cross(x, y);
       var tools = pts.map(function (e) {
         var q = K.to3D(plane, e.x, e.y), rp = { custom: true, origin: q, x: x.slice(), y: y.slice(), n: nn, offset: V.dot(nn, q) };
+        if (nextCtx) section = HW.section(s, HW.nextDepth(f, s, plane, q, nextCtx));
         var hsk = { id: -1, type: 'sketch', plane: rp, entities: [{ t: 'polyline', pts: section, closed: true }] };
         hsk.profile = K.sketchProfile(hsk);
         return revolveSketch(hsk, rp, { p: [0, 0], d: [0, 1] }, 360);
@@ -1370,8 +1376,11 @@ var OcctKernel = (function () {
     // (ku·q[0], q[1]): a run on one circle is that circle (an ellipse when ku ≠ 1), another smooth run the C1 cubic
     // through its points, two points a straight edge. Shared by cylinderCutter (the bend) and exactPrism (the flat).
     // (lane mitrefid2: straight = every point a corner, the outline a polygon in (u, v): helical edges on the cylinder)
+    // (rfPS: straight may be an array, per edge i -> i+1 the circle { c, r } it is a chord of or null: every vertex
+    // where that changes is a corner, a run of chords of one circle is that circle exactly, the rest straight edges)
     function outlineWire(l, surf, ku, straight) {
-      var mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+      var mw = N(new oc.BRepBuilderAPI_MakeWire_1()), cvs = Array.isArray(straight) ? straight : null;
+      if (cvs) straight = false;
       function pnt2(q) { return N(new oc.gp_Pnt2d_3(ku * q[0], q[1])); }
       // the outline's points lie on the cut's true edge (a circle's, a slot's): between corners (a turn of more than
       // 30°) each smooth run is drawn as the C1 cubic through them (chord-length Catmull-Rom), so the cut meets the
@@ -1379,18 +1388,23 @@ var OcctKernel = (function () {
       var n = l.length, corners = [];
       l.forEach(function (p, i) {
         var a = l[(i + n - 1) % n], b = l[(i + 1) % n], d1 = [p[0] - a[0], p[1] - a[1]], d2 = [b[0] - p[0], b[1] - p[1]];
-        if (straight || Math.abs(Math.atan2(d1[0] * d2[1] - d1[1] * d2[0], d1[0] * d2[0] + d1[1] * d2[1])) > 0.5) corners.push(i);
+        if (cvs ? !(cvs[i] && cvs[i] === cvs[(i + n - 1) % n]) : straight || Math.abs(Math.atan2(d1[0] * d2[1] - d1[1] * d2[0], d1[0] * d2[0] + d1[1] * d2[1])) > 0.5) corners.push(i);
       });
       var runs = [];
-      if (!corners.length) runs.push({ pts: l.concat([l[0]]), closed: true });
+      if (!corners.length) runs.push({ pts: l.concat([l[0]]), closed: true, at: 0 });
       else corners.forEach(function (c, j) {
         var e = corners[(j + 1) % corners.length], pts = [];
         for (var i = c; ; i = (i + 1) % n) { pts.push(l[i]); if (i === e && pts.length > 1) break; }
-        runs.push({ pts: pts, closed: false });
+        runs.push({ pts: pts, closed: false, at: c });
       });
       runs.forEach(function (run) {
-        var P0 = run.pts, m = P0.length - 1, crv, cf = m >= 2 ? fitCircle(P0) : null;
-        if (m < 2) crv = N(N(new oc.GCE2d_MakeSegment_1(pnt2(P0[0]), pnt2(P0[1]))).Value()).get();
+        var P0 = run.pts, m = P0.length - 1, crv, cf = cvs ? null : m >= 2 ? fitCircle(P0) : null;
+        if (cvs && cvs[run.at]) {
+          var rc = cvs[run.at], turn = 0;
+          for (var ti = 0; ti < m; ti++) turn += (P0[ti][0] - rc.c[0]) * (P0[ti + 1][1] - rc.c[1]) - (P0[ti][1] - rc.c[1]) * (P0[ti + 1][0] - rc.c[0]);
+          cf = { c: rc.c, r: rc.r, ccw: turn > 0 };
+        }
+        if (m < 2 && !cf) crv = N(N(new oc.GCE2d_MakeSegment_1(pnt2(P0[0]), pnt2(P0[1]))).Value()).get();
         else if (cf) {
           // a run on one circle (a round hole, a slot's end): the circle wrapped round the bend is an ellipse in
           // (angle, t), exactly; major axis along the angle when ku > 1
@@ -1630,11 +1644,88 @@ var OcctKernel = (function () {
       if (rm.sheetError) throw new Error(rm.sheetError);
       if (!bodies.length) throw new Error('Corner Relief: there is no sheet yet.');
       var lay = K.cornerReliefLayout(f, m, { flanges: smFlanges }), acc = null;
+      // (rfPS) a Circular relief is the true circle, as on Anvil's engine (lane PK): the face / wall pieces' chords that
+      // carry the circle's record (cv) are arcs, the bend pieces (wrap.exact) cut by the exact radial walls through the
+      // circle wrapped round the bend (cylinderCutter: an ellipse in (angle, t)); was a 32-gon, 5e-5 more metal on Ø.5
+      var rr = f.size != null ? +f.size / 2 : null;
+      lay.tools.forEach(function (t) { if (rr == null && t.prism && t.prism.cv) t.prism.cv.forEach(function (c) { if (c && rr == null) rr = c.r; }); });
       lay.tools.forEach(function (t) {
-        var s = t.wrap ? wrappedCutter(t.wrap.loops[0], t.wrap.plane, t.wrap.sec, t.wrap.BA) : prismOf((t.prism || t.sector).loop, (t.prism || t.sector).plane, (t.prism || t.sector).a, (t.prism || t.sector).b);
+        var s = null, w = t.wrap;
+        if (w && w.exact && rr > 0) {
+          var ra = reliefArcs(w.loops[0], w, rr);
+          if (ra && ra.loop.every(function (q) { return q[0] > -1e-9 && q[0] < w.BA + 1e-9; })) { try { s = cylinderCutter(ra.loop, w.plane, w.sec, w.BA, null, ra.cv); } catch (e) { s = null; } }
+        }
+        if (!s && w) s = wrappedCutter(w.loops[0], w.plane, w.sec, w.BA);
+        else if (!s && t.prism && t.prism.cv) s = arcPrism(t.prism.loop, t.prism.cv, t.prism.plane, t.prism.a, t.prism.b);
+        else if (!s) s = prismOf((t.prism || t.sector).loop, (t.prism || t.sector).plane, (t.prism || t.sector).a, (t.prism || t.sector).b);
         acc = acc ? fuse(acc, s) : s;
       });
       return acc;
+    }
+    // (rfPS) a Circular relief's bend piece (CCW in the bend's (s, t)): per edge the circle { c, r } it is a chord of, or
+    // null. The layout carries no centre here. A chord lies along none of the pieces' clip lines (w.straight) and is
+    // shorter than r (crArcCv's rule); its centre is on its left at sqrt(r² − (L/2)²). An edge with an end on one of
+    // the record's ends (w.grow) is a chord only when both ends lie on a circle another chord found: a clip there may cut
+    // a chord short. One record for the whole circle (one arc per run). -> { loop, cv } or null when no edge is a chord.
+    function reliefArcs(l, w, r) {
+      var n = l.length, tol = 1e-9 * Math.max(1, r), st = w.straight || [], g = w.grow || {}, rec = null, cand = [];
+      function along(p, q) { return st.some(function (z) { return Math.abs(p[z.k] - z.v) <= tol && Math.abs(q[z.k] - z.v) <= tol; }); }
+      function atEnd(p) { return [g.t0, g.t1].some(function (v) { return v != null && Math.abs(p[1] - v) <= tol; }); }
+      for (var i = 0; i < n; i++) {
+        var p = l[i], q = l[(i + 1) % n], L = Math.hypot(q[0] - p[0], q[1] - p[1]), ok = L > tol && L < r && !along(p, q);
+        cand.push(ok);
+        if (ok && !rec && !atEnd(p) && !atEnd(q)) {
+          var hd = Math.sqrt(r * r - L * L / 4);
+          rec = { c: [(p[0] + q[0]) / 2 - (q[1] - p[1]) / L * hd, (p[1] + q[1]) / 2 + (q[0] - p[0]) / L * hd], r: r };
+        }
+      }
+      if (!rec) return null;
+      function on(p) { return Math.abs(Math.hypot(p[0] - rec.c[0], p[1] - rec.c[1]) - r) <= 1e3 * tol; }
+      // a vertex on a record's end that a chord's clip left inside the circle goes out to where the circle crosses that
+      // end (Anvil's wrapRegion takes the arc exactly to the band's edge, arcAdjust)
+      l = l.map(function (p, i) {
+        if (!atEnd(p) || on(p)) return p;
+        var a = l[(i + n - 1) % n], b = l[(i + 1) % n];
+        if (!((cand[(i + n - 1) % n] && on(a)) || (cand[i] && on(b)))) return p;
+        var dy = p[1] - rec.c[1], h2 = r * r - dy * dy;
+        if (!(h2 > 0)) return p;
+        var s1 = rec.c[0] + Math.sqrt(h2), s2 = rec.c[0] - Math.sqrt(h2);
+        return [Math.abs(s1 - p[0]) < Math.abs(s2 - p[0]) ? s1 : s2, p[1]];
+      });
+      return { loop: l, cv: l.map(function (p, i) { return cand[i] && on(p) && on(l[(i + 1) % n]) ? rec : null; }) };
+    }
+    // (rfPS) prismOf with the chords that carry a circle (cv[i], { c, r } in the loop's frame, Kernel.cornerReliefLayout)
+    // as that circle's arcs: a run of chords of one record is one arc through its middle vertex
+    function arcPrism(loop, cv, plane, a, b) {
+      var n = loop.length, to3 = function (p) { return K.to3D(plane, p[0], p[1]); }, mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+      if (cv.every(function (c) { return c && c === cv[0]; })) {
+        var ax = N(new oc.gp_Ax2_2(P(to3(cv[0].c)), Dir(plane.n), Dir(plane.x)));
+        mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_8(N(new oc.gp_Circ_2(ax, cv[0].r)))).Edge()));
+      } else {
+        var start = 0;
+        for (var s = 0; s < n; s++) if (!(cv[s] && cv[s] === cv[(s + n - 1) % n])) { start = s; break; }
+        for (var i = 0; i < n;) {
+          var ia = (start + i) % n, k = cv[ia], len = 1;
+          if (k) while (i + len < n && cv[(start + i + len) % n] === k) len++;
+          var ib = (start + i + len) % n, pa = loop[ia], pb = loop[ib];
+          if (!k) { if (Math.hypot(pb[0] - pa[0], pb[1] - pa[1]) > 1e-12) mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_3(P(to3(pa)), P(to3(pb)))).Edge())); }
+          else {
+            var mid;
+            if (len >= 2) mid = loop[(ia + (len >> 1)) % n];
+            else {
+              var mx = (pa[0] + pb[0]) / 2 - k.c[0], my = (pa[1] + pb[1]) / 2 - k.c[1], ml = Math.hypot(mx, my) || 1;
+              mid = [k.c[0] + mx / ml * k.r, k.c[1] + my / ml * k.r];
+            }
+            var arc = N(new oc.GC_MakeArcOfCircle_4(P(to3(pa)), P(to3(mid)), P(to3(pb))));
+            if (!arc.IsDone()) return prismOf(loop, plane, a, b);
+            mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_24(N(new oc.Handle_Geom_Curve_2(N(arc.Value()).get())))).Edge()));
+          }
+          i += len;
+        }
+      }
+      if (!mw.IsDone()) return prismOf(loop, plane, a, b);
+      var face = N(N(new oc.BRepBuilderAPI_MakeFace_15(N(mw.Wire()), true)).Face());
+      return N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(face, a, plane), Vec(V.scale(plane.n, b - a)), false, true)).Shape());
     }
     // Welded Corner (lane smcorner; as Kernel.buildWeldedCorner, from Kernel.weldedCornerLayout found on the bodies'
     // tessellation): planar prisms of the gap fill and the chorded fillet; the rebuild fuses the tool (a registered boss)
@@ -2573,6 +2664,9 @@ var OcctKernel = (function () {
         kvPending = (S0.kvPending || []).slice(); kvAcross = !!S0.kvAcross; Object.assign(kvCuts, S0.kvCuts || {}); Object.assign(kvLazy, S0.kvLazy || {});
         kvKnown = (S0.kvKnown || []).map(function (x) { return x && Object.assign({}, x); });
         Object.assign(cutDirs, S0.cutDirs || {});   // lane PK: the directions autoCutDir found in the cached prefix
+        // (rfPS) the sheet-metal records of the cached prefix: without them a Corner Relief added to a built U channel
+        // found no corner (its base flange's bends were in the cache), as did anything else reading earlier records
+        if (S0.smFlanges) Object.assign(smFlanges, JSON.parse(S0.smFlanges));
       }
     }
     function snapshot(i) {
@@ -2585,6 +2679,7 @@ var OcctKernel = (function () {
       Object.keys(sketches).forEach(function (id) { S.sketches[id] = sketches[id]; });
       Object.keys(status).forEach(function (id) { S.status[id] = status[id]; });
       S.cutDirs = Object.assign({}, cutDirs);   // lane PK
+      S.smFlanges = JSON.stringify(smFlanges);   // (rfPS) a copy: later features may move a record's end (Closed Corner)
       var fid = String(m.features[i].id);
       if (tools[fid] && !cache.tools[fid]) cache.tools[fid] = tools[fid] = keep(tools[fid]);
       cache.keys[i] = keys[i]; cache.states[i] = S;

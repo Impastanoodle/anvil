@@ -289,7 +289,8 @@ var AnvilLibrary = (function () {
   function featureArea(id, v, s) { return feature(id).area(v, s || 1); }
   // addFeature(model, plane, id, values, opts) -> { sketch, cut }: pushes a sketch on `plane` (a face frame from
   // UI.facePlane / Kernel.planeFromFace) holding the feature's entities and a Cut-Extrude Through All of it (into the
-  // material: no direction given, the rebuild picks it as SolidWorks does). The caller pushes undo and rebuilds.
+  // material: no direction given, the rebuild picks it as SolidWorks does; on sheet metal Link to thickness). The
+  // caller pushes undo and rebuilds.
   function addFeature(model, plane, id, v, opts) {
     var K = typeof Kernel !== 'undefined' ? Kernel : null, s = model.units === 'mm' ? 25.4 : 1;
     var ents = featureEntities(id, v, s), f = feature(id);
@@ -298,6 +299,9 @@ var AnvilLibrary = (function () {
     model.features.push(sk);
     var cut = { type: 'extrude', sketch: sk.id, depth: 0, end: 'through', cut: true, dir2: false, depth2: 0, end2: 'blind' };
     if (model.sheet || (opts && opts.normalCut)) cut.normalCut = true;
+    // (rfPS) on sheet metal the cut is Link to thickness (SolidWorks' sheet-metal library features cut the sheet they
+    // are dropped on): Through All also cut the opposite wall of a chassis; the depth follows a gauge change
+    if (model.sheet && +model.sheet.thickness > 0) { cut.end = 'blind'; cut.depth = +model.sheet.thickness; cut.linkT = true; }
     cut.id = model.nextId++;
     cut.name = (opts && opts.name) || (K && K.featureName ? K.featureName(model, 'extrude', true) : 'Cut-Extrude' + cut.id);
     cut.library = f.id;
