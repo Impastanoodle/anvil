@@ -298,6 +298,8 @@
   // OpenCascade answered for the model Anvil's build on screen was made from (the sequence numbers match)
   function accept(r) {
     st.result = r; st.error = null; st.volumeDiff = null;
+    // lane smmirror: OpenCascade decided the direction of a cut that had none stored (a model Anvil never rebuilt)
+    if (r.cutDirs) Object.keys(r.cutDirs).forEach(function (id) { var f = K.findFeature(App.model, +id); if (f && f.type === 'extrude' && f.reverse == null) f.reverse = !!r.cutDirs[id]; });
     var anvilBuild = App.build, anvilMesh = App.mesh;
     // the volume worker.js sent with Anvil's build (smooth/responsive: massProps of a large mesh is tens of ms here)
     st.anvilVolume = anvilMesh && anvilMesh.triCount ? (typeof anvilMesh.workerVolume === 'number' ? anvilMesh.workerVolume : K.massProps(anvilMesh, 1).volume) : 0;
