@@ -326,6 +326,16 @@
           for (var qi = 0; qi < np; qi++) add({ k: 'line', a: Pq[qi], b: Pq[(qi + 1) % Pq.length] });
         }
       });
+      // (rfPH) a detail of a flat-pattern view: the flat's bend lines (BEND_UP thin solid / BEND_DOWN dashed) and etch
+      // marks inside the detail circle or profile, at the detail's scale
+      var fdl = ct.flatDetail;
+      if (fdl) {
+        fdl.up.concat(fdl.down).forEach(function (l, i) { var up = i < fdl.up.length; prims.push({ k: 'line', a: toSheet([l[0], l[1]]), b: toSheet([l[2], l[3]]), layer: up ? 'BEND_UP' : 'BEND_DOWN', style: up ? 'bendup' : 'benddown', view: v.id, detailBend: true }); });
+        var DE = { layer: 'ETCH', style: 'etch', color: 'etch', view: v.id, etch: true };
+        fdl.etch.lines.forEach(function (l) { prims.push(Object.assign({ k: 'line', a: toSheet([l[0], l[1]]), b: toSheet([l[2], l[3]]) }, DE)); });
+        fdl.etch.circles.forEach(function (c) { prims.push(Object.assign({ k: 'circle', c: toSheet(c.c), r: c.r * s }, DE)); });
+        fdl.etch.arcs.forEach(function (a) { prims.push(Object.assign({ k: 'arc', c: toSheet(a.c), r: a.r * s, a0: a.a0, a1: a.a1 }, DE)); });
+      }
       // a view still being worked out (lazy compute): a placeholder over the paper it will take (svgParts, live only)
       if (pr.pending) prims.push({ k: 'pending', box: box, layer: layer });
       // (the view's label goes below its linework and below any detail circle drawn on it, r11/hatch11)
@@ -807,7 +817,7 @@
         if (an.hidden) greyOut(r.prims);
         function grow(q) { bx.x0 = Math.min(bx.x0, q[0]); bx.x1 = Math.max(bx.x1, q[0]); bx.y0 = Math.min(bx.y0, q[1]); bx.y1 = Math.max(bx.y1, q[1]); }
         r.prims.forEach(function (x) {
-          x.view = w.view.id;
+          x.view = w.view.id; x.annId = an.id;   // (rfPH: a break drops a record lying wholly in removed paper)
           prims.push(x);
           if (x.a) { grow(x.a); grow(x.b); }
           if (x.k === 'circle' || x.k === 'arc') { grow([x.c[0] - x.r, x.c[1] - x.r]); grow([x.c[0] + x.r, x.c[1] + x.r]); }   // (rfCU: a cosmetic thread's arc alone)
@@ -820,7 +830,7 @@
     // the flat views' bend notes, tags, Bend Tables and FLAT SIZE notes: annotations too (select, drag, hide), with
     // ids 'f<view>:<key>' (key b0, b1 … per bend, 'table', 'size')
     flatPre.forEach(function (it) {
-      if (!it.hidden || SH) { if (it.hidden) greyOut(it.prims); it.prims.forEach(function (x) { x.view = it.view; prims.push(x); }); }
+      if (!it.hidden || SH) { if (it.hidden) greyOut(it.prims); it.prims.forEach(function (x) { x.view = it.view; x.flatKey = it.key; prims.push(x); }); }   // (rfPH: flatKey, a break moves the item whole)
       annotations.push({ id: it.id, view: it.view, type: it.type, key: it.key, auto: true, flat: true, hidden: !!it.hidden, off: it.off, text: it.text, dangling: false, box: it.box, info: it.info || null });
     });
     // (rfQ) a note / symbol attached to a view carries its id (x.view), so a dragged view takes it along live
@@ -1779,6 +1789,7 @@
         var shift = (sorted[0].p[ax] + sorted[sorted.length - 1].p[ax] - sorted[0].t - sorted[sorted.length - 1].t) / 2;
         if (shift < 0) sorted.forEach(function (it) { it.t += shift; });
         sorted.forEach(function (it) {
+          var om0 = out.length;
           function Q(along, across) { var q = [0, 0]; q[ax] = along; q[1 - ax] = across; return q; }
           var from = it.p[1 - ax] + (lvl > it.p[1 - ax] ? 1 : -1) * gapE, sgl = lvl > it.p[1 - ax] ? 1 : -1;
           if (Math.abs(it.t - it.p[ax]) < 1e-9) line(Q(it.p[ax], from), Q(it.p[ax], lvl));
@@ -1792,6 +1803,7 @@
           }
           else if (hz2) out.push({ k: 'text', p: [it.t + th / 2, lvl + sgl * 1 * k], h: th, text: tt, anchor: sgl > 0 ? 'start' : 'end', layer: L, rot: 90 });
           else out.push({ k: 'text', p: [lvl + sgl * 1 * k, it.t - th / 2], h: th, text: tt, anchor: sgl > 0 ? 'start' : 'end', layer: L, rot: 0 });
+          for (var om = om0; om < out.length; om++) out[om].ordM = it.p;   // (rfPH) the member's feature point: a break drops a member in removed paper
         });
       } else {
         // baseline: one linear dimension per reference from the base, nearest first, 8 mm apart
@@ -1806,6 +1818,7 @@
           for (var tries = 0; tries < 16; tries++) {
             var n0 = out.length;
             linear(bp.slice(), it.p.slice(), hz2, bPos, lab, null);
+            for (var bm = n0; bm < out.length; bm++) out[bm].ordM = it.p;   // (rfPH)
             var mine = out.slice(n0).filter(function (x) { return x.k === 'text'; }).map(textRect);
             if (tries === 15 || !mine.some(function (t) { return bTexts.some(function (o) { return rectsMeet(t, o, 1 * k); }); })) { bTexts = bTexts.concat(mine); break; }
             out.length = n0; bPos += side * 4 * k;

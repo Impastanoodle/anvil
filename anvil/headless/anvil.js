@@ -32,6 +32,9 @@ const USAGE = [
   '               [--dual] [--dual-pos bottom|top|left|right] [--dual-units mm|in] [--dual-prec 0..8] [--dual-show-units]',
   '               Dual dimensions display (Document Properties): every length also in the other system, 1.000 [25.40];',
   '               default the other units (mm .12 on an inch part, in .123 on a mm one) under the value (Bottom)',
+  '               --views ...,Flat: the flat-pattern view of a sheet-metal part on the same sheet (summary.flat.blank: its',
+  '               u / v extents); --break "View,a,b[,horizontal][,style][,gap]" (several: ";" between): Broken View, a / b',
+  '               model units along the view\'s u (v for horizontal); style straight|curve|zigzag|smallZigzag|jagged',
   '  example <name | index> [build options]     a bundled example (name case-insensitive, prefix allowed)',
   '  example --all [--occt] [--native [dir]]     every example against its documented volume',
   '  examples                                    list the examples with their documented volumes',
@@ -56,7 +59,7 @@ const USAGE = [
 
 // ------------------------------------------------------------------ arguments
 const VALUED = { stl: 1, step: 1, 'dxf-flat': 1, 'dwg-flat': 1, json: 1, script: 1, svg: 1, dxf: 1, dwg: 1, pdf: 1, views: 1, scale: 1, 'dxf-face': 2, 'dwg-face': 2,
-  'dxf-version': 1, 'dxf-style': 1, jobs: 1, only: 1, 'dual-pos': 1, 'dual-units': 1, 'dual-prec': 1 };
+  'dxf-version': 1, 'dxf-style': 1, jobs: 1, only: 1, 'dual-pos': 1, 'dual-units': 1, 'dual-prec': 1, break: 1 };
 function parseArgs(argv) {
   const out = { _: [], flags: {} };
   for (let i = 0; i < argv.length; i++) {
@@ -336,9 +339,10 @@ async function cmdDrawing(src, flags) {
     }
     if (flags['dual-show-units']) o.dualShowUnits = true;
   }
-  let names;
+  let names, wantFlat = false;
   if (flags.views) {
-    names = String(flags.views).split(',').map((s) => s.trim()).filter(Boolean).map((s) => {
+    // (rfPH) Flat: the flat-pattern view of a sheet-metal part (placed after the others, at the sheet scale where it fits)
+    names = String(flags.views).split(',').map((s) => s.trim()).filter(Boolean).filter((s) => { if (/^flat$/i.test(s)) { wantFlat = true; return false; } return true; }).map((s) => {
       const k = Object.keys(ROLES).filter((o) => o.toLowerCase() === s.toLowerCase() || (s.toLowerCase() === 'iso' && o === 'Isometric'))[0];
       if (!k) throw usage('--views: unknown view "' + s + '" (one of ' + Object.keys(ROLES).join(', ') + ')');
       return k;
@@ -354,11 +358,36 @@ async function cmdDrawing(src, flags) {
       if (role === 'right' && used.front) { props.parent = doc.views[0].id; props.align = 'y'; }
       Drawing.addView(doc, n, props);
     });
-    Drawing.layout(doc, r.mesh, units);
+    if (names.length) Drawing.layout(doc, r.mesh, units);
   } else {
     Drawing.standard3View(doc, r.mesh, units);
     names = doc.views.map((v) => v.orient);
   }
+  // (rfPH) --views ...,Flat: the flat pattern on this sheet (the sheet scale where it fits, else smaller or beside it:
+  // one sheet is written); --break View,a,b[,horizontal][,style][,gap]: Broken View (Drawing.addBreak), repeatable as
+  // a ';' list. a, b in model units along the view's horizontal axis (its vertical one for a horizontal break)
+  let flatView = null;
+  if (wantFlat) {
+    if (flags.scale && !names.length) doc.sheet.scale = parseScale(flags.scale);
+    try { flatView = Drawing.addFlatView(doc, r.mesh, { model: r.model, build: r.build, fit: true, newSheet: false }); }
+    catch (e) { throw Object.assign(new Error('drawing: --views Flat: ' + e.message), { code: 1 }); }
+  }
+  const breaks = [];
+  if (flags.break) String(flags.break).split(';').map((s) => s.trim()).filter(Boolean).forEach((spec) => {
+    const t = spec.split(',').map((s) => s.trim()).filter(Boolean), vn = (t.shift() || '').toLowerCase();
+    const v = vn === 'flat' ? flatView : doc.views.filter((x) => x.kind !== 'flat' && String(x.orient).toLowerCase() === vn)[0];
+    if (!v) throw usage('--break: no ' + (vn || '(view)') + ' view on the sheet (' + doc.views.map((x) => x.kind === 'flat' ? 'Flat' : x.orient).join(', ') + ')');
+    const a = Number(t[0]), b = Number(t[1]), o = { a, b };
+    if (!isFinite(a) || !isFinite(b)) throw usage('--break: expected View,a,b[,horizontal][,style][,gap], not "' + spec + '"');
+    t.slice(2).forEach((x) => {
+      if (/^(h|horizontal)$/i.test(x)) o.dir = 'horizontal'; else if (/^(v|vertical)$/i.test(x)) o.dir = 'vertical';
+      else if (isFinite(Number(x))) o.gap = Number(x);
+      else if (Drawing.BREAK_STYLES.some((s) => s[0] === x)) o.style = x;
+      else throw usage('--break: "' + x + '" is not horizontal / vertical, a gap or a style (' + Drawing.BREAK_STYLES.map((s) => s[0]).join(', ') + ')');
+    });
+    try { Drawing.addBreak(doc, v.id, o); } catch (e) { throw usage('--break: ' + e.message); }
+    breaks.push(v.id);
+  });
   const t0 = performance.now();
   const sheet = Drawing.compute(doc, r.mesh, r.model);
   const outputs = {}, conv = {};
@@ -377,6 +406,14 @@ async function cmdDrawing(src, flags) {
     views: doc.views.map((v) => ({ id: v.id, name: v.name, orient: v.orient, x: r6(v.x), y: r6(v.y), scale: v.scale || null })),
     dims: (sheet.dims || []).length, computeMs: Math.round((performance.now() - t0) * 10) / 10, outputs, errors: r.summary.errors
   };
+  // (rfPH) the flat's blank in its view frame (where --break's a / b are measured) and each broken view's paper size
+  const wOf = (id) => sheet.views.filter((w) => w.view.id === id)[0];
+  if (flatView) {
+    const fw = wOf(flatView.id), bb = fw && fw.flat && fw.flat.bbox;
+    summary.flat = { id: flatView.id, scale: flatView.scale || doc.sheet.scale, offSheet: !!flatView.offSheet, blank: bb ? { umin: r6(bb.umin), umax: r6(bb.umax), vmin: r6(bb.vmin), vmax: r6(bb.vmax) } : null };
+  }
+  if (breaks.length) summary.breaks = doc.views.filter((v) => v.breaks && v.breaks.length).map((v) => { const w = wOf(v.id); return { view: v.id, breaks: v.breaks, paper: w ? { w: r6(w.box.x1 - w.box.x0), h: r6(w.box.y1 - w.box.y0) } : null }; });
+  if (sheet.warnings && sheet.warnings.length) summary.warnings = sheet.warnings;
   if (flags.dual) { const st = Drawing.dualStyle(doc); summary.dual = { units: st.units, prec: st.prec, pos: st.pos, showUnits: st.showUnits }; summary.dimTexts = (sheet.dims || []).map((d) => d.text); }   // (rfPD)
   if (conv.converter) summary.converter = conv.converter;
   process.stdout.write(JSON.stringify(summary, null, 2) + '\n');

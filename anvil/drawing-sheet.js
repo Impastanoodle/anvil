@@ -559,7 +559,9 @@
     var par = findView(doc, parentId);
     if (!par) throw new Error('No drawing view ' + parentId);
     if (par.kind === 'detail') throw new Error('Detail views of detail views are not supported');
-    if (par.kind === 'flat') throw new Error('Detail views of flat-pattern views are not supported');
+    // (rfPH) a flat-pattern view has detail views too (SolidWorks: a notch or a corner relief of the blank at 2 : 1),
+    // with the flat's bend lines and etch marks inside the circle or profile (drawing-views.js flatDetailLines)
+    if (par.kind === 'flat' && opts.pts) throw new Error('A detail of a flat-pattern view takes a circle or a rectangle profile');
     if (par.kind === 'empty') throw new Error('An empty view has no model to show in a detail view');
     // (rfZ) a Profile (opts.shape 'profile', a, b: a rectangle's corners) instead of the circle; opts.style (Per standard /
     // Broken / Leader / No leader / Connected) and opts.outline ('full' | 'jagged'): see drawing-views.js
@@ -808,11 +810,15 @@
       return { frame: F, proj: pr, center: [full.cu, full.cv], caps: capLoops(S, F), section: S, scale: s };
     }
     if (v.kind === 'detail' && par && parentContent) {
-      var pc = parentContent(par), dt = v.detail;
-      if (dt.shape === 'profile' && dt.a && dt.b) return _.detailProfileContent(pc, dt, s);   // (rfZ) a rectangle profile
-      var dpr = clipProjection(pc.proj, dt.c, dt.r);
-      if (pc.proj.pending) dpr.pending = true;   // (its parent still being worked out, r13/drawings13)
-      return { frame: pc.frame, proj: dpr, center: dt.c.slice(), caps: pc.caps, clip: { c: dt.c.slice(), r: dt.r }, scale: s };
+      var pc = parentContent(par), dt = v.detail, dct;
+      if (dt.shape === 'profile' && dt.a && dt.b) dct = _.detailProfileContent(pc, dt, s);   // (rfZ) a rectangle profile
+      else {
+        var dpr = clipProjection(pc.proj, dt.c, dt.r);
+        if (pc.proj.pending) dpr.pending = true;   // (its parent still being worked out, r13/drawings13)
+        dct = { frame: pc.frame, proj: dpr, center: dt.c.slice(), caps: pc.caps, clip: { c: dt.c.slice(), r: dt.r }, scale: s };
+      }
+      if (pc.flat && !pc.flat.error && _.flatDetailLines) dct.flatDetail = _.flatDetailLines(pc.flat, dt, v);   // (rfPH)
+      return dct;
     }
     var F2 = viewFrame(doc, v), pr2 = cachedProjection(mesh, F2, v.display, v.tangent), b = pr2.bounds;
     return { frame: F2, proj: pr2, center: [(b.umin + b.umax) / 2, (b.vmin + b.vmax) / 2], caps: [], scale: s };

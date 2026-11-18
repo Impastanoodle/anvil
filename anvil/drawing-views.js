@@ -1242,17 +1242,19 @@
   }
   // addBreak(doc, viewId, { dir: 'vertical' | 'horizontal', a, b, gap, style }) -> the view: break lines at a and b
   // (model units along u for vertical lines, along v for horizontal ones); gap (paper units) defaults to 10 mm / 0.4 in;
-  // style 'zigzag' (default) or 'straight'. A break overlapping one of the same direction replaces it.
+  // style one of BREAK_STYLES (default 'zigzag'). A break overlapping one of the same direction replaces it.
+  // (rfPH) a flat-pattern view breaks too (SolidWorks: a long blank drawn broken, its dimensions the true lengths).
   // clearBreaks(doc, viewId): Un-Break View.
   function addBreak(doc, viewId, opts) {
     var v = findV(doc, viewId);
     if (!v) throw new Error('No drawing view ' + viewId);
-    if (v.kind === 'detail' || v.kind === 'flat') throw new Error('A ' + (v.kind === 'flat' ? 'flat-pattern' : 'detail') + ' view cannot be broken');
+    if (v.kind === 'detail' || v.kind === 'empty') throw new Error('A' + (v.kind === 'empty' ? 'n empty' : ' detail') + ' view cannot be broken');
     opts = opts || {};
     var dir = /^h/i.test(opts.dir || '') ? 'horizontal' : 'vertical', a = Math.min(+opts.a, +opts.b), b = Math.max(+opts.a, +opts.b);
     if (!isFinite(a) || !isFinite(b) || b - a < 1e-9) throw new Error('A break needs two different break line positions a and b');
+    if (opts.style != null && !breakStyleOk(opts.style)) throw new Error('Break line style: one of ' + BREAK_STYLES.map(function (s) { return s[0]; }).join(', ') + ', not ' + opts.style);
     var gap = opts.gap != null ? +opts.gap : (doc.units === 'in' ? 0.4 : 10);
-    var brk = { dir: dir, a: a, b: b, gap: Math.max(0, gap), style: opts.style === 'straight' ? 'straight' : 'zigzag' };
+    var brk = { dir: dir, a: a, b: b, gap: Math.max(0, gap), style: breakStyle(opts.style) };
     var list = (v.breaks || []).filter(function (o) { return o.dir !== dir || o.b < a || o.a > b; });
     list.push(brk);
     list.sort(function (x, y) { return x.a - y.a; });
@@ -1260,6 +1262,65 @@
     return v;
   }
   function clearBreaks(doc, viewId) { var v = findV(doc, viewId); if (v) delete v.breaks; return v; }
+  // (rfPH) SolidWorks 2024's Break line styles (Broken View PropertyManager), [key, name]; 'zigzag' the default
+  var BREAK_STYLES = [['straight', 'Straight Cut'], ['curve', 'Curve Cut'], ['zigzag', 'Zig Zag Cut'], ['smallZigzag', 'Small Zig Zag Cut'], ['jagged', 'Jagged Cut']];
+  function breakStyleOk(s) { return BREAK_STYLES.some(function (x) { return x[0] === s; }); }
+  function breakStyle(s) { return breakStyleOk(s) ? s : 'zigzag'; }
+  // breakLinePrims(a, b, style, k, layer) -> the prims of one break line from a to b (paper points; k paper units per
+  // mm): Straight Cut one line; Zig Zag Cut teeth all along (1.5 mm high, about 6 mm a tooth); Small Zig Zag Cut a
+  // straight line with one Z in the middle; Curve Cut a wave of true arcs (DXF ARC); Jagged Cut a torn edge (fixed
+  // irregular teeth, so the two lines of a gap are the same shape and every export is the same). Thin lines.
+  var JAG = [[0.55, 0.9], [0.35, -0.5], [0.7, 1], [0.45, -0.85], [0.3, 0.35], [0.6, -1], [0.4, 0.7], [0.5, -0.4]];
+  function breakLinePrims(a, b, style, k, layer) {
+    var dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy), out = [];
+    if (!(len > 1e-12)) return out;
+    var tx = dx / len, ty = dy / len, nx = -ty, ny = tx;
+    function P(t, o) { return [a[0] + tx * t + nx * o, a[1] + ty * t + ny * o]; }
+    function poly(pts) { for (var i = 1; i < pts.length; i++) out.push({ k: 'line', a: pts[i - 1], b: pts[i], layer: layer, style: 'thin', breakLine: true }); }
+    style = breakStyle(style);
+    if (style === 'straight') { poly([a, b]); return out; }
+    if (style === 'zigzag') {
+      var n = Math.max(2, Math.round(len / (6 * k))), amp = 1.5 * k, zp = [a];
+      for (var i = 1; i <= 2 * n; i++) zp.push(P(len * i / (2 * n), i === 2 * n ? 0 : (i % 2 ? amp : -amp)));
+      poly(zp); return out;
+    }
+    if (style === 'smallZigzag') {
+      var st = Math.min(2.5 * k, len / 5), am = 2 * k, m = len / 2;
+      poly([a, P(m - 2 * st, 0), P(m - st, am), P(m + st, -am), P(m + 2 * st, 0), b]); return out;
+    }
+    if (style === 'jagged') {
+      var jp = [a], t = 0, j = 0;
+      while (true) {
+        var J = JAG[j % JAG.length], stp = (2 + 3 * J[0]) * k;
+        if (t + stp > len - 1.5 * k) break;
+        t += stp; jp.push(P(t, J[1] * 1.6 * k)); j++;
+      }
+      jp.push(b); poly(jp); return out;
+    }
+    // Curve Cut: half waves of about 6 mm, each a circular arc 1.5 mm off its chord, alternating sides
+    var nh = Math.max(2, 2 * Math.round(len / (12 * k))), h = len / nh, sg = Math.min(1.5 * k, h / 2.5), r = (h * h / 4 + sg * sg) / (2 * sg);
+    for (var q = 0; q < nh; q++) {
+      var side = q % 2 ? -1 : 1, p0 = P(q * h, 0), p1 = P((q + 1) * h, 0), bulge = P((q + 0.5) * h, side * sg), c = P((q + 0.5) * h, side * (sg - r));
+      var A0 = Math.atan2(p0[1] - c[1], p0[0] - c[0]) * 180 / Math.PI, A1 = Math.atan2(p1[1] - c[1], p1[0] - c[0]) * 180 / Math.PI, AB = Math.atan2(bulge[1] - c[1], bulge[0] - c[0]) * 180 / Math.PI;
+      var ccw = function (s, e, x) { var sw = ((e - s) % 360 + 360) % 360, dx2 = ((x - s) % 360 + 360) % 360; return dx2 <= sw; };
+      var s0 = ccw(A0, A1, AB) ? A0 : A1, s1 = s0 === A0 ? A1 : A0;
+      out.push({ k: 'arc', c: c, r: r, a0: s0, a1: s1, layer: layer, style: 'thin', breakLine: true });
+    }
+    return out;
+  }
+  // the same line as points (arcs sampled), for a live preview
+  function breakLinePoints(a, b, style, k) {
+    var pts = [a];
+    breakLinePrims(a, b, style, k, null).forEach(function (p) {
+      if (p.k === 'line') { pts.push(p.b); return; }
+      var a0 = p.a0, sw = ((p.a1 - p.a0) % 360 + 360) % 360, n = 8, seg = [], last = pts[pts.length - 1];
+      for (var i = 0; i <= n; i++) { var t = (a0 + sw * i / n) * Math.PI / 180; seg.push([p.c[0] + p.r * Math.cos(t), p.c[1] + p.r * Math.sin(t)]); }
+      // (an arc is stored counter-clockwise: walk it from the end at the last point)
+      if (Math.hypot(seg[0][0] - last[0], seg[0][1] - last[1]) > Math.hypot(seg[n][0] - last[0], seg[n][1] - last[1])) seg.reverse();
+      pts = pts.concat(seg.slice(1));
+    });
+    return pts;
+  }
 
   // ---- crop: a projection clipped to a rectangle R = [u0, v0, u1, v1]
   function segInRect(l, R) {
@@ -1502,11 +1563,124 @@
     var xs = [], ys = [];
     vb.forEach(function (b) { xs.push(b.lo, b.hi); }); hb.forEach(function (b) { ys.push(b.lo, b.hi); });
     var out = [], L = w.layer;
+    // (rfPH) what goes with the removed paper and what moves as one piece. A flat view's bend note or tag sits on its
+    // bend line: gone with the line, else moved with the line's middle (or the middle of its longest kept piece when the
+    // break takes the middle); a Cross-Break note with its crossing; the Bend Table, FLAT SIZE and scale notes, the
+    // Fixed Face note, a Hole Table's tags and its X / Y origin move whole (a table is never squeezed). A dimension,
+    // centre mark or callout lying wholly in the removed paper goes with it (SolidWorks hides what references only
+    // removed geometry); one that spans a gap keeps its true value and closes up with the view.
+    var drop = {}, shift = {}, ffs = [];
+    function dOf(p) { var m = M(p); return [m[0] - p[0], m[1] - p[1]]; }
+    // a paper box that reaches into removed paper
+    function cutBox(r) { return vb.some(function (b) { return r.x1 > b.lo + 1e-9 && r.x0 < b.hi - 1e-9; }) || hb.some(function (b) { return r.y1 > b.lo + 1e-9 && r.y0 < b.hi - 1e-9; }); }
+    function keptPieces(A, B) {
+      var dx = B[0] - A[0], dy = B[1] - A[1], tt = [0, 1], kept = [];
+      xs.forEach(function (X) { if (Math.abs(dx) > 1e-15) { var t = (X - A[0]) / dx; if (t > 0 && t < 1) tt.push(t); } });
+      ys.forEach(function (Y) { if (Math.abs(dy) > 1e-15) { var t = (Y - A[1]) / dy; if (t > 0 && t < 1) tt.push(t); } });
+      tt.sort(function (x, y) { return x - y; });
+      for (var i = 1; i < tt.length; i++) if (tt[i] - tt[i - 1] > 1e-12 && !cut([A[0] + dx * (tt[i] + tt[i - 1]) / 2, A[1] + dy * (tt[i] + tt[i - 1]) / 2])) kept.push([tt[i - 1], tt[i]]);
+      return kept;
+    }
+    // a point kept by the breaks nearest p along the axes the bands cut (a note that sat in the removed paper slides
+    // just out of it, by its half width hw / half height hh, to the nearer side)
+    function outOfBands(p, hw, hh) {
+      var q = p.slice();
+      vb.forEach(function (b) { if (q[0] > b.lo - hw && q[0] < b.hi + hw) q[0] = q[0] - b.lo < b.hi - q[0] ? b.lo - hw : b.hi + hw; });
+      hb.forEach(function (b) { if (q[1] > b.lo - hh && q[1] < b.hi + hh) q[1] = q[1] - b.lo < b.hi - q[1] ? b.lo - hh : b.hi + hh; });
+      return q;
+    }
+    (sheet.annotations || []).forEach(function (an) {
+      if (an.view !== v.id) return;
+      var key = an.flat ? 'f:' + an.key : 'a:' + an.id, inf = an.info || {}, bx = an.box && isFinite(an.box.x0) ? an.box : null;
+      if (!an.flat) return;
+      if ((an.type === 'bendNote' || an.type === 'bendTag') && inf.a && inf.b) {
+        var kp = keptPieces(inf.a, inf.b);
+        if (!kp.length) { drop[key] = 1; return; }
+        // along the line (s from a): the note's span [c0 - half, c0 + half]; kept where it lies in one kept piece, else on
+        // the piece holding its centre (or the longest), its end a margin short of the gap when it is longer than the piece
+        var A = inf.a, len = Math.hypot(inf.b[0] - A[0], inf.b[1] - A[1]) || 1, t = [(inf.b[0] - A[0]) / len, (inf.b[1] - A[1]) / len];
+        var sOf = function (p) { return (p[0] - A[0]) * t[0] + (p[1] - A[1]) * t[1]; }, at = function (s) { return [A[0] + t[0] * s, A[1] + t[1] * s]; };
+        var cs = bx ? [sOf([bx.x0, bx.y0]), sOf([bx.x1, bx.y0]), sOf([bx.x0, bx.y1]), sOf([bx.x1, bx.y1])] : [len / 2, len / 2];
+        var lo = Math.min.apply(null, cs), hi = Math.max.apply(null, cs), c0 = (lo + hi) / 2, half = (hi - lo) / 2, mg = 2 * k;
+        var pcs = kp.map(function (p) { return [p[0] * len, p[1] * len, p[0] > 1e-9, p[1] < 1 - 1e-9]; });
+        var home = pcs.filter(function (p) { return c0 >= p[0] && c0 <= p[1]; })[0];
+        if (home && lo >= home[0] - 1e-9 && hi <= home[1] + 1e-9) { shift[key] = dOf(at(c0)); return; }
+        var pc = home || pcs.reduce(function (x, y) { return y[1] - y[0] > x[1] - x[0] ? y : x; }), cn;
+        if (pc[3] && !pc[2]) cn = Math.min(Math.max(c0, pc[0] + half), pc[1] - mg - half);   // the gap above: the end stays short of it
+        else if (pc[2] && !pc[3]) cn = Math.max(Math.min(c0, pc[1] - half), pc[0] + mg + half);
+        else cn = (pc[0] + pc[1]) / 2;
+        var mN = M(at(cn)), p0 = at(c0);
+        shift[key] = [mN[0] - p0[0], mN[1] - p0[1]];
+      } else if (an.type === 'crossBreakNote' && inf.at) { if (cut(inf.at)) drop[key] = 1; else shift[key] = dOf(inf.at); }
+      else if (bx && an.type === 'fixedFace') ffs.push({ key: key, bx: bx });
+      else if (bx) shift[key] = dOf(an.type === 'bendTable' ? [bx.x0, bx.y1] : [(bx.x0 + bx.x1) / 2, (bx.y0 + bx.y1) / 2]);
+    });
+    // the Fixed Face note: where it was if that paper stays, else just beside the removed paper, stepped along the
+    // break line until it is clear of the holes, centre marks, tags and notes left in the view
+    ffs.forEach(function (f) {
+      var bx = f.bx, hw = (bx.x1 - bx.x0) / 2, hh = (bx.y1 - bx.y0) / 2, fc = [(bx.x0 + bx.x1) / 2, (bx.y0 + bx.y1) / 2], m = 3 * k;   // (past a break line's teeth)
+      if (!cutBox(bx)) { shift[f.key] = dOf(fc); return; }
+      var obs = [];
+      (sheet.annotations || []).forEach(function (an) { if (an.view === v.id && an.box && isFinite(an.box.x0) && !drop[an.flat ? 'f:' + an.key : 'a:' + an.id] && an.type !== 'fixedFace' && an.type !== 'bendTable' && an.type !== 'flatSize' && an.type !== 'flatScale') obs.push(an.box); });
+      sheet.prims.forEach(function (p) {
+        if ((p.layer === L || p.view === v.id) && (p.k === 'circle' || p.k === 'arc') && p.c && !cut(p.c)) obs.push({ x0: p.c[0] - p.r, y0: p.c[1] - p.r, x1: p.c[0] + p.r, y1: p.c[1] + p.r });
+        if (p.holeTag != null && p.tagC && !cut(p.tagC) && D.textRect) obs.push(D.textRect(p));
+      });
+      // beside the band on the nearer side first, then the other; each stepped along the band
+      var B = w.box, best = null, c1 = outOfBands(fc, hw + m, hh + m), starts = [c1];
+      vb.concat(hb).forEach(function (b) {
+        var ax = vb.indexOf(b) >= 0 ? 0 : 1, h2 = ax ? hh : hw;
+        if (fc[ax] > b.lo - h2 - m && fc[ax] < b.hi + h2 + m) { var o = c1.slice(); o[ax] = Math.abs(c1[ax] - (b.lo - h2 - m)) < 1e-9 ? b.hi + h2 + m : b.lo - h2 - m; starts.push(o); }
+      });
+      starts.forEach(function (c0) {
+        for (var i = 0; i <= 60 && !best; i++) {
+          var st = Math.ceil(i / 2) * hh * 1.5 * (i % 2 ? 1 : -1), c = vb.length ? [c0[0], c0[1] + st] : [c0[0] + st, c0[1]];
+          var r = { x0: c[0] - hw, y0: c[1] - hh, x1: c[0] + hw, y1: c[1] + hh };
+          if (r.x0 < B.x0 || r.x1 > B.x1 || r.y0 < B.y0 || r.y1 > B.y1 || cutBox(r)) continue;
+          if (obs.some(function (o) { return o.x0 < r.x1 + m && r.x0 - m < o.x1 && o.y0 < r.y1 + m && r.y0 - m < o.y1; })) continue;
+          best = c;
+        }
+      });
+      var to = best || outOfBands(fc, hw + m, hh + m), tm = M(to);
+      shift[f.key] = [tm[0] - fc[0], tm[1] - fc[1]];
+    });
+    // a Hole Table of this view: its tags with their holes, its origin arrows with the origin (the table stays)
+    (sheet.holeTables || []).forEach(function (t) { if (t.view === v.id) shift['h:' + t.id] = t.origin ? dOf(t.origin) : [0, 0]; });
+    // the groups of this view's annotation prims (a dimension, an annotation record) that lie wholly in removed paper
+    var groups = {};
+    function groupOf(p) { return p.dimIx != null ? 'd:' + p.dimIx : p.annId != null ? 'a:' + p.annId : null; }
+    function ptsOf(p) { var a = []; ['a', 'b', 'p', 'c'].forEach(function (f) { if (p[f]) a.push(p[f]); }); if (p.pts) a = a.concat(p.pts); return a; }
     sheet.prims.forEach(function (p) {
-      var mine = p.layer === L && p.view == null, ann = p.view === v.id;
+      var g = p.view === v.id ? groupOf(p) : null;
+      if (!g) return;
+      var all = groups[g] == null ? true : groups[g];
+      groups[g] = all && ptsOf(p).every(cut);
+    });
+    Object.keys(groups).forEach(function (g) { if (groups[g]) drop[g] = 1; });
+    function move(q, d) {
+      function t(p) { return [p[0] + d[0], p[1] + d[1]]; }
+      if (q.a) q.a = t(q.a); if (q.b) q.b = t(q.b); if (q.p) q.p = t(q.p); if (q.c) q.c = t(q.c);
+      if (q.pts) q.pts = q.pts.map(t);
+      if (q.box) q.box = { x0: q.box.x0 + d[0], y0: q.box.y0 + d[1], x1: q.box.x1 + d[0], y1: q.box.y1 + d[1] };
+    }
+    sheet.prims.forEach(function (p) {
+      var mine = p.layer === L && p.view == null, ann = p.view === v.id, fk = p.flatKey != null && ann ? 'f:' + p.flatKey : null;
+      // (rfPH) a Hole Table's tags and origin arrows (on the annotation layer, no view): a tag goes with its hole
+      if (p.holeTable != null && shift['h:' + p.holeTable]) {
+        if (p.holeTag != null && p.tagC) { if (cut(p.tagC)) return; var tq = copyOf(p); move(tq, dOf(p.tagC)); out.push(tq); return; }
+        if (p.htOrigin) { var oq = copyOf(p); move(oq, shift['h:' + p.holeTable]); out.push(oq); return; }
+        out.push(p); return;
+      }
       if (!mine && !ann) { out.push(p); return; }
+      if (fk && drop[fk]) return;
+      var gk = ann ? groupOf(p) : null;
+      if (gk && drop[gk]) return;
+      if (ann && p.ordM && cut(p.ordM)) return;   // an ordinate / baseline member at a point in removed paper
       var q = copyOf(p);
-      if (ann || p.k === 'text' || p.k === 'fill' || p.k === 'pending') {
+      if (fk && shift[fk]) { move(q, shift[fk]); out.push(q); return; }
+      // a flat view's bend lines, bend-region lines and etch marks are its linework (cut, not moved into the gap)
+      var geo = ann && (p.bend != null || p.regionLine != null || p.etch);
+      if (!geo && (ann || p.k === 'text' || p.k === 'fill' || p.k === 'pending')) {
         if (q.a) q.a = M(q.a); if (q.b) q.b = M(q.b); if (q.p) q.p = M(q.p); if (q.c) q.c = M(q.c);
         if (q.pts) q.pts = q.pts.map(M);
         if (q.box) { var b0 = M([q.box.x0, q.box.y0]), b1 = M([q.box.x1, q.box.y1]); q.box = { x0: b0[0], y0: b0[1], x1: b1[0], y1: b1[1] }; }
@@ -1555,16 +1729,9 @@
       }
       out.push(q);
     });
-    // break lines (thin), straight or zig-zag, at both edges of every gap and a little past the view
+    // break lines (thin), in the break's style (BREAK_STYLES), at both edges of every gap and a little past the view
     var bx0 = MX.fwd(w.box.x0), bx1 = MX.fwd(w.box.x1), by0 = MY.fwd(w.box.y0), by1 = MY.fwd(w.box.y1), ov = 3 * k;
-    function brk(a, b, style) {
-      if (style !== 'zigzag') { out.push({ k: 'line', a: a, b: b, layer: L, style: 'thin', breakLine: true }); return; }
-      var dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy), n = Math.max(2, Math.round(len / (6 * k))), amp = 1.5 * k, nx = -dy / len, ny = dx / len, prev = a;
-      for (var i = 1; i <= 2 * n; i++) {
-        var t = i / (2 * n), o = i === 2 * n ? 0 : (i % 2 ? amp : -amp), pt = [a[0] + dx * t + nx * o, a[1] + dy * t + ny * o];
-        out.push({ k: 'line', a: prev, b: pt, layer: L, style: 'thin', breakLine: true }); prev = pt;
-      }
-    }
+    function brk(a, b, style) { breakLinePrims(a, b, style, k, L).forEach(function (p) { out.push(p); }); }
     MX.bands.forEach(function (b, i) { [b.olo, b.ohi].forEach(function (x) { brk([x, by0 - ov], [x, by1 + ov], vb[i].style); }); });
     MY.bands.forEach(function (b, i) { [b.olo, b.ohi].forEach(function (y) { brk([bx0 - ov, y], [bx1 + ov, y], hb[i].style); }); });
     sheet.prims = out;
@@ -1575,13 +1742,23 @@
     // (sheet x / y with and without the breaks, so a dimension dragged in the view maps through them, rfP)
     w.breakMap = { fwd: function (p) { return [MX.fwd(p[0]), MY.fwd(p[1])]; }, inv: function (p) { return [MX.inv(p[0]), MY.inv(p[1])]; } };
     function mapBox(b) { var a0 = M([b.x0, b.y0]), a1 = M([b.x1, b.y1]); return { x0: a0[0], y0: a0[1], x1: a1[0], y1: a1[1] }; }
-    (sheet.dims || []).forEach(function (d) {
+    var NOBOX = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    (sheet.dims || []).forEach(function (d, i) {
       if (d.view !== v.id) return;
+      if (drop['d:' + i]) { d.box = NOBOX; d.tbox = null; d.inBreak = true; return; }   // (rfPH) wholly in removed paper
       if (d.box && isFinite(d.box.x0)) d.box = mapBox(d.box);
       if (d.tbox) d.tbox = mapBox(d.tbox);
       if (d.arrows) d.arrows = d.arrows.map(M);
     });
-    (sheet.annotations || []).forEach(function (an) { if (an.view === v.id && an.box && isFinite(an.box.x0)) an.box = mapBox(an.box); });
+    (sheet.annotations || []).forEach(function (an) {
+      if (an.view !== v.id || !an.box || !isFinite(an.box.x0)) return;
+      var key = an.flat ? 'f:' + an.key : 'a:' + an.id;
+      if (drop[key]) { an.box = NOBOX; an.inBreak = true; return; }
+      if (shift[key]) { var d = shift[key]; an.box = { x0: an.box.x0 + d[0], y0: an.box.y0 + d[1], x1: an.box.x1 + d[0], y1: an.box.y1 + d[1] }; return; }
+      an.box = mapBox(an.box);
+    });
+    // (rfPH) a Hole Table's origin (paper) moves with the view; its tags' boxes are worked out from the prims
+    (sheet.holeTables || []).forEach(function (t) { if (t.view === v.id && t.origin) t.origin = M(t.origin); });
   }
   // the auxiliary view's label (VIEW A-A) and, on the parent, the arrow square to the edge with the letter
   function auxMarks(sheet, w, pw, k, projection) {
@@ -1676,6 +1853,29 @@
     o.profile = R;
     delete o.crop;
     return o;
+  }
+  // (rfPH) flatDetailLines(fd, dt, v) -> { up: [[u0, v0, u1, v1]…], down: […], etch: { lines, circles, arcs } }: a flat
+  // pattern's bend lines (Bend Lines - Up / Down) and etch marks (unless the detail's Show etch marks is off) inside a
+  // detail circle or rectangle profile, in the flat's frame, clipped exactly as the detail clips the blank's outline
+  function flatDetailLines(fd, dt, v) {
+    function blank() { return { lines: { visible: [], hidden: [] }, circles: { visible: [], hidden: [] }, arcs: { visible: [], hidden: [] }, ellipses: { visible: [], hidden: [] } }; }
+    var bp = blank(), ep = blank();
+    (fd.bends || []).forEach(function (b) { if (b.a && b.b) (b.up ? bp.lines.visible : bp.lines.hidden).push([b.a[0], b.a[1], b.b[0], b.b[1], 0]); });
+    if (!v || v.showEtch !== false) (fd.etch || []).forEach(function (it) {
+      if (it.t === 'line') ep.lines.visible.push([it.a[0], it.a[1], it.b[0], it.b[1], 0]);
+      else if (it.t === 'circle') ep.circles.visible.push({ c: it.c.slice(), r: it.r, body: 0 });
+      else if (it.t === 'arc') ep.arcs.visible.push({ c: it.c.slice(), r: it.r, a0: it.a0, a1: it.a1, body: 0 });
+      else if (it.t === 'poly' && it.pts && it.pts.length > 1) for (var i = 0; i + 1 < it.pts.length + (it.closed ? 1 : 0); i++) { var p = it.pts[i], q = it.pts[(i + 1) % it.pts.length]; ep.lines.visible.push([p[0], p[1], q[0], q[1], 0]); }
+    });
+    function clip(pr) {
+      if (dt.shape === 'profile' && dt.a && dt.b) {
+        var R = [Math.min(dt.a[0], dt.b[0]), Math.min(dt.a[1], dt.b[1]), Math.max(dt.a[0], dt.b[0]), Math.max(dt.a[1], dt.b[1])];
+        return clipProjectionPoly(pr, [[R[0], R[1]], [R[2], R[1]], [R[2], R[3]], [R[0], R[3]]]);
+      }
+      return clipProjection(pr, dt.c, dt.r);
+    }
+    var b = clip(bp), e = clip(ep);
+    return { up: b.lines.visible, down: b.lines.hidden, etch: { lines: e.lines.visible, circles: e.circles.visible, arcs: e.arcs.visible } };
   }
   // (rfCQ) profilePts(dt) -> a profile detail's boundary (model units of the parent's frame, counter-clockwise): the
   // sketched polygon, or the rectangle's four corners; null for a circle
@@ -2854,6 +3054,7 @@
   }
   // (rfCX)
   D.addRemovedSection = addRemovedSection; D.isRemovedSection = isRemoved; _.removedContent = removedContent; _.followParentScale = followParentScale; D.convexPieces = convexPieces; _.clipLoopsPoly = clipLoopsPoly;
+  _.flatDetailLines = flatDetailLines;   // (rfPH)
   _.detailHalf = detailHalf; _.detailProfileContent = detailProfileContent; _.detailOpts = detailOpts; _.detailProfile = detailProfile; _.detailOutline = detailOutline;
   _.resolveSectionScale = resolveSectionScale; _.sectionRel = sectionRel; _.partialContent = partialContent; _.isTrueView = isTrueView;
   D.DETAIL_STYLES = DETAIL_STYLES; D.setSectionOptions = setSectionOptions; D.trueLength = trueLength; D.setDimType = setDimType; D.resolveSectionScale = resolveSectionScale;
@@ -2861,6 +3062,7 @@
   _.auxSlide = auxSlide; _.carryAux = carryAux; _.viewPositions = positions;
   D.setSectionType = setSectionType; D.sectionSteps = sectionSteps; D.alignedLegs = alignedLegs; D.pathSectionOf = pathSectionOf;
   D.auxFrame = auxFrame; D.addAuxiliaryView = addAuxiliaryView; D.setCrop = setCrop; D.addBreak = addBreak; D.clearBreaks = clearBreaks;
+  D.BREAK_STYLES = BREAK_STYLES; D.breakLinePrims = breakLinePrims; D.breakLinePoints = breakLinePoints;   // (rfPH)
   D.clipProjectionRect = clipProjectionRect; D.bandMap = bandMap; D.clipProjectionPoly = clipProjectionPoly;
   _.profilePts = profilePts; _.rayOut = rayOut; _.clipLayerToPoly = clipLayerToPoly;   // (rfCQ)
 

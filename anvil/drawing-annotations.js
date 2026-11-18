@@ -3296,7 +3296,7 @@
       }
       var p = pick || [c[0] + o, c[1] + o];
       out.push({ k: 'text', p: p, h: tth, text: row.tag, anchor: 'start', layer: AL, rot: 0, holeTable: id });
-      out[out.length - 1].holeTag = row.tag;
+      out[out.length - 1].holeTag = row.tag; out[out.length - 1].tagC = c;   // (rfPH: a broken view moves a tag with its hole)
       if (row.dangling) out[out.length - 1].color = 'dangling';
       tagBoxes.push({ x0: p[0], y0: p[1], x1: p[0] + tw, y1: p[1] + tth });
     });
@@ -3306,6 +3306,7 @@
     // (rfKT) the X / Y labels are kept clear by the dimensions too (an ordinate set's 0 stood on the Y of a top-left origin)
     out.slice(n0).forEach(function (x) { if (x.k === 'text') { var lw = textWidth(x.text, x.h), lx = x.anchor === 'middle' ? x.p[0] - lw / 2 : x.p[0]; tagBoxes.push({ x0: lx, y0: x.p[1], x1: lx + lw, y1: x.p[1] + x.h }); } });
     if (R.dangling) for (var di = n0; di < out.length; di++) out[di].color = 'dangling';
+    for (var oi = n0; oi < out.length; oi++) out[oi].htOrigin = Os;   // (rfPH: and the origin arrows with the origin)
     var nTags = out.length;
     // the table: TAG / X LOC / Y LOC / SIZE, a row per hole (a size of several lines: a taller row), merged cells
     var colW = HT_COLS.map(function (c) { return c[1] * k; });

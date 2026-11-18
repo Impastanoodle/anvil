@@ -381,8 +381,10 @@
   function detailClick(p) {
     var P = D.pending;
     if (P.parent == null) {
-      var w = parentAt(p);
-      if (!w) { UI.setStatus('Detail View: click inside a model, projected or section view.'); return; }
+      // (rfPH) a flat-pattern view takes a detail too (a notch or relief of the blank)
+      var w = viewAt(p);
+      if (w && (w.view.kind === 'detail' || w.view.kind === 'empty')) w = null;
+      if (!w) { UI.setStatus('Detail View: click inside a model, projected, section or flat-pattern view.'); return; }
       P.parent = w.view.id; P.c = w.fromSheet(p); P.cp = p;
       P.profile = !!(P.pm && P.pm.shape === 'profile');   // (rfZ) a rectangle profile: two opposite corners
       UI.setStatus(P.profile ? 'Detail View: click the opposite corner of the profile rectangle.' : 'Detail View: click to set the radius of the detail circle.');
@@ -1034,6 +1036,8 @@
         { label: 'Bend Notes ▸ None', checked: bn === 'none', action: function () { setFlatViewProps(v.id, { bendNotes: 'none' }); } },
         { label: 'FLAT SIZE Note', checked: v.flatSize != null ? !!v.flatSize : Drawing.docOptions(doc()).flatSizeNote, action: function () { setFlatViewProps(v.id, { flatSize: !(v.flatSize != null ? v.flatSize : Drawing.docOptions(doc()).flatSizeNote) }); } },
         { label: 'Show Etch Marks', checked: v.showEtch !== false, action: function () { setFlatViewProps(v.id, { showEtch: v.showEtch === false }); } },
+        { sep: true },
+        { label: 'Un-Break View', disabled: !(v.breaks && v.breaks.length), action: function () { unBreak(v.id); } },   // (rfPH) a broken flat
         { sep: true },
         ].concat(moveToSheetItems(v), [{ label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }]);
     }
@@ -2428,19 +2432,23 @@
       groups: [{ title: 'Broken View Settings', fields: [
         { type: 'select', key: 'dir', label: 'Break lines', options: [['vertical', 'Add vertical break line'], ['horizontal', 'Add horizontal break line']] },
         { type: 'number', key: 'gap', label: 'Gap size', unit: 'u', min: 0 },
-        { type: 'select', key: 'style', label: 'Break line style', options: [['zigzag', 'Zig Zag Cut'], ['straight', 'Straight Cut']] }
+        // (rfPH) SolidWorks 2024's five: Straight Cut, Curve Cut, Zig Zag Cut, Small Zig Zag Cut, Jagged Cut
+        { type: 'select', key: 'style', label: 'Break line style', options: Drawing.BREAK_STYLES.map(function (s) { return s.slice(); }) }
       ] }],
       onOK: function (val) {
-        startTool('brk', { dir: val.dir === 'horizontal' ? 'horizontal' : 'vertical', gap: +val.gap >= 0 ? +val.gap : (inch ? 0.4 : 10), style: val.style === 'straight' ? 'straight' : 'zigzag', view: null, a: null });
+        var st = Drawing.BREAK_STYLES.some(function (s) { return s[0] === val.style; }) ? val.style : 'zigzag';
+        startTool('brk', { dir: val.dir === 'horizontal' ? 'horizontal' : 'vertical', gap: +val.gap >= 0 ? +val.gap : (inch ? 0.4 : 10), style: st, view: null, a: null });
         UI.setStatus('Break: click in a view where the first break line goes. Esc cancels.');
       }
     });
   }
+  // (rfPH) the views a break goes in: every view with model geometry but a detail view (a flat pattern too)
+  function breakViewAt(p) { var w = viewAt(p); return w && w.view.kind !== 'detail' && w.view.kind !== 'empty' ? w : null; }
   function breakClick(p) {
     var P = D.pending, ax = P.dir === 'horizontal' ? 1 : 0;
     if (P.view == null) {
-      var w = parentAt(p);
-      if (!w) { UI.setStatus('Break: click inside a model, projected, section or auxiliary view.'); return; }
+      var w = breakViewAt(p);
+      if (!w) { UI.setStatus('Break: click inside a model, projected, section, auxiliary or flat-pattern view.'); return; }
       P.view = w.view.id; P.a = w.fromSheet(p)[ax];
       UI.setStatus('Break: click where the second break line goes.');
       return;
@@ -2511,16 +2519,11 @@
     var t = (p[0] - c.x) * c.d[0] + (p[1] - c.y) * c.d[1];
     return { x: c.x + c.d[0] * t, y: c.y + c.d[1] * t, w: c.w, h: c.h, d: c.d, m: m };
   }
-  // a break line across view w at sheet coordinate s (x for vertical breaks, y for horizontal), zig zag or straight
+  // a break line across view w at sheet coordinate s (x for vertical breaks, y for horizontal) in the break's style:
+  // (rfPH) the same shape the sheet draws (Drawing.breakLinePoints), so the preview is what OK gives
   function breakLinePts(w, dir, s, style) {
     var ext = 3 * paperK(), v = dir !== 'horizontal', lo = (v ? w.box.y0 : w.box.x0) - ext, hi = (v ? w.box.y1 : w.box.x1) + ext;
-    var pts = [[lo, 0]];
-    if (style !== 'straight') {
-      var mid = (lo + hi) / 2, amp = 2 * paperK(), step = 2.5 * paperK();
-      pts.push([mid - 2 * step, 0], [mid - step, amp], [mid + step, -amp], [mid + 2 * step, 0]);
-    }
-    pts.push([hi, 0]);
-    return pts.map(function (q) { return v ? [s + q[1], q[0]] : [q[0], s + q[1]]; });
+    return Drawing.breakLinePoints(v ? [s, lo] : [lo, s], v ? [s, hi] : [hi, s], style, paperK());
   }
   function liveOverlay(g, H, node, ghost) {
     var P = D.pending, sw = pxToPaper(2), dash = pxToPaper(12) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3);
@@ -2546,7 +2549,7 @@
       if (P.shape === 'circle') { var r = Math.hypot(b[0] - a[0], b[1] - a[1]); node('circle', { class: 'dw-cut dw-crop', cx: a[0], cy: H - a[1], r: r, fill: 'none', 'stroke-width': sw }, g); D.preview = { kind: 'crop', shape: 'circle', c: a.slice(), r: r }; }
       else { node('rect', { class: 'dw-cut dw-crop', x: Math.min(a[0], b[0]), y: H - Math.max(a[1], b[1]), width: Math.abs(b[0] - a[0]), height: Math.abs(b[1] - a[1]), fill: 'none', 'stroke-width': sw }, g); D.preview = { kind: 'crop', shape: 'rect', a: a.slice(), b: b.slice() }; }
     } else if (D.tool === 'brk') {
-      var w = P.view != null ? sheetView(P.view) : parentAt(P.at), ax = P.dir === 'horizontal' ? 1 : 0;
+      var w = P.view != null ? sheetView(P.view) : breakViewAt(P.at), ax = P.dir === 'horizontal' ? 1 : 0;
       if (!w) return;
       var lines = [];
       if (P.view != null) lines.push(w.toSheet(P.dir === 'horizontal' ? [0, P.a] : [P.a, 0])[ax]);
