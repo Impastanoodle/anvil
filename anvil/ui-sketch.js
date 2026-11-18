@@ -3053,7 +3053,7 @@
     function S(uv) { return UI.worldToScreen(K.to3D(pl, uv[0], uv[1])); }
     function unit(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
     var out = { lines: [], arrows: [], value: g.value, label: (g.prefix === '⌀' ? 'Ø' : g.prefix) + fmtDim(g.value) };   // r14/sketchui14: Century Gothic's Ø (it has no ⌀): the full-height diameter sign of SolidWorks' dimensions
-    if (UI.dimLabelText) out.label = UI.dimLabelText(d, g.value, g.prefix === '⌀' ? 'dia' : g.prefix === 'R' ? 'r' : 'len');   // sketchdims: tolerance, precision, text, radius / diameter
+    if (UI.dimShownText) out.label = UI.dimShownText(d, g.value, g.prefix === '⌀' ? 'dia' : g.prefix === 'R' ? 'r' : 'len');   // sketchdims: tolerance, precision, text, radius / diameter; rfPJ: and the dual value
     if (g.type === 'linear') {
       var ld = linearDimScreen(pl, g.P, g.Q, g.dir, d.off, d.tx);
       ld.value = g.value; ld.label = out.label;
@@ -3778,7 +3778,9 @@
     function layout(turn) {
       radialTurnOn = turn; radialTurned = false; dimSegs = null; prevLabels = null;
       for (var pass = 0; pass < (busy ? 1 : 3); pass++) {
-        labelBoxes = []; drawnLabels = []; dimSegsNow = []; drawnOwners = {};
+        // rfPJ: boxes that stay where they are, taken first (the ordinate sets' "0", drawn over the layer by
+        // ui-sketch-dims.js: a Ø label with its dual value landed on it zoomed out)
+        labelBoxes = UI.sketchFixedLabelBoxes ? UI.sketchFixedLabelBoxes() : []; drawnLabels = []; dimSegsNow = []; drawnOwners = {};
         rcBegin(dimLayer, dimLayer.firstChild);
         try { out = drawDimsIn(f); } finally { rcEnd(); }
         // rfOH: or a label landed on a label drawn after it (an ordinate value on a linear dimension's text)

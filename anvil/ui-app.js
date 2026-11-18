@@ -544,6 +544,29 @@
       };
       kv4.appendChild(el('span', { text: 'Primary precision (' + (m.units === 'in' ? 'in' : 'mm') + ')' })); kv4.appendChild(precSel(false));
       kv4.appendChild(el('span', { text: 'Angular precision (°)' })); kv4.appendChild(precSel(true));
+      // rfPJ: Dimensions ▸ Dual dimensions display and Units ▸ Dual Dimension Length (as the drawing's Document
+      // Properties, lane drawdual): saved in the part (model.dualDimensions), an undo step, redraws every dimension
+      if (UI.setDocDualDims) {
+        var du = UI.docDualDims(), setDu = function (o) { UI.setDocDualDims(o); tpProps(body); };
+        var duOn = el('input', { type: 'checkbox', 'data-role': 'dual-on' }); duOn.checked = du.on;
+        duOn.addEventListener('change', function () { setDu({ on: duOn.checked }); });
+        var duSU = el('input', { type: 'checkbox', 'data-role': 'dual-units-shown' }); duSU.checked = du.showUnits; duSU.disabled = !du.on;
+        duSU.addEventListener('change', function () { setDu({ showUnits: duSU.checked }); });
+        var duPos = el('select', { 'data-role': 'dual-pos', title: 'Where the dual value goes' }); duPos.disabled = !du.on;
+        [['right', 'Right'], ['left', 'Left'], ['top', 'Top'], ['bottom', 'Bottom']].forEach(function (x) { var o = el('option', { value: x[0], text: x[1] }); if (du.pos === x[0]) o.selected = true; duPos.appendChild(o); });
+        duPos.addEventListener('change', function () { setDu({ pos: duPos.value }); });
+        var duU = el('select', { 'data-role': 'dual-unit' });
+        [['in', 'Inches'], ['mm', 'Millimeters']].forEach(function (x) { var o = el('option', { value: x[0], text: x[1] }); if (du.units === x[0]) o.selected = true; duU.appendChild(o); });
+        duU.addEventListener('change', function () { setDu({ units: duU.value, prec: '' }); });
+        var duP = el('select', { 'data-role': 'dual-prec' });
+        for (var dp = 0; dp <= UI.DIM_MAX_PREC; dp++) { var o2 = el('option', { value: String(dp), text: UI.dimPrecText(dp) }); if (dp === du.prec) o2.selected = true; duP.appendChild(o2); }
+        duP.addEventListener('change', function () { setDu({ prec: +duP.value }); });
+        kv4.appendChild(el('span', { text: 'Dual dimensions display' })); kv4.appendChild(duOn);
+        kv4.appendChild(el('span', { text: 'Show units for dual display' })); kv4.appendChild(duSU);
+        kv4.appendChild(el('span', { text: 'Dual position' })); kv4.appendChild(duPos);
+        kv4.appendChild(el('span', { text: 'Dual Dimension Length unit' })); kv4.appendChild(duU);
+        kv4.appendChild(el('span', { text: 'Dual Dimension Length decimals' })); kv4.appendChild(duP);
+      }
       body.appendChild(kv4);
       body.appendChild(el('p', { html: '<small>Decimal places of every dimension set to Document in its PropertyManager (defaults: inch .123, mm .12, angles .12).</small>' }));
     }

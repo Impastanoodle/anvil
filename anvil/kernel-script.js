@@ -1028,6 +1028,22 @@
     if (Object.keys(out).length) this.model.dimPrecision = out; else delete this.model.dimPrecision;
     return this;
   };
+  // rfPJ: Document Properties > Dimensions > Dual dimensions display of a part (the graphics area's dimensions show the
+  // value in the other unit system too, ui-sketch-dims.js): dualDimensions({ on, units: 'in' | 'mm', prec: 0 ... 8,
+  // pos: 'right' | 'left' | 'top' | 'bottom', showUnits }) -> model.dualDimensions with the defaults left out (the other
+  // system, mm .12 / inch .123, right, no unit text); off with nothing else set removes it. Call it after units().
+  Builder.prototype.dualDimensions = function (o) {
+    o = o || {};
+    var out = {}, other = this.model.units === 'in' ? 'mm' : 'in';
+    if (o.on) out.on = true;
+    if ((o.units === 'in' || o.units === 'mm') && o.units !== other) out.units = o.units;
+    var u = out.units || other;
+    if (o.prec != null && o.prec !== '' && +o.prec >= 0 && Math.min(8, Math.round(+o.prec)) !== (u === 'mm' ? 2 : 3)) out.prec = Math.min(8, Math.round(+o.prec));
+    if (o.pos === 'left' || o.pos === 'top' || o.pos === 'bottom') out.pos = o.pos;
+    if (o.showUnits) out.showUnits = true;
+    if (Object.keys(out).length) this.model.dualDimensions = out; else delete this.model.dualDimensions;
+    return this;
+  };
   // equations({ T: 10, W: '=T*2' }) or equations([{ name, expr }]): the model's global variables, in order (replaces
   // any earlier list). Numbers are stored as their string. The object form drops a leading "="; the array form (what
   // generateScript writes) keeps each expr string exactly, so a script round trip reproduces model.equations.
@@ -2008,6 +2024,8 @@
     if (Array.isArray(model.levels) && model.levels.length) out.push('p.levels(' + JSON.stringify(model.levels) + (model.mainLevel != null ? ', ' + JSON.stringify(model.mainLevel) : '') + ');');
     var dpr = model.dimPrecision;   // rfIF: written only when the part has its own
     if (dpr && (dpr.linear != null || dpr.angular != null)) out.push('p.dimPrecision(' + JSON.stringify({ linear: dpr.linear, angular: dpr.angular }) + ');');
+    var ddu = model.dualDimensions;   // rfPJ: written only when the part has one
+    if (ddu && typeof ddu === 'object' && Object.keys(ddu).length) out.push('p.dualDimensions(' + JSON.stringify(ddu) + ');');
     scriptSections.forEach(function (sec) { if (sec.head) out = out.concat(sec.head(model) || []); });
     // equations first, so every "=" field below resolves against them; the array form keeps each expr string exactly
     if (Array.isArray(model.equations) && model.equations.length) out.push('p.equations(' + JSON.stringify(model.equations) + ');');

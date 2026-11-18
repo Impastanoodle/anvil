@@ -362,12 +362,15 @@ if (typeof UI !== 'undefined') (function (UI) {
   }
   function angBetween(a, b) { return Math.acos(Math.max(-1, Math.min(1, V.dot(a, b)))); }
 
-  // the measured dimension, ready to draw: { kind, value, text, anchor, ... } or null
+  // rfPJ: the text drawn: with the part's Dual dimensions display on, the value in the other unit system after it
+  // (ui-sketch-dims.js; text stays the primary value for the status line and the stored dimension)
+  function dualOf(text, value) { return UI.dimDualText ? UI.dimWithDual(text, UI.dimDualText(null, value, 'len')) : text; }
+  // the measured dimension, ready to draw: { kind, value, text, label (drawn), anchor, ... } or null
   function measure(dim, prs) {
     var kind = dim.kind, off = dim.off || [0, 0, 0], u = UI.unitLabel();
     if (kind === 'dia' || kind === 'rad') {
-      var c = prs[0], r = c.r, value = kind === 'dia' ? 2 * r : r;
-      return { kind: kind, value: value, text: (kind === 'dia' ? 'Ø' : 'R') + UI.fmtDim(value), C: c.c, n: c.n, r: r, xdir: c.xdir, anchor: c.c, unit: u };
+      var c = prs[0], r = c.r, value = kind === 'dia' ? 2 * r : r, tx0 = (kind === 'dia' ? 'Ø' : 'R') + UI.fmtDim(value);
+      return { kind: kind, value: value, text: tx0, label: dualOf(tx0, value), C: c.c, n: c.n, r: r, xdir: c.xdir, anchor: c.c, unit: u };
     }
     if (kind === 'ang') {
       var g = angleGeom(prs, off);
@@ -376,7 +379,8 @@ if (typeof UI !== 'undefined') (function (UI) {
     }
     var anchor = anchorOf(kind, prs), lg = linearGeom(kind, prs, off, dim.mode);
     if (!lg) return null;
-    return { kind: kind, value: lg.value, text: UI.fmtDim(lg.value), P: lg.P, Q: lg.Q, d: lg.d, anchor: anchor, unit: u };
+    var tx1 = UI.fmtDim(lg.value);
+    return { kind: kind, value: lg.value, text: tx1, label: dualOf(tx1, lg.value), P: lg.P, Q: lg.Q, d: lg.d, anchor: anchor, unit: u };
   }
 
   // resolved prims per dimension, per mesh
@@ -490,7 +494,7 @@ if (typeof UI !== 'undefined') (function (UI) {
       var x = m.xdir && Math.abs(V.dot(m.xdir, n)) < 1e-6 ? V.norm(m.xdir) : perpOf(n), y = V.cross(n, x);
       var ang = V.len(oIn) > 1e-12 ? Math.atan2(V.dot(oIn, y), V.dot(oIn, x)) * 180 / Math.PI : 45;
       var pl = { origin: m.C, x: x, y: y, n: n }, sc = UI.radialDimScreen(pl, [0, 0], m.r, ang, V.len(oIn));
-      sc.label = m.text;
+      sc.label = m.label || m.text;
       return UI.dimLayout(sc);
     }
     if (m.kind === 'ang') {
@@ -511,7 +515,7 @@ if (typeof UI !== 'undefined') (function (UI) {
       lines.push([sX, r1], [sX, r2p]);
       function u2(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
       var arrows = arrowPath(pts[0], u2(pts[1], pts[0])) + arrowPath(pts[nseg], u2(pts[nseg - 1], pts[nseg]));
-      var mid = pts[Math.round(nseg / 2)], dirOut = u2(sX, mid), w = UI.dimTextWidth ? UI.dimTextWidth(m.text) : m.text.length * 7;
+      var mid = pts[Math.round(nseg / 2)], dirOut = u2(sX, mid), w = UI.dimTextWidth ? UI.dimTextWidth(m.label || m.text) : (m.label || m.text).length * 7;
       var tx = mid[0] + dirOut[0] * (w / 2 + 6), ty = mid[1] + dirOut[1] * 10 + 4;
       return { d: pathOf(lines), arrows: arrows, text: { x: tx, y: ty, anchor: 'middle' } };
     }
@@ -520,7 +524,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     var oy = V.len(o) > 1e-12 ? V.norm(o) : perpOf(d), h = V.dot(V.sub(Wl, m.P), oy);
     var plL = { origin: m.P, x: d, y: oy, n: V.cross(d, oy) }, Q2 = [V.dot(V.sub(m.Q, m.P), d), V.dot(V.sub(m.Q, m.P), oy)];
     var scL = UI.linearDimScreen(plL, [0, 0], Q2, [1, 0], h, null);
-    scL.label = m.text;
+    scL.label = m.label || m.text;
     return UI.dimLayout(scL);
   }
   function drawOne(dim, m, cls) {
@@ -534,7 +538,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     var at = lay ? lay.text : null;
     if (!at) { var sp = S(dim.at || [0, 0, 0]); at = { x: sp[0], y: sp[1], anchor: 'middle' }; }
     var tx = svg('text', { x: r2(at.x), y: r2(at.y), 'text-anchor': at.anchor || 'middle' }, g);
-    tx.textContent = m ? m.text : (dim.text || '?');
+    tx.textContent = m ? m.label || m.text : (dim.text || '?');
     if (cls.indexOf('temp') < 0) {
       tx.addEventListener('mousedown', function (ev) { if (ev.button !== 0) return; ev.stopPropagation(); ev.preventDefault(); pressLabel(dim, ev); });
       tx.addEventListener('dblclick', function (ev) { ev.stopPropagation(); ev.preventDefault(); });
@@ -742,7 +746,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   UI.modelDims = function () {
     return dims().map(function (d) {
       var m = measured(d);
-      return { id: d.id, kind: d.kind, mode: d.mode || null, value: m ? m.value : null, text: m ? m.text : null, dangling: !m, selected: d.id === md.selId };
+      return { id: d.id, kind: d.kind, mode: d.mode || null, value: m ? m.value : null, text: m ? m.text : null, label: m ? m.label || m.text : null, dangling: !m, selected: d.id === md.selId };
     });
   };
   UI.modelDimSelect = function (id) { md.selId = findDim(id) ? id : null; redraw(); return md.selId; };

@@ -1467,7 +1467,9 @@ if (typeof UI !== 'undefined') (function (UI) {
   function computeHandles() {
     if (!App.model || !App.build || !App.mesh || drawingOn() || isAsm()) return [];
     if (App.mode === 'part' && UI.hasPM && UI.hasPM()) return pmHandleObjects();   // r4/features4: PropertyManager handles, Instant3D on or off
-    if (!i3d.on || App.mode === 'sketch') return [];
+    // rfPJ: a feature whose dimensions a double-click showed (ui-commands.js UI.showFeatureDims, rfPE) has them with
+    // Instant3D off too, as SolidWorks (no switching Instant3D on behind the button)
+    if ((!i3d.on && !(UI.featureDimsShown && UI.featureDimsShown() != null)) || App.mode === 'sketch') return [];
     if (App.mode !== 'part' || App.command || (UI.hasPM && UI.hasPM())) return [];
     var list = selection();
     if (list.length !== 1) return [];
@@ -1521,6 +1523,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     var P = function (uv) { return S(K.to3D(pl, uv[0], uv[1])); };
     var dg = svg('g', { 'class': 'i3d-dim' }, g), label, at;
     var text = (gg.prefix === '⌀' ? 'Ø' : gg.prefix) + dimText(v != null ? v : gg.value);
+    if (UI.dimDualText) text = UI.dimWithDual(text, UI.dimDualText({ dual: h.dim.dual }, v != null ? v : gg.value, 'len'));   // rfPJ: the dual value, as in the sketch
     // r14/sketchui14: laid out exactly as the sketch's own dimensions (ui-sketch.js dimLayout): SolidWorks ANSI,
     // Century Gothic, the text horizontal in a break of the line, slim arrows, radius / diameter leaders with a shoulder
     var sc = UI.dimLayout && (gg.type === 'linear' ? UI.linearDimScreen(pl, gg.P, gg.Q, gg.dir, h.off, null) : UI.radialDimScreen(pl, gg.C, gg.r, h.dim.ang, null));
@@ -1553,7 +1556,7 @@ if (typeof UI !== 'undefined') (function (UI) {
       at = [T[0], T[1] - 4];
     }
     label = svg('text', { x: at[0], y: at[1], 'text-anchor': 'middle', 'class': 'i3d-dim-text' }, dg);
-    label.textContent = (gg.prefix === '⌀' ? 'Ø' : gg.prefix) + dimText(v != null ? v : gg.value);
+    label.textContent = text;
     label.addEventListener('mousedown', function (ev) { ev.stopPropagation(); ev.preventDefault(); openEdit(h); });
     label.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });
   }

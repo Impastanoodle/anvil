@@ -8383,7 +8383,7 @@
 //   Instant3D layer of the selected feature (ui-select.js computeHandles: the sketch's dimensions, the depth / angle /
 //   parameter arrows), each arrow's value written beside it as a dimension text; a click (or double-click) on a
 //   dimension opens its Modify box (Enter rebuilds). Esc or a click in empty space clears the selection and hides them.
-//   With Instant3D off the double-click holds it on while they are shown (see releaseForced).
+//   With Instant3D off they are shown too (ui-select.js computeHandles reads UI.featureDimsShown(), rfPJ).
 // - The context toolbar (UI.partContextToolbar): a click on a feature row or on a face of the part (no command open)
 //   shows SolidWorks' small toolbar by the pointer (ui-assembly.js pop-up, kind 'ctx': it fades as the pointer goes
 //   and closes past 180 px, on Esc, on the next selection).
@@ -8441,22 +8441,12 @@
     if (s.kind === 'face' && App.mesh && App.triShared) { var fc = App.mesh.faces[s.index]; return fc ? App.triShared[fc.start] : null; }
     return null;
   }
-  // SolidWorks shows them with Instant3D off too: ui-select.js draws a selected feature's dimensions only with Instant3D
-  // on, so a double-click with it off turns it on for as long as they are shown (the ribbon button and
-  // UI.instant3DOn() keep saying off) and back off when they go. (A line in ui-select.js computeHandles reading
-  // UI.featureDimsShown() would do this without the switch.)
-  var forced = false, baseI3DOn = null, baseI3DToggle = null;
-  function releaseForced() {
-    if (!forced) return;
-    forced = false;
-    var st = document.getElementById('status-msg'), keep = st ? st.textContent : null;
-    if (baseI3DToggle) baseI3DToggle(false);
-    if (keep != null) UI.setStatus(keep);
-  }
+  // SolidWorks shows them with Instant3D off too: ui-select.js computeHandles draws them while UI.featureDimsShown()
+  // names the feature, whatever Instant3D is (rfPJ; the button and UI.instant3DOn() are left alone)
   function shownId() {
-    if (!fd) { releaseForced(); return null; }
+    if (!fd) return null;
     var list = UI.selection ? UI.selection() : (App.sel ? [App.sel] : []);
-    if (!idle() || list.length !== 1 || ownerOf(list[0]) !== fd.id || !K.findFeature(App.model, fd.id)) { fd = null; releaseForced(); return null; }
+    if (!idle() || list.length !== 1 || ownerOf(list[0]) !== fd.id || !K.findFeature(App.model, fd.id)) { fd = null; return null; }
     return fd.id;
   }
   UI.featureDimsShown = shownId;
@@ -8469,10 +8459,9 @@
     App.sel = { kind: 'feature', id: f.id }; App.sel2 = null; App.multi = [];
     UI.updateHighlights(); if (UI.refreshTree) UI.refreshTree();
     fd = { id: f.id };
-    if (baseI3DOn && !baseI3DOn() && baseI3DToggle) { var st = document.getElementById('status-msg'), keep = st ? st.textContent : ''; baseI3DToggle(true); forced = true; UI.setStatus(keep); }
     // (a dimension seen end-on is left out by ui-select.js: a feature that has some still counts as shown)
     var hs = dimHandles();
-    if (!hs.length && !(DIM_TYPES[f.type] && !(f.type === 'flange' && (f.hem || f.miterFlange)))) { fd = null; releaseForced(); return false; }
+    if (!hs.length && !(DIM_TYPES[f.type] && !(f.type === 'flange' && (f.hem || f.miterFlange)))) { fd = null; return false; }
     App.dimsStale = true; if (UI.requestRender) UI.requestRender();
     UI.setStatus(f.name + ': ' + (hs.length ? hs.length + ' dimension' + (hs.length === 1 ? '' : 's') + ' shown. Click or double-click one to change it (Enter rebuilds); Esc or a click in empty space hides them.' : 'its dimensions are seen end-on in this view: turn the view to see them.'));
     return true;
@@ -8498,6 +8487,7 @@
       tx.setAttribute('class', 'i3d-dim-text pe-fdim'); tx.setAttribute('x', at[0].toFixed(2)); tx.setAttribute('y', at[1].toFixed(2)); tx.setAttribute('text-anchor', 'middle');
       var val = parseFloat(m[1]);   // written as the sketch's dimensions are (ui-sketch.js fmtDim: 1.000 in an inch part)
       tx.textContent = m[2] === '°' ? UI.fmtNum(val, 2) + '°' : UI.fmtDim ? UI.fmtDim(val) : m[1];
+      if (m[2] !== '°' && UI.dimDualText) tx.textContent = UI.dimWithDual(tx.textContent, UI.dimDualText(null, val, 'len'));   // rfPJ: the dual value
       tx.addEventListener('mousedown', function (ev) {
         if (ev.button !== 0) return;
         ev.stopPropagation(); ev.preventDefault();
@@ -8514,10 +8504,6 @@
   document.addEventListener('DOMContentLoaded', function () {
     var base = UI.drawDims;
     if (base) UI.drawDims = function () { var r = base.apply(this, arguments); try { drawValues(); } catch (e) { /* an overlay: never break the dimensions */ } return r; };
-    // Instant3D as the user set it (the ribbon button, scripts) while a double-click holds it on
-    baseI3DOn = UI.instant3DOn; baseI3DToggle = UI.toggleInstant3D;
-    if (baseI3DOn) UI.instant3DOn = function () { return forced ? false : baseI3DOn.apply(this, arguments); };
-    if (baseI3DToggle) UI.toggleInstant3D = function (on) { if (forced) { forced = false; if (on == null) on = true; } return baseI3DToggle.call(this, on); };
     // a selection change from outside (Esc, a click in empty space) hides them at once
     var baseHL = UI.updateHighlights;
     if (baseHL) UI.updateHighlights = function () { var r = baseHL.apply(this, arguments); if (fd && shownId() == null) App.dimsStale = true; return r; };

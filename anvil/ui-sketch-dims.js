@@ -134,6 +134,71 @@
     return pre + main + suf;
   }
   UI.dimLabelText = dimLabelText;
+
+  // ------------------------------------------------------------------ dual dimensions (rfPJ, lane sketchdual)
+  // SolidWorks' Document Properties ▸ Dimensions ▸ Dual dimensions display for a part: every length dimension in the
+  // graphics area (sketch Smart Dimensions, distance / arc length / path length / chamfer / ordinate values, the sketch
+  // dimensions and feature values Instant3D and a double-click on a feature show) also shows its value in the other
+  // unit system in square brackets, as the sheets do (drawing-annotations.js dualLab, lane drawdual): 1.000 [25.40].
+  // Angles are not doubled (a chamfer's 'D X A' doubles its distance only), nor a Ø / R sign; a symmetric, bilateral or
+  // limit tolerance is converted with the value. Stored in the part as model.dualDimensions = { on, units, prec, pos,
+  // showUnits } (defaults are not stored: units the other system, mm .12 / inch .123, pos 'right', no unit text); a
+  // dimension's own d.dual (true / false: its Dimension PM's Dual Dimension box) overrides `on`. The graphics area writes
+  // the pair on one line ('left': '[25.40] 1.000'; 'top' / 'bottom' as 'right': the labels' layout is one line).
+  // Status messages, the Modify box and the Value boxes keep the primary value only.
+  var DUAL_POS = ['right', 'left', 'top', 'bottom'];
+  function docDual() {
+    var m = App.model || {}, o = m.dualDimensions || {}, du = inch() ? 'mm' : 'in';
+    var u = o.units === 'in' || o.units === 'mm' ? o.units : du;
+    var p = o.prec != null && o.prec !== '' && +o.prec >= 0 ? Math.min(MAX_PREC, Math.round(+o.prec)) : u === 'mm' ? 2 : 3;
+    return { on: !!o.on, units: u, prec: p, pos: DUAL_POS.indexOf(o.pos) >= 0 ? o.pos : 'right', showUnits: !!o.showUnits };
+  }
+  // setDocDual({ on?, units?, prec?, pos?, showUnits? }): null / '' = the default; an undo step unless unchanged; redraws
+  function setDocDual(o) {
+    o = o || {};
+    var m = App.model, cur = m.dualDimensions || {}, next = {};
+    function val(k) { return k in o ? o[k] : cur[k]; }
+    if (val('on')) next.on = true;
+    var u = val('units'); if ((u === 'in' || u === 'mm') && u !== (inch() ? 'mm' : 'in')) next.units = u;
+    var uu = next.units || (inch() ? 'mm' : 'in'), p = val('prec');
+    if (p != null && p !== '' && +p >= 0 && Math.min(MAX_PREC, Math.round(+p)) !== (uu === 'mm' ? 2 : 3)) next.prec = Math.min(MAX_PREC, Math.round(+p));
+    var ps = val('pos'); if (DUAL_POS.indexOf(ps) > 0) next.pos = ps;
+    if (val('showUnits')) next.showUnits = true;
+    if (JSON.stringify(next) === JSON.stringify(m.dualDimensions || {})) return false;
+    UI.pushUndo();
+    if (Object.keys(next).length) m.dualDimensions = next; else delete m.dualDimensions;
+    App.dimsStale = true;
+    if (UI.refreshDimensionPM) UI.refreshDimensionPM();
+    if (UI.autosave) UI.autosave();
+    if (UI.requestRender) UI.requestRender();
+    return true;
+  }
+  function dualOn(d) { return d && d.dual != null ? !!d.dual : docDual().on; }
+  function dualNum(x, st) {
+    var f = st.units === (inch() ? 'in' : 'mm') ? 1 : st.units === 'mm' ? 25.4 : 1 / 25.4, t = Math.abs(x * f).toFixed(st.prec);
+    if (st.units === 'in') { t = t.replace(/^0\./, '.'); if (+t === 0) t = '0'; }
+    return (x < 0 && +t !== 0 ? '-' : '') + t + (st.showUnits ? st.units : '');
+  }
+  // the bracketed dual value of a length (kind 'len' | 'dia' | 'r' | 'arclen'), or '' (an angle, dual off)
+  function dimDualText(d, value, kind) {
+    if (kind === 'angle' || value == null || !isFinite(value) || !dualOn(d)) return '';
+    d = d || {};
+    var st = docDual(), v = value;
+    if (kind === 'dia' && d.show === 'r') v /= 2; else if (kind === 'r' && d.show === 'dia') v *= 2;
+    var tol = d.tol && d.tol.type, p = Math.abs(+(d.tol && d.tol.plus) || 0), mm = Math.abs(+(d.tol && d.tol.minus) || 0), t = dualNum(v, st);
+    if (tol === 'symmetric') t += ' ±' + dualNum(p, st);
+    else if (tol === 'bilateral') t += ' +' + dualNum(p, st) + ' -' + dualNum(mm, st);
+    else if (tol === 'limit') t = dualNum(v + p, st) + '/' + dualNum(v - mm, st);
+    return '[' + t + ']';
+  }
+  // a label with its dual value where the document puts it: '1.000 [25.40]' ('[25.40] 1.000' with the position Left)
+  function withDual(label, dual) {
+    if (!dual) return label;
+    return docDual().pos === 'left' ? dual + ' ' + label : label + ' ' + dual;
+  }
+  // the text a dimension is drawn with in the graphics area: dimLabelText plus the dual value
+  function dimShownText(d, value, kind) { return withDual(dimLabelText(d, value, kind), dimDualText(d, value, kind)); }
+  UI.docDualDims = docDual; UI.setDocDualDims = setDocDual; UI.dimDualText = dimDualText; UI.dimWithDual = withDual; UI.dimShownText = dimShownText;
   // the factor between the value a dimension stores and the one it shows (a circle's diameter shown as its radius: 0.5)
   UI.dimShowScale = function (d) {
     if (!d || !d.show || d.e == null || d.type) return 1;
@@ -294,7 +359,7 @@
       else if (R < e.r - gap) out.lines.push([at(a, R - ext), at(a, e.r - gap)]);
     });
     var value = rel.driven || rel.v == null ? S.measure(f, 'arclength', rel.refs) : rel.v;
-    out.label = dimLabelText(rel, value, 'arclen');
+    out.label = dimShownText(rel, value, 'arclen');   // rfPJ: with its dual value
     if (rel.driven) out.label = '(' + out.label + ')';
     var mid = at(e.a0 + sw / 2, R);
     out.text = { x: mid[0], y: mid[1] + (UI.DIM_CAP || 9.4) / 2, anchor: 'middle' };
@@ -362,6 +427,7 @@
       v.prefix = d.prefix || '';
       v.suffix = d.suffix || '';
       v.show = it.kindText === 'dia' || it.kindText === 'r' ? (d.show || (it.kindText === 'dia' ? 'dia' : 'r')) : '';
+      v.dual = dualOn(d);   // rfPJ
       var ac = Array.isArray(d.ac) ? d.ac : [];
       v.ac0 = ac[0] || 'c'; v.ac1 = ac[1] || 'c';
       return it;
@@ -393,7 +459,10 @@
             { label: 'TYP', onclick: function () { setText('suffix', ' TYP'); } },
             { label: 'REF', onclick: function () { setText('suffix', ' REF'); } },
             { label: 'Clear', onclick: function () { setText('prefix', ''); setText('suffix', ''); } }
-          ] }
+          ] },
+          // rfPJ: SolidWorks' Dual Dimension box: the value in the other unit system too ([25.40]); starts as the
+          // part's Dual dimensions display, stored only where it differs
+          { type: 'check', key: 'dual', label: 'Dual Dimension', show: function () { return info.kindText !== 'angle'; } }
         ] }
       ],
       onChange: function (x, key) { if (key) apply(key); },
@@ -450,6 +519,8 @@
         return;
       } else if (key === 'prefix' || key === 'suffix') {
         if (v[key]) d[key] = v[key]; else delete d[key];
+      } else if (key === 'dual') {
+        if (!!v.dual === docDual().on) delete d.dual; else d.dual = !!v.dual;   // rfPJ
       } else if (key === 'show') {
         var natural = it.kind === 'dim' && d.k === 'dia' ? 'dia' : 'r';
         if (v.show === natural) delete d.show; else d.show = v.show;
@@ -996,7 +1067,7 @@
     var axis = set.axis, ai = axis === 'x' ? 0 : 1, oi = 1 - ai, s = (UI.cam && UI.cam.scale) || 0.1, cap = UI.DIM_CAP || 9.4;
     var items = [{ idx: -1, ref: set.zero, label: '0' }];
     set.members.forEach(function (i) {
-      var rel = f.rels[i], value = rel.v != null && !rel.driven ? rel.v : S.measure(f, rel.type, rel.refs, rel.dir, rel.sup, rel.ac), lab = dimLabelText(rel, value, 'len');
+      var rel = f.rels[i], value = rel.v != null && !rel.driven ? rel.v : S.measure(f, rel.type, rel.refs, rel.dir, rel.sup, rel.ac), lab = dimShownText(rel, value, 'len');   // rfPJ: each value its dual
       items.push({ idx: i, ref: rel.refs[1], label: rel.driven ? '(' + lab + ')' : lab, rel: rel });
     });
     var at = set.at;
@@ -1135,6 +1206,20 @@
       layer.appendChild(t);
     });
   }
+  // rfPJ: the zeros' ink boxes, for the dimension layout to keep the other labels off (ui-sketch.js drawDims takes them
+  // before any label: the zero stays where its set puts it)
+  UI.sketchFixedLabelBoxes = function () {
+    var f = UI.activeSketchFeature(), out = [];
+    if (!f || App.mode !== 'sketch' || !(f.rels || []).some(function (r) { return r.ord != null; })) return out;
+    var pl = UI.activePlane(), sets = S.ordinateSets(f), cap = UI.DIM_CAP || 9.4, w = UI.dimTextWidth ? UI.dimTextWidth('0') : 7;
+    Object.keys(sets).forEach(function (id) {
+      var L = ordLayout(f, pl, sets[id]), z = L && L.zero;
+      if (!z) return;
+      var x0 = z.text.anchor === 'middle' ? z.text.x - w / 2 : z.text.anchor === 'end' ? z.text.x - w : z.text.x;
+      out.push([x0, z.text.y - cap, x0 + w, z.text.y]);
+    });
+    return out;
+  };
   if (UI.drawDims) {
     var baseDrawDimsOrd = UI.drawDims;
     UI.drawDims = function () { var r = baseDrawDimsOrd.apply(this, arguments); try { drawOrdZeros(); } catch (e) { /* the zeros are an overlay: never break the dimensions */ } return r; };
@@ -1328,13 +1413,15 @@
       var d = info.d;
       if (props) {
         markDirty();
-        ['name', 'tol', 'prec', 'prefix', 'suffix', 'show', 'ac'].forEach(function (k) { if (k in props) { if (props[k] == null || props[k] === '') delete d[k]; else d[k] = clone(props[k]); } });
+        ['name', 'tol', 'prec', 'prefix', 'suffix', 'show', 'ac', 'dual'].forEach(function (k) { if (k in props) { if (props[k] == null || props[k] === '') delete d[k]; else d[k] = clone(props[k]); } });
         if ('ac' in props && d.type === 'distance') { var m = S.measure(info.f, d.type, d.refs, d.dir, d.sup, d.ac); if (m != null) d.v = m; }
         refresh();
       }
       var it = dimInfo({ d: d });
-      return { name: fullName(info.f, d), value: it.value, shown: it.shown, label: dimLabelText(d, it.value, it.kindText), tol: d.tol || null, prec: d.prec != null ? d.prec : null, prefix: d.prefix || '', suffix: d.suffix || '', show: d.show || null, ac: d.ac || null, driven: !!d.driven };
+      return { name: fullName(info.f, d), value: it.value, shown: it.shown, label: dimLabelText(d, it.value, it.kindText), tol: d.tol || null, prec: d.prec != null ? d.prec : null, prefix: d.prefix || '', suffix: d.suffix || '', show: d.show || null, ac: d.ac || null, driven: !!d.driven, dual: d.dual != null ? !!d.dual : null, text: dimShownText(d, it.value, it.kindText) };   // rfPJ: dual, text (as drawn, with the dual value)
     };
+    // rfPJ: the part's Dual dimensions display: anvil.dualDimensions({ on: true, pos: 'left' }) sets, () reads
+    window.anvil.dualDimensions = function (o) { if (o) setDocDual(o); return docDual(); };
   }
 
   // ------------------------------------------------------------------ rfAQ: Chamfer, Path Length, Angular Running dimensions
@@ -1375,8 +1462,8 @@
       // SolidWorks' "0.100 X 45°": the distance (with its tolerance), X, the angle; text before / after round the pair
       var ang = S.chamferShownAngle(f, rel), core = dimLabelText(Object.assign({}, rel, { prefix: '', suffix: '' }), value, 'len');
       var pre = rel.prefix ? String(rel.prefix).replace(/\s*$/, ' ') : '', suf = rel.suffix ? String(rel.suffix).replace(/^\s*/, ' ') : '';
-      lab = pre + core + (ang != null ? ' X ' + fmtVal(ang, rel.prec, true) + '°' : '') + suf;
-    } else lab = dimLabelText(rel, value, 'len');
+      lab = withDual(pre + core + (ang != null ? ' X ' + fmtVal(ang, rel.prec, true) + '°' : '') + suf, dimDualText(rel, value, 'len'));   // rfPJ: the distance's dual (.100 X 45° [2.54], as the sheets)
+    } else lab = dimShownText(rel, value, 'len');
     return rel.driven ? '(' + lab + ')' : lab;
   }
   function unit2(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }

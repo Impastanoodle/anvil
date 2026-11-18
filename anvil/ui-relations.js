@@ -621,6 +621,7 @@
     var label = rel.type === 'angle' ? UI.fmtNum(value, 2) + '°' : UI.fmtDim ? UI.fmtDim(value) : UI.fmtNum(value, 2);   // p9-sketch: inch distances read like the other dimensions (.500)
     if (UI.dimLabelText) label = UI.dimLabelText(rel, value, rel.type === 'angle' ? 'angle' : 'len');   // sketchdims: tolerance, precision, text
     if (rel.type === 'distance' && Array.isArray(rel.ac) && rel.ac.indexOf('dbl') >= 0 && !rel.prefix) label = 'Ø' + label;   // rfKU: SolidWorks' linear diameter dimension
+    if (UI.dimDualText && rel.type !== 'angle') label = UI.dimWithDual(label, UI.dimDualText(rel, value, 'len'));   // rfPJ: the dual value
     if (rel.driven) label = '(' + label + ')';
     if (g.type === 'distance') {
       var ld = UI.linearDimScreen(pl, g.P, g.Q, g.dir, rel.off, rel.tx);
