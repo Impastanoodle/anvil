@@ -229,6 +229,10 @@
     var f = UI.activeSketchFeature(), d = f && (kind === 'rel' ? (f.rels || [])[index] : (f.dims || [])[index]);
     return d ? fullName(f, d) : null;
   };
+  // lane sketchflow6 (rfPR): any sketch's dimensions and their names, for equations that name a sketch dimension
+  // ("=D1/2", '="D1@Sketch1"/2'; the tail IIFE of this file)
+  UI.sketchDimItems = dimList;
+  UI.sketchDimShortName = dimName;
 
   // ------------------------------------------------------------------ the dimension a selection names
   // { f, kind: 'dim' | 'rel', index, d, kindText: 'len' | 'dia' | 'r' | 'angle' | 'arclen', value (stored), shown
@@ -502,10 +506,13 @@
       markDirty();
       if (key === 'name') {
         // the name typed (D1@Sketch1 or just D1); the default name (D<n> by order) is not stored
-        var nm = String(v.name || '').replace(/@.*$/, '').trim(), was = d.name;
+        var nm = String(v.name || '').replace(/@.*$/, '').trim(), was = d.name, oldFull = fullName(f, d);
+        // rfPR: a dimension an equation names keeps its name stored (a default D<n> moves when one before it goes)
+        var named = UI.sketchDimReferenced ? UI.sketchDimReferenced(oldFull) : false;
         delete d.name;
-        if (nm && nm !== dimName(f, d)) d.name = nm;
-        else if (!nm && was) UI.setStatus('A dimension needs a name: it keeps ' + dimName(f, d) + '.');
+        if (nm && (nm !== dimName(f, d) || named)) d.name = nm;
+        else if (!nm && was) { if (named) d.name = was; UI.setStatus('A dimension needs a name: it keeps ' + dimName(f, d) + '.'); }
+        if (fullName(f, d) !== oldFull && UI.renameSketchDimRefs) UI.renameSketchDimRefs(oldFull, fullName(f, d));
       } else if (key === 'tolType' || key === 'plus' || key === 'minus') {
         if (v.tolType === 'none') delete d.tol;
         else d.tol = { type: v.tolType, plus: Math.abs(+v.plus || 0), minus: v.tolType === 'symmetric' ? Math.abs(+v.plus || 0) : Math.abs(+v.minus || 0) };
@@ -2350,29 +2357,153 @@
     var vars = {};
     try { vars = (K.resolveEquations(model) || {}).vars || {}; } catch (e) { return 0; }
     var changed = 0, bad = [];
-    model.features.forEach(function (f) {
-      if (!f || f.type !== 'sketch') return;
-      (f.dims || []).forEach(function (d, i) {
-        if (!d || !d.expr || !f.entities[d.e]) return;
-        var v; try { v = K.evalExpression(String(d.expr), vars); } catch (e) { return; }
-        var sc = UI.dimShowScale ? UI.dimShowScale(d) : 1, cur = K.dimValue(f.entities[d.e], d) * sc;
-        if (!(isFinite(v) && v > 0) || Math.abs(v - cur) < 1e-9 * Math.max(1, Math.abs(v))) return;
-        var r = S.setDim(f, i, v / sc);
-        if (r && r.ok) changed++; else bad.push(f.name + ' ' + d.expr);
+    // rfPR: an equation may name another sketch dimension, which may itself follow one: passes until nothing moves
+    // (a chain D3 = D2 / 2, D2 = D1 * 2 settles in two; a loop is refused when it is typed, eight passes at most)
+    for (var pass = 0; pass < 8; pass++) {
+      var moved = 0;
+      model.features.forEach(function (f) {
+        if (!f || f.type !== 'sketch') return;
+        (f.dims || []).forEach(function (d, i) {
+          if (!d || !d.expr || !f.entities[d.e]) return;
+          var v = evalLinked(d.expr, f, model, vars);
+          if (v == null) return;
+          var sc = showScale(f, d), cur = K.dimValue(f.entities[d.e], d) * sc;
+          if (!(isFinite(v) && v > 0) || Math.abs(v - cur) < 1e-9 * Math.max(1, Math.abs(v))) return;
+          var r = S.setDim(f, i, v / sc);
+          if (r && r.ok) moved++; else if (bad.indexOf(f.name + ' ' + d.expr) < 0) bad.push(f.name + ' ' + d.expr);
+        });
+        (f.rels || []).forEach(function (rel, i) {
+          if (!rel || !rel.expr || rel.v == null) return;
+          var v = evalLinked(rel.expr, f, model, vars);
+          if (v == null || !isFinite(v) || Math.abs(v - rel.v) < 1e-9 * Math.max(1, Math.abs(v))) return;
+          var r = S.setRelValue(f, i, v);
+          if (r && r.ok) moved++; else if (bad.indexOf(f.name + ' ' + rel.expr) < 0) bad.push(f.name + ' ' + rel.expr);
+        });
       });
-      (f.rels || []).forEach(function (rel, i) {
-        if (!rel || !rel.expr || rel.v == null) return;
-        var v; try { v = K.evalExpression(String(rel.expr), vars); } catch (e) { return; }
-        if (!isFinite(v) || Math.abs(v - rel.v) < 1e-9 * Math.max(1, Math.abs(v))) return;
-        var r = S.setRelValue(f, i, v);
-        if (r && r.ok) changed++; else bad.push(f.name + ' ' + rel.expr);
-      });
-    });
+      changed += moved;
+      if (!moved) break;
+    }
     if (bad.length && UI.setStatus) UI.setStatus('Linked sketch dimension' + (bad.length > 1 ? 's' : '') + ' not changed (the sketch cannot take the value): ' + bad.join(', ') + '.');
     if (changed && App.mode === 'sketch') { App.gridStale = true; App.dimsStale = true; UI.updateSketches(); }
     return changed;
   }
   UI.syncSketchDimExprs = function () { return syncSketchDimExprs(App.model); };
+
+  // ---- rfPR (lane sketchflow6): equations that name sketch dimensions. SolidWorks' Modify box takes
+  // ="D1@Sketch1"/2 (a click on a dimension while typing inserts its name); Anvil also takes the name without quotes and,
+  // for the open sketch, without "@Sketch1" (=D1/2). The dimension keeps the equation (Σ before its value) in the
+  // canonical form "D1@Sketch1"/2, stored without the "=" (the kernel evaluates every "=" string of a feature with global
+  // variables only: kernel-equations.js resolveValue / sketchWithExprs) and follows D1 at once and at every rebuild; the dimension named keeps its name
+  // stored from then on (default names D<n> are counted by order and would move when one before it is deleted).
+  function showScale(f, d) {
+    if (!d || !d.show || d.e == null || d.type) return 1;
+    if (d.k === 'dia' && d.show === 'r') return 0.5;
+    if (d.k === 'r' && d.show === 'dia') return 2;
+    return 1;
+  }
+  function itemValue(f, it) {
+    if (it.kind === 'dim') { var e = f.entities[it.d.e]; return e ? K.dimValue(e, it.d) * showScale(f, it.d) : null; }
+    return it.d.v != null ? +it.d.v : null;
+  }
+  function sketchesOf(model) { return ((model && model.features) || []).filter(function (x) { return x && x.type === 'sketch'; }); }
+  // "D1@Sketch1" (or "D1" in sketch `here`) -> { f, it, full } or null; a stored name wins over a default D<n>
+  function findDim(model, name, here) {
+    var m = /^\s*([^@]+?)\s*(?:@\s*(.+?)\s*)?$/.exec(String(name));
+    if (!m) return null;
+    var f = m[2] ? sketchesOf(model).filter(function (x) { return x.name === m[2]; })[0] : here;
+    if (!f || !UI.sketchDimItems) return null;
+    var items = UI.sketchDimItems(f);
+    var it = items.filter(function (x) { return x.d.name != null && String(x.d.name) === m[1]; })[0] ||
+      items.filter(function (x) { return x.d.name == null && UI.sketchDimShortName(f, x.d) === m[1]; })[0];
+    return it ? { f: f, it: it, full: m[1] + '@' + f.name } : null;
+  }
+  // text "=…" as typed or stored, in sketch f -> null (it names no sketch dimension) or { refs: [{ f, it, full }],
+  // expr (the evaluator's text: placeholders for the dimensions), vars, canon (the text to keep) } or { error }
+  function parseLinked(text, f, model, gvars, stored) {
+    var s = String(text == null ? '' : text).trim();
+    if (!/^=/.test(s)) { if (!stored || !s) return null; s = '=' + s; }
+    gvars = gvars || {};
+    var refs = [], vars = {}, err = null;
+    function isGlobal(n) { return Object.prototype.hasOwnProperty.call(gvars, n); }
+    function sub(name, quoted) {
+      var hit = findDim(model, name, f);
+      if (!hit) { if (quoted || /@/.test(name)) err = err || 'Unknown dimension "' + name + '"'; return null; }
+      var id = '_sd' + refs.length;
+      vars[id] = itemValue(hit.f, hit.it);
+      refs.push(hit);
+      return { id: id, canon: '"' + hit.full + '"' };
+    }
+    var canon = '', expr = '';
+    var body = s.replace(/^=\s*/, ''), re = /"([^"]*)"|([A-Za-z_]\w*@\w+)|([A-Za-z_]\w*)(?=\s*(\()?)/g, last = 0, m;
+    while ((m = re.exec(body))) {
+      var lit = body.slice(last, m.index); canon += lit; expr += lit; last = re.lastIndex;
+      var r = null, keep = m[0];
+      if (m[1] != null) {
+        if (!/@/.test(m[1]) && isGlobal(m[1])) { canon += m[0]; expr += m[1]; continue; }
+        r = sub(m[1], true);
+      } else if (m[2] != null) r = sub(m[2], true);
+      else if (!m[4] && !isGlobal(m[3]) && m[3] !== 'pi' && m[3] !== 'e') r = sub(m[3], false);
+      if (r) { canon += r.canon; expr += r.id; } else { canon += keep; expr += keep; }
+    }
+    canon += body.slice(last); expr += body.slice(last);
+    if (err) return { error: err };
+    if (!refs.length) return null;
+    var all = {}; Object.keys(gvars).forEach(function (k) { all[k] = gvars[k]; }); Object.keys(vars).forEach(function (k) { all[k] = vars[k]; });
+    return { refs: refs, expr: '=' + expr, vars: all, canon: canon };
+  }
+  function evalLinked(text, f, model, gvars) {
+    var p = parseLinked(text, f, model, gvars, true);
+    try {
+      if (!p) return K.evalExpression(String(text), gvars);
+      if (p.error) return null;
+      return K.evalExpression(p.expr, p.vars);
+    } catch (e) { return null; }
+  }
+  function globals() { return UI.equationVars ? UI.equationVars() : {}; }
+  // does an equation of `holder` (in sketch f) lead back to it through the dimensions it names?
+  function loops(holder, refs, model) {
+    var seen = [], todo = refs.slice();
+    while (todo.length) {
+      var r = todo.pop();
+      if (r.it.d === holder) return true;
+      if (seen.indexOf(r.it.d) >= 0 || !r.it.d.expr) continue;
+      seen.push(r.it.d);
+      var p = parseLinked(r.it.d.expr, r.f, model, globals(), true);
+      if (p && p.refs) todo = todo.concat(p.refs);
+    }
+    return false;
+  }
+  // the Modify box (ui-sketch.js parseDimInput / closeDimEdit): ctx { f, holder } -> null (no sketch dimension named:
+  // the box's own parsing) or { value, canon } or { error }
+  UI.sketchDimEquation = function (text, ctx) {
+    var f = ctx && ctx.f || UI.activeSketchFeature();
+    if (!f) return null;
+    var p = parseLinked(text, f, App.model, globals());
+    if (!p) return null;
+    if (p.error) return { error: p.error };
+    if (ctx && ctx.holder && loops(ctx.holder, p.refs, App.model)) return { error: 'The equation names the dimension it drives (directly or through another dimension).' };
+    var v;
+    try { v = K.evalExpression(p.expr, p.vars); } catch (e) { return { error: (e && e.message) || String(e) }; }
+    if (typeof v !== 'number' || !isFinite(v)) return { error: 'Not a number: ' + text };
+    return { value: v, canon: p.canon, refs: p.refs.map(function (r) { return r.full; }), pin: p.refs };
+  };
+  // the dimensions an equation names keep their names stored
+  UI.pinSketchDimNames = function (refs) {
+    (refs || []).forEach(function (r) { if (r.it.d.name == null) r.it.d.name = UI.sketchDimShortName(r.f, r.it.d); });
+  };
+  function allExprHolders(model) {
+    var out = [];
+    sketchesOf(model).forEach(function (f) {
+      (f.dims || []).concat(f.rels || []).forEach(function (d) { if (d && d.expr) out.push({ f: f, d: d }); });
+    });
+    return out;
+  }
+  UI.sketchDimReferenced = function (full) {
+    return allExprHolders(App.model).some(function (h) { return String(h.d.expr).indexOf('"' + full + '"') >= 0; });
+  };
+  UI.renameSketchDimRefs = function (from, to) {
+    allExprHolders(App.model).forEach(function (h) { h.d.expr = String(h.d.expr).split('"' + from + '"').join('"' + to + '"'); });
+  };
   var baseRebuild = UI.rebuild;
   UI.rebuild = function () { try { syncSketchDimExprs(App.model); } catch (e) { console.error('linked dimensions: ' + (e && e.message)); } return baseRebuild.apply(this, arguments); };
 })();

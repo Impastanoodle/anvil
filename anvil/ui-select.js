@@ -1160,13 +1160,33 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (!ents.length) return deleteSelection0.apply(this, arguments);
     var n0 = [f.entities.length, (f.rels || []).length, (f.dims || []).length];
     var names = ents.length === 1 && window.SketchSolver ? SketchSolver.refName(f, String(ents[0].index)) : ents.length + ' entities';
+    // rfPR (lane sketchflow6): a centerline a mirrored half is held Symmetric about: the joins those relations held
+    // become Coincidents (SketchSolver.mirrorAxisJoins), so the copy keeps its shape, as SolidWorks' shared points do
+    var gone0 = ents.map(function (s) { return s.index; }), joins = [];
+    if (window.SketchSolver && SketchSolver.mirrorAxisJoins) gone0.forEach(function (i) { SketchSolver.mirrorAxisJoins(f, i).forEach(function (r) { joins.push(r); }); });
     var out = deleteSelection0.apply(this, arguments);
-    var g = UI.activeSketchFeature() || f, gone = n0[0] - g.entities.length;
+    var g = UI.activeSketchFeature() || f, gone = n0[0] - g.entities.length, added = 0;
+    if (gone > 0 && joins.length && g === f) {
+      var shift = function (r) {
+        var e = +String(r).split('.')[0];
+        if (gone0.indexOf(e) >= 0) return null;
+        return String(e - gone0.filter(function (k) { return k < e; }).length) + String(r).slice(String(e).length);
+      };
+      joins.forEach(function (rel) {
+        var refs = rel.refs.map(shift);
+        if (refs.some(function (r) { return r == null; })) return;
+        var dup = (g.rels || []).some(function (x) { return x.type === 'coincident' && x.refs.length === 2 && ((x.refs[0] === refs[0] && x.refs[1] === refs[1]) || (x.refs[0] === refs[1] && x.refs[1] === refs[0])); });
+        if (dup) return;
+        (g.rels = g.rels || []).push({ type: 'coincident', refs: refs });
+        added++;
+      });
+      if (added) UI.updateSketches();
+    }
     if (gone > 0) {
-      var dd = n0[2] - (g.dims || []).length, rr = n0[1] - (g.rels || []).length, extra = [];
+      var dd = n0[2] - (g.dims || []).length, rr = n0[1] - (g.rels || []).length + added, extra = [];
       if (dd > 0) extra.push(dd + ' dimension' + (dd > 1 ? 's' : ''));
       if (rr > 0) extra.push(rr + ' relation' + (rr > 1 ? 's' : ''));
-      UI.setStatus('Deleted ' + names + (extra.length ? ' with ' + extra.join(' and ') + ' on ' + (gone > 1 ? 'them' : 'it') : '') + '. ' + (App.sketchState && window.SketchSolver ? SketchSolver.STATUS_TEXT[App.sketchState.status] + '.' : ''));
+      UI.setStatus('Deleted ' + names + (extra.length ? ' with ' + extra.join(' and ') + ' on ' + (gone > 1 ? 'them' : 'it') : '') + '. ' + (added ? 'The mirrored copy keeps its ' + added + ' join' + (added > 1 ? 's' : '') + ' (Coincident). ' : '') + (App.sketchState && window.SketchSolver ? SketchSolver.STATUS_TEXT[App.sketchState.status] + '.' : ''));
     }
     return out;
   };

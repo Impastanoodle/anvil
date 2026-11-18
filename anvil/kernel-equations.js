@@ -272,10 +272,13 @@
   // sketch before each rebuild (UI.syncSketchDimExprs); resolvedModel does it too, on a copy, so the kernel alone (the
   // headless runner, a configuration's flat pattern) builds each configuration with its own values. Dimension names
   // follow ui-sketch-dims.js: D<n> in the order Smart Dimensions, then the dimension relations, unless d.name is set.
+  var DIM_REL_TYPES = { distance: 1, angle: 1, arclength: 1, chamfer: 1, pathlength: 1, runangle: 1 };
   function sketchDimItems(sk) {
     var out = [], T = typeof SketchSolver !== 'undefined' && SketchSolver.TYPES;
     (sk.dims || []).forEach(function (d, i) { if (d) out.push({ src: 'dim', index: i, d: d }); });
-    (sk.rels || []).forEach(function (r, i) { if (r && T && T[r.type] && T[r.type].dim) out.push({ src: 'rel', index: i, d: r }); });
+    // rfPR: the worker has no SketchSolver until a sketch needs one: the dimension relation types are known here too,
+    // or D<n> numbering and named relations went missing there (an equation naming a distance: Unknown dimension)
+    (sk.rels || []).forEach(function (r, i) { if (r && (T && T[r.type] ? T[r.type].dim : DIM_REL_TYPES[r.type])) out.push({ src: 'rel', index: i, d: r }); });
     out.forEach(function (it, k) { it.name = it.d.name ? String(it.d.name) : 'D' + (k + 1); });
     return out;
   }
@@ -288,17 +291,65 @@
   }
   var sketchSolveCache = [];
   // sketchWithExprs(orig, r, vars) -> null (nothing to change), { sketch } (a solved copy of r) or { error }
-  function sketchWithExprs(orig, r, vars) {
-    var items = sketchDimItems(orig).filter(function (it) { return it.d.expr && isExpression(String(it.d.expr)) && !it.d.driven; });
-    if (!items.length) return null;
-    var todo = [];
-    for (var i = 0; i < items.length; i++) {
-      var it = items[i], v;
-      try { v = evalExpression(String(items[i].d.expr), vars); } catch (e) { return { error: it.name + '@' + orig.name + ': ' + (e.message || String(e)) }; }
-      if (!isFinite(v)) return { error: it.name + '@' + orig.name + ' is not a number' };
-      var cur = sketchDimValue(orig, it);
-      if (!(Math.abs(v - cur) <= 1e-9 * Math.max(1, Math.abs(v)))) todo.push({ it: it, v: v });
+  // rfPR (lane sketchflow6): an equation naming sketch dimensions, as the Modify box keeps it ("D1@Sketch1"/2, stored
+  // without its "=" so resolveValue leaves it alone; ui-sketch-dims.js parseLinked): the quoted or X@Sketch names, and a
+  // bare name that is no variable, constant or function, of sketch `here`, become placeholder variables valued by
+  // value(name, sketchName). Returns the expression for evalExpression and its variables, or null (no name in it).
+  function linkedExpr(text, hereName, vars, value) {
+    var s = String(text == null ? '' : text).trim().replace(/^=\s*/, ''), named = false, own = {}, n = 0, err = null;
+    Object.keys(vars || {}).forEach(function (k) { own[k] = vars[k]; });
+    function sub(name, strict) {
+      var m = /^\s*([^@]+?)\s*(?:@\s*(.+?)\s*)?$/.exec(name), v = m ? value(m[1], m[2] || hereName) : null;
+      if (v == null || !isFinite(v)) { if (strict) err = err || 'Unknown dimension "' + name + '"'; return null; }
+      var id = '_sd' + (n++); own[id] = v; named = true; return id;
     }
+    var out = s.replace(/"([^"]*)"|([A-Za-z_]\w*@\w+)|([A-Za-z_]\w*)(?=\s*(\()?)/g, function (m0, q, at, id, call) {
+      if (q != null) { if (!/@/.test(q) && Object.prototype.hasOwnProperty.call(own, q)) return q; return sub(q, true) || m0; }
+      if (at != null) return sub(at, true) || m0;
+      if (call || Object.prototype.hasOwnProperty.call(own, id) || EXPR_CONST.hasOwnProperty(id)) return m0;
+      return sub(id, false) || m0;
+    });
+    if (err) throw new Error(err);
+    return named ? { expr: out, vars: own } : null;
+  }
+  // value(name, sketchName) for linkedExpr: a dimension's value in that sketch, from `targets` (values this resolve is
+  // setting, keyed sketch name -> item name) first, then the resolved sketches (`done`), then the model
+  function dimLookup(model, done, targets) {
+    return function (name, skName) {
+      var tk = targets && targets[skName];
+      if (tk && Object.prototype.hasOwnProperty.call(tk, name)) return tk[name];
+      var sk = done && done[skName];
+      if (!sk) sk = (model.features || []).filter(function (x) { return x && x.type === 'sketch' && x.name === skName; })[0];
+      if (!sk) return null;
+      var items = sketchDimItems(sk), it = items.filter(function (x) { return x.d.name != null && String(x.d.name) === name; })[0] || items.filter(function (x) { return x.d.name == null && x.name === name; })[0];
+      return it ? sketchDimValue(sk, it) : null;
+    };
+  }
+  function linkedItem(d) { var s = d && d.expr != null ? String(d.expr) : ''; return !!s && (isExpression(s) || /"|@/.test(s)); }
+  function sketchWithExprs(orig, r, vars, ctx) {
+    var items = sketchDimItems(orig).filter(function (it) { return it.d.expr && linkedItem(it.d) && !it.d.driven; });
+    if (!items.length) return null;
+    // rfPR: values in passes, so an equation of another linked dimension of this sketch reads its new value
+    var mine = {}, look = dimLookup(ctx && ctx.model || { features: [orig] }, ctx && ctx.done, (function () { var o = {}; o[orig.name] = mine; return o; })());
+    var vals = [];
+    for (var pass = 0; pass < 8; pass++) {
+      var moved = false;
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i], v;
+        try {
+          var lk = linkedExpr(it.d.expr, orig.name, vars, look);
+          v = lk ? evalExpression(lk.expr, lk.vars) : evalExpression(String(it.d.expr), vars);
+        } catch (e) { return { error: it.name + '@' + orig.name + ': ' + (e.message || String(e)) }; }
+        if (!isFinite(v)) return { error: it.name + '@' + orig.name + ' is not a number' };
+        if (vals[i] == null || Math.abs(vals[i] - v) > 1e-12 * Math.max(1, Math.abs(v))) { vals[i] = v; mine[it.name] = v; moved = true; }
+      }
+      if (!moved) break;
+    }
+    var todo = [];
+    items.forEach(function (it, i) {
+      var v = vals[i], cur = sketchDimValue(orig, it);
+      if (!(Math.abs(v - cur) <= 1e-9 * Math.max(1, Math.abs(v)))) todo.push({ it: it, v: v });
+    });
     if (!todo.length) return null;
     var S = typeof SketchSolver !== 'undefined' ? SketchSolver : null;
     var what = todo.map(function (t) { return t.it.name + '@' + orig.name + ' = ' + (Math.round(t.v * 1e6) / 1e6); }).join(', ');
@@ -345,14 +396,16 @@
     var eq = resolveEquations(model), vars = eq.vars, featureErrors = {}, sheetError = null;
     var rm = {}, sup = suppressedIds(model);   // rfFC: suppressed features (own, per configuration, with their children)
     Object.keys(model).forEach(function (k) { rm[k] = model[k]; });
+    var done = {};   // rfPR: sketch name -> its resolved copy, for equations naming an earlier sketch's dimensions
     rm.features = model.features.map(function (f) {
       if (sup[f.id]) return f.suppressed ? f : suppressedCopy(f, true);
       var r = f;
       if (hasExpressions(f)) try { r = resolveFeature(f, vars); } catch (e) { featureErrors[f.id] = e.message || String(e); }
       if (f.type === 'sketch' && !featureErrors[f.id]) {   // rfOD: sketch dimensions linked to variables (Design Table)
-        var sx = sketchWithExprs(f, r, vars);
+        var sx = sketchWithExprs(f, r, vars, { model: model, done: done });
         if (sx && sx.error) featureErrors[f.id] = sx.error; else if (sx) r = sx.sketch;
       }
+      if (f.type === 'sketch' && f.name) done[f.name] = r;
       return f.suppressed ? suppressedCopy(r, false) : r;   // rfFC: unsuppressed in the active configuration
     });
     if (model.sheet && hasExpressions(model.sheet)) {

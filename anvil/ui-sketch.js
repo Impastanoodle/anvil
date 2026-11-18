@@ -2043,8 +2043,37 @@
       else { typedMade.push(d); if (typedMade.length > 200) typedMade.shift(); }
     });
     if (f.dims && !f.dims.length) delete f.dims;
+    var angled = e.t === 'line' && typed.ang != null && typedAngleDim(f, idx);
     App.dimsStale = true;
-    if (list.length) UI.updateSketches();
+    if (list.length || angled) UI.updateSketches();
+  }
+  // rfPR (lane sketchflow6): an angle typed in the Line tool's on-screen box (Tab, then the angle) is kept as a driving
+  // angle dimension, as the typed length is, unless the line came out horizontal or vertical (those relations hold the
+  // angle): the angle to the line the segment starts from (the chain's previous segment), placed inside the corner.
+  // The first segment of a chain has no line to measure from and gets none. A dimension that would over-define is not
+  // added. Only a value typed (Create dimension only when value is entered / on-screen numeric input as for lengths).
+  function typedAngleDim(f, idx) {
+    var S = window.SketchSolver, e = f.entities[idx];
+    if (!S || !e || e.t !== 'line' || !UI.relDimPlacement) return false;
+    var hv = (f.rels || []).some(function (r) { return (r.type === 'horizontal' || r.type === 'vertical') && r.refs.length === 1 && r.refs[0] === String(idx); });
+    if (hv) return false;
+    var P = [e.x1, e.y1], prev = -1, far = null;
+    for (var j = f.entities.length - 1; j >= 0 && prev < 0; j--) {
+      var g = f.entities[j];
+      if (j === idx || !g || g.t !== 'line' || g.construction) continue;
+      var ends = [[g.x1, g.y1], [g.x2, g.y2]];
+      for (var k = 0; k < 2; k++) if (Math.abs(ends[k][0] - P[0]) < 1e-9 && Math.abs(ends[k][1] - P[1]) < 1e-9) { prev = j; far = ends[1 - k]; }
+    }
+    if (prev < 0) return false;
+    var u1 = [far[0] - P[0], far[1] - P[1]], u2 = [e.x2 - e.x1, e.y2 - e.y1], l1 = Math.hypot(u1[0], u1[1]), l2 = Math.hypot(u2[0], u2[1]);
+    if (!(l1 > 0 && l2 > 0) || Math.abs(u1[0] * u2[1] - u1[1] * u2[0]) / (l1 * l2) < 1e-6) return false;
+    var bis = [u1[0] / l1 + u2[0] / l2, u1[1] / l1 + u2[1] / l2], bl = Math.hypot(bis[0], bis[1]) || 1, rr = 0.35 * Math.min(l1, l2);
+    var at = [P[0] + bis[0] / bl * rr, P[1] + bis[1] / bl * rr], rel = { type: 'angle', refs: [String(prev), String(idx)] };
+    var pl = UI.relDimPlacement(f, rel, at);
+    var n0 = (f.rels || []).length, r = S.addRelation(f, 'angle', rel.refs, { off: pl.off, sup: pl.sup, q: pl.q, ta: pl.ta });
+    if (!r || !r.ok) return false;
+    if (r.status !== 'ok') { f.rels.splice(n0); if (!f.rels.length) delete f.rels; S.solve(f); return false; }
+    return true;
   }
   // The closed loop of lines / arcs through entity idx (end to end, within 1e-6), or null: [{ i, fwd }] in order, fwd =
   // the entity is run p1 -> p2 along the loop.
@@ -3671,6 +3700,24 @@
   function dropFrame(id) { if (UI.beforeFrame) UI.cancelBeforeFrame(id); else cancelAnimationFrame(id); }
   function dimPress(ev, it) {
     if (ev.button !== 0) return;
+    // rfPR: as SolidWorks, with "=" typed in the Modify box a click on another dimension puts its name in the equation
+    // ("D1@Sketch1", quoted) where the caret is; the box stays open with the focus
+    if (dimEditing && !it.auto && !it.temp && UI.sketchDimName && /^\s*=/.test(dimInput.value)) {
+      ev.stopPropagation(); ev.preventDefault();
+      var same = it.rel != null ? dimEditing.rel === it.rel : dimEditing.rel == null && dimEditing.index === it.index;
+      var nm = same ? null : it.rel != null ? UI.sketchDimName('rel', it.rel) : UI.sketchDimName('dim', it.index);
+      if (nm) {
+        var s = dimInput.value, a = dimInput.selectionStart != null ? dimInput.selectionStart : s.length, b = dimInput.selectionEnd != null ? dimInput.selectionEnd : a;
+        if (a < 1) a = b = s.length;
+        var ins = '"' + nm + '"';
+        dimInput.value = s.slice(0, a) + ins + s.slice(b);
+        try { dimInput.setSelectionRange(a + ins.length, a + ins.length); } catch (er) { /* not a text box */ }
+        dimInput.dispatchEvent(new Event('input', { bubbles: true }));
+        UI.setStatus('Equation: ' + dimInput.value + ' (Enter to apply).');
+      }
+      dimInput.focus();
+      return;
+    }
     var through = geometryUnderLabel(ev);
     if (through) { passToGeometry(ev, through); return; }
     ev.stopPropagation(); ev.preventDefault();
@@ -4009,7 +4056,8 @@
     dimInput.value = String(Math.round(dimEditing.value * Math.pow(10, mPl)) / Math.pow(10, mPl));
     // sketchflow2: a dimension linked to a global variable shows its equation
     var lnk = it.rel != null ? f.rels[it.rel] : !it.auto && f.dims ? f.dims[it.index] : null;
-    if (lnk && lnk.expr) dimInput.value = lnk.expr;
+    // (rfPR: one naming a sketch dimension is stored without its "=", shown with it)
+    if (lnk && lnk.expr) dimInput.value = /^\s*=/.test(lnk.expr) ? lnk.expr : '=' + lnk.expr;
     // rfE: the text as shown (rounded to 4 places); ✓ / Enter / a click elsewhere with it untouched is no change (a √13
     // line keeps 3.6055513, not the 3.6056 shown), as the SolidWorks Modify box only shows the value rounded
     dimEditing.text = dimInput.value;
@@ -4104,6 +4152,11 @@
   // stores the resulting number, never the expression.
   function parseDimInput(text, kind) {
     if (!kind) kind = dimEditing && dimEditing.angle ? 'angle' : 'length';
+    // rfPR: "=D1/2", '="D1@Sketch1"/2': an equation naming a sketch dimension (ui-sketch-dims.js tail)
+    if (UI.sketchDimEquation && /^\s*=/.test(String(text || ''))) {
+      var q = UI.sketchDimEquation(text, { holder: dimHolder(dimEditing) });
+      if (q) return q.error != null ? { error: q.error } : { value: q.value };
+    }
     if (UI.parseLength) return UI.parseLength(text, { kind: kind });
     if (UI.evalInput) return UI.evalInput(text);
     var v = parseFloat(text);
@@ -4119,6 +4172,12 @@
     var vars = UI.equationVars ? UI.equationVars() : {}, ids = s.slice(1).match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
     return ids.some(function (id) { return Object.prototype.hasOwnProperty.call(vars, id); }) ? s : null;
   };
+  // rfPR: the dimension or relation the Modify box edits (null for an automatic one)
+  function dimHolder(ed) {
+    var f = ed && UI.activeSketchFeature();
+    if (!f || f.id !== ed.sketchId || ed.auto) return null;
+    return ed.rel != null ? (f.rels || [])[ed.rel] || null : (f.dims || [])[ed.index] || null;
+  }
   function closeDimEdit(commit, keepOnError) {
     var ed = dimEditing;
     if (!ed) return;
@@ -4146,9 +4205,15 @@
     // ui-sketch-dims.js); a plain number typed later lets it go
     var holder = commit && r && r.error == null && e && !ed.auto ? (ed.rel != null ? f.rels[ed.rel] : f.dims && f.dims[ed.index]) : null;
     var newExpr = holder ? UI.dimExprOf(dimInput.value) : null;
+    // rfPR: an equation naming a sketch dimension is kept too, in its canonical form "D1@Sketch1"/2 (stored without
+    // the "=": the kernel evaluates every "=" string of a feature with global variables only)
+    var linked = holder && UI.sketchDimEquation ? UI.sketchDimEquation(dimInput.value, { f: f, holder: holder }) : null;
+    if (linked && linked.error == null) newExpr = linked.canon;
+    function pinNames() { if (linked && linked.pin && UI.pinSketchDimNames) UI.pinSketchDimNames(linked.pin); }
     if (holder && !untouched && Math.abs(v - ed.value) < 1e-9 && (holder.expr || null) !== newExpr) {
       if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
       if (newExpr) holder.expr = newExpr; else delete holder.expr;
+      pinNames();
       if (previewed) App.gridStale = true;
       UI.updateSketches();
       UI.setStatus(newExpr ? 'Dimension linked to ' + newExpr + '.' : 'Dimension no longer linked to an equation.');
@@ -4167,9 +4232,12 @@
         if (!res.ok) throw new Error(res.error);
       } else K.setDimValue(e, ed.d, v);
       if (holder) { if (newExpr) holder.expr = newExpr; else delete holder.expr; }
+      pinNames();
+      // rfPR: dimensions whose equations name this one follow it now (SolidWorks re-solves at once), same undo step
+      if (UI.syncSketchDimExprs) { try { UI.syncSketchDimExprs(); } catch (er) { console.error('linked dimensions: ' + (er && er.message)); } }
       App.gridStale = true;
       UI.updateSketches(); UI.refreshTree();
-      UI.setStatus('Dimension set to ' + (ed.angle ? (Math.round(v * 1e4) / 1e4) + '°' : fmtDim(v) + ' ' + UI.unitLabel()) + (newExpr ? ' (' + newExpr + ')' : '') + '.');
+      UI.setStatus('Dimension set to ' + (ed.angle ? (Math.round(v * 1e4) / 1e4) + '°' : fmtDim(v) + ' ' + UI.unitLabel()) + (newExpr ? ' (' + (/^\s*=/.test(newExpr) ? '' : '=') + newExpr + ')' : '') + '.');
       if (UI.refreshDimensionPM) UI.refreshDimensionPM();   // rfE: an open Dimension PM shows the new value
     } catch (err) { lastDimError = err.message; UI.toast(err.message); UI.setStatus('Dimension not changed: ' + err.message); App.dimsStale = true; if (previewed) UI.updateSketches(); }
   }

@@ -737,6 +737,14 @@
   // to closest: a click removes the segment under the cursor (Power trim's click does too). In every mode the part that
   // would go is highlighted first.
   var trimMode = 'power', trimKeep = false, trimIgnore = false;
+  // rfPR (lane sketchflow6): the mode is remembered from one Trim to the next while a document is open, and a document
+  // opened or made new starts again with Power trim (Trim Entities' default); the remembered mode leaked from one
+  // smoke group's part into the next (rfCH: "Power trim is the default")
+  if (typeof UI.loadModel === 'function') {
+    var baseLoadModel = UI.loadModel;
+    UI.loadModel = function () { trimMode = 'power'; return baseLoadModel.apply(this, arguments); };
+  }
+  UI.trimModeRemembered = function () { return trimMode; };
   var TRIM_MODES = [['power', 'Power trim'], ['corner', 'Corner'], ['inside', 'Trim away inside'], ['outside', 'Trim away outside'], ['closest', 'Trim to closest']];
   var TRIM_MSG = {
     power: '<b>Press and drag across the entities to trim.</b> Every segment the trail crosses goes. Drag from the free end of a line or an arc to extend or shorten it; a click trims the segment under the cursor.',
@@ -1337,7 +1345,7 @@
     return { type: 'pick', icon: 'sketchPattern', placeholder: 'Click instances to skip…', value: function (x) { return x.skip.length ? x.skip.length + ' instance' + (x.skip.length > 1 ? 's' : '') : ''; },
       active: function (x) { return x.box === 'skip'; }, onActivate: function () { setBox(v.box === 'skip' ? 'entities' : 'skip'); },
       items: function (x) { return x.skip.map(function (k) { return { label: '(' + k.split(',').map(function (n) { return +n + 1; }).join(', ') + ')' }; }); },
-      onRemove: function (x, i) { x.skip.splice(i, 1); UI.renderPM(); onChange(); }, onClear: function (x) { x.skip.length = 0; UI.renderPM(); onChange(); } };
+      onRemove: function (x, i) { x.skip.splice(i, 1); x._skipAll = null; UI.renderPM(); onChange(); }, onClear: function (x) { x.skip.length = 0; x._skipAll = null; UI.renderPM(); onChange(); } };   // rfPR: the list as shown is the list
   }
   function patternTool(circular, edit) {
     var f = sketch();
@@ -1404,6 +1412,7 @@
       if (best == null) { UI.setStatus('Click an instance (its dot) to skip it.'); return; }
       var k = v.skip.indexOf(best);
       if (k >= 0) v.skip.splice(k, 1); else v.skip.push(best);
+      if (v._skipAll) { var ka = v._skipAll.indexOf(best); if (k >= 0 && ka >= 0) v._skipAll.splice(ka, 1); else if (k < 0 && ka < 0) v._skipAll.push(best); }   // rfPR
       UI.renderPM(); preview();
     }
     // a line clicked for Direction 1 / 2: the direction runs along it
@@ -1461,7 +1470,12 @@
           var p = seedPt();
           if (p) { var a = +v.arcAngle * Math.PI / 180; v.cx = Math.round((p[0] - +v.radius * Math.cos(a)) * 1e6) / 1e6; v.cy = Math.round((p[1] - +v.radius * Math.sin(a)) * 1e6) / 1e6; UI.renderPM(); }
         } else if (circular && (key === 'cx' || key === 'cy')) { syncPolar(); UI.renderPM(); }
-        if (key === 'count' || key === 'count2') v.skip = v.skip.filter(function (k) { return instances().some(function (q) { return q.key === k; }); });
+        // rfPR (lane sketchflow6): a count is typed a key at a time (10 -> 11 passes through 1), so the instances to skip
+        // are filtered from the full list each time, not cut down for good: they stay skipped once the count is back
+        if (key === 'count' || key === 'count2') {
+          if (!v._skipAll) v._skipAll = v.skip.slice();
+          v.skip = v._skipAll.filter(function (k) { return instances().some(function (q) { return q.key === k; }); });
+        }
         preview();
       },
       okBlocked: function () { return v.entities.length ? '' : 'Select the entities to pattern first.'; },

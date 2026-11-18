@@ -957,12 +957,28 @@ var SketchSolver = (function () {
 
   // Levenberg-Marquardt with minimum-norm steps. mob[j] (default 1) is how freely unknown j moves: a small value makes
   // the solver prefer moving the others. Returns { ok, it, res }.
+  var LS_LAMBDA = 1e-6;
+  // rfPR: did a drag frame fly off? the largest move of a coordinate unknown (x / y / cx / cy / x1 … y2, not angles,
+  // radii or handles) against the sketch's size (its unknowns' coordinate box) plus ten times the mouse's move
+  function flew(sys, x0, to, P0) {
+    var lo = Infinity, hi = -Infinity, mv = 0, x = getX(sys);
+    sys.vars.forEach(function (v, j) {
+      if (!/^(x|y|cx|cy|x1|y1|x2|y2)$/.test(v.n)) return;
+      lo = Math.min(lo, x0[j]); hi = Math.max(hi, x0[j]);
+      mv = Math.max(mv, Math.abs(x[j] - x0[j]));
+    });
+    if (!(hi >= lo)) return false;
+    var reach = P0 && to ? Math.hypot(to[0] - P0[0], to[1] - P0[1]) : to ? Math.hypot(to[0], to[1]) : 0;
+    return !(mv <= (hi - lo) + 10 * reach + 1e-9);
+  }
   function lm(sys, opts) {
     opts = opts || {};
     var only = opts.only, tol = (opts.tol || 1e-13) * sys.scale, maxIt = opts.maxIt || 80, n = sys.vars.length;
     var mob = opts.mob || null;
     if (!FORCE_DENSE && !opts.dense && (n > SPARSE_MIN || sys.m > SPARSE_MIN)) return lmSparse(sys, opts);   // lane NP
-    var r = residuals(sys, only), F = sumSq(r), lambda = 1e-9, it = 0;
+    // rfPR: opts.lamFloor, a floor under the damping (drag's retry, below)
+    var lamMin = opts.lamFloor || 1e-15;
+    var r = residuals(sys, only), F = sumSq(r), lambda = Math.max(1e-9, lamMin), it = 0;
     if (!n || !sys.m) return { ok: maxAbs(r) <= tol, it: 0, res: maxAbs(r) };
     for (it = 0; it < maxIt; it++) {
       if (!opts.leastSquares && maxAbs(r) <= tol) break;
@@ -995,7 +1011,7 @@ var SketchSolver = (function () {
             for (j = 0; j < n; j++) x2[j] -= dx[j];
             setX(sys, x2);
             var r2 = residuals(sys, only), F2 = sumSq(r2);
-            if (F2 < F || (F2 === 0 && F === 0)) { var dec2 = F - F2; r = r2; F = F2; lambda = Math.max(lambda / 10, 1e-15); acc = true; if (opts.leastSquares && dec2 < 1e-15 * Math.max(1, F)) it = maxIt; break; }
+            if (F2 < F || (F2 === 0 && F === 0)) { var dec2 = F - F2; r = r2; F = F2; lambda = Math.max(lambda / 10, lamMin); acc = true; if (opts.leastSquares && dec2 < 1e-15 * Math.max(1, F)) it = maxIt; break; }
             setX(sys, x0);
           }
           lambda *= 10;
@@ -1022,7 +1038,7 @@ var SketchSolver = (function () {
           for (j = 0; j < n; j++) { var sj = 0; for (i = 0; i < m; i++) sj += MJt[i][j] * y[i]; x1[j] -= sj; }
           setX(sys, x1);
           var r1 = residuals(sys, only), F1 = sumSq(r1);
-          if (F1 < F || (F1 === 0 && F === 0)) { r = r1; var dec = F - F1; F = F1; lambda = Math.max(lambda / 10, 1e-15); accepted = true; if (opts.leastSquares && dec < 1e-14 * Math.max(1, F)) it = maxIt; break; }
+          if (F1 < F || (F1 === 0 && F === 0)) { r = r1; var dec = F - F1; F = F1; lambda = Math.max(lambda / 10, lamMin); accepted = true; if (opts.leastSquares && dec < 1e-14 * Math.max(1, F)) it = maxIt; break; }
           setX(sys, x0);
         }
         lambda *= 10;
@@ -1233,8 +1249,8 @@ var SketchSolver = (function () {
   var SPARSE_MIN = 240;
   function lmSparse(sys, opts) {
     var only = opts.only, tol = (opts.tol || 1e-13) * sys.scale, maxIt = opts.maxIt || 80, n = sys.vars.length, m = sys.m;
-    var mob = opts.mob || null;
-    var r = residuals(sys, only), F = sumSq(r), lambda = 1e-9, it = 0, i, j, t;
+    var mob = opts.mob || null, lamMin = opts.lamFloor || 1e-15;   // rfPR: see lm
+    var r = residuals(sys, only), F = sumSq(r), lambda = Math.max(1e-9, lamMin), it = 0, i, j, t;
     if (!n || !m) return { ok: maxAbs(r) <= tol, it: 0, res: maxAbs(r) };
     for (it = 0; it < maxIt; it++) {
       if (!opts.leastSquares && maxAbs(r) <= tol) break;
@@ -1270,7 +1286,7 @@ var SketchSolver = (function () {
             for (j = 0; j < n; j++) x2[j] -= dx[j];
             setX(sys, x2);
             var r2 = residuals(sys, only), F2 = sumSq(r2);
-            if (F2 < F || (F2 === 0 && F === 0)) { var dec2 = F - F2; r = r2; F = F2; lambda = Math.max(lambda / 10, 1e-15); accepted = true; if (opts.leastSquares && dec2 < 1e-15 * Math.max(1, F)) it = maxIt; break; }
+            if (F2 < F || (F2 === 0 && F === 0)) { var dec2 = F - F2; r = r2; F = F2; lambda = Math.max(lambda / 10, lamMin); accepted = true; if (opts.leastSquares && dec2 < 1e-15 * Math.max(1, F)) it = maxIt; break; }
             setX(sys, x0);
           }
           lambda *= 10;
@@ -1302,7 +1318,7 @@ var SketchSolver = (function () {
           for (i = 0; i < m; i++) { var yi = y[i]; if (yi) for (t = 0; t < Jc[i].length; t++) { var jj = Jc[i][t]; x1[jj] -= Jv[i][t] * (mob ? mob[jj] : 1) * yi; } }
           setX(sys, x1);
           var r1 = residuals(sys, only), F1 = sumSq(r1);
-          if (F1 < F || (F1 === 0 && F === 0)) { r = r1; var dec = F - F1; F = F1; lambda = Math.max(lambda / 10, 1e-15); accepted = true; if (opts.leastSquares && dec < 1e-14 * Math.max(1, F)) it = maxIt; break; }
+          if (F1 < F || (F1 === 0 && F === 0)) { r = r1; var dec = F - F1; F = F1; lambda = Math.max(lambda / 10, lamMin); accepted = true; if (opts.leastSquares && dec < 1e-14 * Math.max(1, F)) it = maxIt; break; }
           setX(sys, x0);
         }
         lambda *= 10;
@@ -2241,8 +2257,10 @@ var SketchSolver = (function () {
       // rfMT flow 6: Offset Entities' dimension on a chain (refs: the first base, the first copy) moves the offset only;
       // the base outline is joined to the copies through the Offset relation, so its loose lines moved half the change
       (sketch.rels || []).forEach(function (pr) {
-        if (pr.type !== 'offset' || pr.suppressed || !pr.refs || pr.refs.length < 2 || pr.refs.length % 2) return;
-        var h = pr.refs.length / 2, bases = pr.refs.slice(0, h);
+        // (rfPR: a chain trimmed since has more or fewer copies than bases: chain.n counts the bases)
+        var cn = pr.chain && pr.chain.n | 0;
+        if (pr.type !== 'offset' || pr.suppressed || !pr.refs || pr.refs.length < 2 || (!cn && pr.refs.length % 2)) return;
+        var h = cn || pr.refs.length / 2, bases = pr.refs.slice(0, h);
         if (bases.indexOf(rel.refs[0]) < 0 || pr.refs.slice(h).indexOf(rel.refs[1]) < 0) return;
         bases.forEach(function (s) { var q = parseRef(s); if (q && !q.o && E[q.e]) mob[q.e] = 1e-9; });
       });
@@ -2480,6 +2498,47 @@ var SketchSolver = (function () {
     });
     if (!sketch.rels.length) delete sketch.rels;
   }
+  // rfPR (lane sketchflow6): the centerline a mirrored half is held Symmetric about is deleted. SolidWorks' mirrored
+  // copies share their end points (one sketch point at each join), so its copy keeps its shape and stays joined to the
+  // original on the line; here only the Symmetric relations held the copies' joins, and the copy fell apart into loose
+  // lines (24 degrees of freedom on a five-line half). The ends that meet among the entities those relations held, and
+  // that no Coincident ties yet (directly or through others), get a Coincident before the relations go.
+  function mirrorAxisJoins(sketch, axis) {
+    var E = sketch.entities, ax = E[axis];
+    if (!ax || ax.t !== 'line' || !sketch.rels) return [];
+    var ents = {};
+    sketch.rels.forEach(function (rel) {
+      if (rel.type !== 'symmetric' || rel.refs.length !== 3 || String(rel.refs[2]) !== String(axis)) return;
+      rel.refs.slice(0, 2).forEach(function (r) { var p = parseRef(r); if (p && !p.o && p.e !== axis) ents[p.e] = true; });
+    });
+    var idx = Object.keys(ents).map(Number).filter(function (i) { return E[i] && (E[i].t === 'line' || E[i].t === 'arc'); });
+    if (!idx.length) return [];
+    // the point refs already tied together by point-to-point Coincidents (union-find over the refs)
+    var up = {};
+    function root(r) { while (up[r] && up[r] !== r) r = up[r]; return r; }
+    sketch.rels.forEach(function (rel) {
+      if (rel.type !== 'coincident' || rel.refs.length !== 2 || rel.suppressed) return;
+      var a = parseRef(rel.refs[0]), b = parseRef(rel.refs[1]);
+      if (!a || !b || a.o || b.o || a.s === null || b.s === null) return;
+      var ra = root(rel.refs[0]), rb = root(rel.refs[1]);
+      if (ra !== rb) up[ra] = rb;
+    });
+    var ends = [];
+    idx.forEach(function (i) { tEnds(E[i]).forEach(function (p, k) { ends.push({ ref: i + '.p' + (k + 1), pt: p }); }); });
+    var out = [];
+    for (var a = 0; a < ends.length; a++) {
+      for (var b = a + 1; b < ends.length; b++) {
+        var A = ends[a], B = ends[b];
+        if (A.ref.split('.')[0] === B.ref.split('.')[0]) continue;
+        if (len(sub(A.pt, B.pt)) > 1e-7 * Math.max(1, Math.abs(A.pt[0]), Math.abs(A.pt[1]))) continue;
+        var ra = root(A.ref), rb = root(B.ref);
+        if (ra === rb) continue;
+        up[ra] = rb;
+        out.push({ type: 'coincident', refs: [A.ref, B.ref] });
+      }
+    }
+    return out;
+  }
   // Trim Entities replaced entity `idx` of `before` (the old entity list) by the pieces now in sketch.entities (new
   // objects in its place; every other entity is the same object). As SolidWorks does, the pieces keep the trimmed
   // entity's relations that still make sense on a part of it (Horizontal, Vertical, Parallel, Tangent, Concentric,
@@ -2547,7 +2606,55 @@ var SketchSolver = (function () {
       return longest;
     }
     var rels = [], moved = [];   // moved: relations this trim moved onto a piece or made (dropped first if they over-define)
+    // rfPR (lane sketchflow6): a copy of an Offset Entities chain trimmed (a converted face outline offset inward, then
+    // trimmed to a U): the chain's Offset relation used to go whole, so every copy lost what held it to the model and
+    // the untouched corners came apart. Now the relation keeps the other copies as they were and takes the pieces in the
+    // trimmed copy's place (chainEquation's chain.slot / chain.cut); the corners it held where a piece meets another copy
+    // become Coincidents. Not for a trimmed base or the dimensioned first copy (the relation goes, as before).
+    function trimChain(rel) {
+      var ch = rel.chain, n = ch.n | 0, R = rel.refs.map(parseRef);
+      if (!simple || !(n >= 1) || R.length <= n || R.some(function (p) { return !p || p.o || p.s !== null; })) return null;
+      var oldCopies = R.slice(n).map(function (p) { return p.e; }), q0 = oldCopies.indexOf(idx);
+      if (q0 <= 0 || R.slice(0, n).some(function (p) { return p.e === idx; })) return null;
+      if (R.some(function (p) { return p.e !== idx && !(map[p.e] >= 0); })) return null;
+      if (pieces.some(function (pi) { return E[pi].t !== old.t; })) return null;
+      var oldSlot = Array.isArray(ch.slot) ? ch.slot : oldCopies.map(function (c, q) { return q; }), oldCut = ch.cut || {};
+      var copies = [], slot = [], isCut = [];
+      oldCopies.forEach(function (c, q) {
+        if (q !== q0) { copies.push(map[c]); slot.push(oldSlot[q]); isCut.push(!!oldCut[q]); return; }
+        pieces.forEach(function (pi) { copies.push(pi); slot.push(oldSlot[q]); isCut.push(true); });
+      });
+      function endsOf(i) { return tEnds(E[i]).map(function (p, k) { return { ref: i + '.p' + (k + 1), pt: p }; }); }
+      function meet(a, b) { return len(sub(a, b)) < 1e-6 * Math.max(1, Math.abs(a[0]), Math.abs(a[1])); }
+      // the corners: a piece's end on another copy's end
+      pieces.forEach(function (pi) {
+        endsOf(pi).forEach(function (a) {
+          copies.forEach(function (c) {
+            if (c === pi) return;
+            endsOf(c).forEach(function (b) {
+              if (!meet(a.pt, b.pt)) return;
+              var cr = { type: 'coincident', refs: [a.ref, b.ref] };
+              rels.push(cr); moved.push(cr);
+            });
+          });
+        });
+      });
+      // what holds each piece: a line's ends on its expected line, except an end on a whole copy's end (that end's
+      // Coincident holds it); an arc's centre, and its radius unless an end sits on a whole copy's end
+      var cut = {};
+      copies.forEach(function (c, q) {
+        if (!isCut[q]) return;
+        var held = endsOf(c).filter(function (a) { return copies.some(function (w, k) { return !isCut[k] && endsOf(w).some(function (b) { return meet(a.pt, b.pt); }); }); });
+        if (E[c].t === 'line') cut[q] = ['p1', 'p2'].filter(function (nm) { return !held.some(function (h) { return h.ref === c + '.' + nm; }); });
+        else cut[q] = held.length ? ['c'] : ['c', 'r'];
+      });
+      var nc = clone(rel);
+      nc.refs = R.slice(0, n).map(function (p) { return String(map[p.e]); }).concat(copies.map(String));
+      nc.chain.slot = slot; nc.chain.cut = cut;
+      return nc;
+    }
     (sketch.rels || []).forEach(function (rel) {
+      if (rel.type === 'offset' && rel.chain && rel.refs.indexOf(String(idx)) >= rel.chain.n) { var tc = trimChain(rel); if (tc) { rels.push(tc); return; } }
       var touches = false, ok = true, whole = false;
       var refs = rel.refs.map(function (r) {
         var p = parseRef(r);
@@ -3369,8 +3476,21 @@ var SketchSolver = (function () {
     var eR0 = base.entities[R.e], dm = eR0 && (eR0.t === 'ellipse' || eR0.t === 'pellipse') ? dragMob(sys, R) : blockMob(sys);   // ui-sketch-spline; rfAU: blocks
     dm = symDragMob(sketch, sys, R.e, dm);
     STATS.solves++; STATS.unknowns += sys.vars.length;
+    var x0 = getX(sys);
     lm(sys, { leastSquares: true, maxIt: 60, mob: dm });
     var r = lm(sys, { only: function (c) { return !c.soft; }, mob: dm });
+    // rfPR (lane sketchflow6): a pull the relations cannot follow (a point dragged up off the level line its relations
+    // keep it on) is a residual in a direction the rows already span; the least-squares pass's tiny damping then turned
+    // the finite-difference noise of nonlinear rows (an Offset chain's) into steps along a free direction: a U trimmed
+    // from an offset outline had its middle line 1,500 in long after one drag frame. A frame that moved something
+    // farther than the sketch is big plus ten times the mouse's move is solved again from where it started with a
+    // damping floor (LS_LAMBDA); every frame that stays near is solved exactly as before.
+    if (flew(sys, x0, to, P0)) {
+      STATS.dragRetries = (STATS.dragRetries | 0) + 1;
+      setX(sys, x0);
+      lm(sys, { leastSquares: true, maxIt: 60, mob: dm, lamFloor: LS_LAMBDA });
+      r = lm(sys, { only: function (c) { return !c.soft; }, mob: dm });
+    }
     } finally { if (cz) cz.off(); }
     if (!r.ok) return { ok: false };
     writeBack(sketch, sys);
@@ -5663,14 +5783,39 @@ var SketchSolver = (function () {
       if (b.t === 'line') { var t = itemTan(b, items[0].dir), mid = [(c.x1 + c.x2) / 2, (c.y1 + c.y2) / 2]; return dot(sub(mid, [b.x1, b.y1]), [-t[1], t[0]]); }
       return items[0].dir * (b.r - c.r);
     }
+    // rfPR (lane sketchflow6): a trimmed chain. chain.slot[q] is the expected copy that copy q is (a piece of); chain.cut
+    // { q: ends } marks copy q as a piece of it: a line piece lies on its expected line through the ends listed ('p1',
+    // 'p2': the ends not joined to a whole copy, which hold the others), an arc piece keeps the expected centre ('c') and
+    // radius ('r': not when an end is joined to a whole copy); its extent is free (the trim's Coincidents hold it). The first copy (the dimensioned one) keeps no rows
+    // as a piece: its Parallel / Concentric and the offset dimension hold its carrier.
+    var slot = Array.isArray(ch.slot) ? ch.slot : null, cut = ch.cut || null;
     var exp0 = chainExpected(ents, items, ch, dOf(ents));
-    if (!exp0 || exp0.length !== copies.length || exp0.some(function (x, q) { return ents[copies[q]].t !== x.t; })) return null;
-    var rows = 0, layout = copies.map(function (c, q) { var names = paramNames(ents[c]), cnt = q === 0 ? 2 : names.length; rows += cnt; return { c: c, names: names }; });
+    if (!exp0) return null;
+    if (slot ? slot.length !== copies.length || slot.some(function (s) { return !(s >= 0 && s < exp0.length); }) : exp0.length !== copies.length) return null;
+    if (copies.some(function (c, q) { return ents[c].t !== exp0[slot ? slot[q] : q].t; })) return null;
+    var rows = 0, layout = copies.map(function (c, q) {
+      var names = paramNames(ents[c]), pc = cut && cut[q], cnt;
+      if (pc) cnt = q === 0 ? 0 : ents[c].t === 'line' ? (Array.isArray(pc) ? pc.length : 2) : (!Array.isArray(pc) || pc.indexOf('c') >= 0 ? 2 : 0) + (!Array.isArray(pc) || pc.indexOf('r') >= 0 ? 1 : 0);
+      else cnt = q === 0 ? 2 : names.length;
+      rows += cnt;
+      return { c: c, names: names, s: slot ? slot[q] : q, pc: pc || null };
+    });
     var f = function (E) {
       var exp = chainExpected(E, items, ch, dOf(E)), out = [];
       if (!exp) { for (var z = 0; z < rows; z++) out.push(1e6); return out; }
       layout.forEach(function (L, q) {
-        var c = E[L.c], x = exp[q];
+        var c = E[L.c], x = exp[L.s];
+        if (L.pc) {
+          if (q === 0) return;
+          if (c.t === 'line') {
+            var xa = [x.x1, x.y1], xu = unit(sub([x.x2, x.y2], xa));
+            (Array.isArray(L.pc) ? L.pc : ['p1', 'p2']).forEach(function (end) { out.push(crs(sub(end === 'p1' ? [c.x1, c.y1] : [c.x2, c.y2], xa), xu)); });
+          } else {
+            if (!Array.isArray(L.pc) || L.pc.indexOf('c') >= 0) out.push(c.cx - x.cx, c.cy - x.cy);
+            if (!Array.isArray(L.pc) || L.pc.indexOf('r') >= 0) out.push(c.r - x.r);
+          }
+          return;
+        }
         if (q === 0) {
           if (c.t === 'line') { var u = unit(sub([E[bases[0]].x2, E[bases[0]].y2], [E[bases[0]].x1, E[bases[0]].y1])); out.push(dot(sub([c.x1, c.y1], [x.x1, x.y1]), u), dot(sub([c.x2, c.y2], [x.x2, x.y2]), u)); }
           else out.push(angDiff(c.a0, x.a0), angDiff(c.a1, x.a1));
@@ -6724,7 +6869,7 @@ var SketchSolver = (function () {
     stats: STATS, resetStats: resetStats, setDense: function (on) { FORCE_DENSE = !!on; }, condensePatterns: condensePatterns,
     setDim: setDim, setRelValue: setRelValue, linkedItems: linkedItems, linkValues: linkValues, unlinkValue: unlinkValue, linkItemValue: itemValue, driveEntity: driveEntity, measure: measure, updateDriven: updateDriven, overDefines: overDefines, setDriven: setDriven,
     applicable: applicable, addRelation: addRelation, isExtRel: isExtRel, deleteRelation: deleteRelation, fullyDefine: fullyDefine, placeGaps: placeGaps, relArgs: relArgs,
-    removeEntity: removeEntity, replaceEntity: replaceEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, explodePoly: explodePoly, explodeSlot: explodeSlot, explodeArcSlot: explodeArcSlot, slotCap: slotCap, slotAxisOf: slotAxisOf, clean: clean,
+    removeEntity: removeEntity, mirrorAxisJoins: mirrorAxisJoins, replaceEntity: replaceEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, explodePoly: explodePoly, explodeSlot: explodeSlot, explodeArcSlot: explodeArcSlot, slotCap: slotCap, slotAxisOf: slotAxisOf, clean: clean,
     infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, onCurveRef: onCurveRef, freeEndDir: freeEndDir, sideMid: sideMid,
     diagnose: diagnose, diagnoseApply: diagnoseApply, scanEqual: scanEqual, applyEqual: applyEqual,   // rfAR: SketchXpert, Scan Equal
     lineCorner: lineCorner, filletCorner: filletCorner, extendTarget: extendTarget, extendEntity: extendEntity, endDir: endDir, offsetEntity: offsetEntity, offsetRelations: offsetRelations, offsetDimensions: offsetDimensions,

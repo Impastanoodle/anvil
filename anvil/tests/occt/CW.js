@@ -14,7 +14,7 @@
   var SMC_UO = SMC_U.replace(/position: "inside"/g, 'position: "outside"');
   function smfRelief(type, size, stub) {
     var BA = Math.PI / 2 * 0.09, C = [BA / 2, BA / 2], h = size / 2, pts = [], i, d = Math.SQRT1_2, a0 = Math.atan2(d, -d);
-    if (type === 'circular') for (i = 0; i < 32; i++) pts.push([C[0] + h * Math.cos(2 * Math.PI * i / 32), C[1] + h * Math.sin(2 * Math.PI * i / 32)]);
+    if (type === 'circular') for (i = 0; i < 4096; i++) pts.push([C[0] + h * Math.cos(2 * Math.PI * i / 4096), C[1] + h * Math.sin(2 * Math.PI * i / 4096)]);
     else {
       var ca = [C[0] - d * h, C[1] - d * h], cb = [C[0] + d * h, C[1] + d * h];
       for (i = 0; i <= 16; i++) pts.push([cb[0] + h * Math.cos(a0 - Math.PI * i / 16), cb[1] + h * Math.sin(a0 - Math.PI * i / 16)]);
