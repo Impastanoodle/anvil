@@ -1491,6 +1491,8 @@ var Exchange = (function () {
     // lane MR: free-form faces of an imported part (freeFacesOf) are groups nX0 + k, written by writeFreeFace on their
     // B-spline surface with their own edges
     var nX0 = nW + walls.length, FF = mesh.freeFaces || [], freeOf = mesh.freeOf ? Int32Array.from(mesh.freeOf) : null, freeLab = [], freeV = {};
+    // lane PI: deadFree[t] = 1: a triangle of a free-form face that keeps its facets (see truePlane)
+    var deadFree = FF.length ? new Uint8Array(nT) : null;
     if (FF.length) freeLabels();
     // each free-form face's edges, found in the mesh: the run of the face's boundary vertices from the vertex at the
     // edge's start to the one at its end (of the two ways round, the one through the edge's middle point; a closed edge
@@ -1564,7 +1566,7 @@ var Exchange = (function () {
         FF.forEach(function (F) { if (F.ok && F.keys.some(function (k) { return deadKeys[k]; })) { F.ok = false; changed = true; F.keys.forEach(function (k) { deadKeys[k] = true; }); } });
       }
       FF.forEach(function (F) {
-        if (!F.ok) { F.dead = true; F.ts.forEach(function (t3) { freeOf[t3] = -1; }); return; }
+        if (!F.ok) { F.dead = true; F.ts.forEach(function (t3) { freeOf[t3] = -1; deadFree[t3] = 1; }); return; }
         F.mine.forEach(function (cl) {
           for (var i = 0; i + 1 < cl.vs.length; i++) {
             var a = cl.vs[i], b = cl.vs[i + 1], lo = a < b ? a : b, hi = a < b ? b : a;
@@ -1926,7 +1928,10 @@ var Exchange = (function () {
     }
     function onCylS(S, X) { return Math.abs(axial(S, X).rho - S.r) <= Math.max(tol, 2e-5 * S.r); }
     // stepout-2: a mesh face that is a true plane (no triangle of it carries a curved surface's record)
-    function truePlane(fi) { var ts = groups[fi]; for (var k = 0; k < ts.length; k++) if (triRec[ts[k]] >= 0) return false; return ts.length > 0; }
+    // (lane PI: nor a triangle of a free-form face that keeps its facets, a loft's side a hole cut across the corner of:
+    // those carry no record, so each facet counted as a plane and the hole's rim was written as an ELLIPSE per facet,
+    // 18 to 52 of them: a file OpenCascade found not valid, 1e-2 off, and Anvil's own reader refused)
+    function truePlane(fi) { var ts = groups[fi]; for (var k = 0; k < ts.length; k++) if (triRec[ts[k]] >= 0 || (deadFree && deadFree[ts[k]])) return false; return ts.length > 0; }
     function build() {
       // faces: analytic patches (group nF + comp) and planes (group = the mesh face index)
       groups = [];
@@ -2201,6 +2206,9 @@ var Exchange = (function () {
       // lowest and highest vertex numbers so the face on the other side, which walks it the other way, splits it alike
       if (!breaks.length && cls[0].t === 'p') { var lo = 0, hi = 0; for (i = 1; i < n; i++) { if (l[i] < l[lo]) lo = i; if (l[i] > l[hi]) hi = i; } breaks = lo < hi ? [lo, hi] : [hi, lo]; }
       if (!breaks.length && cls[0].t === 'x') { var i0 = l.indexOf(cls[0].vs[0]); return [freeEdgeOe(cls[0], l[(i0 + 1) % n] === cls[0].vs[1])]; }
+      // lane PI: a whole ellipse (a hole straight through one slanted flat face: its rim there is one closed ELLIPSE).
+      // Only circles were expected here and the export threw a TypeError (cls[0].c undefined).
+      if (!breaks.length && cls[0].t === 'e') return [closedEllipseEdge(cls[0].e, P(l[0]), P(l[1]))];
       if (!breaks.length) return [closedCircleEdge(cls[0].c, P(l[0]), P(l[1]))];
       var out = [];
       for (var k = 0; k < breaks.length; k++) {
@@ -2230,6 +2238,13 @@ var Exchange = (function () {
       if (ch) return oe(ch.id, ch.ccw === dirCCW);
       var V = circleVertex(c);
       ch = chains[key] = { id: W.add('EDGE_CURVE(\'\',' + V + ',' + V + ',' + circleE(c) + ',' + (dirCCW ? '.T.' : '.F.') + ')'), ccw: dirCCW };
+      return oe(ch.id, true);
+    }
+    function closedEllipseEdge(E, A, B) {
+      var fwd = wrapAngle(ellipseParam(E, B) - ellipseParam(E, A)) > 0, key = 'E' + E.key, ch = chains[key];
+      if (ch) return oe(ch.id, ch.ccw === fwd);
+      var V = vertexAt('e' + E.key, add(E.center, scale(E.xdir, E.a)));
+      ch = chains[key] = { id: W.add('EDGE_CURVE(\'\',' + V + ',' + V + ',' + ellipseE(E) + ',' + (fwd ? '.T.' : '.F.') + ')'), ccw: fwd };
       return oe(ch.id, true);
     }
     function edgeLoop(oes) { return W.add('EDGE_LOOP(\'\',' + stepList(oes) + ')'); }
@@ -2648,6 +2663,9 @@ var Exchange = (function () {
       }
     }
   }
+  // lane PI: switches for A / B runs (tests): rowFix = false moves every interior point of a drilled straight face on
+  // its own, as before (see freeVolumeFix)
+  var importOptions = { rowFix: true };
   function paramPatch(loops, outerI, A) {
     var V = [], rings = [], mean0 = null, bands = [];
     function wrapP(d, P) { return P ? d - P * Math.round(d / P) : d; }
@@ -3946,7 +3964,9 @@ var Exchange = (function () {
       // lane MX: a hole in a face straight one way (a loft's side drilled through): the straight way gets the other
       // way's step too (as a length), or the triangles ran from the hole's rim to the far side, slivers whose bump the
       // volume fix cannot place (a drilled loft read 1.6e-4 light; 4e-5 with the tilted ones left out)
+      var strHole = null;
       if (!res && lp.length > 1 && (isFinite(A.hs) !== isFinite(A.ht))) {
+        strHole = isFinite(A.hs) ? 'u' : 'v';   // lane PI: the parameter that is constant along a straight line of the face
         var A2 = {}; Object.keys(A).forEach(function (key) { A2[key] = A[key]; });
         if (isFinite(A.hs)) A2.ht = A.hs * A.su / A.sv; else A2.hs = A.ht * A.sv / A.su;
         A = A2;
@@ -3962,7 +3982,7 @@ var Exchange = (function () {
         if (ln > 0) vote += dot(n3, ns) / ln;
       });
       var flipAll = (vote > 0) !== sameSense;
-      freeVolumeFix(res, A, flipAll);
+      freeVolumeFix(res, A, flipAll, importOptions.rowFix ? strHole : null);
       res.T.forEach(function (t3) {
         var a = res.V[t3[0]], b = res.V[t3[1]], c = res.V[t3[2]];
         if (flipAll) { var tmp = b; b = c; c = tmp; }
@@ -4066,7 +4086,14 @@ var Exchange = (function () {
     // their normal by what the triangles round them miss, shared among the triangles' interior corners:
     // δ = Σ V / Σ (area · n_v·n_t / 3). Boundary points stay on the surface; a triangle with no interior corner keeps
     // its bump. The mesh then lies within a sagitta of the surface, its volume to the fourth order of the step.
-    function freeVolumeFix(res, A, flip) {
+    // lane PI: rowKey ('u' / 'v', or null): on a face straight one way with holes in it (a loft's side drilled through)
+    // the interior points lie in rows along the straight lines, and two rows between them hold one flat strip of
+    // triangles. Moved one by one (each by its own quotient, a few 1e-6 apart along a row) the strip's triangles came
+    // 1e-7 .. 1e-5 off each other's planes: the boolean's band, where the next hole through the face cracked (9 open
+    // edges) or was refused as zero-thickness geometry. A row whose points share one normal now moves as one line, by
+    // the row's own quotient (the volume its triangles miss over the volume one unit of its move adds): the strips stay
+    // flat, the face's volume is the same to first order.
+    function freeVolumeFix(res, A, flip, rowKey) {
       var V = res.V, T = res.T, use = {}, nT = [], aT = [], vol = [], i, k;
       function ek(a, b) { return a < b ? a + ',' + b : b + ',' + a; }
       T.forEach(function (t3) { for (k = 0; k < 3; k++) { var key = ek(t3[k], t3[(k + 1) % 3]); use[key] = (use[key] || 0) + 1; } });
@@ -4115,7 +4142,42 @@ var Exchange = (function () {
         free.forEach(function (q) { num[q] = (num[q] || 0) + vol[ti] / free.length; });
         t3.forEach(function (q) { if (!fixed[q] && nv[q]) den[q] = (den[q] || 0) + aT[ti] * dot(norm(nv[q]), nT[ti]) / 3; });
       });
+      var rowMove = null;
+      if (rowKey) {
+        var lo = Infinity, hi = -Infinity, rows = {};
+        for (i = 0; i < V.length; i++) { lo = Math.min(lo, V[i][rowKey]); hi = Math.max(hi, V[i][rowKey]); }
+        var cell = 1e-9 * Math.max(hi - lo, 1e-300);
+        for (i = 0; i < V.length; i++) {
+          if (fixed[i] || !nv[i]) continue;
+          var rk = Math.round((V[i][rowKey] - lo) / cell);
+          (rows[rk] || (rows[rk] = [])).push(i);
+        }
+        rowMove = new Array(V.length);
+        Object.keys(rows).forEach(function (rk2) {
+          var l = rows[rk2];
+          if (l.length < 2 || !A.normal) return;
+          // the row's direction of travel: the surface's own normal, the same all along a straight line of a face whose
+          // lines are parallel (the facets' normals round a point differ by its neighbours, 1e-4 along a row); turned
+          // to the facets' side
+          var sn = [0, 0, 0], sNum = 0, sDen = 0, cap2 = 0, n0 = null, same = true;
+          l.forEach(function (q) {
+            sn = add(sn, nv[q]);
+            var nq = A.normal(V[q].u, V[q].v), lq = nq ? len(nq) : 0;
+            if (!(lq > 0)) { same = false; return; }
+            nq = scale(nq, 1 / lq);
+            if (!n0) n0 = nq; else if (dot(nq, n0) < 1 - 1e-12) same = false;
+          });
+          if (!same || !n0 || !(len(sn) > 0)) return;   // a twisted strip: no flat strips to keep
+          sn = dot(n0, sn) < 0 ? scale(n0, -1) : n0;
+          l.forEach(function (q) { sNum += num[q] || 0; sDen += den[q] > 0 ? den[q] : 0; cap2 = Math.max(cap2, hMax[q] || 0); });
+          var d2 = sDen > 0 ? sNum / sDen : 0;
+          if (d2 > cap2) d2 = cap2; else if (d2 < -cap2) d2 = -cap2;
+          var mv = scale(sn, d2);
+          l.forEach(function (q) { rowMove[q] = mv; });
+        });
+      }
       for (i = 0; i < V.length; i++) {
+        if (rowMove && rowMove[i]) { V[i] = { p: add(V[i].p, rowMove[i]), u: V[i].u, v: V[i].v }; continue; }
         if (fixed[i] || !nv[i] || !(den[i] > 0) || !num[i]) continue;
         // lane MX: no further than the triangles round it miss (|h1 + h2 + h3| of each: what a corner alone would take).
         // A point among long thin triangles (a thin strip's few inner points fanned to a finely sampled boundary) has
@@ -5879,6 +5941,7 @@ var Exchange = (function () {
     importFeature: importFeature, newPartFromImport: newPartFromImport, newAssemblyFromImport: newAssemblyFromImport, importedBodyColors: importedBodyColors, importedName: importedName, featureInfo: featureInfo,
     encodeSolids: encodeSolids, solidMesh: solidMesh, solidCSG: solidCSG, signedVolume: signedVolume, earcut: earcut,
     b64encode: b64encode, b64decode: b64decode, utf8: utf8, fromUtf8: fromUtf8,
+    importOptions: importOptions,
     surfaceGridKind: bsSurfClassify,   // lane stepin2: occt-kernel.js importCylRecord (B-spline faces that are cylinders)
     FORMATS: [
       { id: 'step', label: 'STEP AP214 (*.step;*.stp)', ext: 'step', import: true, export: true },

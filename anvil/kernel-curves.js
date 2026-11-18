@@ -734,7 +734,7 @@
   // Kernel.massOptions: planarBoxes (the box filter), planarRaster (rfNT: the outline grid of a plane of many polygons;
   // off = planarGrid's box grid), dirTable and sampleWindow (rfNT, boundCorrection: off / Infinity = every cluster and
   // every sampled cell compared, as before) and cache (massProps kept per mesh); the tests switch them off to compare
-  var massOptions = { planarBoxes: true, planarRaster: true, dirTable: true, sampleWindow: 8, cache: true };
+  var massOptions = { planarBoxes: true, planarRaster: true, dirTable: true, sampleWindow: 1, cache: true };
   function planarBox(p) {
     var vs = p.vertices, n = vs.length, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], dmax = 0, smin = 1;
     for (var j = 0; j < n; j++) {
@@ -1279,6 +1279,11 @@
       // have diagonals 48 in long over cells of .01). The same cells are opened: the samples run along a straight
       // segment, so each of the three cell indices only rises or only falls; a cell within one of both this sample and an
       // older one puts that older one within two cells on every axis, and at most six different cells lie between.
+      // Lane PI: the window is 1 (was 8). Each index of the sample before this one lies between the older sample's and
+      // this one's, so a cell within one of both of those is within one of the sample before too: comparing with that
+      // one alone skips exactly the same cells (rfNT's counts are equal for 1, 8 and Infinity), and a cell opened twice
+      // would add nothing anyway (its edges are stamped). The 8-deep compare was 41 % of the first Mass Properties of a
+      // 30-body STEP import (lane chamferpat's profile).
       var near = [], sampled = [];
       eachCell(c.A, c.B, function (key) {
         var si0 = sampled.length > massOptions.sampleWindow ? sampled.length - massOptions.sampleWindow : 0;

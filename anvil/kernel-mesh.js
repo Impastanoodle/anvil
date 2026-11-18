@@ -2040,16 +2040,77 @@
     function rfFRbossPrisms() {
       return Object.keys(rfFRbosses).map(function (k) {
         var b = rfFRbosses[k], L = rfFRouter[b.fi];
-        return _.prism(L.loops[b.li], L.plane, -3 * big, 2 * big + 2 * rfFMband, f.id);
+        return _.prism(L.loops[b.li], L.plane, -3 * big, 2 * big + 2 * rfFMband, f.id, rfPIloopCurves(L, L.loops[b.li]));
       });
+    }
+    // lane PI: the curve records of one loop of a planar face, for _.prism's cv: a segment of the loop that lies on an
+    // edge of a wall facet carrying a cylinder record square to the face (a hole's or a round boss's wall, a rounded
+    // corner of the plate) gets that circle { c, r }. The prisms over a loop (the hole taken off a concave round's tool,
+    // the boss kept out of a convex one, the plate's outline) then have the true cylinder as their wall: without it the
+    // wall inside the round was flat chords with no record, heavy by the chords' segments (rfFT round 259: 3.9e-6 of the
+    // part, 1.2e-3 of the round). Records only: the polygons are the same. K.openGuard.loopCurves = false = before.
+    function rfPIloopCurves(L, loop) {
+      if (K.openGuard.loopCurves === false) return null;
+      var i, n = L.plane.n;
+      if (!L.rims) {
+        L.rims = [];
+        var memo = [], w0 = dot(to3D(L.plane, 0, 0), n);
+        mesh.faces.forEach(function (fc) {
+          (fc.polys || []).forEach(function (p) {
+            var s = p.surf && p.surf.s;
+            if (!s || s.t !== 'cyl' || Math.abs(Math.abs(dot(s.d, n)) - 1) > 1e-9) return;
+            // where the facet meets the face's plane: an edge lying in it, or the cut through a facet that runs past
+            // it (a hole through a boss and the plate has one wall facet from the plate's bottom to the boss's top)
+            var vs = p.vertices.map(function (v) { return arr(v.pos); }), hs = vs.map(function (v) { return dot(v, n) - w0; }), pts = [];
+            for (var q = 0; q < vs.length; q++) {
+              var r = (q + 1) % vs.length;
+              if (Math.abs(hs[q]) < 1e-7) pts.push(vs[q]);
+              else if (Math.abs(hs[r]) >= 1e-7 && hs[q] * hs[r] < 0) pts.push(add(vs[q], scale(sub(vs[r], vs[q]), hs[q] / (hs[q] - hs[r]))));
+            }
+            if (pts.length < 2) return;
+            var a3 = pts[0], b3 = pts[0], far = 0;
+            pts.forEach(function (x) { var dd = len(sub(x, pts[0])); if (dd > far) { far = dd; b3 = x; } });
+            far = 0; pts.forEach(function (x) { var dd = len(sub(x, b3)); if (dd > far) { far = dd; a3 = x; } });
+            if (!(far > 1e-9)) return;
+            var k = memo.indexOf(s);
+            if (k < 0) { memo.push(s); var c2 = to2D(L.plane, s.o); memo.push({ c: [c2[0], c2[1]], r: s.r }); k = memo.length - 2; }
+            var a = to2D(L.plane, a3), b = to2D(L.plane, b3);
+            L.rims.push({ a: a, b: b, C: memo[k + 1], lo: [Math.min(a[0], b[0]) - 1e-6, Math.min(a[1], b[1]) - 1e-6], hi: [Math.max(a[0], b[0]) + 1e-6, Math.max(a[1], b[1]) + 1e-6] });
+          });
+        });
+      }
+      if (!L.rims.length) return null;
+      var cv = [], any = false;
+      // 0: p is off the facet's line; 1: on the line; 2: on the facet's own stretch of it
+      function where(p, e) {
+        var ex = e.b[0] - e.a[0], ey = e.b[1] - e.a[1], l = Math.hypot(ex, ey);
+        var t = ((p[0] - e.a[0]) * ex + (p[1] - e.a[1]) * ey) / l, h = ((p[0] - e.a[0]) * ey - (p[1] - e.a[1]) * ex) / l;
+        return Math.abs(h) >= 1e-6 ? 0 : t > -1e-6 && t < l + 1e-6 ? 2 : 1;
+      }
+      function inBox(p, e) { return p[0] >= e.lo[0] && p[0] <= e.hi[0] && p[1] >= e.lo[1] && p[1] <= e.hi[1]; }
+      for (i = 0; i < loop.length; i++) {
+        // a chord's facet may be in several pieces side by side (split by the planes of a boolean): each end of the
+        // segment on a piece of the same cylinder, both pieces along the segment
+        var p0 = loop[i], p1 = loop[(i + 1) % loop.length], C = null, c0 = [], c1 = [];
+        if (Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) > 1e-9) for (var j = 0; j < L.rims.length; j++) {
+          var e = L.rims[j], i0 = inBox(p0, e), i1 = inBox(p1, e);
+          if (!i0 && !i1) continue;
+          var w0e = where(p0, e), w1e = where(p1, e);
+          if (w0e === 2 && w1e) c0.push(e.C);
+          if (w1e === 2 && w0e) c1.push(e.C);
+        }
+        for (j = 0; j < c0.length && !C; j++) if (c1.indexOf(c0[j]) >= 0) C = c0[j];
+        cv.push(C); if (C) any = true;
+      }
+      return any ? cv : null;
     }
     // rfGG: the prisms up a hole a concave round rests on, taken off the tool: on the hole's flanks the ball dips into the
     // hole (its nearest rim point lies past its foot) and the hole stays open through the round
-    var rfGGholes = {}, rfGGsub = 3, rfGGused = false, rfGGplain = false, rfGGoutline = null;
+    var rfGGholes = {}, rfGGsub = 3, rfGGused = false, rfGGplain = false, rfGGoutline = null, rfPIfalls = false;
     function rfGGholePrisms() {
       return Object.keys(rfGGholes).map(function (k) {
         var b = rfGGholes[k], L = rfFRouter[b.fi];
-        return _.prism(L.loops[b.li], L.plane, -4 * rfFMband, 2 * big + 2 * rfFMband, f.id);
+        return _.prism(L.loops[b.li], L.plane, -4 * rfFMband, 2 * big + 2 * rfFMband, f.id, rfPIloopCurves(L, L.loops[b.li]));
       });
     }
     var rfGGoff = {};   // the stations of a chain whose setback was excused as running off the plate
@@ -2232,7 +2293,7 @@
         if (I.conv) rfFRbosses[I.fp + ':' + li] = { fi: I.fp, li: li };
         else if (li != null) rfGGholes[I.fp + ':' + li] = { fi: I.fp, li: li };
         else rfGGoutline = I.fp;
-        return secShort || rfGGplain ? null : { P: to3D(L.plane, Pi[0], Pi[1]) };   // (a ball on the wall's far rim is already placed)
+        return secShort || rfGGplain ? null : { P: to3D(L.plane, Pi[0], Pi[1]), F: foot };   // (a ball on the wall's far rim is already placed)
       }
       var vs = ch.vs, m = vs.length, N = ch.closed ? m : m - 1, st = vs.map(status), mids = [], any = st.some(function (x) { return x; }), SUB = rfGGsub;
       for (var i = 0; i < N; i++) { mids.push(status(scale(add(vs[i], vs[(i + 1) % m]), 0.5))); if (mids[i]) any = true; }
@@ -2245,6 +2306,20 @@
         if (st[i] || st[j] || mids[i]) for (var q = 1; q < SUB; q++) { var v = add(scale(vs[i], 1 - q / SUB), scale(vs[j], q / SUB)); out.push(v); rail.push(status(v)); }
       }
       if (!ch.closed) { out.push(vs[m - 1]); rail.push(st[m - 1]); }
+      // lane PI: does the ball's resting point stand still, or run backwards, while the ball runs on? Where the setback
+      // heads straight for a hole's rim (along the hole's own radius) the nearest point of the rim is one point for a
+      // whole stretch: every ring of that stretch ends on it, the rings cross each other and no station count gives a
+      // closed tool (rfFT round 259, 931; stack 578, 926: all seven rail attempts open, 106 to 285 edges). Such a round
+      // keeps its surface instead (rfPIfalls, see the guard below). Measured over round and stack fuzz 1000 each: the
+      // resting point's travel over the setback's is under 5e-5 on those four and at least 0.017 on the 36 other
+      // rounds with rails.
+      if (f.type !== 'chamfer') for (i = 0; i < out.length; i++) {
+        var r0 = rail[i], r1 = rail[(i + 1) % out.length];
+        if (!r0 || !r1 || (!ch.closed && i + 1 === out.length)) continue;
+        var dF = sub(r1.F, r0.F), dP = sub(r1.P, r0.P);
+        if (K.openGuard.railLog) K.openGuard.railLog(dot(dP, dF) / dot(dF, dF), len(dF), i);
+        if (dot(dP, dF) < 1e-3 * dot(dF, dF)) rfPIfalls = true;
+      }
       return { vs: out, rail: rail };
     }
     // rfFP: the tools are made by makeTools() so a cracked result can be retried with another band (see below)
@@ -2425,7 +2500,7 @@
     if (K.openGuard.toolLog) K.openGuard.toolLog({ f: f, cuts: cuts, adds: adds, bossPrisms: bp, holePrisms: hp, selected: selected, straight: straight, chains: chainList, mesh: mesh });
     if (hp.length) addU = addU.subtract(unionAll(hp));
     // the plain tool would hang off the plate where its foot leaves it: keep it inside the plate's outline
-    if (addU && rfGGplain && rfGGoutline != null) { var LO = rfFRouter[rfGGoutline]; addU = addU.intersect(_.prism(LO.loops[LO.outer], LO.plane, -4 * rfFMband, 2 * big + 2 * rfFMband, f.id)); }
+    if (addU && rfGGplain && rfGGoutline != null) { var LO = rfFRouter[rfGGoutline]; addU = addU.intersect(_.prism(LO.loops[LO.outer], LO.plane, -4 * rfFMband, 2 * big + 2 * rfFMband, f.id, rfPIloopCurves(LO, LO.loops[LO.outer]))); }
     return [cutU, addU, pres.length && cutU ? unionAll(pres) : null];
     }
     // rfFP: a fillet / chamfer whose result has open edges is never returned: the boolean is done here, checked (open
@@ -2434,6 +2509,13 @@
     // is not done twice. A cracked result (the BSP's 1e-5 where a tool face lies nearly on a body face) is retried with
     // the tools' band past the faces halved, then doubled; still cracked, the feature is refused, the body kept.
     var band0 = rfFMband, tools = makeTools(), cutT = tools[0], addT = tools[1], preT = tools[2];
+    // lane PI: a round whose resting point on the edge bounding its plane stands still (rfPIfalls, see rfGGstations)
+    // keeps its surface: the plain round, trimmed by the hole straight up and by the plate's outline. That is the solid
+    // OpenCascade builds there (= the closed form of the torus less the hole to 4e-12 on round 259), and what the guard
+    // came to after seven rail attempts that all came out open. K.openGuard.restCheck = false = before (rails first,
+    // plain as the last step). K.openGuard.last: what the last fillet / chamfer's guard did.
+    K.openGuard.last = { falls: rfPIfalls, attempts: 0, plain: false };
+    if (rfPIfalls && !rfGGplain && K.openGuard.restCheck !== false) { rfGGplain = true; rfGGused = false; tools = makeTools(); cutT = tools[0]; addT = tools[1]; preT = tools[2]; }
     if (K.openGuard.on && (cutT || addT)) {
       // head (2026-10-29c): before refusing, one more try with the tools at their own band and csg.js's wider crack
       // healing for this boolean only (healWide 20 EPSILON + healFill; off by default because globally they change
@@ -2454,6 +2536,7 @@
         } finally { CO.healWide = keepW; CO.healFill = keepF; }
         // (K.openGuard.log: a probe's hook, lane NI: every attempt with its count, the step that follows, the tools)
         if (K.openGuard.log) K.openGuard.log({ f: f, next: bf, open: rfFPopenCount(res), open0: open0, before: before, cut: cutT, add: addT, pre: preT, res: res });
+        K.openGuard.last.attempts++; K.openGuard.last.plain = rfGGplain;
         if (rfFPopenCount(res) <= open0) {
           done = true;
           if (cutT) rfFPmemo(before, 'subtract', cutT, mid);
