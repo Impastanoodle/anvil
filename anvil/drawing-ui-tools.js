@@ -1768,7 +1768,7 @@
     var w = sheetView(d.view), src = d.auto && d.kind !== 'ordinate' && d.kind !== 'baseline' ? Drawing.dimSource(App.model, App.build, w, d) : null;
     var tol = d.tol || { type: 'none' }, u = units();
     var dualDoc = Drawing.dualStyle(doc()).on, dualKind = d.kind !== 'angrun' && !(d.kind === 'angle' && !d.arcLen) && !(d.kind === 'rad' && d.slot);   // (rfOC)
-    var values = { dual: d.dual != null ? !!d.dual : dualDoc, value: d.value != null ? +d.value.toFixed(8) : 0, tolType: tol.type || 'none', plus: tol.plus != null ? tol.plus : 0, minus: tol.minus != null ? tol.minus : 0, prec: d.prec != null ? String(d.prec) : 'auto', tolPrec: tol.prec != null && tol.prec !== '' ? String(tol.prec) : 'auto', label: d.label != null ? d.label : '<DIM>', flip: !!d.flip };
+    var values = { chform: d.kind === 'chamfer' && d.chform ? d.chform : 'auto', dual: d.dual != null ? !!d.dual : dualDoc, value: d.value != null ? +d.value.toFixed(8) : 0, tolType: tol.type || 'none', plus: tol.plus != null ? tol.plus : 0, minus: tol.minus != null ? tol.minus : 0, prec: d.prec != null ? String(d.prec) : 'auto', tolPrec: tol.prec != null && tol.prec !== '' ? String(tol.prec) : 'auto', label: d.label != null ? d.label : '<DIM>', flip: !!d.flip };
     var single = d.kind !== 'ordinate' && d.kind !== 'baseline' && d.kind !== 'angrun';
     var primary = src ? [{ type: 'number', key: 'value', label: 'Value', unit: 'u' }, { type: 'static', label: 'Drives', value: src.featureName + ' (' + src.what + ')' + (src.expr ? ' — equation ' + src.expr : '') }]
       : [{ type: 'static', label: 'Value', value: single ? (d.kind === 'angle' && !d.arcLen ? (Math.round(d.value * 1e4) / 1e4) + '°' : Drawing.numText(d.value, u) + ' ' + u) + (d.auto ? ' (no model parameter found)' : ' (reference: driven by the model)') : d.text }];
@@ -1798,6 +1798,8 @@
         { title: 'Dimension Text', show: function () { return d.kind !== 'angrun'; }, fields: [{ type: 'text', key: 'label', label: 'Text (<DIM> is the value)' },
           // (rfOC) SolidWorks 2024's Value tab: Dual Dimension under the dimension text, for this dimension over the document's setting
           { type: 'check', key: 'dual', label: 'Dual Dimension', show: function () { return dualKind; } }] },
+        // (rfPD) SolidWorks' Chamfer Text Format on a chamfer dimension's Value tab: 1 X 45°, 45° X 1, 1 X 1, C1
+        { title: 'Chamfer Text Format', show: function () { return d.kind === 'chamfer'; }, fields: [{ type: 'select', key: 'chform', label: 'Text format', options: CHAMFER_FORM_OPTIONS() }] },
         { title: 'Leaders', show: function () { return d.kind !== 'angrun' && d.kind !== 'pathlen'; }, fields: [{ type: 'check', key: 'flip', label: 'Flip arrows (outside)' }] }
       ],
       onChange: function (v, key) {
@@ -1846,7 +1848,15 @@
     var dualDoc = doc() ? Drawing.dualStyle(doc()).on : false;
     return { tol: tol,
       prec: v.prec === 'auto' || v.prec == null ? null : +v.prec, label: label.trim() === '' || label === '<DIM>' ? null : label, flip: !!v.flip,
-      dual: v.dual == null || !!v.dual === dualDoc ? null : !!v.dual };   // (rfOC: stored only where it differs from the document)
+      dual: v.dual == null || !!v.dual === dualDoc ? null : !!v.dual,   // (rfOC: stored only where it differs from the document)
+      chform: v.chform && v.chform !== 'auto' ? v.chform : null };   // (rfPD)
+  }
+  // (rfPD) the chamfer text formats: the Dimension PM's list (auto = the document's) and Document Properties' (auto =
+  // '1 X 1' on a Distance Distance chamfer feature, else '1 X 45°')
+  var CHAMFER_FORM_NAMES = [['dxa', '1 X 45°'], ['axd', '45° X 1'], ['dxd', '1 X 1'], ['c', 'C1']];
+  function CHAMFER_FORM_OPTIONS() {
+    var o = Drawing.dimStyle(doc()).chamfer, n = CHAMFER_FORM_NAMES.filter(function (x) { return x[0] === o; })[0];
+    return CHAMFER_FORM_NAMES.concat([['auto', (n ? n[1] : 'From the feature') + ' (Document)']]);
   }
   // (rfLG) the model sources of a diameter model item that counts several holes (d.count > 1): src, then the sketch
   // circle of every other visible / hidden circle of the view with the same size (each once)
@@ -1948,6 +1958,9 @@
     [0, 1, 2, 3, 4, 5, 6, 7, 8].forEach(function (n) { var op = el('option', { value: String(n), text: precText(n) }); if (du.prec === n) op.selected = true; duP.appendChild(op); });
     function dualSync() { duSU.disabled = !duOn.checked; duPos.querySelectorAll('input').forEach(function (r) { r.disabled = !duOn.checked; }); }
     duOn.addEventListener('change', dualSync); dualSync();
+    // (rfPD) Dimensions > Chamfer > Text display
+    var chf = el('select', { id: 'dw-opt-chamfer' });
+    [['auto', 'From the feature (1 X 1 on a Distance Distance chamfer, else 1 X 45°)']].concat(CHAMFER_FORM_NAMES).forEach(function (x) { var op = el('option', { value: x[0], text: x[1] }); if (o.chamferText === x[0]) op.selected = true; chf.appendChild(op); });
     var body = el('div', { class: 'dw-props dw-docprops' }, [
       el('div', { class: 'dw-tb-head', text: 'Detailing ▸ Auto insert on view creation' }),
       chk(cm, 'Center marks-holes'), chk(cl, 'Centerlines'),
@@ -1962,7 +1975,9 @@
       el('div', { class: 'dw-tb-head', text: 'Units ▸ Dual Dimension Length' }),
       el('label', { text: 'Unit' }), duU, el('label', { text: 'Decimals' }), duP,
       el('div', { class: 'dw-tb-head', text: 'Dimensions ▸ Dual dimensions display' }),
-      chk(duOn, 'Dual dimensions display'), chk(duSU, 'Show units for dual display'), duPos
+      chk(duOn, 'Dual dimensions display'), chk(duSU, 'Show units for dual display'), duPos,
+      el('div', { class: 'dw-tb-head', text: 'Dimensions ▸ Chamfer' }),
+      el('label', { text: 'Text display' }), chf
     ]).concat([
       el('div', { class: 'dw-tb-head', text: 'Sheet Metal ▸ Flat-pattern views' }),
       chk(fd, 'Overall dimensions (blank width and height)'), chk(fs, 'FLAT SIZE note'),
@@ -1972,7 +1987,8 @@
       { label: 'OK', primary: true, id: 'dw-opt-ok', action: function () { UI.closeModal(); var extra = DW.docPropsExtra ? DW.docPropsExtra() : {}; DW.docPropsExtra = null; setDocOptions(Object.assign(extra, { autoCenterMarks: cm.checked, autoCenterlines: cl.checked, extLines: ex.checked, markSize: +sz.value, balloonQty: bq.checked,
         flatDims: fd.checked, flatSizeNote: fs.checked, bendNotes: bn.value, dimPrec: pr.value === '' ? '' : +pr.value, tolPrec: tpr.value === '' ? '' : +tpr.value, fractions: inch ? fr.checked : o.fractions, fracDenom: +dn.value || 64,
         dual: duOn.checked ? true : '', dualShowUnits: duSU.checked ? true : '', dualPos: dualPosOf(duPos) === 'bottom' ? '' : dualPosOf(duPos),   // (rfOC: defaults are not stored)
-        dualUnits: duU.value === (inch ? 'mm' : 'in') ? '' : duU.value, dualPrec: +duP.value === (duU.value === 'mm' ? 2 : 3) ? '' : +duP.value })); } },
+        dualUnits: duU.value === (inch ? 'mm' : 'in') ? '' : duU.value, dualPrec: +duP.value === (duU.value === 'mm' ? 2 : 3) ? '' : +duP.value,
+        chamferText: chf.value === 'auto' ? '' : chf.value })); } },   // (rfPD)
       { label: 'Cancel', action: UI.closeModal }
     ] });
   }

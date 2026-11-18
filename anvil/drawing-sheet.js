@@ -1144,7 +1144,8 @@
   function dimStyle(doc) {
     var o = (doc && doc.options) || {};
     return { prec: o.dimPrec != null && o.dimPrec !== '' && +o.dimPrec >= 0 ? Math.min(8, Math.round(+o.dimPrec)) : null, fractions: !!o.fractions, denom: +o.fracDenom > 0 ? +o.fracDenom : 64,
-      tolPrec: o.tolPrec != null && o.tolPrec !== '' && +o.tolPrec >= 0 ? Math.min(8, Math.round(+o.tolPrec)) : null };
+      tolPrec: o.tolPrec != null && o.tolPrec !== '' && +o.tolPrec >= 0 ? Math.min(8, Math.round(+o.tolPrec)) : null,
+      chamfer: /^(dxa|axd|dxd|c)$/.test(o.chamferText) ? o.chamferText : 'auto' };   // (rfPD) Dimensions > Chamfer > Text display
   }
   // (rfOC, lane drawdual) dualStyle(doc) -> { on, units, prec, pos, showUnits }: SolidWorks 2024's Document Properties >
   // Dimensions > Dual dimensions display (doc.options.dual, off by default; dualShowUnits: Show units for dual display;
@@ -1195,6 +1196,7 @@
   function autoDims(doc, projections, units) {
     var dims = modelItemDims(doc, projections, units), extra = [];
     if (_.sketchAngularItems) { try { extra = _.sketchAngularItems(doc, projections); } catch (e) { extra = []; } }
+    if (_.chamferFeatureItems) { try { extra = extra.concat(_.chamferFeatureItems(doc, projections)); } catch (e) { /* (rfPD) never loses the others */ } }
     extra.forEach(function (d) { d.text = dimText(d, units); });
     return extra.length ? dims.concat(extra) : dims;
   }
@@ -1800,6 +1802,7 @@
     if (d.sketchRel) return d.view + ':rel:' + d.sketchRel;
     if (d.sketchDim) return d.view + ':dim:' + d.sketchDim;
     if (d.kind === 'pathlen' && d.sketchAng) return d.view + ':path:' + d.sketchAng;   // (rfDD)
+    if (d.kind === 'chamfer' && d.chamferFeat != null) return d.view + ':chamfer:' + d.chamferFeat;   // (rfPD) a chamfer feature's model item
     if (d.slot && d.slot.arc) return d.view + ':arcslot:' + d.slot.R.toFixed(4) + 'x' + d.slot.w.toFixed(4) + 'x' + d.slot.angle.toFixed(2);
     if (d.slot) return d.view + ':slot:' + d.slot.w.toFixed(4) + 'x' + d.slot.len.toFixed(4);
     return d.view + ':' + d.kind + ':' + (d.kind === 'dia' || d.kind === 'rad' ? d.value.toFixed(4) : d.a.concat(d.b).map(function (x) { return x.toFixed(4); }).join(','));

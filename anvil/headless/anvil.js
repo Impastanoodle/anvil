@@ -29,6 +29,9 @@ const USAGE = [
   '  drawing <file> [--svg out] [--dxf out] [--dwg out] [--pdf out] [--views Front,Top,Right,Isometric] [--scale 1:2]',
   '               [--dxf-version r12|2000]   the sheet DXF (one layer per view) R12 by default; a DWG is made from R2000 (R2000 / DWG',
   '               hatching: one HATCH entity per region, as the app Save As does; R12: LINEs)',
+  '               [--dual] [--dual-pos bottom|top|left|right] [--dual-units mm|in] [--dual-prec 0..8] [--dual-show-units]',
+  '               Dual dimensions display (Document Properties): every length also in the other system, 1.000 [25.40];',
+  '               default the other units (mm .12 on an inch part, in .123 on a mm one) under the value (Bottom)',
   '  example <name | index> [build options]     a bundled example (name case-insensitive, prefix allowed)',
   '  example --all [--occt] [--native [dir]]     every example against its documented volume',
   '  examples                                    list the examples with their documented volumes',
@@ -53,7 +56,7 @@ const USAGE = [
 
 // ------------------------------------------------------------------ arguments
 const VALUED = { stl: 1, step: 1, 'dxf-flat': 1, 'dwg-flat': 1, json: 1, script: 1, svg: 1, dxf: 1, dwg: 1, pdf: 1, views: 1, scale: 1, 'dxf-face': 2, 'dwg-face': 2,
-  'dxf-version': 1, 'dxf-style': 1, jobs: 1, only: 1 };
+  'dxf-version': 1, 'dxf-style': 1, jobs: 1, only: 1, 'dual-pos': 1, 'dual-units': 1, 'dual-prec': 1 };
 function parseArgs(argv) {
   const out = { _: [], flags: {} };
   for (let i = 0; i < argv.length; i++) {
@@ -309,6 +312,30 @@ async function cmdDrawing(src, flags) {
   const opts = { projection: 'third' };
   if (flags.scale) opts.scale = parseScale(flags.scale);
   const doc = Drawing.newDrawing(r.model, opts), units = r.model.units === 'in' ? 'in' : 'mm';
+  // (rfPD) --dual [--dual-pos, --dual-units, --dual-prec, --dual-show-units]: Document Properties > Dimensions > Dual
+  // dimensions display and Units > Dual Dimension Length, as the app's Document Properties dialog stores them
+  const dualSub = ['dual-pos', 'dual-units', 'dual-prec', 'dual-show-units'].filter((k) => flags[k] != null);
+  if (dualSub.length && !flags.dual) throw usage('--' + dualSub[0] + ' needs --dual');
+  if (flags.dual) {
+    const o = doc.options || (doc.options = {});
+    o.dual = true;
+    if (flags['dual-pos'] != null) {
+      const p = String(flags['dual-pos']).toLowerCase();
+      if (['top', 'bottom', 'left', 'right'].indexOf(p) < 0) throw usage('--dual-pos: top, bottom, left or right, not "' + flags['dual-pos'] + '"');
+      o.dualPos = p;
+    }
+    if (flags['dual-units'] != null) {
+      const u = String(flags['dual-units']).toLowerCase().replace(/^inch(es)?$/, 'in');
+      if (u !== 'in' && u !== 'mm') throw usage('--dual-units: mm or in, not "' + flags['dual-units'] + '"');
+      o.dualUnits = u;
+    }
+    if (flags['dual-prec'] != null) {
+      const n = Number(flags['dual-prec']);
+      if (!(Number.isInteger(n) && n >= 0 && n <= 8)) throw usage('--dual-prec: decimal places 0 to 8, not "' + flags['dual-prec'] + '"');
+      o.dualPrec = n;
+    }
+    if (flags['dual-show-units']) o.dualShowUnits = true;
+  }
   let names;
   if (flags.views) {
     names = String(flags.views).split(',').map((s) => s.trim()).filter(Boolean).map((s) => {
@@ -350,6 +377,7 @@ async function cmdDrawing(src, flags) {
     views: doc.views.map((v) => ({ id: v.id, name: v.name, orient: v.orient, x: r6(v.x), y: r6(v.y), scale: v.scale || null })),
     dims: (sheet.dims || []).length, computeMs: Math.round((performance.now() - t0) * 10) / 10, outputs, errors: r.summary.errors
   };
+  if (flags.dual) { const st = Drawing.dualStyle(doc); summary.dual = { units: st.units, prec: st.prec, pos: st.pos, showUnits: st.showUnits }; summary.dimTexts = (sheet.dims || []).map((d) => d.text); }   // (rfPD)
   if (conv.converter) summary.converter = conv.converter;
   process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
   return r.summary.errors.length ? 1 : 0;

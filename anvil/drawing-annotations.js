@@ -39,7 +39,8 @@
     return { autoCenterMarks: !!o.autoCenterMarks, autoCenterlines: !!o.autoCenterlines, markSize: ms,
       extLines: o.extLines !== false, balloonQty: !!o.balloonQty, flatDims: o.flatDims === true, flatSizeNote: !!o.flatSizeNote,
       bendNotes: o.bendNotes === 'table' || o.bendNotes === 'none' ? o.bendNotes : 'notes', dimPrec: st.prec != null && +o.dimPrec > st.prec ? Math.min(8, Math.round(+o.dimPrec)) : st.prec, fractions: st.fractions, fracDenom: st.denom, tolPrec: st.tolPrec,   // (rfIF: up to 8 places; rfKX: tolPrec, null = Same as nominal)
-      dual: du.on, dualShowUnits: du.showUnits, dualPos: du.pos, dualUnits: du.units, dualPrec: du.prec };   // (rfOC: Dual dimensions display, Dual Dimension Length)
+      dual: du.on, dualShowUnits: du.showUnits, dualPos: du.pos, dualUnits: du.units, dualPrec: du.prec,   // (rfOC: Dual dimensions display, Dual Dimension Length)
+      chamferText: st.chamfer };   // (rfPD: Dimensions > Chamfer > Text display)
   }
   function nextAnnotId(doc) { doc.nextAnnot = (doc.nextAnnot || 0) + 1; return doc.nextAnnot; }
 
@@ -649,15 +650,78 @@
     (v.dims || (v.dims = [])).push(d);
     return d;
   }
-  // chamfer value: the setback along the lead-in edge (chamfer length × cos θ) and θ, the acute angle between them
+  // chamfer value: the setback along the lead-in edge (chamfer length × cos θ) and θ, the acute angle between them;
+  // (rfPD) value2 the other leg (chamfer length × sin θ, square to the lead-in edge): the D2 of the "D1 X D2" form
   function chamferValue(d) {
     var t = [d.b[0] - d.a[0], d.b[1] - d.a[1]], L = Math.hypot(t[0], t[1]), r = [d.ref.b[0] - d.ref.a[0], d.ref.b[1] - d.ref.a[1]], Lr = Math.hypot(r[0], r[1]);
-    if (L < 1e-12 || Lr < 1e-12) { d.value = 0; d.angle = 0; return d; }
+    if (L < 1e-12 || Lr < 1e-12) { d.value = 0; d.angle = 0; d.value2 = 0; return d; }
     var cs = Math.min(1, Math.abs(t[0] * r[0] + t[1] * r[1]) / (L * Lr));
     d.angle = Math.acos(cs) * 180 / Math.PI;
     d.value = L * cs;
+    d.value2 = L * Math.sqrt(Math.max(0, 1 - cs * cs));
     return d;
   }
+  // ------------------------------------------------------------------ (rfPD, lane drawchamfer) Chamfer text format
+  // SolidWorks 2024: Document Properties > Dimensions > Chamfer > Text display, and the Dimension PM's Chamfer Text
+  // Format: '1 X 45°' (dxa), '45° X 1' (axd), '1 X 1' (dxd), 'C1' (c, a 45° chamfer only; any other angle reads
+  // '1 X 30°'). The first distance is always the leg along the lead-in edge (the second pick), the angle is measured
+  // from that edge, D2 is the other leg (square to the lead-in edge): the order of the picks says which leg is which,
+  // as in SolidWorks. A dimension's own d.chform wins over the document's options.chamferText; 'auto' (the default of
+  // both) is '1 X 1' when the chamfer is the edge of a Distance Distance Chamfer feature of the part (its two legs are
+  // the feature's D1 / D2, either way round) and '1 X 45°' otherwise (equal distance, Angle Distance, sketch chamfers,
+  // a chamfer the part does not name). Model items of a chamfer feature (chamferFeatureItems) pick the lead-in edge on
+  // the face that takes the feature's D1, so they read the feature's own numbers: .100 X .300, .100 X 30°.
+  var CHAMFER_FORMS = ['auto', 'dxa', 'axd', 'dxd', 'c'];
+  var cfMemo = { model: null, list: null };
+  // the part's chamfer features as [{ id, d, d2 | null, angle | null }] (resolved values: equations, configurations)
+  function chamferFeatures(model) {
+    if (!model || model.type === 'assembly' || !model.features) return [];
+    if (cfMemo.model === model) return cfMemo.list;
+    var rm; try { rm = K.resolvedModel(model).model; } catch (e) { rm = model; }
+    var has = function (v) { return v != null && v !== ''; }, list = [];
+    (rm.features || []).forEach(function (f) {
+      if (!f || f.type !== 'chamfer' || f.suppressed || !(+f.d > 0)) return;
+      list.push({ id: f.id, name: f.name, d: +f.d, d2: !has(f.angle) && has(f.d2) && +f.d2 > 0 && Math.abs(+f.d2 - +f.d) > 1e-12 ? +f.d2 : null, angle: has(f.angle) && +f.angle > 0 && +f.angle < 90 ? +f.angle : null, edges: f.edges || [], flip: !!f.flip });
+    });
+    cfMemo.model = model; cfMemo.list = list;
+    return list;
+  }
+  // the legs a chamfer feature cuts at a square corner: [D1 leg, other leg]
+  function featureLegs(cf) { return cf.d2 != null ? [cf.d, cf.d2] : cf.angle != null ? [cf.d, cf.d * Math.tan(cf.angle * Math.PI / 180)] : [cf.d, cf.d]; }
+  function legsMatch(p, q) {
+    var tol = Math.max(1e-6, 1e-5 * Math.max(Math.abs(q[0]), Math.abs(q[1])));
+    return Math.abs(p[0] - q[0]) <= tol && Math.abs(p[1] - q[1]) <= tol;
+  }
+  // the chamfer feature whose legs a chamfer dimension measures (either way round), or null
+  function chamferFeatureOf(d, model) {
+    if (d.value2 == null) chamferValue(d);
+    var mine = [d.value, d.value2], hit = null;
+    chamferFeatures(model).forEach(function (cf) {
+      if (hit) return;
+      var L = featureLegs(cf);
+      if (legsMatch(mine, L) || legsMatch(mine, [L[1], L[0]])) hit = cf;
+    });
+    return hit;
+  }
+  // chamferForm(d) -> 'dxa' | 'axd' | 'dxd' | 'c': the form a chamfer dimension is written in
+  function chamferForm(d) {
+    var f = CHAMFER_FORMS.indexOf(d.chform) > 0 ? d.chform : _.DIMSTYLE && CHAMFER_FORMS.indexOf(_.DIMSTYLE.chamfer) > 0 ? _.DIMSTYLE.chamfer : 'auto';
+    if (f === 'auto') {
+      var model = (_.CTX && _.CTX.model) || _.lastModel, cf = model ? chamferFeatureOf(d, model) : null;
+      f = cf && cf.d2 != null ? 'dxd' : 'dxa';
+    }
+    if (f === 'c' && Math.abs(fmtAngle(d.angle) - 45) > 1e-9) f = 'dxa';
+    return f;
+  }
+  // chamferText(d, x, units, prec, x2?) -> the chamfer's text with x as its first distance (x2: its second, else d.value2)
+  function chamferText(d, x, units, prec, x2) {
+    var f = chamferForm(d), A = fmtAngle(d.angle) + '°', n = numText(x, units, prec);
+    if (f === 'dxd') return n + ' X ' + numText(x2 != null ? x2 : d.value2 != null ? d.value2 : chamferValue(d).value2, units, prec);
+    if (f === 'axd') return A + ' X ' + n;
+    if (f === 'c') return 'C' + n;
+    return n + ' X ' + A;
+  }
+  D.CHAMFER_FORMS = CHAMFER_FORMS; D.chamferForm = chamferForm; D.chamferFeatures = chamferFeatures; _.chamferText = chamferText;
   // reattachUserDim(d, pr): reattachDim for every kind, including the references of ordinate / baseline / chamfer
   function reattachUserDim(d, pr) {
     if (d.kind === 'angrun' || d.kind === 'pathlen') return reattachCT(d, pr);   // (lane CT)
@@ -1371,7 +1435,7 @@
   function dimLabel(d, units) {
     var prec = d.prec != null && d.prec !== '' ? +d.prec : null, tol = d.tol && d.tol.type && d.tol.type !== 'none' ? d.tol : null;
     function base(x) {
-      if (d.kind === 'chamfer') return numText(x, units, prec) + ' X ' + fmtAngle(d.angle) + '°';
+      if (d.kind === 'chamfer') return chamferText(d, x, units, prec, x === d.value ? null : (d.value2 || 0) + (x - d.value));   // (rfPD: the text format; a limit moves both distances)
       if (d.kind === 'angle' && d.arcLen) return numText(x, units, prec);   // (rfMZ) an arc length
       if (d.kind === 'angle') return (prec != null ? (+x).toFixed(prec) : fmtAngle(x)) + '°';   // (rfS)
       if (d.kind === 'dia') return (d.count > 1 ? d.count + 'X ' : '') + 'Ø' + numText(x, units, prec);
@@ -1444,10 +1508,14 @@
     if (!(DUAL_KINDS[d.kind] || (d.kind === 'angle' && d.arcLen)) || (d.kind === 'rad' && d.slot)) return null;
     var f = dualConv(units, S.units), d2 = { kind: 'h', value: Math.abs(d.value) * f, prec: S.prec }, tol = d.tol && d.tol.type;
     if (tol === 'bilateral' || tol === 'symmetric' || tol === 'limit') d2.tol = { type: tol, plus: Math.abs(+d.tol.plus || 0) * f, minus: Math.abs(+d.tol.minus || 0) * f };
-    var st = _.DIMSTYLE, lab;
+    var st = _.DIMSTYLE, lab, cform = d.kind === 'chamfer' ? chamferForm(d) : null;
+    // (rfPD) a chamfer written '1 X 1' doubles both distances, in the same order: .100 X .300 [2.54 X 7.62]; the forms
+    // with an angle double the distance only (.060 X 45° [1.52]: the angle reads the same in both systems)
+    if (cform === 'dxd') d2 = { kind: 'chamfer', chform: 'dxd', value: d2.value, value2: Math.abs(d.value2 || 0) * f, angle: d.angle, prec: S.prec, tol: d2.tol };
     _.DIMSTYLE = { prec: S.prec, fractions: false, tolPrec: null };
     try { lab = dimLabel(d2, S.units); } finally { _.DIMSTYLE = st; }
     if (S.showUnits) {
+      if (cform === 'dxd' && lab.main != null) lab.main = lab.main.split(' X ').join(S.units + ' X ');   // (rfPD: each distance its unit)
       if (lab.main != null) lab.main += S.units; else { lab.upper += S.units; lab.lower += S.units; }
       lab.text = lab.main == null ? lab.upper + '/' + lab.lower : lab.main + (lab.upper != null ? ' ' + lab.upper + '/' + lab.lower : '');
     }
@@ -1471,7 +1539,7 @@
   D.dualLabel = dualLab;
   // the dimension properties the Dimension PropertyManager edits; a model item keeps them in doc.dimProps under
   // styleKey (view:kind:n, stable when the part changes size), a Smart Dimension on itself
-  var DIM_PROPS = ['at', 'tx', 'tside', 'lead', 'off', 'flip', 'tol', 'prec', 'label', 'rad', 'dual'];   // (rfOC dual: true / false overrides the document's Dual dimensions display)   // (rad: an angle's arc radius, rfS; tside: placeLinear)
+  var DIM_PROPS = ['at', 'tx', 'tside', 'lead', 'off', 'flip', 'tol', 'prec', 'label', 'rad', 'dual', 'chform'];   // (rfPD chform: a chamfer's text format, CHAMFER_FORMS)   // (rfOC dual: true / false overrides the document's Dual dimensions display)   // (rad: an angle's arc radius, rfS; tside: placeLinear)
   function styleKey(d, n) { return d.view + ':' + d.kind + ':' + n; }
   function setDimProps(target, props) {
     DIM_PROPS.forEach(function (k) {
@@ -2312,6 +2380,68 @@
   }
   // (rfDD) Drawing.autoDims (drawing-sheet.js) calls it directly through _.sketchAngularItems, after the linear items
   D.sketchAngularItems = _.sketchAngularItems = sketchAngularItems;
+  // (rfPD, lane drawchamfer) chamferFeatureItems(doc, projections) -> one Chamfer Dimension model item per Chamfer
+  // feature (SolidWorks' Insert Model Items ▸ Marked for drawing brings a chamfer feature's dimensions as one chamfer
+  // dimension: .100 X 45°, .100 X .300 on a Distance Distance chamfer, .100 X 30° on an Angle Distance one), in the
+  // first orthographic view (Front, Top, Right, then the others) that looks along one of its edges: there the edge
+  // picked in the feature (edge.at) is a point C and the chamfer a visible line whose ends lie the feature's two legs
+  // from C. The lead-in edge is the visible line running on from the end D1 away from C, so the dimension reads the
+  // feature's D1 first. chamferFeat: the feature id (its key, autoDimKey). Square corners only (the legs as the
+  // feature cuts them at 90°); a chamfer seen nowhere end on gets none.
+  function chamferFeatureItems(doc, projections) {
+    var ctx = _.CTX, model = ctx && ctx.model, out = [];
+    if (!doc || !projections || !model || model.type === 'assembly' || !model.features || !D.modelItems || !D.viewFrame) return out;
+    var MI = D.modelItems(doc);
+    // only once Model Items has been run (doc.modelItems, its PM's OK or anvil.drawing.modelItems): a drawing made
+    // before keeps the items it had (the default set has no feature dimensions), as the flat views' items (rfAB)
+    if (!MI.marked || !MI.pm) return out;
+    var feats = chamferFeatures(model);
+    if (MI.source === 'feature') feats = feats.filter(function (cf) { return cf.id === MI.feature; });
+    // a chamfer already dimensioned by hand (a Chamfer Dimension of the drawing whose legs are this feature's) gets no
+    // model item: the same chamfer once on the sheet (Eliminate duplicates)
+    var byHand = [];
+    (doc.views || []).forEach(function (v) { (v.dims || []).forEach(function (d) { if (d && d.kind === 'chamfer' && !d.auto && d.a && d.b && d.ref) { var cf = chamferFeatureOf(d, model); if (cf) byHand.push(cf.id); } }); });
+    feats = feats.filter(function (cf) { return byHand.indexOf(cf.id) < 0; });
+    if (!feats.length) return out;
+    var roleOrder = { front: 0, top: 1, right: 2 }, ORTHO = _.ORTHO || {};
+    var order = (doc.views || []).filter(function (v) { return ORTHO[v.orient] && (!v.kind || v.kind === 'projected') && projections[v.id] && !projections[v.id].error && (!MI.views || MI.views.indexOf(v.id) >= 0); });
+    order.sort(function (a, b) { return (roleOrder[a.role] != null ? roleOrder[a.role] : 5) - (roleOrder[b.role] != null ? roleOrder[b.role] : 5) || a.id - b.id; });
+    function dist(p, q) { return Math.hypot(q[0] - p[0], q[1] - p[1]); }
+    feats.forEach(function (cf) {
+      var L = featureLegs(cf), tol = Math.max(1e-6, 1e-5 * Math.max(L[0], L[1])), d = null;
+      var pts = cf.edges.map(function (e) { return Array.isArray(e) ? e : e && Array.isArray(e.at) ? e.at : null; }).filter(function (p) { return p && p.length === 3; });
+      for (var j = 0; j < order.length && !d; j++) {
+        var v = order[j], F = D.viewFrame(doc, v), pr = projections[v.id], vis = pr.lines && pr.lines.visible || [];
+        if (!F) continue;
+        for (var k = 0; k < pts.length && !d; k++) {
+          var C = [V.dot(pts[k], F.u), V.dot(pts[k], F.v)];
+          vis.forEach(function (l) {
+            if (d) return;
+            var a = [l[0], l[1]], b = [l[2], l[3]], da = dist(a, C), db = dist(b, C), P1 = null, P2 = null;
+            if (Math.abs(da - L[0]) <= tol && Math.abs(db - L[1]) <= tol) { P1 = a; P2 = b; }
+            else if (Math.abs(db - L[0]) <= tol && Math.abs(da - L[1]) <= tol) { P1 = b; P2 = a; }
+            if (!P1 || Math.abs(dist(P1, P2) - Math.hypot(L[0], L[1])) > tol) return;   // (a square corner: the chamfer is the hypotenuse)
+            // the lead-in: a visible edge from P1 on, along C -> P1
+            var t = [(P1[0] - C[0]) / L[0], (P1[1] - C[1]) / L[0]], lead = null;
+            vis.forEach(function (m) {
+              if (lead || m === l) return;
+              var e0 = [m[0], m[1]], e1 = [m[2], m[3]], far = dist(e0, P1) <= tol ? e1 : dist(e1, P1) <= tol ? e0 : null;
+              if (!far) return;
+              var w = [far[0] - P1[0], far[1] - P1[1]], lw = Math.hypot(w[0], w[1]);
+              if (lw > tol && (w[0] * t[0] + w[1] * t[1]) / lw > 1 - 1e-9) lead = { a: P1.slice(), b: far.slice() };
+            });
+            if (!lead) return;
+            var dd = { view: v.id, kind: 'chamfer', a: P1.slice(), b: P2.slice(), ref: refFrom(lead), auto: true, chamferFeat: cf.id };
+            chamferValue(dd);
+            if (dd.angle > 1e-6 && dd.angle < 90 - 1e-6 && dd.value > 1e-12) d = dd;
+          });
+        }
+      }
+      if (d) out.push(d);
+    });
+    return out;
+  }
+  D.chamferFeatureItems = _.chamferFeatureItems = chamferFeatureItems;
   // ------------------------------------------------------------------ notes (Annotation ▸ Note)
   // doc.notes = [{ id, p: [x, y] (paper: the first line's baseline start), text (lines split at \n), h (paper mm,
   // default 3.5) }]: free text on the sheet, drawn on the NOTES layer in SVG, DXF (one TEXT per line) and PDF.
