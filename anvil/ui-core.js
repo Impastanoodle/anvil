@@ -4253,9 +4253,12 @@ var UI = (function () {
       var cell = G.cells.get(Math.floor(mx / EDGE_CELL) * 4096 + Math.floor(my / EDGE_CELL));
       list = cell ? (G.wide.length ? G.wide.concat(cell) : cell) : G.wide;
     }
+    // rfOI: in an open sketch a tangent edge that is drawn (a bend's edge on its flange, Tangent Edges Visible or As
+    // Phantom) is picked too, as SolidWorks dimensions a hole from the bend line; seams between facets never are
+    var tanSet = App.mode === 'sketch' && App.view.tangentEdges !== 'removed' ? new Set((tanCache.edges === App.edges && tanCache.list) || tangentEdgeList(App.mesh)) : null;
     for (var q = 0, n = list ? list.length : App.edges.length; q < n; q++) {
       var i = list ? list[q] : q, e = App.edges[i];
-      if (e.smooth || e.faces.length !== 2) continue;
+      if ((e.smooth && !(tanSet && tanSet.has(e))) || e.faces.length !== 2) continue;
       A[0] = xy[i * 4]; A[1] = xy[i * 4 + 1]; B[0] = xy[i * 4 + 2]; B[1] = xy[i * 4 + 3];
       // cheap reject: the cursor is outside the segment's box grown by the pick radius
       if (mx < Math.min(A[0], B[0]) - bestD || mx > Math.max(A[0], B[0]) + bestD || my < Math.min(A[1], B[1]) - bestD || my > Math.max(A[1], B[1]) + bestD) continue;
@@ -4286,7 +4289,7 @@ var UI = (function () {
     var xy = edgeScreen(), cells = new Map(), wide = [], R = 7, nx = Math.floor(W / EDGE_CELL), ny = Math.floor(H / EDGE_CELL);
     for (var i = 0; i < E.length; i++) {
       var e = E[i];
-      if (e.smooth || e.faces.length !== 2) continue;
+      if ((e.smooth && e.seam) || e.faces.length !== 2) continue;   // (rfOI: smooth edges too: pickEdge takes the drawn tangent ones)
       var ax = xy[i * 4], ay = xy[i * 4 + 1], bx = xy[i * 4 + 2], by = xy[i * 4 + 3];
       var x0 = Math.min(ax, bx) - R, x1 = Math.max(ax, bx) + R, y0 = Math.min(ay, by) - R, y1 = Math.max(ay, by) + R;
       if (!(x1 >= 0 && y1 >= 0 && x0 <= W && y0 <= H)) continue;   // never under a cursor in the graphics area

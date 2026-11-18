@@ -1104,11 +1104,52 @@
     list.forEach(function (it) { S.setDriven(f, it.kind, it.index, false); });   // driving again, holding the value it reads now
     App.dimsStale = true;
   }
+  // rfOI: Ctrl+drag copies sketch entities (SolidWorks: hold Ctrl and drag): the pressed entity, or the selected
+  // entities when it is one of them. The copies follow the cursor (a preview) and are made on release as Copy Entities
+  // makes them (the relations among them come along; none to the entities left behind, no dimensions). One undo step.
+  function ctrlCopyDrag(f, i, p, pl) {
+    if (!f.entities[i] || !S.transformEntities) return null;
+    var sel = (UI.selection ? UI.selection() : []).filter(function (s) { return s.kind === 'entity'; }).map(function (s) { return s.index; });
+    var idx = sel.indexOf(i) >= 0 ? sel : [i], uv0 = UI.screenToPlane(p[0], p[1], pl), d = null;
+    function at(q) { var uv = UI.screenToPlane(q[0], q[1], pl); return uv && uv0 ? { dx: uv[0] - uv0[0], dy: uv[1] - uv0[1] } : null; }
+    function show() {
+      App.tempEntities = d ? idx.map(function (k) { return S.xfEntity(f.entities[k], d); }).filter(Boolean) : [];
+      UI.updateTemp();
+    }
+    return {
+      start: function () { App.sketchDragging = true; UI.setStatus('Ctrl+drag: copying ' + idx.length + ' entit' + (idx.length === 1 ? 'y' : 'ies') + '. Release to place the copy.'); },
+      move: function (q) { d = at(q); show(); },
+      cancel: function () { d = null; show(); App.sketchDragging = false; UI.setStatus('Copy cancelled.'); },
+      end: function () {
+        App.sketchDragging = false;
+        var xf = d; d = null; show();
+        if (!xf || (Math.abs(xf.dx) < 1e-12 && Math.abs(xf.dy) < 1e-12)) return;
+        var n0 = f.entities.length, u0 = App.undo.length, wasDirty = App.sketchDirty;
+        markDirty();
+        var r = S.transformEntities(f, idx, xf, { copy: true, count: 1, keepRelations: false });
+        if (!r.ok) {
+          if (!wasDirty && App.undo.length === u0 + 1) { App.undo.pop(); App.sketchDirty = false; }
+          UI.toast(r.error); return;
+        }
+        var made = []; for (var k = n0; k < f.entities.length; k++) made.push({ kind: 'entity', index: k });
+        if (UI.setSelection) UI.setSelection(made);
+        refresh();
+        UI.setStatus('Copied ' + (f.entities.length - n0) + ' entit' + (f.entities.length - n0 === 1 ? 'y' : 'ies') + ' (Ctrl+drag).');
+      }
+    };
+  }
   function sketchDragHook(p, ev, own) {   // own: the ref to drag (a Sketch Text pressed on its letters), else the one under p
     if (App.mode !== 'sketch' || App.tool !== 'select' || App.command) return null;
     var f = UI.activeSketchFeature(), ref = own || pickSketchRef(p[0], p[1]);
     if (!f || !ref || ref === 'O') return null;
     var pl = UI.activePlane(), start = null, uv0 = null, point = !!S.refPoint(f, ref), moved = false, pushedAt = -1, before = null;
+    // rfOI: Ctrl held as the press starts on an entity: Ctrl+drag copies it (the selection, when it is part of it), as
+    // SolidWorks does; before, the entity itself was dragged (or "did not move" when dimensioned)
+    // (not a sketch Point: Ctrl-dragging a point is the drag without snaps, sketch-refine)
+    if (!own && ((ev && ev.ctrlKey) || ctrlHeld) && !/^\d+\.(p\d|v\d+|mid)$/.test(ref) && !(f.entities[refEntity(ref)] && f.entities[refEntity(ref)].t === 'point')) {
+      var cd = ctrlCopyDrag(f, refEntity(ref), p, pl);
+      if (cd) return cd;
+    }
     if (!point) ref = String(refEntity(ref));
     // grabbing a circle or an arc on its curve changes its radius (the centre point moves it), as in SolidWorks
     var ent = f.entities[refEntity(ref)], radius = !point && ent && (ent.t === 'circle' || ent.t === 'arc');

@@ -153,6 +153,7 @@
     point: 'Click to place a point.',
     dimension: 'Click a line, circle, arc, rectangle, slot or polygon (or two points), then click where the dimension should sit: above / below or beside two points for a horizontal or vertical distance. Double-click a value to change it, drag it to move it; <b>Delete</b> removes a selected dimension.'
   };
+  var lastSketchTool = null;   // rfOI: the last tool picked in a sketch (Enter with the Select tool and no PropertyManager picks it again)
   function setTool(name) {
     // (head, 2026-11-17) Zoom to Area ends when a sketch tool is picked, as any command ends it in SolidWorks: left on,
     // the tool's first press drew a zoom box instead (a Straight Slot got two of its three clicks: smoke rfNK flow a
@@ -170,6 +171,7 @@
     var statusBefore = $('status-msg') ? $('status-msg').textContent : null, stepHint0 = App.tool !== 'select' ? hintText() : null;
     cancelTool(true);
     App.tool = name || 'select';
+    if (App.mode === 'sketch' && App.tool !== 'select') lastSketchTool = App.tool;   // rfOI: what Enter repeats
     App.toolState = { pts: [] };
     App.drawConstruction = false;
     App.dimsStale = true;   // p9-sketchfix: the dimension grips (Instant3D) show with the Select tool only: redrawn now
@@ -1342,6 +1344,9 @@
   function inferOpts(pts, e, closing, dirRel) {
     var o = inferSkip(), st = App.toolState;
     if (dirRel === undefined) dirRel = st ? st.dirRel : null;
+    // rfOI: Ctrl held as the entity is placed: no automatic Horizontal / Vertical / Parallel (SolidWorks: Ctrl while
+    // sketching suppresses the automatic relations; the snap was already off, but a level click still got Horizontal)
+    if (UI.sketchCtrlHeld && UI.sketchCtrlHeld()) { o = Object.assign({}, o || {}, { noHV: true }); dirRel = null; }
     if (dirRel && e && e.t === 'line' && App.tool === 'line') { o = Object.assign({}, o || {}); o.dirRels = [dirRel]; }
     if (closing || !pts || !pts.length) return o;
     o = o ? Object.assign({}, o) : {};
@@ -2468,6 +2473,15 @@
     if (App.mode !== 'sketch' || ev.ctrlKey || ev.metaKey || ev.altKey || numBox) return;
     var tag = (ev.target && ev.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || (ev.target && ev.target.isContentEditable)) return;
+    // rfOI: Enter with the Select tool, nothing typed and no PropertyManager open repeats the last sketch tool, as
+    // SolidWorks repeats the last command (before, Enter did nothing in a sketch)
+    if (ev.key === 'Enter' && App.tool === 'select' && lastSketchTool && !App.command && !(UI.hasPM && UI.hasPM()) && !(document.getElementById('modal') && !document.getElementById('modal').hidden)) {
+      ev.preventDefault(); ev.stopImmediatePropagation();
+      var rt = lastSketchTool;
+      setTool(rt);
+      UI.setStatus('Repeated the last command (' + rt + ').');
+      return;
+    }
     if (App.tool === 'line' && (ev.key === 't' || ev.key === 'T')) {   // r15/tanslide15, rfE: T toggles Tangent start
       ev.preventDefault(); ev.stopImmediatePropagation();
       setLineTangentStart(!lineTanStart);

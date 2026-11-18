@@ -320,10 +320,22 @@
   };
   function arcEnd(f, arcRef, endRef) {
     var pa = S.parseRef(arcRef), pe = S.parseRef(endRef);
-    if (!pa || !pe || pa.o || pe.o || pa.s !== null || pe.e !== pa.e || pe.s !== 'p') return null;
+    if (!pa || !pe || pa.o || pe.o || pa.s !== null) return null;
     var e = f.entities[pa.e];
     if (!e || e.t !== 'arc') return null;
-    return { type: 'arclength', refs: [String(pa.e)], need: pa.e + '.p' + (pe.k === 1 ? 2 : 1) };
+    // rfOI: an end the arc shares with the next entity of a chain is picked as that entity's end point (a line drawn
+    // first comes first): it is the arc's end all the same, as SolidWorks has one sketch point there (before, the arc
+    // and that point made a distance from the arc's centre: 1 instead of the arc's length)
+    var k = pe.e === pa.e && pe.s === 'p' ? pe.k : arcEndAt(f, pa.e, endRef);
+    if (!k) return null;
+    return { type: 'arclength', refs: [String(pa.e)], need: pa.e + '.p' + (k === 1 ? 2 : 1) };
+  }
+  // which end of arc i (1 or 2) point ref lies on, or 0
+  function arcEndAt(f, i, ref) {
+    var P = S.refPoint(f, ref);
+    if (!P) return 0;
+    for (var k = 1; k <= 2; k++) { var Q = S.refPoint(f, i + '.p' + k); if (Q && Math.hypot(P[0] - Q[0], P[1] - Q[1]) <= 1e-9 * Math.max(1, Math.abs(Q[0]), Math.abs(Q[1]))) return k; }
+    return 0;
   }
   // dimToolClick's placing click for a dimension that waits for one more pick (arc length: the arc's other end point):
   // true when the click was that pick (the next click places the dimension)
@@ -331,7 +343,7 @@
     if (!rd || !rd.need) return false;
     var ref = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null, need = rd.need;
     delete rd.need;
-    if (ref !== need) return false;
+    if (ref !== need && !(ref && rd.refs && arcEndAt(f, +rd.refs[0], ref) === +need.slice(-1))) return false;   // rfOI: or a point there
     App.toolState.relDim = rd;
     $('sketch-hint').innerHTML = 'Click where the arc length dimension should sit.';
     return true;
@@ -1304,6 +1316,7 @@
     }
     // one click: the zero, then the text line, then the members (ref: what was clicked; uv: where)
     function click(uv, ref) {
+      var openMember = null;
       if (!st.zero) {
         if (!ref) { UI.setStatus('Nothing there: ' + msg()); return; }
         if (autoAxis && !S.ordKind(f, ref, 'x') && S.ordKind(f, ref, 'y')) axis = 'y';
@@ -1324,9 +1337,13 @@
         refresh();
         var rel = f.rels[r.index];
         UI.setStatus('Ordinate dimension ' + dimLabelText(rel, rel.v, 'len') + unitAfter('len') + (r.driven ? ' added as driven (it would over-define the sketch).' : ' added.'));   // rfA: with the unit
+        // rfOI: as SolidWorks (Input dimension value), the Modify box opens on each driving member, so the values of a
+        // print are typed as the members are clicked (before, every value had to be double-clicked afterwards)
+        if (!r.driven) openMember = r.index;
       }
       App.dimsStale = true;
       render();
+      if (openMember != null && UI.openRelDimEdit) { App.dimsStale = false; if (UI.drawDims) UI.drawDims(); UI.openRelDimEdit(openMember); }
       return true;
     }
     spec.click = click;

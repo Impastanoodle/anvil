@@ -3178,7 +3178,8 @@ var SketchSolver = (function () {
     pointRefs(sketch, i).forEach(function (pr) { mag = Math.max(mag, Math.abs(pr.pt[0]), Math.abs(pr.pt[1])); });
     var tol = 1e-9 * mag + 1e-9, placed = placedTest(opts && opts.placed, Math.max(tol, 1e-7 * mag));
     if (opts && opts.symmetric) symCandidates(sketch, i, tol).forEach(function (c) { out.push(c); });
-    if (e.t === 'line' || e.t === 'slot') {   // r9/sketch9: a straight slot drawn level / upright too (its centre line)
+    // rfOI: opts.noHV (Ctrl held while the line was drawn): no automatic Horizontal / Vertical, as SolidWorks' Ctrl
+    if ((e.t === 'line' || e.t === 'slot') && !(opts && opts.noHV)) {   // r9/sketch9: a straight slot drawn level / upright too (its centre line)
       var dx = Math.abs(e.x2 - e.x1), dy = Math.abs(e.y2 - e.y1);
       if (dy < tol && dx > tol) out.push({ type: 'horizontal', refs: [String(i)], at: [(e.x1 + e.x2) / 2, e.y1] });
       else if (dx < tol && dy > tol) out.push({ type: 'vertical', refs: [String(i)], at: [e.x1, (e.y1 + e.y2) / 2] });
@@ -3813,6 +3814,23 @@ var SketchSolver = (function () {
       var rel = { type: 'coincident', refs: [endRef, at] };
       (sketch.rels = sketch.rels || []).push(rel);
       var an0 = analyze(sketch);
+      // rfOI: a line extended to the end of a line it is Collinear with (the two pieces of an edge a notch was trimmed
+      // out of, the notch deleted): the join repeats one row of the Collinear, so it was dropped and the outline only
+      // looked closed (a drag opened it again). The two lines meet end to end, so the Collinear becomes Parallel (the
+      // join + Parallel hold exactly what Collinear + join would)
+      var pa = parseRef(at), coll = null;
+      if (an0.rels[sketch.rels.length - 1] !== 'ok' && pa && !pa.o && E[pa.e] && E[pa.e].t === 'line' && e.t === 'line') {
+        coll = sketch.rels.filter(function (r) { return r.type === 'collinear' && r.refs.length === 2 && r.refs.indexOf(String(i)) >= 0 && r.refs.indexOf(String(pa.e)) >= 0; })[0] || null;
+        if (coll) {
+          coll.type = 'parallel'; an0 = analyze(sketch);
+          // (both already Vertical / Horizontal: Parallel repeats them too, and the join alone keeps them in line)
+          if (an0.rels[sketch.rels.length - 1] !== 'ok' || an0.rels[sketch.rels.indexOf(coll)] !== 'ok') {
+            var ci = sketch.rels.indexOf(coll);
+            sketch.rels.splice(ci, 1); an0 = analyze(sketch);
+            if (an0.rels[sketch.rels.length - 1] !== 'ok') { coll.type = 'collinear'; sketch.rels.splice(ci, 0, coll); an0 = analyze(sketch); }
+          }
+        }
+      }
       if (an0.rels[sketch.rels.length - 1] !== 'ok') { sketch.rels.pop(); if (!sketch.rels.length) delete sketch.rels; }
     }
     var res = solve(sketch), an = analyze(sketch);
@@ -5193,7 +5211,7 @@ var SketchSolver = (function () {
   // How line / arc e is cut back or extended to end at T: { move: the end that moves, dir: the direction of travel at T
   // (away from the part kept), pt, a0 / a1 (an arc) }. keepEnd (a corner): the end that stays, and T must lie between
   // it and the corner; otherwise the part kept is the one clicked (uv). null when nothing would be left.
-  function reshapeTo(e, T, keepEnd, uv) {
+  function reshapeTo(e, T, keepEnd, uv, consume) {
     var tiny = 1e-9 * Math.max(1, Math.abs(T[0]), Math.abs(T[1]));
     if (e.t === 'line') {
       var A = [e.x1, e.y1], B = [e.x2, e.y2], d = sub(B, A), L2 = dot(d, d);
@@ -5202,6 +5220,12 @@ var SketchSolver = (function () {
       if (keepEnd) {
         move = otherEnd(keepEnd);
         var tK = keepEnd === 'p1' ? tT : 1 - tT;
+        // rfOI: the fillet takes the whole line (R = what is left of it, an obround's end): the line is used up
+        // (consumed: filletPair deletes it and joins the fillet to what its far end met)
+        if (consume && Math.abs(tK) <= 1e-7) {
+          var K1 = keepEnd === 'p1' ? A : B, u = unit(keepEnd === 'p1' ? d : [-d[0], -d[1]]);
+          return { move: move, dir: u, pt: K1.slice(), consumed: true };
+        }
         if (!(tK > 1e-9 && tK <= 1 + 1e-9)) return null;
       } else if (tT > 1e-9 && tT < 1 - 1e-9) move = dot(sub(uv, A), d) / L2 < tT ? 'p2' : 'p1';
       else move = tT >= 1 - 1e-9 ? 'p2' : 'p1';
@@ -5267,7 +5291,7 @@ var SketchSolver = (function () {
         carrierMeet(oa, ob).forEach(function (C) {
           var T1 = footOn(A, C), T2 = footOn(B, C);
           if (!T1 || !T2) return;
-          var sas = reshapeOpts(A, T1, corner ? otherEnd(spec.ei) : null, spec.uvi), sbs = reshapeOpts(B, T2, corner ? otherEnd(spec.ej) : null, spec.uvj);
+          var sas = reshapeOpts(A, T1, corner ? otherEnd(spec.ei) : null, spec.uvi, spec.consume), sbs = reshapeOpts(B, T2, corner ? otherEnd(spec.ej) : null, spec.uvj, spec.consume);
           sas.forEach(function (sa) { sbs.forEach(function (sb) { consider(C, T1, T2, sa, sb); }); });
         });
       });
@@ -5276,12 +5300,12 @@ var SketchSolver = (function () {
   }
   // sketch-fillet2: how entity e meets the fillet at T: a line / arc cut back or extended (reshapeTo); a circle stays
   // whole, and the fillet may leave it either way round
-  function reshapeOpts(e, T, keepEnd, uv) {
+  function reshapeOpts(e, T, keepEnd, uv, consume) {
     if (e.t === 'circle') {
       var tg = ccwTan(Math.atan2(T[1] - e.cy, T[0] - e.cx));
       return [{ move: null, whole: true, dir: tg, pt: T }, { move: null, whole: true, dir: [-tg[0], -tg[1]], pt: T }];
     }
-    var s = reshapeTo(e, T, keepEnd, uv);
+    var s = reshapeTo(e, T, keepEnd, uv, consume);
     return s ? [s] : [];
   }
   // lane C: whether line e's carrier (the line extended both ways) crosses or touches open spline sp within its ends
@@ -5401,6 +5425,15 @@ var SketchSolver = (function () {
       if (Math.abs(crs(di, dj)) < 1e-6) return { ok: false, error: A.t === 'line' && B.t === 'line' ? 'The lines are collinear: there is no corner to round.' : 'They already meet smoothly (tangent): there is no corner to round.' };
     }
     var pl = filletPlan(E, spec, r);
+    // rfOI: R equal to what is left of one line (the second corner of a notch or a slot end 2R wide): SolidWorks makes
+    // the full round and the used-up line goes; it was refused "Radius too large … (at most R.500)" for R.500
+    if (!pl && corner && A.t === 'line' && B.t === 'line') {
+      var cspec = {};
+      Object.keys(spec).forEach(function (key) { cspec[key] = spec[key]; });
+      cspec.consume = true;
+      pl = filletPlan(E, cspec, r);
+      if (pl && pl.sa.consumed && pl.sb.consumed) pl = null;
+    }
     if (!pl && !corner && (splineOpen(A) || splineOpen(B))) {
       // rfAX: SolidWorks extends the spline too when the line misses it (its extension does not reach the spline): the
       // spline's free ends are carried on (its end span's own curve, a style spline's own polynomial) and the fillet
@@ -5459,7 +5492,8 @@ var SketchSolver = (function () {
       // (not at a spline's end: the sharp would lie on the spline's cut-off part, which no curve carries on)
       // (rfH: a Polygon relation holds the corner of its two sides too: the sharp shows the corner it keeps regular)
       var polyHeld = corner && (sketch.rels || []).some(function (rel) { return rel.type === 'polygon' && rel.refs.indexOf(String(spec.i)) > 0 && rel.refs.indexOf(String(spec.j)) > 0; });
-      if (corner && opts.keepCorner !== false && (keep.length || lenDims.length || polyHeld) && !pl.sa.free && !pl.sb.free) {
+      var consumed = pl.sa.consumed ? spec.i : pl.sb.consumed ? spec.j : -1;
+      if (corner && opts.keepCorner !== false && (keep.length || lenDims.length || polyHeld) && !pl.sa.free && !pl.sb.free && consumed < 0) {
         E.push({ t: 'point', x: P[0], y: P[1], construction: true, sharp: true });
         sharp = E.length - 1;
         var sref = String(sharp);
@@ -5498,6 +5532,31 @@ var SketchSolver = (function () {
       } else if (opts.dimension !== false) {
         // the radius is dimensioned, as SolidWorks dimensions a fillet, so the corner stays as defined as it was
         (sketch.dims = sketch.dims || []).push({ e: k, k: 'r', ang: Math.round(toward / D2R * 10) / 10, off: Math.round((P ? len(sub(P, pl.C)) : r * 1.6) * 1e4) / 1e4 });
+      }
+      if (consumed >= 0) {
+        // rfOI: the used-up line goes; the fillet's end takes its far end's joins, and a Tangent it had to an arc
+        // becomes the fillet's (two arcs meeting smoothly: the obround's end)
+        var cs = String(consumed), cEnd = consumed === spec.i ? spec.ei : spec.ej, farRef = cs + '.' + otherEnd(cEnd), cornerRef = cs + '.' + cEnd;
+        var arcEndRef = k + (consumed === spec.i ? (pl.ccw ? '.p1' : '.p2') : (pl.ccw ? '.p2' : '.p1'));
+        sketch.rels = sketch.rels.filter(function (rel) {
+          if (rel.refs.some(function (x) { return String(x) === cs; })) {
+            if (rel.type !== 'tangent' || rel.refs.length !== 2) return false;
+            var o = String(rel.refs[0]) === cs ? String(rel.refs[1]) : String(rel.refs[0]), po = parseRef(o);
+            if (o === String(k) || !po || po.o || !E[po.e] || (E[po.e].t !== 'arc' && E[po.e].t !== 'circle')) return false;
+            rel.refs = [o, String(k)];
+            return true;
+          }
+          rel.refs = rel.refs.map(function (x) { return String(x) === farRef || String(x) === cornerRef ? arcEndRef : x; });
+          return rel.refs.every(function (x, n) { return rel.refs.indexOf(x) === n; });
+        });
+        if (sketch.dims) sketch.dims = sketch.dims.filter(function (d) { return d.e !== consumed; });
+        removeEntity(sketch, consumed);
+        sketch.rels = sketch.rels || [];
+        E.splice(consumed, 1);
+        (sketch.dims || []).forEach(function (d) { if (d.e > consumed) d.e--; });
+        if (k > consumed) k--;
+        made = made.filter(function (rel) { return sketch.rels.indexOf(rel) >= 0; });
+        dedupe(sketch, true);
       }
       var res = solve(sketch), an = analyze(sketch);
       if (!res.ok || an.conflicts > before.conflicts) {
