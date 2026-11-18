@@ -464,7 +464,7 @@
       needX();
       var r = build('p.box(40, 40, 40); p.sketch("Top", 40).circle(20, -20, 5).extrude(40, { cut: true, reverse: true }); p.sketch("Front", 40).circle(20, 20, 5).extrude(40, { cut: true, reverse: true });');
       var step = X.exportSTEP(r.model, r.build);
-      assert(count(/=CYLINDRICAL_SURFACE\(/g, step) === 0 && count(/=ADVANCED_FACE\(/g, step) === count(/=PLANE\(/g, step), 'crossing holes: facets only');
+      assert(count(/=CYLINDRICAL_SURFACE\(/g, step) === 4 && count(/=ELLIPSE\(/g, step) === 2 && count(/=ADVANCED_FACE\(/g, step) === 10 && count(/=PLANE\(/g, step) === 6, 'crossing holes: 4 walls, 2 ellipses, 6 planes');
       edgeUses(step, 'crossing holes');
       var a = buildExample(exampleByName('Pinned plate assembly')), as = X.exportSTEP(a.model, a.build);
       assert(count(/=CYLINDRICAL_SURFACE\(/g, as) === 5 && count(/=CIRCLE\(/g, as) === 10, 'plate holes + pin: ' + count(/=CYLINDRICAL_SURFACE\(/g, as) + ' cylinders, ' + count(/=CIRCLE\(/g, as) + ' circles');

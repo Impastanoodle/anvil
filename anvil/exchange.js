@@ -143,14 +143,14 @@ var Exchange = (function () {
 
   // ------------------------------------------------------------------ watertight body meshes
   // bodyMesh(csg | { polygons }) -> { positions: [x,y,z,…], triangles: [i,j,k,…], faces: [{ normal, w, tris: [t…] }],
-  //   openEdges, volume }
+  //   openEdges, volume }; twins (lane PF, the meshes files are written from): weldOpenTwins too
   // Vertices are welded on a 1e-6 grid; a polygon edge that has another vertex lying on it (a T-junction left by a CSG
   // split in the neighbouring face) is split there, so each edge is shared by exactly two triangles in a closed body.
   // Polygons with collinear vertices are fanned from their centroid (no zero-area triangles); others from vertex 0.
   // `faces` groups the triangles by plane (the planar faces a B-rep export writes).
   var WELD = 1e6;
   function wkey(x, y, z) { return Math.round(x * WELD) + ',' + Math.round(y * WELD) + ',' + Math.round(z * WELD); }
-  function bodyMesh(body) {
+  function bodyMesh(body, twins) {
     var pos = [], vmap = new Map(), polys = [], wq = [];
     // rfHV: the weld grid cell (wkey's three rounded numbers) is looked up under a small-integer hash, the bucket
     // compared number by number (wq[i] = vertex i's cell): the same vertices as the wkey strings, far cheaper
@@ -178,6 +178,7 @@ var Exchange = (function () {
     });
     splitTJunctions(pos, polys);
     dropSpikes(polys);
+    if (twins) weldOpenTwins(pos, polys);   // (the files' meshes only: the kernel's own guards count the body's cracks as they are)
     fillSliverLoops(pos, polys);
     return fanPolygons(pos, polys);
   }
@@ -186,6 +187,36 @@ var Exchange = (function () {
   // No vertex needs to move: a small closed loop of open edges no wider than SLIVER is simply closed with a face of its
   // own. Volume and area change by the sliver's (1e-7 of a square unit); bigger holes in a mesh stay open, as they must.
   var SLIVER = 5e-5;
+  // lane PF: the weld is a grid, so two points of one corner a hair over a cell apart (1.0e-6: a boolean's exact retry on a
+  // drilled free-form import left a split point and its twin so) stay two, and the faces round them stay open: A -> B
+  // on one, B' -> A on the next. Ends of open edges within TWIN of each other are made one vertex when that leaves fewer
+  // open edges (never otherwise); an edge between the two closes up. Nothing else moves.
+  var TWIN = 2.5 / WELD;
+  function weldOpenTwins(pos, polys) {
+    var open = openEdgeList(polys);
+    if (!open.length || open.length > 400) return;
+    var ends = [], seen = {}, to = {}, any = false;
+    open.forEach(function (e) { [e.a, e.b].forEach(function (v) { if (!seen[v]) { seen[v] = true; ends.push(v); } }); });
+    function root(v) { while (to[v] != null) v = to[v]; return v; }
+    for (var i = 0; i < ends.length; i++) for (var j = i + 1; j < ends.length; j++) {
+      var a = ends[i], b = ends[j], dx = pos[a * 3] - pos[b * 3], dy = pos[a * 3 + 1] - pos[b * 3 + 1], dz = pos[a * 3 + 2] - pos[b * 3 + 2];
+      if (dx * dx + dy * dy + dz * dz > TWIN * TWIN) continue;
+      var ra = root(a), rb = root(b);
+      if (ra !== rb) { to[Math.max(ra, rb)] = Math.min(ra, rb); any = true; }
+    }
+    if (!any) return;
+    var next = polys.map(function (p) {
+      var idx = [];
+      p.idx.forEach(function (v) { var r = root(v); if (idx[idx.length - 1] !== r) idx.push(r); });
+      while (idx.length > 1 && idx[0] === idx[idx.length - 1]) idx.pop();
+      return idx;
+    });
+    var kept = [];
+    polys.forEach(function (p, k) { if (next[k].length >= 3) { var q = {}; Object.keys(p).forEach(function (key) { q[key] = p[key]; }); q.idx = next[k]; kept.push(q); } });
+    if (openEdgeList(kept).length >= open.length) return;
+    polys.length = 0;
+    kept.forEach(function (q) { polys.push(q); });
+  }
   function fillSliverLoops(pos, polys) {
     var open = openEdgeList(polys);
     if (!open.length || open.length > 200) return;
@@ -494,7 +525,7 @@ var Exchange = (function () {
         used[nm] = true;
         var mat = bodyMat(model, { bodies: bodies, bodyFeatures: build.bodyFeatures || [] }, i), ic = importedColor(model, build.bodyFeatures || [], i);
         if (ic && !(model.bodyMaterials && model.bodyMaterials[String((build.bodyFeatures || [])[i])])) mat = { name: mat.name, color: ic };
-        return { name: nm, mesh: bodyMesh(b), material: mat, src: { body: b, model: model, build: build } };
+        return { name: nm, mesh: bodyMesh(b, true), material: mat, src: { body: b, model: model, build: build } };
       });
       return { name: model.name || 'Part1', units: model.units === 'in' ? 'in' : 'mm', assembly: false,
         parts: [{ name: model.name || 'Part1', color: partColor(model), bodies: list }],
@@ -550,7 +581,7 @@ var Exchange = (function () {
           var pbodies = pb.bodies && pb.bodies.length ? pb.bodies : [pb.body];
           byKey[key] = parts.length;
           var pbuild = { bodies: pbodies, bodyFeatures: pb.bodyFeatures || [] };
-          parts.push({ name: nm, color: partColor(pm), bodies: pbodies.map(function (bb, i) { return { name: pbodies.length === 1 ? nm : nm + '-Body' + (i + 1), mesh: bodyMesh(mirrored ? reflectX(bb) : bb), material: pm ? asmBodyMat(pm, pbuild, i) : { name: null, color: null }, src: pm && !mirrored ? { body: bb, model: pm, build: pb } : null }; }) });
+          parts.push({ name: nm, color: partColor(pm), bodies: pbodies.map(function (bb, i) { return { name: pbodies.length === 1 ? nm : nm + '-Body' + (i + 1), mesh: bodyMesh(mirrored ? reflectX(bb) : bb, true), material: pm ? asmBodyMat(pm, pbuild, i) : { name: null, color: null }, src: pm && !mirrored ? { body: bb, model: pm, build: pb } : null }; }) });
         }
         if (mirrored) { var R = T.rotation; T = { rotation: [-R[0], R[1], R[2], -R[3], R[4], R[5], -R[6], R[7], R[8]], position: T.position }; }
         var inst = { part: byKey[key], name: c.name, transform: T };
@@ -1072,7 +1103,11 @@ var Exchange = (function () {
         });
       });
       cell = Math.max(cell / Math.max(1, orig.length) * 2, 1e-9);
-      var grid = new Map(), tolP = 1e-7 * Math.max(1, ext);
+      // (lane PF: the mesh's vertices are welded on a 1 / WELD grid, so a piece's corner sits up to a cell off its triangle's
+      // plane (3e-7 on a 3 inch loft, over the old 1e-7 of the size: the piece stayed facets, the hole's rim a polygon); a
+      // sliver's own normal is noise, its mesh face's (the polygon's plane) is not, and its centre may sit on a side)
+      var grid = new Map(), tolP = Math.max(1e-7 * Math.max(1, ext), 2 / WELD), fnOf = new Int32Array(nT).fill(-1);
+      (mesh.faces || []).forEach(function (f, fi) { f.tris.forEach(function (t3) { fnOf[t3] = fi; }); });
       function ck(i, j, k) { return i + ',' + j + ',' + k; }
       orig.forEach(function (o, oi) {
         for (var i = Math.floor(o.lo[0] / cell); i <= Math.floor(o.hi[0] / cell); i++) for (var j = Math.floor(o.lo[1] / cell); j <= Math.floor(o.hi[1] / cell); j++) for (var k = Math.floor(o.lo[2] / cell); k <= Math.floor(o.hi[2] / cell); k++) {
@@ -1087,10 +1122,11 @@ var Exchange = (function () {
         for (var q = 0; q < l.length; q++) {
           var o = orig[l[q]];
           if (got[o.f] === want[o.f] && !gArea[o.f]) continue;   // a face already whole needs no pieces
-          if (dot(n, o.n) / (2 * ar) < 1 - 1e-9) continue;
+          if (dot(n, o.n) / (2 * ar) < 1 - 1e-9 && !(fnOf[t2] >= 0 && dot(norm(mesh.faces[fnOf[t2]].normal), o.n) >= 1 - 1e-9)) continue;
           if (![A, B, C].every(function (p) { return Math.abs(dot(sub(p, o.A), o.n)) <= tolP; })) continue;
           var e0 = dot(cross(sub(o.B, o.A), sub(X, o.A)), o.n), e1 = dot(cross(sub(o.C, o.B), sub(X, o.B)), o.n), e2 = dot(cross(sub(o.A, o.C), sub(X, o.C)), o.n);
-          if (e0 < 0 || e1 < 0 || e2 < 0) continue;
+          var eT = -tolP * Math.sqrt(len(cross(sub(o.B, o.A), sub(o.C, o.A))));
+          if (e0 < eT || e1 < eT || e2 < eT) continue;
           freeOf[t2] = o.f; gArea[o.f] += ar;
           return;
         }
@@ -1317,6 +1353,24 @@ var Exchange = (function () {
     var sGroups = K.curveSurfaces(recs.map(function (F) { return { surf: F }; })), recSurf = [];
     sGroups.forEach(function (g, gi) { g.polys.forEach(function (fp) { var ri = recIndex.get(fp.surf); recSurf[ri == null ? -1 : ri] = gi; }); });
     var surfaces = sGroups.map(function (g) { return g.surf; });
+    // lane PF: a cone's record holds its radius at its origin, and the origin may lie past the apex (r <= 0: the lower
+    // cone of a grip revolved from a V, its origin on the axis at y = 0). The patch was refused for it and took the
+    // cone above along (Rounded handle: 108 planar facets, 1.4e-3 light on reading back). The origin moves along the
+    // axis to the middle of the cone's triangles, where the radius is positive (one nappe only).
+    surfaces = surfaces.map(function (S, si) {
+      if (!S || S.t !== 'cone' || S.r > tol || !(Math.abs(S.k) > 1e-9)) return S;
+      var z0 = Infinity, z1 = -Infinity, mp = mesh.positions;
+      for (var t9 = 0; t9 < nT; t9++) {
+        if (triRec[t9] < 0 || recSurf[triRec[t9]] !== si) continue;
+        for (var e9 = 0; e9 < 3; e9++) { var v9 = tri[t9 * 3 + e9], z9 = (mp[v9 * 3] - S.o[0]) * S.d[0] + (mp[v9 * 3 + 1] - S.o[1]) * S.d[1] + (mp[v9 * 3 + 2] - S.o[2]) * S.d[2]; if (z9 < z0) z0 = z9; if (z9 > z1) z1 = z9; }
+      }
+      var zm = (z0 + z1) / 2;
+      if (!(z1 >= z0) || !(S.r + S.k * zm > tol) || S.r + S.k * z0 < -tol || S.r + S.k * z1 < -tol) return S;
+      var S2 = {};
+      Object.keys(S).forEach(function (key) { S2[key] = S[key]; });
+      S2.o = add(S.o, scale(S.d, zm)); S2.r = S.r + S.k * zm;
+      return S2;
+    });
     // connected patches of each surface: union-find over triangles of one surface sharing an edge
     var par = new Int32Array(nT), edgeTris = new PairMap();
     for (t = 0; t < nT; t++) par[t] = t;
@@ -1344,6 +1398,7 @@ var Exchange = (function () {
     var snaps = [];
     snapToCylinders();
     snapCylCyl();
+    snapCylEqual();
     // lane stepwrite (rfMN): a vertex where two cylinders of different axes meet (a hole through a bend, a cross hole in a
     // tube) is where the boolean met the two faceted surfaces: on one's chord, inside the other by up to its sagitta. It
     // moves, in the file only, to the true intersection curve: onto the thinner cylinder at its own angle and height
@@ -1384,7 +1439,47 @@ var Exchange = (function () {
         pos[v * 3] = Y[0]; pos[v * 3 + 1] = Y[1]; pos[v * 3 + 2] = Y[2];
         snaps.push({ v: v, X: X, comps: cs.slice(), all: cs.slice(), cc: true });
       });
-    }    // lane stepout3: walls of holes folded through a bend (Unfold, cut, Fold: wrapCut lays the hole's points on the bend's
+    }
+    // lane PF: a vertex where two equal cylinders with crossing axes meet (equalCross) moves, in the file only, onto the
+    // ellipse they share: at its own angle on one cylinder, along that ruling into the ellipse's plane (which mirrors one
+    // cylinder into the other, so the point is on both). Where four patches meet (the ellipses' touching point) it goes
+    // to that point. Undone with the patches like snapCylCyl's.
+    function snapCylEqual() {
+      var vS = {}, moved = {};
+      snaps.forEach(function (sn) { moved[sn.v] = true; });
+      comps.forEach(function (c) {
+        if (!c.ok || c.surf.t !== 'cyl') return;
+        c.tris.forEach(function (t3) { for (var e3 = 0; e3 < 3; e3++) vS[tri[t3 * 3 + e3]] = true; });
+      });
+      var vTris = {};
+      for (var t2 = 0; t2 < nT; t2++) for (var e2 = 0; e2 < 3; e2++) { var v0 = tri[t2 * 3 + e2]; if (vS[v0]) (vTris[v0] = vTris[v0] || []).push(t2); }
+      Object.keys(vTris).forEach(function (vk) {
+        var v = +vk, ss = [], cs = [], ok = true;
+        if (moved[v]) return;
+        vTris[v].forEach(function (t4) {
+          var ci = compOf[t4];
+          if (ci < 0 || !comps[ci].ok || comps[ci].surf.t !== 'cyl') { ok = false; return; }
+          if (cs.indexOf(ci) < 0) cs.push(ci);
+          if (ss.indexOf(comps[ci].surf) < 0) ss.push(comps[ci].surf);
+        });
+        var eq = ok && ss.length === 2 ? equalCross(ss[0], ss[1]) : null;
+        if (!eq) return;
+        var X = P(v), S = ss[0], a = axial(S, X), Y;
+        if (Math.abs(a.rho - S.r) > 0.05 * S.r || a.rho < tol) return;
+        if (cs.length > 2) {
+          Y = add(eq.O, scale(eq.top, dot(sub(X, eq.O), eq.top) > 0 ? S.r : -S.r));
+        } else {
+          var Y0 = add(add(S.o, scale(S.d, a.z)), scale(a.v, S.r / a.rho)), d0 = dot(eq.n[0], sub(Y0, eq.O)), d1 = dot(eq.n[1], sub(Y0, eq.O)), n = Math.abs(d0) <= Math.abs(d1) ? eq.n[0] : eq.n[1];
+          var lam = -dot(n, sub(Y0, eq.O)) / dot(n, S.d);
+          Y = add(Y0, scale(S.d, lam));
+        }
+        if (len(sub(Y, X)) > 0.05 * S.r) return;
+        if (pos === mesh.positions) pos = Float64Array.from(pos);
+        pos[v * 3] = Y[0]; pos[v * 3 + 1] = Y[1]; pos[v * 3 + 2] = Y[2];
+        snaps.push({ v: v, X: X, comps: cs.slice(), all: cs.slice(), cc: true });
+      });
+    }
+    // lane stepout3: walls of holes folded through a bend (Unfold, cut, Fold: wrapCut lays the hole's points on the bend's
     // facets' chords, each wall a strip of triangles along two radial lines, from a point on the inner bend to the same
     // angle and height on the outer one, Fold's mid-thickness point between). Each strip becomes a face of its own: the
     // ruled surface of radial lines between two rails, each rail a rational cubic on its cylinder (railOf: exact on the
@@ -1808,6 +1903,27 @@ var Exchange = (function () {
     // lane stepwrite: two cylinders whose meeting curve is written as a curve of its own (snapCylCyl, saddleCurve): axes not
     // parallel, one clearly thinner (equal holes crossing meet in two ellipses that touch: they keep their facets)
     function crossable(S1, S2) { return S1.t === 'cyl' && S2.t === 'cyl' && len(cross(S1.d, S2.d)) > 1e-6 && Math.min(S1.r, S2.r) < 0.98 * Math.max(S1.r, S2.r); }
+    // lane PF: two cylinders of one radius whose axes cross (equal holes drilled across each other) meet in two ellipses,
+    // in the planes through the crossing point square to d1 - d2 and to d1 + d2: equalCross(S1, S2) -> { O, n: [n1, n2],
+    // top } or null (top: the unit normal of both axes; the ellipses touch at O +- r top). Their walls are written whole,
+    // each edge between them an ELLIPSE run from one touching point to the other (were: facets, 3e-4 of the volume)
+    function equalCross(S1, S2) {
+      if (S1 === S2 || S1.t !== 'cyl' || S2.t !== 'cyl' || Math.abs(S1.r - S2.r) > tol) return null;
+      var cx = cross(S1.d, S2.d), lc = len(cx);
+      if (lc < 1e-3) return null;
+      var w = sub(S2.o, S1.o);
+      if (Math.abs(dot(w, cx)) / lc > tol) return null;
+      // the crossing point: S1.o + t d1, t from the two lines' common point
+      var t = dot(cross(w, S2.d), cx) / (lc * lc), d2 = dot(S1.d, S2.d) < 0 ? scale(S2.d, -1) : S2.d;
+      return { O: add(S1.o, scale(S1.d, t)), n: [norm(sub(S1.d, d2)), norm(add(S1.d, d2))], top: scale(cx, 1 / lc) };
+    }
+    function equalEllipse(S, eq, A, B) {
+      for (var k = 0; k < 2; k++) {
+        var n = eq.n[k], w = dot(n, eq.O);
+        if (Math.abs(dot(n, A) - w) <= tol && Math.abs(dot(n, B) - w) <= tol && onCylS(S, A) && onCylS(S, B)) return { t: 'e', e: ellipseOf(S, n, w) };
+      }
+      return null;
+    }
     function onCylS(S, X) { return Math.abs(axial(S, X).rho - S.r) <= Math.max(tol, 2e-5 * S.r); }
     // stepout-2: a mesh face that is a true plane (no triangle of it carries a curved surface's record)
     function truePlane(fi) { var ts = groups[fi]; for (var k = 0; k < ts.length; k++) if (triRec[ts[k]] >= 0) return false; return ts.length > 0; }
@@ -1864,6 +1980,11 @@ var Exchange = (function () {
               var oS0 = comps[nb - nF].surf, cm = classify(oS0, A, B);
               if ((!cm || cm.t !== cl.t || (cl.t === 'c' && cm.c.key !== cl.c.key)) && onCylS(S, A) && onCylS(S, B) && onCylS(oS0, A) && onCylS(oS0, B)) cl = null;
             }
+            // lane PF: between two equal cylinders whose axes cross, the ELLIPSE they meet in (snapCylEqual put both ends on it)
+            if (nb != null && nb >= nF && nb < nW) {
+              var eqc = equalCross(S, comps[nb - nF].surf), eqe = eqc && equalEllipse(S, eqc, A, B);
+              if (eqe) { ecls.set(a < b ? a : b, a < b ? b : a, eqe); continue; }
+            }
             // stepout-2: an oblique plane's cut is an ELLIPSE, where a true plane is beside (not the facets of a
             // curved face that fell back to facets: their planes are not the cut)
             if (!cl && nb != null && nb < nF && truePlane(nb)) { cl = ellipseEdge(S, A, B, mesh.faces[nb], tol); if (cl) c.oblique = true; }
@@ -1915,7 +2036,10 @@ var Exchange = (function () {
         // (lane stepin2: the reader's cylPatch now takes any cylinder patch whose loops stay on one side of the axis, the
         // 'plain' shape: an L-shaped patch a relief notched, a bend with a hole or slot through it; so those are written
         // whole too. Was: one loop of two ruling runs only)
-        if (sh && c.snapped && (sh.kind !== 'plain' || S.t !== 'cyl')) sh = null;
+        // (lane PF: or a band between two whole circles. The Mug's inner wall, one rim point of it a split point the
+        // handle's union left on a chord: refusing it sent the outer wall after it as its coaxial partner, then the
+        // handle; the whole Mug went out as 1031 planar facets and read back 0.9 % light)
+        if (sh && c.snapped && ((sh.kind !== 'plain' && sh.kind !== 'band') || S.t !== 'cyl')) sh = null;
         if (!sh) { c.ok = false; failed = true; } else shape[g] = sh;
       });
       // stepout-2: a bend is written whole or not at all. An obliquely cut cylinder (ELLIPSE edges) whose coaxial
@@ -1965,7 +2089,7 @@ var Exchange = (function () {
           }
           sumW += wrapAngle(firstW - prevW);
           // a winding loop is circles and two-cylinder curves only (chords of facets or of an unnamed curve: not this shape)
-          if (Math.abs(Math.abs(sumW) - 2 * Math.PI) < 1e-6) { nWind++; for (var ie = 0; ie < l.length; ie++) { var ce = eget(l[ie], l[(ie + 1) % l.length]); if (!ce || !(ce.t === 'c' || (ce.t === 'p' && ce.s) || ce.t === 'x')) okW = false; } }   // (lane MX: or an edge of a B-spline face: a hole drilled through it)
+          if (Math.abs(Math.abs(sumW) - 2 * Math.PI) < 1e-6) { nWind++; for (var ie = 0; ie < l.length; ie++) { var ce = eget(l[ie], l[(ie + 1) % l.length]); if (!ce || !(ce.t === 'c' || (ce.t === 'p' && ce.s) || ce.t === 'x' || ce.t === 'e')) okW = false; } }   // (lane MX: or an edge of a B-spline face: a hole drilled through it)
           else if (Math.abs(sumW) > 1e-6) okW = false;
         });
         if (nWind && (!okW || nWind !== 2)) return null;
@@ -1996,7 +2120,8 @@ var Exchange = (function () {
           var l = other[k].loop, sum = 0, prev = null, first2 = null;
           for (var i = 0; i < l.length; i++) {
             var ax = axial(SA, P(l[i]));
-            if (ax.rho < tol) return null;
+            // (lane PF: a cone's apex has no angle: the corner a chamfer equal to a round turns, two rulings and an arc)
+            if (ax.rho < tol) { if (S.t === 'cone' && Math.abs(S.r + S.k * ax.z) < tol) continue; return null; }
             var ang = Math.atan2(dot(ax.v, yd), dot(ax.v, xd));
             if (prev == null) first2 = ang; else sum += wrapAngle(ang - prev);
             prev = ang;
@@ -2765,6 +2890,21 @@ var Exchange = (function () {
     }
   }
   function columnOf(G, j) { return G.map(function (c) { return c[j]; }); }
+  // lane PF: straightGrid(G) -> { G, u, v }: a surface grid straight one way (every line of it that way is a straight
+  // line: a loft between straight sides, a ruled face, whatever the degree it is written in) keeps that way's two ends
+  // only. The points between lie on the lines, so nothing is lost, and the facets come out as Anvil's own loft has
+  // them: one twisted strip a row. Sampled 24 times across, the strip's facets were each a few 1e-6 off their
+  // neighbours' planes (the twist shared out, the volume fix on top): inside the boolean's 1e-5 band, where a cut
+  // through them leaves cracks (a hole drilled through a re-read loft: up to 272 open edges, or refused as zero-thickness)
+  function straightGrid(G) {
+    function lineOrPoint(q) { var f = bsFitCurve(q); return !!(f && f.line) || q.every(function (p) { return len(sub(p, q[0])) === 0; }); }
+    var u = G.length > 2, v = G[0].length > 2, j, i;
+    for (j = 0; j < G[0].length && u; j++) if (!lineOrPoint(columnOf(G, j))) u = false;
+    if (u) G = [G[0], G[G.length - 1]];
+    for (i = 0; i < G.length && v; i++) if (!lineOrPoint(G[i])) v = false;
+    if (v) G = G.map(function (c) { return [c[0], c[c.length - 1]]; });
+    return { G: G, u: u, v: v };
+  }
   // lane importbend: bsSurfClassify(G) -> { plane: n } | { cyl: { t: 'cyl', o, d, r }, flip } | null for a grid of
   // surface points G[i][j] (bsSurfaceGrid): all on one plane (n along the surface's dPdu x dPdv), or straight along one
   // parameter with every point at r from one axis (flip: dPdu x dPdv points at the axis). Within 1e-9 of the size, so
@@ -2886,6 +3026,138 @@ var Exchange = (function () {
       return { faces: faces, sense: info.volume > 0 };
     } catch (e) { return null; }
   }
+  // lane PF: loftFacesOf(src, mesh) -> mesh, or a copy with the patches of Anvil's own spline lofts (3+ sections) as
+  // free-form faces (freeOf / freeFaces, the form freeFacesOf gives an imported part's): a loft a later feature cut or
+  // joined is then written like a drilled import, each side on its B_SPLINE_SURFACE with its own edges, a hole through
+  // it a true curve shared with the hole's wall (holeLoops), where it was 8000 planar facets. A triangle belongs to
+  // the patch all three of its corners project into (the least way outside it along the surface, when they sit on a
+  // shared side); the caps' triangles lie in the end sections' planes and stay planes. A patch that lost one of its
+  // own edges to a cut keeps its facets, and its neighbours with it (freeLabels), as an import's does.
+  function loftFacesOf(src, mesh) {
+    if (!src || !src.body || !src.model || !K._.loftPatches || !mesh.triPoly || !mesh.triangles.length) return mesh;
+    var polys = src.body.polygons, nT = mesh.triangles.length / 3, byId = {}, t, P = mesh.positions, T = mesh.triangles;
+    for (t = 0; t < nT; t++) {
+      var pi = mesh.triPoly[t], sh = pi >= 0 && polys[pi] ? polys[pi].shared : null;
+      if (sh == null || (mesh.triSurf && mesh.triSurf[t]) || (mesh.freeOf && mesh.freeOf[t] >= 0)) continue;
+      (byId[sh] || (byId[sh] = { id: sh, ts: [] })).ts.push(t);
+    }
+    var keys = Object.keys(byId);
+    if (!keys.length) return mesh;
+    var m = null, faces = (mesh.freeFaces || []).slice(), freeOf = null, sk = 0;
+    function V(i) { return [P[i * 3], P[i * 3 + 1], P[i * 3 + 2]]; }
+    keys.forEach(function (key) {
+      try {
+        m = m || K.resolvedModel(src.model).model;
+        var f = K.findFeature(m, byId[key].id);
+        if (!f || f.type !== 'loft' || f.cut || !f.sketches || f.sketches.length < 3) return;
+        var planes = (src.build && src.build.planes) || {};
+        var pa = K._.loftPatches(f.sketches.map(function (sid) {
+          var sk2 = K.findFeature(m, sid), pl = K.resolvePlane(sk2.plane, m, planes), prof = sk2.profile || K.sketchProfile(sk2);
+          var o = prof.loops.filter(function (l) { return !l.hole; })[0];
+          return { plane: pl, loop: o, prof: prof, pts: o.pts.map(function (p) { return K.to3D(pl, p[0], p[1]); }) };
+        }));
+        if (!pa || pa.ruled) return;
+        var list = pa.faces;
+        if (pa.smooth && K._.joinLoftPatches) { var one = K._.joinLoftPatches(list); if (one) list = [one]; }
+        var n = list.length, info = loftShellInfo(list), diag = len(sub(info.hi, info.lo)), tolN = 2e-3 * diag, j, i;
+        if (list.some(function (q) { return q.weights; })) return;
+        for (j = 0; j < n; j++) {
+          var A = list[j], B = list[(j + 1) % n], a = A.poles[A.poles.length - 1], b = B.poles[0];
+          if (b.length !== a.length) return;
+          for (i = 0; i < a.length; i++) if (len(sub(a[i], b[i])) > 1e-9 * diag) return;
+        }
+        // the end sections' planes (the caps): through the patches' first / last pole columns
+        var caps = [0, 1].map(function (end) {
+          var ring = [], nrm = [0, 0, 0];
+          list.forEach(function (q) { var k = end ? q.poles[0].length - 1 : 0; for (var a2 = 0; a2 + 1 < q.poles.length; a2++) ring.push(q.poles[a2][k]); });
+          ring.forEach(function (p, i2) { nrm = add(nrm, cross(sub(p, ring[0]), sub(ring[(i2 + 1) % ring.length], ring[0]))); });
+          nrm = norm(nrm);
+          return { n: nrm, w: dot(nrm, ring[0]) };
+        });
+        var surfs = list.map(function (q) { return { du: 3, dv: q.degV, poles: q.poles, U: bsFlat(q.uKnots, q.uMults), V: bsFlat(q.vKnots, q.vMults), W: null }; });
+        var projs = surfs.map(function (s2) { return loftProjector(s2); });
+        // per vertex and patch: how far outside the patch along the surface (0 inside), or -1 when off the surface
+        var cache = {};
+        function outside(v, k) {
+          var ck = v * n + k, r = cache[ck];
+          if (r !== undefined) return r;
+          var p = V(v), pr = projs[k](p), d = sub(p, pr.p), nn = pr.n, h = nn ? dot(d, nn) : len(d), tg = nn ? len(sub(d, scale(nn, h))) : 0;
+          return (cache[ck] = Math.abs(h) <= tolN && tg <= 2 * tolN ? tg : -1);
+        }
+        var got = list.map(function () { return 0; }), mine = [];
+        byId[key].ts.forEach(function (t2) {
+          var vs = [T[t2 * 3], T[t2 * 3 + 1], T[t2 * 3 + 2]], pts = vs.map(V);
+          if (caps.some(function (c) { return pts.every(function (p) { return Math.abs(dot(c.n, p) - c.w) <= 1e-7 * diag; }); })) return;
+          var best = -1, bd = Infinity;
+          for (var k = 0; k < n; k++) {
+            var o0 = outside(vs[0], k), o1 = o0 < 0 ? -1 : outside(vs[1], k), o2 = o1 < 0 ? -1 : outside(vs[2], k);
+            if (o2 < 0) continue;
+            if (o0 + o1 + o2 < bd) { bd = o0 + o1 + o2; best = k; }
+          }
+          if (best < 0) return;
+          mine.push([t2, best]); got[best]++;
+        });
+        if (!mine.length) return;
+        // the records: one per patch, the loop and the edges as writeLoftBrep has them (side j at u = 0, the rims at the
+        // first and last section); ids are names, unique in this loft (F.sk tells lofts apart)
+        sk++;
+        var edges = {};
+        function edgeRec(id, poles, U) {
+          if (edges[id]) return edges[id];
+          var raw = bsCurvePoints(3, poles, U, null), nn2 = raw.length - 1;
+          return (edges[id] = { id: id, a: poles[0], b: poles[poles.length - 1], ss: true, g: { t: 'b', deg: 3, poles: poles, U: U, W: null }, m: raw[Math.round(nn2 / 2)], q: raw[Math.round(nn2 / 4)] });
+        }
+        var base = faces.length;
+        list.forEach(function (q, j2) {
+          var nx = (j2 + 1) % n, s2 = surfs[j2], last = q.poles[0].length - 1;
+          var side = edgeRec('s' + j2, q.poles[0], s2.V), sideN = edgeRec('s' + nx, list[nx].poles[0], surfs[nx].V);
+          var r0 = edgeRec('r0_' + j2, q.poles.map(function (c) { return c[0]; }), s2.U), r1 = edgeRec('r1_' + j2, q.poles.map(function (c) { return c[last]; }), s2.U);
+          var es = [r0, sideN, r1, side].filter(function (e, k, arr) { return arr.indexOf(e) === k; });
+          faces.push({ rec: { s: s2, ss: true, loops: [{ ori: true, edges: [{ id: r0.id, fwd: true }, { id: sideN.id, fwd: true }, { id: r1.id, fwd: false }, { id: side.id, fwd: false }] }], edges: es }, sk: 'L' + sk + '_' + key, cut: true });
+        });
+        if (!freeOf) freeOf = mesh.freeOf ? Int32Array.from(mesh.freeOf) : new Int32Array(nT).fill(-1);
+        mine.forEach(function (x) { freeOf[x[0]] = base + x[1]; });
+      } catch (e) { /* this loft keeps its facets */ }
+    });
+    if (!freeOf) return mesh;
+    // patches with no triangle left (cut away) leave the list
+    var used = faces.map(function () { return false; }), renum = [], out = [];
+    for (t = 0; t < nT; t++) if (freeOf[t] >= 0) used[freeOf[t]] = true;
+    faces.forEach(function (F, k) { renum[k] = used[k] ? out.length : -1; if (used[k]) out.push(F); });
+    for (t = 0; t < nT; t++) if (freeOf[t] >= 0) freeOf[t] = renum[freeOf[t]];
+    var m2 = {};
+    Object.keys(mesh).forEach(function (k) { m2[k] = mesh[k]; });
+    m2.freeOf = freeOf; m2.freeFaces = out;
+    return m2;
+  }
+  // loftProjector(s) -> fn(p) -> { p, uv, n }: the nearest point of B-spline surface s to p, clamped to its domain
+  // (Gauss-Newton from the nearest of a coarse grid of its points, four a knot span), and the unit normal there
+  function loftProjector(s) {
+    var u0 = s.U[s.du], u1 = s.U[s.U.length - 1 - s.du], v0 = s.V[s.dv], v1 = s.V[s.V.length - 1 - s.dv], seeds = [];
+    function params(U, deg) { var o = [], end = U.length - deg - 1; for (var i = deg; i < end; i++) if (U[i + 1] > U[i]) for (var k = 0; k < 4; k++) o.push(U[i] + (U[i + 1] - U[i]) * k / 4); o.push(U[end]); return o; }
+    params(s.U, s.du).forEach(function (u) { params(s.V, s.dv).forEach(function (v) { var q = bsSurfPoint(s, u, v); seeds.push(u, v, q[0], q[1], q[2]); }); });
+    var hu = 1e-7 * (u1 - u0), hv = 1e-7 * (v1 - v0);
+    function at(u, v) { return bsSurfPoint(s, Math.max(u0, Math.min(u1, u)), Math.max(v0, Math.min(v1, v))); }
+    function derivs(u, v) {
+      var ua = Math.max(u0, u - hu), ub = Math.min(u1, u + hu), va = Math.max(v0, v - hv), vb = Math.min(v1, v + hv);
+      return [scale(sub(at(ub, v), at(ua, v)), 1 / (ub - ua)), scale(sub(at(u, vb), at(u, va)), 1 / (vb - va))];
+    }
+    return function (p) {
+      var u = u0, v = v0, bd = Infinity, D;
+      for (var i = 0; i < seeds.length; i += 5) { var dx = seeds[i + 2] - p[0], dy = seeds[i + 3] - p[1], dz = seeds[i + 4] - p[2], d2 = dx * dx + dy * dy + dz * dz; if (d2 < bd) { bd = d2; u = seeds[i]; v = seeds[i + 1]; } }
+      for (var it = 0; it < 30; it++) {
+        D = derivs(u, v);
+        var r = sub(p, at(u, v)), a = dot(D[0], D[0]), b = dot(D[0], D[1]), c = dot(D[1], D[1]), e = dot(D[0], r), f = dot(D[1], r), det = a * c - b * b;
+        if (!(det > 1e-30 * (a * c + 1e-300))) break;
+        var du = (c * e - b * f) / det, dv = (a * f - b * e) / det;
+        u = Math.max(u0, Math.min(u1, u + du)); v = Math.max(v0, Math.min(v1, v + dv));
+        if (Math.abs(du) <= hu * 1e-3 && Math.abs(dv) <= hv * 1e-3) break;
+      }
+      D = derivs(u, v);
+      var nn = cross(D[0], D[1]), l = len(nn);
+      return { p: at(u, v), uv: [u, v], n: l > 0 ? scale(nn, 1 / l) : null };
+    };
+  }
   function writeLoftBrep(W, L, name) {
     var faces = L.faces, n = faces.length, sense = L.sense, vp = {};
     function pt(p) { return W.add('CARTESIAN_POINT(\'\',' + stepVec(p) + ')'); }
@@ -2976,7 +3248,7 @@ var Exchange = (function () {
       var pr = product(part.name, 'part');
       var origin = axis(null);
       var solids = part.bodies.map(function (b) {
-        var lp = splineLoftOf(b.src, b.mesh), s = lp ? writeLoftBrep(W, lp, b.name) : writeBrep(W, freeFacesOf(b.src, b.mesh), b.name);
+        var lp = splineLoftOf(b.src, b.mesh), s = lp ? writeLoftBrep(W, lp, b.name) : writeBrep(W, loftFacesOf(b.src, freeFacesOf(b.src, b.mesh)), b.name);
         styleSolid(s, (b.material && b.material.color) || part.color);
         return s;
       });
@@ -3166,7 +3438,7 @@ var Exchange = (function () {
       if (cb && /DEG/i.test(String(cb[0]))) angleUnit = Math.PI / 180;
     });
     function vertexPoint(ref) { var v = ent(ref), va = v && args(v, 'VERTEX_POINT'); return va ? point(va[1]) : null; }
-    var edgeCache = {}, keepSpline = {};
+    var edgeCache = {}, keepSpline = {}, noReduce = {};
     function edgeInfo(ref) {
       var id = ref && ref.r;
       if (id == null) return null;
@@ -3204,7 +3476,10 @@ var Exchange = (function () {
         if (!same) raw.reverse();
         raw = bsTrim(raw, p1, p2);
         if (keepSpline[id]) {   // a free-form face's side: as before (degree 1 a chord)
-          if (bc.deg > 1) { info.kind = 'bspline'; info.raw = raw; info.pts = areaTruePath(raw); } else { info.kind = bc.poles.length === 2 ? 'line' : 'other'; info.pts = [p1, p2]; }
+          // (lane PF: a side that is a straight line, whatever its degree, is its two ends: see straightGrid)
+          var sl = bc.deg > 1 && raw.length > 2 && !noReduce[id] && bsFitCurve(raw);
+          if (sl && sl.line) { info.kind = 'bspline'; info.raw = [raw[0], raw[raw.length - 1]]; info.pts = info.raw.slice(); info.straight = true; }
+          else if (bc.deg > 1) { info.kind = 'bspline'; info.raw = raw; info.pts = areaTruePath(raw); } else { info.kind = bc.poles.length === 2 ? 'line' : 'other'; info.pts = [p1, p2]; }
           return (edgeCache[id] = info);
         }
         var fit = bsFitCurve(raw, bc);
@@ -3388,14 +3663,37 @@ var Exchange = (function () {
       if (d && d.poles.length && d.poles.every(function (row) { return row.length && row.every(Boolean); })) res = bsSurfClassify(bsSurfaceGrid(d.du, d.dv, d.poles, d.U, d.V, d.W));
       return (surfKinds[id] = res);
     }
+    var sgCache = {};
+    function straightOf(id, sf) {
+      if (sgCache[id] !== undefined) return sgCache[id];
+      var d = bsSurfOf(sf), r = null;
+      if (d && d.poles.length && d.poles.every(function (row) { return row.length && row.every(Boolean); })) {
+        var G = bsSurfaceGrid(d.du, d.dv, d.poles, d.U, d.V, d.W), nu = G.length - 1, nv = G[0].length - 1, sg = straightGrid(G), ext = 0;
+        G.forEach(function (col) { col.forEach(function (p) { ext = Math.max(ext, Math.abs(p[0]), Math.abs(p[1]), Math.abs(p[2])); }); });
+        r = { u: sg.u, v: sg.v, c: [G[0][0], G[nu][0], G[nu][nv], G[0][nv]], ext: ext };
+      }
+      return (sgCache[id] = r);
+    }
     // the edges of free-form B-spline faces (a loft's patches: splineFace matches their sides against the surface's own
     // B-spline sides) stay B-splines even where one is straight or a circle
     Object.keys(E).forEach(function (id) {
       var fa = args(E[id], 'ADVANCED_FACE'), sf = fa && fa[2] && ent(fa[2]);
       if (!sf || sf.t === 'PLANE' || !bsSurfOf(sf) || bsSurfKind(fa[2].r, sf)) return;
+      var sg = straightOf(fa[2].r, sf);
       (fa[1] || []).forEach(function (bRef) {
         var b = ent(bRef), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
-        if (l && l.t === 'EDGE_LOOP') (l.a[1] || []).forEach(function (oeRef) { var oa = args(ent(oeRef), 'ORIENTED_EDGE'); if (oa && oa[3]) keepSpline[oa[3].r] = true; });
+        if (l && l.t === 'EDGE_LOOP') (l.a[1] || []).forEach(function (oeRef) {
+          var oa = args(ent(oeRef), 'ORIENTED_EDGE');
+          if (!oa || !oa[3]) return;
+          keepSpline[oa[3].r] = true;
+          // lane PF: a straight side keeps its samples where this face is not straight that way (a loft from a square to a
+          // circle: the grid's side is the 24 points a span; splineFace needs them)
+          var ec = ent(oa[3]), ea = ec && args(ec, 'EDGE_CURVE'), p1 = ea && vertexPoint(ea[1]), p2 = ea && vertexPoint(ea[2]);
+          if (!sg || !p1 || !p2) { noReduce[oa[3].r] = true; return; }
+          var c = sg.c, tl = 1e-6 * Math.max(sg.ext, 1e-9);
+          function is(i, j) { return (len(sub(p1, c[i])) <= tl && len(sub(p2, c[j])) <= tl) || (len(sub(p1, c[j])) <= tl && len(sub(p2, c[i])) <= tl); }
+          if ((!sg.u && (is(0, 1) || is(3, 2))) || (!sg.v && (is(0, 3) || is(1, 2)))) noReduce[oa[3].r] = true;
+        });
       });
     });
     // the B-spline edges of faces on cylinders, cones, spheres and tori (true or B-spline) are tessellated at their
@@ -3565,6 +3863,8 @@ var Exchange = (function () {
       var list = loopEdgeList(l);
       if (list.length !== 4 || list.some(function (x) { return x.info.kind !== 'bspline'; })) return false;
       var G = bsSurfaceGrid(+a[1], +a[2], (a[3] || []).map(function (row) { return row.map(point); }), bsFlat(a[10], a[8]), bsFlat(a[11], a[9]));
+      var sg = straightGrid(G);
+      G = sg.G;
       var nu = G.length - 1, nv = G[0].length - 1, ext = 0;
       G.forEach(function (c) { c.forEach(function (p) { ext = Math.max(ext, Math.abs(p[0]), Math.abs(p[1]), Math.abs(p[2])); }); });
       // the grid's boundary, round in (u, v): which way the file's loop goes depends on its orientation, so try every start
@@ -3585,6 +3885,8 @@ var Exchange = (function () {
         // lane MO: the grid's inner points moved out by what the facets miss of the surface (freeVolumeFix: 1e-4 → 1e-7 on
         // a loft) instead of the area-true moves along the rows
         var d0 = bsSurfOf(surf), tsU = bsParams(d0.U, d0.du), tsV = bsParams(d0.V, d0.dv), Qg;
+        if (sg.u) tsU = [tsU[0], tsU[tsU.length - 1]];
+        if (sg.v) tsV = [tsV[0], tsV[tsV.length - 1]];
         if (tsU.length === nu + 1 && tsV.length === nv + 1) {
           var bnd = [got[0], got[1], got[2].slice().reverse(), got[3].slice().reverse()], RV = [], RT = [];
           G.forEach(function (col, i) {

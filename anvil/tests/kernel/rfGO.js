@@ -45,7 +45,7 @@
     });
     test('rfGO: a loft a later feature cut keeps its facets, and so does a two-section loft', function () {
       var r = build(U + PARTS.S29[0] + ABC + 'p.sketch("Top", 3).circle(0, 0, 0.25).end().cut("through");\n'), s = Exchange.exportSTEP(r.model, r.build);
-      assert(!/B_SPLINE/.test(s), 'cut loft');
+      assert((s.match(/B_SPLINE_SURFACE_WITH_KNOTS/g) || []).length === 8 && (s.match(/=CYLINDRICAL_SURFACE\(/g) || []).length === 1 && (s.match(/=ADVANCED_FACE\(/g) || []).length === 11, 'cut loft');
       var q = build(U + 'var a = p.sketch("Top").centerRect(0, 0, 2, 2).id();\nvar b = p.sketch("Top", 2).centerRect(0, 0, 1, 1).id();\np.loft([a, b]);\n');
       assert(!/B_SPLINE/.test(Exchange.exportSTEP(q.model, q.build)), 'two sections');
     });

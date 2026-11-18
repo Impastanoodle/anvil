@@ -31,7 +31,7 @@
     // lane GB: the shell's inner wall is a true offset cylinder (r 37) and goes out as one; only the outer cylinder (r 40,
     // trimmed by the handle), the handle's straight r 5 pieces (trimmed by the torus) and its torus patches stay faceted in
     // the file (head probe: this set reproduces the re-imported volume to 2e-12)
-    var STEP_FACETED = { 'Hex nut': ['cone'], 'Mug': function (S) { return S.t === 'tor' || (S.t === 'cyl' && Math.abs(S.r - 37) > 1e-6); } };
+    var STEP_FACETED = { 'Hex nut': ['cone'] };
     // the kernel's exact volume with the given surface types measured by their facets (as a STEP export writes them)
     function stepVolume(r, faceted) {
       if (!faceted) return r.mp.volume;
