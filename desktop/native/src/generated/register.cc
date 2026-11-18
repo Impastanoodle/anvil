@@ -207,6 +207,7 @@ Napi::Value m_TopoDS_Builder_MakeCompound(const Napi::CallbackInfo& info);
 Napi::Value m_TopoDS_Builder_MakeShell(const Napi::CallbackInfo& info);
 Napi::Value m_TopoDS_Builder_MakeSolid(const Napi::CallbackInfo& info);
 Napi::Value m_TopoDS_Shape_Closed_2(const Napi::CallbackInfo& info);
+Napi::Value m_TopoDS_Shape_IsEqual(const Napi::CallbackInfo& info);
 Napi::Value m_TopoDS_Shape_IsSame(const Napi::CallbackInfo& info);
 Napi::Value m_TopoDS_Shape_Moved(const Napi::CallbackInfo& info);
 Napi::Value m_TopoDS_Shape_Orientation_1(const Napi::CallbackInfo& info);
@@ -610,6 +611,7 @@ void RegisterBindings(Napi::Env env, Napi::Object out) {
   Method(env, out, "TopoDS_Builder", "MakeShell", m_TopoDS_Builder_MakeShell);
   Method(env, out, "TopoDS_Builder", "MakeSolid", m_TopoDS_Builder_MakeSolid);
   Method(env, out, "TopoDS_Shape", "Closed_2", m_TopoDS_Shape_Closed_2);
+  Method(env, out, "TopoDS_Shape", "IsEqual", m_TopoDS_Shape_IsEqual);
   Method(env, out, "TopoDS_Shape", "IsSame", m_TopoDS_Shape_IsSame);
   Method(env, out, "TopoDS_Shape", "Moved", m_TopoDS_Shape_Moved);
   Method(env, out, "TopoDS_Shape", "Orientation_1", m_TopoDS_Shape_Orientation_1);

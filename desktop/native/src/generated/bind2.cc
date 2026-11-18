@@ -635,4 +635,12 @@ Napi::Value m_TopTools_IndexedMapOfShape_Contains(const Napi::CallbackInfo& info
     return Ret(info.Env(), self.Contains(a0));
   OCC_CATCH
 }
+Napi::Value m_TopTools_IndexedMapOfShape_FindIndex(const Napi::CallbackInfo& info) {
+  TopTools_IndexedMapOfShape& self = ArgObj<TopTools_IndexedMapOfShape>(info.This(), ID_TopTools_IndexedMapOfShape);
+  OCC_TRY
+    CheckCount(info, 1, "TopTools_IndexedMapOfShape.FindIndex");
+    TopoDS_Shape& a0 = ArgObj<TopoDS_Shape>(info[0], ID_TopoDS_Shape);
+    return Ret(info.Env(), self.FindIndex(a0));
+  OCC_CATCH
+}
 }
