@@ -154,34 +154,38 @@
     });
 
     // ---------------------------------------------------------------- 3. the 1800-hole panel: times
-    // bounds: three times a quiet run on this PC (rebuild 3.5 s, a flange 0.6 s, edit of the last flange 0.33 s, of the first 1.8 s, flat 2.9 s), so a loaded machine passes
-    test('rfOE: 48 x 24 panel, 1800 holes: four Edge Flanges rebuild in seconds (main: 26 to 32 s), each flange under a second, an edit of one flange and the flat pattern in seconds; closed, the closed-form volume and blank', function () {
+    // lane PC: no time bounds (a test counts work, not milliseconds; five lanes share this PC): every flange outlines
+    // under 2 % of the sheet per pick and meshes no whole body, an edit rebuilds only the features from the edited one
+    // on, and the flat pattern outlines each face of the sheet once (its two 58 000-polygon caps: what it costs). The
+    // times are in the row's detail (quiet: rebuild 3.5 s, a flange 0.3 to 0.6 s, edits 0.33 / 1.8 s, flat 1.5 s).
+    test('rfOE: 48 x 24 panel, 1800 holes: four Edge Flanges (main: 26 to 32 s) mesh no whole body and outline under 2 % of the sheet per pick, an edit rebuilds from the edited flange on, the flat pattern outlines each face once; closed, the closed-form volume and blank', function () {
       var m = rfOEmodel(rfOEcode(48, 24, 60, 30, 0.75, 0.72, rfOEflanges(48, 24, 4))), per = [], last = 0, lastT = 0;
       var t0 = Date.now(), c = rfOEcount(function () { return K.rebuild(m, null, { onProgress: function (i, n, f) { var t = Date.now(); if (last) per.push(t - lastT); last = f.type === 'flange' ? 1 : 0; lastT = t; } }); }), b = c.r;
       per.push(Date.now() - lastT);
-      var ms = Date.now() - t0;
+      var ms = Date.now() - t0, np = b.body.polygons.length;
       rfOEerrs(b);
       assert(c.mesh === 0 && c.edges === 0 && c.whole === 0, c.mesh + ' meshFromBody, ' + c.edges + ' bodyEdges, ' + c.whole + ' picks from the whole body');
-      assert(b.body.polygons.length > 170000, b.body.polygons.length + ' polygons');
-      assert(ms < 12000, 'rebuild took ' + ms + ' ms');
-      per.forEach(function (t, k) { assert(t < 2500, 'flange ' + (k + 1) + ' took ' + t + ' ms'); });
+      assert(np > 170000, np + ' polygons');
+      assert(c.near >= 8 && c.polys < 0.02 * np * c.near, c.polys + ' polygons outlined for ' + c.near + ' picks of a body of ' + np);
       var fl = m.features.filter(function (f) { return f.type === 'flange'; });
       fl[3].length = 1.5;
-      var t1 = Date.now(), b2 = K.rebuild(m, b.cache), msEdit = Date.now() - t1;
+      var t1 = Date.now(), c2 = rfOEcount(function () { return K.rebuild(m, b.cache); }), b2 = c2.r, msEdit = Date.now() - t1;
       rfOEerrs(b2);
-      assert(msEdit < 1500, 'the edit of the last flange took ' + msEdit + ' ms');
+      assert(b2.reused === m.features.indexOf(fl[3]), 'the edit of the last flange reused ' + b2.reused + ' features');
+      assert(c2.mesh === 0 && c2.edges === 0 && c2.whole === 0 && c2.polys < 0.02 * np * Math.max(1, c2.near), 'the edit of the last flange: ' + c2.mesh + ' meshFromBody, ' + c2.edges + ' bodyEdges, ' + c2.polys + ' polygons outlined');
       fl[0].length = 1.5;
-      var t2 = Date.now(), b3 = K.rebuild(m, b2.cache), msEdit0 = Date.now() - t2;
+      var t2 = Date.now(), c3 = rfOEcount(function () { return K.rebuild(m, b2.cache); }), b3 = c3.r, msEdit0 = Date.now() - t2;
       rfOEerrs(b3);
-      assert(msEdit0 < 7000, 'the edit of the first flange (four flanges rebuilt) took ' + msEdit0 + ' ms');
+      assert(b3.reused === m.features.indexOf(fl[0]), 'the edit of the first flange reused ' + b3.reused + ' features');
+      assert(c3.mesh === 0 && c3.edges === 0 && c3.whole === 0 && c3.polys < 0.02 * np * Math.max(1, c3.near), 'the edit of the first flange (four flanges rebuilt): ' + c3.mesh + ' meshFromBody, ' + c3.edges + ' bodyEdges, ' + c3.polys + ' polygons outlined');
       var mesh = K.meshFromBody(b3.body), mp = K.massProps(mesh, 1);
       nearRel(mp.volume, rfOEvolume(48, 24, 1800, 4, 1) + (48 + 24) * 0.5 * T, 1e-9, 'volume');
       var ck = Evaluate.checkBody(b3.body, { maxPairs: 1 });
       assert(!ck.openEdges.length && !ck.nonManifoldEdges.length, ck.openEdges.length + ' open, ' + ck.nonManifoldEdges.length + ' non-manifold edges');
-      var t3 = Date.now(), f = K.flatPattern(m, b3, mesh), msFlat = Date.now() - t3;
-      assert(msFlat < 9000, 'the flat pattern took ' + msFlat + ' ms');
+      var o0 = MS.outlines, op0 = MS.outlinePolys, t3 = Date.now(), f = K.flatPattern(m, b3, mesh), msFlat = Date.now() - t3, outl = MS.outlines - o0, outp = MS.outlinePolys - op0;
+      var caps = mesh.faces.map(function (fc) { return fc.polys ? fc.polys.length : 0; }).sort(function (x, y) { return y - x; });
+      assert(outl <= 12 && outp <= caps[0] + caps[1] + 0.02 * np, 'the flat pattern outlined ' + outl + ' faces, ' + outp + ' polygons (the two caps: ' + caps[0] + ' + ' + caps[1] + ')');
       var t4 = Date.now(), dxf = K.exportDXFFlat(f, 'in', {}), msDxf = Date.now() - t4;
-      assert(msDxf < 3000, 'the flat DXF took ' + msDxf + ' ms');
       assert(f.loops.length === 1801 && f.bends.length === 4, f.loops.length + ' loops, ' + f.bends.length + ' bend lines');
       near(f.bbox.max[0] - f.bbox.min[0], 48 + 2 * BA + 2.5, 1e-9, 'blank width');
       near(f.bbox.max[1] - f.bbox.min[1], 24 + 2 * BA + 2.5, 1e-9, 'blank height');

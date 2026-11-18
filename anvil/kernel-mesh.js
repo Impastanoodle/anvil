@@ -146,7 +146,7 @@
   function tagOf(p) { return (p.body || 0) + (p.face != null ? '|f' + p.face : '') + (p.part != null ? '|p' + p.part : '') + (p.surf && p.surf.s && p.surf.s.w != null ? '|w' + p.surf.s.w : '') + (typeof p.shared === 'string' ? '|s' + p.shared : ''); }
   // lane panelperf (rfOE): work counters. meshFromBody / bodyEdges: calls; meshPolys / edgeFaces / edgePolys: the
   // polygons meshed and the faces and polygons bodyEdges outlined (a whole 1800-hole panel is 174 000 polygons a call)
-  var meshStats = K.meshStats = { meshFromBody: 0, meshPolys: 0, bodyEdges: 0, edgeFaces: 0, edgePolys: 0 };
+  var meshStats = K.meshStats = { meshFromBody: 0, meshPolys: 0, bodyEdges: 0, edgeFaces: 0, edgePolys: 0, outlines: 0, outlinePolys: 0 };
   function meshFromBody(body) {
     if (!body) return { positions: new Float32Array(0), normals: new Float32Array(0), faces: [], triCount: 0 };
     meshStats.meshFromBody++; meshStats.meshPolys += body.polygons.length;
@@ -399,6 +399,7 @@
   function faceOutline(mesh, faceIndex) {
     var face = mesh.faces[faceIndex];
     if (!face) return null;
+    meshStats.outlines++; meshStats.outlinePolys += face.polys ? face.polys.length : 0;   // (lane PC: tests count work)
     var plane = planeFromFace(face.normal, scale(face.normal, face.w));
     // Vertices are welded once: each gets .k, the key of the first vertex within 1e-4 of it on every axis (looked up in
     // its own and the neighbouring 1e-4 cells). That welds all the old key3 cell did (near-coincident CSG corners a few

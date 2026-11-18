@@ -1164,7 +1164,8 @@ var CSG = (function () {
   // wider than FAT_MIN and wound like the face, else the sliver stays. No vertex moves and the merged pieces tile the
   // same area, so volumes, outlines and flats are unchanged (to rounding). Runs on every boolean that had band vertices
   // (FUZZY: no sliver of this kind can appear otherwise); CSG.options.fatten = false turns it off, CSG.fatStats counts.
-  var FAT = { calls: 0, slivers: 0, merged: 0, snapped: 0, ms: 0 }, SLIM = 1e-6, FAT_MIN = 1e-5;
+  // (lane PC) twinVerts / twinLooks: the vertices snapTwins sorted and the candidate twins it looked at (a test counts work)
+  var FAT = { calls: 0, slivers: 0, merged: 0, snapped: 0, ms: 0, twinVerts: 0, twinLooks: 0 }, SLIM = 1e-6, FAT_MIN = 1e-5;
   // 2 area / longest edge of a vertex loop (positions)
   function loopWidth(ps) {
     var a = ps[0], sx = 0, sy = 0, sz = 0, e2 = 0, n = ps.length;
@@ -1267,40 +1268,75 @@ var CSG = (function () {
   var SNAP = 1e-6;
   function pkey(q) { return q.x + ',' + q.y + ',' + q.z; }
   function snapTwins(polys, box) {
-    var vs = [], i, j, k;
+    var vs = [], i, j, k, far = box ? new Uint8Array(polys.length) : null;
     for (i = 0; i < polys.length; i++) {
-      if (box && polygonFar(polys[i], box, 4 * HEAL)) continue;
+      if (box && polygonFar(polys[i], box, 4 * HEAL)) { far[i] = 1; continue; }
       var pv = polys[i].vertices;
       for (j = 0; j < pv.length; j++) vs.push(pv[j].pos);
     }
     if (vs.length < 2) return polys;
     vs.sort(function (a, b) { return a.x - b.x || a.y - b.y || a.z - b.z; });
-    var to = new Map();
-    for (i = 0; i < vs.length; i++) {
-      var a = vs[i];
-      if (to.has(a)) continue;
-      for (k = i + 1; k < vs.length; k++) {
-        var b = vs[k];
-        if (b.x - a.x > SNAP) break;
-        if (to.has(b) || (b.x === a.x && b.y === a.y && b.z === a.z)) continue;
-        var dy = b.y - a.y, dz = b.z - a.z;
-        if (dy > SNAP || dy < -SNAP || dz > SNAP || dz < -SNAP) continue;
+    // lane PC: the pairs are taken in the same order as the old scan over every later vertex within SNAP in x, which
+    // looked at whole columns: a cut across a perforated sheet puts thousands of vertices on one x and two y's (a
+    // Jog at 1800 holes: snapTwins 2.1 of 5.4 s). The sorted list is cut into runs of equal x (runX) and, inside them,
+    // of equal (x, y) (runY); in a run the y's ascend, in a run of (x, y) the z's do. For a, a's own (x, y) run is
+    // read from i + 1 (z ascends from a.z), every later run within SNAP in x and y from a binary search to its first
+    // y >= a.y - SNAP, every (x, y) run from a binary search to its first z >= a.z - SNAP, each up to the first value
+    // past a's + SNAP. Same pairs, same order. A copy of the vertex before it (one corner of many polygons) takes
+    // nothing the first copy did not (every copy of a point has one fate: one a takes them all, in one stretch).
+    var n = vs.length, runX = new Int32Array(n), runY = new Int32Array(n);
+    for (i = n - 1; i >= 0; i--) {
+      var sx = i + 1 < n && vs[i + 1].x === vs[i].x;
+      runX[i] = sx ? runX[i + 1] : i + 1;
+      runY[i] = sx && vs[i + 1].y === vs[i].y ? runY[i + 1] : i + 1;
+    }
+    var to = new Map(), looks = 0;
+    // the (x, y) run from q (its z's ascending; within SNAP of a in x and y), from the first z >= a.z - SNAP
+    function takeZ(a, q, own) {
+      var e = runY[q];
+      if (!own) {
+        var hi = e;
+        while (q < hi) { var mid = (q + hi) >> 1; if (vs[mid].z - a.z < -SNAP) q = mid + 1; else hi = mid; }
+      }
+      for (; q < e; q++) {
+        looks++;
+        var b = vs[q], dz = b.z - a.z;
+        if (dz > SNAP) break;
+        if (dz < -SNAP || to.has(b) || (b.x === a.x && b.y === a.y && b.z === a.z)) continue;
         to.set(b, a);
       }
     }
+    // the x run from q (its y's ascending), from the first y >= a.y - SNAP, each (x, y) run up to a.y + SNAP
+    function takeY(a, q, e, own) {
+      if (!own) {
+        var hi = e;
+        while (q < hi) { var mid = (q + hi) >> 1; if (vs[mid].y - a.y < -SNAP) q = mid + 1; else hi = mid; }
+      }
+      for (; q < e; q = runY[q]) {
+        looks++;
+        if (vs[q].y - a.y > SNAP) break;
+        takeZ(a, q, own && vs[q].y === a.y);
+      }
+    }
+    for (i = 0; i < n; i++) {
+      var a = vs[i], p0 = i ? vs[i - 1] : null;
+      if (to.has(a) || (p0 && p0.x === a.x && p0.y === a.y && p0.z === a.z)) continue;
+      if (i + 1 < runX[i]) takeY(a, i + 1, runX[i], true);
+      for (k = runX[i]; k < n && vs[k].x - a.x <= SNAP; k = runX[k]) takeY(a, k, runX[k], false);
+    }
+    FAT.twinVerts += n; FAT.twinLooks += looks;
     if (!to.size) return polys;
-    // positions are shared only within a polygon's own vertex objects, so map by value through a key of the moved ones
-    var moved = new Map();
-    to.forEach(function (a, b) { moved.set(pkey(b), a); });
+    // every vertex of a polygon near the box is in vs, and every copy of a moved point is moved (to the same a): the
+    // map by object is the map by value
     var out = [], changed = 0;
     for (i = 0; i < polys.length; i++) {
       var p = polys[i], v = p.vertices, hit = false;
-      if (box && polygonFar(p, box, 4 * HEAL)) { out.push(p); continue; }
-      for (j = 0; j < v.length && !hit; j++) if (moved.has(pkey(v[j].pos))) hit = true;
+      if (far && far[i]) { out.push(p); continue; }
+      for (j = 0; j < v.length && !hit; j++) if (to.has(v[j].pos)) hit = true;
       if (!hit) { out.push(p); continue; }
       var nv = [];
       for (j = 0; j < v.length; j++) {
-        var q = v[j].pos, t = moved.get(pkey(q)) || q, last = nv.length ? nv[nv.length - 1].pos : null;
+        var q = v[j].pos, t = to.get(q) || q, last = nv.length ? nv[nv.length - 1].pos : null;
         if (!last || last.x !== t.x || last.y !== t.y || last.z !== t.z) nv.push(new Vertex(t.clone()));
       }
       while (nv.length > 1) { var f0 = nv[0].pos, fl = nv[nv.length - 1].pos; if (f0.x === fl.x && f0.y === fl.y && f0.z === fl.z) nv.pop(); else break; }

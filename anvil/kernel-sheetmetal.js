@@ -7354,12 +7354,17 @@
         if (!curved) r.straight = true;
         var jw = baseIs1 ? 1 : 0, zw = eo[jw][k === 0 ? 0 : 1], nW = jw ? add(scale(rb.n1, Math.cos(rb.A)), scale(t1, Math.sin(rb.A))) : rb.n1;
         r.wp = add(add(rb.C0, scale(rb.d, zw)), scale(nW, rb.RT));   // the outer wall-side corner of this end
+        // (lane PC) and its base-side corner, for insertBendsLayout's mitre pairing only (removed there)
+        var jb = 1 - jw, zb2 = eo[jb][k === 0 ? 0 : 1], nB = jb ? add(scale(rb.n1, Math.cos(rb.A)), scale(t1, Math.sin(rb.A))) : rb.n1;
+        r.bp = add(add(rb.C0, scale(rb.d, zb2)), scale(nB, rb.RT));
       }
       if (curved && bulge > thr) r.bulge = bulge;
       out[k] = r; any = true;
     }
     return any ? out : null;
   }
+  // lane PC: the plate (wall) two Insert Bends bends both run from or to, or null
+  function ibSharedPlate(a, b) { return a.p1 === b.p1 || a.p1 === b.p2 ? a.p1 : a.p2 === b.p1 || a.p2 === b.p2 ? a.p2 : null; }
   // lane NQ: a formed feature read from a file (dimple, louver, lance, rib, extruded hole: SolidWorks' forming tools).
   // On the wall it is pressed from, it is a hole in the wall's face whose column holds metal OUTSIDE the wall's
   // thickness (the dimple's cup, the louver's hood, the lance's bridge), all of it inside the hole's outline (a hem's
@@ -7736,12 +7741,35 @@
         info.forEach(function (q, j) {
           if (j === i || !q.ibEnds) return;
           // (a mitre's walls meet at the corner: their wall-side corners within 2 T; a relief cut between them keeps them apart)
-          [q.a, q.b].forEach(function (P, kk) { var e2 = q.ibEnds[kk]; if (e2 && e2.wp && len(sub(P, E)) < reach && len(sub(e2.wp, e.wp)) < 2 * T + tolU) mitre.push([i, k], [j, kk]); });
+          // lane PC: the corners compared are those on the walls the two bends do not share (the walls the mitre is
+          // between): the wall-side corners when both bends leave the shared wall, as before; with the fixed face on a
+          // riser one first bend runs from that riser to the base, and its corner on the riser is its base-side one (the
+          // pair was missed: drawn along the slant, 0.0057 in² under the part's own flat)
+          var sh = ibSharedPlate(bends[i], bends[j]);
+          [q.a, q.b].forEach(function (P, kk) {
+            var e2 = q.ibEnds[kk];
+            if (!(e2 && e2.wp && len(sub(P, E)) < reach)) return;
+            var c1 = sh != null && bends[i].base === sh ? e.wp : sh != null ? e.bp : e.wp, c2 = sh != null && bends[j].base === sh ? e2.wp : sh != null ? e2.bp : e2.wp;
+            if (len(sub(c2, c1)) < 2 * T + tolU) mitre.push([i, k, j]);
+          });
         });
       });
     });
     // (a mitre cut by a plane, its end a sine: Anvil's Miter Flange: squared as well, but the flat warns that the CAD may differ)
-    mitre.forEach(function (m) { var e = info[m[0]].ibEnds[m[1]]; info[m[0]].ibEnds[m[1]] = e && e.bulge ? { square: true, mitre: true, bulge: e.bulge, i: e.i, o: e.o } : null; });
+    // lane PC: only where the two mitred bends leave one wall (a Miter Flange's first bends, both off the base: SolidWorks'
+    // and Anvil's flat run each strip on square to where they meet past the corner). Two bends further out (an L profile's
+    // second bends, from the two risers to the two lips) share no wall: both flats run that strip's end straight from the
+    // riser's end to the lip's (rfIZ, SolidWorks' miter_L2): squaring it put 0.0085 in² per corner on an imported L's blank
+    var slant = {};
+    mitre.forEach(function (m) { var e = info[m[0]].ibEnds[m[1]]; if (e && !e.straight && ibSharedPlate(bends[m[0]], bends[m[2]]) == null) slant[m[0] + '/' + m[1]] = true; });
+    info.forEach(function (r) { (r.ibEnds || []).forEach(function (e) { if (e) delete e.bp; }); });
+    mitre.forEach(function (m) {
+      var e = info[m[0]].ibEnds[m[1]];
+      // (a slanted mitre end: straight from its base-side to its wall-side corner; the folded bend's own curved end is the
+      // corner's, not a notch: `mitre` keeps flatPattern's bendSurfaceNotches off it)
+      if (slant[m[0] + '/' + m[1]]) { if (e) e.mitre = true; return; }
+      info[m[0]].ibEnds[m[1]] = e && e.bulge ? { square: true, mitre: true, bulge: e.bulge, i: e.i, o: e.o } : null;
+    });
     info.forEach(function (r) { if (r.ibEnds && !r.ibEnds[0] && !r.ibEnds[1]) delete r.ibEnds; });
     return { fills: fills, corners: corners, wedges: wedges, info: info, T: T, R: R, rounded: bends.filter(function (b) { return b.round; }).length };
   }
