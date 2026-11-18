@@ -69,7 +69,7 @@ function makeWorkerClass(oc, loadMs) {
 
 // the page's GROUPS list (tests/occt/*.js, relative to tests/)
 function groupList(html) {
-  const m = /\n  var GROUPS = \[\n([\s\S]*?)\n  \];/.exec(html);
+  const m = /\r?\n  var GROUPS = \[\r?\n([\s\S]*?)\r?\n  \];/.exec(html);   // the page is CRLF in a Windows checkout: --only ran every row (head, local-2026-11-18a)
   return m ? (m[1].match(/'[^']+'/g) || []).map((s) => s.slice(1, -1)) : [];
 }
 // the files an --only list names, as the page's occtGroupsFor picks them
