@@ -1312,15 +1312,74 @@
     D.inline = null;
     if (I.box.parentNode) I.box.parentNode.removeChild(I.box);
     if (!commit || I.inp.value === I.bomCell.shown) { drawOverlay(); return; }
-    var v = I.inp.value, B = I.bomCell, res = null, err = null;
+    var v = I.inp.value, B = I.bomCell, res = null, err = null, linked = B.id === 'description' ? bomLinkedDocs() : null;
     edit(function (dc) {
       try { res = Drawing.setBomCell(dc, App.model, B.r, B.id, v, { mesh: App.mesh || null, build: App.build || null }); } catch (e) { err = e; }
     });
     if (err) { UI.toast(err.message); UI.setStatus(err.message); return; }
+    if (linked) bomDocUndo(linked);
     if (UI.refreshTree) UI.refreshTree();
     UI.setStatus('BOM row ' + B.r + ': ' + (String(v).trim() ? 'set' : 'cleared') + (res.where === 'file' ? ' in ' + res.file + ' (File ▸ Save saves it)' : res.where === 'part' ? ' in the part\'s Description' : res.where === 'assembly' ? ' (kept in the assembly)' : ' on this drawing') + '.');
   }
   DW.openBomCellEdit = openBomCellEdit;
+  // (rfOJ) a DESCRIPTION typed into a BOM cell of an assembly drawing is written into the linked part document
+  // (Assembly.setBomDescription: Documents.put dirty), which lives outside App.model, so Undo took back the drawing's
+  // step but left the part's Description changed. SolidWorks: Ctrl+Z in the drawing undoes the cell and the part's
+  // property together (not checked in SolidWorks). Here the step remembers each linked document it changed (before /
+  // after) against its own undo snapshot; UI.undo puts the old document back (revert when it had no unsaved edit
+  // before), UI.redo the new one. One undo step, as the cell edit itself.
+  function bomLinkedDocs() {
+    if (typeof Assembly === 'undefined' || !Assembly.Documents || !App.model || App.model.type !== 'assembly') return null;
+    var Dm = Assembly.Documents, out = {}, seen = {};
+    (function walk(m, depth) {
+      (m && m.components || []).forEach(function (c) {
+        var src = c && c.source || {};
+        if (src.model && src.model.type === 'assembly' && depth < 16) walk(src.model, depth + 1);
+        if (src.file == null || seen[src.file]) return;
+        var f = String(src.file); seen[f] = true;
+        var d = Dm.get(f);
+        if (!d) return;
+        out[f] = { json: JSON.stringify(d), dirty: Dm.isDirty(f) };
+        if (d.type === 'assembly' && depth < 16) walk(d, depth + 1);
+      });
+    })(App.model, 0);
+    return out;
+  }
+  var bomDocSteps = [];
+  function bomDocUndo(before) {
+    var Dm = Assembly.Documents, changed = [];
+    Object.keys(before).forEach(function (f) { var d = Dm.get(f), j = d ? JSON.stringify(d) : null; if (j !== before[f].json) changed.push({ file: f, before: before[f].json, wasDirty: before[f].dirty, after: j }); });
+    if (!changed.length || !App.undo.length) return;
+    bomDocSteps.push({ snap: App.undo[App.undo.length - 1], redoSnap: null, docs: changed });
+    if (bomDocSteps.length > 60) bomDocSteps.shift();
+  }
+  function bomDocPut(docs, back) {
+    var Dm = Assembly.Documents;
+    docs.forEach(function (x) {
+      if (back) { if (x.wasDirty) Dm.put(x.file, JSON.parse(x.before), { dirty: true }); else Dm.revert(x.file); }
+      else if (x.after != null) Dm.put(x.file, JSON.parse(x.after), { dirty: true });
+    });
+  }
+  if (UI.undo && !UI.undo._bomDocs) {
+    var baseUndo = UI.undo, baseRedo = UI.redo;
+    UI.undo = function () {
+      var top = App.undo.length ? App.undo[App.undo.length - 1] : null, s = null;
+      for (var i = bomDocSteps.length - 1; i >= 0 && top != null; i--) if (bomDocSteps[i].snap === top) { s = bomDocSteps[i]; break; }
+      if (s) bomDocPut(s.docs, true);
+      var r = baseUndo.apply(this, arguments);
+      if (s) s.redoSnap = App.redo.length ? App.redo[App.redo.length - 1] : null;
+      return r;
+    };
+    UI.redo = function () {
+      var top = App.redo.length ? App.redo[App.redo.length - 1] : null, s = null;
+      for (var i = bomDocSteps.length - 1; i >= 0 && top != null; i--) if (bomDocSteps[i].redoSnap === top) { s = bomDocSteps[i]; break; }
+      if (s) bomDocPut(s.docs, false);
+      var r = baseRedo.apply(this, arguments);
+      if (s) { s.snap = App.undo.length ? App.undo[App.undo.length - 1] : null; s.redoSnap = null; }
+      return r;
+    };
+    UI.undo._bomDocs = true;
+  }
 
   // the sheet's mouse (drawing-ui.js calls these first): the format tools, General Table placement and picks
   DW.aeDown = function (p, e) {

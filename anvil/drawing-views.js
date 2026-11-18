@@ -2139,6 +2139,7 @@
       else if (it.t === 'poly' && it.pts && it.pts.length > 1) for (var i = 0; i + 1 < it.pts.length + (it.closed ? 1 : 0); i++) { var p = it.pts[i], q = it.pts[(i + 1) % it.pts.length]; ep.lines.visible.push([p[0], p[1], q[0], q[1], 0]); }
     });
     function clip(pr) {
+      if (dt.shape === 'profile' && dt.pts && dt.pts.length >= 3) return clipProjectionPoly(pr, dt.pts);   // (rfOJ) a sketched profile
       if (dt.shape === 'profile' && dt.a && dt.b) {
         var R = [Math.min(dt.a[0], dt.b[0]), Math.min(dt.a[1], dt.b[1]), Math.max(dt.a[0], dt.b[0]), Math.max(dt.a[1], dt.b[1])];
         return clipProjectionPoly(pr, [[R[0], R[1]], [R[2], R[1]], [R[2], R[3]], [R[0], R[3]]]);

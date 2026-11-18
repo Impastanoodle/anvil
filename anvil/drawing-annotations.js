@@ -40,7 +40,8 @@
       extLines: o.extLines !== false, balloonQty: !!o.balloonQty, flatDims: o.flatDims === true, flatSizeNote: !!o.flatSizeNote,
       bendNotes: o.bendNotes === 'table' || o.bendNotes === 'none' ? o.bendNotes : 'notes', dimPrec: st.prec != null && +o.dimPrec > st.prec ? Math.min(8, Math.round(+o.dimPrec)) : st.prec, fractions: st.fractions, fracDenom: st.denom, tolPrec: st.tolPrec,   // (rfIF: up to 8 places; rfKX: tolPrec, null = Same as nominal)
       dual: du.on, dualShowUnits: du.showUnits, dualPos: du.pos, dualUnits: du.units, dualPrec: du.prec,   // (rfOC: Dual dimensions display, Dual Dimension Length)
-      chamferText: st.chamfer };   // (rfPD: Dimensions > Chamfer > Text display)
+      chamferText: st.chamfer,   // (rfPD: Dimensions > Chamfer > Text display)
+      dxf11: !!o.dxf11 };   // (rfOJ) Scale output 1:1 for the drawing's DXF / DWG (SolidWorks: Export ▸ DXF/DWG ▸ Enable 1:1 scale output)
   }
   function nextAnnotId(doc) { doc.nextAnnot = (doc.nextAnnot || 0) + 1; return doc.nextAnnot; }
 
@@ -3078,6 +3079,12 @@
     if (spec.holes !== undefined) t.holes = (spec.holes || []).filter(function (h) { return h && h.c && +h.r > 0; }).map(function (h) { return { c: [+h.c[0], +h.c[1]], r: +h.r }; });
     if (spec.sizes !== undefined) t.sizes = (spec.sizes || []).map(Number).filter(function (d) { return d > 0; });
     ['all', 'combineTags', 'combineSizes'].forEach(function (q) { if (spec[q] != null) { if (spec[q]) t[q] = true; else delete t[q]; } });
+    // (rfOJ) split: the data rows where a new piece of the table starts (SolidWorks' right-click ▸ Split ▸ Horizontally
+    // Above / Below): each piece repeats the header and stands to the right of the one before; [] or null joins them
+    if (spec.split !== undefined) {
+      var sp = (spec.split || []).map(function (x) { return Math.round(+x); }).filter(function (x, i, l) { return x > 0 && l.indexOf(x) === i; }).sort(function (x, y) { return x - y; });
+      if (sp.length) t.split = sp; else delete t.split;
+    }
     if (spec.tagStyle != null) { if (spec.tagStyle === 'numeric') t.tagStyle = 'numeric'; else delete t.tagStyle; }
     if (spec.prec !== undefined) { if (spec.prec == null || spec.prec === '' || !(+spec.prec >= 0)) delete t.prec; else t.prec = Math.min(8, Math.round(+spec.prec)); }
     if (spec.x != null && spec.y != null) { t.x = +spec.x; t.y = +spec.y; }
@@ -3332,7 +3339,14 @@
         gi0 = gi;
       }
     }
-    var W = colW.reduce(function (s, x) { return s + x; }, 0), Ht = rh + heights.reduce(function (s, x) { return s + x; }, 0), x0, y1;
+    // (rfOJ) the pieces of a split table: [i0, i1) data rows each, side by side (a 4 mm gap), each with the header
+    var cuts = (t.split || []).filter(function (x) { return x > 0 && x < R.rows.length; }), pieces = [], pg = 4 * k, pi0 = 0;
+    cuts.concat([R.rows.length]).forEach(function (c) { if (c > pi0) { pieces.push({ i0: pi0, i1: c }); pi0 = c; } });
+    if (!pieces.length) pieces.push({ i0: 0, i1: R.rows.length });
+    var W = colW.reduce(function (s, x) { return s + x; }, 0);
+    pieces.forEach(function (pc) { pc.h = rh; for (var q = pc.i0; q < pc.i1; q++) pc.h += heights[q]; });
+    var Wp = W, Ht = Math.max.apply(null, pieces.map(function (pc) { return pc.h; })), x0, y1, noRoom = false;
+    W = pieces.length * Wp + (pieces.length - 1) * pg;
     if (t.x != null && t.y != null) { x0 = t.x; y1 = t.y; }
     else {
       // beside the view: right of it, under it, left of it, over it — the first spot on the sheet clear of the other
@@ -3355,43 +3369,58 @@
       var tiers = sheetBox && sheetBox.dims && sheetBox.dims.length ? [clearOf(HT_ROOM * k, true), clearOf(0, true)] : [];
       tiers.push(clearOf(HT_ROOM * k), clearOf(0));
       var pick = null;
-      for (var ti = 0; ti < tiers.length && !pick; ti++) pick = spots.filter(tiers[ti])[0] || (sheetBox && htFreeSpot(sheetBox, W, Ht, spots[0], k, tiers[ti])) || null;
+      var nDimTiers = tiers.length - 2, tiHit = -1;
+      for (var ti = 0; ti < tiers.length && !pick; ti++) { pick = spots.filter(tiers[ti])[0] || (sheetBox && htFreeSpot(sheetBox, W, Ht, spots[0], k, tiers[ti])) || null; if (pick) tiHit = ti; }
+      // (rfOJ) clear of the views only, on the sheet's dimensions or callouts (a 40-hole table on the Top view's 10X Ø.141
+      // callouts): placed there, and the sheet says so
+      if (pick && nDimTiers > 0 && tiHit >= nDimTiers) noRoom = true;
+      // (rfOJ) no clear spot anywhere: it goes beside the view and the sheet says so (a 40-hole table covered the
+      // view's hole callouts with no word); right-click ▸ Split puts it in two or more columns
+      if (!pick) noRoom = true;
       pick = pick || spots[0];
       x0 = pick[0]; y1 = pick[1];
     }
-    var colX = [x0]; colW.forEach(function (cw) { colX.push(colX[colX.length - 1] + cw); });
-    var rowY = [y1, y1 - rh]; heights.forEach(function (h) { rowY.push(rowY[rowY.length - 1] - h); });
-    var y0 = y1 - Ht;
-    ln([x0, y0], [x0 + W, y0], TL, 'thick'); ln([x0 + W, y0], [x0 + W, y1], TL, 'thick'); ln([x0 + W, y1], [x0, y1], TL, 'thick'); ln([x0, y1], [x0, y0], TL, 'thick');
-    for (var ci = 1; ci < 4; ci++) ln([colX[ci], y0], [colX[ci], y1], TL);
-    ln([x0, rowY[1]], [x0 + W, rowY[1]], TL);
-    for (var ri = 1; ri < R.rows.length; ri++) {
-      var same = R.rows[ri].group === R.rows[ri - 1].group, yy = rowY[ri + 1];
-      for (var cj = 0; cj < 4; cj++) {
-        if (same && ((cj === 0 && t.combineTags) || (cj === 3 && t.combineSizes))) continue;
-        ln([colX[cj], yy], [colX[cj + 1], yy], TL);
+    var colX = [], rowY = [], tops = [];
+    pieces.forEach(function (pc, pj) {
+      var px0 = x0 + pj * (Wp + pg), cx = [px0]; colW.forEach(function (cw) { cx.push(cx[cx.length - 1] + cw); });
+      var ry = [y1, y1 - rh]; for (var q = pc.i0; q < pc.i1; q++) ry.push(ry[ry.length - 1] - heights[q]);
+      var py0 = y1 - pc.h;
+      pc.colX = cx; pc.rowY = ry; pc.box = { x0: px0, y0: py0, x1: px0 + Wp, y1: y1 };
+      if (pj === 0) { colX = cx; }
+      ry.slice(pj === 0 ? 0 : 2).forEach(function (yv, qi) { if (pj === 0) rowY.push(yv); else rowY.push(yv); });
+      ln([px0, py0], [px0 + Wp, py0], TL, 'thick'); ln([px0 + Wp, py0], [px0 + Wp, y1], TL, 'thick'); ln([px0 + Wp, y1], [px0, y1], TL, 'thick'); ln([px0, y1], [px0, py0], TL, 'thick');
+      for (var ci = 1; ci < 4; ci++) ln([cx[ci], py0], [cx[ci], y1], TL);
+      ln([px0, ry[1]], [px0 + Wp, ry[1]], TL);
+      for (var ri = pc.i0 + 1; ri < pc.i1; ri++) {
+        var same = R.rows[ri].group === R.rows[ri - 1].group, yy = ry[ri - pc.i0 + 1];
+        for (var cj = 0; cj < 4; cj++) {
+          if (same && ((cj === 0 && t.combineTags) || (cj === 3 && t.combineSizes))) continue;
+          ln([cx[cj], yy], [cx[cj + 1], yy], TL);
+        }
       }
-    }
-    HT_COLS.forEach(function (c, i) { tx([(colX[i] + colX[i + 1]) / 2, rowY[1] + (rh - th) / 2], i === 3 && t.punch ? 'PUNCH ID' : c[0], 'middle', TL); });
-    // the middle of the cells of rows i0 … i1
-    function cellMid(i0, i1) { return (rowY[i0 + 1] + rowY[i1 + 2]) / 2; }
-    function sizeLines(lines, mid) { lines.forEach(function (s, j) { tx([colX[3] + 1.5 * k, mid - th / 2 + ((lines.length - 1) / 2 - j) * rh], s, 'start', TL); }); }
-    var r0 = 0;
-    R.rows.forEach(function (row, i) {
-      var mid = cellMid(i, i), last = i === R.rows.length - 1 || R.rows[i + 1].group !== row.group;
-      if (!t.combineTags) tx([(colX[0] + colX[1]) / 2, mid - th / 2], row.tag, 'middle', TL);
-      tx([(colX[1] + colX[2]) / 2, mid - th / 2], row.xText, 'middle', TL);
-      tx([(colX[2] + colX[3]) / 2, mid - th / 2], row.yText, 'middle', TL);
-      if (!t.combineSizes) sizeLines(row.size, mid);
-      if (last) {
-        var gm = cellMid(r0, i);
-        if (t.combineTags) tx([(colX[0] + colX[1]) / 2, gm - th / 2], row.tag, 'middle', TL);
-        if (t.combineSizes) sizeLines(row.size, gm);
-        r0 = i + 1;
+      HT_COLS.forEach(function (c, i) { tx([(cx[i] + cx[i + 1]) / 2, ry[1] + (rh - th) / 2], i === 3 && t.punch ? 'PUNCH ID' : c[0], 'middle', TL); });
+      // the middle of the cells of rows i0 … i1 (data rows of this piece)
+      var cellMid = function (a0, a1) { return (ry[a0 - pc.i0 + 1] + ry[a1 - pc.i0 + 2]) / 2; };
+      var sizeLines = function (lines, mid) { lines.forEach(function (s, j) { tx([cx[3] + 1.5 * k, mid - th / 2 + ((lines.length - 1) / 2 - j) * rh], s, 'start', TL); }); };
+      var r0 = pc.i0;
+      for (var i = pc.i0; i < pc.i1; i++) {
+        var row = R.rows[i], mid = cellMid(i, i), last = i === pc.i1 - 1 || R.rows[i + 1].group !== row.group;
+        if (!t.combineTags) tx([(cx[0] + cx[1]) / 2, mid - th / 2], row.tag, 'middle', TL);
+        tx([(cx[1] + cx[2]) / 2, mid - th / 2], row.xText, 'middle', TL);
+        tx([(cx[2] + cx[3]) / 2, mid - th / 2], row.yText, 'middle', TL);
+        if (!t.combineSizes) sizeLines(row.size, mid);
+        if (last) {
+          var gm = cellMid(r0, i);
+          if (t.combineTags) tx([(cx[0] + cx[1]) / 2, gm - th / 2], row.tag, 'middle', TL);
+          if (t.combineSizes) sizeLines(row.size, gm);
+          r0 = i + 1;
+        }
       }
     });
+    var y0 = y1 - Ht;
     if (R.dangling || R.rows.some(function (row) { return row.dangling; })) for (var dj = nTags; dj < out.length; dj++) out[dj].color = 'dangling';
     return { prims: out, box: { x0: x0, y0: y0, x1: x0 + W, y1: y1 }, tagBoxes: tagBoxes, rows: R.rows, origin: Os, originView: R.origin, dangling: R.dangling, colX: colX, rowY: rowY,
+      pieces: pieces.map(function (pc) { return { i0: pc.i0, i1: pc.i1, box: pc.box, rowY: pc.rowY }; }), noRoom: noRoom,
       text: t.punch ? 'Punch Table (' + R.rows.length + ' punch' + (R.rows.length === 1 ? '' : 'es') + ')' : 'Hole Table (' + R.rows.length + ' hole' + (R.rows.length === 1 ? '' : 's') + ')', punch: !!t.punch };
   }
   // (rfIR) htFreeSpot(sheetBox, W, H, want, k, ok) -> the top-left corner [x0, y1] of a W × H table nearest to `want`

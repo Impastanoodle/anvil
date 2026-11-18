@@ -715,7 +715,7 @@
         var had = Object.prototype.hasOwnProperty.call(d, 'side'), s0 = d.side;
         var p = placeDim(d, vw, k, pl, ob), pg = primGeo(p);
         if (had) d.side = s0; else delete d.side;   // (placeDim may turn it to the other side: the real pass decides again)
-        ob.texts = ob.texts.concat(pg.texts); ob.segs = ob.segs.concat(pg.segs);
+        ob.texts = ob.texts.concat(pg.texts); ob.segs = ob.segs.concat(pg.segs); ob.dimTexts = (ob.dimTexts || []).concat(pg.texts);
         var bx = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
         p.forEach(function (x) {
           var r = x.k === 'text' ? textRect(x) : x.a ? { x0: Math.min(x.a[0], x.b[0]), y0: Math.min(x.a[1], x.b[1]), x1: Math.max(x.a[0], x.b[0]), y1: Math.max(x.a[1], x.b[1]) } : null;
@@ -747,7 +747,7 @@
     htPre.forEach(function (it) { if (it.box) keepOut.push(it.box); (it.tagBoxes || []).forEach(function (b) { keepOut.push(b); }); });
     // flat-pattern views: bend notes (or Bend Table tags and the table) and the FLAT SIZE note, worked out before the
     // dimensions so those keep clear of them; a Bend Table goes on free paper (flatCtx: what it must keep clear of)
-    var flatPre = [], warnings = marksOff.slice(), flatCtx = { views: views, tb: tbRect, bom: bom, sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 }, taken: [], warnings: warnings };
+    var flatPre = [], warnings = marksOff.slice(), flatCtx = { views: views, tb: tbRect, bom: bom, sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 }, taken: [], warnings: warnings, blocks: tbBoxes.slice(1).concat(revBx ? [revBx] : []) };
     // (rfMV) a Hole Table longer than the sheet (a perforated panel's 600 holes) says so instead of quietly running off it
     htPre.forEach(function (it) {
       var b = it.box;
@@ -805,7 +805,7 @@
       var d = dims[di], vw = views.filter(function (w) { return w.view.id === d.view; })[0];
       if (!vw) return;
       var p = placeDim(d, vw, k, placed, obs), pg = primGeo(p);
-      obs.texts = obs.texts.concat(pg.texts); obs.segs = obs.segs.concat(pg.segs);
+      obs.texts = obs.texts.concat(pg.texts); obs.segs = obs.segs.concat(pg.segs); obs.dimTexts = (obs.dimTexts || []).concat(pg.texts);
       placedPrims[di] = p; placed.push(d);
     });
     dims.forEach(function (d, di) {
@@ -875,7 +875,10 @@
     });
     var holeTables = htPre.map(function (it) {
       it.prims.forEach(function (x) { prims.push(x); });
+      // (rfOJ) a table that found no clear paper says so, as a Bend Table does
+      if (it.noRoom && it.box && !(it.box.y0 < b1 - 1e-9 || it.box.x0 < b1 - 1e-9 || it.box.x1 > S[0] - b1 + 1e-9 || it.box.y1 > S[1] - b1 + 1e-9)) { var vn = (views.filter(function (x) { return x.view.id === it.view; })[0] || { view: {} }).view.name || 'a view'; warnings.push((it.punch ? 'Punch' : 'Hole') + ' Table of ' + vn + ': no clear paper for its ' + (it.rows || []).length + ' rows, so it covers part of the drawing. Right-click it ▸ Split to put it in columns, drag it, or use a larger sheet.'); }
       return { id: it.id, view: it.view, box: it.box, text: it.text, punch: !!it.punch, dangling: !!it.dangling, missing: !!it.missing, origin: it.origin || null, colX: it.colX || null, rowY: it.rowY || null,
+        pieces: it.pieces || null, split: (doc.holeTables || []).filter(function (t) { return t.id === it.id; }).map(function (t) { return t.split || null; })[0] || null, noRoom: !!it.noRoom,
         rows: (it.rows || []).map(function (r) { return { tag: r.tag, x: r.x, y: r.y, xText: r.xText, yText: r.yText, size: r.size.join(' '), lines: r.size.slice(), c: r.c.slice(), r: r.r, dangling: r.dangling }; }) };
     });
     sheetAreaFills(doc, prims, areaFills, HATCH * k, k);
@@ -1156,8 +1159,18 @@
     var yTop = box.y0 - (o.flatDims ? 20 : 8) * k, cx = (box.x0 + box.x1) / 2;
     if (v.flatSize != null ? !!v.flatSize : o.flatSizeNote) {
       var W = fd.bbox.umax - fd.bbox.umin, H = fd.bbox.vmax - fd.bbox.vmin, ts = 'FLAT SIZE ' + D.numText(W, units, null) + ' × ' + D.numText(H, units, null);
-      item('size', 'flatSize', ts, [{ k: 'text', p: [cx, yTop - noteH() * k], h: noteH() * k, text: ts, anchor: 'middle', layer: 'NOTES', rot: 0 }], { w: W, h: H });
-      yTop -= (noteH() + 5) * k;
+      // (rfOJ) under the view unless that is on the title block, the blocks beside it (UNLESS OTHERWISE SPECIFIED,
+      // COMPANY), a Revision Table or past the border (a 1:1 flat on ANSI B with its overall dimensions and a Bend
+      // Table: the note was printed across the COMPANY cell): then over the view, past its own top dimensions
+      var fsP = [cx, yTop - noteH() * k], fsR = rectOfText(fsP, noteH() * k, ts, 0, 'middle');
+      var fsHit = function (r) { return r.y0 < ctx.sheet.y0 || [ctx.tb].concat(ctx.blocks || [], ctx.bom ? [ctx.bom.box] : []).some(function (o) { return o && r.x0 < o.x1 && o.x0 < r.x1 && r.y0 < o.y1 && o.y0 < r.y1; }); };
+      var fsUp = false;
+      if (fsHit(fsR)) {
+        var upP = [cx, box.y1 + 4 * k], upR = rectOfText(upP, noteH() * k, ts, 0, 'middle');
+        if (!fsHit(upR) && upR.y1 <= ctx.sheet.y1) { fsP = upP; fsUp = true; }
+      }
+      item('size', 'flatSize', ts, [{ k: 'text', p: fsP, h: noteH() * k, text: ts, anchor: 'middle', layer: 'NOTES', rot: 0 }], { w: W, h: H, above: fsUp || undefined });
+      if (!fsUp) yTop -= (noteH() + 5) * k;
     }
     // (rfIW) a flat drawn at another scale than the sheet's says so under its notes: SCALE 1 : 2
     if (D.viewScaleNote(v, doc.sheet && doc.sheet.scale)) {
@@ -1463,13 +1476,25 @@
       delete d.outer;
     }
     if (!obs || !d.auto || !/^(h|v)$/.test(d.kind) || !(d.side === 1 || d.side === -1) || d.tx != null || d.flip || d.tside != null || d.off != null || d.at != null) return p;
-    if (!onPaperBlock(p, obs, k)) return p;
-    var s0 = d.side;
+    // (rfOJ) a model item whose value lands on a value placed before it (the gap between two views: the Front view's
+    // flange height 1.500 on the Right view's 1.340, Model Items on a press-brake bracket) goes to the view's other side
+    // when that side is clear of values, blocks and the border
+    var blocked = onPaperBlock(p, obs, k), meets = !blocked && textsMeet(p, obs.dimTexts || [], 0.3 * k);   // (only other dimensions' values: the dry run that places a Bend Table sees those too)
+    if (!blocked && !meets) return p;
+    var s0 = d.side, across0 = acrossView(p, vw.box, k);
     d.side = -s0;
     var q = placeDim0(d, vw, k, placed, obs);
     // (rfIW) only when its extension lines stay out of the view: points on the far edge would draw them across the
-    // part (and the dimension would cover the view, taking the clicks that drag it: smoke rfQ)
-    if (!onPaperBlock(q, obs, k) && !acrossView(q, vw.box, k)) return q;
+    // part (and the dimension would cover the view, taking the clicks that drag it: smoke rfQ). (rfOJ) Unless they cross
+    // it on this side too (a hole's location from an edge: its extension line runs from the hole centre either way): a
+    // third row of hole locations over a Top view ran past the sheet's border, and goes under the view instead
+    if (!blocked) {
+      // (rfOJ) a flip for a value it met: only to a side that is clearer, with no line through a value or a table's
+      // text there (a Bend Table placed on free paper by the dry run, which does not see flat-view texts: smoke rfJR)
+      var gq = primGeo(q), segOnText = gq.segs.some(function (sg) { return obs.texts.some(function (o) { return segHitsRect(sg[0], sg[1], o); }); });
+      if (!segOnText && !onPaperBlock(q, obs, k) && (!acrossView(q, vw.box, k) || across0) && !textsMeet(q, obs.texts, 0.3 * k) &&
+        clashCost(gq, obs, k, d.view, false) < clashCost(primGeo(p), obs, k, d.view, false)) return q;
+    } else if (!onPaperBlock(q, obs, k) && (!acrossView(q, vw.box, k) || across0) && !textsMeet(q, obs.texts, 0.3 * k)) return q;
     d.side = s0;
     return placeDim0(d, vw, k, placed, obs);
   }
@@ -2194,7 +2219,44 @@
     return pos === 'bottom' ? m[1] + '\\X[' + m[2] + ']' : '[' + m[2] + ']\\X' + m[1];
   }
   function dxfVersionOf(v) { return /^(r?2000|ac1015|1015)$/i.test(String(v || '').trim()) ? 'R2000' : 'R12'; }
+  // (rfOJ) Scale output 1:1 (SolidWorks: Options ▸ Export ▸ DXF/DWG ▸ Enable 1:1 scale output): the sheet written
+  // larger by 1 / its scale, so a view drawn at the sheet's scale lands in the DXF at the part's true size (a laser
+  // blank at 1 : 4 on ANSI B comes out 20 in long, not 5) and the border, title block, texts and arrows grow with it.
+  // scaleSheet(sheet, f) -> a copy of what the writers read (prims, dims' DXF points, block inserts and definitions,
+  // the sheet size) with every length times f; measured values (a dimension's value, angles) stay as they are.
+  var SCALE_SKIP = { scale: 1, dash: 1, rgb: 1, color: 1, lw: 1, rot: 1, angle: 1, a0: 1, a1: 1, t0: 1, t1: 1, value: 1, ratio: 1, fillAngle: 1, view: 1, dimIx: 1, rows: 1, cols: 1, offs: 1, period: 1 };
+  var SCALE_LEN = { r: 1, h: 1, lead: 1, sp: 1, fillGap: 1, rx: 1, ry: 1, x0: 1, x1: 1, y0: 1, y1: 1, w: 1, len: 1 };
+  function scaleSheet(sheet, f) {
+    var memo = [], copies = [];
+    function cp(o, key) {
+      if (o == null || typeof o !== 'object') return typeof o === 'number' && SCALE_LEN[key] ? o * f : o;
+      if (SCALE_SKIP[key]) return o;
+      var i = memo.indexOf(o);
+      if (i >= 0) return copies[i];
+      if (Array.isArray(o)) {
+        if (o.length && o.every(function (x) { return typeof x === 'number'; })) { var a = o.map(function (x) { return x * f; }); memo.push(o); copies.push(a); return a; }
+        var arr = []; memo.push(o); copies.push(arr);
+        o.forEach(function (x) { arr.push(cp(x, key)); });
+        return arr;
+      }
+      var out = {}; memo.push(o); copies.push(out);
+      Object.keys(o).forEach(function (q) { out[q] = typeof o[q] === 'function' ? o[q] : cp(o[q], q); });
+      return out;
+    }
+    var s = Object.assign({}, sheet);
+    s.size = sheet.size.map(function (x) { return x * f; });
+    s.prims = sheet.prims.map(function (p) { return cp(p, null); });
+    s.dims = (sheet.dims || []).map(function (d) { if (!d || !d.dxf) return d; var c = Object.assign({}, d); c.dxf = cp(d.dxf, null); return c; });
+    if (sheet.inserts) s.inserts = sheet.inserts.map(function (ins) { var c = cp(ins, null); c.scale = (+ins.scale || 1) * f; c.p = ins.p.map(function (x) { return x * f; }); return c; });
+    if (sheet.blockDefs) { s.blockDefs = {}; Object.keys(sheet.blockDefs).forEach(function (n) { s.blockDefs[n] = sheet.blockDefs[n]; }); }   // (an INSERT scales its block)
+    s.scaled11 = f;
+    return s;
+  }
+  // the factor Scale output 1:1 writes the sheet at: 1 / the sheet scale (1 when the sheet is 1 : 1)
+  function scale11Of(sheet) { var sc = sheet && sheet.scale; var v = Array.isArray(sc) ? +sc[0] / +sc[1] : +sc; return v > 0 && isFinite(v) ? 1 / v : 1; }
   function toDXF(sheet, opts) {
+    // (rfOJ) opts.scale11: true (the sheet scale) or a factor: the sheet written at the part's true size
+    if (opts && opts.scale11 && !sheet.scaled11) { var f11 = opts.scale11 === true ? scale11Of(sheet) : +opts.scale11; if (f11 > 0 && Math.abs(f11 - 1) > 1e-12) sheet = scaleSheet(sheet, f11); }
     var r2000 = dxfVersionOf(opts && opts.version) === 'R2000';
     var L = [];
     // (rfT) R2000: every linear / aligned / diameter / radius (rfV: and angle) dimension is a true DIMENSION entity, its drawn lines,
@@ -2684,7 +2746,7 @@
     return { W: P(sheet.size[0]), H: P(sheet.size[1]), content: c.join('\n') };
   }
 
-  D.compute = compute; D.toSVG = toSVG; D.svgParts = svgParts; D.toDXF = toDXF; D.toPDF = toPDF; D.textRect = textRect; D.STROKE = STROKE; D.plainText = plainText;
+  D.compute = compute; D.toSVG = toSVG; D.svgParts = svgParts; D.toDXF = toDXF; D.scaleSheet = scaleSheet; D.scale11Of = scale11Of; D.toPDF = toPDF; D.textRect = textRect; D.STROKE = STROKE; D.plainText = plainText;
   _.dimPrims = dimPrims;   // (rfDD: the Smart Dimension preview draws the dimension as it will be placed)
   _.segHitsRect = segHitsRect;   // (rfJB: Hole Table tags keep off the view's edges and bend lines)
   _.bzAt = bzAt;   // (rfMS: a smooth curve piece's point at t)

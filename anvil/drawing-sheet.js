@@ -565,7 +565,7 @@
     if (par.kind === 'detail') throw new Error('Detail views of detail views are not supported');
     // (rfPH) a flat-pattern view has detail views too (SolidWorks: a notch or a corner relief of the blank at 2 : 1),
     // with the flat's bend lines and etch marks inside the circle or profile (drawing-views.js flatDetailLines)
-    if (par.kind === 'flat' && opts.pts) throw new Error('A detail of a flat-pattern view takes a circle or a rectangle profile');
+    // (rfOJ) and a sketched profile (opts.pts): the blank, bend lines and etch marks clipped to the polygon (was refused)
     if (par.kind === 'empty') throw new Error('An empty view has no model to show in a detail view');
     // (rfZ) a Profile (opts.shape 'profile', a, b: a rectangle's corners) instead of the circle; opts.style (Per standard /
     // Broken / Leader / No leader / Connected) and opts.outline ('full' | 'jagged'): see drawing-views.js
@@ -2009,6 +2009,33 @@
   // sees it.
   function bomColId(col) { return col.type === 'property' ? 'prop:' + col.prop : col.type; }
   function bomRows(model, mesh, bom, opts) {
+    return bomSorted(bomRows1(model, mesh, bom, opts), bom);
+  }
+  // (rfOJ) BOM Sort (SolidWorks: right-click the table ▸ Sort): bom.sort = { col: column id ('partNumber', 'description',
+  // 'qty', 'item', 'prop:<name>'), dir: 'asc' | 'desc', keepItems }: the rows in that column's order (numbers as numbers,
+  // texts A-Z, ties in assembly order), then numbered 1, 2 … down the table again unless keepItems (Do not change item
+  // numbers: each row keeps the number the assembly order gave it). A typed ITEM NO. is kept either way. Balloons
+  // read the item numbers from the rows, so they follow. An indented BOM is not sorted (its numbers are levels).
+  function bomSortValue(r, id) {
+    var c = id === 'item' || id === 'partNumber' || id === 'description' || id === 'qty' ? { type: id } : /^prop:/.test(id) ? { type: 'property', prop: id.slice(5) } : null;
+    var v = c ? bomCell(r, c) : '';
+    return v == null ? '' : v;
+  }
+  function bomCompare(a, b) {
+    var na = typeof a === 'number' ? a : /^\s*-?\d+(\.\d+)?\s*$/.test(String(a)) ? +a : NaN, nb = typeof b === 'number' ? b : /^\s*-?\d+(\.\d+)?\s*$/.test(String(b)) ? +b : NaN;
+    if (isFinite(na) && isFinite(nb)) return na - nb;
+    var sa = String(a).toUpperCase(), sb = String(b).toUpperCase();
+    return sa < sb ? -1 : sa > sb ? 1 : 0;
+  }
+  function bomSorted(rows, bom) {
+    var so = bom && bom.sort;
+    if (!so || !so.col || rows.length < 2 || (bom.type === 'indented')) return rows;
+    var dir = so.dir === 'desc' ? -1 : 1, ov = bom.overrides || {};
+    var out = rows.map(function (r, i) { return { r: r, i: i, v: bomSortValue(r, String(so.col)) }; }).sort(function (x, y) { return dir * bomCompare(x.v, y.v) || x.i - y.i; }).map(function (x) { return x.r; });
+    if (!so.keepItems) out.forEach(function (r, i) { if (!Object.prototype.hasOwnProperty.call(ov, r.key + '|item')) r.item = i + 1; });
+    return out;
+  }
+  function bomRows1(model, mesh, bom, opts) {
     var rows = bomRows0(model, mesh, bom, opts), ov = bom && bom.overrides;
     if (!ov || !rows.length) return rows;
     rows.forEach(function (r) {
@@ -2203,8 +2230,14 @@
       var rekey = function (views) { (views || []).forEach(function (v) { (v.balloons || []).forEach(function (b) { if (map[b.key]) b.key = map[b.key]; (b.stack || []).forEach(function (s) { if (map[s.key]) s.key = map[s.key]; }); }); }); };
       rekey(doc.views);
       (doc.sheets || []).forEach(function (s) { if (s && s.views && s.views !== doc.views) rekey(s.views); });
-      // a row's typed cells follow its key too
-      if (doc.bom.overrides) Object.keys(doc.bom.overrides).forEach(function (k) { var i = k.lastIndexOf('|'), rk = k.slice(0, i); if (map[rk]) { doc.bom.overrides[map[rk] + k.slice(i)] = doc.bom.overrides[k]; delete doc.bom.overrides[k]; } });
+      // a row's typed cells follow its key too, on every sheet's BOM (rfOJ: a BOM on a sheet that is not the active one
+      // kept its typed cells under the old key, so they fell off once the embedded part's key changed)
+      var rekeyOv = function (bom) { var ov = bom && bom.overrides; if (ov) Object.keys(ov).forEach(function (k) { var i = k.lastIndexOf('|'), rk = k.slice(0, i); if (map[rk]) { ov[map[rk] + k.slice(i)] = ov[k]; delete ov[k]; } }); };
+      rekeyOv(doc.bom);
+      var base = doc._sheetBase || doc;
+      if (base !== doc && base.bom && base.bom !== doc.bom) rekeyOv(base.bom);
+      (base.sheets || []).forEach(function (s) { if (s && s.bom && s.bom !== doc.bom && s.bom !== base.bom) rekeyOv(s.bom); });
+      if (base !== doc) { if (base.views && base.views !== doc.views) rekey(base.views); }
       out.key = map[r.key] || out.key;
     }
     return out;

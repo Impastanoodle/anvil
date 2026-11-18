@@ -968,10 +968,20 @@
     if (App.fileName && fileBase(App.fileName)) return fileBase(App.fileName);
     return null;
   }
+  // (rfOJ) a drawing of a part shown in a configuration that is not its default (the first one) names its exports
+  // after it too, PART_CONFIG.pdf, as the flat DXF does since rfPP (ui-commands.js dxfCfgTag): the three sizes of a
+  // Design Table family printed to one PART.pdf. Not when the name is the drawing's own saved file (it names itself).
+  function cfgTag() {
+    var K = typeof Kernel !== 'undefined' ? Kernel : null, m = App.model;
+    if (!K || !m || !K.configurationList || !K.activeConfiguration) return '';
+    var list = K.configurationList(m) || [], a = list.length > 1 ? K.activeConfiguration(m) : null;
+    if (!a || a.name == null || !list[0] || String(list[0].name) === String(a.name)) return '';
+    return '_' + String(a.name).replace(/[^\w\-]+/g, '_');
+  }
   function safeName() {
-    var nm = savedDocName();
-    if (nm) return nm.replace(/[\\\/:*?"<>|\x00-\x1f]+/g, '_').trim() || 'Drawing';
-    return (doc().name + '_' + (App.model.name || 'part')).replace(/[^\w\-]+/g, '_');
+    var nm = savedDocName(), dc = doc(), dp = App.drawingPath, own = !!(dp && dp.path && dc && dp.name === dc.name && fileBase(dp.path));
+    if (nm) return (nm.replace(/[\\\/:*?"<>|\x00-\x1f]+/g, '_').trim() || 'Drawing') + (own ? '' : cfgTag());
+    return (doc().name + '_' + (App.model.name || 'part') + cfgTag()).replace(/[^\w\-]+/g, '_');
   }
   // exportAs('dxf', { version }): the export dialog has a Version choice, R12 (AC1009) or R2000 (AC1015, true
   // ellipses and line weights; what AutoCAD 2000 and later, and the DWG converters, read natively); the choice is
@@ -990,7 +1000,7 @@
     if (kind === 'svg') UI.exportDialog('Save Drawing as SVG', safeName() + '.svg', Drawing.toSVG(sh), 'image/svg+xml');
     else if (kind === 'dxf') {
       var ver = D.dxfVersion = opts && opts.version === 'R2000' ? 'R2000' : opts && opts.version ? 'R12' : D.dxfVersion || 'R12';
-      UI.exportDialog('Save Drawing as DXF (one layer per view)', safeName() + '.dxf', Drawing.toDXF(sh, { version: ver, hatch: true }), 'application/dxf');
+      UI.exportDialog('Save Drawing as DXF (one layer per view)', safeName() + '.dxf', Drawing.toDXF(sh, { version: ver, hatch: true, scale11: Drawing.docOptions(doc()).dxf11 }), 'application/dxf');
       var ta = document.querySelector('#modal textarea');
       if (ta) {
         var sel = el('select', { id: 'dw-dxf-version', title: 'DXF version' });
@@ -1010,7 +1020,7 @@
   // the writer throws or did not load). Returns a promise of { name, bytes } (null when nothing was saved).
   var DWG_NOTE = 'DWG needs the local server\'s converter (dwg-writer.js did not load)';
   function saveDWG(sh) {
-    var text = Drawing.toDXF(sh, { version: 'R2000', hatch: true }), name = safeName() + '.dwg';
+    var text = Drawing.toDXF(sh, { version: 'R2000', hatch: true, scale11: Drawing.docOptions(doc()).dxf11 }), name = safeName() + '.dwg';
     if (document.getElementById('modal') && !$('modal').hidden) UI.closeModal();
     var probe = UI.dwgConverter ? UI.dwgConverter() : Promise.resolve(null);
     UI.setStatus('Save Drawing as DWG…');
@@ -1166,6 +1176,8 @@
       if (props.x != null && props.y != null) { b.x = +props.x; b.y = +props.y; }
       if (props.type) b.type = Drawing.bomType(props.type);
       if (props.columns !== undefined) { if (props.columns && props.columns.length) b.columns = JSON.parse(JSON.stringify(props.columns)); else delete b.columns; }
+      // (rfOJ) sort: { col, dir: 'asc' | 'desc', keepItems } (Drawing.bomRows), null: back to the assembly order
+      if (props.sort !== undefined) { if (props.sort && props.sort.col) b.sort = { col: String(props.sort.col), dir: props.sort.dir === 'desc' ? 'desc' : 'asc', keepItems: !!props.sort.keepItems }; else delete b.sort; if (b.sort && !b.sort.keepItems) delete b.sort.keepItems; }
       dc.bom = b;
       syncBom(dc);
       if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units());
@@ -1218,9 +1230,24 @@
     });
     if (Object.keys(tb).length) dc.titleBlock = tb; else delete dc.titleBlock;
   }
+  // (rfOJ) Sort ▸ a column ascending / descending (SolidWorks: right-click the BOM ▸ Sort); the item numbers run down
+  // the sorted table again; Assembly order puts the rows (and numbers) back
+  function bomSortItems() {
+    var b = doc().bom || {}, cur = b.sort || null, cols = (D.sheet && D.sheet.bom && D.sheet.bom.columns) || [], out = [];
+    cols.forEach(function (c) {
+      var id = Drawing.bomColId(c);
+      if (id === 'item') return;
+      ['asc', 'desc'].forEach(function (dir) {
+        out.push({ label: c.title + (dir === 'asc' ? ' (A to Z, 0 to 9)' : ' (Z to A, 9 to 0)'), checked: !!(cur && cur.col === id && (cur.dir || 'asc') === dir), action: function () { setBom({ sort: { col: id, dir: dir } }); UI.setStatus('Bill of Materials sorted by ' + c.title + (dir === 'asc' ? ', ascending' : ', descending') + '; item numbers follow the new order.'); } });
+      });
+    });
+    out.push({ sep: true }, { label: 'Assembly order', checked: !cur, action: function () { setBom({ sort: null }); UI.setStatus('Bill of Materials in assembly order.'); } });
+    return out;
+  }
   function bomMenu() {
     return [
       { label: 'Properties…', action: cmdBOM },
+      { label: 'Sort', items: bomSortItems() },
       { label: 'Delete', key: 'Del', action: function () { setBom(null); D.sel = null; render(); } }
     ];
   }
@@ -1939,6 +1966,8 @@
     // (Phase 9) Units: decimal places and, in inches, fractions; Sheet Metal: the flat-pattern view's annotations
     var fd = el('input', { type: 'checkbox', id: 'dw-opt-flatdims' }), fs = el('input', { type: 'checkbox', id: 'dw-opt-flatsize' }), fr = el('input', { type: 'checkbox', id: 'dw-opt-frac' });
     var bn = el('select', { id: 'dw-opt-bend' }), pr = el('select', { id: 'dw-opt-prec' }), dn = el('select', { id: 'dw-opt-denom' }), inch = units() === 'in';
+    var d11 = el('input', { type: 'checkbox', id: 'dw-opt-dxf11' });   // (rfOJ)
+    d11.checked = o.dxf11;
     fd.checked = o.flatDims; fs.checked = o.flatSizeNote; fr.checked = o.fractions;
     BEND_NOTE_OPTIONS.forEach(function (x) { var op = el('option', { value: x[0], text: x[1] }); if (x[0] === o.bendNotes) op.selected = true; bn.appendChild(op); });
     // rfIF: None … .12345678 as SolidWorks lists them, after the default for the units
@@ -1990,14 +2019,15 @@
     ]).concat([
       el('div', { class: 'dw-tb-head', text: 'Sheet Metal ▸ Flat-pattern views' }),
       chk(fd, 'Overall dimensions (blank width and height)'), chk(fs, 'FLAT SIZE note'),
-      el('label', { text: 'Bend notes' }), bn
+      el('label', { text: 'Bend notes' }), bn,
+      el('div', { class: 'dw-tb-head', text: 'Export ▸ DXF / DWG' }), chk(d11, 'Scale output 1:1 (the views at the true size of the part)')
     ]));
     UI.showModal({ title: 'Document Properties - Detailing', body: body, buttons: [
       { label: 'OK', primary: true, id: 'dw-opt-ok', action: function () { UI.closeModal(); var extra = DW.docPropsExtra ? DW.docPropsExtra() : {}; DW.docPropsExtra = null; setDocOptions(Object.assign(extra, { autoCenterMarks: cm.checked, autoCenterlines: cl.checked, extLines: ex.checked, markSize: +sz.value, balloonQty: bq.checked,
         flatDims: fd.checked, flatSizeNote: fs.checked, bendNotes: bn.value, dimPrec: pr.value === '' ? '' : +pr.value, tolPrec: tpr.value === '' ? '' : +tpr.value, fractions: inch ? fr.checked : o.fractions, fracDenom: +dn.value || 64,
         dual: duOn.checked ? true : '', dualShowUnits: duSU.checked ? true : '', dualPos: dualPosOf(duPos) === 'bottom' ? '' : dualPosOf(duPos),   // (rfOC: defaults are not stored)
         dualUnits: duU.value === (inch ? 'mm' : 'in') ? '' : duU.value, dualPrec: +duP.value === (duU.value === 'mm' ? 2 : 3) ? '' : +duP.value,
-        chamferText: chf.value === 'auto' ? '' : chf.value })); } },   // (rfPD)
+        chamferText: chf.value === 'auto' ? '' : chf.value, dxf11: d11.checked ? true : '' })); } },   // (rfPD; rfOJ dxf11)
       { label: 'Cancel', action: UI.closeModal }
     ] });
   }
@@ -3479,10 +3509,33 @@
       values: { tagStyle: t.tagStyle || 'alpha', combineTags: !!t.combineTags, combineSizes: !!t.combineSizes, prec: t.prec != null ? String(t.prec) : '' }, groups: htGroups(true),
       onOK: function (v) { if (tryEdit(function (dc) { Drawing.editHoleTable(dc, id, htProps(v)); })) UI.setStatus(nm + ' changed.'); } });
   }
-  function holeTableMenu(id) {
+  // (rfOJ) the data row of sheet hole table st under paper point p (its index in the table's rows), or -1
+  function htRowAt(st, p) {
+    var out = -1;
+    (st && st.pieces || []).forEach(function (pc) {
+      if (!pc.box || p[0] < pc.box.x0 || p[0] > pc.box.x1) return;
+      for (var i = pc.i0; i < pc.i1; i++) { var hi = pc.rowY[i - pc.i0 + 1], lo = pc.rowY[i - pc.i0 + 2]; if (p[1] <= hi && p[1] >= lo) out = i; }
+    });
+    return out;
+  }
+  // (rfOJ) Split ▸ Horizontally Above / Below (SolidWorks' right-click on a table row): the rows from there on stand
+  // to the right as a new piece with its own header; Split ▸ Join puts the pieces back in one table. One undo step.
+  function htSplit(id, at, join) {
     var t = Drawing.findHoleTable(doc(), id);
+    if (!t) return false;
+    var l = join ? [] : (t.split || []).concat([at]);
+    var ok = tryEdit(function (dc) { Drawing.editHoleTable(dc, id, { split: l }); });
+    if (ok) UI.setStatus(join ? 'Hole Table joined again.' : 'Hole Table split: rows ' + (at + 1) + ' on stand in a new column to its right (drag the table to move it).');
+    return ok;
+  }
+  function holeTableMenu(id, p) {
+    var t = Drawing.findHoleTable(doc(), id), st = D.sheet && (D.sheet.holeTables || []).filter(function (x) { return x.id === id; })[0], r = p && st ? htRowAt(st, p) : -1, n = st ? st.rows.length : 0;
     return [
       { label: 'Properties…', action: function () { cmdHoleTableProps(id); } },
+      { label: 'Split', items: [
+        { label: 'Horizontally Above', disabled: !(r > 0), action: function () { htSplit(id, r); } },
+        { label: 'Horizontally Below', disabled: !(r >= 0 && r < n - 1), action: function () { htSplit(id, r + 1); } },
+        { label: 'Join', disabled: !(t && t.split && t.split.length), action: function () { htSplit(id, 0, true); } }] },
       { label: 'Follow the view (move beside it)', disabled: !t || t.x == null, action: function () { tryEdit(function (dc) { Drawing.editHoleTable(dc, id, { x: null }); }); } },
       { label: 'Delete', key: 'Del', action: function () { deleteHoleTable(id); } }
     ];
@@ -3542,7 +3595,7 @@
     if (!t) return;
     e.preventDefault(); e.stopPropagation();
     D.sel = { kind: 'holetable', id: t.id }; drawOverlay(); DW.renderTree();
-    UI.showMenu(e.clientX, e.clientY, holeTableMenu(t.id));
+    UI.showMenu(e.clientX, e.clientY, holeTableMenu(t.id, DW.toPaper(e)));
   }, true);
   // the overlay: the hole table under the cursor / selected, the Hole Table tool's picks, the Revision Cloud being drawn
   function rfANOverlay(g, H, node) {

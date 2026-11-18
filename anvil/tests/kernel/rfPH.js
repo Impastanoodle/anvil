@@ -226,7 +226,7 @@
       return 'bend line ' + (top - bot).toFixed(3) + ' in on paper';
     });
 
-    test('rfPH: a rectangle-profile detail of the flat round the DOWN bend draws it dashed on BEND_DOWN; a detail round the UP bend follows a change of the part (base 4 -> 4.2 wide: its bend line .2 to the right); a sketched polygon profile is refused on a flat', function () {
+    test('rfPH: a rectangle-profile detail of the flat round the DOWN bend draws it dashed on BEND_DOWN; a detail round the UP bend follows a change of the part (base 4 -> 4.2 wide: its bend line .2 to the right); a sketched polygon profile on a flat is built (rfOJ; refused before)', function () {
       var q = rfPHBracket(), db = q.w.flat.bends.filter(function (b) { return !b.up; })[0];
       var dv = DW.addDetailView(q.doc, q.r.mesh, q.view.id, { shape: 'profile', a: [db.a[0] - 0.5, -1.0], b: [db.a[0] + 0.5, 0.2] });
       q.compute();
@@ -249,9 +249,9 @@
       near(ub2.a[0] - ub.a[0], 0.2, 1e-6, 'the bend line moved .2 on the part');
       near(ul2[0].a[0] - w2.toSheet([ub2.a[0], 0])[0], 0, 1e-9, 'drawn on the moved bend line');
       assert(Math.abs(ul2[0].a[0] - x0) > 0.1, 'moved on paper: ' + x0 + ' -> ' + ul2[0].a[0]);
-      var threw = '';
-      try { DW.addDetailView(q.doc, q.r.mesh, q.view.id, { pts: [[0, 0], [1, 0], [1, -1]] }); } catch (e) { threw = e.message; }
-      assert(/circle or a rectangle profile/.test(threw), 'refused: ' + threw);
+      // (rfOJ) a sketched polygon profile on a flat is built now (was refused); its linework is checked in kernel rfOJ
+      var pv = DW.addDetailView(q.doc, q.r.mesh, q.view.id, { pts: [[0, 0], [1, 0], [1, -1]] });
+      assert(pv && pv.detail.pts && pv.detail.pts.length === 3, 'a polygon detail of the flat');
       return 'DOWN line ' + Math.abs(dl[0].a[1] - dl[0].b[1]).toFixed(3) + ' on paper';
     });
   })();
