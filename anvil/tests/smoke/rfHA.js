@@ -253,7 +253,7 @@
     return 'ok';
   });
 
-  step('rfHA: a double-click on a FeatureManager feature row still opens Edit Feature', async function () {
+  step('rfHA: a double-click on a FeatureManager feature row shows its dimensions (rfPE, SolidWorks; it opened Edit Feature), not the body selection of a double-click on the solid', async function () {
     await anvil.newPart(); await idle();
     await anvil.run(RFHA_BOX); await idle();
     var f = UI.App.model.features.filter(function (x) { return x.type !== 'sketch'; })[0];
@@ -261,7 +261,7 @@
     assert(row, 'the tree row of ' + f.name);
     row.dispatchEvent(new W.MouseEvent('dblclick', { bubbles: true }));
     await idle();
-    assert(UI.hasPM(), 'Edit Feature opened from the tree');
-    UI.pmCancel(); await idle();
+    assert(!UI.hasPM() && UI.featureDimsShown() === f.id && !(UI.App.sel && UI.App.sel.kind === 'body'), 'the dimensions of ' + f.name + ' shown from the tree');
+    if (UI.hasPM()) UI.pmCancel(); await idle();
     return 'ok';
   });

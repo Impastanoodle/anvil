@@ -332,8 +332,8 @@
       return {
         component: c,
         start: function () { UI.setStatus('Exploding ' + c.name + '\u2026'); },
-        move: function (q) { last = q; if (!raf) raf = requestAnimationFrame(show); },
-        end: function (q) { if (raf) { cancelAnimationFrame(raf); raf = 0; } last = q; show(); }
+        move: function (q) { last = q; if (!raf) raf = UI.beforeFrame ? UI.beforeFrame(show) : requestAnimationFrame(show); },   // rfPE: in the frame that draws it
+        end: function (q) { if (raf) { if (UI.beforeFrame) UI.cancelBeforeFrame(raf); else cancelAnimationFrame(raf); raf = 0; } last = q; show(); }
       };
     }
     // pattern instances follow their seed: dragging one is refused
@@ -432,9 +432,9 @@
     return {
       component: c, smartMate: true,
       start: function () { UI.setStatus('SmartMates: drag ' + c.name + ' onto a face of another component.'); },
-      move: function (q) { last = q; if (!raf) raf = requestAnimationFrame(show); },
+      move: function (q) { last = q; if (!raf) raf = UI.beforeFrame ? UI.beforeFrame(show) : requestAnimationFrame(show); },   // rfPE: in the frame that draws it
       end: function (q) {
-        if (raf) { cancelAnimationFrame(raf); raf = 0; }
+        if (raf) { if (UI.beforeFrame) UI.cancelBeforeFrame(raf); else cancelAnimationFrame(raf); raf = 0; }
         last = q;
         var o = offer(q) || (cur && cur.ok ? cur : null);
         if (UI.asmPose.active()) UI.asmPose.end();   // the rebuild below draws the mated result in the same frame
@@ -1827,6 +1827,8 @@
       if (popup !== p || kind !== 'ctx') return;
       var r = box.getBoundingClientRect(), dx = Math.max(r.left - e.clientX, 0, e.clientX - r.right), dy = Math.max(r.top - e.clientY, 0, e.clientY - r.bottom), d = Math.hypot(dx, dy);
       box.classList.toggle('far', d > 40);
+      // rfPE: it fades as the pointer goes (SolidWorks), not in one step at 40 px: full within 16 px, a third by 130 px
+      box.style.opacity = d <= 16 ? '' : String(Math.max(0.3, 1 - (d - 16) / 170).toFixed(2));
       if (d > 180) closePopup('away');
     };
     render();
@@ -1885,6 +1887,8 @@
       ]);
     }, {});
   };
+  // rfPE: the part's context toolbar (ui-commands.js UI.partContextToolbar) is this pop-up, kind 'ctx', with its items
+  UI.ctxToolbarShow = function (at, label, items) { return showPopup(at, 'ctx', label, items, {}); };
   UI.asmClosePopup = function (kind) { if (popup && (!kind || popup.kind === kind)) closePopup('closed'); };
   UI.asmPopup = function () { return popup ? { kind: popup.kind, el: popup.el, buttons: [].map.call(popup.el.querySelectorAll('button'), function (b) { return b.getAttribute('data-act'); }) } : null; };
   UI.asmFlippedAlignment = flippedAlignment;
@@ -1925,7 +1929,7 @@
     var r = baseSelChanged ? baseSelChanged.apply(this, arguments) : undefined;
     if (popup && popup.kind === 'ctx') closePopup('selection');
     // a left click in the graphics area that selected a component (not a drag, not a tree click)
-    if (lastUp && lastUp.button === 0 && lastUp.click && performance.now() - lastUp.t < 400 && App.sel && !App.sel2 && !App.sel.mate) { ctxToolbar(); if (isAsm()) revealOwner(); }
+    if (lastUp && lastUp.button === 0 && lastUp.click && performance.now() - lastUp.t < 400 && App.sel && !App.sel2 && !App.sel.mate) { ctxToolbar(); if (isAsm()) revealOwner(); else if (UI.partContextToolbar) UI.partContextToolbar(viewportClient(null)); }   // rfPE: a part's face too
     return r;
   };
   // r13/asmui13: a pop-up belongs to the document it was opened in (it stayed up over the next document opened)
@@ -2207,7 +2211,7 @@
       if (ins !== s || s.fixed || e.buttons) return;
       last = vp(e);
       if (raf) return;
-      raf = requestAnimationFrame(function () {
+      raf = (UI.beforeFrame ? UI.beforeFrame : function (fn) { return requestAnimationFrame(fn); })(function () {   // rfPE: placed in the frame that draws it
         raf = 0;
         if (ins !== s || !last) return;
         var p = insertTarget(last[0], last[1]);

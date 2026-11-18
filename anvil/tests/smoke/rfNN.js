@@ -620,8 +620,8 @@
         var ok = rfNNOk();
         D.querySelector('#pm .pm-ok').click(); await wait(30); await idle();
         out.push(cmds[i][0] + ': ' + (ok.grey ? 'grey "' + ok.title + '"' : 'NOT GREY') + (UI.hasPM() ? ', stays' : ', closed') + ', features +' + (UI.App.model.features.length - n0));
-        // Unfold with nothing picked is defined (placeholders: the base face fixed, every bend): it adds the Unfold
-        if (cmds[i][0] !== 'Unfold') assert(ok.grey && ok.title && UI.App.model.features.length === n0, cmds[i][0] + ' with nothing picked: ' + out[out.length - 1]);
+        // rfPE: Unfold too waits for its fixed face and bends, as SolidWorks (it unfolded every bend about the base face)
+        assert(ok.grey && ok.title && UI.App.model.features.length === n0, cmds[i][0] + ' with nothing picked: ' + out[out.length - 1]);
         if (UI.hasPM()) UI.pmCancel();
       }
       rfNNjob.gOut = out;

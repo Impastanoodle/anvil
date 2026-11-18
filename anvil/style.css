@@ -2720,3 +2720,12 @@ body.tree-reorder-no, body.tree-reorder-no * { cursor: not-allowed !important; }
 .fm-flyout .ti { cursor: pointer; }
 .fm-flyout .fly-head .nm { font-weight: 600; }
 #tree .ti.hidden-item .nm { opacity: 0.6; font-style: italic; }
+
+/* rfPE (lane treeedit): the Mastercam profile's dimension text looked hollow. Its ground runs from #141414 down to
+   #c0c0c0, so the dark text keeps a light casing for the dark top, but the light default's casing (2.5 px of 90 % white,
+   3 px on Instant3D's texts) is wider than the 13 px Century Gothic strokes: each letter read as a white bubble with a
+   thin dark outline. A narrower, half-clear casing leaves the letters solid; the line casings follow. Same text widths
+   (no weight change: the label layout measures the regular face). */
+:root[data-profile] #viewport.vp-profile-bg.vp-light #dim-layer, :root[data-profile] #viewport.vp-profile-bg.vp-light #ord-layer,
+:root[data-profile] #viewport.vp-profile-bg.vp-light #i3d-layer { --dim-halo: rgba(236,236,236,0.62); --dim-halo-w: 1.6px; }
+:root[data-profile] #viewport.vp-profile-bg.vp-light #i3d-layer .i3d-dim-text { stroke: rgba(236,236,236,0.62); stroke-width: 1.6px; }

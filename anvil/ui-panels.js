@@ -3017,7 +3017,7 @@
       else if (k === 'ArrowLeft') {
         var box = cur.parentNode, parent = box && box !== tree && box.classList.contains('tc') ? box.previousElementSibling : null;
         if (parent && parent.matches(TREE_ROWS)) { var pk = rowKey(parent); clickRow(parent); treeAnchor = pk; }
-      } else if (k === 'Enter') cur.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }));
+      } else if (k === 'Enter') { var ev = new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }); ev.anvilEdit = true; cur.dispatchEvent(ev); }   // rfPE: Enter edits (a double-click shows the dimensions)
     });
   })();
   // ---- rfNR3: the flyout FeatureManager. While a PropertyManager covers the tree, SolidWorks shows the part's tree at
@@ -3340,8 +3340,12 @@
       // a real double-click within the delay cancels it and edits the feature instead
       if (selected && e.isTrusted && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.target.classList && e.target.classList.contains('nm')) slowRename(f);
       App.sel = { kind: 'feature', id: f.id }; App.sel2 = null; UI.updateHighlights(); UI.updateSketches(); refreshTree(); if (UI.onSelectionChanged) UI.onSelectionChanged(); setStatus(f.name + (err ? ': ' + err : ''));
+      // rfPE: SolidWorks' context toolbar beside the pointer (the first click of a double-click shows it, the second not)
+      if ((e.clientX || e.clientY) && (e.detail || 1) === 1 && !e.ctrlKey && !e.metaKey && !e.shiftKey && UI.partContextToolbar) UI.partContextToolbar({ x: e.clientX, y: e.clientY }, { kind: 'feature', id: f.id });
     });
-    row.addEventListener('dblclick', function (e) { e.stopPropagation(); cancelSlowRename(); UI.editFeature(f); });
+    // rfPE: a double-click shows the feature's dimensions on the model (SolidWorks; a double-click on one opens its
+    // Modify box), Instant3D on or off; a feature with none to show (an import, a sketch) opens Edit Feature as before
+    row.addEventListener('dblclick', function (e) { e.stopPropagation(); cancelSlowRename(); if (!e.anvilEdit && UI.showFeatureDims && UI.showFeatureDims(f)) return; UI.editFeature(f); });
     row.addEventListener('contextmenu', function (e) {
       e.preventDefault(); e.stopPropagation();
       // rfNR2: a right-click on one of several selected features keeps them selected (Add to New Folder takes them all)

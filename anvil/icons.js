@@ -499,6 +499,10 @@ var IconsLib = (function () {
   // rfNJ: Edit Feature (the face right-click menu fell back to the generic drawing): a feature block with a yellow
   // pencil on it, as SolidWorks' Edit Feature
   I.editFeature = blk(1.5, 6, 8, 6, 3) + p('M8 14.5 L14.5 8 L12.5 6 L6 12.5 z', FY, S, 1) + p('M6 12.5 L5 15 L8 14.5 z', W, S, 0.9) + ln('M12.5 6 l2 2', FYD, 1);
+  // rfPE: the feature context toolbar's Suppress (the feature block greyed out, dashed) and Rollback (the rollback bar
+  // with the arrow up to the feature above it)
+  I.suppress = blk(2.5, 4.5, 8, 7, 3.5, W, W, W, M, 1) + ln('M1.5 14.5 L14.5 1.5', S, 1.4);
+  I.rollback = blk(3.5, 1.5, 7, 4, 2.5) + ln('M1.5 13.5 H14.5', S, 2.2) + p('M8 11.5 V9 M5.8 10.8 L8 8.4 L10.2 10.8', 'none', S, 1.3);
   // rfFB: Boundary Boss/Base (a yellow body between two profiles, its sides shaped by Direction 2 curves) and Boundary Cut
   I.boundary = p('M2.5 12.5 C2.5 8.5 5.5 7 5.5 3.5 H10.5 C10.5 7 13.5 8.5 13.5 12.5 z', FY, S, 1.1) + ell(8, 12.5, 5.5, 1.7, FYL, S, 1.1) + ell(8, 3.5, 2.5, 0.9, FYL, S, 1.1) + ln('M8 4.4 C8 7.5 8 9 8 14.2', B, 1.1, DASH);
   I.boundaryCut = blk(1.5, 5, 8, 6, 3.5) + p('M3.6 8.4 C4.4 7.6 5.6 7.4 6 5.6 H9.6 C9.4 7 8.8 7.8 8.4 8.4 z', FY, FYD, 1) + ln('M5.5 7.2 C6.8 7 8 6.6 8.2 5.6', B, 0.9, DASH);

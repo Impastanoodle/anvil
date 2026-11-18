@@ -167,7 +167,7 @@
     return 'flanges swapped, ' + fs.length + ' features';
   });
 
-  step('rfNR: the rollback bar still drags; a rolled-back feature and a drop below the bar are refused; a plain click selects, a double-click edits, the right-click menu opens, a tiny move is still a click', async function () {
+  step('rfNR: the rollback bar still drags; a rolled-back feature and a drop below the bar are refused; a plain click selects, a double-click shows the dimensions, the right-click menu opens, a tiny move is still a click', async function () {
     await rfNROpen();
     var cut = rfNRCut(), fil = rfNRKind('fillet'), boss = rfNRKind('extrude', 0), order0 = rfNRNames();
     // the bar: drag it above the cut (as rfGQ)
@@ -190,10 +190,10 @@
     await idle();
     assert(UI.App.sel && UI.App.sel.kind === 'feature' && UI.App.sel.id === boss.id, 'the click selected the boss');
     assert(rfNRNames() === order0 && UI.App.undo.length === undo0, 'a click (with a 2 px wobble) moved nothing');
-    // double-click edits
+    // a double-click shows the boss's dimensions (rfPE: SolidWorks; Edit Feature is on the right-click menu, Enter edits)
     rfNRRow(boss).dispatchEvent(new W.MouseEvent('dblclick', o));
     await idle();
-    assert(UI.hasPM(), 'the double-click opened the PropertyManager');
+    assert(!UI.hasPM() && UI.featureDimsShown() === boss.id, 'the double-click showed the dimensions of the boss (Instant3D ' + UI.instant3DOn() + ', PM ' + (UI.hasPM() && UI.pmTitle()) + ', profile ' + JSON.stringify(anvil.profile()) + ')');
     UI.pmCancel(); await idle(); await wait(50); await idle();
     // with a PropertyManager open a drag does nothing
     UI.cmdPlane(); await idle(); await wait(50); await idle();

@@ -3240,6 +3240,12 @@
     openPM({
       title: existing ? existing.name : titles[kind], icon: isMiter ? 'miter' : 'flange', values: f,
       exprMap: { radiusValue: 'radius', reliefWidthValue: 'reliefWidth', reliefDepthValue: 'reliefDepth' },   // (cbaK / cbaBA / cbaBD, reliefRatioValue: toFeature(v, true))
+      // rfPE: the length as a drag arrow at the preview's free end (SolidWorks; as Boss-Extrude's depth): a drag sets
+      // Length live (the worker previews it), ✓ commits. Laid out by the kernel as the preview is (flangeLayout records).
+      handles: isFlange ? function (v) {
+        if (!v.edges.length || v.lengthEnd === 'upToVertex' || !UI.flangeLengthHandles || !K.flangeLayout || !App.build || !App.build.body) return [];
+        try { return UI.flangeLengthHandles(K.flangeLayout(toFeature(v), previewModel(), { body: App.build.body, flanges: {}, tools: {} }).info, +v.length); } catch (e) { return []; }
+      } : null,
       message: isJog ? 'Click <b>straight edges</b>: the sheet steps up by the jog height and continues flat. Reverse steps it down.' : isHem ? 'Click <b>straight edges</b> to fold the sheet back over itself. <i>Material Inside</i> keeps the hem inside the edge; <i>Bend Outside</i> adds the bend beyond it. An Open hem\'s gap is the opening between the two flats.' :
         (isMiter ? 'Click <b>two or more adjacent straight edges</b> of the flat sheet; the flanges are joined at each shared corner.' : 'Click <b>straight edges</b> of the flat sheet. The ⇄ button beside <i>End condition</i> flips the flange to the other side; <i>Flange Position</i> sets where the bend sits against the edge.') +   // rfNH: named a Reverse box the PM does not have
         ' <i>Miter</i> joins flanges on adjacent edges at their corner, and <i>Relief</i> cuts a slot where a flange ends inside the plate.',
@@ -5317,9 +5323,16 @@
       UI.setStatus((extra ? extra + ' ' : '') + title + ': ' + (n ? n + ' of ' + all + ' bend' + (all === 1 ? '' : 's') : 'all ' + all + ' bend' + (all === 1 ? '' : 's')) +
         (isFold ? '' : ', fixed face ' + (f.fixedFace ? 'picked' : 'the base face')) + '. Press Enter or ✓ to accept.');
     }
+    // rfPE: a new Unfold / Fold waits for its selections as SolidWorks (it unfolded every bend about the base face at once)
+    function waiting() { return !existing && (!f.bends.length || (!isFold && !f.fixedFace && !ufActiveRecord(upto()))); }
     function preview() {
       lit();
       if (bends().error) { UI.setStatus(title + ': ' + bends().error); return; }
+      if (waiting() && (isFold ? bends().rec : bends().length)) {
+        lp.shown = ++lp.seq; UI.disposeGroup(UI.groups.preview);
+        UI.setStatus(title + ': ' + (!isFold && !f.fixedFace && !ufActiveRecord(upto()) ? 'click a flat face that stays fixed, then the bends' : 'click the ' + (isFold ? 'flat bend strips' : 'bends')) + ' to ' + kind + ', or Collect All Bends.');
+        return;
+      }
       if (isFold && !bends().rec) { lp.shown = ++lp.seq; UI.disposeGroup(UI.groups.preview); UI.setStatus('Fold: the part is not unfolded. Add an Unfold first.'); return; }
       livePreview({ op: kind, feature: featOf(f), mats: [UI.mats.preview], sync: previewSync, done: function () { status(); }, fail: function (msg) { UI.setStatus('Preview: ' + msg); } });
     }
@@ -5359,14 +5372,14 @@
     }
     var groups = [];
     if (!isFold) groups.push({ title: 'Selections', fields: [
-      { type: 'pick', icon: 'unfold', placeholder: 'Fixed face (default: the base face)…',
+      { type: 'pick', icon: 'unfold', placeholder: existing ? 'Fixed face (default: the base face)…' : 'Fixed face…',
         value: function (v) { return v.fixedFace ? 'Fixed face <1>' : ''; },
         items: function (v) { return v.fixedFace ? [{ label: 'Face<1>', at: v.fixedFace }] : []; },
         onRemove: function (v) { v.fixedFace = null; renderPM(); preview(); },
         onClear: function (v) { v.fixedFace = null; renderPM(); preview(); } }
     ] });
     groups.push({ title: isFold ? 'Selections' : 'Bends to unfold', fields: [
-      { type: 'pick', icon: isFold ? 'fold' : 'unfold', placeholder: isFold ? 'Bends to fold (empty: every unfolded bend)…' : 'Bends to unfold (empty: every bend)…',
+      { type: 'pick', icon: isFold ? 'fold' : 'unfold', placeholder: existing ? (isFold ? 'Bends to fold (empty: every unfolded bend)…' : 'Bends to unfold (empty: every bend)…') : isFold ? 'Bends to fold…' : 'Bends to unfold…',
         value: function (v) { var n = v.bends.length; return n ? n + ' bend' + (n === 1 ? '' : 's') : ''; },
         items: function (v) { return v.bends.map(function (p, i) { return { label: 'Bend<' + (i + 1) + '>', at: p }; }); },
         onRemove: function (v, i) { v.bends.splice(i, 1); renderPM(); preview(); },
@@ -5379,12 +5392,18 @@
       title: existing ? existing.name : title, icon: kind, values: f,
       onRollback: function () { bendsMemo = null; lit(); },
       message: isFold
-        ? 'Click the <b>flat bend strips</b> to fold back, or <b>Collect All Bends</b> (none picked: every bend the Unfold unfolded). Cuts made across the flat follow the bends.'
-        : 'Click a <b>flat face</b> that stays fixed, then the <b>bends</b> to unfold (a second click removes one), or <b>Collect All Bends</b>. Features after it (cuts, holes, sketches) work on the flat; a Fold folds them with the part.',
+        ? 'Click the <b>flat bend strips</b> to fold back, or <b>Collect All Bends</b>. Cuts made across the flat follow the bends.'
+        : 'Click a <b>flat face</b> that stays fixed, then the <b>bends</b> to unfold (a second click removes one), or <b>Collect All Bends</b>; ✓ waits for both, as in SolidWorks. Features after it (cuts, holes, sketches) work on the flat; a Fold folds them with the part.',
       command: { faceList: [], onPick: pick },
       groups: groups,
       onChange: function () { preview(); },
-      okBlocked: function () { return isFold && !bends().rec ? 'The part is not unfolded: add an Unfold first.' : !isFold && !bends().length && !bends().error ? 'The part has no bends to unfold.' : ''; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
+      okBlocked: function (v) {
+        if (isFold && !bends().rec) return 'The part is not unfolded: add an Unfold first.';
+        if (!isFold && !bends().length && !bends().error) return 'The part has no bends to unfold.';
+        if (!existing && !isFold && !v.fixedFace && !ufActiveRecord(upto())) return 'Select the fixed face: a flat face that stays where it is.';   // rfPE
+        if (!existing && !v.bends.length) return 'Select the bends to ' + kind + ', or Collect All Bends.';
+        return '';
+      },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast)
       onOK: function (v) {
         if (isFold && !bends().rec) { UI.toast('The part is not unfolded: add an Unfold first.'); return false; }
         var feat = featOf(v);
@@ -6885,9 +6904,11 @@
     return {
       component: c,
       start: function () { UI.setStatus((mode === 'move' ? 'Moving ' : 'Rotating ') + c.name + '…'); },
-      move: function (q) { last = q; if (!raf) raf = requestAnimationFrame(show); },
+      // rfPE: solved at the start of the frame that draws it (UI.beforeFrame); its own requestAnimationFrame ran after
+      // the render loop's and the component was drawn a frame behind the cursor (10 of 10 drag frames late)
+      move: function (q) { last = q; if (!raf) raf = UI.beforeFrame ? UI.beforeFrame(show) : requestAnimationFrame(show); },
       end: function (q) {
-        if (raf) { cancelAnimationFrame(raf); raf = 0; }
+        if (raf) { if (UI.beforeFrame) UI.cancelBeforeFrame(raf); else cancelAnimationFrame(raf); raf = 0; }
         var placed = {};   // every component's solved placement (a dragged linkage moves more than the one component)
         var m = mode === 'rotate' ? target(q) : JSON.parse(JSON.stringify(App.model)), o = dragOpts(q, mode === 'rotate' ? m : null);
         if (fast) o.poseOnly = true;
@@ -8310,4 +8331,198 @@
   UI.unsuppressFeature = function (ids, scope, dependents) { return setSuppression(ids, false, scope, !!dependents); };
   UI.suppressMenuItems = suppressMenuItems;
   UI.suppressionChildren = function (ids, scope) { return K.suppressionChildren(App.model, Array.isArray(ids) ? ids : [ids], scope || 'all'); };
+})(UI);
+
+// rfPE (2026-11-17, lane treeedit): the FeatureManager and the graphics area as SolidWorks 2024.
+// - A double-click on a feature shows its dimensions on the model (UI.showFeatureDims; ui-panels.js featureRow): the
+//   Instant3D layer of the selected feature (ui-select.js computeHandles: the sketch's dimensions, the depth / angle /
+//   parameter arrows), each arrow's value written beside it as a dimension text; a click (or double-click) on a
+//   dimension opens its Modify box (Enter rebuilds). Esc or a click in empty space clears the selection and hides them.
+//   With Instant3D off the double-click holds it on while they are shown (see releaseForced).
+// - The context toolbar (UI.partContextToolbar): a click on a feature row or on a face of the part (no command open)
+//   shows SolidWorks' small toolbar by the pointer (ui-assembly.js pop-up, kind 'ctx': it fades as the pointer goes
+//   and closes past 180 px, on Esc, on the next selection).
+// - UI.flangeLengthHandles(records, length): the Edge Flange length arrow at the flange's free end (the PM preview
+//   and Instant3D on a selected flange).
+(function (UI) {
+  'use strict';
+  var App = UI.App, K = UI.K;
+  function add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+  function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+  function sc(a, s) { return [a[0] * s, a[1] * s, a[2] * s]; }
+  function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+  function isPart() { return !!(App.model && App.model.type !== 'assembly' && !(UI.isAssembly && UI.isAssembly())); }
+  function idle() { return isPart() && App.mode === 'part' && !App.command && !(UI.hasPM && UI.hasPM()) && !(UI.drawingActive && UI.drawingActive()); }
+
+  // ---- the flange's free end (kernel-sheetmetal.js flangeLayout records: origin, o across, u up, angle A, R, wall L, T)
+  // the inner face's end of the wall as buildJog finds it, moved to the record's middle along the edge and to half T
+  function flangeTip(r) {
+    var A = +r.angle, R = +r.R, L = +r.L, T = +r.T;
+    if (!r.origin || !r.o || !r.u || ![A, R, L, T].every(isFinite)) return null;
+    var sA = Math.sin(A), cA = Math.cos(A);
+    var inner = add(add(r.origin, sc(r.o, R * sA + cA * L)), sc(r.u, R - R * cA + sA * L));
+    var out = add(sc(r.o, sA), sc(r.u, -cA)), tw = add(sc(r.o, cA), sc(r.u, sA));
+    var d = sub(r.mid || r.origin, r.origin), along = sub(sub(d, sc(r.o, dot(d, r.o))), sc(r.u, dot(d, r.u)));
+    return { tip: add(add(inner, along), sc(out, T / 2)), dir: tw };
+  }
+  UI.flangeTip = flangeTip;
+  // -> [{ key: 'length', O, dir, k: 1, value, min }]: pos(v) = O + dir · v is the free end at length v (a longer flange
+  // runs on along its wall, so the end moves with the value whatever the length is measured from)
+  UI.flangeLengthHandles = function (recs, length, near) {
+    recs = (recs || []).filter(function (r) { return r && r.kind === 'edge' && r.mid; });
+    if (!recs.length || !(+length > 0)) return [];
+    var r = recs[0];
+    if (near) { var bd = Infinity; recs.forEach(function (x) { var q = sub(x.mid, near), dd = dot(q, q); if (dd < bd) { bd = dd; r = x; } }); }
+    var t = flangeTip(r);
+    if (!t) return [];
+    return [{ key: 'length', label: 'Length', O: sub(t.tip, sc(t.dir, +length)), dir: t.dir, k: 1, value: +length, min: 0 }];
+  };
+  // Instant3D on a selected Edge Flange / Miter Flange (Blind): its length arrow (ui-select.js otherFeatureHandles)
+  var baseI3D = UI.instant3DFeatureHandles;
+  UI.instant3DFeatureHandles = function (f, faceIndex) {
+    var out = baseI3D ? baseI3D.apply(this, arguments) : [];
+    if ((!out || !out.length) && f && f.type === 'flange' && !f.hem && !f.miterFlange && f.lengthEnd !== 'upToVertex' && App.build && App.build.flanges) {
+      var fc = faceIndex != null && App.mesh ? App.mesh.faces[faceIndex] : null;
+      out = UI.flangeLengthHandles(App.build.flanges[f.id], f.length, fc && fc.centroid);
+    }
+    return out || [];
+  };
+
+  // ---- feature dimensions shown by a double-click
+  var fd = null;   // { id }: the feature whose dimensions a double-click showed
+  function ownerOf(s) {
+    if (!s) return null;
+    if (s.kind === 'feature') return s.id;
+    if (s.kind === 'face' && App.mesh && App.triShared) { var fc = App.mesh.faces[s.index]; return fc ? App.triShared[fc.start] : null; }
+    return null;
+  }
+  // SolidWorks shows them with Instant3D off too: ui-select.js draws a selected feature's dimensions only with Instant3D
+  // on, so a double-click with it off turns it on for as long as they are shown (the ribbon button and
+  // UI.instant3DOn() keep saying off) and back off when they go. (A line in ui-select.js computeHandles reading
+  // UI.featureDimsShown() would do this without the switch.)
+  var forced = false, baseI3DOn = null, baseI3DToggle = null;
+  function releaseForced() {
+    if (!forced) return;
+    forced = false;
+    var st = document.getElementById('status-msg'), keep = st ? st.textContent : null;
+    if (baseI3DToggle) baseI3DToggle(false);
+    if (keep != null) UI.setStatus(keep);
+  }
+  function shownId() {
+    if (!fd) { releaseForced(); return null; }
+    var list = UI.selection ? UI.selection() : (App.sel ? [App.sel] : []);
+    if (!idle() || list.length !== 1 || ownerOf(list[0]) !== fd.id || !K.findFeature(App.model, fd.id)) { fd = null; releaseForced(); return null; }
+    return fd.id;
+  }
+  UI.featureDimsShown = shownId;
+  var DIM_TYPES = { extrude: 1, revolve: 1, fillet: 1, chamfer: 1, shell: 1, lpattern: 1, cpattern: 1, flange: 1 };   // the features ui-select.js draws dimensions for
+  function dimHandles() { return UI.instant3DHandles ? UI.instant3DHandles().filter(function (h) { return h.kind !== 'pm' && h.kind !== 'callout' && h.kind !== 'pmflip'; }) : []; }
+  UI.showFeatureDims = function (f) {
+    if (!f || !idle() || f.type === 'sketch') return false;
+    if ((UI.rollbarRolled && UI.rollbarRolled(f)) || (UI.isSuppressed && UI.isSuppressed(f.id)) || (App.build && App.build.errors && App.build.errors[f.id])) return false;
+    if (UI.asmClosePopup) UI.asmClosePopup('ctx');
+    App.sel = { kind: 'feature', id: f.id }; App.sel2 = null; App.multi = [];
+    UI.updateHighlights(); if (UI.refreshTree) UI.refreshTree();
+    fd = { id: f.id };
+    if (baseI3DOn && !baseI3DOn() && baseI3DToggle) { var st = document.getElementById('status-msg'), keep = st ? st.textContent : ''; baseI3DToggle(true); forced = true; UI.setStatus(keep); }
+    // (a dimension seen end-on is left out by ui-select.js: a feature that has some still counts as shown)
+    var hs = dimHandles();
+    if (!hs.length && !(DIM_TYPES[f.type] && !(f.type === 'flange' && (f.hem || f.miterFlange)))) { fd = null; releaseForced(); return false; }
+    App.dimsStale = true; if (UI.requestRender) UI.requestRender();
+    UI.setStatus(f.name + ': ' + (hs.length ? hs.length + ' dimension' + (hs.length === 1 ? '' : 's') + ' shown. Click or double-click one to change it (Enter rebuilds); Esc or a click in empty space hides them.' : 'its dimensions are seen end-on in this view: turn the view to see them.'));
+    return true;
+  };
+  // the value of each arrow (depth, angle, a fillet's radius …) as a dimension text beside its head; a press on it
+  // opens the arrow's value box (a press and release on the arrow without moving does that in ui-select.js)
+  var NS = 'http://www.w3.org/2000/svg';
+  function drawValues() {
+    if (shownId() == null) return;
+    var layer = document.getElementById('i3d-layer');
+    if (!layer) return;
+    Array.prototype.forEach.call(layer.querySelectorAll('g.i3d'), function (g) {
+      var kind = g.getAttribute('data-kind');
+      if ((kind !== 'depth' && kind !== 'angle' && kind !== 'fparam') || g.querySelector('.pe-fdim, .i3d-value')) return;
+      var hg = g.querySelector('.i3d-handle'), head = hg && hg.querySelector('.i3d-head'), shaft = hg && hg.querySelector('.i3d-shaft');
+      var m = hg && /\s(-?[\d.]+)(°| \S+)? — drag to change$/.exec(hg.getAttribute('aria-label') || '');
+      if (!head || !shaft || !m) return;
+      var tp = /^\s*(-?[\d.e+-]+)[ ,](-?[\d.e+-]+)/.exec(head.getAttribute('points') || '');
+      if (!tp) return;
+      var tip = [+tp[1], +tp[2]], b = [+shaft.getAttribute('x1'), +shaft.getAttribute('y1')], dx = tip[0] - b[0], dy = tip[1] - b[1], L = Math.hypot(dx, dy) || 1;
+      var u = [dx / L, dy / L], at = [tip[0] + u[0] * (12 + Math.abs(u[0]) * (m[1].length + 1) * 3.6), tip[1] + u[1] * 14 + 4];
+      var tx = document.createElementNS(NS, 'text');
+      tx.setAttribute('class', 'i3d-dim-text pe-fdim'); tx.setAttribute('x', at[0].toFixed(2)); tx.setAttribute('y', at[1].toFixed(2)); tx.setAttribute('text-anchor', 'middle');
+      var val = parseFloat(m[1]);   // written as the sketch's dimensions are (ui-sketch.js fmtDim: 1.000 in an inch part)
+      tx.textContent = m[2] === '°' ? UI.fmtNum(val, 2) + '°' : UI.fmtDim ? UI.fmtDim(val) : m[1];
+      tx.addEventListener('mousedown', function (ev) {
+        if (ev.button !== 0) return;
+        ev.stopPropagation(); ev.preventDefault();
+        var r = layer.getBoundingClientRect(), gx = r.left + (b[0] + tip[0]) / 2, gy = r.top + (b[1] + tip[1]) / 2;
+        hg.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0, buttons: 1, clientX: gx, clientY: gy }));
+        window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, button: 0, buttons: 0, clientX: gx, clientY: gy }));
+      });
+      tx.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });
+      g.appendChild(tx);
+    });
+  }
+  // the dimension layer (ui-sketch.js UI.drawDims, ui-select.js draws Instant3D in it): wrapped once every file has
+  // added its own layer, so the values are drawn after the arrows
+  document.addEventListener('DOMContentLoaded', function () {
+    var base = UI.drawDims;
+    if (base) UI.drawDims = function () { var r = base.apply(this, arguments); try { drawValues(); } catch (e) { /* an overlay: never break the dimensions */ } return r; };
+    // Instant3D as the user set it (the ribbon button, scripts) while a double-click holds it on
+    baseI3DOn = UI.instant3DOn; baseI3DToggle = UI.toggleInstant3D;
+    if (baseI3DOn) UI.instant3DOn = function () { return forced ? false : baseI3DOn.apply(this, arguments); };
+    if (baseI3DToggle) UI.toggleInstant3D = function (on) { if (forced) { forced = false; if (on == null) on = true; } return baseI3DToggle.call(this, on); };
+    // a selection change from outside (Esc, a click in empty space) hides them at once
+    var baseHL = UI.updateHighlights;
+    if (baseHL) UI.updateHighlights = function () { var r = baseHL.apply(this, arguments); if (fd && shownId() == null) App.dimsStale = true; return r; };
+  });
+
+  // ---- the context toolbar
+  function bodyOf(fid) {
+    var faces = App.mesh && App.mesh.faces, ts = App.triShared;
+    if (!faces || !ts) return -1;
+    for (var i = 0; i < faces.length; i++) if (ts[faces[i].start] === fid) return faces[i].body || 0;
+    return -1;
+  }
+  function vpPoint(at) { var r = (UI.viewport || document.getElementById('viewport')).getBoundingClientRect(); return [at.x - r.left, at.y - r.top]; }
+  function featureItems(f, at, face) {
+    var out = [], close = function () { if (UI.asmClosePopup) UI.asmClosePopup('ctx'); };
+    function item(id, icon, title, run, pressed) { out.push({ id: id, icon: icon, title: title, pressed: pressed, run: function () { close(); run(); } }); }
+    var sk = f && f.sketch != null ? K.findFeature(App.model, f.sketch) : null;
+    if (f && f.type !== 'sketch') item('editFeature', 'editFeature', 'Edit Feature', function () { UI.editFeature(f); });
+    if (f && f.type === 'sketch') item('editSketch', 'sketch', 'Edit Sketch', function () { UI.editSketch(f.id); });
+    else if (sk) item('editSketch', 'sketch', 'Edit Sketch', function () { UI.editSketch(sk.id); });
+    if (face != null) {
+      item('sketch', 'sketch', 'Sketch', function () { if (UI.setSelection) UI.setSelection([{ kind: 'face', index: face }]); UI.cmdSketch(); if (UI.refreshRibbon) UI.refreshRibbon(); });
+      item('normalTo', 'vNormalTo', 'Normal To', function () { if (UI.setSelection) UI.setSelection([{ kind: 'face', index: face }]); UI.normalToSelection(); });
+      item('selectOther', 'select', 'Select Other', function () {
+        var q = vpPoint(at), faces = UI.pickFacesAll ? UI.pickFacesAll(q[0], q[1]) : [];
+        if (!faces.length) return;
+        var names = UI.selectOtherAt ? UI.selectOtherAt(q[0], q[1]) : [];
+        UI.showMenu(at.x, at.y, faces.map(function (fc, k) { return { label: (names[k] && names[k].label) || 'Face ' + fc.index, action: function () { App.hover = null; if (UI.setSelection) UI.setSelection([{ kind: 'face', index: fc.index, point: fc.point }]); UI.updateHighlights(); } }; }));
+      });
+    } else if (f) {
+      var sup = UI.isSuppressed && UI.isSuppressed(f.id);
+      if (UI.setSuppression && !(UI.rollbarRolled && UI.rollbarRolled(f))) item(sup ? 'unsuppress' : 'suppress', 'suppress', sup ? 'Unsuppress' : 'Suppress', function () { UI.setSuppression([f.id], !sup, 'this', false); }, !!sup);
+      if (UI.rollbarTo) item('rollback', 'rollback', 'Rollback', function () { UI.rollbarTo(App.model.features.indexOf(f)); });
+    }
+    var bi = face != null ? (App.mesh.faces[face].body || 0) : f && f.type !== 'sketch' ? bodyOf(f.id) : -1;
+    if (bi >= 0 && UI.setBodyHidden) { var hid = !!(UI.isBodyHidden && UI.isBodyHidden(bi)); item(hid ? 'showBody' : 'hideBody', 'hideshow', hid ? 'Show Body' : 'Hide Body', function () { UI.setBodyHidden(bi, !hid); if (UI.refreshTree) UI.refreshTree(); }, hid); }
+    if (f && f.type === 'sketch') item(f.hidden ? 'showSketch' : 'hideSketch', 'hideshow', f.hidden ? 'Show' : 'Hide', function () { f.hidden = !f.hidden; UI.updateSketches(); if (UI.refreshTree) UI.refreshTree(); }, !!f.hidden);
+    if (UI.openTaskPane && (face != null || (f && f.type !== 'sketch'))) item('appearance', 'appearance', 'Appearance', function () { UI.openTaskPane('appearance'); });
+    return out;
+  }
+  // at: { x, y } client point; s: the item ({ kind: 'feature', id } | { kind: 'face', index }), default App.sel
+  UI.partContextToolbar = function (at, s) {
+    s = s || App.sel;
+    if (!at || !s || !idle() || !UI.ctxToolbarShow || (App.multi && App.multi.length) || App.sel2) return null;
+    var f = null, face = null;
+    if (s.kind === 'feature') f = K.findFeature(App.model, s.id);
+    else if (s.kind === 'face' && App.mesh && App.mesh.faces[s.index]) { face = s.index; f = App.triShared ? K.findFeature(App.model, App.triShared[App.mesh.faces[face].start]) : null; }
+    if (!f && face == null) return null;
+    var items = featureItems(f, at, face);
+    if (!items.length) return null;
+    return UI.ctxToolbarShow(at, (face != null ? 'Face' : 'Feature') + (f ? ': ' + f.name : ''), function () { return items; });
+  };
 })(UI);
