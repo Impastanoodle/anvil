@@ -5765,15 +5765,19 @@ var UI = (function () {
   }
   function undo() {
     if (!App.undo.length) return whenIdle();
+    var linked = UI.linkedDocsUndo ? UI.linkedDocsUndo(false) : null;   // drawing-ui-panels.js: a BOM cell typed into a linked document goes back with its step
     App.redo.push(JSON.stringify(App.model));
     App.model = JSON.parse(App.undo.pop());
+    if (linked) linked();
     if (UI.setStatus) UI.setStatus(App.undo.length ? 'Last step undone.' : 'Last step undone (nothing more to undo).');   // not the undone command's result
     return afterModelSwap();
   }
   function redo() {
     if (!App.redo.length) return whenIdle();
+    var linked = UI.linkedDocsUndo ? UI.linkedDocsUndo(true) : null;
     App.undo.push(JSON.stringify(App.model));
     App.model = JSON.parse(App.redo.pop());
+    if (linked) linked();
     if (UI.setStatus) UI.setStatus('Step redone.');
     return afterModelSwap();
   }

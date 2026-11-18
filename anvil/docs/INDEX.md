@@ -706,7 +706,7 @@ more: inSlot L1599, bboxText L1952, nonEmpty L1971, bomCompare L2024, bomSorted 
 more: bomRows0 L2053, envelopeText L2134, revIndex L2486, sheetsOf L2596, stash L2601, freeSheetName L2637,
 more: r6 L2745, segDist L2811, needTable L2907
 
-## drawing-ui-panels.js (1697 lines)
+## drawing-ui-panels.js (1689 lines)
 > the drawing document's panels and automation (drawing-ui.js holds the state and the sheet,
 UI.makeDrawing  L13
 withUnitScales  L26  — An inch drawing lists the ANSI scales (1:1, 1:2, 1:4, 1:8 …): Sheet Properties and the …
@@ -729,10 +729,10 @@ DW.cmdDrawingProps  L322
 DW.renderTree  L357
 treeFilterText  L438  — (rfOC, lane drawdual; the part tree's rfNR2) the filter box: a row shows when its name …
 ordFixed  L474  — (rfW, SolidWorks 2024) View Layout holds the drawing views only (Auxiliary View, Break …
-UI.ribbonTabsFor  L515 (also L1545)  — the View Layout and Annotation tabs exist only in a drawing document; part tabs are …
+UI.ribbonTabsFor  L515 (also L1537)  — the View Layout and Annotation tabs exist only in a drawing document; part tabs are …
 viewDisplayItems  L521  — (rfGT) View ▸ Display: the selected view's tangent edges (SolidWorks' View ▸ Display), …
 DW.menuHookBase  L529
-UI.menuHook  L530 (also L1553)
+UI.menuHook  L530 (also L1545)
 undoCancelsDrawingPM  L611  — lane CA (user, 2026-10-13): Ctrl+Z / Ctrl+Y, Edit ▸ Undo / Redo and the Undo / Redo …
 UI.undoCancelsPM  L637
 drawingKeyAction  L676  — what a key action means on the sheet: fit, delete, zoom, Smart Dimension, or a drawing …
@@ -758,20 +758,19 @@ DW.cmdGeneralTable  L1175
 DW.closeInlineEdit  L1265
 DW.openBomCellEdit  L1271  — (rfPQ) a Bill of Materials cell typed in place (SolidWorks: double-click a BOM cell). …
 bomLinkedDocs  L1331  — (rfOJ) a DESCRIPTION typed into a BOM cell of an assembly drawing is written into the …
-UI.undo  L1365
-UI.redo  L1373
-DW.aeDown  L1385  — the sheet's mouse (drawing-ui.js calls these first): the format tools, General Table …
-DW.aeDragMove  L1432
-DW.aeHover  L1441
-DW.aeDblClick  L1451
-DW.aeContext  L1462
-DW.aeOverlay  L1473
-DW.deleteSelection  L1496 (also L1505, L1511)
-DW.sheetMenu  L1517
-DW.fmtTreeMenu  L1522
-DW.tableTreeMenu  L1523
-saveDrawingFile  L1582  — The .drawing document. File ▸ Save Drawing As writes the open drawing as <name>.drawing …
-UI.openDrawingFile  L1613  — openDrawingFile(name, data, opts) -> Promise of the drawing summary (null when the part …
+UI.linkedDocsUndo  L1365  — (head, local-2026-11-18a) undo() / redo() in ui-core.js call this before their stacks …
+DW.aeDown  L1377  — the sheet's mouse (drawing-ui.js calls these first): the format tools, General Table …
+DW.aeDragMove  L1424
+DW.aeHover  L1433
+DW.aeDblClick  L1443
+DW.aeContext  L1454
+DW.aeOverlay  L1465
+DW.deleteSelection  L1488 (also L1497, L1503)
+DW.sheetMenu  L1509
+DW.fmtTreeMenu  L1514
+DW.tableTreeMenu  L1515
+saveDrawingFile  L1574  — The .drawing document. File ▸ Save Drawing As writes the open drawing as <name>.drawing …
+UI.openDrawingFile  L1605  — openDrawingFile(name, data, opts) -> Promise of the drawing summary (null when the part …
 more: everySheet L131, symSpec L215, symGroups L220, addRevision L285, setDrawingProps L315, row L343,
 more: filterTree L439, cancelDrawingPM L623, summary L719, laterSummary L797, annotApi L811, current L817,
 more: fmtSheetSize L999, fmtItemAt L1000, fmtTool L1013, fmtEditNote L1032, fmtDelete L1040,
@@ -779,7 +778,7 @@ more: resetSheetFormat L1047, fmtMenu L1048, templates L1068, storeTemplates L10
 more: keepTemplate L1071, deleteTemplate L1077, makeTemplate L1078, templateFileName L1083, exportTemplate L1084,
 more: cmdSaveTemplate L1085, importTemplateData L1095, pickJSON L1101, cmdNewDrawing L1163, placeTable L1190,
 more: tableEdit L1198, tableMenu L1199, openCellEdit L1219, closeCell L1255, closeBomCell L1309,
-more: bomDocUndo L1349, bomDocPut L1356, savedFiles L1593, partMatches L1594, attachDrawing L1600
+more: bomDocUndo L1349, bomDocPut L1356, savedFiles L1585, partMatches L1586, attachDrawing L1592
 
 ## drawing-ui-sketch.js (902 lines)
 > the drawing's Sketch tab (rfAO; only when `UI` exists): Line, Centerline, Rectangle, Circle,
@@ -3602,7 +3601,7 @@ more: uniq L8688, selectedFeatureIds L8689, scopeText L8695, run L8725, add L876
 more: dot L8772, idle L8774, ownerOf L8814, dimHandles L8830, drawValues L8848, vpPoint L8895,
 more: featureItems L8896
 
-## ui-core.js (6263 lines)
+## ui-core.js (6267 lines)
 > application state, Three.js scene, camera controls, rendering, picking, highlights.
 UI.K  L5
 UI.App  L7
@@ -3861,73 +3860,73 @@ UI.holdRecovery  L5752
 showDirty  L5755  — "Part1 *": a class on #doc-title (style.css adds the star, so the title text the panels …
 UI.pushUndo  L5761
 UI.undo  L5766
-UI.redo  L5773
-UI.loadModel  L5788
-UI.navKey  L5839
-navSW  L5846  — what the viewport did before the map existed (SolidWorks): middle, or Alt + left, …
-UI.setNavMap  L5871
-UI.navMap  L5872
-UI.navActionFor  L5874  — 'rotate' | 'pan' | 'zoom' | null for a mousedown (or any mouse event with button and …
-UI.navWheelSign  L5881  — +1 when the wheel zooms as in SolidWorks (wheel toward you zooms out), -1 reversed; a …
-faCurveItems  L5905  — Helix / Spiral, Projected, Composite and Curve Through Points records (App.build.planes, …
-UI.V  L5924
-UI.sketchSceneVersion  L5929
-UI.sketchEntityVersions  L5929
-UI.sketchDragRedrawStats  L5929
-UI.pickStats  L5929
-UI.edgeGridStats  L5929
-UI.frameNo  L5929
-UI.viewportRect  L5929
-UI.tempEntityHooks  L5930  — sketch-hooks
-UI.camVersion  L5936
-UI.applyBuild  L5938  — ui-occt.js: OpenCascade's build of the same model
-UI.linePalette  L5943
-UI.on  L5947  — r14/viewui14: background, triad, View Selector
-UI.bodyEdge  L5947  — r14/viewui14: background, triad, View Selector
-UI.apply  L5947  — r14/viewui14: background, triad, View Selector
-UI.rig  L5947  — r14/viewui14: background, triad, View Selector
-UI.drawTriad  L5948
-UI.viewSelectorRegions  L5950
-UI.id  L5950
-UI.rebuildPending  L5956
-UI.getBodyMesh  L5957
-UI.getCrackFill  L5959  — lane FO: display safety (crack filler, section caps, safe normals)
-UI.sectionWarm  L5959  — lane FO: display safety (crack filler, section caps, safe normals)
-UI.curveEdgeStats  L5959  — lane FO: display safety (crack filler, section caps, safe normals)
-UI.sameSolidsStats  L5959  — lane FO: display safety (crack filler, section caps, safe normals)
-UI.same  L5959  — lane FO: display safety (crack filler, section caps, safe normals)
-UI.full  L5959  — lane FO: display safety (crack filler, section caps, safe normals)
-UI.sectionCaps  L5959  — lane FO: display safety (crack filler, section caps, safe normals)
-UI.faceGroups  L5968  — whole curved faces (every facet of one cylinder, hole, cone...) for picking and selection
-UI.tangentEdges  L5970  — rfHL: tangent edge display ('visible' | 'phantom' | 'removed'), its View ▸ Display rows, …
-UI.tangentEdgeList  L5971
-UI.tangentLines  L5971
-UI.cplane  L6013
-UI.setCplane  L6014
-UI.onCplane  L6025
-UI.cplaneLabel  L6030
-UI.cplaneSketchPlane  L6035
-UI.cplaneZ  L6053
-UI.setCplaneZ  L6054
-UI.cplaneMode  L6063
-UI.setCplaneMode  L6064
-UI.cplaneReset  L6071
-UI.viewportProfile  L6074  — the graphics window of the profile
-UI.applyViewportProfile (applyViewport)  L6078
-viewName  L6096  — the name of the graphics view (a standard view the camera looks along, else Mastercam's …
-UI.viewFurnitureTick  L6123 (also L6256)
-UI.viewportLabels  L6126
-UI.CPLANES  L6129
-UI.unzoom  L6146
-UI.translucency  L6168
-UI.showWorldAxes  L6204
-UI.showGnomons  L6206  — Show Gnomons: the triad and the profile's view labels
-gridDrawn  L6214  — Show Grid / Snap to Grid
-UI.gridShown  L6215
-UI.gridSnap  L6221
-hiddenLevels  L6230  — what a viewsheet keeps
-UI.viewState  L6231
-UI.setViewState  L6235
+UI.redo  L5775
+UI.loadModel  L5792
+UI.navKey  L5843
+navSW  L5850  — what the viewport did before the map existed (SolidWorks): middle, or Alt + left, …
+UI.setNavMap  L5875
+UI.navMap  L5876
+UI.navActionFor  L5878  — 'rotate' | 'pan' | 'zoom' | null for a mousedown (or any mouse event with button and …
+UI.navWheelSign  L5885  — +1 when the wheel zooms as in SolidWorks (wheel toward you zooms out), -1 reversed; a …
+faCurveItems  L5909  — Helix / Spiral, Projected, Composite and Curve Through Points records (App.build.planes, …
+UI.V  L5928
+UI.sketchSceneVersion  L5933
+UI.sketchEntityVersions  L5933
+UI.sketchDragRedrawStats  L5933
+UI.pickStats  L5933
+UI.edgeGridStats  L5933
+UI.frameNo  L5933
+UI.viewportRect  L5933
+UI.tempEntityHooks  L5934  — sketch-hooks
+UI.camVersion  L5940
+UI.applyBuild  L5942  — ui-occt.js: OpenCascade's build of the same model
+UI.linePalette  L5947
+UI.on  L5951  — r14/viewui14: background, triad, View Selector
+UI.bodyEdge  L5951  — r14/viewui14: background, triad, View Selector
+UI.apply  L5951  — r14/viewui14: background, triad, View Selector
+UI.rig  L5951  — r14/viewui14: background, triad, View Selector
+UI.drawTriad  L5952
+UI.viewSelectorRegions  L5954
+UI.id  L5954
+UI.rebuildPending  L5960
+UI.getBodyMesh  L5961
+UI.getCrackFill  L5963  — lane FO: display safety (crack filler, section caps, safe normals)
+UI.sectionWarm  L5963  — lane FO: display safety (crack filler, section caps, safe normals)
+UI.curveEdgeStats  L5963  — lane FO: display safety (crack filler, section caps, safe normals)
+UI.sameSolidsStats  L5963  — lane FO: display safety (crack filler, section caps, safe normals)
+UI.same  L5963  — lane FO: display safety (crack filler, section caps, safe normals)
+UI.full  L5963  — lane FO: display safety (crack filler, section caps, safe normals)
+UI.sectionCaps  L5963  — lane FO: display safety (crack filler, section caps, safe normals)
+UI.faceGroups  L5972  — whole curved faces (every facet of one cylinder, hole, cone...) for picking and selection
+UI.tangentEdges  L5974  — rfHL: tangent edge display ('visible' | 'phantom' | 'removed'), its View ▸ Display rows, …
+UI.tangentEdgeList  L5975
+UI.tangentLines  L5975
+UI.cplane  L6017
+UI.setCplane  L6018
+UI.onCplane  L6029
+UI.cplaneLabel  L6034
+UI.cplaneSketchPlane  L6039
+UI.cplaneZ  L6057
+UI.setCplaneZ  L6058
+UI.cplaneMode  L6067
+UI.setCplaneMode  L6068
+UI.cplaneReset  L6075
+UI.viewportProfile  L6078  — the graphics window of the profile
+UI.applyViewportProfile (applyViewport)  L6082
+viewName  L6100  — the name of the graphics view (a standard view the camera looks along, else Mastercam's …
+UI.viewFurnitureTick  L6127 (also L6260)
+UI.viewportLabels  L6130
+UI.CPLANES  L6133
+UI.unzoom  L6150
+UI.translucency  L6172
+UI.showWorldAxes  L6208
+UI.showGnomons  L6210  — Show Gnomons: the triad and the profile's view labels
+gridDrawn  L6218  — Show Grid / Snap to Grid
+UI.gridShown  L6219
+UI.gridSnap  L6225
+hiddenLevels  L6234  — what a viewsheet keeps
+UI.viewState  L6235
+UI.setViewState  L6239
 more: applyLinePalette L192, swPartWanted L218, applyPartLook L224, slopePatch L283, keepModelOnScreen L344,
 more: sceneCenter L430, fitCam L511, lerpPose L584, animU L593, animationsOn L610, setAnimLayers L616,
 more: animateViewFrom L619, stepZoomMomentum L675, buildTriShared L693, bodyList L710, faceHidden L720,
@@ -3953,9 +3952,9 @@ more: settle L5256, postPreview L5292, nextPreview L5305, previewProgress L5312,
 more: rolledBack L5340, showRollback L5360, clearRollback L5406, rollbarLift L5449, rollbarDrop L5456,
 more: onWorkerMessage L5549, onWorkerError L5593, progressBegin L5607, progressEnd L5612, progressWantCard L5613,
 more: onWorkerProgress L5617, setBusy L5625, defaultChordTol L5678, modelJson L5711, writeRecovery L5726,
-more: afterModelSwap L5780, lastMousePos L5823, resolveNav L5856, nearPt L5887, faDrawCurve L5915,
-more: planeFeature L6002, norm L6003, profileDef L6070, profKey L6077, labels L6109, esc L6110, refreshAll L6145,
-more: eachMat L6155, tlApply L6156, axesSync L6184
+more: afterModelSwap L5784, lastMousePos L5827, resolveNav L5860, nearPt L5891, faDrawCurve L5919,
+more: planeFeature L6006, norm L6007, profileDef L6074, profKey L6081, labels L6113, esc L6114, refreshAll L6149,
+more: eachMat L6159, tlApply L6160, axesSync L6188
 
 ## ui-costing.js (125 lines)
 > Evaluate ▸ Costing: SolidWorks 2024's Costing task pane over costing.js (lane evalgrey, rfLP).

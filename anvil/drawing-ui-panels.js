@@ -1360,26 +1360,18 @@
       else if (x.after != null) Dm.put(x.file, JSON.parse(x.after), { dirty: true });
     });
   }
-  if (UI.undo && !UI.undo._bomDocs) {
-    var baseUndo = UI.undo, baseRedo = UI.redo;
-    UI.undo = function () {
-      var top = App.undo.length ? App.undo[App.undo.length - 1] : null, s = null;
-      for (var i = bomDocSteps.length - 1; i >= 0 && top != null; i--) if (bomDocSteps[i].snap === top) { s = bomDocSteps[i]; break; }
-      if (s) bomDocPut(s.docs, true);
-      var r = baseUndo.apply(this, arguments);
-      if (s) s.redoSnap = App.redo.length ? App.redo[App.redo.length - 1] : null;
-      return r;
+  // (head, local-2026-11-18a) undo() / redo() in ui-core.js call this before their stacks move, and the function it
+  // returns after: the linked documents a BOM cell wrote into go back and forward with that step (it wrapped UI.undo).
+  UI.linkedDocsUndo = function (isRedo) {
+    var stack = isRedo ? App.redo : App.undo, top = stack.length ? stack[stack.length - 1] : null, s = null;
+    for (var i = bomDocSteps.length - 1; i >= 0 && top != null; i--) if ((isRedo ? bomDocSteps[i].redoSnap : bomDocSteps[i].snap) === top) { s = bomDocSteps[i]; break; }
+    if (!s) return null;
+    bomDocPut(s.docs, !isRedo);
+    return function () {
+      if (isRedo) { s.snap = App.undo.length ? App.undo[App.undo.length - 1] : null; s.redoSnap = null; }
+      else s.redoSnap = App.redo.length ? App.redo[App.redo.length - 1] : null;
     };
-    UI.redo = function () {
-      var top = App.redo.length ? App.redo[App.redo.length - 1] : null, s = null;
-      for (var i = bomDocSteps.length - 1; i >= 0 && top != null; i--) if (bomDocSteps[i].redoSnap === top) { s = bomDocSteps[i]; break; }
-      if (s) bomDocPut(s.docs, false);
-      var r = baseRedo.apply(this, arguments);
-      if (s) { s.snap = App.undo.length ? App.undo[App.undo.length - 1] : null; s.redoSnap = null; }
-      return r;
-    };
-    UI.undo._bomDocs = true;
-  }
+  };
 
   // the sheet's mouse (drawing-ui.js calls these first): the format tools, General Table placement and picks
   DW.aeDown = function (p, e) {
