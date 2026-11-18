@@ -753,6 +753,55 @@
     return out;
   }
   K.designTableColumns = designTableColumns;
+  // rfOK (lane shopflow7): the Modify box's "This configuration" / "All configurations" (SolidWorks' Modify dialog of a
+  // part with configurations). ref: { feature: id, field } (a feature dimension) or { sketch: id, dimIndex } (a sketch
+  // dimension, its index in sk.dims). configureDimension(model, ref, value, scope) with scope 'this' links the dimension
+  // to a variable as a Design Table column does (D1_Edge_Flange1) and sets it in the active configuration only, the others
+  // keeping what they showed; 'all' sets the value in every configuration (a linked variable's own value, every
+  // configuration's override of it dropped). -> { ok, error?, variable? }. dimLabel(model, ref) -> 'D1@Edge-Flange1'.
+  function dimLabel(model, ref) {
+    if (ref.sketch != null) {
+      var sk = findFeatureById(model, ref.sketch);
+      var it = sk && sketchDimItems(sk).filter(function (x) { return x.src === 'dim' && x.index === ref.dimIndex; })[0];
+      return it ? it.name + '@' + sk.name : null;
+    }
+    var f = findFeatureById(model, ref.feature);
+    if (!f) return null;
+    var i = (DIM_FIELDS[f.type] || []).indexOf(ref.field);
+    return (i >= 0 ? 'D' + (i + 1) : ref.field) + '@' + f.name;
+  }
+  function sameColumn(a, b) { return a && b && !a.error && !b.error && a.kind === b.kind && a.feature === b.feature && a.field === b.field && a.src === b.src && a.index === b.index; }
+  function configureDimension(model, ref, value, scope) {
+    var label = dimLabel(model, ref);
+    if (!label) return { ok: false, error: 'No such dimension' };
+    var col = parseColumn(model, label);
+    if (col.error) return { ok: false, error: col.error };
+    var cfgs = configurationList(model), active = model.activeConfiguration;
+    var v = String(Math.round(+value * 1e9) / 1e9);
+    if (scope === 'all') {
+      var lv = dimVar(model, col);
+      if (!lv) return { ok: true, linked: false };   // not configured: the caller writes the value into the feature
+      eqByName(model, lv).expr = v;
+      cfgs.forEach(function (c) { if (c.values) delete c.values[lv]; });
+      return { ok: true, variable: lv };
+    }
+    if (!cfgs.length || active == null) return { ok: false, error: 'The part has no configurations' };
+    var grid = designTable(model), j = -1;
+    for (var c = 1; c < grid[0].length; c++) if (sameColumn(parseColumn(model, grid[0][c]), col)) j = c;
+    if (j < 0) { grid[0].push(label); for (var r = 1; r < grid.length; r++) grid[r].push(tableCell(model, label, findConfiguration(model, grid[r][0]))); j = grid[0].length - 1; }
+    for (r = 1; r < grid.length; r++) if (String(grid[r][0]) === String(active)) grid[r][j] = v;
+    var res = applyDesignTable(model, grid);
+    if (!res.ok) return { ok: false, error: res.errors.map(function (e) { return e.message; }).join('; ') };
+    return { ok: true, variable: dimVar(model, col) };
+  }
+  K.dimLabel = dimLabel; K.configureDimension = configureDimension;
+  // the value a dimension linked to a variable shows in the active configuration (null when it is not linked)
+  K.linkedDimValue = function (model, ref) {
+    var label = dimLabel(model, ref), col = label && parseColumn(model, label), name = col && !col.error && dimVar(model, col);
+    if (!name) return null;
+    var res = resolveEquations(model), x = res.vars && res.vars[name];
+    return isFinite(x) ? +x : null;
+  };
   K.DIM_FIELDS = DIM_FIELDS; K.designTable = designTable; K.applyDesignTable = applyDesignTable; K.designTableColumn = function (model, label) { return parseColumn(model, label); };
   K.gridToTSV = gridToTSV; K.tsvToGrid = tsvToGrid;
 

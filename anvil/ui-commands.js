@@ -2740,9 +2740,10 @@
     wrap.appendChild(el('div', { class: 'row' }, [el('button', { id: o.id + '-paste-add', class: 'btn', text: 'Add pasted rows', onclick: function () {
       String(paste.value).split(/\r?\n/).forEach(function (line) {
         var cells = line.trim().split(/\t|,|;|\s+/).filter(function (x) { return x !== ''; });
-        if (cells.length < o.columns.length) return;
+        // rfOK: an optional column (the gauge table's Bend deduction) may be left off the pasted line
+        if (cells.length < o.columns.filter(function (col) { return !col.optional; }).length) return;
         var c = {}, ok = true;
-        o.columns.forEach(function (col, j) { var x = cells[j]; if (col.type === 'text') c[col.key] = x; else { c[col.key] = parseFloat(x); if (!isFinite(c[col.key])) ok = false; } });
+        o.columns.forEach(function (col, j) { var x = cells[j]; if (col.optional && x == null) c[col.key] = null; else if (col.type === 'text') c[col.key] = x; else { c[col.key] = parseFloat(x); if (!isFinite(c[col.key])) ok = false; } });
         if (ok) rows.push(c);
       });
       paste.value = ''; render();
@@ -2750,7 +2751,7 @@
     if (o.note) wrap.appendChild(el('p', { html: '<small>' + o.note + '</small>' }));
     UI.showModal({ title: o.title, body: wrap, buttons: [
       { label: 'OK', primary: true, id: o.id + '-ok', action: function () {
-        var out = rows.filter(function (r) { return o.columns.every(function (c) { return c.type === 'text' ? String(r[c.key] == null ? '' : r[c.key]).trim() !== '' : isFinite(r[c.key]) && r[c.key] != null; }); });
+        var out = rows.filter(function (r) { return o.columns.every(function (c) { return c.optional && (r[c.key] == null || r[c.key] === '') ? true : c.type === 'text' ? String(r[c.key] == null ? '' : r[c.key]).trim() !== '' : isFinite(r[c.key]) && r[c.key] != null; }); });
         UI.closeModal(); o.onOK(out);
       } },
       { label: 'Cancel', id: o.id + '-cancel', action: UI.closeModal }
@@ -2782,10 +2783,12 @@
     name.addEventListener('keydown', function (e) { e.stopPropagation(); });
     var u = t.units || 'in';
     gridDialog({ id: 'gt-dialog', title: 'Gauge Table', head: el('div', { class: 'kv' }, [el('span', { text: 'Table name' }), name]), rows: t.rows,
-      columns: [{ key: 'gauge', label: 'Gauge', type: 'text' }, { key: 'thickness', label: 'Thickness (' + u + ')' }, { key: 'radius', label: 'Bend radius (' + u + ')' }, { key: 'kFactor', label: 'K-factor' }],
-      note: (t.example ? 'The radius and K-factor columns of the shipped tables are an <b>' + EXAMPLE_NOTE + '</b>. ' : '') + 'The table is saved in this part.',
+      columns: [{ key: 'gauge', label: 'Gauge', type: 'text' }, { key: 'thickness', label: 'Thickness (' + u + ')' }, { key: 'radius', label: 'Bend radius (' + u + ')' }, { key: 'kFactor', label: 'K-factor' },
+        // rfOK: the shop's bend deduction per gauge (blank: the row's K-factor), so a gauge pick keeps the shop's BD
+        { key: 'bendDeduction', label: 'Bend deduction (' + u + ')', optional: true }],
+      note: (t.example ? 'The radius and K-factor columns of the shipped tables are an <b>' + EXAMPLE_NOTE + '</b>. ' : '') + 'A Bend deduction typed in a row is used for that gauge instead of its K-factor. The table is saved in this part.',
       onOK: function (rows) {
-        v.customGauge = { name: name.value.trim() || 'Shop gauge table', units: u, rows: rows.map(function (r) { return { gauge: String(r.gauge).trim(), thickness: +r.thickness, radius: +r.radius, kFactor: +r.kFactor }; }) };
+        v.customGauge = { name: name.value.trim() || 'Shop gauge table', units: u, rows: rows.map(function (r) { var o = { gauge: String(r.gauge).trim(), thickness: +r.thickness, radius: +r.radius, kFactor: +r.kFactor }; if (r.bendDeduction != null && r.bendDeduction !== '' && isFinite(r.bendDeduction) && +r.bendDeduction > 0) o.bendDeduction = +r.bendDeduction; return o; }) };
         v.gaugeTable = '__custom'; v.useGauge = true;
         if (!K.gaugeRow(v.customGauge, v.gauge, App.model.units) && v.customGauge.rows.length) v.gauge = v.customGauge.rows[0].gauge;
         applyGauge(v);
@@ -8799,7 +8802,9 @@
     var out = baseI3D ? baseI3D.apply(this, arguments) : [];
     if ((!out || !out.length) && f && f.type === 'flange' && !f.hem && !f.miterFlange && f.lengthEnd !== 'upToVertex' && App.build && App.build.flanges) {
       var fc = faceIndex != null && App.mesh ? App.mesh.faces[faceIndex] : null;
-      out = UI.flangeLengthHandles(App.build.flanges[f.id], f.length, fc && fc.centroid);
+      var len = f.length;
+      if (!(+len > 0) && UI.configDimValue) len = UI.configDimValue({ feature: f.id, field: 'length' });   // rfOK: a configured length
+      out = UI.flangeLengthHandles(App.build.flanges[f.id], len, fc && fc.centroid);
     }
     return out || [];
   };

@@ -2733,3 +2733,9 @@ body.tree-reorder-no, body.tree-reorder-no * { cursor: not-allowed !important; }
 :root[data-profile] #viewport.vp-profile-bg.vp-light #dim-layer, :root[data-profile] #viewport.vp-profile-bg.vp-light #ord-layer,
 :root[data-profile] #viewport.vp-profile-bg.vp-light #i3d-layer { --dim-halo: rgba(236,236,236,0.62); --dim-halo-w: 1.6px; }
 :root[data-profile] #viewport.vp-profile-bg.vp-light #i3d-layer .i3d-dim-text { stroke: rgba(236,236,236,0.62); stroke-width: 1.6px; }
+/* lane shopflow7 (rfOK): the Modify box's This configuration / All configurations choice */
+#i3d-edit .cfg-scope { display: block; width: 100%; margin-top: 2px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: inherit; font: 11px "Segoe UI", sans-serif; padding: 1px 4px; text-align: left; cursor: pointer; white-space: nowrap; }
+#i3d-edit .cfg-scope[hidden] { display: none; }
+/* lane shopflow7 (rfOK): the Design Table dialog leaves the model reachable (double-click a dimension to add its column) */
+#modal.dt-pick { pointer-events: none; background: transparent; place-items: start end; }
+#modal.dt-pick #modal-card { pointer-events: auto; margin: 56px 12px 0 0; max-height: calc(100vh - 80px); overflow: auto; }

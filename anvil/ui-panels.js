@@ -4329,7 +4329,7 @@
     var first = body.querySelector('textarea, input, button');
     if (first) first.focus();
   }
-  function closeModal() { $('modal').hidden = true; $('modal-card').classList.remove('wide'); }
+  function closeModal() { $('modal').hidden = true; $('modal-card').classList.remove('wide'); $('modal').classList.remove('dt-pick'); }
   // Enter in a dialog (ui-app.js keydown) presses its primary button
   function modalDefault() { var b = $('modal-buttons').querySelector('.btn.primary'); if (b && !b.disabled) b.click(); }
 
@@ -4943,9 +4943,11 @@
       });
       colSel.appendChild(el('option', { value: '*', text: 'Blank column (type a header)' }));
     }
-    colSel.addEventListener('change', function () {
-      var v = colSel.value;
-      if (!v) return;
+    colSel.addEventListener('change', function () { addColumn(colSel.value); });
+    // rfOK: also from a double click on a model dimension while the dialog is open (UI.designTableState.addColumn)
+    function addColumn(v) {
+      if (!v) return false;
+      if (v !== '*' && dtGrid[0].some(function (h, j) { return j > 0 && String(h) === String(v); })) { render(); return false; }
       dtGrid.forEach(function (r, i) {
         if (i === 0) { r.push(v === '*' ? '' : v); return; }
         var val = '';   // a known column starts with each configuration's value now
@@ -4953,7 +4955,8 @@
         r.push(val);
       });
       render();
-    });
+      return true;
+    }
     function render(errs) {
       table.innerHTML = '';
       var bad = {};
@@ -5052,8 +5055,84 @@
     ] };
     showModal(spec);
     $('modal-card').classList.add('wide');
+    // rfOK: the model stays reachable while the table is open (SolidWorks: double-click a feature, then a dimension,
+    // to add its column); the card sits at the top right, the backdrop lets the clicks through (ui-panels.js last block)
+    $('modal').classList.add('dt-pick');
     render();
-    UI.designTableState = { grid: function () { return dtGrid; }, set: function (g) { dtGrid = g; render(); }, apply: apply, copy: copyText, pasteText: function (t) { var g = K.tsvToGrid(t); if (g.length) { dtGrid = g; render(); } } };
+    UI.designTableState = { grid: function () { return dtGrid; }, set: function (g) { dtGrid = g; render(); }, apply: apply, copy: copyText, addColumn: addColumn, pasteText: function (t) { var g = K.tsvToGrid(t); if (g.length) { dtGrid = g; render(); } } };
   }
   UI.showDesignTable = showDesignTable;
+})(UI);
+
+// rfOK (2026-11-18, lane shopflow7): the Modify box of a model dimension in a part with configurations, as SolidWorks'
+// Modify dialog: a "This configuration" / "All configurations" choice under the value (a button that toggles, so the
+// value keeps the focus). "This configuration" links the dimension to a variable as a Design Table column does and sets
+// it in the active configuration only (Kernel.configureDimension); "All configurations" sets it everywhere. A dimension
+// already linked keeps its Modify box (ui-select.js reads UI.configDimValue for its value). Hooks called by ui-select.js:
+// UI.configDimBox(box, h) when the box opens, UI.configDimApply(h, value, pushed) -> a Promise when it handled the value.
+(function (UI) {
+  'use strict';
+  var App = UI.App, K = UI.K;
+  var scope = 'this';   // the choice of the last Modify box (SolidWorks' default "This configuration" assumed, not checked)
+  function partWithConfigs() { return !!(App.model && App.model.type !== 'assembly' && App.mode !== 'sketch' && K.configurationList && (K.configurationList(App.model) || []).length >= 2); }
+  function refOf(h) {
+    if (!h) return null;
+    if (h.kind === 'sdim' && !h.auto && h.sketch != null && h.dimIndex != null) return { sketch: h.sketch, dimIndex: h.dimIndex };
+    if (h.kind === 'fparam' && h.fid != null) return { feature: h.fid, field: h.key };
+    if (h.kind === 'depth' && h.fid != null) return { feature: h.fid, field: 'depth' };
+    return null;
+  }
+  UI.configDimRef = refOf;
+  // the Design Table open (ui-panels.js showDesignTable, #modal.dt-pick): a double click on a face shows its feature's
+  // dimensions, a double click on a dimension adds its column (D1@Edge-Flange1, D1@Sketch2 …)
+  document.addEventListener('dblclick', function (ev) {
+    var modal = document.getElementById('modal'), st = UI.designTableState;
+    if (!modal || modal.hidden || !modal.classList.contains('dt-pick') || !st || !st.addColumn || !document.getElementById('dt-dialog')) return;
+    if (!ev.target.closest || !ev.target.closest('#viewport')) return;
+    ev.preventDefault(); ev.stopPropagation();
+    var g = ev.target.closest('#i3d-layer g.i3d');
+    if (g) {
+      if (document.activeElement && document.activeElement.closest && document.activeElement.closest('#i3d-edit')) document.activeElement.blur();   // the press opened its Modify box
+      var h = (UI.instant3DHandles ? UI.instant3DHandles() : [])[+g.getAttribute('data-index')], ref = refOf(h), label = ref && K.dimLabel(App.model, ref);
+      if (!label) { UI.setStatus('That dimension cannot be a Design Table column.'); return; }
+      UI.setStatus(st.addColumn(label) ? 'Design Table: column ' + label + ' added.' : 'Design Table: ' + label + ' is already a column.');
+      return;
+    }
+    var vp = document.getElementById('viewport').getBoundingClientRect(), hit = UI.pickFace ? UI.pickFace(ev.clientX - vp.left, ev.clientY - vp.top) : null;
+    var fc = hit && App.mesh && App.mesh.faces[hit.index], fid = fc && App.triShared ? App.triShared[fc.start] : null, f = fid != null ? K.findFeature(App.model, fid) : null;
+    if (f && UI.showFeatureDims && UI.showFeatureDims(f)) UI.setStatus(f.name + ': double-click a dimension to add it to the Design Table.');
+  }, true);
+  UI.configDimValue = function (ref) { return partWithConfigs() && K.linkedDimValue ? K.linkedDimValue(App.model, ref) : null; };
+  UI.configDimScope = function (s) { if (s === 'this' || s === 'all') scope = s; return scope; };
+  UI.configDimBox = function (box, h) {
+    var b = box.querySelector('.cfg-scope');
+    var show = partWithConfigs() && !!refOf(h) && !!K.dimLabel(App.model, refOf(h));
+    if (!show) { if (b) b.hidden = true; return; }
+    if (!b) {
+      b = document.createElement('button');
+      b.type = 'button'; b.className = 'cfg-scope'; b.tabIndex = -1;
+      b.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); });   // the value keeps the focus
+      b.addEventListener('click', function (ev) { ev.preventDefault(); ev.stopPropagation(); scope = scope === 'this' ? 'all' : 'this'; paint(); });
+      box.appendChild(b);
+    }
+    function paint() {
+      var ac = K.activeConfiguration(App.model);
+      b.textContent = scope === 'this' ? 'This configuration' + (ac ? ' (' + ac.name + ')' : '') : 'All configurations';
+      b.title = 'Click: ' + (scope === 'this' ? 'All configurations' : 'This configuration') + '. Which configurations the value goes to.';
+      b.setAttribute('data-scope', scope);
+    }
+    b.hidden = false; paint();
+  };
+  UI.configDimApply = function (h, value, pushed) {
+    var ref = refOf(h);
+    if (!partWithConfigs() || !ref) return null;
+    var linked = K.linkedDimValue(App.model, ref) != null;
+    if (scope === 'all' && !linked) return null;   // a plain dimension: written into the feature as before
+    if (!pushed) UI.pushUndo();
+    var res = K.configureDimension(App.model, ref, value, scope);
+    if (!res.ok) { UI.setStatus('Value not changed: ' + res.error); return Promise.resolve(false); }
+    var ac = K.activeConfiguration(App.model);
+    var msg = K.dimLabel(App.model, ref) + ' set to ' + UI.fmtNum(value, 4) + (scope === 'this' ? ' in ' + (ac ? ac.name : 'this configuration') + ' only' : ' in all configurations') + '.';
+    return UI.afterRebuild(UI.rebuild(), function () { if (UI.refreshTree) UI.refreshTree(); if (UI.refreshConfigPanel) UI.refreshConfigPanel(); UI.setStatus(msg); return UI.whenIdle(); }).then(function () { return true; });
+  };
 })(UI);

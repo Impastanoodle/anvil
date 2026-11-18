@@ -1293,6 +1293,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   function extrudeHandle(f, sk, pl, faceIndex) {
     if (f.end === 'through' || f.dir2) return null;
     var depth = numeric(f.depth);
+    if (depth == null && UI.configDimValue) depth = UI.configDimValue({ feature: f.id, field: 'depth' });   // rfOK: a configured depth
     if (depth == null || !(depth > 0)) return null;
     var n = pl.n, mid = f.end === 'mid', want = mid ? depth / 2 : depth, sign = f.reverse ? -1 : 1, faces = App.mesh.faces;
     var tol = 1e-4 * Math.max(1, depth);
@@ -1825,6 +1826,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     editBox.hidden = false;
     editBox.setAttribute('data-kind', h.kind);
     editBox.title = h.label;
+    if (UI.configDimBox) UI.configDimBox(editBox, h);   // rfOK: This configuration / All configurations (ui-panels.js)
     positionEdit();
     try { editInput.focus(); editInput.select(); } catch (e) { }
   }
@@ -1850,6 +1852,8 @@ if (typeof UI !== 'undefined') (function (UI) {
       return Promise.resolve(false);
     }
     if (Math.abs(r.value - h.value) < 1e-12) return Promise.resolve(true);
+    var cfgP = UI.configDimApply ? UI.configDimApply(h, r.value, ed.pushed) : null;   // rfOK: per configuration (ui-panels.js)
+    if (cfgP) return cfgP.then(function (ok) { if (ok) reselect({ fid: h.fid != null ? h.fid : ownerFeature(), side: h.side, kind: h.kind }); return ok; });
     var d = { pushed: ed.pushed };
     pushUndoOnce(d);
     if (h.apply(r.value) === false) { if (UI.setStatus) UI.setStatus('Value not changed: the sketch cannot reach ' + fmtV(r.value, h) + '.'); return Promise.resolve(false); }   // sketch-units
@@ -1972,6 +1976,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     specs.forEach(function (d) {
       if (!d || d.type === 'callout' || d.type === 'flip') return;
       var val = numeric(f[d.key]);
+      if (val == null && UI.configDimValue) val = UI.configDimValue({ feature: f.id, field: d.key });   // rfOK: configured
       if (val == null) return;   // an equation drives it: no handle
       var h = { kind: 'fparam', fid: f.id, dimIndex: d.key, key: d.key, label: (f.name || f.type) + ' ' + String(d.label || d.key).toLowerCase(), value: val, min: d.min != null ? d.min : 0, max: d.max };
       h.apply = function (v) { f[d.key] = v; return true; };
