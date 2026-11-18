@@ -17,7 +17,7 @@
   function drawOverlay() { DW.drawOverlay(); }
   function units() { return DW.units(); }
   var TOOL_NAMES = { line: 'Line', centerline: 'Centerline', rect: 'Corner Rectangle', circle: 'Circle', arc: 'Centerpoint Arc', spline: 'Spline', point: 'Point', text: 'Text',
-    coin: 'Coincident', hideedges: 'Hide/Show Edges', relpick: 'Relative View', relplace: 'Relative View', hideann: 'Hide/Show Annotations', emptyview: 'Empty View' };
+    coin: 'Coincident', hideedges: 'Hide/Show Edges', relpick: 'Relative View', relplace: 'Relative View', hideann: 'Hide/Show Annotations', emptyview: 'Empty View', block: 'Insert Block' };
   var TOOL_MSG = {
     line: 'Line: click its start, then each next point (the lines chain; an end on another point is held Coincident, a near-level line is made Horizontal). Esc ends.',
     centerline: 'Centerline: click its start, then its end. Esc ends.',
@@ -38,6 +38,10 @@
     relVertical: '<path d="M8 2 v12" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="2.5" r="1.4" fill="#6d6d6d"/><circle cx="8" cy="13.5" r="1.4" fill="#6d6d6d"/><text x="12.5" y="10" font-size="6" font-weight="700" font-family="Arial" text-anchor="middle" fill="#6d6d6d">|</text>',
     lineFormat: '<path d="M2 3.5 h12" stroke="currentColor" stroke-width="0.8"/><path d="M2 7.5 h12" stroke="currentColor" stroke-width="1.6"/><path d="M2 11.5 h12" stroke="#6d6d6d" stroke-width="1.1" stroke-dasharray="2.4 1.2"/><path d="M2 14.5 h12" stroke="#e0553c" stroke-width="1" stroke-dasharray="4 1 1 1"/>',
     hideShowEdges: '<path d="M2.5 12.5 h11 M2.5 12.5 v-9 h11 v9" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M5 9.5 h6" stroke="#a4a4a4" stroke-width="1" stroke-dasharray="1.6 1"/><path d="M3 2 l10 12" stroke="#e0553c" stroke-width="1.2"/>',
+    // (rfPM) blocks: a dashed box round a small stamp; insert: an arrow into it; explode: its pieces apart
+    makeBlock: '<path d="M2 3 h12 v10 H2 z" fill="none" stroke="#6d6d6d" stroke-width="1" stroke-dasharray="2 1.2"/><path d="M4.5 5.5 h7 v5 h-7 z" fill="#d8d8d8" stroke="currentColor" stroke-width="1"/><path d="M4.5 8 h7" stroke="currentColor" stroke-width="0.8"/>',
+    insertBlock: '<path d="M6.5 5.5 h7 v6 h-7 z" fill="#d8d8d8" stroke="currentColor" stroke-width="1"/><path d="M6.5 8.5 h7" stroke="currentColor" stroke-width="0.8"/><path d="M1.5 3 l4.2 4.2" stroke="#e0553c" stroke-width="1.4"/><path d="M6.4 7.9 l-0.2 -3 -2.8 2.8 z" fill="#e0553c"/>',
+    explodeBlock: '<path d="M2 3 h5 v4 H2 z M9 3 h5 v4 H9 z M2 9 h5 v4 H2 z M9 9 h5 v4 H9 z" fill="#d8d8d8" stroke="currentColor" stroke-width="0.9"/>',
     relativeView: '<path d="M2 2.5 h12 v11 H2 z" fill="none" stroke="#6d6d6d" stroke-width="1" stroke-dasharray="2 1.2"/><path d="M4.5 9 l4 -3 4 2 -4 3 z" fill="#c4c4c4" stroke="currentColor" stroke-width="0.9"/><path d="M8.5 11 v-2.5" stroke="#e0553c" stroke-width="1.2"/><circle cx="8.5" cy="8" r="0.9" fill="#e0553c"/>'
   };
   var baseIcons = Icons;
@@ -68,6 +72,7 @@
     if (e.t === 'point') return Math.hypot(p[0] - e.p[0], p[1] - e.p[1]);
     if (e.t === 'text') return inBox(p, textBox(e), px(2)) ? 0 : Infinity;
     if (e.t === 'dim') return inBox(p, it.dim.box, px(2)) ? 0 : Math.min.apply(null, it.dim.lines.map(function (l) { return segDist(p, l[0], l[1]); }).concat([Infinity]));
+    if (e.t === 'block') return Math.min.apply(null, (it.ents || []).map(function (be) { return distTo({ e: be }, p); }).concat([Infinity]));   // (rfPM) any of its entities
     return Infinity;
   }
   // hit(p, opts) -> { id, it, end } of the sketch item under p (an end within 7 px wins), or null
@@ -140,6 +145,7 @@
     if (name === 'emptyview') { emptyViewClick(p); return; }
     if (name === 'relpick') { relPick(p); return; }
     if (name === 'relplace') { relPlace(p); return; }
+    if (name === 'block') { blockPlace(p); return; }   // (rfPM) Insert Block
     if (name === 'coin') {
       var h = hit(p, { noDims: true });
       if (!h || !h.end) { UI.setStatus('Coincident: click an end point (or a centre) of a sketch entity.'); return; }
@@ -358,6 +364,102 @@
     relate(kind, ids);
   }
 
+  // ------------------------------------------------------------------ (rfPM) Blocks: Tools ▸ Block ▸ Make / Insert / Explode / Save
+  // SolidWorks 2024's drawing blocks: Make Block turns the selected sketch entities (lines, arcs, circles, splines,
+  // points, text) into a named block, one instance where they were (insertion point: their lower-left corner); Insert
+  // Block places instances (scale, angle) with clicks on the sheet or in a view, until Esc; Explode Block gives an
+  // instance back as plain entities; Save Block puts a definition in this computer's block library (every drawing's
+  // Insert Block lists it, as a shop keeps its stamps). The engine is drawing-views.js (Drawing.makeBlock …).
+  var LIB_KEY = 'anvil.drawingBlocks';
+  function libRead() { try { var o = JSON.parse(localStorage.getItem(LIB_KEY) || '{}'); return o && typeof o === 'object' ? o : {}; } catch (e) { return {}; } }
+  function libWrite(o) { try { localStorage.setItem(LIB_KEY, JSON.stringify(o)); return true; } catch (e) { return false; } }
+  function blockIdsSel() { return selIds().filter(function (id) { var e = Drawing.sketchEntity(doc(), id); return e && e.t === 'block'; }); }
+  function cmdMakeBlock() {
+    if (!D.active) return;
+    var ids = selIds().filter(function (id) { var e = Drawing.sketchEntity(doc(), id); return e && e.t !== 'rel' && e.t !== 'dim'; });
+    if (!ids.length) { UI.toast('Make Block: select the sketch entities first (lines, arcs, circles, splines, points, text; Ctrl adds).'); return; }
+    var n = 1, names = Drawing.blocks(doc()).map(function (b) { return b.name; });
+    while (names.indexOf('Block' + n) >= 0) n++;
+    openPM({ title: 'Make Block', icon: 'makeBlock', command: 'dwMakeBlock',
+      message: ids.length + ' sketch entit' + (ids.length > 1 ? 'ies' : 'y') + ' become one block; the insertion point is their lower-left corner. Insert Block places it again, on this or any sheet.',
+      values: { name: 'Block' + n },
+      groups: [{ title: 'Block', fields: [{ type: 'text', key: 'name', label: 'Block name' }, { type: 'static', label: 'Block entities', value: function () { return ids.length + ' selected'; } }] }],
+      onOK: function (v) {
+        var nm = String(v.name || '').trim(), ins = null;
+        try { Drawing.makeBlock(JSON.parse(JSON.stringify(doc())), ids, { name: nm }); } catch (err) { UI.toast(err.message); return false; }
+        ins = edit(function (dc) { return Drawing.makeBlock(dc, ids, { name: nm }); });
+        D.sel = { kind: 'sk', id: ins.id, ids: [ins.id] }; drawOverlay(); DW.renderTree();
+        UI.setStatus('Block "' + ins.name + '" made (' + ids.length + ' entities). Drag it to move it; Tools ▸ Block ▸ Insert places it again.');
+      } });
+  }
+  // the blocks Insert Block offers: the drawing's, then the library's that the drawing has not
+  function blockOptions() {
+    var own = Drawing.blocks(doc()).map(function (b) { return b.name; }), lib = Object.keys(libRead()).filter(function (n) { return own.indexOf(n) < 0; });
+    return own.map(function (n) { return [n, n]; }).concat(lib.map(function (n) { return ['lib:' + n, n + ' (library)']; }));
+  }
+  function cmdInsertBlock(name) {
+    if (!D.active) return;
+    var opts = blockOptions();
+    if (!opts.length) { UI.toast('Insert Block: no blocks yet. Select sketch entities and Make Block first.'); return; }
+    var vals = { block: name && opts.some(function (o) { return o[0] === name; }) ? name : opts[0][0], scale: 1, angle: 0 };
+    openPM({ title: 'Insert Block', icon: 'insertBlock', command: 'dwInsertBlock',
+      message: 'Pick the block, its scale and angle, press OK, then click where it goes (on the sheet, or in a view to move with it). Each click places one; Esc ends.',
+      values: vals,
+      groups: [{ title: 'Blocks to Insert', fields: [{ type: 'select', key: 'block', label: 'Block', options: opts }] },
+        { title: 'Parameters', fields: [{ type: 'number', key: 'scale', label: 'Scale', min: 0.001 }, { type: 'number', key: 'angle', label: 'Angle (°)' }] }],
+      onOK: function (v) {
+        var spec = { name: String(v.block), scale: +v.scale > 0 ? +v.scale : 1, rot: +v.angle || 0 };
+        setTimeout(function () { startTool('block'); D.pending = { pts: [], spec: spec }; drawOverlay(); UI.setStatus('Insert Block "' + spec.name.replace(/^lib:/, '') + '": click where it goes (its insertion point). Esc ends.'); }, 0);
+      } });
+  }
+  function blockPlace(p) {
+    var P = D.pending || {}, spec = P.spec;
+    if (!spec) return;
+    var view = ownerAt(p), lib = /^lib:/.test(spec.name), name = spec.name.replace(/^lib:/, ''), def = lib ? libRead()[name] : null, b = null;
+    try {
+      b = edit(function (dc) {
+        if (lib && !Drawing.blockDef(dc, name)) Drawing.defineBlock(dc, name, def);
+        return Drawing.insertBlock(dc, name, p, view, { scale: spec.scale, rot: spec.rot });
+      });
+    } catch (err) { UI.toast(err.message); return; }
+    if (lib) spec.name = name;   // (it is the drawing's own now)
+    D.pending = { pts: [], spec: spec, at: p };
+    drawOverlay();
+    UI.setStatus('Block "' + name + '" placed' + (view != null ? ' in ' + (Drawing.findView(doc(), view) || {}).name : '') + '. Click to place another, Esc ends.');
+    return b;
+  }
+  function cmdExplodeBlock(ids) {
+    if (!D.active) return;
+    ids = ids || blockIdsSel();
+    if (!ids.length) { UI.toast('Explode Block: select an inserted block first.'); return; }
+    var out = [];
+    edit(function (dc) { ids.forEach(function (id) { out = out.concat(Drawing.explodeBlock(dc, id)); }); });
+    D.sel = out.length ? { kind: 'sk', id: out[0], ids: out } : null; drawOverlay(); DW.renderTree();
+    UI.setStatus(ids.length + ' block' + (ids.length > 1 ? 's' : '') + ' exploded into ' + out.length + ' sketch entities.');
+  }
+  function cmdSaveBlock(id) {
+    if (!D.active) return;
+    var e = id != null ? Drawing.sketchEntity(doc(), id) : Drawing.sketchEntity(doc(), blockIdsSel()[0]);
+    if (!e || e.t !== 'block') { UI.toast('Save Block: select an inserted block first.'); return; }
+    var lib = libRead(), had = !!lib[e.name];
+    lib[e.name] = Drawing.blockDef(doc(), e.name);
+    if (!libWrite(lib)) { UI.toast('Save Block: this browser would not keep it (storage blocked).'); return; }
+    UI.setStatus('Block "' + e.name + '" ' + (had ? 'updated in' : 'saved to') + ' the block library: Insert Block lists it in every drawing.');
+  }
+  function cmdBlockProps(id) {
+    var e = Drawing.sketchEntity(doc(), id);
+    if (!e || e.t !== 'block') return;
+    D.sel = { kind: 'sk', id: id, ids: [id] }; drawOverlay();
+    var vals = { scale: +e.scale > 0 ? +e.scale : 1, angle: +e.rot || 0 }, orig = JSON.parse(JSON.stringify(vals));
+    openPM({ title: 'Block Properties', icon: 'insertBlock', command: 'dwBlockProps', message: 'Block "' + e.name + '"' + (e.view != null ? ' in ' + (Drawing.findView(doc(), e.view) || {}).name : ' on the sheet') + '.', values: vals,
+      groups: [{ title: 'Block', fields: [{ type: 'static', label: 'Name', value: function () { return e.name; } }, { type: 'number', key: 'scale', label: 'Scale', min: 0.001 }, { type: 'number', key: 'angle', label: 'Angle (°)' }] },
+        { title: 'Block', fields: [{ type: 'buttons', key: 'b', buttons: [{ label: 'Explode Block', onclick: function () { UI.pmCancel(); cmdExplodeBlock([id]); } }, { label: 'Save Block', onclick: function () { cmdSaveBlock(id); } }] }] }],
+      onOK: function (v) {
+        if (v.scale === orig.scale && v.angle === orig.angle) return;
+        edit(function (dc) { Drawing.editSketchEntity(dc, id, { scale: +v.scale > 0 ? +v.scale : 1, rot: +v.angle || 0 }); });
+      } });
+  }
+
   // ------------------------------------------------------------------ Relative View
   var REL = null;
   function cmdRelativeView() {
@@ -478,7 +580,7 @@
   DW.skDblClick = function (p) {
     var h = hit(p);
     if (!h) return false;
-    if (h.it.t === 'dim') editDim(h.id); else cmdEntityProps(h.id);
+    if (h.it.t === 'dim') editDim(h.id); else if (h.it.t === 'block') cmdBlockProps(h.id); else cmdEntityProps(h.id);
     return true;
   };
   DW.skContext = function (p, e) {
@@ -492,7 +594,9 @@
     var lines = ids.filter(function (id) { var x = Drawing.sketchEntity(doc(), id); return x && x.t === 'line'; });
     var menu = [];
     if (h.it.t === 'dim') menu.push({ label: 'Modify Value…', action: function () { editDim(h.id); } });
-    else menu.push({ label: 'Properties…', action: function () { cmdEntityProps(h.id); } }, { label: 'Line Format…', action: function () { cmdLineFormat({ ids: ids.slice() }); } });
+    else if (h.it.t === 'block') menu.push({ label: 'Properties…', action: function () { cmdBlockProps(h.id); } }, { label: 'Explode Block', action: function () { cmdExplodeBlock(ids.filter(function (id) { var x = Drawing.sketchEntity(doc(), id); return x && x.t === 'block'; })); } },
+      { label: 'Save Block…', action: function () { cmdSaveBlock(h.id); } });   // (rfPM)
+    else menu.push({ label: 'Properties…', action: function () { cmdEntityProps(h.id); } }, { label: 'Line Format…', action: function () { cmdLineFormat({ ids: ids.slice() }); } }, { label: 'Make Block…', action: function () { cmdMakeBlock(); } });
     if (lines.length) menu.push({ sep: true }, { label: 'Make Horizontal', action: function () { relate('H', lines); } }, { label: 'Make Vertical', action: function () { relate('V', lines); } });
     menu.push({ sep: true }, { label: 'Delete', key: 'Del', action: function () { DW.skDelete(); } });
     UI.showMenu(e.clientX, e.clientY, menu);
@@ -534,6 +638,7 @@
       else if (e.t === 'spline') svgNode('path', Object.assign(a, { d: Drawing.sketchSpline(e.pts).map(function (q, i) { return (i ? 'L' : 'M') + q[0] + ' ' + (H - q[1]); }).join(' ') }), g);
       else if (e.t === 'point') svgNode('circle', Object.assign(a, { cx: e.p[0], cy: H - e.p[1], r: px(4) }), g);
       else if (e.t === 'text') { var b = textBox(e); svgNode('rect', { class: 'dw-dbox' + (cls.indexOf('pre') < 0 ? ' sel' : ''), x: b.x0 - pad / 2, y: H - b.y1 - pad / 2, width: b.x1 - b.x0 + pad, height: b.y1 - b.y0 + pad, 'stroke-width': sw }, g); }
+      else if (e.t === 'block') Drawing.blockEnts(doc(), e).forEach(function (be) { if (be.t === 'text') { var tb = textBox(be); svgNode('rect', Object.assign({}, a, { x: tb.x0, y: H - tb.y1, width: tb.x1 - tb.x0, height: tb.y1 - tb.y0 }), g); } else geo(be, cls, w); });   // (rfPM)
     }
     var ids = selIds(), hov = D.hover && D.hover.kind === 'sk' ? D.hover : null;
     if (ids.length || hov) items().forEach(function (it) {
@@ -581,6 +686,10 @@
     }
     if (T === 'sk:spline' && P.pts && P.pts.length) { var sp = P.pts.concat(at ? [at] : []); if (sp.length >= 2) geo({ t: 'spline', pts: sp }, 'dw-cut', gw); }
     if (T === 'sk:relpick' && REL) REL.pts.forEach(function (q, i) { svgNode('circle', { class: 'dw-hot dw-rel-pick', cx: q[0], cy: H - q[1], r: px(5), fill: i ? '#3ba776' : '#2a2a2a', 'stroke-width': px(1) }, g); });
+    if (T === 'sk:block' && P.at && P.spec) {   // (rfPM) the block where a click puts it
+      var bn = P.spec.name.replace(/^lib:/, ''), src = /^lib:/.test(P.spec.name) ? { blocks: (function () { var o = {}; o[bn] = libRead()[bn]; return o; })() } : doc();
+      Drawing.blockEnts(src, { name: bn, p: P.at, scale: P.spec.scale, rot: P.spec.rot }).forEach(function (be) { if (be.t !== 'text') geo(be, 'dw-cut dw-blk-prev', gw); else { var tb = textBox(be); svgNode('rect', { class: 'dw-cut dw-blk-prev', x: tb.x0, y: H - tb.y1, width: tb.x1 - tb.x0, height: tb.y1 - tb.y0, fill: 'none', 'stroke-width': gw }, g); } });
+    }
     if (T === 'sk:relplace' && P.at && P.w) svgNode('rect', { class: 'dw-ghost', x: P.at[0] - P.w / 2, y: H - P.at[1] - P.h / 2, width: P.w, height: P.h, 'stroke-width': sw, 'stroke-dasharray': px(5) + ' ' + px(3) }, g);
   };
 
@@ -605,6 +714,8 @@
     { sep: true },
     { id: 'lineFormat', label: 'Line\nFormat', help: 'Line style, thickness and colour of the selected sketch entities', run: function () { cmdLineFormat(); } },
     { id: 'hideShowEdges', label: 'Hide/Show\nEdges', help: 'Click view edges to hide them; hidden ones show grey, click to show them again', run: function () { startTool('hideedges'); }, active: function () { return toolOn('hideedges'); } }
+    // (rfPM) Blocks are on Tools ▸ Block and the sketch's right-click menu (SolidWorks' places): a ribbon button would
+    // change the drawing's command list that smoke rfLH pins
   ];
   // RIBBON.Sketch is the part's Sketch tab; in a drawing the same tab name shows the drawing's sketch tools
   function swapTab(R, keepPart) {
@@ -663,12 +774,17 @@
         { label: 'Sketch Entities ▸ Point', action: function () { startTool('point'); } }, { label: 'Sketch Entities ▸ Text', action: function () { startTool('text'); } },
         { label: 'Relations ▸ Add Relation ▸ Horizontal', action: function () { cmdRelation('H'); } }, { label: 'Relations ▸ Add Relation ▸ Vertical', action: function () { cmdRelation('V'); } },
         { label: 'Relations ▸ Add Relation ▸ Coincident', action: function () { cmdRelation('coincident'); } },
-        { label: 'Line Format…', action: function () { cmdLineFormat(); } }, { label: 'Hide/Show Edges', action: function () { startTool('hideedges'); } });
+        { label: 'Line Format…', action: function () { cmdLineFormat(); } }, { label: 'Hide/Show Edges', action: function () { startTool('hideedges'); } },
+        { label: 'Block ▸ Make…', help: 'Make a block from the selected sketch entities and notes', action: function () { cmdMakeBlock(); } },   // (rfPM)
+        { label: 'Block ▸ Insert…', help: 'Insert a block from this drawing or the block library, at a scale and angle', action: function () { cmdInsertBlock(); } },
+        { label: 'Block ▸ Explode', help: 'Turn the selected block back into plain sketch entities', action: function () { cmdExplodeBlock(); } },
+        { label: 'Block ▸ Save…', help: 'Save the selected block to this computer\'s block library', action: function () { cmdSaveBlock(); } });
     }
     return out;
   };
 
   // ------------------------------------------------------------------ automation: anvil.drawing.sketch
+  DW.cmdMakeBlock = cmdMakeBlock; DW.cmdInsertBlock = cmdInsertBlock; DW.cmdExplodeBlock = cmdExplodeBlock; DW.cmdSaveBlock = cmdSaveBlock; DW.blockLibraryKey = LIB_KEY;   // (rfPM)
   DW.sketchTool = startTool; DW.cmdLineFormat = cmdLineFormat; DW.cmdRelativeView = cmdRelativeView; DW.skHit = hit; DW.cmdSketchRelation = cmdRelation;
   function api() {
     return {
@@ -680,6 +796,11 @@
       move: function (id, dx, dy, end) { return edit(function (dc) { return Drawing.moveSketchEntity(dc, id, dx, dy, end); }); },
       remove: function (id) { edit(function (dc) { Drawing.deleteSketchEntity(dc, id); }); },
       relate: function (kind, refs) { return edit(function (dc) { return Drawing.addSketchRelation(dc, kind, refs); }); },
+      // (rfPM) blocks: makeBlock(ids, { name, base }), insertBlock(name, p, viewId?, { scale, rot }), explodeBlock(id), blocks()
+      makeBlock: function (ids, o) { return edit(function (dc) { return Drawing.makeBlock(dc, ids, o); }); },
+      insertBlock: function (name, p, viewId, o) { return edit(function (dc) { return Drawing.insertBlock(dc, name, p, viewId, o); }); },
+      explodeBlock: function (id) { return edit(function (dc) { return Drawing.explodeBlock(dc, id); }); },
+      blocks: function () { return doc() ? Drawing.blocks(doc()) : []; },
       dim: function (id, opts) { return edit(function (dc) { return Drawing.addSketchDim(dc, id, opts); }); },
       setDim: function (id, v) { return edit(function (dc) { return Drawing.setSketchDim(dc, id, v); }); },
       lineFormat: function (ids, fmt) { return edit(function (dc) { return Drawing.setLineFormat(dc, ids, fmt); }); },

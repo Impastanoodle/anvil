@@ -729,6 +729,8 @@
         return { id: w.view.id, name: w.view.name, orient: w.view.orient, role: w.view.role, kind: w.view.kind || 'model', label: w.view.label || null, parent: w.view.parent, showLabel: Drawing.viewLabelShown(w.view), exploded: isAsm() ? Drawing.explodedShown(w.view, App.model) : undefined,
           display: w.view.display, tangent: w.view.tangent || 'removed', x: +w.view.x.toFixed(3), y: +w.view.y.toFixed(3), scale: w.view.scale ? Drawing.scaleText(w.view.scale) : null,
           extents: [+(b.umax - b.umin).toFixed(4), +(b.vmax - b.vmin).toFixed(4)], box: [w.box.x0, w.box.y0, w.box.x1, w.box.y1].map(function (x) { return +x.toFixed(3); }), stats: w.proj.stats, dims: (w.view.dims || []).length,
+          crop: w.view.crop ? w.view.crop.type : null,   // (rfPM) 'rect' | 'circle' | 'poly'
+          altPositions: w.view.altPositions ? w.view.altPositions.map(function (a) { var ap = (w.content && w.content.altPos || []).filter(function (x) { return x.id === a.id; })[0]; return { id: a.id, name: a.name, mates: a.mates, config: a.config || null, moved: ap ? ap.moved.map(function (i) { return App.model.components[i] ? App.model.components[i].name : i; }) : [] }; }) : undefined,
           hatch: w.hatch, sectionArea: w.section ? +w.section.area.toFixed(6) : null,
           hatches: (w.hatches || []).map(function (h) { return { body: h.body, component: isAsm() && App.model.components[h.body] ? App.model.components[h.body].name : null, part: h.part != null ? (pnames || (pnames = partNames()))[h.part] || null : null, angle: h.angle, spacing: +h.spacing.toFixed(4), lines: h.lines, pattern: h.pattern }; }),
           balloons: (D.sheet.balloons || []).filter(function (b) { return b.view === w.view.id; }).map(function (b) { return b.item; }),

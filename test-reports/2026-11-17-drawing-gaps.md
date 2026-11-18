@@ -79,3 +79,21 @@ under Node (scratch scripts on a 48 x 6 16 ga blank, a 14 ga bracket, three boxe
   Curve Cut a wave of arcs 1.5 mm high; Jagged Cut a torn edge) and SolidWorks' default style.
 - Whether SolidWorks hides an ordinate member or a centre mark whose feature lies in the removed part of a broken view
   (Anvil does), and where it puts the Fixed Face note of a broken flat.
+
+## Lane PM / drawgaps2 (round local-2026-11-17c): items 4, 5 and the rest of the list
+
+| Item | Now | Measured |
+|---|---|---|
+| Crop View of a flat | **built** | the 48 x 6 blank at 1 : 4 cropped to u -1 .. 20: box 5.000 in wide (20 in), holes 6 / 18 kept, the bend at 2 with its note, the one at 46 and its note gone; ordinates 24 / 30 / 42 / 46 / 48 / 4.500 gone, 0 / 2 / 6 / 18 kept; hole tags 2 of 5, the Hole Table all 5 rows; centre marks 2 of 5; FLAT SIZE still 48.000 × 6.000 under the cropped view; Bend Table both rows, the cropped bend's tag and the Fixed Face note (u 24) gone |
+| Crop View by a sketched profile (any view) | **built** | a closed sketch selected + Crop View (SolidWorks' order); triangle / circle profiles on a flat, a triangle on a section view: hatching clipped to the triangle, not its box; Edit Crop gives the outline back as sketch lines, Remove Crop; a profile crop turns with Rotate View at any angle |
+| Crop and dimensions | **changed** | a cropped view's dims reattach against the whole view (a dimension on an edge the crop cuts read the clipped length before); a linear one whose end is cropped away goes (`inCrop`) |
+| Drawing Blocks | **built** | Tools ▸ Block ▸ Make / Insert / Explode / Save, right-click on the sketch; a block made of 7 entities draws the same 7 primitives; scale 1.5 / 90° instances; DXF R12 + R2000: one BLOCK, an INSERT per instance (scale 41-43, rotation 50), no loose copies, audit clean, DWG written |
+| Alternate Position View | **built** | a block held by Distance1 15 -> 40 mm: the block (only) drawn again 25 mm higher (12.5 mm on paper at 1 : 2), thin phantom, no hidden lines, DXF PHANTOM |
+| BOM DESCRIPTION from the part's Description | already right for a custom property; **fixed** per configuration | before: the Bar shown in Short and Long configurations was one row `Bar / BAR 2 FT / 3` (the part's active configuration) and a suppressed component was listed; now `BAR 2 FT / 1`, `BAR 4 FT / 2`, the suppressed one left out |
+
+Left: a detail of a flat from a sketched profile (circle and rectangle work); Predefined View, Format Painter, Spell / Design Checker; block attributes (text linked to a property) and a block's own insertion point picked by the mouse (it is the lower-left corner); the Alternate Position view's box does not grow to hold the phantom part (model items may sit on it); ribbon buttons for Blocks / Alternate Position (smoke rfLH pins the drawing's ribbon ids: they are on the menus).
+
+### To check in SolidWorks
+
+- Whether a dimension whose one end is cropped away is hidden (Anvil hides it) and whether a cropped flat's Hole Table lists every hole (Anvil: every hole, tags only on the shown ones).
+- The Alternate Position line font and whether SolidWorks draws the unmoved components again (Anvil: only the moved ones).

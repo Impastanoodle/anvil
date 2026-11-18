@@ -292,6 +292,15 @@
       // (rfPD) thin phantom, SolidWorks' Line Font for Explode Lines (style 'tanfont': the thin PHANTOM the drawing sketch's
       // Line Format maps phantom to; 'chain' is the thick cutting-plane weight)
       (ct.explLines || []).forEach(function (l) { prims.push({ k: 'line', a: toSheet([l[0], l[1]]), b: toSheet([l[2], l[3]]), layer: layer, style: 'tanfont', view: v.id, explodeLine: true }); });
+      // (rfPM) Alternate Position View: the components the second position moves, visible edges only, thin phantom
+      // (SolidWorks' Alternate Position line font); tagged altPos (crops and breaks cut them as the view's linework)
+      (ct.altPos || []).forEach(function (ap) {
+        var E = { layer: layer, style: 'tanfont', view: v.id, altPos: ap.id };
+        ap.lines.forEach(function (l) { prims.push(Object.assign({ k: 'line', a: toSheet([l[0], l[1]]), b: toSheet([l[2], l[3]]) }, E)); });
+        ap.circles.forEach(function (c) { prims.push(Object.assign({ k: 'circle', c: toSheet(c.c), r: c.r * s }, E)); });
+        ap.arcs.forEach(function (a) { prims.push(Object.assign({ k: 'arc', c: toSheet(a.c), r: a.r * s, a0: a.a0, a1: a.a1 }, E)); });
+        ap.ellipses.forEach(function (el) { prims.push(Object.assign(ellipsePrim(el, toSheet, s, layer, 'tanfont'), { view: v.id, altPos: ap.id })); });
+      });
       chained(pr.lines.hidden, 'hidden');
       pr.circles.hidden.forEach(function (c) { prims.push({ k: 'circle', c: toSheet(c.c), r: c.r * s, layer: layer, style: 'hidden' }); });
       (pr.arcs ? pr.arcs.hidden : []).forEach(function (a) { prims.push({ k: 'arc', c: toSheet(a.c), r: a.r * s, a0: a.a0, a1: a.a1, layer: layer, style: 'hidden' }); });
@@ -590,7 +599,7 @@
       if (pendingView[v.id]) return;
       var tw = views.filter(function (x) { return x.view.id === v.id && x.trueDims; })[0];
       (v.dims || []).forEach(function (d, i) {
-        if (projections[v.id]) reattachUserDim(d, projections[v.id]);
+        if (projections[v.id]) reattachUserDim(d, (contents[v.id] && contents[v.id].fullProj) || projections[v.id]);   // (rfPM) a cropped view: the whole view
         var c = JSON.parse(JSON.stringify(d)); c.view = v.id; c.index = i;
         // (rfZ) Dimension Type True: a linear dimension in a pictorial view reads the true length of what it measures
         if (tw && c.a && c.b && /^(h|v|aligned)$/.test(c.kind)) { var tl = D.trueLength(mesh, tw.frame, c.a, c.b); if (tl != null) { c.value = tl; c.trueDim = true; } }
@@ -1775,7 +1784,7 @@
       // the feature point of a reference: a circle centre, or the end of an edge nearest the dimension side
       items.forEach(function (it) {
         var q = sp(it.ref);
-        if (!q) { var e0 = vw.toSheet(it.ref.a), e1 = vw.toSheet(it.ref.b); q = (e0[1 - ax] - e1[1 - ax]) * side > 0 ? e0 : e1; if (Math.abs(e0[1 - ax] - e1[1 - ax]) < 1e-9) q = [(e0[0] + e1[0]) / 2, (e0[1] + e1[1]) / 2]; q[ax] = vw.toSheet(ax ? [0, refPos(it.ref, 1)] : [refPos(it.ref, 0), 0])[ax]; }
+        if (!q) { var e0 = vw.toSheet(it.ref.a), e1 = vw.toSheet(it.ref.b), ce = _.cropEdge ? _.cropEdge(vw, e0, e1) : null; if (ce) { e0 = ce[0]; e1 = ce[1]; } /* (rfPM) a cropped view: the edge's kept piece */ q = (e0[1 - ax] - e1[1 - ax]) * side > 0 ? e0 : e1; if (Math.abs(e0[1 - ax] - e1[1 - ax]) < 1e-9) q = [(e0[0] + e1[0]) / 2, (e0[1] + e1[1]) / 2]; q[ax] = vw.toSheet(ax ? [0, refPos(it.ref, 1)] : [refPos(it.ref, 0), 0])[ax]; }
         it.p = q;
       });
       // (d.outer: paper mm more, a sketch's ordinate set beside the overall size below / left of the view)
@@ -1803,7 +1812,7 @@
           }
           else if (hz2) out.push({ k: 'text', p: [it.t + th / 2, lvl + sgl * 1 * k], h: th, text: tt, anchor: sgl > 0 ? 'start' : 'end', layer: L, rot: 90 });
           else out.push({ k: 'text', p: [lvl + sgl * 1 * k, it.t - th / 2], h: th, text: tt, anchor: sgl > 0 ? 'start' : 'end', layer: L, rot: 0 });
-          for (var om = om0; om < out.length; om++) out[om].ordM = it.p;   // (rfPH) the member's feature point: a break drops a member in removed paper
+          for (var om = om0; om < out.length; om++) out[om].ordM = it.p;   // (rfPH) the member's feature point: a break drops a member in removed paper (rfPM: a crop one outside)
         });
       } else {
         // baseline: one linear dimension per reference from the base, nearest first, 8 mm apart
@@ -2178,9 +2187,27 @@
       dimOf[i] = g; dimGroups.push(g);
     });
     sheet.prims.forEach(function (p) { if (p.dimIx != null && dimOf[p.dimIx]) dimOf[p.dimIx].prims.push(p); });
+    // (rfPM) drawing Blocks: each definition an instance on the sheet uses is one BLOCK (its entities at the origin,
+    // unscaled), each instance an INSERT (point, scale, rotation) instead of its exploded entities
+    var blkGroups = [], blkOf = {}, insUsed = {}, blkNames = {};
+    if (sheet.inserts && sheet.blockDefs) {
+      var drawn = {};
+      sheet.prims.forEach(function (p) { if (p.blockIns != null) drawn[p.blockIns] = 1; });
+      sheet.inserts.forEach(function (ins) {
+        if (!drawn[ins.id] || !sheet.blockDefs[ins.name] || !sheet.blockDefs[ins.name].length) return;
+        insUsed[ins.id] = ins;
+        if (blkOf[ins.name]) return;
+        var base = String(ins.name).replace(/[^A-Za-z0-9_\-$]/g, '_').toUpperCase() || 'BLOCK', nm = base, n = 2;
+        while (blkNames[nm] || /^\*/.test(nm)) nm = base + '_' + n++;
+        blkNames[nm] = 1;
+        var g = { name: ins.name, dxfName: nm, prims: sheet.blockDefs[ins.name] };
+        blkOf[ins.name] = g; blkGroups.push(g);
+      });
+    }
     function pr(c, v) { L.push(String(c), String(v)); }
     var layers = [];
     sheet.prims.forEach(function (p) { if (layers.indexOf(p.layer) < 0) layers.push(p.layer); });
+    blkGroups.forEach(function (g) { g.prims.forEach(function (p) { if (layers.indexOf(p.layer) < 0) layers.push(p.layer); }); });
     var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3, ANNOTATIONS: 3, BEND_UP: 3, BEND_DOWN: 1, BEND_NOTES: 3, NOTES: 7, ETCH: 3, SYMBOLS: 7, REVISIONS: 7, TABLES: 7 }, THIN = { hatch: 1, tangent: 1, tanfont: 1, center: 1 };
     var inch = sheet.units === 'in';
     // R2000 handles: the fixed ones AutoCAD's own drawings use (tables 1–A, root dictionary C, ACAD_GROUP D, layer 0
@@ -2252,15 +2279,32 @@
         pr(73, 1); pr(74, 1); pr(77, 0); pr(78, inch ? 4 : 8); pr(271, pd != null ? pd : inch ? 3 : 2); pr(340, '11');
       });
       dimGroups.forEach(function (g) { g.br = H(); g.bh = H(); g.eh = H(); });
-      table('BLOCK_RECORD', 2 + dimGroups.length, function () {
+      blkGroups.forEach(function (g) { g.br = H(); g.bh = H(); g.eh = H(); });   // (rfPM)
+      table('BLOCK_RECORD', 2 + dimGroups.length + blkGroups.length, function () {
         record('BLOCK_RECORD', 'AcDbBlockTableRecord', msBR); pr(2, '*Model_Space');
         record('BLOCK_RECORD', 'AcDbBlockTableRecord', psBR); pr(2, '*Paper_Space');
         dimGroups.forEach(function (g) { record('BLOCK_RECORD', 'AcDbBlockTableRecord', g.br); pr(2, g.name); });
+        blkGroups.forEach(function (g) { record('BLOCK_RECORD', 'AcDbBlockTableRecord', g.br); pr(2, g.dxfName); });
       });
     }
     pr(0, 'ENDSEC');
+    if (!r2000 && blkGroups.length) {   // (rfPM) R12: a BLOCKS section only when the sheet has blocks
+      pr(0, 'SECTION'); pr(2, 'BLOCKS');
+      blkGroups.forEach(function (g) {
+        pr(0, 'BLOCK'); pr(8, 0); pr(2, g.dxfName); pr(70, 0); pr(10, 0); pr(20, 0); pr(30, 0); pr(3, g.dxfName);
+        g.prims.forEach(function (p) { entity(p, null); });
+        pr(0, 'ENDBLK'); pr(8, 0);
+      });
+      pr(0, 'ENDSEC');
+    }
     if (r2000) {
       pr(0, 'SECTION'); pr(2, 'BLOCKS');
+      blkGroups.forEach(function (g) {   // (rfPM) the drawing's named blocks
+        pr(0, 'BLOCK'); pr(5, g.bh); pr(330, g.br); pr(100, 'AcDbEntity'); pr(8, 0); pr(100, 'AcDbBlockBegin');
+        pr(2, g.dxfName); pr(70, 0); pr(10, 0); pr(20, 0); pr(30, 0); pr(3, g.dxfName); pr(1, '');
+        g.prims.forEach(function (p) { entity(p, g.br); });
+        pr(0, 'ENDBLK'); pr(5, g.eh); pr(330, g.br); pr(100, 'AcDbEntity'); pr(8, 0); pr(100, 'AcDbBlockEnd');
+      });
       [[msBR, '*Model_Space', false, '20', '21'], [psBR, '*Paper_Space', true, '1C', '1D']].forEach(function (b) {
         pr(0, 'BLOCK'); pr(5, b[3]); pr(330, b[0]); pr(100, 'AcDbEntity'); if (b[2]) pr(67, 1); pr(8, 0); pr(100, 'AcDbBlockBegin');
         pr(2, b[1]); pr(70, 0); pr(10, 0); pr(20, 0); pr(30, 0); pr(3, b[1]); pr(1, '');
@@ -2303,7 +2347,23 @@
       for (var j = i + 1; sheet.prims[j] && sheet.prims[j].k === 'line' && sheet.prims[j].bz && sheet.prims[j].chain === p.chain; j++) run.push(sheet.prims[j]);
       if (run.length >= 2) bzMark(p, run);
     });
-    sheet.prims.forEach(function (p) { if (!(p.dimIx != null && dimOf[p.dimIx])) entity(p, msBR); });
+    var insDone = {};
+    sheet.prims.forEach(function (p) {
+      if (p.blockIns != null && insUsed[p.blockIns]) {   // (rfPM) an instance: one INSERT where its first entity was
+        if (insDone[p.blockIns]) return;
+        insDone[p.blockIns] = 1;
+        var ins = insUsed[p.blockIns], g = blkOf[ins.name];
+        pr(0, 'INSERT');
+        if (r2000) { pr(5, H()); pr(330, msBR); pr(100, 'AcDbEntity'); }
+        pr(8, p.layer);
+        if (r2000) pr(100, 'AcDbBlockReference');
+        pr(2, g.dxfName); pr(10, gnum(ins.p[0])); pr(20, gnum(ins.p[1])); pr(30, 0);
+        if (ins.scale !== 1) { pr(41, gnum(ins.scale)); pr(42, gnum(ins.scale)); pr(43, gnum(ins.scale)); }
+        if (ins.rot) pr(50, gnum(((ins.rot % 360) + 360) % 360));
+        return;
+      }
+      if (!(p.dimIx != null && dimOf[p.dimIx])) entity(p, msBR);
+    });
     dimGroups.forEach(function (g) {
       var d = g.d, X = g.d.dxf, type = { linear: 0, aligned: 1, dia: 3, rad: 4, angular: 5 }[X.type];
       function pt(c, q) { pr(c, num(q[0])); pr(c + 10, num(q[1])); pr(c + 20, 0); }

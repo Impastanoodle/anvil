@@ -167,7 +167,7 @@
     // (rfLG) any angle, as SolidWorks: the dimensions, centre marks, balloons and the notes / symbols whose leaders are
     // on the view turn with the geometry. A break or a rectangular crop (its sides along the view's axes) turns in
     // steps of 90° only.
-    if (((v.breaks && v.breaks.length) || (v.crop && v.crop.type !== 'circle')) && !right) throw new Error((v.name || 'That view') + ' has a break or a crop: it turns in steps of 90°');
+    if (((v.breaks && v.breaks.length) || (v.crop && v.crop.type !== 'circle' && v.crop.type !== 'poly')) && !right) throw new Error((v.name || 'That view') + ' has a break or a crop: it turns in steps of 90°');
     var a = by * Math.PI / 180, c = Math.cos(a), s = Math.sin(a), rd = function (x) { return Math.abs(x - Math.round(x)) < 1e-12 ? Math.round(x) : x; };
     var R = function (p) { return [rd(c * p[0] - s * p[1]), rd(s * p[0] + c * p[1])]; };
     var odd = right && q % 2 === 1;
@@ -231,7 +231,11 @@
       n.anchor.snap = true;   // (the arrow goes onto the turned point at the next compute: anchorLeaders)
     });
     if (v.crop && v.crop.type === 'circle') v.crop.c = R(v.crop.c);
-    else if (v.crop && v.crop.a && v.crop.b) { var ca = R(v.crop.a), cb = R(v.crop.b); v.crop.a = [Math.min(ca[0], cb[0]), Math.min(ca[1], cb[1])]; v.crop.b = [Math.max(ca[0], cb[0]), Math.max(ca[1], cb[1])]; }
+    else if (v.crop && v.crop.type === 'poly' && v.crop.pts) {   // (rfPM) a sketched crop profile turns point by point, its box after
+      v.crop.pts = v.crop.pts.map(R);
+      v.crop.a = [Math.min.apply(null, v.crop.pts.map(function (p) { return p[0]; })), Math.min.apply(null, v.crop.pts.map(function (p) { return p[1]; }))];
+      v.crop.b = [Math.max.apply(null, v.crop.pts.map(function (p) { return p[0]; })), Math.max.apply(null, v.crop.pts.map(function (p) { return p[1]; }))];
+    } else if (v.crop && v.crop.a && v.crop.b) { var ca = R(v.crop.a), cb = R(v.crop.b); v.crop.a = [Math.min(ca[0], cb[0]), Math.min(ca[1], cb[1])]; v.crop.b = [Math.max(ca[0], cb[0]), Math.max(ca[1], cb[1])]; }
     if (to) v.rotate = to; else delete v.rotate;
     if (v.align) v.align = null;   // (a turned view is no longer lined up with its parent, as SolidWorks breaks the alignment)
     doc.layout = 'manual';
@@ -771,9 +775,13 @@
       ct.explLines = [];
       xl.forEach(function (l) { var a = d2(l.from), b = d2(l.to); if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-9) ct.explLines.push([a[0], a[1], b[0], b[1]]); });
     }
+    // (rfPM) Alternate Position View: the assembly's second position, phantom lines in the view's frame
+    if ((!v.kind || v.kind === 'projected') && v.altPositions && v.altPositions.length && ct.frame && !ct.proj.pending && _.altPositionContent) ct.altPos = _.altPositionContent(doc, v, mesh0, ct.frame);
     _.auxCenter(doc, v, ct, parentContent);
     _.contentExtras(doc, v, ct, parentContent);   // (rfAD) jagged detail linework, Area Hatch regions
-    if (v.crop && v.kind !== 'detail' && v.kind !== 'flat') ct = _.cropContent(ct, v.crop);
+    // (rfPM) a flat crops too; the uncropped projection stays as fullProj, so a dimension on an edge the crop cuts or
+    // takes keeps its true value (drawing-render.js reattaches against it; applyCrop hides what lies wholly outside)
+    if (v.crop && v.kind !== 'detail' && v.kind !== 'empty') { var full = ct.proj; ct = _.cropContent(ct, v.crop); ct.fullProj = full; }
     if (v.kind === 'section' && v.section && v.section.partial) ct = _.partialContent(v, ct);   // (rfZ) a partial section
     return ct;
   }
@@ -1945,9 +1953,10 @@
   }
   // the evaluator for one part: prop(name) through Materials (custom / configuration-specific properties, "SW-" links,
   // Material / Mass falling back to the part's own)
-  function partProps(model, build, mesh, bodyOverride) {
+  // (rfPM) cfg: the configuration a component shows (its configuration-specific properties, Description among them)
+  function partProps(model, build, mesh, bodyOverride, cfg) {
     if (!hasMaterials() || !model) return function () { return ''; };
-    var ctx = Materials.context(model, bodyOverride ? { massProps: bodyOverride.mp, material: bodyOverride.material } : { build: build, mesh: mesh });
+    var ctx = Materials.context(model, bodyOverride ? { massProps: bodyOverride.mp, material: bodyOverride.material, config: cfg != null ? cfg : undefined } : { build: build, mesh: mesh, config: cfg != null ? cfg : undefined });
     var memo = {};
     return function (name) {
       var k = String(name).toLowerCase();
@@ -2027,20 +2036,31 @@
         groups.push({ key: r.key, source: JSON.parse(r.key), first: first, components: r.components.slice(), indices: idx, transform: first >= 0 ? model.components[first].transform : null, qty: r.qty, item: r.item, level: r.level, kind: r.kind });
       });
     } else {
+      // (rfPM) a component shows one configuration of its part (Assembly.compState): each configuration is its own row
+      // (its configuration-specific properties: Description, Part Number …), as SolidWorks' BOM lists them; a
+      // suppressed component is not in the BOM
+      var stOf = typeof Assembly !== 'undefined' && Assembly.compState ? function (c) { try { return Assembly.compState(model, c); } catch (e) { return null; } } : function () { return null; };
       model.components.forEach(function (c, i) {
-        var key = JSON.stringify(c.source), g = bySrc[key];
-        if (!g) { g = bySrc[key] = { key: key, source: c.source, first: i, components: [], indices: [], transform: c.transform }; groups.push(g); }
+        var cs = stOf(c), cfg = cs && cs.config != null ? String(cs.config) : null;
+        if (cs && cs.suppressed) return;
+        var key = JSON.stringify(c.source) + (cfg != null ? '|cfg:' + cfg : ''), g = bySrc[key];
+        if (!g) { g = bySrc[key] = { key: key, source: c.source, first: i, components: [], indices: [], transform: c.transform, config: cfg }; groups.push(g); }
         g.components.push(c.id); g.indices.push(i);
       });
     }
     groups.forEach(function (g) {
       var qty = g.qty != null ? g.qty : g.components.length;
-      var info = partInfo(g.source, opts.build), pb = null;
-      function pbuild() { return pb || (pb = info.build()); }
-      var prop = partProps(info.model, null, null), full = null;
+      var info = partInfo(g.source, opts.build), pb = null, cfg = g.config != null ? g.config : null;
+      function pbuild() {
+        if (pb) return pb;
+        // (rfPM) a configured component: its configuration's build from the assembly's cache when there is one
+        var ce = cfg != null && opts.build && opts.build.cache && Assembly.entryKey && g.first >= 0 ? opts.build.cache[Assembly.entryKey(model, model.components[g.first])] : null;
+        return (pb = ce && ce.build ? ce.build : info.build());
+      }
+      var prop = partProps(info.model, null, null, null, cfg), full = null;
       // mass needs the part's build: a property column evaluates through a context that has it, built on first use
       var propFn = function (name) {
-        if (!full) full = info.model ? partProps(info.model, pbuild(), null) : prop;
+        if (!full) full = info.model ? partProps(info.model, pbuild(), null, null, cfg) : prop;
         return full(name);
       };
       var pn = nonEmpty(prop('Part Number')) || info.name;
@@ -2049,7 +2069,11 @@
         brs.forEach(function (b) { push({ key: g.key + '#' + b.key, srcKey: g.key, partNumber: pn + ' - ' + b.name, description: b.size, qty: b.count * qty, components: g.components.slice(), indices: g.indices.slice(), prop: b.prop, body: true }); });
         return;
       }
-      var desc = nonEmpty(prop('Description')) || info.description;
+      // (rfPM, with lane asmfeel) a Design Library part's Description kept in the assembly (Assembly.bomOverride, by
+      // the row's source key; a configured row also tries its plain source key), else the part's Description property
+      var bo = typeof Assembly !== 'undefined' && Assembly.bomOverride ? function (k) { try { return nonEmpty(Assembly.bomOverride(model, k)); } catch (e) { return null; } } : function () { return null; };
+      var plainKey = String(g.key).replace(/\|cfg:[\s\S]*$/, '');
+      var desc = bo(g.key) || (plainKey !== g.key ? bo(plainKey) : null) || nonEmpty(prop('Description')) || info.description;
       if (!desc && mesh && g.first >= 0) desc = envelopeText(mesh, g.first, g.transform, model.units);
       var r = push({ key: g.key, srcKey: g.key, partNumber: pn, description: desc, qty: qty, components: g.components.slice(), indices: g.indices.slice(), prop: propFn });
       if (type === 'indented' && g.item != null) { r.item = g.item; r.level = g.level; }
@@ -2248,6 +2272,8 @@
     var cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2, r = BALLOON_R * k, pr = w.proj;
     // a balloon names its component's source; in a Parts only BOM that part may be several rows (its bodies): the first
     var byKey = {}; rows.forEach(function (rw) { byKey[rw.key] = rw; if (rw.srcKey && !byKey[rw.srcKey]) byKey[rw.srcKey] = rw; });
+    // (rfPM) a balloon placed before rows were split by configuration names the plain source: its first row
+    rows.forEach(function (rw) { var plain = String(rw.key).replace(/\|cfg:[\s\S]*$/, ''); if (plain !== rw.key && !byKey[plain]) byKey[plain] = rw; });
     list.forEach(function (b) {
       var rw = byKey[b.key];
       if (!rw) return;

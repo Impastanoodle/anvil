@@ -35,6 +35,8 @@ const USAGE = [
   '               --views ...,Flat: the flat-pattern view of a sheet-metal part on the same sheet (summary.flat.blank: its',
   '               u / v extents); --break "View,a,b[,horizontal][,style][,gap]" (several: ";" between): Broken View, a / b',
   '               model units along the view\'s u (v for horizontal); style straight|curve|zigzag|smallZigzag|jagged',
+  '               --crop "View,u0,v0,u1,v1" | "View,circle,u,v,r" | "View,u,v,u,v,u,v[,…]" (a polygon; several: ";"): Crop View',
+  '               (a flat too: its bend notes, tags, ordinates outside go); summary.crops gives each cropped view\'s paper size',
   '  example <name | index> [build options]     a bundled example (name case-insensitive, prefix allowed)',
   '  example --all [--occt] [--native [dir]]     every example against its documented volume',
   '  examples                                    list the examples with their documented volumes',
@@ -59,7 +61,7 @@ const USAGE = [
 
 // ------------------------------------------------------------------ arguments
 const VALUED = { stl: 1, step: 1, 'dxf-flat': 1, 'dwg-flat': 1, json: 1, script: 1, svg: 1, dxf: 1, dwg: 1, pdf: 1, views: 1, scale: 1, 'dxf-face': 2, 'dwg-face': 2,
-  'dxf-version': 1, 'dxf-style': 1, jobs: 1, only: 1, 'dual-pos': 1, 'dual-units': 1, 'dual-prec': 1, break: 1 };
+  'dxf-version': 1, 'dxf-style': 1, jobs: 1, only: 1, 'dual-pos': 1, 'dual-units': 1, 'dual-prec': 1, break: 1, crop: 1 };
 function parseArgs(argv) {
   const out = { _: [], flags: {} };
   for (let i = 0; i < argv.length; i++) {
@@ -388,6 +390,18 @@ async function cmdDrawing(src, flags) {
     try { Drawing.addBreak(doc, v.id, o); } catch (e) { throw usage('--break: ' + e.message); }
     breaks.push(v.id);
   });
+  // (rfPM) --crop View,u0,v0,u1,v1 | View,circle,u,v,r | View,u,v,u,v,u,v[,…]: Crop View (Drawing.setCrop), ';' between views
+  const crops = [];
+  if (flags.crop) String(flags.crop).split(';').map((s) => s.trim()).filter(Boolean).forEach((spec) => {
+    const t = spec.split(',').map((s) => s.trim()).filter(Boolean), vn = (t.shift() || '').toLowerCase();
+    const v = vn === 'flat' ? flatView : doc.views.filter((x) => x.kind !== 'flat' && String(x.orient).toLowerCase() === vn)[0];
+    if (!v) throw usage('--crop: no ' + (vn || '(view)') + ' view on the sheet (' + doc.views.map((x) => x.kind === 'flat' ? 'Flat' : x.orient).join(', ') + ')');
+    const circle = /^circle$/i.test(t[0] || ''), n = (circle ? t.slice(1) : t).map(Number);
+    if (n.some((x) => !isFinite(x)) || (circle ? n.length !== 3 : n.length < 4 || n.length % 2)) throw usage('--crop: expected View,u0,v0,u1,v1 | View,circle,u,v,r | View,u,v,u,v,u,v…, not "' + spec + '"');
+    const region = circle ? { type: 'circle', c: [n[0], n[1]], r: n[2] } : n.length === 4 ? { type: 'rect', a: [n[0], n[1]], b: [n[2], n[3]] } : { pts: n.reduce((o, x, i) => { if (i % 2) o[o.length - 1].push(x); else o.push([x]); return o; }, []) };
+    try { Drawing.setCrop(doc, v.id, region); } catch (e) { throw usage('--crop: ' + e.message); }
+    crops.push(v.id);
+  });
   const t0 = performance.now();
   const sheet = Drawing.compute(doc, r.mesh, r.model);
   const outputs = {}, conv = {};
@@ -413,6 +427,7 @@ async function cmdDrawing(src, flags) {
     summary.flat = { id: flatView.id, scale: flatView.scale || doc.sheet.scale, offSheet: !!flatView.offSheet, blank: bb ? { umin: r6(bb.umin), umax: r6(bb.umax), vmin: r6(bb.vmin), vmax: r6(bb.vmax) } : null };
   }
   if (breaks.length) summary.breaks = doc.views.filter((v) => v.breaks && v.breaks.length).map((v) => { const w = wOf(v.id); return { view: v.id, breaks: v.breaks, paper: w ? { w: r6(w.box.x1 - w.box.x0), h: r6(w.box.y1 - w.box.y0) } : null }; });
+  if (crops.length) summary.crops = doc.views.filter((v) => v.crop).map((v) => { const w = wOf(v.id); return { view: v.id, crop: v.crop, paper: w ? { w: r6(w.box.x1 - w.box.x0), h: r6(w.box.y1 - w.box.y0) } : null }; });   // (rfPM)
   if (sheet.warnings && sheet.warnings.length) summary.warnings = sheet.warnings;
   if (flags.dual) { const st = Drawing.dualStyle(doc); summary.dual = { units: st.units, prec: st.prec, pos: st.pos, showUnits: st.showUnits }; summary.dimTexts = (sheet.dims || []).map((d) => d.text); }   // (rfPD)
   if (conv.converter) summary.converter = conv.converter;

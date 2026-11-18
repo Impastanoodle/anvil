@@ -3152,6 +3152,9 @@
   // holeTableRows(t, w, mesh, units, ends, holeNames) -> { origin: [u, v], rows: [{ tag, c, r, x, y, xText, yText,
   // size: [lines], group, dangling }], dangling }
   function holeTableRows(t, w, mesh, units, ends, holeNames) {
+    // (rfPM) a cropped view's table lists the holes of the whole view (as a broken one does); the tags of the holes
+    // the crop takes go with them (drawing-views.js applyCrop)
+    if (w.content && w.content.fullProj && w.content.fullProj !== w.proj) w = Object.assign({}, w, { proj: w.content.fullProj });
     var pr = w.proj, dangling = false, O;
     if (t.origin.kind === 'pt') {
       var po = { kind: 'pt', p: t.origin.p.slice() };

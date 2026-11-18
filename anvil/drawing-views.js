@@ -158,6 +158,101 @@
     memo[key] = out;
     return out;
   }
+  // ---- (rfPM) Alternate Position View (SolidWorks: Insert ▸ Drawing View ▸ Alternate Position). A model or projected
+  // view of an assembly also shows the assembly in another position, superimposed in phantom lines: a lid open, a
+  // clamp released, a slide out. view.altPositions = [{ id, name, mates: { <mate id>: value } (a Distance's distance,
+  // an Angle's angle, a Coincident's offset; mm / degrees as the mate stores them), config?: an assembly configuration
+  // }]. The position is the assembly rebuilt from a copy with those mate values (Assembly.rebuild, part builds from the
+  // drawn build's cache, as the exploded views are), seen in the view's frame with hidden lines removed; only the
+  // components that moved are drawn (the others lie on the view's own lines). Worked out on the main thread, cached
+  // on the drawn mesh per position.
+  var ALT_MATE = { distance: 'distance', angle: 'angle', coincident: 'offset' };
+  function altMateOf(model, key) {
+    var ms = (model && model.mates) || [];
+    for (var i = 0; i < ms.length; i++) if (String(ms[i].id) === String(key) || ms[i].name === key) return ms[i];
+    return null;
+  }
+  // addAltPosition(doc, viewId, { mates: { <mate id or name>: value }, config?, name? }, model) -> the entry
+  function addAltPosition(doc, viewId, spec, model) {
+    var v = D.findView(doc, viewId);
+    if (!v) throw new Error('No drawing view ' + viewId);
+    if (v.kind && v.kind !== 'projected') throw new Error('Alternate Position: pick a model view or a projected view');
+    if (!model || model.type !== 'assembly' || !model.components) throw new Error('Alternate Position View is for an assembly drawing');
+    spec = spec || {};
+    var mates = {}, n = 0;
+    Object.keys(spec.mates || {}).forEach(function (k) {
+      var m = altMateOf(model, isNaN(+k) ? k : +k), val = +spec.mates[k];
+      if (!m) throw new Error('Alternate Position: no mate ' + k);
+      var f = ALT_MATE[m.type];
+      if (!f) throw new Error('Alternate Position: ' + m.name + ' has no value to change (a Distance, Angle or Coincident offset)');
+      if (!isFinite(val) || val < 0 || (m.type === 'angle' && val > 180)) throw new Error('Alternate Position: ' + m.name + ' must be ' + (m.type === 'angle' ? 'between 0° and 180°' : 'a number ≥ 0'));
+      if (Math.abs(val - (+m[f] || 0)) > 1e-12) { mates[String(m.id)] = val; n++; }
+    });
+    var cfg = spec.config != null && spec.config !== '' ? String(spec.config) : null;
+    if (cfg && !(model.configurations || []).some(function (c) { return c && String(c.name) === cfg; })) throw new Error('Alternate Position: no configuration "' + cfg + '"');
+    if (!n && (!cfg || cfg === String(model.activeConfiguration))) throw new Error('Alternate Position: change a mate value (or pick another configuration) for the second position');
+    if (!v.altPositions) v.altPositions = [];
+    var id = 1;
+    v.altPositions.forEach(function (a) { id = Math.max(id, (+a.id || 0) + 1); });
+    var e = { id: id, name: spec.name ? String(spec.name) : 'AltPosition_' + (v.name || 'View') + '_' + id, mates: mates };
+    if (cfg) e.config = cfg;
+    v.altPositions.push(e);
+    return e;
+  }
+  function deleteAltPosition(doc, viewId, id) {
+    var v = D.findView(doc, viewId);
+    if (!v || !v.altPositions) return false;
+    var n = v.altPositions.length;
+    v.altPositions = v.altPositions.filter(function (a) { return a.id !== id && a.name !== id; });
+    if (!v.altPositions.length) delete v.altPositions;
+    return n !== (v.altPositions ? v.altPositions.length : 0);
+  }
+  // altPositionContent(doc, v, mesh, F) -> [{ id, name, lines, circles, arcs, ellipses, moved: [component index] }]
+  // (view frame) or null
+  function altPositionContent(doc, v, mesh, F) {
+    var model = (_.CTX && _.CTX.model) || _.lastModel;
+    if (!v || !v.altPositions || !v.altPositions.length || !mesh || !F || !model || !model.components || typeof Assembly === 'undefined') return null;
+    if (v.kind && v.kind !== 'projected') return null;
+    var memo = mesh._drawingAlt;
+    if (!memo) { memo = {}; try { Object.defineProperty(mesh, '_drawingAlt', { value: memo, enumerable: false, configurable: true }); } catch (e) { return null; } }
+    var out = [];
+    v.altPositions.forEach(function (a) {
+      var key = JSON.stringify([a.mates || {}, a.config || null, model.exploded != null && v.exploded !== false ? (v.exploded || model.exploded) : null]), alt = memo[key];
+      if (alt === undefined) {
+        alt = null;
+        try {
+          var m2 = JSON.parse(JSON.stringify(model)), bd = _.CTX && _.CTX.build;
+          Object.keys(a.mates || {}).forEach(function (k) { var m = altMateOf(m2, +k); if (m && ALT_MATE[m.type]) m[ALT_MATE[m.type]] = +a.mates[k]; });
+          if (a.config) m2.activeConfiguration = a.config;
+          delete m2.exploded;
+          var b2 = Assembly.rebuild(m2, bd && bd.cache || null);
+          if (b2 && b2.body) {
+            var moved = [];
+            m2.components.forEach(function (c, i) {
+              var c0 = model.components[i], T0 = c0 && c0.transform, T1 = c.transform;
+              if (!T0 || !T1) { moved.push(i); return; }
+              var d = 0;
+              for (var q = 0; q < 3; q++) d = Math.max(d, Math.abs((T0.position || [0, 0, 0])[q] - (T1.position || [0, 0, 0])[q]));
+              for (var r = 0; r < 9; r++) d = Math.max(d, Math.abs((T0.rotation || [1, 0, 0, 0, 1, 0, 0, 0, 1])[r] - (T1.rotation || [1, 0, 0, 0, 1, 0, 0, 0, 1])[r]) * 100);
+              if (d > 1e-6) moved.push(i);
+            });
+            alt = { mesh: K.meshFromBody(b2.body), moved: moved, errors: Object.keys(b2.errors || {}).length };
+          }
+        } catch (err) { alt = null; }
+        memo[key] = alt;
+      }
+      if (!alt || !alt.moved.length) { out.push({ id: a.id, name: a.name, lines: [], circles: [], arcs: [], ellipses: [], moved: [] }); return; }
+      var fk = [F.e, F.u, F.v].map(function (x) { return x.map(function (y) { return y.toFixed(9); }).join(','); }).join('|');
+      if (!alt.proj) alt.proj = {};
+      var pr = alt.proj[fk] || (alt.proj[fk] = D.projectView(alt.mesh, F, { display: 'hlr' })), mv = {};
+      alt.moved.forEach(function (i) { mv[i] = 1; });
+      function mine(x) { var b = Array.isArray(x) ? x[4] : x.body; return mv[b | 0] === 1; }
+      out.push({ id: a.id, name: a.name, moved: alt.moved.slice(),
+        lines: (pr.lines.visible || []).filter(mine), circles: (pr.circles.visible || []).filter(mine), arcs: ((pr.arcs && pr.arcs.visible) || []).filter(mine),
+        ellipses: ((pr.ellipses && pr.ellipses.visible) || []).filter(mine) });
+    });
+    return out;
+  }
   // a box as CSG: ax = three orthonormal axes, lo / hi = coordinate ranges along them
   function boxSolid(ax, lo, hi) {
     function pt(c) { return new CSG.Vector(ax[0][0] * c[0] + ax[1][0] * c[1] + ax[2][0] * c[2], ax[0][1] * c[0] + ax[1][1] * c[1] + ax[2][1] * c[2], ax[0][2] * c[0] + ax[1][2] * c[1] + ax[2][2] * c[2]); }
@@ -1225,11 +1320,21 @@
   }
   // setCrop(doc, viewId, region | null): crops a view to a rectangle { type: 'rect', a, b } or a circle { type:
   // 'circle', c, r } (model units in the view's frame); null takes the crop off (SolidWorks: Crop View ▸ Remove Crop)
+  // (rfPM) a flat-pattern view crops too (SolidWorks: Crop View on a flat, the bend lines, notes and tags cropped with
+  // it: applyCrop), and the profile may be a closed sketched outline { type: 'poly', pts: [[u, v], …] } (a circle,
+  // lines / arcs / splines end to end, sketched in the view and selected before Crop View), kept counter-clockwise
+  // with its box a / b
   function setCrop(doc, viewId, region) {
     var v = findV(doc, viewId);
     if (!v) throw new Error('No drawing view ' + viewId);
     if (region == null) { delete v.crop; return v; }
-    if (v.kind === 'detail' || v.kind === 'flat') throw new Error('A ' + (v.kind === 'flat' ? 'flat-pattern' : 'detail') + ' view cannot be cropped');
+    if (v.kind === 'detail' || v.kind === 'empty') throw new Error('A' + (v.kind === 'empty' ? 'n empty' : ' detail') + ' view cannot be cropped');
+    if (region.pts || region.type === 'poly') {
+      var dp;
+      try { dp = detailProfile({ pts: region.pts || [] }); } catch (e) { throw new Error('A crop profile needs a closed outline of three points or more: { pts: [[u, v], …] }'); }
+      v.crop = { type: 'poly', pts: dp.pts, a: dp.a, b: dp.b };
+      return v;
+    }
     if (region.type === 'circle' || (region.c && region.r != null)) {
       if (!(region.r > 0)) throw new Error('A crop circle needs a radius');
       v.crop = { type: 'circle', c: [+region.c[0], +region.c[1]], r: +region.r };
@@ -1503,7 +1608,12 @@
         c2.loops = cap.loops.map(function (l) { return loopInRect(l, R); }).filter(Boolean);
         return c2;
       }).filter(function (c) { return c.loops.length; });
+      // (rfPM) a sketched profile: clipped to its box, then the linework to the outline itself (the hatching is clipped
+      // to it on the sheet, applyCrop; viewClipper reads o.poly)
+      if (crop.type === 'poly' && crop.pts && crop.pts.length >= 3) { o.proj = clipProjectionPoly(o.proj, crop.pts); o.poly = crop.pts; }
     }
+    if (ct.proj.bends && !o.proj.bends) o.proj.bends = ct.proj.bends;   // (rfPM) a flat's bend stations (Autodimension)
+    if (ct.proj.pending) o.proj.pending = true;
     o.crop = crop;
     return o;
   }
@@ -1679,7 +1789,7 @@
       var q = copyOf(p);
       if (fk && shift[fk]) { move(q, shift[fk]); out.push(q); return; }
       // a flat view's bend lines, bend-region lines and etch marks are its linework (cut, not moved into the gap)
-      var geo = ann && (p.bend != null || p.regionLine != null || p.etch);
+      var geo = ann && (p.bend != null || p.regionLine != null || p.etch || p.altPos != null);   // (rfPM: an alternate position's lines)
       if (!geo && (ann || p.k === 'text' || p.k === 'fill' || p.k === 'pending')) {
         if (q.a) q.a = M(q.a); if (q.b) q.b = M(q.b); if (q.p) q.p = M(q.p); if (q.c) q.c = M(q.c);
         if (q.pts) q.pts = q.pts.map(M);
@@ -1760,6 +1870,166 @@
     // (rfPH) a Hole Table's origin (paper) moves with the view; its tags' boxes are worked out from the prims
     (sheet.holeTables || []).forEach(function (t) { if (t.view === v.id && t.origin) t.origin = M(t.origin); });
   }
+  // ---- (rfPM) Crop View on the sheet. The content crop (cropContent) clipped the view's own linework; applyCrop does
+  // the rest, as applyBreaks does for the paper a break removes: a flat's bend lines, bend-region lines and etch marks,
+  // explode lines and (a sketched profile) the hatching are clipped to the crop; a bend note or tag stays on its bend
+  // line's kept piece (moved onto the longest when the crop takes its place) and goes with the line; a Cross-Break note
+  // goes with its crossing, the Fixed Face note when the fixed face's centre is cropped away; a dimension, centre mark,
+  // centreline or callout whose features all lie outside goes (dims / annotations get .inCrop), an ordinate / baseline
+  // member whose feature point lies outside goes; a Hole Table's tags go with their holes (the table keeps every row);
+  // the Bend Table, FLAT SIZE and scale notes stay. cropRegion(w) -> { inside(p), poly (sheet), circle? }
+  function cropRegion(w) {
+    var cr = w.view.crop;
+    if (cr.type === 'circle') {
+      var c = w.toSheet(cr.c), r = cr.r * w.scale;
+      return { inside: function (p) { return Math.hypot(p[0] - c[0], p[1] - c[1]) <= r * (1 + 1e-9) + 1e-12; }, poly: circlePoly(c, r, 256), circle: { c: c, r: r } };
+    }
+    var P = cr.type === 'poly' && cr.pts ? cr.pts : [[cr.a[0], cr.a[1]], [cr.b[0], cr.a[1]], [cr.b[0], cr.b[1]], [cr.a[0], cr.b[1]]], S = P.map(w.toSheet);
+    var lo = [Infinity, Infinity], hi = [-Infinity, -Infinity], tol;
+    S.forEach(function (q) { lo = [Math.min(lo[0], q[0]), Math.min(lo[1], q[1])]; hi = [Math.max(hi[0], q[0]), Math.max(hi[1], q[1])]; });
+    tol = 1e-9 * (1 + hi[0] - lo[0] + hi[1] - lo[1]);
+    function onEdge(p) {
+      for (var i = 0; i < S.length; i++) { var a = S[i], b = S[(i + 1) % S.length]; if (segPtDist(p, a, b) <= tol) return true; }
+      return false;
+    }
+    return { inside: function (p) { return inPoly(p, S) || onEdge(p); }, poly: S, box: { x0: lo[0], y0: lo[1], x1: hi[0], y1: hi[1] } };
+  }
+  function segPtDist(p, a, b) {
+    var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy, t = L2 > 0 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t);
+  }
+  // a sheet primitive clipped to the region: its pieces inside
+  function cropPrim(p, reg) {
+    if (reg.circle && p.k === 'line') { var q = clipSeg([p.a[0], p.a[1], p.b[0], p.b[1]], reg.circle.c, reg.circle.r); return q ? [withAB(p, [q[0], q[1]], [q[2], q[3]])] : []; }
+    if (p.k === 'region') { var rq = withLoops(p, clipLoopsPoly(p.loops, reg.poly)); return rq ? [rq] : []; }
+    if (p.k === 'text') return reg.inside(p.p) ? [p] : [];
+    if (p.k === 'fill' && p.pts) return p.pts.some(reg.inside) ? [p] : [];
+    return primInPoly(p, reg.poly);
+  }
+  // featIn(o, ts, reg) -> whether a view dimension / annotation record (view frame) still has something to point at in
+  // the crop: one of its edges crosses it, a circle or point lies in it (null when it names no feature: kept). A
+  // horizontal / vertical / aligned dimension needs both measured points inside (its extension lines would start in
+  // the paper the crop took).
+  function pt2(x) { return Array.isArray(x) && x.length === 2 && isFinite(x[0]) && isFinite(x[1]); }
+  function featIn(o, ts, reg) {
+    if (/^(h|v|aligned)$/.test(o.kind) && pt2(o.a) && pt2(o.b)) return reg.inside(ts(o.a)) && reg.inside(ts(o.b));
+    var any = false, named = false;
+    function circ(c, r) {
+      named = true;
+      if (reg.inside(ts(c))) { any = true; return; }
+      if (r > 0) for (var i = 0; i < 32 && !any; i++) { var t = i / 32 * 2 * Math.PI; if (reg.inside(ts([c[0] + r * Math.cos(t), c[1] + r * Math.sin(t)]))) any = true; }
+    }
+    function add(x) {
+      if (!x || typeof x !== 'object' || any) return;
+      if (pt2(x.c)) { circ(x.c, +x.r || 0); return; }
+      if (pt2(x.a) && pt2(x.b)) { named = true; if (cropPrim({ k: 'line', a: ts(x.a), b: ts(x.b) }, reg).length) any = true; return; }
+      if (pt2(x.p) && (x.kind === 'pt' || !x.kind)) { named = true; if (reg.inside(ts(x.p))) any = true; }
+    }
+    add(o);
+    if (o.base) add(o.base);
+    (o.refs || []).forEach(add);
+    (o.holes || []).forEach(add);   // (a centre mark: its holes)
+    if (o.arc) add(o.arc);
+    if (o.ref) add(o.ref);
+    return named ? any : null;
+  }
+  // (rfPM) cropEdge(w, a, b) -> [a', b'] the part of the sheet segment a-b that a cropped view keeps (from its first
+  // kept point to its last, in a -> b order), or null (the view is not cropped, or nothing of it is kept): an ordinate
+  // member's feature point is the kept end of its edge (drawing-render.js)
+  function cropEdge(w, a, b) {
+    if (!w || !w.view || !w.view.crop || w.view.kind === 'detail' || w.view.kind === 'empty' || !w.toSheet) return null;
+    var reg = w._cropReg;
+    if (!reg) { reg = cropRegion(w); try { Object.defineProperty(w, '_cropReg', { value: reg, configurable: true, writable: true }); } catch (e) { } }
+    var pcs = cropPrim({ k: 'line', a: a, b: b }, reg);
+    if (!pcs.length) return null;
+    var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy || 1, t0 = Infinity, t1 = -Infinity;
+    pcs.forEach(function (q) { [q.a, q.b].forEach(function (x) { var t = ((x[0] - a[0]) * dx + (x[1] - a[1]) * dy) / L2; t0 = Math.min(t0, t); t1 = Math.max(t1, t); }); });
+    return [[a[0] + dx * t0, a[1] + dy * t0], [a[0] + dx * t1, a[1] + dy * t1]];
+  }
+  function applyCrop(sheet, w, k) {
+    var v = w.view, reg = cropRegion(w), L = w.layer, drop = {}, shift = {}, ts = w.toSheet;
+    var NOBOX = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    // the kept pieces [t0, t1] (0..1) of the segment A-B
+    function keptPieces(A, B) {
+      return cropPrim({ k: 'line', a: A, b: B }, reg).map(function (q) {
+        var dx = B[0] - A[0], dy = B[1] - A[1], L2 = dx * dx + dy * dy || 1;
+        var t0 = ((q.a[0] - A[0]) * dx + (q.a[1] - A[1]) * dy) / L2, t1 = ((q.b[0] - A[0]) * dx + (q.b[1] - A[1]) * dy) / L2;
+        return [Math.min(t0, t1), Math.max(t0, t1)];
+      }).filter(function (pc) { return pc[1] - pc[0] > 1e-9; });
+    }
+    var recs = {};
+    (v.annotations || []).forEach(function (an) { if (an && an.id != null) recs[an.id] = an; });
+    (sheet.annotations || []).forEach(function (an) {
+      if (an.view !== v.id) return;
+      var key = an.flat ? 'f:' + an.key : 'a:' + an.id, inf = an.info || {}, bx = an.box && isFinite(an.box.x0) ? an.box : null;
+      if (!an.flat) {
+        var rec = recs[an.id];
+        if (rec && featIn(rec, ts, reg) === false) drop[key] = 1;
+        return;
+      }
+      if ((an.type === 'bendNote' || an.type === 'bendTag') && inf.a && inf.b) {
+        var kp = keptPieces(inf.a, inf.b);
+        if (!kp.length) { drop[key] = 1; return; }
+        var A = inf.a, len = Math.hypot(inf.b[0] - A[0], inf.b[1] - A[1]) || 1, t = [(inf.b[0] - A[0]) / len, (inf.b[1] - A[1]) / len];
+        var sOf = function (p) { return (p[0] - A[0]) * t[0] + (p[1] - A[1]) * t[1]; }, at = function (s) { return [A[0] + t[0] * s, A[1] + t[1] * s]; };
+        var cs = bx ? [sOf([bx.x0, bx.y0]), sOf([bx.x1, bx.y0]), sOf([bx.x0, bx.y1]), sOf([bx.x1, bx.y1])] : [len / 2, len / 2];
+        var lo = Math.min.apply(null, cs), hi = Math.max.apply(null, cs), c0 = (lo + hi) / 2, half = (hi - lo) / 2, mg = 2 * k;
+        var pcs = kp.map(function (p) { return [p[0] * len, p[1] * len, p[0] > 1e-9, p[1] < 1 - 1e-9]; });
+        var home = pcs.filter(function (p) { return c0 >= p[0] && c0 <= p[1]; })[0];
+        if (home && lo >= home[0] - 1e-9 && hi <= home[1] + 1e-9) return;   // where it is
+        var pc = home || pcs.reduce(function (x, y) { return y[1] - y[0] > x[1] - x[0] ? y : x; }), cn;
+        if (pc[3] && !pc[2]) cn = Math.min(Math.max(c0, pc[0] + half), pc[1] - mg - half);   // cropped beyond its end: kept short of the crop
+        else if (pc[2] && !pc[3]) cn = Math.max(Math.min(c0, pc[1] - half), pc[0] + mg + half);
+        else cn = (pc[0] + pc[1]) / 2;
+        if (half * 2 + mg > pc[1] - pc[0]) cn = (pc[0] + pc[1]) / 2;   // longer than the piece: centred on it
+        var pN = at(cn), p0 = at(c0);
+        shift[key] = [pN[0] - p0[0], pN[1] - p0[1]];
+      } else if (an.type === 'crossBreakNote' && inf.at) { if (!reg.inside(inf.at)) drop[key] = 1; }
+      else if (an.type === 'fixedFace' && bx) { if (!reg.inside([(bx.x0 + bx.x1) / 2, (bx.y0 + bx.y1) / 2])) drop[key] = 1; }
+    });
+    // dimensions of this view whose features all lie outside (an ordinate / baseline set: member by member below)
+    (sheet.dims || []).forEach(function (d, i) {
+      if (d.view !== v.id || d.kind === 'ordinate' || d.kind === 'baseline') return;
+      if (featIn(d, ts, reg) === false) drop['d:' + i] = 1;
+    });
+    var hts = {};
+    (sheet.holeTables || []).forEach(function (t) { if (t.view === v.id) hts[t.id] = 1; });
+    function groupOf(p) { return p.dimIx != null ? 'd:' + p.dimIx : p.annId != null ? 'a:' + p.annId : null; }
+    var out = [];
+    sheet.prims.forEach(function (p) {
+      // a Hole Table's tags go with their holes
+      if (p.holeTable != null && hts[p.holeTable] && p.holeTag != null && p.tagC) { if (reg.inside(p.tagC)) out.push(p); return; }
+      var mine = p.layer === L && p.view == null, ann = p.view === v.id;
+      if (!mine && !ann) { out.push(p); return; }
+      var fk = p.flatKey != null && ann ? 'f:' + p.flatKey : null;
+      if (fk && drop[fk]) return;
+      var gk = ann ? groupOf(p) : null;
+      if (gk && drop[gk]) return;
+      if (ann && p.ordM && !reg.inside(p.ordM)) return;
+      if (fk && shift[fk]) {
+        var d = shift[fk], q = copyOf(p);
+        ['a', 'b', 'p', 'c'].forEach(function (f) { if (q[f]) q[f] = [q[f][0] + d[0], q[f][1] + d[1]]; });
+        if (q.pts) q.pts = q.pts.map(function (x) { return [x[0] + d[0], x[1] + d[1]]; });
+        out.push(q); return;
+      }
+      // linework the content crop did not reach: a flat's bend / region lines and etch, explode lines, and on a
+      // sketched profile the hatching (clipped to the profile's box only)
+      var geo = ann && (p.bend != null || p.regionLine != null || p.etch || p.explodeLine || p.altPos != null);
+      var hatch = mine && v.crop.type === 'poly' && (p.style === 'hatch' || p.k === 'region');
+      if (geo || hatch) { cropPrim(p, reg).forEach(function (q) { out.push(q); }); return; }
+      out.push(p);
+    });
+    sheet.prims = out;
+    (sheet.dims || []).forEach(function (d, i) { if (drop['d:' + i]) { d.box = NOBOX; d.tbox = null; d.inCrop = true; } });
+    (sheet.annotations || []).forEach(function (an) {
+      if (an.view !== v.id || !an.box || !isFinite(an.box.x0)) return;
+      var key = an.flat ? 'f:' + an.key : 'a:' + an.id;
+      if (drop[key]) { an.box = NOBOX; an.inCrop = true; return; }
+      if (shift[key]) { var d = shift[key]; an.box = { x0: an.box.x0 + d[0], y0: an.box.y0 + d[1], x1: an.box.x1 + d[0], y1: an.box.y1 + d[1] }; }
+    });
+    w.crop = { region: reg.circle ? { c: reg.circle.c, r: reg.circle.r } : reg.poly };
+  }
   // the auxiliary view's label (VIEW A-A) and, on the parent, the arrow square to the edge with the letter
   function auxMarks(sheet, w, pw, k, projection) {
     var v = w.view, L = w.layer, CAP = _.CAP_EM || 1;
@@ -1790,6 +2060,7 @@
     });
     // (rfAD) broken-out profiles and the regions with their own hatch, before the breaks so they move with the view
     sheet.views.forEach(function (w) { brokenOutMarks(doc, sheet, w, byId, k); });
+    sheet.views.forEach(function (w) { if (w.view.crop && w.view.kind !== 'detail' && w.view.kind !== 'empty' && !w.pending) applyCrop(sheet, w, k); });   // (rfPM) before the breaks
     sheet.views.forEach(function (w) { if (w.view.breaks && w.view.breaks.length && !w.pending) applyBreaks(sheet, w, k); });
     sheet.views.forEach(function (w) {
       if (w.view.kind !== 'aux' || !w.view.aux) return;
@@ -3055,6 +3326,8 @@
   // (rfCX)
   D.addRemovedSection = addRemovedSection; D.isRemovedSection = isRemoved; _.removedContent = removedContent; _.followParentScale = followParentScale; D.convexPieces = convexPieces; _.clipLoopsPoly = clipLoopsPoly;
   _.flatDetailLines = flatDetailLines;   // (rfPH)
+  _.cropEdge = cropEdge; _.cropRegion = cropRegion; _.applyCrop = applyCrop;   // (rfPM)
+  _.altPositionContent = altPositionContent; D.addAltPosition = addAltPosition; D.deleteAltPosition = deleteAltPosition;   // (rfPM)
   _.detailHalf = detailHalf; _.detailProfileContent = detailProfileContent; _.detailOpts = detailOpts; _.detailProfile = detailProfile; _.detailOutline = detailOutline;
   _.resolveSectionScale = resolveSectionScale; _.sectionRel = sectionRel; _.partialContent = partialContent; _.isTrueView = isTrueView;
   D.DETAIL_STYLES = DETAIL_STYLES; D.setSectionOptions = setSectionOptions; D.trueLength = trueLength; D.setDimType = setDimType; D.resolveSectionScale = resolveSectionScale;
@@ -3097,7 +3370,7 @@
   'use strict';
   var V = Kernel.vec;
   var STYLES = ['solid', 'hidden', 'center', 'phantom'], WEIGHT_MM = { thin: 0.25, normal: 0.5, thick: 0.7 };
-  var KINDS = { line: 1, circle: 1, arc: 1, spline: 1, point: 1, text: 1 };
+  var KINDS = { line: 1, circle: 1, arc: 1, spline: 1, point: 1, text: 1, block: 1 };   // (rfPM: block, an inserted Block)
   function paperK(doc) { return doc && doc.units === 'in' ? 1 / 25.4 : 1; }
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
   function shiftPts(e, dx, dy) {
@@ -3162,7 +3435,119 @@
     else e.p = q;
   }
   function endsOf(e) {
-    return e.t === 'line' ? ['a', 'b'] : e.t === 'arc' ? ['c', 'start', 'end'] : e.t === 'circle' ? ['c'] : e.t === 'spline' ? ['start', 'end'] : e.t === 'point' || e.t === 'text' ? ['p'] : [];
+    return e.t === 'line' ? ['a', 'b'] : e.t === 'arc' ? ['c', 'start', 'end'] : e.t === 'circle' ? ['c'] : e.t === 'spline' ? ['start', 'end'] : e.t === 'point' || e.t === 'text' || e.t === 'block' ? ['p'] : [];
+  }
+
+  // ---- (rfPM) Blocks, as SolidWorks has them in a drawing (Tools ▸ Block ▸ Make / Insert / Explode; a shop keeps its
+  // title-block stamps, weld / finish notes and revision stamps as blocks). A definition lives on the drawing,
+  // doc.blocks[name] = { name, ents: [sketch entities (line, circle, arc, spline, point, text) relative to its insertion
+  // point, paper units] }, shared by every sheet; an instance is a sketch entity { t: 'block', name, p, scale?, rot? }
+  // on the sheet or in a view, so it is picked, dragged, deleted and undone like any sketch entity. Every output draws
+  // its entities on the SKETCH layer; a DXF writes the definition once as a BLOCK and each instance as an INSERT.
+  var BLOCK_KINDS = { line: 1, circle: 1, arc: 1, spline: 1, point: 1, text: 1 };
+  function blockDef(doc, name) { return doc && doc.blocks && name != null && Object.prototype.hasOwnProperty.call(doc.blocks, String(name)) ? doc.blocks[String(name)] : null; }
+  // blockXf(ins) -> function (local point) -> owner-list point: the instance's scale, turn and insertion point
+  function blockXf(ins) {
+    var s = +ins.scale > 0 ? +ins.scale : 1, a = (+ins.rot || 0) * Math.PI / 180, c = Math.cos(a), n = Math.sin(a), p = ins.p;
+    return function (q) { return [p[0] + s * (c * q[0] - n * q[1]), p[1] + s * (n * q[0] + c * q[1])]; };
+  }
+  // blockEnts(doc, ins) -> the definition's entities placed where the instance puts them (its own coordinates)
+  function blockEnts(doc, ins) {
+    var def = blockDef(doc, ins.name);
+    if (!def) return [];
+    var X = blockXf(ins), s = +ins.scale > 0 ? +ins.scale : 1, r = +ins.rot || 0;
+    return def.ents.map(function (e0) {
+      var e = clone(e0);
+      ['a', 'b', 'c', 'p'].forEach(function (k) { if (e[k]) e[k] = X(e[k]); });
+      if (e.pts) e.pts = e.pts.map(X);
+      if (e.r != null) e.r = e.r * s;
+      if (e.h != null) e.h = e.h * s;
+      if (e.t === 'arc') { e.a0 += r; e.a1 += r; }
+      if (e.t === 'text' && r) e.rot = (+e.rot || 0) + r;
+      return e;
+    });
+  }
+  function blockNameOk(n) { return /^[A-Za-z0-9 _\-.$]{1,64}$/.test(n) && /[A-Za-z0-9]/.test(n); }
+  // makeBlock(doc, ids, { name, base? (sheet point; default the lower-left of the entities' box) }) -> the instance
+  // that replaces them: the selected sketch entities (one sketch: the sheet or one view) become the block's definition
+  function makeBlock(doc, ids, opts) {
+    opts = opts || {};
+    ids = [].concat(ids == null ? [] : ids);
+    if (!ids.length) throw new Error('Make Block: select the sketch entities (lines, arcs, circles, splines, points, text) first');
+    var name = String(opts.name == null ? '' : opts.name).trim();
+    if (!name) { var n = 1; while (blockDef(doc, 'Block' + n)) n++; name = 'Block' + n; }
+    if (!blockNameOk(name)) throw new Error('A block name is letters, digits, spaces and _ - . $ (64 at most)');
+    if (blockDef(doc, name)) throw new Error('There is a block named "' + name + '" already');
+    var first = locate(doc, ids[0]);
+    if (!first) throw new Error('No sketch entity ' + ids[0]);
+    var o = first.owner, ents = [];
+    ids.forEach(function (id) {
+      var f = locate(doc, id);
+      if (!f) throw new Error('No sketch entity ' + id);
+      if (f.owner.list !== o.list) throw new Error('A block is made of entities of one sketch (the sheet or one view)');
+      if (f.ent.t === 'block') throw new Error('A block inside a block is not supported: explode it first');
+      if (!BLOCK_KINDS[f.ent.t]) return;   // (relations and dimensions stay out)
+      ents.push(f.ent);
+    });
+    if (!ents.length) throw new Error('Make Block: the selection has no lines, arcs, circles, splines, points or text');
+    var base = opts.base ? [+opts.base[0] - o.off[0], +opts.base[1] - o.off[1]] : null;
+    if (!base) {
+      var lo = [Infinity, Infinity];
+      ents.forEach(function (e) {
+        var pts = [];
+        ['a', 'b', 'p'].forEach(function (k) { if (e[k]) pts.push(e[k]); });
+        if (e.c) pts.push([e.c[0] - e.r, e.c[1] - e.r]);
+        if (e.pts) pts = pts.concat(e.pts);
+        pts.forEach(function (q) { lo = [Math.min(lo[0], q[0]), Math.min(lo[1], q[1])]; });
+      });
+      base = lo;
+    }
+    if (!isFinite(base[0]) || !isFinite(base[1])) throw new Error('Make Block: no insertion point');
+    var defEnts = ents.map(function (e) { var c = shiftPts(e, -base[0], -base[1]); delete c.id; delete c.view; return c; });
+    if (!doc.blocks) doc.blocks = {};
+    doc.blocks[name] = { name: name, ents: defEnts };
+    ents.forEach(function (e) { deleteSketchEntity(doc, e.id); });
+    var ins = { t: 'block', name: name, p: base, id: nextId(doc) };
+    o.list.push(ins);
+    return sketchEntity(doc, ins.id);
+  }
+  // insertBlock(doc, name, p (sheet), viewId?, { scale, rot }) -> the instance
+  function insertBlock(doc, name, p, viewId, opts) {
+    opts = opts || {};
+    return addSketchEntity(doc, { t: 'block', name: name, p: p, scale: opts.scale, rot: opts.rot }, viewId);
+  }
+  // explodeBlock(doc, id) -> [ids]: the instance replaced by its entities, plain sketch entities where it put them
+  function explodeBlock(doc, id) {
+    var f = locate(doc, id);
+    if (!f || f.ent.t !== 'block') throw new Error('Explode Block: select an inserted block');
+    var out = [];
+    blockEnts(doc, f.ent).forEach(function (e) { e.id = nextId(doc); f.owner.list.push(e); out.push(e.id); });
+    deleteSketchEntity(doc, id);
+    return out;
+  }
+  // defineBlock(doc, name, { ents }) -> the definition (a library block brought into the drawing; replaces one of
+  // that name only when opts.replace); deleteBlock(doc, name): a definition no instance uses
+  function defineBlock(doc, name, def, opts) {
+    name = String(name == null ? '' : name).trim();
+    if (!blockNameOk(name)) throw new Error('A block name is letters, digits, spaces and _ - . $ (64 at most)');
+    if (blockDef(doc, name) && !(opts && opts.replace)) throw new Error('There is a block named "' + name + '" already');
+    var ents = ((def && def.ents) || []).filter(function (e) { return e && BLOCK_KINDS[e.t]; }).map(function (e) { var c = clone(e); delete c.id; delete c.view; checkFmt(c); return c; });
+    if (!ents.length) throw new Error('A block needs lines, arcs, circles, splines, points or text');
+    if (!doc.blocks) doc.blocks = {};
+    doc.blocks[name] = { name: name, ents: ents };
+    return clone(doc.blocks[name]);
+  }
+  function deleteBlock(doc, name) {
+    if (!blockDef(doc, name)) throw new Error('No block named "' + name + '"');
+    var used = owners(doc).some(function (o) { return o.list.some(function (e) { return e.t === 'block' && e.name === String(name); }); });
+    if (used) throw new Error('Block "' + name + '" is inserted on the sheet: delete or explode its instances first');
+    delete doc.blocks[String(name)];
+  }
+  // blocks(doc) -> [{ name, count (entities), used (instances on the active sheet) }]
+  function blockList(doc) {
+    var use = {};
+    owners(doc).forEach(function (o) { o.list.forEach(function (e) { if (e.t === 'block') use[e.name] = (use[e.name] || 0) + 1; }); });
+    return Object.keys(doc.blocks || {}).map(function (n) { return { name: n, count: doc.blocks[n].ents.length, used: use[n] || 0 }; });
   }
   // solveList(list, scale, fixed): the relations and driving dimensions of one list made true; fixed { 'id:end': 1 }
   // ('id:*' the whole entity, 'id:r' its radius) stay put (what the mouse holds). Coincident points move together,
@@ -3234,7 +3619,12 @@
     if (e.t === 'line' && (!e.a || !e.b)) throw new Error('A line needs a and b');
     if ((e.t === 'circle' || e.t === 'arc') && !(+e.r > 0)) throw new Error('A circle or arc needs a radius above 0');
     if (e.t === 'spline' && !(e.pts && e.pts.length >= 2)) throw new Error('A spline needs at least two points');
-    if ((e.t === 'point' || e.t === 'text') && !e.p) throw new Error('A point or text needs p');
+    if ((e.t === 'point' || e.t === 'text' || e.t === 'block') && !e.p) throw new Error('A point, text or block needs p');
+    if (e.t === 'block') {   // (rfPM) an inserted Block: { name, p (insertion point), scale, rot (degrees) }
+      if (!blockDef(doc, e.name)) throw new Error('No block named "' + e.name + '" in this drawing');
+      e.name = String(e.name); e.scale = +e.scale > 0 ? +e.scale : 1; e.rot = isFinite(+e.rot) ? +e.rot : 0;
+      if (e.scale === 1) delete e.scale; if (!e.rot) delete e.rot;
+    }
     if (e.t === 'text') { e.text = String(e.text == null ? '' : e.text); if (!(+e.h > 0)) e.h = 3.5 * paperK(doc); }
     if (e.t === 'arc') { e.a0 = +e.a0 || 0; e.a1 = +e.a1 || 0; while (e.a1 <= e.a0) e.a1 += 360; }
     e.id = nextId(doc);
@@ -3496,6 +3886,7 @@
         if (e.t === 'rel') return;
         var c = shiftPts(e, o.off[0], o.off[1]), it = { id: e.id, t: e.t, view: o.view ? o.view.id : null, e: c };
         if (e.t === 'dim') { var g = byId[e.of]; if (!g) return; it.of = shiftPts(g, o.off[0], o.off[1]); it.dim = dimGeom(doc, e, it.of); }
+        if (e.t === 'block') it.ents = blockEnts(doc, c);   // (rfPM) where the block's entities are, sheet coordinates
         out.push(it);
       });
     });
@@ -3506,16 +3897,36 @@
   function sketchPrims(doc, sheet) {
     if (!sheet || !sheet.prims || !doc.sheet) return sheet;
     var k = paperK(doc), CAP = _.CAP_EM || 0.72, items = sketchItems(doc);
-    sheet.sketch = [];
-    items.forEach(function (it) {
-      var e = it.e, ls = lineStyle(fmtOf(e)), n0 = sheet.prims.length;
-      function P(q) { q.layer = 'SKETCH'; if (!q.style) { q.style = ls.style; q.lw = ls.lw; if (e.color) q.rgb = e.color; } q.sk = it.id; if (it.view != null) q.view = it.view; sheet.prims.push(q); }
+    sheet.sketch = []; delete sheet.inserts; delete sheet.blockDefs;
+    // one drawable entity's primitives through put(q) (its Line Format unless q has a style); cid names a spline's chain
+    function draw(e, put, cid) {
+      var ls = lineStyle(fmtOf(e));
+      function P(q) { if (!q.style) { q.style = ls.style; q.lw = ls.lw; if (e.color) q.rgb = e.color; } put(q); }
       if (e.t === 'line') P({ k: 'line', a: e.a, b: e.b });
       else if (e.t === 'circle') P({ k: 'circle', c: e.c, r: e.r });
       else if (e.t === 'arc') P({ k: 'arc', c: e.c, r: e.r, a0: e.a0, a1: e.a1 });
-      else if (e.t === 'spline') { var sp = splinePts(e.pts), cid = 'sk' + it.id; for (var i = 1; i < sp.length; i++) P({ k: 'line', a: sp[i - 1], b: sp[i], chain: cid }); }
+      else if (e.t === 'spline') { var sp = splinePts(e.pts); for (var i = 1; i < sp.length; i++) P({ k: 'line', a: sp[i - 1], b: sp[i], chain: cid }); }
       else if (e.t === 'point') { var pr = 0.6 * k, pts = []; for (var j = 0; j < 12; j++) pts.push([e.p[0] + pr * Math.cos(j * Math.PI / 6), e.p[1] + pr * Math.sin(j * Math.PI / 6)]); P({ k: 'fill', pts: pts, style: 'thin' }); }
-      else if (e.t === 'text') String(e.text).split(/\r?\n/).forEach(function (s, li) { if (s) P({ k: 'text', p: [e.p[0], e.p[1] - li * e.h * 1.5], h: e.h * CAP, text: s, anchor: 'start', rot: e.rot || 0, style: 'thin' }); });
+      else if (e.t === 'text') {   // (rfPM: a turned text's next lines step square to it)
+        var tr = (+e.rot || 0) * Math.PI / 180, dx = Math.sin(tr), dy = -Math.cos(tr);
+        String(e.text).split(/\r?\n/).forEach(function (s, li) { if (s) P({ k: 'text', p: [e.p[0] + dx * li * e.h * 1.5, e.p[1] + dy * li * e.h * 1.5], h: e.h * CAP, text: s, anchor: 'start', rot: e.rot || 0, style: 'thin' }); });
+      }
+    }
+    var defs = {};
+    items.forEach(function (it) {
+      var e = it.e, ls = lineStyle(fmtOf(e)), n0 = sheet.prims.length;
+      function P(q) { q.layer = 'SKETCH'; if (!q.style) { q.style = ls.style; q.lw = ls.lw; if (e.color) q.rgb = e.color; } q.sk = it.id; if (it.view != null) q.view = it.view; sheet.prims.push(q); }
+      if (BLOCK_KINDS[e.t]) draw(e, P, 'sk' + it.id);
+      else if (e.t === 'block') {
+        // (rfPM) an inserted block: its entities where the instance puts them (tagged blockIns), and once per sheet the
+        // definition's own primitives at the origin, unscaled (sheet.blockDefs, for the DXF's BLOCKS section)
+        var def = blockDef(doc, e.name);
+        if (!def) return;
+        if (!defs[e.name]) { var lp = []; def.ents.forEach(function (de, di) { draw(de, function (q) { q.layer = 'SKETCH'; lp.push(q); }, 'blk' + di); }); defs[e.name] = lp; }
+        (it.ents || []).forEach(function (be, bi) { draw(be, function (q) { q.blockIns = it.id; q.block = e.name; P(q); }, 'sk' + it.id + '.' + bi); });
+        if (!sheet.inserts) sheet.inserts = [];
+        sheet.inserts.push({ id: it.id, name: e.name, p: e.p.slice(), scale: +e.scale > 0 ? +e.scale : 1, rot: +e.rot || 0, view: it.view });
+      }
       else if (e.t === 'dim') {
         var g = it.dim;
         g.lines.forEach(function (l) { P({ k: 'line', a: l[0], b: l[1], style: 'thin' }); });
@@ -3528,6 +3939,7 @@
       if (sheet.prims.length > n0) sheet.sketch.push({ id: it.id, t: it.t, view: it.view, from: n0, to: sheet.prims.length });
     });
     if (!sheet.sketch.length) delete sheet.sketch;
+    if (Object.keys(defs).length) sheet.blockDefs = defs;   // (rfPM)
     return sheet;
   }
 
@@ -3655,6 +4067,8 @@
     return v;
   }
 
+  D.makeBlock = makeBlock; D.insertBlock = insertBlock; D.explodeBlock = explodeBlock; D.defineBlock = defineBlock; D.deleteBlock = deleteBlock;   // (rfPM)
+  D.blocks = blockList; D.blockDef = function (doc, name) { var d = blockDef(doc, name); return d ? clone(d) : null; }; D.blockEnts = blockEnts;
   D.SKETCH_STYLES = STYLES; D.SKETCH_WEIGHTS = Object.keys(WEIGHT_MM);
   D.addSketchEntity = addSketchEntity; D.addSketchRect = addSketchRect; D.sketchEntity = sketchEntity; D.sketchEntities = sketchEntities;
   D.editSketchEntity = editSketchEntity; D.moveSketchEntity = moveSketchEntity; D.deleteSketchEntity = deleteSketchEntity; D.solveSketch = solveSketch;

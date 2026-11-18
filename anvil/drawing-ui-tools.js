@@ -1038,6 +1038,8 @@
         { label: 'Show Etch Marks', checked: v.showEtch !== false, action: function () { setFlatViewProps(v.id, { showEtch: v.showEtch === false }); } },
         { sep: true },
         { label: 'Un-Break View', disabled: !(v.breaks && v.breaks.length), action: function () { unBreak(v.id); } },   // (rfPH) a broken flat
+        { label: 'Crop View ▸ Edit Crop', disabled: !v.crop, action: function () { editCrop(v.id); } },   // (rfPM) a cropped flat
+        { label: 'Crop View ▸ Remove Crop', disabled: !v.crop, action: function () { removeCrop(v.id); } },
         { sep: true },
         ].concat(moveToSheetItems(v), [{ label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }]);
     }
@@ -1046,6 +1048,8 @@
       { sep: true },
       { label: 'Projected View', disabled: v.kind === 'detail', action: function () { D.sel = { kind: 'view', id: v.id }; cmdProjectedView(); } },
       { label: 'Auto Balloon', disabled: !isAsm() || v.kind === 'detail', action: function () { autoBalloonView(v.id); } },
+      { label: 'Alternate Position View\u2026', disabled: !isAsm() || !!(v.kind && v.kind !== 'projected'), action: function () { cmdAltPosition(v.id); } },   // (rfPM)
+      ].concat((v.altPositions || []).map(function (a) { return { label: 'Alternate Position \u25b8 Delete ' + a.name, action: function () { deleteAltPosition(v.id, a.id); } }; }), [
       { sep: true },
       { label: 'Display \u25b8 Hidden Lines Visible', checked: v.display === 'hlv', action: function () { setViewDisplay(v.id, 'hlv'); } },
       { label: 'Display \u25b8 Hidden Lines Removed', checked: v.display === 'hlr', action: function () { setViewDisplay(v.id, 'hlr'); } },
@@ -1058,12 +1062,13 @@
       { label: 'Tangent Edge \u25b8 Tangent Edges With Font', disabled: v.kind === 'detail', checked: v.tangent === 'font', action: function () { setViewTangent(v.id, 'font'); } },
       { label: 'Tangent Edge \u25b8 Tangent Edges Removed', disabled: v.kind === 'detail', checked: !v.tangent || v.tangent === 'removed', action: function () { setViewTangent(v.id, 'removed'); } },
       { sep: true },
+      { label: 'Crop View ▸ Edit Crop', disabled: !v.crop, action: function () { editCrop(v.id); } },   // (rfPM)
       { label: 'Crop View ▸ Remove Crop', disabled: !v.crop, action: function () { removeCrop(v.id); } },
       { label: 'Un-Break View', disabled: !(v.breaks && v.breaks.length), action: function () { unBreak(v.id); } },
       { label: 'Broken-out Section ▸ Remove', disabled: !(v.brokenOut && v.brokenOut.length), action: function () { removeBrokenOut(v.id); } },
       { label: 'Area Hatch/Fill…', disabled: !hatchUnder(v), action: function () { var h = hatchUnder(v); if (h) cmdAreaHatch(v.id, h.g); } },
       { sep: true },
-      ].concat(moveToSheetItems(v), [{ label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }]);
+      ].concat(moveToSheetItems(v), [{ label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }]));
   }
   // (rfLA) SolidWorks' Rotate Drawing View dialog: Drawing view angle (degrees, counter-clockwise), Apply; one undo
   // step. Any angle: its dimensions, centre marks and notes turn with it (rfLG); a break or a rectangular crop turns in
@@ -2391,12 +2396,68 @@
     }
   }
   DW.cmdRemovedSection = cmdRemovedSection; DW.rmsecClick = rmsecClick; DW.rmsecOverlay = rmsecOverlay;
+  // (rfPM) SolidWorks' way first: a closed profile sketched in a view (a circle, or lines / arcs / splines end to end)
+  // and selected, then Crop View, crops that view to it at once; its sketch entities become the crop (one undo step).
+  // A flat-pattern view crops too. Right-click ▸ Crop View ▸ Edit Crop gives the profile back as sketch entities (the
+  // view uncropped) to change; selecting it and Crop View again crops to the new outline.
+  function cropProfileSel() {
+    var ids = D.sel && D.sel.kind === 'sk' ? (D.sel.ids || [D.sel.id]) : [];
+    if (!ids.length || !D.sheet) return null;
+    var L = null;
+    try { L = Drawing.sketchLoop(doc(), ids); } catch (err) { UI.toast('Crop View: ' + err.message + '.'); return false; }
+    var w = L.view != null ? sheetView(L.view) : null;
+    if (!w || w.view.kind === 'detail' || w.view.kind === 'empty') { UI.toast('Crop View: sketch the profile in a model, projected, section, auxiliary or flat-pattern view.'); return false; }
+    return L;
+  }
+  function cropRegionOf(L, w) {
+    if (L.circle) return { type: 'circle', c: w.fromSheet(L.circle.c), r: L.circle.r / w.scale };
+    var P = L.pts.map(w.fromSheet);
+    // four corners square to the view: a plain rectangle crop (it turns with the view in 90° steps, as before)
+    if (P.length === 4) {
+      var xs = P.map(function (q) { return q[0]; }), ys = P.map(function (q) { return q[1]; }), x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys), t = 1e-9 * (1 + x1 - x0 + y1 - y0);
+      if (P.every(function (q) { return (Math.abs(q[0] - x0) < t || Math.abs(q[0] - x1) < t) && (Math.abs(q[1] - y0) < t || Math.abs(q[1] - y1) < t); })) return { type: 'rect', a: [x0, y0], b: [x1, y1] };
+    }
+    return { type: 'poly', pts: P };
+  }
+  function cropBySketch(L) {
+    var w = sheetView(L.view), id = L.view, region = cropRegionOf(L, w), ids = L.ids.slice();
+    if (D.tool && D.tool.indexOf('sk:') === 0) endTool();   // (the sketch tool that drew the profile ends)
+    if (!tryEdit(function (dc) { ids.forEach(function (sid) { try { Drawing.deleteSketchEntity(dc, sid); } catch (e) { } }); Drawing.setCrop(dc, id, region); })) return false;
+    D.sel = { kind: 'view', id: id }; drawOverlay(); DW.renderTree();
+    UI.setStatus(w.view.name + ' cropped to the sketched ' + (region.type === 'circle' ? 'circle' : region.type === 'rect' ? 'rectangle' : 'profile') + ' (right-click ▸ Crop View ▸ Edit Crop / Remove Crop).');
+    return true;
+  }
+  // Edit Crop: the crop's outline back as sketch entities in the view (lines, or a circle), the view whole again;
+  // the outline is selected so Crop View crops to it again once it is changed
+  function editCrop(id) {
+    var w = sheetView(id), v = w && w.view;
+    if (!v || !v.crop) return;
+    var cr = v.crop, ids = [];
+    edit(function (dc) {
+      var w2 = w, P;
+      if (cr.type === 'circle') { ids.push(Drawing.addSketchEntity(dc, { t: 'circle', c: w2.toSheet(cr.c), r: cr.r * w2.scale }, id).id); }
+      else {
+        P = (cr.type === 'poly' ? cr.pts : [[cr.a[0], cr.a[1]], [cr.b[0], cr.a[1]], [cr.b[0], cr.b[1]], [cr.a[0], cr.b[1]]]).map(w2.toSheet);
+        if (cr.type !== 'poly') ids = Drawing.addSketchRect(dc, P[0], P[2], id);
+        else {
+          P.forEach(function (q, i) { ids.push(Drawing.addSketchEntity(dc, { t: 'line', a: q, b: P[(i + 1) % P.length] }, id).id); });
+          ids.forEach(function (sid, i) { try { Drawing.addSketchRelation(dc, 'coincident', [{ id: sid, end: 'b' }, { id: ids[(i + 1) % ids.length], end: 'a' }]); } catch (e) { } });
+        }
+      }
+      Drawing.setCrop(dc, id, null);
+    });
+    D.sel = { kind: 'sk', id: ids[0], ids: ids.slice() }; drawOverlay(); DW.renderTree();
+    UI.setStatus('Edit Crop: change the profile (drag its points), keep it selected and click Crop View to crop ' + v.name + ' again. Esc / Remove the lines leaves it uncropped.');
+  }
   function cmdCropView() {
     if (D.tool === 'crop') { endTool(); return; }
     if (!needPart()) return;
+    var L = cropProfileSel();
+    if (L) { cropBySketch(L); return; }
+    if (L === false) return;
     openDrawingPM({
       title: 'Crop View', icon: 'cropView', command: 'cropView',
-      message: 'Pick the crop profile, press OK, then click two points in a view: opposite corners of the rectangle, or the centre and a point on the circle. The view keeps what is inside.',
+      message: 'Pick the crop profile, press OK, then click two points in a view: opposite corners of the rectangle, or the centre and a point on the circle. The view keeps what is inside. (Or sketch a closed profile in the view, select it, then Crop View.)',
       values: { shape: 'rect' },
       groups: [{ title: 'Crop Profile', fields: [{ type: 'select', key: 'shape', label: 'Profile', options: [['rect', 'Rectangle'], ['circle', 'Circle']] }] }],
       onOK: function (val) {
@@ -2408,8 +2469,9 @@
   function cropClick(p) {
     var P = D.pending;
     if (P.view == null) {
-      var w = parentAt(p);
-      if (!w) { UI.setStatus('Crop View: click inside a model, projected, section or auxiliary view.'); return; }
+      var w = viewAt(p);   // (rfPM) a flat-pattern view too
+      if (w && (w.view.kind === 'detail' || w.view.kind === 'empty')) w = null;
+      if (!w) { UI.setStatus('Crop View: click inside a model, projected, section, auxiliary or flat-pattern view.'); return; }
       P.view = w.view.id; P.p0 = w.fromSheet(p); P.s0 = p;
       UI.setStatus('Crop View: click ' + (P.shape === 'circle' ? 'a point on the circle.' : 'the opposite corner.'));
       return;
@@ -2420,6 +2482,61 @@
     region = P.shape === 'circle' ? { type: 'circle', c: P.p0, r: Math.hypot(p[0] - P.s0[0], p[1] - P.s0[1]) / w2.scale } : { type: 'rect', a: P.p0, b: q };
     if (tryEdit(function (dc) { Drawing.setCrop(dc, id, region); })) { D.sel = { kind: 'view', id: id }; drawOverlay(); DW.renderTree(); UI.setStatus(w2.view.name + ' cropped (right-click ▸ Crop View ▸ Remove Crop takes it off).'); }
   }
+  // ------------------------------------------------------------------ (rfPM) Alternate Position View
+  // SolidWorks: Insert ▸ Drawing View ▸ Alternate Position (or the view's right-click): pick a model / projected view of
+  // the assembly, then the second position: a new one (the Distance / Angle / Coincident offset mates with the values
+  // that put the parts there: a lid at 90°, a slide pulled out) or an existing configuration; ✓ draws the parts that
+  // move, in phantom lines, over the view. Right-click ▸ Alternate Position ▸ Delete takes one off.
+  var ALT_KINDS = { distance: ['distance', 'len'], angle: ['angle', 'deg'], coincident: ['offset', 'len'] };
+  function altViewOk(w) { return w && (!w.view.kind || w.view.kind === 'projected'); }
+  function cmdAltPosition(viewId) {
+    if (D.tool === 'altpos') { endTool(); return; }
+    if (!isAsm()) { UI.toast('Alternate Position View is for an assembly drawing.'); return; }
+    if (!needPart()) return;
+    var w = viewId != null ? sheetView(viewId) : D.sel && D.sel.kind === 'view' ? sheetView(D.sel.id) : null;
+    if (altViewOk(w)) { altPositionPM(w.view.id); return; }
+    startTool('altpos', {});
+    UI.setStatus('Alternate Position View: click a model or projected view of the assembly. Esc cancels.');
+  }
+  function altPosClick(p) {
+    var w = viewAt(p);
+    if (!altViewOk(w)) { UI.setStatus('Alternate Position View: click a model or projected view of the assembly.'); return; }
+    endTool();
+    altPositionPM(w.view.id);
+  }
+  function altPositionPM(id) {
+    var m = App.model, inch = m.units === 'in', k = inch ? 25.4 : 1, w = sheetView(id), mates = (m.mates || []).filter(function (x) { return ALT_KINDS[x.type] && !x.suppressed; });
+    var cfgs = (m.configurations || []).filter(function (c) { return c && c.name != null; }).map(function (c) { return [String(c.name), String(c.name)]; });
+    if (!mates.length && !cfgs.length) { UI.toast('Alternate Position View: the assembly has no Distance, Angle or Coincident offset mate (and no configuration) to give a second position.'); return; }
+    var n = 1;
+    (w.view.altPositions || []).forEach(function (a) { n = Math.max(n, (+a.id || 0) + 1); });
+    var vals = { mode: mates.length ? 'new' : 'existing', name: 'AltPosition_' + w.view.name + '_' + n, config: cfgs.length ? cfgs[0][0] : '' }, fields = [];
+    mates.forEach(function (x) {
+      var kk = ALT_KINDS[x.type], v0 = +x[kk[0]] || 0;
+      vals['m' + x.id] = kk[1] === 'deg' ? v0 : +(v0 / k).toFixed(6);
+      fields.push({ type: 'number', key: 'm' + x.id, label: x.name + (kk[1] === 'deg' ? ' (°)' : ' (' + (inch ? 'in' : 'mm') + ')'), min: 0, show: function (v) { return v.mode === 'new'; } });
+    });
+    var orig = JSON.parse(JSON.stringify(vals)), groups = [{ title: 'Configuration', fields: [{ type: 'radio', key: 'mode', label: 'Configuration', rerender: true, options: [['new', 'New configuration']].concat(cfgs.length ? [['existing', 'Existing configuration']] : []) },
+      { type: 'text', key: 'name', label: 'Name', show: function (v) { return v.mode === 'new'; } },
+      { type: 'select', key: 'config', label: 'Configuration', options: cfgs.length ? cfgs : [['', '(none)']], show: function (v) { return v.mode === 'existing'; } }] }];
+    if (fields.length) groups.push({ title: 'Second Position (mate values)', fields: fields });
+    openDrawingPM({ title: 'Alternate Position', icon: 'projView', command: 'altPosition', values: vals, groups: groups,
+      message: 'The second position of ' + w.view.name + ': change the mate values that move the parts there (or pick a configuration). ✓ draws the parts that move in phantom lines over the view.',
+      onOK: function (v) {
+        var spec = { name: v.name };
+        if (v.mode === 'existing') spec.config = v.config;
+        else {
+          spec.mates = {};
+          mates.forEach(function (x) { var key = 'm' + x.id; if (v[key] !== orig[key]) spec.mates[x.id] = ALT_KINDS[x.type][1] === 'deg' ? +v[key] : +v[key] * k; });
+        }
+        var e = null;
+        if (!tryEdit(function (dc) { e = Drawing.addAltPosition(dc, id, spec, App.model); })) return false;
+        D.sel = { kind: 'view', id: id }; drawOverlay(); DW.renderTree();
+        UI.setStatus(w.view.name + ': ' + e.name + ' drawn in phantom lines (right-click ▸ Alternate Position ▸ Delete takes it off).');
+      } });
+  }
+  function deleteAltPosition(id, altId) { if (tryEdit(function (dc) { Drawing.deleteAltPosition(dc, id, altId); })) UI.setStatus('Alternate position deleted.'); }
+  DW.cmdAltPosition = cmdAltPosition;
   function removeCrop(id) { if (tryEdit(function (dc) { Drawing.setCrop(dc, id, null); })) UI.setStatus('Crop removed.'); }
   function cmdBreakView() {
     if (D.tool === 'brk') { endTool(); return; }
@@ -2779,7 +2896,7 @@
     setTimeout(function () { if (D.active && !D.tool) { if (h.fill) cmdAreaFill(null, h.fill); else cmdAreaHatch(h.view, h.g); } }, 0);
   }, true);
   document.addEventListener('contextmenu', function (e) { ctxAt = D.active && D.sheet && D.host && D.host.contains(e.target) ? DW.toPaper(e) : null; }, true);
-  var RF_TOOLS = { aux: auxClick, crop: cropClick, brk: breakClick, bko: boClick, ahatch: hatchPickClick };   // (rfAG) routed by tool name
+  var RF_TOOLS = { aux: auxClick, crop: cropClick, brk: breakClick, bko: boClick, ahatch: hatchPickClick, altpos: altPosClick };   // (rfPM: altpos)   // (rfAG) routed by tool name
   RF_TOOLS.rmsec = rmsecClick;   // (rfCX) Removed Section
   RF_TOOLS.chaindim = chainLinearClick;   // (rfMZ) Chain Dimension
   RF_TOOLS.reattach = reattachClick;   // (rfMZ) Reattach a dangling dimension
@@ -2860,7 +2977,7 @@
         menu.items.forEach(function (it) {
           items.push(it);
           if (it && it.label === 'Drawing View ▸ Projected') add('Drawing View ▸ Auxiliary', cmdAuxiliaryView);
-          if (it && it.label === 'Drawing View ▸ Detail') { add('Drawing View ▸ Broken-out Section', cmdBrokenOut); add('Drawing View ▸ Break', cmdBreakView); add('Drawing View ▸ Crop', cmdCropView); }
+          if (it && it.label === 'Drawing View ▸ Detail') { add('Drawing View ▸ Broken-out Section', cmdBrokenOut); add('Drawing View ▸ Break', cmdBreakView); add('Drawing View ▸ Crop', cmdCropView); if (isAsm()) add('Drawing View ▸ Alternate Position', function () { cmdAltPosition(); }); }   // (rfPM)
           if (it && it.label === 'Annotations ▸ Centerline') add('Annotations ▸ Area Hatch/Fill', cmdAreaHatchTool);   // (rfAD)
           if (it && it.label === 'Annotations ▸ Auto Balloon') add('Annotations ▸ Magnetic Line', cmdMagLine);   // (rfAG)
           if (it && it.label === 'Annotations ▸ Geometric Tolerance…') { add('Annotations ▸ Weld Symbol…', function () { cmdSymbolAN('weld'); }); add('Annotations ▸ Revision Symbol…', function () { cmdSymbolAN('revision'); }); add('Annotations ▸ Revision Cloud', cmdCloud); add('Annotations ▸ Datum Target…', function () { cuSymbolPM('datumTarget'); }); add('Annotations ▸ Cosmetic Thread…', function () { cmdCosmeticThread(); }); add('Annotations ▸ Dowel Pin Symbol', cmdDowelPin); }   // (rfAN; rfCU)
@@ -2901,6 +3018,9 @@
       return api.summary();
     };
     api.crop = function (viewId, region) { return doc() && tryEdit(function (dc) { Drawing.setCrop(dc, viewId, region == null ? null : region); }) ? api.summary() : null; };
+    // (rfPM) alternatePosition(viewId, { mates: { <mate name or id>: value (mm / °) }, config?, name? }); one undo step
+    api.alternatePosition = function (viewId, spec) { return doc() && tryEdit(function (dc) { Drawing.addAltPosition(dc, viewId, spec || {}, App.model); }) ? api.summary() : null; };
+    api.deleteAlternatePosition = function (viewId, id) { return doc() && tryEdit(function (dc) { Drawing.deleteAltPosition(dc, viewId, id); }) ? api.summary() : null; };
     api.breakView = function (viewId, opts) { return doc() && tryEdit(function (dc) { Drawing.addBreak(dc, viewId, opts || {}); }) ? api.summary() : null; };
     api.unbreak = function (viewId) { return doc() && tryEdit(function (dc) { Drawing.clearBreaks(dc, viewId); }) ? api.summary() : null; };
     // (rfZ) viewOptions(viewId, { dimType: 'true' | 'projected', partial: [from, to] | null, scaleWithModel, style,
