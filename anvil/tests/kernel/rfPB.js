@@ -46,6 +46,16 @@
       ['Mirror (Front, offset 3) of a Mirror (Right, offset 3) of it', rfPBC + 'var c = p.chamfer(0.1, [[2, 1, 2.5]], { d2: 0.3 }).last();\nvar m = p.mirror("Right", { feature: c, offset: 3 }).last();\np.mirror("Front", { feature: m, offset: 3 });', rfPBCbase, [rfPBup(2, 2.5, 0.1, 0.3, NX, PZ)],
         [rfPBid, rfPBmirX, rfPBmirZ, function (q) { return rfPBmirZ(rfPBmirX(q)); }]]
     ];
+    // follow-up: a feature-mode Mirror / LPattern / CirPattern of a Shell (also of a Mirror of one) says why it copies
+    // nothing, on both engines (it was "Mirror source feature has no geometry."); the part is the shelled block
+    var rfPBSH = 'p.units("in");\np.sketch("Top").rect(0, -2, 6, 2).end().extrude(1);\nvar s = p.shell(0.1, [[1.5, 1, 1]]).last();\n';
+    var rfPBSHELL = [
+      ['Mirror of a Shell', rfPBSH + 'p.mirror("Right", { feature: s, offset: 3 });', /^Cannot mirror Shell1: a Shell hollows the whole body/],
+      ['LPattern of a Shell', rfPBSH + 'p.linearPattern({ feature: s, dir: "x", spacing: 3, count: 2 });', /^Cannot pattern Shell1: a Shell hollows the whole body/],
+      ['CirPattern of a Shell', rfPBSH + 'p.circularPattern({ feature: s, axis: "y", center: [3, 0, 1], count: 2 });', /^Cannot pattern Shell1: /],
+      ['CirPattern of a Mirror of a Shell', rfPBSH + 'var m = p.mirror("Right", { feature: s, offset: 3 }).last();\np.circularPattern({ feature: m, axis: "y", center: [3, 0, 1], count: 2 });', /^Cannot mirror Shell1: /]   // (the Mirror fails first; the pattern of it fails after it)
+    ];
+    var rfPBSHELLV = 12 - 5.8 * 1.8 * 0.9;   // the 6 x 1 x 2 block shelled .1 open at the top
     // the closed form: the base solids minus every map's image of every seed prism -> { volume, centroid }
     function rfPBwant(c) {
       var V = 0, M = [0, 0, 0];
@@ -79,6 +89,14 @@
       return 'chamfer ' + JSON.stringify({ d: ch.d, d2: ch.d2 }) + ', pattern of #' + cp.feature;
     });
 
+    test('rfPB: Mirror / LPattern / CirPattern of a Shell (and of a Mirror of one) on Anvil\'s engine: the pattern fails with "Cannot mirror / pattern Shell1: a Shell hollows the whole body …" (was "source feature has no geometry"), the part stays the shelled block', function () {
+      rfPBSHELL.forEach(function (c) {
+        var r = build(c[1]), ids = Object.keys(r.errors).sort(function (a, b) { return a - b; }), first = r.model.features.filter(function (x) { return x.type !== 'sketch' && x.type !== 'extrude' && x.type !== 'shell'; })[0];
+        assert(ids.length >= 1 && +ids[0] === first.id && c[2].test(r.errors[ids[0]]) && ids.length === r.model.features.length - 3, c[0] + ': ' + JSON.stringify(r.errors));
+        nearRel(r.mp.volume, rfPBSHELLV, 1e-9, c[0] + ': the part');
+      });
+      return rfPBSHELL.length + ' parts; ' + build(rfPBSHELL[0][1]).errors[4];
+    });
     // OpenCascade under Node in a worker thread, as rfOB does (rfOBocct): plain synchronous rows, skipped in the
     // browser and where anvil/vendor/occt is absent. -> { rows: { name: { volume, centroid, valid, ok, bodies, bad } } }
     var rfPBocc = null;
@@ -112,6 +130,7 @@
       var eng = path.resolve(dir, '..', 'vendor', 'occt');
       if (!fs.existsSync(path.join(eng, 'opencascade.full.js')) || !fs.existsSync(path.join(eng, 'opencascade.full.wasm'))) return (rfPBocc = { skipped: 'skipped: no OpenCascade engine in anvil/vendor/occt (anvil/vendor/get-occt.ps1)' });
       var cases = rfPBCASES.map(function (c) { return { name: c[0], code: c[1] }; });
+      rfPBSHELL.forEach(function (c) { cases.push({ name: c[0], code: c[1] }); });
       var sab = new SharedArrayBuffer(4), flag = new Int32Array(sab), ch = new wt.MessageChannel();
       var w = new wt.Worker('(' + rfPBworker.toString() + ')()', { eval: true, workerData: { dir: dir, cases: cases, sab: sab, port: ch.port2 }, transferList: [ch.port2] });
       var waited = Atomics.wait(flag, 0, 0, 240000), got = null;
@@ -135,6 +154,17 @@
         for (var k = 0; k < 3; k++) { near(r.centroid[k], a.mp.centroid[k], 1e-9, c[0] + ': the two engines\' centres'); worst = Math.max(worst, Math.abs(r.centroid[k] - a.mp.centroid[k])); }
       });
       return rfPBCASES.length + ' parts, the engines\' centres at most ' + worst.toExponential(1) + ' apart; engine loaded in ' + (o.loadMs / 1000).toFixed(1) + ' s';
+    });
+    test('rfPB: OpenCascade: Mirror / LPattern / CirPattern of a Shell fail with the same message as Anvil\'s engine, the part the shelled block', function () {
+      var o = rfPBocct();
+      if (o.skipped) return o.skipped;
+      rfPBSHELL.forEach(function (c) {
+        var r = o.rows[c[0]];
+        if (!r || r.error) fail(c[0] + ': ' + JSON.stringify(r));
+        assert(r.bad.length >= 1 && c[2].test(r.bad[0].replace(/^error: /, '')), c[0] + ': ' + JSON.stringify(r.bad));
+        nearRel(r.volume, rfPBSHELLV, 1e-9, 'OpenCascade, ' + c[0]);
+      });
+      return rfPBSHELL.length + ' parts';
     });
   })();
   // --- end rfPB ---

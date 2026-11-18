@@ -137,6 +137,7 @@ const caches = new Map();
 function freeCache(c) {
   (c.states || []).forEach((S) => S.bodies.forEach((b) => { try { b.delete(); } catch (e) { } }));
   Object.values(c.tools || {}).forEach((t) => { try { t.delete(); } catch (e) { } });
+  (c.props || []).forEach((e) => { if (e) try { e.pre.delete(); e.unified.delete(); } catch (x) { } });   // rfPB: the per-body props cache
 }
 function cacheFor(key) {
   if (!key) return cache;

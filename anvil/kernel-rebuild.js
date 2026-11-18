@@ -181,6 +181,17 @@
     var whole = moves.map(function (m) { return m(src); });
     return whole.length === 1 ? whole[0] : unionAll(whole);
   }
+  // rfPB: why a feature-mode Mirror / LPattern / CirPattern has nothing to copy. A Shell (also through a pattern or
+  // mirror of one) hollows the whole body in place: it has no tool of its own, and SolidWorks does not pattern or
+  // mirror one either (as reported to this lane; its exact wording is not checked here). It was 'Mirror source feature
+  // has no geometry.' (the QUEUE said the copy did nothing).
+  // Both engines (occt-kernel.js patternTool) say this.
+  function patternSourceMessage(f, model) {
+    var g = findFeature(model, f.feature), d = 0, verb = f.type === 'mirror' ? 'mirror' : 'pattern';
+    while (g && (g.type === 'lpattern' || g.type === 'cpattern' || (g.type === 'mirror' && !g.body)) && d++ < 8) g = findFeature(model, g.feature);
+    if (g && g.type === 'shell') return 'Cannot ' + verb + ' ' + (g.name || 'a Shell') + ': a Shell hollows the whole body and has no geometry of its own to copy. ' + (f.type === 'mirror' ? 'Mirror the features before it, or the whole body (Bodies to Mirror), then shell.' : 'Pattern the features before it, then shell.');
+    return (f.type === 'mirror' ? 'Mirror' : 'Pattern') + ' source feature has no geometry.';
+  }
   // rfGB: the point maps of a pattern / mirror feature's own copies (not the seed): translations, rotations, a reflection
   function familyMaps(f, ctx) {
     var out = [];
@@ -457,7 +468,7 @@
       case 'boundary': return _.buildBoundary(f, model, ctx);   // rfFB
       case 'lpattern': {
         var src = familyTool(f.feature, model, ctx);
-        if (!src) throw new Error('Pattern source feature has no geometry.');
+        if (!src) throw new Error(patternSourceMessage(f, model));
         var d1 = scale(AXES[f.d1 || 'x'], f.rev1 ? -1 : 1), copies = [];
         var n1 = Math.max(1, f.n1 | 0), n2 = f.d2 ? Math.max(1, f.n2 | 0) : 1;
         var d2 = f.d2 ? scale(AXES[f.d2], f.rev2 ? -1 : 1) : [0, 0, 0];
@@ -470,7 +481,7 @@
       }
       case 'cpattern': {
         var csrc = familyTool(f.feature, model, ctx);
-        if (!csrc) throw new Error('Pattern source feature has no geometry.');
+        if (!csrc) throw new Error(patternSourceMessage(f, model));
         var count = Math.max(2, f.n | 0), total = +f.angle || 360;
         var step = (f.equal === false) ? total : (Math.abs(total) >= 360 ? total / count : total / (count - 1));
         var ccopies = [];
@@ -485,7 +496,7 @@
           return mirrorBody(ctx.body, mplane);
         }
         var msrc = familyTool(f.feature, model, ctx);
-        if (!msrc) throw new Error('Mirror source feature has no geometry.');
+        if (!msrc) throw new Error(patternSourceMessage(f, model));
         return copiesOf(msrc, [function (b) { return mirrorBody(b, mplane); }]);
       }
       default:
@@ -1457,6 +1468,7 @@
   K.newModel = newModel; K.featureName = featureName; K.findFeature = findFeature; K.cutDirectionHint = cutDirectionHint; K.buildTool = buildTool;
   K.refAxisFor = refAxisFor;   // lane CZ
   K.exactFaceCenter = exactFaceCenter;   // lane DF (occt-kernel.js resolves reference geometry the same way)
+  K.patternSourceMessage = patternSourceMessage;   // rfPB (occt-kernel.js patternTool)
   K.isCut = isCut; K.cutScope = cutScope; K.registerFeature = registerFeature; K.registerSketchScript = registerSketchScript;
   K.registerScriptSection = registerScriptSection; K.rebuild = rebuild; K.combineBodies = combineBodies; K.bodyInfo = bodyInfo;
   K.bodyNearPoint = bodyNearPoint; K.packBuild = packBuild; K.packTransferables = packTransferables; K.unpackBuild = unpackBuild;

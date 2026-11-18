@@ -566,7 +566,7 @@ var OcctKernel = (function () {
       var src = familyTool(f.feature), copies = [], sf = !src && f.feature != null ? K.findFeature(m, f.feature) : null;
       var seeds = sf && !(f.type === 'mirror' && f.body) ? edgeSeeds(f.feature, 0) : null;
       if (seeds) { edgeFeatureCopies(f, seeds); return null; }
-      if (f.type !== 'mirror' || !f.body) { if (!src) throw new Error((f.type === 'mirror' ? 'Mirror' : 'Pattern') + ' source feature has no geometry.'); }
+      if (f.type !== 'mirror' || !f.body) { if (!src) throw new Error(K.patternSourceMessage ? K.patternSourceMessage(f, m) : (f.type === 'mirror' ? 'Mirror' : 'Pattern') + ' source feature has no geometry.'); }   // rfPB: a Shell says why
       if (f.type === 'lpattern') {
         var d1 = K.AXES[f.d1 || 'x'].map(function (x) { return x * (f.rev1 ? -1 : 1); }), n1 = Math.max(1, f.n1 | 0), n2 = f.d2 ? Math.max(1, f.n2 | 0) : 1;
         var d2 = f.d2 ? K.AXES[f.d2].map(function (x) { return x * (f.rev2 ? -1 : 1); }) : [0, 0, 0];
@@ -2054,8 +2054,11 @@ var OcctKernel = (function () {
     }
     function applyCut(tool, f) {
       if (!bodies.length) throw new Error('Nothing to cut yet.');
-      var scope = K.cutScope(f, bodies.length), parts = toolSolids(tool), next = bodies.slice(), nextF = bodyFeatures.slice();
+      var scope = K.cutScope(f, bodies.length), parts = toolSolids(tool), next = bodies.slice(), nextF = bodyFeatures.slice(), tb = bboxOf(tool);
       for (var s = scope.length - 1; s >= 0; s--) {
+        // rfPB: a body the tool's box does not meet stays the very same shape (no Boolean: on a 30-body import a cut
+        // made 30 new solids, and every one lost its cached mass properties, propsCache below)
+        if (tb && !boxesMeet(bboxOf(bodies[scope[s]]), tb)) continue;
         var i = scope[s], nb = parts.length > 1 ? boolMany('cut', bodies[i], parts, 'OpenCascade could not cut the body.') : cut(bodies[i], tool);
         var vn = volumeOf(nb), vb = volumeOf(bodies[i]);
         // lane FZ2: a cut never adds material
@@ -2597,7 +2600,22 @@ var OcctKernel = (function () {
       // booleans leave faces split along old seams (a pocket floor in pieces): merge faces on the same surface
       // rfKV: a body the plate path made stays known (valid, exact properties, box) while unify leaves its faces alone
       var known = bodies.map(function (b, i) { return kvKnown[i] && kvKnown[i].shape === b ? kvKnown[i] : null; });
+      // rfPB: per-body cache (cache.props, kept by the worker with the rebuild cache): a body that is the very same
+      // B-rep as one of the last build (TopoDS IsEqual: same TShape, location and orientation; the entry holds a handle
+      // to it, so the TShape cannot be freed and its address reused) takes that build's unified shape, validity and
+      // mass properties instead of UnifySameDomain, BRepCheck and the Gauss-Kronrod volume again. Any change to a
+      // body makes a new TShape (a Boolean, a fillet, a re-read file), so it misses. A 30-body part rebuilt after a
+      // one-feature change spent 3 to 4 s of its 4 to 5 s here. Not with Wrap scribes (they split the unified faces).
+      var scribes = m.features.some(function (f) { return f.type === 'wrap' && f.mode === 'scribe'; });
+      var pc = cache && !scribes ? (cache.props = cache.props || []) : null, pre = bodies.slice();
+      var hits = bodies.map(function (b, i) {
+        if (!pc || known[i]) return null;
+        if (pc[i] && pc[i].pre.IsEqual(b)) return pc[i];   // (usually at its own index)
+        for (var q = 0; q < pc.length; q++) if (pc[q] && pc[q].pre.IsEqual(b)) return pc[q];
+        return null;
+      });
       bodies = bodies.map(function (b, i) {
+        if (hits[i]) return N(keep(hits[i].unified));
         // (round holes add nothing UnifySameDomain could merge: one cylinder each, on a body unified before them)
         if (known[i] && known[i].round) return b;
         try {
@@ -2608,17 +2626,20 @@ var OcctKernel = (function () {
         } catch (e) { return b; }
       });
       bodies = wrapScribeAll(bodies);   // rfDZ: Wrap scribes split the final faces (UnifySameDomain would merge a split made earlier)
-      if (m.features.some(function (f) { return f.type === 'wrap' && f.mode === 'scribe'; })) known = known.map(function () { return null; });
+      if (scribes) known = known.map(function () { return null; });
       // exact mass properties per body (volume, surface area, centre of volume): Kernel.massProps prefers them
       out.ms.unify = now() - tS; tS = now();
       // rfKV: the plate path's holes are apart and clear of every edge (kvPlan), the body before them passed the check
+      var oks = [];
       bodies.forEach(function (b, i) {
-        if (!known[i]) { if (!valid(b)) out.valid = false; return; }
+        if (hits[i]) { oks[i] = hits[i].valid; if (!oks[i]) out.valid = false; return; }
+        if (!known[i]) { oks[i] = valid(b); if (!oks[i]) out.valid = false; return; }
         kvStats.checkSkipped++;
         if (PLT.check) kvStats.checked = (kvStats.checked !== false) && valid(b);
       });
       out.ms.valid = now() - tS; tS = now();
       out.bodyProps = bodies.map(function (b, i) {
+        if (hits[i]) { var hp = hits[i].props; out.volume += hp.volume; return { volume: hp.volume, area: hp.area, centroid: hp.centroid.slice() }; }
         if (known[i]) { kvStats.propsKnown++; out.volume += known[i].props.volume; return { volume: known[i].props.volume, area: known[i].props.area, centroid: known[i].props.centroid.slice() }; }
         var g = N(new oc.GProp_GProps_1()), s = N(new oc.GProp_GProps_1());
         // lane FZ2: Gauss-Kronrod over the knot spans to a relative error of 1e-9. The fixed-order Gauss rule was 1.2e-4
@@ -2635,9 +2656,30 @@ var OcctKernel = (function () {
         out.volume += v;
         return { volume: v, area: s.Mass(), centroid: [c.X(), c.Y(), c.Z()] };
       });
+      // rfPB: the cache keeps this build's bodies only (the entries hit, new ones for the rest); the others are freed
+      if (pc && !readOnly) {
+        var nextPc = bodies.map(function (b, i) {
+          if (hits[i]) return hits[i];
+          if (known[i]) return null;
+          return { pre: keep(pre[i]), unified: keep(b), valid: oks[i], props: { volume: out.bodyProps[i].volume, area: out.bodyProps[i].area, centroid: out.bodyProps[i].centroid.slice() } };
+        });   // (index for index with bodies: a body is looked for at its own index first)
+        pc.forEach(function (e) { if (e && nextPc.indexOf(e) < 0) { try { e.pre.delete(); e.unified.delete(); } catch (eD) { } } });
+        cache.props = nextPc;
+      }
+      out.propsReused = hits.filter(Boolean).length;
       var all = bodies.length === 1 ? bodies[0] : compound(bodies);
-      out.bbox = bodies.length === 1 && known[0] ? known[0].bbox : bboxOf(all, true);   // rfKV: holes inside the plate leave its box
-      out.ms.props = now() - tS;
+      out.ms.props = now() - tS; tS = now();
+      // rfPB: the exact box (AddOptimal: 3 s on 30 filleted cylinders) body by body, a cached body's from the cache;
+      // their union is the compound's box (AddOptimal adds each face's box)
+      var boxes = bodies.map(function (b, i) {
+        if (known[i]) return known[i].bbox;
+        if (hits[i]) { if (!hits[i].box) hits[i].box = bboxOf(b, true); return hits[i].box; }
+        var bx = bboxOf(b, true);
+        if (pc && !readOnly && cache.props[i] && !hits[i]) cache.props[i].box = bx;
+        return bx;
+      }).filter(Boolean);
+      out.bbox = boxes.length ? [[0, 1, 2].map(function (k) { return Math.min.apply(null, boxes.map(function (x) { return x[0][k]; })); }), [0, 1, 2].map(function (k) { return Math.max.apply(null, boxes.map(function (x) { return x[1][k]; })); })] : null;   // rfKV: holes inside the plate leave its box
+      out.ms.bbox = now() - tS;
       if (opts.exports && out.valid) {
         // STEP AP214 and IGES 5.3 straight from the B-rep: every face exact (planes, cylinders, cones, spheres, tori,
         // B-splines), in the model's units, the product named after the part

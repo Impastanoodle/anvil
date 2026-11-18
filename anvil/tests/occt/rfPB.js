@@ -33,4 +33,30 @@
       counts[whyPb.length ? 'fail' : 'pass']++;
     } catch (e) { row('bad', pbName, e.message); counts.fail++; }
   }
+  // follow-up (QUEUE "OpenCascade redoes mass properties for every unchanged body"): the worker's rebuild cache keeps,
+  // per body, the unified shape, BRepCheck, the mass properties and the exact box (occt-kernel.js cache.props), keyed
+  // by the B-rep itself; a cut whose box misses a body leaves that body the same shape. Six filleted cylinders read
+  // from OpenCascade's own STEP, then a cut through one of them at two depths: the second build takes five bodies from
+  // the cache and equals a build without the cache (volume, every body's properties, box, faces, triangles)
+  try {
+    var tpc = performance.now(), whyPc = [], spc = 'p.units("mm");\n';
+    for (var ipc = 0; ipc < 6; ipc++) spc += 'p.sketch("Top").circle(' + ipc * 30 + ', 0, 10).end().extrude(20, { merge: false });\np.fillet(2, [[' + (ipc * 30 + 10) + ', 20, 0]]);\n';
+    var mpc = K.newModel('PB6'); K.runScript(mpc, spc);
+    var rpc = await occt(JSON.parse(JSON.stringify(mpc)), { exports: true, noCache: true });
+    var ipcM = K.newModel('PB6 import');
+    ipcM.features.push({ id: 1, type: 'import', name: 'Imported1', file: 'pb6.step', format: 'step', units: 'mm', solids: [], brep: { format: 'step', text: rpc.step } });
+    ipcM.nextId = 2;
+    var pcAt = function (d) { var x = JSON.parse(JSON.stringify(ipcM)); K.runScript(x, 'p.sketch("Top", 20).circle(5, 0, 2).end().cut(' + d + ', { reverse: true });'); return x; };
+    var pc1 = await occt(pcAt(3)), pc2 = await occt(pcAt(4)), pcF = await occt(pcAt(4), { noCache: true });
+    if (pc2.reused !== 2 || pc2.propsReused !== 5) whyPc.push('reused ' + pc2.reused + ' features, ' + pc2.propsReused + ' bodies\' properties (want 2 and 5)');
+    if (pcF.propsReused) whyPc.push('a build without the cache reused ' + pcF.propsReused);
+    if (!(pc2.ok && pc2.valid && pc2.bodies === 6)) whyPc.push('ok ' + pc2.ok + ', valid ' + pc2.valid + ', ' + pc2.bodies + ' bodies');
+    if (!(Math.abs(pc2.volume - pcF.volume) <= 1e-12 * pcF.volume) || Math.abs(pc1.volume - pc2.volume - Math.PI * 4) > 1e-6) whyPc.push('volumes ' + pc1.volume + ' / ' + pc2.volume + ', without the cache ' + pcF.volume);
+    if (JSON.stringify(pc2.bodyProps) !== JSON.stringify(pcF.bodyProps)) whyPc.push('body properties differ from the build without the cache');
+    if (JSON.stringify(pc2.bbox) !== JSON.stringify(pcF.bbox)) whyPc.push('box ' + JSON.stringify(pc2.bbox) + ', without the cache ' + JSON.stringify(pcF.bbox));
+    if (pc2.faces.length !== pcF.faces.length || pc2.mesh.faceOf.length !== pcF.mesh.faceOf.length) whyPc.push(pc2.faces.length + ' faces / ' + pc2.mesh.faceOf.length + ' triangles, without the cache ' + pcF.faces.length + ' / ' + pcF.mesh.faceOf.length);
+    row(whyPc.length ? 'bad' : 'ok', 'rfPB a 6-body STEP import, a cut through one body changed: the other five bodies\' unified shape, check, mass properties and box come from the cache, the build = one without the cache', whyPc.join('\n') ||
+      ('cached ' + (pc2.ms.unify + pc2.ms.valid + pc2.ms.props + pc2.ms.bbox).toFixed(0) + ' ms, without ' + (pcF.ms.unify + pcF.ms.valid + pcF.ms.props + pcF.ms.bbox).toFixed(0) + ' ms (unify, check, properties, box)'), performance.now() - tpc);
+    counts[whyPc.length ? 'fail' : 'pass']++;
+  } catch (e) { row('bad', 'rfPB per-body properties cache', e.message); counts.fail++; }
   // --- end rfPB ---
