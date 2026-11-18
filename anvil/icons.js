@@ -370,6 +370,8 @@ var IconsLib = (function () {
     // drawing views (rfN): Auxiliary View, Crop View, Break
     auxView: rect(1.5, 8.5, 6.5, 6, W, S, 1.1) + p('M9.5 1.5 l5 3 -2.2 3.7 -5 -3 z', '#d0d0d0', B, 1.1) + ln('M6.5 8.5 L9.2 4.6', B, 1.2) + p('M9.9 3.6 l-0.2 2.1 -1.7 -1.2 z', B, B, 0.6),
     cropView: rect(4, 4, 8, 8, '#d0d0d0', 'none', 0) + ln('M4 1 V12 H15 M1 4 H12 V15', B, 1.4),
+    // (rfPQ) Alternate Position View: a lid on a base, and the lid again swung open in phantom (dashed)
+    altPosition: rect(1.5, 10, 13, 4, '#d0d0d0', B, 1.1) + rect(2.5, 7, 7, 3, W, S, 1.1) + ln('M9.5 7 L4.8 1.8 L2.6 3.8 L6.5 8.2', B, 1, DASH),
     breakView: rect(1, 5, 5, 6, '#d0d0d0', B, 1) + rect(10, 5, 5, 6, '#d0d0d0', B, 1) + ln('M7 2.5 l1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 M9 2.5 l1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5', S, 0.9),
     // (rfAD) Broken-out Section, Area Hatch/Fill
     brokenOut: rect(1.5, 2.5, 13, 11, '#d0d0d0', B, 1.1) + p('M5 5.5 C7.5 4 11.5 5 11 8 C10.5 11 6 11.5 4.5 9.5 C3.5 8 4 6.3 5 5.5 z', W, B, 0.9) + ln('M5.5 9.5 L8.5 6.5 M7 10.3 L10 7.3', S, 0.7),

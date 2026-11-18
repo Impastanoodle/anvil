@@ -1999,7 +1999,27 @@
   // PART NUMBER is the part's "Part Number" property, else its name; DESCRIPTION its "Description" property, else the
   // model's description / Design Library name / size "30 x 5 x 20" (when the mesh is given). opts.build: the
   // assembly (or part) build, to reuse its part builds.
+  // (rfPQ) a cell typed on the drawing that is not written back to the part (ITEM NO., PART NUMBER, QTY., a property
+  // column, a body row's DESCRIPTION) is kept on the BOM: bom.overrides { '<row key>|<column id>': text }, as SolidWorks
+  // keeps a typed cell (its link to the property broken). Every reader of the rows (the table, balloons, their QTY)
+  // sees it.
+  function bomColId(col) { return col.type === 'property' ? 'prop:' + col.prop : col.type; }
   function bomRows(model, mesh, bom, opts) {
+    var rows = bomRows0(model, mesh, bom, opts), ov = bom && bom.overrides;
+    if (!ov || !rows.length) return rows;
+    rows.forEach(function (r) {
+      function get(id) { var k = r.key + '|' + id; return Object.prototype.hasOwnProperty.call(ov, k) ? String(ov[k]) : null; }
+      var it = get('item'), pn = get('partNumber'), q = get('qty'), de = get('description');
+      if (it != null) r.item = it;
+      if (pn != null) r.partNumber = pn;
+      if (de != null) r.description = de;
+      if (q != null) r.qty = /^\s*\d+\s*$/.test(q) ? +q : q;
+      var base = r.prop;
+      if (base) r.prop = function (name) { var x = get('prop:' + name); return x != null ? x : base(name); };
+    });
+    return rows;
+  }
+  function bomRows0(model, mesh, bom, opts) {
     opts = opts || {};
     if (!model) return [];
     var asm = model.type === 'assembly', parts = !!(bom && bom.type === 'parts'), units = model.units === 'in' ? 'in' : 'mm';
@@ -2124,6 +2144,66 @@
     }
     var cols = [x0]; columns.forEach(function (c) { cols.push(cols[cols.length - 1] + c.width * k); });
     return { x0: x0, y0: y1 - H, x1: x0 + W, y1: y1, rowH: BOM_ROW * k, cols: cols, anchor: anchor, columns: columns };
+  }
+  // (rfPQ) bomCellAt(doc, units, p) -> { r (0 the header, 1… the rows), c, column, id (bomColId), rect } of the shown
+  // Bill of Materials cell under paper point p, or null
+  function bomCellAt(doc, units, p) {
+    if (!doc.bom || doc.bom.show === false || !(doc.bomRows > 0)) return null;
+    var bb = bomBox(doc, units, doc.bomRows);
+    if (p[0] < bb.x0 || p[0] > bb.x1 || p[1] < bb.y0 || p[1] > bb.y1) return null;
+    var r = Math.min(doc.bomRows, Math.floor((bb.y1 - p[1]) / bb.rowH)), c = 0;
+    while (c < bb.columns.length - 1 && p[0] > bb.cols[c + 1]) c++;
+    return { r: r, c: c, column: bb.columns[c], id: bomColId(bb.columns[c]), rect: { x0: bb.cols[c], x1: bb.cols[c + 1], y0: bb.y1 - (r + 1) * bb.rowH, y1: bb.y1 - r * bb.rowH } };
+  }
+  // (rfPQ) setBomCell(doc, model, row (1-based index or the row's key), columnId, text, opts { mesh, build }) ->
+  // { where: 'file' | 'part' | 'assembly' | 'drawing', key, row }. A DESCRIPTION goes where SolidWorks writes a BOM
+  // cell linked to the part's property, the part's "Description": in an assembly drawing through
+  // Assembly.setBomDescription (a linked part document, the embedded copies, or a Design Library part's description kept
+  // in the assembly: lane asmfeel's assembly BOM writes the same place), in a part drawing the part's own property.
+  // Every other cell (and a multibody part's body row) is kept on the drawing (bom.overrides). Empty text clears it
+  // (back to the linked value). A write that changes a component's source (an embedded copy's property) changes its
+  // row's key: balloons naming the old key are moved to the new one on every sheet.
+  function setBomCell(doc, model, row, colId, text, opts) {
+    opts = opts || {};
+    if (!doc.bom) throw new Error('The drawing has no Bill of Materials');
+    text = text == null ? '' : String(text);
+    var before = bomRows(model, opts.mesh || null, doc.bom, { build: opts.build || null });
+    var r = typeof row === 'number' ? before[row - 1] : before.filter(function (x) { return x.key === row; })[0];
+    if (!r) throw new Error('No BOM row ' + row);
+    colId = String(colId);
+    if (!/^(item|partNumber|description|qty|prop:.+)$/.test(colId)) throw new Error('No BOM column ' + colId);
+    var out = { key: r.key, row: before.indexOf(r) + 1, where: 'drawing' }, ok = r.key + '|' + colId;
+    if (colId === 'description' && !r.body) {
+      if (model.type === 'assembly') {
+        if (typeof Assembly === 'undefined' || !Assembly.setBomDescription) throw new Error('The assembly BOM needs assembly.js');
+        var res = Assembly.setBomDescription(model, r.key, text);
+        if (!res.ok) throw new Error('That row\'s description cannot be changed');
+        out.where = res.where; if (res.file) out.file = res.file;
+      } else {
+        if (!hasMaterials() || !Materials.setProperty) throw new Error('Custom properties need materials.js');
+        Materials.setProperty(model, 'Description', text.trim() ? text : null, {});
+        out.where = 'part';
+      }
+      if (doc.bom.overrides) delete doc.bom.overrides[ok];
+      var plain = String(r.key).replace(/\|cfg:[\s\S]*$/, '');
+      delete partInfoCache[plain]; delete partInfoCache[r.key];
+    } else {
+      if (!doc.bom.overrides) doc.bom.overrides = {};
+      if (text.trim()) doc.bom.overrides[ok] = text; else delete doc.bom.overrides[ok];
+    }
+    if (doc.bom.overrides && !Object.keys(doc.bom.overrides).length) delete doc.bom.overrides;
+    // balloons follow a row whose key changed (the same rows in the same order, before and after)
+    var after = bomRows(model, opts.mesh || null, doc.bom, { build: opts.build || null }), map = {}, n = 0;
+    if (after.length === before.length) before.forEach(function (b, i) { if (b.key !== after[i].key) { map[b.key] = after[i].key; n++; } });
+    if (n) {
+      var rekey = function (views) { (views || []).forEach(function (v) { (v.balloons || []).forEach(function (b) { if (map[b.key]) b.key = map[b.key]; (b.stack || []).forEach(function (s) { if (map[s.key]) s.key = map[s.key]; }); }); }); };
+      rekey(doc.views);
+      (doc.sheets || []).forEach(function (s) { if (s && s.views && s.views !== doc.views) rekey(s.views); });
+      // a row's typed cells follow its key too
+      if (doc.bom.overrides) Object.keys(doc.bom.overrides).forEach(function (k) { var i = k.lastIndexOf('|'), rk = k.slice(0, i); if (map[rk]) { doc.bom.overrides[map[rk] + k.slice(i)] = doc.bom.overrides[k]; delete doc.bom.overrides[k]; } });
+      out.key = map[r.key] || out.key;
+    }
+    return out;
   }
   // autoBalloon(doc, model, viewId, { ignoreMultiple }) -> the view's balloons [{ key (the BOM row: the component
   // source), component (id), instance? }]. SolidWorks Auto Balloon: one balloon per BOM item that shows in the view
@@ -2879,6 +2959,7 @@
   D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.dualStyle = dualStyle; D.DUAL_POS = DUAL_POS; _.dimText0 = dimText0; D.autoDims = autoDims; D.modelItems = modelItems; D.dimSizes = dimSizes; D.dimGeometry = dimGeometry; D.DIM_SIZES = DIM_SIZES; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
   D.arcSlotsIn = arcSlotsIn; D.sketchOrdinates = sketchOrdinates; D.sketchDistances = sketchDistances;
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;
+  D.bomCellAt = bomCellAt; D.setBomCell = setBomCell; D.bomColId = bomColId;   // (rfPQ)
   D.bomRows = bomRows; D.BOM_ANCHORS = BOM_ANCHORS; D.bomPropertyNames = bomPropertyNames; D.bomBox = bomBox; D.autoBalloon = autoBalloon; D.deleteBalloons = deleteBalloons; D.balloonSpots = balloonSpots;
   D.BALLOON_SIDES = BALLOON_SIDES; D.addMagLine = addMagLine; D.setMagLine = setMagLine; D.balloonMag = balloonMag; D.magLinesOf = magLinesOf; D.magLineAt = magLineAt; D.findMagLine = findMagLine;
   _.clearSpot = clearSpot; _.fitOnSheet = fitOnSheet;   // (rfCX: Removed Section placement, drawing-views.js)

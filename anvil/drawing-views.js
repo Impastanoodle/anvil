@@ -3452,12 +3452,15 @@
     return function (q) { return [p[0] + s * (c * q[0] - n * q[1]), p[1] + s * (n * q[0] + c * q[1])]; };
   }
   // blockEnts(doc, ins) -> the definition's entities placed where the instance puts them (its own coordinates)
+  // (rfPQ) an attribute text (e.attr: its tag) shows the instance's value (ins.attrs[tag]) when it has one, else the
+  // definition's text (its default, which may link a property: $PRP:"Revision")
   function blockEnts(doc, ins) {
     var def = blockDef(doc, ins.name);
     if (!def) return [];
-    var X = blockXf(ins), s = +ins.scale > 0 ? +ins.scale : 1, r = +ins.rot || 0;
+    var X = blockXf(ins), s = +ins.scale > 0 ? +ins.scale : 1, r = +ins.rot || 0, av = ins.attrs || {};
     return def.ents.map(function (e0) {
       var e = clone(e0);
+      if (e.t === 'text' && e.attr && Object.prototype.hasOwnProperty.call(av, e.attr) && av[e.attr] != null) e.text = String(av[e.attr]);
       ['a', 'b', 'c', 'p'].forEach(function (k) { if (e[k]) e[k] = X(e[k]); });
       if (e.pts) e.pts = e.pts.map(X);
       if (e.r != null) e.r = e.r * s;
@@ -3468,8 +3471,49 @@
     });
   }
   function blockNameOk(n) { return /^[A-Za-z0-9 _\-.$]{1,64}$/.test(n) && /[A-Za-z0-9]/.test(n); }
-  // makeBlock(doc, ids, { name, base? (sheet point; default the lower-left of the entities' box) }) -> the instance
-  // that replaces them: the selected sketch entities (one sketch: the sheet or one view) become the block's definition
+  // (rfPQ) block attributes, as SolidWorks' (and AutoCAD's) blocks have them: a text of the definition with a tag
+  // (e.attr, capitals, digits, _ -) is filled in per instance (ins.attrs { tag: value }): a revision stamp's REV, DATE
+  // and BY. Its definition text is the default value and may link a property ($PRP:"Revision", $PRPSHEET:"…"): the
+  // sheet shows the linked value, as a note does. Texts of a block with a tag or a link are written to a DXF beside
+  // each INSERT (their own values), not inside the BLOCK.
+  function attrTagOk(t) { return /^[A-Z0-9_\-]{1,32}$/.test(t); }
+  function attrTag(t) {
+    var s = String(t == null ? '' : t).trim().toUpperCase().replace(/\s+/g, '_');
+    if (!attrTagOk(s)) throw new Error('An attribute tag is capitals, digits, _ and - (32 at most): "' + t + '"');
+    return s;
+  }
+  // blockAttributes(doc, name) -> [{ tag, value (the default text), prompt }] of the definition, in its order
+  function blockAttributes(doc, name) {
+    var def = blockDef(doc, name);
+    return def ? def.ents.filter(function (e) { return e.t === 'text' && e.attr; }).map(function (e) { return { tag: e.attr, value: e.text, prompt: e.prompt || e.attr }; }) : [];
+  }
+  function cleanAttrs(doc, name, attrs) {
+    if (!attrs) return null;
+    var tags = {}, out = {}, n = 0;
+    blockAttributes(doc, name).forEach(function (a) { tags[a.tag] = 1; });
+    Object.keys(attrs).forEach(function (k) {
+      var t = attrTag(k);
+      if (!tags[t]) throw new Error('Block "' + name + '" has no attribute ' + t);
+      if (attrs[k] != null) { out[t] = String(attrs[k]); n++; }
+    });
+    return n ? out : null;
+  }
+  // setBlockAttributes(doc, id, { tag: value | null }) -> the instance: values merged (null: back to the default)
+  function setBlockAttributes(doc, id, attrs) {
+    var f = locate(doc, id);
+    if (!f || f.ent.t !== 'block') throw new Error('Block attributes: select an inserted block');
+    var cur = Object.assign({}, f.ent.attrs || {});
+    Object.keys(attrs || {}).forEach(function (k) {
+      var t = attrTag(k);
+      if (!blockAttributes(doc, f.ent.name).some(function (a) { return a.tag === t; })) throw new Error('Block "' + f.ent.name + '" has no attribute ' + t);
+      if (attrs[k] == null) delete cur[t]; else cur[t] = String(attrs[k]);
+    });
+    if (Object.keys(cur).length) f.ent.attrs = cur; else delete f.ent.attrs;
+    return sketchEntity(doc, id);
+  }
+  // makeBlock(doc, ids, { name, base? (sheet point; default the lower-left of the entities' box), attrs? { <text entity
+  // id>: tag | { tag, prompt } } }) -> the instance that replaces them: the selected sketch entities (one sketch: the
+  // sheet or one view) become the block's definition
   function makeBlock(doc, ids, opts) {
     opts = opts || {};
     ids = [].concat(ids == null ? [] : ids);
@@ -3503,7 +3547,20 @@
       base = lo;
     }
     if (!isFinite(base[0]) || !isFinite(base[1])) throw new Error('Make Block: no insertion point');
-    var defEnts = ents.map(function (e) { var c = shiftPts(e, -base[0], -base[1]); delete c.id; delete c.view; return c; });
+    // (rfPQ) attribute tags of its texts
+    var am = opts.attrs || {}, seenTag = {};
+    var defEnts = ents.map(function (e) {
+      var c = shiftPts(e, -base[0], -base[1]), a = am[e.id];
+      delete c.id; delete c.view; delete c.attr; delete c.prompt;
+      if (a != null && a !== '' && !(a && typeof a === 'object' && !a.tag)) {
+        if (c.t !== 'text') throw new Error('Only a text of a block can be an attribute');
+        c.attr = attrTag(typeof a === 'object' ? a.tag : a);
+        if (seenTag[c.attr]) throw new Error('Two attributes of one block are tagged ' + c.attr);
+        seenTag[c.attr] = 1;
+        if (a && typeof a === 'object' && a.prompt) c.prompt = String(a.prompt);
+      }
+      return c;
+    });
     if (!doc.blocks) doc.blocks = {};
     doc.blocks[name] = { name: name, ents: defEnts };
     ents.forEach(function (e) { deleteSketchEntity(doc, e.id); });
@@ -3511,17 +3568,17 @@
     o.list.push(ins);
     return sketchEntity(doc, ins.id);
   }
-  // insertBlock(doc, name, p (sheet), viewId?, { scale, rot }) -> the instance
+  // insertBlock(doc, name, p (sheet), viewId?, { scale, rot, attrs? { tag: value } }) -> the instance
   function insertBlock(doc, name, p, viewId, opts) {
     opts = opts || {};
-    return addSketchEntity(doc, { t: 'block', name: name, p: p, scale: opts.scale, rot: opts.rot }, viewId);
+    return addSketchEntity(doc, { t: 'block', name: name, p: p, scale: opts.scale, rot: opts.rot, attrs: opts.attrs }, viewId);
   }
   // explodeBlock(doc, id) -> [ids]: the instance replaced by its entities, plain sketch entities where it put them
   function explodeBlock(doc, id) {
     var f = locate(doc, id);
     if (!f || f.ent.t !== 'block') throw new Error('Explode Block: select an inserted block');
     var out = [];
-    blockEnts(doc, f.ent).forEach(function (e) { e.id = nextId(doc); f.owner.list.push(e); out.push(e.id); });
+    blockEnts(doc, f.ent).forEach(function (e) { delete e.attr; delete e.prompt; e.id = nextId(doc); f.owner.list.push(e); out.push(e.id); });   // (rfPQ: an attribute becomes its text)
     deleteSketchEntity(doc, id);
     return out;
   }
@@ -3531,7 +3588,7 @@
     name = String(name == null ? '' : name).trim();
     if (!blockNameOk(name)) throw new Error('A block name is letters, digits, spaces and _ - . $ (64 at most)');
     if (blockDef(doc, name) && !(opts && opts.replace)) throw new Error('There is a block named "' + name + '" already');
-    var ents = ((def && def.ents) || []).filter(function (e) { return e && BLOCK_KINDS[e.t]; }).map(function (e) { var c = clone(e); delete c.id; delete c.view; checkFmt(c); return c; });
+    var ents = ((def && def.ents) || []).filter(function (e) { return e && BLOCK_KINDS[e.t]; }).map(function (e) { var c = clone(e); delete c.id; delete c.view; checkFmt(c); if (c.attr) { if (c.t !== 'text') delete c.attr; else c.attr = attrTag(c.attr); } return c; });   // (rfPQ: attribute tags)
     if (!ents.length) throw new Error('A block needs lines, arcs, circles, splines, points or text');
     if (!doc.blocks) doc.blocks = {};
     doc.blocks[name] = { name: name, ents: ents };
@@ -3624,6 +3681,8 @@
       if (!blockDef(doc, e.name)) throw new Error('No block named "' + e.name + '" in this drawing');
       e.name = String(e.name); e.scale = +e.scale > 0 ? +e.scale : 1; e.rot = isFinite(+e.rot) ? +e.rot : 0;
       if (e.scale === 1) delete e.scale; if (!e.rot) delete e.rot;
+      var ca = cleanAttrs(doc, e.name, e.attrs);   // (rfPQ) attribute values
+      if (ca) e.attrs = ca; else delete e.attrs;
     }
     if (e.t === 'text') { e.text = String(e.text == null ? '' : e.text); if (!(+e.h > 0)) e.h = 3.5 * paperK(doc); }
     if (e.t === 'arc') { e.a0 = +e.a0 || 0; e.a1 = +e.a1 || 0; while (e.a1 <= e.a0) e.a1 += 360; }
@@ -3898,6 +3957,22 @@
     if (!sheet || !sheet.prims || !doc.sheet) return sheet;
     var k = paperK(doc), CAP = _.CAP_EM || 0.72, items = sketchItems(doc);
     sheet.sketch = []; delete sheet.inserts; delete sheet.blockDefs;
+    // (rfPQ) a text's $PRP:"name" / $PRPSHEET:"name" links show the property's value (a block attribute's default, a
+    // revision stamp's REV), worked out as a note's are
+    var linkCtx = null;
+    function linked(t) {
+      t = String(t == null ? '' : t);
+      if (!/\$PRP/.test(t) || !D.titleText) return t;
+      var C = _.CTX || {}, model = C.model || _.lastModel;
+      if (!model) return t;
+      if (!linkCtx) {
+        linkCtx = {};
+        if (typeof Materials !== 'undefined') { var asm = model.type === 'assembly', b = C.build && !!C.build.assembly === asm ? C.build : null; try { linkCtx = { build: b, mesh: C.mesh, props: Materials.context(model, { build: b, mesh: asm ? null : C.mesh }) }; } catch (e) { linkCtx = {}; } }
+      }
+      try { return D.titleText(t, doc, model, linkCtx); } catch (e) { return t; }
+    }
+    // a block's text that each instance draws with its own value (an attribute or a linked text): not in the BLOCK
+    function perInstance(e) { return e.t === 'text' && (!!e.attr || /\$PRP/.test(String(e.text))); }
     // one drawable entity's primitives through put(q) (its Line Format unless q has a style); cid names a spline's chain
     function draw(e, put, cid) {
       var ls = lineStyle(fmtOf(e));
@@ -3909,7 +3984,7 @@
       else if (e.t === 'point') { var pr = 0.6 * k, pts = []; for (var j = 0; j < 12; j++) pts.push([e.p[0] + pr * Math.cos(j * Math.PI / 6), e.p[1] + pr * Math.sin(j * Math.PI / 6)]); P({ k: 'fill', pts: pts, style: 'thin' }); }
       else if (e.t === 'text') {   // (rfPM: a turned text's next lines step square to it)
         var tr = (+e.rot || 0) * Math.PI / 180, dx = Math.sin(tr), dy = -Math.cos(tr);
-        String(e.text).split(/\r?\n/).forEach(function (s, li) { if (s) P({ k: 'text', p: [e.p[0] + dx * li * e.h * 1.5, e.p[1] + dy * li * e.h * 1.5], h: e.h * CAP, text: s, anchor: 'start', rot: e.rot || 0, style: 'thin' }); });
+        linked(e.text).split(/\r?\n/).forEach(function (s, li) { if (s) P({ k: 'text', p: [e.p[0] + dx * li * e.h * 1.5, e.p[1] + dy * li * e.h * 1.5], h: e.h * CAP, text: s, anchor: 'start', rot: e.rot || 0, style: 'thin' }); });
       }
     }
     var defs = {};
@@ -3922,8 +3997,8 @@
         // definition's own primitives at the origin, unscaled (sheet.blockDefs, for the DXF's BLOCKS section)
         var def = blockDef(doc, e.name);
         if (!def) return;
-        if (!defs[e.name]) { var lp = []; def.ents.forEach(function (de, di) { draw(de, function (q) { q.layer = 'SKETCH'; lp.push(q); }, 'blk' + di); }); defs[e.name] = lp; }
-        (it.ents || []).forEach(function (be, bi) { draw(be, function (q) { q.blockIns = it.id; q.block = e.name; P(q); }, 'sk' + it.id + '.' + bi); });
+        if (!defs[e.name]) { var lp = []; def.ents.forEach(function (de, di) { if (!perInstance(de)) draw(de, function (q) { q.layer = 'SKETCH'; lp.push(q); }, 'blk' + di); }); defs[e.name] = lp; }
+        (it.ents || []).forEach(function (be, bi) { var own = perInstance(be); draw(be, function (q) { q.blockIns = it.id; q.block = e.name; if (own) q.blockAttr = be.attr || true; P(q); }, 'sk' + it.id + '.' + bi); });   // (rfPQ: blockAttr)
         if (!sheet.inserts) sheet.inserts = [];
         sheet.inserts.push({ id: it.id, name: e.name, p: e.p.slice(), scale: +e.scale > 0 ? +e.scale : 1, rot: +e.rot || 0, view: it.view });
       }
@@ -4068,6 +4143,7 @@
   }
 
   D.makeBlock = makeBlock; D.insertBlock = insertBlock; D.explodeBlock = explodeBlock; D.defineBlock = defineBlock; D.deleteBlock = deleteBlock;   // (rfPM)
+  D.blockAttributes = blockAttributes; D.setBlockAttributes = setBlockAttributes;   // (rfPQ)
   D.blocks = blockList; D.blockDef = function (doc, name) { var d = blockDef(doc, name); return d ? clone(d) : null; }; D.blockEnts = blockEnts;
   D.SKETCH_STYLES = STYLES; D.SKETCH_WEIGHTS = Object.keys(WEIGHT_MM);
   D.addSketchEntity = addSketchEntity; D.addSketchRect = addSketchRect; D.sketchEntity = sketchEntity; D.sketchEntities = sketchEntities;

@@ -146,6 +146,7 @@
     if (name === 'relpick') { relPick(p); return; }
     if (name === 'relplace') { relPlace(p); return; }
     if (name === 'block') { blockPlace(p); return; }   // (rfPM) Insert Block
+    if (name === 'blkbase') { blockBaseClick(p); return; }   // (rfPQ) Make Block's insertion point
     if (name === 'coin') {
       var h = hit(p, { noDims: true });
       if (!h || !h.end) { UI.setStatus('Coincident: click an end point (or a centre) of a sketch entity.'); return; }
@@ -380,17 +381,52 @@
     if (!ids.length) { UI.toast('Make Block: select the sketch entities first (lines, arcs, circles, splines, points, text; Ctrl adds).'); return; }
     var n = 1, names = Drawing.blocks(doc()).map(function (b) { return b.name; });
     while (names.indexOf('Block' + n) >= 0) n++;
+    // (rfPQ) SolidWorks' Make Block: Insertion Point (a click on the sheet puts it; an end point or centre snaps; none
+    // picked: the lower-left corner) and, here, Block Attributes: a tag on a text makes it a value each instance fills in
+    var texts = ids.map(function (id) { return Drawing.sketchEntity(doc(), id); }).filter(function (e) { return e && e.t === 'text'; });
+    var vals = { name: 'Block' + n };
+    texts.forEach(function (e) { vals['tag' + e.id] = ''; });
+    MB = { base: null };
+    var fieldsA = texts.map(function (e) { var s = String(e.text).split(/\r?\n/)[0]; return { type: 'text', key: 'tag' + e.id, label: '"' + (s.length > 18 ? s.slice(0, 17) + '…' : s) + '" tag' }; });
+    var groups = [{ title: 'Block', fields: [{ type: 'text', key: 'name', label: 'Block name' }, { type: 'static', label: 'Block entities', value: function () { return ids.length + ' selected'; } }] },
+      { title: 'Insertion Point', fields: [{ type: 'static', label: 'Point', value: function () { var b = MB && MB.base; return b ? fmtPt(b) : 'lower-left corner (click on the sheet to pick it)'; } },
+        { type: 'buttons', key: 'b', buttons: [{ label: 'Lower-left corner', onclick: function () { if (MB) MB.base = null; if (UI.renderPM) UI.renderPM(); drawOverlay(); } }] }] }];
+    if (fieldsA.length) groups.push({ title: 'Block Attributes', fields: fieldsA.concat([{ type: 'static', label: '', value: function () { return 'A tag (REV, DATE, BY…) makes the text a value each instance fills in; its text now is the default ($PRP:"name" links a property). Empty: plain text.'; } }]) });
     openPM({ title: 'Make Block', icon: 'makeBlock', command: 'dwMakeBlock',
-      message: ids.length + ' sketch entit' + (ids.length > 1 ? 'ies' : 'y') + ' become one block; the insertion point is their lower-left corner. Insert Block places it again, on this or any sheet.',
-      values: { name: 'Block' + n },
-      groups: [{ title: 'Block', fields: [{ type: 'text', key: 'name', label: 'Block name' }, { type: 'static', label: 'Block entities', value: function () { return ids.length + ' selected'; } }] }],
+      message: ids.length + ' sketch entit' + (ids.length > 1 ? 'ies' : 'y') + ' become one block. Click on the sheet for its insertion point (it snaps to an end point or centre); without one it is their lower-left corner. Insert Block places it again, on this or any sheet.',
+      values: vals, groups: groups,
       onOK: function (v) {
-        var nm = String(v.name || '').trim(), ins = null;
-        try { Drawing.makeBlock(JSON.parse(JSON.stringify(doc())), ids, { name: nm }); } catch (err) { UI.toast(err.message); return false; }
-        ins = edit(function (dc) { return Drawing.makeBlock(dc, ids, { name: nm }); });
-        D.sel = { kind: 'sk', id: ins.id, ids: [ins.id] }; drawOverlay(); DW.renderTree();
-        UI.setStatus('Block "' + ins.name + '" made (' + ids.length + ' entities). Drag it to move it; Tools ▸ Block ▸ Insert places it again.');
-      } });
+        var nm = String(v.name || '').trim(), ins = null, attrs = {}, o;
+        texts.forEach(function (e) { var t = String(v['tag' + e.id] || '').trim(); if (t) attrs[e.id] = t; });
+        o = { name: nm, attrs: attrs };
+        if (MB && MB.base) o.base = MB.base.slice();
+        try { Drawing.makeBlock(JSON.parse(JSON.stringify(doc())), ids, o); } catch (err) { UI.toast(err.message); return false; }
+        if (D.tool === 'sk:blkbase') { D.tool = null; D.pending = null; }
+        ins = edit(function (dc) { return Drawing.makeBlock(dc, ids, o); });
+        D.sel = { kind: 'sk', id: ins.id, ids: [ins.id] }; drawOverlay(); DW.renderTree(); UI.refreshRibbon();
+        var na = Object.keys(attrs).length;
+        UI.setStatus('Block "' + ins.name + '" made (' + ids.length + ' entities' + (na ? ', ' + na + ' attribute' + (na > 1 ? 's' : '') : '') + '). Drag it to move it; Insert Block places it again.');
+      },
+      onClose: function () { if (D.tool === 'sk:blkbase') { D.tool = null; D.pending = null; drawOverlay(); UI.refreshRibbon(); } MB = null; }
+    });
+    D.tool = 'sk:blkbase'; D.pending = { pts: [] }; drawOverlay(); UI.refreshRibbon();
+    UI.setStatus('Make Block: click the insertion point on the sheet (an end point or centre snaps), or press OK for the lower-left corner.');
+  }
+  var MB = null;
+  function fmtPt(p) { var inch = App.model && App.model.units === 'in', d = inch ? 3 : 1; return '(' + p[0].toFixed(d) + ', ' + p[1].toFixed(d) + ')' + (inch ? ' in' : ' mm'); }
+  function blockBaseClick(p) {
+    if (!MB) return;
+    var s = snap(p, { view: undefined }, null);
+    MB.base = s.p.slice();
+    if (UI.renderPM) UI.renderPM();
+    drawOverlay();
+    UI.setStatus('Make Block: insertion point ' + fmtPt(MB.base) + (s.ref ? ' (on an end point)' : '') + '. Click again to move it, OK makes the block.');
+  }
+  // the attributes of an Insert Block choice: a drawing's block name, or 'lib:' + a library block's
+  function attrsOf(key) {
+    var lib = /^lib:/.test(key), nm = String(key).replace(/^lib:/, ''), src = lib ? { blocks: {} } : doc();
+    if (lib) { var d = libRead()[nm]; if (!d) return []; src.blocks[nm] = d; }
+    return Drawing.blockAttributes(src, nm);
   }
   // the blocks Insert Block offers: the drawing's, then the library's that the drawing has not
   function blockOptions() {
@@ -402,13 +438,23 @@
     var opts = blockOptions();
     if (!opts.length) { UI.toast('Insert Block: no blocks yet. Select sketch entities and Make Block first.'); return; }
     var vals = { block: name && opts.some(function (o) { return o[0] === name; }) ? name : opts[0][0], scale: 1, angle: 0 };
+    // (rfPQ) each block's attributes, filled in for the instances this command places (the default shown)
+    var fieldsA = [];
+    opts.forEach(function (o) {
+      var key = o[0];
+      attrsOf(key).forEach(function (a) { vals['a:' + key + ':' + a.tag] = a.value; fieldsA.push({ type: 'text', key: 'a:' + key + ':' + a.tag, label: a.prompt || a.tag, show: function (v) { return v.block === key; } }); });
+    });
+    var groups = [{ title: 'Blocks to Insert', fields: [{ type: 'select', key: 'block', label: 'Block', options: opts, rerender: true }] },
+      { title: 'Parameters', fields: [{ type: 'number', key: 'scale', label: 'Scale', min: 0.001 }, { type: 'number', key: 'angle', label: 'Angle (°)' }] }];
+    if (fieldsA.length) groups.push({ title: 'Block Attributes', fields: fieldsA });
     openPM({ title: 'Insert Block', icon: 'insertBlock', command: 'dwInsertBlock',
-      message: 'Pick the block, its scale and angle, press OK, then click where it goes (on the sheet, or in a view to move with it). Each click places one; Esc ends.',
+      message: 'Pick the block, its scale and angle (and its attribute values), press OK, then click where it goes (on the sheet, or in a view to move with it). Each click places one; Esc ends.',
       values: vals,
-      groups: [{ title: 'Blocks to Insert', fields: [{ type: 'select', key: 'block', label: 'Block', options: opts }] },
-        { title: 'Parameters', fields: [{ type: 'number', key: 'scale', label: 'Scale', min: 0.001 }, { type: 'number', key: 'angle', label: 'Angle (°)' }] }],
+      groups: groups,
       onOK: function (v) {
-        var spec = { name: String(v.block), scale: +v.scale > 0 ? +v.scale : 1, rot: +v.angle || 0 };
+        var spec = { name: String(v.block), scale: +v.scale > 0 ? +v.scale : 1, rot: +v.angle || 0 }, at = {};
+        attrsOf(spec.name).forEach(function (a) { var x = v['a:' + spec.name + ':' + a.tag]; if (x != null && String(x) !== String(a.value)) at[a.tag] = String(x); });
+        if (Object.keys(at).length) spec.attrs = at;
         setTimeout(function () { startTool('block'); D.pending = { pts: [], spec: spec }; drawOverlay(); UI.setStatus('Insert Block "' + spec.name.replace(/^lib:/, '') + '": click where it goes (its insertion point). Esc ends.'); }, 0);
       } });
   }
@@ -419,7 +465,7 @@
     try {
       b = edit(function (dc) {
         if (lib && !Drawing.blockDef(dc, name)) Drawing.defineBlock(dc, name, def);
-        return Drawing.insertBlock(dc, name, p, view, { scale: spec.scale, rot: spec.rot });
+        return Drawing.insertBlock(dc, name, p, view, { scale: spec.scale, rot: spec.rot, attrs: spec.attrs });
       });
     } catch (err) { UI.toast(err.message); return; }
     if (lib) spec.name = name;   // (it is the drawing's own now)
@@ -450,13 +496,24 @@
     var e = Drawing.sketchEntity(doc(), id);
     if (!e || e.t !== 'block') return;
     D.sel = { kind: 'sk', id: id, ids: [id] }; drawOverlay();
-    var vals = { scale: +e.scale > 0 ? +e.scale : 1, angle: +e.rot || 0 }, orig = JSON.parse(JSON.stringify(vals));
+    var vals = { scale: +e.scale > 0 ? +e.scale : 1, angle: +e.rot || 0 };
+    // (rfPQ) its attribute values (an empty box goes back to the block's default)
+    var ats = Drawing.blockAttributes(doc(), e.name), cur = e.attrs || {};
+    ats.forEach(function (a) { vals['a:' + a.tag] = cur[a.tag] != null ? cur[a.tag] : a.value; });
+    var orig = JSON.parse(JSON.stringify(vals));
+    var groups = [{ title: 'Block', fields: [{ type: 'static', label: 'Name', value: function () { return e.name; } }, { type: 'number', key: 'scale', label: 'Scale', min: 0.001 }, { type: 'number', key: 'angle', label: 'Angle (°)' }] }];
+    if (ats.length) groups.push({ title: 'Block Attributes', fields: ats.map(function (a) { return { type: 'text', key: 'a:' + a.tag, label: a.prompt || a.tag }; }) });
+    groups.push({ title: 'Block', fields: [{ type: 'buttons', key: 'b', buttons: [{ label: 'Explode Block', onclick: function () { UI.pmCancel(); cmdExplodeBlock([id]); } }, { label: 'Save Block', onclick: function () { cmdSaveBlock(id); } }] }] });
     openPM({ title: 'Block Properties', icon: 'insertBlock', command: 'dwBlockProps', message: 'Block "' + e.name + '"' + (e.view != null ? ' in ' + (Drawing.findView(doc(), e.view) || {}).name : ' on the sheet') + '.', values: vals,
-      groups: [{ title: 'Block', fields: [{ type: 'static', label: 'Name', value: function () { return e.name; } }, { type: 'number', key: 'scale', label: 'Scale', min: 0.001 }, { type: 'number', key: 'angle', label: 'Angle (°)' }] },
-        { title: 'Block', fields: [{ type: 'buttons', key: 'b', buttons: [{ label: 'Explode Block', onclick: function () { UI.pmCancel(); cmdExplodeBlock([id]); } }, { label: 'Save Block', onclick: function () { cmdSaveBlock(id); } }] }] }],
+      groups: groups,
       onOK: function (v) {
-        if (v.scale === orig.scale && v.angle === orig.angle) return;
-        edit(function (dc) { Drawing.editSketchEntity(dc, id, { scale: +v.scale > 0 ? +v.scale : 1, rot: +v.angle || 0 }); });
+        var at = {}, na = 0;
+        ats.forEach(function (a) { var k = 'a:' + a.tag; if (v[k] !== orig[k]) { var x = String(v[k] == null ? '' : v[k]); at[a.tag] = x === '' || x === String(a.value) ? null : x; na++; } });
+        if (v.scale === orig.scale && v.angle === orig.angle && !na) return;
+        edit(function (dc) {   // one undo step
+          if (v.scale !== orig.scale || v.angle !== orig.angle) Drawing.editSketchEntity(dc, id, { scale: +v.scale > 0 ? +v.scale : 1, rot: +v.angle || 0 });
+          if (na) Drawing.setBlockAttributes(dc, id, at);
+        });
       } });
   }
 
@@ -685,6 +742,11 @@
       else geo({ t: 'arc', c: P.c, r: Math.hypot(P.s[0] - P.c[0], P.s[1] - P.c[1]), a0: Math.atan2(P.s[1] - P.c[1], P.s[0] - P.c[0]) * 180 / Math.PI, a1: (function () { var a0 = Math.atan2(P.s[1] - P.c[1], P.s[0] - P.c[0]) * 180 / Math.PI, a1 = Math.atan2(at[1] - P.c[1], at[0] - P.c[0]) * 180 / Math.PI; while (a1 <= a0) a1 += 360; return a1; })() }, 'dw-cut', gw);
     }
     if (T === 'sk:spline' && P.pts && P.pts.length) { var sp = P.pts.concat(at ? [at] : []); if (sp.length >= 2) geo({ t: 'spline', pts: sp }, 'dw-cut', gw); }
+    if (T === 'sk:blkbase' && MB && MB.base) {   // (rfPQ) Make Block's insertion point: a cross in a circle
+      var bp = MB.base, br = px(6);
+      svgNode('circle', { class: 'dw-hot dw-blk-base', cx: bp[0], cy: H - bp[1], r: br, fill: 'none', 'stroke-width': px(1.5) }, g);
+      svgNode('path', { class: 'dw-hot dw-blk-base', d: 'M' + (bp[0] - br * 1.6) + ' ' + (H - bp[1]) + ' h' + (br * 3.2) + ' M' + bp[0] + ' ' + (H - bp[1] - br * 1.6) + ' v' + (br * 3.2), fill: 'none', 'stroke-width': px(1.2) }, g);
+    }
     if (T === 'sk:relpick' && REL) REL.pts.forEach(function (q, i) { svgNode('circle', { class: 'dw-hot dw-rel-pick', cx: q[0], cy: H - q[1], r: px(5), fill: i ? '#3ba776' : '#2a2a2a', 'stroke-width': px(1) }, g); });
     if (T === 'sk:block' && P.at && P.spec) {   // (rfPM) the block where a click puts it
       var bn = P.spec.name.replace(/^lib:/, ''), src = /^lib:/.test(P.spec.name) ? { blocks: (function () { var o = {}; o[bn] = libRead()[bn]; return o; })() } : doc();
@@ -740,6 +802,20 @@
     var at = -1;
     vl.forEach(function (it, i) { if (it.id === 'modelView' || (it.stack || []).some(function (s) { return s.id === 'modelView'; })) at = i; });
     vl.splice(at >= 0 ? at + 1 : vl.length, 0, { id: 'relativeView', label: 'Relative\nView', help: 'A view whose orientation two faces define: the first faces you, the second points right (or left, up, down)', run: cmdRelativeView, active: function () { return D.tool === 'sk:relpick' || D.tool === 'sk:relplace'; } });
+  })();
+  // (rfPQ) Annotation: the Blocks flyout (Make Block, Insert Block, Explode Block) after Datum Target and before the
+  // tables / Center Mark, where SolidWorks 2024's drawing Annotation tab has its Blocks button (the Sketch tab has none)
+  (function () {
+    var an = UI.RIBBON.Annotation;
+    if (!an) return;
+    var at = -1;
+    an.forEach(function (it, i) { if ((it.stack || []).some(function (s) { return s.id === 'datumTarget'; })) at = i; });
+    if (at < 0) an.forEach(function (it, i) { if (it.id === 'bom' && at < 0) at = i - 1; });
+    an.splice(at >= 0 ? at + 1 : an.length, 0, { fly: 'dwBlocks', label: 'Blocks', items: [
+      { id: 'makeBlock', label: 'Make\nBlock', help: 'The selected sketch entities become one named block; click its insertion point', run: function () { cmdMakeBlock(); }, active: function () { return D.tool === 'sk:blkbase'; } },
+      { id: 'insertBlock', label: 'Insert\nBlock', help: 'Place a block of this drawing or of the block library, with its attribute values', run: function () { cmdInsertBlock(); }, active: function () { return D.tool === 'sk:block'; } },
+      { id: 'explodeBlock', label: 'Explode\nBlock', help: 'An inserted block back into plain sketch entities', run: function () { cmdExplodeBlock(); } }
+    ] });
   })();
   // Insert ▸ Drawing View ▸ Relative To Model, Tools ▸ Sketch Entities in a drawing
   var baseMenuHook = UI.menuHook;
@@ -801,6 +877,9 @@
       insertBlock: function (name, p, viewId, o) { return edit(function (dc) { return Drawing.insertBlock(dc, name, p, viewId, o); }); },
       explodeBlock: function (id) { return edit(function (dc) { return Drawing.explodeBlock(dc, id); }); },
       blocks: function () { return doc() ? Drawing.blocks(doc()) : []; },
+      // (rfPQ) attributes: makeBlock(ids, { base, attrs: { <text id>: tag } }), insertBlock(name, p, view, { attrs: { tag: value } })
+      blockAttributes: function (name) { return doc() ? Drawing.blockAttributes(doc(), name) : []; },
+      setBlockAttributes: function (id, attrs) { return edit(function (dc) { return Drawing.setBlockAttributes(dc, id, attrs); }); },
       dim: function (id, opts) { return edit(function (dc) { return Drawing.addSketchDim(dc, id, opts); }); },
       setDim: function (id, v) { return edit(function (dc) { return Drawing.setSketchDim(dc, id, v); }); },
       lineFormat: function (ids, fmt) { return edit(function (dc) { return Drawing.setLineFormat(dc, ids, fmt); }); },

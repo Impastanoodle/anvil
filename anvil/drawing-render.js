@@ -307,6 +307,26 @@
       ['visible', 'hidden'].forEach(function (st) { (pr.ellipses ? pr.ellipses[st] : []).forEach(function (el) { prims.push(ellipsePrim(el, toSheet, s, layer, st)); }); });
       var p0 = toSheet([bd.umin, bd.vmin]), p1 = toSheet([bd.umax, bd.vmax]);
       var box = { x0: p0[0], x1: p1[0], y0: p0[1], y1: p1[1] };
+      // (rfPQ) the view's box holds its Alternate Position too (SolidWorks' view boundary does), so model items, balloons,
+      // the view label and other views keep off the phantom part; a crop keeps its own outline
+      if (ct.altPos && ct.altPos.length && !v.crop) {
+        var grow = function (q) { if (q[0] < box.x0) box.x0 = q[0]; if (q[0] > box.x1) box.x1 = q[0]; if (q[1] < box.y0) box.y0 = q[1]; if (q[1] > box.y1) box.y1 = q[1]; };
+        var growArc = function (c, r, a0, a1) {   // the ends and every quadrant point inside the sweep (counter-clockwise a0 -> a1, degrees)
+          var t0 = a0 * Math.PI / 180, t1 = a1 * Math.PI / 180;
+          while (t1 < t0) t1 += TWO_PI;
+          grow(toSheet([c[0] + r * Math.cos(t0), c[1] + r * Math.sin(t0)])); grow(toSheet([c[0] + r * Math.cos(t1), c[1] + r * Math.sin(t1)]));
+          for (var qa = Math.ceil(t0 / (Math.PI / 2)) * Math.PI / 2; qa < t1; qa += Math.PI / 2) grow(toSheet([c[0] + r * Math.cos(qa), c[1] + r * Math.sin(qa)]));
+        };
+        ct.altPos.forEach(function (ap) {
+          ap.lines.forEach(function (l) { grow(toSheet([l[0], l[1]])); grow(toSheet([l[2], l[3]])); });
+          ap.circles.forEach(function (c) { growArc(c.c, c.r, 0, 360); });
+          ap.arcs.forEach(function (a) { growArc(a.c, a.r, a.a0, a.a1); });
+          ap.ellipses.forEach(function (el) {
+            var e0 = el.full ? 0 : el.t0, e1 = el.full ? TWO_PI : el.t1;
+            for (var ei = 0; ei <= 64; ei++) { var t = e0 + (e1 - e0) * ei / 64; grow(toSheet([el.c[0] + el.ax[0] * Math.cos(t) + el.ay[0] * Math.sin(t), el.c[1] + el.ax[1] * Math.cos(t) + el.ay[1] * Math.sin(t)])); }
+          });
+        });
+      }
       // a flat-pattern view: the bend centre lines, a little past the outline at both ends, UP on BEND_UP (thin solid),
       // DOWN on BEND_DOWN (thin dashed), as SolidWorks' Bend Lines - Up / Down line fonts; a part that does not unfold
       // says why in the view
@@ -2350,6 +2370,9 @@
     var insDone = {};
     sheet.prims.forEach(function (p) {
       if (p.blockIns != null && insUsed[p.blockIns]) {   // (rfPM) an instance: one INSERT where its first entity was
+        // (rfPQ) its attribute / linked texts carry this instance's own values: written as TEXT beside the INSERT (the
+        // DWG writer and every laser reader take TEXT; ATTDEF / ATTRIB are not written)
+        if (p.blockAttr != null) entity(p, msBR);
         if (insDone[p.blockIns]) return;
         insDone[p.blockIns] = 1;
         var ins = insUsed[p.blockIns], g = blkOf[ins.name];

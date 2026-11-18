@@ -1306,6 +1306,9 @@
     if (aq) { if (aq.type === 'cosmeticThread' && DW.cmdCosmeticThread) DW.cmdCosmeticThread(aq.id); else if (aq.type === 'holeCallout') DW.cmdCalloutProps(aq); else if (aq.flat) DW.cmdViewProperties(aq.view); return; }
     var dq = dimAt(pp);
     if (dq) { DW.cmdDimensionPM(DW.dimRef(dq)); DW.openInlineEdit(dq); return; }
+    // (rfPQ) a BOM cell is typed in place, as SolidWorks; the header row opens the Bill of Materials PropertyManager
+    var bc = D.sheet && D.sheet.bom && DW.openBomCellEdit ? Drawing.bomCellAt(doc(), units(), pp) : null;
+    if (bc && bc.r > 0) { DW.openBomCellEdit(bc); return; }
     if (DW.bomAt(toPaper(e))) { DW.cmdBOM(); return; }
     var tf = D.sheet && Drawing.titleFieldAt(D.sheet.size, units(), pp, doc());
     if (tf) { DW.openTitleEdit(tf); return; }

@@ -2520,7 +2520,7 @@
       { type: 'text', key: 'name', label: 'Name', show: function (v) { return v.mode === 'new'; } },
       { type: 'select', key: 'config', label: 'Configuration', options: cfgs.length ? cfgs : [['', '(none)']], show: function (v) { return v.mode === 'existing'; } }] }];
     if (fields.length) groups.push({ title: 'Second Position (mate values)', fields: fields });
-    openDrawingPM({ title: 'Alternate Position', icon: 'projView', command: 'altPosition', values: vals, groups: groups,
+    openDrawingPM({ title: 'Alternate Position', icon: 'altPosition', command: 'altPosition', values: vals, groups: groups,
       message: 'The second position of ' + w.view.name + ': change the mate values that move the parts there (or pick a configuration). ✓ draws the parts that move in phantom lines over the view.',
       onOK: function (v) {
         var spec = { name: v.name };
@@ -2925,6 +2925,8 @@
         out.push({ id: 'brokenOut', label: 'Broken-out\nSection', run: cmdBrokenOut, active: boActive });   // (rfAD, SolidWorks order)
         out.push({ id: 'breakView', label: 'Break', run: cmdBreakView, active: function () { return D.tool === 'brk'; } });
         out.push({ id: 'cropView', label: 'Crop\nView', run: cmdCropView, active: function () { return D.tool === 'crop'; } });
+        // (rfPQ) Alternate Position View after Crop View, as SolidWorks 2024's View Layout tab has it (an assembly drawing's)
+        out.push({ id: 'altPosition', label: 'Alternate\nPosition View', help: 'An assembly view shown again in a second position (a mate value or a configuration), in phantom lines', run: function () { cmdAltPosition(); }, active: function () { return D.tool === 'altpos'; } });
       }
       if (b.id === 'dxfExport') out.push({ id: 'dwgExport', label: 'Save as\nDWG', run: function () { exportAs('dwg'); } });   // (rfS)
     });

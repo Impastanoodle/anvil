@@ -1262,7 +1262,65 @@
     edit(function (dc) { Drawing.editTableCell(dc, I.cell.id, I.cell.r, I.cell.c, v); });
   }
   var baseCloseInline = DW.closeInlineEdit;
-  DW.closeInlineEdit = function (commit) { if (D.inline && D.inline.cell) return closeCell(commit); return baseCloseInline.apply(this, arguments); };
+  DW.closeInlineEdit = function (commit) { if (D.inline && D.inline.cell) return closeCell(commit); if (D.inline && D.inline.bomCell) return closeBomCell(commit); return baseCloseInline.apply(this, arguments); };
+
+  // (rfPQ) a Bill of Materials cell typed in place (SolidWorks: double-click a BOM cell). DESCRIPTION goes into the
+  // part's Description property (Drawing.setBomCell: a linked part document, the embedded copies, or a Design Library
+  // part's kept in the assembly, where the assembly's own BOM writes it); any other cell is kept on the drawing. One
+  // undo step; Enter applies, Tab / Shift+Tab the next / previous cell, Esc cancels; an empty cell goes back to the link.
+  function openBomCellEdit(c) {
+    DW.closeInlineEdit(false);
+    var sb = D.sheet && D.sheet.bom;
+    if (!sb || !(c.r >= 1) || !sb.cells[c.r - 1]) return;
+    var shown = sb.cells[c.r - 1][c.c], col = sb.columns[c.c];
+    shown = shown == null ? '' : String(shown);
+    var inp = el('input', { type: 'text', spellcheck: 'false', 'aria-label': 'BOM ' + col.title + ', row ' + c.r });
+    var ok = el('button', { class: 'dw-edit-btn ok', title: 'OK (Enter)', text: '✓' }), no = el('button', { class: 'dw-edit-btn', title: 'Cancel (Esc)', text: '✗' });
+    var box = el('div', { id: 'dw-edit', class: 'text tb cell' }, [inp, ok, no]);
+    inp.value = shown;
+    D.root.appendChild(box);
+    D.sel = { kind: 'bom' };
+    D.inline = { box: box, inp: inp, field: { key: '__bomcell', rect: c.rect, shown: shown }, ref: { view: -1, index: -1 }, bomCell: { r: c.r, c: c.c, id: c.id, shown: shown } };
+    DW.positionInlineEdit();
+    inp.addEventListener('keydown', function (ev) {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') { ev.preventDefault(); closeBomCell(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); closeBomCell(false); }
+      else if (ev.key === 'Tab') {
+        ev.preventDefault();
+        var I = D.inline && D.inline.bomCell;
+        if (!I) return;
+        var nc = (D.sheet.bom.columns || []).length, n = (I.r - 1) * nc + I.c + (ev.shiftKey ? -1 : 1);
+        closeBomCell(true);
+        var rows = D.sheet && D.sheet.bom ? D.sheet.bom.rows.length : 0;
+        if (n < 0 || n >= rows * nc) return;
+        var bb = D.sheet.bom.box, r = Math.floor(n / nc) + 1, cc = n % nc;
+        openBomCellEdit({ r: r, c: cc, id: Drawing.bomColId(D.sheet.bom.columns[cc]), rect: { x0: bb.cols[cc], x1: bb.cols[cc + 1], y0: bb.y1 - (r + 1) * bb.rowH, y1: bb.y1 - r * bb.rowH } });
+      }
+    });
+    inp.addEventListener('blur', function () { setTimeout(function () { if (D.inline && D.inline.inp === inp && !box.contains(document.activeElement)) closeBomCell(false); }, 0); });
+    [ok, no].forEach(function (b) { b.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); }); });
+    ok.addEventListener('click', function () { closeBomCell(true); });
+    no.addEventListener('click', function () { closeBomCell(false); });
+    box.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    try { inp.focus({ preventScroll: true }); inp.select(); } catch (err) { }
+    UI.setStatus('BOM ' + col.title + ', row ' + c.r + ': type its text' + (c.id === 'description' ? ' (it goes into the part\'s Description property)' : ' (kept on this drawing; empty goes back to the linked value)') + '; Enter applies, Tab goes to the next cell, Esc cancels.');
+  }
+  function closeBomCell(commit) {
+    var I = D.inline;
+    if (!I || !I.bomCell) return;
+    D.inline = null;
+    if (I.box.parentNode) I.box.parentNode.removeChild(I.box);
+    if (!commit || I.inp.value === I.bomCell.shown) { drawOverlay(); return; }
+    var v = I.inp.value, B = I.bomCell, res = null, err = null;
+    edit(function (dc) {
+      try { res = Drawing.setBomCell(dc, App.model, B.r, B.id, v, { mesh: App.mesh || null, build: App.build || null }); } catch (e) { err = e; }
+    });
+    if (err) { UI.toast(err.message); UI.setStatus(err.message); return; }
+    if (UI.refreshTree) UI.refreshTree();
+    UI.setStatus('BOM row ' + B.r + ': ' + (String(v).trim() ? 'set' : 'cleared') + (res.where === 'file' ? ' in ' + res.file + ' (File ▸ Save saves it)' : res.where === 'part' ? ' in the part\'s Description' : res.where === 'assembly' ? ' (kept in the assembly)' : ' on this drawing') + '.');
+  }
+  DW.openBomCellEdit = openBomCellEdit;
 
   // the sheet's mouse (drawing-ui.js calls these first): the format tools, General Table placement and picks
   DW.aeDown = function (p, e) {
