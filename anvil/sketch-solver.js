@@ -812,9 +812,11 @@ var SketchSolver = (function () {
   // opts: { dimTargets: { index: value }, relTargets: { index: value }, extra: [{ n, f, ents }], skipRels: bool }
   function buildSystem(sketch, opts) {
     opts = opts || {};
-    var ents = clone(sketch.entities || []);
-    var vars = [], owner = [];
     var only = opts.entities || null;   // { index: true }: unknowns of these entities only, and the equations that touch them
+    // rfPA: with `only`, the other entities are read, never changed (no unknowns): the sketch's own objects, not copies
+    // (a drag frame on a 1,600-hole plate copied every hole twice)
+    var ents = only ? (sketch.entities || []).map(function (e, i) { return only[i] ? clone(e) : e; }) : clone(sketch.entities || []);
+    var vars = [], owner = [];
     ents.forEach(function (e, i) { if (only && !only[i]) return; paramNames(e).forEach(function (nm) { vars.push({ e: i, n: nm }); owner.push(i); }); });
     // lane DE: a driving spline handle a relation names ('3.h2') turns: its angle is an unknown
     var hSeen = {};
@@ -1311,7 +1313,8 @@ var SketchSolver = (function () {
     return { ok: res <= Math.max(tol * 100, 1e-7 * sys.scale), it: it, res: res };
   }
   // what the solver did since the last STATS reset (smoke rfNP counts work, not milliseconds)
-  var STATS = { solves: 0, unknowns: 0, analyses: 0, analysisSize: 0, analysisHits: 0, jacobians: 0, factorizations: 0 };
+  var STATS = { solves: 0, unknowns: 0, analyses: 0, analysisSize: 0, analysisHits: 0, jacobians: 0, factorizations: 0, dragPartKept: 0 };
+  var dragPart = { start: null };   // rfPA: the part of the sketch a drag moves, kept for the drag's later frames (drag)
   var FORCE_DENSE = false;   // kernel rfNP: the reference (dense forms, no condensed patterns), to compare against
   function resetStats() { Object.keys(STATS).forEach(function (k) { STATS[k] = 0; }); return STATS; }
 
@@ -3349,11 +3352,20 @@ var SketchSolver = (function () {
     var cz = (opts && opts.noCondense) || FORCE_DENSE ? null : condensePatterns(sketch, R.e);
     if (cz) cz.on();
     try {
-    var sys = buildSystem(sketch, { dimTargets: targets, extra: extra, entities: cz ? cz.only : null });
     // only the geometry tied to the dragged entity (through relations and dimensions) can move: solve that part alone
     // (much smaller matrices in a sketch of several separate pieces; a conflict elsewhere does not block the drag)
-    var part = connected(sys, R.e);
-    if (part.count < sys.ents.length) sys = buildSystem(sketch, { dimTargets: targets, extra: extra, entities: part.set });
+    // rfPA: the part is the same on every frame of one drag (`start` is the drag's own copy, the relations and
+    // dimensions do not change while it lasts): the whole system is built on its first frame only
+    var pkey = R.e + '|' + JSON.stringify(opts || null) + '|' + (cz ? 1 : 0), sys;
+    if (start && dragPart.start === start && dragPart.key === pkey && dragPart.rels === sketch.rels && dragPart.dims === sketch.dims && dragPart.n === sketch.entities.length) {
+      sys = buildSystem(sketch, { dimTargets: targets, extra: extra, entities: dragPart.set || (cz ? cz.only : null) });
+      STATS.dragPartKept++;
+    } else {
+      sys = buildSystem(sketch, { dimTargets: targets, extra: extra, entities: cz ? cz.only : null });
+      var part = connected(sys, R.e), pset2 = part.count < sys.ents.length ? part.set : null;
+      if (pset2) sys = buildSystem(sketch, { dimTargets: targets, extra: extra, entities: pset2 });
+      dragPart = { start: start || null, key: pkey, rels: sketch.rels, dims: sketch.dims, n: sketch.entities.length, set: pset2 };
+    }
     var eR0 = base.entities[R.e], dm = eR0 && (eR0.t === 'ellipse' || eR0.t === 'pellipse') ? dragMob(sys, R) : blockMob(sys);   // ui-sketch-spline; rfAU: blocks
     dm = symDragMob(sketch, sys, R.e, dm);
     STATS.solves++; STATS.unknowns += sys.vars.length;

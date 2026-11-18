@@ -1151,9 +1151,16 @@ var UI = (function () {
     m.color.set(a.color); m.metalness = a.metalness; m.roughness = a.roughness; m.userData.rvPattern.value = a.pattern || 0;
     m.envMapIntensity = a.env != null ? a.env : 1;   // swpart: SolidWorks' default part reflects its studio less
   }
+  // rfPA (lane dragfeel): a material Section View clips keeps one clipping plane at all times: with no section it is
+  // NO_CLIP, which clips nothing (the camera space positive side of a plane 1e15 away). The first Section View with
+  // RealView on waited 400 to 780 ms while the RealView program was built again for one plane; now the section only
+  // changes the plane's values (a uniform), never the program. The RealView materials, their section caps and the thick
+  // lines' twins take it; the Phong part (RealView off) keeps an empty list (smoke rfHF reads it).
+  var NO_CLIP = [new THREE.Plane(new THREE.Vector3(0, 0, 1), 1e15)];
+  function clipList(planes) { return planes && planes.length ? planes : NO_CLIP; }
   function rvSync(m) {
-    var p = mats.part;
-    if (m.clippingPlanes !== p.clippingPlanes) { m.clippingPlanes = p.clippingPlanes; m.needsUpdate = true; }
+    var p = mats.part, want = clipList(p.clippingPlanes);
+    if (m.clippingPlanes !== want) { m.clippingPlanes = want; m.needsUpdate = true; }
     if (!m.wireframe) m.polygonOffsetFactor = p.polygonOffsetFactor;
     if (m.envMap !== rv.env) { m.envMap = rv.env; m.needsUpdate = true; }
   }
@@ -1212,6 +1219,7 @@ var UI = (function () {
       m.stencilWrite = true; m.stencilRef = 0; m.stencilFunc = THREE.NotEqualStencilFunc;
       m.stencilFail = THREE.ReplaceStencilOp; m.stencilZFail = THREE.ReplaceStencilOp; m.stencilZPass = THREE.ReplaceStencilOp;
       m.userData.sectionCap = true;
+      m.clippingPlanes = NO_CLIP;   // (rfPA: the body's RealView program, never one of its own)
       rvCapMats[i] = m;
     }
     rvSetAppearance(m, a);
@@ -1512,9 +1520,10 @@ var UI = (function () {
     // transparent pass, in its renderOrder, so a translucent fill under it (the shaded sketch regions, renderOrder 9)
     // never washes over its inner half: opacity 1, the same colour, the whole width
     var tr = !!src.transparent || (!hidden && src.depthTest === false);
-    if (fm.transparent !== tr) { fm.transparent = tr; fm.needsUpdate = true; }
+    if (fm.transparent !== tr) { fm.transparent = tr; fm.needsUpdate = true; fatTouch++; }
     if (!hidden) { fm.depthTest = src.depthTest; fm.depthWrite = src.depthWrite; }
-    fm.clippingPlanes = src.clippingPlanes;
+    var cl = clipList(src.clippingPlanes);   // rfPA: one plane at all times (NO_CLIP)
+    if (fm.clippingPlanes !== cl) fm.clippingPlanes = cl;
     fm.visible = src.visible;
     if (src.isLineDashedMaterial && src.userData.dashPx) { fm.uniforms.dashPx.value = src.userData.dashPx; fm.uniforms.gapPx.value = src.userData.gapPx || 4; }
     else if (src.isLineDashedMaterial) { var wp = fatU.worldPerPx.value || 1; fm.uniforms.dashPx.value = src.dashSize / wp; fm.uniforms.gapPx.value = src.gapSize / wp; }
@@ -1581,6 +1590,7 @@ var UI = (function () {
   function dropFat(o) {
     var f = o.userData.fat;
     if (!f) return;
+    fatTouch++;
     if (f.mesh) o.remove(f.mesh);
     if (f.hid) o.remove(f.hid);
     if (f.g) f.g.geom.dispose();
@@ -1600,6 +1610,7 @@ var UI = (function () {
         (f.g.nb && (f.g.nb[2] !== o.geometry.attributes.n1 || f.g.nb[3] !== o.geometry.attributes.n2))) {
       if (f.g) f.g.geom.dispose();
       f.g = fatGeometry(o, needDist);
+      fatTouch++;
       if (f.mesh) f.mesh.geometry = f.g.geom;
       if (f.hid) f.hid.geometry = f.g.geom;
       if (!o.geometry.userData.fatHooked) {
@@ -1609,29 +1620,40 @@ var UI = (function () {
     } else if (f.g.ver !== pos.version) {
       f.g.ver = pos.version;
       f.g.ib.needsUpdate = true;
+      // rfPA: a sketch batch written in place in part (updateSketches' drag frame) uploads that range only, and keeps
+      // its own box
+      var dr = o.geometry.userData.dirtyRange;
+      o.geometry.userData.dirtyRange = null;
+      if (dr) { f.g.ib.updateRange.offset = dr[0]; f.g.ib.updateRange.count = dr[1] - dr[0]; }
       if (f.g.nb) { f.g.nb[0].needsUpdate = true; f.g.nb[1].needsUpdate = true; }
       if (f.g.db) {
-        if (f.g.ld) f.g.db.needsUpdate = true;
+        if (f.g.ld) { f.g.db.needsUpdate = true; if (dr) { f.g.db.updateRange.offset = dr[0] / 3; f.g.db.updateRange.count = (dr[1] - dr[0]) / 3; } }
         else { f.g.db.array = chainDistances(pos.array, !!o.isLineSegments); f.g.db.needsUpdate = true; }
       }
-      o.geometry.computeBoundingBox(); f.g.geom.boundingBox = o.geometry.boundingBox;
+      if (!o.geometry.userData.boxKept || !o.geometry.boundingBox) o.geometry.computeBoundingBox();
+      f.g.geom.boundingBox = o.geometry.boundingBox;
     }
     var kind = sil ? 'sil' : m.isLineDashedMaterial ? 'dash' : 'line';
     var fm = fatMatFor(m, kind);
     syncFatMat(fm, m, w, false);
-    if (!f.mesh) { f.mesh = fatChild(f.g.geom, fm, 'line'); o.add(f.mesh); }
+    if (!f.mesh) { f.mesh = fatChild(f.g.geom, fm, 'line'); o.add(f.mesh); fatTouch++; }
+    if (f.mesh.material !== fm || f.mesh.renderOrder !== o.renderOrder + 0.5) fatTouch++;
     f.mesh.material = fm;
     f.mesh.renderOrder = o.renderOrder + 0.5;   // after the body (0) so Hidden Lines Visible's pass sits under it
     if (hlv) {
       var hm = fatMatFor(m, sil ? 'silhid' : 'hid');
       syncFatMat(hm, m, LINE_W.hidden, true);
-      if (!f.hid) { f.hid = fatChild(f.g.geom, hm, 'hidden'); o.add(f.hid); }
+      if (!f.hid) { f.hid = fatChild(f.g.geom, hm, 'hidden'); o.add(f.hid); fatTouch++; }
+      if (f.hid.material !== hm || f.hid.renderOrder !== o.renderOrder + 0.25 || !f.hid.visible) fatTouch++;
       f.hid.material = hm;
       f.hid.renderOrder = o.renderOrder + 0.25;
       f.hid.visible = true;
-    } else if (f.hid) f.hid.visible = false;
+    } else if (f.hid) { if (f.hid.visible) fatTouch++; f.hid.visible = false; }
     if (o.layers.mask !== (1 << FAT_LAYER)) o.layers.set(FAT_LAYER);
   }
+  // rfPA: structural changes syncFatLines made (a twin made, dropped or given another geometry, material, order or
+  // visibility): with none, a scene signature taken before it still holds (render: one scene walk a frame, not two)
+  var fatTouch = 0;
   function syncFatLines(obj) {
     if (!obj.visible) return;
     if ((obj.isLineSegments || obj.isLine) && !obj.isLineLoop) fatSyncLine(obj);
@@ -3208,22 +3230,32 @@ var UI = (function () {
   // lane arccenters: the centre of a circle, an arc, an ellipse, a slot or a polygon (Arc Center Points hides its dot)
   var ARC_CENTER = { circle: 1, arc: 1, aslot: 1, ellipse: 1, pellipse: 1, slot: 1, poly: 1 };
   function isArcCenterRef(e, ref) { return !!(e && ARC_CENTER[e.t] && /\.c$/.test(ref)); }
-  function sketchEndPoints(f, i, e, mat, ptsBy) {
-    var S = window.SketchSolver;
-    if (!S || !S.pointRefs || e.t === 'point') return;
+  // the dots of entity i (sketch coordinates; rfPA: kept per entity for a drag frame, entityDots then pushDots)
+  function entityDots(f, i, e) {
+    var S = window.SketchSolver, out = [];
+    if (!S || !S.pointRefs || e.t === 'point') return out;
     var inf = S.infSides ? S.infSides(e) : null;   // sketch-refine: no dot on an infinite line's runaway end
     S.pointRefs(f, i).forEach(function (pr) {
       if (/\.mid$/.test(pr.ref) || (e.t === 'rect' && /\.c$/.test(pr.ref))) return;
       if (inf && inf[pr.ref.split('.')[1]]) return;
       if (App.view.showEndpoints === false && !/\.c$/.test(pr.ref)) return;   // View ▸ Display ▸ Show Endpoints off: centres only (ui-panels.js)
       if (App.view.showArcCenters === false && isArcCenterRef(e, pr.ref)) return;   // lane arccenters: View ▸ Display ▸ Arc Center Points off
-      var key = Math.round(pr.pt[0] / cam.scale / 2) + ',' + Math.round(pr.pt[1] / cam.scale / 2);
-      var b = ptsBy[mat.uuid] || (ptsBy[mat.uuid] = { mat: mat, pts: [], cr: [] });
-      var cr = dotCapRadius(e), seen = ptsBy._seen && ptsBy._seen[key];
-      if (seen) { var c0 = seen.b.cr[seen.i]; if (cr != null && (c0 == null || cr < c0)) seen.b.cr[seen.i] = cr; return; }   // rfOH: the smallest curve at a shared point sets its dot
-      (ptsBy._seen = ptsBy._seen || {})[key] = { b: b, i: b.pts.length };
-      b.pts.push(pr.pt); b.cr.push(cr);
+      out.push(pr.pt);
     });
+    return out;
+  }
+  function pushDots(pts, cr, mat, ptsBy) {
+    var S2 = 2 * cam.scale, seenAt = ptsBy._seen || (ptsBy._seen = new Map());
+    for (var j = 0; j < pts.length; j++) {
+      // (one dot where several ends meet: the same 2-pixel cell; a number key while it fits, else text)
+      var pt = pts[j], kx = Math.round(pt[0] / S2), ky = Math.round(pt[1] / S2);
+      var key = kx > -2097152 && kx < 2097152 && ky > -2097152 && ky < 2097152 ? kx * 4194304 + ky : kx + ',' + ky;
+      var b = ptsBy[mat.uuid] || (ptsBy[mat.uuid] = { mat: mat, pts: [], cr: [] });
+      var seen = seenAt.get(key);
+      if (seen) { var c0 = seen.b.cr[seen.i]; if (cr != null && (c0 == null || cr < c0)) seen.b.cr[seen.i] = cr; continue; }   // rfOH: the smallest curve at a shared point sets its dot
+      seenAt.set(key, { b: b, i: b.pts.length });
+      b.pts.push(pt); b.cr.push(cr);
+    }
   }
   // rfOH: a dot never covers more than a third of the screen diameter of the circle, arc, slot end or ellipse it belongs
   // to (a Ø.281 hole zoomed out was a green disc: the 10 px bead swallowed its 8 px circle); under PT_MIN px it is not
@@ -3247,27 +3279,41 @@ var UI = (function () {
       if (o.visible !== on) o.visible = on;
     }
   }
-  function addSketchPoints(pl, ptsBy) {
+  // the dot objects of ptsBy, in order. rfPA: old (a drag frame) = the objects of the last redraw by material and radius
+  // key: one with as many dots is kept and its positions written in place (a Points object a redraw keeps is what
+  // screenGeometry in ui-sketch.js reads unchanged)
+  function sketchPointObjects(pl, ptsBy, old) {
+    var out = [];
     Object.keys(ptsBy).forEach(function (k) {
       if (k === '_seen') return;
       var b = ptsBy[k], byR = {};
       // rfOH: one Points object per capping curve radius ('-': none, the full PT_SIZE), sized by syncDotSizes
       b.pts.forEach(function (p, i) {
         var cr = b.cr ? b.cr[i] : null, key = cr == null ? '-' : String(cr);
-        var q = K.to3D(pl, p[0], p[1]);
+        var q = p._pl === pl && p._x === p[0] && p._y === p[1] ? p._w : (p._w = K.to3D(pl, p[0], p[1]));   // rfPA: a dot of an entity that did not move keeps its place in the model
+        p._pl = pl; p._x = p[0]; p._y = p[1];
         (byR[key] || (byR[key] = [])).push(q[0], q[1], q[2]);
       });
       Object.keys(byR).forEach(function (key) {
+        var arr = byR[key], o = old && old[b.mat.uuid + '|' + key];
+        if (o && o.geometry.attributes.position.array.length === arr.length) {
+          var at = o.geometry.attributes.position, a = at.array, ch = false;
+          for (var j = 0; j < arr.length; j++) if (a[j] !== Math.fround(arr[j])) { a[j] = arr[j]; ch = true; }
+          if (ch) { at.needsUpdate = true; o.geometry.boundingSphere = null; o.geometry.boundingBox = null; }
+          out.push(o);
+          return;
+        }
         var g = new THREE.BufferGeometry();
-        g.setAttribute('position', new THREE.Float32BufferAttribute(byR[key], 3));
+        g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
         var cr = key === '-' ? null : +key;
         var pts = new THREE.Points(g, sketchPointMat(b.mat, cr == null ? null : key));
         pts.renderOrder = 11;
-        pts.userData = { sketchPoints: true, capR: cr };
-        groups.sketches.add(pts);
+        pts.userData = { sketchPoints: true, capR: cr, dotKey: b.mat.uuid + '|' + key };
+        pts.matrixAutoUpdate = false; pts.updateMatrix();
+        out.push(pts);
       });
-      syncDotSizes();
     });
+    return out;
   }
   // r15/truecircles: sketch circles, arcs and slots are tessellated for the screen — a chord sagitta of about
   // SCREEN_SAG_PX at the current zoom, 32 to 2048 segments per turn — instead of with the model's chord tolerance
@@ -3312,14 +3358,89 @@ var UI = (function () {
     plsCache.set(k, hit);
     return hit;
   }
+  // rfPA (lane dragfeel): which entities of the active sketch changed. Every entity has a version (a number never used
+  // twice) that changes when its content does (a shallow copy compared field by field; an array field by its text); a
+  // Sketch Text may follow another entity, so it changes every time. Anyone can ask (UI.sketchEntityVersions): a
+  // consumer keeps the version each of its parts was made from and works out again only the entities whose version
+  // moved (the drag frame of updateSketches, the dimension layer's screen geometry in ui-sketch.js).
+  var entTrack = { f: null, n: -1, snaps: null, ver: null, at: -1 }, entVerSeq = 0;
+  function entSnap(e) {
+    var s = { k: [], v: [] };
+    for (var k in e) { var v = e[k]; s.k.push(k); s.v.push(v !== null && typeof v === 'object' ? JSON.stringify(v) : v); }
+    return s;
+  }
+  function entSame(e, s) {
+    if (!e || !s) return false;
+    var n = 0, K2 = s.k, V2 = s.v;
+    for (var k in e) {
+      if (K2[n] !== k) return false;   // (the same fields in the same order)
+      var v = e[k], w = V2[n++];
+      if (v !== null && typeof v === 'object') { if (typeof w !== 'string' || JSON.stringify(v) !== w) return false; }
+      else if (v !== w) return false;
+    }
+    return n === K2.length;
+  }
+  function trackEntities(f) {
+    var T = entTrack, E = f.entities, i;
+    if (App.sketchDragging && T.f === f && T.n === E.length && T.at === sceneVer) return T.ver;   // nothing changes between a drag frame's redraw and its dimensions
+    if (T.f !== f || T.n !== E.length) {
+      T.f = f; T.n = E.length; T.snaps = new Array(E.length); T.ver = new Array(E.length);
+      for (i = 0; i < E.length; i++) { T.snaps[i] = E[i] ? entSnap(E[i]) : null; T.ver[i] = ++entVerSeq; }
+    } else {
+      for (i = 0; i < E.length; i++) {
+        var e = E[i];
+        if (e && e.t !== 'text' && entSame(e, T.snaps[i])) continue;
+        T.snaps[i] = e ? entSnap(e) : null; T.ver[i] = ++entVerSeq;
+      }
+    }
+    T.at = sceneVer;
+    return T.ver;
+  }
+  // The active sketch as drawn by the last redraw (rfPA), for a drag frame: per entity its version, material, object (a
+  // sketch under BATCH_MIN entities, or a point) or place in its material's batch, and its dots; the batches; the dots,
+  // regions and overlay objects that end the sketch's run of children (tail).
+  var skKeep = null;
+  function keepSig() {
+    var vis = [];
+    App.model.features.forEach(function (f) { if (f.type === 'sketch' && sketchVisible(f)) vis.push(f.id); });
+    return [App.activeSketch, cam.scale, plsFor, App.view.showEndpoints, App.view.showArcCenters, App.mode, vis.join(',')].join('|');
+  }
+  // the material entity i is drawn in, as the full redraw chooses it (and whether it is dashed)
+  function entityMaterial(f, e, i, active, state, ly) {
+    var stateMat = { full: mats.sketchFull, over: mats.sketchOver, conflict: mats.sketchConflict };
+    var selected = active && (UI.entitySelected ? UI.entitySelected(i) : App.sel && App.sel.kind === 'entity' && App.sel.index === i);
+    var mat = selected ? mats.sketchSel : (active ? (state && stateMat[state.entities[i]]) || mats.sketch : mats.sketchDim);
+    if (ly && ly.mat && !selected && !e.construction && mat !== mats.sketchOver && mat !== mats.sketchConflict) mat = ly.mat;   // over defined stays red
+    if (!active && !selected && App.build && App.build.warnings && /^Dangling\b/.test(App.build.warnings[f.id] || '')) mat = mats.sketchDangling;   // r12/occtui12
+    if (active && e.construction && !selected && mat !== mats.sketchOver && mat !== mats.sketchConflict) mat = mats.sketchConstr;   // rfBR: light grey
+    return mat;
+  }
+  function pointCross(pl, e) {
+    var p = K.to3D(pl, e.x, e.y), s = cam.scale * 3;
+    return [].concat(V.add(p, V.scale(pl.x, -s)), V.add(p, V.scale(pl.x, s)), V.add(p, V.scale(pl.y, -s)), V.add(p, V.scale(pl.y, s)));
+  }
+  // a batch entity's run of dash distances (each entity's dashes start at its own first point)
+  function runDistances(A, n0, out) {
+    var run = 0;
+    for (var q = n0; q < A.length; q += 6) { out.push(run); run += Math.hypot(A[q + 3] - A[q], A[q + 4] - A[q + 1], A[q + 5] - A[q + 2]); out.push(run); }
+    return out;
+  }
+  var dragRedraw = { fast: 0, full: 0, why: '' };   // UI.sketchDragRedrawStats(): drag frames redrawn in part / in full, and why the last was in full
   function updateSketches() {
     App.dimsStale = true;
-    sketchSegsScale = cam.scale;
     var plsNow = K._ && K._.tessKey ? K._.tessKey() : '';
     if (plsNow !== plsFor || plsCache.size > 30000) { plsCache.clear(); plsFor = plsNow; }
     sceneVer++;
+    if (App.sketchDragging && UI.sketchDragRedraw !== false) {
+      var why = redrawMoved();
+      if (!why) { dragRedraw.fast++; sketchSegsScale = cam.scale; if (App.mode === 'sketch' && UI.refreshStatus) UI.refreshStatus(); return; }
+      dragRedraw.full++; dragRedraw.why = why;
+    }
+    sketchSegsScale = cam.scale;
     disposeGroup(groups.sketches);
+    skKeep = null;
     mats.sketchSel.dashSize = cam.scale * 6; mats.sketchSel.gapSize = cam.scale * 4;   // rfBR: the 1-pixel fallback's dashes at this zoom
+    var sig = keepSig();
     App.model.features.forEach(function (f) {
       if (f.type !== 'sketch' || !sketchVisible(f)) return;
       var pl; try { pl = K.resolvePlane(f.plane, App.model, App.build && App.build.planes); } catch (e) { return; }
@@ -3328,30 +3449,30 @@ var UI = (function () {
       var state = null;
       if (active && App.sketchDragging && App.sketchState) state = App.sketchState;   // mid-drag: same relations, same state
       else if (active && window.SketchSolver) { try { SketchSolver.clean(f); state = App.sketchState = cachedAnalysis(f); } catch (err) { state = App.sketchState = null; } }
-      var stateMat = { full: mats.sketchFull, over: mats.sketchOver, conflict: mats.sketchConflict }, ptsBy = {};
+      var ptsBy = {};
       var batch = f.entities.length >= BATCH_MIN ? {} : null;   // lane NP
       var layerStyle = UI.sketchLayerStyle;   // sketch-layers (ui-sketch-layers.js): hidden layers, layer colours, dashed layers
+      var keep = active ? { f: f, pl: pl, sig: sig, state: state, n: f.entities.length, recs: new Array(f.entities.length), batch: batch, ver: trackEntities(f).slice(), tail: [], start: groups.sketches.children.length } : null;
       f.entities.forEach(function (e, i) {
         var ly = layerStyle ? layerStyle(f, e, active) : null;
+        var rec = keep ? (keep.recs[i] = { hidden: !!(ly && ly.hidden), mat: null, obj: null, bkey: null, off: 0, len: 0, dots: null, cr: null }) : null;
         if (ly && ly.hidden) return;
-        var pls = cachedScreenPolylines(e);
-        var selected = active && (UI.entitySelected ? UI.entitySelected(i) : App.sel && App.sel.kind === 'entity' && App.sel.index === i);
-        var mat = selected ? mats.sketchSel : (active ? (state && stateMat[state.entities[i]]) || mats.sketch : mats.sketchDim);
-        if (ly && ly.mat && !selected && !e.construction && mat !== mats.sketchOver && mat !== mats.sketchConflict) mat = ly.mat;   // over defined stays red
-        if (!active && !selected && App.build && App.build.warnings && /^Dangling\b/.test(App.build.warnings[f.id] || '')) mat = mats.sketchDangling;   // r12/occtui12
-        if (active && e.construction && !selected && mat !== mats.sketchOver && mat !== mats.sketchConflict) mat = mats.sketchConstr;   // rfBR: light grey
+        var mat = entityMaterial(f, e, i, active, state, ly);
         if (e.t === 'point') {
-          var p = K.to3D(pl, e.x, e.y), s = cam.scale * 3;
           var g = new THREE.BufferGeometry();
-          g.setAttribute('position', new THREE.Float32BufferAttribute([].concat(V.add(p, V.scale(pl.x, -s)), V.add(p, V.scale(pl.x, s)), V.add(p, V.scale(pl.y, -s)), V.add(p, V.scale(pl.y, s))), 3));
+          g.setAttribute('position', new THREE.Float32BufferAttribute(pointCross(pl, e), 3));
           var pc = new THREE.LineSegments(g, mat);
           if (mat.isLineDashedMaterial) pc.computeLineDistances();
-          groups.sketches.add(pc);
+          skAdd(pc);
+          if (rec) { rec.mat = mat; rec.obj = pc; }
           return;
         }
-        if (!pls.length) return;
+        var pls = cachedScreenPolylines(e);
         var baseMat = mat, dashed = e.construction || !!(ly && ly.dashed);
         if (dashed && !mat.isLineDashedMaterial) mat = dashedMat(mat);   // construction geometry / centerlines (and BEND-type layers): dashed
+        if (rec) rec.mat = mat;
+        if (!pls.length) { if (rec) rec.empty = true; return; }
+        if (rec) { rec.baseMat = baseMat; rec.dots = entityDots(f, i, e); rec.cr = dotCapRadius(e); }
         // lane NP (big sketches): the segments of every entity drawn in one material go into one LineSegments (a
         // 1,600-hole sketch was 1,600 objects and 1,600 draw calls per frame); a dashed material's batch keeps each
         // entity's dash phase (its own line distances). Sketches under BATCH_MIN entities keep one object per entity
@@ -3361,15 +3482,17 @@ var UI = (function () {
           if (mat.isLineDashedMaterial) ls.computeLineDistances();   // rfBR: a selected entity is dashed too
           ls.userData = { sketch: f.id, index: i };
           if (active) ls.renderOrder = 10;
-          groups.sketches.add(ls);
-          if (active) sketchEndPoints(f, i, e, baseMat, ptsBy);
+          skAdd(ls);
+          if (active) pushDots(rec.dots, rec.cr, baseMat, ptsBy);
+          if (rec) rec.obj = ls;
           return;
         }
-        var bt = batch[mat.uuid] || (batch[mat.uuid] = { mat: mat, arr: [], dist: mat.isLineDashedMaterial ? [] : null });
+        var bt = batch[mat.uuid] || (batch[mat.uuid] = { mat: mat, arr: [], dist: mat.isLineDashedMaterial ? [] : null, ents: [] });
         var n0 = bt.arr.length;
         lineSegmentsInto(pl, pls, bt.arr);
-        if (bt.dist) { var run = 0, A = bt.arr; for (var q = n0; q < A.length; q += 6) { bt.dist.push(run); run += Math.hypot(A[q + 3] - A[q], A[q + 4] - A[q + 1], A[q + 5] - A[q + 2]); bt.dist.push(run); } }
-        if (active) sketchEndPoints(f, i, e, baseMat, ptsBy);
+        if (bt.dist) runDistances(bt.arr, n0, bt.dist);
+        if (rec) { rec.bkey = mat.uuid; rec.off = n0; rec.len = bt.arr.length - n0; bt.ents.push(i); }
+        if (active) pushDots(rec.dots, rec.cr, baseMat, ptsBy);
       });
       if (batch) Object.keys(batch).forEach(function (k) {
         var bt = batch[k], g = new THREE.BufferGeometry();
@@ -3378,15 +3501,136 @@ var UI = (function () {
         var ls = new THREE.LineSegments(g, bt.mat);
         ls.userData = { sketch: f.id };
         if (active) ls.renderOrder = 10;
-        groups.sketches.add(ls);
+        skAdd(ls);
+        bt.obj = ls; bt.arr = null; bt.dist = null;
       });
-      if (active) addSketchPoints(pl, ptsBy);
+      if (!active) return;
+      var tail = keep.tail;
+      sketchPointObjects(pl, ptsBy, null).forEach(function (o) { skAdd(o); tail.push(o); });
+      syncDotSizes();
       // sketch-layers: closed regions shaded and open ends marked in the sketch being edited (View ▸ Sketch Regions)
-      if (active && UI.sketchRegionObjects) UI.sketchRegionObjects(f, pl).forEach(function (o) { groups.sketches.add(o); });
-      if (active) sketchOverlayObjects(f, pl).forEach(function (o) { groups.sketches.add(o); });   // sketch-hooks: Dynamic Mirror's "=" marks …
+      if (UI.sketchRegionObjects) UI.sketchRegionObjects(f, pl).forEach(function (o) { groups.sketches.add(o); tail.push(o); });
+      sketchOverlayObjects(f, pl).forEach(function (o) { groups.sketches.add(o); tail.push(o); });   // sketch-hooks: Dynamic Mirror's "=" marks …
+      var chn = groups.sketches.children.length - tail.length;
+      keep.last = chn > keep.start ? groups.sketches.children[chn - 1] : null;   // the sketch's last line object: the tail goes after it
+      skKeep = keep;
     });
     if (App.mode !== 'sketch') App.sketchState = null;
     else if (UI.refreshStatus) UI.refreshStatus();
+  }
+  // rfPA (lane dragfeel): a drag frame redraws only the entities the solve moved. Everything else keeps its objects
+  // and buffers: a moved entity of a small sketch gets a new geometry on its own object; in a batch (BATCH_MIN entities
+  // and more) its segments are written in place when their count is unchanged (the upload covers the changed range
+  // only: fatSyncLine reads geometry.userData.dirtyRange), else that batch is put together again from the kept buffer;
+  // the dots are put together from each entity's kept dots (an object with as many dots keeps its buffer); the regions
+  // and overlays are asked again (the regions follow on their own, ui-sketch-layers.js). Anything else that differs
+  // from the last redraw (another zoom, a material, a layer, the shown sketches, the entity count, a group someone
+  // else changed) -> the reason, and the caller redraws in full. The release always redraws in full.
+  function redrawMoved() {
+    var kp = skKeep, ch = groups.sketches.children;
+    if (!kp) return 'nothing kept';
+    var f = kp.f;
+    if (App.activeSketch !== f.id || K.findFeature(App.model, f.id) !== f) return 'another sketch';
+    if (f.entities.length !== kp.n) return 'entity count';
+    var lastAt = kp.last ? ch.indexOf(kp.last) : -1;
+    if (lastAt < 0 || (kp.tail.length && ch[lastAt + 1] !== kp.tail[0])) return 'group changed';
+    if (App.sketchState !== kp.state) return 'analysis';
+    if (keepSig() !== kp.sig) return 'view';
+    var pl = kp.pl, ver = trackEntities(f), layerStyle = UI.sketchLayerStyle, moved = [], i, rec, e;
+    for (i = 0; i < kp.n; i++) {
+      rec = kp.recs[i]; e = f.entities[i];
+      if (!e) return 'empty entity';
+      var ly = layerStyle ? layerStyle(f, e, true) : null;
+      if (!!(ly && ly.hidden) !== rec.hidden) return 'layer';
+      if (rec.hidden) { kp.ver[i] = ver[i]; continue; }
+      var mat = entityMaterial(f, e, i, true, kp.state, ly);
+      if (e.t !== 'point' && (e.construction || (ly && ly.dashed)) && !mat.isLineDashedMaterial) mat = dashedMat(mat);
+      if (mat !== rec.mat) return 'material';
+      if (ver[i] !== kp.ver[i]) moved.push(i);
+    }
+    // work the moved entities out; nothing in the scene changes until all of them could be
+    var work = [], b, bdirty = {}, rebatch = {};
+    for (var m = 0; m < moved.length; m++) {
+      i = moved[m]; rec = kp.recs[i]; e = f.entities[i];
+      if (e.t === 'point') { work.push({ i: i, cross: pointCross(pl, e) }); continue; }
+      var pls = screenPolylines(e);
+      if (!pls.length !== !!rec.empty) return 'drawn or not';
+      if (rec.empty) continue;
+      var w = { i: i, pls: pls, dots: entityDots(f, i, e), cr: dotCapRadius(e) };
+      if (kp.batch) {
+        w.arr = lineSegmentsInto(pl, pls, []);
+        if (kp.batch[rec.bkey].mat.isLineDashedMaterial) w.dist = runDistances(w.arr, 0, []);
+        if (w.arr.length !== rec.len) rebatch[rec.bkey] = true;
+      }
+      work.push(w);
+    }
+    for (m = 0; m < work.length; m++) {
+      var wk = work[m];
+      i = wk.i; rec = kp.recs[i];
+      if (wk.cross) { swapGeometry(rec.obj, new THREE.Float32BufferAttribute(wk.cross, 3)); continue; }
+      rec.dots = wk.dots; rec.cr = wk.cr;
+      if (!kp.batch) { swapGeometry(rec.obj, null, lineGeometryFromPolylines(pl, wk.pls)); continue; }
+      b = kp.batch[rec.bkey];
+      if (rebatch[rec.bkey]) { rec.next = wk; continue; }
+      var pa = b.obj.geometry.attributes.position, la = b.obj.geometry.attributes.lineDistance;
+      pa.array.set(wk.arr, rec.off);
+      if (la && wk.dist) la.array.set(wk.dist, rec.off / 3);
+      var d = bdirty[rec.bkey] || (bdirty[rec.bkey] = { lo: Infinity, hi: -Infinity, box: b.obj.geometry.boundingBox });
+      d.lo = Math.min(d.lo, rec.off); d.hi = Math.max(d.hi, rec.off + rec.len);
+      if (d.box) for (var q = 0; q < wk.arr.length; q += 3) { tmpPt.set(wk.arr[q], wk.arr[q + 1], wk.arr[q + 2]); d.box.expandByPoint(tmpPt); }
+    }
+    Object.keys(bdirty).forEach(function (k) {
+      var g = kp.batch[k].obj.geometry, d = bdirty[k];
+      g.attributes.position.needsUpdate = true;
+      if (g.attributes.lineDistance) g.attributes.lineDistance.needsUpdate = true;
+      var r = g.userData.dirtyRange;
+      g.userData.dirtyRange = r ? [Math.min(r[0], d.lo), Math.max(r[1], d.hi)] : [d.lo, d.hi];
+      g.userData.boxKept = true;
+      if (d.box) { g.boundingSphere = g.boundingSphere || new THREE.Sphere(); d.box.getBoundingSphere(g.boundingSphere); }
+    });
+    Object.keys(rebatch).forEach(function (k) {
+      var b2 = kp.batch[k], old = b2.obj.geometry, oa = old.attributes.position.array, od = old.attributes.lineDistance ? old.attributes.lineDistance.array : null;
+      var parts = [], dparts = [], len = 0;
+      b2.ents.forEach(function (j) {
+        var r2 = kp.recs[j], nx = r2.next;
+        var a = nx ? nx.arr : oa.subarray(r2.off, r2.off + r2.len);
+        parts.push(a); dparts.push(nx ? nx.dist : od ? od.subarray(r2.off / 3, (r2.off + r2.len) / 3) : null);
+        r2.off = len; r2.len = a.length; len += a.length; r2.next = null;
+      });
+      var arr = new Float32Array(len), dist = od ? new Float32Array(len / 3) : null;
+      parts.forEach(function (a, j) { var r3 = kp.recs[b2.ents[j]]; arr.set(a, r3.off); if (dist && dparts[j]) dist.set(dparts[j], r3.off / 3); });
+      var g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+      if (dist) g.setAttribute('lineDistance', new THREE.BufferAttribute(dist, 1));
+      b2.obj.geometry = g;
+      old.dispose();
+    });
+    // the dots, regions and overlays: put together again and put in place of the last ones
+    var ptsBy = {}, oldDots = {};
+    for (i = 0; i < kp.n; i++) { rec = kp.recs[i]; if (rec.dots) pushDots(rec.dots, rec.cr, rec.baseMat, ptsBy); }
+    kp.tail.forEach(function (o) { if (o.userData && o.userData.dotKey) oldDots[o.userData.dotKey] = o; });
+    var tail = sketchPointObjects(pl, ptsBy, oldDots);
+    if (UI.sketchRegionObjects) tail = tail.concat(UI.sketchRegionObjects(f, pl));
+    tail = tail.concat(sketchOverlayObjects(f, pl));
+    var at = lastAt + 1, keepSet = new Set(tail);
+    kp.tail.forEach(function (o) { if (!keepSet.has(o)) { o.parent = null; if (o.geometry && !o.geometry.userData.keep) o.geometry.dispose(); } });
+    tail.forEach(function (o) { if (o.parent && o.parent !== groups.sketches) o.parent.remove(o); o.parent = groups.sketches; });
+    Array.prototype.splice.apply(ch, [at, kp.tail.length].concat(tail));
+    kp.tail = tail;
+    syncDotSizes();
+    for (i = 0; i < kp.n; i++) kp.ver[i] = ver[i];
+    return '';
+  }
+  var tmpPt = new THREE.Vector3();
+  // rfPA: sketch lines and dots never move: their matrices are made once, not composed again every frame
+  function skAdd(o) { o.matrixAutoUpdate = false; o.updateMatrix(); groups.sketches.add(o); }
+  // a kept object gets a new geometry (its old one disposed: its thick-line twin follows, fatSyncLine)
+  function swapGeometry(o, posAttr, geom) {
+    var old = o.geometry, g = geom || new THREE.BufferGeometry();
+    if (posAttr) g.setAttribute('position', posAttr);
+    o.geometry = g;
+    if (o.material && o.material.isLineDashedMaterial) o.computeLineDistances();
+    old.dispose();
   }
   // sketch-hooks: other files add to what the sketch being edited shows without wrapping the redraw functions.
   // UI.sketchOverlayHooks: functions (f, pl) -> THREE objects drawn with the active sketch (Dynamic Mirror's "=" marks).
@@ -4056,7 +4300,7 @@ var UI = (function () {
   function sceneSignature() {
     var hi = 0, hf = 0;
     function visit(o) {
-      if (o === camera) return;
+      if (o === camera || o.userData.fatLine) return;   // rfPA: a thick line's twin follows its line (syncFatLines): fatTouch below stands for it
       hi = (hi * 31 + o.id * 7 + (o.visible ? 1 : 2) + o.renderOrder * 3) | 0;
       hf += o.position.x * 1.3 + o.position.y * 1.7 + o.position.z * 2.3 + o.quaternion.x + o.quaternion.y * 1.1 + o.quaternion.z * 1.3 + o.scale.x + o.scale.y * 1.5 + o.scale.z * 1.9;
       var m = o.material;
@@ -4065,7 +4309,7 @@ var UI = (function () {
         hi = (hi * 31 + m.id * 5 + m.version + (m.visible ? 1 : 2)) | 0;
         if (m.color) hf += m.color.r * 3.1 + m.color.g * 5.3 + m.color.b * 7.7;
         hf += m.opacity * 1.9;
-        if (m.clippingPlanes && m.clippingPlanes.length) { var cp = m.clippingPlanes[0]; hf += cp.constant * 1.1 + cp.normal.x + cp.normal.y * 1.3 + cp.normal.z * 1.7; }
+        if (m.clippingPlanes && m.clippingPlanes.length && m.clippingPlanes !== NO_CLIP) { var cp = m.clippingPlanes[0]; hf += cp.constant * 1.1 + cp.normal.x + cp.normal.y * 1.3 + cp.normal.z * 1.7; }
       }
       var g = o.geometry;
       if (g) {
@@ -4075,7 +4319,7 @@ var UI = (function () {
       for (var i = 0; i < o.children.length; i++) visit(o.children[i]);
     }
     visit(scene);
-    return hi + '|' + hf + '|' + size.w + 'x' + size.h;
+    return hi + '|' + hf + '|' + size.w + 'x' + size.h + '|' + fatTouch;
   }
   // Depth range fitted to what is in the scene (both views of it while a transition runs): an orthographic camera can
   // take any near / far, and a range a few times the model instead of 20 m keeps the depth buffer fine enough that
@@ -4108,8 +4352,9 @@ var UI = (function () {
   var renderHooks = { draw: null, idle: null };
   function render(sig, mode) {
     updateGrid();
+    var ft = fatTouch;
     syncFatLines(scene);   // r13/lines13: thick lines follow their line objects (before the signature: new children count)
-    if (typeof sig !== 'string') sig = sceneSignature();
+    if (typeof sig !== 'string' || (mode === 'auto' && ft !== fatTouch)) sig = sceneSignature();
     var pose = null, dir = cam.dir, up = cam.up, right = cam.right;
     if (viewAnim) {
       var u = animU();
@@ -4184,7 +4429,9 @@ var UI = (function () {
       return;
     }
     App.holdCam = null;
-    if (needsRender || viewAnim || zoomMomentum.pending || App.gridStale || now - lastRenderAt > 1000 || sceneSignature() !== lastSig) render(undefined, 'auto');
+    // (the signature the test takes is handed on: the render walks the scene again only when the thick lines changed it)
+    var sigNow = null;
+    if (needsRender || viewAnim || zoomMomentum.pending || App.gridStale || now - lastRenderAt > 1000 || (sigNow = sceneSignature()) !== lastSig) render(sigNow == null || App.gridStale ? undefined : sigNow, 'auto');
     else if (renderHooks.idle && renderHooks.idle(now)) render(lastSig, 'still');   // rfHD: the view is still
     else if (UI.drawDims && App.dimsStale) { App.dimsStale = false; UI.drawDims(); }
   }
@@ -5278,7 +5525,7 @@ var UI = (function () {
     applyCamera: applyCamera, resize: resize, rotateView: rotateView, panView: panView, zoomView: zoomView, zoomToFit: zoomToFit,
     setView: setView, viewNormalTo: viewNormalTo, previousView: previousView, pushViewHistory: pushViewHistory, VIEWS: VIEWS, modelBounds: modelBounds,
     updateBodyMesh: updateBodyMesh, applyDisplayStyle: applyDisplayStyle, partColor: partColor, updateHighlights: updateHighlights, updatePlanes: updatePlanes,
-    updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: cachedScreenPolylines, sketchDotCap: pointDotCap, sketchSceneVersion: function () { return sceneVer; }, scaleBar: scaleBarInfo, updateTemp: updateTemp, pickStats: pickStats, edgeGridStats: edgeGridStats, beforeFrame: beforeFrame, cancelBeforeFrame: cancelBeforeFrame, frameHooks: frameHooks, frameNo: function () { return frameNo; }, viewportRect: function () { return viewportRect(); }, viewportRectStale: viewportRectStale, disposeGroup: disposeGroup,
+    updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: cachedScreenPolylines, sketchDotCap: pointDotCap, sketchSceneVersion: function () { return sceneVer; }, sketchEntityVersions: function (f) { f = f || activeSketchFeature(); return f ? trackEntities(f) : null; }, sketchDragRedrawStats: function () { return { fast: dragRedraw.fast, full: dragRedraw.full, why: dragRedraw.why }; }, scaleBar: scaleBarInfo, updateTemp: updateTemp, pickStats: pickStats, edgeGridStats: edgeGridStats, beforeFrame: beforeFrame, cancelBeforeFrame: cancelBeforeFrame, frameHooks: frameHooks, frameNo: function () { return frameNo; }, viewportRect: function () { return viewportRect(); }, viewportRectStale: viewportRectStale, disposeGroup: disposeGroup,
     sketchOverlayHooks: sketchOverlayHooks, tempEntityHooks: tempEntityHooks, sketchOverlayObjects: sketchOverlayObjects, tempEntitiesShown: tempEntitiesShown,   // sketch-hooks
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep, gridMinors: gridMinors,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickRefGeo: pickRefGeo, updateRefGeo: updateRefGeo, drawRefGeo: drawRefGeo, pickEntity: pickEntity, pickEntityDist: pickEntityDist, pickEdge: pickEdge,

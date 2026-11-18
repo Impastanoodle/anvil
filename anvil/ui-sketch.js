@@ -1592,7 +1592,7 @@
     hook.rfAYGhost = true;
     hook.start = function () {
       var f = UI.activeSketchFeature();
-      skGhost = f && skSetting('ghostOnDrag') ? { id: f.id, before: f.entities.map(function (e) { return JSON.stringify(e); }), ents: {} } : null;
+      skGhost = f && skSetting('ghostOnDrag') ? { id: f.id, before: f.entities.map(function (e) { return JSON.stringify(e); }), ents: {}, v0: UI.sketchEntityVersions ? UI.sketchEntityVersions(f).slice() : null } : null;
       return s0.apply(this, arguments);
     };
     hook.end = function () {
@@ -1603,9 +1603,11 @@
   }
   function ghostObjects(f, pl) {
     if (!skGhost || !f || f.id !== skGhost.id) return [];
-    var pls = [], n = 0;
+    // rfPA: an entity whose version is the one it had at the press has not moved (no text compare: 1,600 a frame)
+    var pls = [], n = 0, vers = skGhost.v0 && UI.sketchEntityVersions && f.entities.length === skGhost.v0.length ? UI.sketchEntityVersions(f) : null;
     skGhost.before.forEach(function (js, i) {
       var cur = f.entities[i];
+      if (vers && vers[i] === skGhost.v0[i]) return;
       if (cur && JSON.stringify(cur) === js) return;
       var e = skGhost.ents[i] || (skGhost.ents[i] = JSON.parse(js));
       if (e.t === 'point') {
@@ -1615,7 +1617,8 @@
       n++;
     });
     if (!pls.length) return [];
-    if (!skGhostMat) skGhostMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.35, depthTest: false, depthWrite: false });
+    // (rfPA: a 1 px thick line, as the sketch's own lines are drawn: no shader program of its own to make on the first drag frame, 7 ms)
+    if (!skGhostMat) { skGhostMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.35, depthTest: false, depthWrite: false }); skGhostMat.userData.lineWidth = 1; }
     skGhostMat.color.copy(UI.mats && UI.mats.sketch ? UI.mats.sketch.color : new THREE.Color(0xffffff));
     var ls = new THREE.LineSegments(UI.lineGeometryFromPolylines(pl, pls), skGhostMat);
     ls.renderOrder = 9;
@@ -3132,6 +3135,38 @@
     if (!hit) { hit = K.entityPolylines(e); geoPls.set(k, hit); }
     return hit;
   }
+  // rfPA (lane dragfeel): during a sketch drag the list is kept from frame to frame (same view): only the entities whose
+  // version moved (UI.sketchEntityVersions) and the dots that moved are worked out again; their old segments are marked
+  // dead (skipped by every query) and the new ones appended, to the label grid too. Made in full again when the dead
+  // outnumber the live, and outside a drag.
+  var geoKeep = null;
+  function entityScreenSegs(e, pl, o, ux, uy, W, H, out) {
+    if (!e || e.t === 'point') return;
+    var pls;
+    try { pls = App.sketchDragging && e.t !== 'text' ? K.entityPolylines(e) : geoPolylines(e); } catch (err) { return; }   // (a drag frame's shape is not kept: it is gone by the next)
+    pls.forEach(function (l) {
+      var s = l.pts.map(o ? function (q) { return [o[0] + q[0] * ux[0] + q[1] * uy[0], o[1] + q[0] * ux[1] + q[1] * uy[1]]; } : function (q) { return UI.worldToScreen(K.to3D(pl, q[0], q[1])); }), n = s.length, cnt = l.closed ? n : n - 1;
+      for (var k = 0; k < cnt; k++) {
+        var a = s[k], c = s[(k + 1) % n];
+        if (!a || !c) continue;
+        var x0 = Math.min(a[0], c[0]), x1 = Math.max(a[0], c[0]), y0 = Math.min(a[1], c[1]), y1 = Math.max(a[1], c[1]);
+        if (x1 < -50 || y1 < -50 || x0 > W + 50 || y0 > H + 50) continue;
+        out.push({ a: a, b: c, box: [x0, y0, x1, y1] });
+      }
+    });
+  }
+  // rfOH: the point dots as drawn (their square: a label stepping clear of the geometry steps off them too; a value
+  // printed over the centerline's end dot); x, y, z: the dot's place in the model
+  function dotScreenSegs(x, y, z, h, W, H, out) {
+    var c = UI.worldToScreen([x, y, z]);
+    if (!c || c[0] < -50 || c[1] < -50 || c[0] > W + 50 || c[1] > H + 50) return false;
+    var q = [[c[0] - h, c[1] - h], [c[0] + h, c[1] - h], [c[0] + h, c[1] + h], [c[0] - h, c[1] + h]];
+    for (var j = 0; j < 4; j++) { var p0 = q[j], p1 = q[(j + 1) % 4]; out.push({ a: p0, b: p1, dot: true, box: [Math.min(p0[0], p1[0]), Math.min(p0[1], p1[1]), Math.max(p0[0], p1[0]), Math.max(p0[1], p1[1])] }); }
+    return true;
+  }
+  function screenDotObjects() {
+    return UI.groups && UI.groups.sketches ? UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketchPoints && o.visible && o.material; }) : [];
+  }
   function screenGeometry(f, pl) {
     var out = [], W = UI.size ? UI.size.w : 1e9, H = UI.size ? UI.size.h : 1e9;
     var tk = K._ && K._.tessKey ? K._.tessKey() : '';
@@ -3141,33 +3176,58 @@
       o = UI.worldToScreen(K.to3D(pl, 0, 0)); ux = UI.worldToScreen(K.to3D(pl, 1, 0)); uy = UI.worldToScreen(K.to3D(pl, 0, 1));
       if (o && ux && uy) { ux = [ux[0] - o[0], ux[1] - o[1]]; uy = [uy[0] - o[0], uy[1] - o[1]]; } else o = null;
     }
-    (f.entities || []).forEach(function (e) {
-      if (!e || e.t === 'point') return;
-      var pls;
-      try { pls = geoPolylines(e); } catch (err) { return; }
-      pls.forEach(function (l) {
-        var s = l.pts.map(o ? function (q) { return [o[0] + q[0] * ux[0] + q[1] * uy[0], o[1] + q[0] * ux[1] + q[1] * uy[1]]; } : function (q) { return UI.worldToScreen(K.to3D(pl, q[0], q[1])); }), n = s.length, cnt = l.closed ? n : n - 1;
-        for (var k = 0; k < cnt; k++) {
-          var a = s[k], c = s[(k + 1) % n];
-          if (!a || !c) continue;
-          var x0 = Math.min(a[0], c[0]), x1 = Math.max(a[0], c[0]), y0 = Math.min(a[1], c[1]), y1 = Math.max(a[1], c[1]);
-          if (x1 < -50 || y1 < -50 || x0 > W + 50 || y0 > H + 50) continue;
-          out.push({ a: a, b: c, box: [x0, y0, x1, y1] });
-        }
-      });
-    });
-    // rfOH: and the point dots as drawn (their square: a label stepping clear of the geometry steps off them too; a
-    // value printed over the centerline's end dot)
-    if (UI.groups && UI.groups.sketches) UI.groups.sketches.children.forEach(function (o) {
-      if (!o.userData || !o.userData.sketchPoints || !o.visible || !o.material) return;
-      var at = o.geometry.getAttribute('position'), h = o.material.size / 2;
-      for (var k = 0; k < at.count; k++) {
-        var c = UI.worldToScreen([at.getX(k), at.getY(k), at.getZ(k)]);
-        if (!c || c[0] < -50 || c[1] < -50 || c[0] > W + 50 || c[1] > H + 50) continue;
-        var q = [[c[0] - h, c[1] - h], [c[0] + h, c[1] - h], [c[0] + h, c[1] + h], [c[0] - h, c[1] + h]];
-        for (var j = 0; j < 4; j++) { var p0 = q[j], p1 = q[(j + 1) % 4]; out.push({ a: p0, b: p1, dot: true, box: [Math.min(p0[0], p1[0]), Math.min(p0[1], p1[1]), Math.max(p0[0], p1[0]), Math.max(p0[1], p1[1])] }); }
+    var E = f.entities || [], vers = UI.sketchEntityVersions ? UI.sketchEntityVersions(f) : null;
+    var key = o ? [o[0], o[1], ux[0], ux[1], uy[0], uy[1], W, H, tk].join(',') : null, gk = geoKeep;
+    if (App.sketchDragging && o && vers && gk && gk.f === f && gk.key === key && gk.n === E.length && UI.sketchGeoKeep !== false) {
+      var segs = gk.out, n0 = segs.length, i, j, k;
+      for (i = 0; i < E.length; i++) {
+        if (gk.vers[i] === vers[i]) continue;
+        for (j = gk.ranges[i][0]; j < gk.ranges[i][1]; j++) segs[j].dead = true;
+        gk.dead += gk.ranges[i][1] - gk.ranges[i][0];
+        var s0 = segs.length;
+        entityScreenSegs(E[i], pl, o, ux, uy, W, H, segs);
+        gk.ranges[i] = [s0, segs.length]; gk.vers[i] = vers[i];
       }
+      // the dots: an object kept by the redraw keeps the items of every dot that did not move
+      var objs = screenDotObjects(), seen = new Set();
+      objs.forEach(function (ob) {
+        var at = ob.geometry.getAttribute('position'), a = at.array, h = ob.material.size / 2, rec = gk.dots.get(ob);
+        seen.add(ob);
+        if (rec && rec.ver === at.version && rec.h === h) return;
+        if (!rec || rec.h !== h || rec.n !== at.count) {
+          if (rec) rec.idx.forEach(function (s) { if (s >= 0) { for (var q = 0; q < 4; q++) segs[s + q].dead = true; gk.dead += 4; } });
+          rec = { ver: -1, h: h, n: at.count, arr: new Float32Array(a.length).fill(NaN), idx: new Int32Array(at.count).fill(-1) };
+          gk.dots.set(ob, rec);
+        }
+        for (k = 0; k < at.count; k++) {
+          if (rec.arr[3 * k] === a[3 * k] && rec.arr[3 * k + 1] === a[3 * k + 1] && rec.arr[3 * k + 2] === a[3 * k + 2]) continue;
+          if (rec.idx[k] >= 0) { for (var q = 0; q < 4; q++) segs[rec.idx[k] + q].dead = true; gk.dead += 4; }
+          var s1 = segs.length;
+          rec.idx[k] = dotScreenSegs(a[3 * k], a[3 * k + 1], a[3 * k + 2], h, W, H, segs) ? s1 : -1;
+          rec.arr[3 * k] = a[3 * k]; rec.arr[3 * k + 1] = a[3 * k + 1]; rec.arr[3 * k + 2] = a[3 * k + 2];
+        }
+        rec.ver = at.version;
+      });
+      gk.dots.forEach(function (rec, ob) {
+        if (seen.has(ob)) return;
+        rec.idx.forEach(function (s) { if (s >= 0) { for (var q = 0; q < 4; q++) segs[s + q].dead = true; gk.dead += 4; } });
+        gk.dots.delete(ob);
+      });
+      if (gk.dead * 2 <= segs.length) {
+        if (geoGrid && geoGrid.segs === segs) for (j = n0; j < segs.length; j++) geoGridAdd(geoGrid, segs[j]);
+        return segs;
+      }
+    }
+    var ranges = new Array(E.length);
+    E.forEach(function (e, i) { var s0 = out.length; entityScreenSegs(e, pl, o, ux, uy, W, H, out); ranges[i] = [s0, out.length]; });
+    var dots = new Map();
+    screenDotObjects().forEach(function (ob) {
+      var at = ob.geometry.getAttribute('position'), a = at.array, h = ob.material.size / 2;
+      var rec = { ver: at.version, h: h, n: at.count, arr: new Float32Array(a), idx: new Int32Array(at.count) };
+      for (var k = 0; k < at.count; k++) { var s1 = out.length; rec.idx[k] = dotScreenSegs(at.getX(k), at.getY(k), at.getZ(k), h, W, H, out) ? s1 : -1; }
+      dots.set(ob, rec);
     });
+    geoKeep = key && vers ? { f: f, key: key, n: E.length, vers: vers.slice(), ranges: ranges, dots: dots, out: out, dead: 0 } : null;
     return out;
   }
   // rfOG: with many curves on screen (a plate full of holes) the boxes tried for labels and icons asked every segment
@@ -3176,18 +3236,19 @@
   var GEO_CELL = 48, GEO_GRID_MIN = 400, geoGrid = null;
   function geoGridOf(segs) {
     if (geoGrid && geoGrid.segs === segs) return geoGrid;
-    var cells = new Map(), wide = [];
-    for (var i = 0; i < segs.length; i++) {
-      var q = segs[i].box, x0 = Math.floor(q[0] / GEO_CELL), x1 = Math.floor(q[2] / GEO_CELL), y0 = Math.floor(q[1] / GEO_CELL), y1 = Math.floor(q[3] / GEO_CELL);
-      if ((x1 - x0 + 1) * (y1 - y0 + 1) > 64) { wide.push(segs[i]); continue; }
-      for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) { var k = x * 100003 + y, c = cells.get(k); if (c) c.push(segs[i]); else cells.set(k, [segs[i]]); }
-    }
-    return (geoGrid = { segs: segs, cells: cells, wide: wide });
+    geoGrid = { segs: segs, cells: new Map(), wide: [] };
+    for (var i = 0; i < segs.length; i++) if (!segs[i].dead) geoGridAdd(geoGrid, segs[i]);
+    return geoGrid;
+  }
+  function geoGridAdd(G, s) {
+    var q = s.box, x0 = Math.floor(q[0] / GEO_CELL), x1 = Math.floor(q[2] / GEO_CELL), y0 = Math.floor(q[1] / GEO_CELL), y1 = Math.floor(q[3] / GEO_CELL);
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > 64) { G.wide.push(s); return; }
+    for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) { var k = x * 100003 + y, c = G.cells.get(k); if (c) c.push(s); else G.cells.set(k, [s]); }
   }
   function onGeometryIn(list, b, dotsOnly) {
     for (var i = 0; i < list.length; i++) {
       var g = list[i], q = g.box;
-      if (dotsOnly && !g.dot) continue;
+      if ((dotsOnly && !g.dot) || g.dead) continue;
       if (q[2] < b[0] || q[0] > b[2] || q[3] < b[1] || q[1] > b[3]) continue;
       if (segHitsBox(g.a, g.b, b)) return true;
     }
@@ -3205,7 +3266,7 @@
     }
     for (var i = 0; i < geoSegs.length; i++) {
       var g = geoSegs[i], q = g.box;
-      if (dotsOnly && !g.dot) continue;
+      if ((dotsOnly && !g.dot) || g.dead) continue;
       if (q[2] < b[0] || q[0] > b[2] || q[3] < b[1] || q[1] > b[3]) continue;
       if (segHitsBox(g.a, g.b, b)) return true;
     }
@@ -3228,14 +3289,23 @@
   // the drawn curves (as ui-core draws them: UI.screenPolylines) and dots (sketchEndPoints' rule) of each shown entity of
   // f in sketch coordinates, as flat arrays (seg: ax ay bx by …, pts: x y …); kept while the sketches are not redrawn
   // (UI.sketchSceneVersion), so a zoom or pan frame only maps them to the screen
+  // rfPA (lane dragfeel): index-aligned (null: nothing drawn); during a drag only the entities whose version moved
+  // (UI.sketchEntityVersions) are worked out again; vers = the versions the list was made from
   function clipEntitiesUV(f) {
     var key = (UI.sketchSceneVersion ? UI.sketchSceneVersion() : NaN) + ':' + f.entities.length;
     if (uvCache.f === f && uvCache.key === key) return uvCache.ents;
-    var S = window.SketchSolver, ents = [];
-    f.entities.forEach(function (e, i) {
-      if (!e) return;
+    var vers = UI.sketchEntityVersions ? UI.sketchEntityVersions(f) : null, n = f.entities.length;
+    var inc = App.sketchDragging && vers && uvCache.f === f && uvCache.vers && uvCache.ents.length === n && UI.sketchGeoKeep !== false;
+    var ents = new Array(n);
+    for (var i = 0; i < n; i++) ents[i] = inc && uvCache.vers[i] === vers[i] ? uvCache.ents[i] : clipEntityUV(f, i);
+    uvCache = { key: key, f: f, ents: ents, vers: vers ? vers.slice() : null };
+    return ents;
+  }
+  function clipEntityUV(f, i) {
+    var S = window.SketchSolver, e = f.entities[i];
+    if (!e) return null;
       var ly = UI.sketchLayerStyle ? UI.sketchLayerStyle(f, e, true) : null;
-      if (ly && ly.hidden) return;
+      if (ly && ly.hidden) return null;
       var seg = [], pts = [];
       if (e.t === 'point') pts.push(e.x, e.y);
       else {
@@ -3258,10 +3328,7 @@
           } catch (err) { /* no dots */ }
         }
       }
-      if (seg.length || pts.length) ents.push({ seg: seg, pts: pts });
-    });
-    uvCache = { key: key, f: f, ents: ents };
-    return ents;
+      return seg.length || pts.length ? { seg: seg, pts: pts, e: e } : null;
   }
   var geoClearOn = true;
   // UI.dimGeometryClear(on?) -> whether dimension lines are cut clear of the sketch geometry (off: as before rfIB, for comparisons)
@@ -3281,15 +3348,62 @@
   // margin: anything further out is clamped into the border cells, as a query is, so nothing is missed) in cells sized
   // to the items' density, so a sketch zoomed far out (everything within a few pixels) still tests few per query
   var GRID_MARGIN = 240, GRID_DENSE = 4;
+  // rfPA (lane dragfeel): a dot keeps its drawn radius (rad; a point's cross 3 px, a dot capped by a small curve smaller,
+  // a hidden one 1 px), so a line clears it by the same 1.5 px whatever its size (it cleared every dot as a full 10 px
+  // bead: 6.5 px gaps by a 3 px dot)
+  function clipDotRadius(e) {
+    if (!e || e.t === 'point') return 3;
+    var sz = UI.sketchDotCap ? UI.sketchDotCap(e) : DOT_FULL * 2;
+    return sz >= 3 ? sz / 2 : 1;
+  }
+  var DOT_FULL = 5;
+  function clipItems(en, m, xy, dot, rad) {
+    if (!en) return;
+    var s = en.seg, p = en.pts, dr = p.length ? clipDotRadius(en.e) : 0;
+    for (var j = 0; j < s.length; j += 4) { xy.push(m[0] + s[j] * m[2] + s[j + 1] * m[4], m[1] + s[j] * m[3] + s[j + 1] * m[5], m[0] + s[j + 2] * m[2] + s[j + 3] * m[4], m[1] + s[j + 2] * m[3] + s[j + 3] * m[5]); dot.push(0); rad.push(0); }
+    for (var k = 0; k < p.length; k += 2) { var x = m[0] + p[k] * m[2] + p[k + 1] * m[4], y = m[1] + p[k] * m[3] + p[k + 1] * m[5]; xy.push(x, y, x, y); dot.push(1); rad.push(dr); }
+  }
+  // where several dots share a place one dot is drawn, the smallest (ui-core pushDots): each takes the smallest radius there
+  function clipDotsShared(g, from) {
+    var at = new Map(), k, key;
+    for (k = 0; k < g.dot.length; k++) if (g.dot[k] === 1 && g.dead[k] !== 1) { key = Math.round(g.xy[4 * k] * 2) + ',' + Math.round(g.xy[4 * k + 1] * 2); var r0 = at.get(key); if (r0 == null || g.rad[k] < r0) at.set(key, g.rad[k]); }
+    for (k = from; k < g.dot.length; k++) if (g.dot[k] === 1) { key = Math.round(g.xy[4 * k] * 2) + ',' + Math.round(g.xy[4 * k + 1] * 2); var r1 = at.get(key); if (r1 != null) g.rad[k] = r1; }
+  }
+  function clipCellsAdd(g, k2) {
+    var xy = g.xy, o = 4 * k2, i0 = g.cx(Math.min(xy[o], xy[o + 2])), i1 = g.cx(Math.max(xy[o], xy[o + 2])), j0 = g.cy(Math.min(xy[o + 1], xy[o + 3])), j1 = g.cy(Math.max(xy[o + 1], xy[o + 3]));
+    for (var jj = j0; jj <= j1; jj++) for (var ii = i0; ii <= i1; ii++) { var c = jj * g.nx + ii; (g.cells[c] || (g.cells[c] = [])).push(k2); }
+  }
+  // rfPA (lane dragfeel): the grid is kept for the next drawDims of a drag in the same view: the items of the entities
+  // whose version moved are marked dead (g.dead[k] = 1, skipped by nearGeometry) and their new ones appended (to the
+  // cells too; an item outside the grid's span is clamped into its border cells, as a query is). Built in full again
+  // when the dead outnumber the live, and outside a drag. The grid's size and `dense` stay those of the build.
+  var clipKeep = null;
   function clipGrid() {
     var st = clipState;
     if (st.grid) return st.grid;
     var m = st.m, W = UI.size ? UI.size.w : 2000, H = UI.size ? UI.size.h : 2000, xy = [], dot = [];
-    clipEntitiesUV(st.f).forEach(function (en) {
-      var s = en.seg, p = en.pts;
-      for (var j = 0; j < s.length; j += 4) { xy.push(m[0] + s[j] * m[2] + s[j + 1] * m[4], m[1] + s[j] * m[3] + s[j + 1] * m[5], m[0] + s[j + 2] * m[2] + s[j + 3] * m[4], m[1] + s[j + 2] * m[3] + s[j + 3] * m[5]); dot.push(0); }
-      for (var k = 0; k < p.length; k += 2) { var x = m[0] + p[k] * m[2] + p[k + 1] * m[4], y = m[1] + p[k] * m[3] + p[k + 1] * m[5]; xy.push(x, y, x, y); dot.push(1); }
-    });
+    var ents = clipEntitiesUV(st.f), vers = uvCache.vers, key = m.join(',') + '|' + W + 'x' + H, ck = clipKeep;
+    if (App.sketchDragging && vers && ck && ck.f === st.f && ck.key === key && ck.vers.length === ents.length && UI.sketchGeoKeep !== false) {
+      var g0 = ck.grid, n0 = g0.dot.length;
+      for (var i = 0; i < ents.length; i++) {
+        if (ck.vers[i] === vers[i]) continue;
+        for (var k = ck.ranges[i][0]; k < ck.ranges[i][1]; k++) g0.dead[k] = 1;
+        ck.dead += ck.ranges[i][1] - ck.ranges[i][0];
+        var a0 = g0.dot.length;
+        clipItems(ents[i], m, g0.xy, g0.dot, g0.rad);
+        ck.ranges[i] = [a0, g0.dot.length];
+        ck.vers[i] = vers[i];
+      }
+      if (ck.dead * 2 <= g0.dot.length) {
+        for (var k3 = n0; k3 < g0.dot.length; k3++) { g0.dead[k3] = 0; clipCellsAdd(g0, k3); }
+        if (g0.dot.length > n0) clipDotsShared(g0, n0);
+        if (g0.stamp.length < g0.dot.length) g0.stamp = new Int32Array(g0.dot.length * 2);   // (zeros: below every query number to come)
+        return (st.grid = g0);
+      }
+      xy = []; dot = [];
+    }
+    var ranges = new Array(ents.length), rad = [];
+    ents.forEach(function (en, i) { var a0 = dot.length; clipItems(en, m, xy, dot, rad); ranges[i] = [a0, dot.length]; });
     var bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
     for (var a = 0; a < xy.length; a += 2) { if (xy[a] < bx0) bx0 = xy[a]; if (xy[a] > bx1) bx1 = xy[a]; if (xy[a + 1] < by0) by0 = xy[a + 1]; if (xy[a + 1] > by1) by1 = xy[a + 1]; }
     bx0 = Math.max(bx0, -GRID_MARGIN); by0 = Math.max(by0, -GRID_MARGIN); bx1 = Math.min(bx1, W + GRID_MARGIN); by1 = Math.min(by1, H + GRID_MARGIN);
@@ -3307,7 +3421,9 @@
     // a sketch so far zoomed out that its curves average under GRID_DENSE px apart: no dimension line can be clear of
     // them (nor read) there, so none is cut (it would cost a few ms a frame for nothing)
     var spacing = Math.sqrt(wB * hB / Math.max(1, dot.length));
-    st.grid = { xy: xy, dot: dot, cells: cells, nx: nx, cx: cx, cy: cy, stamp: new Int32Array(dot.length), q: 0, spacing: spacing, dense: spacing < GRID_DENSE };
+    st.grid = { xy: xy, dot: dot, cells: cells, nx: nx, cx: cx, cy: cy, stamp: new Int32Array(dot.length), q: 0, spacing: spacing, dense: spacing < GRID_DENSE, dead: [], rad: rad };
+    clipDotsShared(st.grid, 0);
+    clipKeep = vers ? { f: st.f, key: key, vers: vers.slice(), ranges: ranges, grid: st.grid, dead: 0 } : null;
     return st.grid;
   }
   // the part [spanLo, spanHi] of p + t·d (t over all reals) within r of the segment a–b: a capsule, convex, so one
@@ -3358,9 +3474,9 @@
       if (!cell) continue;
       for (var c = 0; c < cell.length; c++) {
         var k = cell[c];
-        if (stamp[k] === qn) continue;
+        if (stamp[k] === qn || g.dead[k] === 1) continue;
         stamp[k] = qn;
-        var isDot = g.dot[k] === 1, rr = isDot ? rDot : r, o = 4 * k, Ax = xy[o], Ay = xy[o + 1], Bx = xy[o + 2], By = xy[o + 3];
+        var isDot = g.dot[k] === 1, rr = isDot ? rDot - DOT_FULL + g.rad[k] : r, o = 4 * k, Ax = xy[o], Ay = xy[o + 1], Bx = xy[o + 2], By = xy[o + 3];
         var na = -uy * Ax + ux * Ay - nc, nb = -uy * Bx + ux * By - nc;
         if ((na > rr && nb > rr) || (na < -rr && nb < -rr)) continue;
         var ta = ux * Ax + uy * Ay - tc, tb = ux * Bx + uy * By - tc;
@@ -3461,8 +3577,16 @@
         var geo = pass === 0 ? true : pass === 1 ? 'dots' : false, found = false;
         if (geo === 'dots' ? boxFree(b, own, 'dots') : !geo && boxFree(b, own, false)) break;
         var tr = geo === 'dots' ? tries.concat(tries.map(function (x) { return x + (x < 0 ? -4 : 4); })) : tries;   // rfOH: further off a dot
-        for (var k = 0; k < tr.length; k++) {
-          var t = s0 + tr[k] * step, bb = labelBox(sc, al.u[0] * t, al.u[1] * t);
+        var ts = tr.map(function (x) { return s0 + x * step; });
+        // rfPA (lane dragfeel): and, clear of the sketch, outside the dimension past either arrow (where SolidWorks puts a
+        // value that has no room between its extension lines): zoomed far out a value with no clear place along its
+        // line (7.000 beside the plate's edge, the edge as long as the dimension) stayed on the sketch's lines
+        if (geo === true && !al.radial && isFinite(al.half) && al.half > 0) {
+          var ext = (Math.abs(al.u[0]) * w + Math.abs(al.u[1]) * (b[3] - b[1])) / 2, out0 = al.half + ARROW_L + 4 + ext;
+          [0, 1, 2].forEach(function (m) { ts.push(out0 + m * step, -(out0 + m * step)); });
+        }
+        for (var k = 0; k < ts.length; k++) {
+          var t = ts[k], bb = labelBox(sc, al.u[0] * t, al.u[1] * t);
           if (!onOwnArrows(sc, bb) && boxFree(bb, own, geo)) { best = t; b = bb; found = true; break; }
         }
         if (found) break;

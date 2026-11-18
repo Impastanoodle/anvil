@@ -1136,27 +1136,62 @@
     // target (the point slides along it), and an arc is a target only inside its sweep. Equal distances keep the
     // first entity in sketch order, so a drop on two coincident points always picks the same one.
     function hiddenEnt(e) { return !!(e && UI.entityLayerHidden && UI.entityLayerHidden(f, e)); }
+    // rfPA (lane dragfeel): what each entity offers a drop (its points and side midpoints, its curves) is kept by the
+    // entity's version (UI.sketchEntityVersions) for the drag: a frame works out again only the entities the last solve
+    // moved, and a candidate is projected only when the plane's affine map puts it within reach of the cursor
+    var dtKeep = [];
+    function dtEntity(i, e, P0, e0, st0) {
+      function same(a, b) { return !!(a && b && Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9); }
+      function lineMid(c) { return [(c.a[0] + c.b[0]) / 2, (c.a[1] + c.b[1]) / 2]; }
+      var out = { pts: [], curves: [], free: null };
+      if (i !== e0 && hiddenEnt(e)) return out;   // rfCY: a hidden layer's points and curves are no drop targets
+      if (i === e0) return out;   // (every point of the dragged entity is excluded, and it is no curve target)
+      S.pointRefs(f, i).forEach(function (pr) {
+        if (/\.c$/.test(pr.ref) && CENTERLESS.test(e.t)) return;
+        if (same(S.refPoint(st0, pr.ref), P0)) return;
+        if (/\.mid$/.test(pr.ref)) { if (e.t === 'line') out.pts.push({ ref: String(i), pt: pr.pt, mid: true }); return; }
+        out.pts.push({ ref: pr.ref, pt: pr.pt });
+      });
+      S.curveRefs(f, i).forEach(function (cr) {
+        if (!/\.e\d+$/.test(cr)) return;
+        var c = S.refCurve(f, cr), c0 = S.refCurve(st0, cr);
+        if (c && c.kind === 'line' && !(c0 && same(lineMid(c0), P0))) out.pts.push({ ref: cr, pt: lineMid(c), mid: true });
+      });
+      if (!e || e.t === 'slot') return out;   // a slot's curve ref is its (undrawn) centre line: no target, as in SketchSolver.onCurveRef
+      S.curveRefs(f, i).forEach(function (cr) {
+        var c = S.refCurve(f, cr), c0 = S.refCurve(st0, cr);
+        if (!c || (c0 && onAt(c0, start[i], P0))) return;
+        out.curves.push({ cr: cr, c: c });
+      });
+      // sketch-refine: onto a spline / ellipse (point on curve), unless the point already lay on it
+      if (S.isFree && S.isFree(e) && !(start[i] && P0 && freeOn(start[i], P0))) out.free = S.freeCurve(e) || null;
+      return out;
+    }
+    function onAt(c, e, P) {   // does P lie on curve c (of entity e) within its extent?
+      if (!P) return false;
+      var tol = 1e-9 * Math.max(1, Math.abs(P[0]), Math.abs(P[1]));
+      if (c.kind === 'line') {
+        var dx = c.b[0] - c.a[0], dy = c.b[1] - c.a[1], L = Math.hypot(dx, dy);
+        return L > 0 && Math.abs((P[0] - c.a[0]) * dy - (P[1] - c.a[1]) * dx) / L < tol;
+      }
+      return Math.abs(Math.hypot(P[0] - c.c[0], P[1] - c.c[1]) - c.r) < tol;
+    }
     function dropTarget(q) {
       var e0 = refEntity(ref), P0 = S.refPoint({ entities: start }, ref), best = null, bd = 9, st0 = { entities: start };
-      function same(a, b) { return !!(a && b && Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9); }
-      function excluded(i, pt0) { return i === e0 || same(pt0, P0); }
-      function take(c) { var s = scr(pl, c.pt), d = Math.hypot(s[0] - q[0], s[1] - q[1]); if (d < bd) { bd = d; best = c; } }
-      function lineMid(c) { return [(c.a[0] + c.b[0]) / 2, (c.a[1] + c.b[1]) / 2]; }
-      f.entities.forEach(function (e, i) {
-        if (i !== e0 && hiddenEnt(e)) return;   // rfCY: a hidden layer's points and curves are no drop targets
-        S.pointRefs(f, i).forEach(function (pr) {
-          if (/\.c$/.test(pr.ref) && CENTERLESS.test(e.t)) return;
-          if (excluded(i, S.refPoint(st0, pr.ref))) return;
-          if (/\.mid$/.test(pr.ref)) { if (e.t === 'line') take({ ref: String(i), pt: pr.pt, mid: true }); return; }
-          take({ ref: pr.ref, pt: pr.pt });
-        });
-        if (i === e0) return;
-        S.curveRefs(f, i).forEach(function (cr) {
-          if (!/\.e\d+$/.test(cr)) return;
-          var c = S.refCurve(f, cr), c0 = S.refCurve(st0, cr);
-          if (c && c.kind === 'line' && !(c0 && same(lineMid(c0), P0))) take({ ref: cr, pt: lineMid(c), mid: true });
-        });
+      var vers = UI.sketchEntityVersions && UI.sketchRelKeep !== false ? UI.sketchEntityVersions(f) : null;
+      var cand = f.entities.map(function (e, i) {
+        var k = dtKeep[i];
+        if (vers && k && k.v === vers[i]) return k.c;
+        var c = dtEntity(i, e, P0, e0, st0);
+        dtKeep[i] = { v: vers ? vers[i] : -1, c: c };
+        return c;
       });
+      // the plane's affine map to the screen (a parallel view), to pass over what is far from the cursor unprojected
+      var A0 = scr(pl, [0, 0]), Ax = scr(pl, [1, 0]), Ay = scr(pl, [0, 1]), aff = A0 && Ax && Ay ? [A0[0], A0[1], Ax[0] - A0[0], Ax[1] - A0[1], Ay[0] - A0[0], Ay[1] - A0[1]] : null;
+      if (!(UI.camera && UI.camera.isOrthographicCamera)) aff = null;
+      function far(pt, r) { if (!aff) return false; var x = aff[0] + pt[0] * aff[2] + pt[1] * aff[4], y = aff[1] + pt[0] * aff[3] + pt[1] * aff[5]; return Math.abs(x - q[0]) > r + 1 || Math.abs(y - q[1]) > r + 1; }
+      function take(c) { if (far(c.pt, bd)) return; var s = scr(pl, c.pt), d = Math.hypot(s[0] - q[0], s[1] - q[1]); if (d < bd) { bd = d; best = c; } }
+      cand.forEach(function (c) { for (var k = 0; k < c.pts.length; k++) take(c.pts[k]); });
       var o = scr(pl, [0, 0]);
       if (!(P0 && Math.abs(P0[0]) < 1e-9 && Math.abs(P0[1]) < 1e-9) && Math.hypot(o[0] - q[0], o[1] - q[1]) < bd) best = { ref: 'O', pt: [0, 0] };
       // sketch-refine: Snap to Model while dragging too (as the drawing tools snap, ui-sketch.js inferPoint): a model
@@ -1172,20 +1207,10 @@
       var uv = UI.screenToPlane(q[0], q[1], pl);
       if (!uv) return null;
       var bc = null, bdc = 7;
-      function onAt(c, e, P) {   // does P lie on curve c (of entity e) within its extent?
-        if (!P) return false;
-        var tol = 1e-9 * Math.max(1, Math.abs(P[0]), Math.abs(P[1]));
-        if (c.kind === 'line') {
-          var dx = c.b[0] - c.a[0], dy = c.b[1] - c.a[1], L = Math.hypot(dx, dy);
-          return L > 0 && Math.abs((P[0] - c.a[0]) * dy - (P[1] - c.a[1]) * dx) / L < tol;
-        }
-        return Math.abs(Math.hypot(P[0] - c.c[0], P[1] - c.c[1]) - c.r) < tol;
-      }
-      f.entities.forEach(function (e, i) {
-        if (i === e0 || !e || e.t === 'slot' || hiddenEnt(e)) return;   // a slot's curve ref is its (undrawn) centre line: no target, as in SketchSolver.onCurveRef
-        S.curveRefs(f, i).forEach(function (cr) {
-          var c = S.refCurve(f, cr), c0 = S.refCurve(st0, cr), pt;
-          if (!c || (c0 && onAt(c0, start[i], P0))) return;
+      cand.forEach(function (cd, i) {
+        var e = f.entities[i];
+        cd.curves.forEach(function (it) {
+          var c = it.c, pt;
           if (c.kind === 'line') {
             var dx = c.b[0] - c.a[0], dy = c.b[1] - c.a[1], L2 = dx * dx + dy * dy;
             if (!(L2 > 0)) return;
@@ -1201,12 +1226,13 @@
             }
             pt = [c.c[0] + vx / r * c.r, c.c[1] + vy / r * c.r];
           }
+          if (far(pt, bdc)) return;
           var s = scr(pl, pt), d = Math.hypot(s[0] - q[0], s[1] - q[1]);
-          if (d < bdc) { bdc = d; bc = { ref: cr, pt: pt, curve: true }; }
+          if (d < bdc) { bdc = d; bc = { ref: it.cr, pt: pt, curve: true }; }
         });
         // sketch-refine: onto a spline / ellipse (point on curve), unless the point already lay on it
-        if (S.isFree && S.isFree(e) && !(start[i] && P0 && freeOn(start[i], P0))) {
-          var fc = S.freeCurve(e), cl = fc && S.freeClosest(fc, uv);
+        if (cd.free) {
+          var cl = S.freeClosest(cd.free, uv);
           if (cl && !cl.end) { var sf = scr(pl, cl.p), df = Math.hypot(sf[0] - q[0], sf[1] - q[1]); if (df < bdc) { bdc = df; bc = { ref: String(i), pt: cl.p, curve: true }; } }
         }
       });
