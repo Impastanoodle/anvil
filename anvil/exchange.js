@@ -1160,6 +1160,7 @@ var Exchange = (function () {
   // face stays on its surface. writeBrep writes the body again without the split when a patch at a split vertex falls
   // back to facets anyway (mesh.crossFailed). crossOptions.on = false: as before; .last = { splits }.
   var crossOptions = { on: true, last: null };
+  var PARALLEL_SNAP = { on: true };   // lane solidstep6: snapCylParallel (writeBrepAnalytic)
   function splitCrossings(mesh) {
     var pos = mesh.positions, tri = mesh.triangles, nT = tri.length / 3, ts = mesh.triSurf;
     if (!ts || !crossOptions.on) return mesh;
@@ -1538,7 +1539,72 @@ var Exchange = (function () {
     });
     var snaps = [];
     snapToCylinders();
+    snapCylParallel();   // lane solidstep6 (rfON)
     snapCylCyl();
+    // lane solidstep6 (rfON): a vertex where two cylinders with parallel axes meet (two overlapping holes, a hole that
+    // bites a slot's end or a corner round: the polygons of the two circles cross on a chord of each, inside both true
+    // circles by up to a sagitta) moves, in the file only, onto the line the two cylinders share: the nearer crossing of
+    // the two circles at its own height. The line between the top and the bottom vertex is then a ruling of both walls,
+    // the rim arcs end on their circles, and both walls are written whole (was: both went back to facets, 52 planes for
+    // two overlapping holes in a plate, 4e-5 of the volume). Any plane at the vertex must still hold the moved point
+    // (the faces square to the axis do). Undone with the patches like snapCylCyl's. `Exchange.parallelSnap.on = false`:
+    // as before.
+    // a moved vertex must stay on the same side of every vertex it shares a triangle with, and not land on one: where
+    // the true crossing lies past a neighbouring rim vertex (the polygons cross within a sagitta of it) the short rim
+    // chord would turn round and be read as an arc the long way (17 open edges read back); such a vertex is left where
+    // it is and its patches keep their facets, as before
+    function snapKeepsOrder(v, X, Y, ts) {
+      for (var i = 0; i < ts.length; i++) for (var e = 0; e < 3; e++) {
+        var w = tri[ts[i] * 3 + e];
+        if (w === v) continue;
+        var W = P(w), a = sub(X, W), b = sub(Y, W), la = len(a);
+        if (la <= tol) continue;
+        if (dot(a, b) <= 0.25 * la * la) return false;
+      }
+      return true;
+    }
+    function snapCylParallel() {
+      if (!PARALLEL_SNAP.on) return;
+      var vS = {}, moved = {};
+      snaps.forEach(function (sn) { moved[sn.v] = true; });
+      comps.forEach(function (c) {
+        if (!c.ok || c.surf.t !== 'cyl') return;
+        c.tris.forEach(function (t3) { for (var e3 = 0; e3 < 3; e3++) vS[tri[t3 * 3 + e3]] = true; });
+      });
+      var vTris = {};
+      for (var t2 = 0; t2 < nT; t2++) for (var e2 = 0; e2 < 3; e2++) { var v0 = tri[t2 * 3 + e2]; if (vS[v0]) (vTris[v0] = vTris[v0] || []).push(t2); }
+      Object.keys(vTris).forEach(function (vk) {
+        var v = +vk, ss = [], cs = [], planes = [], ok = true;
+        if (moved[v]) return;
+        vTris[v].forEach(function (t4) {
+          var ci = compOf[t4];
+          if (ci < 0) { if (triRec[t4] >= 0) ok = false; else if (planes.indexOf(triPlane[t4]) < 0) planes.push(triPlane[t4]); return; }
+          if (!comps[ci].ok || comps[ci].surf.t !== 'cyl') { ok = false; return; }
+          if (cs.indexOf(ci) < 0) cs.push(ci);
+          if (ss.indexOf(comps[ci].surf) < 0) ss.push(comps[ci].surf);
+        });
+        if (!ok || ss.length !== 2) return;
+        var SA = ss[0], SB = ss[1], d = SA.d;
+        if (len(cross(d, SB.d)) > 1e-9) return;
+        var X = P(v), a = axial(SA, X), b = axial(SB, X);
+        if (Math.abs(a.rho - SA.r) <= tol && Math.abs(b.rho - SB.r) <= tol) return;
+        var rmin = Math.min(SA.r, SB.r);
+        if (Math.abs(a.rho - SA.r) > 0.05 * rmin || Math.abs(b.rho - SB.r) > 0.05 * rmin) return;
+        var cA = add(SA.o, scale(d, dot(sub(X, SA.o), d))), wB = sub(X, SB.o), cB = add(SB.o, scale(d, dot(wB, d)));
+        var D = sub(cB, cA), dist = len(D);
+        if (dist < 1e-6 * rmin) return;   // coaxial
+        var al = (SA.r * SA.r - SB.r * SB.r + dist * dist) / (2 * dist), h2 = SA.r * SA.r - al * al;
+        if (!(h2 > 1e-8 * rmin * rmin)) return;   // tangent or apart: no line to stand on
+        var Dn = scale(D, 1 / dist), side = cross(d, Dn), h = Math.sqrt(h2), M = add(cA, scale(Dn, al));
+        var Y1 = add(M, scale(side, h)), Y2 = sub(M, scale(side, h)), Y = len(sub(Y1, X)) <= len(sub(Y2, X)) ? Y1 : Y2;
+        if (len(sub(Y, X)) > 0.05 * rmin) return;
+        if (planes.some(function (fi) { var pf = mesh.faces[fi]; return Math.abs(dot(norm(pf.normal), Y) - pf.w) > tol; })) return;
+        if (!snapKeepsOrder(v, X, Y, vTris[v])) return;
+        if (pos === mesh.positions) pos = Float64Array.from(pos);
+        pos[v * 3] = Y[0]; pos[v * 3 + 1] = Y[1]; pos[v * 3 + 2] = Y[2];
+        snaps.push({ v: v, X: X, comps: cs.slice(), all: cs.slice(), cc: true });
+      });
+    }
     snapCylEqual();
     snapToCones();   // lane PO
     // lane stepwrite (rfMN): a vertex where two cylinders of different axes meet (a hole through a bend, a cross hole in a
@@ -1573,6 +1639,10 @@ var Exchange = (function () {
         var Y0 = add(add(SA.o, scale(SA.d, a.z)), scale(a.v, SA.r / a.rho));
         var w0 = sub(Y0, SB.o), wp = sub(w0, scale(SB.d, dot(w0, SB.d))), Lp = sub(SA.d, scale(SB.d, dot(SA.d, SB.d)));
         var qa = dot(Lp, Lp), qb = 2 * dot(wp, Lp), qc = dot(wp, wp) - SB.r * SB.r, disc = qb * qb - 4 * qa * qc;
+        // (lane solidstep6, rfON: no real root where the thinner cylinder's ruling at the point misses the other one: a
+        // cross hole that breaks out of a bar's side, at the bar's outermost ruling. Both walls then keep their facets.
+        // Sliding the other way round, along the wider cylinder's ruling onto the thinner, was tried: OpenCascade reads
+        // those files as valid solids, Anvil's reader zips the bar's band wrong on some; test-reports/2026-11-18-solids-fidelity-6.md)
         if (!(qa > 1e-12) || !(disc >= 0)) return;
         var r1 = (-qb + Math.sqrt(disc)) / (2 * qa), r2 = (-qb - Math.sqrt(disc)) / (2 * qa), lam = Math.abs(r1) < Math.abs(r2) ? r1 : r2;
         if (Math.abs(lam) > 0.05 * SB.r) return;
@@ -2186,11 +2256,11 @@ var Exchange = (function () {
       var failed = false;
       comps.forEach(function (c, ci) {
         if (!c.ok) return;
-        var g = nF + ci, S = c.surf, bad = false;
+        var g = nF + ci, S = c.surf, bad = false, why = 0, whyAt = null;
         loopsOf[g].forEach(function (l) {
           for (var i = 0; i < l.length && !bad; i++) {
             var a = l[i], b = l[(i + 1) % l.length], A = P(a), B = P(b), cl = classify(S, A, B), nb = owner.get(b, a);
-            if (nb != null && nb >= nX0) { if (eget(a, b)) continue; bad = true; break; }   // lane MR: a free-form face's own edge
+            if (nb != null && nb >= nX0) { if (eget(a, b)) continue; bad = true; why = 2193; whyAt = [A, B, nb]; break; }   // lane MR: a free-form face's own edge
             // lane stepreal2: two points of a hole's rim at one height on the bend make a chord of a latitude circle,
             // but the face beside it is the hole's wall, not that circle's plane: the edge is the wall's cut (an
             // ellipse, or the chord, below), not the circle's arc (it sent the bend back to facets)
@@ -2229,16 +2299,16 @@ var Exchange = (function () {
               if (!oS || (oS.t === 'cyl' && onCylS(oS, A) && onCylS(oS, B) && (crossable(S, oS) || !classify(oS, A, B)))) {   // (lane stepwrite: between crossable cylinders a name only one side gives is no name, see above)
                 cl = oS && crossable(S, oS) ? { t: 'p', s: [S, oS] } : PEDGE; c.poly = true; ecls.set(a < b ? a : b, a < b ? b : a, cl); continue; }
             }
-            if (!cl || nb == null) { bad = true; break; }
+            if (!cl || nb == null) { bad = true; why = 2232; whyAt = [A, B, nb]; break; }
             if (nb >= nF) {
               var c2 = classify(comps[nb - nF].surf, A, B);
-              if (!c2 || c2.t !== cl.t || (cl.t === 'c' && c2.c.key !== cl.c.key)) bad = true;
+              if (!c2 || c2.t !== cl.t || (cl.t === 'c' && c2.c.key !== cl.c.key)) { bad = true; why = 2235; }
             } else if (cl.t === 'c') {
               var pf = mesh.faces[nb], pn = norm(pf.normal);
               // (lane stepreal2: 100 tol on the offset. The chord's ends are the plane's own vertices, so with the normals
               // parallel the circle is in the plane; a mesh face's w is one polygon's, 7e-7 off on an imported part, and
               // that one edge sent a hole's wall back to facets)
-              if (Math.abs(Math.abs(dot(pn, cl.c.normal)) - 1) > 1e-9 || Math.abs(dot(pn, cl.c.center) - pf.w) > 100 * tol) bad = true;
+              if (Math.abs(Math.abs(dot(pn, cl.c.normal)) - 1) > 1e-9 || Math.abs(dot(pn, cl.c.center) - pf.w) > 100 * tol) { bad = true; why = 2241; }
             }
             ecls.set(a < b ? a : b, a < b ? b : a, cl);
           }
@@ -2256,15 +2326,15 @@ var Exchange = (function () {
             var c0 = eget(l[i], l[(i + 1) % n]);
             if (!c0 || c0.t !== 'k' || !runK(i + n - 1, i, i + 1)) allK = false;
             if (c0 && c0.t === 'k') {
-              if (!runK(i + n - 1, i, i + 1) && Math.abs(coneOff(S, P(l[i]))) > tol) bad = true;
-              if (!runK(i, i + 1, i + 2) && Math.abs(coneOff(S, P(l[(i + 1) % n]))) > tol) bad = true;
+              if (!runK(i + n - 1, i, i + 1) && Math.abs(coneOff(S, P(l[i]))) > tol) { bad = true; why = 2259; }
+              if (!runK(i, i + 1, i + 2) && Math.abs(coneOff(S, P(l[(i + 1) % n]))) > tol) { bad = true; why = 2260; }
               continue;
             }
             if (!c0 || c0.t !== 'e') continue;
-            if (!run(i + n - 1, i, i + 1) && !onCylS(S, P(l[i]))) bad = true;   // (lane stepreal2: onCylS, an imported curve's end is 2e-6 r off)
-            if (!run(i, i + 1, i + 2) && !onCylS(S, P(l[(i + 1) % n]))) bad = true;
+            if (!run(i + n - 1, i, i + 1) && !onCylS(S, P(l[i]))) { bad = true; why = 2264; }   // (lane stepreal2: onCylS, an imported curve's end is 2e-6 r off)
+            if (!run(i, i + 1, i + 2) && !onCylS(S, P(l[(i + 1) % n]))) { bad = true; why = 2265; }
           }
-          if (allK) bad = true;
+          if (allK) { bad = true; why = 2267; }
         });
         var sh = bad ? null : patchShape(c, loopsOf[g]);
         // lane mitreplane (rfKC): a patch made exact by snapToCylinders is written only in the form Anvil's reader
@@ -2279,7 +2349,7 @@ var Exchange = (function () {
         // handle; the whole Mug went out as 1031 planar facets and read back 0.9 % light)
         // (lane PO: or a cone's plain patch: snapToCones; the reader's surfPatch takes it)
         if (sh && c.snapped && ((sh.kind !== 'plain' && sh.kind !== 'band') || (S.t !== 'cyl' && !(S.t === 'cone' && sh.kind === 'plain')))) sh = null;
-        if (!sh) { c.ok = false; failed = true; } else shape[g] = sh;
+        if (!sh) { c.ok = false; failed = true; if (Exchange.stepLog) Exchange.stepLog({ surf: S, why: why || (bad ? -1 : 'shape'), at: whyAt, snapped: !!c.snapped, loops: loopsOf[g].length }); } else shape[g] = sh;
       });
       // stepout-2: a bend is written whole or not at all. An obliquely cut cylinder (ELLIPSE edges) whose coaxial
       // partner of another radius (the other side of the sheet) keeps its facets goes back to facets too: one exact
@@ -6241,6 +6311,7 @@ var Exchange = (function () {
     encodeSolids: encodeSolids, solidMesh: solidMesh, solidCSG: solidCSG, signedVolume: signedVolume, earcut: earcut,
     b64encode: b64encode, b64decode: b64decode, utf8: utf8, fromUtf8: fromUtf8,
     importOptions: importOptions,
+    parallelSnap: PARALLEL_SNAP,   // lane solidstep6: snapCylParallel (two walls with parallel axes share a ruling) { on }
     crossOptions: crossOptions,   // lane PO: splitCrossings (two bends crossing at a mitre) { on, last: { splits } }
     surfaceGridKind: bsSurfClassify,   // lane stepin2: occt-kernel.js importCylRecord (B-spline faces that are cylinders)
     FORMATS: [
