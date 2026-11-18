@@ -219,15 +219,17 @@
     }
     var inner = seeds(findFeature(model, f.feature), 0);
     if (!inner) return null;
-    var own = familyMaps(f, ctx), edges = [];
+    var own = familyMaps(f, ctx), edges = [], lins = [], copyOf = [];
     if (!own.length) throw new Error((f.type === 'mirror' ? 'Mirror' : 'Pattern') + ' needs at least 2 instances.');
     own.forEach(function (m) {
       inner.maps.forEach(function (im) {
+        var M = function (q) { return m(im(q)); }, o = M([0, 0, 0]), copy = lins.length;
+        lins.push([sub(M([1, 0, 0]), o), sub(M([0, 1, 0]), o), sub(M([0, 0, 1]), o)]);   // the copy's linear part, by columns
         (inner.src.edges || []).forEach(function (e) {
           var spec = {};
           for (var key in e) spec[key] = e[key];
-          if (e.at) spec.at = m(im(e.at));
-          edges.push(spec);
+          if (e.at) spec.at = M(e.at);
+          edges.push(spec); copyOf.push(copy);
         });
       });
     });
@@ -235,7 +237,47 @@
     for (var key in inner.src) fe[key] = inner.src[key];
     fe.id = f.id; fe.edges = edges; fe.bodies = f.bodies || inner.src.bodies;
     fe._family = inner.src;
+    fe._copyOf = copyOf; fe._lins = lins;   // rfPB: which copy each pick is on, each copy's linear part
     return fe;
+  }
+  // rfPB: edgeFamilyParts(fe, ctx) -> the edge features to run for an edgeFamily, on ctx.body. A Chamfer with two
+  // distances or by angle (Kernel.chamferSpec) puts d on the face Kernel.chamferFace names at each seed edge (+Y, +X,
+  // +Z first): run again at a mirrored or rotated copy, that rule can name the other face, and the copy came out with
+  // d and d2 swapped (same volume, not the mirror / rotated image). Each copied pick is checked: the face the rule
+  // names at the copy against the image of the face it names at the original (the copy's face normals taken back
+  // through the copy's linear part, an orthogonal matrix: its transpose). Picks that disagree go into a second
+  // feature with flip toggled; a pick on the chain of an earlier pick of the same copy follows that pick (the kernel
+  // assigns it from there). Anything else (a fillet, an equal chamfer, a translation): [fe], as before.
+  function edgeFamilyParts(fe, ctx) {
+    var size = +fe.d, spec = fe.type === 'chamfer' && K.chamferSpec && K.chamferFace ? K.chamferSpec(fe, size) : null;
+    if (!spec || !ctx.body || !fe._lins) return [fe];
+    var mesh = _.meshFromBody(ctx.body), tol = _.pickTol(ctx.units, size);
+    var edges = _.bodyEdges(mesh).filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex !== null; });
+    var planar = function (fc) { return !(fc.polys || []).some(function (p) { return p.surf; }); };
+    var keyOf = function (e) { return e.ka + '|' + e.kb; };
+    var toggle = [], chains = [];   // per pick: toggle the flip?; the edges its chain takes
+    fe.edges.forEach(function (s, i) {
+      var c = fe._copyOf[i], L = fe._lins[c], hit = s.at ? _.resolveEdges([{ at: s.at, chain: false }], edges, tol)[0] : null;
+      chains[i] = {};
+      if (s.at) _.resolveEdges([{ at: s.at, chain: s.chain }], edges, tol).forEach(function (e) { chains[i][keyOf(e)] = true; });
+      toggle[i] = false;
+      if (!hit) return;
+      for (var j = 0; j < i; j++) if (fe._copyOf[j] === c && chains[j][keyOf(hit)]) { toggle[i] = toggle[j]; return; }
+      var back = function (n) { return [dot(L[0], n), dot(L[1], n), dot(L[2], n)]; };
+      var p0 = planar(mesh.faces[hit.faces[0]]), p1 = planar(mesh.faces[hit.faces[1]]);
+      toggle[i] = K.chamferFace(hit.normals[0], hit.normals[1], p0, p1, false) !== K.chamferFace(back(hit.normals[0]), back(hit.normals[1]), p0, p1, false);
+    });
+    if (!toggle.some(function (t) { return t; })) return [fe];
+    var parts = [false, true].map(function (t) {
+      var g = {};
+      for (var key in fe) g[key] = fe[key];
+      g.edges = fe.edges.filter(function (s, i) { return toggle[i] === t; });
+      g.flip = t ? !fe.flip : !!fe.flip;
+      if (!g.flip) delete g.flip;
+      return g;
+    }).filter(function (g) { return g.edges.length; });
+    if (toggle[0]) parts.reverse();
+    return parts;
   }
   function edgeFamilyMiss(f, fe) {
     var what = fe.type === 'chamfer' ? 'chamfer' : 'fillet', src = fe._family;
@@ -1097,15 +1139,22 @@
             // edges (SolidWorks), not its removed / added volume moved (which added a sliver outside the part)
             var efam = edgeFamily(f, model, ctx);
             if (efam) {
-              var efk = pickBody(efam);
-              var efr;
-              try { efr = buildEdgeFeature(efam, ctx); }
-              catch (ee) { if (/^No edges found/.test(ee.message || '')) throw new Error(edgeFamilyMiss(f, efam)); throw ee; }
-              var efb = ctx.body;
-              if (efr.cut) efb = efb.subtract(efr.cut);
-              if (efr.add) efb = efb.union(efr.add);
-              putBody(efk, efb);
-              ctx.tools[f.id] = efr.cut || efr.add;
+              // rfPB: one feature, or two when some copies of a two-distance / angle chamfer need flip toggled
+              var efparts = null, eftool = null;
+              pickBody(efam);
+              efparts = edgeFamilyParts(efam, ctx);
+              efparts.forEach(function (part) {
+                var efk = pickBody(part), efr;
+                try { efr = buildEdgeFeature(part, ctx); }
+                catch (ee) { if (/^No edges found/.test(ee.message || '')) throw new Error(edgeFamilyMiss(f, efam)); throw ee; }
+                var efb = ctx.body;
+                if (efr.cut) efb = efb.subtract(efr.cut);
+                if (efr.add) efb = efb.union(efr.add);
+                putBody(efk, efb);
+                var t = efr.cut || efr.add;
+                eftool = eftool && t ? eftool.union(t) : eftool || t;
+              });
+              ctx.tools[f.id] = eftool;
               break;
             }
             // lane sweptflange-2: a Swept Flange that starts the part on a straight path is an open-profile Base Flange

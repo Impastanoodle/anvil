@@ -512,7 +512,8 @@ var OcctKernel = (function () {
     // lane FZ2: a Mirror / LPattern / CirPattern of a fillet or chamfer (rfGA G10): OpenCascade rounds edges in place
     // (edgeOp, no tool body), so the copy is the same edge feature on the edges at the moved pick points, one per
     // instance, as SolidWorks does. The point maps follow patternTool's own transforms below.
-    function edgeFeatureCopies(f, sf) {
+    // rfPB: the point maps of a pattern / mirror's own copies (familyMaps in kernel-rebuild.js)
+    function familyPointMaps(f) {
       var maps = [];
       if (f.type === 'mirror') {
         var mp = K.makePlane(f.plane || 'Right', f.offset || 0);
@@ -533,15 +534,38 @@ var OcctKernel = (function () {
           maps.push(function (p) { var v = V.sub(p, o), k = V.dot(ax, v); return V.add(o, V.add(V.add(V.scale(v, cs), V.scale(V.cross(ax, v), sn)), V.scale(ax, k * (1 - cs)))); });
         })(step * c * Math.PI / 180);
       }
+      return maps;
+    }
+    // rfPB: edgeSeeds(id) -> { src: the fillet / chamfer, maps: every instance it has on the part, identity first } when
+    // the feature is one, or a feature-mode pattern / mirror of one (nested: a Mirror of a Mirror of a chamfer said
+    // "Mirror source feature has no geometry" here; Anvil's engine built it), else null
+    function edgeSeeds(id, depth) {
+      var g = id != null ? K.findFeature(m, id) : null;
+      if (!g || depth > 8) return null;
+      if (g.type === 'fillet' || g.type === 'chamfer') return { src: g, maps: [function (p) { return p; }] };
+      if (!(g.type === 'lpattern' || g.type === 'cpattern' || (g.type === 'mirror' && !g.body)) || familyTool(g.feature)) return null;
+      var inner = edgeSeeds(g.feature, depth + 1);
+      if (!inner) return null;
+      var all = inner.maps.slice();
+      familyPointMaps(g).forEach(function (mp) { inner.maps.forEach(function (im) { all.push(function (p) { return mp(im(p)); }); }); });
+      return { src: inner.src, maps: all };
+    }
+    function edgeFeatureCopies(f, seeds) {
+      var maps = [], sf = seeds.src;
+      familyPointMaps(f).forEach(function (mp) { seeds.maps.forEach(function (im) { maps.push(function (p) { return mp(im(p)); }); }); });
       maps.forEach(function (mapP) {
-        var g = JSON.parse(JSON.stringify(sf));
+        var g = JSON.parse(JSON.stringify(sf)), o = mapP([0, 0, 0]);
         g.edges = (sf.edges || []).map(function (e) { var e2 = JSON.parse(JSON.stringify(e)); e2.at = mapP(e.at); return e2; });
+        // rfPB: the copy's linear part (columns): edgeMaker seeds a two-distance / angle chamfer's d face from the
+        // original's normals, so the copy is the mirror / rotated image (the +Y, +X, +Z rule run at the copy swapped d, d2)
+        g._lin = [V.sub(mapP([1, 0, 0]), o), V.sub(mapP([0, 1, 0]), o), V.sub(mapP([0, 0, 1]), o)];
         edgeOp(g);
       });
     }
     function patternTool(f) {
       var src = familyTool(f.feature), copies = [], sf = !src && f.feature != null ? K.findFeature(m, f.feature) : null;
-      if (sf && (sf.type === 'fillet' || sf.type === 'chamfer') && !(f.type === 'mirror' && f.body)) { edgeFeatureCopies(f, sf); return null; }
+      var seeds = sf && !(f.type === 'mirror' && f.body) ? edgeSeeds(f.feature, 0) : null;
+      if (seeds) { edgeFeatureCopies(f, seeds); return null; }
       if (f.type !== 'mirror' || !f.body) { if (!src) throw new Error((f.type === 'mirror' ? 'Mirror' : 'Pattern') + ' source feature has no geometry.'); }
       if (f.type === 'lpattern') {
         var d1 = K.AXES[f.d1 || 'x'].map(function (x) { return x * (f.rev1 ? -1 : 1); }), n1 = Math.max(1, f.n1 | 0), n2 = f.d2 ? Math.max(1, f.n2 | 0) : 1;
@@ -859,7 +883,10 @@ var OcctKernel = (function () {
       function seed(r) {
         var a = outward(r.faces[0], r.mid), b = outward(r.faces[1], r.mid);
         r.n = [a.n || [0, 0, 0], b.n || [0, 0, 0]];
-        r.side = K.chamferFace(r.n[0], r.n[1], a.planar, b.planar, spec.flip);
+        // rfPB: a Mirror / pattern copy (edgeFeatureCopies' f._lin) takes the rule at the original edge: the normals
+        // taken back through the copy's orthogonal linear part (its transpose)
+        var L = f._lin, back = function (n) { return L ? [V.dot(L[0], n), V.dot(L[1], n), V.dot(L[2], n)] : n; };
+        r.side = K.chamferFace(back(r.n[0]), back(r.n[1]), a.planar, b.planar, spec.flip);
       }
       function spread(r0) {
         var queue = [r0];

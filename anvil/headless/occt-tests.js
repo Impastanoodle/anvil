@@ -6,7 +6,9 @@
 //
 //   node anvil/headless/occt-tests.js [--native [dir]] [--json out] [--only text] [--quiet]
 //
-// --only: rows whose name contains the text are printed (every row still runs: the page is one script).
+// --only: a comma list naming group files of tests/occt/ (the page's GROUPS: rfPB, rfKD,cutbend; the exact file name
+// without .js, else part of one) runs those files only, as the page's ?only= does; any other text runs every row and
+// prints the rows whose name contains it.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -65,6 +67,26 @@ function makeWorkerClass(oc, loadMs) {
   };
 }
 
+// the page's GROUPS list (tests/occt/*.js, relative to tests/)
+function groupList(html) {
+  const m = /\n  var GROUPS = \[\n([\s\S]*?)\n  \];/.exec(html);
+  return m ? (m[1].match(/'[^']+'/g) || []).map((s) => s.slice(1, -1)) : [];
+}
+// the files an --only list names, as the page's occtGroupsFor picks them
+function selectGroups(files, only) {
+  const want = String(only).split(',').map((x) => x.trim()).filter(Boolean), base = (f) => path.basename(f, '.js');
+  return files.filter((f) => want.some((w) => base(f) === w || (!files.some((g) => base(g) === w) && base(f).indexOf(w) >= 0)));
+}
+// the page reads its group files with a synchronous XMLHttpRequest: here it reads them from disk (relative to tests/)
+class FileRequest {
+  open(method, url) { this.url = url; }
+  overrideMimeType() { }
+  send() {
+    const file = path.join(ANVIL_DIR, 'tests', String(this.url).replace(/[?#].*$/, ''));
+    try { this.responseText = fs.readFileSync(file, 'utf8'); this.status = 200; } catch (e) { this.responseText = ''; this.status = 404; }
+  }
+}
+
 async function main() {
   const opts = parse(process.argv.slice(2));
   const g = load({ occt: true });
@@ -86,10 +108,14 @@ async function main() {
   const done = new Promise((res) => { finished = res; });
   const window = {};
   Object.defineProperty(window, 'occtTestsDone', { set(v) { if (v) finished(); }, get() { return false; } });
+  // --only naming group files of tests/occt/ (the page's GROUPS; exact name, else part of it) runs those files only;
+  // any other text runs the whole page and prints the rows whose name contains it
+  const groups = groupList(html), byGroup = opts.only ? selectGroups(groups, opts.only) : [];
+  if (byGroup.length) window.occtOnly = opts.only;
   const Worker = makeWorkerClass(oc, loadMs);
   const t0 = performance.now();
-  const run = vm.runInThisContext('(function (document, window, Worker) {' + inline.join('\n') + '\n})', { filename: PAGE });
-  run(document, window, Worker);
+  const run = vm.runInThisContext('(function (document, window, Worker, XMLHttpRequest) {' + inline.join('\n') + '\n})', { filename: PAGE });
+  run(document, window, Worker, FileRequest);
   await done;
   const ms = performance.now() - t0;
 
@@ -97,11 +123,12 @@ async function main() {
   const counts = { pass: 0, fail: 0, todo: 0 };
   rows.forEach((r) => { counts[r.status === 'PASS' ? 'pass' : r.status === 'FAIL' ? 'fail' : 'todo']++; });
   if (!opts.quiet) rows.forEach((r) => {
-    if (opts.only && r.name.indexOf(opts.only) < 0) return;
+    if (opts.only && !byGroup.length && r.name.indexOf(opts.only) < 0) return;
     process.stdout.write(r.status + '  ' + r.name + (r.status === 'PASS' ? '' : '\n      ' + r.detail.replace(/\n/g, '\n      ')) + '\n');
   });
   const engine = opts.native ? 'native OpenCascade 7.6.3' : 'opencascade.js (WebAssembly)';
-  process.stdout.write(els.summary.textContent + '\n' + rows.length + ' rows: ' + counts.pass + ' pass, ' + counts.fail + ' fail, ' + counts.todo + ' todo · ' + engine + ' · ' + (ms / 1000).toFixed(1) + ' s\n');
+  process.stdout.write(els.summary.textContent + '\n' + rows.length + ' rows: ' + counts.pass + ' pass, ' + counts.fail + ' fail, ' + counts.todo + ' todo · ' + engine + ' · ' + (ms / 1000).toFixed(1) + ' s' +
+    (byGroup.length ? ' · ' + byGroup.length + ' of ' + groups.length + ' group files (' + byGroup.map((f) => path.basename(f, '.js')).join(', ') + ')' : '') + '\n');
   if (opts.json) fs.writeFileSync(path.resolve(opts.json), JSON.stringify({ engine, loadMs, ms, counts, summary: els.summary.textContent, rows }, null, 1) + '\n');
   return counts.fail ? 1 : 0;
 }

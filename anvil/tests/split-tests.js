@@ -1,5 +1,6 @@
-// split-tests.js — checks the test group files of tests/ui-smoke.html (tests/smoke/*.js) and tests/kernel-tests.html
-// (tests/kernel/*.js) against each page's GROUPS list, and holds the one-off tool that made the split (2026-10-13).
+// split-tests.js — checks the test group files of tests/ui-smoke.html (tests/smoke/*.js), tests/kernel-tests.html
+// (tests/kernel/*.js) and tests/occt-tests.html (tests/occt/*.js) against each page's GROUPS list, and holds the one-off
+// tool that made the first two splits (2026-10-13; the OpenCascade page was split 2026-11-17, lane chamferpat).
 //   node anvil/tests/split-tests.js --check     (the default) every listed file exists and parses as a script, every
 //                                               .js file in the folder is listed, the page's helpers and runner use no
 //                                               name that only a group file declares; exit 1 on a problem
@@ -7,7 +8,9 @@
 // Each page reads its group files in GROUPS order, joins them and runs them with one direct eval inside the page script,
 // so the files share one scope exactly as when they were written inline: a group may call a top-level helper that an
 // earlier (or later) group file declares. Two files declaring the same top-level name is legal JS (the later one wins
-// everywhere) but is listed as a note.
+// everywhere) but is listed as a note. The OpenCascade page is different: each of its files runs as an async function
+// of its own (rows await the worker), so a file may use only the page's helpers and its own names: a name another file
+// declares at its top level is a problem here (it would be a ReferenceError there).
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -95,15 +98,46 @@ function namesOf(toks, d0) {
   }
   return { decl, used };
 }
-// a group file must parse as a strict script on its own (no top-level return: it runs inside an eval)
-function parseError(code) {
-  try { new vm.Script('\'use strict\';\n' + code); return null; } catch (e) { return e.message; }
+// a group file must parse as a strict script on its own (no top-level return: it runs inside an eval); an OpenCascade
+// group file as the body of a strict async function (it may await)
+function parseError(code, isolated) {
+  try { new vm.Script(isolated ? '\'use strict\';\n(async function () {\n' + code + '\n})' : '\'use strict\';\n' + code); return null; } catch (e) { return e.message; }
+}
+// every name a piece of code declares at any depth (var / let / const, function names and parameters, catch): the
+// names an isolated group file has of its own
+function declaredAnywhere(toks) {
+  const out = new Set();
+  for (let k = 0; k < toks.length; k++) {
+    const t = toks[k], p = toks[k - 1];
+    if (t.t !== 'id' || (p && p.t === 'punct' && p.v === '.')) continue;
+    if (t.v === 'var' || t.v === 'let' || t.v === 'const') {
+      let expectName = true;
+      for (let m = k + 1; m < toks.length; m++) {
+        const q = toks[m];
+        if (q.depth < t.depth || (q.depth === t.depth && q.t === 'punct' && q.v === ';')) break;   // (a for's `)` is one level up)
+        if (expectName && q.t === 'id') { out.add(q.v); expectName = false; }
+        else if (q.depth === t.depth && q.t === 'punct' && q.v === ',') expectName = true;
+      }
+    } else if (t.v === 'function' || t.v === 'catch') {
+      let m = k + 1;
+      if (toks[m] && toks[m].t === 'id') { out.add(toks[m].v); m++; }
+      if (!toks[m] || toks[m].v !== '(') continue;
+      const d = toks[m].depth;
+      for (m++; m < toks.length && !(toks[m].depth === d && toks[m].v === ')'); m++) {
+        const q = toks[m], b = toks[m - 1];
+        if (q.t === 'id' && q.depth === d + 1 && b.t === 'punct' && (b.v === '(' || b.v === ',')) out.add(q.v);
+      }
+    }
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------ pages
 const PAGES = [
   { page: 'ui-smoke.html', dir: 'smoke', what: 'steps', firstGroup: /^  \/\/ ---- steps\r?\n?$/, runner: /^  \/\/ ---- runner\r?\n?$/ },
-  { page: 'kernel-tests.html', dir: 'kernel', what: 'tests', firstGroup: /^  \/\/ -{60,} CSG primitives\r?\n?$/, runner: /^  \/\/ -{60,} summary\r?\n?$/ }
+  { page: 'kernel-tests.html', dir: 'kernel', what: 'tests', firstGroup: /^  \/\/ -{60,} CSG primitives\r?\n?$/, runner: /^  \/\/ -{60,} summary\r?\n?$/ },
+  // each file its own async function (isolated); split by a one-off script, so --split leaves it alone
+  { page: 'occt-tests.html', dir: 'occt', what: 'rows', isolated: true, runner: /^  \/\/ ---- summary\r?\n?$/ }
 ];
 function splitLines(text) { return text.match(/[^\n]*\n|[^\n]+$/g) || []; }
 const START = /^  \/\/ -{3,}(?!-)\s*(?!end\b)(\S.*?)\r?\n?$/;
@@ -231,7 +265,7 @@ function check(pages) {
     const declaredBy = new Map();
     per.forEach((p, i) => p.decl.forEach((nm) => { if (!declaredBy.has(nm)) declaredBy.set(nm, []); declaredBy.get(nm).push(i); }));
     declaredBy.forEach((js, nm) => {
-      if (js.length > 1) console.log('  note: ' + nm + ' is declared at top level in ' + js.map((j) => r.segs[j].file).join(', ') + ' (the last one wins)');
+      if (js.length > 1 && !r.cfg.isolated) console.log('  note: ' + nm + ' is declared at top level in ' + js.map((j) => r.segs[j].file).join(', ') + ' (the last one wins)');
       if (H.decl.has(nm)) console.log('  note: ' + nm + ' in ' + js.map((j) => r.segs[j].file).join(', ') + ' shadows the page helper of that name');
     });
     // group declarations live in the eval's scope: the page's helpers and runner cannot see them
@@ -239,7 +273,15 @@ function check(pages) {
       if (X.decl.has(nm) || H.decl.has(nm) || !declaredBy.has(nm)) return;
       problems++; console.log('  ' + r.cfg.page + ' ' + part + ' use ' + nm + ', which only ' + declaredBy.get(nm).map((j) => r.segs[j].file).join(', ') + ' declares');
     }));
-    r.segs.forEach((s) => { const err = parseError(s.code); if (err) { problems++; console.log('  ' + s.file + ' does not parse: ' + err); } });
+    r.segs.forEach((s) => { const err = parseError(s.code, r.cfg.isolated); if (err) { problems++; console.log('  ' + s.file + ' does not parse: ' + err); } });
+    // an isolated file sees the page's helpers and its own names only
+    if (r.cfg.isolated) r.segs.forEach((s, i) => {
+      const own = declaredAnywhere(scan(s.code).toks);
+      per[i].used.forEach((nm) => {
+        if (own.has(nm) || H.decl.has(nm) || !declaredBy.has(nm)) return;
+        problems++; console.log('  ' + s.file + ' uses ' + nm + ', which only ' + declaredBy.get(nm).map((j) => r.segs[j].file).join(', ') + ' declares: each file of ' + r.cfg.page + ' has its own scope; move it to the page\'s helpers');
+      });
+    });
   });
   return problems;
 }
@@ -270,7 +312,7 @@ function readSplit(cfg) {
 function main() {
   const args = process.argv.slice(2);
   if (args.includes('--split')) {
-    const results = PAGES.map(splitPage);
+    const results = PAGES.filter((c) => !c.isolated).map(splitPage);
     results.forEach((r) => { r.helpers = r.lines.slice(r.scriptStart + 1, r.first).join(''); r.runnerCode = r.lines.slice(r.runner).join(''); });
     results.forEach((r) => console.log(r.cfg.page + ': ' + r.segs.length + ' group files'));
     const problems = check(results);
