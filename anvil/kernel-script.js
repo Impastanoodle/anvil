@@ -511,7 +511,19 @@
   DXF.prototype.line = function (layer, a, b) { this.ents.push({ k: 'LINE', layer: layer, a: a, b: b }); this._grow(a[0], a[1]); this._grow(b[0], b[1]); };
   DXF.prototype.circle = function (layer, c, r) { this.ents.push({ k: 'CIRCLE', layer: layer, c: c, r: r }); this._grow(c[0], c[1], r); };
   // arc(layer, centre, r, start°, end°): counterclockwise from start to end
-  DXF.prototype.arc = function (layer, c, r, a0, a1) { this.ents.push({ k: 'ARC', layer: layer, c: c, r: r, a0: a0, a1: a1 }); this._grow(c[0], c[1], r); };
+  // lane exportaudit (rfOM): an arc grows the extents by its two ends and the axis points it passes (0°, 90°, 180°,
+  // 270°), not by its whole circle; a bulged polyline segment the same way. $EXTMIN / $EXTMAX of a flat with R.365
+  // fillets came out .25 past the blank (the fillet's full circle about the chord's middle)
+  DXF.prototype._growArc = function (c, r, s, sw) {   // start angle s, signed sweep sw (radians)
+    var e = s + sw, lo = Math.min(s, e), hi = Math.max(s, e);
+    this._grow(c[0] + r * Math.cos(s), c[1] + r * Math.sin(s)); this._grow(c[0] + r * Math.cos(e), c[1] + r * Math.sin(e));
+    for (var k = Math.ceil(lo / (Math.PI / 2) - 1e-12); k * Math.PI / 2 <= hi + 1e-12; k++) this._grow(c[0] + r * Math.cos(k * Math.PI / 2), c[1] + r * Math.sin(k * Math.PI / 2));
+  };
+  DXF.prototype.arc = function (layer, c, r, a0, a1) {
+    this.ents.push({ k: 'ARC', layer: layer, c: c, r: r, a0: a0, a1: a1 });
+    var sw = ((a1 - a0) % 360 + 360) % 360; if (sw < 1e-12) sw = 360;
+    this._growArc(c, r, a0 * Math.PI / 180, sw * Math.PI / 180);
+  };
   // text(layer, p, height, text, opts?): opts.rot (degrees, counterclockwise) and opts.center (p is then the middle of
   // the baseline: horizontal justification 1, alignment point 11/21)
   DXF.prototype.text = function (layer, p, height, text, opts) {
@@ -547,9 +559,13 @@
     pts.forEach(function (q, i) {
       self._grow(q[0], q[1]);
       var b = bulges && bulges[i];
-      if (b && (closed || i + 1 < pts.length)) {   // a bulged segment can reach out to the arc's radius
-        var q2 = pts[(i + 1) % pts.length], c = Math.hypot(q2[0] - q[0], q2[1] - q[1]) / 2, r = c * (1 + b * b) / (2 * Math.abs(b));
-        self._grow((q[0] + q2[0]) / 2, (q[1] + q2[1]) / 2, r);
+      if (b && (closed || i + 1 < pts.length)) {   // a bulged segment: the arc's own extremes (rfOM)
+        var q2 = pts[(i + 1) % pts.length], dx = q2[0] - q[0], dy = q2[1] - q[1], ch = Math.hypot(dx, dy);
+        if (!(ch > 0)) return;
+        var sw = 4 * Math.atan(b), r = ch * (1 + b * b) / (4 * Math.abs(b));
+        // centre: the chord's middle, offset along its left normal by d = (ch / 2) · (1 − b²) / (2b)
+        var d = ch * (1 - b * b) / (4 * b), cx = (q[0] + q2[0]) / 2 - dy / ch * d, cy = (q[1] + q2[1]) / 2 + dx / ch * d;
+        self._growArc([cx, cy], r, Math.atan2(q[1] - cy, q[0] - cx), sw);
       }
     });
   };

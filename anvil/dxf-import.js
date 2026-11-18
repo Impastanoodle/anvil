@@ -649,6 +649,11 @@ var DxfImport = (function () {
         if (closed && dist(Fw[0], Fw[Fw.length - 1]) < 1e-9 * Math.max(1, bezSize([Fw]))) Fw.pop();
         var e = { t: 'spline', pts: Fw };
         if (closed) e.closed = true;
+        // lane exportaudit (rfOM): a zero start / end tangent (12 / 13 = 0, 0) means "not set", as AutoCAD reads it;
+        // LibreDWG writes one for every fit spline of a DWG (DWG has no unset tangent), and it was taken as the
+        // direction atan2(0, 0) = 0°: a five-point fit spline came back .22 off its points' curve
+        if (st && !(Math.abs(st[0]) + Math.abs(st[1]) > 0)) st = null;
+        if (en && !(Math.abs(en[0]) + Math.abs(en[1]) > 0)) en = null;
         if (!closed && (st || en)) {
           e.tans = Fw.map(function () { return null; });
           if (st) { var sv = apv(M, st[0], st[1]); e.tans[0] = [Math.atan2(sv[1], sv[0]) * R2D, 1]; }
@@ -1193,6 +1198,13 @@ var DxfImport = (function () {
       var L3 = live(), ents3 = L3.map(function (r) { return r.e; }), all = [], grid = new PointGrid(tol);
       ents3.forEach(function (e, i) { ends(e).forEach(function (en) { grid.add(en.p, all.length); all.push({ i: i, k: en.k, p: en.p, rigid: !!en.rigid }); }); });
       var used = all.map(function () { return false; });
+      // lane exportaudit (rfOM): an end already joined to another entity's end (within eps) is not a free end: it is
+      // snapped to a gap only where it is the seed's own point. A closed outline with an edge shorter than the gap
+      // (a .0007 step beside a relief notch) had the next edge's start pulled onto the step's other end: the step
+      // left a branch and an overlap, and the blank came in with no closed loop.
+      var joined = all.map(function (x, m) {
+        return grid.near(x.p, Math.max(eps, 1e-12)).some(function (g) { var y = all[grid.pts[g].id]; return grid.pts[g].id !== m && y.i !== x.i && dist(x.p, y.p) <= eps; });
+      });
       all.forEach(function (seed, n) {
         if (used[n]) return;
         // the seed, then the nearest end of each other entity within tol of it
@@ -1200,11 +1212,12 @@ var DxfImport = (function () {
         grid.near(seed.p, tol).forEach(function (g) {
           var m = grid.pts[g].id, x = all[m], d = dist(x.p, seed.p);
           if (used[m] || m === n || x.i === seed.i) return;
+          if (joined[m] && d > eps) return;
           if (byEnt[x.i] == null || d < byEnt[x.i].d) byEnt[x.i] = { m: m, d: d };
         });
         Object.keys(byEnt).forEach(function (k) { members.push(byEnt[k].m); });
-        members.forEach(function (m) { used[m] = true; });
         if (members.length < 2) return;
+        members.forEach(function (m) { used[m] = true; });
         var pts = members.map(function (m) { return all[m]; });
         var spread = 0;
         pts.forEach(function (x) { pts.forEach(function (y) { spread = Math.max(spread, dist(x.p, y.p)); }); });
@@ -1371,13 +1384,32 @@ var DxfImport = (function () {
     var inBlk = ents.filter(function (e) { return e.blk != null; }), plain = ents.filter(function (e) { return e.blk == null; });
     // (lane NA: corners here too: a corner open by less than Merge points closer than was closed at the midpoint of its
     // two ends, tilting both edges; a 3 × 2 open by 1e-4 came in 5e-5 out of square)
-    var rep = plain.length ? repair(plain, { tol: tol || 1e-9, closeGaps: tol > 0, merge: fix, removeTiny: fix, join: false, split: false, corners: true }) : { entities: [], report: null };
+    // lane exportaudit (rfOM): duplicates and overlaps are merged within a layer only, then gaps close across layers.
+    // Merged over every layer at once, a BOUNDARY rectangle round a flat (Flat to DXF's Boundary box) took the OUTLINE
+    // edges it lies on: the outline lost its straight edges to the BOUNDARY layer and came in as open pieces (a blank
+    // with filleted corners: 0 closed loops). A cut layer and a bend, etch or boundary layer are separate drawings to
+    // CAM. Gaps still close between layers (a customer outline drawn half on 0, half on CUT).
+    function pass(E, o) {
+      if (!E.length) return { entities: [], report: null };
+      var order = [], groups = {}, merged = [], mrep = null;
+      E.forEach(function (e) { var k = e.layer == null ? '' : String(e.layer); if (!groups[k]) { groups[k] = []; order.push(k); } groups[k].push(e); });
+      order.forEach(function (k) {
+        var r = repair(groups[k], { tol: o.tol, closeGaps: false, merge: o.merge, removeTiny: o.removeTiny, join: false, split: false });
+        merged = merged.concat(r.entities);
+        if (!mrep) mrep = r.report;
+        else { mrep.merged += r.report.merged; mrep.removed += r.report.removed; mrep.spots = mrep.spots.concat(r.report.spots); }
+      });
+      var gp = repair(merged, { tol: o.tol, closeGaps: o.closeGaps, merge: false, removeTiny: false, join: false, split: false, corners: true });
+      gp.report.merged += mrep.merged; gp.report.removed += mrep.removed; gp.report.spots = mrep.spots.concat(gp.report.spots);
+      return gp;
+    }
+    var rep = pass(plain, { tol: tol || 1e-9, closeGaps: tol > 0, merge: fix, removeTiny: fix });
     // Repair after import also closes the gaps customer DXFs carry, so a flat comes in as one closed profile that
     // extrudes or makes a Base Flange without a Repair Sketch step; only ends move, none more than the gap (lane dxfaudit:
     // corners: two lines of a gap meet where they cross, so an edge keeps its direction)
     var gap = Math.max(0, +(opts.gap != null ? opts.gap : pu === 'in' ? 0.001 : 0.025) || 0);
     if (fix && gap > tol && rep.entities.length) {
-      var rep2 = repair(rep.entities, { tol: gap, closeGaps: true, merge: true, removeTiny: false, join: false, split: false, corners: true });
+      var rep2 = pass(rep.entities, { tol: gap, closeGaps: true, merge: true, removeTiny: false });
       if (rep.report) {
         rep2.report.gaps += rep.report.gaps; rep2.report.merged += rep.report.merged; rep2.report.removed += rep.report.removed;
         rep2.report.maxMove = Math.max(rep2.report.maxMove, rep.report.maxMove);

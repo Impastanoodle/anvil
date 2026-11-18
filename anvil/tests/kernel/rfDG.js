@@ -149,7 +149,7 @@
       assert(ms && ms.type === 49, 'block record *Model_Space at 1F');
       return t.bytes.length + ' bytes, ' + t.rd.objects.length + ' objects';
     });
-    test('rfDG: inch sketch — splines, ellipses, a slot (LWPOLYLINE with bulges), a block with two INSERTs; INSUNITS 1 in the header; an R12 DXF is refused', function () {
+    test('rfDG: inch sketch — splines, ellipses, a slot (LWPOLYLINE with bulges), a block with two INSERTs; INSUNITS 1 in the header; an R12 DXF is written (rfOM; was refused)', function () {
       var sk = { entities: [
         { t: 'rect', x: 0, y: 0, w: 10, h: 6 }, { t: 'spline', pts: [[2, 1], [2.2, 1.3], [2.5, 1.1], [2.8, 1.4]] },
         { t: 'ellipse', cx: 3, cy: 4, rx: 0.6, ry: 0.3, rot: 30 }, { t: 'pellipse', cx: 5, cy: 4, rx: 0.2, ry: 0.5, rot: 0, a0: 10, a1: 200 },
@@ -160,8 +160,9 @@
       if (K.makeBlock) assert(t.counts.INSERT === 2, 'two inserts ' + JSON.stringify(t.counts));
       // INSUNITS: the header's BS after the flags; find it by decoding the tail is long — check the DXF header made it through parse instead
       assert(DWG.parseDXF(text).header.$INSUNITS.num(70) === 1, 'inch DXF');
-      var msg = null; try { DWG.fromDXF(K.exportDXFSketch(sk, 'in', { version: 'R12' })); } catch (e) { msg = e.message; }
-      assert(msg && /R12/.test(msg), 'R12 refused: ' + msg);
+      // (rfOM: an R12 DXF is written now, POLYLINE / VERTEX as LWPOLYLINE; was refused. rfOM checks its objects)
+      var b12 = DWG.fromDXF(K.exportDXFSketch(sk, 'in', { version: 'R12' }));
+      assert(b12 && b12.length > 1000, 'R12 written: ' + (b12 && b12.length));
       return t.bytes.length + ' bytes';
     });
     test('rfDG: drawing sheet — views (HIDDEN / PHANTOM line types), DIMENSIONs with their anonymous *D blocks, notes, title block, a solid HATCH; every entity kept, geometry to 1e-9', function () {

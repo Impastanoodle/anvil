@@ -141,7 +141,7 @@
   var LOCATOR_XOR = { 3: 0xA598, 4: 0x8101, 5: 0x3CC4, 6: 0x8461 };
 
   // fixed object type numbers (ODA spec, "Object type codes")
-  var T = { TEXT: 1, BLOCK: 4, ENDBLK: 5, INSERT: 7, ARC: 17, CIRCLE: 18, LINE: 19, DIM_ORDINATE: 20, DIM_LINEAR: 21,
+  var T = { TEXT: 1, ATTRIB: 2, ATTDEF: 3, SEQEND: 6, BLOCK: 4, ENDBLK: 5, INSERT: 7, ARC: 17, CIRCLE: 18, LINE: 19, DIM_ORDINATE: 20, DIM_LINEAR: 21,
     DIM_ALIGNED: 22, DIM_ANG3PT: 23, DIM_ANG2LN: 24, DIM_RADIUS: 25, DIM_DIAMETER: 26, POINT: 27, SOLID: 31,
     ELLIPSE: 35, SPLINE: 36, DICTIONARY: 42, MTEXT: 44, BLOCK_CONTROL: 48, BLOCK_HEADER: 49, LAYER_CONTROL: 50,
     LAYER: 51, STYLE_CONTROL: 52, STYLE: 53, LTYPE_CONTROL: 56, LTYPE: 57, VIEW_CONTROL: 60, UCS_CONTROL: 62,
@@ -233,9 +233,61 @@
   function fromDXF(text) {
     var dxf = parseDXF(text);
     var ver = dxf.header.$ACADVER ? dxf.header.$ACADVER.str(1, '') : '';
-    if (/^AC1009$/i.test(ver) || (!ver && /\nVERTEX\r?\n/.test(text))) throw new Error('DWG is made from an R2000 DXF (AC1015); this DXF is R12. Export it as R2000 first.');
+    // lane exportaudit (rfOM): an R12 (AC1009) DXF is written too (it was refused): its records carry no handles (the
+    // writer numbers its own anyway) and its POLYLINE / VERTEX / SEQEND become what R2000 writes: an LWPOLYLINE for a
+    // 2D polyline (bulges, widths, closed, elevation), LINEs for a 3D one; a polyface / polygon mesh is still refused.
+    var COMMON = { 8: 1, 6: 1, 62: 1, 370: 1, 48: 1, 60: 1, 67: 1, 39: 1, 210: 1, 220: 1, 230: 1 };
+    function polyRecs(pl, vs) {
+      var f = pl.num(70, 0) | 0, keep = vs.filter(function (v) { return !((v.num(70, 0) | 0) & 16); });   // not spline frame points
+      if (f & (16 | 64)) throw new Error('DWG: a polygon / polyface mesh POLYLINE is not written by the DWG writer');
+      var head = pl.p.filter(function (q) { return COMMON[q[0]]; });
+      if (f & 8) {   // 3D polyline: its segments as LINEs
+        var out = [], n = keep.length, segs = (f & 1) && n > 2 ? n : n - 1;
+        for (var k = 0; k < segs; k++) {
+          var a = keep[k].pt(10), b = keep[(k + 1) % n].pt(10), L = new Rec('LINE');
+          L.p = head.filter(function (q) { return q[0] < 200; }).concat([[10, a[0]], [20, a[1]], [30, a[2]], [11, b[0]], [21, b[1]], [31, b[2]]]);
+          out.push(L);
+        }
+        return out;
+      }
+      var lw = new Rec('LWPOLYLINE'), w0 = pl.num(40, 0), w1 = pl.num(41, 0);
+      lw.p = head.concat([[90, keep.length], [70, (f & 1) | (f & 128)], [38, pl.num(30, 0)]]);
+      var cw = keep.every(function (v) { return v.num(40, w0) === w0 && v.num(41, w1) === w1; }) && w0 === w1;
+      if (cw && w0) lw.p.push([43, w0]);
+      keep.forEach(function (v) {
+        lw.p.push([10, v.num(10, 0)], [20, v.num(20, 0)]);
+        if (!cw) lw.p.push([40, v.num(40, w0)], [41, v.num(41, w1)]);
+        if (v.num(42, 0)) lw.p.push([42, v.num(42, 0)]);
+      });
+      return [lw];
+    }
+    // block attributes (rfOM): the ATTRIBs after an INSERT (66 = 1) up to its SEQEND belong to that INSERT (written
+    // after it, owned by it, with their own SEQEND); ATTDEF is an entity of its block. An ATTRIB with no INSERT before
+    // it is dropped (AutoCAD does not keep one either). POLYLINE + VERTEX + SEQEND: see polyRecs.
+    function foldAttribs(list) {
+      var out = [], cur = null, pl = null, vs = null;
+      list.forEach(function (r) {
+        if (pl) {
+          if (r.type === 'VERTEX') { vs.push(r); return; }
+          Array.prototype.push.apply(out, polyRecs(pl, vs)); pl = null;
+          if (r.type === 'SEQEND') return;
+        }
+        if (r.type === 'POLYLINE') { pl = r; vs = []; cur = null; return; }
+        if (r.type === 'ATTRIB') { if (cur) cur.attribs.push(r); return; }
+        if (r.type === 'SEQEND') { cur = null; return; }
+        cur = null;
+        if (r.type === 'INSERT') { r.attribs = []; cur = r; }
+        out.push(r);
+      });
+      if (pl) Array.prototype.push.apply(out, polyRecs(pl, vs));
+      return out;
+    }
+    dxf.entities = foldAttribs(dxf.entities);
+    dxf.blocks.forEach(function (b) { b.ents = foldAttribs(b.ents); });
     var hv = function (name, code, d) { var r = dxf.header[name]; return r ? r.num(code, d) : d; };
-    var insunits = hv('$INSUNITS', 70, 4) | 0, inch = insunits === 1 || insunits === 2, metric = !inch;
+    // (rfOM) a DXF without $INSUNITS (an R12 file) stays unitless (0) in the DWG, not millimetres; its $MEASUREMENT,
+    // when it has none, is AutoCAD's default 0
+    var insunits = hv('$INSUNITS', 70, dxf.header.$INSUNITS ? 4 : 0) | 0, inch = insunits === 1 || insunits === 2, metric = !inch && insunits !== 0;
     var measurement = hv('$MEASUREMENT', 70, metric ? 1 : 0) | 0;
 
     // ---- handles
@@ -328,6 +380,8 @@
           var tb = blockByName[upper(it.rec.str(2, ''))];
           if (!tb) throw new Error('DXF: INSERT of an undefined block "' + it.rec.str(2, '') + '"');
           (inserts[tb.h] = inserts[tb.h] || []).push(it.h);
+          // (rfOM) its attributes and their SEQEND
+          if (it.rec.attribs && it.rec.attribs.length) { it.att = it.rec.attribs.map(function () { return alloc(); }); it.seq = alloc(); }
         }
       });
     });
@@ -440,9 +494,11 @@
       obj(T.LAYER, L.h, function (w, hs) {
         var r = L.rec, f70 = r.num(70, 0) | 0, plot = r.num(290, 1) !== 0;
         recHead(w, hs, H.LAYER_CONTROL, L.name);
-        var flags = (f70 & 1 ? 1 : 0) | (f70 & 2 ? 4 : 0) | (f70 & 4 ? 8 : 0) | (plot ? 16 : 0) | (lwIndex(r.num(370, -3)) << 5);
-        w.BS(flags);
+        // lane exportaudit (rfOM): an off layer (negative colour) also sets flag bit 2, as LibreDWG's dxf2dwg writes it
+        // (OFF 1010 against 1008); with the colour alone dwg2dxf read the layer back on
         var c = r.num(62, 7) | 0; if (c === 0) c = 7;
+        var flags = (f70 & 1 ? 1 : 0) | (c < 0 ? 2 : 0) | (f70 & 2 ? 4 : 0) | (f70 & 4 ? 8 : 0) | (plot ? 16 : 0) | (lwIndex(r.num(370, -3)) << 5);
+        w.BS(flags);
         w.CMC(c);
         hs.H(HARD_PTR, 0);   // plot style (Normal)
         var ltn = upper(r.str(6, 'Continuous'));
@@ -611,25 +667,9 @@
           cps.forEach(function (p, k) { w.BD3(p); if (weighted) w.BD(weights[k]); });
         }
       });
-      else if (type === 'TEXT') E(T.TEXT, function (w, hs) {
-        var p = r.pt(10), a = r.get(11) != null ? r.pt(11) : p, rot = r.num(50, 0), wf = r.num(41, 1), obl = r.num(51, 0);
-        var gen = r.num(71, 0) | 0, ha = r.num(72, 0) | 0, va = r.num(73, 0) | 0, el = p[2];
-        var hasAlign = r.get(11) != null && (ha || va);
-        var df = (el === 0 ? 1 : 0) | (hasAlign ? 0 : 2) | (obl === 0 ? 4 : 0) | (rot === 0 ? 8 : 0) | (wf === 1 ? 16 : 0) | (gen === 0 ? 32 : 0) | (ha === 0 ? 64 : 0) | (va === 0 ? 128 : 0);
-        w.RC(df);
-        if (!(df & 1)) w.RD(el);
-        w.RD2(p);
-        if (!(df & 2)) w.DD2(a, p);
-        w.BE(ext); w.BT(r.num(39, 0));
-        if (!(df & 4)) w.RD(obl * D2R);
-        if (!(df & 8)) w.RD(rot * D2R);
-        w.RD(r.num(40, 1));
-        if (!(df & 16)) w.RD(wf);
-        w.TV(r.get(1, ''));
-        if (!(df & 32)) w.BS(gen);
-        if (!(df & 64)) w.BS(ha);
-        if (!(df & 128)) w.BS(va);
-        hs.H(HARD_PTR, styleByName[upper(r.str(7, 'Standard'))] || H.STANDARD);
+      else if (type === 'TEXT') E(T.TEXT, function (w, hs) { textData(w, hs, r, ext, 73); });
+      else if (type === 'ATTDEF') E(T.ATTDEF, function (w, hs) {   // (rfOM) a block's attribute definition
+        textData(w, hs, r, ext, 74, function () { w.TV(r.get(2, '')); w.BS(r.num(73, 0) | 0); w.RC(r.num(70, 0) & 0xFF); w.TV(r.get(3, '')); });
       });
       else if (type === 'MTEXT') E(T.MTEXT, function (w, hs) {
         var txt = ''; r.p.forEach(function (q) { if (q[0] === 3) txt += q[1]; }); txt += r.get(1, '');
@@ -638,22 +678,42 @@
         w.BD(r.num(43, 0)); w.BD(r.num(42, 0)); w.TV(txt); w.BS(r.num(73, 1) | 0); w.BD(r.num(44, 1)); w.B(0);
         hs.H(HARD_PTR, styleByName[upper(r.str(7, 'Standard'))] || H.STANDARD);
       });
-      else if (type === 'INSERT') E(T.INSERT, function (w, hs) {
+      else if (type === 'INSERT') insertWithAttribs();
+      else if (type === 'SOLID' || type === 'TRACE') E(T.SOLID, function (w) {
+        w.BT(r.num(39, 0)); w.BD(r.num(30, 0));
+        w.RD2([r.num(10, 0), r.num(20, 0)]); w.RD2([r.num(11, 0), r.num(21, 0)]); w.RD2([r.num(12, 0), r.num(22, 0)]); w.RD2([r.num(13, r.num(12, 0)), r.num(23, r.num(22, 0))]);
+        w.BE(ext);
+      });
+      else if (type === 'LWPOLYLINE') lwpoly();
+      else if (type === 'HATCH') E(T.HATCH, function (w) { hatch(w, r, ext); });
+      else if (type === 'DIMENSION') dimension();
+      else throw new Error('DWG: the ' + type + ' entity is not written by the DWG writer');
+      function insertWithAttribs() { E(T.INSERT, function (w, hs) {
         var sx = r.num(41, 1), sy = r.num(42, 1), sz = r.num(43, 1);
         w.BD3(r.pt(10));
         if (sx === 1 && sy === 1 && sz === 1) w.BB(3);
         else if (sx === sy && sx === sz) { w.BB(2); w.RD(sx); }
         else if (sx === 1) { w.BB(1); w.DD(sy, 1); w.DD(sz, 1); }
         else { w.BB(0); w.RD(sx); w.DD(sy, sx); w.DD(sz, sx); }
-        w.BD(r.num(50, 0) * D2R); w.BD3(ext); w.B(0);
+        w.BD(r.num(50, 0) * D2R); w.BD3(ext); w.B(it.att ? 1 : 0);
         hs.H(HARD_PTR, blockByName[upper(r.str(2, ''))].h);
+        // (rfOM) R13-R2000: first and last ATTRIB (soft pointers), then the SEQEND (hard owner)
+        if (it.att) { hs.H(SOFT_PTR, it.att[0]); hs.H(SOFT_PTR, it.att[it.att.length - 1]); hs.H(HARD_OWN, it.seq); }
       });
-      else if (type === 'SOLID' || type === 'TRACE') E(T.SOLID, function (w) {
-        w.BT(r.num(39, 0)); w.BD(r.num(30, 0));
-        w.RD2([r.num(10, 0), r.num(20, 0)]); w.RD2([r.num(11, 0), r.num(21, 0)]); w.RD2([r.num(12, 0), r.num(22, 0)]); w.RD2([r.num(13, r.num(12, 0)), r.num(23, r.num(22, 0))]);
-        w.BE(ext);
-      });
-      else if (type === 'LWPOLYLINE') E(T.LWPOLYLINE, function (w) {
+      // (rfOM) the INSERT's attributes: owned by it (entity mode 0), linked to each other, then its SEQEND
+      if (type === 'INSERT' && it.att) {
+        r.attribs.forEach(function (ar, k) {
+          var ao = { owner: it.h, mode: 0, prev: k ? it.att[k - 1] : 0, next: k + 1 < it.att.length ? it.att[k + 1] : 0, rec: ar };
+          var aext = ar.pt(210, [0, 0, 1]);
+          obj(T.ATTRIB, it.att[k], function (w, hs) {
+            entHead(w, hs, ao);
+            textData(w, hs, ar, aext, 74, function () { w.TV(ar.get(2, '')); w.BS(ar.num(73, 0) | 0); w.RC(ar.num(70, 0) & 0xFF); });
+          });
+        });
+        obj(T.SEQEND, it.seq, function (w, hs) { entHead(w, hs, { owner: it.h, mode: 0, prev: 0, next: 0, rec: r }); });
+      }
+      }
+      function lwpoly() { E(T.LWPOLYLINE, function (w) {
         var pts = [], bul = [], wid = [], cw = r.get(43) != null ? r.num(43, 0) : 0, el = r.num(38, 0), th = r.num(39, 0);
         r.p.forEach(function (q, k) {
           if (q[0] === 10) { pts.push([+q[1], r.p[k + 1] && r.p[k + 1][0] === 20 ? +r.p[k + 1][1] : 0]); bul.push(0); wid.push([0, 0]); }
@@ -675,9 +735,8 @@
         pts.forEach(function (p, k) { if (k === 0) w.RD2(p); else w.DD2(p, pts[k - 1]); });
         if (hasB) bul.forEach(function (x) { w.BD(x); });
         if (hasW) wid.forEach(function (x) { w.BD(x[0]); w.BD(x[1]); });
-      });
-      else if (type === 'HATCH') E(T.HATCH, function (w) { hatch(w, r, ext); });
-      else if (type === 'DIMENSION') {
+      }); }
+      function dimension() {
         var kind = (r.num(70, 0) | 0) & 7;
         var dt = [T.DIM_LINEAR, T.DIM_ALIGNED, T.DIM_ANG2LN, T.DIM_DIAMETER, T.DIM_RADIUS, T.DIM_ANG3PT, T.DIM_ORDINATE][kind];
         if (!dt) throw new Error('DXF: DIMENSION type ' + kind + ' is not written to DWG');
@@ -701,7 +760,32 @@
           var bn = blockByName[upper(r.str(2, ''))];
           hs.H(HARD_PTR, bn ? bn.h : 0);
         });
-      } else throw new Error('DWG: the ' + type + ' entity is not written by the DWG writer');
+      }
+    }
+
+    // TEXT's data (R2000: data flags, then each field the flags do not default), shared by ATTRIB and ATTDEF (rfOM):
+    // vaCode is the DXF code of the vertical alignment (73 for TEXT, 74 for ATTRIB / ATTDEF), more() writes what an
+    // attribute adds after the text (tag, field length, flags; ATTDEF: prompt) before the style handle
+    function textData(w, hs, r, ext, vaCode, more) {
+      var p = r.pt(10), a = r.get(11) != null ? r.pt(11) : p, rot = r.num(50, 0), wf = r.num(41, 1), obl = r.num(51, 0);
+      var gen = r.num(71, 0) | 0, ha = r.num(72, 0) | 0, va = r.num(vaCode, 0) | 0, el = p[2];
+      var hasAlign = r.get(11) != null && (ha || va);
+      var df = (el === 0 ? 1 : 0) | (hasAlign ? 0 : 2) | (obl === 0 ? 4 : 0) | (rot === 0 ? 8 : 0) | (wf === 1 ? 16 : 0) | (gen === 0 ? 32 : 0) | (ha === 0 ? 64 : 0) | (va === 0 ? 128 : 0);
+      w.RC(df);
+      if (!(df & 1)) w.RD(el);
+      w.RD2(p);
+      if (!(df & 2)) w.DD2(a, p);
+      w.BE(ext); w.BT(r.num(39, 0));
+      if (!(df & 4)) w.RD(obl * D2R);
+      if (!(df & 8)) w.RD(rot * D2R);
+      w.RD(r.num(40, 1));
+      if (!(df & 16)) w.RD(wf);
+      w.TV(r.get(1, ''));
+      if (!(df & 32)) w.BS(gen);
+      if (!(df & 64)) w.BS(ha);
+      if (!(df & 128)) w.BS(va);
+      if (more) more();
+      hs.H(HARD_PTR, styleByName[upper(r.str(7, 'Standard'))] || H.STANDARD);
     }
 
     function hatch(w, r, ext) {
