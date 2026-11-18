@@ -292,11 +292,21 @@ function readSplit(cfg) {
   const g0 = lines.findIndex((l) => /^  var GROUPS = \[/.test(l));
   if (g0 < 0) return null;
   const files = [];
-  for (let i = g0 + 1; !/^  \];/.test(lines[i]); i++) { const m = /'([^']+)'/.exec(lines[i]); if (m) files.push(m[1]); }
+  let listProblems = 0;
+  for (let i = g0 + 1; !/^  \];/.test(lines[i]); i++) {
+    const m = /'([^']+)'/.exec(lines[i]);
+    if (m) files.push(m[1]);
+    // (head, local-2026-11-18a) one entry a line, ending with a comma, each file once: two entries joined without a comma
+    // ('a.js' 'b.js', after a merge of two appended lines) are one string to JavaScript, the page then loads a file that
+    // does not exist and the OpenCascade page hangs at "loading" until the runner's timeout (local-2026-11-17c, twice)
+    const code = lines[i].replace(/\r?\n$/, '').replace(/\/\/.*$/, '').trim();
+    if (code && !/^'[^']+',$/.test(code)) { listProblems++; console.log('  ' + cfg.page + ' line ' + (i + 1) + ': a GROUPS line must be one quoted file name ending with a comma: ' + code); }
+    if (m && files.indexOf(m[1]) !== files.length - 1) { listProblems++; console.log('  ' + cfg.page + ' line ' + (i + 1) + ': ' + m[1] + ' is listed twice'); }
+  }
   const scriptStart = lines.findIndex((l) => /^<script>\r?\n?$/.test(l));
   const first = lines.findIndex((l) => /^  \/\/ ---- test groups/.test(l));
   const runner = lines.findIndex((l, i) => i > g0 && cfg.runner.test(l));
-  let problems = 0;
+  let problems = listProblems;
   const segs = [];
   files.forEach((f) => {
     const p = path.join(TESTS, f);
