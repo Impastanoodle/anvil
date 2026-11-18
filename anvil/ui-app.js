@@ -363,7 +363,7 @@
       ls.renderOrder = 10;
       UI.groups.preview.add(ls);
       if (UI.requestRender) UI.requestRender();
-      UI.setStatus(fd.name + ': ' + UI.fmtNum(LIB.featureArea(id, v, s), 4) + ' ' + UI.unitLabel() + '² cut Through All. Press Enter or ✓ to add it.');
+      UI.setStatus(fd.name + ': ' + UI.fmtNum(LIB.featureArea(id, v, s), 4) + ' ' + UI.unitLabel() + '² cut ' + (App.model.sheet ? 'through the sheet' : 'Through All') + '. Press Enter or ✓ to add it.');
     }
     var sizeFields = fd.fields.map(function (f) {
       if (f.type === 'select') return { type: 'select', key: f.key, label: f.label, options: f.options.map(function (o) { return [o, o]; }) };
@@ -400,6 +400,9 @@
         UI.pushUndo();
         var made;
         try { made = LIB.addFeature(App.model, face.plane, id, val); } catch (e) { UI.toast(e.message); return false; }
+        // rfPP: on sheet metal the cut is Link to thickness (SolidWorks' sheet-metal library features), not Through
+        // All: a PEM hole in one wall of a chassis left a second hole in the opposite wall
+        if (App.model.sheet && +App.model.sheet.thickness > 0 && made.cut.end === 'through') { made.cut.end = 'blind'; made.cut.depth = +App.model.sheet.thickness; made.cut.linkT = true; }
         return UI.afterRebuild(UI.rebuild(), function () {
           App.sel = { kind: 'feature', id: made.cut.id };
           UI.updateHighlights(); UI.updateSketches(); UI.refreshTree();

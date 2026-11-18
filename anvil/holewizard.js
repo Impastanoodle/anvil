@@ -4,7 +4,7 @@
 // Feature JSON:
 //   { type: 'hole', standard: 'ANSI Inch' | 'ISO', holeType: 'cbore' | 'csk' | 'hole' | 'tap', size, fit: 'close' |
 //     'normal' | 'loose', sizeType: 'drill' (ANSI Inch Hole only: size is a drill, '#7', 'F', '17/64'; otherwise a
-//     screw clearance), end: 'blind' | 'through', depth, threadDepth (tap, blind), sketch: <id of a sketch of points> }
+//     screw clearance), end: 'blind' | 'through' | 'next' (Up To Next), depth, threadDepth (tap, blind), sketch: <id of a sketch of points> }
 //   size: ISO 'M8'; ANSI Inch screws '#10', '1/4'; ANSI Inch threads '1/4-20 UNC', '#10-32 UNF'.
 // The tables are in each standard's own unit (ISO mm, ANSI inches); spec(f, units) converts to the part's units, so an
 // ANSI hole in a metric part and an ISO hole in an inch part come out the right size. Without units each standard
@@ -232,11 +232,11 @@ var HoleWizard = (function () {
   // '⌴ Ø.438 ↧ .250' (counterbore), '⌵ Ø.507 X 82°' (countersink) or '1/4-20 UNC - 2B ↧ .500' (thread)
   function callout(f, units) {
     units = units || (standardOf(f) === ANSI ? 'in' : 'mm');
-    var s = spec(f, units), thru = f.end === 'through', lines = [];
-    lines.push('Ø' + numText(s.dia, units) + (thru ? ' THRU ALL' : ' ↧ ' + numText(+f.depth, units)));
+    var s = spec(f, units), thru = f.end === 'through', next = f.end === 'next', lines = [];
+    lines.push('Ø' + numText(s.dia, units) + (thru ? ' THRU ALL' : next ? ' THRU' : ' ↧ ' + numText(+f.depth, units)));
     if (s.cbore) lines.push('⌴ Ø' + numText(s.cbore.dia, units) + ' ↧ ' + numText(s.cbore.depth, units));
     if (s.csk) lines.push('⌵ Ø' + numText(s.csk.dia, units) + ' X ' + s.csk.angle + '°');
-    if (s.thread) lines.push(s.thread.label + (thru ? ' THRU ALL' : ' ↧ ' + numText(+(f.threadDepth || f.depth), units)));
+    if (s.thread) lines.push(s.thread.label + (thru ? ' THRU ALL' : next ? ' THRU' : ' ↧ ' + numText(+(f.threadDepth || f.depth), units)));
     return lines;
   }
 
@@ -277,9 +277,52 @@ var HoleWizard = (function () {
   }
   function modelUnits(model) { return model && model.units === 'in' ? 'in' : 'mm'; }
 
+  // (rfPP) Up To Next (end 'next', SolidWorks' Up To Next): the hole runs from its face into the part and stops at the
+  // next face its whole profile crosses, the far side of the material it enters, so a hole in one wall of a box or a
+  // chassis leaves the opposite wall alone (Through All drills both). Rays along the axis and round the drill's rim
+  // find the first exit of each; the depth is the farthest of them, carried halfway into the gap to the next material
+  // (or as far again past it with nothing beyond) so the cut ends in air, clear of the next wall.
+  // nextDepth(f, s (spec), plane, q, ctx) -> the depth below point q (one position) along -plane.n; ctx.bodies (or
+  // ctx.body): solids with CSG-style polygons { plane: { normal: {x,y,z}, w }, vertices: [{ pos: {x,y,z} }] } (convex)
+  function nextDepth(f, s, plane, q, ctx) {
+    var bodies = ctx && ctx.bodies && ctx.bodies.length ? ctx.bodies : ctx && ctx.body ? [ctx.body] : [];
+    var dir = V.scale(plane.n, -1), r = s.dia / 2 * 0.98, tol = 1e-7 * Math.max(1, Math.abs(s.dia) * 100);
+    var starts = [q];
+    for (var k = 0; k < 8; k++) { var a = k * Math.PI / 4; starts.push(V.add(q, V.add(V.scale(plane.x, r * Math.cos(a)), V.scale(plane.y, r * Math.sin(a))))); }
+    var exitMax = -1, entryMin = Infinity;
+    starts.forEach(function (o) {
+      var hits = [];
+      bodies.forEach(function (b) {
+        (b && b.polygons || []).forEach(function (p) {
+          var N = p.plane.normal, nd = N.x * dir[0] + N.y * dir[1] + N.z * dir[2];
+          if (Math.abs(nd) < 1e-12) return;
+          var t = (p.plane.w - (N.x * o[0] + N.y * o[1] + N.z * o[2])) / nd;
+          if (!(t > tol)) return;
+          var P = [o[0] + t * dir[0], o[1] + t * dir[1], o[2] + t * dir[2]], vs = p.vertices, inside = true;
+          for (var i = 0; i < vs.length && inside; i++) {
+            var A = vs[i].pos, B = vs[(i + 1) % vs.length].pos;
+            var ex = B.x - A.x, ey = B.y - A.y, ez = B.z - A.z, px = P[0] - A.x, py = P[1] - A.y, pz = P[2] - A.z;
+            var cx = ey * pz - ez * py, cy = ez * px - ex * pz, cz = ex * py - ey * px;
+            if (cx * N.x + cy * N.y + cz * N.z < -1e-12 * Math.max(1, ex * ex + ey * ey + ez * ez)) inside = false;
+          }
+          if (inside) hits.push({ t: t, exit: nd > 0 });
+        });
+      });
+      hits.sort(function (a, b) { return a.t - b.t; });
+      var e = hits.filter(function (h) { return h.exit; })[0];
+      if (!e) return;
+      exitMax = Math.max(exitMax, e.t);
+      var n2 = hits.filter(function (h) { return !h.exit && h.t > e.t + tol; })[0];
+      if (n2) entryMin = Math.min(entryMin, n2.t);
+    });
+    if (!(exitMax > 0)) throw new Error('Up To Next: the hole at this position meets no material below its face.');
+    return entryMin > exitMax + tol && isFinite(entryMin) ? (exitMax + entryMin) / 2 : exitMax * 2;
+  }
+
   function build(f, model, ctx) {
-    var s = spec(f, modelUnits(model)), pos = positions(f, model, ctx), L = holeDepth(f, ctx), prof = section(s, L);
+    var s = spec(f, modelUnits(model)), pos = positions(f, model, ctx), L = f.end === 'next' ? 0 : holeDepth(f, ctx), prof = f.end === 'next' ? null : section(s, L);
     var n = pos.plane.n, x = pos.plane.x, tools = pos.pts.map(function (q) {
+      if (f.end === 'next') prof = section(s, nextDepth(f, s, pos.plane, q.p, ctx));
       var y = n, nn = V.cross(x, y);
       var rp = { custom: true, origin: q.p, x: x.slice(), y: y.slice(), n: nn, offset: V.dot(nn, q.p) };
       var sk = { id: -1, type: 'sketch', plane: rp, entities: [{ t: 'polyline', pts: prof, closed: true }] };
@@ -298,7 +341,7 @@ var HoleWizard = (function () {
       if (f.type !== 'hole' || f.holeType !== 'tap' || f.suppressed) return;
       try {
         var s = spec(f, modelUnits(model)), pos = positions(f, model, null);
-        var depth = f.end === 'through' ? null : +(f.threadDepth || f.depth);
+        var depth = f.end === 'through' || f.end === 'next' ? null : +(f.threadDepth || f.depth);
         pos.pts.forEach(function (q) { out.push({ featureId: f.id, p: q.p, n: V.scale(pos.plane.n, -1), r: s.thread.major / 2, depth: depth, label: s.thread.label, drill: s.dia, standard: s.standard, size: f.size }); });
       } catch (e) { }
     });
@@ -329,7 +372,7 @@ var HoleWizard = (function () {
     var std = o.standard ? standardName(o.standard) : o.size ? standardOf({ size: o.size }) : units === 'in' ? ANSI : 'ISO';
     var type = o.type || o.holeType || 'hole', sizeType = std === ANSI && type === 'hole' && o.sizeType === 'drill' ? 'drill' : null;
     var f = { type: 'hole', standard: std, holeType: type, size: o.size || defaultSize(std, type, sizeType), fit: o.fit || 'normal',
-      end: o.end === 'through' || o.throughAll || o.depth === 'through' ? 'through' : 'blind', depth: o.depth === 'through' ? 0 : +(o.depth || 0) };
+      end: o.end === 'through' || o.throughAll || o.depth === 'through' ? 'through' : o.end === 'next' ? 'next' : 'blind', depth: o.depth === 'through' ? 0 : +(o.depth || 0) };
     if (sizeType) f.sizeType = sizeType;
     if (std === ANSI && type === 'tap') f.size = threadRow(f.size).size;   // canonical spelling ('1/4-20 unc' -> '1/4-20 UNC')
     if (f.end === 'blind' && !(f.depth > 0)) {
@@ -350,8 +393,8 @@ var HoleWizard = (function () {
       o.type = f.holeType;
       if (f.sizeType === 'drill') o.sizeType = 'drill';
       o.size = f.size; o.fit = f.fit;
-      if (f.end === 'through') o.end = 'through'; else o.depth = f.depth;
-      if (f.holeType === 'tap' && f.end !== 'through' && f.threadDepth !== f.depth) o.threadDepth = f.threadDepth;
+      if (f.end === 'through' || f.end === 'next') o.end = f.end; else o.depth = f.depth;
+      if (f.holeType === 'tap' && f.end === 'blind' && f.threadDepth !== f.depth) o.threadDepth = f.threadDepth;
       o.name = f.name;
       return 'var ' + v + ' = p.holeWizard(' + optsStr(o) + ').last();';
     }
@@ -379,6 +422,6 @@ var HoleWizard = (function () {
     STANDARDS: STANDARDS, TYPES: TYPES, FITS: FITS, SIZE_TYPES: SIZE_TYPES, CSK_ANGLE: CSK_ANGLE, ANSI_CSK_ANGLE: ANSI_CSK_ANGLE,
     sizeRow: sizeRow, screwRow: screwRow, threadRow: threadRow, drill: drill, standardOf: standardOf, standardName: standardName,
     sizeOptions: sizeOptions, defaultSize: defaultSize, validSize: validSize, spec: spec, callout: callout, section: section,
-    threads: threads, positions: positions, holeName: holeName, newFeature: newFeature, build: build };
+    threads: threads, positions: positions, holeName: holeName, newFeature: newFeature, build: build, nextDepth: nextDepth };
 })();
 if (typeof module !== 'undefined') module.exports = HoleWizard;

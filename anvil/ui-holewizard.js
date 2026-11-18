@@ -101,7 +101,7 @@
           { type: 'select', label: 'Fit', key: 'fit', options: HW.FITS, rerender: true, show: function (x) { return x.holeType !== 'tap' && !(isAnsiHole(x) && x.sizeType === 'drill'); } },
           { type: 'static', label: 'Hole', value: specText }] },
         { title: 'End Condition', show: isType, fields: [
-          { type: 'select', label: 'End condition', key: 'end', options: [['blind', 'Blind'], ['through', 'Through All']], rerender: true },
+          { type: 'select', label: 'End condition', key: 'end', options: [['blind', 'Blind'], ['through', 'Through All'], ['next', 'Up To Next']], rerender: true },   // rfPP: Up To Next (one wall of a box, not both)
           { type: 'number', label: 'Depth', key: 'depth', unit: 'u', min: 0, show: function (x) { return x.end === 'blind'; } },
           { type: 'number', label: 'Thread depth', key: 'threadDepth', unit: 'u', min: 0, show: function (x) { return x.end === 'blind' && x.holeType === 'tap'; } }] },
         { title: 'Hole Position', show: isPos, fields: [
