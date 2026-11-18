@@ -6726,6 +6726,15 @@
         flip: !(v.type === 'width' && v.b && refKind(v.b) === 'axis'),   // a cylindrical tab: nothing to flip
         type: function () { return v.type; },
         onType: function (t) { if (t === v.type) return; v.type = t; syncGroups(v); if (mySpec && mySpec.onChange) mySpec.onChange(v, 'type'); },
+        // rfPL: the Distance / Angle value boxes of the pop-up (SolidWorks): a value typed there makes that mate with it
+        value: function (t) { return t === 'distance' ? v.distance : v.angle; },
+        onValue: function (t, text) {
+          var r = evalFieldExpr(text);
+          if (r.error || !isFinite(r.value) || r.value < 0) { UI.setStatus((t === 'distance' ? 'Distance' : 'Angle') + ': ' + (r.error || 'a value of 0 or more') + '.'); return; }
+          v[t] = r.value; valueSet = true;
+          if (v.type !== t) { v.type = t; syncGroups(v); if (mySpec && mySpec.onChange) mySpec.onChange(v, 'type'); }
+          else { renderPM(); preview(); }
+        },
         onFlip: function () {
           var cur = alignSet || autoAlign ? v.alignment : defaultAlignment(v.type, v.a, v.b);
           v.alignment = cur === 'closest' && UI.asmFlippedAlignment ? UI.asmFlippedAlignment({ type: v.type, a: v.a, b: v.b, alignment: 'closest' }) : cur === 'aligned' ? 'anti-aligned' : 'aligned';
@@ -6744,6 +6753,9 @@
       message: 'Select two entities to mate: planar faces, cylindrical faces, or origin planes, on different components.',
       command: {
         pickPlane: true, quietPlanes: true, faceList: [],   // r13/asmui13: origin planes are picked in the FeatureManager (drawn while their row is hovered), not drawn over the model
+        // rfPL: as in SolidWorks a floating component can be dragged while the PM is open (a click still picks); not
+        // while a mate is previewed (the drag would commit the preview with it)
+        get dragComponents() { return previewed ? null : 'mate'; },
         onPick: function (pk) {
           var ref = null;
           if (pk.kind === 'face' && unpick(pk.index)) return true;   // r5/select5
@@ -6886,7 +6898,8 @@
     var c = face ? (App.model.components || [])[face.body || 0] : null;
     if (!c) return null;
     var mode = force === 'rotate' || (App.command && App.command.dragComponents === 'rotate') ? 'rotate' : 'move';
-    if (c.fixed && !(c.flexible && mode === 'move')) { if (force !== 'rotate') UI.setStatus(c.name + ' is fixed: Float it to drag it.'); return null; }
+    var quiet = App.command && App.command.dragComponents === 'mate';   // rfPL: in the Mate PM a press on a fixed part is a pick, not a refused drag
+    if (c.fixed && !(c.flexible && mode === 'move')) { if (force !== 'rotate' && !quiet) UI.setStatus(c.name + ' is fixed: Float it to drag it.'); return null; }
     var snap = JSON.stringify(App.model), id = c.id, start = p.slice(), last = null, raf = 0;
     var center = Assembly.componentCenter(App.model, App.build, id);
     // Move: the grabbed point (local to the component) follows the mouse in the screen plane as far as the mates let
@@ -6911,7 +6924,7 @@
       }
     }
     // r5/asm5: a fixed Flexible sub-assembly still lets its floating parts be dragged (as in SolidWorks), not its base
-    if (c.fixed && dragId === id) { UI.setStatus(c.name + ' is fixed: Float it to drag it.'); return null; }
+    if (c.fixed && dragId === id) { if (!quiet) UI.setStatus(c.name + ' is fixed: Float it to drag it.'); return null; }
     // Rotate: the component turns about its centre with the mouse; one its mates hold (a hinged arm) turns as far as
     // they allow: the grabbed point is pulled to where the free turn would take it.
     function dragOpts(q, rotated) {

@@ -846,6 +846,10 @@ html[data-theme="dark"] #sketch-hint b, #viewport #sketch-hint b { color: #ecece
 .bom-table { border-collapse: collapse; width: 100%; margin-top: 8px; font-size: 12px; }
 .bom-table th, .bom-table td { border: 1px solid var(--line); padding: 3px 6px; text-align: left; }
 .bom-table td:last-child, .bom-table td:first-child { text-align: center; }
+/* rfPL: a DESCRIPTION cell is edited in place (double-click) */
+.bom-table td.bom-edit { cursor: text; }
+.bom-table td.bom-edit:hover { background: var(--hover); }
+.bom-table td .bom-desc-input { width: 100%; box-sizing: border-box; margin: -2px 0; padding: 1px 3px; font: inherit; border: 1px solid var(--blue-line, #6b9bd1); }
 /* ---- selection (ui-select.js): Selection Filter toolbar (F5), box selection, Instant3D handles */
 #sel-filter { position: absolute; left: 10px; top: 46px; z-index: 5; display: flex; align-items: center; gap: 2px; padding: 3px 5px; background: var(--input-bg); border: 1px solid var(--line, #cfcfcf); border-radius: 4px; box-shadow: 0 2px 8px var(--shadow); font: 11px "Segoe UI", sans-serif; }
 #sel-filter[hidden] { display: none; }

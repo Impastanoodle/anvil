@@ -390,9 +390,15 @@ var Assembly = (function () {
   // square, so B turns by the Cardan relation tan(b) = tan(a) cos(beta) from where they stood when first solved (phase
   // [deg, deg]: each yoke's turn against its shaft's reference direction). jointPoint: true (Define joint point) makes
   // the two axes meet, at a2 (a vertex / point) when given.
+  // Hinge { angle } (rfPL; with limit only): the angle the door is placed at (SolidWorks' Angle above Maximum / Minimum),
+  // signed and measured as min / max. It places the door once: the solve that meets it stores `anglePlaced: true` (as
+  // `phase`), so afterwards the door swings free inside its limits; a new angle (edit, script) places it again.
   function setMateValues(m, opts) {
     opts = opts || {};
+    var angle0 = m.angle;
     ['distance', 'angle', 'offset', 'min', 'max', 'percent'].forEach(function (k) { if (opts[k] != null) m[k] = +opts[k]; });
+    if (m.angle !== angle0) delete m.anglePlaced;
+    if (opts.anglePlaced != null) { if (opts.anglePlaced) m.anglePlaced = true; else delete m.anglePlaced; }
     if (opts.constraint != null) m.constraint = String(opts.constraint).toLowerCase();
     if (opts.pitch != null) m.pitch = +opts.pitch;
     if (opts.pitchBy != null) m.pitchBy = String(opts.pitchBy).toLowerCase();
@@ -415,7 +421,8 @@ var Assembly = (function () {
     var limit = m.type === 'limitdistance' || m.type === 'limitangle' || (m.type === 'hinge' && !!m.limit);
     if (!slotPct) delete m.percent; else if (m.percent == null) m.percent = 50;
     if (m.type !== 'distance' && !slotDist) delete m.distance;
-    if (m.type !== 'angle') delete m.angle;
+    if (m.type !== 'angle' && !(m.type === 'hinge' && m.limit)) delete m.angle;
+    if (m.type !== 'hinge' || m.angle == null) delete m.anglePlaced;
     if ((m.type !== 'coincident' && m.type !== 'profilecenter') || !m.offset) delete m.offset;
     if (!limit) { delete m.min; delete m.max; }
     if (m.type !== 'gear' && m.type !== 'linearcoupler') delete m.ratio;
@@ -1323,7 +1330,19 @@ var Assembly = (function () {
   function hingeExcess(pm, A, A3, B3) {
     if (pm.noLimit) return 0;
     var lo = +pm.mate.min * Math.PI / 180, hi = +pm.mate.max * Math.PI / 180, mid = (lo + hi) / 2;
+    if (pm.hingeAngle != null) return wrapAngle(signedAngle(dirOf(A3), dirOf(B3), A.dir) - pm.hingeAngle);   // rfPL: placed at its angle
     return clampExcess(mid + wrapAngle(signedAngle(dirOf(A3), dirOf(B3), A.dir) - mid), lo, hi);
+  }
+  // hingeAngle(model, partBuilds, m) -> degrees: the angle a Hinge's Angle Selections (a3, b3) make now about its
+  // Concentric axis, signed and measured as its limits are (rfPL: the Hinge PM's Angle starts there); null when unset
+  function hingeAngle(model, partBuilds, m) {
+    if (!m || !m.a || !m.a3 || !m.b3) return null;
+    try {
+      var A = resolveRef(model, partBuilds, m.a), A3 = resolveRef(model, partBuilds, m.a3), B3 = resolveRef(model, partBuilds, m.b3);
+      if (!A || !A.dir || !A3 || !B3) return null;
+      if (m.a3.component !== m.a.component && m.b3.component === m.a.component) { var t = A3; A3 = B3; B3 = t; }
+      return signedAngle(dirOf(A3), dirOf(B3), A.dir) * 180 / Math.PI;
+    } catch (e) { return null; }
   }
   function vnorm(r) { var s = 0; for (var i = 0; i < r.length; i++) s += r[i] * r[i]; return Math.sqrt(s); }
 
@@ -1490,6 +1509,10 @@ var Assembly = (function () {
             if (!m.a3 || !m.b3) throw new Error('Hinge needs two faces as its Angle Selections to limit the angle');
             pm.A3 = localRef(model, partBuilds, m.a3); pm.B3 = localRef(model, partBuilds, m.b3);
             if (pm.A3.comp !== pm.A.comp && pm.B3.comp === pm.A.comp) { var sw3 = pm.A3; pm.A3 = pm.B3; pm.B3 = sw3; }
+            if (m.angle != null) {   // rfPL: the initial angle, met once (anglePlaced), inside the limits
+              if (!(isFinite(+m.angle) && +m.angle >= +m.min - 1e-9 && +m.angle <= +m.max + 1e-9)) throw new Error('Hinge angle must lie between the minimum and the maximum');
+              if (!m.anglePlaced) pm.hingeAngle = +m.angle * Math.PI / 180;
+            }
           }
           // the alignment is the Coincident Selections'; the Concentric pair keeps the sense it has (closest)
           pm.sign2 = pm.sign; pm.sign = 0;
@@ -2823,6 +2846,8 @@ var Assembly = (function () {
       var T = sol.transforms[c.id];
       if (T) c.transform = { position: T.position.slice(), rotation: T.rotation.slice() };
     });
+    // rfPL: a Hinge placed at its angle by this solve swings free from now on
+    (model.mates || []).forEach(function (m) { if (m.type === 'hinge' && m.limit && m.angle != null && !m.anglePlaced && sol.mates[m.id] && sol.mates[m.id].ok) m.anglePlaced = true; });
     Object.keys(sol.mates).forEach(function (id) { if (sol.mates[id].error) errors[id] = sol.mates[id].error; else if (sol.mates[id].warning) warnings[id] = sol.mates[id].warning; });
     sol.components.forEach(function (co) {
       var e = entries[co.id];
@@ -3425,6 +3450,15 @@ var Assembly = (function () {
     if (!d.trim()) d = m.description || (source && source.example != null ? String(source.example) : '');
     return d;
   }
+  // rfPL: the row's PART NUMBER is the part's "Part Number" property, else its document name (SolidWorks' default)
+  function partNumberOf(m) {
+    var p = '';
+    if (typeof Materials !== 'undefined' && Materials.sheetProperty) { try { p = String(Materials.sheetProperty(m, 'Part Number') || ''); } catch (e) { p = ''; } }
+    return p.trim();
+  }
+  // rfPL: a Description typed into the BOM for a Design Library / script part (which cannot be written) is kept in the
+  // assembly: model.bomDescriptions { entry key: text } (top-level model; every level's rows look it up there)
+  function bomOverride(model, key) { var o = model && model.bomDescriptions; return o && Object.prototype.hasOwnProperty.call(o, key) ? String(o[key]) : null; }
   function bom(model, build, opts) {
     opts = opts || {};
     var type = opts.type === 'indented' || opts.type === 'parts' ? opts.type : 'top';
@@ -3434,11 +3468,13 @@ var Assembly = (function () {
       if (!names[key]) {
         var r = null;
         try { r = resolveSource(c.source); } catch (e) { r = null; }
-        names[key] = { name: c.source && c.source.file != null ? String(c.source.file) : (r && r.model && r.model.name) || baseName(c.name), kind: r ? r.kind : 'part', model: r ? r.model : null, broken: !r,
-          description: r && r.model ? describe(r.model, c.source) : '' };
+        var nm = c.source && c.source.file != null ? String(c.source.file) : (r && r.model && r.model.name) || baseName(c.name), ov = bomOverride(model, key);
+        names[key] = { name: nm, kind: r ? r.kind : 'part', model: r ? r.model : null, broken: !r,
+          description: ov != null ? ov : r && r.model ? describe(r.model, c.source) : '', partNumber: (r && r.model ? partNumberOf(r.model) : '') || nm,
+          editable: !r ? '' : c.source && c.source.file != null ? 'file' : c.source && c.source.model ? 'part' : 'assembly' };
       }
       var inf = names[key];
-      return { key: key, name: inf.name, description: inf.description, kind: inf.kind, broken: inf.broken, sub: inf.kind === 'assembly' ? { model: pb && pb.model ? pb.model : inf.model, build: pb && pb.assembly ? pb : null } : null };
+      return { key: key, name: inf.name, description: inf.description, partNumber: inf.partNumber, editable: inf.editable, kind: inf.kind, broken: inf.broken, sub: inf.kind === 'assembly' ? { model: pb && pb.model ? pb.model : inf.model, build: pb && pb.assembly ? pb : null } : null };
     }
     function groups(m, b) {
       var out = [], by = {};
@@ -3448,14 +3484,14 @@ var Assembly = (function () {
         var it = info(c, b && b.partBuilds ? b.partBuilds[c.id] : null);
         if (it.broken) return;
         var g = by[it.key];
-        if (!g) { g = by[it.key] = { key: it.key, name: it.name, description: it.description, kind: it.kind, sub: it.sub, components: [], file: c.source && c.source.file != null ? String(c.source.file) : null }; out.push(g); }
+        if (!g) { g = by[it.key] = { key: it.key, name: it.name, description: it.description, partNumber: it.partNumber, editable: it.editable, kind: it.kind, sub: it.sub, components: [], file: c.source && c.source.file != null ? String(c.source.file) : null }; out.push(g); }
         g.components.push(c.id);
       });
       return out;
     }
     var rows = [];
     function row(g, item, level, qty) {
-      var r = { item: String(item), level: level, name: g.name, description: g.description || '', kind: g.kind, key: g.key, qty: qty, components: g.components.slice() };
+      var r = { item: String(item), level: level, name: g.name, partNumber: g.partNumber || g.name, description: g.description || '', descriptionIn: g.editable, kind: g.kind, key: g.key, qty: qty, components: g.components.slice() };
       if (g.file) r.file = g.file;
       rows.push(r);
       return r;
@@ -3480,6 +3516,53 @@ var Assembly = (function () {
       });
     })(model, build, '', 0);
     return rows;
+  }
+  // setBomDescription(model, key, text) -> { ok, where: 'file' | 'part' | 'assembly', file?, count } (rfPL): a BOM row's
+  // DESCRIPTION typed in the table goes where SolidWorks writes it, the part's "Description" property: a linked document
+  // ({ file }: kept dirty, so File > Save saves it with the assembly; every assembly using it sees it), the embedded
+  // copies ({ model }: each component of the row, at any level), else (Design Library / script parts, which are not
+  // documents) the assembly's own model.bomDescriptions. Empty text clears it (back to the part's own description).
+  function setBomDescription(model, key, text) {
+    text = text == null ? '' : String(text);
+    var val = text.trim() ? text : null, out = { ok: false, where: null, count: 0 }, files = {};
+    function writeProp(m) {
+      if (typeof Materials === 'undefined' || !Materials.setProperty) throw new Error('Custom properties need materials.js');
+      // a configuration-specific Description (it wins over the Custom one) is the one changed
+      var cfgRow = Materials.effective(m).filter(function (p) { return p.name.toLowerCase() === 'description' && p.source === 'config'; })[0];
+      Materials.setProperty(m, 'Description', val, cfgRow ? { config: Materials.activeConfigName(m) } : {});
+    }
+    (function walk(m, depth) {
+      (m.components || []).forEach(function (c) {
+        var src = c.source || {};
+        if (entryKey(model, c) === key) {
+          if (src.file != null) {
+            var f = String(src.file);
+            if (!files[f]) { files[f] = true; var d = Documents.get(f); if (d) { writeProp(d); Documents.put(f, d, { dirty: true }); out.where = 'file'; out.file = f; out.count++; } }
+          } else if (src.model) { writeProp(src.model); out.where = out.where || 'part'; out.count++; }
+          else if (src.example != null || src.script != null) out.where = out.where || 'assembly';
+          return;
+        }
+        if (depth >= MAX_DEPTH) return;
+        if (src.model && isAssembly(src.model)) walk(src.model, depth + 1);
+        else if (src.file != null && !files['@' + src.file]) {   // a linked sub-assembly: its parts' rows (written in that document)
+          files['@' + src.file] = true;
+          var sd = Documents.get(String(src.file));
+          if (sd && isAssembly(sd)) {
+            var before = out.count;
+            walk(sd, depth + 1);
+            if (out.count > before && out.where === 'part') { Documents.put(String(src.file), sd, { dirty: true }); }
+          }
+        }
+      });
+    })(model, 0);
+    if (out.where === 'assembly' || (!out.where && bomOverride(model, key) != null)) {
+      model.bomDescriptions = model.bomDescriptions || {};
+      if (val == null) delete model.bomDescriptions[key]; else model.bomDescriptions[key] = text;
+      if (!Object.keys(model.bomDescriptions).length) delete model.bomDescriptions;
+      out.where = 'assembly'; out.count = 1;
+    }
+    out.ok = !!out.where;
+    return out;
   }
 
   // ------------------------------------------------------------------ script API
@@ -3537,17 +3620,24 @@ var Assembly = (function () {
   Builder.prototype.limitDistance = function (a, b, min, max, opts) { return this.mate('limitdistance', a, b, withValue(withValue(opts, 'min', min), 'max', max)); };
   Builder.prototype.limitAngle = function (a, b, min, max, opts) { return this.mate('limitangle', a, b, withValue(withValue(opts, 'min', min), 'max', max)); };
   // symmetric(symmetryPlane, a, b, opts); slot(slotFace, pin, opts { constraint, distance, percent, flip });
-  // hinge(concentricA, concentricB, coincidentA, coincidentB, opts { limit: { a, b, min, max } })
+  // hinge(concentricA, concentricB, coincidentA, coincidentB, opts { limit: { a, b, min, max, angle? } })
   Builder.prototype.symmetric = function (plane, a, b, opts) {
     var o = JSON.parse(JSON.stringify(opts || {}));
     o.a2 = builderRef(this.model, plane);
     return this.mate('symmetric', a, b, o);
   };
   Builder.prototype.slot = function (face, pin, opts) { return this.mate('slot', face, pin, opts); };
+  // rfPL: bomDescription(entry key | component, text): a BOM Description kept in the assembly (model.bomDescriptions)
+  Builder.prototype.bomDescription = function (key, text) {
+    if (typeof key !== 'string' || key.charAt(0) !== '{') key = entryKey(this.model, findComponent(this.model, key) || (function () { throw new Error('Unknown component ' + JSON.stringify(key)); })());
+    this.model.bomDescriptions = this.model.bomDescriptions || {};
+    this.model.bomDescriptions[key] = String(text == null ? '' : text);
+    return this;
+  };
   Builder.prototype.hinge = function (a, b, a2, b2, opts) {
     var o = JSON.parse(JSON.stringify(opts || {})), l = o.limit;
     o.a2 = builderRef(this.model, a2); o.b2 = builderRef(this.model, b2);
-    if (l && typeof l === 'object') { o.a3 = builderRef(this.model, l.a); o.b3 = builderRef(this.model, l.b); o.min = l.min; o.max = l.max; o.limit = true; }
+    if (l && typeof l === 'object') { o.a3 = builderRef(this.model, l.a); o.b3 = builderRef(this.model, l.b); o.min = l.min; o.max = l.max; o.limit = true; if (l.angle != null) o.angle = l.angle; }
     return this.mate('hinge', a, b, o);
   };
   function patternOpts(model, opts) {
@@ -3694,6 +3784,7 @@ var Assembly = (function () {
       ['distance', 'angle', 'offset', 'min', 'max', 'percent'].forEach(function (k) { if (m[k] != null) opts.push(k + ': ' + String(r6(+m[k]))); });
       if (m.constraint) opts.push('constraint: ' + JSON.stringify(m.constraint));
       if (m.limit) opts.push('limit: true');
+      if (m.anglePlaced) opts.push('anglePlaced: true');   // rfPL: a Hinge already placed at its angle
       if (m.lock) opts.push('lock: true');
       if (m.jointPoint) opts.push('jointPoint: true');   // rfKF
       if (m.ratio) opts.push('ratio: ' + numList(m.ratio));
@@ -3721,6 +3812,9 @@ var Assembly = (function () {
     (model.ignoredInterferences || []).forEach(function (k) {   // r4/asm4
       var s = ignoreSides(k);   // r5/asm5: saved by component id, written by name (a script's ids may differ)
       out.push('a.ignoreInterference(' + JSON.stringify(sideName(model, s.a)) + ', ' + JSON.stringify(sideName(model, s.b)) + (s.co ? ', { coincident: true }' : '') + ');');
+    });
+    Object.keys(model.bomDescriptions || {}).forEach(function (k) {   // rfPL: a BOM row's Description typed for a library part
+      out.push('a.bomDescription(' + JSON.stringify(k) + ', ' + JSON.stringify(String(model.bomDescriptions[k])) + ');');
     });
     return out.join('\n') + '\n';
   }
@@ -3963,7 +4057,7 @@ var Assembly = (function () {
     findExplodedView: findExplodedView, findExplodeStep: findExplodeStep, setExploded: setExploded, explodeOffsets: explodeOffsets,
     explodedBodies: explodedBodies, explodeDir: explodeDir, smartFasteners: smartFasteners, addSmartFasteners: addSmartFasteners,   // lane evalgrey
     Documents: Documents, documents: Documents, resolveSource: resolveSource, references: references, saveReferences: saveReferences,
-    packAndGo: packAndGo, setFlexible: setFlexible, setTransparent: setTransparent, isSubAssemblySource: isSubAssemblySource, bom: bom, leafBodies: leafBodies,
+    packAndGo: packAndGo, setFlexible: setFlexible, setTransparent: setTransparent, isSubAssemblySource: isSubAssemblySource, bom: bom, setBomDescription: setBomDescription, bomOverride: bomOverride, hingeAngle: hingeAngle, leafBodies: leafBodies,
     composeTransforms: composeT, relativeTransform: relativeT, interferenceKey: interferenceKey, setInterferenceIgnored: setInterferenceIgnored, ignoreSide: ignoreSide, migrateIgnored: migrateIgnored,
     findCylinder: function (build, p) { var g = partGeom(build); return g ? findCylinder(g, p) : null; },
     camPath: function (build, p, near) { var g = partGeom(build); return g ? camPath(g, copy3(p), near) : null; },   // rfKF

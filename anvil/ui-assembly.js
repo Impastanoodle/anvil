@@ -341,7 +341,7 @@
     // pattern instances follow their seed: dragging one is refused
     if (isAsm() && (!App.command || App.command.dragComponents) && App.mesh && UI.pickFace) {
       var h = UI.pickFace(p[0], p[1]), f = h && App.mesh.faces[h.index], cc = f ? (App.model.components || [])[f.body || 0] : null;
-      if (cc && cc.pattern != null) { UI.setStatus(cc.name + ' is a pattern instance: drag its seed ' + compName(cc.seed) + '.'); return null; }
+      if (cc && cc.pattern != null) { if (!App.command || App.command.dragComponents !== 'mate') UI.setStatus(cc.name + ' is a pattern instance: drag its seed ' + compName(cc.seed) + '.'); return null; }   // (rfPL: in the Mate PM a press there is a pick)
     }
     return baseDragHook ? baseDragHook(p, ev, force) : null;
   };
@@ -385,11 +385,49 @@
     var src = null;
     try { src = AS.refFromPick(App.model, App.build, hit.index, hit.point, App.mesh); } catch (e) { src = null; }
     if (!refKind(src)) return null;
-    var snap = JSON.stringify(App.model), raf = 0, last = null, cur = null, tries = {};
+    var snap = JSON.stringify(App.model), raf = 0, last = null, cur = null, tries = {}, flipped = false;
+    // rfPL: Tab while dragging flips the alignment of the mate offered (SolidWorks: "press Tab to toggle the mate
+    // alignment"); it stays flipped for the next face until Tab again. The capture listener keeps Tab from the graphics
+    // area's Hide component (it is a drag key now) and from moving the focus.
+    function onTab(e) {
+      if (e.key !== 'Tab' || e.ctrlKey || e.metaKey) return;
+      e.preventDefault(); e.stopPropagation();
+      flipped = !flipped;
+      cur = null;
+      if (last && !raf) raf = UI.beforeFrame ? UI.beforeFrame(show) : requestAnimationFrame(show);
+    }
+    document.addEventListener('keydown', onTab, true);
+    function stopTab() { document.removeEventListener('keydown', onTab, true); window.removeEventListener('mouseup', stopTab, true); }
+    window.addEventListener('mouseup', stopTab, true);   // (a press that never became a drag ends here too)
+    // the alignment a solved offer has (Closest: the sense its two references have in that pose)
+    function senseOf(o) {
+      var al = o.alignment || AS.defaultAlignment({ type: o.type, a: src, b: o.ref });
+      if (al !== 'closest') return al;
+      try {
+        var A = AS.resolveRef(o.model, o.pb.partBuilds || App.build.partBuilds, src), B = AS.resolveRef(o.model, o.pb.partBuilds || App.build.partBuilds, o.ref);
+        var da = A.normal || A.dir, db = B.normal || B.dir;
+        return da[0] * db[0] + da[1] * db[1] + da[2] * db[2] < 0 ? 'anti-aligned' : 'aligned';
+      } catch (e) { return 'aligned'; }
+    }
     // the mate the cursor offers: { key, type, ref, ok, pb, model } (cached per target face)
     function offer(q) {
       var h = pickOther(q[0], q[1], ci), tf = h && App.mesh.faces[h.index];
       if (!tf) return null;
+      var o0 = offerAt(h);
+      if (!flipped || !o0.type || !o0.ref || o0.ref.component === c.id || !AS.hasAlignment({ type: o0.type, a: src, b: o0.ref })) return o0;
+      var key = h.index + ':flip', o = tries[key];
+      if (o) return o;
+      o = tries[key] = { key: key, type: o0.type, ref: o0.ref, ok: false, flipped: true };
+      if (!o0.ok) { o.error = o0.error; return o; }
+      o.alignment = senseOf(o0) === 'aligned' ? 'anti-aligned' : 'aligned';
+      try {
+        var mmf = JSON.parse(snap), matef = AS.addMate(mmf, o.type, JSON.parse(JSON.stringify(src)), JSON.parse(JSON.stringify(o.ref)), { alignment: o.alignment });
+        var pbf = AS.rebuild(mmf, App.asmCache, { poseOnly: true }), rf = pbf.mates && pbf.mates[matef.id];
+        o.ok = !!(rf && !rf.error); o.error = rf && rf.error; o.model = mmf; o.pb = pbf;
+      } catch (e3) { o.error = e3.message || String(e3); }
+      return o;
+    }
+    function offerAt(h) {
       var key = h.index, o = tries[key];
       if (o) return o;
       var ref = null;
@@ -424,7 +462,7 @@
       cur = o;
       if (o && o.ok) {
         UI.asmPose.apply(o.model, o.pb.explode);
-        UI.setStatus('SmartMates: ' + SMART_NAMES[o.type] + ' — drop to add the mate.');
+        UI.setStatus('SmartMates: ' + SMART_NAMES[o.type] + (o.flipped ? ' (' + (o.alignment === 'aligned' ? 'Aligned' : 'Anti-Aligned') + ')' : '') + ' — drop to add the mate; Tab flips the alignment.');
       } else {
         UI.asmPose.apply(JSON.parse(snap), App.build.explode);
         UI.setStatus(o && o.type && o.error ? 'SmartMates: ' + SMART_NAMES[o.type] + ' not possible: ' + o.error
@@ -437,6 +475,7 @@
       move: function (q) { last = q; if (!raf) raf = UI.beforeFrame ? UI.beforeFrame(show) : requestAnimationFrame(show); },   // rfPE: in the frame that draws it
       end: function (q) {
         if (raf) { if (UI.beforeFrame) UI.cancelBeforeFrame(raf); else cancelAnimationFrame(raf); raf = 0; }
+        stopTab();
         last = q;
         var o = offer(q) || (cur && cur.ok ? cur : null);
         if (UI.asmPose.active()) UI.asmPose.end();   // the rebuild below draws the mated result in the same frame
@@ -445,7 +484,7 @@
         return commit(function (m) { return AS.addMate(m, type, JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)), al ? { alignment: al } : {}); },
           function (mt) { return 'SmartMates: ' + (mt ? mt.name : SMART_NAMES[type]) + ' added (' + c.name + '). Pick another type, Flip Mate Alignment, or ✓.'; })
           .then(function (mt) {   // r5/asm5: the Mate pop-up toolbar at the drop point, as in SolidWorks
-            if (mt) smartPopup(q, { pre: pre, a: a, b: b, type: type, alignment: null, mateId: mt.id, kinds: refKind(src) + '|' + refKind(o.ref), comp: c.name });
+            if (mt) smartPopup(q, { pre: pre, a: a, b: b, type: type, alignment: al, mateId: mt.id, kinds: refKind(src) + '|' + refKind(o.ref), comp: c.name });
             return mt;
           })
           .catch(function (e) { UI.toast(e.message || String(e)); });
@@ -1708,11 +1747,50 @@
       table.innerHTML = '';
       table.appendChild(el('tr', {}, ['ITEM NO.', 'PART NUMBER', 'DESCRIPTION', 'QTY.'].map(function (h) { return el('th', { text: h }); })));   // DESCRIPTION: r3/assembly3
       bomRows(sel.value).forEach(function (r) {
-        var nm = el('td', { text: r.name + (r.kind === 'assembly' ? ' (assembly)' : '') + (r.file ? ' ↗' : '') });
+        // rfPL: PART NUMBER is the part's Part Number property, else its document name
+        var nm = el('td', { class: 'bom-pn', text: (r.partNumber || r.name) + (r.kind === 'assembly' ? ' (assembly)' : '') + (r.file ? ' ↗' : '') });
         nm.style.paddingLeft = (6 + 14 * r.level) + 'px';
-        var tr = el('tr', { class: 'bom-row', 'data-item': r.item }, [el('td', { text: r.item }), nm, el('td', { class: 'bom-desc', text: r.description || '' }), el('td', { text: String(r.qty) })]);
+        var desc = el('td', { class: 'bom-desc' + (r.descriptionIn ? ' bom-edit' : ''), text: r.description || '' });
+        if (r.descriptionIn) {
+          desc.title = 'Double-click to edit: ' + (r.descriptionIn === 'file' ? 'written to the Description property of ' + r.file + ' (saved with File ▸ Save)'
+            : r.descriptionIn === 'part' ? 'written to the part\'s Description property' : 'kept with this assembly (a Design Library part)');
+          desc.addEventListener('dblclick', function () { editDesc(desc, r); });
+        }
+        var tr = el('tr', { class: 'bom-row', 'data-item': r.item }, [el('td', { text: r.item }), nm, desc, el('td', { text: String(r.qty) })]);
         table.appendChild(tr);
       });
+    }
+    // rfPL: a DESCRIPTION cell edited in place (SolidWorks writes a BOM cell linked to $PRP:"Description" back to the
+    // part): Enter or leaving the box applies (one undo step), Esc keeps the old text
+    function editDesc(td, r) {
+      if (td.querySelector('input')) return;
+      var was = r.description || '', inp = el('input', { type: 'text', class: 'bom-desc-input', 'aria-label': 'Description of ' + (r.partNumber || r.name) });
+      inp.value = was;
+      td.textContent = '';
+      td.appendChild(inp);
+      var done = false;
+      function finish(apply) {
+        if (done) return;
+        done = true;
+        if (apply && inp.value !== was) setBomDescription(r.key, inp.value);
+        fill();
+      }
+      inp.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); finish(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+        else e.stopPropagation();   // (typing is the box's, not a shortcut)
+      });
+      inp.addEventListener('blur', function () { finish(true); });
+      inp.focus(); inp.select();
+    }
+    function setBomDescription(key, text) {
+      UI.pushUndo();
+      var res = AS.setBomDescription(App.model, key, text);
+      if (!res.ok) { UI.toast('That row\'s description cannot be changed.'); return res; }
+      if (UI.autosave) UI.autosave();
+      if (UI.refreshTree) UI.refreshTree();
+      UI.setStatus('Description ' + (String(text).trim() ? 'set' : 'cleared') + (res.where === 'file' ? ' in ' + res.file + ' (File ▸ Save saves it)' : res.where === 'part' ? ' in the part (' + res.count + ' cop' + (res.count === 1 ? 'y' : 'ies') + ')' : ' in this assembly') + '.');
+      return res;
     }
     sel.addEventListener('change', fill);
     fill();
@@ -1755,6 +1833,8 @@
       '.asm-pop button:hover{background:var(--hover);border-color:var(--blue-line)}',
       '.asm-pop button[aria-pressed="true"]{background:var(--blue-soft);border-color:var(--blue-line)}',
       '.asm-pop .sep{width:1px;align-self:stretch;margin:2px 3px;background:var(--line)}',
+      '.asm-pop .pop-val{width:56px;height:22px;margin:0 1px 0 2px;padding:0 4px;border:1px solid var(--line);border-radius:2px;background:var(--bg,#fff);color:var(--text);font:inherit;font-size:12px;text-align:right}',   // rfPL
+      '.asm-pop .pop-unit{font-size:11px;color:var(--muted);margin-right:3px}',
       '.asm-pop.ctx.far{opacity:.3}',
       '.asm-flyout{position:absolute;left:8px;top:44px;z-index:6;font-size:12px;color:var(--text);user-select:none;max-width:60%}',
       '.asm-flyout .fo-row{display:flex;align-items:center;gap:4px;height:21px;padding:0 8px 0 2px;border-radius:2px;cursor:default;white-space:nowrap}',
@@ -1804,9 +1884,24 @@
     var box = el('div', { class: 'asm-pop ' + kind, role: 'toolbar', 'aria-label': label });
     var p = { el: box, kind: kind, opts: opts, items: items };
     function render() {
+      var focused = document.activeElement && box.contains(document.activeElement) ? document.activeElement.getAttribute('data-field') : null;
       box.innerHTML = '';
       items().forEach(function (it) {
         if (it.sep) { box.appendChild(el('span', { class: 'sep' })); return; }
+        if (it.field) {   // rfPL: a value box (the Distance / Angle beside their buttons, as SolidWorks' Mate pop-up)
+          var inp = el('input', { type: 'text', class: 'pop-val', title: it.title, 'aria-label': it.title, 'data-field': it.id });
+          inp.value = it.value();
+          inp._armed = inp.value;
+          inp.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+          inp.addEventListener('focus', function () { try { inp.select(); } catch (e) { } });
+          inp.addEventListener('change', function () { if (inp.value !== inp._armed) { inp._armed = inp.value; it.run(inp.value); if (popup === p) render(); } });
+          p.fieldEnter = p.fieldEnter || {};
+          p.fieldEnter[it.id] = function () { if (inp.value === inp._armed) return false; inp._armed = inp.value; it.run(inp.value); if (popup === p) render(); return true; };
+          box.appendChild(inp);
+          if (it.unit) box.appendChild(el('span', { class: 'pop-unit', text: it.unit }));
+          if (focused === it.id) setTimeout(function () { try { inp.focus(); } catch (e) { } }, 0);
+          return;
+        }
         var b = el('button', { type: 'button', title: it.title, 'aria-label': it.title, 'data-act': it.id || it.icon || '' });
         if (it.pressed != null) b.setAttribute('aria-pressed', it.pressed ? 'true' : 'false');
         b.innerHTML = it.svg || iconHtml(it.icon);
@@ -1820,6 +1915,10 @@
     p.key = function (e) {
       if (popup !== p) return;
       if (kind === 'ctx') { if (e.key === 'Escape') closePopup('esc'); return; }   // the keys stay the graphics area's
+      // rfPL: in a value box, Enter applies a changed value (the next Enter is ✓) and the other keys type
+      var fid = e.target && e.target.getAttribute && box.contains(e.target) ? e.target.getAttribute('data-field') : null;
+      if (fid && e.key !== 'Enter' && e.key !== 'Escape') { e.stopPropagation(); return; }
+      if (fid && e.key === 'Enter' && p.fieldEnter && p.fieldEnter[fid] && p.fieldEnter[fid]()) { e.preventDefault(); e.stopPropagation(); return; }
       if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); act('ok'); }
       else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); act('cancel'); }
     };
@@ -1880,7 +1979,15 @@
   // type() -> current, onType(t), onFlip(), onOK(), onCancel() }
   UI.asmMatePopup = function (o) {
     return showPopup(viewportClient(null), 'mate', 'Mate', function () {
-      return typeItems(o.types(), o.type(), function (t) { o.onType(t); }).concat(o.flip === false ? [{ sep: true }] : [   // r7/asm7: o.flip false: none
+      var ti = typeItems(o.types(), o.type(), function (t) { o.onType(t); });
+      // rfPL: SolidWorks' Mate pop-up has a value box beside Distance and Angle: a value typed there makes that mate
+      if (o.value && o.onValue) ti = [].concat.apply([], ti.map(function (it) {
+        if (it.id !== 'distance' && it.id !== 'angle') return [it];
+        var t = it.id;
+        return [it, { field: true, id: t + 'Value', title: t === 'distance' ? 'Distance' : 'Angle', unit: t === 'angle' ? '°' : (UI.unitLabel ? UI.unitLabel() : ''),
+          value: function () { var x = o.value(t); return x == null ? '' : String(+(+x).toFixed(6)); }, run: function (val) { o.onValue(t, val); } }];
+      }));
+      return ti.concat(o.flip === false ? [{ sep: true }] : [   // r7/asm7: o.flip false: none
         { sep: true },
         { svg: FLIP_SVG, id: 'flip', title: 'Flip Mate Alignment', run: function () { o.onFlip(); } },
         { sep: true }]).concat([
@@ -2051,12 +2158,73 @@
   var ghostMesh = null, ghostMat = null, ghostFront = null;
   function ghostKeyOk() { return isAsm(); }
   function isGhost(id) { var c = isAsm() && AS.findComponent(App.model, id); return !!(c && c.transparent); }
+  // rfPL: displayGhost {body index: true}: drawn transparent for a while without changing the model (Interference
+  // Detection ▸ Make interfering parts transparent)
+  var displayGhost = null;
   UI.bodyGhost = function (i) {
     if (!ghostKeyOk()) return false;
     var c = (App.model.components || [])[i];
-    return !!(c && c.transparent);
+    return !!(c && c.transparent) || !!(displayGhost && displayGhost[i]);
   };
-  UI.anyGhost = function () { return isAsm() && (App.model.components || []).some(function (c) { return c.transparent; }); };
+  UI.anyGhost = function () { return isAsm() && ((App.model.components || []).some(function (c) { return c.transparent; }) || !!(displayGhost && Object.keys(displayGhost).length)); };
+  function setDisplayGhost(set) {
+    var a = JSON.stringify(displayGhost || {}), b = JSON.stringify(set || {});
+    if (a === b) return false;
+    displayGhost = set && Object.keys(set).length ? set : null;
+    if (isAsm() && UI.setBodyHidden && App.mesh) UI.setBodyHidden(0, !!(UI.isBodyHidden && UI.isBodyHidden(0)));   // redraw: the opaque mesh leaves them out
+    drawGhosts();
+    return true;
+  }
+  (UI.onBuild = UI.onBuild || []).push(function () { if (displayGhost && !isAsm()) displayGhost = null; });
+  // rfPL: Interference Detection ▸ Options ▸ Make interfering parts transparent (SolidWorks): the components of the
+  // interferences shown (the one picked in Results, else every one counted) are drawn see-through while the PM is open,
+  // so the red interference volume shows inside them; nothing in the model changes. The PM is ui-evaluate.js'
+  // cmdInterference (loaded after this file): UI.cmdInterference is wrapped as it is assigned.
+  var intfTransparent = false, intfSpec = null;
+  function intfGhostSet() {
+    var s = UI.interferenceSession && UI.interferenceSession(), res = s && s.results && s.results(), out = {};
+    if (!intfTransparent || !res || !res.pairs || !intfSpec || !UI.pmSpec || UI.pmSpec() !== intfSpec) return out;
+    var row = document.querySelector('#pm .intf-row.selected'), act = row ? res.pairs[+row.getAttribute('data-i')] : null;   // the result picked in Results
+    var shown = act ? [act] : res.pairs.filter(function (p) { return !p.ignored; });
+    shown.forEach(function (p) { if (p.aIndex != null) out[p.aIndex] = true; if (p.bIndex != null) out[p.bIndex] = true; });
+    return out;
+  }
+  function intfGhostSync() { setDisplayGhost(intfGhostSet()); }
+  function wrapInterference(inner) {
+    return function () {
+      var r = inner.apply(this, arguments), spec = UI.pmSpec && UI.pmSpec();
+      if (!spec || spec.title !== 'Interference Detection' || spec.__rfPL) return r;
+      spec.__rfPL = true; intfSpec = spec;
+      var opts = (spec.groups || []).filter(function (g) { return g.title === 'Options'; })[0];
+      if (opts) {
+        var at = opts.fields.length;
+        opts.fields.forEach(function (f, i) { if (f.key === 'ignoreHidden') at = i; });   // SolidWorks' order: before Ignore hidden bodies
+        opts.fields.splice(at, 0, { type: 'check', label: 'Make interfering parts transparent', key: 'transparentIntf' });
+      }
+      spec.values.transparentIntf = intfTransparent;
+      var change = spec.onChange, close = spec.onClose;
+      spec.onChange = function (val, key) {
+        if (key === 'transparentIntf') { intfTransparent = !!val[key]; intfGhostSync(); return undefined; }
+        return change ? change.apply(this, arguments) : undefined;
+      };
+      spec.onClose = function () { intfSpec = null; setDisplayGhost(null); return close ? close.apply(this, arguments) : undefined; };
+      if (UI.renderPM) UI.renderPM();
+      intfGhostSync();
+      return r;
+    };
+  }
+  // the results change (a pick, an option, Ignore, a row picked): ui-evaluate.js redraws the highlights each time
+  var baseUpdateHl = UI.updateHighlights;
+  if (baseUpdateHl) UI.updateHighlights = function () {
+    var r = baseUpdateHl.apply(this, arguments);
+    if (intfSpec || displayGhost) intfGhostSync();
+    return r;
+  };
+  (function () {
+    var cur = UI.cmdInterference ? wrapInterference(UI.cmdInterference) : null;
+    try { Object.defineProperty(UI, 'cmdInterference', { configurable: true, enumerable: true, get: function () { return cur; }, set: function (fn) { cur = typeof fn === 'function' ? wrapInterference(fn) : fn; } }); } catch (e) { /* kept as it is */ }
+  })();
+  UI.asmDisplayGhost = function () { return displayGhost ? Object.keys(displayGhost).map(Number) : []; };
   function setGhost(id, on) {
     var c = ghostKeyOk() && AS.findComponent(App.model, id);
     if (!c) return false;
@@ -2325,8 +2493,7 @@
     A.editPart = function (idOrName) { var c = isAsm() ? AS.findComponent(App.model, idOrName) : null; return c ? editPart(c.id) : fail('Unknown component ' + JSON.stringify(idOrName)); };
     A.returnToAssembly = function () { return returnToAssembly(); };
     A.docStack = function () { return UI.asmDocs.stack(); };
-    A.bom = function (type) { return bomRows(type || 'top').map(function (r) { return { item: r.item, level: r.level, name: r.name, description: r.description || '', kind: r.kind, qty: r.qty, file: r.file || null }; }); };
-    A.packAndGo = function () { return isAsm() ? AS.packAndGo(App.model) : null; };
+    A.bom = function (type) { return bomRows(type || 'top').map(function (r) { return { item: r.item, level: r.level, name: r.name, partNumber: r.partNumber || r.name, description: r.description || '', kind: r.kind, qty: r.qty, file: r.file || null }; }); };    A.packAndGo = function () { return isAsm() ? AS.packAndGo(App.model) : null; };
     A.saveReferences = function () { return isAsm() ? AS.saveReferences(App.model) : []; };
     A.explodedViews = function () {
       if (!isAsm()) return [];
@@ -2509,13 +2676,16 @@
   var gvSession = null;
   function gvMate(type, existing, seed) {
     if (!(UI.isAssembly ? UI.isAssembly() : App.model && App.model.type === 'assembly')) { UI.toast('Open an assembly first (File \u25b8 New \u25b8 Assembly).'); return; }
-    var X = existing || {}, snapshot = JSON.stringify(App.model), previewed = false, alignSet = !!X.alignment;
+    var X = existing || {}, snapshot = JSON.stringify(App.model), previewed = false, alignSet = !!X.alignment, baseModel = App.model;
     function start(k) { return X[k] ? clone(X[k]) : seed && seed[k] ? clone(seed[k]) : null; }
     var v = { type: type, advType: GV_ADV[type] ? type : '', mechType: GV_ADV[type] ? '' : type,
       ratioA: X.ratio ? +X.ratio[0] : 1, ratioB: X.ratio ? +X.ratio[1] : 1, offset: X.offset != null ? X.offset : 0, lock: !!X.lock,
       a: start('a'), b: start('b'), a2: start('a2'), b2: start('b2'), a3: start('a3'), b3: start('b3'),
       constraint: X.constraint || 'free', distance: X.distance != null ? X.distance : 0, percent: X.percent != null ? X.percent : 50, flip: !!X.flip,
-      limit: !!X.limit, min: X.min != null ? X.min : 0, max: X.max != null ? X.max : 90 };
+      limit: !!X.limit, min: X.min != null ? X.min : 0, max: X.max != null ? X.max : 90, angle: X.angle != null ? X.angle : 0 };
+    // rfPL: Hinge ▸ Angle (with Define angle limit): shows the angle the Angle Selections make now until a value is
+    // typed; a typed one places the door there once (assembly.js anglePlaced)
+    var angleTyped = X.angle != null;
     // rfKA: Screw (Revolutions/unit | Distance/revolution) and Rack Pinion (Pinion pitch diameter | Rack travel/revolution)
     v.pitchBy = X.pitchBy || (type === 'rackpinion' && !existing ? 'diameter' : 'distance');
     v.pitchVal = X.pitch == null ? (type === 'screw' ? 1 : 20) : v.pitchBy === 'revolutions' ? 1 / +X.pitch : v.pitchBy === 'diameter' ? +X.pitch / Math.PI : +X.pitch;
@@ -2530,10 +2700,10 @@
     function slots() { return type === 'symmetric' ? ['a2', 'a', 'b'] : type === 'universaljoint' ? (v.jointPoint ? ['a', 'b', 'a2'] : ['a', 'b'])
       : type === 'slot' || type === 'linearcoupler' || type === 'profilecenter' || type === 'cam' || GV_PITCH[type] ? ['a', 'b'] : v.limit ? ['a', 'b', 'a2', 'b2', 'a3', 'b3'] : ['a', 'b', 'a2', 'b2']; }
     function ready() { return slots().every(function (k) { return !!v[k]; }); }
-    function restore() { App.model = JSON.parse(snapshot); }
+    function restore() { App.model = JSON.parse(snapshot); baseModel = App.model; }
     function values() {
       if (type === 'slot') return { constraint: v.constraint, distance: v.constraint === 'distance' ? +v.distance || 0 : null, percent: v.constraint === 'percent' ? +v.percent || 0 : null, flip: !!v.flip };
-      if (type === 'hinge') return { limit: !!v.limit, min: v.limit ? +v.min || 0 : null, max: v.limit ? +v.max || 0 : null };
+      if (type === 'hinge') return { limit: !!v.limit, min: v.limit ? +v.min || 0 : null, max: v.limit ? +v.max || 0 : null, angle: v.limit && angleTyped ? +v.angle || 0 : null };
       if (type === 'linearcoupler') return { ratio: [+v.ratioA, +v.ratioB], flip: !!v.flip };
       if (type === 'profilecenter') return { offset: +v.offset || 0, flip: !!v.flip, lock: !!v.lock };
       if (type === 'universaljoint') return { jointPoint: !!v.jointPoint };
@@ -2580,6 +2750,8 @@
     }
     function statusOf(mt) { return UI.mateStatus ? UI.mateStatus(mt) : { error: null }; }
     function preview() {
+      // rfPL: the model was replaced while the PM stayed open (a drag, an undo): previews start from that one
+      if (!previewed && App.model !== baseModel) { snapshot = JSON.stringify(App.model); baseModel = App.model; }
       restore();
       if (!ready()) { if (previewed) { previewed = false; UI.rebuild({ noSave: true }); } setMessage(hint()); return; }
       var mt, st;
@@ -2594,6 +2766,10 @@
           if (st2.error) { v.a = was[0]; v.b = was[1]; restore(); mt = apply(App.model); UI.rebuild({ noSave: true }); st = statusOf(mt); } else { st = st2; UI.renderPM(); }
         }
       } catch (e) { restore(); previewed = false; UI.rebuild({ noSave: true }); setMessage('Preview failed: ' + (e.message || e)); return; }
+      if (type === 'hinge' && v.limit && !angleTyped && !st.error && App.build && AS.hingeAngle) {   // rfPL: the angle it stands at
+        var ha = AS.hingeAngle(App.model, App.build.partBuilds, mt);
+        if (ha != null) v.angle = Math.round(ha * 1e4) / 1e4;
+      }
       setMessage(st.error ? GV_LABEL[type] + ': ' + st.error : GV_LABEL[type] + ' mate previewed. Press ✓ to ' + (existing ? 'update' : 'add') + ' it.', !st.error);
     }
     function lightFaces() {
@@ -2670,6 +2846,7 @@
       { type: 'check', label: 'Reverse', key: 'flip' }
     ]);
     if (type === 'hinge') mech = mech.concat([
+      { type: 'number', label: 'Angle', key: 'angle', unit: '°', show: function (x) { return !!x.limit; } },   // rfPL (SolidWorks: above the limits)
       { type: 'number', label: 'Maximum Value', key: 'max', unit: '°', show: function (x) { return !!x.limit; } },
       { type: 'number', label: 'Minimum Value', key: 'min', unit: '°', show: function (x) { return !!x.limit; } }
     ]);
@@ -2698,6 +2875,7 @@
     var pmSpec = {
       title: existing ? existing.name : 'Mate', icon: 'mate', values: v, noFocus: !existing, message: hint(),
       command: { pickPlane: true, quietPlanes: true, faceList: [], onPick: pick, pickEdges: !!GV_PITCH[type], edgeList: [],
+        get dragComponents() { return previewed ? null : 'mate'; },   // rfPL: drag a floating component with the PM open (SolidWorks)
         // rfKF: a vertex is picked once the next box takes one (the Cam Follower, a Universal Joint's joint point)
         pickRefGeo: type === 'cam' || type === 'universaljoint', refKinds: ['point'],
         pickVertices: function () { return type === 'cam' ? !!v.a && !v.b : type === 'universaljoint' && v.jointPoint && !!v.a && !!v.b && !v.a2; } },
@@ -2717,6 +2895,7 @@
           return;
         }
         if (key === 'alignment') alignSet = true;
+        if (key === 'angle') angleTyped = true;   // rfPL
         if (key === 'pitchVal') { pitchTyped = true; x.pitchTravel = null; }
         if (key === 'pitchBy' && GV_PITCH[type]) {   // the same pitch shown the other way
           var cur = +x.pitchVal, was = x.pitchBy === 'revolutions' || x.pitchBy === 'diameter' ? 'distance' : type === 'screw' ? 'revolutions' : 'diameter';
@@ -2729,14 +2908,29 @@
       onCancel: function () { if (previewed) { restore(); previewed = false; UI.rebuild({ noSave: true }); } },
       onClose: function () { gvSession = null; },
       onOK: function () {
+        // rfPL: as the Standard mates (ui-commands.js cmdMate), a new mate keeps the PM open for the next one, its
+        // selections cleared; ✓ with nothing selected (or ✗ / Esc) closes it
+        if (!existing && !slots().concat(['a2', 'b2', 'a3', 'b3']).some(function (k) { return !!v[k]; })) return undefined;
         if (type === 'linearcoupler' && !(+v.ratioA > 0 && +v.ratioB > 0)) { UI.toast('Linear/Linear Coupler: the ratio must be two numbers > 0.'); return false; }
         if (GV_PITCH[type] && !(+v.pitchVal > 0)) { UI.toast(GV_LABEL[type] + ': the value must be a number > 0.'); return false; }
         if (!ready()) { UI.toast('Select ' + (type === 'hinge' ? 'the Concentric and Coincident Selections' : type === 'slot' ? 'a slot face and a pin' : type === 'linearcoupler' ? 'a direction on each of two components' : type === 'screw' ? 'two cylindrical faces or axes' : type === 'rackpinion' ? 'the rack (a linear edge) and the pinion (a cylindrical face)' : type === 'profilecenter' ? 'a planar face on each of two components' : type === 'cam' ? 'a face of the cam path and a cam follower' : type === 'universaljoint' ? 'a cylindrical face or axis on each shaft' + (v.jointPoint ? ' and the joint point' : '') : 'the Symmetry Plane and two entities') + ' first.'); return false; }
         restore(); previewed = false;
-        return gvCommit(apply, function (mt) {
+        var p = gvCommit(apply, function (mt) {
           var st = statusOf(mt);
           return st.error ? mt.name + ': ' + st.error : mt.name + (existing ? ' updated.' : ' added.');
         });
+        if (existing) return p;
+        slots().concat(['a2', 'b2', 'a3', 'b3']).forEach(function (k) { v[k] = null; });
+        angleTyped = false;
+        return { keepOpen: true, promise: p.then(function (mt) {
+          snapshot = JSON.stringify(App.model); baseModel = App.model; previewed = false;
+          if (UI.hasPM() && UI.pmSpec() === pmSpec) {
+            var st = statusOf(mt);
+            UI.renderPM(); lightFaces();
+            setMessage((st.error ? mt.name + ': ' + st.error + '. ' : '<b>' + mt.name + '</b> added. ') + 'Select the entities for the next ' + GV_LABEL[type] + ' mate, or ✓ / Esc to close.', !st.error);
+          }
+          return mt;
+        }) };
       }
     };
     UI.openPM(pmSpec);
@@ -2788,7 +2982,7 @@
   // Assembly.collisionDrag (Rotate drags, rfJA: Assembly.collisionStep), so the dragged parts stop at first contact.
   var cd = { mode: 'standard', between: 'all', these: [], stop: true, draggedOnly: false, highlight: true, sound: false };   // kept between opens, as SolidWorks
   var cdRun = null;   // the drag running with Collision Detection: { last: collision result, beeped }
-  function cdOn() { return cd.mode === 'collision' && App.command && !!App.command.dragComponents; }
+  function cdOn() { return cd.mode === 'collision' && App.command && !!App.command.dragComponents && App.command.dragComponents !== 'mate'; }   // (rfPL: not a drag in the Mate PM)
   function cdBeep() {
     try {
       var C = window.AudioContext || window.webkitAudioContext;
