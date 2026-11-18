@@ -547,7 +547,9 @@
       var tabs = anvil.drawing.holeTables();
       notes.push('hole table ' + String(JSON.stringify(ht)).slice(0, 160) + ' rows ' + String(JSON.stringify(tabs && tabs[0] && tabs[0].rows.map(function (q) { return [q.tag, q.x, q.y, q.size]; }))).slice(0, 900) + ' status ' + statusText().slice(0, 160));
       rfNWjob.cDraw = { texts: texts, table: tabs[0] };
-      var want = ['[\"2X Ø .201 THRU ALL\"]', '[\"Ø .201 THRU ALL ⌵ Ø .385 X 82°\"]', '[\"Ø .201 THRU ALL 1/4-20 UNC THRU ALL\"]', '[\"Ø.344 THRU ALL\"]'];
+      // the PEM hole: since lane shopflow6 a Design Library feature on sheet metal cuts through the sheet only (blind T,
+      // linked to the thickness), a through hole of a stated end, which the callout writes THRU (lane shopsmall's rule)
+      var want = ['[\"2X Ø .201 THRU ALL\"]', '[\"Ø .201 THRU ALL ⌵ Ø .385 X 82°\"]', '[\"Ø .201 THRU ALL 1/4-20 UNC THRU ALL\"]', '[\"Ø.344 THRU\"]'];
       texts.forEach(function (x, i) { assert(x.slice(x.indexOf('→ ') + 2) === want[i], 'callout ' + i + ' as SolidWorks writes it (test-reports/2026-11-02-solidworks-reference-2.md): ' + x); });
       assert(tabs[0] && tabs[0].rows.length === 5, 'a Hole Table row per hole: ' + notes.join('; '));
       } catch (ex) { assert(false, 'EXC ' + (ex.stack || ex).toString().slice(0, 600) + ' :: ' + notes.join('; ')); }

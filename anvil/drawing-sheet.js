@@ -1858,6 +1858,9 @@
   function partInfo(source, asmBuild) {
     var key = JSON.stringify(source);
     var info = partInfoCache[key];
+    // a linked document saved again (new properties, new geometry) since this entry was made: read it again
+    var rev = source && source.file != null && typeof Assembly !== 'undefined' && Assembly.Documents && Assembly.Documents.rev ? Assembly.Documents.rev() : null;
+    if (info && rev != null && info.rev !== rev) info = null;
     if (!info) {
       info = { name: 'Part', description: '', model: null, _build: null };
       try {
@@ -1875,6 +1878,7 @@
         try { info._build = K.rebuild(JSON.parse(JSON.stringify(info.model))); } catch (e) { info._build = null; }
         return info._build;
       };
+      info.rev = rev;
       partInfoCache[key] = info;
     }
     // the assembly build already holds every part's build: reuse it instead of building the part again

@@ -97,27 +97,30 @@ var Assembly = (function () {
       list: function () { return Object.keys(docs); }
     };
   }
-  var backing = memoryBacking(), openDocs = {};
+  // docRev counts every change to the store (put, save, revert, remove, use), so a cache of a document's model (the
+  // drawing BOM's partInfo) knows it went stale when the part is saved again with new properties
+  var backing = memoryBacking(), openDocs = {}, docRev = 0;
   function has(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
   function rawDoc(name) { name = String(name); return has(openDocs, name) ? openDocs[name] : backing.get(name); }
   var Documents = {
     // use(backing | null): { get(name) -> model | null, put(name, model), remove(name), list() -> names }; null: a fresh
     // in-memory store. Unsaved (dirty) documents are dropped.
-    use: function (b) { backing = b || memoryBacking(); openDocs = {}; return Documents; },
+    use: function (b) { backing = b || memoryBacking(); openDocs = {}; docRev++; return Documents; },
+    rev: function () { return docRev; },
     get: function (name) { var m = rawDoc(name); return m ? clone(m) : null; },
     has: function (name) { return !!rawDoc(name); },
     // put(name, model, { dirty }): save to the backing store, or with dirty keep it in memory only (an edit not saved)
     put: function (name, model, opts) {
-      name = String(name);
+      name = String(name); docRev++;
       if (opts && opts.dirty) openDocs[name] = clone(model);
       else { backing.put(name, clone(model)); delete openDocs[name]; }
       return name;
     },
     isDirty: function (name) { return has(openDocs, String(name)); },
     dirty: function () { return Object.keys(openDocs); },
-    save: function (name) { name = String(name); if (!has(openDocs, name)) return false; backing.put(name, openDocs[name]); delete openDocs[name]; return true; },
-    revert: function (name) { var d = has(openDocs, String(name)); delete openDocs[String(name)]; return d; },
-    remove: function (name) { name = String(name); delete openDocs[name]; backing.remove(name); },
+    save: function (name) { name = String(name); if (!has(openDocs, name)) return false; docRev++; backing.put(name, openDocs[name]); delete openDocs[name]; return true; },
+    revert: function (name) { var d = has(openDocs, String(name)); docRev++; delete openDocs[String(name)]; return d; },
+    remove: function (name) { name = String(name); docRev++; delete openDocs[name]; backing.remove(name); },
     list: function () { var seen = {}; (backing.list() || []).concat(Object.keys(openDocs)).forEach(function (n) { seen[n] = true; }); return Object.keys(seen).sort(); }
   };
   function hashString(s) { var h = 5381; for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36) + ':' + s.length; }
