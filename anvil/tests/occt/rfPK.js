@@ -17,6 +17,8 @@
     { name: 'an edge Jog mirrored', a: PK_BASE + 'p.jog(0.5, 1, [[2, ' + PK_T + ', 2.5]]);\np.mirror("Right", { feature: 3 });', b: PK_BASE + 'p.jog(0.5, 1, [[2, ' + PK_T + ', 2.5], [-2, ' + PK_T + ', 2.5]]);' },
     { name: 'an Overlap Closed Corner and its flange mirrored', a: PK_PL + 'var rf = p.flange(1, [[4, ' + PK_T2 + ', 1]], ' + PK_IN + ').last();\np.mirror("Right", { feature: rf });\nvar c = p.closedCorner([' + JSON.stringify(PK_P) + '], ' + PK_O + ').last();\np.mirror("Right", { feature: c });',
       b: PK_PL + 'p.flange(1, [[4, ' + PK_T2 + ', 1], [-4, ' + PK_T2 + ', 1]], ' + PK_IN + ');\np.closedCorner([' + JSON.stringify(PK_P) + ', ' + JSON.stringify([-PK_P[0], PK_P[1], PK_P[2]]) + '], ' + PK_O + ');' },
+    { name: 'a Butt Closed Corner with the default Coplanar faces mirrored (the mirrored end face is closed already)', a: PK_PL + 'var rf = p.flange(1, [[4, ' + PK_T2 + ', 1]], ' + PK_IN + ').last();\np.mirror("Right", { feature: rf });\nvar c = p.closedCorner([' + JSON.stringify(PK_P) + '], { gap: 0.01 }).last();\np.mirror("Right", { feature: c });',
+      b: PK_PL + 'p.flange(1, [[4, ' + PK_T2 + ', 1], [-4, ' + PK_T2 + ', 1]], ' + PK_IN + ');\np.closedCorner([' + JSON.stringify(PK_P) + '], { gap: 0.01 });' },
     { name: 'a Circular Pattern (4 about Y) of a flange on a square', a: 'p.units("in");\np.sheet(0.1196, 0.12, 0.44);\np.sketch("Top").rect(-2, -2, 4, 4).end().baseFlange();\np.flange(1, [[2, ' + PK_T + ', 0]], { position: "inside", lengthRef: "outer", relief: "rect" });\np.circularPattern({ feature: 3, axis: "y", center: [0, 0, 0], count: 4 });',
       b: 'p.units("in");\np.sheet(0.1196, 0.12, 0.44);\np.sketch("Top").rect(-2, -2, 4, 4).end().baseFlange();\n' + ['[2, ' + PK_T + ', 0]', '[0, ' + PK_T + ', -2]', '[-2, ' + PK_T + ', 0]', '[0, ' + PK_T + ', 2]'].map(function (e) { return 'p.flange(1, [' + e + '], { position: "inside", lengthRef: "outer", relief: "rect" });\n'; }).join('') }
   ];
@@ -64,6 +66,13 @@
       if (!!mpd.features[mpd.features.length - 1].reverse !== pkd.want) whyPd.push('Anvil turned it ' + (pkd.want ? 'not ' : '') + 'round: reverse ' + mpd.features[mpd.features.length - 1].reverse);
       if (!rpd.ok || !rpd.valid || rpd.bodies !== 1) whyPd.push('OpenCascade: ok ' + rpd.ok + ', valid ' + rpd.valid + ', ' + rpd.bodies + ' bodies ' + JSON.stringify(rpd.status));
       if (!(Math.abs(rpd.volume - apd.volume) <= 1e-9 * apd.volume)) whyPd.push('volume ' + rpd.volume + ', Anvil ' + apd.volume + ' (the block: 16)');
+      // the worker hands the direction on (result.cutDirs, for ui-occt.js), also from its rebuild cache (a second build)
+      var cid = String(cutF.id), cd1 = (rpd.cutDirs || {})[cid];
+      if (pkd.want ? cd1 !== true : cd1 != null) whyPd.push('result.cutDirs ' + JSON.stringify(rpd.cutDirs));
+      if (pkd.want) {
+        var rc1 = await occt(JSON.parse(JSON.stringify(raw))), rc2 = await occt(JSON.parse(JSON.stringify(raw)));
+        if ((rc1.cutDirs || {})[cid] !== true || (rc2.cutDirs || {})[cid] !== true || !(rc2.reused >= raw.features.length) || Math.abs(rc2.volume - apd.volume) > 1e-9 * apd.volume) whyPd.push('cached builds: cutDirs ' + JSON.stringify([rc1.cutDirs, rc2.cutDirs]) + ', reused ' + rc2.reused + ', volume ' + rc2.volume);
+      }
       row(whyPd.length ? 'bad' : 'ok', pkdName, whyPd.join('\n') || 'volume ' + rpd.volume.toFixed(9) + (rpd.cutDirs ? ', cutDirs ' + JSON.stringify(rpd.cutDirs) : ''), performance.now() - tpd);
       counts[whyPd.length ? 'fail' : 'pass']++;
     } catch (e) { row('bad', pkdName, e.message); counts.fail++; }

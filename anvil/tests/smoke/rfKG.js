@@ -13,6 +13,8 @@
     function rfKGCaret() { return Array.prototype.filter.call(D.querySelectorAll('#ribbon .rb-caret'), function (b) { return /Corner/.test(b.getAttribute('aria-label') || ''); })[0]; }
     function rfKGRadio(val) { return $('pm').querySelector('input[data-key="cornerType:' + val + '"]'); }
     function rfKGBlank(fl) { return fl.loops.reduce(function (s, l, i) { return s + (i ? -Math.abs(K.signedArea(l)) : Math.abs(K.signedArea(l))); }, 0); }
+    // lane PK: the blank with its arcs true (as the DXF writes them): a Circular relief is the true circle in the solid now
+    function rfKGBlankX(fl) { return fl.loops.reduce(function (s, l, i) { var c = K.dxfLoopCurves(l), a = 0; if (c && c.circle) a = Math.PI * c.circle.r * c.circle.r; else if (c && c.segs) { c.segs.forEach(function (g) { a += (g.a[0] * g.b[1] - g.b[0] * g.a[1]) / 2; if (g.t === 'arc') a += g.r * g.r / 2 * (g.sweep - Math.sin(g.sweep)); }); a = Math.abs(a); } else a = Math.abs(K.signedArea(l)); return s + (i ? -a : a); }, 0); }
     function rfKGClosed() { var c = W.Evaluate.checkBody(UI.App.build.body, { maxPairs: 1 }); return c.openEdges.length + c.nonManifoldEdges.length; }
 
     step('rfKG: Corner Relief ▸ 3 Bend corner ▸ Circular Ø.12 at both corners through the PM: closed, one blank, folded = blank × T; Edit Feature ▸ Obround; an arc Swept Flange\'s end Edge Flange is in the flat', async function () {
@@ -40,8 +42,8 @@
       assert(rfKGClosed() === 0, 'closed solid');
       var fl = anvil.flat();
       assert(fl && fl.loops.length === 1, 'one blank');
-      near(rfKGVol(), rfKGBlank(fl) * T, 1e-6 * rfKGBlank(fl) * T, 'folded = blank × T');
-      near(v0 - rfKGVol(), 1.2905e-3, 1e-6, 'material removed (two Ø.12 corners less the notch, × T)');
+      near(rfKGVol(), rfKGBlankX(fl) * T, 1e-6 * rfKGBlankX(fl) * T, 'folded = blank × T');
+      near(v0 - rfKGVol(), 1.29761e-3, 1e-6, 'material removed (two Ø.12 corners less the notch, × T; lane PK: the true circles, the 32-gons took 1.2905e-3)');
       UI.editFeature(f); await wait(30); await idle();
       assert(UI.hasPM() && rfKGRadio('3bend').checked && pmField('Relief type').value === 'circular', 'Edit Feature: 3 Bend corner, Circular');
       setInput(pmField('Relief type'), 'obround'); await wait(20);

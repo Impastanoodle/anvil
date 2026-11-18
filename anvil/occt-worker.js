@@ -11,6 +11,9 @@
 //                { type: 'import', seq, format, text }    a STEP / IGES file read and tessellated (-> 'imported' / 'importError')
 // Messages out:  { type: 'ready', loadMs }                once, when OpenCascade has loaded
 //                { type: 'built', seq, result }           OcctKernel.build's result (mesh arrays transferred)
+//                                                         result.cutDirs: { extrude id: true } for Cut-Extrudes with no
+//                                                         direction that OpenCascade turned into the material (lane PK,
+//                                                         also across the rebuild cache); ui-occt.js writes them onto the model
 //                                                         result.edges: Kernel.bodyEdges of the mesh it makes (parts),
 //                                                         result.curves / normals: its Kernel.meshCurveInfo / analyticNormals,
 //                                                         result.packed: its bodies (OcctKernel.toBodies) packed, when

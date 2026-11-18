@@ -1351,7 +1351,7 @@
     // metal per unit (s, t) area) is hung on the outer cylinder record (`adj`: { v, m }), which kernel-curves.js
     // curveCorrection adds once per record. Only with round voids, and only for Fold (opts.exactArcs).
     var feet = opts.exactFoot && sec.R > 0 ? footCurves(opts.exactFoot, sec, BA, plane, segs) : null;
-    var arcs = (opts.exactArcs && arcCircles.length || feet && feet.length) && sec.R > 0 ? arcAdjust(edges, opts.exactArcs ? arcCircles : [], sec, BA, segs, Z, E, sEnd, t0, t1, tolT, plane, feet) : null;
+    var arcs = (opts.exactArcs && arcCircles.length || feet && feet.length) && sec.R > 0 ? arcAdjust(edges, opts.exactArcs ? arcCircles : [], sec, BA, segs, Z, E, sEnd, t0, t1, tolT, plane, feet, opts.straight) : null;
     var polys = [];
     faces.forEach(function (f) {
       var pg = CSG.Polygon.tryCreate(f.map(function (p) { return new CSG.Vertex(new CSG.Vector(p[0], p[1], p[2])); }), opts.shared);
@@ -1518,7 +1518,7 @@
   // metal per unit (s, t) area
   var MQ_GL = { x: [0.033765242898423986, 0.16939530676686776, 0.38069040695840156, 0.6193095930415985, 0.8306046932331322, 0.966234757101576],
     w: [0.08566224618958517, 0.18038078652406933, 0.23395696728634552, 0.23395696728634552, 0.18038078652406933, 0.08566224618958517] };
-  function arcAdjust(edges, circles, sec, BA, segs, Z, E, sEnd, t0, t1, tolT, plane, feet) {
+  function arcAdjust(edges, circles, sec, BA, segs, Z, E, sEnd, t0, t1, tolT, plane, feet, straight) {
     var A = sec.A, R = sec.R, T = sec.T, f = ((R + T) * (R + T) - R * R) / 2 * A / BA;
     var rc = (2 / 3) * (Math.pow(R + T, 3) - R * R * R) / ((R + T) * (R + T) - R * R), axC = add(plane.origin, scale(plane.y, R));
     var tolB = 1e-9 * Math.max(1, BA, t1 - t0);
@@ -1638,6 +1638,8 @@
         var dA = seg(a, aT) + I + seg(bT, b) - repInt(a, b);
         if (dA) partAt(dA, a, b);
       });
+      // lane PK: an edge along a line the outline was clipped on (opts.straight: { k, v } in (s, t)) is no chord
+      if (straight && straight.some(function (L) { return Math.abs(a[L.k] - L.v) <= tolB && Math.abs(b[L.k] - L.v) <= tolB; })) return;
       circles.forEach(function (C) {
         var ca = onC(a, C), cb = onC(b, C);
         if (!(ca || cb) || !(ca || ba) || !(cb || bb)) return;
@@ -4651,7 +4653,10 @@
   function clipHalf(poly, a, c) {
     var out = [];
     for (var i = 0; i < poly.length; i++) {
-      var p = poly[i], q = poly[(i + 1) % poly.length], dp = a[0] * p[0] + a[1] * p[1] - c, dq = a[0] * q[0] + a[1] * q[1] - c;
+      var p = poly[i], q = poly[(i + 1) % poly.length], dp = a[0] * p[0] + a[1] * p[1] - c, dq = a[0] * q[0] + a[1] * q[1] - c, z = 1e-12 * Math.max(1, Math.abs(c));
+      // (lane PK: a vertex on the line (a Circular relief's, crCircle) is on it: no second point a hair beside it)
+      if (Math.abs(dp) <= z) dp = 0;
+      if (Math.abs(dq) <= z) dq = 0;
       if (dp <= 0) out.push(p);
       if ((dp < 0 && dq > 0) || (dp > 0 && dq < 0)) { var t = dp / (dp - dq); out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]); }
     }
@@ -4664,12 +4669,48 @@
     if (poly.length && y1 != null) poly = clipHalf(poly, [0, 1], y1);
     return poly.length >= 3 && Math.abs(signedArea(poly)) > 1e-12 ? poly : null;
   }
-  // the relief outline in the corner frame (CCW): see the section comment
-  function cornerReliefShape(type, size, BAa, BAb, centered) {
+  // lane PK: a Circular relief's circle as a CCW loop with a vertex wherever it crosses one of the lines its pieces are
+  // clipped on (lines: { x: [v…], y: [v…] } in the corner frame), equal chords of at most 2π/32 between them: every
+  // piece's arc then runs from a point on the circle to a point on the circle, so each chord can carry the circle's
+  // record (crArcCv: the face and wall prisms exact in Mass Properties), the bend pieces' arcs are exact (wrapRegion
+  // exactArcs) and the flat's arcs are DXF ARCs of the true radius. Without lines: the old 32 equal chords from 0°.
+  var CR_EXACT = { on: true };   // K.crExact.on = false: the old 32-gon relief (comparisons)
+  K.crExact = CR_EXACT;
+  function crCircle(C, h, lines) {
+    var TAU = 2 * Math.PI, angs = [];
+    ((lines && lines.x) || []).forEach(function (v) { var dx = v - C[0]; if (v != null && isFinite(v) && Math.abs(dx) < h * (1 - 1e-9)) { var a = Math.acos(dx / h); angs.push(a, TAU - a); } });
+    ((lines && lines.y) || []).forEach(function (v) { var dy = v - C[1]; if (v != null && isFinite(v) && Math.abs(dy) < h * (1 - 1e-9)) { var a = Math.asin(dy / h); angs.push(a, Math.PI - a); } });
+    angs = angs.map(function (a) { return ((a % TAU) + TAU) % TAU; }).sort(function (p, q) { return p - q; });
+    var br = [];
+    angs.forEach(function (a) { if (!br.length || a - br[br.length - 1] > 1e-9) br.push(a); });
+    if (br.length > 1 && br[0] + TAU - br[br.length - 1] <= 1e-9) br.pop();
+    if (!br.length) br = [0];
+    var pts = [];
+    br.forEach(function (a0, k) {
+      var a1 = k + 1 < br.length ? br[k + 1] : br[0] + TAU, m = Math.max(1, Math.ceil((a1 - a0) / (TAU / 32) - 1e-9));
+      for (var j = 0; j < m; j++) { var th = a0 + (a1 - a0) * j / m; pts.push([C[0] + h * Math.cos(th), C[1] + h * Math.sin(th)]); }
+    });
+    return pts;
+  }
+  // lane PK: per edge of a clipped piece of the relief (CCW or not), the circle's record { c, r } (one object, in the
+  // piece's own 2D frame: map(C)) when the edge is an arc chord: both ends on the circle and not along a clip line
+  function crArcCv(poly, circ, lines, map) {
+    if (!circ || !poly) return null;
+    var C = circ.c, h = circ.r, tol = 1e-9 * Math.max(1, h), rec = { c: map ? map(C) : C.slice(), r: h }, any = false, n = poly.length;
+    function on(p) { return Math.abs(Math.hypot(p[0] - C[0], p[1] - C[1]) - h) <= tol; }
+    function along(p, q) {
+      return ((lines && lines.x) || []).some(function (v) { return Math.abs(p[0] - v) <= tol && Math.abs(q[0] - v) <= tol; }) ||
+        ((lines && lines.y) || []).some(function (v) { return Math.abs(p[1] - v) <= tol && Math.abs(q[1] - v) <= tol; });
+    }
+    var cv = poly.map(function (p, i) { var q = poly[(i + 1) % n]; var a = on(p) && on(q) && !along(p, q) && Math.hypot(q[0] - p[0], q[1] - p[1]) < h; if (a) any = true; return a ? rec : null; });
+    return any ? cv : null;
+  }
+  // the relief outline in the corner frame (CCW): see the section comment (lines: crCircle's)
+  function cornerReliefShape(type, size, BAa, BAb, centered, lines) {
     var C = centered ? [BAa / 2, BAb / 2] : [0, 0], h = size / 2, d = [Math.SQRT1_2, Math.SQRT1_2], nn = [-Math.SQRT1_2, Math.SQRT1_2], i, pts = [];
     if (type === 'tear') return [[0, 0], [BAa, 0], [BAa, BAb], [0, BAb]];
     if (type === 'rect') return [[C[0] - h, C[1] - h], [C[0] + h, C[1] - h], [C[0] + h, C[1] + h], [C[0] - h, C[1] + h]];
-    if (type === 'circular') { for (i = 0; i < 32; i++) { var th = 2 * Math.PI * i / 32; pts.push([C[0] + h * Math.cos(th), C[1] + h * Math.sin(th)]); } return pts; }
+    if (type === 'circular') return crCircle(C, h, lines);
     if (type === 'obround') {
       // two half circles Ø size, centres size / 2 either side of C along the diagonal
       var ca = [C[0] - d[0] * h, C[1] - d[1] * h], cb = [C[0] + d[0] * h, C[1] + d[1] * h], a0 = Math.atan2(nn[1], nn[0]);
@@ -4730,14 +4771,20 @@
       if (best.d > lim) throw new Error('Corner Relief: no corner of two bends near ' + q.map(function (x) { return fmtN(+x); }).join(', ') + '.');
       if (used.indexOf(best.c) >= 0) return;
       used.push(best.c);
-      var c = best.c, P = c.at, A = c.A, B = c.B, Q = cornerReliefShape(type, size, A.BA, B.BA, centered);
-      var pr = { at: P.slice(), closed: false, tools: [], bends: [] };
+      var c = best.c, P = c.at, A = c.A, B = c.B;
+      // lane PK: a Circular relief is the true circle (crCircle / crArcCv), its vertices on the lines it is clipped on
+      // (only the bend zones' lines: a vertex on a record's end line left 1e-4 edges that the drawing drew twice, rfMV;
+      // a piece ending there ends on wrapRegion's band edge, which arcAdjust takes exactly anyway)
+      var lines = { x: [0, A.BA], y: [0, B.BA] };
+      if (!CR_EXACT.on) lines = null;
+      var Q = cornerReliefShape(type, size, A.BA, B.BA, centered, lines), circ = type === 'circular' && lines ? { c: centered ? [A.BA / 2, B.BA / 2] : [0, 0], r: size / 2, lines: lines } : null;
+      var pr = { at: P.slice(), closed: false, tools: [], bends: [], circ: !!circ };
       pairs.push(pr);
       // the sheet face: x ≤ 0, y ≤ 0, a prism through T below the inside face
       var fp = clipBox(Q, null, 0, null, 0);
       if (fp) {
         var pl0 = { origin: P.slice(), x: c.e1.slice(), y: c.e2.slice(), n: norm(cross(c.e1, c.e2)) }, sg0 = dot(pl0.n, A.rec.u) > 0;
-        tools.push({ prism: { loop: fp, plane: pl0, a: sg0 ? -T - eps : -eps, b: sg0 ? eps : T + eps } });
+        tools.push({ prism: { loop: fp, plane: pl0, a: sg0 ? -T - eps : -eps, b: sg0 ? eps : T + eps, cv: crArcCv(fp, circ, lines) } });
       }
       // each bend (A across x, B across y): its strip (0 … BA) and its wall (BA on), over the record's length
       [[A, 0, c.yA, c.e2], [B, 1, c.xB, c.e1]].forEach(function (z) {
@@ -4753,9 +4800,9 @@
         // lane occtparity-2: the strip and wall through crBendCut (as the 3 Bend corner): a strip piece that is not a
         // rectangle carries `direct` (its band cut out by radial planes, its metal less the piece put back: cornerReliefApply)
         var n0 = tools.length;
-        crBendCut(bd, strip(0, BA, ext[1] + sh.by), st, false, tools, recs, eps, T, sh.by ? { end: near, by: sh.by } : null);
+        crBendCut(bd, strip(0, BA, ext[1] + sh.by), st, false, tools, recs, eps, T, sh.by ? { end: near, by: sh.by } : null, circ);
         for (var ti = n0; ti < tools.length; ti++) pr.tools.push(ti);
-        crBendCut(bd, strip(BA, null, ext[1] + sh.by + sh.cut), st, true, tools, recs, eps, T);
+        crBendCut(bd, strip(BA, null, ext[1] + sh.by + sh.cut), st, true, tools, recs, eps, T, null, circ);
         // (cornerReliefApply's corner path: the whole piece across this bend's strip, in the bend's (s, t), whatever
         // the end at the corner looks like; tP: the corner on the bend's line, dir: toward the corner's far side)
         var whole = strip(0, BA, null);
@@ -4778,7 +4825,7 @@
   var CORNER3_TYPES = ['rect', 'tear', 'circular', 'obround'];   // lane smflat: circular / obround rebuild the bends' metal (cornerReliefApply)
   // one bend's part of a relief: poly in the corner frame (clipped to the bend's strip or wall), st: corner (x, y) ->
   // the bend's (s from its start line, t along its line from its origin)
-  function crBendCut(bd, poly, st, wall, tools, recs, eps, T, endAdj) {
+  function crBendCut(bd, poly, st, wall, tools, recs, eps, T, endAdj, circ) {
     var r = bd.rec, BA = bd.BA, R = +r.R, Ang = +r.angle;
     if (!poly) return;
     if (!wall) {
@@ -4800,8 +4847,15 @@
         var te0 = dot(sub(r.a, r.origin), bd.n), te1 = dot(sub(r.b, r.origin), bd.n), tlo = Math.min(te0, te1), thi = Math.max(te0, te1);
         // (lane MJ: the bend runs `by` past that end of its record: a Closed Corner with the bend region closed)
         if (endAdj && endAdj.by) { if ((endAdj.end ? te1 : te0) >= (endAdj.end ? te0 : te1)) thi += endAdj.by; else tlo -= endAdj.by; }
-        tools.push({ wrap: { loops: [lp], sec: { A: Ang, R: R, T: T }, BA: BA, plane: plane, grow: { t0: tlo, t1: thi },
-          direct: { t0: Math.max(tlo, tMin - T), t1: Math.min(thi, tMax + T) } } });
+        // lane PK: a Circular relief's arcs are true circles in the bend's metal (wrapRegion exactArcs), the clip lines'
+        // edges (t = const: the record's end) straight (straight, in (s, t))
+        var wr = { loops: [lp], sec: { A: Ang, R: R, T: T }, BA: BA, plane: plane, grow: { t0: tlo, t1: thi }, direct: { t0: Math.max(tlo, tMin - T), t1: Math.min(thi, tMax + T) } };
+        if (circ) {
+          wr.exact = true; wr.straight = [];
+          (circ.lines.x || []).forEach(function (v) { var p0 = st([v, 0]), p1 = st([v, 1]); wr.straight.push(Math.abs(p0[0] - p1[0]) < 1e-12 ? { k: 0, v: p0[0] } : { k: 1, v: p0[1] }); });
+          (circ.lines.y || []).forEach(function (v) { var p0 = st([0, v]), p1 = st([1, v]); wr.straight.push(Math.abs(p0[0] - p1[0]) < 1e-12 ? { k: 0, v: p0[0] } : { k: 1, v: p0[1] }); });
+        }
+        tools.push({ wrap: wr });
       }
       var ta = dot(sub(r.a, r.origin), bd.n), tb = dot(sub(r.b, r.origin), bd.n), sg = tb >= ta ? 1 : -1;
       recs.push({ kind: 'foldCutouts', feature: bd.id, index: bd.index, cutouts: [lp.map(function (p) { return [p[0], (p[1] - ta) * sg]; })] });
@@ -4810,9 +4864,9 @@
     var sA = Math.sin(Ang), cA = Math.cos(Ang);
     var W0 = add(add(r.origin, scale(r.o, R * sA)), scale(r.u, R - R * cA)), wd = add(scale(r.o, cA), scale(r.u, sA)), tn = sub(scale(r.o, sA), scale(r.u, cA));
     var plw = { origin: W0, x: wd, y: bd.n.slice(), n: norm(cross(wd, bd.n)) }, sgw = dot(plw.n, tn) > 0;
-    var lw = poly.map(function (p) { var q = st(p); return [q[0] - BA, q[1]]; });
-    if (signedArea(lw) < 0) lw.reverse();
-    tools.push({ prism: { loop: lw, plane: plw, a: sgw ? -eps : -T - eps, b: sgw ? T + eps : eps } });
+    var lw = poly.map(function (p) { var q = st(p); return [q[0] - BA, q[1]]; }), pw = poly;
+    if (signedArea(lw) < 0) { lw.reverse(); pw = poly.slice().reverse(); }
+    tools.push({ prism: { loop: lw, plane: plw, a: sgw ? -eps : -T - eps, b: sgw ? T + eps : eps, cv: circ ? crArcCv(pw, circ, circ.lines, function (C) { var q = st(C); return [q[0] - BA, q[1]]; }) : null } });
   }
   function corner3Layout(f, model, ctx) {
     var sheet = sheetParams(model), T = +sheet.thickness;
@@ -4834,28 +4888,31 @@
       if (used.indexOf(best.c) >= 0) return;
       used.push(best.c);
       var c = best.c, P = c.at, A = c.A, B1 = c.B1, B2 = c.B2, BAa = A.BA, BA1 = B1.BA, BA2 = B2.BA, yB2 = c.yB2;
-      var Q = type === 'tear' ? [[0, 0], [BAa, 0], [BAa, BA1], [0, BA1]] : cornerReliefShape(type, size, BAa, BA1, centered);
+      // lane PK: a Circular relief's circle has its vertices on the lines its pieces are clipped on (crCircle)
+      var lines = CR_EXACT.on ? { x: [c.x1[0], 0, BAa, BAa + c.d2[1]], y: [c.yA[0], c.yA[1], 0, BA1, yB2, yB2 + BA2, Math.min(c.yA[1], yB2)] } : null;
+      var Q = type === 'tear' ? [[0, 0], [BAa, 0], [BAa, BA1], [0, BA1]] : cornerReliefShape(type, size, BAa, BA1, centered, lines);
+      var circ = type === 'circular' && lines ? { c: centered ? [BAa / 2, BA1 / 2] : [0, 0], r: size / 2, lines: lines } : null;
       // the face: x ≤ 0, y ≤ 0
       var fp = clipBox(Q, c.x1[0], 0, c.yA[0], 0);
       if (fp) {
         var pl0 = { origin: P.slice(), x: c.e1.slice(), y: c.e2.slice(), n: norm(cross(c.e1, c.e2)) }, sg0 = dot(pl0.n, A.rec.u) > 0;
-        tools.push({ prism: { loop: fp, plane: pl0, a: sg0 ? -T - eps : -eps, b: sg0 ? eps : T + eps } });
+        tools.push({ prism: { loop: fp, plane: pl0, a: sg0 ? -T - eps : -eps, b: sg0 ? eps : T + eps, cv: crArcCv(fp, circ, lines) } });
       }
       // A: s = x, t along its line from y
       var tPA = dot(sub(P, A.rec.origin), A.n), sgA = dot(c.e2, A.n) > 0 ? 1 : -1;
       function stA(p) { return [p[0], tPA + sgA * p[1]]; }
-      crBendCut(A, clipBox(Q, 0, BAa, c.yA[0], c.yA[1]), stA, false, tools, recs, eps, T);
-      crBendCut(A, clipBox(Q, BAa, null, c.yA[0], Math.min(c.yA[1], yB2)), stA, true, tools, recs, eps, T);
+      crBendCut(A, clipBox(Q, 0, BAa, c.yA[0], c.yA[1]), stA, false, tools, recs, eps, T, null, circ);
+      crBendCut(A, clipBox(Q, BAa, null, c.yA[0], Math.min(c.yA[1], yB2)), stA, true, tools, recs, eps, T, null, circ);
       // B1: s = y, t along its line from x
       var tP1 = dot(sub(P, B1.rec.origin), B1.n), sg1 = dot(c.e1, B1.n) > 0 ? 1 : -1;
       function st1(p) { return [p[1], tP1 + sg1 * p[0]]; }
-      crBendCut(B1, clipBox(Q, c.x1[0], 0, 0, BA1), st1, false, tools, recs, eps, T);
-      crBendCut(B1, clipBox(Q, c.x1[0], 0, BA1, null), st1, true, tools, recs, eps, T);
+      crBendCut(B1, clipBox(Q, c.x1[0], 0, 0, BA1), st1, false, tools, recs, eps, T, null, circ);
+      crBendCut(B1, clipBox(Q, c.x1[0], 0, BA1, null), st1, true, tools, recs, eps, T, null, circ);
       // B2 (on A's wall): s = y − its start, t along its line from x − BA_A (the distance up A's wall)
       var tW2 = dot(sub(c.W0, B2.rec.origin), B2.n), sg2 = dot(c.wd, B2.n) > 0 ? 1 : -1;
       function st2(p) { return [p[1] - yB2, tW2 + sg2 * (p[0] - BAa)]; }
-      crBendCut(B2, clipBox(Q, BAa, BAa + c.d2[1], yB2, yB2 + BA2), st2, false, tools, recs, eps, T);
-      crBendCut(B2, clipBox(Q, BAa, BAa + c.d2[1], yB2 + BA2, null), st2, true, tools, recs, eps, T);
+      crBendCut(B2, clipBox(Q, BAa, BAa + c.d2[1], yB2, yB2 + BA2), st2, false, tools, recs, eps, T, null, circ);
+      crBendCut(B2, clipBox(Q, BAa, BAa + c.d2[1], yB2 + BA2, null), st2, true, tools, recs, eps, T, null, circ);
     });
     return { tools: tools, recs: recs, corners: used.map(function (c) { return c.at; }) };
   }
@@ -4864,7 +4921,7 @@
     if (ctx.flanges) ctx.flanges[f.id] = lay.recs;
     var solids = [];
     lay.tools.forEach(function (t) {
-      if (t.prism) solids.push(prism(t.prism.loop, t.prism.plane, t.prism.a, t.prism.b, f.id));
+      if (t.prism) solids.push(prism(t.prism.loop, t.prism.plane, t.prism.a, t.prism.b, f.id, t.prism.cv || null));
       else if (t.sector) solids.push(prism(t.sector.loop, t.sector.plane, t.sector.a, t.sector.b, f.id));
       else if (t.wrap) { var w = wrapCut(t.wrap.loops, t.wrap.sec, t.wrap.BA, t.wrap.plane, { shared: f.id, grow: t.wrap.grow }); if (w) solids.push(w); }
     });
@@ -4903,10 +4960,10 @@
     });
     lay.tools.forEach(function (t, ti) {
       if (skip[ti]) return;
-      if (t.prism || t.sector) { var q = t.prism || t.sector; cuts.push(prism(q.loop, q.plane, q.a, q.b, f.id)); return; }
+      if (t.prism || t.sector) { var q = t.prism || t.sector; cuts.push(prism(q.loop, q.plane, q.a, q.b, f.id, q.cv || null)); return; }
       var w = t.wrap, d = w.direct;
       if (plainOf[ti]) {
-        var metal = wrapRegion(w.loops, w.sec, w.BA, w.plane, d.t0, d.t1, { shared: f.id });
+        var metal = wrapRegion(w.loops, w.sec, w.BA, w.plane, d.t0, d.t1, { shared: f.id, exactArcs: !!w.exact, straight: w.straight });   // (lane PK: exactArcs, a Circular relief)
         sectors.push(plainOf[ti]);
         if (metal) metals.push(metal);
         return;
@@ -4983,7 +5040,7 @@
       var lo = -T, hi = b.sec.R + 2 * T;
       (b.loop || []).forEach(function (p) { var w = (p[1] - b.tP) * b.dir; lo = Math.min(lo, w - T); hi = Math.max(hi, w + T); });
       var ta = b.tP + b.dir * lo, tb = b.tP + b.dir * hi;
-      bands.push({ sec: b.sec, BA: b.BA, plane: b.plane, t0: Math.min(ta, tb), t1: Math.max(ta, tb), cut: b.loop });
+      bands.push({ sec: b.sec, BA: b.BA, plane: b.plane, t0: Math.min(ta, tb), t1: Math.max(ta, tb), cut: b.loop, exactArcs: !!pair.circ });
     });
     var rb = bendBandsRebuild(body, bands, T, id);
     if (!rb) return null;
@@ -5009,7 +5066,7 @@
       if (!v0 || !v1) { ok = false; return; }
       var m0 = wrapRegion(v0, bn.sec, bn.BA, bn.plane, bn.t0, bn.t1, { shared: id });
       oldVol += m0 ? m0.volume() : 0;
-      var m1 = v1 === v0 ? m0 : wrapRegion(v1, bn.sec, bn.BA, bn.plane, bn.t0, bn.t1, { shared: id, exactFoot: bn.exact });
+      var m1 = v1 === v0 ? m0 : wrapRegion(v1, bn.sec, bn.BA, bn.plane, bn.t0, bn.t1, { shared: id, exactFoot: bn.exact, exactArcs: !!bn.exactArcs });   // (lane PK: a Circular relief's arcs)
       if (m1) metals.push(m1);
     });
     if (!ok || !(oldVol > 0) || Math.abs(removed - oldVol) > 1e-7 * oldVol) return null;
@@ -9395,7 +9452,7 @@
   // n·o = T / 2 over its facets (the mitre where two facets meet), so the solid is closed and T thick across each bend
   function buildLoftedBend(f, model, ctx) {
     var lay = loftedBendLayout(f, model, ctx), sol = lbSolid(lay), polys = [];
-    sol.faces.concat(sol.walls).forEach(function (q) { _.pushPoly(polys, q); });
+    sol.faces.concat(sol.walls).forEach(function (q) { _.pushPoly(polys, q, f.id); });   // lane PK: tagged with the feature id (polygon.shared), as every other feature's
     return _.ensureOutward(polys);
   }
   // lane smfix: lbSolid(lay) -> { faces, walls }: the sheet's triangles (faces: the two offset surfaces; walls: the side

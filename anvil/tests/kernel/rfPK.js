@@ -96,6 +96,25 @@
       return out.join('; ');
     });
 
+    test('rfPK: a Closed Corner with the default Coplanar faces mirrored: the first corner already closed the mirrored end face (coplanar with the picked one), so the copy adds nothing and says so (it failed "no flat face"); = one corner closing both; a mirror plane off the part names the corner', function () {
+      var PL = 'p.units("in");\np.sheet(' + T2 + ', ' + T2 + ', 0.5);\np.sketch("Top").rect(-4, -2, 8, 2).end().baseFlange();\np.flange(1, [[0, ' + T2 + ', 2]], ' + IN + ');\n';
+      var P = [4 - T2 / 2, 0.6, 2 - 2 * T2], out = [];
+      ['butt', 'overlap'].forEach(function (k) {
+        var o = '{ cornerType: "' + k + '", gap: 0.01 }';
+        var a = rfPKflat(PL + 'var rf = p.flange(1, [[4, ' + T2 + ', 1]], ' + IN + ').last();\np.mirror("Right", { feature: rf });\nvar c = p.closedCorner([' + JSON.stringify(P) + '], ' + o + ').last();\np.mirror("Right", { feature: c });');
+        var b = rfPKflat(PL + 'p.flange(1, [[4, ' + T2 + ', 1], [-4, ' + T2 + ', 1]], ' + IN + ');\np.closedCorner([' + JSON.stringify(P) + '], ' + o + ');');
+        out.push(k + ' ' + rfPKsame(a, b, 3));
+        var w = a.warnings[7] || '';
+        assert(/^The mirrored end face is closed already \(Closed Corner1's Coplanar faces extended it too\)/.test(w), 'the note: ' + JSON.stringify(a.warnings));
+        // = both end faces picked without Coplanar faces
+        var two = rfPKflat(PL + 'p.flange(1, [[4, ' + T2 + ', 1], [-4, ' + T2 + ', 1]], ' + IN + ');\np.closedCorner([' + JSON.stringify(P) + ', ' + JSON.stringify([-P[0], P[1], P[2]]) + '], { cornerType: "' + k + '", gap: 0.01, coplanar: false });');
+        rfPKsame(a, two, 3);   // both corners closed, as picking both end faces
+      });
+      var miss = build(PL + 'var rf = p.flange(1, [[4, ' + T2 + ', 1]], ' + IN + ').last();\np.mirror("Right", { feature: rf });\nvar c = p.closedCorner([' + JSON.stringify(P) + '], { gap: 0.01, coplanar: false }).last();\np.mirror("Front", { feature: c, offset: 5 });');
+      assert(/^Mirror: the mirrored end faces of Closed Corner1 are not on the part/.test(miss.errors[7] || ''), 'off the part: ' + JSON.stringify(miss.errors));
+      return out.join('; ') + '; note: ' + 'closed already; off the part: ' + miss.errors[7];
+    });
+
     test('rfPK: Linear Pattern (3 at 3) of a flange on a tab edge, Circular Pattern (4 about Y) of a flange on a square, Mirror (Front) of a Mirror (Right) of a flange = the flange on every edge; a mirrored edge off the part says so', function () {
       var out = [];
       var COMB = 'p.units("in");\np.sheet(0.1196, 0.12, 0.44);\np.sketch("Top").rect(0, -3, 10, 3).end().baseFlange();\np.sketch("Top", ' + T + ').rect(1, -1, 1, 1).rect(4, -1, 1, 1).rect(7, -1, 1, 1).end().cut(1, { reverse: true });\n';

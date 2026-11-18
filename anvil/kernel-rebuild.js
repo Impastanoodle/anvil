@@ -382,6 +382,31 @@
     return (f.type === 'mirror' ? 'Mirror' : 'Pattern') + ': the ' + (f.type === 'mirror' ? 'mirrored' : 'patterned') + ' ' + what + ' of ' + (src.name || 'the flange') +
       ' are not on the part, so there is nothing to bend. Check the ' + (f.type === 'mirror' ? 'mirror plane' : 'pattern direction and spacing') + '.';
   }
+  // lane PK: where P lies against a closed CSG solid: 'on' (within tol of a polygon), 'in' or 'out' (ray parity along a
+  // skew direction). A mirrored Closed Corner's pick that is 'in' the part was closed already (the source's Coplanar
+  // faces extended that end face too: SolidWorks' Closed Corner takes the coplanar end faces with the one picked)
+  function solidWhere(csg, P, tol) {
+    var dir = norm([0.5773, 0.5779, 0.5767]), hits = 0, ps = csg.polygons;
+    function inTri(X, a, b, c, n) {
+      var s1 = dot(_.cross(sub(b, a), sub(X, a)), n), s2 = dot(_.cross(sub(c, b), sub(X, b)), n), s3 = dot(_.cross(sub(a, c), sub(X, c)), n);
+      return (s1 >= -1e-15 && s2 >= -1e-15 && s3 >= -1e-15) || (s1 <= 1e-15 && s2 <= 1e-15 && s3 <= 1e-15);
+    }
+    for (var i = 0; i < ps.length; i++) {
+      var pg = ps[i], n = [pg.plane.normal.x, pg.plane.normal.y, pg.plane.normal.z], d = dot(n, P) - pg.plane.w, v = pg.vertices.map(function (q) { return [q.pos.x, q.pos.y, q.pos.z]; });
+      var den = dot(n, dir), t = Math.abs(den) > 1e-12 ? -d / den : -1, X = t > 0 ? add(P, scale(dir, t)) : null;
+      for (var k = 1; k + 1 < v.length; k++) {
+        if (Math.abs(d) < tol && inTri(sub(P, scale(n, d)), v[0], v[k], v[k + 1], n)) return 'on';
+        if (X && inTri(X, v[0], v[k], v[k + 1], n)) { hits++; break; }
+      }
+    }
+    return hits % 2 ? 'in' : 'out';
+  }
+  function bendFamilyShut(f, src, n) {
+    return (n === 1 ? 'The ' : n + ' of the ') + (f.type === 'mirror' ? 'mirrored' : 'patterned') + ' end face' + (n === 1 ? ' is' : 's are') + ' closed already (' + (src.name || 'the Closed Corner') +
+      '\'s Coplanar faces extended ' + (n === 1 ? 'it' : 'them') + ' too): nothing to add there.';
+  }
+  K.bendFamilyShut = bendFamilyShut;   // occt-kernel.js bendFamilyOp
+  _.solidWhere = solidWhere;
   _.bendFamilySeed = bendFamilySeed;
   K.bendFamily = bendFamily;   // occt-kernel.js patternTool
   K.bendFamilyWhy = bendFamilyWhy;   // ui-commands.js Mirror / Pattern PMs
@@ -1265,7 +1290,7 @@
             var bfam = bendFamily(f, model, ctx);
             if (bfam) {
               if (sheetError) throw new Error(sheetError);
-              var bfRecs = [], bfTools = [], bfType = bfam.src.type;
+              var bfRecs = [], bfTools = [], bfType = bfam.src.type, bfShut = 0;
               bfam.copies.forEach(function (g) {
                 delete ctx.flanges[f.id];
                 var bk, bt;
@@ -1273,6 +1298,11 @@
                   if (bfType === 'closedCorner') {
                     bk = ctx.bodies.length ? Math.max(0, bodyNearPoint(ctx.bodies, (g.faces && g.faces[0]) || [0, 0, 0])) : -1;
                     ctx.body = bk >= 0 ? ctx.bodies[bk] : null;
+                    // a copied pick inside the part: that end face was closed already (the source's Coplanar faces took it)
+                    var bfT = model.sheet ? +model.sheet.thickness || 0 : 0, n0 = (g.faces || []).length;
+                    if (ctx.body) g.faces = (g.faces || []).filter(function (q) { return solidWhere(ctx.body, Array.isArray(q) ? q : q.at, 1e-6 * (1 + bfT)) !== 'in'; });
+                    bfShut += n0 - g.faces.length;
+                    if (!g.faces.length) return;
                     var bcr = _.buildClosedCorner(g, model, ctx);
                     putBody(bk, bcr.apply ? bcr.apply(ctx.body) : (bcr.cut ? ctx.body.subtract(bcr.cut) : ctx.body).union(bcr.add));
                     bt = bcr.add;
@@ -1287,12 +1317,13 @@
                     putBody(bk, (ctx.flangeCut ? ctx.body.subtract(ctx.flangeCut) : ctx.body).union(bt));
                   }
                 } catch (be) {
-                  if (/^No edge selected|^Closed Corner: pick|not an end face|no end face/i.test(be.message || '')) throw new Error(bendFamilyMiss(f, bfam.src));
+                  if (/^No edge selected|^Closed Corner: pick|not an end face|no end face|no flat face at/i.test(be.message || '')) throw new Error(bendFamilyMiss(f, bfam.src));
                   throw be;
                 }
                 bfRecs = bfRecs.concat(ctx.flanges[f.id] || []);
                 if (bt) bfTools.push(bt);
               });
+              if (bfShut) warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + bendFamilyShut(f, bfam.src, bfShut);
               ctx.flanges[f.id] = bfRecs;
               ctx.tools[f.id] = bfTools.length ? unionAll(bfTools) : null;
               break;

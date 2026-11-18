@@ -39,6 +39,9 @@
     test('rfLB: the 9 reliefs that left open / non-manifold edges are closed; volume = OpenCascade\'s to 1e-6, the flat\'s blank as before (1e-7)', function () {
       CASES.forEach(function (c) {
         var r = rfLBcase(c[0], c[1], c[2], c[3], c[6]), tag = c.slice(0, 4).join(' ');
+        // lane PK: a Circular relief is the true circle now (OpenCascade's numbers here are its 32-gon's, 5e-5 more metal):
+        // folded volume = the blank with its arcs true (as the DXF writes them) × T
+        if (c[1] === 'circular') { var ax = r.flat.loops.reduce(function (s, l, i) { var cc = K.dxfLoopCurves(l), q = 0; if (cc && cc.circle) q = Math.PI * cc.circle.r * cc.circle.r; else if (cc && cc.segs) { cc.segs.forEach(function (g) { q += (g.a[0] * g.b[1] - g.b[0] * g.a[1]) / 2; if (g.t === 'arc') q += g.r * g.r / 2 * (g.sweep - Math.sin(g.sweep)); }); q = Math.abs(q); } else q = Math.abs(K.signedArea(l)); return s + (i ? -q : q); }, 0); nearRel(r.mp.volume, ax * T, 1e-6, tag + ': volume = the true blank × T'); return; }
         nearRel(r.mp.volume, c[4], 1e-6, tag + ': volume');
         nearRel(r.area, c[5], 1e-7, tag + ': flat blank');
       });

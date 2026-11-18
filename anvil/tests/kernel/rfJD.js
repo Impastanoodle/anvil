@@ -10,6 +10,8 @@
     function side(pos) { return 'p.flange(1, [[4, ' + T + ', 1.5]], { position: "' + (pos || 'inside') + '", lengthRef: "outer" });\n'; }
     function front(pos, trim) { return 'p.flange(1, [[2, ' + T + ', 3]], { position: "' + (pos || 'inside') + '", lengthRef: "outer"' + (trim ? ', trimSideBends: true' : '') + ' });\n'; }
     function blankArea(flat) { return flat.loops.reduce(function (s, l, i) { return s + (i === 0 ? Math.abs(K.signedArea(l)) : -Math.abs(K.signedArea(l))); }, 0); }
+    // lane PK: the blank with its arcs true (as the DXF writes them): a Circular relief is the true circle in the solid now
+    function blankAreaX(flat) { return flat.loops.reduce(function (s, l, i) { var c = K.dxfLoopCurves(l), a = 0; if (c && c.circle) a = Math.PI * c.circle.r * c.circle.r; else if (c && c.segs) { c.segs.forEach(function (g) { a += (g.a[0] * g.b[1] - g.b[0] * g.a[1]) / 2; if (g.t === 'arc') a += g.r * g.r / 2 * (g.sweep - Math.sin(g.sweep)); }); a = Math.abs(a); } else a = Math.abs(K.signedArea(l)); return s + (i === 0 ? a : -a); }, 0); }
     function make(code) {
       var r = build(code);
       r.flat = K.flatPattern(r.model, r.build, r.mesh);
@@ -20,7 +22,7 @@
       var c = Evaluate.checkBody(r.body, { maxPairs: 1 });
       assert(!c.openEdges.length && !c.nonManifoldEdges.length, label + ': closed solid (' + c.openEdges.length + ' open, ' + c.nonManifoldEdges.length + ' non-manifold)');
       assert(r.flat.loops.length === 1, label + ': one blank loop, got ' + r.flat.loops.length);
-      nearRel(r.mp.volume, blankArea(r.flat) * (th || T), tol || 1e-9, label + ': folded volume = blank area × T');
+      nearRel(r.mp.volume, (/circular/.test(label) ? blankAreaX : blankArea)(r.flat) * (th || T), tol || 1e-9, label + ': folded volume = blank area × T');
     }
     function errOf(r) { var ids = Object.keys(r.errors || {}); return ids.length ? r.errors[ids[ids.length - 1]] : ''; }
     var CORNER = '[[3.88, 0.06, 2.88]]';

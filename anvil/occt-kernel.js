@@ -625,12 +625,20 @@ var OcctKernel = (function () {
       var recs = [], st = fam.src.type;
       fam.copies.forEach(function (g) {
         delete smFlanges[f.id];
+        if (st === 'closedCorner') {   // a copied pick inside the part: closed already by the source's Coplanar faces (as Anvil's rebuild)
+          var ck = pickBody(g.faces && g.faces[0]);
+          if (ck >= 0) {
+            var ccl = N(new oc.BRepClass3d_SolidClassifier_2(bodies[ck]));
+            g.faces = (g.faces || []).filter(function (q) { ccl.Perform(P(Array.isArray(q) ? q : q.at), 1e-7); return ccl.State() !== oc.TopAbs_State.TopAbs_IN; });
+          }
+          if (!g.faces.length) return;
+        }
         try {
           if (st === 'closedCorner') closedCornerOp(g);
           else if (st === 'jog') jogOp(g);
           else flangeOp(g);
         } catch (e) {
-          if (/^No edge selected|^Closed Corner: pick|not an end face|no end face/i.test(e.message || '')) throw new Error(K.bendFamilyMiss(f, fam.src));
+          if (/^No edge selected|^Closed Corner: pick|not an end face|no end face|no flat face at/i.test(e.message || '')) throw new Error(K.bendFamilyMiss(f, fam.src));
           throw e;
         }
         recs = recs.concat(smFlanges[f.id] || []);
@@ -2564,6 +2572,7 @@ var OcctKernel = (function () {
         approx = !!S0.approx;
         kvPending = (S0.kvPending || []).slice(); kvAcross = !!S0.kvAcross; Object.assign(kvCuts, S0.kvCuts || {}); Object.assign(kvLazy, S0.kvLazy || {});
         kvKnown = (S0.kvKnown || []).map(function (x) { return x && Object.assign({}, x); });
+        Object.assign(cutDirs, S0.cutDirs || {});   // lane PK: the directions autoCutDir found in the cached prefix
       }
     }
     function snapshot(i) {
@@ -2575,6 +2584,7 @@ var OcctKernel = (function () {
       Object.keys(planes).forEach(function (id) { S.planes[id] = planes[id]; });
       Object.keys(sketches).forEach(function (id) { S.sketches[id] = sketches[id]; });
       Object.keys(status).forEach(function (id) { S.status[id] = status[id]; });
+      S.cutDirs = Object.assign({}, cutDirs);   // lane PK
       var fid = String(m.features[i].id);
       if (tools[fid] && !cache.tools[fid]) cache.tools[fid] = tools[fid] = keep(tools[fid]);
       cache.keys[i] = keys[i]; cache.states[i] = S;

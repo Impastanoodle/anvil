@@ -139,16 +139,18 @@
     var STUB = { inside: R + T, outside: R, bendOutside: 0 };
     var rfKGCache = {};
     function rfKGPlain(pos, up) { var k = pos + up; return rfKGCache[k] || (rfKGCache[k] = rfKGB(rfKGPart(pos, up))); }
+    // lane PK: the blank with its arcs true (as the DXF writes them): a Circular relief is the true circle in the solid now
+    function rfKGAreaX(flat) { return flat.loops.reduce(function (s, l, i) { var c = K.dxfLoopCurves(l), a = 0; if (c && c.circle) a = Math.PI * c.circle.r * c.circle.r; else if (c && c.segs) { c.segs.forEach(function (g) { a += (g.a[0] * g.b[1] - g.b[0] * g.a[1]) / 2; if (g.t === 'arc') a += g.r * g.r / 2 * (g.sweep - Math.sin(g.sweep)); }); a = Math.abs(a); } else a = Math.abs(K.signedArea(l)); return s + (i ? -a : a); }, 0); }
     function rfKGExact(r, label) {
       var c = Evaluate.checkBody(r.body, { maxPairs: 1 });
       assert(!c.openEdges.length && !c.nonManifoldEdges.length, label + ': closed solid (' + c.openEdges.length + ' open, ' + c.nonManifoldEdges.length + ' non-manifold)');
-      nearRel(r.mp.volume, rfKGArea(r.flat) * T, 1e-6, label + ': folded volume = blank area × T');
+      nearRel(r.mp.volume, (/circular/.test(label) ? rfKGAreaX : rfKGArea)(r.flat) * T, 1e-6, label + ': folded volume = blank area × T');
     }
     // the relief's area in the blank per corner: the shape (32-gon / obround as cornerReliefShape) less its part over
     // the corner notch [0, BA] × [stub, ∞)
     function rfKGRelief(type, size, centred, stub) {
       var C = centred ? [BA / 2, BA / 2] : [0, 0], h = size / 2, pts = [], i;
-      if (type === 'circular') for (i = 0; i < 32; i++) { var th = 2 * Math.PI * i / 32; pts.push([C[0] + h * Math.cos(th), C[1] + h * Math.sin(th)]); }
+      if (type === 'circular') for (i = 0; i < 20000; i++) { var th = 2 * Math.PI * i / 20000; pts.push([C[0] + h * Math.cos(th), C[1] + h * Math.sin(th)]); }   // (lane PK: the true circle, 2e-10)
       else {
         var d = Math.SQRT1_2, ca = [C[0] - d * h, C[1] - d * h], cb = [C[0] + d * h, C[1] + d * h], a0 = Math.atan2(Math.SQRT1_2, -Math.SQRT1_2);
         for (i = 0; i <= 16; i++) { var ta = a0 - Math.PI * i / 16; pts.push([cb[0] + h * Math.cos(ta), cb[1] + h * Math.sin(ta)]); }
@@ -166,8 +168,9 @@
             var r = rfKGB(rfKGPart(pos, false) + 'p.cornerRelief(' + JSON.stringify(at) + ', ' + q[1] + ', ' + JSON.stringify({ cornerType: '3bend', reliefType: q[0], centeredOnBend: cen }) + ');\n');
             var label = q[0] + ' ' + q[1] + ' ' + pos + (cen ? ' centred' : ' on P');
             rfKGExact(r, label);
-            near(rfKGArea(a.flat) - rfKGArea(r.flat), 2 * rfKGRelief(q[0], q[1], cen, STUB[pos]), 1e-9, label + ': blank');
-            near(a.mp.volume - r.mp.volume, T * (rfKGArea(a.flat) - rfKGArea(r.flat)), 1e-6, label + ': removed = T × the blank\'s loss');
+            var AR = q[0] === 'circular' ? rfKGAreaX : rfKGArea;
+            near(rfKGArea(a.flat) - AR(r.flat), 2 * rfKGRelief(q[0], q[1], cen, STUB[pos]), q[0] === 'circular' ? 3e-9 : 1e-9, label + ': blank');   // (lane PK: the DXF's arcs refitted from the chords, 1.3e-9 measured)
+            near(a.mp.volume - r.mp.volume, T * (rfKGArea(a.flat) - AR(r.flat)), 1e-6, label + ': removed = T × the blank\'s loss');
           });
         });
       });
@@ -176,8 +179,8 @@
     test('rfKG: 3 Bend corner Circular with the base flange up, the flat\'s DXF, Edit to Rectangular and round trip', function () {
       var a = rfKGPlain('inside', true), at = K.cornerReliefCandidates(a.model, a.build, '3bend').map(function (c) { return c.at; });
       var r = rfKGB(rfKGPart('inside', true) + 'p.cornerRelief(' + JSON.stringify(at) + ', null, { cornerType: "3bend", reliefType: "circular" });\n');
-      rfKGExact(r, 'base up, default size 2T');
-      near(rfKGArea(a.flat) - rfKGArea(r.flat), 2 * rfKGRelief('circular', 2 * T, true, STUB.inside), 1e-9, 'default Ø = 2T');
+      rfKGExact(r, 'base up, circular default size 2T');
+      near(rfKGArea(a.flat) - rfKGAreaX(r.flat), 2 * rfKGRelief('circular', 2 * T, true, STUB.inside), 1e-9, 'default Ø = 2T');
       assert(r.flat.loops.length === 1, 'one blank');
       var dc = DxfCheck.check(K.exportDXFFlat(r.flat, 'in', {}), { units: 'in' });
       assert(dc.ok, 'DXF reads back: ' + dc.errors.join('; '));

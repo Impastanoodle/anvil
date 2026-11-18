@@ -111,16 +111,20 @@
       var T = G16, r = build(rfNOhead(T) + 'p.flange(1, [[4, ' + T + ', 1.5]], { position: "inside", lengthRef: "outer" });\np.flange(1, [[2, ' + T + ', 3]], { position: "inside", lengthRef: "outer" });\np.cornerRelief([[' + (4 - 2 * T) + ', ' + T + ', ' + (3 - 2 * T) + ']], 0.25, { reliefType: "circular" });\n');
       noErrors(r);
       var fl0 = K.flatPattern(r.model, r.build, r.mesh), blankV = rfNOsig(fl0).net * T, s = X.exportSTEP(r.model, r.build), f = rfNOfaces(s);
-      assert(f.CYLINDRICAL_SURFACE === 4, 'faces ' + JSON.stringify(f));
+      // lane PK: the Circular relief is the true circle: its walls in the face and the two walls are 3 more cylinders; in
+      // the bends the file keeps the relief's chords (exchange.js), so the read-back is the part less its arcs' dj.
+      assert(f.CYLINDRICAL_SURFACE === 7, 'faces ' + JSON.stringify(f));
+      var adjV = 0, seenS = [];
+      r.build.body.polygons.forEach(function (pg) { var S = pg.surf; if (S && S.adj && seenS.indexOf(S) < 0) { seenS.push(S); adjV += S.adj.v; } });
       var res = X.importFile('rfNO.step', s, { units: 'in' }), m2 = X.newPartFromImport(res), b2 = K.rebuild(m2), v2 = K.massProps(K.meshFromBody(b2.body), 1).volume;
       assert(!res.stats.openEdges, 'open edges ' + res.stats.openEdges);
-      nearRel(v2, blankV, 1e-8, 'read-back volume against the blank × T');
+      nearRel(v2, r.mp.volume - adjV, 1e-7, 'read-back volume against the part less its arcs\' adj (4.4e-8 measured)');
       new K.Builder(m2).insertBends([1, T, 1.3], { kFactor: 0.5 });
       var b3 = K.rebuild(m2);
       assert(!Object.keys(b3.errors).length, 'Insert Bends: ' + JSON.stringify(b3.errors));
       var fl = K.flatPattern(m2, b3, K.meshFromBody(b3.body));
       assert(fl.bends.length === 2, 'bends ' + fl.bends.length);
-      return JSON.stringify(f) + ', volume ' + ((v2 - blankV) / blankV).toExponential(1) + ' off the blank × T';
+      return JSON.stringify(f) + ', volume ' + ((v2 - blankV) / blankV).toExponential(1) + ' off the polygon blank × T, ' + ((v2 - r.mp.volume + adjV) / v2).toExponential(1) + ' off the part less adj';
     });
     // (lane NO2) earcut on a big ring files its points in a grid (earGrid) and picks a hole's bridge by selection: the same
     // triangles (the reader's triangles of every embedded test file hashed equal before / after); the 600-hole panel's
