@@ -458,21 +458,57 @@
       var errs0 = errors.length, notes = [];
       assert(rfPGjob.gus, 'job 2 gusset first');
       var g = rfPGjob.gus;
-      rfPGClickRow(g.ef); await idle(); await wait(20);
-      // Mirror is in the Linear Pattern flyout (as SolidWorks' Features tab has it under the pattern ▾ too)
-      var caret = rfPGRibbon('Features', /^Linear Pattern options/);
-      assert(caret, 'the Linear Pattern flyout');
-      caret.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); caret.click(); await wait(20);
-      var mi = Array.prototype.filter.call(D.querySelectorAll('body > .menu .mi'), function (m) { return /^\s*Mirror\b/.test(m.textContent); })[0];
-      assert(mi, 'Mirror in the flyout: ' + Array.prototype.map.call(D.querySelectorAll('body > .menu .mi'), function (m) { return m.textContent.trim(); }).join(' | '));
-      mi.click(); await idle(); await wait(40);
-      rfPGPmOpen('Mirror');
-      var mv = UI.pmSpec().values, okb = D.querySelector('#pm .pm-ok');
-      notes.push('Mirror PM ' + JSON.stringify({ feature: mv.feature, plane: mv.plane, body: mv.body }) + ' ✓ ' + (okb.classList.contains('disabled') ? 'grey: ' + okb.title : 'lit') + ' status ' + statusText().slice(0, 200));
-      // (it was lit: Mirror1 added a plain solid copy, .4782 in³ against the flange's .4465, and the blank stayed 3 bends)
-      assert(okb.classList.contains('disabled') && /Flat Pattern leaves out/.test(okb.title),'the Mirror of a flange is refused with the reason: ' + notes.join('; '));
-      UI.pmCancel(); await idle();
-      // what the message says: Edit Feature on Edge-Flange1 (right-click), the left edge clicked too
+      // lane PK: the Mirror of Edge-Flange1 is the flange again on the mirrored edge (kernel-rebuild.js bendFamily). It was
+      // refused here (rfPG: a plain solid copy, .4782 in³ against the flange's .4465, the blank stayed 3 bends), and before
+      // that it was lit and silently short in the flat
+      async function mirrorOf(fid) {
+        rfPGClickRow(fid); await idle(); await wait(20);
+        // Mirror is in the Linear Pattern flyout (as SolidWorks' Features tab has it under the pattern ▾ too)
+        // (the flyout's face remembers the last command: 'Mirror options' after the first Mirror, as SolidWorks)
+        var caret = rfPGRibbon('Features', /^(Linear Pattern|Mirror) options/);
+        assert(caret, 'the Linear Pattern flyout');
+        caret.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); caret.click(); await wait(20);
+        var mi = Array.prototype.filter.call(D.querySelectorAll('body > .menu .mi'), function (m) { return /^\s*Mirror\b/.test(m.textContent); })[0];
+        assert(mi, 'Mirror in the flyout: ' + Array.prototype.map.call(D.querySelectorAll('body > .menu .mi'), function (m) { return m.textContent.trim(); }).join(' | '));
+        mi.click(); await idle(); await wait(40);
+        rfPGPmOpen('Mirror');
+        var mv = UI.pmSpec().values, okb = D.querySelector('#pm .pm-ok');
+        notes.push('Mirror PM ' + JSON.stringify({ feature: mv.feature, plane: mv.plane, body: mv.body }) + ' ✓ ' + (okb.classList.contains('disabled') ? 'grey: ' + okb.title : 'lit'));
+        assert(mv.feature === fid && (mv.plane || 'Right') === 'Right' && !okb.classList.contains('disabled'), 'the Mirror of ' + fid + ' about the Right Plane, ✓ lit: ' + notes.join('; '));
+        await pmAccept(); await wait(30);
+        var mf = rfPGLast();
+        notes.push(mf.name + ' ' + (rfPGErrs()[mf.id] || 'ok'));
+        assert(mf.type === 'mirror' && !rfPGErrs()[mf.id], 'the mirror builds: ' + notes.join('; '));
+        return mf;
+      }
+      var m1 = await mirrorOf(g.ef), fl1 = anvil.flat();
+      notes.push('after ' + m1.name + ': blank ' + fl1.size.map(rfPGF).join(' x ') + ' bends ' + (fl1.bends || []).length);
+      assert((fl1.bends || []).length === g.bends + 1, 'the mirrored flange is in the flat: ' + notes.join('; '));
+      await rfPGView('Isometric');
+      var m2 = await mirrorOf(g.hem);
+      var fl = anvil.flat(), bb = UI.App.build.body.getBounds();
+      notes.push('both sides: errors ' + JSON.stringify(rfPGErrs()) + ' blank ' + fl.size.map(rfPGF).join(' x ') + ' bends ' + (fl.bends || []).length + ' x ' + rfPGF(bb.min[0]) + '..' + rfPGF(bb.max[0]));
+      assert(!Object.keys(rfPGErrs()).length && (fl.bends || []).length === 5, 'two flanges and two hems in the flat: ' + notes.join('; '));
+      near(bb.min[0], -bb.max[0], 1e-9, 'symmetric about the Right Plane');
+      var wide = Math.max(fl.size[0], fl.size[1]);
+      near(wide, 4 + 2 * (g.flat[0] - 4), 1e-6, 'each side develops as the first did');
+      // the same part with the flange and the hem picked on both edges (what the refusal used to ask for): equal to 1e-9
+      var both = UI.App.model.features.filter(function (f) { return f.id !== m1.id && f.id !== m2.id; }).map(function (f) { return JSON.parse(JSON.stringify(f)); });
+      both.forEach(function (f) {
+        if (f.id === g.ef || f.id === g.hem) f.edges = f.edges.concat(f.edges.map(function (e) { return { at: [-e.at[0], e.at[1], e.at[2]] }; }));
+        delete f.pickRefs;
+      });
+      var bm = JSON.parse(JSON.stringify(UI.App.model)); bm.features = both;
+      var bb2 = K.rebuild(bm), bmesh = K.meshFromBody(bb2.body), bfl = K.flatPattern(bm, bb2, bmesh);
+      notes.push('picked on both edges: blank ' + bfl.size.map(rfPGF).join(' x ') + ' volume ' + rfPGF(K.massProps(bmesh, 1).volume));
+      near(K.massProps(bmesh, 1).volume, rfPGVol(), 1e-9, 'volume = the flange and hem picked on both edges');
+      near(bfl.size[0], fl.size[0], 1e-9, 'blank x'); near(bfl.size[1], fl.size[1], 1e-9, 'blank y');
+      // the flat DXF carries both bends of each side
+      var dxf = K.exportDXFFlat(fl, 'in').replace(/\r\n/g, '\n').split('\n'), nb = 0, ent = null;
+      for (var di = 0; di + 1 < dxf.length; di += 2) { var dc = dxf[di].trim(), dv = dxf[di + 1].trim(); if (dc === '0') ent = dv; else if (dc === '8' && ent === 'LINE' && dv === 'BEND') nb++; }
+      notes.push('DXF ' + nb + ' bend lines');
+      assert(nb === 5, nb + ' LINEs on BEND in the flat DXF: ' + notes.join('; '));
+      // Edit Feature on Edge-Flange1, 1.5 -> 1.25: both flanges and both hems follow
       async function editFromMenu(fid) {
         var row = rfPGRow(fid), rr = row.getBoundingClientRect();
         row.dispatchEvent(new W.MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: W, button: 2, clientX: rr.left + 30, clientY: rr.top + 6 }));
@@ -480,41 +516,13 @@
         assert(it, 'Edit Feature on the right-click menu'); it.click(); await idle(); await wait(30);
       }
       await editFromMenu(g.ef);
-      rfPGPmOpen('Edge-Flange1');
-      var e2 = edgeNear([-2, T11, 1.2]);
-      await rfPGLook(e2.mid, [-1, 0.8, 0.5], 0.008);   // turn the view to the left side, as a user would
-      await rfPGClickAt(UI.worldToScreen(e2.mid)); await idle(); await wait(20);
-      var sp = UI.worldToScreen(e2.mid);
-      notes.push('Edge-Flange1 edges ' + JSON.stringify(UI.pmSpec().values.edges) + ' (clicked ' + JSON.stringify(e2.mid.map(rfPGF)) + ' at ' + sp.map(Math.round) + ' pickEdge ' + JSON.stringify(UI.pickEdge ? UI.pickEdge(sp[0], sp[1]) && UI.pickEdge(sp[0], sp[1]).mid : '?') + ' status ' + statusText().slice(0, 200) + ')');
-      assert(UI.pmSpec().values.edges.length === 2, 'the left edge taken: ' + notes.join('; '));
-      await pmAccept(); await wait(30);
-      bb = UI.App.build.body.getBounds();
-      notes.push('box ' + JSON.stringify([bb.min, bb.max].map(function (p) { return p.map(rfPGF); })) + ' errors ' + JSON.stringify(rfPGErrs()));
-      assert(bb.min[1] > -1e-6 && Math.abs(bb.min[0] + bb.max[0]) < 0.25, 'the left flange goes up as the right: ' + notes.join('; '));
-      await rfPGView('Isometric');
-      await editFromMenu(g.hem);
-      rfPGPmOpen('Hem1');
-      var h2 = edgeNear([-2, 1.5, 1.2]);
-      await rfPGLook(h2.mid, [-1, 0.8, 0.5], 0.008);
-      await rfPGClickAt(UI.worldToScreen(h2.mid)); await idle(); await wait(20);
-      notes.push('Hem1 edges ' + JSON.stringify(UI.pmSpec().values.edges));
-      assert(UI.pmSpec().values.edges.length === 2, 'the left top edge taken: ' + notes.join('; '));
-      await pmAccept(); await wait(30);
-      var fl = anvil.flat(), bb = UI.App.build.body.getBounds();
-      notes.push('both sides: errors ' + JSON.stringify(rfPGErrs()) + ' blank ' + fl.size.map(rfPGF).join(' x ') + ' bends ' + (fl.bends || []).length + ' x ' + rfPGF(bb.min[0]) + '..' + rfPGF(bb.max[0]));
-      assert(!Object.keys(rfPGErrs()).length && (fl.bends || []).length === 5, 'two flanges and two hems in the flat: ' + notes.join('; '));
-      near(bb.min[0], -bb.max[0], 1e-9, 'symmetric about the Right Plane');
-      var wide = Math.max(fl.size[0], fl.size[1]), half = wide - 4;   // 4 = the base; each side adds the same
-      near(wide, 4 + 2 * (g.flat[0] - 4), 1e-6, 'each side develops as the first did');
-      // Edit Feature on Edge-Flange1, 1.5 -> 1.25: both flanges and both hems follow
-      await editFromMenu(g.ef);
       setInput(pmField('Length'), 1.25); await wait(10);
       await pmAccept(); await wait(30);
-      var fl2 = anvil.flat(), bb2 = UI.App.build.body.getBounds();
+      var fl2 = anvil.flat(), bb3 = UI.App.build.body.getBounds();
       notes.push('1.25: errors ' + JSON.stringify(rfPGErrs()) + ' blank ' + fl2.size.map(rfPGF).join(' x ') + ' bends ' + (fl2.bends || []).length);
       near(Math.max(fl2.size[0], fl2.size[1]), wide - 0.5, 1e-6, 'the blank 2 × .25 narrower');
       assert(!Object.keys(rfPGErrs()).length && (fl2.bends || []).length === 5, 'everything follows: ' + notes.join('; '));
-      near(bb2.min[0], -bb2.max[0], 1e-9, 'still symmetric');
+      near(bb3.min[0], -bb3.max[0], 1e-9, 'still symmetric');
       notes.push('features ' + UI.App.model.features.map(function (f) { return f.name; }).join(','));
       rfPGjob.gusMirror = notes.slice();
       assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));

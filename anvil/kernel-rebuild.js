@@ -296,6 +296,97 @@
       ' are not on the part, so there is nothing to ' + what + '. Check the ' + (f.type === 'mirror' ? 'mirror plane' : 'pattern direction and spacing') + '.';
   }
 
+  // lane PK: a feature-mode Mirror / LPattern / CirPattern of a sheet-metal feature. SolidWorks 2024 mirrors an Edge
+  // Flange, Miter Flange, Hem, Base Flange/Tab and Closed Corner (help: "Mirroring Sheet Metal Features"), and patterns an
+  // Edge Flange; the copy is that feature again on the mirrored / moved edges, so it bends the base (not the base's square
+  // corner with a solid stuck on), its bend records go to ctx.flanges[f.id] and Flat Pattern, the DXF and the bend notes
+  // take it. Before, the copy was the flange's solid moved: Flat Pattern left it out (the blank silently short).
+  // A Sketched Bend, a sketch Jog, Unfold / Fold, Insert Bends, Swept Flange and Lofted-Bend are not in SolidWorks' list:
+  // refused with the reason (both engines). Base Flange/Tab is an extrude: it is copied as a solid, as before.
+  var BEND_FAMILY_REFUSE = { sketchedBend: 'a Sketched Bend', unfold: 'an Unfold', fold: 'a Fold', insertBends: 'Insert Bends', convertSM: 'Convert to Sheet Metal', sweptFlange: 'a Swept Flange', loftedBend: 'a Lofted-Bend' };
+  function isPlainFamily(g) { return !!g && (g.type === 'lpattern' || g.type === 'cpattern' || (g.type === 'mirror' && !g.body)); }
+  function isBendSeed(g) { return !!g && (g.type === 'flange' || g.type === 'closedCorner' || (g.type === 'jog' && g.sketch == null)); }
+  // bendFamilySeed(model, f) -> the sheet-metal feature a family feature f (through patterns / mirrors of it) copies, or null
+  function bendFamilySeed(model, f) {
+    var g = f, d = 0;
+    while (isPlainFamily(g) && d++ < 9) g = findFeature(model, g.feature);
+    return g !== f && isBendSeed(g) ? g : null;
+  }
+  function bendFamilyWhy(model, f) {
+    if (!isPlainFamily(f)) return '';
+    var g = f, d = 0;
+    while (isPlainFamily(g) && d++ < 9) g = findFeature(model, g.feature);
+    if (!g || g === f) return '';
+    var what = BEND_FAMILY_REFUSE[g.type] || (g.type === 'jog' && g.sketch != null ? 'a Jog' : null);
+    if (!what) return '';
+    var verb = f.type === 'mirror' ? 'mirror' : 'pattern';
+    return 'Cannot ' + verb + ' ' + (g.name || what) + ': SolidWorks ' + verb + 's Edge Flanges, Miter Flanges, Hems and Closed Corners, not ' + what + ' (a copy would be a plain solid that Flat Pattern leaves out). ' +
+      (g.type === 'sketchedBend' || g.type === 'jog' ? 'Sketch the other bend line in the same sketch instead.' : 'Make it again on the other side.');
+  }
+  // the image of a sketch (its plane and entities) under the point map M with linear part L (columns): a reflection keeps
+  // the plane right-handed by turning y round, so the entities' y is negated (lines, arcs and points: a Miter Flange's
+  // profile holds nothing else)
+  function mappedSketch(sk, model, ctx, M, L, det) {
+    var pl = resolvePlane(sk.plane, model, ctx.planes || {}), lin = function (v) { return add(add(scale(L[0], v[0]), scale(L[1], v[1])), scale(L[2], v[2])); };
+    var y = lin(pl.y), out = {};
+    for (var key in sk) if (key !== 'profile') out[key] = sk[key];
+    out.plane = { custom: true, origin: M(pl.origin), x: lin(pl.x), y: det < 0 ? scale(y, -1) : y, n: lin(pl.n) };
+    out.entities = (sk.entities || []).map(function (e) {
+      var c = JSON.parse(JSON.stringify(e));
+      if (det > 0) return c;
+      if (c.t === 'line') { c.y1 = -c.y1; c.y2 = -c.y2; }
+      else if (c.t === 'arc') { c.cy = -c.cy; var a0 = c.a0; c.a0 = -c.a1; c.a1 = -a0; }
+      else if (c.t === 'point') c.y = -c.y;
+      else return null;
+      return c;
+    }).filter(function (c) { return c; });
+    return out;
+  }
+  // bendFamily(f, model, ctx) -> null, or { src, copies: [the source feature on each copy, id f.id] } (throws the refusal)
+  function bendFamily(f, model, ctx) {
+    if (!isPlainFamily(f)) return null;
+    var why = bendFamilyWhy(model, f);
+    if (why) throw new Error(why);
+    var src = bendFamilySeed(model, f);
+    if (!src) return null;
+    function maps(g, depth) {   // every instance g puts on the part (identity included)
+      if (g === src) return [function (q) { return q; }];
+      var inner = maps(findFeature(model, g.feature), depth + 1), all = inner.slice();
+      familyMaps(g, ctx).forEach(function (m) { inner.forEach(function (im) { all.push(function (q) { return m(im(q)); }); }); });
+      return all;
+    }
+    var inner = maps(findFeature(model, f.feature), 0), own = familyMaps(f, ctx), copies = [];
+    if (!own.length) throw new Error((f.type === 'mirror' ? 'Mirror' : 'Pattern') + ' needs at least 2 instances.');
+    var srcSketch = src.miterFlange && src.sketch != null ? (ctx.sketches && ctx.sketches[src.sketch]) || findFeature(model, src.sketch) : null;
+    own.forEach(function (m) {
+      inner.forEach(function (im) {
+        var M = function (q) { return m(im(q)); }, o = M([0, 0, 0]);
+        var L = [sub(M([1, 0, 0]), o), sub(M([0, 1, 0]), o), sub(M([0, 0, 1]), o)], det = dot(L[0], _.cross(L[1], L[2]));
+        var lin = function (v) { return add(add(scale(L[0], v[0]), scale(L[1], v[1])), scale(L[2], v[2])); };
+        var g = JSON.parse(JSON.stringify(src));
+        g.id = f.id; delete g.pickRefs;
+        if (src.name) g.name = src.name;
+        if (Array.isArray(g.edges)) g.edges = g.edges.map(function (e) { if (e && e.at) e.at = M(e.at); if (e && e.toward) e.toward = lin(e.toward); return e; });
+        if (Array.isArray(g.faces)) g.faces = g.faces.map(function (p) { return Array.isArray(p) ? M(p) : p && p.at ? Object.assign(p, { at: M(p.at) }) : p; });
+        if (g.toward) g.toward = lin(g.toward);
+        if (Array.isArray(g.lengthVertex)) g.lengthVertex = M(g.lengthVertex);
+        if (Array.isArray(g.startAt)) g.startAt = M(g.startAt);
+        if (srcSketch) g._sketch = mappedSketch(srcSketch, model, ctx, M, L, det);
+        copies.push(g);
+      });
+    });
+    return { src: src, copies: copies };
+  }
+  function bendFamilyMiss(f, src) {
+    var what = src.type === 'closedCorner' ? 'end faces' : 'edges';
+    return (f.type === 'mirror' ? 'Mirror' : 'Pattern') + ': the ' + (f.type === 'mirror' ? 'mirrored' : 'patterned') + ' ' + what + ' of ' + (src.name || 'the flange') +
+      ' are not on the part, so there is nothing to bend. Check the ' + (f.type === 'mirror' ? 'mirror plane' : 'pattern direction and spacing') + '.';
+  }
+  _.bendFamilySeed = bendFamilySeed;
+  K.bendFamily = bendFamily;   // occt-kernel.js patternTool
+  K.bendFamilyWhy = bendFamilyWhy;   // ui-commands.js Mirror / Pattern PMs
+  K.bendFamilyMiss = bendFamilyMiss;
+
   // rfFN: nonManifoldCount(csg) -> the number of edges of the body's welded, T-junction-split triangle mesh
   // (Exchange.bodyMesh) that more than two triangles share: where a solid touches itself along a line or at a point.
   // 0 when exchange.js is not loaded. Cached on the CSG object (bodies are never changed in place). NM.on switches the
@@ -1166,6 +1257,44 @@
                 eftool = eftool && t ? eftool.union(t) : eftool || t;
               });
               ctx.tools[f.id] = eftool;
+              break;
+            }
+            // lane PK: a Mirror / LPattern / CirPattern of an Edge Flange, Hem, Miter Flange, (edge) Jog or Closed Corner is
+            // that feature again on the copied edges / faces, one copy after the other; the copies' bend records together
+            // are this feature's (ctx.flanges[f.id]: Flat Pattern and the DXF take them)
+            var bfam = bendFamily(f, model, ctx);
+            if (bfam) {
+              if (sheetError) throw new Error(sheetError);
+              var bfRecs = [], bfTools = [], bfType = bfam.src.type;
+              bfam.copies.forEach(function (g) {
+                delete ctx.flanges[f.id];
+                var bk, bt;
+                try {
+                  if (bfType === 'closedCorner') {
+                    bk = ctx.bodies.length ? Math.max(0, bodyNearPoint(ctx.bodies, (g.faces && g.faces[0]) || [0, 0, 0])) : -1;
+                    ctx.body = bk >= 0 ? ctx.bodies[bk] : null;
+                    var bcr = _.buildClosedCorner(g, model, ctx);
+                    putBody(bk, bcr.apply ? bcr.apply(ctx.body) : (bcr.cut ? ctx.body.subtract(bcr.cut) : ctx.body).union(bcr.add));
+                    bt = bcr.add;
+                  } else if (bfType === 'jog') {
+                    bk = pickBody(g);
+                    var bjg = _.buildJog(g, model, ctx);
+                    putBody(bk, (ctx.flangeCut ? ctx.body.subtract(ctx.flangeCut) : ctx.body).union(bjg.first).union(bjg.second));
+                    bt = bjg.first.union(bjg.second);
+                  } else {
+                    bk = pickBody(g);
+                    bt = _.buildFlange(g, model, ctx);
+                    putBody(bk, (ctx.flangeCut ? ctx.body.subtract(ctx.flangeCut) : ctx.body).union(bt));
+                  }
+                } catch (be) {
+                  if (/^No edge selected|^Closed Corner: pick|not an end face|no end face/i.test(be.message || '')) throw new Error(bendFamilyMiss(f, bfam.src));
+                  throw be;
+                }
+                bfRecs = bfRecs.concat(ctx.flanges[f.id] || []);
+                if (bt) bfTools.push(bt);
+              });
+              ctx.flanges[f.id] = bfRecs;
+              ctx.tools[f.id] = bfTools.length ? unionAll(bfTools) : null;
               break;
             }
             // lane sweptflange-2: a Swept Flange that starts the part on a straight path is an open-profile Base Flange

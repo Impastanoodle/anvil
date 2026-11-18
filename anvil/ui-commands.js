@@ -1823,14 +1823,12 @@
   function needSource(f) { if (f.feature == null && !solidFeatures().length) { UI.toast('Create a boss or cut first, then pattern it.'); return false; } return true; }
   function noSource(v) { return v.feature == null || v.feature === '' || v.feature === -1; }
   function sourceWhy(v, what) { return noSource(v) ? 'Select the feature to ' + what + ': click a face of it, or pick it in the list.' : ''; }
-  // rfPG: the kernel mirrors a sheet-metal bend feature (Edge-Flange, Hem, Jog, Sketched Bend …) as a plain solid copy:
-  // it is not a flange (its bend keeps the base's square corner) and Flat Pattern leaves it out, so the blank and the
-  // DXF silently miss it. Refused until the kernel builds the mirrored copy as the same feature on the mirrored edges.
+  // rfPG / lane PK: the kernel mirrors an Edge-Flange, Hem, Miter Flange, edge Jog or Closed Corner as that feature on the
+  // mirrored edges (kernel-rebuild.js bendFamily: it unfolds); what SolidWorks does not mirror (a Sketched Bend, a sketch
+  // Jog, Unfold / Fold, Insert Bends, Swept Flange, Lofted-Bend) is refused here with the kernel's reason
   function bendSourceWhy(v) {
-    if (!App.model.sheet || noSource(v)) return '';
-    var f = K.findFeature(App.model, typeof v.feature === 'string' ? +v.feature : v.feature);
-    if (!f || !(/^(flange|hem|jog|sketchedBend|fold|unfold)$/.test(f.type) || /Flange|Bend/.test(f.type))) return '';
-    return 'A mirror of ' + f.name + ' would be a plain solid that Flat Pattern leaves out (it does not unfold). Add the flange on the other edge instead: Edit Feature on ' + f.name + ' and pick that edge too, so both stay equal.';
+    if (noSource(v) || !K.bendFamilyWhy) return '';
+    return K.bendFamilyWhy(App.model, { type: 'mirror', feature: typeof v.feature === 'string' ? +v.feature : v.feature });
   }
   function sourceNum(v) { v.feature = noSource(v) ? null : +v.feature; return v; }
   // a click on a face of the part names its feature as the one to pattern (base: the PM's other command, kept)

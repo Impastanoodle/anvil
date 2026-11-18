@@ -1838,7 +1838,7 @@
   }
   // the profile as virtual sharps: { plane, pts: [[x, y], …] (sketch 2D, first line first), radii: [r | null per joint] }
   function miterProfile(f, model, ctx) {
-    var sketch = (ctx.sketches && ctx.sketches[f.sketch]) || findFeature(model, f.sketch);
+    var sketch = f._sketch || (ctx.sketches && ctx.sketches[f.sketch]) || findFeature(model, f.sketch);   // lane PK: _sketch = a mirrored / moved copy (kernel-rebuild.js bendFamily)
     if (!sketch || sketch.type !== 'sketch') throw new Error('Miter Flange: select the profile sketch.');
     var plane = resolvePlane(sketch.plane, model, ctx.planes || {}), pieces = [];
     (sketch.entities || []).forEach(function (e) {
@@ -2681,6 +2681,11 @@
       if (f.type === 'cornerRelief' && !build.errors[f.id]) { foldCutouts(flanges, flangeIds, build.flanges[f.id]); return; }   // lane smtrim: the relief across the bends
       if (f.type === 'extrude' && f.normalCut && !build.errors[f.id] && build.flanges[f.id]) { foldCutouts(flanges, flangeIds, build.flanges[f.id]); return; }   // lane NM: its round holes' traces
       if ((f.type === 'insertBends' || f.type === 'convertSM') && !build.errors[f.id]) { (build.flanges[f.id] || []).forEach(function (fi, j) { flanges.push(fi); flangeIds[flanges.length - 1] = { feature: f.id, index: j }; }); return; }   // lane DQ
+      // lane PK: a Mirror / Pattern of an Edge Flange, Hem, Miter Flange or edge Jog carries the copies' bend records, of a
+      // Closed Corner the copies' corner records (kernel-rebuild.js bendFamily)
+      var bfSeed = (f.type === 'mirror' || f.type === 'lpattern' || f.type === 'cpattern') && !build.errors[f.id] && build.flanges[f.id] && _.bendFamilySeed ? _.bendFamilySeed(model, f) : null;
+      if (bfSeed && bfSeed.type === 'closedCorner') { ccExtendRecords(flanges, flangeIds, build.flanges[f.id]); return; }
+      if (bfSeed) f = { id: f.id, type: 'flange' };
       if ((f.type !== 'flange' && f.type !== 'jog' && f.type !== 'sketchedBend') || build.errors[f.id]) return;
       if (f.type === 'sketchedBend' || isSketchJog(f)) {
         var sbr = sketchedBendRecords(flanges, anchors, build.flanges[f.id] || []), n0 = flanges.length; flanges = sbr.flanges; anchors = sbr.anchors;
@@ -6275,11 +6280,12 @@
   // lane DV: the bend records (of edge flanges before it) whose end the corner cut: [{ kind: 'ccEnd', feature, index,
   // end, t0, ext }] (how far past the record's end the strip now ends at the bend's start / at its end; negative =
   // shorter). The record: the edge flange's bend along `dir` holding the probe point `at`.
+  function isFlangeFamily(model, g) { var s = _.bendFamilySeed ? _.bendFamilySeed(model, g) : null; return !!s && s.type === 'flange'; }   // lane PK
   function closedCornerEnds(list, model, ctx) {
     var T = +model.sheet.thickness, out = [];
     list.forEach(function (e) {
       model.features.forEach(function (g) {
-        if (g.type !== 'flange' || !ctx.flanges[g.id]) return;
+        if (!ctx.flanges[g.id] || !(g.type === 'flange' || isFlangeFamily(model, g))) return;   // lane PK: a Mirror / Pattern of a flange too
         ctx.flanges[g.id].forEach(function (r, j) {
           if (!r || r.kind !== 'edge' || !r.a || !r.b || !r.origin || !r.u || !r.o) return;
           var d = norm(sub(r.b, r.a)), dn = dot(d, e.dir);
@@ -6298,7 +6304,7 @@
     var T = +model.sheet.thickness, tol = 1e-4 + 1e-3 * T, out = [];
     fills.forEach(function (t) {
       model.features.forEach(function (g) {
-        if (g.type !== 'flange' || !ctx.flanges[g.id]) return;
+        if (!ctx.flanges[g.id] || !(g.type === 'flange' || isFlangeFamily(model, g))) return;   // lane PK: a Mirror / Pattern of a flange too
         ctx.flanges[g.id].forEach(function (r, j) {
           if (!r || r.kind !== 'edge' || !r.a || !r.b) return;
           var d = norm(sub(r.b, r.a)), dn = dot(d, t.n);

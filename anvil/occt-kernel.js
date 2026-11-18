@@ -282,6 +282,7 @@ var OcctKernel = (function () {
 
     var rm = K.resolvedModel(model), m = rm.model;
     var planes = {}, sketches = {}, tools = {}, bodies = [], bodyFeatures = [], status = {}, unsupported = null;
+    var cutDirs = {};   // lane PK: Cut-Extrudes with no direction that autoCutDir turned into the material (out.cutDirs)
     var smFlanges = {};   // lane smtrim: edge-flange records by feature id (flangeLayout's Trim side bends looks up the side bends)
     // a feature Anvil's kernel only approximates was built (a shell of curved faces, three picked edges meeting at one
     // corner): the volume check against Anvil uses the loose tolerance (see out.tolerance)
@@ -347,6 +348,61 @@ var OcctKernel = (function () {
         solid = normalCutTool(solid, ncDir);
       }
       return solid;
+    }
+    // lane PK (found by lane chamferpat): a Cut-Extrude with no direction (a script's cut without `reverse` / `dir`, one
+    // direction, not mid-plane) goes into the material, as Anvil's rebuild decides it (kernel-rebuild.js rfFS: +n first,
+    // -n when +n removes nothing and -n does) and writes it onto the model. A model OpenCascade gets before Anvil ever
+    // rebuilt it (a script run straight on OpenCascade) cut +n always, so a cut sketched on a top face cut nothing.
+    // Decided here without a Boolean (a trial cut of a perforated plate would cost what the plate path saves): points
+    // inside the profile (up to 3 per outer loop, off its holes) sampled along each direction's range within the bodies'
+    // box and classified against each body in scope; +n stays unless it meets no material and -n does (f.reverse set on
+    // this build's copy and reported in out.cutDirs). Returns true when it turned the cut round.
+    function autoCutDir(f) {
+      if (!(f.type === 'extrude' && K.isCut(f, m) && f.reverse == null && !f.dir2 && f.end !== 'mid') || !bodies.length || !K._ || !K._.triangulate) return false;
+      var sk, plane, prof;
+      try { sk = K.contourSketch(f, sketchOf(f)); plane = K.resolvePlane(sk.plane, m, planes); prof = sk.profile || K.sketchProfile(sk); } catch (e) { return false; }
+      var loops = (prof.loops || []).filter(function (l) { return l && l.pts && l.pts.length >= 3; }), holes = loops.filter(function (l) { return l.hole; }), pts = [];
+      loops.forEach(function (l) {
+        if (l.hole || pts.length > 24) return;
+        var tris = K._.triangulate(l.pts), got = 0;
+        for (var i = 0; i < tris.length && got < 3; i++) {
+          var a = l.pts[tris[i][0]], b = l.pts[tris[i][1]], c = l.pts[tris[i][2]], q = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3];
+          if (holes.some(function (h) { return K._.pointInPoly(q, h.pts); })) continue;
+          pts.push(K.to3D ? K.to3D(plane, q[0], q[1]) : V.add(plane.origin, V.add(V.scale(plane.x, q[0]), V.scale(plane.y, q[1]))));
+          got++;
+        }
+      });
+      if (!pts.length) return false;
+      var scope = K.cutScope(f, bodies.length), boxes = scope.map(function (i) { return bboxOf(bodies[i]); });
+      var cls = scope.map(function (i) { return N(new oc.BRepClass3d_SolidClassifier_2(bodies[i])); });
+      function meets(rev) {
+        var g = Object.assign({}, f); if (rev) g.reverse = true;
+        var range = K.extrudeRange(g, K.THROUGH), n = plane.n;
+        for (var s = 0; s < scope.length; s++) {
+          var bx = boxes[s];
+          if (!bx) continue;
+          for (var k = 0; k < pts.length; k++) {
+            // the part of the line P + t n inside the body's box, within the cut's range
+            var t0 = range[0], t1 = range[1];
+            for (var ax = 0; ax < 3 && t0 < t1; ax++) {
+              if (Math.abs(n[ax]) < 1e-12) { if (pts[k][ax] < bx[0][ax] || pts[k][ax] > bx[1][ax]) t1 = t0 - 1; continue; }
+              var u0 = (bx[0][ax] - pts[k][ax]) / n[ax], u1 = (bx[1][ax] - pts[k][ax]) / n[ax];
+              t0 = Math.max(t0, Math.min(u0, u1)); t1 = Math.min(t1, Math.max(u0, u1));
+            }
+            if (!(t1 > t0)) continue;
+            for (var j = 0; j < 16; j++) {
+              var t = t0 + (t1 - t0) * (j + 0.5) / 16;
+              cls[s].Perform(P(V.add(pts[k], V.scale(n, t))), 1e-7);
+              if (cls[s].State() === oc.TopAbs_State.TopAbs_IN) return true;
+            }
+          }
+        }
+        return false;
+      }
+      if (meets(false) || !meets(true)) return false;
+      f.reverse = true;
+      cutDirs[f.id] = true;
+      return true;
     }
     // Normal Cut (as Kernel.normalCutTool): the tool's faces that lie on a sheet surface where it meets the body (air
     // just in front, metal half a thickness behind, air a thickness behind; area-weighted over its triangles), only
@@ -562,7 +618,28 @@ var OcctKernel = (function () {
         edgeOp(g);
       });
     }
+    // lane PK: a Mirror / LPattern / CirPattern of an Edge Flange, Hem, Miter Flange, edge Jog or Closed Corner is that
+    // feature again on the copied edges / faces (Kernel.bendFamily, as Anvil's rebuild), one copy after the other; the
+    // copies' bend records are this feature's (smFlanges). What SolidWorks does not mirror / pattern is refused there.
+    function bendFamilyOp(f, fam) {
+      var recs = [], st = fam.src.type;
+      fam.copies.forEach(function (g) {
+        delete smFlanges[f.id];
+        try {
+          if (st === 'closedCorner') closedCornerOp(g);
+          else if (st === 'jog') jogOp(g);
+          else flangeOp(g);
+        } catch (e) {
+          if (/^No edge selected|^Closed Corner: pick|not an end face|no end face/i.test(e.message || '')) throw new Error(K.bendFamilyMiss(f, fam.src));
+          throw e;
+        }
+        recs = recs.concat(smFlanges[f.id] || []);
+      });
+      smFlanges[f.id] = recs;
+    }
     function patternTool(f) {
+      var bfam = !(f.type === 'mirror' && f.body) && K.bendFamily ? K.bendFamily(f, m, { planes: planes, sketches: sketches }) : null;
+      if (bfam) { bendFamilyOp(f, bfam); return null; }
       var src = familyTool(f.feature), copies = [], sf = !src && f.feature != null ? K.findFeature(m, f.feature) : null;
       var seeds = sf && !(f.type === 'mirror' && f.body) ? edgeSeeds(f.feature, 0) : null;
       if (seeds) { edgeFeatureCopies(f, seeds); return null; }
@@ -2527,7 +2604,9 @@ var OcctKernel = (function () {
               if (fp && fp.plane !== f.plane) { f.plane = fp.plane; keys[fi] = featureKey(f); }
               if (!f.profile) f.profile = K.sketchProfile(f); sketches[f.id] = f; break;
             }
-            case 'extrude': if (K.isCut(f, m) ? kvTryCut(f) : (kvFlush(), false)) break; tool = extrudeTool(f); break;   // rfKV
+            case 'extrude':
+              if (f.reverse == null && K.isCut(f, m)) { var fdir = Object.assign({}, f); if (autoCutDir(fdir)) { f = m.features[fi] = fdir; } }   // lane PK: into the material, as Anvil's rebuild
+              if (K.isCut(f, m) ? kvTryCut(f) : (kvFlush(), false)) break; tool = extrudeTool(f); break;   // rfKV
             case 'revolve': tool = revolveTool(f); break;
             case 'loft': tool = loftTool(f); break;
             case 'boundary': tool = rfFBBoundary(oc, K, f, m, { N: N, R: R, explore: explore, volumeOf: volumeOf, sketches: sketches, planes: planes, unsupportedErr: unsupportedErr, loft: function (ids) { return loftTool({ sketches: ids }); }, loftWires: function (ids) { return ids.map(function (id) { var s = sketchById(id, 'A Direction 1 profile sketch was not found.'), o = outerLoop(s, 'Each Direction 1 sketch must contain exactly one closed profile.'); return loopWire(o.loop, o.profile, K.resolvePlane(s.plane, m, planes)); }); } }); break;   // rfFB
@@ -2595,6 +2674,7 @@ var OcctKernel = (function () {
           return f.type === 'sweep' || f.type === 'loft' || f.type === 'boundary' || f.type === 'import' || f.type === 'flange' || f.type === 'jog' || f.type === 'sketchedBend' || f.type === 'insertBends' || f.type === 'convertSM' || ((f.type === 'fillet' || f.type === 'chamfer') && (f.edges || []).some(function (e) { return e.chain === false; }));
         }) ? 2e-2 : 1e-4 };
       out.plate = kvStats;   // rfKV
+      out.cutDirs = cutDirs;   // lane PK
       if (unsupported || !bodies.length) return out;
       var tS = now();
       // booleans leave faces split along old seams (a pocket floor in pieces): merge faces on the same surface
