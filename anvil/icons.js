@@ -215,6 +215,8 @@ var IconsLib = (function () {
     unfold: p(FLANGE_L, F2, S, 1) + ln('M3 7 C3 4 5 2.5 8.5 2.5', B, 1.2) + ln('M3 7.2 l-1.5 -1.6 M3 7.2 l1.6 -1.4', B, 1.2),
     fold: p('M1.5 11 h8 v3 h-8 z', F2, S, 1) + p('M9.5 11 h5 v3 h-5 z', FY, S, 1) + ln('M12 9 C12 5.5 10 3.5 6.5 3.5', B, 1.2) + ln('M12 9.2 l-1.5 -1.6 M12 9.2 l1.5 -1.6', B, 1.2),
     rip: blk(1.5, 5, 9, 7, 3.5) + ln('M10.5 9 v6.5', R, 1.8) + ln('M10.5 8.5 l3.5 -3.5', R, 1.8),
+    // lane PT: Tab and Slot: an upright plate whose two tabs (yellow) go down through slots in the base plate
+    tabSlot: p('M1 11 h14 v3 H1 z', F2, S, 1) + p('M4 2 h8 v9 h-1.5 v2 h-1.5 v-2 h-2 v2 h-1.5 v-2 H4 z', F2, S, 1) + p('M5.5 11 h1.5 v2 h-1.5 z M9 11 h1.5 v2 h-1.5 z', FY, FYD, 0.8),
     // lane DQ: Insert Bends (a sharp L whose corner turns into a yellow bend) and No Bends (the same L, sharp, struck)
     insertBends: p('M2 3 h3 v7.5 h8.5 v3 H5 a3 3 0 0 1 -3 -3 z', F2, S, 1) + p('M2 10.5 a3 3 0 0 0 3 3 v-3 z', FY, FYD, 1),
     noBends: p('M2 3 h3 v7.5 h8.5 v3 H2 z', F2, S, 1) + ln('M3 2 L14 14', R, 1.4),

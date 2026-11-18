@@ -1320,6 +1320,15 @@
       if (o.end != null && o.end !== 'blind') throw new Error('offset.end must be "blind".');
       f.offset = { end: 'blind', distance: num(o.distance) };
     }
+    // lane PT: SolidWorks' Edit Flange Profile on part of the edge: the profile's sides set back startOffset from the
+    // edge's start (the end nearer opts.startAt, else the edge's first end) and endOffset from its other end; the sheet
+    // past each side keeps its edge and takes the flange's relief (kernel flangeLayout, miterOffsetEnds)
+    if (opts.startOffset != null) f.startOffset = num(opts.startOffset);
+    if (opts.endOffset != null) f.endOffset = num(opts.endOffset);
+    if (opts.startPoint != null) {
+      if (!Array.isArray(opts.startPoint) || opts.startPoint.length !== 3) throw new Error('startPoint must be [x, y, z] (startOffset counts from the end of the edge nearer it).');
+      f.startPoint = opts.startPoint.map(num);
+    }
   }
   // lane DL: miterFlange(edges, opts): Sheet Metal ▸ Miter Flange from a profile sketch (Kernel.miterFlangeStages). edges:
   // [[x,y,z], …] points on the straight edges to run along (the one the profile starts on is added when missing). opts:
@@ -1531,6 +1540,29 @@
       return e.direction ? { at: pt(e.at), direction: e.direction } : { at: pt(e.at) };
     }), gap: gap != null ? num(gap) : K.ripDefaultGap(this.model), direction: dir };
     if (opts.name) f.name = opts.name;
+    this._add(f);
+    return this;
+  };
+  // lane PT: tabSlot(edges, opts): Sheet Metal ▸ Tab and Slot (kernel-sheetmetal.js tabSlotLayout). edges: [[x, y, z], …]
+  // points on straight edges of one body that rest on a face of another; opts: face ([x, y, z] on the slot face; none:
+  // the face the edge rests on), count (equal spacing, default 2) or spacing: 'distance' with pitch (centre to centre),
+  // startOffset, endOffset, startPoint, tabLength (default 1 in / 25 mm), tabHeight (none = through the slot body),
+  // tabEdge ('sharp' | 'chamfer' | 'fillet') + tabEdgeSize, slotLengthOffset, slotWidthOffset (clearance each end / side),
+  // slotCorner ('sharp' | 'chamfer' | 'fillet') + slotCornerSize, name
+  Builder.prototype.tabSlot = function (edges, opts) {
+    opts = opts || {};
+    var pt = function (p) { if (!Array.isArray(p) || p.length !== 3) throw new Error('tabSlot: points are [x, y, z].'); return p.map(num); };
+    var f = { type: 'tabSlot', edges: (edges || []).map(function (e) { return { at: pt(Array.isArray(e) ? e : e.at) }; }), face: opts.face ? { at: pt(opts.face) } : null,
+      spacing: opts.spacing === 'distance' ? 'distance' : 'equal', count: opts.count != null ? num(opts.count) : 2,
+      tabLength: opts.tabLength != null ? num(opts.tabLength) : (this.model.units === 'in' ? 1 : 25), tabHeight: opts.tabHeight != null ? num(opts.tabHeight) : null,
+      tabEdge: opts.tabEdge || 'sharp', slotCorner: opts.slotCorner || 'sharp' };
+    if (!f.edges.length) throw new Error('tabSlot needs the edge for the tabs.');
+    if (K.TAB_EDGE_TYPES.indexOf(f.tabEdge) < 0) throw new Error('tabEdge must be one of ' + K.TAB_EDGE_TYPES.join(', ') + '.');
+    if (K.SLOT_CORNER_TYPES.indexOf(f.slotCorner) < 0) throw new Error('slotCorner must be one of ' + K.SLOT_CORNER_TYPES.join(', ') + '.');
+    if (f.spacing === 'distance') f.pitch = num(opts.pitch);
+    ['startOffset', 'endOffset', 'tabEdgeSize', 'slotLengthOffset', 'slotWidthOffset', 'slotCornerSize'].forEach(function (k) { if (opts[k] != null) f[k] = num(opts[k]); });
+    if (opts.startPoint != null) f.startPoint = pt(opts.startPoint);
+    f.name = opts.name || featureName(this.model, 'tabSlot');
     this._add(f);
     return this;
   };
@@ -2174,6 +2206,10 @@
           if (f.lengthEnd === 'upToVertex') { fo.lengthEnd = 'upToVertex'; fo.lengthVertex = f.lengthVertex; if (f.lengthVertexMode) fo.lengthVertexMode = f.lengthVertexMode; }
           if (f.offset != null) fo.offset = numOut(typeof f.offset === 'object' ? f.offset.distance : f.offset);
           if (f.trimSideBends && !f.hem) fo.trimSideBends = true;   // lane smtrim
+          // lane PT: a flange on part of its edge (Edit Flange Profile): the profile's sides set back from the edge's ends
+          if (!f.hem && f.startOffset != null && (isExpression(f.startOffset) || +f.startOffset !== 0)) fo.startOffset = numOut(f.startOffset);
+          if (!f.hem && f.endOffset != null && (isExpression(f.endOffset) || +f.endOffset !== 0)) fo.endOffset = numOut(f.endOffset);
+          if (!f.hem && (fo.startOffset != null || fo.endOffset != null) && Array.isArray(f.startPoint)) fo.startPoint = f.startPoint.map(function (x) { return isExpression(x) ? x : Math.round(x * 1e6) / 1e6; });
           if (f.bendAllowance) fo.bendAllowance = bendAllowanceOut(f.bendAllowance);
           if (f.hem) {
             var ho = !f.hemType || f.hemType === 'open' ? { gap: f.gap != null ? numOut(f.gap) : Math.round(f.radius * 2 * 1e4) / 1e4, name: f.name } : { name: f.name };

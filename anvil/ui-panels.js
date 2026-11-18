@@ -211,6 +211,7 @@
       { sep: true },
       { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'hem', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'jog', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'sketchedBend', label: 'Sketched\nBend', run: function () { UI.cmdSketchedBend(); } },
       { stack: [{ id: 'crossBreak', icon: 'crossBreak', label: 'Cross-Break', help: 'Mark a stiffening X on a flat sheet face, corner to corner (cosmetic: the solid and the blank stay)', run: function () { UI.cmdCrossBreak(); } }, { fly: 'corners', items: [{ id: 'breakCorner', label: 'Break-Corner/Corner-Trim', help: 'Round or chamfer outside corners of the sheet (Corners ▸ Break-Corner/Corner-Trim)', run: function () { UI.cmdBreakCorner(); } }, { id: 'closedCorner', label: 'Closed Corner', help: 'Extend the end faces of a flange to close the gap at a box corner (Corners ▸ Closed Corner)', run: function () { UI.cmdClosedCorner(); } }, { id: 'weldedCorner', label: 'Welded Corner', help: 'Fill the gap at a box corner with weld metal; the flat pattern leaves it out (Corners ▸ Welded Corner)', run: function () { UI.cmdWeldedCorner(); } }, { id: 'cornerRelief', label: 'Corner Relief', help: 'Cut a relief where two bends meet at a corner (Corners ▸ Corner Relief)', run: function () { UI.cmdCornerRelief(); } }] }, { fly: 'forming', label: 'Forming Tool', items: [['dimple', 'Dimple', 'Press a round dimple (emboss) into a sheet face'], ['extrudedHole', 'Extruded Hole', 'A formed collar round a hole (extruded flange)'], ['louver', 'Louver', 'A vent hood lanced along one side'], ['lance', 'Lance', 'A bridge lance: cut along both sides, pressed up'], ['rib', 'Rib', 'A straight stiffening rib with round ends']].map(function (t) { return { id: 'ft' + t[0].charAt(0).toUpperCase() + t[0].slice(1), label: t[1], help: t[2], run: function () { UI.cmdFormingTool(t[0]); } }; }) }] },   // lane forming
+      { id: 'tabSlot', label: 'Tab and\nSlot', run: function () { UI.cmdTabSlot(); } },   // lane PT: after Forming Tool, before the cuts (SolidWorks 2024's place assumed, not checked)
       { sep: true },
       { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'vent', label: 'Vent', run: function () { UI.cmdVent(); } },
       { sep: true },
@@ -1355,7 +1356,7 @@
     'Performance Evaluation': 'Rebuild time of each feature', 'Costing': 'Estimate the manufacturing cost',
     'Convert to Sheet Metal': 'Turn a solid into sheet metal', 'Lofted-Bend': 'Sheet metal lofted between two open profiles', 'Sketched Bend': 'Bend the sheet along a sketch line',
     'Cross-Break': 'Stiffening cross-break on a face', 'Corners': 'Close, break or relieve sheet-metal corners', 'Forming Tool': 'Press a formed shape into the sheet',
-    'Vent': 'Vent openings from a sketch', 'Unfold': 'Flatten selected bends', 'Fold': 'Fold unfolded bends back', 'Rip': 'Rip the edges of a hollow part so it can be unfolded',
+    'Vent': 'Vent openings from a sketch', 'Tab and Slot': 'Tabs on an edge of one body through matching slots in the face of the other body it rests on (two bodies: make the second with Merge result off)', 'Unfold': 'Flatten selected bends', 'Fold': 'Fold unfolded bends back', 'Rip': 'Rip the edges of a hollow part so it can be unfolded',
     'Linear Component Pattern': 'Repeat components along one or two directions', 'Circular Component Pattern': 'Repeat components about an axis',
     'Mirror Components': 'Mirror components about a plane', 'Exploded View': 'Pull the components apart in steps', 'Bill of Materials': 'Parts list with quantities',
     'Smart Fasteners': 'Add fasteners to holes', 'Hole Alignment': 'Find holes that do not line up across components'
@@ -2357,6 +2358,7 @@
   var FEATURE_ICON = { sketch: 'sketch', plane: 'planeSmall', extrude: 'extrude', revolve: 'revolve', lpattern: 'lpattern', cpattern: 'cpattern', mirror: 'mirror', chamfer: 'chamfer', fillet: 'fillet', flange: 'bend', jog: 'bend', sweep: 'sweep', loft: 'loft', shell: 'shell', import: 'imported', hole: 'holeWizard' };
   FEATURE_ICON.refaxis = 'refAxis'; FEATURE_ICON.refpoint = 'refPoint'; FEATURE_ICON.csys = 'csys';   // lane CZ: reference geometry
   FEATURE_ICON.rip = 'rip';   // lane DI
+  FEATURE_ICON.tabSlot = 'tabSlot';   // lane PT
   FEATURE_ICON.vent = 'vent';   // lane DT
   FEATURE_ICON.crossBreak = 'crossBreak';   // lane cross-break
   FEATURE_ICON.cornerRelief = 'cornerRelief';   // lane smtrim (Corners flyout)
@@ -3921,6 +3923,7 @@
         { label: 'Sheet Metal ▸ Miter Flange', action: function () { UI.cmdMiterFlange(); } },
         { label: 'Sheet Metal ▸ Hem', action: function () { UI.cmdHem(); } },
         { label: 'Sheet Metal ▸ Jog', action: function () { UI.cmdJog(); } },
+        { label: 'Sheet Metal ▸ Tab and Slot', icon: 'tabSlot', action: function () { UI.cmdTabSlot(); } },   // lane PT
         { label: 'Sheet Metal ▸ Flatten', checked: !!(App.model && App.model.flatState), action: function () { (UI.flattenWithBar || UI.toggleFlatten)(); } },
         { label: 'Tables ▸ Design Table…', action: function () { showDesignTable(); } }   // rfFC
       ] },

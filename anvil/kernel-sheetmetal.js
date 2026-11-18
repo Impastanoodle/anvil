@@ -367,7 +367,9 @@
           throw new Error((f.miter ? 'Miter Flange' : f.hem ? 'Hem' : 'Edge Flange') + ': the selected edge is not linear. Flanges can be created on linear edges only.');
       });
     });
-    if ((+f.startOffset || 0) !== 0 || (+f.endOffset || 0) !== 0) selected = miterOffsetEnds(selected, f);   // lane DL: Miter Flange start / end offsets
+    // lane DL: Miter Flange start / end offsets; lane PT: an Edge Flange on part of its edge (Edit Flange Profile) takes
+    // the same set-backs, startOffset from the end nearer f.startPoint ([x, y, z]; none: the edge's first end)
+    if ((+f.startOffset || 0) !== 0 || (+f.endOffset || 0) !== 0) selected = miterOffsetEnds(selected, f.startAt == null && Array.isArray(f.startPoint) ? Object.assign({}, f, { startAt: f.startPoint.map(Number) }) : f);
     // placement: 'bendOutside' (default: bend and wall beyond the edge), 'outside' (Material Outside: the wall's inner
     // face at the edge), 'inside' (Material Inside: the wall's outer face at the edge), 'virtualSharp' (Bend from
     // Virtual Sharp: the outer virtual sharp on the edge, so the base keeps its outside dimension at any angle; at 90°
@@ -2662,6 +2664,11 @@
     function warn(w) { if (w && warnings.indexOf(w) < 0) warnings.push(w); }
     var meshIn = mesh;   // (lane stepin2) the part's own mesh, for ibMetalCheck
     mesh = planeFaces(mesh);
+    // lane PT: a multibody part (Tab and Slot between the sheet and a plate made with Merge result off): the flat is the
+    // sheet's body alone (the plate's larger face parallel to the base took the flat before)
+    var sheetBody = build && build.bodies && build.bodies.length > 1 && build.bodyFeatures ? build.bodyFeatures.indexOf(base.id) : -1;
+    if (sheetBody >= 0 && mesh.faces.some(function (f) { return (f.body || 0) !== sheetBody; }) && mesh.faces.some(function (f) { return (f.body || 0) === sheetBody; }))
+      mesh = Object.assign({}, mesh, { faces: mesh.faces.filter(function (f) { return (f.body || 0) === sheetBody; }) });
     var best = null;
     mesh.faces.forEach(function (face, i) {
       var d = dot(face.normal, plane.n);
@@ -10302,4 +10309,205 @@
   K.SWEPT_FLANGE_FLATTEN = SF_FLATTEN.slice(); _.sfPointMap = sfPointMap; _.sfBodyLoops = sfBodyLoops;
 
   K.sweptFlangeLayout = sweptFlangeLayout; K.sweptFlangeOpenBase = sweptFlangeOpenBase; _.sweptFlangeOpenBase = sweptFlangeOpenBase; K.buildSweptFlange = buildSweptFlange; K.sweptFlangeFlat = sweptFlangeFlat; _.sweptFlangeFlat = sweptFlangeFlat;
+})(Kernel, Kernel._);
+// ---- lane PT: Tab and Slot (SolidWorks 2017+, Insert ▸ Sheet Metal ▸ Tab and Slot). Tabs on a straight edge of one body
+// go through matching slots cut in the face of another body that the edge rests on, so two parts locate and hold each
+// other for welding. Feature JSON:
+//   { type: 'tabSlot', edges: [{ at }], face: { at } | null (none: the face of another body the edge lies on),
+//     startOffset, endOffset (the tabs' run along the edge, from its start / end; start = the end nearer startPoint, else
+//     the edge's first end), startPoint?: [x, y, z],
+//     spacing: 'equal' (count tabs, each centred in its 1/count of the run) | 'distance' (pitch: centre to centre, as
+//     many as fit, the group centred), count, pitch,
+//     tabLength, tabHeight (null = through the slot body, flush), tabEdge: 'sharp' | 'chamfer' | 'fillet', tabEdgeSize,
+//     slotLengthOffset, slotWidthOffset (clearance each end / each side), slotCorner: 'sharp' | 'chamfer' | 'fillet',
+//     slotCornerSize, name }
+// The tab body and the slot body must be two bodies (a sheet-metal part and a plate made with Merge result off, or two
+// plates): in one body the edge resting on the face would be one welded piece (no gap) and the flat could not unfold it.
+// The slots go through the slot body; on a sheet-metal body they are holes in its faces, so the flat pattern and its DXF
+// show them; tabs on the sheet-metal body lie in the plane of its wall and grow its outline in the flat.
+// tabSlotLayout(f, model, bodies) -> { tabBody, slotBody, tabs: [{ loop, plane, a, b }], slots: [...], info } (plain data)
+(function (K, _) {
+  'use strict';
+  var V = K.vec, add = V.add, sub = V.sub, scale = V.scale, dot = V.dot, cross = V.cross, len = V.len, norm = V.norm;
+  var TAB_EDGES = ['sharp', 'chamfer', 'fillet'], SLOT_CORNERS = ['sharp', 'chamfer', 'fillet'], ARC_SEGS = 8;
+  function fmt(x) { return String(Math.round(x * 1e4) / 1e4); }
+  function bboxDiag(mesh) {
+    var p = mesh.positions, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (var i = 0; i < p.length; i += 3) for (var k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[i + k]); hi[k] = Math.max(hi[k], p[i + k]); }
+    return len(sub(hi, lo)) || 1;
+  }
+  // distance along unit dir from P (inside) to where the body ends, snapped to a face of the body square to dir
+  // (measured from Q, the point the distance counts from)
+  function through(tester, mesh, P, Q, dir, maxLen) {
+    var h = maxLen / 512, t = 0;
+    while (t < maxLen && tester(add(P, scale(dir, t + h)))) t += h;
+    var lo = t, hi = t + h;
+    for (var k = 0; k < 60; k++) { var m = (lo + hi) / 2; if (tester(add(P, scale(dir, m)))) lo = m; else hi = m; }
+    var est = dot(sub(add(P, scale(dir, lo)), Q), dir), best = null;
+    mesh.faces.forEach(function (fc) {
+      var c = dot(fc.normal, dir);
+      if (!(c > 1 - 1e-9)) return;
+      var d = (fc.w - dot(fc.normal, Q)) / c;
+      if (Math.abs(d - est) < 1e-4 * (1 + maxLen) && (best == null || Math.abs(d - est) < Math.abs(best - est))) best = d;
+    });
+    return best != null ? best : est;
+  }
+  // a rectangle [x0, x1] × [y0, y1] with its corners treated: which = the corners treated ('top' = the two at y1, 'all'),
+  // kind 'sharp' | 'chamfer' | 'fillet', size the chamfer leg / fillet radius; counter-clockwise
+  function cornerRect(x0, x1, y0, y1, which, kind, size) {
+    var C = [[x0, y0, -1, -1], [x1, y0, 1, -1], [x1, y1, 1, 1], [x0, y1, -1, 1]], out = [];
+    C.forEach(function (c, i) {
+      var treat = kind !== 'sharp' && size > 0 && (which === 'all' || (which === 'top' && i >= 2));
+      if (!treat) { out.push([c[0], c[1]]); return; }
+      // the corner's two directions in order round the loop: coming in along the previous side, leaving along the next
+      var cx = c[0] - c[2] * size, cy = c[1] - c[3] * size;   // fillet centre / chamfer inner corner
+      // counter-clockwise loop: corner 0 (−,−) goes from the left side (x = x0) to the bottom (y = y0), etc.
+      var startA = [Math.PI, 1.5 * Math.PI, 0, 0.5 * Math.PI][i], endA = startA + Math.PI / 2;
+      if (kind === 'chamfer') { out.push([cx + size * Math.cos(startA), cy + size * Math.sin(startA)], [cx + size * Math.cos(endA), cy + size * Math.sin(endA)]); return; }
+      for (var k = 0; k <= ARC_SEGS; k++) { var t = startA + (endA - startA) * k / ARC_SEGS; out.push([cx + size * Math.cos(t), cy + size * Math.sin(t)]); }
+    });
+    return out;
+  }
+  function frame(x, y, origin, along, depth) {
+    var n = norm(cross(x, y)), s = dot(n, along) > 0 ? 1 : -1;
+    return { plane: { origin: origin, x: x, y: y, n: n }, a: s > 0 ? depth[0] : -depth[1], b: s > 0 ? depth[1] : -depth[0] };
+  }
+  function tabSlotLayout(f, model, bodies) {
+    if (!bodies || bodies.length < 2) throw new Error('Tab and Slot needs two bodies: the tab edge on one and the slot face on the other (make the second with Merge result off).');
+    var units = model.units || 'mm', tol = Math.max(1e-6, (units === 'in' ? 1e-4 : 2.5e-3));
+    var meshes = bodies.map(function (b) { return b ? K.meshFromBody(b) : null; });
+    var testers = bodies.map(function (b) { return b ? b.pointTester() : function () { return false; }; });
+    var specs = (f.edges || []).map(function (e) { return Array.isArray(e) ? e : e.at; });
+    if (!specs.length) throw new Error('Tab and Slot: select the edge for the tabs.');
+    var tabLen = +f.tabLength, cl = +f.slotLengthOffset || 0, cw = +f.slotWidthOffset || 0;
+    if (!(tabLen > 0)) throw new Error('Tab length must be greater than zero.');
+    if (!(cl >= 0) || !(cw >= 0)) throw new Error('Slot length and width offsets must be zero or more.');
+    var tabEdge = f.tabEdge || 'sharp', slotCorner = f.slotCorner || 'sharp';
+    if (TAB_EDGES.indexOf(tabEdge) < 0) throw new Error('Tab edge type must be one of ' + TAB_EDGES.join(', ') + '.');
+    if (SLOT_CORNERS.indexOf(slotCorner) < 0) throw new Error('Slot corner type must be one of ' + SLOT_CORNERS.join(', ') + '.');
+    var out = { tabBody: -1, slotBody: -1, tabs: [], slots: [], info: [] };
+    specs.forEach(function (at, si) {
+      // the edge: on which body
+      var A = -1, e = null;
+      meshes.forEach(function (m, i) {
+        if (e || !m) return;
+        var sharp = K.bodyEdges(m).filter(function (g) { return !g.smooth && g.faces.length === 2; });
+        var r = K.resolveEdges([{ at: at.map(Number), chain: false }], sharp, K.pickTol(units, 0));
+        if (r.length) { A = i; e = r[0]; }
+      });
+      if (!e) throw new Error('Tab and Slot: no straight edge at ' + at.map(fmt).join(', ') + '.');
+      // the slot face: a planar face of another body that the edge lies on, the tab body's end face against it
+      var B = -1, nF = null, wF = 0, eps = 1e-4 * (1 + e.len);
+      var fp = f.face ? (Array.isArray(f.face) ? f.face : f.face.at).map(Number) : null;
+      meshes.forEach(function (m, j) {
+        if (nF || !m) return;
+        m.faces.forEach(function (fc) {
+          if (nF || fc.curved) return;
+          var n = fc.normal;
+          if (fp) {
+            if (Math.abs(dot(n, fp) - fc.w) > tol || !testers[j](sub(fp, scale(n, eps))) || testers[j](add(fp, scale(n, eps)))) return;
+            if (Math.abs(dot(n, e.a) - fc.w) > tol || Math.abs(dot(n, e.b) - fc.w) > tol) return;
+          } else {
+            if (j === A) return;
+            if (Math.abs(dot(n, e.a) - fc.w) > tol || Math.abs(dot(n, e.b) - fc.w) > tol) return;
+            if (!e.normals.some(function (q) { return dot(q, n) < -1 + 1e-6; })) return;
+            if (!testers[j](sub(e.mid, scale(n, eps)))) {
+              // the edge may sit on the face's border: probe a little across the tab body's thickness too
+              var sOut = e.normals.filter(function (q) { return Math.abs(dot(q, n)) < 1e-6; })[0];
+              if (!sOut || !testers[j](sub(sub(e.mid, scale(n, eps)), scale(sOut, eps)))) return;
+            }
+          }
+          B = j; nF = n.slice(); wF = fc.w;
+        });
+      });
+      if (!nF) throw new Error(fp ? 'Tab and Slot: the edge does not lie on the selected face (the tab edge must rest on the slot face).' : 'Tab and Slot: the edge at ' + at.map(fmt).join(', ') + ' does not rest on a face of another body; select the slot face.');
+      if (B === A) throw new Error('Tab and Slot: the tab edge and the slot face are on the same body. Anvil builds tabs and slots between two bodies (make one with Merge result off): in one body the joint is welded shut and the flat pattern cannot unfold it.');
+      if (out.tabBody >= 0 && (out.tabBody !== A || out.slotBody !== B)) throw new Error('Tab and Slot: every edge must be on the same tab body and rest on the same slot body.');
+      out.tabBody = A; out.slotBody = B;
+      // the edge's faces: the end face lies on the slot face (its normal −nF); the side face's normal s, c = −s across
+      var end = -1;
+      e.normals.forEach(function (q, k) { if (dot(q, nF) < -1 + 1e-6) end = k; });
+      if (end < 0) throw new Error('Tab and Slot: the edge must be an edge of the face that rests on the slot face.');
+      var s = e.normals[1 - end], c = scale(s, -1), d = scale(nF, -1);
+      if (Math.abs(dot(s, nF)) > 1e-6) throw new Error('Tab and Slot: the tab body must meet the slot face square (its side face at 90° to it).');
+      var diagA = bboxDiag(meshes[A]), diagB = bboxDiag(meshes[B]), dl = 1e-5 * (1 + e.len);
+      var TA = through(testers[A], meshes[A], add(add(e.mid, scale(c, dl)), scale(nF, dl)), e.mid, c, diagA);
+      // the run along the edge, from its start (startPoint picks which end)
+      var a = e.a, b = e.b;
+      if (Array.isArray(f.startPoint) && len(sub(f.startPoint.map(Number), b)) < len(sub(f.startPoint.map(Number), a))) { a = e.b; b = e.a; }
+      var dir = norm(sub(b, a)), L = len(sub(b, a)), so = +f.startOffset || 0, eo = +f.endOffset || 0;
+      if (!(so >= 0) || !(eo >= 0)) throw new Error('Start and end offsets must be zero or more.');
+      var U = L - so - eo;
+      if (!(U >= tabLen - 1e-9)) throw new Error('Tab and Slot: the tabs\' run (' + fmt(U) + ', the edge less its offsets) is shorter than one tab (' + fmt(tabLen) + ').');
+      var centres = [];
+      if (f.spacing === 'distance') {
+        var pitch = +f.pitch;
+        if (!(pitch > 0)) throw new Error('Tab spacing must be greater than zero.');
+        var n = Math.floor((U - tabLen) / pitch + 1e-9) + 1, s0 = so + (U - (n - 1) * pitch) / 2;
+        for (var i = 0; i < n; i++) centres.push(s0 + i * pitch);
+      } else {
+        var cnt = Math.round(+f.count);
+        if (!(cnt >= 1)) throw new Error('Number of tabs must be 1 or more.');
+        for (var j = 0; j < cnt; j++) centres.push(so + (j + 0.5) * U / cnt);
+        if (cnt > 1 && U / cnt < tabLen - 1e-9) throw new Error('Tab and Slot: ' + cnt + ' tabs ' + fmt(tabLen) + ' long do not fit in ' + fmt(U) + '.');
+      }
+      var gap = centres.length > 1 ? centres[1] - centres[0] : Infinity;
+      if (gap < tabLen + 2 * cl - 1e-9) throw new Error('Tab and Slot: the slots run into each other (tabs ' + fmt(gap) + ' apart, each slot ' + fmt(tabLen + 2 * cl) + ' long).');
+      // the slot body's thickness under the first tab: the tab height when none is given (flush through)
+      var foot0 = add(add(a, scale(dir, centres[0])), scale(c, TA / 2));
+      var HB = through(testers[B], meshes[B], add(foot0, scale(d, dl)), foot0, d, diagB);
+      var H = f.tabHeight != null && f.tabHeight !== '' ? +f.tabHeight : HB;
+      if (!(H > 0)) throw new Error('Tab height must be greater than zero.');
+      var te = +f.tabEdgeSize || 0, sc = +f.slotCornerSize || 0;
+      if (tabEdge !== 'sharp' && !(te > 0 && te < tabLen / 2 + 1e-12 && te <= H + 1e-12)) throw new Error('Tab edge size must be greater than zero and at most half the tab length and the tab height.');
+      if (slotCorner !== 'sharp' && !(sc > 0 && sc <= Math.min(tabLen + 2 * cl, TA + 2 * cw) / 2 + 1e-12)) throw new Error('Slot corner size must be greater than zero and at most half the slot width.');
+      var ov = TA / 2, ex = Math.max(dl, 0.05 * HB);
+      centres.forEach(function (sx) {
+        // tab: in the plane (x along the edge, y into the slot body), T_A thick across c; it starts ov back in the tab body
+        var tf = frame(dir, d, a, c, [0, TA]);
+        tf.loop = cornerRect(sx - tabLen / 2, sx + tabLen / 2, -ov, H, 'top', tabEdge, te);
+        out.tabs.push(tf);
+        // slot: in the slot face (x along the edge, y across c), through the slot body along d
+        var sf = frame(dir, c, a, d, [-ex, HB + ex]);
+        sf.loop = cornerRect(sx - tabLen / 2 - cl, sx + tabLen / 2 + cl, -cw, TA + cw, 'all', slotCorner, sc);
+        out.slots.push(sf);
+      });
+      out.info.push({ edge: si, a: a.slice(), b: b.slice(), len: L, thickness: TA, slotDepth: HB, height: H, centres: centres });
+    });
+    return out;
+  }
+  function ccw(l) { var s = 0; for (var i = 0; i < l.length; i++) { var p = l[i], q = l[(i + 1) % l.length]; s += p[0] * q[1] - q[0] * p[1]; } return s < 0 ? l.slice().reverse() : l; }
+  function tabSlotTools(lay, id) {
+    var tabs = lay.tabs.map(function (t) { return _.prism(ccw(t.loop), t.plane, t.a, t.b, id); });
+    var slots = lay.slots.map(function (t) { return _.prism(ccw(t.loop), t.plane, t.a, t.b, id); });
+    return { tabs: _.unionAll(tabs), slots: _.unionAll(slots) };
+  }
+  function applyTabSlot(f, state, model) {
+    var lay = tabSlotLayout(f, model, state.bodies), tl = tabSlotTools(lay, f.id);
+    var bodies = state.bodies.slice();
+    bodies[lay.slotBody] = bodies[lay.slotBody].subtract(tl.slots);
+    bodies[lay.tabBody] = bodies[lay.tabBody].union(tl.tabs);
+    return { bodies: bodies, bodyFeatures: state.bodyFeatures.slice(), tool: tl.tabs.union(tl.slots) };
+  }
+  K.registerFeature('tabSlot', {
+    apply: applyTabSlot,
+    script: function (f, v, idVar, optsStr) {
+      var o = { name: f.name };
+      if (f.face) o.face = (Array.isArray(f.face) ? f.face : f.face.at).map(function (x) { return Math.round(+x * 1e6) / 1e6; });
+      if (+f.startOffset) o.startOffset = f.startOffset;
+      if (+f.endOffset) o.endOffset = f.endOffset;
+      if (Array.isArray(f.startPoint)) o.startPoint = f.startPoint.map(function (x) { return Math.round(+x * 1e6) / 1e6; });
+      if (f.spacing === 'distance') { o.spacing = 'distance'; o.pitch = f.pitch; } else o.count = f.count;
+      o.tabLength = f.tabLength;
+      if (f.tabHeight != null && f.tabHeight !== '') o.tabHeight = f.tabHeight;
+      if (f.tabEdge && f.tabEdge !== 'sharp') { o.tabEdge = f.tabEdge; o.tabEdgeSize = f.tabEdgeSize; }
+      if (+f.slotLengthOffset) o.slotLengthOffset = f.slotLengthOffset;
+      if (+f.slotWidthOffset) o.slotWidthOffset = f.slotWidthOffset;
+      if (f.slotCorner && f.slotCorner !== 'sharp') { o.slotCorner = f.slotCorner; o.slotCornerSize = f.slotCornerSize; }
+      var edges = '[' + (f.edges || []).map(function (e) { return '[' + (Array.isArray(e) ? e : e.at).map(function (x) { return String(Math.round(+x * 1e6) / 1e6); }).join(', ') + ']'; }).join(', ') + ']';
+      return 'var ' + v + ' = p.tabSlot(' + edges + ', ' + optsStr(o) + ').last();';
+    }
+  });
+  K.tabSlotLayout = tabSlotLayout; K.tabSlotTools = tabSlotTools;
+  K.TAB_EDGE_TYPES = TAB_EDGES.slice(); K.SLOT_CORNER_TYPES = SLOT_CORNERS.slice();
 })(Kernel, Kernel._);

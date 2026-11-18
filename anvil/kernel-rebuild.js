@@ -26,6 +26,7 @@
   NAME_BASE.unfold = 'Unfold'; NAME_BASE.fold = 'Fold';   // lane DB
   NAME_BASE.refaxis = 'Axis'; NAME_BASE.refpoint = 'Point'; NAME_BASE.csys = 'Coordinate System';   // lane CZ: reference geometry
   NAME_BASE.rip = 'Rip'; NAME_BASE.tab = 'Tab';   // lane DI
+  NAME_BASE.tabSlot = 'Tab and Slot';   // lane PT
   NAME_BASE.vent = 'Vent';   // lane DT
   NAME_BASE.draft = 'Draft';   // rfDX
   NAME_BASE.wrap = 'Wrap'; NAME_BASE.splitLine = 'Split Line'; NAME_BASE.sketch3d = '3DSketch';   // rfLQ   // rfDZ
