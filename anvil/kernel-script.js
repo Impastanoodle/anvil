@@ -1329,7 +1329,22 @@
       if (!Array.isArray(opts.startPoint) || opts.startPoint.length !== 3) throw new Error('startPoint must be [x, y, z] (startOffset counts from the end of the edge nearer it).');
       f.startPoint = opts.startPoint.map(num);
     }
+    // lane flangeprofile (rfOL): the flange's own profile (Edit Flange Profile, any shape): { entities: [lines / arcs] } in
+    // the wall's frame (u along the edge from its start, v up the wall from the bend's end); Kernel.flangeWallProfile
+    if (opts.profile != null) f.profile = K.flangeProfileSpec(opts.profile);
   }
+  // lane flangeprofile: a profile as plain data (lines and arcs, numbers), for the feature JSON and the script
+  K.flangeProfileSpec = function (p) {
+    var ents = p && Array.isArray(p.entities) ? p.entities : Array.isArray(p) ? p : null;
+    if (!ents) throw new Error('profile must be { entities: [lines and arcs] }.');
+    var r = function (x) { var v = +x; if (!isFinite(v)) throw new Error('profile: a number is missing.'); return Math.round(v * 1e10) / 1e10; };
+    return { entities: ents.filter(function (e) { return e && !e.construction; }).map(function (e) {
+      if (e.t === 'line') return { t: 'line', x1: r(e.x1), y1: r(e.y1), x2: r(e.x2), y2: r(e.y2) };
+      if (e.t === 'arc') return { t: 'arc', cx: r(e.cx), cy: r(e.cy), r: r(e.r), a0: r(e.a0), a1: r(e.a1) };
+      if (e.t === 'circle') return { t: 'circle', cx: r(e.cx), cy: r(e.cy), r: r(e.r) };
+      throw new Error('profile: lines, arcs and circles only (not ' + e.t + ').');
+    }) };
+  };
   // lane DL: miterFlange(edges, opts): Sheet Metal ▸ Miter Flange from a profile sketch (Kernel.miterFlangeStages). edges:
   // [[x,y,z], …] points on the straight edges to run along (the one the profile starts on is added when missing). opts:
   // sketch (default: the last sketch; an open chain of lines (+ tangent arcs) on a plane normal to an edge, starting on
@@ -2209,7 +2224,8 @@
           // lane PT: a flange on part of its edge (Edit Flange Profile): the profile's sides set back from the edge's ends
           if (!f.hem && f.startOffset != null && (isExpression(f.startOffset) || +f.startOffset !== 0)) fo.startOffset = numOut(f.startOffset);
           if (!f.hem && f.endOffset != null && (isExpression(f.endOffset) || +f.endOffset !== 0)) fo.endOffset = numOut(f.endOffset);
-          if (!f.hem && (fo.startOffset != null || fo.endOffset != null) && Array.isArray(f.startPoint)) fo.startPoint = f.startPoint.map(function (x) { return isExpression(x) ? x : Math.round(x * 1e6) / 1e6; });
+          if (!f.hem && f.profile) { fo.profile = K.flangeProfileSpec(f.profile); delete fo.startOffset; delete fo.endOffset; }   // lane flangeprofile
+          if (!f.hem && (fo.startOffset != null || fo.endOffset != null || fo.profile) && Array.isArray(f.startPoint)) fo.startPoint = f.startPoint.map(function (x) { return isExpression(x) ? x : Math.round(x * 1e6) / 1e6; });
           if (f.bendAllowance) fo.bendAllowance = bendAllowanceOut(f.bendAllowance);
           if (f.hem) {
             var ho = !f.hemType || f.hemType === 'open' ? { gap: f.gap != null ? numOut(f.gap) : Math.round(f.radius * 2 * 1e4) / 1e4, name: f.name } : { name: f.name };

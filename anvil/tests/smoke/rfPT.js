@@ -82,7 +82,8 @@
       clickPmButton('Edit Flange Profile'); await idle(); await wait(60);
       ents = UI.activeSketchFeature().entities;
       near(Math.min(ents[1].x1, ents[1].x2), 2, 1e-9, 'profile from 2'); near(Math.max(ents[1].x1, ents[1].x2), 4, 1e-9, 'to 4');
-      near(Math.max(ents[2].y1, ents[2].y2), 1, 1e-9, 'top at the length');
+      // lane flangeprofile (rfOL): the sketch's y = 0 is the wall's start line, so the top is the straight wall: Length 1 less R + T (to the outer virtual sharp)
+      near(Math.max(ents[2].y1, ents[2].y2), 1 - (R + T), 1e-9, 'top at the wall (the length less the bend)');
       D.querySelector('.cc-cancel').click(); await idle(); await wait(60); await idle();
       if (modalOpen()) { clickModalButton('Discard Changes and Exit'); await idle(); await wait(60); await idle(); }
       assert(UI.App.mode !== 'sketch' && UI.hasPM() && Math.abs(+pmField('Profile end offset').value - 2) < 1e-9, 'the PM is back as it was');

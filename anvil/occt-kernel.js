@@ -45,6 +45,7 @@ var OcctKernel = (function () {
   SUPPORTED.boundary = 1;   // rfFB
   SUPPORTED.deleteBody = 1;   // rfHT: Delete/Keep Body
   SUPPORTED.formingTool = SUPPORTED.loftedBend = 1;   // lane occtparity
+  SUPPORTED.tabSlot = 1;   // lane flangeprofile (rfOL): Tab and Slot (Kernel.tabSlotLayout's plain prisms)
   SUPPORTED.helix = SUPPORTED.projCurve = SUPPORTED.compositeCurve = SUPPORTED.xyzCurve = SUPPORTED.refPtCurve = 1;   // rfFA: reference curves (no body)
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
   // rfHL: faces whose normals turn by less than this across a shared edge are tangent (BRepLib::EncodeRegularity)
@@ -1288,6 +1289,12 @@ var OcctKernel = (function () {
       var body = bodies[k], src = body, srcCSG = null;
       if (withCuts && lay.cuts.length) body = boolMany('cut', body, lay.cuts.map(function (c) { return prismOf(c.loop, c.plane, c.a, c.b); }), 'OpenCascade could not cut the body.');
       var walls = lay.parts.map(function (p) {
+        // lane flangeprofile (rfOL): an Edge Flange's own profile (Edit Flange Profile): the wall is the profile's face (true
+        // arcs) T thick in the wall's frame (Kernel.flangeLayout's part.wallProfile), holes through it
+        if (p.wallProfile) return fromLoops(loopFaces({ profile: p.wallProfile }, p.plane), function (face, hole) {
+          var e = hole ? 0.01 * (p.t1 - p.t0) : 0;
+          return N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(face, p.t0 - e, p.plane), Vec(V.scale(p.plane.n, p.t1 - p.t0 + 2 * e)), false, true)).Shape());
+        });
         // a part whose band holds a hole / slot of the sheet (p.voids): no overlap strip, and the cut wrapped round the bend
         var cutters = p.voids ? bendCutters(src, srcCSG || (srcCSG = shapeToCSG(src)), p.plane, p.band, lay.section, p.BA, false) : [];
         // a Miter Flange's square end: the bend's taper, and the overlap strip stops at the base's corner
@@ -1318,6 +1325,17 @@ var OcctKernel = (function () {
       });
       if (walls.length) body = boolMany('fuse', body, walls, 'OpenCascade could not join the bodies.');
       bodies[k] = body;
+    }
+    // lane flangeprofile (rfOL): Tab and Slot. Kernel.tabSlotLayout reads the bodies as Anvil meshes (OpenCascade's
+    // triangles, planar faces flat: the edge, the slot face, both thicknesses snapped to face planes) and gives plain
+    // prisms: the slots cut from the slot body first, then the tabs fused to the tab body (in one body the same body:
+    // the slots have clearance, so a tab passes through its slot without touching it). The same polygons as Anvil's.
+    function tabSlotOp(f) {
+      var lay = K.tabSlotLayout(f, m, bodies.map(function (b) { return b ? shapeToCSG(b) : null; }));
+      var ccw = function (l) { var s = 0; for (var i = 0; i < l.length; i++) { var p = l[i], q = l[(i + 1) % l.length]; s += p[0] * q[1] - q[0] * p[1]; } return s < 0 ? l.slice().reverse() : l; };
+      var prisms = function (list) { return list.map(function (t) { return prismOf(ccw(t.loop), t.plane, t.a, t.b); }); };
+      bodies[lay.slotBody] = boolMany('cut', bodies[lay.slotBody], prisms(lay.slots), 'OpenCascade could not cut the slots.');
+      bodies[lay.tabBody] = boolMany('fuse', bodies[lay.tabBody], prisms(lay.tabs), 'OpenCascade could not add the tabs.');
     }
     // a taper triangle [(0, base corner), (BA, wall end), (0, wall end)], in either order, as a cutter's outline: the
     // slanted side is carried on past both ends of the bend and the rest runs well outside the sweep, so the cut ends on
@@ -2738,6 +2756,7 @@ var OcctKernel = (function () {
             case 'rib': tool = ribTool(f); break;   // rfDY
             case 'intersect': intersectOp(f); break;   // rfDY
             case 'deleteBody': rfHTdeleteBody(f); break;   // rfHT: Delete/Keep Body
+            case 'tabSlot': tabSlotOp(f); break;   // lane flangeprofile (rfOL)
             case 'shell': shellOp(f); break;
             case 'draft': draftOp(f); break;   // rfDX
             default: if (f.type === 'lpattern' ? kvTryPattern(f) : (kvFlush(), false)) break; tool = patternTool(f);   // rfKV

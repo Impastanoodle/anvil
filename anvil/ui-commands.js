@@ -3044,10 +3044,15 @@
   // lane PT: Edit Flange Profile. flangeProfileFrame(feat, existing) -> { plane, len }: the flange built on its whole
   // edge (set-backs dropped) in a copy of the model up to it; its record gives the edge (a = the start the offsets
   // count from, kernel miterOffsetEnds) and the wall's direction cos A·o + sin A·u, the sketch's y.
+  // lane flangeprofile (rfOL): the sketch's origin is on the wall's start line (where the bend ends, the inner face), so
+  // x = u and y = v of the kernel's profile frame (Kernel.flangeWallProfile): y = 0 is the edge line the base sits on;
+  // toSharp(lengthRef): what the Length box adds to the wall (the bend to the virtual sharp / tangent).
   var flangeProfileEdit = null;
   function flangeProfileFrame(feat, existing) {
     var m = JSON.parse(JSON.stringify(App.model)), g = JSON.parse(JSON.stringify(feat)), at = m.features.length;
-    delete g.startOffset; delete g.endOffset;
+    delete g.startOffset; delete g.endOffset; delete g.profile; delete g.lengthEnd; delete g.lengthVertex;
+    if (!(+g.length > 0)) g.length = UI.lenDefault(20);
+    g.lengthRef = 'wall';
     if (existing) m.features.forEach(function (q, i) { if (q.id === existing.id) at = i; });
     g.id = existing ? existing.id : m.nextId++;
     m.features = m.features.slice(0, at).concat([g]);
@@ -3057,38 +3062,42 @@
     if (!r || r.kind !== 'edge') throw new Error('the flange does not build on this edge.');
     var V = K.vec;
     // the set-backs count from the end nearer the feature's startPoint (kernel flangeLayout); none: the edge's first end
-    if (Array.isArray(feat.startPoint) && V.len(V.sub(feat.startPoint.map(Number), r.b)) < V.len(V.sub(feat.startPoint.map(Number), r.a))) r = { a: r.b, b: r.a, o: r.o, u: r.u, angle: r.angle };
+    if (Array.isArray(feat.startPoint) && V.len(V.sub(feat.startPoint.map(Number), r.b)) < V.len(V.sub(feat.startPoint.map(Number), r.a))) r = { a: r.b, b: r.a, o: r.o, u: r.u, angle: r.angle, origin: r.origin, R: r.R, T: r.T };
     var x = V.norm(V.sub(r.b, r.a)), A = +r.angle, w = V.norm(V.add(V.scale(r.o, Math.cos(A)), V.scale(r.u, Math.sin(A))));
-    var n = V.norm(V.cross(x, w)), plane = { custom: true, origin: r.a.slice(), x: x, y: w, n: n, offset: V.dot(n, r.a) };
+    var Rr = +r.R, Tt = +r.T, P = V.add(V.add(r.origin, V.scale(r.o, Rr * Math.sin(A))), V.scale(r.u, Rr - Rr * Math.cos(A)));
+    var O = V.add(P, V.scale(x, V.dot(V.sub(r.a, P), x)));
+    var n = V.norm(V.cross(x, w)), plane = { custom: true, origin: O, x: x, y: w, n: n, offset: V.dot(n, O) };
     if (K.tidyPlane) K.tidyPlane(plane);
-    return { plane: plane, len: V.len(V.sub(r.b, r.a)), start: r.a.slice() };
+    var toSharp = function (ref) {
+      return ref === 'outer' ? (Rr + Tt) * Math.tan(A / 2) : ref === 'inner' ? Rr * Math.tan(A / 2) : ref === 'tangent' ? K.outsideSetback(A, Rr, Tt) : 0;
+    };
+    return { plane: plane, len: V.len(V.sub(r.b, r.a)), start: r.a.slice(), toSharp: toSharp };
   }
-  // readFlangeProfile(sketch, len) -> { so, eo, L } or { error }: the profile must stay one axis-aligned rectangle above
-  // the edge line, inside the edge's ends (Anvil builds rectangular flange profiles; SolidWorks also takes other shapes)
+  // readFlangeProfile(sketch, len) -> { so, eo, L } (a rectangle square to the edge: the flange's set-backs and its wall,
+  // as lane PT stored it) or { profile, L } (lane flangeprofile: any shape, Kernel.flangeWallProfile: lines, arcs, holes;
+  // one closed contour whose base lies on the edge line y = 0 inside the edge) or { error } (why, for the sketch)
   function readFlangeProfile(sk, len) {
-    var segs = [], bad = null;
+    var ents = [], bad = null;
     (sk.entities || []).forEach(function (e) {
       if (e.construction || e.t === 'point') return;
       if (e.t === 'rect' || e.t === 'crect') {
         var x0 = e.t === 'rect' ? +e.x : +e.cx - +e.w / 2, y0 = e.t === 'rect' ? +e.y : +e.cy - +e.h / 2, x1 = x0 + +e.w, y1 = y0 + +e.h;
-        segs.push([[x0, y0], [x1, y0]], [[x1, y0], [x1, y1]], [[x1, y1], [x0, y1]], [[x0, y1], [x0, y0]]);
-      } else if (e.t === 'line') segs.push([[+e.x1, +e.y1], [+e.x2, +e.y2]]);
-      else if (e.t === 'polyline') for (var i = 0; i + 1 < e.pts.length + (e.closed ? 1 : 0); i++) segs.push([e.pts[i].map(Number), e.pts[(i + 1) % e.pts.length].map(Number)]);
-      else bad = 'Anvil builds rectangular flange profiles only: keep the profile to the rectangle (lines), no ' + e.t + '.';
+        [[x0, y0, x1, y0], [x1, y0, x1, y1], [x1, y1, x0, y1], [x0, y1, x0, y0]].forEach(function (q) { ents.push({ t: 'line', x1: q[0], y1: q[1], x2: q[2], y2: q[3] }); });
+      } else if (e.t === 'line' || e.t === 'arc' || e.t === 'circle') ents.push(e);
+      else if (e.t === 'polyline') for (var i = 0; i + 1 < e.pts.length + (e.closed ? 1 : 0); i++) { var p = e.pts[i], q = e.pts[(i + 1) % e.pts.length]; ents.push({ t: 'line', x1: +p[0], y1: +p[1], x2: +q[0], y2: +q[1] }); }
+      else bad = 'a flange profile is made of lines and arcs (and circles for holes), not a ' + e.t + '.';
     });
     if (bad) return { error: bad };
-    if (!segs.length) return { error: 'the profile sketch has no rectangle.' };
-    var tol = 1e-6 * (1 + len), X0 = Infinity, X1 = -Infinity, Y0 = Infinity, Y1 = -Infinity;
-    segs.forEach(function (q) { q.forEach(function (p) { X0 = Math.min(X0, p[0]); X1 = Math.max(X1, p[0]); Y0 = Math.min(Y0, p[1]); Y1 = Math.max(Y1, p[1]); }); });
-    var onSide = function (q) {
-      var h = Math.abs(q[0][1] - q[1][1]) < tol, vt = Math.abs(q[0][0] - q[1][0]) < tol;
-      return (h && (Math.abs(q[0][1] - Y0) < tol || Math.abs(q[0][1] - Y1) < tol)) || (vt && (Math.abs(q[0][0] - X0) < tol || Math.abs(q[0][0] - X1) < tol));
-    };
-    if (!segs.every(onSide)) return { error: 'Anvil builds rectangular flange profiles only: the profile must stay a rectangle square to the edge.' };
-    if (X0 < -tol || X1 > len + tol) return { error: 'the profile runs past the end of the edge (0 to ' + UI.fmtNum(len, 4) + ').' };
-    if (!(X1 - X0 > tol) || !(Y1 > tol)) return { error: 'the profile has no width or height.' };
-    var r8 = function (x) { return Math.round(x * 1e8) / 1e8; };
-    return { so: r8(Math.max(0, X0)), eo: r8(Math.max(0, len - X1)), L: r8(Y1) };
+    if (!ents.length) return { error: 'the profile sketch is empty.' };
+    var spec, wp;
+    try { spec = K.flangeProfileSpec({ entities: ents }); wp = K.flangeWallProfile(spec, len); } catch (err) { return { error: String(err.message || err).replace(/^Edit Flange Profile: /, '') }; }
+    var r8 = function (x) { return Math.round(x * 1e8) / 1e8; }, pr = wp.profile, l0 = pr.loops[0], tol = 1e-6 * (1 + len);
+    var rect = pr.loops.length === 1 && !l0.seg && l0.pts.length === 4 && l0.pts.every(function (p, i) {
+      var q = l0.pts[(i + 1) % 4];
+      return Math.abs(p[0] - q[0]) < tol || Math.abs(p[1] - q[1]) < tol;
+    });
+    if (rect) return { so: r8(Math.max(0, wp.ua)), eo: r8(Math.max(0, len - wp.ub)), L: r8(wp.vmax) };
+    return { profile: spec, L: r8(wp.vmax) };
   }
   UI.sketchExitHooks = UI.sketchExitHooks || [];
   UI.sketchExitHooks.push(function (sk) {
@@ -3098,8 +3107,20 @@
     var kept = !!App.pendingAfterSketch, feat = pe.feat, msg = null;   // Discard Changes and Exit clears pendingAfterSketch first
     if (kept) {
       var got = readFlangeProfile(sk, pe.len);
-      if (got.error) msg = 'Edit Flange Profile: ' + got.error + ' The profile was not changed.';
-      else { feat.startOffset = got.so; feat.endOffset = got.eo; feat.length = got.L; if (got.so || got.eo) feat.startPoint = pe.start; else delete feat.startPoint; }
+      // lane flangeprofile: a profile Anvil cannot build is refused in the sketch: the sketch opens again with the reason
+      // (Discard Changes and Exit leaves the flange as it was)
+      if (got.error) {
+        App.pendingAfterSketch = function () {
+          flangeProfileEdit = pe;
+          UI.enterSketch(sk.id);
+          var why = 'Edit Flange Profile: ' + got.error + ' Fix the profile and exit again, or Discard Changes and Exit.';
+          UI.setStatus(why); UI.toast(why);
+        };
+        return;
+      }
+      var r8 = function (x) { return Math.round(x * 1e8) / 1e8; }, add = pe.toSharp ? pe.toSharp(feat.lengthRef) : 0;
+      if (got.profile) { feat.profile = got.profile; delete feat.startOffset; delete feat.endOffset; feat.startPoint = pe.start; feat.length = r8(got.L + add); }
+      else { delete feat.profile; feat.startOffset = got.so; feat.endOffset = got.eo; feat.length = r8(got.L + add); if (got.so || got.eo) feat.startPoint = pe.start; else delete feat.startPoint; }
     }
     App.model.features = App.model.features.filter(function (g) { return g.id !== pe.id; });
     App.pendingAfterSketch = function () { cmdEdgeFlange(pe.existing, pe.kind, feat); if (msg) UI.toast(msg); };
@@ -3226,7 +3247,8 @@
         if (v.useOffset) out.offset = { end: 'blind', distance: +v.offsetDist || 0 }; else delete out.offset;
         if (v.trimSideBends) out.trimSideBends = true; else delete out.trimSideBends;
         // lane PT: the profile's set-backs (kernel miterOffsetEnds); none written when both are zero
-        if (+v.startOffset || +v.endOffset) {
+        if (v.profile) { delete out.startOffset; delete out.endOffset; }   // lane flangeprofile: the profile's base sets the span
+        else if (+v.startOffset || +v.endOffset) {
           out.startOffset = forOK ? pmExpr('startOffset', +v.startOffset || 0) : +v.startOffset || 0;
           out.endOffset = forOK ? pmExpr('endOffset', +v.endOffset || 0) : +v.endOffset || 0;
         } else { delete out.startOffset; delete out.endOffset; delete out.startPoint; }
@@ -3307,6 +3329,9 @@
       try { fr = flangeProfileFrame(feat, existing); } catch (e) { UI.toast('Edit Flange Profile: ' + (e.message || e)); return; }
       var so = Math.max(0, +v.startOffset || 0), eo = Math.max(0, +v.endOffset || 0), L = +v.length;
       if (!(L > 0)) L = UI.lenDefault(20);
+      // lane flangeprofile: the rectangle's top is the straight wall (y from the wall's start line): Length less the bend
+      var H = L - fr.toSharp(v.lengthRef);
+      if (!(H > 1e-6 * (1 + L))) H = L;
       closePM();
       UI.pushUndo();
       // the edge (construction, fixed) and the profile as four lines kept a rectangle on the edge line (as the
@@ -3314,15 +3339,38 @@
       var x0 = so, x1 = Math.max(fr.len - eo, so + 1e-3 * fr.len);
       var sk = { id: App.model.nextId++, type: 'sketch', plane: fr.plane, entities: [
         { t: 'line', x1: 0, y1: 0, x2: fr.len, y2: 0, construction: true },
-        { t: 'line', x1: x0, y1: 0, x2: x1, y2: 0 }, { t: 'line', x1: x1, y1: 0, x2: x1, y2: L },
-        { t: 'line', x1: x1, y1: L, x2: x0, y2: L }, { t: 'line', x1: x0, y1: L, x2: x0, y2: 0 }],
+        { t: 'line', x1: x0, y1: 0, x2: x1, y2: 0 }, { t: 'line', x1: x1, y1: 0, x2: x1, y2: H },
+        { t: 'line', x1: x1, y1: H, x2: x0, y2: H }, { t: 'line', x1: x0, y1: H, x2: x0, y2: 0 }],
         rels: [{ type: 'fix', refs: ['0'] }, { type: 'collinear', refs: ['0', '1'] }, { type: 'horizontal', refs: ['3'] }, { type: 'vertical', refs: ['2'] }, { type: 'vertical', refs: ['4'] },
           { type: 'coincident', refs: ['1.p2', '2.p1'] }, { type: 'coincident', refs: ['2.p2', '3.p1'] }, { type: 'coincident', refs: ['3.p2', '4.p1'] }, { type: 'coincident', refs: ['4.p2', '1.p1'] }] };
+      // lane flangeprofile: a flange with its own profile opens that profile: its lines and arcs, each line on the edge
+      // Collinear with it, touching ends Coincident (the sketch tools all work on it: drag, dimension, fillet, trim)
+      if (v.profile && v.profile.entities && v.profile.entities.length) {
+        var pents = JSON.parse(JSON.stringify(v.profile.entities)), rels = [{ type: 'fix', refs: ['0'] }], ends = [], ptol = 1e-7 * (1 + fr.len);
+        pents.forEach(function (e, i) {
+          var k = String(i + 1);
+          if (e.t === 'line') {
+            ends.push([k + '.p1', [e.x1, e.y1]], [k + '.p2', [e.x2, e.y2]]);
+            if (Math.abs(e.y1) < ptol && Math.abs(e.y2) < ptol) rels.push({ type: 'collinear', refs: ['0', k] });
+          } else if (e.t === 'arc') {
+            var a0 = e.a0 * Math.PI / 180, a1 = e.a1 * Math.PI / 180;
+            ends.push([k + '.p1', [e.cx + e.r * Math.cos(a0), e.cy + e.r * Math.sin(a0)]], [k + '.p2', [e.cx + e.r * Math.cos(a1), e.cy + e.r * Math.sin(a1)]]);
+          }
+        });
+        ends.forEach(function (a, i) {
+          for (var j = i + 1; j < ends.length; j++) {
+            var b = ends[j];
+            if (a[0].split('.')[0] !== b[0].split('.')[0] && Math.hypot(a[1][0] - b[1][0], a[1][1] - b[1][1]) < ptol) { rels.push({ type: 'coincident', refs: [a[0], b[0]] }); break; }
+          }
+        });
+        sk.entities = [sk.entities[0]].concat(pents);
+        sk.rels = rels;
+      }
       sk.name = K.featureName(App.model, 'sketch');
       App.model.features.push(sk);
       App.sketchSnapshot = JSON.stringify({ entities: sk.entities, rels: sk.rels });
       App.newSketchId = sk.id;
-      flangeProfileEdit = { id: sk.id, len: fr.len, start: fr.start, feat: feat, existing: existing || null, kind: kind };
+      flangeProfileEdit = { id: sk.id, len: fr.len, start: fr.start, toSharp: fr.toSharp, feat: feat, existing: existing || null, kind: kind };
       App.pendingAfterSketch = function () { };   // the exit hook replaces it (Discard Changes clears it first)
       UI.afterRebuild(UI.rebuild(), function () {
         UI.enterSketch(sk.id);
@@ -3381,8 +3429,12 @@
         // lane PT: SolidWorks' Edit Flange Profile (under the edge list): the flange's profile as a rectangle on its wall,
         // sides dragged or dimensioned from the edge's ends; the set-backs it leaves show below and can be typed
         { type: 'buttons', buttons: [{ label: 'Edit Flange Profile', title: 'Sketch the flange profile on its wall: drag or dimension its sides to put the flange on part of the edge', onclick: function (v) { editFlangeProfile(v); } }] },
-        { type: 'number', label: 'Profile start offset', key: 'startOffset', unit: 'u', min: 0, show: function (v) { return +v.startOffset > 0 || +v.endOffset > 0; } },
-        { type: 'number', label: 'Profile end offset', key: 'endOffset', unit: 'u', min: 0, show: function (v) { return +v.startOffset > 0 || +v.endOffset > 0; } }
+        { type: 'number', label: 'Profile start offset', key: 'startOffset', unit: 'u', min: 0, show: function (v) { return !v.profile && (+v.startOffset > 0 || +v.endOffset > 0); } },
+        { type: 'number', label: 'Profile end offset', key: 'endOffset', unit: 'u', min: 0, show: function (v) { return !v.profile && (+v.startOffset > 0 || +v.endOffset > 0); } },
+        // lane flangeprofile: a sketched profile (not a rectangle) drives the flange's shape and length
+        { type: 'static', label: 'Profile', show: function (v) { return !!v.profile; }, value: function (v) {
+          try { var wp = K.flangeWallProfile(v.profile); return 'sketched: base ' + UI.fmtNum(wp.ua, 4) + ' to ' + UI.fmtNum(wp.ub, 4) + ', ' + UI.fmtNum(wp.vmax, 4) + ' high'; } catch (e) { return String(e.message || e); }
+        } }
       ].concat(radiusFields, [{ type: 'buttons', buttons: [{ label: 'Clear selection', onclick: function (v) { v.edges.length = 0; renderPM(); resolveList(); preview(); } }] }]) },
       { title: 'Angle', fields: [{ type: 'number', label: 'Flange angle', key: 'angle', unit: '°', min: 0 }] },
       // rfIU / rfJC: SolidWorks' Flange Length order: the end condition (Blind / Up To Vertex) with Reverse Direction
@@ -3391,7 +3443,9 @@
       { title: 'Flange Length', fields: [
         { type: 'select', label: 'End condition', key: 'lengthEnd', options: [['blind', 'Blind'], ['upToVertex', 'Up To Vertex']], rerender: true },
         { type: 'check', label: 'Reverse direction', key: 'reverse' },
-        { type: 'number', label: 'Length', key: 'length', unit: 'u', min: 0, show: function (v) { return !upTo(v); } },
+        { type: 'number', label: 'Length', key: 'length', unit: 'u', min: 0, show: function (v) { return !upTo(v); }, disabled: function (v) { return !!v.profile; } },
+        // lane flangeprofile: SolidWorks' behaviour here is not checked; Anvil greys Length while a sketched profile sets it
+        { type: 'static', label: '', show: function (v) { return !upTo(v) && !!v.profile; }, value: 'Set by the flange profile (its highest point): Edit Flange Profile to change it.' },
         { type: 'iconRadio', label: 'Measured from', key: 'lengthRef', options: lengthRefs, show: function (v) { return !upTo(v); } },
         { type: 'pick', icon: 'point', placeholder: 'Select a vertex…', show: upTo, value: function (v) { return v.lengthVertex ? 'Vertex<1>' : ''; },
           active: function (v) { return !!v.vxActive; }, onActivate: function (v) { v.vxActive = true; renderPM(); UI.setStatus('Up To Vertex: click the vertex the flange runs to.'); } },
@@ -4798,6 +4852,8 @@
   // (Equal spacing with the number of instances, or a spacing distance), Tabs (length, height: flush through the slot
   // body or a distance, edge type), Slot (length / width offset, Equal offset, corner type). The edge lies on one body
   // and rests on a face of another (Merge result off); the face box is optional (none: the face the edge rests on).
+  // lane flangeprofile (rfOL): or, in one body, faces a face of the same body across a small gap (a folded box); the
+  // slots then need clearance, so a new Tab and Slot in a one-body part starts with .01 in / 0.25 mm offsets.
   var tsLast = null;   // the values last accepted this session
   var TS_EDGES = [['sharp', 'Sharp'], ['chamfer', 'Chamfer'], ['fillet', 'Fillet']];
   function bodiesBefore(id) {
@@ -4810,15 +4866,17 @@
   }
   function cmdTabSlot(existing) {
     if (App.mode === 'sketch') UI.exitSketch(true);
-    if (!App.build || !App.build.bodies || App.build.bodies.length < 2) {
-      if (!existing) { UI.toast('Tab and Slot needs two bodies: the tab edge on one and the slot face on the other (make the second with Merge result off).'); return; }
+    if (!App.build || !App.build.bodies || !App.build.bodies.length) {
+      if (!existing) { UI.toast('Tab and Slot needs a part: the tab edge and the slot face it rests on (another body) or faces across a small gap (the same body).'); return; }
     }
+    var oneBody = !existing && App.build.bodies.length === 1;
     var inch = App.model.units === 'in';
     var f = existing ? JSON.parse(JSON.stringify(existing)) : Object.assign({ type: 'tabSlot', edges: [], face: null, spacing: 'equal', count: 2, pitch: inch ? 2 : 50,
       tabLength: inch ? 0.5 : 12, tabHeight: null, tabEdge: 'sharp', tabEdgeSize: inch ? 0.03 : 0.75, slotLengthOffset: 0, slotWidthOffset: 0, slotCorner: 'sharp', slotCornerSize: inch ? 0.03 : 0.75,
       startOffset: 0, endOffset: 0 }, tsLast && tsLast.units === App.model.units ? tsLast.v : {});
     if (existing) f.edges = (f.edges || []).map(function (e) { return { at: (Array.isArray(e) ? e : e.at).slice() }; });
     else { f.edges = []; f.face = null; }
+    if (oneBody && !(+f.slotLengthOffset > 0 && +f.slotWidthOffset > 0)) f.slotLengthOffset = f.slotWidthOffset = inch ? 0.01 : 0.25;   // lane flangeprofile
     // UI-only: the height box (Through = flush through the slot body), Equal offset, which pick box is live
     f.flush = f.tabHeight == null || f.tabHeight === '';
     f.heightValue = f.flush ? (inch ? 0.25 : 6) : +f.tabHeight;

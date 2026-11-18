@@ -315,6 +315,14 @@
       if (upToMode !== 'normal' && upToMode !== 'parallel') throw new Error('Up To Vertex: the mode must be normal (to the flange plane) or parallel (to the base flange).');
       L = 1;
     }
+    // lane flangeprofile (rfOL): a profile (Edit Flange Profile) sets the wall: its highest point is the straight wall's length
+    var wallProf = null;
+    if (f.profile != null) {
+      if (f.hem || f.type !== 'flange' || f.miterStage || f.miterJoin || f.swJoin || f.miterSquare) throw new Error('Edit Flange Profile: only an Edge Flange takes a profile.');
+      if (upTo) throw new Error('Edit Flange Profile: the profile sets the flange length; Up To Vertex does not apply.');
+      wallProf = flangeWallProfile(f.profile);
+      L = wallProf.vmax;
+    }
     if (!isFinite(L)) throw new Error('Flange length must be a number.');
     if (!isFinite(A)) throw new Error('Flange angle must be a number.');
     if (!(L > 0) && !curl) throw new Error('Flange length must be greater than zero.');
@@ -326,7 +334,7 @@
     // ('wall': L is the straight wall). L becomes the straight wall after the bend.
     var lengthRef = f.hem ? null : (f.lengthRef == null ? null : String(f.lengthRef));
     if (lengthRef && LENGTH_REFS.indexOf(lengthRef) < 0) throw new Error('Unknown flange length reference "' + lengthRef + '" (outer, inner, tangent or wall).');
-    if (!upTo && (lengthRef === 'outer' || lengthRef === 'inner' || lengthRef === 'tangent')) {
+    if (!upTo && !wallProf && (lengthRef === 'outer' || lengthRef === 'inner' || lengthRef === 'tangent')) {
       if (lengthRef !== 'tangent' && !(A < Math.PI - 0.01)) throw new Error('A flange length to the ' + lengthRef + ' virtual sharp needs an angle below 180°; use Tangent Bend.');
       var toSharp = lengthRef === 'tangent' ? outsideSetback(A, R, T) : (lengthRef === 'outer' ? R + T : R) * Math.tan(A / 2);
       var what = lengthRef === 'tangent' ? 'the outside of the bend' : 'the ' + lengthRef + ' virtual sharp';
@@ -369,7 +377,15 @@
     });
     // lane DL: Miter Flange start / end offsets; lane PT: an Edge Flange on part of its edge (Edit Flange Profile) takes
     // the same set-backs, startOffset from the end nearer f.startPoint ([x, y, z]; none: the edge's first end)
-    if ((+f.startOffset || 0) !== 0 || (+f.endOffset || 0) !== 0) selected = miterOffsetEnds(selected, f.startAt == null && Array.isArray(f.startPoint) ? Object.assign({}, f, { startAt: f.startPoint.map(Number) }) : f);
+    if (wallProf) {
+      // lane flangeprofile: the profile's base sets the bend's span (startOffset / endOffset are not read)
+      if (selected.length !== 1) throw new Error('Edit Flange Profile: a flange with its own profile is on one edge (' + selected.length + ' picked).');
+      var pe0 = selected[0], pS = pe0.a, pE = pe0.b;
+      if (Array.isArray(f.startPoint) && len(sub(f.startPoint.map(Number), pe0.b)) < len(sub(f.startPoint.map(Number), pe0.a))) { pS = pe0.b; pE = pe0.a; }
+      wallProf = Object.assign(flangeWallProfile(f.profile, pe0.len), { S: pS, X: norm(sub(pE, pS)) });
+      var pso = wallProf.ua > 1e-9 * (1 + pe0.len) ? wallProf.ua : 0, peo = pe0.len - wallProf.ub > 1e-9 * (1 + pe0.len) ? pe0.len - wallProf.ub : 0;
+      if (pso || peo) selected = miterOffsetEnds(selected, { startOffset: pso, endOffset: peo, startAt: pS });
+    } else if ((+f.startOffset || 0) !== 0 || (+f.endOffset || 0) !== 0) selected = miterOffsetEnds(selected, f.startAt == null && Array.isArray(f.startPoint) ? Object.assign({}, f, { startAt: f.startPoint.map(Number) }) : f);
     // placement: 'bendOutside' (default: bend and wall beyond the edge), 'outside' (Material Outside: the wall's inner
     // face at the edge), 'inside' (Material Inside: the wall's outer face at the edge), 'virtualSharp' (Bend from
     // Virtual Sharp: the outer virtual sharp on the edge, so the base keeps its outside dimension at any angle; at 90°
@@ -467,7 +483,7 @@
         if (!(upToL > 1e-6)) throw new Error('Up To Vertex: the vertex at ' + f.lengthVertex.map(function (x) { return fmtN(+x); }).join(', ') + ' does not lie past the bend: the wall would be ' + fmtN(upToL) + ' long.');
         L = upToL;
       }
-      var loop = noRepeatLoop(flangeProfile(A, R, T, L, ov));
+      var loop = noRepeatLoop(flangeProfile(A, R, T, wallProf ? 0 : L, ov));   // lane flangeprofile: the bend alone, the wall is the profile's part
       var wmax = 0;
       loop.forEach(function (p) { wmax = Math.max(wmax, p[0]); });
       var ta = dot(sub(e.a, e.mid), plane.n), tb = dot(sub(e.b, e.mid), plane.n);
@@ -683,6 +699,17 @@
         (part.endCuts = part.endCuts || []).push({ loop: loop2, plane: sp, a: a0, b: b0 });
       });
       tools.push(part);
+      // lane flangeprofile (rfOL): the wall as the profile, a prism T thick in the wall's own frame: x along the edge from
+      // the profile's start, y up the wall from its start line (the inner face's tangent point of the bend's end), n
+      // across the thickness. buildFlange / occt-kernel.js applyLayout build p.wallProfile (lines and true arcs).
+      if (wallProf) {
+        var wsA = Math.sin(A), wcA = Math.cos(A), wdir = add(scale(ed.o, wcA), scale(ed.u, wsA)), wth = sub(scale(ed.o, wsA), scale(ed.u, wcA));
+        var wI0 = add(add(ed.plane.origin, scale(ed.o, R * wsA)), scale(ed.u, R - R * wcA));
+        var wO = add(wI0, scale(ed.plane.n, dot(sub(wallProf.S, ed.plane.origin), ed.plane.n)));
+        var wpl = { origin: wO, x: wallProf.X.slice(), y: wdir, n: norm(cross(wallProf.X, wdir)) };
+        var wsg = dot(wpl.n, wth) > 0 ? 1 : -1;
+        tools.push({ wallProfile: wallProf.profile, plane: wpl, t0: Math.min(0, wsg * T), t1: Math.max(0, wsg * T), clips: [] });
+      }
       if (relief !== 'none') ed.ends.forEach(function (en) {
         if (en.shared || en.sideTrim) return;
         // does the sheet continue beyond this end? probe half a thickness past it at mid-thickness, inside the
@@ -692,7 +719,7 @@
         if (!inside(add(past, scale(ed.o, -0.25 * T))) && !inside(add(past, scale(ed.o, (R + T) / 2)))) return;
         var beyond = -dot(en.dIn, ed.plane.n); // sign of t past the end
         var tA = beyond > 0 ? en.t : en.t - rw, tB = beyond > 0 ? en.t + rw : en.t;
-        var o0 = -(f.reliefFromBend ? rd : Math.max(shift, 0) + rd) + Math.min(shift, 0), o1 = R + T + rd;
+        var o0 = -(f.reliefFromBend ? rd : Math.max(shift, 0) + rd) + Math.min(shift, 0), o1 = Math.max(R + T, shift) + rd;   // lane flangeprofile: past the sheet's own edge too (Material Inside past ~100 degrees trims further back than R + T + rd: the relief was a closed slot with a sliver of sheet across its end)
         var slot = [[o1, tA], [o1, tB]];
         if (relief === 'obround') {
           var r = rw / 2, oc = o0 + r, tc = (tA + tB) / 2;
@@ -728,6 +755,8 @@
       // a roll that curls into its own sheet splits the sheet's face in the solid; the blank has no such gap: flatPattern
       // lays the strip this far back over the sheet (the reach of the outer arc below the sheet's fold-side face)
       if (hemType === 'rolled' && R - (R + T) * Math.cos(A) < 0 && A > 1.5 * Math.PI) rec.curlBack = Math.sqrt((R + T) * (R + T) - R * R);
+      // lane flangeprofile: a wall from a profile (the flat unfolds the wall's faces; L is its highest point)
+      if (wallProf) rec.profiled = { ua: wallProf.ua, ub: wallProf.ub, area: wallProf.area };
       info.push(rec);
     });
     // lane smtrim: the side bends this flange cut back ride on its first record; flatPattern shortens those strips
@@ -743,7 +772,7 @@
       if (signedArea(wl) < 0) wl.reverse();
       hemCrossing(f, model, ctx, eds, cuts, wl, 0, T, 0);
     }
-    return { parts: tools, cuts: cuts, info: info, section: { A: A, R: R, T: T, L: L, ov: ov } };
+    return { parts: tools, cuts: cuts, info: info, section: { A: A, R: R, T: T, L: wallProf ? 0 : L, ov: ov } };
   }
   // lane smtrim: Trim side bends. sideBendTrim(f, ctx, P, dIn, o, nF, d, T) -> { cut, rec } | null: P is an end of a
   // flange's edge (dIn into the edge, o out of the sheet past it, nF the picked face's normal) whose sheet is trimmed
@@ -917,6 +946,53 @@
   // solid: it folds with SolidWorks' 0.1 mm between the leaves (CLOSED_HEM_GAP_MM, lane DI2), and its flat uses that radius
   // (BA = π·(0.05 mm + K·T)); give the hem a Custom Bend Allowance for a shop's own hem value.
   var LENGTH_REFS = ['outer', 'inner', 'tangent', 'wall'];
+  // lane flangeprofile (rfOL): an Edge Flange's own profile (SolidWorks' Edit Flange Profile). f.profile = { entities:
+  // [sketch lines { t: 'line', x1, y1, x2, y2 } and arcs { t: 'arc', cx, cy, r, a0, a1 } (degrees, CCW)] } in the wall's
+  // frame: x (u) along the edge from its start (the end nearer f.startPoint, else the edge's first end), y (v) up the
+  // wall from the line where the bend ends (the wall's start line; the same on both faces). One closed outer loop whose
+  // base runs along v = 0 inside the edge (0 <= u <= the edge's length), holes inside it allowed. The bend runs over the
+  // base only (startOffset / endOffset are the base's set-backs, with reliefs as a partial flange's); the wall is the
+  // profile T thick. flangeWallProfile(spec, len?) -> { profile (sketchProfile's), ua, ub, vmax, area } or throws why.
+  function flangeWallProfile(spec, edgeLen) {
+    var ents = spec && Array.isArray(spec.entities) ? spec.entities : null;
+    if (!ents || !ents.length) throw new Error('Edit Flange Profile: the profile has no lines.');
+    var profile = _.sketchProfile({ entities: ents.filter(function (e) { return e && !e.construction && e.t !== 'point'; }) });
+    if ((profile.warnings || []).some(function (w) { return /Open contour/.test(w); }) || !profile.loops.length)
+      throw new Error('Edit Flange Profile: the profile is open: it must be one closed contour.');
+    profile.loops.forEach(function (l) { if (l.cross) throw new Error('Edit Flange Profile: the profile crosses itself near (' + fmtN(l.cross[0]) + ', ' + fmtN(l.cross[1]) + ').'); });
+    profile.loops.forEach(function (l) { if (l.meet) throw new Error('Edit Flange Profile: two contours of the profile cross near (' + fmtN(l.meet[0]) + ', ' + fmtN(l.meet[1]) + ').'); });
+    var outers = profile.loops.filter(function (l) { return !l.hole; });
+    if (outers.length !== 1) throw new Error('Edit Flange Profile: the profile must be one closed contour (it has ' + outers.length + ').');
+    if (profile.loops.some(function (l) { return l.depth > 1; })) throw new Error('Edit Flange Profile: a contour inside a hole of the profile is not supported.');
+    if (profile.free && profile.free.length) throw new Error('Edit Flange Profile: lines and arcs only (no splines or ellipses).');
+    var out = outers[0], pts = out.pts, n = pts.length, size = 0, vmin = Infinity, vmax = -Infinity;
+    profile.loops.forEach(function (l) { l.pts.forEach(function (p) { size = Math.max(size, Math.abs(p[0]), Math.abs(p[1])); vmin = Math.min(vmin, p[1]); vmax = Math.max(vmax, p[1]); }); });
+    var tol = 1e-7 * (1 + size);
+    if (vmin < -tol) throw new Error('Edit Flange Profile: the profile runs below the edge (to ' + fmtN(vmin) + '): it must stay on the wall.');
+    if (!(vmax > tol)) throw new Error('Edit Flange Profile: the profile has no height.');
+    var on = [], seg = out.seg;
+    for (var i = 0; i < n; i++) {
+      var p = pts[i], q = pts[(i + 1) % n];
+      if (Math.abs(p[1]) <= tol && Math.abs(q[1]) <= tol && !(seg && seg[i] >= 0)) on.push([Math.min(p[0], q[0]), Math.max(p[0], q[0])]);
+    }
+    on.sort(function (a, b) { return a[0] - b[0]; });
+    var runs = [];
+    on.forEach(function (s) { var r = runs[runs.length - 1]; if (r && s[0] <= r[1] + tol) r[1] = Math.max(r[1], s[1]); else runs.push(s.slice()); });
+    if (!runs.length) throw new Error('Edit Flange Profile: the profile must have a line on the edge (its base, Collinear with the edge).');
+    if (runs.length > 1) throw new Error('Edit Flange Profile: the profile must touch the edge along one line only (it has ' + runs.length + ').');
+    var ua = runs[0][0], ub = runs[0][1];
+    if (!(ub - ua > tol)) throw new Error('Edit Flange Profile: the base on the edge has no length.');
+    pts.forEach(function (p) { if (Math.abs(p[1]) <= tol && (p[0] < ua - tol || p[0] > ub + tol)) throw new Error('Edit Flange Profile: the profile touches the edge outside its base, at u = ' + fmtN(p[0]) + '.'); });
+    profile.loops.forEach(function (l) { if (l.hole && l.pts.some(function (p) { return p[1] <= tol; })) throw new Error('Edit Flange Profile: a hole of the profile reaches the edge.'); });
+    if (edgeLen != null) {
+      var et = 1e-6 * (1 + edgeLen);
+      if (ua < -et || ub > edgeLen + et) throw new Error('Edit Flange Profile: the base leaves the edge: it runs from ' + fmtN(ua) + ' to ' + fmtN(ub) + ', the edge from 0 to ' + fmtN(edgeLen) + '.');
+    }
+    var area = 0;
+    profile.loops.forEach(function (l) { area += (l.hole ? -1 : 1) * Math.abs(signedArea(l.pts)); });
+    return { profile: profile, ua: ua, ub: ub, vmax: vmax, area: area };
+  }
+  K.flangeWallProfile = flangeWallProfile;
   var HEM_TYPES = ['open', 'closed', 'teardrop', 'rolled'];
   // a Tear Drop starts at 200° (the Hem PM's start, and what SolidWorks built in rfDO / rfGD; it refuses exactly 270°)
   var CLOSED_HEM_R = 0.02, DEFAULT_HEM_ANGLE = { teardrop: 200, rolled: 270 };
@@ -1724,6 +1800,7 @@
     var tools = lay.parts.map(function (p) {
       if (p.taper) return endCut(buttPart(p, lay.section, f.id), p, lay.section.T);
       if (p.tapers) return endCut(miterSquarePart(p, lay, f), p, lay.section.T);
+      if (p.wallProfile) return flangeWallSolid(p, f.id);   // lane flangeprofile
       var tool = prism(p.loop, p.plane, p.t0, p.t1, f.id, secCv(p.loop, lay.section));
       p.clips.forEach(function (c) { tool = tool.clipByPlane(c.n, c.w); });
       tool = endCut(tool, p, lay.section.T);
@@ -1739,6 +1816,19 @@
     return unionAll(tools);
   }
 
+  // lane flangeprofile (rfOL): the profile's wall (flangeLayout's part.wallProfile): each loop a prism with its arcs'
+  // cylinder records (exact volume), the holes taken out
+  function flangeWallSolid(p, shared) {
+    var pr = p.wallProfile, outers = [], holes = [];
+    pr.loops.forEach(function (l) {
+      var cv = l.seg && pr.curves ? l.seg.map(function (k) { return k >= 0 ? pr.curves[k] : null; }) : null;
+      var lo = l.hole ? p.t0 - 0.01 * Math.abs(p.t1 - p.t0) : p.t0, hi = l.hole ? p.t1 + 0.01 * Math.abs(p.t1 - p.t0) : p.t1;
+      (l.hole ? holes : outers).push(prism(l.pts, p.plane, lo, hi, shared, cv));
+    });
+    var body = outers[0];
+    if (holes.length) body = body.subtract(unionAll(holes));
+    return body;
+  }
   // the section's overlap strip into the sheet, a little over: it goes no further than the base's corner (flangeLayout `tails`)
   function miterTail(sec) { var e = 0.01 * sec.T; return [[-sec.ov - e, e], [0, e], [0, -sec.T - e], [-sec.ov - e, -sec.T - e]].reverse(); }
   // a Miter Flange's part with square ends: the wall and the overlap strip as plain prisms, the bend as its metal less the
@@ -2758,7 +2848,14 @@
         outers.forEach(function (l) { comps.push({ loops: [l], area: signedArea(l), plane: o.plane }); });
         holes.forEach(function (h) {
           var p = loopInteriorPoint(h) || h[0], best = null;
-          comps.forEach(function (c) { if (pointInPoly(p, c.loops[0]) && (!best || c.area < best.area)) best = c; });
+          // lane flangeprofile (rfOL): not an island inside the hole (a tab through a slot of the same body ends flush in
+          // the wall's outer plane: its end face is a piece of that plane inside the slot, and the hole's middle point
+          // lies on it, so the slot went to the island and the wall lost it in the flat)
+          var hA = Math.abs(signedArea(h));
+          comps.forEach(function (c) {
+            if (c.area < hA && pointInPoly(loopInteriorPoint(c.loops[0]) || c.loops[0][0], h)) return;
+            if (pointInPoly(p, c.loops[0]) && (!best || c.area < best.area)) best = c;
+          });
           if (best) best.loops.push(h); else if (comps.length) comps[0].loops.push(h);
         });
         comps.sort(function (a, b) { return b.area - a.area; });
@@ -10373,7 +10470,11 @@
     return { plane: { origin: origin, x: x, y: y, n: n }, a: s > 0 ? depth[0] : -depth[1], b: s > 0 ? depth[1] : -depth[0] };
   }
   function tabSlotLayout(f, model, bodies) {
-    if (!bodies || bodies.length < 2) throw new Error('Tab and Slot needs two bodies: the tab edge on one and the slot face on the other (make the second with Merge result off).');
+    if (!bodies || !bodies.length) throw new Error('Tab and Slot needs a body.');
+    // lane flangeprofile (rfOL): in one body the slot face is a face of the same body the edge's end face looks at across
+    // a small gap (a folded box's Closed Corner: one flange's end face against the next flange's inside face, the gap
+    // between them); up to SAME_GAP away. Between two bodies the edge rests on the face (gap 0) as before.
+    var SAME_GAP = (model.units || 'mm') === 'in' ? 0.1 : 2.5;
     var units = model.units || 'mm', tol = Math.max(1e-6, (units === 'in' ? 1e-4 : 2.5e-3));
     var meshes = bodies.map(function (b) { return b ? K.meshFromBody(b) : null; });
     var testers = bodies.map(function (b) { return b ? b.pointTester() : function () { return false; }; });
@@ -10397,31 +10498,35 @@
       });
       if (!e) throw new Error('Tab and Slot: no straight edge at ' + at.map(fmt).join(', ') + '.');
       // the slot face: a planar face of another body that the edge lies on, the tab body's end face against it
-      var B = -1, nF = null, wF = 0, eps = 1e-4 * (1 + e.len);
+      var B = -1, nF = null, wF = 0, fGap = 0, eps = 1e-4 * (1 + e.len);
       var fp = f.face ? (Array.isArray(f.face) ? f.face : f.face.at).map(Number) : null;
       meshes.forEach(function (m, j) {
-        if (nF || !m) return;
+        if (!m) return;
         m.faces.forEach(function (fc) {
-          if (nF || fc.curved) return;
-          var n = fc.normal;
+          if (fc.curved) return;
+          var n = fc.normal, g = dot(n, e.a) - fc.w;
+          // the edge parallel to the face, in front of it: touching (another body) or across a gap (lane flangeprofile)
+          if (Math.abs(dot(n, e.b) - fc.w - g) > tol) return;
+          if (j === A ? !(g > tol && g <= SAME_GAP) : Math.abs(g) > tol) return;
+          if (!e.normals.some(function (q) { return dot(q, n) < -1 + 1e-6; })) return;
           if (fp) {
             if (Math.abs(dot(n, fp) - fc.w) > tol || !testers[j](sub(fp, scale(n, eps))) || testers[j](add(fp, scale(n, eps)))) return;
-            if (Math.abs(dot(n, e.a) - fc.w) > tol || Math.abs(dot(n, e.b) - fc.w) > tol) return;
           } else {
-            if (j === A) return;
-            if (Math.abs(dot(n, e.a) - fc.w) > tol || Math.abs(dot(n, e.b) - fc.w) > tol) return;
-            if (!e.normals.some(function (q) { return dot(q, n) < -1 + 1e-6; })) return;
-            if (!testers[j](sub(e.mid, scale(n, eps)))) {
+            var foot = sub(e.mid, scale(n, g));
+            if (!testers[j](sub(foot, scale(n, eps)))) {
               // the edge may sit on the face's border: probe a little across the tab body's thickness too
               var sOut = e.normals.filter(function (q) { return Math.abs(dot(q, n)) < 1e-6; })[0];
-              if (!sOut || !testers[j](sub(sub(e.mid, scale(n, eps)), scale(sOut, eps)))) return;
+              if (!sOut || !testers[j](sub(sub(foot, scale(n, eps)), scale(sOut, eps)))) return;
             }
           }
-          B = j; nF = n.slice(); wF = fc.w;
+          if (nF && !(Math.abs(g) < fGap - tol)) return;   // the nearest face (another body's, touching, first)
+          B = j; nF = n.slice(); wF = fc.w; fGap = Math.max(0, g);
         });
       });
-      if (!nF) throw new Error(fp ? 'Tab and Slot: the edge does not lie on the selected face (the tab edge must rest on the slot face).' : 'Tab and Slot: the edge at ' + at.map(fmt).join(', ') + ' does not rest on a face of another body; select the slot face.');
-      if (B === A) throw new Error('Tab and Slot: the tab edge and the slot face are on the same body. Anvil builds tabs and slots between two bodies (make one with Merge result off): in one body the joint is welded shut and the flat pattern cannot unfold it.');
+      if (!nF) throw new Error(fp ? 'Tab and Slot: the edge does not lie on the selected face (the tab edge must rest on the slot face, or face it across a small gap in one body).' : 'Tab and Slot: the edge at ' + at.map(fmt).join(', ') + ' does not rest on a face of another body, nor face one of its own body across a small gap; select the slot face.');
+      // lane flangeprofile: in one body the slots need clearance: with none the tab's faces would lie on the slot's walls and
+      // the union would weld the joint shut (one solid, no slot left in the flat); Anvil refuses that rather than warn
+      if (B === A && !(cl > 0 && cw > 0)) throw new Error('Tab and Slot in one body: set a slot length offset and a slot width offset greater than zero; with none the tabs touch the slot walls and the joint is welded shut.');
       if (out.tabBody >= 0 && (out.tabBody !== A || out.slotBody !== B)) throw new Error('Tab and Slot: every edge must be on the same tab body and rest on the same slot body.');
       out.tabBody = A; out.slotBody = B;
       // the edge's faces: the end face lies on the slot face (its normal −nF); the side face's normal s, c = −s across
@@ -10454,7 +10559,7 @@
       var gap = centres.length > 1 ? centres[1] - centres[0] : Infinity;
       if (gap < tabLen + 2 * cl - 1e-9) throw new Error('Tab and Slot: the slots run into each other (tabs ' + fmt(gap) + ' apart, each slot ' + fmt(tabLen + 2 * cl) + ' long).');
       // the slot body's thickness under the first tab: the tab height when none is given (flush through)
-      var foot0 = add(add(a, scale(dir, centres[0])), scale(c, TA / 2));
+      var foot0 = add(add(add(a, scale(dir, centres[0])), scale(c, TA / 2)), scale(d, fGap));   // on the slot face
       var HB = through(testers[B], meshes[B], add(foot0, scale(d, dl)), foot0, d, diagB);
       var H = f.tabHeight != null && f.tabHeight !== '' ? +f.tabHeight : HB;
       if (!(H > 0)) throw new Error('Tab height must be greater than zero.');
@@ -10465,14 +10570,14 @@
       centres.forEach(function (sx) {
         // tab: in the plane (x along the edge, y into the slot body), T_A thick across c; it starts ov back in the tab body
         var tf = frame(dir, d, a, c, [0, TA]);
-        tf.loop = cornerRect(sx - tabLen / 2, sx + tabLen / 2, -ov, H, 'top', tabEdge, te);
+        tf.loop = cornerRect(sx - tabLen / 2, sx + tabLen / 2, -ov, fGap + H, 'top', tabEdge, te);   // across the gap, then H
         out.tabs.push(tf);
         // slot: in the slot face (x along the edge, y across c), through the slot body along d
-        var sf = frame(dir, c, a, d, [-ex, HB + ex]);
+        var sf = frame(dir, c, add(a, scale(d, fGap)), d, [-ex, HB + ex]);
         sf.loop = cornerRect(sx - tabLen / 2 - cl, sx + tabLen / 2 + cl, -cw, TA + cw, 'all', slotCorner, sc);
         out.slots.push(sf);
       });
-      out.info.push({ edge: si, a: a.slice(), b: b.slice(), len: L, thickness: TA, slotDepth: HB, height: H, centres: centres });
+      out.info.push({ edge: si, a: a.slice(), b: b.slice(), len: L, thickness: TA, slotDepth: HB, height: H, centres: centres, gap: fGap, oneBody: A === B });
     });
     return out;
   }

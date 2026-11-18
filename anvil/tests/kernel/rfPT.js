@@ -163,7 +163,8 @@
       var sl = K.tabSlotLayout(s.model.features[s.model.features.length - 1], s.model, pre.build.bodies).info[0];
       near(sl.a[0], 1, 1e-12, 'the run starts at x = 1 (startPoint)'); near(sl.centres[0], 1 + 3 / 2, 1e-12, 'one tab centred in the 3 in run');
       var one = build(SHEET + 'p.tabSlot([[3, 0.1, 0]], { count: 1, tabLength: 0.5 });');
-      assert(/needs two bodies/.test(one.errors[3] || ''), 'one body: ' + one.errors[3]);
+      // lane flangeprofile (rfOL): one body is built now (a face of its own body across a small gap, kernel rfOL); the sheet's free edge faces nothing
+      assert(/nor face one of its own body/.test(one.errors[3] || ''), 'one body: ' + one.errors[3]);
       var many = build(SHEET + PLATE + 'p.tabSlot([[3, 0.1, 2]], { count: 9, tabLength: 0.5 });');
       assert(/do not fit/.test(many.errors[5] || ''), 'too many: ' + many.errors[5]);
       var up = build(SHEET + PLATE + 'p.tabSlot([[3, 2.1, 2]], { count: 2, tabLength: 0.5 });');

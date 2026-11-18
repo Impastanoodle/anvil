@@ -372,6 +372,7 @@
         if (g.toward) g.toward = lin(g.toward);
         if (Array.isArray(g.lengthVertex)) g.lengthVertex = M(g.lengthVertex);
         if (Array.isArray(g.startAt)) g.startAt = M(g.startAt);
+        if (Array.isArray(g.startPoint)) g.startPoint = M(g.startPoint);   // lane flangeprofile: the end a partial or profiled Edge Flange counts from
         if (srcSketch) g._sketch = mappedSketch(srcSketch, model, ctx, M, L, det);
         copies.push(g);
       });
