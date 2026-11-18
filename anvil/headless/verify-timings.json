@@ -1,17 +1,17 @@
 {
  "note": "the last green verify: seconds per suite (scheduling order) and test counts: node anvil/headless/verify.js",
  "seconds": {
-  "examples": 10,
-  "ex-occt": 53,
-  "smoke": 671,
-  "occt": 696,
-  "kernel": 927,
-  "wall": 927
+  "examples": 3,
+  "ex-occt": 23,
+  "smoke": 584,
+  "occt": 488,
+  "kernel": 447,
+  "wall": 584
  },
  "counts": {
   "examples": 29,
   "ex-occt": 29,
-  "smoke": 1584,
+  "smoke": 1591,
   "occt": 269,
   "kernel": 3191
  }

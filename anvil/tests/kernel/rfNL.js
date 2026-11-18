@@ -42,7 +42,8 @@
       var xl = function (w) { return sh.prims.filter(function (p) { return p.explodeLine && p.view === w.view.id; }); };
       assert(xl(sh.views[0]).length === 0, 'collapsed: no explode line');
       var L = xl(sh.views[1]);
-      assert(L.length === 1 && L[0].style === 'chain' && L[0].layer === sh.views[1].layer, 'one phantom line: ' + JSON.stringify(L));
+      // (rfPD) thin phantom as SolidWorks' Line Font for explode lines ('tanfont'; it was 'chain', the 0.7 mm cutting-plane weight)
+      assert(L.length === 1 && L[0].style === 'tanfont' && L[0].layer === sh.views[1].layer, 'one thin phantom line: ' + JSON.stringify(L));
       var s = sh.views[1].scale, len = Math.hypot(L[0].b[0] - L[0].a[0], L[0].b[1] - L[0].a[1]);
       near(len, 30 * s, 1e-6, 'the step’s 30 mm at the view scale');
       near(Math.abs(L[0].b[1] - L[0].a[1]), 30 * s, 1e-6, 'straight up (Y) in Front');

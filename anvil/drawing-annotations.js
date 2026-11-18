@@ -418,12 +418,23 @@
   // dimension references for ordinate / baseline / chamfer dimensions: a circle { kind: 'dia', c, r } (its centre) or
   // an edge { kind: 'h' | 'v' | 'aligned', a, b }; refFrom({ c, r } | { a, b }) builds one
   function refFrom(x) {
-    if (x.c) return { kind: 'dia', c: [+x.c[0], +x.c[1]], r: +x.r || 0, value: 2 * (+x.r || 0) };
+    if (x.c) {
+      var rc = { kind: 'dia', c: [+x.c[0], +x.c[1]], r: +x.r || 0, value: 2 * (+x.r || 0) };
+      if (x.arcEnd) rc.arcEnd = [+x.arcEnd[0], +x.arcEnd[1]];   // (rfPD) a slot's end arc: its centre, found again among the arcs
+      return rc;
+    }
     if (x.p && !x.a) { var po = { kind: 'pt', p: [+x.p[0], +x.p[1]] }; if (x.ext) { po.ext = x.ext; po.ax = +x.ax || 0; } return po; }   // (rfMZ) a vertex (Autodimension's overall size of a blank with no square edge)
     var a = [+x.a[0], +x.a[1]], b = [+x.b[0], +x.b[1]], dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
     var out = { kind: Math.abs(dy) <= L * 1e-9 ? 'h' : Math.abs(dx) <= L * 1e-9 ? 'v' : 'aligned', a: a, b: b, value: L };
     if (x.bend != null) out.bend = x.bend;   // (rfJM) a bend line of a flat pattern view
     return out;
+  }
+  // (rfPD) a slot end station (ref.arcEnd [a0, a1]): its end arc again (reattachDim on the arcs), the centre it reads
+  function reattachArcEnd(r, pr) {
+    var ra = { kind: 'rad', c: r.c, r: r.r, a0: r.arcEnd[0], a1: r.arcEnd[1] };
+    if (!reattachDim(ra, pr)) { r.dangling = true; return false; }
+    r.c = ra.c.slice(); r.r = ra.r; r.value = 2 * ra.r; r.arcEnd = [ra.a0, ra.a1]; delete r.dangling;
+    return true;
   }
   // (rfMZ) an Autodimension vertex station (ref.ext 'min' | 'max' along ref.ax): the outline's extreme vertex again
   function extremeVertex(r, pr) {
@@ -456,6 +467,7 @@
   // (rfJM) a flat pattern's bend lines across the direction are stations too (after the edges, before the holes; ref
   // { a, b, bend: key }, found again by reattachBendRef), unless opts.bends is false; opts.select (Entities to
   // dimension: Selected) keeps the origin station and those matching a selected edge / circle / bend line.
+  function gtArcPick(a) { return { arc: { c: a.c.slice(), r: a.r, a0: a.a0, a1: a.a1 } }; }
   function gtStations(pr, dir, opts) {
     opts = opts || {};
     var ax = dir === 'h' ? 0 : 1, xs = [];
@@ -463,8 +475,28 @@
     (pr.circles.visible || []).forEach(function (c) { xs.push(Math.abs(c.c[0]), Math.abs(c.c[1])); });
     var size = xs.length ? Math.max.apply(null, xs) : 1, tol = 1e-7 * (1 + size), out = [];
     function at(pos) { return out.filter(function (q) { return Math.abs(q.pos - pos) <= tol * 10; })[0]; }
+    // (rfPD) straight slots (Drawing.slotsIn): SolidWorks' Autodimension locates a slot by its centre, not its sides or
+    // ends: its side lines are no stations; a slot square to the direction is one station on its centre line, one along
+    // it a station at the end centre nearer the origin (opts.far: the right / top end) carrying the other end
+    // (q.slotOther, autodimension adds the centre-to-centre length); a slanted slot both end centres
+    var slots = D.slotsIn && pr.arcs ? D.slotsIn(pr) : [], sideOf = [];
+    slots.forEach(function (s) {
+      var A = s.ends[0], B = s.ends[1], d = [B.c[0] - A.c[0], B.c[1] - A.c[1]], L = Math.hypot(d[0], d[1]) || 1, n = [-d[1] / L * A.r, d[0] / L * A.r];
+      [1, -1].forEach(function (sg) { sideOf.push({ P: [A.c[0] + sg * n[0], A.c[1] + sg * n[1]], t: [d[0] / L, d[1] / L], L: L }); });
+    });
+    function isSide(l) {
+      return sideOf.some(function (s) {
+        return [[l[0], l[1]], [l[2], l[3]]].every(function (e) {
+          var x = e[0] - s.P[0], y = e[1] - s.P[1], al = x * s.t[0] + y * s.t[1];
+          return Math.abs(x * s.t[1] - y * s.t[0]) <= tol * 10 && al >= -tol * 10 && al <= s.L + tol * 10;
+        });
+      });
+    }
+    var arcPick = gtArcPick;
+    function arcRef(a) { return { c: a.c.slice(), r: a.r, arcEnd: [a.a0, a.a1] }; }
     (pr.lines.visible || []).forEach(function (l) {
       if (Math.abs(l[ax] - l[ax + 2]) > tol) return;
+      if (sideOf.length && isSide(l)) return;
       var a = [l[0], l[1]], b = [l[2], l[3]], L = Math.hypot(b[0] - a[0], b[1] - a[1]), q = at(l[ax]);
       if (!(L > tol)) return;
       if (!q) out.push({ pos: l[ax], L: L, ref: { a: a, b: b }, pick: { edge: [a, b] } });
@@ -474,6 +506,18 @@
       if (!b.a || !b.b || Math.abs(b.a[ax] - b.b[ax]) > tol || at(b.a[ax])) return;
       var key = b.key || true;
       out.push({ pos: b.a[ax], L: 0, bend: true, ref: { a: b.a.slice(), b: b.b.slice(), bend: key }, pick: { edge: [b.a.slice(), b.b.slice()] } });
+    });
+    slots.forEach(function (s) {
+      var A = s.ends[0], B = s.ends[1];
+      if (B.c[ax] < A.c[ax] - tol) { var t0 = A; A = B; B = t0; }
+      var across = Math.abs(B.c[1 - ax] - A.c[1 - ax]) <= tol * 10, square = Math.abs(B.c[ax] - A.c[ax]) <= tol * 10;
+      if (square) { if (!at(A.c[ax])) out.push({ pos: A.c[ax], L: 0, slot: true, ref: arcRef(A), pick: arcPick(A) }); return; }
+      if (across) {
+        var near = opts.far ? B : A, other = opts.far ? A : B;
+        if (!at(near.c[ax])) out.push({ pos: near.c[ax], L: 0, slot: true, slotOther: other, slotNear: near, ref: arcRef(near), pick: arcPick(near) });
+        return;
+      }
+      [A, B].forEach(function (e) { if (!at(e.c[ax])) out.push({ pos: e.c[ax], L: 0, slot: true, ref: arcRef(e), pick: arcPick(e) }); });
     });
     (pr.circles.visible || []).forEach(function (c) {
       if (!at(c.c[ax])) out.push({ pos: c.c[ax], L: 0, ref: { c: c.c.slice(), r: c.r }, pick: { circle: { c: c.c.slice(), r: c.r } } });
@@ -526,13 +570,21 @@
     ['h', 'v'].forEach(function (dir) {
       var o = opts[dir];
       if (!o || !o.scheme || o.scheme === 'none') return;
-      var st = gtStations(pr, dir, opts), ax = dir === 'h' ? 1 : 0, far = o.origin === 'right' || o.origin === 'top';
+      var far = o.origin === 'right' || o.origin === 'top', st = gtStations(pr, dir, Object.assign({}, opts, { far: far })), ax = dir === 'h' ? 1 : 0;
       var side = o.place === 'below' || o.place === 'left' ? -1 : 1;
-      if (st.length < 2) st = gtStations(pr, dir, Object.assign({}, opts, { vertices: true }));   // (rfMZ) the overall size between vertices
+      if (st.length < 2) st = gtStations(pr, dir, Object.assign({}, opts, { vertices: true, far: far }));   // (rfMZ) the overall size between vertices
       if (st.length < 2) return;
       if (far) st.reverse();
       // (rfJM) Entities to dimension: Selected — the origin edge and the selected entities only
       if (opts.select) { var o0 = st[0]; st = [o0].concat(st.slice(1).filter(function (q) { return gtSelected(q, opts.select, pr); })); if (st.length < 2) return; }
+      // (rfPD) a slot along the direction: its centre-to-centre length, a Smart Dimension between its end arcs' centres
+      // just past the slot on the placement side (SolidWorks: position 2.500 from the origin, then 3.000 centre to centre)
+      st.forEach(function (q) {
+        if (!q.slotOther || q === st[0]) return;
+        var A = q.slotNear, B = q.slotOther, mid = (A.c[1 - ax] + B.c[1 - ax]) / 2, off = A.c[ax] + side * (A.r + gap * 0.4);
+        var dm = addSmartDim(doc, viewId, gtArcPick(A), gtArcPick(B), dir === 'h' ? [mid, off] : [off, mid], { lock: dir, scale: sc });
+        if (dm) { delete dm.tside; n++; }
+      });
       if (o.scheme !== 'chain') {
         (o.scheme === 'ordinate' ? addOrdinate : addBaseline)(doc, viewId, { dir: dir, base: st[0].ref, refs: st.slice(1).map(function (q) { return q.ref; }), side: side });
         n += st.length - 1;
@@ -726,7 +778,7 @@
   function reattachUserDim(d, pr) {
     if (d.kind === 'angrun' || d.kind === 'pathlen') return reattachCT(d, pr);   // (lane CT)
     if (d.kind === 'ordinate' || d.kind === 'baseline') {
-      var ok = [d.base].concat(d.refs).map(function (r) { return r.bend != null ? reattachBendRef(r, pr) : r.kind === 'pt' && r.ext ? extremeVertex(r, pr) : r.kind === 'pt' ? reattachRef(r, pr) : reattachDim(r, pr); }).every(Boolean);   // (rfMZ: a vertex)   // (rfJM: bend lines)
+      var ok = [d.base].concat(d.refs).map(function (r) { return r.bend != null ? reattachBendRef(r, pr) : r.arcEnd ? reattachArcEnd(r, pr) : r.kind === 'pt' && r.ext ? extremeVertex(r, pr) : r.kind === 'pt' ? reattachRef(r, pr) : reattachDim(r, pr); }).every(Boolean);   // (rfMZ: a vertex)   // (rfJM: bend lines)
       if (ok) delete d.dangling; else d.dangling = true;
       var ax = d.dir === 'v' ? 1 : 0, b0 = refPos(d.base, ax);
       if (d.rot) {   // (rfLG) a set turned with its view (Rotate View at an angle): the values along its turned axis

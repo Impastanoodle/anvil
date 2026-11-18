@@ -289,7 +289,9 @@
       (pr.arcs && pr.arcs.tangent || []).forEach(function (a) { prims.push({ k: 'arc', c: toSheet(a.c), r: a.r * s, a0: a.a0, a1: a.a1, layer: layer, style: tst }); });
       (pr.ellipses && pr.ellipses.tangent || []).forEach(function (el) { prims.push(ellipsePrim(el, toSheet, s, layer, tst)); });
       // (rfNL) explode lines of an exploded assembly view: phantom (SolidWorks' Explode Line Sketch)
-      (ct.explLines || []).forEach(function (l) { prims.push({ k: 'line', a: toSheet([l[0], l[1]]), b: toSheet([l[2], l[3]]), layer: layer, style: 'chain', view: v.id, explodeLine: true }); });
+      // (rfPD) thin phantom, SolidWorks' Line Font for Explode Lines (style 'tanfont': the thin PHANTOM the drawing sketch's
+      // Line Format maps phantom to; 'chain' is the thick cutting-plane weight)
+      (ct.explLines || []).forEach(function (l) { prims.push({ k: 'line', a: toSheet([l[0], l[1]]), b: toSheet([l[2], l[3]]), layer: layer, style: 'tanfont', view: v.id, explodeLine: true }); });
       chained(pr.lines.hidden, 'hidden');
       pr.circles.hidden.forEach(function (c) { prims.push({ k: 'circle', c: toSheet(c.c), r: c.r * s, layer: layer, style: 'hidden' }); });
       (pr.arcs ? pr.arcs.hidden : []).forEach(function (a) { prims.push({ k: 'arc', c: toSheet(a.c), r: a.r * s, a0: a.a0, a1: a.a1, layer: layer, style: 'hidden' }); });
@@ -2305,7 +2307,7 @@
       if (X.type === 'angular') { pr(100, 'AcDb3PointAngularDimension'); pt(13, X.p13); pt(14, X.p14); pt(15, X.p15); }
     });
     function entity(p, owner) {
-      var ltn = p.style === 'hidden' || p.style === 'benddown' ? 'HIDDEN' : p.style === 'chain' || p.style === 'tanfont' ? 'PHANTOM' : p.style === 'center' ? 'CENTER' : null, dc = p.color && DXF_COLORS[p.color] || (THIN[p.style] && !colors[p.layer] ? 8 : 0);
+      var ltn = p.style === 'hidden' || p.style === 'benddown' ? 'HIDDEN' : p.style === 'chain' || p.style === 'tanfont' ? 'PHANTOM' : p.style === 'center' ? 'CENTER' : null, dc = p.color && DXF_COLORS[p.color] || (THIN[p.style] && !colors[p.layer] && !p.explodeLine ? 8 : 0);   // (rfPD: an explode line keeps the layer's colour, not the tangent-edge grey)
       // an entity's head: type, (R2000: handle, owner, AcDbEntity,) layer, line type, colour, (R2000: weight, subclass)
       function head(type, sub, lw) {
         pr(0, type);

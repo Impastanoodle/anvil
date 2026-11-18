@@ -160,6 +160,57 @@
       return out.join(' ; ');
     });
 
+    test('rfPD: Autodimension on a slot (8 x 4 plate, slot centres 2.5 / 5.5 at y 2): SolidWorks\' centre position 2.500 and centre-to-centre 3.000, the slot\'s centre line 2.000 (not its sides 1.750 / 2.250 or ends); baseline, chain and ordinate, from either side; the dimensions follow the slot when it moves', function () {
+      var r = build('p.units("in");\np.sketch("Front").rect(0, 0, 8, 4).slot(2.5, 2, 5.5, 2, 0.5).extrude(0.25);');
+      noErrors(r);
+      var doc = DW.newDrawing(r.model, { date: '2026-11-17' });
+      doc.views = []; doc.nextView = 1; doc.autoDims = false;
+      DW.addView(doc, 'Front', { x: 200, y: 140 });
+      var sh = DW.compute(doc, r.mesh, r.model, { build: r.build }), w = sh.views[0], out = [];
+      function run(scheme, far) {
+        doc.views[0].dims = [];
+        DW.autodimension(doc, doc.views[0].id, w.proj, { h: { scheme: scheme, origin: far ? 'right' : 'left', place: far ? 'below' : 'above' }, v: { scheme: scheme, origin: far ? 'top' : 'bottom', place: far ? 'right' : 'left' }, scale: 1, units: 'in' });
+        sh = DW.compute(doc, r.mesh, r.model, { build: r.build });
+        assert(!sh.dims.some(function (d) { return d.dangling; }), scheme + ': none dangles');
+        return sh.dims.map(function (d) { return d.kind + ' ' + d.text; }).sort().join(' | ');
+      }
+      var want = {
+        baseline: 'baseline 2.000, 4.000 | baseline 2.500, 8.000 | h 3.000',
+        chain: 'h 2.500 | h 3.000 | h 5.500 | v 2.000 | v 2.000',
+        ordinate: 'h 3.000 | ordinate 0, 2.000, 4.000 | ordinate 0, 2.500, 8.000'
+      };
+      Object.keys(want).forEach(function (s) {
+        [false, true].forEach(function (far) { var t = run(s, far); assert(t === want[s], s + (far ? ' (right / top)' : '') + ': ' + t); });
+        out.push(want[s]);
+      });
+      // moved to 3 .. 6.5 (ordinate from the right / top, the last run): 8 - 6.5 = 1.500, centre to centre 3.500
+      var r2 = build('p.units("in");\np.sketch("Front").rect(0, 0, 8, 4).slot(3, 2, 6.5, 2, 0.5).extrude(0.25);');
+      var s2 = DW.compute(doc, r2.mesh, r2.model, { build: r2.build }), t2 = s2.dims.map(function (d) { return d.kind + ' ' + d.text + (d.dangling ? '?' : ''); }).sort().join(' | ');
+      assert(t2 === 'h 3.500 | ordinate 0, 1.500, 8.000 | ordinate 0, 2.000, 4.000', 'moved: ' + t2);
+      return out.join(' ; ');
+    });
+
+    test('rfPD: Hole Wizard callouts as SolidWorks writes them (drill line on top, a space after each symbol as its callout tokens <MOD-DIAM> <hw-diam> store it): Ø .281 ↧ .750; Ø .266 THRU ALL over ⌴ Ø .438 ↧ .250; Ø .266 THRU ALL over ⌵ Ø .507 X 82°', function () {
+      if (typeof HoleWizard === 'undefined') return 'no Hole Wizard';
+      var base = 'p.units("in");\np.sketch("Top").rect(0, -2, 4, 2).end().extrude(1);\n', out = [];
+      [['p.holeWizard({ face: "Top", offset: 1, points: [[1, -1]], standard: "ANSI Inch", type: "hole", size: "9/32", sizeType: "drill", end: "blind", depth: 0.75 });', 'Ø .281 ↧ .750'],
+        ['p.holeWizard({ face: "Top", offset: 1, points: [[1, -1]], standard: "ANSI Inch", type: "cbore", size: "1/4", fit: "normal", end: "through" });', 'Ø .266 THRU ALL\n⌴ Ø .438 ↧ .250'],
+        ['p.holeWizard({ face: "Top", offset: 1, points: [[1, -1]], standard: "ANSI Inch", type: "csk", size: "1/4", end: "through" });', 'Ø .266 THRU ALL\n⌵ Ø .507 X 82°']].forEach(function (x) {
+        var r = build(base + x[0]);
+        noErrors(r);
+        var doc = DW.newDrawing(r.model, { date: '2026-11-17' });
+        DW.standard3View(doc, r.mesh, 'in');
+        var sh = DW.compute(doc, r.mesh, r.model, { build: r.build }), T = sh.views.filter(function (q) { return q.view.orient === 'Top'; })[0];
+        var c = T.proj.circles.visible.slice().sort(function (a, b) { return a.r - b.r; })[0];
+        DW.addHoleCallout(doc, T.view.id, { c: c.c, r: c.r });
+        sh = DW.compute(doc, r.mesh, r.model, { build: r.build });
+        var a = sh.annotations.filter(function (q) { return q.type === 'holeCallout'; })[0];
+        assert(a && a.text.replace(/\s+/g, ' ') === x[1].replace(/\n/g, ' '), 'callout ' + JSON.stringify(a && a.text) + ' wanted ' + JSON.stringify(x[1]));
+        out.push(a.text.replace(/\n/g, ' / '));
+      });
+      return out.join(' ; ');
+    });
+
     test('rfPD: explode lines: a projected view made from an exploded model view is exploded too and draws its explode line; a collapsed one none', function () {
       if (typeof Assembly === 'undefined' || typeof buildAsm === 'undefined') return 'no assembly helpers';
       var r = buildAsm('var b = a.insert({ script: \'p.name("Base"); p.box(100, 50, 10);\' }, { fixed: true });\n' +
@@ -175,6 +226,7 @@
       assert(sh.views.length === 2, 'two views: ' + sh.views.length);
       var F = xl(sh.views[0]), T = xl(sh.views[1]);
       assert(F.length === 1 && T.length === 1, 'one explode line each: ' + F.length + ' / ' + T.length);
+      assert(F[0].style === 'tanfont' && T[0].style === 'tanfont', 'thin phantom (SolidWorks\' explode line font): ' + F[0].style);
       var s = sh.views[1].scale;
       near(Math.abs(T[0].b[0] - T[0].a[0]), 40 * s, 1e-6, 'Top: along x, 40 mm');
       var dxf = DW.toDXF(sh, { version: 'R2000' });
