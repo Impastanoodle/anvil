@@ -1149,9 +1149,150 @@ var Exchange = (function () {
     m2.freeOf = freeOf; m2.freeFaces = list;
     return m2;
   }
+  // lane PO (rfPO): splitCrossings(mesh) -> mesh, or a copy in which each vertex where two cylinders and two planes meet
+  // round one point (the fan around it: cylinder, plane, plane, cylinder) is two vertices joined by a short edge. Two
+  // bends whose ends cross (a Miter Flange's lips folded less than 90 deg off the riser: both outer cylinders overlap at
+  // the mitre and meet in an ellipse, each bend's end a fan of planar chords) meet there; the four surfaces have no
+  // common point (the chords on the two sides are split by different diagonals: 2e-5 apart), so the vertex sat where the
+  // four facets meet, 2e-4 inside both cylinders, and both bends went out as facets (Insert Bends found 2 of 4 bends).
+  // The two new vertices are where three of the surfaces meet: the line where the two planes meet stops at the cylinder
+  // it reaches first (from that edge's far end), and the other vertex is the plane between on both cylinders, so every
+  // face stays on its surface. writeBrep writes the body again without the split when a patch at a split vertex falls
+  // back to facets anyway (mesh.crossFailed). crossOptions.on = false: as before; .last = { splits }.
+  var crossOptions = { on: true, last: null };
+  function splitCrossings(mesh) {
+    var pos = mesh.positions, tri = mesh.triangles, nT = tri.length / 3, ts = mesh.triSurf;
+    if (!ts || !crossOptions.on) return mesh;
+    var ext = 1, q;
+    for (q = 0; q < pos.length; q++) ext = Math.max(ext, Math.abs(pos[q]));
+    var tol = 1e-7 * ext, faceOf = new Int32Array(nT).fill(-1), curvedF = new Uint8Array(mesh.faces.length);
+    mesh.faces.forEach(function (f, fi) { f.tris.forEach(function (t) { faceOf[t] = fi; if (ts[t] || (mesh.freeOf && mesh.freeOf[t] >= 0)) curvedF[fi] = 1; }); });
+    function P(i) { return [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]; }
+    function cylOf(F) { var S = F && (F.s || F); return S && S.t === 'cyl' && S.r > 0 ? S : null; }   // (triSurf[t] = { s: record })
+    function same(S1, S2) { return S1 === S2 || (Math.abs(S1.r - S2.r) <= tol && len(cross(S1.d, S2.d)) < 1e-9 && axial(S1, S2.o).rho <= tol); }
+    // candidates: vertices of a cylinder's triangles off it by more than tol (on a facet's chord)
+    var cand = [], seen = new Uint8Array(pos.length / 3), t, e;
+    for (t = 0; t < nT; t++) {
+      var S = cylOf(ts[t]);
+      if (!S) continue;
+      for (e = 0; e < 3; e++) { var v0 = tri[t * 3 + e]; if (!seen[v0] && Math.abs(axial(S, P(v0)).rho - S.r) > tol) { seen[v0] = 1; cand.push(v0); } }
+    }
+    if (!cand.length) return mesh;
+    var vT = {};
+    cand.forEach(function (v) { vT[v] = []; });
+    for (t = 0; t < nT; t++) for (e = 0; e < 3; e++) { var w = tri[t * 3 + e]; if (vT[w]) vT[w].push(t); }
+    var splits = [];
+    cand.forEach(function (v) {
+      var fan = vT[v], cyls = [], gOf = {}, ok = true;
+      fan.forEach(function (t2) {
+        var S2 = cylOf(ts[t2]);
+        if (S2) { var k = -1; for (var i = 0; i < cyls.length; i++) if (same(cyls[i], S2)) k = i; if (k < 0) { k = cyls.length; cyls.push(S2); } gOf[t2] = 'c' + k; return; }
+        if (ts[t2] || faceOf[t2] < 0 || curvedF[faceOf[t2]] || (mesh.freeOf && mesh.freeOf[t2] >= 0)) { ok = false; return; }
+        gOf[t2] = 'f' + faceOf[t2];
+      });
+      if (!ok || cyls.length !== 2) return;
+      // the fan in order: each triangle as (t, p, q) round v, the next one's p this one's q
+      var rot = fan.map(function (t2) { var a = tri[t2 * 3], b = tri[t2 * 3 + 1], c = tri[t2 * 3 + 2]; return a === v ? [t2, b, c] : b === v ? [t2, c, a] : [t2, a, b]; });
+      var order = [rot[0]], used = {};
+      used[rot[0][0]] = 1;
+      while (order.length < rot.length) {
+        var last = order[order.length - 1], nx = null;
+        for (var i2 = 0; i2 < rot.length; i2++) if (!used[rot[i2][0]] && rot[i2][1] === last[2]) { nx = rot[i2]; break; }
+        if (!nx) return;
+        used[nx[0]] = 1; order.push(nx);
+      }
+      if (order[order.length - 1][2] !== order[0][1]) return;
+      var s0 = -1;
+      for (var i3 = 0; i3 < order.length && s0 < 0; i3++) if (gOf[order[i3][0]] !== gOf[order[(i3 + order.length - 1) % order.length][0]]) s0 = i3;
+      if (s0 < 0) return;
+      order = order.slice(s0).concat(order.slice(0, s0));
+      var arcs = [];
+      order.forEach(function (r) { var g = gOf[r[0]]; if (!arcs.length || arcs[arcs.length - 1].g !== g) arcs.push({ g: g, tris: [] }); arcs[arcs.length - 1].tris.push(r); });
+      if (arcs.length !== 4 || arcs[0].g === arcs[3].g) return;
+      var k0 = -1;
+      for (var i4 = 0; i4 < 4; i4++) if (arcs[i4].g[0] === 'c' && arcs[(i4 + 1) % 4].g[0] === 'f' && arcs[(i4 + 2) % 4].g[0] === 'f' && arcs[(i4 + 3) % 4].g[0] === 'c') k0 = i4;
+      if (k0 < 0) return;
+      var C1 = arcs[k0], P1 = arcs[(k0 + 1) % 4], P2 = arcs[(k0 + 2) % 4], C2 = arcs[(k0 + 3) % 4];
+      var SA = cyls[+C1.g.slice(1)], SB = cyls[+C2.g.slice(1)], X = P(v);
+      var pl = [P1, P2].map(function (a) { var f = mesh.faces[+a.g.slice(1)]; return { n: norm(f.normal), w: f.w / len(f.normal) }; });
+      if (pl.some(function (p) { return Math.abs(dot(p.n, X) - p.w) > tol; }) || len(cross(pl[0].n, pl[1].n)) < 1e-6) return;
+      var reach = 0.05 * Math.min(SA.r, SB.r);
+      // the planes' line from X to a cylinder (the root nearest X)
+      function lineHit(L, Sc) {
+        var w0 = sub(X, Sc.o), wp = sub(w0, scale(Sc.d, dot(w0, Sc.d))), Lp = sub(L, scale(Sc.d, dot(L, Sc.d)));
+        var qa = dot(Lp, Lp), qb = 2 * dot(wp, Lp), qc = dot(wp, wp) - Sc.r * Sc.r, disc = qb * qb - 4 * qa * qc;
+        if (!(qa > 1e-12) || !(disc >= 0)) return null;
+        var r1 = (-qb + Math.sqrt(disc)) / (2 * qa), r2 = (-qb - Math.sqrt(disc)) / (2 * qa), lam = Math.abs(r1) < Math.abs(r2) ? r1 : r2;
+        return Math.abs(lam) > reach ? null : add(X, scale(L, lam));
+      }
+      // both cylinders and a plane: Newton from X (rows of J are the three gradients)
+      function threeHit(p) {
+        var Y = X.slice();
+        for (var it = 0; it < 50; it++) {
+          var a = axial(SA, Y), b = axial(SB, Y);
+          if (!(a.rho > 0) || !(b.rho > 0)) return null;
+          var F = [a.rho - SA.r, b.rho - SB.r, dot(p.n, Y) - p.w], J0 = scale(a.v, 1 / a.rho), J1 = scale(b.v, 1 / b.rho), J2 = p.n, det = dot(J0, cross(J1, J2));
+          if (!(Math.abs(det) > 1e-9)) return null;
+          var d = scale(add(add(scale(cross(J1, J2), F[0]), scale(cross(J2, J0), F[1])), scale(cross(J0, J1), F[2])), 1 / det);
+          Y = sub(Y, d);
+          if (len(d) <= 1e-15 * ext) break;
+        }
+        var a2 = axial(SA, Y), b2 = axial(SB, Y);
+        if (Math.abs(a2.rho - SA.r) > 1e-3 * tol || Math.abs(b2.rho - SB.r) > 1e-3 * tol || Math.abs(dot(p.n, Y) - p.w) > 1e-3 * tol || len(sub(Y, X)) > reach) return null;
+        return Y;
+      }
+      var L = norm(cross(pl[0].n, pl[1].n)), B = P(P1.tris[P1.tris.length - 1][2]), H1 = lineHit(L, SA), H2 = lineHit(L, SB);
+      if (!H1 && !H2) return;
+      // option 1: the new edge between P1 and C2 (V1 on C1 P1 C2, V2 on P1 P2 C2); option 2: between C1 and P2 (V1 on
+      // C1 P1 P2, V2 on C1 P2 C2). The planes' edge from its far end B stops at the first cylinder it meets.
+      var opt = !H1 ? 1 : !H2 ? 2 : len(sub(H2, B)) <= len(sub(H1, B)) ? 1 : 2;
+      var V1 = opt === 1 ? threeHit(pl[0]) : H1, V2 = opt === 1 ? H2 : threeHit(pl[1]);
+      if (!V1 || !V2 || !(len(sub(V1, V2)) > tol)) return;
+      splits.push({ v: v, opt: opt, arcs: [C1, P1, P2, C2], V1: V1, V2: V2 });
+    });
+    crossOptions.last = { splits: splits.length };
+    if (!splits.length) return mesh;
+    var nV = pos.length / 3, pos2 = new Float64Array(pos.length + 3 * splits.length), tri2 = Array.prototype.slice.call(tri), ts2 = ts.slice();
+    var faces2 = mesh.faces.map(function (f) { var g = {}; Object.keys(f).forEach(function (k) { g[k] = f[k]; }); g.tris = f.tris.slice(); return g; });
+    var free2 = mesh.freeOf ? Array.prototype.slice.call(mesh.freeOf) : null, crossVerts = [];
+    pos2.set(pos);
+    splits.forEach(function (sp, i) {
+      var v1 = sp.v, v2 = nV + i;
+      pos2[v1 * 3] = sp.V1[0]; pos2[v1 * 3 + 1] = sp.V1[1]; pos2[v1 * 3 + 2] = sp.V1[2];
+      pos2[v2 * 3] = sp.V2[0]; pos2[v2 * 3 + 1] = sp.V2[1]; pos2[v2 * 3 + 2] = sp.V2[2];
+      // an arc's triangles take the vertex on their p side; an arc on both sides of the new edge also gets a triangle
+      // (that vertex, the arc's last q, the other vertex): its loop runs q, other, mine, p
+      function setArc(arc, mine, other) {
+        arc.tris.forEach(function (r) { for (var e2 = 0; e2 < 3; e2++) if (tri2[r[0] * 3 + e2] === sp.v) tri2[r[0] * 3 + e2] = mine; });
+        if (other == null) return;
+        var tn = tri2.length / 3, r0 = arc.tris[0][0];
+        tri2.push(mine, arc.tris[arc.tris.length - 1][2], other);
+        ts2.push(ts[r0]);
+        if (free2) free2.push(-1);
+        if (!ts[r0]) faces2[faceOf[r0]].tris.push(tn);
+      }
+      if (sp.opt === 1) { setArc(sp.arcs[0], v1); setArc(sp.arcs[1], v1, v2); setArc(sp.arcs[2], v2); setArc(sp.arcs[3], v2, v1); }
+      else { setArc(sp.arcs[0], v2, v1); setArc(sp.arcs[1], v1); setArc(sp.arcs[2], v1, v2); setArc(sp.arcs[3], v2); }
+      crossVerts.push(v1, v2);
+    });
+    var m2 = {};
+    Object.keys(mesh).forEach(function (k) { m2[k] = mesh[k]; });
+    m2.positions = pos2; m2.triangles = tri2; m2.triSurf = ts2; m2.faces = faces2; m2.crossVerts = crossVerts;
+    if (free2) m2.freeOf = Int32Array.from(free2);
+    return m2;
+  }
   function writeBrep(W, mesh, name, T) {
     if (!T) mesh = mergePlanes(mesh);
-    if (!T && (mesh.triSurf || mesh.freeFaces)) return writeBrepAnalytic(W, mesh, name);
+    if (!T && (mesh.triSurf || mesh.freeFaces)) {
+      // lane PO: two bends crossing (splitCrossings); written again as they were when a patch there falls back to facets
+      var sp = splitCrossings(mesh);
+      if (sp !== mesh) {
+        var n0 = W.n, l0 = W.lines.length, id = writeBrepAnalytic(W, sp, name);
+        if (!sp.crossFailed) return id;
+        W.n = n0; W.lines.length = l0;
+      }
+      return writeBrepAnalytic(W, mesh, name);
+    }
     T = T || null;
     var P = function (i) { var q = [mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]]; return T ? tfPoint(T, q) : q; };
     var vp = {}, edges = {};
@@ -1399,6 +1540,7 @@ var Exchange = (function () {
     snapToCylinders();
     snapCylCyl();
     snapCylEqual();
+    snapToCones();   // lane PO
     // lane stepwrite (rfMN): a vertex where two cylinders of different axes meet (a hole through a bend, a cross hole in a
     // tube) is where the boolean met the two faceted surfaces: on one's chord, inside the other by up to its sagitta. It
     // moves, in the file only, to the true intersection curve: onto the thinner cylinder at its own angle and height
@@ -1898,6 +2040,85 @@ var Exchange = (function () {
         snaps.push(sn);
       });
     }
+    // lane PO (rfPO): snapToCylinders for a cone. A vertex where planes cut a faceted cone (a chamfer revolved round a hex
+    // nut, cut by its flats; a drafted boss cut by a rib: Hex nut, Moulded cap) sits on a facet's chord, inside the cone
+    // by up to the sagitta, so the cone went to STEP as facets. It moves, in the file only, along the line two of its
+    // planes fix (or radially in one plane square to the axis: a cap's circle) to where that line meets the cone. Undone
+    // with the patch like the cylinders' snaps.
+    function coneOff(S, X) { var a = axial(S, X); return a.rho - (S.r + S.k * a.z); }
+    function snapToCones() {
+      var faceCurved = mesh.faces.map(function (f) { for (var k = 0; k < f.tris.length; k++) if (triRec[f.tris[k]] >= 0) return true; return false; });
+      var vTris = {}, cand = {}, moved = {};
+      snaps.forEach(function (sn) { moved[sn.v] = true; });
+      for (var t2 = 0; t2 < nT; t2++) for (var e2 = 0; e2 < 3; e2++) { var v0 = tri[t2 * 3 + e2]; (vTris[v0] = vTris[v0] || []).push(t2); }
+      comps.forEach(function (c) {
+        var S = c.surf;
+        if (!c.ok || S.t !== 'cone') return;
+        c.tris.forEach(function (t3) { for (var e3 = 0; e3 < 3; e3++) { var v1 = tri[t3 * 3 + e3], X1 = P(v1), off = Math.abs(coneOff(S, X1)), rr = S.r + S.k * axial(S, X1).z; if (!moved[v1] && off > ntol && off <= 0.05 * rr) cand[v1] = true; } });
+      });
+      Object.keys(cand).forEach(function (vk) {
+        var v = +vk, X = P(v), planes = [], on = [], off = [], seen = {};
+        vTris[v].forEach(function (t4) {
+          if (triRec[t4] < 0) { var fi = triPlane[t4]; if (!faceCurved[fi] && !seen['f' + fi]) { seen['f' + fi] = 1; planes.push(mesh.faces[fi]); } return; }
+          var si = recSurf[triRec[t4]];
+          if (seen['s' + si]) return;
+          seen['s' + si] = 1;
+          var S2 = surfaces[si];
+          if (!S2 || (S2.t !== 'cyl' && S2.t !== 'cone')) { off.push(null); return; }
+          (Math.abs(S2.t === 'cone' ? coneOff(S2, X) : axial(S2, X).rho - S2.r) <= tol ? on : off).push(S2);
+        });
+        if (off.length !== 1 || !off[0] || off[0].t !== 'cone') return;
+        var S = off[0], ns = [];
+        for (var i = 0; i < planes.length; i++) {
+          var n = norm(planes[i].normal);
+          if (Math.abs(dot(n, X) - planes[i].w) > tol) return;
+          if (!ns.some(function (m) { return len(cross(m, n)) < 1e-9; })) ns.push(n);
+        }
+        var L = null, w0 = sub(X, S.o), z0 = dot(w0, S.d), wp = sub(w0, scale(S.d, z0));
+        if (ns.length === 2) L = norm(cross(ns[0], ns[1]));
+        else if (ns.length === 1 && !on.length && len(cross(ns[0], S.d)) < 1e-9) { var rp = sub(wp, scale(ns[0], dot(ns[0], wp))); if (len(rp) > 0) L = norm(rp); }
+        if (!L) return;
+        // |wp + lam Lp|^2 = (r + k (z0 + lam Ld))^2
+        var Ld = dot(L, S.d), Lp = sub(L, scale(S.d, Ld)), r0 = S.r + S.k * z0;
+        var qa = dot(Lp, Lp) - S.k * S.k * Ld * Ld, qb = 2 * (dot(wp, Lp) - S.k * r0 * Ld), qc = dot(wp, wp) - r0 * r0, lam;
+        if (Math.abs(qa) < 1e-12) { if (!(Math.abs(qb) > 1e-15)) return; lam = -qc / qb; }
+        else {
+          var disc = qb * qb - 4 * qa * qc;
+          if (!(disc >= 0)) return;
+          var r1 = (-qb + Math.sqrt(disc)) / (2 * qa), r2 = (-qb - Math.sqrt(disc)) / (2 * qa);
+          lam = Math.abs(r1) < Math.abs(r2) ? r1 : r2;
+        }
+        if (!(Math.abs(lam) <= 0.05 * Math.abs(r0))) return;
+        var Y = add(X, scale(L, lam));
+        if (!(S.r + S.k * axial(S, Y).z > tol)) return;
+        if (planes.some(function (pf) { return Math.abs(dot(norm(pf.normal), Y) - pf.w) > tol; })) return;
+        if (on.some(function (S4) { return Math.abs(S4.t === 'cone' ? coneOff(S4, Y) : axial(S4, Y).rho - S4.r) > tol; })) return;
+        if (pos === mesh.positions) pos = Float64Array.from(pos);
+        pos[v * 3] = Y[0]; pos[v * 3 + 1] = Y[1]; pos[v * 3 + 2] = Y[2];
+        var sn = { v: v, X: X, comps: [], all: [] };
+        vTris[v].forEach(function (t5) {
+          var ci = compOf[t5];
+          if (ci < 0 || sn.all.indexOf(ci) >= 0) return;
+          sn.all.push(ci);
+          if (comps[ci].surf === S) sn.comps.push(ci);
+        });
+        snaps.push(sn);
+      });
+    }
+    // lane PO (rfPO): a mesh edge AB of a cone patch whose neighbour is the true plane pf: a chord of the conic where the
+    // plane meets the cone (a hyperbola where a hex nut's flat cuts its chamfer, an ellipse, a parabola), or null. Both
+    // ends on the plane, on the cone or inside it by at most a chord's sagitta, one end on it at least (as ellipseEdge).
+    // The run is written as a rational quadratic B-spline through its end vertices, exact on the conic (conicCurve).
+    function conicEdge(S, A, B, pf) {
+      if (S.t !== 'cone' || !pf || !pf.normal) return null;
+      var pn = norm(pf.normal);
+      if (Math.abs(dot(pn, A) - pf.w) > tol || Math.abs(dot(pn, B) - pf.w) > tol) return null;
+      var oa = coneOff(S, A), ob = coneOff(S, B), ra = S.r + S.k * axial(S, A).z, rb = S.r + S.k * axial(S, B).z;
+      if (!(ra > tol) || !(rb > tol) || oa > tol || ob > tol || oa < -0.05 * ra || ob < -0.05 * rb) return null;
+      if (Math.abs(oa) > tol && Math.abs(ob) > tol) return null;
+      var n = canonDir(pn), w = pf.w * (dot(pn, n) > 0 ? 1 : -1);
+      return { t: 'k', k: { S: S, n: n, w: w, key: 'k' + S.o.map(qk).join(',') + '|' + S.d.map(qk).join(',') + '|' + qk(S.r) + '|' + qk(S.k) + '|' + n.map(qk).join(',') + '|' + qk(w) } };
+    }
     function eget(a, b) { return a < b ? ecls.get(a, b) : ecls.get(b, a); }
     var PEDGE = { t: 'p' };   // lane stepreal2: a chord between two points of a cylinder, written as it is
     // (within 2e-5 of the radius: another CAD system's intersection curves are approximations, 2e-6 r off on a shop
@@ -1993,6 +2214,7 @@ var Exchange = (function () {
             // stepout-2: an oblique plane's cut is an ELLIPSE, where a true plane is beside (not the facets of a
             // curved face that fell back to facets: their planes are not the cut)
             if (!cl && nb != null && nb < nF && truePlane(nb)) { cl = ellipseEdge(S, A, B, mesh.faces[nb], tol); if (cl) c.oblique = true; }
+            if (!cl && nb != null && nb < nF && S.t === 'cone' && truePlane(nb)) cl = conicEdge(S, A, B, mesh.faces[nb]);   // lane PO
             // lane stepout3: the edge of a radial wall (a hole folded through the bend) is that wall's rail, whatever it is
             if (nb != null && nb >= nW) { cl = { t: 'w', S: S }; ecls.set(a < b ? a : b, a < b ? b : a, cl); continue; }
             // lane stepreal2: any other edge of a cylinder patch whose two ends lie on the cylinder (a hole's wall
@@ -2026,12 +2248,23 @@ var Exchange = (function () {
         if (!bad) loopsOf[g].forEach(function (l) {
           var n = l.length;
           function run(i, j, k) { var x = eget(l[j % n], l[k % n]), y = eget(l[i % n], l[j % n]); return x && y && x.t === 'e' && y.t === 'e' && x.e.key === y.e.key && owner.get(l[k % n], l[j % n]) === owner.get(l[j % n], l[i % n]); }
+          // lane PO: a conic run (cone cut by a plane) likewise, its ends on the cone; a loop that is one closed conic
+          // keeps its facets (not written yet)
+          function runK(i, j, k) { var x = eget(l[j % n], l[k % n]), y = eget(l[i % n], l[j % n]); return x && y && x.t === 'k' && y.t === 'k' && x.k.key === y.k.key && owner.get(l[k % n], l[j % n]) === owner.get(l[j % n], l[i % n]); }
+          var allK = n > 0;
           for (var i = 0; i < n && !bad; i++) {
             var c0 = eget(l[i], l[(i + 1) % n]);
+            if (!c0 || c0.t !== 'k' || !runK(i + n - 1, i, i + 1)) allK = false;
+            if (c0 && c0.t === 'k') {
+              if (!runK(i + n - 1, i, i + 1) && Math.abs(coneOff(S, P(l[i]))) > tol) bad = true;
+              if (!runK(i, i + 1, i + 2) && Math.abs(coneOff(S, P(l[(i + 1) % n]))) > tol) bad = true;
+              continue;
+            }
             if (!c0 || c0.t !== 'e') continue;
             if (!run(i + n - 1, i, i + 1) && !onCylS(S, P(l[i]))) bad = true;   // (lane stepreal2: onCylS, an imported curve's end is 2e-6 r off)
             if (!run(i, i + 1, i + 2) && !onCylS(S, P(l[(i + 1) % n]))) bad = true;
           }
+          if (allK) bad = true;
         });
         var sh = bad ? null : patchShape(c, loopsOf[g]);
         // lane mitreplane (rfKC): a patch made exact by snapToCylinders is written only in the form Anvil's reader
@@ -2044,7 +2277,8 @@ var Exchange = (function () {
         // (lane PF: or a band between two whole circles. The Mug's inner wall, one rim point of it a split point the
         // handle's union left on a chord: refusing it sent the outer wall after it as its coaxial partner, then the
         // handle; the whole Mug went out as 1031 planar facets and read back 0.9 % light)
-        if (sh && c.snapped && ((sh.kind !== 'plain' && sh.kind !== 'band') || S.t !== 'cyl')) sh = null;
+        // (lane PO: or a cone's plain patch: snapToCones; the reader's surfPatch takes it)
+        if (sh && c.snapped && ((sh.kind !== 'plain' && sh.kind !== 'band') || (S.t !== 'cyl' && !(S.t === 'cone' && sh.kind === 'plain')))) sh = null;
         if (!sh) { c.ok = false; failed = true; } else shape[g] = sh;
       });
       // stepout-2: a bend is written whole or not at all. An obliquely cut cylinder (ELLIPSE edges) whose coaxial
@@ -2175,6 +2409,12 @@ var Exchange = (function () {
       undo.forEach(function (sn) { pos[sn.v * 3] = sn.X[0]; pos[sn.v * 3 + 1] = sn.X[1]; pos[sn.v * 3 + 2] = sn.X[2]; });
       live = live.filter(function (sn) { return undo.indexOf(sn) < 0; });
     }
+    // lane PO: a patch at a vertex splitCrossings split fell back to facets: writeBrep writes the body again unsplit
+    if (mesh.crossVerts) {
+      var crossV = {};
+      mesh.crossVerts.forEach(function (v) { crossV[v] = true; });
+      for (var tc = 0; tc < nT && !mesh.crossFailed; tc++) for (var ec = 0; ec < 3; ec++) if (crossV[tri[tc * 3 + ec]] && compOf[tc] >= 0 && !comps[compOf[tc]].ok) mesh.crossFailed = true;
+    }
 
     // ---- writing
     var vp = {}, cv = {}, cg = {}, chains = {};
@@ -2197,6 +2437,7 @@ var Exchange = (function () {
         if (nbs[i1] !== nbs[i2]) return false;
         if (cls[i1].t === 'x' || cls[i2].t === 'x') return cls[i1] === cls[i2];   // lane MR: one edge of a free-form face
         if (cls[i1].t === 'e' && cls[i2].t === 'e') return cls[i1].e.key === cls[i2].e.key;   // stepout-2
+        if (cls[i1].t === 'k' && cls[i2].t === 'k') return cls[i1].k.key === cls[i2].k.key;   // lane PO
         if (cls[i1].t === 'p' && cls[i2].t === 'p') return true;   // lane stepreal2: a run of chords between the same two faces
         return cls[i1].t === 'c' && cls[i2].t === 'c' && cls[i1].c.key === cls[i2].c.key;
       }
@@ -2227,6 +2468,7 @@ var Exchange = (function () {
       if (cl.t === 'c') { geom = circleE(cl.c); sense = ccw(cl.c, A, B) ? '.T.' : '.F.'; }
       else if (cl.t === 'e') { geom = ellipseE(cl.e); sense = wrapAngle(ellipseParam(cl.e, B) - ellipseParam(cl.e, A)) > 0 ? '.T.' : '.F.'; }
       else if (cl.t === 'w') { var rl = railOf(cl.S, A, B); geom = rationalCurve(rl.poles, rl.w); }   // lane stepout3
+      else if (cl.t === 'k') geom = conicCurve(cl.k, vs.map(P));   // lane PO
       else if (cl.t === 'p' && cl.s) geom = saddleCurve(vs.map(P), cl.s[0], cl.s[1]);   // lane stepwrite
       else if (cl.t === 'p' && vs.length > 2) geom = polylineCurve(vs.map(P));   // lane stepreal2
       else geom = lineE(A, P(vs[vs.length - 1]));
@@ -2325,6 +2567,63 @@ var Exchange = (function () {
       var n = pts.length, mults = [], knots = [];
       for (var i = 0; i < n; i++) { mults.push(i === 0 || i === n - 1 ? 2 : 1); knots.push(stepReal(i)); }
       return W.add('B_SPLINE_CURVE_WITH_KNOTS(\'\',1,' + stepList(pts.map(pt)) + ',.POLYLINE_FORM.,.F.,.F.,(' + mults.join(',') + '),(' + knots.join(',') + '),.UNSPECIFIED.)');
+    }
+    // lane PO (rfPO): a run of points on the conic where plane (n, w) cuts cone S (its ends on both): rational quadratic
+    // B-spline pieces, each exact on the conic. A piece from Qa to Qb has its middle pole where the conic's tangents at
+    // its ends meet and weight lam / (1 - lam), lam the fraction of the way from the chord's middle to that pole at which
+    // the line between them crosses the cone (a conic's point at t = 1/2: hyperbola w > 1, ellipse w < 1). The run is cut
+    // in pieces turning at most 60 deg, at its own points moved onto the conic. Anything off: the chords (polylineCurve).
+    function conicCurve(Kc, pts) {
+      var S = Kc.S, n = Kc.n, m = pts.length - 1;
+      function nrm(X) { var a = axial(S, X); return a.rho > 0 ? norm(sub(scale(a.v, 1 / a.rho), scale(S.d, S.k))) : null; }
+      function tang(X, d) { var N = nrm(X); if (!N) return null; var t = cross(n, N), lt = len(t); if (!(lt > 1e-9)) return null; t = scale(t, 1 / lt); return dot(t, d) < 0 ? scale(t, -1) : t; }
+      // Y + lam D on the cone: the root nearest lam0 (or in (0, 1) when inside)
+      function hit(Y, D, lam0, inside) {
+        var w0 = sub(Y, S.o), z0 = dot(w0, S.d), wp = sub(w0, scale(S.d, z0)), Dd = dot(D, S.d), Dp = sub(D, scale(S.d, Dd)), r0 = S.r + S.k * z0;
+        var qa = dot(Dp, Dp) - S.k * S.k * Dd * Dd, qb = 2 * (dot(wp, Dp) - S.k * r0 * Dd), qc = dot(wp, wp) - r0 * r0, roots = [];
+        if (Math.abs(qa) < 1e-14 * (dot(D, D) + 1e-300)) { if (Math.abs(qb) > 0) roots.push(-qc / qb); }
+        else { var disc = qb * qb - 4 * qa * qc; if (disc >= 0) roots.push((-qb + Math.sqrt(disc)) / (2 * qa), (-qb - Math.sqrt(disc)) / (2 * qa)); }
+        roots = roots.filter(function (l) { return isFinite(l) && S.r + S.k * (z0 + l * Dd) > 0 && (!inside || (l > 0 && l < 1)); });
+        if (!roots.length) return null;
+        roots.sort(function (a, b) { return Math.abs(a - lam0) - Math.abs(b - lam0); });
+        return roots[0];
+      }
+      var X0 = pts[0], X2 = pts[m], ch = sub(X2, X0), t0 = tang(X0, ch), t2 = tang(X2, ch);
+      if (!t0 || !t2 || !(len(ch) > 0)) return polylineCurve(pts);
+      var turn = Math.acos(Math.max(-1, Math.min(1, dot(t0, t2)))), np = Math.max(1, Math.min(m, Math.ceil(turn / (Math.PI / 3) - 1e-9))), Q = [X0];
+      // split points: the run's points nearest equal shares of its length, moved onto the conic in the plane, along the
+      // cone's normal there
+      var acc = [0];
+      for (var i = 1; i <= m; i++) acc.push(acc[i - 1] + len(sub(pts[i], pts[i - 1])));
+      for (var j = 1, last = 0; j < np; j++) {
+        var want = acc[m] * j / np, bi = last + 1;
+        for (i = last + 1; i < m; i++) if (Math.abs(acc[i] - want) < Math.abs(acc[bi] - want)) bi = i;
+        if (bi <= last || bi >= m) return polylineCurve(pts);
+        last = bi;
+        var N = nrm(pts[bi]);
+        if (!N) return polylineCurve(pts);
+        var Dn = sub(N, scale(n, dot(N, n))), lq = hit(pts[bi], Dn, 0, false);
+        if (lq == null) return polylineCurve(pts);
+        Q.push(add(pts[bi], scale(Dn, lq)));
+      }
+      Q.push(X2);
+      var poles = [Q[0]], wts = [1];
+      for (var k = 0; k + 1 < Q.length; k++) {
+        var Qa = Q[k], Qb = Q[k + 1], d = sub(Qb, Qa), ta = tang(Qa, d), tb = tang(Qb, d);
+        if (!ta || !tb) return polylineCurve(pts);
+        // Qa + al ta = Qb - be tb (least squares)
+        var a11 = dot(ta, ta), a12 = dot(ta, tb), a22 = dot(tb, tb), b1 = dot(d, ta), b2 = dot(d, tb), det = a11 * a22 - a12 * a12;
+        if (!(det > 1e-12)) return polylineCurve(pts);
+        var al = (b1 * a22 - b2 * a12) / det, be = (a11 * b2 - a12 * b1) / det;
+        if (!(al > 0) || !(be > 0)) return polylineCurve(pts);
+        var P1 = add(Qa, scale(ta, al)), mid = scale(add(Qa, Qb), 0.5), lam = hit(mid, sub(P1, mid), 0.5, true);
+        if (lam == null || len(sub(P1, sub(Qb, scale(tb, be)))) > 1e-6 * (len(d) + 1e-300)) return polylineCurve(pts);
+        poles.push(P1, Qb); wts.push(lam / (1 - lam), 1);
+      }
+      var ms = [3], ks = [stepReal(0)];
+      for (k = 1; k < Q.length - 1; k++) { ms.push(2); ks.push(stepReal(k / (Q.length - 1))); }
+      ms.push(3); ks.push(stepReal(1));
+      return W.add('(BOUNDED_CURVE()B_SPLINE_CURVE(2,' + stepList(poles.map(pt)) + ',.UNSPECIFIED.,.F.,.F.)B_SPLINE_CURVE_WITH_KNOTS((' + ms.join(',') + '),(' + ks.join(',') + '),.UNSPECIFIED.)CURVE()GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE(' + stepList(wts.map(stepReal)) + ')REPRESENTATION_ITEM(\'\'))');
     }
     function rationalCurve(poles, w) {
       var ps = stepList(poles.map(pt));
@@ -5942,6 +6241,7 @@ var Exchange = (function () {
     encodeSolids: encodeSolids, solidMesh: solidMesh, solidCSG: solidCSG, signedVolume: signedVolume, earcut: earcut,
     b64encode: b64encode, b64decode: b64decode, utf8: utf8, fromUtf8: fromUtf8,
     importOptions: importOptions,
+    crossOptions: crossOptions,   // lane PO: splitCrossings (two bends crossing at a mitre) { on, last: { splits } }
     surfaceGridKind: bsSurfClassify,   // lane stepin2: occt-kernel.js importCylRecord (B-spline faces that are cylinders)
     FORMATS: [
       { id: 'step', label: 'STEP AP214 (*.step;*.stp)', ext: 'step', import: true, export: true },
