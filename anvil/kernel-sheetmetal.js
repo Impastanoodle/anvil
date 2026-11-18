@@ -7207,7 +7207,20 @@
           });
           if (on && Math.abs(dot(fc.normal, d)) < 1e-6) faces[k] = true;
         });
-        var rec = { R: R, RT: RT, A: A, C0: C0, d: d, n1: n1, n2: n2, s0: s0, s1: s1, i1: i1, i2: i2, faces: faces, mid: at(e(a, a.th0 + A / 2), RT, t1, 0, sm) };
+        // lane PC: and every facet polygon of the bend, whichever mesh face holds it (ibRoundEnds)
+        var polys = [], wide = [];
+        mesh.faces.forEach(function (fc) {
+          (fc.polys || []).forEach(function (p) {
+            if (!(Math.abs(dot([p.plane.normal.x, p.plane.normal.y, p.plane.normal.z], d)) < 1e-6)) return;
+            // (polys: the facets within the span; wide: also those reaching up to 2 (R + T) past it that touch it (a mitred
+            // end runs on past s0 / s1 on one surface; a coaxial bend beyond a relief does not touch the span), read only
+            // where polys has no vertex at a tangent angle: a Closed Corner's ends are read from polys, as before)
+            var inSpan = false, all = true, okP = p.vertices.every(function (v) { var q = sub([v.pos.x, v.pos.y, v.pos.z], C0), z = dot(q, d), rr = len(sub(q, scale(d, z))); if (z >= s0 - pr && z <= s1 + pr) inSpan = true; else all = false; return z >= s0 - 2 * RT - pr && z <= s1 + 2 * RT + pr && rset.some(function (x) { return Math.abs(rr - x) <= pr; }); });
+            if (okP && all) polys.push(p);
+            if (okP && inSpan) wide.push(p);
+          });
+        });
+        var rec = { R: R, RT: RT, A: A, C0: C0, d: d, n1: n1, n2: n2, s0: s0, s1: s1, i1: i1, i2: i2, faces: faces, polys: polys, wide: wide, mid: at(e(a, a.th0 + A / 2), RT, t1, 0, sm) };
         if (hem) rec.hem = true;
         if (noWall) rec.noWall = true;
         out.push(rec);
@@ -7302,8 +7315,14 @@
     var t1 = cross(rb.d, rb.n1), tolA = 1e-6, out = [null, null], any = false, len0 = s1 - s0;
     var ext = { i: [[Infinity, -Infinity], [Infinity, -Infinity]], o: [[Infinity, -Infinity], [Infinity, -Infinity]] };
     var pr = units === 'in' ? 1e-4 : 2.5e-3, pts = [];
-    Object.keys(rb.faces).forEach(function (k) {
-      (mesh.faces[k].polys || []).forEach(function (p) {
+    // lane PC: the bend's facet polygons (rb.polys), not whole mesh faces: a mesh face is every coplanar polygon, and a
+    // Z profile's third bend has its outer facets in one plane with the second bend's inner ones (riser, lip, return):
+    // those faces were not the bend's, its outer surface read no vertex at the lip-side tangent, and its mitred end
+    // was drawn square (0.0085 in² over the part's own flat)
+    // (lane PC: rb.wide read again only where rb.polys has no vertex at a tangent angle on a surface; see ibRoundBends)
+    function scan(list) {
+      ext = { i: [[Infinity, -Infinity], [Infinity, -Infinity]], o: [[Infinity, -Infinity], [Infinity, -Infinity]] }; pts = [];
+      list.forEach(function (p) {
         p.vertices.forEach(function (v) {
           var q = sub([v.pos.x, v.pos.y, v.pos.z], rb.C0), z = dot(q, rb.d), rad = sub(q, scale(rb.d, z)), rr = len(rad);
           var side = Math.abs(rr - rb.R) <= pr && rb.R > 0 ? 'i' : Math.abs(rr - rb.RT) <= pr ? 'o' : null;
@@ -7318,7 +7337,10 @@
           });
         });
       });
-    });
+    }
+    scan(rb.polys || [].concat.apply([], Object.keys(rb.faces).map(function (k) { return mesh.faces[k].polys || []; })));
+    var gap = ['i', 'o'].some(function (sd) { return (sd === 'o' || rb.R > 0) && ext[sd].some(function (e) { return !isFinite(e[0]); }); });
+    if (gap && rb.wide) scan(rb.wide);
     var tol = 1e-7 * (1 + Math.abs(s0) + Math.abs(s1));
     for (var k = 0; k < 2; k++) {
       var r = {}, bad = false, sq = true;
@@ -7759,9 +7781,12 @@
     // lane PC: only where the two mitred bends leave one wall (a Miter Flange's first bends, both off the base: SolidWorks'
     // and Anvil's flat run each strip on square to where they meet past the corner). Two bends further out (an L profile's
     // second bends, from the two risers to the two lips) share no wall: both flats run that strip's end straight from the
-    // riser's end to the lip's (rfIZ, SolidWorks' miter_L2): squaring it put 0.0085 in² per corner on an imported L's blank
+    // riser's end to the lip's (rfIZ, SolidWorks' miter_L2): squaring it put 0.0085 in² per corner on an imported L's blank.
+    // Only where the end's wall side reaches further out than its base side (ext > t0 on both surfaces: the lip, the
+    // return of a riser-lip-return profile); a lip turned in reaches less far than its riser, and both flats keep that
+    // strip square at the riser's reach
     var slant = {};
-    mitre.forEach(function (m) { var e = info[m[0]].ibEnds[m[1]]; if (e && !e.straight && ibSharedPlate(bends[m[0]], bends[m[2]]) == null) slant[m[0] + '/' + m[1]] = true; });
+    mitre.forEach(function (m) { var e = info[m[0]].ibEnds[m[1]]; if (e && !e.straight && e.i && e.o && e.i.ext > e.i.t0 + 0.05 * T && e.o.ext > e.o.t0 + 0.05 * T && ibSharedPlate(bends[m[0]], bends[m[2]]) == null) slant[m[0] + '/' + m[1]] = true; });
     info.forEach(function (r) { (r.ibEnds || []).forEach(function (e) { if (e) delete e.bp; }); });
     mitre.forEach(function (m) {
       var e = info[m[0]].ibEnds[m[1]];

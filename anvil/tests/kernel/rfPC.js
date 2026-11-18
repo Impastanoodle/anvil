@@ -80,15 +80,17 @@
     var rfPCmf = [
       ['L profile (riser 1, lip .5 out), fixed face on the base (main: 0.017 in² over)', LH + 'p.sketch("Right").line(0, 0.06, 0, 1.06).line(0, 1.06, 0.5, 1.06).end();\np.miterFlange([[2, 0.06, 0], [0, 0.06, 1]], {});\n', [1, 0.06, 1.3], 2],
       ['the same L, fixed face on a riser (its first bend runs from the riser to the base; main: 0.011 in² over)', LH + 'p.sketch("Right").line(0, 0.06, 0, 1.06).line(0, 1.06, 0.5, 1.06).end();\np.miterFlange([[2, 0.06, 0], [0, 0.06, 1]], {});\n', [2, 0.5, 0], 2],
-      ['L profile with the lip turned in (right on main too)', LH + 'p.sketch("Right").line(0, 0.06, 0, 1.06).line(0, 1.06, -0.5, 1.06).end();\np.miterFlange([[2, 0.06, 0], [0, 0.06, 1]], {});\n', [1, 0.06, 1.3], 2],
+      ['L profile with the lip turned in (right on main too; its lips\' bends end on a sine bulging out: squared and warned like the first bends)', LH + 'p.sketch("Right").line(0, 0.06, 0, 1.06).line(0, 1.06, -0.5, 1.06).end();\np.miterFlange([[2, 0.06, 0], [0, 0.06, 1]], {});\n', [1, 0.06, 1.3], 4],
+      ['riser, lip and return (main: 0.025 in² over; the returns\' bend facets share planes with the lips\' bends, the returns\' ends drawn along the slant and warned)', LH + 'p.sketch("Right").line(0, 0.06, 0, 1.06).line(0, 1.06, 0.5, 1.06).line(0.5, 1.06, 0.5, 1.5).end();\np.miterFlange([[2, 0.06, 0], [0, 0.06, 1]], {});\n', [1, 0.06, 1.3], 4, 2],
       ['L profile round three edges, two mitred corners (main: 0.034 in² over)', LH + 'p.sketch("Right").line(0, 0.06, 0, 1.06).line(0, 1.06, 0.5, 1.06).end();\np.miterFlange([[2, 0.06, 0], [0, 0.06, 1], [4, 0.06, 1]], {});\n', [1, 0.06, 1.3], 4],
       ['a riser alone (one bend each side: square, as before)', LH + 'p.sketch("Right").line(0, 0.06, 0, 1.06).end();\np.miterFlange([[2, 0.06, 0], [0, 0.06, 1]], {});\n', [1, 0.06, 1.3], 2]
     ];
     rfPCmf.forEach(function (c) {
-      test('rfPC: Miter Flange ' + c[0] + ' through STEP and Insert Bends: the blank is the part\'s own to 1e-6 (the lips\' bend ends were squared), only the first bends\' mitre warns', function () {
+      test('rfPC: Miter Flange ' + c[0] + ' through STEP and Insert Bends: the blank is the part\'s own to 1e-6, the mitre warnings are the ends drawn square (and those drawn along a bulging slant)', function () {
         var t = rfPCtrip(c[1], c[2]), w = rfPCmitreWarn(t.ib);
         assert(w.length === c[3], w.length + ' mitre warnings, expected ' + c[3] + ': ' + w.join(' | '));
-        assert(w.every(function (s) { return /drawn square/.test(s); }), 'a mitre end drawn along the slant: ' + w.join(' | '));
+        var sl = w.filter(function (s) { return /drawn along the slant/.test(s); }).length;
+        assert(sl === (c[4] || 0), sl + ' mitre ends drawn along the slant, expected ' + (c[4] || 0) + ': ' + w.join(' | '));
         return 'blank ' + rfPCarea(t.ib).toFixed(6) + ' in², ' + t.ib.loops[0].length + ' corners';
       });
     });
