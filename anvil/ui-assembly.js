@@ -327,11 +327,13 @@
       var c = face ? (App.model.components || [])[face.body || 0] : null;
       if (!c) return null;
       var s = expSession, start = p.slice(), d0 = +s.values.distance || 0, center = AS.componentCenter(App.model, App.build, c.id), raf = 0, last = null;
-      if (s.values.comps.indexOf(c.id) < 0) s.values.comps.push(c.id);
+      // rfPG: the component joins the step when the drag starts; a press and release without moving is a click, which
+      // the pick toggles (it was added here at the press, then the click's pick took it out again: a click did nothing)
+      function join() { if (s.values.comps.indexOf(c.id) < 0) s.values.comps.push(c.id); }
       function show() { raf = 0; if (!last) return; s.values.distance = +(d0 + s.dragDistance([last[0] - start[0], last[1] - start[1]], center)).toFixed(3); UI.renderPM(); s.preview(); }
       return {
         component: c,
-        start: function () { UI.setStatus('Exploding ' + c.name + '\u2026'); },
+        start: function () { join(); UI.setStatus('Exploding ' + c.name + '\u2026'); },
         move: function (q) { last = q; if (!raf) raf = UI.beforeFrame ? UI.beforeFrame(show) : requestAnimationFrame(show); },   // rfPE: in the frame that draws it
         end: function (q) { if (raf) { if (UI.beforeFrame) UI.cancelBeforeFrame(raf); else cancelAnimationFrame(raf); raf = 0; } last = q; show(); }
       };

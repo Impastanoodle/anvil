@@ -200,16 +200,17 @@
       assert(pdf.indexOf('(' + noteOf(true, 90, 0.03).replace('°', '\\260') + ') Tj') >= 0 && pdf.indexOf('(FLAT SIZE 6.177 \\327 2.000) Tj') >= 0, 'PDF text');
       return 'layers ' + ['FLAT_PATTERN', 'BEND_UP', 'BEND_DOWN', 'BEND_NOTES', 'NOTES'].join(', ');
     });
-    test('p9-drawing: a part that is not sheet metal has no flat-pattern view (addFlatView refuses it); a flat view whose part lost its Base Flange says why in the view; projected / section / detail views of a flat are refused', function () {
+    test('p9-drawing: a part that is not sheet metal has no flat-pattern view (addFlatView refuses it); a flat view whose part lost its Base Flange says why in the view; projected / section views of a flat are refused, a detail of a flat is allowed (rfPH)', function () {
       var r = build('p.box(10, 10, 2);'), doc = DW.newDrawing(r.model, {}), threw = null;
       try { DW.addFlatView(doc, r.mesh, { model: r.model, build: r.build }); } catch (e) { threw = e.message; }
       assert(threw && /sheet-metal|Base Flange/.test(threw) && !DW.isSheetMetal(r.model), 'refused: ' + threw);
       var q = flatDrawing(UB);
       assert(DW.isSheetMetal(q.model), 'U-bracket is sheet metal');
-      ['addProjectedView', 'addSectionView', 'addDetailView'].forEach(function (fn) {
+      ['addProjectedView', 'addSectionView'].forEach(function (fn) {
         var t = null; try { DW[fn](q.doc, q.mesh, q.view.id, fn === 'addProjectedView' ? 'down' : { r: 5, c: [0, 0] }); } catch (e) { t = e.message; }
         assert(t && /flat-pattern/.test(t), fn + ': ' + t);
       });
+      assert(DW.addDetailView(q.doc, q.mesh, q.view.id, { r: 5, c: [0, 0] }).kind === 'detail', 'a detail of a flat (rfPH)');
       var json = JSON.parse(JSON.stringify(q.doc)), sh = DW.compute(json, r.mesh, r.model, { build: r.build });
       assert(sh.prims.some(function (p) { return p.k === 'text' && /^FLAT PATTERN: /.test(p.text); }) && !sh.dims.some(function (d) { return d.flat; }), 'the reason shows in the view');
       return threw;

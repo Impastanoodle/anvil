@@ -699,6 +699,12 @@ var Assembly = (function () {
     });
     var sol = solveLinear(N, rhs);
     if (!sol) return null;
+    // rfPG (B1 of the 2026-11-16 shop audit): a patch set that is not tangent to the fitted cylinder is no cylinder. A
+    // flat face of a sheet-metal part grows into the bend's facets and the flange's face: the fit had no residual check,
+    // so the bracket's bottom and the tray floor came back as cylinders and the Mate PM offered Concentric
+    var bad = 0;
+    region.forEach(function (q) { var e = Math.abs(dot(q.normal, e1) * sol[0] + dot(q.normal, e2) * sol[1] + sol[2] - q.w); if (e > bad) bad = e; });
+    if (bad > 1e-3 * Math.max(1e-3, Math.abs(sol[2]))) return null;
     var point = add(scale(e1, sol[0]), scale(e2, sol[1]));
     return { point: point, dir: canonicalDir(axis), radius: Math.abs(sol[2]), patches: region };
   }

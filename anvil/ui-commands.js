@@ -1567,7 +1567,27 @@
     return rev;
   }
 
+  // rfPG (SolidWorks): Extruded Boss / Cut with a planar face or a plane picked first opens a sketch on it and comes
+  // back to the PropertyManager at Exit Sketch; with nothing to use it asks for a plane or face (it only said "Create a
+  // sketch first"). An empty sketch is discarded and nothing reopens (exitSketch).
+  function sketchThen(title, icon, after) {
+    function go(pk) { if (pk.kind === 'plane') newSketchOnPlane(pk.ref); else newSketchOnFace(pk); App.pendingAfterSketch = after; }
+    if (App.sel && App.sel.kind === 'face' && App.mesh && App.mesh.faces[App.sel.index]) { go(App.sel); return true; }
+    if (App.sel && App.sel.kind === 'plane') { go(App.sel); return true; }
+    return function () {
+      openPM({
+        title: title, icon: icon,
+        message: 'Select a <b>plane</b> or a <b>planar face</b> to sketch the profile on, or a sketch in the FeatureManager; <b>Exit Sketch</b> brings this PropertyManager back.',
+        command: { pickPlane: true, onPick: function (pk) { go(pk); return true; } },
+        okBlocked: function () { return 'Select a plane or a planar face first.'; },
+        groups: [{ title: 'Standard planes', fields: [{ type: 'buttons', buttons: ['Front', 'Top', 'Right'].map(function (r) { return { label: r + ' Plane', onclick: function () { go({ kind: 'plane', ref: r }); } }; }) }] }]
+      });
+    };
+  }
   function cmdExtrude(cut, existing) {
+    if (!existing && App.mode !== 'sketch' && !isAsm() && selectedSketchId() == null && App.sel && (App.sel.kind === 'face' || App.sel.kind === 'plane')) {
+      if (sketchThen(cut ? 'Cut-Extrude' : 'Boss-Extrude', cut ? 'cut' : 'extrude', function () { cmdExtrude(cut); }) === true) return;
+    }
     withSketch(function (sid) {
       var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'extrude', cut: !!cut, depth: UI.lenDefault(10), end: cut ? 'through' : 'blind', reverse: false, dir2: false, depth2: UI.lenDefault(10), end2: 'blind', sketch: pickDefaultSketch(sid) };
       if (existing) delete f.profile;
@@ -1581,7 +1601,12 @@
       f.linkT = !!f.linkT;
       function sheetT() { var sh = previewModel().sheet || App.model.sheet; return sh ? +sh.thickness : null; }
       if (f.linkT && sheetT() != null) f.depth = sheetT();
-      if (f.sketch == null) { UI.setStatus('Create a sketch first: Sketch tab → pick a plane → draw a closed profile.'); UI.toast('No sketch available. Draw a sketch first.'); return; }
+      if (f.sketch == null) {
+        if (existing || isAsm()) { UI.setStatus('Create a sketch first: Sketch tab → pick a plane → draw a closed profile.'); UI.toast('No sketch available. Draw a sketch first.'); return; }
+        var ask = sketchThen(f.cut ? 'Cut-Extrude' : 'Boss-Extrude', f.cut ? 'cut' : 'extrude', function () { cmdExtrude(cut); });
+        if (typeof ask === 'function') ask();
+        return;
+      }
       // a cut drawn on a face should go into the material (the face normal points out of it)
       if (!existing && cut) f.reverse = defaultCutReverse(f.sketch, f.reverse);
       var title = f.cut ? 'Cut-Extrude' : 'Boss-Extrude';
@@ -1796,6 +1821,15 @@
   function needSource(f) { if (f.feature == null && !solidFeatures().length) { UI.toast('Create a boss or cut first, then pattern it.'); return false; } return true; }
   function noSource(v) { return v.feature == null || v.feature === '' || v.feature === -1; }
   function sourceWhy(v, what) { return noSource(v) ? 'Select the feature to ' + what + ': click a face of it, or pick it in the list.' : ''; }
+  // rfPG: the kernel mirrors a sheet-metal bend feature (Edge-Flange, Hem, Jog, Sketched Bend …) as a plain solid copy:
+  // it is not a flange (its bend keeps the base's square corner) and Flat Pattern leaves it out, so the blank and the
+  // DXF silently miss it. Refused until the kernel builds the mirrored copy as the same feature on the mirrored edges.
+  function bendSourceWhy(v) {
+    if (!App.model.sheet || noSource(v)) return '';
+    var f = K.findFeature(App.model, typeof v.feature === 'string' ? +v.feature : v.feature);
+    if (!f || !(/^(flange|hem|jog|sketchedBend|fold|unfold)$/.test(f.type) || /Flange|Bend/.test(f.type))) return '';
+    return 'A mirror of ' + f.name + ' would be a plain solid that Flat Pattern leaves out (it does not unfold). Add the flange on the other edge instead: Edit Feature on ' + f.name + ' and pick that edge too, so both stay equal.';
+  }
   function sourceNum(v) { v.feature = noSource(v) ? null : +v.feature; return v; }
   // a click on a face of the part names its feature as the one to pattern (base: the PM's other command, kept)
   function sourceCommand(base) {
@@ -1878,8 +1912,8 @@
         scopeGroup(featureIsCut),   // a mirror of a cut is itself a cut
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
-      okBlocked: function (v) { return v.body ? '' : sourceWhy(v, 'mirror'); },   // rfNN
-      onChange: function (v) { if (!v.body) sourceNum(v); if (!v.body && noSource(v)) { UI.disposeGroup(UI.groups.preview); UI.setStatus(sourceWhy(v, 'mirror')); return; } var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing mirror.'); },
+      okBlocked: function (v) { return v.body ? '' : sourceWhy(v, 'mirror') || bendSourceWhy(v); },   // rfNN, rfPG
+      onChange: function (v) { if (!v.body) sourceNum(v); if (!v.body && (noSource(v) || bendSourceWhy(v))) { UI.disposeGroup(UI.groups.preview); UI.setStatus(sourceWhy(v, 'mirror') || bendSourceWhy(v)); return; } var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing mirror.'); },
       onOK: function (v) { if (!v.name) delete v.name; if (v.body) delete v.feature; else sourceNum(v); return commitFeature(applyBodyFields(v, v, featureIsCut(v)), existing); }
     });
   }
@@ -3847,11 +3881,20 @@
   // (as Edge Flange). The preview (what moves, with the bends) is built on the main thread.
   var SKETCHED_BEND_POSITIONS = [['centerline', 'Bend Centerline'], ['inside', 'Material Inside'], ['outside', 'Material Outside'], ['bendOutside', 'Bend Outside']];
   function cmdSketchedBend(existing) {
+    // rfPG (SolidWorks): a flat face picked first opens the bend-line sketch on it; Exit Sketch brings the PM
+    if (!existing && App.mode !== 'sketch' && App.model.sheet && selectedSketchId() == null && App.sel && App.sel.kind === 'face') {
+      if (sketchThen('Sketched Bend', 'sketchedBend', function () { cmdSketchedBend(); }) === true) return;
+    }
     withSketch(function (sid) {
       if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
       var sheet = previewModel().sheet || App.model.sheet, T = +sheet.thickness;   // resolved: the sheet parameters may be equations
       var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'sketchedBend', sketch: pickDefaultSketch(sid), fixed: null, position: 'centerline', angle: 90, reverse: false, radius: null };
-      if (f.sketch == null) { UI.toast('Sketch the bend line(s) on a flat face of the sheet first, then click Sketched Bend.'); return; }
+      if (f.sketch == null) {
+        if (existing) { UI.toast('Sketch the bend line(s) on a flat face of the sheet first, then click Sketched Bend.'); return; }
+        var ask = sketchThen('Sketched Bend', 'sketchedBend', function () { cmdSketchedBend(); });
+        if (typeof ask === 'function') ask();
+        return;
+      }
       if (!f.position) f.position = 'centerline';
       f.useDefaultRadius = f.radius == null;
       f.radiusValue = f.radius != null ? f.radius : sheet.bendRadius;

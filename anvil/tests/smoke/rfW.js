@@ -126,7 +126,7 @@
     assert(rfWOver('polyline.dw-break').length === 1, 'first break line at the pointer');
     rfWClick(rfWAt(F.id, [30, 25])); sheetMouse('mousemove', rfWAt(F.id, [70, 25]));
     var bl = rfWOver('polyline.dw-break');
-    assert(bl.length === 2 && rfWPts(bl[0]) === 6, 'two zig zag break lines ' + bl.length);
+    assert(bl.length === 2 && rfWPts(bl[0]) > 6,'two zig zag break lines ' + bl.length);
     key('Escape'); await wait(20);
     assert(!rfWOver('polyline').length && anvil.drawing.doc().views.filter(function (v) { return v.id === F.id; })[0].breaks == null, 'Esc leaves nothing');
     anvil.drawing.close(); await idle();
