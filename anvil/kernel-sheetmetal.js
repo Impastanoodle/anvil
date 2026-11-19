@@ -4348,6 +4348,18 @@
       var zone = region(k).concat([{ n: ln.m, w: ln.wS }, { n: scale(ln.m, -1), w: -(ln.wS + BA) }, { n: n, w: ln.band[0] }, { n: scale(n, -1), w: -ln.band[1] }]);
       var ext = regionExtent(ctx.body, zone, ln.O, ln.a);
       if (!ext || ext[1] - ext[0] < 1e-6) throw new Error('Sketched Bend: line ' + (k + 1) + ' does not cross the sheet.');
+      // lane shopflow9: metal standing off the face at an end of the strip (an Edge Flange on the edge the line runs to)
+      // would be cut in two by the bend: the part came out open (a jog across a door panel with its four return flanges:
+      // 30 open edges, no error). The line must end on free edges of the face: refused with the reason.
+      if (ln.jogOf == null) [0, 1].forEach(function (e) {
+        var ta = e ? ext[1] - T / 4 : ext[0] + T / 4;
+        [0.1, 0.5, 0.9].forEach(function (fs) {
+          [ln.band[0] - T, ln.band[0] - 2 * T, ln.band[1] + T, ln.band[1] + 2 * T].forEach(function (h) {
+            var P = add(add(ln.O, scale(ln.a, ta)), scale(ln.m, BA * fs));
+            if (inside(add(P, scale(n, h - dot(n, P))))) throw new Error((f.jogBack != null ? 'Jog' : 'Sketched Bend') + ': line ' + (k + 1) + ' runs into a flange or wall at its end: the bend would cut it in two. Bend lines must end on free edges of a flat face; add the ' + (f.jogBack != null ? 'jog' : 'bend') + ' before the flanges on those edges.');
+          });
+        });
+      });
       var Oc = add(ln.O, scale(ln.a, (ext[0] + ext[1]) / 2)), half = (ext[1] - ext[0]) / 2;
       // the moving piece slides back by BA (the strip it rolls up), then turns by A about the bend's axis
       G[k] = mCompose(Gp, mCompose(mRotation(add(ln.O, scale(ln.up, R)), ln.a, A), { R: M_ID.R, t: scale(ln.m, -BA) }));
@@ -5742,10 +5754,13 @@
     return 'Welded Corner' + (max + 1);
   }
   // the flat of a part with Welded Corners: the same part with them suppressed (rebuilt once per build, from its cache)
-  function hasWelds(model) { return (model.features || []).some(function (g) { return g.type === 'weldedCorner' && !g.suppressed; }); }
+  // lane shopflow9: a Rib (Features ▸ Rib) on a sheet-metal part is a welded-in gusset plate, not formed metal: the flat
+  // is the part without it too (an 11 ga L with two Ribs as gussets showed four phantom holes where they met the faces)
+  function weldLike(g) { return (g.type === 'weldedCorner' || g.type === 'rib') && !g.suppressed; }
+  function hasWelds(model) { return (model.features || []).some(weldLike); }
   function weldFreeFlat(model, build, opts) {
-    var m2 = JSON.parse(JSON.stringify(model));
-    m2.features.forEach(function (g) { if (g.type === 'weldedCorner') g.suppressed = true; });
+    var m2 = JSON.parse(JSON.stringify(model)), ribs = [];
+    m2.features.forEach(function (g) { if (weldLike(g)) { if (g.type === 'rib') ribs.push(g.name || 'Rib'); g.suppressed = true; } });
     var key = JSON.stringify(m2), memo = build && build.__weldFree, b2, mesh2;
     if (memo && memo.key === key) { b2 = memo.build; mesh2 = memo.mesh; }
     else {
@@ -5754,7 +5769,9 @@
       mesh2 = meshFromBody(b2.body);
       if (build && typeof build === 'object') Object.defineProperty(build, '__weldFree', { value: { key: key, build: b2, mesh: mesh2 }, configurable: true, writable: true, enumerable: false });
     }
-    return flatPattern(m2, b2, mesh2, opts);
+    var fl = flatPattern(m2, b2, mesh2, opts);
+    if (ribs.length && fl && fl.warnings) fl.warnings.push(ribs.join(', ') + ': a Rib is not sheet metal (a welded-in gusset plate), so the flat pattern leaves it out; SolidWorks\' formed Sheet Metal Gusset is not available.');
+    return fl;
   }
   K.registerFeature('weldedCorner', {
     cut: false,
@@ -6336,7 +6353,7 @@
       });
     }
     if (!lines.length) { push(P3(c[0]), P3(c[2])); push(P3(c[1]), P3(c[3])); }
-    return { refgeo: 'crossBreak', plane: plane, n: n.slice(), at: p.slice(), lines: lines, corners: c.map(P3), radius: +f.radius, angle: +f.angle, reverse: !!f.reverse };
+    return { refgeo: 'crossBreak', plane: plane, n: n.slice(), at: sub(p, scale(n, dot(n, p) - face.w)), lines: lines, corners: c.map(P3), radius: +f.radius, angle: +f.angle, reverse: !!f.reverse };
   }
   // the marks of every Cross-Break, added to the flat's etch items as { t: 'line', a, b, crossBreak: feature id, up,
   // angle, R, note: true on a feature's first line } (so a Flat-Pattern orientation moves them with the rest);
@@ -9115,6 +9132,7 @@
     cornerRelief: [['corners', 'point']],
     closedCorner: [['faces', 'face']],
     weldedCorner: [['faces', 'face']],
+    crossBreak: [['face', 'face', true]],   // lane shopflow9: gauge 18 -> 16 left the face point inside the sheet
     rip: [['edges', 'edge']],
     unfold: [['fixedFace', 'face', true], ['bends', 'bend']],
     fold: [['bends', 'bend']]   // lane MY3: points on bends of the folded part, by the flange record that made the bend
