@@ -942,7 +942,7 @@
   function tableSpot(w, ctx, W, H, under, own, k) {
     var g = 2 * k, sh = ctx.sheet, tb = ctx.tb, step = 2 * k;
     function obstacles(pad) {
-      var list = [tb];
+      var list = [tb].concat(ctx.blocks || []);   // (rfQC) the blocks beside the title block (UNLESS OTHERWISE SPECIFIED, the revision table) too
       if (ctx.bom) list.push(ctx.bom.box);
       ctx.views.forEach(function (o) {
         if (o === w) { list.push(own); return; }
@@ -974,21 +974,32 @@
     // (rfJB, shop audit 6) no free paper: the spot inside the border that covers the least of the other views, the
     // title block and what is placed (views count 4 x), nearest the old place under the view; marked noRoom so the
     // sheet says so (sheet.warnings) instead of quietly drawing the table over a view
-    var tight = obstacles(0), best = null, bc = Infinity, bd = Infinity;
+    // (rfQC) never on the title block, the blocks beside it (UNLESS OTHERWISE SPECIFIED, the revision table) or what is
+    // placed (dimension values, notes: ctx.taken): only views (and the BOM) may be covered, the least of them; when
+    // every spot inside the border meets one of those, the table hangs off the sheet at its right edge (SolidWorks
+    // lets a table sit off the sheet), top level with the border, and the warning says where it went
+    var hard = [tb].concat(ctx.blocks || [], ctx.taken), soft = (ctx.bom ? [ctx.bom.box] : []);
+    ctx.views.forEach(function (o) { if (o !== w) soft.push(o.box); });
+    soft.push(own);
+    function meets(r, o) { return Math.min(r.x1, o.x1) - Math.max(r.x0, o.x0) > 1e-9 && Math.min(r.y1, o.y1) - Math.max(r.y0, o.y0) > 1e-9; }
     function cover(x0, y1) {
       var r = { x0: x0, y0: y1 - H, x1: x0 + W, y1: y1 }, c = 0;
-      tight.forEach(function (o, i) {
+      if (hard.some(function (o) { return meets(r, o); })) return Infinity;
+      soft.forEach(function (o) {
         var ix = Math.min(r.x1, o.x1) - Math.max(r.x0, o.x0), iy = Math.min(r.y1, o.y1) - Math.max(r.y0, o.y0);
-        if (ix > 0 && iy > 0) c += ix * iy * (i > 0 && i <= ctx.views.length + (ctx.bom ? 1 : 0) ? 4 : 1);
+        if (ix > 0 && iy > 0) c += ix * iy;
       });
       return c;
     }
-    var st2 = 4 * k;
+    var st2 = 4 * k, best = null, bc = Infinity, bd = Infinity;
     for (y = sh.y1 - g; y - H >= sh.y0 + g - 1e-9; y -= st2) for (x = sh.x0 + g; x + W <= sh.x1 - g + 1e-9; x += st2) {
       var cv = cover(x, y), dv = Math.hypot(x - under[0], y - under[1]);
       if (cv < bc - 1e-12 || (Math.abs(cv - bc) <= 1e-12 && dv < bd)) { bc = cv; bd = dv; best = [x, y]; }
     }
-    var res = (best && bc < cover(under[0], under[1]) ? best : under).slice();
+    var res;
+    if (best && isFinite(bc) && bc <= cover(under[0], under[1])) res = best.slice();
+    else if (isFinite(cover(under[0], under[1])) && under[0] >= sh.x0 - 1e-9 && under[0] + W <= sh.x1 + 1e-9 && under[1] - H >= sh.y0 - 1e-9 && under[1] <= sh.y1 + 1e-9) res = under.slice();
+    else { res = [sh.x1 + 20 * k, sh.y1]; res.offSheet = true; }
     res.noRoom = true;
     return res;
   }
@@ -1237,8 +1248,8 @@
       [spec.map(function (c) { return c[2]; })].concat(rows).forEach(function (r, ri) {
         r.forEach(function (s, ci) { ps.push({ k: 'text', p: [(cxs[ci] + cxs[ci + 1]) / 2, y1 - (ri + 1) * rh + (rh - th) / 2], h: th, text: s, anchor: 'middle', layer: 'BEND_NOTES', rot: 0 }); });
       });
-      item('table', 'bendTable', 'Bend Table (' + rows.length + ')', ps, { rows: rows, columns: spec.map(function (c) { return c[2]; }), keys: spec.map(function (c) { return c[0]; }), noRoom: !!spot.noRoom });
-      if (spot.noRoom && ctx.warnings && !(v.flatAnn && v.flatAnn.table && v.flatAnn.table.off)) ctx.warnings.push('Bend Table of ' + (v.name || 'the flat pattern') + ': no free paper on the sheet, so it covers part of the drawing. Drag it, use a larger sheet, or put the flat pattern on its own sheet.');
+      item('table', 'bendTable', 'Bend Table (' + rows.length + ')', ps, { rows: rows, columns: spec.map(function (c) { return c[2]; }), keys: spec.map(function (c) { return c[0]; }), noRoom: !!spot.noRoom, offSheet: !!spot.offSheet });
+      if (spot.noRoom && ctx.warnings && !(v.flatAnn && v.flatAnn.table && v.flatAnn.table.off)) ctx.warnings.push('Bend Table of ' + (v.name || 'the flat pattern') + ': no free paper on the sheet, so it ' + (spot.offSheet ? 'is placed off the sheet at its right edge (it does not print there; every spot on the sheet meets the title block or a dimension)' : 'covers part of the drawing') + '. Drag it, use a larger sheet, or put the flat pattern on its own sheet.');
     }
     out.forEach(function (it) { if (!it.hidden) ctx.taken.push(it.box); });
     return out;
@@ -2282,10 +2293,20 @@
         var base = String(ins.name).replace(/[^A-Za-z0-9_\-$]/g, '_').toUpperCase() || 'BLOCK', nm = base, n = 2;
         while (blkNames[nm] || /^\*/.test(nm)) nm = base + '_' + n++;
         blkNames[nm] = 1;
-        var g = { name: ins.name, dxfName: nm, prims: sheet.blockDefs[ins.name] };
+        var g = { name: ins.name, dxfName: nm, prims: sheet.blockDefs[ins.name], defOf: {}, tags: [] };
+        g.prims.forEach(function (p) { if (p.attDef != null && p.k === 'text' && !g.defOf[p.attDef]) { g.defOf[p.attDef] = p; g.tags.push(p.attDef); } });
         blkOf[ins.name] = g; blkGroups.push(g);
       });
     }
+    // (rfQC) R2000 with opts.attributes: an instance's attribute values are ATTRIBs after its INSERT (66 1 ... SEQEND), one per tag its BLOCK
+    // has an ATTDEF for (a value's first line; a further line, or a linked text with no tag, stays TEXT beside it)
+    var attOf = {}, attPrims = [], useAtt = r2000 && !!(opts && opts.attributes);   // (the app's Save as DXF / DWG pass it; the engine default keeps TEXT, as rfPQ counts)
+    if (useAtt) sheet.prims.forEach(function (p) {
+      if (p.k !== 'text' || p.blockIns == null || typeof p.blockAttr !== 'string' || !insUsed[p.blockIns]) return;
+      var g = blkOf[insUsed[p.blockIns].name], a = attOf[p.blockIns] = attOf[p.blockIns] || { list: [], seen: {} };
+      if (!g || !g.defOf[p.blockAttr] || a.seen[p.blockAttr]) return;
+      a.seen[p.blockAttr] = 1; a.list.push(p); attPrims.push(p);
+    });
     function pr(c, v) { L.push(String(c), String(v)); }
     var layers = [];
     sheet.prims.forEach(function (p) { if (layers.indexOf(p.layer) < 0) layers.push(p.layer); });
@@ -2374,7 +2395,7 @@
       pr(0, 'SECTION'); pr(2, 'BLOCKS');
       blkGroups.forEach(function (g) {
         pr(0, 'BLOCK'); pr(8, 0); pr(2, g.dxfName); pr(70, 0); pr(10, 0); pr(20, 0); pr(30, 0); pr(3, g.dxfName);
-        g.prims.forEach(function (p) { entity(p, null); });
+        g.prims.forEach(function (p) { if (p.attDef == null) entity(p, null); });   // (rfQC: R12 keeps attributes as TEXT)
         pr(0, 'ENDBLK'); pr(8, 0);
       });
       pr(0, 'ENDSEC');
@@ -2383,8 +2404,11 @@
       pr(0, 'SECTION'); pr(2, 'BLOCKS');
       blkGroups.forEach(function (g) {   // (rfPM) the drawing's named blocks
         pr(0, 'BLOCK'); pr(5, g.bh); pr(330, g.br); pr(100, 'AcDbEntity'); pr(8, 0); pr(100, 'AcDbBlockBegin');
-        pr(2, g.dxfName); pr(70, 0); pr(10, 0); pr(20, 0); pr(30, 0); pr(3, g.dxfName); pr(1, '');
-        g.prims.forEach(function (p) { entity(p, g.br); });
+        pr(2, g.dxfName); pr(70, useAtt && g.tags.length ? 2 : 0); pr(10, 0); pr(20, 0); pr(30, 0); pr(3, g.dxfName); pr(1, '');   // (70 2: has attributes)
+        g.prims.forEach(function (p) {
+          if (p.attDef == null) entity(p, g.br);
+          else if (useAtt && g.defOf[p.attDef] === p) attText(p, 'ATTDEF', g.br, p.attDef, p.prompt);   // (rfQC) one ATTDEF per tag (a value's first line)
+        });
         pr(0, 'ENDBLK'); pr(5, g.eh); pr(330, g.br); pr(100, 'AcDbEntity'); pr(8, 0); pr(100, 'AcDbBlockEnd');
       });
       [[msBR, '*Model_Space', false, '20', '21'], [psBR, '*Paper_Space', true, '1C', '1D']].forEach(function (b) {
@@ -2432,19 +2456,24 @@
     var insDone = {};
     sheet.prims.forEach(function (p) {
       if (p.blockIns != null && insUsed[p.blockIns]) {   // (rfPM) an instance: one INSERT where its first entity was
-        // (rfPQ) its attribute / linked texts carry this instance's own values: written as TEXT beside the INSERT (the
-        // DWG writer and every laser reader take TEXT; ATTDEF / ATTRIB are not written)
-        if (p.blockAttr != null) entity(p, msBR);
+        // (rfPQ) its attribute / linked texts carry this instance's own values. (rfQC) R2000: a tagged one is an ATTRIB
+        // after the INSERT (below); R12, and a linked text with no tag, TEXT beside the INSERT
+        if (p.blockAttr != null && attPrims.indexOf(p) < 0) entity(p, msBR);
         if (insDone[p.blockIns]) return;
         insDone[p.blockIns] = 1;
-        var ins = insUsed[p.blockIns], g = blkOf[ins.name];
+        var ins = insUsed[p.blockIns], g = blkOf[ins.name], atts = attOf[p.blockIns] ? attOf[p.blockIns].list : [], ih = r2000 ? H() : null;
         pr(0, 'INSERT');
-        if (r2000) { pr(5, H()); pr(330, msBR); pr(100, 'AcDbEntity'); }
+        if (r2000) { pr(5, ih); pr(330, msBR); pr(100, 'AcDbEntity'); }
         pr(8, p.layer);
         if (r2000) pr(100, 'AcDbBlockReference');
+        if (atts.length) pr(66, 1);
         pr(2, g.dxfName); pr(10, gnum(ins.p[0])); pr(20, gnum(ins.p[1])); pr(30, 0);
         if (ins.scale !== 1) { pr(41, gnum(ins.scale)); pr(42, gnum(ins.scale)); pr(43, gnum(ins.scale)); }
         if (ins.rot) pr(50, gnum(((ins.rot % 360) + 360) % 360));
+        if (atts.length) {
+          atts.forEach(function (a) { attText(a, 'ATTRIB', ih, a.blockAttr); });
+          pr(0, 'SEQEND'); pr(5, H()); pr(330, ih); pr(100, 'AcDbEntity'); pr(8, p.layer);
+        }
         return;
       }
       if (!(p.dimIx != null && dimOf[p.dimIx])) entity(p, msBR);
@@ -2464,6 +2493,16 @@
       // (rfV) an angle: 3-point angular, 13 / 14 on the two lines, 15 the vertex, 10 on the dimension arc
       if (X.type === 'angular') { pr(100, 'AcDb3PointAngularDimension'); pt(13, X.p13); pt(14, X.p14); pt(15, X.p15); }
     });
+    // (rfQC) an R2000 ATTDEF (in a BLOCK: its default, prompt and tag) or ATTRIB (after an INSERT: this instance's value)
+    function attText(p, type, owner, tag, prompt) {
+      pr(0, type); pr(5, H()); pr(330, owner); pr(100, 'AcDbEntity'); pr(8, p.layer); pr(100, 'AcDbText');
+      pr(10, num(p.p[0])); pr(20, num(p.p[1])); pr(30, 0); pr(40, num(p.h)); pr(1, dxfText(p.text));
+      if (p.rot) pr(50, num(p.rot));
+      pr(7, styleName);
+      if (p.anchor !== 'start') { pr(72, p.anchor === 'middle' ? 1 : 2); pr(11, num(p.p[0])); pr(21, num(p.p[1])); pr(31, 0); }
+      if (type === 'ATTDEF') { pr(100, 'AcDbAttributeDefinition'); pr(3, dxfText(prompt || tag)); pr(2, tag); pr(70, 0); pr(73, 0); pr(74, 0); }
+      else { pr(100, 'AcDbAttribute'); pr(2, tag); pr(70, 0); pr(73, 0); pr(74, 0); }
+    }
     function entity(p, owner) {
       var ltn = p.style === 'hidden' || p.style === 'benddown' ? 'HIDDEN' : p.style === 'chain' || p.style === 'tanfont' ? 'PHANTOM' : p.style === 'center' ? 'CENTER' : null, dc = p.color && DXF_COLORS[p.color] || (THIN[p.style] && !colors[p.layer] && !p.explodeLine ? 8 : 0);   // (rfPD: an explode line keeps the layer's colour, not the tangent-edge grey)
       // an entity's head: type, (R2000: handle, owner, AcDbEntity,) layer, line type, colour, (R2000: weight, subclass)

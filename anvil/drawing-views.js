@@ -3998,7 +3998,9 @@
         // definition's own primitives at the origin, unscaled (sheet.blockDefs, for the DXF's BLOCKS section)
         var def = blockDef(doc, e.name);
         if (!def) return;
-        if (!defs[e.name]) { var lp = []; def.ents.forEach(function (de, di) { if (!perInstance(de)) draw(de, function (q) { q.layer = 'SKETCH'; lp.push(q); }, 'blk' + di); }); defs[e.name] = lp; }
+        // (rfQC) an attribute text goes in too, tagged attDef (its tag) / prompt: R2000 writes it as the BLOCK's ATTDEF
+        // (its default, a link shown with its value), R12 leaves it out (the values are TEXT beside each INSERT there)
+        if (!defs[e.name]) { var lp = []; def.ents.forEach(function (de, di) { if (!perInstance(de)) draw(de, function (q) { q.layer = 'SKETCH'; lp.push(q); }, 'blk' + di); else if (de.attr) draw(de, function (q) { q.layer = 'SKETCH'; q.attDef = de.attr; q.prompt = de.prompt || de.attr; lp.push(q); }, 'blk' + di); }); defs[e.name] = lp; }
         (it.ents || []).forEach(function (be, bi) { var own = perInstance(be); draw(be, function (q) { q.blockIns = it.id; q.block = e.name; if (own) q.blockAttr = be.attr || true; P(q); }, 'sk' + it.id + '.' + bi); });   // (rfPQ: blockAttr)
         if (!sheet.inserts) sheet.inserts = [];
         sheet.inserts.push({ id: it.id, name: e.name, p: e.p.slice(), scale: +e.scale > 0 ? +e.scale : 1, rot: +e.rot || 0, view: it.view });

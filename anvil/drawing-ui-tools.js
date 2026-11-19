@@ -1000,7 +1000,7 @@
     if (kind === 'svg') UI.exportDialog('Save Drawing as SVG', safeName() + '.svg', Drawing.toSVG(sh), 'image/svg+xml');
     else if (kind === 'dxf') {
       var ver = D.dxfVersion = opts && opts.version === 'R2000' ? 'R2000' : opts && opts.version ? 'R12' : D.dxfVersion || 'R12';
-      UI.exportDialog('Save Drawing as DXF (one layer per view)', safeName() + '.dxf', Drawing.toDXF(sh, { version: ver, hatch: true, scale11: Drawing.docOptions(doc()).dxf11 }), 'application/dxf');
+      UI.exportDialog('Save Drawing as DXF (one layer per view)', safeName() + '.dxf', Drawing.toDXF(sh, { version: ver, hatch: true, attributes: true, scale11: Drawing.docOptions(doc()).dxf11 }), 'application/dxf');
       var ta = document.querySelector('#modal textarea');
       if (ta) {
         var sel = el('select', { id: 'dw-dxf-version', title: 'DXF version' });
@@ -1020,7 +1020,7 @@
   // the writer throws or did not load). Returns a promise of { name, bytes } (null when nothing was saved).
   var DWG_NOTE = 'DWG needs the local server\'s converter (dwg-writer.js did not load)';
   function saveDWG(sh) {
-    var text = Drawing.toDXF(sh, { version: 'R2000', hatch: true, scale11: Drawing.docOptions(doc()).dxf11 }), name = safeName() + '.dwg';
+    var text = Drawing.toDXF(sh, { version: 'R2000', hatch: true, attributes: true, scale11: Drawing.docOptions(doc()).dxf11 }), name = safeName() + '.dwg';
     if (document.getElementById('modal') && !$('modal').hidden) UI.closeModal();
     var probe = UI.dwgConverter ? UI.dwgConverter() : Promise.resolve(null);
     UI.setStatus('Save Drawing as DWG…');
@@ -2245,9 +2245,39 @@
     }
     return props;
   }
+  // (rfQC) Shift+drag (move) / Ctrl+drag (copy) a dimension over another view: it stays where it is while the pointer
+  // is there (the status line says what the drop does); dropped, Drawing.dimToView makes it that view's dimension
+  // (true length there) or the drop is refused with the reason. Over its own view or the paper it drags as before.
+  function xferTarget(dg, p) {
+    if (!dg.xfer) return null;
+    var w = viewAt(p);
+    return w && w.view.id !== dg.d.view ? w : null;
+  }
+  function dropDimToView(dg) {
+    var w = sheetView(dg.toView), d = dg.d, copy = dg.xfer === 'copy';
+    if (!w) return false;
+    var at = w.fromSheet(dg.at), nd = null;
+    // (a refused drop leaves the dimension where it was; the drag's undo step holds the document as before)
+    try { Drawing.dimToView(JSON.parse(JSON.stringify(doc())), mesh(), d, w.view.id, at, { copy: copy }); }
+    catch (err) { UI.toast(err.message); UI.setStatus(err.message); render(); return true; }
+    nd = Drawing.dimToView(doc(), mesh(), d, w.view.id, at, { copy: copy });
+    var vs = Drawing.findView(doc(), w.view.id), ix = vs.dims.indexOf(nd);
+    D.sel = { kind: 'dim', view: w.view.id, key: null, index: ix };
+    D.dirty = true; UI.autosave(); render(); DW.renderTree();
+    UI.setStatus('Dimension ' + (d.text || '') + (copy ? ' copied to ' : ' moved to ') + w.view.name + '.');
+    return true;
+  }
   function dragDim(p) {
     var dg = D.drag, d = dg.d, w = sheetView(d.view), dx = p[0] - dg.start[0], dy = p[1] - dg.start[1], props = {};
     if (!w) return;
+    var xt = xferTarget(dg, p);
+    if (xt) {
+      if (dg.toView !== xt.view.id) UI.setStatus('Release to ' + (dg.xfer === 'copy' ? 'copy' : 'move') + ' the ' + (d.text || 'dimension') + ' to ' + xt.view.name + ' (Shift moves, Ctrl copies).');
+      dg.toView = xt.view.id; dg.at = p.slice();
+      if (D.snapGuide) { D.snapGuide = null; drawOverlay(); }
+      return;
+    }
+    dg.toView = null;
     // (rfP) in a broken view the pointer's move is taken back through the break, so the dimension keeps its model place
     // (anchored on the text as it was drawn, so the pointer's pixel rounding is not magnified inside a gap)
     if (w.breakMap) {
@@ -4158,6 +4188,6 @@
   DW.holeCalloutClick = holeCalloutClick; DW.calloutOverlay = calloutOverlay; DW.cmdChainDim = cmdChainDim; DW.chainDimClick = chainDimClick; DW.cmdChamferDim = cmdChamferDim; DW.chamferClick = chamferClick;
   DW.cmdBalloon = cmdBalloon; DW.balloonClick = balloonClick; DW.cmdBalloonProps = cmdBalloonProps; DW.setBalloonProps = setBalloonProps; DW.cmdDimensionPM = cmdDimensionPM; DW.sectionPreview = sectionPreview; DW.liveOverlay = liveOverlay; DW.openClickDimPM = openClickDimPM; DW.closeClickPM = closeClickPM; DW.clickPM = clickPM;
   DW.applyDimensionPM = applyDimensionPM; DW.cmdCalloutProps = cmdCalloutProps; DW.cmdDocProps = cmdDocProps; DW.setDocOptions = setDocOptions; DW.defaultDocOptions = defaultDocOptions;
-  DW.autoInsertViews = autoInsertViews; DW.startDimDrag = startDimDrag; DW.FLIP_KINDS = FLIP_KINDS; DW.arrowAt = arrowAt; DW.flipArrows = flipArrows; DW.openInlineEdit = openInlineEdit;
+  DW.autoInsertViews = autoInsertViews; DW.startDimDrag = startDimDrag; DW.dropDimToView = dropDimToView; DW.FLIP_KINDS = FLIP_KINDS; DW.arrowAt = arrowAt; DW.flipArrows = flipArrows; DW.openInlineEdit = openInlineEdit;
   DW.positionInlineEdit = positionInlineEdit; DW.openTitleEdit = openTitleEdit; DW.closeInlineEdit = closeInlineEdit; DW.dragDim = dragDim; DW.balloonRef = balloonRef;
 })();

@@ -3796,6 +3796,80 @@
   D.holeSizeNames = holeSizeNames;
   D.addAngularRunning = addAngularRunning; D.addPathLength = addPathLength; D.angRunMeasure = angRunMeasure; D.pathLengthOf = pathLengthOf;   // (lane CT)
   D.pathRefFrom = pathRefFrom; D.pathRefEnds = pathRefEnds; D.pathRefMid = pathRefMid; D.pathChained = pathChained; D.ctAngleText = ctAngleText; _.ctDimPrims = ctDimPrims;
+  // (rfQC) Shift+drag a dimension onto another view moves it there, Ctrl+drag copies it (SolidWorks). dimToView(doc,
+  // mesh, d, toId, at, { copy }) -> the new dimension of view toId: d is the sheet's dimension (compute's dims: kind,
+  // view, a, b, value, key (a model item) or index (a Smart Dimension)), at the drop point in the target view's
+  // coordinates. Only a linear (h / v / aligned) dimension whose measured direction lies in the target view's plane
+  // (true length there) and whose ends are model vertices: each end is the model vertex under it in the source view
+  // nearest the drop point across the target; the new one is a point-to-point Smart Dimension (locked h / v) that
+  // keeps the source's properties (precision, tolerance, text). Moving suppresses a model item (doc.suppressed) or
+  // removes the Smart Dimension from its view. Throws with the reason when it cannot go there.
+  function dimToView(doc, mesh, d, toId, at, opts) {
+    opts = opts || {};
+    var vs = findView(doc, d && d.view), vt = findView(doc, toId);
+    if (!vs || !vt) throw new Error('No drawing view ' + (vs ? toId : d && d.view));
+    if (vs.id === vt.id) throw new Error('Drop it on another view');
+    if (!{ h: 1, v: 1, aligned: 1 }[d.kind] || !d.a || !d.b) throw new Error('Only a linear dimension between two points moves to another view');
+    [vs, vt].forEach(function (v) {
+      if (v.kind === 'flat') throw new Error('A flat pattern\'s dimensions measure the flat, not the folded part: not moved to or from ' + v.name);
+      if (v.kind === 'empty') throw new Error(v.name + ' shows no model');
+      if (Math.abs(((+v.rotate || 0) % 90)) > 1e-9) throw new Error(v.name + ' is rotated: not moved');
+    });
+    var of = viewContents(doc, mesh), cs = of(vs), ct = of(vt);
+    if (!cs || !cs.frame || !ct || !ct.frame) throw new Error('The views are not drawn yet');
+    var Fs = cs.frame, Ft = ct.frame;
+    function to3(q) { return [q[0] * Fs.u[0] + q[1] * Fs.v[0], q[0] * Fs.u[1] + q[1] * Fs.v[1], q[0] * Fs.u[2] + q[1] * Fs.v[2]]; }
+    var u2 = d.kind === 'h' ? [1, 0] : d.kind === 'v' ? [0, 1] : [d.b[0] - d.a[0], d.b[1] - d.a[1]], L = Math.hypot(u2[0], u2[1]);
+    if (!(L > 1e-12)) throw new Error('The dimension has no length');
+    var dir = V.norm(to3([u2[0] / L, u2[1] / L])), tu = V.dot(dir, Ft.u), tv = V.dot(dir, Ft.v);
+    if (Math.abs(V.dot(dir, Ft.e)) > 1e-6) throw new Error('Not true length in ' + vt.name + ': the ' + (d.text || 'dimension') + ' runs toward or away from that view; drop it on a view square to it');
+    // the model vertices under each end in the source view; each end the one nearest the drop point across the target
+    var P = mesh.positions64 || mesh.positions, tol = Math.max(1e-6, (meshDiag ? meshDiag(mesh) : 1) * 1e-6), side = [-tv, tu];
+    // (an overall size's end is the part's extreme, not always a corner under it: then any model vertex at that
+    // station along the measured direction)
+    var dirS = [u2[0] / L, u2[1] / L];
+    function endFor(q, loose) {
+      var best = null, bd = Infinity, qa = q[0] * dirS[0] + q[1] * dirS[1];
+      for (var i = 0; i + 2 < P.length; i += 3) {
+        var x = P[i], y = P[i + 1], z = P[i + 2], su = x * Fs.u[0] + y * Fs.u[1] + z * Fs.u[2], sv = x * Fs.v[0] + y * Fs.v[1] + z * Fs.v[2];
+        if (loose ? Math.abs(su * dirS[0] + sv * dirS[1] - qa) > tol : Math.abs(su - q[0]) > tol || Math.abs(sv - q[1]) > tol) continue;
+        var p2 = [x * Ft.u[0] + y * Ft.u[1] + z * Ft.u[2], x * Ft.v[0] + y * Ft.v[1] + z * Ft.v[2]];
+        var dd = at ? Math.abs((at[0] - p2[0]) * side[0] + (at[1] - p2[1]) * side[1]) : 0;
+        if (dd < bd - 1e-12) { bd = dd; best = p2; }
+      }
+      return best;
+    }
+    var A = endFor(d.a) || endFor(d.a, true), B = endFor(d.b) || endFor(d.b, true);
+    if (!A || !B) throw new Error('The ' + (d.text || 'dimension') + ' does not end on model corners: not moved');
+    var lock = Math.abs(tv) < 1e-9 ? 'h' : Math.abs(tu) < 1e-9 ? 'v' : null;
+    var sc = ct.scale > 0 ? ct.scale : 1, aim = at || [(A[0] + B[0]) / 2 + side[0], (A[1] + B[1]) / 2 + side[1]];
+    // each end on a straight edge of the target square to the measured direction is that edge (so the dimension
+    // follows the part as an edge-to-edge one does), else the point
+    var t2 = [tu, tv], tl = Math.hypot(tu, tv) || 1, prT = ct.fullProj || ct.proj, etol = Math.max(1e-6, tol * 10);
+    function pickFor(q) {
+      var best = null, bl = 0;
+      (prT && prT.all || []).forEach(function (m) {
+        var ex = m[2] - m[0], ey = m[3] - m[1], el = Math.hypot(ex, ey);
+        if (!(el > etol) || Math.abs((ex * t2[0] + ey * t2[1]) / (el * tl)) > 1e-6) return;
+        var s = ((q[0] - m[0]) * ex + (q[1] - m[1]) * ey) / (el * el), off = Math.abs((q[0] - m[0]) * ey - (q[1] - m[1]) * ex) / el;
+        if (off > etol || s < -1e-9 || s > 1 + 1e-9 || el <= bl) return;
+        best = [[m[0], m[1]], [m[2], m[3]]]; bl = el;
+      });
+      return best ? { edge: best } : { point: q };
+    }
+    var nd = smartDim(pickFor(A), pickFor(B), aim, lock ? { lock: lock, scale: sc } : { aligned: true, scale: sc });
+    if (!nd || !isFinite(nd.value) || Math.abs(nd.value - d.value) > 1e-6 * Math.max(1, Math.abs(d.value))) throw new Error('The ' + (d.text || 'dimension') + ' would measure ' + (nd ? (+nd.value).toFixed(4) : 'nothing') + ' in ' + vt.name + ': not moved');
+    // its properties: the source's own (a model item's in doc.dimProps[style]) except where it sits
+    var src = d.auto ? doc.dimProps && doc.dimProps[d.style] : vs.dims && vs.dims[d.index];
+    if (src) DIM_PROPS.forEach(function (k) { if (src[k] != null && !{ at: 1, tx: 1, tside: 1, lead: 1, off: 1 }[k]) nd[k] = JSON.parse(JSON.stringify(src[k])); });
+    (vt.dims || (vt.dims = [])).push(nd);
+    if (!opts.copy) {
+      if (d.auto && d.key) { doc.suppressed = (doc.suppressed || []).concat([d.key]); }
+      else if (vs.dims && d.index != null && vs.dims[d.index]) vs.dims.splice(d.index, 1);
+    }
+    return nd;
+  }
+  D.dimToView = dimToView;
   D.smartDim = smartDim; D.addSmartDim = addSmartDim; D.measurePair = measurePair; D.finishAngles = finishAngles; D._anglePrims = anglePrims;
   _.holeEnds = holeEnds; _.finishAngles = finishAngles; _.refPos = refPos; _.reattachUserDim = reattachUserDim; _.partThreads = partThreads; _.threadsAlong = threadsAlong; _.annotationPrims = annotationPrims;
 })(Drawing, Drawing._);

@@ -1147,7 +1147,7 @@
       var pd = toPaper(e), dd = D.drag;
       if (!dd.moved && Math.hypot(pd[0] - dd.start[0], pd[1] - dd.start[1]) < pxToPaper(3)) return;
       if (!dd.moved) { UI.pushUndo(); dd.moved = true; D.host.classList.add('dw-dragging'); }
-      if (dd.kind === 'dim') { dd.noSnap = !!e.altKey; DW.dragDim(pd); }   // Alt: no snapping (r4/drawings4)
+      if (dd.kind === 'dim') { dd.noSnap = !!e.altKey; dd.xfer = e.shiftKey ? 'move' : e.ctrlKey || e.metaKey ? 'copy' : null; DW.dragDim(pd); }   // Alt: no snapping (r4/drawings4); (rfQC) Shift / Ctrl: to another view
       else if (dd.kind === 'balloon') {
         var vb = Drawing.findView(doc(), dd.view), bb = vb && vb.balloons && vb.balloons[dd.index];
         if (bb) {
@@ -1221,6 +1221,7 @@
     // (SolidWorks) a click on a dimension, without a drag, opens its Dimension PropertyManager; the keyboard stays on
     // the sheet (Delete deletes it, D starts Smart Dimension)
     if (dg.kind === 'dim' && dg.clickPM && !dg.moved && D.active) DW.openClickDimPM(dg.ref);
+    if (dg.kind === 'dim' && dg.moved && dg.toView != null && DW.dropDimToView && DW.dropDimToView(dg)) return;   // (rfQC) Shift / Ctrl+drag onto another view
     if ((dg.kind === 'fmt' || dg.kind === 'gtable' || dg.kind === 'sk') && dg.moved) { D.dirty = true; UI.autosave(); render(); return; }   // (rfAE)
     if ((dg.kind === 'view' || dg.kind === 'bom' || dg.kind === 'dim' || dg.kind === 'balloon' || dg.kind === 'annot' || dg.kind === 'note' || dg.kind === 'flatann' || dg.kind === 'symbol' || dg.kind === 'tip') && dg.moved) { D.dirty = true; UI.autosave(); render(); }
   }
