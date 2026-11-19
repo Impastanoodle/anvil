@@ -3332,7 +3332,10 @@ var Exchange = (function () {
     function link(ti, on) { var t = T[ti]; for (var e = 0; e < 3; e++) { var k = ek(t[e], t[(e + 1) % 3]), l = em.get(k); if (!l) em.set(k, l = []); if (on) l.push(ti); else l.splice(l.indexOf(ti), 1); if (on) stack.push(k); } }
     function inCircle(a, b, c, d) {
       var ax = a[0] - d[0], ay = a[1] - d[1], bx = b[0] - d[0], by = b[1] - d[1], cx = c[0] - d[0], cy = c[1] - d[1];
-      return (ax * ax + ay * ay) * (bx * cy - cx * by) - (bx * bx + by * by) * (ax * cy - cx * ay) + (cx * cx + cy * cy) * (ax * by - bx * ay) > eps;
+      // lane QY: the tolerance is the four points' own size (relative to d), not the patch's: a patch 500 steps long put
+      // eps above every determinant of its small triangles, no flip was made, and the refinement never finished
+      var m = Math.max(Math.abs(ax), Math.abs(ay), Math.abs(bx), Math.abs(by), Math.abs(cx), Math.abs(cy)), m2 = m * m;
+      return (ax * ax + ay * ay) * (bx * cy - cx * by) - (bx * bx + by * by) * (ax * cy - cx * ay) + (cx * cx + cy * cy) * (ax * by - bx * ay) > Math.min(eps, 1e-12 * m2 * m2 + 1e-11 * sc * m2 * m);
     }
     function orient(a, b, c) { return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]); }
     function rot(t, a) { var i = t.indexOf(a); return [t[i], t[(i + 1) % 3], t[(i + 2) % 3]]; }
@@ -3560,12 +3563,19 @@ var Exchange = (function () {
     // the Delaunay triangles then join each point to the nearest ones round the axis, the zipper of the loops' own points.
     // In true lengths a hole's wall between two wavy loops fanned across up to 23 steps round, and the refinement filled
     // it: 2508 triangles for the kernel's 98)
-    var hsF = isFinite(A.hs) ? A.hs : A.ht * A.sv / A.su * 1e3, htF = isFinite(A.ht) ? A.ht : A.hs * A.su / A.sv * 1e3;
+    // lane QY: a step longer than the patch's whole range that way is a straight direction too (a ruled B-spline face
+    // whose rulings turn a hair: a thread's flank, one step across, 500 along; flipped with that width as nothing, the
+    // fans ran from end to end and the refinement never finished: the face was refused)
+    var uLo = Infinity, uHi = -Infinity, vLo = Infinity, vHi = -Infinity;
+    V.forEach(function (x) { if (x.u < uLo) uLo = x.u; if (x.u > uHi) uHi = x.u; if (x.v < vLo) vLo = x.v; if (x.v > vHi) vHi = x.v; });
+    var hsE = isFinite(A.ht) && A.hs >= uHi - uLo ? Infinity : A.hs, htE = isFinite(A.hs) && A.ht >= vHi - vLo ? Infinity : A.ht;
+    if (!isFinite(hsE) && !isFinite(htE)) { hsE = A.hs; htE = A.ht; }
+    var hsF = isFinite(hsE) ? hsE : htE * A.sv / A.su * 1e3, htF = isFinite(htE) ? htE : hsE * A.su / A.sv * 1e3;
     // lane MO: curved both ways (sphere, torus, B-spline): the points of the canonical grid (one step each way, as the
     // kernel's own rows) that lie inside the patch and half a step clear of its boundary go in first, each into the ear
     // clipping's triangle that holds it, and the flips below make the whole Delaunay in step units; the refinement then
     // only fills what the grid left (it alone made 2.5 to 13 triangles a step², the grid makes 2)
-    if (isFinite(A.hs) && isFinite(A.ht)) gridInsert(V, T3, rings, A);
+    if (isFinite(hsE) && isFinite(htE)) gridInsert(V, T3, rings, A);
     delaunayFlips(T3, isFinite(hsF) && isFinite(htF) ? V.map(function (x) { return [x.u / hsF, x.v / htF]; }) : P2);
     var em = {};
     function ek(a, b) { return a < b ? a + ',' + b : b + ',' + a; }
@@ -3597,7 +3607,7 @@ var Exchange = (function () {
       var ti0 = queue.pop(), e0 = longest(ti0);
       if (span(e0[0], e0[1]) <= SPLIT) continue;
       var cur = ti0, edge = e0;
-      for (var walk = 0; walk < 1000; walk++) {
+      for (var walk = 0; walk < 64; walk++) {
         guard++;
         var nbs = em[ek(edge[0], edge[1])], nb = nbs.length === 2 ? (nbs[0] === cur ? nbs[1] : nbs[0]) : -1;
         if (nb < 0) { edge = null; break; }   // a boundary edge: kept (the edges' own points)
@@ -4174,6 +4184,20 @@ var Exchange = (function () {
   function importSTEP(text, opts) {
     opts = opts || {};
     var st = parseStep(text), E = st.ents, warnings = [];
+    // lane QY: the file's stated accuracy (its UNCERTAINTY_MEASURE), for edge samples closer than it (thinCurve)
+    var uncE = (function () { var m = /UNCERTAINTY_MEASURE_WITH_UNIT\s*\(\s*LENGTH_MEASURE\s*\(\s*([-+0-9.Ee]+)/.exec(text); return m ? Math.abs(+m[1]) || 0 : 0; })();
+    // lane QY: a B-spline edge sampled 24 points a span on a part 3.5 mm long put its samples 3.6e-5 mm apart, inside the
+    // file's accuracy (2.5e-4 mm): the triangles of the plane beside it between those points were too small for the
+    // kernel's polygons (dropped: 43 open edges). Samples within ten times the accuracy of the last kept one are left
+    // out (the same tolerance the free-form faces' boundary is projected with).
+    function thinCurve(raw) {
+      if (!(uncE > 0) || raw.length < 3) return raw;
+      var out = [raw[0]], n = raw.length - 1;
+      var gap = 10 * Math.min(uncE, 2.5e-4 / (toMM || 1));   // (a file stating 0.005 in: no more than 2.5 µm)
+      for (var i = 1; i < n; i++) if (len(sub(raw[i], out[out.length - 1])) > gap && len(sub(raw[i], raw[n])) > gap) out.push(raw[i]);
+      out.push(raw[n]);
+      return out.length === raw.length ? raw : out;
+    }
     function ent(ref) { return ref && ref.r != null ? E[ref.r] : null; }
     function has(e, type) { return e && (e.t === type || (e.parts && e.parts[type])); }
     function args(e, type) { return e ? (e.t === type ? e.a : e.parts && e.parts[type]) : null; }
@@ -4227,6 +4251,7 @@ var Exchange = (function () {
     // Planar faces are ear clipped; faces on cylinders, cones, spheres and tori are tessellated in rows of latitude
     // circles (curvedFace) and their triangles carry the surface records kernel.js uses for exact mass properties.
     var nonPlanar = {}, faceCount = 0, angleUnit = 1, noHeightFaces = 0;
+    function faceCountRefused() { var n = 0; for (var k in nonPlanar) if (k.indexOf('curve ') !== 0) n += nonPlanar[k]; return n; }
     Object.keys(E).forEach(function (id) {
       var e = E[id], cb = has(e, 'PLANE_ANGLE_UNIT') && args(e, 'CONVERSION_BASED_UNIT');
       if (cb && /DEG/i.test(String(cb[0]))) angleUnit = Math.PI / 180;
@@ -4273,7 +4298,7 @@ var Exchange = (function () {
           // (lane PF: a side that is a straight line, whatever its degree, is its two ends: see straightGrid)
           var sl = bc.deg > 1 && raw.length > 2 && !noReduce[id] && bsFitCurve(raw);
           if (sl && sl.line) { info.kind = 'bspline'; info.raw = [raw[0], raw[raw.length - 1]]; info.pts = info.raw.slice(); info.straight = true; }
-          else if (bc.deg > 1) { info.kind = 'bspline'; info.raw = raw; info.pts = areaTruePath(raw); } else { info.kind = bc.poles.length === 2 ? 'line' : 'other'; info.pts = [p1, p2]; }
+          else if (bc.deg > 1) { info.kind = 'bspline'; info.raw = raw = thinCurve(raw); info.pts = areaTruePath(raw); } else { info.kind = bc.poles.length === 2 ? 'line' : 'other'; info.pts = [p1, p2]; }
           return (edgeCache[id] = info);
         }
         var fit = bsFitCurve(raw, bc);
@@ -4283,7 +4308,7 @@ var Exchange = (function () {
           var cps = circlePoints(fit.circle, p1, p2, true, toMM);
           info.pts = cps.pts; info.mid = cps.mid; info.full = cps.full;
         } else if (bc.deg === 1) { info.kind = 'poly'; info.corners = bc.poles; info.pts = raw.filter(function (p, k) { return k === 0 || k === raw.length - 1 || len(sub(p, raw[k - 1])) > 0; }); }
-        else { info.kind = 'bspline'; info.raw = raw; info.pts = areaTruePath(raw); }
+        else { info.kind = 'bspline'; info.raw = raw = thinCurve(raw); info.pts = areaTruePath(raw); }
       } else info.pts = [p1, p2];
       return (edgeCache[id] = info);
     }
@@ -4447,6 +4472,8 @@ var Exchange = (function () {
       if (len(normal) < 0.5) return;
       var t0 = out.tris.length;
       triangulateFace(loops, outerIdx, normal, out);
+      // lane QY: an axis-aligned plane face (clampMoved holds moved points to it where it is the box's side)
+      for (var ak = 0; ak < 3; ak++) if (Math.abs(Math.abs(normal[ak]) - 1) < 1e-9) (out.flats || (out.flats = [])).push(ak, loops[outerIdx][0][ak]);
       for (var t = t0; t < out.tris.length; t += 3) out.recs.push(null);
     }
     // lane importbend: what a B-spline surface is ({ plane: n } | { cyl: S, flip } | null), once per surface entity
@@ -4692,13 +4719,16 @@ var Exchange = (function () {
           var at = function (i, j) { return i * (nv + 1) + j; };
           gridTris(G.map(function (col, i) { return col.map(function (p, j) { return at(i, j); }); }), function (a, b, c) { RT.push([a, b, c]); });
           freeVolumeFix({ V: RV, T: RT }, { at: function (u, v) { return bsSurfPoint(d0, u, v); } }, !sameSense);
-          Qg = G.map(function (col, i) { return col.map(function (p, j) { return RV[at(i, j)].p; }); });
+          var movedFrom = new Map();
+          Qg = G.map(function (col, i) { return col.map(function (p, j) { var x = RV[at(i, j)]; if (x.p0) movedFrom.set(x.p, x.p0); return x.p; }); });
         } else Qg = areaTrueGrid(G, got[0], got[1], got[2].slice().reverse(), got[3].slice().reverse());
+        if (!movedFrom) movedFrom = new Map();
         gridTris(Qg, function (A, B, C) {
           var base = out.pos.length / 3, P = sameSense ? B : C, Q = sameSense ? C : B;
           out.pos.push(A[0], A[1], A[2], P[0], P[1], P[2], Q[0], Q[1], Q[2]);
           out.tris.push(base, base + 1, base + 2);
           out.recs.push(null);
+          [A, P, Q].forEach(function (x, k) { var x0 = movedFrom.get(x); if (x0) (out.moved || (out.moved = [])).push(base + k, x0); });   // lane QY (clampMoved)
         });
         out.lastFree = freeRecord(fa, surf, sameSense);   // lane MR
         return true;
@@ -4710,6 +4740,51 @@ var Exchange = (function () {
     // B-spline curve, trimmed by any edges. Boundary points are projected into the surface's (u, v) (nearest sample, then
     // Newton), paramPatch triangulates, new points lie on the surface; the steps keep a chord within the canonical grid's
     // angle for the local radius of curvature. No surface record (as splineFace).
+    // lane QY: freeVolumeFix moves a free-form face's inner points off the surface (outward on a convex round, by up to
+    // three times the facets' sag: a corner round's points 0.023 mm past the plane it is tangent to, the part read
+    // 38.045 x 70.024 for 38 x 70). The volume is kept, but a part must show its true size: every moved point is
+    // clamped into the box of the shell's points that lie on their surfaces (all others, and the moved ones where
+    // they were), on the sides of that box that are plane faces, so only points past the true box come back.
+    function clampMoved(out) {
+      var M = out.moved;
+      if (!M || !M.length) return;
+      var P = out.pos, isM = new Uint8Array(P.length / 3), lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], i, k;
+      for (i = 0; i < M.length; i += 2) isM[M[i]] = 1;
+      function grow(x, y, z) { if (x < lo[0]) lo[0] = x; if (x > hi[0]) hi[0] = x; if (y < lo[1]) lo[1] = y; if (y > hi[1]) hi[1] = y; if (z < lo[2]) lo[2] = z; if (z > hi[2]) hi[2] = z; }
+      for (i = 0; i < isM.length; i++) if (!isM[i]) grow(P[3 * i], P[3 * i + 1], P[3 * i + 2]);
+      for (i = 0; i < M.length; i += 2) grow(M[i + 1][0], M[i + 1][1], M[i + 1][2]);
+      // only a side of the box that is a plane face square to that axis holds them (a round's extreme is its own: a
+      // sphere's or a loft's bulge keeps its volume fix)
+      var F = out.flats || [], hiF = [false, false, false], loF = [false, false, false];
+      for (i = 0; i < F.length; i += 2) { k = F[i]; var tolF = 1e-9 * (1 + Math.abs(hi[k]) + Math.abs(lo[k])); if (Math.abs(F[i + 1] - hi[k]) <= tolF) hiF[k] = true; if (Math.abs(F[i + 1] - lo[k]) <= tolF) loF[k] = true; }
+      if (!hiF.some(Boolean) && !loF.some(Boolean)) { delete out.moved; return; }
+      // the volume the clamp takes off is given back by the other moved points, further along their own moves (the
+      // shell's signed volume over the triangles that hold a moved point: a variable blend keeps 2e-7 of its volume)
+      var T = out.tris, tm = [];
+      for (i = 0; i < T.length; i += 3) if (isM[T[i]] || isM[T[i + 1]] || isM[T[i + 2]]) tm.push(i);
+      function vol() {
+        var v = 0;
+        tm.forEach(function (t) {
+          var a = 3 * T[t], b = 3 * T[t + 1], c = 3 * T[t + 2];
+          v += P[a] * (P[b + 1] * P[c + 2] - P[b + 2] * P[c + 1]) - P[a + 1] * (P[b] * P[c + 2] - P[b + 2] * P[c]) + P[a + 2] * (P[b] * P[c + 1] - P[b + 1] * P[c]);
+        });
+        return v / 6;
+      }
+      var v0 = vol(), held = new Uint8Array(M.length / 2), any = false;
+      for (i = 0; i < M.length; i += 2) for (k = 0; k < 3; k++) { var j = 3 * M[i] + k; if (hiF[k] && P[j] > hi[k]) { P[j] = hi[k]; held[i / 2] = 1; any = true; } else if (loF[k] && P[j] < lo[k]) { P[j] = lo[k]; held[i / 2] = 1; any = true; } }
+      if (any) {
+        var v1 = vol(), free = [];
+        for (i = 0; i < M.length; i += 2) if (!held[i / 2]) free.push(i);
+        function stretch(f) { free.forEach(function (q) { var x0 = M[q + 1]; for (k = 0; k < 3; k++) { var jj = 3 * M[q] + k; P[jj] = x0[k] + (P[jj] - x0[k]) * f; } }); }
+        if (free.length) {
+          stretch(2); var v2 = vol(); stretch(0.5);   // the slope of the volume in the moves' length (they are small: linear)
+          if (Math.abs(v2 - v1) > 1e-300) { var al = (v0 - v1) / (v2 - v1); if (al > -0.5 && al < 0.5) stretch(1 + al); }
+          // and no point past the plane sides after it
+          for (i = 0; i < M.length; i += 2) for (k = 0; k < 3; k++) { var j2 = 3 * M[i] + k; if (hiF[k] && P[j2] > hi[k]) P[j2] = hi[k]; else if (loF[k] && P[j2] < lo[k]) P[j2] = lo[k]; }
+        }
+      }
+      delete out.moved;
+    }
     function freeFace(fa, surf, sameSense, out) {
       var A = null, d = bsSurfOf(surf);
       if (d && d.poles.length && d.poles.every(function (row) { return row.length && row.every(Boolean); }) && d.U.length === d.poles.length + d.du + 1 && d.V.length === d.poles[0].length + d.dv + 1) A = bsAdaptor(d);
@@ -4747,7 +4822,8 @@ var Exchange = (function () {
         if (isFinite(A.hs)) A2.ht = A.hs * A.su / A.sv; else A2.hs = A.ht * A.sv / A.su;
         A = A2;
       }
-      if (!res) res = paramPatch(lp, outerI, A);      if (!res) return false;
+      if (!res) res = paramPatch(lp, outerI, A);
+      if (!res) return false;
       if (!whole && d) centreInsert(res, A);   // (B-spline faces: an extrusion's side is straight along w, its caps polygons)
       // lane stepreal2: the triangles all turn one way in (u, v), so one answer serves them all: the area-weighted vote
       // of the surface normal (asked triangle by triangle, slivers along a boundary answered the other way: edges with
@@ -4766,6 +4842,8 @@ var Exchange = (function () {
         out.pos.push(a.p[0], a.p[1], a.p[2], b.p[0], b.p[1], b.p[2], c.p[0], c.p[1], c.p[2]);
         out.tris.push(base, base + 1, base + 2);
         out.recs.push(null);
+        // lane QY: points the volume fix moved off the surface, with where they were (clampMoved)
+        [a, b, c].forEach(function (x, k) { if (x.p0) (out.moved || (out.moved = [])).push(base + k, x.p0); });
       });
       if (d) out.lastFree = freeRecord(fa, surf, sameSense);   // lane MR (B-spline surfaces only)
       return true;
@@ -4953,7 +5031,7 @@ var Exchange = (function () {
         });
       }
       for (i = 0; i < V.length; i++) {
-        if (rowMove && rowMove[i]) { V[i] = { p: add(V[i].p, rowMove[i]), u: V[i].u, v: V[i].v }; continue; }
+        if (rowMove && rowMove[i]) { V[i] = { p: add(V[i].p, rowMove[i]), u: V[i].u, v: V[i].v, p0: V[i].p }; continue; }
         if (fixed[i] || !nv[i] || !(den[i] > 0) || !num[i]) continue;
         // lane MX: no further than the triangles round it miss (|h1 + h2 + h3| of each: what a corner alone would take).
         // A point among long thin triangles (a thin strip's few inner points fanned to a finely sampled boundary) has
@@ -4961,7 +5039,7 @@ var Exchange = (function () {
         // fillet (others 4e-4 inside it), through the plane beside it (Check: self-intersections)
         var dl = num[i] / den[i], cap = hMax[i] || 0;
         if (dl > cap) dl = cap; else if (dl < -cap) dl = -cap;
-        V[i] = { p: add(V[i].p, scale(norm(nv[i]), dl)), u: V[i].u, v: V[i].v };
+        V[i] = { p: add(V[i].p, scale(norm(nv[i]), dl)), u: V[i].u, v: V[i].v, p0: V[i].p };
       }
     }
     // (u, v) of p on at(u, v) from a start: Gauss-Newton with central differences; lo / hi bound u and v (null: free)
@@ -4980,15 +5058,16 @@ var Exchange = (function () {
     }
     // the largest parameter step along a row of samples (params ts, points ps) whose chord stays inside the canonical
     // grid's angle at the local radius of curvature (Infinity for a straight row)
-    function rowStep(ts, ps) {
+    function rowStep(ts, ps, acc) {
       var best = Infinity;
       for (var i = 1; i + 1 < ps.length; i++) {
         var d1 = sub(ps[i], ps[i - 1]), d2 = sub(ps[i + 1], ps[i]), l1 = len(d1), l2 = len(d2);
         if (!(l1 > 0) || !(l2 > 0)) continue;
         var th = Math.acos(Math.max(-1, Math.min(1, dot(d1, d2) / (l1 * l2))));
         if (!(th > 1e-9)) continue;
-        var Rc = (l1 + l2) / 2 / th, al = 2 * Math.PI / K.segsForRadius(Rc * (toMM || 1));
-        best = Math.min(best, (ts[i + 1] - ts[i - 1]) / 2 * al / th);
+        var Rc = (l1 + l2) / 2 / th, al = 2 * Math.PI / K.segsForRadius(Rc * (toMM || 1)), st = (ts[i + 1] - ts[i - 1]) / 2 * al / th;
+        if (acc) acc.push(st);
+        best = Math.min(best, st);
       }
       return best;
     }
@@ -5028,14 +5107,31 @@ var Exchange = (function () {
       size = len(sub(hi, lo)) || 1;
       // (a row that is one point, a pole, has no turning: skipped)
       function flat(row) { for (var k = 1; k < row.length; k++) if (len(sub(row[k], row[0])) > 1e-9 * size) return false; return true; }
-      for (var j = 0; j < tsV.length; j++) { var rowJ = columnOf(G, j); if (!flat(rowJ)) hs = Math.min(hs, rowStep(tsU, rowJ)); }
-      for (var i = 0; i < tsU.length; i++) if (!flat(G[i])) ht = Math.min(ht, rowStep(tsV, G[i]));
+      var accU = [], accV = [];
+      for (var j = 0; j < tsV.length; j++) { var rowJ = columnOf(G, j); if (!flat(rowJ)) hs = Math.min(hs, rowStep(tsU, rowJ, accU)); }
+      for (var i = 0; i < tsU.length; i++) if (!flat(G[i])) ht = Math.min(ht, rowStep(tsV, G[i], accV));
       // a step no finer than an eighth of the grid's (24 samples a knot span)
-      hs = Math.max(hs, (u1 - u0) / Math.max(1, tsU.length - 1) / 8); ht = Math.max(ht, (v1 - v0) / Math.max(1, tsV.length - 1) / 8);
+      var hsMin = (u1 - u0) / Math.max(1, tsU.length - 1) / 8, htMin = (v1 - v0) / Math.max(1, tsV.length - 1) / 8;
+      hs = Math.max(hs, hsMin); ht = Math.max(ht, htMin);
+      // lane QY: the steps are the finest curvature anywhere on the face. When that makes a grid of more than 6000
+      // steps², the fine steps are a spot where the parameter crawls (dense knots beside a pole of a rational patch: a
+      // tenth of the samples asked for steps 300 times finer than the median): the steps are then a low quantile of the
+      // samples' own (2 %, 5 %, 10 %, 20 %, the first that fits), still finer where the face is curved everywhere (a face
+      // 1000 x 40 steps: 270 000 triangles before the refinement gave up, and the file was refused)
+      var qs = [0.02, 0.05, 0.1, 0.2];
+      if ((u1 - u0) / hs * (v1 - v0) / ht > 6000) {
+        accU.sort(function (x, y) { return x - y; }); accV.sort(function (x, y) { return x - y; });
+        for (var qk = 0; qk < qs.length && (u1 - u0) / hs * (v1 - v0) / ht > 6000; qk++) {
+          if (isFinite(hs) && accU.length) hs = Math.max(hs, accU[Math.floor(accU.length * qs[qk])]);
+          if (isFinite(ht) && accV.length) ht = Math.max(ht, accV[Math.floor(accV.length * qs[qk])]);
+        }
+      }
       // seeds: every third grid sample
       var seeds = [];
       for (i = 0; i < tsU.length; i += 3) for (j = 0; j < tsV.length; j += 3) seeds.push([tsU[i], tsV[j], G[i][j]]);
-      var hu = 1e-7 * (u1 - u0), hv = 1e-7 * (v1 - v0), far = 1e-3 * size, poleTol = 1e-7 * size;
+      // lane QY: a boundary point may miss the surface by ten times the file's uncertainty (a 0.015 in patch's edges
+      // 4e-5 in past its domain's side; 1e-3 of the patch alone refused it)
+      var hu = 1e-7 * (u1 - u0), hv = 1e-7 * (v1 - v0), far = Math.max(1e-3 * size, 10 * Math.min(unc, 2.5e-4 / (toMM || 1))), poleTol = 1e-7 * size;
       var poles = [];
       if (poleS.v0) poles.push({ p: at(u0, v0), v: v0 });
       if (poleS.v1) poles.push({ p: at(u0, v1), v: v1 });
@@ -5116,6 +5212,14 @@ var Exchange = (function () {
         loops.push(list);
         lflip.push(!!(ba[2] && ba[2].e === "F"));   // lane realfiles (surfPatch: which side of a lone circle a cap lies)
       });
+      // lane QY: a cone placed at its apex (radius 0 there: a countersink or a point running to its tip) is re-based
+      // along its axis to the middle height of its boundary, where the radius is positive (the same surface)
+      if (ok && S.t === 'cone' && !(S.r > 0) && len(S.d) > 0.5 && loops.length) {
+        var zs = 0, zn = 0, dn = norm(S.d);
+        loops.forEach(function (lp) { lp.forEach(function (x) { (x.info.pts || [x.info.start]).forEach(function (p) { if (p) { zs += dot(sub(p, S.o), dn); zn++; } }); }); });
+        var zm = zn ? zs / zn : 0, rm = S.r + S.k * zm;
+        if (rm > 0) { var Sc = {}; for (var ck in S) if (Object.prototype.hasOwnProperty.call(S, ck)) Sc[ck] = S[ck]; Sc.o = add(S.o, scale(dn, zm)); Sc.r = rm; Sc.d = dn; S = Sc; }
+      }
       if (!ok || !(S.r > 0) || len(S.d) < 0.5) return false;
       // lane MO: a sphere face bounded by one whole circle at any tilt (a ball on a shaft that does not run along the
       // sphere's own axis; OpenCascade adds a VERTEX_LOOP at the pole inside the face): re-framed about the circle's
@@ -5351,7 +5455,7 @@ var Exchange = (function () {
           var ti0 = queue.pop(), e0 = longest(ti0);
           if (span(e0[0], e0[1]) <= stepU) continue;
           var cur = ti0, edge = e0;
-          for (var walk = 0; walk < 1000; walk++) {
+          for (var walk = 0; walk < 64; walk++) {
             guard++;
             var nbs = em[ek(edge[0], edge[1])], nb = nbs.length === 2 ? (nbs[0] === cur ? nbs[1] : nbs[0]) : -1;
             if (nb < 0) { edge = null; break; }   // a boundary edge: kept (the edges' own points)
@@ -5731,6 +5835,22 @@ var Exchange = (function () {
       if (!roots.length) return null;
       return { name: name, cls: cls, kids: kids, roots: roots, nOcc: nOcc };
     }
+    // lane QY: the refusal is decided before the solids are tessellated where it can be (a face on a surface no path
+    // reads), and otherwise at the first face that cannot be read: a refused 4.7 MB assembly took 22 s, tessellating
+    // every other face first (the window froze)
+    function listOf(keys) { return keys.map(function (k) { return nonPlanar[k] + ' ' + k.replace(/^curve /, ''); }).join(', '); }
+    function refuseCurved() {
+      var sf = Object.keys(nonPlanar).filter(function (k) { return k.indexOf('curve ') !== 0; }), cv = Object.keys(nonPlanar).filter(function (k) { return k.indexOf('curve ') === 0; });
+      if (sf.length) throw new Error('This STEP file has curved faces (' + listOf(sf) + (cv.length ? '; curved edges: ' + listOf(cv) : '') + '). Anvil imports planar-face and faceted B-reps, and cylinders, cones, spheres and tori bounded by circles and straight rulings; export it from the source CAD as a faceted / tessellated STEP, or as STL or 3MF.');
+    }
+    var READABLE = { PLANE: 1, CYLINDRICAL_SURFACE: 1, CONICAL_SURFACE: 1, SPHERICAL_SURFACE: 1, TOROIDAL_SURFACE: 1, SURFACE_OF_LINEAR_EXTRUSION: 1 };
+    if (solidIds.length) Object.keys(E).forEach(function (id) {
+      var fa0 = args(E[id], 'ADVANCED_FACE') || args(E[id], 'FACE_SURFACE'), sf0 = fa0 && fa0[2] && ent(fa0[2]);
+      if (!sf0 || (sf0.t && READABLE[sf0.t]) || bsSurfOf(sf0)) return;
+      var k0 = sf0.t || 'complex surface';
+      nonPlanar[k0] = (nonPlanar[k0] || 0) + 1;
+    });
+    refuseCurved();
     var solids = [], solidInfo = [], structure = null;
     solidIds.forEach(function (sid) {
       var e = E[sid], shells = [];
@@ -5748,12 +5868,14 @@ var Exchange = (function () {
           var t0 = out.tris.length, r0 = out.recs.length;
           out.lastFree = null;
           faceTriangles(fr, out);
+          if (faceCountRefused()) refuseCurved();   // lane QY: at the first face refused
           // lane MR: the triangles of a free-form face carry its index in out.free (fid, -1 elsewhere)
           var fk = -1;
           if (out.lastFree && out.recs.length > r0) { fk = out.free.length; out.free.push(out.lastFree); }
           for (var rk = r0; rk < out.recs.length; rk++) out.fid.push(fk);
           if (opts.trace) { var tf0 = ent(fr), ta = tf0 && (args(tf0, 'ADVANCED_FACE') || args(tf0, 'FACE_SURFACE')), ts = ta && ta[2] && ent(ta[2]); opts.trace.push({ face: fr && fr.r, surf: ts ? ts.t || 'complex' : '', out: out, from: t0, to: out.tris.length }); }
         });
+        clampMoved(out);
         return out;
       });
       // representations holding this solid
@@ -5882,8 +6004,7 @@ var Exchange = (function () {
     }
     var surfs = Object.keys(nonPlanar).filter(function (k) { return k.indexOf('curve ') !== 0; });
     var curves = Object.keys(nonPlanar).filter(function (k) { return k.indexOf('curve ') === 0; });
-    function listOf(keys) { return keys.map(function (k) { return nonPlanar[k] + ' ' + k.replace(/^curve /, ''); }).join(', '); }
-    if (surfs.length) throw new Error('This STEP file has curved faces (' + listOf(surfs) + (curves.length ? '; curved edges: ' + listOf(curves) : '') + '). Anvil imports planar-face and faceted B-reps, and cylinders, cones, spheres and tori bounded by circles and straight rulings; export it from the source CAD as a faceted / tessellated STEP, or as STL or 3MF.');
+    refuseCurved();
     if (curves.length) warnings.push('Curved edges (' + listOf(curves) + ') on planar faces were taken as straight lines.');
     if (noHeightFaces) warnings.push(noHeightFaces + ' cylinder face' + (noHeightFaces === 1 ? '' : 's') + ' with no height (bounded by one circle alone) ' + (noHeightFaces === 1 ? 'was' : 'were') + ' read as the flat disc inside the circle.');
     if (!(asm ? asm.solids : solids).length) throw new Error('No faces could be read from the STEP solids.');
@@ -6423,6 +6544,59 @@ var Exchange = (function () {
   // ------------------------------------------------------------------ common import finish
   // Scale to the target units, weld, split T-junctions (a mesh exported from a CSG modeller usually has them), orient
   // each solid outward, and report open edges.
+  // lane QY: flipSlivers(m) (m from fanPolygons): a triangle whose doubled area is under 1e-12 (the size below which
+  // the kernel's polygons drop a triangle, csg.js Plane.fromVertices: absolute, so on a part 3.5 mm long in inches
+  // the caps between an edge's close samples and a far corner went, 14 open edges) gives its longest edge to its
+  // neighbour across it when both lie on one face (same record, same free face, normals within 1e-6 of each other)
+  // and both new triangles are larger and turn the same way. The mesh stays closed and the same shape.
+  function flipSlivers(m) {
+    var P = m.positions, T = m.triangles, nT = T.length / 3, TH = 1e-12, done = 0;
+    function cr(a, b, c) {
+      var A = 3 * a, B = 3 * b, C = 3 * c, u0 = P[B] - P[A], u1 = P[B + 1] - P[A + 1], u2 = P[B + 2] - P[A + 2], v0 = P[C] - P[A], v1 = P[C + 1] - P[A + 1], v2 = P[C + 2] - P[A + 2];
+      return [u1 * v2 - u2 * v1, u2 * v0 - u0 * v2, u0 * v1 - u1 * v0];
+    }
+    function d2(a, b) { var x = P[3 * a] - P[3 * b], y = P[3 * a + 1] - P[3 * b + 1], z = P[3 * a + 2] - P[3 * b + 2]; return x * x + y * y + z * z; }
+    var bad = [];
+    for (var t = 0; t < nT; t++) { var l = len(cr(T[3 * t], T[3 * t + 1], T[3 * t + 2])); if (l > 0 && l < TH) bad.push(t); }
+    if (!bad.length) return 0;
+    var M = P.length / 3 + 1, em = new Map();
+    function ek(a, b) { return a < b ? a * M + b : b * M + a; }
+    function link(t, on) { for (var e = 0; e < 3; e++) { var k = ek(T[3 * t + e], T[3 * t + (e + 1) % 3]), L = em.get(k); if (!L) em.set(k, L = []); if (on) L.push(t); else L.splice(L.indexOf(t), 1); } }
+    for (t = 0; t < nT; t++) link(t, true);
+    function sameFace(t1, t2) {
+      if (m.triSurf && m.triSurf[t1] !== m.triSurf[t2]) return false;
+      if (m.triPoly && m.triPoly[t1] !== m.triPoly[t2]) {
+        // different source polygons: only when neither is a free-form or curved triangle and the planes agree
+        if (m.triSurf && (m.triSurf[t1] || m.triSurf[t2])) return false;
+      }
+      return true;
+    }
+    for (var pass = 0; pass < 3; pass++) {
+      var again = [];
+      bad.forEach(function (t1) {
+        var a0 = T[3 * t1], b0 = T[3 * t1 + 1], c0 = T[3 * t1 + 2], n1 = cr(a0, b0, c0), l1 = len(n1);
+        if (!(l1 < TH)) return;
+        var vs = [a0, b0, c0], best = 0;
+        for (var e = 1; e < 3; e++) if (d2(vs[e], vs[(e + 1) % 3]) > d2(vs[best], vs[(best + 1) % 3])) best = e;
+        var a = vs[best], b = vs[(best + 1) % 3], c = vs[(best + 2) % 3], L = em.get(ek(a, b));
+        if (!L || L.length !== 2) { again.push(t1); return; }
+        var t2 = L[0] === t1 ? L[1] : L[0], q = [T[3 * t2], T[3 * t2 + 1], T[3 * t2 + 2]], k = q.indexOf(b);
+        if (k < 0 || q[(k + 1) % 3] !== a || !sameFace(t1, t2)) { again.push(t1); return; }
+        var d = q[(k + 2) % 3], n2 = cr(q[0], q[1], q[2]), l2 = len(n2);
+        if (!(l2 > 0)) { again.push(t1); return; }
+        var nA = cr(c, a, d), nB = cr(d, b, c), lA = len(nA), lB = len(nB);
+        if (!(lA >= TH && lB >= TH) || dot(nA, n2) <= 0 || dot(nB, n2) <= 0 || Math.abs(dot(nA, n2) / (lA * l2) - 1) > 1e-6 && !(l1 < 1e-3 * l2)) { again.push(t1); return; }
+        link(t1, false); link(t2, false);
+        T[3 * t1] = c; T[3 * t1 + 1] = a; T[3 * t1 + 2] = d;
+        T[3 * t2] = d; T[3 * t2 + 1] = b; T[3 * t2 + 2] = c;
+        link(t1, true); link(t2, true);
+        done++;
+      });
+      if (!again.length || again.length === bad.length) break;
+      bad = again;
+    }
+    return done;
+  }
   function finishImport(format, opts, solids, toMM, warnings) {
     // target units: the model's ('mm' / 'in'); 'auto' keeps a STEP / 3MF file's own inches, else millimetres
     var units = opts.units === 'in' ? 'in' : opts.units === 'auto' && (format === 'step' || format === '3mf') && Math.abs((toMM || 1) - 25.4) < 1e-9 ? 'in' : 'mm';
@@ -6459,6 +6633,7 @@ var Exchange = (function () {
       }
       splitTJunctions(w.positions, polys, tol);
       var m = fanPolygons(w.positions, polys);
+      if (format === 'step') flipSlivers(m);
       // lane MR: the free-form faces this solid still has, their triangles tagged (0 = none, else face index + 1)
       var freeTri = null, freeFaces = null;
       if (w.fid) {
@@ -6747,6 +6922,7 @@ var Exchange = (function () {
     encodeSolids: encodeSolids, solidMesh: solidMesh, solidCSG: solidCSG, signedVolume: signedVolume, earcut: earcut,
     b64encode: b64encode, b64decode: b64decode, utf8: utf8, fromUtf8: fromUtf8,
     importOptions: importOptions,
+    paramPatch: paramPatch, flipSlivers: flipSlivers,   // lane QY (tests rfQY)
     circleCuts: CIRCLE_CUTS,       // lane QS: a whole rim split like the face across it { on }
     pinchSplit: PINCH_SPLIT,       // lane QJ: a planar loop through one vertex twice -> two loops { on, retrace (lane QO) }
     parallelSnap: PARALLEL_SNAP,
