@@ -4298,6 +4298,8 @@
     if (App.mode === 'sketch') UI.exitSketch(true);
     if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
     if (!App.build || !App.build.body) { UI.toast('Create a Base Flange first.'); return; }
+    // lane smrelief (rfQF): flattened, Break-Corner/Corner-Trim is Corner-Trim (SolidWorks), the flat's own feature
+    if (!existing && App.model.flatState) { cmdCornerTrim(); return; }
     var sheet = previewModel().sheet || App.model.sheet, T = +sheet.thickness;
     var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'breakCorner', kind: bcLast.kind, size: bcLast.size != null ? bcLast.size : UI.lenDefault(5), corners: [] };
     f.corners = (f.corners || []).map(function (p) { return p.slice(); });
@@ -4420,6 +4422,78 @@
     });
     preview();
   }
+
+  // ------------------------------------------------------------------ sheet metal: Corner-Trim (lane smrelief, rfQF)
+  // SolidWorks: Break-Corner/Corner-Trim on the flattened part is Corner-Trim, a feature under Flat-Pattern1 that the
+  // folded part does not show (Kernel.cornerTrimFlat). Relief Options at every corner where two bend lines meet
+  // (Circular radius / Square side / Bend Waist, centred on the bend lines), Break Corner Options (Chamfer distance /
+  // Fillet radius) on every outer corner of the blank. The status line counts what each takes in the flat shown.
+  var ctLast = null;
+  function cmdCornerTrim(existing) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
+    if (!existing && !App.model.flatState) { UI.toast('Corner-Trim works on the flat pattern: Flatten the part first.'); return; }
+    var T = +App.model.sheet.thickness, d = ctLast || { relief: 'circular', size: 2 * T, breakCorner: 'chamfer', breakSize: T };
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'cornerTrim', relief: d.relief, size: d.size, breakCorner: null, breakSize: d.breakSize };
+    f.reliefOn = !!f.relief; f.relief = f.relief || d.relief; if (f.size == null) f.size = d.size;
+    f.breakOn = !!f.breakCorner; f.breakCorner = f.breakCorner || d.breakCorner; if (f.breakSize == null) f.breakSize = d.breakSize;
+    f.centered = true;
+    function featOf(v) {
+      var out = { type: 'cornerTrim', relief: v.reliefOn ? v.relief : null, breakCorner: v.breakOn ? v.breakCorner : null };
+      if (out.relief) { out.size = out.relief === 'bendWaist' ? null : v.size; out.centered = true; if (v.corners) out.corners = v.corners; }
+      if (out.breakCorner) { out.breakSize = v.breakSize; if (v.breakCorners) out.breakCorners = v.breakCorners; }
+      if (v.name) out.name = v.name;
+      return out;
+    }
+    function why(v) {
+      if (!v.reliefOn && !v.breakOn) return 'Tick Relief Options or Break Corner Options.';
+      if (v.reliefOn && v.relief !== 'bendWaist' && !(+v.size > 0)) return 'The relief ' + (v.relief === 'square' ? 'side' : 'radius') + ' must be more than 0.';
+      if (v.breakOn && !(+v.breakSize > 0)) return 'The break ' + (v.breakCorner === 'fillet' ? 'radius' : 'distance') + ' must be more than 0.';
+      return '';
+    }
+    function status() {
+      var w = why(f);
+      if (w) { UI.setStatus('Corner-Trim: ' + w); return; }
+      var n = App.flat && K.cornerTrimCorners ? K.cornerTrimCorners(App.flat).length : 0;
+      UI.setStatus('Corner-Trim: ' + (f.reliefOn ? n + ' corner' + (n === 1 ? '' : 's') + ' where bend lines meet' : 'no relief') + (f.breakOn ? ', ' + f.breakCorner + ' on the outer corners' : '') + '. Press Enter or ✓ to accept.');
+    }
+    var RELIEFS = [['circular', 'Circular', 'cornerTrim'], ['square', 'Square', 'cornerTrim'], ['bendWaist', 'Bend Waist', 'cornerTrim']];
+    var KINDS = [['chamfer', 'Chamfer', 'chamfer'], ['fillet', 'Fillet', 'fillet']];
+    openPM({
+      title: existing ? existing.name : 'Corner-Trim', icon: 'cornerTrim', values: f,
+      message: 'Corner-Trim acts on the <b>flat pattern</b> only: reliefs where bend lines meet and breaks on the outer corners of the blank. The folded part stays as it is.',
+      groups: [
+        { title: 'Relief Options', fields: [
+          { type: 'check', label: 'Relief at the bend corners', key: 'reliefOn', rerender: true },
+          { type: 'iconRadio', label: 'Relief type', key: 'relief', options: RELIEFS, rerender: true, show: function (v) { return v.reliefOn; } },
+          { type: 'check', label: 'Centered on bend lines', key: 'centered', show: function (v) { return v.reliefOn; }, disabled: function () { return true; } },
+          { type: 'number', label: 'Relief radius', key: 'size', unit: 'u', min: 0, show: function (v) { return v.reliefOn && v.relief === 'circular'; } },
+          { type: 'number', label: 'Side length', key: 'size', unit: 'u', min: 0, show: function (v) { return v.reliefOn && v.relief === 'square'; } }
+        ] },
+        { title: 'Break Corner Options', fields: [
+          { type: 'check', label: 'Break the outer corners', key: 'breakOn', rerender: true },
+          { type: 'iconRadio', label: 'Break type', key: 'breakCorner', options: KINDS, rerender: true, show: function (v) { return v.breakOn; } },
+          { type: 'number', label: 'Distance', key: 'breakSize', unit: 'u', min: 0, show: function (v) { return v.breakOn && v.breakCorner === 'chamfer'; } },
+          { type: 'number', label: 'Radius', key: 'breakSize', unit: 'u', min: 0, show: function (v) { return v.breakOn && v.breakCorner === 'fillet'; } }
+        ] },
+        { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ],
+      onChange: function () { status(); },
+      okBlocked: function (v) { return why(v); },
+      onOK: function (v) {
+        var w = why(v);
+        if (w) { UI.toast(w); return false; }
+        var feat = featOf(v);
+        if (feat.size != null) feat.size = +v.size;
+        if (feat.breakSize != null) feat.breakSize = +v.breakSize;
+        if (!existing && !feat.name) feat.name = K.cornerTrimName(App.model);
+        ctLast = { relief: v.relief, size: +v.size || 2 * T, breakCorner: v.breakCorner, breakSize: +v.breakSize || T };
+        return commitFeature(feat, existing);
+      }
+    });
+    status();
+  }
+  UI.cmdCornerTrim = cmdCornerTrim;
 
   // ------------------------------------------------------------------ sheet metal: Corner Relief (lane smtrim)
   // SolidWorks' Sheet Metal ▸ Corners ▸ Corner Relief (Kernel.cornerReliefLayout, a registered cut): Corner Type (2 Bend
@@ -7570,6 +7644,7 @@
       case 'sweptFlange': cmdSweptFlange(f); break;   // lane sweptflange
       case 'sketchedBend': UI.cmdSketchedBend(f); break;
       case 'breakCorner': UI.cmdBreakCorner(f); break;
+      case 'cornerTrim': UI.cmdCornerTrim(f); break;   // lane smrelief
       case 'cornerRelief': UI.cmdCornerRelief(f); break;   // lane smtrim
       case 'weldedCorner': UI.cmdWeldedCorner(f); break;   // lane smcorner
       case 'closedCorner': UI.cmdClosedCorner(f); break;

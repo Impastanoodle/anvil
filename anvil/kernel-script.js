@@ -1521,6 +1521,22 @@
     this._add(f);
     return this;
   };
+  // lane smrelief: cornerTrim(opts): Break-Corner/Corner-Trim on the flattened part (kernel-sheetmetal.js cornerTrimFlat):
+  // in the flat only, the folded part stays. opts: relief ('circular' | 'square' | 'bendWaist'), size (circular: the
+  // radius, square: the side), corners ([[x, y]] in the flat near bend-line corners; absent = all), breakCorner
+  // ('chamfer' | 'fillet'), breakSize (chamfer distance / fillet radius), breakCorners ([[x, y]] outer corners of the
+  // blank; absent = all), name
+  Builder.prototype.cornerTrim = function (opts) {
+    opts = opts || {};
+    function pts(list) { return list.map(function (p) { return [+p[0], +p[1]]; }); }
+    var f = { type: 'cornerTrim', relief: opts.relief || null, breakCorner: opts.breakCorner || null };
+    if (f.relief) { f.size = f.relief === 'bendWaist' ? null : num(opts.size); f.centered = true; if (opts.corners) f.corners = pts(opts.corners); }
+    if (f.breakCorner) { f.breakSize = num(opts.breakSize); if (opts.breakCorners) f.breakCorners = pts(opts.breakCorners); }
+    K.cornerTrimCheck(f, this.model);
+    f.name = opts.name || K.cornerTrimName(this.model);
+    this._add(f);
+    return this;
+  };
   // lane smtrim: cornerRelief(corners, size, opts): Sheet Metal ▸ Corners ▸ Corner Relief, 2 Bend corners
   // (kernel-sheetmetal.js cornerReliefLayout). corners: [[x, y, z]] near the corners (K.cornerReliefCandidates); size
   // (null = 2 × T; unused by 'tear'); opts: reliefType ('rect' (default) | 'circular' | 'tear' | 'obround' |

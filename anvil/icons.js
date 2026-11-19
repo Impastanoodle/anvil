@@ -176,6 +176,8 @@ var IconsLib = (function () {
     sketchedBend: p('M1.5 12 h5.5 a2 2 0 0 0 2 -2 V2.5 h2.5 V10 a4.5 4.5 0 0 1 -4.5 4.5 H1.5 z', F2, S) + p('M7 12 a2 2 0 0 0 2 -2 h2.5 a4.5 4.5 0 0 1 -4.5 4.5 z', FY, S, 1) + ln('M7.2 15 l5.6 -5.6', B, 1.2, DASH),
     // lane CP: Break-Corner/Corner-Trim — a sheet with one corner chamfered and one rounded, the breaks in yellow
     breakCorner: p('M1.5 14 V7.5 L4.5 4.5 H9.5 a4.5 4.5 0 0 1 4.5 4.5 V14 z', F2, S) + p('M1.5 14 h12.5 v1 H1.5 z', FYD, S, 0.8) + ln('M1.5 7.5 L4.5 4.5 M9.5 4.5 a4.5 4.5 0 0 1 4.5 4.5', FY, 2.2),
+    // lane smrelief: Corner-Trim — a flat blank's corner where two dashed bend lines meet, the round relief there in yellow
+    cornerTrim: p('M1.5 1.5 h13 v13 H6 V6 H1.5 z', F2, S) + p('M3.5 6 A2.5 2.5 0 0 0 6 8.5 V6 z', FY, S, 0.8) + ln('M3.5 8.5 H14.5 M8.5 3.5 V14.5', B, 1, DASH) + ln('M6 8.5 A2.5 2.5 0 0 1 8.5 6', FY, 1.6),
     // lane CS: Closed Corner (top view of a box corner: the far wall grey, the near wall's extension closing the gap in
     // yellow) and its corner types (the extended flange yellow, the matching flange grey)
     closedCorner: p('M1.5 1.5 h13 v3 h-13 z', F2, S) + p('M1.5 7.5 h3 v7 h-3 z', F2, S) + p('M1.5 5.2 h3 v2.3 h-3 z', FY, S),

@@ -615,7 +615,7 @@
         });
       }
     }
-    var inside = null;
+    var inside = null, bendCuts = null;
     eds.forEach(function (ed) {
       var L = ed.L;   // lane smflange: the edge's own length (f.lengths), else the feature's
       function swMax(sm) { return Math.max(sm.ext, sm.ext + sm.slope * L, sm.tB); }
@@ -756,7 +756,13 @@
         } else slot.push([o0, tB], [o0, tA]);
         // sweep the slot outline (in the sheet plane: o across, t along the edge) through the thickness (u ∈ [-T, 0])
         var sp = { origin: ed.plane.origin, x: ed.o, y: ed.plane.n, n: scale(ed.u, -1) };
-        cuts.push({ loop: slot, plane: sp, a: -0.01, b: T + 0.01 });
+        // lane smrelief (rfQF): where the slot runs into the bend of an earlier flange (a tray's corner), that part of
+        // the slot is folded with the bend (reliefFold), as the flat cuts it from that bend's strip
+        var fold = reliefFold(ctx, f, sheet, slot, sp, past, T);
+        if (fold) {
+          fold.cuts.forEach(function (c) { cuts.push(c); });
+          if (fold.bend) (bendCuts = bendCuts || []).push(fold.bend);
+        } else cuts.push({ loop: slot, plane: sp, a: -0.01, b: T + 0.01 });
         // for the flat pattern: the slot is w wide past this end and reaches d0 inside the (trimmed) edge line
         en.relief = { w: rw, d0: -o0, d1: rd, obround: relief === 'obround' };
       });
@@ -802,7 +808,60 @@
       if (signedArea(wl) < 0) wl.reverse();
       hemCrossing(f, model, ctx, eds, cuts, wl, 0, T, 0);
     }
-    return { parts: tools, cuts: cuts, info: info, section: { A: A, R: R, T: T, L: wallProf ? 0 : L, ov: ov } };
+    var out = { parts: tools, cuts: cuts, info: info, section: { A: A, R: R, T: T, L: wallProf ? 0 : L, ov: ov } };
+    if (bendCuts) out.bendCuts = bendCuts;   // lane smrelief: relief pieces in an earlier bend (reliefFold)
+    return out;
+  }
+  // lane smrelief (rfQF): reliefFold(ctx, f, sheet, slot, sp, past, T) -> { cuts: [prism], bend: { loop, sec, BA, plane,
+  // t0, t1 } | null } or null. A bend relief's slot (in sp: x across the edge, y along it, n through the sheet) past a
+  // flange end that runs into the bend of an earlier edge flange (a tray's corner: `past`, the probe half T past the
+  // end, lies in that bend's metal) was a straight prism T + .02 thick in the sheet's plane, so the bend's metal above
+  // the plane stayed in the relief (rect 4.6e-5 per corner, more metal folded than the flat, which cuts the notch from
+  // that bend's strip). Here the slot is unrolled in that bend's frame (s across its strip from its start, t along its
+  // axis) and cut as the flat has it: s ≤ 0 a prism through the sheet, 0..BA wrapped round the bend (radial walls at
+  // angle A·s/BA: Anvil's bendBandsRebuild, OpenCascade's cylinderCutter), past BA a prism through the bend's wall.
+  function reliefFold(ctx, f, sheet, slot, sp, past, T) {
+    var g = null, lists = [];
+    Object.keys(ctx.flanges || {}).forEach(function (id) { if (String(id) !== String(f.id)) lists.push(ctx.flanges[id] || []); });
+    if (ctx.copyRecs) lists.push(ctx.copyRecs);   // a Mirror / Pattern's earlier copies (buildFlange; occt-kernel.js bendFamilyOp)
+    lists.forEach(function (list) {
+      if (g) return;
+      list.forEach(function (r) {
+        if (g || !r || r.kind !== 'edge' || !r.a || !r.b || !r.o || !r.u || !r.origin || !(+r.R > 0)) return;
+        if (!(r.angle > 1e-6 && r.angle < Math.PI - 1e-6)) return;   // not hems
+        if (Math.abs(Math.abs(dot(r.u, sp.n)) - 1) > 1e-9) return;   // the same sheet plane
+        var n = norm(cross(r.o, r.u)), R = +r.R, q = sub(past, add(r.origin, scale(r.u, R)));
+        var x = dot(q, r.o), y = dot(q, r.u), rad = Math.hypot(x, y), th = Math.atan2(x, -y), tq = dot(sub(past, r.origin), n);
+        var ta = dot(sub(r.a, r.origin), n), tb = dot(sub(r.b, r.origin), n), tol = 1e-6 * (1 + T);
+        if (rad < R - tol || rad > R + T + tol || th < -1e-9 || th > +r.angle + 1e-9) return;
+        if (tq < Math.min(ta, tb) - tol || tq > Math.max(ta, tb) + tol) return;
+        g = { r: r, n: n };
+      });
+    });
+    if (!g) return null;
+    var r = g.r, n = g.n, A = +r.angle, R = +r.R, BA = cornerRecordBA(sheet, r);
+    // the slot in the bend's (s, t)
+    var st = slot.map(function (p) {
+      var P = sub(add(add(sp.origin, scale(sp.x, p[0])), scale(sp.y, p[1])), r.origin);
+      return [dot(P, r.o), dot(P, n)];
+    });
+    if (signedArea(st) < 0) st.reverse();
+    var cutsOut = [], bend = null, big = 1e3 * (1 + BA + T);
+    var base = clipBox(st, null, 0, null, null);
+    if (base) cutsOut.push({ loop: base, plane: { origin: r.origin.slice(), x: r.o.slice(), y: n, n: scale(r.u, -1) }, a: -0.01, b: T + 0.01 });
+    var mid = clipBox(st, 0, BA, null, null);
+    if (mid) {
+      var t0 = Infinity, t1 = -Infinity;
+      mid.forEach(function (p) { t0 = Math.min(t0, p[1]); t1 = Math.max(t1, p[1]); });
+      bend = { loop: mid, sec: { A: A, R: R, T: T }, BA: BA, plane: { origin: r.origin.slice(), x: r.o.slice(), y: r.u.slice(), n: n }, t0: t0, t1: t1 };
+    }
+    var wall = clipBox(st, BA, big, null, null);
+    if (wall) {
+      var sA = Math.sin(A), cA = Math.cos(A), wd = add(scale(r.o, cA), scale(r.u, sA));
+      var W0 = add(add(r.origin, scale(r.o, R * sA)), scale(r.u, R - R * cA));
+      cutsOut.push({ loop: wall.map(function (p) { return [p[0] - BA, p[1]]; }), plane: { origin: W0, x: wd, y: n, n: norm(cross(wd, n)) }, a: -0.01, b: T + 0.01 });
+    }
+    return { cuts: cutsOut, bend: bend };
   }
   // lane smtrim: Trim side bends. sideBendTrim(f, ctx, P, dIn, o, nF, d, T) -> { cut, rec } | null: P is an end of a
   // flange's edge (dIn into the edge, o out of the sheet past it, nF the picked face's normal) whose sheet is trimmed
@@ -1826,7 +1885,13 @@
   }
   function buildFlange(f, model, ctx) {
     if (f.miterFlange && f.sketch != null) return buildMiterFlange(f, model, ctx);   // lane DL: Miter Flange from a profile sketch
-    var lay = flangeLayout(f, model, ctx);
+    // lane smrelief: a Mirror / Pattern builds its copies one after the other with the same id and drops each copy's
+    // records before the next (kernel-rebuild.js bendFamily); the earlier copies' bends are neighbours for reliefFold
+    var copies = ctx.smCopies || (ctx.smCopies = {});
+    ctx.copyRecs = copies[f.id] || null;
+    var lay;
+    try { lay = flangeLayout(f, model, ctx); } finally { delete ctx.copyRecs; }
+    copies[f.id] = (copies[f.id] || []).concat(lay.info);
     var tools = lay.parts.map(function (p) {
       var sec = p.section || lay.section;   // lane smflange: an edge's own length
       if (p.taper) return endCut(buttPart(p, sec, f.id), p, sec.T);
@@ -1843,7 +1908,22 @@
       return tool;
     });
     ctx.flanges[f.id] = lay.info;
-    ctx.flangeCut = lay.cuts.length ? unionAll(lay.cuts.map(function (c) { return prism(c.loop, c.plane, c.a, c.b, f.id); })) : null;
+    var cutTools = lay.cuts.map(function (c) { return prism(c.loop, c.plane, c.a, c.b, f.id); });
+    // lane smrelief (rfQF): relief pieces in an earlier bend (reliefFold): the bend's band is cut out by its exact radial
+    // sector and its metal less the piece put back (bendBandsRebuild, no boolean through the bend), in ctx.body, which
+    // the callers read after this; a band that does not hold plain bend metal takes the wrapped tool
+    (lay.bendCuts || []).forEach(function (bc) {
+      var T = bc.sec.T, rb = ctx.body ? bendBandsRebuild(ctx.body, [{ sec: bc.sec, BA: bc.BA, plane: bc.plane, t0: bc.t0 - T, t1: bc.t1 + T, cut: bc.loop }], T, f.id) : null;
+      if (rb) {
+        var nb = rb.rest;
+        rb.metals.forEach(function (mm) { nb = smBool(nb, 'union', mm, T); });
+        ctx.body = nb;
+        return;
+      }
+      var wc = wrapCut([bc.loop], bc.sec, bc.BA, bc.plane, { shared: f.id });
+      if (wc) cutTools.push(wc);
+    });
+    ctx.flangeCut = cutTools.length ? unionAll(cutTools) : null;
     return unionAll(tools);
   }
 
@@ -3467,6 +3547,7 @@
     // lane DK: Flat-Pattern1's Fixed face / Grain direction (model.flatFixed, model.flatGrain); not while an Unfold is
     // open (its frame wins) nor for the trace Unfold / Fold read (their maps are in the plain frame)
     if (!trace && !openUnfold && (model.flatFixed || model.flatGrain)) flatOrient(res, model, base, faceRecs, T, warn);
+    if (!trace && !openUnfold) cornerTrimFlat(res, model);   // lane smrelief: Corner-Trim, in the flat only, last
     return res;
   }
   // lane DK: SolidWorks' Flat-Pattern PropertyManager, Fixed face and Grain direction. flatOrient(flat, model, base,
@@ -4673,6 +4754,179 @@
       if (f.faces && f.faces.length) o.faces = pts(f.faces);
       o.name = f.name;
       return 'var ' + v + ' = p.breakCorner(' + (K.isExpression(f.size) ? JSON.stringify(f.size) : String(f.size)) + ', ' + JSON.stringify(pts(f.corners)) + ', ' + optsStr(o) + ').last();';
+    }
+  });
+
+  // ------------------------------------------------------------------ Corner-Trim (lane smrelief, rfQF)
+  // SolidWorks' Break-Corner/Corner-Trim run on the flattened part: Corner-Trim, a feature under Flat-Pattern1 that
+  // exists in the flat only (the folded part does not show it). Relief Options at the corners where two bend lines
+  // meet (Circular: radius `size`; Square: side `size`; Bend Waist: the crossing of the two bend regions, BA × BA,
+  // size unused), centred on the bend lines' intersection; Break Corner Options (chamfer: distance along both edges,
+  // fillet: radius) on the blank's outer corners. Feature JSON { type: 'cornerTrim', relief: 'circular' | 'square' |
+  // 'bendWaist' | null, size, centered: true, corners: null (all) | [[x, y] in the flat], breakCorner: 'chamfer' |
+  // 'fillet' | null, breakSize, breakCorners: null (all) | [[x, y]], name }. flatPattern applies it last (cornerTrimFlat,
+  // after Fixed face / Grain), so the DXF and the drawing's flat view carry it; the rebuild leaves the bodies alone.
+  var CT_RELIEFS = ['circular', 'square', 'bendWaist'], CT_BREAKS = ['chamfer', 'fillet'];
+  function cornerTrimName(model) {
+    var max = 0;
+    (model.features || []).forEach(function (g) { var mm = /^Corner-Trim(\d+)$/.exec(g.name || ''); if (mm && +mm[1] > max) max = +mm[1]; });
+    return 'Corner-Trim' + (max + 1);
+  }
+  function cornerTrimCheck(f, model) {
+    if (!model.sheet) throw new Error('Corner-Trim needs a sheet-metal part.');
+    if (f.relief != null && CT_RELIEFS.indexOf(f.relief) < 0) throw new Error('Corner-Trim relief must be circular, square or bendWaist.');
+    if (f.breakCorner != null && CT_BREAKS.indexOf(f.breakCorner) < 0) throw new Error('Corner-Trim break corner must be chamfer or fillet.');
+    if (f.relief == null && f.breakCorner == null) throw new Error('Corner-Trim: choose a relief or a break corner.');
+    if (f.relief && f.relief !== 'bendWaist' && !(+f.size > 0)) throw new Error('Corner-Trim: the relief size must be greater than zero.');
+    if (f.breakCorner && !(+f.breakSize > 0)) throw new Error('Corner-Trim: the break corner size must be greater than zero.');
+  }
+  // the corners where two bend lines of a flat meet: [{ at: [x, y], i, j, uA, uB, baA, baB }] (lines not parallel,
+  // their crossing within a bend allowance + R + 2T of an end of each)
+  function cornerTrimCorners(flat) {
+    var bs = flat.bends || [], T = flat.sheet ? +flat.sheet.thickness || 0 : 0, out = [];
+    for (var i = 0; i < bs.length; i++) for (var j = i + 1; j < bs.length; j++) {
+      var a = bs[i], b = bs[j];
+      if (!a.a || !a.b || !b.a || !b.b) continue;
+      var dA = [a.b[0] - a.a[0], a.b[1] - a.a[1]], dB = [b.b[0] - b.a[0], b.b[1] - b.a[1]], LA = Math.hypot(dA[0], dA[1]), LB = Math.hypot(dB[0], dB[1]);
+      if (!(LA > 0 && LB > 0)) continue;
+      dA = [dA[0] / LA, dA[1] / LA]; dB = [dB[0] / LB, dB[1] / LB];
+      var cr = dA[0] * dB[1] - dA[1] * dB[0];
+      if (Math.abs(cr) < 0.1) continue;
+      var w = [b.a[0] - a.a[0], b.a[1] - a.a[1]], s = (w[0] * dB[1] - w[1] * dB[0]) / cr, t = (w[0] * dA[1] - w[1] * dA[0]) / cr;
+      var rA = (+a.ba || 0) + (+a.R || 0) + 2 * T, rB = (+b.ba || 0) + (+b.R || 0) + 2 * T;
+      if (s < -rA || s > LA + rA || t < -rB || t > LB + rB) continue;
+      if (s > rA && s < LA - rA) continue;   // crossing the middle of a line: not a corner
+      if (t > rB && t < LB - rB) continue;
+      var P = [a.a[0] + dA[0] * s, a.a[1] + dA[1] * s];
+      if (out.some(function (c) { return Math.hypot(c.at[0] - P[0], c.at[1] - P[1]) < 1e-6 * (1 + LA); })) continue;
+      out.push({ at: P, i: i, j: j, uA: dA, uB: dB, baA: +a.ba || 0, baB: +b.ba || 0 });
+    }
+    return out;
+  }
+  // a CCW circle with a vertex wherever it crosses an edge of `loops` (so the cut's ends lie on the circle and on the
+  // edge exactly: the DXF's arcs are the true circle) and equal steps of at most 5° between
+  function ctCircle(C, r, loops) {
+    var TAU = 2 * Math.PI, angs = [];
+    loops.forEach(function (l) {
+      l.forEach(function (p, k) {
+        var q = l[(k + 1) % l.length], d = [q[0] - p[0], q[1] - p[1]], f = [p[0] - C[0], p[1] - C[1]];
+        var A = d[0] * d[0] + d[1] * d[1], B = 2 * (f[0] * d[0] + f[1] * d[1]), Cc = f[0] * f[0] + f[1] * f[1] - r * r, D = B * B - 4 * A * Cc;
+        if (!(A > 0) || D < 0) return;
+        [(-B - Math.sqrt(D)) / (2 * A), (-B + Math.sqrt(D)) / (2 * A)].forEach(function (t) {
+          if (t < 0 || t > 1) return;
+          var x = p[0] + d[0] * t - C[0], y = p[1] + d[1] * t - C[1];
+          angs.push(((Math.atan2(y, x) % TAU) + TAU) % TAU);
+        });
+      });
+    });
+    angs.sort(function (x, y) { return x - y; });
+    var key = [];
+    angs.forEach(function (x) { if (!key.length || x - key[key.length - 1] > 1e-9) key.push(x); });
+    if (key.length > 1 && key[0] + TAU - key[key.length - 1] <= 1e-9) key.pop();
+    if (!key.length) key = [0];
+    var pts = [], step = TAU / 72;
+    key.forEach(function (a0, k) {
+      var a1 = k + 1 < key.length ? key[k + 1] : key[0] + TAU, n = Math.max(1, Math.ceil((a1 - a0) / step - 1e-9));
+      for (var m = 0; m < n; m++) { var a = a0 + (a1 - a0) * m / n; pts.push([C[0] + r * Math.cos(a), C[1] + r * Math.sin(a)]); }
+    });
+    // (a crossing point exactly: cos / sin of the angle round to the same point within 1e-16 of the radius)
+    return pts;
+  }
+  // chamfer / fillet the convex corners of the outer loops (turn over 10°, both edges longer than the break) near
+  // `only` (null: every one); -> { loops, n }
+  function ctBreak(loops, kind, d, only, tol) {
+    var n = 0;
+    var out = loops.map(function (l) {
+      if (signedArea(l) <= 0) return l;   // holes keep their corners
+      var res = [], L = l.length;
+      for (var k = 0; k < L; k++) {
+        var p = l[(k + L - 1) % L], v = l[k], q = l[(k + 1) % L];
+        var e1 = [v[0] - p[0], v[1] - p[1]], e2 = [q[0] - v[0], q[1] - v[1]], l1 = Math.hypot(e1[0], e1[1]), l2 = Math.hypot(e2[0], e2[1]);
+        var turn = l1 > 0 && l2 > 0 ? Math.atan2(e1[0] * e2[1] - e1[1] * e2[0], e1[0] * e2[0] + e1[1] * e2[1]) : 0;
+        var hit = !only || only.some(function (c) { return Math.hypot(c[0] - v[0], c[1] - v[1]) <= tol; });
+        var tl = kind === 'fillet' ? d * Math.tan(turn / 2) : d;
+        if (!hit || !(turn > Math.PI / 18 && turn < Math.PI - 1e-6) || !(tl < l1 * (1 - 1e-9) && tl < l2 * (1 - 1e-9))) { res.push(v); continue; }
+        var u1 = [e1[0] / l1, e1[1] / l1], u2 = [e2[0] / l2, e2[1] / l2];
+        var A = [v[0] - u1[0] * tl, v[1] - u1[1] * tl], B = [v[0] + u2[0] * tl, v[1] + u2[1] * tl];
+        res.push(A);
+        if (kind === 'fillet') {
+          // the arc's centre: d in from A, on the left of the edge (the blank lies left of a CCW outline)
+          var C = [A[0] - u1[1] * d, A[1] + u1[0] * d], a0 = Math.atan2(A[1] - C[1], A[0] - C[0]), nseg = Math.max(2, Math.ceil(turn / (Math.PI / 36)));
+          for (var m = 1; m < nseg; m++) { var a = a0 + turn * m / nseg; res.push([C[0] + d * Math.cos(a), C[1] + d * Math.sin(a)]); }
+        }
+        res.push(B);
+        n++;
+      }
+      return res;
+    });
+    return { loops: out, n: n };
+  }
+  // cornerTrimFlat(flat, model): every Corner-Trim of the model applied to the flat, in order (flatPattern's last step)
+  function cornerTrimFlat(flat, model) {
+    var feats = (model.features || []).filter(function (g) { return g.type === 'cornerTrim' && !g.suppressed; });
+    if (!feats.length) return;
+    var warnings = flat.warnings || (flat.warnings = []);
+    function warn(w) { if (warnings.indexOf(w) < 0) warnings.push(w); }
+    var size0 = Math.max(flat.size[0], flat.size[1]), tol = Math.max(1e-4, 1e-6 * size0);
+    flat.trims = [];
+    feats.forEach(function (f) {
+      try { cornerTrimCheck(f, model); } catch (e) { warn((f.name || 'Corner-Trim') + ': ' + e.message); return; }
+      var loops = flat.loops, info = { id: f.id, name: f.name, reliefs: [], breaks: 0 };
+      if (f.breakCorner) {
+        var br = ctBreak(loops, f.breakCorner, +f.breakSize, f.breakCorners || null, tol);
+        loops = br.loops; info.breaks = br.n;
+        if (!br.n) warn((f.name || 'Corner-Trim') + ': no outer corner of the blank takes a ' + f.breakCorner + ' of ' + fmtN(+f.breakSize) + '.');
+      }
+      if (f.relief) {
+        var cs = cornerTrimCorners(flat).filter(function (c) { return !f.corners || f.corners.some(function (q) { return Math.hypot(q[0] - c.at[0], q[1] - c.at[1]) <= Math.max(tol, 1e-3 * (1 + +f.size || 0)); }); });
+        if (!cs.length) warn((f.name || 'Corner-Trim') + ': no corner where two bend lines meet' + (f.corners ? ' at the picked points' : '') + '.');
+        var notches = cs.map(function (c) {
+          var P = c.at, nt;
+          if (f.relief === 'circular') nt = ctCircle(P, +f.size, loops);
+          else {
+            // square: side `size` along the first bend line and square to it; bend waist: the two bend regions' crossing
+            var nA = [-c.uA[1], c.uA[0]], nB = [-c.uB[1], c.uB[0]];
+            if (f.relief === 'square') { var h = +f.size / 2; nt = [[-h, -h], [h, -h], [h, h], [-h, h]].map(function (q) { return [P[0] + c.uA[0] * q[0] + nA[0] * q[1], P[1] + c.uA[1] * q[0] + nA[1] * q[1]]; }); }
+            else {
+              // {x: |nA·(x − P)| ≤ baA/2, |nB·(x − P)| ≤ baB/2}: corners where the band edges cross
+              var M = nA[0] * nB[1] - nA[1] * nB[0], hA = c.baA / 2, hB = c.baB / 2;
+              nt = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(function (sg) {
+                var x = sg[0] * hA, y = sg[1] * hB;   // nA·d = x, nB·d = y
+                return [P[0] + (x * nB[1] - y * nA[1]) / M, P[1] + (nA[0] * y - nB[0] * x) / M];
+              });
+            }
+          }
+          if (signedArea(nt) < 0) nt.reverse();
+          info.reliefs.push(P.slice());
+          return nt;
+        });
+        if (notches.length) {
+          var merged = mergeFlatRegions([loops], notches, FLAT_WELD) || csgMerge([loops], notches);
+          if (merged && merged.length) loops = merged;
+        }
+      }
+      loops.sort(function (a, b) { return signedArea(b) - signedArea(a); });
+      flat.loops = loops;
+      flat.trims.push(info);
+    });
+    (flat.bends || []).forEach(function (bd) { trimBendToMetal(bd, flat.loops); });
+    var min = [Infinity, Infinity], max = [-Infinity, -Infinity];
+    flat.loops.forEach(function (l) { l.forEach(function (p) { for (var k = 0; k < 2; k++) { min[k] = Math.min(min[k], p[k]); max[k] = Math.max(max[k], p[k]); } }); });
+    flat.bbox = { min: min, max: max }; flat.size = [max[0] - min[0], max[1] - min[1]];
+  }
+  K.registerFeature('cornerTrim', {
+    // the solid stays: Corner-Trim lives in the flat (cornerTrimFlat)
+    apply: function (f, state, model) {
+      cornerTrimCheck(f, model);
+      return { bodies: state.bodies, bodyFeatures: state.bodyFeatures, tool: null };
+    },
+    script: function (f, v, idVar, optsStr) {
+      var o = {};
+      function pts(list) { return list.map(function (p) { return p.map(function (x) { return Math.round(x * 1e6) / 1e6; }); }); }
+      if (f.relief) { o.relief = f.relief; if (f.relief !== 'bendWaist') o.size = f.size; if (f.corners) o.corners = pts(f.corners); }
+      if (f.breakCorner) { o.breakCorner = f.breakCorner; o.breakSize = f.breakSize; if (f.breakCorners) o.breakCorners = pts(f.breakCorners); }
+      o.name = f.name;
+      return 'var ' + v + ' = p.cornerTrim(' + optsStr(o) + ').last();';
     }
   });
 
@@ -8405,6 +8659,8 @@
   K.CORNER_RELIEF_TYPES = CORNER_RELIEF_TYPES; K.cornerReliefDefaultSize = cornerReliefDefaultSize; K.CORNER3_TYPES = CORNER3_TYPES;   // lane smcorner-2
   K.weldedCornerLayout = weldedCornerLayout; K.buildWeldedCorner = buildWeldedCorner; K.weldedCornerName = weldedCornerName;   // lane smcorner
   K.breakCornerName = breakCornerName; K.BREAK_CORNER_KINDS = BC_KINDS.slice();
+  K.cornerTrimName = cornerTrimName; K.cornerTrimCorners = cornerTrimCorners; K.cornerTrimCheck = cornerTrimCheck;   // lane smrelief
+  K.CORNER_TRIM_RELIEFS = CT_RELIEFS.slice(); K.CORNER_TRIM_BREAKS = CT_BREAKS.slice();
   _.buildSketchedBend = buildSketchedBend; _.sketchedBendPoint = sketchedBendPoint;
   // Unfold / Fold (lane DB)
   K.buildUnfold = buildUnfold; K.buildFold = buildFold; K.sheetBends = sheetBends; K.sheetBendAt = sheetBendAt; K.unfoldedBendAt = unfoldedBendAt; K.unfoldPreview = unfoldPreview; _.buildUnfold = buildUnfold; _.buildFold = buildFold;

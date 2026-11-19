@@ -139,6 +139,12 @@
       btn.click(); await idle(); await wait(30);
       assert(UI.hasPM() && UI.pmTitle() === 'Tab and Slot', 'Tab and Slot PM opens in a one-body part: ' + statusText());
       near(+pmField('Slot length offset').value, 0.01, 1e-9, 'slot clearance .01 to start with');
+      // lane smrelief (rfQF): the PM remembers the last Tab and Slot's offsets (tsLast); run after rfPT's step (.01 / .005,
+      // Equal offset unticked) it opened with a width offset of .005 and the volume read -0.000168 (slots .07 wide, not
+      // .08): this step is about one body, so it ticks Equal offset as a user would, both offsets .01
+      var eqo = pmField('Equal offset');
+      if (eqo && !eqo.checked) { eqo.click(); await wait(20); notes.push('Equal offset ticked (remembered from the last Tab and Slot)'); }
+      assert(UI.pmSpec().values.equalOffset, 'Equal offset ticked');
       var e = edgeNear([3, 2, 4 - T - G]);
       rfOLsClick(UI.worldToScreen(e.mid)); await idle(); await wait(20);
       var v = UI.pmSpec().values;

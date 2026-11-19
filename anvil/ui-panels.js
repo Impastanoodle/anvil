@@ -2300,6 +2300,7 @@
       var r = treeItem({ icon: k.icon, name: k.name, depth: 3, cls: 'fp-kid' + (flat ? '' : ' suppressed dim') + (k.hidden ? ' hidden-item' : ''), title: k.title });
       if (k.kind) r.setAttribute('data-fp', k.kind);
       r.addEventListener('click', function () { setStatus(k.title); });
+      if (k.edit) r.addEventListener('dblclick', function (e) { e.stopPropagation(); k.edit(); });   // lane smrelief: Corner-Trim
       r.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, k.menu ? k.menu() : [{ label: 'Flat Pattern…', action: function () { UI.cmdFlatten(); } }]); });
       kb.appendChild(r);
     });
@@ -2328,6 +2329,19 @@
       var kind = g ? (g.hem ? 'HemBend' : g.miter ? 'MiterBend' : BEND_KIND[g.type] || (g.sheetBase ? 'Bend' : 'Bend')) : 'Bend';
       count[kind] = (count[kind] || 0) + 1;
       out.push({ kind: 'bend', icon: 'bend', name: kind + count[kind], title: kind + count[kind] + (g ? ' (' + g.name + ')' : '') + ': ' + (bd.label || (bd.angle + '°')) + (bd.ba != null ? ', BA ' + fmt(bd.ba) : '') + (bd.bd != null ? ', BD ' + fmt(bd.bd) : '') + ' ' + units });
+    });
+    // lane smrelief (rfQF): Corner-Trim features live here, under Flat-Pattern1 (the folded part does not show them)
+    App.model.features.forEach(function (g) {
+      if (g.type !== 'cornerTrim') return;
+      var tr = F && F.trims ? F.trims.filter(function (t) { return t.id === g.id; })[0] : null;
+      var what = (g.relief ? (g.relief === 'bendWaist' ? 'Bend Waist' : g.relief === 'square' ? 'Square ' + fmt(g.size) : 'Circular R ' + fmt(g.size)) + ' relief' + (tr ? ' at ' + tr.reliefs.length + ' corner' + (tr.reliefs.length === 1 ? '' : 's') : '') : '') +
+        (g.relief && g.breakCorner ? ', ' : '') + (g.breakCorner ? g.breakCorner + ' ' + fmt(g.breakSize) + (tr ? ' on ' + tr.breaks + ' outer corner' + (tr.breaks === 1 ? '' : 's') : '') : '');
+      out.push({ kind: 'cornerTrim', icon: 'cornerTrim', name: g.name, title: g.name + ': ' + what + (flat ? '' : ' (shown in the flat pattern)'),
+        edit: function () { UI.editFeature(g); },
+        menu: function () {
+          return [{ label: 'Edit Feature', help: 'Change the Corner-Trim (the flat pattern\'s reliefs and break corners)', action: function () { UI.editFeature(g); } },
+            { label: 'Delete', help: 'Delete the Corner-Trim from the flat pattern', action: function () { UI.deleteFeature(g.id); } }];
+        } });
     });
     return out;
   }
@@ -2383,6 +2397,7 @@
     if (f.type === 'jog') return 'jog';
     if (f.type === 'sketchedBend') return 'sketchedBend';
     if (f.type === 'breakCorner') return 'breakCorner';   // lane CP
+    if (f.type === 'cornerTrim') return 'cornerTrim';   // lane smrelief
     if (f.type === 'closedCorner') return 'closedCorner';   // lane CS
     if (f.type === 'formingTool' && f.tool && Icons.has && Icons.has('ft' + f.tool.charAt(0).toUpperCase() + f.tool.slice(1))) return 'ft' + f.tool.charAt(0).toUpperCase() + f.tool.slice(1);   // lane forming
     if (f.type === 'unfold' || f.type === 'fold') return f.type;   // lane DB
@@ -2472,6 +2487,7 @@
     folders.forEach(function (fo) { fo.ids.forEach(function (id) { folderOf[id] = fo; }); });
     m.features.forEach(function (f) {
       if (f.type === 'sketch' && consumedBy[f.id] != null) return; // shown under its feature
+      if (f.type === 'cornerTrim' && !filter) return;   // lane smrelief: under Flat-Pattern1 (appendFlatPatternFolder)
       if (f === smBase && !filter) tree.appendChild(sheetMetalRow());
       var fo = folderOf[f.id] || null;
       if (fo !== curFo) {

@@ -37,6 +37,7 @@ var OcctKernel = (function () {
   SUPPORTED.weldedCorner = 1;   // lane smcorner
   SUPPORTED.sweptFlange = 1;   // lane sweptflange
   SUPPORTED.crossBreak = 1;   // rfGK: cosmetic, makes no body (skipped below)
+  SUPPORTED.cornerTrim = 1;   // lane smrelief: Corner-Trim lives in the flat only (Kernel.flatPattern), the solid stays
   SUPPORTED.vent = 1;   // lane DT
   SUPPORTED.draft = 1;   // rfDX
   SUPPORTED.wrap = 1;   // rfDZ
@@ -649,10 +650,13 @@ var OcctKernel = (function () {
           if (!g.faces.length) return;
         }
         try {
+          famCopies = recs.length ? recs : null;
           if (st === 'closedCorner') closedCornerOp(g);
           else if (st === 'jog') jogOp(g);
           else flangeOp(g);
+          famCopies = null;
         } catch (e) {
+          famCopies = null;
           if (/^No edge selected|^Closed Corner: pick|not an end face|no end face|no flat face at/i.test(e.message || '')) throw new Error(K.bendFamilyMiss(f, fam.src));
           throw e;
         }
@@ -1381,6 +1385,9 @@ var OcctKernel = (function () {
     function applyLayout(k, lay, withCuts) {
       var body = bodies[k], src = body, srcCSG = null;
       if (withCuts && lay.cuts.length) body = boolMany('cut', body, lay.cuts.map(function (c) { return prismOf(c.loop, c.plane, c.a, c.b); }), 'OpenCascade could not cut the body.');
+      // lane smrelief (rfQF): a bend relief's piece in an earlier flange's bend (Kernel.flangeLayout's bendCuts), wrapped
+      // round that bend with exact radial walls, as the flat cuts it from that bend's strip
+      if (withCuts && (lay.bendCuts || []).length) body = boolMany('cut', body, lay.bendCuts.map(function (c) { return cylinderCutter(c.loop, c.plane, c.sec, c.BA, null, true); }), 'OpenCascade could not cut the relief across the bend.');
       var walls = lay.parts.map(function (p) {
         // lane flangeprofile (rfOL): an Edge Flange's own profile (Edit Flange Profile): the wall is the profile's face (true
         // arcs) T thick in the wall's frame (Kernel.flangeLayout's part.wallProfile), holes through it
@@ -1624,10 +1631,11 @@ var OcctKernel = (function () {
     function flangeOp(f) {
       if (f.miterFlange && f.sketch != null) { miterFlangeOp(f); return; }   // lane DL
       var k = sheetBody(f);
-      var lay = K.flangeLayout(f, m, { body: shapeToCSG(bodies[k]), flanges: smFlanges });
+      var lay = K.flangeLayout(f, m, { body: shapeToCSG(bodies[k]), flanges: smFlanges, copyRecs: famCopies });   // (lane smrelief: a family's earlier copies)
       applyLayout(k, lay, true);
       smFlanges[f.id] = lay.info;
     }
+    var famCopies = null;   // lane smrelief: bendFamilyOp's copies built so far (Kernel.flangeLayout's reliefFold neighbours)
     // lane DL: Miter Flange from a profile sketch (as Kernel's buildMiterFlange): Kernel.miterFlangeStages plans the
     // stages; each is an edge-flange layout built with exact bend arcs on the part as the stages before it left it
     function miterFlangeOp(f) {
@@ -2685,7 +2693,7 @@ var OcctKernel = (function () {
     }
     // a feature the pending holes can wait across: it is built on the plate without them and reads nothing they change
     function kvCommutes(f) {
-      if (f.suppressed || f.type === 'plane' || f.type === 'crossBreak') return true;
+      if (f.suppressed || f.type === 'plane' || f.type === 'crossBreak' || f.type === 'cornerTrim') return true;
       if (f.type === 'sketch') return !(f.plane && f.plane.custom);
       if (f.type === 'flange') return !kvNoDefer;
       return false;
@@ -2813,6 +2821,7 @@ var OcctKernel = (function () {
             case 'plane': planes[f.id] = K.makePlane(f.ref || 'Front', +f.offset || 0); break;
             case 'helix': case 'projCurve': case 'compositeCurve': case 'xyzCurve': case 'refPtCurve': planes[f.id] = K.resolveCurve(f, m, refGeoCtx()); break;   // rfFA
             case 'crossBreak': break;   // rfGK
+            case 'cornerTrim': break;   // lane smrelief: flat only
             case 'refaxis': case 'refpoint': case 'csys': var rgc = refGeoCtx(); planes[f.id] = K.resolveRefGeo(f, m, rgc); if (K.exactFaceCenter) K.exactFaceCenter(f, rgc); break;   // lane DF: no body, a record
             case 'sketch': {
               // r10/facesketch10: a sketch on a face follows the face, resolved exactly as Kernel.rebuild does (an
