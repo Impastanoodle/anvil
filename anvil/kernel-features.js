@@ -2750,6 +2750,15 @@
     for (var i = 0; i < pts.length; i++) { var j = (i + 1) % pts.length; pushPoly(polys, [pts[j], pts[i], top[i], top[j]], shared); }
     return ensureOutward(polys);
   }
+  // lane QS: the convex hull, in its plane (unit normal n), of points pts on a flat face a rib meets: its corners in 3D,
+  // counter-clockwise about n, or null (fewer than 3). Shared with OcctKernel's ribTool. (Rounded to 1e-9 in the plane:
+  // rounding noise of 2e-16 across a thin strip's side made the hull skip true corners.)
+  function ribFlatHull(n, pts) {
+    var u = Math.abs(n[0]) < 0.9 ? norm(cross(n, [1, 0, 0])) : norm(cross(n, [0, 1, 0])), v = cross(n, u), o = pts[0];
+    var h = rfDYhull(pts.map(function (p) { var d = sub(p, o); return [Math.round(dot(d, u) * 1e9) / 1e9, Math.round(dot(d, v) * 1e9) / 1e9]; }));
+    return h.length < 3 ? null : h.map(function (q) { return add(o, add(scale(u, q[0]), scale(v, q[1]))); });
+  }
+  var RIB_BRIDGE = { on: true };   // lane QS: a rib bridges a hole in a flat face it meets (buildRib); K.ribBridge
   function ribMissError() { return new Error('The rib does not meet the body all along its sketch: flip the material side, change the extrusion direction or extend the sketch.'); }
   function buildRib(f, model, ctx) {
     var sketch = ctx.sketches[f.sketch] || findFeature(model, f.sketch);
@@ -2758,7 +2767,24 @@
     var lay = ribLayout(f, sketch, plane, body), parts = [];
     lay.pieces.forEach(function (pc) {
       var P = prism(pc.loop, plane, pc.a, pc.b, f.id), Bp = body.intersect(P), sh = [], vD = scale(pc.m, pc.D);
-      Bp.polygons.forEach(function (q) { if (dot([q.plane.normal.x, q.plane.normal.y, q.plane.normal.z], pc.m) < -1e-9) sh.push(rfDYsweep(q, vD, f.id)); });
+      var flats = {};
+      Bp.polygons.forEach(function (q) {
+        var qn = [q.plane.normal.x, q.plane.normal.y, q.plane.normal.z];
+        if (dot(qn, pc.m) >= -1e-9) return;
+        if (!RIB_BRIDGE.on || q.surf) { sh.push(rfDYsweep(q, vD, f.id)); return; }
+        {   // a true flat (a curved face's facets carry their surface): lane QS, see below; swept as its plane's hull
+          var key = qn.map(function (x) { return Math.round(x * 1e6); }).join(',') + ':' + Math.round(q.plane.w * 1e6);
+          (flats[key] || (flats[key] = { n: qn, pts: [] })).pts = flats[key].pts.concat(q.vertices.map(function (w) { return [w.pos.x, w.pos.y, w.pos.z]; }));
+        }
+      });
+      // lane QS (fuzz b6078): the rib stops at the faces it meets, as SolidWorks: a flat face it meets is taken whole
+      // across the rib (the convex hull of where it meets the rib, in its plane), so a hole through that face under the
+      // rib stays open beneath it (was: the rib ran down into the hole to its far wall, 0.0557 in3 more than the same
+      // rib over no hole)
+      Object.keys(flats).forEach(function (k) {
+        var h = ribFlatHull(flats[k].n, flats[k].pts);
+        if (h) sh.push(rfDYsweep({ vertices: h.map(function (p) { return { pos: { x: p[0], y: p[1], z: p[2] } }; }) }, vD, f.id));
+      });
       var rib = sh.length ? P.subtract(unionTree(sh)) : P;
       var w0 = dot(to3D(plane, pc.loop[0][0], pc.loop[0][1]), pc.m);
       rib.polygons.forEach(function (q) { q.vertices.forEach(function (w) { if (dot([w.pos.x, w.pos.y, w.pos.z], pc.m) - w0 > 0.5 * pc.D) throw ribMissError(); }); });
@@ -2931,7 +2957,7 @@
       return 'var ' + v + ' = p.intersect(' + optsStr(o) + ').last();';
     }
   });
-  K.ribLayout = ribLayout; K.buildRib = buildRib; K.intersectRegions = intersectRegions; K.intersectKeep = ixKeep; K.solidLumps = ixLumps; K.ribRay = rfDYray;
+  K.ribLayout = ribLayout; K.buildRib = buildRib; K.ribBridge = RIB_BRIDGE; K.ribFlatHull = ribFlatHull; K.intersectRegions = intersectRegions; K.intersectKeep = ixKeep; K.solidLumps = ixLumps; K.ribRay = rfDYray;
   _.applyIntersect = applyIntersect;
   // ------------------------------------------------------------------ rfFA: reference curves (Features ▸ Curves)
   // Five feature types that change no body (SolidWorks' Curves flyout); rebuild resolves each into a record kept in

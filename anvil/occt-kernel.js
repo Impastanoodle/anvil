@@ -3632,24 +3632,36 @@ var OcctKernel = (function () {
       if (!bodies.length) throw new Error('A rib needs a solid to meet: create the part first.');
       var lay = K.ribLayout(f, sk, plane, refGeoCtx().body), all = bodies.length === 1 ? bodies[0] : compound(bodies), parts = [];
       lay.pieces.forEach(function (pc) {
-        var P = prismOf(pc.loop, plane, pc.a, pc.b), vD = V.scale(pc.m, pc.D), sh = [], shC = [];
+        var P = prismOf(pc.loop, plane, pc.a, pc.b), vD = V.scale(pc.m, pc.D), sh = [], shC = [], flats = {};
         facesOf(rfDYcommon(all, P)).forEach(function (fc) {
           var ad = N(new oc.BRepAdaptor_Surface_2(fc, true)), t = ad.GetType(), tv = t && t.value != null ? t.value : t;
           if (tv === 0) {
             var d = N(N(N(ad.Plane()).Axis()).Direction()), n = [d.X(), d.Y(), d.Z()];
             if (fc.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED) n = V.scale(n, -1);
             if (V.dot(n, pc.m) > -1e-9) return;
+            // lane QS: a flat face the rib meets is taken whole across the rib, as Kernel's buildRib (K.ribBridge): the
+            // convex hull of its vertices in its plane is swept, so a hole through that face under the rib stays open
+            if (K.ribBridge && K.ribBridge.on) {
+              var vs = explore(fc, ENUM.TopAbs_VERTEX).map(function (x) { var q = N(oc.BRep_Tool.Pnt(N(oc.TopoDS.Vertex_1(x)))); return [q.X(), q.Y(), q.Z()]; });
+              if (vs.length) { var key = n.map(function (x) { return Math.round(x * 1e6); }).join(',') + ':' + Math.round(V.dot(n, vs[0]) * 1e6); (flats[key] || (flats[key] = { n: n, pts: [] })).pts = flats[key].pts.concat(vs); return; }
+            }
           } else {
             approx = true;   // Anvil's rib meets the facets of a curved face
             if (tv === 1) { var ca = N(N(N(ad.Cylinder()).Position()).Direction()); if (Math.abs(V.dot([ca.X(), ca.Y(), ca.Z()], pc.m)) > 1 - 1e-9) return; }
           }
           (tv === 0 ? sh : shC).push(N(N(new oc.BRepPrimAPI_MakePrism_1(fc, Vec(vD), false, true)).Shape()));
         });
+        Object.keys(flats).forEach(function (k) {
+          var h = K.ribFlatHull(flats[k].n, flats[k].pts);
+          if (h) sh.push(N(N(new oc.BRepPrimAPI_MakePrism_1(polyFace3(h), Vec(vD), false, true)).Shape()));
+        });
         var rib = sh.length ? boolMany('cut', P, sh, 'OpenCascade could not trim the rib to the body.') : P;
         // lane QP: a curved face's sweep is cut away only where it meets the rib trimmed by the planes: a hole through
         // the base under an L-bracket's rib (fuzz b6078) swept along the rib's growth made the trimming Boolean fail
         // without a word, and the untrimmed prism (5.4 in3 for Anvil's .27) went on the part
-        shC.forEach(function (s) { if (volumeOf(rfDYcommon(rib, s)) > 1e-12) rib = cut(rib, s); });
+        // (lane QS: a sweep that is no solid, a curved face swept partly along itself, has volume 0 and its common with the
+        // rib came back as the whole rib, so the cut emptied it: a common larger than the sweep itself is not cut)
+        shC.forEach(function (s) { var vc = volumeOf(rfDYcommon(rib, s)); if (vc > 1e-12 && vc <= Math.abs(volumeOf(s)) * (1 + 1e-6) + 1e-12) rib = cut(rib, s); });
         var bb = bboxOf(rib, true), w0 = V.dot(K.to3D(plane, pc.loop[0][0], pc.loop[0][1]), pc.m);
         if (!bb || volumeOf(rib) < 1e-12) return;
         for (var i = 0; i < 8; i++) {

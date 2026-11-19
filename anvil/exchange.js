@@ -1161,6 +1161,7 @@ var Exchange = (function () {
   // back to facets anyway (mesh.crossFailed). crossOptions.on = false: as before; .last = { splits }.
   var crossOptions = { on: true, last: null };
   var PARALLEL_SNAP = { on: true };   // lane solidstep6: snapCylParallel (writeBrepAnalytic)
+  var CIRCLE_CUTS = { on: true };                    // lane QS: a whole rim takes the arcs its planar face was written with (loopEdges)
   var PINCH_SPLIT = { on: true, retrace: true };     // lane QJ: a planar face's loop through one vertex twice is written as two loops; lane QO: retrace, loops sharing a vertex re-traced (retraceLoops)
   // retraceLoops(loops, uv) -> the loops of a planar face (vertex indices, the material on their left in uv) traced
   // again so that no vertex is shared between two loops: at a vertex with several edges leaving it, the walk takes the
@@ -2527,7 +2528,7 @@ var Exchange = (function () {
     }
 
     // ---- writing
-    var vp = {}, cv = {}, cg = {}, chains = {};
+    var vp = {}, cv = {}, cg = {}, chains = {}, circleCuts = {};   // circleCuts[circle key][vertex]: lane QS, see loopEdges
     function pt(p) { return W.add('CARTESIAN_POINT(\'\',' + stepVec(p) + ')'); }
     function dirE(d) { return W.add('DIRECTION(\'\',' + stepVec(d) + ')'); }
     function axisE(o, z, x) { return W.add('AXIS2_PLACEMENT_3D(\'\',' + pt(o) + ',' + dirE(z) + ',' + dirE(x) + ')'); }
@@ -2541,7 +2542,7 @@ var Exchange = (function () {
     function oe(id, fwd) { return W.add('ORIENTED_EDGE(\'\',*,*,' + id + ',' + (fwd ? '.T.' : '.F.') + ')'); }
     function ccw(c, A, B) { return dot(cross(sub(A, c.center), sub(B, c.center)), c.normal) > 0; }
     // the oriented edges of one loop: runs of chords of one circle between the same two faces become one EDGE_CURVE
-    function loopEdges(l, g) {
+    function loopEdges(l, g, noCut) {
       var n = l.length, cls = [], nbs = [], i;
       for (i = 0; i < n; i++) { cls.push(eget(l[i], l[(i + 1) % n]) || { t: 'l' }); nbs.push(owner.get(l[(i + 1) % n], l[i])); }
       function same(i1, i2) {
@@ -2561,6 +2562,14 @@ var Exchange = (function () {
       // lane PI: a whole ellipse (a hole straight through one slanted flat face: its rim there is one closed ELLIPSE).
       // Only circles were expected here and the export threw a TypeError (cls[0].c undefined).
       if (!breaks.length && cls[0].t === 'e') return [closedEllipseEdge(cls[0].e, P(l[0]), P(l[1]))];
+      // lane QS: a whole rim whose face on the other side was written as arcs (a keyway floor in two pieces touching at
+      // the cross hole's rim, t6028: each piece took half the circle) takes the same arcs, so both faces use the same
+      // edges (was: one closed edge of its own, and OpenCascade read the shell as not closed, three free edges). Planar
+      // faces are written first, so their arcs are known here. A band / cap keeps its whole circle (its seam starts on it)
+      if (!breaks.length && cls[0].t === 'c' && !noCut && CIRCLE_CUTS.on && circleCuts[cls[0].c.key]) {
+        var cut = circleCuts[cls[0].c.key];
+        for (i = 0; i < n; i++) if (cut[l[i]]) breaks.push(i);
+      }
       if (!breaks.length) return [closedCircleEdge(cls[0].c, P(l[0]), P(l[1]))];
       var out = [];
       for (var k = 0; k < breaks.length; k++) {
@@ -2578,7 +2587,11 @@ var Exchange = (function () {
       var fk = vs.join(','), rk = vs.slice().reverse().join(','), key = fk < rk ? fk : rk, ch = chains[key];
       if (ch) return oe(ch.id, ch.fk === fk);
       var A = P(vs[0]), B = P(vs[1]), geom, sense = '.T.';
-      if (cl.t === 'c') { geom = circleE(cl.c); sense = ccw(cl.c, A, B) ? '.T.' : '.F.'; }
+      if (cl.t === 'c') {
+        geom = circleE(cl.c); sense = ccw(cl.c, A, B) ? '.T.' : '.F.';
+        var cut = circleCuts[cl.c.key] || (circleCuts[cl.c.key] = {});
+        cut[vs[0]] = cut[vs[vs.length - 1]] = true;
+      }
       else if (cl.t === 'e') {   // (lane QE: the sense from the whole run's turn, not its first chord's: a run that steps back at a fold of the mesh,
         // +0.003 then -0.039, was written the long way round, 358 deg, and Anvil's reader refused the hole's wall, f6003)
         geom = ellipseE(cl.e);
@@ -2988,13 +3001,13 @@ var Exchange = (function () {
         sf = surfaceE(c);
         loopsOf[g].forEach(function (l) { bounds.push(W.add('FACE_BOUND(\'\',' + edgeLoop(loopEdges(l, g)) + ',.T.)')); });
       } else if (sh.kind === 'band') {
-        var L1 = sh.loops[0], L2 = sh.loops[1], e1 = loopEdges(L1.loop, g)[0], e2 = loopEdges(L2.loop, g)[0];
+        var L1 = sh.loops[0], L2 = sh.loops[1], e1 = loopEdges(L1.loop, g, true)[0], e2 = loopEdges(L2.loop, g, true)[0];
         var p1 = add(L1.circle.center, scale(L1.circle.xdir, L1.circle.radius)), p2 = add(L2.circle.center, scale(L2.circle.xdir, L2.circle.radius));
         var seam = seamEdge(c, S, circleVertex(L1.circle), p1, circleVertex(L2.circle), p2);
         sf = surfaceE(c);
         bounds.push(W.add('FACE_BOUND(\'\',' + edgeLoop([e1, oe(seam, true), e2, oe(seam, false)]) + ',.T.)'));
       } else if (sh.kind === 'cap') {
-        var L = sh.loops[0], ec = loopEdges(L.loop, g)[0], pc = add(L.circle.center, scale(L.circle.xdir, L.circle.radius));
+        var L = sh.loops[0], ec = loopEdges(L.loop, g, true)[0], pc = add(L.circle.center, scale(L.circle.xdir, L.circle.radius));
         var sc = seamEdge(c, S, circleVertex(L.circle), pc, vertexAt('apex' + g, sh.apex), sh.apex);
         sf = surfaceE(c);
         bounds.push(W.add('FACE_BOUND(\'\',' + edgeLoop([ec, oe(sc, true), oe(sc, false)]) + ',.T.)'));
@@ -4992,6 +5005,18 @@ var Exchange = (function () {
           else { tris.push([A[i].p, B[j + 1].p, B[j].p, r]); j++; }
         }
       }
+      // lane QS: zip(A, B, false)'s triangles in (r angle, height): true when one turns against the rest (beyond rounding)
+      function zipFolds(A, B) {
+        var i = 0, j = 0, pos = 0, neg = 0, big = 0, ar = [];
+        function uv(q) { return [q.a * S.r, ax(q.p).z]; }
+        function t2(p, q, s) { var a = uv(p), b = uv(q), c = uv(s), x = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]); ar.push(x); big = Math.max(big, Math.abs(x)); }
+        while (i < A.length - 1 || j < B.length - 1) {
+          if (j >= B.length - 1 || (i < A.length - 1 && A[i + 1].a <= B[j + 1].a)) { t2(A[i], A[i + 1], B[j]); i++; }
+          else { t2(A[i], B[j + 1], B[j]); j++; }
+        }
+        ar.forEach(function (x) { if (x > 1e-9 * big) pos++; else if (x < -1e-9 * big) neg++; });
+        return pos > 0 && neg > 0;
+      }
       function pointRow(p) { return [{ p: p, a: 0 }]; }
       // a latitude row of a sphere / torus at meridian angle beta (a pole is one point)
       function betaRow(beta) {
@@ -5247,6 +5272,10 @@ var Exchange = (function () {
           // stepout-2: each side must run one way round the axis (sides of ellipse arcs are not latitude rows)
           function monotone(us) { for (var mi = 1; mi < us.length; mi++) if (us[mi].a < us[mi - 1].a - 1e-9) return false; return true; }
           if (ells.length && (!monotone(ua) || !monotone(ub))) return false;
+          // lane QS: the zip's triangles must all turn one way in (angle, height): a side that is not one curve from ruling
+          // to ruling (a pocket floor's arcs with a side hole's curve leaving them upright up the wall, m6043) folded a zip
+          // triangle there (three edges oriented inconsistently read back); such a patch goes to cylPatch below
+          if (zipFolds(ua, ub)) return false;
           zip(ua, ub, false, rec());
           return true;
         })()) { /* zipped */ } else general = true;
@@ -6496,6 +6525,7 @@ var Exchange = (function () {
     encodeSolids: encodeSolids, solidMesh: solidMesh, solidCSG: solidCSG, signedVolume: signedVolume, earcut: earcut,
     b64encode: b64encode, b64decode: b64decode, utf8: utf8, fromUtf8: fromUtf8,
     importOptions: importOptions,
+    circleCuts: CIRCLE_CUTS,       // lane QS: a whole rim split like the face across it { on }
     pinchSplit: PINCH_SPLIT,       // lane QJ: a planar loop through one vertex twice -> two loops { on, retrace (lane QO) }
     parallelSnap: PARALLEL_SNAP,   // lane solidstep6: snapCylParallel (two walls with parallel axes share a ruling) { on }
     crossOptions: crossOptions,   // lane PO: splitCrossings (two bends crossing at a mitre) { on, last: { splits } }

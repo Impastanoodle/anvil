@@ -538,7 +538,7 @@
   // fall on the line; no valid solid or STEP file can hold it (SolidWorks: zero-thickness geometry). A fillet meeting a
   // face (normals the same way) or a hole a real gap off the wall (1e-4) is not a contact. a / b: { t: 'plane' } or
   // { t: 'cyl', r, sigma (+1 a round outside, -1 a hole) }; P the touch point (a point of the line when line is true).
-  var QJ = { on: true, tol: 1e-9 };   // K.tangentContactCheck: on (tests / probes), tol x max(1, diagonal)
+  var QJ = { on: true, tol: 1e-9, near: true };   // (near: lane QS, holes overlapping within the facets' sagitta)   // K.tangentContactCheck: on (tests / probes), tol x max(1, diagonal)
   function tangentContacts(body) {
     if (!body || !body.polygons || !body.polygons.length) return [];
     if (body._qjTouch) return body._qjTouch;
@@ -639,10 +639,26 @@
       return len;
     }
     var out = [];
-    function found(A, B, P, line, sA, sB) {
+    function found(A, B, P, line, sA, sB, near) {
       var key = P.map(function (x) { return (Math.round(x * 1e5) / 1e5).toFixed(5); }).join(',') + (line ? '|' + A.d.map(rk).join(',') : '');
       if (out.some(function (c) { return c.key === key; })) return;
-      out.push({ key: key, P: P, line: line, a: { t: 'cyl', r: A.r, sigma: sA }, b: B.t === 'cyl' ? { t: 'cyl', r: B.r, sigma: sB } : { t: 'plane', n: B.n } });
+      out.push({ key: key, P: P, line: line, near: near || null, a: { t: 'cyl', r: A.r, sigma: sA }, b: B.t === 'cyl' ? { t: 'cyl', r: B.r, sigma: sB } : { t: 'plane', n: B.n } });
+    }
+    // lane QS: the sagitta of a cylinder group's facets (the widest facet's angle: its own circle's chord depth)
+    function sagOf(g) {
+      if (g.sag != null) return g.sag;
+      var w = 0;
+      g.polys.forEach(function (p) {
+        var a0 = null, lo = 0, hi = 0;
+        p.vertices.forEach(function (v) {
+          var q = sub(V(v), g.o), a = Math.atan2(dot(q, g.e2), dot(q, g.e1));
+          if (a0 == null) { a0 = a; return; }
+          a -= a0; while (a > Math.PI) a -= 2 * Math.PI; while (a <= -Math.PI) a += 2 * Math.PI;
+          lo = Math.min(lo, a); hi = Math.max(hi, a);
+        });
+        w = Math.max(w, hi - lo);
+      });
+      return (g.sag = g.r * (1 - Math.cos(Math.min(w, Math.PI) / 2)));
     }
     cylList.forEach(function (A) {
       planeList.forEach(function (B) {
@@ -670,13 +686,19 @@
         if (D <= tol) continue;
         u = [u[0] / D, u[1] / D, u[2] / D];
         var P, rA, rB;
-        if (Math.abs(D - (A.r + B.r)) <= tol) { P = add(P1, u, A.r); rA = u; rB = [-u[0], -u[1], -u[2]]; }
+        var near = null;
+        // lane QS: two parallel walls whose exact circles touch or cross by less than their facets resolve (the facets
+        // stay apart: an inscribed polygon is inside its circle by up to its sagitta) are a tangency too: written exact
+        // (STEP) the two circles cross, which no reader takes (the 14 rfON plates OpenCascade called invalid: two holes
+        // drawn tangent whose decimals overlap by 1e-5)
+        if (QJ.near !== false && cl < 1e-9 && D < A.r + B.r - tol && D >= A.r + B.r - sagOf(A) - sagOf(B)) near = { over: A.r + B.r - D, sag: sagOf(A) + sagOf(B) };
+        if (Math.abs(D - (A.r + B.r)) <= tol || near) { P = add(P1, u, A.r); rA = u; rB = [-u[0], -u[1], -u[2]]; }
         else if (Math.abs(D - Math.abs(A.r - B.r)) <= tol) { P = A.r > B.r ? add(P1, u, A.r) : add(P1, u, -A.r); rA = A.r > B.r ? u : [-u[0], -u[1], -u[2]]; rB = rA; }
         else continue;
         var sA2 = cylCovers(A, P), sB2 = sA2 && cylCovers(B, P);
         if (!sA2 || !sB2 || sA2 * sB2 * dot(rA, rB) >= 0) continue;   // outward normals the same way: a smooth meet
         var eps = Math.min(minL, 0.1 * Math.min(A.r, B.r));
-        if (cl < 1e-9) { if (lineLength(A, B, P, cross(A.d, u), eps) >= minL) found(A, B, P, true, sA2, sB2); }
+        if (cl < 1e-9) { if (lineLength(A, B, P, cross(A.d, u), eps) >= minL) found(A, B, P, true, sA2, sB2, near); }
         else if ([A.d, B.d, add(A.d, B.d, 1), add(A.d, B.d, -1)].some(function (w) { w = unit(w); return w && bothSides(A, B, P, w, eps); })) found(A, B, P, false, sA2, sB2);
       }
     }
@@ -1269,11 +1291,14 @@
       var c = null;
       changed.some(function (b) { return tangentContacts(b).some(function (x) { if (had[x.key]) return false; c = x; return true; }); });
       if (!c) return;
-      if (c.b.t === 'cyl' && c.b.sigma < 0 && c.a.sigma > 0) c = { P: c.P, line: c.line, a: c.b, b: c.a };   // the hole first
+      if (c.b.t === 'cyl' && c.b.sigma < 0 && c.a.sigma > 0) c = { P: c.P, line: c.line, near: c.near, a: c.b, b: c.a };   // the hole first
       function num(x) { return String(+(+x).toFixed(4)); }
       function face(s) { return s.t === 'plane' ? 'a flat face of the part' : s.sigma < 0 ? 'a Ø' + num(2 * s.r) + ' hole' : 'a Ø' + num(2 * s.r) + ' cylindrical face'; }
       var u = model.units || 'mm', move = u === 'in' ? '0.001 in' : u === 'mm' ? '0.025 mm' : '0.001 ' + u;
       var what = c.a.sigma < 0 ? 'the wall of ' + face(c.a) : face(c.a), at = '(' + c.P.map(num).join(', ') + ')';
+      if (c.near) throw new Error('This feature would create zero-thickness geometry: ' + what + ' and ' + face(c.b) + ' overlap by ' + String(+c.near.over.toPrecision(2)) + ' ' + u +
+        ' at ' + '(' + c.P.map(num).join(', ') + '), less than the part\'s facets resolve, so they would touch along a line. Move one of them at least ' +
+        num(c.near.over + parseFloat(move)) + ' ' + u + ' away from the other, or ' + num(c.near.sag - c.near.over + parseFloat(move)) + ' ' + u + ' farther into it.');
       throw new Error('This feature would create zero-thickness geometry: ' + what + ' is tangent to ' + face(c.b) +
         (c.line ? ' along a line through ' + at : ' at the point ' + at) + ', so the solid would touch itself there. Move the feature ' + move +
         ' or more toward or away from ' + (c.b.t === 'plane' ? 'that face' : 'it') + ' so the wall has a thickness or opens up.');
