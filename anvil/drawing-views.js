@@ -713,7 +713,8 @@
       if (Math.abs(m[1] - m[3]) <= tol) return Math.abs(m[1] - b.vmin) <= tol ? 'vmin' : Math.abs(m[1] - b.vmax) <= tol ? 'vmax' : null;
       return null;
     }
-    (pr.all || []).forEach(function (m) {
+    // (rfQG) with the tangent edges a view shows (a dimension to a bend's tangent line stays on it)
+    (pr.all || []).concat(pr.lines && pr.lines.tangent || []).forEach(function (m) {
       var mx = m[2] - m[0], my = m[3] - m[1], ml = Math.hypot(mx, my);
       if (ml < 1e-12 || Math.abs(t[0] * my - t[1] * mx) > ml * 1e-6) return;          // not parallel
       var p0 = (m[0] - a[0]) * t[0] + (m[1] - a[1]) * t[1], p1 = (m[2] - a[0]) * t[0] + (m[3] - a[1]) * t[1];

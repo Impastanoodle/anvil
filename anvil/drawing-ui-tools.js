@@ -604,7 +604,7 @@
   // far (max) side, the side clicked.
   var SD_MSG = 'Smart Dimension: click an edge, a circle or arc, a vertex or a circle’s centre in an orthographic view. Esc ends.';
   function cmdSmartDimension() {
-    D.tool = D.tool === 'dim' && !D.dimLock ? null : 'dim'; D.pending = null; D.hover = null; D.dimLock = null;   // (lane CT: from Horizontal / Vertical Dimension it turns into Smart Dimension)
+    D.tool = D.tool === 'dim' && !D.dimLock ? null : 'dim'; D.pending = null; D.hover = null; D.dimLock = null; D.sdFind = null;   // (lane CT: from Horizontal / Vertical Dimension it turns into Smart Dimension)
     drawOverlay(); UI.refreshRibbon();
     UI.setStatus(D.tool === 'dim' ? SD_MSG : 'Ready');
   }
@@ -614,7 +614,7 @@
   function sdName() { return D.dimLock === 'h' ? 'Horizontal Dimension' : D.dimLock === 'v' ? 'Vertical Dimension' : 'Smart Dimension'; }
   function cmdLockedDimension(lock) {
     lock = lock === 'v' ? 'v' : 'h';
-    if (D.tool === 'dim' && D.dimLock === lock) { if (UI.hasPM && UI.hasPM() && D.sdPM) UI.pmCancel(); D.tool = null; D.pending = null; D.hover = null; D.dimLock = null; drawOverlay(); UI.refreshRibbon(); UI.setStatus('Ready'); return; }
+    if (D.tool === 'dim' && D.dimLock === lock) { if (UI.hasPM && UI.hasPM() && D.sdPM) UI.pmCancel(); D.tool = null; D.pending = null; D.hover = null; D.dimLock = null; D.sdFind = null; drawOverlay(); UI.refreshRibbon(); UI.setStatus('Ready'); return; }
     if (D.tool && D.tool !== 'dim' && UI.hasPM && UI.hasPM()) UI.pmCancel();
     D.tool = 'dim'; D.dimLock = lock; D.pending = null; D.hover = null;
     drawOverlay(); UI.refreshRibbon();
@@ -736,10 +736,38 @@
     var i0 = d.kind === 'h' ? 0 : 1, mid = (A[i0] + B[i0]) / 2;
     if ((at[i0] - (mid + def)) * d.tside > 0) d.tx = at[i0] - mid;
   }
+  // (rfQG) SolidWorks: with Smart Dimension running, right-click a straight edge ▸ Find Intersection, then click a
+  // second edge: the pick is the virtual sharp where their lines meet (a bend's outside corner). DW.sdContext is
+  // asked first by drawing-ui.js' right-click; vsharpAt makes the pick from the second click
+  function sdContext(p, e) {
+    if (D.tool !== 'dim' || (D.pending && D.pending.second)) return false;
+    var ent = entityAt(p, false, true);
+    if (!ent || ent.circle || ent.arc || ent.ellipse || !ent.la || (D.pending && D.pending.first && ent.view !== D.pending.view)) return false;
+    var w = sheetView(ent.view);
+    if (!w || !(w.ortho || w.trueDims)) return false;
+    UI.showMenu(e.clientX, e.clientY, [{ label: 'Find Intersection', help: 'Picks the virtual sharp where this edge and the next edge you click would meet.', action: function () {
+      D.sdFind = { view: ent.view, edge: [ent.la.slice(), ent.lb.slice()] }; drawOverlay();
+      UI.setStatus(sdName() + ': Find Intersection: click the second edge. Esc cancels.');
+    } }]);
+    return true;
+  }
+  function vsharpAt(p) {
+    var f = D.sdFind, ent = entityAt(p, false, true), w = f && sheetView(f.view);
+    if (!w || !ent || ent.view !== f.view || ent.circle || ent.arc || ent.ellipse || !ent.la) return null;
+    var e2 = [ent.la.slice(), ent.lb.slice()], ix = Drawing.vsMeet({ a: f.edge[0], b: f.edge[1] }, { a: e2[0], b: e2[1] });
+    if (!ix) return null;
+    return { view: f.view, w: w, pick: { point: ix, vsharp: [f.edge, e2] }, at: p, hl: { pt: w.toSheet(ix) } };
+  }
+  DW.sdContext = sdContext;
   function smartDimClick(p, e) {
-    var P = D.pending, hit;
+    var P = D.pending, hit, vsHit = null;
+    if (D.sdFind) {
+      vsHit = vsharpAt(p);
+      if (!vsHit || (P && P.first && vsHit.view !== P.view)) { UI.setStatus(sdName() + ': Find Intersection: click a second straight edge of the same view, not parallel to the first. Esc cancels.'); return; }
+      D.sdFind = null;
+    }
     if (!P || !P.first) {
-      hit = pickAt(p);
+      hit = vsHit || pickAt(p);
       if (!hit) { UI.setStatus(sdName() + ': click a visible edge, circle, arc, vertex or circle centre of an orthographic view.'); return; }
       // the previous dimension's PropertyManager closes, keeping its edits, as the next one starts
       if (UI.hasPM && UI.hasPM() && $('app').classList.contains('dw-pm')) { D.sdNext = true; try { UI.pmOK(); } finally { D.sdNext = false; } D.tool = 'dim'; }
@@ -751,7 +779,7 @@
       return;
     }
     if (!P.second) {
-      hit = pickAt(p, P.view);
+      hit = vsHit || pickAt(p, P.view);
       if (hit && !samePick(hit, P.first)) {
         hit.shift = !!(e && e.shiftKey);
         var trial = Drawing.smartDim(P.first.pick, hit.pick, null, { lock: D.dimLock || null });
@@ -784,7 +812,7 @@
     UI.setStatus('Dimension ' + (sd ? sd.text : '') + ' added to ' + w.view.name + '. Pick the next item, or Esc to end.');
     // (✓ or Esc on it ends Smart Dimension, as SolidWorks; the next pick closes it with its edits and goes on)
     if (sd) {
-      cmdDimensionPM(ref, function () { D.sdPM = false; if (!D.sdNext && D.tool === 'dim') { D.tool = null; D.pending = null; D.hover = null; D.dimLock = null; UI.refreshRibbon(); UI.setStatus('Ready'); } });
+      cmdDimensionPM(ref, function () { D.sdPM = false; if (!D.sdNext && D.tool === 'dim') { D.tool = null; D.pending = null; D.hover = null; D.dimLock = null; D.sdFind = null; UI.refreshRibbon(); UI.setStatus('Ready'); } });
       D.sdPM = true;
     }
     D.tool = 'dim'; drawOverlay(); UI.refreshRibbon();
@@ -812,7 +840,7 @@
   UI.escapeTools = UI.escapeTools || [];
   UI.escapeTools.push(function () {
     if (!D.active || !D.tool) return false;
-    D.tool = null; D.pending = null; D.hover = null; D.dimLock = null; UI.refreshRibbon(); drawOverlay();
+    D.tool = null; D.pending = null; D.hover = null; D.dimLock = null; D.sdFind = null; UI.refreshRibbon(); drawOverlay();
     return true;
   });
   // the pointer over the sheet while the tool runs: what the next click picks, and the preview
@@ -1659,7 +1687,32 @@
     var w = sheetView(P.view);
     if (!w) return;
     var k = paperK(), gap = 10 * k;   // the first line 10 mm (.39 in) off the view, as the model items' first row
-    if (P.line == null) P.line = P.dir === 'h' ? w.fromSheet([0, w.box.y1 + gap])[1] : w.fromSheet([w.box.x1 + gap, 0])[0];
+    if (P.line == null) {
+      // (rfQG) beyond the dimensions already on that side of the view (a Baseline set over the same holes: the row's
+      // first 1.500 sat on the set's first 1.500), 6 mm past the outermost of their lines and values; when that runs
+      // past the border (the value sits 1 mm + a text height beyond its line) or into another view, the other side
+      var ax = P.dir === 'h' ? 1 : 0, S = D.sheet.size, mrg = 10 * k, th = Drawing.dimGeometry(doc()).text * k;
+      var rowAt = function (sg) {
+        var edge = sg > 0 ? (ax ? w.box.y1 : w.box.x1) : (ax ? w.box.y0 : w.box.x0), far = edge, e6 = 1e-6 * (1 + Math.abs(edge));
+        (D.sheet.prims || []).forEach(function (q) {
+          if (q.dimIx == null || !D.sheet.dims[q.dimIx] || D.sheet.dims[q.dimIx].view !== P.view) return;
+          var r = q.k === 'text' ? Drawing.textRect(q) : q.k === 'line' ? { x0: Math.min(q.a[0], q.b[0]), y0: Math.min(q.a[1], q.b[1]), x1: Math.max(q.a[0], q.b[0]), y1: Math.max(q.a[1], q.b[1]) } : null;
+          if (!r) return;
+          if (sg > 0 ? (ax ? r.y0 : r.x0) < edge - e6 : (ax ? r.y1 : r.x1) > edge + e6) return;
+          far = sg > 0 ? Math.max(far, ax ? r.y1 : r.x1) : Math.min(far, ax ? r.y0 : r.x0);
+        });
+        var at = Math.abs(far - edge) > e6 ? far + sg * 6 * k : edge + sg * gap, reach = at + sg * (1 * k + th);
+        var lo = Math.min(at, reach) - 1 * k, hi = Math.max(at, reach);
+        var ok = lo >= mrg && hi <= (ax ? S[1] : S[0]) - mrg && !D.sheet.views.some(function (o) {
+          if (o.view.id === P.view) return false;
+          var b = o.box, a0 = ax ? b.y0 : b.x0, a1 = ax ? b.y1 : b.x1, c0 = ax ? b.x0 : b.y0, c1 = ax ? b.x1 : b.y1, v0 = ax ? w.box.x0 : w.box.y0, v1 = ax ? w.box.x1 : w.box.y1;
+          return a0 < hi && a1 > lo && c0 < v1 && c1 > v0;
+        });
+        return { at: at, ok: ok };
+      };
+      var r1 = rowAt(1), r2 = r1.ok ? null : rowAt(-1), at = r2 && r2.ok ? r2.at : r1.at;
+      P.line = P.dir === 'h' ? w.fromSheet([0, at])[1] : w.fromSheet([at, 0])[0];
+    }
     var mid = w.fromSheet([(w.toSheet(refPick(P.prev))[0] + w.toSheet(refPick(hit))[0]) / 2, (w.toSheet(refPick(P.prev))[1] + w.toSheet(refPick(hit))[1]) / 2]);
     var at = P.dir === 'h' ? [mid[0], P.line] : [P.line, mid[1]];
     var spec = Drawing.smartDim(P.prev.pick, hit.pick, at, { lock: P.dir, scale: w.scale });
@@ -1804,7 +1857,8 @@
     var w = sheetView(d.view), src = d.auto && d.kind !== 'ordinate' && d.kind !== 'baseline' ? Drawing.dimSource(App.model, App.build, w, d) : null;
     var tol = d.tol || { type: 'none' }, u = units();
     var dualDoc = Drawing.dualStyle(doc()).on, dualKind = d.kind !== 'angrun' && !(d.kind === 'angle' && !d.arcLen) && !(d.kind === 'rad' && d.slot);   // (rfOC)
-    var values = { chform: d.kind === 'chamfer' && d.chform ? d.chform : 'auto', dual: d.dual != null ? !!d.dual : dualDoc, value: d.value != null ? +d.value.toFixed(8) : 0, tolType: tol.type || 'none', plus: tol.plus != null ? tol.plus : 0, minus: tol.minus != null ? tol.minus : 0, prec: d.prec != null ? String(d.prec) : 'auto', tolPrec: tol.prec != null && tol.prec !== '' ? String(tol.prec) : 'auto', label: d.label != null ? d.label : '<DIM>', flip: !!d.flip };
+    var values = { chform: d.kind === 'chamfer' && d.chform ? d.chform : 'auto', dual: d.dual != null ? !!d.dual : dualDoc, value: d.value != null ? +d.value.toFixed(8) : 0, tolType: tol.type || 'none', plus: tol.plus != null ? tol.plus : 0, minus: tol.minus != null ? tol.minus : 0, prec: d.prec != null ? String(d.prec) : 'auto', tolPrec: tol.prec != null && tol.prec !== '' ? String(tol.prec) : 'auto', label: d.label != null ? d.label : '<DIM>', flip: !!d.flip,
+      brk: !!d.brk, brkArrows: d.brk === 'arrows', brkDoc: !(+d.brkGap > 0), brkGap: +d.brkGap > 0 ? +d.brkGap : Drawing.dimBreakGap(doc()), fs: !!d.fs };   // (rfQG) Break Lines
     var single = d.kind !== 'ordinate' && d.kind !== 'baseline' && d.kind !== 'angrun';
     var primary = src ? [{ type: 'number', key: 'value', label: 'Value', unit: 'u' }, { type: 'static', label: 'Drives', value: src.featureName + ' (' + src.what + ')' + (src.expr ? ' — equation ' + src.expr : '') }]
       : [{ type: 'static', label: 'Value', value: single ? (d.kind === 'angle' && !d.arcLen ? (Math.round(d.value * 1e4) / 1e4) + '°' : Drawing.numText(d.value, u) + ' ' + u) + (d.auto ? ' (no model parameter found)' : ' (reference: driven by the model)') : d.text }];
@@ -1836,7 +1890,14 @@
           { type: 'check', key: 'dual', label: 'Dual Dimension', show: function () { return dualKind; } }] },
         // (rfPD) SolidWorks' Chamfer Text Format on a chamfer dimension's Value tab: 1 X 45°, 45° X 1, 1 X 1, C1
         { title: 'Chamfer Text Format', show: function () { return d.kind === 'chamfer'; }, fields: [{ type: 'select', key: 'chform', label: 'Text format', options: CHAMFER_FORM_OPTIONS() }] },
-        { title: 'Leaders', show: function () { return d.kind !== 'angrun' && d.kind !== 'pathlen'; }, fields: [{ type: 'check', key: 'flip', label: 'Flip arrows (outside)' }] }
+        { title: 'Leaders', show: function () { return d.kind !== 'angrun' && d.kind !== 'pathlen'; }, fields: [{ type: 'check', key: 'flip', label: 'Flip arrows (outside)' },
+          // (rfQG) SolidWorks' Leaders tab: Break Lines (the extension and dimension lines cut where they cross another
+          // dimension's lines or arrows), Break around dimension arrows only, Use document gap or a gap of its own
+          { type: 'check', key: 'fs', label: 'Foreshortened', show: function () { return d.kind === 'rad' && !d.ell; } },   // (rfQG) a large radius: a jogged line from a false centre
+          { type: 'check', key: 'brk', label: 'Break Lines', rerender: true, show: function () { return BRK_KINDS[d.kind]; } },
+          { type: 'check', key: 'brkArrows', label: 'Break around dimension arrows only', show: function (v) { return BRK_KINDS[d.kind] && v.brk; } },
+          { type: 'check', key: 'brkDoc', label: 'Use document gap', rerender: true, show: function (v) { return BRK_KINDS[d.kind] && v.brk; } },
+          { type: 'number', key: 'brkGap', label: 'Gap', unit: 'u', show: function (v) { return BRK_KINDS[d.kind] && v.brk && !v.brkDoc; } }] }
       ],
       onChange: function (v, key) {
         // (the PM's opening call has no key; nothing changed yet: no undo step)
@@ -1885,7 +1946,8 @@
     return { tol: tol,
       prec: v.prec === 'auto' || v.prec == null ? null : +v.prec, label: label.trim() === '' || label === '<DIM>' ? null : label, flip: !!v.flip,
       dual: v.dual == null || !!v.dual === dualDoc ? null : !!v.dual,   // (rfOC: stored only where it differs from the document)
-      chform: v.chform && v.chform !== 'auto' ? v.chform : null };   // (rfPD)
+      chform: v.chform && v.chform !== 'auto' ? v.chform : null,   // (rfPD)
+      brk: v.brk ? (v.brkArrows ? 'arrows' : true) : null, brkGap: v.brk && !v.brkDoc && +v.brkGap > 0 ? +v.brkGap : null, fs: v.fs ? true : null };   // (rfQG)
   }
   // (rfPD) the chamfer text formats: the Dimension PM's list (auto = the document's) and Document Properties' (auto =
   // '1 X 1' on a Distance Distance chamfer feature, else '1 X 45°')
@@ -2067,6 +2129,7 @@
   // Options (Flip Arrows, Display with Parentheses: a reference dimension), Add To Ordinate / Add To Baseline (click
   // more features, ✓ ends), Delete
   var PAREN_RE = /^\((.*)\)$/;
+  var BRK_KINDS = { h: 1, v: 1, aligned: 1, baseline: 1 }, CENTRE_KINDS = { h: 1, v: 1, aligned: 1 };   // (rfQG) Break Lines / Center Dimension
   function dimMenu(d) {
     var ref = dimRef(d), lab = d.label != null ? String(d.label) : '<DIM>', paren = PAREN_RE.test(lab), rows = [];
     rows.push({ label: 'Properties…', action: function () { var x = sheetDim(ref); if (x) cmdDimensionPM(dimRef(x)); } });
@@ -2077,6 +2140,13 @@
       var nd = sheetDim(ref); UI.setStatus('Dimension ' + (nd ? nd.text : '') + (paren ? ': parentheses removed.' : ': a reference dimension, in parentheses.'));
     } });
     if (FLIP_KINDS[d.kind]) rows.push({ label: 'Flip Arrows', action: function () { var x = sheetDim(ref); if (x) flipArrows(x); } });
+    // (rfQG) SolidWorks: right-click ▸ Display Options ▸ Center Dimension: the value back in the middle between the
+    // extension lines and kept there while the dimension is dragged; clicked again it lets the value move
+    if (CENTRE_KINDS[d.kind]) rows.push({ label: 'Display Options ▸ Center Dimension', checked: !!d.centre, help: 'Keeps the value centred between the extension lines; a drag moves only the dimension line.', action: function () {
+      var x = sheetDim(ref); if (!x) return;
+      setDimProps(x, x.centre ? { centre: null } : { centre: true, tx: null, tside: 0 });
+      var nd = sheetDim(ref); UI.setStatus('Dimension ' + (nd ? nd.text : '') + (x.centre ? ': Center Dimension off.' : ': centred between its extension lines.'));
+    } });
     if ((d.kind === 'ordinate' || d.kind === 'baseline') && !d.auto) rows.push({ label: d.kind === 'ordinate' ? 'Add To Ordinate' : 'Add To Baseline', action: function () { addToChain(ref); } });
     if (d.dangling && !d.auto) rows.push({ label: 'Reattach', action: function () { startReattach(ref); } });
     rows.push({ sep: true });
@@ -2267,6 +2337,12 @@
     UI.setStatus('Dimension ' + (d.text || '') + (copy ? ' copied to ' : ' moved to ') + w.view.name + '.');
     return true;
   }
+  // (rfQG) the member of a Baseline set whose dimension line is nearest paper point p (index in d.blPos, nearest first)
+  function blMember(d, p) {
+    var ac = d.dir === 'v' ? 0 : 1, best = -1, bd = Infinity;
+    (d.blPos || []).forEach(function (q, i) { var e = Math.abs(q - p[ac]); if (e < bd) { bd = e; best = i; } });
+    return best;
+  }
   function dragDim(p) {
     var dg = D.drag, d = dg.d, w = sheetView(d.view), dx = p[0] - dg.start[0], dy = p[1] - dg.start[1], props = {};
     if (!w) return;
@@ -2298,6 +2374,13 @@
       if (ang > 90 || ang <= -90) tt = [-t[0], -t[1]];
       props.off = (d.offNow || 0) + dx * n0[0] + dy * n0[1]; props.tx = (d.txNow != null ? d.txNow : d.tx || 0) + dx * tt[0] + dy * tt[1];
     } else if (d.kind === 'dia' || d.kind === 'rad' || d.kind === 'chamfer') props.lead = [d.leadNow[0] + dx, d.leadNow[1] + dy];
+    else if (d.kind === 'baseline' && d.blPos && d.blPos.length > 1 && blMember(d, dg.start) > 0) {
+      // (rfQG) SolidWorks: a Baseline set keeps equal spacing; dragging the innermost line moves the set, dragging any
+      // other line re-spaces the set so that line follows the pointer (never closer than a text height and 2 mm)
+      var bi = blMember(d, dg.start), ac = d.dir === 'v' ? 0 : 1, kk = paperK(), sg = d.blPos[1] > d.blPos[0] ? 1 : -1;
+      var np = d.blPos[bi] + (ac ? dy : dx), th = Drawing.dimGeometry(doc()).text;   // (paper mm)
+      props.step = Math.max(th + 2, sg * (np - d.blPos[0]) / bi / kk);
+    }
     else if (d.kind === 'ordinate' || d.kind === 'baseline') props.at = d.lineAt + (d.dir === 'v' ? dx : dy) / w.scale;
     else if (d.kind === 'pathlen' && d.leadNow) props.lead = [d.leadNow[0] + dx, d.leadNow[1] + dy];   // (lane CT)
     else if ((d.kind === 'angle' || d.kind === 'angrun') && d.c) {
@@ -2305,6 +2388,7 @@
       var vc = w.toSheet(d.c), um = [dg.start[0] - vc[0], dg.start[1] - vc[1]], ul = Math.hypot(um[0], um[1]) || 1;
       props.rad = Math.max(1e-9, ((d.radNow || d.rad || 0) * w.scale + (dx * um[0] + dy * um[1]) / ul) / w.scale);
     }
+    if (d.centre && 'tx' in props) delete props.tx;   // (rfQG) Center Dimension: only the dimension line moves
     // (lane CA) text dragged back to the middle: centred between the extension lines when it fits there (tside 0)
     if (Math.abs(props.tx || 0) < pxToPaper(4)) { if ('tx' in props) { props.tx = null; props.tside = 0; } }
     var hadGuide = !!D.snapGuide;

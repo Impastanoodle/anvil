@@ -1177,7 +1177,8 @@
   // Y14.2 / SolidWorks' ANSI template) .125 text, .125 x .042 arrows (3:1), a .0625 gap from the part and .125 beyond
   // the dimension line; ISO millimetre drawings keep 3.5 text, 3 x 1 arrows, 1.5 gap, 2 beyond. doc.options.dimText,
   // arrowLen, arrowWidth, extGap, extBeyond override them.
-  var DIM_SIZES = { 'in': { dimText: 0.125, arrowLen: 0.125, arrowWidth: 0.042, extGap: 0.0625, extBeyond: 0.125 }, mm: { dimText: 3.5, arrowLen: 3, arrowWidth: 1, extGap: 1.5, extBeyond: 2 } };
+  // (rfQG) dimBreakGap: Break dimension extension / leader lines Gap (the gap a dimension with Break Lines leaves)
+  var DIM_SIZES = { 'in': { dimText: 0.125, arrowLen: 0.125, arrowWidth: 0.042, extGap: 0.0625, extBeyond: 0.125, dimBreakGap: 0.0625 }, mm: { dimText: 3.5, arrowLen: 3, arrowWidth: 1, extGap: 1.5, extBeyond: 2, dimBreakGap: 1.5 } };
   // dimSizes(doc) -> { units, dimText, arrowLen, arrowWidth, extGap, extBeyond } in the drawing's units
   function dimSizes(doc) {
     var u = doc && doc.units === 'in' ? 'in' : 'mm', o = doc && doc.options || {}, df = DIM_SIZES[u], out = { units: u };
@@ -2993,7 +2994,7 @@
   D.addSheet = addSheet; D.deleteSheet = deleteSheet; D.renameSheet = renameSheet; D.moveViewToSheet = moveViewToSheet;
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
   D.standard3View = standard3View; D.partViews = partViews; D.plateOf = plateOf; D.extentsOf = extentsOf; D.layout = layoutViews; D.moveView = moveView; D.deleteView = deleteView; D.viewDependents = viewDependents; D.findView = findView;
-  D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.dualStyle = dualStyle; D.DUAL_POS = DUAL_POS; _.dimText0 = dimText0; D.autoDims = autoDims; D.modelItems = modelItems; D.dimSizes = dimSizes; D.dimGeometry = dimGeometry; D.DIM_SIZES = DIM_SIZES; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
+  D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.dualStyle = dualStyle; D.DUAL_POS = DUAL_POS; _.dimText0 = dimText0; D.autoDims = autoDims; D.modelItems = modelItems; D.dimSizes = dimSizes; D.dimBreakGap = function (doc) { return dimSizes(doc).dimBreakGap; }; D.dimGeometry = dimGeometry; D.DIM_SIZES = DIM_SIZES; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
   D.arcSlotsIn = arcSlotsIn; D.sketchOrdinates = sketchOrdinates; D.sketchDistances = sketchDistances;
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;
   D.bomCellAt = bomCellAt; D.setBomCell = setBomCell; D.bomColId = bomColId;   // (rfPQ)

@@ -101,7 +101,7 @@
     var body = document.querySelector('.dw-docprops'), ok = document.getElementById('dw-opt-ok');
     if (!body || !doc()) return;
     var z = Drawing.dimSizes(doc()), inch = z.units === 'in', un = inch ? 'in' : 'mm', inputs = {};
-    var rows = [['dimText', 'Text height'], ['arrowLen', 'Arrow length'], ['arrowWidth', 'Arrow width'], ['extGap', 'Extension line gap'], ['extBeyond', 'Extension beyond dimension line']];
+    var rows = [['dimText', 'Text height'], ['arrowLen', 'Arrow length'], ['arrowWidth', 'Arrow width'], ['extGap', 'Extension line gap'], ['extBeyond', 'Extension beyond dimension line'], ['dimBreakGap', 'Break dimension extension/leader lines gap']];   // (rfQG)
     var kids = [el('div', { class: 'dw-tb-head', text: 'Dimensions (' + (inch ? 'ANSI, inches' : 'ISO, millimetres') + ')' })];
     rows.forEach(function (r) {
       var inp = el('input', { type: 'number', step: inch ? '0.001' : '0.1', min: '0', value: String(z[r[0]]), id: 'dw-opt-' + r[0] });

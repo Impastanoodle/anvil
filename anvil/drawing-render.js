@@ -808,6 +808,25 @@
       obs.texts = obs.texts.concat(pg.texts); obs.segs = obs.segs.concat(pg.segs); obs.dimTexts = (obs.dimTexts || []).concat(pg.texts);
       placedPrims[di] = p; placed.push(d);
     });
+    // (rfQG) a virtual sharp a dimension measures to (a ref with vs: two edges' lines meeting): each edge's line runs on
+    // from its nearer end, a gap off the part, to just past the sharp (ASME: the corner shown by its extension lines)
+    dims.forEach(function (d, di) {
+      var p = placedPrims[di], vw = p && d.refs && d.refs.some(function (r) { return r && r.vs; }) ? views.filter(function (w) { return w.view.id === d.view; })[0] : null;
+      if (!vw) return;
+      var G = _.DIMGEO || { gap: 1.5, ext: 2 };
+      d.refs.forEach(function (r) {
+        if (!r || !r.vs) return;
+        var S = vw.toSheet(r.p);
+        r.vs.forEach(function (e) {
+          var A = vw.toSheet(e.a), B = vw.toSheet(e.b), N = Math.hypot(A[0] - S[0], A[1] - S[1]) < Math.hypot(B[0] - S[0], B[1] - S[1]) ? A : B;
+          var L = Math.hypot(S[0] - N[0], S[1] - N[1]);
+          if (!(L > G.gap * k * 1.5)) return;
+          var u = [(S[0] - N[0]) / L, (S[1] - N[1]) / L];
+          p.push({ k: 'line', a: [N[0] + u[0] * G.gap * k, N[1] + u[1] * G.gap * k], b: [S[0] + u[0] * G.ext * k, S[1] + u[1] * G.ext * k], layer: 'DIMENSIONS', style: 'thin', vsharp: true });
+        });
+      });
+    });
+    breakDimLines(dims, placedPrims, k, doc);   // (rfQG) Break Lines
     dims.forEach(function (d, di) {
       var p = placedPrims[di];
       if (!p) return;
@@ -1486,6 +1505,18 @@
       for (var oj = 4; oj <= 40; oj += 4) { d.outer = oj; var pj = placeDim0(d, vw, k, placed, obs); if (!textsMeet(pj, obs.texts, 0.5 * k) && !onPaperBlock(pj, obs, k)) { delete d.outer; d.outerNow = oj; return pj; } }
       delete d.outer;
     }
+    // (rfQG) a Baseline set nobody has dragged yet (no at) whose stack runs past the border or onto a block (four rows
+    // over a Top view at the top of an ANSI B sheet: the last line and its 6.000 above the border) goes to the view's
+    // other side when the whole stack fits there clear of the blocks, the other views and the values placed before it
+    if (obs && d.kind === 'baseline' && d.at == null && onPaperBlock(p, obs, k)) {
+      var hb = Object.prototype.hasOwnProperty.call(d, 'side'), sb0 = d.side;
+      d.side = -(d.side || 1);
+      var pb = placeDim0(d, vw, k, placed, obs), gb = primGeo(pb);
+      var onView = obs.boxes.some(function (b) { return b.view != null && b.view !== d.view && (gb.texts.some(function (t) { return rectsMeet(t, b.box, 0); }) || gb.segs.some(function (s) { return segHitsRect(s[0], s[1], b.box); })); });
+      if (!onPaperBlock(pb, obs, k) && !onView && !textsMeet(pb, obs.texts, 0.3 * k)) return pb;
+      if (hb) d.side = sb0; else delete d.side;
+      p = placeDim0(d, vw, k, placed, obs);
+    }
     if (!obs || !d.auto || !/^(h|v)$/.test(d.kind) || !(d.side === 1 || d.side === -1) || d.tx != null || d.flip || d.tside != null || d.off != null || d.at != null) return p;
     // (rfOJ) a model item whose value lands on a value placed before it (the gap between two views: the Front view's
     // flange height 1.500 on the Right view's 1.340, Model Items on a press-brake bracket) goes to the view's other side
@@ -1508,6 +1539,65 @@
     } else if (!onPaperBlock(q, obs, k) && (!acrossView(q, vw.box, k) || across0) && !textsMeet(q, obs.texts, 0.3 * k)) return q;
     d.side = s0;
     return placeDim0(d, vw, k, placed, obs);
+  }
+  // (rfQG) Break Lines (SolidWorks Dimension PM ▸ Leaders ▸ Break Lines): a dimension with d.brk has its extension
+  // and dimension lines cut where they cross another dimension's lines or arrows (d.brk 'arrows': Break around
+  // dimension arrows only), a gap each side: d.brkGap (drawing units) or Document Properties ▸ Dimensions ▸ Break
+  // dimension extension / leader lines Gap (doc.options.dimBreakGap), else the extension line gap. The pieces keep
+  // the line's other keys (dimIx is set after this)
+  function breakDimLines(dims, placedPrims, k, doc) {
+    if (!dims.some(function (d) { return d.brk; })) return;
+    var o = (doc && doc.options) || {}, g0 = D.dimBreakGap(doc);
+    dims.forEach(function (d, di) {
+      var mine = placedPrims[di];
+      if (!d.brk || !mine) return;
+      var g = +d.brkGap > 0 ? +d.brkGap : g0, arrowsOnly = d.brk === 'arrows', cutters = [];
+      placedPrims.forEach(function (p, j) {
+        if (!p || j === di) return;
+        p.forEach(function (x) {
+          if (x.k === 'fill' && x.pts && x.pts.length >= 3) cutters.push({ poly: x.pts });
+          else if (!arrowsOnly && x.k === 'line') cutters.push({ a: x.a, b: x.b });
+        });
+      });
+      if (!cutters.length) return;
+      var res = [];
+      mine.forEach(function (x) {
+        if (x.k !== 'line') { res.push(x); return; }
+        var A = x.a, B = x.b, ux = B[0] - A[0], uy = B[1] - A[1], L = Math.hypot(ux, uy);
+        if (!(L > 1e-12)) { res.push(x); return; }
+        var cuts = [], gt = g / L;
+        // t on A→B where segment p→q meets it (both inside), or null
+        var meet = function (p, q) {
+          var vx = q[0] - p[0], vy = q[1] - p[1], den = ux * vy - uy * vx;
+          if (Math.abs(den) < 1e-12 * L * (Math.hypot(vx, vy) + 1e-12)) return null;
+          var wx = p[0] - A[0], wy = p[1] - A[1], t = (wx * vy - wy * vx) / den, s = (wx * uy - wy * ux) / den;
+          return t > -1e-9 && t < 1 + 1e-9 && s > -1e-9 && s < 1 + 1e-9 ? t : null;
+        };
+        cutters.forEach(function (c) {
+          if (c.poly) {
+            var ts = [];
+            for (var i = 0; i < c.poly.length; i++) { var t = meet(c.poly[i], c.poly[(i + 1) % c.poly.length]); if (t != null) ts.push(t); }
+            if (ts.length) cuts.push([Math.min.apply(null, ts) - gt, Math.max.apply(null, ts) + gt]);
+          } else {
+            var t2 = meet(c.a, c.b);
+            // a line that only ends on this one (an arrow's own dimension line meeting its extension line) is no crossing
+            if (t2 != null && t2 > 1e-6 && t2 < 1 - 1e-6) {
+              var cl = Math.hypot(c.b[0] - c.a[0], c.b[1] - c.a[1]) || 1, ca = Math.hypot(A[0] + ux * t2 - c.a[0], A[1] + uy * t2 - c.a[1]) / cl;
+              if (ca > 1e-6 && ca < 1 - 1e-6) cuts.push([t2 - gt, t2 + gt]);
+            }
+          }
+        });
+        if (!cuts.length) { res.push(x); return; }
+        cuts.sort(function (p, q) { return p[0] - q[0]; });
+        var t0 = 0;
+        cuts.forEach(function (c) {
+          if (c[0] > t0 + 1e-9) res.push(Object.assign({}, x, { a: [A[0] + ux * t0, A[1] + uy * t0], b: [A[0] + ux * Math.min(1, c[0]), A[1] + uy * Math.min(1, c[0])], brk: true }));
+          t0 = Math.max(t0, c[1]);
+        });
+        if (t0 < 1 - 1e-9) res.push(Object.assign({}, x, { a: [A[0] + ux * t0, A[1] + uy * t0], b: B.slice(), brk: true }));
+      });
+      placedPrims[di] = res;
+    });
   }
   // do the lines of dimension p reach into view box B (more than 1 mm in from its edges)? Extension lines from points
   // on the far edge run the height of the view, along or across the part
@@ -1718,6 +1808,34 @@
       // (an unplaced one tries other points along the arc and longer leaders until it is clear of the others: d._alt)
       var ralt = ALT_RAD[d._alt || 0] || ALT_RAD[0], ra0 = d.a0 || 0, ra1 = d.a1 != null ? d.a1 : 360;
       var rc = vw.toSheet(d.c), rr = d.r * vw.scale, am = (ra0 + (ra1 - ra0) * ralt[0]) * Math.PI / 180, ru, rin = false;
+      if (d.fs && !sEll) {
+        // (rfQG) Foreshortened (SolidWorks Dimension PM ▸ Leaders): a large arc's centre off the view or the sheet. The
+        // dimension line runs from a false centre F (d.lead = F - centre, paper; default 20 mm in from the arc, at most
+        // .7 R) along the radius with a zigzag jog, its arrow on the arc at the arc's middle; a false centre dragged
+        // aside joins the radius with a slanted jog. The value sits beyond F, horizontal (ANSI)
+        var fu = [Math.cos((ra0 + (ra1 - ra0) / 2) * Math.PI / 180), Math.sin((ra0 + (ra1 - ra0) / 2) * Math.PI / 180)], fn = [-fu[1], fu[0]];
+        var ftip = [rc[0] + fu[0] * rr, rc[1] + fu[1] * rr], fL = Math.min(0.7 * rr, 20 * k);
+        var F = d.lead && Math.hypot(d.lead[0], d.lead[1]) < rr - 2 * k ? [rc[0] + d.lead[0], rc[1] + d.lead[1]] :   // (a leader dragged outside before: not a false centre)
+          [ftip[0] - fu[0] * fL, ftip[1] - fu[1] * fL];
+        var fa = (ftip[0] - F[0]) * fu[0] + (ftip[1] - F[1]) * fu[1], fo = (F[0] - ftip[0]) * fn[0] + (F[1] - ftip[1]) * fn[1];
+        if (!(fa > 4 * k)) { fa = 4 * k; F = [ftip[0] - fu[0] * fa + fn[0] * fo, ftip[1] - fu[1] * fa + fn[1] * fo]; }
+        var fP = function (al, of) { return [ftip[0] - fu[0] * al + fn[0] * of, ftip[1] - fu[1] * al + fn[1] * of]; };
+        var fj = 1.5 * k, fs1 = 0.55 * fa;
+        if (Math.abs(fo) < 1 * k) {
+          // on the radius: F, a zigzag (the foreshortened mark), on to the arc
+          var z = [F, fP(fs1 + fj, 0), fP(fs1 + fj / 2, fj), fP(fs1 - fj / 2, -fj), fP(fs1 - fj, 0), ftip];
+          for (var zi = 0; zi + 1 < z.length; zi++) line(z[zi], z[zi + 1]);
+        } else {
+          // aside: F along the radius' direction, a slanted jog onto the radius, on to the arc
+          line(F, fP(fs1 + fj, fo)); line(fP(fs1 + fj, fo), fP(fs1 - fj, 0)); line(fP(fs1 - fj, 0), ftip);
+        }
+        arrow(ftip, fu);
+        var fsg = fu[0] > 1e-9 ? 1 : -1;   // the text on the false centre's far side from the arc
+        label([F[0] - fsg * TEXT_GAP * k - fu[0] * TEXT_GAP * k, F[1] - fu[1] * TEXT_GAP * k - th / 2], fsg > 0 ? 'end' : 'start', 0, labMain);
+        d.leadNow = [F[0] - rc[0], F[1] - rc[1]];
+        delete d.dxf;   // (exploded in R2000: a DIMENSION would draw the radius whole)
+        return out;
+      }
       // (lane BX) is direction u (sheet) on the arc a0 → a1 (degrees, counter-clockwise)?
       var onArc = function (u) {
         var span = ra1 - ra0;
@@ -1813,13 +1931,14 @@
         half = (hz ? lc * hW + ls * hH : ls * hW + lc * hH) + g;
       }
       var fits = hi - lo >= 2 * half + 2 * ar + g, out = !!d.flip || !fits;
+      if (d.centre) tx = null;   // (rfQG) Center Dimension: the value in the middle, wherever it was dragged
       var c = mid + (tx || 0);
       // (lane CA) placed by a click (d.tside, Drawing.smartDim): between the extension lines the text stays there when it
       // fits between them, the arrows going outside if they do not (SolidWorks); a click outside puts it outside on
       // that side; with no click (model items) or no room, beyond the far arrow
       if (tx == null) {
         if (d.tside === -1) c = lo - xo - half;
-        else if (d.tside === 1 || (!fits && !(d.tside === 0 && hi - lo >= 2 * half - 1e-9))) c = hi + xo + half;
+        else if (d.tside === 1 || (!fits && !((d.tside === 0 || d.centre) && hi - lo >= 2 * half - 1e-9))) c = hi + xo + half;
       }
       var inside = c - half >= lo - 1e-9 && c + half <= hi + 1e-9;
       var l0 = out ? lo - xo : lo, l1 = out ? hi + xo : hi;
@@ -1874,18 +1993,18 @@
         // baseline: one linear dimension per reference from the base, nearest first, 8 mm apart
         // (rfNS) a dimension whose text would land on an earlier one's (a vertical stack: horizontal texts wider than the
         // 8 mm step; values a few thou apart) steps out 4 mm more at a time until it is clear, as SolidWorks spaces them
-        var bp = items[0].p, rest = items.slice(1).sort(function (p, q) { return Math.abs(p.val) - Math.abs(q.val); }), bPos = lvl, bTexts = [];
+        var bp = items[0].p, rest = items.slice(1).sort(function (p, q) { return Math.abs(p.val) - Math.abs(q.val); }), bPos = lvl, bTexts = [], blPos = d.blPos = [];   // (rfQG) blPos: each member's line, nearest first (a drag reads which one it holds)
         rest.forEach(function (it, i) {
           var lab = d.tol || d.label != null ? dimLabel(Object.assign({}, d, { kind: 'h', value: Math.abs(it.val) }), units) : { main: numText(Math.abs(it.val), units, prec), upper: null, lower: null };
           var bDual = _.dualLab(Object.assign({}, d, { kind: 'h', value: Math.abs(it.val) }), units);   // (rfOC)
           if (bDual) lab.dual = bDual;
-          if (i) bPos += side * 8 * k;
+          if (i) bPos += side * (+d.step > 0 ? +d.step : 8) * k;   // (rfQG) d.step: the spacing a dragged member set (paper mm)
           for (var tries = 0; tries < 16; tries++) {
             var n0 = out.length;
             linear(bp.slice(), it.p.slice(), hz2, bPos, lab, null);
             for (var bm = n0; bm < out.length; bm++) out[bm].ordM = it.p;   // (rfPH)
             var mine = out.slice(n0).filter(function (x) { return x.k === 'text'; }).map(textRect);
-            if (tries === 15 || !mine.some(function (t) { return bTexts.some(function (o) { return rectsMeet(t, o, 1 * k); }); })) { bTexts = bTexts.concat(mine); break; }
+            if (tries === 15 || !mine.some(function (t) { return bTexts.some(function (o) { return rectsMeet(t, o, 1 * k); }); })) { bTexts = bTexts.concat(mine); blPos.push(bPos); break; }
             out.length = n0; bPos += side * 4 * k;
           }
         });
@@ -2275,7 +2394,7 @@
     // support still shows them, and AutoCAD / Mastercam read the value and can restyle it); R12 keeps them exploded.
     var dimGroups = [], dimOf = {};
     if (r2000 && opts && opts.dimensions !== false) (sheet.dims || []).forEach(function (d, i) {
-      if (!d || !d.dxf || !{ h: 1, v: 1, aligned: 1, dia: 1, rad: 1, angle: 1 }[d.kind]) return;   // ordinate / baseline / chamfer stay exploded
+      if (!d || !d.dxf || d.brk || !{ h: 1, v: 1, aligned: 1, dia: 1, rad: 1, angle: 1 }[d.kind]) return;   // ordinate / baseline / chamfer stay exploded; (rfQG) so does one with Break Lines (a DIMENSION redraws its lines whole)
       var g = { d: d, prims: [], name: '*D' + (dimGroups.length + 1) };
       dimOf[i] = g; dimGroups.push(g);
     });

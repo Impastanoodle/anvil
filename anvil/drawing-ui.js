@@ -934,7 +934,9 @@
       if (!w.ortho && !w.trueDims && !any) return;   // lengths in a pictorial view are foreshortened (any: pre-highlight only; rfZ: a True view reads true lengths)
       var b = w.box;
       if (p[0] < b.x0 - tol || p[0] > b.x1 + tol || p[1] < b.y0 - tol || p[1] > b.y1 + tol) return;
-      w.proj.lines.visible.forEach(function (l) {
+      // (rfQG) and the tangent edges a view shows (View ▸ Display ▸ Tangent Edges Visible / With Font): a bend's
+      // tangent line is dimensioned to, as in SolidWorks (they could be seen but not picked)
+      w.proj.lines.visible.concat(w.view.tangent && w.view.tangent !== 'removed' ? w.proj.lines.tangent || [] : []).forEach(function (l) {
         var a = w.toSheet([l[0], l[1]]), b = w.toSheet([l[2], l[3]]), d = segDist(p, a, b);
         if (d < bd) { bd = d; best = { kind: 'entity', view: w.view.id, a: a, b: b, la: [l[0], l[1]], lb: [l[2], l[3]] }; }
       });
@@ -1322,7 +1324,8 @@
     if (!D.active) return;
     var p = toPaper(e), w = viewAt(p);
     if (DW.skContext && DW.skContext(p, e)) return;   // (rfAO) a sketch entity's menu (also notes the point for a view edge's Hide Edge)
-    if (DW.aeContext && DW.aeContext(p, e)) return;   // (rfAE) Edit Sheet Format's menu, a General Table's menu
+    if (DW.aeContext && DW.aeContext(p, e)) return;
+    if (DW.sdContext && DW.sdContext(p, e)) return;   // (rfQG) Smart Dimension: an edge's Find Intersection   // (rfAE) Edit Sheet Format's menu, a General Table's menu
     if (revTableAt(p)) { D.sel = { kind: 'revtable' }; drawOverlay(); DW.renderTree(); UI.showMenu(e.clientX, e.clientY, DW.revTableMenu(Drawing.revRowAt(doc(), units(), p))); return; }
     // (rfMZ) a dimension's own menu (Properties, parentheses, Flip Arrows, Add To Ordinate, Delete), as SolidWorks
     var dmh = DW.dimMenu && !D.tool ? dimAt(p) : null, tq = pxToPaper(3);

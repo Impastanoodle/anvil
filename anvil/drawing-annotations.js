@@ -882,6 +882,11 @@
   function reattachRef(r, pr) {
     if (r.bend != null && r.a) return reattachBendRef(r, pr);   // (rfJM) a flat pattern's bend line
     // (rfIG) an edge's midpoint: the edge is found again as any edge reference is, the point is its new middle
+    if (r.kind === 'pt' && r.vs) {   // (rfQG) a virtual sharp: both edges found again, the point where their lines meet
+      var okV = reattachRef(r.vs[0], pr) && reattachRef(r.vs[1], pr), pv = okV && vsMeet(r.vs[0], r.vs[1]);
+      if (pv) r.p = pv;
+      return !!pv;
+    }
     if (r.kind === 'pt' && r.mid) {
       var okM = reattachRef(r.mid, pr);
       if (okM) r.p = [(r.mid.a[0] + r.mid.b[0]) / 2, (r.mid.a[1] + r.mid.b[1]) / 2];
@@ -897,8 +902,8 @@
     }
     if (r.kind === 'arc') { var ra = { kind: 'rad', c: r.c, r: r.r, a0: r.a0, a1: r.a1, ell: r.ell }, ok = reattachDim(ra, pr); if (ok) { r.c = ra.c; r.r = ra.r; if (r.ell) r.ell = ra.ell; } return ok; }
     if (r.kind === 'dia') { var rc = { kind: 'dia', c: r.c, r: r.r, ell: r.ell }, ok2 = reattachDim(rc, pr); if (ok2) { r.c = rc.c; r.r = rc.r; if (r.ell) r.ell = rc.ell; } return ok2; }
-    var re = { kind: r.kind, a: r.a, b: r.b, value: r.value }, ok3 = reattachDim(re, pr);
-    if (ok3) { r.a = re.a; r.b = re.b; r.value = re.value; }
+    var re = { kind: r.kind, a: r.a, b: r.b, value: r.value, bound: r.bound }, ok3 = reattachDim(re, pr);   // (rfQG: bound kept, so an outline edge keeps its role)
+    if (ok3) { r.a = re.a; r.b = re.b; r.value = re.value; if (re.bound) r.bound = re.bound; else delete r.bound; }
     return ok3;
   }
 
@@ -924,6 +929,14 @@
     return Math.sqrt((s + Math.sqrt(Math.max(0, s * s - 4 * p * p))) / 2);
   }
   D.ellipseRadius = ellipseRadius;
+  // (rfQG) where the lines of edges e1 and e2 ({ a, b }) meet, or null when they are parallel (within 1e-9 rad)
+  function vsMeet(e1, e2) {
+    var ux = e1.b[0] - e1.a[0], uy = e1.b[1] - e1.a[1], vx = e2.b[0] - e2.a[0], vy = e2.b[1] - e2.a[1], den = ux * vy - uy * vx;
+    if (Math.abs(den) <= 1e-9 * Math.hypot(ux, uy) * Math.hypot(vx, vy)) return null;
+    var t = ((e2.a[0] - e1.a[0]) * vy - (e2.a[1] - e1.a[1]) * vx) / den;
+    return [e1.a[0] + ux * t, e1.a[1] + uy * t];
+  }
+  D.vsMeet = vsMeet;
   function pickRef(pk) {
     if (pk.edge) return refFrom({ a: pk.edge[0], b: pk.edge[1] });
     // (rfAL) an ellipse (a hole seen in a True / pictorial view): its true diameter, or radius when it is a part arc
@@ -935,6 +948,9 @@
     if (pk.circle) return { kind: 'dia', c: [+pk.circle.c[0], +pk.circle.c[1]], r: +pk.circle.r };
     if (pk.arc) return { kind: 'arc', c: [+pk.arc.c[0], +pk.arc.c[1]], r: +pk.arc.r, a0: pk.arc.a0, a1: pk.arc.a1 };
     if (pk.center) return { kind: 'pt', p: [+pk.center.c[0], +pk.center.c[1]], center: true };
+    // (rfQG) a virtual sharp (Smart Dimension ▸ right-click ▸ Find Intersection): the meeting point of two straight
+    // edges' lines; it keeps both edges, so it follows them when the part changes
+    if (pk.vsharp) { var v1 = refFrom({ a: pk.vsharp[0][0], b: pk.vsharp[0][1] }), v2 = refFrom({ a: pk.vsharp[1][0], b: pk.vsharp[1][1] }), vx = vsMeet(v1, v2); if (vx) return { kind: 'pt', p: vx, vs: [v1, v2] }; }
     if (pk.point) return { kind: 'pt', p: [+pk.point[0], +pk.point[1]] };
     // (rfIG) the midpoint of a straight edge: a point that keeps its edge, so it follows the edge when the view updates
     if (pk.mid) { var em = refFrom({ a: pk.mid[0], b: pk.mid[1] }); return { kind: 'pt', p: [(em.a[0] + em.b[0]) / 2, (em.a[1] + em.b[1]) / 2], mid: em }; }
@@ -1592,7 +1608,7 @@
   D.dualLabel = dualLab;
   // the dimension properties the Dimension PropertyManager edits; a model item keeps them in doc.dimProps under
   // styleKey (view:kind:n, stable when the part changes size), a Smart Dimension on itself
-  var DIM_PROPS = ['at', 'tx', 'tside', 'lead', 'off', 'flip', 'tol', 'prec', 'label', 'rad', 'dual', 'chform'];   // (rfPD chform: a chamfer's text format, CHAMFER_FORMS)   // (rfOC dual: true / false overrides the document's Dual dimensions display)   // (rad: an angle's arc radius, rfS; tside: placeLinear)
+  var DIM_PROPS = ['at', 'tx', 'tside', 'lead', 'off', 'flip', 'tol', 'prec', 'label', 'rad', 'dual', 'chform', 'step', 'brk', 'brkGap', 'centre', 'fs'];   // (rfQG step: a Baseline set's spacing in paper mm, set by dragging a member)   // (rfPD chform: a chamfer's text format, CHAMFER_FORMS)   // (rfOC dual: true / false overrides the document's Dual dimensions display)   // (rad: an angle's arc radius, rfS; tside: placeLinear)
   function styleKey(d, n) { return d.view + ':' + d.kind + ':' + n; }
   function setDimProps(target, props) {
     DIM_PROPS.forEach(function (k) {
