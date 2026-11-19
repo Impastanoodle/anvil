@@ -5603,7 +5603,7 @@
       var v = pm.values || v0;
       UI.disposeGroup(UI.groups.preview);
       info = { bends: null, rips: null, err: null, rounded: 0 };
-      if (!v.fixedFace) { UI.setStatus('Click the fixed face' + (isConv ? ', then the edges that become bends.' : ' (a flat face of the part that stays put in the flat).')); renderInfo(); return; }
+      if (!v.fixedFace) { UI.setStatus('Click the fixed face' + (isConv ? ', then the edges that become bends.' : ' (a flat face of the part that stays put in the flat; on a rolled part, the roll).')); renderInfo(); return; }
       if (isConv && !v.bendEdges.length) { UI.setStatus('Click the edges of the solid that become bends.'); renderInfo(); return; }
       if (!isConv && thickness(v) == null) { info.err = measured.err; UI.setStatus(title + ': ' + measured.err); renderInfo(); return; }
       try {
@@ -5730,7 +5730,7 @@
       onRollback: function () { base = null; measured.at = null; lit(); },
       message: isConv
         ? 'Click the <b>fixed face</b>, then the <b>edges</b> (or rounded faces) of the solid that become bends (or <b>Collect All Bends</b> on a part with walls T thick). The faces not joined to the fixed face across them are removed (a shell of T inward; walls already T thick stay as they are), the edges between kept faces are ripped, and the bends are inserted.'
-        : 'Click the <b>fixed face</b> (a flat face that stays put in the flat). Every sharp corner between two walls of the part\'s thickness becomes a bend of this radius; bends already rounded keep their own radius. A closed tray or box: click its corner <b>edges to rip</b> (Rip Parameters).',
+        : 'Click the <b>fixed face</b> (a flat face that stays put in the flat; on a rolled part click the roll). Every sharp corner between two walls of the part\'s thickness becomes a bend of this radius; bends already rounded keep their own radius. A closed tray or box: click its corner <b>edges to rip</b> (Rip Parameters).',
       command: { faceList: [], edgeList: [], pickEdges: true, onPick: pick },
       groups: gs, pmUndo: isConv ? pmUndo : null,
       onChange: function (v, key) {

@@ -1187,7 +1187,11 @@
       // file over in millimetres, so the same customer file opened as an inch part with OpenCascade off and as a
       // millimetre part (38.1 for 1.5) with it on, which is the default wherever the engine is installed
       var auto = fmt === 'step' && /CONVERSION_BASED_UNIT\s*\(\s*'INCH'/i.test(text) ? 'in' : 'mm';
-      var res = Exchange.finishImport('step', { units: units === 'auto' ? auto : units }, r.solids, 1, asmFile ? ['Anvil\'s reader could not read this assembly (' + (first && first.message) + '): OpenCascade read it as one part with every solid placed.'] : []);
+      // (lane RA) what OpenCascade repaired on the way in, as SolidWorks' import diagnostics report it
+      var notes = asmFile ? ['Anvil\'s reader could not read this assembly (' + (first && first.message) + '): OpenCascade read it as one part with every solid placed.'] : [];
+      if (r.heal && r.heal.healed) notes.push(r.heal.healed + (r.heal.healed === 1 ? ' solid of this file was' : ' solids of this file were') + ' repaired on import (a face with no area replaced by the flat face it stands for).');
+      if (r.heal && r.heal.failed) notes.push(r.heal.failed + (r.heal.failed === 1 ? ' solid of this file is' : ' solids of this file are') + ' not valid as written and could not be repaired: check the part before cutting from it.');
+      var res = Exchange.finishImport('step', { units: units === 'auto' ? auto : units }, r.solids, 1, notes);
       res.format = fmt; res.name = base; res.file = String(name || '').replace(/^.*[\\\/]/, '');
       res.brep = { format: fmt, text: text };
       return finish(res);
