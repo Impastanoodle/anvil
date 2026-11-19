@@ -175,6 +175,24 @@
     });
     return out;
   }
+  // lane QD: a Design Library forming tool dropped on the graphics area: its PropertyManager opens with the face under
+  // the drop point picked (the tool's centre there), as SolidWorks' drag of a forming tool onto a face
+  var DL_FORMING = 'text/x-anvil-forming';
+  function dlFormingDrag(e) { var t = e.dataTransfer && e.dataTransfer.types; return !!t && Array.prototype.indexOf.call(t, DL_FORMING) >= 0; }
+  document.addEventListener('dragover', function (e) {
+    if (!dlFormingDrag(e) || !e.target.closest || !e.target.closest('#viewport')) return;
+    e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+  document.addEventListener('drop', function (e) {
+    if (!dlFormingDrag(e) || !e.target.closest || !e.target.closest('#viewport')) return;
+    e.preventDefault();
+    var id = e.dataTransfer.getData(DL_FORMING), r = document.getElementById('viewport').getBoundingClientRect();
+    var pk = UI.pickFace ? UI.pickFace(e.clientX - r.left, e.clientY - r.top) : null;
+    if (typeof UI.cmdFormingTool !== 'function') return;
+    UI.cmdFormingTool(id);
+    if (pk && pk.point && App.command && App.command.onPick) App.command.onPick({ kind: 'face', index: pk.index, point: pk.point });
+    else if (UI.setStatus) UI.setStatus('Drop the tool on a flat face of the sheet, or click the face now.');
+  });
   function tpLibrary(body) {
     var root = el('div', { class: 'dl' });
     dl.root = root;
@@ -219,6 +237,11 @@
       var b = el('button', { class: 'dl-tile', 'data-folder': it.folder, 'data-kind': it.kind, title: it.name + (it.note ? '\n' + it.note : ''), onclick: function () { it.run(); } },
         [el('span', { class: 'dl-ico', html: dlIcon(it.icon, 32) }), el('span', { class: 'dl-name', text: it.name })]);
       if (it.id) b.dataset.id = it.id;
+      // lane QD: a forming tool is dragged onto a face of the sheet, as in SolidWorks (a click still opens it to place)
+      if (it.kind === 'forming') {
+        b.draggable = true;
+        b.addEventListener('dragstart', function (e) { if (e.dataTransfer) { e.dataTransfer.setData(DL_FORMING, it.id); e.dataTransfer.effectAllowed = 'copy'; } });
+      }
       tiles.appendChild(b);
     });
     root.appendChild(tiles);

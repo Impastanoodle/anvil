@@ -61,6 +61,50 @@
       return e;
     });
 
+    // QD2: a pattern / mirror of a Forming Tool = the same tools placed one by one (volume to 1e-9, the flat's loops and
+    // forming marks / notes the same to 1e-7, every copy in the flat DXF)
+    var QPLATE = 'p.units("in");\np.sheet(' + T + ', ' + R + ', ' + KF + ');\np.sketch("Top").rect(0, -10, 10, 10).end().baseFlange();\n';
+    function rfQDft(tool, x, z, ang) { return 'p.formingTool("' + tool + '", [' + x + ', ' + T + ', ' + z + '], { angle: ' + ang + ' });\n'; }
+    function rfQDsig(code) {
+      var r = build(QPLATE + code);
+      noErrors(r);
+      assert(K.meshQuality(r.mesh).openEdges === 0, 'closed');
+      var fl = K.flatPattern(r.model, r.build, r.mesh), r7 = function (v) { return Math.round(v * 1e7) / 1e7; };
+      var loops = fl.loops.map(function (l) { return l.map(function (p) { return p.map(r7).join(','); }).sort().join(';'); }).sort();
+      var et = (fl.etch || []).filter(function (i) { return i.form != null; }).map(function (i) {
+        return JSON.stringify([i.t, i.kind, i.text || '', (i.pts || [i.a, i.b, i.c].filter(Boolean)).map(function (p) { return p.map(r7).join(','); }).sort(), i.r ? r7(i.r) : 0]);
+      }).sort();
+      return { vol: r.mp.volume, loops: JSON.stringify(loops), nl: loops.length, et: JSON.stringify(et), ne: et.length, dxf: K.exportDXFFlat(fl, 'in', { bendLines: true, notes: true, formingTools: true }) };
+    }
+    function rfQDsame(a, b, what) {
+      near(a.vol, b.vol, 1e-9, what + ' volume');
+      assert(a.loops === b.loops, what + ': the flat\'s loops (' + a.nl + ' / ' + b.nl + ')');
+      assert(a.et === b.et, what + ': the forming marks and notes (' + a.ne + ' / ' + b.ne + ')');
+    }
+
+    test('rfQD: QD2, Linear Pattern of a louver x4 (1.5 apart) = four louvers placed one by one: volume, flat loops (four lance slits), marks and notes; the flat DXF has four LOUVER notes', function () {
+      var a = rfQDsig(rfQDft('louver', 2, 2, 0) + 'p.linearPattern({ dir: "z", spacing: 1.5, count: 4 });\n');
+      var b = rfQDsig(rfQDft('louver', 2, 2, 0) + rfQDft('louver', 2, 3.5, 0) + rfQDft('louver', 2, 5, 0) + rfQDft('louver', 2, 6.5, 0));
+      rfQDsame(a, b, 'louver x4');
+      assert(a.nl === 5 && (a.dxf.match(/LOUVER/g) || []).length === 4, 'four lances, four notes: ' + a.nl);
+      return 'volume ' + a.vol.toFixed(9) + ', ' + a.nl + ' loops, ' + a.ne + ' marks';
+    });
+
+    test('rfQD: QD2, Circular Pattern of a dimple and of a louver about the plate\'s centre (4 equal): each copy turned with the rotation (seed angle - 90 k), as placed one by one', function () {
+      var cp = 'p.circularPattern({ axis: "y", center: [5, 0, 5], count: 4 });\n';
+      rfQDsame(rfQDsig(rfQDft('dimple', 8, 5, 0) + cp), rfQDsig(rfQDft('dimple', 8, 5, 0) + rfQDft('dimple', 5, 8, 270) + rfQDft('dimple', 2, 5, 180) + rfQDft('dimple', 5, 2, 90)), 'dimple');
+      var a = rfQDsig(rfQDft('louver', 8, 5, 90) + cp);
+      rfQDsame(a, rfQDsig(rfQDft('louver', 8, 5, 90) + rfQDft('louver', 5, 8, 0) + rfQDft('louver', 2, 5, 270) + rfQDft('louver', 5, 2, 180)), 'louver');
+      return 'louver ' + a.nl + ' loops';
+    });
+
+    test('rfQD: QD2, Mirror of a louver (angle 90 at x 3) about x = 5: the mirrored louver opens the mirrored way (= a louver at x 7, angle 270, not angle 90)', function () {
+      var a = rfQDsig(rfQDft('louver', 3, 5, 90) + 'p.mirror("Right", { offset: 5 });\n');
+      rfQDsame(a, rfQDsig(rfQDft('louver', 3, 5, 90) + rfQDft('louver', 7, 5, 270)), 'mirror');
+      assert(a.loops !== rfQDsig(rfQDft('louver', 3, 5, 90) + rfQDft('louver', 7, 5, 90)).loops, 'not the same louver moved');
+      return a.nl + ' loops';
+    });
+
     test('rfQD: job 4a, a 4 x 3 bracket with two 1.5 flanges and two holes written to STEP, read back as a dumb solid, Insert Bends with the base picked: blank 4 - 2(R + T) + 2(1.5 - R - T) + 2 BA; K .5: + 2 x A T (.06); the right flange 0.5 longer by a Tab: + .5; a hole: one more loop', function () {
       var src = build('p.units("in");\np.sheet(' + T + ', ' + R + ', ' + KF + ');\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();\n' +
         'p.flange(1.5, [[0, ' + T + ', 1.5], [4, ' + T + ', 1.5]], { position: "inside", lengthRef: "outer" });\n' +

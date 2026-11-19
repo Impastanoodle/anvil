@@ -159,4 +159,70 @@
       assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
       return 'gap ' + gap.toFixed(4) + ', listed as row ' + (rows.indexOf(row) + 1) + ' of ' + rows.length + ', weld + ' + (v1 - v0).toFixed(6) + ' in³';
     });
+
+    step('rfQD: QD2, Design Library ▸ Forming Tools ▸ Louver dragged onto the web of a 16 ga channel (its PM opens with the face picked at the drop point) ✓; Features ▸ Linear Pattern of it, Z, 1.5, 4 ✓: volume and flat = four louvers placed one by one, four LOUVER notes in the flat DXF', async function () {
+      var errs0 = errors.length, T16 = 0.0598;
+      await rfQDNewInch();
+      await anvil.run('p.units("in");\np.sheet(' + T16 + ', 0.0625, 0.44);\np.sketch("Front").polyline([[0, 2], [0, 0], [6, 0], [7, 1.7320508075688772]], false).end().baseFlange(null, { depth: 10 });\n'); await idle();
+      UI.setView('Top'); if (UI.zoomToFit) UI.zoomToFit(); await idle(); await wait(30);
+      UI.openTaskPane('library'); await wait(30);
+      var dlf = D.querySelector('.dl-row[data-folder="forming"]');
+      assert(dlf, 'the Forming Tools folder'); dlf.click(); await wait(20);
+      var tile = D.querySelector('.dl-tile[data-kind="forming"][data-id="louver"]');
+      assert(tile && !tile.hidden && tile.draggable, 'the Louver tile, draggable');
+      var s = UI.worldToScreen([1.5, 0, 1.5]), vr = $('viewport').getBoundingClientRect(), cx = Math.round(vr.left + s[0]), cy = Math.round(vr.top + s[1]);
+      var dt = new W.DataTransfer();
+      tile.dispatchEvent(new W.DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      var over = new W.DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: cx, clientY: cy });
+      $('viewport').dispatchEvent(over);
+      assert(over.defaultPrevented, 'the graphics area takes the drop');
+      $('viewport').dispatchEvent(new W.DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: cx, clientY: cy }));
+      tile.dispatchEvent(new W.DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+      await idle(); await wait(30);
+      UI.closeTaskPane();
+      assert(UI.hasPM() && UI.pmTitle() === 'Forming Tool' && UI.pmSpec().values.tool === 'louver' && UI.pmSpec().values.face, 'the Louver PM with the face: ' + statusText());
+      var fv = UI.pmSpec().values.face;
+      assert(Math.abs(fv[1]) < 1e-6 && Math.abs(fv[0] - 1.5) < 0.05 && Math.abs(fv[2] - 1.5) < 0.05, 'at the drop point on the web: ' + JSON.stringify(fv));
+      await pmAccept(); await wait(30);
+      var fs = UI.App.model.features, lv = fs[fs.length - 1];
+      assert(lv.type === 'formingTool' && lv.tool === 'louver' && !UI.App.build.errors[lv.id], 'Louver built: ' + JSON.stringify(UI.App.build.errors));
+      // the louver picked in the FeatureManager, then Features ▸ Linear Pattern
+      var row = Array.prototype.filter.call(D.querySelectorAll('#tree .ti'), function (r) { var nm = r.querySelector('.nm'); return nm && nm.textContent === lv.name; })[0];
+      assert(row, 'the ' + lv.name + ' row'); row.click(); await wait(20);
+      UI.setRibbonTab('Features'); await wait(20);
+      var lb = Array.prototype.filter.call(D.querySelectorAll('#ribbon button'), function (b) { return /Linear Pattern/.test(((b.getAttribute('aria-label') || '') + ' ' + (b.title || '') + ' ' + b.textContent)); })[0];
+      if (lb) lb.click();
+      else {   // the flyout's face shows the pattern used last: its caret ▸ Linear Pattern
+        var pc = Array.prototype.filter.call(D.querySelectorAll('#ribbon .rb-caret'), function (b) { return /Pattern|Mirror/.test(b.getAttribute('aria-label') || ''); })[0];
+        assert(pc, 'the Pattern flyout on the ribbon');
+        pc.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); pc.click(); await wait(20);
+        var mi = Array.prototype.filter.call(D.querySelectorAll('body > .menu .mi'), function (m) { return /Linear\s*Pattern/.test(m.textContent); })[0];
+        assert(mi, 'Linear Pattern in the flyout'); mi.click();
+      }
+      await idle(); await wait(30);
+      assert(UI.hasPM() && UI.pmTitle() === 'Linear Pattern' && UI.pmSpec().values.feature === lv.id, 'Linear Pattern PM with the louver: ' + (UI.hasPM() && JSON.stringify(UI.pmSpec().values)));
+      var sel = pmField('Direction'); sel.value = 'z'; sel.dispatchEvent(new W.Event('change', { bubbles: true })); await wait(20);
+      setInput(pmField('Spacing'), 1.5); await wait(20);
+      setInput(pmField('Number of instances'), 4); await wait(20);
+      await pmAccept(); await wait(30);
+      fs = UI.App.model.features; var lp = fs[fs.length - 1];
+      assert(lp.type === 'lpattern' && lp.d1 === 'z' && +lp.s1 === 1.5 && +lp.n1 === 4 && !UI.App.build.errors[lp.id], 'pattern built: ' + JSON.stringify(lp) + ' ' + UI.App.build.errors[lp.id]);
+      // the same louvers placed one by one (kernel), against what the part shows
+      var ref = JSON.parse(JSON.stringify(UI.App.model)), seed = ref.features.filter(function (g) { return g.id === lv.id; })[0];
+      ref.features = ref.features.filter(function (g) { return g.id !== lp.id; });
+      for (var k = 1; k < 4; k++) {
+        var c = JSON.parse(JSON.stringify(seed)); c.id = ref.nextId++; c.name = 'Louver' + (k + 1);
+        c.face = [seed.face[0], seed.face[1], seed.face[2] + 1.5 * k];
+        if (c.at) c.at = [seed.at[0], seed.at[1] - 1.5 * k];
+        ref.features.push(c);
+      }
+      var rb = K.rebuild(ref), rm = K.meshFromBody(rb.body), rfl = K.flatPattern(ref, rb, rm), fl = anvil.flat();
+      var v1 = K.massProps(UI.App.mesh, 1).volume, v2 = K.massProps(rm, 1).volume;
+      near(v1, v2, 1e-9, 'volume = four louvers');
+      assert(fl.loops.length === 5 && rfl.loops.length === 5, 'the flat: outline + four lance slits: ' + fl.loops.length + ' / ' + rfl.loops.length);
+      var dxf = UI.dxfOutput({ export: 'sheet', version: 'R2000', bendLines: true, notes: true, formingTools: true });
+      assert((dxf.match(/LOUVER/g) || []).length === 4, 'four LOUVER notes in the flat DXF');
+      assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+      return 'louver at ' + fv.map(function (x) { return x.toFixed(3); }).join(', ') + '; volume ' + v1.toFixed(6) + '; flat ' + fl.loops.length + ' loops';
+    });
   })();

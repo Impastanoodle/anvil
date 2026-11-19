@@ -380,6 +380,39 @@
     });
     return { src: src, copies: copies };
   }
+  // lane QD: formingFamily(f, model, ctx) -> null, or { src, copies: [the Forming Tool on each copy, id f.id] }: face =
+  // the seed's centre moved, _copy = its length direction and face normal through the copy's linear part (det < 0: a
+  // reflection), read by kernel-sheetmetal.js formingToolLayout
+  function formingFamily(f, model, ctx) {
+    if (!isPlainFamily(f)) return null;
+    var g0 = f, d0 = 0;
+    while (isPlainFamily(g0) && d0++ < 9) g0 = findFeature(model, g0.feature);
+    if (!g0 || g0 === f || g0.type !== 'formingTool') return null;
+    var src = g0, rec = ctx.planes[src.id];
+    if (!rec || rec.refgeo !== 'formingTool') throw new Error((f.type === 'mirror' ? 'Mirror' : 'Pattern') + ': ' + (src.name || 'the Forming Tool') + ' did not build, so there is nothing to copy.');
+    function maps(g, depth) {
+      if (g === src) return [function (q) { return q; }];
+      var inner = maps(findFeature(model, g.feature), depth + 1), all = inner.slice();
+      familyMaps(g, ctx).forEach(function (m) { inner.forEach(function (im) { all.push(function (q) { return m(im(q)); }); }); });
+      return all;
+    }
+    var inner = maps(findFeature(model, f.feature), 0), own = familyMaps(f, ctx), copies = [];
+    if (!own.length) throw new Error((f.type === 'mirror' ? 'Mirror' : 'Pattern') + ' needs at least 2 instances.');
+    own.forEach(function (m) {
+      inner.forEach(function (im) {
+        var M = function (q) { return m(im(q)); }, o = M([0, 0, 0]);
+        var L = [sub(M([1, 0, 0]), o), sub(M([0, 1, 0]), o), sub(M([0, 0, 1]), o)], det = dot(L[0], _.cross(L[1], L[2]));
+        var lin = function (v) { return add(add(scale(L[0], v[0]), scale(L[1], v[1])), scale(L[2], v[2])); };
+        var g = JSON.parse(JSON.stringify(src));
+        g.id = f.id; delete g.at;
+        g.face = M(rec.at);
+        g._copy = { x: lin(rec.x), n: lin(rec.n), det: det };
+        copies.push(g);
+      });
+    });
+    return { src: src, copies: copies };
+  }
+  K.formingFamily = formingFamily;
   function bendFamilyMiss(f, src) {
     var what = src.type === 'closedCorner' ? 'end faces' : 'edges';
     return (f.type === 'mirror' ? 'Mirror' : 'Pattern') + ': the ' + (f.type === 'mirror' ? 'mirrored' : 'patterned') + ' ' + what + ' of ' + (src.name || 'the flange') +
@@ -1292,6 +1325,23 @@
                 eftool = eftool && t ? eftool.union(t) : eftool || t;
               });
               ctx.tools[f.id] = eftool;
+              break;
+            }
+            // lane QD: a Mirror / LPattern / CirPattern of a Forming Tool forms each copy as the seed was (footprint cut,
+            // formed shell in) on the body under it; the copies' recs ride in planes for the flat (formingFlat)
+            var ffam = formingFamily(f, model, ctx);
+            if (ffam) {
+              var ffRecs = [], ffTool = null;
+              ffam.copies.forEach(function (g) {
+                var fk = ctx.bodies.length ? Math.max(0, bodyNearPoint(ctx.bodies, g.face)) : -1;
+                ctx.body = fk >= 0 ? ctx.bodies[fk] : null;
+                var fr = _.buildFormingTool(g, model, ctx);
+                putBody(fk, fr.body);
+                ffRecs.push(fr.rec);
+                ffTool = ffTool ? ffTool.union(fr.tool) : fr.tool;
+              });
+              ctx.planes[f.id] = { refgeo: 'formingToolCopies', seed: ffam.src.id, recs: ffRecs };
+              ctx.tools[f.id] = ffTool;
               break;
             }
             // lane PK: a Mirror / LPattern / CirPattern of an Edge Flange, Hem, Miter Flange, (edge) Jog or Closed Corner is

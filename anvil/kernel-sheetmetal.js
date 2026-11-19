@@ -8685,14 +8685,24 @@
     });
     if (!face) throw new Error(what + ': there is no flat face of the sheet at ' + bcPt(p) + ': select a flat face of the sheet.');
     var n = face.plane.n.slice(), fp = _.planeFromFace(n, scale(n, face.w));
-    var at = f.at && f.at.length === 2 ? [+f.at[0], +f.at[1]] : to2D(fp, p);
+    var at = f.at && f.at.length === 2 && !f._copy ? [+f.at[0], +f.at[1]] : to2D(fp, p);
     if (!isFinite(at[0]) || !isFinite(at[1])) throw new Error(what + ': the position must be numbers.');
     var ang = (+f.angle || 0) * Math.PI / 180, P = to3D(fp, at[0], at[1]);
-    var ex = add(scale(fp.x, Math.cos(ang)), scale(fp.y, Math.sin(ang))), ey = cross(n, ex);
+    var ex = add(scale(fp.x, Math.cos(ang)), scale(fp.y, Math.sin(ang))), ey = cross(n, ex), cflip = !!f.flip;
+    // lane QD: a copy of a pattern / mirror (kernel-rebuild.js formingFamily): f._copy = { x, n, det } the seed's length
+    // direction and face normal through the copy's linear part. A copy landing on the face whose normal is the other way
+    // forms the other way (flip toggled); a reflection or that turn reverses x, so y = n x x is the seed's y mapped (the
+    // tools are symmetric about their y axis): a mirrored louver opens the mirrored way.
+    if (f._copy) {
+      var cs = dot(n, f._copy.n) < 0, cx = sub(f._copy.x, scale(n, dot(n, f._copy.x))), cl = Math.hypot(cx[0], cx[1], cx[2]);
+      if (cl < 1e-9) throw new Error(what + ': the copy\'s tool direction is normal to its face.');
+      ex = scale(cx, ((f._copy.det < 0) !== cs ? -1 : 1) / cl); ey = cross(n, ex);
+      if (cs) cflip = !cflip;
+    }
     function W3(q) { return add(P, add(scale(ex, q[0]), scale(ey, q[1]))); }
     if (!ftFaceHolds(face, g.clear.map(function (q) { return to2D(face.plane, W3(q)); })))
       throw new Error(what + ': the tool does not fit on the face at (' + ftNum(at[0]) + ', ' + ftNum(at[1]) + '): it runs off the face, over a hole or across a bend; move it at least ' + ftNum(T) + ' clear of the face\'s edges.');
-    var flip = !!f.flip, solids = g.solids.map(function (s) {
+    var flip = cflip, solids = g.solids.map(function (s) {
       var path = flip ? ftMirror(s.path, T) : s.path, plane;
       if (s.rev) {
         var rd = add(scale(ex, s.dir[0]), scale(ey, s.dir[1]));
@@ -8749,10 +8759,17 @@
     return null;
   }
   function formingFlat(model, build, faceRecs, T, warn, regions, notches, items) {
+    // lane QD: a Linear / Circular Pattern or Mirror of a Forming Tool keeps every copy's rec (refgeo
+    // 'formingToolCopies', kernel-rebuild.js formingFamily): each is marked as the seed's own, under the pattern's id
     model.features.forEach(function (f) {
-      if (f.type !== 'formingTool' || f.suppressed || (build.errors && build.errors[f.id])) return;
-      var rec = build.planes && build.planes[f.id];
-      if (!rec || rec.refgeo !== 'formingTool') return;
+      if (f.suppressed || (build.errors && build.errors[f.id])) return;
+      var pr = build.planes && build.planes[f.id];
+      if (f.type === 'formingTool') { if (pr && pr.refgeo === 'formingTool') one(f, pr, f.id); return; }
+      if (!pr || pr.refgeo !== 'formingToolCopies') return;
+      var seed = K.findFeature(model, pr.seed);
+      if (seed) pr.recs.forEach(function (rec) { one(seed, rec, f.id); });
+    });
+    function one(f, rec, formId) {
       var w0 = dot(rec.n, rec.at), tol = 1e-5 * (1 + Math.abs(w0)), best = null;
       faceRecs.forEach(function (fr) {
         if (Math.abs(Math.abs(dot(rec.n, fr.normal)) - 1) > 1e-6) return;
@@ -8784,7 +8801,7 @@
       var hid = ftHidden(f, model, T);
       function W3(q) { return add(rec.at, add(scale(rec.x, q[0]), scale(rec.y, q[1]))); }
       rec.marks.forEach(function (m, mi) {
-        var it = m.t === 'circle' ? { t: 'circle', c: drop(m.c), r: m.r, form: f.id, kind: 'mark' } : { t: 'poly', pts: m.pts.map(drop), closed: !!m.closed, form: f.id, kind: 'mark' };
+        var it = m.t === 'circle' ? { t: 'circle', c: drop(m.c), r: m.r, form: formId, kind: 'mark' } : { t: 'poly', pts: m.pts.map(drop), closed: !!m.closed, form: formId, kind: 'mark' };
         if (mi === 0 && hid && hid.r && it.t === 'circle') it.farR = hid.r;
         else if (mi === 0 && hid && hid.pts && it.t === 'poly' && it.pts.length > 1) {
           var o = it.pts[0], dx = it.pts[1][0] - o[0], dy = it.pts[1][1] - o[1], l = Math.hypot(dx, dy) || 1;
@@ -8793,7 +8810,7 @@
         }
         items.push(it);
       });
-      rec.centre.forEach(function (l) { items.push({ t: 'line', a: drop(l[0]), b: drop(l[1]), form: f.id, kind: 'mark' }); });
+      rec.centre.forEach(function (l) { items.push({ t: 'line', a: drop(l[0]), b: drop(l[1]), form: formId, kind: 'mark' }); });
       // a lance cut is a real cut through the blank: a slit FT_SLIT wide (0.01 in / 0.25 mm, a laser kerf) centred on the
       // lance line, so the DXF keeps closed loops on HOLES
       var gw = model.units === 'in' ? FT_SLIT : FT_SLIT * 25.4;
@@ -8802,8 +8819,8 @@
         var sl = [[a2[0] - nx, a2[1] - ny], [b2[0] - nx, b2[1] - ny], [b2[0] + nx, b2[1] + ny], [a2[0] + nx, a2[1] + ny]];
         notches.push(signedArea(sl) < 0 ? sl.reverse() : sl);
       });
-      items.push({ t: 'note', a: drop(rec.noteAt), text: note, form: f.id, kind: 'note', up: up, tool: rec.tool });
-    });
+      items.push({ t: 'note', a: drop(rec.noteAt), text: note, form: formId, kind: 'note', up: up, tool: rec.tool });
+    }
   }
   K.registerFeature('formingTool', {
     cut: false,
