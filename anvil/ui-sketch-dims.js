@@ -222,27 +222,64 @@
   // Dimension or a distance between two entities). Names by position (dims first, then relations) stay for what a
   // document already holds; when new dimension items appear (more Smart Dimensions at the end of f.dims, or more
   // dimension relations at the end of the relations), every unnamed old one gets the name it shows today stored on it
-  // and each new one takes the next free D<n>. Counts per sketch id; a count that drops (delete, undo) is re-seeded.
-  var dimCounts = {};
-  function dimRelCount(f) { var n = 0; (f.rels || []).forEach(function (r) { if (r && S.TYPES[r.type] && S.TYPES[r.type].dim) n++; }); return n; }
+  // and each new one takes the next free D<n>.
+  // rfQH (lane sketchflow9): names never renumber. Each sketch keeps a snapshot of the names it last showed (per dimension
+  // object); on the next call every dimension that is still there (same object; else the same content, for an operation
+  // that put back a clone; else the same place when nothing was added or removed) keeps its name, so deleting D2 leaves
+  // D3 as D3 (stored on it, since its place now says D2). A new one takes the highest D<n> shown + 1 (no gap refilled).
+  // A list with no dimension object in common with the snapshot (undo / redo / open put a parsed copy in) is re-seeded:
+  // that copy is a state that was shown, with its names stored. Called on every redraw (drawDims), every name lookup and
+  // before a rebuild in sketch mode (ui-core rebuild), so equations see the stored name before the kernel resolves them.
+  var dimSnaps = {};
+  function dimSig(d) {
+    var o = {};
+    Object.keys(d).forEach(function (k) { if (k !== 'name') o[k] = d[k]; });
+    try { return JSON.stringify(o); } catch (e) { return null; }
+  }
   function nameNewDims(f, seedOnly) {
     if (!f || f.type !== 'sketch') return;
-    var key = String(f.id), nd = (f.dims || []).length, nr = dimRelCount(f), was = dimCounts[key];
-    dimCounts[key] = { nd: nd, nr: nr };
-    if (seedOnly || !was || (nd <= was.nd && nr <= was.nr)) return;
-    var newD = nd > was.nd ? f.dims.slice(was.nd) : [], rels = (f.rels || []).filter(function (r) { return r && S.TYPES[r.type] && S.TYPES[r.type].dim; });
-    var newR = nr > was.nr ? rels.slice(was.nr) : [], fresh = newD.concat(newR);
-    if (!fresh.some(function (d) { return d && !d.name; })) return;
-    // the old ones keep the names they show (their place among the old ones only), the new ones take the next numbers;
-    // a name is stored only where the place in the list would give another one, so a sketch whose dimensions were
-    // made in list order keeps no names (its script stays as it was)
-    var old = (f.dims || []).filter(function (d) { return newD.indexOf(d) < 0; }).concat(rels.filter(function (r) { return newR.indexOf(r) < 0; }));
-    var want = new Map(), top = 0;
-    old.forEach(function (d, k) { if (d) want.set(d, d.name ? String(d.name) : 'D' + (k + 1)); });
-    want.forEach(function (nm) { var m = /^D(\d+)$/.exec(nm); if (m) top = Math.max(top, +m[1]); });
-    fresh.forEach(function (d) { if (d) { if (d.name) { var m = /^D(\d+)$/.exec(String(d.name)); if (m) top = Math.max(top, +m[1]); } } });
-    fresh.forEach(function (d) { if (d) want.set(d, d.name ? String(d.name) : 'D' + (++top)); });
-    (f.dims || []).concat(rels).forEach(function (d, k) { if (d && !d.name && want.get(d) !== 'D' + (k + 1)) d.name = want.get(d); });
+    var key = String(f.id), list = dimList(f), prev = dimSnaps[key], reseed = !!seedOnly || !prev, names = [];
+    // the same objects in the same order: nothing to do (the common case: every label lookup of a redraw)
+    if (!reseed && prev.items.length === list.length && list.every(function (it, k) { return prev.byD.get(it.d) === k && (it.d.name ? String(it.d.name) : 'D' + (k + 1)) === prev.items[k].name; })) return;
+    var matched = list.map(function () { return null; });
+    if (!reseed && prev.items.length && list.length) {
+      var used = {}, any = false;
+      list.forEach(function (it, k) {
+        var j = prev.byD.get(it.d);
+        if (j != null && !used[j]) { matched[k] = j; used[j] = true; any = true; }
+      });
+      if (!any) reseed = true;
+      else {
+        list.forEach(function (it, k) {
+          if (matched[k] != null) return;
+          var s = dimSig(it.d);
+          for (var j = 0; j < prev.items.length; j++) {
+            if (!used[j] && prev.items[j].kind === it.kind && s != null && prev.items[j].sig === s) { matched[k] = j; used[j] = true; return; }
+          }
+        });
+        if (list.length === prev.items.length) list.forEach(function (it, k) {
+          if (matched[k] == null && !used[k] && prev.items[k].kind === it.kind) { matched[k] = k; used[k] = true; }
+        });
+      }
+    }
+    if (reseed) names = list.map(function (it, k) { return it.d.name ? String(it.d.name) : 'D' + (k + 1); });
+    else {
+      var top = 0;
+      list.forEach(function (it, k) {
+        names[k] = it.d.name ? String(it.d.name) : matched[k] != null ? prev.items[matched[k]].name : null;
+        var m = names[k] && /^D(\d+)$/.exec(names[k]);
+        if (m) top = Math.max(top, +m[1]);
+      });
+      list.forEach(function (it, k) {
+        if (names[k] == null) names[k] = 'D' + (++top);
+        // a name is stored only where the place in the list would give another one, so a sketch whose dimensions were
+        // made in list order and never deleted keeps no names (its script stays as it was)
+        if (!it.d.name && names[k] !== 'D' + (k + 1)) it.d.name = names[k];
+      });
+    }
+    var byD = new Map();
+    list.forEach(function (it, k) { byD.set(it.d, k); });
+    dimSnaps[key] = { byD: byD, items: list.map(function (it, k) { return { kind: it.kind, sig: dimSig(it.d), name: names[k] }; }) };
   }
   UI.sketchNameNewDims = nameNewDims;
   UI.sketchEnterHooks = UI.sketchEnterHooks || [];

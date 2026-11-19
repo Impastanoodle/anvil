@@ -4958,6 +4958,8 @@ var UI = (function () {
   }
   function rebuild(opts) {
     rollbarSync();   // rfGQ: a new feature goes in at the rollback bar
+    // rfQH: an open sketch stores the D-names it showed before a delete renumbers them, before equations are resolved
+    if (App.mode === 'sketch' && UI.sketchNameNewDims && UI.activeSketchFeature) { try { UI.sketchNameNewDims(UI.activeSketchFeature()); } catch (e) { /* names only */ } }
     opts = opts || {};
     if (opts.keepSame && keepSame()) {
       applyBuild(App.build, { noSave: !!opts.noSave, keepMs: true, kept: true, sameMesh: true });

@@ -2537,6 +2537,32 @@ var SketchSolver = (function () {
   }
 
   // Entity `index` was deleted: relations on it go, refs to later entities shift down.
+  // the Offset chain relation `rel` without the pair whose base or copy is entity `index`: a list of open chain relations
+  // (refs still in the old numbering), [] when nothing is left, null when rel does not hold index or is not a plain chain
+  // (trimmed, bi-directional, capped: those go as before)
+  function chainWithout(rel, index) {
+    var ch = rel.chain, n = ch.n | 0, refs = rel.refs, R = refs.map(parseRef);
+    if (!(n >= 1) || refs.length !== 2 * n || ch.slot || ch.cut || ch.bi || ch.cap || !Array.isArray(ch.dirs) || ch.dirs.length !== n) return null;
+    if (R.some(function (p) { return !p || p.o || p.s !== null; })) return null;
+    var k = -1;
+    R.forEach(function (p, i) { if (p.e === index) k = i % n; });
+    if (k < 0) return null;
+    var lead = ch.lead > 0 && ch.lead < n ? ch.lead | 0 : 0, runs = [], j;
+    if (ch.closed) { var run = []; for (j = 1; j < n; j++) run.push((k + j) % n); runs.push(run); }
+    else {
+      var a = [], b = [];
+      for (j = 0; j < k; j++) a.push(j);
+      for (j = k + 1; j < n; j++) b.push(j);
+      runs = [a, b];
+    }
+    return runs.filter(function (r) { return r.length; }).map(function (r) {
+      var nc = { n: r.length, dirs: r.map(function (q) { return ch.dirs[q]; }), closed: false };
+      if (Array.isArray(ch.joins)) nc.joins = r.slice(0, -1).map(function (q) { return ch.joins[q]; });
+      var L = r.indexOf(lead);
+      if (L > 0) nc.lead = L;
+      return { type: 'offset', refs: r.map(function (q) { return refs[q]; }).concat(r.map(function (q) { return refs[n + q]; })), chain: nc };
+    });
+  }
   function removeEntity(sketch, index) {
     if (!sketch.rels) return;
     // rfMW: a deleted pattern copy takes its whole instance out of the Pattern relation (the instance becomes one to
@@ -2553,6 +2579,18 @@ var SketchSolver = (function () {
       rel.refs.splice(na + m + q * m, m);
       pt.inst = pt.inst.slice(); pt.inst.splice(q, 1);
     });
+    // rfQH (lane sketchflow9): a base or copy of an Offset chain deleted (a fillet of an outline offset as one chain) no
+    // longer drops the whole chain relation (33 free degrees on the flat of rfQH flow c): the other pairs stay held as a
+    // shorter open chain (two when an open chain loses an inner item)
+    var split = [];
+    sketch.rels = sketch.rels.filter(function (rel) {
+      if (rel.type !== 'offset' || !rel.chain) return true;
+      var parts = chainWithout(rel, index);
+      if (!parts) return true;
+      split = split.concat(parts);
+      return false;
+    });
+    if (split.length) sketch.rels = sketch.rels.concat(split);
     sketch.rels = sketch.rels.filter(function (rel) {
       return !rel.refs.some(function (r) { var p = parseRef(r); return p && !p.o && p.e === index; });
     }).map(function (rel) {
@@ -2676,7 +2714,7 @@ var SketchSolver = (function () {
     // become Coincidents. Not for a trimmed base or a first copy trimmed away whole (the relation goes, as before).
     function trimChain(rel) {
       var ch = rel.chain, n = ch.n | 0, R = rel.refs.map(parseRef);
-      if (!simple || !(n >= 1) || R.length <= n || R.some(function (p) { return !p || p.o || p.s !== null; })) return null;
+      if (!simple || !(n >= 1) || ch.lead || R.length <= n || R.some(function (p) { return !p || p.o || p.s !== null; })) return null;
       var oldCopies = R.slice(n).map(function (p) { return p.e; }), q0 = oldCopies.indexOf(idx);
       if (q0 < 0 || R.slice(0, n).some(function (p) { return p.e === idx; })) return null;
       if (R.some(function (p) { return p.e !== idx && !(map[p.e] >= 0); })) return null;
@@ -5920,19 +5958,22 @@ var SketchSolver = (function () {
     if (!(n >= 1) || !Array.isArray(ch.dirs) || ch.dirs.length !== n || idx.some(function (e) { return e < 0 || !ents[e]; })) return null;
     var bases = idx.slice(0, n), copies = idx.slice(n), items = bases.map(function (b, k) { return { i: b, dir: ch.dirs[k] === -1 ? -1 : 1 }; });
     if (bases.some(function (b) { return !curveEnt(ents[b]); })) return null;
-    var c0 = ents[copies[0]], b0 = ents[bases[0]];
+    // rfQH: chain.lead (default 0) is the dimensioned pair: a closed chain opened where a base was deleted keeps the pair
+    // its Parallel / Concentric and offset dimension hold, wherever it now sits in the list (removeEntity, chainWithout)
+    var slot = Array.isArray(ch.slot) ? ch.slot : null, cut = ch.cut || null;
+    var L0 = !slot && ch.lead > 0 && ch.lead < n ? ch.lead | 0 : 0;
+    var c0 = ents[copies[L0]], b0 = ents[bases[L0]];
     if (!c0 || c0.t !== b0.t) return null;
     function dOf(E) {
-      var b = E[bases[0]], c = E[copies[0]];
-      if (b.t === 'line') { var t = itemTan(b, items[0].dir), mid = [(c.x1 + c.x2) / 2, (c.y1 + c.y2) / 2]; return dot(sub(mid, [b.x1, b.y1]), [-t[1], t[0]]); }
-      return items[0].dir * (b.r - c.r);
+      var b = E[bases[L0]], c = E[copies[L0]];
+      if (b.t === 'line') { var t = itemTan(b, items[L0].dir), mid = [(c.x1 + c.x2) / 2, (c.y1 + c.y2) / 2]; return dot(sub(mid, [b.x1, b.y1]), [-t[1], t[0]]); }
+      return items[L0].dir * (b.r - c.r);
     }
     // rfPR (lane sketchflow6): a trimmed chain. chain.slot[q] is the expected copy that copy q is (a piece of); chain.cut
     // { q: ends } marks copy q as a piece of it: a line piece lies on its expected line through the ends listed ('p1',
     // 'p2': the ends not joined to a whole copy, which hold the others), an arc piece keeps the expected centre ('c') and
     // radius ('r': not when an end is joined to a whole copy); its extent is free (the trim's Coincidents hold it). The first copy (the dimensioned one) keeps no rows
     // as a piece: its Parallel / Concentric and the offset dimension hold its carrier.
-    var slot = Array.isArray(ch.slot) ? ch.slot : null, cut = ch.cut || null;
     var exp0 = chainExpected(ents, items, ch, dOf(ents));
     if (!exp0) return null;
     if (slot ? slot.length !== copies.length || slot.some(function (s) { return !(s >= 0 && s < exp0.length); }) : exp0.length !== copies.length) return null;
@@ -5940,7 +5981,7 @@ var SketchSolver = (function () {
     var rows = 0, layout = copies.map(function (c, q) {
       var names = paramNames(ents[c]), pc = cut && cut[q], cnt;
       if (pc) cnt = q === 0 ? 0 : ents[c].t === 'line' ? (Array.isArray(pc) ? pc.length : 2) : (!Array.isArray(pc) || pc.indexOf('c') >= 0 ? 2 : 0) + (!Array.isArray(pc) || pc.indexOf('r') >= 0 ? 1 : 0);
-      else cnt = q === 0 ? 2 : names.length;
+      else cnt = q === L0 ? 2 : names.length;
       rows += cnt;
       return { c: c, names: names, s: slot ? slot[q] : q, pc: pc || null };
     });
@@ -5960,8 +6001,8 @@ var SketchSolver = (function () {
           }
           return;
         }
-        if (q === 0) {
-          if (c.t === 'line') { var u = unit(sub([E[bases[0]].x2, E[bases[0]].y2], [E[bases[0]].x1, E[bases[0]].y1])); out.push(dot(sub([c.x1, c.y1], [x.x1, x.y1]), u), dot(sub([c.x2, c.y2], [x.x2, x.y2]), u)); }
+        if (q === L0) {
+          if (c.t === 'line') { var u = unit(sub([E[bases[L0]].x2, E[bases[L0]].y2], [E[bases[L0]].x1, E[bases[L0]].y1])); out.push(dot(sub([c.x1, c.y1], [x.x1, x.y1]), u), dot(sub([c.x2, c.y2], [x.x2, x.y2]), u)); }
           else out.push(angDiff(c.a0, x.a0), angDiff(c.a1, x.a1));
           return;
         }

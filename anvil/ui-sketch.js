@@ -9,7 +9,7 @@
     if (UI.isAssembly && UI.isAssembly()) { if (UI.setStatus) UI.setStatus('Sketches are not available in an assembly document'); return; }
     var f = K.findFeature(App.model, id);
     if (!f || f.type !== 'sketch') return;
-    if (App.mode === 'sketch' && App.activeSketch !== id) { exitSketch(true); if (App.mode === 'sketch') return; }   // rfQA: the exit guard kept the open sketch
+    if (App.mode === 'sketch' && App.activeSketch !== id) { exitSketch(true, false); if (App.mode === 'sketch') return; }   // rfQA: the exit guard kept the open sketch
     App.mode = 'sketch';
     App.activeSketch = id;
     App.sel = null; App.sel2 = null;
@@ -67,11 +67,20 @@
   // rfQA (lane sketchflow8): UI.sketchExitGuard, when a function, is asked first with the sketch feature: a string it
   // returns keeps the sketch open and is shown as a toast (another command, e.g. Edit Flange Profile, sets it while its
   // sketch must stay valid). Discard Changes and Exit (force) does not ask.
+  // rfQH (lane sketchflow9), the rule: the guard is asked when the USER leaves the sketch: exitSketch() / exitSketch(false)
+  // (the confirmation corner, the Sketch / Exit Sketch ribbon toggle, the Exit Sketch menu rows and right-click rows,
+  // Make Drawing, Nest's Create Part), a command that waits for the close through App.pendingAfterSketch (withSketch: the
+  // command is then not run), and force === false (enterSketch of another sketch, Rapid Sketch to another plane: both stop
+  // when it refuses). It is NOT asked by force === true (Discard Changes and Exit, undo / open / delete taking the sketch
+  // away) nor by a silent exit with nothing waiting (exitSketch(true): a command that goes on at once as if the sketch were
+  // closed, e.g. Linear Pattern, Hole Wizard, 3D Sketch, Insert Library Feature, Import): keeping the sketch open there would
+  // run that command inside the sketch. A guarded command's own exit hook still sees the sketch (UI.sketchExitHooks).
   UI.sketchExitGuard = null;
   function exitSketch(silent, force) {
     if (App.mode !== 'sketch') return UI.whenIdle();
     var f = UI.activeSketchFeature();
-    if (!force && f && typeof UI.sketchExitGuard === 'function') {
+    var ask = force === false || (!force && (!silent || !!App.pendingAfterSketch));
+    if (ask && f && typeof UI.sketchExitGuard === 'function') {
       var why = null;
       try { why = UI.sketchExitGuard(f); } catch (e) { why = null; }
       if (typeof why === 'string' && why) { App.pendingAfterSketch = null; UI.toast(why); UI.setStatus(why); return UI.whenIdle(); }
@@ -716,7 +725,14 @@
     // land on them (UI.sketchToolDefs[tool].noOwnSnap(st) or UI.sketchFreeHooks[tool].noOwnSnap(st): an arc slot's width
     // click near its third point, an ellipse's minor axis point near its centre)
     var tdef = UI.sketchToolDefs[App.tool] || UI.sketchFreeHooks[App.tool], ownSnap = !(tdef && tdef.noOwnSnap && tdef.noOwnSnap(st));   // (an ellipse's minor axis point too)
-    if (ownSnap) st.pts.forEach(function (p) { cands.push({ pt: p, kind: 'end' }); });
+    // rfQH: a circle's / polygon's radius point never snaps back onto its own centre (a small hole started on a bolt
+    // circle's quadrant: the second click 6 px away took the quadrant again, radius 0, and nothing was made)
+    // (head: a polygon keeps the alignment with its own centre, which sets its angle: p9-sketch-curves' flats at x = ±10;
+    // only the point itself is not a snap target for it)
+    var ownPt = ownSnap;
+    if (ownSnap && st.pts.length === 1 && App.tool === 'circle') ownSnap = ownPt = false;
+    if (ownPt && st.pts.length === 1 && App.tool === 'polygon') ownPt = false;
+    if (ownPt) st.pts.forEach(function (p) { cands.push({ pt: p, kind: 'end' }); });
     // rfA: … nor on any point sitting where one of them is (an ellipse centred on the origin: its minor axis click near
     // the centre snapped onto the origin, the centre again, and was refused)
     else cands = cands.filter(function (c) { return !st.pts.some(function (q) { return Math.abs(q[0] - c.pt[0]) < 1e-9 && Math.abs(q[1] - c.pt[1]) < 1e-9; }); });
@@ -1750,7 +1766,8 @@
     if (App.tool === 'line' && UI.lineMode) item = { tool: 'line', label: item.label, lineMode: UI.lineMode() };
     var s = pk.point ? UI.worldToScreen(pk.point) : [mx, my];
     App.hover = null;
-    exitSketch(true);
+    exitSketch(true, false);   // rfQH: the user leaves this sketch for another plane: the exit guard is asked
+    if (App.mode === 'sketch') return true;
     rapidStart(pk, item, s);
     return true;
   }
