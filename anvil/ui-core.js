@@ -686,6 +686,7 @@ var UI = (function () {
   function disposeGroup(g) {
     while (g.children.length) {
       var c = g.children.pop();
+      c.parent = null;   // (rfQX) as Object3D.remove does: the Sketch Picture group asked "is my parent still the sketches group?" and stayed out of the scene after a zoom redraw
       if (c.geometry && !c.geometry.userData.keep) c.geometry.dispose();   // rfOG: a cached geometry (userData.keep) is its owner's to dispose
     }
   }

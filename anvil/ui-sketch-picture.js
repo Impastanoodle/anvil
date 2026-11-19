@@ -109,6 +109,9 @@
   // call) adds it straight after the sketches are drawn; ui-core.js's own redraws (load, undo, rebuild) empty the
   // sketches group without it, so a frame check puts it back when it has gone.
   var holder = null;
+  // (rfQX) in the scene means in the group's children: ui-core.js's disposeGroup popped the children without clearing
+  // their parent, so after a zoom redraw holder.parent still said "sketches" and the picture was never put back
+  function inScene() { var ch = UI.groups.sketches.children; return !!holder && (ch[ch.length - 1] === holder || ch.indexOf(holder) >= 0); }
   function addPictures() {
     if (holder) { holder.children.forEach(function (m) { if (m.geometry) m.geometry.dispose(); }); if (holder.parent) holder.parent.remove(holder); }
     holder = new THREE.Group();
@@ -129,10 +132,10 @@
     return r;
   };
   (function watch() {
-    try { if (!holder || holder.parent !== UI.groups.sketches) { addPictures(); if (UI.requestRender) UI.requestRender(); } } catch (err) { /* */ }
+    try { if (!inScene()) { addPictures(); if (UI.requestRender) UI.requestRender(); } } catch (err) { /* */ }
     requestAnimationFrame(watch);
   })();
-  UI.sketchPictureObjects = function () { return holder && holder.parent === UI.groups.sketches ? holder.children.slice() : []; };   // test hook
+  UI.sketchPictureObjects = function () { return inScene() ? holder.children.slice() : []; };   // test hook
 
   // ------------------------------------------------------------------ inserting
   // The file is read as a data URL; a picture over MAX_PX pixels on a side, or a BMP, is re-encoded (PNG when it has
