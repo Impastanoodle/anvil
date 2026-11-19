@@ -174,9 +174,9 @@
       assert(UI.App.undo.length === u1 + 1, 'one undo step for both');
       // by name, without quotes or @: D1 is the first Smart Dimension (the height 1.250); the top's height = D1 * 2
       var y7 = f.entities[7].y1;
-      await rfPRDim([[-1, 3], [-1.5, 0]], [-5, 1.5], '=D1*2');
+      await rfPRDim([[-1, 3], [-1.5, 0]], [-5, 1.5], '=D2*2');   // (lane sketchflow8: names in creation order; the width distance made first is D1, the side height D2)
       near(f.entities[7].y1, 2.5, 1e-9, 'the top at twice the side height (was ' + y7 + ')');
-      assert(/="D1@Sketch1"\*2/.test(statusText()), 'status names the equation: ' + statusText());
+      assert(/="D2@Sketch1"\*2/.test(statusText()), 'status names the equation: ' + statusText());
       await rfPREditDim(/^1\.250$/, '1');
       near(f.entities[7].y1, 2, 1e-9, 'the top follows D1');
       UI.setTool('select'); await wait(20);

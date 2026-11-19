@@ -651,6 +651,10 @@ var OcctKernel = (function () {
     function patternTool(f) {
       var bfam = !(f.type === 'mirror' && f.body) && K.bendFamily ? K.bendFamily(f, m, { planes: planes, sketches: sketches }) : null;
       if (bfam) { bendFamilyOp(f, bfam); return null; }
+      // (lane QD2, applied by the head) a pattern / mirror of a Forming Tool: each copy formed like the seed (Kernel.formingFamily),
+      // as Anvil's rebuild does; it failed here with 'Pattern source feature has no geometry'
+      var ffam = !(f.type === 'mirror' && f.body) && K.formingFamily ? K.formingFamily(f, m, { planes: planes, sketches: sketches }) : null;
+      if (ffam) { var ffRecs = []; ffam.copies.forEach(function (g) { formingToolOp(g); ffRecs.push(planes[f.id]); }); planes[f.id] = { refgeo: 'formingToolCopies', seed: ffam.src.id, recs: ffRecs }; return null; }
       var src = familyTool(f.feature), copies = [], sf = !src && f.feature != null ? K.findFeature(m, f.feature) : null;
       var seeds = sf && !(f.type === 'mirror' && f.body) ? edgeSeeds(f.feature, 0) : null;
       if (seeds) { edgeFeatureCopies(f, seeds); return null; }
