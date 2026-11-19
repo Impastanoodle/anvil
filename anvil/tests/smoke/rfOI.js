@@ -365,10 +365,10 @@
       ef.length = 3;
       await check(1, 0.87, -0.12, 'flange 3');
       m.sheet.thickness = 0.075;
-      await check(1, 0.87, -0.135, 'T .075');   // (the flange's wall moves out to T + R; the base keeps its own depth, so the bend edge stays at .12)
+      await check(1, 0.885, -0.135, 'T .075');   // (the flange's wall moves out to T + R, and since lane smflange the Base Flange takes the sheet's T too, so the bend edge is at .135)
       var bs = m.features.filter(function (x) { return x.type === 'sketch'; })[0];
       bs.entities[0].x = 0.5; bs.entities[0].w = 5.5;
-      await check(1.5, 0.87, -0.135, 'base moved in');
+      await check(1.5, 0.885, -0.135, 'base moved in');
     } finally { UI.setTangentEdges(tan0); await rfPREnd(); }
     return rfPROut(log);
   });

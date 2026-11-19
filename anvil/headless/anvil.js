@@ -409,11 +409,11 @@ async function cmdDrawing(src, flags) {
   // the drawing DXF: R12 by default, --dxf-version 2000 for R2000; read back by dxf-check (no cut layers on a drawing:
   // the check is the header, units and entities); a DWG goes through an R2000 DXF, as the flat's does
   if (flags.dxf) {
-    const dv = dxfOptions(flags, false).version, text = Drawing.toDXF(sheet, { version: dv, hatch: true }), c = require('./dxf-check').check(text, { units, layers: [] });
+    const dv = dxfOptions(flags, false).version, text = Drawing.toDXF(sheet, { version: dv, hatch: true, attributes: true }), c = require('./dxf-check').check(text, { units, layers: [] });
     outputs.dxf = Object.assign(writeOut(flags.dxf, text), { version: dv, check: { ok: c.ok, version: c.version, insunits: c.insunits, entities: c.entities, counts: c.counts } });
     if (!c.ok) r.summary.errors.push({ id: null, feature: 'DXF check (drawing)', message: c.errors.slice(0, 5).join('; ') });
   }
-  if (flags.dwg) outputs.dwg = writeOut(flags.dwg, toDwg(Drawing.toDXF(sheet, { version: 'R2000', hatch: true }), conv));
+  if (flags.dwg) outputs.dwg = writeOut(flags.dwg, toDwg(Drawing.toDXF(sheet, { version: 'R2000', hatch: true, attributes: true }), conv));
   if (flags.pdf) outputs.pdf = writeOut(flags.pdf, Drawing.toPDF(sheet), 'latin1');
   const summary = {
     name: r.model.name, kind: r.kind, sheet: { format: doc.sheet.format, scale: doc.sheet.scale, projection: doc.sheet.projection, units },
