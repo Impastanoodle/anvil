@@ -788,7 +788,7 @@
     var placed = [], shown = [];
     // (geo: the views' drawn geometry, worked out above for the dry run)
     var obs = { texts: [], segs: [], geo: geo, boxes: views.map(function (w) { return { box: w.box, view: w.view.id }; }).concat([{ box: tbRect }]),
-      sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 } };
+      sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 }, warnings: warnings };   // (rfQN warnings: a Baseline set closed up or pulled in to stay on the sheet)
     if (bom) obs.boxes.push({ box: bom.box });
     Object.keys(annPre).forEach(function (key) { annPre[key].prims.forEach(function (x) { if (x.k === 'line') geo.segs.push([x.a, x.b]); else if (x.k === 'text') obs.texts.push(textRect(x)); }); });
     flatPre.concat(notePre).forEach(function (it) { if (!it.hidden) obs.texts.push(it.box); });
@@ -1036,8 +1036,11 @@
   // be. It goes on two lines then ('DOWN 90°' over 'R .060', split where the longer line is shortest), beside the line
   // as before; when even that does not fit (a narrow tab), it runs on from the bend line's end, outside the blank,
   // centred on the line. M: the line's middle, t / n: along / beside it (text upright), L: its length (paper).
-  function bendNotePrims(txt, M, t, n, L, g, h, rot, e) {
-    function tp(along, across, s, anchor) { return { k: 'text', p: [M[0] + t[0] * along + n[0] * across, M[1] + t[1] * along + n[1] * across], h: h, text: s, anchor: anchor || 'middle', layer: 'BEND_NOTES', rot: rot }; }
+  // (rfQN) side -1: the note on the line's other side (each line's span across the bend line mirrored, the first line still
+  // on top as read): a hem's bend line .49 in from the blank's edge put its note across the outline
+  function bendNotePrims(txt, M, t, n, L, g, h, rot, e, side) {
+    var sgn = side < 0 ? -1 : 1;
+    function tp(along, across, s, anchor) { if (sgn < 0 && anchor !== 'start') across = -across - h; return { k: 'text', p: [M[0] + t[0] * along + n[0] * across, M[1] + t[1] * along + n[1] * across], h: h, text: s, anchor: anchor || 'middle', layer: 'BEND_NOTES', rot: rot }; }
     var room = L - 2 * g;
     if (textWidth(txt, h) <= room) return [tp(0, g, txt)];
     var best = null, i = -1;
@@ -1047,7 +1050,7 @@
       var wd = Math.max(textWidth(l1, h), textWidth(l2, h));
       if (!best || wd < best.w) best = { w: wd, lines: [l1, l2] };
     }
-    if (best && best.w <= room) return [tp(0, g + 1.6 * h, best.lines[0]), tp(0, g, best.lines[1])];
+    if (best && best.w <= room) return sgn < 0 ? [tp(0, g, best.lines[0]), tp(0, g + 1.6 * h, best.lines[1])] : [tp(0, g + 1.6 * h, best.lines[0]), tp(0, g, best.lines[1])];
     return [tp(L / 2 + e + g, -h / 2, txt, 'start')];
   }
   // (lane drawing) cbCrossing(segs) -> where a Cross-Break's first two lines cross (paper), else its first line's middle
@@ -1131,6 +1134,19 @@
     var bkeys = fd.bends && D.bendKeyMatch ? D.bendKeyMatch(fd.bends, own, fd.bbox ? Math.hypot(fd.bbox.umax - fd.bbox.umin, fd.bbox.vmax - fd.bbox.vmin) : 1) : [];
     try { Object.defineProperty(v, '_bendKeys', { value: bkeys.slice(), configurable: true, writable: true, enumerable: false }); } catch (e) { }
     var crowded = false, nCrowded = 0;
+    // (rfQN) the flat's own lines on the sheet (outline, holes) and its bend lines, for onFlatGeo
+    var flatSegs = null;
+    function onFlatGeo(ps, own) {
+      if (!flatSegs) {
+        flatSegs = [];
+        (fd.lines || []).forEach(function (m) { flatSegs.push({ a: w.toSheet([m[0], m[1]]), b: w.toSheet([m[2], m[3]]), bend: null }); });
+        fd.bends.forEach(function (b2, j) { flatSegs.push({ a: w.toSheet(b2.a), b: w.toSheet(b2.b), bend: j }); });
+      }
+      return ps.some(function (x) {
+        var tr = rectOfText(x.p, x.h, x.text, x.rot, x.anchor), e2 = 1e-6;
+        return flatSegs.some(function (sg) { return sg.bend !== own && segHitsRect(sg.a, sg.b, { x0: tr.x0 + e2, y0: tr.y0 + e2, x1: tr.x1 - e2, y1: tr.y1 - e2 }); });
+      });
+    }
     if (mode !== 'none') fd.bends.forEach(function (b, i) {
       var A = w.toSheet(b.a), B = w.toSheet(b.b), dx = B[0] - A[0], dy = B[1] - A[1], L = Math.hypot(dx, dy) || 1, t = [dx / L, dy / L];
       if (t[0] < -1e-9 || (Math.abs(t[0]) <= 1e-9 && t[1] < 0)) t = [-t[0], -t[1]];
@@ -1156,6 +1172,32 @@
         else crowded = bp.some(function (x) {   // truly on an earlier note (turned texts: their outlines, not their boxes)
           return out.some(function (it) { return !it.hidden && (it.type === 'bendNote') && it.prims.some(function (y) { return y.k === 'text' && textsCross(x, y); }); });
         });
+      }
+      // (rfQN) a note or tag across the blank's outline or another bend line (a hem's line .49 in from the blank's edge)
+      // goes to its line's other side when that is clear and the note still reads as its own (nearer its line than any
+      // other bend line), slid along the line past an earlier note; else past an end of its line, in line with it
+      var ownLine = function (ps) {
+        var r0 = null; ps.forEach(function (x) { var tr = rectOfText(x.p, x.h, x.text, x.rot, x.anchor); r0 = r0 ? { x0: Math.min(r0.x0, tr.x0), y0: Math.min(r0.y0, tr.y0), x1: Math.max(r0.x1, tr.x1), y1: Math.max(r0.y1, tr.y1) } : tr; });
+        var c = [(r0.x0 + r0.x1) / 2, (r0.y0 + r0.y1) / 2], dl = function (sg) { var dx = sg.b[0] - sg.a[0], dy = sg.b[1] - sg.a[1], L2 = dx * dx + dy * dy || 1, u = Math.max(0, Math.min(1, ((c[0] - sg.a[0]) * dx + (c[1] - sg.a[1]) * dy) / L2)); return Math.hypot(sg.a[0] + u * dx - c[0], sg.a[1] + u * dy - c[1]); };
+        var mine = Infinity, other = Infinity;
+        flatSegs.forEach(function (sg) { if (sg.bend == null) return; var d0 = dl(sg); if (sg.bend === i) mine = Math.min(mine, d0); else other = Math.min(other, d0); });
+        return mine < other;
+      };
+      if (!(own[bk] && own[bk].off) && bp.length && bp[0].anchor === 'middle' && (onFlatGeo(bp, i) || !ownLine(bp))) {
+        var alt = null, tw2 = Math.max.apply(null, bp.map(function (x) { return textWidth(x.text, x.h); })), reach2 = (L - tw2) / 2 - g, stp2 = Math.max(noteH() * k / 2, 1e-6);
+        var okAlt = function (q2) { return !onFlatGeo(q2, i) && !(avoid.length && hitsAvoid(q2)) && ownLine(q2); };
+        for (var sd2 = 0; sd2 <= Math.max(0, reach2) + 1e-9 && !alt; sd2 += stp2) [sd2, -sd2].forEach(function (d2) {
+          if (alt || (d2 === 0 && sd2 > 0)) return;
+          var q2 = bendNotePrims(txt, [M[0] + t[0] * d2, M[1] + t[1] * d2], t, n, L, g, noteH() * k, rot, BEND_EXT * k, -1);
+          if (okAlt(q2)) alt = q2;
+        });
+        if (!alt) [1, -1].forEach(function (se) {
+          if (alt) return;
+          var hh = noteH() * k, along = se * (L / 2 + BEND_EXT * k + g + textWidth(txt, hh) / 2);   // (anchored in its middle: textRect centres a turned text)
+          var q3 = [{ k: 'text', p: [M[0] + t[0] * along - n[0] * hh / 2, M[1] + t[1] * along - n[1] * hh / 2], h: hh, text: txt, anchor: 'middle', layer: 'BEND_NOTES', rot: rot }];
+          if (!onFlatGeo(q3, i) && !(avoid.length && hitsAvoid(q3))) alt = q3;
+        });
+        if (alt) bp = alt;
       }
       item(bk, mode === 'table' ? 'bendTag' : 'bendNote', txt, bp,
         { bend: i, bendKey: bk, up: b.up, angle: b.angle, R: b.R, a: A, b: B });
@@ -1204,8 +1246,15 @@
     }
     // (rfIW) a flat drawn at another scale than the sheet's says so under its notes: SCALE 1 : 2
     if (D.viewScaleNote(v, doc.sheet && doc.sheet.scale)) {
-      var stx = D.scaleLabel(v.scale);
-      item('scale', 'flatScale', stx, [{ k: 'text', p: [cx, yTop - 3 * k], h: 3 * k, text: stx, anchor: 'middle', layer: w.layer, rot: 0 }], {});
+      var stx = D.scaleLabel(v.scale), scP = [cx, yTop - 3 * k];
+      // (rfQN) the same rule as FLAT SIZE: a door flat made 42 long (configuration) pushed SCALE 1 : 4 onto UNLESS
+      // OTHERWISE SPECIFIED; over the view (past FLAT SIZE when that went up too) when under it is on a block
+      var scHit = function (r) { return r.y0 < ctx.sheet.y0 || [ctx.tb].concat(ctx.blocks || [], ctx.bom ? [ctx.bom.box] : []).some(function (o) { return o && r.x0 < o.x1 && o.x0 < r.x1 && r.y0 < o.y1 && o.y0 < r.y1; }); };
+      if (scHit(rectOfText(scP, 3 * k, stx, 0, 'middle'))) {
+        var scUp = [cx, box.y1 + (4 + (fsUp ? noteH() + 2 : 0)) * k], scUpR = rectOfText(scUp, 3 * k, stx, 0, 'middle');
+        if (!scHit(scUpR) && scUpR.y1 <= ctx.sheet.y1) scP = scUp;
+      }
+      item('scale', 'flatScale', stx, [{ k: 'text', p: scP, h: 3 * k, text: stx, anchor: 'middle', layer: w.layer, rot: 0 }], {});
       yTop -= 8 * k;
     }
     // (rfJG, test-reports/2026-11-02-unchecked-items.md 3b) a Bend Table on a flat view adds a 'Fixed Face' note at the
@@ -1485,6 +1534,7 @@
     return ix;
   }
   function placeDim(d, vw, k, placed, obs) {
+    if (d.kind === 'baseline') { delete d.stepFit; delete d.stepNow; }   // (rfQN: worked out again on each pass, below)
     var p = placeDim0(d, vw, k, placed, obs);
     // (rfKT) an ordinate set's values on a paper block (a Hole Table's datum X / Y, a table, the title block): the set's
     // values go to the view's other side when that is clear, else the line goes out 4 mm at a time (up to 16) until its
@@ -1516,6 +1566,52 @@
       if (!onPaperBlock(pb, obs, k) && !onView && !textsMeet(pb, obs.texts, 0.3 * k)) return pb;
       if (hb) d.side = sb0; else delete d.side;
       p = placeDim0(d, vw, k, placed, obs);
+      // (rfQN) neither side fits at the document spacing (the drawflow7 bracket: its Top view at the top of the sheet,
+      // the Front view under it). SolidWorks leaves that to the user; Anvil keeps the set on the sheet: the lines close
+      // up (8 mm down to the text height + 2 mm; the stepping above still keeps values apart), first on this side, then
+      // on the other (clear of other views and values there); else the side with more room, the set pulled in toward
+      // the view until its last value is inside the border; the status line says so
+      // (a set whose spacing was dragged, d.step, is the user's: left where the drag put it, the dragged line under the
+      // pointer, as SolidWorks leaves it)
+      if (!(+d.step > 0) && onPaperBlock(p, obs, k)) {
+        var uStep = 0, tH = (_.DIMGEO && +_.DIMGEO.text > 0 ? +_.DIMGEO.text : 3.5) * (_.dualFor(d) ? 2.2 : 1), sMin = uStep || Math.min(8, tH + 2), s1 = d.side || 1, fitB = null;
+        var tryB = function (sd, st) {
+          d.side = sd; d.stepFit = st;
+          var q = placeDim0(d, vw, k, placed, obs);
+          if (onPaperBlock(q, obs, k)) return null;
+          if (sd !== s1) {
+            var gq = primGeo(q);
+            if (obs.boxes.some(function (b) { return b.view != null && b.view !== d.view && (gq.texts.some(function (t) { return rectsMeet(t, b.box, 0); }) || gq.segs.some(function (s) { return segHitsRect(s[0], s[1], b.box); })); }) || textsMeet(q, obs.texts, 0.3 * k)) return null;
+          }
+          return q;
+        };
+        var steps = []; if (!uStep) for (var st = 7.5; st > sMin + 1e-9; st -= 0.5) steps.push(st); steps.push(sMin);
+        [s1, -s1].some(function (sd) { return steps.some(function (st2) { var q = tryB(sd, st2); if (q) fitB = q; return !!q; }); });
+        var bWarn = function (msg) { if (obs.warnings) obs.warnings.push(msg); };
+        var setName = 'The Baseline set ' + (d.text || '');
+        if (fitB) { d.stepNow = d.stepFit; if (!uStep || d.side !== s1) bWarn(setName + ' has no room ' + (uStep ? 'on its side of the view' : 'at the document spacing (8 mm)') + ': its lines are ' + (+d.stepFit).toFixed(1) + ' mm apart' + (d.side !== s1 ? ', on the view\'s other side' : '') + '. Drag a line to space it, or move the view.'); return fitB; }
+        // none fits: the side whose last line runs least past the border, the set pulled in until it is inside
+        var over = function (q) {
+          var g = primGeo(q), S = obs.sheet, m = 0;
+          g.texts.forEach(function (r) { m = Math.max(m, S.x0 - r.x0, S.y0 - r.y0, r.x1 - S.x1, r.y1 - S.y1); });
+          g.segs.forEach(function (s) { [s[0], s[1]].forEach(function (pt) { m = Math.max(m, S.x0 - pt[0], S.y0 - pt[1], pt[0] - S.x1, pt[1] - S.y1); }); });
+          return m;
+        };
+        d.stepFit = sMin;
+        var best = null;
+        [s1, -s1].forEach(function (sd) { d.side = sd; delete d.outer; var q = placeDim0(d, vw, k, placed, obs), m = over(q); if (!best || m < best.m - 1e-9) best = { sd: sd, m: m }; });
+        d.side = best.sd;
+        var pull = 0, qb = null;
+        for (var it = 0; it < 6; it++) {
+          d.outer = -pull / k; qb = placeDim0(d, vw, k, placed, obs);
+          var m2 = over(qb);
+          if (m2 <= 1e-9) break;
+          pull += m2 + 0.5 * k;
+        }
+        delete d.outer; d.outerNow = -pull / k; d.stepNow = sMin;
+        bWarn(setName + ' does not fit on either side of ' + (vw.view.name || 'its view') + ' clear of the other views and blocks: its lines are ' + sMin.toFixed(1) + ' mm apart' + (d.side !== s1 ? ' on the view\'s other side, where there is more room' : '') + (pull > 1e-9 ? ', pulled in ' + (pull / k).toFixed(1) + ' mm toward the view' : '') + ' to stay on the sheet, and may cover the drawing there. Move the view, use a larger sheet, or drag the set.');
+        return qb;
+      }
     }
     if (!obs || !d.auto || !/^(h|v)$/.test(d.kind) || !(d.side === 1 || d.side === -1) || d.tx != null || d.flip || d.tside != null || d.off != null || d.at != null) return p;
     // (rfOJ) a model item whose value lands on a value placed before it (the gap between two views: the Front view's
@@ -1680,7 +1776,7 @@
     var vw2 = Object.assign({}, vw, { toSheet: to2, fromSheet: from2, box: box2 || vw.box, scale: vw.scale });
     d2._rho = r;
     var out = dimPrims0(d2, vw2, k, placed);
-    ['lineAt', 'txNow', 'offNow', 'leadNow', 'outerNow'].forEach(function (q) { if (q in d2) d[q] = d2[q]; else delete d[q]; });
+    ['lineAt', 'txNow', 'offNow', 'leadNow', 'outerNow', 'stepNow', 'stepFit'].forEach(function (q) { if (q in d2) d[q] = d2[q]; else delete d[q]; });
     if (d2.dxf) {
       var X = Object.assign({}, d2.dxf);
       ['p10', 'p11', 'p13', 'p14'].forEach(function (q) { if (X[q]) X[q] = turnP(X[q], r); });
@@ -2000,7 +2096,7 @@
           var lab = d.tol || d.label != null ? dimLabel(Object.assign({}, d, { kind: 'h', value: Math.abs(it.val) }), units) : { main: numText(Math.abs(it.val), units, prec), upper: null, lower: null };
           var bDual = _.dualLab(Object.assign({}, d, { kind: 'h', value: Math.abs(it.val) }), units);   // (rfOC)
           if (bDual) lab.dual = bDual;
-          if (i) bPos += side * (+d.step > 0 ? +d.step : 8) * k;   // (rfQG) d.step: the spacing a dragged member set (paper mm)
+          if (i) bPos += side * (+d.step > 0 ? +d.step : +d.stepFit > 0 ? +d.stepFit : 8) * k;   // (rfQN) stepFit: closed up to stay on the sheet (placeDim)   // (rfQG) d.step: the spacing a dragged member set (paper mm)
           for (var tries = 0; tries < 16; tries++) {
             var n0 = out.length;
             linear(bp.slice(), it.p.slice(), hz2, bPos, lab, null);
@@ -2419,9 +2515,10 @@
         blkOf[ins.name] = g; blkGroups.push(g);
       });
     }
-    // (rfQC) R2000 with opts.attributes: an instance's attribute values are ATTRIBs after its INSERT (66 1 ... SEQEND), one per tag its BLOCK
-    // has an ATTDEF for (a value's first line; a further line, or a linked text with no tag, stays TEXT beside it)
-    var attOf = {}, attPrims = [], useAtt = r2000 && !!(opts && opts.attributes);   // (the app's Save as DXF / DWG pass it; the engine default keeps TEXT, as rfPQ counts)
+    // (rfQC) R2000: an instance's attribute values are ATTRIBs after its INSERT (66 1 ... SEQEND), one per tag its BLOCK
+    // has an ATTDEF for (a value's first line; a further line, or a linked text with no tag, stays TEXT beside it).
+    // (rfQN) the default for R2000; opts.attributes === false keeps them TEXT; R12 always TEXT
+    var attOf = {}, attPrims = [], useAtt = r2000 && !(opts && opts.attributes === false);
     if (useAtt) sheet.prims.forEach(function (p) {
       if (p.k !== 'text' || p.blockIns == null || typeof p.blockAttr !== 'string' || !insUsed[p.blockIns]) return;
       var g = blkOf[insUsed[p.blockIns].name], a = attOf[p.blockIns] = attOf[p.blockIns] || { list: [], seen: {} };

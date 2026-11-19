@@ -79,12 +79,20 @@
         assert(P.length === 4 && P.every(function (x, i) { return !i || Math.abs(x - P[i - 1] - s1) < 1e-9; }), 'equal spacing: ' + P.join(', '));
         var t3 = rfQGTexts(ix)[2], c = rfQGMid(t3);
         rfQGClick([w.box.x0 - 1, w.box.y0 - 0.3]); await wait(20);
-        await rfQGDrag(c, [c[0], c[1] - 0.2]);
+        // (rfQN) the set starts at its closest spacing (5.5 mm, kept on the sheet), above or under the view: drag the third
+        // line 0.1 in outward (away from the first line), which widens the spacing. At fit zoom a pixel is .031 in, so
+        // 0.1 in is about 3 px, inside the 3 px drag threshold (the press only selected the set): zoom in on it first
+        var out = P[1] > P[0] ? 1 : -1;
+        await rfQGZoom(c, 3);
+        await rfQGDrag(c, [c[0], c[1] + out * 0.1]);
+        UI.drawing.fit(); await rfQGDone();
         d = UI.drawing.state.sheet.dims[rfQGIx(function (x) { return x.view === id && x.kind === 'baseline'; })];
         var Q = d.blPos, s2 = Q[1] - Q[0];
         assert(Math.abs(Q[0] - P[0]) < 1e-9, 'the first line stays: ' + Q[0] + ' / ' + P[0]);
-        assert(Math.abs(Q[2] - (P[2] - 0.2)) < 0.02, 'the dragged line follows the pointer: ' + Q[2] + ' / ' + (P[2] - 0.2));
-        assert(Q.every(function (x, i) { return !i || Math.abs(x - Q[i - 1] - s2) < 1e-9; }) && s2 < s1 - 0.05, 'evenly re-spaced: ' + Q.join(', '));
+        assert(Math.abs(Q[2] - (P[2] + out * 0.1)) < 0.02, 'the dragged line follows the pointer: ' + Q[2] + ' / ' + (P[2] + out * 0.1));
+        assert(Q.every(function (x, i) { return !i || Math.abs(x - Q[i - 1] - s2) < 1e-9; }) && out * s2 > out * s1 + 0.04, 'evenly re-spaced, wider: ' + Q.join(', '));
+        var stored = W.Drawing.findView(UI.App.model.drawings[UI.drawing.state.index], id).dims.filter(function (x) { return x.kind === 'baseline'; })[0];
+        assert(stored && Math.abs(stored.step - Math.abs(s2) * 25.4) < 1e-6 && !(d.stepFit > 0), 'the hand spacing is kept (not closed up again): step ' + (stored && stored.step) + ' fit ' + d.stepFit);
         await UI.undo(); await rfQGDone();
         d = UI.drawing.state.sheet.dims[rfQGIx(function (x) { return x.view === id && x.kind === 'baseline'; })];
         assert(Math.abs(d.blPos[1] - d.blPos[0] - s1) < 1e-9, 'one undo step puts the spacing back');

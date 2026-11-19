@@ -137,7 +137,7 @@
       assert(ents.some(function (e) { return e.t === 'text' && e.text === 'C'; }) && !ents.some(function (e) { return e.attr != null; }), 'exploded: plain text C');
       return 'B / 11/20/26 / JD -> C / LM; linked D';
     });
-    test('rfPQ: the sheet to DXF: the BLOCK holds the frame and captions only (8 entities); each INSERT\'s values are TEXT beside it (B, 11/20/26, JD; the linked D); R2000 and R12 audit clean; DWG written', function () {
+    test('rfPQ: the sheet to DXF: the BLOCK holds the frame and captions (8 entities); R2000 (rfQN: the default) adds an ATTDEF per tag in the BLOCK and each INSERT\'s values are ATTRIBs after it, R12 TEXT beside it (B, 11/20/26, JD; the linked D); R2000 and R12 audit clean; DWG written', function () {
       var s = rfPQStamp();
       var attrs = {}; attrs[s.val[0]] = 'REV'; attrs[s.val[1]] = 'DATE'; attrs[s.val[2]] = 'BY';
       DW.makeBlock(s.doc, s.ids, { name: 'REV STAMP', base: [12, 1.75], attrs: attrs });
@@ -153,8 +153,11 @@
         assert(n === 8 && inBlk.sort().join(',') === 'BY,DATE,REV', ver + ' block entities: ' + n + ' ' + inBlk.join(','));
         var insE = ents.filter(function (e) { return e.sec === 'ENTITIES' && e.type === 'INSERT'; });
         assert(insE.length === 2, ver + ' INSERTs ' + insE.length);
-        var vals = ents.filter(function (e) { return e.sec === 'ENTITIES' && e.type === 'TEXT'; }).map(function (e) { return e.g['1']; });
-        ['D', '11/18/26', 'LM', 'B', '11/20/26', 'JD'].forEach(function (v) { assert(vals.indexOf(v) >= 0, ver + ' value ' + v + ' as TEXT: ' + vals.join('|')); });
+        var att = ver === 'R2000' ? 'ATTRIB' : 'TEXT', defs = [];
+        for (var j = i0 + 1; j < ents.length && ents[j].type !== 'ENDBLK'; j++) if (ents[j].type === 'ATTDEF') defs.push(ents[j].g['2']);
+        assert(defs.sort().join(',') === (ver === 'R2000' ? 'BY,DATE,REV' : ''), ver + ' ATTDEFs in the BLOCK: ' + defs.join(','));
+        var vals = ents.filter(function (e) { return e.sec === 'ENTITIES' && e.type === att; }).map(function (e) { return e.g['1']; });
+        ['D', '11/18/26', 'LM', 'B', '11/20/26', 'JD'].forEach(function (v) { assert(vals.indexOf(v) >= 0, ver + ' value ' + v + ' as ' + att + ': ' + vals.join('|')); });
         assert(!vals.some(function (v) { return /\$PRP/.test(v); }), ver + ' no raw link');
         assert(vals.indexOf('BY') < 0, ver + ' no loose caption (they are in the BLOCK; the title block has its own REV / DATE)');
         if (typeof DxfCheck !== 'undefined') { var au = DxfCheck.audit(dxf, { units: 'in' }); assert(!au.errors.length, ver + ' audit: ' + au.errors.slice(0, 3).join(' | ')); }

@@ -309,8 +309,8 @@
     // itself): a clear spot on this sheet at that scale, else a new sheet at that scale (below); it shrinks only on the
     // new sheet, when the blank does not fit even an empty sheet. opts.newSheet false keeps rfIW's way (half the scale
     // on this sheet, else beside it).
-    var newOk = opts.fit && opts.newSheet !== false;
-    var onSheet = opts.x == null && opts.y == null && mesh ? (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, null, newOk ? { noShrink: true } : null) : true;
+    var newOk = opts.fit && opts.newSheet !== false, alone = doc.views.length === 1;   // (rfQN alone: no other view on this sheet)
+    var onSheet = opts.x == null && opts.y == null && mesh ? (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, null, alone && opts.fit ? { anyScale: true } : newOk ? { noShrink: true } : null) : true;
     delete v.offSheet;
     var layout0 = doc.layout;
     doc.layout = 'manual';
@@ -324,7 +324,7 @@
       addSheet(doc, {});
       doc.views.push(v);
       v.scale = sc; v.x = S[0] / 2; v.y = S[1] / 2;
-      fitOnSheet(doc, mesh, v, null);
+      fitOnSheet(doc, mesh, v, null, { anyScale: true });
       delete v.offSheet;
       doc.layout = 'manual';
     }
@@ -440,7 +440,9 @@
     var par = v.kind === 'detail' && v.parent != null ? findView(doc, v.parent) : null, lo = par ? viewScale(doc, par) : 0;
     // (rfIW) a flat-pattern view shrinks to half the sheet scale at most (its hole tags and bend notes stay readable);
     // when that does not fit, addFlatView puts it on a new sheet (rfIR had let it go to an eighth)
-    var minF = v.kind === 'flat' ? 2 : 4;
+    // (rfQN) fopts.anyScale: a flat alone on its sheet (an empty sheet, or the new sheet addFlatView made) shrinks as far as
+    // it must (a 37 in door on ANSI C: 1:4), as a detailer sets the sheet scale; 1:2 at most left it off the sheet at 1:1
+    var minF = v.kind === 'flat' ? (fopts && fopts.anyScale ? Infinity : 2) : 4;
     var smaller = noShrink ? [] : scalesFor(doc).filter(function (s) { var q = scaleValue(s); return q < s0 - 1e-9 && q >= s0 / minF - 1e-9 && q > lo + 1e-9; });
     function at(sc, align, tight) { v.x = x0; v.y = y0; v.scale = sc; v.align = align; return clearSpot(doc, mesh, v, align ? free : null, tight); }
     // (rfIJ) at each scale the usual gap first, then (a crowded sheet: ANSI A with four views) a narrow one, so the
@@ -1122,21 +1124,29 @@
   // set. The style (precision, fractions) is the drawing's, set by compute for the sheet it works out (_.DIMSTYLE,
   // see dimStyle); with none the defaults apply.
   _.DIMSTYLE = null;
+  // (rfQN) x rounded to prec places as a decimal, half away from zero: the value is read at 12 significant digits first,
+  // so a product such as .375 * 25.4 (9.524999999999999 in binary) rounds as the exact 9.525 does, to 9.53 (SolidWorks
+  // 2024's default Round half away from zero); Math.round(x * 100) / 100 gave 9.52
+  function roundDec(x, prec) {
+    x = +x; prec = Math.max(0, Math.min(10, Math.round(+prec) || 0));
+    if (!isFinite(x)) return x;
+    var a = Math.abs(+x.toPrecision(12)), r = Number(Math.round(Number(a + 'e' + prec)) + 'e-' + prec);
+    return x < 0 && r !== 0 ? -r : r;
+  }
   function fmtDim(x, units) {
     var st = _.DIMSTYLE || {};
     if (units === 'in') {
       if (st.fractions) return fracText(x, st.denom || 64);
       return inchText(x, st.prec != null ? st.prec : 3);
     }
-    if (st.prec != null) return (Math.round(x * Math.pow(10, st.prec)) / Math.pow(10, st.prec)).toFixed(st.prec);
-    var d = 2, p = Math.pow(10, d);
-    var s = String(Math.round(x * p) / p);
+    if (st.prec != null) return roundDec(x, st.prec).toFixed(st.prec);
+    var s = String(roundDec(x, 2));
     return s;
   }
   // a decimal inch with `prec` places and no leading zero: .030, -.500, 12.250; a value that rounds to zero is '0'
   function inchText(x, prec) {
     prec = Math.max(0, Math.min(8, Math.round(+prec)));   // (rfIF: up to .12345678)
-    var p = Math.pow(10, prec), r = Math.round(Math.abs(+x) * p) / p;
+    var r = Math.abs(roundDec(x, prec));
     if (r === 0) return '0';
     var s = r.toFixed(prec);
     if (s.charAt(0) === '0' && s.length > 1) s = s.slice(1);
@@ -2997,7 +3007,7 @@
   D.addSheet = addSheet; D.deleteSheet = deleteSheet; D.renameSheet = renameSheet; D.moveViewToSheet = moveViewToSheet;
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
   D.standard3View = standard3View; D.partViews = partViews; D.plateOf = plateOf; D.extentsOf = extentsOf; D.layout = layoutViews; D.moveView = moveView; D.deleteView = deleteView; D.viewDependents = viewDependents; D.findView = findView;
-  D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.dualStyle = dualStyle; D.DUAL_POS = DUAL_POS; _.dimText0 = dimText0; D.autoDims = autoDims; D.modelItems = modelItems; D.dimSizes = dimSizes; D.dimBreakGap = function (doc) { return dimSizes(doc).dimBreakGap; }; D.dimGeometry = dimGeometry; D.DIM_SIZES = DIM_SIZES; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
+  D.fmtDim = fmtDim; D.roundDec = roundDec; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.dualStyle = dualStyle; D.DUAL_POS = DUAL_POS; _.dimText0 = dimText0; D.autoDims = autoDims; D.modelItems = modelItems; D.dimSizes = dimSizes; D.dimBreakGap = function (doc) { return dimSizes(doc).dimBreakGap; }; D.dimGeometry = dimGeometry; D.DIM_SIZES = DIM_SIZES; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
   D.arcSlotsIn = arcSlotsIn; D.sketchOrdinates = sketchOrdinates; D.sketchDistances = sketchDistances;
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;
   D.bomCellAt = bomCellAt; D.setBomCell = setBomCell; D.bomColId = bomColId;   // (rfPQ)

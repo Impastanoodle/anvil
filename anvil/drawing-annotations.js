@@ -775,11 +775,35 @@
     return n + ' X ' + A;
   }
   D.CHAMFER_FORMS = CHAMFER_FORMS; D.chamferForm = chamferForm; D.chamferFeatures = chamferFeatures; _.chamferText = chamferText;
+  // (rfQN) an ordinate / baseline member measures where its edge's line is across the set, not the edge itself: an edge
+  // that slid along its own line (a door flat 36 -> 42 long: the far flange's short side edge moved 6 in up its line,
+  // no overlap left, so reattachDim lost it and the set dangled) is found again on the same line, the piece whose middle
+  // is nearest the old middle. An edge that moved across its line still dangles
+  function slidEdge(r, pr) {
+    if (!r.a || !r.b || r.kind === 'dia') return false;
+    var b = pr.bounds, size = Math.max(1e-9, Math.hypot(b.umax - b.umin, b.vmax - b.vmin)), tol = size * 1e-6;
+    var L = Math.hypot(r.b[0] - r.a[0], r.b[1] - r.a[1]);
+    if (L < 1e-12) return false;
+    var t = [(r.b[0] - r.a[0]) / L, (r.b[1] - r.a[1]) / L], mid = [(r.a[0] + r.b[0]) / 2, (r.a[1] + r.b[1]) / 2], best = null, bd = Infinity;
+    (pr.all || []).forEach(function (m) {
+      var mx = m[2] - m[0], my = m[3] - m[1], ml = Math.hypot(mx, my);
+      if (ml < 1e-12 || Math.abs(t[0] * my - t[1] * mx) > ml * 1e-6) return;
+      if (Math.abs(t[0] * (m[1] - r.a[1]) - t[1] * (m[0] - r.a[0])) > tol) return;
+      var dm = Math.hypot((m[0] + m[2]) / 2 - mid[0], (m[1] + m[3]) / 2 - mid[1]);
+      if (dm < bd) { bd = dm; best = m; }
+    });
+    if (!best) return false;
+    var fw = (best[2] - best[0]) * t[0] + (best[3] - best[1]) * t[1] >= 0;
+    r.a = fw ? [best[0], best[1]] : [best[2], best[3]]; r.b = fw ? [best[2], best[3]] : [best[0], best[1]];
+    if (r.value != null) r.value = Math.hypot(best[2] - best[0], best[3] - best[1]);
+    delete r.dangling;
+    return true;
+  }
   // reattachUserDim(d, pr): reattachDim for every kind, including the references of ordinate / baseline / chamfer
   function reattachUserDim(d, pr) {
     if (d.kind === 'angrun' || d.kind === 'pathlen') return reattachCT(d, pr);   // (lane CT)
     if (d.kind === 'ordinate' || d.kind === 'baseline') {
-      var ok = [d.base].concat(d.refs).map(function (r) { return r.bend != null ? reattachBendRef(r, pr) : r.arcEnd ? reattachArcEnd(r, pr) : r.kind === 'pt' && r.ext ? extremeVertex(r, pr) : r.kind === 'pt' ? reattachRef(r, pr) : reattachDim(r, pr); }).every(Boolean);   // (rfMZ: a vertex)   // (rfJM: bend lines)
+      var ok = [d.base].concat(d.refs).map(function (r) { return r.bend != null ? reattachBendRef(r, pr) : r.arcEnd ? reattachArcEnd(r, pr) : r.kind === 'pt' && r.ext ? extremeVertex(r, pr) : r.kind === 'pt' ? reattachRef(r, pr) : reattachDim(r, pr) || slidEdge(r, pr); }).every(Boolean);   // (rfMZ: a vertex)   // (rfJM: bend lines)
       if (ok) delete d.dangling; else d.dangling = true;
       var ax = d.dir === 'v' ? 1 : 0, b0 = refPos(d.base, ax);
       if (d.rot) {   // (rfLG) a set turned with its view (Rotate View at an angle): the values along its turned axis
@@ -1493,9 +1517,9 @@
   function numText(x, units, prec) {
     if (!(prec != null && prec !== '' && +prec >= 0)) return fmtDim(x, units);
     prec = Math.min(8, Math.round(+prec));   // rfIF: up to 8 places (SolidWorks' .12345678)
-    if (units !== 'in') return (Math.round(+x * Math.pow(10, prec)) / Math.pow(10, prec)).toFixed(prec);
+    if (units !== 'in') return D.roundDec(x, prec).toFixed(prec);
     if (prec <= 6) return D.inchText(x, prec);
-    var s = Math.abs(+x).toFixed(prec);
+    var s = Math.abs(D.roundDec(x, prec)).toFixed(prec);
     if (+s === 0) return '0';
     return (+x < 0 ? '-' : '') + s.replace(/^0\./, '.');
   }

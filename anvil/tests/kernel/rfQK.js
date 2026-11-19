@@ -97,7 +97,7 @@
     });
 
     group('rfQK: Dual dimensions display: a slot callout carries the dual value after each size, as a hole callout does');
-    test('a straight and an arc slot callout with dual on: .375 [9.52] X 1.375 [34.92] SLOT, R1.000 [25.40] ARC SLOT .250 [6.35] WIDE 60°; drawn so and in the R12 / R2000 DXF; the callout\'s own dual off gives the plain text', function () {
+    test('a straight and an arc slot callout with dual on: .375 [9.53] X 1.375 [34.93] SLOT, R1.000 [25.40] ARC SLOT .250 [6.35] WIDE 60°; drawn so and in the R12 / R2000 DXF; the callout\'s own dual off gives the plain text', function () {
       var r = build('p.units("in");\np.sketch("Front").rect(0, 0, 10, 6).slot(2, 3, 3, 3, 0.375).arcSlot(7, 3, 1, 30, 90, 0.25).extrude(0.25);'); noErrors(r);
       var doc = DW.newDrawing(r.model, { date: '2026-11-19' }); DW.standard3View(doc, r.mesh, 'in'); doc.autoDims = false;
       var sh = DW.compute(doc, r.mesh, r.model, { build: r.build });
@@ -109,7 +109,7 @@
       (doc.options || (doc.options = {})).dual = true;
       sh = DW.compute(doc, r.mesh, r.model, { build: r.build });
       var texts = sh.dims.filter(function (d) { return d.view === fv.id; }).map(function (d) { return d.text; });
-      var S1 = '.375 [9.52] X 1.375 [34.92] SLOT', S2 = 'R1.000 [25.40] ARC SLOT .250 [6.35] WIDE 60°';
+      var S1 = '.375 [9.53] X 1.375 [34.93] SLOT', S2 = 'R1.000 [25.40] ARC SLOT .250 [6.35] WIDE 60°';
       assert(texts.indexOf(S1) >= 0 && texts.indexOf(S2) >= 0, 'texts ' + texts.join(' | '));
       var drawn = sh.prims.filter(function (p) { return p.k === 'text'; }).map(function (p) { return p.text; });
       assert(drawn.indexOf(S1) >= 0 && drawn.indexOf(S2) >= 0, 'drawn: ' + drawn.filter(function (t) { return /SLOT/.test(t); }).join(' | '));

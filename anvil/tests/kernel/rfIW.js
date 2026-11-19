@@ -41,7 +41,11 @@
       function scaleTexts(sh) { return sh.prims.filter(function (p) { return p.k === 'text' && /^SCALE /.test(p.text); }); }
       var sh = DW.compute(doc, r.mesh, r.model, { build: r.build }), w = sh.views.filter(function (x) { return x.view.id === fv.id; })[0];
       var sc = scaleTexts(sh), fs = sh.prims.filter(function (p) { return p.k === 'text' && /^FLAT SIZE/.test(p.text); })[0];
-      assert(sc.length === 1 && sc[0].text === 'SCALE 1 : 2' && fs && sc[0].p[1] < fs.p[1] && sc[0].p[1] < w.box.y0, 'one SCALE, under FLAT SIZE: ' + JSON.stringify([sc.map(function (p) { return [p.text, p.p]; }), fs && fs.p]));
+      // (rfQN) under FLAT SIZE it would run past the 10 mm border here (y .36), so it goes over the view: inside the
+      // border and clear of the title block
+      var scR = sc.length ? DW.textRect(sc[0]) : null, bb = 10 / 25.4;
+      assert(sc.length === 1 && sc[0].text === 'SCALE 1 : 2' && fs && scR.y0 > bb && scR.x0 > bb && scR.y1 < sh.size[1] - bb && scR.x1 < sh.size[0] - bb &&
+        DW.tbRects(sh.size, 'in').every(function (tb) { return scR.x1 <= tb.x0 || scR.x0 >= tb.x1 || scR.y1 <= tb.y0 || scR.y0 >= tb.y1; }), 'one SCALE, inside the border, off the title block: ' + JSON.stringify([sc.map(function (p) { return [p.text, p.p]; }), fs && fs.p]));
       assert(sh.annotations.some(function (a) { return a.type === 'flatScale' && a.view === fv.id; }), 'a flat annotation (moves, hides with the others)');
       DW.setViewLabel(doc, fv.id, false);
       assert(!scaleTexts(DW.compute(doc, r.mesh, r.model, { build: r.build })).length, 'Display label off');

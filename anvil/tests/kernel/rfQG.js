@@ -28,7 +28,7 @@
       assert(d.blPos.length === 3 && Math.abs((d.blPos[1] - d.blPos[0]) - (d.blPos[2] - d.blPos[1])) < 1e-9 && Math.abs(Math.abs(d.blPos[1] - d.blPos[0]) - 8 / IN) < 1e-9, 'equal 8 mm: ' + d.blPos.map(fmt).join(' '));
       return 'lines ' + ys.map(fmt).join(' ');
     });
-    test('a Front view under it: the set stays above (the other side is not clear either way)', function () {
+    test('a Front view under it: no room above at 8 mm, so the set is kept inside the sheet border (rfQN)', function () {
       var r = rfQGPlate(); noErrors(r);
       var doc = DW.newDrawing(r.model, { date: '2026-11-19', scale: [1, 1] });
       doc.autoDims = false;
@@ -36,8 +36,13 @@
       DW.addView(doc, 'Front', { x: 8, y: 8.2 });
       rfQGSet(doc, v.id);
       var sh = DW.compute(doc, r.mesh, r.model), w = sh.views.filter(function (x) { return x.view.id === v.id; })[0], ix = sh.dims.length - 1;
-      assert(rfQGLines(sh, ix).every(function (y) { return y > w.box.y1; }), 'above');
-      return 'stays above';
+      // (rfQN) it stayed above, running past the border. Neither side fits at 8 mm here (this fixture's Front view
+      // overlaps the Top view), so the set goes to the side with more room, under the view, closed up and warned
+      var ys = rfQGLines(sh, ix), texts = sh.prims.filter(function (p) { return p.k === 'text' && p.dimIx === ix; }).map(DW.textRect), b = 10 / IN;
+      assert(ys.every(function (y) { return y > b && y < sh.size[1] - b; }), 'lines inside the border: ' + ys.map(fmt).join(' '));
+      assert(texts.every(function (t) { return t.y1 < sh.size[1] - b && t.y0 > b; }), 'values inside the border');
+      assert((sh.warnings || []).some(function (x) { return /Baseline set/.test(x); }), 'warned');
+      return 'lines ' + ys.map(fmt).join(' ');
     });
     test('step (paper mm) spaces every line of the set: 12 mm', function () {
       var r = rfQGPlate(); noErrors(r);

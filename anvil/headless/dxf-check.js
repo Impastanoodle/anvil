@@ -104,6 +104,8 @@
       case 'CIRCLE': return { type: 'CIRCLE', layer: e.layer, c: [g[10] || 0, g[20] || 0], r: g[40] || 0 };
       case 'ARC': return { type: 'ARC', layer: e.layer, c: [g[10] || 0, g[20] || 0], r: g[40] || 0, a0: g[50] || 0, a1: g[51] || 0 };
       case 'TEXT': return { type: 'TEXT', layer: e.layer, p: [g[10] || 0, g[20] || 0], h: g[40] || 0, text: g[1] || '' };
+      // (rfQN) a block attribute: its definition in a BLOCK or its value after an INSERT; the tag (2) tells two on one layer apart
+      case 'ATTDEF': case 'ATTRIB': return { type: e.type, layer: e.layer, p: [g[10] || 0, g[20] || 0], h: g[40] || 0, text: g[1] || '', tag: e.s[2] || '' };
       case 'INSERT': return { type: 'INSERT', layer: e.layer, block: e.s[2] || '', p: [g[10] || 0, g[20] || 0], sx: g[41] != null ? g[41] : 1, sy: g[42] != null ? g[42] : 1, rot: g[50] || 0 };
       // (rfT) 70 & 7: 0 rotated (horizontal / vertical), 1 aligned, 2 angular, 3 diameter, 4 radius, 6 ordinate
       case 'DIMENSION': return { type: 'DIMENSION', layer: e.layer, block: e.s[2] || '', style: e.s[3] || '', kind: ['linear', 'aligned', 'angular', 'diameter', 'radius', 'angular3', 'ordinate'][(g[70] || 0) & 7] || 'linear',
@@ -165,7 +167,7 @@
       case 'LINE': o.a = P(e.a); o.b = P(e.b); break;
       case 'CIRCLE': o.c = P(e.c); o.r = e.r * k; break;
       case 'ARC': o.c = P(e.c); o.r = e.r * k; o.a0 = mir ? ang(e.a1) : ang(e.a0); o.a1 = mir ? ang(e.a0) : ang(e.a1); break;
-      case 'TEXT': o.p = P(e.p); o.h = e.h * Math.abs(sy); break;
+      case 'TEXT': case 'ATTDEF': case 'ATTRIB': o.p = P(e.p); o.h = e.h * Math.abs(sy); break;
       case 'LWPOLYLINE': case 'POLYLINE': o.pts = e.pts.map(P); if (mir) o.bulges = e.bulges.map(function (b) { return -b; }); break;
       case 'SPLINE': o.cps = e.cps.map(P); break;
       case 'SOLID': case 'TRACE': case '3DFACE': o.corners = e.corners.map(P); break;
@@ -264,7 +266,7 @@
         return;
       }
       if (layers.indexOf(e.layer) < 0) return;
-      var sig = JSON.stringify([e.type, e.a, e.b, e.c, e.r, e.a0, e.a1, e.pts, e.p, e.text, e.corners]);
+      var sig = JSON.stringify([e.type, e.a, e.b, e.c, e.r, e.a0, e.a1, e.pts, e.p, e.text, e.corners, e.tag]);
       if (seen[sig]) errors.push('duplicate ' + e.type + ' on ' + e.layer); seen[sig] = true;
       if (e.type === 'LINE') {
         if (Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1]) < 1e-9) errors.push('zero-length LINE on ' + e.layer + ' at ' + e.a);
@@ -429,7 +431,7 @@
     var cutLayers = opts.layers || ['OUTLINE', 'HOLES'], cutEnds = [], bendEnds = [], cutLines = [];
     all.forEach(function (e) {
       if (e.type === 'INSERT') return;
-      var sig = JSON.stringify([e.type, e.layer, e.a, e.b, e.c, e.r, e.a0, e.a1, e.pts, e.p, e.text, e.cps, e.major, e.t0, e.corners]);
+      var sig = JSON.stringify([e.type, e.layer, e.a, e.b, e.c, e.r, e.a0, e.a1, e.pts, e.p, e.text, e.cps, e.major, e.t0, e.corners, e.tag]);
       if (sigs[sig]) errors.push('duplicate ' + e.type + ' on ' + e.layer);
       sigs[sig] = true;
       if (e.type === 'LINE') {
@@ -459,8 +461,8 @@
       } else if (e.type === 'SPLINE') {
         var rg = splineRange(e);
         if (splinePt(e, rg[0])) for (var q3 = 0; q3 <= 256; q3++) g(splinePt(e, q3 === 256 ? rg[1] : rg[0] + (rg[1] - rg[0]) * q3 / 256));
-      } else if (e.type === 'TEXT') {
-        if (!(e.h >= minText - 1e-12)) errors.push('TEXT "' + e.text + '" on ' + e.layer + ' is ' + e.h + ' high (below ' + minText + ')');
+      } else if (e.type === 'TEXT' || e.type === 'ATTDEF' || e.type === 'ATTRIB') {
+        if (!(e.h >= minText - 1e-12)) errors.push(e.type + ' "' + e.text + '" on ' + e.layer + ' is ' + e.h + ' high (below ' + minText + ')');
       }
     });
     var size = isFinite(gmin[0]) ? Math.max(gmax[0] - gmin[0], gmax[1] - gmin[1], 1e-9) : 1, tol = 1e-6 * (1 + size);
