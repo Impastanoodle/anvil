@@ -53,7 +53,7 @@
       return d.blPos.map(fmt).join(' ');
     });
 
-    group('rfQG: Break Lines: a dimension\'s extension lines cut a gap each side where they cross another dimension\'s line or arrow; arrows only; its own gap; the document gap; R2000 keeps it exploded');
+    group('rfQG: Break Lines: a dimension\'s extension lines cut a gap each side where they cross another dimension\'s line or arrow; arrows only; its own gap; the document gap; R2000 writes it as a DIMENSION (rfQK)');
     function rfQGBreakDoc(props, opts) {
       var r = rfQGPlate(); noErrors(r);
       var doc = DW.newDrawing(r.model, { date: '2026-11-19', scale: [1, 1] });
@@ -76,11 +76,11 @@
       assert(o.lines.length === 2 && o.lines.every(function (p) { return Math.min(p.a[0], p.b[0]) < o.x6 && Math.max(p.a[0], p.b[0]) > o.x6; }), 'whole');
       return o.lines.length + ' lines';
     });
-    test('Break Lines: both lines cut .0625 each side of the 3.000\'s line (the top one through its arrow tip); R2000 writes no DIMENSION for it', function () {
+    test('Break Lines: both lines cut .0625 each side of the 3.000\'s line (the top one through its arrow tip); R2000 writes a DIMENSION for it (rfQK)', function () {
       var o = rfQGBreakDoc({ brk: true }), g = rfQGGaps(o);
       assert(o.lines.length === 4 && g.length === 4 && g.every(function (x) { return Math.abs(x - 0.0625) < 1e-9; }), 'gaps ' + g.map(fmt).join(' '));
       var dxf = DW.toDXF(o.sh, { version: 'R2000' }), n = (dxf.match(/\n0\nDIMENSION\n/g) || []).length;
-      assert(n === 1, 'one DIMENSION (the 3.000): ' + n);
+      assert(n === 2, 'a DIMENSION each (rfQK: the block of the .750 holds the cut lines): ' + n);
       return g.map(fmt).join(' ');
     });
     test('Break around dimension arrows only: the line through the arrow is cut, the one across the plain line is not', function () {
@@ -133,7 +133,7 @@
       return { doc: doc, sheet: DW.compute(doc, r.mesh, r.model) };
     }
     function rfQGVid(doc, orient) { return doc.views.filter(function (v) { return v.orient === orient; })[0].id; }
-    test('Foreshortened R22.600 (Top view, centre 22 in off the view): a zigzag line from a false centre 20 mm in, the arrow on the arc\'s middle, the value past the false centre; no DIMENSION in R2000', function () {
+    test('Foreshortened R22.600 (Top view, centre 22 in off the view): a zigzag line from a false centre 20 mm in, the arrow on the arc\'s middle, the value past the false centre; a DIMENSION in R2000 (rfQK)', function () {
       var r = rfQGBracket(); noErrors(r);
       var o = rfQGSheet(r, function (doc) {
         var d = DW.smartDim({ arc: { c: [3, -25.4], r: 22.6, a0: 82.37, a1: 97.63 } }, null, [4, -2.2], { scale: 1 });
@@ -150,7 +150,7 @@
       var t = P.filter(function (p) { return p.k === 'text'; })[0];
       assert(t && t.p[1] < F[1], 'value past the false centre');
       var dxf = DW.toDXF(sh, { version: 'R2000' });
-      assert(!/\n0\nDIMENSION\n/.test(dxf) && /R22\.600/.test(dxf), 'exploded in R2000');
+      assert(/\n0\nDIMENSION\n/.test(dxf) && /R22\.600/.test(dxf), 'a DIMENSION in R2000 (rfQK: its block draws the zigzag)');
       return 'F ' + F.map(fmt).join(',');
     });
     test('Foreshortened with its false centre dragged aside (d.lead): a slanted jog joins the radius; the arrow stays on the arc', function () {

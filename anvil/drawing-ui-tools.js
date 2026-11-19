@@ -1347,6 +1347,9 @@
     if (ent.a && ent.b) { var dx = ent.b[0] - ent.a[0], dy = ent.b[1] - ent.a[1], L = dx * dx + dy * dy, t = L ? ((p[0] - ent.a[0]) * dx + (p[1] - ent.a[1]) * dy) / L : 0; t = Math.max(0, Math.min(1, t)); return [ent.a[0] + t * dx, ent.a[1] + t * dy]; }
     return p.slice();
   }
+  // (rfQK) a symbol's leader arrow point: on the model edge / circle / arc under the click (as a Note's), so the leader
+  // attaches to it (anchorLeaders' 0.6 mm reach missed a click a pixel or two beside the line); on paper, the click
+  DW.symTipAt = function (p) { var ent = DW.entityAt(p, true, true); return ent ? noteTipOn(ent, p) : p.slice(); };
   // the leader from the picked point to the pointer while the note's place is chosen
   function noteLeaderOverlay(g, H, svgNode) {
     var P = D.pending;
@@ -3813,7 +3816,7 @@
   function symClickAN(p) {
     var P = D.pending, v = P.values, M = RF_SYM[P.type];
     var lead = P.type === 'weld' || v.leader;
-    if (lead && !P.tip) { P.tip = p; UI.setStatus(M.title + ': now click where the ' + (P.type === 'weld' ? 'reference line starts' : 'symbol goes') + '.'); return; }
+    if (lead && !P.tip) { P.tip = DW.symTipAt(p); UI.setStatus(M.title + ': now click where the ' + (P.type === 'weld' ? 'reference line starts' : 'symbol goes') + '.'); return; }
     var spec = Object.assign({ type: P.type, p: p }, symSpecAN(P.type, v)), made = null;
     if (P.tip) spec.leader = P.tip;
     P.tip = null; P.at = null;

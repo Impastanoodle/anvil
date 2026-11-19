@@ -1833,7 +1833,9 @@
         var fsg = fu[0] > 1e-9 ? 1 : -1;   // the text on the false centre's far side from the arc
         label([F[0] - fsg * TEXT_GAP * k - fu[0] * TEXT_GAP * k, F[1] - fu[1] * TEXT_GAP * k - th / 2], fsg > 0 ? 'end' : 'start', 0, labMain);
         d.leadNow = [F[0] - rc[0], F[1] - rc[1]];
-        delete d.dxf;   // (exploded in R2000: a DIMENSION would draw the radius whole)
+        // (rfQK) R2000: a radial DIMENSION on the true centre and the arc point, its block the zigzag drawn here (what
+        // a reader shows; the value stays the true radius)
+        d.dxf = { type: 'rad', p10: rc.slice(), p15: ftip.slice(), p11: [F[0] - fsg * (TEXT_GAP * k + labWidth(labMain) / 2), F[1] - fu[1] * TEXT_GAP * k - th / 2], lead: Math.hypot(F[0] - ftip[0], F[1] - ftip[1]) };
         return out;
       }
       // (lane BX) is direction u (sheet) on the arc a0 → a1 (degrees, counter-clockwise)?
@@ -2394,7 +2396,7 @@
     // support still shows them, and AutoCAD / Mastercam read the value and can restyle it); R12 keeps them exploded.
     var dimGroups = [], dimOf = {};
     if (r2000 && opts && opts.dimensions !== false) (sheet.dims || []).forEach(function (d, i) {
-      if (!d || !d.dxf || d.brk || !{ h: 1, v: 1, aligned: 1, dia: 1, rad: 1, angle: 1 }[d.kind]) return;   // ordinate / baseline / chamfer stay exploded; (rfQG) so does one with Break Lines (a DIMENSION redraws its lines whole)
+      if (!d || !d.dxf || !{ h: 1, v: 1, aligned: 1, dia: 1, rad: 1, angle: 1 }[d.kind]) return;   // ordinate / baseline / chamfer stay exploded; (rfQK) Break Lines / Foreshortened: a DIMENSION whose block holds the cut lines / zigzag as drawn
       var g = { d: d, prims: [], name: '*D' + (dimGroups.length + 1) };
       dimOf[i] = g; dimGroups.push(g);
     });

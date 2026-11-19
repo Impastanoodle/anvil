@@ -1800,7 +1800,10 @@
   // the drawing's own precision still wins, and a "2X" in a part's text replaces the callout's count)
   function slotText(d, units, prec) {
     var pp = d.slot.props || {}, lead = null;
-    var f = function (x, part) {
+    // (rfQK) with Dual dimensions display on (or the callout's own dual), each size carries its dual value as a hole
+    // callout's does: .250 [6.35] X 1.250 [31.75] SLOT
+    var f = function (x, part) { return f0(x, part) + (_.dualSuffix ? _.dualSuffix(d, x, units) : ''); };
+    var f0 = function (x, part) {
       var q = pp[part];
       if (!q || !(q.tol || q.prec != null || q.label != null)) return prec != null ? D.numText(x, units, prec) : fmtDim(x, units);
       var lab = q.label, m = lab != null && /^(\(?)\s*(\d+)\s*[xX]\s+/.exec(lab);
@@ -1823,7 +1826,7 @@
     return d.view + ':' + d.kind + ':' + (d.kind === 'dia' || d.kind === 'rad' ? d.value.toFixed(4) : d.a.concat(d.b).map(function (x) { return x.toFixed(4); }).join(','));
   }
   // (rfOC) the text with its dual value in brackets when Dual dimensions display is on for it (drawing-annotations.js
-  // dualOf: angles, angular running sets and slot callouts are not doubled); dimText0 is the primary text alone
+  // dualOf: angles and angular running sets are not doubled; a slot callout doubles each size inside slotText, rfQK); dimText0 is the primary text alone
   function dimText(d, units) {
     var t = dimText0(d, units);
     return _.dualText ? _.dualText(d, units, t) : t;

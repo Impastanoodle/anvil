@@ -255,7 +255,7 @@
   function symbolClick(p) {
     var P = D.pending;
     if (!P) return;
-    if (P.values.leader && !P.tip) { P.tip = p; UI.setStatus(SYM_TITLES[P.type] + ': now click where the symbol goes.'); return; }
+    if (P.values.leader && !P.tip) { P.tip = DW.symTipAt ? DW.symTipAt(p) : p; UI.setStatus(SYM_TITLES[P.type] + ': now click where the symbol goes.'); return; }
     var spec = Object.assign({ type: P.type, p: p }, symSpec(P.type, P.values));
     if (P.tip) spec.leader = P.tip;
     try { Drawing.addSymbol(JSON.parse(JSON.stringify(doc())), spec); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return; }

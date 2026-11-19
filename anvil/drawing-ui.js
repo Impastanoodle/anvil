@@ -330,6 +330,7 @@
     opts = opts || {};
     if (!App.mesh || !App.mesh.triCount) { UI.toast(isAsm() ? 'The assembly has no components to draw yet.' : 'The part has no solid body to draw yet.'); return null; }
     if (App.mode === 'sketch' && UI.exitSketch) UI.exitSketch();
+    if (App.mode === 'sketch') return null;   // (rfQK) the Exit Sketch was refused (UI.sketchExitGuard: its toast says why): stay in the sketch
     if (UI.hasPM && UI.hasPM()) UI.pmCancel();
     var list = App.model.drawings || [];
     if (!list.length || opts.fresh) {
