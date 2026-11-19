@@ -9,7 +9,7 @@
     if (UI.isAssembly && UI.isAssembly()) { if (UI.setStatus) UI.setStatus('Sketches are not available in an assembly document'); return; }
     var f = K.findFeature(App.model, id);
     if (!f || f.type !== 'sketch') return;
-    if (App.mode === 'sketch' && App.activeSketch !== id) exitSketch(true);
+    if (App.mode === 'sketch' && App.activeSketch !== id) { exitSketch(true); if (App.mode === 'sketch') return; }   // rfQA: the exit guard kept the open sketch
     App.mode = 'sketch';
     App.activeSketch = id;
     App.sel = null; App.sel2 = null;
@@ -64,9 +64,18 @@
   if ($('pm') && window.MutationObserver) new MutationObserver(function () { refreshCorner(); }).observe($('pm'), { attributes: true, attributeFilter: ['hidden'] });
   UI.refreshSketchCorner = refreshCorner;
 
-  function exitSketch(silent) {
+  // rfQA (lane sketchflow8): UI.sketchExitGuard, when a function, is asked first with the sketch feature: a string it
+  // returns keeps the sketch open and is shown as a toast (another command, e.g. Edit Flange Profile, sets it while its
+  // sketch must stay valid). Discard Changes and Exit (force) does not ask.
+  UI.sketchExitGuard = null;
+  function exitSketch(silent, force) {
     if (App.mode !== 'sketch') return UI.whenIdle();
     var f = UI.activeSketchFeature();
+    if (!force && f && typeof UI.sketchExitGuard === 'function') {
+      var why = null;
+      try { why = UI.sketchExitGuard(f); } catch (e) { why = null; }
+      if (typeof why === 'string' && why) { App.pendingAfterSketch = null; UI.toast(why); UI.setStatus(why); return UI.whenIdle(); }
+    }
     cancelTool();
     App.mode = 'part';
     App.activeSketch = null;
@@ -136,7 +145,7 @@
       }
     }
     App.pendingAfterSketch = null;
-    exitSketch(true);
+    exitSketch(true, true);
   }
 
   // ------------------------------------------------------------------ tools
@@ -3826,7 +3835,8 @@
     lastDimDraw = now;
     dimSegs = null; prevLabels = null;
     var fG = UI.activeSketchFeature();
-    geoSegs = fG && App.mode === 'sketch' ? screenGeometry(fG, UI.activePlane()) : null;
+    if (fG && App.mode === 'sketch' && UI.sketchNameNewDims) { try { UI.sketchNameNewDims(fG); } catch (e) { /* names only */ } }   // rfQA: D<n> in creation order
+    geoSegs =fG && App.mode === 'sketch' ? screenGeometry(fG, UI.activePlane()) : null;
     clipBegin(fG && App.mode === 'sketch' ? fG : null, fG ? UI.activePlane() : null);   // rfIB
     // p9-sketch: a second pass when a label landed on another dimension's line, with every line as an obstacle
     // (and a third when a label moved in the second ran a neighbour's line on into another label). While the view or
@@ -4062,7 +4072,7 @@
     // rfAV: an angle (Smart Dimension between two lines) or an Angular Running value is in degrees: its own unit, a 1°
     // spin step and its own range (angle: above 0 up to 180; running angle: 0 up to 360, the spin wraps round)
     var rtype = it.rel != null ? f.rels[it.rel].type : null;
-    dimEditing = { d: it.d, auto: !!it.auto, index: it.index, rel: it.rel, sketchId: f.id, value: value, angle: rtype === 'angle' || rtype === 'runangle', range: dimAngleRange(rtype), scale: scale };
+    dimEditing = { d: it.d, auto: !!it.auto, index: it.index, rel: it.rel, sketchId: f.id, value: value, angle: rtype === 'angle' || rtype === 'runangle' || rtype === 'arcangle', range: dimAngleRange(rtype), scale: scale };
     dimEdit.hidden = false;
     dimUnit.textContent = dimEditing.angle ? '°' : (UI.unitLabel ? UI.unitLabel() : 'mm');
     // rfIF: rounded to 4 places, or to the dimension's own / the document's precision when that is finer (up to 8)
@@ -4097,6 +4107,7 @@
   function dimAngleRange(type) {
     if (type === 'angle') return { lo: 0, hi: 180, loOpen: true, msg: 'Angle must be between 0 and 180 degrees.' };
     if (type === 'runangle') return { lo: 0, hi: 360, hiOpen: true, wrap: true, msg: 'An angular running value must be from 0 up to 360 degrees.' };
+    if (type === 'arcangle') return { lo: 0, hi: 360, loOpen: true, hiOpen: true, msg: 'An arc angle must be more than 0 and less than 360 degrees.' };   // rfQA
     return null;
   }
   function inAngleRange(rg, v) { return !rg || ((rg.loOpen ? v > rg.lo : v >= rg.lo) && (rg.hiOpen ? v < rg.hi : v <= rg.hi)); }
@@ -4313,7 +4324,8 @@
     if (!f) return;
     if (st.relDim) {
       // sketchdims: an arc length waits for the arc's other end point first (UI.dimPickNeed)
-      if (st.relDim.need && UI.dimPickNeed && UI.dimPickNeed(f, st.relDim, mx, my)) return;
+      // rfQA: so does a distance between an arc's two end points for a click on the arc's centre (its angle)
+      if ((st.relDim.need || st.relDim.alt) && UI.dimPickNeed && UI.dimPickNeed(f, st.relDim, mx, my)) return;
       // third click of a two-entity dimension: place it, then type its value
       var rd = st.relDim;
       st.relDim = null; st.dim = null; App.tempRelDim = null;
@@ -4759,7 +4771,7 @@
       drag.last = p;
       return;
     }
-    if (p[0] < 0 || p[1] < 0 || p[0] > UI.size.w || p[1] > UI.size.h) return;
+    if (p[0] < 0 || p[1] < 0 || p[0] > UI.size.w || p[1] > UI.size.h) { leaveHover(); return; }
     if (App.mode === 'sketch') { sketchMove(p[0], p[1]); return; }
     // hover
     var hover = null;
@@ -4785,6 +4797,17 @@
     else $('status-coords').textContent = '';
   });
 
+  // rfQA (lane sketchflow8): the cursor gone off the graphics area (onto the PropertyManager, the ribbon, out of the
+  // window): the Select / Smart Dimension hover (the highlight and its "Circle" / "Endpoint" label in #dim-layer) goes
+  // with it. It stayed until the next move inside, so a label was left among the dimensions (seen as a stray "Circle").
+  // A drawing tool keeps its preview (its rubber band waits for the cursor to come back).
+  function leaveHover() {
+    if (App.mode !== 'sketch' || !fbLayer || !fbLayer.firstChild) return;
+    var drawing = App.tool !== 'select' && App.tool !== 'dimension' && !(App.command && App.command.onSketchPoint);
+    if (drawing && App.toolState && App.toolState.pts && App.toolState.pts.length) return;
+    clearFeedback();
+  }
+  viewport.addEventListener('mouseleave', leaveHover);
   // rfOG: is something being dragged in the graphics area (the view, a sketch point, a box, a component)? Hover work is skipped then
   UI.viewportDragging = function () { return !!drag && drag.kind !== 'maybe-rotate' && drag.kind !== 'maybe-hook'; };
   // rfOG: Esc while a sketch point or entity is being dragged ends the drag and puts everything back, in one step (the

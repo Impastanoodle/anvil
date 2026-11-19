@@ -194,3 +194,12 @@ Dim kinds `k`: line `len|dx|dy`; rect `w|h` (`i` = edge 0 bottom, 1 right, 2 top
     - Step titles with an apostrophe break the group file (escape it, or reword).
     - Esc puts a drawing tool down, so set the tool again before the next entity.
     - A drag on a circle's edge changes its radius: drag its centre to move it.
+
+- **Lane sketchflow8 (2026-11-19, rfQA kernel + smoke, report `test-reports/2026-11-19-sketch-flow-8.md`).**
+  - Trimmed first copy of an Offset chain: `trimChain` (sketch-solver.js `afterTrim`) keeps the chain; the piece that takes the copy's Parallel / distance (`pieceFor`) goes first with `cut[0] = []` (no rows), the other piece is held by the chain like any trimmed copy, and the split's Collinear is not added (`splitHeld`).
+  - D-names in creation order: `nameNewDims` (ui-sketch-dims.js, called from `dimName` and ui-sketch.js `drawDims`) stores `d.name` only where the place in the list would give another name; counts per sketch id, seeded on enter. Deleting a dimension still renumbers the unnamed ones after it.
+  - Arc Angle: rel `arcangle` (refs [arc], degrees, 0 < v < 360). Smart Dimension end, end, then centre: `UI.relDimFor` puts `alt` on the end-to-end distance and `UI.dimPickNeed` swaps it on the centre click. Drawn by `relDimScreenExt` like the arc length.
+  - `tangentTurns` (sketch-solver.js): `setDim` / `setRelValue` refuse a value after which a Tangent join between a line and an arc (or two arcs) at a shared end is a cusp.
+  - Mirror Entities: an arc pair's Symmetric carries `ends: true` (`mirrorPairRels`). That holds the copy whole. `mirrorRelations` falls back to the plain Symmetric when the ends are held already.
+  - `UI.sketchExitGuard(f)` ? a string keeps the sketch open (toast). `exitSketch(silent, force)`: Discard (`cancelSketch`) passes force. `enterSketch` stops if the guard kept the old sketch open. The confirmation corner already existed (`refreshCorner`, `#exit-sketch`, side by side; hidden in Mastercam direct mode).
+  - The hover label (`cursorLabel` in `fbLayer`) lives in `#dim-layer`. `leaveHover` clears it when the cursor leaves the graphics area.

@@ -694,7 +694,7 @@
     App.dimsStale = false;
     if (UI.drawDims) UI.drawDims();
     if (r.status !== 'ok') { askDriven(f, 'rel', idx); return; }
-    UI.setStatus((rd.type === 'angle' ? 'Angle' : 'Distance') + ' dimension placed. Type a value and press Enter to drive the sketch.');
+    UI.setStatus((rd.type === 'angle' || rd.type === 'arcangle' ? 'Angle' : 'Distance') + ' dimension placed. Type a value and press Enter to drive the sketch.');
     UI.openRelDimEdit(idx);
   }
 

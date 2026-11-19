@@ -218,7 +218,37 @@
     (f.rels || []).forEach(function (r, i) { if (S.TYPES[r.type] && S.TYPES[r.type].dim) out.push({ kind: 'rel', index: i, d: r }); });
     return out;
   }
+  // rfQA (lane sketchflow8): SolidWorks names a sketch's dimensions in creation order (D1, D2, … whether Smart
+  // Dimension or a distance between two entities). Names by position (dims first, then relations) stay for what a
+  // document already holds; when new dimension items appear (more Smart Dimensions at the end of f.dims, or more
+  // dimension relations at the end of the relations), every unnamed old one gets the name it shows today stored on it
+  // and each new one takes the next free D<n>. Counts per sketch id; a count that drops (delete, undo) is re-seeded.
+  var dimCounts = {};
+  function dimRelCount(f) { var n = 0; (f.rels || []).forEach(function (r) { if (r && S.TYPES[r.type] && S.TYPES[r.type].dim) n++; }); return n; }
+  function nameNewDims(f, seedOnly) {
+    if (!f || f.type !== 'sketch') return;
+    var key = String(f.id), nd = (f.dims || []).length, nr = dimRelCount(f), was = dimCounts[key];
+    dimCounts[key] = { nd: nd, nr: nr };
+    if (seedOnly || !was || (nd <= was.nd && nr <= was.nr)) return;
+    var newD = nd > was.nd ? f.dims.slice(was.nd) : [], rels = (f.rels || []).filter(function (r) { return r && S.TYPES[r.type] && S.TYPES[r.type].dim; });
+    var newR = nr > was.nr ? rels.slice(was.nr) : [], fresh = newD.concat(newR);
+    if (!fresh.some(function (d) { return d && !d.name; })) return;
+    // the old ones keep the names they show (their place among the old ones only), the new ones take the next numbers;
+    // a name is stored only where the place in the list would give another one, so a sketch whose dimensions were
+    // made in list order keeps no names (its script stays as it was)
+    var old = (f.dims || []).filter(function (d) { return newD.indexOf(d) < 0; }).concat(rels.filter(function (r) { return newR.indexOf(r) < 0; }));
+    var want = new Map(), top = 0;
+    old.forEach(function (d, k) { if (d) want.set(d, d.name ? String(d.name) : 'D' + (k + 1)); });
+    want.forEach(function (nm) { var m = /^D(\d+)$/.exec(nm); if (m) top = Math.max(top, +m[1]); });
+    fresh.forEach(function (d) { if (d) { if (d.name) { var m = /^D(\d+)$/.exec(String(d.name)); if (m) top = Math.max(top, +m[1]); } } });
+    fresh.forEach(function (d) { if (d) want.set(d, d.name ? String(d.name) : 'D' + (++top)); });
+    (f.dims || []).concat(rels).forEach(function (d, k) { if (d && !d.name && want.get(d) !== 'D' + (k + 1)) d.name = want.get(d); });
+  }
+  UI.sketchNameNewDims = nameNewDims;
+  UI.sketchEnterHooks = UI.sketchEnterHooks || [];
+  UI.sketchEnterHooks.push(function (f) { nameNewDims(f, true); });
   function dimName(f, d) {
+    nameNewDims(f);
     if (d && d.name) return String(d.name);
     var list = dimList(f), k = -1;
     for (var i = 0; i < list.length; i++) if (list[i].d === d) k = i;
@@ -247,7 +277,7 @@
     var index = kind === 'rel' ? f.rels.indexOf(d) : f.dims.indexOf(d), kt, value;
     if (kind === 'rel') {
       if (!S.TYPES[d.type] || !S.TYPES[d.type].dim) return null;
-      kt = d.type === 'angle' || d.type === 'runangle' ? 'angle' : d.type === 'arclength' ? 'arclen' : 'len';   // rfAQ: an angular running value is an angle
+      kt = d.type === 'angle' || d.type === 'runangle' || d.type === 'arcangle' ? 'angle' : d.type === 'arclength' ? 'arclen' : 'len';   // rfAQ: an angular running value is an angle
       value = d.driven || d.v == null ? S.measure(f, d.type, d.refs, d.dir, d.sup, d.ac) : d.v;
     } else {
       var e = f.entities[d.e], g = e && K.dimGeometry(e, d);
@@ -316,8 +346,23 @@
   if (baseRelDimFor) UI.relDimFor = function (f, r1, r2) {
     var a = arcEnd(f, r1, r2) || arcEnd(f, r2, r1);
     if (a) return a;
-    return baseRelDimFor.apply(this, arguments);
+    var two = baseRelDimFor.apply(this, arguments), ai = two && two.type === 'distance' ? arcOfEnds(f, r1, r2) : -1;
+    // rfQA: the two end points of one arc: the distance between them, or, when the arc's centre is clicked next, the
+    // angle the arc sweeps (SolidWorks: end point, end point, centre point)
+    if (ai >= 0) two.alt = { need: ai + '.c', type: 'arcangle', refs: [String(ai)] };
+    return two;
   };
+  // the arc whose two end points r1 and r2 are (either order, or points lying there), or -1
+  function arcOfEnds(f, r1, r2) {
+    var p1 = S.parseRef(r1), p2 = S.parseRef(r2);
+    if (!p1 || !p2 || p1.o || p2.o || S.refKind(f, r1) !== 'point' || S.refKind(f, r2) !== 'point') return -1;
+    for (var i = 0; i < f.entities.length; i++) {
+      if (f.entities[i].t !== 'arc') continue;
+      var k1 = arcEndAt(f, i, r1), k2 = arcEndAt(f, i, r2);
+      if (k1 && k2 && k1 !== k2) return i;
+    }
+    return -1;
+  }
   function arcEnd(f, arcRef, endRef) {
     var pa = S.parseRef(arcRef), pe = S.parseRef(endRef);
     if (!pa || !pe || pa.o || pe.o || pa.s !== null) return null;
@@ -340,6 +385,17 @@
   // dimToolClick's placing click for a dimension that waits for one more pick (arc length: the arc's other end point):
   // true when the click was that pick (the next click places the dimension)
   UI.dimPickNeed = function (f, rd, mx, my) {
+    if (rd && rd.alt) {
+      var alt = rd.alt, at = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null;
+      delete rd.alt;
+      if (at !== alt.need) return false;
+      var ad = { type: alt.type, refs: alt.refs.slice() };
+      App.toolState.relDim = ad;
+      App.tempRelDim = Object.assign({}, ad);
+      App.dimsStale = true;
+      $('sketch-hint').innerHTML = 'Click where the angle dimension should sit.';
+      return true;
+    }
     if (!rd || !rd.need) return false;
     var ref = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null, need = rd.need;
     delete rd.need;
@@ -350,7 +406,7 @@
   };
   UI.relDimPlacementExt = function (f, rel, uv) {
     if (rel.ord != null && rel.type === 'distance') return ordPlacement(f, rel, uv);   // sketch-ordinate: the whole set's text line
-    if (rel.type !== 'arclength') return null;
+    if (rel.type !== 'arclength' && rel.type !== 'arcangle') return null;   // rfQA: an arc angle sits the same way
     var p = S.parseRef(rel.refs[0]), e = p && !p.o && f.entities[p.e];
     if (!e || e.t !== 'arc') return {};
     return { off: Math.round(Math.hypot(uv[0] - e.cx, uv[1] - e.cy) * 1e4) / 1e4 };
@@ -359,8 +415,8 @@
   // the ⌒ value at the middle
   UI.relDimScreenExt = function (f, pl, rel) {
     if (rel.ord != null && rel.type === 'distance') return ordScreen(f, pl, rel);   // sketch-ordinate: a member of an ordinate set
-    if (rel.type !== 'arclength') return null;
-    var p = S.parseRef(rel.refs[0]), e = p && !p.o && f.entities[p.e];
+    if (rel.type !== 'arclength' && rel.type !== 'arcangle') return null;
+    var p = S.parseRef(rel.refs[0]), e = p && !p.o && f.entities[p.e], isAng = rel.type === 'arcangle';
     if (!e || e.t !== 'arc') return null;
     var s = UI.cam.scale || 0.1, R = rel.off != null && rel.off > 1e-9 ? rel.off : e.r + 18 * s;
     function at(adeg, r) { var a = adeg * Math.PI / 180; return scr(pl, [e.cx + r * Math.cos(a), e.cy + r * Math.sin(a)]); }
@@ -371,11 +427,12 @@
     out.arrows.push({ tip: pts[0], dir: unit(pts[1], pts[0]) }, { tip: pts[n], dir: unit(pts[n - 1], pts[n]) });
     var gap = 2 * s, ext = 4 * s;
     [e.a0, e.a1].forEach(function (a) {
+      if (isAng) { out.lines.push([at(a, 0), at(a, R + ext)]); return; }   // rfQA: an angle's extension lines run from the centre
       if (R > e.r + gap) out.lines.push([at(a, e.r + gap), at(a, R + ext)]);
       else if (R < e.r - gap) out.lines.push([at(a, R - ext), at(a, e.r - gap)]);
     });
-    var value = rel.driven || rel.v == null ? S.measure(f, 'arclength', rel.refs) : rel.v;
-    out.label = dimShownText(rel, value, 'arclen');   // rfPJ: with its dual value
+    var value = rel.driven || rel.v == null ? S.measure(f, rel.type, rel.refs) : rel.v;
+    out.label = dimShownText(rel, value, isAng ? 'angle' : 'arclen');   // rfPJ: with its dual value
     if (rel.driven) out.label = '(' + out.label + ')';
     var mid = at(e.a0 + sw / 2, R);
     out.text = { x: mid[0], y: mid[1] + (UI.DIM_CAP || 9.4) / 2, anchor: 'middle' };
@@ -462,7 +519,7 @@
         ] },
         { title: 'Primary Value', fields: [
           { type: 'text', key: 'name', label: 'Name' },
-          { type: 'number', key: 'value', label: info.kind === 'rel' && d.type === 'angle' ? 'Angle' : 'Value', unit: unit },
+          { type: 'number', key: 'value', label: info.kind === 'rel' && (d.type === 'angle' || d.type === 'arcangle') ? 'Angle' : 'Value', unit: unit },
           { type: 'check', key: 'driven', label: 'Driven (reference dimension)' },
           { type: 'check', key: 'mark', label: 'Mark for drawing' },
           { type: 'buttons', buttons: [{ label: 'Reverse direction', onclick: function () { var r = reverseSense({ d: d }); if (!r.ok) UI.toast(r.error); rerender(); } }] }

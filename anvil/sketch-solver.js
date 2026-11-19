@@ -249,6 +249,8 @@ var SketchSolver = (function () {
     angle: { name: 'Angle', glyph: '∠', dim: true },
     // sketchdims: the length along an arc (Smart Dimension: the arc, then its two end points), refs [arc]
     arclength: { name: 'Arc Length', glyph: '⌒', dim: true },
+    // rfQA: the angle an arc sweeps (Smart Dimension: its two end points, then its centre), refs [arc], v in degrees (0 to 360)
+    arcangle: { name: 'Arc Angle', glyph: '∠', dim: true },
     // rfAQ: Chamfer Dimension (refs [chamfer line, adjacent line]: v = the chamfer's length along the adjacent line,
     // cang = its angle to that line, degrees), Path Length (refs: the lines / arcs / circles of a chain, v = their total
     // length) and Angular Running (refs [vertex, datum point, point]: v = the angle at the vertex from the datum to the
@@ -298,7 +300,7 @@ var SketchSolver = (function () {
         var ls = [0, 1, 2].filter(function (q) { return q !== pi; });
         return kinds[ls[0]] === 'line' && kinds[ls[1]] === 'line' ? [pi, ls[0], ls[1]] : null;
       }
-      case 'arclength': return n === 1 && kinds[0] === 'circle' ? [0] : null;
+      case 'arclength': case 'arcangle': return n === 1 && kinds[0] === 'circle' ? [0] : null;
       case 'equal': return n === 2 ? perm('line', 'line') || perm('circle', 'circle') : null;
       // rfCR: any two curves (a line, an arc / circle, a spline / ellipse); relEquation refuses the entity types it cannot measure
       case 'equalcurve': return n === 2 && kinds.every(function (k) { return k === 'line' || k === 'circle' || k === 'free'; }) ? [0, 1] : null;
@@ -487,6 +489,20 @@ var SketchSolver = (function () {
         // p9-sketchfix: two slots are mirror images: their widths are equal too (Mirror Entities holds a slot copy so)
         var slots = kA === 'line' && slotPair(ents, A, B);
         n = pairs.length * 2 + (kA === 'circle' || slots ? 1 : 0);
+        // rfQA (lane sketchflow8): rel.ends on two arcs (Mirror Entities sets it): the ends mirror too, the copy's start
+        // the original's end (a mirror turns the arc round), so a mirrored arc is held whole as SolidWorks holds it (before,
+        // only its centre and radius: a mirrored slot row was 2 DOF an arc under-defined, and Fully Define dimensioned the
+        // copies' ends). One row per end: with the centre and radius held, the end's place along the axis or across it,
+        // whichever its circle crosses the more squarely there.
+        var endRows = [];
+        if (kA === 'circle' && rel.ends && !A.o && !B.o && A.s === null && B.s === null && ents[A.e] && ents[B.e] && ents[A.e].t === 'arc' && ents[B.e].t === 'arc') {
+          var axd = C(Ax, ents), ud = unit(sub(axd.b, axd.a));
+          [[1, 2], [2, 1]].forEach(function (kk) {
+            var ea = refPoint(ents, { e: A.e, s: 'p', k: kk[0] }), ca = C(A, ents).c, rr = unit(sub(ea, ca)), tg = [-rr[1], rr[0]];
+            endRows.push({ a: { e: A.e, s: 'p', k: kk[0] }, b: { e: B.e, s: 'p', k: kk[1] }, along: Math.abs(dot(tg, ud)) >= Math.abs(crs(tg, ud)) });
+          });
+          n += 2;
+        }
         f = function (E) {
           var L = C(Ax, E), dir = unit(sub(L.b, L.a)), out = [];
           pairs.forEach(function (pr) {
@@ -495,6 +511,7 @@ var SketchSolver = (function () {
           });
           if (kA === 'circle') out.push(C(A, E).r - C(B, E).r);
           if (slots) out.push(E[A.e].w - E[B.e].w);
+          endRows.forEach(function (er) { var a = refPoint(E, er.a), b = refPoint(E, er.b); out.push(er.along ? dot(sub(b, a), dir) : lineDist([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], L)); });
           return out;
         };
         break;
@@ -553,6 +570,14 @@ var SketchSolver = (function () {
         var ia = A.e;
         n = 1;
         f = function (E) { var e = E[ia]; return [e.r * (e.a1 - e.a0) * D2R - v]; };
+        break;
+      }
+      case 'arcangle': {
+        // rfQA: the arc's sweep in degrees (whole arc ref only)
+        if (!(v > 0) || A.o || A.s !== null || !ents[A.e] || ents[A.e].t !== 'arc') return null;
+        var iaa = A.e;
+        n = 1;
+        f = function (E) { var e = E[iaa]; return [e.a1 - e.a0 - v]; };
         break;
       }
       case 'equal':
@@ -1687,7 +1712,7 @@ var SketchSolver = (function () {
     // as Equal, then orientation relations, and only last what joins the geometry (Coincident, Midpoint, Fix,
     // patterns, offsets): before, the first solution of a plate over defined by a third dimension deleted a corner
     // Coincident. Same cost: flagged (redundant / conflicting) first, then the newest.
-    var DIAG_COST = { distance: 0, angle: 0, arclength: 0, pathlength: 0, chamfer: 0, equal: 1, horizontal: 2, vertical: 2, parallel: 2, perpendicular: 2, collinear: 2, tangent: 2, concentric: 2, coradial: 2, symmetric: 2,
+    var DIAG_COST = { distance: 0, angle: 0, arclength: 0, arcangle: 0, pathlength: 0, chamfer: 0, equal: 1, horizontal: 2, vertical: 2, parallel: 2, perpendicular: 2, collinear: 2, tangent: 2, concentric: 2, coradial: 2, symmetric: 2,
       coincident: 3, midpoint: 3, onEdge: 3, fix: 3, pattern: 3, offset: 3, pierce: 3 };
     function diagCost(it) { if (it.src === 'dim') return 0; var r = sketch.rels[it.index], c = r && DIAG_COST[r.type]; return c == null ? 1 : c; }
     var pool = flagged.map(function (it) { return { it: it, f: 0 }; }).concat(tied.map(function (it) { return { it: it, f: 1 }; }));
@@ -2067,8 +2092,42 @@ var SketchSolver = (function () {
       if (pr) r = pr;
     }
     if (!r.ok) { var names = conflictNames(sketch, opts, index >= 0 ? { src: 'dim', index: index } : null); sketch.entities = saved; return { ok: false, error: conflictMessage(names), conflicts: names }; }
+    var tt = tangentTurns(sketch, saved);
+    if (tt) { sketch.entities = saved; return { ok: false, error: tt, turned: true }; }
     if (lk) lk.rels.forEach(function (j) { sketch.rels[j].v = v; });
     return { ok: true };
+  }
+  // rfQA (lane sketchflow8): a value that would turn a Tangent join inside out. The Tangent equation at a shared end
+  // (the radius square to the line, two radii in line) holds on either side, so a large change of a tangent arc's R
+  // could land on the mirrored solution: the arc leaving the line backwards (a cusp), or the line turned round. A join
+  // that was smooth (the curve going on the way the other came in) and is a cusp after the solve is refused with the
+  // reason. Returns the message, or null.
+  function tangentTurns(sketch, before) {
+    var E = sketch.entities, msg = null;
+    function ends(e) { return e.t === 'line' ? [[e.x1, e.y1], [e.x2, e.y2]] : e.t === 'arc' ? tEnds(e) : null; }
+    // the direction of travel into end k (0 / 1) of e, coming along e
+    function into(e, k) {
+      if (e.t === 'line') { var p = ends(e); return unit(sub(p[k], p[1 - k])); }
+      var a = (k ? e.a1 : e.a0) * D2R, t = [-Math.sin(a), Math.cos(a)];   // counter-clockwise at that end
+      return k ? t : [-t[0], -t[1]];
+    }
+    function joinSign(Es, i, j, ki, kj) { var a = into(Es[i], ki), b = into(Es[j], kj); return -dot(a, b); }   // > 0: smooth (b leaves the way a came in)
+    (sketch.rels || []).forEach(function (rel) {
+      if (msg || rel.type !== 'tangent' || rel.suppressed || !rel.refs || rel.refs.length !== 2) return;
+      var R = rel.refs.map(parseRef);
+      if (R.some(function (p) { return !p || p.o || p.s !== null; })) return;
+      var i = R[0].e, j = R[1].e, a0 = before[i], b0 = before[j], a1 = E[i], b1 = E[j];
+      if (!a0 || !b0 || !a1 || !b1 || !/^(line|arc)$/.test(a0.t) || !/^(line|arc)$/.test(b0.t) || (a0.t === 'line' && b0.t === 'line')) return;
+      var pa = ends(a0), pb = ends(b0), ki = -1, kj = -1, tol = 1e-6 * Math.max(1, Math.abs(pa[0][0]), Math.abs(pa[0][1]));
+      for (var x = 0; x < 2; x++) for (var y = 0; y < 2; y++) if (ki < 0 && len(sub(pa[x], pb[y])) < tol) { ki = x; kj = y; }
+      if (ki < 0) return;
+      // a line gone to (nearly) nothing has no direction to compare
+      function size(e) { var p = ends(e); return e.t === 'line' ? len(sub(p[1], p[0])) : e.r; }
+      if (size(a1) < 1e-9 || size(b1) < 1e-9) return;
+      var s0 = joinSign(before, i, j, ki, kj), s1 = joinSign(E, i, j, ki, kj);
+      if (s0 > 0.5 && s1 < -0.5) msg = 'That value would turn ' + refName(sketch, String(i)) + ' and ' + refName(sketch, String(j)) + ' inside out at their Tangent join (the mirrored solution): the geometry is left as it was.';
+    });
+    return msg;
   }
   // lane CV: Link Values (SolidWorks' right-click a dimension ▸ Link Values). Dimensions (Smart Dimensions in
   // sketch.dims and distance / angle relations) that carry the same `link` name share one value: setting one sets
@@ -2169,6 +2228,7 @@ var SketchSolver = (function () {
     if (rel.driven) return { ok: false, error: DRIVEN_MSG };
     v = +v;
     if (!(v >= 0) || !isFinite(v) || (rel.type === 'angle' && v > 180)) return { ok: false, error: rel.type === 'angle' ? 'Angle must be between 0 and 180 degrees.' : 'Dimension must be a positive number.' };
+    if (rel.type === 'arcangle' && !(v > 0 && v < 360)) return { ok: false, error: 'An arc angle must be more than 0 and less than 360 degrees.' };
     var saved = clone(sketch.entities), t = {};
     t[index] = v;
     var R = rel.refs.map(parseRef), pe = R.filter(function (q) { return q && !q.o; })[0];
@@ -2189,6 +2249,8 @@ var SketchSolver = (function () {
     if (!r || !r.ok) r = solve(sketch, { relTargets: t, part: pe ? pe.e : null });
     if (!r.ok) { var pr = patternRetry(sketch, saved, { relTargets: t, part: pe ? pe.e : null }); if (pr) r = pr; }   // rfMW
     if (!r.ok) { var names = conflictNames(sketch, { relTargets: t }, { src: 'rel', index: index }); sketch.entities = saved; return { ok: false, error: conflictMessage(names), conflicts: names }; }
+    var tt = tangentTurns(sketch, saved);   // rfQA
+    if (tt) { sketch.entities = saved; return { ok: false, error: tt, turned: true }; }
     rel.v = v;
     return { ok: true };
   }
@@ -2276,6 +2338,7 @@ var SketchSolver = (function () {
     var p = match(type, kinds);
     if (!p) return null;
     if (type === 'arclength') { var ea = !R[0].o && R[0].s === null && ents[R[0].e]; return ea && ea.t === 'arc' ? ea.r * (ea.a1 - ea.a0) * D2R : null; }
+    if (type === 'arcangle') { var eg = !R[0].o && R[0].s === null && ents[R[0].e]; return eg && eg.t === 'arc' ? eg.a1 - eg.a0 : null; }
     if (type === 'chamfer' || type === 'pathlength' || type === 'runangle') return rfaqMeasure(sketch, type, R, kinds, dir === 'cw');   // rfAQ (dir 'cw': a clockwise running angle)
     var base = measureBase(sketch, type, R, kinds, p, dir, sup);
     if (base == null || type !== 'distance' || dir === 'r' || !Array.isArray(ac)) return base;
@@ -2605,24 +2668,39 @@ var SketchSolver = (function () {
       }
       return longest;
     }
-    var rels = [], moved = [];   // moved: relations this trim moved onto a piece or made (dropped first if they over-define)
+    var rels = [], moved = [], splitHeld = false;   // moved: relations this trim moved onto a piece or made (dropped first if they over-define); splitHeld: the chain holds the pieces (rfQA)
     // rfPR (lane sketchflow6): a copy of an Offset Entities chain trimmed (a converted face outline offset inward, then
     // trimmed to a U): the chain's Offset relation used to go whole, so every copy lost what held it to the model and
     // the untouched corners came apart. Now the relation keeps the other copies as they were and takes the pieces in the
     // trimmed copy's place (chainEquation's chain.slot / chain.cut); the corners it held where a piece meets another copy
-    // become Coincidents. Not for a trimmed base or the dimensioned first copy (the relation goes, as before).
+    // become Coincidents. Not for a trimmed base or a first copy trimmed away whole (the relation goes, as before).
     function trimChain(rel) {
       var ch = rel.chain, n = ch.n | 0, R = rel.refs.map(parseRef);
       if (!simple || !(n >= 1) || R.length <= n || R.some(function (p) { return !p || p.o || p.s !== null; })) return null;
       var oldCopies = R.slice(n).map(function (p) { return p.e; }), q0 = oldCopies.indexOf(idx);
-      if (q0 <= 0 || R.slice(0, n).some(function (p) { return p.e === idx; })) return null;
+      if (q0 < 0 || R.slice(0, n).some(function (p) { return p.e === idx; })) return null;
       if (R.some(function (p) { return p.e !== idx && !(map[p.e] >= 0); })) return null;
       if (pieces.some(function (pi) { return E[pi].t !== old.t; })) return null;
+      // rfQA (lane sketchflow8): the dimensioned first copy trimmed (one piece, or two when cut in two). The piece the
+      // copy's Parallel / Concentric and offset dimension go to (pieceFor, as the loop below moves them) stays first:
+      // the relation measures the chain's distance there and gives it no rows (cut: []); the other piece lies on its
+      // expected curve like any trimmed copy, so the split's Collinear (Concentric + Equal) is not added (it would repeat
+      // a corner's Coincident).
+      var firstPiece = null;
+      if (q0 === 0) {
+        if (!pieces.length || (pieces.length > 1 && !split)) return null;
+        var b0s = String(R[0].e), c0s = String(idx), held0 = (sketch.rels || []).filter(function (r) { return (r.type === 'distance' || r.type === 'parallel' || r.type === 'concentric') && r.refs.length === 2 && r.refs.indexOf(b0s) >= 0 && r.refs.indexOf(c0s) >= 0; });
+        if (!held0.length) return null;
+        firstPiece = split ? pieceFor(held0[0]) : pieces[0];
+        if (held0.some(function (r) { return (split ? pieceFor(r) : pieces[0]) !== firstPiece; })) return null;
+      }
       var oldSlot = Array.isArray(ch.slot) ? ch.slot : oldCopies.map(function (c, q) { return q; }), oldCut = ch.cut || {};
-      var copies = [], slot = [], isCut = [];
+      var copies = [], slot = [], isCut = [], noRows = {};
       oldCopies.forEach(function (c, q) {
         if (q !== q0) { copies.push(map[c]); slot.push(oldSlot[q]); isCut.push(!!oldCut[q]); return; }
-        pieces.forEach(function (pi) { copies.push(pi); slot.push(oldSlot[q]); isCut.push(true); });
+        var ps = firstPiece == null ? pieces : [firstPiece].concat(pieces.filter(function (pi) { return pi !== firstPiece; }));
+        ps.forEach(function (pi) { if (pi === firstPiece) noRows[copies.length] = true; copies.push(pi); slot.push(oldSlot[q]); isCut.push(true); });
+        if (firstPiece != null) splitHeld = true;
       });
       function endsOf(i) { return tEnds(E[i]).map(function (p, k) { return { ref: i + '.p' + (k + 1), pt: p }; }); }
       function meet(a, b) { return len(sub(a, b)) < 1e-6 * Math.max(1, Math.abs(a[0]), Math.abs(a[1])); }
@@ -2644,7 +2722,8 @@ var SketchSolver = (function () {
       var cut = {};
       copies.forEach(function (c, q) {
         if (!isCut[q]) return;
-        var held = endsOf(c).filter(function (a) { return copies.some(function (w, k) { return !isCut[k] && endsOf(w).some(function (b) { return meet(a.pt, b.pt); }); }); });
+        if (noRows[q]) { cut[q] = []; return; }
+        var held =endsOf(c).filter(function (a) { return copies.some(function (w, k) { return !isCut[k] && endsOf(w).some(function (b) { return meet(a.pt, b.pt); }); }); });
         if (E[c].t === 'line') cut[q] = ['p1', 'p2'].filter(function (nm) { return !held.some(function (h) { return h.ref === c + '.' + nm; }); });
         else cut[q] = held.length ? ['c'] : ['c', 'r'];
       });
@@ -2700,7 +2779,7 @@ var SketchSolver = (function () {
         rels.push(copy); moved.push(copy);
       }
     });
-    if (split) {
+    if (split && !splitHeld) {
       // the two pieces stay on the old line (Collinear) or the old circle (Concentric + Equal)
       var A = String(pieces[0]), B = String(pieces[1]);
       if (old.t === 'line') rels.push({ type: 'collinear', refs: [A, B] });
@@ -3630,6 +3709,7 @@ var SketchSolver = (function () {
     var a = E[i], b = E[j], A = String(i), B = String(j), X = String(axis);
     function sym(ra, rb) { return { type: 'symmetric', refs: [ra, rb, X] }; }
     if (!a || !b) return [];
+    if (a.t === 'arc' && b.t === 'arc') { var sa = sym(A, B); sa.ends = true; return [sa]; }   // rfQA: its ends too (relEquation)
     if (a.t === b.t && /^(line|circle|arc|point|slot)$/.test(a.t)) return [sym(A, B)];
     if (a.t === 'text' && b.t === 'text' && textFree(a) && textFree(b)) return [sym(A, B)];   // sketch-text-ref: their insertion points
     if (a.t === 'poly' && b.t === 'poly') return [sym(A + '.c', B + '.c'), sym(A + '.v0', B + '.v0')];
@@ -3652,10 +3732,15 @@ var SketchSolver = (function () {
       mirrorPairRels(sketch.entities, p[0], p[1], axis).forEach(function (rel) {
         if (!relEquation(sketch.entities, rel, sketch.rels)) return;
         var before = analyze(sketch);
-        (sketch.rels = sketch.rels || []).push(rel);
-        solve(sketch);   // the copies were rounded to 1e-4: close the relation exactly
-        var an = analyze(sketch);
-        if (an.rels[sketch.rels.length - 1] !== 'ok' || an.redundant > before.redundant || an.conflicts > before.conflicts) { sketch.rels.pop(); if (!sketch.rels.length) delete sketch.rels; return; }
+        function tryRel(r) {
+          (sketch.rels = sketch.rels || []).push(r);
+          solve(sketch);   // the copies were rounded to 1e-4: close the relation exactly
+          var an = analyze(sketch);
+          if (an.rels[sketch.rels.length - 1] !== 'ok' || an.redundant > before.redundant || an.conflicts > before.conflicts) { sketch.rels.pop(); if (!sketch.rels.length) delete sketch.rels; return false; }
+          return true;
+        }
+        // rfQA: an arc copy whose ends something else holds already (Dynamic Mirror's joins) keeps the plain Symmetric
+        if (!tryRel(rel) && !(rel.ends && (delete rel.ends, tryRel(rel)))) return;
         held++;
       });
       if (held) n++;
@@ -6592,7 +6677,7 @@ var SketchSolver = (function () {
   // sketchdims: what a relation or dimension carries besides its geometry, kept through scripts: arc conditions, the
   // Dimension PropertyManager's name / tolerance / precision / text before and after / radius-or-diameter display, and
   // Suppressed (Display/Delete Relations). A Smart Dimension's go through .dimProps([[i, { … }], …]).
-  var REL_EXTRA = ['ac', 'name', 'tol', 'prec', 'prefix', 'suffix', 'show', 'suppressed', 'implied', 'link', 'expr', 'dual'];   // lane CV: link (Link Values)   // rfY: implied (an arc slot's fourth join)
+  var REL_EXTRA = ['ends', 'ac', 'name', 'tol', 'prec', 'prefix', 'suffix', 'show', 'suppressed', 'implied', 'link', 'expr', 'dual'];   // lane CV: link (Link Values)   // rfY: implied (an arc slot's fourth join)
   var DIM_EXTRA = ['name', 'tol', 'prec', 'prefix', 'suffix', 'show', 'link', 'expr', 'dual'];   // sketchflow2: expr (a value linked to a global variable)   // rfPJ: dual (true / false over the part's Dual dimensions display)
   function extras(item, keys) {
     var o = null;

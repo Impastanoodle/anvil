@@ -272,7 +272,7 @@
   // sketch before each rebuild (UI.syncSketchDimExprs); resolvedModel does it too, on a copy, so the kernel alone (the
   // headless runner, a configuration's flat pattern) builds each configuration with its own values. Dimension names
   // follow ui-sketch-dims.js: D<n> in the order Smart Dimensions, then the dimension relations, unless d.name is set.
-  var DIM_REL_TYPES = { distance: 1, angle: 1, arclength: 1, chamfer: 1, pathlength: 1, runangle: 1 };
+  var DIM_REL_TYPES = { distance: 1, angle: 1, arclength: 1, arcangle: 1, chamfer: 1, pathlength: 1, runangle: 1 };
   function sketchDimItems(sk) {
     var out = [], T = typeof SketchSolver !== 'undefined' && SketchSolver.TYPES;
     (sk.dims || []).forEach(function (d, i) { if (d) out.push({ src: 'dim', index: i, d: d }); });
