@@ -5801,6 +5801,7 @@ var UI = (function () {
     App.model = model;
     App.fileName = null;   // the saved-document name, set by whoever opened it from the browser's saved files
     if (UI.cplaneReset) UI.cplaneReset();   // lane mcdirect: the construction plane is the document's (Top for a new one)
+    if (UI.tabSlotReset) UI.tabSlotReset();   // lane smfinish: Tab and Slot starts from its defaults in a new or opened document
     if (!model.features) model.features = [];
     var ids = model.features.map(function (f) { return f.id; });
     if (model.type === 'assembly') {

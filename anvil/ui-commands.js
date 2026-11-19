@@ -4438,33 +4438,123 @@
     f.reliefOn = !!f.relief; f.relief = f.relief || d.relief; if (f.size == null) f.size = d.size;
     f.breakOn = !!f.breakCorner; f.breakCorner = f.breakCorner || d.breakCorner; if (f.breakSize == null) f.breakSize = d.breakSize;
     f.centered = true;
+    // lane smfinish (rfQM): the Corner Edges boxes (SolidWorks: Relief Options and Break Corner Options each have one,
+    // with Collect all corners). A click on a corner in the flattened view (its edge through the thickness, or its
+    // vertex) adds it to the active box or removes it. Picks are points in the flat (Kernel.cornerTrimFollow keeps them
+    // on their corners when a flange's length changes); a box holding every corner is stored as "all" (no list).
+    // The corners offered are those of the flat before this feature (a Corner-Trim being edited is left out).
+    var flat0 = App.flat, fb0 = null;
+    if (existing) {
+      try {
+        var mt = JSON.parse(JSON.stringify(App.model)), ix = -1;
+        mt.features.forEach(function (g, i) { if (g.id === existing.id) ix = i; });
+        mt.features = mt.features.filter(function (g, i) { return g.type !== 'cornerTrim' || (ix >= 0 && i < ix); });
+        flat0 = K.flatPattern(mt, App.build, App.mesh);
+      } catch (e) { flat0 = App.flat; }
+    }
+    try { if (flat0) fb0 = K.flatBody(App.model, App.build, flat0); } catch (e) { fb0 = null; }
+    var ctTol = flat0 ? Math.max(1e-4, 1e-6 * Math.max(flat0.size[0], flat0.size[1])) : 1e-4;
+    var reliefCands = flat0 && K.cornerTrimCorners ? K.cornerTrimCorners(flat0).map(function (c) { return c.at; }) : [];
+    var breakCands = flat0 && K.cornerTrimBreakCorners ? K.cornerTrimBreakCorners(flat0) : [];
+    function followed(list, cands, tol) { return list ? K.cornerTrimFollow(list, cands, flat0 || { bends: [] }, tol).at.map(function (p) { return p.slice(); }) : cands.map(function (p) { return p.slice(); }); }
+    f.corners = followed(f.corners || null, reliefCands, Math.max(ctTol, 1e-3 * (1 + (+f.size || 0))));
+    f.breakCorners = followed(f.breakCorners || null, breakCands, ctTol);
+    f.box = f.reliefOn || !f.breakOn ? 'relief' : 'break';
+    function allOf(list, cands) { return list.length === cands.length && cands.every(function (c) { return list.some(function (p) { return p[0] === c[0] && p[1] === c[1]; }); }); }
+    function rnd(list) { return list.map(function (p) { return [Math.round(p[0] * 1e6) / 1e6, Math.round(p[1] * 1e6) / 1e6]; }); }
     function featOf(v) {
       var out = { type: 'cornerTrim', relief: v.reliefOn ? v.relief : null, breakCorner: v.breakOn ? v.breakCorner : null };
-      if (out.relief) { out.size = out.relief === 'bendWaist' ? null : v.size; out.centered = true; if (v.corners) out.corners = v.corners; }
-      if (out.breakCorner) { out.breakSize = v.breakSize; if (v.breakCorners) out.breakCorners = v.breakCorners; }
+      if (out.relief) { out.size = out.relief === 'bendWaist' ? null : v.size; out.centered = true; if (!allOf(v.corners, reliefCands)) out.corners = rnd(v.corners); }
+      if (out.breakCorner) { out.breakSize = v.breakSize; if (!allOf(v.breakCorners, breakCands)) out.breakCorners = rnd(v.breakCorners); }
       if (v.name) out.name = v.name;
       return out;
+    }
+    // the flat's 3D: a point of the flat at height h over the flat body's plane
+    function ctP(q, h) { var pl = fb0.plane, w = K.to3D(pl, q[0], q[1]); return [w[0] + pl.n[0] * h, w[1] + pl.n[1] * h, w[2] + pl.n[2] * h]; }
+    function segDist(m, a, b) {
+      var d = [b[0] - a[0], b[1] - a[1]], L2 = d[0] * d[0] + d[1] * d[1], t = L2 > 0 ? Math.max(0, Math.min(1, ((m[0] - a[0]) * d[0] + (m[1] - a[1]) * d[1]) / L2)) : 0;
+      return Math.hypot(m[0] - a[0] - d[0] * t, m[1] - a[1] - d[1] * t);
+    }
+    // the corner of the active box under the pointer (within 10 px of its edge through the thickness)
+    function ctPickAt(mx, my) {
+      if (!fb0 || !UI.worldToScreen) return null;
+      var box = f.box, cands = box === 'break' ? breakCands : reliefCands, best = null, bd = 10;
+      cands.forEach(function (c) {
+        var d = segDist([mx, my], UI.worldToScreen(ctP(c, fb0.h0)), UI.worldToScreen(ctP(c, fb0.h1)));
+        if (d <= bd) { bd = d; best = c; }
+      });
+      return best ? { kind: 'ctCorner', box: box, at: best.slice() } : null;
+    }
+    function ctIndex(list, p) { for (var i = 0; i < list.length; i++) if (Math.hypot(list[i][0] - p[0], list[i][1] - p[1]) <= ctTol) return i; return -1; }
+    var ctMat = { relief: null, break: null };
+    function ctMarks() {
+      if (!UI.groups || !UI.groups.preview) return;
+      UI.disposeGroup(UI.groups.preview);
+      if (!fb0) return;
+      var s = 0.015 * Math.max(flat0.size[0], flat0.size[1]);
+      [['relief', f.reliefOn ? f.corners : [], 0x1f6fd0], ['break', f.breakOn ? f.breakCorners : [], 0xe8891c]].forEach(function (z) {
+        if (!z[1].length) return;
+        var seg = [];
+        z[1].forEach(function (c) {
+          var a = ctP(c, fb0.h0), b = ctP(c, fb0.h1);
+          seg.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+          [[s, 0], [0, s], [-s, 0], [0, -s]].forEach(function (o, k, arr) { var o2 = arr[(k + 1) % 4], p = ctP([c[0] + o[0], c[1] + o[1]], fb0.h1), q = ctP([c[0] + o2[0], c[1] + o2[1]], fb0.h1); seg.push(p[0], p[1], p[2], q[0], q[1], q[2]); });
+        });
+        if (!ctMat[z[0]]) ctMat[z[0]] = new THREE.LineBasicMaterial({ color: z[2], depthTest: false });
+        var g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(seg), 3));
+        var o = new THREE.LineSegments(g, ctMat[z[0]]);
+        o.renderOrder = 4;
+        o.userData.cornerTrimPicks = z[0];
+        UI.groups.preview.add(o);
+      });
+      if (UI.requestRender) UI.requestRender();
+    }
+    function ctPick(pk) {
+      if (!pk || pk.kind !== 'ctCorner') return false;
+      var list = pk.box === 'break' ? f.breakCorners : f.corners, i = ctIndex(list, pk.at);
+      if (i >= 0) list.splice(i, 1); else list.push(pk.at.slice());
+      renderPM(); ctMarks(); status();
+      return true;
+    }
+    function ctBox(key, cands, box) {
+      return { type: 'pick', icon: 'cornerTrim', placeholder: 'Corner edges…',
+        value: function (v) { var n = v[key].length; return n ? n + ' corner' + (n === 1 ? '' : 's') : ''; },
+        active: function (v) { return v.box === box; }, onActivate: function (v) { v.box = box; renderPM(); UI.setStatus('Corner-Trim: click ' + (box === 'break' ? 'outer corners of the blank' : 'corners where bend lines meet') + ' to add or remove them.'); },
+        items: function (v) { return v[key].map(function (p, i) { return { label: 'Corner<' + (i + 1) + '>', at: p }; }); },
+        onRemove: function (v, i) { v[key].splice(i, 1); renderPM(); ctMarks(); status(); },
+        onClear: function (v) { v[key].length = 0; renderPM(); ctMarks(); status(); },
+        show: function (v) { return box === 'break' ? v.breakOn : v.reliefOn; } };
+    }
+    function ctCollect(key, cands, box) {
+      return { type: 'buttons', show: function (v) { return box === 'break' ? v.breakOn : v.reliefOn; },
+        buttons: [{ label: 'Collect all corners', onclick: function (v) { v[key] = cands.map(function (p) { return p.slice(); }); v.box = box; renderPM(); ctMarks(); status(); } }] };
     }
     function why(v) {
       if (!v.reliefOn && !v.breakOn) return 'Tick Relief Options or Break Corner Options.';
       if (v.reliefOn && v.relief !== 'bendWaist' && !(+v.size > 0)) return 'The relief ' + (v.relief === 'square' ? 'side' : 'radius') + ' must be more than 0.';
       if (v.breakOn && !(+v.breakSize > 0)) return 'The break ' + (v.breakCorner === 'fillet' ? 'radius' : 'distance') + ' must be more than 0.';
+      if (v.reliefOn && !v.corners.length) return 'Select the corners for the relief (or Collect all corners).';
+      if (v.breakOn && !v.breakCorners.length) return 'Select the outer corners to break (or Collect all corners).';
       return '';
     }
     function status() {
       var w = why(f);
       if (w) { UI.setStatus('Corner-Trim: ' + w); return; }
-      var n = App.flat && K.cornerTrimCorners ? K.cornerTrimCorners(App.flat).length : 0;
-      UI.setStatus('Corner-Trim: ' + (f.reliefOn ? n + ' corner' + (n === 1 ? '' : 's') + ' where bend lines meet' : 'no relief') + (f.breakOn ? ', ' + f.breakCorner + ' on the outer corners' : '') + '. Press Enter or ✓ to accept.');
+      var n = f.corners.length, m = f.breakCorners.length;
+      UI.setStatus('Corner-Trim: ' + (f.reliefOn ? n + ' corner' + (n === 1 ? '' : 's') + ' where bend lines meet' : 'no relief') + (f.breakOn ? ', ' + f.breakCorner + ' on ' + m + ' outer corner' + (m === 1 ? '' : 's') : '') + '. Press Enter or ✓ to accept.');
     }
     var RELIEFS = [['circular', 'Circular', 'cornerTrim'], ['square', 'Square', 'cornerTrim'], ['bendWaist', 'Bend Waist', 'cornerTrim']];
     var KINDS = [['chamfer', 'Chamfer', 'chamfer'], ['fillet', 'Fillet', 'fillet']];
     openPM({
       title: existing ? existing.name : 'Corner-Trim', icon: 'cornerTrim', values: f,
-      message: 'Corner-Trim acts on the <b>flat pattern</b> only: reliefs where bend lines meet and breaks on the outer corners of the blank. The folded part stays as it is.',
+      message: 'Corner-Trim acts on the <b>flat pattern</b> only: reliefs where bend lines meet and breaks on the outer corners of the blank. The folded part stays as it is. Click corners in the flat to add or remove them from the active Corner Edges box.',
+      command: { regionsActive: function () { return !!fb0; }, pickRegions: ctPickAt, onPick: ctPick },
       groups: [
         { title: 'Relief Options', fields: [
           { type: 'check', label: 'Relief at the bend corners', key: 'reliefOn', rerender: true },
+          ctBox('corners', reliefCands, 'relief'),
+          ctCollect('corners', reliefCands, 'relief'),
           { type: 'iconRadio', label: 'Relief type', key: 'relief', options: RELIEFS, rerender: true, show: function (v) { return v.reliefOn; } },
           { type: 'check', label: 'Centered on bend lines', key: 'centered', show: function (v) { return v.reliefOn; }, disabled: function () { return true; } },
           { type: 'number', label: 'Relief radius', key: 'size', unit: 'u', min: 0, show: function (v) { return v.reliefOn && v.relief === 'circular'; } },
@@ -4472,13 +4562,20 @@
         ] },
         { title: 'Break Corner Options', fields: [
           { type: 'check', label: 'Break the outer corners', key: 'breakOn', rerender: true },
+          ctBox('breakCorners', breakCands, 'break'),
+          ctCollect('breakCorners', breakCands, 'break'),
           { type: 'iconRadio', label: 'Break type', key: 'breakCorner', options: KINDS, rerender: true, show: function (v) { return v.breakOn; } },
           { type: 'number', label: 'Distance', key: 'breakSize', unit: 'u', min: 0, show: function (v) { return v.breakOn && v.breakCorner === 'chamfer'; } },
           { type: 'number', label: 'Radius', key: 'breakSize', unit: 'u', min: 0, show: function (v) { return v.breakOn && v.breakCorner === 'fillet'; } }
         ] },
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
-      onChange: function () { status(); },
+      onChange: function (v) {
+        // a box ticked on takes the clicks; one ticked off gives them to the other
+        if (v.box === 'relief' && !v.reliefOn && v.breakOn) v.box = 'break';
+        else if (v.box === 'break' && !v.breakOn && v.reliefOn) v.box = 'relief';
+        ctMarks(); status();
+      },
       okBlocked: function (v) { return why(v); },
       onOK: function (v) {
         var w = why(v);
@@ -4488,9 +4585,12 @@
         if (feat.breakSize != null) feat.breakSize = +v.breakSize;
         if (!existing && !feat.name) feat.name = K.cornerTrimName(App.model);
         ctLast = { relief: v.relief, size: +v.size || 2 * T, breakCorner: v.breakCorner, breakSize: +v.breakSize || T };
+        UI.disposeGroup(UI.groups.preview);
         return commitFeature(feat, existing);
-      }
+      },
+      onCancel: function () { UI.disposeGroup(UI.groups.preview); }
     });
+    ctMarks();
     status();
   }
   UI.cmdCornerTrim = cmdCornerTrim;
@@ -5017,7 +5117,11 @@
   // and rests on a face of another (Merge result off); the face box is optional (none: the face the edge rests on).
   // lane flangeprofile (rfOL): or, in one body, faces a face of the same body across a small gap (a folded box); the
   // slots then need clearance, so a new Tab and Slot in a one-body part starts with .01 in / 0.25 mm offsets.
-  var tsLast = null;   // the values last accepted this session
+  var tsLast = null;   // the values last accepted while this document is open
+  // lane smfinish (rfQM): a document opened or made new starts Tab and Slot from its defaults (the remembered offsets
+  // leaked from one smoke group's part into the next: rfPT's .01 / .005 made rfOL's slots .07 wide)
+  // (head: a direct hook, called by loadModel in ui-core.js, instead of a wrap of UI.loadModel)
+  UI.tabSlotReset = function () { tsLast = null; };
   var TS_EDGES = [['sharp', 'Sharp'], ['chamfer', 'Chamfer'], ['fillet', 'Fillet']];
   function bodiesBefore(id) {
     var idx = -1;

@@ -98,8 +98,42 @@
   }
   function fitTol(r) { return 1e-6 * (1 + r); }
   // arcThrough(run, ccw) -> { t: 'arc', a, b, c, r, ccw, sweep (signed, radians) } through the run's ends, or null
-  function arcThrough(run, ccw) {
+  // lane smfinish (rfQM): ends: { prev, next, corner: [bool, bool] }: the loop's vertices before / after the run and
+  // whether each end is a corner (a line meets the arc there at an angle). An end at a corner is often a boolean's split
+  // point on a chord (a vent rib crossing a spar: up to the chord's sagitta inside the circle), so with three or more
+  // interior vertices the circle is fitted on those alone and each corner end is moved along its line onto that
+  // circle (in place: the line's end moves with it). The Vent's spar arc centre came out (2.9999968, 2.4999954) for
+  // (3, 2.5) when the split points were fitted too.
+  function moveOntoCircle(E, Q, c, r, lim) {
+    var d = [E[0] - Q[0], E[1] - Q[1]], L = Math.hypot(d[0], d[1]);
+    if (!(L > 1e-12)) return false;
+    d = [d[0] / L, d[1] / L];
+    var f = [E[0] - c[0], E[1] - c[1]], b = f[0] * d[0] + f[1] * d[1], cc = f[0] * f[0] + f[1] * f[1] - r * r, D = b * b - cc;
+    // (the line must cross the circle, not run along it: a tangent end stays where it is)
+    if (D < 0 || Math.abs(b) < 0.2 * r) return false;
+    var s = Math.abs(-b + Math.sqrt(D)) < Math.abs(-b - Math.sqrt(D)) ? -b + Math.sqrt(D) : -b - Math.sqrt(D);
+    if (Math.abs(s) > lim || L + s <= 0) return false;
+    return [E[0] + d[0] * s, E[1] + d[1] * s];
+  }
+  function arcThrough(run, ccw, ends) {
     var f = fitCircle(run);
+    if (ends && run.length >= 5 && (ends.corner[0] || ends.corner[1])) {
+      var fi = fitCircle(run.slice(1, run.length - 1));
+      if (fi && fi.err <= 1e-3 * fitTol(fi.r) && (!f || fi.err < f.err || f.err > fitTol(f.r))) {
+        var ch = dist2(run[1], run[2]), lim = 5 * ch * ch / (8 * fi.r) + fitTol(fi.r);
+        var nA = ends.corner[0] ? moveOntoCircle(run[0], ends.prev, fi.c, fi.r, lim) : false;
+        var nB = ends.corner[1] ? moveOntoCircle(run[run.length - 1], ends.next, fi.c, fi.r, lim) : false;
+        var pts = run.slice(1, run.length - 1);
+        pts.push(nA || run[0], nB || run[run.length - 1]);
+        var g = fitCircle(pts);
+        if (g && g.err <= fitTol(g.r)) {
+          // (in place: the neighbouring line's end is the same point)
+          if (nA) { run[0][0] = nA[0]; run[0][1] = nA[1]; }
+          if (nB) { var e = run[run.length - 1]; e[0] = nB[0]; e[1] = nB[1]; }
+          f = g;
+        }
+      }
+    }
     if (!f || f.err > fitTol(f.r)) return null;
     var A = run[0], B = run[run.length - 1], M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], L = dist2(A, B);
     var c = f.c;
@@ -192,7 +226,9 @@
       if (m + 1 >= tol.minChords) {
         var run = [];
         for (k = 0; k <= m + 1; k++) run.push(p[(a + k) % n]);
-        var arc = arcThrough(run, T[(a + 1) % n] > 0);
+        // (a corner end: the run turns there sharply and the vertex beyond is not inside another run, so a line meets it)
+        var e1 = (a + m + 1) % n, isCorner = function (v, w) { return Math.abs(T[v]) > Math.max(2 * tol.maxStep, 0.2) && !inner[w]; };
+        var arc = arcThrough(run, T[(a + 1) % n] > 0, { prev: p[(a + n - 1) % n], next: p[(e1 + 1) % n], corner: [isCorner(a, (a + n - 1) % n), isCorner(e1, (e1 + 1) % n)] });
         if (arc) { arc.n = m + 1; segs.push(arc); i += m + 1; continue; }
       }
       segs.push({ t: 'line', a: p[a], b: p[(a + 1) % n] });

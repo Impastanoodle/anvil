@@ -4873,6 +4873,49 @@
     });
     return { loops: out, n: n };
   }
+  // lane smfinish (rfQM): the outer corners a Break Corner can take (ctBreak's rule without the size): [[x, y]]
+  function cornerTrimBreakCorners(flat) {
+    var out = [];
+    (flat.loops || []).forEach(function (l) {
+      if (signedArea(l) <= 0) return;
+      var L = l.length;
+      for (var k = 0; k < L; k++) {
+        var p = l[(k + L - 1) % L], v = l[k], q = l[(k + 1) % L], e1 = [v[0] - p[0], v[1] - p[1]], e2 = [q[0] - v[0], q[1] - v[1]];
+        if (!(Math.hypot(e1[0], e1[1]) > 0 && Math.hypot(e2[0], e2[1]) > 0)) continue;
+        var turn = Math.atan2(e1[0] * e2[1] - e1[1] * e2[0], e1[0] * e2[0] + e1[1] * e2[1]);
+        if (turn > Math.PI / 18 && turn < Math.PI - 1e-6) out.push(v.slice());
+      }
+    });
+    return out;
+  }
+  // lane smfinish (rfQM): picked corners [[x, y]] (points in the flat, Corner Edges box) -> the corners of `cands` they
+  // stand for now. A pick on a corner (within tol) is that corner; otherwise it follows the edit that moved it: a
+  // flange's length moves its wall's corners square to its bend line, so the corner is the nearest one straight across
+  // a bend line from the pick, on the same side of that line (the stored point stays as picked, as a flat-pattern
+  // point; the folded part's picks follow through SM_PICKS). -> { at: [[x, y]], lost: n }
+  function ctFollow(picks, cands, flat, tol) {
+    var at = [], lost = 0;
+    function take(c) { if (!at.some(function (a) { return a[0] === c[0] && a[1] === c[1]; })) at.push(c); }
+    picks.forEach(function (q) {
+      var hit = null, bd = tol;
+      cands.forEach(function (c) { var d = Math.hypot(c[0] - q[0], c[1] - q[1]); if (d <= bd) { bd = d; hit = c; } });
+      if (hit) { take(hit); return; }
+      var best = null;
+      (flat.bends || []).forEach(function (b) {
+        var dx = b.b[0] - b.a[0], dy = b.b[1] - b.a[1], L = Math.hypot(dx, dy);
+        if (!(L > 0)) return;
+        var u = [dx / L, dy / L], n = [-u[1], u[0]], sq = (q[0] - b.a[0]) * n[0] + (q[1] - b.a[1]) * n[1];
+        cands.forEach(function (c) {
+          var d = [c[0] - q[0], c[1] - q[1]], along = d[0] * u[0] + d[1] * u[1], across = d[0] * n[0] + d[1] * n[1];
+          var sc = (c[0] - b.a[0]) * n[0] + (c[1] - b.a[1]) * n[1];
+          if (Math.abs(along) > tol || sq * sc < 0) return;
+          if (!best || Math.abs(across) < best.d) best = { d: Math.abs(across), c: c };
+        });
+      });
+      if (best) take(best.c); else lost++;
+    });
+    return { at: at, lost: lost };
+  }
   // cornerTrimFlat(flat, model): every Corner-Trim of the model applied to the flat, in order (flatPattern's last step)
   function cornerTrimFlat(flat, model) {
     var feats = (model.features || []).filter(function (g) { return g.type === 'cornerTrim' && !g.suppressed; });
@@ -4885,12 +4928,23 @@
       try { cornerTrimCheck(f, model); } catch (e) { warn((f.name || 'Corner-Trim') + ': ' + e.message); return; }
       var loops = flat.loops, info = { id: f.id, name: f.name, reliefs: [], breaks: 0 };
       if (f.breakCorner) {
-        var br = ctBreak(loops, f.breakCorner, +f.breakSize, f.breakCorners || null, tol);
+        var bOnly = null;
+        if (f.breakCorners) {
+          var bf = ctFollow(f.breakCorners, cornerTrimBreakCorners({ loops: loops }), flat, tol);
+          bOnly = bf.at;
+          if (bf.lost) warn((f.name || 'Corner-Trim') + ': ' + bf.lost + ' picked outer corner' + (bf.lost === 1 ? ' is' : 's are') + ' no longer on the blank.');
+        }
+        var br = bOnly && !bOnly.length ? { loops: loops, n: 0 } : ctBreak(loops, f.breakCorner, +f.breakSize, bOnly, tol);
         loops = br.loops; info.breaks = br.n;
         if (!br.n) warn((f.name || 'Corner-Trim') + ': no outer corner of the blank takes a ' + f.breakCorner + ' of ' + fmtN(+f.breakSize) + '.');
       }
       if (f.relief) {
-        var cs = cornerTrimCorners(flat).filter(function (c) { return !f.corners || f.corners.some(function (q) { return Math.hypot(q[0] - c.at[0], q[1] - c.at[1]) <= Math.max(tol, 1e-3 * (1 + +f.size || 0)); }); });
+        var cs = cornerTrimCorners(flat);
+        if (f.corners) {
+          var rf = ctFollow(f.corners, cs.map(function (c) { return c.at; }), flat, Math.max(tol, 1e-3 * (1 + +f.size || 0)));
+          cs = cs.filter(function (c) { return rf.at.indexOf(c.at) >= 0; });
+          if (rf.lost && cs.length) warn((f.name || 'Corner-Trim') + ': ' + rf.lost + ' picked corner' + (rf.lost === 1 ? ' is' : 's are') + ' no longer where two bend lines meet.');
+        }
         if (!cs.length) warn((f.name || 'Corner-Trim') + ': no corner where two bend lines meet' + (f.corners ? ' at the picked points' : '') + '.');
         var notches = cs.map(function (c) {
           var P = c.at, nt;
@@ -5197,6 +5251,19 @@
       var lines = { x: [0, A.BA], y: [0, B.BA] };
       if (!CR_EXACT.on) lines = null;
       var Q = cornerReliefShape(type, size, A.BA, B.BA, centered, lines), circ = type === 'circular' && lines ? { c: centered ? [A.BA / 2, B.BA / 2] : [0, 0], r: size / 2, lines: lines } : null;
+      // lane smfinish (rfQM): the strips' pieces ride to the flat (foldCutouts) clipped at the bends' ends at the corner;
+      // there the 32-gon's chord crossed the end line 8e-5 inside the circle and the DXF drew that bit as a line (flat
+      // 2.7e-7 x T per corner short of the folded part's exact circle). The flat's pieces come from a circle with
+      // vertices on those end lines too (the solid keeps Q: a vertex there left 1e-4 edges, rfMV). Only where both
+      // bends end plain at the corner (no bend relief, no Closed Corner): the solid then takes the exact circle
+      // (cornerReliefApply); otherwise the solid's piece meets the relief notch or the closed end at a chord crossing too
+      // (crCornerApply), and the flat keeps the same chord so the two still agree
+      var Qf = null;
+      if (circ) {
+        var endOf = function (bd, along) { var r0 = bd.rec; return dot(sub(r0.b, P), along) > dot(sub(r0.a, P), along) ? 1 : 0; };
+        var plainEnd = function (bd, along) { var e = endOf(bd, along); return !(bd.rec.reliefs && bd.rec.reliefs[e]) && !endShift(bd, e).any; };
+        if (plainEnd(A, c.e2) && plainEnd(B, c.e1)) Qf = crCircle(circ.c, circ.r, { x: lines.x.concat([c.xB[0], c.xB[1]]), y: lines.y.concat([c.yA[0], c.yA[1]]) });
+      }
       var pr = { at: P.slice(), closed: false, tools: [], bends: [], circ: !!circ };
       pairs.push(pr);
       // the sheet face: x ≤ 0, y ≤ 0, a prism through T below the inside face
@@ -5211,7 +5278,7 @@
         // corner frame (x, y) -> this bend's (s, t)
         var tP = dot(sub(P, r.origin), bd.n), sgn = dot(along, bd.n) > 0 ? 1 : -1;
         function st(p) { var s = ax ? p[1] : p[0], w = ax ? p[0] : p[1]; return [s, tP + sgn * w]; }
-        function strip(lo, hi, e1) { return ax ? clipBox(Q, ext[0], e1, lo, hi) : clipBox(Q, lo, hi, ext[0], e1); }
+        function strip(lo, hi, e1, q) { q = q || Q; return ax ? clipBox(q, ext[0], e1, lo, hi) : clipBox(q, lo, hi, ext[0], e1); }
         // lane MJ: a Closed Corner moved this bend's end at the corner (the record still ends where the flange put it):
         // the strip's piece runs on over the closed bend region (`by`), the wall's to where the wall now ends
         var near = dot(sub(r.b, P), along) > dot(sub(r.a, P), along) ? 1 : 0, sh = endShift(bd, near);
@@ -5219,7 +5286,7 @@
         // lane occtparity-2: the strip and wall through crBendCut (as the 3 Bend corner): a strip piece that is not a
         // rectangle carries `direct` (its band cut out by radial planes, its metal less the piece put back: cornerReliefApply)
         var n0 = tools.length;
-        crBendCut(bd, strip(0, BA, ext[1] + sh.by), st, false, tools, recs, eps, T, sh.by ? { end: near, by: sh.by } : null, circ);
+        crBendCut(bd, strip(0, BA, ext[1] + sh.by), st, false, tools, recs, eps, T, sh.by ? { end: near, by: sh.by } : null, circ, Qf ? strip(0, BA, ext[1] + sh.by, Qf) : null);
         for (var ti = n0; ti < tools.length; ti++) pr.tools.push(ti);
         crBendCut(bd, strip(BA, null, ext[1] + sh.by + sh.cut), st, true, tools, recs, eps, T, null, circ);
         // (cornerReliefApply's corner path: the whole piece across this bend's strip, in the bend's (s, t), whatever
@@ -5244,7 +5311,7 @@
   var CORNER3_TYPES = ['rect', 'tear', 'circular', 'obround'];   // lane smflat: circular / obround rebuild the bends' metal (cornerReliefApply)
   // one bend's part of a relief: poly in the corner frame (clipped to the bend's strip or wall), st: corner (x, y) ->
   // the bend's (s from its start line, t along its line from its origin)
-  function crBendCut(bd, poly, st, wall, tools, recs, eps, T, endAdj, circ) {
+  function crBendCut(bd, poly, st, wall, tools, recs, eps, T, endAdj, circ, flatPoly) {
     var r = bd.rec, BA = bd.BA, R = +r.R, Ang = +r.angle;
     if (!poly) return;
     if (!wall) {
@@ -5277,7 +5344,9 @@
         tools.push({ wrap: wr });
       }
       var ta = dot(sub(r.a, r.origin), bd.n), tb = dot(sub(r.b, r.origin), bd.n), sg = tb >= ta ? 1 : -1;
-      recs.push({ kind: 'foldCutouts', feature: bd.id, index: bd.index, cutouts: [lp.map(function (p) { return [p[0], (p[1] - ta) * sg]; })] });
+      var lf = flatPoly ? flatPoly.map(st) : lp;   // (lane smfinish: the flat's piece, crossings on the true circle)
+      if (signedArea(lf) < 0) lf.reverse();
+      recs.push({ kind: 'foldCutouts', feature: bd.id, index: bd.index, cutouts: [lf.map(function (p) { return [p[0], (p[1] - ta) * sg]; })] });
       return;
     }
     var sA = Math.sin(Ang), cA = Math.cos(Ang);
@@ -8677,6 +8746,7 @@
   K.weldedCornerLayout = weldedCornerLayout; K.buildWeldedCorner = buildWeldedCorner; K.weldedCornerName = weldedCornerName;   // lane smcorner
   K.breakCornerName = breakCornerName; K.BREAK_CORNER_KINDS = BC_KINDS.slice();
   K.cornerTrimName = cornerTrimName; K.cornerTrimCorners = cornerTrimCorners; K.cornerTrimCheck = cornerTrimCheck;   // lane smrelief
+  K.cornerTrimBreakCorners = cornerTrimBreakCorners; K.cornerTrimFollow = ctFollow;   // lane smfinish (rfQM)
   K.CORNER_TRIM_RELIEFS = CT_RELIEFS.slice(); K.CORNER_TRIM_BREAKS = CT_BREAKS.slice();
   _.buildSketchedBend = buildSketchedBend; _.sketchedBendPoint = sketchedBendPoint;
   // Unfold / Fold (lane DB)
