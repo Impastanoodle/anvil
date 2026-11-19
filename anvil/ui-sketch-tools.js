@@ -540,6 +540,8 @@
         if (pending && !commitPending()) return false;
         if (!applyTyped()) return false;   // rfCE 2: ✓ commits a typed value first; refused: ✓ waits for a good one
         if (specs.length && good != null && valuesNow() !== good && !replay()) return false;   // a value still refused: ✓ waits for a good one
+        // rfQT: the "Pick another vertex …" prompt does not outlive the PropertyManager
+        UI.setStatus(made && rows.length ? sizeText() + ' at ' + rows.length + (rows.length > 1 ? ' corners.' : ' corner.') : (chamfer ? 'Sketch Chamfer' : 'Sketch Fillet') + ' closed.');
       },
       onCancel: function () {
         pending = null; App.tempEntities = []; UI.updateTemp();
