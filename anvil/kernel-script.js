@@ -191,6 +191,100 @@
     segs.forEach(function (s) { delete s.n; });
   }
 
+  // lane RB: step 3b, only when tol.fit > 0 (exportDXFFlat: 0.001 in / 0.025 mm unless opts.arcFit says otherwise).
+  // A free-form edge (a B-spline in a customer's STEP) reaches the flat as chords whose vertices lie on the curve but
+  // on no one circle: hundreds of short LINEs on the laser. A run of two or more lines of like length turning by at most maxStep at
+  // each vertex is covered greedily by the longest pieces whose VERTICES all lie within tol.fit of one line (written as
+  // a LINE) or one arc through the piece's ends (an ARC; points in order along it; two chords or more). Chord midpoints are not checked: a
+  // coarse reader's chords sag off the true curve, its vertices do not, and the arc is fitted to the curve.
+  function fitSplineRuns(segs, tol) {
+    var N = segs.length, i, TAU = 2 * Math.PI;
+    if (N < 4) return segs;
+    function dir(s) { return Math.atan2(s.b[1] - s.a[1], s.b[0] - s.a[0]); }
+    function turn(s, t) { var d = dir(t) - dir(s); while (d > Math.PI) d -= TAU; while (d < -Math.PI) d += TAU; return d; }
+    // smooth[i]: the joint at the end of segs[i] (into segs[i + 1]) is between two lines and turns little
+    // (and the two are of like length, within 4 x: a reader's chords along one curve are, while a long straight edge
+    // that meets a curve is not one of its chords: only vertices are held to the arc, so a 110 mm edge between two
+    // spline corners went into one arc of R 829, 1.9 mm off the edge at its middle)
+    var smooth = segs.map(function (s, j) {
+      var t = segs[(j + 1) % N], ls = dist2(s.a, s.b), lt = dist2(t.a, t.b);
+      return s.t === 'line' && t.t === 'line' && Math.abs(turn(s, t)) <= tol.maxStep && Math.max(ls, lt) <= 4 * Math.min(ls, lt);
+    });
+    var start = smooth.indexOf(false);
+    if (start < 0) start = 0; else start = (start + 1) % N;
+    var out = [];
+    function lineFits(pts) {
+      var A = pts[0], B = pts[pts.length - 1], L = dist2(A, B);
+      if (!(L > 1e-12)) return false;
+      var ux = (B[0] - A[0]) / L, uy = (B[1] - A[1]) / L, last = -Infinity;
+      for (var k = 1; k < pts.length - 1; k++) {
+        var x = (pts[k][0] - A[0]) * ux + (pts[k][1] - A[1]) * uy, y = (pts[k][1] - A[1]) * ux - (pts[k][0] - A[0]) * uy;
+        if (Math.abs(y) > tol.fit || x <= last || x >= L) return false;
+        last = x;
+      }
+      return true;
+    }
+    function arcFits(pts) {
+      var f = fitCircle(pts);
+      if (!f) return null;
+      var tt = 0;
+      for (var k = 1; k < pts.length - 1; k++) {
+        var o = pts[k - 1], q = pts[k], w = pts[k + 1];
+        tt += Math.atan2((q[0] - o[0]) * (w[1] - q[1]) - (q[1] - o[1]) * (w[0] - q[0]), (q[0] - o[0]) * (w[0] - q[0]) + (q[1] - o[1]) * (w[1] - q[1]));
+      }
+      // (the least-squares centre moved onto the ends' bisector, as arcThrough does; the points need only lie within
+      // tol.fit of that arc)
+      var A = pts[0], B = pts[pts.length - 1], M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], L = dist2(A, B), c = f.c;
+      if (!(L > 1e-12)) return null;
+      var nx = -(B[1] - A[1]) / L, ny = (B[0] - A[0]) / L, t = (c[0] - M[0]) * nx + (c[1] - M[1]) * ny;
+      c = [M[0] + nx * t, M[1] + ny * t];
+      var sw = Math.atan2(B[1] - c[1], B[0] - c[0]) - Math.atan2(A[1] - c[1], A[0] - c[0]);
+      if (tt > 0) { while (sw <= 0) sw += TAU; } else { while (sw >= 0) sw -= TAU; }
+      var arc = { t: 'arc', a: A, b: B, c: c, r: dist2(c, A), ccw: tt > 0, sweep: sw };
+      if (Math.abs(arc.sweep) > Math.PI * 1.5) return null;
+      var a0 = Math.atan2(arc.a[1] - arc.c[1], arc.a[0] - arc.c[0]), prev = 0;
+      // (and each chord within 4 x tol.fit of the arc at its middle: a reader's chords of a spline sag a little, 0.04 mm
+      // on OpenCascade's R 15 corner; a curve Anvil drew with long chords on purpose, Lofted-Bend facets or a sketch
+      // parabola's polyline, sags far more and keeps its chords)
+      for (k = 0; k + 1 < pts.length; k++) {
+        var mid = [(pts[k][0] + pts[k + 1][0]) / 2, (pts[k][1] + pts[k + 1][1]) / 2];
+        if (Math.abs(dist2(arc.c, mid) - arc.r) > 4 * tol.fit) return null;
+      }
+      for (k = 1; k < pts.length - 1; k++) {
+        if (Math.abs(dist2(arc.c, pts[k]) - arc.r) > tol.fit) return null;
+        var ph = Math.atan2(pts[k][1] - arc.c[1], pts[k][0] - arc.c[0]) - a0;
+        if (arc.ccw) { while (ph < 0) ph += TAU; } else { while (ph > 0) ph -= TAU; }
+        if (Math.abs(ph) <= Math.abs(prev) || Math.abs(ph) >= Math.abs(arc.sweep)) return null;
+        prev = ph;
+      }
+      return arc;
+    }
+    for (i = 0; i < N;) {
+      var j0 = (start + i) % N;
+      // the run of lines from j0 joined smoothly
+      var len = 1;
+      while (i + len < N && segs[(j0 + len - 1) % N].t === 'line' && smooth[(j0 + len - 1) % N]) len++;
+      if (segs[j0].t !== 'line' || len < 2) { for (var q = 0; q < len; q++) out.push(segs[(j0 + q) % N]); i += len; continue; }
+      var pts = [segs[j0].a];
+      for (q = 0; q < len; q++) pts.push(segs[(j0 + q) % N].b);
+      for (var s0 = 0; s0 < len;) {
+        var best = null, bestE = s0 + 1;
+        // (pieces of two chords too: a short spline between two true arcs comes in as two or three chords, and an arc
+        // through their three points is closer to it than the chords are)
+        for (var e = s0 + 2; e <= len; e++) {
+          var piece = pts.slice(s0, e + 1);
+          if (lineFits(piece)) { best = { t: 'line', a: piece[0], b: piece[piece.length - 1] }; bestE = e; continue; }
+          var ar = arcFits(piece);
+          if (ar) { best = ar; bestE = e; continue; }
+          break;
+        }
+        if (best) { out.push(best); s0 = bestE; } else { out.push(segs[(j0 + s0) % N]); s0++; }
+      }
+      i += len;
+    }
+    return out;
+  }
+
   // dxfLoopCurves(loop, tol?) -> { circle: { c, r } } | { segs: [{ t: 'line', a, b } | { t: 'arc', a, b, c, r, ccw,
   // sweep }] } (closed, in loop order, each segment starting where the last ended) | null for a degenerate loop
   function dxfLoopCurves(loop, tol) {
@@ -212,8 +306,67 @@
       var fc = fitCircle(p);
       if (fc && fc.err <= fitTol(fc.r)) return { circle: { c: fc.c, r: fc.r } };
     }
+    // lane RB: a hole a STEP reader tessellated with uneven steps (its last chord the remainder) is a circle too
+    function smallTurn(v, s) { return Math.abs(T[v]) > 1e-9 && Math.abs(T[v]) <= tol.maxStep && T[v] * s > 0; }
+    if (n >= 8 && T.every(function (t, j) { return smallTurn(j, T[0]); })) {
+      var fu = fitCircle(p);
+      if (fu && fu.err <= fitTol(fu.r)) return { circle: { c: fu.c, r: fu.r } };
+    }
+    // lane RB: circleRun(a, left) -> the chords of an arc from vertex a whose first and / or last chord is the
+    // remainder of a reader's step (an R .3937 30° arc as 11.25° + 11.25° + 7.5°; a slot's end as .0337 + 13 × .1595 +
+    // .0337): the equal-length run (as below, two chords or more) plus one chord of another length at either end when
+    // its far vertex lies on the run's circle (onRun; arcThrough then holds every vertex to fitTol). The
+    // equal-length runs alone stopped a chord short and left a short LINE at each end of the arc. Only one chord per
+    // end: four points of any smooth curve lie on a circle within 1e-6, so chords of other lengths are no evidence.
+    function eqRun(b, limit) {
+      var m = 0;
+      while (m + 1 < limit) {
+        var v = (b + m + 1) % n;
+        if (!inner[v] || !sameTurn(T[v], T[(b + 1) % n]) || !sameLen(v, b)) break;
+        m++;
+      }
+      return m + 1;
+    }
+    function circum(A, B, C) {
+      var bx = B[0] - A[0], by = B[1] - A[1], cx = C[0] - A[0], cy = C[1] - A[1], d = 2 * (bx * cy - by * cx);
+      if (!(Math.abs(d) > 1e-30)) return null;
+      var b2 = bx * bx + by * by, c2 = cx * cx + cy * cy, ux = (cy * b2 - by * c2) / d, uy = (bx * c2 - cx * b2) / d;
+      return { c: [A[0] + ux, A[1] + uy], r: Math.hypot(ux, uy) };
+    }
+    // q and every vertex of the equal run of c chords from b on one circle within 1e-9 (1 + r): a reader's analytic arc
+    // is that exact (its points are c + r (cos, sin), moved rigidly), while four points of any smooth curve, a Normal
+    // Cut's developed lobe, lie on a circle within 1e-6 and were taken as arcs
+    function onRun(b, c, q) {
+      var C = circum(p[b], p[(b + Math.max(1, c >> 1)) % n], p[(b + c) % n]), e = 1e-9 * (1 + (C ? C.r : 0));
+      if (!C || Math.abs(dist2(C.c, q) - C.r) > e) return false;
+      for (var j = 1; j < c; j++) if (Math.abs(dist2(C.c, p[(b + j) % n]) - C.r) > e) return false;
+      return true;
+    }
+    function circleRun(a, left) {
+      if (left < 3) return 0;
+      var c = eqRun(a, left), b = a, front = 0;
+      if (c < 2 && left >= 3) {   // a remainder chord first: the equal run starts at a + 1
+        var c1 = eqRun((a + 1) % n, left - 1);
+        if (c1 >= 2 && smallTurn((a + 1) % n, T[(a + 2) % n]) && onRun((a + 1) % n, c1, p[a])) { b = (a + 1) % n; c = c1; front = 1; }
+      }
+      if (c < 2) return 0;
+      var tot = c + front;
+      if (tot < left && smallTurn((b + c) % n, T[(b + 1) % n]) && onRun(b, c, p[(b + c + 1) % n])) tot++;
+      return tot >= tol.minChords && tot > c ? tot : 0;
+    }
     // walk the loop from a vertex where no run passes through (a corner, or the end of an arc)
-    var s0 = inner.indexOf(false);
+    // (lane RB: a sharp corner first: a vertex that is only not inside an equal-length run may be inside an arc whose end
+    // chords differ, and the arc would be cut there)
+    var s0 = -1;
+    for (k = 0; k < n && s0 < 0; k++) if (Math.abs(T[k]) > tol.maxStep) s0 = k;
+    // (no corner at all, a slot whose arcs meet its sides tangentially: the end of a segment much longer than both its
+    // neighbours, a straight side, where an arc starts)
+    if (s0 < 0) {
+      var lm = -1;
+      for (k = 0; k < n; k++) if (L[k] > 2 * Math.max(L[(k + n - 1) % n], L[(k + 1) % n]) && (lm < 0 || L[k] > L[lm])) lm = k;
+      if (lm >= 0) s0 = (lm + 1) % n;
+    }
+    if (s0 < 0) s0 = inner.indexOf(false);
     if (s0 < 0) for (s0 = 0, k = 0; k < n; k++) if (!sameTurn(T[k], T[(k + n - 1) % n])) { s0 = k; break; }
     var segs = [];
     for (i = 0; i < n;) {
@@ -223,18 +376,24 @@
         if (!inner[v] || !sameTurn(T[v], T[(a + 1) % n]) || !sameLen(v, a)) break;
         m++;
       }
-      if (m + 1 >= tol.minChords) {
+      var mc = circleRun(a, n - i);
+      for (var pass = mc > m + 1 ? 0 : 1; pass < 2; pass++) {
+        var mm = pass ? m : mc - 1;
+        if (mm + 1 < tol.minChords) continue;
         var run = [];
-        for (k = 0; k <= m + 1; k++) run.push(p[(a + k) % n]);
+        for (k = 0; k <= mm + 1; k++) run.push(p[(a + k) % n]);
         // (a corner end: the run turns there sharply and the vertex beyond is not inside another run, so a line meets it)
-        var e1 = (a + m + 1) % n, isCorner = function (v, w) { return Math.abs(T[v]) > Math.max(2 * tol.maxStep, 0.2) && !inner[w]; };
+        var e1 = (a + mm + 1) % n, isCorner = function (v, w) { return Math.abs(T[v]) > Math.max(2 * tol.maxStep, 0.2) && !inner[w]; };
         var arc = arcThrough(run, T[(a + 1) % n] > 0, { prev: p[(a + n - 1) % n], next: p[(e1 + 1) % n], corner: [isCorner(a, (a + n - 1) % n), isCorner(e1, (e1 + 1) % n)] });
-        if (arc) { arc.n = m + 1; segs.push(arc); i += m + 1; continue; }
+        if (arc) { arc.n = mm + 1; break; }
       }
+      if (arc && pass < 2) { segs.push(arc); i += mm + 1; arc = null; continue; }
+      arc = null;
       segs.push({ t: 'line', a: p[a], b: p[(a + 1) % n] });
       i++;
     }
     absorbEndChords(segs, tol);
+    if (tol.fit > 0) segs = fitSplineRuns(segs, tol);
     // step 4: merge straight runs
     for (var again = true; again && segs.length > 2;) {
       again = false;
@@ -382,11 +541,19 @@
   // Layers: OUTLINE (the blank), HOLES (every inner loop; round holes are CIRCLEs), BEND (bend centre lines), NOTES,
   // ETCH (marking: Etch text strokes and ETCH-layer lines / arcs / circles, colour from the sketch's layer, default 3).
   // Coordinates are in the part's units ($INSUNITS 1 inch / 4 mm, $MEASUREMENT 0 / 1).
+  // Lane RB: arcFit (false or 0 = off; default 0.001 in / 0.025 mm when the flat has fitCurves, i.e. comes from an
+  // imported solid, else off): free-form edges (an imported B-spline's chords) are written as LINEs and ARCs through
+  // their vertices within that distance (fitSplineRuns), not as every chord.
+  function dxfFitTol(units, opts) {
+    var f = opts && opts.arcFit != null ? +opts.arcFit || 0 : (units === 'in' ? 0.001 : 0.025);
+    return f > 0 ? Object.assign({}, DXF_TOL, { fit: f }) : DXF_TOL;
+  }
   function exportDXFFlat(flat, units, opts) {
     opts = opts || {};
     units = units === 'in' ? 'in' : 'mm';
     var d = new DXF(units, Object.assign({}, opts, { textExtents: false })), style = opts.style === 'entities' ? 'entities' : 'polyline';
-    var cvs = flat.loops.map(function (l) { return dxfLoopCurves(l); });
+    var ftol = dxfFitTol(units, opts.arcFit == null && !flat.fitCurves ? { arcFit: false } : opts);
+    var cvs = flat.loops.map(function (l) { return dxfLoopCurves(l, ftol); });
     var box = curvesBox(cvs), shift = opts.origin === false || !isFinite(box.min[0]) ? [0, 0] : [-box.min[0], -box.min[1]];
     var rel = opts.reliefLayer ? flatReliefPolys(flat) : [];
     if (rel.length) d.layer('RELIEF', 2);
@@ -1045,7 +1212,7 @@
     cvs.forEach(function (cv, i) { if (cv) emitLoop(d, i === outerIdx ? 'OUTLINE' : 'HOLES', cv, style, shift); });
     return d.toString();
   }
-  K.dxfLoopCurves = dxfLoopCurves; K.DXF_TOL = DXF_TOL;
+  K.dxfLoopCurves = dxfLoopCurves; K.DXF_TOL = DXF_TOL; K.dxfFitTol = dxfFitTol;
 
   // ------------------------------------------------------------------ script builder (the API scripts talk to)
   function Builder(model) {

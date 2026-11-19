@@ -2834,6 +2834,14 @@
     dx /= l; dy /= l;
     return pts.map(function (p) { var x = p[0] - bend.a[0], y = p[1] - bend.a[1]; return [x * dx + y * dy, y * dx - x * dy]; });
   }
+  // lane RB: the flat of a part made from an imported solid (an 'import' feature: a customer's STEP) says so,
+  // `fitCurves: true`, and exportDXFFlat then fits its free-form edges with lines and arcs (arcFit) by default; a part
+  // drawn in Anvil keeps its DXF as before unless the caller asks for arcFit
+  function flatPatternOut(model, build, mesh, opts) {
+    var fl = flatPattern(model, build, mesh, opts);
+    if (fl && model && (model.features || []).some(function (f) { return f.type === 'import' && !f.suppressed; })) fl.fitCurves = true;
+    return fl;
+  }
   function flatPattern(model, build, mesh, opts) {
     // lane DB: opts.trace (an object) is filled with { faces, strips, plane, nB, wB }: every laid face piece and bend
     // strip with the rigid map it went into the flat with (Unfold / Fold use them to move material between the states)
@@ -2858,6 +2866,12 @@
     }
     var obFlat = null;   // lane open-base: a Base Flange from an open profile lays the flat from its fixed plate
     if (isOpenBase(base)) { var obl = openBaseLayout(base, model, { planes: build.planes }); base = Object.assign({}, base, { fixedFace: obl.fixed }); obFlat = obl.flatPlane; }
+    // lane RB: Insert Bends fixed on a rolled wall: the roll developed (ibRolledFlat)
+    if (!obFlat && base.type === 'insertBends' && base.fixedFace && mesh && build && build.body && !model.noBends) {
+      var ri = ibFaceAt(mesh, base.fixedFace, model.units === 'in' ? 0.01 : 0.25);
+      var rl = ri < 0 || ibCurvedFace(mesh.faces[ri]) ? ibRolled(build.body, base.fixedFace, model.units) : null;
+      if (rl && !rl.walls) return ibRolledFlat(base, model, build, mesh, rl);
+    }
     var plane = obFlat || ibFlatPlane(base, mesh, model) || resolvePlane(findFeature(model, base.sketch).plane, model, build.planes);   // lane DQ: Insert Bends lays the flat from its fixed face
     // lane DB2: a part left unfolded draws its flat in the frame the Unfold moved the flat to (the same 2D as folded)
     var openUnfold = ufOpenRecord(model, build);
@@ -7514,13 +7528,53 @@
   }
   // lane realfiles: true when the body is a flat plate T thick from the flat face at P: its (faceted) volume is that
   // face's area × T (1e-6), so every hole and edge goes straight through
+  // lane RB: faceOutline of a coplanar mesh's face, once per (mesh, face) for the Insert Bends searches (ibFaceAt,
+  // ibFaceBeside, ibFaceWidth, ibFlatPlate, ibForms each traced the fixed face again: 0.75 s on a 280-hole panel)
+  var ibOutlines = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+  function ibOutline(mesh, i) {
+    if (!ibOutlines) return faceOutline(mesh, i);
+    var m = ibOutlines.get(mesh);
+    if (!m) ibOutlines.set(mesh, m = {});
+    if (!(i in m)) { try { m[i] = { o: faceOutline(mesh, i) }; } catch (e) { m[i] = { e: e }; } }
+    if (m[i].e) throw m[i].e;
+    return m[i].o;
+  }
+  // true when P, dropped onto the face's plane, lies in one of its convex polygons (edges inclusive, 1e-12 relative)
+  function ibInPolys(g, P) {
+    var n = g.normal, ax = Math.abs(n[0]) >= Math.abs(n[1]) && Math.abs(n[0]) >= Math.abs(n[2]) ? 0 : Math.abs(n[1]) >= Math.abs(n[2]) ? 1 : 2;
+    var u = (ax + 1) % 3, v = (ax + 2) % 3, pu = P[u], pv = P[v];
+    var pos = function (q) { return [q.x, q.y, q.z]; };
+    for (var k = 0; k < (g.polys || []).length; k++) {
+      var vs = g.polys[k].vertices, sgn = 0, ok = true;
+      if (!vs || vs.length < 3) continue;
+      for (var j = 0; j < vs.length && ok; j++) {
+        var a = pos(vs[j].pos), b = pos(vs[(j + 1) % vs.length].pos);
+        var cr = (b[u] - a[u]) * (pv - a[v]) - (b[v] - a[v]) * (pu - a[u]), sc = 1e-12 * (Math.abs(b[u] - a[u]) + Math.abs(b[v] - a[v]) + 1) * (Math.abs(pu - a[u]) + Math.abs(pv - a[v]) + 1);
+        if (Math.abs(cr) <= sc) continue;
+        if (!sgn) sgn = cr > 0 ? 1 : -1; else if ((cr > 0 ? 1 : -1) !== sgn) ok = false;
+      }
+      if (ok && sgn) return true;
+    }
+    return false;
+  }
+  // the signed volume of a mesh's triangles (double positions when the mesh has them)
+  function ibFacetVolume(mesh) {
+    var P = mesh.positions64 || mesh.positions, V = 0;
+    for (var o = 0; o + 8 < P.length; o += 9) {
+      var ax = P[o], ay = P[o + 1], az = P[o + 2], bx = P[o + 3], by = P[o + 4], bz = P[o + 5], cx = P[o + 6], cy = P[o + 7], cz = P[o + 8];
+      V += ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx);
+    }
+    return V / 6;
+  }
   function ibFlatPlate(body, mesh, P, T, tol) {
     var i = ibFaceAt(mesh, P, tol), o;
     if (i < 0) return false;
-    try { o = faceOutline(mesh, i); } catch (e) { return false; }
+    try { o = ibOutline(mesh, i); } catch (e) { return false; }
     var A = 0;
     o.loops.forEach(function (l) { A += signedArea(l); });
-    var mp = K.massProps(mesh), V = mp.polygonal ? mp.polygonal.volume : mp.volume;
+    // (lane RB: the facets' own volume, summed here: K.massProps added its curve corrections, 1.3 s on a 37 000-
+    // triangle panel, and only the polygonal volume was read)
+    var V = ibFacetVolume(mesh);
     return A > 0 && V > 0 && Math.abs(V - Math.abs(A) * T) <= 1e-6 * V;
   }
   // lane stepflats (rfQR): the mean width (2 area / perimeter) of the flat face at P, or null. A face narrower than the
@@ -7529,7 +7583,7 @@
   function ibFaceWidth(mesh, P, tol) {
     var i = ibFaceAt(mesh, P, tol), o;
     if (i < 0) return null;
-    try { o = faceOutline(mesh, i); } catch (e) { return null; }
+    try { o = ibOutline(mesh, i); } catch (e) { return null; }
     var A = 0, L = 0;
     o.loops.forEach(function (l) { A += signedArea(l); l.forEach(function (p, k) { var q = l[(k + 1) % l.length]; L += Math.hypot(q[0] - p[0], q[1] - p[1]); }); });
     return L > 0 ? 2 * Math.abs(A) / L : null;
@@ -7540,8 +7594,10 @@
     mesh.faces.forEach(function (g, i) {
       var dd = Math.abs(dot(g.normal, P) - g.w);
       if (dd > tol || dd >= bd) return;
+      // (lane RB: P inside one of the face's polygons is a hit without tracing the outline)
+      if (ibInPolys(g, P)) { best = i; bd = dd; return; }
       var o;
-      try { o = faceOutline(mesh, i); } catch (e) { o = null; }
+      try { o = ibOutline(mesh, i); } catch (e) { o = null; }
       if (!o) return;
       var q = to2D(o.plane, P), hit = false;
       o.loops.forEach(function (l) { if (signedArea(l) > 0 && pointInPoly(q, l)) hit = true; });
@@ -7558,7 +7614,7 @@
     mesh.faces.forEach(function (g, i) {
       if (ibCurvedFace(g) || Math.abs(dot(g.normal, P) - g.w) > tol) return;
       var o;
-      try { o = faceOutline(mesh, i); } catch (e) { o = null; }
+      try { o = ibOutline(mesh, i); } catch (e) { o = null; }
       if (!o) return;
       var q = to2D(o.plane, P), d = Infinity;
       o.loops.forEach(function (l) {
@@ -7612,8 +7668,10 @@
   // other way behind it); the Builder / PM measure the sheet's T with it
   function sheetThicknessAt(body, P, units) {
     if (!body || !body.polygons || !body.polygons.length) throw new Error('Insert Bends: there is no solid to bend yet.');
-    var mesh = meshFromBody(coplanarBody(body)), inside = body.pointTester(), tol = units === 'in' ? 0.01 : 0.25, pr = units === 'in' ? 1e-4 : 2.5e-3;
+    var mesh = meshFromBody(coplanarBody(body)), inside = ibFewProbes(body), tol = units === 'in' ? 0.01 : 0.25, pr = units === 'in' ? 1e-4 : 2.5e-3;
     var i = ibFaceAt(mesh, P, tol);
+    // lane RB: a point on a rolled wall (no flat face there): the two radii
+    if (i < 0 || ibCurvedFace(mesh.faces[i])) { var rl = ibRolled(body, P, units); if (rl) return rl.T; }
     if (i < 0) throw new Error('Insert Bends: there is no flat face at ' + bcPt(P) + '.');
     var g = mesh.faces[i], n = g.normal, Q = sub(P, scale(n, dot(n, P) - g.w)), ts = [];
     mesh.faces.forEach(function (h) { if (dot(h.normal, n) < -0.999) { var t = g.w + h.w; if (t > pr) ts.push(t); } });
@@ -7708,7 +7766,7 @@
   // cross(n1, n2)·d > 0), s0, s1 (the extent along d), i1, i2 (the walls' outer faces in mesh), mid (a point on the
   // outer surface half way), faces: { mesh face index: true } (the bend's facets) }]
   function ibRoundBends(body, mesh, T, units) {
-    var groups = ibCylGroups(body), out = [], inside = body.pointTester(), pr = units === 'in' ? 1e-4 : 2.5e-3, dl = 1e-3 * T, sameAxis = ibSameAxis;
+    var groups = ibCylGroups(body), out = [], inside = ibTester(body), pr = units === 'in' ? 1e-4 : 2.5e-3, dl = 1e-3 * T, sameAxis = ibSameAxis;
     function angDiff(a, b) { var x = (a - b) % (2 * Math.PI); if (x > Math.PI) x -= 2 * Math.PI; if (x < -Math.PI) x += 2 * Math.PI; return Math.abs(x); }
     function wallFace(n, w) {
       for (var i = 0; i < mesh.faces.length; i++) { var fc = mesh.faces[i]; if (dot(fc.normal, n) > 1 - 1e-6 && Math.abs(fc.w - w) <= pr) return i; }
@@ -7831,7 +7889,7 @@
   // point on it), C0, d, n1, n2, R, RT, A, s0, s1 (as ibNearRound reads) }]: arcs under 180° whose two flat tangent
   // walls are T thick past it, not one of the bends in rbs (a cutout's rounded corner in a plate is no wall corner)
   function ibLoneRounds(body, mesh, T, units, rbs) {
-    var out = [], inside = body.pointTester(), pr = units === 'in' ? 1e-4 : 2.5e-3, dl = 1e-3 * T, groups = ibCylGroups(body);
+    var out = [], inside = ibTester(body), pr = units === 'in' ? 1e-4 : 2.5e-3, dl = 1e-3 * T, groups = ibCylGroups(body);
     groups.forEach(function (g) {
       var a = g.f;
       if (!a || !(a.A > 1e-3) || a.A > Math.PI - 1e-3) return;
@@ -8000,7 +8058,10 @@
     loop.forEach(function (q) { bx[0] = Math.min(bx[0], q[0]); bx[2] = Math.max(bx[2], q[0]); bx[1] = Math.min(bx[1], q[1]); bx[3] = Math.max(bx[3], q[1]); });
     var size = Math.max(bx[2] - bx[0], bx[3] - bx[1]), tolH = 1e-4 * (1 + T), tolB = 1e-5 * (1 + size);
     // polygons over the hole that reach outside the wall's slab [−T, 0]
-    var cand = pp.filter(function (q) { return q.box[0] < bx[2] && q.box[2] > bx[0] && q.box[1] < bx[3] && q.box[3] > bx[1] && (q.hhi > tolH || q.hlo < -T - tolH); });
+    // (lane RB: the polygons out of the slab, sorted out once per plane and T: every hole of a 280-hole panel ran the
+    // test over all 37 000 polygons)
+    if (pp.outT !== T) { pp.outT = T; pp.out = pp.filter(function (q) { return q.hhi > tolH || q.hlo < -T - tolH; }); }
+    var cand = pp.out.filter(function (q) { return q.box[0] < bx[2] && q.box[2] > bx[0] && q.box[1] < bx[3] && q.box[3] > bx[1]; });
     if (!cand.length) return null;
     // the hole is in a wall T thick: just outside its edge the metal ends T behind the face (a tray's rim, the end face
     // of its walls, holds the tray's opening with the bottom under it, and the metal runs on down: no form)
@@ -8089,7 +8150,7 @@
     mesh.faces.forEach(function (g, i) {
       if (!g.polys || !g.polys.length || ibCurvedFace(g)) return;
       var o;
-      try { o = faceOutline(mesh, i); } catch (e) { o = null; }
+      try { o = ibOutline(mesh, i); } catch (e) { o = null; }
       if (!o) return;
       o.loops.forEach(function (l) {
         if (signedArea(l) >= 0) return;
@@ -8112,6 +8173,141 @@
   // `plane` from a to b along plane.n; wedges also { R, RT, A, ov } for an exact build: the annulus R … RT from plane.x
   // through A, with ov strips into both plates), info (the bend records), T, R } — plain data for both kernels.
   // f.edges (Convert to Sheet Metal): only the corners whose outer edge passes within the pick tolerance of a point.
+  // lane RB: one BSP point tester per body for the Insert Bends probes (sheetThicknessAt, ibRoundBends, ibLoneRounds,
+  // insertBendsLayout each built their own: four BSPs of the same imported solid, about 0.5 s each on a 6 400-triangle
+  // plate). Keyed by the polygon array (a CSG body never changes it in place); the count guards a reuse.
+  var ibTesters = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+  function ibTester(body) {
+    var key = body && body.polygons;
+    if (!ibTesters || !key || typeof key !== 'object') return body.pointTester();
+    var hit = ibTesters.get(key);
+    if (hit && hit.n === key.length) return hit.f;
+    var f = body.pointTester();
+    ibTesters.set(key, { n: key.length, f: f });
+    return f;
+  }
+  // lane RB (rfRB): a ROLLED sheet: one open cylindrical wall (two coaxial cylinders T apart over the same sweep, the
+  // ends and sides plane), no flat face to fix. SolidWorks flattens it with Insert Bends from a point on the roll; so
+  // does Anvil. ibRolled(body, P, units) -> null when P is on no cylinder of the body, else { inner, outer (the
+  // ibCylGroups frames), Ri, Ro, T, A (sweep, radians), z0, z1, onInner, walls (true: some vertex lies off the roll, a
+  // flat wall or a flange: not a plain roll), polys (the inner skin's facets) }.
+  function ibRolled(body, P, units) {
+    if (!body || !body.polygons || !P) return null;
+    var tol = units === 'in' ? 0.01 : 0.25, TAU = 2 * Math.PI, hit = null;
+    var groups = ibCylGroups(body).filter(function (g) { return g.f; });
+    function local(f, X) {
+      var q = sub(X, f.o), z = dot(q, f.d), rad = sub(q, scale(f.d, z)), th = Math.atan2(dot(rad, f.e2), dot(rad, f.e1)) - f.th0;
+      while (th < -1e-9) th += TAU;
+      while (th >= TAU - 1e-9) th -= TAU;
+      return { r: len(rad), z: z, th: th };
+    }
+    groups.forEach(function (g) {
+      var f = g.f, q = local(f, P), d = Math.abs(q.r - f.r);
+      // (a click lands on a facet: up to its sag inside the true surface)
+      if (d > tol + (f.sag || 0) || q.z < f.z0 - tol || q.z > f.z1 + tol || q.th > f.A + tol / f.r) return;
+      if (!hit || d < hit.d) hit = { g: g, d: d };
+    });
+    if (!hit) return null;
+    var g = hit.g, mate = null, inside = ibFewProbes(body), q0 = local(g.f, P);
+    groups.forEach(function (h) {
+      if (h === g || !ibSameAxis(g.s, h.s) || Math.abs(h.f.r - g.f.r) <= 1e-9 * (1 + g.f.r)) return;
+      if (Math.abs(h.f.A - g.f.A) > 1e-3 || Math.abs(h.f.th0 - g.f.th0) > 1e-3) return;
+      var rm = (h.f.r + g.f.r) / 2, th = g.f.th0 + Math.min(Math.max(q0.th, 0.05 * g.f.A), 0.95 * g.f.A);
+      var z = Math.min(Math.max(q0.z, g.f.z0 + 0.05 * (g.f.z1 - g.f.z0)), g.f.z1 - 0.05 * (g.f.z1 - g.f.z0));
+      var X = add(add(g.f.o, scale(g.f.d, z)), add(scale(g.f.e1, rm * Math.cos(th)), scale(g.f.e2, rm * Math.sin(th))));
+      if (!inside(X)) return;
+      if (!mate || Math.abs(h.f.r - g.f.r) < Math.abs(mate.f.r - g.f.r)) mate = h;
+    });
+    if (!mate) return null;
+    var inner = g.f.r < mate.f.r ? g : mate, outer = inner === g ? mate : g, f = inner.f, Ri = f.r, Ro = outer.f.r, walls = false;
+    var tw = tol / Ro;
+    body.polygons.forEach(function (p) {
+      if (walls) return;
+      p.vertices.forEach(function (v) {
+        var q = local(f, [v.pos.x, v.pos.y, v.pos.z]);
+        if (q.r < Ri - tol || q.r > Ro + tol || q.z < f.z0 - tol || q.z > f.z1 + tol || (q.th > f.A + tw && q.th < TAU - tw)) walls = true;
+      });
+    });
+    return { inner: f, outer: outer.f, Ri: Ri, Ro: Ro, T: Ro - Ri, A: f.A, z0: f.z0, z1: f.z1, onInner: inner === g, walls: walls, polys: inner.polys };
+  }
+  // ibRolledFlat(base, model, build, mesh, rl) -> the flat of a rolled sheet (flatPattern's shape): the inner skin's
+  // facets developed onto the neutral surface, s = theta * BA / A (BA = bendCalc over the sweep at the inner radius: the
+  // arc at R + K*T for a K-factor), z along the axis; holes through the roll come with them. The flat lies on the
+  // tangent plane at the fixed point, seen from the side the point was picked on (outside: not mirrored). One BEND line
+  // on the roll's centre, along the axis, as SolidWorks marks a rolled bend; ibMetalCheck holds the blank to the solid.
+  function ibRolledFlat(base, model, build, mesh, rl) {
+    var sheet = model.sheet, T = rl.T, A = rl.A, units = model.units, f = rl.inner, TAU = 2 * Math.PI;
+    var bc = bendCalc(sheet, A, rl.Ri, T), BA = bc.BA, k = BA / A, sg = rl.onInner ? -1 : 1, warnings = [];
+    function warn(w) { if (w && warnings.indexOf(w) < 0) warnings.push(w); }
+    if (bc.warning) warn(bc.warning);
+    function map(X) {
+      var q = sub(X, f.o), z = dot(q, f.d), rad = sub(q, scale(f.d, z)), th = Math.atan2(dot(rad, f.e2), dot(rad, f.e1)) - f.th0;
+      // (into [A/2 - pi, A/2 + pi]: the roll's middle is never at the wrap)
+      while (th < A / 2 - Math.PI) th += TAU;
+      while (th > A / 2 + Math.PI) th -= TAU;
+      return [sg * th * k, z];
+    }
+    var polys = [];
+    rl.polys.forEach(function (p) {
+      var m = p.vertices.map(function (v) { return map([v.pos.x, v.pos.y, v.pos.z]); }), a = signedArea(m);
+      if (!(Math.abs(a) > 1e-14)) return;
+      if (a < 0) m.reverse();
+      polys.push({ vertices: m.map(function (q) { return { pos: { x: q[0], y: q[1], z: 0 } }; }) });
+    });
+    // (the developed facets traced as one 2D face and merged, as the Swept Flange's sfOutline does)
+    var o = polys.length ? faceOutline({ faces: [{ normal: [0, 0, 1], w: 0, polys: polys }] }, 0) : null, loops = null;
+    if (o && o.loops.length) {
+      var merged = mergeFlatRegions([o.loops.map(function (l) { return l.map(function (qq) { var X = to3D(o.plane, qq[0], qq[1]); return [X[0], X[1]]; }); })], [], 1e-4);
+      if (merged && merged.length) {
+        var outs = merged.filter(function (l) { return signedArea(l) > 0; }).sort(function (a, b) { return signedArea(b) - signedArea(a); });
+        loops = outs.concat(merged.filter(function (l) { return signedArea(l) < 0; }));
+      }
+    }
+    if (!loops || !loops.length) throw new Error('Flat pattern: the rolled wall could not be laid flat.');
+    loops = loops.map(function (l) { var C = enclosingCircle(l); return C ? snapFlatCircle(l, flatCircleTol(units, C.r)) : l; });
+    // the plane: tangent to the picked surface at the fixed point; x along the roll (theta), y along the axis
+    var P = base.fixedFace, qp = map(P), q = sub(P, f.o), zP = dot(q, f.d), u = norm(sub(q, scale(f.d, zP)));
+    var rP = rl.onInner ? rl.Ri : rl.Ro, at = add(add(f.o, scale(f.d, zP)), scale(u, rP));
+    var x = scale(norm(cross(f.d, u)), sg), y = f.d.slice(), n = scale(u, sg);
+    var origin = sub(sub(at, scale(x, qp[0])), scale(y, qp[1]));
+    var min = [Infinity, Infinity], max = [-Infinity, -Infinity];
+    loops[0].forEach(function (p) { min[0] = Math.min(min[0], p[0]); min[1] = Math.min(min[1], p[1]); max[0] = Math.max(max[0], p[0]); max[1] = Math.max(max[1], p[1]); });
+    // (UP when the flat is seen from the inside: the roll comes up toward the viewer, as an edge flange does)
+    var sm = sg * BA / 2, deg = A * 180 / Math.PI;
+    var bend = { a: [sm, rl.z0], b: [sm, rl.z1], up: rl.onInner, angle: deg, R: rl.Ri, ba: BA, method: bc.type, rolled: true, id: base.id + ':roll' };
+    bend.label = bendNoteText(bend, units);
+    ibMetalCheck(mesh, loops, [bend], T, units, warn);
+    var outSheet = Object.assign({}, sheet, { kFactor: sheetKFactor(sheet) });
+    return { loops: loops, bends: [bend], plane: { origin: origin, x: x, y: y, n: n, offset: dot(n, origin) }, sheet: outSheet,
+      bbox: { min: min, max: max }, size: [max[0] - min[0], max[1] - min[1]], note: sheetNote(sheet) + ' ROLLED', warnings: warnings, etch: [], etchLayer: null,
+      rolled: { R: rl.Ri, T: T, angle: deg, length: rl.z1 - rl.z0, ba: BA } };
+  }
+  // lane RB: a point tester for a few probes (sheetThicknessAt asks two to a dozen): the parity of a ray's crossings
+  // with the body's polygons, no BSP (0.5 s to build on an imported plate whose faces are fans of slivers). Past 32
+  // probes it hands over to the shared BSP (ibTester). The ray runs along an odd direction so it meets no edge.
+  function ibFewProbes(body) {
+    var calls = 0, bsp = null, D = norm([0.5773502691896258 + 1.1e-3, 0.5773502691896258 - 2.3e-3, 0.5773502691896258 + 0.7e-3]);
+    return function (p) {
+      if (bsp) return bsp(p);
+      if (++calls > 32) { bsp = ibTester(body); return bsp(p); }
+      var px = p[0], py = p[1], pz = p[2], hits = 0, polys = body.polygons;
+      for (var k = 0; k < polys.length; k++) {
+        var vs = polys[k].vertices, a = vs[0].pos;
+        for (var j = 1; j + 1 < vs.length; j++) {
+          var b = vs[j].pos, c = vs[j + 1].pos;
+          var e1x = b.x - a.x, e1y = b.y - a.y, e1z = b.z - a.z, e2x = c.x - a.x, e2y = c.y - a.y, e2z = c.z - a.z;
+          var hx = D[1] * e2z - D[2] * e2y, hy = D[2] * e2x - D[0] * e2z, hz = D[0] * e2y - D[1] * e2x, det = e1x * hx + e1y * hy + e1z * hz;
+          if (Math.abs(det) < 1e-30) continue;
+          var sx = px - a.x, sy = py - a.y, sz = pz - a.z, u = (sx * hx + sy * hy + sz * hz) / det;
+          if (u < 0 || u > 1) continue;
+          var qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x, v = (D[0] * qx + D[1] * qy + D[2] * qz) / det;
+          if (v < 0 || u + v > 1) continue;
+          if ((e2x * qx + e2y * qy + e2z * qz) / det > 0) hits++;
+        }
+      }
+      return (hits & 1) === 1;
+    };
+  }
   function insertBendsLayout(f, model, ctx) {
     var body = ctx.body, what = f.type === 'convertSM' ? 'Convert to Sheet Metal' : 'Insert Bends';
     if (!body || !body.polygons || !body.polygons.length) throw new Error(what + ': there is no solid to bend yet.');
@@ -8124,10 +8320,27 @@
     if (IB_RELIEFS.indexOf(relief) < 0) throw new Error(what + ': Auto Relief must be "rect" or "none".');
     var P0 = f.fixedFace;
     if (!P0 || P0.length !== 3) throw new Error(what + ': pick the fixed face.');
-    var mesh = meshFromBody(coplanarBody(body)), edges = bodyEdges(mesh), inside = body.pointTester();
+    var mesh = meshFromBody(coplanarBody(body));
     var tolU = model.units === 'in' ? 0.01 : 0.25, dl = 1e-3 * T, eps = 0.1 * T, ov = T / 2;
+    // lane RB: a rolled sheet fixed by a point on its roll: no bend to insert, the flat develops the roll (ibRolledFlat)
+    if (f.type !== 'convertSM') {
+      var i0 = ibFaceAt(mesh, P0, tolU), rl = i0 < 0 || ibCurvedFace(mesh.faces[i0]) ? ibRolled(body, P0, model.units) : null;
+      if (rl) {
+        if (rl.walls) throw new Error(what + ': a rolled part with flat walls or flanges is not supported yet (only a plain roll: one cylindrical wall).');
+        if (Math.abs(rl.T - T) > 1e-4 * (1 + T)) throw new Error(what + ': the rolled wall is ' + bcNum(rl.T) + ' thick, the sheet ' + bcNum(T) + '.');
+        return { fills: [], corners: [], wedges: [], info: [], T: T, R: R, rounded: 0, plate: true, rolled: true };
+      }
+    }
+    // lane RB: a flat plate (the fixed face's outline T thick, the face no narrower than T) has no bend to find: taken
+    // here, before the edge and form searches (a 280-hole panel spent 1.5 s in them to find none). Same answer as
+    // the no-bends branch below gives.
+    if (f.type !== 'convertSM') {
+      var fw0 = ibFaceWidth(mesh, P0, tolU);
+      if (fw0 != null && fw0 >= T && ibFlatPlate(body, mesh, P0, T, tolU)) return { fills: [], corners: [], wedges: [], info: [], T: T, R: R, rounded: 0, plate: true };
+    }
+    var edges = bodyEdges(mesh), inside = ibTester(body);
     // the outer corner lines: convex edges between two flat faces, merged per face pair and line
-    var lines = [];
+    var lines = [], lineByPair = {};
     edges.forEach(function (e) {
       if (e.faces.length !== 2 || e.smooth || !e.convex) return;
       var n1 = e.normals[0], n2 = e.normals[1], d = e.dir.slice(), big = 0, i1 = e.faces[0], i2 = e.faces[1];
@@ -8138,8 +8351,11 @@
       if (d[big] < 0) d = scale(d, -1);
       if (dot(cross(n1, n2), d) < 0) { var sw = n1; n1 = n2; n2 = sw; sw = i1; i1 = i2; i2 = sw; }
       var sa = dot(e.a, d), sb = dot(e.b, d), O0 = sub(e.a, scale(d, sa)), hit = null;
-      lines.forEach(function (L) { if (!hit && L.i1 === i1 && L.i2 === i2 && len(sub(L.O0, O0)) < 1e-6 * (1 + len(O0))) hit = L; });
-      if (!hit) lines.push(hit = { i1: i1, i2: i2, n1: n1, n2: n2, d: d, c: c, O0: O0, segs: [] });
+      // (lane RB: the lines of one face pair only: every chord of every hole is such an edge, and the search over all
+      // lines was quadratic, 0.8 s on a 280-hole panel)
+      var pk = i1 + ',' + i2, pl = lineByPair[pk] || (lineByPair[pk] = []);
+      pl.forEach(function (L) { if (!hit && len(sub(L.O0, O0)) < 1e-6 * (1 + len(O0))) hit = L; });
+      if (!hit) { lines.push(hit = { i1: i1, i2: i2, n1: n1, n2: n2, d: d, c: c, O0: O0, segs: [] }); pl.push(hit); }
       hit.segs.push([Math.min(sa, sb), Math.max(sa, sb)]);
     });
     var bends = [], plates = [], regionCache = {};
@@ -8759,7 +8975,7 @@
   K.buildFlange = buildFlange; K.flangeLayout = flangeLayout; K.buildJog = buildJog; K.normalCutTool = normalCutTool;
   _.mergeFlatRegions = mergeFlatRegions;   // lane sweptflange-2 (Swept Flange / Lofted-Bend cuts)
   _.flatPolyGrid = flatPolyGrid;           // lane flatperf (tests read flatPolyGrid.ops)
-  K.flangeProfile = flangeProfile; K.flatPattern = flatPattern; K.flatOptions = flatOptions; K.flatOptionsOf = flatOptionsOf; K.FLAT_OPTION_DEFAULTS = FLAT_OPTION_DEFAULTS; K.sheetCutList = sheetCutList; K.CUT_LIST_NAMES = CUT_LIST_NAMES; K.cleanFlatLoop = cleanFlatLoop; K.snapFlatCircle = snapFlatCircle; K.flatCircleTol = flatCircleTol; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
+  K.flangeProfile = flangeProfile; K.flatPattern = flatPatternOut; K.flatOptions = flatOptions; K.flatOptionsOf = flatOptionsOf; K.FLAT_OPTION_DEFAULTS = FLAT_OPTION_DEFAULTS; K.sheetCutList = sheetCutList; K.CUT_LIST_NAMES = CUT_LIST_NAMES; K.cleanFlatLoop = cleanFlatLoop; K.snapFlatCircle = snapFlatCircle; K.flatCircleTol = flatCircleTol; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
   K.bendDeduction = bendDeduction; K.outsideSetback = outsideSetback; K.bendCalc = bendCalc; K.bendTableLookup = bendTableLookup;
   K.makeSheet = makeSheet; K.sheetKFactor = sheetKFactor; K.sheetNote = sheetNote; K.gaugeTables = GAUGE_TABLES; K.gaugeTable = gaugeTable; K.gaugeRow = gaugeRow;
   K.DEFAULT_K_FACTOR = DEFAULT_K; K.LEGACY_K_FACTOR = LEGACY_K; K.AUTO_RELIEF_RATIO = AUTO_RELIEF_RATIO; K.DEFAULT_GAUGE_TABLE = DEFAULT_GAUGE_TABLE; K.BEND_ALLOWANCE_TYPES = BA_TYPES.slice();
