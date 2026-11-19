@@ -967,16 +967,32 @@ var Exchange = (function () {
   // carry no curved surface's record, and whose points all lie within planeTol of the plane fitted to both (area-
   // weighted normal and offset) become one face on that fitted plane. A face alone keeps its own normal and offset
   // (Anvil's own exact parts write the same text as before).
-  function planeTolOf(pos) {
-    var ext = 1;
+  function planeTolOf(pos, small) {
+    var ext = small ? 0 : 1;
     for (var q = 0; q < pos.length; q++) ext = Math.max(ext, Math.abs(pos[q]));
-    return Math.max(4e-6, 1e-6 * ext);   // the reader's weld is 1e-6; a 6-decimal file's points are up to 1e-6 off each way
+    // lane QZ: small = an imported part (importedMesh): one under a unit across scales the floor with it (a 0.14 in part
+    // read from a file in full precision merged flat faces 4e-6 off, 3e-5 of its size, and moved points as far)
+    if (small && ext < 1) return 4e-6 * Math.max(ext, 0.01);
+    return Math.max(4e-6, 1e-6 * Math.max(ext, 1));   // the reader's weld is 1e-6; a 6-decimal file's points are up to 1e-6 off each way
   }
   function mergePlanes(mesh) {
-    var faces = mesh.faces, nF = faces.length, tri = mesh.triangles, pos = mesh.positions;
-    if (nF < 2) return mesh;
-    var dtol = planeTolOf(pos), nT = tri.length / 3, triFace = new Int32Array(nT).fill(-1), curved = new Uint8Array(nF);
-    faces.forEach(function (f, fi) { f.tris.forEach(function (t) { triFace[t] = fi; if ((mesh.triSurf && mesh.triSurf[t]) || (mesh.freeOf && mesh.freeOf[t] >= 0)) curved[fi] = 1; }); });
+    var tri = mesh.triangles, pos = mesh.positions, faces = mesh.faces, mixed = false;
+    // lane QZ: a mesh face holding triangles of a curved or free-form face and plain ones (a flat face's slivers at the
+    // normal of the B-spline face tangent to it there) is two faces here, so the plain ones can join their flat face
+    function isCurved(t) { return (mesh.triSurf && mesh.triSurf[t]) || (mesh.freeOf && mesh.freeOf[t] >= 0); }
+    if (mesh.triSurf || mesh.freeOf) {
+      var sp = [];
+      faces.forEach(function (f) {
+        var c = [], p = [];
+        f.tris.forEach(function (t) { (isCurved(t) ? c : p).push(t); });
+        if (c.length && p.length) { mixed = true; sp.push({ normal: f.normal, w: f.w, tris: p }, { normal: f.normal, w: f.w, tris: c }); } else sp.push(f);
+      });
+      if (mixed) faces = sp;
+    }
+    var nF = faces.length;
+    if (nF < 2 && !mixed) return mesh;
+    var dtol = planeTolOf(pos, mesh.imported), nT = tri.length / 3, triFace = new Int32Array(nT).fill(-1), curved = new Uint8Array(nF);
+    faces.forEach(function (f, fi) { f.tris.forEach(function (t) { triFace[t] = fi; if (isCurved(t)) curved[fi] = 1; }); });
     var par = [], N = [], verts = [];
     faces.forEach(function (f, fi) {
       par.push(fi);
@@ -1012,6 +1028,15 @@ var Exchange = (function () {
       if (dot(u, n0) < 0) u = scale(u, -1);
       return { n: u, w: dot(u, c) };
     }
+    var dev = [];
+    function devOf(r) {
+      if (dev[r] == null) {
+        var vr = verts[r], pr = fit(N[r], vr), m = 0;
+        for (var q = 0; q < vr.length; q++) m = Math.max(m, Math.abs(pos[vr[q] * 3] * pr.n[0] + pos[vr[q] * 3 + 1] * pr.n[1] + pos[vr[q] * 3 + 2] * pr.n[2] - pr.w));
+        dev[r] = m;
+      }
+      return dev[r];
+    }
     var edgeT = new PairMap(), merged = false;
     for (var t = 0; t < nT; t++) {
       var fa = triFace[t];
@@ -1026,12 +1051,17 @@ var Exchange = (function () {
         var na = norm(N[ra]), nb = norm(N[rb]);
         if (!(dot(na, nb) > 1 - 1e-3) || verts[ra].length + verts[rb].length > 50000) continue;
         var vs = verts[ra].concat(verts[rb]), pl = fit(add(N[ra], N[rb]), vs), ok = true;
-        for (var k = 0; k < vs.length && ok; k++) if (Math.abs(pos[vs[k] * 3] * pl.n[0] + pos[vs[k] * 3 + 1] * pl.n[1] + pos[vs[k] * 3 + 2] * pl.n[2] - pl.w) > dtol) ok = false;
+        // lane QZ: or no farther off than either face alone (a flat face of a file whose curved edge's points sit a
+        // little off it, and the slivers its fan left at a slightly other normal, holding nothing but points of it: they
+        // stayed apart, and each sliver took one chord of the B-spline edge)
+        var lim = Math.max(dtol, Math.min(100 * dtol, 1.01 * Math.max(devOf(ra), devOf(rb))));
+        for (var k = 0; k < vs.length && ok; k++) if (Math.abs(pos[vs[k] * 3] * pl.n[0] + pos[vs[k] * 3 + 1] * pl.n[1] + pos[vs[k] * 3 + 2] * pl.n[2] - pl.w) > lim) ok = false;
         if (!ok) continue;
+        dev[rb] = null;
         par[ra] = rb; N[rb] = add(N[ra], N[rb]); verts[rb] = vs; merged = true;
       }
     }
-    if (!merged) return mesh;
+    if (!merged && !mixed) return mesh;
     var out = [], at = {}, size = {};
     faces.forEach(function (f, fi) { var r = root(fi); size[r] = (size[r] || 0) + 1; });
     faces.forEach(function (f, fi) {
@@ -1047,6 +1077,19 @@ var Exchange = (function () {
     return m2;
   }
 
+  // lane QZ: importedMesh(src, mesh) -> mesh, or a copy flagged imported when the part holds an Imported feature: the
+  // writer then names an edge between two curved faces (or a curved face and a plane) that is none of its circles,
+  // rulings or ellipses by its run of chords when both ends lie on both surfaces (the file's own intersection curves)
+  // (IMPORT_EDGES.on false: as before)
+  var IMPORT_EDGES = { on: true };
+  function importedMesh(src, mesh) {
+    var feats = src && src.model && src.model.features || [];
+    if (!IMPORT_EDGES.on || !feats.some(function (f) { return f.type === 'import' && !f.suppressed; })) return mesh;
+    var m2 = {};
+    Object.keys(mesh).forEach(function (k) { m2[k] = mesh[k]; });
+    m2.imported = true;
+    return m2;
+  }
   // lane MR: freeFacesOf(src, mesh) -> mesh, or a copy carrying freeOf (Int32Array: per triangle the index into
   // freeFaces, -1 elsewhere) and freeFaces (the free-form face records of an Imported feature, mapFree's form) for the
   // faces of the part's imported solids that are still whole in this body: every triangle of the face is a triangle of
@@ -1498,13 +1541,13 @@ var Exchange = (function () {
   function writeBrepAnalytic(W, mesh, name) {
     var pos = mesh.positions, tri = mesh.triangles, nT = tri.length / 3, nF = mesh.faces.length;
     function P(i) { return [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]; }
-    var ext = 1;
+    var ext = mesh.imported ? 0.01 : 1;   // (lane QZ: an imported part under a unit across: tolerances scale with it)
     for (var q = 0; q < pos.length; q++) ext = Math.max(ext, Math.abs(pos[q]));
     var tol = 1e-7 * ext;
     // lane stepwrite (rfMN): the points of an imported part carry its file's rounding (a 6-decimal file: ~1e-6), so an edge
     // that is not a circle's chord or a ruling to tol is tried again to ntol, and circles that close (centre, radius,
     // axis) are one circle: the first one met (an exact part's circles all pass at tol, their keys equal: as before)
-    var ntol = Math.max(tol, planeTolOf(pos)), circles = [];
+    var ntol = Math.max(tol, planeTolOf(pos, mesh.imported)), circles = [];
     function canonCircle(c) {
       for (var i = 0; i < circles.length; i++) if (circles[i].key === c.key) return circles[i];
       for (i = 0; i < circles.length; i++) {
@@ -1803,6 +1846,7 @@ var Exchange = (function () {
         var segs = new PairMap();
         if (ok) mine.forEach(function (cl) { for (var i = 0; i + 1 < cl.vs.length; i++) { var a = cl.vs[i], b = cl.vs[i + 1]; segs.set(a < b ? a : b, a < b ? b : a, cl); } });
         if (ok) loops.forEach(function (l) { for (var i = 0; i < l.length; i++) { var a = l[i], b = l[(i + 1) % l.length]; if (!segs.get(a < b ? a : b, a < b ? b : a)) ok = false; } });
+        if (F.kill) ok = false;   // lane QZ: a face across one of its edges fell back to facets (freeRunBroken)
         F.ok = ok; F.mine = mine; F.ts = ts;
         F.keys = rec.edges.map(function (E) { return F.sk + ':' + E.id; });
       });
@@ -2232,6 +2276,103 @@ var Exchange = (function () {
     }
     function eget(a, b) { return a < b ? ecls.get(a, b) : ecls.get(b, a); }
     var PEDGE = { t: 'p' };   // lane stepreal2: a chord between two points of a cylinder, written as it is
+    // lane QZ: X within the file's tolerance of surface record S (cylinder, cone, sphere, torus)
+    function surfOff(S, X) {   // distance of X from S (a plane { t: 'pl', n, w } too), and the surface's size there
+      if (S.t === 'pl') return { d: Math.abs(dot(S.n, X) - S.w), sz: 0 };
+      var ax = axial(S, X), d, sz = S.r;
+      if (S.t === 'cyl') d = ax.rho - S.r;
+      else if (S.t === 'cone') { d = (ax.rho - (S.r + S.k * ax.z)) / Math.sqrt(1 + S.k * S.k); sz = Math.max(Math.abs(S.r + S.k * ax.z), tol); }
+      else if (S.t === 'sph') d = Math.sqrt(ax.rho * ax.rho + ax.z * ax.z) - S.r;
+      else if (S.t === 'tor') { var dr = ax.rho - Math.abs(S.R); d = Math.sqrt(dr * dr + ax.z * ax.z) - S.r; }
+      else return null;
+      return { d: Math.abs(d), sz: Math.abs(sz) };
+    }
+    function onSurfS(S, X) {
+      var o = surfOff(S, X);
+      return !!o && o.d <= Math.max(3 * ntol, 2e-4 * o.sz);   // (a corner of three faces sits up to ~1e-4 r off one of them)
+    }
+    // lane QZ: the imported edge through pts, on surfaces Ss (records, or a true plane), as a C2 cubic through some of
+    // the points (chord-length knots, end tangents from three points), more points put in where the curve strays off a
+    // surface farther than the points themselves lie (polylineCurve if that fails): the file's own intersection curve
+    // again, in a few spans (a degree 1 curve of 300 points took OpenCascade 45 s to read and Anvil 450 k triangles)
+    function importCurve(pts, Ss) {
+      var n = pts.length;
+      if (n < 4) return polylineCurve(pts);
+      function off(X) { var m = 0; Ss.forEach(function (S) { var o = S && surfOff(S, X); if (o) m = Math.max(m, o.d); }); return m; }
+      var base = 0;
+      pts.forEach(function (X) { base = Math.max(base, off(X)); });
+      var dTol = Math.max(2 * base, tol), keep = [], step = Math.max(1, Math.floor((n - 1) / 6));
+      for (var i = 0; i < n - 1; i += step) keep.push(i);
+      keep.push(n - 1);
+      var fitC = null;
+      for (var pass = 0; pass < 12; pass++) {
+        fitC = cubicThrough(keep.map(function (k) { return pts[k]; }));
+        if (!fitC) break;
+        var more = [];
+        for (var j = 0; j + 1 < keep.length; j++) {
+          if (keep[j + 1] - keep[j] < 2) continue;
+          var bad = false;
+          for (var f = 1; f < 4 && !bad; f++) if (off(cubicAt(fitC, fitC.u[j] + (fitC.u[j + 1] - fitC.u[j]) * f / 4)) > dTol) bad = true;
+          if (bad) more.push((keep[j] + keep[j + 1]) >> 1);
+        }
+        if (!more.length) break;
+        keep = keep.concat(more).sort(function (a, b) { return a - b; });
+        if (pass === 11) fitC = null;
+      }
+      if (!fitC) return polylineCurve(pts);
+      var ms = [4], ks = [0];
+      for (var q = 1; q < fitC.u.length - 1; q++) { ms.push(1); ks.push(fitC.u[q]); }
+      ms.push(4); ks.push(1);
+      return W.add('B_SPLINE_CURVE_WITH_KNOTS(\'\',3,' + stepList(fitC.P.map(pt)) + ',.UNSPECIFIED.,.F.,.F.,(' + ms.join(',') + '),(' + ks.map(stepReal).join(',') + '),.UNSPECIFIED.)');
+    }
+    // the C2 cubic B-spline through q (clamped, a knot at every point by chord length, end tangents through three points)
+    function cubicThrough(q) {
+      var m = q.length - 1, u = [0], tot = 0, k;
+      for (k = 1; k <= m; k++) { tot += len(sub(q[k], q[k - 1])); u.push(tot); }
+      if (!(tot > 0) || m < 2) return null;
+      u = u.map(function (x) { return x / tot; }); u[m] = 1;
+      for (k = 1; k <= m; k++) if (!(u[k] > u[k - 1])) return null;
+      function endTan(a, b, c) {
+        var h1 = len(sub(b, a)), h2 = len(sub(c, b));
+        var d = sub(scale(sub(b, a), (h1 + h2) / (h1 * h2)), scale(sub(c, a), h1 / (h2 * (h1 + h2))));
+        return len(d) > 0 ? norm(d) : null;
+      }
+      var t0 = endTan(q[0], q[1], q[2]), t1 = endTan(q[m], q[m - 1], q[m - 2]);
+      if (!t0 || !t1) return null;
+      t1 = scale(t1, -1);
+      var U = [0, 0, 0, 0].concat(u.slice(1, m), [1, 1, 1, 1]);
+      function N(j, p, x) {
+        if (p === 0) return U[j] <= x && x < U[j + 1] ? 1 : 0;
+        var a = U[j + p] > U[j] ? (x - U[j]) / (U[j + p] - U[j]) * N(j, p - 1, x) : 0;
+        var b = U[j + p + 1] > U[j + 1] ? (U[j + p + 1] - x) / (U[j + p + 1] - U[j + 1]) * N(j + 1, p - 1, x) : 0;
+        return a + b;
+      }
+      var Pp = [];
+      Pp[0] = q[0]; Pp[1] = add(q[0], scale(t0, u[1] * tot / 3));
+      Pp[m + 2] = q[m]; Pp[m + 1] = sub(q[m], scale(t1, (1 - u[m - 1]) * tot / 3));
+      var A = [], B = [], C = [], R = [];
+      for (k = 1; k <= m - 1; k++) {
+        var a = N(k, 3, u[k]), b = N(k + 1, 3, u[k]), cc = N(k + 2, 3, u[k]), r = q[k];
+        if (k === 1) { r = sub(r, scale(Pp[1], a)); a = 0; }
+        if (k === m - 1) { r = sub(r, scale(Pp[m + 1], cc)); cc = 0; }
+        A.push(a); B.push(b); C.push(cc); R.push(r);
+      }
+      for (k = 1; k < R.length; k++) { var w = A[k] / B[k - 1]; B[k] -= w * C[k - 1]; R[k] = sub(R[k], scale(R[k - 1], w)); }
+      for (k = R.length - 1; k >= 0; k--) Pp[k + 2] = scale(k + 1 < R.length ? sub(R[k], scale(Pp[k + 3], C[k])) : R[k], 1 / B[k]);
+      if (Pp.some(function (x) { return !x || !isFinite(x[0] + x[1] + x[2]); })) return null;
+      return { P: Pp, u: u, U: U };
+    }
+    function cubicAt(c, x) {   // de Boor
+      var U = c.U, n = c.P.length, s = 3;
+      while (s < n - 1 && U[s + 1] <= x) s++;
+      var d = [];
+      for (var j = 0; j <= 3; j++) d.push(c.P[s - 3 + j].slice());
+      for (var r = 1; r <= 3; r++) for (j = 3; j >= r; j--) {
+        var i0 = s - 3 + j, den = U[i0 + 4 - r] - U[i0], al = den > 0 ? (x - U[i0]) / den : 0;
+        d[j] = add(scale(d[j - 1], 1 - al), scale(d[j], al));
+      }
+      return d[3];
+    }
     // (within 2e-5 of the radius: another CAD system's intersection curves are approximations, 2e-6 r off on a shop
     // file; a split point on a facet's chord is 1e-4 r off or more unless it sits at the chord's very end)
     // lane stepwrite: two cylinders whose meeting curve is written as a curve of its own (snapCylCyl, saddleCurve): axes not
@@ -2264,6 +2405,27 @@ var Exchange = (function () {
     // those carry no record, so each facet counted as a plane and the hole's rim was written as an ELLIPSE per facet,
     // 18 to 52 of them: a file OpenCascade found not valid, 1e-2 off, and Anvil's own reader refused)
     function truePlane(fi) { var ts = groups[fi]; for (var k = 0; k < ts.length; k++) if (triRec[ts[k]] >= 0 || (deadFree && deadFree[ts[k]])) return false; return ts.length > 0; }
+    // lane QZ: freeRunBroken(F, gF) -> true when an edge run of free-form face F (group gF) cannot be written as the
+    // face across it needs: every segment of the run must have a face on the other side, and each such face must be an
+    // exact patch, a radial wall, another free-form face or a true plane (not facets of a patch that fell back: a facet
+    // cannot hold a piece of a B-spline edge). Where the face across changes along the run (one flat face of the file
+    // read as two mesh faces) the edge is written in pieces on the same curve (freeEdgeOes)
+    var loopUses = null;
+    function freeRunBroken(F, gF) {
+      if (!loopUses) {   // (a segment used by other than two loops: the mesh is not closed there, the file's own crack)
+        loopUses = new PairMap();
+        loopsOf.forEach(function (ls) { ls.forEach(function (l) { for (var i = 0; i < l.length; i++) { var a = l[i], b = l[(i + 1) % l.length], lo = a < b ? a : b, hi = a < b ? b : a; loopUses.set(lo, hi, (loopUses.get(lo, hi) || 0) + 1); } }); });
+      }
+      return (F.mine || []).some(function (cl) {
+        for (var i = 0; i + 1 < cl.vs.length; i++) {
+          var a = cl.vs[i], b = cl.vs[i + 1], o1 = owner.get(a, b), o2 = owner.get(b, a), other = o1 === gF ? o2 : o1;
+          if (other == null || other === gF || loopUses.get(a < b ? a : b, a < b ? b : a) !== 2) return true;
+          if (other >= nW) continue;
+          if (other >= nF ? !comps[other - nF].ok : !truePlane(other)) return true;
+        }
+        return false;
+      });
+    }
     function build() {
       // faces: analytic patches (group nF + comp) and planes (group = the mesh face index)
       groups = [];
@@ -2289,7 +2451,7 @@ var Exchange = (function () {
           return l;
         });
       });
-      owner = new PairMap();
+      owner = new PairMap(); loopUses = null;
       loopsOf.forEach(function (ls, g) { ls.forEach(function (l) { for (var i = 0; i < l.length; i++) owner.set(l[i], l[(i + 1) % l.length], g); }); });
       ecls = new PairMap();
       freeLab.forEach(function (x) { ecls.set(x[0], x[1], x[2]); });
@@ -2339,6 +2501,16 @@ var Exchange = (function () {
               var oS = nb >= nF ? comps[nb - nF].surf : null;
               if (!oS || (oS.t === 'cyl' && onCylS(oS, A) && onCylS(oS, B) && (crossable(S, oS) || !classify(oS, A, B)))) {   // (lane stepwrite: between crossable cylinders a name only one side gives is no name, see above)
                 cl = oS && crossable(S, oS) ? { t: 'p', s: [S, oS] } : PEDGE; c.poly = true; ecls.set(a < b ? a : b, a < b ? b : a, cl); continue; }
+            }
+            // lane QZ: an imported part's curved faces meet planes and each other along the file's own curves (a torus
+            // round running into a sphere or a cone, a cone cut by a slanted plane): no circle, ruling or ellipse of
+            // either. Where both ends lie on both surfaces the edge is written as what the mesh holds (a run of chords,
+            // as stepreal2 does for cylinders), the patch keeps its surface (was: 2232 / 2235, the patch to facets)
+            if (mesh.imported && IMPORT_EDGES.on && nb != null && nb < nW && onSurfS(S, A) && onSurfS(S, B)) {
+              var oS3 = nb >= nF ? comps[nb - nF].surf : null, c3 = !cl ? null : oS3 ? classify(oS3, A, B) : cl;
+              if ((!cl || !c3 || c3.t !== cl.t || (cl.t === 'c' && c3.c.key !== cl.c.key)) && (!oS3 || (onSurfS(oS3, A) && onSurfS(oS3, B)))) {
+                ecls.set(a < b ? a : b, a < b ? b : a, { t: 'p', imp: [S, oS3 || (nb < nF && truePlane(nb) ? { t: 'pl', n: norm(mesh.faces[nb].normal), w: mesh.faces[nb].w / len(mesh.faces[nb].normal) } : null)], fac: !oS3 && !(nb < nF && truePlane(nb)) }); continue;
+              }
             }
             if (!cl || nb == null) { bad = true; why = 2232; whyAt = [A, B, nb]; break; }
             if (nb >= nF) {
@@ -2426,7 +2598,9 @@ var Exchange = (function () {
       // cross-drilled tube to 4e-7 of the closed form; Anvil's reader unrolls two loops winding one period as a band; a
       // seam ruling written as OpenCascade writes it sent Anvil's reader 3 % off). Every other loop must stay on one side
       // of the axis. Was: facets
-      if (S.t === 'cyl' && !(closed.length === 2 && !other.length)) {
+      // (lane QZ: any surface of an imported part: a hole drilled through a round, a cone or a sphere zone, as
+      // OpenCascade and SolidWorks write it, one face whose loops wind round the axis)
+      if ((S.t === 'cyl' || mesh.imported) && !(closed.length === 2 && !other.length)) {
         var okW = true, nWind = 0;
         loops.forEach(function (l) {
           var sumW = 0, prevW = null, firstW = null;
@@ -2439,7 +2613,7 @@ var Exchange = (function () {
           }
           sumW += wrapAngle(firstW - prevW);
           // a winding loop is circles and two-cylinder curves only (chords of facets or of an unnamed curve: not this shape)
-          if (Math.abs(Math.abs(sumW) - 2 * Math.PI) < 1e-6) { nWind++; for (var ie = 0; ie < l.length; ie++) { var ce = eget(l[ie], l[(ie + 1) % l.length]); if (!ce || !(ce.t === 'c' || (ce.t === 'p' && ce.s) || ce.t === 'x' || ce.t === 'e')) okW = false; } }   // (lane MX: or an edge of a B-spline face: a hole drilled through it)
+          if (Math.abs(Math.abs(sumW) - 2 * Math.PI) < 1e-6) { nWind++; for (var ie = 0; ie < l.length; ie++) { var ce = eget(l[ie], l[(ie + 1) % l.length]); if (!ce || !(ce.t === 'c' || (ce.t === 'p' && (ce.s || mesh.imported)) || (ce.t === 'l' && mesh.imported) || ce.t === 'x' || ce.t === 'e')) okW = false; } }   // (lane MX: or an edge of a B-spline face: a hole drilled through it)
           else if (Math.abs(sumW) > 1e-6) okW = false;
         });
         if (nWind && (!okW || nWind !== 2)) return null;
@@ -2505,6 +2679,18 @@ var Exchange = (function () {
         freeLabels();
         continue;
       }
+      // lane QZ: each edge of a free-form face is written whole (freeEdgeOe), so the face across it must take it whole:
+      // one face along the whole run, an exact patch, a wall, another free-form face, or a true plane. Where a patch
+      // beside it fell back to facets (an imported torus / sphere / cone cut by curves classify does not name), each
+      // facet took the whole B-spline edge for its one chord: loops that did not close, 244 open edges and 61 % of the
+      // volume lost on reading back. That face keeps its facets too (and, through freeLabels, the free faces sharing an
+      // edge with it), everything built again
+      var xUndo = round < 8 ? FF.filter(function (F, k) { return !F.dead && freeRunBroken(F, nX0 + k); }) : [];
+      if (xUndo.length) {
+        xUndo.forEach(function (F) { F.kill = true; });
+        freeLabels();
+        continue;
+      }
       var undo = live.filter(function (sn) { return sn.comps.some(function (ci) { return !comps[ci].ok; }); });
       // lane stepout3: a radial wall whose bend fell back to facets goes back to its triangles, its points where they were
       var wUndo = walls.filter(function (w) { return w.live && (!comps[w.ci].ok || !comps[w.co].ok); });
@@ -2558,7 +2744,7 @@ var Exchange = (function () {
       // lane stepreal2: a closed run of chords (a hole's rim on a bend, one wall all round): two edges, split at the loop's
       // lowest and highest vertex numbers so the face on the other side, which walks it the other way, splits it alike
       if (!breaks.length && cls[0].t === 'p') { var lo = 0, hi = 0; for (i = 1; i < n; i++) { if (l[i] < l[lo]) lo = i; if (l[i] > l[hi]) hi = i; } breaks = lo < hi ? [lo, hi] : [hi, lo]; }
-      if (!breaks.length && cls[0].t === 'x') { var i0 = l.indexOf(cls[0].vs[0]); return [freeEdgeOe(cls[0], l[(i0 + 1) % n] === cls[0].vs[1])]; }
+      if (!breaks.length && cls[0].t === 'x') { var i0 = l.indexOf(cls[0].vs[0]); return freeEdgeOes(cls[0], l[(i0 + 1) % n] === cls[0].vs[1]); }
       // lane PI: a whole ellipse (a hole straight through one slanted flat face: its rim there is one closed ELLIPSE).
       // Only circles were expected here and the export threw a TypeError (cls[0].c undefined).
       if (!breaks.length && cls[0].t === 'e') return [closedEllipseEdge(cls[0].e, P(l[0]), P(l[1]))];
@@ -2583,7 +2769,7 @@ var Exchange = (function () {
       return out;
     }
     function openEdge(vs, cl) {
-      if (cl.t === 'x') return freeEdgeOe(cl, vs[0] === cl.vs[0] && vs[1] === cl.vs[1]);   // lane MR
+      if (cl.t === 'x') return freeRunOe(cl, vs);   // lane MR (lane QZ: the piece this run is)
       var fk = vs.join(','), rk = vs.slice().reverse().join(','), key = fk < rk ? fk : rk, ch = chains[key];
       if (ch) return oe(ch.id, ch.fk === fk);
       var A = P(vs[0]), B = P(vs[1]), geom, sense = '.T.';
@@ -2601,6 +2787,7 @@ var Exchange = (function () {
       else if (cl.t === 'w') { var rl = railOf(cl.S, A, B); geom = rationalCurve(rl.poles, rl.w); }   // lane stepout3
       else if (cl.t === 'k') geom = conicCurve(cl.k, vs.map(P));   // lane PO
       else if (cl.t === 'p' && cl.s) geom = saddleCurve(vs.map(P), cl.s[0], cl.s[1]);   // lane stepwrite
+      else if (cl.t === 'p' && cl.imp && !cl.fac && vs.length > 3) geom = importCurve(vs.map(P), cl.imp);   // lane QZ
       else if (cl.t === 'p' && vs.length > 2) geom = polylineCurve(vs.map(P));   // lane stepreal2
       else geom = lineE(A, P(vs[vs.length - 1]));
       ch = chains[key] = { id: W.add('EDGE_CURVE(\'\',' + vertex(vs[0]) + ',' + vertex(vs[vs.length - 1]) + ',' + geom + ',' + sense + ')'), fk: fk };
@@ -2867,11 +3054,44 @@ var Exchange = (function () {
       if (!g.W) return W.add('B_SPLINE_CURVE_WITH_KNOTS(\'\',' + g.deg + ',' + ps + ',.UNSPECIFIED.,.F.,.F.,' + kn + ',.UNSPECIFIED.)');
       return W.add('(BOUNDED_CURVE()B_SPLINE_CURVE(' + g.deg + ',' + ps + ',.UNSPECIFIED.,.F.,.F.)B_SPLINE_CURVE_WITH_KNOTS(' + kn + ',.UNSPECIFIED.)CURVE()GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE(' + stepList(g.W.map(stepReal)) + ')REPRESENTATION_ITEM(\'\'))');
     }
-    // the EDGE_CURVE of labelled run cl (one per edge, from its start vertex to its end, the curve's own sense), oriented
-    function freeEdgeOe(cl, fwd) {
-      var ch = chains['X' + cl.key];
-      if (!ch) ch = chains['X' + cl.key] = { id: W.add('EDGE_CURVE(\'\',' + vertex(cl.vs[0]) + ',' + vertex(cl.vs[cl.vs.length - 1]) + ',' + freeCurveE(cl.E, cl.vs) + ',' + (cl.E.ss ? '.T.' : '.F.') + ')') };
-      return oe(ch.id, fwd);
+    // the EDGE_CURVEs of labelled run cl, oriented: one per piece (lane QZ: the run is cut where the face across it
+    // changes, every piece an EDGE_CURVE on the one curve from its first vertex to its last, the curve's own sense), in
+    // the run's order (fwd) or backwards
+    function freeCuts(cl) {
+      if (cl.cuts) return cl.cuts;
+      var cuts = [0], prev = null;
+      for (var i = 0; i + 1 < cl.vs.length; i++) {
+        var key = owner.get(cl.vs[i], cl.vs[i + 1]) + ',' + owner.get(cl.vs[i + 1], cl.vs[i]);
+        if (prev != null && key !== prev) cuts.push(i);
+        prev = key;
+      }
+      cuts.push(cl.vs.length - 1);
+      return (cl.cuts = cuts);
+    }
+    function freePiece(cl, p) {
+      var cuts = freeCuts(cl), key = 'X' + cl.key + (cuts.length > 2 ? ':' + p : ''), ch = chains[key];
+      if (!ch) {
+        if (cl.geom == null) cl.geom = freeCurveE(cl.E, cl.vs);
+        ch = chains[key] = { id: W.add('EDGE_CURVE(\'\',' + vertex(cl.vs[cuts[p]]) + ',' + vertex(cl.vs[cuts[p + 1]]) + ',' + cl.geom + ',' + (cl.E.ss ? '.T.' : '.F.') + ')') };
+      }
+      return ch.id;
+    }
+    function freeEdgeOes(cl, fwd) {
+      var n = freeCuts(cl).length - 1, out = [];
+      for (var p = 0; p < n; p++) out.push(oe(freePiece(cl, fwd ? p : n - 1 - p), fwd));
+      return out;
+    }
+    // the piece of cl that the run of vertices vs is (either way), oriented as vs runs (a run no piece matches: as
+    // before lane QZ, the whole edge)
+    function freeRunOe(cl, vs) {
+      var cuts = freeCuts(cl), m = vs.length;
+      for (var p = 0; p + 1 < cuts.length; p++) {
+        var a = cuts[p], b = cuts[p + 1];
+        if (b - a + 1 !== m) continue;
+        if (cl.vs[a] === vs[0] && cl.vs[a + 1] === vs[1]) return oe(freePiece(cl, p), true);
+        if (cl.vs[b] === vs[0] && cl.vs[b - 1] === vs[1]) return oe(freePiece(cl, p), false);
+      }
+      return oe(freePiece(cl, 0), vs[0] === cl.vs[0] && vs[1] === cl.vs[1]);
     }
     function freeSurfaceE(s) {
       var rows = stepList(s.poles.map(function (row) { return stepList(row.map(pt)); })), ku = knotsOf(s.U), kv = knotsOf(s.V);
@@ -2889,20 +3109,22 @@ var Exchange = (function () {
       var bounds = rec.loops.map(function (l, li) {
         var ori = l.ori !== flip ? '.T.' : '.F.';
         if (l.vtx) return W.add('FACE_BOUND(\'\',' + W.add('VERTEX_LOOP(\'\',' + vertexAt('fv' + k + '_' + li, l.vtx) + ')') + ',' + ori + ')');
-        var oes = l.edges.map(function (x) {
+        var oes = [];
+        l.edges.forEach(function (x) {
           var sm = F.seams[x.id];
           if (sm) {
             var ch = chains['S' + sm.key];
             if (!ch) ch = chains['S' + sm.key] = { id: W.add('EDGE_CURVE(\'\',' + vertex(sm.va) + ',' + vertex(sm.vb) + ',' + freeCurveE(sm.E, [sm.va, sm.vb]) + ',' + (sm.E.ss ? '.T.' : '.F.') + ')') };
-            return oe(ch.id, x.fwd);
+            oes.push(oe(ch.id, x.fwd));
+            return;
           }
-          return freeEdgeOe(F.labs[x.id], x.fwd);
+          oes.push.apply(oes, freeEdgeOes(F.labs[x.id], x.fwd));
         });
         return W.add('FACE_BOUND(\'\',' + edgeLoop(oes) + ',' + ori + ')');
       });
       // lane MX: the holes cut through it (holeLoops), each run in its loop's own direction (the triangles' boundary: the
       // face on its left seen from outside)
-      (F.holeBounds || []).forEach(function (cls) { bounds.push(W.add('FACE_BOUND(\'\',' + edgeLoop(cls.map(function (cl) { return freeEdgeOe(cl, true); })) + ',.T.)')); });
+      (F.holeBounds || []).forEach(function (cls) { bounds.push(W.add('FACE_BOUND(\'\',' + edgeLoop([].concat.apply([], cls.map(function (cl) { return freeEdgeOes(cl, true); }))) + ',.T.)')); });
       return W.add('ADVANCED_FACE(\'\',' + stepList(bounds) + ',' + freeSurfaceE(s) + ',' + (!!rec.ss !== flip ? '.T.' : '.F.') + ')');
     }
     // the wall face of radial strip wq: degree 3 along the rails (inner a → b, outer its partners), 1 across, the
@@ -3820,7 +4042,7 @@ var Exchange = (function () {
       var pr = product(part.name, 'part');
       var origin = axis(null);
       var solids = part.bodies.map(function (b) {
-        var lp = splineLoftOf(b.src, b.mesh), s = lp ? writeLoftBrep(W, lp, b.name) : writeBrep(W, loftFacesOf(b.src, freeFacesOf(b.src, b.mesh)), b.name);
+        var lp = splineLoftOf(b.src, b.mesh), s = lp ? writeLoftBrep(W, lp, b.name) : writeBrep(W, importedMesh(b.src, loftFacesOf(b.src, freeFacesOf(b.src, b.mesh))), b.name);
         styleSolid(s, (b.material && b.material.color) || part.color);
         return s;
       });
@@ -6527,7 +6749,8 @@ var Exchange = (function () {
     importOptions: importOptions,
     circleCuts: CIRCLE_CUTS,       // lane QS: a whole rim split like the face across it { on }
     pinchSplit: PINCH_SPLIT,       // lane QJ: a planar loop through one vertex twice -> two loops { on, retrace (lane QO) }
-    parallelSnap: PARALLEL_SNAP,   // lane solidstep6: snapCylParallel (two walls with parallel axes share a ruling) { on }
+    parallelSnap: PARALLEL_SNAP,
+    importEdges: IMPORT_EDGES,     // lane QZ: an imported part's curved faces keep their surfaces along unnamed curves { on }   // lane solidstep6: snapCylParallel (two walls with parallel axes share a ruling) { on }
     crossOptions: crossOptions,   // lane PO: splitCrossings (two bends crossing at a mitre) { on, last: { splits } }
     surfaceGridKind: bsSurfClassify,   // lane stepin2: occt-kernel.js importCylRecord (B-spline faces that are cylinders)
     FORMATS: [
