@@ -2536,7 +2536,12 @@ var Exchange = (function () {
       if (ch) return oe(ch.id, ch.fk === fk);
       var A = P(vs[0]), B = P(vs[1]), geom, sense = '.T.';
       if (cl.t === 'c') { geom = circleE(cl.c); sense = ccw(cl.c, A, B) ? '.T.' : '.F.'; }
-      else if (cl.t === 'e') { geom = ellipseE(cl.e); sense = wrapAngle(ellipseParam(cl.e, B) - ellipseParam(cl.e, A)) > 0 ? '.T.' : '.F.'; }
+      else if (cl.t === 'e') {   // (lane QE: the sense from the whole run's turn, not its first chord's: a run that steps back at a fold of the mesh,
+        // +0.003 then -0.039, was written the long way round, 358 deg, and Anvil's reader refused the hole's wall, f6003)
+        geom = ellipseE(cl.e);
+        for (var swE = 0, i8 = 1; i8 < vs.length; i8++) swE += wrapAngle(ellipseParam(cl.e, P(vs[i8])) - ellipseParam(cl.e, P(vs[i8 - 1])));
+        sense = swE > 0 ? '.T.' : '.F.';
+      }
       else if (cl.t === 'w') { var rl = railOf(cl.S, A, B); geom = rationalCurve(rl.poles, rl.w); }   // lane stepout3
       else if (cl.t === 'k') geom = conicCurve(cl.k, vs.map(P));   // lane PO
       else if (cl.t === 'p' && cl.s) geom = saddleCurve(vs.map(P), cl.s[0], cl.s[1]);   // lane stepwrite
@@ -2588,12 +2593,47 @@ var Exchange = (function () {
       // interior points closer than a fifth of the thinner radius apart are left out (a read-back part's edge carries
       // its file's samples, 24 a span: the curve through all of them is that many times longer and wiggles on their
       // rounding); the ends stay
-      var hT = 0.2 * (S2 ? Math.min(S1.r, S2.r) : S1.r), keep = [pts[0]], acc = 0;
-      for (var q = 1; q < pts.length - 1; q++) { acc += len(sub(pts[q], pts[q - 1])); if (acc >= 0.7 * hT) { keep.push(pts[q]); acc = 0; } }
-      if (keep.length > 1 && acc + len(sub(pts[pts.length - 1], pts[pts.length - 2])) < 0.35 * hT) keep.pop();
-      keep.push(pts[pts.length - 1]);
-      pts = keep;
-      var m = pts.length - 1, i, k;
+      var hT = 0.2 * (S2 ? Math.min(S1.r, S2.r) : S1.r), keepI = [0], acc = 0, all = pts, nA = all.length;
+      for (var q = 1; q < nA - 1; q++) { acc += len(sub(all[q], all[q - 1])); if (acc >= 0.7 * hT) { keepI.push(q); acc = 0; } }
+      if (keepI.length > 1 && acc + len(sub(all[nA - 1], all[nA - 2])) < 0.35 * hT) keepI.pop();
+      keepI.push(nA - 1);
+      // lane QE (rfQE): a point where the surfaces touch is always kept (a corner, below); then, while the curve between
+      // two kept points strays more than dTol off a cylinder (a hole near a bar's wall turns sharply where it runs up the
+      // bar: 5.6e-4 off with every fifth point, t6033, refused by Anvil's reader), the middle point left out there goes back in
+      // (two cylinders only: beside a free-form face (S2 null, lane MX) the run is the file's own samples, as before)
+      if (S2) for (q = 1; q < nA - 1; q++) if (keepI.indexOf(q) < 0 && !tang(all[q], sub(all[q + 1], all[q - 1]))) keepI.push(q);
+      keepI.sort(function (a, b) { return a - b; });
+      var dTol = 1e-7 * Math.max(1, S1.r, S2 ? S2.r : 0), built = null;
+      function offSurf(p) { var a1 = axial(S1, p), d = Math.abs(a1.rho - S1.r); if (S2) { var a2 = axial(S2, p); d = Math.max(d, Math.abs(a2.rho - S2.r)); } return d; }
+      for (var pass = 0; pass < (S2 ? 10 : 1); pass++) {
+        built = curveThrough(keepI.map(function (k2) { return all[k2]; }));
+        if (!built || !built.poles) break;
+        var more = [];
+        for (var jj = 0; jj + 1 < keepI.length; jj++) {
+          if (keepI[jj + 1] - keepI[jj] < 2) continue;
+          var bad = false;
+          for (var fr = 1; fr < 4 && !bad; fr++) if (offSurf(deBoor(built, built.par[jj] + (built.par[jj + 1] - built.par[jj]) * fr / 4)) > dTol) bad = true;
+          if (bad) more.push((keepI[jj] + keepI[jj + 1]) >> 1);
+        }
+        if (!more.length) break;
+        keepI = keepI.concat(more).sort(function (a, b) { return a - b; });
+      }
+      if (!built || !built.poles) return polylineCurve(keepI.map(function (k2) { return all[k2]; }));
+      return W.add('B_SPLINE_CURVE_WITH_KNOTS(\'\',3,' + stepList(built.poles.map(pt)) + ',.UNSPECIFIED.,.F.,.F.,(' + built.ms.join(',') + '),(' + built.ks.map(stepReal).join(',') + '),.UNSPECIFIED.)');
+      // a point of a clamped cubic { poles, ms, ks } at parameter x
+      function deBoor(c, x) {
+        var U = [];
+        c.ms.forEach(function (mu, j) { for (var r = 0; r < mu; r++) U.push(c.ks[j]); });
+        var n = c.poles.length, s = 3;
+        while (s < n - 1 && U[s + 1] <= x) s++;
+        var d = [];
+        for (var j = 0; j <= 3; j++) d.push(c.poles[s - 3 + j].slice());
+        for (var r = 1; r <= 3; r++) for (j = 3; j >= r; j--) {
+          var i0 = s - 3 + j, den = U[i0 + 4 - r] - U[i0], al = den > 0 ? (x - U[i0]) / den : 0;
+          d[j] = add(scale(d[j - 1], 1 - al), scale(d[j], al));
+        }
+        return d[3];
+      }
       function tang(p, d) {
         var a1 = axial(S1, p), a2 = S2 ? axial(S2, p) : { rho: 1, v: n2(p) };
         if (!(a1.rho > 0) || !(a2.rho > 0) || !a2.v) return null;
@@ -2602,10 +2642,67 @@ var Exchange = (function () {
         t = scale(t, 1 / lt);
         return dot(t, d) < 0 ? scale(t, -1) : t;
       }
+      // lane QE (rfQE): a point of the run where the two surfaces touch (a boss on a bar tangent to its outermost
+      // ruling: the normals parallel) is a corner of the curve, two branches crossing. One C2 spline through it swung
+      // 1e-3 off both cylinders (Anvil's reader refused the face, t6001 / t6033 ...). The run is cut there: a cubic per
+      // piece, joined C0 by a knot of multiplicity 3, each piece's tangent at the corner from its own points (Bessel)
+      // -> { poles, ms, ks (numbers), par (each point's parameter) } or null (no tangent at an end: the chords)
+      function curveThrough(pts) {
+        var cuts = [];
+        for (var ci = 1; S2 && ci < pts.length - 1; ci++) if (!tang(pts[ci], sub(pts[ci + 1], pts[ci - 1]))) cuts.push(ci);
+        var bounds = [0].concat(cuts, [pts.length - 1]), pieces = [];
+        for (var bi = 0; bi + 1 < bounds.length; bi++) pieces.push(pts.slice(bounds[bi], bounds[bi + 1] + 1));
+        var fits = pieces.map(function (pc) { return fitRun(pc, cuts.length > 0); });
+        if (!fits.every(Boolean)) return null;
+        var tl = 0, lens = fits.map(function (f) { tl += f.tot; return f.tot; }), at = 0, poles = [], ms = [4], ks = [0], par = [0];
+        fits.forEach(function (f, j) {
+          poles = poles.concat(j ? f.Pp.slice(1) : f.Pp);
+          for (var q2 = 1; q2 < f.u.length - 1; q2++) { ms.push(1); ks.push((at + f.u[q2] * lens[j]) / tl); par.push(ks[ks.length - 1]); }
+          at += lens[j];
+          if (j + 1 < fits.length) { ms.push(3); ks.push(at / tl); par.push(at / tl); }
+        });
+        ms.push(4); ks.push(1); par.push(1);
+        return { poles: poles, ms: ms, ks: ks, par: par };
+      }
+      // where two cylinders touch (normals parallel) the branches of their crossing leave along the directions v of the
+      // common tangent plane in which both bend the same: (1 - (v.a1)^2) / r1 = +-(1 - (v.a2)^2) / r2 (the sign: whether
+      // the normals agree); -> the branch nearest d, or null
+      function singTang(p, d) {
+        if (!S2) return null;
+        var a1 = axial(S1, p), a2 = axial(S2, p);
+        if (!(a1.rho > 0) || !(a2.rho > 0)) return null;
+        var nn = scale(a1.v, 1 / a1.rho), sg = dot(nn, a2.v) > 0 ? 1 : -1, e1 = norm(cross(nn, Math.abs(nn[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), e2 = cross(nn, e1);
+        function f(t) { var v = add(scale(e1, Math.cos(t)), scale(e2, Math.sin(t))), c1 = dot(v, S1.d), c2 = dot(v, S2.d); return (1 - c1 * c1) / S1.r - sg * (1 - c2 * c2) / S2.r; }
+        var best = null, bd = -2, NS = 720;
+        for (var s = 0; s < NS; s++) {
+          var t0 = Math.PI * s / NS, t1 = Math.PI * (s + 1) / NS, f0 = f(t0), f1 = f(t1);
+          if (f0 === 0 || f0 * f1 < 0) {
+            for (var it = 0; it < 60 && f0 !== 0; it++) { var tm = (t0 + t1) / 2, fm = f(tm); if (f0 * fm <= 0) t1 = tm; else { t0 = tm; f0 = fm; } }
+            var v = add(scale(e1, Math.cos(t0)), scale(e2, Math.sin(t0))), dd = dot(v, norm(d));
+            if (Math.abs(dd) > bd) { bd = Math.abs(dd); best = dd < 0 ? scale(v, -1) : v; }
+          }
+        }
+        return best;
+      }
+      // the parabola's direction at q0 through q0, q1, q2 (chord-length parameters)
+      function bessel(q0, q1, q2) {
+        var st = singTang(q0, sub(q1, q0));
+        if (st) return st;
+        var h1 = len(sub(q1, q0)), h2 = q2 ? len(sub(q2, q1)) : 0;
+        if (!(h1 > 0)) return null;
+        var d = !q2 || !(h2 > 0) ? sub(q1, q0) : sub(scale(sub(q1, q0), (h1 + h2) / (h1 * h2)), scale(sub(q2, q0), h1 / (h2 * (h1 + h2))));
+        return len(d) > 0 ? norm(d) : null;
+      }
+      // -> { Pp, u (0..1), tot } of the C2 cubic through pts, or null; bes: an end the surfaces' normals do not give
+      // takes its tangent from the points
+      function fitRun(pts, bes) {
+      var m = pts.length - 1, i, k;
       var u = [0], tot = 0;
       for (i = 1; i <= m; i++) { tot += len(sub(pts[i], pts[i - 1])); u.push(tot); }
       var t0 = tang(pts[0], sub(pts[1], pts[0])), t1 = tang(pts[m], sub(pts[m], pts[m - 1]));
-      if (!(tot > 0) || !t0 || !t1) return polylineCurve(pts);
+      if (bes && !t0) t0 = bessel(pts[0], pts[1], pts[2]);
+      if (bes && !t1) { var tb = bessel(pts[m], pts[m - 1], pts[m - 2]); t1 = tb && scale(tb, -1); }
+      if (!(tot > 0) || !t0 || !t1) return null;
       u = u.map(function (x) { return x / tot; }); u[m] = 1;
       var U = [0, 0, 0, 0].concat(u.slice(1, m), [1, 1, 1, 1]);
       function N(j, p, x) {
@@ -2627,11 +2724,9 @@ var Exchange = (function () {
       }
       for (k = 1; k < R.length; k++) { var w = A[k] / B[k - 1]; B[k] -= w * C[k - 1]; R[k] = sub(R[k], scale(R[k - 1], w)); }
       for (k = R.length - 1; k >= 0; k--) Pp[k + 2] = scale(k + 1 < R.length ? sub(R[k], scale(Pp[k + 3], C[k])) : R[k], 1 / B[k]);
-      if (Pp.some(function (q) { return !q || !isFinite(q[0] + q[1] + q[2]); })) return polylineCurve(pts);
-      var mults = [4], knots = [stepReal(0)];
-      for (i = 1; i < m; i++) { mults.push(1); knots.push(stepReal(u[i])); }
-      mults.push(4); knots.push(stepReal(1));
-      return W.add('B_SPLINE_CURVE_WITH_KNOTS(\'\',3,' + stepList(Pp.map(pt)) + ',.UNSPECIFIED.,.F.,.F.,(' + mults.join(',') + '),(' + knots.join(',') + '),.UNSPECIFIED.)');
+      if (Pp.some(function (q) { return !q || !isFinite(q[0] + q[1] + q[2]); })) return null;
+      return { Pp: Pp, u: u, tot: tot };
+      }
     }    // lane stepreal2: the chords through pts as one curve: a degree 1 B-spline, a knot at every point
     function polylineCurve(pts) {
       var n = pts.length, mults = [], knots = [];
@@ -3105,7 +3200,27 @@ var Exchange = (function () {
       // edges in (u, v)), so the triangles either side of it meet point for point
       if (bands.length !== 2 || bands[0].dir !== bands[1].dir) return null;
       var dI = bands[0].dir, Pd = dI ? A.pv : A.pu, key = dI ? 'v' : 'u', oth = dI ? 'u' : 'v';
-      var L1 = bands[0].line, L2 = bands[1].line, s0 = L1[0][key];
+      var L1 = bands[0].line, L2 = bands[1].line;
+      // lane QE (rfQE): the cut starts at the first loop's point farthest round the period from every hole's points (a
+      // cross hole tangent to the bar's outermost ruling has its vertex on the seam: the cut ran into it and the edge from
+      // the circle's start to it was shared by four faces, t6055)
+      if (rings.length) {
+        var hk = [];
+        rings.forEach(function (ix) { ix.forEach(function (q) { hk.push(V[q][key]); }); });
+        var nL1 = L1.length - 1, kA = 0, dA = -1;
+        for (var q1 = 0; q1 < nL1; q1++) {
+          var dm = Infinity;
+          for (var h1 = 0; h1 < hk.length; h1++) { var dh = hk[h1] - L1[q1][key]; dh = Math.abs(dh - Pd * Math.round(dh / Pd)); if (dh < dm) dm = dh; }
+          if (q1 === 0 && dm > 0.25 * Pd) break;   // the start is clear: kept (the file's own cut, as before)
+          if (dm > dA + 1e-12) { dA = dm; kA = q1; }
+        }
+        if (kA) {
+          var rotA = L1.slice(kA, nL1);
+          for (q1 = 0; q1 <= kA; q1++) { var yA = { p: L1[q1].p, u: L1[q1].u, v: L1[q1].v }; yA[key] += Pd; rotA.push(yA); }
+          L1 = bands[0].line = rotA;
+        }
+      }
+      var s0 = L1[0][key];
       // lane MX: the second loop starts at its point nearest the first one's start round the period, so the cut runs
       // straight along the band (it ran from wherever each file's loop began: half a turn across a hole's wall, every
       // triangle spanning that much, the refinement filled the wall with 7182 triangles for the 98 of the kernel's)
@@ -3875,7 +3990,7 @@ var Exchange = (function () {
           info.kind = 'circle'; info.circle = fit.circle; info.fromSpline = true;
           var cps = circlePoints(fit.circle, p1, p2, true, toMM);
           info.pts = cps.pts; info.mid = cps.mid; info.full = cps.full;
-        } else if (bc.deg === 1) { info.kind = 'poly'; info.pts = raw.filter(function (p, k) { return k === 0 || k === raw.length - 1 || len(sub(p, raw[k - 1])) > 0; }); }
+        } else if (bc.deg === 1) { info.kind = 'poly'; info.corners = bc.poles; info.pts = raw.filter(function (p, k) { return k === 0 || k === raw.length - 1 || len(sub(p, raw[k - 1])) > 0; }); }
         else { info.kind = 'bspline'; info.raw = raw; info.pts = areaTruePath(raw); }
       } else info.pts = [p1, p2];
       return (edgeCache[id] = info);
@@ -4970,8 +5085,11 @@ var Exchange = (function () {
           lp.push(pts);
         }
         // a boundary far off the surface is not this face's (1e-4 of its size: intersection curves are approximate)
+        // (lane QE: a run of chords, a degree 1 B-spline, by its corners: Anvil writes a hole's rim against a round that
+        // keeps its facets as the chords, inside the hole by a sagitta between its corners, p6169)
         var far = 1e-4 * ext;
-        if (lp.some(function (pts) { return pts.some(function (p) { var a = ax(p); return Math.abs(S.t === 'cyl' ? a.rho - S.r : S.t === 'cone' ? (a.rho - (S.r + S.k * a.z)) / Math.sqrt(1 + S.k * S.k) : Math.hypot(a.rho - Cr, a.z) - S.r) > far; }); })) return false;
+        function farOff(p) { var a = ax(p); return Math.abs(S.t === 'cyl' ? a.rho - S.r : S.t === 'cone' ? (a.rho - (S.r + S.k * a.z)) / Math.sqrt(1 + S.k * S.k) : Math.hypot(a.rho - Cr, a.z) - S.r) > far; }
+        if (loops.some(function (L) { return L.some(function (x) { return (x.info.kind === 'poly' && x.info.corners ? x.info.corners : orientedPts(x)).some(farOff); }); })) return false;
         if (!(rmax > 0)) return false;
         var A = {
           uv: function (p) { var a = ax(p), v = round ? Math.atan2(a.z, a.rho - Cr) : a.z; return [a.ang, v, a.rho < tol]; },

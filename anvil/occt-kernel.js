@@ -612,6 +612,18 @@ var OcctKernel = (function () {
     function edgeFeatureCopies(f, seeds) {
       var maps = [], sf = seeds.src;
       familyPointMaps(f).forEach(function (mp) { seeds.maps.forEach(function (im) { maps.push(function (p) { return mp(im(p)); }); }); });
+      // lane QE (rfQE): a fillet or an equal-distance chamfer takes every copy's picks at once on the part as it was
+      // before the pattern, as Anvil's engine does (one buildEdgeFeature). Copy after copy, each copy's pick found the
+      // rim the copy before had just made (plate p6034: a chamfer on a hole's rim patterned at the hole's radius went
+      // round three new rims, 2.1e-3 of the part off Anvil). A two-distance / angle chamfer stays copy by copy (rfPB: each
+      // copy's own linear part names the d face)
+      if (!(sf.type === 'chamfer' && K.chamferSpec && K.chamferSpec(sf, +sf.d))) {
+        var gAll = JSON.parse(JSON.stringify(sf));
+        gAll.edges = [];
+        maps.forEach(function (mapP) { (sf.edges || []).forEach(function (e) { var e2 = JSON.parse(JSON.stringify(e)); e2.at = mapP(e.at); gAll.edges.push(e2); }); });
+        edgeOp(gAll);
+        return;
+      }
       maps.forEach(function (mapP) {
         var g = JSON.parse(JSON.stringify(sf)), o = mapP([0, 0, 0]);
         g.edges = (sf.edges || []).map(function (e) { var e2 = JSON.parse(JSON.stringify(e)); e2.at = mapP(e.at); return e2; });
@@ -891,6 +903,21 @@ var OcctKernel = (function () {
       var body = unify(bodies[k]);
       var es = pickedEdges(f, body, size);
       if (!es.length) throw new Error('No edges found for this ' + f.type + '. Select edges again.');
+      // lane QE (rfQE): a pick with chain: false stops at its edge's ends in Anvil (and SolidWorks with Tangent
+      // propagation off); MakeChamfer / MakeFillet.Add run on along tangent edges by themselves (plate p6022: the chamfer
+      // ran on round the end arc of a round and the corner edge after it, 1e-4 of the part). A straight edge between two
+      // planes that has a tangent edge after it is cut by its own tool instead: the wedge (chamfer) or the wedge less the
+      // round's cylinder (fillet) as a prism over the edge's length
+      var own = ownEdgeTools(f, body, es, size);
+      if (own.tools.length) {
+        es = es.filter(function (e) { return own.left.indexOf(e) >= 0; });
+        if (!es.length) {
+          var resT = body;
+          own.tools.forEach(function (t) { resT = cut(resT, t); });
+          bodies[k] = resT;
+          return;
+        }
+      }
       var mk = edgeMaker(f, body, es, size);
       // a fillet / chamfer along a curved edge is polygonal in Anvil (it follows the edge's facets)
       if (es.some(function (e) { var t = N(new oc.BRepAdaptor_Curve_2(e)).GetType(); return (t && t.value != null ? t.value : t) !== 0; })) approx = true;
@@ -912,7 +939,67 @@ var OcctKernel = (function () {
       try { res = N(mk.Shape()); } catch (e) { res = null; }
       if (!res) res = widenedEdgeOp(f, body, es, size);
       if (!res) throw new Error('OpenCascade could not ' + f.type + ' these edges (' + (f.type === 'chamfer' ? 'distance' : 'radius') + ' too large?).');
+      own.tools.forEach(function (t) { res = cut(res, t); });
       bodies[k] = res;
+    }
+    // lane QE: -> { tools, left }: the tools of the chain: false picks (straight, between two planes, a tangent edge
+    // after an end) and the picked edges left to MakeChamfer / MakeFillet
+    function ownEdgeTools(f, body, es, size) {
+      var out = { tools: [], left: es.slice() };
+      var stops = (f.edges || []).filter(function (s) { return s && s.chain === false && s.at; });
+      if (!stops.length || (f.type === 'chamfer' && K.chamferSpec && K.chamferSpec(f, size))) return out;
+      var all = null, fcs = null;
+      function ends(e) {
+        var ac = N(new oc.BRepAdaptor_Curve_2(e)), u0 = ac.FirstParameter(), u1 = ac.LastParameter(), h = (u1 - u0) * 1e-4;
+        var pt = function (u) { var p = N(ac.Value(u)); return [p.X(), p.Y(), p.Z()]; }, t = ac.GetType();
+        var a = pt(u0), b = pt(u1);
+        return { line: (t && t.value != null ? t.value : t) === 0, a: a, b: b, da: V.norm(V.sub(pt(u0 + h), a)), db: V.norm(V.sub(pt(u1 - h), b)) };
+      }
+      stops.forEach(function (s) {
+        var best = null, bd = K.pickTol(m.units, size);
+        out.left.forEach(function (e) { var d = dist(s.at, e); if (d < bd) { bd = d; best = e; } });
+        if (!best) return;
+        var E = ends(best);
+        if (!E.line) return;
+        var L = V.len(V.sub(E.b, E.a)), dir = V.scale(V.sub(E.b, E.a), 1 / L), tolP = 1e-7 * Math.max(1, L), COS = Math.cos(2 * Math.PI / 180);
+        all = all || edgesOf(body).map(function (e) { return { e: e, E: ends(e) }; });
+        // a tangent edge after either end: one leaving A along -dir or B along +dir
+        var tangent = all.some(function (o) {
+          if (o.e.IsSame(best)) return false;
+          return [[o.E.a, o.E.da], [o.E.b, o.E.db]].some(function (q) {
+            return (V.len(V.sub(q[0], E.a)) < tolP && V.dot(q[1], dir) < -COS) || (V.len(V.sub(q[0], E.b)) < tolP && V.dot(q[1], dir) > COS);
+          });
+        });
+        if (!tangent) return;
+        fcs = fcs || facesOf(body);
+        var two = fcs.filter(function (fc) { return explore(fc, ENUM.TopAbs_EDGE).some(function (x) { return x.IsSame(best); }); });
+        if (two.length !== 2) return;
+        var pl = two.map(draftPlaneOf);
+        if (!pl[0] || !pl[1]) return;
+        var M = V.scale(V.add(E.a, E.b), 0.5), t = pl.map(function (p, i) {
+          var ti = V.norm(V.cross(p.n, dir));
+          return dist(V.add(M, V.scale(ti, 1e-3 * size)), two[i]) < 1e-6 * Math.max(1, size) ? ti : V.scale(ti, -1);
+        });
+        if (!(V.dot(pl[0].n, t[1]) < -1e-9)) return;   // a concave edge: left to OpenCascade
+        var phi = Math.acos(Math.max(-1, Math.min(1, V.dot(t[0], t[1])))), dl = 0.5 * size, sec;
+        var A = E.a, out1 = V.add(V.scale(pl[0].n, dl), V.scale(pl[1].n, dl));
+        if (f.type === 'chamfer') sec = [V.add(A, V.scale(t[0], size)), V.add(A, V.scale(t[1], size))];
+        else {
+          var sb = size / Math.tan(phi / 2), C = V.add(A, V.scale(V.norm(V.add(t[0], t[1])), size / Math.sin(phi / 2)));
+          sec = [V.add(A, V.scale(t[0], sb)), C, V.add(A, V.scale(t[1], sb))];
+        }
+        var poly = [V.add(sec[0], V.scale(pl[0].n, dl))].concat(sec, [V.add(sec[sec.length - 1], V.scale(pl[1].n, dl)), V.add(A, out1)]);
+        var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(polyFace3(poly), Vec(V.scale(dir, L)), false, true)).Shape());
+        if (f.type !== 'chamfer') {
+          var x0 = V.norm(V.sub(sec[0], sec[1])), mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+          mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_8(N(new oc.gp_Circ_2(N(new oc.gp_Ax2_2(P(sec[1]), Dir(dir), Dir(x0))), size)))).Edge()));
+          var disk = N(N(new oc.BRepBuilderAPI_MakeFace_15(N(mw.Wire()), true)).Face());
+          tool = cut(tool, N(N(new oc.BRepPrimAPI_MakePrism_1(disk, Vec(V.scale(dir, L)), false, true)).Shape()));
+        }
+        out.tools.push(tool);
+        out.left = out.left.filter(function (e) { return !e.IsSame(best); });
+      });
+      return out;
     }
     // the edges of body nearest the picks; seam edges (where a cylinder or cone closes on itself) and degenerate ones
     // are no edges to round: a pick on a rim right where the seam meets it is as near the seam as the rim, and the
