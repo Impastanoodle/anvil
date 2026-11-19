@@ -1896,8 +1896,30 @@
     if (!needSource(f)) return;
     initBodyFields(f, existing);
     function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, featureIsCut(v)); }
+    // lane shopmouse2 (rfQU): SolidWorks' Direction 1 / 2 boxes take an edge. A click on a straight edge along X, Y or Z
+    // sets Direction 1 to that axis (Direction 2 when Direction 1 already runs along another axis and Direction 2 is on);
+    // the kernel's pattern runs along the axes only, so a slanted (or curved) edge is not taken: the status says why
+    function directionPick(pk) {
+      if (!pk || pk.kind !== 'edge' || !pk.edge || !pk.edge.a || !pk.edge.b) return false;
+      var sp = UI.pmSpec && UI.pmSpec(), v = sp && sp.values;
+      if (!v) return false;
+      var d = V.sub(pk.edge.b, pk.edge.a), L = V.len(d), ax = null;
+      if (L > 1e-9) ['x', 'y', 'z'].forEach(function (a, i) { if (Math.abs(Math.abs(d[i]) / L - 1) < 1e-6) ax = a; });
+      if (!ax) {
+        // a curved or slanted edge (a hole's rim, near where its face was meant) names the newer feature on its two faces
+        var ids = (pk.edge.faces || []).map(function (i) { var fc = App.mesh && App.triShared && App.mesh.faces[i]; return fc ? App.triShared[fc.start] : null; });
+        var src = App.model.features.filter(function (g) { return ids.indexOf(g.id) >= 0 && g.id !== v.id && solidFeatures().indexOf(g) >= 0; }).pop();
+        if (src && !v.body) { v.feature = src.id; renderPM(); if (sp.onChange) sp.onChange(v, 'feature'); UI.setStatus('Feature to pattern: ' + src.name + '.'); return true; }
+        UI.setStatus('Linear Pattern: the direction runs along X, Y or Z: click an edge parallel to one of them.'); return false;
+      }
+      var key = v.d2 && v.d1 !== ax ? 'd2' : 'd1';
+      v[key] = ax; renderPM();
+      if (sp.onChange) sp.onChange(v, key);
+      UI.setStatus('Direction ' + (key === 'd1' ? 1 : 2) + ': ' + ax.toUpperCase() + ' axis (the edge clicked). Reverse direction flips it.');
+      return true;
+    }
     openPM({
-      title: existing ? existing.name : 'Linear Pattern', icon: 'lpattern', values: f, handles: lpatternHandles, command: sourceCommand(),
+      title: existing ? existing.name : 'Linear Pattern', icon: 'lpattern', values: f, handles: lpatternHandles, command: sourceCommand({ pickEdges: true, onPick: directionPick }),
       groups: [
         // rfNH: SolidWorks' order (Direction 1, Direction 2, then the features), its Reverse Direction button beside the
         // direction, "Number of instances" as the sketch patterns
@@ -3859,8 +3881,25 @@
     }
     function sketchOpts() { return dxfSketches().map(function (s) { return [String(s.id), s.name]; }); }
     function isBent(v) { return v.method === 'bent'; }
+    // lane shopmouse2 (rfQU): SolidWorks' Profiles box takes the sketches clicked in the graphics area or the
+    // FeatureManager; a click on a sketch that is not a profile yet replaces the profile picked longest ago (Profile 1,
+    // then Profile 2, ...), so two clicks set both. The drop-downs stay for the keyboard.
+    var lbNext = 'p1';
+    function lbPick(id) {
+      var s = K.findFeature(App.model, id);
+      if (!s || s.type !== 'sketch' || !dxfSketches().some(function (q) { return q.id === s.id; })) return false;
+      var v = UI.pmSpec().values;
+      if (v.p1 === String(id) || v.p2 === String(id)) { UI.setStatus(s.name + ' is already Profile ' + (v.p1 === String(id) ? 1 : 2) + '.'); return true; }
+      v[lbNext] = String(id);
+      UI.setStatus(s.name + ' is Profile ' + (lbNext === 'p1' ? 1 : 2) + '.');
+      lbNext = lbNext === 'p1' ? 'p2' : 'p1';
+      renderPM(); preview();
+      return true;
+    }
     openPM({
       title: existing ? existing.name : 'Lofted-Bend', icon: 'loft', values: f,
+      command: { loftIds: dxfSketches().map(function (s) { return s.id; }), pickRefGeo: true, refKinds: [], pickSketchRefs: true, onPick: function (pk) { return pk.kind === 'sketchEntity' ? lbPick(pk.sketch) : pk.kind === 'feature' ? lbPick(pk.id) : false; } },
+      onSelection: function () { if (App.sel && App.sel.kind === 'feature') lbPick(App.sel.id); },
       okBlocked: function (v) { return v.p1 === v.p2 ? 'Pick two different profiles.' : !(+v.facetValue > 0) ? 'The faceting value must be greater than zero.' : !App.model.sheet && !(+v.thickness > 0) ? 'The thickness must be greater than zero.' : pvErr ? 'The feature cannot be built: ' + pvErr : ''; },
       message: 'Pick the two <b>open profiles</b> (lines and arcs, one sketch each, with a small gap where the seam goes). They are the sheet\'s mid-surface. <b>Bent</b> makes flat facets with bend lines in the flat pattern; <b>Formed</b> a rolled transition without bend lines.',
       groups: [
