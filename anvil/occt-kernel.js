@@ -942,6 +942,7 @@ var OcctKernel = (function () {
       var res;
       try { res = N(mk.Shape()); } catch (e) { res = null; }
       if (!res) res = widenedEdgeOp(f, body, es, size);
+      if (!res) res = prismEdgeOp(f, body, es, size);
       if (!res) throw new Error('OpenCascade could not ' + f.type + ' these edges (' + (f.type === 'chamfer' ? 'distance' : 'radius') + ' too large?).');
       own.tools.forEach(function (t) { res = cut(res, t); });
       bodies[k] = res;
@@ -976,33 +977,194 @@ var OcctKernel = (function () {
         });
         if (!tangent) return;
         fcs = fcs || facesOf(body);
-        var two = fcs.filter(function (fc) { return explore(fc, ENUM.TopAbs_EDGE).some(function (x) { return x.IsSame(best); }); });
-        if (two.length !== 2) return;
-        var pl = two.map(draftPlaneOf);
-        if (!pl[0] || !pl[1]) return;
-        var M = V.scale(V.add(E.a, E.b), 0.5), t = pl.map(function (p, i) {
-          var ti = V.norm(V.cross(p.n, dir));
-          return dist(V.add(M, V.scale(ti, 1e-3 * size)), two[i]) < 1e-6 * Math.max(1, size) ? ti : V.scale(ti, -1);
-        });
-        if (!(V.dot(pl[0].n, t[1]) < -1e-9)) return;   // a concave edge: left to OpenCascade
-        var phi = Math.acos(Math.max(-1, Math.min(1, V.dot(t[0], t[1])))), dl = 0.5 * size, sec;
-        var A = E.a, out1 = V.add(V.scale(pl[0].n, dl), V.scale(pl[1].n, dl));
-        if (f.type === 'chamfer') sec = [V.add(A, V.scale(t[0], size)), V.add(A, V.scale(t[1], size))];
-        else {
-          var sb = size / Math.tan(phi / 2), C = V.add(A, V.scale(V.norm(V.add(t[0], t[1])), size / Math.sin(phi / 2)));
-          sec = [V.add(A, V.scale(t[0], sb)), C, V.add(A, V.scale(t[1], sb))];
-        }
-        var poly = [V.add(sec[0], V.scale(pl[0].n, dl))].concat(sec, [V.add(sec[sec.length - 1], V.scale(pl[1].n, dl)), V.add(A, out1)]);
-        var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(polyFace3(poly), Vec(V.scale(dir, L)), false, true)).Shape());
-        if (f.type !== 'chamfer') {
-          var x0 = V.norm(V.sub(sec[0], sec[1])), mw = N(new oc.BRepBuilderAPI_MakeWire_1());
-          mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_8(N(new oc.gp_Circ_2(N(new oc.gp_Ax2_2(P(sec[1]), Dir(dir), Dir(x0))), size)))).Edge()));
-          var disk = N(N(new oc.BRepBuilderAPI_MakeFace_15(N(mw.Wire()), true)).Face());
-          tool = cut(tool, N(N(new oc.BRepPrimAPI_MakePrism_1(disk, Vec(V.scale(dir, L)), false, true)).Shape()));
-        }
+        var tool = edgePrismTool(f, best, E, size, fcs);
+        if (!tool) return;
         out.tools.push(tool);
         out.left = out.left.filter(function (e) { return !e.IsSame(best); });
       });
+      return out;
+    }
+    // lane QP (rfQP): ChFi3d refuses a chamfer / round whose band runs into a hole or a notch beside its edge ("distance
+    // too large?": a hole .01 from a plate's top edge under a .225 chamfer, fuzz p6142). When every picked edge is a
+    // straight convex edge between two planes, the band is the wedge prism over the edge (edgePrismTool), cut from the
+    // body as Anvil's engine cuts its edge tool: the hole is already in the body, so the chamfer face comes out notched
+    // where the hole crosses it. null when an edge is not such an edge or the cut is not a valid solid
+    function prismEdgeOp(f, body, es, size) {
+      if (f.type === 'chamfer' && K.chamferSpec && K.chamferSpec(f, size)) return null;
+      try { return prismEdgeTry(f, body, es, size); } catch (e) { return null; }
+    }
+    function prismEdgeTry(f, body, es, size) {
+      var fcs = facesOf(body), tools = [];
+      for (var i = 0; i < es.length; i++) {
+        var ac = N(new oc.BRepAdaptor_Curve_2(es[i])), ty = ac.GetType(), tv = ty && ty.value != null ? ty.value : ty;
+        var pa = N(ac.Value(ac.FirstParameter())), pb = N(ac.Value(ac.LastParameter()));
+        var tool = tv === 0 ? edgePrismTool(f, es[i], { a: [pa.X(), pa.Y(), pa.Z()], b: [pb.X(), pb.Y(), pb.Z()] }, size, fcs, body)
+          : tv === 1 ? rimRingTool(f, es[i], ac, size, fcs) : null;
+        if (!tool) return null;
+        tools.push(tool);
+      }
+      var res = body;
+      try { tools.forEach(function (t) { res = cut(res, t); }); } catch (e) { return null; }
+      return valid(res) ? res : null;
+    }
+    // the tool of a straight convex edge between two planes, as a prism over the edge's length: the wedge (chamfer of
+    // equal distances) or the wedge less the round's cylinder (fillet). E: ends(e) of ownEdgeTools ({ a, b }); fcs: the
+    // body's faces. null when the edge is not such an edge
+    function edgePrismTool(f, e, E, size, fcs, ends) {
+      var L = V.len(V.sub(E.b, E.a));
+      if (!(L > 1e-9)) return null;
+      var dir = V.scale(V.sub(E.b, E.a), 1 / L);
+      var two = fcs.filter(function (fc) { return explore(fc, ENUM.TopAbs_EDGE).some(function (x) { return x.IsSame(e); }); });
+      if (two.length !== 2) return null;
+      var pl = two.map(draftPlaneOf);
+      if (!pl[0] || !pl[1]) return null;
+      var M = V.scale(V.add(E.a, E.b), 0.5), t = pl.map(function (p, i) {
+        var ti = V.norm(V.cross(p.n, dir));
+        return dist(V.add(M, V.scale(ti, 1e-3 * size)), two[i]) < 1e-6 * Math.max(1, size) ? ti : V.scale(ti, -1);
+      });
+      if (!(V.dot(pl[0].n, t[1]) < -1e-9)) return null;   // a concave edge: left to OpenCascade
+      var phi = Math.acos(Math.max(-1, Math.min(1, V.dot(t[0], t[1])))), dl = 0.5 * size, sec;
+      var A = E.a, out1 = V.add(V.scale(pl[0].n, dl), V.scale(pl[1].n, dl));
+      if (f.type === 'chamfer') sec = [V.add(A, V.scale(t[0], size)), V.add(A, V.scale(t[1], size))];
+      else {
+        var sb = size / Math.tan(phi / 2), C = V.add(A, V.scale(V.norm(V.add(t[0], t[1])), size / Math.sin(phi / 2)));
+        sec = [V.add(A, V.scale(t[0], sb)), C, V.add(A, V.scale(t[1], sb))];
+      }
+      var poly = [V.add(sec[0], V.scale(pl[0].n, dl))].concat(sec, [V.add(sec[sec.length - 1], V.scale(pl[1].n, dl)), V.add(A, out1)]);
+      // ends (prismEdgeOp): how far the band runs on past each end (ext[0] back from a, ext[1] on from b), or null
+      var ext = ends ? prismEnds(e, E, dir, A, sec, pl, two, fcs, size, ends, f.type) : [0, 0];
+      if (!ext) return null;
+      var A0 = V.sub(A, V.scale(dir, ext[0])), Lx = L + ext[0] + ext[1], sh = V.scale(dir, -ext[0]);
+      poly = poly.map(function (p) { return V.add(p, sh); });
+      var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(polyFace3(poly), Vec(V.scale(dir, Lx)), false, true)).Shape());
+      if (f.type !== 'chamfer') {
+        var x0 = V.norm(V.sub(sec[0], sec[1])), mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+        mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_8(N(new oc.gp_Circ_2(N(new oc.gp_Ax2_2(P(V.add(sec[1], sh)), Dir(dir), Dir(x0))), size)))).Edge()));
+        var disk = N(N(new oc.BRepBuilderAPI_MakeFace_15(N(mw.Wire()), true)).Face());
+        tool = cut(tool, N(N(new oc.BRepPrimAPI_MakePrism_1(disk, Vec(V.scale(dir, Lx)), false, true)).Shape()));
+      }
+      return tool;
+    }
+    // lane QP: the tool of a whole circular rim between a plane square to its axis and the cylinder about that axis (a
+    // tube's or boss's rim, a hole's rim), convex: the chamfer's triangle (or the round's corner) revolved once about
+    // the axis, as Anvil's engine cuts it (a hole beside the rim crossing the band: fuzz t6016, t6007). null otherwise
+    function rimRingTool(f, e, ac, size, fcs) {
+      var u0 = ac.FirstParameter(), u1 = ac.LastParameter(), p0 = N(ac.Value(u0)), p1 = N(ac.Value(u1));
+      var A = [p0.X(), p0.Y(), p0.Z()];
+      if (V.len(V.sub([p1.X(), p1.Y(), p1.Z()], A)) > 1e-7 * Math.max(1, size)) return null;   // an arc: not a whole rim
+      var ci = N(ac.Circle()), o = N(ci.Location()), xd = N(N(ci.XAxis()).Direction()), yd = N(N(ci.YAxis()).Direction());
+      var c = [o.X(), o.Y(), o.Z()], ax = V.norm(V.cross([xd.X(), xd.Y(), xd.Z()], [yd.X(), yd.Y(), yd.Z()])), r = ci.Radius();
+      var two = fcs.filter(function (fc) { return explore(fc, ENUM.TopAbs_EDGE).some(function (x) { return x.IsSame(e); }); });
+      if (two.length !== 2) return null;
+      var plI = -1, pln = null;
+      two.forEach(function (fc, i) { var q = draftPlaneOf(fc); if (q && Math.abs(Math.abs(V.dot(q.n, ax)) - 1) < 1e-9) { plI = i; pln = q; } });
+      if (plI < 0) return null;
+      var cy = two[1 - plI], sa = N(new oc.BRepAdaptor_Surface_2(cy, true)), st = sa.GetType();
+      if ((st && st.value != null ? st.value : st) !== 1) return null;
+      var cyl = N(sa.Cylinder()), ca = N(cyl.Position()), cd = N(ca.Direction()), cl = N(ca.Location());
+      var cax = [cd.X(), cd.Y(), cd.Z()], cc = V.sub([cl.X(), cl.Y(), cl.Z()], c);
+      if (Math.abs(Math.abs(V.dot(cax, ax)) - 1) > 1e-9 || V.len(V.sub(cc, V.scale(ax, V.dot(cc, ax)))) > 1e-7 * Math.max(1, r) || Math.abs(cyl.Radius() - r) > 1e-7 * Math.max(1, r)) return null;
+      var rho = V.norm(V.sub(A, c)), tolF = 1e-6 * Math.max(1, size), h = 1e-3 * size;
+      // into the plane face: toward the axis (a boss's rim) or away (a hole's rim); into the wall: away from the plane
+      var tP = dist(V.add(A, V.scale(rho, -h)), two[plI]) < tolF ? V.scale(rho, -1) : dist(V.add(A, V.scale(rho, h)), two[plI]) < tolF ? rho : null;
+      var tC = V.scale(pln.n, -1);
+      if (!tP || !(dist(V.add(A, V.scale(tC, h)), cy) < tolF)) return null;
+      // the rim must run between the two faces all round (a boss merged with another one along part of its rim: the
+      // round Anvil refuses as too large, fuzz b6025; the faces may be narrower than the size, t6100)
+      var bx = V.norm(V.cross(ax, rho));
+      for (var q = 0; q < 8; q++) {
+        var an = q * Math.PI / 4, rq = V.add(V.scale(rho, Math.cos(an)), V.scale(bx, Math.sin(an))), Aq = V.add(c, V.scale(rq, r));
+        var tPq = tP === rho ? rq : V.scale(rq, -1);
+        if (!(dist(V.add(Aq, V.scale(tPq, h)), two[plI]) < tolF) || !(dist(V.add(Aq, V.scale(tC, h)), cy) < tolF)) return null;
+      }
+      var nP = pln.n, nC = V.scale(tP, -1), dl = 0.5 * size, sec;
+      if (f.type === 'chamfer') sec = [V.add(A, V.scale(tP, size)), V.add(A, V.scale(tC, size))];
+      else sec = [V.add(A, V.scale(tP, size)), V.add(A, V.scale(V.add(tP, tC), size)), V.add(A, V.scale(tC, size))];
+      var poly = [V.add(sec[0], V.scale(nP, dl))].concat(sec, [V.add(sec[sec.length - 1], V.scale(nC, dl)), V.add(A, V.scale(V.add(nP, nC), dl))]);
+      // the section must stay clear of the axis
+      if (!poly.every(function (p) { var q = V.sub(p, c); return V.len(V.sub(q, V.scale(ax, V.dot(q, ax)))) > 1e-6 * Math.max(1, r); }) || r - (tP === rho ? dl : size) <= 1e-6 * Math.max(1, r)) return null;
+      var ax1 = N(new oc.gp_Ax1_2(P(c), Dir(ax)));
+      var tool = N(N(new oc.BRepPrimAPI_MakeRevol_1(polyFace3(poly), ax1, 2 * Math.PI, false)).Shape());
+      if (f.type !== 'chamfer') {
+        var mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+        mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_8(N(new oc.gp_Circ_2(N(new oc.gp_Ax2_2(P(sec[1]), Dir(V.norm(V.cross(rho, ax))), Dir(rho))), size)))).Edge()));
+        var disk = N(N(new oc.BRepBuilderAPI_MakeFace_15(N(mw.Wire()), true)).Face());
+        tool = cut(tool, N(N(new oc.BRepPrimAPI_MakeRevol_1(disk, ax1, 2 * Math.PI, false)).Shape()));
+      }
+      return tool;
+    }
+    // lane QP: the radius of a cylinder face tangent to one of the planes pl ({ n, w }), else 0
+    function blendRadius(fc, pl) {
+      try {
+        var sa = N(new oc.BRepAdaptor_Surface_2(fc, true)), st = sa.GetType();
+        if ((st && st.value != null ? st.value : st) !== 1) return 0;
+        var cyl = N(sa.Cylinder()), ca = N(cyl.Position()), cd = N(ca.Direction()), cl = N(ca.Location()), R = cyl.Radius();
+        var d = [cd.X(), cd.Y(), cd.Z()], o = [cl.X(), cl.Y(), cl.Z()];
+        return pl.some(function (p) { return Math.abs(V.dot(p.n, d)) < 1e-9 && Math.abs(Math.abs(V.dot(p.n, o) - p.w) - R) < 1e-7 * Math.max(1, R); }) ? R : 0;
+      } catch (e) { return 0; }
+    }
+    // lane QP: where a prism band ends. At each end of the edge the faces of the body there, other than the edge's two,
+    // must be planes; the band runs on past the end until its section (the edge point and the setback points) is
+    // beyond every such plane (a square end face: 0; a chamfer or a sloped face across the end: the band runs on up
+    // to it, as SolidWorks trims a chamfer against the face it runs into). A curved face there (a hole notching the
+    // edge's end) or material still under the band just past where it stops: null (OpenCascade leaves the feature)
+    function prismEnds(e, E, dir, A, sec, pl, two, fcs, size, bodyOfEdge, kind) {
+      var vs = explore(e, ENUM.TopAbs_VERTEX), cls = null, out = [0, 0];
+      var tolP = 1e-7 * Math.max(1, size);
+      for (var k = 0; k < 2; k++) {
+        var at = k ? E.b : E.a, sgn = k ? 1 : -1, d = V.scale(dir, sgn), vx = null;
+        vs.forEach(function (v) { var q = N(oc.BRep_Tool.Pnt(N(oc.TopoDS.Vertex_1(v)))); if (V.len(V.sub([q.X(), q.Y(), q.Z()], at)) < 1e-6 * Math.max(1, size)) vx = v; });
+        if (!vx) return null;
+        var others = fcs.filter(function (fc) {
+          if (fc.IsSame(two[0]) || fc.IsSame(two[1])) return false;
+          return explore(fc, ENUM.TopAbs_VERTEX).some(function (x) { return x.IsSame(vx); });
+        });
+        if (!others.length) return null;
+        // an edge running on tangentially from this end: the chamfer / round runs on along it (tangent propagation,
+        // fuzz p6158: a top edge whose corners were rounded first), which ChFi3d does and a prism does not
+        var COS2 = Math.cos(2 * Math.PI / 180), runsOn = false;
+        two.forEach(function (fc) {
+          explore(fc, ENUM.TopAbs_EDGE).forEach(function (x) {
+            if (runsOn || x.IsSame(e) || !explore(x, ENUM.TopAbs_VERTEX).some(function (w) { return w.IsSame(vx); })) return;
+            var cx = N(new oc.BRepAdaptor_Curve_2(N(oc.TopoDS.Edge_1(x)))), w0 = cx.FirstParameter(), w1 = cx.LastParameter(), hh = (w1 - w0) * 1e-4;
+            var q0 = N(cx.Value(w0)), atStart = V.len(V.sub([q0.X(), q0.Y(), q0.Z()], at)) < 1e-6 * Math.max(1, size);
+            var qa = N(cx.Value(atStart ? w0 : w1)), qb = N(cx.Value(atStart ? w0 + hh : w1 - hh));
+            var tx = V.norm(V.sub([qb.X(), qb.Y(), qb.Z()], [qa.X(), qa.Y(), qa.Z()]));
+            if (!(V.dot(tx, d) > COS2)) return;
+            // a chamfer larger than the round it meets runs on through it (Anvil's capFor, SolidWorks' chamfer plane:
+            // fuzz p6052); a fillet, or a chamfer within the round, follows the round
+            var ct = cx.GetType(), cv = ct && ct.value != null ? ct.value : ct;
+            if (kind === 'chamfer' && cv === 1 && size > N(cx.Circle()).Radius() * (1 + 1e-6)) return;
+            runsOn = true;
+          });
+        });
+        if (runsOn) return null;
+        // the section at this end: the edge point and the setback points, carried to this end
+        var off = V.sub(at, A), pts = [at].concat(sec.map(function (p) { return V.add(p, off); })), run = 0;
+        for (var i = 0; i < others.length; i++) {
+          var q = draftPlaneOf(others[i]);
+          if (!q) {
+            // a round that one of the edge's planes blends into (an earlier fillet along the edge's end): the band runs
+            // on through it until it leaves the body, by the round's radius + the size (Anvil's capFor does the same)
+            var R = blendRadius(others[i], pl);
+            if (!(R > 0)) return null;
+            run = Math.max(run, R + size);
+            continue;
+          }
+          var nd = V.dot(q.n, d);
+          pts.forEach(function (p) {
+            var gap = q.w - V.dot(q.n, p);   // > 0: p is inside the plane's material side
+            if (gap > tolP) { if (nd > 1e-9) run = Math.max(run, gap / nd); else run = Infinity; }
+          });
+        }
+        if (!(run < 4 * size + tolP)) return null;
+        // nothing of the body left under the band just past where it stops
+        cls = cls || N(new oc.BRepClass3d_SolidClassifier_2(bodyOfEdge));
+        var mid = V.scale(V.add(at, V.add(V.add(sec[0], off), V.add(sec[sec.length - 1], off))), 1 / 3), probe = V.add(mid, V.scale(d, run + 1e-3 * size));
+        cls.Perform(P(probe), 1e-7);
+        if (cls.State() === oc.TopAbs_State.TopAbs_IN) return null;
+        out[k] = run;
+      }
       return out;
     }
     // the edges of body nearest the picks; seam edges (where a cylinder or cone closes on itself) and degenerate ones
@@ -1249,32 +1411,124 @@ var OcctKernel = (function () {
       // (Mirror body, a pattern) ran for minutes. Such a result is refused here, so the feature fails on OpenCascade,
       // Anvil's shell drives, and the features after it build on valid solids.
       var badShell = 'OpenCascade could not shell this body: its offset walls cross each other.';
-      if (rm.length) {
-        var list = N(new oc.TopTools_ListOfShape_1());
-        rm.forEach(function (fc) { list.Append_1(fc); });
-        var th = N(new oc.BRepOffsetAPI_MakeThickSolid());
-        th.MakeThickSolidByJoin(body, list, -T, 1e-3, mode, false, false, join, false, R());
-        if (!th.IsDone()) throw new Error('OpenCascade could not shell the body with this thickness.');
-        res = N(th.Shape());
-      } else {
-        var mo = N(new oc.BRepOffsetAPI_MakeOffsetShape());
-        mo.PerformByJoin(body, -T, 1e-3, mode, false, false, join, false, R());
-        if (!mo.IsDone()) throw new Error('OpenCascade could not shell the body with this thickness.');
-        var inner = N(mo.Shape());
-        if (!valid(inner)) throw new Error(badShell);
-        res = cut(body, inner);
+      // lane QP: where the offset fails or is refused, the walls as Anvil builds them (slabShell)
+      var slab = function (err) { var s = slabShell(body, rm, T); if (s && shellOk(s)) { bodies[k] = s; return true; } if (err) throw err; return false; };
+      function shellOk(res) {
+        var vr = volumeOf(res), gl = N(new oc.GProp_GProps_1());
+        var aKept = areaOf(body) - rm.reduce(function (s, fc) { return s + areaOf(fc); }, 0);
+        oc.BRepGProp.LinearProperties(body, gl, false, false);
+        return valid(res) && vr > 0 && vr < volumeOf(body) && !(vr > 1.2 * T * aKept + T * T * gl.Mass());
       }
-      // valid is not enough: on a cylinder with a slot through its side the offset also came out VALID but 2.9 times
-      // too heavy (18946 for 6524 mm³: the cavity lost where the slot's offset walls cross the bore). A wall T thick
-      // holds about T × the area of the faces kept (less on convex curves, more round a bore: T·A·(1 + T/2r)), plus
-      // about T² per length of concave edge at sharp inside corners; 1.2·T·A + T²·(every edge's length) is a generous
-      // ceiling (a slotted Ø20 cylinder: 8428 for Anvil's 4159 mm³ was let through by 1.5·T·A)
-      var vr = volumeOf(res), gl = N(new oc.GProp_GProps_1()), aKept = 0;
       function areaOf(s) { var g = N(new oc.GProp_GProps_1()); oc.BRepGProp.SurfaceProperties_1(s, g, false, false); return g.Mass(); }
-      aKept = areaOf(body) - rm.reduce(function (s, fc) { return s + areaOf(fc); }, 0);
-      oc.BRepGProp.LinearProperties(body, gl, false, false);
-      if (!valid(res) || !(vr > 0) || !(vr < volumeOf(body)) || vr > 1.2 * T * aKept + T * T * gl.Mass()) throw new Error(badShell);
-      bodies[k] = res;
+      function shellOffset() {
+        if (rm.length) {
+          var list = N(new oc.TopTools_ListOfShape_1());
+          rm.forEach(function (fc) { list.Append_1(fc); });
+          var th = N(new oc.BRepOffsetAPI_MakeThickSolid());
+          th.MakeThickSolidByJoin(body, list, -T, 1e-3, mode, false, false, join, false, R());
+          if (!th.IsDone()) throw new Error('OpenCascade could not shell the body with this thickness.');
+          res = N(th.Shape());
+        } else {
+          var mo = N(new oc.BRepOffsetAPI_MakeOffsetShape());
+          mo.PerformByJoin(body, -T, 1e-3, mode, false, false, join, false, R());
+          if (!mo.IsDone()) throw new Error('OpenCascade could not shell the body with this thickness.');
+          var inner = N(mo.Shape());
+          if (!valid(inner)) throw new Error(badShell);
+          res = cut(body, inner);
+        }
+        // valid is not enough: on a cylinder with a slot through its side the offset also came out VALID but 2.9 times
+        // too heavy (18946 for 6524 mm³: the cavity lost where the slot's offset walls cross the bore). A wall T thick
+        // holds about T × the area of the faces kept (less on convex curves, more round a bore: T·A·(1 + T/2r)), plus
+        // about T² per length of concave edge at sharp inside corners; 1.2·T·A + T²·(every edge's length) is a generous
+        // ceiling (a slotted Ø20 cylinder: 8428 for Anvil's 4159 mm³ was let through by 1.5·T·A)
+        var vr = volumeOf(res), gl = N(new oc.GProp_GProps_1()), aKept = 0;
+        function areaOf(s) { var g = N(new oc.GProp_GProps_1()); oc.BRepGProp.SurfaceProperties_1(s, g, false, false); return g.Mass(); }
+        aKept = areaOf(body) - rm.reduce(function (s, fc) { return s + areaOf(fc); }, 0);
+        oc.BRepGProp.LinearProperties(body, gl, false, false);
+        if (!valid(res) || !(vr > 0) || !(vr < volumeOf(body)) || vr > 1.2 * T * aKept + T * T * gl.Mass()) throw new Error(badShell);
+        bodies[k] = res;
+      }
+      try { shellOffset(); } catch (e) { slab(e); }
+    }
+    // lane QP (rfQP): a shell as the union of the kept faces' slabs inside the body. OpenCascade's offset fails where a
+    // wall's offset collapses: a part thinner than 2T (a step .2 thick under a .125 shell, fuzz b6045), a hole closer than
+    // 2T to a face (b6079), a convex round smaller than T (b6006). The wall is every point of the body within T of a kept
+    // face: each planar face grown by T in its plane (MakeOffset of the face: a square inside corner's offsets meet T
+    // past the corner; past an outside corner the slab lies in air or within T of the next face) and swept T inward, each
+    // curved face thickened T inward (MakeThickSolidBySimple); the cavity is the body less every slab. null when a face
+    // cannot be thickened so
+    function slabShell(body, rm, T) {
+      try {
+        var cav = body, ok = true;
+        facesOf(body).forEach(function (fc) {
+          if (!ok || rm.some(function (r) { return r.IsSame(fc); })) return;
+          var s = faceSlab(fc, T, body);
+          if (!s) { ok = false; return; }
+          cav = cut(cav, s);
+        });
+        if (!ok) return null;
+        return unify(cut(body, cav));
+      } catch (e) { return null; }
+    }
+    function faceSlab(fc, T, bodyNow) {
+      var pl = draftPlaneOf(fc);
+      if (!pl) {
+        // only cylinders: a shell over a round chained round the corners of a box (tori and a corner blend, fuzz b6094)
+        // came out 1e-2 light, so other curved faces leave the shell to Anvil
+        var stp = N(new oc.BRepAdaptor_Surface_2(fc, true)).GetType();
+        if ((stp && stp.value != null ? stp.value : stp) !== 1) return null;
+        // MakeThickSolidBySimple offsets along the surface's own normal, not the face's: of the two sides, the one
+        // whose slab lies in the body (a hole's wall: away from the axis; a round: toward it)
+        var area = (function () { var g = N(new oc.GProp_GProps_1()); oc.BRepGProp.SurfaceProperties_1(fc, g, false, false); return g.Mass(); })();
+        for (var sg = -1; sg <= 1; sg += 2) {
+          try {
+            var th = N(new oc.BRepOffsetAPI_MakeThickSolid());
+            th.MakeThickSolidBySimple(fc, sg * T);
+            if (!th.IsDone()) continue;
+            var sh = N(th.Shape()), v = volumeOf(sh);
+            if (!(v > 0) || v > 3 * area * T + 4 * T * T * T) continue;
+            if (volumeOf(common(sh, bodyNow)) > 0.5 * v) return sh;
+          } catch (e) { }
+        }
+        return null;
+      }
+      var mo = N(new oc.BRepOffsetAPI_MakeOffset_2(fc, oc.GeomAbs_JoinType.GeomAbs_Intersection, false));
+      mo.Perform(T, 0);
+      if (!mo.IsDone()) return null;
+      var ws = explore(N(mo.Shape()), ENUM.TopAbs_WIRE), sweep = Vec(V.scale(pl.n, -T));
+      if (!ws.length) return null;
+      // the outer wire is the one with the largest box; the others (holes, bosses) go in as its inner wires (a prism
+      // of each taken out of the outer one's left an invalid solid: fuzz b6059)
+      var wf = ws.map(function (w) {
+        var wire = N(oc.TopoDS.Wire_1(w)), face = N(N(new oc.BRepBuilderAPI_MakeFace_15(wire, true)).Face()), bb = bboxOf(face);
+        return { wire: wire, face: face, size: bb ? V.len(V.sub(bb[1], bb[0])) : 0 };
+      }).sort(function (a, b) { return b.size - a.size; });
+      // an inner wire over air (a hole through the face, a pocket in it) is left out: the slab may cover the hole, the
+      // body has none there; one over material (a boss on the face) stays
+      var clsB = N(new oc.BRepClass3d_SolidClassifier_2(bodyNow));
+      wf = wf.filter(function (w, i) {
+        if (!i) return true;
+        var bb = bboxOf(w.face), c = V.add(V.scale(V.add(bb[0], bb[1]), 0.5), V.scale(pl.n, -0.5 * T));
+        clsB.Perform(P(c), 1e-7);
+        return clsB.State() === oc.TopAbs_State.TopAbs_IN;
+      });
+      var out = null;
+      [false, true].some(function (flip) {
+        try {
+          var face = wf[0].face;
+          if (wf.length > 1) {
+            var mf = N(new oc.BRepBuilderAPI_MakeFace_2(wf[0].face));
+            for (var i = 1; i < wf.length; i++) mf.Add(flip ? N(oc.TopoDS.Wire_1(N(wf[i].wire.Reversed()))) : wf[i].wire);
+            if (!mf.IsDone()) return false;
+            face = N(mf.Face());
+          }
+          var pr = N(N(new oc.BRepPrimAPI_MakePrism_1(face, sweep, false, true)).Shape());
+          if (volumeOf(pr) < 0) pr = N(pr.Reversed());
+          if (!valid(pr)) return false;
+          out = pr;
+          return true;
+        } catch (e) { return false; }
+      });      return out;
     }
     // Imported feature (exchange.js) that kept its source file (f.brep: { format: 'step' | 'iges', text }): the exact
     // B-rep read again, each solid a body (or unioned into the bodies it touches with merge), in the model's units.
@@ -2348,6 +2602,40 @@ var OcctKernel = (function () {
       for (var h = hit.length - 1; h >= 1; h--) { bodies.splice(hit[h], 1); bodyFeatures.splice(hit[h], 1); }
       bodies[hit[0]] = merged;
     }
+    // lane QP: whether some point of the tool (a 6 x 6 x 6 grid over its box) lies inside both the tool and the body
+    function toolInside(body, tool, tb) {
+      if (!tb) return false;
+      var cb = N(new oc.BRepClass3d_SolidClassifier_2(body)), ct = N(new oc.BRepClass3d_SolidClassifier_2(tool)), IN = oc.TopAbs_State.TopAbs_IN, G = 6;
+      for (var a = 0; a < G; a++) for (var b = 0; b < G; b++) for (var c = 0; c < G; c++) {
+        var q = [0, 1, 2].map(function (k) { var t = ([a, b, c][k] + 0.5) / G; return tb[0][k] + (tb[1][k] - tb[0][k]) * t; }), pq = P(q);
+        ct.Perform(pq, 1e-7);
+        if (ct.State() !== IN) continue;
+        cb.Perform(pq, 1e-7);
+        if (cb.State() === IN) return true;
+      }
+      return false;
+    }
+    // lane QP: body less the tool, the tool cut in two by a plane across its box (x, then y, then z; a hair off the
+    // middle); the first that removes more than the plain cut did (vNow), else null
+    function halvesCut(body, tool, tb, vNow) {
+      for (var ax = 0; ax < 3; ax++) {
+        try {
+          var lo = tb[0].map(function (x, k) { return x - 1 - (tb[1][k] - tb[0][k]); }), hi = tb[1].map(function (x, k) { return x + 1 + (tb[1][k] - tb[0][k]); });
+          var mid = (tb[0][ax] + tb[1][ax]) / 2 + 1e-3 * (tb[1][ax] - tb[0][ax]);
+          var halves = [[lo[ax], mid], [mid, hi[ax]]].map(function (r) {
+            var a = lo.slice(), b = hi.slice(); a[ax] = r[0]; b[ax] = r[1];
+            var u = (ax + 1) % 3, w = (ax + 2) % 3, p0 = a.slice(), p1 = a.slice(), p2 = a.slice(), p3 = a.slice();
+            p1[u] = b[u]; p2[u] = b[u]; p2[w] = b[w]; p3[w] = b[w];
+            var dv = [0, 0, 0]; dv[ax] = b[ax] - a[ax];
+            var box = N(N(new oc.BRepPrimAPI_MakePrism_1(polyFace3([p0, p1, p2, p3]), Vec(dv), false, true)).Shape());
+            return common(tool, box);
+          });
+          var res = cut(cut(body, halves[0]), halves[1]);
+          if (volumeOf(res) < vNow * (1 - 1e-6) && valid(res)) return res;
+        } catch (e) { }
+      }
+      return null;
+    }
     function applyCut(tool, f) {
       if (!bodies.length) throw new Error('Nothing to cut yet.');
       var scope = K.cutScope(f, bodies.length), parts = toolSolids(tool), next = bodies.slice(), nextF = bodyFeatures.slice(), tb = bboxOf(tool);
@@ -2357,6 +2645,13 @@ var OcctKernel = (function () {
         if (tb && !boxesMeet(bboxOf(bodies[scope[s]]), tb)) continue;
         var i = scope[s], nb = parts.length > 1 ? boolMany('cut', bodies[i], parts, 'OpenCascade could not cut the body.') : cut(bodies[i], tool);
         var vn = volumeOf(nb), vb = volumeOf(bodies[i]);
+        // lane QP: a cut that removed nothing although the tool lies partly inside the body is a Boolean that failed
+        // without a word (fuzz t6002: a Ø.375 cut across a tube grooved by a Revolve Cut, BRepAlgoAPI_Common of the two
+        // is empty too); the tool cut in two halves goes through
+        if (parts.length === 1 && vn >= vb * (1 - 1e-6) && toolInside(bodies[i], tool, tb)) {
+          var nh = halvesCut(bodies[i], tool, tb, vn);
+          if (nh) { nb = nh; vn = volumeOf(nb); }
+        }
         // lane FZ2: a cut never adds material
         if (vn > vb * (1 + 1e-3)) throw new Error('OpenCascade cut this body into a heavier solid.');
         if (vn < 1e-9) { next.splice(i, 1); nextF.splice(i, 1); } else next[i] = nb;
@@ -3337,7 +3632,7 @@ var OcctKernel = (function () {
       if (!bodies.length) throw new Error('A rib needs a solid to meet: create the part first.');
       var lay = K.ribLayout(f, sk, plane, refGeoCtx().body), all = bodies.length === 1 ? bodies[0] : compound(bodies), parts = [];
       lay.pieces.forEach(function (pc) {
-        var P = prismOf(pc.loop, plane, pc.a, pc.b), vD = V.scale(pc.m, pc.D), sh = [];
+        var P = prismOf(pc.loop, plane, pc.a, pc.b), vD = V.scale(pc.m, pc.D), sh = [], shC = [];
         facesOf(rfDYcommon(all, P)).forEach(function (fc) {
           var ad = N(new oc.BRepAdaptor_Surface_2(fc, true)), t = ad.GetType(), tv = t && t.value != null ? t.value : t;
           if (tv === 0) {
@@ -3348,9 +3643,13 @@ var OcctKernel = (function () {
             approx = true;   // Anvil's rib meets the facets of a curved face
             if (tv === 1) { var ca = N(N(N(ad.Cylinder()).Position()).Direction()); if (Math.abs(V.dot([ca.X(), ca.Y(), ca.Z()], pc.m)) > 1 - 1e-9) return; }
           }
-          sh.push(N(N(new oc.BRepPrimAPI_MakePrism_1(fc, Vec(vD), false, true)).Shape()));
+          (tv === 0 ? sh : shC).push(N(N(new oc.BRepPrimAPI_MakePrism_1(fc, Vec(vD), false, true)).Shape()));
         });
         var rib = sh.length ? boolMany('cut', P, sh, 'OpenCascade could not trim the rib to the body.') : P;
+        // lane QP: a curved face's sweep is cut away only where it meets the rib trimmed by the planes: a hole through
+        // the base under an L-bracket's rib (fuzz b6078) swept along the rib's growth made the trimming Boolean fail
+        // without a word, and the untrimmed prism (5.4 in3 for Anvil's .27) went on the part
+        shC.forEach(function (s) { if (volumeOf(rfDYcommon(rib, s)) > 1e-12) rib = cut(rib, s); });
         var bb = bboxOf(rib, true), w0 = V.dot(K.to3D(plane, pc.loop[0][0], pc.loop[0][1]), pc.m);
         if (!bb || volumeOf(rib) < 1e-12) return;
         for (var i = 0; i < 8; i++) {
