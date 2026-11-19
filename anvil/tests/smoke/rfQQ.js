@@ -492,4 +492,25 @@
       assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
       return notes.join('; ');
     });
-  })();
+    step('rfQQ: 1b, an equation whose variable is deleted in Tools > Equations (D1@Sketch1 = W, W deleted by its row\'s delete button, OK): the Equations folder turns red with a D1@Sketch1 row, and the status line names it (the folder showed nothing)', async function () {
+      var errs0 = errors.length;
+      await rfQQNewInch();
+      await anvil.run('p.units("in");\np.equations({ W: 6, H: 4 });\np.sketch("Front").line(0, 0, 6, 0).line(6, 0, 6, 4).line(6, 4, 0, 4).line(0, 4, 0, 0).dim(0, "len", { value: 6 }).end().extrude(1);\n'); await idle();
+      // setup: D1 linked to W as the Modify box stores "=W" (rfQL types it)
+      var sk = UI.App.model.features.filter(function (g) { return g.type === 'sketch'; })[0]; UI.pushUndo(); sk.dims[0].expr = '=W'; await UI.afterRebuild(UI.rebuild(), function () { }); await idle();
+      var rows = menuRows('Equations');
+      assert(rows.length, 'Tools > Equations'); rows[0].row.click(); if (UI.closeMenus) UI.closeMenus(); await wait(30);
+      var wr = Array.prototype.filter.call(D.querySelectorAll('#eq-table tr.eq-row'), function (tr) { return tr.querySelector('.eq-name').value === 'W'; })[0];
+      assert(wr, 'the W row'); wr.querySelector('.eq-del').click(); await wait(20);
+      $('eq-ok').click(); await anvil.idle(); await idle(); await wait(30);
+      var ee = UI.App.build.equationErrors || {};
+      assert(ee['D1@Sketch1'], 'D1@Sketch1 an equation error: ' + JSON.stringify(ee));
+      var fo = D.querySelector('#tree .eq-folder');
+      assert(fo && fo.classList.contains('err'), 'the Equations folder red');
+      var r = D.querySelector('#tree .eq-row.err[data-eq="D1@Sketch1"]');
+      assert(r && /D1@Sketch1 =W/.test(r.textContent), 'a red D1@Sketch1 row: ' + (r && r.textContent));
+      rfQQRowMouse('click', r); await wait(10);
+      assert(/Equation D1@Sketch1: .*W/.test(statusText()), 'status: ' + statusText());
+      assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+      return r.textContent + ' | ' + statusText().slice(0, 100);
+    });  })();

@@ -39,3 +39,9 @@ Smoke group `anvil/tests/smoke/rfQQ.js`, 9 steps.
 - Tangent to Bend at 90 deg gives the Material Inside flat (6.895979).
 - Flange angle 60, Material Inside: the outer virtual sharp T / tan A inside the base's end.
 - Closed Corner Butt: gap measured diagonally (gap / sqrt 2 per wall). The edge-flange corners also use gap / sqrt 2 (.0071 for .01).
+
+## Follow-up (QQ2, base main after the merge)
+
+- 1b done: Tools ▸ Equations, W deleted by its row's delete button, OK: the Equations folder was not flagged and had no row for D1@Sketch1. Now the folder is red and has a red row `D1@Sketch1 =W`; a click on it puts 'Equation D1@Sketch1: =W: Unknown variable \"W\" (the dimension keeps 6)' on the status line (ui-panels.js `appendEquationsFolder`). Step rfQQ 1b.
+- Sketched Bend / Jog position as icon buttons: left. An iconRadio row has no input under a label, so p9-pm's `pmField('Bend position')` (lines 222, 242) would get null; that test needs re-pinning to `[data-key=\"position:inside\"]` first.
+- Not reached (context budget): Hole Wizard on a flange, Corner Relief, Welded Corner, Flat-Pattern Edit Feature, Forming Tool + Linear Pattern, Vent.

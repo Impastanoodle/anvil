@@ -3320,12 +3320,15 @@
   // "T = 10" row per model.equations entry; double-click opens Tools ▸ Equations. Open by default.
   function appendEquationsFolder(tree, filter) {
     var list = currentEquations();   // with the active configuration's values
-    if (!list.length) return;
     var vars = (App.build && App.build.equations) || {}, errs = (App.build && App.build.equationErrors) || {};
+    // rfQQ: a dimension equation that cannot be evaluated (its variable deleted: "D1@Sketch1", rfQL) is shown in the
+    // folder as a red row, and the folder is red, as SolidWorks marks a broken equation
+    var dimErrs = Array.isArray(errs) ? [] : Object.keys(errs).filter(function (k) { return /@/.test(k) && !list.some(function (q) { return q.name === k; }); });
+    if (!list.length && !dimErrs.length) return;
     var shown = list.filter(function (q) { return !filter || String(q.name).toLowerCase().indexOf(filter) >= 0; });
     var isOpen = expanded.equations == null ? true : !!expanded.equations;
     if (filter && shown.length) isOpen = true;
-    var anyErr = list.some(function (q) { return errs[q.name]; });
+    var anyErr = dimErrs.length > 0 || list.some(function (q) { return errs[q.name]; });
     var folder = treeItem({ icon: 'equations', name: 'Equations', depth: 1, cls: 'eq-folder' + (anyErr ? ' err' : ''), children: true, open: isOpen, title: list.length + ' global variable' + (list.length === 1 ? '' : 's') + (K.activeConfiguration && K.activeConfiguration(App.model) ? ' (configuration ' + K.activeConfiguration(App.model).name + ')' : '') + ' — double-click to manage', toggle: function () { expanded.equations = !isOpen; refreshTree(); } });
     folder.addEventListener('dblclick', function (e) { e.stopPropagation(); showEquations(); });
     folder.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, [{ label: 'Manage Equations…', action: showEquations }]); });
@@ -3339,6 +3342,16 @@
       row.addEventListener('dblclick', function (e) { e.stopPropagation(); showEquations(q.name); });
       row.addEventListener('click', function () { setStatus(err ? q.name + ': ' + err : q.name + ' = ' + q.expr + (val != null ? ' = ' + UI.fmtNum(val, 6) : '')); });
       row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, [{ label: 'Manage Equations…', action: function () { showEquations(q.name); } }]); });
+      box.appendChild(row);
+    });
+    dimErrs.forEach(function (k) {
+      if (filter && k.toLowerCase().indexOf(filter) < 0) return;
+      var msg = String(errs[k]), m = /^(=[^:]*):/.exec(msg);
+      var row = treeItem({ icon: 'error', name: k + ' ' + (m ? m[1] : '= ?'), depth: 2, cls: 'eq-row eq-dim err', title: k + ': ' + msg });
+      row.setAttribute('data-eq', k);
+      row.addEventListener('click', function () { setStatus('Equation ' + k + ': ' + msg); });
+      row.addEventListener('dblclick', function (e) { e.stopPropagation(); showEquations(); });
+      row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, [{ label: 'Manage Equations…', help: 'Open Tools ▸ Equations to fix or delete the broken equation', action: function () { showEquations(); } }]); });
       box.appendChild(row);
     });
     tree.appendChild(box);
