@@ -1501,10 +1501,12 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (App.build.errors && App.build.errors[f.id]) return [];
     var pat = face != null ? patternOfInstance(f, face, s.point) : null;   // rfFD: a pattern copy's face is tagged with its seed
     if (pat) return otherFeatureHandles(pat, null);
-    if (f.type !== 'extrude' && f.type !== 'revolve') return otherFeatureHandles(f, face);   // rfFD: fillet, shell, patterns
+    var openBase = f.type === 'insertBends' && f.openBase;   // rfQQ: an open-profile Base Flange shows its depth and its sketch's dimensions, as an extrude
+    if (f.type !== 'extrude' && f.type !== 'revolve' && !openBase) return otherFeatureHandles(f, face);   // rfFD: fillet, shell, patterns
     var sk = K.findFeature(App.model, f.sketch), pl = sk && sketchPlane(sk);
     if (!sk || !pl) return [];
-    var out = [], h = f.type === 'extrude' ? extrudeHandle(f, sk, pl, face) : revolveHandle(f, sk, pl, face);
+    var out = [], h = f.type !== 'revolve' ? extrudeHandle(f, sk, pl, face) : revolveHandle(f, sk, pl, face);
+    if (h && openBase) h.label = 'Base-Flange depth';
     if (h) out.push(h);
     return out.concat(sketchDimHandles(sk, pl));
   }

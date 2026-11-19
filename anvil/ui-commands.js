@@ -1070,11 +1070,12 @@
     }
     return null;
   }
-  function commitFeature(f, existing) {
+  function commitFeature(f, existing, afterUndo) {
     // lane DC2: a feature made while the part is flat goes in above Flat-Pattern1 (the end of the feature list) and
     // acts on the folded part, as in SolidWorks; the flat is redrawn from the rebuilt part
     applyExpressions(f);   // number fields typed as '=T*2' are stored as the equation, not its value
     UI.pushUndo();
+    if (afterUndo) afterUndo();   // rfQQ: a change outside the feature (Base Flange: model.sheet) in the same undo step
     if (existing) {
       Object.keys(f).forEach(function (k) { existing[k] = f[k]; });
       Object.keys(existing).forEach(function (k) { if (!(k in f) && k !== 'id' && k !== 'name' && k !== 'profile') delete existing[k]; });
@@ -2868,9 +2869,16 @@
         return;
       }
       if (K.isOpenProfile(K.findFeature(App.model, f.sketch))) { cmdOpenBase(f.sketch, null); return; }   // lane open-base
+      baseFlangePM(f, null);
+    });
+  }
+  // rfQQ: Edit Feature on Base-Flange1 (closed profile) reopens this PropertyManager with its sketch, Reverse direction
+  // and the sheet's values, as SolidWorks (it opened the Sheet-Metal PM, where Reverse direction is not offered); the
+  // sheet and the feature change in one undo step, and a new flange's undo takes its sheet away with it
+  function baseFlangePM(f, existing) {
       function feature(v) { var o = {}; Object.keys(v).forEach(function (k) { if (SHEET_PM_KEYS.indexOf(k) < 0) o[k] = v[k]; }); return o; }
       openPM({
-        title: 'Base Flange/Tab', icon: 'flange', values: f, command: { sketchId: f.sketch },
+        title: existing ? existing.name : 'Base Flange/Tab', icon: 'flange', values: f, command: { sketchId: f.sketch },
         groups: [{ title: 'Sketch', fields: [sketchPickerField(f)] }].concat(sheetGroups([{ type: 'check', label: 'Reverse direction', key: 'reverse' }])),
         okBlocked: function (v) { return sheetWhy(v); },   // rfNJ: a sheet value the kernel refuses (it toasted on ✓)
         onChange: function (v, key) {
@@ -2882,14 +2890,24 @@
           // the sheet parameters may be equations too (the kernel resolves model.sheet like a feature)
           var sheet;
           try { sheet = sheetFromValues(v, true); } catch (e) { UI.toast(e.message); UI.setStatus(e.message); return false; }
-          App.model.sheet = sheet;
           var feat = feature(v);
-          feat.depth = pmExpr('thickness', +v.thickness); feat.name = 'Base-Flange' + (App.model.features.filter(function (q) { return /^Base-Flange\d+$/.test(q.name || ''); }).length + 1);
+          feat.depth = pmExpr('thickness', +v.thickness);
+          feat.name = existing ? existing.name : 'Base-Flange' + (App.model.features.filter(function (q) { return /^Base-Flange\d+$/.test(q.name || ''); }).length + 1);
           feat.sheetBase = true;
-          return commitFeature(feat, null);
+          delete feat.id;
+          // after the undo snapshot (it holds the sheet as it was), before the rebuild
+          return commitFeature(feat, existing, function () {
+            App.model.sheet = sheet;
+            if (existing) App.model.features.forEach(function (q) { if (q.type === 'extrude' && (q.linkT || (q.sheetBase && q !== existing))) q.depth = sheet.thickness; });   // as the Sheet-Metal PM: the other T-linked extrudes follow
+          });
         }
       });
-    });
+  }
+  function cmdEditBaseFlange(existing) {
+    var f = JSON.parse(JSON.stringify(existing));
+    sheetToValues(App.model.sheet || defaultSheet(), f);
+    f.depth = f.thickness;
+    baseFlangePM(f, existing);
   }
   // lane open-base: Base Flange from an open profile: Direction 1 (Blind / Mid Plane, depth, Reverse Direction), the
   // sheet's groups with a Reverse direction for the side T goes to (SolidWorks). The feature is an `insertBends` with
@@ -7722,7 +7740,7 @@
     switch (f.type) {
       case 'sketch': editSketch(f.id); break;
       // a Base Flange's depth is the sheet thickness: it is edited with the sheet's parameters, not as an extrude
-      case 'extrude': if (f.tab && !f.cut) cmdTab(f); else if (f.sheetBase && !f.cut) cmdSheetMetal(); else cmdExtrude(f.cut, f); break;
+      case 'extrude': if (f.tab && !f.cut) cmdTab(f); else if (f.sheetBase && !f.cut) cmdEditBaseFlange(f); else cmdExtrude(f.cut, f); break;
       case 'rip': UI.cmdRipFeature(f); break;   // lane DI
       case 'vent': UI.cmdVent(f); break;   // lane DT
       case 'tabSlot': UI.cmdTabSlot(f); break;   // lane PT
@@ -9093,7 +9111,7 @@
     return fd.id;
   }
   UI.featureDimsShown = shownId;
-  var DIM_TYPES = { extrude: 1, revolve: 1, fillet: 1, chamfer: 1, shell: 1, lpattern: 1, cpattern: 1, flange: 1 };   // the features ui-select.js draws dimensions for
+  var DIM_TYPES = { extrude: 1, revolve: 1, fillet: 1, chamfer: 1, shell: 1, lpattern: 1, cpattern: 1, flange: 1, insertBends: 1 };   // the features ui-select.js draws dimensions for
   function dimHandles() { return UI.instant3DHandles ? UI.instant3DHandles().filter(function (h) { return h.kind !== 'pm' && h.kind !== 'callout' && h.kind !== 'pmflip'; }) : []; }
   UI.showFeatureDims = function (f) {
     if (!f || !idle() || f.type === 'sketch') return false;
@@ -9104,7 +9122,7 @@
     fd = { id: f.id };
     // (a dimension seen end-on is left out by ui-select.js: a feature that has some still counts as shown)
     var hs = dimHandles();
-    if (!hs.length && !(DIM_TYPES[f.type] && !(f.type === 'flange' && (f.hem || f.miterFlange)))) { fd = null; return false; }
+    if (!hs.length && !(DIM_TYPES[f.type] && !(f.type === 'flange' && (f.hem || f.miterFlange)) && !(f.type === 'insertBends' && !f.openBase))) { fd = null; return false; }
     App.dimsStale = true; if (UI.requestRender) UI.requestRender();
     UI.setStatus(f.name + ': ' + (hs.length ? hs.length + ' dimension' + (hs.length === 1 ? '' : 's') + ' shown. Click or double-click one to change it (Enter rebuilds); Esc or a click in empty space hides them.' : 'its dimensions are seen end-on in this view: turn the view to see them.'));
     return true;

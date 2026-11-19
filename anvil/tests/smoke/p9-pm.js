@@ -152,7 +152,7 @@
     var mesh0 = UI.App.mesh, bf = UI.App.model.features.filter(function (q) { return q.sheetBase; })[0];
     assert(bf, 'no Base Flange');
     UI.editFeature(bf);
-    assert(UI.hasPM() && UI.pmTitle() === 'Sheet-Metal', 'PM: ' + UI.pmTitle());
+    assert(UI.hasPM() && UI.pmTitle() === 'Base-Flange1', 'PM: ' + UI.pmTitle());   // (lane shopmouse: Edit Feature on a Base Flange opens its own PM, with Reverse direction; it opened Sheet-Metal)
     await idle(); await wait(150);
     assert(UI.App.rollback == null && UI.App.mesh === mesh0 && mesh0.triCount > 0, 'the part was rolled back to before the Base Flange (rollback ' + UI.App.rollback + ')');
     UI.pmCancel();

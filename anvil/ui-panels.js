@@ -3625,6 +3625,9 @@
     if (ft && ft.type !== 'sketch') out.push({ label: 'Edit Feature', icon: 'editFeature', help: 'Edit ' + ft.name + ', the feature that made this face', action: function () { UI.editFeature(ft); } });
     if (ft && ft.sketch != null && K.findFeature(App.model, ft.sketch)) out.push({ label: 'Edit Sketch', icon: 'sketch', help: 'Edit the sketch of ' + ft.name, action: function () { UI.editSketch(ft.sketch); } });
     out.push({ label: 'Sketch', icon: 'sketch', help: 'Start a sketch on this face', action: function () { pick(); UI.cmdSketch(); refreshRibbon(); } });
+    // rfQQ: SolidWorks' Export to DXF / DWG on a face: a sheet-metal part's flat pattern, else this face (DXF/DWG Output)
+    if (UI.cmdDxfOutput) out.push({ label: 'Export to DXF / DWG', icon: 'dxf', help: App.model.sheet ? 'Write the flat pattern to DXF or DWG (DXF/DWG Output: layers, bend lines, bend notes)' : 'Write this face to DXF or DWG (DXF/DWG Output)',
+      action: function () { pick(); UI.cmdDxfOutput({ export: App.model.sheet ? 'sheet' : 'faces' }); } });
     out.push({ sep: true });
     out.push({ label: 'Normal To', key: 'Ctrl+8', icon: 'vNormalTo', help: 'Look straight at this face', action: function () { pick(); UI.normalToSelection(); } });
     out.push({ label: 'Measure', icon: 'measure', action: function () { pick(); UI.cmdMeasure(); } });
