@@ -2447,6 +2447,17 @@ var SketchSolver = (function () {
     // the rank reduction flags whichever equation comes last, so a new relation repeating an older dimension shows up
     // as that dimension turning redundant: judge by the count, not only by the added rows
     else if (worst === 'ok' && an.redundant > before.redundant) worst = 'redundant';
+    // rfQL (lane sketchflow10): Symmetric on the two ends of a Horizontal line about a vertical centerline (a hat
+    // channel's top), or on a rectangle's two sides, repeats part of what the line's Horizontal / Vertical already say
+    // (the chord square to the axis) and adds the rest (the midpoint on the axis). SolidWorks takes it and the sketch
+    // stays Under / Fully Defined; here it showed Over Defined. A Symmetric that adds at least one equation the sketch
+    // did not have is kept as `implied` (a consistent partial repeat, as an arc slot's fourth join); one that adds
+    // nothing at all stays redundant.
+    if (worst === 'redundant' && type === 'symmetric' && res.ok && an.rank > before.rank && an.conflicts === before.conflicts) {
+      added.forEach(function (i) { sketch.rels[i].implied = true; });
+      an = analyze(sketch);
+      if (!an.conflicts && an.redundant <= before.redundant) worst = 'ok';
+    }
     if (worst !== 'ok' && opts.rejectOver) { sketch.rels = savedRels; sketch.entities = saved; return { ok: false, status: worst, error: 'Adding ' + TYPES[type].name + ' would over-define the sketch.' }; }
     var out = { ok: true, rels: added, status: worst, analysis: an };
     if (worst === 'conflict' && added.length) out.conflicts = conflictNames(sketch, {}, { src: 'rel', index: added[0] });   // what it fights, for the message

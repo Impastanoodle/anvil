@@ -1489,6 +1489,16 @@
             var rl = S.linearPattern(f, v.entities, linSpec()), lr = rl.ok ? lastPatternRel(f, true) : null;
             if (lr) lr.pat.spec = { ref1: v.ref1, angle: +v.angle, rev1: !!v.rev1, spacing: +v.spacing, count: v.count | 0, dims: !!v.dims, showCount: !!v.showCount,
               ref2: v.ref2, angle2: +v.angle2, rev2: !!v.rev2, spacing2: +v.spacing2, count2: v.count2 | 0, dimY: !!v.dimY, showCount2: !!v.showCount2, dimAngle: !!v.dimAngle };
+            // rfQL (lane sketchflow10): a spacing typed as an equation (=W/4) links the spacing dimension the pattern
+            // makes to it, as SolidWorks does (before: the dimension took the number and the link was lost)
+            if (lr && UI.pmExpressions && UI.dimExprOf) {
+              var ex = UI.pmExpressions().exprs || {};
+              [['spacing', 1], ['spacing2', 2]].forEach(function (sk) {
+                var expr = ex[sk[0]] != null ? UI.dimExprOf(ex[sk[0]]) : null;
+                if (!expr || lr.pat.nd < sk[1]) return;
+                (f.rels || []).forEach(function (q) { if (q.type === 'distance' && q.refs.length === 2 && q.refs[0] === lr.refs[0] && q.refs[1] === lr.refs[sk[1]]) q.expr = expr; });
+              });
+            }
             return rl;
           }
           // lane DM: Edit Circular Pattern takes the old instances and construction lines out first (a failure pops the

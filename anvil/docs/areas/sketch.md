@@ -210,3 +210,9 @@ Dim kinds `k`: line `len|dx|dy`; rect `w|h` (`i` = edge 0 bottom, 1 right, 2 top
   - inferPoint: a circle's or polygon's radius point never snaps to its own centre.
   - Offset chain: `chainWithout` (sketch-solver.js, used by `removeEntity`) splits a plain chain around a deleted base or copy into open chains. `chain.lead` is the dimensioned pair's place (chainEquation `L0`; trimChain bails when it is set).
   - Harness: a leading `.` cannot be typed into a number box key by key (`.25` becomes 25), so type `1/4`. At the 9 x 8 frame a .266 hole is 13 px. A click below or right of the viewport is dropped (ordinate text lines must be on screen). Ordinates worked once the text-line clicks were on screen and the dimension selected by the last Modify box was cleared with Esc (both were changed together).
+
+## Lane sketchflow10 (2026-11-19, smoke / kernel rfQL; report test-reports/2026-11-19-sketch-flow-10.md)
+- Symmetric that partly repeats a Horizontal / Vertical (a line's two ends, a rectangle's sides about a centerline) is kept `implied` by `addRelation` (sketch-solver.js): not Over Defined; a full repeat stays redundant.
+- Linear Sketch Pattern: a Spacing typed `=W/4` goes onto the spacing distance relation's `expr` (patternTool onOK, read from `UI.pmExpressions`).
+- Equations: `K.applyEquations` renames a variable whose row keeps its place and value (`K.renameVariable`: every `=` text, dim / rel `expr`, configuration values). A sketch dimension whose global equation cannot be evaluated is `build.equationErrors['D1@Sketch1']` and the sketch builds with its last values (resolvedModel resolves `withoutDimExprs(f)`); its label reads `!S` (`UI.dimExprBroken`). Linked `"D1@Sketch1"` equations stay sketch errors.
+- Open: a double-click on an open-profile Base Flange (insertBends) shows no dimensions (ui-select.js computeHandles, ui-commands.js DIM_TYPES).

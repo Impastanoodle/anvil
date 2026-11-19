@@ -130,9 +130,22 @@
     if (pre && !/\s$/.test(pre)) pre += ' ';
     if (suf && !/^\s/.test(suf)) suf = ' ' + suf;
     if (d.link != null && d.link !== '') main = '∞' + main;   // lane CV: a linked (shared) value, as SolidWorks marks it
-    else if (d.expr) main = 'Σ' + main;   // sketchflow2: driven by an equation (a global variable), SolidWorks' Σ
+    else if (d.expr) main = (exprBroken(d.expr) ? '!Σ' : 'Σ') + main;   // sketchflow2: driven by an equation (a global variable), SolidWorks' Σ; rfQL: '!' when it cannot be evaluated (its variable deleted)
     return pre + main + suf;
   }
+  // rfQL (lane sketchflow10): a global-variable equation ("=W/4") that no longer evaluates (W deleted or misspelt):
+  // the dimension keeps its value and its equation, and its label reads !Σ (the kernel names it in the build's
+  // equation errors, kernel-equations.js sketchWithExprs)
+  var brokenMemo = { vars: null, out: {} };
+  function exprBroken(expr) {
+    var s = String(expr);
+    if (!/^\s*=/.test(s) || /"|@/.test(s) || !K.evalExpression) return false;
+    var vars = UI.equationVars ? UI.equationVars() : {};
+    if (brokenMemo.vars !== vars) brokenMemo = { vars: vars, out: {} };
+    if (brokenMemo.out[s] == null) { try { brokenMemo.out[s] = !isFinite(K.evalExpression(s.replace(/^\s*=\s*/, ''), vars)); } catch (e) { brokenMemo.out[s] = true; } }
+    return brokenMemo.out[s];
+  }
+  UI.dimExprBroken = exprBroken;
   UI.dimLabelText = dimLabelText;
 
   // ------------------------------------------------------------------ dual dimensions (rfPJ, lane sketchdual)

@@ -202,6 +202,38 @@
     effectiveEquations(model).forEach(function (eq) { if (eq && eq.name != null) out[String(eq.name)] = String(eq.expr == null ? '' : eq.expr); });
     return out;
   }
+  // renameIdent(text, from, to): the identifier `from` written as `to` in an equation's text, outside "quoted" names
+  // ("D1@Sketch1" is a dimension, not a variable)
+  function renameIdent(text, from, to) {
+    if (typeof text !== 'string' || text.indexOf(from) < 0) return text;
+    return text.split('"').map(function (seg, k) {
+      return k % 2 ? seg : seg.replace(/[A-Za-z_][A-Za-z0-9_]*/g, function (m, off, s) { return m === from && !/[0-9.]$/.test(s.slice(0, off)) ? to : m; });
+    }).join('"');
+  }
+  // renameVariable(model, from, to) -> number of texts changed: every equation text of the model that names global
+  // variable `from` names `to` instead (feature and sheet values written "=...", sketch dimension / relation `expr`,
+  // configuration values and their keys). model.equations itself is left to the caller.
+  function renameVariable(model, from, to) {
+    var n = 0;
+    function walk(o, depth) {
+      if (!o || typeof o !== 'object' || depth > 12) return;
+      Object.keys(o).forEach(function (k) {
+        if (o === model && k === 'equations') return;
+        var v = o[k];
+        if (typeof v === 'string') {
+          if (k === 'expr' || /^\s*=/.test(v)) { var w = renameIdent(v, from, to); if (w !== v) { o[k] = w; n++; } }
+        } else if (v && typeof v === 'object') walk(v, depth + 1);
+      });
+    }
+    walk(model, 0);
+    configurationList(model).forEach(function (c) {
+      var vals = c.values;
+      if (!vals || typeof vals !== 'object') return;
+      Object.keys(vals).forEach(function (k) { if (typeof vals[k] === 'string') { var w = renameIdent(vals[k], from, to); if (w !== vals[k]) { vals[k] = w; n++; } } });
+      if (Object.prototype.hasOwnProperty.call(vals, from) && !Object.prototype.hasOwnProperty.call(vals, to)) { vals[to] = vals[from]; delete vals[from]; n++; }
+    });
+    return n;
+  }
   // applyEquations(model, list) -> model: write an edited equation list ([{ name, expr }], e.g. from the Equations
   // dialog) back. With no active configuration it replaces model.equations (an empty list deletes it). With one, the
   // list's names and order become model.equations; a variable the active configuration names gets its new expr in
@@ -210,6 +242,24 @@
   function applyEquations(model, list) {
     list = (list || []).filter(function (q) { return q && q.name != null && String(q.name) !== ''; })
       .map(function (q) { return { name: String(q.name), expr: String(q.expr == null ? '' : q.expr) }; });
+    // rfQL (lane sketchflow10): a variable renamed in the dialog (its row keeps its place; the old name is gone from
+    // the list and the new one is new) is renamed wherever an equation names it: the other variables, the
+    // configurations, feature values and sketch dimensions (SolidWorks renames the references; before, every
+    // dimension typed =W became an "Unknown variable" error when W was renamed WIDTH)
+    var prev = effectiveEquations(model);
+    if (prev.length === list.length) {
+      var oldN = {}, newN = {};
+      prev.forEach(function (q) { oldN[String(q.name)] = true; });
+      list.forEach(function (q) { newN[q.name] = true; });
+      var typed = list.map(function (q) { return q.expr; });
+      prev.forEach(function (q, i) {
+        var from = String(q.name), to = list[i].name;
+        // a rename keeps the row's value; a row deleted and another added in its place (another value) is not one
+        if (from === to || newN[from] || oldN[to] || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(to) || String(q.expr) !== typed[i]) return;
+        list.forEach(function (r) { r.expr = renameIdent(r.expr, from, to); });
+        renameVariable(model, from, to);
+      });
+    }
     var ac = activeConfiguration(model), vals = ac ? (ac.values && typeof ac.values === 'object' ? ac.values : (ac.values = {})) : null;
     var base = {};
     (Array.isArray(model.equations) ? model.equations : []).forEach(function (q) { if (q && q.name != null) base[String(q.name)] = q; });
@@ -256,6 +306,14 @@
   // resolveFeature(f, vars) -> a deep copy of f with every "=" string replaced by its value; throws
   // "<field>: <message>" (nested fields as dir2.depth) for the first field that fails.
   function resolveFeature(f, vars) { return resolveValue(f, vars || {}, ''); }
+  // rfQL: a sketch with its dimension / relation `expr` fields left out (shallow copies of the dims and rels holding one)
+  function withoutDimExprs(f) {
+    function strip(list) { return list.map(function (d) { if (!d || d.expr == null) return d; var o = {}; Object.keys(d).forEach(function (k) { if (k !== 'expr') o[k] = d[k]; }); return o; }); }
+    if (!(f.dims || []).some(function (d) { return d && d.expr != null; }) && !(f.rels || []).some(function (d) { return d && d.expr != null; })) return f;
+    var o = {};
+    Object.keys(f).forEach(function (k) { o[k] = (k === 'dims' || k === 'rels') && Array.isArray(f[k]) ? strip(f[k]) : f[k]; });
+    return o;
+  }
   // hasExpressions(f) -> true when the feature holds any "=" string outside the skipped keys
   function hasExpressions(f) {
     if (isExpression(f)) return true;
@@ -331,22 +389,34 @@
     if (!items.length) return null;
     // rfPR: values in passes, so an equation of another linked dimension of this sketch reads its new value
     var mine = {}, look = dimLookup(ctx && ctx.model || { features: [orig] }, ctx && ctx.done, (function () { var o = {}; o[orig.name] = mine; return o; })());
-    var vals = [];
+    var vals = [], soft = {};
+    if (ctx && ctx.soft) ctx.soft[orig.name] = soft;
     for (var pass = 0; pass < 8; pass++) {
       var moved = false;
       for (var i = 0; i < items.length; i++) {
         var it = items[i], v;
+        if (soft[it.name]) continue;
         try {
           var lk = linkedExpr(it.d.expr, orig.name, vars, look);
           v = lk ? evalExpression(lk.expr, lk.vars) : evalExpression(String(it.d.expr), vars);
-        } catch (e) { return { error: it.name + '@' + orig.name + ': ' + (e.message || String(e)) }; }
-        if (!isFinite(v)) return { error: it.name + '@' + orig.name + ' is not a number' };
+          if (!isFinite(v)) throw new Error('not a number');
+        } catch (e) {
+          // an equation naming sketch dimensions ("D9@Sketch1"/4) that is not there stays the sketch's error (rfPR)
+          if (!/^\s*=/.test(String(it.d.expr)) || /"|@/.test(String(it.d.expr))) return { error: it.name + '@' + orig.name + ': ' + (e.message || String(e)) };
+          // rfQL (lane sketchflow10): an equation that cannot be evaluated (its variable deleted) is an equation error,
+          // as SolidWorks shows it (a red equation): the dimension keeps its equation and its last value, and the
+          // sketch builds (before, the sketch failed and took every feature after it down)
+          var cur0 = sketchDimValue(orig, it);
+          soft[it.name] = (/^\s*=/.test(String(it.d.expr)) ? '' : '=') + String(it.d.expr) + ': ' + (e.message || String(e)) + ' (the dimension keeps ' + (Math.round(cur0 * 1e6) / 1e6) + ')';
+          continue;
+        }
         if (vals[i] == null || Math.abs(vals[i] - v) > 1e-12 * Math.max(1, Math.abs(v))) { vals[i] = v; mine[it.name] = v; moved = true; }
       }
       if (!moved) break;
     }
     var todo = [];
     items.forEach(function (it, i) {
+      if (soft[it.name]) return;
       var v = vals[i], cur = sketchDimValue(orig, it);
       if (!(Math.abs(v - cur) <= 1e-9 * Math.max(1, Math.abs(v)))) todo.push({ it: it, v: v });
     });
@@ -397,12 +467,15 @@
     var rm = {}, sup = suppressedIds(model);   // rfFC: suppressed features (own, per configuration, with their children)
     Object.keys(model).forEach(function (k) { rm[k] = model[k]; });
     var done = {};   // rfPR: sketch name -> its resolved copy, for equations naming an earlier sketch's dimensions
+    var soft = {};   // rfQL: sketch name -> { dimension name: why its equation cannot be evaluated }
     rm.features = model.features.map(function (f) {
       if (sup[f.id]) return f.suppressed ? f : suppressedCopy(f, true);
       var r = f;
-      if (hasExpressions(f)) try { r = resolveFeature(f, vars); } catch (e) { featureErrors[f.id] = e.message || String(e); }
+      // rfQL: a sketch's dimension equations (dims / rels `expr`) are evaluated by sketchWithExprs alone, which keeps
+      // one that fails as an equation error instead of failing the sketch
+      if (hasExpressions(f)) try { r = resolveFeature(f.type === 'sketch' ? withoutDimExprs(f) : f, vars); } catch (e) { featureErrors[f.id] = e.message || String(e); }
       if (f.type === 'sketch' && !featureErrors[f.id]) {   // rfOD: sketch dimensions linked to variables (Design Table)
-        var sx = sketchWithExprs(f, r, vars, { model: model, done: done });
+        var sx = sketchWithExprs(f, r, vars, { model: model, done: done, soft: soft });
         if (sx && sx.error) featureErrors[f.id] = sx.error; else if (sx) r = sx.sketch;
       }
       if (f.type === 'sketch' && f.name) done[f.name] = r;
@@ -411,7 +484,11 @@
     if (model.sheet && hasExpressions(model.sheet)) {
       try { rm.sheet = resolveFeature(model.sheet, vars); } catch (e) { sheetError = 'sheet.' + (e.message || String(e)); }
     }
-    return { model: rm, vars: vars, errors: eq.errors, featureErrors: featureErrors, sheetError: sheetError, configuration: eq.configuration, suppressed: sup };
+    var errors = eq.errors;
+    Object.keys(soft).forEach(function (skn) {
+      Object.keys(soft[skn]).forEach(function (dn) { if (errors === eq.errors) errors = cloneValue(eq.errors || {}); errors[dn + '@' + skn] = soft[skn][dn]; });
+    });
+    return { model: rm, vars: vars, errors: errors, featureErrors: featureErrors, sheetError: sheetError, configuration: eq.configuration, suppressed: sup };
   }
 
   // ------------------------------------------------------------------ rfFC: feature suppression (SolidWorks Suppress)
@@ -809,7 +886,7 @@
   K.isExpression = isExpression; K.evalExpression = evalExpression; K.resolveEquations = resolveEquations; K.resolvedModel = resolvedModel;
   K.resolveFeature = resolveFeature; K.hasExpressions = hasExpressions; K.configurationList = configurationList;
   K.findConfiguration = findConfiguration; K.activeConfiguration = activeConfiguration; K.effectiveEquations = effectiveEquations;
-  K.captureConfiguration = captureConfiguration; K.applyEquations = applyEquations; K.EXPR_FUNCTIONS = Object.keys(EXPR_FN);
+  K.captureConfiguration = captureConfiguration; K.applyEquations = applyEquations; K.renameVariable = renameVariable; K.EXPR_FUNCTIONS = Object.keys(EXPR_FN);
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.configExpr = configExpr; _.evalExpression = evalExpression; _.findConfiguration = findConfiguration; _.isExpression = isExpression;
   _.resolveEquations = resolveEquations; _.resolvedModel = resolvedModel;
