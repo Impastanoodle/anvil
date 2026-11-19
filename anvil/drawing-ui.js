@@ -903,6 +903,7 @@
     if (/^(aux|crop|brk|bko|ahatch|magline)$/.test(D.tool) && DW.liveOverlay) DW.liveOverlay(g, H, svgNode, ghost);   // (rfW)
     if (D.tool === 'rmsec' && D.pending && DW.rmsecOverlay) DW.rmsecOverlay(g, H, svgNode, ghost);   // (rfCX) Removed Section
     if (DW.magOverlay) DW.magOverlay(g, H, svgNode);   // (rfAG) magnetic lines (not printed)
+    if (D.drag && D.drag.kind === 'vhandle' && DW.vhandleOverlay) DW.vhandleOverlay(g, H, svgNode);   // (rfQV) a cutting line / detail circle being dragged
     if (D.tool === 'culeader' && DW.cuLeaderOverlay) DW.cuLeaderOverlay(g, H, svgNode);   // (rfCU2) the multi-jog leader being clicked
     if (D.tool === 'note' && DW.noteLeaderOverlay) DW.noteLeaderOverlay(g, H, svgNode);   // (rfKT) a note's leader before the note is placed
     if (D.tool === 'holecallout' && DW.calloutOverlay) DW.calloutOverlay(g, H, svgNode);   // (rfKX) the callout follows the pointer until the second click
@@ -1058,6 +1059,9 @@
       UI.setStatus('Balloon ' + bl.item + ' (Bill of Materials item ' + bl.item + ') — drag to move it, double-click for properties, Delete removes it.');
       return;
     }
+    // (rfQV) a cutting line / detail circle within 5 px, dragged (before the centre marks, whose boxes cover the circle)
+    var hd = DW.viewHandleAt ? DW.viewHandleAt(p) : null;
+    if (hd) { D.sel = { kind: 'view', id: hd.id }; D.drag = { kind: 'vhandle', h: hd, start: p, at: null, moved: false }; drawOverlay(); DW.renderTree(); UI.setStatus(hd.msg); return; }
     var an = DW.annotAt(p);
     if (an) {
       D.sel = { kind: 'annot', id: an.id, view: an.view };
@@ -1089,6 +1093,7 @@
     var w = viewAt(p);
     if (w) {
       D.sel = { kind: 'view', id: w.view.id };
+      if (w.view.locked) { drawOverlay(); DW.renderTree(); UI.setStatus(w.view.name + ': position locked (right-click ▸ Lock View Position to free it).'); return; }   // (rfQV)
       D.drag = { kind: 'view', id: w.view.id, start: p, x0: w.view.x, y0: w.view.y, moved: false };
       drawOverlay(); DW.renderTree();
       UI.setStatus(w.view.name + ' (' + w.view.orient + ') \u2014 drag to move' + (w.view.parent != null ? ' along its projection' : '') + ', right-click for options.');
@@ -1167,6 +1172,12 @@
       }
       return;
     }
+    if (D.drag && D.drag.kind === 'vhandle') {   // (rfQV) the line / circle follows the pointer; the view on the drop
+      var ph = toPaper(e), dh = D.drag;
+      if (!dh.moved && Math.hypot(ph[0] - dh.start[0], ph[1] - dh.start[1]) < pxToPaper(3)) return;
+      dh.moved = true; dh.at = ph; D.host.classList.add('dw-dragging'); drawOverlay();
+      return;
+    }
     if (D.drag && D.drag.kind === 'view') {
       var p = toPaper(e), dg = D.drag;
       if (!dg.moved && Math.hypot(p[0] - dg.start[0], p[1] - dg.start[1]) < pxToPaper(3)) return;
@@ -1225,6 +1236,7 @@
     // the sheet (Delete deletes it, D starts Smart Dimension)
     if (dg.kind === 'dim' && dg.clickPM && !dg.moved && D.active) DW.openClickDimPM(dg.ref);
     if (dg.kind === 'dim' && dg.moved && dg.toView != null && DW.dropDimToView && DW.dropDimToView(dg)) return;   // (rfQC) Shift / Ctrl+drag onto another view
+    if (dg.kind === 'vhandle') { if (dg.moved) DW.dropViewHandle(dg); else drawOverlay(); return; }   // (rfQV)
     if ((dg.kind === 'fmt' || dg.kind === 'gtable' || dg.kind === 'sk') && dg.moved) { D.dirty = true; UI.autosave(); render(); return; }   // (rfAE)
     if ((dg.kind === 'view' || dg.kind === 'bom' || dg.kind === 'dim' || dg.kind === 'balloon' || dg.kind === 'annot' || dg.kind === 'note' || dg.kind === 'flatann' || dg.kind === 'symbol' || dg.kind === 'tip') && dg.moved) { D.dirty = true; UI.autosave(); render(); }
   }

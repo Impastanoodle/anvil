@@ -215,6 +215,7 @@
       return hatchPattern(bm && bm.name);
     };
     doc.views.forEach(function (v) {
+      if (v.hidden) return;   // (rfQV) right-click ▸ Hide: off the sheet and the exports; its views stay (worked out from it)
       var ct = contentOf(v), pr = ct.proj;
       projections[v.id] = pr;
       var s = viewScale(doc, v), cu = ct.center[0], cv = ct.center[1], bd = pr.bounds;
@@ -616,7 +617,7 @@
       return suppressed.indexOf(d.key) < 0;
     }) : [];
     doc.views.forEach(function (v) {
-      if (pendingView[v.id]) return;
+      if (pendingView[v.id] || v.hidden) return;
       var tw = views.filter(function (x) { return x.view.id === v.id && x.trueDims; })[0];
       (v.dims || []).forEach(function (d, i) {
         if (projections[v.id]) reattachUserDim(d, (contents[v.id] && contents[v.id].fullProj) || projections[v.id]);   // (rfPM) a cropped view: the whole view

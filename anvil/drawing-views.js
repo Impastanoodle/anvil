@@ -2335,6 +2335,34 @@
     return v;
   }
   D.setDetailOptions = setDetailOptions;
+  // (rfQV) SolidWorks drags a section's cutting line and a detail's circle on the sheet; the views follow.
+  // moveSectionLine(doc, mesh, id, at): the line to `at` (parent frame, across the line); an offset line's legs and a
+  // half / aligned centre keep their places along it, the legs move by the same amount. A removed section is moved
+  // through its own two ends (refused here).
+  function moveSectionLine(doc, mesh, id, at) {
+    var v = findV(doc, id);
+    if (!v || v.kind !== 'section' || !v.section) throw new Error('No section view ' + id);
+    if (isRemoved(v)) throw new Error('A removed section\'s cutting line runs between its two ends: edit it from its PropertyManager');
+    if (!isFinite(at)) throw new Error('moveSectionLine: the line\'s place must be a number');
+    var d = at - v.section.at;
+    v.section.at = at;
+    if (v.section.jogs) v.section.jogs.forEach(function (j) { j.at += d; });
+    if (v.section.scaleWithModel) sectionRel(doc, mesh, v);
+    return v;
+  }
+  // moveDetailCircle(doc, id, c): the detail circle's (or profile's) centre to c (parent frame)
+  function moveDetailCircle(doc, id, c) {
+    var v = findV(doc, id);
+    if (!v || v.kind !== 'detail' || !v.detail) throw new Error('No detail view ' + id);
+    var dt = v.detail, dx = c[0] - dt.c[0], dy = c[1] - dt.c[1];
+    function sh(q) { return [q[0] + dx, q[1] + dy]; }
+    dt.c = [c[0], c[1]];
+    if (dt.a) dt.a = sh(dt.a);
+    if (dt.b) dt.b = sh(dt.b);
+    if (dt.pts) dt.pts = dt.pts.map(sh);
+    return v;
+  }
+  D.moveSectionLine = moveSectionLine; D.moveDetailCircle = moveDetailCircle;
   // (rfCQ) the view label, as SolidWorks shows it: section, detail and auxiliary views are labelled by default (SECTION
   // A-A, DETAIL B / SCALE 2 : 1, VIEW C-C); model, projected, relative and flat-pattern views are not, unless the view's
   // Display label is on (view.showLabel: stored only when it differs from the default). viewLabelShown(v) -> boolean
@@ -3264,8 +3292,19 @@
   }
   // (rfCX) a section drawn at its parent's scale (Use parent scale: section.parentScale, set when it is made) follows
   // the parent's scale when that changes (drawing-render.js compute, through resolveSectionScale)
+  // (rfQV) a projected view (and Standard 3 View's Top / Right) uses its parent's scale and display style, as
+  // SolidWorks' Use parent scale / Use parent style do by default: the Front set to 1:2 or Hidden Lines Removed takes
+  // its projections along. v.ownScale / v.ownStyle (the Properties PM, the right-click Display ▸) keep the view's own.
+  function followsParent(v) { return v.parent != null && (v.kind === 'projected' || !v.kind); }
   function followParentScale(doc) {
     (doc.views || []).forEach(function (v) {
+      if (followsParent(v)) {
+        var pv = findV(doc, v.parent);
+        if (!pv) return;
+        if (!v.ownScale) { var ws = pv.scale ? pv.scale.slice() : null; if (JSON.stringify(v.scale || null) !== JSON.stringify(ws)) v.scale = ws; }
+        if (!v.ownStyle && pv.display && v.display !== pv.display) v.display = pv.display;
+        return;
+      }
       if (!(v.kind === 'section' && v.section && v.section.parentScale && v.parent != null)) return;
       var par = findV(doc, v.parent);
       if (!par) return;
@@ -3326,7 +3365,7 @@
     return out;
   }
   // (rfCX)
-  D.addRemovedSection = addRemovedSection; D.isRemovedSection = isRemoved; _.removedContent = removedContent; _.followParentScale = followParentScale; D.convexPieces = convexPieces; _.clipLoopsPoly = clipLoopsPoly;
+  D.addRemovedSection = addRemovedSection; D.isRemovedSection = isRemoved; _.removedContent = removedContent; _.followParentScale = followParentScale; D.followsParent = followsParent; D.followParents = followParentScale; D.convexPieces = convexPieces; _.clipLoopsPoly = clipLoopsPoly;
   _.flatDetailLines = flatDetailLines;   // (rfPH)
   _.cropEdge = cropEdge; _.cropRegion = cropRegion; _.applyCrop = applyCrop;   // (rfPM)
   _.altPositionContent = altPositionContent; D.addAltPosition = addAltPosition; D.deleteAltPosition = deleteAltPosition;   // (rfPM)

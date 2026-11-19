@@ -72,7 +72,18 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
   // 'right' of its parent) in third-angle projection, from the opposite side in first angle. Vertical neighbours share
   // the parent's u (so they line up in x), horizontal ones its v (level in y). Front + up = Top, Front + right = Right.
   var DIRS = { up: [0, 1], down: [0, -1], left: [-1, 0], right: [1, 0] };
+  // (rfQV) the four corners ('upright' …): SolidWorks' projected view placed diagonally from its parent is the
+  // pictorial view from that corner (Front + upright = the Isometric); the parent's up stays up
+  var DIAGS = { upright: [1, 1], upleft: [-1, 1], downright: [1, -1], downleft: [-1, -1] };
   function projectedFrame(P, dir, projection) {
+    var g = DIAGS[dir];
+    if (g) {
+      var sd = projection === 'first' ? -1 : 1;
+      var ed = V.norm(V.add(P.e, V.add(V.scale(P.u, sd * g[0]), V.scale(P.v, sd * g[1])))), ud = V.norm(V.cross(P.v, ed));
+      var FD = frameOf({ e: ed, u: ud, v: V.cross(ed, ud) });
+      if (FD.name === 'Projected') FD.name = 'Isometric';
+      return FD;
+    }
     var d = DIRS[dir];
     if (!d) throw new Error('Projection direction must be up, down, left or right');
     var sg = projection === 'first' ? -1 : 1;
@@ -764,7 +775,7 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
   }
 
   D.ORIENTS = Object.keys(ORIENTS); D.orientation = orientation; D.frameOf = frameOf; D.isOrthoFrame = isOrthoFrame;
-  D.projectedFrame = projectedFrame; D.sectionFrame = sectionFrame;
+  D.projectedFrame = projectedFrame; D.sectionFrame = sectionFrame; D.DIAGS = DIAGS;
   D.meshEdges = meshEdges; D.pairOpenEdges = pairOpenEdges; D.joinCollinear = joinCollinear;
   _.TWO_PI = TWO_PI; _.ORTHO = ORTHO; _.DIRS = DIRS; _.frameKey = frameKey; _.COS_SMOOTH = COS_SMOOTH; _.COS_CREASE = COS_CREASE;
   _.meshDiag = meshDiag; _.closeEnds = closeEnds; _.closeFreeEnds = closeFreeEnds; _.closeSmallGaps = closeSmallGaps; _.boxGrid = boxGrid; _.edgeOps = edgeOps; _.weldEnds = weldEnds; _.chordsToArcs = chordsToArcs;

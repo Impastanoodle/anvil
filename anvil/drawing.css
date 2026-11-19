@@ -81,6 +81,7 @@
 #drawing-tree .ti:hover { background: var(--sw-row-hover, var(--hover)); }
 #drawing-tree .ti.selected { background: var(--sw-row-sel, var(--sel)); box-shadow: inset 0 0 0 1px var(--sw-row-sel-line, var(--line)); }
 #drawing-tree .ti .nm { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#drawing-tree .ti.dw-view-hidden .nm, #drawing-tree .ti.dw-view-hidden svg { opacity: .5; }   /* (rfQV) a hidden view's row, greyed as SolidWorks does */
 #drawing-tree .ti .badge { flex: none; padding-left: 8px; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: pre; }
 #drawing-tree .ti.dw-root .nm { font-weight: 600; }
 #drawing-tree .ti.dw-ref { color: var(--muted); }

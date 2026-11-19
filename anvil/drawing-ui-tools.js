@@ -17,8 +17,17 @@
   Drawing.explodedNow = function () { return !!(isAsm() && App.model.exploded != null && (App.model.explodedViews || []).length); };
 
   // ------------------------------------------------------------------ commands
-  function cmdStandard3View() {
+  // o.add (the ribbon, Insert ▸ Drawing View, the sheet's right-click; rfQV): SolidWorks' Standard 3 View, Front / Top /
+  // Right added to the sheet and the views on it kept; without it (the API) the sheet is laid out anew with an Isometric
+  function cmdStandard3View(o) {
     if (!App.mesh || !App.mesh.triCount) { UI.toast(isAsm() ? 'The assembly has no components to draw yet.' : 'The part has no solid body to draw yet.'); return; }
+    if (o && o.add) {
+      var had = doc().views.length;
+      editView(function (dc) { syncBom(dc); return Drawing.addStandard3View(dc, mesh(), units(), { autoInsert: false })[0]; }, { insert: true });
+      D.sel = null; if (!had) fitSheet();
+      UI.setStatus('Standard 3 View: Front, Top and Right (' + (doc().sheet.projection === 'first' ? 'first' : 'third') + '-angle), scale ' + Drawing.scaleText(doc().sheet.scale) + (had ? '; the views already on the sheet stay.' : '.'));
+      return;
+    }
     // (rfDR) the views' hidden-line removal goes to the worker; Auto insert runs when they have landed
     editView(function (dc) { syncBom(dc); Drawing.standard3View(dc, mesh(), units(), { autoInsert: false }); return dc.views[0]; }, { insert: true });
     D.sel = null; fitSheet();
@@ -147,6 +156,13 @@
     if (!w) return null;
     var v = w.view, dx = p[0] - v.x, dy = p[1] - v.y;
     var dir = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 'right' : 'left') : (dy >= 0 ? 'up' : 'down'), vert = dir === 'up' || dir === 'down';
+    // (rfQV) past a corner of the parent's box (beyond it both across and up / down): the pictorial view from that
+    // corner, placed where the pointer is (SolidWorks' auto-start projected view gives the isometric there)
+    var B = w.box, off = pxToPaper(6);
+    if ((p[0] > B.x1 + off || p[0] < B.x0 - off) && (p[1] > B.y1 + off || p[1] < B.y0 - off)) {
+      var dg = (dy >= 0 ? 'up' : 'down') + (dx >= 0 ? 'right' : 'left'), FD = Drawing.projectedFrame(w.frame, dg, doc().sheet.projection), ed = Drawing.extentsOf(mesh(), FD);
+      return { dir: dg, diag: true, x: p[0], y: p[1], w: ed.w * w.scale, h: ed.h * w.scale, name: FD.name };
+    }
     var F = Drawing.projectedFrame(w.frame, dir, doc().sheet.projection), ext = Drawing.extentsOf(mesh(), F);
     return { dir: dir, x: vert ? v.x : p[0], y: vert ? p[1] : v.y, w: ext.w * w.scale, h: ext.h * w.scale, name: F.name };
   }
@@ -165,7 +181,7 @@
     endTool();
     v = editView(function (dc) { return Drawing.addProjectedView(dc, mesh(), parent, pl.dir, { x: pl.x, y: pl.y }); });
     D.sel = { kind: 'view', id: v.id }; drawOverlay(); DW.renderTree();
-    UI.setStatus(v.name + ' (' + v.orient + ') projected ' + pl.dir + ' from its parent, aligned with it.' + (chain ? ' Click for another projection, Esc ends.' : ''));
+    UI.setStatus(v.name + ' (' + v.orient + ') projected ' + (pl.diag ? 'from the ' + pl.dir.replace(/^(up|down)/, '$1 ').replace('up', 'top').replace('down', 'bottom') + ' corner of its parent (it moves freely).' : pl.dir + ' from its parent, aligned with it.') + (chain ? ' Click for another projection, Esc ends.' : ''));
     if (chain) startTool('project', { parent: parent, at: null, chain: true });   // (rfW) Auto-start projected view goes on
     return v;
   }
@@ -419,9 +435,19 @@
     UI.setStatus(v.name + ' placed.');
     return v;
   }
+  // (rfQV) SolidWorks' Scale ▸ Use custom scale ▸ User Defined: any ratio typed ('3:8', '1:2.5', '2.5')
+  function userScaleOpt() { return [['user', 'User Defined']]; }
+  function listedScale(sc) { return !sc || scaleOptions().some(function (o) { return o[0] === Drawing.scaleText(sc); }); }
+  function parseUserScale(t) {
+    var m = /^\s*(\d*\.?\d+)\s*(?:[:\/]\s*(\d*\.?\d+))?\s*$/.exec(String(t || ''));
+    if (!m) return null;
+    var a = +m[1], b = m[2] != null ? +m[2] : 1;
+    return a > 0 && b > 0 && a / b >= 1 / 1000 && a / b <= 1000 ? [a, b] : null;
+  }
   function cmdViewProperties(id) {
     var v = Drawing.findView(doc(), id);
     if (!v) return;
+    var kid = Drawing.followsParent(v);
     if (v.kind === 'flat') {
       var o = Drawing.docOptions(doc());
       openDrawingPM({
@@ -455,14 +481,17 @@
     }
     openDrawingPM({
       title: v.name, icon: 'drawingView', command: 'viewProps',
-      values: { orient: v.orient, display: v.display, tangent: v.tangent || 'removed', scale: v.section && v.section.parentScale ? 'parent' : v.scale ? Drawing.scaleText(v.scale) : 'sheet', dimType: v.dimType === 'true' ? 'true' : 'projected',
+      values: { orient: v.orient, display: v.display, tangent: v.tangent || 'removed', scale: v.section && v.section.parentScale || kid && !v.ownScale ? 'parent' : !listedScale(v.scale) ? 'user' : v.scale ? Drawing.scaleText(v.scale) : 'sheet', userScale: v.scale ? Drawing.scaleText(v.scale) : '', parentStyle: kid && !v.ownStyle, dimType: v.dimType === 'true' ? 'true' : 'projected',
         swm: !!(v.section && v.section.scaleWithModel), partial: !!(v.section && v.section.partial), dstyle: (v.detail && v.detail.style) || 'standard', outline: (v.detail && v.detail.outline) || 'none',
         showLabel: Drawing.viewLabelShown(v), exploded: !!Drawing.explodedShown(v, App.model), excluded: v.kind === 'section' && v.section && (!v.section.type || v.section.type === 'full') ? (v.section.excluded || []).slice() : undefined },
       // projected, section and detail views take their direction from the parent
       groups: (v.kind ? [] : [{ title: 'Orientation', fields: [{ type: 'select', key: 'orient', label: 'View', rerender: true, options: Drawing.ORIENTS }] }]).concat([
-        { title: 'Display Style', fields: [{ type: 'select', key: 'display', label: 'Style', options: [['hlv', 'Hidden Lines Visible'], ['hlr', 'Hidden Lines Removed']] }].concat(v.kind === 'detail' ? [] : [
+        // (rfQV) a projected view: Use parent style (on: the style follows the parent's and the Style box is hidden)
+        { title: 'Display Style', fields: (kid ? [{ type: 'check', key: 'parentStyle', label: 'Use parent style', rerender: true }] : []).concat([{ type: 'select', key: 'display', label: 'Style', options: [['hlv', 'Hidden Lines Visible'], ['hlr', 'Hidden Lines Removed']], show: function (val) { return !(kid && val.parentStyle); } }]).concat(v.kind === 'detail' ? [] : [
           { type: 'select', key: 'tangent', label: 'Tangent edges', options: [['visible', 'Tangent Edges Visible'], ['font', 'Tangent Edges With Font'], ['removed', 'Tangent Edges Removed']] }]) },
-        { title: 'Scale', fields: [{ type: 'select', key: 'scale', label: 'Scale', options: v.kind === 'detail' ? scaleOptions().slice(1) : v.kind === 'section' ? [['parent', 'Use parent scale']].concat(scaleOptions()) : scaleOptions() }] }
+        // (rfQV) Use parent scale for a projected view; User Defined: a scale typed as 3:8 or 1:2.5
+        { title: 'Scale', fields: [{ type: 'select', key: 'scale', label: 'Scale', rerender: true, options: (v.kind === 'detail' ? scaleOptions().slice(1) : v.kind === 'section' || kid ? [['parent', 'Use parent scale']].concat(scaleOptions()) : scaleOptions()).concat(userScaleOpt(v)) },
+          { type: 'text', key: 'userScale', label: 'User defined', show: function (val) { return val.scale === 'user'; } }] }
       ]).concat(
         // (rfZ) a pictorial model view's Dimension Type; a section's Partial section (off only: a new line is clicked) and
         // Scale with model changes; a detail's circle style and outline
@@ -478,9 +507,18 @@
         // (rfCQ) the view label: off by default on model and projected views, on for section, detail and auxiliary views
         [{ title: 'Label', fields: [{ type: 'check', key: 'showLabel', label: 'Display label' }] }]),
       onOK: function (val) {
+        if (val.scale === 'user') {   // (rfQV) a typed scale; one that does not read keeps the view's scale
+          var us = parseUserScale(val.userScale);
+          if (us) val.scale = us[0] + ':' + us[1];
+          else { UI.toast('Scale: type it as 3:8, 1:2.5 or 2 (kept ' + Drawing.scaleText(v.scale || doc().sheet.scale || [1, 1]) + ').'); val.scale = kid && !v.ownScale ? 'parent' : v.scale ? Drawing.scaleText(v.scale) : 'sheet'; }
+        }
         edit(function (dc) {
           var w = Drawing.findView(dc, id);
           if (!w) return;
+          if (kid) {   // (rfQV) Use parent scale / Use parent style
+            if (val.scale === 'parent') delete w.ownScale; else w.ownScale = true;
+            if (val.parentStyle) { delete w.ownStyle; var pw = Drawing.findView(dc, w.parent); if (pw && pw.display) val.display = pw.display; } else w.ownStyle = true;
+          }
           if (!w.kind && w.orient !== val.orient) {
             w.orient = val.orient; w.role = null; w.parent = null; w.align = null; w.dims = [];
             // projected views keep the frame they were made with: no longer aligned with the turned parent
@@ -506,7 +544,7 @@
     });
   }
   function setViewDisplay(id, display) {
-    edit(function (dc) { var v = Drawing.findView(dc, id); if (v) v.display = display; });
+    edit(function (dc) { var v = Drawing.findView(dc, id); if (v) { v.display = display; if (Drawing.followsParent(v)) v.ownStyle = true; } });   // (rfQV) a projected view's own style from now on
   }
   // Tangent Edges Visible / With Font / Removed (SolidWorks: view right-click ▸ Tangent Edge); 'removed' is the default
   function setViewTangent(id, mode) {
@@ -1079,7 +1117,7 @@
         { label: 'Crop View ▸ Edit Crop', disabled: !v.crop, action: function () { editCrop(v.id); } },   // (rfPM) a cropped flat
         { label: 'Crop View ▸ Remove Crop', disabled: !v.crop, action: function () { removeCrop(v.id); } },
         { sep: true },
-        ].concat(moveToSheetItems(v), [{ label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }]);
+        ].concat(lockHideItems(v), moveToSheetItems(v), [{ label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }]);
     }
     return [
       { label: 'Properties\u2026', action: function () { cmdViewProperties(v.id); } },
@@ -1106,7 +1144,71 @@
       { label: 'Broken-out Section ▸ Remove', disabled: !(v.brokenOut && v.brokenOut.length), action: function () { removeBrokenOut(v.id); } },
       { label: 'Area Hatch/Fill…', disabled: !hatchUnder(v), action: function () { var h = hatchUnder(v); if (h) cmdAreaHatch(v.id, h.g); } },
       { sep: true },
-      ].concat(moveToSheetItems(v), [{ label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }]));
+      ].concat(lockHideItems(v), moveToSheetItems(v), [{ label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }]));
+  }
+  // (rfQV) a section's cutting line or a detail's circle under the pointer, to drag (SolidWorks moves them on the
+  // sheet and the view follows): { kind: 'secline' | 'detcircle', id (the section / detail view), w (its parent on
+  // the sheet), msg } or null. A removed section's line and a rotated parent are left to their PropertyManagers.
+  function viewHandleAt(p) {
+    if (!D.sheet || D.tool) return null;
+    var tol = pxToPaper(5), best = null, bd = tol, dc = doc();
+    dc.views.forEach(function (v) {
+      if (v.hidden || v.parent == null) return;
+      var w = sheetView(v.parent);
+      if (!w || w.view.rotate) return;
+      if (v.kind === 'section' && v.section && !Drawing.isRemovedSection(v)) {
+        var sc = v.section, h = sc.axis === 'h', q = w.toSheet(h ? [0, sc.at] : [sc.at, 0]), B = w.box, ext = 5 * paperK();
+        var along = h ? p[0] : p[1], lo = h ? B.x0 - ext : B.y0 - ext, hi = h ? B.x1 + ext : B.y1 + ext;
+        if (sc.type || sc.partial) return;   // (a full line across the parent only: half / offset / aligned / partial lines are edited in the PM)
+        var dd = Math.abs(h ? p[1] - q[1] : p[0] - q[0]);
+        if (along >= lo && along <= hi && dd < bd) { bd = dd; best = { kind: 'secline', id: v.id, w: w, msg: 'Cutting line ' + (v.label || '') + '-' + (v.label || '') + ': drag it across the view; the section follows (it snaps to hole centres).' }; }
+      } else if (v.kind === 'detail' && v.detail && !v.detail.shape) {
+        var c = w.toSheet(v.detail.c), r = v.detail.r * w.scale, dr = Math.abs(Math.hypot(p[0] - c[0], p[1] - c[1]) - r);
+        if (dr < bd) { bd = dr; best = { kind: 'detcircle', id: v.id, w: w, msg: 'Detail circle ' + (v.label || '') + ': drag it to another place on the view; the detail follows.' }; }
+      }
+    });
+    return best;
+  }
+  // where the dragged handle would go now: { at } for a cutting line (snapped to circle centres within 8 px), { c } for
+  // a detail circle (parent frame)
+  function handleTarget(dg, p) {
+    var h = dg.h, w = h.w, v = Drawing.findView(doc(), h.id), dp = [p[0] - dg.start[0], p[1] - dg.start[1]];
+    if (h.kind === 'secline') {
+      var ax = v.section.axis, mp = w.fromSheet(p), at = ax === 'h' ? mp[1] : mp[0], snap = pxToPaper(8), best = snap;
+      w.proj.circles.visible.concat(w.proj.circles.hidden).forEach(function (cc) { var cs = w.toSheet(cc.c), d = ax === 'h' ? Math.abs(cs[1] - p[1]) : Math.abs(cs[0] - p[0]); if (d < best) { best = d; at = ax === 'h' ? cc.c[1] : cc.c[0]; } });
+      return { at: at };
+    }
+    var c0 = w.toSheet(v.detail.c);
+    return { c: w.fromSheet([c0[0] + dp[0], c0[1] + dp[1]]) };
+  }
+  function vhandleOverlay(g, H, svgNode) {
+    var dg = D.drag;
+    if (!dg || dg.kind !== 'vhandle' || !dg.moved || !dg.at) return;
+    var t = handleTarget(dg, dg.at), w = dg.h.w, v = Drawing.findView(doc(), dg.h.id), ext = 5 * paperK(), B = w.box;
+    if (t.at != null) {
+      var q = w.toSheet(v.section.axis === 'h' ? [0, t.at] : [t.at, 0]), a = v.section.axis === 'h' ? [B.x0 - ext, q[1]] : [q[0], B.y0 - ext], b = v.section.axis === 'h' ? [B.x1 + ext, q[1]] : [q[0], B.y1 + ext];
+      svgNode('line', { class: 'dw-cut', x1: a[0], y1: H - a[1], x2: b[0], y2: H - b[1], 'stroke-width': pxToPaper(2), 'stroke-dasharray': pxToPaper(12) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3) }, g);
+    } else {
+      var c = w.toSheet(t.c);
+      svgNode('circle', { class: 'dw-cut', cx: c[0], cy: H - c[1], r: v.detail.r * w.scale, fill: 'none', 'stroke-width': pxToPaper(2) }, g);
+    }
+  }
+  // the drop: one undo step (the section / detail worked out again)
+  function dropViewHandle(dg) {
+    var t = handleTarget(dg, dg.at || dg.start), id = dg.h.id;
+    var ok = tryEdit(function (dc) { if (t.at != null) Drawing.moveSectionLine(dc, mesh(), id, t.at); else Drawing.moveDetailCircle(dc, id, t.c); });
+    if (ok) UI.setStatus(t.at != null ? 'Cutting line moved to ' + Drawing.fmtDim(t.at, units()) + ' ' + units() + '; the section follows.' : 'Detail circle moved; the detail follows.');
+    return ok;
+  }
+  DW.viewHandleAt = viewHandleAt; DW.vhandleOverlay = vhandleOverlay; DW.dropViewHandle = dropViewHandle;
+  // (rfQV) SolidWorks' Lock View Position and Hide / Show on a view's right-click (and its FeatureManager row)
+  function lockHideItems(v) {
+    var locked = !!v.locked, hidden = !!v.hidden;
+    return [
+      { label: 'Lock View Position', checked: locked, help: 'Keep the view where it is: a drag no longer moves it (its parent still takes it along)', action: function () { if (tryEdit(function (dc) { Drawing.setViewLocked(dc, v.id, !locked); })) UI.setStatus(v.name + (locked ? ' can be dragged again.' : ': position locked (right-click ▸ Lock View Position again to free it).')); } },
+      { label: hidden ? 'Show' : 'Hide', help: hidden ? 'Put the hidden view back on the sheet' : 'Take the view off the sheet and the exports; its row stays in the FeatureManager to show it again', action: function () { if (tryEdit(function (dc) { Drawing.setViewHidden(dc, v.id, !hidden); })) { if (!hidden && D.sel && D.sel.id === v.id) D.sel = null; UI.setStatus(v.name + (hidden ? ' shown.' : ' hidden: right-click its FeatureManager row ▸ Show puts it back.')); } } },
+      { sep: true }
+    ];
   }
   // (rfLA) SolidWorks' Rotate Drawing View dialog: Drawing view angle (degrees, counter-clockwise), Apply; one undo
   // step. Any angle: its dimensions, centre marks and notes turn with it (rfLG); a break or a rectangular crop turns in
@@ -1147,7 +1249,7 @@
   function sheetMenu() {
     return [
       { label: 'Properties\u2026', action: cmdSheetProperties },
-      { label: 'Standard 3 View', action: cmdStandard3View },
+      { label: 'Standard 3 View', action: function () { cmdStandard3View({ add: true }); } },
       { label: 'Model View\u2026', action: cmdModelView },
       { label: 'Model Items…', checked: !!(doc() && doc().autoDims), action: function () { if (DW.cmdModelItemsPM) DW.cmdModelItemsPM(); else cmdModelItems(); } },
       { label: 'Document Properties\u2026', action: cmdDocProps },

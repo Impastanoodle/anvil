@@ -340,7 +340,17 @@
     if (par.kind === 'detail') throw new Error('A view cannot be projected from a detail view');
     if (par.kind === 'flat') throw new Error('A view cannot be projected from a flat-pattern view');
     if (par.kind === 'empty') throw new Error('A view cannot be projected from an empty view');
-    var F = projectedFrame(viewFrame(doc, par), dir, doc.sheet.projection), vert = !DIRS[dir][0];
+    var F = projectedFrame(viewFrame(doc, par), dir, doc.sheet.projection);
+    if (D.DIAGS[dir]) {   // (rfQV) placed at a corner: the pictorial view from it, where it was put, not aligned
+      var pe = viewExtents(doc, mesh, par), ce = extentsOf(mesh, F), s0 = viewScale(doc, par), g0 = GAP * paperK(doc.units), q = D.DIAGS[dir];
+      var dv = addView(doc, F.name, { kind: 'projected', frame: { e: F.e, u: F.u, v: F.v }, parent: par.id, align: null, dir: dir, scale: par.scale ? par.scale.slice() : null, display: par.display || 'hlr',
+        x: opts.x != null ? opts.x : par.x + q[0] * ((pe.w + ce.w) * s0 / 2 + g0), y: opts.y != null ? opts.y : par.y + q[1] * ((pe.h + ce.h) * s0 / 2 + g0) });
+      dv.dimType = 'true';
+      labelOpt(doc, dv, opts);
+      doc.layout = 'manual';
+      return dv;
+    }
+    var vert = !DIRS[dir][0];
     var pos = besidePos(doc, mesh, par, F, dir);
     var v = addView(doc, F.name, { kind: 'projected', frame: { e: F.e, u: F.u, v: F.v }, parent: par.id, align: vert ? 'x' : 'y', dir: dir,
       scale: par.scale ? par.scale.slice() : null, display: isOrthoFrame(F) ? 'hlv' : 'hlr', x: pos[0], y: pos[1] });
@@ -856,6 +866,25 @@
     if (opts.autoInsert !== false) D.autoInsert(doc, mesh);
     return doc;
   }
+  // (rfQV) addStandard3View(doc, mesh, units, opts) -> [front, top, right]: SolidWorks' Standard 3 View, the three
+  // orthographic views and no isometric, added to the sheet: an empty sheet is laid out as standard3View does; on one
+  // with views they stay where they are and the three go where standard3View would put them at the sheet's scale
+  // (no roles when the sheet already has a front: the automatic layout keeps to the first set)
+  function addStandard3View(doc, mesh, units, opts) {
+    opts = opts || {};
+    if (!doc.views.length) { standard3View(doc, mesh, units, Object.assign({}, opts, { iso: false })); return doc.views.slice(0, 3); }
+    var tmp = { units: doc.units, sheet: JSON.parse(JSON.stringify(doc.sheet)), views: [], nextView: 1, options: doc.options, bom: doc.bom, bomRows: doc.bomRows, revisions: doc.revisions };
+    tmp.sheet.autoScale = false;
+    standard3View(tmp, mesh, units, { iso: false, autoInsert: false });
+    var roles = !doc.views.some(function (v) { return v.role === 'front'; }), ids = {}, out = [];
+    tmp.views.forEach(function (t) {
+      var nv = addView(doc, t.orient, { role: roles ? t.role : null, parent: t.parent != null ? ids[t.parent] : null, align: t.align || null, x: t.x, y: t.y, scale: t.scale ? t.scale.slice() : null });
+      ids[t.id] = nv.id; out.push(nv);
+    });
+    doc.layout = 'manual';
+    if (opts.autoInsert !== false) D.autoInsert(doc, mesh);
+    return out;
+  }
   // (rfLG) plateOf(mesh) -> { axis (0 X, 1 Y, 2 Z), T, ext } when the part is a flat plate: every vertex on one of two
   // levels along its thinnest axis (one thickness: no bends, steps, counterbores or countersinks) and that thickness a
   // quarter of the next-smallest size or less; else null
@@ -1059,7 +1088,22 @@
   // moves freely and no longer follows its parent; the old alignment is kept in v.alignWas) / Default Alignment (on
   // true: lined up with its parent again, along the alignment it had, else the axis it is nearer to, and snapped to
   // it). Model views with a parent only (projected, section, the Standard 3 View's Top / Right); not aux / detail.
-  function canAlign(doc, v) { return !!v && v.parent != null && !!findView(doc, v.parent) && v.kind !== 'detail' && v.kind !== 'aux' && v.kind !== 'flat'; }
+  function canAlign(doc, v) { return !!v && v.parent != null && !!findView(doc, v.parent) && v.kind !== 'detail' && v.kind !== 'aux' && v.kind !== 'flat' && !(v.dir && D.DIAGS[v.dir]); }   // (rfQV: a corner view is pictorial, never aligned)
+  // (rfQV) SolidWorks' view right-click ▸ Hide / Show (v.hidden: off the sheet and the exports, its row greyed in the
+  // FeatureManager; views made from it stay) and Lock View Position (v.locked: a drag does not move it; its parent's
+  // drag still takes it along, as in SolidWorks)
+  function setViewHidden(doc, id, on) {
+    var v = findView(doc, id);
+    if (!v) throw new Error('No drawing view ' + id);
+    if (on) v.hidden = true; else delete v.hidden;
+    return v;
+  }
+  function setViewLocked(doc, id, on) {
+    var v = findView(doc, id);
+    if (!v) throw new Error('No drawing view ' + id);
+    if (on) v.locked = true; else delete v.locked;
+    return v;
+  }
   function setViewAlignment(doc, id, on) {
     var v = findView(doc, id);
     if (!canAlign(doc, v)) throw new Error('Only a view projected or cut from another view has an alignment');
@@ -3006,7 +3050,7 @@
   D.SHEET_KEYS = SHEET_KEYS; D.sheetCount = sheetCount; D.sheets = sheets; D.sheetIndex = sheetIndex; D.sheetDoc = sheetDoc; D.activateSheet = activateSheet;
   D.addSheet = addSheet; D.deleteSheet = deleteSheet; D.renameSheet = renameSheet; D.moveViewToSheet = moveViewToSheet;
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
-  D.standard3View = standard3View; D.partViews = partViews; D.plateOf = plateOf; D.extentsOf = extentsOf; D.layout = layoutViews; D.moveView = moveView; D.deleteView = deleteView; D.viewDependents = viewDependents; D.findView = findView;
+  D.standard3View = standard3View; D.addStandard3View = addStandard3View; D.setViewHidden = setViewHidden; D.setViewLocked = setViewLocked; D.partViews = partViews; D.plateOf = plateOf; D.extentsOf = extentsOf; D.layout = layoutViews; D.moveView = moveView; D.deleteView = deleteView; D.viewDependents = viewDependents; D.findView = findView;
   D.fmtDim = fmtDim; D.roundDec = roundDec; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.dualStyle = dualStyle; D.DUAL_POS = DUAL_POS; _.dimText0 = dimText0; D.autoDims = autoDims; D.modelItems = modelItems; D.dimSizes = dimSizes; D.dimBreakGap = function (doc) { return dimSizes(doc).dimBreakGap; }; D.dimGeometry = dimGeometry; D.DIM_SIZES = DIM_SIZES; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
   D.arcSlotsIn = arcSlotsIn; D.sketchOrdinates = sketchOrdinates; D.sketchDistances = sketchDistances;
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;

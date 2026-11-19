@@ -405,8 +405,8 @@
       var w = D.sheet && D.sheet.views.filter(function (x) { return x.view.id === v.id; })[0];
       var st = w ? w.proj.stats : null;
       var badge = v.kind === 'section' ? v.label + '-' + v.label : v.kind === 'detail' ? v.label + ' ' + Drawing.scaleText(v.scale || dc.sheet.scale) : v.kind === 'empty' ? 'Empty' : v.orient;
-      t.appendChild(row({ icon: v.kind === 'section' ? (v.section && v.section.removed ? 'removedSection' : 'sectionView') : v.kind === 'detail' ? 'detailView' : v.kind === 'projected' ? 'projView' : v.kind === 'flat' ? 'flatView' : 'drawingView', name: v.name, depth: 2, twisty: true, cls: 'dw-view' + (v.kind ? ' dw-' + v.kind : ''), data: { view: String(v.id) }, sel: sel, badge: badge,
-        title: v.name + ' \u2014 ' + v.orient + (v.scale ? ', scale ' + Drawing.scaleText(v.scale) : '') + (st ? ' \u2014 ' + st.visibleLines + ' visible / ' + st.hiddenLines + ' hidden lines, ' + st.visibleCircles + ' circles' : '') + '. Double-click for properties.',
+      t.appendChild(row({ icon: v.kind === 'section' ? (v.section && v.section.removed ? 'removedSection' : 'sectionView') : v.kind === 'detail' ? 'detailView' : v.kind === 'projected' ? 'projView' : v.kind === 'flat' ? 'flatView' : 'drawingView', name: v.name, depth: 2, twisty: true, cls: 'dw-view' + (v.kind ? ' dw-' + v.kind : '') + (v.hidden ? ' dw-view-hidden' : ''), data: { view: String(v.id) }, sel: sel, badge: badge + (v.hidden ? ' (hidden)' : v.locked ? ' (locked)' : ''),   // (rfQV)
+        title: v.name + (v.hidden ? ' (hidden: right-click \u25b8 Show)' : '') + ' \u2014 ' + v.orient + (v.scale ? ', scale ' + Drawing.scaleText(v.scale) : '') + (st ? ' \u2014 ' + st.visibleLines + ' visible / ' + st.hiddenLines + ' hidden lines, ' + st.visibleCircles + ' circles' : '') + '. Double-click for properties.',
         click: function () { D.sel = { kind: 'view', id: v.id }; drawOverlay(); renderTree(); },
         dbl: function () { cmdViewProperties(v.id); }, menu: function () { return viewMenu(v); } }));
       t.appendChild(row({ icon: isAsm() ? 'assembly' : 'part', name: App.model.name, depth: 3, cls: 'dw-ref' }));
@@ -458,7 +458,8 @@
 
   // ------------------------------------------------------------------ ribbon, menus, keys
   UI.RIBBON['View Layout'] = [
-    { id: 'std3view', label: 'Standard\n3 View', run: cmdStandard3View },
+    // (rfQV) the ribbon's Standard 3 View is SolidWorks': Front, Top and Right added to the sheet, the views on it kept
+    { id: 'std3view', label: 'Standard\n3 View', run: function () { cmdStandard3View({ add: true }); } },
     { id: 'modelView', label: 'Model\nView', run: cmdModelView, active: function () { return D.tool === 'place'; } },
     { id: 'projView', label: 'Projected\nView', run: cmdProjectedView, active: function () { return D.tool === 'project'; } },
     { id: 'sectionView', label: 'Section\nView', run: cmdSectionView, active: function () { return D.tool === 'section'; } },
@@ -564,11 +565,15 @@
         { sep: true },
         { label: 'Close Drawing', action: requestClose }
       ]) },
-      { label: 'Edit', items: (editMenu ? editMenu.items.slice(0, 2) : []).concat([{ label: 'Delete', key: 'Del', disabled: !D.sel || D.sel.kind === 'sheet', action: deleteSelection }]) },
+      { label: 'Edit', items: (editMenu ? editMenu.items.slice(0, 2) : []).concat([
+        // (rfQV) SolidWorks moves a drawing view to another sheet by Cut on one sheet and Paste on the other
+        { label: 'Cut', key: 'Ctrl+X', help: 'Cut the selected drawing view, to paste it on another sheet', disabled: !(D.sel && D.sel.kind === 'view'), action: cutView },
+        { label: 'Paste', key: 'Ctrl+V', help: 'Move the view that was cut onto this sheet, at the same place', disabled: !D.cut, action: pasteView },
+        { label: 'Delete', key: 'Del', disabled: !D.sel || D.sel.kind === 'sheet', action: deleteSelection }]) },
       { label: 'View', items: [{ label: 'Zoom to Fit', key: 'F', action: fitSheet }].concat(viewDisplayItems()) },
       { label: 'Insert', items: [
         { label: 'Sheet\u2026', action: function () { DW.addSheet(); } },
-        { label: 'Drawing View \u25b8 Standard 3 View', action: cmdStandard3View },
+        { label: 'Drawing View \u25b8 Standard 3 View', action: function () { cmdStandard3View({ add: true }); } },
         { label: 'Drawing View \u25b8 Model\u2026', action: cmdModelView },
         { label: 'Drawing View \u25b8 Projected', action: cmdProjectedView },
         { label: 'Drawing View \u25b8 Section\u2026', action: cmdSectionView },
@@ -640,6 +645,32 @@
     e.preventDefault(); e.stopImmediatePropagation();
     cancelDrawingPM();
   }, true);
+  // (rfQV) Ctrl+X on a selected view, Ctrl+V on another sheet: the view (with the views made from it, its dimensions
+  // and annotations) moves there at the same place, one undo step (Drawing.moveViewToSheet). The view stays on its
+  // sheet until it is pasted; a projected / section / detail view goes with its parent only (moveViewToSheet says so).
+  function cutView() {
+    var dc = doc();
+    if (!dc || !D.sel || D.sel.kind !== 'view') { UI.setStatus('Cut: select a drawing view first.'); return; }
+    var v = Drawing.findView(dc, D.sel.id);
+    if (!v) return;
+    D.cut = { id: v.id, sheet: dc.activeSheet | 0, name: v.name };
+    UI.setStatus(v.name + ' cut: open another sheet and press Ctrl+V to move it there.');
+  }
+  function pasteView() {
+    var dc = doc(), c = D.cut;
+    if (!dc || !c) { UI.setStatus('Paste: cut a drawing view first (select it, Ctrl+X).'); return; }
+    var to = dc.activeSheet | 0;
+    if (to === c.sheet) { UI.setStatus('Paste: ' + c.name + ' is on this sheet; open another sheet to move it there.'); return; }
+    var ids = null;
+    function move(d) { Drawing.activateSheet(d, c.sheet); try { ids = Drawing.moveViewToSheet(d, c.id, to); } finally { Drawing.activateSheet(d, to); } }
+    try { move(JSON.parse(JSON.stringify(dc))); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return; }
+    edit(move);
+    D.cut = null; D.sel = { kind: 'view', id: c.id };
+    D.prog = { doc: doc(), insert: false, t0: performance.now() };
+    render(); renderTree();
+    UI.setStatus((ids && ids.length > 1 ? ids.length + ' views' : c.name) + ' moved to ' + dc.sheet.name + '.');
+  }
+  DW.cutView = cutView; DW.pasteView = pasteView;
   // keys in a drawing: Esc ends a tool, Delete removes the selection, F fits the sheet, D toggles Smart Dimension;
   // other part shortcuts are swallowed (Ctrl+Z / Y / S / O / N still reach the app).
   window.addEventListener('keydown', function (e) {
@@ -663,6 +694,7 @@
     var pa = UI.keys && UI.keys.profileActionFor ? UI.keys.profileActionFor(e) : null;
     e.stopImmediatePropagation();
     if (pa) { e.preventDefault(); drawingKeyAction(pa, e); return; }
+    if (ctrl && /^[xXvV]$/.test(k)) { e.preventDefault(); if (/[xX]/.test(k)) cutView(); else pasteView(); return; }   // (rfQV)
     if (ctrl) return;
     // (rfNL) SolidWorks' Z / Shift+Z (or the keys the user bound to Zoom In / Out) zoom the sheet about its middle
     var ka = UI.keys && UI.keys.actionFor ? UI.keys.actionFor(e) : null;
