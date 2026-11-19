@@ -363,8 +363,9 @@ var CSG = (function () {
   // operand's polygons that may lie near the other one for its tree to be built from the near part only.
   // CSG.options.sphereTest = false turns off splitPolygon's bounding-sphere shortcut (same results, slower).
   // CSG.options.heal = false turns off healCracks (rfFL) on boolean results; healWide, healFill, healDrop: see healCracks.
+  // CSG.options.healFold = false turns off lane QJ's two heal steps (a fin tip dropped, a sliver corner past a chord dropped).
   // CSG.options.retryExact = false turns off the exact retry of a cracked boolean (rfFQ); retryMin / retryMax: see retryExact.
-  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5, sphereTest: true, heal: true, healWide: 2 * EPSILON, healDrop: false, healFill: false, retryExact: true, retryMin: 3, retryMax: 300, fatten: true, restoreFar: true, snapTwins: true, recap: true, band: true, bandReach: 10 * EPSILON, bandCos: 0.94, bandWide: 100 * EPSILON };
+  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5, sphereTest: true, heal: true, healFold: true, healWide: 2 * EPSILON, healDrop: false, healFill: false, retryExact: true, retryMin: 3, retryMax: 300, fatten: true, restoreFar: true, snapTwins: true, recap: true, band: true, bandReach: 10 * EPSILON, bandCos: 0.94, bandWide: 100 * EPSILON };
   // FRAG: the bounding box of the fragments the last restoreWhole kept (null: everything may be cut), the region where
   // healCracks looks for cracks
   var FRAG = null;
@@ -549,6 +550,34 @@ var CSG = (function () {
       list.push({ t: bestT[bw], v: bw });
       change = true;
     }
+    // (2c) lane QJ: a corner b of a polygon whose outline runs a→b→c, next to an open edge, while another polygon's
+    // open edge c→a is the chord and b lies within HEAL of that chord (segment): b goes. A needle the BSP left on a
+    // flat cut through a loft's fold ran past the chord's end and back (f6040: 1.8e-5 past, 2.7e-6 aside), overlapping
+    // its coplanar neighbour; the edge it shared with the loft was used three times and the chord stayed open.
+    // the polygon's other edge at b must be used three times or more (the overlap), so dropping b only takes away a
+    // surplus use (a 359 deg rolled hem lost a manifold edge to it otherwise, rfGF)
+    var drop = new Map(), openKey = new Set(), uses = null;
+    for (i = 0; i < open.length; i += 4) openKey.add(open[i + 2] * N + open[i + 3]);
+    if (OPTIONS.healFold && open.length) { uses = new Map(); for (k = 0; k < ne; k++) { var uk = Math.min(src[k], tgt[k]) * N + Math.max(src[k], tgt[k]); uses.set(uk, (uses.get(uk) || 0) + 1); } }
+    for (i = 0; i < (OPTIONS.healFold ? open.length : 0); i += 4) {
+      var di = open[i], dj = open[i + 1], dids = pid[di], dm = dids.length;
+      if (dm < 4) continue;
+      for (var side = 0; side < 2; side++) {
+        var jb = side ? dj : (dj + 1) % dm, ja = (jb + dm - 1) % dm, jc = (jb + 1) % dm, va = to[dids[ja]], vb = to[dids[jb]], vc = to[dids[jc]];
+        if (va === vc || bestE[vb] >= 0 || !openKey.has(dids[jc] * N + dids[ja])) continue;   // (a point (2) inserts stays)
+        var o1 = side ? dids[ja] : dids[jc], o2 = dids[jb];   // the edge at b that is not the open one
+        if (!((uses.get(Math.min(o1, o2) * N + Math.max(o1, o2)) || 0) >= 3)) continue;
+        if (uses.get(Math.min(dids[ja], dids[jc]) * N + Math.max(dids[ja], dids[jc])) !== 1) continue;   // the chord: its one open use only
+        var PA2 = pos[va], PB2 = pos[vb], PC2 = pos[vc], cx2 = PC2.x - PA2.x, cy2 = PC2.y - PA2.y, cz2 = PC2.z - PA2.z, cl2 = cx2 * cx2 + cy2 * cy2 + cz2 * cz2;
+        if (!(cl2 > 0)) continue;
+        // b is a needle's tip: the outline turns back there (more than 170 deg; a square corner near a chord stays: rfGF)
+        var bx1 = PB2.x - PA2.x, by1 = PB2.y - PA2.y, bz1 = PB2.z - PA2.z, bx2 = PC2.x - PB2.x, by2 = PC2.y - PB2.y, bz2 = PC2.z - PB2.z;
+        if (!(bx1 * bx2 + by1 * by2 + bz1 * bz2 < -0.985 * Math.sqrt((bx1 * bx1 + by1 * by1 + bz1 * bz1) * (bx2 * bx2 + by2 * by2 + bz2 * bz2)))) continue;
+        var ts2 = Math.max(0, Math.min(1, ((PB2.x - PA2.x) * cx2 + (PB2.y - PA2.y) * cy2 + (PB2.z - PA2.z) * cz2) / cl2));
+        var ex2 = PA2.x + ts2 * cx2 - PB2.x, ey2 = PA2.y + ts2 * cy2 - PB2.y, ez2 = PA2.z + ts2 * cz2 - PB2.z;
+        if (ex2 * ex2 + ey2 * ey2 + ez2 * ez2 < HEAL * HEAL) { drop.set(di * 65536 + jb, true); change = true; }
+      }
+    }
     if (!change) {
       // (2b) nothing to snap or insert: a small closed loop of open edges is a sliver the BSP dropped; put it back
       var holes = OPTIONS.healFill ? fillSlivers(open, polys, pos) : [];
@@ -560,12 +589,12 @@ var CSG = (function () {
     var out = sel ? all.slice() : [], dropped = false;
     for (i = 0; i < n; i++) {
       var ids0 = pid[i], touched = false;
-      for (j = 0; j < ids0.length && !touched; j++) if (to[ids0[j]] !== ids0[j] || ins.has(i * 65536 + j)) touched = true;
+      for (j = 0; j < ids0.length && !touched; j++) if (to[ids0[j]] !== ids0[j] || ins.has(i * 65536 + j) || drop.has(i * 65536 + j)) touched = true;
       if (!touched) { if (!sel) out.push(polys[i]); continue; }
       var ids1 = [];
       for (j = 0; j < ids0.length; j++) {
         var f = to[ids0[j]];
-        if (!ids1.length || ids1[ids1.length - 1] !== f) ids1.push(f);
+        if (!drop.has(i * 65536 + j) && (!ids1.length || ids1[ids1.length - 1] !== f)) ids1.push(f);
         var il = ins.get(i * 65536 + j);
         if (il) {
           il.sort(function (x, y) { return x.t - y.t; });
@@ -575,6 +604,10 @@ var CSG = (function () {
       while (ids1.length > 1 && ids1[0] === ids1[ids1.length - 1]) ids1.pop();
       if (ids1.length < 3 || (OPTIONS.healDrop && sliver(ids1, pos))) { healStats.dropped++; if (sel) { out[sel[i]] = null; dropped = true; } continue; }
       // an insertion that folds the outline back on itself (a fin): this polygon keeps its old outline
+      // lane QJ: an inserted point that lies on this polygon's NEXT edge too (a needle polygon whose two long edges
+      // run within 5e-5 rad of each other: a drilled loft's fold, f6001) makes a fin at the needle's tip; the tip
+      // vertex goes instead (its neighbours across both edges pair with the inserted point on the next pass)
+      if (OPTIONS.healFold && spiked(ids1, pos)) { var cut = unspike(ids1, pos, ids0); if (cut) ids1 = cut; }
       if (spiked(ids1, pos)) { SPIKES++; if (sel) out[sel[i]] = polys[i]; else out.push(polys[i]); continue; }
       var p = polys[i], pp = new Polygon(ids1.map(function (q) { return new Vertex(pos[q].clone()); }), p.shared, p.plane.clone());
       pp.surf = p.surf;
@@ -731,6 +764,27 @@ var CSG = (function () {
       if (l > 0 && d < -(1 - 1e-9) * l) return true;
     }
     return false;
+  }
+  // lane QJ: the outline without the fin tips that an insertion made: a vertex of the old outline (ids0) where the
+  // outline turns back (as spiked) next to an inserted point is dropped; null when nothing such is found or fewer than
+  // three vertices would be left
+  function unspike(ids, P, ids0) {
+    var out = ids.slice(), changed = false;
+    for (var guard = 0; guard < ids.length; guard++) {
+      var m = out.length, hit = -1;
+      if (m < 4) break;
+      for (var k = 0; k < m && hit < 0; k++) {
+        var ia = out[(k + m - 1) % m], ib = out[k], ic = out[(k + 1) % m];
+        if (ids0.indexOf(ib) < 0 || (ids0.indexOf(ia) >= 0 && ids0.indexOf(ic) >= 0)) continue;
+        var a = P[ia], b = P[ib], c = P[ic];
+        var ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z, wx = c.x - b.x, wy = c.y - b.y, wz = c.z - b.z;
+        var d = ux * wx + uy * wy + uz * wz, l = Math.sqrt((ux * ux + uy * uy + uz * uz) * (wx * wx + wy * wy + wz * wz));
+        if (l > 0 && d < -(1 - 1e-9) * l) hit = k;
+      }
+      if (hit < 0) break;
+      out.splice(hit, 1); changed = true;
+    }
+    return changed && out.length >= 3 ? out : null;
   }
   // a polygon narrower than HEAL everywhere: twice its area over its longest edge
   function sliver(ids, P) {

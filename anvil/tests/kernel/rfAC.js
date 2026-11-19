@@ -21,14 +21,14 @@
       assert(stray.length === 1 && Math.abs(Math.max.apply(null, xs) - Math.min.apply(null, xs) - 0.281) < 1e-3, 'the circle is the stray loop');
       return a.errors[ids[0]];
     });
-    test('rfAC: legitimate contours still build — holes clear of the outline (exact volume), a circle tangent inside an edge, two rectangles sharing an edge, a rectangle inside another touching its edge', function () {
+    test('rfAC: legitimate contours still build — holes clear of the outline (exact volume), a circle tangent inside an edge is refused as zero-thickness (lane solidcracks), two rectangles sharing an edge, a rectangle inside another touching its edge', function () {
       var A = 10 * 6 - 1, H = Math.PI * 0.1405 * 0.1405;
       var a = build(blank([8, 4]) + '.end().extrude(0.5);');
       noErrors(a);
       nearRel(a.mp.volume, (A - 4 * H) * 0.5, 1e-3, 'four holes');
       var t = build('p.sketch("Front").rect(0, 0, 20, 10).circle(5, 3, 3).end().extrude(1);');   // tangent to y = 0 from inside
-      noErrors(t);
-      nearRel(t.mp.volume, 200 - Math.PI * 9, 5e-3, 'tangent hole');
+      var tm = Object.keys(t.errors).map(function (id) { return t.errors[id]; }).join(' | ');
+      assert(/zero-thickness/.test(tm), 'the tangent hole is refused as zero-thickness geometry (it built before lane solidcracks): ' + tm);
       var s = build('p.sketch("Front").rect(0, 0, 10, 10).rect(10, 0, 10, 10).end().extrude(1);');
       noErrors(s);
       var n = build('p.sketch("Front").rect(0, 0, 20, 10).rect(0, 2, 5, 5).end().extrude(1);');

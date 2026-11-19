@@ -100,7 +100,7 @@
       rfNCclosed(r, 'fuzz 908');
       assert(r.build.bodies.length === 1, r.build.bodies.length + ' bodies');
       assert(wide > 0, 'the wide rule paired ' + wide + ' points');
-      var off = rfNCwith(CSG.options, 'bandWide', 0, function () { var b = build(rfNC908); return { c: rfNCcount(b), v: b.mp.volume }; });
+      var off = rfNCwith(CSG.options, 'bandWide', 0, function () { return rfNCwith(CSG.options, 'healFold', false, function () { var b = build(rfNC908); return { c: rfNCcount(b), v: b.mp.volume }; }); });   // (healFold, lane solidcracks, closes it too)
       assert(off.c.open + off.c.nm > 0, 'with the wide rule off this part was open (4 open + 2 non-manifold): ' + JSON.stringify(off.c) + ' (if it is closed without, this row no longer tests the rule)');
       nearRel(r.mp.volume, off.v, 1e-8, 'volume against the result without the rule (the same solid)');
       assert(CSG.options.bandWide === 1e-3, 'CSG.options.bandWide is back at ' + CSG.options.bandWide);

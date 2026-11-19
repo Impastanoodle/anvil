@@ -16,7 +16,7 @@
     return out;
   }
   step('r13 thick lines: model edges and silhouettes drawn as 1.5 px screen-space quads, wider than the 1-pixel lines, picking unchanged', async function () {
-    await anvil.run('p.box(40, 20, 30);\np.hole("Top", 20, -15, 10, { offset: 20 });');
+    await anvil.run('p.box(40, 20, 30);\np.hole("Top", 20, -10, 10, { offset: 20 });');
     await idle();
     UI.App.hover = null; UI.App.sel = null; UI.App.sel2 = null; UI.updateHighlights();
     UI.setStyle('hlr'); UI.setView('Isometric'); await wait(700); UI.tick();   // the body writes no colour, nothing highlighted: every light opaque pixel is line ink

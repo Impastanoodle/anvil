@@ -530,6 +530,161 @@
     try { Object.defineProperty(body, '_mqTouch', { value: res, enumerable: false, writable: true, configurable: true }); } catch (e) { /* frozen */ }
     return res;
   }
+  // lane QJ: tangentContacts(body) -> [{ key, a, b, P, line }] (cached): where two faces of the body touch with
+  // OPPOSITE outward normals by their surface records, not by their facets: a cylinder wall whose axis lies r from a
+  // parallel flat face (a hole tangent to a side wall, to a keyway's wall), two cylinders whose axes lie r1 + r2 or
+  // |r1 - r2| apart (tangent holes; a hole touching a tube's outside: then at a point). Each face must be there at the
+  // touch (its facets cover the line or point). The mesh check only sees such a touch when facet vertices happen to
+  // fall on the line; no valid solid or STEP file can hold it (SolidWorks: zero-thickness geometry). A fillet meeting a
+  // face (normals the same way) or a hole a real gap off the wall (1e-4) is not a contact. a / b: { t: 'plane' } or
+  // { t: 'cyl', r, sigma (+1 a round outside, -1 a hole) }; P the touch point (a point of the line when line is true).
+  var QJ = { on: true, tol: 1e-9 };   // K.tangentContactCheck: on (tests / probes), tol x max(1, diagonal)
+  function tangentContacts(body) {
+    if (!body || !body.polygons || !body.polygons.length) return [];
+    if (body._qjTouch) return body._qjTouch;
+    var bb = body.getBounds(), diag = Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]) || 1;
+    var tol = QJ.tol * Math.max(1, diag), cover = 1e-7 * Math.max(1, diag), minL = 1e-3 * diag;
+    function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+    function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+    function add(a, b, s) { return [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s]; }
+    function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+    function unit(a) { var l = Math.hypot(a[0], a[1], a[2]); return l ? [a[0] / l, a[1] / l, a[2] / l] : null; }
+    function V(v) { return [v.pos.x, v.pos.y, v.pos.z]; }
+    function rk(x) { return (Math.round(x * 1e6) / 1e6).toFixed(6); }
+    var cyls = {}, cylList = [], planes = {}, planeList = [];
+    body.polygons.forEach(function (p) {
+      var s = p.surf && p.surf.s;
+      if (s && s.t === 'cyl') {
+        var d = unit(s.d); if (!d) return;
+        var big = Math.abs(d[0]) > Math.abs(d[1]) ? (Math.abs(d[0]) > Math.abs(d[2]) ? 0 : 2) : (Math.abs(d[1]) > Math.abs(d[2]) ? 1 : 2);
+        if (d[big] < 0) d = [-d[0], -d[1], -d[2]];
+        var o = add(s.o, d, -dot(s.o, d)), k = [d[0], d[1], d[2], o[0], o[1], o[2], s.r].map(rk).join(',');
+        var g = cyls[k];
+        if (!g) {
+          var e1 = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+          g = cyls[k] = { t: 'cyl', o: o, d: d, r: s.r, e1: e1, e2: cross(d, e1), polys: [] };
+          cylList.push(g);
+        }
+        g.polys.push(p);
+      } else if (!s) {
+        var n = [p.plane.normal.x, p.plane.normal.y, p.plane.normal.z], pk = n.map(rk).join(',') + ',' + rk(p.plane.w);
+        if (!planes[pk]) { planes[pk] = { t: 'plane', n: n, w: p.plane.w, polys: [] }; planeList.push(planes[pk]); }
+        planes[pk].polys.push(p);
+      }
+    });
+    // facets of a cylinder group as (arc length, axial) polygons about X's angle; sigma from the facet's own normal
+    function cylCovers(g, X) {
+      var q = sub(X, g.o), t = dot(q, g.d), th = Math.atan2(dot(q, g.e2), dot(q, g.e1));
+      for (var i = 0; i < g.polys.length; i++) {
+        var p = g.polys[i], pts = p.vertices.map(function (v) {
+          var w = sub(V(v), g.o), a = Math.atan2(dot(w, g.e2), dot(w, g.e1)) - th;
+          while (a > Math.PI) a -= 2 * Math.PI;
+          while (a <= -Math.PI) a += 2 * Math.PI;
+          return [a * g.r, dot(w, g.d) - t];
+        });
+        if (inPoly2(pts, 0, 0)) {
+          var c = p.vertices.reduce(function (s, v) { return add(s, V(v), 1 / p.vertices.length); }, [0, 0, 0]), cq = sub(c, g.o), rad = add(cq, g.d, -dot(cq, g.d));
+          return dot([p.plane.normal.x, p.plane.normal.y, p.plane.normal.z], rad) > 0 ? 1 : -1;
+        }
+      }
+      return 0;
+    }
+    function planeCovers(g, X) {
+      var ax = Math.abs(g.n[0]) > Math.abs(g.n[1]) ? (Math.abs(g.n[0]) > Math.abs(g.n[2]) ? 0 : 2) : (Math.abs(g.n[1]) > Math.abs(g.n[2]) ? 1 : 2), u = (ax + 1) % 3, v = (ax + 2) % 3;
+      for (var i = 0; i < g.polys.length; i++) {
+        var pts = g.polys[i].vertices.map(function (w) { var a = V(w); return [a[u] - X[u], a[v] - X[v]]; });
+        if (inPoly2(pts, 0, 0)) return 1;
+      }
+      return 0;
+    }
+    // (x, y) inside the polygon or within `cover` of its outline
+    function inPoly2(pts, x, y) {
+      var inside = false, n = pts.length, minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (var i = 0; i < n; i++) { minX = Math.min(minX, pts[i][0]); maxX = Math.max(maxX, pts[i][0]); minY = Math.min(minY, pts[i][1]); maxY = Math.max(maxY, pts[i][1]); }
+      if (x < minX - cover || x > maxX + cover || y < minY - cover || y > maxY + cover) return false;
+      for (var j = 0, k = n - 1; j < n; k = j++) {
+        var a = pts[k], b = pts[j], ex = b[0] - a[0], ey = b[1] - a[1], L2 = ex * ex + ey * ey;
+        var s = L2 ? Math.max(0, Math.min(1, ((x - a[0]) * ex + (y - a[1]) * ey) / L2)) : 0;
+        if (Math.hypot(a[0] + s * ex - x, a[1] + s * ey - y) <= cover) return true;
+        if ((a[1] > y) !== (b[1] > y) && x < a[0] + (y - a[1]) * ex / ey) inside = !inside;
+      }
+      return inside;
+    }
+    function covers(g, X) { return g.t === 'cyl' ? cylCovers(g, X) : planeCovers(g, X); }
+    // a pinch, not a cusp: both faces go on past the touch on BOTH sides along u (a hole tangent to a wall: the wall and
+    // the hole's wall run on either side of the line, the material is two horns meeting there; two rounds of a body
+    // mirrored onto its face meet tangentially too, but each ends at the line: a cusp with air in it, a valid solid)
+    function bothSides(A, B, X, u, eps) {
+      var p = add(X, u, eps), q = add(X, u, -eps);
+      return !!(covers(A, p) && covers(A, q) && covers(B, p) && covers(B, q));
+    }
+    // a line contact: the axial ranges of A's facets at P's angle, sampled, each sample on B too
+    function lineLength(A, B, P, u, eps) {
+      var len = 0, q = sub(P, A.o), t0 = dot(q, A.d), th = Math.atan2(dot(q, A.e2), dot(q, A.e1));
+      A.polys.forEach(function (p) {
+        var lo = Infinity, hi = -Infinity, pts = p.vertices.map(function (v) {
+          var w = sub(V(v), A.o), a = Math.atan2(dot(w, A.e2), dot(w, A.e1)) - th;
+          while (a > Math.PI) a -= 2 * Math.PI;
+          while (a <= -Math.PI) a += 2 * Math.PI;
+          return [a * A.r, dot(w, A.d) - t0];
+        });
+        for (var j = 0, k = pts.length - 1; j < pts.length; k = j++) {
+          var a = pts[k], b = pts[j];
+          if (Math.abs(a[0]) <= cover) { lo = Math.min(lo, a[1]); hi = Math.max(hi, a[1]); }
+          if ((a[0] > cover && b[0] < -cover) || (a[0] < -cover && b[0] > cover)) { var y = a[1] + (b[1] - a[1]) * a[0] / (a[0] - b[0]); lo = Math.min(lo, y); hi = Math.max(hi, y); }
+        }
+        if (!(hi - lo > 0)) return;
+        for (var m = 0; m < 8; m++) { var X = add(P, A.d, lo + (hi - lo) * (m + 0.5) / 8); if (covers(B, X) && bothSides(A, B, X, u, eps)) len += (hi - lo) / 8; }
+      });
+      return len;
+    }
+    var out = [];
+    function found(A, B, P, line, sA, sB) {
+      var key = P.map(function (x) { return (Math.round(x * 1e5) / 1e5).toFixed(5); }).join(',') + (line ? '|' + A.d.map(rk).join(',') : '');
+      if (out.some(function (c) { return c.key === key; })) return;
+      out.push({ key: key, P: P, line: line, a: { t: 'cyl', r: A.r, sigma: sA }, b: B.t === 'cyl' ? { t: 'cyl', r: B.r, sigma: sB } : { t: 'plane', n: B.n } });
+    }
+    cylList.forEach(function (A) {
+      planeList.forEach(function (B) {
+        if (Math.abs(dot(B.n, A.d)) > 1e-9) return;
+        var dist = dot(B.n, A.o) - B.w;
+        if (Math.abs(Math.abs(dist) - A.r) > tol || A.r <= tol) return;
+        var P = add(A.o, B.n, -dist), sA = cylCovers(A, P);
+        // opposite normals: the cylinder's outward normal sA * (P - axis) = sA * -sign(dist) * n against the face's n
+        if (!sA || sA * (dist > 0 ? 1 : -1) <= 0) return;
+        if (lineLength(A, B, P, cross(A.d, B.n), Math.min(minL, 0.1 * A.r)) >= minL) found(A, B, P, true, sA, 0);
+      });
+    });
+    for (var i = 0; i < cylList.length; i++) {
+      for (var j = i + 1; j < cylList.length; j++) {
+        var A = cylList[i], B = cylList[j], c = cross(A.d, B.d), cl = Math.hypot(c[0], c[1], c[2]), P1, P2;
+        if (cl < 1e-9) {   // parallel axes
+          var w = sub(B.o, A.o); w = add(w, A.d, -dot(w, A.d));
+          P1 = A.o; P2 = add(A.o, w, 1);
+        } else {           // the closest points of the two axes
+          var r0 = sub(A.o, B.o), a = 1, b = dot(A.d, B.d), e = dot(A.d, r0), f = dot(B.d, r0), den = a - b * b;
+          var s1 = (b * f - e) / den, s2 = (f - b * e) / den;
+          P1 = add(A.o, A.d, s1); P2 = add(B.o, B.d, s2);
+        }
+        var u = sub(P2, P1), D = Math.hypot(u[0], u[1], u[2]);
+        if (D <= tol) continue;
+        u = [u[0] / D, u[1] / D, u[2] / D];
+        var P, rA, rB;
+        if (Math.abs(D - (A.r + B.r)) <= tol) { P = add(P1, u, A.r); rA = u; rB = [-u[0], -u[1], -u[2]]; }
+        else if (Math.abs(D - Math.abs(A.r - B.r)) <= tol) { P = A.r > B.r ? add(P1, u, A.r) : add(P1, u, -A.r); rA = A.r > B.r ? u : [-u[0], -u[1], -u[2]]; rB = rA; }
+        else continue;
+        var sA2 = cylCovers(A, P), sB2 = sA2 && cylCovers(B, P);
+        if (!sA2 || !sB2 || sA2 * sB2 * dot(rA, rB) >= 0) continue;   // outward normals the same way: a smooth meet
+        var eps = Math.min(minL, 0.1 * Math.min(A.r, B.r));
+        if (cl < 1e-9) { if (lineLength(A, B, P, cross(A.d, u), eps) >= minL) found(A, B, P, true, sA2, sB2); }
+        else if ([A.d, B.d, add(A.d, B.d, 1), add(A.d, B.d, -1)].some(function (w) { w = unit(w); return w && bothSides(A, B, P, w, eps); })) found(A, B, P, false, sA2, sB2);
+      }
+    }
+    try { Object.defineProperty(body, '_qjTouch', { value: out, enumerable: false, writable: true, configurable: true }); } catch (e) { /* frozen */ }
+    return out;
+  }
+  K.tangentContacts = tangentContacts;
+  K.tangentContactCheck = QJ;
   // rfGH: touchParts(body, apart) -> the closed solid pieces of a body whose pieces touch only along edges or at
   // vertices (apart: or do not touch at all: a boss off the part inside the part's box, rfGA 183), or null: no such
   // pieces, a piece that is not a solid of its own (a cavity's wall, negative volume), or one still open or still
@@ -1099,9 +1254,29 @@
       var gone = before.filter(function (b) { return ctx.bodies.indexOf(b) < 0; });
       var nAfter = 0, nBefore = 0;
       changed.forEach(function (b) { nAfter += nonManifoldCount(b); });
-      if (!nAfter) return;
-      gone.forEach(function (b) { nBefore += nonManifoldCount(b); });
-      if (nAfter > nBefore) throw new Error('This feature would create zero-thickness geometry: the solid would touch itself along an edge or at a point. Change its size or position so the pieces overlap or stay apart.');
+      if (nAfter) {
+        gone.forEach(function (b) { nBefore += nonManifoldCount(b); });
+        if (nAfter > nBefore) throw new Error('This feature would create zero-thickness geometry: the solid would touch itself along an edge or at a point. Change its size or position so the pieces overlap or stay apart.');
+      }
+      tangentRefusal(changed, gone);
+    }
+    // lane QJ: a contact by the records (tangentContacts) the bodies before did not have refuses the feature, naming
+    // what is tangent to what: the mesh check above only sees it when facet vertices fall on the line
+    function tangentRefusal(changed, gone) {
+      if (!QJ.on) return;
+      var had = {};
+      gone.forEach(function (b) { tangentContacts(b).forEach(function (c) { had[c.key] = true; }); });
+      var c = null;
+      changed.some(function (b) { return tangentContacts(b).some(function (x) { if (had[x.key]) return false; c = x; return true; }); });
+      if (!c) return;
+      if (c.b.t === 'cyl' && c.b.sigma < 0 && c.a.sigma > 0) c = { P: c.P, line: c.line, a: c.b, b: c.a };   // the hole first
+      function num(x) { return String(+(+x).toFixed(4)); }
+      function face(s) { return s.t === 'plane' ? 'a flat face of the part' : s.sigma < 0 ? 'a Ø' + num(2 * s.r) + ' hole' : 'a Ø' + num(2 * s.r) + ' cylindrical face'; }
+      var u = model.units || 'mm', move = u === 'in' ? '0.001 in' : u === 'mm' ? '0.025 mm' : '0.001 ' + u;
+      var what = c.a.sigma < 0 ? 'the wall of ' + face(c.a) : face(c.a), at = '(' + c.P.map(num).join(', ') + ')';
+      throw new Error('This feature would create zero-thickness geometry: ' + what + ' is tangent to ' + face(c.b) +
+        (c.line ? ' along a line through ' + at : ' at the point ' + at) + ', so the solid would touch itself there. Move the feature ' + move +
+        ' or more toward or away from ' + (c.b.t === 'plane' ? 'that face' : 'it') + ' so the wall has a thickness or opens up.');
     }
     // sketches used as sweep paths are open by design: no "open contour" warning for them
     var pathIds = {};

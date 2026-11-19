@@ -27,8 +27,6 @@
     var CASES = [
       ['boss tangent to a side face', PLATE + 'p.sketch("Top", 0.5).circle(3.5, -1, 0.5).extrude(1);\n', 4 + PI * 0.25, 1e-12],
       ['boss tangent to the outside of a face', PLATE + 'p.sketch("Top").circle(4.5, -1, 0.5).extrude(0.5);\n', 4 + PI * 0.125, 1e-12],
-      ['hole tangent to the plate edge', PLATE + 'p.sketch("Top").circle(3.5, -1, 0.5).cut("through");\n', 4 - PI * 0.125, 1e-12],
-      ['slot whose round ends touch both end walls', PLATE + 'p.sketch("Top").slot(0.25, -1, 3.75, -1, 0.5).cut("through");\n', (8 - 1.75 - PI * 0.0625) * 0.5, 1e-12],
       ['slot whose round ends meet a pocket wall', PLATE + 'p.sketch("Top", 0.5).rect(0.5, -1.5, 3, 1).extrude(0.25, { cut: true, reverse: true });\n' +
         'p.sketch("Top", 0.25).slot(0.75, -1, 3.25, -1, 0.5).extrude(0.25, { cut: true, reverse: true });\n', 4 - 0.75 - (1.25 + PI * 0.0625) * 0.25, 1e-12],
       ['stacked boxes sharing faces (coplanar union)', PLATE + 'p.sketch("Top", 0.5).rect(1, -1.5, 4, 1).extrude(0.5);\np.sketch("Top").rect(4, -2, 1, 2).extrude(0.5);\n', 7, 1e-12],
@@ -53,6 +51,19 @@
         'p.sketch("Front").arc(0,1.0,0.35,-90,90).line(0,1.35,0,0.65).revolveCut(360);\n' +
         'p.fillet(0.25,[[3,1.5,0]]);\np.fillet(0.15,[[2.5,1.5,0]]);\n', 33.362651728326746, 2e-7, [12]]
     ];
+    // (lane solidcracks, 2026-11-19) a through hole tangent to the plate's edge and a slot whose round ends touch both end
+    // walls leave a wall of zero thickness along a line: refused like SolidWorks' zero-thickness geometry (they were two
+    // CASES rows that built closed at the exact volume: a solid no STEP file can hold)
+    test('rfFL: a hole tangent to the plate edge and a slot whose round ends touch both end walls are refused as zero-thickness geometry', function () {
+      var out = [];
+      [PLATE + 'p.sketch("Top").circle(3.5, -1, 0.5).cut("through");\n', PLATE + 'p.sketch("Top").slot(0.25, -1, 3.75, -1, 0.5).cut("through");\n'].forEach(function (code) {
+        var r = build(code), msgs = Object.keys(r.errors).map(function (id) { return r.errors[id]; }).join(' | ');
+        assert(/zero-thickness/.test(msgs), 'refused: ' + msgs);
+        nearRel(r.mp.volume, 4, 1e-12, 'the plate is left as it was');
+        out.push(msgs);
+      });
+      return out[0];
+    });
     CASES.forEach(function (cs) {
       var angles = cs[4] || [12, 6, 3];
       test('rfFL: ' + cs[0] + ' — closed, exact volume at maxAngle ' + angles.join(' / '), function () {

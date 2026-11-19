@@ -1161,6 +1161,7 @@ var Exchange = (function () {
   // back to facets anyway (mesh.crossFailed). crossOptions.on = false: as before; .last = { splits }.
   var crossOptions = { on: true, last: null };
   var PARALLEL_SNAP = { on: true };   // lane solidstep6: snapCylParallel (writeBrepAnalytic)
+  var PINCH_SPLIT = { on: true };     // lane QJ: a planar face's loop through one vertex twice is written as two loops
   function splitCrossings(mesh) {
     var pos = mesh.positions, tri = mesh.triangles, nT = tri.length / 3, ts = mesh.triSurf;
     if (!ts || !crossOptions.on) return mesh;
@@ -2911,7 +2912,15 @@ var Exchange = (function () {
         // a planar face: every counter-clockwise loop (seen along the normal) is an outer bound, every clockwise loop a
         // hole of the smallest outer loop that contains it
         var f = mesh.faces[g], n = norm(f.normal), fr = frameFor(n);
-        var ls = loopsOf[g], l2 = ls.map(function (l) { return l.map(function (v) { var p = P(v); return [dot(p, fr.u), dot(p, fr.v)]; }); });
+        // lane QJ: a loop through one vertex twice (a keyway floor cut in two by a hole of the keyway's width: two
+        // pieces touching at a point, t6028) is written as two loops there, each its own face or hole (one loop read
+        // back with an edge shared by four faces)
+        var ls = [];
+        loopsOf[g].forEach(function pin(l) {
+          for (var i = 0; i < l.length && PINCH_SPLIT.on; i++) for (var j = i + 1; j < l.length; j++) if (l[i] === l[j]) { pin(l.slice(i, j)); pin(l.slice(j).concat(l.slice(0, i))); return; }
+          if (l.length >= 3) ls.push(l);
+        });
+        var l2 = ls.map(function (l) { return l.map(function (v) { var p = P(v); return [dot(p, fr.u), dot(p, fr.v)]; }); });
         var outers = [], holes = [];
         ls.forEach(function (l, i) { var A = area2(l2[i]); (A >= 0 ? outers : holes).push({ loop: l, pts: l2[i], area: Math.abs(A), holes: [] }); });
         holes.forEach(function (h) {
@@ -6429,6 +6438,7 @@ var Exchange = (function () {
     encodeSolids: encodeSolids, solidMesh: solidMesh, solidCSG: solidCSG, signedVolume: signedVolume, earcut: earcut,
     b64encode: b64encode, b64decode: b64decode, utf8: utf8, fromUtf8: fromUtf8,
     importOptions: importOptions,
+    pinchSplit: PINCH_SPLIT,       // lane QJ: a planar loop through one vertex twice -> two loops { on }
     parallelSnap: PARALLEL_SNAP,   // lane solidstep6: snapCylParallel (two walls with parallel axes share a ruling) { on }
     crossOptions: crossOptions,   // lane PO: splitCrossings (two bends crossing at a mitre) { on, last: { splits } }
     surfaceGridKind: bsSurfClassify,   // lane stepin2: occt-kernel.js importCylRecord (B-spline faces that are cylinders)

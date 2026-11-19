@@ -33,7 +33,7 @@
       assert(!e.length, label + ': ' + e.join(' | '));
       assert(!c.open && !c.nm && !c.mesh, label + ': ' + c.open + ' open, ' + c.nm + ' non-manifold edges (mesh ' + c.mesh + ' open)');
     }
-    function rfMPoff(fn) { var was = CSG.options.band; CSG.options.band = false; try { return fn(); } finally { CSG.options.band = was; } }
+    function rfMPoff(fn) { var was = CSG.options.band, wasH = CSG.options.healFold; CSG.options.band = false; CSG.options.healFold = false; try { return fn(); } finally { CSG.options.band = was; CSG.options.healFold = wasH; } }   // (healFold, lane solidcracks, closes these too)
     function rfMPbits(body) {
       var s = [];
       body.polygons.forEach(function (p) { p.vertices.forEach(function (v) { s.push(v.pos.x, v.pos.y, v.pos.z); }); s.push(p.plane.w); });
@@ -101,7 +101,8 @@
       // a count that calls every snapped list worse: the result must be the one without the snap (open, as with band off)
       var calls = 0;
       CSG.options.cracks = function (polys) { return calls++ % 2 === 0 ? 1 : 0; };   // the snapped list is counted first
-      try { r = build(rfMP773); c = rfMPcount(r); } finally { CSG.options.cracks = was; }
+      var wasH = CSG.options.healFold; CSG.options.healFold = false;   // (lane solidcracks' fold heal closes this one too)
+      try { r = build(rfMP773); c = rfMPcount(r); } finally { CSG.options.cracks = was; CSG.options.healFold = wasH; }
       assert(CSG.bandStats.undone > u0 && CSG.bandStats.kept === k0, 'undone ' + (CSG.bandStats.undone - u0) + ', kept ' + (CSG.bandStats.kept - k0));
       assert(c.open + c.nm > 0, 'the result without the snap is the open one: ' + JSON.stringify(c));
       r = build(rfMP773);

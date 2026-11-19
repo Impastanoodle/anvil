@@ -117,7 +117,7 @@
       var old = rfPIwith(X.importOptions, 'rowFix', false, function () {
         var r0 = rfPIsecond(), m2 = X.newPartFromImport(r0), bb = inBand(K.rebuild(m2).body);
         K.runScript(m2, rfPIhole('Front', 0.9, 2.3, 0.2));
-        return { band: bb, open: rfPIedges(K.rebuild(m2).body) };
+        return { band: bb, open: rfPIwith(CSG.options, 'healFold', false, function () { return rfPIedges(K.rebuild(m2).body); }) };   // (healFold, lane solidcracks, closes it too)
       });
       assert(old.band > 100 && old.open > 0, 'with the switch off: ' + JSON.stringify(old));
       return 'read-back rel ' + out.join(', ') + '; with the rows moved point by point ' + old.band + ' pairs in the band, ' + old.open + ' open edges';
