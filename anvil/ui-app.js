@@ -1126,6 +1126,7 @@
   // Tools ▸ OpenCascade kernel is on, or when Anvil's own STEP reader cannot take the file; everything else is Anvil's.
   // (rfMG) a breadcrumb for the not-responding report (ui-reports.js, when it is loaded)
   function crumb(text) { try { if (UI.reports && UI.reports.crumb) UI.reports.crumb(text); } catch (e) { /* never in the way */ } }
+  var OWN_READER_WORKER_MIN = 400000;   // (rfRE) bytes: from here Anvil's reader runs in a worker (about half a second of reading and up)
   function importData(name, data, units, opts) {
     opts = opts || {};
     var fmt = opts.format || Exchange.formatOf(name, typeof data === 'string' ? data : null);
@@ -1176,8 +1177,29 @@
       }
       UI.setStatus('Reading ' + shortName + '…');
       say(null, 'Reading the file');
-      return new Promise(function (res) { var went = false, go = function () { if (!went) { went = true; res(); } }; requestAnimationFrame(function () { setTimeout(go, 0); }); setTimeout(go, 80); })
-        .then(readOwn).then(null, function (e) { if (!occt) return fail(e); first = e; return viaOcct(); });
+      var painted = function () { return new Promise(function (res) { var went = false, go = function () { if (!went) { went = true; res(); } }; requestAnimationFrame(function () { setTimeout(go, 0); }); setTimeout(go, 80); }); };
+      // (rfRE) a large file is read in a worker of its own (worker.js, message 'import'), so the window answers while
+      // Anvil's reader works: a customer's 55-solid assembly froze it for 31 s. No worker (or one that cannot start):
+      // the main thread reads it, as before. Cancel on the progress card ends the worker.
+      var readOwnAway = function () {
+        return new Promise(function (res, rej) {
+          var w, over = false, poll = 0;
+          try { w = new Worker('worker.js'); } catch (e0) { rej({ noWorker: true }); return; }
+          function end() { over = true; if (poll) clearInterval(poll); try { w.terminate(); } catch (e1) { } }
+          w.onmessage = function (ev) {
+            var m = ev.data || {};
+            if (m.type === 'imported') { end(); res(m.result); }
+            else if (m.type === 'importError') { end(); rej(new Error(m.message)); }
+          };
+          w.onerror = function () { if (!over) { end(); rej({ noWorker: true }); } };
+          poll = setInterval(function () { if (!over && cancelled()) { end(); rej(new Error('Opening ' + (shortName || 'the file') + ' was cancelled.')); } }, 200);
+          crumb('open: reading ' + (fmt || 'file') + ' with Anvil\'s reader in a worker (' + size + ' bytes)');
+          try { w.postMessage({ type: 'import', name: name, data: data, opts: { units: units, sourceUnits: opts.sourceUnits, format: opts.format, assembly: asmFile } }); }
+          catch (e2) { end(); rej({ noWorker: true }); }
+        }).then(function (own) { crumb('open: read'); return finish(own); }, function (e) { if (e && e.noWorker) return painted().then(readOwn); throw e; });
+      };
+      return (size >= OWN_READER_WORKER_MIN && window.Worker ? readOwnAway() : painted().then(readOwn))
+        .then(null, function (e) { if (!occt) return fail(e); first = e; return viaOcct(); });
     }
     return viaOcct();
     function occtResult(r, text, base) {

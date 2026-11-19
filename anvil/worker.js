@@ -114,6 +114,14 @@ self.onmessage = function (e) {
     catch (err) { self.postMessage({ type: 'previewError', seq: m.seq, message: (err && err.message) || String(err) }); }
     return;
   }
+  // (rfRE) { type: 'import', name, data, opts } -> { type: 'imported', result } | { type: 'importError', message }:
+  // Exchange.importFile off the main thread (ui-app.js importData starts a worker of its own for a large file and ends
+  // it with the reply: a 55-solid assembly took Anvil's reader over 30 s, with the window frozen for all of it)
+  if (m.type === 'import') {
+    try { self.postMessage({ type: 'imported', seq: m.seq, result: Exchange.importFile(m.name, m.data, m.opts || {}) }); }
+    catch (errI) { self.postMessage({ type: 'importError', seq: m.seq, message: (errI && errI.message) || String(errI) }); }
+    return;
+  }
   if (m.type !== 'rebuild') return;
   try {
     // lane progress: when asked (m.progress, ui-core.js), one message before each feature (and one before the mesh work
