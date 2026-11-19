@@ -281,6 +281,9 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
       var det = E.ax[0] * E.ay[1] - E.ax[1] * E.ay[0];
       E.det = det; E.rm = Math.sqrt(Math.abs(det));
     });
+    // candidates by a grid over the pieces' boxes (taken once, as the scan before it did), in ascending order: every end
+    // scanning every piece was the square of the line count (an imported free-form part: thousands of chords)
+    var grid = boxGrid(els.map(function (E) { return E.b; }));
     // distance from p to what is drawn of E
     function dist(E, p) {
       if (E.k === 'l') return segD(p, E.o);
@@ -333,8 +336,9 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
         var M = mover(E, end);
         if (!M) return;
         var p = M.p, eps = 1e-9 * (1 + Math.abs(p[0]) + Math.abs(p[1])), best = null, bd = Infinity, met = false;
-        for (var i = 0; i < els.length && !met; i++) {
-          var O = els[i];
+        var cand = grid.query([p[0] - tol, p[1] - tol, p[0] + tol, p[1] + tol]);
+        for (var ci = 0; ci < cand.length && !met; ci++) {
+          var O = els[cand[ci]];
           if (O === E || p[0] < O.b[0] - tol || p[0] > O.b[2] + tol || p[1] < O.b[1] - tol || p[1] > O.b[3] + tol) continue;
           var d = dist(O, p);
           if (d <= eps) met = true;
@@ -567,9 +571,14 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
       return cp(E, (lo + hi) / 2);
     }
     // the nearest point of the linework other than `self` within G of p: { q, d } (d <= eps: p meets it), or null
+    // (lane RD) the lines are asked through a grid of their boxes, kept up to date as ends move (every end scanning
+    // every line was the square of the line count: 20 000 chords of an imported part)
+    function lbox(l) { return [Math.min(l[0], l[2]), Math.min(l[1], l[3]), Math.max(l[0], l[2]), Math.max(l[1], l[3])]; }
+    var lg = boxGrid(lines.map(lbox));
     function nearest(p, self) {
-      var best = null, bd = G;
-      lines.forEach(function (l) {
+      var best = null, bd = G, cand = lg.query([p[0] - G, p[1] - G, p[0] + G, p[1] + G]);
+      cand.forEach(function (ci) {
+        var l = lines[ci];
         if (l === self || Math.hypot(l[2] - l[0], l[3] - l[1]) <= 1e-9 || p[0] < Math.min(l[0], l[2]) - bd || p[0] > Math.max(l[0], l[2]) + bd || p[1] < Math.min(l[1], l[3]) - bd || p[1] > Math.max(l[1], l[3]) + bd) return;
         var q = segQ(p, l), d = hyp(p, q); if (d <= bd) { bd = d; best = { q: q, d: d }; }
       });
@@ -590,7 +599,7 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
     lines.forEach(function (l) { if (Math.hypot(l[2] - l[0], l[3] - l[1]) > 1e-9) { bump(l[0], l[1], 1); bump(l[2], l[3], 1); } });
     var bridges = [], moved = true;
     // (an end moved off another can free that one: a second pass picks it up)
-    for (var pass = 0; pass < 3 && moved; pass++) { moved = false; lines.forEach(function (l) {
+    for (var pass = 0; pass < 3 && moved; pass++) { moved = false; lines.forEach(function (l, li) {
       [0, 1].forEach(function (end) {
         var p = end ? [l[2], l[3]] : [l[0], l[1]];
         if (Math.hypot(l[2] - l[0], l[3] - l[1]) <= 1e-9 || cnt[ek(p[0], p[1])] > 1) return;
@@ -598,6 +607,7 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
         if (!n || n.d <= epsAt(p)) return;
         bump(p[0], p[1], -1); bump(n.q[0], n.q[1], 1);
         if (end) { l[2] = n.q[0]; l[3] = n.q[1]; } else { l[0] = n.q[0]; l[1] = n.q[1]; }
+        lg.update(li, lbox(l));
         // (a piece pulled back onto its own other end is gone: its ends no longer count)
         if (Math.hypot(l[2] - l[0], l[3] - l[1]) <= 1e-9) { bump(l[0], l[1], -1); bump(l[2], l[3], -1); }
         moved = true;

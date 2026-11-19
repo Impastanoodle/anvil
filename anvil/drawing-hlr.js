@@ -203,18 +203,25 @@
         var fs0 = CV.faceSurf[ed.faces[0]], fs1 = CV.faceSurf[ed.faces[1]];
         if (fs0 && fs1 && fs0.key === fs1.key) { sameSurf = fs0.s; sameKey = fs0.key; }
       }
+      // (lane RD) two facets of one B-rep face (an imported free-form face, an OpenCascade face) never show the edge
+      // between them, however sharply a coarse tessellation turns there: it is drawn only where it is the outline
+      var oneFace = !sameSurf && ed.faces.length === 2 && !ed.exactDone && sameBrep(ed.faces[0], ed.faces[1]);
+      if (oneFace && !ed.smooth) ed = { a: ed.a, b: ed.b, faces: ed.faces, normals: ed.normals, smooth: true, oneFace: true };
       // faces meeting under 23° count as smooth (facets of a curved face); where both faces' true normals are known
       // (surface records, or flat faces that are not facets of a curved one) a real crease, a shallow chamfer or a
       // drafted face meeting another feature, is drawn as an edge instead of a tangent edge (r5/drawings5)
-      if (!opts._noCrease && ed.smooth && !sameSurf && !ed.exactDone && ed.faces.length === 2 && (seam && ei != null && seam[ei] || creased(ed))) ed = { a: ed.a, b: ed.b, faces: ed.faces, normals: ed.normals, smooth: false };
+      if (!opts._noCrease && ed.smooth && !sameSurf && !oneFace && !ed.exactDone && ed.faces.length === 2 && (seam && ei != null && seam[ei] || creased(ed))) ed = { a: ed.a, b: ed.b, faces: ed.faces, normals: ed.normals, smooth: false };
       if (ed.smooth || sameSurf) {
         var s0 = V.dot(ed.normals[0], e) > 1e-9, s1 = V.dot(ed.normals[1], e) > 1e-9;
+        // (lane RD) facets of one B-rep face both seen edge-on (a free-form wall that runs along the view direction):
+        // the face projects onto its own boundary, which is drawn; its facets' front / back flips are noise
+        if (oneFace && Math.abs(V.dot(ed.normals[0], e)) < 1e-6 && Math.abs(V.dot(ed.normals[1], e)) < 1e-6) return;
         if (s0 === s1) {
           // a tangent edge, not on the outline: drawn only with Tangent Edges Visible / With Font, and only where two
           // different surfaces meet (a fillet's run-out onto a face, a hole's blend), never between facets of one
           // (r4/drawings4: also where faces of two different features meet smoothly and neither has a surface record,
           // e.g. an Anvil fillet's facets running out onto a cap)
-          if (tanOn && s0 && !sameSurf && ed.faces.length === 2 && (CV && (CV.faceSurf[ed.faces[0]] || CV.faceSurf[ed.faces[1]]) || featureOf(ed.faces[0]) !== featureOf(ed.faces[1]))) {
+          if (tanOn && s0 && !sameSurf && !oneFace && ed.faces.length === 2 && (CV && (CV.faceSurf[ed.faces[0]] || CV.faceSurf[ed.faces[1]]) || featureOf(ed.faces[0]) !== featureOf(ed.faces[1]))) {
             var ta2 = [V.dot(ed.a, U), V.dot(ed.a, Vv)], tb2 = [V.dot(ed.b, U), V.dot(ed.b, Vv)], tL = Math.hypot(tb2[0] - ta2[0], tb2[1] - ta2[1]), tt = 0;
             var tbody = mesh.faces[ed.faces[0]].body || 0, tg = CV && CV.tanCurve && ei != null ? CV.tanCurve[ei] : -1;
             if (tL < tol2 * 10 && tg >= 0) return;
@@ -401,9 +408,29 @@
       }
       hidden.forEach(function (iv) { seg(t, iv[0], vis); seg(iv[0], iv[1], hid); t = iv[1]; });
       seg(t, 1, vis);
+      // (lane RD) a chord of a free-form face's outline or silhouette is noted with the intersection curves: drawn runs
+      // of such chords become one smooth curve (render smoothChain: an SVG path, one DXF SPLINE / POLYLINE)
+      if (!ed.isect && (ed.oneFace || ed.faces.some(freeFacet))) ipts.push([a2[0], a2[1], b2[0], b2[1]]);
       // silhouettes of facets with no surface record, for dropStubs (r9/drawings9)
       if (ed.smooth && !sameSurf && !ed.exactDone && ed.faces.length === 2 && !(CV && (CV.faceSurf[ed.faces[0]] || CV.faceSurf[ed.faces[1]]))) fsil.push([a2[0], a2[1], b2[0], b2[1]]);
       if (A !== ed.a || ed.isect) silh.push(a2, b2);
+    }
+    // (lane RD) the B-rep face a mesh face lies on, when the mesh says: an OpenCascade polygon's face id, or an imported
+    // solid's face tag (surf.bf, a free-form face of Anvil's STEP reader); null when unknown
+    function brepOf(fi) {
+      var f = mesh.faces[fi], p = f && f.polys && f.polys[0];
+      if (!p) return null;
+      return p.face != null ? (f.body || 0) + ':' + p.face : null;
+    }
+    function sameBrep(f0, f1) { var b0 = brepOf(f0); return b0 != null && b0 === brepOf(f1); }
+    // a mesh face that is one facet of a curved B-rep face with no surface record (a free-form face: its B-rep face is
+    // several mesh faces; a flat B-rep face is one): its outline and silhouette pieces are chords of a smooth curve
+    function freeFacet(fi) {
+      if (CV && CV.faceSurf[fi]) return false;
+      var b = brepOf(fi);
+      if (b == null) return false;
+      if (!MC.brepCount) { var cnt = {}; mesh.faces.forEach(function (f, i) { var k = brepOf(i); if (k != null) cnt[k] = (cnt[k] || 0) + 1; }); MC.brepCount = cnt; }
+      return MC.brepCount[b] > 1;
     }
     // the feature that made a mesh face (its polygons' shared tag), or null
     function featureOf(fi) { var f = mesh.faces[fi], p = f && f.polys && f.polys[0]; return p && p.shared != null ? p.shared : null; }
@@ -1017,7 +1044,7 @@
         // rc: the smallest radius of curvature, b² / a (a, b: the semi-axes), for the sagitta a chord may show
         var qa = ax[0] * ax[0] + ax[1] * ax[1], qb = ay[0] * ay[0] + ay[1] * ay[1], Ea = (qa + qb) / 2, Da = Math.hypot((qa - qb) / 2, ax[0] * ay[0] + ax[1] * ay[1]);
         if (Math.abs(det) < 1e-12) return;
-        cs.push({ c: c, ax: ax, ay: ay, t0: t0, t1: t1, inv: [ay[1] / det, -ay[0] / det, -ax[1] / det, ax[0] / det], rc: Math.max(Ea - Da, 0) / Math.sqrt(Ea + Da),
+        cs.push({ c: c, ax: ax, ay: ay, t0: t0, t1: t1, inv: [ay[1] / det, -ay[0] / det, -ax[1] / det, ax[0] / det], rc: Math.max(Ea - Da, 0) / Math.sqrt(Ea + Da), semi: Math.sqrt(Math.max(Ea - Da, 0)),
           box: [c[0] - rx - tc, c[1] - ry - tc, c[0] + rx + tc, c[1] + ry + tc] });
       }
       arcs.forEach(function (a) { add(a.c, [a.r, 0], [0, a.r], a.a0 * Math.PI / 180, a.a1 * Math.PI / 180); });
@@ -1044,6 +1071,9 @@
         return !cs.some(function (C) {
           if (Math.min(l[0], l[2]) < C.box[0] || Math.max(l[0], l[2]) > C.box[2] || Math.min(l[1], l[3]) < C.box[1] || Math.max(l[1], l[3]) > C.box[3]) return false;
           if (!(C.rc > 0) || L > C.rc) return false;
+          // (lane RD) an end whose unit-circle radius is off 1 by more than tc / the smaller semi-axis is further than tc
+          // from the curve: no search (a large circle's box holds every chord of the view)
+          if (!ends.every(function (p) { var dx = p[0] - C.c[0], dy = p[1] - C.c[1]; return Math.abs(Math.hypot(C.inv[0] * dx + C.inv[1] * dy, C.inv[2] * dx + C.inv[3] * dy) - 1) * C.semi <= tc * (1 + 1e-9) + 1e-12; })) return false;
           if (!ends.every(function (p) { var d = near(C, p); return d != null && d <= tc; })) return false;
           var dm = near(C, mid);
           return dm != null && dm <= tc + L * L / (8 * C.rc);
@@ -1430,9 +1460,9 @@
       var ka = key(s[0], s[1]), kb = key(s[2], s[3]);
       (adj[ka] || (adj[ka] = [])).push(i); (adj[kb] || (adj[kb] = [])).push(i);
     });
-    var used = new Uint8Array(segs.length), circles = [];
+    var used = new Uint8Array(segs.length), tried = new Uint8Array(segs.length), circles = [];
     for (var i = 0; i < segs.length; i++) {
-      if (used[i]) continue;
+      if (used[i] || tried[i]) continue;
       // walk a chain of degree-2 vertices starting at segment i
       var chain = [i], pts = [[segs[i][0], segs[i][1]]], cur = i, at = key(segs[i][2], segs[i][3]), start = key(segs[i][0], segs[i][1]), ok = true;
       var seen = {}; seen[i] = 1;
@@ -1440,16 +1470,20 @@
         var lst = adj[at];
         if (!lst || lst.length !== 2) { ok = false; break; }
         var nx = lst[0] === cur ? lst[1] : lst[0];
-        if (seen[nx] || used[nx]) { ok = false; break; }
+        // (a piece already ruled out lies on the same run: so is this one)
+        if (seen[nx] || used[nx] || tried[nx]) { ok = false; break; }
         var s = segs[nx], forward = key(s[0], s[1]) === at;
         pts.push(forward ? [s[0], s[1]] : [s[2], s[3]]);
         at = forward ? key(s[2], s[3]) : key(s[0], s[1]);
         chain.push(nx); seen[nx] = 1; cur = nx;
         if (chain.length > 4000) { ok = false; break; }
       }
-      if (!ok || (adj[start] || []).length !== 2 || pts.length < 12) continue;
+      // a failed walk rules out every piece it crossed: they lie on the same run, which is not a closed loop of
+      // degree-2 points (or is one that is no circle), so walking again from each of them made long open runs
+      // (a free-form face's outline, thousands of chords) cost the square of their length
+      if (!ok || (adj[start] || []).length !== 2 || pts.length < 12) { chain.forEach(function (j) { tried[j] = 1; }); continue; }
       var c = circleFit(pts, diag);
-      if (!c) continue;
+      if (!c) { chain.forEach(function (j) { tried[j] = 1; }); continue; }
       chain.forEach(function (j) { used[j] = 1; });
       c.body = segs[i][4] || 0;
       circles.push(c);
