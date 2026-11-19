@@ -18,22 +18,37 @@
 'p.linearPattern({ dir: "x", reverse: true, spacing: 90, count: 2, dir2: "z", spacing2: 50, count2: 2 });\n' +
 '// a slot, mirrored about the Right plane\n' +
 'p.sketch("Top", 30).slot(-50, 0, -35, 0, 6).cut("through", { reverse: true });\n' +
+'p.mirror("Right");\n',
+      // the same bracket drawn in inches: the start-up part and the Design Library entry while new documents default
+      // to inches (exampleCode)
+      codeIn:
+'p.name("Mounting Bracket").units("in");\n' +
+'// 5 x 3 x 1/8 base plate on the Top plane (sketch X = world X, sketch Y = -Z)\n' +
+'p.sketch("Top").centerRect(0, 0, 5, 3).extrude(0.125);\n' +
+'// central boss and its bore\n' +
+'p.sketch("Top", 0.125).circle(0, 0, 0.625).extrude(0.75);\n' +
+'p.sketch("Top", 1).circle(0, 0, 0.25).cut("through", { reverse: true });\n' +
+'// one corner hole, then a 2 x 2 linear pattern\n' +
+'p.sketch("Top", 1).circle(1.875, 1, 0.1875).cut("through", { reverse: true });\n' +
+'p.linearPattern({ dir: "x", reverse: true, spacing: 3.75, count: 2, dir2: "z", spacing2: 2, count2: 2 });\n' +
+'// a slot, mirrored about the Right plane\n' +
+'p.sketch("Top", 1).slot(-2, 0, -1.5, 0, 0.25).cut("through", { reverse: true });\n' +
 'p.mirror("Right");\n' },
     { name: 'Flanged Bushing', note: 'single revolve of a stepped profile', code:
-'p.name("Flanged Bushing");\n' +
+'p.name("Flanged Bushing").units("mm");\n' +
 '// profile in the Front plane: X is radius, Y is height; revolve about the sketch Y axis\n' +
 'p.sketch("Front").polyline([[6, 0], [14, 0], [14, 3], [9, 3], [9, 22], [6, 22]]).revolve(360);\n' +
 '// cross hole through the wall\n' +
 'p.sketch("Right", 20).circle(0, 12, 1.5).cut("through", { reverse: true });\n' },
     { name: 'V-Belt Pulley', note: 'revolve with groove, bore, six lightening holes in a circular pattern', code:
-'p.name("V-Belt Pulley");\n' +
+'p.name("V-Belt Pulley").units("mm");\n' +
 'p.sketch("Front").polyline([[8, 0], [40, 0], [40, 5], [34, 9], [40, 13], [40, 18], [8, 18]]).revolve(360);\n' +
 'p.sketch("Top", 30).circle(24, 0, 4).cut("through", { reverse: true });\n' +
 'p.circularPattern({ axis: "y", count: 6 });\n' +
 '// keyway\n' +
 'p.sketch("Top", 30).rect(6, -1.5, 4, 3).cut("through", { reverse: true });\n' },
     { name: 'Enclosure Base', note: 'box, pocket leaving 3 mm walls, four corner bosses with holes', code:
-'p.name("Enclosure Base");\n' +
+'p.name("Enclosure Base").units("mm");\n' +
 'p.sketch("Top").centerRect(0, 0, 100, 60).extrude(22);\n' +
 'p.sketch("Top", 22).centerRect(0, 0, 94, 54).cut(19, { reverse: true });\n' +
 '// corner boss inside the pocket\n' +
@@ -42,7 +57,7 @@
 'p.sketch("Top", 30).circle(43, 23, 1.3).cut(12, { reverse: true });\n' +
 'p.linearPattern({ dir: "x", reverse: true, spacing: 86, count: 2, dir2: "z", spacing2: 46, count2: 2 });\n' },
     { name: 'Sheet Metal Bracket', note: 'base flange, hole, two edge flanges (one reversed), ready to Flatten', code:
-'p.name("Sheet Bracket");\n' +
+'p.name("Sheet Bracket").units("mm");\n' +
 '// 2 mm steel, 2 mm inside bend radius, shop K-factor 0.71\n' +
 'p.sheet(2, 2, 0.71);\n' +
 'p.sketch("Top").centerRect(0, 0, 100, 60).end().baseFlange(2);\n' +
@@ -52,10 +67,15 @@
 'p.flange(15, [[50, 2, 0]], { reverse: true });\n' +
 '// Sheet Metal tab -> Flatten shows the blank with bend lines; Flat to DXF exports OUTLINE/HOLES/BEND/NOTES\n' },
     { name: 'Hex Standoff', note: 'polygon extrude with a threaded-size bore, mid-plane', code:
-'p.name("Hex Standoff");\n' +
+'p.name("Hex Standoff").units("mm");\n' +
 'p.sketch("Top").polygon(0, 0, 4, 6, 30).extrude(20, { midplane: true });\n' +
 'p.sketch("Top", 20).circle(0, 0, 1.6).cut("through", { reverse: true });\n' }
   ];
+
+  // Anvil defaults to inches (IPS, UI.defaultUnits): a sample that has an inch drawing of itself (codeIn) opens as that
+  // one unless Tools > Default units says millimeters; the other samples are metric parts and say so in their script
+  // (with inches the default they opened as inch documents with mm numbers: 2 in steel)
+  function exampleCode(ex) { return ex.codeIn && UI.defaultUnits() === 'in' ? ex.codeIn : ex.code; }
 
   // examples/examples.js (optional) contributes more sample parts as AnvilExamples = [{name, description, code}]
   if (window.AnvilExamples && Array.isArray(window.AnvilExamples)) {
@@ -445,7 +465,7 @@
     reset: function () { dl.folder = 'examples'; dl.back = []; dl.query = ''; if (tpCurrent === 'library') openTaskPane('library'); } };
   // Design Library entry -> a new part or assembly document (an assembly entry's code is an assembly script)
   function openExample(ex) {
-    return runScript(ex.code, true, ex.kind === 'assembly' ? 'assembly' : 'part').then(function (r) {
+    return runScript(exampleCode(ex), true, ex.kind === 'assembly' ? 'assembly' : 'part').then(function (r) {
       if (!r.error) UI.markClean();   // opened from the Design Library, not made by the user: nothing to save yet
       UI.toast(r.error ? ex.name + ': ' + r.error.split('\n')[0] : 'Loaded ' + ex.name);
       return r;
@@ -640,7 +660,7 @@
     var ex = el('select');
     ex.appendChild(el('option', { value: '', text: 'Insert example…' }));
     EXAMPLES.forEach(function (e, i) { ex.appendChild(el('option', { value: String(i), text: e.name })); });
-    ex.addEventListener('change', function () { if (ex.value !== '') { ta.value = EXAMPLES[+ex.value].code; lastScript = ta.value; ex.value = ''; } });
+    ex.addEventListener('change', function () { if (ex.value !== '') { ta.value = exampleCode(EXAMPLES[+ex.value]); lastScript = ta.value; ex.value = ''; } });
     row.appendChild(ex);
     body.appendChild(el('p', { html: 'Scripts run against <code>p</code>, a part builder, or <code>a</code>, an assembly builder (a script calling <code>a.insert</code> / <code>a.mate</code> opens as an assembly). The model and this script are interchangeable: <b>Script from model</b> regenerates code from the feature tree.' }));
     body.appendChild(ta);
@@ -2690,7 +2710,9 @@
     // the start-up document is the first Design Library part; unsaved work from an earlier session is offered once it
     // is up (offerRecovery), never restored silently
     var model = K.newModel('Mounting Bracket');
-    try { K.runScript(model, EXAMPLES[0].code); } catch (e) { console.error(e); }
+    // in inches unless Tools > Default units says millimeters (exampleCode): Anvil opened in MMGS on a metric bracket
+    // while every new document was IPS
+    try { K.runScript(model, exampleCode(EXAMPLES[0])); } catch (e) { console.error(e); }
     try { var lp = localStorage.getItem('anvil.lastPart'); if (lp) App.lastPart = JSON.parse(lp); } catch (e) { }
     App.model = model;
     App.model.nextId = App.model.nextId || (Math.max.apply(null, [0].concat(model.features.map(function (f) { return f.id; }))) + 1);
@@ -2791,7 +2813,7 @@
   UI.confirmDiscard = confirmDiscard; UI.offerRecovery = offerRecovery; UI.recoverDocument = recoverDocument;
   UI.rememberPart = rememberPart; UI.modelScript = modelScript; UI.openExample = openExample;
   UI.massInFrame = massInFrame;   // lane DF
-  UI.showMassProperties = showMassProperties; UI.showShortcuts = showShortcuts; UI.showAbout = showAbout; UI.EXAMPLES = EXAMPLES;
+  UI.showMassProperties = showMassProperties; UI.showShortcuts = showShortcuts; UI.showAbout = showAbout; UI.EXAMPLES = EXAMPLES; UI.exampleCode = exampleCode;
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })(UI);
