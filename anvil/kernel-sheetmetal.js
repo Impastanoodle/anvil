@@ -764,7 +764,9 @@
           if (fold.bend) (bendCuts = bendCuts || []).push(fold.bend);
         } else cuts.push({ loop: slot, plane: sp, a: -0.01, b: T + 0.01 });
         // for the flat pattern: the slot is w wide past this end and reaches d0 inside the (trimmed) edge line
-        en.relief = { w: rw, d0: -o0, d1: rd, obround: relief === 'obround' };
+        // reach: o1, how far the slot runs out from the edge line (lane stepflats, rfQR: past ~100 degrees Material Inside
+        // moves the bend in by more than R + T, and the flat's notch stopped short of the sheet's own edge: a closed hole)
+        en.relief = { w: rw, d0: -o0, d1: rd, obround: relief === 'obround', reach: o1 };
       });
       var sh = scale(ed.o, -shift), e = ed.e;
       // miterPlanes: per end, the clip plane { n, w } (tool kept where n·p >= w) or null; the flat pattern uses it to
@@ -3355,7 +3357,9 @@
         var relPolys = [];
         (fi.reliefs || []).forEach(function (rl, kk) {
           if (!rl) return;
-          var r = ends[kk], lo = -rl.d0, hi = Math.max(BA, fi.R + T) + rl.d1, w = rl.w, nt = [corner(r, hi, 0), corner(r, hi, w)];
+          // lane stepflats (rfQR): out to the solid slot's reach too (a bend moved in past the sheet's edge, Material
+          // Inside past ~100 degrees: the notch stopped 0.023 in short of the blank's edge at 135 degrees, 11 ga)
+          var r = ends[kk], lo = -rl.d0, hi = Math.max(Math.max(BA, fi.R + T) + rl.d1, rl.reach != null ? +rl.reach : 0), w = rl.w, nt = [corner(r, hi, 0), corner(r, hi, w)];
           if (rl.obround) {
             var rr = w / 2;
             for (var q = 0; q <= 12; q++) { var ph = Math.PI / 2 + Math.PI * q / 12; nt.push(corner(r, lo + rr + rr * Math.cos(ph), rr + rr * Math.sin(ph))); }
@@ -7519,6 +7523,17 @@
     var mp = K.massProps(mesh), V = mp.polygonal ? mp.polygonal.volume : mp.volume;
     return A > 0 && V > 0 && Math.abs(V - Math.abs(A) * T) <= 1e-6 * V;
   }
+  // lane stepflats (rfQR): the mean width (2 area / perimeter) of the flat face at P, or null. A face narrower than the
+  // thickness measured across it is the edge of a sheet (a bracket's side, T wide): Insert Bends measured T as the part's
+  // length there (4 in on a 4 in L) and took the extruded L for a flat plate that thick: a 1.6 x 2.1 blank, no warning
+  function ibFaceWidth(mesh, P, tol) {
+    var i = ibFaceAt(mesh, P, tol), o;
+    if (i < 0) return null;
+    try { o = faceOutline(mesh, i); } catch (e) { return null; }
+    var A = 0, L = 0;
+    o.loops.forEach(function (l) { A += signedArea(l); l.forEach(function (p, k) { var q = l[(k + 1) % l.length]; L += Math.hypot(q[0] - p[0], q[1] - p[1]); }); });
+    return L > 0 ? 2 * Math.abs(A) / L : null;
+  }
   // the face of a coplanar mesh that holds P (its plane within tol, P inside its outline), else -1
   function ibFaceAt(mesh, P, tol) {
     var best = -1, bd = Infinity;
@@ -7924,6 +7939,20 @@
         dev = Math.max(dev, Math.abs(o)); bulge = Math.max(bulge, o);
       });
       var thr = Math.max(0.02 * rb.RT, 5 * pr), curved = dev > thr;
+      // lane stepflats (rfQR): a bend relief folded into this bend (a tray's corner, rfQF) steps the end: square at the
+      // record's end over a run of the arc that reaches one tangent side, cut back (straight, or round: an obround's end)
+      // across the rest. Read as a slant from corner to corner it drew the strip's end across the notch (0.005 in² per
+      // corner, a "mitre" warning). Square at the full reach; the notch is a gap in the bend's surface, cut by
+      // flatPattern's notches. A mitre's slant or sine reaches the end at one angle at most, so it is never read so.
+      var zEnd = k === 0 ? s0 : s1, inward = function (z) { return k === 0 ? z >= zEnd - pr : z <= zEnd + pr; };
+      var fq = Object.keys(far).map(function (key) { return far[key]; }).sort(function (p, q) { return p[0] - q[0]; });
+      var atE = fq.map(function (q) { return Math.abs(q[1] - zEnd) <= pr; }), nE = atE.filter(Boolean).length, runs = 0;
+      atE.forEach(function (a, i) { if (a && (i === 0 || !atE[i - 1])) runs++; });
+      if (!sq && nE >= 2 && runs === 1 && (atE[0] || atE[atE.length - 1]) && Math.abs(za - zb) > thr &&
+          [za, zb].every(inward) && fq.every(function (q) { return inward(q[1]); })) {
+        // (an entry, not null: flatPattern's reliefAt then judges this end's gaps at mid-thickness instead of dropping them)
+        out[k] = { square: true, stepped: true, i: { t0: 0, ext: 0 }, o: { t0: 0, ext: 0 } }; any = true; continue;
+      }
       if (sq && !curved) r.square = true;   // drawn square as before; flatPattern judges its corner gaps (a relief cut square)
       else {
         // slanted: a Closed Corner's, a relief's or an edge flange mitre's. insertBendsLayout tells a mitre by its
@@ -8201,6 +8230,8 @@
       bends.push({ L: L, P: P, s0: rb.s0, s1: rb.s1, A: rb.A, round: rb, p1: plateOf(rb.n1, dot(rb.n1, O0), Q1), p2: plateOf(rb.n2, dot(rb.n2, O0), Q2) });
     });
     if (!bends.length) {
+      var fw = ibFaceWidth(mesh, P0, tolU);
+      if (fw != null && fw < T) throw new Error(what + ': the face at ' + bcPt(P0) + ' is the edge of a sheet (' + bcNum(fw) + ' wide, the thickness measured across it ' + bcNum(T) + '): pick a face of the plate, not its edge.');
       // lane realfiles: a flat plate (a blank a customer sends as a solid): SolidWorks' Insert Bends makes it a
       // sheet-metal part with no bends, its flat the plate. Taken when the body is the fixed face's outline T thick
       // (volume = that face's area × T, 1e-6); anything else still has nothing to bend
