@@ -6267,16 +6267,18 @@
   // dxfToDwg(dxfText) -> Promise of the DWG bytes (ArrayBuffer). (lane DG) DWG.fromDXF writes them in the page; only if
   // it throws (an entity it does not write) does the R2000 DXF go to the local server's converter (POST api/dxf2dwg),
   // and with no server either the writer's message is the error.
-  // (shop audit 2) An R12 DXF (AC1009, POLYLINE / VERTEX) is refused up front: the PM, the drawing's Save as DWG and
-  // the headless runner all convert from R2000.
+  // (lane QD) An R12 DXF (AC1009, POLYLINE / VERTEX) goes to the writer like any other (it writes R12 since rfOM: a 2D
+  // POLYLINE becomes an LWPOLYLINE). It is refused only where the writer cannot take it: dwg-writer.js not loaded, or
+  // the writer refusing it (a polyface mesh); it is never sent to the server, whose LibreDWG writes an empty DWG from R12.
   var DXF_R12_NOTE = 'DWG is made from an R2000 DXF (AC1015); this DXF is R12. Export it as R2000 first.';
   function dxfToDwg(dxfText) {
-    if (/\$ACADVER\s*\r?\n\s*1\s*\r?\n\s*AC1009\b/.test(String(dxfText).slice(0, 4000))) return Promise.reject(new Error(DXF_R12_NOTE));
+    var r12 = /\$ACADVER\s*\r?\n\s*1\s*\r?\n\s*AC1009\b/.test(String(dxfText).slice(0, 4000));
     var jsError = null;
     if (jsDwg()) {
       try { var b = DWG.fromDXF(String(dxfText)); return Promise.resolve(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)); }
       catch (e) { jsError = e && e.message || String(e); }
     }
+    if (r12) return Promise.reject(new Error(jsError ? 'DWG: ' + jsError + '. ' + DXF_R12_NOTE : DXF_R12_NOTE));
     return fetch('api/dxf2dwg', { method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: dxfText }).then(function (r) {
       if (r.status === 200) return r.arrayBuffer();
       return r.text().then(function (t) {

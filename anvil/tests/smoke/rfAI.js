@@ -92,11 +92,11 @@
     assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
     return out.join(', ') + ' in³';
   });
-  step('rfAI: UI.dxfToDwg refuses an R12 DXF before any request (LibreDWG writes an empty DWG from one); the DXF/DWG Output PM, Save Drawing as DWG and the headless runner all convert from R2000', async function () {
+  step('rfAI: UI.dxfToDwg never sends an R12 DXF to the server (LibreDWG writes an empty DWG from one); the page\'s writer takes it (lane QD), a polyface mesh it refuses is refused without a request', async function () {
     var errs0 = errors.length, msg = null;
     var real = W.fetch, calls = 0;
     W.fetch = function () { calls++; return real.apply(W, arguments); };
-    try { await UI.dxfToDwg('0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n0\nENDSEC\n0\nEOF\n'); } catch (e) { msg = e.message; } finally { W.fetch = real; }
+    try { await UI.dxfToDwg('0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nPOLYLINE\n8\n0\n66\n1\n70\n64\n0\nSEQEND\n0\nENDSEC\n0\nEOF\n'); } catch (e) { msg = e.message; } finally { W.fetch = real; }
     assert(calls === 0 && /R2000 DXF \(AC1015\); this DXF is R12/.test(msg || ''), 'refused without a request: ' + calls + ' ' + msg);
     assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
     return msg;

@@ -1736,7 +1736,15 @@ if (typeof UI !== 'undefined') (function (UI) {
     var m = pos(ev), raw = h.rawAt(m[0], m[1]);
     // a feature handle is dragged with the feature selected (face indices change while it rebuilds)
     if (App.mode === 'part' && h.fid != null) { if (h.side) i3d.side[h.fid] = h.side; }
-    var d = i3d.drag = { h: h, v0: h.value, v: h.value, grab: raw == null ? 0 : raw - h.value, moved: false, pushed: false, sel: App.sel };
+    // (lane QD) a dimension configured / linked to a variable: the drag previews in the feature as any other, and the
+    // release puts the feature back and sends the value through UI.configDimApply as a typed one (This configuration /
+    // All configurations); it wrote a plain number into the feature, which unlinked it. Equation-driven: refused.
+    var cfgRef = !h.pm && App.mode === 'part' && UI.configDimRef && UI.configDimValue ? UI.configDimRef(h) : null;
+    if (cfgRef && UI.configDimValue(cfgRef) == null) cfgRef = null;
+    var why = cfgRef && UI.configDimDriven ? UI.configDimDriven(h) : null;
+    var cfgOwner = cfgRef ? K.findFeature(App.model, cfgRef.sketch != null ? cfgRef.sketch : cfgRef.feature) : null;
+    var d = i3d.drag = { h: h, v0: h.value, v: h.value, grab: raw == null ? 0 : raw - h.value, moved: false, pushed: false, sel: App.sel,
+      cfg: cfgOwner ? { owner: cfgOwner, snap: JSON.stringify(cfgOwner) } : null, refused: why };
     if (h.angle && raw != null && Math.abs(d.grab) > 180) d.grab = 0;   // a ring grabbed across 0° / 360°
     if (App.mode === 'part' && !h.pm) {
       var fid = h.fid != null ? h.fid : ownerFeature();
@@ -1747,6 +1755,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     function move(e) {
       var q = pos(e), r = h.rawAt(q[0], q[1]);
       if (r == null) return;
+      if (d.refused) { if (UI.setStatus) UI.setStatus('Not dragged: ' + d.refused); return; }   // lane QD
       d.moved = true;
       var wasOn = d.onRuler, v = valueFor(h, r - d.grab, q, r);
       if (wasOn !== d.onRuler) App.dimsStale = true;   // the ruler lights while it snaps
@@ -1791,7 +1800,14 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (h.pm) { App.dimsStale = true; if (d.moved && UI.pmFocusField) UI.pmFocusField(h.key); return Promise.resolve(); }   // r4/features4
     var session = { key: hKey(h), pushed: d.pushed, fid: d.fid, side: h.side, kind: h.kind, sketch: h.sketch, dimIndex: h.dimIndex, dim: h.dim };
     if (App.mode === 'sketch') { App.dimsStale = true; openEditFor(session); return Promise.resolve(); }
-    var done = d.pushed ? UI.afterRebuild(UI.rebuild(), function () { return UI.whenIdle(); }) : Promise.resolve();
+    var done = null;
+    if (d.cfg && d.pushed && UI.configDimApply) {   // lane QD: the feature as it was (linked), the value per configuration
+      var o = d.cfg.owner, snap = JSON.parse(d.cfg.snap);
+      Object.keys(o).forEach(function (k) { if (!(k in snap)) delete o[k]; });
+      Object.keys(snap).forEach(function (k) { o[k] = snap[k]; });
+      done = UI.configDimApply(h, d.v, true);
+    }
+    if (!done) done = d.pushed ? UI.afterRebuild(UI.rebuild(), function () { return UI.whenIdle(); }) : Promise.resolve();
     if (d.previewed && UI.featurePreviewEnd) UI.featurePreviewEnd(done);   // r3/engine3: the feature preview goes once the part is rebuilt
     return done.then(function () { reselect(session); openEditFor(session); });
   }

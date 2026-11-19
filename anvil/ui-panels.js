@@ -5103,6 +5103,23 @@
     if (f && UI.showFeatureDims && UI.showFeatureDims(f)) UI.setStatus(f.name + ': double-click a dimension to add it to the Design Table.');
   }, true);
   UI.configDimValue = function (ref) { return partWithConfigs() && K.linkedDimValue ? K.linkedDimValue(App.model, ref) : null; };
+  // (lane QD) UI.configDimDriven(h) -> the reason a configured dimension cannot be dragged (its variable is an
+  // equation in the active configuration, e.g. =W*2), else null. ui-select.js refuses the drag with it.
+  UI.configDimDriven = function (h) {
+    var ref = refOf(h);
+    if (!partWithConfigs() || !ref || !K.designTable || K.linkedDimValue(App.model, ref) == null) return null;
+    var label = K.dimLabel(App.model, ref), grid;
+    try { grid = K.designTable(App.model); } catch (e) { return null; }
+    var key = JSON.stringify(K.designTableColumn(App.model, label)), j = -1, active = App.model.activeConfiguration;
+    for (var c = 1; c < grid[0].length; c++) if (JSON.stringify(K.designTableColumn(App.model, grid[0][c])) === key) j = c;
+    if (j < 0) return null;
+    for (var r = 1; r < grid.length; r++) {
+      if (String(grid[r][0]) !== String(active)) continue;
+      var cell = String(grid[r][j]).trim();
+      if (cell !== '' && !isFinite(Number(cell))) return label + ' is driven by the equation ' + cell + ': change it in Tools ▸ Equations or the Design Table.';
+    }
+    return null;
+  };
   UI.configDimScope = function (s) { if (s === 'this' || s === 'all') scope = s; return scope; };
   UI.configDimBox = function (box, h) {
     var b = box.querySelector('.cfg-scope');
