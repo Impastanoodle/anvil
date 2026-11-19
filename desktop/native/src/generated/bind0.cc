@@ -637,4 +637,34 @@ Napi::Value ctor_Geom_ConicalSurface_1(const Napi::CallbackInfo& info) {
     return info.Env().Undefined();
   OCC_CATCH
 }
+Napi::Value ctor_Geom_CylindricalSurface_1(const Napi::CallbackInfo& info) {
+  if (!info.IsConstructCall()) throw Napi::TypeError::New(info.Env(), "Geom_CylindricalSurface_1 must be called with new");
+  CheckCount(info, 2, "Geom_CylindricalSurface_1");
+  OCC_TRY
+    gp_Ax3& a0 = ArgObj<gp_Ax3>(info[0], ID_gp_Ax3);
+    Standard_Real a1 = ArgReal(info[1]);
+    Geom_CylindricalSurface* p = new Geom_CylindricalSurface(a0, a1);
+    Adopt(info.Env(), info.This().As<Napi::Object>(), ID_Geom_CylindricalSurface, p, p);
+    return info.Env().Undefined();
+  OCC_CATCH
+}
+Napi::Value ctor_Geom_Plane_1(const Napi::CallbackInfo& info) {
+  if (!info.IsConstructCall()) throw Napi::TypeError::New(info.Env(), "Geom_Plane_1 must be called with new");
+  CheckCount(info, 1, "Geom_Plane_1");
+  OCC_TRY
+    gp_Ax3& a0 = ArgObj<gp_Ax3>(info[0], ID_gp_Ax3);
+    Geom_Plane* p = new Geom_Plane(a0);
+    Adopt(info.Env(), info.This().As<Napi::Object>(), ID_Geom_Plane, p, p);
+    return info.Env().Undefined();
+  OCC_CATCH
+}
+Napi::Value ctor_IGESControl_Reader_1(const Napi::CallbackInfo& info) {
+  if (!info.IsConstructCall()) throw Napi::TypeError::New(info.Env(), "IGESControl_Reader_1 must be called with new");
+  CheckCount(info, 0, "IGESControl_Reader_1");
+  OCC_TRY
+    IGESControl_Reader* p = new IGESControl_Reader();
+    Adopt(info.Env(), info.This().As<Napi::Object>(), ID_IGESControl_Reader, p, nullptr);
+    return info.Env().Undefined();
+  OCC_CATCH
+}
 }

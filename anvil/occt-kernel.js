@@ -92,6 +92,7 @@ var OcctKernel = (function () {
       }
     }
     var t0 = now(), arena = [], V = K.vec;
+    var importSrc = [], impInfo = {};   // lane RA: the bodies importOp made ({ shape, remake }), what it healed / reused
     // every OpenCascade object made here goes into the arena and is deleted at the end
     function N(o) { arena.push(o); return o; }
     var R = function () { return N(new oc.Message_ProgressRange_1()); };
@@ -134,7 +135,71 @@ var OcctKernel = (function () {
     }
     // faces split along old boolean seams merged back (edge and face picks see whole edges and faces)
     function unify(sh) {
-      try { var u = N(new oc.ShapeUpgrade_UnifySameDomain_2(sh, true, true, false)); u.Build(); return N(u.Shape()); } catch (e) { return sh; }
+      try { var u = N(new oc.ShapeUpgrade_UnifySameDomain_2(sh, true, !unifyWraps(sh), false)); u.Build(); return N(u.Shape()); } catch (e) { return sh; }
+    }
+    // lane RA: would merging faces wind one face round a cylinder or cone more than once? A modelled thread (a
+    // purchased screw in a customer's assembly) has its crest and root cylinders in half-turn pieces between the
+    // helices, each joined to the next along a ruling: UnifySameDomain 7.6 merges all of them into one strip of
+    // many turns and never returns (assemblies with purchased screws never finished building; nothing can
+    // stop it once inside). Faces on the same cylinder / cone are chained through the edges they share that run
+    // along the surface (a ruling, or a curve spanning less than half the angle of either face; a circle between two
+    // stacked bands does not chain them): a chain whose faces turn through more than 360° in all cannot be one
+    // face. Such a body keeps its faces as they are (edges are still merged), as SolidWorks leaves an imported thread.
+    function unifyWraps(sh) {
+      try {
+        var groups = {}, any = false;
+        explore(sh, ENUM.TopAbs_FACE).forEach(function (s) {
+          var f = N(oc.TopoDS.Face_1(s)), ad = N(new oc.BRepAdaptor_Surface_2(f, true)), t = ad.GetType(), tv = t && t.value != null ? t.value : t, key;
+          if (tv !== 1 && tv !== 2) return;
+          var g = N(tv === 1 ? ad.Cylinder() : ad.Cone()), ax = N(g.Position()), o = N(ax.Location()), d = N(ax.Direction());
+          var D = [d.X(), d.Y(), d.Z()], O = [o.X(), o.Y(), o.Z()], r = tv === 1 ? g.Radius() : g.RefRadius();
+          if (tv === 2) { var ta = Math.tan(g.SemiAngle()); if (Math.abs(ta) > 1e-12) { O = V.sub(O, V.scale(D, r / ta)); r = 0; } }   // a cone by its apex
+          else {
+            if (D[0] < -1e-9 || (Math.abs(D[0]) <= 1e-9 && (D[1] < -1e-9 || (Math.abs(D[1]) <= 1e-9 && D[2] < 0)))) D = V.scale(D, -1);
+            O = V.sub(O, V.scale(D, V.dot(O, D)));   // the axis by its point nearest the origin
+          }
+          var sz = 1e-6 * (1 + Math.abs(O[0]) + Math.abs(O[1]) + Math.abs(O[2]) + Math.abs(r));
+          key = tv + ':' + D.map(function (x) { return Math.round(x * 1e6); }).join(',') + ':' + O.map(function (x) { return Math.round(x / sz); }).join(',') + ':' + Math.round(r / sz) + (tv === 2 ? ':' + Math.round(Math.abs(g.SemiAngle()) * 1e6) : '');
+          var l = groups[key] || (groups[key] = []);
+          l.push({ f: f, ext: Math.abs(ad.LastUParameter() - ad.FirstUParameter()), o: O, d: D });
+          if (l.length > 2) any = true;   // (a wrap takes three pieces at least: two can only close one turn)
+        });
+        if (!any) return false;
+        return Object.keys(groups).some(function (key) {
+          var l = groups[key];
+          if (l.length < 3) return false;
+          var emap = N(new oc.TopTools_IndexedMapOfShape_1()), users = [], par = l.map(function (x, i) { return i; });
+          function find(i) { while (par[i] !== i) i = par[i] = par[par[i]]; return i; }
+          l.forEach(function (rec, i) {
+            explore(rec.f, ENUM.TopAbs_EDGE).forEach(function (se) {
+              var idx = emap.FindIndex(se);
+              if (!idx) idx = emap.Add(se);
+              var u = users[idx] || (users[idx] = []);
+              if (u.indexOf(i) < 0) u.push(i);
+            });
+          });
+          // the angle an edge spans round the axis (0 for a ruling)
+          var O = l[0].o, D = l[0].d, X = V.norm(V.cross(D, Math.abs(D[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), Y = V.cross(D, X);
+          function span(idx) {
+            var ac = N(new oc.BRepAdaptor_Curve_2(N(oc.TopoDS.Edge_1(emap.FindKey(idx))))), ct = ac.GetType(), cv = ct && ct.value != null ? ct.value : ct;
+            if (cv === 0) return 0;
+            var a = ac.FirstParameter(), b = ac.LastParameter(), prev = null, acc = 0, lo = 0, hi = 0;
+            for (var k = 0; k <= 32; k++) {
+              var p = N(ac.Value(a + (b - a) * k / 32)), q = V.sub([p.X(), p.Y(), p.Z()], O), th = Math.atan2(V.dot(q, Y), V.dot(q, X));
+              if (prev != null) { var dt = th - prev; dt -= 2 * Math.PI * Math.round(dt / (2 * Math.PI)); acc += dt; lo = Math.min(lo, acc); hi = Math.max(hi, acc); }
+              prev = th;
+            }
+            return hi - lo;
+          }
+          users.forEach(function (u, idx) {
+            if (!u || u.length !== 2) return;
+            if (span(idx) < 0.5 * Math.min(l[u[0]].ext, l[u[1]].ext)) par[find(u[0])] = find(u[1]);
+          });
+          var turn = {};
+          l.forEach(function (rec, i) { var c = find(i); turn[c] = (turn[c] || 0) + rec.ext; });
+          return Object.keys(turn).some(function (c) { return turn[c] > 2 * Math.PI + 1e-6; });
+        });
+      } catch (e) { return false; }
     }
     // the body a face- or edge-picked feature works on: the one nearest its first pick (Kernel's pickBody)
     function pickBody(at) {
@@ -1535,10 +1600,28 @@ var OcctKernel = (function () {
     // One without it (an STL / OBJ / 3MF mesh) stays Anvil's.
     function importOp(f) {
       if (!f.brep || !f.brep.text) throw unsupportedErr('a mesh import (STL / OBJ / 3MF)');
-      var shape = readShape(oc, f.brep.format, f.brep.text, N);
-      if (m.units === 'in') { var sc = N(new oc.gp_Trsf_1()); sc.SetScale(P([0, 0, 0]), 1 / 25.4); shape = transformed(shape, sc); }
-      var list = solidsOf(oc, shape, N);
-      if (!list.length) throw new Error('The imported file has no solid geometry.');
+      // lane RA: the file's solids, healed as on import (importFile's own when it has just read this text), each
+      // copied into the model's units (millimetres -> inches; the copy carries no triangulation). The file's solids
+      // themselves stay as read: a body UnifySameDomain spoils is made again from them (importSrc, see the final
+      // unify). Instances of one solid are copied once and placed (twinsOf), so they still share their geometry:
+      // the mesh, the check and the mass properties of two dozen screws are those of one.
+      var rs = readSolids(oc, f.brep.format, f.brep.text, N), src = rs.list, inch = m.units === 'in', k = inch ? 1 / 25.4 : 1;
+      if (!src.length) throw new Error('The imported file has no solid geometry.');
+      if (rs.healed || rs.failed) impInfo.heal = { healed: (impInfo.heal ? impInfo.heal.healed : 0) + (rs.healed || 0), failed: (impInfo.heal ? impInfo.heal.failed : 0) + (rs.failed || 0) };
+      impInfo.readCached = !!rs.cached;
+      var sc = N(new oc.gp_Trsf_1()), tw = twinsOf(oc, src, N), list = [];
+      if (inch) sc.SetScale(P([0, 0, 0]), k);
+      function fresh(i) { return N(oc.TopoDS.Solid_1(transformed(src[i], sc))); }
+      function placed(i, base) {
+        var tr = N(tw.rel[i].Transformation());
+        if (inch) { var t = N(tr.TranslationPart()); tr.SetTranslationPart(Vec([t.X() * k, t.Y() * k, t.Z() * k])); }
+        return N(oc.TopoDS.Solid_1(N(base.Moved(N(new oc.TopLoc_Location_2(tr)), false))));
+      }
+      src.forEach(function (s, i) {
+        var j = tw ? tw.twin[i] : -1;
+        try { list[i] = j >= 0 ? placed(i, list[j]) : fresh(i); } catch (eT) { list[i] = fresh(i); }
+        importSrc.push({ shape: list[i], source: s, remake: function () { return fresh(i); } });
+      });
       list.forEach(function (s) {
         if (f.merge) { var tb = bboxOf(s), hit = -1; bodies.forEach(function (b, i) { if (hit < 0 && boxesMeet(bboxOf(b), tb)) hit = i; }); if (hit >= 0) { bodies[hit] = fuse(bodies[hit], s); return; } }
         bodies.push(s); bodyFeatures.push(f.id);
@@ -3216,33 +3299,90 @@ var OcctKernel = (function () {
         for (var q = 0; q < pc.length; q++) if (pc[q] && pc[q].pre.IsEqual(b)) return pc[q];
         return null;
       });
-      bodies = bodies.map(function (b, i) {
+      // lane RA: instances of one solid (twinsOf: an imported assembly's screws) are unified, checked and measured
+      // once: a twin is the first one's unified body moved onto it, with its validity, volume and area, and its
+      // centre of volume moved the same way (they then share their geometry, so BRepMesh meshes them once too).
+      // And a body straight from an import that UnifySameDomain spoils is made again from the file's solid and keeps
+      // its faces: on one customer fixture the merge threw Standard_NullObject half way and left the body it was
+      // given (valid as read) failing BRepCheck, on another its edge merge alone returned an invalid body.
+      // An imported body is valid when the file's solid is: BRepCheck_Solid has absolute thresholds, and a screw
+      // a few millimetres long that passes as read failed EnclosedRegion once scaled to inches, which
+      // marked a whole customer assembly not valid (and kept its STEP / IGES export back).
+      var tw = scribes ? null : twinsOf(oc, pre, N), oks = [], tV = 0, threw = [], asRead = [];
+      function twinBase(i) { return tw && !hits[i] && !known[i] && tw.twin[i] >= 0 && !known[tw.twin[i]] ? tw.twin[i] : -1; }
+      function importOf(i) {   // the importSrc entry of a body no feature has touched since importOp made it
+        if (!importSrc.length) return null;
+        if (importSrc[i] && importSrc[i].shape.IsEqual(pre[i])) return importSrc[i];
+        for (var q = 0; q < importSrc.length; q++) if (importSrc[q].shape.IsEqual(pre[i])) return importSrc[q];
+        return null;
+      }
+      function unified(b, i) {
         if (hits[i]) return N(keep(hits[i].unified));
         // (round holes add nothing UnifySameDomain could merge: one cylinder each, on a body unified before them)
         if (known[i] && known[i].round) return b;
         try {
-          var u = N(new oc.ShapeUpgrade_UnifySameDomain_2(b, true, true, false)); u.Build();
+          var wraps = unifyWraps(b);   // lane RA: a thread's faces stay apart
+          if (wraps) {
+            out.unifyKept = (out.unifyKept || 0) + 1;
+            if (!known[i] && importOf(i)) { asRead[i] = true; return b; }   // an imported thread stays as read
+          }
+          var u = N(new oc.ShapeUpgrade_UnifySameDomain_2(b, true, !wraps, false)); u.Build();
           var ub = N(u.Shape());
           if (known[i] && kvCount(ub) !== known[i].faces) known[i] = null;
           return ub;
-        } catch (e) { return b; }
+        } catch (e) { threw[i] = true; return b; }
+      }
+      // rfKV: the plate path's holes are apart and clear of every edge (kvPlan), the body before them passed the check
+      function checked(b, i, remake) {
+        var tc = now();
+        try {
+          if (hits[i]) { oks[i] = hits[i].valid; return b; }
+          if (known[i]) { kvStats.checkSkipped++; if (PLT.check) kvStats.checked = (kvStats.checked !== false) && valid(b); return b; }
+          var src = remake && (asRead[i] || threw[i]) ? importOf(i) : null;
+          if (src && asRead[i]) { oks[i] = valid(src.source); return b; }
+          if (!src) {
+            oks[i] = valid(b);
+            if (oks[i] || !remake) return b;
+            src = importOf(i);
+            if (!src) return b;
+          }
+          // the merge spoiled it (or threw half way): the file's solid again, if that one is sound
+          oks[i] = valid(src.source);
+          if (!oks[i]) return b;
+          try { var nb = src.remake(); out.unifyUndone = (out.unifyUndone || 0) + 1; return nb; } catch (eR) { oks[i] = false; return b; }
+        } finally { tV += now() - tc; }
+      }
+      bodies = bodies.map(function (b, i) {
+        if (twinBase(i) >= 0) return null;
+        var ub = unified(b, i);
+        return scribes ? ub : checked(ub, i, true);
+      });
+      bodies = bodies.map(function (b, i) {
+        var j = twinBase(i);
+        if (j < 0) return b;
+        try { var mv = N(bodies[j].Moved(tw.rel[i], false)); oks[i] = oks[j]; out.twins = (out.twins || 0) + 1; return mv; }
+        catch (e) { tw.twin[i] = -1; return checked(unified(pre[i], i), i, true); }
       });
       bodies = wrapScribeAll(bodies);   // rfDZ: Wrap scribes split the final faces (UnifySameDomain would merge a split made earlier)
-      if (scribes) known = known.map(function () { return null; });
+      if (scribes) { known = known.map(function () { return null; }); bodies.forEach(function (b, i) { checked(b, i, false); }); }
+      oks.forEach(function (o) { if (o === false) out.valid = false; });
       // exact mass properties per body (volume, surface area, centre of volume): Kernel.massProps prefers them
-      out.ms.unify = now() - tS; tS = now();
-      // rfKV: the plate path's holes are apart and clear of every edge (kvPlan), the body before them passed the check
-      var oks = [];
+      out.ms.unify = now() - tS - tV; out.ms.valid = tV; tS = now();
+      out.bodyProps = [];
+      var sigs = [];
+      function areaFixed(o) {
+        if (o.a1 == null) { var ga = N(new oc.GProp_GProps_1()); oc.BRepGProp.SurfaceProperties_1(o.b, ga, false, false); o.a1 = ga.Mass(); }
+        return o.a1;
+      }
       bodies.forEach(function (b, i) {
-        if (hits[i]) { oks[i] = hits[i].valid; if (!oks[i]) out.valid = false; return; }
-        if (!known[i]) { oks[i] = valid(b); if (!oks[i]) out.valid = false; return; }
-        kvStats.checkSkipped++;
-        if (PLT.check) kvStats.checked = (kvStats.checked !== false) && valid(b);
-      });
-      out.ms.valid = now() - tS; tS = now();
-      out.bodyProps = bodies.map(function (b, i) {
-        if (hits[i]) { var hp = hits[i].props; out.volume += hp.volume; return { volume: hp.volume, area: hp.area, centroid: hp.centroid.slice() }; }
-        if (known[i]) { kvStats.propsKnown++; out.volume += known[i].props.volume; return { volume: known[i].props.volume, area: known[i].props.area, centroid: known[i].props.centroid.slice() }; }
+        if (hits[i]) { var hp = hits[i].props; out.volume += hp.volume; out.bodyProps[i] = { volume: hp.volume, area: hp.area, centroid: hp.centroid.slice() }; return; }
+        if (known[i]) { kvStats.propsKnown++; out.volume += known[i].props.volume; out.bodyProps[i] = { volume: known[i].props.volume, area: known[i].props.area, centroid: known[i].props.centroid.slice() }; return; }
+        var tj = twinBase(i);
+        if (tj >= 0) {
+          var bj = out.bodyProps[tj], cj = N(P(bj.centroid).Transformed(N(tw.rel[i].Transformation())));
+          out.volume += bj.volume; out.bodyProps[i] = { volume: bj.volume, area: bj.area, centroid: [cj.X(), cj.Y(), cj.Z()] };
+          return;
+        }
         var g = N(new oc.GProp_GProps_1()), s = N(new oc.GProp_GProps_1());
         // lane FZ2: Gauss-Kronrod over the knot spans to a relative error of 1e-9. The fixed-order Gauss rule was 1.2e-4
         // heavy on a handwheel whose spokes meet the rim and hub in B-spline intersection curves (rfGA G01) and 5e-5
@@ -3252,12 +3392,33 @@ var OcctKernel = (function () {
         // the centre still comes from the fixed rule
         var gv = N(new oc.GProp_GProps_1());
         oc.BRepGProp.VolumeProperties_1(b, g, false, false, false);
+        var c = N(g.CentreOfMass());
+        // lane RA: a copy of a body measured already (an assembly exported with every screw written out again, so
+        // twinsOf does not see them: threaded screws were most of one build's time here, over a second each in the area of
+        // the two helicoid flanks alone) takes that body's volume and area; only its centre is its own. A copy has
+        // the same number of faces and the same fixed-rule volume and area to 1e-9 (the fixed rule integrates each
+        // face in its own parameters, so placing a body differently changes its result only by rounding). The
+        // fixed-rule area is worked out only for bodies whose face count and volume already agree.
+        var sg = { nf: kvCount(b), v1: g.Mass(), a1: null, b: b, i: i }, like = null;
+        for (var q = 0; q < sigs.length && !like; q++) {
+          var o = sigs[q];
+          if (o.nf === sg.nf && Math.abs(o.v1 - sg.v1) <= 1e-9 * Math.abs(sg.v1) && Math.abs(sg.v1) > 0 && Math.abs(areaFixed(o) - areaFixed(sg)) <= 1e-9 * Math.abs(sg.a1)) like = o;
+        }
+        if (like) {
+          var lp = out.bodyProps[like.i];
+          out.volume += lp.volume; out.propsCopied = (out.propsCopied || 0) + 1;
+          out.bodyProps[i] = { volume: lp.volume, area: lp.area, centroid: [c.X(), c.Y(), c.Z()] };
+          return;
+        }
+        sigs.push(sg);
         oc.BRepGProp.VolumePropertiesGK_1(b, gv, 1e-9, false, true, false, false, false);
         oc.BRepGProp.SurfaceProperties_2(b, s, 1e-9, false);
-        var c = N(g.CentreOfMass()), v = gv.Mass();
+        var v = gv.Mass();
         out.volume += v;
-        return { volume: v, area: s.Mass(), centroid: [c.X(), c.Y(), c.Z()] };
+        out.bodyProps[i] = { volume: v, area: s.Mass(), centroid: [c.X(), c.Y(), c.Z()] };
       });
+      if (impInfo.heal) out.heal = impInfo.heal;
+      if (impInfo.readCached != null) out.readCached = impInfo.readCached;
       // rfPB: the cache keeps this build's bodies only (the entries hit, new ones for the rest); the others are freed
       if (pc && !readOnly) {
         var nextPc = bodies.map(function (b, i) {
@@ -3440,6 +3601,8 @@ var OcctKernel = (function () {
     // the triangles of every face kvMeshPlan picked ({ gi: [x, y, z, …] }), or null (then BRepMesh does them all)
     function kvMeshBuild(kp) {
       var faces = kp.faces, pts = {}, triCache = {}, outerCircle = {};
+      function kvNo(why) { kvStats.meshWhy = why; return null; }   // lane RA: out.plate.meshWhy = which check gave up
+      if (PLT.meshFail) return kvNo('meshFail');   // (tests: the BRepMesh fallback)
       function edgeOf(idx) { return N(oc.TopoDS.Edge_1(kp.emap.FindKey(idx))); }
       function circlePts(idx) {
         if (pts[idx]) return pts[idx];
@@ -3462,14 +3625,14 @@ var OcctKernel = (function () {
         var g = kp.edgeFaces[idx].filter(function (x) { return !faces[x].big && !faces[x].wall; })[0];
         if (g == null) {   // between two perforated faces (a box of perforated sheet): a straight edge is its two ends
           var al = N(new oc.BRepAdaptor_Curve_2(edgeOf(idx)));
-          if (kvTypeOf(al.GetType()) !== 0) return null;
+          if (kvTypeOf(al.GetType()) !== 0) return kvNo(1);
           var e0 = N(al.Value(al.FirstParameter())), e1 = N(al.Value(al.LastParameter()));
           return (pts[idx] = [[e0.X(), e0.Y(), e0.Z()], [e1.X(), e1.Y(), e1.Z()]]);
         }
         var T = triOf(g);
-        if (!T) return null;
+        if (!T) return kvNo(2);
         var ph = N(oc.BRep_Tool.PolygonOnTriangulation_1(edgeOf(idx), T.h, T.loc));
-        if (ph.IsNull()) return null;
+        if (ph.IsNull()) return kvNo(3);
         var poly = ph.get(), out = [];
         for (var i = 1; i <= poly.NbNodes(); i++) { var p = N(N(T.tri.Node(poly.Node(i))).Transformed(T.tr)); out.push([p.X(), p.Y(), p.Z()]); }
         return (pts[idx] = out);
@@ -3480,7 +3643,7 @@ var OcctKernel = (function () {
         var rec = faces[gi];
         if (!rec.big) continue;
         var pl = draftPlaneOf(rec.f);
-        if (!pl) return null;
+        if (!pl) return kvNo(4);
         var n = pl.n, ux = V.norm(V.cross(n, Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), vy = V.cross(n, ux), loops = [];
         var wires = explore(rec.f, ENUM.TopAbs_WIRE);
         for (var wi = 0; wi < wires.length; wi++) {
@@ -3488,9 +3651,9 @@ var OcctKernel = (function () {
           var es = explore(wires[wi], ENUM.TopAbs_EDGE);
           for (var ei = 0; ei < es.length; ei++) {
             var idx = kp.emap.FindIndex(es[ei]);
-            if (!idx) return null;
-            if (kp.circleEdge[idx]) { if (es.length !== 1) return null; circ = idx; runs.push(circlePts(idx)); }
-            else { var rp = restPts(idx); if (!rp || rp.length < 2) return null; runs.push(rp); }
+            if (!idx) return kvNo(5);
+            if (kp.circleEdge[idx]) { if (es.length !== 1) return kvNo(6); circ = idx; runs.push(circlePts(idx)); }
+            else { var rp = restPts(idx); if (!rp || rp.length < 2) return kvNo(7); runs.push(rp); }
           }
           // chain the runs end to end into one closed ring (no point repeated)
           var ring;
@@ -3505,15 +3668,15 @@ var OcctKernel = (function () {
                 if (same(left[q][0], end, tol)) { hit = q; break; }
                 if (same(left[q][left[q].length - 1], end, tol)) { hit = q; rev = true; break; }
               }
-              if (hit < 0) return null;
+              if (hit < 0) return kvNo(8);
               var nx = left.splice(hit, 1)[0];
               if (rev) nx = nx.slice().reverse();
               for (var t = 1; t < nx.length; t++) ring.push(nx[t]);
             }
-            if (!same(ring[0], ring[ring.length - 1], tol)) return null;
+            if (!same(ring[0], ring[ring.length - 1], tol)) return kvNo(9);
             ring.pop();
           }
-          if (ring.length < 3) return null;
+          if (ring.length < 3) return kvNo(10);
           var r2 = ring.map(function (p) { return [V.dot(p, ux), V.dot(p, vy)]; }), A = 0;
           for (var a = 0; a < r2.length; a++) { var p1 = r2[a], p2 = r2[(a + 1) % r2.length]; A += p1[0] * p2[1] - p2[0] * p1[1]; }
           loops.push({ ring: ring, r2: r2, area: Math.abs(A / 2), circ: circ });
@@ -3529,7 +3692,7 @@ var OcctKernel = (function () {
         var tE = now(), tris = kvEarcut(data, holes), out = [];
         kvStats.earcutMs = (kvStats.earcutMs || 0) + now() - tE;
         // every vertex of the face is on its boundary: Σ triangles = vertices + 2·holes - 2 when nothing was dropped
-        if (tris.length / 3 !== P3.length + 2 * (order.length - 1) - 2) return null;
+        if (tris.length / 3 !== P3.length + 2 * (order.length - 1) - 2) return kvNo(11);
         for (var ti = 0; ti < tris.length; ti += 3) {
           var ia = tris[ti], ib = tris[ti + 1], ic = tris[ti + 2];
           var cr = (data[2 * ib] - data[2 * ia]) * (data[2 * ic + 1] - data[2 * ia + 1]) - (data[2 * ib + 1] - data[2 * ia + 1]) * (data[2 * ic] - data[2 * ia]);
@@ -3544,12 +3707,12 @@ var OcctKernel = (function () {
         rec = faces[gi];
         if (!rec.wall) continue;
         var Ar = circlePts(rec.circles[0]), Br = circlePts(rec.circles[1]), nA = Ar.length;
-        if (Br.length !== nA || outerCircle[rec.circles[0]] == null || outerCircle[rec.circles[0]] !== outerCircle[rec.circles[1]]) return null;
+        if (Br.length !== nA || outerCircle[rec.circles[0]] == null || outerCircle[rec.circles[0]] !== outerCircle[rec.circles[1]]) return kvNo(12);
         var j0 = 0, dmin = Infinity;
         Br.forEach(function (p, j) { var d = V.len(V.sub(p, Ar[0])); if (d < dmin) { dmin = d; j0 = j; } });
         var dir = V.len(V.sub(Br[(j0 + 1) % nA], Ar[1])) <= V.len(V.sub(Br[(j0 + nA - 1) % nA], Ar[1])) ? 1 : -1;
         var ax = V.sub(Br.c, Ar.c), axl = V.len(ax);
-        if (!(axl > 0)) return null;
+        if (!(axl > 0)) return kvNo(13);
         ax = V.scale(ax, 1 / axl);
         var sgn = outerCircle[rec.circles[0]] ? 1 : -1, wout = [];
         for (var k = 0; k < nA; k++) {
@@ -3578,9 +3741,13 @@ var OcctKernel = (function () {
         tq = now();
         if (kp.rest.length) N(new oc.BRepMesh_IncrementalMesh_2(compound(kp.rest), chord, false, ang, false));
         kvStats.brepMeshMs = now() - tq; tq = now();
-        try { own = kvMeshBuild(kp); } catch (eB) { own = null; }
+        try { own = kvMeshBuild(kp); } catch (eB) { own = null; kvStats.meshWhy = String(eB && eB.message || eB); }
         kvStats.meshBuildMs = now() - tq;
-        if (!own) oc.BRepTools.Clean(all, true);
+        // lane RA: BRepMesh then does the whole part. The triangulation of the faces meshed above is dropped first where
+        // the engine can (BRepTools.Clean; the native addon had no such call and threw here, so a customer panel never
+        // built in the app); without it BRepMesh keeps those faces and meshes the rest: the same triangles either way
+        // (checked on a large perforated panel: the same count and the same volume to 14 digits on both engines)
+        if (!own) { if (oc.BRepTools && oc.BRepTools.Clean) oc.BRepTools.Clean(all, true); }
         else kvStats.meshFaces = Object.keys(own).length;
       }
       if (!own) N(new oc.BRepMesh_IncrementalMesh_2(all, chord, false, ang, false));
@@ -3890,7 +4057,52 @@ var OcctKernel = (function () {
       invSize = Math.max(maxX - minX, maxY - minY); invSize = invSize !== 0 ? 32767 / invSize : 0;
     }
     ecLinkedEar(outerNode, tris, minX, minY, invSize, 0);
+    // lane RA: every vertex is on a ring, so a full triangulation has n + 2·holes − 2 triangles. Fewer: ear clipping
+    // dropped vertices that had come to lie exactly on a line with their ring neighbours (ecFilter; square and slot
+    // cut-outs in rows do that, round holes almost never), leaving an edge that passes through them (ecRepair)
+    if (tris.length && tris.length / 3 < data.length / 2 + 2 * (hasHoles ? holeIndices.length : 0) - 2) tris = ecRepair(data, holeIndices || [], tris) || tris;
     return tris;
+  }
+  // lane RA: the triangles with their T-junctions taken out, or null. An edge is open when it is inside the polygon and
+  // one triangle has it, or on a ring and none has it; the open edges lie in collinear runs where ecFilter took
+  // vertices away. Every triangle with an open edge through open vertices becomes a fan from its far corner over
+  // them. Done when no edge is open (each inside edge twice, each ring edge once).
+  function ecRepair(data, holeIndices, tris) {
+    var n = data.length / 2, ring = {}, starts = [0].concat(holeIndices, [n]), r, i, pass;
+    function key(a, b) { return a < b ? a * n + b : b * n + a; }
+    for (r = 0; r + 1 < starts.length; r++) for (i = starts[r]; i < starts[r + 1]; i++) ring[key(i, i + 1 < starts[r + 1] ? i + 1 : starts[r])] = true;
+    for (pass = 0; pass < 8; pass++) {
+      var count = {}, t, k, e, open = [], pts = {}, bad = false;
+      for (t = 0; t < tris.length; t += 3) for (k = 0; k < 3; k++) { e = key(tris[t + k], tris[t + (k + 1) % 3]); count[e] = (count[e] || 0) + 1; }
+      for (t = 0; t < tris.length; t += 3) for (k = 0; k < 3; k++) {
+        var a = tris[t + k], b = tris[t + (k + 1) % 3]; e = key(a, b);
+        if (count[e] > 2 || (ring[e] && count[e] !== 1)) bad = true;
+        else if (!ring[e] && count[e] === 1) { open.push([t, k]); pts[a] = true; pts[b] = true; }
+      }
+      if (bad) return null;
+      Object.keys(ring).forEach(function (e2) { if (!count[e2]) { var lo = Math.floor(+e2 / n); pts[lo] = true; pts[+e2 - lo * n] = true; } });
+      if (!open.length) return Object.keys(ring).every(function (e2) { return count[e2] === 1; }) ? tris : null;
+      var cand = Object.keys(pts).map(Number), out = [], split = {};
+      open.forEach(function (o) {
+        if (split[o[0]]) return;   // (one edge of a triangle per pass)
+        var u = tris[o[0] + o[1]], v = tris[o[0] + (o[1] + 1) % 3], q = tris[o[0] + (o[1] + 2) % 3];
+        var ux = data[2 * u], uy = data[2 * u + 1], dx = data[2 * v] - ux, dy = data[2 * v + 1] - uy, L2 = dx * dx + dy * dy, mid = [];
+        cand.forEach(function (c) {
+          if (c === u || c === v || c === q) return;
+          var cx = data[2 * c] - ux, cy = data[2 * c + 1] - uy, d = cx * dx + cy * dy;
+          if (d > 0 && d < L2 && Math.abs(cx * dy - cy * dx) <= 1e-12 * L2) mid.push([d, c]);
+        });
+        if (!mid.length) return;
+        mid.sort(function (p1, p2) { return p1[0] - p2[0]; });
+        var chain = [u].concat(mid.map(function (p1) { return p1[1]; }), [v]);
+        for (var j = 0; j + 1 < chain.length; j++) out.push(chain[j], chain[j + 1], q);
+        split[o[0]] = true;
+      });
+      if (!out.length) return null;
+      for (t = 0; t < tris.length; t += 3) if (!split[t]) out.push(tris[t], tris[t + 1], tris[t + 2]);
+      tris = out;
+    }
+    return null;
   }
   function EcNode(i, x, y) { this.i = i; this.x = x; this.y = y; this.prev = null; this.next = null; this.z = 0; this.prevZ = null; this.nextZ = null; this.steiner = false; }
   function ecLinked(data, start, end, clockwise) {
@@ -4197,6 +4409,128 @@ var OcctKernel = (function () {
     }
     return out;
   }
+  // lane RA: import healing, as SolidWorks' import diagnostics heal a file. The defect customer files had: a cylinder
+  // face of no height (its wire is one circle, its parameter box has no width; some CAD writes the flat bottom of a
+  // hole, or a circle split on a face, that way). OpenCascade reads it as a face without area: BRepCheck fails on
+  // its wire, the mesh has an open ring where it should be, the exact volume lacks the disc's share, and the edges
+  // of the circle carry a tolerance as large as the part. Such a face is replaced by the planar face inside its wire
+  // (Anvil's own reader reads it the same way), turned the way the face it replaces used its edges. The healed solid
+  // is kept only when BRepCheck passes and its volume differs from the unhealed one by no more than the discs can
+  // account for (each at most area × reach / 3 in the divergence integral; 1e-6 otherwise). Finding the faces costs
+  // one adaptor per face, so a sound file is not checked by BRepCheck here and reads as fast as before.
+  // healSolids(oc, list, N) -> { list, healed, failed } (solids, in the same order)
+  function healSolids(oc, list, N) {
+    var E = oc.TopAbs_ShapeEnum, healed = 0, failed = 0;
+    function each(sh, kind, fn) { for (var x = N(new oc.TopExp_Explorer_2(sh, kind, E.TopAbs_SHAPE)); x.More(); x.Next()) fn(N(x.Current())); }
+    function vol(sh) { var g = N(new oc.GProp_GProps_1()); oc.BRepGProp.VolumeProperties_1(sh, g, false, false, false); return g.Mass(); }
+    function ok(sh) { try { return N(new oc.BRepCheck_Analyzer(sh, true, false)).IsValid_2(); } catch (e) { return false; } }
+    function ov(s) { var o = s.Orientation_1(); return o && o.value != null ? o.value : o; }
+    var out = list.map(function (sol) {
+      var faces = [], flat = [], shells = 0;
+      each(sol, E.TopAbs_SHELL, function () { shells++; });
+      each(sol, E.TopAbs_FACE, function (s) {
+        var f = N(oc.TopoDS.Face_1(s)), bad = false;
+        try {
+          var ad = N(new oc.BRepAdaptor_Surface_2(f, true)), du = Math.abs(ad.LastUParameter() - ad.FirstUParameter()), dv = Math.abs(ad.LastVParameter() - ad.FirstVParameter());
+          bad = du <= 1e-12 || dv <= 1e-12;
+        } catch (e) { }
+        if (bad) flat.push(faces.length);
+        faces.push(f);
+      });
+      if (!flat.length) return sol;
+      try {
+        if (shells !== 1) throw new Error('shells');
+        var caps = {}, capArea = 0;
+        flat.forEach(function (fi) {
+          var wires = [], first = null, cap, same = null;
+          each(faces[fi], E.TopAbs_WIRE, function (w) { wires.push(w); });
+          if (wires.length !== 1) throw new Error('wires');
+          var mf = N(new oc.BRepBuilderAPI_MakeFace_15(N(oc.TopoDS.Wire_1(wires[0])), true));
+          if (!mf.IsDone()) throw new Error('not planar');
+          cap = N(mf.Face());
+          // the cap uses the wire's edges the way the face did (MakeFace turns the wire when it runs the other way)
+          each(faces[fi], E.TopAbs_EDGE, function (e) { if (!first) first = e; });
+          each(cap, E.TopAbs_EDGE, function (e) { if (same == null && e.IsSame(first)) same = ov(e) === ov(first); });
+          if (same == null) throw new Error('edges');
+          var g = N(new oc.GProp_GProps_1()); oc.BRepGProp.SurfaceProperties_2(cap, g, 1e-9, false);
+          if (!(g.Mass() > 0)) throw new Error('no area');
+          capArea += g.Mass();
+          caps[fi] = same ? cap : N(oc.TopoDS.Face_1(N(cap.Reversed())));
+        });
+        var b = N(new oc.Bnd_Box_1()); oc.BRepBndLib.Add(sol, b, false);
+        var lo = N(b.CornerMin()), hi = N(b.CornerMax());
+        var reach = Math.hypot(Math.max(Math.abs(lo.X()), Math.abs(hi.X())), Math.max(Math.abs(lo.Y()), Math.abs(hi.Y())), Math.max(Math.abs(lo.Z()), Math.abs(hi.Z())));
+        var v0 = vol(sol), fixed = null;
+        [false, true].some(function (flip) {   // (the other way round only when the file's own face was turned wrongly)
+          var bld = N(new oc.BRep_Builder()), shell = N(new oc.TopoDS_Shell());
+          bld.MakeShell(shell);
+          faces.forEach(function (f, i) { bld.Add(shell, caps[i] ? (flip ? N(caps[i].Reversed()) : caps[i]) : f); });
+          var ms = N(new oc.BRepBuilderAPI_MakeSolid_3(shell));
+          if (!ms.IsDone()) return false;
+          var so = N(ms.Solid()), v1 = vol(so);
+          if (!(v1 > 0) || Math.abs(v1 - v0) > 1e-6 * Math.abs(v0) + 1.01 * capArea * reach / 3 || !ok(so)) return false;
+          fixed = so;
+          return true;
+        });
+        if (!fixed) throw new Error('not valid');
+        healed++;
+        return fixed;
+      } catch (e) { failed++; return sol; }
+    });
+    return { list: out, healed: healed, failed: failed };
+  }
+  // lane RA: the last file importFile read (its solids, healed), so the build of the part that keeps that file
+  // (the Imported feature's exact rebuild, run by the same worker right after the open) does not read it again:
+  // reading was a third of that build on a large panel and several seconds on an assembly. One file, replaced
+  // by the next import; importOp copies what it takes (the copy has no triangulation and the cache stays as read).
+  var lastRead = null;
+  function forgetRead() {
+    if (!lastRead) return;
+    var l = lastRead; lastRead = null;
+    l.solids.forEach(function (s) { try { s.delete(); } catch (e) { } });
+  }
+  function rememberRead(oc, format, text, list, healed, failed) {
+    forgetRead();
+    var ident = new oc.TopLoc_Location_1();
+    try {
+      lastRead = { oc: oc, format: format, text: text, healed: healed || 0, failed: failed || 0, solids: list.map(function (s) { var mv = s.Moved(ident, false), so = oc.TopoDS.Solid_1(mv); try { mv.delete(); } catch (e) { } return so; }) };
+    } catch (e) { lastRead = null; } finally { try { ident.delete(); } catch (e2) { } }
+  }
+  // the solids of a STEP / IGES text, healed: importFile's when it read this very text, else read now
+  function readSolids(oc, format, text, N) {
+    if (lastRead && lastRead.oc === oc && lastRead.format === format && lastRead.text === text) return { list: lastRead.solids.slice(), healed: lastRead.healed, failed: lastRead.failed, cached: true };
+    var h = healSolids(oc, solidsOf(oc, readShape(oc, format, text, N), N), N);
+    return { list: h.list, healed: h.healed, failed: h.failed, cached: false };
+  }
+  // lane RA: instances of one solid (a STEP assembly places one screw many times: the same TShape at many locations).
+  // twinsOf(oc, list, N) -> null, or { twin: [index of the first solid with the same TShape, or -1], rel: [the
+  // TopLoc_Location that carries that first solid onto this one] }. Needs IsPartner / Location (an engine without
+  // them, the native addon before it was rebuilt for this lane, gets null and every solid is worked on its own).
+  function twinsOf(oc, list, N) {
+    if (list.length < 2 || list.length > 400 || typeof list[0].IsPartner !== 'function' || typeof list[0].Location_1 !== 'function') return null;
+    try {
+      var loc0 = N(list[0].Location_1());
+      if (typeof loc0.Inverted !== 'function' || typeof loc0.Multiplied !== 'function') return null;
+      var twin = [], rel = [], any = false, locs = [], bases = [];
+      list.forEach(function (s, i) {
+        var o = s.Orientation_1(), ovv = o && o.value != null ? o.value : o;
+        twin[i] = -1; rel[i] = null;
+        for (var q = 0; q < bases.length; q++) {
+          var j = bases[q];
+          if (!list[j].IsPartner(s)) continue;
+          var oj = list[j].Orientation_1();
+          if ((oj && oj.value != null ? oj.value : oj) !== ovv) continue;
+          locs[i] = locs[i] || N(s.Location_1()); locs[j] = locs[j] || N(list[j].Location_1());
+          var r = N(locs[i].Multiplied(N(locs[j].Inverted()))), tr = N(r.Transformation());
+          if (tr.IsNegative && tr.IsNegative()) continue;   // (a mirrored instance is worked on its own)
+          twin[i] = j; rel[i] = r; any = true;
+          return;
+        }
+        bases.push(i);
+      });
+      return any ? { twin: twin, rel: rel } : null;
+    } catch (e) { return null; }
+  }
   // lane importbend: { s: { t: 'cyl', o, d, r } } for a face on a cylinder (the adaptor applies the face's location),
   // else null
   function importCylRecord(oc, f, N) {
@@ -4232,6 +4566,9 @@ var OcctKernel = (function () {
       say(0.05, 'Reading the file');
       var shape = readShape(oc, format, text, N), list = solidsOf(oc, shape, N), E = oc.TopAbs_ShapeEnum, faces = 0;
       if (!list.length) throw new Error('The file has no solid bodies (surfaces only?).');
+      var hl = healSolids(oc, list, N);   // lane RA
+      list = hl.list;
+      rememberRead(oc, format, text, list, hl.healed, hl.failed);
       var solids = list.map(function (sol, si) {
         say(0.25 + 0.3 * si / list.length, 'Meshing solid ' + (si + 1) + ' of ' + list.length);
         var b = N(new oc.Bnd_Box_1()); oc.BRepBndLib.Add(sol, b, false);
@@ -4259,7 +4596,7 @@ var OcctKernel = (function () {
         if (anyRec) out.recs = recs;
         return out;
       });
-      return { solids: solids, faces: faces, ms: now() - t0 };
+      return { solids: solids, faces: faces, ms: now() - t0, heal: { healed: hl.healed, failed: hl.failed } };
     } finally {
       for (var a = arena.length - 1; a >= 0; a--) { try { if (arena[a] && arena[a].delete && !(arena[a].isDeleted && arena[a].isDeleted())) arena[a].delete(); } catch (e) { } }
     }
@@ -4570,6 +4907,6 @@ var OcctKernel = (function () {
     return h + body;
   }
 
-  return { build: build, importFile: importFile, mapFaces: mapFaces, toBuild: toBuild, toBodies: toBodies, fromPacked: fromPacked, nearestTriangles: nearestTriangles, stepHeader: stepHeader, SUPPORTED: SUPPORTED, TANGENT_ANG: TANGENT_ANG, plateOptions: PLATE, earcut: kvEarcut };
+  return { build: build, importFile: importFile, forgetRead: forgetRead, healSolids: healSolids, mapFaces: mapFaces, toBuild: toBuild, toBodies: toBodies, fromPacked: fromPacked, nearestTriangles: nearestTriangles, stepHeader: stepHeader, SUPPORTED: SUPPORTED, TANGENT_ANG: TANGENT_ANG, plateOptions: PLATE, earcut: kvEarcut };
 })();
 if (typeof self !== 'undefined') self.OcctKernel = OcctKernel;

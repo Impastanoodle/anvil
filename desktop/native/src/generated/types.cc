@@ -447,6 +447,13 @@ static void* up_BRepPrimAPI_MakeSweep(void* p, int to) {
   }
   return nullptr;
 }
+static void* up_BRepTools(void* p, int to) {
+  BRepTools* x = static_cast<BRepTools*>(p);
+  switch (to) {
+    case ID_BRepTools: return x;
+  }
+  return nullptr;
+}
 static void* up_BRep_Builder(void* p, int to) {
   BRep_Builder* x = static_cast<BRep_Builder*>(p);
   switch (to) {
@@ -1195,6 +1202,14 @@ static void* up_gp_Vec(void* p, int to) {
   return nullptr;
 }
 static void del_gp_Vec(void* p) { delete static_cast<gp_Vec*>(p); }
+static void* up_gp_XYZ(void* p, int to) {
+  gp_XYZ* x = static_cast<gp_XYZ*>(p);
+  switch (to) {
+    case ID_gp_XYZ: return x;
+  }
+  return nullptr;
+}
+static void del_gp_XYZ(void* p) { delete static_cast<gp_XYZ*>(p); }
 static void* up_Handle_Geom2d_Curve(void* p, int to) { return to == ID_Handle_Geom2d_Curve ? p : nullptr; }
 static void del_Handle_Geom2d_Curve(void* p) { delete static_cast<opencascade::handle<Geom2d_Curve>*>(p); }
 static void* up_Handle_Geom2d_TrimmedCurve(void* p, int to) { return to == ID_Handle_Geom2d_TrimmedCurve ? p : nullptr; }
@@ -1260,6 +1275,7 @@ void RegisterTypes() {
   g_types[ID_BRepPrimAPI_MakePrism] = new TypeInfo{ "BRepPrimAPI_MakePrism", ID_BRepPrimAPI_MakePrism, ID_BRepPrimAPI_MakeSweep, false, false, up_BRepPrimAPI_MakePrism, del_BRepPrimAPI_MakePrism, nullptr, nullptr, -1 };
   g_types[ID_BRepPrimAPI_MakeRevol] = new TypeInfo{ "BRepPrimAPI_MakeRevol", ID_BRepPrimAPI_MakeRevol, ID_BRepPrimAPI_MakeSweep, false, false, up_BRepPrimAPI_MakeRevol, del_BRepPrimAPI_MakeRevol, nullptr, nullptr, -1 };
   g_types[ID_BRepPrimAPI_MakeSweep] = new TypeInfo{ "BRepPrimAPI_MakeSweep", ID_BRepPrimAPI_MakeSweep, ID_BRepBuilderAPI_MakeShape, false, false, up_BRepPrimAPI_MakeSweep, nullptr, nullptr, nullptr, -1 };
+  g_types[ID_BRepTools] = new TypeInfo{ "BRepTools", ID_BRepTools, -1, false, false, up_BRepTools, nullptr, nullptr, nullptr, -1 };
   g_types[ID_BRep_Builder] = new TypeInfo{ "BRep_Builder", ID_BRep_Builder, ID_TopoDS_Builder, false, false, up_BRep_Builder, del_BRep_Builder, nullptr, nullptr, -1 };
   g_types[ID_BRep_Tool] = new TypeInfo{ "BRep_Tool", ID_BRep_Tool, -1, false, false, up_BRep_Tool, nullptr, nullptr, nullptr, -1 };
   g_types[ID_Bnd_Box] = new TypeInfo{ "Bnd_Box", ID_Bnd_Box, -1, false, false, up_Bnd_Box, del_Bnd_Box, nullptr, nullptr, -1 };
@@ -1342,6 +1358,7 @@ void RegisterTypes() {
   g_types[ID_gp_Torus] = new TypeInfo{ "gp_Torus", ID_gp_Torus, -1, false, false, up_gp_Torus, del_gp_Torus, nullptr, nullptr, -1 };
   g_types[ID_gp_Trsf] = new TypeInfo{ "gp_Trsf", ID_gp_Trsf, -1, false, false, up_gp_Trsf, del_gp_Trsf, nullptr, nullptr, -1 };
   g_types[ID_gp_Vec] = new TypeInfo{ "gp_Vec", ID_gp_Vec, -1, false, false, up_gp_Vec, del_gp_Vec, nullptr, nullptr, -1 };
+  g_types[ID_gp_XYZ] = new TypeInfo{ "gp_XYZ", ID_gp_XYZ, -1, false, false, up_gp_XYZ, del_gp_XYZ, nullptr, nullptr, -1 };
   g_types[ID_Handle_Geom2d_Curve] = new TypeInfo{ "Handle_Geom2d_Curve", ID_Handle_Geom2d_Curve, -1, false, true, up_Handle_Geom2d_Curve, del_Handle_Geom2d_Curve, nullptr, nullptr, ID_Geom2d_Curve };
   g_types[ID_Handle_Geom2d_TrimmedCurve] = new TypeInfo{ "Handle_Geom2d_TrimmedCurve", ID_Handle_Geom2d_TrimmedCurve, -1, false, true, up_Handle_Geom2d_TrimmedCurve, del_Handle_Geom2d_TrimmedCurve, nullptr, nullptr, ID_Geom2d_TrimmedCurve };
   g_types[ID_Handle_Geom_BSplineCurve] = new TypeInfo{ "Handle_Geom_BSplineCurve", ID_Handle_Geom_BSplineCurve, -1, false, true, up_Handle_Geom_BSplineCurve, del_Handle_Geom_BSplineCurve, nullptr, nullptr, ID_Geom_BSplineCurve };

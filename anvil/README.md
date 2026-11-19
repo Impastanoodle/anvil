@@ -1635,6 +1635,15 @@ Exchange.importSTEP(text) / importSTL(data) / importOBJ(text) / import3MF(bytes)
 Exchange.newPartFromImport(result) -> part model with Imported1      Exchange.importFeature(model, result) -> feature
 ```
 
+**Large STEP files read by OpenCascade** (`OcctKernel.importFile`, and the Imported feature's exact rebuild in `OcctKernel.build`):
+
+- *Import healing.* A cylinder face of no height (a hole's flat bottom, or a circle split on a face, written as a `CYLINDRICAL_SURFACE` bounded by one circle) is read as the planar face inside its circle, as SolidWorks' import diagnostics heal it and as Anvil's own reader reads it. The healed solid is kept only when `BRepCheck` passes and its volume changed by no more than the discs account for. `importFile(...).heal` and the build's `heal` are `{ healed, failed }` (solids). A sound file is not checked on import and reads as fast as before.
+- *The file is read once.* The build that follows an open takes the solids the import has just read (`readCached: true` in the build's result); `OcctKernel.forgetRead()` drops them.
+- *Threads.* A modelled thread has its crest and root cylinders in half-turn pieces joined along rulings; merging them would wind one face round the cylinder several times, and OpenCascade 7.6's `ShapeUpgrade_UnifySameDomain` never returns from that. A body with such a chain of faces (same cylinder or cone, more than 360° in all) keeps its faces as read (`unifyKept` = how many bodies).
+- *Validity as read.* A body straight from the file that the face merge spoils (it can throw half way, or return an invalid body) is made again from the file's solid (`unifyUndone`), and an imported body is valid when the file's solid is: `BRepCheck_Solid` has absolute thresholds that a small part scaled from millimetres to inches can trip.
+- *Repeated parts.* Instances of one solid in an assembly (the same B-rep placed several times) are unified, checked and measured once (`twins`; they share their geometry, so they are meshed once too), and a copy written out again (same face count, same fixed-rule volume and area to 1e-9) takes the first one's volume and area (`propsCopied`).
+- *Perforated panels with square or slotted cut-outs in rows* are triangulated by the plate path like round ones (`plate.meshFaces`; `plate.meshWhy` says which check gave up when BRepMesh had to do the part).
+
 Validated outside the browser: the STEP files open in OpenCascade 8 (the kernel under FreeCAD) as valid solids (`BRepCheck_Analyzer`) with the same volume and bounding box, and assemblies read through XCAF as one assembly with the right component names; lib3mf reads the 3MF packages as manifold, oriented meshes with the right units and build items; trimesh reads the OBJ (watertight once merged by position, colour from the `.mtl`). STEP files written by OpenCascade (a planar part and its own layout of an assembly) import with exact volumes; two of them are test fixtures in `tests/fixtures/`.
 
 ## Evaluate tools
