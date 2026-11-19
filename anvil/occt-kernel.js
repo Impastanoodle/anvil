@@ -282,6 +282,8 @@ var OcctKernel = (function () {
     }
 
     var rm = K.resolvedModel(model), m = rm.model;
+    // lane smflange (rfQB): Link to thickness and the Base Flange take the sheet's T, as Anvil's rebuild (kernel-rebuild.js linkThickness)
+    if (K._ && K._.linkThickness) m = K._.linkThickness(m);
     var planes = {}, sketches = {}, tools = {}, bodies = [], bodyFeatures = [], status = {}, unsupported = null;
     var cutDirs = {};   // lane PK: Cut-Extrudes with no direction that autoCutDir turned into the material (out.cutDirs)
     var smFlanges = {};   // lane smtrim: edge-flange records by feature id (flangeLayout's Trim side bends looks up the side bends)
@@ -1296,15 +1298,16 @@ var OcctKernel = (function () {
           return N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(face, p.t0 - e, p.plane), Vec(V.scale(p.plane.n, p.t1 - p.t0 + 2 * e)), false, true)).Shape());
         });
         // a part whose band holds a hole / slot of the sheet (p.voids): no overlap strip, and the cut wrapped round the bend
-        var cutters = p.voids ? bendCutters(src, srcCSG || (srcCSG = shapeToCSG(src)), p.plane, p.band, lay.section, p.BA, false) : [];
+        var sec = p.section || lay.section;   // lane smflange: an edge's own length (Kernel.flangeLayout's f.lengths)
+        var cutters = p.voids ? bendCutters(src, srcCSG || (srcCSG = shapeToCSG(src)), p.plane, p.band, sec, p.BA, false) : [];
         // a Miter Flange's square end: the bend's taper, and the overlap strip stops at the base's corner
         // lane mitrefid2: SolidWorks' edge-flange mitre (flangeLayout's swMiter, the part has wallClips) is a polygon in
         // (s, t), straight between its points as Anvil's (the end straight in (angle, t); a Miter Flange's later stage on
         // the bend's zone lines), not a smooth run: a shallow mitre (turn under 0.5 rad) made [−ov, tB], [0, tB], [BA, tW]
         // one elliptic arc, 6e-5 to 1.6e-4 under Anvil. A Miter Flange's square end (miterTaper: points on the true sin
         // curve) keeps the smooth run, SolidWorks' curve (DL rows)
-        (p.tapers || []).forEach(function (l) { cutters.push(cylinderCutter(l, p.plane, lay.section, p.BA, null, !!p.wallClips)); });
-        if (!p.voids) (p.tails || []).forEach(function (r) { cutters.push(prismOf(K.miterTail(lay.section), p.plane, r.t0, r.t1)); });
+        (p.tapers || []).forEach(function (l) { cutters.push(cylinderCutter(l, p.plane, sec, p.BA, null, !!p.wallClips)); });
+        if (!p.voids) (p.tails || []).forEach(function (r) { cutters.push(prismOf(K.miterTail(sec), p.plane, r.t0, r.t1)); });
         // lane rfIS: the overlap strip's sliver past an acute corner of the sheet (Kernel.flangeLayout's endCuts), and a
         // wall cut square to itself where that plane would cut the bend too (wallCuts: below 90°, the wall's part only)
         (p.endCuts || []).forEach(function (c) { cutters.push(prismOf(c.loop, c.plane, c.a, c.b)); });
@@ -1313,9 +1316,9 @@ var OcctKernel = (function () {
         // the base corner to the wall's end and only then are the walls cut square, so the taper does not have to find
         // its corner on the tangent line where bend meets wall at the very end of the sweep.
         var over = p.taper ? 0.02 * p.taper.BA : 0;
-        var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(flangeSection(p.voids || p.taper ? noOverlap(lay.section, false) : lay.section, p.plane), p.t0 - over, p.plane), Vec(V.scale(p.plane.n, p.t1 - p.t0 + 2 * over)), false, true)).Shape());
+        var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(flangeSection(p.voids || p.taper ? noOverlap(sec, false) : sec, p.plane), p.t0 - over, p.plane), Vec(V.scale(p.plane.n, p.t1 - p.t0 + 2 * over)), false, true)).Shape());
         if (p.taper) {
-          tool = boolMany('cut', tool, p.taper.loops.map(function (l) { return cylinderCutter(taperLoop(l, p.taper.BA), p.plane, lay.section, p.taper.BA); }), 'OpenCascade could not taper the bend.');
+          tool = boolMany('cut', tool, p.taper.loops.map(function (l) { return cylinderCutter(taperLoop(l, p.taper.BA), p.plane, sec, p.taper.BA); }), 'OpenCascade could not taper the bend.');
           var w0 = V.dot(p.plane.n, p.plane.origin);
           tool = clipKeep(clipKeep(tool, p.plane.n, w0 + p.t0), V.scale(p.plane.n, -1), -(w0 + p.t1));
         }

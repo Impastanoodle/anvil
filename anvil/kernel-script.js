@@ -1305,6 +1305,18 @@
       if (K.FLANGE_LENGTH_REFS.indexOf(opts.lengthRef) < 0) throw new Error('lengthRef must be one of ' + K.FLANGE_LENGTH_REFS.join(', ') + '.');
       f.lengthRef = opts.lengthRef;
     }
+    // lane smflange (rfQB): lengths { <index into edges>: length } (or an array, null = the feature's length): a length
+    // per edge, measured as `length` is
+    if (opts.lengths != null) {
+      var ls = {}, src = opts.lengths;
+      Object.keys(src).forEach(function (k) {
+        if (src[k] == null) return;
+        var i = +k;
+        if (!(i >= 0 && i < f.edges.length && Math.floor(i) === i)) throw new Error('lengths: ' + k + ' is not the index of an edge (0 to ' + (f.edges.length - 1) + ').');
+        ls[i] = num(src[k]);
+      });
+      if (Object.keys(ls).length) f.lengths = ls;
+    }
     customBendAllowance(f, opts.bendAllowance);
     this._add(f);
     return this;
@@ -2227,6 +2239,7 @@
           if (f.radius != null) fo.radius = f.radius;
           if (f.position && f.position !== 'bendOutside') fo.position = f.position;
           if (f.lengthRef != null) fo.lengthRef = f.lengthRef;
+          if (!f.hem && f.lengths && Object.keys(f.lengths).length) { fo.lengths = {}; Object.keys(f.lengths).forEach(function (k) { if (f.lengths[k] != null) fo.lengths[k] = numOut(f.lengths[k]); }); }   // lane smflange
           if (f.toward) fo.toward = f.toward.map(function (x) { return isExpression(x) ? x : Math.round(x * 1e4) / 1e4; });
           if (f.miter) fo.miter = true;
           if (f.miterGap != null && (isExpression(f.miterGap) || +f.miterGap !== 0)) fo.miterGap = numOut(f.miterGap);

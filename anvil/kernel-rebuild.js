@@ -373,6 +373,7 @@
         if (Array.isArray(g.lengthVertex)) g.lengthVertex = M(g.lengthVertex);
         if (Array.isArray(g.startAt)) g.startAt = M(g.startAt);
         if (Array.isArray(g.startPoint)) g.startPoint = M(g.startPoint);   // lane flangeprofile: the end a partial or profiled Edge Flange counts from
+        // (lane smflange: g.lengths, a length per edge, is keyed by the index into g.edges, which keep their order: copied as is)
         if (srcSketch) g._sketch = mappedSketch(srcSketch, model, ctx, M, L, det);
         copies.push(g);
       });
@@ -887,14 +888,21 @@
   // lane DC (finding #10): Cut-Extrude's "Link to thickness" in a sheet part: a feature with linkT: true is a blind cut
   // whose depth is the sheet's thickness, whatever depth it stores (the PM stores T too, for the other kernel). On the
   // RESOLVED model; the features it changes are copies.
+  // lane smflange (rfQB): the Base Flange (an extrude with sheetBase) is the sheet's thickness as well: a new
+  // model.sheet.thickness (a script, an equation, a configuration) left it at its stored depth while every flange took
+  // the new T (shop-flow-7: Base .06, Edge-Flange .075). Its end condition (Mid Plane) stays.
+  // (a depth that is not a number still fails as it did: the feature is broken, not just stale)
+  function sheetBaseExtrude(f) { return f.sheetBase && f.type === 'extrude' && !f.cut && f.depth !== '' && f.depth != null && isFinite(+f.depth); }
   function linkThickness(model) {
     var T = model.sheet ? +model.sheet.thickness : NaN;
-    if (!(T > 0) || !model.features.some(function (f) { return f.linkT; })) return model;
+    if (!(T > 0) || !model.features.some(function (f) { return f.linkT || (sheetBaseExtrude(f) && +f.depth !== T); })) return model;
     model.features = model.features.map(function (f) {
-      if (!f.linkT || f.type !== 'extrude') return f;
+      var link = f.linkT && f.type === 'extrude', base = !link && sheetBaseExtrude(f) && +f.depth !== T;
+      if (!link && !base) return f;
       var c = {};
       Object.keys(f).forEach(function (k) { c[k] = f[k]; });
-      c.depth = T; c.end = 'blind';
+      c.depth = T;
+      if (link) c.end = 'blind';
       return c;
     });
     return model;

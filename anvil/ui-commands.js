@@ -3102,11 +3102,28 @@
     if (rect) return { so: r8(Math.max(0, wp.ua)), eo: r8(Math.max(0, len - wp.ub)), L: r8(wp.vmax) };
     return { profile: spec, L: r8(wp.vmax) };
   }
+  // lane smflange: while a flange profile is edited, Exit Sketch asks first (UI.sketchExitGuard, the sketch lane's hook:
+  // a string keeps the sketch open and is shown as a toast); a profile Anvil cannot build is refused there, so the sketch
+  // never closes and reopens. The exit hook below keeps its own refusal for a build without the guard.
+  var flangeGuardPrev = null, flangeGuardOn = false;
+  function flangeProfileGuard(sk) {
+    var pe = flangeProfileEdit;
+    if (pe && sk && sk.id === pe.id) {
+      var got = readFlangeProfile(sk, pe.len);
+      return got.error ? 'Edit Flange Profile: ' + got.error + ' Fix the profile and exit again, or Discard Changes and Exit.' : null;
+    }
+    return typeof flangeGuardPrev === 'function' ? flangeGuardPrev.apply(this, arguments) : null;
+  }
+  function setFlangeGuard(on) {
+    if (on && !flangeGuardOn) { flangeGuardPrev = UI.sketchExitGuard || null; UI.sketchExitGuard = flangeProfileGuard; flangeGuardOn = true; }
+    else if (!on && flangeGuardOn) { if (UI.sketchExitGuard === flangeProfileGuard) UI.sketchExitGuard = flangeGuardPrev; flangeGuardPrev = null; flangeGuardOn = false; }
+  }
   UI.sketchExitHooks = UI.sketchExitHooks || [];
   UI.sketchExitHooks.push(function (sk) {
     var pe = flangeProfileEdit;
     if (!pe || !sk || sk.id !== pe.id) return;
     flangeProfileEdit = null;
+    setFlangeGuard(false);
     var kept = !!App.pendingAfterSketch, feat = pe.feat, msg = null;   // Discard Changes and Exit clears pendingAfterSketch first
     if (kept) {
       var got = readFlangeProfile(sk, pe.len);
@@ -3114,7 +3131,7 @@
       // (Discard Changes and Exit leaves the flange as it was)
       if (got.error) {
         App.pendingAfterSketch = function () {
-          flangeProfileEdit = pe;
+          flangeProfileEdit = pe; setFlangeGuard(true);
           UI.enterSketch(sk.id);
           var why = 'Edit Flange Profile: ' + got.error + ' Fix the profile and exit again, or Discard Changes and Exit.';
           UI.setStatus(why); UI.toast(why);
@@ -3196,6 +3213,12 @@
       // lane PT: Edit Flange Profile on part of the edge: the profile's sides set back from the edge's start / end
       f.startOffset = f.startOffset != null ? f.startOffset : 0;
       f.endOffset = f.endOffset != null ? f.endOffset : 0;
+      // lane smflange (rfQB): a length per edge (feature lengths { <edge index>: L }); each edge's arrow edits its own
+      // length, the box under Length shows the edge whose arrow was used last (lenEdge, UI only; edgeLen its value)
+      var ls0 = f.lengths && typeof f.lengths === 'object' ? f.lengths : {};
+      f.lengths = {};
+      Object.keys(ls0).forEach(function (k) { if (ls0[k] != null && isFinite(+ls0[k])) f.lengths[k] = +ls0[k]; });
+      f.lenEdge = -1; f.edgeLen = +f.length;
     }
     var memKind = isHem ? 'hem' : isFlange ? 'flange' : null, mem = memKind && smMemory[memKind];
     if (!existing && !resume && mem && mem.units === App.model.units) {
@@ -3222,8 +3245,16 @@
       var sharp = App.edges.filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex; });
       return v.edges.map(function (spec, i) { return { label: 'Edge<' + (i + 1) + '>', at: spec.at, get edges() { try { return existing ? [] : K.resolveEdges([{ at: spec.at, chain: false }], sharp, K.pickTol(App.model.units, sheet.thickness)); } catch (e) { return []; } } }; });
     }
-    function flangeRemove(v, i) { v.edges.splice(i, 1); renderPM(); resolveList(); preview(); }
-    function flangeClear(v) { v.edges.length = 0; renderPM(); resolveList(); preview(); }
+    // lane smflange: an edge taken out of the list takes its own length with it; the later edges' lengths move down one
+    function dropEdgeLength(v, i) {
+      if (!v.lengths) return;
+      var ls = {};
+      Object.keys(v.lengths).forEach(function (k) { var n = +k; if (n < i) ls[n] = v.lengths[k]; else if (n > i) ls[n - 1] = v.lengths[k]; });
+      v.lengths = ls;
+      if (v.lenEdge === i) v.lenEdge = -1; else if (v.lenEdge > i) v.lenEdge--;
+    }
+    function flangeRemove(v, i) { v.edges.splice(i, 1); dropEdgeLength(v, i); renderPM(); resolveList(); preview(); }
+    function flangeClear(v) { v.edges.length = 0; if (v.lengths) { v.lengths = {}; v.lenEdge = -1; } renderPM(); resolveList(); preview(); }
     var CBA_KEY = { kfactor: 'cbaK', allowance: 'cbaBA', deduction: 'cbaBD' };
     function toFeature(v, forOK) {
       var out = JSON.parse(JSON.stringify(v));
@@ -3256,6 +3287,13 @@
           out.endOffset = forOK ? pmExpr('endOffset', +v.endOffset || 0) : +v.endOffset || 0;
         } else { delete out.startOffset; delete out.endOffset; delete out.startPoint; }
         delete out.vxActive; delete out.useOffset; delete out.offsetDist;
+        // lane smflange: the edges' own lengths (only for edges in the list, Blind, no profile; one equal to Length is dropped)
+        delete out.lenEdge; delete out.edgeLen; delete out.lengths;
+        if (v.lengths && v.lengthEnd !== 'upToVertex' && !v.profile && v.edges.length > 1) {
+          var lsOut = {};
+          Object.keys(v.lengths).forEach(function (k) { var n = +k; if (n >= 0 && n < v.edges.length && isFinite(+v.lengths[k]) && +v.lengths[k] !== +v.length) lsOut[n] = +v.lengths[k]; });
+          if (Object.keys(lsOut).length) out.lengths = lsOut;
+        }
       }
       if (isHem) {
         if (v.edges.length > 1) { out.miter = true; out.miterGap = Math.max(0, +v.miterGap || 0); } else { delete out.miter; delete out.miterGap; }
@@ -3374,6 +3412,7 @@
       App.sketchSnapshot = JSON.stringify({ entities: sk.entities, rels: sk.rels });
       App.newSketchId = sk.id;
       flangeProfileEdit = { id: sk.id, len: fr.len, start: fr.start, toSharp: fr.toSharp, feat: feat, existing: existing || null, kind: kind };
+      setFlangeGuard(true);   // lane smflange: a refused profile keeps the sketch open (UI.sketchExitGuard)
       App.pendingAfterSketch = function () { };   // the exit hook replaces it (Discard Changes clears it first)
       UI.afterRebuild(UI.rebuild(), function () {
         UI.enterSketch(sk.id);
@@ -3447,6 +3486,12 @@
         { type: 'select', label: 'End condition', key: 'lengthEnd', options: [['blind', 'Blind'], ['upToVertex', 'Up To Vertex']], rerender: true },
         { type: 'check', label: 'Reverse direction', key: 'reverse' },
         { type: 'number', label: 'Length', key: 'length', unit: 'u', min: 0, show: function (v) { return !upTo(v); }, disabled: function (v) { return !!v.profile; } },
+        // lane smflange (rfQB): the edge whose length arrow was used last, its own length (SolidWorks edits each edge's
+        // profile sketch; how its PM offers this is not checked). Length stays the length of every other edge.
+        { type: 'number', label: 'Edge length', key: 'edgeLen', unit: 'u', min: 0, show: function (v) { return !upTo(v) && !v.profile && v.edges.length > 1 && v.lenEdge >= 0; } },
+        { type: 'static', label: '', show: function (v) { return !upTo(v) && !v.profile && v.edges.length > 1 && v.lenEdge >= 0; }, value: function (v) { return 'Edge<' + (v.lenEdge + 1) + '>: drag an edge\'s arrow to set its own length'; } },
+        { type: 'buttons', show: function (v) { return !upTo(v) && !v.profile && v.edges.length > 1 && v.lengths && Object.keys(v.lengths).length > 0; },
+          buttons: [{ label: 'Same length on every edge', title: 'Drop the edges\' own lengths: every edge takes Length', onclick: function (v) { v.lengths = {}; v.lenEdge = -1; renderPM(); preview(); } }] },
         // lane flangeprofile: SolidWorks' behaviour here is not checked; Anvil greys Length while a sketched profile sets it
         { type: 'static', label: '', show: function (v) { return !upTo(v) && !!v.profile; }, value: 'Set by the flange profile (its highest point): Edit Flange Profile to change it.' },
         { type: 'iconRadio', label: 'Measured from', key: 'lengthRef', options: lengthRefs, show: function (v) { return !upTo(v); } },
@@ -3488,7 +3533,21 @@
       // Length live (the worker previews it), ✓ commits. Laid out by the kernel as the preview is (flangeLayout records).
       handles: isFlange ? function (v) {
         if (!v.edges.length || v.lengthEnd === 'upToVertex' || !UI.flangeLengthHandles || !K.flangeLayout || !App.build || !App.build.body) return [];
-        try { return UI.flangeLengthHandles(K.flangeLayout(toFeature(v), previewModel(), { body: App.build.body, flanges: {}, tools: {} }).info, +v.length); } catch (e) { return []; }
+        try {
+          var recs = K.flangeLayout(toFeature(v), previewModel(), { body: App.build.body, flanges: {}, tools: {} }).info;
+          if (v.edges.length < 2 || v.profile) return UI.flangeLengthHandles(recs, +v.length);
+          // lane smflange (rfQB): one arrow per edge, each its own length (key len@<edge index>; onChange files it)
+          var hs = [];
+          (recs || []).forEach(function (r) {
+            if (!r || r.kind !== 'edge' || !r.a || !r.b) return;
+            var bi = -1, bd = Infinity;
+            v.edges.forEach(function (spec, i) { var d = K.pointSegmentDistance(spec.at, r.a, r.b); if (d < bd) { bd = d; bi = i; } });
+            if (bi < 0 || hs.some(function (h) { return h.key === 'len@' + bi; })) return;
+            var own = v.lengths && v.lengths[bi] != null ? +v.lengths[bi] : +v.length;
+            UI.flangeLengthHandles([r], own).forEach(function (h) { h.key = 'len@' + bi; h.label = 'Length (Edge<' + (bi + 1) + '>)'; hs.push(h); });
+          });
+          return hs;
+        } catch (e) { return []; }
       } : null,
       message: isJog ? 'Click <b>straight edges</b>: the sheet steps up by the jog height and continues flat. Reverse steps it down.' : isHem ? 'Click <b>straight edges</b> to fold the sheet back over itself. <i>Material Inside</i> keeps the hem inside the edge; <i>Bend Outside</i> adds the bend beyond it. An Open hem\'s gap is the opening between the two flats.' :
         (isMiter ? 'Click <b>two or more adjacent straight edges</b> of the flat sheet; the flanges are joined at each shared corner.' : 'Click <b>straight edges</b> of the flat sheet. The ⇄ button beside <i>End condition</i> flips the flange to the other side; <i>Flange Position</i> sets where the bend sits against the edge.') +   // rfNH: named a Reverse box the PM does not have
@@ -3506,7 +3565,7 @@
           if (pk.kind !== 'edge') return false;
           var e = pk.edge, idx = -1;
           f.edges.forEach(function (spec, i) { if (K.pointSegmentDistance(spec.at, e.a, e.b) < 0.5) idx = i; });
-          if (idx >= 0) f.edges.splice(idx, 1); else f.edges.push({ at: e.mid.slice() });
+          if (idx >= 0) { f.edges.splice(idx, 1); if (isFlange) dropEdgeLength(f, idx); } else f.edges.push({ at: e.mid.slice() });
           renderPM(); resolveList(); preview();
           return true;
         }
@@ -3523,6 +3582,33 @@
           if (tb !== tbShown) { tbShown = tb; renderPM(); }
         }
         if (isFlange && key === 'lengthEnd') { v.vxActive = v.lengthEnd === 'upToVertex' && !v.lengthVertex; renderPM(); if (v.vxActive) UI.setStatus('Up To Vertex: click the vertex the flange runs to.'); }
+        // lane smflange (rfQB): a sketched profile sets the length: Length shows its highest point measured from the new
+        // reference (it kept the value of the reference it was read with)
+        if (isFlange && key === 'lengthRef' && v.profile) {
+          try {
+            var wpL = K.flangeWallProfile(v.profile), frL = flangeProfileFrame(toFeature(v), existing);
+            v.length = Math.round((wpL.vmax + frL.toSharp(v.lengthRef)) * 1e8) / 1e8;
+            var inpL = pm.root && pm.root.querySelector('input.pm-num[data-key="length"]');
+            if (inpL) inpL.value = v.length;
+          } catch (e) { }
+        }
+        // lane smflange (rfQB): an edge's length arrow (len@<i>) sets that edge's own length and shows it in Edge length;
+        // a typed Edge length goes to that edge
+        if (isFlange && typeof key === 'string' && key.indexOf('len@') === 0) {
+          var ei = +key.slice(4), lv = +v[key];
+          delete v[key];
+          if (!v.lengths) v.lengths = {};
+          if (ei >= 0 && isFinite(lv)) {
+            v.lengths[ei] = lv; v.edgeLen = lv;
+            var shown = v.lenEdge === ei;
+            v.lenEdge = ei;
+            var inpE = pm.root && pm.root.querySelector('input.pm-num[data-key="edgeLen"]');
+            if (shown && inpE) inpE.value = lv; else renderPM();
+          }
+        } else if (isFlange && key === 'edgeLen' && v.lenEdge >= 0 && isFinite(+v.edgeLen)) {
+          if (!v.lengths) v.lengths = {};
+          v.lengths[v.lenEdge] = +v.edgeLen;
+        }
         resolveList(); preview();
       },
       okBlocked: function (v) { return !v.edges.length ? 'Select at least one edge.' : isFlange && v.lengthEnd === 'upToVertex' && !v.lengthVertex ? 'Up To Vertex: select the vertex the flange runs to.' : ''; },   // rfNH: ✓ greys until the selection is made (it took the click and refused with a toast); rfNJ: the Up To Vertex vertex too

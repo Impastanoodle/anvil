@@ -341,6 +341,30 @@
       if (!(L - toSharp > 1e-6)) throw new Error('Flange length must be longer than ' + fmtN(toSharp) + ' (the bend, to ' + what + ').');
       L -= toSharp;
     }
+    // lane smflange (rfQB): a length per edge (SolidWorks: each edge of an Edge-Flange has its own profile sketch).
+    // f.lengths = { <index into f.edges>: length } overrides f.length for that edge, measured as f.length is (lengthRef).
+    // Plain blind Edge Flanges only (not hems, Up To Vertex, a profile, a Miter Flange's stages).
+    var lenOf = null;
+    if (f.lengths != null && typeof f.lengths === 'object' && Object.keys(f.lengths).length) {
+      if (f.hem || f.type !== 'flange' || upTo || wallProf || f.miterStage || f.miterJoin || f.swJoin || f.miterSquare || curl)
+        throw new Error('A length per edge is for a plain Edge Flange with a Blind length.');
+      var lenCut = !upTo && !wallProf && (lengthRef === 'outer' || lengthRef === 'inner' || lengthRef === 'tangent') ? toSharp : 0;
+      lenOf = {};
+      Object.keys(f.lengths).forEach(function (k) {
+        var v = f.lengths[k];
+        if (v == null || v === '') return;
+        v = +v;
+        if (!isFinite(v)) throw new Error('Flange length of edge ' + (+k + 1) + ' must be a number.');
+        if (!(v - lenCut > 1e-6)) throw new Error('Flange length of edge ' + (+k + 1) + ' must be longer than ' + fmtN(lenCut) + '.');
+        lenOf[k] = v - lenCut;
+      });
+    }
+    // the f.edges index a resolved edge came from: the pick nearest it
+    function edgeIndexOf(e) {
+      var best = -1, bd = Infinity;
+      (f.edges || []).forEach(function (pk, i) { if (!pk || !pk.at) return; var d = _.pointSegmentDistance(pk.at, e.a, e.b); if (d < bd - 1e-12) { bd = d; best = i; } });
+      return best;
+    }
     var miter = !!f.miter, gap = Math.max(0, +f.miterGap || 0);
     // a flange (not a hem, not a jog's halves) without its own relief takes the sheet's Auto Relief (makeSheet)
     var auto = f.type === 'flange' && !f.hem && f.relief == null && (sheet.relief === 'rect' || sheet.relief === 'obround' || sheet.relief === 'tear');
@@ -483,12 +507,13 @@
         if (!(upToL > 1e-6)) throw new Error('Up To Vertex: the vertex at ' + f.lengthVertex.map(function (x) { return fmtN(+x); }).join(', ') + ' does not lie past the bend: the wall would be ' + fmtN(upToL) + ' long.');
         L = upToL;
       }
-      var loop = noRepeatLoop(flangeProfile(A, R, T, wallProf ? 0 : L, ov));   // lane flangeprofile: the bend alone, the wall is the profile's part
+      var eIdx = lenOf ? edgeIndexOf(e) : -1, Le = lenOf && lenOf[eIdx] != null ? lenOf[eIdx] : L;   // lane smflange: this edge's own length
+      var loop = noRepeatLoop(flangeProfile(A, R, T, wallProf ? 0 : Le, ov));   // lane flangeprofile: the bend alone, the wall is the profile's part
       var wmax = 0;
       loop.forEach(function (p) { wmax = Math.max(wmax, p[0]); });
       var ta = dot(sub(e.a, e.mid), plane.n), tb = dot(sub(e.b, e.mid), plane.n);
       // ends: P = vertex, t = sweep coordinate, dIn = unit direction from the vertex into the edge
-      eds.push({ e: e, nF: nF, o: o, u: u, plane: plane, loop: loop, wmax: wmax,
+      eds.push({ e: e, nF: nF, o: o, u: u, plane: plane, loop: loop, wmax: wmax, L: Le, edgeIndex: eIdx,
         ends: [{ P: e.a, t: ta, dIn: norm(sub(e.b, e.a)), sideTrim: trimmedEnd[0] }, { P: e.b, t: tb, dIn: norm(sub(e.a, e.b)), sideTrim: trimmedEnd[1] }] });
     });
     // (rfJU) SolidWorks mitres every corner two edges of one Edge Flange share (Gap distance, default 0.01 in / 0.25
@@ -592,11 +617,15 @@
     }
     var inside = null;
     eds.forEach(function (ed) {
+      var L = ed.L;   // lane smflange: the edge's own length (f.lengths), else the feature's
       function swMax(sm) { return Math.max(sm.ext, sm.ext + sm.slope * L, sm.tB); }
       function endAt(en) { return en.square ? en.t - dot(en.dIn, ed.plane.n) * en.square.ext : en.swMiter ? en.t - dot(en.dIn, ed.plane.n) * swMax(en.swMiter) : en.miter ? en.miter.tExt : en.butt ? buttWallT(ed, en) : en.t; }
       var t0 = endAt(ed.ends[0]), t1 = endAt(ed.ends[1]);
       var part = { loop: ed.loop, plane: ed.plane, t0: Math.min(t0, t1), t1: Math.max(t0, t1),
         clips: ed.ends.filter(function (en) { return en.miter && !en.swMiter; }).map(function (en) { return { n: en.miter.n, w: en.miter.w }; }) };
+      // lane smflange: an edge with its own length carries its own section (buildFlange / occt-kernel.js applyLayout read
+      // p.section before lay.section)
+      if (lenOf && !wallProf) part.section = { A: A, R: R, T: T, L: L, ov: ov };
       // lane rfIS: SolidWorks' edge-flange mitre (see swMiter above): the bend's end a taper from the base's corner to the
       // wall's line (part.tapers, as a Miter Flange's square end, but straight in (angle, t)), the overlap strip stopping
       // at the base's corner (tails), the wall cut square to itself (wallClips; OpenCascade: a clip of the whole sweep
@@ -768,6 +797,7 @@
     else if (f.type === 'flange' && !f.miterJoin && !f.swJoin && !f.miterStage && !f.miterSquare && f.startAt == null &&
       (A > Math.PI / 2 + 1e-6 || Object.keys(ctx.flanges || {}).some(function (id) { return String(id) !== String(f.id) && (ctx.flanges[id] || []).some(function (rc) { return rc && rc.kind === 'edge' && +rc.angle > Math.PI / 2 + 1e-6; }); }))) {
       // the wall alone (the bend's start sits on the sheet: on a faceted curved sheet its chords read as 1e-4 in common)
+      if (lenOf) L = eds.reduce(function (m, ed) { return Math.max(m, ed.L); }, 0);   // lane smflange: the longest edge's wall
       var sA = Math.sin(A), cA = Math.cos(A), wl = [[R * sA, R - R * cA], [R * sA + cA * L, R - R * cA + sA * L], [(R + T) * sA + cA * L, R - (R + T) * cA + sA * L], [(R + T) * sA, R - (R + T) * cA]];
       if (signedArea(wl) < 0) wl.reverse();
       hemCrossing(f, model, ctx, eds, cuts, wl, 0, T, 0);
@@ -1798,15 +1828,16 @@
     if (f.miterFlange && f.sketch != null) return buildMiterFlange(f, model, ctx);   // lane DL: Miter Flange from a profile sketch
     var lay = flangeLayout(f, model, ctx);
     var tools = lay.parts.map(function (p) {
-      if (p.taper) return endCut(buttPart(p, lay.section, f.id), p, lay.section.T);
-      if (p.tapers) return endCut(miterSquarePart(p, lay, f), p, lay.section.T);
+      var sec = p.section || lay.section;   // lane smflange: an edge's own length
+      if (p.taper) return endCut(buttPart(p, sec, f.id), p, sec.T);
+      if (p.tapers) return endCut(miterSquarePart(p, lay, f), p, sec.T);
       if (p.wallProfile) return flangeWallSolid(p, f.id);   // lane flangeprofile
-      var tool = prism(p.loop, p.plane, p.t0, p.t1, f.id, secCv(p.loop, lay.section));
+      var tool = prism(p.loop, p.plane, p.t0, p.t1, f.id, secCv(p.loop, sec));
       p.clips.forEach(function (c) { tool = tool.clipByPlane(c.n, c.w); });
-      tool = endCut(tool, p, lay.section.T);
+      tool = endCut(tool, p, sec.T);
       // cuts across the bend zone (bendVoids): wrapped round the bend and taken out of it
       if (p.voids && p.voids.length) {
-        var w = wrapCut(p.voids, lay.section, p.BA, p.plane, { grow: { s0: p.band.s0 }, shared: f.id });
+        var w = wrapCut(p.voids, sec, p.BA, p.plane, { grow: { s0: p.band.s0 }, shared: f.id });
         if (w) tool = tool.subtract(w);
       }
       return tool;
@@ -3415,6 +3446,7 @@
     if (footMaps.length) loops = loops.map(function (l) { return flatFootLoop(l, footMaps); });   // lane NM
     // r16/flatcircle: a round hole is a circle in the flat, whichever kernel's points it was joined from
     loops = loops.map(function (l) { var C = enclosingCircle(l); return C ? snapFlatCircle(l, flatCircleTol(model.units, C.r)) : l; });
+    if (!trace) bends.forEach(function (bd) { trimBendToMetal(bd, loops); });   // lane smflange (rfQB)
     var min =[Infinity, Infinity], max = [-Infinity, -Infinity];
     loops.forEach(function (l) { l.forEach(function (p) { min[0] = Math.min(min[0], p[0]); min[1] = Math.min(min[1], p[1]); max[0] = Math.max(max[0], p[0]); max[1] = Math.max(max[1], p[1]); }); });
     Object.keys(kUsed).forEach(function (k) {
@@ -3676,6 +3708,23 @@
     return out;
   }
   // the parts of segment a–b inside the blank (outer loop less holes), for the tangent lines of mergeFaces off
+  // lane smflange (rfQB): a bend line ends where the metal does. A corner relief (or a bend relief / cut) that removes
+  // the end of a bend left the line running on into the void (up to T + R on a tray's tear relief): its ends move in
+  // along the line to the first / last piece of it on the blank (clipToBlank); a hole across its middle keeps the line
+  // whole. bend.reliefs (in the line's frame, origin bend.a) follow the moved origin.
+  function trimBendToMetal(bd, loops) {
+    if (!bd || !bd.a || !bd.b) return;
+    var segs = clipToBlank(bd.a, bd.b, loops);
+    if (!segs.length) return;
+    var A = segs[0].a, B = segs[segs.length - 1].b, L = Math.hypot(bd.b[0] - bd.a[0], bd.b[1] - bd.a[1]);
+    var s0 = Math.hypot(A[0] - bd.a[0], A[1] - bd.a[1]), s1 = Math.hypot(B[0] - bd.b[0], B[1] - bd.b[1]), tol = 1e-9 * Math.max(1, L);
+    if (s0 <= tol && s1 <= tol) return;
+    if (s0 > tol) {
+      if (bd.reliefs) bd.reliefs = bd.reliefs.map(function (nt) { return nt.map(function (p) { return [p[0] - s0, p[1]]; }); });
+      bd.a = A.slice();
+    }
+    if (s1 > tol) bd.b = B.slice();
+  }
   function clipToBlank(a, b, loops) {
     var ts = [0, 1], d = [b[0] - a[0], b[1] - a[1]];
     loops.forEach(function (l) {
