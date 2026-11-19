@@ -1153,7 +1153,13 @@
       UI.setStatus('Reading ' + shortName + ' with OpenCascade…');
       say(null, 'Reading the file with OpenCascade');
       crumb('open: reading ' + fmt + ' with OpenCascade (' + text.length + ' characters)');
-      return UI.occt.importFile(fmt, text, say).then(function (r) { return occtResult(r, text, base); }, function (e) { throw first ? new Error(first.message + ' (OpenCascade: ' + e.message + ')') : e; }).then(null, fail);
+      return UI.occt.importFile(fmt, text, say).then(function (r) { return occtResult(r, text, base); }, function (e) {
+        if (first) throw new Error(first.message + ' (OpenCascade: ' + e.message + ')');
+        // (rfRC) OpenCascade finds no solid: Anvil's reader says what the file does hold (a wireframe export, surfaces
+        // only) and what to do about it; should it find a solid after all, that solid is opened
+        if (fmt === 'step' && /no solid/i.test(String(e && e.message))) return finish(Exchange.importFile(name, data, { units: units, sourceUnits: opts.sourceUnits, format: opts.format }));
+        throw e;
+      }).then(null, fail);
     }
     if (!(occt && (fmt === 'iges' || UI.occt.on())) || asmFile) {
       // Anvil's own reader runs on the main thread (1.8 s on a 136 000 triangle STEP file): the status line and the bar
