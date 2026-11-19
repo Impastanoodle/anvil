@@ -1161,7 +1161,42 @@ var Exchange = (function () {
   // back to facets anyway (mesh.crossFailed). crossOptions.on = false: as before; .last = { splits }.
   var crossOptions = { on: true, last: null };
   var PARALLEL_SNAP = { on: true };   // lane solidstep6: snapCylParallel (writeBrepAnalytic)
-  var PINCH_SPLIT = { on: true };     // lane QJ: a planar face's loop through one vertex twice is written as two loops
+  var PINCH_SPLIT = { on: true, retrace: true };     // lane QJ: a planar face's loop through one vertex twice is written as two loops; lane QO: retrace, loops sharing a vertex re-traced (retraceLoops)
+  // retraceLoops(loops, uv) -> the loops of a planar face (vertex indices, the material on their left in uv) traced
+  // again so that no vertex is shared between two loops: at a vertex with several edges leaving it, the walk takes the
+  // first one clockwise from the edge it came in by. Loops sharing no vertex come back unchanged (lane QO).
+  function retraceLoops(loops, uv) {
+    var seen = {}, shared = false;
+    loops.forEach(function (l, li) { l.forEach(function (v) { if (seen[v] != null && seen[v] !== li) shared = true; seen[v] = li; }); });
+    if (!shared) return loops;
+    var edges = [], from = {};
+    loops.forEach(function (l) {
+      for (var i = 0; i < l.length; i++) { var e = { a: l[i], b: l[(i + 1) % l.length], used: false }; edges.push(e); (from[e.a] = from[e.a] || []).push(e); }
+    });
+    var pt = {};
+    function q(v) { return pt[v] || (pt[v] = uv(v)); }
+    function ang(a, b) { var p = q(a), r = q(b); return Math.atan2(r[1] - p[1], r[0] - p[0]); }
+    var out = [];
+    edges.forEach(function (e0) {
+      if (e0.used) return;
+      var l = [], e = e0, guard = 0;
+      while (e && !e.used && guard++ <= edges.length) {
+        e.used = true; l.push(e.a);
+        var back = ang(e.b, e.a), best = null, bestA = Infinity;
+        (from[e.b] || []).forEach(function (c) {
+          if (c.used && c !== e0) return;
+          var cw = back - ang(c.a, c.b);
+          while (cw <= 1e-12) cw += 2 * Math.PI;
+          while (cw > 2 * Math.PI + 1e-12) cw -= 2 * Math.PI;
+          if (cw < bestA) { bestA = cw; best = c; }
+        });
+        if (best === e0) break;
+        e = best;
+      }
+      if (l.length >= 3) out.push(l);
+    });
+    return out;
+  }
   function splitCrossings(mesh) {
     var pos = mesh.positions, tri = mesh.triangles, nT = tri.length / 3, ts = mesh.triSurf;
     if (!ts || !crossOptions.on) return mesh;
@@ -1538,7 +1573,7 @@ var Exchange = (function () {
       var S = c.surf;
       c.ok = (S.t === 'cyl' || S.t === 'cone' || S.t === 'sph' || S.t === 'tor') && S.r > tol && (S.t !== 'tor' || Math.abs(S.R) > S.r + tol) && (S.t !== 'cone' || Math.abs(S.k) > 1e-9);
     });
-    var snaps = [];
+    var snaps = [], vAlias = {};
     snapToCylinders();
     snapCylParallel();   // lane solidstep6 (rfON)
     snapCylCyl();
@@ -2099,6 +2134,10 @@ var Exchange = (function () {
         var Y = add(X, scale(L, lam));
         if (planes.some(function (pf) { return Math.abs(dot(norm(pf.normal), Y) - pf.w) > tol; })) return;
         if (onCyl.some(function (S4) { return Math.abs(axial(S4, Y).rho - S4.r) > tol; })) return;
+        // lane QO: moved onto a neighbour (a 120 degree Material Outside tray in mm: a bend end's corner .016 from the
+        // bend's start lands on it), the two are one vertex in the file and the edge between them is left out: it was
+        // written as an edge of no length, and OpenCascade split the solid there (7 shells, no solid)
+        vTris[v].some(function (t6) { for (var e6 = 0; e6 < 3; e6++) { var u6 = tri[t6 * 3 + e6]; if (u6 !== v && len(sub(P(u6), Y)) <= tol) { vAlias[v] = u6; return true; } } return false; });
         if (!moved) { moved = true; pos = Float64Array.from(pos); }
         pos[v * 3] = Y[0]; pos[v * 3 + 1] = Y[1]; pos[v * 3 + 2] = Y[2];
         var sn = { v: v, X: X, comps: [], all: [] };
@@ -2492,7 +2531,8 @@ var Exchange = (function () {
     function pt(p) { return W.add('CARTESIAN_POINT(\'\',' + stepVec(p) + ')'); }
     function dirE(d) { return W.add('DIRECTION(\'\',' + stepVec(d) + ')'); }
     function axisE(o, z, x) { return W.add('AXIS2_PLACEMENT_3D(\'\',' + pt(o) + ',' + dirE(z) + ',' + dirE(x) + ')'); }
-    function vertex(i) { return vp[i] || (vp[i] = W.add('VERTEX_POINT(\'\',' + pt(P(i)) + ')')); }
+    function vRoot(i) { while (vAlias[i] != null) i = vAlias[i]; return i; }
+    function vertex(i) { i = vRoot(i); return vp[i] || (vp[i] = W.add('VERTEX_POINT(\'\',' + pt(P(i)) + ')')); }
     function vertexAt(key, p) { return cv[key] || (cv[key] = W.add('VERTEX_POINT(\'\',' + pt(p) + ')')); }
     function circleVertex(c) { return vertexAt('c' + c.key, add(c.center, scale(c.xdir, c.radius))); }
     function circleE(c) { return cg[c.key] || (cg[c.key] = W.add('CIRCLE(\'\',' + axisE(c.center, c.normal, c.xdir) + ',' + stepReal(c.radius) + ')')); }
@@ -2527,6 +2567,8 @@ var Exchange = (function () {
         var s = breaks[k], e = breaks[(k + 1) % breaks.length], vs = [];
         if (e <= s) e += n;
         for (var j = s; j <= e; j++) vs.push(l[j % n]);
+        // lane QO: two vertices made one (vAlias): the straight edge between them has no length and is left out
+        if (vRoot(vs[0]) === vRoot(vs[vs.length - 1]) && vs.every(function (x) { return len(sub(P(x), P(vs[0]))) <= tol; })) continue;
         out.push(openEdge(vs, cls[s]));
       }
       return out;
@@ -2916,7 +2958,13 @@ var Exchange = (function () {
         // pieces touching at a point, t6028) is written as two loops there, each its own face or hole (one loop read
         // back with an edge shared by four faces)
         var ls = [];
-        loopsOf[g].forEach(function pin(l) {
+        // lane QO: a hole touching its outer loop (or another hole) at a vertex (a 120 degree Bend Outside tray's wall
+        // face: its corner triangles meet the rest at two points each, written as a rectangle with two holes touching
+        // it, which Anvil read back with edges shared by four faces) is re-traced as the face's pieces: at a vertex with
+        // more than one way on, the loop takes the first edge clockwise from where it came from (the material stays on
+        // its left), so every loop bounds one piece; a piece touching itself is split below as before
+        var fl0 = PINCH_SPLIT.on && PINCH_SPLIT.retrace !== false ? retraceLoops(loopsOf[g], function (v) { var p = P(v); return [dot(p, fr.u), dot(p, fr.v)]; }) : loopsOf[g];
+        fl0.forEach(function pin(l) {
           for (var i = 0; i < l.length && PINCH_SPLIT.on; i++) for (var j = i + 1; j < l.length; j++) if (l[i] === l[j]) { pin(l.slice(i, j)); pin(l.slice(j).concat(l.slice(0, i))); return; }
           if (l.length >= 3) ls.push(l);
         });
@@ -5692,6 +5740,16 @@ var Exchange = (function () {
     var pending = holes.slice().sort(function (a, b) { return maxX(b) - maxX(a); });
     while (pending.length) {
       var h = pending.shift(), m = h[0];
+      // lane QO: a hole touching the ring at a vertex (a notch written as an outer loop and a hole sharing one vertex:
+      // a 120 degree tray wall's end face) joins the ring there, no bridge: a bridge from its far point crossed into
+      // the touching corner and the face came back folded (edges shared by four faces)
+      var tk = -1, tj = -1;
+      for (var hj = 0; hj < h.length && tk < 0; hj++) for (var rk = 0; rk < ring.length; rk++) if (same(P[h[hj]], P[ring[rk]])) { tk = rk; tj = hj; break; }
+      if (tk >= 0) {
+        var ht = h.slice(tj).concat(h.slice(0, tj));
+        ring = ring.slice(0, tk + 1).concat(ht.slice(1), [ht[0]], ring.slice(tk + 1));
+        continue;
+      }
       h.forEach(function (i) { if (P[i][0] > P[m][0] || (P[i][0] === P[m][0] && P[i][1] < P[m][1])) m = i; });
       // bridge to the nearest ring vertex that sees M: locally inside at that vertex, and crossing no ring edge and no
       // edge of a hole still waiting
@@ -6438,7 +6496,7 @@ var Exchange = (function () {
     encodeSolids: encodeSolids, solidMesh: solidMesh, solidCSG: solidCSG, signedVolume: signedVolume, earcut: earcut,
     b64encode: b64encode, b64decode: b64decode, utf8: utf8, fromUtf8: fromUtf8,
     importOptions: importOptions,
-    pinchSplit: PINCH_SPLIT,       // lane QJ: a planar loop through one vertex twice -> two loops { on }
+    pinchSplit: PINCH_SPLIT,       // lane QJ: a planar loop through one vertex twice -> two loops { on, retrace (lane QO) }
     parallelSnap: PARALLEL_SNAP,   // lane solidstep6: snapCylParallel (two walls with parallel axes share a ruling) { on }
     crossOptions: crossOptions,   // lane PO: splitCrossings (two bends crossing at a mitre) { on, last: { splits } }
     surfaceGridKind: bsSurfClassify,   // lane stepin2: occt-kernel.js importCylRecord (B-spline faces that are cylinders)
